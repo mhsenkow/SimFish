@@ -18,6 +18,10 @@ const PLANT_RAMP: Array[Color] = [
 ]
 const VOXEL_SIZE: float = 0.32
 
+# Optional per-species ramp override. World assigns this before init() so each
+# species reads a different color band.
+var ramp_override: Array = []
+
 # Per-plant params (set on spawn).
 var max_height: int = 22
 var growth_rate: float = 0.18  # voxels per second at saturated nutrients
@@ -27,6 +31,8 @@ var sway_amplitude: float = 0.25
 var current_height: int = 0
 var growth_progress: float = 0.0
 var voxels: Array[MeshInstance3D] = []
+var has_flower: bool = false
+var _flower_voxel: MeshInstance3D = null
 var _phase: float = 0.0
 var _t: float = 0.0
 var _world_pos: Vector3 = Vector3.ZERO
@@ -51,7 +57,8 @@ func _grow_one() -> bool:
 		return false
 	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
 	var ramp_idx: int = clampi(int(rel * 5.0), 0, 5)
-	var color: Color = PLANT_RAMP[ramp_idx]
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var color: Color = ramp[ramp_idx]
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
@@ -89,6 +96,31 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		growth_progress = 0.0
 		if _grow_one():
 			substrate.consume_at(_world_pos, nutrient_demand)
+	# Rare flowering: mature plant (close to max_height) occasionally pops a
+	# bright tip voxel. Gets cleared next time it's nibbled or it dies.
+	if not has_flower and current_height >= max_height - 1 and randf() < 0.0005:
+		_flower()
+
+
+func _flower() -> void:
+	if has_flower or voxels.is_empty():
+		return
+	has_flower = true
+	var palette: Array[Color] = [
+		Color8(230, 130, 200),  # pink
+		Color8(245, 220, 90),   # yellow
+		Color8(220, 100, 100),  # red
+		Color8(170, 130, 220),  # lavender
+		Color8(240, 240, 240),  # white
+	]
+	var flower_color: Color = palette[randi() % palette.size()]
+	_flower_voxel = MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(VOXEL_SIZE * 1.1, VOXEL_SIZE * 1.1, VOXEL_SIZE * 1.1)
+	_flower_voxel.mesh = bm
+	_flower_voxel.material_override = VoxelMat.make(flower_color)
+	_flower_voxel.position = Vector3(0, current_height * VOXEL_SIZE + VOXEL_SIZE * 1.2, 0)
+	add_child(_flower_voxel)
 
 
 # Fish nibbling: remove up to `amount` voxels from the top. Returns the

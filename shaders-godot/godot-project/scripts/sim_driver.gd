@@ -19,13 +19,26 @@ signal stats_changed(stats: Dictionary)
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
 
+# Time scale: 0=paused, 1=real-time, 4 / 16 = accelerated. Affects both the
+# sim tick AND every creature's per-frame motion (each script multiplies its
+# delta by sim.time_scale).
+var time_scale: float = 1.0
+# Day/night cycle: progresses 0..1 over DAY_LENGTH_S then wraps. 0=dawn,
+# 0.25=midday, 0.5=dusk, 0.75=midnight.
+var day_phase: float = 0.25  # start at midday
+const DAY_LENGTH_S: float = 360.0  # 6-minute full cycle
+# Deterministic seed shown in HUD. World reads this on init.
+var tank_seed: int = 0xCAFEF155
+
 var fish: Array[Fish] = []
 var shrimp: Array[Shrimp] = []
 var plants: Array[Plant] = []
 var waste: Array[WasteParticle] = []
 var eggs: Array[FishEgg] = []
+var algae: Array[Algae] = []
 var substrate: SubstrateGrid = null
 var snails_root: Node3D = null   # set by world so SimDriver can scan snail children
+var algae_root: Node3D = null    # container for algae voxels
 var world_bounds: AABB = AABB(Vector3(-8, 1.6, -4), Vector3(16, 5, 8))
 var substrate_top_y: float = 1.6
 
@@ -61,14 +74,23 @@ func register_shrimp(s: Shrimp) -> void:
 
 
 func _physics_process(dt: float) -> void:
-	_accum += dt
+	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
+	var sdt: float = dt * time_scale
+	_accum += sdt
+	day_phase = fposmod(day_phase + sdt / DAY_LENGTH_S, 1.0)
 	while _accum >= SIM_DT:
 		_accum -= SIM_DT
 		_tick(SIM_DT)
-	_stats_timer += dt
+	_stats_timer += sdt
 	if _stats_timer >= 1.0:
 		_stats_timer = 0.0
 		_emit_stats()
+
+
+# Day/night light multiplier 0..1. Cosine over the cycle so it's a smooth
+# bell. day_phase 0.25 = peak (midday), 0.75 = trough (midnight).
+func daylight() -> float:
+	return 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
 
 
 func _tick(dt: float) -> void:
@@ -146,6 +168,43 @@ func _tick(dt: float) -> void:
 	for e in hatched:
 		_hatch(e)
 		e.queue_free()
+
+	# 6b. Algae - bloom if conditions favor (high nutrients + low plant biomass),
+	# decay otherwise. Tracking is sparse to keep voxel count reasonable.
+	var n_total: float = 0.0
+	if substrate != null:
+		n_total = substrate.total_above_baseline()
+	var plant_biomass: int = 0
+	for p in plants:
+		if is_instance_valid(p):
+			plant_biomass += p.biomass()
+	var bloom_favor: bool = n_total > 4.0 and plant_biomass < 350
+	# Cap algae count so it doesn't explode.
+	if bloom_favor and algae.size() < 60 and algae_root != null and randf() < 0.2:
+		var a := Algae.new()
+		algae_root.add_child(a)
+		a.global_position = Vector3(
+			randf_range(-7.5, 7.5),
+			randf_range(2.2, 5.5),
+			randf_range(-3.5, 3.5),
+		)
+		var palette: Array[Color] = [
+			Color8(120, 165, 60),
+			Color8(95, 145, 70),
+			Color8(140, 180, 80),
+		]
+		a.init(palette[randi() % palette.size()])
+		algae.append(a)
+	# Tick existing algae.
+	var dead_algae: Array[Algae] = []
+	for a in algae:
+		if not is_instance_valid(a):
+			continue
+		if a.tick(dt, bloom_favor):
+			dead_algae.append(a)
+	for a in dead_algae:
+		algae.erase(a)
+		a.queue_free()
 
 	# 7. Resolve events from fish + shrimp.
 	for ev in events:
@@ -279,6 +338,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 		)
 		e.init(g)
 		register_egg(e)
+	_play_ambient(0.4)  # soft mid-tone for laying
 
 
 func _hatch(e: FishEgg) -> void:
@@ -293,6 +353,17 @@ func _hatch(e: FishEgg) -> void:
 	fry.hunger = 0.3
 	fry.energy = 1.0
 	register_fish(fry)
+	_play_ambient(0.7)  # joyful high plink on hatch
+
+
+# Helper - look up the audio node and emit a plink. Cheap no-op if missing.
+func _play_ambient(intensity: float) -> void:
+	var root := get_tree().current_scene
+	if root == null:
+		return
+	var audio := root.get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("play_event_plink"):
+		audio.play_event_plink(intensity)
 
 
 func _emit_stats() -> void:

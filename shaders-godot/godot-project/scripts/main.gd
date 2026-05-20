@@ -19,8 +19,12 @@ extends Node
 @onready var hud: Label = $DebugHUD
 @onready var world: Node3D = $SubViewport/World
 
+# Cached SimDriver ref for time_scale + seed + day_phase queries.
+var _sim: Node = null
 # Last-known ecosystem stats (updated via SimDriver.stats_changed signal).
 var _stats: Dictionary = {}
+# Edge-detect for key triggers.
+var _key_was_pressed: Dictionary = {}
 
 # Orbit state - default angle is the "feels nice" view the user landed on
 # (drag to refine, F to reset back to this).
@@ -45,8 +49,12 @@ const AUTO_ORBIT_SPEED: float = 0.08
 
 var _orbiting: bool = false
 var _last_mouse: Vector2 = Vector2.ZERO
+var _drag_start: Vector2 = Vector2.ZERO  # to distinguish click from drag
+var _drag_total: float = 0.0
 var _auto_orbit: bool = false
 var _space_was_pressed: bool = false
+# Follow-cam: when set, camera target tracks this Node3D.
+var _follow_target: Node3D = null
 
 
 func _ready() -> void:
@@ -54,9 +62,9 @@ func _ready() -> void:
 	_apply_camera()
 	# Subscribe to SimDriver stats - they emit at ~1Hz with the ecosystem snapshot.
 	await get_tree().process_frame
-	var sim_node: Node = world.get_node_or_null("SimDriver")
-	if sim_node != null and sim_node.has_signal("stats_changed"):
-		sim_node.connect("stats_changed", _on_stats_changed)
+	_sim = world.get_node_or_null("SimDriver")
+	if _sim != null and _sim.has_signal("stats_changed"):
+		_sim.connect("stats_changed", _on_stats_changed)
 
 
 func _process(dt: float) -> void:
@@ -73,16 +81,30 @@ func _process(dt: float) -> void:
 	if any_btn and not _orbiting:
 		_orbiting = true
 		_last_mouse = mouse_now
+		_drag_start = mouse_now
+		_drag_total = 0.0
 	elif not any_btn and _orbiting:
 		_orbiting = false
+		# If total drag distance was small, treat as a click - try follow-cam.
+		if _drag_total < 5.0:
+			_try_follow_click(mouse_now)
 
 	if _orbiting:
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
+		_drag_total += delta.length()
 		if delta.length_squared() > 0.0:
 			yaw -= delta.x * SENSITIVITY
 			pitch -= delta.y * SENSITIVITY
 			pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+			_apply_camera()
+
+	# Follow-cam: smoothly track the followed creature.
+	if _follow_target != null:
+		if not is_instance_valid(_follow_target):
+			_follow_target = null
+		else:
+			target = target.lerp(_follow_target.global_position, clampf(dt * 3.0, 0.0, 1.0))
 			_apply_camera()
 
 	# WASD pan target along view direction.
@@ -117,8 +139,135 @@ func _process(dt: float) -> void:
 		yaw += AUTO_ORBIT_SPEED * dt
 		_apply_camera()
 
-	# Update debug HUD every frame.
-	_update_hud(mouse_now, any_btn)
+	# Edge-triggered shortcuts: P pause toggle, 1/2/3 time-scale, F12 photo,
+	# ESC clears follow-cam.
+	_handle_shortcut(KEY_P, _toggle_pause)
+	_handle_shortcut(KEY_1, func(): _set_time_scale(1.0))
+	_handle_shortcut(KEY_2, func(): _set_time_scale(4.0))
+	_handle_shortcut(KEY_3, func(): _set_time_scale(16.0))
+	_handle_shortcut(KEY_F12, _take_photo)
+	_handle_shortcut(KEY_ESCAPE, _clear_follow)
+	_handle_shortcut(KEY_T, _toggle_timelapse)
+
+	# Timelapse: dump a frame every TIMELAPSE_INTERVAL real seconds.
+	if _timelapse_active:
+		_timelapse_accum += dt
+		if _timelapse_accum >= TIMELAPSE_INTERVAL:
+			_timelapse_accum = 0.0
+			var img: Image = sub_viewport.get_texture().get_image()
+			img.save_png("%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index])
+			_timelapse_index += 1
+
+	# Keep header in sync with time-scale + day phase live, not just at 1Hz.
+	_render_header()
+
+
+# ---- Time controls + photo mode ----
+
+func _handle_shortcut(key: int, action: Callable) -> void:
+	var pressed: bool = Input.is_key_pressed(key)
+	var was: bool = _key_was_pressed.get(key, false)
+	if pressed and not was:
+		action.call()
+	_key_was_pressed[key] = pressed
+
+
+var _saved_time_scale: float = 1.0
+
+func _toggle_pause() -> void:
+	if _sim == null:
+		return
+	if float(_sim.time_scale) > 0.0:
+		_saved_time_scale = float(_sim.time_scale)
+		_sim.time_scale = 0.0
+	else:
+		_sim.time_scale = _saved_time_scale
+
+
+func _set_time_scale(s: float) -> void:
+	if _sim == null:
+		return
+	_sim.time_scale = s
+	_saved_time_scale = s
+
+
+func _take_photo() -> void:
+	var img: Image = sub_viewport.get_texture().get_image()
+	# Save into the user's app-data dir under ./captures
+	var dir: String = OS.get_user_data_dir() + "/captures"
+	DirAccess.make_dir_recursive_absolute(dir)
+	var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
+	var path: String = dir + "/vivarium_" + ts + ".png"
+	img.save_png(path)
+	print("[vivarium] photo saved: ", path)
+
+
+# ---- Timelapse mode ----
+# Press T to start recording. Auto-dumps a frame every 0.5 real seconds into
+# captures/timelapse_<timestamp>/. Press T again to stop. The user assembles
+# the PNG sequence into a GIF/MP4 via their favorite tool.
+var _timelapse_active: bool = false
+var _timelapse_dir: String = ""
+var _timelapse_index: int = 0
+var _timelapse_accum: float = 0.0
+const TIMELAPSE_INTERVAL: float = 0.5
+
+
+func _toggle_timelapse() -> void:
+	if _timelapse_active:
+		_timelapse_active = false
+		print("[vivarium] timelapse stopped: ", _timelapse_index, " frames in ", _timelapse_dir)
+	else:
+		var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
+		_timelapse_dir = OS.get_user_data_dir() + "/captures/timelapse_" + ts
+		DirAccess.make_dir_recursive_absolute(_timelapse_dir)
+		_timelapse_index = 0
+		_timelapse_accum = 0.0
+		_timelapse_active = true
+		print("[vivarium] timelapse started: ", _timelapse_dir)
+
+
+# ---- Follow-cam ----
+
+func _clear_follow() -> void:
+	_follow_target = null
+
+
+func _try_follow_click(screen_pos: Vector2) -> void:
+	# Project a ray from the camera through the click point, find the closest
+	# Fish/Shrimp within ~0.5 unit perpendicular distance, lock the cam target
+	# onto it.
+	if camera == null:
+		return
+	# Convert window-space mouse to SubViewport-space, since the camera is
+	# inside the SubViewport.
+	var win_size: Vector2 = get_window().size
+	var sv_size: Vector2 = Vector2(sub_viewport.size)
+	var sv_pos: Vector2 = screen_pos * (sv_size / win_size)
+	var origin: Vector3 = camera.project_ray_origin(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos)
+	# Find the closest Fish or Shrimp to the ray within reach.
+	var best: Node3D = null
+	var best_perp: float = 0.7
+	var creatures: Array = []
+	if _sim != null:
+		for f in _sim.fish:
+			if is_instance_valid(f): creatures.append(f)
+		for s in _sim.shrimp:
+			if is_instance_valid(s): creatures.append(s)
+	for c in creatures:
+		var n: Node3D = c
+		var to_n: Vector3 = n.global_position - origin
+		var t: float = to_n.dot(dir)
+		if t < 0.0: continue  # behind camera
+		var closest: Vector3 = origin + dir * t
+		var perp: float = closest.distance_to(n.global_position)
+		if perp < best_perp:
+			best_perp = perp
+			best = n
+	if best != null:
+		_follow_target = best
+		print("[vivarium] following ", best.name)
 
 
 # Scroll wheel comes through as button events, not as Input.is_pressed state.
@@ -176,6 +325,19 @@ func _render_header() -> void:
 	var nutrients: float = float(_stats.get("substrate_nutrients_total", 0.0))
 
 	var parts: Array[String] = []
+	# Seed + clock state at the head of the line so they're glanceable.
+	if _sim != null:
+		var seed_str: String = "%08x" % int(_sim.tank_seed)
+		var ts: float = float(_sim.time_scale)
+		var clock: String
+		if ts == 0.0:
+			clock = "paused"
+		elif is_equal_approx(ts, 1.0):
+			clock = "1x"
+		else:
+			clock = "%gx" % ts
+		var day: String = _day_label(float(_sim.day_phase))
+		parts.append("seed %s · %s · %s" % [seed_str, clock, day])
 	parts.append("fish %d (%d/%d)" % [fish_total, fish_adults, fish_fry])
 	parts.append("shrimp %d (%d/%d)" % [shrimp_total, shrimp_adults, shrimp_fry])
 	parts.append("eggs %d" % eggs)
@@ -183,3 +345,12 @@ func _render_header() -> void:
 	parts.append("waste %d" % waste)
 	parts.append("nutrients %.1f" % nutrients)
 	hud.text = "   ·   ".join(parts)
+
+
+func _day_label(p: float) -> String:
+	# Map day_phase (0=dawn, 0.25=midday, 0.5=dusk, 0.75=midnight) to a label.
+	if p < 0.125: return "dawn"
+	elif p < 0.375: return "day"
+	elif p < 0.5: return "dusk"
+	elif p < 0.875: return "night"
+	else: return "dawn"

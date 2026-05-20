@@ -351,6 +351,12 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 		wander_dir.y = 0.0
 		target_velocity += wander_dir.normalized() * max_speed * 0.4
 
+	# Night-time dampening - shrimp also slow at night.
+	if sim != null:
+		var dl: float = float(sim.daylight())
+		var night_factor: float = 0.35 + 0.65 * dl
+		target_velocity *= night_factor
+
 	_apply_target(target_velocity)
 	return events
 
@@ -366,6 +372,10 @@ var _target_velocity: Vector3 = Vector3.ZERO
 # ---- Physics + animation (render rate) ----
 
 func _process(dt: float) -> void:
+	if sim != null:
+		dt *= sim.time_scale
+		if dt <= 0.0:
+			return
 	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
 	if climb_target == null:
 		_target_velocity.y -= 1.2 * dt

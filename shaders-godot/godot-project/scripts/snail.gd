@@ -46,6 +46,12 @@ func _ready() -> void:
 
 
 func _process(dt: float) -> void:
+	# Honor sim time_scale so pause/fast-forward affect snails too.
+	var sim := _get_sim()
+	if sim != null:
+		dt *= float(sim.time_scale)
+		if dt <= 0.0:
+			return
 	_age += dt
 	# Babies grow into adults over time. _apply_squash() reads is_baby + _age
 	# to compute scale, so we just flip the flag here.

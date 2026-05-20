@@ -367,11 +367,11 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 1c: RARE PREDATION on baby shrimp. Only adults, only when hungry,
-	# small chance per tick. Real fish snap at things — but this is rare so
-	# shrimp populations can grow.
+	# Tier 1c: PREDATION on baby shrimp. Most species do this rarely; the
+	# betta (carnivore species, herbivory=0) is much more aggressive.
+	var predation_chance: float = 0.25 if species == "betta" else 0.05
 	if maturity == MATURITY_ADULT and hunger > 0.55 and not baby_shrimp.is_empty() \
-			and randf() < 0.05:
+			and randf() < predation_chance:
 		var prey: Shrimp = null
 		var best_d2: float = 1.2 * 1.2
 		for s in baby_shrimp:
@@ -450,6 +450,14 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	# Mild wander via personal heading offset.
 	desired += heading_offset * 0.5
 
+	# Night-time dampening: at low daylight fish slow down and stop seeking.
+	# Real Walstad tanks: most species visibly sleep at night, hovering near
+	# plants or substrate. We scale the desired velocity by daylight.
+	if sim != null:
+		var dl: float = float(sim.daylight())
+		var night_factor: float = 0.25 + 0.75 * dl
+		desired *= night_factor
+
 	target_velocity = desired.limit_length(effective_max)
 	# Position + facing now updated in _process at render rate.
 
@@ -473,6 +481,10 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 #
 # Fish can't slide sideways, can't 180° in place, and bank into yaw turns.
 func _process(dt: float) -> void:
+	if sim != null:
+		dt *= sim.time_scale
+		if dt <= 0.0:
+			return  # paused
 	# Decompose the brain's target into a desired direction + desired speed.
 	var target_dir: Vector3 = heading
 	var target_spd: float = 0.0

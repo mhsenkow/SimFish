@@ -60,6 +60,12 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 			position.y = substrate_top_y + voxel_size * 0.5
 			settled = true
 			substrate.add_at(position, nutrient_value)
+			# Visible mulm: tiny chance to add a permanent dark voxel at this
+			# spot. The world node provides add_mulm_voxel; cheap and capped.
+			if randf() < 0.10:
+				var w := get_tree().current_scene.get_node_or_null("SubViewport/World")
+				if w != null and w.has_method("add_mulm_voxel"):
+					w.add_mulm_voxel(global_position)
 	else:
 		_settle_timer += dt
 		if _settle_timer > 4.0:
