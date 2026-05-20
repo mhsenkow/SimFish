@@ -35,6 +35,9 @@ var max_speed: float = 0.85
 var max_turn_rate: float = 4.0                      # nimble
 var sex: int = 0
 
+# ---- Lineage ----
+var generation: int = 0
+
 # ---- State ----
 var age: float = 0.0
 var hunger: float = 0.3
@@ -532,16 +535,24 @@ func _wall_avoid(b: AABB) -> Vector3:
 
 
 func produce_offspring_genome(other: Shrimp) -> Dictionary:
+	# Strong color + size drift so cherry-red colonies slowly diverge into
+	# amber, olive, blue, etc. over many generations.
 	var mix := 0.5
-	var muta := 0.06
+	var color_muta := 0.2
+	var size_muta := 0.08
+	var new_size: float = (adult_voxel_scale + other.adult_voxel_scale) * 0.5 \
+		+ randf_range(-size_muta, size_muta) * adult_voxel_scale
+	new_size = clampf(new_size, adult_voxel_scale * 0.65, adult_voxel_scale * 1.5)
 	return {
 		"species": species,
 		"base_color": base_color.lerp(other.base_color, mix).lerp(
-			Color(randf(), randf(), randf()), muta),
-		"accent_color": accent_color.lerp(other.accent_color, mix),
-		"adult_voxel_scale": adult_voxel_scale,
-		"max_age_s": max_age_s + randf_range(-30.0, 30.0),
-		"max_speed": (max_speed + other.max_speed) * 0.5 + randf_range(-0.05, 0.05),
+			Color(randf(), randf(), randf()), color_muta),
+		"accent_color": accent_color.lerp(other.accent_color, mix).lerp(
+			Color(randf(), randf(), randf()), color_muta * 0.5),
+		"adult_voxel_scale": new_size,
+		"max_age_s": (max_age_s + other.max_age_s) * 0.5 + randf_range(-30.0, 30.0),
+		"max_speed": (max_speed + other.max_speed) * 0.5 + randf_range(-0.08, 0.08),
 		"sex": randi() % 2,
 		"substrate_top_y": substrate_top_y,
+		"generation": maxi(generation, other.generation) + 1,
 	}

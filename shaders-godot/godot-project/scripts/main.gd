@@ -344,6 +344,9 @@ func _render_header() -> void:
 	parts.append("plants %d / biomass %d" % [plants, biomass])
 	parts.append("waste %d" % waste)
 	parts.append("nutrients %.1f" % nutrients)
+	var max_gen: int = int(_stats.get("max_generation", 0))
+	if max_gen > 0:
+		parts.append("gen %d" % max_gen)
 	hud.text = "   ·   ".join(parts)
 
 

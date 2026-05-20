@@ -390,6 +390,7 @@ func _emit_stats() -> void:
 		total_biomass += p.biomass()
 	var shrimp_adults: int = 0
 	var shrimp_fry: int = 0
+	var max_gen: int = 0
 	for sh in shrimp:
 		if not is_instance_valid(sh):
 			continue
@@ -397,6 +398,17 @@ func _emit_stats() -> void:
 			shrimp_adults += 1
 		elif sh.maturity == Shrimp.MATURITY_FRY:
 			shrimp_fry += 1
+		max_gen = maxi(max_gen, int(sh.generation))
+	for f in fish:
+		if is_instance_valid(f):
+			max_gen = maxi(max_gen, int(f.generation))
+	# Snails: peek at the children of snails_root - they don't live in a
+	# typed array on SimDriver.
+	if snails_root != null:
+		for s in snails_root.get_children():
+			var g = s.get("generation")
+			if g != null:
+				max_gen = maxi(max_gen, int(g))
 	var s: Dictionary = {
 		"fish_total": fish.size(),
 		"fish_adults": n_adults,
@@ -405,6 +417,7 @@ func _emit_stats() -> void:
 		"shrimp_total": shrimp.size(),
 		"shrimp_adults": shrimp_adults,
 		"shrimp_fry": shrimp_fry,
+		"max_generation": max_gen,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,
 		"waste_particles": waste.size(),

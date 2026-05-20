@@ -11,6 +11,15 @@ extends Node3D
 @export var wall_max: Vector3 = Vector3(7.6, 6.0, 3.6)
 @export var is_baby: bool = false     # baby snails are 0.5x scale until they grow up
 
+# ---- Heritable genome ----
+# Shell color + size are passed parent -> egg -> baby with mutation. Bigger
+# shells eat more (slower hunger climb but slower movement). Color drifts
+# over generations.
+@export var shell_color: Color = Color8(135, 44, 176)
+@export var shell_size: float = 1.0   # multiplier on body voxel sizes
+@export var generation: int = 0
+@export var sex: int = 0   # 0/1 - used for snail breeding later if added
+
 const SPEED: float = 0.18                  # units per second; ~3 minutes coast-to-coast
 const TURN_INTERVAL_MIN: float = 6.0
 const TURN_INTERVAL_MAX: float = 14.0
@@ -202,9 +211,8 @@ func _count_snails() -> int:
 
 
 func _lay_egg_sac() -> void:
-	# Spawn an egg sac at our current location. After a delay it hatches
-	# into a new baby snail on the same wall. The sac is just a small
-	# pale-yellow voxel cluster that uses the SnailEgg script.
+	# Spawn an egg sac that inherits our shell genome with mutation. The baby
+	# that hatches will look like a drifted-color child of this snail.
 	var sac := Node3D.new()
 	sac.set_script(load("res://scripts/snail_egg.gd"))
 	get_parent().add_child(sac)
@@ -212,6 +220,15 @@ func _lay_egg_sac() -> void:
 	sac.set("wall_normal", wall_normal)
 	sac.set("wall_min", wall_min)
 	sac.set("wall_max", wall_max)
+	# Inherit shell traits with mutation. Color drift ~0.18 per generation;
+	# size mutation small so the trend is mostly visual.
+	var color_muta := 0.18
+	var new_color: Color = shell_color.lerp(
+		Color(randf(), randf() * 0.6 + 0.2, randf()), color_muta)
+	var new_size: float = clampf(shell_size + randf_range(-0.08, 0.08), 0.65, 1.5)
+	sac.set("inherited_shell_color", new_color)
+	sac.set("inherited_shell_size", new_size)
+	sac.set("inherited_generation", generation + 1)
 
 
 func _choose_new_direction() -> void:

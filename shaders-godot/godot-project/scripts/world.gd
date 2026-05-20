@@ -312,10 +312,17 @@ func _build_snails() -> void:
 	var c := Node3D.new()
 	c.name = "Snails"
 	add_child(c)
-	# Snails get a small CrawlingSnail script that slides them slowly along
-	# their wall over time, so the glass-cling life feels alive.
+	# Founders get varied starting colors so the colony has visible diversity
+	# from frame zero. Mutation drift will further spread these over generations.
+	var founder_palette: Array[Color] = [
+		Color8(135, 44, 176),   # classic purple
+		Color8(180, 70, 90),    # warm rose
+		Color8(80, 100, 180),   # cool blue
+		Color8(160, 130, 60),   # amber
+		Color8(70, 140, 110),   # teal
+		Color8(190, 160, 60),   # ochre
+	]
 	var positions_and_walls := [
-		# pos, wall_normal (which face of the tank they're on)
 		[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0)],
 		[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0)],
 		[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0)],
@@ -323,7 +330,8 @@ func _build_snails() -> void:
 		[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1)],
 		[Vector3(-2.0, 3.8, -3.95), Vector3(0, 0, -1)],
 	]
-	for pw in positions_and_walls:
+	for i in positions_and_walls.size():
+		var pw = positions_and_walls[i]
 		var pos: Vector3 = pw[0]
 		var wall_n: Vector3 = pw[1]
 		var snail := Node3D.new()
@@ -332,27 +340,38 @@ func _build_snails() -> void:
 		snail.set("wall_normal", wall_n)
 		snail.set("wall_min", Vector3(-TANK_HALF_W + 0.4, SUBSTRATE_DEPTH + 0.4, -TANK_HALF_D + 0.4))
 		snail.set("wall_max", Vector3(TANK_HALF_W - 0.4, WATER_HEIGHT - 0.2, TANK_HALF_D - 0.4))
+		snail.set("shell_color", founder_palette[i % founder_palette.size()])
+		snail.set("shell_size", _rng.randf_range(0.85, 1.15))
+		snail.set("generation", 0)
 		c.add_child(snail)
 		_build_snail_body(snail)
 
 
 func _build_snail_body(snail: Node3D) -> void:
-	var shell_mat := _solid_mat(C_SNAIL_SHELL)
-	var shell_dark := _solid_mat(C_SNAIL_SHELL.darkened(0.2))
-	var body_mat := _solid_mat(C_SNAIL_BODY)
-	# Shell spiral.
+	# Read the snail's heritable shell_color + shell_size (set above) and
+	# build the body voxels with those traits.
+	var shell_color: Color = snail.get("shell_color")
+	var shell_size: float = snail.get("shell_size")
+	var shell_dark: Color = shell_color.darkened(0.22)
+	var body_color: Color = C_SNAIL_BODY
+	var shell_mat := _solid_mat(shell_color)
+	var shell_dark_mat := _solid_mat(shell_dark)
+	var body_mat := _solid_mat(body_color)
 	for i in 4:
 		var ang: float = i * 0.7
-		var r: float = 0.05 + i * 0.06
+		var r: float = (0.05 + i * 0.06) * shell_size
 		var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
-		var s: float = 0.16 - i * 0.02
-		var mat: Material = shell_mat if (i & 1) == 0 else shell_dark
+		var s: float = (0.16 - i * 0.02) * shell_size
+		var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
 		_add_cube(snail, sp, Vector3(s, s, s), mat)
-	# Foot.
-	_add_cube(snail, Vector3(0, -0.12, 0), Vector3(0.24, 0.06, 0.16), body_mat)
-	# Tiny eye stalks.
-	_add_cube(snail, Vector3(0.10, -0.06, 0.06), Vector3(0.03, 0.10, 0.03), body_mat)
-	_add_cube(snail, Vector3(0.10, -0.06, -0.06), Vector3(0.03, 0.10, 0.03), body_mat)
+	# Foot scales with shell.
+	_add_cube(snail, Vector3(0, -0.12 * shell_size, 0),
+		Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size), body_mat)
+	# Eye stalks - keep them at a fixed small size for visibility.
+	_add_cube(snail, Vector3(0.10, -0.06 * shell_size, 0.06),
+		Vector3(0.03, 0.10 * shell_size, 0.03), body_mat)
+	_add_cube(snail, Vector3(0.10, -0.06 * shell_size, -0.06),
+		Vector3(0.03, 0.10 * shell_size, 0.03), body_mat)
 
 
 # ---- Initial population ----
@@ -432,14 +451,45 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	var p := Plant.new()
 	plants_root.add_child(p)
 	p.global_position = pos
-	# Apply species color ramp directly to the plant. Plant.gd uses its own
-	# PLANT_RAMP for default greens, so we override by setting the field.
 	p.ramp_override = spec["ramp"]
+	p.water_surface_y = WATER_HEIGHT
+	p.generation = 0
 	var max_range: Array = spec["max"]
 	p.init(initial_height, {
 		"max_height": _rng.randi_range(int(max_range[0]), int(max_range[1])),
 		"growth_rate": float(spec["rate"]),
 		"sway_amplitude": float(spec["sway"]),
+	})
+	sim.register_plant(p)
+
+
+# Called by Plant.gd when an emergent (above-water) plant casts a seed.
+# Spawns a tiny new plant nearby with the parent's mutated ramp + same
+# rough max_height target. Capped via plants_alive size so we don't grow
+# the field infinitely.
+func spawn_seedling(pos: Vector3, ramp: Array, generation: int, parent_max: int) -> void:
+	if plants_root == null or sim == null:
+		return
+	if sim.plants.size() >= 320:
+		return
+	# Clamp to substrate level and tank bounds.
+	var sp: Vector3 = Vector3(
+		clampf(pos.x, -TANK_HALF_W * 0.95, TANK_HALF_W * 0.95),
+		SUBSTRATE_DEPTH,
+		clampf(pos.z, -TANK_HALF_D * 0.95, TANK_HALF_D * 0.95),
+	)
+	var p := Plant.new()
+	plants_root.add_child(p)
+	p.global_position = sp
+	if ramp.size() == 6:
+		p.ramp_override = ramp
+	p.water_surface_y = WATER_HEIGHT
+	p.generation = generation
+	# Inherit a small range around the parent's max so the lineage diverges.
+	p.init(1, {
+		"max_height": clampi(parent_max + _rng.randi_range(-2, 2), 4, 26),
+		"growth_rate": 0.16,
+		"sway_amplitude": 0.18,
 	})
 	sim.register_plant(p)
 

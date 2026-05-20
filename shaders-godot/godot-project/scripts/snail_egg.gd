@@ -7,6 +7,12 @@ extends Node3D
 @export var wall_min: Vector3 = Vector3.ZERO
 @export var wall_max: Vector3 = Vector3.ZERO
 
+# Inherited from parent snail at lay time. Defaults are the founder values
+# for any snail that's not actually a child (e.g. test spawning).
+@export var inherited_shell_color: Color = Color8(135, 44, 176)
+@export var inherited_shell_size: float = 1.0
+@export var inherited_generation: int = 0
+
 const HATCH_TIME: float = 60.0
 
 var _age: float = 0.0
@@ -42,7 +48,7 @@ func _process(dt: float) -> void:
 
 
 func _hatch() -> void:
-	# Spawn a baby snail on the same wall, at this position.
+	# Spawn a baby snail on the same wall with the inherited shell genome.
 	var parent := get_parent()
 	if parent == null:
 		queue_free()
@@ -55,25 +61,27 @@ func _hatch() -> void:
 	baby.set("wall_min", wall_min)
 	baby.set("wall_max", wall_max)
 	baby.set("is_baby", true)
-	# Manually build the baby's body since snail.gd doesn't auto-build.
-	_build_baby_body(baby)
+	baby.set("shell_color", inherited_shell_color)
+	baby.set("shell_size", inherited_shell_size)
+	baby.set("generation", inherited_generation)
+	# Build the baby's body using the inherited shell color + size.
+	_build_baby_body(baby, inherited_shell_color, inherited_shell_size)
 	queue_free()
 
 
-func _build_baby_body(snail: Node3D) -> void:
-	# Mirror the body-building logic from world.gd's _build_snail_body so the
-	# new baby snail has visible geometry.
-	var shell := Color8(135, 44, 176)
-	var shell_dark := Color8(135, 44, 176).darkened(0.2)
+func _build_baby_body(snail: Node3D, shell_color: Color, shell_size: float) -> void:
+	# Mirror world.gd's _build_snail_body but with the heritable shell color
+	# + size scaling each voxel by shell_size. Bigger shells = bigger snail.
+	var shell_dark := shell_color.darkened(0.22)
 	var body := Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make(shell)
+	var shell_mat := VoxelMat.make(shell_color)
 	var shell_dark_mat := VoxelMat.make(shell_dark)
 	var body_mat := VoxelMat.make(body)
 	for i in 4:
 		var ang: float = i * 0.7
-		var r: float = 0.05 + i * 0.06
+		var r: float = (0.05 + i * 0.06) * shell_size
 		var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
-		var s: float = 0.16 - i * 0.02
+		var s: float = (0.16 - i * 0.02) * shell_size
 		var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
 		var mi := MeshInstance3D.new()
 		var bm := BoxMesh.new()
@@ -82,11 +90,11 @@ func _build_baby_body(snail: Node3D) -> void:
 		mi.position = sp
 		mi.material_override = mat
 		snail.add_child(mi)
-	# Foot.
+	# Foot scales with shell.
 	var foot := MeshInstance3D.new()
 	var foot_bm := BoxMesh.new()
-	foot_bm.size = Vector3(0.24, 0.06, 0.16)
+	foot_bm.size = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
 	foot.mesh = foot_bm
-	foot.position = Vector3(0, -0.12, 0)
+	foot.position = Vector3(0, -0.12 * shell_size, 0)
 	foot.material_override = body_mat
 	snail.add_child(foot)

@@ -32,10 +32,17 @@ var current_height: int = 0
 var growth_progress: float = 0.0
 var voxels: Array[MeshInstance3D] = []
 var has_flower: bool = false
+var has_emerged: bool = false   # true once tip has reached the water surface
+var bloom_voxels: Array[MeshInstance3D] = []
+var seed_timer: float = 0.0
 var _flower_voxel: MeshInstance3D = null
 var _phase: float = 0.0
 var _t: float = 0.0
 var _world_pos: Vector3 = Vector3.ZERO
+# Surface for "emerged"/seeding check. Set by world.gd from WATER_HEIGHT
+# at spawn so plant.gd doesn't need to know world geometry constants.
+var water_surface_y: float = 6.5
+var generation: int = 0
 
 
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
@@ -101,6 +108,18 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if not has_flower and current_height >= max_height - 1 and randf() < 0.0005:
 		_flower()
 
+	# Emergent: if our tip reaches the water surface, spawn an emergent
+	# bloom (richer flower cluster) and slowly cast seeds that grow new
+	# plants nearby. This is what makes a mature tank look like a meadow
+	# breaking through the meniscus.
+	if not has_emerged and top_world_y() >= water_surface_y - 0.15:
+		_emerge_above_water()
+	if has_emerged:
+		seed_timer += dt
+		if seed_timer >= 18.0 and randf() < 0.5:
+			seed_timer = 0.0
+			_cast_seed()
+
 
 func _flower() -> void:
 	if has_flower or voxels.is_empty():
@@ -150,6 +169,73 @@ func _on_death() -> void:
 	var sim_driver: Node = _find_sim()
 	if sim_driver != null and sim_driver.substrate != null:
 		sim_driver.substrate.add_at(global_position, 0.35)
+
+
+func _emerge_above_water() -> void:
+	# Cluster of bright flower voxels at the tip, indicating the plant has
+	# emerged above the meniscus. Used to be a single dim flower; emergent
+	# plants get a more lavish bloom that reads as "the plant broke through".
+	has_emerged = true
+	has_flower = true
+	var palettes: Array = [
+		[Color8(245, 220, 90), Color8(255, 180, 60)],   # daffodil
+		[Color8(230, 130, 200), Color8(220, 100, 160)], # pink
+		[Color8(170, 130, 220), Color8(140, 100, 200)], # lavender
+		[Color8(240, 240, 240), Color8(210, 210, 210)], # white lily
+		[Color8(220, 100, 100), Color8(180, 70, 70)],   # red
+	]
+	var palette: Array = palettes[randi() % palettes.size()]
+	var center_y: float = current_height * VOXEL_SIZE + VOXEL_SIZE * 1.2
+	# 4 petals + center.
+	var center: MeshInstance3D = MeshInstance3D.new()
+	var cm := BoxMesh.new()
+	cm.size = Vector3(VOXEL_SIZE * 1.0, VOXEL_SIZE * 0.6, VOXEL_SIZE * 1.0)
+	center.mesh = cm
+	center.material_override = VoxelMat.make(palette[1])
+	center.position = Vector3(0, center_y, 0)
+	add_child(center)
+	bloom_voxels.append(center)
+	var petal_offsets: Array[Vector3] = [
+		Vector3(VOXEL_SIZE * 0.9, 0, 0),
+		Vector3(-VOXEL_SIZE * 0.9, 0, 0),
+		Vector3(0, 0, VOXEL_SIZE * 0.9),
+		Vector3(0, 0, -VOXEL_SIZE * 0.9),
+	]
+	for o in petal_offsets:
+		var petal := MeshInstance3D.new()
+		var pm := BoxMesh.new()
+		pm.size = Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.9)
+		petal.mesh = pm
+		petal.material_override = VoxelMat.make(palette[0])
+		petal.position = Vector3(0, center_y, 0) + o
+		add_child(petal)
+		bloom_voxels.append(petal)
+
+
+func _cast_seed() -> void:
+	# Drop a small seed voxel nearby. SimDriver picks it up via a Plant.gd
+	# tick check - we rely on the world spawning a new plant at the seed
+	# position. Cheap approach: directly request the world spawn a child
+	# plant near us, inheriting the parent's ramp_override with mutation.
+	var sim_driver: Node = _find_sim()
+	if sim_driver == null:
+		return
+	var world: Node = sim_driver.get_parent()
+	if world == null or not world.has_method("spawn_seedling"):
+		return
+	var seed_pos: Vector3 = global_position + Vector3(
+		randf_range(-1.5, 1.5),
+		0.0,
+		randf_range(-1.5, 1.5),
+	)
+	# Mutated ramp = parent's ramp lerped toward a random color slightly.
+	var mutated_ramp: Array = ramp_override.duplicate()
+	if mutated_ramp.size() == 6:
+		var muta: float = 0.10
+		var jitter := Color(randf(), randf(), randf())
+		for i in mutated_ramp.size():
+			mutated_ramp[i] = (mutated_ramp[i] as Color).lerp(jitter, muta)
+	world.spawn_seedling(seed_pos, mutated_ramp, generation + 1, max_height)
 
 
 func _find_sim() -> Node:

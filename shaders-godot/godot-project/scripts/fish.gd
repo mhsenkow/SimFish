@@ -38,6 +38,9 @@ var clutch_size: int = 2
 var preferred_y: float = 3.5            # mid-water by default
 var sex: int = 0                        # 0 male, 1 female
 
+# ---- Lineage ----
+var generation: int = 0   # max(parents) + 1 on birth; founders are 0
+
 # ---- State (mutable) ----
 var age: float = 0.0
 var hunger: float = 0.3        # 0 = full, 1 = starving
@@ -133,6 +136,7 @@ func init_genome(genome: Dictionary) -> void:
 	clutch_size = genome.get("clutch_size", clutch_size)
 	preferred_y = genome.get("preferred_y", preferred_y)
 	sex = genome.get("sex", randi() % 2)
+	generation = genome.get("generation", 0)
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -827,23 +831,35 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 
 # Used by SimDriver when this fish breeds with a partner.
 func produce_offspring_genome(partner: Fish) -> Dictionary:
-	# Average parental traits with small mutation, mix colors.
+	# Mix parental traits with moderate mutation so color + size drift is
+	# visible across 3-5 generations. Heritable: color, accent color,
+	# voxel scale (size), max_speed, lifespan, preferred Y layer.
 	var mix := 0.5
-	var muta := 0.05
+	var color_muta := 0.18   # noticeable hue jiggle per generation
+	var size_muta := 0.06    # size drift; capped within reasonable bounds
+	var lerp_random_base := Color(randf(), randf(), randf())
+	var lerp_random_accent := Color(randf(), randf(), randf())
+	var new_size: float = (adult_voxel_scale + partner.adult_voxel_scale) * 0.5 \
+		+ randf_range(-size_muta, size_muta) * adult_voxel_scale
+	# Hold size in a reasonable band so mutation can't shrink/grow the species
+	# unboundedly across generations.
+	new_size = clampf(new_size, adult_voxel_scale * 0.6, adult_voxel_scale * 1.5)
 	var g: Dictionary = {
 		"species": species,
 		"base_color": base_color.lerp(partner.base_color, mix).lerp(
-			Color(randf(), randf(), randf()), muta),
-		"accent_color": accent_color.lerp(partner.accent_color, mix),
-		"adult_voxel_scale": adult_voxel_scale,
-		"max_age_s": max_age_s + randf_range(-20.0, 20.0),
-		"max_speed": (max_speed + partner.max_speed) * 0.5 + randf_range(-0.1, 0.1),
+			lerp_random_base, color_muta),
+		"accent_color": accent_color.lerp(partner.accent_color, mix).lerp(
+			lerp_random_accent, color_muta * 0.7),
+		"adult_voxel_scale": new_size,
+		"max_age_s": (max_age_s + partner.max_age_s) * 0.5 + randf_range(-25.0, 25.0),
+		"max_speed": (max_speed + partner.max_speed) * 0.5 + randf_range(-0.15, 0.15),
 		"schooling_strength": (schooling_strength + partner.schooling_strength) * 0.5,
 		"separation_radius": separation_radius,
 		"herbivory": herbivory,
 		"fecundity": fecundity,
 		"clutch_size": clutch_size,
-		"preferred_y": preferred_y + randf_range(-0.3, 0.3),
+		"preferred_y": preferred_y + randf_range(-0.4, 0.4),
 		"sex": randi() % 2,
+		"generation": maxi(generation, partner.generation) + 1,
 	}
 	return g
