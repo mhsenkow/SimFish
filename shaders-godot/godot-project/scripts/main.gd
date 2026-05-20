@@ -56,6 +56,14 @@ var _space_was_pressed: bool = false
 # Follow-cam: when set, camera target tracks this Node3D.
 var _follow_target: Node3D = null
 
+# Aquascape mode: when active, the sim is paused and left-click drops a
+# hardscape voxel (stone) at the substrate level under the cursor. Shift+
+# click drops driftwood. Backspace removes the most-recently placed.
+var _aquascape_mode: bool = false
+var _aquascape_placed: Array[Node3D] = []
+var _aquascape_preview: MeshInstance3D = null
+var _aquascape_saved_time_scale: float = 1.0
+
 
 func _ready() -> void:
 	display.texture = sub_viewport.get_texture()
@@ -85,9 +93,14 @@ func _process(dt: float) -> void:
 		_drag_total = 0.0
 	elif not any_btn and _orbiting:
 		_orbiting = false
-		# If total drag distance was small, treat as a click - try follow-cam.
+		# If total drag distance was small, treat as a click. In aquascape
+		# mode, place a hardscape voxel at the cursor; otherwise try
+		# follow-cam on the creature under the cursor.
 		if _drag_total < 5.0:
-			_try_follow_click(mouse_now)
+			if _aquascape_mode:
+				_aquascape_place(mouse_now)
+			else:
+				_try_follow_click(mouse_now)
 
 	if _orbiting:
 		var delta: Vector2 = mouse_now - _last_mouse
@@ -148,6 +161,14 @@ func _process(dt: float) -> void:
 	_handle_shortcut(KEY_F12, _take_photo)
 	_handle_shortcut(KEY_ESCAPE, _clear_follow)
 	_handle_shortcut(KEY_T, _toggle_timelapse)
+	_handle_shortcut(KEY_B, _toggle_aquascape)
+	_handle_shortcut(KEY_BACKSPACE, _aquascape_undo)
+	_handle_shortcut(KEY_DELETE, _aquascape_undo)
+
+	# Aquascape preview voxel: shown at the substrate projection of the
+	# current mouse position, ONLY when in aquascape mode.
+	if _aquascape_mode:
+		_update_aquascape_preview(mouse_now)
 
 	# Timelapse: dump a frame every TIMELAPSE_INTERVAL real seconds.
 	if _timelapse_active:
@@ -268,6 +289,133 @@ func _try_follow_click(screen_pos: Vector2) -> void:
 	if best != null:
 		_follow_target = best
 		print("[vivarium] following ", best.name)
+
+
+# ---- Aquascape mode ----
+
+func _toggle_aquascape() -> void:
+	_aquascape_mode = not _aquascape_mode
+	if _sim == null:
+		return
+	if _aquascape_mode:
+		# Pause the sim and clear any follow target.
+		_aquascape_saved_time_scale = float(_sim.time_scale)
+		_sim.time_scale = 0.0
+		_follow_target = null
+		_ensure_aquascape_preview()
+		print("[vivarium] aquascape ON. click to place stones, shift-click for wood, backspace undo, B exit.")
+	else:
+		_sim.time_scale = _aquascape_saved_time_scale
+		if _aquascape_preview != null:
+			_aquascape_preview.visible = false
+		print("[vivarium] aquascape OFF (resumed at %gx)" % _aquascape_saved_time_scale)
+
+
+func _ensure_aquascape_preview() -> void:
+	if _aquascape_preview != null:
+		_aquascape_preview.visible = true
+		return
+	# Build a small wireframe-like preview cube. We attach it to the World
+	# node so its position is in world space.
+	if world == null:
+		return
+	_aquascape_preview = MeshInstance3D.new()
+	_aquascape_preview.name = "AquascapePreview"
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.9, 0.9, 0.9)
+	_aquascape_preview.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1, 1, 0.6, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.emission_enabled = true
+	mat.emission = Color(1, 1, 0.4)
+	mat.emission_energy_multiplier = 0.6
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_aquascape_preview.material_override = mat
+	world.add_child(_aquascape_preview)
+
+
+func _update_aquascape_preview(mouse_pos: Vector2) -> void:
+	if _aquascape_preview == null or camera == null or world == null:
+		return
+	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	# Snap to a 0.5-unit grid on X/Z so placement is tidy.
+	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
+	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
+	# Y just above substrate.
+	hit.y = _substrate_top_y() + 0.45
+	_aquascape_preview.global_position = hit
+
+
+func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
+	# Project the cursor's ray onto the horizontal plane y = SUBSTRATE_TOP.
+	if camera == null:
+		return Vector3.ZERO
+	var win_size: Vector2 = get_window().size
+	var sv_size: Vector2 = Vector2(sub_viewport.size)
+	var sv_pos: Vector2 = mouse_pos * (sv_size / win_size)
+	var origin: Vector3 = camera.project_ray_origin(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos)
+	var top_y: float = _substrate_top_y()
+	if absf(dir.y) < 1e-4:
+		return origin
+	var t: float = (top_y - origin.y) / dir.y
+	if t < 0.0:
+		return origin
+	return origin + dir * t
+
+
+func _substrate_top_y() -> float:
+	# World keeps SUBSTRATE_DEPTH publicly accessible.
+	return float(world.get("SUBSTRATE_DEPTH")) if world != null else 1.6
+
+
+func _aquascape_place(mouse_pos: Vector2) -> void:
+	if world == null:
+		return
+	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
+	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
+	hit.y = _substrate_top_y() + 0.45
+	# Shift-click = driftwood, plain click = stone.
+	var is_driftwood: bool = Input.is_key_pressed(KEY_SHIFT)
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.9, 0.9, 0.9)
+	mi.mesh = bm
+	var color: Color
+	if is_driftwood:
+		color = Color8(78, 52, 32)
+	else:
+		# Pick a stone shade for variety.
+		var palette: Array[Color] = [
+			Color8(85, 85, 96), Color8(75, 70, 78), Color8(105, 100, 92),
+			Color8(60, 60, 70),
+		]
+		color = palette[randi() % palette.size()]
+	# Use the same VoxelMat helper if it loads cleanly, otherwise inline mat.
+	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
+	if voxel_mat_script != null:
+		mi.material_override = voxel_mat_script.make(color)
+	else:
+		var sm := StandardMaterial3D.new()
+		sm.albedo_color = color
+		mi.material_override = sm
+	mi.global_position = hit
+	# Slight Y jitter so adjacent placements don't z-fight.
+	mi.global_position.y += randf_range(-0.02, 0.02)
+	world.add_child(mi)
+	_aquascape_placed.append(mi)
+
+
+func _aquascape_undo() -> void:
+	if not _aquascape_mode:
+		return
+	while _aquascape_placed.size() > 0:
+		var v: Node3D = _aquascape_placed.pop_back()
+		if is_instance_valid(v):
+			v.queue_free()
+			return
 
 
 # Scroll wheel comes through as button events, not as Input.is_pressed state.

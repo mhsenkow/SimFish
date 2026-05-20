@@ -492,6 +492,34 @@ func _spawn_initial_plants() -> void:
 			_spawn_plant(species_specs[4], Vector3(x + off.x, arc_y, off.z),
 				_rng.randi_range(1, 2))
 
+	# --- Spiral plants: 6 scattered, voxels arranged in golden-angle
+	# phyllotaxis. Visibly mathematical (sunflower / aloe pattern).
+	var spiral_ramps: Array = [
+		[Color8(40, 70, 30), Color8(60, 100, 45), Color8(85, 130, 60),
+		 Color8(110, 160, 78), Color8(140, 190, 100), Color8(180, 220, 140)],
+		[Color8(70, 30, 30), Color8(100, 50, 50), Color8(140, 80, 75),
+		 Color8(170, 110, 100), Color8(200, 140, 130), Color8(220, 175, 160)],
+	]
+	for i in 6:
+		var sp := SpiralPlant.new()
+		plants_root.add_child(sp)
+		sp.global_position = Vector3(
+			_rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85),
+			SUBSTRATE_DEPTH,
+			_rng.randf_range(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5),
+		)
+		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
+		sp.water_surface_y = WATER_HEIGHT
+		sp.generation = 0
+		sp.radius_step = _rng.randf_range(0.05, 0.08)
+		sp.height_step = _rng.randf_range(0.14, 0.22)
+		sp.init(_rng.randi_range(3, 6), {
+			"max_height": _rng.randi_range(20, 40),
+			"growth_rate": 0.20,
+			"sway_amplitude": 0.06,
+		})
+		sim.register_plant(sp)
+
 	# --- Branching ferns: 8 scattered, each grows into a small tree shape
 	# via L-system side branches. Visible mathematical structure.
 	var fern_ramp: Array = [

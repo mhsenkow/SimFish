@@ -66,15 +66,23 @@ func _grow_one() -> bool:
 	var ramp_idx: int = clampi(int(rel * 5.0), 0, 5)
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	var color: Color = ramp[ramp_idx]
+	# Phototropism: bias the new voxel's lateral offset toward the light
+	# fixture's horizontal direction. Plants visibly lean toward the lamp.
+	var photo_offset: Vector2 = _phototropic_offset()
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
 	mi.mesh = bm
 	mi.material_override = VoxelMat.make(color)
-	# Stack the new voxel on top, with a small lateral offset that curves
-	# the blade as it grows.
+	# Stack the new voxel on top. Two lateral biases:
+	#   - sway_amplitude curve (existing) - personality bend of the blade
+	#   - phototropism offset (new) - blade leans toward the lamp
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
-	mi.position = Vector3(lat, current_height * VOXEL_SIZE + VOXEL_SIZE * 0.5, 0)
+	mi.position = Vector3(
+		lat + photo_offset.x,
+		current_height * VOXEL_SIZE + VOXEL_SIZE * 0.5,
+		photo_offset.y,
+	)
 	add_child(mi)
 	voxels.append(mi)
 	current_height += 1
@@ -246,6 +254,26 @@ func _find_sim() -> Node:
 			return d
 		n = n.get_parent()
 	return null
+
+
+func _phototropic_offset() -> Vector2:
+	# Each new voxel placed up the stem is biased toward the horizontal
+	# position of the light fixture. The further up the plant (higher
+	# current_height), the bigger the cumulative lean. Scales with plant
+	# height so short plants lean less.
+	var cfg := _find_sim()
+	if cfg == null:
+		return Vector2.ZERO
+	# Pull light_yaw + light_pitch from TankConfig.
+	var tc := cfg.get_node("/root/TankConfig") if cfg.has_node("/root/TankConfig") else null
+	if tc == null:
+		return Vector2.ZERO
+	var yaw_rad: float = float(tc.light_yaw) * TAU
+	var photo_strength: float = 0.04
+	# Stronger lean higher up the plant.
+	var height_factor: float = float(current_height) / float(maxi(1, max_height))
+	var bias: float = photo_strength * height_factor
+	return Vector2(sin(yaw_rad) * bias, cos(yaw_rad) * bias)
 
 
 # Quick world-space height of the top voxel (for fish to target nibbling).

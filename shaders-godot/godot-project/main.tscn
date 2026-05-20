@@ -125,4 +125,4 @@ offset_bottom = -6.0
 mouse_filter = 2
 label_settings = SubResource("HUDHintSettings")
 horizontal_alignment = 1
-text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE auto · P pause · 1/2/3 speed · click follow · ESC unfollow · F12 photo · T timelapse · O settings"
+text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE auto · P pause · 1/2/3 speed · click follow · ESC unfollow · F12 photo · T timelapse · O settings · B aquascape"
