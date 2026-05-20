@@ -17,24 +17,21 @@ func _ready() -> void:
 
 
 func _build_visual() -> void:
+	# Smaller, less obtrusive sac than before - just 2 tiny voxels so the
+	# tank doesn't get visually polluted with pending eggs.
 	var c := Color8(235, 220, 170)
 	var c2 := Color8(215, 200, 150)
-	var mat1 := VoxelMat.make(c)
-	var mat2 := VoxelMat.make(c2)
-	# Small mound of egg blobs.
 	var positions: Array[Vector3] = [
 		Vector3(0, 0, 0),
-		Vector3(0.06, 0.02, 0),
-		Vector3(-0.05, -0.02, 0.04),
-		Vector3(0.02, 0.06, -0.03),
+		Vector3(0.04, 0.02, 0),
 	]
 	for i in positions.size():
 		var mi := MeshInstance3D.new()
 		var bm := BoxMesh.new()
-		bm.size = Vector3(0.05, 0.05, 0.05)
+		bm.size = Vector3(0.04, 0.04, 0.04)
 		mi.mesh = bm
 		mi.position = positions[i]
-		mi.material_override = mat1 if (i & 1) == 0 else mat2
+		mi.material_override = VoxelMat.make(c if (i & 1) == 0 else c2)
 		add_child(mi)
 
 

@@ -35,7 +35,9 @@ var shrimp: Array[Shrimp] = []
 var plants: Array[Plant] = []
 var waste: Array[WasteParticle] = []
 var eggs: Array[FishEgg] = []
-var algae: Array[Algae] = []
+var algae: Array = []   # Algae nodes; untyped so the script loads even if
+						# the Algae class hasn't reimported into the global
+						# registry yet on a fresh project scan.
 var substrate: SubstrateGrid = null
 var snails_root: Node3D = null   # set by world so SimDriver can scan snail children
 var algae_root: Node3D = null    # container for algae voxels
@@ -196,7 +198,7 @@ func _tick(dt: float) -> void:
 		a.init(palette[randi() % palette.size()])
 		algae.append(a)
 	# Tick existing algae.
-	var dead_algae: Array[Algae] = []
+	var dead_algae: Array = []
 	for a in algae:
 		if not is_instance_valid(a):
 			continue

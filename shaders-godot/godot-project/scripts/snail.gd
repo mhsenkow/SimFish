@@ -16,12 +16,14 @@ const TURN_INTERVAL_MIN: float = 6.0
 const TURN_INTERVAL_MAX: float = 14.0
 const PAUSE_CHANCE: float = 0.3            # when turning, sometimes just sit still
 
-# Breeding: snails breed once they've been alive a while; lay egg sacs (small
-# pale blobs) that hatch into a baby snail after some seconds. Population
-# grows visibly over a few minutes of play.
-const BREEDING_INTERVAL_MIN: float = 90.0
-const BREEDING_INTERVAL_MAX: float = 180.0
+# Breeding + lifecycle. Snails are prolific in real tanks; unchecked their
+# voxel footprint smothers the whole substrate. We cap population and give
+# them a finite lifespan so the system stays bounded.
+const BREEDING_INTERVAL_MIN: float = 180.0
+const BREEDING_INTERVAL_MAX: float = 360.0
 const MATURITY_AGE: float = 60.0          # baby -> adult after a minute
+const LIFESPAN_S: float = 720.0           # 12-minute lifespan; senescence at end
+const POPULATION_CAP: int = 28            # global cap. Above this, no laying.
 
 var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
@@ -53,6 +55,11 @@ func _process(dt: float) -> void:
 		if dt <= 0.0:
 			return
 	_age += dt
+	# Death by old age. queue_free with a small chance of leaving a shell
+	# voxel behind (not done here - just remove).
+	if _age >= LIFESPAN_S:
+		queue_free()
+		return
 	# Babies grow into adults over time. _apply_squash() reads is_baby + _age
 	# to compute scale, so we just flip the flag here.
 	if is_baby and _age >= MATURITY_AGE:
@@ -62,11 +69,15 @@ func _process(dt: float) -> void:
 	if _t_until_turn <= 0.0:
 		_choose_new_direction()
 
-	# Breeding: lay an egg sac once the timer expires. Only adults breed.
+	# Breeding: lay an egg sac once the timer expires, BUT only if the global
+	# snail population is below the cap. Otherwise just reset and try again
+	# later. Without this guard, snails carpet the entire tank floor in
+	# minutes - they're nature's r-strategists.
 	if not is_baby:
 		_t_until_breed -= dt
 		if _t_until_breed <= 0.0:
-			_lay_egg_sac()
+			if _count_snails() < POPULATION_CAP:
+				_lay_egg_sac()
 			_t_until_breed = randf_range(BREEDING_INTERVAL_MIN, BREEDING_INTERVAL_MAX)
 
 	# Smoothly turn the visual "facing" toward the target direction. Snails
@@ -178,6 +189,16 @@ func _apply_squash(squash_y: float, _up: Vector3) -> void:
 	# Squash along wall_normal direction (the "thickness" of the snail).
 	# Approximation: just scale on Y if wall is vertical-ish.
 	scale = Vector3(base, base * squash_y, base)
+
+
+func _count_snails() -> int:
+	# Count all Snail siblings under our parent (the Snails container).
+	# Includes egg sacs - we don't want to lay more if the wall is already
+	# covered in pending eggs.
+	var parent := get_parent()
+	if parent == null:
+		return 0
+	return parent.get_child_count()
 
 
 func _lay_egg_sac() -> void:
