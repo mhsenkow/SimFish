@@ -5,6 +5,7 @@
 [ext_resource type="Shader" path="res://shaders/palette_quantize.gdshader" id="3_quantize"]
 [ext_resource type="Texture2D" path="res://palettes/planted_48.png" id="4_palette"]
 [ext_resource type="Script" path="res://scripts/ambient_audio.gd" id="6_audio"]
+[ext_resource type="Script" path="res://scripts/settings_panel.gd" id="7_settings"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_quantize"]
 shader = ExtResource("3_quantize")
@@ -93,6 +94,17 @@ text = ""
 [node name="AmbientAudio" type="Node" parent="."]
 script = ExtResource("6_audio")
 
+[node name="SettingsPanel" type="PanelContainer" parent="."]
+anchor_left = 1.0
+anchor_top = 0.0
+anchor_right = 1.0
+anchor_bottom = 0.0
+offset_left = -460.0
+offset_top = 40.0
+offset_right = -16.0
+offset_bottom = 600.0
+script = ExtResource("7_settings")
+
 [node name="ControlsHint" type="Label" parent="."]
 anchor_left = 0.0
 anchor_top = 1.0
@@ -105,4 +117,4 @@ offset_bottom = -6.0
 mouse_filter = 2
 label_settings = SubResource("HUDHintSettings")
 horizontal_alignment = 1
-text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE auto · P pause · 1/2/3 speed · click follow · ESC unfollow · F12 photo · T timelapse"
+text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE auto · P pause · 1/2/3 speed · click follow · ESC unfollow · F12 photo · T timelapse · O settings"

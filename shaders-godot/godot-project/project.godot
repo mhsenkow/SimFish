@@ -15,6 +15,10 @@ config/description="Generative pixel-art aquarium. 3D voxel content rendered thr
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 
+[autoload]
+
+TankConfig="*res://scripts/tank_config.gd"
+
 [display]
 
 window/size/viewport_width=1536

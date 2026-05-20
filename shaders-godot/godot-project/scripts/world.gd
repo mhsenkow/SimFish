@@ -15,17 +15,18 @@ extends Node3D
 var tannins: float = 0.0
 var _water_mesh: MeshInstance3D = null
 var _water_material_ref: StandardMaterial3D = null
-# Mulm voxels (small dark blocks accumulating on top of the substrate from
-# settled waste). We keep a flat array so we can stir them when something
-# disturbs the layer.
 var _mulm_voxels: Array = []
 var algae_root: Node3D = null
 
-const TANK_HALF_W: float = 8.0
-const TANK_HALF_D: float = 4.0
-const TANK_HEIGHT: float = 7.0
-const WATER_HEIGHT: float = 6.5
-const SUBSTRATE_DEPTH: float = 1.6
+# Tank dimensions read from TankConfig at _ready so the user can resize.
+# Treated as plain vars (was const) so settings can change them.
+var TANK_HALF_W: float = 8.0
+var TANK_HALF_D: float = 4.0
+var TANK_HEIGHT: float = 7.0
+var WATER_HEIGHT: float = 6.5
+var SUBSTRATE_DEPTH: float = 1.6
+# Substrate color ramp (overridden by TankConfig substrate profile).
+var ACTIVE_SOIL_RAMP: Array = []
 
 # ---- Palette (chosen so the quantize shader has good targets) ----
 const C_WATER_DEEP    := Color(0.04, 0.10, 0.14)
@@ -56,6 +57,20 @@ var waste_root: Node3D = null
 
 
 func _ready() -> void:
+	# Pull tank dimensions + substrate profile from the autoload config.
+	# Settings panel writes here and reloads the scene to apply.
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		TANK_HALF_W = float(cfg.tank_half_w)
+		TANK_HALF_D = float(cfg.tank_half_d)
+		TANK_HEIGHT = float(cfg.tank_height)
+		WATER_HEIGHT = TANK_HEIGHT * float(cfg.water_surface_fraction)
+		SUBSTRATE_DEPTH = TANK_HEIGHT * float(cfg.substrate_depth_fraction)
+		var profile: Dictionary = cfg.current_substrate_profile()
+		ACTIVE_SOIL_RAMP = profile.get("colors", C_SOIL_RAMP)
+	else:
+		ACTIVE_SOIL_RAMP = C_SOIL_RAMP
+
 	# Seed comes from env var VIVARIUM_SEED if set, otherwise default. Lets
 	# users replay a specific tank by exporting the env var before launch.
 	var seed_env: String = OS.get_environment("VIVARIUM_SEED")
@@ -72,6 +87,12 @@ func _ready() -> void:
 	substrate_grid.name = "SubstrateGrid"
 	add_child(substrate_grid)
 	substrate_grid.init(TANK_HALF_W, TANK_HALF_D, 1.0)
+	# Apply substrate fertility from the active profile.
+	var cfg2 := get_node_or_null("/root/TankConfig")
+	if cfg2 != null:
+		var profile: Dictionary = cfg2.current_substrate_profile()
+		substrate_grid.baseline_override = float(profile.get("nutrient_baseline", 0.30))
+		substrate_grid.reservoir_leak_override = float(profile.get("reservoir_leak", 0.00015))
 	sim.substrate = substrate_grid
 	sim.substrate_top_y = SUBSTRATE_DEPTH
 	sim.world_bounds = AABB(
@@ -136,11 +157,29 @@ func _process(dt: float) -> void:
 		_water_material_ref.albedo_color = tinted
 
 	# Day/night light cycle: directional energy + ambient mod.
+	# Energy is modulated by TankConfig.light_energy (user-adjustable),
+	# direction by light_yaw + light_pitch, color by light_warmth.
 	if _directional_light != null and sim != null:
 		var dl: float = sim.daylight()
-		_directional_light.light_energy = 0.05 + dl * 0.45
-		_directional_light.light_color = Color(0.55, 0.65, 0.95).lerp(
-			Color(1.0, 0.95, 0.80), dl)
+		var cfg2 := get_node_or_null("/root/TankConfig")
+		var max_energy: float = 0.5
+		if cfg2 != null:
+			max_energy = float(cfg2.light_energy)
+			# Position the light on a unit sphere above the tank, then orient
+			# it at the tank center. Yaw is rotation around Y, pitch is angle
+			# above horizontal (0 = top-down, 1 = horizontal).
+			var yaw_rad: float = float(cfg2.light_yaw) * TAU
+			var pitch_rad: float = lerpf(PI / 2.0, 0.05, float(cfg2.light_pitch))
+			var dist: float = maxf(TANK_HEIGHT, TANK_HALF_W * 1.2) * 1.5
+			var x: float = sin(yaw_rad) * cos(pitch_rad) * dist
+			var z: float = cos(yaw_rad) * cos(pitch_rad) * dist
+			var y: float = sin(pitch_rad) * dist + TANK_HEIGHT * 0.5
+			_directional_light.global_position = Vector3(x, y, z)
+			_directional_light.look_at(Vector3(0, TANK_HEIGHT * 0.4, 0), Vector3.UP)
+			var warmth: float = float(cfg2.light_warmth)
+			_directional_light.light_color = Color(0.55, 0.65, 0.95).lerp(
+				Color(1.0, 0.95, 0.80), warmth)
+		_directional_light.light_energy = 0.05 + dl * max_energy
 
 	# Floater drift: each surface plant wanders gently on a sin curve.
 	_floater_t += sdt
@@ -220,12 +259,13 @@ func _build_substrate() -> void:
 				if r == rows - 1 and _rng.randf() < 0.15:
 					continue
 				var color: Color
+				var ramp: Array = ACTIVE_SOIL_RAMP if ACTIVE_SOIL_RAMP.size() == 6 else C_SOIL_RAMP
 				if r < rows - soil_rows:
-					color = C_GRAVEL.lerp(C_SOIL_RAMP[0], _rng.randf() * 0.4)
+					color = C_GRAVEL.lerp(ramp[0], _rng.randf() * 0.4)
 				else:
 					var rel: float = float(r - (rows - soil_rows)) / float(maxi(1, soil_rows))
 					var idx: int = clampi(int(rel * 5.0 + _rng.randf() * 1.5), 0, 5)
-					color = C_SOIL_RAMP[idx]
+					color = ramp[idx]
 				_add_cube(container, Vector3(x, y, z), Vector3(voxel_size, voxel_size, voxel_size),
 						  _solid_mat(color))
 

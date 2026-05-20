@@ -12,13 +12,24 @@ class_name SubstrateGrid
 
 const NUTRIENT_BASELINE: float = 0.3
 const NUTRIENT_MAX: float = 3.0
-const DIFFUSION_RATE: float = 0.04  # per tick - smooths the field
-const DECAY_RATE: float = 0.003     # per tick - represents plant uptake without nearby plant
-# Aquasoil reservoir leak: the bedrock substrate slowly releases nutrients
-# into the active layer, mimicking real planted-tank substrate kept months on
-# a single dose. Without this the nutrient pool drifts down because waste
-# gets snapped up before settling.
+const DIFFUSION_RATE: float = 0.04
+const DECAY_RATE: float = 0.003
 const RESERVOIR_LEAK_PER_TICK: float = 0.00015
+
+# Per-instance overrides set by world.gd from TankConfig.SUBSTRATE_PROFILES.
+# Negative means "use the const default". Allows different substrate types
+# (sand, eco-complete, inert gravel) to have different fertility characteristics
+# at sim start without touching the global constants.
+var baseline_override: float = -1.0
+var reservoir_leak_override: float = -1.0
+
+
+func _active_baseline() -> float:
+	return baseline_override if baseline_override >= 0.0 else NUTRIENT_BASELINE
+
+
+func _active_reservoir_leak() -> float:
+	return reservoir_leak_override if reservoir_leak_override >= 0.0 else RESERVOIR_LEAK_PER_TICK
 
 var cells_x: int
 var cells_z: int
@@ -36,7 +47,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	for x in cells_x:
 		var col: Array = []
 		col.resize(cells_z)
-		col.fill(NUTRIENT_BASELINE)
+		col.fill(_active_baseline())
 		nutrients.append(col)
 
 
@@ -60,7 +71,7 @@ func add_at(world_pos: Vector3, amount: float) -> void:
 func consume_at(world_pos: Vector3, amount: float) -> float:
 	# Take up to `amount` from the cell. Return actually-consumed value.
 	var c := _cell_at(world_pos)
-	var available: float = nutrients[c.x][c.y] - NUTRIENT_BASELINE
+	var available: float = nutrients[c.x][c.y] - _active_baseline()
 	if available <= 0.0:
 		return 0.0
 	var taken: float = minf(amount, available)
@@ -93,9 +104,9 @@ func tick(_dt: float) -> void:
 			var avg: float = sum / maxf(count, 1.0)
 			var new_val: float = c + (avg - c) * DIFFUSION_RATE
 			# Slow decay toward baseline.
-			new_val += (NUTRIENT_BASELINE - new_val) * DECAY_RATE
-			# Reservoir leak from bedrock aquasoil.
-			new_val += RESERVOIR_LEAK_PER_TICK
+			new_val += (_active_baseline() - new_val) * DECAY_RATE
+			# Reservoir leak from bedrock aquasoil (or whatever substrate is set).
+			new_val += _active_reservoir_leak()
 			nutrients[x][z] = clampf(new_val, 0.0, NUTRIENT_MAX)
 
 
@@ -103,5 +114,5 @@ func total_above_baseline() -> float:
 	var sum: float = 0.0
 	for x in cells_x:
 		for z in cells_z:
-			sum += maxf(0.0, nutrients[x][z] - NUTRIENT_BASELINE)
+			sum += maxf(0.0, nutrients[x][z] - _active_baseline())
 	return sum
