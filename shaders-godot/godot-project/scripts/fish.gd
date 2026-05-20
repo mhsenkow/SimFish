@@ -280,9 +280,10 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	var events: Dictionary = {}
 
 	age += dt
-	hunger = clampf(hunger + dt * 0.012, 0.0, 1.0)
-	# Energy drains faster while bursting.
-	var energy_drain := 0.005 + (0.04 if burst_remaining > 0.0 else 0.0)
+	# Hunger accumulates slower so fish have more time to find food. Real
+	# fish go days without eating; the sim was forcing starvation in ~80s.
+	hunger = clampf(hunger + dt * 0.008, 0.0, 1.0)
+	var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
 	energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 	burst_remaining = maxf(0.0, burst_remaining - dt)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
@@ -377,12 +378,13 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 1b2: SIZE-BASED PREDATION on smaller fish + adult shrimp. Adults
-	# that are at least 1.4x the size of another creature treat it as prey.
-	# This makes well-fed fish naturally graduate into apex roles - betta
-	# starts close to this threshold; over-fed glassdarts can outgrow their
-	# schoolmates and start cannibalising.
-	if maturity == MATURITY_ADULT and hunger > 0.4 and randf() < 0.12:
+	# Tier 1b2: SIZE-BASED PREDATION on smaller fish + adult shrimp. Gated so
+	# only "predator-class" fish hunt - either grown above 1.3x their base
+	# size (well-fed adult that's earned it), or a carnivore species (betta).
+	# Otherwise the betta at spawn is already 1.56x a glassdart's base size
+	# and starts wiping the school day-one.
+	var is_predator_class: bool = growth_factor >= 1.3 or species == "betta"
+	if is_predator_class and maturity == MATURITY_ADULT and hunger > 0.45 and randf() < 0.10:
 		var my_size: float = effective_size()
 		var best_prey: Node3D = null
 		var best_prey_d2: float = 4.5 * 4.5
@@ -397,21 +399,21 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				# cannibalism as a "betta only" thing).
 				if species != "betta":
 					continue
-			if my_size > of.effective_size() * 1.4:
+			# Need a stronger size advantage now (1.8x). At spawn the betta
+			# is only 1.56x a glassdart - it has to grow before it can hunt.
+			if my_size > of.effective_size() * 1.8:
 				var d2: float = of.position.distance_squared_to(position)
 				if d2 < best_prey_d2:
 					best_prey_d2 = d2
 					best_prey = of
-		# Adult shrimp also become prey to big fish.
-		# baby_shrimp is just the fry list; let SimDriver also pass adults if needed.
-		# For simplicity we treat any shrimp within range as fair game when our
-		# size advantage is big.
+		# Adult shrimp only become prey to very large predators (3x advantage).
+		# This effectively limits adult-shrimp predation to a well-grown betta
+		# - otherwise the school strips shrimp before they can recruit.
 		if sim != null:
 			for s in sim.shrimp:
 				if not is_instance_valid(s) or s.maturity != Shrimp.MATURITY_ADULT:
 					continue
-				# Shrimp adult "size" proxy: just compare adult_voxel_scale.
-				if my_size > s.adult_voxel_scale * 1.8:
+				if my_size > s.adult_voxel_scale * 3.0:
 					var d2: float = s.position.distance_squared_to(position)
 					if d2 < best_prey_d2:
 						best_prey_d2 = d2
@@ -433,10 +435,11 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				return events
 
 	# Tier 1c: PREDATION on baby shrimp by any fish (smaller-target case the
-	# size check above might miss). Most species do this rarely; the betta is
-	# more aggressive about it.
-	var predation_chance: float = 0.25 if species == "betta" else 0.05
-	if maturity == MATURITY_ADULT and hunger > 0.55 and not baby_shrimp.is_empty() \
+	# size check above might miss). VERY rare for normal fish - high fish
+	# populations were stripping shrimp fry faster than shrimp could recruit.
+	# Betta still 4x more aggressive than schoolers.
+	var predation_chance: float = 0.08 if species == "betta" else 0.02
+	if maturity == MATURITY_ADULT and hunger > 0.65 and not baby_shrimp.is_empty() \
 			and randf() < predation_chance:
 		var prey: Shrimp = null
 		var best_d2: float = 1.2 * 1.2
@@ -463,14 +466,14 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 2: HUNGRY HERBIVORE on tall plants only. Fish prefer the soft tips
-	# of established plants; they won't strip a tiny sprout. Minimum plant
-	# biomass = 12 voxels.
+	# Tier 2: HUNGRY HERBIVORE. Plants need at least 6 voxels of biomass
+	# (was 12) so fish have more food options before the shrimp graze them
+	# down to nothing.
 	if herbivory > 0.0 and hunger > 0.55 and maturity != MATURITY_FRY \
 			and randf() < 0.5:
 		if target_plant == null or not is_instance_valid(target_plant) \
-				or target_plant.biomass() < 12:
-			target_plant = _find_nearest_tall_plant(plants, 5.0, 12)
+				or target_plant.biomass() < 6:
+			target_plant = _find_nearest_tall_plant(plants, 5.0, 6)
 		if target_plant != null:
 			current_mode = Mode.FORAGE
 			var top: Vector3 = target_plant.global_position
@@ -492,9 +495,14 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 3: SEEK PARTNER. Adult, well-fed, not on cooldown, no current partner.
+	# Tier 3: SEEK PARTNER. Adult, well-fed, not on cooldown, no current
+	# partner. Also gated by a global fish population cap so 200+ fish don't
+	# bloom out and crash the ecosystem.
+	const FISH_POPULATION_CAP: int = 45
+	var current_fish_pop: int = sim.fish.size() if sim != null else 0
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.5 and energy > 0.65 and stress < 0.4:
+			and hunger < 0.5 and energy > 0.65 and stress < 0.4 \
+			and current_fish_pop < FISH_POPULATION_CAP:
 		var candidate: Fish = _find_breeding_partner(neighbors)
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.

@@ -475,14 +475,16 @@ func _spawn_initial_fish() -> void:
 		"clutch_size": 3,
 		"preferred_y": 2.4,
 	}
-	for i in 8:
+	# Larger founding cohort so the "valley" between founders dying and
+	# first-generation maturing doesn't drop the whole population to 0.
+	for i in 14:
 		var g: Dictionary = glassdart_genome.duplicate()
 		g["sex"] = i % 2
 		g["max_age_s"] += randf_range(-30, 30)
 		_spawn_fish_at(g, Vector3(
 			randf_range(-5, 5), randf_range(3.0, 4.5), randf_range(-2, 2)
 		))
-	for i in 3:
+	for i in 5:
 		var g: Dictionary = mudsifter_genome.duplicate()
 		g["sex"] = i % 2
 		_spawn_fish_at(g, Vector3(
@@ -702,9 +704,9 @@ func _spawn_initial_shrimp() -> void:
 		"max_speed": 0.85,
 		"substrate_top_y": SUBSTRATE_DEPTH,
 	}
-	# 5 reds + 3 ambers, start as adults so breeding kicks in soon.
-	for i in 8:
-		var g: Dictionary = red_genome.duplicate() if i < 5 else amber_genome.duplicate()
+	# 8 reds + 4 ambers, start as adults so breeding kicks in soon.
+	for i in 12:
+		var g: Dictionary = red_genome.duplicate() if i < 8 else amber_genome.duplicate()
 		g["sex"] = i % 2
 		g["max_age_s"] += randf_range(-30, 30)
 		var sh := Shrimp.new()

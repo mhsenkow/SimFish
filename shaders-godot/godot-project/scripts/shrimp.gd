@@ -60,6 +60,17 @@ var clutch_size: int = 3
 # Internal substrate-top reference set by SimDriver via init.
 var substrate_top_y: float = 1.6
 
+# Shrimp size growth from feeding. Same mechanic as Fish.growth_factor:
+# well-fed adults grow above baseline; chronically hungry shrink. Used for
+# cannibalism size comparison.
+var growth_factor: float = 1.0
+const MAX_GROWTH: float = 1.5
+const SHRIMP_POPULATION_CAP: int = 28
+
+
+func effective_size() -> float:
+	return adult_voxel_scale * _maturity_scale() * growth_factor
+
 # Animation
 var _swim_phase: float = 0.0
 var _tail_pivot: Node3D = null
@@ -224,13 +235,48 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			_apply_target(target_velocity)
 			return events
 
-	# Tier 3: rare predation. Only adults, only when hungry, only on tiny prey.
-	# Gated by a small per-tick probability so shrimp aren't constantly hunting.
-	if maturity == MATURITY_ADULT and hunger > 0.55 and randf() < 0.04:
+	# Tier 2.5: CANNIBALISM. Only kicks in when the population is crowded
+	# (>=22 shrimp). Below that, adults spare the fry so the colony can
+	# build up. Above the threshold, hungry adults will eat young to keep
+	# numbers in check - real cherry-shrimp self-thin this way.
+	var shrimp_pop: int = sim.shrimp.size() if sim != null else 0
+	if maturity == MATURITY_ADULT and hunger > 0.5 and shrimp_pop >= 22 \
+			and randf() < 0.08 and sim != null:
+		var my_size: float = effective_size()
+		var fry_prey: Shrimp = null
+		var best_d2: float = 1.0
+		for s in sim.shrimp:
+			if not is_instance_valid(s) or s == self:
+				continue
+			if s.maturity != MATURITY_FRY:
+				continue
+			# Cannibalism more likely when crowded.
+			var d2: float = s.position.distance_squared_to(position)
+			if d2 < best_d2:
+				best_d2 = d2
+				fry_prey = s
+		if fry_prey != null:
+			current_mode = Mode.HUNT
+			var to_p: Vector3 = fry_prey.position - position
+			if to_p.length() < 0.3:
+				events["kill_prey"] = fry_prey
+				hunger = maxf(0.0, hunger - 0.35)
+				energy = minf(1.0, energy + 0.12)
+				events["waste_at"] = position + Vector3(0, -0.05, 0)
+				events["waste_amount"] = 0.10
+			else:
+				target_velocity += to_p.normalized() * max_speed * 1.2
+				_apply_target(target_velocity)
+				return events
+
+	# Tier 3: rare predation on baby SNAILS only. Real shrimp don't usually
+	# catch fish fry - they're too slow - so we leave fish-fry hunting out
+	# of shrimp's repertoire entirely. Otherwise shrimp eat fish fry faster
+	# than fish can recruit and the school crashes.
+	if maturity == MATURITY_ADULT and hunger > 0.7 and randf() < 0.02:
 		var prey_pos: Vector3 = Vector3.INF
 		var prey_ref: Node3D = null
-		var best_d2: float = 1.5 * 1.5
-		# Baby snails first (slow, easier).
+		var best_d2: float = 1.2 * 1.2
 		for s in baby_snails:
 			if not is_instance_valid(s):
 				continue
@@ -239,15 +285,6 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 				best_d2 = d2
 				prey_pos = (s as Node3D).global_position
 				prey_ref = s
-		# Then fry.
-		for f in fry_array:
-			if not is_instance_valid(f):
-				continue
-			var d2: float = (f as Node3D).global_position.distance_squared_to(position)
-			if d2 < best_d2:
-				best_d2 = d2
-				prey_pos = (f as Node3D).global_position
-				prey_ref = f
 		if prey_ref != null:
 			current_mode = Mode.HUNT
 			var to_prey: Vector3 = prey_pos - position
@@ -263,9 +300,11 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 				return events
 
 	# Tier 4: seek breeding partner. Shrimp are happy to breed even when
-	# moderately hungry as long as they have energy reserves.
+	# moderately hungry as long as they have energy reserves AND the global
+	# population is below cap.
+	var current_pop: int = sim.shrimp.size() if sim != null else 0
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.6 and energy > 0.5:
+			and hunger < 0.6 and energy > 0.5 and current_pop < SHRIMP_POPULATION_CAP:
 		for n in neighbors:
 			if not (n is Shrimp):
 				continue
@@ -381,6 +420,13 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 		var night_factor: float = 0.35 + 0.65 * dl
 		target_velocity *= night_factor
 
+	# Size growth from feeding (mirrors Fish.growth_factor logic).
+	if maturity == MATURITY_ADULT:
+		if hunger < 0.35:
+			growth_factor = minf(growth_factor + 0.0007 * dt, MAX_GROWTH)
+		elif hunger > 0.7:
+			growth_factor = maxf(growth_factor - 0.0004 * dt, 0.7)
+
 	_apply_target(target_velocity)
 	return events
 
@@ -455,8 +501,8 @@ func _process(dt: float) -> void:
 		_antenna_pivot.rotation.y = sin(_swim_phase * 1.7) * 0.20
 		_antenna_pivot.rotation.x = sin(_swim_phase * 2.1) * 0.10
 
-	# Maturity scale lerps.
-	scale = scale.lerp(Vector3.ONE * _maturity_scale(), dt * 0.5)
+	# Maturity scale lerps AND growth_factor so well-fed shrimp visibly bulk.
+	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
 
 
 func _update_maturity() -> void:
