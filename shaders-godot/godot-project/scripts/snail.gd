@@ -75,6 +75,11 @@ func _process(dt: float) -> void:
 	else:
 		tangent = wall_normal.cross(up).normalized()
 
+	# Detritus seeking: if there's a waste particle near our wall, steer
+	# toward it (within tangent-plane). Snails are the cleanup crew - they
+	# detect detritus from a moderate distance and slow-crawl over to consume.
+	_check_waste_nearby(tangent, up)
+
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails
 	# move noticeably only on the forward stroke of the pulse.
@@ -101,6 +106,59 @@ func _process(dt: float) -> void:
 	position.x = clampf(position.x, wall_min.x, wall_max.x)
 	position.y = clampf(position.y, wall_min.y, wall_max.y)
 	position.z = clampf(position.z, wall_min.z, wall_max.z)
+
+
+func _check_waste_nearby(tangent: Vector3, up: Vector3) -> void:
+	# Scan the world for waste particles near our wall. If one is close enough,
+	# point our motion toward it in the wall-tangent plane. When we get very
+	# close, consume it (produces a tiny snail pellet).
+	var sim := _get_sim()
+	if sim == null:
+		return
+	var best: Node3D = null
+	var best_d2: float = 2.0 * 2.0
+	for w in sim.waste:
+		if not is_instance_valid(w):
+			continue
+		# Only consider waste roughly on or near our wall (within 1.5 units in
+		# the wall_normal direction). Most waste is on the substrate so the
+		# substrate floor naturally satisfies this for floor-walking snails.
+		var d2: float = (w as Node3D).global_position.distance_squared_to(position)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = w
+	if best == null:
+		return
+	var to_w: Vector3 = best.global_position - position
+	# Consume if very close.
+	if to_w.length() < 0.25:
+		# Snails eat detritus -> tiny pellet output (recycle).
+		sim.waste.erase(best)
+		(best as Node3D).queue_free()
+		# Tiny snail pellet on the substrate at our position.
+		if sim.has_method("_spawn_waste"):
+			sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.04,
+				WasteParticle.KIND_SNAIL)
+		return
+	# Project the to_w vector into wall-tangent space and override direction.
+	var dx: float = to_w.dot(tangent)
+	var dy: float = to_w.dot(up)
+	var dir := Vector2(dx, dy)
+	if dir.length() > 0.01:
+		_direction = dir.normalized()
+		_paused = false
+
+
+func _get_sim() -> Node:
+	# Walk up the scene tree to find the SimDriver. Cheap - happens at sim
+	# rate but only when the snail considers a turn (rare).
+	var n: Node = get_parent()
+	while n != null:
+		var d := n.get_node_or_null("SimDriver")
+		if d != null:
+			return d
+		n = n.get_parent()
+	return null
 
 
 func _apply_squash(squash_y: float, _up: Vector3) -> void:

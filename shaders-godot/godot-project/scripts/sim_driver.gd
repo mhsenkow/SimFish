@@ -20,10 +20,12 @@ const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
 
 var fish: Array[Fish] = []
+var shrimp: Array[Shrimp] = []
 var plants: Array[Plant] = []
 var waste: Array[WasteParticle] = []
 var eggs: Array[FishEgg] = []
 var substrate: SubstrateGrid = null
+var snails_root: Node3D = null   # set by world so SimDriver can scan snail children
 var world_bounds: AABB = AABB(Vector3(-8, 1.6, -4), Vector3(16, 5, 8))
 var substrate_top_y: float = 1.6
 
@@ -53,6 +55,11 @@ func register_egg(e: FishEgg) -> void:
 	eggs.append(e)
 
 
+func register_shrimp(s: Shrimp) -> void:
+	shrimp.append(s)
+	s.sim = self
+
+
 func _physics_process(dt: float) -> void:
 	_accum += dt
 	while _accum >= SIM_DT:
@@ -67,6 +74,7 @@ func _physics_process(dt: float) -> void:
 func _tick(dt: float) -> void:
 	# 1. Prune invalid refs (queue_freed nodes).
 	fish = fish.filter(func(f): return is_instance_valid(f))
+	shrimp = shrimp.filter(func(s): return is_instance_valid(s))
 	plants = plants.filter(func(p): return is_instance_valid(p))
 	waste = waste.filter(func(w): return is_instance_valid(w))
 	eggs = eggs.filter(func(e): return is_instance_valid(e))
@@ -80,17 +88,46 @@ func _tick(dt: float) -> void:
 		p.tick(dt, substrate)
 
 	# 4. Fish: gather neighbors, tick, collect events.
-	# Use O(N^2) - fine up to ~60.
 	var events: Array[Dictionary] = []
+	# Pre-collect fry list and baby snails for predator AI.
+	var fry_list: Array = []
+	for f in fish:
+		if f.maturity == Fish.MATURITY_FRY:
+			fry_list.append(f)
+	var baby_shrimp_list: Array = []
+	for s in shrimp:
+		if s.maturity == Shrimp.MATURITY_FRY:
+			baby_shrimp_list.append(s)
+	var baby_snail_list: Array = []
+	if snails_root != null:
+		for c in snails_root.get_children():
+			if c.get("is_baby") == true:
+				baby_snail_list.append(c)
+
 	for f in fish:
 		var neighbors: Array = []
 		for g in fish:
 			if g == f: continue
-			if g.position.distance_squared_to(f.position) < 9.0:  # 3.0 radius
+			if g.position.distance_squared_to(f.position) < 9.0:
 				neighbors.append(g)
-		var ev: Dictionary = f.tick(dt, neighbors, plants, world_bounds)
+		var ev: Dictionary = f.tick(dt, neighbors, plants, waste, baby_shrimp_list, world_bounds)
 		if ev.size() > 0:
 			ev["actor"] = f
+			ev["actor_kind"] = "fish"
+			events.append(ev)
+
+	# 4b. Shrimp.
+	for s in shrimp:
+		var sn: Array = []
+		for o in shrimp:
+			if o == s: continue
+			if o.position.distance_squared_to(s.position) < 4.0:
+				sn.append(o)
+		var ev: Dictionary = s.tick(dt, plants, waste, fry_list, baby_snail_list,
+			sn, world_bounds)
+		if ev.size() > 0:
+			ev["actor"] = s
+			ev["actor_kind"] = "shrimp"
 			events.append(ev)
 
 	# 5. Waste.
@@ -110,32 +147,97 @@ func _tick(dt: float) -> void:
 		_hatch(e)
 		e.queue_free()
 
-	# 7. Resolve fish events.
+	# 7. Resolve events from fish + shrimp.
 	for ev in events:
-		var actor: Fish = ev.get("actor", null)
+		var actor: Node3D = ev.get("actor", null)
+		var actor_kind: String = ev.get("actor_kind", "fish")
 		if actor == null or not is_instance_valid(actor):
 			continue
+
+		# Waste emission - kind depends on who pooped.
 		if ev.has("waste_at"):
-			_spawn_waste(ev["waste_at"], ev.get("waste_amount", 0.2))
+			var kind_const: int = WasteParticle.KIND_FISH
+			if actor_kind == "shrimp":
+				kind_const = WasteParticle.KIND_SHRIMP
+			_spawn_waste(ev["waste_at"], ev.get("waste_amount", 0.2), kind_const)
+
+		# Fish breeding -> eggs.
 		if ev.has("lay_egg_with"):
-			var partner: Fish = ev["lay_egg_with"]
-			if is_instance_valid(partner):
-				_lay_eggs(actor, partner)
+			var partner_f: Fish = ev["lay_egg_with"]
+			if is_instance_valid(partner_f):
+				_lay_eggs(actor as Fish, partner_f)
+
+		# Shrimp breeding -> direct fry spawn (berried-female metaphor; we skip
+		# the explicit egg sac because shrimp eggs hatch hidden under the
+		# female's tail in reality - too small to render cleanly anyway).
+		if ev.has("lay_shrimp_eggs_with"):
+			var partner_s: Shrimp = ev["lay_shrimp_eggs_with"]
+			if is_instance_valid(partner_s):
+				_spawn_shrimp_brood(actor as Shrimp, partner_s)
+
+		# Consume a waste particle (food). The eater absorbs most of the value,
+		# but excretes a smaller metabolic waste at its own position. This
+		# keeps the nutrient cycle closing - half-life waste descends until
+		# the leftover falls below 0.04 and is lost as background heat.
+		if ev.has("eat_waste"):
+			var w: WasteParticle = ev["eat_waste"]
+			if is_instance_valid(w):
+				var leftover: float = w.nutrient_value * 0.4
+				waste.erase(w)
+				w.queue_free()
+				if leftover > 0.04:
+					var new_kind: int = WasteParticle.KIND_FISH
+					if actor_kind == "shrimp":
+						new_kind = WasteParticle.KIND_SHRIMP
+					_spawn_waste(actor.global_position + Vector3(0, -0.1, 0),
+						leftover, new_kind)
+
+		# Predation - remove the prey.
+		if ev.has("kill_prey"):
+			var prey: Node = ev["kill_prey"]
+			if is_instance_valid(prey):
+				if prey is Fish:
+					fish.erase(prey)
+				elif prey is Shrimp:
+					shrimp.erase(prey)
+				# baby snail is a Node3D under snails_root - no explicit array
+				prey.queue_free()
+
 		if ev.get("die", false):
 			# On death, drop a single waste particle worth a bit of nutrient,
-			# then free the fish. This closes the loop: fish biomass -> substrate.
-			_spawn_waste(actor.position, 0.4)
+			# then free the fish/shrimp. Closes the biomass -> substrate loop.
+			var k: int = WasteParticle.KIND_FISH if actor_kind == "fish" else WasteParticle.KIND_SHRIMP
+			_spawn_waste(actor.position, 0.4 if actor_kind == "fish" else 0.25, k)
 			actor.queue_free()
 
 
-func _spawn_waste(at: Vector3, amount: float) -> void:
+func _spawn_waste(at: Vector3, amount: float, kind: int = 0) -> void:
 	if waste_root == null:
 		return
 	var w := WasteParticle.new()
 	waste_root.add_child(w)
 	w.global_position = at
-	w.init(amount, substrate_top_y)
+	w.init(amount, substrate_top_y, kind)
 	register_waste(w)
+
+
+func _spawn_shrimp_brood(a: Shrimp, b: Shrimp) -> void:
+	if fauna_root == null:
+		return
+	var n: int = mini(a.clutch_size, 4)
+	var mid: Vector3 = (a.position + b.position) * 0.5
+	for i in n:
+		var g: Dictionary = a.produce_offspring_genome(b)
+		var baby := Shrimp.new()
+		fauna_root.add_child(baby)
+		baby.global_position = mid + Vector3(
+			randf_range(-0.2, 0.2), randf_range(0.0, 0.05), randf_range(-0.2, 0.2)
+		)
+		baby.init_genome(g)
+		# Born as a fry.
+		baby.age = 0.0
+		baby.maturity = Shrimp.MATURITY_FRY
+		register_shrimp(baby)
 
 
 func _lay_eggs(a: Fish, b: Fish) -> void:
@@ -204,11 +306,21 @@ func _emit_stats() -> void:
 			n_fry += 1
 	for p in plants:
 		total_biomass += p.biomass()
+	var shrimp_adults: int = 0
+	var shrimp_fry: int = 0
+	for sh in shrimp:
+		if sh.maturity == Shrimp.MATURITY_ADULT:
+			shrimp_adults += 1
+		elif sh.maturity == Shrimp.MATURITY_FRY:
+			shrimp_fry += 1
 	var s: Dictionary = {
 		"fish_total": fish.size(),
 		"fish_adults": n_adults,
 		"fish_fry": n_fry,
 		"eggs": eggs.size(),
+		"shrimp_total": shrimp.size(),
+		"shrimp_adults": shrimp_adults,
+		"shrimp_fry": shrimp_fry,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,
 		"waste_particles": waste.size(),

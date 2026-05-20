@@ -1,44 +1,64 @@
-# Fish waste / detritus particle. Falls due to gravity, deposits its nutrient
-# value into the SubstrateGrid when it reaches the substrate top, then queues
-# itself for removal. Lives ~30 sim seconds max so the scene doesn't fill up.
+# Detritus particle. Spawned by every creature in the tank: fish drop the
+# largest particles, shrimp drop medium ones (lighter color because they eat
+# plants), snails drop tiny pellets. All fall to the substrate, deposit their
+# nutrient_value there, and persist briefly before despawning.
+#
+# Other creatures can claim a waste particle as food via SimDriver._claim_waste.
+# When claimed, the particle is consumed (no nutrient deposit) and the eater
+# gains its nutrient_value as energy/food.
 
 extends Node3D
 class_name WasteParticle
 
-const VOXEL_SIZE: float = 0.12
 const FALL_SPEED: float = 0.6
 const MAX_LIFE: float = 30.0
+const KIND_FISH: int = 0
+const KIND_SHRIMP: int = 1
+const KIND_SNAIL: int = 2
 
 var nutrient_value: float = 0.2
 var substrate_top_y: float = 1.6
+var kind: int = KIND_FISH
+var voxel_size: float = 0.12
+var settled: bool = false
 var _life: float = 0.0
-var _settled: bool = false
 var _settle_timer: float = 0.0
 
 
-func init(value: float, top_y: float) -> void:
+func init(value: float, top_y: float, particle_kind: int = KIND_FISH) -> void:
 	nutrient_value = value
 	substrate_top_y = top_y
+	kind = particle_kind
+	var color: Color
+	match kind:
+		KIND_SHRIMP:
+			voxel_size = 0.08
+			color = Color8(95, 80, 50)  # olive-brown, plant-fed
+		KIND_SNAIL:
+			voxel_size = 0.05
+			color = Color8(40, 32, 22)  # tiny dark pellet
+		_:
+			voxel_size = 0.12
+			color = Color8(60, 45, 30)  # standard fish brown
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
+	bm.size = Vector3(voxel_size, voxel_size, voxel_size)
 	mi.mesh = bm
-	mi.material_override = VoxelMat.make(Color8(60, 45, 30))
+	mi.material_override = VoxelMat.make(color)
 	add_child(mi)
 
 
+# Called by SimDriver each tick. Returns true if the particle should be removed.
 func tick(dt: float, substrate: SubstrateGrid) -> bool:
-	# Returns true if the particle should be removed this tick.
 	_life += dt
 	if _life >= MAX_LIFE:
 		return true
-	if not _settled:
+	if not settled:
 		position.y -= FALL_SPEED * dt
-		# Gentle horizontal drift so they spread.
 		position.x += sin(_life * 1.7) * 0.04 * dt
-		if position.y <= substrate_top_y + VOXEL_SIZE * 0.5:
-			position.y = substrate_top_y + VOXEL_SIZE * 0.5
-			_settled = true
+		if position.y <= substrate_top_y + voxel_size * 0.5:
+			position.y = substrate_top_y + voxel_size * 0.5
+			settled = true
 			substrate.add_at(position, nutrient_value)
 	else:
 		_settle_timer += dt

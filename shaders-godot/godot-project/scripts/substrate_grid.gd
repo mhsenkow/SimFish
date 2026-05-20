@@ -14,6 +14,11 @@ const NUTRIENT_BASELINE: float = 0.3
 const NUTRIENT_MAX: float = 3.0
 const DIFFUSION_RATE: float = 0.04  # per tick - smooths the field
 const DECAY_RATE: float = 0.003     # per tick - represents plant uptake without nearby plant
+# Aquasoil reservoir leak: the bedrock substrate slowly releases nutrients
+# into the active layer, mimicking real planted-tank substrate kept months on
+# a single dose. Without this the nutrient pool drifts down because waste
+# gets snapped up before settling.
+const RESERVOIR_LEAK_PER_TICK: float = 0.00015
 
 var cells_x: int
 var cells_z: int
@@ -89,6 +94,8 @@ func tick(_dt: float) -> void:
 			var new_val: float = c + (avg - c) * DIFFUSION_RATE
 			# Slow decay toward baseline.
 			new_val += (NUTRIENT_BASELINE - new_val) * DECAY_RATE
+			# Reservoir leak from bedrock aquasoil.
+			new_val += RESERVOIR_LEAK_PER_TICK
 			nutrients[x][z] = clampf(new_val, 0.0, NUTRIENT_MAX)
 
 

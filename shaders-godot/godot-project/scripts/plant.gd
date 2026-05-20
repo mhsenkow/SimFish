@@ -105,8 +105,29 @@ func nibble(amount: int) -> int:
 		# Reset growth progress so the regrow doesn't snap a new voxel in instantly.
 		growth_progress = 0.0
 	if current_height <= 0:
+		_on_death()
 		queue_free()
 	return removed
+
+
+func _on_death() -> void:
+	# When a plant is fully eaten, its roots + decay matter return some
+	# nutrients to the substrate. Closes the cycle: without this the nutrient
+	# pool drifts down over time because waste gets eaten before settling.
+	# We add directly to the substrate grid since the plant's about to free.
+	var sim_driver: Node = _find_sim()
+	if sim_driver != null and sim_driver.substrate != null:
+		sim_driver.substrate.add_at(global_position, 0.35)
+
+
+func _find_sim() -> Node:
+	var n: Node = get_parent()
+	while n != null:
+		var d := n.get_node_or_null("SimDriver")
+		if d != null:
+			return d
+		n = n.get_parent()
+	return null
 
 
 # Quick world-space height of the top voxel (for fish to target nibbling).

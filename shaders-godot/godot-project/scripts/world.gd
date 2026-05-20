@@ -77,12 +77,16 @@ func _ready() -> void:
 
 	_spawn_initial_plants()
 	_spawn_initial_fish()
+	_spawn_initial_shrimp()
+	# Make sure SimDriver can find the snails container for predator AI.
+	sim.snails_root = get_node_or_null("Snails")
 	# Seed the substrate with some uneven nutrients so plants in nutrient-rich
 	# spots immediately start to outpace the others - visible variance.
 	_seed_nutrient_hotspots()
 
 	print("[vivarium] world built: ", get_child_count(), " top-level nodes; ",
-		  sim.fish.size(), " fish, ", sim.plants.size(), " plants")
+		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
+		  sim.plants.size(), " plants")
 
 
 # ---- Materials ----
@@ -414,6 +418,43 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	f.global_position = pos
 	f.init_genome(genome)
 	sim.register_fish(f)
+
+
+func _spawn_initial_shrimp() -> void:
+	# Neocaridina-style shrimp. Two color morphs for visual interest.
+	var red_genome: Dictionary = {
+		"species": "shrimp",
+		"base_color": Color8(195, 65, 55),    # cherry red
+		"accent_color": Color8(245, 220, 200),
+		"adult_voxel_scale": 0.11,
+		"max_age_s": 360.0,
+		"max_speed": 0.85,
+		"substrate_top_y": SUBSTRATE_DEPTH,
+	}
+	var amber_genome: Dictionary = {
+		"species": "shrimp",
+		"base_color": Color8(195, 145, 70),   # amber/honey
+		"accent_color": Color8(245, 220, 200),
+		"adult_voxel_scale": 0.11,
+		"max_age_s": 360.0,
+		"max_speed": 0.85,
+		"substrate_top_y": SUBSTRATE_DEPTH,
+	}
+	# 5 reds + 3 ambers, start as adults so breeding kicks in soon.
+	for i in 8:
+		var g: Dictionary = red_genome.duplicate() if i < 5 else amber_genome.duplicate()
+		g["sex"] = i % 2
+		g["max_age_s"] += randf_range(-30, 30)
+		var sh := Shrimp.new()
+		sh.age = g["max_age_s"] * 0.35
+		fauna_root.add_child(sh)
+		sh.global_position = Vector3(
+			randf_range(-TANK_HALF_W * 0.8, TANK_HALF_W * 0.8),
+			SUBSTRATE_DEPTH + 0.15,
+			randf_range(-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7),
+		)
+		sh.init_genome(g)
+		sim.register_shrimp(sh)
 
 
 func _seed_nutrient_hotspots() -> void:

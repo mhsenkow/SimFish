@@ -263,8 +263,10 @@ func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 
 # ---- Tick (called by SimDriver) ----
 
-func tick(dt: float, neighbors: Array, plants: Array, world_bounds: AABB) -> Dictionary:
-	# Returns events for the SimDriver to act on (lay egg, spawn waste, die).
+func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
+		  baby_shrimp: Array, world_bounds: AABB) -> Dictionary:
+	# Returns events for the SimDriver to act on (lay egg, eat waste,
+	# kill prey, spawn waste, die).
 	var events: Dictionary = {}
 
 	age += dt
@@ -337,11 +339,72 @@ func tick(dt: float, neighbors: Array, plants: Array, world_bounds: AABB) -> Dic
 			target_velocity = desired.limit_length(effective_max)
 			return events
 
-	# Tier 2: HUNGRY HERBIVORE. Chase plants if low food.
-	if herbivory > 0.0 and hunger > 0.5 and maturity != MATURITY_FRY:
+	# Tier 1b: SCAVENGE WASTE. Fish opportunistically eat waste particles
+	# that drift past. Cheaper than chasing live food. Applies to all fish,
+	# herbivores or not, when even slightly hungry.
+	if hunger > 0.3 and maturity != MATURITY_FRY:
+		var best_w: WasteParticle = null
+		var best_d2: float = 2.5 * 2.5
+		for w in waste:
+			if not is_instance_valid(w):
+				continue
+			# Fish prefer fresh-fallen waste in mid-water, not settled.
+			if w.settled and randf() > 0.4:
+				continue
+			var d2: float = (w as Node3D).global_position.distance_squared_to(position)
+			if d2 < best_d2:
+				best_d2 = d2
+				best_w = w
+		if best_w != null:
+			current_mode = Mode.FORAGE
+			var to_w: Vector3 = best_w.global_position - position
+			if to_w.length() < 0.4:
+				events["eat_waste"] = best_w
+				hunger = maxf(0.0, hunger - 0.25)
+				energy = minf(1.0, energy + 0.06)
+			else:
+				desired += to_w.normalized() * effective_max * 0.9
+				target_velocity = desired.limit_length(effective_max)
+				return events
+
+	# Tier 1c: RARE PREDATION on baby shrimp. Only adults, only when hungry,
+	# small chance per tick. Real fish snap at things — but this is rare so
+	# shrimp populations can grow.
+	if maturity == MATURITY_ADULT and hunger > 0.55 and not baby_shrimp.is_empty() \
+			and randf() < 0.05:
+		var prey: Shrimp = null
+		var best_d2: float = 1.2 * 1.2
+		for s in baby_shrimp:
+			if not is_instance_valid(s):
+				continue
+			var d2: float = (s as Node3D).global_position.distance_squared_to(position)
+			if d2 < best_d2:
+				best_d2 = d2
+				prey = s
+		if prey != null:
+			current_mode = Mode.FORAGE
+			var to_prey: Vector3 = prey.global_position - position
+			if to_prey.length() < 0.35:
+				events["kill_prey"] = prey
+				hunger = maxf(0.0, hunger - 0.40)
+				energy = minf(1.0, energy + 0.12)
+				events["waste_at"] = position + Vector3(0, -0.1, 0)
+				events["waste_amount"] = 0.15
+			else:
+				if burst_remaining <= 0.0 and energy > 0.3:
+					burst_remaining = 0.4
+				desired += to_prey.normalized() * effective_max * 1.2
+				target_velocity = desired.limit_length(effective_max)
+				return events
+
+	# Tier 2: HUNGRY HERBIVORE on tall plants only. Fish prefer the soft tips
+	# of established plants; they won't strip a tiny sprout. Minimum plant
+	# biomass = 12 voxels.
+	if herbivory > 0.0 and hunger > 0.55 and maturity != MATURITY_FRY \
+			and randf() < 0.5:
 		if target_plant == null or not is_instance_valid(target_plant) \
-				or target_plant.biomass() <= 0:
-			target_plant = _find_nearest_plant(plants, 5.0)
+				or target_plant.biomass() < 12:
+			target_plant = _find_nearest_tall_plant(plants, 5.0, 12)
 		if target_plant != null:
 			current_mode = Mode.FORAGE
 			var top: Vector3 = target_plant.global_position
@@ -357,7 +420,6 @@ func tick(dt: float, neighbors: Array, plants: Array, world_bounds: AABB) -> Dic
 					events["waste_amount"] = 0.15 * float(taken)
 				target_plant = null
 			else:
-				# Burst toward the food if very hungry.
 				if hunger > 0.8 and burst_remaining <= 0.0 and energy > 0.3:
 					burst_remaining = 0.6
 				desired += (top - position).normalized() * effective_max
@@ -638,6 +700,23 @@ func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 	var best_d: float = max_dist
 	for p in plants:
 		if not is_instance_valid(p) or p.biomass() <= 0:
+			continue
+		var top_pos: Vector3 = (p as Plant).global_position
+		top_pos.y = (p as Plant).top_world_y()
+		var d: float = top_pos.distance_to(position)
+		if d < best_d:
+			best_d = d
+			best = p
+	return best
+
+
+func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) -> Plant:
+	# Fish only nibble plants that are at least min_biomass voxels tall.
+	# Spares saplings + carpets.
+	var best: Plant = null
+	var best_d: float = max_dist
+	for p in plants:
+		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
 		top_pos.y = (p as Plant).top_world_y()
