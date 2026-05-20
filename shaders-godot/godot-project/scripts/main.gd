@@ -17,6 +17,10 @@ extends Node
 @onready var display: TextureRect = $Display
 @onready var camera: Camera3D = $SubViewport/World/Camera3D
 @onready var hud: Label = $DebugHUD
+@onready var world: Node3D = $SubViewport/World
+
+# Last-known ecosystem stats (updated via SimDriver.stats_changed signal).
+var _stats: Dictionary = {}
 
 # Orbit state - default angle is the "feels nice" view the user landed on
 # (drag to refine, F to reset back to this).
@@ -48,6 +52,11 @@ var _space_was_pressed: bool = false
 func _ready() -> void:
 	display.texture = sub_viewport.get_texture()
 	_apply_camera()
+	# Subscribe to SimDriver stats - they emit at ~1Hz with the ecosystem snapshot.
+	await get_tree().process_frame
+	var sim_node: Node = world.get_node_or_null("SimDriver")
+	if sim_node != null and sim_node.has_signal("stats_changed"):
+		sim_node.connect("stats_changed", _on_stats_changed)
 
 
 func _process(dt: float) -> void:
@@ -135,19 +144,42 @@ func _apply_camera() -> void:
 	camera.look_at(target, Vector3.UP)
 
 
-func _update_hud(mouse_pos: Vector2, any_btn: bool) -> void:
+func _on_stats_changed(stats: Dictionary) -> void:
+	_stats = stats
+	_render_header()
+
+
+func _update_hud(_mouse_pos: Vector2, _any_btn: bool) -> void:
+	# Header re-rendered on stats_changed; nothing per-frame.
+	pass
+
+
+func _render_header() -> void:
 	if hud == null:
 		return
-	var lines: Array[String] = []
-	lines.append("mouse: %d, %d" % [int(mouse_pos.x), int(mouse_pos.y)])
-	lines.append("btn: %s  orbiting: %s  auto: %s" % [
-		"yes" if any_btn else "no",
-		"yes" if _orbiting else "no",
-		"yes" if _auto_orbit else "no",
-	])
-	lines.append("yaw: %.2f  pitch: %.2f  radius: %.1f" % [yaw, pitch, radius])
-	lines.append("target: %.1f, %.1f, %.1f" % [target.x, target.y, target.z])
-	lines.append("cam: %.1f, %.1f, %.1f" % [
-		camera.global_position.x, camera.global_position.y, camera.global_position.z])
-	lines.append("drag any mouse button to orbit, scroll to zoom, WASDQE to pan, F to reset, SPACE auto")
-	hud.text = "\n".join(lines)
+	# Single-line subtle header grouped by trophic role. Use middle-dots so
+	# the line reads as a continuous strip rather than a list.
+	#
+	#   FAUNA  fish 22 (11/11) · shrimp 11 (8/3) · eggs 0
+	#   FLORA  plants 89 · biomass 451
+	#   DETRITUS  waste 0 · nutrients 6.4
+	var fish_total: int = int(_stats.get("fish_total", 0))
+	var fish_adults: int = int(_stats.get("fish_adults", 0))
+	var fish_fry: int = int(_stats.get("fish_fry", 0))
+	var shrimp_total: int = int(_stats.get("shrimp_total", 0))
+	var shrimp_adults: int = int(_stats.get("shrimp_adults", 0))
+	var shrimp_fry: int = int(_stats.get("shrimp_fry", 0))
+	var eggs: int = int(_stats.get("eggs", 0))
+	var plants: int = int(_stats.get("plants_alive", 0))
+	var biomass: int = int(_stats.get("plant_total_biomass", 0))
+	var waste: int = int(_stats.get("waste_particles", 0))
+	var nutrients: float = float(_stats.get("substrate_nutrients_total", 0.0))
+
+	var parts: Array[String] = []
+	parts.append("fish %d (%d/%d)" % [fish_total, fish_adults, fish_fry])
+	parts.append("shrimp %d (%d/%d)" % [shrimp_total, shrimp_adults, shrimp_fry])
+	parts.append("eggs %d" % eggs)
+	parts.append("plants %d / biomass %d" % [plants, biomass])
+	parts.append("waste %d" % waste)
+	parts.append("nutrients %.1f" % nutrients)
+	hud.text = "   ·   ".join(parts)
