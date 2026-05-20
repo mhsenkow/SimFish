@@ -54,11 +54,23 @@ var climb_target: Plant = null
 var climb_remaining_time: float = 0.0  # countdown before giving up
 const CLIMB_GIVE_UP_TIME: float = 18.0  # if can't reach, give up
 
-# Courtship (lighter than fish — shrimp pair faster).
+# Courtship + gravidity (berried-female mechanic).
 var partner: Shrimp = null
 var court_timer: float = 0.0
 const COURT_DURATION: float = 4.0
+const GRAVIDITY_DURATION: float = 25.0
 var clutch_size: int = 3
+# is_gravid: true on females after a completed courtship - they carry the
+# egg cluster visibly under their tail for GRAVIDITY_DURATION seconds before
+# releasing fry. Real cherry shrimp call this "berried".
+var is_gravid: bool = false
+var gravid_timer: float = 0.0
+var gravid_partner_genome: Dictionary = {}  # cached mate genome at fertilization
+var _egg_cluster: Node3D = null
+# Tracks how many successful broods this individual has had. Used for
+# breeding-partner bias - successful breeders are more attractive (cheap
+# stand-in for true sexual selection).
+var breed_count: int = 0
 
 # Internal substrate-top reference set by SimDriver via init.
 var substrate_top_y: float = 1.6
@@ -196,6 +208,15 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 	energy = clampf(energy - dt * 0.004, 0.0, 1.0)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 
+	# Gravidity: if carrying eggs, count down and release fry when ready.
+	if is_gravid:
+		gravid_timer += dt
+		if gravid_timer >= GRAVIDITY_DURATION:
+			events["release_fry"] = gravid_partner_genome
+			is_gravid = false
+			gravid_timer = 0.0
+			gravid_partner_genome = {}
+
 	_update_maturity()
 
 	# Death conditions.
@@ -227,11 +248,20 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			target_velocity += (ct - position).normalized() * max_speed * 0.7
 			court_timer += dt
 			if dist < 0.8 and court_timer >= COURT_DURATION:
-				events["lay_shrimp_eggs_with"] = partner
+				# Pick the female of the pair to become gravid. We compute
+				# the offspring genome NOW (combining both parents) and stash
+				# it on the female to release as fry once gravidity completes.
+				var female: Shrimp = self if sex == 1 else partner
+				var male: Shrimp = partner if sex == 1 else self
+				female.is_gravid = true
+				female.gravid_timer = 0.0
+				female.gravid_partner_genome = female.produce_offspring_genome(male)
 				breed_cooldown = 60.0
-				energy = maxf(0.0, energy - 0.35)
+				energy = maxf(0.0, energy - 0.30)
 				partner.breed_cooldown = 60.0
-				partner.energy = maxf(0.0, partner.energy - 0.35)
+				partner.energy = maxf(0.0, partner.energy - 0.30)
+				breed_count += 1
+				partner.breed_count += 1
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
@@ -506,6 +536,41 @@ func _process(dt: float) -> void:
 
 	# Maturity scale lerps AND growth_factor so well-fed shrimp visibly bulk.
 	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
+
+	# Berried-female visual: small yellow egg cluster under the tail.
+	if is_gravid and _egg_cluster == null:
+		_spawn_egg_cluster()
+	elif not is_gravid and _egg_cluster != null:
+		_egg_cluster.queue_free()
+		_egg_cluster = null
+
+
+func _spawn_egg_cluster() -> void:
+	if _bank_pivot == null:
+		return
+	_egg_cluster = Node3D.new()
+	_egg_cluster.name = "EggCluster"
+	# Position under the tail (which sits at z = 0.6v ish in tail_pivot).
+	_egg_cluster.position = Vector3(0, -adult_voxel_scale * 0.45, adult_voxel_scale * 0.4)
+	_bank_pivot.add_child(_egg_cluster)
+	var v: float = adult_voxel_scale
+	var c_egg := Color8(245, 220, 110)
+	var c_egg_dark := Color8(220, 190, 80)
+	var positions: Array[Vector3] = [
+		Vector3(0, 0, 0),
+		Vector3(v * 0.18, 0, 0),
+		Vector3(-v * 0.18, 0, 0),
+		Vector3(0, 0, v * 0.18),
+		Vector3(v * 0.10, v * 0.05, v * 0.10),
+	]
+	for i in positions.size():
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(v * 0.16, v * 0.16, v * 0.16)
+		mi.mesh = bm
+		mi.position = positions[i]
+		mi.material_override = VoxelMat.make(c_egg if (i & 1) == 0 else c_egg_dark)
+		_egg_cluster.add_child(mi)
 
 
 func _update_maturity() -> void:

@@ -72,6 +72,15 @@ var burst_remaining: float = 0.0
 var growth_factor: float = 1.0
 var max_growth: float = 1.4     # apex species (betta) override higher (~2.0)
 
+# Visible phenotypes - heritable traits affecting body proportions + pattern.
+# Drift over generations and create lineages that look distinct.
+var fin_length_factor: float = 1.0   # multiplier on tail / dorsal / anal fin extent (0.6-1.6)
+var body_elongation: float = 1.0     # body length stretch factor (0.85-1.15)
+var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars
+var color_dot_count: int = 0         # extra accent dots (0-4)
+# Lifetime breed count - successful breeders are slightly more attractive.
+var breed_count: int = 0
+
 
 func effective_size() -> float:
 	return adult_voxel_scale * _maturity_scale() * growth_factor
@@ -141,6 +150,10 @@ func init_genome(genome: Dictionary) -> void:
 	preferred_y = genome.get("preferred_y", preferred_y)
 	sex = genome.get("sex", randi() % 2)
 	generation = genome.get("generation", 0)
+	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
+	body_elongation = genome.get("body_elongation", body_elongation)
+	pattern_type = int(genome.get("pattern_type", pattern_type))
+	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -215,12 +228,36 @@ func _build_body() -> void:
 			Vector3(bs * 0.55, v * 0.25, v), mat_top)
 		_add_voxel_to(_body_mid_pivot, Vector3(0, -bs * 0.5, bz),
 			Vector3(bs * 0.55, v * 0.25, v), mat_belly)
-	# Lateral stripe accent along both sides.
-	for i in seg_widths.size():
-		_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, 0, i * v),
-			Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
-		_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, 0, i * v),
-			Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
+	# Lateral pattern - varies by pattern_type genotype.
+	# 0 = solid (no accents), 1 = horizontal stripe, 2 = spots, 3 = vertical bars
+	if pattern_type == 1:
+		# Horizontal stripe along both sides.
+		for i in seg_widths.size():
+			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, 0, i * v),
+				Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
+			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, 0, i * v),
+				Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
+	elif pattern_type == 2:
+		# Spots: 3 small dots along each side.
+		for i in seg_widths.size():
+			var dy: float = (-1.0 if i == 1 else 1.0) * v * 0.25
+			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, dy, i * v),
+				Vector3(v * 0.15, v * 0.3, v * 0.3), mat_accent)
+			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, dy, i * v),
+				Vector3(v * 0.15, v * 0.3, v * 0.3), mat_accent)
+	elif pattern_type == 3:
+		# Vertical bars: tall thin accent stripes across the body height.
+		for i in seg_widths.size():
+			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, 0, i * v),
+				Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
+			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, 0, i * v),
+				Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
+	# Extra dots scattered on top of the body (independent decorative trait).
+	for i in color_dot_count:
+		var zoff: float = (float(i) / float(maxi(1, color_dot_count - 1)) - 0.5) * v * 2.0
+		var xside: float = (-1.0 if i % 2 == 0 else 1.0) * v * 0.55
+		_add_voxel_to(_body_mid_pivot, Vector3(xside, v * 0.35, zoff),
+			Vector3(v * 0.2, v * 0.2, v * 0.2), mat_accent)
 	# Dorsal fin (top) - pivoted at its base so it can sway lazily.
 	_dorsal_pivot = Node3D.new()
 	_dorsal_pivot.name = "DorsalPivot"
@@ -260,16 +297,22 @@ func _build_body() -> void:
 	# Tail peduncle (narrow connector).
 	_add_voxel_to(_tail_pivot, Vector3(0, 0, 0),
 		Vector3(v * 0.5, v * 0.6, v), mat_body)
-	# Forked tail fin - top + bottom prongs.
-	_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45, v * 0.9),
-		Vector3(v * 0.15, v * 0.4, v * 0.6), mat_fin)
-	_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.45, v * 0.9),
-		Vector3(v * 0.15, v * 0.4, v * 0.6), mat_fin)
+	# Forked tail fin - top + bottom prongs. Extent scales with fin_length_factor:
+	# long-finned individuals have visibly trailing fins; short-finned are stubby.
+	var fl: float = fin_length_factor
+	_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45, v * (0.9 * fl)),
+		Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_fin)
+	_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.45, v * (0.9 * fl)),
+		Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_fin)
 	# Outer fin tips, further back.
-	_add_voxel_to(_tail_pivot, Vector3(0, v * 0.7, v * 1.4),
-		Vector3(v * 0.12, v * 0.3, v * 0.4), mat_fin)
-	_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.7, v * 1.4),
-		Vector3(v * 0.12, v * 0.3, v * 0.4), mat_fin)
+	_add_voxel_to(_tail_pivot, Vector3(0, v * (0.7 * fl), v * (1.4 * fl)),
+		Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_fin)
+	_add_voxel_to(_tail_pivot, Vector3(0, v * (-0.7 * fl), v * (1.4 * fl)),
+		Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_fin)
+	# Apply body elongation by stretching the bank pivot's local Z scale.
+	# This makes some fish look more eel-like (1.15) and others stubbier (0.85).
+	if _bank_pivot != null:
+		_bank_pivot.scale.z = body_elongation
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -369,6 +412,8 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				energy = maxf(0.0, energy - 0.35)
 				partner.breed_cooldown = 35.0
 				partner.energy = maxf(0.0, partner.energy - 0.35)
+				breed_count += 1
+				partner.breed_count += 1
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
@@ -813,10 +858,13 @@ func _wall_avoid(b: AABB) -> Vector3:
 
 
 func _find_breeding_partner(neighbors: Array) -> Fish:
-	# Prefer same-species adults of opposite sex, with no current partner,
-	# low hunger, high energy, low stress. Within 3 units.
+	# Same-species, opposite sex, available, healthy, within 3 units.
+	# Among valid candidates, prefer the one with the best *attractiveness*
+	# score = lower distance bonus + breed_count bias (successful breeders
+	# are more attractive). This creates very mild sexual selection -
+	# lineages with successful ancestors get picked slightly more often.
 	var best: Fish = null
-	var best_d2: float = 9.0
+	var best_score: float = -INF
 	for n in neighbors:
 		if not n is Fish or n == self:
 			continue
@@ -830,8 +878,12 @@ func _find_breeding_partner(neighbors: Array) -> Fish:
 		if f.hunger > 0.5 or f.energy < 0.55 or f.stress > 0.4:
 			continue
 		var d2: float = f.position.distance_squared_to(position)
-		if d2 < best_d2:
-			best_d2 = d2
+		if d2 > 9.0:
+			continue
+		# Lower distance is better, more breed_count is better.
+		var score: float = -d2 + sqrt(float(f.breed_count)) * 0.5
+		if score > best_score:
+			best_score = score
 			best = f
 	return best
 
@@ -883,6 +935,22 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	# Hold size in a reasonable band so mutation can't shrink/grow the species
 	# unboundedly across generations.
 	new_size = clampf(new_size, adult_voxel_scale * 0.6, adult_voxel_scale * 1.5)
+	# Phenotype inheritance: average parents + small mutation, clamped.
+	var new_fin: float = clampf(
+		(fin_length_factor + partner.fin_length_factor) * 0.5 + randf_range(-0.12, 0.12),
+		0.6, 1.6)
+	var new_elong: float = clampf(
+		(body_elongation + partner.body_elongation) * 0.5 + randf_range(-0.05, 0.05),
+		0.85, 1.15)
+	# Pattern: usually inherits from one parent, small chance to mutate to
+	# a different pattern entirely.
+	var new_pattern: int = pattern_type if randf() < 0.5 else partner.pattern_type
+	if randf() < 0.06:
+		new_pattern = randi() % 4
+	# Dots: average then small jitter, clamped 0-4.
+	var new_dots: int = clampi(
+		int((color_dot_count + partner.color_dot_count) * 0.5 + randf_range(-1.0, 1.0)),
+		0, 4)
 	var g: Dictionary = {
 		"species": species,
 		"base_color": base_color.lerp(partner.base_color, mix).lerp(
@@ -900,5 +968,9 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"preferred_y": preferred_y + randf_range(-0.4, 0.4),
 		"sex": randi() % 2,
 		"generation": maxi(generation, partner.generation) + 1,
+		"fin_length_factor": new_fin,
+		"body_elongation": new_elong,
+		"pattern_type": new_pattern,
+		"color_dot_count": new_dots,
 	}
 	return g

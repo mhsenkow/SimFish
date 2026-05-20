@@ -228,13 +228,13 @@ func _tick(dt: float) -> void:
 			if is_instance_valid(partner_f):
 				_lay_eggs(actor as Fish, partner_f)
 
-		# Shrimp breeding -> direct fry spawn (berried-female metaphor; we skip
-		# the explicit egg sac because shrimp eggs hatch hidden under the
-		# female's tail in reality - too small to render cleanly anyway).
-		if ev.has("lay_shrimp_eggs_with"):
-			var partner_s: Shrimp = ev["lay_shrimp_eggs_with"]
-			if is_instance_valid(partner_s):
-				_spawn_shrimp_brood(actor as Shrimp, partner_s)
+		# Shrimp release fry (after gravidity period). Genome was pre-computed
+		# at fertilization time and stashed on the female; we just spawn the
+		# babies now using it.
+		if ev.has("release_fry"):
+			var brood_genome: Dictionary = ev["release_fry"]
+			if brood_genome.size() > 0:
+				_release_shrimp_brood(actor as Shrimp, brood_genome)
 
 		# Consume a waste particle (food). The eater absorbs most of the value,
 		# but excretes a smaller metabolic waste at its own position. This
@@ -282,20 +282,28 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0) -> void:
 	register_waste(w)
 
 
-func _spawn_shrimp_brood(a: Shrimp, b: Shrimp) -> void:
+func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
+	# Release fry from the gravid mother. Each baby gets a fresh genome
+	# derived from the cached brood_genome - the offspring traits were
+	# pre-computed at fertilization. We re-randomize sex per baby and add
+	# small per-baby color jitter so siblings are clearly siblings but not
+	# identical clones.
 	if fauna_root == null:
 		return
-	var n: int = mini(a.clutch_size, 4)
-	var mid: Vector3 = (a.position + b.position) * 0.5
+	var n: int = mini(mother.clutch_size, 4)
 	for i in n:
-		var g: Dictionary = a.produce_offspring_genome(b)
+		var g: Dictionary = brood_genome.duplicate(true)
+		g["sex"] = randi() % 2
+		# Tiny per-baby color jitter so the litter isn't identical.
+		if g.has("base_color"):
+			g["base_color"] = (g["base_color"] as Color).lerp(
+				Color(randf(), randf(), randf()), 0.05)
 		var baby := Shrimp.new()
 		fauna_root.add_child(baby)
-		baby.global_position = mid + Vector3(
+		baby.global_position = mother.global_position + Vector3(
 			randf_range(-0.2, 0.2), randf_range(0.0, 0.05), randf_range(-0.2, 0.2)
 		)
 		baby.init_genome(g)
-		# Born as a fry.
 		baby.age = 0.0
 		baby.maturity = Shrimp.MATURITY_FRY
 		register_shrimp(baby)
