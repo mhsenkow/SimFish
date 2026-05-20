@@ -4,23 +4,35 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette. Animation emerges from physics, not keyframes.
 
-## Download (macOS)
+## Download
 
-Grab the latest `Vivarium-mac.zip` from the [Releases page](https://github.com/mhsenkow/SimFish/releases). Unzip, then run `Vivarium.app`.
+All builds live on the [Releases page](https://github.com/mhsenkow/SimFish/releases). Pick your platform:
 
-The app is ad-hoc signed but **not notarized** by Apple — macOS Gatekeeper will warn you on first launch. Two-step fix:
+### macOS — `Vivarium-mac.zip` (universal, Intel + Apple Silicon)
 
-1. **Right-click `Vivarium.app` → Open → Open** in the dialog. If macOS instead says *"Vivarium.app is damaged and can't be opened"* (Chrome downloads sometimes trigger this), open Terminal and run:
+Unzip, then double-click `Vivarium.app`. The app is **ad-hoc signed** but not Apple-notarized, so Gatekeeper will warn you on first launch:
 
+1. **Right-click `Vivarium.app` → Open → Open** in the dialog.
+2. If macOS instead says *"Vivarium.app is damaged and can't be opened"* (Chrome downloads sometimes trigger this), open Terminal and run:
    ```bash
    xattr -dr com.apple.quarantine ~/Downloads/Vivarium.app
    ```
-
    then double-click again.
 
-2. macOS only nags you the first time. After that it just opens.
+macOS only nags once.
 
-Universal binary — runs natively on both Intel and Apple Silicon Macs.
+### Windows — `Vivarium-windows.zip` (x86_64)
+
+Unzip, then double-click `Vivarium.exe`. SmartScreen will warn that the publisher is unknown — click **More info** → **Run anyway**.
+
+### Linux — `Vivarium-linux.tar.gz` (x86_64)
+
+```bash
+tar -xzf Vivarium-linux.tar.gz
+./Vivarium-linux.x86_64
+```
+
+Tested on Ubuntu / Debian-based distros. The binary already has the exec bit set.
 
 ## What's in the tank
 
