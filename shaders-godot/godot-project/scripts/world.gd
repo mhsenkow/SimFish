@@ -668,8 +668,14 @@ func add_mulm_voxel(pos: Vector3) -> void:
 
 func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	var f := Fish.new()
-	# Start as an adult so we see breeding sooner; fry would take ages to mature.
-	f.age = (genome.get("max_age_s", 240.0)) * 0.35
+	# Spread initial ages so the founding generation doesn't all die at once.
+	# Some are juvenile-fresh, some are nearly senescent. This creates rolling
+	# generations from frame zero rather than synchronised crashes.
+	var lifespan: float = genome.get("max_age_s", 240.0)
+	f.age = randf_range(0.15, 0.65) * lifespan
+	# Apex species (e.g. betta) can grow much bigger than schooling species.
+	if genome.get("species", "") == "betta":
+		f.max_growth = 3.5
 	fauna_root.add_child(f)
 	f.global_position = pos
 	f.init_genome(genome)
@@ -702,7 +708,8 @@ func _spawn_initial_shrimp() -> void:
 		g["sex"] = i % 2
 		g["max_age_s"] += randf_range(-30, 30)
 		var sh := Shrimp.new()
-		sh.age = g["max_age_s"] * 0.35
+		# Spread initial ages so we don't get a synchronised die-off.
+		sh.age = g["max_age_s"] * randf_range(0.15, 0.6)
 		fauna_root.add_child(sh)
 		sh.global_position = Vector3(
 			randf_range(-TANK_HALF_W * 0.8, TANK_HALF_W * 0.8),

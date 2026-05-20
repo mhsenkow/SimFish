@@ -63,6 +63,16 @@ const COURT_DURATION: float = 6.0  # sim seconds of swimming together before spa
 # max_speed by burst_multiplier. Drains energy faster.
 var burst_remaining: float = 0.0
 
+# Size growth from feeding. Well-fed adults slowly grow above their starting
+# size; chronically hungry ones shrink. effective_size() is the property
+# used for size-based predation (bigger fish hunt smaller ones).
+var growth_factor: float = 1.0
+var max_growth: float = 1.8     # apex species (betta) override to ~3.5
+
+
+func effective_size() -> float:
+	return adult_voxel_scale * _maturity_scale() * growth_factor
+
 # Velocity has two parts: target (set by tick at 10Hz) and current (smoothed
 # at render rate in _process). This keeps motion smooth even though the
 # brain ticks slowly.
@@ -367,8 +377,64 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 1c: PREDATION on baby shrimp. Most species do this rarely; the
-	# betta (carnivore species, herbivory=0) is much more aggressive.
+	# Tier 1b2: SIZE-BASED PREDATION on smaller fish + adult shrimp. Adults
+	# that are at least 1.4x the size of another creature treat it as prey.
+	# This makes well-fed fish naturally graduate into apex roles - betta
+	# starts close to this threshold; over-fed glassdarts can outgrow their
+	# schoolmates and start cannibalising.
+	if maturity == MATURITY_ADULT and hunger > 0.4 and randf() < 0.12:
+		var my_size: float = effective_size()
+		var best_prey: Node3D = null
+		var best_prey_d2: float = 4.5 * 4.5
+		# Smaller fish
+		for n in neighbors:
+			if not (n is Fish) or n == self:
+				continue
+			var of: Fish = n
+			if of.species == species and of.maturity == MATURITY_FRY:
+				# Same-species fry: only ~25% of fish will eat their own kind's
+				# young (real species vary - we just model species-specific
+				# cannibalism as a "betta only" thing).
+				if species != "betta":
+					continue
+			if my_size > of.effective_size() * 1.4:
+				var d2: float = of.position.distance_squared_to(position)
+				if d2 < best_prey_d2:
+					best_prey_d2 = d2
+					best_prey = of
+		# Adult shrimp also become prey to big fish.
+		# baby_shrimp is just the fry list; let SimDriver also pass adults if needed.
+		# For simplicity we treat any shrimp within range as fair game when our
+		# size advantage is big.
+		if sim != null:
+			for s in sim.shrimp:
+				if not is_instance_valid(s) or s.maturity != Shrimp.MATURITY_ADULT:
+					continue
+				# Shrimp adult "size" proxy: just compare adult_voxel_scale.
+				if my_size > s.adult_voxel_scale * 1.8:
+					var d2: float = s.position.distance_squared_to(position)
+					if d2 < best_prey_d2:
+						best_prey_d2 = d2
+						best_prey = s
+		if best_prey != null and is_instance_valid(best_prey):
+			current_mode = Mode.FORAGE
+			var to_prey: Vector3 = (best_prey as Node3D).global_position - position
+			if to_prey.length() < 0.45:
+				events["kill_prey"] = best_prey
+				hunger = maxf(0.0, hunger - 0.50)
+				energy = minf(1.0, energy + 0.18)
+				events["waste_at"] = position + Vector3(0, -0.1, 0)
+				events["waste_amount"] = 0.20
+			else:
+				if burst_remaining <= 0.0 and energy > 0.3:
+					burst_remaining = 0.5
+				desired += to_prey.normalized() * effective_max * 1.3
+				target_velocity = desired.limit_length(effective_max)
+				return events
+
+	# Tier 1c: PREDATION on baby shrimp by any fish (smaller-target case the
+	# size check above might miss). Most species do this rarely; the betta is
+	# more aggressive about it.
 	var predation_chance: float = 0.25 if species == "betta" else 0.05
 	if maturity == MATURITY_ADULT and hunger > 0.55 and not baby_shrimp.is_empty() \
 			and randf() < predation_chance:
@@ -469,8 +535,18 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	if hunger >= 1.0 and energy < 0.1:
 		events["die"] = true
 
-	# Update body scale across maturity.
-	scale = scale.lerp(Vector3.ONE * _maturity_scale(), dt * 0.5)
+	# Size growth from feeding history. Adults that maintain low hunger
+	# slowly grow; ones that stay starved shrink toward 0.6x. This is what
+	# makes well-fed populations produce bigger fish over time and creates
+	# the size-based predation dynamic.
+	if maturity == MATURITY_ADULT:
+		if hunger < 0.35:
+			growth_factor = minf(growth_factor + 0.0008 * dt, max_growth)
+		elif hunger > 0.7:
+			growth_factor = maxf(growth_factor - 0.0004 * dt, 0.6)
+
+	# Update body scale across maturity AND growth_factor.
+	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
 
 	return events
 

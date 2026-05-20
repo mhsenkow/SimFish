@@ -262,9 +262,10 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 				_apply_target(target_velocity)
 				return events
 
-	# Tier 4: seek breeding partner.
+	# Tier 4: seek breeding partner. Shrimp are happy to breed even when
+	# moderately hungry as long as they have energy reserves.
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.4 and energy > 0.6:
+			and hunger < 0.6 and energy > 0.5:
 		for n in neighbors:
 			if not (n is Shrimp):
 				continue
@@ -274,7 +275,7 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			if s.sex == sex or s.maturity != MATURITY_ADULT \
 					or s.breed_cooldown > 0.0 or s.partner != null:
 				continue
-			if s.hunger > 0.4 or s.energy < 0.55:
+			if s.hunger > 0.6 or s.energy < 0.45:
 				continue
 			partner = s
 			s.partner = self
@@ -303,21 +304,43 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			_apply_target(target_velocity)
 			return events
 
-	# Tier 6: climb plants to nibble tips (only if no waste claim succeeded).
-	if climb_target == null and hunger > 0.4 and randf() < 0.10:
-		# Probabilistic kickoff: maybe pick a tall plant to climb.
-		var best_p: Plant = null
-		var best_p_d2: float = 9.0
+	# Tier 6: PLANTS - shrimp are primary consumers and aggressive grazers.
+	# They eat plant tips (climbing) AND graze low foliage they pass on the
+	# substrate. Drop the rare-probability gate; instead the climb-vs-graze
+	# choice is based on which plant is closest.
+	if hunger > 0.3:
+		# First: a quick grazing pass for plants right next to us on the floor.
+		# Cheaper than climbing - shrimp munch any short plant they pass over.
 		for p in plants:
-			if not is_instance_valid(p) or p.biomass() < 10:
+			if not is_instance_valid(p) or p.biomass() <= 0:
 				continue
-			var d2: float = p.global_position.distance_squared_to(position)
-			if d2 < best_p_d2:
-				best_p_d2 = d2
-				best_p = p
-		if best_p != null:
-			climb_target = best_p
-			climb_remaining_time = CLIMB_GIVE_UP_TIME
+			var pp: Vector3 = p.global_position
+			if absf(pp.y - position.y) > 0.6: continue   # only floor-level plants
+			var d2: float = pp.distance_squared_to(position)
+			if d2 < 0.35 * 0.35:
+				var taken: int = p.nibble(1)
+				if taken > 0:
+					hunger = maxf(0.0, hunger - 0.22 * float(taken))
+					energy = minf(1.0, energy + 0.04)
+					events["waste_at"] = position + Vector3(0, -0.05, 0)
+					events["waste_amount"] = 0.10 * float(taken)
+					_apply_target(target_velocity)
+					return events
+
+		# Then: pick a tall plant to climb if we have no current target.
+		if climb_target == null:
+			var best_p: Plant = null
+			var best_p_d2: float = 12.0
+			for p in plants:
+				if not is_instance_valid(p) or p.biomass() < 6:
+					continue
+				var d2: float = p.global_position.distance_squared_to(position)
+				if d2 < best_p_d2:
+					best_p_d2 = d2
+					best_p = p
+			if best_p != null:
+				climb_target = best_p
+				climb_remaining_time = CLIMB_GIVE_UP_TIME
 
 	if climb_target != null:
 		if not is_instance_valid(climb_target) or climb_target.biomass() <= 0:
@@ -328,12 +351,13 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			var top: Vector3 = climb_target.global_position
 			top.y = climb_target.top_world_y()
 			var to_top: Vector3 = top - position
-			if to_top.length() < 0.4:
+			if to_top.length() < 0.45:
 				current_mode = Mode.NIBBLE
-				var taken: int = climb_target.nibble(1)
+				# Eat 2 voxels per visit - more visible chomp.
+				var taken: int = climb_target.nibble(2)
 				if taken > 0:
-					hunger = maxf(0.0, hunger - 0.20 * float(taken))
-					energy = minf(1.0, energy + 0.04)
+					hunger = maxf(0.0, hunger - 0.22 * float(taken))
+					energy = minf(1.0, energy + 0.05)
 					events["waste_at"] = position + Vector3(0, -0.05, 0)
 					events["waste_amount"] = 0.10 * float(taken)
 				climb_target = null
