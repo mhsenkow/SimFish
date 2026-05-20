@@ -567,6 +567,52 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, parent_max: int)
 	sim.register_plant(p)
 
 
+func _initial_phenotype_spread() -> float:
+	# How widely the founding cohort's phenotypes are scattered. Pulled from
+	# the active TankConfig.tank_preset. 0 = clones, 2.5 = highly diverse.
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 1.0
+	var preset: Dictionary = cfg.current_tank_preset()
+	return float(preset.get("phenotype_spread", 1.0))
+
+
+func _spread_around(base: float, range: float, mult: float) -> float:
+	# Helper: pick a value `base ± (range * mult)`. mult scales with preset.
+	return base + _rng.randf_range(-range, range) * mult
+
+
+func _apply_initial_phenotype_spread(genome: Dictionary, mult: float) -> void:
+	# Scatter the heritable visible phenotypes around their defaults. Higher
+	# mult = wider initial diversity. mult=0 means every founder is identical
+	# (the "single species clones" preset).
+	if mult <= 0.0:
+		genome["fin_length_factor"] = 1.0
+		genome["body_elongation"] = 1.0
+		genome["body_depth_factor"] = 1.0
+		genome["head_proportion"] = 1.0
+		genome["dorsal_height_factor"] = 1.0
+		genome["tail_fork_depth"] = 1.0
+		genome["pattern_type"] = 1
+		genome["color_dot_count"] = 0
+		return
+	genome["fin_length_factor"] = clampf(1.0 + _rng.randf_range(-0.2, 0.2) * mult, 0.6, 1.6)
+	genome["body_elongation"] = clampf(1.0 + _rng.randf_range(-0.08, 0.08) * mult, 0.85, 1.15)
+	genome["body_depth_factor"] = clampf(1.0 + _rng.randf_range(-0.15, 0.15) * mult, 0.7, 1.4)
+	genome["head_proportion"] = clampf(1.0 + _rng.randf_range(-0.12, 0.12) * mult, 0.7, 1.3)
+	genome["dorsal_height_factor"] = clampf(1.0 + _rng.randf_range(-0.20, 0.20) * mult, 0.6, 1.6)
+	genome["tail_fork_depth"] = clampf(1.0 + _rng.randf_range(-0.18, 0.18) * mult, 0.5, 1.5)
+	# Pattern: pick from {solid, stripe, spots, bars} with bias toward stripe
+	# at low spread, more variety at high spread.
+	if mult >= 1.5:
+		genome["pattern_type"] = _rng.randi_range(0, 3)
+	elif mult >= 0.7:
+		genome["pattern_type"] = 1 if _rng.randf() < 0.55 else _rng.randi_range(0, 3)
+	else:
+		genome["pattern_type"] = 1
+	genome["color_dot_count"] = clampi(int(_rng.randf_range(0, 2.5) * mult), 0, 4)
+
+
 func _spawn_initial_fish() -> void:
 	# Two species. Glassdarts (mid-water schoolers, mild herbivory). Mudsifters
 	# (bottom-loving, stronger herbivory, fewer of them).
@@ -598,18 +644,36 @@ func _spawn_initial_fish() -> void:
 		"clutch_size": 3,
 		"preferred_y": 2.4,
 	}
-	# Larger founding cohort so the "valley" between founders dying and
-	# first-generation maturing doesn't drop the whole population to 0.
-	for i in 14:
+	# Read counts from TankConfig preset (or custom override).
+	var cfg := get_node_or_null("/root/TankConfig")
+	var glassdart_n: int = 14
+	var mudsifter_n: int = 5
+	var betta_n: int = 1
+	if cfg != null:
+		var preset: Dictionary = cfg.current_tank_preset()
+		if cfg.tank_preset == "custom":
+			glassdart_n = int(cfg.custom_glassdart_count)
+			mudsifter_n = int(cfg.custom_mudsifter_count)
+			betta_n = 1
+		else:
+			glassdart_n = int(preset.get("glassdarts", 14))
+			mudsifter_n = int(preset.get("mudsifters", 5))
+			betta_n = int(preset.get("betta", 1))
+	var phenotype_mult: float = _initial_phenotype_spread()
+
+	for i in glassdart_n:
 		var g: Dictionary = glassdart_genome.duplicate()
 		g["sex"] = i % 2
 		g["max_age_s"] += randf_range(-30, 30)
+		# Founding phenotype spread - wider for "diverse" preset, zero for clones.
+		_apply_initial_phenotype_spread(g, phenotype_mult)
 		_spawn_fish_at(g, Vector3(
 			randf_range(-5, 5), randf_range(3.0, 4.5), randf_range(-2, 2)
 		))
-	for i in 5:
+	for i in mudsifter_n:
 		var g: Dictionary = mudsifter_genome.duplicate()
 		g["sex"] = i % 2
+		_apply_initial_phenotype_spread(g, phenotype_mult)
 		_spawn_fish_at(g, Vector3(
 			randf_range(-4, 4), randf_range(2.0, 2.8), randf_range(-2, 2)
 		))
@@ -630,8 +694,10 @@ func _spawn_initial_fish() -> void:
 		"clutch_size": 0,
 		"preferred_y": 3.8,
 	}
-	betta_genome["sex"] = randi() % 2
-	_spawn_fish_at(betta_genome, Vector3(0, 4.0, 0))
+	for b in betta_n:
+		var bg: Dictionary = betta_genome.duplicate()
+		bg["sex"] = randi() % 2
+		_spawn_fish_at(bg, Vector3(randf_range(-2, 2), 4.0, randf_range(-1, 1)))
 
 
 var _light_fixture_root: Node3D = null
@@ -982,9 +1048,19 @@ func _spawn_initial_shrimp() -> void:
 		"max_speed": 0.85,
 		"substrate_top_y": SUBSTRATE_DEPTH,
 	}
-	# 8 reds + 4 ambers, start as adults so breeding kicks in soon.
-	for i in 12:
-		var g: Dictionary = red_genome.duplicate() if i < 8 else amber_genome.duplicate()
+	# Number from TankConfig preset.
+	var sh_cfg := get_node_or_null("/root/TankConfig")
+	var shrimp_n: int = 12
+	if sh_cfg != null:
+		var preset: Dictionary = sh_cfg.current_tank_preset()
+		if sh_cfg.tank_preset == "custom":
+			shrimp_n = int(sh_cfg.custom_shrimp_count)
+		else:
+			shrimp_n = int(preset.get("shrimp", 12))
+	# Roughly 2/3 reds + 1/3 ambers. Start as adults so breeding kicks in soon.
+	var red_n: int = int(shrimp_n * 2.0 / 3.0)
+	for i in shrimp_n:
+		var g: Dictionary = red_genome.duplicate() if i < red_n else amber_genome.duplicate()
 		g["sex"] = i % 2
 		g["max_age_s"] += randf_range(-30, 30)
 		var sh := Shrimp.new()

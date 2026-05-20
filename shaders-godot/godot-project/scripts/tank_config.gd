@@ -38,6 +38,59 @@ var light_size: float = 0.75
 # Show volumetric beams (god rays). Off can save a bit of GPU.
 var light_volumetric: bool = true
 
+# ---- Tank population preset ----
+# Selects the initial stocking of the tank. Each preset specifies how many
+# of each species spawn AND a phenotype-range modifier so the founding
+# generation has a distinctive look. Custom uses the inline counts.
+var tank_preset: String = "community"
+var custom_glassdart_count: int = 14
+var custom_mudsifter_count: int = 5
+var custom_shrimp_count: int = 12
+
+const TANK_PRESETS: Dictionary = {
+	"community": {
+		"label": "Community (balanced)",
+		"glassdarts": 14, "mudsifters": 5, "betta": 1, "shrimp": 12,
+		"phenotype_spread": 1.0,   # default mutation range
+		"description": "Balanced mix: schooling tetras + bottom-dwellers + 1 betta apex.",
+	},
+	"tetra_school": {
+		"label": "Tetra school (peaceful)",
+		"glassdarts": 28, "mudsifters": 0, "betta": 0, "shrimp": 18,
+		"phenotype_spread": 0.5,
+		"description": "Pure schooling tetras + dense shrimp colony. No apex.",
+	},
+	"apex_tank": {
+		"label": "Apex predator + prey",
+		"glassdarts": 8, "mudsifters": 2, "betta": 1, "shrimp": 20,
+		"phenotype_spread": 0.8,
+		"description": "Lots of shrimp + small fish for the betta to hunt.",
+	},
+	"diverse": {
+		"label": "Diverse founding stock",
+		"glassdarts": 12, "mudsifters": 6, "betta": 1, "shrimp": 12,
+		"phenotype_spread": 2.5,  # wide initial trait variation
+		"description": "Wide initial phenotype spread. Evolution diverges fast.",
+	},
+	"single_species": {
+		"label": "Single species (clones)",
+		"glassdarts": 20, "mudsifters": 0, "betta": 0, "shrimp": 8,
+		"phenotype_spread": 0.0,  # everyone is a clone of the template
+		"description": "All glassdarts start identical. Drift emerges slowly.",
+	},
+	"custom": {
+		"label": "Custom",
+		"glassdarts": -1, "mudsifters": -1, "betta": -1, "shrimp": -1,
+		"phenotype_spread": 1.0,
+		"description": "Set counts manually below.",
+	},
+}
+
+
+func current_tank_preset() -> Dictionary:
+	return TANK_PRESETS.get(tank_preset, TANK_PRESETS["community"])
+
+
 # ---- Substrate ----
 # Four substrate "types" with different fertility characteristics. Each
 # affects plant growth via SubstrateGrid.NUTRIENT_BASELINE and the
@@ -110,6 +163,10 @@ func save_to_disk() -> void:
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
 	cfg.set_value("substrate", "type", substrate_type)
+	cfg.set_value("preset", "tank", tank_preset)
+	cfg.set_value("preset", "glassdarts", custom_glassdart_count)
+	cfg.set_value("preset", "mudsifters", custom_mudsifter_count)
+	cfg.set_value("preset", "shrimp", custom_shrimp_count)
 	cfg.save(SAVE_PATH)
 
 
@@ -130,6 +187,10 @@ func load_from_disk() -> void:
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
+	tank_preset = cfg.get_value("preset", "tank", tank_preset)
+	custom_glassdart_count = cfg.get_value("preset", "glassdarts", custom_glassdart_count)
+	custom_mudsifter_count = cfg.get_value("preset", "mudsifters", custom_mudsifter_count)
+	custom_shrimp_count = cfg.get_value("preset", "shrimp", custom_shrimp_count)
 
 
 func _ready() -> void:

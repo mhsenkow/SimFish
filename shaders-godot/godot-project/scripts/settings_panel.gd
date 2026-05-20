@@ -26,6 +26,8 @@ var _light_size_label: Label
 var _light_volumetric_check: CheckBox
 var _substrate_option: OptionButton
 var _substrate_desc: Label
+var _preset_option: OptionButton
+var _preset_desc: Label
 var _w_label: Label
 var _d_label: Label
 var _h_label: Label
@@ -126,6 +128,21 @@ func _build_ui() -> void:
 	_light_volumetric_check.toggled.connect(func(v): _on_volumetric(v))
 	vbox.add_child(_light_volumetric_check)
 
+	# Tank preset selection.
+	_add_section(vbox, "Stocking preset")
+	_preset_option = OptionButton.new()
+	for key in TankConfig.TANK_PRESETS.keys():
+		var label: String = TankConfig.TANK_PRESETS[key]["label"]
+		_preset_option.add_item(label)
+		_preset_option.set_item_metadata(_preset_option.item_count - 1, key)
+	_preset_option.item_selected.connect(func(idx): _on_preset(idx))
+	vbox.add_child(_preset_option)
+	_preset_desc = Label.new()
+	_preset_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_preset_desc.add_theme_font_size_override("font_size", 11)
+	_preset_desc.modulate = Color(1, 1, 1, 0.7)
+	vbox.add_child(_preset_desc)
+
 	_add_section(vbox, "Substrate")
 	_substrate_option = OptionButton.new()
 	for key in TankConfig.SUBSTRATE_PROFILES.keys():
@@ -212,6 +229,12 @@ func _pull_from_config() -> void:
 			_substrate_option.select(i)
 			break
 	_update_substrate_desc()
+	# Pick the option matching current preset.
+	for i in _preset_option.item_count:
+		if _preset_option.get_item_metadata(i) == TankConfig.tank_preset:
+			_preset_option.select(i)
+			break
+	_update_preset_desc()
 
 
 func _update_value_labels() -> void:
@@ -288,6 +311,27 @@ func _on_light_warmth(v: float) -> void:
 func _on_substrate(idx: int) -> void:
 	TankConfig.substrate_type = _substrate_option.get_item_metadata(idx)
 	_update_substrate_desc()
+
+
+func _on_preset(idx: int) -> void:
+	TankConfig.tank_preset = _preset_option.get_item_metadata(idx)
+	_update_preset_desc()
+
+
+func _update_preset_desc() -> void:
+	var key: String = TankConfig.tank_preset
+	var preset: Dictionary = TankConfig.TANK_PRESETS.get(key, {})
+	var desc: String = preset.get("description", "")
+	if key != "custom":
+		var stocking: String = "Stocking: %d glassdarts, %d mudsifters, %d betta, %d shrimp" % [
+			preset.get("glassdarts", 0),
+			preset.get("mudsifters", 0),
+			preset.get("betta", 0),
+			preset.get("shrimp", 0),
+		]
+		var spread: String = "Phenotype spread: %.1f×" % float(preset.get("phenotype_spread", 1.0))
+		desc = desc + "\n" + stocking + " · " + spread
+	_preset_desc.text = desc
 
 
 func _on_apply() -> void:

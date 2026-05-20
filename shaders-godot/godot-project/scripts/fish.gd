@@ -76,6 +76,10 @@ var max_growth: float = 1.4     # apex species (betta) override higher (~2.0)
 # Drift over generations and create lineages that look distinct.
 var fin_length_factor: float = 1.0   # multiplier on tail / dorsal / anal fin extent (0.6-1.6)
 var body_elongation: float = 1.0     # body length stretch factor (0.85-1.15)
+var body_depth_factor: float = 1.0   # body height stretch factor (0.7-1.4) - puffer vs minnow
+var head_proportion: float = 1.0     # head size relative to body (0.7-1.3)
+var dorsal_height_factor: float = 1.0  # dorsal fin height multiplier (0.6-1.6)
+var tail_fork_depth: float = 1.0     # how spread the top/bottom prongs are (0.5-1.5)
 var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars
 var color_dot_count: int = 0         # extra accent dots (0-4)
 # Lifetime breed count - successful breeders are slightly more attractive.
@@ -152,6 +156,10 @@ func init_genome(genome: Dictionary) -> void:
 	generation = genome.get("generation", 0)
 	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
 	body_elongation = genome.get("body_elongation", body_elongation)
+	body_depth_factor = genome.get("body_depth_factor", body_depth_factor)
+	head_proportion = genome.get("head_proportion", head_proportion)
+	dorsal_height_factor = genome.get("dorsal_height_factor", dorsal_height_factor)
+	tail_fork_depth = genome.get("tail_fork_depth", tail_fork_depth)
 	pattern_type = int(genome.get("pattern_type", pattern_type))
 	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
 	# A fry is born tiny - we'll lerp scale as it matures.
@@ -196,19 +204,25 @@ func _build_body() -> void:
 	add_child(_bank_pivot)
 
 	# ---- HEAD (rigid, at z = -2.5v, the front of the fish) ----
+	# head_proportion scales the head's overall size relative to the body,
+	# so small-headed minnow types contrast against big-headed cichlids.
+	var hp: float = head_proportion
 	var head := Node3D.new()
 	head.name = "Head"
 	_bank_pivot.add_child(head)
-	_add_voxel_to(head, Vector3(0, 0, -2.5 * v), Vector3(v * 0.95, v * 0.9, v), mat_body)
-	# Forehead - lighter, catches the top face shading.
-	_add_voxel_to(head, Vector3(0, v * 0.5, -2.5 * v), Vector3(v * 0.6, v * 0.3, v), mat_top)
+	_add_voxel_to(head, Vector3(0, 0, -2.5 * v),
+		Vector3(v * 0.95 * hp, v * 0.9 * hp, v * hp), mat_body)
+	# Forehead - lighter.
+	_add_voxel_to(head, Vector3(0, v * 0.5 * hp, -2.5 * v),
+		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_top)
 	# Belly under head.
-	_add_voxel_to(head, Vector3(0, -v * 0.5, -2.5 * v), Vector3(v * 0.6, v * 0.3, v), mat_belly)
+	_add_voxel_to(head, Vector3(0, -v * 0.5 * hp, -2.5 * v),
+		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_belly)
 	# Eyes - one on each lateral side of the head.
-	_add_voxel_to(head, Vector3(v * 0.4, v * 0.1, -2.4 * v),
-		Vector3(v * 0.2, v * 0.25, v * 0.25), mat_eye)
-	_add_voxel_to(head, Vector3(-v * 0.4, v * 0.1, -2.4 * v),
-		Vector3(v * 0.2, v * 0.25, v * 0.25), mat_eye)
+	_add_voxel_to(head, Vector3(v * 0.4 * hp, v * 0.1 * hp, -2.4 * v),
+		Vector3(v * 0.2 * hp, v * 0.25 * hp, v * 0.25), mat_eye)
+	_add_voxel_to(head, Vector3(-v * 0.4 * hp, v * 0.1 * hp, -2.4 * v),
+		Vector3(v * 0.2 * hp, v * 0.25 * hp, v * 0.25), mat_eye)
 
 	# ---- BODY MID (gentle counter-wag) - thickest part of the fish ----
 	_body_mid_pivot = Node3D.new()
@@ -259,14 +273,16 @@ func _build_body() -> void:
 		_add_voxel_to(_body_mid_pivot, Vector3(xside, v * 0.35, zoff),
 			Vector3(v * 0.2, v * 0.2, v * 0.2), mat_accent)
 	# Dorsal fin (top) - pivoted at its base so it can sway lazily.
+	# Height scaled by dorsal_height_factor so long-dorsal phenotype is visible.
+	var dh: float = dorsal_height_factor
 	_dorsal_pivot = Node3D.new()
 	_dorsal_pivot.name = "DorsalPivot"
 	_dorsal_pivot.position = Vector3(0, v * 0.75, v * 1.0)
 	_body_mid_pivot.add_child(_dorsal_pivot)
-	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.2, 0),
-		Vector3(v * 0.15, v * 0.4, v * 1.2), mat_fin)
-	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.45, v * 0.2),
-		Vector3(v * 0.12, v * 0.25, v * 0.6), mat_fin)
+	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.2 * dh, 0),
+		Vector3(v * 0.15, v * 0.4 * dh, v * 1.2), mat_fin)
+	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.45 * dh, v * 0.2),
+		Vector3(v * 0.12, v * 0.25 * dh, v * 0.6), mat_fin)
 	# Anal fin (bottom) - smaller mirror of dorsal, also pivoted.
 	_anal_pivot = Node3D.new()
 	_anal_pivot.name = "AnalPivot"
@@ -297,22 +313,25 @@ func _build_body() -> void:
 	# Tail peduncle (narrow connector).
 	_add_voxel_to(_tail_pivot, Vector3(0, 0, 0),
 		Vector3(v * 0.5, v * 0.6, v), mat_body)
-	# Forked tail fin - top + bottom prongs. Extent scales with fin_length_factor:
-	# long-finned individuals have visibly trailing fins; short-finned are stubby.
+	# Forked tail fin - top + bottom prongs. Extent scales with fin_length_factor.
+	# Vertical separation scales with tail_fork_depth - deep-forked tails
+	# (tuna-like) vs shallow rounded tails (goldfish-like).
 	var fl: float = fin_length_factor
-	_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45, v * (0.9 * fl)),
+	var tf: float = tail_fork_depth
+	_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45 * tf, v * (0.9 * fl)),
 		Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_fin)
-	_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.45, v * (0.9 * fl)),
+	_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.45 * tf, v * (0.9 * fl)),
 		Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_fin)
-	# Outer fin tips, further back.
-	_add_voxel_to(_tail_pivot, Vector3(0, v * (0.7 * fl), v * (1.4 * fl)),
+	# Outer fin tips, further back and further apart for forked tails.
+	_add_voxel_to(_tail_pivot, Vector3(0, v * (0.7 * fl * tf), v * (1.4 * fl)),
 		Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_fin)
-	_add_voxel_to(_tail_pivot, Vector3(0, v * (-0.7 * fl), v * (1.4 * fl)),
+	_add_voxel_to(_tail_pivot, Vector3(0, v * (-0.7 * fl * tf), v * (1.4 * fl)),
 		Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_fin)
-	# Apply body elongation by stretching the bank pivot's local Z scale.
-	# This makes some fish look more eel-like (1.15) and others stubbier (0.85).
+	# Apply body elongation + depth scaling. The bank pivot's local Y stretches
+	# the body height (puffer = 1.4, minnow = 0.7), Z stretches length.
 	if _bank_pivot != null:
 		_bank_pivot.scale.z = body_elongation
+		_bank_pivot.scale.y = body_depth_factor
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -942,6 +961,18 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var new_elong: float = clampf(
 		(body_elongation + partner.body_elongation) * 0.5 + randf_range(-0.05, 0.05),
 		0.85, 1.15)
+	var new_depth: float = clampf(
+		(body_depth_factor + partner.body_depth_factor) * 0.5 + randf_range(-0.10, 0.10),
+		0.7, 1.4)
+	var new_head: float = clampf(
+		(head_proportion + partner.head_proportion) * 0.5 + randf_range(-0.08, 0.08),
+		0.7, 1.3)
+	var new_dorsal: float = clampf(
+		(dorsal_height_factor + partner.dorsal_height_factor) * 0.5 + randf_range(-0.12, 0.12),
+		0.6, 1.6)
+	var new_fork: float = clampf(
+		(tail_fork_depth + partner.tail_fork_depth) * 0.5 + randf_range(-0.10, 0.10),
+		0.5, 1.5)
 	# Pattern: usually inherits from one parent, small chance to mutate to
 	# a different pattern entirely.
 	var new_pattern: int = pattern_type if randf() < 0.5 else partner.pattern_type
@@ -970,6 +1001,10 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"generation": maxi(generation, partner.generation) + 1,
 		"fin_length_factor": new_fin,
 		"body_elongation": new_elong,
+		"body_depth_factor": new_depth,
+		"head_proportion": new_head,
+		"dorsal_height_factor": new_dorsal,
+		"tail_fork_depth": new_fork,
 		"pattern_type": new_pattern,
 		"color_dot_count": new_dots,
 	}
