@@ -15,6 +15,7 @@ const MAX_LIFE: float = 30.0
 const KIND_FISH: int = 0
 const KIND_SHRIMP: int = 1
 const KIND_SNAIL: int = 2
+const KIND_FOOD: int = 3
 
 var nutrient_value: float = 0.2
 var substrate_top_y: float = 1.6
@@ -37,6 +38,9 @@ func init(value: float, top_y: float, particle_kind: int = KIND_FISH) -> void:
 		KIND_SNAIL:
 			voxel_size = 0.05
 			color = Color8(40, 32, 22)  # tiny dark pellet
+		KIND_FOOD:
+			voxel_size = 0.16
+			color = Color8(210, 150, 90)  # fish food pellet
 		_:
 			voxel_size = 0.12
 			color = Color8(60, 45, 30)  # standard fish brown
@@ -54,8 +58,18 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 	if _life >= MAX_LIFE:
 		return true
 	if not settled:
-		position.y -= FALL_SPEED * dt
-		position.x += sin(_life * 1.7) * 0.04 * dt
+		var can_fall: bool = true
+		if kind == KIND_FOOD and _life < 8.0:
+			can_fall = false
+			# Bob gently on the surface
+			position.y += sin(_life * 3.0) * 0.015 * dt
+			position.x += sin(_life * 1.2) * 0.04 * dt
+			position.z += cos(_life * 0.9) * 0.04 * dt
+			
+		if can_fall:
+			position.y -= FALL_SPEED * dt
+			position.x += sin(_life * 1.7) * 0.04 * dt
+			
 		if position.y <= substrate_top_y + voxel_size * 0.5:
 			position.y = substrate_top_y + voxel_size * 0.5
 			settled = true

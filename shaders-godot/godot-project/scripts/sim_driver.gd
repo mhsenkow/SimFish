@@ -49,9 +49,12 @@ var substrate_top_y: float = 1.6
 var fauna_root: Node3D = null
 var waste_root: Node3D = null
 var plants_root: Node3D = null
+var world: Node = null
 
 var _accum: float = 0.0
 var _stats_timer: float = 0.0
+var _extinction_timer: float = 0.0
+var _auto_feed_timer: float = 0.0
 
 # ---- Dissolved-O2 model ----
 # Tank-wide normalized scalar where 1.0 ≈ fully saturated, 0.0 = anoxic.
@@ -181,7 +184,7 @@ func _tick(dt: float) -> void:
 			if g == f: continue
 			if g.position.distance_squared_to(f.position) < 9.0:
 				neighbors.append(g)
-		var ev: Dictionary = f.tick(dt, neighbors, plants, waste, baby_shrimp_list, world_bounds)
+		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
 		if ev.size() > 0:
 			ev["actor"] = f
 			ev["actor_kind"] = "fish"
@@ -194,7 +197,7 @@ func _tick(dt: float) -> void:
 			if o == s: continue
 			if o.position.distance_squared_to(s.position) < 4.0:
 				sn.append(o)
-		var ev: Dictionary = s.tick(dt, plants, waste, fry_list, baby_snail_list,
+		var ev: Dictionary = s.tick(dt, plants, algae, waste, fry_list, baby_snail_list,
 			sn, world_bounds)
 		if ev.size() > 0:
 			ev["actor"] = s
@@ -218,7 +221,38 @@ func _tick(dt: float) -> void:
 		_hatch(e)
 		e.queue_free()
 
-	# 6b. Algae - bloom if conditions favor (high nutrients + low plant biomass),
+	# 6a. Auto-Respawn Fauna if completely empty
+	var cfg = get_node_or_null("/root/TankConfig")
+	if cfg != null and cfg.auto_respawn_fauna:
+		if fish.is_empty() and shrimp.is_empty() and eggs.is_empty():
+			_extinction_timer += dt
+			if _extinction_timer >= 5.0:
+				_extinction_timer = 0.0
+				var world: Node = get_parent()
+				if world != null and world.has_method("_respawn_extinct_fauna"):
+					world.call("_respawn_extinct_fauna")
+		else:
+			_extinction_timer = 0.0
+
+	# 6b. Auto-Feed at surface
+	if cfg != null and cfg.auto_feed_fauna:
+		_auto_feed_timer += dt
+		if _auto_feed_timer >= 12.0:
+			_auto_feed_timer = 0.0
+			var spawn_x: float = 0.0
+			var spawn_z: float = 0.0
+			var world := get_parent()
+			if world != null and world.has_method("sample_xz_in_tank"):
+				var xz: Vector2 = world.sample_xz_in_tank(0.5)
+				spawn_x = xz.x
+				spawn_z = xz.y
+			else:
+				spawn_x = randf_range(world_bounds.position.x + 0.5, world_bounds.end.x - 0.5)
+				spawn_z = randf_range(world_bounds.position.z + 0.5, world_bounds.end.z - 0.5)
+			var fy: float = 6.4 if world == null else float(world.get("WATER_HEIGHT") - 0.1)
+			_spawn_waste(Vector3(spawn_x, fy, spawn_z), 0.5, 3) # 3 = KIND_FOOD
+
+	# 6c. Algae - bloom if conditions favor (high nutrients + low plant biomass),
 	# decay otherwise. Tracking is sparse to keep voxel count reasonable.
 	var n_total: float = 0.0
 	if substrate != null:

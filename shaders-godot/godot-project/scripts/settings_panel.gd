@@ -33,6 +33,8 @@ var _aeration_strength: HSlider
 var _aeration_strength_label: Label
 var _aeration_x: HSlider
 var _aeration_x_label: Label
+var _auto_respawn_check: CheckBox
+var _auto_feed_check: CheckBox
 var _preset_option: OptionButton
 var _preset_desc: Label
 var _w_label: Label
@@ -175,6 +177,17 @@ func _build_ui() -> void:
 
 	# Tank preset selection.
 	_add_section(vbox, "Stocking preset")
+	
+	_auto_respawn_check = CheckBox.new()
+	_auto_respawn_check.text = "Auto-respawn extinct creatures (10 per species)"
+	_auto_respawn_check.toggled.connect(func(v): TankConfig.auto_respawn_fauna = v)
+	vbox.add_child(_auto_respawn_check)
+
+	_auto_feed_check = CheckBox.new()
+	_auto_feed_check.text = "Auto-feed surface (simulate manual feeding)"
+	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
+	vbox.add_child(_auto_feed_check)
+	
 	_preset_option = OptionButton.new()
 	for key in TankConfig.TANK_PRESETS.keys():
 		var label: String = TankConfig.TANK_PRESETS[key]["label"]
@@ -329,6 +342,8 @@ func _pull_from_config() -> void:
 	_update_aeration_desc()
 	_aeration_strength_label.text = "%.2f" % _aeration_strength.value
 	_aeration_x_label.text = "%.2f" % _aeration_x.value
+	_auto_respawn_check.button_pressed = TankConfig.auto_respawn_fauna
+	_auto_feed_check.button_pressed = TankConfig.auto_feed_fauna
 	# Pick the option matching current preset.
 	for i in _preset_option.item_count:
 		if _preset_option.get_item_metadata(i) == TankConfig.tank_preset:

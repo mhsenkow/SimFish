@@ -1,22 +1,19 @@
 # Lily pad - radial surface plant.
 #
-# Mathematically constructed pad: a circular array of leaf voxels arranged
-# in a logarithmic-spiral disc (Vogel's model, same golden-angle pattern
-# as a sunflower head) at the water surface, with one stem voxel descending
-# to the substrate.
+# === Dynamic growth ===
+# Now grows incrementally: starts as a small 4-voxel pad that expands over
+# time by adding new phyllotaxis-arranged leaf voxels. The stem grows first
+# (reaching from substrate to the surface), then the pad expands. Flower
+# buds appear once the pad reaches maturity and open into the layered bloom.
+# Mature pads can produce runner stems that spawn new pads nearby.
 #
-# Lily pads in real planted tanks (Nymphaea spp.) grow from a rhizome on
-# the substrate, send a stalk to the surface, and produce a single round
-# pad. Multiple pads stack on the surface to form a canopy.
+# Mathematical structure: Vogel's spiral / sunflower phyllotaxis for the pad
+# voxels, with golden angle spacing for maximally even coverage.
 #
 # Parameters:
 #   pad_radius    visual extent of the pad (in units, ~0.6-1.2)
 #   pad_voxels    how many leaf voxels make up the disc (12-40)
 #   stem_y        y of substrate top - stem reaches from there to the pad
-#
-# The pad bobs gently on a sine curve like the floaters, slightly out of
-# phase with its neighbors. Each pad logs a deterministic phase so the
-# motion isn't synchronized across the bed.
 
 extends Node3D
 class_name LilyPad
@@ -35,18 +32,41 @@ var pad_bot: Color = Color8(45, 90, 50)
 # Optional bright flower pop in the centre (Nymphaea blooms).
 var has_flower: bool = false
 
+# ---- Dynamic growth state ----
+var _current_pad_voxels: int = 0
+var _growth_timer: float = 0.0
+var _growth_interval: float = 3.0   # seconds per pad voxel
+var _stem_built: bool = false
+var _pad_voxel_nodes: Array[MeshInstance3D] = []
+# Flower lifecycle.
+enum FlowerStage { NONE, BUD, OPENING, FULL, FADING }
+var _flower_stage: int = FlowerStage.NONE
+var _flower_timer: float = 0.0
+var _flower_open_frac: float = 0.0
+var _flower_nodes: Array[MeshInstance3D] = []
+# Runner propagation.
+var _runner_timer: float = 0.0
+var _has_run: bool = false
+
+# Precomputed golden angle.
+const GOLDEN_ANGLE: float = 2.39996322972865332  # TAU * (1 - 1/φ)
+
 
 func init_at(world_pos: Vector3, base_y: float) -> void:
 	global_position = Vector3(world_pos.x, world_pos.y, world_pos.z)
 	stem_y = base_y
 	_phase = randf() * TAU
-	# 1-in-4 pads bloom at spawn for visual variety.
-	has_flower = randf() < 0.25
-	_build()
+	# Build the stem first, then start adding pad voxels.
+	_build_stem()
+	# Start with a small pad (4 voxels).
+	for i in 4:
+		_add_pad_voxel()
 
 
-func _build() -> void:
-	# Stem - thin dark voxel column from substrate up to pad.
+func _build_stem() -> void:
+	if _stem_built:
+		return
+	_stem_built = true
 	var stem_top_y: float = global_position.y - VOXEL_SIZE * 0.5
 	var stem_h: float = stem_top_y - stem_y
 	if stem_h > 0.0:
@@ -58,65 +78,176 @@ func _build() -> void:
 		stem.position = Vector3(0, -stem_h * 0.5, 0)
 		add_child(stem)
 
-	# Pad voxels arranged via Vogel's spiral / sunflower phyllotaxis: for
-	# each i, theta = i * golden_angle, r = sqrt(i / n) * pad_radius. The
-	# golden angle (137.508°) produces a maximally even packing - no two
-	# voxels ever overlap and the disc fills uniformly.
-	var golden_angle: float = TAU * (1.0 - 1.0 / 1.618033988)
-	var mat_top := _make_mat(pad_top)
-	var mat_bot := _make_mat(pad_bot)
-	for i in pad_voxels:
-		var t: float = float(i + 1) / float(pad_voxels)
-		var r: float = sqrt(t) * pad_radius
-		var theta: float = float(i) * golden_angle
-		var x: float = cos(theta) * r
-		var z: float = sin(theta) * r
-		# Top voxel.
-		var top := MeshInstance3D.new()
-		var top_mesh := BoxMesh.new()
-		top_mesh.size = Vector3(VOXEL_SIZE * 1.5, VOXEL_SIZE * 0.45, VOXEL_SIZE * 1.5)
-		top.mesh = top_mesh
-		top.material_override = mat_top
-		top.position = Vector3(x, 0.0, z)
-		add_child(top)
-		# Darker underside for the edge ring only (visible from below).
-		if t > 0.55:
-			var under := MeshInstance3D.new()
-			var under_mesh := BoxMesh.new()
-			under_mesh.size = Vector3(VOXEL_SIZE * 1.3, VOXEL_SIZE * 0.20, VOXEL_SIZE * 1.3)
-			under.mesh = under_mesh
-			under.material_override = mat_bot
-			under.position = Vector3(x, -VOXEL_SIZE * 0.3, z)
-			add_child(under)
 
-	# Optional flower pop in the centre.
-	if has_flower:
-		var palette: Array[Color] = [
-			Color8(245, 220, 220),  # pale pink
-			Color8(255, 245, 220),  # ivory
-			Color8(245, 195, 100),  # gold center
-		]
-		for i in palette.size():
-			var f := MeshInstance3D.new()
-			var fm := BoxMesh.new()
-			fm.size = Vector3(VOXEL_SIZE * (1.0 - i * 0.25),
-				VOXEL_SIZE * 0.35,
-				VOXEL_SIZE * (1.0 - i * 0.25))
-			f.mesh = fm
-			f.material_override = _make_mat(palette[i])
-			f.position = Vector3(0, VOXEL_SIZE * 0.3 + i * VOXEL_SIZE * 0.18, 0)
-			add_child(f)
+func _add_pad_voxel() -> void:
+	if _current_pad_voxels >= pad_voxels:
+		return
+	var i: int = _current_pad_voxels
+	var t: float = float(i + 1) / float(pad_voxels)
+	var r: float = sqrt(t) * pad_radius
+	var theta: float = float(i) * GOLDEN_ANGLE
+	var x: float = cos(theta) * r
+	var z: float = sin(theta) * r
+	# Top voxel - new growth is slightly brighter.
+	var is_new: bool = (_current_pad_voxels > pad_voxels * 0.7)
+	var top_color: Color = pad_top.lightened(0.1) if is_new else pad_top
+	var top := MeshInstance3D.new()
+	var top_mesh := BoxMesh.new()
+	top_mesh.size = Vector3(VOXEL_SIZE * 1.5, VOXEL_SIZE * 0.45, VOXEL_SIZE * 1.5)
+	top.mesh = top_mesh
+	top.material_override = _make_mat(top_color)
+	top.position = Vector3(x, 0.0, z)
+	add_child(top)
+	_pad_voxel_nodes.append(top)
+	# Darker underside for the edge ring only (visible from below).
+	if t > 0.55:
+		var under := MeshInstance3D.new()
+		var under_mesh := BoxMesh.new()
+		under_mesh.size = Vector3(VOXEL_SIZE * 1.3, VOXEL_SIZE * 0.20, VOXEL_SIZE * 1.3)
+		under.mesh = under_mesh
+		under.material_override = _make_mat(pad_bot)
+		under.position = Vector3(x, -VOXEL_SIZE * 0.3, z)
+		add_child(under)
+	_current_pad_voxels += 1
 
 
 func tick(dt: float) -> void:
-	# Slow vertical bob - keeps the pad sitting on the meniscus without
-	# leaving it static. Each pad uses its own phase so a bed of pads
-	# undulates with visible delay between them.
 	_t += dt
-	position.y = global_position.y - 0.0  # no-op marker; the actual bob
-	# lives in the rotation below since position.y is anchored to the world.
+	# Slow gentle tilt - pad rocks on the meniscus.
 	rotation.z = sin(_t * 0.6 + _phase) * 0.03
 	rotation.x = cos(_t * 0.55 + _phase * 1.1) * 0.025
+
+	# ---- Incremental pad growth ----
+	_growth_timer += dt
+	if _current_pad_voxels < pad_voxels and _growth_timer >= _growth_interval:
+		_growth_timer = 0.0
+		_add_pad_voxel()
+
+	# ---- Flower lifecycle ----
+	# Flower bud appears once the pad is ~70% grown.
+	if _flower_stage == FlowerStage.NONE \
+			and _current_pad_voxels >= int(pad_voxels * 0.7) \
+			and randf() < 0.002:
+		_begin_flower()
+	_tick_flower(dt)
+
+	# ---- Runner propagation ----
+	if _current_pad_voxels >= pad_voxels:
+		_runner_timer += dt
+		if not _has_run and _runner_timer > 45.0 and randf() < 0.15:
+			_has_run = true
+			_try_propagate()
+
+
+func _begin_flower() -> void:
+	_flower_stage = FlowerStage.BUD
+	_flower_timer = 0.0
+	# Small green bud in the center.
+	var bud := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5)
+	bud.mesh = bm
+	bud.material_override = _make_mat(pad_top.darkened(0.1))
+	bud.position = Vector3(0, VOXEL_SIZE * 0.3, 0)
+	add_child(bud)
+	_flower_nodes.append(bud)
+
+
+func _tick_flower(dt: float) -> void:
+	if _flower_stage == FlowerStage.NONE:
+		return
+	_flower_timer += dt
+	match _flower_stage:
+		FlowerStage.BUD:
+			if _flower_timer > 6.0:
+				_flower_stage = FlowerStage.OPENING
+				_flower_timer = 0.0
+				_flower_open_frac = 0.0
+		FlowerStage.OPENING:
+			_flower_open_frac = clampf(_flower_timer / 5.0, 0.0, 1.0)
+			_rebuild_flower(_flower_open_frac)
+			if _flower_timer > 5.0:
+				_flower_stage = FlowerStage.FULL
+				_flower_timer = 0.0
+		FlowerStage.FULL:
+			# Full bloom for 30 seconds.
+			if _flower_timer > 30.0:
+				_flower_stage = FlowerStage.FADING
+				_flower_timer = 0.0
+		FlowerStage.FADING:
+			# Petals darken and shrink.
+			var fade: float = clampf(_flower_timer / 8.0, 0.0, 1.0)
+			for fn in _flower_nodes:
+				if is_instance_valid(fn):
+					fn.scale = Vector3.ONE * (1.0 - fade * 0.4)
+			if _flower_timer > 8.0:
+				_clear_flower()
+				_flower_stage = FlowerStage.NONE
+
+
+func _rebuild_flower(open_frac: float) -> void:
+	_clear_flower()
+	var palette: Array[Color] = [
+		Color8(245, 220, 220),  # pale pink
+		Color8(255, 245, 220),  # ivory
+		Color8(245, 195, 100),  # gold center
+	]
+	# Petals fan outward as they open.
+	var n_petals: int = 6
+	for i in n_petals:
+		var angle: float = float(i) / float(n_petals) * TAU
+		var petal_spread: float = open_frac * VOXEL_SIZE * 0.9
+		var f := MeshInstance3D.new()
+		var fm := BoxMesh.new()
+		var petal_size: float = VOXEL_SIZE * (0.7 - float(i % 2) * 0.15)
+		fm.size = Vector3(petal_size, VOXEL_SIZE * 0.2, petal_size * 0.8)
+		f.mesh = fm
+		var petal_color: Color = palette[0] if i % 2 == 0 else palette[1]
+		f.material_override = _make_mat(petal_color)
+		f.position = Vector3(
+			cos(angle) * petal_spread,
+			VOXEL_SIZE * 0.35,
+			sin(angle) * petal_spread,
+		)
+		f.rotation.z = cos(angle) * open_frac * 0.3
+		f.rotation.x = sin(angle) * open_frac * 0.3
+		add_child(f)
+		_flower_nodes.append(f)
+	# Gold center.
+	var center := MeshInstance3D.new()
+	var cm := BoxMesh.new()
+	cm.size = Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.4)
+	center.mesh = cm
+	center.material_override = _make_mat(palette[2])
+	center.position = Vector3(0, VOXEL_SIZE * 0.4, 0)
+	add_child(center)
+	_flower_nodes.append(center)
+
+
+func _clear_flower() -> void:
+	for fn in _flower_nodes:
+		if is_instance_valid(fn):
+			fn.queue_free()
+	_flower_nodes.clear()
+
+
+func _try_propagate() -> void:
+	# Spawn a new pad nearby via a runner (just spawn directly; visual
+	# runner could be added later).
+	var parent_node: Node = get_parent()
+	if parent_node == null:
+		return
+	var offset := Vector3(
+		randf_range(-2.0, 2.0),
+		0.0,
+		randf_range(-2.0, 2.0),
+	)
+	var new_pos: Vector3 = global_position + offset
+	var new_pad := LilyPad.new()
+	parent_node.add_child(new_pad)
+	new_pad.pad_radius = pad_radius * randf_range(0.75, 1.0)
+	new_pad.pad_voxels = maxi(12, int(pad_voxels * randf_range(0.6, 0.9)))
+	new_pad.init_at(new_pos, stem_y)
 
 
 func _make_mat(c: Color) -> Material:

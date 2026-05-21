@@ -655,7 +655,7 @@ func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 
 # ---- Tick (called by SimDriver) ----
 
-func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
+func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste: Array,
 		  baby_shrimp: Array, world_bounds: AABB) -> Dictionary:
 	# Returns events for the SimDriver to act on (lay egg, eat waste,
 	# kill prey, spawn waste, die).
@@ -823,7 +823,7 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	# herbivores or not, when even slightly hungry.
 	if hunger > 0.3 and maturity != MATURITY_FRY:
 		var best_w: WasteParticle = null
-		var best_d2: float = 2.5 * 2.5
+		var best_d2: float = 144.0  # 12.0^2 max range for food! High awareness.
 		for w in waste:
 			if not is_instance_valid(w):
 				continue
@@ -831,7 +831,8 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 			if w.settled and randf() > 0.4:
 				continue
 			var d2: float = (w as Node3D).global_position.distance_squared_to(position)
-			if d2 < best_d2:
+			var max_dist_sq: float = 144.0 if w.kind == 3 else 16.0 # 3=FOOD, 16.0=4.0^2 for regular waste
+			if d2 < max_dist_sq and d2 < best_d2:
 				best_d2 = d2
 				best_w = w
 		if best_w != null:
@@ -842,7 +843,16 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				hunger = maxf(0.0, hunger - 0.25)
 				energy = minf(1.0, energy + 0.06)
 			else:
-				desired += to_w.normalized() * effective_max * 0.9
+				var pull: float = 0.9
+				if best_w.kind == 3: # FOOD
+					pull = 1.9 # Intently swim to it
+					# Dart towards food and trigger a feeding frenzy!
+					if burst_remaining <= 0.0 and energy > 0.15 and randf() < 0.4:
+						burst_remaining = randf_range(0.4, 0.7)
+						# This fish bolting for food will spook/alert the school!
+						_startle_heading = to_w.normalized()
+						_startle_remaining = 0.5
+				desired += to_w.normalized() * effective_max * pull
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
@@ -962,43 +972,41 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 					desired += to_snail.normalized() * effective_max * 1.1
 					target_velocity = desired.limit_length(effective_max)
 					return events
-		if algae_grazer and sim != null:
-			var algae_arr = sim.get("algae")
-			if algae_arr != null and algae_arr.size() > 0:
-				var best_alga: Node3D = null
-				var best_alga_d2: float = 6.0
-				for a in algae_arr:
-					if not is_instance_valid(a):
-						continue
-					var d2: float = (a.global_position - position).length_squared()
-					if d2 < best_alga_d2:
-						best_alga_d2 = d2
-						best_alga = a
-				if best_alga != null:
-					current_mode = Mode.FORAGE
-					if best_alga_d2 < 0.25:
-						events["eat_algae"] = best_alga
-						hunger = maxf(0.0, hunger - 0.2)
-					else:
-						var to_alga: Vector3 = best_alga.global_position - position
-						desired += to_alga.normalized() * effective_max * 0.9
-						target_velocity = desired.limit_length(effective_max)
-						return events
+		if herbivory > 0.0 and algae_array.size() > 0:
+			var best_alga: Node3D = null
+			var best_alga_d2: float = 6.0
+			for a in algae_array:
+				if not is_instance_valid(a):
+					continue
+				var d2: float = (a.global_position - position).length_squared()
+				if d2 < best_alga_d2:
+					best_alga_d2 = d2
+					best_alga = a
+			if best_alga != null:
+				current_mode = Mode.FORAGE
+				if best_alga_d2 < 0.25:
+					events["eat_algae"] = best_alga
+					hunger = maxf(0.0, hunger - 0.2)
+				else:
+					var to_alga: Vector3 = best_alga.global_position - position
+					desired += to_alga.normalized() * effective_max * 0.9
+					target_velocity = desired.limit_length(effective_max)
+					return events
 
-	# Tier 2: HUNGRY HERBIVORE. Plants need at least 6 voxels of biomass
-	# (was 12) so fish have more food options before the shrimp graze them
+	# Tier 2: HUNGRY HERBIVORE. Plants need at least 15 voxels of biomass
+	# so fish have more food options before the shrimp graze them
 	# down to nothing.
 	if herbivory > 0.0 and hunger > 0.55 and maturity != MATURITY_FRY \
 			and randf() < 0.5:
 		if target_plant == null or not is_instance_valid(target_plant) \
-				or target_plant.biomass() < 6:
-			target_plant = _find_nearest_tall_plant(plants, 5.0, 6)
+				or target_plant.biomass() < 15:
+			target_plant = _find_nearest_tall_plant(plants, 5.0, 15)
 		if target_plant != null:
 			current_mode = Mode.FORAGE
 			var top: Vector3 = target_plant.global_position
 			top.y = target_plant.top_world_y()
-			var dist: float = top.distance_to(position)
-			if dist < 0.5 and nibble_cooldown <= 0.0:
+			var dist_sq: float = top.distance_squared_to(position)
+			if dist_sq < 0.25 and nibble_cooldown <= 0.0:
 				var taken := target_plant.nibble(1)
 				if taken > 0:
 					hunger = maxf(0.0, hunger - 0.30 * float(taken))
@@ -1142,6 +1150,21 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 		# Record startle heading so school-mates can copy it.
 		_startle_heading = dart_dir
 		_startle_remaining = 0.4
+
+	# HOVER / INVESTIGATE TRIGGER. Any fish might occasionally stop mid-water to
+	# look around. This breaks up the constant swimming and adds lifelike personality.
+	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and randf() < dt * 0.12 and energy > 0.3:
+		# Temporarily stop swimming
+		desired = Vector3.ZERO
+		target_velocity = Vector3.ZERO
+		return events
+		
+	# PLAYFUL DART (ZOOMIES). Even non-dart species occasionally get a burst of
+	# energy if they are well-fed and healthy.
+	if burst_remaining <= 0.0 and energy > 0.7 and hunger < 0.2 and randf() < dt * 0.05:
+		burst_remaining = randf_range(0.3, 0.6)
+		var ang: float = randf() * TAU
+		heading_offset = Vector3(sin(ang), randf_range(-0.4, 0.6), cos(ang)) * 1.5
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
 	# meanderers wander more, hoverers wander less. During startle propagation,
@@ -1494,15 +1517,15 @@ func _find_breeding_partner(neighbors: Array) -> Fish:
 
 func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 	var best: Plant = null
-	var best_d: float = max_dist
+	var best_d2: float = max_dist * max_dist
 	for p in plants:
 		if not is_instance_valid(p) or p.biomass() <= 0:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
 		top_pos.y = (p as Plant).top_world_y()
-		var d: float = top_pos.distance_to(position)
-		if d < best_d:
-			best_d = d
+		var d2: float = top_pos.distance_squared_to(position)
+		if d2 < best_d2:
+			best_d2 = d2
 			best = p
 	return best
 
@@ -1511,15 +1534,15 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 	# Fish only nibble plants that are at least min_biomass voxels tall.
 	# Spares saplings + carpets.
 	var best: Plant = null
-	var best_d: float = max_dist
+	var best_d2: float = max_dist * max_dist
 	for p in plants:
 		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
 		top_pos.y = (p as Plant).top_world_y()
-		var d: float = top_pos.distance_to(position)
-		if d < best_d:
-			best_d = d
+		var d2: float = top_pos.distance_squared_to(position)
+		if d2 < best_d2:
+			best_d2 = d2
 			best = p
 	return best
 

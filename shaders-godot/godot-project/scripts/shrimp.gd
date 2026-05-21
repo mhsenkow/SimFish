@@ -199,7 +199,7 @@ func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 
 # ---- Brain (10 Hz tick) ----
 
-func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails: Array,
+func tick(dt: float, plants: Array, algae_array: Array, waste: Array, fry_array: Array, baby_snails: Array,
 		  neighbors: Array, world_bounds: AABB) -> Dictionary:
 	var events: Dictionary = {}
 
@@ -357,12 +357,13 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 
 	# Tier 5: claim nearby waste. The actual eat is resolved by SimDriver.
 	var best_w: WasteParticle = null
-	var best_w_d2: float = 4.0
+	var best_w_d2: float = 25.0
 	for w in waste:
 		if not is_instance_valid(w):
 			continue
 		var d2: float = (w as Node3D).global_position.distance_squared_to(position)
-		if d2 < best_w_d2:
+		var max_dist: float = 25.0 if w.kind == 3 else 4.0
+		if d2 < max_dist and d2 < best_w_d2:
 			best_w_d2 = d2
 			best_w = w
 	if best_w != null:
@@ -376,15 +377,37 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			_apply_target(target_velocity)
 			return events
 
-	# Tier 6: PLANTS - shrimp are primary consumers and aggressive grazers.
-	# They eat plant tips (climbing) AND graze low foliage they pass on the
-	# substrate. Drop the rare-probability gate; instead the climb-vs-graze
-	# choice is based on which plant is closest.
-	if hunger > 0.3:
+	# Tier 5.5: ALGAE - Shrimp are excellent algae eaters.
+	if hunger > 0.2:
+		var best_a: Node3D = null
+		var best_a_d2: float = 4.0
+		for a in algae_array:
+			if not is_instance_valid(a) or a.biomass() <= 0:
+				continue
+			var d2: float = a.global_position.distance_squared_to(position)
+			if d2 < best_a_d2:
+				best_a_d2 = d2
+				best_a = a
+		if best_a != null:
+			current_mode = Mode.NIBBLE
+			var to_a: Vector3 = best_a.global_position - position
+			if to_a.length() < 0.4:
+				var taken: int = best_a.nibble(2)
+				if taken > 0:
+					hunger = maxf(0.0, hunger - 0.25 * float(taken))
+					energy = minf(1.0, energy + 0.08)
+					events["waste_at"] = position + Vector3(0, -0.05, 0)
+					events["waste_amount"] = 0.10 * float(taken)
+			else:
+				target_velocity += to_a.normalized() * max_speed * 1.0
+				_apply_target(target_velocity)
+				return events
+
+	# Tier 6: PLANTS - Only if plants are growing well and algae/food is scarce.
+	if hunger > 0.4:
 		# First: a quick grazing pass for plants right next to us on the floor.
-		# Cheaper than climbing - shrimp munch any short plant they pass over.
 		for p in plants:
-			if not is_instance_valid(p) or p.biomass() <= 0:
+			if not is_instance_valid(p) or p.biomass() < 15:
 				continue
 			var pp: Vector3 = p.global_position
 			if absf(pp.y - position.y) > 0.6: continue   # only floor-level plants
@@ -404,7 +427,7 @@ func tick(dt: float, plants: Array, waste: Array, fry_array: Array, baby_snails:
 			var best_p: Plant = null
 			var best_p_d2: float = 12.0
 			for p in plants:
-				if not is_instance_valid(p) or p.biomass() < 6:
+				if not is_instance_valid(p) or p.biomass() < 15:
 					continue
 				var d2: float = p.global_position.distance_squared_to(position)
 				if d2 < best_p_d2:

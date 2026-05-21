@@ -13,8 +13,21 @@
     "description": { "type": "string" },
     "form": {
       "type": "string",
-      "enum": ["rosette", "stem", "carpet", "moss", "floater", "fern", "vine", "epiphyte"],
+      "enum": ["rosette", "stem", "carpet", "moss", "floater", "fern", "vine", "epiphyte", "emergent", "bulb"],
       "description": "Top-level growth habit. Drives rough silhouette + collision rules."
+    },
+    "leaf_shape": {
+      "type": "string",
+      "enum": ["paddle", "ribbon", "lance", "needle", "oval", "round", "lobed"],
+      "description": "Visual leaf geometry. Paddle = wide pointed oval (Crypts), ribbon = long narrow strip (Vallisneria), lance = medium pointed (Ludwigia), needle = thin grass-like (Eleocharis), oval = short waxy (Anubias), round = circular pad (Nymphaea), lobed = irregular (Java Fern)."
+    },
+    "leaf_width_voxels": {
+      "type": "integer", "minimum": 1, "maximum": 5, "default": 2,
+      "description": "How many voxels wide each leaf structure is at its widest point."
+    },
+    "leaf_length_voxels": {
+      "type": "integer", "minimum": 1, "maximum": 14, "default": 4,
+      "description": "How many voxels long each leaf structure is."
     },
     "lsystem": {
       "type": "object",
@@ -67,12 +80,12 @@
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["runners", "daughters", "seeds", "spores", "fragments", "none"]
+          "enum": ["runners", "daughters", "seeds", "spores", "fragments", "budding", "adventitious", "none"]
         },
         "trigger": {
           "type": "string",
-          "enum": ["mass", "age", "size", "stress"],
-          "description": "What event spawns offspring."
+          "enum": ["mass", "age", "size", "stress", "emerged"],
+          "description": "What event spawns offspring. 'emerged' = only when above water surface."
         },
         "trigger_threshold": { "type": "number" },
         "offspring_distance_px_range": {
@@ -81,7 +94,13 @@
           "minItems": 2,
           "maxItems": 2
         },
-        "max_density_per_100px2": { "type": "number", "description": "Self-thinning rule." }
+        "max_density_per_100px2": { "type": "number", "description": "Self-thinning rule." },
+        "runner_visible": { "type": "boolean", "default": true, "description": "If true, render a visible stolon connecting parent to daughter." },
+        "budding_position": {
+          "type": "string",
+          "enum": ["rhizome", "leaf_tip", "stem_node", "root"],
+          "description": "Where on the parent the daughter plant buds from."
+        }
       }
     },
     "lifecycle": {
@@ -100,7 +119,91 @@
           "minimum": 0,
           "maximum": 100,
           "description": "Crypt-melt mechanic. Sudden water change beyond this % triggers a melt event - all leaves dissolve but rhizome survives."
+        },
+        "leaf_lifespan_days": {
+          "type": "number",
+          "description": "Individual leaves age and shed after this many sim-days. Older leaves darken and eventually detach, producing detritus."
+        },
+        "regrow_after_melt_days": {
+          "type": "number", "default": 14,
+          "description": "How many sim-days after a crypt melt before the rhizome begins regrowing."
         }
+      }
+    },
+    "flowering": {
+      "type": "object",
+      "description": "Multi-stage flowering lifecycle. Plants go through bud → opening → mature → seed pod → seed release.",
+      "additionalProperties": false,
+      "properties": {
+        "can_flower": { "type": "boolean", "default": true },
+        "flower_trigger": {
+          "type": "string",
+          "enum": ["maturity", "emerged", "stress", "seasonal"],
+          "description": "What triggers flowering. 'emerged' = only flowers above the water surface."
+        },
+        "bud_duration_s": { "type": "number", "default": 5, "description": "Sim seconds the bud stage lasts." },
+        "open_duration_s": { "type": "number", "default": 4, "description": "Sim seconds the opening animation takes." },
+        "mature_duration_s": { "type": "number", "default": 25, "description": "Sim seconds the flower stays in full bloom." },
+        "seed_mature_s": { "type": "number", "default": 10, "description": "Sim seconds for the seed pod to mature." },
+        "petal_colors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Hex color strings for petal palette. First entry is petal, second is center/pistil."
+        },
+        "n_petals": { "type": "integer", "minimum": 3, "maximum": 12, "default": 5 }
+      }
+    },
+    "roots": {
+      "type": "object",
+      "description": "Root system parameters. Visible root voxels anchor the plant into the substrate.",
+      "additionalProperties": false,
+      "properties": {
+        "max_roots": { "type": "integer", "minimum": 0, "maximum": 12, "default": 5 },
+        "root_depth_range": {
+          "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2,
+          "description": "Min and max depth in voxels for root tendrils."
+        },
+        "root_spread": { "type": "number", "minimum": 0, "maximum": 3.0, "default": 1.2, "description": "How far roots spread laterally." }
+      }
+    },
+    "deficiency_symptoms": {
+      "type": "object",
+      "description": "Visual symptoms when specific nutrients are depleted.",
+      "additionalProperties": false,
+      "properties": {
+        "iron": {
+          "type": "string",
+          "enum": ["pale_new_growth", "interveinal_chlorosis", "none"],
+          "default": "pale_new_growth",
+          "description": "Iron deficiency: new leaves grow pale/yellow instead of green."
+        },
+        "potassium": {
+          "type": "string",
+          "enum": ["pinholes", "necrotic_edges", "none"],
+          "default": "pinholes",
+          "description": "Potassium deficiency: holes appear in older leaves."
+        },
+        "nitrogen": {
+          "type": "string",
+          "enum": ["yellowing_old_leaves", "stunted_growth", "none"],
+          "default": "yellowing_old_leaves",
+          "description": "Nitrogen deficiency: oldest leaves yellow first."
+        },
+        "phosphate": {
+          "type": "string",
+          "enum": ["dark_leaves", "algae_magnet", "none"],
+          "default": "dark_leaves"
+        }
+      }
+    },
+    "pearling": {
+      "type": "object",
+      "description": "O2 bubble emission from leaf surfaces when photosynthesis is saturated.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "o2_threshold": { "type": "number", "minimum": 0, "maximum": 1.5, "default": 0.85, "description": "Dissolved O2 level above which pearling begins." },
+        "intensity": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5, "description": "How vigorously the plant pearls. 1.0 = prolific bubbler." }
       }
     },
     "appearance": {
@@ -113,6 +216,7 @@
         "stem_palette_indices":  { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 47 } },
         "root_palette_indices":  { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 47 } },
         "stress_palette_indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 47 }, "description": "Yellow/translucent ramp shown when starving." },
+        "new_growth_palette_indices": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 47 }, "description": "Brighter/lighter ramp for newly grown leaves at the tips." },
         "dither_volume": { "type": "boolean", "default": true, "description": "Apply Bayer dither inside leaves for volume?" }
       }
     },

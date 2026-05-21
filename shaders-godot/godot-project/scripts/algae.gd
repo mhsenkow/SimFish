@@ -72,3 +72,21 @@ func _add_voxel(local_pos: Vector3, scale_factor: float) -> void:
 	mi.position = local_pos
 	add_child(mi)
 	_voxels.append(mi)
+
+
+func biomass() -> int:
+	return _voxels.size()
+
+
+func nibble(amount: int) -> int:
+	var taken: int = 0
+	for i in amount:
+		if _voxels.is_empty():
+			break
+		var v = _voxels.pop_back()
+		if is_instance_valid(v):
+			v.queue_free()
+		taken += 1
+	if _voxels.is_empty():
+		_age = MAX_LIFE # mark for death
+	return taken

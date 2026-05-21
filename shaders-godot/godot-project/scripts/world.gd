@@ -292,11 +292,10 @@ func _water_mat() -> StandardMaterial3D:
 
 func _add_cube(parent: Node, pos: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = size
-	mi.mesh = bm
+	mi.mesh = VoxelMat.get_box(size)
 	mi.position = pos
-	mi.material_override = mat
+	if mat != null:
+		mi.material_override = mat
 	parent.add_child(mi)
 	return mi
 
@@ -575,9 +574,7 @@ func _add_wall_between(parent: Node3D, p1: Vector3, p2: Vector3,
 	var mid: Vector3 = (p1 + p2) * 0.5
 	mid.y = height * 0.5
 	var wall := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(length, height, 0.1)
-	wall.mesh = bm
+	wall.mesh = VoxelMat.get_box(Vector3(length, height, 0.1))
 	wall.material_override = mat
 	parent.add_child(wall)
 	wall.global_position = mid
@@ -653,6 +650,88 @@ func _build_snail_body(snail: Node3D) -> void:
 
 # ---- Initial population ----
 
+func _respawn_extinct_fauna() -> void:
+	# Called by SimDriver if the auto-respawn toggle is checked and the tank
+	# has been completely devoid of fauna for 5 seconds. Rebuilds the current
+	# preset but forces a count of 10 for every species.
+	var cfg = get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+		
+	var stocking: Dictionary = {}
+	if cfg.tank_preset == "custom":
+		stocking = {
+			"glassdart": 10,
+			"mudsifter": 10,
+			"betta": 10,
+			"shrimp": 10
+		}
+	else:
+		var preset: Dictionary = cfg.current_tank_preset()
+		stocking = preset.get("stocking", {}).duplicate()
+		for key in stocking.keys():
+			stocking[key] = 10
+			
+	if stocking.is_empty():
+		stocking = {"glassdart": 10, "mudsifter": 10, "shrimp": 10}
+
+	var phenotype_mult: float = _initial_phenotype_spread()
+	
+	# Clear out old snails if they existed but died (just in case)
+	if sim.snails_root != null:
+		for c in sim.snails_root.get_children():
+			c.queue_free()
+	
+	# Spawn Fish
+	for species_name in stocking.keys():
+		if species_name == "shrimp" or species_name == "snails":
+			continue
+		var count: int = int(stocking[species_name])
+		if count <= 0:
+			continue
+		var entry: Dictionary = TankConfig.SPECIES_LIBRARY.get(species_name, {})
+		if entry.is_empty():
+			continue
+		var template: Dictionary = entry.get("genome", {})
+		for i in count:
+			var g: Dictionary = template.duplicate(true)
+			g["sex"] = i % 2
+			g["max_age_s"] = float(g.get("max_age_s", 240.0)) + randf_range(-30, 30)
+			_apply_initial_phenotype_spread(g, phenotype_mult)
+			var pref_y: float = float(g.get("preferred_y", 3.5))
+			var spawn_y: float = pref_y + randf_range(-0.6, 0.6)
+			var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6)
+			var sp := Vector3(xz.x, spawn_y, xz.y)
+			var f := Fish.new()
+			fauna_root.add_child(f)
+			f.global_position = sp
+			f.init_genome(g)
+			# Fast-forward growth
+			f.age = randf_range(0.2, 0.6) * f.max_age_s
+			f.maturity = Fish.MATURITY_ADULT
+			f.adult_voxel_scale = g.get("adult_voxel_scale", 0.15)
+			sim.register_fish(f)
+			
+	# Spawn Shrimp
+	if stocking.has("shrimp"):
+		var shrimp_count: int = stocking["shrimp"]
+		for i in shrimp_count:
+			var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6)
+			var sp := Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y)
+			var s := Shrimp.new()
+			fauna_root.add_child(s)
+			s.global_position = sp
+			s.base_color = Color.from_hsv(randf(), randf_range(0.6, 0.9), randf_range(0.5, 0.9))
+			s.max_speed = randf_range(0.4, 0.6)
+			s.max_age_s = randf_range(120.0, 180.0)
+			s.age = randf_range(10.0, 40.0)
+			s.maturity = Shrimp.MATURITY_ADULT
+			sim.register_shrimp(s)
+			
+	# Snails (always spawns 6 per _build_snails default, which is close enough to 10 for snails)
+	_build_snails()
+
+
 func _spawn_initial_plants() -> void:
 	# Walstad jungle: dense, varied. Five species flavors keyed by zone +
 	# growth params. Each species has a color ramp + max_height + grow rate.
@@ -665,18 +744,23 @@ func _spawn_initial_plants() -> void:
 
 	var species_specs: Array[Dictionary] = [
 		{"name": "valli",    "max": [18, 26], "rate": 0.16, "sway": 0.22,
+		 "leaf_form": "ribbon", "leaf_length": 8, "max_roots": 4,
 		 "ramp": [Color8(16, 38, 20), Color8(29, 59, 34), Color8(44, 90, 48),
 				  Color8(62, 127, 64), Color8(87, 162, 83), Color8(121, 192, 105)]},
 		{"name": "crypt",    "max": [9, 14],  "rate": 0.20, "sway": 0.10,
+		 "leaf_form": "paddle", "leaf_length": 5, "max_roots": 6,
 		 "ramp": [Color8(34, 60, 28), Color8(54, 88, 38), Color8(78, 119, 53),
 				  Color8(110, 152, 73), Color8(140, 178, 95), Color8(170, 200, 120)]},
 		{"name": "carpet",   "max": [3, 6],   "rate": 0.30, "sway": 0.04,
+		 "leaf_form": "needle", "leaf_length": 3, "max_roots": 3,
 		 "ramp": [Color8(40, 90, 35), Color8(60, 122, 52), Color8(82, 152, 70),
 				  Color8(110, 180, 92), Color8(145, 205, 118), Color8(180, 225, 145)]},
 		{"name": "red_stem", "max": [11, 18], "rate": 0.18, "sway": 0.16,
+		 "leaf_form": "lance", "leaf_length": 3, "max_roots": 4,
 		 "ramp": [Color8(78, 32, 30), Color8(115, 50, 40), Color8(155, 70, 52),
 				  Color8(180, 95, 72), Color8(200, 125, 90), Color8(215, 160, 120)]},
 		{"name": "moss",     "max": [2, 4],   "rate": 0.10, "sway": 0.02,
+		 "leaf_form": "column", "leaf_length": 2, "max_roots": 2,
 		 "ramp": [Color8(28, 50, 24), Color8(48, 80, 40), Color8(72, 110, 58),
 				  Color8(98, 140, 78), Color8(125, 168, 100), Color8(150, 190, 125)]},
 	]
@@ -735,8 +819,6 @@ func _spawn_initial_plants() -> void:
 		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
 		sp.water_surface_y = WATER_HEIGHT
 		sp.generation = 0
-		sp.radius_step = _rng.randf_range(0.05, 0.08)
-		sp.height_step = _rng.randf_range(0.14, 0.22)
 		sp.init(_rng.randi_range(3, 6), {
 			"max_height": _rng.randi_range(20, 40),
 			"growth_rate": 0.20,
@@ -781,6 +863,9 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 		"max_height": _rng.randi_range(int(max_range[0]), int(max_range[1])),
 		"growth_rate": float(spec["rate"]),
 		"sway_amplitude": float(spec["sway"]),
+		"leaf_form": spec.get("leaf_form", "column"),
+		"leaf_length": int(spec.get("leaf_length", 4)),
+		"max_roots": int(spec.get("max_roots", 5)),
 	})
 	sim.register_plant(p)
 
@@ -789,7 +874,7 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 # Spawns a tiny new plant nearby with the parent's mutated ramp + same
 # rough max_height target. Capped via plants_alive size so we don't grow
 # the field infinitely.
-func spawn_seedling(pos: Vector3, ramp: Array, generation: int, parent_max: int) -> void:
+func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dictionary) -> void:
 	if plants_root == null or sim == null:
 		return
 	if sim.plants.size() >= 320:
@@ -800,19 +885,33 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, parent_max: int)
 		SUBSTRATE_DEPTH,
 		clampf(pos.z, -TANK_HALF_D * 0.95, TANK_HALF_D * 0.95),
 	)
-	var p := Plant.new()
+	var script: Script = seed_config.get("script", load("res://scripts/plant.gd"))
+	var p = script.new()
 	plants_root.add_child(p)
 	p.global_position = sp
 	if ramp.size() == 6:
 		p.ramp_override = ramp
 	p.water_surface_y = WATER_HEIGHT
 	p.generation = generation
-	# Inherit a small range around the parent's max so the lineage diverges.
-	p.init(1, {
-		"max_height": clampi(parent_max + _rng.randi_range(-2, 2), 4, 26),
-		"growth_rate": 0.16,
-		"sway_amplitude": 0.18,
-	})
+	
+	# Inherit properties from parent and slightly mutate max_height
+	var child_cfg: Dictionary = seed_config.duplicate()
+	var parent_max: int = seed_config.get("max_height", 10)
+	child_cfg["max_height"] = clampi(parent_max + _rng.randi_range(-2, 2), 4, 30)
+	
+	# Initialize the child plant using the parent's genetic traits
+	p.init(1, child_cfg)
+	
+	# Apply specialized traits if they exist in the config
+	if "branch_chance" in child_cfg:
+		p.branch_chance = child_cfg["branch_chance"]
+		p.branch_interval = child_cfg["branch_interval"]
+		p.branch_angle_deg = child_cfg["branch_angle_deg"]
+	if "radius_step" in child_cfg:
+		p.radius_step = child_cfg["radius_step"]
+		p.height_step = child_cfg["height_step"]
+		p.radius_cap = child_cfg["radius_cap"]
+		
 	sim.register_plant(p)
 
 
@@ -1038,17 +1137,13 @@ func _spawn_floaters() -> void:
 			var ang: float = float(j) / float(n_leaves) * TAU
 			var r: float = _rng.randf_range(0.15, 0.32)
 			var mi := MeshInstance3D.new()
-			var bm := BoxMesh.new()
-			bm.size = Vector3(0.28, 0.08, 0.28)
-			mi.mesh = bm
+			mi.mesh = VoxelMat.get_box(Vector3(0.28, 0.08, 0.28))
 			mi.position = Vector3(cos(ang) * r, 0, sin(ang) * r)
 			mi.material_override = VoxelMat.make(leaf_color if (j & 1) == 0 else leaf_color_dark)
 			disk.add_child(mi)
 		# Small dangling root (one dark voxel under center).
 		var root_mi := MeshInstance3D.new()
-		var root_bm := BoxMesh.new()
-		root_bm.size = Vector3(0.06, 0.3, 0.06)
-		root_mi.mesh = root_bm
+		root_mi.mesh = VoxelMat.get_box(Vector3(0.08, 0.4, 0.08))
 		root_mi.position = Vector3(0, -0.2, 0)
 		root_mi.material_override = VoxelMat.make(Color8(45, 70, 40))
 		disk.add_child(root_mi)
@@ -1109,6 +1204,7 @@ func _spawn_math_plants() -> void:
 		p.height_voxels = _rng.randi_range(18, 26)
 		p.lean_amplitude = _rng.randf_range(0.4, 0.8)
 		p.head_voxels = _rng.randi_range(4, 6)
+		p.water_surface_y = WATER_HEIGHT
 		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + 0.05, xz.y),
 			Color8(110, 145, 75),
 			Color8(110, 78, 48),
@@ -1189,19 +1285,15 @@ func _add_floater_at(pos: Vector3) -> void:
 	var leaf_color_dark := Color8(50, 100, 45)
 	for j in n_leaves:
 		var ang: float = float(j) / float(n_leaves) * TAU
-		var r: float = _rng.randf_range(0.15, 0.32)
+		var r: float = float(j) * 0.12
 		var mi := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = Vector3(0.28, 0.08, 0.28)
-		mi.mesh = bm
+		mi.mesh = VoxelMat.get_box(Vector3(0.35, 0.1, 0.35))
 		mi.position = Vector3(cos(ang) * r, 0, sin(ang) * r)
 		mi.material_override = VoxelMat.make(leaf_color if (j & 1) == 0 else leaf_color_dark)
 		disk.add_child(mi)
 	var root_mi := MeshInstance3D.new()
-	var root_bm := BoxMesh.new()
-	root_bm.size = Vector3(0.06, 0.3, 0.06)
-	root_mi.mesh = root_bm
-	root_mi.position = Vector3(0, -0.2, 0)
+	root_mi.mesh = VoxelMat.get_box(Vector3(0.1, 0.6, 0.1))
+	root_mi.position = Vector3(0, -0.3, 0)
 	root_mi.material_override = VoxelMat.make(Color8(45, 70, 40))
 	disk.add_child(root_mi)
 	disk.set_meta("phase", randf() * TAU)

@@ -73,19 +73,41 @@ func biomass() -> int:
 	return total
 
 
-# Nibble propagates to the heaviest branch (or main stem if no branches).
-# This means shrimp + fish that "nibble" a branching plant pick the most
-# vigorous arm to graze, which keeps the plant pruned in a natural shape.
+# Nibble prioritizes the outermost branches to simulate natural grazing.
+# It delegates the bite to the heaviest valid branch. Only if no valid
+# branches remain will the main stem itself be eaten. This prevents the
+# whole tree from being felled like a beaver chewed the trunk!
 func nibble(amount: int) -> int:
-	# Find heaviest sub-target (branch or self).
-	var heaviest: Plant = self
-	var heaviest_bm: int = current_height
+	var valid_branches: Array[BranchPlant] = []
 	for b in _branches:
-		if is_instance_valid(b) and b.biomass() > heaviest_bm:
-			heaviest = b
-			heaviest_bm = b.biomass()
-	if heaviest == self:
-		# Fall through to base behaviour.
-		return super.nibble(amount)
-	# Delegate to whichever branch is the prime growth point.
-	return heaviest.nibble(amount)
+		if is_instance_valid(b) and b.biomass() > 0:
+			valid_branches.append(b)
+			
+	if valid_branches.size() > 0:
+		var heaviest: BranchPlant = valid_branches[0]
+		for b in valid_branches:
+			if b.biomass() > heaviest.biomass():
+				heaviest = b
+		return heaviest.nibble(amount)
+	
+	# Fall through to base behavior only if no valid branches are left.
+	return super.nibble(amount)
+
+
+func _on_death() -> void:
+	# When a branching plant dies, it returns nutrients proportional to
+	# its total biomass, not just the root mass. This prevents massive
+	# nutrient loss when a complex tree is killed.
+	var total_mass: int = biomass()
+	var sim_driver: Node = _find_sim()
+	if sim_driver != null and sim_driver.substrate != null:
+		# A base plant returns 0.35. We add ~0.05 per voxel of total biomass.
+		sim_driver.substrate.add_at(global_position, 0.35 + float(total_mass) * 0.05)
+
+
+func get_seed_config() -> Dictionary:
+	var cfg: Dictionary = super.get_seed_config()
+	cfg["branch_chance"] = branch_chance
+	cfg["branch_interval"] = branch_interval
+	cfg["branch_angle_deg"] = branch_angle_deg
+	return cfg

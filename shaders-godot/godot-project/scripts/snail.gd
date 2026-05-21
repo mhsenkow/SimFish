@@ -167,14 +167,32 @@ func _check_waste_nearby(tangent: Vector3, up: Vector3) -> void:
 		if d2 < best_d2:
 			best_d2 = d2
 			best = w
+			
+	# If no waste is found, check for algae. Snails love algae!
+	if best == null and sim.get("algae") != null:
+		best_d2 = 5.0 * 5.0
+		for a in sim.algae:
+			if not is_instance_valid(a):
+				continue
+			var d2: float = (a as Node3D).global_position.distance_squared_to(position)
+			if d2 < best_d2:
+				best_d2 = d2
+				best = a
+				
 	if best == null:
 		return
 	var to_w: Vector3 = best.global_position - position
 	# Consume if very close.
 	if to_w.length() < 0.25:
-		# Snails eat detritus -> tiny pellet output (recycle).
-		sim.waste.erase(best)
-		(best as Node3D).queue_free()
+		if best.get("kind") != null:
+			# It's waste
+			sim.waste.erase(best)
+			(best as Node3D).queue_free()
+		else:
+			# It's algae - just nibble it away entirely since snails are slow
+			if best.has_method("nibble"):
+				best.nibble(999)
+				
 		# Tiny snail pellet on the substrate at our position.
 		if sim.has_method("_spawn_waste"):
 			sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.04,
@@ -193,13 +211,16 @@ func _check_waste_nearby(tangent: Vector3, up: Vector3) -> void:
 		_pursuing_waste = true
 
 
+var _sim_driver_ref: Node = null
+
 func _get_sim() -> Node:
-	# Walk up the scene tree to find the SimDriver. Cheap - happens at sim
-	# rate but only when the snail considers a turn (rare).
+	if _sim_driver_ref != null and is_instance_valid(_sim_driver_ref):
+		return _sim_driver_ref
 	var n: Node = get_parent()
 	while n != null:
 		var d := n.get_node_or_null("SimDriver")
 		if d != null:
+			_sim_driver_ref = d
 			return d
 		n = n.get_parent()
 	return null

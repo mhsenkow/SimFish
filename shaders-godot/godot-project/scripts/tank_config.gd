@@ -75,6 +75,11 @@ var light_size: float = 0.75
 # Show volumetric beams (god rays). Off can save a bit of GPU.
 var light_volumetric: bool = true
 
+# ---- Fauna ----
+# If true, respawn 10 of each creature if the tank is empty.
+var auto_respawn_fauna: bool = false
+var auto_feed_fauna: bool = false
+
 # ---- Tank population preset ----
 # Selects the initial stocking of the tank. Each preset specifies how many
 # of each species spawn AND a phenotype-range modifier so the founding
@@ -584,6 +589,8 @@ func save_to_disk() -> void:
 	cfg.set_value("aeration", "type", aeration_type)
 	cfg.set_value("aeration", "strength", aeration_strength)
 	cfg.set_value("aeration", "x_frac", aeration_x_frac)
+	cfg.set_value("fauna", "auto_respawn", auto_respawn_fauna)
+	cfg.set_value("fauna", "auto_feed", auto_feed_fauna)
 	cfg.set_value("preset", "tank", tank_preset)
 	cfg.set_value("preset", "glassdarts", custom_glassdart_count)
 	cfg.set_value("preset", "mudsifters", custom_mudsifter_count)
@@ -628,6 +635,8 @@ func load_from_disk() -> void:
 	aeration_type = cfg.get_value("aeration", "type", aeration_type)
 	aeration_strength = cfg.get_value("aeration", "strength", aeration_strength)
 	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)
+	auto_respawn_fauna = cfg.get_value("fauna", "auto_respawn", auto_respawn_fauna)
+	auto_feed_fauna = cfg.get_value("fauna", "auto_feed", auto_feed_fauna)
 	tank_preset = cfg.get_value("preset", "tank", tank_preset)
 	custom_glassdart_count = cfg.get_value("preset", "glassdarts", custom_glassdart_count)
 	custom_mudsifter_count = cfg.get_value("preset", "mudsifters", custom_mudsifter_count)

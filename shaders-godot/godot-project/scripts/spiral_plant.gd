@@ -16,9 +16,9 @@ const GOLDEN_ANGLE: float = 2.39996322972865332
 
 # How far each voxel sits from the central axis. Scales with voxel index so
 # the spiral spreads outward as it grows.
-@export var radius_step: float = 0.06
+@export var radius_step: float = 0.005
 @export var height_step: float = 0.18    # vertical rise per voxel (vs VOXEL_SIZE for stems)
-@export var radius_cap: float = 1.6      # maximum radius before the spiral plateaus
+@export var radius_cap: float = 0.15      # maximum radius before the spiral plateaus
 
 
 func _grow_one() -> bool:
@@ -26,37 +26,55 @@ func _grow_one() -> bool:
 		return false
 	var idx: int = current_height
 	# Phyllotaxis: theta = idx * golden_angle, r = radius_step * sqrt(idx).
-	# sqrt growth keeps voxel density roughly constant (Vogel's spiral).
 	var theta: float = float(idx) * GOLDEN_ANGLE
 	var r: float = minf(radius_step * sqrt(float(idx) + 1.0), radius_cap)
-	var pos := Vector3(
-		cos(theta) * r,
-		float(idx) * height_step,
-		sin(theta) * r,
-	)
-	# Color ramp: outer / older voxels (low idx) are deeper green, inner / new
-	# voxels (high idx, central rosette) are brighter to make the spiral pattern
-	# read clearly.
+	
+	# Color ramp: outer / older leaves (low idx) are deeper green, inner / new
+	# leaves (high idx, central rosette) are brighter.
 	var rel: float = float(idx) / float(maxi(1, max_height - 1))
-	var ramp_idx: int = clampi(int(rel * 5.0), 0, 5)
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-	var color: Color = ramp[ramp_idx]
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(VOXEL_SIZE * 0.95, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.95)
-	mi.mesh = bm
-	mi.material_override = VoxelMat.make(color)
-	mi.position = pos
-	add_child(mi)
-	voxels.append(mi)
+	
+	# Tight vertical leaves.
+	var leaf_len: int = clampi(2 + int((1.0 - rel) * 2.0), 2, 4)
+	var leaf_voxels: Array = LeafShapes.build_paddle(leaf_len, ramp, 1.0 - rel, 2, 0.45)
+	
+	var leaf_root := Node3D.new()
+	var outward := Vector3(cos(theta), 0.0, sin(theta))
+	leaf_root.position = Vector3(0.0, float(idx) * height_step, 0.0) + outward * r
+	leaf_root.look_at(leaf_root.position + outward, Vector3.UP)
+	
+	# Godot look_at makes local -Z point outward.
+	# Pitching by -X tilts the leaf (which grows along +Y) towards -Z (outward).
+	leaf_root.rotation.x = -lerpf(PI * 0.08, PI * 0.01, rel)
+	
+	add_child(leaf_root)
+	
+	# Add to our internal tracking so decay and shedding works exactly like other plants.
+	for v in leaf_voxels:
+		leaf_root.add_child(v)
+		voxels.append(v)
+		
+	_leaf_nodes.append(leaf_root)
+	_leaf_ages.append(0.0)
+	
 	current_height += 1
 	return true
 
 
-# top_world_y reads the top of the spiral - which is the most recently placed
-# voxel (highest Y position in local coords).
+# top_world_y reads the top of the spiral rosette - which is the crown height
+# plus the vertical extension of the newest, most upright leaf.
 func top_world_y() -> float:
 	if voxels.is_empty():
 		return global_position.y
-	var top_local: float = float(current_height) * height_step
-	return global_position.y + top_local
+	var crown_y: float = float(current_height) * height_step
+	# Leaf is ~8 voxels long, each 0.85 * VOXEL_SIZE, pitched at ~PI*0.05 (almost vertical).
+	var leaf_extension: float = 8.0 * VOXEL_SIZE * 0.85 * cos(PI * 0.05)
+	return global_position.y + crown_y + leaf_extension
+
+
+func get_seed_config() -> Dictionary:
+	var cfg: Dictionary = super.get_seed_config()
+	cfg["radius_step"] = radius_step
+	cfg["height_step"] = height_step
+	cfg["radius_cap"] = radius_cap
+	return cfg
