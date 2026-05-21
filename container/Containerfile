@@ -1,0 +1,75 @@
+# vivarium-serve OCI image.
+#
+# Build from the repo root, not from this directory. The build context
+# has to reach sim-rust/ and shaders-godot/.
+#
+#   container build -f container/Containerfile -t vivarium-serve .
+#   podman    build -f container/Containerfile -t vivarium-serve .
+#   docker    build -f container/Containerfile -t vivarium-serve .
+#
+# Three stages:
+#   1. godot-builder: Exports the Godot project to HTML5/WASM. Forced to
+#      linux/amd64 because barichello's image is amd64-only; on arm64 hosts
+#      this stage runs under emulation (~30s instead of ~5s native).
+#   2. rust-builder: Compiles vivarium-serve in release mode.
+#   3. runtime: Minimal Debian with just the binary, the exported web
+#      assets, and the env -> CLI entrypoint shim.
+
+# ---- Godot web-export stage ----------------------------------------------
+# barichello/godot-ci bundles the headless Godot binary AND the matching
+# version's export templates in one image. That's the part you can't skip,
+# since raw godot can't --export-debug Web without the Web template installed.
+# Tag matches the project's Godot minor version (4.6.x).
+FROM --platform=linux/amd64 docker.io/barichello/godot-ci:4.6 AS godot-builder
+WORKDIR /src
+COPY shaders-godot/godot-project ./godot-project
+# Godot won't create missing parent dirs for the export output.
+RUN mkdir -p /export
+# Two-step: --import primes the resource cache so any first-time .import
+# sidecars exist before --export-debug looks for them. Then the actual
+# Web export writes index.{html,js,wasm,pck,...} into /export.
+RUN cd godot-project \
+ && godot --headless --import . \
+ && godot --headless --path . --export-debug Web /export/index.html
+
+# ---- Rust build stage ----------------------------------------------------
+# Pinned to bookworm-slim so the runtime stage can link against the same
+# libc. Using bookworm both sides also avoids glibc version drift surprises.
+FROM docker.io/library/rust:1-slim-bookworm AS rust-builder
+WORKDIR /src/sim-rust
+# Bring in the whole crate. Cargo.toml references examples/cycle.rs so
+# selectively copying src/ alone trips the manifest validator.
+COPY sim-rust ./
+RUN cargo build --release --bin vivarium-serve \
+ && strip target/release/vivarium-serve
+
+# ---- Runtime stage --------------------------------------------------------
+FROM docker.io/library/debian:bookworm-slim
+
+# Drop privileges. vivarium-serve only needs to read its web-root and bind
+# a TCP port >= 1024, so a system user with no shell is fine.
+RUN groupadd --system vivarium \
+ && useradd --system --gid vivarium --home-dir /home/vivarium --create-home vivarium
+
+COPY --from=rust-builder /src/sim-rust/target/release/vivarium-serve /usr/local/bin/vivarium-serve
+COPY --from=godot-builder /export /opt/vivarium/web
+COPY container/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/vivarium-serve
+
+USER vivarium
+EXPOSE 8080
+
+# Every knob the server exposes is driven by an env var. entrypoint.sh
+# translates these into CLI flags at start time.
+#
+# Override at run time:
+#   podman run --rm -p 8080:8080 -e PROMETHEUS=false vivarium-serve
+ENV HOST=0.0.0.0 \
+    PORT=8080 \
+    WEB_ROOT=/opt/vivarium/web \
+    PROMETHEUS=true \
+    CLIENT_TIMEOUT=30
+# LOG_STDOUT intentionally not set. Stdout telemetry logging is off by
+# default; pass `-e LOG_STDOUT=true` at run time to enable.
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

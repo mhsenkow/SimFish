@@ -787,6 +787,35 @@ func _pan_target(delta: Vector2) -> void:
 func _on_stats_changed(stats: Dictionary) -> void:
 	_stats = stats
 	_render_header()
+	_push_telemetry_to_js()
+
+
+# Web-only: forward the current stats snapshot to the host page so it can
+# POST it to the headless launcher's /telemetry endpoint. No-op on native
+# builds (no JavaScriptBridge there). The injected page-side shim defines
+# window.__vivariumPushStats; if we're hosted somewhere else, this just
+# silently does nothing.
+func _push_telemetry_to_js() -> void:
+	if not OS.has_feature("web"):
+		return
+	var payload: Dictionary = _stats.duplicate()
+	if _sim != null:
+		payload["time_scale"] = float(_sim.time_scale)
+		payload["day_phase"] = float(_sim.day_phase)
+		payload["tank_seed"] = int(_sim.tank_seed)
+		# Effective sim tick rate. SimDriver runs the inner loop at SIM_HZ
+		# but multiplies the incoming delta by time_scale, so the *observed*
+		# tick rate scales with it. Pause => 0.
+		payload["sim_fps"] = float(_sim.SIM_HZ) * float(_sim.time_scale)
+	payload["render_fps"] = float(Engine.get_frames_per_second())
+	# Use compact JSON; the host shim parses it as a plain JS object.
+	var body: String = JSON.stringify(payload)
+	# eval(code, use_global_execution_context). Global context is what we
+	# want. The shim defined window.__vivariumPushStats at top level.
+	JavaScriptBridge.eval(
+		"if (window.__vivariumPushStats) { window.__vivariumPushStats(" + body + "); }",
+		true,
+	)
 
 
 func _update_hud(_mouse_pos: Vector2, _any_btn: bool) -> void:

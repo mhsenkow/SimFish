@@ -8,6 +8,11 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 rand_xoshiro = "0.6"
+# Used only by the `vivarium-serve` binary. Kept as a hard dep (rather than
+# optional + features) to keep `cargo run --bin vivarium-serve` zero-friction.
+tiny_http = "0.12"
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 # nothing extra; examples use std.
@@ -19,6 +24,10 @@ path = "src/lib.rs"
 [[example]]
 name = "cycle"
 path = "examples/cycle.rs"
+
+[[bin]]
+name = "vivarium-serve"
+path = "src/bin/vivarium_serve.rs"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,30 @@
+# Build context exclusions for `podman/docker build -f container/Containerfile .`.
+# Without these, ~300 MB of pre-built artifacts (the macOS .app, the Rust
+# host target/ dir, captured PNGs) gets streamed to the daemon on every
+# build.
+
+.git
+.gitignore
+
+# Host-built native binaries. The container rebuilds Rust for linux/amd64
+# anyway, and the .app is a desktop artifact that has nothing to do with
+# the web export the container serves.
+build/
+sim-rust/target/
+
+# Capture / preview outputs.
+output/
+
+# Host-built Godot web export. The container regenerates this from source
+# in its godot-builder stage, so a local copy would just be a stale ghost
+# silently overriding the fresh build.
+shaders-godot/godot-project/web/build/
+
+# OS / editor noise.
+.DS_Store
+.idea/
+.vscode/
+
+# Anything else the dev keeps locally.
+*.swp
+*.swo
