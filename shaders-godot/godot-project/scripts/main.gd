@@ -113,6 +113,9 @@ var _wood_drag_y_offset: float = 0.0
 # dozens of them per second on the same cell.
 var _paint_cooldown: float = 0.0
 const PAINT_INTERVAL: float = 0.08   # seconds between brush samples
+# Screen-space pick radius in SubViewport pixels (what you click on screen).
+const PICK_RADIUS_PX: float = 28.0
+const PORTAL_PICK_RADIUS_PX: float = 40.0
 
 
 func _ready() -> void:
@@ -286,6 +289,9 @@ func _process(dt: float) -> void:
 					_aquascape_place(mouse_now)
 			else:
 				_drag_mode = "orbit"
+				# PiP: pick on press so a tiny camera wobble doesn't cancel the click.
+				if _portal_open and not pan_modifier:
+					_try_portal_pick(mouse_now)
 	elif not any_btn and _orbiting:
 		_orbiting = false
 		_wood_drag = null
@@ -299,11 +305,15 @@ func _process(dt: float) -> void:
 		# the follow-fish dispatch (and that's disabled anyway since LMB
 		# in aquascape goes to paint/wood_drag, never to orbit). For
 		# normal mode this dispatches follow-cam on a clean LMB tap.
-		var is_normal_click: bool = _drag_button == MOUSE_BUTTON_LEFT \
-			and _drag_total < 12.0 \
-			and _drag_mode == "orbit"   # only triggered by non-aquascape LMB
-		if is_normal_click and not _aquascape_mode:
-			_try_follow_click(mouse_now)
+		var is_click: bool = _drag_button == MOUSE_BUTTON_LEFT \
+			and _drag_total < 12.0
+		# Normal follow uses orbit-only release; PiP accepts any small LMB tap
+		# (Shift/Space pan taps are ignored so pan still works).
+		if is_click and not _aquascape_mode:
+			if _portal_open and _drag_mode != "paint" and _drag_mode != "wood_drag":
+				_try_follow_click(mouse_now)
+			elif _drag_mode == "orbit":
+				_try_follow_click(mouse_now)
 		_drag_mode = ""
 		_drag_button = 0
 
@@ -432,6 +442,7 @@ func _process(dt: float) -> void:
 	_handle_shortcut(KEY_4, func(): _on_four())
 	_handle_shortcut(KEY_F12, _take_photo)
 	_handle_shortcut(KEY_ESCAPE, _clear_follow)
+	_handle_shortcut(KEY_C, _toggle_portal)
 	_handle_shortcut(KEY_T, _toggle_timelapse)
 	_handle_shortcut(KEY_B, _toggle_aquascape)
 	_handle_shortcut(KEY_BACKSPACE, _aquascape_undo)
@@ -554,50 +565,97 @@ func _toggle_timelapse() -> void:
 
 func _clear_follow() -> void:
 	_follow_target = null
+	_portal_target = null
+	if portal_hint != null and _portal_open:
+		portal_hint.visible = true
+
+
+func _window_mouse_to_viewport(mouse: Vector2) -> Vector2:
+	# Map OS window coords to SubViewport pixels via the Display rect. A naive
+	# win_size scale breaks when the texture is letterboxed or offset.
+	if display == null or sub_viewport == null:
+		var win_size: Vector2 = get_window().size
+		var sv_size: Vector2 = Vector2(sub_viewport.size)
+		return mouse * (sv_size / win_size)
+	var rect: Rect2 = display.get_global_rect()
+	if rect.size.x < 1.0 or rect.size.y < 1.0:
+		return mouse
+	var local: Vector2 = mouse - rect.position
+	return Vector2(
+		clampf(local.x / rect.size.x, 0.0, 1.0) * float(sub_viewport.size.x),
+		clampf(local.y / rect.size.y, 0.0, 1.0) * float(sub_viewport.size.y),
+	)
+
+
+func _gather_creatures() -> Array:
+	var creatures: Array = []
+	if _sim == null:
+		return creatures
+	for f in _sim.fish:
+		if is_instance_valid(f):
+			creatures.append(f)
+	for s in _sim.shrimp:
+		if is_instance_valid(s):
+			creatures.append(s)
+	if _sim.snails_root != null:
+		for sn in _sim.snails_root.get_children():
+			if is_instance_valid(sn):
+				creatures.append(sn)
+	return creatures
+
+
+func _pick_creature(screen_pos: Vector2) -> Node3D:
+	# Screen-space pick: project each creature to viewport pixels and choose
+	# whoever is closest to the cursor. Much more reliable than 3D ray perp
+	# distance for tiny voxels.
+	if camera == null:
+		return null
+	var sv_pos: Vector2 = _window_mouse_to_viewport(screen_pos)
+	var radius: float = PORTAL_PICK_RADIUS_PX if _portal_open else PICK_RADIUS_PX
+	var cam_fwd: Vector3 = -camera.global_transform.basis.z
+	var best: Node3D = null
+	var best_dist: float = radius
+	for c in _gather_creatures():
+		var n: Node3D = c as Node3D
+		if n == null:
+			continue
+		var to_creature: Vector3 = n.global_position - camera.global_position
+		if to_creature.dot(cam_fwd) <= 0.0:
+			continue
+		var screen_pt: Vector2 = camera.unproject_position(n.global_position)
+		var dist: float = screen_pt.distance_to(sv_pos)
+		if dist < best_dist:
+			best_dist = dist
+			best = n
+	return best
+
+
+func _try_portal_pick(screen_pos: Vector2) -> void:
+	if not _portal_open:
+		return
+	var best: Node3D = _pick_creature(screen_pos)
+	if best == null:
+		return
+	_portal_target = best
+	if portal_hint != null:
+		portal_hint.visible = false
+	print("[vivarium] portal tracking ", best.name)
 
 
 func _try_follow_click(screen_pos: Vector2) -> void:
-	# Project a ray from the camera through the click point, find the closest
-	# Fish/Shrimp within ~0.5 unit perpendicular distance, lock the cam target
-	# onto it.
-	if camera == null:
-		return
-	# Convert window-space mouse to SubViewport-space, since the camera is
-	# inside the SubViewport.
-	var win_size: Vector2 = get_window().size
-	var sv_size: Vector2 = Vector2(sub_viewport.size)
-	var sv_pos: Vector2 = screen_pos * (sv_size / win_size)
-	var origin: Vector3 = camera.project_ray_origin(sv_pos)
-	var dir: Vector3 = camera.project_ray_normal(sv_pos)
-	# Find the closest Fish or Shrimp to the ray within reach.
-	var best: Node3D = null
-	var best_perp: float = 1.2
-	var creatures: Array = []
-	if _sim != null:
-		for f in _sim.fish:
-			if is_instance_valid(f): creatures.append(f)
-		for s in _sim.shrimp:
-			if is_instance_valid(s): creatures.append(s)
-		if _sim.snails_root != null:
-			for sn in _sim.snails_root.get_children():
-				if is_instance_valid(sn): creatures.append(sn)
-	for c in creatures:
-		var n: Node3D = c
-		var to_n: Vector3 = n.global_position - origin
-		var t: float = to_n.dot(dir)
-		if t < 0.0: continue  # behind camera
-		var closest: Vector3 = origin + dir * t
-		var perp: float = closest.distance_to(n.global_position)
-		if perp < best_perp:
-			best_perp = perp
-			best = n
-	if best != null:
+	var best: Node3D = _pick_creature(screen_pos)
+	if best == null:
 		if _portal_open:
-			_portal_target = best
-			print("[vivarium] portal tracking ", best.name)
-		else:
-			_follow_target = best
-			print("[vivarium] following ", best.name)
+			print("[vivarium] portal: no creature near click")
+		return
+	if _portal_open:
+		_portal_target = best
+		if portal_hint != null:
+			portal_hint.visible = false
+		print("[vivarium] portal tracking ", best.name)
+	else:
+		_follow_target = best
+		print("[vivarium] following ", best.name)
 
 
 # ---- Aquascape mode ----
@@ -733,9 +791,7 @@ const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
 func _pick_wood_log(mouse_pos: Vector2) -> Node3D:
 	if camera == null:
 		return null
-	var win_size: Vector2 = get_window().size
-	var sv_size: Vector2 = Vector2(sub_viewport.size)
-	var sv_pos: Vector2 = mouse_pos * (sv_size / win_size)
+	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
 	var origin: Vector3 = camera.project_ray_origin(sv_pos)
 	var dir: Vector3 = camera.project_ray_normal(sv_pos)
 	var best: Node3D = null
@@ -768,9 +824,7 @@ func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
 	# check before placing.
 	if camera == null:
 		return INVALID_HIT
-	var win_size: Vector2 = get_window().size
-	var sv_size: Vector2 = Vector2(sub_viewport.size)
-	var sv_pos: Vector2 = mouse_pos * (sv_size / win_size)
+	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
 	var origin: Vector3 = camera.project_ray_origin(sv_pos)
 	var dir: Vector3 = camera.project_ray_normal(sv_pos)
 	var top_y: float = _substrate_top_y()

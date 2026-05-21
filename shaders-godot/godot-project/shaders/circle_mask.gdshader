@@ -16,6 +16,5 @@ void fragment() {
     float border_alpha = smoothstep(0.5 - border_width, 0.5 - border_width - 0.01, dist);
     vec4 final_color = mix(border_color, tex_color, border_alpha);
     
-    ALBEDO = final_color.rgb; // for 3d? No, canvas item uses COLOR
     COLOR = vec4(final_color.rgb, final_color.a * alpha);
 }
