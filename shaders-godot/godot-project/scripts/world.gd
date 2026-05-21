@@ -253,6 +253,11 @@ func _add_cube(parent: Node, pos: Vector3, size: Vector3, mat: Material) -> Mesh
 	return mi
 
 
+# Public so main.gd / aquascape mode can clamp clicks to the tank footprint.
+func is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
+	return _is_inside_tank(x, z, margin)
+
+
 func _is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
 	# Point-in-shape test for the tank footprint. margin > 0 returns true
 	# only for points well inside the shape (used for spawn placement).
@@ -287,6 +292,19 @@ func _random_inside_tank(margin: float = 0.4) -> Vector3:
 		if _is_inside_tank(x, z, margin):
 			return Vector3(x, 0, z)
 	return Vector3.ZERO
+
+
+# Like _random_inside_tank but allows constraining Z to a band (e.g. background
+# strip, foreground carpet). Resamples until the (x, z) is inside the tank
+# shape, falling back to (0, mid-of-band) if nothing fits in 32 tries (tiny
+# triangle case).
+func _random_xz_in_band(z_min: float, z_max: float, margin: float = 0.4) -> Vector2:
+	for _i in 32:
+		var x: float = _rng.randf_range(-TANK_HALF_W, TANK_HALF_W)
+		var z: float = _rng.randf_range(z_min, z_max)
+		if _is_inside_tank(x, z, margin):
+			return Vector2(x, z)
+	return Vector2(0.0, clampf((z_min + z_max) * 0.5, -TANK_HALF_D, TANK_HALF_D))
 
 
 func _build_substrate() -> void:
@@ -545,33 +563,29 @@ func _spawn_initial_plants() -> void:
 		var cz: float = _rng.randf_range(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.5)
 		var n_blades: int = _rng.randi_range(5, 9)
 		for i in n_blades:
-			_spawn_plant(species_specs[0], Vector3(
-				cx + _rng.randf_range(-0.5, 0.5),
-				SUBSTRATE_DEPTH,
-				cz + _rng.randf_range(-0.5, 0.5)
-			), _rng.randi_range(2, 5))
+			var px: float = cx + _rng.randf_range(-0.5, 0.5)
+			var pz: float = cz + _rng.randf_range(-0.5, 0.5)
+			# Skip if the jittered position pokes outside non-rect tank shapes.
+			if not _is_inside_tank(px, pz, 0.3):
+				continue
+			_spawn_plant(species_specs[0], Vector3(px, SUBSTRATE_DEPTH, pz),
+				_rng.randi_range(2, 5))
 
 	# --- Midground rosettes (crypts) + red accent stems scattered ---
 	for i in 28:
-		_spawn_plant(species_specs[1], Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.9, TANK_HALF_W * 0.9),
-			SUBSTRATE_DEPTH,
-			_rng.randf_range(-0.5, 1.5)
-		), _rng.randi_range(2, 4))
+		var xz: Vector2 = _random_xz_in_band(-0.5, 1.5, 0.3)
+		_spawn_plant(species_specs[1], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+			_rng.randi_range(2, 4))
 	for i in 14:
-		_spawn_plant(species_specs[3], Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85),
-			SUBSTRATE_DEPTH,
-			_rng.randf_range(-1.5, 1.5)
-		), _rng.randi_range(2, 4))
+		var xz: Vector2 = _random_xz_in_band(-1.5, 1.5, 0.3)
+		_spawn_plant(species_specs[3], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+			_rng.randi_range(2, 4))
 
 	# --- Foreground carpet: very dense ---
 	for i in 55:
-		_spawn_plant(species_specs[2], Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.95, TANK_HALF_W * 0.95),
-			SUBSTRATE_DEPTH,
-			_rng.randf_range(TANK_HALF_D * 0.2, TANK_HALF_D * 0.95)
-		), _rng.randi_range(1, 3))
+		var xz: Vector2 = _random_xz_in_band(TANK_HALF_D * 0.2, TANK_HALF_D * 0.95, 0.3)
+		_spawn_plant(species_specs[2], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+			_rng.randi_range(1, 3))
 
 	# --- Moss on the driftwood arch (epiphytes) ---
 	for x in [-5.5, -4.0, -2.5, -1.0, 0.5, 1.8, 3.2, 4.5]:
@@ -591,11 +605,8 @@ func _spawn_initial_plants() -> void:
 	for i in 6:
 		var sp := SpiralPlant.new()
 		plants_root.add_child(sp)
-		sp.global_position = Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85),
-			SUBSTRATE_DEPTH,
-			_rng.randf_range(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5),
-		)
+		var sp_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.4)
+		sp.global_position = Vector3(sp_xz.x, SUBSTRATE_DEPTH, sp_xz.y)
 		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
 		sp.water_surface_y = WATER_HEIGHT
 		sp.generation = 0
@@ -617,11 +628,8 @@ func _spawn_initial_plants() -> void:
 	for i in 8:
 		var bp := BranchPlant.new()
 		plants_root.add_child(bp)
-		bp.global_position = Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85),
-			SUBSTRATE_DEPTH,
-			_rng.randf_range(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.7),
-		)
+		var bp_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.7, 0.4)
+		bp.global_position = Vector3(bp_xz.x, SUBSTRATE_DEPTH, bp_xz.y)
 		bp.ramp_override = fern_ramp
 		bp.water_surface_y = WATER_HEIGHT
 		bp.generation = 0
@@ -783,16 +791,16 @@ func _spawn_initial_fish() -> void:
 		g["max_age_s"] += randf_range(-30, 30)
 		# Founding phenotype spread - wider for "diverse" preset, zero for clones.
 		_apply_initial_phenotype_spread(g, phenotype_mult)
-		_spawn_fish_at(g, Vector3(
-			randf_range(-5, 5), randf_range(3.0, 4.5), randf_range(-2, 2)
-		))
+		# Clamp to tank footprint so hex/triangle shapes don't get fish in the
+		# corners outside the glass.
+		var gd_xz: Vector2 = _random_xz_in_band(-2.0, 2.0, 0.5)
+		_spawn_fish_at(g, Vector3(gd_xz.x, randf_range(3.0, 4.5), gd_xz.y))
 	for i in mudsifter_n:
 		var g: Dictionary = mudsifter_genome.duplicate()
 		g["sex"] = i % 2
 		_apply_initial_phenotype_spread(g, phenotype_mult)
-		_spawn_fish_at(g, Vector3(
-			randf_range(-4, 4), randf_range(2.0, 2.8), randf_range(-2, 2)
-		))
+		var ms_xz: Vector2 = _random_xz_in_band(-2.0, 2.0, 0.5)
+		_spawn_fish_at(g, Vector3(ms_xz.x, randf_range(2.0, 2.8), ms_xz.y))
 
 	# One solo apex: betta-like - bigger, brighter, more territorial. Hunts
 	# baby shrimp + fry more often (high herbivory_priority via aggression).
@@ -813,7 +821,8 @@ func _spawn_initial_fish() -> void:
 	for b in betta_n:
 		var bg: Dictionary = betta_genome.duplicate()
 		bg["sex"] = randi() % 2
-		_spawn_fish_at(bg, Vector3(randf_range(-2, 2), 4.0, randf_range(-1, 1)))
+		var bt_xz: Vector2 = _random_xz_in_band(-1.0, 1.0, 0.6)
+		_spawn_fish_at(bg, Vector3(bt_xz.x, 4.0, bt_xz.y))
 
 
 var _light_fixture_root: Node3D = null
@@ -915,11 +924,8 @@ func _spawn_floaters() -> void:
 	for i in 18:
 		var disk := Node3D.new()
 		container.add_child(disk)
-		disk.position = Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85),
-			WATER_HEIGHT - 0.05,
-			_rng.randf_range(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85),
-		)
+		var f_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
+		disk.position = Vector3(f_xz.x, WATER_HEIGHT - 0.05, f_xz.y)
 		# Cluster of 3-5 small green voxels in a rough circle.
 		var n_leaves: int = _rng.randi_range(3, 5)
 		var leaf_color := Color8(70, 130, 60)
@@ -990,8 +996,9 @@ func _spawn_bubble_streams() -> void:
 	container.name = "BubbleStreams"
 	add_child(container)
 	for i in n_streams:
-		var sx: float = _rng.randf_range(-TANK_HALF_W * 0.85, TANK_HALF_W * 0.85)
-		var sz: float = _rng.randf_range(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85)
+		var b_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
+		var sx: float = b_xz.x
+		var sz: float = b_xz.y
 		# --- Rising bubbles from the substrate ---
 		var p := GPUParticles3D.new()
 		p.amount = 6
@@ -1098,11 +1105,8 @@ func _spawn_mulm_layer() -> void:
 		var bm := BoxMesh.new()
 		bm.size = Vector3(0.18, 0.06, 0.18)
 		mi.mesh = bm
-		mi.position = Vector3(
-			_rng.randf_range(-TANK_HALF_W * 0.95, TANK_HALF_W * 0.95),
-			SUBSTRATE_DEPTH + 0.04,
-			_rng.randf_range(-TANK_HALF_D * 0.95, TANK_HALF_D * 0.95),
-		)
+		var m_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.95, TANK_HALF_D * 0.95, 0.2)
+		mi.position = Vector3(m_xz.x, SUBSTRATE_DEPTH + 0.04, m_xz.y)
 		mi.material_override = VoxelMat.make(Color8(28, 22, 16))
 		container.add_child(mi)
 		_mulm_voxels.append(mi)
@@ -1183,11 +1187,8 @@ func _spawn_initial_shrimp() -> void:
 		# Spread initial ages so we don't get a synchronised die-off.
 		sh.age = g["max_age_s"] * randf_range(0.15, 0.6)
 		fauna_root.add_child(sh)
-		sh.global_position = Vector3(
-			randf_range(-TANK_HALF_W * 0.8, TANK_HALF_W * 0.8),
-			SUBSTRATE_DEPTH + 0.15,
-			randf_range(-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7),
-		)
+		var sh_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 0.4)
+		sh.global_position = Vector3(sh_xz.x, SUBSTRATE_DEPTH + 0.15, sh_xz.y)
 		sh.init_genome(g)
 		sim.register_shrimp(sh)
 
@@ -1196,6 +1197,5 @@ func _seed_nutrient_hotspots() -> void:
 	# Push extra nutrients into a few cells so plants near them get a visible
 	# head start. Without this, all plants would grow uniformly which is boring.
 	for i in 5:
-		var x: float = _rng.randf_range(-TANK_HALF_W * 0.8, TANK_HALF_W * 0.8)
-		var z: float = _rng.randf_range(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.8)
-		substrate_grid.add_at(Vector3(x, SUBSTRATE_DEPTH, z), 1.5)
+		var hs_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.8, 0.4)
+		substrate_grid.add_at(Vector3(hs_xz.x, SUBSTRATE_DEPTH, hs_xz.y), 1.5)

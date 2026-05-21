@@ -455,6 +455,13 @@ func _update_aquascape_preview(mouse_pos: Vector2) -> void:
 	if _aquascape_preview == null or camera == null or world == null:
 		return
 	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	# If the cursor isn't pointing at a valid substrate cell inside the tank,
+	# hide the preview so the user gets clear feedback that placement won't
+	# happen here.
+	if hit == INVALID_HIT:
+		_aquascape_preview.visible = false
+		return
+	_aquascape_preview.visible = true
 	# Snap to a 0.5-unit grid on X/Z so placement is tidy.
 	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
 	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
@@ -463,22 +470,35 @@ func _update_aquascape_preview(mouse_pos: Vector2) -> void:
 	_aquascape_preview.global_position = hit
 
 
+const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
+
+
 func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
 	# Project the cursor's ray onto the horizontal plane y = SUBSTRATE_TOP.
+	# Returns INVALID_HIT if the ray doesn't hit the plane in front of the
+	# camera OR if the hit falls outside the tank's footprint. Callers must
+	# check before placing.
 	if camera == null:
-		return Vector3.ZERO
+		return INVALID_HIT
 	var win_size: Vector2 = get_window().size
 	var sv_size: Vector2 = Vector2(sub_viewport.size)
 	var sv_pos: Vector2 = mouse_pos * (sv_size / win_size)
 	var origin: Vector3 = camera.project_ray_origin(sv_pos)
 	var dir: Vector3 = camera.project_ray_normal(sv_pos)
 	var top_y: float = _substrate_top_y()
-	if absf(dir.y) < 1e-4:
-		return origin
+	# Ray must be going DOWN for it to hit the substrate plane from above.
+	if dir.y > -0.01:
+		return INVALID_HIT
 	var t: float = (top_y - origin.y) / dir.y
 	if t < 0.0:
-		return origin
-	return origin + dir * t
+		return INVALID_HIT
+	var hit: Vector3 = origin + dir * t
+	# Reject points outside the tank's footprint - prevents placing dirt
+	# in empty space when the cursor is past the glass wall.
+	if world != null and world.has_method("is_inside_tank"):
+		if not world.is_inside_tank(hit.x, hit.z, 0.3):
+			return INVALID_HIT
+	return hit
 
 
 func _substrate_top_y() -> float:
@@ -490,6 +510,12 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 	if world == null:
 		return
 	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	# Refuse to place when the cursor isn't over a valid substrate cell -
+	# this is the fix for "dirt placed in empty space when clicking outside
+	# the tank glass".
+	if hit == INVALID_HIT:
+		print("[vivarium] aquascape: cursor not over tank, skipping placement")
+		return
 	# Snap horizontally to a 0.5-unit grid so placement reads tidy.
 	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
 	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
