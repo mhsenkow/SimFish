@@ -38,6 +38,10 @@ var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
 var _t_until_turn: float = 0.0
 var _paused: bool = false
+# Cleaner-crew pursuit: true while we're tracking a waste particle. The
+# crawl pulse runs faster while this is set, so the snail visibly
+# accelerates on the food trail.
+var _pursuing_waste: bool = false
 var _age: float = 0.0
 var _t_until_breed: float = 0.0
 # Foot-pulse phase: snails locomote by rhythmic muscular waves through their
@@ -116,10 +120,14 @@ func _process(dt: float) -> void:
 		_apply_squash(idle_squash, up)
 		return
 
-	_pulse_phase += dt * 1.5
+	# Pulse rate jumps when pursuing detritus - the snail visibly speeds up
+	# toward food, which is the real "cleaner crew converging" pattern.
+	var pulse_rate: float = 2.4 if _pursuing_waste else 1.5
+	_pulse_phase += dt * pulse_rate
 	# Pulse-driven forward velocity: peaks at +SPEED * 1.6, dips to ~0.
 	var pulse_factor: float = 0.5 + 0.5 * sin(_pulse_phase)  # 0..1
-	var gait_speed: float = SPEED * (0.4 + 1.2 * pulse_factor)
+	var speed_mult: float = 1.4 if _pursuing_waste else 1.0
+	var gait_speed: float = SPEED * (0.4 + 1.2 * pulse_factor) * speed_mult
 	var delta: Vector3 = tangent * _facing.x + up * _facing.y
 	position += delta * gait_speed * dt
 
@@ -135,14 +143,20 @@ func _process(dt: float) -> void:
 
 
 func _check_waste_nearby(tangent: Vector3, up: Vector3) -> void:
-	# Scan the world for waste particles near our wall. If one is close enough,
-	# point our motion toward it in the wall-tangent plane. When we get very
-	# close, consume it (produces a tiny snail pellet).
+	# Scan the world for waste particles near our wall. If one is close
+	# enough, point our motion toward it in the wall-tangent plane. When we
+	# get very close, consume it (produces a tiny snail pellet).
+	#
+	# Cleaner-crew sequencing: snails can detect detritus from much further
+	# than they used to (~5 units now) and they accelerate the crawl when
+	# they're on a trail. The result is a visible "drift toward the corpse"
+	# pattern with multiple snails converging on the same particle - real
+	# Walstad cleanup behavior.
 	var sim := _get_sim()
 	if sim == null:
 		return
 	var best: Node3D = null
-	var best_d2: float = 2.0 * 2.0
+	var best_d2: float = 5.0 * 5.0
 	for w in sim.waste:
 		if not is_instance_valid(w):
 			continue
@@ -173,6 +187,10 @@ func _check_waste_nearby(tangent: Vector3, up: Vector3) -> void:
 	if dir.length() > 0.01:
 		_direction = dir.normalized()
 		_paused = false
+		# Trail-mode flag: while pursuing, the foot pulse goes faster so the
+		# snail visibly speeds up toward food. Reset by _choose_new_direction
+		# once we lose sight of waste.
+		_pursuing_waste = true
 
 
 func _get_sim() -> Node:
@@ -232,6 +250,10 @@ func _lay_egg_sac() -> void:
 
 
 func _choose_new_direction() -> void:
+	# Clear cleaner-crew pursuit flag - if there was a waste trail nearby
+	# we'd still be locked onto it via _check_waste_nearby. By the time
+	# we get here we've either eaten the target or lost it.
+	_pursuing_waste = false
 	_t_until_turn = randf_range(TURN_INTERVAL_MIN, TURN_INTERVAL_MAX)
 	_paused = randf() < PAUSE_CHANCE
 	if _paused:

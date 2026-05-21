@@ -128,6 +128,7 @@ func _ready() -> void:
 	_spawn_initial_plants()
 	_spawn_floaters()
 	_spawn_lily_pads()
+	_spawn_math_plants()
 	_spawn_initial_fish()
 	_spawn_initial_shrimp()
 	_spawn_aeration_system()
@@ -219,6 +220,14 @@ func _process(dt: float) -> void:
 		_floaters.erase(df)
 
 	# Lily pad gentle sway. Each pad runs its own _t-based sin curve.
+	# Math plants - their tick is what makes the nautilus / cattail / moss
+	# nodes visibly sway. Filter dead refs in case any get queue_freed (eg
+	# eaten by future grazer pass).
+	for mp in _math_plants:
+		if not is_instance_valid(mp):
+			continue
+		if mp.has_method("tick"):
+			mp.tick(sdt)
 	_lily_pad_t += sdt
 	for lp in _lily_pads:
 		if not is_instance_valid(lp):
@@ -1046,6 +1055,78 @@ var _floater_t: float = 0.0
 var _duckweed_accum: float = 0.0
 var _lily_pads: Array = []
 var _lily_pad_t: float = 0.0
+var _math_plants: Array = []
+
+
+# Spawn the three new mathematical plant types:
+#   - 2-3 nautilus log-spirals (Bernoulli's spira mirabilis curl)
+#   - 2-4 cattail / reed clusters (vertical with seed head)
+#   - 6-10 fractal moss patches (recursive L-system clusters)
+# All shape-validated for non-rectangular tanks. New plant species are
+# self-contained Node3Ds with their own tick(); they're stored in
+# _math_plants so _process can drive their animation each frame.
+func _spawn_math_plants() -> void:
+	var container := Node3D.new()
+	container.name = "MathPlants"
+	add_child(container)
+	var green_ramp: Array = [
+		Color8(20, 60, 30), Color8(40, 95, 50), Color8(60, 130, 70),
+		Color8(90, 170, 95), Color8(140, 210, 130),
+	]
+	var red_ramp: Array = [
+		Color8(70, 30, 30), Color8(110, 50, 50), Color8(160, 80, 80),
+		Color8(200, 120, 120), Color8(230, 170, 165),
+	]
+
+	# Nautilus spirals.
+	var nautilus_script := load("res://scripts/nautilus_plant.gd")
+	for i in _rng.randi_range(2, 3):
+		var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.6)
+		var p = nautilus_script.new()
+		container.add_child(p)
+		var ramp_choice: Array = green_ramp if randf() < 0.7 else red_ramp
+		p.a = _rng.randf_range(0.04, 0.07)
+		p.b = _rng.randf_range(0.18, 0.26)
+		p.total_turns = _rng.randf_range(3.0, 4.2)
+		p.y_per_turn = _rng.randf_range(0.45, 0.7)
+		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y), ramp_choice)
+		_math_plants.append(p)
+
+	# Cattail reeds.
+	var cattail_script := load("res://scripts/cattail_plant.gd")
+	for i in _rng.randi_range(2, 4):
+		# Reeds prefer the back band (background-plant style).
+		var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.4, 0.5)
+		var p = cattail_script.new()
+		container.add_child(p)
+		p.height_voxels = _rng.randi_range(18, 26)
+		p.lean_amplitude = _rng.randf_range(0.4, 0.8)
+		p.head_voxels = _rng.randi_range(4, 6)
+		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + 0.05, xz.y),
+			Color8(110, 145, 75),
+			Color8(110, 78, 48),
+			Color8(95, 140, 75))
+		_math_plants.append(p)
+
+	# Fractal moss patches.
+	var moss_script := load("res://scripts/fractal_moss.gd")
+	var moss_ramp: Array = [
+		Color8(25, 65, 40), Color8(45, 95, 55), Color8(75, 130, 70),
+		Color8(110, 170, 95), Color8(150, 200, 125),
+	]
+	for i in _rng.randi_range(6, 10):
+		var xz: Vector2 = _random_xz_in_band(
+			-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
+		var p = moss_script.new()
+		container.add_child(p)
+		p.depth = _rng.randi_range(2, 3)
+		p.children = _rng.randi_range(3, 5)
+		# Moss settles on the substrate OR on existing logs at random
+		# heights - we anchor to substrate here; future "moss on log"
+		# pass could parent these to a hardscape log instead.
+		var y_jitter: float = randf_range(0.1, 0.6)
+		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + y_jitter, xz.y), moss_ramp)
+		_math_plants.append(p)
 
 
 # Spawn a small bed of lily pads (Nymphaea) - mathematical radial plants

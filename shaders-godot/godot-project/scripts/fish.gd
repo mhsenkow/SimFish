@@ -168,6 +168,11 @@ const COURT_DURATION: float = 6.0  # sim seconds of swimming together before spa
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
 var burst_remaining: float = 0.0
+# Flips to true while in MALE courtship display - drives the renderer to
+# flare the tail wag and over-bank into the S-curve dance. Cleared
+# automatically when courtship ends or the fish moves out of display
+# range.
+var _courtship_flare: bool = false
 # Aerial respiration: cories + loaches periodically dart to the surface to
 # gulp atmospheric air, then sink back to the substrate. Real Walstad
 # behavior - it's a stress signal in healthy tanks but routine in any
@@ -175,6 +180,14 @@ var burst_remaining: float = 0.0
 # trip (the negative value drives the upward bias).
 var _aerial_timer: float = -1.0
 var _aerial_target_y: float = 0.0
+# Substrate sifting: "shuffle" species (cory, loach) periodically tilt
+# nose-down at the substrate and stay put for a couple of seconds, working
+# their barbels through the mulm. Real Walstad behavior - the alternative
+# is constant scuttling, which looks unrealistic at rest. Counts down
+# between sift events; while > 0 the fish almost stops and applies a
+# downward pitch tilt.
+var _sift_timer: float = 0.0
+var _sift_cooldown: float = 0.0
 # Startle: one fish triggering a burst can cause its school-mates to
 # panic in the SAME direction (classic predator-evasion behavior).
 # When _startle_remaining > 0, the dart heading is forced to match the
@@ -272,6 +285,27 @@ func init_genome(genome: Dictionary) -> void:
 	clutch_size = genome.get("clutch_size", clutch_size)
 	preferred_y = genome.get("preferred_y", preferred_y)
 	sex = genome.get("sex", randi() % 2)
+	# Sexual dimorphism for species that have it. Guppies are the obvious
+	# case: males are tiny, brightly colored, and grow long flowing tails;
+	# females are larger, dull silver, and have small tails. The genome
+	# carries a base template; if dimorphism is enabled, we override the
+	# visible traits for this individual based on sex BEFORE building the
+	# body. Drift-through-generations still works because the underlying
+	# stored values are shared.
+	if bool(genome.get("dimorphic", false)) and sex == 1:
+		# Female form: drop saturation, enlarge body, shrink fins.
+		base_color = Color(base_color.r, base_color.g, base_color.b) \
+			.lerp(Color(0.78, 0.78, 0.80), 0.55)   # silvery wash
+		if _tail_color_set:
+			tail_color = tail_color.lerp(Color(0.7, 0.72, 0.75), 0.6)
+		accent_color = accent_color.lerp(Color(0.65, 0.65, 0.70), 0.45)
+		# Bigger, dumpier body.
+		adult_voxel_scale *= 1.35
+		body_depth_factor *= 1.15
+		ventral_profile = clampf(ventral_profile * 1.25, 0.55, 1.9)
+		# Smaller, drabber fins.
+		fin_length_factor = clampf(fin_length_factor * 0.55, 0.5, 1.8)
+		dorsal_height_factor = clampf(dorsal_height_factor * 0.7, 0.5, 1.8)
 	generation = genome.get("generation", 0)
 	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
 	body_elongation = genome.get("body_elongation", body_elongation)
@@ -638,6 +672,18 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
 	_startle_remaining = maxf(0.0, _startle_remaining - dt)
 
+	# Substrate sifting (shuffle species only). Slow countdown to next
+	# sift. While _sift_timer > 0 the brain damps velocity to almost
+	# zero AND we tilt nose-down via _process. Sifts happen near the
+	# substrate (don't sift if home_y is mid-water).
+	if swim_pattern == "shuffle" and home_y < 3.0:
+		_sift_cooldown = maxf(0.0, _sift_cooldown - dt)
+		_sift_timer = maxf(0.0, _sift_timer - dt)
+		if _sift_timer <= 0.0 and _sift_cooldown <= 0.0 \
+				and burst_remaining <= 0.0 and randf() < dt * 0.4:
+			_sift_timer = randf_range(1.5, 3.0)
+			_sift_cooldown = randf_range(6.0, 12.0)
+
 	# Cory / loach aerial respiration. Every ~25-40 sim seconds, a
 	# "shuffle" pattern fish darts to the surface, gulps, and sinks back.
 	# The trip is implemented by overriding home_y temporarily via the
@@ -695,11 +741,39 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	# Tier 0: wall avoidance always runs (additive).
 	desired += _wall_avoid(world_bounds) * 3.0
 
+	# Tier 0.5: TERRITORIAL DEFENSE. swim_pattern "hover" species (angelfish)
+	# claim a small territory around home_x/home_z and chase off conspecifics
+	# OR similar-sized neighbors that enter it. Real angelfish behaviour - a
+	# mated pair claims a corner of the tank and herds intruders out.
+	if swim_pattern == "hover" and maturity == MATURITY_ADULT:
+		for n in neighbors:
+			if not (n is Fish):
+				continue
+			var intruder: Fish = n
+			# Don't chase your own partner or fry.
+			if intruder == partner:
+				continue
+			if intruder.maturity == MATURITY_FRY:
+				continue
+			# Is the intruder INSIDE my territory? Use home_radius.
+			var dx: float = intruder.position.x - home_x
+			var dz: float = intruder.position.z - home_z
+			var d2: float = dx * dx + dz * dz
+			if d2 < home_radius * home_radius:
+				# Push outward, with the chasing fish pursuing the intruder
+				# in the direction AWAY from home. Visible aggressive lunge.
+				var to_intruder: Vector3 = intruder.position - position
+				if to_intruder.length_squared() > 0.04:
+					desired += to_intruder.normalized() * effective_max * 0.9
+					if burst_remaining <= 0.0 and energy > 0.4:
+						burst_remaining = 0.3
+
 	# Tier 1: COURTSHIP. Already paired? Continue the dance toward spawn.
 	if partner != null:
 		if not is_instance_valid(partner) or partner.maturity != MATURITY_ADULT:
 			partner = null
 			court_timer = 0.0
+			_courtship_flare = false
 		else:
 			current_mode = Mode.COURT
 			var to_partner: Vector3 = partner.position - position
@@ -707,7 +781,25 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 			# Swim alongside (not into) the partner: target a point slightly to one side.
 			var side: Vector3 = to_partner.cross(Vector3.UP).normalized() * 0.4
 			var courtship_target: Vector3 = partner.position + side
-			desired += (courtship_target - position).normalized() * effective_max * 0.7
+			# MALE COURTING DISPLAY. Real male guppies + bettas parade
+			# alongside the female in a tight S-curve, flaring their tail
+			# fins to maximum spread. We simulate this by adding a
+			# sinusoidal lateral offset (the S-curve) when the male is
+			# close enough to display, scaled by the courtship sequence
+			# duration so the dance accelerates as the spawn approaches.
+			if sex == 0 and dist < 1.8:
+				var t_phase: float = court_timer * 4.5
+				var s_offset: Vector3 = to_partner.cross(Vector3.UP).normalized() \
+					* sin(t_phase) * 0.35
+				desired += (courtship_target + s_offset - position).normalized() \
+					* effective_max * 0.85
+				# Mark the renderer flag - _apply_render() uses it to flare the
+				# tail wag amplitude AND temporarily boost the bank angle so
+				# the dance reads visually.
+				_courtship_flare = true
+			else:
+				desired += (courtship_target - position).normalized() * effective_max * 0.7
+				_courtship_flare = false
 			court_timer += dt
 			# Spawn when we've been close enough for long enough.
 			if dist < 1.2 and court_timer >= COURT_DURATION:
@@ -722,6 +814,7 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
+				_courtship_flare = false
 			target_velocity = desired.limit_length(effective_max)
 			return events
 
@@ -1132,11 +1225,14 @@ func _process(dt: float) -> void:
 		if dt <= 0.0:
 			return  # paused
 	# Decompose the brain's target into a desired direction + desired speed.
+	# Sifting fish (cory mid-graze) almost stop while the timer is active.
 	var target_dir: Vector3 = heading
 	var target_spd: float = 0.0
 	if target_velocity.length_squared() > 0.0001:
 		target_spd = target_velocity.length()
 		target_dir = target_velocity.normalized()
+	if _sift_timer > 0.0:
+		target_spd *= 0.15
 
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
 	var angle: float = heading.angle_to(target_dir)
@@ -1184,18 +1280,36 @@ func _process(dt: float) -> void:
 	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 	if _bank_pivot != null:
 		_bank_pivot.rotation.z = _bank
+		# Sifting nose-down tilt. While _sift_timer > 0 we apply a pitch
+		# rotation around X so the fish's head points down at the
+		# substrate - the classic cory grazing pose. Lerp in + out for
+		# smoothness; courtship-display males ALSO tilt slightly for the
+		# parade swim.
+		var pitch_target: float = 0.0
+		if _sift_timer > 0.0:
+			pitch_target = 0.55
+		elif _courtship_flare:
+			pitch_target = -0.12   # nose slightly up for the parade swim
+		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, pitch_target,
+			clampf(dt * 4.0, 0.0, 1.0))
 
 	# ---- Swim animation ----
 	# Tail wag scales with speed. Hovering fish pulse slowly, dashing fast.
 	# Independent fin pivots add full-body life: pectoral fins flutter at a
 	# faster frequency offset by 90 degrees for left/right (rowing motion),
 	# dorsal/anal fins sway gently with the body's counter-wag.
+	# Courtship-display fish wag faster + flare wider so the dance reads.
 	var wag_freq: float = 2.5 + speed * 5.5
+	var wag_amp_extra: float = 0.0
+	if _courtship_flare:
+		wag_freq *= 1.4
+		wag_amp_extra = 0.25
 	_swim_phase += dt * wag_freq
 	if _tail_pivot != null:
-		_tail_pivot.rotation.y = sin(_swim_phase) * (0.35 + minf(speed * 0.18, 0.25))
+		_tail_pivot.rotation.y = sin(_swim_phase) * (0.35 + wag_amp_extra \
+			+ minf(speed * 0.18, 0.25))
 	if _body_mid_pivot != null:
-		_body_mid_pivot.rotation.y = -sin(_swim_phase) * 0.10
+		_body_mid_pivot.rotation.y = -sin(_swim_phase) * (0.10 + wag_amp_extra * 0.4)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08

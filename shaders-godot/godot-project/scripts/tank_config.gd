@@ -224,6 +224,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(45, 50, 60),
 			"accent_color": Color8(255, 240, 90),
 			"tail_color": Color8(240, 55, 30),
+			"dimorphic": true,                   # males flashy, females silver
 			"adult_voxel_scale": 0.11,
 			"max_age_s": 180.0,
 			"max_speed": 1.5,

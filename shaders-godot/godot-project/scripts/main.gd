@@ -85,6 +85,13 @@ var _aquascape_preview: MeshInstance3D = null
 var _aquascape_saved_time_scale: float = 1.0
 var _aquascape_tool: String = "dirt"
 const AQUASCAPE_TOOLS: Array[String] = ["dirt", "stone", "wood", "dig"]
+# Drag-existing-driftwood state. While in aquascape mode, an LMB hold that
+# starts on a placed wood log enters drag mode for that log: the entire
+# log Node3D follows the cursor's substrate projection until LMB releases.
+# This is what makes the wood tool feel like aquascaping software instead
+# of stamping single voxels.
+var _wood_drag: Node3D = null
+var _wood_drag_y_offset: float = 0.0
 
 
 func _ready() -> void:
@@ -209,8 +216,21 @@ func _process(dt: float) -> void:
 		else:
 			_drag_button = MOUSE_BUTTON_LEFT
 			_drag_mode = "pan" if pan_modifier else "orbit"
+			# Aquascape mode: if the LMB-down landed on a placed wood log,
+			# enter wood-drag mode instead of orbit. The log will follow the
+			# cursor's substrate projection until LMB releases. Any other
+			# tool / no log under cursor falls through to the normal click
+			# (place voxel) path on release.
+			if _aquascape_mode and not pan_modifier:
+				var picked: Node3D = _pick_wood_log(mouse_now)
+				if picked != null:
+					_wood_drag = picked
+					_wood_drag_y_offset = picked.global_position.y \
+						- _substrate_top_y()
+					_drag_mode = "wood_drag"
 	elif not any_btn and _orbiting:
 		_orbiting = false
+		_wood_drag = null
 		# Click vs drag: only a pure LMB tap (no Shift/Space held, no
 		# significant drag distance) dispatches as a click. MMB/RMB release
 		# never places aquascape voxels or starts a follow. A Shift-LMB or
@@ -247,6 +267,18 @@ func _process(dt: float) -> void:
 					radius = clampf(radius * (1.0 + delta.y * DOLLY_MOUSE_SENSITIVITY),
 						MIN_RADIUS, MAX_RADIUS)
 					_apply_camera()
+				"wood_drag":
+					# Move the held driftwood log to the current cursor
+					# projection on the substrate. Preserve its original
+					# Y offset so logs that were sitting up on a stone pile
+					# don't snap down into the floor.
+					if _wood_drag != null and is_instance_valid(_wood_drag):
+						var hit: Vector3 = _project_to_substrate(mouse_now)
+						if hit != INVALID_HIT:
+							_wood_drag.global_position = Vector3(
+								hit.x,
+								_substrate_top_y() + _wood_drag_y_offset,
+								hit.z)
 				_:
 					yaw -= delta.x * SENSITIVITY
 					pitch -= delta.y * SENSITIVITY
@@ -524,6 +556,41 @@ func _update_aquascape_preview(mouse_pos: Vector2) -> void:
 
 
 const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
+
+
+# Pick the topmost placed wood log under the cursor (or null). Iterates
+# _aquascape_placed, ray-tests against each log's bounding sphere computed
+# from its first child voxel's distance to centroid. Cheap because the
+# list is small (usually < 8 logs).
+func _pick_wood_log(mouse_pos: Vector2) -> Node3D:
+	if camera == null:
+		return null
+	var win_size: Vector2 = get_window().size
+	var sv_size: Vector2 = Vector2(sub_viewport.size)
+	var sv_pos: Vector2 = mouse_pos * (sv_size / win_size)
+	var origin: Vector3 = camera.project_ray_origin(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos)
+	var best: Node3D = null
+	var best_t: float = 1e9
+	for v in _aquascape_placed:
+		if not is_instance_valid(v):
+			continue
+		# Wood logs are Node3D containers with multiple voxel children;
+		# single-voxel placements (dirt, stone) are MeshInstance3D leaves.
+		# Tool meta tells us the kind reliably.
+		if v.get_meta("aquascape_tool", "") != "wood":
+			continue
+		# Sphere test: log "radius" approximated as 1.6 (~5 voxels of 0.7).
+		var to_c: Vector3 = v.global_position - origin
+		var t: float = to_c.dot(dir)
+		if t < 0.0:
+			continue
+		var closest: Vector3 = origin + dir * t
+		var perp_sq: float = (closest - v.global_position).length_squared()
+		if perp_sq < 1.6 * 1.6 and t < best_t:
+			best_t = t
+			best = v
+	return best
 
 
 func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
