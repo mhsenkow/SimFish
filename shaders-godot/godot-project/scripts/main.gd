@@ -36,8 +36,10 @@ extends Node
 
 var _portal_open: bool = false
 var _portal_target: Node3D = null
-var _portal_mat: ShaderMaterial = null
-const PORTAL_ZOOM: float = 3.5
+# Fish-local eye offsets (forward = -Z on fish/shrimp nodes).
+const PORTAL_EYE_FISH := Vector3(0.0, 0.07, -0.16)
+const PORTAL_EYE_SHRIMP := Vector3(0.0, 0.05, -0.10)
+const PORTAL_EYE_DEFAULT := Vector3(0.0, 0.04, -0.08)
 # The four tool buttons inside the palette - built procedurally in _ready
 # because we want one button per AQUASCAPE_TOOLS entry without locking
 # in a fixed scene tree.
@@ -148,19 +150,30 @@ func _ready() -> void:
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
+	_setup_portal()
+
+
+func _setup_portal() -> void:
+	if portal_viewport == null or portal_camera == null or sub_viewport == null:
+		return
+	portal_viewport.world_3d = sub_viewport.world_3d
+	portal_camera.set_as_top_level(true)
+	portal_camera.current = true
+	portal_camera.fov = 88.0
+	portal_camera.near = 0.04
+	portal_camera.far = 80.0
 	if portal_display != null:
-		# PiP zooms the main tank render — no second 3D camera needed.
-		portal_display.texture = sub_viewport.get_texture()
-		if portal_display.material is ShaderMaterial:
-			_portal_mat = portal_display.material as ShaderMaterial
-	if portal_viewport != null:
-		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		portal_display.texture = portal_viewport.get_texture()
+	portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
 func _toggle_portal() -> void:
 	_portal_open = not _portal_open
 	if portal_container != null:
 		portal_container.visible = _portal_open
+	if portal_viewport != null:
+		portal_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS \
+			if _portal_open else SubViewport.UPDATE_DISABLED
 	if not _portal_open:
 		_portal_target = null
 	if portal_hint != null:
@@ -657,24 +670,41 @@ func _creature_label(creature: Node) -> String:
 	return creature.name
 
 
+func _creature_eye_local(creature: Node) -> Vector3:
+	if creature is Fish:
+		return PORTAL_EYE_FISH
+	if creature is Shrimp:
+		return PORTAL_EYE_SHRIMP
+	return PORTAL_EYE_DEFAULT
+
+
+func _creature_swim_forward(creature: Node3D) -> Vector3:
+	if creature.get("heading") != null:
+		var h: Variant = creature.get("heading")
+		if h is Vector3 and (h as Vector3).length_squared() > 0.01:
+			return (h as Vector3).normalized()
+	return -creature.global_transform.basis.z.normalized()
+
+
+func _creature_eye_transform(creature: Node3D) -> Transform3D:
+	var t: Transform3D = creature.global_transform
+	var eye_pos: Vector3 = t * _creature_eye_local(creature)
+	var fwd: Vector3 = _creature_swim_forward(creature)
+	var up: Vector3 = t.basis.y
+	if absf(fwd.dot(up)) > 0.92:
+		up = Vector3.UP
+	return Transform3D(Basis.looking_at(fwd, up), eye_pos)
+
+
 func _update_portal_pip() -> void:
-	if not _portal_open or _portal_mat == null or camera == null:
+	if not _portal_open or portal_camera == null:
 		return
 	if _portal_target == null or not is_instance_valid(_portal_target):
 		_portal_target = null
-		_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
 		if portal_hint != null:
 			portal_hint.visible = true
 		return
-	if camera.is_position_behind(_portal_target.global_position):
-		return
-	var screen_pt: Vector2 = camera.unproject_position(_portal_target.global_position)
-	var center_uv: Vector2 = Vector2(
-		screen_pt.x / float(sub_viewport.size.x),
-		screen_pt.y / float(sub_viewport.size.y),
-	)
-	_portal_mat.set_shader_parameter("center_uv", center_uv)
-	_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
+	portal_camera.global_transform = _creature_eye_transform(_portal_target)
 	if portal_hint != null:
 		portal_hint.visible = false
 
