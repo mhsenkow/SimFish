@@ -74,6 +74,9 @@ func _ready() -> void:
 	# so the resolution change takes effect.
 	_apply_render_config()
 	display.texture = sub_viewport.get_texture()
+	# Restore camera state if we saved it before a scene reload. Otherwise
+	# fall back to defaults set at declaration.
+	_restore_camera_state()
 	_apply_camera()
 	# Subscribe to SimDriver stats - they emit at ~1Hz with the ecosystem snapshot.
 	await get_tree().process_frame
@@ -85,6 +88,40 @@ func _ready() -> void:
 		settings_toggle.pressed.connect(settings_panel.toggle)
 	if render_toggle != null and render_panel != null:
 		render_toggle.pressed.connect(render_panel.toggle)
+
+
+func _restore_camera_state() -> void:
+	# Pull preserved camera yaw/pitch/radius/target from TankConfig if the
+	# user has saved it (i.e. they Applied settings at least once and we
+	# stashed the current view before reload).
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.camera_state_saved):
+		return
+	yaw = float(cfg.camera_yaw)
+	pitch = float(cfg.camera_pitch)
+	radius = float(cfg.camera_radius)
+	target = Vector3(
+		float(cfg.camera_target_x),
+		float(cfg.camera_target_y),
+		float(cfg.camera_target_z),
+	)
+
+
+# Called by the settings + render panels just before they call
+# reload_current_scene(). Stashes the current view so we can restore it
+# in the next _ready().
+func save_camera_state() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	cfg.camera_yaw = yaw
+	cfg.camera_pitch = pitch
+	cfg.camera_radius = radius
+	cfg.camera_target_x = target.x
+	cfg.camera_target_y = target.y
+	cfg.camera_target_z = target.z
+	cfg.camera_state_saved = true
+	cfg.save_to_disk()
 
 
 func _apply_render_config() -> void:
@@ -140,7 +177,9 @@ func _process(dt: float) -> void:
 		# If total drag distance was small, treat as a click. In aquascape
 		# mode, place a hardscape voxel at the cursor; otherwise try
 		# follow-cam on the creature under the cursor.
-		if _drag_total < 5.0:
+		# Threshold loosened from 5 -> 12 to be more forgiving of trackpad
+		# jitter during clicks.
+		if _drag_total < 12.0:
 			if _aquascape_mode:
 				_aquascape_place(mouse_now)
 			else:
@@ -339,17 +378,17 @@ func _try_follow_click(screen_pos: Vector2) -> void:
 
 func _toggle_aquascape() -> void:
 	_aquascape_mode = not _aquascape_mode
-	if _sim == null:
-		return
 	if _aquascape_mode:
-		# Pause the sim and clear any follow target.
-		_aquascape_saved_time_scale = float(_sim.time_scale)
-		_sim.time_scale = 0.0
+		# Pause sim (if available) + clear any follow target.
+		if _sim != null:
+			_aquascape_saved_time_scale = float(_sim.time_scale)
+			_sim.time_scale = 0.0
 		_follow_target = null
 		_ensure_aquascape_preview()
-		print("[vivarium] aquascape ON. click to place stones, shift-click for wood, backspace undo, B exit.")
+		print("[vivarium] aquascape ON. click to place stones, shift-click for driftwood, backspace undo, B exit.")
 	else:
-		_sim.time_scale = _aquascape_saved_time_scale
+		if _sim != null:
+			_sim.time_scale = _aquascape_saved_time_scale
 		if _aquascape_preview != null:
 			_aquascape_preview.visible = false
 		print("[vivarium] aquascape OFF (resumed at %gx)" % _aquascape_saved_time_scale)
@@ -416,28 +455,32 @@ func _substrate_top_y() -> float:
 
 func _aquascape_place(mouse_pos: Vector2) -> void:
 	if world == null:
+		print("[vivarium] aquascape: world is null")
 		return
 	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	# Snap to a 0.5-unit grid horizontally for tidy placement.
 	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
 	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
-	hit.y = _substrate_top_y() + 0.45
-	# Shift-click = driftwood, plain click = stone.
+	hit.y = _substrate_top_y() + 0.45 + randf_range(-0.02, 0.02)
+
+	# Shift-click drops driftwood (warm brown), plain click drops a stone.
 	var is_driftwood: bool = Input.is_key_pressed(KEY_SHIFT)
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.9, 0.9, 0.9)
-	mi.mesh = bm
 	var color: Color
 	if is_driftwood:
 		color = Color8(78, 52, 32)
 	else:
-		# Pick a stone shade for variety.
 		var palette: Array[Color] = [
-			Color8(85, 85, 96), Color8(75, 70, 78), Color8(105, 100, 92),
-			Color8(60, 60, 70),
+			Color8(85, 85, 96), Color8(75, 70, 78),
+			Color8(105, 100, 92), Color8(60, 60, 70),
 		]
 		color = palette[randi() % palette.size()]
-	# Use the same VoxelMat helper if it loads cleanly, otherwise inline mat.
+
+	var mi := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.9, 0.9, 0.9)
+	mi.mesh = bm
+	# Build the material via the same VoxelMat helper the rest of the world
+	# uses, so the new voxel matches the existing aesthetic.
 	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
 	if voxel_mat_script != null:
 		mi.material_override = voxel_mat_script.make(color)
@@ -445,11 +488,14 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 		var sm := StandardMaterial3D.new()
 		sm.albedo_color = color
 		mi.material_override = sm
-	mi.global_position = hit
-	# Slight Y jitter so adjacent placements don't z-fight.
-	mi.global_position.y += randf_range(-0.02, 0.02)
+	# IMPORTANT: add_child BEFORE setting global_position. Setting before
+	# parenting in Godot 4 doesn't reliably propagate through the parent's
+	# transform, and the node ends up at the wrong spot.
 	world.add_child(mi)
+	mi.global_position = hit
 	_aquascape_placed.append(mi)
+	print("[vivarium] placed ", "driftwood" if is_driftwood else "stone",
+		" at ", hit, " (total: ", _aquascape_placed.size(), ")")
 
 
 func _aquascape_undo() -> void:

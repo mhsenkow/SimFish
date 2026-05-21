@@ -245,6 +245,10 @@ func _on_fov(v: float) -> void:
 
 
 func _on_apply() -> void:
+	# Preserve current camera view before the scene reload.
+	var main := get_tree().current_scene
+	if main != null and main.has_method("save_camera_state"):
+		main.save_camera_state()
 	TankConfig.save_to_disk()
 	# Reload scene so resolution + MSAA + palette toggle take effect.
 	get_tree().reload_current_scene()

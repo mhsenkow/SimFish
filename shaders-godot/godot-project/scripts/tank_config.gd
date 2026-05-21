@@ -28,6 +28,17 @@ var fog_ambient_inject: float = 0.05
 var camera_fov: float = 50.0
 # Anti-aliasing on the SubViewport. 0=off, 1=2x, 2=4x, 3=8x.
 var msaa: int = 0
+# Camera state - preserved across scene reloads so changing settings doesn't
+# snap the view back to the default. Saved by main.gd.save_camera_state()
+# right before a panel triggers reload_current_scene.
+var camera_yaw: float = -0.35
+var camera_pitch: float = 0.30
+var camera_radius: float = 14.0
+var camera_target_x: float = 0.0
+var camera_target_y: float = 3.0
+var camera_target_z: float = 0.0
+# A "do we have one saved?" flag - false on first launch means use defaults.
+var camera_state_saved: bool = false
 
 # ---- Tank dimensions ----
 var tank_half_w: float = 8.0
@@ -195,6 +206,13 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "fog_ambient_inject", fog_ambient_inject)
 	cfg.set_value("render", "fov", camera_fov)
 	cfg.set_value("render", "msaa", msaa)
+	cfg.set_value("camera", "saved", camera_state_saved)
+	cfg.set_value("camera", "yaw", camera_yaw)
+	cfg.set_value("camera", "pitch", camera_pitch)
+	cfg.set_value("camera", "radius", camera_radius)
+	cfg.set_value("camera", "target_x", camera_target_x)
+	cfg.set_value("camera", "target_y", camera_target_y)
+	cfg.set_value("camera", "target_z", camera_target_z)
 	cfg.save(SAVE_PATH)
 
 
@@ -228,6 +246,13 @@ func load_from_disk() -> void:
 	fog_ambient_inject = cfg.get_value("render", "fog_ambient_inject", fog_ambient_inject)
 	camera_fov = cfg.get_value("render", "fov", camera_fov)
 	msaa = cfg.get_value("render", "msaa", msaa)
+	camera_state_saved = cfg.get_value("camera", "saved", false)
+	camera_yaw = cfg.get_value("camera", "yaw", camera_yaw)
+	camera_pitch = cfg.get_value("camera", "pitch", camera_pitch)
+	camera_radius = cfg.get_value("camera", "radius", camera_radius)
+	camera_target_x = cfg.get_value("camera", "target_x", camera_target_x)
+	camera_target_y = cfg.get_value("camera", "target_y", camera_target_y)
+	camera_target_z = cfg.get_value("camera", "target_z", camera_target_z)
 
 
 func _ready() -> void:

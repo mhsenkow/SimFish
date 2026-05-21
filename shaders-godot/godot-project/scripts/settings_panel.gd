@@ -335,7 +335,12 @@ func _update_preset_desc() -> void:
 
 
 func _on_apply() -> void:
+	# Preserve camera before the reload so the view doesn't snap back to
+	# defaults. Main node has save_camera_state() that stashes yaw/pitch/etc
+	# into TankConfig + saves to disk.
+	var main := get_tree().current_scene
+	if main != null and main.has_method("save_camera_state"):
+		main.save_camera_state()
 	TankConfig.save_to_disk()
 	apply_requested.emit()
-	# Reload the entire main scene - the world rebuilds from TankConfig.
 	get_tree().reload_current_scene()
