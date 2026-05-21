@@ -114,8 +114,9 @@ var _wood_drag_y_offset: float = 0.0
 var _paint_cooldown: float = 0.0
 const PAINT_INTERVAL: float = 0.08   # seconds between brush samples
 # Screen-space pick radius in SubViewport pixels (what you click on screen).
-const PICK_RADIUS_PX: float = 28.0
-const PORTAL_PICK_RADIUS_PX: float = 40.0
+const PICK_RADIUS_PX: float = 48.0
+const PORTAL_PICK_RADIUS_PX: float = 72.0
+const RAY_PICK_RADIUS: float = 2.0
 
 
 func _ready() -> void:
@@ -289,9 +290,6 @@ func _process(dt: float) -> void:
 					_aquascape_place(mouse_now)
 			else:
 				_drag_mode = "orbit"
-				# PiP: pick on press so a tiny camera wobble doesn't cancel the click.
-				if _portal_open and not pan_modifier:
-					_try_portal_pick(mouse_now)
 	elif not any_btn and _orbiting:
 		_orbiting = false
 		_wood_drag = null
@@ -305,15 +303,6 @@ func _process(dt: float) -> void:
 		# the follow-fish dispatch (and that's disabled anyway since LMB
 		# in aquascape goes to paint/wood_drag, never to orbit). For
 		# normal mode this dispatches follow-cam on a clean LMB tap.
-		var is_click: bool = _drag_button == MOUSE_BUTTON_LEFT \
-			and _drag_total < 12.0
-		# Normal follow uses orbit-only release; PiP accepts any small LMB tap
-		# (Shift/Space pan taps are ignored so pan still works).
-		if is_click and not _aquascape_mode:
-			if _portal_open and _drag_mode != "paint" and _drag_mode != "wood_drag":
-				_try_follow_click(mouse_now)
-			elif _drag_mode == "orbit":
-				_try_follow_click(mouse_now)
 		_drag_mode = ""
 		_drag_button = 0
 
@@ -571,91 +560,139 @@ func _clear_follow() -> void:
 
 
 func _window_mouse_to_viewport(mouse: Vector2) -> Vector2:
-	# Map OS window coords to SubViewport pixels via the Display rect. A naive
-	# win_size scale breaks when the texture is letterboxed or offset.
-	if display == null or sub_viewport == null:
-		var win_size: Vector2 = get_window().size
-		var sv_size: Vector2 = Vector2(sub_viewport.size)
-		return mouse * (sv_size / win_size)
-	var rect: Rect2 = display.get_global_rect()
-	if rect.size.x < 1.0 or rect.size.y < 1.0:
+	# Prefer Display-local coords (Retina-safe). Fall back to global rect math.
+	if display != null and sub_viewport != null and display.size.x > 1.0:
+		var local: Vector2 = display.get_local_mouse_position()
+		if local.x >= 0.0 and local.y >= 0.0 \
+				and local.x <= display.size.x and local.y <= display.size.y:
+			return Vector2(
+				local.x / display.size.x * float(sub_viewport.size.x),
+				local.y / display.size.y * float(sub_viewport.size.y),
+			)
+		var rect: Rect2 = display.get_global_rect()
+		if rect.size.x > 1.0 and rect.size.y > 1.0:
+			var glocal: Vector2 = mouse - rect.position
+			return Vector2(
+				clampf(glocal.x / rect.size.x, 0.0, 1.0) * float(sub_viewport.size.x),
+				clampf(glocal.y / rect.size.y, 0.0, 1.0) * float(sub_viewport.size.y),
+			)
+	if sub_viewport == null:
 		return mouse
-	var local: Vector2 = mouse - rect.position
-	return Vector2(
-		clampf(local.x / rect.size.x, 0.0, 1.0) * float(sub_viewport.size.x),
-		clampf(local.y / rect.size.y, 0.0, 1.0) * float(sub_viewport.size.y),
-	)
+	var win_size: Vector2 = get_window().size
+	var sv_size: Vector2 = Vector2(sub_viewport.size)
+	return mouse * (sv_size / win_size)
 
 
 func _gather_creatures() -> Array:
 	var creatures: Array = []
-	if _sim == null:
-		return creatures
-	for f in _sim.fish:
-		if is_instance_valid(f):
-			creatures.append(f)
-	for s in _sim.shrimp:
-		if is_instance_valid(s):
-			creatures.append(s)
-	if _sim.snails_root != null:
-		for sn in _sim.snails_root.get_children():
-			if is_instance_valid(sn):
-				creatures.append(sn)
+	var seen: Dictionary = {}
+	if _sim != null:
+		for f in _sim.fish:
+			if is_instance_valid(f) and not seen.has(f.get_instance_id()):
+				seen[f.get_instance_id()] = true
+				creatures.append(f)
+		for s in _sim.shrimp:
+			if is_instance_valid(s) and not seen.has(s.get_instance_id()):
+				seen[s.get_instance_id()] = true
+				creatures.append(s)
+		if _sim.snails_root != null:
+			for sn in _sim.snails_root.get_children():
+				if is_instance_valid(sn) and not seen.has(sn.get_instance_id()):
+					seen[sn.get_instance_id()] = true
+					creatures.append(sn)
+	# Fallback: scan the scene tree if SimDriver arrays are empty/stale.
+	if creatures.is_empty() and world != null:
+		var fauna: Node = world.get_node_or_null("Fauna")
+		if fauna != null:
+			for c in fauna.get_children():
+				if is_instance_valid(c) and c is Node3D \
+						and not seen.has(c.get_instance_id()):
+					seen[c.get_instance_id()] = true
+					creatures.append(c)
+		var snails: Node = world.get_node_or_null("Snails")
+		if snails != null:
+			for c in snails.get_children():
+				if is_instance_valid(c) and c is Node3D \
+						and not seen.has(c.get_instance_id()):
+					seen[c.get_instance_id()] = true
+					creatures.append(c)
 	return creatures
 
 
-func _pick_creature(screen_pos: Vector2) -> Node3D:
-	# Screen-space pick: project each creature to viewport pixels and choose
-	# whoever is closest to the cursor. Much more reliable than 3D ray perp
-	# distance for tiny voxels.
+func _pick_creature_at_viewport(sv_pos: Vector2) -> Node3D:
 	if camera == null:
 		return null
-	var sv_pos: Vector2 = _window_mouse_to_viewport(screen_pos)
-	var radius: float = PORTAL_PICK_RADIUS_PX if _portal_open else PICK_RADIUS_PX
-	var cam_fwd: Vector3 = -camera.global_transform.basis.z
+	var radius_px: float = PORTAL_PICK_RADIUS_PX if _portal_open else PICK_RADIUS_PX
 	var best: Node3D = null
-	var best_dist: float = radius
+	var best_score: float = radius_px
+	var origin: Vector3 = camera.project_ray_origin(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos)
 	for c in _gather_creatures():
 		var n: Node3D = c as Node3D
 		if n == null:
 			continue
-		var to_creature: Vector3 = n.global_position - camera.global_position
-		if to_creature.dot(cam_fwd) <= 0.0:
+		if camera.is_position_behind(n.global_position):
 			continue
 		var screen_pt: Vector2 = camera.unproject_position(n.global_position)
-		var dist: float = screen_pt.distance_to(sv_pos)
-		if dist < best_dist:
-			best_dist = dist
+		var screen_dist: float = screen_pt.distance_to(sv_pos)
+		var to_n: Vector3 = n.global_position - origin
+		var t: float = to_n.dot(dir)
+		var ray_dist: float = 9999.0
+		if t > 0.05:
+			var closest: Vector3 = origin + dir * t
+			ray_dist = closest.distance_to(n.global_position)
+		var score: float = minf(screen_dist, ray_dist * 24.0)
+		if score < best_score:
+			best_score = score
 			best = n
 	return best
 
 
-func _try_portal_pick(screen_pos: Vector2) -> void:
-	if not _portal_open:
-		return
-	var best: Node3D = _pick_creature(screen_pos)
-	if best == null:
-		return
-	_portal_target = best
-	if portal_hint != null:
-		portal_hint.visible = false
-	print("[vivarium] portal tracking ", best.name)
+func _pick_creature_from_display() -> Node3D:
+	if display == null or sub_viewport == null:
+		return null
+	var sv_pos: Vector2 = _window_mouse_to_viewport(get_viewport().get_mouse_position())
+	return _pick_creature_at_viewport(sv_pos)
 
 
-func _try_follow_click(screen_pos: Vector2) -> void:
-	var best: Node3D = _pick_creature(screen_pos)
-	if best == null:
-		if _portal_open:
-			print("[vivarium] portal: no creature near click")
-		return
+func _assign_creature_target(creature: Node3D) -> void:
 	if _portal_open:
-		_portal_target = best
+		_portal_target = creature
 		if portal_hint != null:
 			portal_hint.visible = false
-		print("[vivarium] portal tracking ", best.name)
+		print("[vivarium] portal tracking ", creature.name)
 	else:
-		_follow_target = best
-		print("[vivarium] following ", best.name)
+		_follow_target = creature
+		print("[vivarium] following ", creature.name)
+
+
+func _click_targets_creature() -> bool:
+	if _aquascape_mode:
+		return false
+	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_SPACE):
+		return false
+	if display == null:
+		return false
+	var hovered: Control = get_viewport().gui_get_hovered_control()
+	if hovered != null and hovered != display:
+		if hovered.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+			if hovered is BaseButton or hovered is PanelContainer:
+				return false
+	var gp: Vector2 = display.get_global_mouse_position()
+	if not display.get_global_rect().has_point(gp):
+		return false
+	var picked: Node3D = _pick_creature_from_display()
+	if picked == null:
+		var n_creatures: int = _gather_creatures().size()
+		if _portal_open or n_creatures > 0:
+			print("[vivarium] pick miss: creatures=%d mouse=%s sv=%s" % [
+				n_creatures,
+				display.get_local_mouse_position(),
+				_window_mouse_to_viewport(get_viewport().get_mouse_position()),
+			])
+		return false
+	_assign_creature_target(picked)
+	return true
 
 
 # ---- Aquascape mode ----
@@ -1030,7 +1067,7 @@ func _aquascape_undo() -> void:
 			return
 
 
-# Scroll wheel comes through as button events, not as Input.is_pressed state.
+# Scroll wheel + creature clicks come through as events (not reliable via polling).
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
@@ -1041,6 +1078,8 @@ func _input(event: InputEvent) -> void:
 			elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 				radius = minf(MAX_RADIUS, radius * ZOOM_FACTOR)
 				_apply_camera()
+			elif mb.button_index == MOUSE_BUTTON_LEFT:
+				_click_targets_creature()
 
 
 func _apply_camera() -> void:
