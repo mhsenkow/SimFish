@@ -282,7 +282,15 @@ func _process(dt: float) -> void:
 		# releasing Shift/Space mid-drag flips orbit <-> pan immediately.
 		# MMB stays pan and RMB stays dolly for their whole gesture - the
 		# starting button's intent wins for non-LMB drags.
-		if _drag_button == MOUSE_BUTTON_LEFT:
+		#
+		# CRITICAL: don't touch paint / wood_drag modes here. Those were
+		# locked in at LMB-down by the aquascape branch above; overwriting
+		# them every frame is what made the original "I can't paint dirt"
+		# bug - the moment the cursor moved, the mode flipped back to
+		# orbit and the camera ate the drag.
+		if _drag_button == MOUSE_BUTTON_LEFT \
+				and _drag_mode != "paint" \
+				and _drag_mode != "wood_drag":
 			_drag_mode = "pan" if pan_modifier else "orbit"
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
