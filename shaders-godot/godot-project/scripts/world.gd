@@ -386,16 +386,86 @@ func _build_hardscape() -> void:
 
 
 func _build_water_volume() -> void:
-	# Water volume box that fits inside the tank's bounding rect. For
-	# hex/triangle shapes the glass walls clip the visible water at the
-	# diagonals so we don't need a perfectly-shaped water mesh.
+	# Water volume as a polygon prism extruded from the tank footprint. The
+	# old version was a fixed BoxMesh which poked through hex/triangle glass
+	# walls and visibly broke the illusion of a non-rectangular tank.
+	#
+	# The mesh is generated from _tank_footprint_corners(): we shrink the
+	# polygon by INSET so the water sits snugly inside the glass, then build
+	# a closed prism (top cap + bottom cap + side quads) with outward normals.
+	const INSET: float = 0.1
+	var corners: Array[Vector3] = _tank_footprint_corners()
+	var n: int = corners.size()
+	if n < 3:
+		return
+	# Compute polygon centroid; we'll use it to shrink each corner inward.
+	var cen: Vector3 = Vector3.ZERO
+	for c in corners:
+		cen += c
+	cen /= float(n)
+	var inset_corners: Array[Vector3] = []
+	for c in corners:
+		var dir: Vector3 = c - cen
+		var d: float = dir.length()
+		if d > INSET * 1.05:
+			dir = dir.normalized() * (d - INSET)
+		inset_corners.append(cen + dir)
+
+	var y_bot: float = SUBSTRATE_DEPTH
+	var y_top: float = WATER_HEIGHT
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	# Top cap (triangle fan from centroid, normal +Y so it's visible from
+	# above the tank).
+	for i in n:
+		var a: Vector3 = inset_corners[i]
+		var b: Vector3 = inset_corners[(i + 1) % n]
+		st.set_normal(Vector3.UP)
+		st.add_vertex(Vector3(cen.x, y_top, cen.z))
+		st.set_normal(Vector3.UP)
+		st.add_vertex(Vector3(a.x, y_top, a.z))
+		st.set_normal(Vector3.UP)
+		st.add_vertex(Vector3(b.x, y_top, b.z))
+
+	# Bottom cap (triangle fan, normal -Y - faces down so it's hidden inside
+	# the substrate but still part of the closed volume).
+	for i in n:
+		var a: Vector3 = inset_corners[i]
+		var b: Vector3 = inset_corners[(i + 1) % n]
+		st.set_normal(Vector3.DOWN)
+		st.add_vertex(Vector3(cen.x, y_bot, cen.z))
+		st.set_normal(Vector3.DOWN)
+		st.add_vertex(Vector3(b.x, y_bot, b.z))
+		st.set_normal(Vector3.DOWN)
+		st.add_vertex(Vector3(a.x, y_bot, a.z))
+
+	# Side walls: one quad per edge, outward normal (away from centroid).
+	for i in n:
+		var a: Vector3 = inset_corners[i]
+		var b: Vector3 = inset_corners[(i + 1) % n]
+		# Outward normal: vector from centroid to edge midpoint, projected
+		# onto the XZ plane. Always points outward regardless of corner
+		# winding order so this code is robust across tank shapes.
+		var mid: Vector3 = (a + b) * 0.5
+		var out_n: Vector3 = Vector3(mid.x - cen.x, 0, mid.z - cen.z).normalized()
+		# Two triangles per quad. Wind CCW when viewed from outside.
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(a.x, y_bot, a.z))
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(b.x, y_bot, b.z))
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(b.x, y_top, b.z))
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(a.x, y_bot, a.z))
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(b.x, y_top, b.z))
+		st.set_normal(out_n)
+		st.add_vertex(Vector3(a.x, y_top, a.z))
+
 	var water := MeshInstance3D.new()
 	water.name = "Water"
-	var bm := BoxMesh.new()
-	bm.size = Vector3(TANK_HALF_W * 2.0 - 0.2, WATER_HEIGHT - SUBSTRATE_DEPTH,
-					  TANK_HALF_D * 2.0 - 0.2)
-	water.mesh = bm
-	water.position = Vector3(0, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.5, 0)
+	water.mesh = st.commit()
 	_water_material_ref = _water_mat()
 	water.material_override = _water_material_ref
 	_water_mesh = water
