@@ -64,7 +64,7 @@ var _drag_start: Vector2 = Vector2.ZERO  # to distinguish click from drag
 var _drag_total: float = 0.0
 var _drag_button: int = 0  # which button initiated; used for click-vs-drag dispatch
 var _auto_orbit: bool = false
-var _space_was_pressed: bool = false
+var _auto_orbit_was_pressed: bool = false
 const PAN_MOUSE_SENSITIVITY: float = 0.012  # world units per pixel at radius=1
 const DOLLY_MOUSE_SENSITIVITY: float = 0.012  # log-ish dolly per pixel
 # Follow-cam: when set, camera target tracks this Node3D.
@@ -180,7 +180,11 @@ func _process(dt: float) -> void:
 	var lmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	var mmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
 	var rmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
-	var shift: bool = Input.is_key_pressed(KEY_SHIFT)
+	# Pan modifier = either Shift OR Space held. Photoshop / Figma users have
+	# "hold space to pan" in their muscle memory; CAD / DCC users reach for
+	# Shift. Support both so neither group has to think.
+	var pan_modifier: bool = Input.is_key_pressed(KEY_SHIFT) \
+		or Input.is_key_pressed(KEY_SPACE)
 	var any_btn: bool = lmb or mmb or rmb
 
 	if any_btn and not _orbiting:
@@ -189,9 +193,9 @@ func _process(dt: float) -> void:
 		_drag_start = mouse_now
 		_drag_total = 0.0
 		# Pick the drag mode based on which button started + modifiers.
-		#   MMB or Shift+LMB -> pan target
-		#   RMB              -> dolly (push/pull camera distance)
-		#   LMB              -> orbit
+		#   MMB / Shift+LMB / Space+LMB -> pan target
+		#   RMB                          -> dolly (push/pull camera distance)
+		#   LMB                          -> orbit
 		if mmb:
 			_drag_mode = "pan"
 			_drag_button = MOUSE_BUTTON_MIDDLE
@@ -200,14 +204,18 @@ func _process(dt: float) -> void:
 			_drag_button = MOUSE_BUTTON_RIGHT
 		else:
 			_drag_button = MOUSE_BUTTON_LEFT
-			_drag_mode = "pan" if shift else "orbit"
+			_drag_mode = "pan" if pan_modifier else "orbit"
 	elif not any_btn and _orbiting:
 		_orbiting = false
-		# Click vs drag: only the LMB tap dispatches as a click. MMB/RMB
-		# release never places aquascape voxels or starts a follow.
-		# Threshold loosened from 5 -> 12 to be more forgiving of trackpad
-		# jitter during clicks.
-		if _drag_button == MOUSE_BUTTON_LEFT and _drag_total < 12.0:
+		# Click vs drag: only a pure LMB tap (no Shift/Space held, no
+		# significant drag distance) dispatches as a click. MMB/RMB release
+		# never places aquascape voxels or starts a follow. A Shift-LMB or
+		# Space-LMB tap is treated as the user reaching for pan and then
+		# changing their mind - no action.
+		var is_click: bool = _drag_button == MOUSE_BUTTON_LEFT \
+			and _drag_total < 12.0 \
+			and _drag_mode != "pan"
+		if is_click:
 			if _aquascape_mode:
 				_aquascape_place(mouse_now)
 			else:
@@ -216,6 +224,12 @@ func _process(dt: float) -> void:
 		_drag_button = 0
 
 	if _orbiting:
+		# Dynamic modifier re-evaluation: while LMB is held, pressing OR
+		# releasing Shift/Space mid-drag flips orbit <-> pan immediately.
+		# MMB stays pan and RMB stays dolly for their whole gesture - the
+		# starting button's intent wins for non-LMB drags.
+		if _drag_button == MOUSE_BUTTON_LEFT:
+			_drag_mode = "pan" if pan_modifier else "orbit"
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
 		_drag_total += delta.length()
@@ -266,11 +280,12 @@ func _process(dt: float) -> void:
 		if moved:
 			_apply_camera()
 
-	# Space toggles auto-orbit.
-	var space_now: bool = Input.is_key_pressed(KEY_SPACE)
-	if space_now and not _space_was_pressed:
+	# G toggles auto-orbit. (Space used to do this; it's now reserved as the
+	# hold-to-pan modifier, matching Photoshop / Figma muscle memory.)
+	var g_now: bool = Input.is_key_pressed(KEY_G)
+	if g_now and not _auto_orbit_was_pressed:
 		_auto_orbit = not _auto_orbit
-	_space_was_pressed = space_now
+	_auto_orbit_was_pressed = g_now
 	if _auto_orbit:
 		yaw += AUTO_ORBIT_SPEED * dt
 		_apply_camera()
