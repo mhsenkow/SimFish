@@ -27,6 +27,17 @@ var WATER_HEIGHT: float = 6.5
 var SUBSTRATE_DEPTH: float = 1.6
 # Substrate color ramp (overridden by TankConfig substrate profile).
 var ACTIVE_SOIL_RAMP: Array = []
+# Active substrate profile resolved at _ready (honors preset.substrate
+# overrides like the reef preset's ocean_sand). Used to decide between
+# plant vs coral spawn paths via the is_saltwater flag.
+var _active_substrate_profile: Dictionary = {}
+# Coral recruitment timer (saltwater only). Ticks down in _process; when
+# zero, spawns a tiny new coral somewhere on the substrate via larval-
+# drift analogy. Reset to a random value in CORAL_RECRUIT_MIN..MAX.
+var _coral_recruit_timer: float = 30.0   # first recruit after ~30s
+const CORAL_RECRUIT_MIN: float = 35.0
+const CORAL_RECRUIT_MAX: float = 65.0
+const CORAL_MAX: int = 60                 # cap so reefs don't carpet
 # Tank shape: "box" / "cube" / "hex" / "triangle". Read from TankConfig.
 var TANK_SHAPE: String = "box"
 
@@ -62,6 +73,11 @@ func _ready() -> void:
 	# Pull tank dimensions + substrate profile from the autoload config.
 	# Settings panel writes here and reloads the scene to apply.
 	var cfg := get_node_or_null("/root/TankConfig")
+	# Active substrate profile - normally driven by cfg.substrate_type, but
+	# certain presets (e.g. "reef") declare a substrate override that wins
+	# without writing back to the saved config. We resolve once here and
+	# reuse below + later in _ready.
+	_active_substrate_profile = {}
 	if cfg != null:
 		TANK_HALF_W = float(cfg.tank_half_w)
 		TANK_HALF_D = float(cfg.tank_half_d)
@@ -74,8 +90,16 @@ func _ready() -> void:
 			TANK_HALF_D = m
 		WATER_HEIGHT = TANK_HEIGHT * float(cfg.water_surface_fraction)
 		SUBSTRATE_DEPTH = TANK_HEIGHT * float(cfg.substrate_depth_fraction)
-		var profile: Dictionary = cfg.current_substrate_profile()
-		ACTIVE_SOIL_RAMP = profile.get("colors", C_SOIL_RAMP)
+		_active_substrate_profile = cfg.current_substrate_profile()
+		# Preset-driven substrate override (reef preset → ocean_sand).
+		var preset_for_substrate: Dictionary = cfg.current_tank_preset()
+		var preset_substrate: String = String(preset_for_substrate.get("substrate", ""))
+		if preset_substrate != "":
+			var override_profile: Dictionary = TankConfig.SUBSTRATE_PROFILES.get(
+				preset_substrate, {})
+			if not override_profile.is_empty():
+				_active_substrate_profile = override_profile
+		ACTIVE_SOIL_RAMP = _active_substrate_profile.get("colors", C_SOIL_RAMP)
 	else:
 		ACTIVE_SOIL_RAMP = C_SOIL_RAMP
 
@@ -95,12 +119,13 @@ func _ready() -> void:
 	substrate_grid.name = "SubstrateGrid"
 	add_child(substrate_grid)
 	substrate_grid.init(TANK_HALF_W, TANK_HALF_D, 1.0)
-	# Apply substrate fertility from the active profile.
-	var cfg2 := get_node_or_null("/root/TankConfig")
-	if cfg2 != null:
-		var profile: Dictionary = cfg2.current_substrate_profile()
-		substrate_grid.baseline_override = float(profile.get("nutrient_baseline", 0.30))
-		substrate_grid.reservoir_leak_override = float(profile.get("reservoir_leak", 0.00015))
+	# Apply substrate fertility from the resolved active profile (honors
+	# any preset.substrate override - see top of _ready).
+	if not _active_substrate_profile.is_empty():
+		substrate_grid.baseline_override = float(
+			_active_substrate_profile.get("nutrient_baseline", 0.30))
+		substrate_grid.reservoir_leak_override = float(
+			_active_substrate_profile.get("reservoir_leak", 0.00015))
 	sim.substrate = substrate_grid
 	sim.substrate_top_y = SUBSTRATE_DEPTH
 	sim.world_bounds = AABB(
@@ -130,16 +155,28 @@ func _ready() -> void:
 	_build_light_fixture()
 	await get_tree().process_frame
 
-	await _spawn_initial_plants()
-	await get_tree().process_frame
+	# Saltwater branch: ocean_sand substrate replaces freshwater plants
+	# with a reef of corals. Floaters / lily pads / math plants don't
+	# exist in saltwater either (they're freshwater forms) so we skip
+	# them entirely. Shrimp are also skipped further down via the same
+	# is_saltwater check.
+	if bool(_active_substrate_profile.get("is_saltwater", false)):
+		await _spawn_initial_corals()
+		await get_tree().process_frame
+	else:
+		await _spawn_initial_plants()
+		await get_tree().process_frame
 
-	_spawn_floaters()
-	_spawn_lily_pads()
-	_spawn_math_plants()
-	await get_tree().process_frame
+		_spawn_floaters()
+		_spawn_lily_pads()
+		_spawn_math_plants()
+		await get_tree().process_frame
 
 	await _spawn_initial_fish()
-	await _spawn_initial_shrimp()
+	if bool(_active_substrate_profile.get("is_saltwater", false)):
+		await _spawn_marine_shrimp()
+	else:
+		await _spawn_initial_shrimp()
 	await get_tree().process_frame
 
 	_spawn_aeration_system()
@@ -174,6 +211,16 @@ func _process(dt: float) -> void:
 	var sdt: float = dt
 	if sim != null:
 		sdt = dt * float(sim.time_scale)
+	# Coral recruitment (saltwater tanks only). Every CORAL_RECRUIT_INTERVAL
+	# sim-seconds a fresh polyp appears somewhere on the substrate, mimicking
+	# the larval-drift-and-settle mechanism that keeps real reefs replenished
+	# even as older corals get grazed or die. Capped at CORAL_MAX so the
+	# reef can't carpet the entire tank.
+	if bool(_active_substrate_profile.get("is_saltwater", false)):
+		_coral_recruit_timer = maxf(0.0, _coral_recruit_timer - sdt)
+		if _coral_recruit_timer <= 0.0:
+			_coral_recruit_timer = randf_range(CORAL_RECRUIT_MIN, CORAL_RECRUIT_MAX)
+			_maybe_recruit_coral()
 	# Tannins: slow rise toward a cap (driftwood + leaves leak organics into
 	# the water column). Visible as a warm brown tint that deepens over time.
 	if tannins < 0.35:
@@ -597,28 +644,62 @@ func _build_snails() -> void:
 	var c := Node3D.new()
 	c.name = "Snails"
 	add_child(c)
-	# Founders get varied starting colors so the colony has visible diversity
-	# from frame zero. Mutation drift will further spread these over generations.
-	var founder_palette: Array[Color] = [
-		Color8(135, 44, 176),   # classic purple
-		Color8(180, 70, 90),    # warm rose
-		Color8(80, 100, 180),   # cool blue
-		Color8(160, 130, 60),   # amber
-		Color8(70, 140, 110),   # teal
-		Color8(190, 160, 60),   # ochre
-	]
-	var positions_and_walls := [
-		[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0)],
-		[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0)],
-		[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0)],
-		[Vector3(7.95, 4.5, -1.0), Vector3(1, 0, 0)],
-		[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1)],
-		[Vector3(-2.0, 3.8, -3.95), Vector3(0, 0, -1)],
-	]
+	# Saltwater branches into a marine snail mix (turbo / trochus on the
+	# glass, plus nassarius scavengers on the substrate). Freshwater
+	# keeps the original purple-leaning founder palette.
+	var is_saltwater: bool = bool(_active_substrate_profile.get("is_saltwater", false))
+	var founder_palette: Array[Color]
+	if is_saltwater:
+		# Marine palette: pearl whites, sand creams, dark banding.
+		founder_palette = [
+			Color8(245, 235, 210),   # pearl cream
+			Color8(220, 200, 165),   # sand
+			Color8(60, 50, 45),      # near-black banding
+			Color8(180, 155, 110),   # tan
+			Color8(230, 220, 195),   # pale ivory
+			Color8(95, 75, 60),      # dark sepia
+		]
+	else:
+		founder_palette = [
+			Color8(135, 44, 176),   # classic purple
+			Color8(180, 70, 90),    # warm rose
+			Color8(80, 100, 180),   # cool blue
+			Color8(160, 130, 60),   # amber
+			Color8(70, 140, 110),   # teal
+			Color8(190, 160, 60),   # ochre
+		]
+	# Position list. Each entry: [position, wall_normal, shell_shape].
+	# Freshwater = 6 turbos on the glass walls. Marine = mix of turbo,
+	# trochus, and nassarius (the nassarius ride the substrate plane
+	# with wall_normal pointing UP so they "stick" to the floor).
+	var positions_and_walls: Array
+	if is_saltwater:
+		positions_and_walls = [
+			# Glass-walking algae grazers (mix turbo + trochus).
+			[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0), "turbo"],
+			[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0), "trochus"],
+			[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0), "trochus"],
+			[Vector3(7.95, 4.5, -1.0), Vector3(1, 0, 0), "turbo"],
+			[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1), "turbo"],
+			# Nassarius scavengers riding the substrate floor.
+			[Vector3(-3.0, SUBSTRATE_DEPTH + 0.1, 1.5), Vector3(0, 1, 0), "nassarius"],
+			[Vector3(2.5, SUBSTRATE_DEPTH + 0.1, -2.0), Vector3(0, 1, 0), "nassarius"],
+			[Vector3(0.0, SUBSTRATE_DEPTH + 0.1, 0.5), Vector3(0, 1, 0), "nassarius"],
+		]
+	else:
+		positions_and_walls = [
+			[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0), "turbo"],
+			[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0), "turbo"],
+			[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0), "turbo"],
+			[Vector3(7.95, 4.5, -1.0), Vector3(1, 0, 0), "turbo"],
+			[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1), "turbo"],
+			[Vector3(-2.0, 3.8, -3.95), Vector3(0, 0, -1), "turbo"],
+		]
 	for i in positions_and_walls.size():
 		var pw = positions_and_walls[i]
 		var pos: Vector3 = pw[0]
 		var wall_n: Vector3 = pw[1]
+		var shape: String = String(pw[2]) if pw.size() > 2 else "turbo"
 		var snail := Node3D.new()
 		snail.set_script(load("res://scripts/snail.gd"))
 		snail.position = pos
@@ -628,30 +709,65 @@ func _build_snails() -> void:
 		snail.set("shell_color", founder_palette[i % founder_palette.size()])
 		snail.set("shell_size", _rng.randf_range(0.85, 1.15))
 		snail.set("generation", 0)
+		snail.set("shell_shape", shape)
 		c.add_child(snail)
 		_build_snail_body(snail)
 
 
 func _build_snail_body(snail: Node3D) -> void:
-	# Read the snail's heritable shell_color + shell_size (set above) and
-	# build the body voxels with those traits.
+	# Read heritable traits and shell silhouette. shell_shape branches
+	# the construction into one of three forms:
+	#   turbo      classic round low spiral (default, freshwater + marine)
+	#   trochus    tall pointed cone (marine algae grazer)
+	#   nassarius  small flat oval that lives on the substrate (marine
+	#              scavenger; sits flatter and lower than a turbo)
 	var shell_color: Color = snail.get("shell_color")
 	var shell_size: float = snail.get("shell_size")
+	var shell_shape: String = String(snail.get("shell_shape") if "shell_shape" in snail else "turbo")
 	var shell_dark: Color = shell_color.darkened(0.22)
 	var body_color: Color = C_SNAIL_BODY
 	var shell_mat := _solid_mat(shell_color)
 	var shell_dark_mat := _solid_mat(shell_dark)
 	var body_mat := _solid_mat(body_color)
-	for i in 4:
-		var ang: float = i * 0.7
-		var r: float = (0.05 + i * 0.06) * shell_size
-		var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
-		var s: float = (0.16 - i * 0.02) * shell_size
-		var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
-		_add_cube(snail, sp, Vector3(s, s, s), mat)
-	# Foot scales with shell.
-	_add_cube(snail, Vector3(0, -0.12 * shell_size, 0),
-		Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size), body_mat)
+
+	match shell_shape:
+		"trochus":
+			# Pointed cone: 6 voxels stacked vertically, shrinking toward
+			# the tip. Banded with alternating dark/light for the classic
+			# trochus stripe look.
+			for i in 6:
+				var y: float = 0.04 + i * 0.045 * shell_size
+				var s: float = (0.18 - i * 0.025) * shell_size
+				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
+				_add_cube(snail, Vector3(0, y, 0), Vector3(s, s * 0.85, s), mat)
+		"nassarius":
+			# Small flat oval - a stubby low egg shape. Two voxels:
+			# main body + a smaller cap.
+			_add_cube(snail, Vector3(0, 0.0, 0),
+				Vector3(0.18 * shell_size, 0.10 * shell_size,
+					0.22 * shell_size), shell_mat)
+			_add_cube(snail, Vector3(0, 0.06 * shell_size, -0.04),
+				Vector3(0.10 * shell_size, 0.06 * shell_size,
+					0.12 * shell_size), shell_dark_mat)
+		_:
+			# turbo: round low spiral (the original snail shape).
+			for i in 4:
+				var ang: float = i * 0.7
+				var r: float = (0.05 + i * 0.06) * shell_size
+				var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
+				var s: float = (0.16 - i * 0.02) * shell_size
+				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
+				_add_cube(snail, sp, Vector3(s, s, s), mat)
+
+	# Foot scales with shell. Nassarius foot is wider + flatter since they
+	# crawl on substrate rather than glass.
+	var foot_y: float = -0.05 * shell_size if shell_shape == "nassarius" else -0.12 * shell_size
+	var foot_size: Vector3
+	if shell_shape == "nassarius":
+		foot_size = Vector3(0.28 * shell_size, 0.04 * shell_size, 0.20 * shell_size)
+	else:
+		foot_size = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
+	_add_cube(snail, Vector3(0, foot_y, 0), foot_size, body_mat)
 	# Eye stalks - keep them at a fixed small size for visibility.
 	_add_cube(snail, Vector3(0.10, -0.06 * shell_size, 0.06),
 		Vector3(0.03, 0.10 * shell_size, 0.03), body_mat)
@@ -871,6 +987,179 @@ func _spawn_initial_plants() -> void:
 		sim.register_plant(bp)
 
 
+# Reef-tank coral spawn (called instead of _spawn_initial_plants when
+# the substrate profile is_saltwater). Lays out a layered reef:
+#   background:  staghorn branching forest along the back wall
+#   midground:   brain/boulder domes scattered through center
+#   foreground:  table corals + feathery soft corals near the front
+# Each coral form has its own palette + max_height range so the reef
+# reads as a complex multi-species community.
+func _spawn_initial_corals() -> void:
+	# Coral palettes, each a 6-color ramp (dark base → bright polyp tip).
+	# Six base palettes - enough variety that two corals adjacent rarely
+	# share an exact ramp.
+	var coral_palettes: Array = [
+		# 0: orange-pink staghorn (Acropora millepora)
+		[Color8(120, 55, 50), Color8(160, 85, 70), Color8(200, 120, 95),
+		 Color8(225, 155, 130), Color8(245, 185, 165), Color8(255, 215, 195)],
+		# 1: purple staghorn
+		[Color8(60, 35, 90), Color8(85, 55, 130), Color8(115, 85, 170),
+		 Color8(150, 120, 205), Color8(185, 160, 225), Color8(215, 195, 240)],
+		# 2: green-tan brain coral
+		[Color8(45, 70, 50), Color8(75, 105, 70), Color8(110, 140, 95),
+		 Color8(145, 170, 120), Color8(180, 195, 150), Color8(215, 220, 180)],
+		# 3: red-cream brain coral
+		[Color8(110, 45, 35), Color8(145, 70, 55), Color8(180, 100, 80),
+		 Color8(210, 135, 110), Color8(235, 175, 150), Color8(250, 220, 200)],
+		# 4: lavender soft coral
+		[Color8(75, 50, 100), Color8(105, 75, 140), Color8(140, 110, 180),
+		 Color8(175, 145, 215), Color8(205, 180, 235), Color8(230, 215, 250)],
+		# 5: yellow-amber plate coral
+		[Color8(105, 75, 30), Color8(140, 105, 45), Color8(180, 140, 60),
+		 Color8(210, 175, 85), Color8(235, 210, 130), Color8(250, 235, 180)],
+	]
+
+	# --- Background: staghorn forest ---
+	for x_frac in [-0.88, -0.62, -0.38, -0.12, 0.12, 0.38, 0.62, 0.88]:
+		var cx: float = x_frac * TANK_HALF_W
+		var cz: float = _rng.randf_range(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.55)
+		if not _is_inside_tank(cx, cz, 0.4):
+			continue
+		var c := Coral.new()
+		plants_root.add_child(c)
+		c.global_position = Vector3(cx, SUBSTRATE_DEPTH, cz)
+		c.coral_form = "branching"
+		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
+		c.ramp_override = pal
+		c.tip_color = pal[pal.size() - 1]
+		c.water_surface_y = WATER_HEIGHT
+		c.generation = 0
+		c.init(_rng.randi_range(3, 5), {
+			"max_height": _rng.randi_range(14, 22),
+			"growth_rate": 0.18,
+			"sway_amplitude": 0.04,
+		})
+		sim.register_plant(c)
+	await get_tree().process_frame
+
+	# --- Midground: brain coral domes ---
+	for i in 10:
+		var xz: Vector2 = _random_xz_in_band(-0.5, 1.0, 0.4)
+		var c := Coral.new()
+		plants_root.add_child(c)
+		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.coral_form = "dome"
+		var pal: Array = coral_palettes[2 + _rng.randi() % 2]  # palettes 2 or 3
+		c.ramp_override = pal
+		c.tip_color = pal[pal.size() - 1]
+		c.water_surface_y = WATER_HEIGHT
+		c.generation = 0
+		c.init(_rng.randi_range(4, 7), {
+			"max_height": _rng.randi_range(16, 28),
+			"growth_rate": 0.14,
+			"sway_amplitude": 0.0,    # domes don't sway
+		})
+		sim.register_plant(c)
+	await get_tree().process_frame
+
+	# --- Soft corals: tall feathery / sea-fan, scattered through midground ---
+	for i in 8:
+		var xz: Vector2 = _random_xz_in_band(-1.5, 1.5, 0.5)
+		var c := Coral.new()
+		plants_root.add_child(c)
+		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.coral_form = "feathery"
+		c.ramp_override = coral_palettes[4]   # lavender
+		c.tip_color = coral_palettes[4][5]
+		c.water_surface_y = WATER_HEIGHT
+		c.generation = 0
+		c.init(_rng.randi_range(2, 4), {
+			"max_height": _rng.randi_range(14, 22),
+			"growth_rate": 0.20,
+			"sway_amplitude": 0.22,
+		})
+		sim.register_plant(c)
+	await get_tree().process_frame
+
+	# --- Foreground: table corals on small pedestals ---
+	for i in 6:
+		var xz: Vector2 = _random_xz_in_band(TANK_HALF_D * 0.25, TANK_HALF_D * 0.95, 0.4)
+		var c := Coral.new()
+		plants_root.add_child(c)
+		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.coral_form = "plate"
+		c.ramp_override = coral_palettes[5]   # yellow-amber
+		c.tip_color = coral_palettes[5][5]
+		c.water_surface_y = WATER_HEIGHT
+		c.generation = 0
+		c.init(_rng.randi_range(3, 5), {
+			"max_height": _rng.randi_range(12, 18),
+			"growth_rate": 0.18,
+			"sway_amplitude": 0.0,
+		})
+		sim.register_plant(c)
+	await get_tree().process_frame
+
+
+func _maybe_recruit_coral() -> void:
+	# Spawn a single fresh-larvae-sized coral somewhere on the substrate.
+	# Respects CORAL_MAX so the reef doesn't carpet the tank. Form is
+	# weighted toward the smaller varieties (dome / plate) since real
+	# reef recruits start small and dome-shaped.
+	if plants_root == null or sim == null:
+		return
+	var current_coral_count: int = 0
+	for p in sim.plants:
+		if p is Coral:
+			current_coral_count += 1
+	if current_coral_count >= CORAL_MAX:
+		return
+	# Random palette - same set the initial spawn uses.
+	var palettes: Array = [
+		[Color8(120, 55, 50), Color8(160, 85, 70), Color8(200, 120, 95),
+		 Color8(225, 155, 130), Color8(245, 185, 165), Color8(255, 215, 195)],
+		[Color8(60, 35, 90), Color8(85, 55, 130), Color8(115, 85, 170),
+		 Color8(150, 120, 205), Color8(185, 160, 225), Color8(215, 195, 240)],
+		[Color8(45, 70, 50), Color8(75, 105, 70), Color8(110, 140, 95),
+		 Color8(145, 170, 120), Color8(180, 195, 150), Color8(215, 220, 180)],
+		[Color8(110, 45, 35), Color8(145, 70, 55), Color8(180, 100, 80),
+		 Color8(210, 135, 110), Color8(235, 175, 150), Color8(250, 220, 200)],
+		[Color8(75, 50, 100), Color8(105, 75, 140), Color8(140, 110, 180),
+		 Color8(175, 145, 215), Color8(205, 180, 235), Color8(230, 215, 250)],
+		[Color8(105, 75, 30), Color8(140, 105, 45), Color8(180, 140, 60),
+		 Color8(210, 175, 85), Color8(235, 210, 130), Color8(250, 235, 180)],
+	]
+	# Weighted form pick: domes most common (newly settled coral is a
+	# tiny lump), then branching, occasionally feathery. Plates are rare
+	# (need a mature stem first).
+	var roll: float = randf()
+	var form: String = "dome"
+	if roll < 0.55:
+		form = "dome"
+	elif roll < 0.85:
+		form = "branching"
+	else:
+		form = "feathery"
+	# Pick a substrate position inside the tank footprint.
+	var xz: Vector2 = _random_xz_in_band(
+		-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
+	var pal: Array = palettes[_rng.randi() % palettes.size()]
+	var c := Coral.new()
+	plants_root.add_child(c)
+	c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+	c.coral_form = form
+	c.ramp_override = pal
+	c.tip_color = pal[pal.size() - 1]
+	c.water_surface_y = WATER_HEIGHT
+	c.generation = 1
+	c.init(1, {
+		"max_height": _rng.randi_range(10, 18),
+		"growth_rate": 0.15,
+		"sway_amplitude": 0.04 if form == "feathery" else 0.0,
+	})
+	sim.register_plant(c)
+
+
 func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	var p := Plant.new()
 	plants_root.add_child(p)
@@ -1045,8 +1334,19 @@ func _spawn_initial_fish() -> void:
 			# the FULL tank depth (not a narrow center band) so every fish
 			# starts with a unique home_x / home_z - this is what spreads
 			# the school across the tank instead of clumping at center.
+			# NOTE: g["preferred_y"] is still the LEGACY value here; the
+			# remap happens later inside _spawn_fish_at. To get the jitter
+			# scaled to the actual column we precompute the column height
+			# locally.
 			var pref_y: float = float(g.get("preferred_y", 3.5))
-			var spawn_y: float = pref_y + randf_range(-0.6, 0.6)
+			var _col: float = maxf(1.0, WATER_HEIGHT - SUBSTRATE_DEPTH)
+			var _ref_frac: float = clampf(
+				(pref_y - _REF_SUBSTRATE_Y) / _REF_COLUMN_HEIGHT, 0.05, 0.95)
+			var pref_y_actual: float = SUBSTRATE_DEPTH + _ref_frac * _col
+			# Jitter 12% of column on either side - in a 13.6-unit reef
+			# column that's ~1.6 units of vertical spread per fish at
+			# spawn, instead of the old absolute ±0.6.
+			var spawn_y: float = pref_y_actual + randf_range(-0.12, 0.12) * _col
 			var xz: Vector2 = _random_xz_in_band(
 				-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6)
 			_spawn_fish_at(g, Vector3(xz.x, spawn_y, xz.y))
@@ -1741,10 +2041,53 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	# not tank-monster huge.
 	if genome.get("species", "") == "betta":
 		f.max_growth = 2.0
+	# Remap preferred_y + home_y_radius to the actual water column.
+	# Species library values were calibrated for the default 5-unit
+	# column; in a tall reef tank without this remap every fish would
+	# pin to the bottom 1-2 units. Mutates the genome in place so the
+	# subsequent init_genome() reads the corrected values.
+	_apply_water_column_scale(genome)
 	fauna_root.add_child(f)
 	f.global_position = pos
 	f.init_genome(genome)
 	sim.register_fish(f)
+
+
+# Reference dimensions the species library was originally tuned against
+# (default tank: half-height 8, substrate at ~1.6, water surface at ~6.5,
+# water column ~5 units). Any preferred_y / home_y_radius in the library
+# is interpreted as if it sits in this column, then re-projected onto
+# the actual tank's column.
+const _REF_SUBSTRATE_Y: float = 1.6
+const _REF_COLUMN_HEIGHT: float = 5.0
+
+
+func _apply_water_column_scale(genome: Dictionary) -> void:
+	# Actual water column for this tank (SUBSTRATE_DEPTH .. WATER_HEIGHT).
+	var col: float = maxf(1.0, WATER_HEIGHT - SUBSTRATE_DEPTH)
+
+	# Vertical anchor:
+	#   preferred_y_frac (0..1) - new key, takes priority. Mixed-morph
+	#     reef fish use this to spread across the column.
+	#   preferred_y - legacy absolute Y. Remap as a fraction of the
+	#     reference column, then project onto the actual column.
+	var frac: float
+	if genome.has("preferred_y_frac"):
+		frac = clampf(float(genome["preferred_y_frac"]), 0.05, 0.95)
+	else:
+		var legacy: float = float(genome.get("preferred_y", 3.5))
+		frac = clampf((legacy - _REF_SUBSTRATE_Y) / _REF_COLUMN_HEIGHT, 0.05, 0.95)
+	genome["preferred_y"] = SUBSTRATE_DEPTH + frac * col
+
+	# Vertical territory radius:
+	#   The library's home_y_radius was 16-25% of the reference column.
+	#   Scale by the same factor so taller tanks get larger territories.
+	var col_ratio: float = col / _REF_COLUMN_HEIGHT
+	if genome.has("home_y_radius"):
+		genome["home_y_radius"] = float(genome["home_y_radius"]) * col_ratio
+	# If not set, fish.gd defaults to 0.8 - scale that too via an explicit set.
+	else:
+		genome["home_y_radius"] = 0.8 * col_ratio
 
 
 func _spawn_initial_shrimp() -> void:
@@ -1792,6 +2135,37 @@ func _spawn_initial_shrimp() -> void:
 		sim.register_shrimp(sh)
 		# Yield every 4 shrimp - each builds ~15 voxels + an egg cluster.
 		if (i + 1) % 4 == 0:
+			await get_tree().process_frame
+
+
+func _spawn_marine_shrimp() -> void:
+	# Skunk cleaner shrimp (Lysmata amboinensis) - bright red carapace
+	# with a stark white spine stripe and oversize white antennae.
+	# Cleaning-station behavior tier in shrimp.gd handles the gameplay.
+	var cleaner_genome: Dictionary = {
+		"species": "shrimp",
+		"base_color": Color8(195, 50, 45),       # deep tomato red
+		"accent_color": Color8(245, 230, 215),   # cream belly
+		"adult_voxel_scale": 0.13,                # slightly bigger than cherry
+		"max_age_s": 400.0,
+		"max_speed": 0.90,
+		"substrate_top_y": SUBSTRATE_DEPTH,
+		"is_cleaner": true,
+	}
+	var n: int = 6                                  # small cleaning crew
+	for i in n:
+		var g: Dictionary = cleaner_genome.duplicate()
+		g["sex"] = i % 2
+		g["max_age_s"] += randf_range(-30, 30)
+		var sh := Shrimp.new()
+		sh.age = g["max_age_s"] * randf_range(0.15, 0.6)
+		fauna_root.add_child(sh)
+		var sh_xz: Vector2 = _random_xz_in_band(
+			-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 0.4)
+		sh.global_position = Vector3(sh_xz.x, SUBSTRATE_DEPTH + 0.15, sh_xz.y)
+		sh.init_genome(g)
+		sim.register_shrimp(sh)
+		if (i + 1) % 3 == 0:
 			await get_tree().process_frame
 
 

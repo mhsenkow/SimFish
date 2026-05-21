@@ -19,6 +19,11 @@ extends Node3D
 @export var shell_size: float = 1.0   # multiplier on body voxel sizes
 @export var generation: int = 0
 @export var sex: int = 0   # 0/1 - used for snail breeding later if added
+# Shell silhouette. "turbo" = freshwater default (round low spiral),
+# "trochus" = tall pointed cone (marine algae grazer), "nassarius" =
+# small flat oval that rides the substrate plane (marine scavenger).
+# world.gd's _build_snail_body branches on this.
+@export var shell_shape: String = "turbo"
 
 const SPEED: float = 0.18                  # units per second; ~3 minutes coast-to-coast
 const TURN_INTERVAL_MIN: float = 6.0

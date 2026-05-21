@@ -23,7 +23,7 @@ const MATURITY_JUVENILE := 1
 const MATURITY_ADULT := 2
 const MATURITY_SENESCENT := 3
 
-enum Mode { WANDER, FORAGE_WASTE, CLIMB, NIBBLE, HUNT, COURT, REST }
+enum Mode { WANDER, FORAGE_WASTE, CLIMB, NIBBLE, HUNT, COURT, REST, CLEAN }
 
 # ---- Genome (set at spawn) ----
 var species: String = "shrimp"
@@ -75,6 +75,23 @@ var _molt_timer: float = 0.0
 var _molt_flash: float = 0.0
 const MOLT_INTERVAL_MIN: float = 60.0
 const MOLT_INTERVAL_MAX: float = 120.0
+
+# Marine / cleaner-shrimp variant (Lysmata amboinensis - skunk cleaner).
+# When is_cleaner == true:
+#   - body builder uses a red base + a white spine stripe + extra-long
+#     white antennae for the distinctive skunk look
+#   - tick adds a CLEANING_STATION behavior tier: pause near high-stress
+#     fish, reduce their stress, gain a tiny food reward (parasites)
+# Set on saltwater spawns; freshwater cherry / amber morphs keep the
+# default colour-only body.
+var is_cleaner: bool = false
+# Cleaning-station behavior state.
+var _clean_target: Node3D = null
+var _clean_hold: float = 0.0
+const CLEAN_RADIUS: float = 1.4
+const CLEAN_HOLD_DURATION: float = 3.0
+const CLEAN_COOLDOWN: float = 12.0
+var _clean_cooldown: float = 0.0
 # Tracks how many successful broods this individual has had. Used for
 # breeding-partner bias - successful breeders are more attractive (cheap
 # stand-in for true sexual selection).
@@ -117,6 +134,7 @@ func init_genome(genome: Dictionary) -> void:
 	max_speed = genome.get("max_speed", max_speed)
 	sex = genome.get("sex", randi() % 2)
 	substrate_top_y = genome.get("substrate_top_y", substrate_top_y)
+	is_cleaner = bool(genome.get("is_cleaner", is_cleaner))
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
 	# Start each shrimp facing a random horizontal direction.
@@ -164,12 +182,22 @@ func _build_body() -> void:
 	_voxel(_bank_pivot, Vector3(-v * 0.4, v * 0.3, -v * 1.1), Vector3(v * 0.18, v * 0.18, v * 0.18), mat_eye)
 
 	# Antennae - thin voxels jutting forward. We'll animate the pivot.
+	# Cleaner shrimp get noticeably longer + bright white antennae - one
+	# of the species' most recognisable features (they wave them at fish
+	# as a "I'll clean you" signal at cleaning stations).
 	_antenna_pivot = Node3D.new()
 	_antenna_pivot.name = "Antennae"
 	_antenna_pivot.position = Vector3(0, v * 0.3, -v * 1.2)
 	_bank_pivot.add_child(_antenna_pivot)
-	_voxel(_antenna_pivot, Vector3(v * 0.2, v * 0.1, -v * 0.4), Vector3(v * 0.06, v * 0.06, v * 0.9), mat_antenna)
-	_voxel(_antenna_pivot, Vector3(-v * 0.2, v * 0.1, -v * 0.4), Vector3(v * 0.06, v * 0.06, v * 0.9), mat_antenna)
+	var antenna_mat: Material = mat_antenna
+	var antenna_len: float = 0.9
+	if is_cleaner:
+		antenna_mat = VoxelMat.make(Color8(250, 250, 250))
+		antenna_len = 1.6
+	_voxel(_antenna_pivot, Vector3(v * 0.2, v * 0.1, -v * antenna_len * 0.45),
+		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
+	_voxel(_antenna_pivot, Vector3(-v * 0.2, v * 0.1, -v * antenna_len * 0.45),
+		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
 
 	# Mid segment (thickest part of carapace).
 	_voxel(_bank_pivot, Vector3(0, v * 0.3, 0), Vector3(v * 1.1, v * 1.0, v * 0.9), mat_body)
@@ -208,6 +236,20 @@ func _build_body() -> void:
 		for ez in [-0.1, 0.1]:
 			_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
 				   Vector3(v * 0.18, v * 0.18, v * 0.18), mat_egg)
+
+	# Cleaner-shrimp spine stripe: a single bright white voxel running
+	# along the top of the body from carapace through mid through tail.
+	# The signature "skunk" stripe that ID's Lysmata amboinensis.
+	if is_cleaner:
+		var stripe_mat := VoxelMat.make(Color8(252, 252, 252))
+		# Three segments along the spine, matching the three body
+		# segments. Y offset puts the stripe on the very top.
+		_voxel(_bank_pivot, Vector3(0, v * 0.65, -v * 0.8),
+			Vector3(v * 0.16, v * 0.08, v * 0.6), stripe_mat)
+		_voxel(_bank_pivot, Vector3(0, v * 0.7, 0),
+			Vector3(v * 0.16, v * 0.08, v * 0.85), stripe_mat)
+		_voxel(_bank_pivot, Vector3(0, v * 0.65, v * 0.55),
+			Vector3(v * 0.16, v * 0.08, v * 0.5), stripe_mat)
 
 	# Stagger first molt so the population doesn't molt in lock-step.
 	_molt_timer = randf_range(MOLT_INTERVAL_MIN, MOLT_INTERVAL_MAX)
@@ -302,6 +344,62 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
+			_apply_target(target_velocity)
+			return events
+
+	# Tier 2.4: CLEANING STATION (cleaner-shrimp only). Real Lysmata
+	# amboinensis set up "cleaning stations" - a fixed perch where fish
+	# queue up to be cleaned of parasites and dead tissue. We approximate:
+	# the shrimp finds the nearest fish with elevated stress within
+	# CLEAN_RADIUS, walks toward it, then holds position for
+	# CLEAN_HOLD_DURATION seconds. During the hold, the fish's stress
+	# drops; the shrimp gains a small food reward. Cooldown prevents
+	# the shrimp from chaining clean → clean → clean forever.
+	_clean_cooldown = maxf(0.0, _clean_cooldown - dt)
+	if is_cleaner and maturity != MATURITY_FRY and _clean_cooldown <= 0.0 \
+			and hunger > 0.2 and sim != null:
+		# Validate existing target.
+		if _clean_target != null \
+				and (not is_instance_valid(_clean_target)
+					or _clean_target.position.distance_squared_to(position)
+						> CLEAN_RADIUS * CLEAN_RADIUS * 4.0):
+			_clean_target = null
+			_clean_hold = 0.0
+		# Find a target if we don't have one.
+		if _clean_target == null:
+			var best: Node3D = null
+			var best_score: float = 0.45    # require min stress to bother
+			for f in sim.fish:
+				if not is_instance_valid(f) or f.maturity == Fish.MATURITY_FRY:
+					continue
+				var d2: float = f.position.distance_squared_to(position)
+				if d2 > CLEAN_RADIUS * CLEAN_RADIUS:
+					continue
+				# Score = stress level. Highest-stress fish in range wins.
+				var s: float = float(f.stress)
+				if s > best_score:
+					best_score = s
+					best = f
+			_clean_target = best
+		if _clean_target != null and is_instance_valid(_clean_target):
+			current_mode = Mode.CLEAN
+			var to_t: Vector3 = (_clean_target as Node3D).position - position
+			var dist: float = to_t.length()
+			if dist > 0.35:
+				# Approach the fish.
+				target_velocity += to_t.normalized() * max_speed * 0.5
+			else:
+				# At the station - hold position, perform the clean.
+				_clean_hold += dt
+				# Fish stress drops + small hunger reward for the shrimp.
+				if "stress" in _clean_target:
+					_clean_target.stress = maxf(0.0,
+						float(_clean_target.stress) - dt * 0.20)
+				hunger = maxf(0.0, hunger - dt * 0.08)
+				if _clean_hold >= CLEAN_HOLD_DURATION:
+					_clean_hold = 0.0
+					_clean_target = null
+					_clean_cooldown = CLEAN_COOLDOWN
 			_apply_target(target_velocity)
 			return events
 

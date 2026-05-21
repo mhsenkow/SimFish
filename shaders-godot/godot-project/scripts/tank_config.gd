@@ -415,6 +415,39 @@ const SPECIES_LIBRARY: Dictionary = {
 			"snout_pointed": true,
 		},
 	},
+	"reef_fish": {
+		"label": "Mixed reef school",
+		"description": "Single 'species' built to look like a mixed reef community - clownfish, tangs, chromis, anthias. Every individual rolls a unique morph at spawn.",
+		"genome": {
+			"species": "reef_fish",
+			# Bright tropical baseline. The mixed_morphs path in fish.gd
+			# init_genome OVERWRITES base_color / accent_color / pattern /
+			# shape per individual so this baseline is rarely seen
+			# unchanged. Strong saturation so even the random jitters
+			# stay vivid.
+			"base_color": Color8(245, 165, 40),       # Clownfish orange default
+			"accent_color": Color8(255, 255, 255),    # crisp white bars
+			"adult_voxel_scale": 0.16,
+			"max_age_s": 260.0,
+			"max_speed": 1.6,
+			"schooling_strength": 0.6,                # loose - reef fish don't tight-school
+			"separation_radius": 0.7,
+			"herbivory": 0.5,                          # mixed reef diet
+			"fecundity": 0.6,
+			"clutch_size": 2,
+			"preferred_y": 3.6,
+			"body_elongation": 0.95,
+			"body_depth_factor": 1.10,
+			"fin_length_factor": 1.0,
+			"swim_pattern": "shoal",
+			"tail_shape": 1,
+			"eye_size_factor": 1.1,
+			# Mixed-morph spawn flag: each individual gets random tropical
+			# colors, body_shape, pattern, tail_shape so the school reads
+			# as multiple "species". See fish.gd init_genome handling.
+			"mixed_morphs": true,
+		},
+	},
 }
 
 
@@ -492,6 +525,19 @@ const TANK_PRESETS: Dictionary = {
 		"stocking": {},
 		"phenotype_spread": 1.0,
 		"description": "Set counts manually below.",
+	},
+	"reef": {
+		"label": "Reef (saltwater)",
+		"stocking": {
+			# Single species, but mixed_morphs + high phenotype_spread mean
+			# every individual reads as a different reef fish (clownfish,
+			# tang, chromis, anthias-shaped morphs). No shrimp - this is a
+			# pure reef community.
+			"reef_fish": 16,
+		},
+		"phenotype_spread": 3.5,
+		"substrate": "ocean_sand",
+		"description": "Coral reef + mixed tropical school. Each fish unique. Plants replaced by corals.",
 	},
 }
 
@@ -598,6 +644,23 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(145, 145, 155), Color8(165, 165, 175), Color8(185, 185, 195),
 		],
 		"description": "Sterile gravel. Plants survive only on water column dosing.",
+	},
+	"ocean_sand": {
+		"label": "Ocean sand (saltwater)",
+		# Corals don't draw nutrients from substrate the same way plants do
+		# - they get most of their energy via photosynthetic zooxanthellae.
+		# We keep a small substrate nutrient baseline so the existing
+		# plant.tick() growth path still works.
+		"nutrient_baseline": 0.12,
+		"reservoir_leak": 0.00005,
+		"colors": [
+			Color8(228, 215, 188), Color8(238, 226, 200), Color8(245, 234, 210),
+			Color8(250, 240, 218), Color8(252, 245, 226), Color8(255, 250, 235),
+		],
+		# is_saltwater flips the world build from plants → corals and
+		# unlocks the reef_fish species library entry.
+		"is_saltwater": true,
+		"description": "Crushed coral / aragonite sand. Reef tank substrate. Spawns corals + reef fish.",
 	},
 }
 

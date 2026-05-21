@@ -30,6 +30,11 @@ const WASTE_ENERGY_DELTA: float = 0.06
 const FOOD_AGE_REVIVAL_FRAC: float = 0.08
 # OmniLight3D energy applied to the food-glow halo on a food bite.
 const FOOD_GLOW_ENERGY: float = 2.0
+# Every successful meal (waste, algae, plant nibble, predation) rewinds
+# the fish's age by this fraction of max_age_s. Stacks with the larger
+# FOOD_AGE_REVIVAL_FRAC bonus on auto-feeder pellets. Result: well-fed
+# fish live well past max_age_s; starving fish hit senescence on schedule.
+const MEAL_AGE_REDUCTION_FRAC: float = 0.012
 
 # Behavior modes - what the fish is doing right now. Visible in the HUD if we
 # add per-fish debug labels.
@@ -328,6 +333,14 @@ func _ready() -> void:
 # ---- Setup ----
 
 func init_genome(genome: Dictionary) -> void:
+	# mixed_morphs (reef tank): each individual rolls a fresh tropical
+	# colour + body + pattern + tail combo at spawn so a single species
+	# entry produces a school that reads as a mixed reef community
+	# (clownfish, tang, chromis, anthias, etc.). Applied BEFORE color
+	# extraction so the rolled values land in the genome dict that the
+	# rest of init_genome reads from.
+	if bool(genome.get("mixed_morphs", false)):
+		_apply_mixed_morph_jitter(genome)
 	species = genome.get("species", species)
 	base_color = genome.get("base_color", base_color)
 	accent_color = genome.get("accent_color", accent_color)
@@ -463,6 +476,77 @@ func _maturity_scale() -> float:
 		MATURITY_ADULT:      return 1.0
 		MATURITY_SENESCENT:  return 0.95
 		_: return 1.0
+
+
+# Mixed-morph spawn: when a reef-style species has mixed_morphs=true,
+# this overwrites the genome's color + shape keys with a randomly-rolled
+# tropical combination so each individual reads as a different species
+# of reef fish even though they share one library entry. Mutates `genome`
+# in place; init_genome reads the post-mutation values below.
+func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
+	# Curated tropical color palette - inspired by clownfish, tangs,
+	# chromis, anthias, royal grammas. Each entry is (base, accent).
+	# Accent is the contrasting bar / lateral stripe color.
+	var palettes: Array = [
+		[Color8(245, 110, 30), Color8(255, 255, 255)],  # clownfish orange + white
+		[Color8(255, 215, 40), Color8(45, 35, 25)],     # yellow tang + dark mask
+		[Color8(35, 95, 220), Color8(255, 230, 30)],    # blue tang + yellow tail
+		[Color8(60, 170, 215), Color8(245, 245, 245)],  # chromis blue-cyan + white
+		[Color8(230, 70, 130), Color8(255, 235, 90)],   # anthias pink + amber
+		[Color8(110, 60, 180), Color8(255, 220, 70)],   # royal gramma purple + yellow
+		[Color8(245, 245, 245), Color8(35, 35, 50)],    # damselfish pearl + black
+		[Color8(220, 60, 50), Color8(255, 245, 180)],   # squirrelfish red + cream
+		[Color8(40, 80, 60), Color8(255, 200, 90)],     # moorish idol dark + yellow
+	]
+	var p: Array = palettes[randi() % palettes.size()]
+	genome["base_color"] = p[0]
+	genome["accent_color"] = p[1]
+	# Tail color: 50/50 chance to be a third contrasting hue or match
+	# accent. Real reef fish often have a bright tail flash.
+	if randf() < 0.5:
+		genome["tail_color"] = p[1]
+	else:
+		genome["tail_color"] = Color(randf(), randf() * 0.6 + 0.3, randf())
+	# Body shape: most reef fish are compressed (laterally flat) like
+	# tangs / angelfish. Smaller chance of fusiform (anthias / chromis).
+	genome["body_shape"] = "compressed" if randf() < 0.65 else "fusiform"
+	# Pattern: random pick. Vertical bars (clownfish, damselfish),
+	# horizontal stripes, spots, or solid.
+	genome["pattern_type"] = randi() % 4
+	# Tail shape: square paddle (tang / chromis), fan (anthias), or
+	# forked (chromis); avoid lyre (cichlid).
+	genome["tail_shape"] = [0, 1, 3][randi() % 3]
+	# Skeletal variation. Body depth + elongation jitter heavy so some
+	# reef morphs read as nearly-disc tang while others read as torpedo.
+	genome["body_elongation"] = randf_range(0.78, 1.20)
+	genome["body_depth_factor"] = randf_range(0.95, 1.65)
+	genome["fin_length_factor"] = randf_range(0.7, 1.4)
+	genome["dorsal_height_factor"] = randf_range(0.7, 1.4)
+	# Anal fin matches dorsal-ish for the symmetric tang look.
+	genome["anal_fin_length_factor"] = randf_range(0.5, 1.5)
+	# Random dot count (some morphs have peppered flanks).
+	genome["color_dot_count"] = randi_range(0, 4)
+	# Preferred Y as a FRACTION of the actual water column (0=substrate,
+	# 1=surface). World.gd's _apply_water_column_scale converts this to
+	# absolute Y at spawn based on the tank's real dimensions, so the
+	# reef school spans the full column whether the tank is 5 units or
+	# 15 units tall. Range 0.10..0.90 keeps every fish well inside the
+	# water and gives the school maximum vertical diversity.
+	genome["preferred_y_frac"] = randf_range(0.10, 0.90)
+	# Reef fish are less territorially layered than freshwater
+	# schoolers - they cruise more of the column. Give each one a
+	# bigger vertical wander radius (25% of column, scaled in world).
+	genome["home_y_radius"] = 1.25  # interpreted as 25% of ref column = 1.25
+	# Trophic niche: roughly 30% of the school rolls polyp-grazer (high
+	# herbivory like butterflyfish / tangs - actively nibble corals once
+	# they're large enough). The other 70% read as planktivores /
+	# carnivores: low herbivory, swim past corals without biting. This
+	# gives the reef a believable mix where most fish ignore corals and
+	# only a few specialists eat them - matching real reef behaviour.
+	if randf() < 0.30:
+		genome["herbivory"] = randf_range(0.65, 0.90)
+	else:
+		genome["herbivory"] = randf_range(0.05, 0.25)
 
 
 func _build_body() -> void:
@@ -803,9 +887,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var events: Dictionary = {}
 
 	age += dt
-	# Hunger accumulates slower so fish have more time to find food. Real
-	# fish go days without eating; the sim was forcing starvation in ~80s.
-	hunger = clampf(hunger + dt * 0.008, 0.0, 1.0)
+	# Hunger accumulates slowly. Real fish go days without eating; we keep
+	# the rate gentle so fish can spend more time on courtship / schooling
+	# / exploration than on frantic foraging. 0.006/s = ~165s from sated
+	# to starvation if the fish never finds a bite (longer than most
+	# fish lifespans, so starvation is a real but uncommon kill switch).
+	hunger = clampf(hunger + dt * 0.006, 0.0, 1.0)
 	var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
 	energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 	burst_remaining = maxf(0.0, burst_remaining - dt)
@@ -862,7 +949,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		_apply_aging_tint()
 
 	# Death conditions.
-	if maturity == MATURITY_SENESCENT and age >= max_age_s * 1.15:
+	# Old fish can hang on for 25% past max_age_s. Meal-driven age
+	# reductions stack against this clock, so a well-fed senescent fish
+	# can hold its place for a long time before finally dying of old age.
+	if maturity == MATURITY_SENESCENT and age >= max_age_s * 1.25:
 		events["die"] = true
 		return events
 	if hunger >= 1.0 and energy < 0.1:
@@ -1050,8 +1140,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var is_food: bool = best_w.kind == 3
 				hunger = maxf(0.0, hunger - (FOOD_HUNGER_DELTA if is_food else WASTE_HUNGER_DELTA))
 				energy = minf(1.0, energy + (FOOD_ENERGY_DELTA if is_food else WASTE_ENERGY_DELTA))
+				# All meals rewind the age clock a little.
+				age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				if is_food:
-					# High-quality food revitalizes the fish and brings them "back to life".
+					# High-quality food stacks an additional big revival.
 					age = maxf(0.0, age - max_age_s * FOOD_AGE_REVIVAL_FRAC)
 					stress = 0.0
 					if maturity == MATURITY_SENESCENT and age < max_age_s:
@@ -1123,6 +1215,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				events["kill_prey"] = best_prey
 				hunger = maxf(0.0, hunger - 0.50)
 				energy = minf(1.0, energy + 0.18)
+				age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				events["waste_at"] = position + Vector3(0, -0.1, 0)
 				events["waste_amount"] = 0.20
 			else:
@@ -1155,6 +1248,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				events["kill_prey"] = prey
 				hunger = maxf(0.0, hunger - 0.40)
 				energy = minf(1.0, energy + 0.12)
+				age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				events["waste_at"] = position + Vector3(0, -0.1, 0)
 				events["waste_amount"] = 0.15
 			else:
@@ -1186,6 +1280,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if best_snail_d2 < 0.25:
 					events["kill_snail"] = best_snail
 					hunger = maxf(0.0, hunger - 0.35)
+					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				else:
 					if burst_remaining <= 0.0 and energy > 0.3:
 						burst_remaining = 0.35
@@ -1207,6 +1302,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if best_alga_d2 < 0.25:
 					events["eat_algae"] = best_alga
 					hunger = maxf(0.0, hunger - 0.2)
+					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				else:
 					var to_alga: Vector3 = best_alga.global_position - position
 					desired += to_alga.normalized() * effective_max * 0.9
@@ -1231,6 +1327,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if taken > 0:
 					hunger = maxf(0.0, hunger - 0.30 * float(taken))
 					energy = minf(1.0, energy + 0.06)
+					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC * float(taken))
 					nibble_cooldown = 0.9
 					events["waste_at"] = position + Vector3(0, -0.1, 0)
 					events["waste_amount"] = 0.15 * float(taken)
@@ -1441,9 +1538,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	target_velocity = desired.limit_length(effective_max)
 	# Position + facing now updated in _process at render rate.
 
-	# Senescence speeds death.
+	# Senescence speeds hunger a little but no longer punishes; meals
+	# can still meaningfully rewind the age clock even for old fish.
 	if maturity == MATURITY_SENESCENT:
-		hunger = clampf(hunger + dt * 0.01, 0.0, 1.0)
+		hunger = clampf(hunger + dt * 0.007, 0.0, 1.0)
 
 	# Starvation kills.
 	if hunger >= 1.0 and energy < 0.1:
