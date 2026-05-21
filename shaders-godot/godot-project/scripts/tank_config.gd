@@ -101,31 +101,34 @@ var custom_shrimp_count: int = 12
 const SPECIES_LIBRARY: Dictionary = {
 	"glassdart": {
 		"label": "Glassdart tetra",
-		"description": "Mid-water schoolers. Streamlined body, fast, mild herbivory.",
+		"description": "Mid-water schoolers. Electric blue stripe over scarlet body. Streamlined and fast.",
 		"genome": {
 			"species": "glassdart",
-			"base_color": Color8(195, 59, 59),
-			"accent_color": Color8(230, 201, 42),
+			# Cardinal-tetra inspired: vivid scarlet body, electric blue accent.
+			"base_color": Color8(230, 35, 55),
+			"accent_color": Color8(60, 170, 240),
 			"adult_voxel_scale": 0.18,
 			"max_age_s": 220.0,
 			"max_speed": 2.0,
-			"schooling_strength": 1.4,
-			"separation_radius": 0.6,
+			"schooling_strength": 1.6,
+			"separation_radius": 0.55,
 			"herbivory": 0.4,
 			"fecundity": 0.8,
 			"clutch_size": 2,
 			"preferred_y": 4.0,
 			"body_elongation": 1.10,
 			"body_depth_factor": 0.85,
+			"swim_pattern": "school",
 		},
 	},
 	"mudsifter": {
-		"label": "Mudsifter (cory-like)",
-		"description": "Bottom-dweller. Strong herbivore. Sifts substrate for detritus.",
+		"label": "Mudsifter (kuhli-like)",
+		"description": "Bottom-dweller. Banded orange + chocolate. Sifts substrate for detritus.",
 		"genome": {
 			"species": "mudsifter",
-			"base_color": Color8(120, 85, 56),
-			"accent_color": Color8(205, 176, 136),
+			# Kuhli-loach inspired: bright orange with dark chocolate bands.
+			"base_color": Color8(225, 130, 50),
+			"accent_color": Color8(60, 35, 25),
 			"adult_voxel_scale": 0.22,
 			"max_age_s": 280.0,
 			"max_speed": 1.2,
@@ -138,15 +141,18 @@ const SPECIES_LIBRARY: Dictionary = {
 			"body_elongation": 1.05,
 			"body_depth_factor": 1.05,
 			"head_proportion": 1.15,
+			"pattern_type": 3,                  # vertical bars
+			"swim_pattern": "shuffle",
 		},
 	},
 	"betta": {
 		"label": "Betta (solo apex)",
-		"description": "Solitary carnivore. Large, brightly colored, territorial. Hunts fry.",
+		"description": "Solitary carnivore. Iridescent royal-blue with magenta finnage. Long sweeping arcs.",
 		"genome": {
 			"species": "betta",
-			"base_color": Color8(80, 50, 170),
-			"accent_color": Color8(230, 130, 200),
+			# Vibrant royal blue with hot magenta accents.
+			"base_color": Color8(40, 90, 235),
+			"accent_color": Color8(245, 90, 180),
 			"adult_voxel_scale": 0.28,
 			"max_age_s": 420.0,
 			"max_speed": 1.6,
@@ -159,92 +165,99 @@ const SPECIES_LIBRARY: Dictionary = {
 			"fin_length_factor": 1.4,
 			"dorsal_height_factor": 1.35,
 			"tail_fork_depth": 0.7,
+			"swim_pattern": "cruise",
 		},
 	},
 	"killifish": {
 		"label": "Killifish",
-		"description": "Surface dweller. Brilliantly colored, short-lived, breeds prolifically.",
+		"description": "Surface darter. Brilliant turquoise + orange. Short-lived, breeds prolifically.",
 		"genome": {
 			"species": "killifish",
-			# Killifish are stunningly bright - turquoise body, orange accents.
-			"base_color": Color8(40, 175, 195),
-			"accent_color": Color8(245, 130, 60),
-			"adult_voxel_scale": 0.14,        # small
-			"max_age_s": 150.0,               # short-lived in the wild
+			# Vivid turquoise body with hot orange accents.
+			"base_color": Color8(20, 200, 215),
+			"accent_color": Color8(255, 110, 35),
+			"adult_voxel_scale": 0.14,
+			"max_age_s": 150.0,
 			"max_speed": 1.7,
-			"schooling_strength": 0.4,        # loose pairs, not tight schools
+			"schooling_strength": 0.4,
 			"separation_radius": 0.5,
-			"herbivory": 0.3,                 # eats small invertebrates + detritus
-			"fecundity": 1.6,                 # very high - "annual" killifish strategy
+			"herbivory": 0.3,
+			"fecundity": 1.6,
 			"clutch_size": 3,
-			"preferred_y": 5.2,               # near surface
+			"preferred_y": 5.2,
 			"body_elongation": 1.20,
 			"body_depth_factor": 0.85,
 			"fin_length_factor": 1.25,
 			"dorsal_height_factor": 1.15,
-			"pattern_type": 2,                # spots - signature killifish look
+			"pattern_type": 2,
 			"color_dot_count": 3,
+			"swim_pattern": "dart",
 		},
 	},
 	"guppy": {
 		"label": "Guppy",
-		"description": "Tiny livebearer. Pastel rainbows. Breeds constantly in mid-water.",
+		"description": "Tiny neon-yellow livebearer with a gold tail. Loose shoals in mid-water.",
 		"genome": {
 			"species": "guppy",
-			"base_color": Color8(220, 175, 230),  # lavender pastel
-			"accent_color": Color8(250, 220, 100), # gold tail flash
-			"adult_voxel_scale": 0.11,         # smallest
+			# Matches the user's actual tank - bright neon yellow guppies.
+			"base_color": Color8(255, 215, 35),
+			"accent_color": Color8(255, 95, 35),
+			"adult_voxel_scale": 0.11,
 			"max_age_s": 180.0,
 			"max_speed": 1.5,
-			"schooling_strength": 0.7,         # loose shoals
+			"schooling_strength": 0.7,
 			"separation_radius": 0.4,
-			"herbivory": 0.6,                  # omnivore, mostly plants
-			"fecundity": 1.8,                  # very high
+			"herbivory": 0.6,
+			"fecundity": 1.8,
 			"clutch_size": 4,
 			"preferred_y": 3.6,
 			"body_elongation": 0.95,
 			"body_depth_factor": 1.0,
-			"fin_length_factor": 1.45,          # signature flowing tail
+			"fin_length_factor": 1.45,
 			"tail_fork_depth": 0.3,
-			"pattern_type": 2,                  # stripes
+			"pattern_type": 2,
+			"swim_pattern": "shoal",
 		},
 	},
 	"pufferfish": {
 		"label": "Dwarf pufferfish",
-		"description": "Round, slow, solitary. Hunts snails + shrimp. Inflates when stressed.",
+		"description": "Round, slow, solitary. Lemon-yellow with dark spots. Meanders, hunts shrimp.",
 		"genome": {
 			"species": "pufferfish",
-			"base_color": Color8(200, 180, 80),  # yellow-olive
-			"accent_color": Color8(60, 50, 40),  # dark spots
+			# Bright lemon yellow with strong dark spots - high contrast.
+			"base_color": Color8(255, 220, 60),
+			"accent_color": Color8(50, 40, 25),
 			"adult_voxel_scale": 0.22,
 			"max_age_s": 360.0,
-			"max_speed": 0.7,                   # slow cruiser
-			"schooling_strength": 0.0,          # solitary
+			"max_speed": 0.7,
+			"schooling_strength": 0.0,
 			"separation_radius": 1.3,
-			"herbivory": 0.0,                   # strict carnivore
+			"herbivory": 0.0,
 			"fecundity": 0.15,
 			"clutch_size": 1,
 			"preferred_y": 3.0,
-			"body_elongation": 0.65,            # signature round body
+			"body_elongation": 0.65,
 			"body_depth_factor": 1.55,
 			"head_proportion": 1.25,
 			"fin_length_factor": 0.55,
 			"dorsal_height_factor": 0.6,
 			"tail_fork_depth": 0.4,
-			"pattern_type": 2,               # dotted - signature puffer look
+			"pattern_type": 2,
 			"color_dot_count": 4,
+			"swim_pattern": "meander",
 		},
 	},
 	"danio": {
 		"label": "Zebra danio",
-		"description": "Fast top schooler. Striped, restless, never stops moving.",
+		"description": "Fast top schooler. Iridescent silver with electric-blue stripes. Restless.",
 		"genome": {
 			"species": "danio",
-			"base_color": Color8(180, 195, 215), # silver-blue
-			"accent_color": Color8(35, 45, 90),  # dark blue stripe
+			# Iridescent silver-cyan with electric blue lateral stripe.
+			"base_color": Color8(220, 235, 250),
+			"accent_color": Color8(20, 80, 220),
 			"adult_voxel_scale": 0.15,
 			"max_age_s": 200.0,
-			"max_speed": 2.4,                   # fastest in the tank
+			"max_speed": 2.4,
 			"schooling_strength": 1.8,
 			"separation_radius": 0.45,
 			"herbivory": 0.5,
@@ -253,54 +266,59 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 4.6,
 			"body_elongation": 1.30,
 			"body_depth_factor": 0.75,
-			"pattern_type": 1,                  # lateral stripes - zebra look
+			"pattern_type": 1,
+			"swim_pattern": "school",
 		},
 	},
 	"corydoras": {
 		"label": "Corydoras (armored cat)",
-		"description": "Gentle bottom group. Plates of armor. Sifts substrate with whiskers.",
+		"description": "Peppered bronze armor. Tight bottom group, shuffles between plants.",
 		"genome": {
 			"species": "corydoras",
-			"base_color": Color8(180, 165, 130),  # tan
-			"accent_color": Color8(60, 45, 30),   # dark armor lines
+			# Bronze cory with high-contrast dark peppering.
+			"base_color": Color8(210, 165, 95),
+			"accent_color": Color8(40, 30, 20),
 			"adult_voxel_scale": 0.18,
 			"max_age_s": 360.0,
 			"max_speed": 0.9,
-			"schooling_strength": 1.0,           # tight bottom group
+			"schooling_strength": 1.0,
 			"separation_radius": 0.5,
-			"herbivory": 0.95,                   # detritus + plants
+			"herbivory": 0.95,
 			"fecundity": 0.4,
 			"clutch_size": 3,
-			"preferred_y": 2.0,                  # very bottom-loving
+			"preferred_y": 2.0,
 			"body_elongation": 1.10,
 			"body_depth_factor": 1.10,
 			"head_proportion": 1.20,
-			"pattern_type": 1,
-			"color_dot_count": 2,
+			"pattern_type": 2,
+			"color_dot_count": 3,
+			"swim_pattern": "shuffle",
 		},
 	},
 	"angelfish": {
 		"label": "Angelfish",
-		"description": "Tall slow centerpiece. Mid-water, pairs up, defends territory.",
+		"description": "Tall slow centerpiece. Pearl white with jet-black bars. Hovers in pairs.",
 		"genome": {
 			"species": "angelfish",
-			"base_color": Color8(215, 215, 220),  # silver
-			"accent_color": Color8(35, 35, 45),   # bold black bars
+			# Pure pearl white with jet black bars - real angelfish striking look.
+			"base_color": Color8(250, 250, 252),
+			"accent_color": Color8(15, 15, 25),
 			"adult_voxel_scale": 0.26,
-			"max_age_s": 480.0,                  # long-lived
-			"max_speed": 0.9,                    # slow + graceful
-			"schooling_strength": 0.3,           # mated pairs only
+			"max_age_s": 480.0,
+			"max_speed": 0.9,
+			"schooling_strength": 0.3,
 			"separation_radius": 1.1,
 			"herbivory": 0.4,
 			"fecundity": 0.3,
 			"clutch_size": 2,
 			"preferred_y": 3.6,
 			"body_elongation": 0.85,
-			"body_depth_factor": 1.75,           # very tall
-			"fin_length_factor": 1.65,           # long trailing fins
+			"body_depth_factor": 1.75,
+			"fin_length_factor": 1.65,
 			"dorsal_height_factor": 1.7,
 			"tail_fork_depth": 0.9,
-			"pattern_type": 3,                   # vertical bars - signature angelfish
+			"pattern_type": 3,
+			"swim_pattern": "hover",
 		},
 	},
 }

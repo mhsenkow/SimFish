@@ -850,10 +850,14 @@ func _spawn_initial_fish() -> void:
 			# Founding phenotype spread - varies by preset.
 			_apply_initial_phenotype_spread(g, phenotype_mult)
 			# Spawn at the species' preferred depth (plus jitter) and inside
-			# the tank's footprint via shape-aware rejection sampling.
+			# the tank's footprint via shape-aware rejection sampling. Use
+			# the FULL tank depth (not a narrow center band) so every fish
+			# starts with a unique home_x / home_z - this is what spreads
+			# the school across the tank instead of clumping at center.
 			var pref_y: float = float(g.get("preferred_y", 3.5))
 			var spawn_y: float = pref_y + randf_range(-0.6, 0.6)
-			var xz: Vector2 = _random_xz_in_band(-2.0, 2.0, 0.5)
+			var xz: Vector2 = _random_xz_in_band(
+				-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6)
 			_spawn_fish_at(g, Vector3(xz.x, spawn_y, xz.y))
 
 

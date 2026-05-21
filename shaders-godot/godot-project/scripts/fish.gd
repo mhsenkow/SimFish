@@ -52,6 +52,31 @@ var breed_cooldown: float = 0.0
 var nibble_cooldown: float = 0.0
 var target_plant: Plant = null
 var heading_offset: Vector3 = Vector3.ZERO  # personal randomness in schooling
+
+# ---- Territory / swim pattern (heritable) ----
+# Each fish has a "home point" it loosely orbits, plus a swim_pattern that
+# controls HOW it moves around that home. Without this, every fish settles
+# at the tank centroid because every brain agrees the centroid is optimal,
+# so the whole population clumps. Giving each fish a different home spreads
+# them across the tank realistically.
+#
+# All heritable, so lineages can split into different territorial niches
+# over generations.
+var home_x: float = INF                  # INF = set lazily from spawn pos
+var home_z: float = INF
+var home_radius: float = 2.5             # how far the fish wanders from home
+var wander_strength: float = 1.0         # heading_offset magnitude multiplier
+var dart_chance: float = 0.0             # per-second probability of darting
+var dart_speed_mult: float = 1.6         # multiplier on speed during a dart
+# Pattern dispatch - used to derive defaults + influence the brain. Patterns:
+#   "school"   tight cohesive group (default)
+#   "shoal"    loose group, wider territory
+#   "dart"     surface dart-and-pause (killifish)
+#   "hover"    station-keeps near home (angelfish)
+#   "cruise"   slow long arcs (betta, large fish)
+#   "meander"  slow random wander (pufferfish)
+#   "shuffle"  bottom-hugging slow group (corydoras, mudsifter)
+var swim_pattern: String = "school"
 var current_mode: Mode = Mode.CRUISE
 
 # Courtship state machine:
@@ -162,9 +187,64 @@ func init_genome(genome: Dictionary) -> void:
 	tail_fork_depth = genome.get("tail_fork_depth", tail_fork_depth)
 	pattern_type = int(genome.get("pattern_type", pattern_type))
 	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
+	# Swim pattern + territory (heritable).
+	swim_pattern = String(genome.get("swim_pattern", swim_pattern))
+	# Apply pattern-derived defaults FIRST so explicit genome values can
+	# override them on the next reads below.
+	_apply_swim_pattern_defaults()
+	home_x = float(genome.get("home_x", home_x))
+	home_z = float(genome.get("home_z", home_z))
+	home_radius = float(genome.get("home_radius", home_radius))
+	wander_strength = float(genome.get("wander_strength", wander_strength))
+	dart_chance = float(genome.get("dart_chance", dart_chance))
+	dart_speed_mult = float(genome.get("dart_speed_mult", dart_speed_mult))
+	# Lazy initialization of home: if the genome didn't supply one, anchor
+	# to the spawn position so each fish gets its OWN territory rather than
+	# every fish converging on the tank centroid.
+	if is_inf(home_x):
+		home_x = global_position.x + randf_range(-1.5, 1.5)
+		home_z = global_position.z + randf_range(-1.5, 1.5)
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
+
+
+# Apply per-pattern defaults. Only fills in fields the genome hasn't already
+# overridden (sentinel-style: a default of 1.0 / 2.5 / 0.0 means "use the
+# pattern's pick"). Each pattern shapes how the fish wanders + how often it
+# darts; the actual schooling weight stays driven by genome.schooling_strength.
+func _apply_swim_pattern_defaults() -> void:
+	match swim_pattern:
+		"school":
+			home_radius = 2.5
+			wander_strength = 1.0
+			dart_chance = 0.005
+		"shoal":
+			home_radius = 4.5
+			wander_strength = 1.3
+			dart_chance = 0.01
+		"dart":
+			home_radius = 3.0
+			wander_strength = 0.7
+			dart_chance = 0.045
+			dart_speed_mult = 1.9
+		"hover":
+			home_radius = 0.9
+			wander_strength = 0.35
+			dart_chance = 0.002
+		"cruise":
+			home_radius = 6.0
+			wander_strength = 0.55
+			dart_chance = 0.003
+		"meander":
+			home_radius = 3.5
+			wander_strength = 1.5
+			dart_chance = 0.0
+		"shuffle":
+			home_radius = 2.0
+			wander_strength = 0.5
+			dart_chance = 0.012
+			dart_speed_mult = 1.4
 
 
 func _maturity_scale() -> float:
@@ -403,7 +483,11 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	# Behavior priority - higher tier wins. Each tier produces a desired velocity
 	# (or events) for the brain.
 	var desired := Vector3.ZERO
-	var effective_max := max_speed * (1.6 if burst_remaining > 0.0 else 1.0)
+	# Burst speed uses the fish's own dart_speed_mult (heritable) when a dart
+	# is active; falls back to a sensible 1.5 for non-dart-pattern bursts
+	# (flee, chase) which still trigger burst_remaining.
+	var burst_mult: float = dart_speed_mult if dart_speed_mult > 1.0 else 1.5
+	var effective_max := max_speed * (burst_mult if burst_remaining > 0.0 else 1.0)
 	current_mode = Mode.CRUISE
 
 	# Tier 0: wall avoidance always runs (additive).
@@ -632,8 +716,36 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	var dy: float = target_y - position.y
 	desired.y += dy * 0.6
 
-	# Mild wander via personal heading offset.
-	desired += heading_offset * 0.5
+	# HOME-PULL. Each fish has its own home_x / home_z territory; if the fish
+	# wanders past home_radius, pull it back. This is the single biggest fix
+	# for "all the fish clump at the tank centroid" - without a per-fish
+	# preferred horizontal position, the boids tier converges on the average
+	# position of every neighbor, which IS the centroid.
+	#
+	# The pull strength scales with how far past home_radius the fish is, so
+	# close-to-home doesn't fight wander but far-from-home is firm.
+	var to_home: Vector3 = Vector3(home_x - position.x, 0.0, home_z - position.z)
+	var dist_home: float = to_home.length()
+	if dist_home > home_radius:
+		var pull_strength: float = clampf(
+			(dist_home / maxf(home_radius, 0.5)) - 1.0, 0.0, 2.0)
+		desired += to_home.normalized() * effective_max * 0.5 * pull_strength
+
+	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
+	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
+	# is heritable so lineages can drift toward calmer or twitchier.
+	if dart_chance > 0.0 and burst_remaining <= 0.0 \
+			and randf() < dart_chance * dt * 10.0 and energy > 0.25:
+		burst_remaining = randf_range(0.25, 0.45)
+		# Snap heading_offset to a new random direction so the dart goes
+		# somewhere new (not just "faster in current direction").
+		var ang: float = randf() * TAU
+		heading_offset = Vector3(sin(ang), randf_range(-0.15, 0.15), cos(ang)) \
+			* (1.0 + wander_strength)
+
+	# Mild wander via personal heading offset, scaled by wander_strength so
+	# meanderers wander more, hoverers wander less.
+	desired += heading_offset * 0.5 * wander_strength
 
 	# Night-time dampening: at low daylight fish slow down and stop seeking.
 	# Real Walstad tanks: most species visibly sleep at night, hovering near
@@ -1027,5 +1139,22 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"tail_fork_depth": new_fork,
 		"pattern_type": new_pattern,
 		"color_dot_count": new_dots,
+		# Swim pattern + territory inheritance. Pattern usually stays in the
+		# lineage; ~5% chance a fry tries a different niche. home_x/z drift
+		# from the midpoint of the parents so siblings spread radially,
+		# colonising different parts of the tank over generations.
+		"swim_pattern": (swim_pattern if randf() < 0.95 else partner.swim_pattern),
+		"home_x": clampf((home_x + partner.home_x) * 0.5 + randf_range(-2.0, 2.0),
+			-10.0, 10.0),
+		"home_z": clampf((home_z + partner.home_z) * 0.5 + randf_range(-2.0, 2.0),
+			-8.0, 8.0),
+		"home_radius": clampf((home_radius + partner.home_radius) * 0.5
+			+ randf_range(-0.4, 0.4), 0.6, 7.0),
+		"wander_strength": clampf((wander_strength + partner.wander_strength) * 0.5
+			+ randf_range(-0.15, 0.15), 0.2, 2.0),
+		"dart_chance": clampf((dart_chance + partner.dart_chance) * 0.5
+			+ randf_range(-0.005, 0.005), 0.0, 0.08),
+		"dart_speed_mult": clampf((dart_speed_mult + partner.dart_speed_mult) * 0.5
+			+ randf_range(-0.10, 0.10), 1.0, 2.5),
 	}
 	return g
