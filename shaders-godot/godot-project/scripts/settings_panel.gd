@@ -11,6 +11,7 @@ extends PanelContainer
 
 signal apply_requested
 
+var _shape_option: OptionButton
 var _w_slider: HSlider
 var _d_slider: HSlider
 var _h_slider: HSlider
@@ -69,16 +70,36 @@ func _build_ui() -> void:
 	vbox.add_child(title)
 
 	_add_section(vbox, "Tank")
+	# Tank shape dropdown.
+	var shape_row := HBoxContainer.new()
+	vbox.add_child(shape_row)
+	var sl := Label.new()
+	sl.text = "Shape"
+	sl.custom_minimum_size = Vector2(140, 0)
+	shape_row.add_child(sl)
+	_shape_option = OptionButton.new()
+	for entry in [
+			{"key": "box",      "label": "Box (rectangle)"},
+			{"key": "cube",     "label": "Cube (square)"},
+			{"key": "hex",      "label": "Hexagon"},
+			{"key": "triangle", "label": "Triangle"},
+		]:
+		_shape_option.add_item(String(entry["label"]))
+		_shape_option.set_item_metadata(_shape_option.item_count - 1, entry["key"])
+	_shape_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_shape_option.item_selected.connect(func(idx): TankConfig.tank_shape = _shape_option.get_item_metadata(idx))
+	shape_row.add_child(_shape_option)
+
 	_w_label = Label.new()
-	_w_slider = _add_slider_row(vbox, "Width", 4.0, 16.0, 0.5, _w_label)
+	_w_slider = _add_slider_row(vbox, "Width", 4.0, 24.0, 0.5, _w_label)
 	_w_slider.value_changed.connect(func(v): _on_w(v))
 
 	_d_label = Label.new()
-	_d_slider = _add_slider_row(vbox, "Depth", 2.0, 8.0, 0.5, _d_label)
+	_d_slider = _add_slider_row(vbox, "Depth", 2.0, 14.0, 0.5, _d_label)
 	_d_slider.value_changed.connect(func(v): _on_d(v))
 
 	_h_label = Label.new()
-	_h_slider = _add_slider_row(vbox, "Height", 4.0, 12.0, 0.5, _h_label)
+	_h_slider = _add_slider_row(vbox, "Height", 4.0, 20.0, 0.5, _h_label)
 	_h_slider.value_changed.connect(func(v): _on_h(v))
 
 	_add_section(vbox, "Light")
@@ -207,6 +228,11 @@ func _add_slider_row(parent: Node, name: String, min_val: float, max_val: float,
 # ---- Push/pull TankConfig ----
 
 func _pull_from_config() -> void:
+	# Tank shape dropdown.
+	for i in _shape_option.item_count:
+		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
+			_shape_option.select(i)
+			break
 	_w_slider.value = TankConfig.tank_half_w * 2.0
 	_d_slider.value = TankConfig.tank_half_d * 2.0
 	_h_slider.value = TankConfig.tank_height

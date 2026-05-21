@@ -60,13 +60,19 @@ var _space_was_pressed: bool = false
 # Follow-cam: when set, camera target tracks this Node3D.
 var _follow_target: Node3D = null
 
-# Aquascape mode: when active, the sim is paused and left-click drops a
-# hardscape voxel (stone) at the substrate level under the cursor. Shift+
-# click drops driftwood. Backspace removes the most-recently placed.
+# Aquascape mode: when active, sim is paused, mouse cursor projects to the
+# substrate, and clicks place voxels according to the current tool. Tools:
+#   1 = dirt   (raise substrate by stacking a soil voxel)
+#   2 = stone  (gray hardscape)
+#   3 = wood   (driftwood / dark brown)
+#   4 = dig    (remove the topmost voxel under cursor)
+# Tool changes via number keys while in aquascape mode. HUD shows current.
 var _aquascape_mode: bool = false
 var _aquascape_placed: Array[Node3D] = []
 var _aquascape_preview: MeshInstance3D = null
 var _aquascape_saved_time_scale: float = 1.0
+var _aquascape_tool: String = "dirt"
+const AQUASCAPE_TOOLS: Array[String] = ["dirt", "stone", "wood", "dig"]
 
 
 func _ready() -> void:
@@ -235,12 +241,13 @@ func _process(dt: float) -> void:
 		yaw += AUTO_ORBIT_SPEED * dt
 		_apply_camera()
 
-	# Edge-triggered shortcuts: P pause toggle, 1/2/3 time-scale, F12 photo,
-	# ESC clears follow-cam.
+	# Edge-triggered shortcuts. In aquascape mode 1/2/3/4 switch the tool;
+	# otherwise they're the time-scale 1x/4x/16x keys.
 	_handle_shortcut(KEY_P, _toggle_pause)
-	_handle_shortcut(KEY_1, func(): _set_time_scale(1.0))
-	_handle_shortcut(KEY_2, func(): _set_time_scale(4.0))
-	_handle_shortcut(KEY_3, func(): _set_time_scale(16.0))
+	_handle_shortcut(KEY_1, func(): _on_one())
+	_handle_shortcut(KEY_2, func(): _on_two())
+	_handle_shortcut(KEY_3, func(): _on_three())
+	_handle_shortcut(KEY_4, func(): _on_four())
 	_handle_shortcut(KEY_F12, _take_photo)
 	_handle_shortcut(KEY_ESCAPE, _clear_follow)
 	_handle_shortcut(KEY_T, _toggle_timelapse)
@@ -293,6 +300,32 @@ func _set_time_scale(s: float) -> void:
 		return
 	_sim.time_scale = s
 	_saved_time_scale = s
+
+
+func _on_one() -> void:
+	if _aquascape_mode:
+		_aquascape_tool = "dirt"
+	else:
+		_set_time_scale(1.0)
+
+
+func _on_two() -> void:
+	if _aquascape_mode:
+		_aquascape_tool = "stone"
+	else:
+		_set_time_scale(4.0)
+
+
+func _on_three() -> void:
+	if _aquascape_mode:
+		_aquascape_tool = "wood"
+	else:
+		_set_time_scale(16.0)
+
+
+func _on_four() -> void:
+	if _aquascape_mode:
+		_aquascape_tool = "dig"
 
 
 func _take_photo() -> void:
@@ -455,32 +488,56 @@ func _substrate_top_y() -> float:
 
 func _aquascape_place(mouse_pos: Vector2) -> void:
 	if world == null:
-		print("[vivarium] aquascape: world is null")
 		return
 	var hit: Vector3 = _project_to_substrate(mouse_pos)
-	# Snap to a 0.5-unit grid horizontally for tidy placement.
+	# Snap horizontally to a 0.5-unit grid so placement reads tidy.
 	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
 	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
-	hit.y = _substrate_top_y() + 0.45 + randf_range(-0.02, 0.02)
 
-	# Shift-click drops driftwood (warm brown), plain click drops a stone.
-	var is_driftwood: bool = Input.is_key_pressed(KEY_SHIFT)
+	if _aquascape_tool == "dig":
+		_aquascape_dig(hit)
+		return
+
+	# Look up the current top of the column (stack height under cursor) so
+	# we place ON TOP of whatever is already there - this is what makes the
+	# dirt tool feel like sculpting.
+	var top_y: float = _column_top_y(hit.x, hit.z)
+	var size_y: float = 0.5
+	hit.y = top_y + size_y * 0.5
+
+	# Pick color + voxel size based on tool.
 	var color: Color
-	if is_driftwood:
-		color = Color8(78, 52, 32)
-	else:
-		var palette: Array[Color] = [
-			Color8(85, 85, 96), Color8(75, 70, 78),
-			Color8(105, 100, 92), Color8(60, 60, 70),
-		]
-		color = palette[randi() % palette.size()]
+	var voxel_size: Vector3 = Vector3(0.5, size_y, 0.5)
+	match _aquascape_tool:
+		"dirt":
+			# Substrate voxel - blends with the existing soil. Use the active
+			# ramp's mid tones so it visually merges with the rest of the floor.
+			var ramp: Array = world.get("ACTIVE_SOIL_RAMP")
+			if ramp != null and ramp.size() == 6:
+				color = ramp[3 + randi() % 2]   # one of the lighter soil tones
+			else:
+				color = Color8(95, 70, 45)
+		"stone":
+			var palette: Array[Color] = [
+				Color8(85, 85, 96), Color8(75, 70, 78),
+				Color8(105, 100, 92), Color8(60, 60, 70),
+			]
+			color = palette[randi() % palette.size()]
+			voxel_size = Vector3(0.9, 0.9, 0.9)
+		"wood":
+			color = Color8(78, 52, 32)
+			voxel_size = Vector3(0.9, 0.9, 0.9)
+		_:
+			color = Color8(120, 120, 120)
+			voxel_size = Vector3(0.5, 0.5, 0.5)
+
+	# For stones / wood, adjust hit.y so the bigger voxel rests on the column.
+	hit.y = top_y + voxel_size.y * 0.5
 
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(0.9, 0.9, 0.9)
+	bm.size = voxel_size
 	mi.mesh = bm
-	# Build the material via the same VoxelMat helper the rest of the world
-	# uses, so the new voxel matches the existing aesthetic.
 	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
 	if voxel_mat_script != null:
 		mi.material_override = voxel_mat_script.make(color)
@@ -488,14 +545,53 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 		var sm := StandardMaterial3D.new()
 		sm.albedo_color = color
 		mi.material_override = sm
-	# IMPORTANT: add_child BEFORE setting global_position. Setting before
-	# parenting in Godot 4 doesn't reliably propagate through the parent's
-	# transform, and the node ends up at the wrong spot.
+	# add_child first, then global_position (Godot 4 transform ordering).
 	world.add_child(mi)
 	mi.global_position = hit
+	mi.set_meta("aquascape_tool", _aquascape_tool)
 	_aquascape_placed.append(mi)
-	print("[vivarium] placed ", "driftwood" if is_driftwood else "stone",
-		" at ", hit, " (total: ", _aquascape_placed.size(), ")")
+	print("[vivarium] placed %s at %s (total %d)" % [_aquascape_tool, hit, _aquascape_placed.size()])
+
+
+func _column_top_y(x: float, z: float) -> float:
+	# Walk through all the placed objects + existing substrate visuals to
+	# find the topmost Y in this XZ column. Cheap because we just iterate
+	# the aquascape_placed list + the world's Substrate container.
+	# Returns the world-space Y of the top face of the topmost voxel.
+	var top: float = _substrate_top_y()
+	# Aquascape placements first (these are the things the user just made).
+	for v in _aquascape_placed:
+		if not is_instance_valid(v):
+			continue
+		var gp: Vector3 = v.global_position
+		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
+			# Use the voxel's mesh size to compute its top.
+			var size_y: float = 0.5
+			if v is MeshInstance3D:
+				var bm := (v as MeshInstance3D).mesh as BoxMesh
+				if bm != null:
+					size_y = bm.size.y
+			var voxel_top: float = gp.y + size_y * 0.5
+			if voxel_top > top:
+				top = voxel_top
+	return top
+
+
+func _aquascape_dig(hit: Vector3) -> void:
+	# Find the topmost aquascape-placed voxel at this cursor XZ and remove it.
+	var best: Node3D = null
+	var best_y: float = -INF
+	for v in _aquascape_placed:
+		if not is_instance_valid(v):
+			continue
+		var gp: Vector3 = v.global_position
+		if absf(gp.x - hit.x) < 0.45 and absf(gp.z - hit.z) < 0.45 and gp.y > best_y:
+			best_y = gp.y
+			best = v
+	if best == null:
+		return
+	_aquascape_placed.erase(best)
+	best.queue_free()
 
 
 func _aquascape_undo() -> void:
@@ -563,6 +659,10 @@ func _render_header() -> void:
 	var nutrients: float = float(_stats.get("substrate_nutrients_total", 0.0))
 
 	var parts: Array[String] = []
+	# Aquascape mode chip: shown only when active, calls out the current tool.
+	if _aquascape_mode:
+		parts.append("AQUASCAPE: %s (1 dirt · 2 stone · 3 wood · 4 dig)" %
+			_aquascape_tool.to_upper())
 	# Seed + clock state at the head of the line so they're glanceable.
 	if _sim != null:
 		var seed_str: String = "%08x" % int(_sim.tank_seed)

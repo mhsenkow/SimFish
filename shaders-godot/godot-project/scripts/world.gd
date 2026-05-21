@@ -27,6 +27,8 @@ var WATER_HEIGHT: float = 6.5
 var SUBSTRATE_DEPTH: float = 1.6
 # Substrate color ramp (overridden by TankConfig substrate profile).
 var ACTIVE_SOIL_RAMP: Array = []
+# Tank shape: "box" / "cube" / "hex" / "triangle". Read from TankConfig.
+var TANK_SHAPE: String = "box"
 
 # ---- Palette (chosen so the quantize shader has good targets) ----
 const C_WATER_DEEP    := Color(0.04, 0.10, 0.14)
@@ -64,6 +66,12 @@ func _ready() -> void:
 		TANK_HALF_W = float(cfg.tank_half_w)
 		TANK_HALF_D = float(cfg.tank_half_d)
 		TANK_HEIGHT = float(cfg.tank_height)
+		# Cube shape: enforce equal W=D (use the smaller of the two so it fits).
+		TANK_SHAPE = String(cfg.tank_shape)
+		if TANK_SHAPE == "cube":
+			var m: float = minf(TANK_HALF_W, TANK_HALF_D)
+			TANK_HALF_W = m
+			TANK_HALF_D = m
 		WATER_HEIGHT = TANK_HEIGHT * float(cfg.water_surface_fraction)
 		SUBSTRATE_DEPTH = TANK_HEIGHT * float(cfg.substrate_depth_fraction)
 		var profile: Dictionary = cfg.current_substrate_profile()
@@ -245,6 +253,42 @@ func _add_cube(parent: Node, pos: Vector3, size: Vector3, mat: Material) -> Mesh
 	return mi
 
 
+func _is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
+	# Point-in-shape test for the tank footprint. margin > 0 returns true
+	# only for points well inside the shape (used for spawn placement).
+	var hw: float = TANK_HALF_W - margin
+	var hd: float = TANK_HALF_D - margin
+	if hw <= 0.0 or hd <= 0.0:
+		return false
+	match TANK_SHAPE:
+		"hex":
+			# Regular hexagon inscribed in 2*hw x 2*hd rect. Use normalised
+			# coords; standard point-in-hex test.
+			var q: float = absf(x) / hw
+			var r: float = absf(z) / hd
+			return q + r * 0.5 < 1.0 and r < 1.0
+		"triangle":
+			# Equilateral triangle pointing in +Z direction. Apex at z=+hd,
+			# base at z=-hd between x=-hw..hw.
+			if z > hd or z < -hd:
+				return false
+			var base_half: float = hw * (hd - z) / (2.0 * hd)
+			return absf(x) <= base_half
+		_:
+			# box / cube - axis-aligned rectangle.
+			return absf(x) <= hw and absf(z) <= hd
+
+
+func _random_inside_tank(margin: float = 0.4) -> Vector3:
+	# Rejection sampling to spawn inside non-rectangular shapes safely.
+	for _i in 32:
+		var x: float = _rng.randf_range(-TANK_HALF_W, TANK_HALF_W)
+		var z: float = _rng.randf_range(-TANK_HALF_D, TANK_HALF_D)
+		if _is_inside_tank(x, z, margin):
+			return Vector3(x, 0, z)
+	return Vector3.ZERO
+
+
 func _build_substrate() -> void:
 	var container := Node3D.new()
 	container.name = "Substrate"
@@ -262,6 +306,9 @@ func _build_substrate() -> void:
 				var x: float = -TANK_HALF_W + (c + 0.5) * voxel_size
 				var z: float = -TANK_HALF_D + (d + 0.5) * voxel_size
 				var y: float = (r + 0.5) * voxel_size
+				# Skip voxels outside the tank shape (hex / triangle clip).
+				if not _is_inside_tank(x, z, voxel_size * 0.25):
+					continue
 				if r == rows - 1 and _rng.randf() < 0.15:
 					continue
 				var color: Color
@@ -321,6 +368,9 @@ func _build_hardscape() -> void:
 
 
 func _build_water_volume() -> void:
+	# Water volume box that fits inside the tank's bounding rect. For
+	# hex/triangle shapes the glass walls clip the visible water at the
+	# diagonals so we don't need a perfectly-shaped water mesh.
 	var water := MeshInstance3D.new()
 	water.name = "Water"
 	var bm := BoxMesh.new()
@@ -339,19 +389,57 @@ func _build_glass() -> void:
 	c.name = "Glass"
 	add_child(c)
 	var glass := _glass_mat()
-	var thick := 0.1
-	var sides := [
-		[Vector3(0, TANK_HEIGHT * 0.5, TANK_HALF_D + thick * 0.5),
-		 Vector3(TANK_HALF_W * 2, TANK_HEIGHT, thick)],
-		[Vector3(0, TANK_HEIGHT * 0.5, -TANK_HALF_D - thick * 0.5),
-		 Vector3(TANK_HALF_W * 2, TANK_HEIGHT, thick)],
-		[Vector3(TANK_HALF_W + thick * 0.5, TANK_HEIGHT * 0.5, 0),
-		 Vector3(thick, TANK_HEIGHT, TANK_HALF_D * 2)],
-		[Vector3(-TANK_HALF_W - thick * 0.5, TANK_HEIGHT * 0.5, 0),
-		 Vector3(thick, TANK_HEIGHT, TANK_HALF_D * 2)],
-	]
-	for s in sides:
-		_add_cube(c, s[0], s[1], glass)
+	# Build a polygon of glass walls around the tank's footprint. The
+	# footprint is approximated as N corner points; each adjacent pair is
+	# connected by a thin wall mesh.
+	var corners: Array[Vector3] = _tank_footprint_corners()
+	for i in corners.size():
+		var p1: Vector3 = corners[i]
+		var p2: Vector3 = corners[(i + 1) % corners.size()]
+		_add_wall_between(c, p1, p2, TANK_HEIGHT, glass)
+
+
+func _tank_footprint_corners() -> Array[Vector3]:
+	# Return the corner points of the tank footprint at Y=0 in world space.
+	# Order is CCW so wall normals point outward.
+	var pts: Array[Vector3] = []
+	match TANK_SHAPE:
+		"hex":
+			# Hexagon inscribed in the (2*hw) x (2*hd) box. 6 evenly spaced
+			# points around the center.
+			for i in 6:
+				var a: float = (float(i) / 6.0) * TAU
+				pts.append(Vector3(cos(a) * TANK_HALF_W, 0, sin(a) * TANK_HALF_D))
+		"triangle":
+			# Equilateral-ish triangle pointing in +Z.
+			pts.append(Vector3(0, 0, TANK_HALF_D))
+			pts.append(Vector3(-TANK_HALF_W, 0, -TANK_HALF_D))
+			pts.append(Vector3(TANK_HALF_W, 0, -TANK_HALF_D))
+		_:
+			# Box / cube - 4 corners.
+			pts.append(Vector3(TANK_HALF_W, 0, TANK_HALF_D))
+			pts.append(Vector3(-TANK_HALF_W, 0, TANK_HALF_D))
+			pts.append(Vector3(-TANK_HALF_W, 0, -TANK_HALF_D))
+			pts.append(Vector3(TANK_HALF_W, 0, -TANK_HALF_D))
+	return pts
+
+
+func _add_wall_between(parent: Node3D, p1: Vector3, p2: Vector3,
+		height: float, mat: Material) -> void:
+	var length: float = p1.distance_to(p2)
+	if length < 0.01:
+		return
+	var mid: Vector3 = (p1 + p2) * 0.5
+	mid.y = height * 0.5
+	var wall := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(length, height, 0.1)
+	wall.mesh = bm
+	wall.material_override = mat
+	parent.add_child(wall)
+	wall.global_position = mid
+	# Rotate so the wall's local +X axis lies along (p1 -> p2).
+	wall.rotation.y = -atan2(p2.z - p1.z, p2.x - p1.x)
 
 
 func _build_snails() -> void:

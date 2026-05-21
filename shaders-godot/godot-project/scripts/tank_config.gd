@@ -40,7 +40,14 @@ var camera_target_z: float = 0.0
 # A "do we have one saved?" flag - false on first launch means use defaults.
 var camera_state_saved: bool = false
 
-# ---- Tank dimensions ----
+# ---- Tank shape + dimensions ----
+# Glass + substrate geometry. Each shape clips substrate fill + spawn
+# regions appropriately so creatures don't appear outside the walls.
+#   box       - default rectangular prism (4 walls)
+#   cube      - same rectangular geom but enforces W=D (single dimension)
+#   hex       - regular hexagonal prism (6 walls)
+#   triangle  - equilateral triangular prism (3 walls)
+var tank_shape: String = "box"
 var tank_half_w: float = 8.0
 var tank_half_d: float = 4.0
 var tank_height: float = 7.0
@@ -184,6 +191,7 @@ func save_to_disk() -> void:
 	cfg.set_value("tank", "half_w", tank_half_w)
 	cfg.set_value("tank", "half_d", tank_half_d)
 	cfg.set_value("tank", "height", tank_height)
+	cfg.set_value("tank", "shape", tank_shape)
 	cfg.set_value("light", "energy", light_energy)
 	cfg.set_value("light", "yaw", light_yaw)
 	cfg.set_value("light", "pitch", light_pitch)
@@ -224,6 +232,7 @@ func load_from_disk() -> void:
 	tank_half_w = cfg.get_value("tank", "half_w", tank_half_w)
 	tank_half_d = cfg.get_value("tank", "half_d", tank_half_d)
 	tank_height = cfg.get_value("tank", "height", tank_height)
+	tank_shape = cfg.get_value("tank", "shape", tank_shape)
 	light_energy = cfg.get_value("light", "energy", light_energy)
 	light_yaw = cfg.get_value("light", "yaw", light_yaw)
 	light_pitch = cfg.get_value("light", "pitch", light_pitch)
