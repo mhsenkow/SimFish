@@ -227,6 +227,18 @@ func _build_ui() -> void:
 		_aeration_x_label)
 	_aeration_x.value_changed.connect(func(v): _on_aeration_x(v))
 
+	# Species food chart. Read-only listing showing which species in the
+	# library hunt what. Lets the player understand WHY their puffer is
+	# eating their snails or their cory is grazing algae rather than
+	# pellets - and pick presets accordingly.
+	_add_section(vbox, "Species & diet")
+	var diet_chart := Label.new()
+	diet_chart.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	diet_chart.add_theme_font_size_override("font_size", 11)
+	diet_chart.modulate = Color(1, 1, 1, 0.85)
+	diet_chart.text = _build_diet_chart()
+	vbox.add_child(diet_chart)
+
 	# Footer buttons - attached to `outer` (NOT `vbox`) so they stay pinned at
 	# the bottom of the panel below the scroll area. Without this, when the
 	# section list grew past the screen height the Apply button scrolled off
@@ -425,6 +437,41 @@ func _update_aeration_desc() -> void:
 func _on_preset(idx: int) -> void:
 	TankConfig.tank_preset = _preset_option.get_item_metadata(idx)
 	_update_preset_desc()
+
+
+func _build_diet_chart() -> String:
+	# Compose a per-species diet summary by iterating the species library.
+	# Each line lists the species label + a short tag bag like
+	# "[snail-hunter] [algae-grazer] [herbivore]". Read directly from
+	# SPECIES_LIBRARY so adding a new species in the library shows up here
+	# automatically.
+	var lines: Array[String] = []
+	for key in TankConfig.SPECIES_LIBRARY.keys():
+		var entry: Dictionary = TankConfig.SPECIES_LIBRARY[key]
+		var label: String = entry.get("label", key)
+		var g: Dictionary = entry.get("genome", {})
+		var tags: Array[String] = []
+		var herb: float = float(g.get("herbivory", 0.0))
+		if herb >= 0.9:
+			tags.append("herbivore")
+		elif herb >= 0.4:
+			tags.append("omnivore")
+		else:
+			tags.append("carnivore")
+		if bool(g.get("snail_predator", false)):
+			tags.append("snail-hunter")
+		if bool(g.get("algae_grazer", false)):
+			tags.append("algae-grazer")
+		# Surface / mid / bottom water column hint via preferred_y.
+		var py: float = float(g.get("preferred_y", 3.5))
+		if py >= 4.8:
+			tags.append("surface")
+		elif py <= 2.5:
+			tags.append("bottom")
+		else:
+			tags.append("mid-water")
+		lines.append("• %s  —  %s" % [label, ", ".join(tags)])
+	return "\n".join(lines)
 
 
 func _update_preset_desc() -> void:

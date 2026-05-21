@@ -461,6 +461,13 @@ func _emit_stats() -> void:
 	var total_biomass: int = 0
 	var n_adults: int = 0
 	var n_fry: int = 0
+	# Track emergent sub-species via fish.morph_label(). A fish whose
+	# skeleton genes still match its species template returns plain
+	# "species"; a drifted one returns "species sp. <tags>". morph_drifted
+	# counts only the second kind, so HUD reads "morphs +N" when N
+	# lineages have actually diverged.
+	var morphs: Dictionary = {}
+	var morph_drifted: int = 0
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
@@ -468,6 +475,12 @@ func _emit_stats() -> void:
 			n_adults += 1
 		elif f.maturity == Fish.MATURITY_FRY:
 			n_fry += 1
+		var ml: String = f.morph_label()
+		if ml != f.species:
+			# Count distinct drifted labels (not individuals).
+			if not morphs.has(ml):
+				morph_drifted += 1
+		morphs[ml] = int(morphs.get(ml, 0)) + 1
 	for p in plants:
 		if not is_instance_valid(p):
 			continue
@@ -517,6 +530,8 @@ func _emit_stats() -> void:
 		"snails_babies": snail_babies,
 		"algae_clusters": algae.size(),
 		"max_generation": max_gen,
+		"morph_count": morphs.size(),
+		"morph_distinct": morph_drifted,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,
 		"waste_particles": waste.size(),

@@ -829,6 +829,12 @@ func _render_header() -> void:
 	water_parts.append("waste %d" % waste)
 	if max_gen > 0:
 		water_parts.append("gen %d" % max_gen)
+	# Emergent speciation: show how many distinct morphs are alive. Greater
+	# than 1 means the founding species has fragmented into recognizable
+	# variants - the system is actively speciating.
+	var distinct: int = int(_stats.get("morph_distinct", 0))
+	if distinct > 0:
+		water_parts.append("[color=#e0c060]morphs +%d[/color]" % distinct)
 	groups.append("[color=%s]water[/color] %s" % [c_water, " · ".join(water_parts)])
 
 	# Join groups with double bullets so the eye groups them visually.

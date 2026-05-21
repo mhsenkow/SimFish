@@ -127,6 +127,7 @@ func _ready() -> void:
 	_build_light_fixture()
 	_spawn_initial_plants()
 	_spawn_floaters()
+	_spawn_lily_pads()
 	_spawn_initial_fish()
 	_spawn_initial_shrimp()
 	_spawn_aeration_system()
@@ -214,6 +215,14 @@ func _process(dt: float) -> void:
 		fn.position.z = clampf(fn.position.z, -TANK_HALF_D * 0.9, TANK_HALF_D * 0.9)
 	for df in dead_floaters:
 		_floaters.erase(df)
+
+	# Lily pad gentle sway. Each pad runs its own _t-based sin curve.
+	_lily_pad_t += sdt
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		if lp.has_method("tick"):
+			lp.tick(sdt)
 
 	# Duckweed propagation. Every DUCKWEED_PROP_INTERVAL sim seconds, IF the
 	# population is below DUCKWEED_CAP, spawn a fresh clump near a randomly
@@ -805,34 +814,47 @@ func _spread_around(base: float, range: float, mult: float) -> float:
 
 
 func _apply_initial_phenotype_spread(genome: Dictionary, mult: float) -> void:
-	# Scatter the heritable visible phenotypes around their defaults. Higher
-	# mult = wider initial diversity. mult=0 means every founder is identical
-	# (the "single species clones" preset).
+	# Scatter the heritable visible phenotypes AROUND THEIR SPECIES-DEFINED
+	# BASELINE rather than overwriting back to 1.0. Previously this function
+	# wiped distinguishing skeletal traits the species library carefully set
+	# (loach body_elongation 1.45, puffer body_depth_factor 1.55, etc.),
+	# which is why every fish looked like a generic tetra.
+	#
+	# Higher mult = wider initial diversity around each species' baseline.
+	# mult=0 means every founder is an EXACT clone of the species template.
+	var base_fin: float = float(genome.get("fin_length_factor", 1.0))
+	var base_elong: float = float(genome.get("body_elongation", 1.0))
+	var base_depth: float = float(genome.get("body_depth_factor", 1.0))
+	var base_head: float = float(genome.get("head_proportion", 1.0))
+	var base_dorsal: float = float(genome.get("dorsal_height_factor", 1.0))
+	var base_fork: float = float(genome.get("tail_fork_depth", 1.0))
 	if mult <= 0.0:
-		genome["fin_length_factor"] = 1.0
-		genome["body_elongation"] = 1.0
-		genome["body_depth_factor"] = 1.0
-		genome["head_proportion"] = 1.0
-		genome["dorsal_height_factor"] = 1.0
-		genome["tail_fork_depth"] = 1.0
-		genome["pattern_type"] = 1
-		genome["color_dot_count"] = 0
+		# Pure clones - just keep the species template values, no jitter.
+		# (The library already supplies all the right numbers.)
 		return
-	genome["fin_length_factor"] = clampf(1.0 + _rng.randf_range(-0.2, 0.2) * mult, 0.6, 1.6)
-	genome["body_elongation"] = clampf(1.0 + _rng.randf_range(-0.08, 0.08) * mult, 0.85, 1.15)
-	genome["body_depth_factor"] = clampf(1.0 + _rng.randf_range(-0.15, 0.15) * mult, 0.7, 1.4)
-	genome["head_proportion"] = clampf(1.0 + _rng.randf_range(-0.12, 0.12) * mult, 0.7, 1.3)
-	genome["dorsal_height_factor"] = clampf(1.0 + _rng.randf_range(-0.20, 0.20) * mult, 0.6, 1.6)
-	genome["tail_fork_depth"] = clampf(1.0 + _rng.randf_range(-0.18, 0.18) * mult, 0.5, 1.5)
-	# Pattern: pick from {solid, stripe, spots, bars} with bias toward stripe
-	# at low spread, more variety at high spread.
-	if mult >= 1.5:
-		genome["pattern_type"] = _rng.randi_range(0, 3)
-	elif mult >= 0.7:
-		genome["pattern_type"] = 1 if _rng.randf() < 0.55 else _rng.randi_range(0, 3)
-	else:
-		genome["pattern_type"] = 1
-	genome["color_dot_count"] = clampi(int(_rng.randf_range(0, 2.5) * mult), 0, 4)
+	genome["fin_length_factor"] = clampf(
+		base_fin + _rng.randf_range(-0.2, 0.2) * mult, 0.6, 1.8)
+	genome["body_elongation"] = clampf(
+		base_elong + _rng.randf_range(-0.08, 0.08) * mult, 0.55, 1.65)
+	genome["body_depth_factor"] = clampf(
+		base_depth + _rng.randf_range(-0.15, 0.15) * mult, 0.55, 1.85)
+	genome["head_proportion"] = clampf(
+		base_head + _rng.randf_range(-0.12, 0.12) * mult, 0.7, 1.4)
+	genome["dorsal_height_factor"] = clampf(
+		base_dorsal + _rng.randf_range(-0.20, 0.20) * mult, 0.6, 1.8)
+	genome["tail_fork_depth"] = clampf(
+		base_fork + _rng.randf_range(-0.18, 0.18) * mult, 0.3, 1.5)
+	# Pattern + dots: only override if the species template didn't specify
+	# them (so killifish stay spotted etc.). Use sentinel "has" check.
+	if not genome.has("pattern_type"):
+		if mult >= 1.5:
+			genome["pattern_type"] = _rng.randi_range(0, 3)
+		elif mult >= 0.7:
+			genome["pattern_type"] = 1 if _rng.randf() < 0.55 else _rng.randi_range(0, 3)
+		else:
+			genome["pattern_type"] = 1
+	if not genome.has("color_dot_count"):
+		genome["color_dot_count"] = clampi(int(_rng.randf_range(0, 2.5) * mult), 0, 4)
 
 
 func _spawn_initial_fish() -> void:
@@ -1020,6 +1042,45 @@ func _spawn_floaters() -> void:
 var _floaters: Array = []
 var _floater_t: float = 0.0
 var _duckweed_accum: float = 0.0
+var _lily_pads: Array = []
+var _lily_pad_t: float = 0.0
+
+
+# Spawn a small bed of lily pads (Nymphaea) - mathematical radial plants
+# arranged via Vogel's spiral on the water surface. Each has its own stem
+# down to the substrate. 3-5 pads scattered, shape-validated for hex /
+# triangle tanks. See lily_pad.gd for the math.
+func _spawn_lily_pads() -> void:
+	var container := Node3D.new()
+	container.name = "LilyPads"
+	add_child(container)
+	var n: int = _rng.randi_range(3, 5)
+	for i in n:
+		var xz: Vector2 = _random_xz_in_band(
+			-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 1.0)
+		# Skip if too close to an existing pad - lily pads have territorial
+		# spread, they don't stack.
+		var too_close: bool = false
+		for existing in _lily_pads:
+			if not is_instance_valid(existing):
+				continue
+			var dx: float = existing.global_position.x - xz.x
+			var dz: float = existing.global_position.z - xz.y
+			if dx * dx + dz * dz < 4.0:
+				too_close = true
+				break
+		if too_close:
+			continue
+		var pad_script := load("res://scripts/lily_pad.gd")
+		if pad_script == null:
+			continue
+		var pad = pad_script.new()
+		container.add_child(pad)
+		pad.global_position = Vector3(xz.x, WATER_HEIGHT - 0.1, xz.y)
+		pad.pad_radius = _rng.randf_range(0.75, 1.15)
+		pad.pad_voxels = _rng.randi_range(20, 34)
+		pad.init_at(pad.global_position, SUBSTRATE_DEPTH)
+		_lily_pads.append(pad)
 
 
 # Spawn a single duckweed clump at the given world-space position. Extracted

@@ -110,6 +110,44 @@ var dart_speed_mult: float = 1.6         # multiplier on speed during a dart
 #   "meander"  slow random wander (pufferfish)
 #   "shuffle"  bottom-hugging slow group (corydoras, mudsifter)
 var swim_pattern: String = "school"
+
+
+# ---- Emergent speciation ----
+# Compare this fish's heritable skeleton genes against its species'
+# template in TankConfig.SPECIES_LIBRARY. Fish that differ on discrete
+# traits (tail_shape, has_barbels, armor_plates, mouth_orientation) OR
+# drift past a percentage threshold on continuous traits (body_elongation,
+# body_depth_factor, eye_size_factor) get a morph suffix like "sp. A".
+#
+# This is the simplest "new species" rule that's actually visible to the
+# user: when a lineage drifts so far that it doesn't match the founder
+# silhouette anymore, the HUD shows it as a separate morph.
+func morph_label() -> String:
+	var lib = get_tree().root.get_node_or_null("TankConfig")
+	if lib == null or not lib.SPECIES_LIBRARY.has(species):
+		return species
+	var template: Dictionary = lib.SPECIES_LIBRARY[species].get("genome", {})
+	var tags: Array[String] = []
+	# Discrete trait changes - each maps to a single distinct morph letter.
+	if int(template.get("tail_shape", 0)) != tail_shape:
+		tags.append(["F", "R", "L", "S"][clampi(tail_shape, 0, 3)])
+	if bool(template.get("has_barbels", false)) != has_barbels:
+		tags.append("B" if has_barbels else "b")
+	if bool(template.get("armor_plates", false)) != armor_plates:
+		tags.append("A" if armor_plates else "a")
+	if int(template.get("mouth_orientation", 0)) != mouth_orientation:
+		tags.append(["U", "M", "D"][clampi(mouth_orientation + 1, 0, 2)])
+	# Continuous trait drift past LARGE thresholds - founders with normal
+	# phenotype spread shouldn't trigger; only multi-generation drift should.
+	if absf(body_elongation - float(template.get("body_elongation", 1.0))) > 0.45:
+		tags.append("E")
+	if absf(body_depth_factor - float(template.get("body_depth_factor", 1.0))) > 0.55:
+		tags.append("d")
+	if absf(eye_size_factor - float(template.get("eye_size_factor", 1.0))) > 0.55:
+		tags.append("e")
+	if tags.is_empty():
+		return species
+	return "%s sp. %s" % [species, "".join(tags)]
 var current_mode: Mode = Mode.CRUISE
 
 # Courtship state machine:
@@ -123,6 +161,19 @@ const COURT_DURATION: float = 6.0  # sim seconds of swimming together before spa
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
 var burst_remaining: float = 0.0
+# Aerial respiration: cories + loaches periodically dart to the surface to
+# gulp atmospheric air, then sink back to the substrate. Real Walstad
+# behavior - it's a stress signal in healthy tanks but routine in any
+# armored catfish. Counts down between trips, becomes negative during a
+# trip (the negative value drives the upward bias).
+var _aerial_timer: float = -1.0
+var _aerial_target_y: float = 0.0
+# Startle: one fish triggering a burst can cause its school-mates to
+# panic in the SAME direction (classic predator-evasion behavior).
+# When _startle_remaining > 0, the dart heading is forced to match the
+# group's startle vector.
+var _startle_remaining: float = 0.0
+var _startle_heading: Vector3 = Vector3.ZERO
 
 # Size growth from feeding. Well-fed adults slowly grow above their starting
 # size; chronically hungry ones shrink. effective_size() is the property
@@ -570,6 +621,27 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	burst_remaining = maxf(0.0, burst_remaining - dt)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
+	_startle_remaining = maxf(0.0, _startle_remaining - dt)
+
+	# Cory / loach aerial respiration. Every ~25-40 sim seconds, a
+	# "shuffle" pattern fish darts to the surface, gulps, and sinks back.
+	# The trip is implemented by overriding home_y temporarily via the
+	# _aerial_timer + _aerial_target_y fields - see Y-enforcement block.
+	if swim_pattern == "shuffle":
+		if _aerial_timer <= 0.0:
+			# Idle - count down to next trip OR start a trip.
+			_aerial_timer -= dt
+			if _aerial_timer < -randf_range(25.0, 40.0):
+				# Begin the gulp trip - target Y just below water surface.
+				var surface_y: float = 0.0
+				if sim != null and sim.get("substrate_top_y") != null:
+					surface_y = float(sim.substrate_top_y) + 5.0
+				else:
+					surface_y = home_y + 4.0
+				_aerial_target_y = surface_y - 0.2
+				_aerial_timer = randf_range(2.0, 3.5)   # trip duration
+		else:
+			_aerial_timer -= dt
 
 	# Schooling stress climbs if too few conspecifics nearby.
 	var conspecifics_nearby: int = 0
@@ -868,6 +940,9 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	# surface to gulp - the real-world "fish at the surface" symptom of an
 	# under-aerated tank.
 	var target_y: float = home_y
+	# Aerial respiration trip overrides home_y for its duration.
+	if _aerial_timer > 0.0:
+		target_y = _aerial_target_y
 	if sim != null and sim.get("dissolved_o2") != null:
 		var o2: float = float(sim.dissolved_o2)
 		if o2 < 0.4:
@@ -897,6 +972,26 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 			(dist_home / maxf(home_radius, 0.5)) - 1.0, 0.0, 2.0)
 		desired += to_home.normalized() * effective_max * 0.5 * pull_strength
 
+	# STARTLE PROPAGATION. School / shoal species are prey - in nature they
+	# evade predators by all flipping the same direction at once. If any
+	# CONSPECIFIC neighbor just started a dart burst, copy its heading.
+	# This is what creates the dramatic "the whole school turns at once"
+	# moment when something spooks them.
+	if _startle_remaining <= 0.0 and burst_remaining <= 0.0 \
+			and (swim_pattern == "school" or swim_pattern == "shoal"):
+		for n in neighbors:
+			if not (n is Fish):
+				continue
+			var nf: Fish = n
+			if nf.species != species:
+				continue
+			if nf.burst_remaining > 0.2 and nf._startle_heading.length_squared() > 0.01:
+				# Conspecific bolted recently - join the panic in their direction.
+				_startle_remaining = 0.4
+				_startle_heading = nf._startle_heading
+				burst_remaining = 0.35
+				break
+
 	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
 	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
 	# is heritable so lineages can drift toward calmer or twitchier.
@@ -906,12 +1001,19 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 		# Snap heading_offset to a new random direction so the dart goes
 		# somewhere new (not just "faster in current direction").
 		var ang: float = randf() * TAU
-		heading_offset = Vector3(sin(ang), randf_range(-0.15, 0.15), cos(ang)) \
-			* (1.0 + wander_strength)
+		var dart_dir := Vector3(sin(ang), randf_range(-0.15, 0.15), cos(ang))
+		heading_offset = dart_dir * (1.0 + wander_strength)
+		# Record startle heading so school-mates can copy it.
+		_startle_heading = dart_dir
+		_startle_remaining = 0.4
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
-	# meanderers wander more, hoverers wander less.
-	desired += heading_offset * 0.5 * wander_strength
+	# meanderers wander more, hoverers wander less. During startle propagation,
+	# force the heading to the shared school direction.
+	if _startle_remaining > 0.0:
+		desired += _startle_heading * effective_max * 0.8
+	else:
+		desired += heading_offset * 0.5 * wander_strength
 
 	# Diurnal / nocturnal / crepuscular activity. The generic "everyone slows
 	# at night" was wrong - real freshwater fish split by activity period.
