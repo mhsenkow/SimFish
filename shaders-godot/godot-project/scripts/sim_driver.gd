@@ -52,6 +52,29 @@ var plants_root: Node3D = null
 var _accum: float = 0.0
 var _stats_timer: float = 0.0
 
+# ---- Dissolved-O2 model ----
+# Tank-wide normalized scalar where 1.0 ≈ fully saturated, 0.0 = anoxic.
+# Filled by the active aeration fixture, replenished modestly by plant
+# photosynthesis during daylight, drawn down by fish + shrimp respiration.
+# Fish read this to decide whether to gulp at the surface.
+var dissolved_o2: float = 0.85
+# Rates set by world.gd._spawn_aeration_system() based on the current
+# TankConfig. air_rate ~ 0..1 from profile, flow_rate ~ 0..1 surface agitation.
+var aeration_air_rate: float = 0.6
+var aeration_flow_rate: float = 0.15
+var aeration_fixture: String = "disk"
+# Tuning constants - in normalized-units per second. Sized so a typical
+# community tank with the disk fixture sits around 0.85-0.95 O2 in steady
+# state, drops noticeably to 0.4-0.6 if you switch to "none" with a full bio
+# load, and recovers within ~1 in-game minute if you turn aeration back on.
+const O2_INJECT_PER_RATE: float = 0.20    # disk at strength=1 -> 0.20/s peak input
+const O2_FLOW_BONUS_PER_RATE: float = 0.08
+const O2_PHOTO_PER_PLANT: float = 0.0008  # multiplied by daylight + biomass term
+const O2_RESPIRE_FISH: float = 0.0040
+const O2_RESPIRE_SHRIMP: float = 0.0020
+const O2_PASSIVE_SURFACE_GAS: float = 0.015   # tank breathing on its own
+const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
+
 
 func register_fish(f: Fish) -> void:
 	fish.append(f)
@@ -102,6 +125,29 @@ func _tick(dt: float) -> void:
 	plants = plants.filter(func(p): return is_instance_valid(p))
 	waste = waste.filter(func(w): return is_instance_valid(w))
 	eggs = eggs.filter(func(e): return is_instance_valid(e))
+
+	# 1b. Tank-wide dissolved-O2 update.
+	#
+	#   Inputs:
+	#     fixture injection    +(air_rate * INJECT) + flow_rate * FLOW_BONUS
+	#     plant photosynthesis +(daylight * plants * PHOTO)
+	#     passive surface drift to a natural target (so a fully unaerated
+	#       tank doesn't go to zero - it settles around O2_TARGET_NATURAL)
+	#   Outputs:
+	#     fish respiration     -(n_fish * RESPIRE_FISH)
+	#     shrimp respiration   -(n_shrimp * RESPIRE_SHRIMP)
+	#
+	# Clamped 0..1.2 so plant blooms during the day can briefly push the tank
+	# slightly supersaturated, which fish "notice" only when they need it.
+	var inject: float = aeration_air_rate * O2_INJECT_PER_RATE \
+		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE
+	var photo: float = daylight() * float(plants.size()) * O2_PHOTO_PER_PLANT
+	var respire: float = float(fish.size()) * O2_RESPIRE_FISH \
+		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP
+	# Drift toward the natural target if there's no equipment.
+	var drift: float = O2_PASSIVE_SURFACE_GAS * (O2_TARGET_NATURAL - dissolved_o2)
+	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
+		0.0, 1.2)
 
 	# 2. Substrate field.
 	if substrate != null:
@@ -430,6 +476,8 @@ func _emit_stats() -> void:
 		"plant_total_biomass": total_biomass,
 		"waste_particles": waste.size(),
 		"substrate_nutrients_total": substrate.total_above_baseline() if substrate else 0.0,
+		"dissolved_o2": dissolved_o2,
+		"aeration_fixture": aeration_fixture,
 	}
 	stats_changed.emit(s)
 	print("[vivarium] ", s)

@@ -129,7 +129,7 @@ func _ready() -> void:
 	_spawn_floaters()
 	_spawn_initial_fish()
 	_spawn_initial_shrimp()
-	_spawn_bubble_streams()
+	_spawn_aeration_system()
 	_spawn_mulm_layer()
 	_spawn_surface_ripples()
 	# Make sure SimDriver can find the snails container for predator AI.
@@ -986,52 +986,270 @@ func _spawn_surface_ripples() -> void:
 	add_child(p)
 
 
-func _spawn_bubble_streams() -> void:
-	# 3-4 anaerobic bubble streams. Each rises bubbles to the meniscus, then
-	# a paired pop-ripple emitter spawns small expanding rings at the surface
-	# directly above. Bubble lifetime is tuned so the visual disappear lines
-	# up with the surface depth.
-	var n_streams: int = _rng.randi_range(3, 5)
+# Top-level aeration dispatcher. Looks at TankConfig and builds the chosen
+# fixture (disk / stick / filter / none) as a child node tree containing the
+# visible equipment voxels plus the GPU particle emitters for the bubble
+# stream + surface pops. Stores the resulting air injection rate on the
+# SimDriver so dissolved-O2 simulation can respond.
+func _spawn_aeration_system() -> void:
 	var container := Node3D.new()
-	container.name = "BubbleStreams"
+	container.name = "Aeration"
 	add_child(container)
-	for i in n_streams:
-		var b_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
-		var sx: float = b_xz.x
-		var sz: float = b_xz.y
-		# --- Rising bubbles from the substrate ---
-		var p := GPUParticles3D.new()
-		p.amount = 6
-		# Tune lifetime so a bubble rises ~from substrate to surface.
-		# bubble_speed (~0.6) * lifetime = distance, want ~(WATER_HEIGHT-SUBSTRATE)
-		var rise_distance: float = WATER_HEIGHT - SUBSTRATE_DEPTH
-		p.lifetime = clampf(rise_distance / 1.3, 2.5, 6.0)
-		p.preprocess = p.lifetime * 0.5
-		p.local_coords = false
-		p.position = Vector3(sx, SUBSTRATE_DEPTH + 0.1, sz)
-		var pm := ParticleProcessMaterial.new()
-		pm.direction = Vector3(0, 1, 0)
-		pm.initial_velocity_min = 0.4
-		pm.initial_velocity_max = 0.7
-		pm.gravity = Vector3(0, 0.9, 0)
-		pm.spread = 5.0
-		pm.scale_min = 0.7
-		pm.scale_max = 1.3
-		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-		pm.emission_box_extents = Vector3(0.1, 0.02, 0.1)
-		p.process_material = pm
-		var bm := SphereMesh.new()
-		bm.radius = 0.08
-		bm.height = 0.16
-		bm.radial_segments = 5
-		bm.rings = 3
-		bm.material = VoxelMat.make(Color8(200, 230, 235))
-		p.draw_pass_1 = bm
-		container.add_child(p)
 
-		# --- Pop ripples at the surface directly above ---
-		_spawn_surface_pop_emitter(container, Vector3(sx, WATER_HEIGHT - 0.05, sz),
-			p.lifetime, p.amount)
+	var cfg := get_node_or_null("/root/TankConfig")
+	var fixture: String = "disk"
+	var strength: float = 0.6
+	var x_frac: float = 0.0
+	if cfg != null:
+		fixture = String(cfg.aeration_type)
+		strength = float(cfg.aeration_strength)
+		x_frac = float(cfg.aeration_x_frac)
+	# Anchor lateral position to tank width, keeping a margin from glass.
+	var anchor_x: float = clampf(x_frac, -1.0, 1.0) * (TANK_HALF_W - 1.2)
+
+	# Air injection rate fed into the sim: base profile rate * user strength.
+	var profile: Dictionary = {"air_rate": 0.0, "flow_rate": 0.0}
+	if cfg != null:
+		profile = cfg.current_aeration_profile()
+	var air_rate: float = float(profile.get("air_rate", 0.0)) * strength
+	var flow_rate: float = float(profile.get("flow_rate", 0.0)) * strength
+
+	match fixture:
+		"disk":
+			_build_disk_aerator(container, anchor_x)
+		"stick":
+			_build_stick_aerator(container, anchor_x)
+		"filter":
+			_build_filter_aerator(container, anchor_x)
+		"none":
+			pass
+		_:
+			_build_disk_aerator(container, anchor_x)
+
+	# Push the computed rates onto the SimDriver so it can run the O2 model.
+	if sim != null:
+		sim.set("aeration_air_rate", air_rate)
+		sim.set("aeration_flow_rate", flow_rate)
+		sim.set("aeration_fixture", fixture)
+
+
+# --- Bubble disk ---
+# Round porous air-stone sitting on the substrate. Dense column of fine
+# bubbles rises straight up to the surface. The disk itself is 5 dark gray
+# voxels arranged in a + pattern with a thin air-line snaking back to the
+# back wall.
+func _build_disk_aerator(parent: Node, anchor_x: float) -> void:
+	var sz: float = -TANK_HALF_D * 0.65        # tuck close to back wall
+	if not _is_inside_tank(anchor_x, sz, 0.5):
+		# Tank shape too narrow at the back - bring it forward.
+		sz = -TANK_HALF_D * 0.3
+		if not _is_inside_tank(anchor_x, sz, 0.5):
+			sz = 0.0
+	var disk_y: float = SUBSTRATE_DEPTH + 0.06
+	# Disk body: cross pattern of dark voxels with a paler centre.
+	var disk_color := Color8(35, 35, 42)
+	var disk_center := Color8(70, 70, 78)
+	var offs := [Vector3.ZERO, Vector3(0.3, 0, 0), Vector3(-0.3, 0, 0),
+				 Vector3(0, 0, 0.3), Vector3(0, 0, -0.3)]
+	for i in offs.size():
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.32, 0.1, 0.32)
+		mi.mesh = bm
+		mi.material_override = VoxelMat.make(disk_center if i == 0 else disk_color)
+		mi.position = Vector3(anchor_x + (offs[i] as Vector3).x, disk_y,
+			sz + (offs[i] as Vector3).z)
+		parent.add_child(mi)
+	# Air line: a thin trail of small dark voxels from the disk to the back
+	# upper-right of the tank, suggesting the tube going up to a pump.
+	var line_end := Vector3(anchor_x, WATER_HEIGHT + 0.4, -TANK_HALF_D + 0.15)
+	_add_air_line(parent, Vector3(anchor_x, disk_y + 0.1, sz), line_end)
+	# Bubble emitter: dense column emitting straight up from the disk surface.
+	var rise_dist: float = WATER_HEIGHT - disk_y
+	_emit_rising_bubbles(parent, Vector3(anchor_x, disk_y + 0.08, sz),
+		Vector3(0.22, 0.02, 0.22), rise_dist, 18, 0.06)
+	# Surface pop ripples at the meniscus directly above the disk.
+	_spawn_surface_pop_emitter(parent, Vector3(anchor_x, WATER_HEIGHT - 0.05, sz),
+		clampf(rise_dist / 1.3, 2.5, 6.0), 18)
+
+
+# --- Bubble stick (wand) ---
+# Long thin air-stone bar lying flat along the back wall. Wide, even bubble
+# curtain. Visually about 60% of tank width.
+func _build_stick_aerator(parent: Node, anchor_x: float) -> void:
+	var sz: float = -TANK_HALF_D * 0.78
+	# Make sure both ends of the bar are inside the tank for hex/triangle.
+	var half_bar: float = TANK_HALF_W * 0.45
+	var left_x: float = clampf(anchor_x - half_bar, -TANK_HALF_W + 1.0, TANK_HALF_W - 1.0)
+	var right_x: float = clampf(anchor_x + half_bar, -TANK_HALF_W + 1.0, TANK_HALF_W - 1.0)
+	if not _is_inside_tank(left_x, sz, 0.4) or not _is_inside_tank(right_x, sz, 0.4):
+		sz = -TANK_HALF_D * 0.3
+		if not _is_inside_tank(left_x, sz, 0.4):
+			left_x = -TANK_HALF_W * 0.6
+			right_x = TANK_HALF_W * 0.6
+	var bar_y: float = SUBSTRATE_DEPTH + 0.06
+	# Build the bar as a series of small dark voxels with bright caps at the
+	# ends (where the air line connects).
+	var n_segments: int = int((right_x - left_x) / 0.32) + 1
+	for i in n_segments:
+		var t: float = float(i) / float(maxi(1, n_segments - 1))
+		var x: float = lerpf(left_x, right_x, t)
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.3, 0.18, 0.18)
+		mi.mesh = bm
+		var is_cap: bool = (i == 0 or i == n_segments - 1)
+		mi.material_override = VoxelMat.make(
+			Color8(80, 80, 88) if is_cap else Color8(40, 40, 48))
+		mi.position = Vector3(x, bar_y, sz)
+		parent.add_child(mi)
+	# Air line from one cap of the bar up the back wall.
+	_add_air_line(parent, Vector3(right_x, bar_y + 0.1, sz),
+		Vector3(right_x, WATER_HEIGHT + 0.4, -TANK_HALF_D + 0.15))
+	# Bubble curtain: BOX emission shape stretched along X covers the whole bar.
+	var center_x: float = (left_x + right_x) * 0.5
+	var span: float = (right_x - left_x) * 0.5
+	var rise_dist: float = WATER_HEIGHT - bar_y
+	_emit_rising_bubbles(parent, Vector3(center_x, bar_y + 0.12, sz),
+		Vector3(span, 0.02, 0.08), rise_dist, 28, 0.05)
+	# Surface pops along the bar.
+	_spawn_surface_pop_emitter(parent, Vector3(center_x, WATER_HEIGHT - 0.05, sz),
+		clampf(rise_dist / 1.3, 2.5, 6.0), 24)
+
+
+# --- Filter (hang-on-back) ---
+# Vertical intake/return tube. Bottom strainer sits just above the substrate;
+# the tube rises through the water column to just above the surface where a
+# horizontal spout pushes water (and a trickle of air-entrained bubbles)
+# outward into the tank.
+func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
+	var sz: float = -TANK_HALF_D * 0.82       # mount on the back wall
+	if not _is_inside_tank(anchor_x, sz, 0.4):
+		sz = -TANK_HALF_D * 0.3
+	var tube_color := Color8(40, 42, 50)
+	var trim := Color8(95, 95, 105)
+	var spout_color := Color8(60, 62, 70)
+	# Vertical tube: stack thin voxels from substrate to just above water.
+	var base_y: float = SUBSTRATE_DEPTH + 0.2
+	var top_y: float = WATER_HEIGHT + 0.3
+	var n_seg: int = int((top_y - base_y) / 0.4) + 1
+	for i in n_seg:
+		var t: float = float(i) / float(maxi(1, n_seg - 1))
+		var y: float = lerpf(base_y, top_y, t)
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.32, 0.42, 0.32)
+		mi.mesh = bm
+		# Top + bottom voxels are accent colored.
+		var col: Color = trim if (i == 0 or i == n_seg - 1) else tube_color
+		mi.material_override = VoxelMat.make(col)
+		mi.position = Vector3(anchor_x, y, sz)
+		parent.add_child(mi)
+	# Intake strainer at the bottom - a wider voxel with little slots (just one
+	# bigger box for visual chunk; the "slots" come from the palette dither).
+	var intake := MeshInstance3D.new()
+	var ibm := BoxMesh.new()
+	ibm.size = Vector3(0.55, 0.32, 0.45)
+	intake.mesh = ibm
+	intake.material_override = VoxelMat.make(trim)
+	intake.position = Vector3(anchor_x, base_y - 0.05, sz)
+	parent.add_child(intake)
+	# Horizontal spout near the top, sticking forward (toward +Z, away from
+	# the back wall). 3-4 voxels.
+	var spout_y: float = WATER_HEIGHT - 0.05
+	for j in 4:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.3, 0.3, 0.34)
+		mi.mesh = bm
+		mi.material_override = VoxelMat.make(spout_color)
+		mi.position = Vector3(anchor_x, spout_y, sz + 0.32 + j * 0.32)
+		parent.add_child(mi)
+	# Output stream: bubbles + flow emitting forward from the spout end.
+	var spout_end := Vector3(anchor_x, spout_y, sz + 0.32 + 3.5 * 0.32)
+	_emit_filter_outflow(parent, spout_end)
+	# Surface pop ripples downstream of the spout end.
+	_spawn_surface_pop_emitter(parent,
+		Vector3(spout_end.x, WATER_HEIGHT - 0.05, spout_end.z + 0.4),
+		1.6, 16)
+
+
+# A thin trail of dark voxels representing an air line / silicone tube. Used
+# by the disk + stick aerators to make the supply visible behind the tank.
+func _add_air_line(parent: Node, a: Vector3, b: Vector3) -> void:
+	var steps: int = int(a.distance_to(b) / 0.35) + 1
+	for i in steps:
+		var t: float = float(i) / float(maxi(1, steps - 1))
+		var p: Vector3 = a.lerp(b, t)
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.1, 0.1, 0.1)
+		mi.mesh = bm
+		mi.material_override = VoxelMat.make(Color8(20, 20, 24))
+		mi.position = p
+		parent.add_child(mi)
+
+
+# Shared bubble emitter helper. Creates a GPUParticles3D rising straight up
+# from `base_pos` with emission box `extents` (half-extents on X/Y/Z).
+func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
+		rise_distance: float, amount: int, bubble_radius: float) -> void:
+	var p := GPUParticles3D.new()
+	p.amount = amount
+	p.lifetime = clampf(rise_distance / 1.3, 2.5, 6.0)
+	p.preprocess = p.lifetime * 0.5
+	p.local_coords = false
+	p.position = base_pos
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, 1, 0)
+	pm.initial_velocity_min = 0.4
+	pm.initial_velocity_max = 0.7
+	pm.gravity = Vector3(0, 0.9, 0)
+	pm.spread = 5.0
+	pm.scale_min = 0.7
+	pm.scale_max = 1.3
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = extents
+	p.process_material = pm
+	var bm := SphereMesh.new()
+	bm.radius = bubble_radius
+	bm.height = bubble_radius * 2.0
+	bm.radial_segments = 5
+	bm.rings = 3
+	bm.material = VoxelMat.make(Color8(200, 230, 235))
+	p.draw_pass_1 = bm
+	parent.add_child(p)
+
+
+# Filter outflow: a horizontal-ish jet of bubbles + flow streaks coming out
+# of the spout. Bubbles have less buoyancy and more forward velocity so the
+# stream curves down into the tank before rising again.
+func _emit_filter_outflow(parent: Node, spout_end: Vector3) -> void:
+	var p := GPUParticles3D.new()
+	p.amount = 14
+	p.lifetime = 2.0
+	p.preprocess = 0.5
+	p.local_coords = false
+	p.position = spout_end
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0, -0.2, 1).normalized()
+	pm.initial_velocity_min = 0.9
+	pm.initial_velocity_max = 1.3
+	pm.gravity = Vector3(0, 0.7, 0)         # buoyancy reasserts itself
+	pm.spread = 12.0
+	pm.scale_min = 0.6
+	pm.scale_max = 1.2
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(0.05, 0.08, 0.02)
+	p.process_material = pm
+	var bm := SphereMesh.new()
+	bm.radius = 0.07
+	bm.height = 0.14
+	bm.radial_segments = 5
+	bm.rings = 3
+	bm.material = VoxelMat.make(Color8(200, 230, 235))
+	p.draw_pass_1 = bm
+	parent.add_child(p)
 
 
 # Spawn a tiny ring-of-flat-voxels particle emitter at the surface position.

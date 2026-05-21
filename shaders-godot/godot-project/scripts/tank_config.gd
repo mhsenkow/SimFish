@@ -128,6 +128,58 @@ func current_tank_preset() -> Dictionary:
 	return TANK_PRESETS.get(tank_preset, TANK_PRESETS["community"])
 
 
+# ---- Aeration / air system ----
+# Vivarium models a tank-wide dissolved-O2 level (0..1, 1=saturated) that
+# is filled by the chosen aeration fixture, replenished by plant photosynthesis
+# during the day, and consumed by fish + shrimp respiration. Fish gulp at the
+# surface when O2 falls too low.
+#
+# Fixture types - each has a distinct visible shape AND a different air
+# injection rate:
+#   "none"     - no fixture, no injection from equipment
+#   "disk"     - flat air-stone disk on substrate, dense fine-bubble curtain,
+#                HIGH air rate. Best aeration but a big visual footprint.
+#   "stick"    - long thin air-stone bar (a.k.a. "bubble wand"). Medium rate,
+#                spread out along the back wall.
+#   "filter"   - hang-on-back style filter return: vertical intake/return tube
+#                with bubbles trickling up + a horizontal spout that disturbs
+#                the surface. Medium rate but ADDS visible water flow.
+var aeration_type: String = "disk"
+var aeration_strength: float = 0.6      # 0..1, scales injection rate
+var aeration_x_frac: float = 0.0        # -1..1, lateral position in tank
+
+const AERATION_PROFILES: Dictionary = {
+	"none": {
+		"label": "None (no aeration)",
+		"air_rate": 0.0,
+		"flow_rate": 0.0,
+		"description": "No equipment. Relies on plant photosynthesis + surface gas exchange. Low-stock tanks only.",
+	},
+	"disk": {
+		"label": "Bubble disk (air stone)",
+		"air_rate": 1.0,
+		"flow_rate": 0.15,
+		"description": "Round porous disk on substrate. Dense fine bubble column. Highest aeration. Strips CO2 fast - poor for high-tech planted tanks.",
+	},
+	"stick": {
+		"label": "Bubble stick / wand",
+		"air_rate": 0.7,
+		"flow_rate": 0.10,
+		"description": "Long thin air stone along back wall. Wide bubble curtain. Medium aeration, evenly distributed.",
+	},
+	"filter": {
+		"label": "Hang-on-back filter",
+		"air_rate": 0.55,
+		"flow_rate": 1.0,
+		"description": "Vertical intake + return spout. Moderate aeration via surface agitation, but creates strong water flow that schools fish enjoy.",
+	},
+}
+
+
+func current_aeration_profile() -> Dictionary:
+	return AERATION_PROFILES.get(aeration_type, AERATION_PROFILES["disk"])
+
+
 # ---- Substrate ----
 # Four substrate "types" with different fertility characteristics. Each
 # affects plant growth via SubstrateGrid.NUTRIENT_BASELINE and the
@@ -201,6 +253,9 @@ func save_to_disk() -> void:
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
 	cfg.set_value("substrate", "type", substrate_type)
+	cfg.set_value("aeration", "type", aeration_type)
+	cfg.set_value("aeration", "strength", aeration_strength)
+	cfg.set_value("aeration", "x_frac", aeration_x_frac)
 	cfg.set_value("preset", "tank", tank_preset)
 	cfg.set_value("preset", "glassdarts", custom_glassdart_count)
 	cfg.set_value("preset", "mudsifters", custom_mudsifter_count)
@@ -242,6 +297,9 @@ func load_from_disk() -> void:
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
+	aeration_type = cfg.get_value("aeration", "type", aeration_type)
+	aeration_strength = cfg.get_value("aeration", "strength", aeration_strength)
+	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)
 	tank_preset = cfg.get_value("preset", "tank", tank_preset)
 	custom_glassdart_count = cfg.get_value("preset", "glassdarts", custom_glassdart_count)
 	custom_mudsifter_count = cfg.get_value("preset", "mudsifters", custom_mudsifter_count)

@@ -52,11 +52,21 @@ const PAN_SPEED: float = 6.0
 const AUTO_ORBIT_SPEED: float = 0.08
 
 var _orbiting: bool = false
+# Drag gesture state. When a mouse button goes down we lock in which mode the
+# drag is operating in for its lifetime. That avoids the gesture flipping
+# mid-drag if the user accidentally chords a second button.
+#   "orbit" - LMB drag, rotate camera around target (Maya style LMB tumble)
+#   "pan"   - MMB or Shift+LMB drag, slide the target perpendicular to view
+#   "dolly" - RMB drag, push/pull camera in/out (vertical mouse Y = radius)
+var _drag_mode: String = ""
 var _last_mouse: Vector2 = Vector2.ZERO
 var _drag_start: Vector2 = Vector2.ZERO  # to distinguish click from drag
 var _drag_total: float = 0.0
+var _drag_button: int = 0  # which button initiated; used for click-vs-drag dispatch
 var _auto_orbit: bool = false
 var _space_was_pressed: bool = false
+const PAN_MOUSE_SENSITIVITY: float = 0.012  # world units per pixel at radius=1
+const DOLLY_MOUSE_SENSITIVITY: float = 0.012  # log-ish dolly per pixel
 # Follow-cam: when set, camera target tracks this Node3D.
 var _follow_target: Node3D = null
 
@@ -167,39 +177,63 @@ func _process(dt: float) -> void:
 	# since that's where the OS cursor actually lives. get_window() returns
 	# this scene's OS window.
 	var mouse_now: Vector2 = get_window().get_mouse_position()
-	var any_btn: bool = (
-		Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-		or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
-		or Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
-	)
+	var lmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	var mmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
+	var rmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+	var shift: bool = Input.is_key_pressed(KEY_SHIFT)
+	var any_btn: bool = lmb or mmb or rmb
 
 	if any_btn and not _orbiting:
 		_orbiting = true
 		_last_mouse = mouse_now
 		_drag_start = mouse_now
 		_drag_total = 0.0
+		# Pick the drag mode based on which button started + modifiers.
+		#   MMB or Shift+LMB -> pan target
+		#   RMB              -> dolly (push/pull camera distance)
+		#   LMB              -> orbit
+		if mmb:
+			_drag_mode = "pan"
+			_drag_button = MOUSE_BUTTON_MIDDLE
+		elif rmb:
+			_drag_mode = "dolly"
+			_drag_button = MOUSE_BUTTON_RIGHT
+		else:
+			_drag_button = MOUSE_BUTTON_LEFT
+			_drag_mode = "pan" if shift else "orbit"
 	elif not any_btn and _orbiting:
 		_orbiting = false
-		# If total drag distance was small, treat as a click. In aquascape
-		# mode, place a hardscape voxel at the cursor; otherwise try
-		# follow-cam on the creature under the cursor.
+		# Click vs drag: only the LMB tap dispatches as a click. MMB/RMB
+		# release never places aquascape voxels or starts a follow.
 		# Threshold loosened from 5 -> 12 to be more forgiving of trackpad
 		# jitter during clicks.
-		if _drag_total < 12.0:
+		if _drag_button == MOUSE_BUTTON_LEFT and _drag_total < 12.0:
 			if _aquascape_mode:
 				_aquascape_place(mouse_now)
 			else:
 				_try_follow_click(mouse_now)
+		_drag_mode = ""
+		_drag_button = 0
 
 	if _orbiting:
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
 		_drag_total += delta.length()
 		if delta.length_squared() > 0.0:
-			yaw -= delta.x * SENSITIVITY
-			pitch -= delta.y * SENSITIVITY
-			pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-			_apply_camera()
+			match _drag_mode:
+				"pan":
+					_pan_target(delta)
+				"dolly":
+					# Vertical mouse motion = distance change. Drag DOWN pushes
+					# camera away (radius up), drag UP pulls closer.
+					radius = clampf(radius * (1.0 + delta.y * DOLLY_MOUSE_SENSITIVITY),
+						MIN_RADIUS, MAX_RADIUS)
+					_apply_camera()
+				_:
+					yaw -= delta.x * SENSITIVITY
+					pitch -= delta.y * SENSITIVITY
+					pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+					_apply_camera()
 
 	# Follow-cam: smoothly track the followed creature.
 	if _follow_target != null:
@@ -653,6 +687,26 @@ func _apply_camera() -> void:
 	camera.look_at(target, Vector3.UP)
 
 
+# Pan: slide the orbit target perpendicular to the view direction. Mouse
+# motion delta is in screen pixels; we convert to world units using the
+# camera basis. Pan speed scales with radius so the world doesn't "fly past"
+# at far zooms or feel sticky when zoomed in close. Mouse-right drag moves
+# the world the same way (i.e. target goes LEFT under the camera).
+func _pan_target(delta: Vector2) -> void:
+	if camera == null:
+		return
+	var basis: Basis = camera.global_transform.basis
+	var right: Vector3 = basis.x
+	var up: Vector3 = basis.y
+	# Negate so dragging RIGHT pushes the scene right (target moves left).
+	var scale: float = PAN_MOUSE_SENSITIVITY * radius
+	target -= right * (delta.x * scale)
+	target += up * (delta.y * scale)
+	# Clear follow-cam when the user manually pans - they're taking control back.
+	_follow_target = null
+	_apply_camera()
+
+
 func _on_stats_changed(stats: Dictionary) -> void:
 	_stats = stats
 	_render_header()
@@ -708,6 +762,13 @@ func _render_header() -> void:
 	parts.append("plants %d / biomass %d" % [plants, biomass])
 	parts.append("waste %d" % waste)
 	parts.append("nutrients %.1f" % nutrients)
+	# Dissolved O2 - shown as a percent; <30 % gets a warning glyph so the
+	# player notices the tank is gasping.
+	if _stats.has("dissolved_o2"):
+		var o2_pct: int = int(round(float(_stats["dissolved_o2"]) * 100.0))
+		var fixture: String = String(_stats.get("aeration_fixture", "?"))
+		var prefix: String = "!" if o2_pct < 30 else ""
+		parts.append("%sO₂ %d%% (%s)" % [prefix, o2_pct, fixture])
 	var max_gen: int = int(_stats.get("max_generation", 0))
 	if max_gen > 0:
 		parts.append("gen %d" % max_gen)

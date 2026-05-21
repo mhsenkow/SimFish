@@ -27,6 +27,12 @@ var _light_size_label: Label
 var _light_volumetric_check: CheckBox
 var _substrate_option: OptionButton
 var _substrate_desc: Label
+var _aeration_option: OptionButton
+var _aeration_desc: Label
+var _aeration_strength: HSlider
+var _aeration_strength_label: Label
+var _aeration_x: HSlider
+var _aeration_x_label: Label
 var _preset_option: OptionButton
 var _preset_desc: Label
 var _w_label: Label
@@ -178,6 +184,31 @@ func _build_ui() -> void:
 	_substrate_desc.modulate = Color(1, 1, 1, 0.7)
 	vbox.add_child(_substrate_desc)
 
+	# Aeration / air system. Picks a fixture type (disk / stick / filter /
+	# none) which is rebuilt on Apply, plus strength + lateral position that
+	# the rebuild reads from TankConfig.
+	_add_section(vbox, "Aeration")
+	_aeration_option = OptionButton.new()
+	for key in TankConfig.AERATION_PROFILES.keys():
+		var label: String = TankConfig.AERATION_PROFILES[key]["label"]
+		_aeration_option.add_item(label)
+		_aeration_option.set_item_metadata(_aeration_option.item_count - 1, key)
+	_aeration_option.item_selected.connect(func(idx): _on_aeration(idx))
+	vbox.add_child(_aeration_option)
+	_aeration_desc = Label.new()
+	_aeration_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_aeration_desc.add_theme_font_size_override("font_size", 11)
+	_aeration_desc.modulate = Color(1, 1, 1, 0.7)
+	vbox.add_child(_aeration_desc)
+	_aeration_strength_label = Label.new()
+	_aeration_strength = _add_slider_row(vbox, "Air strength", 0.0, 1.0, 0.05,
+		_aeration_strength_label)
+	_aeration_strength.value_changed.connect(func(v): _on_aeration_strength(v))
+	_aeration_x_label = Label.new()
+	_aeration_x = _add_slider_row(vbox, "Position (left↔right)", -1.0, 1.0, 0.05,
+		_aeration_x_label)
+	_aeration_x.value_changed.connect(func(v): _on_aeration_x(v))
+
 	# Footer buttons.
 	var sep := HSeparator.new()
 	vbox.add_child(sep)
@@ -255,6 +286,16 @@ func _pull_from_config() -> void:
 			_substrate_option.select(i)
 			break
 	_update_substrate_desc()
+	# Aeration.
+	for i in _aeration_option.item_count:
+		if _aeration_option.get_item_metadata(i) == TankConfig.aeration_type:
+			_aeration_option.select(i)
+			break
+	_aeration_strength.value = TankConfig.aeration_strength
+	_aeration_x.value = TankConfig.aeration_x_frac
+	_update_aeration_desc()
+	_aeration_strength_label.text = "%.2f" % _aeration_strength.value
+	_aeration_x_label.text = "%.2f" % _aeration_x.value
 	# Pick the option matching current preset.
 	for i in _preset_option.item_count:
 		if _preset_option.get_item_metadata(i) == TankConfig.tank_preset:
@@ -337,6 +378,27 @@ func _on_light_warmth(v: float) -> void:
 func _on_substrate(idx: int) -> void:
 	TankConfig.substrate_type = _substrate_option.get_item_metadata(idx)
 	_update_substrate_desc()
+
+
+func _on_aeration(idx: int) -> void:
+	TankConfig.aeration_type = _aeration_option.get_item_metadata(idx)
+	_update_aeration_desc()
+
+
+func _on_aeration_strength(v: float) -> void:
+	TankConfig.aeration_strength = v
+	_aeration_strength_label.text = "%.2f" % v
+
+
+func _on_aeration_x(v: float) -> void:
+	TankConfig.aeration_x_frac = v
+	_aeration_x_label.text = "%.2f" % v
+
+
+func _update_aeration_desc() -> void:
+	var key: String = TankConfig.aeration_type
+	var profile: Dictionary = TankConfig.AERATION_PROFILES.get(key, {})
+	_aeration_desc.text = profile.get("description", "")
 
 
 func _on_preset(idx: int) -> void:

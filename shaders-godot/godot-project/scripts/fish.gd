@@ -608,8 +608,28 @@ func tick(dt: float, neighbors: Array, plants: Array, waste: Array,
 	var tightness: float = 1.0 + stress * 1.5
 	desired += _boids(neighbors, tightness) * schooling_strength
 
-	# Drift toward preferred Y layer, more strongly when far from it.
-	var dy: float = preferred_y - position.y
+	# Drift toward preferred Y layer, more strongly when far from it. If the
+	# tank is low on dissolved O2, EVERY fish biases up toward the surface
+	# to gulp - this is the real-world "fish at the surface" symptom of an
+	# under-aerated tank, and it gives the player a clear visual cue to add
+	# aeration.
+	var target_y: float = preferred_y
+	if sim != null and sim.get("dissolved_o2") != null:
+		var o2: float = float(sim.dissolved_o2)
+		if o2 < 0.4:
+			# Severity 0 at o2=0.4, severity 1 at o2=0.0 - smoothly biases the
+			# fish from its natural depth all the way up to just below the
+			# meniscus.
+			var severity: float = clampf((0.4 - o2) / 0.4, 0.0, 1.0)
+			var surface_y: float = float(sim.get("substrate_top_y")) + 5.0
+			# Fall back if sim doesn't expose surface; surface_y above is a
+			# best-guess shifted from substrate.
+			target_y = lerpf(preferred_y, surface_y, severity)
+			# Low O2 raises stress, which tightens schooling AND raises
+			# breathing rate (we don't simulate gill rate explicitly but the
+			# stress field is read by the audio + behavior layers).
+			stress = clampf(stress + dt * severity * 0.05, 0.0, 1.0)
+	var dy: float = target_y - position.y
 	desired.y += dy * 0.6
 
 	# Mild wander via personal heading offset.
