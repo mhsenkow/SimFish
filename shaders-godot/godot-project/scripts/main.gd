@@ -27,6 +27,8 @@ extends Node
 @onready var aquascape_toggle: Button = $AquascapeToggle
 @onready var aquascape_palette: PanelContainer = $AquascapeToolPalette
 
+@onready var portal_viewport: SubViewport = $PortalViewport
+@onready var portal_camera: Camera3D = $PortalViewport/PortalCamera
 @onready var portal_container: Control = $PortalContainer
 @onready var portal_display: TextureRect = $PortalContainer/PortalDisplay
 @onready var portal_hint: Label = $PortalContainer/PortalHint
@@ -34,13 +36,8 @@ extends Node
 
 var _portal_open: bool = false
 var _portal_target: Node3D = null
-# Fish-local eye offsets (forward = -Z on fish/shrimp nodes).
-const PORTAL_EYE_FISH := Vector3(0.0, 0.08, -0.22)
-const PORTAL_EYE_SHRIMP := Vector3(0.0, 0.06, -0.14)
-const PORTAL_EYE_DEFAULT := Vector3(0.0, 0.04, -0.08)
-const PIP_VIEWPORT_NAME := "PipViewport"
-const PIP_CAMERA_NAME := "PipCamera"
-const PIP_SIZE: Vector2i = Vector2i(256, 256)
+var _portal_mat: ShaderMaterial = null
+const PORTAL_ZOOM: float = 3.5
 # The four tool buttons inside the palette - built procedurally in _ready
 # because we want one button per AQUASCAPE_TOOLS entry without locking
 # in a fixed scene tree.
@@ -151,6 +148,13 @@ func _ready() -> void:
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
+	if portal_display != null:
+		# PiP zooms the main tank render — no second 3D camera needed.
+		portal_display.texture = sub_viewport.get_texture()
+		if portal_display.material is ShaderMaterial:
+			_portal_mat = portal_display.material as ShaderMaterial
+	if portal_viewport != null:
+		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
 func _toggle_portal() -> void:
@@ -159,7 +163,6 @@ func _toggle_portal() -> void:
 		portal_container.visible = _portal_open
 	if not _portal_open:
 		_portal_target = null
-		_deactivate_all_pip_rigs()
 	if portal_hint != null:
 		portal_hint.visible = _portal_target == null
 	if _portal_open:
@@ -539,7 +542,6 @@ func _toggle_timelapse() -> void:
 func _clear_follow() -> void:
 	_follow_target = null
 	_portal_target = null
-	_deactivate_all_pip_rigs()
 	if portal_hint != null and _portal_open:
 		portal_hint.visible = true
 
@@ -655,67 +657,24 @@ func _creature_label(creature: Node) -> String:
 	return creature.name
 
 
-func _creature_eye_local(creature: Node) -> Vector3:
-	if creature is Fish:
-		return PORTAL_EYE_FISH
-	if creature is Shrimp:
-		return PORTAL_EYE_SHRIMP
-	return PORTAL_EYE_DEFAULT
-
-
-func _deactivate_all_pip_rigs() -> void:
-	if world == null:
-		return
-	for root_name in ["Fauna", "Snails"]:
-		var root: Node = world.get_node_or_null(root_name)
-		if root == null:
-			continue
-		for c in root.get_children():
-			var pip: SubViewport = c.get_node_or_null(PIP_VIEWPORT_NAME) as SubViewport
-			if pip != null:
-				pip.render_target_update_mode = SubViewport.UPDATE_DISABLED
-
-
-func _ensure_pip_rig(creature: Node3D) -> SubViewport:
-	var pip: SubViewport = creature.get_node_or_null(PIP_VIEWPORT_NAME) as SubViewport
-	if pip == null:
-		pip = SubViewport.new()
-		pip.name = PIP_VIEWPORT_NAME
-		pip.size = PIP_SIZE
-		pip.own_world_3d = false
-		pip.transparent_bg = true
-		pip.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		creature.add_child(pip)
-		var cam := Camera3D.new()
-		cam.name = PIP_CAMERA_NAME
-		cam.fov = 88.0
-		cam.near = 0.03
-		cam.far = 60.0
-		cam.current = true
-		pip.add_child(cam)
-	var cam_node: Camera3D = pip.get_node_or_null(PIP_CAMERA_NAME) as Camera3D
-	if cam_node != null:
-		cam_node.position = _creature_eye_local(creature)
-		cam_node.rotation = Vector3.ZERO
-	return pip
-
-
 func _update_portal_pip() -> void:
-	if not _portal_open:
+	if not _portal_open or _portal_mat == null or camera == null:
 		return
 	if _portal_target == null or not is_instance_valid(_portal_target):
 		_portal_target = null
-		_deactivate_all_pip_rigs()
-		if portal_display != null:
-			portal_display.texture = null
+		_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
 		if portal_hint != null:
 			portal_hint.visible = true
 		return
-	_deactivate_all_pip_rigs()
-	var pip: SubViewport = _ensure_pip_rig(_portal_target)
-	pip.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	if portal_display != null:
-		portal_display.texture = pip.get_texture()
+	if camera.is_position_behind(_portal_target.global_position):
+		return
+	var screen_pt: Vector2 = camera.unproject_position(_portal_target.global_position)
+	var center_uv: Vector2 = Vector2(
+		screen_pt.x / float(sub_viewport.size.x),
+		screen_pt.y / float(sub_viewport.size.y),
+	)
+	_portal_mat.set_shader_parameter("center_uv", center_uv)
+	_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
 	if portal_hint != null:
 		portal_hint.visible = false
 
