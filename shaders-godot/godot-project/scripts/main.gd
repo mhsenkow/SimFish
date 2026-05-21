@@ -36,6 +36,8 @@ extends Node
 
 var _portal_open: bool = false
 var _portal_target: Node3D = null
+var _portal_mat: ShaderMaterial = null
+const PORTAL_ZOOM: float = 3.5
 # The four tool buttons inside the palette - built procedurally in _ready
 # because we want one button per AQUASCAPE_TOOLS entry without locking
 # in a fixed scene tree.
@@ -146,9 +148,12 @@ func _ready() -> void:
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
-	if portal_viewport != null and portal_display != null:
-		portal_display.texture = portal_viewport.get_texture()
-		portal_viewport.world_3d = sub_viewport.world_3d
+	if portal_display != null:
+		# PiP zooms the main tank render — no second 3D camera needed.
+		portal_display.texture = sub_viewport.get_texture()
+		if portal_display.material is ShaderMaterial:
+			_portal_mat = portal_display.material as ShaderMaterial
+	if portal_viewport != null:
 		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
@@ -156,12 +161,12 @@ func _toggle_portal() -> void:
 	_portal_open = not _portal_open
 	if portal_container != null:
 		portal_container.visible = _portal_open
-	if portal_viewport != null:
-		portal_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if _portal_open else SubViewport.UPDATE_DISABLED
 	if not _portal_open:
 		_portal_target = null
 	if portal_hint != null:
 		portal_hint.visible = _portal_target == null
+	if _portal_open:
+		_update_portal_pip()
 	print("[vivarium] PiP portal %s" % ("OPEN" if _portal_open else "CLOSED"))
 
 
@@ -368,26 +373,8 @@ func _process(dt: float) -> void:
 			target = target.lerp(_follow_target.global_position, clampf(dt * 3.0, 0.0, 1.0))
 			_apply_camera()
 			
-	# Portal cam: track the portal target
-	if _portal_open and _portal_target != null and portal_camera != null:
-		if not is_instance_valid(_portal_target):
-			_portal_target = null
-		else:
-			var pt_pos: Vector3 = _portal_target.global_position
-			var pt_fwd: Vector3 = Vector3.FORWARD
-			if _portal_target is Node3D and _portal_target.get("heading") != null:
-				pt_fwd = _portal_target.get("heading")
-			# Over the shoulder view
-			var cam_pos: Vector3 = pt_pos - pt_fwd * 0.8 + Vector3(0, 0.4, 0)
-			portal_camera.global_position = portal_camera.global_position.lerp(cam_pos, clampf(dt * 5.0, 0.0, 1.0))
-			# Look slightly ahead of the creature
-			var look_target: Vector3 = pt_pos + pt_fwd * 2.0
-			# Smoothly rotate to look
-			var target_transform = portal_camera.global_transform.looking_at(look_target, Vector3.UP)
-			portal_camera.global_transform = portal_camera.global_transform.interpolate_with(target_transform, clampf(dt * 5.0, 0.0, 1.0))
-			
-			if portal_hint != null and portal_hint.visible:
-				portal_hint.visible = false
+	if _portal_open:
+		_update_portal_pip()
 
 	# WASD pan target along view direction.
 	var fwd: Vector3 = (target - camera.global_position)
@@ -655,15 +642,51 @@ func _pick_creature_from_display() -> Node3D:
 	return _pick_creature_at_viewport(sv_pos)
 
 
+func _creature_label(creature: Node) -> String:
+	if creature is Fish:
+		if creature.get("maturity") != null and creature.maturity == Fish.MATURITY_FRY:
+			return "fish (fry)"
+		return "fish"
+	if creature is Shrimp:
+		if creature.get("is_baby") != null and creature.is_baby:
+			return "shrimp (baby)"
+		return "shrimp"
+	var scr: Script = creature.get_script()
+	if scr != null and scr.resource_path.ends_with("snail.gd"):
+		return "snail"
+	return creature.name
+
+
+func _update_portal_pip() -> void:
+	if not _portal_open or _portal_mat == null or camera == null:
+		return
+	if _portal_target == null or not is_instance_valid(_portal_target):
+		_portal_target = null
+		_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
+		if portal_hint != null:
+			portal_hint.visible = true
+		return
+	if camera.is_position_behind(_portal_target.global_position):
+		return
+	var screen_pt: Vector2 = camera.unproject_position(_portal_target.global_position)
+	var center_uv: Vector2 = Vector2(
+		screen_pt.x / float(sub_viewport.size.x),
+		screen_pt.y / float(sub_viewport.size.y),
+	)
+	_portal_mat.set_shader_parameter("center_uv", center_uv)
+	_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
+	if portal_hint != null:
+		portal_hint.visible = false
+
+
 func _assign_creature_target(creature: Node3D) -> void:
 	if _portal_open:
 		_portal_target = creature
-		if portal_hint != null:
-			portal_hint.visible = false
-		print("[vivarium] portal tracking ", creature.name)
+		_update_portal_pip()
+		print("[vivarium] portal tracking %s" % _creature_label(creature))
 	else:
 		_follow_target = creature
-		print("[vivarium] following ", creature.name)
+		print("[vivarium] following %s" % _creature_label(creature))
 
 
 func _click_targets_creature() -> bool:
