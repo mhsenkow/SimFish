@@ -457,12 +457,23 @@ func _emit_stats() -> void:
 		if is_instance_valid(f):
 			max_gen = maxi(max_gen, int(f.generation))
 	# Snails: peek at the children of snails_root - they don't live in a
-	# typed array on SimDriver.
+	# typed array on SimDriver. Count adults vs babies via the per-snail
+	# is_baby flag set by snail.gd.
+	var snail_total: int = 0
+	var snail_adults: int = 0
+	var snail_babies: int = 0
 	if snails_root != null:
 		for s in snails_root.get_children():
-			var g = s.get("generation")
-			if g != null:
-				max_gen = maxi(max_gen, int(g))
+			# Only count nodes that look like snails (have a generation field +
+			# is_baby property). Skip stray markers / decoration.
+			if s.get("generation") == null:
+				continue
+			snail_total += 1
+			if s.get("is_baby") == true:
+				snail_babies += 1
+			else:
+				snail_adults += 1
+			max_gen = maxi(max_gen, int(s.get("generation")))
 	var s: Dictionary = {
 		"fish_total": fish.size(),
 		"fish_adults": n_adults,
@@ -471,6 +482,10 @@ func _emit_stats() -> void:
 		"shrimp_total": shrimp.size(),
 		"shrimp_adults": shrimp_adults,
 		"shrimp_fry": shrimp_fry,
+		"snails_total": snail_total,
+		"snails_adults": snail_adults,
+		"snails_babies": snail_babies,
+		"algae_clusters": algae.size(),
 		"max_generation": max_gen,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,

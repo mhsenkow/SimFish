@@ -16,7 +16,7 @@ extends Node
 @onready var sub_viewport: SubViewport = $SubViewport
 @onready var display: TextureRect = $Display
 @onready var camera: Camera3D = $SubViewport/World/Camera3D
-@onready var hud: Label = $DebugHUD
+@onready var hud: RichTextLabel = $DebugHUD
 @onready var world: Node3D = $SubViewport/World
 @onready var settings_panel: PanelContainer = $SettingsPanel
 @onready var render_panel: PanelContainer = $RenderPanel
@@ -735,59 +735,118 @@ func _update_hud(_mouse_pos: Vector2, _any_btn: bool) -> void:
 func _render_header() -> void:
 	if hud == null:
 		return
-	# Single-line subtle header grouped by trophic role. Use middle-dots so
-	# the line reads as a continuous strip rather than a list.
+	# Four-group BBCode strip. Each group has a softly tinted label so the
+	# eye can scan to its category fast without reading every number.
+	# Groups separated by double-bullets; items inside a group by single
+	# bullets. Warning conditions (paused, low O2, algae outbreak) get a
+	# colored highlight + a "!" prefix so trouble is visible at a glance.
 	#
-	#   FAUNA  fish 22 (11/11) · shrimp 11 (8/3) · eggs 0
-	#   FLORA  plants 89 · biomass 451
-	#   DETRITUS  waste 0 · nutrients 6.4
+	#   [STATE]  cafef155 · 1× · day
+	#   [FAUNA]  fish 22 / 11A 11F · shrimp 11 / 8A 3F · snails 6 / 5A 1B
+	#   [FLORA]  plants 89 · biomass 451 · algae 3
+	#   [WATER]  O2 87% disk · nutrients 6.4 · waste 0 · gen 4
 	var fish_total: int = int(_stats.get("fish_total", 0))
 	var fish_adults: int = int(_stats.get("fish_adults", 0))
 	var fish_fry: int = int(_stats.get("fish_fry", 0))
 	var shrimp_total: int = int(_stats.get("shrimp_total", 0))
 	var shrimp_adults: int = int(_stats.get("shrimp_adults", 0))
 	var shrimp_fry: int = int(_stats.get("shrimp_fry", 0))
+	var snail_total: int = int(_stats.get("snails_total", 0))
+	var snail_adults: int = int(_stats.get("snails_adults", 0))
+	var snail_babies: int = int(_stats.get("snails_babies", 0))
+	var algae: int = int(_stats.get("algae_clusters", 0))
 	var eggs: int = int(_stats.get("eggs", 0))
 	var plants: int = int(_stats.get("plants_alive", 0))
 	var biomass: int = int(_stats.get("plant_total_biomass", 0))
 	var waste: int = int(_stats.get("waste_particles", 0))
 	var nutrients: float = float(_stats.get("substrate_nutrients_total", 0.0))
+	var o2: float = float(_stats.get("dissolved_o2", 1.0))
+	var fixture: String = String(_stats.get("aeration_fixture", "?"))
+	var max_gen: int = int(_stats.get("max_generation", 0))
 
-	var parts: Array[String] = []
-	# Aquascape mode chip: shown only when active, calls out the current tool.
+	# Soft, distinct group tints so the eye can find each section.
+	var c_state := "#9aa8c8"
+	var c_fauna := "#d6b070"
+	var c_flora := "#86c084"
+	var c_water := "#7fb7d8"
+	var c_warn := "#e07070"
+
+	var groups: Array[String] = []
+
+	# Aquascape banner takes priority when active.
 	if _aquascape_mode:
-		parts.append("AQUASCAPE: %s (1 dirt · 2 stone · 3 wood · 4 dig)" %
-			_aquascape_tool.to_upper())
-	# Seed + clock state at the head of the line so they're glanceable.
+		groups.append("[color=#e0c060]AQUASCAPE %s[/color] (1 dirt · 2 stone · 3 wood · 4 dig)"
+			% _aquascape_tool.to_upper())
+
+	# --- STATE: seed · clock · day phase ---
 	if _sim != null:
 		var seed_str: String = "%08x" % int(_sim.tank_seed)
 		var ts: float = float(_sim.time_scale)
 		var clock: String
 		if ts == 0.0:
-			clock = "paused"
+			clock = "[color=%s]paused[/color]" % c_warn
 		elif is_equal_approx(ts, 1.0):
-			clock = "1x"
+			clock = "1×"
 		else:
-			clock = "%gx" % ts
+			clock = "%g×" % ts
 		var day: String = _day_label(float(_sim.day_phase))
-		parts.append("seed %s · %s · %s" % [seed_str, clock, day])
-	parts.append("fish %d (%d/%d)" % [fish_total, fish_adults, fish_fry])
-	parts.append("shrimp %d (%d/%d)" % [shrimp_total, shrimp_adults, shrimp_fry])
-	parts.append("eggs %d" % eggs)
-	parts.append("plants %d / biomass %d" % [plants, biomass])
-	parts.append("waste %d" % waste)
-	parts.append("nutrients %.1f" % nutrients)
-	# Dissolved O2 - shown as a percent; <30 % gets a warning glyph so the
-	# player notices the tank is gasping.
-	if _stats.has("dissolved_o2"):
-		var o2_pct: int = int(round(float(_stats["dissolved_o2"]) * 100.0))
-		var fixture: String = String(_stats.get("aeration_fixture", "?"))
-		var prefix: String = "!" if o2_pct < 30 else ""
-		parts.append("%sO₂ %d%% (%s)" % [prefix, o2_pct, fixture])
-	var max_gen: int = int(_stats.get("max_generation", 0))
+		groups.append("[color=%s]state[/color] %s · %s · %s" % [c_state, seed_str, clock, day])
+
+	# --- FAUNA: fish · shrimp · snails · eggs ---
+	# Population format helper renders "0", "N", or "N / aA fF" depending on
+	# the breakdown. Suffix letters: A=adults, F=fry, B=babies for snails.
+	var fauna_parts: Array[String] = []
+	fauna_parts.append("fish " + _pop_str(fish_total, fish_adults, fish_fry, "A", "F"))
+	fauna_parts.append("shrimp " + _pop_str(shrimp_total, shrimp_adults, shrimp_fry, "A", "F"))
+	fauna_parts.append("snails " + _pop_str(snail_total, snail_adults, snail_babies, "A", "B"))
+	if eggs > 0:
+		fauna_parts.append("eggs %d" % eggs)
+	groups.append("[color=%s]fauna[/color] %s" % [c_fauna, " · ".join(fauna_parts)])
+
+	# --- FLORA: plants · biomass · algae ---
+	var flora_parts: Array[String] = []
+	flora_parts.append("plants %d" % plants)
+	flora_parts.append("biomass %d" % biomass)
+	if algae > 0:
+		# Algae > 20 is becoming an outbreak; flag in red so the player can
+		# tune light / nutrients to bring it down.
+		var algae_str: String = "%d" % algae
+		if algae > 20:
+			algae_str = "[color=%s]!%d[/color]" % [c_warn, algae]
+		flora_parts.append("algae " + algae_str)
+	groups.append("[color=%s]flora[/color] %s" % [c_flora, " · ".join(flora_parts)])
+
+	# --- WATER: O2 + fixture · nutrients · waste · gen ---
+	var water_parts: Array[String] = []
+	var o2_pct: int = int(round(o2 * 100.0))
+	if o2_pct < 30:
+		water_parts.append("[color=%s]!O₂ %d%% %s[/color]" % [c_warn, o2_pct, fixture])
+	elif o2_pct < 50:
+		water_parts.append("[color=#d9bb70]O₂ %d%% %s[/color]" % [o2_pct, fixture])
+	else:
+		water_parts.append("O₂ %d%% %s" % [o2_pct, fixture])
+	water_parts.append("nutrients %.1f" % nutrients)
+	water_parts.append("waste %d" % waste)
 	if max_gen > 0:
-		parts.append("gen %d" % max_gen)
-	hud.text = "   ·   ".join(parts)
+		water_parts.append("gen %d" % max_gen)
+	groups.append("[color=%s]water[/color] %s" % [c_water, " · ".join(water_parts)])
+
+	# Join groups with double bullets so the eye groups them visually.
+	# RichTextLabel handles BBCode + horizontal centering via inline alignment.
+	hud.text = "[center]" + "   ··   ".join(groups) + "[/center]"
+
+
+# Format "{total} / {adults}{a_suf} {kids}{k_suf}" with the breakdown hidden
+# if the population is zero or undifferentiated. Examples:
+#   fish 0       -> "0" dim
+#   fish 6       -> "6"            (no babies, no adults stat available)
+#   fish 4 ad/2f -> "4 / 2A 2F"
+func _pop_str(total: int, adults: int, kids: int, a_suf: String, k_suf: String) -> String:
+	if total == 0:
+		return "[color=#777777]0[/color]"
+	if adults == 0 and kids == 0:
+		return "%d" % total
+	return "%d / %d%s %d%s" % [total, adults, a_suf, kids, k_suf]
 
 
 func _day_label(p: float) -> String:

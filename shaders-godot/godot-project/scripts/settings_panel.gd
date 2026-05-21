@@ -66,14 +66,32 @@ func toggle() -> void:
 # labels + sliders, plus a small header and the apply / close buttons.
 func _build_ui() -> void:
 	custom_minimum_size = Vector2(420, 0)
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	add_child(vbox)
+	# Outer layout: title at the top, scrolling section list in the middle,
+	# always-visible footer (Close / Apply) at the bottom. The PanelContainer
+	# anchors to fill the screen vertically so the scroll area gets as much
+	# height as possible.
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 6)
+	add_child(outer)
 
 	var title := Label.new()
 	title.text = "Settings"
 	title.add_theme_font_size_override("font_size", 18)
-	vbox.add_child(title)
+	outer.add_child(title)
+
+	# Scrolling body. The section vbox lives inside this so when there are
+	# more controls than fit on screen, the user can scroll - and the Apply
+	# button stays reachable at the bottom of the panel.
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
 
 	_add_section(vbox, "Tank")
 	# Tank shape dropdown.
@@ -209,12 +227,15 @@ func _build_ui() -> void:
 		_aeration_x_label)
 	_aeration_x.value_changed.connect(func(v): _on_aeration_x(v))
 
-	# Footer buttons.
+	# Footer buttons - attached to `outer` (NOT `vbox`) so they stay pinned at
+	# the bottom of the panel below the scroll area. Without this, when the
+	# section list grew past the screen height the Apply button scrolled off
+	# the bottom and became unreachable.
 	var sep := HSeparator.new()
-	vbox.add_child(sep)
+	outer.add_child(sep)
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END
-	vbox.add_child(hb)
+	outer.add_child(hb)
 	var close := Button.new()
 	close.text = "Close"
 	close.pressed.connect(func(): visible = false)

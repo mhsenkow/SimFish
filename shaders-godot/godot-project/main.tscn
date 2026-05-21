@@ -34,11 +34,6 @@ volumetric_fog_ambient_inject = 0.05
 
 [sub_resource type="CameraAttributesPractical" id="CamAttr_default"]
 
-[sub_resource type="LabelSettings" id="HUDLabelSettings"]
-font_size = 11
-font_color = Color(0.85, 0.9, 0.96, 0.75)
-outline_size = 2
-outline_color = Color(0, 0, 0, 0.55)
 
 [sub_resource type="LabelSettings" id="HUDHintSettings"]
 font_size = 10
@@ -87,18 +82,24 @@ expand_mode = 1
 stretch_mode = 0
 texture_filter = 1
 
-[node name="DebugHUD" type="Label" parent="."]
+[node name="DebugHUD" type="RichTextLabel" parent="."]
 anchor_left = 0.0
 anchor_top = 0.0
 anchor_right = 1.0
 offset_left = 16.0
-offset_top = 8.0
+offset_top = 4.0
 offset_right = -16.0
-offset_bottom = 26.0
+offset_bottom = 30.0
 mouse_filter = 2
-label_settings = SubResource("HUDLabelSettings")
-horizontal_alignment = 1
+bbcode_enabled = true
+fit_content = true
+scroll_active = false
+scroll_following = false
 text = ""
+theme_override_colors/default_color = Color(0.85, 0.9, 0.96, 0.85)
+theme_override_colors/font_outline_color = Color(0, 0, 0, 0.55)
+theme_override_constants/outline_size = 2
+theme_override_font_sizes/normal_font_size = 11
 
 [node name="AmbientAudio" type="Node" parent="."]
 script = ExtResource("6_audio")
@@ -107,22 +108,22 @@ script = ExtResource("6_audio")
 anchor_left = 1.0
 anchor_top = 0.0
 anchor_right = 1.0
-anchor_bottom = 0.0
+anchor_bottom = 1.0
 offset_left = -460.0
 offset_top = 40.0
 offset_right = -16.0
-offset_bottom = 700.0
+offset_bottom = -40.0
 script = ExtResource("7_settings")
 
 [node name="RenderPanel" type="PanelContainer" parent="."]
 anchor_left = 0.0
 anchor_top = 0.0
 anchor_right = 0.0
-anchor_bottom = 0.0
+anchor_bottom = 1.0
 offset_left = 16.0
 offset_top = 40.0
 offset_right = 460.0
-offset_bottom = 640.0
+offset_bottom = -40.0
 script = ExtResource("8_render")
 
 [node name="RenderToggle" type="Button" parent="."]
