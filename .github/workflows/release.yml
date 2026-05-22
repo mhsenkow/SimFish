@@ -20,6 +20,7 @@ env:
   # Folder name inside export_templates/*.tpz and on disk.
   GODOT_TEMPLATES_DIR: 4.6.3.stable
   PROJECT_PATH: shaders-godot/godot-project
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   export:
@@ -43,7 +44,7 @@ jobs:
             artifact: Vivarium-linux.tar.gz
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Godot + export templates (Linux)
         if: runner.os == 'Linux'
@@ -51,7 +52,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libfontconfig1 libx11-6 libxcursor1 libxinerama1 libxrandr2 \
-            libxi6 libglu1-mesa libasound2
+            libxi6 libglu1-mesa libasound2t64
           mkdir -p "$HOME/godot" "$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATES_DIR}"
           cd "$HOME/godot"
           curl -fsSL -o godot.zip \
@@ -133,7 +134,7 @@ jobs:
           mkdir -p artifacts
           tar -czf artifacts/Vivarium-linux.tar.gz -C build Vivarium-linux.x86_64
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: artifacts/${{ matrix.artifact }}
@@ -147,7 +148,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: dist
