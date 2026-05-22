@@ -949,15 +949,20 @@ func _spawn_initial_plants() -> void:
 	for i in 6:
 		var sp := SpiralPlant.new()
 		plants_root.add_child(sp)
-		var sp_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.4)
+		var sp_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.55)
 		sp.global_position = Vector3(sp_xz.x, SUBSTRATE_DEPTH, sp_xz.y)
 		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
 		sp.water_surface_y = WATER_HEIGHT
 		sp.generation = 0
+		# Per-spawn horizontal budget: stay inside glass even near walls.
+		var wall_x: float = TANK_HALF_W - absf(sp_xz.x) - 0.55
+		var wall_z: float = TANK_HALF_D - absf(sp_xz.y) - 0.55
+		sp.max_horizontal_extent = clampf(minf(wall_x, wall_z) * 0.85, 0.06, 0.12)
+		sp.tank_wall_margin = 0.55
 		sp.init(_rng.randi_range(3, 6), {
-			"max_height": _rng.randi_range(20, 40),
-			"growth_rate": 0.20,
-			"sway_amplitude": 0.06,
+			"max_height": _rng.randi_range(14, 24),
+			"growth_rate": 0.18,
+			"sway_amplitude": 0.0,
 		})
 		sim.register_plant(sp)
 	await get_tree().process_frame
@@ -1220,6 +1225,11 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		p.radius_step = child_cfg["radius_step"]
 		p.height_step = child_cfg["height_step"]
 		p.radius_cap = child_cfg["radius_cap"]
+	if p is SpiralPlant:
+		if "max_horizontal_extent" in child_cfg:
+			p.max_horizontal_extent = child_cfg["max_horizontal_extent"]
+		if "tank_wall_margin" in child_cfg:
+			p.tank_wall_margin = child_cfg["tank_wall_margin"]
 		
 	sim.register_plant(p)
 

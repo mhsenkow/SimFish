@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vivarium — generative pixel-art aquarium</title>
+  <meta name="description" content="A generative pixel-art aquarium running as a 3D voxel scene through a palette-quantize + dither shader pipeline. Plants grow, fish school and breed, shrimp climb plants, snails crawl the glass." />
+  <meta property="og:title" content="Vivarium — generative pixel-art aquarium" />
+  <meta property="og:description" content="Self-balancing voxel ecosystem rendered as 48-color pixel art. Plants grow, fish breed, snails crawl, shrimp molt — every creature is an agent with a genome and a behavior tree." />
+  <meta property="og:image" content="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
+  <meta property="og:type" content="website" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <h1>Vivarium</h1>
+      <p class="tagline">A generative pixel-art aquarium. 3D voxel scene → palette-quantize + dither → chunky 48-color pixels. Plants grow voxel by voxel, fish school and breed, shrimp molt, snails crawl the glass. The whole thing self-balances over a few minutes of watching.</p>
+      <div class="downloads">
+        <a class="dl-btn dl-mac" href="https://github.com/mhsenkow/SimFish/releases/latest">
+          <span class="platform">macOS</span>
+          <span class="hint">Universal · Apple Silicon + Intel</span>
+        </a>
+        <a class="dl-btn dl-win" href="https://github.com/mhsenkow/SimFish/releases/latest">
+          <span class="platform">Windows</span>
+          <span class="hint">x86_64</span>
+        </a>
+        <a class="dl-btn dl-linux" href="https://github.com/mhsenkow/SimFish/releases/latest">
+          <span class="platform">Linux</span>
+          <span class="hint">x86_64</span>
+        </a>
+      </div>
+      <p class="releases-link"><a href="https://github.com/mhsenkow/SimFish/releases">All releases</a> · <a href="https://github.com/mhsenkow/SimFish">Source on GitHub</a></p>
+    </div>
+    <figure class="hero-shot">
+      <img src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" alt="Screenshot of the Vivarium aquarium — pixel-art voxel fish over a planted substrate" loading="eager" />
+    </figure>
+  </header>
+
+  <section class="features">
+    <h2>What's in the tank</h2>
+    <div class="grid">
+      <article class="feature">
+        <h3>Plants that actually grow</h3>
+        <p>Every plant builds itself voxel by voxel over real time, fed by a nutrient field under the substrate. Six leaf forms (paddle, ribbon, lance, needle, column, moss). Vallisneria sends out horizontal runners that root into daughter plants. Cryptocorynes melt under low light and regrow from the rhizome.</p>
+      </article>
+      <article class="feature">
+        <h3>Fish with genomes and behavior trees</h3>
+        <p>Each fish has a heritable genome — body shape, fin length, color, swim pattern, mouth orientation, eye size, tail fork depth. Lineages drift over generations into visible morphs. Tetras school, angelfish hover and brood their eggs, guppy males flare for females, livebearer females release free-swimming fry instead of laying eggs.</p>
+      </article>
+      <article class="feature">
+        <h3>Walstad food web</h3>
+        <p>Closed nutrient loop: plants ← substrate ← waste ← creatures. Shrimp graze plant tips and snap at fry. Snails crawl glass and clear detritus. Fish defecate. Bettas hunt shrimp. Algae blooms when nutrients spike. Auto-balances over a few minutes.</p>
+      </article>
+      <article class="feature">
+        <h3>Day/night cycle</h3>
+        <p>A 6-minute day/night cycle drives plant photosynthesis (visible O2 pearling), fish activity (cory species nocturnal, schoolers diurnal), and surface gulping when oxygen drops too low.</p>
+      </article>
+      <article class="feature">
+        <h3>Saltwater reef mode</h3>
+        <p>Switch the preset and the tank turns into a saltwater reef: ocean-sand substrate, four coral morphs (branching staghorn, brain dome, table, soft feathery), a mixed school of tropical fish where every individual rolls a unique morph at spawn, marine snails (turbo, trochus, nassarius), and skunk cleaner shrimp that set up cleaning stations.</p>
+      </article>
+      <article class="feature">
+        <h3>Pixel-perfect aesthetic</h3>
+        <p>Internal sim runs at full 3D continuous. The render pass quantizes to chunky pixels and a 48-color palette via a custom GDShader. Animation emerges from physics, not keyframes — every tail wag, every wall-bounce, every settle is calculated.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="gallery">
+    <h2>More views</h2>
+    <div class="gallery-grid">
+      <figure>
+        <img src="https://github.com/user-attachments/assets/8b8a9c07-869c-4462-98bf-074c32911a56" alt="Mid-water school of tetras and a planted background" loading="lazy" />
+      </figure>
+      <figure>
+        <img src="https://github.com/user-attachments/assets/1838bd1a-bddf-4924-be2e-1de1b5e5b71a" alt="Foreground carpet with corydoras and shrimp on the substrate" loading="lazy" />
+      </figure>
+    </div>
+  </section>
+
+  <section class="install">
+    <h2>Installing</h2>
+    <div class="install-grid">
+      <div>
+        <h3>macOS</h3>
+        <p>Download <code>Vivarium-mac.zip</code>, unzip, then <strong>right-click → Open → Open</strong> in the Gatekeeper dialog. The app is ad-hoc signed but not Apple-notarized.</p>
+        <p class="muted">If macOS says <em>"Vivarium.app is damaged and can't be opened"</em> (Chrome quarantine bug), open Terminal and run <code>xattr -dr com.apple.quarantine ~/Downloads/Vivarium.app</code>, then double-click again.</p>
+      </div>
+      <div>
+        <h3>Windows</h3>
+        <p>Download <code>Vivarium-windows.zip</code>, unzip, double-click <code>Vivarium.exe</code>. SmartScreen will warn that the publisher is unknown — click <strong>More info → Run anyway</strong>.</p>
+      </div>
+      <div>
+        <h3>Linux</h3>
+        <p>Download <code>Vivarium-linux.tar.gz</code>, then:</p>
+        <pre><code>tar -xzf Vivarium-linux.tar.gz
+./Vivarium-linux.x86_64</code></pre>
+        <p class="muted">Tested on Ubuntu / Debian. Exec bit already set.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      Built with Godot 4. Source on <a href="https://github.com/mhsenkow/SimFish">GitHub</a>.
+      Issues and PRs welcome.
+    </p>
+  </footer>
+</body>
+</html>

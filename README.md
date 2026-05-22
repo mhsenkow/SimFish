@@ -16,7 +16,7 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 
 All builds live on the [Releases page](https://github.com/mhsenkow/SimFish/releases). Pick your platform:
 
-### macOS — `Vivarium-mac.zip` (universal, Intel + Apple Silicon)
+### macOS — [`Vivarium-mac.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-mac.zip) (universal, Intel + Apple Silicon)
 
 Unzip, then double-click `Vivarium.app`. The app is **ad-hoc signed** but not Apple-notarized, so Gatekeeper will warn you on first launch:
 
@@ -29,11 +29,11 @@ Unzip, then double-click `Vivarium.app`. The app is **ad-hoc signed** but not Ap
 
 macOS only nags once.
 
-### Windows — `Vivarium-windows.zip` (x86_64)
+### Windows — [`Vivarium-windows.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-windows.zip) (x86_64)
 
 Unzip, then double-click `Vivarium.exe`. SmartScreen will warn that the publisher is unknown — click **More info** → **Run anyway**.
 
-### Linux — `Vivarium-linux.tar.gz` (x86_64)
+### Linux — [`Vivarium-linux.tar.gz`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-linux.tar.gz) (x86_64)
 
 ```bash
 tar -xzf Vivarium-linux.tar.gz
