@@ -62,6 +62,54 @@ func _spawn_branch() -> void:
 	_branches.append(child)
 
 
+func _save_kind() -> String:
+	return "branch_plant"
+
+
+func to_save_dict() -> Dictionary:
+	var d: Dictionary = super.to_save_dict()
+	d["branch_chance"] = branch_chance
+	d["branch_interval"] = branch_interval
+	d["branch_angle_deg"] = branch_angle_deg
+	d["branch_depth"] = branch_depth
+	d["max_branch_depth"] = max_branch_depth
+	d["_last_branch_at"] = _last_branch_at
+	# Recursively save children branches. Each is itself a BranchPlant.
+	var kids: Array = []
+	for b in _branches:
+		if is_instance_valid(b):
+			# Children store local position relative to parent (already in
+			# the saved global_position field of to_save_dict).
+			kids.append(b.to_save_dict())
+	d["children"] = kids
+	return d
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	branch_chance = float(d.get("branch_chance", branch_chance))
+	branch_interval = int(d.get("branch_interval", branch_interval))
+	branch_angle_deg = float(d.get("branch_angle_deg", branch_angle_deg))
+	branch_depth = int(d.get("branch_depth", branch_depth))
+	max_branch_depth = int(d.get("max_branch_depth", max_branch_depth))
+	_last_branch_at = int(d.get("_last_branch_at", -99))
+	super.apply_save_dict(d)
+	# Rebuild children. Each child was added as a Node3D child of self with
+	# a local position; we restore the same structure by add_child'ing a
+	# new BranchPlant, setting its position from the saved global_position
+	# (converted to local), then recursing into apply_save_dict.
+	var kids: Array = d.get("children", [])
+	for kd in kids:
+		if not (kd is Dictionary):
+			continue
+		var child := BranchPlant.new()
+		add_child(child)
+		var saved_pos: Vector3 = SaveHelpers.array_to_vec3(kd.get("pos", []), Vector3.ZERO)
+		# Children's saved_pos was global at save time. Convert to local.
+		child.global_position = saved_pos
+		child.apply_save_dict(kd)
+		_branches.append(child)
+
+
 func biomass() -> int:
 	# A branching plant's total biomass = main stem + all branches recursively.
 	# This matters because shrimp + fish gate plant nibbling on a minimum

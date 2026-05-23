@@ -25,6 +25,31 @@ func init(color: Color = Color8(120, 165, 60)) -> void:
 	_add_voxel(Vector3.ZERO, 1.0)
 
 
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	return {
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"color": SaveHelpers.color_to_array(_color),
+		"age": _age,
+		"phase": _phase,
+		"voxel_count": _voxels.size(),
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	init(SaveHelpers.array_to_color(d.get("color", []), _color))
+	_age = float(d.get("age", 0.0))
+	_phase = float(d.get("phase", randf() * TAU))
+	# Re-add voxels to roughly match the saved cluster size. tick() will
+	# rebuild the precise shape, but starting with the right count avoids
+	# a visible "shrinking and regrowing" snap on restore.
+	var target_count: int = int(d.get("voxel_count", 1))
+	while _voxels.size() < target_count:
+		_add_voxel(Vector3(randf_range(-0.2, 0.2), randf_range(-0.1, 0.1),
+			randf_range(-0.2, 0.2)), randf_range(0.6, 1.0))
+
+
 # Called by SimDriver each tick. Returns true if the algae should die off.
 func tick(dt: float, conditions_favor: bool) -> bool:
 	# Aging rate: 1× when conditions favor growth, 1.5× when they don't.

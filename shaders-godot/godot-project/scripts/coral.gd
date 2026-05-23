@@ -41,6 +41,23 @@ func _build_initial_roots() -> void:
 	pass
 
 
+func _save_kind() -> String:
+	return "coral"
+
+
+func to_save_dict() -> Dictionary:
+	var d: Dictionary = super.to_save_dict()
+	d["coral_form"] = coral_form
+	d["tip_color"] = SaveHelpers.color_to_array(tip_color)
+	return d
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	coral_form = String(d.get("coral_form", coral_form))
+	tip_color = SaveHelpers.array_to_color(d.get("tip_color", []), tip_color)
+	super.apply_save_dict(d)
+
+
 func _grow_one() -> bool:
 	if current_height >= max_height:
 		return false

@@ -80,6 +80,9 @@ const CLAMP_RADIUS: float = 1.6
 const CLAMP_RELEASE_GRACE: float = 0.7   # extra time clamped after threat leaves
 var _clamp_grace_remaining: float = 0.0
 
+# Save/load id (see fish.gd for rationale).
+var id: String = ""
+
 
 func _ready() -> void:
 	_choose_new_direction()
@@ -442,3 +445,60 @@ func _choose_new_direction() -> void:
 		return
 	var ang := randf() * TAU
 	_direction = Vector2(cos(ang), sin(ang))
+
+
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	return {
+		"id": id,
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"wall_normal": SaveHelpers.vec3_to_array(wall_normal),
+		"wall_min": SaveHelpers.vec3_to_array(wall_min),
+		"wall_max": SaveHelpers.vec3_to_array(wall_max),
+		"is_baby": is_baby,
+		"shell_color": SaveHelpers.color_to_array(shell_color),
+		"shell_size": shell_size,
+		"shell_shape": shell_shape,
+		"generation": generation,
+		"sex": sex,
+		"direction": SaveHelpers.vec2_to_array(_direction),
+		"facing": SaveHelpers.vec2_to_array(_facing),
+		"wall_anchor_offset": _wall_anchor_offset,
+		"age": _age,
+		"t_until_breed": _t_until_breed,
+		"t_until_turn": _t_until_turn,
+		"paused": _paused,
+		"pursuing_waste": _pursuing_waste,
+		"clamped": _clamped,
+		"clamp_grace_remaining": _clamp_grace_remaining,
+		"eye_retract_remaining": _eye_retract_remaining,
+		"eye_retract_timer": _eye_retract_timer,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	id = String(d.get("id", id))
+	wall_normal = SaveHelpers.array_to_vec3(d.get("wall_normal", []), wall_normal)
+	wall_min = SaveHelpers.array_to_vec3(d.get("wall_min", []), wall_min)
+	wall_max = SaveHelpers.array_to_vec3(d.get("wall_max", []), wall_max)
+	is_baby = bool(d.get("is_baby", is_baby))
+	shell_color = SaveHelpers.array_to_color(d.get("shell_color", []), shell_color)
+	shell_size = float(d.get("shell_size", shell_size))
+	shell_shape = String(d.get("shell_shape", shell_shape))
+	generation = int(d.get("generation", 0))
+	sex = int(d.get("sex", 0))
+	_direction = SaveHelpers.array_to_vec2(d.get("direction", []), Vector2.RIGHT)
+	_facing = SaveHelpers.array_to_vec2(d.get("facing", []), Vector2.RIGHT)
+	_wall_anchor_offset = float(d.get("wall_anchor_offset", _wall_anchor_offset))
+	_age = float(d.get("age", 0.0))
+	_t_until_breed = float(d.get("t_until_breed", _t_until_breed))
+	_t_until_turn = float(d.get("t_until_turn", _t_until_turn))
+	_paused = bool(d.get("paused", false))
+	_pursuing_waste = bool(d.get("pursuing_waste", false))
+	_clamped = bool(d.get("clamped", false))
+	_clamp_grace_remaining = float(d.get("clamp_grace_remaining", 0.0))
+	_eye_retract_remaining = float(d.get("eye_retract_remaining", 0.0))
+	_eye_retract_timer = float(d.get("eye_retract_timer", _eye_retract_timer))
+	if is_baby:
+		scale = Vector3.ONE * 0.5

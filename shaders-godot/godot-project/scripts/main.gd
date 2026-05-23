@@ -26,6 +26,7 @@ extends Node
 @onready var fish_store_panel: PanelContainer = $FishStorePanel
 @onready var aquascape_toggle: Button = $AquascapeToggle
 @onready var aquascape_palette: PanelContainer = $AquascapeToolPalette
+@onready var menu_button: Button = $MenuButton
 
 @onready var portal_viewport: SubViewport = $PortalViewport
 @onready var portal_camera: Camera3D = $PortalViewport/PortalCamera
@@ -124,6 +125,10 @@ const PAINT_INTERVAL: float = 0.08   # seconds between brush samples
 # Screen-space pick radius in SubViewport pixels (what you click on screen).
 const PICK_RADIUS_PX: float = 48.0
 const PORTAL_PICK_RADIUS_PX: float = 72.0
+# Fingers are less precise than a mouse cursor — bump the pick radius up so
+# small fish are tappable. Applied in _pick_creature_at_viewport when touch
+# is the active input source.
+const PICK_RADIUS_PX_TOUCH: float = 110.0
 const RAY_PICK_RADIUS: float = 2.0
 
 # ---- Touch input state ----
@@ -155,6 +160,44 @@ const PINCH_ZOOM_SENSITIVITY: float = 0.008
 var _touch_active: bool = false
 # Mobile HUD reference (wired in _ready if the node exists).
 var _mobile_hud: Control = null
+
+# ---- Two-finger twist gesture ----
+# Angle (radians) between the two touching fingers on the previous frame.
+# Compared against current angle in _handle_screen_drag to compute a delta
+# we apply to camera yaw.
+var _pinch_angle: float = 0.0
+const TWIST_SENSITIVITY: float = 1.2  # multiplier on the raw radian delta
+
+# ---- Edge swipe to open settings panel ----
+# When a single touch lands within EDGE_SWIPE_TRIGGER_PX of the right screen
+# edge AND the user then drags > EDGE_SWIPE_MIN_PX to the left, we toggle
+# settings. Set on touch-down, cleared on lift or once consumed.
+var _edge_swipe_active: bool = false
+var _edge_swipe_start_x: float = 0.0
+const EDGE_SWIPE_TRIGGER_PX: float = 28.0
+const EDGE_SWIPE_MIN_PX: float = 80.0
+
+# ---- Focus-out / background pause ----
+# Stash time_scale when the OS sends FOCUS_OUT (user switched apps / locked
+# screen). Restored on FOCUS_IN. We bail out gracefully if a pause was
+# already in effect (aquascape mode, manual pause) so we don't clobber it.
+var _focus_paused: bool = false
+var _focus_saved_time_scale: float = 1.0
+
+# ---- Aquascape radial menu (mobile only) ----
+# Replaces the long-press-toggles-auto-orbit gesture WHEN in aquascape mode,
+# so a long-press near a finger pops up a 4-tool wheel (dirt/stone/wood/dig).
+# Tap an icon to select tool; tap outside to dismiss.
+var _radial_menu: Control = null
+
+# ---- Tutorial overlay ----
+# Shown on first mobile launch; dismissed by tapping OK, persisted via
+# TankConfig.tutorial_seen so it never returns.
+var _tutorial_overlay: Control = null
+
+# ---- Welcome-back toast (time-skip recap) ----
+# Floating Label shown briefly on resume when we detect the user was away.
+var _welcome_label: Label = null
 
 
 func _is_mobile() -> bool:
@@ -188,6 +231,8 @@ func _ready() -> void:
 		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
 	if aquascape_toggle != null:
 		aquascape_toggle.pressed.connect(_toggle_aquascape)
+	if menu_button != null:
+		menu_button.pressed.connect(_on_back_to_menu)
 	_build_aquascape_palette()
 	
 	if portal_toggle != null:
@@ -202,7 +247,20 @@ func _ready() -> void:
 	
 	# ---- Mobile setup ----
 	if _is_mobile():
+		_pick_device_tier_if_unset()
 		_setup_mobile_ui()
+	# Always apply the fps cap (works on desktop too, so the user can choose
+	# a 60-fps lock to reduce GPU heat). Mobile gets a 60-fps default on first
+	# launch if no cap has been set.
+	_apply_fps_cap()
+	# Welcome-back toast and time-stamp persistence — only meaningful on
+	# subsequent launches, but cheap to set up unconditionally.
+	_show_welcome_back_if_returning()
+	# Tank state restore. Defers a frame so world.gd._ready has fully run
+	# (substrate exists, roots are set up, plants_root etc. are wired) before
+	# we start spawning entities into it.
+	if _sim != null:
+		call_deferred("_try_load_saved_state")
 
 
 func _toggle_portal() -> void:
@@ -288,14 +346,34 @@ func _process(dt: float) -> void:
 	# Tick the aquascape brush cooldown so drag-painting deposits voxels
 	# at a steady rate regardless of frame timing.
 	_paint_cooldown = maxf(0.0, _paint_cooldown - dt)
+
+	# Periodic autosave. Only ticks the accumulator when we're actually
+	# playing (not aquascape-paused, not manually paused) so the 5-minute
+	# clock measures user-attention not wall-clock.
+	if _sim != null and not _aquascape_mode and float(_sim.time_scale) > 0.0:
+		_autosave_accum += dt
+		if _autosave_accum >= AUTOSAVE_INTERVAL_S:
+			_autosave_accum = 0.0
+			save_active_tank()
 	
 	# ---- Touch: long-press detection (runs every frame while finger is down) ----
 	if _touches.size() == 1 and not _long_press_fired:
 		var elapsed: float = Time.get_ticks_msec() / 1000.0 - _tap_start_time
 		if elapsed >= LONG_PRESS_TIME and _tap_moved < TAP_MAX_MOVE:
 			_long_press_fired = true
-			_auto_orbit = not _auto_orbit
-			print_verbose("[vivarium] long-press: auto-orbit %s" % ("ON" if _auto_orbit else "OFF"))
+			# Aquascape mode: pop a radial tool picker centered on the finger.
+			# Normal mode: keep the existing auto-orbit toggle. Painting that
+			# was started on touch-down gets cancelled so the menu doesn't
+			# also drop a voxel.
+			if _aquascape_mode:
+				_drag_mode = ""
+				_wood_drag = null
+				_haptic(22)
+				_show_radial_menu(_tap_start_pos)
+			else:
+				_auto_orbit = not _auto_orbit
+				_haptic(15)
+				print_verbose("[vivarium] long-press: auto-orbit %s" % ("ON" if _auto_orbit else "OFF"))
 	
 	# ---- Mouse input (skipped when touch is active to avoid double-fire) ----
 	if _is_touch_active():
@@ -495,6 +573,7 @@ func _toggle_pause() -> void:
 		_sim.time_scale = 0.0
 	else:
 		_sim.time_scale = _saved_time_scale
+	_haptic(12)
 
 
 func _set_time_scale(s: float) -> void:
@@ -502,6 +581,7 @@ func _set_time_scale(s: float) -> void:
 		return
 	_sim.time_scale = s
 	_saved_time_scale = s
+	_haptic(12)
 
 
 func _on_one() -> void:
@@ -543,6 +623,8 @@ func _take_photo() -> void:
 	var path: String = dir + "/vivarium_" + ts + ".png"
 	img.save_png(path)
 	print_verbose("[vivarium] photo saved: ", path)
+	_haptic(25)
+	_show_photo_toast(path)
 
 
 # ---- Timelapse mode ----
@@ -642,7 +724,17 @@ func _gather_creatures() -> Array:
 func _pick_creature_at_viewport(sv_pos: Vector2, creatures: Array) -> Node3D:
 	if camera == null:
 		return null
-	var radius_px: float = PORTAL_PICK_RADIUS_PX if _portal_open else PICK_RADIUS_PX
+	# Pick radius: portal mode is most permissive; touch input gets a
+	# fatter target than mouse because fingers are imprecise; otherwise the
+	# desktop default. This makes small fish actually tappable on a phone
+	# without sacrificing precision when a mouse is in use.
+	var radius_px: float
+	if _portal_open:
+		radius_px = PORTAL_PICK_RADIUS_PX
+	elif _is_touch_active():
+		radius_px = PICK_RADIUS_PX_TOUCH
+	else:
+		radius_px = PICK_RADIUS_PX
 	var best: Node3D = null
 	var best_score: float = radius_px
 	var origin: Vector3 = camera.project_ray_origin(sv_pos)
@@ -1116,6 +1208,112 @@ func _aquascape_dig(hit: Vector3) -> void:
 	best.queue_free()
 
 
+# ---- Aquascape save / load ----
+# _aquascape_placed holds two kinds of nodes:
+#   - MeshInstance3D (single voxel, kind "voxel"): dirt or stone
+#   - Node3D container (kind "log"): wood, with N MeshInstance3D children
+# Both have set_meta("aquascape_tool", "dirt"|"stone"|"wood") on the root.
+func _aquascape_to_save_arr() -> Array:
+	var out: Array = []
+	for v in _aquascape_placed:
+		if not is_instance_valid(v):
+			continue
+		var tool: String = String(v.get_meta("aquascape_tool", ""))
+		if v is MeshInstance3D:
+			var mi: MeshInstance3D = v
+			var bm: BoxMesh = mi.mesh as BoxMesh
+			var color: Color = Color.WHITE
+			if mi.material_override is BaseMaterial3D:
+				color = (mi.material_override as BaseMaterial3D).albedo_color
+			out.append({
+				"kind": "voxel",
+				"tool": tool,
+				"pos": SaveHelpers.vec3_to_array(mi.global_position),
+				"size": SaveHelpers.vec3_to_array(bm.size if bm != null else Vector3.ONE),
+				"color": SaveHelpers.color_to_array(color),
+			})
+		else:
+			# Log: walk children to capture each segment.
+			var segs: Array = []
+			for child in v.get_children():
+				if not (child is MeshInstance3D):
+					continue
+				var seg: MeshInstance3D = child
+				var seg_bm: BoxMesh = seg.mesh as BoxMesh
+				var seg_color: Color = Color.WHITE
+				if seg.material_override is BaseMaterial3D:
+					seg_color = (seg.material_override as BaseMaterial3D).albedo_color
+				segs.append({
+					"offset": SaveHelpers.vec3_to_array(seg.position),
+					"size": SaveHelpers.vec3_to_array(seg_bm.size if seg_bm != null else Vector3.ONE),
+					"color": SaveHelpers.color_to_array(seg_color),
+				})
+			out.append({
+				"kind": "log",
+				"tool": tool,
+				"pos": SaveHelpers.vec3_to_array(v.global_position),
+				"segments": segs,
+			})
+	return out
+
+
+# Restore aquascape from a previously-saved array. Builds nodes with the
+# exact saved positions/colors/sizes — no procedural jitter.
+func _restore_aquascape(arr: Array) -> void:
+	if world == null:
+		return
+	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
+	var hardscape := world.get_node_or_null("Hardscape")
+	if hardscape == null:
+		hardscape = world
+	for entry in arr:
+		if not (entry is Dictionary):
+			continue
+		var kind: String = String(entry.get("kind", ""))
+		var tool: String = String(entry.get("tool", ""))
+		var pos: Vector3 = SaveHelpers.array_to_vec3(entry.get("pos", []), Vector3.ZERO)
+		if kind == "voxel":
+			var size: Vector3 = SaveHelpers.array_to_vec3(entry.get("size", []), Vector3(0.5, 0.5, 0.5))
+			var color: Color = SaveHelpers.array_to_color(entry.get("color", []), Color.WHITE)
+			var mi := MeshInstance3D.new()
+			var bm := BoxMesh.new()
+			bm.size = size
+			mi.mesh = bm
+			if voxel_mat_script != null:
+				mi.material_override = voxel_mat_script.make(color)
+			else:
+				var sm := StandardMaterial3D.new()
+				sm.albedo_color = color
+				mi.material_override = sm
+			world.add_child(mi)
+			mi.global_position = pos
+			mi.set_meta("aquascape_tool", tool)
+			_aquascape_placed.append(mi)
+		elif kind == "log":
+			var log_node := Node3D.new()
+			log_node.name = "AquaLog"
+			hardscape.add_child(log_node)
+			log_node.global_position = pos
+			for seg_entry in entry.get("segments", []):
+				if not (seg_entry is Dictionary):
+					continue
+				var seg := MeshInstance3D.new()
+				var bm := BoxMesh.new()
+				bm.size = SaveHelpers.array_to_vec3(seg_entry.get("size", []), Vector3(0.7, 0.6, 0.7))
+				seg.mesh = bm
+				var c: Color = SaveHelpers.array_to_color(seg_entry.get("color", []), Color.WHITE)
+				if voxel_mat_script != null:
+					seg.material_override = voxel_mat_script.make(c)
+				else:
+					var sm := StandardMaterial3D.new()
+					sm.albedo_color = c
+					seg.material_override = sm
+				log_node.add_child(seg)
+				seg.position = SaveHelpers.array_to_vec3(seg_entry.get("offset", []), Vector3.ZERO)
+			log_node.set_meta("aquascape_tool", tool)
+			_aquascape_placed.append(log_node)
+
+
 func _aquascape_undo() -> void:
 	if not _aquascape_mode:
 		return
@@ -1123,6 +1321,7 @@ func _aquascape_undo() -> void:
 		var v: Node3D = _aquascape_placed.pop_back()
 		if is_instance_valid(v):
 			v.queue_free()
+			_haptic(15)
 			return
 
 
@@ -1164,14 +1363,26 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 		_touches[ev.index] = ev.position
 		_touch_prev[ev.index] = ev.position
 		_touch_active = true
-		
+		# Keep the mobile HUD lit while the user is interacting.
+		if _mobile_hud != null and _mobile_hud.has_method("notify_input"):
+			_mobile_hud.notify_input()
+
 		if _touches.size() == 1:
 			# First finger: start tap / long-press timers.
 			_tap_start_time = Time.get_ticks_msec() / 1000.0
 			_tap_start_pos = ev.position
 			_tap_moved = 0.0
 			_long_press_fired = false
-			
+
+			# Edge-swipe from the right edge → opens settings. Only arm the
+			# tracker if the touch starts very close to the screen's right
+			# edge; the actual decision happens on lift in case the user
+			# changes their mind mid-drag.
+			var win_w: float = get_viewport().get_visible_rect().size.x
+			if not _aquascape_mode and ev.position.x >= win_w - EDGE_SWIPE_TRIGGER_PX:
+				_edge_swipe_active = true
+				_edge_swipe_start_x = ev.position.x
+
 			# Aquascape: start painting immediately on touch-down (like LMB).
 			if _aquascape_mode:
 				var picked: Node3D = _pick_wood_log(ev.position)
@@ -1185,15 +1396,20 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_paint_cooldown = 0.0
 					_aquascape_place(ev.position)
 		elif _touches.size() == 2:
-			# Second finger: record pinch baseline distance.
+			# Second finger: record pinch baseline distance + angle.
 			var positions: Array = _touches.values()
-			_pinch_distance = (positions[0] as Vector2).distance_to(positions[1] as Vector2)
+			var p0: Vector2 = positions[0] as Vector2
+			var p1: Vector2 = positions[1] as Vector2
+			_pinch_distance = p0.distance_to(p1)
+			_pinch_angle = (p1 - p0).angle()
 			# Cancel any pending tap / long-press — this is a multi-touch gesture.
 			_long_press_fired = true
 			# Cancel aquascape paint if we were in it — 2-finger means navigate.
 			if _drag_mode == "paint":
 				_drag_mode = ""
 			_wood_drag = null
+			# Cancel any in-flight edge swipe — multi-touch overrides it.
+			_edge_swipe_active = false
 	else:
 		# Finger up.
 		if ev.index == 0 and _touches.size() == 1:
@@ -1224,20 +1440,40 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_last_tap_pos = ev.position
 					_touch_pick_creature(ev.position)
 			
+			# Check for completed edge-swipe gesture: started near right edge,
+			# moved at least EDGE_SWIPE_MIN_PX to the left. Fire BEFORE we
+			# clear state so the trigger is unambiguous.
+			if _edge_swipe_active:
+				var dx: float = _edge_swipe_start_x - ev.position.x
+				if dx >= EDGE_SWIPE_MIN_PX:
+					_edge_swipe_active = false
+					if settings_panel != null and settings_panel.has_method("toggle"):
+						settings_panel.toggle()
+						_haptic(15)
+						# Treat the swipe as consumed — don't also reset camera
+						# via the tap/double-tap path.
+						_long_press_fired = true
+				else:
+					_edge_swipe_active = false
+
 			# End aquascape drag.
 			_wood_drag = null
 			_drag_mode = ""
-		
+
 		_touches.erase(ev.index)
 		_touch_prev.erase(ev.index)
 		if _touches.is_empty():
 			_touch_active = false
 			_pinch_distance = 0.0
+			_pinch_angle = 0.0
+			_edge_swipe_active = false
 
 
 func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 	_touches[ev.index] = ev.position
-	
+	if _mobile_hud != null and _mobile_hud.has_method("notify_input"):
+		_mobile_hud.notify_input()
+
 	# Track cumulative movement for tap detection.
 	if ev.index == 0:
 		_tap_moved += ev.relative.length()
@@ -1274,12 +1510,12 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 		_touch_prev[ev.index] = ev.position
 	
 	elif _touches.size() == 2:
-		# ---- Two fingers: pan + pinch zoom ----
+		# ---- Two fingers: pan + pinch zoom + twist rotate ----
 		_touch_prev[ev.index] = ev.position
 		var positions: Array = _touches.values()
 		var p0: Vector2 = positions[0] as Vector2
 		var p1: Vector2 = positions[1] as Vector2
-		
+
 		# Pinch zoom: compare current finger distance to previous frame.
 		var cur_dist: float = p0.distance_to(p1)
 		if _pinch_distance > 10.0:  # avoid division issues on initial frame
@@ -1287,10 +1523,28 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 			radius = clampf(radius * (1.0 - zoom_delta / 100.0), MIN_RADIUS, MAX_RADIUS)
 			_apply_camera()
 		_pinch_distance = cur_dist
-		
+
+		# Twist: angle between the two fingers. Apply the delta to yaw so a
+		# clockwise twist rotates the view clockwise (matches Maps/photo
+		# viewers). Skip the very first frame after the second finger lands
+		# because the previous angle was set on touch-down with both fingers
+		# already in place.
+		var cur_angle: float = (p1 - p0).angle()
+		var angle_delta: float = cur_angle - _pinch_angle
+		# Wrap to [-PI, PI] so a 359→1 jump becomes a small +2° delta.
+		if angle_delta > PI:
+			angle_delta -= TAU
+		elif angle_delta < -PI:
+			angle_delta += TAU
+		# Only act on substantial twists so accidental hand jitter doesn't
+		# spin the view while the user just wants to pan/zoom.
+		if absf(angle_delta) > 0.005 and absf(angle_delta) < 0.5:
+			yaw -= angle_delta * TWIST_SENSITIVITY
+			_apply_camera()
+		_pinch_angle = cur_angle
+
 		# 2-finger pan: average of both deltas.
 		if _touch_prev.size() == 2:
-			var prev_positions: Array = _touch_prev.values()
 			var avg_delta: Vector2 = ev.relative * 0.5  # approximate
 			_pan_target(avg_delta * (TOUCH_PAN_SENSITIVITY / PAN_MOUSE_SENSITIVITY))
 
@@ -1329,7 +1583,7 @@ func _setup_mobile_ui() -> void:
 	# Update the controls hint to show touch gestures instead of keyboard.
 	var hint: Label = get_node_or_null("ControlsHint")
 	if hint != null:
-		hint.text = "drag orbit · pinch zoom · 2-finger pan · tap creature · double-tap reset · long-press auto-orbit"
+		hint.text = "drag orbit · pinch zoom · 2-finger pan + twist · tap creature · double-tap reset · long-press auto-orbit · edge-swipe settings"
 	
 	# Wire up the MobileHUD node if it exists in the scene tree.
 	_mobile_hud = get_node_or_null("MobileHUD")
@@ -1338,6 +1592,11 @@ func _setup_mobile_ui() -> void:
 		_mobile_hud.connect("speed_pressed", _set_time_scale)
 		_mobile_hud.connect("photo_pressed", _take_photo)
 		_mobile_hud.connect("undo_pressed", _aquascape_undo)
+
+	# Show the first-launch gesture tutorial on top of everything else.
+	# Defers a frame so the panel doesn't fight with other mobile-setup
+	# layout passes for size/anchor positioning.
+	call_deferred("_maybe_show_tutorial")
 
 
 func _apply_camera() -> void:
@@ -1549,3 +1808,492 @@ func _day_label(p: float) -> String:
 	elif p < 0.5: return "dusk"
 	elif p < 0.875: return "night"
 	else: return "dawn"
+
+
+# ---- Back-to-menu navigation ----
+# The Menu button (top-left of main.tscn) saves the active tank and
+# transitions back to the tank picker. Also bound to Android's back button
+# via NOTIFICATION_WM_GO_BACK_REQUEST in _notification.
+func _on_back_to_menu() -> void:
+	if _save_restored:
+		save_active_tank()
+	_haptic(15)
+	get_tree().change_scene_to_file("res://tank_menu.tscn")
+
+
+# ---- Tank save / load orchestration ----
+# main.gd owns the file-level save/load because it has the SimDriver ref +
+# the aquascape voxel array. SimDriver covers everything sim-side; this
+# wrapper combines its dict with aquascape data, atomically writes JSON,
+# captures a thumbnail, and updates per-slot meta.
+
+# Periodic autosave cadence. 5 minutes of real time between disk writes —
+# frequent enough that a phone OS kill rarely loses more than a few minutes
+# of progress, infrequent enough that the cost is negligible.
+const AUTOSAVE_INTERVAL_S: float = 300.0
+var _autosave_accum: float = 0.0
+# True once we've successfully restored state (or determined there's nothing
+# to restore). Guards against running load_state twice.
+var _save_restored: bool = false
+# Sticky last-running time_scale: when the user pauses for aquascape or
+# manually, we save the previous non-zero value so the next session opens
+# at the speed they were playing at — not paused.
+var _save_pending_time_scale: float = 1.0
+
+
+func _try_load_saved_state() -> void:
+	if _save_restored:
+		return
+	_save_restored = true
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return
+	# world.gd already deleted incompatible state files before its spawn
+	# decision, but check again here so a race in autoload order can't
+	# resurrect a stale load.
+	if not saves.is_active_save_compatible():
+		return
+	var path: String = saves.state_path(int(saves.active_slot))
+	if not FileAccess.file_exists(path):
+		return
+	var d: Dictionary = saves.read_json(path)
+	if d.is_empty():
+		# Parse failed — likely corruption. Surface the prompt.
+		_show_corrupt_save_prompt(path)
+		return
+	if _sim != null and _sim.has_method("load_state"):
+		_sim.load_state(d)
+	# Aquascape lives outside the sim dict.
+	if d.has("aquascape"):
+		_restore_aquascape(d["aquascape"])
+	print_verbose("[vivarium] restored save from ", path)
+
+
+# Snapshot the world to disk. Called by:
+#   - the 5-minute periodic autosave
+#   - app focus-out (NOTIFICATION_APPLICATION_FOCUS_OUT)
+#   - the back-to-menu button
+#   - clean app quit
+# Skip if we're in the middle of aquascape mode (time_scale=0 from that path
+# would freeze the session at "paused" forever).
+func save_active_tank() -> void:
+	if _sim == null or not _sim.has_method("save_state"):
+		return
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return
+	# Don't write a paused-by-aquascape time_scale. Save the running speed
+	# the player chose so reload picks up at that speed.
+	var live_ts: float = float(_sim.time_scale)
+	if live_ts > 0.0:
+		_save_pending_time_scale = live_ts
+	var state_d: Dictionary = _sim.save_state()
+	state_d["sim"]["time_scale"] = _save_pending_time_scale
+	state_d["aquascape"] = _aquascape_to_save_arr()
+	var path: String = saves.state_path(int(saves.active_slot))
+	var err: int = saves.write_text_atomic(path, JSON.stringify(state_d, "  "))
+	if err != OK:
+		push_warning("[vivarium] save failed at %s: err %d" % [path, err])
+		return
+	# Capture a thumbnail for the menu card. Cheap — pulls the existing
+	# SubViewport texture, no extra rendering.
+	_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
+	# Update per-tank meta: accumulated runtime + last-opened.
+	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
+	if meta.is_empty():
+		meta = {
+			"name": "Tank %d" % int(saves.active_slot),
+			"runtime_s": 0,
+			"created_unix": int(Time.get_unix_time_from_system()),
+			"last_opened_unix": int(Time.get_unix_time_from_system()),
+		}
+	meta["runtime_s"] = int(_sim.elapsed_runtime_s) if _sim.get("elapsed_runtime_s") != null else int(meta.get("runtime_s", 0))
+	meta["last_opened_unix"] = int(Time.get_unix_time_from_system())
+	saves.update_tank_meta(int(saves.active_slot), meta)
+
+
+func _save_thumbnail(path: String) -> void:
+	if sub_viewport == null:
+		return
+	var img: Image = sub_viewport.get_texture().get_image()
+	if img == null:
+		return
+	# Downscale for storage; 480-wide gives a sharp menu card without taking
+	# 200KB per thumbnail.
+	var w: int = 480
+	var h: int = int(round(float(img.get_height()) * (float(w) / float(img.get_width()))))
+	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
+	img.save_png(path)
+
+
+# Show a modal prompt offering to start fresh or attempt the .bak file. Only
+# fires when state.json existed but failed to parse — corruption.
+func _show_corrupt_save_prompt(state_path: String) -> void:
+	var bak_path: String = state_path + ".bak"
+	var dialog := AcceptDialog.new()
+	if FileAccess.file_exists(bak_path):
+		dialog.dialog_text = "This tank's save file is corrupted.\nA backup is available."
+		dialog.add_button("Restore from backup", true, "restore_bak")
+		dialog.add_button("Start fresh", false, "start_fresh")
+	else:
+		dialog.dialog_text = "This tank's save file is corrupted and there's no backup.\nStarting fresh."
+	dialog.title = "Save file problem"
+	add_child(dialog)
+	dialog.custom_action.connect(func(action: StringName):
+		if String(action) == "restore_bak":
+			var saves := get_node_or_null("/root/TankSaves")
+			if saves != null:
+				var d: Dictionary = saves.read_json(bak_path)
+				if not d.is_empty() and _sim != null:
+					_sim.load_state(d)
+					if d.has("aquascape"):
+						_restore_aquascape(d["aquascape"])
+		dialog.queue_free())
+	dialog.confirmed.connect(func(): dialog.queue_free())
+	dialog.popup_centered()
+
+
+# ---- App-lifecycle: pause sim when backgrounded ----
+# Android (and other mobile OSes) keep the process running when the user
+# switches away, which means the sim would tick the whole time and drain
+# battery. We freeze time_scale on FOCUS_OUT and restore it on FOCUS_IN. The
+# pause is best-effort: if some other code (manual pause, aquascape) already
+# zeroed time_scale we leave it alone so we don't accidentally un-pause.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT \
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+		_on_focus_out()
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN \
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_IN:
+		_on_focus_in()
+	elif what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_persist_last_quit_unix()
+		if _save_restored:
+			save_active_tank()
+	elif what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		# Android system back button. Save and pop to the tank menu rather
+		# than letting the OS kill the activity outright.
+		_on_back_to_menu()
+
+
+func _on_focus_out() -> void:
+	# Remember when the user left so we can show a welcome-back toast on
+	# resume. Done on focus-out (rather than only on exit) because Android
+	# rarely sends a clean exit notification.
+	_persist_last_quit_unix()
+	# Snapshot tank state to disk. Best-effort — if it fails, we still want
+	# the lifecycle hooks to continue.
+	if _save_restored:
+		save_active_tank()
+	if _sim == null:
+		return
+	# Only freeze if the sim is currently running; if it was already paused
+	# don't store 0 as the "saved" value — we'd unpause on resume.
+	var ts: float = float(_sim.time_scale)
+	if ts > 0.0:
+		_focus_saved_time_scale = ts
+		_sim.time_scale = 0.0
+		_focus_paused = true
+
+
+func _on_focus_in() -> void:
+	if _sim == null or not _focus_paused:
+		return
+	_sim.time_scale = _focus_saved_time_scale
+	_focus_paused = false
+
+
+func _persist_last_quit_unix() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	cfg.last_quit_unix = int(Time.get_unix_time_from_system())
+	cfg.save_to_disk()
+
+
+# ---- Device tier pick (first mobile launch) ----
+# Cheap heuristic for picking an initial render scale: use the screen's
+# short-side pixel count. Phones report ~720-1200 short side; tablets are
+# 1200+. We only set device_tier once (when "") so the user's later choice
+# is preserved across launches. Render res is bumped on tablets only —
+# phones keep the current default that's already working well.
+func _pick_device_tier_if_unset() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	if String(cfg.device_tier) != "":
+		return  # already picked
+	var sz: Vector2i = DisplayServer.screen_get_size()
+	var short_side: int = min(sz.x, sz.y) if sz.x > 0 and sz.y > 0 else 0
+	if short_side >= 1500:
+		cfg.device_tier = "high"
+		# Bump render res so the tank fills the bigger tablet panel with
+		# more detail. Stays well within typical mobile GPU budgets.
+		cfg.render_width = 768
+		cfg.render_height = 432
+	elif short_side >= 900:
+		cfg.device_tier = "mid"
+	else:
+		cfg.device_tier = "low"
+		# Tiny / old phones: drop one notch so we stay smooth.
+		cfg.render_width = 384
+		cfg.render_height = 216
+	cfg.save_to_disk()
+	print_verbose("[vivarium] device_tier picked: %s (short side %d px)" % [cfg.device_tier, short_side])
+
+
+# ---- FPS cap (battery saver) ----
+func _apply_fps_cap() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	# First-mobile-launch default: if no cap is set, lock to 60 to save
+	# battery + thermals. User can override in settings (when wired up).
+	if _is_mobile() and int(cfg.fps_cap) == 0:
+		cfg.fps_cap = 60
+		cfg.save_to_disk()
+	if int(cfg.fps_cap) > 0:
+		Engine.max_fps = int(cfg.fps_cap)
+
+
+# ---- Welcome-back toast ----
+# Cheap floating Label that auto-fades after a few seconds. Doesn't
+# fast-forward the sim — that'd risk creature/state divergence. Players
+# accept a soft "you were away" message readily; sim time-skip would need
+# a more careful implementation.
+func _show_welcome_back_if_returning() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	var last_quit: int = int(cfg.last_quit_unix)
+	if last_quit <= 0:
+		return
+	var now: int = int(Time.get_unix_time_from_system())
+	var delta: int = now - last_quit
+	if delta < 30:
+		return  # ignore brief reloads
+	var msg: String = "Welcome back. You were away for %s." % _format_duration(delta)
+	_spawn_welcome_label(msg)
+
+
+func _spawn_welcome_label(text: String) -> void:
+	if _welcome_label != null and is_instance_valid(_welcome_label):
+		_welcome_label.queue_free()
+	var lab := Label.new()
+	lab.text = text
+	lab.add_theme_color_override("font_color", Color(1, 1, 0.85, 1))
+	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	lab.add_theme_constant_override("outline_size", 4)
+	lab.add_theme_font_size_override("font_size", 14 if _is_mobile() else 13)
+	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lab.anchor_left = 0.0
+	lab.anchor_right = 1.0
+	lab.anchor_top = 0.0
+	lab.anchor_bottom = 0.0
+	lab.offset_top = 64.0
+	lab.offset_bottom = 96.0
+	add_child(lab)
+	_welcome_label = lab
+	# Fade out after 4 seconds. Use a tween so the message gently disappears
+	# instead of yanking on/off.
+	var tw := create_tween()
+	tw.tween_interval(4.0)
+	tw.tween_property(lab, "modulate:a", 0.0, 1.5)
+	tw.tween_callback(func():
+		if is_instance_valid(lab):
+			lab.queue_free())
+
+
+func _format_duration(seconds: int) -> String:
+	if seconds < 60:
+		return "%d seconds" % seconds
+	if seconds < 3600:
+		return "%d min" % (seconds / 60)
+	if seconds < 86400:
+		var h: int = seconds / 3600
+		var m: int = (seconds % 3600) / 60
+		if m == 0:
+			return "%d hr" % h
+		return "%d hr %d min" % [h, m]
+	return "%d days" % (seconds / 86400)
+
+
+# ---- Haptic feedback ----
+# Short vibration on key actions (photo, undo, place, speed change). 15-30ms
+# is the "tactile click" range; longer than 50ms starts to feel annoying.
+# Input.vibrate_handheld is a no-op on desktop.
+func _haptic(duration_ms: int = 15) -> void:
+	if _is_mobile():
+		Input.vibrate_handheld(duration_ms)
+
+
+# ---- Tutorial overlay ----
+# Built on first mobile launch from main._setup_mobile_ui. A semi-transparent
+# panel with gesture hints and a single OK button that persists
+# tutorial_seen=true so it never returns. Doesn't block sim — user can
+# dismiss instantly or admire the tank behind it.
+func _maybe_show_tutorial() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or bool(cfg.tutorial_seen):
+		return
+	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
+		return
+	var overlay := Control.new()
+	overlay.anchor_right = 1.0
+	overlay.anchor_bottom = 1.0
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP  # block input behind
+	add_child(overlay)
+	# Dim background so the panel reads as a modal.
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.anchor_right = 1.0
+	bg.anchor_bottom = 1.0
+	overlay.add_child(bg)
+	# Centered panel with the gesture cheat-sheet.
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -200
+	panel.offset_top = -160
+	panel.offset_right = 200
+	panel.offset_bottom = 160
+	overlay.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Welcome to your tank"
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", Color(1, 0.9, 0.6, 1))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(title)
+	var hints: Array[String] = [
+		"• Drag to orbit",
+		"• Pinch to zoom",
+		"• Two-finger drag to pan",
+		"• Twist two fingers to rotate",
+		"• Tap a creature to follow",
+		"• Double-tap to reset view",
+		"• Long-press for auto-orbit",
+		"• Swipe in from right edge for settings",
+	]
+	for h in hints:
+		var lab := Label.new()
+		lab.text = h
+		lab.add_theme_color_override("font_color", Color(0.92, 0.94, 0.98, 1))
+		lab.add_theme_font_size_override("font_size", 14)
+		vb.add_child(lab)
+	var ok := Button.new()
+	ok.text = "Got it"
+	ok.custom_minimum_size = Vector2(0, 48)
+	ok.add_theme_font_size_override("font_size", 16)
+	ok.pressed.connect(func():
+		cfg.tutorial_seen = true
+		cfg.save_to_disk()
+		_haptic(12)
+		if is_instance_valid(overlay):
+			overlay.queue_free()
+		_tutorial_overlay = null)
+	vb.add_child(ok)
+	_tutorial_overlay = overlay
+
+
+# ---- Aquascape long-press radial menu (mobile only) ----
+# Shown when the user long-presses inside aquascape mode. 4 buttons arranged
+# around the finger position; tapping one selects the tool, tapping outside
+# (or on the same press release) dismisses. Replaces the auto-orbit
+# long-press gesture WHEN aquascape mode is active.
+func _show_radial_menu(center: Vector2) -> void:
+	_dismiss_radial_menu()
+	var overlay := Control.new()
+	overlay.anchor_right = 1.0
+	overlay.anchor_bottom = 1.0
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	# Tap on background dismisses without selecting.
+	overlay.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
+			_dismiss_radial_menu()
+		elif ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
+			_dismiss_radial_menu())
+	add_child(overlay)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.35)
+	bg.anchor_right = 1.0
+	bg.anchor_bottom = 1.0
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(bg)
+	# 4 tool buttons around the touch point. Lay out at 0/90/180/270 degrees.
+	var defs := [
+		{"key": "dirt",  "label": "dirt",  "angle": -PI / 2, "color": Color8(150, 110, 70)},
+		{"key": "stone", "label": "stone", "angle": 0.0,     "color": Color8(120, 120, 130)},
+		{"key": "wood",  "label": "wood",  "angle": PI / 2,  "color": Color8(95, 65, 35)},
+		{"key": "dig",   "label": "dig",   "angle": PI,      "color": Color8(220, 90, 90)},
+	]
+	var ring_radius: float = 90.0
+	var btn_size: Vector2 = Vector2(72, 56)
+	for def in defs:
+		var btn := Button.new()
+		btn.text = String(def["label"])
+		btn.custom_minimum_size = btn_size
+		btn.add_theme_font_size_override("font_size", 14)
+		btn.add_theme_color_override("font_color", def["color"])
+		var key: String = String(def["key"])
+		btn.pressed.connect(func():
+			_aquascape_tool = key
+			_refresh_tool_buttons()
+			_haptic(18)
+			_dismiss_radial_menu())
+		var angle: float = float(def["angle"])
+		var bx: float = center.x + cos(angle) * ring_radius - btn_size.x * 0.5
+		var by: float = center.y + sin(angle) * ring_radius - btn_size.y * 0.5
+		btn.anchor_left = 0.0
+		btn.anchor_top = 0.0
+		btn.anchor_right = 0.0
+		btn.anchor_bottom = 0.0
+		btn.offset_left = bx
+		btn.offset_top = by
+		btn.offset_right = bx + btn_size.x
+		btn.offset_bottom = by + btn_size.y
+		overlay.add_child(btn)
+	_radial_menu = overlay
+
+
+func _dismiss_radial_menu() -> void:
+	if _radial_menu != null and is_instance_valid(_radial_menu):
+		_radial_menu.queue_free()
+	_radial_menu = null
+
+
+# ---- Photo feedback toast ----
+# Lightweight Label that flashes in for 1.5s after a photo is taken so the
+# user gets visual confirmation. Mobile-only; desktop uses the existing
+# verbose log.
+func _show_photo_toast(path: String) -> void:
+	if not _is_mobile():
+		return
+	var lab := Label.new()
+	# Show just the filename, not the full path — useful but not noisy.
+	var name: String = path.get_file()
+	lab.text = "Photo saved: %s" % name
+	lab.add_theme_color_override("font_color", Color(0.85, 1.0, 0.85, 1))
+	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	lab.add_theme_constant_override("outline_size", 4)
+	lab.add_theme_font_size_override("font_size", 14)
+	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lab.anchor_left = 0.0
+	lab.anchor_right = 1.0
+	lab.anchor_top = 1.0
+	lab.anchor_bottom = 1.0
+	lab.offset_top = -120
+	lab.offset_bottom = -90
+	add_child(lab)
+	var tw := create_tween()
+	tw.tween_interval(1.5)
+	tw.tween_property(lab, "modulate:a", 0.0, 0.8)
+	tw.tween_callback(func():
+		if is_instance_valid(lab):
+			lab.queue_free())

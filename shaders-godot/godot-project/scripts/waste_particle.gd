@@ -26,6 +26,31 @@ var _life: float = 0.0
 var _settle_timer: float = 0.0
 
 
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	return {
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"nutrient_value": nutrient_value,
+		"substrate_top_y": substrate_top_y,
+		"kind": kind,
+		"settled": settled,
+		"life": _life,
+		"settle_timer": _settle_timer,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	# init() builds the visual + sets kind/value; we re-call it then patch
+	# the dynamic settle state.
+	init(float(d.get("nutrient_value", 0.2)),
+		float(d.get("substrate_top_y", 1.6)),
+		int(d.get("kind", KIND_FISH)))
+	settled = bool(d.get("settled", false))
+	_life = float(d.get("life", 0.0))
+	_settle_timer = float(d.get("settle_timer", 0.0))
+
+
 func init(value: float, top_y: float, particle_kind: int = KIND_FISH) -> void:
 	nutrient_value = value
 	substrate_top_y = top_y

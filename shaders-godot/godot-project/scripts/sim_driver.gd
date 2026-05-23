@@ -56,6 +56,26 @@ var _stats_timer: float = 0.0
 var _extinction_timer: float = 0.0
 var _auto_feed_timer: float = 0.0
 
+# ---- Save/load: stable per-entity IDs ----
+# instance_id() is not stable across sessions, so anything that needs a
+# saveable cross-reference (Fish.partner, Shrimp.partner, fish.target_plant,
+# brooding parents) gets a string id minted here. The counter advances on
+# every mint and is persisted in state.json so reloading doesn't recycle
+# ids that point to still-alive entities.
+var _next_entity_id: int = 1
+
+
+func mint_id() -> String:
+	var s: String = "e_" + str(_next_entity_id)
+	_next_entity_id += 1
+	return s
+
+
+# Total real-world seconds this tank has been running with focus. Persisted
+# in tanks/<slot>/meta.cfg and shown on the menu card. Ticked per real
+# frame (NOT scaled by time_scale — this measures user attention).
+var elapsed_runtime_s: float = 0.0
+
 # ---- Dissolved-O2 model ----
 # Tank-wide normalized scalar where 1.0 ≈ fully saturated, 0.0 = anoxic.
 # Filled by the active aeration fixture, replenished modestly by plant
@@ -103,6 +123,9 @@ func register_shrimp(s: Shrimp) -> void:
 
 
 func _physics_process(dt: float) -> void:
+	# Real-time runtime accumulator (unscaled — measures how long the user
+	# has had this tank open with focus). Used by the menu's "ran for X" line.
+	elapsed_runtime_s += dt
 	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
 	var sdt: float = dt * time_scale
 	_accum += sdt
@@ -666,3 +689,300 @@ func _emit_stats() -> void:
 	}
 	stats_changed.emit(s)
 	print_verbose("[vivarium] ", s)
+
+
+# ============================================================================
+# SAVE / LOAD
+# ============================================================================
+# save_state() walks every entity, mints ids where missing, and returns a
+# JSON-serializable Dictionary. load_state(d) does the inverse, spawning
+# entities in dependency order: substrate first, then plants (fish reference
+# plants for breeding), then creatures, then transient particles, then
+# resolving cross-references in a final pass.
+
+const SAVE_STATE_VERSION: int = 1
+
+
+func save_state() -> Dictionary:
+	# Mint ids for any entity that doesn't have one yet.
+	_ensure_ids()
+	# Substrate type is included in the sim header so we can detect saltwater
+	# ↔ freshwater swaps on load (those produce ecologically incompatible
+	# plant lists — corals can't live in freshwater, vice versa). If the
+	# loaded value doesn't match TankConfig.substrate_type at load time, the
+	# loader bails and lets world.gd do a fresh initial spawn instead.
+	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg_substrate: String = String(cfg.substrate_type) if cfg != null else ""
+	var out: Dictionary = {
+		"version": SAVE_STATE_VERSION,
+		"saved_unix": int(Time.get_unix_time_from_system()),
+		"sim": {
+			"time_scale": time_scale,
+			"day_phase": day_phase,
+			"tank_seed": tank_seed,
+			"dissolved_o2": dissolved_o2,
+			"aeration_air_rate": aeration_air_rate,
+			"aeration_flow_rate": aeration_flow_rate,
+			"aeration_fixture": aeration_fixture,
+			"elapsed_runtime_s": elapsed_runtime_s,
+			"next_entity_id": _next_entity_id,
+			"substrate_type": cfg_substrate,
+		},
+		"substrate": substrate.to_save_dict() if substrate != null else {},
+		"plants": [],
+		"fish": [],
+		"shrimp": [],
+		"snails": [],
+		"snail_eggs": [],
+		"fish_eggs": [],
+		"waste": [],
+		"algae": [],
+	}
+	for p in plants:
+		if is_instance_valid(p):
+			out["plants"].append(p.to_save_dict())
+	for f in fish:
+		if is_instance_valid(f):
+			out["fish"].append(f.to_save_dict())
+	for sh in shrimp:
+		if is_instance_valid(sh):
+			out["shrimp"].append(sh.to_save_dict())
+	if snails_root != null:
+		for sn in snails_root.get_children():
+			if not is_instance_valid(sn):
+				continue
+			# Snail eggs and adult snails both live under snails_root; tell
+			# them apart by script path. snail_egg has its own apply_save_dict
+			# but doesn't extend Snail.
+			var script: Script = sn.get_script()
+			var path: String = script.resource_path if script != null else ""
+			if path.ends_with("snail.gd"):
+				if sn.has_method("to_save_dict"):
+					out["snails"].append(sn.to_save_dict())
+			elif path.ends_with("snail_egg.gd"):
+				if sn.has_method("to_save_dict"):
+					out["snail_eggs"].append(sn.to_save_dict())
+	for e in eggs:
+		if is_instance_valid(e):
+			out["fish_eggs"].append(e.to_save_dict())
+	for w in waste:
+		if is_instance_valid(w):
+			out["waste"].append(w.to_save_dict())
+	for a in algae:
+		if is_instance_valid(a) and a.has_method("to_save_dict"):
+			out["algae"].append(a.to_save_dict())
+	return out
+
+
+# Assign a fresh id to any entity that hasn't been minted yet. Idempotent:
+# already-assigned ids are left untouched.
+func _ensure_ids() -> void:
+	for f in fish:
+		if is_instance_valid(f) and String(f.id) == "":
+			f.id = mint_id()
+	for s in shrimp:
+		if is_instance_valid(s) and String(s.id) == "":
+			s.id = mint_id()
+	for p in plants:
+		if is_instance_valid(p) and String(p.id) == "":
+			p.id = mint_id()
+	if snails_root != null:
+		for sn in snails_root.get_children():
+			if is_instance_valid(sn) and sn.get("id") != null and String(sn.id) == "":
+				sn.id = mint_id()
+
+
+# Restore the entire sim from a saved Dictionary. world.gd's `loading_from_save`
+# branch ensures _spawn_initial_* didn't run, so the scene is currently a
+# bare tank (glass, substrate grid, aeration). We populate it.
+func load_state(d: Dictionary) -> void:
+	if int(d.get("version", 0)) != SAVE_STATE_VERSION:
+		push_warning("[vivarium] save version mismatch; got %s, expected %d. Loading anyway." % [d.get("version"), SAVE_STATE_VERSION])
+
+	# 1. SimDriver scalars (these need to be set before entities tick).
+	var sim_d: Dictionary = d.get("sim", {})
+	day_phase = float(sim_d.get("day_phase", day_phase))
+	tank_seed = int(sim_d.get("tank_seed", tank_seed))
+	dissolved_o2 = float(sim_d.get("dissolved_o2", dissolved_o2))
+	aeration_air_rate = float(sim_d.get("aeration_air_rate", aeration_air_rate))
+	aeration_flow_rate = float(sim_d.get("aeration_flow_rate", aeration_flow_rate))
+	aeration_fixture = String(sim_d.get("aeration_fixture", aeration_fixture))
+	elapsed_runtime_s = float(sim_d.get("elapsed_runtime_s", 0.0))
+	_next_entity_id = int(sim_d.get("next_entity_id", _next_entity_id))
+
+	# 2. Substrate (re-init was already done by world; overwrite nutrients).
+	if substrate != null and d.has("substrate"):
+		substrate.apply_save_dict(d["substrate"])
+
+	# 3. Plants. Build the id→Node map as we go so post-load ref resolution
+	# can find them.
+	var id_map: Dictionary = {}
+	for plant_dict in d.get("plants", []):
+		var p: Plant = _spawn_plant_from_dict(plant_dict)
+		if p != null:
+			plants.append(p)
+			id_map[String(p.id)] = p
+
+	# 4. Algae.
+	for alga_dict in d.get("algae", []):
+		var a: Node = _spawn_algae_from_dict(alga_dict)
+		if a != null:
+			algae.append(a)
+
+	# 5. Fish.
+	for fish_dict in d.get("fish", []):
+		var f: Fish = _spawn_fish_from_dict(fish_dict)
+		if f != null:
+			fish.append(f)
+			id_map[String(f.id)] = f
+
+	# 6. Shrimp.
+	for sh_dict in d.get("shrimp", []):
+		var sh: Shrimp = _spawn_shrimp_from_dict(sh_dict)
+		if sh != null:
+			shrimp.append(sh)
+			id_map[String(sh.id)] = sh
+
+	# 7. Snails + snail eggs (children of snails_root).
+	for sn_dict in d.get("snails", []):
+		var sn: Node3D = _spawn_snail_from_dict(sn_dict)
+		if sn != null:
+			id_map[String(sn.id)] = sn
+	for se_dict in d.get("snail_eggs", []):
+		_spawn_snail_egg_from_dict(se_dict)
+
+	# 8. Fish eggs.
+	for egg_dict in d.get("fish_eggs", []):
+		var e: FishEgg = _spawn_fish_egg_from_dict(egg_dict)
+		if e != null:
+			eggs.append(e)
+
+	# 9. Waste.
+	for waste_dict in d.get("waste", []):
+		var w: WasteParticle = _spawn_waste_from_dict(waste_dict)
+		if w != null:
+			waste.append(w)
+
+	# 10. Cross-reference pass: resolve partner_id → partner Node refs.
+	_resolve_refs(d, id_map)
+
+	# 11. Finally, restore time_scale. We do this LAST because some entity
+	# init paths read time_scale and we want them to see a stable state.
+	time_scale = float(sim_d.get("time_scale", 1.0))
+
+
+# ---- Spawn helpers (one per entity type) ----
+
+func _spawn_plant_from_dict(d: Dictionary) -> Plant:
+	if plants_root == null:
+		return null
+	var subclass: String = String(d.get("subclass", "plant"))
+	var p: Plant = null
+	match subclass:
+		"spiral_plant":
+			p = SpiralPlant.new()
+		"branch_plant":
+			p = BranchPlant.new()
+		"coral":
+			p = Coral.new()
+		_:
+			p = Plant.new()
+	plants_root.add_child(p)
+	p.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	p.apply_save_dict(d)
+	return p
+
+
+func _spawn_algae_from_dict(d: Dictionary) -> Node:
+	if algae_root == null:
+		return null
+	var a := Algae.new()
+	algae_root.add_child(a)
+	a.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	a.apply_save_dict(d)
+	return a
+
+
+func _spawn_fish_from_dict(d: Dictionary) -> Fish:
+	if fauna_root == null:
+		return null
+	var f := Fish.new()
+	fauna_root.add_child(f)
+	f.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	f.sim = self
+	f.apply_save_dict(d)
+	return f
+
+
+func _spawn_shrimp_from_dict(d: Dictionary) -> Shrimp:
+	if fauna_root == null:
+		return null
+	var sh := Shrimp.new()
+	fauna_root.add_child(sh)
+	sh.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	sh.sim = self
+	sh.apply_save_dict(d)
+	return sh
+
+
+func _spawn_snail_from_dict(d: Dictionary) -> Node3D:
+	if snails_root == null:
+		return null
+	var snail_script := load("res://scripts/snail.gd")
+	if snail_script == null:
+		return null
+	var sn: Node3D = snail_script.new()
+	snails_root.add_child(sn)
+	sn.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	if sn.has_method("apply_save_dict"):
+		sn.apply_save_dict(d)
+	return sn
+
+
+func _spawn_snail_egg_from_dict(d: Dictionary) -> Node3D:
+	if snails_root == null:
+		return null
+	var egg_script := load("res://scripts/snail_egg.gd")
+	if egg_script == null:
+		return null
+	var se: Node3D = egg_script.new()
+	snails_root.add_child(se)
+	se.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	if se.has_method("apply_save_dict"):
+		se.apply_save_dict(d)
+	return se
+
+
+func _spawn_fish_egg_from_dict(d: Dictionary) -> FishEgg:
+	if fauna_root == null:
+		return null
+	var e := FishEgg.new()
+	fauna_root.add_child(e)
+	e.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	e.apply_save_dict(d)
+	return e
+
+
+func _spawn_waste_from_dict(d: Dictionary) -> WasteParticle:
+	if waste_root == null:
+		return null
+	var w := WasteParticle.new()
+	waste_root.add_child(w)
+	w.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	w.apply_save_dict(d)
+	return w
+
+
+# Second pass — every entity has been spawned and has its id assigned. Now
+# walk again and resolve cross-refs (partner_id strings → Node references).
+func _resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
+	var fish_saves: Array = saved.get("fish", [])
+	for i in mini(fish.size(), fish_saves.size()):
+		var f: Fish = fish[i]
+		if is_instance_valid(f) and f.has_method("resolve_refs"):
+			f.resolve_refs(fish_saves[i], id_map)
+	var shrimp_saves: Array = saved.get("shrimp", [])
+	for i in mini(shrimp.size(), shrimp_saves.size()):
+		var sh: Shrimp = shrimp[i]
+		if is_instance_valid(sh) and sh.has_method("resolve_refs"):
+			sh.resolve_refs(shrimp_saves[i], id_map)

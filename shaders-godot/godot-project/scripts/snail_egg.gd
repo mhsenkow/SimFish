@@ -23,6 +23,31 @@ var _age: float = 0.0
 var _hatched: bool = false
 
 
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	return {
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"wall_normal": SaveHelpers.vec3_to_array(wall_normal),
+		"wall_min": SaveHelpers.vec3_to_array(wall_min),
+		"wall_max": SaveHelpers.vec3_to_array(wall_max),
+		"inherited_shell_color": SaveHelpers.color_to_array(inherited_shell_color),
+		"inherited_shell_size": inherited_shell_size,
+		"inherited_generation": inherited_generation,
+		"age": _age,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	wall_normal = SaveHelpers.array_to_vec3(d.get("wall_normal", []), wall_normal)
+	wall_min = SaveHelpers.array_to_vec3(d.get("wall_min", []), wall_min)
+	wall_max = SaveHelpers.array_to_vec3(d.get("wall_max", []), wall_max)
+	inherited_shell_color = SaveHelpers.array_to_color(d.get("inherited_shell_color", []), inherited_shell_color)
+	inherited_shell_size = float(d.get("inherited_shell_size", inherited_shell_size))
+	inherited_generation = int(d.get("inherited_generation", 0))
+	_age = float(d.get("age", 0.0))
+
+
 func _ready() -> void:
 	_build_visual()
 

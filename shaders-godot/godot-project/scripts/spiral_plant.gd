@@ -83,6 +83,30 @@ func _grow_one() -> bool:
 	return true
 
 
+func _save_kind() -> String:
+	return "spiral_plant"
+
+
+func to_save_dict() -> Dictionary:
+	var d: Dictionary = super.to_save_dict()
+	d["max_horizontal_extent"] = max_horizontal_extent
+	d["tank_wall_margin"] = tank_wall_margin
+	d["radius_step"] = radius_step
+	d["height_step"] = height_step
+	d["radius_cap"] = radius_cap
+	return d
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	# Set subclass-specific fields BEFORE super so init() sees them.
+	max_horizontal_extent = float(d.get("max_horizontal_extent", max_horizontal_extent))
+	tank_wall_margin = float(d.get("tank_wall_margin", tank_wall_margin))
+	radius_step = float(d.get("radius_step", radius_step))
+	height_step = float(d.get("height_step", height_step))
+	radius_cap = float(d.get("radius_cap", radius_cap))
+	super.apply_save_dict(d)
+
+
 func top_world_y() -> float:
 	if voxels.is_empty():
 		return global_position.y

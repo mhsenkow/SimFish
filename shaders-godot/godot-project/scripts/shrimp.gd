@@ -123,9 +123,17 @@ var _bank: float = 0.0
 var sim: Node = null
 
 
+# ---- Save / load ----
+# Stable cross-session id and original-genome cache. See fish.gd for the
+# rationale — same pattern, applied to shrimp.
+var id: String = ""
+var _saved_genome: Dictionary = {}
+
+
 # ---- Setup ----
 
 func init_genome(genome: Dictionary) -> void:
+	_saved_genome = genome.duplicate(true)
 	species = genome.get("species", species)
 	base_color = genome.get("base_color", base_color)
 	accent_color = genome.get("accent_color", accent_color)
@@ -825,3 +833,89 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"substrate_top_y": substrate_top_y,
 		"generation": maxi(generation, other.generation) + 1,
 	}
+
+
+# ---- Save / load ----
+
+static func _genome_to_json(g: Dictionary) -> Dictionary:
+	var out: Dictionary = g.duplicate(true)
+	for key in ["base_color", "accent_color"]:
+		if out.has(key) and out[key] is Color:
+			out[key] = SaveHelpers.color_to_array(out[key])
+	return out
+
+
+static func _genome_from_json(g: Dictionary) -> Dictionary:
+	var out: Dictionary = g.duplicate(true)
+	for key in ["base_color", "accent_color"]:
+		if out.has(key) and out[key] is Array:
+			out[key] = SaveHelpers.array_to_color(out[key])
+	return out
+
+
+func to_save_dict() -> Dictionary:
+	return {
+		"id": id,
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"genome": _genome_to_json(_saved_genome),
+		# Dynamic state
+		"age": age,
+		"hunger": hunger,
+		"energy": energy,
+		"maturity": int(maturity),
+		"velocity": SaveHelpers.vec3_to_array(velocity),
+		"heading": SaveHelpers.vec3_to_array(heading),
+		"speed": speed,
+		"current_mode": int(current_mode),
+		"breed_cooldown": breed_cooldown,
+		"breed_count": breed_count,
+		"clutch_size": clutch_size,
+		"is_gravid": is_gravid,
+		"gravid_timer": gravid_timer,
+		"gravid_partner_genome": _genome_to_json(gravid_partner_genome),
+		"partner_id": _id_of(partner),
+		"court_timer": court_timer,
+		"growth_factor": growth_factor,
+		"generation": generation,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	id = String(d.get("id", id))
+	var g: Dictionary = _genome_from_json(d.get("genome", {}))
+	init_genome(g)
+	age = float(d.get("age", 0.0))
+	hunger = float(d.get("hunger", 0.3))
+	energy = float(d.get("energy", 1.0))
+	maturity = int(d.get("maturity", MATURITY_FRY))
+	velocity = SaveHelpers.array_to_vec3(d.get("velocity", []), Vector3.ZERO)
+	heading = SaveHelpers.array_to_vec3(d.get("heading", []), Vector3.FORWARD)
+	speed = float(d.get("speed", 0.0))
+	current_mode = int(d.get("current_mode", Mode.WANDER)) as Mode
+	breed_cooldown = float(d.get("breed_cooldown", 0.0))
+	breed_count = int(d.get("breed_count", 0))
+	clutch_size = int(d.get("clutch_size", clutch_size))
+	is_gravid = bool(d.get("is_gravid", false))
+	gravid_timer = float(d.get("gravid_timer", 0.0))
+	gravid_partner_genome = _genome_from_json(d.get("gravid_partner_genome", {}))
+	court_timer = float(d.get("court_timer", 0.0))
+	growth_factor = float(d.get("growth_factor", 1.0))
+	generation = int(d.get("generation", 0))
+	# Maturity-dependent scale needs to be re-applied since init_genome ran
+	# before we'd set the maturity.
+	scale = Vector3.ONE * _maturity_scale()
+	climb_target = null  # cheap to re-pick
+
+
+static func _id_of(n: Node) -> String:
+	if n == null or not is_instance_valid(n):
+		return ""
+	return String(n.get("id"))
+
+
+func resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
+	var pid: String = String(saved.get("partner_id", ""))
+	if pid != "" and id_map.has(pid):
+		var p: Node = id_map[pid]
+		if p is Shrimp and is_instance_valid(p):
+			partner = p

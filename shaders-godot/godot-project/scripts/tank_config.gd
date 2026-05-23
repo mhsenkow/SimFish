@@ -40,6 +40,20 @@ var camera_target_z: float = 0.0
 # A "do we have one saved?" flag - false on first launch means use defaults.
 var camera_state_saved: bool = false
 
+# ---- Mobile / device settings ----
+# Engine.max_fps cap. 0 = uncapped (desktop default). On mobile we default to 60
+# to keep battery + thermals reasonable; user can change via settings.
+var fps_cap: int = 0
+# Device tier guess - set once on first launch from screen size + DPI heuristic
+# (see main._auto_pick_device_tier). Used to set sensible initial render scale.
+# Values: "" (not yet picked), "low", "mid", "high".
+var device_tier: String = ""
+# True once the player has seen and dismissed the gesture tutorial overlay.
+var tutorial_seen: bool = false
+# Unix seconds at last clean quit. Used to show "you were away for X" on
+# resume. 0 = never quit cleanly (first launch).
+var last_quit_unix: int = 0
+
 # ---- Tank shape + dimensions ----
 # Glass + substrate geometry. Each shape clips substrate fill + spawn
 # regions appropriately so creatures don't appear outside the walls.
@@ -670,7 +684,20 @@ func current_substrate_profile() -> Dictionary:
 
 
 # Save/load via Godot's user settings file. Survives app restarts.
-const SAVE_PATH := "user://tank_config.cfg"
+#
+# Multi-tank: each tank slot has its own config.cfg under
+# user://tanks/<slot>/config.cfg. The TankSaves singleton owns the slot
+# layout and tells us which slot is active. Falls back to the legacy
+# single-file path on first launch (TankSaves' migration step copies the
+# old file into slot 1 so this is a tight backstop, not a hot path).
+const LEGACY_SAVE_PATH := "user://tank_config.cfg"
+
+
+func _current_save_path() -> String:
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return LEGACY_SAVE_PATH
+	return saves.config_path(int(saves.active_slot))
 
 
 func save_to_disk() -> void:
@@ -713,14 +740,23 @@ func save_to_disk() -> void:
 	cfg.set_value("camera", "target_x", camera_target_x)
 	cfg.set_value("camera", "target_y", camera_target_y)
 	cfg.set_value("camera", "target_z", camera_target_z)
-	cfg.save(SAVE_PATH)
+	cfg.set_value("mobile", "fps_cap", fps_cap)
+	cfg.set_value("mobile", "device_tier", device_tier)
+	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
+	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
+	cfg.save(_current_save_path())
 
 
 func load_from_disk() -> void:
 	var cfg := ConfigFile.new()
-	var err := cfg.load(SAVE_PATH)
+	var err := cfg.load(_current_save_path())
 	if err != OK:
-		return
+		# Fallback: legacy single-file path (in case TankSaves hasn't migrated
+		# yet — shouldn't happen in normal flow because autoloads load in
+		# declaration order, but cheap safety net).
+		err = cfg.load(LEGACY_SAVE_PATH)
+		if err != OK:
+			return
 	tank_half_w = cfg.get_value("tank", "half_w", tank_half_w)
 	tank_half_d = cfg.get_value("tank", "half_d", tank_half_d)
 	tank_height = cfg.get_value("tank", "height", tank_height)
@@ -759,7 +795,21 @@ func load_from_disk() -> void:
 	camera_target_x = cfg.get_value("camera", "target_x", camera_target_x)
 	camera_target_y = cfg.get_value("camera", "target_y", camera_target_y)
 	camera_target_z = cfg.get_value("camera", "target_z", camera_target_z)
+	fps_cap = cfg.get_value("mobile", "fps_cap", fps_cap)
+	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
+	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
+	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
 
 
 func _ready() -> void:
+	load_from_disk()
+
+
+# Switch the live config to a different tank slot. Called by the menu when
+# the player opens a tank — sets the active slot on TankSaves, then reloads
+# all fields from that slot's config.cfg.
+func switch_to_slot(slot: int) -> void:
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves != null:
+		saves.set_active(slot)
 	load_from_disk()

@@ -12,11 +12,12 @@ config_version=5
 
 config/name="Vivarium"
 config/description="Generative pixel-art aquarium. 3D voxel content rendered through palette-quantized 384x216 SubViewport."
-run/main_scene="res://main.tscn"
+run/main_scene="res://tank_menu.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
 
 [autoload]
 
+TankSaves="*res://scripts/tank_saves.gd"
 TankConfig="*res://scripts/tank_config.gd"
 
 [display]
@@ -24,6 +25,7 @@ TankConfig="*res://scripts/tank_config.gd"
 window/size/viewport_width=1536
 window/size/viewport_height=864
 window/stretch/mode="viewport"
+window/handheld/orientation=4
 
 [rendering]
 
@@ -32,8 +34,3 @@ renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.05, 0.04, 0.07, 1)
 2d/snap/snap_2d_transforms_to_pixel=true
-
-[input_devices]
-
-pointing/emulate_mouse_from_touch=true
-pointing/emulate_touch_from_mouse=false

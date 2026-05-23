@@ -155,29 +155,50 @@ func _ready() -> void:
 	_build_light_fixture()
 	await get_tree().process_frame
 
+	# When the active tank has a saved state.json AND that save is compatible
+	# with the current tank settings (specifically substrate type — saltwater
+	# saves can't restore into a freshwater tank because corals and freshwater
+	# plants aren't interchangeable), skip the procedural stocking entirely.
+	# SimDriver.load_state() will restock from disk right after _ready
+	# completes. If the save is INCOMPATIBLE (substrate type changed between
+	# sessions), we silently delete it and run the initial spawn instead —
+	# the user's substrate choice wins.
+	var saves := get_node_or_null("/root/TankSaves")
+	var loading_from_save: bool = false
+	if saves != null:
+		if saves.has_state_for_active_slot() and not saves.is_active_save_compatible():
+			var cfg_for_log := get_node_or_null("/root/TankConfig")
+			var cur_sub: String = String(cfg_for_log.substrate_type) if cfg_for_log != null else "?"
+			print_verbose("[vivarium] save substrate mismatch (saved=%s, current=%s); discarding state.json" % [
+				saves.peek_saved_substrate_type(), cur_sub,
+			])
+			saves.clear_active_state()
+		loading_from_save = saves.has_state_for_active_slot()
+
 	# Saltwater branch: ocean_sand substrate replaces freshwater plants
 	# with a reef of corals. Floaters / lily pads / math plants don't
 	# exist in saltwater either (they're freshwater forms) so we skip
 	# them entirely. Shrimp are also skipped further down via the same
 	# is_saltwater check.
-	if bool(_active_substrate_profile.get("is_saltwater", false)):
-		await _spawn_initial_corals()
-		await get_tree().process_frame
-	else:
-		await _spawn_initial_plants()
-		await get_tree().process_frame
+	if not loading_from_save:
+		if bool(_active_substrate_profile.get("is_saltwater", false)):
+			await _spawn_initial_corals()
+			await get_tree().process_frame
+		else:
+			await _spawn_initial_plants()
+			await get_tree().process_frame
 
-		_spawn_floaters()
-		_spawn_lily_pads()
-		_spawn_math_plants()
-		await get_tree().process_frame
+			_spawn_floaters()
+			_spawn_lily_pads()
+			_spawn_math_plants()
+			await get_tree().process_frame
 
-	await _spawn_initial_fish()
-	if bool(_active_substrate_profile.get("is_saltwater", false)):
-		await _spawn_marine_shrimp()
-	else:
-		await _spawn_initial_shrimp()
-	await get_tree().process_frame
+		await _spawn_initial_fish()
+		if bool(_active_substrate_profile.get("is_saltwater", false)):
+			await _spawn_marine_shrimp()
+		else:
+			await _spawn_initial_shrimp()
+		await get_tree().process_frame
 
 	_spawn_aeration_system()
 	_spawn_mulm_layer()

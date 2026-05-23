@@ -144,6 +144,82 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_grow_one()
 
 
+# ---- Save / load ----
+
+# Subclass identifier — the loader uses this to instantiate the right script.
+# Subclasses override; base Plant returns "plant".
+func _save_kind() -> String:
+	return "plant"
+
+
+# Stable cross-session id (see fish.gd). Plants are referenced by
+# fish.target_plant during nibble cycles but we don't currently restore that
+# ref — kept here for future-proofing and consistency.
+var id: String = ""
+
+
+func to_save_dict() -> Dictionary:
+	return {
+		"subclass": _save_kind(),
+		"id": id,
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"init_params": {
+			"max_height": max_height,
+			"growth_rate": growth_rate,
+			"nutrient_demand": nutrient_demand,
+			"sway_amplitude": sway_amplitude,
+			"leaf_form": leaf_form,
+			"leaf_length": leaf_length,
+			"max_roots": _max_roots,
+		},
+		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
+		"water_surface_y": water_surface_y,
+		"current_height": current_height,
+		"growth_progress": growth_progress,
+		"has_flower": has_flower,
+		"has_emerged": has_emerged,
+		"seed_timer": seed_timer,
+		"health": health,
+		"_health_smooth": _health_smooth,
+		"flower_stage": int(flower_stage),
+		"_flower_timer": _flower_timer,
+		"_flower_open_frac": _flower_open_frac,
+		"_flower_petal_color": SaveHelpers.color_to_array(_flower_petal_color),
+		"_flower_center_color": SaveHelpers.color_to_array(_flower_center_color),
+		"is_dying": is_dying,
+		"generation": generation,
+	}
+
+
+# Restore the plant's full state. Caller (SimDriver.load_state) has already
+# add_child'd this node and set its global_position, so we don't touch position
+# here — we use the saved position to verify but the node is already placed.
+func apply_save_dict(d: Dictionary) -> void:
+	id = String(d.get("id", id))
+	# ramp_override must be set BEFORE init() because the voxel-color path
+	# reads from it as each voxel is built.
+	ramp_override = SaveHelpers.array_to_colors(d.get("ramp_override", []))
+	water_surface_y = float(d.get("water_surface_y", water_surface_y))
+	# Rebuild voxels at the saved height in one shot.
+	var params: Dictionary = d.get("init_params", {})
+	var h: int = int(d.get("current_height", 1))
+	init(h, params)
+	# Patch dynamic state AFTER init so init() doesn't clobber it.
+	growth_progress = float(d.get("growth_progress", 0.0))
+	has_flower = bool(d.get("has_flower", false))
+	has_emerged = bool(d.get("has_emerged", false))
+	seed_timer = float(d.get("seed_timer", 0.0))
+	health = float(d.get("health", 1.0))
+	_health_smooth = float(d.get("_health_smooth", health))
+	flower_stage = int(d.get("flower_stage", 0)) as FlowerStage
+	_flower_timer = float(d.get("_flower_timer", 0.0))
+	_flower_open_frac = float(d.get("_flower_open_frac", 0.0))
+	_flower_petal_color = SaveHelpers.array_to_color(d.get("_flower_petal_color", []), _flower_petal_color)
+	_flower_center_color = SaveHelpers.array_to_color(d.get("_flower_center_color", []), _flower_center_color)
+	is_dying = bool(d.get("is_dying", false))
+	generation = int(d.get("generation", 0))
+
+
 func _ready() -> void:
 	_phase = float(get_instance_id() % 1000) * 0.013
 	_world_pos = global_position

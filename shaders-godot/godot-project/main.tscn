@@ -238,6 +238,16 @@ offset_bottom = 32.0
 tooltip_text = "Follow portal (C)"
 text = "👁 PiP"
 
+[node name="MenuButton" type="Button" parent="."]
+anchor_left = 0.0
+anchor_top = 0.0
+offset_left = 16.0
+offset_top = 8.0
+offset_right = 80.0
+offset_bottom = 32.0
+tooltip_text = "Save and return to tank menu"
+text = "≡ Menu"
+
 [node name="AquascapeToolPalette" type="PanelContainer" parent="."]
 visible = false
 anchor_left = 0.5

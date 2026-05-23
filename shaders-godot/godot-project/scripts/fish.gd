@@ -332,6 +332,17 @@ var linear_accel: float = 2.5    # units/sec^2 - how fast speed changes
 # ---- Refs ----
 var sim: Node = null
 
+# ---- Save/load ----
+# Stable cross-session id minted by SimDriver. Used to resolve partner / target
+# refs after a load. Empty string means "not yet assigned" — first save will
+# fill it.
+var id: String = ""
+# Cached original genome dict that was passed to init_genome. We re-apply this
+# on restore so dimorphic transformations + body_shape derivations run again
+# from the same starting point (saving the post-transformation fields and
+# replaying init_genome on them would double-transform).
+var _saved_genome: Dictionary = {}
+
 
 func _ready() -> void:
 	heading_offset = Vector3(
@@ -358,6 +369,10 @@ func _ready() -> void:
 # ---- Setup ----
 
 func init_genome(genome: Dictionary) -> void:
+	# Cache the genome that built this fish so we can replay init_genome on
+	# load. We duplicate(true) so later mutation by the caller doesn't reach
+	# back into our cached copy.
+	_saved_genome = genome.duplicate(true)
 	# mixed_morphs (reef tank): each individual rolls a fresh tropical
 	# colour + body + pattern + tail combo at spawn so a single species
 	# entry produces a school that reads as a mixed reef community
@@ -366,6 +381,9 @@ func init_genome(genome: Dictionary) -> void:
 	# rest of init_genome reads from.
 	if bool(genome.get("mixed_morphs", false)):
 		_apply_mixed_morph_jitter(genome)
+		# Re-cache after jitter so the post-jitter genome (specific colour /
+		# body roll for THIS fish) is what we replay on restore.
+		_saved_genome = genome.duplicate(true)
 	species = genome.get("species", species)
 	base_color = genome.get("base_color", base_color)
 	accent_color = genome.get("accent_color", accent_color)
@@ -2225,3 +2243,110 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"body_shape": body_shape,
 	}
 	return g
+
+
+# ---- Save / load ----
+
+# Convert all Color-valued genome entries to JSON-friendly Arrays. Used both
+# when saving and as a static utility from the loader side.
+static func _genome_to_json(g: Dictionary) -> Dictionary:
+	var out: Dictionary = g.duplicate(true)
+	for key in ["base_color", "accent_color", "tail_color"]:
+		if out.has(key) and out[key] is Color:
+			out[key] = SaveHelpers.color_to_array(out[key])
+	return out
+
+
+static func _genome_from_json(g: Dictionary) -> Dictionary:
+	var out: Dictionary = g.duplicate(true)
+	for key in ["base_color", "accent_color", "tail_color"]:
+		if out.has(key) and out[key] is Array:
+			out[key] = SaveHelpers.array_to_color(out[key])
+	return out
+
+
+func to_save_dict() -> Dictionary:
+	return {
+		"id": id,
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"genome": _genome_to_json(_saved_genome),
+		# Dynamic state. velocity + heading are derived from each other in
+		# the locomotion code, so we save both for fidelity; speed is the
+		# magnitude. partner_id is resolved post-load by SimDriver._resolve_refs.
+		"age": age,
+		"hunger": hunger,
+		"energy": energy,
+		"stress": stress,
+		"maturity": int(maturity),
+		"velocity": SaveHelpers.vec3_to_array(velocity),
+		"heading": SaveHelpers.vec3_to_array(heading),
+		"speed": speed,
+		"current_mode": int(current_mode),
+		"breed_cooldown": breed_cooldown,
+		"nibble_cooldown": nibble_cooldown,
+		"breed_count": breed_count,
+		"growth_factor": growth_factor,
+		"heading_offset": SaveHelpers.vec3_to_array(heading_offset),
+		"partner_id": _id_of(partner),
+		"court_timer": court_timer,
+		"brooding_at": SaveHelpers.vec3_to_array(brooding_at),
+		"brooding_remaining": brooding_remaining,
+		"burst_remaining": burst_remaining,
+		"home": [home_x, home_y, home_z],
+	}
+
+
+# Restore a fish from a saved dict. Caller has already add_child'd this node
+# and assigned its global_position. partner ref is resolved by SimDriver in
+# a second pass after every entity has its id assigned.
+func apply_save_dict(d: Dictionary) -> void:
+	id = String(d.get("id", id))
+	# Replay init_genome with the saved genome — this re-derives all the
+	# phenotype fields including the dimorphic transformation.
+	var g: Dictionary = _genome_from_json(d.get("genome", {}))
+	init_genome(g)
+	# Patch dynamic state AFTER init so init_genome doesn't clobber it.
+	age = float(d.get("age", 0.0))
+	hunger = float(d.get("hunger", 0.3))
+	energy = float(d.get("energy", 1.0))
+	stress = float(d.get("stress", 0.0))
+	maturity = int(d.get("maturity", MATURITY_FRY))
+	velocity = SaveHelpers.array_to_vec3(d.get("velocity", []), Vector3.ZERO)
+	heading = SaveHelpers.array_to_vec3(d.get("heading", []), Vector3.FORWARD)
+	speed = float(d.get("speed", 0.0))
+	current_mode = int(d.get("current_mode", Mode.CRUISE)) as Mode
+	breed_cooldown = float(d.get("breed_cooldown", 0.0))
+	nibble_cooldown = float(d.get("nibble_cooldown", 0.0))
+	breed_count = int(d.get("breed_count", 0))
+	growth_factor = float(d.get("growth_factor", 1.0))
+	heading_offset = SaveHelpers.array_to_vec3(d.get("heading_offset", []), Vector3.ZERO)
+	court_timer = float(d.get("court_timer", 0.0))
+	brooding_at = SaveHelpers.array_to_vec3(d.get("brooding_at", []), Vector3.ZERO)
+	brooding_remaining = float(d.get("brooding_remaining", 0.0))
+	burst_remaining = float(d.get("burst_remaining", 0.0))
+	var home: Array = d.get("home", [])
+	if home.size() >= 3:
+		home_x = float(home[0])
+		home_y = float(home[1])
+		home_z = float(home[2])
+	# Transient refs are NOT restored — they're cheap to re-pick next tick
+	# and trying to resolve them across saves is fragile (the plant might
+	# have just been nibbled to death). Clear them so the AI starts fresh.
+	target_plant = null
+
+
+static func _id_of(n: Node) -> String:
+	if n == null or not is_instance_valid(n):
+		return ""
+	return String(n.get("id"))
+
+
+# Second-pass ref resolution. Called by SimDriver._resolve_refs after every
+# entity has been spawned and registered in id_map. Maps the saved partner_id
+# string back into a Fish reference.
+func resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
+	var pid: String = String(saved.get("partner_id", ""))
+	if pid != "" and id_map.has(pid):
+		var p: Node = id_map[pid]
+		if p is Fish and is_instance_valid(p):
+			partner = p

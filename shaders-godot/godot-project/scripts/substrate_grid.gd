@@ -116,3 +116,45 @@ func total_above_baseline() -> float:
 		for z in cells_z:
 			sum += maxf(0.0, nutrients[x][z] - _active_baseline())
 	return sum
+
+
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	# Pack the 2D nutrient array as a flat float list so JSON encoding stays
+	# small (no nested array headers per row). cells_x/cells_z let us
+	# re-shape on load.
+	var flat: PackedFloat32Array = PackedFloat32Array()
+	flat.resize(cells_x * cells_z)
+	for x in cells_x:
+		for z in cells_z:
+			flat[x * cells_z + z] = nutrients[x][z]
+	return {
+		"cells_x": cells_x,
+		"cells_z": cells_z,
+		"cell_size": cell_size,
+		"origin": [origin.x, origin.y, origin.z],
+		"baseline_override": baseline_override,
+		"reservoir_leak_override": reservoir_leak_override,
+		"nutrients_flat": Array(flat),
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	# Caller has already called init() with the tank's current dimensions, so
+	# our grid exists with the right shape. We just overwrite the nutrient
+	# values. If the saved grid was a different size (player resized the
+	# tank between sessions, which shouldn't happen but defensively), we
+	# copy only the overlapping cells.
+	baseline_override = float(d.get("baseline_override", baseline_override))
+	reservoir_leak_override = float(d.get("reservoir_leak_override", reservoir_leak_override))
+	var sx: int = int(d.get("cells_x", cells_x))
+	var sz: int = int(d.get("cells_z", cells_z))
+	var flat: Array = d.get("nutrients_flat", [])
+	if flat.size() < sx * sz:
+		return  # malformed
+	var copy_x: int = mini(cells_x, sx)
+	var copy_z: int = mini(cells_z, sz)
+	for x in copy_x:
+		for z in copy_z:
+			nutrients[x][z] = float(flat[x * sz + z])

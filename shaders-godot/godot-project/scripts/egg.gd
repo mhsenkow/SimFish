@@ -22,6 +22,32 @@ func init(genome_dict: Dictionary) -> void:
 	_build_visual()
 
 
+# ---- Save / load ----
+
+func to_save_dict() -> Dictionary:
+	# Genome may contain Color values — convert to arrays for JSON.
+	var g: Dictionary = genome.duplicate(true)
+	for key in ["base_color", "accent_color", "tail_color"]:
+		if g.has(key) and g[key] is Color:
+			g[key] = SaveHelpers.color_to_array(g[key])
+	return {
+		"pos": SaveHelpers.vec3_to_array(global_position),
+		"species": species,
+		"genome": g,
+		"age": _age,
+	}
+
+
+func apply_save_dict(d: Dictionary) -> void:
+	species = String(d.get("species", species))
+	var g: Dictionary = d.get("genome", {})
+	for key in ["base_color", "accent_color", "tail_color"]:
+		if g.has(key) and g[key] is Array:
+			g[key] = SaveHelpers.array_to_color(g[key])
+	init(g)
+	_age = float(d.get("age", 0.0))
+
+
 func _build_visual() -> void:
 	# A cluster of 3-5 tiny pale-orange/yellow eggs.
 	_wobble_pivot = Node3D.new()
