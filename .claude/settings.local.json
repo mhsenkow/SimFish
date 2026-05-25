@@ -159,7 +159,9 @@
       "Bash(/Applications/Godot.app/Contents/MacOS/Godot --path /Users/powerox/iAquarium/shaders-godot/godot-project)",
       "Bash(tee /tmp/godot-run.log)",
       "Bash(pkill -f \"Godot.app/Contents/MacOS/Godot\")",
-      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit-after 3)"
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit-after 3)",
+      "Bash(gh run *)",
+      "Bash(grep -n '^\\\\s*\"\\\\w\\\\+\":\\\\s*{$\\\\|\"label\"\\\\|\"description\"' /Users/powerox/iAquarium/shaders-godot/godot-project/scripts/tank_config.gd)"
     ]
   }
 }

@@ -183,20 +183,46 @@ func peek_saved_substrate_type() -> String:
 	return String(sim_d.get("substrate_type", ""))
 
 
-# True when state.json exists AND its substrate_type matches the current
-# active TankConfig — i.e. the save is safe to restore. False otherwise
-# (no save, malformed save, or substrate mismatch). World.gd uses this to
-# decide between "skip initial spawn + load_state" vs "do initial spawn".
+# Same as peek_saved_substrate_type, but for tank_preset. Returns "" if the
+# save predates the preset-in-header change (in which case the preset check
+# in is_active_save_compatible is skipped — we don't want to invalidate
+# legacy saves that just don't carry the field yet).
+func peek_saved_preset() -> String:
+	var path: String = state_path(active_slot)
+	if not FileAccess.file_exists(path):
+		return ""
+	var d: Dictionary = read_json(path)
+	var sim_d: Dictionary = d.get("sim", {})
+	return String(sim_d.get("tank_preset", ""))
+
+
+# True when state.json exists AND it's safe to restore into the current
+# TankConfig. False when there's no save, the save is malformed, or it
+# conflicts with the active tank in a way that would produce nonsense
+# (substrate mismatch, preset mismatch, or ecology mismatch). World.gd
+# uses this to decide between "skip initial spawn + load_state" vs
+# "do initial spawn".
 func is_active_save_compatible() -> bool:
 	if not has_state_for_active_slot():
 		return false
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return true  # can't validate, assume OK
+	# Substrate mismatch — the original compatibility check. Saltwater corals
+	# in a freshwater tank (or vice versa) make no ecological sense.
 	var cur: String = String(cfg.substrate_type)
 	var saved: String = peek_saved_substrate_type()
-	# Explicit match check (new saves write substrate_type).
 	if saved != "" and saved != cur:
+		return false
+	# Preset mismatch — if the player switched stocking presets (e.g.
+	# Community → Tetra School) the saved fish list is stale. Without this
+	# check, hitting Apply after a preset change reloaded the OLD fish and
+	# the new preset's stocking never spawned, which read as "the preset
+	# dropdown doesn't change anything". Empty saved_preset means a legacy
+	# save predating this field — skip the check rather than invalidate it.
+	var cur_preset: String = String(cfg.tank_preset)
+	var saved_preset: String = peek_saved_preset()
+	if saved_preset != "" and saved_preset != cur_preset:
 		return false
 	# Ecological fallback (catches legacy saves that don't have substrate_type
 	# in the file header). If the current substrate is saltwater but the

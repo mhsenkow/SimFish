@@ -231,9 +231,17 @@ func _build_ui() -> void:
 	# Read-only listing showing which species in the library hunt what. Lets
 	# the player understand WHY their puffer is eating their snails or their
 	# cory is grazing algae rather than pellets — and pick presets accordingly.
+	# Built as a RichTextLabel so the trophic / habitat / size tags can be
+	# color-tinted; the previous plain-Label version produced lines that
+	# read identically (e.g. all "omnivore, mid-water") for half the library.
 	_add_section(vbox, "Species & diet")
-	var diet_chart := PanelTheme.make_description()
-	diet_chart.add_theme_color_override("font_color", Color(0.86, 0.90, 0.96, 0.92))
+	var diet_chart := RichTextLabel.new()
+	diet_chart.bbcode_enabled = true
+	diet_chart.fit_content = true
+	diet_chart.scroll_active = false
+	diet_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
+	diet_chart.add_theme_font_size_override("normal_font_size", 11)
 	diet_chart.text = _build_diet_chart()
 	vbox.add_child(diet_chart)
 
@@ -461,37 +469,96 @@ func _sync_substrate_dropdown() -> void:
 
 
 func _build_diet_chart() -> String:
-	# Compose a per-species diet summary by iterating the species library.
-	# Each line lists the species label + a short tag bag like
-	# "[snail-hunter] [algae-grazer] [herbivore]". Read directly from
-	# SPECIES_LIBRARY so adding a new species in the library shows up here
-	# automatically.
-	var lines: Array[String] = []
+	# Per-species diet summary, sorted by water-column position so the
+	# eye walks top→bottom of the tank as it reads the list. Each line
+	# is BBCode-tinted: the species label in a neutral tone, then a
+	# trophic chip (green/yellow/red), then habitat + size/social tags
+	# in muted gray. Without the extra size + schooling dimensions, half
+	# the library (glassdart, danio, guppy, angelfish, reef_fish) all
+	# collapsed to "omnivore, mid-water" and looked identical here.
+	var c_herb := "#86c084"
+	var c_omni := "#d6b070"
+	var c_carn := "#e07070"
+	var c_special := "#e0c060"  # snail-hunter / algae-grazer
+	var c_dim := "#9aa8c8"
+	var entries: Array = []
 	for key in TankConfig.SPECIES_LIBRARY.keys():
 		var entry: Dictionary = TankConfig.SPECIES_LIBRARY[key]
-		var label: String = entry.get("label", key)
 		var g: Dictionary = entry.get("genome", {})
-		var tags: Array[String] = []
-		var herb: float = float(g.get("herbivory", 0.0))
-		if herb >= 0.9:
-			tags.append("herbivore")
-		elif herb >= 0.4:
-			tags.append("omnivore")
-		else:
-			tags.append("carnivore")
-		if bool(g.get("snail_predator", false)):
-			tags.append("snail-hunter")
-		if bool(g.get("algae_grazer", false)):
-			tags.append("algae-grazer")
-		# Surface / mid / bottom water column hint via preferred_y.
 		var py: float = float(g.get("preferred_y", 3.5))
-		if py >= 4.8:
-			tags.append("surface")
-		elif py <= 2.5:
-			tags.append("bottom")
+		entries.append({"key": key, "label": entry.get("label", key), "g": g, "py": py})
+	# Sort surface → bottom so the chart reads like a tank cross-section.
+	entries.sort_custom(func(a, b): return float(a["py"]) > float(b["py"]))
+
+	var lines: Array[String] = []
+	for e in entries:
+		var label: String = String(e["label"])
+		var g: Dictionary = e["g"]
+		var py: float = float(e["py"])
+
+		# Trophic chip — color = diet category.
+		var herb: float = float(g.get("herbivory", 0.0))
+		var trophic: String
+		if herb >= 0.9:
+			trophic = "[color=%s]herbivore[/color]" % c_herb
+		elif herb >= 0.4:
+			trophic = "[color=%s]omnivore[/color]" % c_omni
 		else:
-			tags.append("mid-water")
-		lines.append("• %s  —  %s" % [label, ", ".join(tags)])
+			trophic = "[color=%s]carnivore[/color]" % c_carn
+
+		# Habitat (water column).
+		var habitat: String
+		if py >= 4.8:
+			habitat = "surface"
+		elif py <= 2.5:
+			habitat = "bottom"
+		else:
+			habitat = "mid"
+
+		# Size class — uses adult_voxel_scale because it's the field that
+		# actually drives rendered fish size. Distinguishes tiny guppies
+		# from large angelfish even when their other tags collide.
+		var sz: float = float(g.get("adult_voxel_scale", 0.18))
+		var size_class: String
+		if sz < 0.14:
+			size_class = "tiny"
+		elif sz < 0.20:
+			size_class = "small"
+		elif sz < 0.25:
+			size_class = "medium"
+		else:
+			size_class = "large"
+
+		# Social mode — schooling vs. solitary. Driven by schooling_strength
+		# which the brain uses for flock cohesion. Adds visible variation
+		# between schoolers (glassdart, danio) and loners (betta, puffer).
+		var sch: float = float(g.get("schooling_strength", 0.5))
+		var social: String
+		if sch >= 1.2:
+			social = "school"
+		elif sch >= 0.5:
+			social = "shoal"
+		else:
+			social = "solo"
+
+		# Specialist tags (snail-hunter / algae-grazer) get the warm
+		# accent color so the eye picks them out — they're load-bearing
+		# for picking presets (don't put snails in with puffers).
+		var specials: Array[String] = []
+		if bool(g.get("snail_predator", false)):
+			specials.append("[color=%s]snail-hunter[/color]" % c_special)
+		if bool(g.get("algae_grazer", false)):
+			specials.append("[color=%s]algae-grazer[/color]" % c_special)
+		if bool(g.get("mixed_morphs", false)):
+			specials.append("[color=%s]mixed morphs[/color]" % c_special)
+
+		var dim_tags: String = "[color=%s]%s · %s · %s[/color]" % [
+			c_dim, habitat, size_class, social,
+		]
+		var special_str: String = ""
+		if not specials.is_empty():
+			special_str = "  " + " ".join(specials)
+		lines.append("• %s  %s  %s%s" % [label, trophic, dim_tags, special_str])
 	return "\n".join(lines)
 
 

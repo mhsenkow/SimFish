@@ -214,10 +214,17 @@ func _tick(dt: float) -> void:
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
+		# Dying fish are inert: skip the tick entirely so the death pose
+		# isn't fought by the brain, and skip them from any other fish's
+		# neighbor list so schoolers don't cluster around the sinking
+		# corpse and predators don't try to eat it mid-death.
+		if f.get("_dying") == true:
+			continue
 		var neighbors: Array = []
 		for g in fish:
 			if g == f: continue
 			if not is_instance_valid(g): continue
+			if g.get("_dying") == true: continue
 			if g.position.distance_squared_to(f.position) < 9.0:
 				neighbors.append(g)
 		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
@@ -230,10 +237,15 @@ func _tick(dt: float) -> void:
 	for s in shrimp:
 		if not is_instance_valid(s):
 			continue
+		# Skip dying shrimp from the brain tick + neighbor lists (matches the
+		# fish loop above — corpses shouldn't drive courtship or schooling).
+		if s.get("_dying") == true:
+			continue
 		var sn: Array = []
 		for o in shrimp:
 			if o == s: continue
 			if not is_instance_valid(o): continue
+			if o.get("_dying") == true: continue
 			if o.position.distance_squared_to(s.position) < 4.0:
 				sn.append(o)
 		var ev: Dictionary = s.tick(dt, plants, algae, waste, fry_list, baby_snail_list,
@@ -449,17 +461,24 @@ func _tick(dt: float) -> void:
 				alga.queue_free()
 
 		if ev.get("die", false):
-			# On death, drop a single waste particle worth a bit of nutrient,
-			# then free the fish/shrimp. Closes the biomass -> substrate loop.
-			# Guard with `consumed`: if another actor's kill_prey already freed
-			# this actor earlier in the same batch, skip — the queue_free is
-			# already pending and we'd otherwise drop a phantom waste particle
-			# at a stale position.
+			# Natural death (old age / starvation). Hand off to the entity's
+			# start_dying() so it plays a sink + tilt + fade animation before
+			# actually being freed and dropping its mulm — much more readable
+			# than the instant-pop the old code did. Predator kills go through
+			# kill_prey instead and still free immediately (they read as eaten,
+			# not dying of natural causes). Guard with `consumed` so if both a
+			# die event and a kill_prey land in the same tick we don't double-
+			# process.
 			if not consumed.has(actor):
 				consumed[actor] = true
-				var k: int = WasteParticle.KIND_FISH if actor_kind == "fish" else WasteParticle.KIND_SHRIMP
-				_spawn_waste(actor.position, 0.4 if actor_kind == "fish" else 0.25, k)
-				actor.queue_free()
+				if actor.has_method("start_dying"):
+					actor.start_dying()
+				else:
+					# Fallback for entities without a death animation (snails,
+					# etc.) — old behavior: spawn waste + free immediately.
+					var k: int = WasteParticle.KIND_FISH if actor_kind == "fish" else WasteParticle.KIND_SHRIMP
+					_spawn_waste(actor.position, 0.4 if actor_kind == "fish" else 0.25, k)
+					actor.queue_free()
 
 
 func _spawn_waste(at: Vector3, amount: float, kind: int = 0) -> void:
@@ -713,6 +732,13 @@ func save_state() -> Dictionary:
 	# loader bails and lets world.gd do a fresh initial spawn instead.
 	var cfg := get_node_or_null("/root/TankConfig")
 	var cfg_substrate: String = String(cfg.substrate_type) if cfg != null else ""
+	# Stocking preset goes in the save header too. Substrate alone wasn't
+	# enough to invalidate the save on preset change — switching e.g.
+	# Community → Tetra School left both at "aquasoil", the compatibility
+	# check passed, and load_state restored the old community fish instead
+	# of letting the new preset's stocking spawn. TankSaves.is_active_save_compatible
+	# now checks this field too.
+	var cfg_preset: String = String(cfg.tank_preset) if cfg != null else ""
 	var out: Dictionary = {
 		"version": SAVE_STATE_VERSION,
 		"saved_unix": int(Time.get_unix_time_from_system()),
@@ -727,6 +753,7 @@ func save_state() -> Dictionary:
 			"elapsed_runtime_s": elapsed_runtime_s,
 			"next_entity_id": _next_entity_id,
 			"substrate_type": cfg_substrate,
+			"tank_preset": cfg_preset,
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],

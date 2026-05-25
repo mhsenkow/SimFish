@@ -119,6 +119,14 @@ var _bank_pivot: Node3D = null
 var _last_yaw: float = 0.0
 var _bank: float = 0.0
 
+# Death animation state. Mirrors fish.gd — when a die event fires the shrimp
+# tilts onto its side, drifts to the substrate, fades alpha, then frees and
+# drops a mulm waste particle. Predator kills bypass this (kill_prey is still
+# instant — the prey reads as eaten, not dying).
+var _dying: bool = false
+var _dying_timer: float = 0.0
+const DEATH_DURATION: float = 2.5
+
 # Refs
 var sim: Node = null
 
@@ -276,6 +284,11 @@ func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array: Array, baby_snails: Array,
 		  neighbors: Array, world_bounds: AABB) -> Dictionary:
 	var events: Dictionary = {}
+
+	# Dying shrimp are inert — no behavior, no events. _process handles
+	# the sinking + fading animation and queue_free.
+	if _dying:
+		return events
 
 	age += dt
 	hunger = clampf(hunger + dt * 0.011, 0.0, 1.0)
@@ -665,6 +678,21 @@ func _process(dt: float) -> void:
 		dt *= sim.time_scale
 		if dt <= 0.0:
 			return
+
+	# Death sequence — tilts, sinks, fades over DEATH_DURATION before
+	# the sim_driver actually frees us. Skips the normal motion pipeline.
+	if _dying:
+		_animate_death(dt)
+		return
+
+	# Cap per-step dt for integration stability. At time_scale=16 a single
+	# frame's dt would otherwise be ~0.27 s — large enough that the shrimp's
+	# Euler-integrated position overshoots its steering target, the brain
+	# inverts target_velocity next frame, and the shrimp ping-pongs in place
+	# (the "spinning" symptom shared with fish.gd). Slightly conservative
+	# 0.04 s here because shrimp have a higher turn rate than fish, so they
+	# need a tighter step to stay stable.
+	dt = minf(dt, 0.04)
 	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
 	if climb_target == null:
 		_target_velocity.y -= 1.2 * dt
@@ -675,6 +703,10 @@ func _process(dt: float) -> void:
 	if _target_velocity.length_squared() > 1e-4:
 		target_spd = _target_velocity.length()
 		target_dir = _target_velocity.normalized()
+	# Day/night activity. Shrimp are crepuscular — most active at dawn /
+	# dusk, calmer at midday and dim at midnight. We compute a soft bell
+	# centered on day_phase 0.0 and 0.5 (the dawn / dusk transitions).
+	target_spd *= _day_activity_mult()
 
 	# Bounded turn (shrimp are nimble - higher turn rate than fish).
 	var angle: float = heading.angle_to(target_dir)
@@ -685,6 +717,9 @@ func _process(dt: float) -> void:
 		axis = axis.normalized()
 		var turn: float = minf(max_turn_rate * dt, angle)
 		heading = heading.rotated(axis, turn).normalized()
+		# NaN guard — see fish.gd's matching guard for the failure mode.
+		if not heading.is_finite() or heading.length_squared() < 0.5:
+			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
 
 	# Linear accel toward target speed.
 	speed = move_toward(speed, target_spd, 3.0 * dt)
@@ -695,11 +730,13 @@ func _process(dt: float) -> void:
 	# Clamp to substrate. Shrimp can climb up but never sink below substrate top.
 	position.y = maxf(position.y, substrate_top_y + 0.05)
 
-	# Face heading (look_at with body built facing -Z).
-	if heading.length_squared() > 1e-4:
+	# Face heading (look_at with body built facing -Z). Skip when nearly
+	# stationary — the brain may flip target_velocity direction frame-to-
+	# frame at low speed and look_at would snap the shrimp around.
+	if speed > 0.04 and heading.length_squared() > 1e-4:
 		var d: Vector3 = heading
 		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.0001, 0, 0)).normalized()
+			d = (d + Vector3(0.05, 0, 0)).normalized()
 		look_at(position + d, Vector3.UP)
 
 	# Banking on yaw rate (shrimp lean into turns less than fish).
@@ -757,6 +794,65 @@ func _process(dt: float) -> void:
 	elif not is_gravid and _egg_cluster != null:
 		_egg_cluster.queue_free()
 		_egg_cluster = null
+
+
+# Day/night activity multiplier. Shrimp are crepuscular — they peak at the
+# dawn / dusk transitions and ebb at deep midday and midnight. We model
+# this as 1 - |daylight - 0.5|*0.9 so the curve has shallow dips at the
+# extremes and a soft plateau through the transition zones. Output range
+# roughly [0.55, 1.0]. SimDriver.daylight() returns the 0..1 bell.
+func _day_activity_mult() -> float:
+	if sim == null:
+		return 1.0
+	var daylight: float = float(sim.daylight())
+	return clampf(1.0 - absf(daylight - 0.5) * 0.9, 0.55, 1.0)
+
+
+# Triggers the death-animation state. Called by SimDriver when a die event
+# fires (old age / starvation). Idempotent so multiple die events in the
+# same tick don't reset the timer.
+func start_dying() -> void:
+	if _dying:
+		return
+	_dying = true
+	_dying_timer = DEATH_DURATION
+	_target_velocity = Vector3.ZERO
+	speed = 0.0
+
+
+# Death pose: rolls onto its side + curls the tail, drifts to the
+# substrate, shrinks toward zero, then frees and drops a mulm waste
+# particle. We shrink the bank pivot's scale rather than fading alpha —
+# see fish.gd's matching _animate_death for the reason (Node3D has no
+# `modulate`, and per-voxel transparency would be heavy for a 2.5-second
+# anim). 2.5s here vs the fish's 3.5s because tiny shrimp on their side
+# start to look stuck if they linger.
+func _animate_death(dt: float) -> void:
+	_dying_timer = maxf(0.0, _dying_timer - dt)
+	var progress: float = clampf(1.0 - (_dying_timer / DEATH_DURATION), 0.0, 1.0)
+	# Curl + tilt the body. Shrimp die-pose is curled tail-under, on their
+	# side. We use the bank pivot's z-rotation for the side flop and the
+	# tail pivot for a slight curl.
+	if _bank_pivot != null:
+		var tilt_target: float = PI * 0.5
+		var tilt_speed: float = clampf(dt * 2.0, 0.0, 1.0)
+		_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z, tilt_target, tilt_speed)
+		# Withering shrink — see fish.gd notes.
+		var shrink: float = lerpf(1.0, 0.15, progress)
+		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
+	if _tail_pivot != null:
+		var curl_target: float = -0.7
+		var curl_speed: float = clampf(dt * 1.6, 0.0, 1.0)
+		_tail_pivot.rotation.x = lerpf(_tail_pivot.rotation.x, curl_target, curl_speed)
+	# Drift to the substrate. Shrimp are negatively buoyant when dead.
+	position.y -= 0.12 * dt
+	if sim != null and position.y < substrate_top_y + 0.04:
+		position.y = substrate_top_y + 0.04
+	# End of sequence — drop the mulm and free.
+	if _dying_timer <= 0.0:
+		if sim != null and sim.has_method("_spawn_waste"):
+			sim._spawn_waste(position, 0.25, WasteParticle.KIND_SHRIMP)
+		queue_free()
 
 
 func _spawn_egg_cluster() -> void:

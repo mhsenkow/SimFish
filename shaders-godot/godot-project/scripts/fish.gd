@@ -329,6 +329,16 @@ var speed: float = 0.0
 var max_turn_rate: float = 2.6   # radians/sec - how fast the fish can yaw
 var linear_accel: float = 2.5    # units/sec^2 - how fast speed changes
 
+# Death animation state. When a die event fires (old age / starvation), we
+# don't queue_free immediately — we set _dying so the fish drifts sideways,
+# tilts onto its flank, sinks, and fades over DEATH_DURATION before the
+# sim_driver actually frees it and drops the mulm waste particle. Predator
+# kills bypass this (the kill_prey event still frees instantly so it reads
+# as eaten rather than dying of natural causes).
+var _dying: bool = false
+var _dying_timer: float = 0.0
+const DEATH_DURATION: float = 3.5
+
 # ---- Refs ----
 var sim: Node = null
 
@@ -951,6 +961,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# kill prey, spawn waste, die).
 	var events: Dictionary = {}
 
+	# Dying fish are inert — no behavior, no events. _process handles the
+	# sinking + fading animation and queue_free at the end of DEATH_DURATION.
+	if _dying:
+		return events
+
 	age += dt
 	# Hunger accumulates slowly. Real fish go days without eating; we keep
 	# the rate gentle so fish can spend more time on courtship / schooling
@@ -1290,10 +1305,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					best_prey = of
 		# Adult shrimp only become prey to very large predators (3x advantage).
 		# This effectively limits adult-shrimp predation to a well-grown betta
-		# - otherwise the school strips shrimp before they can recruit.
+		# - otherwise the school strips shrimp before they can recruit. Dying
+		# shrimp are skipped so a predator doesn't snap-eat a fading corpse
+		# mid-death animation.
 		if sim != null:
 			for s in sim.shrimp:
 				if not is_instance_valid(s) or s.maturity != Shrimp.MATURITY_ADULT:
+					continue
+				if s.get("_dying") == true:
 					continue
 				if my_size > s.adult_voxel_scale * 3.0:
 					var d2: float = s.position.distance_squared_to(position)
@@ -1694,11 +1713,109 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 func _process(dt: float) -> void:
 	if _food_glow != null and _food_glow.light_energy > 0.0:
 		_food_glow.light_energy = maxf(0.0, _food_glow.light_energy - dt * 1.5)
-		
+
 	if sim != null:
 		dt *= sim.time_scale
 		if dt <= 0.0:
 			return  # paused
+
+	# Death sequence — drifts sideways, sinks, fades over DEATH_DURATION
+	# before the sim_driver actually frees us. Skips the normal motion
+	# pipeline so a dying fish doesn't fight the death pose.
+	if _dying:
+		_animate_death(dt)
+		return
+
+	# Substep at high time_scale. With time_scale=16 and a 60-fps render
+	# frame, a single naive step gets dt ≈ 0.27 s — long enough that the
+	# fish translates past its steering target, the brain inverts the
+	# desired velocity next frame, and the fish ping-pongs in place
+	# (the "spinning stupidly" bug). Splitting into ≤ 0.05 s sub-steps
+	# keeps Euler integration stable while preserving the nominal sim
+	# rate. One sub-step at 1× time_scale (the common case) so there's
+	# no cost when it doesn't matter.
+	var n_steps: int = clampi(int(ceil(dt / 0.05)), 1, 16)
+	var sub_dt: float = dt / float(n_steps)
+	for _step in n_steps:
+		_motion_substep(sub_dt)
+
+
+# Day/night activity multiplier. 1.0 = nominal speed, <1 = drowsy / asleep
+# behavior, >1 = nocturnal alertness. SimDriver.daylight() peaks at 1.0 at
+# midday and bottoms at 0.0 at midnight. Bottom-dwellers (shuffle swim
+# pattern: corydoras + mudsifter / kuhli loaches) invert the curve because
+# real loaches forage at night. Result: at midnight, top-water tetras
+# barely cruise while the bottom group is actively shuffling — a tiny
+# touch but exactly what makes a tank feel alive 24h.
+func _day_activity_mult() -> float:
+	if sim == null:
+		return 1.0
+	var daylight: float = float(sim.daylight())
+	if swim_pattern == "shuffle":
+		return lerpf(0.75, 1.15, 1.0 - daylight)
+	return lerpf(0.55, 1.0, daylight)
+
+
+# Triggers the death-animation state. Called by SimDriver when a die event
+# fires (old age / starvation). Idempotent so multiple die events in the
+# same tick don't reset the timer.
+func start_dying() -> void:
+	if _dying:
+		return
+	_dying = true
+	_dying_timer = DEATH_DURATION
+	# Stop all forward motion + steering targets so the brain's last
+	# commanded velocity doesn't keep the corpse swimming.
+	target_velocity = Vector3.ZERO
+	speed = 0.0
+	burst_remaining = 0.0
+
+
+# Death pose: tilts onto its side, drifts slowly downward, shrinks toward
+# zero, then frees the node. We shrink the bank pivot's scale rather than
+# fading alpha because Node3D has no `modulate` (that's a CanvasItem 2D
+# property) and the voxel body is dozens of MeshInstance3Ds — touching
+# their materials would mean turning transparency on per-voxel for a
+# 3-second animation. Scaling reads as "withering" and is one Vector3
+# write per frame. Combined with the sink + tilt + final mulm drop, the
+# visual story is: tip, drift, dissolve.
+func _animate_death(dt: float) -> void:
+	_dying_timer = maxf(0.0, _dying_timer - dt)
+	var progress: float = clampf(1.0 - (_dying_timer / DEATH_DURATION), 0.0, 1.0)
+	# Tilt: rotate onto right flank over the first ~30% of the death
+	# duration. Real fish flip belly-up or onto a flank when they die; the
+	# bank pivot already exists so we just push its z-rotation to PI/2.
+	if _bank_pivot != null:
+		var tilt_target: float = PI * 0.5
+		var tilt_speed: float = clampf(dt * 1.8, 0.0, 1.0)
+		_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z, tilt_target, tilt_speed)
+		# Reset the live pitch toward zero so the dying pose isn't still
+		# nosing down from sift / senescence.
+		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, 0.0, tilt_speed)
+		# Shrink toward 0.15× over the death duration. Keeps a faint
+		# silhouette through ~70% of the animation, then drops fast at
+		# the end so the queue_free is visually motivated.
+		var shrink: float = lerpf(1.0, 0.15, progress)
+		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
+	# Sink slowly — real dead fish drop to the substrate as buoyancy fails.
+	position.y -= 0.18 * dt
+	# Stop above substrate so the corpse rests on the bottom rather than
+	# clipping through it. SimDriver's substrate_top_y is the floor.
+	if sim != null and position.y < sim.substrate_top_y + 0.1:
+		position.y = sim.substrate_top_y + 0.1
+	# At the end of the sequence, drop the mulm and remove the node.
+	if _dying_timer <= 0.0:
+		if sim != null and sim.has_method("_spawn_waste"):
+			var kind: int = WasteParticle.KIND_FISH
+			sim._spawn_waste(position, 0.4, kind)
+		queue_free()
+
+
+# Single physics integration step. Pulled out of _process so we can call it
+# multiple times per frame at high time_scale without the integration
+# blowing up. Reads target_velocity (set by the brain at 10 Hz), writes
+# heading + position + look_at + bank.
+func _motion_substep(dt: float) -> void:
 	# Decompose the brain's target into a desired direction + desired speed.
 	# Sifting fish (cory mid-graze) almost stop while the timer is active.
 	var target_dir: Vector3 = heading
@@ -1715,6 +1832,12 @@ func _process(dt: float) -> void:
 		target_spd *= 0.4
 	elif stress > 0.6:
 		target_spd *= 0.75
+	# Day/night activity modulation. Diurnal species (tetras, bettas, etc.)
+	# slow at night to half-speed; bottom-dwellers with the shuffle swim
+	# pattern (cory, mudsifter) are nocturnal in real tanks and become
+	# noticeably MORE active when the lights go down. Subtle by design —
+	# the tank should never feel frozen, even at deep midnight.
+	target_spd *= _day_activity_mult()
 
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
 	var angle: float = heading.angle_to(target_dir)
@@ -1734,6 +1857,12 @@ func _process(dt: float) -> void:
 			axis = horizontal_axis.normalized()
 		var turn: float = minf(max_step, angle)
 		heading = heading.rotated(axis, turn).normalized()
+		# Defensive NaN guard: if axis was degenerate in a way the checks
+		# above missed, the rotation can leak NaN into heading. Restore from
+		# _last_yaw so the fish doesn't enter a spin-forever orientation
+		# (look_at(NaN) silently corrupts the transform basis).
+		if not heading.is_finite() or heading.length_squared() < 0.5:
+			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
 
 	# ---- Accelerate speed toward target_spd, bounded by linear_accel ----
 	speed = move_toward(speed, target_spd, linear_accel * dt)
@@ -1743,12 +1872,18 @@ func _process(dt: float) -> void:
 	position += velocity * dt
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
-	# built so its forward = -Z, so the fish faces its motion correctly. ----
-	if heading.length_squared() > 0.0001:
+	# built so its forward = -Z, so the fish faces its motion correctly.
+	# We only re-orient when the fish has meaningful forward speed; when
+	# nearly stopped the brain may flip target_velocity direction frame-to-
+	# frame and look_at would snap the fish around (read as "spinning"). ----
+	if speed > 0.04 and heading.length_squared() > 0.0001:
 		var d: Vector3 = heading
 		# Avoid look_at singularity when heading is straight up/down.
+		# Nudge by 0.05 (not 0.0001) so the resulting d is meaningfully
+		# off-axis — a sub-millimeter nudge can still confuse look_at on
+		# certain platforms.
 		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.0001, 0, 0)).normalized()
+			d = (d + Vector3(0.05, 0, 0)).normalized()
 		look_at(position + d, Vector3.UP)
 
 	# ---- Banking into yaw turns ----
