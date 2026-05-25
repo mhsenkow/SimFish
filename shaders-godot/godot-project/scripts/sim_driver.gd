@@ -51,6 +51,13 @@ var waste_root: Node3D = null
 var plants_root: Node3D = null
 var world: Node = null
 
+# Filter intake world-space position. Set by world._build_filter_aerator()
+# when the "filter" aeration profile is active; remains Vector3.ZERO for
+# disk / stick / none. Microfauna and waste particles read it to drift
+# toward the intake and despawn there, closing the "tiny life sucked in
+# by the filter" loop that real planted tanks always have.
+var filter_intake_pos: Vector3 = Vector3.ZERO
+
 var _accum: float = 0.0
 var _stats_timer: float = 0.0
 var _extinction_timer: float = 0.0

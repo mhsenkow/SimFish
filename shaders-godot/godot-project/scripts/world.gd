@@ -17,6 +17,22 @@ var _water_mesh: MeshInstance3D = null
 var _water_material_ref: StandardMaterial3D = null
 var _mulm_voxels: Array = []
 var algae_root: Node3D = null
+# Microfauna swarm + detrital worm carpet. Both are pure-visual entity
+# populations maintained by _process below — they're not part of the
+# brain tick loop because nothing makes decisions about them, they just
+# drift and squirm. Adds tank-feel at small scale (real Walstad tanks
+# always have a teeming film of copepods + worms).
+var microfauna_root: Node3D = null
+var wriggle_root: Node3D = null
+const MICROFAUNA_TARGET: int = 90
+# Worms spawn at roughly half the mulm-voxel rate so a fresh tank has
+# almost no worms and a long-running one develops a visible carpet.
+const WRIGGLE_PER_MULM_FRAC: float = 0.55
+const WRIGGLE_MAX: int = 90
+# Maintenance cadence — refilling every frame is fine cost-wise but the
+# RNG variance reads better when we batch into 0.8 s slices.
+var _microfauna_refill_t: float = 0.0
+var _wriggle_refill_t: float = 0.0
 
 # Tank dimensions read from TankConfig at _ready so the user can resize.
 # Treated as plain vars (was const) so settings can change them.
@@ -138,6 +154,8 @@ func _ready() -> void:
 	fauna_root = Node3D.new(); fauna_root.name = "Fauna"; add_child(fauna_root)
 	waste_root = Node3D.new(); waste_root.name = "Waste"; add_child(waste_root)
 	algae_root = Node3D.new(); algae_root.name = "Algae"; add_child(algae_root)
+	microfauna_root = Node3D.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
+	wriggle_root = Node3D.new(); wriggle_root.name = "WriggleWorms"; add_child(wriggle_root)
 	sim.plants_root = plants_root
 	sim.fauna_root = fauna_root
 	sim.waste_root = waste_root
@@ -203,6 +221,10 @@ func _ready() -> void:
 	_spawn_aeration_system()
 	_spawn_mulm_layer()
 	_spawn_surface_ripples()
+	# Seed the microfauna swarm to roughly the steady-state target so the
+	# tank reads as "alive at small scale" from the first second instead of
+	# fading in over the first 30s. _process maintains the count from here.
+	_spawn_initial_microfauna(MICROFAUNA_TARGET)
 	# Make sure SimDriver can find the snails container for predator AI.
 	sim.snails_root = get_node_or_null("Snails")
 	# Hardscape container - fry hide-at-log behavior reads this.
@@ -232,6 +254,10 @@ func _process(dt: float) -> void:
 	var sdt: float = dt
 	if sim != null:
 		sdt = dt * float(sim.time_scale)
+	# Keep the microfauna swarm + detrital worms topped up. Cheap (one
+	# child_count + a handful of conditional spawns per ~1 s window).
+	_maintain_microfauna(sdt)
+	_maintain_wriggle_worms(sdt)
 	# Coral recruitment (saltwater tanks only). Every CORAL_RECRUIT_INTERVAL
 	# sim-seconds a fresh polyp appears somewhere on the substrate, mimicking
 	# the larval-drift-and-settle mechanism that keeps real reefs replenished
@@ -1869,6 +1895,13 @@ func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
 	intake.material_override = VoxelMat.make(trim)
 	intake.position = Vector3(anchor_x, base_y - 0.05, sz)
 	parent.add_child(intake)
+	# Publish the intake world position so microfauna + waste particles can
+	# drift toward it and despawn — the visible "filter is doing something"
+	# loop. Only set when this fixture is the active one; disk/stick/none
+	# leave sim.filter_intake_pos at Vector3.ZERO (Microfauna.gd treats
+	# that as "no intake, ignore").
+	if sim != null:
+		sim.filter_intake_pos = intake.position
 	# Horizontal spout near the top, sticking forward (toward +Z, away from
 	# the back wall). 3-4 voxels.
 	var spout_y: float = WATER_HEIGHT - 0.05
@@ -2062,6 +2095,98 @@ func add_mulm_voxel(pos: Vector3) -> void:
 	mi.material_override = VoxelMat.make(Color8(28, 22, 16))
 	container.add_child(mi)
 	_mulm_voxels.append(mi)
+
+
+# ---- Microfauna swarm ------------------------------------------------------
+# Seeds the tank with N tiny drifting copepod / daphnia-like entities. Called
+# once at end of _ready to fill the swarm immediately; _process then keeps
+# it topped up via _maintain_microfauna() as individuals age out or get
+# pulled into the filter intake.
+func _spawn_initial_microfauna(count: int) -> void:
+	for i in count:
+		_spawn_one_microfauna()
+
+
+func _spawn_one_microfauna() -> void:
+	if microfauna_root == null or sim == null:
+		return
+	var b: AABB = sim.world_bounds
+	# Reject samples outside the (possibly non-rectangular) tank shape, so
+	# hex / triangle tanks don't get microfauna floating in the corner air.
+	# Tries up to 6 times before giving up — at 90 microfauna a single
+	# missed spawn isn't visible.
+	for _attempt in 6:
+		var x: float = randf_range(b.position.x, b.position.x + b.size.x)
+		var z: float = randf_range(b.position.z, b.position.z + b.size.z)
+		if not _is_inside_tank(x, z, 0.3):
+			continue
+		var y: float = randf_range(b.position.y, b.position.y + b.size.y)
+		var m := Microfauna.new()
+		microfauna_root.add_child(m)
+		m.sim = sim
+		m.position = Vector3(x, y, z)
+		# Stagger initial age so the population doesn't all die at once.
+		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.6)
+		return
+
+
+# Wriggle worms — proportional to current mulm carpet. As mulm accumulates,
+# more worms appear. As mulm caps out, the worm count caps too. Aged-out
+# worms (via _process in the WriggleWorm script) are auto-replaced here.
+func _spawn_one_wriggle() -> void:
+	if wriggle_root == null:
+		return
+	if _mulm_voxels.is_empty():
+		return
+	# Pick a random existing mulm voxel and place the worm near it.
+	var idx: int = randi() % _mulm_voxels.size()
+	var anchor: Node3D = _mulm_voxels[idx]
+	if not is_instance_valid(anchor):
+		return
+	var p: Vector3 = anchor.position
+	# Small offset so the worm doesn't sit dead-center on the mulm voxel.
+	p.x += randf_range(-0.12, 0.12)
+	p.z += randf_range(-0.12, 0.12)
+	var w := WriggleWorm.new()
+	wriggle_root.add_child(w)
+	w.sim = sim
+	w.substrate_top_y = SUBSTRATE_DEPTH
+	w.position = p
+
+
+# Per-tick maintenance: refills both populations back to their targets. Cheap
+# — counts a child list once per refill window, doesn't iterate per entity.
+func _maintain_microfauna(sdt: float) -> void:
+	_microfauna_refill_t = maxf(0.0, _microfauna_refill_t - sdt)
+	if _microfauna_refill_t > 0.0:
+		return
+	_microfauna_refill_t = 0.8  # next refill in ~0.8 sim-seconds
+	if microfauna_root == null:
+		return
+	var have: int = microfauna_root.get_child_count()
+	# Spawn up to ~4 per window so the swarm refreshes gradually rather
+	# than popping in a burst whenever a few age out simultaneously.
+	var deficit: int = MICROFAUNA_TARGET - have
+	var to_spawn: int = mini(deficit, 4)
+	for i in to_spawn:
+		_spawn_one_microfauna()
+
+
+func _maintain_wriggle_worms(sdt: float) -> void:
+	_wriggle_refill_t = maxf(0.0, _wriggle_refill_t - sdt)
+	if _wriggle_refill_t > 0.0:
+		return
+	_wriggle_refill_t = 1.6
+	if wriggle_root == null:
+		return
+	# Target count tracks mulm carpet density — a fresh tank with few
+	# settled waste voxels has few worms; a mature tank with 150 mulm
+	# voxels has the full carpet.
+	var target: int = mini(WRIGGLE_MAX, int(_mulm_voxels.size() * WRIGGLE_PER_MULM_FRAC))
+	var have: int = wriggle_root.get_child_count()
+	var to_spawn: int = mini(target - have, 2)
+	for i in to_spawn:
+		_spawn_one_wriggle()
 
 
 # Public entry point for the retro fish store. Picks a sensible spawn

@@ -52,12 +52,12 @@ sells the "this is alive" feeling.
 The trophic loop is already wired — these add visibility and dynamics.
 
 - [ ] **21. Algae bloom dynamics.** When nutrients spike + plant biomass low, water gradually tints green; balance shift crashes it back. *Effort: L · Impact: L*
-- [ ] **22. Microfauna (copepods, daphnia).** Tiny moving white dots, snack food for fry. *Effort: M · Impact: L*
+- [x] **22. Microfauna (copepods, daphnia).** Tiny moving white dots, snack food for fry. *Effort: M · Impact: L* — `microfauna.gd`; 90 drifting individuals refilled by `world._maintain_microfauna()`; two visual variants (copepods + paler-blue daphnia). Eaten by the filter intake currently; full predation hook still pending.
 - [ ] **23. Tap-to-feed.** Tap the tank surface to drop a flake cloud; fish converge from below. *Effort: M · Impact: L*
-- [ ] **24. Substrate worms.** Visible squirms in mulm patches — visual proof of the detrital loop. *Effort: M · Impact: M*
-- [ ] **25. Plant flowering events.** Lily pads, cattails, and emergent plants occasionally bloom for a few minutes. *Effort: M · Impact: M*
-- [ ] **26. Filter intake suction.** Particles within ~0.5 units of the filter intake drift toward it. *Effort: S · Impact: M*
-- [ ] **27. Tannin staining from driftwood.** Wood pieces slowly tint the water tea-brown over hours. *Effort: M · Impact: M*
+- [x] **24. Substrate worms.** Visible squirms in mulm patches — visual proof of the detrital loop. *Effort: M · Impact: M* — `wriggle_worm.gd`; two-segment voxel with head-leading phase wave; population scales with mulm carpet density.
+- [x] **25. Plant flowering events.** Lily pads, cattails, and emergent plants occasionally bloom for a few minutes. *Effort: M · Impact: M* — already present: lily_pad has full 6-petal bloom lifecycle, cattails have seed-head puffing, base plant.gd has bud→opening→mature→seed-pod stages inherited by spiral/branch plants. Tuning per species is open work.
+- [x] **26. Filter intake suction.** Particles within ~0.5 units of the filter intake drift toward it. *Effort: S · Impact: M* — `sim.filter_intake_pos` published by `world._build_filter_aerator()`; Microfauna accelerates toward intake within `FILTER_PULL_RADIUS` and despawns on contact. Waste particles still ignore it (they settle too fast for the pull to read).
+- [x] **27. Tannin staining from driftwood.** Wood pieces slowly tint the water tea-brown over hours. *Effort: M · Impact: M* — already present: `world.tannins` rises slowly in `_process` and lerps the water material toward a warm brown.
 - [ ] **28. Predator–prey rebound cycles.** When a snail-hunter dies, snails boom; when puffers eat snails too fast, puffer starves. Track these explicitly. *Effort: M · Impact: M*
 - [ ] **29. Plant nutrient competition.** Fast-growing stems crowd out slow rosettes when nutrients are limited. *Effort: L · Impact: M*
 - [ ] **30. Population history graph.** Tap a stat chip to see a 24h sparkline of that population. *Effort: M · Impact: M*
