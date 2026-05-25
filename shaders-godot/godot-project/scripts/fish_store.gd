@@ -49,16 +49,22 @@ func toggle() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(380, 0)
-	# Outer layout - title, status, three cards, close.
+	custom_minimum_size = Vector2(420, 0)
+	# Use the shared dark rounded chrome so the store reads as part of the
+	# same panel family. Cards inside keep their arcade-cyan border so the
+	# shop still feels like a destination, not just another settings page.
+	PanelTheme.apply_panel_chrome(self)
+
+	# Outer layout — title, subtitle, status, cards, footer.
 	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", 6)
+	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	# Retro header.
+	# Retro neon header. The double-bar glyphs frame the title without
+	# needing a font with built-in flourishes.
 	var title := Label.new()
 	title.text = "═══ FISH STORE ═══"
-	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color8(255, 110, 200))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(title)
@@ -72,31 +78,33 @@ func _build_ui() -> void:
 
 	_status_label = Label.new()
 	_status_label.text = ""
-	_status_label.add_theme_font_size_override("font_size", 11)
+	_status_label.add_theme_font_size_override("font_size", 12)
 	_status_label.add_theme_color_override("font_color", Color8(140, 240, 140))
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(_status_label)
 
-	# Cards container - we rebuild this on each open so each visit shows fresh
-	# stock.
+	outer.add_child(PanelTheme.make_rule())
+
+	# Cards container — rebuilt on each open so each visit shows fresh stock.
+	# Generous 10-px row gap so the bordered cards have visual room and
+	# don't look like they're stacked on top of each other.
 	_cards_container = VBoxContainer.new()
-	_cards_container.add_theme_constant_override("separation", 6)
+	_cards_container.add_theme_constant_override("separation", 10)
 	outer.add_child(_cards_container)
 
-	# Footer: close + reroll.
-	var sep := HSeparator.new()
-	outer.add_child(sep)
+	# Footer: reroll + close. Reroll is the primary action (it's why the
+	# player is here); close is secondary.
+	outer.add_child(PanelTheme.make_rule())
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
-	var reroll := Button.new()
-	reroll.text = "REROLL"
-	reroll.pressed.connect(_regenerate)
-	hb.add_child(reroll)
-	var close := Button.new()
-	close.text = "CLOSE"
+	var close := PanelTheme.make_secondary_button("CLOSE")
 	close.pressed.connect(func(): visible = false)
 	hb.add_child(close)
+	var reroll := PanelTheme.make_primary_button("REROLL")
+	reroll.pressed.connect(_regenerate)
+	hb.add_child(reroll)
 
 
 func _regenerate() -> void:
@@ -118,64 +126,92 @@ func _rebuild_cards() -> void:
 
 func _make_card(idx: int) -> Control:
 	var g: Dictionary = _options[idx]
-	# Outer card frame.
+	# Outer card frame. Cyan-on-dark-blue is the arcade "shop card" look —
+	# kept intentionally distinct from the muted panel chrome so the cards
+	# read as merchandise rather than form rows. Rounded corners + thicker
+	# padding lift the card off the panel background.
 	var frame := PanelContainer.new()
 	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.9)
+	style.bg_color = Color(0.08, 0.10, 0.16, 0.92)
 	style.border_color = Color8(60, 200, 255)
 	style.border_width_left = 2
 	style.border_width_right = 2
 	style.border_width_top = 2
 	style.border_width_bottom = 2
-	style.corner_radius_top_left = 0
-	style.corner_radius_top_right = 0
-	style.corner_radius_bottom_left = 0
-	style.corner_radius_bottom_right = 0
-	style.content_margin_left = 8
-	style.content_margin_right = 8
-	style.content_margin_top = 6
-	style.content_margin_bottom = 6
+	style.corner_radius_top_left = 6
+	style.corner_radius_top_right = 6
+	style.corner_radius_bottom_left = 6
+	style.corner_radius_bottom_right = 6
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
 	frame.add_theme_stylebox_override("panel", style)
 
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
+	hb.add_theme_constant_override("separation", 12)
 	frame.add_child(hb)
 
-	# Color swatch. Two stacked rects showing base + accent + tail tints.
+	# Color swatch. Three vertical rects showing base + accent + tail tints
+	# so the player can preview the fish's palette at a glance.
 	var swatch := ColorRect.new()
-	swatch.custom_minimum_size = Vector2(40, 60)
+	swatch.custom_minimum_size = Vector2(44, 64)
 	swatch.color = g.get("base_color", Color.WHITE)
 	hb.add_child(swatch)
 	var accent_swatch := ColorRect.new()
-	accent_swatch.custom_minimum_size = Vector2(10, 60)
+	accent_swatch.custom_minimum_size = Vector2(12, 64)
 	accent_swatch.color = g.get("accent_color", Color.GRAY)
 	hb.add_child(accent_swatch)
 	var tail_swatch := ColorRect.new()
-	tail_swatch.custom_minimum_size = Vector2(10, 60)
+	tail_swatch.custom_minimum_size = Vector2(12, 64)
 	tail_swatch.color = g.get("tail_color", g.get("accent_color", Color.GRAY))
 	hb.add_child(tail_swatch)
 
-	# Text block.
+	# Text block — name on top, trait line beneath with looser leading
+	# (separation 4) so the description doesn't crowd the name.
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 1)
+	vbox.add_theme_constant_override("separation", 4)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(vbox)
 	var name_label := Label.new()
 	name_label.text = String(g.get("_display_name", "fish"))
-	name_label.add_theme_font_size_override("font_size", 14)
+	name_label.add_theme_font_size_override("font_size", 15)
 	name_label.add_theme_color_override("font_color", Color8(255, 220, 80))
 	vbox.add_child(name_label)
 	var desc := Label.new()
 	desc.text = _describe(g)
 	desc.add_theme_font_size_override("font_size", 11)
-	desc.add_theme_color_override("font_color", Color8(220, 220, 230))
+	desc.add_theme_color_override("font_color", Color8(200, 210, 225))
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(desc)
 
-	# Buy button.
+	# Buy button. Styled bright cyan-on-dark to match the card border so
+	# tapping feels like clicking the bezel itself.
 	var buy := Button.new()
 	buy.text = "BUY"
+	buy.custom_minimum_size = Vector2(64, 32)
+	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	buy.add_theme_color_override("font_color", Color8(20, 28, 36))
+	buy.add_theme_color_override("font_hover_color", Color8(20, 28, 36))
+	buy.add_theme_color_override("font_pressed_color", Color8(20, 28, 36))
+	var buy_normal := StyleBoxFlat.new()
+	buy_normal.bg_color = Color8(60, 200, 255)
+	buy_normal.corner_radius_top_left = 4
+	buy_normal.corner_radius_top_right = 4
+	buy_normal.corner_radius_bottom_left = 4
+	buy_normal.corner_radius_bottom_right = 4
+	buy_normal.content_margin_left = 12
+	buy_normal.content_margin_right = 12
+	buy_normal.content_margin_top = 6
+	buy_normal.content_margin_bottom = 6
+	buy.add_theme_stylebox_override("normal", buy_normal)
+	var buy_hover := buy_normal.duplicate() as StyleBoxFlat
+	buy_hover.bg_color = Color8(120, 230, 255)
+	buy.add_theme_stylebox_override("hover", buy_hover)
+	var buy_pressed := buy_normal.duplicate() as StyleBoxFlat
+	buy_pressed.bg_color = Color8(40, 170, 220)
+	buy.add_theme_stylebox_override("pressed", buy_pressed)
 	# Capture idx; pressed.connect lambda needs to bind it.
 	var captured_idx: int = idx
 	buy.pressed.connect(func(): _on_buy(captured_idx, frame, buy))

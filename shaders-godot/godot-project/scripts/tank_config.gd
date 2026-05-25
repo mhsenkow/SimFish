@@ -808,8 +808,70 @@ func _ready() -> void:
 # Switch the live config to a different tank slot. Called by the menu when
 # the player opens a tank — sets the active slot on TankSaves, then reloads
 # all fields from that slot's config.cfg.
+#
+# Resets to script defaults BEFORE loading. Without this, opening a brand-new
+# slot (no config.cfg yet) would leave the previous tank's fields in place —
+# so the "new tank" the player just created would silently inherit the
+# previous tank's preset, substrate, lighting, etc.
 func switch_to_slot(slot: int) -> void:
 	var saves := get_node_or_null("/root/TankSaves")
 	if saves != null:
 		saves.set_active(slot)
+	reset_to_defaults()
 	load_from_disk()
+
+
+# Reset every per-tank field back to the value declared at the top of this
+# file. Used by switch_to_slot so a new slot doesn't inherit from the slot
+# the player just left.
+#
+# Device-level fields (fps_cap, device_tier, tutorial_seen, last_quit_unix)
+# are intentionally NOT reset — those reflect the device the user is on, not
+# the tank they happen to be in.
+func reset_to_defaults() -> void:
+	# Tank shape + dimensions.
+	tank_shape = "box"
+	tank_half_w = 8.0
+	tank_half_d = 4.0
+	tank_height = 7.0
+	# Lighting.
+	light_energy = 0.5
+	light_yaw = 0.5
+	light_pitch = 0.3
+	light_warmth = 0.6
+	light_fixture = "bar"
+	light_height = 1.4
+	light_size = 0.75
+	light_volumetric = false
+	# Fauna behavior.
+	auto_respawn_fauna = false
+	auto_feed_fauna = false
+	# Preset + custom counts.
+	tank_preset = "community"
+	custom_glassdart_count = 14
+	custom_mudsifter_count = 5
+	custom_shrimp_count = 12
+	# Substrate.
+	substrate_type = "aquasoil"
+	# Aeration.
+	aeration_type = "disk"
+	aeration_strength = 0.6
+	aeration_x_frac = 0.0
+	# Render pipeline.
+	render_width = 512
+	render_height = 288
+	dither_strength = 0.85
+	palette_enabled = true
+	fog_density = 0.02
+	fog_anisotropy = 0.3
+	fog_ambient_inject = 0.05
+	camera_fov = 50.0
+	msaa = 0
+	# Camera view.
+	camera_state_saved = false
+	camera_yaw = -0.35
+	camera_pitch = 0.30
+	camera_radius = 14.0
+	camera_target_x = 0.0
+	camera_target_y = 3.0
+	camera_target_z = 0.0

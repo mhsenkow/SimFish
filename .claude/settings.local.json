@@ -149,7 +149,17 @@
       "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --check-only --quit-after 1 --path .)",
       "Bash(timeout 15 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . main.tscn)",
       "Bash(timeout 8 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . main.tscn)",
-      "Bash(timeout 10 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . main.tscn)"
+      "Bash(timeout 10 /Applications/Godot.app/Contents/MacOS/Godot --headless --path . main.tscn)",
+      "Bash(find /Applications -maxdepth 2 -iname \"Godot*\" -type d 2>/dev/null | head -5 && find /Users/powerox -maxdepth 4 -iname \"Godot*\" -type f 2>/dev/null | head -5)",
+      "Bash(timeout 4 /Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit-after 50)",
+      "Bash(grep -rn '\\\\$DebugHUD\\\\|\\\\$MenuButton\\\\|\\\\$RenderToggle\\\\|\\\\$SettingsToggle\\\\|\\\\$FishStoreToggle\\\\|\\\\$AquascapeToggle\\\\|\\\\$PortalToggle' /Users/powerox/iAquarium/shaders-godot/godot-project/scripts/)",
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --check-only)",
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit)",
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit-after 2)",
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --path /Users/powerox/iAquarium/shaders-godot/godot-project)",
+      "Bash(tee /tmp/godot-run.log)",
+      "Bash(pkill -f \"Godot.app/Contents/MacOS/Godot\")",
+      "Bash(/Applications/Godot.app/Contents/MacOS/Godot --headless --path /Users/powerox/iAquarium/shaders-godot/godot-project --quit-after 3)"
     ]
   }
 }

@@ -53,19 +53,17 @@ func toggle() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(380, 0)
-	# Outer layout: title at the top, scrolling section list in the middle,
-	# always-visible footer (Close / Apply) at the bottom. The PanelContainer
-	# anchors to fill the screen vertically so the scroll area gets as much
-	# height as possible.
+	custom_minimum_size = Vector2(420, 0)
+	PanelTheme.apply_panel_chrome(self)
+
+	# Outer layout: title + rule at top, scrolling section list in the middle,
+	# pinned Close / Apply footer at the bottom.
 	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", 6)
+	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	var title := Label.new()
-	title.text = "Rendering"
-	title.add_theme_font_size_override("font_size", 18)
-	outer.add_child(title)
+	outer.add_child(PanelTheme.make_title("Rendering"))
+	outer.add_child(PanelTheme.make_rule())
 
 	# Scrolling body.
 	var scroll := ScrollContainer.new()
@@ -75,107 +73,75 @@ func _build_ui() -> void:
 	outer.add_child(scroll)
 
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
+	vbox.add_theme_constant_override("separation", 8)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(vbox)
 
-	# Internal resolution.
+	# -- Resolution section --
 	_add_section(vbox, "Resolution")
 	_res_option = OptionButton.new()
+	_res_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_res_option.custom_minimum_size = Vector2(0, 30)
 	for r in RESOLUTIONS:
 		_res_option.add_item(String(r["label"]))
 	_res_option.item_selected.connect(func(idx): _on_resolution(idx))
 	vbox.add_child(_res_option)
 
-	# Palette / dither section.
+	# -- Palette / dither section --
 	_add_section(vbox, "Palette quantize")
 	_palette_check = CheckBox.new()
 	_palette_check.text = "Enable palette quantization"
 	_palette_check.toggled.connect(func(v): TankConfig.palette_enabled = v)
 	vbox.add_child(_palette_check)
 	_dither_label = Label.new()
-	_dither = _add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
+	_dither = PanelTheme.add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
 	_dither.value_changed.connect(func(v): _on_dither(v))
 
-	# Fog section (volumetric).
+	# -- Volumetric fog section --
 	_add_section(vbox, "Volumetric fog")
 	_fog_density_label = Label.new()
-	_fog_density = _add_slider_row(vbox, "Density", 0.0, 0.08, 0.005, _fog_density_label)
+	_fog_density = PanelTheme.add_slider_row(vbox, "Density", 0.0, 0.08, 0.005, _fog_density_label)
 	_fog_density.value_changed.connect(func(v): _on_fog_density(v))
 	_fog_anisotropy_label = Label.new()
-	_fog_anisotropy = _add_slider_row(vbox, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
+	_fog_anisotropy = PanelTheme.add_slider_row(vbox, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
 	_fog_anisotropy.value_changed.connect(func(v): _on_fog_anisotropy(v))
 	_fog_ambient_label = Label.new()
-	_fog_ambient = _add_slider_row(vbox, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
+	_fog_ambient = PanelTheme.add_slider_row(vbox, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
 	_fog_ambient.value_changed.connect(func(v): _on_fog_ambient(v))
 
-	# Camera section.
+	# -- Camera section --
 	_add_section(vbox, "Camera")
 	_fov_label = Label.new()
-	_fov = _add_slider_row(vbox, "Field of view", 30.0, 90.0, 1.0, _fov_label)
+	_fov = PanelTheme.add_slider_row(vbox, "Field of view", 30.0, 90.0, 1.0, _fov_label)
 	_fov.value_changed.connect(func(v): _on_fov(v))
 
-	# Quality section.
+	# -- Quality section --
 	_add_section(vbox, "Quality")
-	var msaa_row := HBoxContainer.new()
-	vbox.add_child(msaa_row)
-	var ml := Label.new()
-	ml.text = "MSAA"
-	ml.custom_minimum_size = Vector2(140, 0)
-	msaa_row.add_child(ml)
-	_msaa_option = OptionButton.new()
+	_msaa_option = PanelTheme.add_dropdown_row(vbox, "MSAA")
 	for label in MSAA_LABELS:
 		_msaa_option.add_item(label)
-	_msaa_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_msaa_option.item_selected.connect(func(idx): TankConfig.msaa = idx)
-	msaa_row.add_child(_msaa_option)
 
-	# Footer buttons - attached to `outer` (NOT `vbox`) so Close + Apply
+	# Footer buttons — attached to `outer` (NOT `vbox`) so Close + Apply
 	# stay pinned at the bottom of the panel below the scroll area.
-	var sep := HSeparator.new()
-	outer.add_child(sep)
+	outer.add_child(PanelTheme.make_rule())
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
-	var close := Button.new()
-	close.text = "Close"
+	var close := PanelTheme.make_secondary_button("Close")
 	close.pressed.connect(func(): visible = false)
 	hb.add_child(close)
-	var apply := Button.new()
-	apply.text = "Apply (reload)"
+	var apply := PanelTheme.make_primary_button("Apply (reload)")
 	apply.pressed.connect(_on_apply)
 	hb.add_child(apply)
 
 
+# Section header with a 4-px spacer above so each group reads as a chunk
+# instead of running into the previous slider row.
 func _add_section(parent: Node, label: String) -> void:
-	var sep := HSeparator.new()
-	parent.add_child(sep)
-	var l := Label.new()
-	l.text = label
-	l.add_theme_font_size_override("font_size", 13)
-	l.modulate = Color(0.85, 0.92, 1.0)
-	parent.add_child(l)
-
-
-func _add_slider_row(parent: Node, label: String, min_val: float, max_val: float,
-		step: float, value_label: Label) -> HSlider:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	parent.add_child(row)
-	var l := Label.new()
-	l.text = label
-	l.custom_minimum_size = Vector2(140, 0)
-	row.add_child(l)
-	var s := HSlider.new()
-	s.min_value = min_val
-	s.max_value = max_val
-	s.step = step
-	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(s)
-	value_label.custom_minimum_size = Vector2(55, 0)
-	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	row.add_child(value_label)
-	return s
+	parent.add_child(PanelTheme.make_spacer(4))
+	parent.add_child(PanelTheme.make_section(label))
 
 
 func _pull_from_config() -> void:

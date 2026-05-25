@@ -16,24 +16,41 @@ extends Node
 @onready var sub_viewport: SubViewport = $SubViewport
 @onready var display: TextureRect = $Display
 @onready var camera: Camera3D = $SubViewport/World/Camera3D
-@onready var hud: RichTextLabel = $DebugHUD
 @onready var world: Node3D = $SubViewport/World
 @onready var settings_panel: PanelContainer = $SettingsPanel
 @onready var render_panel: PanelContainer = $RenderPanel
-@onready var settings_toggle: Button = $SettingsToggle
-@onready var render_toggle: Button = $RenderToggle
-@onready var fish_store_toggle: Button = $FishStoreToggle
 @onready var fish_store_panel: PanelContainer = $FishStorePanel
-@onready var aquascape_toggle: Button = $AquascapeToggle
 @onready var aquascape_palette: PanelContainer = $AquascapeToolPalette
-@onready var menu_button: Button = $MenuButton
+
+# Top-bar HUD — restructured 2026 into clusters + chip strip. All buttons are
+# unique_name_in_owner so the script paths survive future re-parenting.
+@onready var top_hud: Control = $TopHUD
+@onready var left_cluster: PanelContainer = %LeftCluster
+@onready var right_cluster: PanelContainer = %RightCluster
+@onready var stats_bar: PanelContainer = %StatsBar
+@onready var settings_toggle: Button = %SettingsToggle
+@onready var render_toggle: Button = %RenderToggle
+@onready var fish_store_toggle: Button = %FishStoreToggle
+@onready var aquascape_toggle: Button = %AquascapeToggle
+@onready var menu_button: Button = %MenuButton
+@onready var portal_toggle: Button = %PortalToggle
+
+# Stat chip refs — built once in _ready, value labels updated on stats_changed.
+# Keys: "state", "fauna", "flora", "water", "alert".
+var _chips: Dictionary = {}
+# Layout breakpoint — last computed, drives _apply_hud_layout decisions.
+var _hud_layout: String = ""
+# Idle-dim state for the top HUD (mirrors MobileHUD's behavior).
+var _hud_idle_seconds: float = 0.0
+const HUD_IDLE_DIM_SECONDS: float = 6.0
+const HUD_DIM_MODULATE: Color = Color(1, 1, 1, 0.45)
+const HUD_LIT_MODULATE: Color = Color(1, 1, 1, 1)
 
 @onready var portal_viewport: SubViewport = $PortalViewport
 @onready var portal_camera: Camera3D = $PortalViewport/PortalCamera
 @onready var portal_container: Control = $PortalContainer
 @onready var portal_display: TextureRect = $PortalContainer/PortalDisplay
 @onready var portal_hint: Label = $PortalContainer/PortalHint
-@onready var portal_toggle: Button = $PortalToggle
 
 var _portal_open: bool = false
 var _portal_target: Node3D = null
@@ -244,7 +261,12 @@ func _ready() -> void:
 			_portal_mat = portal_display.material as ShaderMaterial
 	if portal_viewport != null:
 		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	
+
+	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
+	_build_hud_chips()
+	_apply_hud_layout()
+	get_viewport().size_changed.connect(_apply_hud_layout)
+
 	# ---- Mobile setup ----
 	if _is_mobile():
 		_pick_device_tier_if_unset()
@@ -346,6 +368,14 @@ func _process(dt: float) -> void:
 	# Tick the aquascape brush cooldown so drag-painting deposits voxels
 	# at a steady rate regardless of frame timing.
 	_paint_cooldown = maxf(0.0, _paint_cooldown - dt)
+
+	# Top-HUD idle-dim. Mirrors MobileHUD: after HUD_IDLE_DIM_SECONDS of no
+	# input, fade the top bar so it stops competing with the scene.
+	# _notify_hud_input() (called from _input + touch handlers) resets this.
+	_hud_idle_seconds += dt
+	if top_hud != null and _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
+		if top_hud.modulate != HUD_DIM_MODULATE:
+			top_hud.modulate = HUD_DIM_MODULATE
 
 	# Periodic autosave. Only ticks the accumulator when we're actually
 	# playing (not aquascape-paused, not manually paused) so the 5-minute
@@ -1327,6 +1357,12 @@ func _aquascape_undo() -> void:
 
 # Scroll wheel + creature clicks come through as events (not reliable via polling).
 func _input(event: InputEvent) -> void:
+	# Any input keeps the top HUD lit. Cheap, runs once per input event.
+	if event is InputEventMouseMotion or event is InputEventMouseButton or \
+			event is InputEventScreenTouch or event is InputEventScreenDrag or \
+			event is InputEventKey:
+		_notify_hud_input()
+
 	# ---- Touch events ----
 	if event is InputEventScreenTouch:
 		_handle_screen_touch(event as InputEventScreenTouch)
@@ -1678,19 +1714,15 @@ func _update_hud(_mouse_pos: Vector2, _any_btn: bool) -> void:
 	pass
 
 
+# Chip layout: a row of icon-prefixed metric cards in the top-center StatsBar
+# panel. Each chip is pre-built once in _build_hud_chips() and updated in
+# place here. Warnings (low O₂, algae outbreak, paused, etc.) re-tint the
+# affected chip without rebuilding it. Visibility per-chip is driven by
+# _apply_hud_layout() — compact breakpoints hide secondary chips.
 func _render_header() -> void:
-	if hud == null:
+	if _chips.is_empty():
 		return
-	# Four-group BBCode strip. Each group has a softly tinted label so the
-	# eye can scan to its category fast without reading every number.
-	# Groups separated by double-bullets; items inside a group by single
-	# bullets. Warning conditions (paused, low O2, algae outbreak) get a
-	# colored highlight + a "!" prefix so trouble is visible at a glance.
-	#
-	#   [STATE]  cafef155 · 1× · day
-	#   [FAUNA]  fish 22 / 11A 11F · shrimp 11 / 8A 3F · snails 6 / 5A 1B
-	#   [FLORA]  plants 89 · biomass 451 · algae 3
-	#   [WATER]  O2 87% disk · nutrients 6.4 · waste 0 · gen 4
+
 	var fish_total: int = int(_stats.get("fish_total", 0))
 	var fish_adults: int = int(_stats.get("fish_adults", 0))
 	var fish_fry: int = int(_stats.get("fish_fry", 0))
@@ -1701,91 +1733,254 @@ func _render_header() -> void:
 	var snail_adults: int = int(_stats.get("snails_adults", 0))
 	var snail_babies: int = int(_stats.get("snails_babies", 0))
 	var algae: int = int(_stats.get("algae_clusters", 0))
-	var eggs: int = int(_stats.get("eggs", 0))
 	var plants: int = int(_stats.get("plants_alive", 0))
 	var biomass: int = int(_stats.get("plant_total_biomass", 0))
 	var waste: int = int(_stats.get("waste_particles", 0))
-	var nutrients: float = float(_stats.get("substrate_nutrients_total", 0.0))
 	var o2: float = float(_stats.get("dissolved_o2", 1.0))
 	var fixture: String = String(_stats.get("aeration_fixture", "?"))
-	var max_gen: int = int(_stats.get("max_generation", 0))
-
-	# Soft, distinct group tints so the eye can find each section.
-	var c_state := "#9aa8c8"
-	var c_fauna := "#d6b070"
-	var c_flora := "#86c084"
-	var c_water := "#7fb7d8"
-	var c_warn := "#e07070"
-
-	var groups: Array[String] = []
-
-	# Aquascape banner takes priority when active.
-	if _aquascape_mode:
-		groups.append("[color=#e0c060]AQUASCAPE %s[/color] (1 dirt · 2 stone · 3 wood · 4 dig)"
-			% _aquascape_tool.to_upper())
-
-	# --- STATE: seed · clock · day phase ---
-	if _sim != null:
-		var seed_str: String = "%08x" % int(_sim.tank_seed)
-		var ts: float = float(_sim.time_scale)
-		var clock: String
-		if ts == 0.0:
-			clock = "[color=%s]paused[/color]" % c_warn
-		elif is_equal_approx(ts, 1.0):
-			clock = "1×"
-		else:
-			clock = "%g×" % ts
-		var day: String = _day_label(float(_sim.day_phase))
-		groups.append("[color=%s]state[/color] %s · %s · %s" % [c_state, seed_str, clock, day])
-
-	# --- FAUNA: fish · shrimp · snails · eggs ---
-	# Population format helper renders "0", "N", or "N / aA fF" depending on
-	# the breakdown. Suffix letters: A=adults, F=fry, B=babies for snails.
-	var fauna_parts: Array[String] = []
-	fauna_parts.append("fish " + _pop_str(fish_total, fish_adults, fish_fry, "A", "F"))
-	fauna_parts.append("shrimp " + _pop_str(shrimp_total, shrimp_adults, shrimp_fry, "A", "F"))
-	fauna_parts.append("snails " + _pop_str(snail_total, snail_adults, snail_babies, "A", "B"))
-	if eggs > 0:
-		fauna_parts.append("eggs %d" % eggs)
-	groups.append("[color=%s]fauna[/color] %s" % [c_fauna, " · ".join(fauna_parts)])
-
-	# --- FLORA: plants · biomass · algae ---
-	var flora_parts: Array[String] = []
-	flora_parts.append("plants %d" % plants)
-	flora_parts.append("biomass %d" % biomass)
-	if algae > 0:
-		# Algae > 20 is becoming an outbreak; flag in red so the player can
-		# tune light / nutrients to bring it down.
-		var algae_str: String = "%d" % algae
-		if algae > 20:
-			algae_str = "[color=%s]!%d[/color]" % [c_warn, algae]
-		flora_parts.append("algae " + algae_str)
-	groups.append("[color=%s]flora[/color] %s" % [c_flora, " · ".join(flora_parts)])
-
-	# --- WATER: O2 + fixture · nutrients · waste · gen ---
-	var water_parts: Array[String] = []
 	var o2_pct: int = int(round(o2 * 100.0))
-	if o2_pct < 30:
-		water_parts.append("[color=%s]!O₂ %d%% %s[/color]" % [c_warn, o2_pct, fixture])
-	elif o2_pct < 50:
-		water_parts.append("[color=#d9bb70]O₂ %d%% %s[/color]" % [o2_pct, fixture])
-	else:
-		water_parts.append("O₂ %d%% %s" % [o2_pct, fixture])
-	water_parts.append("nutrients %.1f" % nutrients)
-	water_parts.append("waste %d" % waste)
-	if max_gen > 0:
-		water_parts.append("gen %d" % max_gen)
-	# Emergent speciation: show how many distinct morphs are alive. Greater
-	# than 1 means the founding species has fragmented into recognizable
-	# variants - the system is actively speciating.
-	var distinct: int = int(_stats.get("morph_distinct", 0))
-	if distinct > 0:
-		water_parts.append("[color=#e0c060]morphs +%d[/color]" % distinct)
-	groups.append("[color=%s]water[/color] %s" % [c_water, " · ".join(water_parts)])
+	var distinct_morphs: int = int(_stats.get("morph_distinct", 0))
 
-	# Join groups with double bullets so the eye groups them visually.
-	# RichTextLabel handles BBCode + horizontal centering via inline alignment.
-	hud.text = "[center]" + "   ··   ".join(groups) + "[/center]"
+	# State chip: speed indicator + day phase.
+	var state_value: String = "1×"
+	var state_sub: String = "—"
+	var state_warn: bool = false
+	if _sim != null:
+		var ts: float = float(_sim.time_scale)
+		if ts == 0.0:
+			state_value = "⏸"
+			state_warn = true
+		elif is_equal_approx(ts, 1.0):
+			state_value = "1×"
+		else:
+			state_value = "%g×" % ts
+		state_sub = _day_label(float(_sim.day_phase))
+	_update_chip("state", state_value, state_sub, true, state_warn)
+
+	# Fauna chips. On compact layout the shrimp+snails chips are hidden and
+	# the "fish" chip shows the grand fauna total instead.
+	var fauna_compact: bool = _hud_layout == "compact"
+	if fauna_compact:
+		var fauna_total: int = fish_total + shrimp_total + snail_total
+		_update_chip("fish", str(fauna_total), "fauna", true, false)
+	else:
+		_update_chip("fish", str(fish_total),
+			("%dA %dF" % [fish_adults, fish_fry]) if fish_total > 0 else "—",
+			true, false)
+		_update_chip("shrimp", str(shrimp_total),
+			("%dA %dF" % [shrimp_adults, shrimp_fry]) if shrimp_total > 0 else "—",
+			true, false)
+		_update_chip("snails", str(snail_total),
+			("%dA %dB" % [snail_adults, snail_babies]) if snail_total > 0 else "—",
+			true, false)
+
+	# Flora chip.
+	_update_chip("flora", str(plants), "biomass %d" % biomass, true, false)
+
+	# Water chip: O₂ percentage + fixture name; warn-tinted below 50%.
+	_update_chip("water", "%d%%" % o2_pct, fixture, true, o2_pct < 50)
+
+	# Morphs chip — only meaningful once speciation has produced variants.
+	_update_chip("morphs", "+%d" % distinct_morphs, "morphs", distinct_morphs > 0, false)
+
+	# Alert chip — surfaces the most pressing problem so a glance reveals trouble.
+	var has_alert: bool = false
+	var alert_value: String = "!"
+	var alert_sub: String = ""
+	if o2_pct < 30:
+		has_alert = true
+		alert_sub = "low O₂"
+	elif algae > 20:
+		has_alert = true
+		alert_value = "%d" % algae
+		alert_sub = "algae"
+	elif waste > 30:
+		has_alert = true
+		alert_value = "%d" % waste
+		alert_sub = "waste"
+	_update_chip("alert", alert_value, alert_sub, has_alert, true)
+
+	# Aquascape mode replaces the state chip's sublabel with the tool name so
+	# the player sees the active tool at a glance.
+	if _aquascape_mode:
+		_update_chip("state", "AQUA", _aquascape_tool.to_upper(), true, false)
+
+
+# Build the chip widgets inside the StatsBar's HBox. Called once from _ready
+# after the scene is set up. Each chip is a PanelContainer with a category-
+# tinted left border, an emoji/glyph icon, the numeric value, and an optional
+# sublabel. The chip itself is cached in _chips[key]; its value/sublabel
+# Labels are exposed via meta so _update_chip can rewrite them without
+# walking the tree.
+func _build_hud_chips() -> void:
+	if stats_bar == null:
+		return
+	var bar: HBoxContainer = stats_bar.get_node_or_null("HBox") as HBoxContainer
+	if bar == null:
+		return
+	# Clear any pre-existing children (re-entrant safety in case _ready runs twice).
+	for c in bar.get_children():
+		c.queue_free()
+	_chips.clear()
+
+	# Defs: ordered list of (key, icon, accent_color). Order = visual order
+	# left-to-right in the bar.
+	var defs: Array = [
+		{"key": "state",  "icon": "◴", "color": Color8(154, 168, 200)},
+		{"key": "fish",   "icon": "🐟", "color": Color8(214, 176, 112)},
+		{"key": "shrimp", "icon": "🦐", "color": Color8(214, 176, 112)},
+		{"key": "snails", "icon": "🐌", "color": Color8(214, 176, 112)},
+		{"key": "flora",  "icon": "🌿", "color": Color8(134, 192, 132)},
+		{"key": "water",  "icon": "💧", "color": Color8(127, 183, 216)},
+		{"key": "morphs", "icon": "✦", "color": Color8(224, 192, 96)},
+		{"key": "alert",  "icon": "⚠", "color": Color8(224, 112, 112)},
+	]
+	for d in defs:
+		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color)
+		bar.add_child(chip)
+		_chips[d["key"]] = chip
+
+
+# Construct a single chip widget. Caches the value + sublabel Labels via meta
+# so _update_chip can find them without walking the subtree on every tick.
+func _make_chip(icon: String, accent: Color) -> Control:
+	var pc := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	# Chips sit inside the StatsBar's tinted panel — no fill, just a 2-px
+	# accent strip on the left so the eye can find each category.
+	style.bg_color = Color(0, 0, 0, 0)
+	style.border_color = accent
+	style.border_width_left = 2
+	style.corner_radius_top_left = 4
+	style.corner_radius_top_right = 4
+	style.corner_radius_bottom_left = 4
+	style.corner_radius_bottom_right = 4
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 2
+	style.content_margin_bottom = 2
+	pc.add_theme_stylebox_override("panel", style)
+
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 6)
+	pc.add_child(hb)
+
+	var icon_lbl := Label.new()
+	icon_lbl.text = icon
+	icon_lbl.add_theme_font_size_override("font_size", 14)
+	icon_lbl.add_theme_color_override("font_color", accent)
+	hb.add_child(icon_lbl)
+
+	var value_lbl := Label.new()
+	value_lbl.add_theme_font_size_override("font_size", 13)
+	value_lbl.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
+	hb.add_child(value_lbl)
+
+	var sublabel_lbl := Label.new()
+	sublabel_lbl.add_theme_font_size_override("font_size", 10)
+	sublabel_lbl.add_theme_color_override("font_color", Color(0.72, 0.78, 0.85, 0.85))
+	hb.add_child(sublabel_lbl)
+
+	pc.set_meta("value_label", value_lbl)
+	pc.set_meta("sublabel_label", sublabel_lbl)
+	pc.set_meta("accent", accent)
+	return pc
+
+
+# Update a chip's value + sublabel. `warn` re-tints the chip red when a
+# threshold is crossed (low O₂, paused, etc.); `visible_` hides the whole chip
+# when the metric isn't relevant (e.g. no morphs yet).
+func _update_chip(key: String, value: String, sublabel: String,
+		visible_: bool, warn: bool) -> void:
+	var chip: Control = _chips.get(key, null) as Control
+	if chip == null:
+		return
+	chip.visible = visible_
+	if not visible_:
+		return
+	var v: Label = chip.get_meta("value_label", null) as Label
+	var s: Label = chip.get_meta("sublabel_label", null) as Label
+	if v != null:
+		v.text = value
+	if s != null:
+		s.text = sublabel
+	chip.modulate = Color(1.0, 0.7, 0.7) if warn else Color(1.0, 1.0, 1.0)
+
+
+# Responsive layout. Three breakpoints driven by viewport width + touch:
+#   wide   (≥1100):     all chips visible WITH sublabels, both clusters at top
+#   medium (700-1099):  all chips visible, sublabels hidden to save space
+#   compact (<700, or
+#           touch+<900): minimal chips (state/fish/flora/water/alert), right
+#                       cluster moves to bottom-right thumb zone
+# Called once at _ready and on every viewport size_changed.
+func _apply_hud_layout() -> void:
+	if top_hud == null or stats_bar == null:
+		return
+	var w: float = get_viewport().get_visible_rect().size.x
+	var is_touch: bool = _is_mobile()
+
+	var layout: String = "wide"
+	if w < 700.0 or (is_touch and w < 900.0):
+		layout = "compact"
+	elif w < 1100.0:
+		layout = "medium"
+	if layout == _hud_layout:
+		return
+	_hud_layout = layout
+
+	# Sublabel visibility: only shown on the wide breakpoint.
+	for chip in _chips.values():
+		var s: Label = (chip as Control).get_meta("sublabel_label", null) as Label
+		if s != null:
+			s.visible = layout == "wide"
+
+	# Compact: hide secondary fauna chips (their data folds into the "fish"
+	# chip via _render_header's compact branch).
+	var compact_only_chips := ["shrimp", "snails", "morphs"]
+	for k in compact_only_chips:
+		var chip: Control = _chips.get(k, null) as Control
+		if chip != null:
+			# Visibility is also gated by _render_header (morphs only shown
+			# when >0). In compact, force-hide regardless.
+			if layout == "compact":
+				chip.visible = false
+
+	# Right cluster: top-right on wide/medium, bottom-right (FAB zone) on compact.
+	if right_cluster != null:
+		if layout == "compact":
+			right_cluster.anchor_left = 1.0
+			right_cluster.anchor_top = 1.0
+			right_cluster.anchor_right = 1.0
+			right_cluster.anchor_bottom = 1.0
+			right_cluster.offset_left = -12.0
+			right_cluster.offset_top = -12.0
+			right_cluster.offset_right = -12.0
+			right_cluster.offset_bottom = -12.0
+			right_cluster.grow_horizontal = 0
+			right_cluster.grow_vertical = 0
+		else:
+			right_cluster.anchor_left = 1.0
+			right_cluster.anchor_top = 0.0
+			right_cluster.anchor_right = 1.0
+			right_cluster.anchor_bottom = 0.0
+			right_cluster.offset_left = -12.0
+			right_cluster.offset_top = 8.0
+			right_cluster.offset_right = -12.0
+			right_cluster.offset_bottom = 8.0
+			right_cluster.grow_horizontal = 0
+			right_cluster.grow_vertical = 1
+
+	# Re-render chip values so the compact-fauna branch kicks in immediately.
+	_render_header()
+
+
+# Mirror MobileHUD's idle-dim for the top HUD. Resets the timer; called from
+# every input handler. Restores full brightness if we were dimmed.
+func _notify_hud_input() -> void:
+	_hud_idle_seconds = 0.0
+	if top_hud != null and top_hud.modulate != HUD_LIT_MODULATE:
+		top_hud.modulate = HUD_LIT_MODULATE
 
 
 # Format "{total} / {adults}{a_suf} {kids}{k_suf}" with the breakdown hidden
