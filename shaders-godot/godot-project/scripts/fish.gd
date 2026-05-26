@@ -1010,14 +1010,18 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				and burst_remaining <= 0.0 and randf() < dt * 0.4:
 			_sift_timer = randf_range(1.5, 3.0)
 			_sift_cooldown = randf_range(6.0, 12.0)
-			# Substrate dig puff. When a shuffle fish starts a sift, it kicks
-			# up a tiny mulm voxel at its current position — the visible
-			# "loach digging in the substrate" moment. World caps mulm so
-			# this just contributes to the carpet rather than ballooning it.
+			# Substrate dig: a persistent mulm voxel for the carpet, plus a
+			# brief dust burst that rises + fades over ~1.4s. The dust is
+			# the visible "kicked up the substrate" moment that just adding
+			# a static voxel can't sell on its own. World caps the mulm
+			# carpet so the persistent voxels don't balloon.
 			if sim != null and position.y < sim.substrate_top_y + 1.0:
 				var w := get_tree().current_scene.get_node_or_null("SubViewport/World")
-				if w != null and w.has_method("add_mulm_voxel"):
-					w.add_mulm_voxel(global_position)
+				if w != null:
+					if w.has_method("add_mulm_voxel"):
+						w.add_mulm_voxel(global_position)
+					if w.has_method("spawn_substrate_dust"):
+						w.spawn_substrate_dust(global_position)
 
 	# Cory / loach aerial respiration. Every ~25-40 sim seconds, a
 	# "shuffle" pattern fish darts to the surface, gulps, and sinks back.

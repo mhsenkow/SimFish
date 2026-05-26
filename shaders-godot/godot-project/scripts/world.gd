@@ -17,6 +17,18 @@ var _water_mesh: MeshInstance3D = null
 var _water_material_ref: StandardMaterial3D = null
 var _mulm_voxels: Array = []
 var algae_root: Node3D = null
+# Driftwood voxels captured in _build_hardscape so the biofilm tick can
+# tint a growing fraction over time. Real driftwood develops a fuzzy
+# white biofilm in the first 1-2 weeks of a new tank, then settles back
+# as bacteria balance out and shrimp / otos graze it.
+var _driftwood_voxels: Array[MeshInstance3D] = []
+# Biofilm progress 0..1. Climbs slowly over the first few real-time
+# minutes, peaks around 0.65, then decays back toward a balanced level
+# as the "biofilm gets grazed" — the visible bloom-and-settle that all
+# new tanks show. Saved/loaded via TankConfig if we ever want to
+# persist it across sessions; for now it's per-session.
+var biofilm_progress: float = 0.0
+var _biofilm_apply_t: float = 0.0
 # Microfauna swarm + detrital worm carpet. Both are pure-visual entity
 # populations maintained by _process below — they're not part of the
 # brain tick loop because nothing makes decisions about them, they just
@@ -258,6 +270,17 @@ func _process(dt: float) -> void:
 	# child_count + a handful of conditional spawns per ~1 s window).
 	_maintain_microfauna(sdt)
 	_maintain_wriggle_worms(sdt)
+	# Driftwood biofilm: rises over the first ~5 sim-minutes to ~0.65
+	# then very slowly decays as if grazed. We refresh the tints every
+	# 2 s rather than per-frame since the change is glacial.
+	_biofilm_apply_t -= sdt
+	if _biofilm_apply_t <= 0.0:
+		_biofilm_apply_t = 2.0
+		var target: float = 0.65
+		# Slow rise (~5 min to reach 0.6), then very slow decay past 0.65.
+		var delta: float = (target - biofilm_progress) * sdt * 0.004 + sdt * 0.0008
+		biofilm_progress = clampf(biofilm_progress + delta, 0.0, 0.7)
+		_apply_biofilm_tints()
 	# Coral recruitment (saltwater tanks only). Every CORAL_RECRUIT_INTERVAL
 	# sim-seconds a fresh polyp appears somewhere on the substrate, mimicking
 	# the larval-drift-and-settle mechanism that keeps real reefs replenished
@@ -536,10 +559,12 @@ func _build_hardscape() -> void:
 			var t: float = float(s) / float(steps)
 			var p: Vector3 = a.lerp(b, t)
 			var size: float = 0.55
-			_add_cube(c, p, Vector3(size, size, size), mat_dark)
+			_driftwood_voxels.append(_add_cube(
+				c, p, Vector3(size, size, size), mat_dark))
 			for dx in [-1, 1]:
-				_add_cube(c, p + Vector3(0, size * 0.5, dx * size * 0.4),
-						  Vector3(size * 0.6, size * 0.6, size * 0.6), mat_light)
+				_driftwood_voxels.append(_add_cube(
+					c, p + Vector3(0, size * 0.5, dx * size * 0.4),
+					Vector3(size * 0.6, size * 0.6, size * 0.6), mat_light))
 
 	var stone_mat := _solid_mat(C_STONE_LIGHT)
 	var stone_dark := _solid_mat(C_STONE_DARK)
@@ -2088,6 +2113,74 @@ func _spawn_mulm_layer() -> void:
 		mi.material_override = VoxelMat.make(Color8(28, 22, 16))
 		container.add_child(mi)
 		_mulm_voxels.append(mi)
+
+
+# Apply a deterministic biofilm tint pattern across the driftwood voxels.
+# Uses each voxel's index hash modulo a denominator that shrinks with
+# biofilm_progress — at 0 nothing is tinted; at 0.65 roughly two-thirds
+# of voxels carry the cream/white biofilm tint. Deterministic so the
+# pattern doesn't shimmer between updates (a voxel that's tinted at
+# 0.40 stays tinted at 0.65).
+func _apply_biofilm_tints() -> void:
+	if _driftwood_voxels.is_empty():
+		return
+	var cream: Color = Color(1.28, 1.22, 1.10)  # warm-white biofilm
+	var clean: Color = Color(1.0, 1.0, 1.0)
+	# Higher progress → smaller denominator → more voxels tinted.
+	# At progress=0.0, denom>=100 → ~0 voxels tinted.
+	# At progress=0.65, denom≈2 → ~half tinted.
+	var denom: int = maxi(1, int(round(20.0 - biofilm_progress * 28.0)))
+	for i in _driftwood_voxels.size():
+		var vx: MeshInstance3D = _driftwood_voxels[i]
+		if not is_instance_valid(vx):
+			continue
+		var tinted: bool = (hash(i * 73 + 13) % denom) == 0
+		# Blend the cream toward white based on biofilm strength so the
+		# tint also intensifies over time rather than just flipping on.
+		var tint_for_vx: Color = clean
+		if tinted:
+			tint_for_vx = clean.lerp(cream, clampf(biofilm_progress / 0.65, 0.0, 1.0))
+		vx.set_instance_shader_parameter("tint", tint_for_vx)
+
+
+# Spawn a brief dust burst at `pos` — 4-5 tiny dark voxels that puff up
+# and outward, fading via Tween over ~1.4 seconds. Called from fish.gd
+# when a shuffle-pattern fish (cory, mudsifter) starts a sift, layered
+# on top of the persistent mulm voxel that already drops there. Sells
+# the "kicked up the substrate" moment that the static voxel alone can't.
+func spawn_substrate_dust(pos: Vector3) -> void:
+	var container := get_node_or_null("Mulm")
+	if container == null:
+		return
+	# Cap per-burst at 5 voxels and global concurrent dust at ~30 to keep
+	# the scene clean during a school of cory all sifting at once.
+	if container.get_child_count() > 175:
+		return
+	var n: int = randi_range(3, 5)
+	for i in n:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.07, 0.07, 0.07)
+		mi.mesh = bm
+		mi.material_override = VoxelMat.make(Color8(38, 30, 22))
+		# Random spread around the dig point. Slight upward bias so the
+		# burst reads as "puffing up" not "spilling sideways."
+		var spread := Vector3(
+			randf_range(-0.18, 0.18),
+			randf_range(0.02, 0.10),
+			randf_range(-0.18, 0.18),
+		)
+		mi.position = pos + spread
+		container.add_child(mi)
+		# Tween: rise 0.25 units further + drift outward + shrink + free.
+		var rise: Vector3 = mi.position + Vector3(
+			spread.x * 1.5, 0.25, spread.z * 1.5)
+		var tw: Tween = create_tween().set_parallel(true)
+		tw.tween_property(mi, "position", rise, 1.4) \
+			.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+		tw.tween_property(mi, "scale", Vector3(0.2, 0.2, 0.2), 1.4) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		tw.chain().tween_callback(mi.queue_free)
 
 
 # Called by sim_driver when a waste particle settles. Adds another tiny

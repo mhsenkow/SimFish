@@ -240,8 +240,11 @@ func _clear_flower() -> void:
 
 
 func _try_propagate() -> void:
-	# Spawn a new pad nearby via a runner (just spawn directly; visual
-	# runner could be added later).
+	# Spawn a new pad nearby via a runner. The "runner" itself is a thin
+	# chain of dark voxels along the substrate connecting parent → child;
+	# without it the new pad just popped into existence with no causal
+	# link to its parent. Real lily / Echinodorus runners are exactly
+	# this kind of visible stolen-stem along the substrate.
 	#
 	# Lily pads previously propagated with a ±2.0-unit XZ offset and no
 	# bounds check — runners spawned through the glass on any tank smaller
@@ -265,11 +268,39 @@ func _try_propagate() -> void:
 			break
 	if not found:
 		return
+	# Lay a visible runner trail along the substrate from us to the new
+	# spawn. Runners sit just above the mulm so they read as plant
+	# tissue, not detritus.
+	_lay_runner_trail(global_position, new_pos, parent_node)
 	var new_pad := LilyPad.new()
 	parent_node.add_child(new_pad)
 	new_pad.pad_radius = pad_radius * randf_range(0.75, 1.0)
 	new_pad.pad_voxels = maxi(12, int(pad_voxels * randf_range(0.6, 0.9)))
 	new_pad.init_at(new_pos, stem_y)
+
+
+# Drop a chain of 4-7 dark-green voxels along the segment from `a` to `b`
+# at substrate height (y from `a.y`). Reads as a stolen-stem runner —
+# the visible "this pad came from that pad" causal link that real
+# carpet / lily propagation produces.
+func _lay_runner_trail(a: Vector3, b: Vector3, parent_node: Node) -> void:
+	var segs: int = clampi(int(round((b - a).length() / 0.4)), 4, 8)
+	var runner_color := Color8(60, 90, 45)
+	for i in segs:
+		var t: float = float(i + 1) / float(segs + 1)
+		var p: Vector3 = a.lerp(b, t)
+		# Substrate-hugging Y plus a tiny lateral wiggle so the chain
+		# doesn't read as a perfectly straight ruler line.
+		p.y = a.y - 0.02
+		p.x += sin(t * PI * 1.5) * 0.06
+		p.z += cos(t * PI * 1.3) * 0.06
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.12, 0.05, 0.12)
+		mi.mesh = bm
+		mi.material_override = VoxelMat.make(runner_color)
+		mi.position = p
+		parent_node.add_child(mi)
 
 
 # Walk up the scene tree to find the world node (which carries

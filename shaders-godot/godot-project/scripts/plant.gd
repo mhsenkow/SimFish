@@ -95,6 +95,13 @@ var _shade_check_t: float = 0.0
 const SHADE_RADIUS: float = 1.4
 const SHADE_HEIGHT_DELTA: int = 2  # neighbor must be at least this much taller
 const SHADE_PENALTY: float = 0.55  # multiplier on nutrient_mult when shaded
+
+# ---- Deficiency tinting ----
+# Refreshed every 2.5-4 s. Modulates the top voxels of the plant toward
+# pale (CO₂ stress) or yellow (iron stress) when the relevant inferred
+# condition is met. Both are cosmetic — they don't accelerate decay.
+var _deficiency_check_t: float = 0.0
+var _deficiency_active: String = ""  # "", "co2", "iron"
 var _has_pinholes: bool = false
 
 # ---- Flowering lifecycle ----
@@ -250,14 +257,27 @@ func _build_initial_roots() -> void:
 func _add_root(root_ramp: Array) -> void:
 	if _root_count >= _max_roots:
 		return
-	var angle: float = float(_root_count) / float(maxi(1, _max_roots)) * TAU
+	# Distribute angles around the full circle. As _root_count grows past
+	# the original cap of 5, subsequent roots fan out into the gaps via
+	# the golden-angle stride so they don't stack on the radial axes the
+	# first few roots already claimed. This is the visible "established
+	# plant has a denser root mat" effect.
+	var angle: float
+	if _root_count < 5:
+		angle = float(_root_count) / 5.0 * TAU
+	else:
+		angle = float(_root_count) * 2.39996  # golden angle in radians
 	angle += randf_range(-0.4, 0.4)  # jitter
+	# Lateral spread: later-grown roots reach further from the stem,
+	# giving the mature plant a wider root halo just under the substrate
+	# instead of all roots stacking under the trunk.
+	var lateral_bias: float = 1.0 + clampf(float(_root_count) / 8.0, 0.0, 0.8)
 	var depth: int = _rng_range(2, 4)
 	var root_color: Color = root_ramp[0] if root_ramp.size() > 0 else Color8(60, 45, 30)
 	var root_light: Color = root_ramp[1] if root_ramp.size() > 1 else Color8(80, 60, 40)
 	for j in depth:
 		var t: float = float(j) / float(depth)
-		var spread: float = t * VOXEL_SIZE * 1.2
+		var spread: float = t * VOXEL_SIZE * 1.2 * lateral_bias
 		var mi := MeshInstance3D.new()
 		var taper: float = 1.0 - t * 0.4
 		mi.mesh = VoxelMat.get_box(Vector3(
@@ -356,8 +376,16 @@ func _grow_one() -> bool:
 
 	current_height += 1
 
-	# Root growth: add a root every 3-4 stem voxels.
+	# Root growth: add a root every 3-4 stem voxels. As the plant matures
+	# (current_height climbs), bump the root cap so the root mat keeps
+	# spreading laterally — established planted-tank specimens visibly
+	# carpet the substrate under their stem with roots, not just have
+	# a tight bundle directly below.
 	_root_growth_counter += 1
+	# Lift the cap to 5 + ceil(height/4), maxing at 12. So a 4-voxel
+	# sapling has the original 5-root cap; a 28-voxel sword can grow up
+	# to 12 root columns spreading well past the stem.
+	_max_roots = clampi(5 + int(ceil(float(current_height) / 4.0)), 5, 12)
 	if _root_growth_counter >= 3 and _root_count < _max_roots:
 		_root_growth_counter = 0
 		var root_ramp: Array = [ramp[0].darkened(0.3), ramp[0].darkened(0.15)]
@@ -383,6 +411,30 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	voxels.append(mi)
 
 
+# Animate a freshly-spawned leaf node from a curled-up start (small scale,
+# tilted forward like a rolled-up shoot) into its full open pose. Real
+# aquatic plants unfurl new leaves over a day or two; we compress that to
+# ~1.6 sim seconds so the player visibly sees fresh growth "opening." Uses
+# a Tween so each leaf manages its own animation lifecycle — no per-frame
+# bookkeeping in tick().
+func _animate_leaf_unfurl(leaf_node: Node3D) -> void:
+	if leaf_node == null:
+		return
+	var final_scale: Vector3 = leaf_node.scale
+	leaf_node.scale = Vector3(0.15, 0.25, 0.15)
+	# Tiny initial forward pitch — the rolled-up shoot pose. Pivot is at
+	# the leaf base since LeafShapes builds the leaf extending outward
+	# from there, so a pitch tilts it inward toward the stem and reads as
+	# "still rolled."
+	var orig_rot: Vector3 = leaf_node.rotation
+	leaf_node.rotation = orig_rot + Vector3(deg_to_rad(-35.0), 0.0, 0.0)
+	var tw: Tween = create_tween().set_parallel(true)
+	tw.tween_property(leaf_node, "scale", final_scale, 1.6) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(leaf_node, "rotation", orig_rot, 1.4) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
 func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2) -> void:
 	var leaf_node := Node3D.new()
@@ -405,6 +457,7 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 		leaf_node.add_child(v)
 		voxels.append(v)
 	_leaf_nodes.append(leaf_node)
+	_animate_leaf_unfurl(leaf_node)
 	_leaf_ages.append(_t)
 
 
@@ -429,6 +482,7 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 		voxels.append(v)
 	_leaf_nodes.append(leaf_node)
 	_leaf_ages.append(_t)
+	_animate_leaf_unfurl(leaf_node)
 
 
 func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
@@ -460,6 +514,7 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 			voxels.append(v)
 		_leaf_nodes.append(leaf_node)
 		_leaf_ages.append(_t)
+		_animate_leaf_unfurl(leaf_node)
 
 
 func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
@@ -479,6 +534,7 @@ func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 		voxels.append(v)
 	_leaf_nodes.append(leaf_node)
 	_leaf_ages.append(_t)
+	_animate_leaf_unfurl(leaf_node)
 
 
 func _build_stressed_ramp(base_ramp: Array) -> Array:
@@ -517,6 +573,58 @@ func _recompute_shade() -> void:
 		if op.current_height > current_height + SHADE_HEIGHT_DELTA:
 			_shade_mult = SHADE_PENALTY
 			return  # one is enough; no need to scan more
+
+
+# Compute & apply pale (CO₂) or yellow (iron) tint to the topmost voxels.
+# Reads sim.daylight() and uses growth_progress as an indirect "stalled
+# photosynthesis" signal. We tint the top quartile of voxels because
+# deficiencies show first on new growth in real plants (carbon demand
+# and iron mobility both favor the youngest tissue).
+func _apply_deficiency_tints(nutrient_mult: float) -> void:
+	if voxels.is_empty():
+		return
+	var sim_driver: Node = _find_sim()
+	var daylight: float = 1.0
+	if sim_driver != null and sim_driver.has_method("daylight"):
+		daylight = float(sim_driver.daylight())
+	# CO₂ stress: high light, stalled growth, plant still healthy enough
+	# to register the visible symptom (a dying plant has bigger problems).
+	var co2_stressed: bool = daylight > 0.7 and growth_progress < 0.15 \
+		and current_height >= max_height - 1 and _health_smooth > 0.5
+	# Iron stress: nutrients are middling — plenty for survival, not
+	# enough for vivid pigment in new growth. Substrate baseline is the
+	# tell (aquasoil / eco_complete are iron-rich; sand / inert_gravel
+	# starve stem plants of micronutrients).
+	var iron_stressed: bool = nutrient_mult > 0.25 and nutrient_mult < 0.6 \
+		and _health_smooth > 0.5
+	var new_state: String = ""
+	if co2_stressed:
+		new_state = "co2"
+	elif iron_stressed:
+		new_state = "iron"
+	# Idempotent: skip re-applying if nothing changed since last check.
+	if new_state == _deficiency_active:
+		return
+	_deficiency_active = new_state
+
+	var tint: Color = Color(1, 1, 1, 1)
+	if new_state == "co2":
+		tint = Color(0.88, 0.95, 0.84)   # pale, slightly chlorotic
+	elif new_state == "iron":
+		tint = Color(1.05, 1.0, 0.55)    # yellow new-growth chlorosis
+	# Apply to the top quartile of voxels (newest growth). The voxel
+	# shader has an `instance uniform vec4 tint` so we can multiply per
+	# voxel without duplicating its material — cheap and lets the same
+	# base color shine through everywhere else.
+	var clean: Color = Color(1, 1, 1, 1)
+	var n: int = voxels.size()
+	var cutoff: int = maxi(1, n - int(ceil(float(n) * 0.25)))
+	for i in n:
+		var vx: MeshInstance3D = voxels[i]
+		if not is_instance_valid(vx):
+			continue
+		vx.set_instance_shader_parameter("tint",
+			tint if i >= cutoff else clean)
 
 
 # Called by SimDriver each tick.
@@ -559,6 +667,28 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_apply_pinholes()
 	if _health_smooth < 0.2 and not is_dying:
 		_begin_dying()
+
+	# CO₂ + iron deficiency tinting. We don't model these as separate
+	# substrate pools (yet) — instead we infer them from existing state:
+	#
+	#   CO₂ stress: light is HIGH (>0.7) but growth_progress isn't catching
+	#     up. Real planted-tank symptom: bright lights without CO₂ injection
+	#     mean photosynthesis stalls. Visible as a soft pale tint at the
+	#     plant's top voxels (newest growth, where carbon demand is highest).
+	#
+	#   Iron stress: nutrient_mult is mid-low (0.25..0.6) AND the substrate
+	#     is the inert / sand profile (low organic iron). Real symptom:
+	#     interveinal yellowing on new leaves while older leaves stay green.
+	#     We tint the top quartile of leaves toward yellow.
+	#
+	# Both are pure visual — they don't accelerate decay. They're cues for
+	# the player to tweak settings (CO₂: lower the light or pick a richer
+	# substrate; iron: switch to aquasoil or eco_complete). Tint applied
+	# every ~3s, not per-tick, since the result changes slowly.
+	_deficiency_check_t -= dt
+	if _deficiency_check_t <= 0.0:
+		_deficiency_check_t = randf_range(2.5, 4.0)
+		_apply_deficiency_tints(nutrient_mult)
 
 	# ---- Starvation → leaf shedding ----
 	if _health_smooth < 0.45:
@@ -846,20 +976,32 @@ func _tick_pearling(_dt: float) -> void:
 	var daylight: float = 1.0
 	if sim_driver.has_method("daylight"):
 		daylight = sim_driver.daylight()
-	# Pearl when: high O2 + bright light + plant is healthy + actively growing.
-	var should_pearl: bool = o2 > 0.85 and daylight > 0.5 and health > 0.6 \
-		and current_height > 3
-	if should_pearl and not _pearling_active:
-		_pearling_active = true
-		_pearling_particles.emitting = true
-		# Position at the top of the plant.
+	# Pearl when: O2 super-saturated + bright light + plant healthy + tall
+	# enough that you'd actually see the bubble stream. Intensity is now
+	# graded rather than binary so the stream visibly thickens with a
+	# bigger, healthier plant under brighter light, and thins as those
+	# inputs drop — real planted-tank pearling fades in/out, it doesn't
+	# pop. Total amount = O2 saturation × light × health × biomass-factor.
+	var pearl_factor: float = clampf((o2 - 0.75) / 0.25, 0.0, 1.0) \
+		* clampf((daylight - 0.4) / 0.6, 0.0, 1.0) \
+		* clampf((health - 0.5) / 0.5, 0.0, 1.0) \
+		* clampf(float(current_height - 2) / 10.0, 0.0, 1.0)
+	var should_pearl: bool = pearl_factor > 0.05
+	if should_pearl:
+		if not _pearling_active:
+			_pearling_active = true
+			_pearling_particles.emitting = true
+		# Scale emission rate with the gradient so a fully healthy big
+		# plant streams bubbles fast and a marginal one trickles. The
+		# emitter exposes `amount_ratio` in Godot 4 for runtime intensity
+		# without rebuilding the particle system.
+		var amount_ratio: float = clampf(0.25 + pearl_factor * 0.85, 0.25, 1.0)
+		_pearling_particles.set("amount_ratio", amount_ratio)
+		# Position at the top of the plant, tracking growth.
 		_pearling_particles.position = Vector3(0, current_height * VOXEL_SIZE * 0.8, 0)
-	elif not should_pearl and _pearling_active:
+	elif _pearling_active:
 		_pearling_active = false
 		_pearling_particles.emitting = false
-	elif _pearling_active:
-		# Update position to follow growth.
-		_pearling_particles.position = Vector3(0, current_height * VOXEL_SIZE * 0.8, 0)
 
 
 # ---- Seeding ----

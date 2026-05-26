@@ -12,6 +12,10 @@ shader_type spatial;
 render_mode unshaded, cull_back;
 
 uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+// Per-instance tint multiplier. Plants set this on individual voxels to
+// signal CO₂ / iron / health deficiencies without having to duplicate the
+// underlying material. Default 1,1,1,1 = no tint.
+instance uniform vec4 tint : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 
 void fragment() {
     vec3 n = normalize(NORMAL);
@@ -25,5 +29,5 @@ void fragment() {
     } else {
         f = 0.68;        // +Z / -Z sides
     }
-    ALBEDO = albedo.rgb * f;
+    ALBEDO = albedo.rgb * tint.rgb * f;
 }
