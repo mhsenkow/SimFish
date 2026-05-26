@@ -457,6 +457,12 @@ func _tick(dt: float) -> void:
 			if is_instance_valid(partner_f):
 				_lay_eggs(actor as Fish, partner_f)
 
+		# Fish release livebearer fry (after gestation period).
+		if ev.has("release_livebearer_fry"):
+			var brood_genome: Dictionary = ev["release_livebearer_fry"]
+			if brood_genome.size() > 0:
+				_release_livebearer_fry(actor as Fish, brood_genome)
+
 		# Shrimp release fry (after gravidity period). Genome was pre-computed
 		# at fertilization time and stashed on the female; we just spawn the
 		# babies now using it.
@@ -582,6 +588,34 @@ func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
 		register_shrimp(baby)
 
 
+func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
+	if fauna_root == null:
+		return
+	var n: int = mini(mother.clutch_size, 4)
+	for i in n:
+		var g: Dictionary = brood_genome.duplicate(true)
+		g["sex"] = randi() % 2
+		# Tiny per-baby color jitter so the litter isn't identical.
+		if g.has("base_color"):
+			g["base_color"] = (g["base_color"] as Color).lerp(
+				Color(randf(), randf(), randf()), 0.05)
+		var fry := Fish.new()
+		fauna_root.add_child(fry)
+		fry.global_position = mother.global_position + Vector3(
+			randf_range(-0.15, 0.15),
+			randf_range(-0.10, 0.05),
+			randf_range(-0.15, 0.15),
+		)
+		fry.init_genome(g)
+		fry.maturity = Fish.MATURITY_FRY
+		fry.hunger = 0.25
+		fry.energy = 0.95
+		register_fish(fry)
+	# Mother's belly is empty: extra exhaustion + small recovery cooldown.
+	mother.energy = maxf(0.0, mother.energy - 0.20)
+	_play_ambient(0.65)
+
+
 func _lay_eggs(a: Fish, b: Fish) -> void:
 	# Branch on a.is_livebearer: guppies and platies don't lay eggs - the
 	# female releases free-swimming juveniles directly. Everyone else
@@ -652,15 +686,17 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 		log_story_event("First eggs laid — a %s pair spawned %d eggs." % [
 			a.species, n])
 
-	# Pair-bonding species (currently angelfish via swim_pattern "hover")
-	# enter brooding mode: both parents hover near the nest and chase
-	# intruders for BROODING_DURATION sim seconds. Fish.tick() reads the
-	# brooding fields and overrides its behavior tree while active.
-	if a.swim_pattern == "hover" and b.swim_pattern == "hover":
+	# Pair-bonding/guarding species enter brooding mode: parents hover near
+	# the nest and chase intruders. Hover species get full 90s duration;
+	# other species with guards_clutch genome get 45s light brooding duration.
+	var a_guards = a.get("guards_clutch") == true or a.swim_pattern == "hover"
+	var b_guards = b.get("guards_clutch") == true or b.swim_pattern == "hover"
+	if a_guards:
 		a.brooding_at = lay_at
-		a.brooding_remaining = Fish.BROODING_DURATION
+		a.brooding_remaining = Fish.BROODING_DURATION if a.swim_pattern == "hover" else Fish.BROODING_DURATION_LIGHT
+	if b_guards:
 		b.brooding_at = lay_at
-		b.brooding_remaining = Fish.BROODING_DURATION
+		b.brooding_remaining = Fish.BROODING_DURATION if b.swim_pattern == "hover" else Fish.BROODING_DURATION_LIGHT
 
 	_play_ambient(0.4)  # soft mid-tone for laying
 
@@ -832,7 +868,6 @@ var story_events: Array = []
 var _logged_first_egg: bool = false
 var _logged_first_hatch: bool = false
 var _logged_first_death: bool = false
-var _logged_first_morph: bool = false
 
 
 func log_story_event(text: String) -> void:

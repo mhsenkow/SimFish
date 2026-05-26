@@ -31,9 +31,9 @@ var msaa: int = 0
 # Camera state - preserved across scene reloads so changing settings doesn't
 # snap the view back to the default. Saved by main.gd.save_camera_state()
 # right before a panel triggers reload_current_scene.
-var camera_yaw: float = -0.35
-var camera_pitch: float = 0.30
-var camera_radius: float = 14.0
+var camera_yaw: float = -0.55
+var camera_pitch: float = 0.48
+var camera_radius: float = 17.5
 var camera_target_x: float = 0.0
 var camera_target_y: float = 3.0
 var camera_target_z: float = 0.0
@@ -86,10 +86,8 @@ var light_fixture: String = "bar"
 var light_height: float = 1.4
 # Size of the fixture as a fraction of tank width.
 var light_size: float = 0.75
-# Show volumetric beams (god rays). Off by default - heavy on macOS Metal
-# and a known fence-timeout trigger when combined with the dense scene.
-# Users can re-enable via Settings panel.
-var light_volumetric: bool = false
+# Show volumetric beams (god rays). On by default for high-fidelity startup experience.
+var light_volumetric: bool = true
 
 # ---- Room environment ----
 # A "scene" around the tank — desk, wall, lamp, props. Lifts the tank
@@ -314,6 +312,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			# killifish have one - it reads as "this is not a tetra-tetra
 			# but it shares the lineage." Helps differentiate from danios.
 			"adipose_fin": true,
+			"guards_clutch": true,
 		},
 	},
 	"guppy": {
@@ -449,6 +448,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"back_arch": 1.0,
 			"tail_shape": 3,                    # square paddle
 			"algae_grazer": true,               # corydoras graze algae + biofilm
+			"guards_clutch": true,
 		},
 	},
 	"angelfish": {
@@ -491,6 +491,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"body_shape": "compressed",
 			"anal_fin_length_factor": 1.7,
 			"snout_pointed": true,
+			"guards_clutch": true,
 		},
 	},
 	"reef_fish": {
@@ -908,7 +909,7 @@ func reset_to_defaults() -> void:
 	light_fixture = "bar"
 	light_height = 1.4
 	light_size = 0.75
-	light_volumetric = false
+	light_volumetric = true
 	environment_preset = "void"
 	# Fauna behavior.
 	auto_respawn_fauna = false
@@ -936,9 +937,9 @@ func reset_to_defaults() -> void:
 	msaa = 0
 	# Camera view.
 	camera_state_saved = false
-	camera_yaw = -0.35
-	camera_pitch = 0.30
-	camera_radius = 14.0
+	camera_yaw = -0.55
+	camera_pitch = 0.48
+	camera_radius = 17.5
 	camera_target_x = 0.0
 	camera_target_y = 3.0
 	camera_target_z = 0.0

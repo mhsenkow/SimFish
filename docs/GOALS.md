@@ -38,13 +38,13 @@ sells the "this is alive" feeling.
 
 - [ ] **11. Intensifying courtship display.** Color pulse + fin spread ramps over the courtship window so the spawn moment reads as a flash. Some of this exists; needs tuning. *Effort: M · Impact: M*
 - [ ] **12. Mouthbrooder egg-carry.** Selected cichlid-likes carry visible eggs in the throat for the incubation period. *Effort: L · Impact: M*
-- [ ] **13. Fry-in-plants shoaling.** Fresh fry seek the densest plant patch and shoal there until juvenile. *Effort: M · Impact: L*
-- [ ] **14. Adult coloration deepening with age.** Juveniles slightly desaturated, adults full vivid. Currently jumps; should be gradual. *Effort: S · Impact: M*
-- [ ] **15. Live-bearer pregnancy bulge.** Guppy females visibly grow rounder before birth. Already partly modeled; needs animation curve. *Effort: S · Impact: M*
+- [x] **13. Fry-in-plants shoaling.** Fresh fry seek the densest plant patch and shoal there until juvenile. *Effort: M · Impact: L*
+- [x] **14. Adult coloration deepening with age.** Juveniles slightly desaturated, adults full vivid. Currently jumps; should be gradual. *Effort: S · Impact: M*
+- [x] **15. Live-bearer pregnancy bulge.** Guppy females visibly grow rounder before birth. Already partly modeled; needs animation curve. *Effort: S · Impact: M*
 - [ ] **16. Sterile / hybrid genetic flag.** Some crossed pairs produce non-viable eggs that simply don't hatch — adds genetic realism. *Effort: M · Impact: S*
-- [ ] **17. Parental clutch guarding.** Egg-laying species defend their eggs from passing fish for the incubation window. *Effort: M · Impact: L*
+- [x] **17. Parental clutch guarding.** Egg-laying species defend their eggs from passing fish for the incubation window. *Effort: M · Impact: L*
 - [ ] **18. Pheromone trails during heat.** Subtle particle trail from a receptive female that nearby males can follow. *Effort: M · Impact: M*
-- [ ] **19. Species-tinted egg color.** Eggs currently look identical; tinting them per-species sells the variety. *Effort: S · Impact: S*
+- [x] **19. Species-tinted egg color.** Eggs currently look identical; tinting them per-species sells the variety. *Effort: S · Impact: S*
 - [ ] **20. Per-species mating dance.** Each species gets a distinct courtship choreography (spiral, parade, vertical bob, parallel cruise). *Effort: L · Impact: L*
 
 ## C. Food web & ecology

@@ -71,9 +71,9 @@ var _key_was_pressed: Dictionary = {}
 # Orbit state - default angle is the "feels nice" view the user landed on
 # (drag to refine, F to reset back to this).
 const DEFAULT_TARGET := Vector3(0, 3.0, 0)
-const DEFAULT_RADIUS := 14.0
-const DEFAULT_YAW := -0.35
-const DEFAULT_PITCH := 0.30
+const DEFAULT_RADIUS := 17.5
+const DEFAULT_YAW := -0.55
+const DEFAULT_PITCH := 0.48
 
 var target: Vector3 = DEFAULT_TARGET
 var radius: float = DEFAULT_RADIUS
@@ -384,7 +384,7 @@ func _process(dt: float) -> void:
 		_autosave_accum += dt
 		if _autosave_accum >= AUTOSAVE_INTERVAL_S:
 			_autosave_accum = 0.0
-			save_active_tank()
+			save_active_tank(not get_window().has_focus())
 	
 	# ---- Touch: long-press detection (runs every frame while finger is down) ----
 	if _touches.size() == 1 and not _long_press_fired:
@@ -2498,7 +2498,7 @@ func _try_load_saved_state() -> void:
 #   - clean app quit
 # Skip if we're in the middle of aquascape mode (time_scale=0 from that path
 # would freeze the session at "paused" forever).
-func save_active_tank() -> void:
+func save_active_tank(skip_thumbnail: bool = false) -> void:
 	if _sim == null or not _sim.has_method("save_state"):
 		return
 	var saves := get_node_or_null("/root/TankSaves")
@@ -2519,7 +2519,8 @@ func save_active_tank() -> void:
 		return
 	# Capture a thumbnail for the menu card. Cheap — pulls the existing
 	# SubViewport texture, no extra rendering.
-	_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
+	if not skip_thumbnail:
+		_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
 	# Update per-tank meta: accumulated runtime + last-opened.
 	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
 	if meta.is_empty():
@@ -2536,6 +2537,8 @@ func save_active_tank() -> void:
 
 func _save_thumbnail(path: String) -> void:
 	if sub_viewport == null:
+		return
+	if not get_window().has_focus():
 		return
 	var img: Image = sub_viewport.get_texture().get_image()
 	if img == null:
@@ -2591,7 +2594,7 @@ func _notification(what: int) -> void:
 	elif what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_persist_last_quit_unix()
 		if _save_restored:
-			save_active_tank()
+			save_active_tank(true)
 	elif what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		# Android system back button. Save and pop to the tank menu rather
 		# than letting the OS kill the activity outright.
@@ -2606,7 +2609,7 @@ func _on_focus_out() -> void:
 	# Snapshot tank state to disk. Best-effort — if it fails, we still want
 	# the lifecycle hooks to continue.
 	if _save_restored:
-		save_active_tank()
+		save_active_tank(true)
 	if _sim == null:
 		return
 	# Only freeze if the sim is currently running; if it was already paused

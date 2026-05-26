@@ -266,7 +266,9 @@ func _ready() -> void:
 	# Toggle volumetric beams based on TankConfig.light_volumetric.
 	var we := get_parent().get_node_or_null("WorldEnvironment")
 	if we != null and we.environment != null and cfg != null:
-		we.environment.volumetric_fog_enabled = bool(cfg.light_volumetric)
+		# Disable heavy built-in volumetric fog to avoid macOS fence timeouts / performance degradation.
+		# The light beams are now drawn via super-performant shader meshes.
+		we.environment.volumetric_fog_enabled = false
 
 	print_verbose("[vivarium] world built: ", get_child_count(), " top-level nodes; ",
 		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
@@ -359,6 +361,24 @@ func _process(dt: float) -> void:
 				continue
 			spot.light_color = beam_color
 			spot.light_energy = spot_energy
+
+		# Sync god ray materials to the light cycle and Render panel parameters.
+		var density: float = 0.02
+		var anisotropy: float = 0.3
+		if cfg2 != null:
+			density = float(cfg2.fog_density)
+			anisotropy = float(cfg2.fog_anisotropy)
+		
+		# Base beam opacity scales with daylight + user density settings
+		var base_alpha: float = density * 4.0
+		var ray_alpha: float = base_alpha * (0.15 + dl * 0.85) * (max_energy / 0.5)
+		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
+		var exponent: float = lerp(1.5, 4.0, (anisotropy + 0.9) / 1.8)
+		
+		for mat in _god_ray_materials:
+			if mat != null:
+				mat.set_shader_parameter("beam_color", ray_color)
+				mat.set_shader_parameter("falloff_exponent", exponent)
 
 	# Floater drift: each surface plant wanders gently on a sin curve.
 	# Filter out queue_freed floaters (e.g. eaten by surface-feeding guppies).
@@ -1486,6 +1506,7 @@ func _spawn_initial_fish() -> void:
 
 var _light_fixture_root: Node3D = null
 var _light_fixture_spots: Array[SpotLight3D] = []
+var _god_ray_materials: Array[ShaderMaterial] = []
 
 
 func _build_light_fixture() -> void:
@@ -1501,6 +1522,8 @@ func _build_light_fixture() -> void:
 		fixture_type = String(cfg.light_fixture)
 		height_above = float(cfg.light_height)
 		size_frac = float(cfg.light_size)
+
+	_god_ray_materials.clear()
 
 	_light_fixture_root = Node3D.new()
 	_light_fixture_root.name = "LightFixture"
@@ -1537,6 +1560,9 @@ func _build_light_fixture() -> void:
 		spot.shadow_enabled = false
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
+
+		if cfg != null and bool(cfg.light_volumetric):
+			_add_god_ray_beam(_light_fixture_root, spot, 38.0, height_above)
 	else:
 		# Bar - long thin housing across the tank width.
 		var bar_length: float = size_frac * TANK_HALF_W * 2.0
@@ -1571,6 +1597,56 @@ func _build_light_fixture() -> void:
 			spot.shadow_enabled = false
 			_light_fixture_root.add_child(spot)
 			_light_fixture_spots.append(spot)
+
+			if cfg != null and bool(cfg.light_volumetric):
+				_add_god_ray_beam(_light_fixture_root, spot, 42.0, height_above)
+
+
+func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, height_above: float) -> void:
+	# Calculate height from spotlight down to substrate.
+	var spot_y: float = TANK_HEIGHT + height_above + spot.position.y
+	var dist: float = spot_y - SUBSTRATE_DEPTH
+	if dist <= 0.1:
+		return
+
+	# Create a CylinderMesh.
+	var mesh := CylinderMesh.new()
+	mesh.top_radius = 0.05
+	# Widen bottom radius to match spotlight visual angle.
+	mesh.bottom_radius = dist * tan(deg_to_rad(spot_angle * 0.45))
+	mesh.height = dist
+	mesh.cap_top = false
+	mesh.cap_bottom = false
+	mesh.radial_segments = 16
+	mesh.rings = 4
+
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	
+	# Position the mesh. CylinderMesh is centered, so offset down by half height.
+	mi.position = Vector3(spot.position.x, spot.position.y - dist * 0.5, spot.position.z)
+	
+	# Load the shader and create a material.
+	var shader := load("res://shaders/god_ray.gdshader") as Shader
+	if shader != null:
+		var mat := ShaderMaterial.new()
+		mat.shader = shader
+		
+		# Set initial parameters
+		mat.set_shader_parameter("beam_color", Color(1.0, 0.95, 0.80, 0.0))
+		mat.set_shader_parameter("speed", 1.2)
+		mat.set_shader_parameter("noise_scale", 1.8)
+		mat.set_shader_parameter("edge_fade", 0.15)
+		
+		var exponent: float = 2.0
+		if TankConfig != null:
+			exponent = lerp(1.5, 4.0, (TankConfig.fog_anisotropy + 0.9) / 1.8)
+		mat.set_shader_parameter("falloff_exponent", exponent)
+		
+		mi.material_override = mat
+		_god_ray_materials.append(mat)
+		
+	parent.add_child(mi)
 
 
 func _spawn_floaters() -> void:

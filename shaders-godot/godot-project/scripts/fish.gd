@@ -242,6 +242,20 @@ const COURT_DURATION: float = 6.0  # sim seconds of swimming together before spa
 # FishEgg pipeline and spawns juveniles directly at the mother.
 var is_livebearer: bool = false
 
+# Livebearer gestation state. After courtship completion, livebearer females
+# don't release fry immediately — they enter a visible pregnancy period where
+# the belly gradually swells (ventral_profile scaled up) before dropping fry.
+# _gestation_progress 0.0 = not pregnant, 0.01..1.0 = gestating, >= 1.0 = birth.
+# _gestation_genome caches the offspring genome (like shrimp.gravid_partner_genome).
+var _gestation_progress: float = 0.0
+var _gestation_genome: Dictionary = {}
+const GESTATION_DURATION: float = 25.0  # sim seconds of visible pregnancy
+
+# Clutch guarding flag (genome-driven). Species that guard their eggs after
+# spawning (angelfish, corydoras, killifish). When true, both parents enter
+# brooding mode after laying eggs, even if they aren't "hover" pattern.
+var guards_clutch: bool = false
+
 # Egg-guarding / brooding state. Set on both parents post-spawn for
 # pair-bonding species (currently swim_pattern == "hover": angelfish).
 # While brooding_remaining > 0 the fish hovers near brooding_at and
@@ -249,6 +263,7 @@ var is_livebearer: bool = false
 var brooding_at: Vector3 = Vector3.ZERO
 var brooding_remaining: float = 0.0
 const BROODING_DURATION: float = 90.0    # ~1.5 sim minutes of guarding
+const BROODING_DURATION_LIGHT: float = 45.0  # lighter guarding for non-hover species
 const BROODING_RADIUS: float = 1.2       # how far intruders trip a chase
 
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
@@ -339,6 +354,16 @@ var _bank: float = 0.0
 # in sync.
 var _saccade_t: float = 0.0
 var _saccade_target: float = 0.0
+# Wander refresh: periodically rotate heading_offset to a new random
+# direction so the fish explores different patrol paths around its home.
+# Without this, solo/low-schooling fish (betta, angelfish) repeat the
+# same tight orbit forever because heading_offset is set once at _ready.
+var _wander_refresh_timer: float = 0.0
+# Home-drift timer: bottom-dwellers and solo fish periodically shift their
+# home_x/home_z within the tank so they roam new territory. Real kuhli
+# loaches explore the entire bottom over hours; bettas patrol different
+# corners. Timer counts down, refreshes to a random interval.
+var _home_drift_timer: float = 0.0
 
 # Heading + speed motion model (separates direction from magnitude). Real
 # fish accelerate forward via tail thrust and steer via slow heading changes,
@@ -447,6 +472,7 @@ func init_genome(genome: Dictionary) -> void:
 	tail_shape = int(genome.get("tail_shape", tail_shape))
 	armor_plates = bool(genome.get("armor_plates", armor_plates))
 	is_livebearer = bool(genome.get("is_livebearer", is_livebearer))
+	guards_clutch = bool(genome.get("guards_clutch", guards_clutch))
 	anal_fin_length_factor = float(genome.get("anal_fin_length_factor",
 		anal_fin_length_factor))
 	adipose_fin = bool(genome.get("adipose_fin", adipose_fin))
@@ -505,6 +531,7 @@ func init_genome(genome: Dictionary) -> void:
 	wander_strength = float(genome.get("wander_strength", wander_strength))
 	dart_chance = float(genome.get("dart_chance", dart_chance))
 	dart_speed_mult = float(genome.get("dart_speed_mult", dart_speed_mult))
+	max_turn_rate = float(genome.get("max_turn_rate", max_turn_rate))
 	# Lazy initialization of home: if the genome didn't supply one, anchor
 	# to the spawn position (XZ) and to preferred_y (Y) plus jitter. Each
 	# fish ends up with its own 3D territory rather than every fish
@@ -524,37 +551,45 @@ func init_genome(genome: Dictionary) -> void:
 # pattern's pick"). Each pattern shapes how the fish wanders + how often it
 # darts; the actual schooling weight stays driven by genome.schooling_strength.
 func _apply_swim_pattern_defaults() -> void:
+	max_turn_rate = 2.6 # default reset
 	match swim_pattern:
 		"school":
 			home_radius = 2.5
 			wander_strength = 1.0
 			dart_chance = 0.005
+			max_turn_rate = 2.6
 		"shoal":
 			home_radius = 4.5
 			wander_strength = 1.3
 			dart_chance = 0.01
+			max_turn_rate = 2.5
 		"dart":
 			home_radius = 3.0
 			wander_strength = 0.7
 			dart_chance = 0.045
 			dart_speed_mult = 1.9
+			max_turn_rate = 3.2
 		"hover":
-			home_radius = 0.9
+			home_radius = 2.2 # increased from 0.9 for wider, more natural hovering area
 			wander_strength = 0.35
 			dart_chance = 0.002
+			max_turn_rate = 1.1 # slow, elegant centerpiece turns
 		"cruise":
 			home_radius = 6.0
 			wander_strength = 0.55
 			dart_chance = 0.003
+			max_turn_rate = 1.8
 		"meander":
 			home_radius = 3.5
 			wander_strength = 1.5
 			dart_chance = 0.0
+			max_turn_rate = 1.5
 		"shuffle":
-			home_radius = 2.0
-			wander_strength = 0.5
+			home_radius = 5.0
+			wander_strength = 1.2
 			dart_chance = 0.012
 			dart_speed_mult = 1.4
+			max_turn_rate = 2.2
 
 
 func _maturity_scale() -> float:
@@ -999,6 +1034,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
 	_startle_remaining = maxf(0.0, _startle_remaining - dt)
 
+	# Gestation progress (livebearer females only)
+	if is_livebearer and sex == 1 and _gestation_progress > 0.0:
+		_gestation_progress += dt / GESTATION_DURATION
+		if _gestation_progress >= 1.0:
+			events["release_livebearer_fry"] = _gestation_genome.duplicate(true)
+			_gestation_progress = 0.0
+			_gestation_genome = {}
+
 	# Substrate sifting (shuffle species only). Slow countdown to next
 	# sift. While _sift_timer > 0 the brain damps velocity to almost
 	# zero AND we tilt nose-down via _process. Sifts happen near the
@@ -1058,6 +1101,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Senescent fish: slowly fade their colors.
 	if maturity == MATURITY_SENESCENT:
 		_apply_aging_tint()
+	# Juvenile color deepening: fry + juveniles are desaturated, gradually
+	# gaining vibrancy as they approach adulthood (#14 in GOALS).
+	elif maturity <= MATURITY_JUVENILE:
+		_apply_maturity_color()
+	else:
+		_restore_original_colors()
 
 	# Death conditions.
 	# Old fish can hang on for 25% past max_age_s. Meal-driven age
@@ -1137,6 +1186,37 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					burst_remaining = 0.25
 		target_velocity = desired.limit_length(effective_max)
 		return events
+
+	# Tier 0.35: FRY PLANT SHELTER. Fresh fry seek the densest nearby plant
+	# patch and hold position inside it until they hit juvenile stage. Real
+	# fry do this instinctively — the foliage hides them from adult
+	# predation and gives them first access to infusoria growing on leaves.
+	# Once within ~0.5 units the fry dampens its velocity so it "nestles"
+	# in the plant rather than orbiting around it. Play (tier 3.8) and
+	# food (tier 1b) still fire when their conditions are met — this only
+	# provides a default resting bias.
+	if maturity == MATURITY_FRY:
+		var shelter: Plant = null
+		var shelter_d2: float = 16.0  # within 4 units
+		for p in plants:
+			if not is_instance_valid(p):
+				continue
+			if p.biomass() < 8:
+				continue
+			var d2: float = p._world_pos.distance_squared_to(position)
+			if d2 < shelter_d2:
+				shelter_d2 = d2
+				shelter = p
+		if shelter != null:
+			var to_plant: Vector3 = shelter._world_pos - position
+			to_plant.y += 0.3  # aim for mid-plant, not substrate base
+			var dist: float = to_plant.length()
+			if dist > 0.5:
+				# Steer toward the plant at a gentle pace.
+				desired += to_plant.normalized() * effective_max * 0.6
+			else:
+				# Inside the plant — dampen velocity to hold position.
+				desired *= 0.15
 
 	# Tier 0.4: FRY FLEE FROM ADULT CONSPECIFICS. Real fry instinctively dart
 	# away from larger same-species fish that might cannibalize them. We
@@ -1266,7 +1346,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# Spawn when we've been close enough for long enough.
 			if dist < 1.2 and court_timer >= COURT_DURATION:
 				current_mode = Mode.SPAWN
-				events["lay_egg_with"] = partner
+				if is_livebearer:
+					var female: Fish = self if sex == 1 else partner
+					var male: Fish = partner if sex == 1 else self
+					if female != null and male != null:
+						female._gestation_progress = 0.01
+						female._gestation_genome = female.produce_offspring_genome(male)
+				else:
+					events["lay_egg_with"] = partner
 				breed_cooldown = 35.0
 				energy = maxf(0.0, energy - 0.35)
 				# Post-spawn burst: both fish dart apart visibly. Gives
@@ -1683,7 +1770,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if dist_home > home_radius:
 		var pull_strength: float = clampf(
 			(dist_home / maxf(home_radius, 0.5)) - 1.0, 0.0, 2.0)
-		desired += to_home.normalized() * effective_max * 0.5 * pull_strength
+		var pull_mult: float = 0.5
+		if swim_pattern == "hover":
+			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
+		desired += to_home.normalized() * effective_max * pull_mult * pull_strength
 
 	# STARTLE PROPAGATION. School / shoal species are prey - in nature they
 	# evade predators by all flipping the same direction at once. If any
@@ -1758,6 +1848,47 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		burst_remaining = randf_range(0.3, 0.6)
 		var ang: float = randf() * TAU
 		heading_offset = Vector3(sin(ang), randf_range(-0.4, 0.6), cos(ang)) * 1.5
+
+	# Wander refresh: periodically rotate heading_offset to a new random
+	# direction. Interval is shorter for solo fish (every 4-8s) so they
+	# explore actively, longer for tight schoolers (every 15-25s) where
+	# the school boids already provide direction variety.
+	_wander_refresh_timer -= dt
+	if _wander_refresh_timer <= 0.0:
+		var interval: float = 15.0 + randf() * 10.0  # schooler default
+		if schooling_strength < 0.4:
+			interval = 4.0 + randf() * 4.0  # solo fish: much more frequent
+		elif swim_pattern == "shuffle":
+			interval = 5.0 + randf() * 6.0  # loaches: frequent zig-zags
+		_wander_refresh_timer = interval
+		var ang: float = randf() * TAU
+		heading_offset = Vector3(
+			sin(ang) * randf_range(0.3, 0.6),
+			randf_range(-0.15, 0.15),
+			cos(ang) * randf_range(0.3, 0.6),
+		)
+
+	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
+	# periodically shift their home_x/home_z so they roam the tank over time
+	# instead of circling the same spot. Real kuhli loaches explore the
+	# entire substrate; bettas patrol different territories.
+	_home_drift_timer -= dt
+	if _home_drift_timer <= 0.0:
+		var drift_interval: float = 30.0 + randf() * 30.0  # default: 30-60s
+		var drift_radius: float = 1.5
+		if swim_pattern == "shuffle":
+			drift_interval = 15.0 + randf() * 15.0  # loaches: faster roaming
+			drift_radius = 3.0  # cover more ground
+		elif schooling_strength < 0.4:
+			drift_interval = 20.0 + randf() * 15.0  # solo fish: moderate drift
+			drift_radius = 2.5
+		_home_drift_timer = drift_interval
+		# Nudge home within tank bounds. The world_bounds AABB keeps
+		# the drift from pushing home outside the tank.
+		home_x = clampf(home_x + randf_range(-drift_radius, drift_radius),
+			world_bounds.position.x + 1.0, world_bounds.end.x - 1.0)
+		home_z = clampf(home_z + randf_range(-drift_radius, drift_radius),
+			world_bounds.position.z + 1.0, world_bounds.end.z - 1.0)
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
 	# meanderers wander more, hoverers wander less. During startle propagation,
@@ -1871,6 +2002,14 @@ func _process(dt: float) -> void:
 		dt *= sim.time_scale
 		if dt <= 0.0:
 			return  # paused
+
+	# Apply pregnancy bulge if gestating
+	if _body_mid_pivot != null:
+		if is_livebearer and sex == 1 and _gestation_progress > 0.0:
+			var bulge := 1.0 + _gestation_progress * 0.35
+			_body_mid_pivot.scale = Vector3(bulge * 0.8 + 0.2, bulge, 1.0)
+		else:
+			_body_mid_pivot.scale = Vector3.ONE
 
 	# Death sequence — drifts sideways, sinks, fades over DEATH_DURATION
 	# before the sim_driver actually frees us. Skips the normal motion
@@ -2239,6 +2378,12 @@ func _update_maturity() -> void:
 		maturity = MATURITY_ADULT
 	else:
 		maturity = MATURITY_SENESCENT
+	# Color maturity: smooth ramp from 0 (newborn, pale) to 1 (full adult
+	# coloration). Fry start at 0, reach ~0.5 at juvenile stage boundary,
+	# and hit 1.0 well before adulthood. The curve front-loads color gain
+	# so the transition from "washed out" to "getting color" is visible
+	# early and the last 30% of juvenile life looks nearly adult.
+	_color_maturity = clampf(t / 0.28, 0.0, 1.0)
 
 
 # ---- Boids ----
@@ -2324,17 +2469,76 @@ func _apply_aging_tint() -> void:
 	if _aged_applied:
 		return
 	_aged_applied = true
-	var fade: Color = base_color.lerp(Color8(120, 110, 100), 0.45)
 	# Walk all MeshInstance3D descendants and tint their material to the
 	# faded color. Cheap since fish are small.
 	for child in _all_meshes(self):
 		var mi: MeshInstance3D = child
 		var m: Material = mi.material_override
 		if m is ShaderMaterial:
-			(m as ShaderMaterial).set_shader_parameter("albedo", fade)
+			var orig_mat: Material = null
+			if mi.has_meta("orig_mat"):
+				orig_mat = mi.get_meta("orig_mat")
+			if orig_mat == null:
+				orig_mat = m
+				mi.set_meta("orig_mat", orig_mat)
+			
+			var orig_color: Color = (orig_mat as ShaderMaterial).get_shader_parameter("albedo")
+			var fade: Color = orig_color.lerp(Color8(120, 110, 100), 0.45)
+			
+			if mi.material_override == orig_mat:
+				mi.material_override = (orig_mat as ShaderMaterial).duplicate()
+			(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", fade)
 
 
 var _aged_applied: bool = false
+
+# ---- Juvenile color deepening ----
+# Tracks how far along the fry-→-adult color ramp this fish is. 0.0 = freshly
+# hatched (pale silvery wash), 1.0 = full genome color. Updated every tick by
+# _update_maturity(). _last_maturity_color_step tracks the last rounded step
+# so we don’t re-walk the mesh tree every single frame (expensive on big fish).
+var _color_maturity: float = 0.0
+var _last_maturity_color_step: int = -1
+
+
+func _apply_maturity_color() -> void:
+	# Quantise to 10 steps so we only re-walk the mesh tree ~10 times over
+	# the entire fry→juvenile→adult ramp, not every tick.
+	var step: int = int(_color_maturity * 10.0)
+	if step == _last_maturity_color_step:
+		return
+	_last_maturity_color_step = step
+	# Desaturation factor: at _color_maturity 0 the fish is 45% washed
+	# toward a pale silvery tone. At 1.0 it’s at full genome color.
+	var desat: float = 0.45 * (1.0 - _color_maturity)
+	var wash: Color = Color(0.75, 0.75, 0.78)
+	for child in _all_meshes(self):
+		var mi: MeshInstance3D = child
+		var m: Material = mi.material_override
+		if m is ShaderMaterial:
+			var orig_mat: Material = null
+			if mi.has_meta("orig_mat"):
+				orig_mat = mi.get_meta("orig_mat")
+			if orig_mat == null:
+				orig_mat = m
+				mi.set_meta("orig_mat", orig_mat)
+			
+			var orig_color: Color = (orig_mat as ShaderMaterial).get_shader_parameter("albedo")
+			var tinted: Color = orig_color.lerp(wash, desat)
+			
+			if mi.material_override == orig_mat:
+				mi.material_override = (orig_mat as ShaderMaterial).duplicate()
+			(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", tinted)
+
+
+func _restore_original_colors() -> void:
+	for child in _all_meshes(self):
+		var mi: MeshInstance3D = child
+		if mi.has_meta("orig_mat"):
+			var orig = mi.get_meta("orig_mat")
+			if orig != null:
+				mi.material_override = orig
+			mi.remove_meta("orig_mat")
 
 func _all_meshes(node: Node) -> Array:
 	var out: Array = []
@@ -2544,6 +2748,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"algae_grazer": algae_grazer,
 		# Livebearer trait is species-locked too - inherited identically.
 		"is_livebearer": is_livebearer,
+		"guards_clutch": guards_clutch,
 		# Silhouette traits. anal_fin_length_factor drifts continuously like
 		# fin_length_factor; the booleans + body_shape are species-locked
 		# (no realistic mutation path on a 4-5 generation timescale).
@@ -2604,6 +2809,8 @@ func to_save_dict() -> Dictionary:
 		"brooding_at": SaveHelpers.vec3_to_array(brooding_at),
 		"brooding_remaining": brooding_remaining,
 		"burst_remaining": burst_remaining,
+		"gestation_progress": _gestation_progress,
+		"gestation_genome": _genome_to_json(_gestation_genome),
 		"home": [home_x, home_y, home_z],
 	}
 
@@ -2636,6 +2843,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	brooding_at = SaveHelpers.array_to_vec3(d.get("brooding_at", []), Vector3.ZERO)
 	brooding_remaining = float(d.get("brooding_remaining", 0.0))
 	burst_remaining = float(d.get("burst_remaining", 0.0))
+	_gestation_progress = float(d.get("gestation_progress", 0.0))
+	_gestation_genome = _genome_from_json(d.get("gestation_genome", {}))
 	var home: Array = d.get("home", [])
 	if home.size() >= 3:
 		home_x = float(home[0])

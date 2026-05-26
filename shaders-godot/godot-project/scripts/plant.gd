@@ -915,7 +915,7 @@ func _begin_flowering() -> void:
 	# Build bud.
 	_flower_node = Node3D.new()
 	_flower_node.name = "Flower"
-	_flower_node.position = Vector3(0, current_height * VOXEL_SIZE + VOXEL_SIZE * 1.2, 0)
+	_flower_node.position = Vector3(0, _get_stem_top() + VOXEL_SIZE * 0.15, 0)
 	add_child(_flower_node)
 	var bud_voxels: Array = LeafShapes.build_bud(_flower_petal_color.darkened(0.3))
 	for v in bud_voxels:
@@ -1036,7 +1036,7 @@ func _tick_pearling(_dt: float) -> void:
 		var amount_ratio: float = clampf(0.25 + pearl_factor * 0.85, 0.25, 1.0)
 		_pearling_particles.set("amount_ratio", amount_ratio)
 		# Position at the top of the plant, tracking growth.
-		_pearling_particles.position = Vector3(0, current_height * VOXEL_SIZE * 0.8, 0)
+		_pearling_particles.position = Vector3(0, _get_stem_top(), 0)
 	elif _pearling_active:
 		_pearling_active = false
 		_pearling_particles.emitting = false
@@ -1288,9 +1288,18 @@ func _phototropic_offset() -> Vector2:
 	return Vector2(sin(yaw_rad) * bias, cos(yaw_rad) * bias)
 
 
+func _get_stem_top() -> float:
+	var factor := 1.0
+	if leaf_form == "paddle":
+		factor = 0.9
+	elif leaf_form == "lance":
+		factor = 0.85
+	return current_height * VOXEL_SIZE * factor
+
+
 # Quick world-space height of the top voxel (for fish to target nibbling).
 func top_world_y() -> float:
-	return global_position.y + current_height * VOXEL_SIZE
+	return global_position.y + _get_stem_top()
 
 
 # ---- Utility ----
