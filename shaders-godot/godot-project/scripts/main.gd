@@ -1854,7 +1854,11 @@ func _render_header() -> void:
 		elif is_equal_approx(ts, 1.0):
 			state_value = "1×"
 		else:
-			state_value = "%g×" % ts
+			# GDScript's `%` operator doesn't accept `%g` (Python-style auto
+			# precision) — using it threw a String formatting error on every
+			# stats tick once the player nudged time_scale off 1×. `%s` calls
+			# str() on the value, which renders cleanly: 4.0 → "4", 1.5 → "1.5".
+			state_value = "%s×" % ts
 		state_sub = _day_label(float(_sim.day_phase))
 	_update_chip("state", state_value, state_sub, true, state_warn)
 
