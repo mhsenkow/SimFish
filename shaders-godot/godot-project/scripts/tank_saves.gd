@@ -43,14 +43,14 @@ func list_tanks() -> Array:
 		return out
 	d.list_dir_begin()
 	while true:
-		var name: String = d.get_next()
-		if name == "":
+		var entry: String = d.get_next()
+		if entry == "":
 			break
 		if not d.current_is_dir():
 			continue
-		if not name.is_valid_int():
+		if not entry.is_valid_int():
 			continue
-		var slot: int = int(name)
+		var slot: int = int(entry)
 		var meta: Dictionary = _read_meta(slot)
 		if meta.is_empty():
 			continue
@@ -66,13 +66,13 @@ func list_tanks() -> Array:
 # Create an empty new slot. Caller is expected to immediately set TankConfig
 # fields (the menu's "+ New tank" flow does this) and then save it.
 # Returns the new slot id.
-func new_tank(name: String = "New tank") -> int:
+func new_tank(tank_name: String = "New tank") -> int:
 	var slot: int = _next_free_slot()
 	var dir: String = _slot_dir(slot)
 	_ensure_dir(dir)
 	var now: int = int(Time.get_unix_time_from_system())
 	_write_meta(slot, {
-		"name": name,
+		"name": tank_name,
 		"runtime_s": 0,
 		"created_unix": now,
 		"last_opened_unix": now,
@@ -114,12 +114,12 @@ func delete_tank(slot: int) -> void:
 	if d != null:
 		d.list_dir_begin()
 		while true:
-			var name: String = d.get_next()
-			if name == "":
+			var entry: String = d.get_next()
+			if entry == "":
 				break
 			if d.current_is_dir():
 				continue
-			d.remove(name)
+			d.remove(entry)
 		d.list_dir_end()
 	DirAccess.remove_absolute(dir)
 	if active_slot == slot:

@@ -160,9 +160,9 @@ func _on_duplicate(slot: int) -> void:
 	_refresh()
 
 
-func _on_delete_confirm(slot: int, name: String) -> void:
+func _on_delete_confirm(slot: int, tank_name: String) -> void:
 	var dialog := ConfirmationDialog.new()
-	dialog.dialog_text = "Delete \"%s\"?\nThis cannot be undone." % name
+	dialog.dialog_text = "Delete \"%s\"?\nThis cannot be undone." % tank_name
 	dialog.ok_button_text = "Delete"
 	add_child(dialog)
 	dialog.confirmed.connect(func():

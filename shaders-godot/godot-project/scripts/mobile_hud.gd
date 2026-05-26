@@ -78,21 +78,21 @@ func _btn_size() -> Vector2:
 	# dp_to_px = dpi / 160. Clamp to [1.0, 2.0] so very high-dpi phones don't
 	# get monster buttons. Tablets typically report ~200-280; we want ~1.4x
 	# there. Phones ~300-450 → 1.0x (already at baseline).
-	var scale: float = 1.0
+	var sc: float = 1.0
 	if dpi > 0.0:
 		# Larger physical screens (tablets) tend to *under*-report dpi relative
 		# to the dp standard, so we invert: low dpi number == big screen.
 		# Map dpi 320+ → 1.0x, dpi ≤ 160 → 1.6x.
-		scale = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.6), 1.0, 1.6)
-	return Vector2(56.0 * scale, 48.0 * scale)
+		sc = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.6), 1.0, 1.6)
+	return Vector2(56.0 * sc, 48.0 * sc)
 
 
 func _font_size() -> int:
 	var dpi: float = float(DisplayServer.screen_get_dpi())
-	var scale: float = 1.0
+	var sc: float = 1.0
 	if dpi > 0.0:
-		scale = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.4), 1.0, 1.4)
-	return int(round(18.0 * scale))
+		sc = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.4), 1.0, 1.4)
+	return int(round(18.0 * sc))
 
 
 # Safe area in window/viewport coordinates. Falls back to a generous default

@@ -1765,9 +1765,9 @@ func _pan_target(delta: Vector2) -> void:
 	var right: Vector3 = basis.x
 	var up: Vector3 = basis.y
 	# Negate so dragging RIGHT pushes the scene right (target moves left).
-	var scale: float = PAN_MOUSE_SENSITIVITY * radius
-	target -= right * (delta.x * scale)
-	target += up * (delta.y * scale)
+	var pan_sc: float = PAN_MOUSE_SENSITIVITY * radius
+	target -= right * (delta.x * pan_sc)
+	target += up * (delta.y * pan_sc)
 	# `target` is clamped to a sane box inside `_apply_camera()` (every
 	# update path calls through there, so the clamp lives at the single
 	# convergence point).
@@ -2070,8 +2070,8 @@ func _apply_hud_layout() -> void:
 			right_cluster.offset_top = -12.0
 			right_cluster.offset_right = -12.0
 			right_cluster.offset_bottom = -12.0
-			right_cluster.grow_horizontal = 0
-			right_cluster.grow_vertical = 0
+			right_cluster.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+			right_cluster.grow_vertical = Control.GROW_DIRECTION_BEGIN
 		else:
 			right_cluster.anchor_left = 1.0
 			right_cluster.anchor_top = 0.0
@@ -2081,8 +2081,8 @@ func _apply_hud_layout() -> void:
 			right_cluster.offset_top = 8.0
 			right_cluster.offset_right = -12.0
 			right_cluster.offset_bottom = 8.0
-			right_cluster.grow_horizontal = 0
-			right_cluster.grow_vertical = 1
+			right_cluster.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+			right_cluster.grow_vertical = Control.GROW_DIRECTION_END
 
 	# Re-render chip values so the compact-fauna branch kicks in immediately.
 	_render_header()
@@ -2594,13 +2594,17 @@ func _format_duration(seconds: int) -> String:
 	if seconds < 60:
 		return "%d seconds" % seconds
 	if seconds < 3600:
+		@warning_ignore("integer_division")
 		return "%d min" % (seconds / 60)
 	if seconds < 86400:
+		@warning_ignore("integer_division")
 		var h: int = seconds / 3600
+		@warning_ignore("integer_division")
 		var m: int = (seconds % 3600) / 60
 		if m == 0:
 			return "%d hr" % h
 		return "%d hr %d min" % [h, m]
+	@warning_ignore("integer_division")
 	return "%d days" % (seconds / 86400)
 
 
@@ -2761,8 +2765,8 @@ func _show_photo_toast(path: String) -> void:
 		return
 	var lab := Label.new()
 	# Show just the filename, not the full path — useful but not noisy.
-	var name: String = path.get_file()
-	lab.text = "Photo saved: %s" % name
+	var file_name: String = path.get_file()
+	lab.text = "Photo saved: %s" % file_name
 	lab.add_theme_color_override("font_color", Color(0.85, 1.0, 0.85, 1))
 	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	lab.add_theme_constant_override("outline_size", 4)
