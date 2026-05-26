@@ -30,6 +30,18 @@ const WASTE_ENERGY_DELTA: float = 0.06
 const FOOD_AGE_REVIVAL_FRAC: float = 0.08
 # OmniLight3D energy applied to the food-glow halo on a food bite.
 const FOOD_GLOW_ENERGY: float = 2.0
+
+# Dissolved-O₂ threshold below which fish swim to the surface to gulp
+# atmospheric oxygen. Real-world threshold for most freshwater species is
+# ~3 mg/L (about 35% saturation); we use 0.45 (45% of saturated 1.0) so
+# the visible response kicks in before fish actually start dying — the
+# behavior is meant to read as "something's wrong, look at your aerator".
+const SURFACE_GULP_O2: float = 0.45
+# Stress threshold above which fish actively seek plant cover to hide.
+# Real fish under chronic stress (pheromones, predators, water-quality
+# spikes) retreat to shaded foliage; the response sells the "tank in
+# distress" reading without needing a separate calm/scared animation.
+const STRESS_HIDE_THRESHOLD: float = 0.65
 # Every successful meal (waste, algae, plant nibble, predation) rewinds
 # the fish's age by this fraction of max_age_s. Stacks with the larger
 # FOOD_AGE_REVIVAL_FRAC bonus on auto-feeder pellets. Result: well-fed
@@ -320,6 +332,13 @@ var _anal_pivot: Node3D = null
 var _swim_phase: float = 0.0
 var _last_yaw: float = 0.0
 var _bank: float = 0.0
+# Eye-saccade state. Drives a brief micro-yaw on _head_pivot when the
+# fish is at rest. Tick-counted timer + a decaying target angle so the
+# twitch reads as a "glance" rather than a sustained head-turn. Each
+# fish's saccade is independently timed so the school doesn't twitch
+# in sync.
+var _saccade_t: float = 0.0
+var _saccade_target: float = 0.0
 
 # Heading + speed motion model (separates direction from magnitude). Real
 # fish accelerate forward via tail thrust and steer via slow heading changes,
@@ -991,6 +1010,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				and burst_remaining <= 0.0 and randf() < dt * 0.4:
 			_sift_timer = randf_range(1.5, 3.0)
 			_sift_cooldown = randf_range(6.0, 12.0)
+			# Substrate dig puff. When a shuffle fish starts a sift, it kicks
+			# up a tiny mulm voxel at its current position — the visible
+			# "loach digging in the substrate" moment. World caps mulm so
+			# this just contributes to the carpet rather than ballooning it.
+			if sim != null and position.y < sim.substrate_top_y + 1.0:
+				var w := get_tree().current_scene.get_node_or_null("SubViewport/World")
+				if w != null and w.has_method("add_mulm_voxel"):
+					w.add_mulm_voxel(global_position)
 
 	# Cory / loach aerial respiration. Every ~25-40 sim seconds, a
 	# "shuffle" pattern fish darts to the surface, gulps, and sinks back.
@@ -1051,6 +1078,22 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Tier 0: wall avoidance always runs (additive).
 	desired += _wall_avoid(world_bounds) * 3.0
+
+	# Tier 0.2: SURFACE GULPING (hypoxia response). When dissolved O₂ drops
+	# below SURFACE_GULP_O2, fish swim to the meniscus and hold there. Real
+	# fish gulp atmospheric oxygen at the surface when the water is hypoxic
+	# — it's the most recognizable "this tank is in trouble" body language
+	# in the hobby. Highest priority after wall avoid since asphyxiation
+	# trumps every other goal.
+	if sim != null and float(sim.dissolved_o2) < SURFACE_GULP_O2:
+		var surface_y: float = world_bounds.position.y + world_bounds.size.y - 0.15
+		var gulp_dir: Vector3 = Vector3(0, surface_y - position.y, 0)
+		# Add a small lateral random walk so the school of gulpers doesn't
+		# converge to one column.
+		gulp_dir.x += sin(_swim_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
+		desired += gulp_dir.normalized() * effective_max * 1.4
+		current_mode = Mode.FORAGE
+		# Don't return — let wall avoid still mix in so we don't pin to glass.
 
 	# Tier 0.3: EGG-GUARDING / BROODING. Pair-bonding species (currently
 	# the "hover" pattern, i.e. angelfish) stay near the egg cluster for
@@ -1145,6 +1188,30 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					if burst_remaining <= 0.0 and energy > 0.4:
 						burst_remaining = 0.3
 
+	# Tier 0.6: STRESS HIDE-IN-PLANTS. When stress crosses STRESS_HIDE_THRESHOLD
+	# (chronic distress — repeated predator scares, hypoxia, etc.), the fish
+	# breaks off courtship / foraging and steers into the densest plant
+	# patch. Real fish do exactly this; reads as "this one is scared and
+	# wants out of the open." Big plants only (≥6 voxels) so a wisp of
+	# fresh growth doesn't count as cover.
+	if stress > STRESS_HIDE_THRESHOLD:
+		var nearest_cover: Plant = null
+		var cover_d2: float = 9.0  # within 3 units to count as reachable
+		for p in plants:
+			if not is_instance_valid(p):
+				continue
+			if p.biomass() < 6:
+				continue
+			var d2: float = p._world_pos.distance_squared_to(position)
+			if d2 < cover_d2:
+				cover_d2 = d2
+				nearest_cover = p
+		if nearest_cover != null:
+			var to_cover: Vector3 = nearest_cover._world_pos - position
+			to_cover.y += 0.4  # aim for mid-plant height, not the substrate
+			desired += to_cover.normalized() * effective_max * 0.7
+			current_mode = Mode.FLEE
+
 	# Tier 1: COURTSHIP. Already paired? Continue the dance toward spawn.
 	if partner != null:
 		if not is_instance_valid(partner) or partner.maturity != MATURITY_ADULT:
@@ -1218,6 +1285,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Tier 1b: SCAVENGE WASTE. Fish opportunistically eat waste particles
 	# that drift past. Cheaper than chasing live food. Applies to all fish,
 	# herbivores or not, when even slightly hungry.
+	#
+	# Surface-skim feeding: top-dwellers (preferred_y >= 4.5) get a vertical-
+	# affinity bonus on KIND_FOOD that bobs on the surface — the real-world
+	# behavior of killifish / danios / hatchetfish racing each other to the
+	# top of the tank when flakes land. Implemented as a score penalty on
+	# food that's BELOW the fish's preferred Y, so surface dwellers ignore
+	# sunk pellets and grab surface ones first, while bottom dwellers do
+	# the opposite (loaches and cory hoover sunk food).
 	if hunger > 0.3 and maturity != MATURITY_FRY:
 		var best_w: WasteParticle = null
 		var best_d2: float = 144.0  # 12.0^2 max range for food! High awareness.
@@ -1229,6 +1304,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				continue
 			var d2: float = (w as Node3D).global_position.distance_squared_to(position)
 			var max_dist_sq: float = 144.0 if w.kind == 3 else 16.0 # 3=FOOD, 16.0=4.0^2 for regular waste
+			# Y-affinity bias: penalize food in the WRONG water column for
+			# this fish. Effect is mild (×1.5 at maximum penalty) so a
+			# truly hungry fish still chases anything, but in normal play
+			# the top-dwellers win the surface flakes and bottom-dwellers
+			# clean up settled pellets.
+			if w.kind == 3:
+				var w_y: float = (w as Node3D).global_position.y
+				var y_delta: float = absf(w_y - preferred_y)
+				d2 *= 1.0 + clampf(y_delta * 0.18, 0.0, 0.5)
 			if d2 < max_dist_sq and d2 < best_d2:
 				best_d2 = d2
 				best_w = w
@@ -1494,6 +1578,33 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			court_timer = 0.0
 			candidate.court_timer = 0.0
 
+	# Tier 3.8: JUVENILE PLAY (fry only). Fry chase each other in short
+	# bursts — purely social motion, not foraging. Real fry do this
+	# constantly between feeds and it reads as "alive" instantly. Skips
+	# if the fry is hungry / stressed / out of energy.
+	if maturity == MATURITY_FRY and hunger < 0.6 and stress < 0.5 \
+			and energy > 0.45 and burst_remaining <= 0.0:
+		# Roll the dice each tick for a brief play burst — every ~20 sim
+		# seconds on average per fry (dt * 0.05).
+		if randf() < dt * 0.05:
+			var playmate: Fish = null
+			var pd2: float = 4.0  # within 2 units
+			for n in neighbors:
+				if not (n is Fish):
+					continue
+				var nf: Fish = n
+				if nf.maturity != MATURITY_FRY or nf == self:
+					continue
+				var d2: float = nf.position.distance_squared_to(position)
+				if d2 < pd2:
+					pd2 = d2
+					playmate = nf
+			if playmate != null:
+				var to_mate: Vector3 = playmate.position - position
+				if to_mate.length_squared() > 1e-4:
+					desired += to_mate.normalized() * effective_max * 1.2
+					burst_remaining = 0.4
+
 	# Tier 4: SCHOOL. Default behavior - boids with dynamic tightness.
 	current_mode = Mode.CRUISE
 	# When stressed (too few neighbors), tighten the school dramatically.
@@ -1676,6 +1787,33 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_:
 				activity = 0.3 + 0.7 * dl
 		desired *= activity
+
+		# Sleep shelter-seeking. When daylight drops below 0.18 (deep
+		# night) AND the species is diurnal (low pattern types), bias
+		# the fish gently toward the nearest large plant — like real
+		# tetras / killis / guppies tucking into the foliage to sleep.
+		# Only kicks in if no higher-priority drive is already set
+		# (hungry / breeding fish keep moving). Soft pull so it reads
+		# as drifting, not herding.
+		if dl < 0.18 and current_mode == Mode.CRUISE \
+				and (swim_pattern == "school" or swim_pattern == "shoal" \
+					or swim_pattern == "hover" or swim_pattern == "meander"):
+			var shelter: Plant = null
+			var sd2: float = 16.0  # within 4 units
+			for p in plants:
+				if not is_instance_valid(p):
+					continue
+				if p.biomass() < 6:
+					continue
+				var d2: float = p._world_pos.distance_squared_to(position)
+				if d2 < sd2:
+					sd2 = d2
+					shelter = p
+			if shelter != null:
+				var to_shelter: Vector3 = shelter._world_pos - position
+				to_shelter.y += 0.5
+				desired += to_shelter.normalized() * effective_max * 0.35
+				current_mode = Mode.REST
 
 	target_velocity = desired.limit_length(effective_max)
 	# Position + facing now updated in _process at render rate.
@@ -2009,8 +2147,32 @@ func _motion_substep(dt: float) -> void:
 	if _head_pivot != null:
 		# Smooth head rotation in to avoid pop when locomotion changes.
 		var head_target: float = sin(_swim_phase + head_phase) * head_amp
-		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y, head_target,
+		# Eye saccades: at rest, the head occasionally micro-turns. Fish
+		# don't have movable eyeballs (most species) so they redirect
+		# gaze by twitching the whole head a few degrees. Combined with
+		# the gill-flare scale pulse below, this is the difference
+		# between a "frozen voxel" and a "fish that's alive but holding
+		# position." Triggered randomly so each fish's twitches stay
+		# out of sync with its school-mates.
+		var rest_factor: float = 1.0 - clampf(speed * 2.5, 0.0, 1.0)
+		_saccade_t -= dt
+		if rest_factor > 0.5 and _saccade_t <= 0.0:
+			_saccade_t = randf_range(2.5, 5.5)
+			_saccade_target = randf_range(-0.22, 0.22)
+		# Decay the saccade target back toward 0 so the twitch is a brief
+		# pulse, not a sustained head-cock.
+		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
+		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y,
+			head_target + _saccade_target * rest_factor,
 			clampf(dt * 12.0, 0.0, 1.0))
+		# Gill flare at rest. When the fish is barely moving (drifting,
+		# sifting, sleeping), the eye reads a subtle head-width pulse as
+		# gill-cover breathing — a real fish at rest does this constantly
+		# and a still aquarium fish that DOESN'T do it reads as "frozen".
+		# Active swimming hides the pulse anyway (wag dominates the visual).
+		var breath_amp: float = 0.035 * rest_factor
+		var breath: float = 1.0 + sin(_swim_phase * 0.9) * breath_amp
+		_head_pivot.scale = Vector3(breath, 1.0, 1.0)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08

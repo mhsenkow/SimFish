@@ -1090,6 +1090,40 @@ func _project_to_surface(mouse_pos: Vector2) -> Vector3:
 	return hit
 
 
+# Tap-glass startle. The player clicked somewhere in the tank but didn't
+# pick a creature and didn't drop food. Project the click into the tank
+# and trigger a brief flee burst on any fish within STARTLE_RADIUS. Real
+# fish do exactly this when something thuds on the glass — the visible
+# "the school just bolted" response sells the interactivity of the tank
+# without needing a separate UI affordance.
+const STARTLE_RADIUS_SQ: float = 9.0  # 3-unit blast radius
+func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
+	if _sim == null:
+		return
+	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	if hit == INVALID_HIT:
+		return
+	for f in _sim.fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true:
+			continue
+		if f.position.distance_squared_to(hit) > STARTLE_RADIUS_SQ:
+			continue
+		# Inject a flee burst away from the tap point. We poke the
+		# burst_remaining + heading_offset directly because there's no
+		# event channel for "external scare" — keeps the change local
+		# to main.gd without modifying fish.gd's tick signature.
+		var away: Vector3 = (f.position - hit)
+		if away.length_squared() < 1e-4:
+			away = Vector3(randf_range(-1, 1), 0.1, randf_range(-1, 1))
+		away = away.normalized()
+		f.burst_remaining = 0.5
+		f.heading_offset = away * 1.4
+		f._startle_heading = away
+		f._startle_remaining = 0.4
+
+
 # Drop a cluster of 4-6 food pellets at the surface point under the cursor.
 # Returns true if the cluster spawned (used by the caller to suppress orbit
 # drag for that gesture so the camera doesn't yank during feeding).
@@ -1448,6 +1482,14 @@ func _input(event: InputEvent) -> void:
 				# also yanked the camera as the user moved the cursor.
 				elif _click_targets_creature():
 					_suppress_drag_until_release = true
+				else:
+					# Tap-glass: the click hit empty water (or the glass).
+					# Project to substrate and spook any fish within the
+					# tap radius — real fish bolt when something thuds on
+					# the glass. We don't return / consume the gesture,
+					# so the orbit drag still works if the player intended
+					# to drag the camera (a true tap = small drag_total).
+					_startle_fish_near_tap(mb.position)
 
 
 # ---- Touch gesture handlers ----
