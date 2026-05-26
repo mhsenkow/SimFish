@@ -2985,7 +2985,7 @@ func _update_pheromone_trail() -> void:
 			var mat := StandardMaterial3D.new()
 			mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
 			mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
-			mat.use_particle_colors = true
+			mat.vertex_color_use_as_albedo = true
 			mat.billboard_mode = StandardMaterial3D.BILLBOARD_PARTICLES
 
 			quad.material = mat
