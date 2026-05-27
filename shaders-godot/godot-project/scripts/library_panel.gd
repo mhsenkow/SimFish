@@ -1,6 +1,7 @@
-# Species Library overlay.
+# Life Library overlay.
 #
-# Full-screen modal that lists every species the player has discovered
+# Full-screen modal that lists every genotype the player has discovered
+# across fish, shrimp, snails, and plants.
 # (per-tank + globally pinned), shows one selected species spinning inside
 # a faint containment sphere in its own SubViewport, and exposes a genome
 # readout. Per the design pass this is read-only — no live param sliders,
@@ -25,6 +26,8 @@
 
 extends PanelContainer
 
+const _SPECIES_LIB := preload("res://scripts/species_library.gd")
+
 # Visual constants -----------------------------------------------------------
 
 const PREVIEW_SIZE := Vector2i(384, 384)
@@ -33,22 +36,43 @@ const PREVIEW_CAM_HEIGHT: float = 0.6
 const SPHERE_RADIUS: float = 1.55
 const AUTO_ORBIT_SPEED: float = 0.35   # rad/s
 const DRAG_SENSITIVITY: float = 0.012
+const SHRIMP_PREVIEW_SCALE: float = 2.8
+const SNAIL_PREVIEW_SCALE: float = 1.6
 
 # Tabs -----------------------------------------------------------------------
 
 enum Scope { TANK, GLOBAL }
+enum TypeFilter { ALL, FISH, SHRIMP, SNAIL, PLANT }
+enum ViewMode { LIST, TREE }
+
 var _scope: int = Scope.TANK
+var _type_filter: int = TypeFilter.ALL
+var _view_mode: int = ViewMode.LIST
 
 # UI refs (resolved in _build_ui) --------------------------------------------
 
 var _list_root: VBoxContainer = null
+var _list_host: Control = null
+var _lineage_layer: Control = null
+var _row_by_key: Dictionary = {}
+var _lineage_edges: Array = []
+var _filter_all: Button = null
+var _filter_fish: Button = null
+var _filter_shrimp: Button = null
+var _filter_snail: Button = null
+var _filter_plant: Button = null
+var _view_list_btn: Button = null
+var _view_tree_btn: Button = null
+var _list_panel: Control = null
+var _tree_scroll: ScrollContainer = null
+var _lineage_tree: LineageTreeView = null
 var _tab_tank: Button = null
 var _tab_global: Button = null
 
 var _preview_viewport: SubViewport = null
 var _preview_root: Node3D = null
 var _preview_pivot: Node3D = null
-var _preview_fish: Fish = null
+var _preview_creature: Node3D = null
 var _preview_cam: Camera3D = null
 var _preview_texture_rect: TextureRect = null
 var _preview_yaw: float = 0.6
@@ -82,6 +106,7 @@ func _ready() -> void:
 func toggle() -> void:
 	visible = not visible
 	if visible:
+		_backfill_discoveries_from_tank()
 		_refresh_list()
 		set_process(true)
 		_resume_preview_rendering()
@@ -120,7 +145,7 @@ func _build_ui() -> void:
 	header.add_theme_constant_override("separation", 12)
 	outer.add_child(header)
 
-	var title := PanelTheme.make_title("Species Library")
+	var title := PanelTheme.make_title("Life Library")
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(title)
 
@@ -153,22 +178,87 @@ func _build_ui() -> void:
 
 func _build_list_column() -> Control:
 	var v := VBoxContainer.new()
-	v.custom_minimum_size = Vector2(220, 0)
+	v.custom_minimum_size = Vector2(240, 0)
 	v.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	v.add_theme_constant_override("separation", 6)
 
 	v.add_child(PanelTheme.make_section("Discovered"))
 
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 4)
+	v.add_child(filter_row)
+	_filter_all = _make_filter_button("All", true)
+	_filter_all.pressed.connect(func(): _set_type_filter(TypeFilter.ALL))
+	filter_row.add_child(_filter_all)
+	_filter_fish = _make_filter_button("Fish", false)
+	_filter_fish.pressed.connect(func(): _set_type_filter(TypeFilter.FISH))
+	filter_row.add_child(_filter_fish)
+	_filter_shrimp = _make_filter_button("Shrimp", false)
+	_filter_shrimp.pressed.connect(func(): _set_type_filter(TypeFilter.SHRIMP))
+	filter_row.add_child(_filter_shrimp)
+	_filter_snail = _make_filter_button("Snails", false)
+	_filter_snail.pressed.connect(func(): _set_type_filter(TypeFilter.SNAIL))
+	filter_row.add_child(_filter_snail)
+	_filter_plant = _make_filter_button("Plants", false)
+	_filter_plant.pressed.connect(func(): _set_type_filter(TypeFilter.PLANT))
+	filter_row.add_child(_filter_plant)
+
+	var view_row := HBoxContainer.new()
+	view_row.add_theme_constant_override("separation", 4)
+	v.add_child(view_row)
+	_view_list_btn = _make_filter_button("List", true)
+	_view_list_btn.pressed.connect(func(): _set_view_mode(ViewMode.LIST))
+	view_row.add_child(_view_list_btn)
+	_view_tree_btn = _make_filter_button("Tree", false)
+	_view_tree_btn.pressed.connect(func(): _set_view_mode(ViewMode.TREE))
+	view_row.add_child(_view_tree_btn)
+
+	_list_panel = VBoxContainer.new()
+	_list_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_list_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list_panel.add_theme_constant_override("separation", 6)
+	v.add_child(_list_panel)
+
+	var lineage_hint := Label.new()
+	lineage_hint.text = "Lines link offspring → parents"
+	lineage_hint.add_theme_font_size_override("font_size", 9)
+	lineage_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	_list_panel.add_child(lineage_hint)
+
+	_list_host = Control.new()
+	_list_host.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_list_host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list_host.custom_minimum_size = Vector2(0, 120)
+	_list_panel.add_child(_list_host)
+
+	_lineage_layer = Control.new()
+	_lineage_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_lineage_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_lineage_layer.draw.connect(_draw_lineage_overlay)
+	_list_host.add_child(_lineage_layer)
+
 	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	v.add_child(scroll)
+	_list_host.add_child(scroll)
 
 	_list_root = VBoxContainer.new()
 	_list_root.add_theme_constant_override("separation", 4)
 	_list_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_list_root)
+
+	_tree_scroll = ScrollContainer.new()
+	_tree_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_tree_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tree_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_tree_scroll.visible = false
+	v.add_child(_tree_scroll)
+
+	_lineage_tree = LineageTreeView.new()
+	_lineage_tree.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lineage_tree.entry_selected.connect(_select_entry)
+	_tree_scroll.add_child(_lineage_tree)
+
 	# Initial placeholder gets replaced on first _refresh_list call; we still
 	# put one here so a panel that opens before _refresh_list (defensive) has
 	# something readable in the list slot.
@@ -440,6 +530,44 @@ func _set_scope(s: int) -> void:
 	_refresh_list()
 
 
+func _set_type_filter(f: int) -> void:
+	if _type_filter == f:
+		return
+	_type_filter = f
+	if _filter_all != null:
+		_filter_all.button_pressed = f == TypeFilter.ALL
+		_filter_fish.button_pressed = f == TypeFilter.FISH
+		_filter_shrimp.button_pressed = f == TypeFilter.SHRIMP
+		_filter_snail.button_pressed = f == TypeFilter.SNAIL
+		_filter_plant.button_pressed = f == TypeFilter.PLANT
+	_refresh_list()
+
+
+func _set_view_mode(mode: int) -> void:
+	if _view_mode == mode:
+		return
+	_view_mode = mode
+	if _view_list_btn != null:
+		_view_list_btn.button_pressed = mode == ViewMode.LIST
+		_view_tree_btn.button_pressed = mode == ViewMode.TREE
+	if _list_panel != null:
+		_list_panel.visible = mode == ViewMode.LIST
+	if _tree_scroll != null:
+		_tree_scroll.visible = mode == ViewMode.TREE
+	_refresh_list()
+
+
+func _make_filter_button(text: String, active: bool) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.toggle_mode = true
+	b.button_pressed = active
+	b.add_theme_font_size_override("font_size", 10)
+	b.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	b.add_theme_color_override("font_pressed_color", PanelTheme.TITLE_FG)
+	return b
+
+
 func _make_tab_button(text: String, active: bool) -> Button:
 	var b := Button.new()
 	b.text = text
@@ -449,6 +577,12 @@ func _make_tab_button(text: String, active: bool) -> Button:
 	b.add_theme_color_override("font_pressed_color", PanelTheme.TITLE_FG)
 	b.add_theme_color_override("font_hover_color", PanelTheme.TITLE_FG)
 	return b
+
+
+func _backfill_discoveries_from_tank() -> void:
+	var sim := get_tree().root.find_child("SimDriver", true, false)
+	if sim != null and sim.has_method("sync_species_discoveries"):
+		sim.sync_species_discoveries()
 
 
 func _on_library_changed() -> void:
@@ -461,13 +595,15 @@ func _refresh_list() -> void:
 		return
 	for c in _list_root.get_children():
 		c.queue_free()
-	var entries: Array = _current_scope_entries()
+	_row_by_key.clear()
+	_lineage_edges.clear()
+	var entries: Array = _filter_entries(_current_scope_entries())
 	if entries.is_empty():
 		var empty := Label.new()
 		empty.text = (
-			"No discoveries yet.\nBuy fish from the store, breed in the tank,\nor let founders settle in to populate."
+			"No discoveries yet.\nFish, shrimp, snails, and plants appear here as they breed,\nevolve, and spread in the tank."
 			if _scope == Scope.TANK else
-			"No global pins yet.\nOpen 'This Tank' and pin species you want to keep."
+			"No global pins yet.\nOpen 'This Tank' and pin lineages you want to keep."
 		)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		empty.add_theme_color_override("font_color", PanelTheme.DIM_FG)
@@ -475,12 +611,24 @@ func _refresh_list() -> void:
 		_list_root.add_child(empty)
 		_select_entry({})
 		return
-	# Sort by first_seen so newest discoveries float to the top — the player
-	# just made something happen, that's what they want to see.
+	# Sort by generation (founders first) then newest discovery — reads as a tree.
 	entries.sort_custom(func(a, b):
+		var ga: int = int(a.get("generation", 0))
+		var gb: int = int(b.get("generation", 0))
+		if ga != gb:
+			return ga < gb
 		return int(a.get("first_seen_unix", 0)) > int(b.get("first_seen_unix", 0)))
 	for entry in entries:
-		_list_root.add_child(_make_list_item(entry))
+		var item: Control = _make_list_item(entry)
+		_list_root.add_child(item)
+		var k: String = String(entry.get("species_key", ""))
+		if k != "":
+			_row_by_key[k] = item
+	if _view_mode == ViewMode.LIST:
+		_build_lineage_edges(entries)
+		call_deferred("_sync_lineage_overlay")
+	if _lineage_tree != null:
+		_lineage_tree.set_entries(entries, _selected_key)
 	# Auto-select first entry if nothing currently selected, or the previously
 	# selected one if it's still around.
 	var keep: Dictionary = _find_entry_in_list(entries, _selected_key)
@@ -497,6 +645,75 @@ func _current_scope_entries() -> Array:
 	return lib.get_tank_entries() if _scope == Scope.TANK else lib.get_global_entries()
 
 
+func _filter_entries(entries: Array) -> Array:
+	if _type_filter == TypeFilter.ALL:
+		return entries
+	var want: String = {
+		TypeFilter.FISH: SpeciesLibrary.ORGANISM_FISH,
+		TypeFilter.SHRIMP: SpeciesLibrary.ORGANISM_SHRIMP,
+		TypeFilter.SNAIL: SpeciesLibrary.ORGANISM_SNAIL,
+		TypeFilter.PLANT: SpeciesLibrary.ORGANISM_PLANT,
+	}.get(_type_filter, "")
+	var out: Array = []
+	for e in entries:
+		if e is Dictionary:
+			var otype: String = String(e.get("organism_type", SpeciesLibrary.ORGANISM_FISH))
+			if otype == want:
+				out.append(e)
+	return out
+
+
+func _build_lineage_edges(entries: Array) -> void:
+	_lineage_edges.clear()
+	var keys_in_view: Dictionary = {}
+	for e in entries:
+		if e is Dictionary:
+			keys_in_view[String(e.get("species_key", ""))] = true
+	for e in entries:
+		if not (e is Dictionary):
+			continue
+		var child_key: String = String(e.get("species_key", ""))
+		if child_key == "":
+			continue
+		var pks: Variant = e.get("parent_keys", [])
+		if not (pks is Array):
+			continue
+		for pk in pks:
+			var parent_key: String = String(pk)
+			if parent_key != "" and keys_in_view.has(parent_key):
+				_lineage_edges.append({"from": parent_key, "to": child_key})
+
+
+func _sync_lineage_overlay() -> void:
+	if _lineage_layer != null:
+		_lineage_layer.queue_redraw()
+
+
+func _draw_lineage_overlay() -> void:
+	if _lineage_layer == null or _lineage_edges.is_empty():
+		return
+	var line_col := Color(0.45, 0.72, 0.95, 0.55)
+	for edge in _lineage_edges:
+		var from_key: String = String(edge.get("from", ""))
+		var to_key: String = String(edge.get("to", ""))
+		if not _row_by_key.has(from_key) or not _row_by_key.has(to_key):
+			continue
+		var from_ctrl: Control = _row_by_key[from_key] as Control
+		var to_ctrl: Control = _row_by_key[to_key] as Control
+		if from_ctrl == null or to_ctrl == null:
+			continue
+		var p_from: Vector2 = _control_center_in_layer(from_ctrl)
+		var p_to: Vector2 = _control_center_in_layer(to_ctrl)
+		_lineage_layer.draw_line(p_from, p_to, line_col, 2.0, true)
+		_lineage_layer.draw_circle(p_from, 3.0, Color(0.55, 0.85, 1.0, 0.75))
+
+
+func _control_center_in_layer(ctrl: Control) -> Vector2:
+	var rect: Rect2 = ctrl.get_global_rect()
+	var center: Vector2 = rect.position + rect.size * 0.5
+	return _lineage_layer.get_global_transform().affine_inverse() * center
+
+
 func _find_entry_in_list(arr: Array, key: String) -> Dictionary:
 	for e in arr:
 		if e is Dictionary and String(e.get("species_key", "")) == key:
@@ -507,17 +724,19 @@ func _find_entry_in_list(arr: Array, key: String) -> Dictionary:
 func _make_list_item(entry: Dictionary) -> Control:
 	var btn := Button.new()
 	var key: String = String(entry.get("species_key", ""))
-	var display: String = String(entry.get("display_name", "fish"))
-	var source: String = String(entry.get("source", ""))
+	var display: String = String(entry.get("display_name", "creature"))
+	var otype: String = String(entry.get("organism_type", SpeciesLibrary.ORGANISM_FISH))
+	var gen: int = int(entry.get("generation", 0))
 	var is_pin: bool = false
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib != null and _scope == Scope.TANK:
 		is_pin = lib.is_pinned(key)
-	# Compact one-line label: NAME (source) + optional pin marker. We use a
-	# button so the whole row is hittable; styling matches the side rails.
+	var icon: String = _organism_icon(otype)
+	var indent: String = "  ".repeat(mini(gen, 6))
 	var marker: String = " 📌" if is_pin else ""
-	btn.text = "%s%s" % [display, marker]
-	btn.tooltip_text = "source: %s\nspecies: %s" % [source, entry.get("species", "?")]
+	btn.text = "%s%s %s · g%d%s" % [indent, icon, display, gen, marker]
+	var lineage: String = String(entry.get("parent_lineage", ""))
+	btn.tooltip_text = "%s · gen %d\nfrom: %s" % [otype, gen, lineage]
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn.custom_minimum_size = Vector2(0, 28)
@@ -537,8 +756,13 @@ func _make_list_item(entry: Dictionary) -> Control:
 		sel.content_margin_top = 4
 		sel.content_margin_bottom = 4
 		btn.add_theme_stylebox_override("normal", sel)
-	btn.pressed.connect(func(): _select_entry(entry))
+	btn.pressed.connect(_on_list_item_pressed.bind(key))
 	return btn
+
+
+func _on_list_item_pressed(species_key: String) -> void:
+	var entries: Array = _filter_entries(_current_scope_entries())
+	_select_entry(_find_entry_in_list(entries, species_key))
 
 
 # ---- Detail panel -----------------------------------------------------------
@@ -552,14 +776,17 @@ func _select_entry(entry: Dictionary) -> void:
 		_clear_children(_detail_swatches)
 		_clear_children(_detail_traits)
 		_pin_button.disabled = true
-		_clear_preview_fish()
+		_clear_preview_creature()
 		return
 
 	_selected_key = String(entry.get("species_key", ""))
+	if _lineage_tree != null:
+		_lineage_tree.set_selected_key(_selected_key)
 	var genome_raw: Dictionary = entry.get("genome", {})
-	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
+	var genome: Dictionary = _SPECIES_LIB.genome_from_serialisable(genome_raw)
+	var otype: String = String(entry.get("organism_type", _SPECIES_LIB.organism_type(genome)))
 
-	_detail_name.text = String(entry.get("display_name", "?"))
+	_detail_name.text = "%s %s" % [_organism_icon(otype), String(entry.get("display_name", "?"))]
 	var src: String = String(entry.get("source", ""))
 	var src_label: String = {
 		"founder": "Founder cohort",
@@ -567,50 +794,21 @@ func _select_entry(entry: Dictionary) -> void:
 		"evolved": "Bred in tank",
 	}.get(src, src)
 	var gen: int = int(entry.get("generation", 0))
-	_detail_source_badge.text = "%s · gen %d · seen %d" % [
-		src_label, gen, int(entry.get("count_seen", 1)),
+	var lineage: String = String(entry.get("parent_lineage", "Founders"))
+	_detail_source_badge.text = "%s · %s · gen %d · seen %d" % [
+		otype, src_label, gen, int(entry.get("count_seen", 1)),
 	]
 
 	_clear_children(_detail_swatches)
-	_add_swatch(genome.get("base_color", Color.WHITE), 32)
-	_add_swatch(genome.get("accent_color", Color.GRAY), 18)
-	_add_swatch(genome.get("tail_color", genome.get("accent_color", Color.GRAY)), 18)
+	_populate_swatches(genome, otype)
 
 	_clear_children(_detail_traits)
-	_add_trait("Species", String(genome.get("species", "?")))
-	_add_trait("Swim", String(genome.get("swim_pattern", "?")))
-	_add_trait("Body", String(genome.get("body_shape", "(default)")))
-	_add_trait("Locomotion", _infer_locomotion(genome))
-	_add_trait("Layer", _layer_label(float(genome.get("preferred_y", 3.5))))
-	_add_trait("Size", "%.2f" % float(genome.get("adult_voxel_scale", 0.18)))
-	_add_trait("Elongation", "%.2f" % float(genome.get("body_elongation", 1.0)))
-	_add_trait("Depth", "%.2f" % float(genome.get("body_depth_factor", 1.0)))
-	_add_trait("Schooling", "%.2f" % float(genome.get("schooling_strength", 1.0)))
-	_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 1.8)))
-	_add_trait("Herbivory", "%.2f" % float(genome.get("herbivory", 0.0)))
-	_add_trait("Fecundity", "%.2f" % float(genome.get("fecundity", 0.7)))
-	var traits_tags: Array[String] = []
-	if bool(genome.get("has_barbels", false)):
-		traits_tags.append("barbels")
-	if bool(genome.get("armor_plates", false)):
-		traits_tags.append("armored")
-	if bool(genome.get("adipose_fin", false)):
-		traits_tags.append("adipose fin")
-	var mo: int = int(genome.get("mouth_orientation", 0))
-	if mo > 0:
-		traits_tags.append("sifter mouth")
-	elif mo < 0:
-		traits_tags.append("upturned mouth")
-	if bool(genome.get("snail_predator", false)):
-		traits_tags.append("snail predator")
-	if bool(genome.get("algae_grazer", false)):
-		traits_tags.append("algae grazer")
-	if bool(genome.get("is_livebearer", false)):
-		traits_tags.append("livebearer")
-	if traits_tags.is_empty():
-		_add_trait("Traits", "—")
-	else:
-		_add_trait("Traits", ", ".join(traits_tags))
+	_add_trait("Type", otype)
+	_add_trait("Lineage", lineage)
+	var pks: Variant = entry.get("parent_keys", [])
+	if pks is Array and (pks as Array).size() > 0:
+		_add_trait("Parent keys", ", ".join(pks))
+	_populate_traits(genome, otype)
 
 	var first_unix: int = int(entry.get("first_seen_unix", 0))
 	if first_unix > 0:
@@ -629,7 +827,66 @@ func _select_entry(entry: Dictionary) -> void:
 		_pin_button.text = "Unpin from Global" if pinned else "Pin to Global"
 		_pin_button.disabled = false
 
-	_load_preview_fish(genome)
+	call_deferred("_load_preview_creature", genome, otype)
+
+
+func _organism_icon(otype: String) -> String:
+	match otype:
+		SpeciesLibrary.ORGANISM_SHRIMP:
+			return "🦐"
+		SpeciesLibrary.ORGANISM_SNAIL:
+			return "🐌"
+		SpeciesLibrary.ORGANISM_PLANT:
+			return "🌿"
+		_:
+			return "🐟"
+
+
+func _populate_swatches(genome: Dictionary, otype: String) -> void:
+	match otype:
+		SpeciesLibrary.ORGANISM_SNAIL:
+			_add_swatch(genome.get("shell_color", Color.WHITE), 32)
+		SpeciesLibrary.ORGANISM_PLANT:
+			var ramp: Variant = genome.get("ramp_override", [])
+			if ramp is Array:
+				var step: int = maxi(1, (ramp as Array).size() / 4)
+				for i in range(0, (ramp as Array).size(), step):
+					_add_swatch((ramp as Array)[i], 22)
+		_:
+			_add_swatch(genome.get("base_color", Color.WHITE), 32)
+			_add_swatch(genome.get("accent_color", Color.GRAY), 18)
+			if otype == SpeciesLibrary.ORGANISM_FISH:
+				_add_swatch(genome.get("tail_color", genome.get("accent_color", Color.GRAY)), 18)
+
+
+func _populate_traits(genome: Dictionary, otype: String) -> void:
+	match otype:
+		SpeciesLibrary.ORGANISM_SHRIMP:
+			_add_trait("Species", String(genome.get("species", "shrimp")))
+			_add_trait("Size", "%.2f" % float(genome.get("adult_voxel_scale", 0.1)))
+			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 0.85)))
+			if bool(genome.get("is_cleaner", false)):
+				_add_trait("Role", "cleaner shrimp")
+		SpeciesLibrary.ORGANISM_SNAIL:
+			_add_trait("Shell shape", String(genome.get("shell_shape", "turbo")))
+			_add_trait("Shell size", "%.2f" % float(genome.get("shell_size", 1.0)))
+		SpeciesLibrary.ORGANISM_PLANT:
+			_add_trait("Form", String(genome.get("leaf_form", "column")))
+			_add_trait("Max height", str(int(genome.get("max_height", 12))))
+			_add_trait("Growth", "%.2f" % float(genome.get("growth_rate", 0.18)))
+		_:
+			_add_trait("Species", String(genome.get("species", "?")))
+			_add_trait("Swim", String(genome.get("swim_pattern", "?")))
+			_add_trait("Body", String(genome.get("body_shape", "(default)")))
+			_add_trait("Locomotion", _infer_locomotion(genome))
+			_add_trait("Layer", _layer_label(float(genome.get("preferred_y", 3.5))))
+			_add_trait("Size", "%.2f" % float(genome.get("adult_voxel_scale", 0.18)))
+			_add_trait("Elongation", "%.2f" % float(genome.get("body_elongation", 1.0)))
+			_add_trait("Depth", "%.2f" % float(genome.get("body_depth_factor", 1.0)))
+			_add_trait("Schooling", "%.2f" % float(genome.get("schooling_strength", 1.0)))
+			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 1.8)))
+			_add_trait("Herbivory", "%.2f" % float(genome.get("herbivory", 0.0)))
+			_add_trait("Fecundity", "%.2f" % float(genome.get("fecundity", 0.7)))
 
 
 func _on_pin_pressed() -> void:
@@ -642,39 +899,151 @@ func _on_pin_pressed() -> void:
 		lib.pin_to_global(_selected_key)
 
 
-# ---- Preview fish lifecycle -------------------------------------------------
+# ---- Preview creature lifecycle ---------------------------------------------
 
-func _clear_preview_fish() -> void:
-	if _preview_fish != null and is_instance_valid(_preview_fish):
-		_preview_fish.queue_free()
-	_preview_fish = null
+func _clear_preview_creature() -> void:
+	if _preview_creature != null and is_instance_valid(_preview_creature):
+		_preview_creature.queue_free()
+	_preview_creature = null
 
 
-func _load_preview_fish(genome: Dictionary) -> void:
-	_clear_preview_fish()
+func _load_preview_creature(genome: Dictionary, otype: String) -> void:
+	_clear_preview_creature()
 	if _preview_pivot == null or genome.is_empty():
 		return
+	var g: Dictionary = genome.duplicate(true)
+	match otype:
+		SpeciesLibrary.ORGANISM_SHRIMP:
+			_preview_creature = _spawn_preview_shrimp(g)
+		SpeciesLibrary.ORGANISM_SNAIL:
+			_preview_creature = _spawn_preview_snail(g)
+		SpeciesLibrary.ORGANISM_PLANT:
+			_preview_creature = _spawn_preview_plant(g)
+		_:
+			_preview_creature = _spawn_preview_fish(g)
+
+
+func _spawn_preview_fish(g: Dictionary) -> Fish:
 	var f := Fish.new()
 	_preview_pivot.add_child(f)
 	f.position = Vector3.ZERO
-	# init_genome reads many keys; we feed it a duplicate so the original
-	# library entry is never mutated by the side effects inside init_genome
-	# (e.g. mixed_morphs rolls, sexual dimorphism overrides).
-	var g: Dictionary = genome.duplicate(true)
-	# Force an adult preview — fry are tiny and the player wants to see the
-	# species at its display size.
 	g.erase("preferred_y_frac")
 	f.init_genome(g)
 	f.maturity = Fish.MATURITY_ADULT
 	f.scale = Vector3.ONE
-	# Hold position: target_velocity stays zero, speed never accelerates, so
-	# _motion_substep doesn't translate the fish but still ticks fin/tail
-	# wiggle animations. We just need a known facing.
 	f.target_velocity = Vector3.ZERO
 	f.speed = 0.0
-	f.heading = Vector3(0, 0, -1)
+	f.heading = Vector3(3, 0, -1)
 	f.look_at(f.position + Vector3(0, 0, -1), Vector3.UP)
-	_preview_fish = f
+	_freeze_preview_creature(f)
+	return f
+
+
+func _spawn_preview_shrimp(g: Dictionary) -> Shrimp:
+	var s := Shrimp.new()
+	_preview_pivot.add_child(s)
+	s.position = Vector3(0, 0.05, 0)
+	# init_genome builds the body at current maturity — fry scale is invisible
+	# in the preview sphere.
+	s.maturity = Shrimp.MATURITY_ADULT
+	s.init_genome(g)
+	s.position = Vector3(0, 0.05, 0)
+	s.scale = Vector3.ONE * SHRIMP_PREVIEW_SCALE
+	s.velocity = Vector3.ZERO
+	s.speed = 0.0
+	s.heading = Vector3(0, 0, -1)
+	_freeze_preview_creature(s)
+	return s
+
+
+func _spawn_preview_snail(g: Dictionary) -> Node3D:
+	# Plain Node3D — do NOT attach snail.gd or _process will crawl the mesh
+	# off-screen / queue_free in the isolated preview world.
+	var sn := Node3D.new()
+	sn.name = "PreviewSnail"
+	_preview_pivot.add_child(sn)
+	sn.position = Vector3(0, 0.05, 0)
+	sn.rotation.y = PI * 0.5
+	sn.scale = Vector3.ONE * SNAIL_PREVIEW_SCALE
+	_build_preview_snail_shell(sn, g)
+	return sn
+
+
+func _freeze_preview_creature(node: Node) -> void:
+	node.set_process(false)
+	node.set_physics_process(false)
+
+
+func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:
+	var shell_color: Color = _preview_color(g.get("shell_color", Color8(135, 44, 176)))
+	var shell_size: float = float(g.get("shell_size", 1.0))
+	var shell_shape: String = String(g.get("shell_shape", "turbo"))
+	var shell_dark := shell_color.darkened(0.22)
+	var body := Color8(44, 31, 21)
+	var shell_mat := VoxelMat.make(shell_color)
+	var shell_dark_mat := VoxelMat.make(shell_dark)
+	var body_mat := VoxelMat.make(body)
+	match shell_shape:
+		"trochus":
+			for i in 6:
+				var y: float = 0.04 + i * 0.045 * shell_size
+				var s: float = (0.18 - i * 0.025) * shell_size
+				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
+				var mi := MeshInstance3D.new()
+				mi.mesh = VoxelMat.get_box(Vector3(s, s * 0.85, s))
+				mi.position = Vector3(0, y, 0)
+				mi.material_override = mat
+				snail.add_child(mi)
+		"nassarius":
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(0.14 * shell_size, 0.08 * shell_size, 0.18 * shell_size))
+			mi.material_override = shell_mat
+			snail.add_child(mi)
+		_:
+			for i in 4:
+				var ang: float = i * 0.7
+				var r: float = (0.05 + i * 0.06) * shell_size
+				var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
+				var s: float = (0.16 - i * 0.02) * shell_size
+				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
+				var mi := MeshInstance3D.new()
+				mi.mesh = VoxelMat.get_box(Vector3(s, s, s))
+				mi.position = sp
+				mi.material_override = mat
+				snail.add_child(mi)
+	var foot := MeshInstance3D.new()
+	foot.mesh = VoxelMat.get_box(Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size))
+	foot.position = Vector3(0, -0.12 * shell_size, 0)
+	foot.material_override = body_mat
+	snail.add_child(foot)
+
+
+func _preview_color(c: Variant) -> Color:
+	if c is Color:
+		return c
+	if c is Array and (c as Array).size() >= 3:
+		var a: Array = c
+		return Color(float(a[0]), float(a[1]), float(a[2]),
+			float(a[3]) if a.size() >= 4 else 1.0)
+	return Color8(135, 44, 176)
+
+
+func _spawn_preview_plant(g: Dictionary) -> Plant:
+	var p := Plant.new()
+	_preview_pivot.add_child(p)
+	p.position = Vector3(0, -0.5, 0)
+	var ramp: Variant = g.get("ramp_override", [])
+	if ramp is Array and (ramp as Array).size() == 6:
+		p.ramp_override = (ramp as Array).duplicate()
+	p.init(mini(6, int(g.get("max_height", 8))), {
+		"max_height": int(g.get("max_height", 12)),
+		"growth_rate": float(g.get("growth_rate", 0.18)),
+		"sway_amplitude": float(g.get("sway_amplitude", 0.25)),
+		"leaf_form": String(g.get("leaf_form", "column")),
+		"leaf_length": int(g.get("leaf_length", 4)),
+	})
+	_freeze_preview_creature(p)
+	return p
 
 
 # ---- Detail helpers ---------------------------------------------------------
@@ -745,7 +1114,7 @@ func _format_elapsed(secs: int) -> String:
 	if secs < 60:
 		return "%ds" % secs
 	if secs < 3600:
-		return "%dm" % (secs / 60)
+		return "%dm" % int(secs / 60.0)
 	if secs < 86400:
-		return "%dh" % (secs / 3600)
-	return "%dd" % (secs / 86400)
+		return "%dh" % int(secs / 3600.0)
+	return "%dd" % int(secs / 86400.0)

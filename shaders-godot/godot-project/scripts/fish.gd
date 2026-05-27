@@ -457,6 +457,8 @@ func init_genome(genome: Dictionary) -> void:
 	# load. We duplicate(true) so later mutation by the caller doesn't reach
 	# back into our cached copy.
 	_saved_genome = genome.duplicate(true)
+	if not _saved_genome.has("organism_type"):
+		_saved_genome["organism_type"] = "fish"
 	# mixed_morphs (reef tank): each individual rolls a fresh tropical
 	# colour + body + pattern + tail combo at spawn so a single species
 	# entry produces a school that reads as a mixed reef community
@@ -2869,7 +2871,13 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"adipose_fin": adipose_fin,
 		"snout_pointed": snout_pointed,
 		"body_shape": body_shape,
+		"organism_type": "fish",
+		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
+			get_saved_genome(), partner.get_saved_genome(),
+		]),
 	}
+	if sim != null:
+		EvolutionPressure.apply_fish_offspring(g, EvolutionPressure.sample_from_sim(sim))
 	return g
 
 

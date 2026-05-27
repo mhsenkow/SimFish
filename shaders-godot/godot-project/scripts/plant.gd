@@ -26,6 +26,7 @@ const PLANT_RAMP: Array[Color] = [
 	Color8(121, 192, 105),
 ]
 const VOXEL_SIZE: float = 0.32
+const _SPECIES_LIB := preload("res://scripts/species_library.gd")
 
 # Stress palette for nutrient deficiency (yellowing / browning).
 const STRESS_RAMP: Array[Color] = [
@@ -72,6 +73,9 @@ var _world_pos: Vector3 = Vector3.ZERO
 # at spawn so plant.gd doesn't need to know world geometry constants.
 var water_surface_y: float = 6.5
 var generation: int = 0
+var plant_name: String = ""
+var parent_lineage: String = "Founders"
+var _parent_keys: Array = []
 
 # ---- Root system ----
 var root_voxels: Array[MeshInstance3D] = []
@@ -149,6 +153,39 @@ const RUNNER_DISTANCE_MIN: float = 1.4
 const RUNNER_DISTANCE_MAX: float = 2.1
 
 
+func get_plant_genome() -> Dictionary:
+	_ensure_plant_named()
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	return {
+		"organism_type": "plant",
+		"species": _save_kind(),
+		"plant_name": plant_name,
+		"leaf_form": leaf_form,
+		"max_height": max_height,
+		"growth_rate": growth_rate,
+		"sway_amplitude": sway_amplitude,
+		"leaf_length": leaf_length,
+		"ramp_override": ramp.duplicate(),
+		"generation": generation,
+		"parent_lineage": parent_lineage,
+		"parent_keys": _parent_keys.duplicate(),
+	}
+
+
+func _ensure_plant_named() -> void:
+	if plant_name != "":
+		return
+	var forms: Dictionary = {
+		"column": "Stem",
+		"paddle": "Rosette",
+		"ribbon": "Blade",
+		"lance": "Sprig",
+		"needle": "Carpet",
+	}
+	var base: String = forms.get(leaf_form, "Plant")
+	plant_name = "%s %d" % [base, randi() % 900 + 100]
+
+
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	max_height = params.get("max_height", max_height)
 	growth_rate = params.get("growth_rate", growth_rate)
@@ -157,6 +194,13 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	leaf_form = params.get("leaf_form", leaf_form)
 	leaf_length = params.get("leaf_length", leaf_length)
 	_max_roots = params.get("max_roots", _max_roots)
+	generation = int(params.get("generation", generation))
+	plant_name = String(params.get("plant_name", plant_name))
+	parent_lineage = String(params.get("parent_lineage", parent_lineage))
+	var pk: Variant = params.get("parent_keys", [])
+	if pk is Array:
+		_parent_keys = pk.duplicate()
+	_ensure_plant_named()
 	# Build initial roots.
 	_build_initial_roots()
 	for i in initial_height:
@@ -708,6 +752,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	health = lerpf(health, target_health, dt * 0.03) # slower health changes
 	_health_smooth = lerpf(_health_smooth, health, dt * 0.05)
 
+	# Environmental adaptation: well-fed plants slowly tune growth to local
+	# nutrients (phenotypic plasticity, distinct from seedling genetic mutation).
+	if health > 0.85 and nutrient_mult > 0.45 and randf() < 0.0002:
+		growth_rate = clampf(
+			growth_rate + (nutrient_mult - 0.5) * randf_range(-0.012, 0.018),
+			0.06, 0.42)
+
 	# ---- Deficiency symptoms ----
 	if _health_smooth < 0.4 and not _has_pinholes and voxels.size() > 4:
 		_apply_pinholes()
@@ -1245,11 +1296,17 @@ func _cast_seed() -> void:
 		var jitter := Color(randf(), randf(), randf())
 		for i in mutated_ramp.size():
 			mutated_ramp[i] = (mutated_ramp[i] as Color).lerp(jitter, muta)
+		var sim_n: Node = _find_sim()
+		if sim_n != null:
+			EvolutionPressure.apply_plant_ramp(
+				mutated_ramp, EvolutionPressure.sample_from_sim(sim_n))
 	world.spawn_seedling(seed_pos, mutated_ramp, generation + 1, get_seed_config())
 
 
 # Returns a dictionary of heritable traits so seedlings spawn as the same species.
 func get_seed_config() -> Dictionary:
+	_ensure_plant_named()
+	var my_key: String = _SPECIES_LIB.make_species_key(get_plant_genome())
 	return {
 		"script": get_script(),
 		"max_height": max_height,
@@ -1258,6 +1315,10 @@ func get_seed_config() -> Dictionary:
 		"leaf_form": leaf_form,
 		"leaf_length": leaf_length,
 		"max_roots": _max_roots,
+		"generation": generation + 1,
+		"parent_lineage": plant_name,
+		"parent_keys": [my_key] if my_key != "" else [],
+		"plant_name": "",
 	}
 
 

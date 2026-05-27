@@ -24,6 +24,9 @@ extends Node3D
 # small flat oval that rides the substrate plane (marine scavenger).
 # world.gd's _build_snail_body branches on this.
 @export var shell_shape: String = "turbo"
+var snail_name: String = ""
+var parent_lineage: String = "Founders"
+var _parent_keys: Array = []
 
 const SPEED: float = 0.18                  # units per second; ~3 minutes coast-to-coast
 const TURN_INTERVAL_MIN: float = 6.0
@@ -93,7 +96,46 @@ var _scan_accum: float = 0.0
 var id: String = ""
 
 
+func get_saved_genome() -> Dictionary:
+	_ensure_named()
+	return {
+		"organism_type": "snail",
+		"species": "snail",
+		"shell_color": shell_color,
+		"shell_size": shell_size,
+		"shell_shape": shell_shape,
+		"generation": generation,
+		"snail_name": snail_name,
+		"parent_lineage": parent_lineage,
+		"parent_keys": _parent_keys.duplicate(),
+	}
+
+
+func apply_genome_metadata(g: Dictionary) -> void:
+	if g.is_empty():
+		return
+	shell_color = g.get("shell_color", shell_color)
+	shell_size = float(g.get("shell_size", shell_size))
+	shell_shape = String(g.get("shell_shape", shell_shape))
+	generation = int(g.get("generation", generation))
+	snail_name = String(g.get("snail_name", snail_name))
+	parent_lineage = String(g.get("parent_lineage", parent_lineage))
+	var pk: Variant = g.get("parent_keys", [])
+	if pk is Array:
+		_parent_keys = pk.duplicate()
+	_ensure_named()
+
+
+func _ensure_named() -> void:
+	if snail_name != "":
+		return
+	var adjs := ["Spiral", "Glass", "Pearl", "Moss", "Ivory", "Copper", "Jade", "Dusk"]
+	var nouns := ["Crawler", "Glider", "Wanderer", "Drifter", "Pacer", "Rambler"]
+	snail_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+
+
 func _ready() -> void:
+	_ensure_named()
 	_choose_new_direction()
 	_facing = _direction
 	_t_until_breed = randf_range(BREEDING_INTERVAL_MIN, BREEDING_INTERVAL_MAX)
@@ -393,10 +435,15 @@ func _lay_egg_sac() -> void:
 	var color_muta := 0.18
 	var new_color: Color = shell_color.lerp(
 		Color(randf(), randf() * 0.6 + 0.2, randf()), color_muta)
+	var pressure: Dictionary = EvolutionPressure.sample_from_sim(_get_sim())
+	new_color = EvolutionPressure.apply_snail_shell_color(new_color, pressure)
 	var new_size: float = clampf(shell_size + randf_range(-0.08, 0.08), 0.65, 1.5)
 	sac.set("inherited_shell_color", new_color)
 	sac.set("inherited_shell_size", new_size)
 	sac.set("inherited_generation", generation + 1)
+	sac.set("inherited_shell_shape", shell_shape)
+	sac.set("inherited_parent_lineage", snail_name)
+	sac.set("inherited_parent_keys", SpeciesLibrary.parent_keys_for_breeding([get_saved_genome()]))
 
 
 func _tick_eye_stalks(dt: float) -> void:

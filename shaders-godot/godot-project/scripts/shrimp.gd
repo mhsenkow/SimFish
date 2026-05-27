@@ -143,8 +143,14 @@ var _saved_genome: Dictionary = {}
 
 # ---- Setup ----
 
+func get_saved_genome() -> Dictionary:
+	return _saved_genome.duplicate(true)
+
+
 func init_genome(genome: Dictionary) -> void:
 	_saved_genome = genome.duplicate(true)
+	if not _saved_genome.has("organism_type"):
+		_saved_genome["organism_type"] = "shrimp"
 	species = genome.get("species", species)
 	base_color = genome.get("base_color", base_color)
 	accent_color = genome.get("accent_color", accent_color)
@@ -935,7 +941,8 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	var new_size: float = (adult_voxel_scale + other.adult_voxel_scale) * 0.5 \
 		+ randf_range(-size_muta, size_muta) * adult_voxel_scale
 	new_size = clampf(new_size, adult_voxel_scale * 0.65, adult_voxel_scale * 1.5)
-	return {
+	var g: Dictionary = {
+		"organism_type": "shrimp",
 		"species": species,
 		"base_color": base_color.lerp(other.base_color, mix).lerp(
 			Color(randf(), randf(), randf()), color_muta),
@@ -946,9 +953,16 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"max_speed": (max_speed + other.max_speed) * 0.5 + randf_range(-0.08, 0.08),
 		"sex": randi() % 2,
 		"substrate_top_y": substrate_top_y,
+		"is_cleaner": is_cleaner or other.is_cleaner,
 		"generation": maxi(generation, other.generation) + 1,
 		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
+		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
+			get_saved_genome(), other.get_saved_genome(),
+		]),
 	}
+	if sim != null:
+		EvolutionPressure.apply_shrimp_offspring(g, EvolutionPressure.sample_from_sim(sim))
+	return g
 
 
 # ---- Save / load ----

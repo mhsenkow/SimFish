@@ -122,12 +122,12 @@ func _format_subtitle(entry: Dictionary) -> String:
 
 func _fmt_duration(seconds: int) -> String:
 	if seconds < 60: return "%ds" % seconds
-	if seconds < 3600: return "%dm" % (seconds / 60)
+	if seconds < 3600: return "%dm" % int(seconds / 60.0)
 	if seconds < 86400:
-		var h: int = seconds / 3600
-		var m: int = (seconds % 3600) / 60
+		var h: int = int(seconds / 3600.0)
+		var m: int = int((seconds % 3600) / 60.0)
 		return "%dh %dm" % [h, m] if m > 0 else "%dh" % h
-	return "%dd" % (seconds / 86400)
+	return "%dd" % int(seconds / 86400.0)
 
 
 # ---- Actions ----

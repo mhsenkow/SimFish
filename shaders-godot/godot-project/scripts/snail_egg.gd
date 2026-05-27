@@ -12,6 +12,9 @@ extends Node3D
 @export var inherited_shell_color: Color = Color8(135, 44, 176)
 @export var inherited_shell_size: float = 1.0
 @export var inherited_generation: int = 0
+@export var inherited_shell_shape: String = "turbo"
+@export var inherited_parent_lineage: String = "Founders"
+@export var inherited_parent_keys: Array = []
 
 const HATCH_TIME: float = 60.0
 
@@ -123,8 +126,16 @@ func _hatch() -> void:
 	baby.set("shell_color", inherited_shell_color)
 	baby.set("shell_size", inherited_shell_size)
 	baby.set("generation", inherited_generation)
+	baby.set("shell_shape", inherited_shell_shape)
+	baby.set("parent_lineage", inherited_parent_lineage)
+	baby.set("_parent_keys", inherited_parent_keys.duplicate())
+	if baby.has_method("_ensure_named"):
+		baby._ensure_named()
 	# Build the baby's body using the inherited shell color + size.
 	_build_baby_body(baby, inherited_shell_color, inherited_shell_size)
+	var sim := _get_sim()
+	if sim != null and sim.has_method("register_snail"):
+		sim.register_snail(baby)
 	queue_free()
 
 
