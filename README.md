@@ -1,4 +1,5 @@
 # Vivarium
+<img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/82432dbc-8338-4bc1-9313-0b54c24aff27" />
 
 <img width="2560" height="1440" alt="Screenshot 2026-05-20 at 10 57 35 AM" src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
 <img width="2560" height="1440" alt="Screenshot 2026-05-20 at 4 06 02 PM" src="https://github.com/user-attachments/assets/8b8a9c07-869c-4462-98bf-074c32911a56" />
