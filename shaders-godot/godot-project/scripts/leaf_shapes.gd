@@ -48,7 +48,7 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 				sx *= 0.6
 				sz *= 0.6
 			mi.mesh = VoxelMat.get_box(Vector3(sx, sy, sz))
-			mi.material_override = VoxelMat.make(color)
+			mi.material_override = VoxelMat.make_foliage(color)
 			mi.position = Vector3(
 				float(dx) * VOXEL_SIZE * 0.75,
 				float(i) * VOXEL_SIZE * 0.85,
@@ -78,7 +78,7 @@ static func build_ribbon(length: int, ramp: Array, age_frac: float,
 			VOXEL_SIZE * 1.0,
 			VOXEL_SIZE * 0.4,
 		))
-		mi.material_override = VoxelMat.make(color)
+		mi.material_override = VoxelMat.make_foliage(color)
 		# Gentle S-curve along the blade.
 		var curve_x: float = sin(t * PI + sway_seed) * VOXEL_SIZE * 0.4
 		mi.position = Vector3(
@@ -110,7 +110,7 @@ static func build_lance_pair(ramp: Array, age_frac: float,
 				VOXEL_SIZE * 0.45,
 				VOXEL_SIZE * 0.35,
 			))
-			mi.material_override = VoxelMat.make(color)
+			mi.material_override = VoxelMat.make_foliage(color)
 			# Leaves angle outward from the stem.
 			var angle: float = float(side) * 0.7 + yaw_offset
 			var dist: float = float(i) * VOXEL_SIZE * 0.65
@@ -136,7 +136,7 @@ static func build_needle(length: int, ramp: Array, age_frac: float) -> Array:
 			VOXEL_SIZE * 0.8,
 			VOXEL_SIZE * 0.3,
 		))
-		mi.material_override = VoxelMat.make(color)
+		mi.material_override = VoxelMat.make_foliage(color)
 		mi.position = Vector3(0, float(i) * VOXEL_SIZE * 0.75, 0)
 		nodes.append(mi)
 	return nodes
@@ -166,7 +166,7 @@ static func build_oval(ramp: Array, age_frac: float) -> Array:
 				VOXEL_SIZE * 0.4,
 				VOXEL_SIZE * 0.8,
 			))
-			mi.material_override = VoxelMat.make(color)
+			mi.material_override = VoxelMat.make_foliage(color)
 			mi.position = Vector3(
 				(float(col) - 1.0) * VOXEL_SIZE * 0.7,
 				float(row) * VOXEL_SIZE * 0.65,
@@ -196,7 +196,7 @@ static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
 				VOXEL_SIZE * 0.9,
 				VOXEL_SIZE * 0.45,
 			))
-			mi.material_override = VoxelMat.make(color)
+			mi.material_override = VoxelMat.make_foliage(color)
 			mi.position = Vector3(
 				float(dx) * VOXEL_SIZE * 0.7,
 				float(i) * VOXEL_SIZE * 0.8,
@@ -264,14 +264,14 @@ static func build_bud(color: Color) -> Array:
 	var nodes: Array = []
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.5))
-	mi.material_override = VoxelMat.make(color)
+	mi.material_override = VoxelMat.make_foliage(color)
 	mi.position = Vector3.ZERO
 	nodes.append(mi)
 	# Two tiny sepal voxels at the base.
 	for dx in [-1, 1]:
 		var sepal := MeshInstance3D.new()
 		sepal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.3))
-		sepal.material_override = VoxelMat.make(color.darkened(0.3))
+		sepal.material_override = VoxelMat.make_foliage(color.darkened(0.3))
 		sepal.position = Vector3(float(dx) * VOXEL_SIZE * 0.35, -VOXEL_SIZE * 0.2, 0)
 		nodes.append(sepal)
 	return nodes
@@ -286,7 +286,7 @@ static func build_flower(petal_color: Color, center_color: Color,
 	# Center pistil / carpel.
 	var center := MeshInstance3D.new()
 	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.4))
-	center.material_override = VoxelMat.make(center_color)
+	center.material_override = VoxelMat.make_foliage(center_color)
 	center.position = Vector3(0, VOXEL_SIZE * 0.1, 0)
 	nodes.append(center)
 	# Petals fan outward as open_frac increases.
@@ -302,7 +302,7 @@ static func build_flower(petal_color: Color, center_color: Color,
 			clampf(petal_color.g + shade, 0.0, 1.0),
 			clampf(petal_color.b + shade, 0.0, 1.0),
 		)
-		petal.material_override = VoxelMat.make(pc)
+		petal.material_override = VoxelMat.make_foliage(pc)
 		petal.position = Vector3(
 			cos(angle) * spread,
 			VOXEL_SIZE * 0.05 - open_frac * VOXEL_SIZE * 0.15,
@@ -338,7 +338,7 @@ static func build_seed_pod(color: Color) -> Array:
 	var nodes: Array = []
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.55))
-	mi.material_override = VoxelMat.make(color.darkened(0.35))
+	mi.material_override = VoxelMat.make_foliage(color.darkened(0.35))
 	nodes.append(mi)
 	return nodes
 

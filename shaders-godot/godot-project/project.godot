@@ -19,6 +19,7 @@ config/features=PackedStringArray("4.6", "Mobile")
 
 TankSaves="*res://scripts/tank_saves.gd"
 TankConfig="*res://scripts/tank_config.gd"
+SpeciesLibrary="*res://scripts/species_library.gd"
 
 [display]
 

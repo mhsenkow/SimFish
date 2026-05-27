@@ -16,6 +16,13 @@ const DIFFUSION_RATE: float = 0.04
 const DECAY_RATE: float = 0.003
 const RESERVOIR_LEAK_PER_TICK: float = 0.00015
 
+# Hoisted out of tick(): GDScript reallocates an inline array literal
+# every time the for-loop is entered, so the old `for off in [Vector2i(...),
+# ...]` form was allocating 4 Vector2is per cell per tick.
+const NEIGHBOR_OFFSETS: Array[Vector2i] = [
+	Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1),
+]
+
 # Per-instance overrides set by world.gd from TankConfig.SUBSTRATE_PROFILES.
 # Negative means "use the const default". Allows different substrate types
 # (sand, eco-complete, inert gravel) to have different fertility characteristics
@@ -36,6 +43,9 @@ var cells_z: int
 var cell_size: float
 var origin: Vector3   # world-space corner of cell (0,0)
 var nutrients: Array  # of Array[float], [x][z]
+# Scratch buffer for diffusion. Preallocated once in init() so tick()
+# doesn't have to allocate cells_x × cells_z floats every sim frame.
+var _scratch: Array = []
 
 
 func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
@@ -44,11 +54,15 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	cell_size = 1.0 / cells_per_unit
 	origin = Vector3(-half_w, 0, -half_d)
 	nutrients = []
+	_scratch = []
 	for x in cells_x:
 		var col: Array = []
 		col.resize(cells_z)
 		col.fill(_active_baseline())
 		nutrients.append(col)
+		var sc: Array = []
+		sc.resize(cells_z)
+		_scratch.append(sc)
 
 
 func _cell_at(world_pos: Vector3) -> Vector2i:
@@ -81,32 +95,34 @@ func consume_at(world_pos: Vector3, amount: float) -> float:
 
 func tick(_dt: float) -> void:
 	# Diffuse + decay. Cheap explicit step; substepping not needed at this resolution.
-	var scratch: Array = []
+	# Copy nutrients into the preallocated scratch buffer (no per-tick alloc).
 	for x in cells_x:
-		var col: Array = []
-		col.resize(cells_z)
+		var src_col: Array = nutrients[x]
+		var dst_col: Array = _scratch[x]
 		for z in cells_z:
-			col[z] = nutrients[x][z]
-		scratch.append(col)
+			dst_col[z] = src_col[z]
 
+	# Hoist the per-call helper values out of the inner loop.
+	var baseline: float = _active_baseline()
+	var leak: float = _active_reservoir_leak()
 	for x in cells_x:
 		for z in cells_z:
-			var c: float = scratch[x][z]
+			var c: float = _scratch[x][z]
 			var sum: float = 0.0
 			var count: float = 0.0
-			for off in [Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, -1), Vector2i(0, 1)]:
+			for off in NEIGHBOR_OFFSETS:
 				var nx: int = x + off.x
 				var nz: int = z + off.y
 				if nx < 0 or nz < 0 or nx >= cells_x or nz >= cells_z:
 					continue
-				sum += scratch[nx][nz]
+				sum += _scratch[nx][nz]
 				count += 1.0
 			var avg: float = sum / maxf(count, 1.0)
 			var new_val: float = c + (avg - c) * DIFFUSION_RATE
 			# Slow decay toward baseline.
-			new_val += (_active_baseline() - new_val) * DECAY_RATE
+			new_val += (baseline - new_val) * DECAY_RATE
 			# Reservoir leak from bedrock aquasoil (or whatever substrate is set).
-			new_val += _active_reservoir_leak()
+			new_val += leak
 			nutrients[x][z] = clampf(new_val, 0.0, NUTRIENT_MAX)
 
 

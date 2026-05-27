@@ -20,6 +20,7 @@ extends Node
 @onready var settings_panel: PanelContainer = $SettingsPanel
 @onready var render_panel: PanelContainer = $RenderPanel
 @onready var fish_store_panel: PanelContainer = $FishStorePanel
+@onready var library_panel: PanelContainer = $LibraryPanel
 @onready var aquascape_palette: PanelContainer = $AquascapeToolPalette
 
 # Top-bar HUD — restructured 2026 into clusters + chip strip. All buttons are
@@ -31,6 +32,7 @@ extends Node
 @onready var settings_toggle: Button = %SettingsToggle
 @onready var render_toggle: Button = %RenderToggle
 @onready var fish_store_toggle: Button = %FishStoreToggle
+@onready var library_toggle: Button = %LibraryToggle
 @onready var aquascape_toggle: Button = %AquascapeToggle
 @onready var menu_button: Button = %MenuButton
 @onready var portal_toggle: Button = %PortalToggle
@@ -56,6 +58,13 @@ var _portal_open: bool = false
 var _portal_target: Node3D = null
 var _portal_mat: ShaderMaterial = null
 const PORTAL_ZOOM: float = 3.5
+
+# PiP info panel elements
+var _portal_info_panel: PanelContainer = null
+var _portal_name_lbl: Label = null
+var _portal_lineage_lbl: Label = null
+var _portal_stats_lbl: Label = null
+
 # The four tool buttons inside the palette - built procedurally in _ready
 # because we want one button per AQUASCAPE_TOOLS entry without locking
 # in a fixed scene tree.
@@ -246,6 +255,8 @@ func _ready() -> void:
 		render_toggle.pressed.connect(render_panel.toggle)
 	if fish_store_toggle != null and fish_store_panel != null:
 		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
+	if library_toggle != null and library_panel != null:
+		library_toggle.pressed.connect(library_panel.toggle)
 	if aquascape_toggle != null:
 		aquascape_toggle.pressed.connect(_toggle_aquascape)
 	if menu_button != null:
@@ -283,6 +294,8 @@ func _ready() -> void:
 	# we start spawning entities into it.
 	if _sim != null:
 		call_deferred("_try_load_saved_state")
+		
+	_build_portal_info_ui()
 
 
 func _toggle_portal() -> void:
@@ -427,7 +440,7 @@ func _process(dt: float) -> void:
 			target = target.lerp(_follow_target.global_position, t)
 			_apply_camera()
 			
-	if _portal_open:
+	if _portal_open or _follow_target != null or (_portal_info_panel != null and _portal_info_panel.visible):
 		_update_portal_pip()
 
 	# WASD pan target along view direction (desktop only — no keyboard on mobile).
@@ -687,8 +700,7 @@ func _toggle_timelapse() -> void:
 func _clear_follow() -> void:
 	_follow_target = null
 	_portal_target = null
-	if portal_hint != null and _portal_open:
-		portal_hint.visible = true
+	_update_portal_pip()
 
 
 func _window_mouse_to_viewport(mouse: Vector2) -> Vector2:
@@ -813,25 +825,185 @@ func _creature_label(creature: Node) -> String:
 
 
 func _update_portal_pip() -> void:
-	if not _portal_open or _portal_mat == null or camera == null:
+	if camera == null:
 		return
-	if _portal_target == null or not is_instance_valid(_portal_target):
-		_portal_target = null
-		_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
+		
+	var target_node: Node3D = null
+	if _portal_open:
+		target_node = _portal_target
+	else:
+		target_node = _follow_target
+		
+	if target_node == null or not is_instance_valid(target_node):
+		# No target to track
+		if not _portal_open:
+			if portal_container != null:
+				portal_container.visible = false
+			if _portal_info_panel != null:
+				_portal_info_panel.visible = false
+			return
+		else:
+			# Portal is open but has no target
+			if portal_container != null:
+				portal_container.visible = true
+			if portal_display != null:
+				portal_display.visible = true
+				if _portal_mat != null:
+					_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
+			if portal_hint != null:
+				portal_hint.visible = true
+			if _portal_info_panel != null:
+				_portal_info_panel.visible = false
+			return
+
+	# We have a valid target!
+	if portal_container != null:
+		portal_container.visible = true
+		
+	if _portal_open:
+		if portal_display != null:
+			portal_display.visible = true
 		if portal_hint != null:
-			portal_hint.visible = true
+			portal_hint.visible = false
+			
+		if _portal_mat != null:
+			if not camera.is_position_behind(target_node.global_position):
+				var screen_pt: Vector2 = camera.unproject_position(target_node.global_position)
+				var center_uv: Vector2 = Vector2(
+					screen_pt.x / float(sub_viewport.size.x),
+					screen_pt.y / float(sub_viewport.size.y),
+				)
+				_portal_mat.set_shader_parameter("center_uv", center_uv)
+				_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
+				
+		if _portal_info_panel != null:
+			_portal_info_panel.offset_top = 196.0
+			_portal_info_panel.offset_bottom = 292.0
+			_portal_info_panel.visible = true
+	else:
+		if portal_display != null:
+			portal_display.visible = false
+		if portal_hint != null:
+			portal_hint.visible = false
+			
+		if _portal_info_panel != null:
+			_portal_info_panel.offset_top = 0.0
+			_portal_info_panel.offset_bottom = 96.0
+			_portal_info_panel.visible = true
+
+	# Update the dynamic creature stats and lineage labels
+	if _portal_info_panel != null and _portal_info_panel.visible:
+		# Name
+		var c_name := ""
+		if target_node.get("fish_name") != null and String(target_node.get("fish_name")) != "":
+			c_name = String(target_node.get("fish_name"))
+		elif target_node.get("shrimp_name") != null and String(target_node.get("shrimp_name")) != "":
+			c_name = String(target_node.get("shrimp_name"))
+		elif target_node.get("_display_name") != null and String(target_node.get("_display_name")) != "":
+			c_name = String(target_node.get("_display_name"))
+		else:
+			c_name = _creature_label(target_node).capitalize()
+		_portal_name_lbl.text = c_name
+		
+		# Lineage (Generation & Parents)
+		var spec := _creature_label(target_node).capitalize()
+		var gen := 0
+		if target_node.get("generation") != null:
+			gen = int(target_node.generation)
+			
+		var lin := "Founders"
+		if target_node.get("parent_lineage") != null and String(target_node.get("parent_lineage")) != "":
+			lin = String(target_node.get("parent_lineage"))
+		_portal_lineage_lbl.text = "%s · Gen %d\nFrom: %s" % [spec, gen, lin]
+		
+		# Stats (Age, hunger, sex, and sterile flag)
+		var age_str := ""
+		if target_node.get("age") != null:
+			var sec: float = target_node.age
+			var m := int(sec / 60.0)
+			var s := int(sec) % 60
+			if m > 0:
+				age_str = "%dm %ds" % [m, s]
+			else:
+				age_str = "%ds" % s
+		else:
+			age_str = "N/A"
+			
+		var hunger_val := 0.0
+		if target_node.get("hunger") != null:
+			hunger_val = float(target_node.hunger)
+		var hunger_pct := int(clampf(hunger_val, 0.0, 1.0) * 100.0)
+		
+		var sex_str := ""
+		if target_node.get("sex") != null:
+			sex_str = " · Male" if target_node.sex == 0 else " · Female"
+			
+		var sterile_str := ""
+		if target_node.get("sterile") != null and bool(target_node.sterile):
+			sterile_str = " · Sterile"
+			
+		_portal_stats_lbl.text = "Age: %s · Hunger: %d%%%s%s" % [age_str, hunger_pct, sex_str, sterile_str]
+
+
+func _build_portal_info_ui() -> void:
+	if portal_container == null:
 		return
-	if camera.is_position_behind(_portal_target.global_position):
-		return
-	var screen_pt: Vector2 = camera.unproject_position(_portal_target.global_position)
-	var center_uv: Vector2 = Vector2(
-		screen_pt.x / float(sub_viewport.size.x),
-		screen_pt.y / float(sub_viewport.size.y),
-	)
-	_portal_mat.set_shader_parameter("center_uv", center_uv)
-	_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
-	if portal_hint != null:
-		portal_hint.visible = false
+		
+	# Expand the portal container size so the text panel fits cleanly
+	portal_container.offset_bottom = 340.0
+	
+	_portal_info_panel = PanelContainer.new()
+	_portal_info_panel.name = "PortalInfoPanel"
+	_portal_info_panel.anchors_preset = Control.PRESET_BOTTOM_WIDE
+	_portal_info_panel.offset_top = 196.0
+	_portal_info_panel.offset_bottom = 292.0
+	_portal_info_panel.offset_left = 0
+	_portal_info_panel.offset_right = 0
+	
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.08, 0.14, 0.85)
+	style.border_color = Color(0.35, 0.45, 0.6, 0.5)
+	style.border_width_left = 1
+	style.border_width_right = 1
+	style.border_width_top = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 8
+	style.corner_radius_top_right = 8
+	style.corner_radius_bottom_left = 8
+	style.corner_radius_bottom_right = 8
+	style.content_margin_left = 8
+	style.content_margin_right = 8
+	style.content_margin_top = 6
+	style.content_margin_bottom = 6
+	_portal_info_panel.add_theme_stylebox_override("panel", style)
+	
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 2)
+	_portal_info_panel.add_child(vbox)
+	
+	_portal_name_lbl = Label.new()
+	_portal_name_lbl.text = "Unknown"
+	_portal_name_lbl.add_theme_font_size_override("font_size", 12)
+	_portal_name_lbl.add_theme_color_override("font_color", Color8(255, 215, 80))
+	_portal_name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_portal_name_lbl)
+	
+	_portal_lineage_lbl = Label.new()
+	_portal_lineage_lbl.text = "Gen 0 · Founders"
+	_portal_lineage_lbl.add_theme_font_size_override("font_size", 9)
+	_portal_lineage_lbl.add_theme_color_override("font_color", Color8(200, 210, 225))
+	_portal_lineage_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_portal_lineage_lbl)
+	
+	_portal_stats_lbl = Label.new()
+	_portal_stats_lbl.text = "Age: 0s · Hunger: 0%"
+	_portal_stats_lbl.add_theme_font_size_override("font_size", 9)
+	_portal_stats_lbl.add_theme_color_override("font_color", Color8(150, 230, 150))
+	_portal_stats_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(_portal_stats_lbl)
+	
+	portal_container.add_child(_portal_info_panel)
+	_portal_info_panel.visible = false
 
 
 func _assign_creature_target(creature: Node3D) -> void:
@@ -841,6 +1013,7 @@ func _assign_creature_target(creature: Node3D) -> void:
 		print_verbose("[vivarium] portal tracking %s" % _creature_label(creature))
 	else:
 		_follow_target = creature
+		_update_portal_pip()
 		print_verbose("[vivarium] following %s" % _creature_label(creature))
 
 

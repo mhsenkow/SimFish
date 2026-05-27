@@ -186,6 +186,11 @@ func _ready() -> void:
 	# between resource batches. Doing everything synchronously hammered Metal
 	# on macOS and tripped fence timeouts during the first render frame.
 	# Spawn functions themselves also yield internally (see each function).
+	# Initialize caustics material early so _build_substrate() can apply it
+	# as next_pass on top-row MultiMesh materials during the build phase.
+	if _caustics_mat == null:
+		_caustics_mat = ShaderMaterial.new()
+		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
 	_build_substrate()
 	_build_hardscape()
 	_build_water_volume()
@@ -203,6 +208,15 @@ func _ready() -> void:
 	# completes. If the save is INCOMPATIBLE (substrate type changed between
 	# sessions), we silently delete it and run the initial spawn instead —
 	# the user's substrate choice wins.
+	# Reset the SpeciesLibrary's per-tank discovery list. The autoload is a
+	# singleton that survives scene reloads, so if the player returns from
+	# menu into a different tank, last-tank's discoveries would otherwise
+	# leak. The loading branch overwrites this with the saved set; the
+	# fresh-spawn branch starts from zero and accumulates as founders enter.
+	var lib_for_reset := get_node_or_null("/root/SpeciesLibrary")
+	if lib_for_reset != null:
+		lib_for_reset.clear_tank()
+
 	var saves := get_node_or_null("/root/TankSaves")
 	var loading_from_save: bool = false
 	if saves != null:
@@ -239,6 +253,14 @@ func _ready() -> void:
 		else:
 			await _spawn_initial_shrimp()
 		await get_tree().process_frame
+	else:
+		# If loading from save, we still need to spawn the procedural freshwater floaters,
+		# lily pads, and math plants since they are not saved in the save file.
+		if not bool(_active_substrate_profile.get("is_saltwater", false)):
+			_spawn_floaters()
+			_spawn_lily_pads()
+			_spawn_math_plants()
+			await get_tree().process_frame
 
 	_spawn_aeration_system()
 	_spawn_mulm_layer()
@@ -278,13 +300,103 @@ func _ready() -> void:
 		  sim.plants.size(), " plants")
 
 
+
 var _directional_light: DirectionalLight3D = null
+
+# Lofi room environment dynamic variables
+var _room_sky_mat: ShaderMaterial = null
+var _room_stars: Array[MeshInstance3D] = []
+var _room_clock_hour_pivot: Node3D = null
+var _room_clock_min_pivot: Node3D = null
+var _room_record_disc: MeshInstance3D = null
+var _room_record_speed: float = 0.0
+var _room_lava_lamp_blobs: Array[MeshInstance3D] = []
+var _room_lava_lamp_light: OmniLight3D = null
+var _room_time_passed: float = 0.0
+
+# Day/night light + caustics + god-ray shader-parameter writes are
+# throttled to 10 Hz. The daylight cycle takes 360 s, so the values being
+# pushed to shaders change by <1% per tenth of a second — writing them
+# every render frame is pure waste and shows up under profiling as one
+# of the larger per-frame costs in a populated tank.
+const LIGHT_CYCLE_INTERVAL: float = 0.1
+var _light_cycle_accum: float = 0.0
+
 
 
 func _process(dt: float) -> void:
 	var sdt: float = dt
 	if sim != null:
 		sdt = dt * float(sim.time_scale)
+
+	# Update lofi room environment animations
+	_room_time_passed += sdt
+	
+	if sim != null:
+		var dl: float = sim.daylight()
+		
+		# 1. Update Sky Color
+		if _room_sky_mat != null:
+			var sky_col: Color
+			if dl > 0.65:
+				sky_col = Color8(235, 110, 85).lerp(Color8(115, 185, 245), (dl - 0.65) / 0.35)
+			elif dl > 0.2:
+				sky_col = Color8(12, 10, 24).lerp(Color8(235, 110, 85), (dl - 0.2) / 0.45)
+			else:
+				sky_col = Color8(12, 10, 24)
+			_room_sky_mat.set_shader_parameter("albedo", sky_col)
+			
+		# 2. Update Twinkling stars
+		var show_stars: bool = (dl < 0.25)
+		for star in _room_stars:
+			if is_instance_valid(star):
+				star.visible = show_stars
+				if show_stars:
+					var offset_phase: float = star.position.x * 12.3 + star.position.y * 7.9
+					var scale_factor: float = 0.7 + 0.3 * sin(_room_time_passed * 3.5 + offset_phase)
+					star.scale = Vector3(scale_factor, scale_factor, scale_factor)
+
+	# 3. Update Clock hands (real-world local time)
+	if _room_clock_hour_pivot != null and _room_clock_min_pivot != null:
+		var sys_time := Time.get_time_dict_from_system()
+		var hr: float = float(sys_time.hour)
+		var mn: float = float(sys_time.minute)
+		var sc: float = float(sys_time.second)
+		
+		_room_clock_hour_pivot.rotation.z = -((int(hr) % 12) + mn / 60.0 + sc / 3600.0) * (TAU / 12.0)
+		_room_clock_min_pivot.rotation.z = -(mn + sc / 60.0) * (TAU / 60.0)
+
+	# 4. Update spinning vinyl record disc (synced to music state)
+	if _room_record_disc != null:
+		var cfg_player := get_node_or_null("/root/TankConfig")
+		var target_speed: float = 1.5 if (cfg_player != null and cfg_player.music_enabled) else 0.0
+		_room_record_speed = lerpf(_room_record_speed, target_speed, sdt * 2.0)
+		if _room_record_speed > 0.001:
+			_room_record_disc.rotate_y(-sdt * _room_record_speed)
+
+	# 5. Update Lava Lamp blobs & glow
+	if _room_lava_lamp_blobs.size() >= 2:
+		var blob1 := _room_lava_lamp_blobs[0]
+		if is_instance_valid(blob1):
+			var b1_y: float = -0.6 + 0.35 + sin(_room_time_passed * 0.45) * 0.20
+			blob1.position.y = b1_y
+			var b1_vel: float = cos(_room_time_passed * 0.45) * 0.20 * 0.45
+			var stretch_y: float = 1.0 + absf(b1_vel) * 0.8
+			var stretch_xz: float = 1.0 / sqrt(stretch_y)
+			blob1.scale = Vector3(stretch_xz, stretch_y, stretch_xz)
+			
+		var blob2 := _room_lava_lamp_blobs[1]
+		if is_instance_valid(blob2):
+			var b2_y: float = -0.6 + 0.65 + cos(_room_time_passed * 0.35 + 0.8) * 0.20
+			blob2.position.y = b2_y
+			var b2_vel: float = -sin(_room_time_passed * 0.35 + 0.8) * 0.20 * 0.35
+			var stretch_y: float = 1.0 + absf(b2_vel) * 0.8
+			var stretch_xz: float = 1.0 / sqrt(stretch_y)
+			blob2.scale = Vector3(stretch_xz, stretch_y, stretch_xz)
+			
+		if is_instance_valid(_room_lava_lamp_light):
+			_room_lava_lamp_light.light_energy = 0.12 + 0.08 * sin(_room_time_passed * 2.2)
+
 	# Keep the microfauna swarm + detrital worms topped up. Cheap (one
 	# child_count + a handful of conditional spawns per ~1 s window).
 	_maintain_microfauna(sdt)
@@ -342,8 +454,13 @@ func _process(dt: float) -> void:
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
-	# Both are dimmed by the day/night cycle.
-	if sim != null:
+	# Both are dimmed by the day/night cycle. Throttled to 10 Hz using
+	# real-time dt (not sim-scaled) — at 16× fast-forward we still only
+	# write shader parameters 10 times a second, which is plenty for an
+	# arc that takes seconds to visibly change.
+	_light_cycle_accum += dt
+	if sim != null and _light_cycle_accum >= LIGHT_CYCLE_INTERVAL:
+		_light_cycle_accum = 0.0
 		var dl: float = sim.daylight()
 		var cfg2 := get_node_or_null("/root/TankConfig")
 		var max_energy: float = 0.5
@@ -371,13 +488,17 @@ func _process(dt: float) -> void:
 			if cfg2 != null:
 				show_caustics = bool(cfg2.light_caustics)
 			
+			var intensity: float = 0.0
 			if show_caustics:
 				# Scale caustics intensity by daylight and max energy.
-				var intensity: float = dl * max_energy * 2.0
-				_caustics_mat.set_shader_parameter("caustic_intensity", clampf(intensity, 0.0, 1.0))
+				intensity = clampf(dl * max_energy * 2.0, 0.0, 1.0)
+				_caustics_mat.set_shader_parameter("caustic_intensity", intensity)
 				_caustics_mat.set_shader_parameter("light_color", beam_color)
 			else:
 				_caustics_mat.set_shader_parameter("caustic_intensity", 0.0)
+			
+			# Propagate these dynamic updates to all cached substrate/hardscape caustics materials
+			VoxelMat.update_caustic_uniforms(intensity, beam_color)
 
 		# Sync god ray materials to the light cycle and Render panel parameters.
 		var density: float = 0.02
@@ -560,17 +681,7 @@ func _random_xz_in_band(z_min: float, z_max: float, margin: float = 0.4) -> Vect
 
 
 func _setup_caustics() -> void:
-	if _caustics_mat == null:
-		_caustics_mat = ShaderMaterial.new()
-		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
-
-	for mi in _caustic_meshes:
-		if is_instance_valid(mi) and mi.material_override != null:
-			var mat = mi.material_override
-			if mat is ShaderMaterial:
-				var dup_mat = mat.duplicate()
-				dup_mat.next_pass = _caustics_mat
-				mi.material_override = dup_mat
+	pass # All caustics are now computed in a single opaque shader pass.
 
 
 func _build_substrate() -> void:
@@ -583,6 +694,9 @@ func _build_substrate() -> void:
 	var cols: int = int((TANK_HALF_W * 2.0) / voxel_size)
 	var depths: int = int((TANK_HALF_D * 2.0) / voxel_size)
 
+	# First pass: collect transforms grouped by snapped color key and caustic status.
+	# Each bucket is key -> {transforms: Array[Vector3], caustic: bool, color: Color}
+	var buckets: Dictionary = {}
 	var soil_rows: int = int(rows * 0.7)
 	for r in rows:
 		for c in cols:
@@ -603,10 +717,39 @@ func _build_substrate() -> void:
 					var rel: float = float(r - (rows - soil_rows)) / float(maxi(1, soil_rows))
 					var idx: int = clampi(int(rel * 5.0 + _rng.randf() * 1.5), 0, 5)
 					color = ramp[idx]
-				var mi := _add_cube(container, Vector3(x, y, z), Vector3(voxel_size, voxel_size, voxel_size),
-						  _solid_mat(color))
-				if r >= rows - 2:
-					_caustic_meshes.append(mi)
+				# Snap color to match VoxelMat cache granularity.
+				var key := Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
+				var is_caustic: bool = (r >= rows - 2)
+				var bucket_key := "%s_%d" % [key.to_html(false), 1 if is_caustic else 0]
+				if not buckets.has(bucket_key):
+					buckets[bucket_key] = {"transforms": [], "caustic": is_caustic, "color": key}
+				buckets[bucket_key]["transforms"].append(Vector3(x, y, z))
+
+	# Second pass: create one MultiMeshInstance3D per bucket (color + caustic status).
+	var box_mesh: BoxMesh = VoxelMat.get_box(Vector3(voxel_size, voxel_size, voxel_size))
+	for b_key in buckets:
+		var bucket: Dictionary = buckets[b_key]
+		var positions: Array = bucket["transforms"]
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = box_mesh
+		mm.instance_count = positions.size()
+		for i in positions.size():
+			var t := Transform3D()
+			t.origin = positions[i]
+			mm.set_instance_transform(i, t)
+
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		# Use the dedicated opaque/caustic substrate shaders to avoid transparency sorting/flickering.
+		var mat: ShaderMaterial
+		if bucket["caustic"]:
+			mat = VoxelMat.make_substrate_caustic(bucket["color"])
+		else:
+			mat = VoxelMat.make_substrate_opaque(bucket["color"])
+		mmi.material_override = mat
+		container.add_child(mmi)
+
 
 
 func _build_hardscape() -> void:
@@ -614,49 +757,164 @@ func _build_hardscape() -> void:
 	c.name = "Hardscape"
 	add_child(c)
 
-	var points := [
-		Vector3(-6.5, 1.3, -1.0),
-		Vector3(-5.0, 2.0, -0.5),
-		Vector3(-3.0, 2.6, 0.0),
-		Vector3(-1.0, 3.0, 0.3),
-		Vector3(1.0, 2.8, 0.0),
-		Vector3(2.8, 2.2, -0.4),
-		Vector3(4.0, 1.6, -0.6),
-	]
-	var mat_dark := _solid_mat(C_DRIFTWOOD_DARK)
-	var mat_light := _solid_mat(C_DRIFTWOOD_LIGHT)
-	for i in points.size() - 1:
-		var a: Vector3 = points[i]
-		var b: Vector3 = points[i + 1]
-		var steps: int = int(a.distance_to(b) / 0.35) + 1
-		for s in steps:
-			var t: float = float(s) / float(steps)
-			var p: Vector3 = a.lerp(b, t)
-			var size: float = 0.55
-			var mi_d := _add_cube(c, p, Vector3(size, size, size), mat_dark)
-			_driftwood_voxels.append(mi_d)
-			_caustic_meshes.append(mi_d)
-			for dx in [-1, 1]:
-				var mi_l := _add_cube(
-					c, p + Vector3(0, size * 0.5, dx * size * 0.4),
-					Vector3(size * 0.6, size * 0.6, size * 0.6), mat_light)
-				_driftwood_voxels.append(mi_l)
-				_caustic_meshes.append(mi_l)
+	# 1. Procedural Driftwood Spline (Bezier Curve)
+	var bezier: Callable = func(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: float) -> Vector3:
+		var q0 := p0.lerp(p1, t)
+		var q1 := p1.lerp(p2, t)
+		var q2 := p2.lerp(p3, t)
+		var r0 := q0.lerp(q1, t)
+		var r1 := q1.lerp(q2, t)
+		return r0.lerp(r1, t)
 
-	var stone_mat := _solid_mat(C_STONE_LIGHT)
-	var stone_dark := _solid_mat(C_STONE_DARK)
-	var stone_positions := [Vector3(5.5, 1.0, 1.5), Vector3(-7.0, 0.9, 1.5)]
-	for sp in stone_positions:
-		for i in 4:
-			var jitter := Vector3(_rng.randf_range(-0.4, 0.4),
-								  _rng.randf_range(0, 0.6),
-								  _rng.randf_range(-0.4, 0.4))
-			var size := _rng.randf_range(0.7, 1.1)
-			var m: Material = stone_mat if (i & 1) == 0 else stone_dark
-			var mi := _add_cube(c, sp + jitter, Vector3(size, size, size), m)
-			_caustic_meshes.append(mi)
-			mi.rotation = Vector3(_rng.randf_range(-0.3, 0.3), _rng.randf_range(0, PI),
-								  _rng.randf_range(-0.3, 0.3))
+	var p0 := Vector3(-TANK_HALF_W * 0.8, SUBSTRATE_DEPTH - 0.25, -TANK_HALF_D * 0.4)
+	var p1 := Vector3(-TANK_HALF_W * 0.4, SUBSTRATE_DEPTH + 1.25, TANK_HALF_D * 0.2)
+	var p2 := Vector3(TANK_HALF_W * 0.1, SUBSTRATE_DEPTH + 1.55, TANK_HALF_D * 0.3)
+	var p3 := Vector3(TANK_HALF_W * 0.65, SUBSTRATE_DEPTH + 0.05, -TANK_HALF_D * 0.2)
+
+	var mat_dark := VoxelMat.make_substrate_caustic(C_DRIFTWOOD_DARK)
+	var mat_light := VoxelMat.make_substrate_caustic(C_DRIFTWOOD_LIGHT)
+	
+	_driftwood_voxels.clear()
+
+	# Main Trunk
+	var steps := 80
+	for s in range(steps + 1):
+		var t := float(s) / float(steps)
+		var p: Vector3 = bezier.call(p0, p1, p2, p3, t)
+		var size := lerpf(0.62, 0.25, t)
+		
+		# Spawn dark wood core voxel
+		var mi_d := _add_cube(c, p, Vector3(size, size, size), mat_dark)
+		_driftwood_voxels.append(mi_d)
+		
+		# Calculate curve tangent for bark accent alignment
+		var next_t := minf(t + 0.01, 1.0)
+		var prev_t := maxf(t - 0.01, 0.0)
+		var tangent: Vector3 = (bezier.call(p0, p1, p2, p3, next_t) - bezier.call(p0, p1, p2, p3, prev_t)).normalized()
+		
+		# Find orthogonal normal vector in XZ plane
+		var normal: Vector3 = Vector3(-tangent.z, 0.0, tangent.x).normalized()
+		if normal.length_squared() < 0.1:
+			normal = Vector3.BACK
+		
+		# Spawn light wood bark accent voxels on side walls perpendicular to growth
+		for dx in [-1, 1]:
+			var offset: Vector3 = Vector3(0.0, size * 0.4, 0.0) + normal * dx * size * 0.38
+			var mi_l := _add_cube(c, p + offset, Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
+			_driftwood_voxels.append(mi_l)
+
+	# Side Twigs
+	var twig_configs := [
+		{"t_start": 0.28, "length": 7, "angle_y": -0.65, "angle_z": 0.45, "scale_mult": 0.55},
+		{"t_start": 0.52, "length": 6, "angle_y": 0.85, "angle_z": 0.55, "scale_mult": 0.50},
+		{"t_start": 0.74, "length": 5, "angle_y": -0.35, "angle_z": 0.65, "scale_mult": 0.45}
+	]
+	
+	for tc in twig_configs:
+		var t_start: float = tc["t_start"]
+		var p_start: Vector3 = bezier.call(p0, p1, p2, p3, t_start)
+		var size_start: float = lerpf(0.62, 0.25, t_start) * tc["scale_mult"]
+		
+		# Get tangent and normal to decide branch direction
+		var next_t := minf(t_start + 0.01, 1.0)
+		var prev_t := maxf(t_start - 0.01, 0.0)
+		var tangent: Vector3 = (bezier.call(p0, p1, p2, p3, next_t) - bezier.call(p0, p1, p2, p3, prev_t)).normalized()
+		var normal: Vector3 = Vector3(-tangent.z, 0.0, tangent.x).normalized()
+		if normal.length_squared() < 0.1:
+			normal = Vector3.BACK
+		
+		var twig_dir: Vector3 = (tangent.rotated(Vector3.UP, tc["angle_y"]) + Vector3.UP * tc["angle_z"]).normalized()
+		
+		var twig_p: Vector3 = p_start
+		var twig_len: int = tc["length"]
+		for j in twig_len:
+			var jt := float(j) / float(twig_len - 1)
+			var size := lerpf(size_start, 0.15, jt)
+			
+			var step_offset: Vector3 = twig_dir * 0.26
+			step_offset += Vector3(sin(float(j) * 1.5) * 0.04, cos(float(j) * 1.2) * 0.03, sin(float(j) * 0.8) * 0.04)
+			twig_p += step_offset
+			
+			var mi_d := _add_cube(c, twig_p, Vector3(size, size, size), mat_dark)
+			_driftwood_voxels.append(mi_d)
+			
+			if size > 0.22:
+				var mi_l := _add_cube(c, twig_p + Vector3(0.0, size * 0.42, 0.0), Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
+				_driftwood_voxels.append(mi_l)
+
+	# 2. Japanese Iwagumi Rock Clusters
+	var stone_mat := VoxelMat.make_substrate_caustic(C_STONE_LIGHT)
+	var stone_dark := VoxelMat.make_substrate_caustic(C_STONE_DARK)
+
+	var add_rock_voxel: Callable = func(center: Vector3, offset: Vector3, size: Vector3, is_dark: bool, rot: Vector3) -> MeshInstance3D:
+		var m := stone_dark if is_dark else stone_mat
+		var b_rot := Basis.from_euler(rot)
+		var rotated_offset := b_rot * offset
+		var mi := _add_cube(c, center + rotated_offset, size, m)
+		mi.basis = b_rot * Basis.from_euler(Vector3(_rng.randf_range(-0.06, 0.06), _rng.randf_range(-0.06, 0.06), _rng.randf_range(-0.06, 0.06)))
+		return mi
+
+	# --- Main Island (Right side, off-center) ---
+	var right_center := Vector3(3.6, SUBSTRATE_DEPTH, 0.4)
+	var right_tilt := Vector3(0.2, -0.3, 0.35)
+	# Oyaishi (Main Stone)
+	add_rock_voxel.call(right_center, Vector3(0.0, -0.1, 0.0), Vector3(1.3, 0.8, 1.3), true, right_tilt)
+	add_rock_voxel.call(right_center, Vector3(-0.15, 0.5, 0.1), Vector3(1.1, 0.8, 1.1), false, right_tilt)
+	add_rock_voxel.call(right_center, Vector3(-0.3, 1.1, -0.05), Vector3(0.85, 0.9, 0.85), true, right_tilt)
+	add_rock_voxel.call(right_center, Vector3(-0.45, 1.7, -0.1), Vector3(0.55, 0.65, 0.55), false, right_tilt)
+	add_rock_voxel.call(right_center, Vector3(0.45, 0.1, -0.35), Vector3(0.7, 0.6, 0.7), false, right_tilt)
+	add_rock_voxel.call(right_center, Vector3(-0.45, 0.25, 0.35), Vector3(0.6, 0.7, 0.6), true, right_tilt)
+
+	# Fukuishi (Secondary Stone)
+	var fuku_center := Vector3(4.8, SUBSTRATE_DEPTH, 0.05)
+	var fuku_tilt := Vector3(0.15, -0.25, 0.3)
+	add_rock_voxel.call(fuku_center, Vector3(0.0, -0.1, 0.0), Vector3(0.9, 0.7, 0.9), false, fuku_tilt)
+	add_rock_voxel.call(fuku_center, Vector3(-0.1, 0.45, 0.08), Vector3(0.75, 0.75, 0.75), true, fuku_tilt)
+	add_rock_voxel.call(fuku_center, Vector3(-0.2, 0.95, 0.0), Vector3(0.5, 0.6, 0.5), false, fuku_tilt)
+	add_rock_voxel.call(fuku_center, Vector3(0.28, 0.1, 0.22), Vector3(0.5, 0.55, 0.5), true, fuku_tilt)
+
+	# Soishi (Tertiary Stone)
+	var soishi_center := Vector3(2.5, SUBSTRATE_DEPTH, 0.75)
+	var soishi_tilt := Vector3(0.25, -0.4, 0.1)
+	add_rock_voxel.call(soishi_center, Vector3(0.0, -0.08, 0.0), Vector3(0.68, 0.58, 0.68), true, soishi_tilt)
+	add_rock_voxel.call(soishi_center, Vector3(0.08, 0.35, -0.08), Vector3(0.5, 0.5, 0.5), false, soishi_tilt)
+	add_rock_voxel.call(soishi_center, Vector3(-0.18, 0.05, 0.18), Vector3(0.42, 0.42, 0.42), true, soishi_tilt)
+
+	# Suteishi (Accents)
+	var pebble_positions := [
+		Vector3(1.9, SUBSTRATE_DEPTH - 0.08, 1.15),
+		Vector3(3.1, SUBSTRATE_DEPTH - 0.08, -0.45),
+		Vector3(5.15, SUBSTRATE_DEPTH - 0.08, 0.85)
+	]
+	var pebble_sizes := [0.45, 0.38, 0.42]
+	var pebble_rots := [Vector3(0.12, 1.4, -0.15), Vector3(-0.25, 0.4, 0.18), Vector3(0.3, -0.8, -0.22)]
+	for i in pebble_positions.size():
+		var mi := _add_cube(c, pebble_positions[i], Vector3(pebble_sizes[i], pebble_sizes[i], pebble_sizes[i]), stone_dark if (i & 1) == 0 else stone_mat)
+		mi.rotation = pebble_rots[i]
+
+	# --- Secondary Island (Left side, balancing) ---
+	var left_center := Vector3(-5.5, SUBSTRATE_DEPTH, 0.6)
+	var left_tilt := Vector3(0.12, 0.3, -0.28)
+	# Left Fukuishi
+	add_rock_voxel.call(left_center, Vector3(0.0, -0.08, 0.0), Vector3(0.85, 0.68, 0.85), false, left_tilt)
+	add_rock_voxel.call(left_center, Vector3(0.08, 0.4, -0.08), Vector3(0.68, 0.68, 0.68), true, left_tilt)
+	add_rock_voxel.call(left_center, Vector3(0.15, 0.82, 0.0), Vector3(0.48, 0.55, 0.48), false, left_tilt)
+
+	# Left Soishi
+	var left_soishi := Vector3(-4.4, SUBSTRATE_DEPTH, 0.25)
+	var left_soishi_tilt := Vector3(0.2, 0.25, -0.12)
+	add_rock_voxel.call(left_soishi, Vector3(0.0, -0.08, 0.0), Vector3(0.62, 0.52, 0.62), true, left_soishi_tilt)
+	add_rock_voxel.call(left_soishi, Vector3(0.06, 0.32, 0.06), Vector3(0.45, 0.45, 0.45), false, left_soishi_tilt)
+
+	# Left Suteishi (Accents)
+	var left_pebbles := [
+		Vector3(-6.15, SUBSTRATE_DEPTH - 0.08, 0.95),
+		Vector3(-3.85, SUBSTRATE_DEPTH - 0.08, 0.45),
+		Vector3(-4.85, SUBSTRATE_DEPTH - 0.08, -0.35)
+	]
+	for i in left_pebbles.size():
+		var mi := _add_cube(c, left_pebbles[i], Vector3(0.40, 0.40, 0.40), stone_mat if (i & 1) == 0 else stone_dark)
+		mi.rotation = Vector3(_rng.randf_range(-0.3, 0.3), _rng.randf_range(0, PI), _rng.randf_range(-0.3, 0.3))
 
 
 func _build_water_volume() -> void:
@@ -1209,7 +1467,7 @@ func _spawn_initial_corals() -> void:
 		var c := Coral.new()
 		plants_root.add_child(c)
 		c.global_position = Vector3(cx, SUBSTRATE_DEPTH, cz)
-		c.coral_form = "branching"
+		c.coral_form = "branching" if _rng.randf() < 0.6 else "staghorn_fern"
 		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
 		c.ramp_override = pal
 		c.tip_color = pal[pal.size() - 1]
@@ -1222,14 +1480,14 @@ func _spawn_initial_corals() -> void:
 		})
 		sim.register_plant(c)
 	await get_tree().process_frame
-
+ 
 	# --- Midground: brain coral domes ---
 	for i in 10:
 		var xz: Vector2 = _random_xz_in_band(-0.5, 1.0, 0.4)
 		var c := Coral.new()
 		plants_root.add_child(c)
 		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
-		c.coral_form = "dome"
+		c.coral_form = "dome" if _rng.randf() < 0.5 else "brain"
 		var pal: Array = coral_palettes[2 + _rng.randi() % 2]  # palettes 2 or 3
 		c.ramp_override = pal
 		c.tip_color = pal[pal.size() - 1]
@@ -1242,7 +1500,7 @@ func _spawn_initial_corals() -> void:
 		})
 		sim.register_plant(c)
 	await get_tree().process_frame
-
+ 
 	# --- Soft corals: tall feathery / sea-fan, scattered through midground ---
 	for i in 8:
 		var xz: Vector2 = _random_xz_in_band(-1.5, 1.5, 0.5)
@@ -1261,7 +1519,7 @@ func _spawn_initial_corals() -> void:
 		})
 		sim.register_plant(c)
 	await get_tree().process_frame
-
+ 
 	# --- Foreground: table corals on small pedestals ---
 	for i in 6:
 		var xz: Vector2 = _random_xz_in_band(TANK_HALF_D * 0.25, TANK_HALF_D * 0.95, 0.4)
@@ -1280,8 +1538,8 @@ func _spawn_initial_corals() -> void:
 		})
 		sim.register_plant(c)
 	await get_tree().process_frame
-
-
+ 
+ 
 func _maybe_recruit_coral() -> void:
 	# Spawn a single fresh-larvae-sized coral somewhere on the substrate.
 	# Respects CORAL_MAX so the reef doesn't carpet the tank. Form is
@@ -1310,15 +1568,17 @@ func _maybe_recruit_coral() -> void:
 		[Color8(105, 75, 30), Color8(140, 105, 45), Color8(180, 140, 60),
 		 Color8(210, 175, 85), Color8(235, 210, 130), Color8(250, 235, 180)],
 	]
-	# Weighted form pick: domes most common (newly settled coral is a
-	# tiny lump), then branching, occasionally feathery. Plates are rare
-	# (need a mature stem first).
+	# Weighted form pick: domes most common, then branching, occasionally feathery.
 	var roll: float = randf()
 	var form: String = "dome"
-	if roll < 0.55:
+	if roll < 0.35:
 		form = "dome"
-	elif roll < 0.85:
+	elif roll < 0.55:
+		form = "brain"
+	elif roll < 0.75:
 		form = "branching"
+	elif roll < 0.90:
+		form = "staghorn_fern"
 	else:
 		form = "feathery"
 	# Pick a substrate position inside the tank footprint.
@@ -2426,16 +2686,38 @@ func _build_room_environment() -> void:
 	var brick_w: float = 1.5
 	var rows: int = int(wall_height / brick_h) + 1
 	var cols: int = int(wall_half_w * 2.0 / brick_w) + 1
+	
+	# Wall cutout coordinates for window
+	var include_window: bool = bool(preset.get("include_window", false))
+	var window_w_half: float = 3.5
+	var window_h_half: float = 2.5
+	var window_center_y: float = desk_y + 4.5
+	
 	for r in rows:
 		for col in cols:
 			var bx: float = -wall_half_w + (float(col) + 0.5) * brick_w
 			var by: float = wall_y_min + (float(r) + 0.5) * brick_h
+			
+			if include_window:
+				var brick_left: float = bx - brick_w * 0.5
+				var brick_right: float = bx + brick_w * 0.5
+				var brick_bottom: float = by - brick_h * 0.5
+				var brick_top: float = by + brick_h * 0.5
+				# If brick overlaps window rectangle, skip spawning it
+				if brick_right > -window_w_half and brick_left < window_w_half and \
+				   brick_top > (window_center_y - window_h_half) and brick_bottom < (window_center_y + window_h_half):
+					continue
+					
 			var subtle: bool = ((r * 3 + col) % 5) == 0
 			var brick := MeshInstance3D.new()
 			brick.mesh = VoxelMat.get_box(Vector3(brick_w * 0.96, brick_h * 0.96, 0.4))
 			brick.material_override = accent_mat if subtle else wall_mat
 			brick.position = Vector3(bx, by, wall_z)
 			room.add_child(brick)
+
+	# Build window frame/sky if active
+	if include_window:
+		_build_room_window(room, wall_z, wall_mat, desk_dark_mat, preset)
 
 	# Soft warm room light from the side — simulates a window or lamp.
 	# Energy is low (0.18) so it doesn't blow out the tank's own fixture.
@@ -2463,8 +2745,351 @@ func _build_room_environment() -> void:
 		_build_room_plant(room, Vector3(-desk_half_w + 2.0, desk_y + 0.05,
 			-desk_half_d + 2.6))
 
+	# Cozy Steaming Coffee/Tea Mug
+	if bool(preset.get("include_mug", false)):
+		_build_room_mug(room, Vector3(desk_half_w - 3.4, desk_y, -desk_half_d + 1.8), accent_color)
+
+	# Vintage Alarm Clock (Functioning)
+	if bool(preset.get("include_clock", false)):
+		_build_room_clock(room, Vector3(desk_half_w - 1.2, desk_y, -desk_half_d + 1.8), accent_color)
+
+	# Interactive Record Player
+	if bool(preset.get("include_record_player", false)):
+		_build_room_record_player(room, Vector3(-desk_half_w + 4.2, desk_y, -desk_half_d + 1.8))
+
+	# Dynamic Lava Lamp
+	if bool(preset.get("include_lava_lamp", false)):
+		_build_room_lava_lamp(room, Vector3(-desk_half_w + 2.0, desk_y, -desk_half_d + 1.6),
+			Color8(160, 160, 165), accent_color)
+
+
+
+func _build_room_window(parent: Node3D, wall_z: float, wall_mat: Material,
+		frame_mat: Material, preset: Dictionary) -> void:
+	# Sky Backing: placed slightly behind the wall.
+	# Size: 7.0 wide, 5.0 tall, 0.1 deep.
+	var sky_w := 7.0
+	var sky_h := 5.0
+	var sky_y := -0.6 + 4.5 # desk_y + 4.5 = 3.9
+	
+	var sky := MeshInstance3D.new()
+	sky.mesh = VoxelMat.get_box(Vector3(sky_w, sky_h, 0.1))
+	
+	# Create sky material (duplicated so we can change its color in _process)
+	var sky_base_col_rgb: Array = preset.get("light_color", [255, 235, 200])
+	var sky_base_col := Color8(sky_base_col_rgb[0], sky_base_col_rgb[1], sky_base_col_rgb[2])
+	_room_sky_mat = VoxelMat.make(sky_base_col).duplicate()
+	sky.material_override = _room_sky_mat
+	sky.position = Vector3(0.0, sky_y, wall_z - 0.2)
+	parent.add_child(sky)
+	
+	# Spawn stars outside the window (Z = wall_z - 0.15).
+	# Star meshes are tiny white voxel boxes.
+	_room_stars.clear()
+	var star_positions := [
+		Vector3(-2.2, sky_y + 1.6, wall_z - 0.18),
+		Vector3(-1.1, sky_y + 0.8, wall_z - 0.18),
+		Vector3(0.4, sky_y + 2.0, wall_z - 0.18),
+		Vector3(1.8, sky_y + 1.2, wall_z - 0.18),
+		Vector3(2.5, sky_y + 0.4, wall_z - 0.18),
+	]
+	var star_mat := VoxelMat.make(Color8(255, 255, 240)) # unshaded white
+	for pos in star_positions:
+		var star := MeshInstance3D.new()
+		star.mesh = VoxelMat.get_box(Vector3(0.08, 0.08, 0.08))
+		star.material_override = star_mat
+		star.position = pos
+		star.visible = false # starts hidden during daylight
+		parent.add_child(star)
+		_room_stars.append(star)
+		
+	# Window Frame (Z = wall_z):
+	# Outer frame: left, right, top, bottom border.
+	# We construct this from boxes to keep the voxel style clean.
+	var frame_thickness := 0.25
+	var frame_depth := 0.5
+	
+	# Left vertical frame
+	var f_left := MeshInstance3D.new()
+	f_left.mesh = VoxelMat.get_box(Vector3(frame_thickness, sky_h + frame_thickness, frame_depth))
+	f_left.material_override = frame_mat
+	f_left.position = Vector3(-sky_w * 0.5 - frame_thickness * 0.5, sky_y, wall_z)
+	parent.add_child(f_left)
+	
+	# Right vertical frame
+	var f_right := MeshInstance3D.new()
+	f_right.mesh = VoxelMat.get_box(Vector3(frame_thickness, sky_h + frame_thickness, frame_depth))
+	f_right.material_override = frame_mat
+	f_right.position = Vector3(sky_w * 0.5 + frame_thickness * 0.5, sky_y, wall_z)
+	parent.add_child(f_right)
+	
+	# Top horizontal frame
+	var f_top := MeshInstance3D.new()
+	f_top.mesh = VoxelMat.get_box(Vector3(sky_w + frame_thickness * 2.0, frame_thickness, frame_depth))
+	f_top.material_override = frame_mat
+	f_top.position = Vector3(0.0, sky_y + sky_h * 0.5 + frame_thickness * 0.5, wall_z)
+	parent.add_child(f_top)
+	
+	# Bottom horizontal frame (sill)
+	var f_bottom := MeshInstance3D.new()
+	f_bottom.mesh = VoxelMat.get_box(Vector3(sky_w + frame_thickness * 2.0, frame_thickness * 1.5, frame_depth * 1.2))
+	f_bottom.material_override = frame_mat
+	f_bottom.position = Vector3(0.0, sky_y - sky_h * 0.5 - frame_thickness * 0.75, wall_z + frame_depth * 0.05)
+	parent.add_child(f_bottom)
+	
+	# Mullions / Inner grid frames:
+	# We can do a vertical bar in the center and a horizontal bar.
+	var m_vert := MeshInstance3D.new()
+	m_vert.mesh = VoxelMat.get_box(Vector3(0.12, sky_h, frame_depth * 0.7))
+	m_vert.material_override = frame_mat
+	m_vert.position = Vector3(0.0, sky_y, wall_z + 0.05)
+	parent.add_child(m_vert)
+	
+	var m_horiz := MeshInstance3D.new()
+	m_horiz.mesh = VoxelMat.get_box(Vector3(sky_w, 0.12, frame_depth * 0.7))
+	m_horiz.material_override = frame_mat
+	m_horiz.position = Vector3(0.0, sky_y, wall_z + 0.05)
+	parent.add_child(m_horiz)
+
+
+func _build_room_mug(parent: Node3D, base_pos: Vector3, ceramic_color: Color) -> void:
+	var mug_mat := VoxelMat.make(ceramic_color)
+	
+	# Mug Body
+	var body := MeshInstance3D.new()
+	body.mesh = VoxelMat.get_box(Vector3(0.35, 0.4, 0.35))
+	body.material_override = mug_mat
+	body.position = base_pos + Vector3(0.0, 0.2, 0.0)
+	parent.add_child(body)
+	
+	# Mug Handle
+	var handle := MeshInstance3D.new()
+	handle.mesh = VoxelMat.get_box(Vector3(0.1, 0.22, 0.08))
+	handle.material_override = mug_mat
+	handle.position = base_pos + Vector3(0.2, 0.2, 0.0)
+	parent.add_child(handle)
+	
+	# Coffee Liquid
+	var liquid := MeshInstance3D.new()
+	liquid.mesh = VoxelMat.get_box(Vector3(0.28, 0.02, 0.28))
+	liquid.material_override = VoxelMat.make(Color8(65, 40, 25)) # coffee brown
+	liquid.position = base_pos + Vector3(0.0, 0.38, 0.0)
+	parent.add_child(liquid)
+	
+	# Steam Particles: GPUParticles3D
+	var steam := GPUParticles3D.new()
+	steam.amount = 5
+	steam.lifetime = 1.8
+	steam.preprocess = 0.9
+	steam.local_coords = false
+	steam.position = base_pos + Vector3(0.0, 0.4, 0.0)
+	
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = Vector3(0.08, 1.0, 0.0).normalized()
+	pm.initial_velocity_min = 0.18
+	pm.initial_velocity_max = 0.3
+	pm.gravity = Vector3(0, 0.08, 0)
+	pm.spread = 10.0
+	pm.scale_min = 0.8
+	pm.scale_max = 1.3
+	steam.process_material = pm
+	
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.05, 0.05, 0.05)
+	bm.material = VoxelMat.make(Color8(230, 230, 230))
+	steam.draw_pass_1 = bm
+	parent.add_child(steam)
+
+
+func _build_room_clock(parent: Node3D, base_pos: Vector3, clock_color: Color) -> void:
+	var body_mat := VoxelMat.make(clock_color)
+	var metal_mat := VoxelMat.make(Color8(165, 165, 170))
+	var face_mat := VoxelMat.make(Color8(240, 238, 225))
+	var hand_mat := VoxelMat.make(Color8(30, 30, 32))
+	
+	# Stand Support
+	var stand := MeshInstance3D.new()
+	stand.mesh = VoxelMat.get_box(Vector3(0.3, 0.05, 0.2))
+	stand.material_override = metal_mat
+	stand.position = base_pos + Vector3(0, 0.025, 0)
+	parent.add_child(stand)
+	
+	# Clock Body
+	var body := MeshInstance3D.new()
+	body.mesh = VoxelMat.get_box(Vector3(0.46, 0.46, 0.16))
+	body.material_override = body_mat
+	body.position = base_pos + Vector3(0, 0.28, 0)
+	parent.add_child(body)
+	
+	# Twin Bells
+	var bell_l := MeshInstance3D.new()
+	bell_l.mesh = VoxelMat.get_box(Vector3(0.12, 0.12, 0.12))
+	bell_l.material_override = metal_mat
+	bell_l.position = base_pos + Vector3(-0.16, 0.54, 0)
+	parent.add_child(bell_l)
+	
+	var bell_r := MeshInstance3D.new()
+	bell_r.mesh = VoxelMat.get_box(Vector3(0.12, 0.12, 0.12))
+	bell_r.material_override = metal_mat
+	bell_r.position = base_pos + Vector3(0.16, 0.54, 0)
+	parent.add_child(bell_r)
+	
+	# Face Plate
+	var face := MeshInstance3D.new()
+	face.mesh = VoxelMat.get_box(Vector3(0.38, 0.38, 0.02))
+	face.material_override = face_mat
+	face.position = base_pos + Vector3(0, 0.28, 0.09)
+	parent.add_child(face)
+	
+	# Hour Hand Pivot
+	_room_clock_hour_pivot = Node3D.new()
+	_room_clock_hour_pivot.position = base_pos + Vector3(0, 0.28, 0.102)
+	parent.add_child(_room_clock_hour_pivot)
+	
+	var hr_mesh := MeshInstance3D.new()
+	hr_mesh.mesh = VoxelMat.get_box(Vector3(0.04, 0.12, 0.015))
+	hr_mesh.material_override = hand_mat
+	hr_mesh.position = Vector3(0, 0.06, 0)
+	_room_clock_hour_pivot.add_child(hr_mesh)
+	
+	# Minute Hand Pivot
+	_room_clock_min_pivot = Node3D.new()
+	_room_clock_min_pivot.position = base_pos + Vector3(0, 0.28, 0.104)
+	parent.add_child(_room_clock_min_pivot)
+	
+	var min_mesh := MeshInstance3D.new()
+	min_mesh.mesh = VoxelMat.get_box(Vector3(0.03, 0.17, 0.015))
+	min_mesh.material_override = hand_mat
+	min_mesh.position = Vector3(0, 0.085, 0)
+	_room_clock_min_pivot.add_child(min_mesh)
+
+
+func _build_room_record_player(parent: Node3D, base_pos: Vector3) -> void:
+	var wood_mat := VoxelMat.make(Color8(95, 60, 45))
+	var platter_mat := VoxelMat.make(Color8(160, 160, 165))
+	var vinyl_mat := VoxelMat.make(Color8(28, 28, 30))
+	var label_mat := VoxelMat.make(Color8(210, 175, 55))
+	var arm_mat := VoxelMat.make(Color8(120, 120, 125))
+	
+	# Base cabinet
+	var base := MeshInstance3D.new()
+	base.mesh = VoxelMat.get_box(Vector3(0.75, 0.18, 0.75))
+	base.material_override = wood_mat
+	base.position = base_pos + Vector3(0.0, 0.09, 0.0)
+	parent.add_child(base)
+	
+	# Platter
+	var platter := MeshInstance3D.new()
+	platter.mesh = VoxelMat.get_box(Vector3(0.60, 0.03, 0.60))
+	platter.material_override = platter_mat
+	platter.position = base_pos + Vector3(0.0, 0.195, 0.0)
+	parent.add_child(platter)
+	
+	# Vinyl Record
+	_room_record_disc = MeshInstance3D.new()
+	_room_record_disc.mesh = VoxelMat.get_box(Vector3(0.55, 0.02, 0.55))
+	_room_record_disc.material_override = vinyl_mat
+	_room_record_disc.position = base_pos + Vector3(0.0, 0.22, 0.0)
+	parent.add_child(_room_record_disc)
+	
+	# Spindle/Center Label
+	var label := MeshInstance3D.new()
+	label.mesh = VoxelMat.get_box(Vector3(0.16, 0.005, 0.16))
+	label.material_override = label_mat
+	label.position = Vector3(0, 0.011, 0)
+	_room_record_disc.add_child(label)
+	
+	# Tone Arm
+	var arm_base := MeshInstance3D.new()
+	arm_base.mesh = VoxelMat.get_box(Vector3(0.08, 0.15, 0.08))
+	arm_base.material_override = arm_mat
+	arm_base.position = base_pos + Vector3(0.24, 0.255, -0.24)
+	parent.add_child(arm_base)
+	
+	var arm_bar := MeshInstance3D.new()
+	arm_bar.mesh = VoxelMat.get_box(Vector3(0.04, 0.04, 0.35))
+	arm_bar.material_override = arm_mat
+	arm_bar.position = base_pos + Vector3(0.18, 0.315, -0.1)
+	arm_bar.rotation.y = -0.3
+	parent.add_child(arm_bar)
+
+
+func _build_room_lava_lamp(parent: Node3D, base_pos: Vector3,
+		metal_color: Color, neon_color: Color) -> void:
+	var metal_mat := VoxelMat.make(metal_color)
+	var neon_mat := VoxelMat.make(neon_color)
+	
+	# Base cap
+	var base_cap := MeshInstance3D.new()
+	base_cap.mesh = VoxelMat.get_box(Vector3(0.35, 0.24, 0.35))
+	base_cap.material_override = metal_mat
+	base_cap.position = base_pos + Vector3(0, 0.12, 0)
+	parent.add_child(base_cap)
+	
+	# Top cap
+	var top_cap := MeshInstance3D.new()
+	top_cap.mesh = VoxelMat.get_box(Vector3(0.24, 0.12, 0.24))
+	top_cap.material_override = metal_mat
+	top_cap.position = base_pos + Vector3(0, 0.85, 0)
+	parent.add_child(top_cap)
+	
+	# Corner structural rods
+	var rod_positions := [
+		Vector3(-0.14, 0.51, -0.14),
+		Vector3(0.14, 0.51, -0.14),
+		Vector3(-0.14, 0.51, 0.14),
+		Vector3(0.14, 0.51, 0.14),
+	]
+	var rod_mat := VoxelMat.make(Color8(120, 120, 125))
+	for r_pos in rod_positions:
+		var rod := MeshInstance3D.new()
+		rod.mesh = VoxelMat.get_box(Vector3(0.03, 0.58, 0.03))
+		rod.material_override = rod_mat
+		rod.position = base_pos + r_pos
+		parent.add_child(rod)
+		
+	# Static wax pools
+	var bottom_pool := MeshInstance3D.new()
+	bottom_pool.mesh = VoxelMat.get_box(Vector3(0.24, 0.06, 0.24))
+	bottom_pool.material_override = neon_mat
+	bottom_pool.position = base_pos + Vector3(0, 0.25, 0)
+	parent.add_child(bottom_pool)
+	
+	var top_pool := MeshInstance3D.new()
+	top_pool.mesh = VoxelMat.get_box(Vector3(0.20, 0.06, 0.20))
+	top_pool.material_override = neon_mat
+	top_pool.position = base_pos + Vector3(0, 0.76, 0)
+	parent.add_child(top_pool)
+	
+	# Floating Blobs
+	_room_lava_lamp_blobs.clear()
+	
+	var blob1 := MeshInstance3D.new()
+	blob1.mesh = VoxelMat.get_box(Vector3(0.16, 0.18, 0.16))
+	blob1.material_override = neon_mat
+	blob1.position = base_pos + Vector3(0, 0.35, 0)
+	parent.add_child(blob1)
+	_room_lava_lamp_blobs.append(blob1)
+	
+	var blob2 := MeshInstance3D.new()
+	blob2.mesh = VoxelMat.get_box(Vector3(0.14, 0.15, 0.14))
+	blob2.material_override = neon_mat
+	blob2.position = base_pos + Vector3(0, 0.65, 0)
+	parent.add_child(blob2)
+	_room_lava_lamp_blobs.append(blob2)
+	
+	# OmniLight3D
+	_room_lava_lamp_light = OmniLight3D.new()
+	_room_lava_lamp_light.light_color = neon_color
+	_room_lava_lamp_light.light_energy = 0.25
+	_room_lava_lamp_light.omni_range = 6.0
+	_room_lava_lamp_light.omni_attenuation = 2.0
+	_room_lava_lamp_light.position = base_pos + Vector3(0, 0.5, 0)
+	parent.add_child(_room_lava_lamp_light)
+
 
 func _build_room_lamp(parent: Node3D, base_pos: Vector3,
+
 		accent: Color, light_col: Color) -> void:
 	var stand_mat: ShaderMaterial = VoxelMat.make(Color8(45, 40, 38))
 	var shade_mat: ShaderMaterial = VoxelMat.make(accent.lightened(0.15))
@@ -2636,7 +3261,7 @@ func _clear_driftwood_biofilm(vx: MeshInstance3D) -> void:
 	if not vx.has_meta("tint_mat"):
 		return
 	var orig: Color = vx.get_meta("base_albedo")
-	vx.material_override = VoxelMat.make(orig)
+	vx.material_override = VoxelMat.make_substrate_caustic(orig)
 	vx.remove_meta("tint_mat")
 
 

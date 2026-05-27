@@ -80,6 +80,15 @@ const CLAMP_RADIUS: float = 1.6
 const CLAMP_RELEASE_GRACE: float = 0.7   # extra time clamped after threat leaves
 var _clamp_grace_remaining: float = 0.0
 
+# Predator + food scans throttled to ~3 Hz. A real snail's chemosense is
+# slow (it's tasting the water column, not seeing); the visible result
+# of running these scans every render frame vs every 0.3 s is identical,
+# but the cost drops from 60 Hz × N fish/waste to 3 Hz × N. Eye-stalk
+# wiggle, foot pulse, facing lerp etc. all still update per frame so the
+# motion stays smooth.
+const SCAN_INTERVAL: float = 0.3
+var _scan_accum: float = 0.0
+
 # Save/load id (see fish.gd for rationale).
 var id: String = ""
 
@@ -119,11 +128,22 @@ func _process(dt: float) -> void:
 	if is_baby and _age >= MATURITY_AGE:
 		is_baby = false
 
+	# Scan cadence: predator + food scans iterate sim.fish / sim.waste /
+	# sim.algae linearly, so per-frame runs were the single biggest CPU
+	# hit in a populated tank. Gate both behind a 0.3 s accumulator and
+	# pass the accumulated dt so the clamp-release grace counter ticks
+	# down at the same wall-clock rate as before.
+	_scan_accum += dt
+	var scan_due: bool = _scan_accum >= SCAN_INTERVAL
+	var scan_dt: float = _scan_accum
+	if scan_due:
+		_scan_accum = 0.0
+
 	# Predator scan: clamp into the shell when a snail-hunter is close.
 	# Real snails go still + retract so soft body parts aren't exposed.
-	# We re-scan every tick rather than caching threats so a moving puffer
-	# trips the clamp the moment it crosses the radius.
-	_check_predator_threat(dt)
+	# Throttled — 0.3 s detection latency reads as natural reaction time.
+	if scan_due:
+		_check_predator_threat(scan_dt)
 
 	# Eye stalk animation runs in every state (clamped, paused, crawling).
 	# Slow sway is the resting wiggle real snails do as they sense around;
@@ -189,7 +209,10 @@ func _process(dt: float) -> void:
 	# Detritus seeking: if there's a waste particle near our wall, steer
 	# toward it (within tangent-plane). Snails are the cleanup crew - they
 	# detect detritus from a moderate distance and slow-crawl over to consume.
-	_check_waste_nearby(tangent, bitangent)
+	# Same throttle as the predator scan — _direction stays set between
+	# scans, so the snail continues crawling toward the last-detected target.
+	if scan_due:
+		_check_waste_nearby(tangent, bitangent)
 
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails

@@ -124,6 +124,28 @@ const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
 func register_fish(f: Fish) -> void:
 	fish.append(f)
 	f.sim = self
+	_record_species_discovery(f)
+
+
+# Notify the SpeciesLibrary autoload that a fish entered the world. Source is
+# inferred from genome shape: store stock uses synthetic "stranger_N" species
+# ids; everything else is a founder if it has no recorded generation, an
+# offspring otherwise. Silent if SpeciesLibrary isn't available (it's an
+# autoload in project.godot, but be defensive — bare unit-test scenes might
+# instantiate SimDriver without it).
+func _record_species_discovery(f: Fish) -> void:
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null:
+		return
+	var g: Dictionary = f.get_saved_genome()
+	if g.is_empty():
+		return
+	var source: String = "evolved"
+	if String(f.species).begins_with("stranger_"):
+		source = "store"
+	elif int(f.generation) == 0:
+		source = "founder"
+	lib.record_discovery(g, source)
 
 
 func register_plant(p: Plant) -> void:
@@ -172,13 +194,65 @@ func daylight() -> float:
 	return 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
 
 
+# ---- Spatial hash grid for neighbor lookups ----
+# Cell size chosen to match the fish neighbor radius (3.0 units) so each
+# query only needs to check the 9 surrounding cells in 2D (Y is ignored
+# for cell assignment since the tank is shallow). Rebuilt every tick from
+# scratch — the insert is O(N), and queries are O(neighbors) instead of
+# the previous O(N²) brute-force scan.
+const SPATIAL_CELL_SIZE: float = 3.0
+var _spatial_grid: Dictionary = {}  # Vector2i → Array[Node3D]
+
+
+func _spatial_rebuild(entities: Array) -> void:
+	_spatial_grid.clear()
+	for e in entities:
+		if not is_instance_valid(e):
+			continue
+		if e.get("_dying") == true:
+			continue
+		var cell := Vector2i(
+			int(floor(e.position.x / SPATIAL_CELL_SIZE)),
+			int(floor(e.position.z / SPATIAL_CELL_SIZE)),
+		)
+		if _spatial_grid.has(cell):
+			_spatial_grid[cell].append(e)
+		else:
+			_spatial_grid[cell] = [e]
+
+
+func _spatial_query(pos: Vector3, radius_sq: float, exclude: Node3D = null) -> Array:
+	var result: Array = []
+	var cx: int = int(floor(pos.x / SPATIAL_CELL_SIZE))
+	var cz: int = int(floor(pos.z / SPATIAL_CELL_SIZE))
+	for dx in [-1, 0, 1]:
+		for dz in [-1, 0, 1]:
+			var cell := Vector2i(cx + dx, cz + dz)
+			var bucket: Array = _spatial_grid.get(cell, [])
+			for e in bucket:
+				if e == exclude:
+					continue
+				if e.position.distance_squared_to(pos) < radius_sq:
+					result.append(e)
+	return result
+
+
+# In-place removal of invalidated refs. Iterates backward and uses
+# remove_at() so we never allocate a new Array — eliminates the GC
+# pressure of the old Array.filter() approach.
+static func _prune_invalid(arr: Array) -> void:
+	for i in range(arr.size() - 1, -1, -1):
+		if not is_instance_valid(arr[i]):
+			arr.remove_at(i)
+
+
 func _tick(dt: float) -> void:
-	# 1. Prune invalid refs (queue_freed nodes).
-	fish = fish.filter(func(f): return is_instance_valid(f))
-	shrimp = shrimp.filter(func(s): return is_instance_valid(s))
-	plants = plants.filter(func(p): return is_instance_valid(p))
-	waste = waste.filter(func(w): return is_instance_valid(w))
-	eggs = eggs.filter(func(e): return is_instance_valid(e))
+	# 1. Prune invalid refs (queue_freed nodes) — in-place, no allocation.
+	_prune_invalid(fish)
+	_prune_invalid(shrimp)
+	_prune_invalid(plants)
+	_prune_invalid(waste)
+	_prune_invalid(eggs)
 
 	# 1b. Tank-wide dissolved-O2 update.
 	#
@@ -232,6 +306,10 @@ func _tick(dt: float) -> void:
 			if c.get("is_baby") == true:
 				baby_snail_list.append(c)
 
+	# Build spatial hash grid from all live (non-dying) fish. One O(N)
+	# insert pass replaces the old O(N²) nested neighbor loop.
+	_spatial_rebuild(fish)
+
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
@@ -241,20 +319,17 @@ func _tick(dt: float) -> void:
 		# corpse and predators don't try to eat it mid-death.
 		if f.get("_dying") == true:
 			continue
-		var neighbors: Array = []
-		for g in fish:
-			if g == f: continue
-			if not is_instance_valid(g): continue
-			if g.get("_dying") == true: continue
-			if g.position.distance_squared_to(f.position) < 9.0:
-				neighbors.append(g)
+		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
+		var neighbors: Array = _spatial_query(f.position, 9.0, f)
 		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
 		if ev.size() > 0:
 			ev["actor"] = f
 			ev["actor_kind"] = "fish"
 			events.append(ev)
 
-	# 4b. Shrimp.
+	# 4b. Shrimp — rebuild grid with shrimp entities.
+	_spatial_rebuild(shrimp)
+
 	for s in shrimp:
 		if not is_instance_valid(s):
 			continue
@@ -262,13 +337,8 @@ func _tick(dt: float) -> void:
 		# fish loop above — corpses shouldn't drive courtship or schooling).
 		if s.get("_dying") == true:
 			continue
-		var sn: Array = []
-		for o in shrimp:
-			if o == s: continue
-			if not is_instance_valid(o): continue
-			if o.get("_dying") == true: continue
-			if o.position.distance_squared_to(s.position) < 4.0:
-				sn.append(o)
+		# Spatial query: radius² = 4.0 (2.0 unit radius for shrimp)
+		var sn: Array = _spatial_query(s.position, 4.0, s)
 		var ev: Dictionary = s.tick(dt, plants, algae, waste, fry_list, baby_snail_list,
 			sn, world_bounds)
 		if ev.size() > 0:
@@ -962,6 +1032,7 @@ func save_state() -> Dictionary:
 		"fish_eggs": [],
 		"waste": [],
 		"algae": [],
+		"discovered_species": _get_discovered_species_for_save(),
 	}
 	for p in plants:
 		if is_instance_valid(p):
@@ -999,6 +1070,16 @@ func save_state() -> Dictionary:
 	return out
 
 
+# Snapshot of SpeciesLibrary.tank_entries for inclusion in state.json. Returns
+# an empty array if the autoload isn't available (defensive — see comment on
+# _record_species_discovery).
+func _get_discovered_species_for_save() -> Array:
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null:
+		return []
+	return lib.get_tank_entries()
+
+
 # Assign a fresh id to any entity that hasn't been minted yet. Idempotent:
 # already-assigned ids are left untouched.
 func _ensure_ids() -> void:
@@ -1023,6 +1104,13 @@ func _ensure_ids() -> void:
 func load_state(d: Dictionary) -> void:
 	if int(d.get("version", 0)) != SAVE_STATE_VERSION:
 		push_warning("[vivarium] save version mismatch; got %s, expected %d. Loading anyway." % [d.get("version"), SAVE_STATE_VERSION])
+
+	# 0. Restore species discoveries BEFORE any spawn happens. Spawn helpers
+	# in load_state bypass register_fish (no double-recording risk), but we
+	# want the library populated before the panel can open during load.
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib != null:
+		lib.set_tank_entries(d.get("discovered_species", []))
 
 	# 1. SimDriver scalars (these need to be set before entities tick).
 	var sim_d: Dictionary = d.get("sim", {})

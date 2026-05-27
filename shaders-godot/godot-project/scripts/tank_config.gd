@@ -119,6 +119,10 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_lamp": true,
 		"include_books": true,
 		"include_plant": true,
+		"include_window": true,
+		"include_clock": true,
+		"include_record_player": true,
+		"include_mug": true,
 	},
 	"sunny_window": {
 		"label": "Sunny window",
@@ -130,6 +134,9 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_lamp": false,
 		"include_books": true,
 		"include_plant": true,
+		"include_window": true,
+		"include_clock": true,
+		"include_mug": true,
 	},
 	"dark_cabinet": {
 		"label": "Dark cabinet",
@@ -141,6 +148,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_lamp": false,
 		"include_books": false,
 		"include_plant": false,
+		"include_lava_lamp": true,
+		"include_clock": true,
 	},
 	"forest_window": {
 		"label": "Forest window",
@@ -152,6 +161,9 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_lamp": false,
 		"include_books": false,
 		"include_plant": true,
+		"include_window": true,
+		"include_mug": true,
+		"include_lava_lamp": true,
 	},
 }
 

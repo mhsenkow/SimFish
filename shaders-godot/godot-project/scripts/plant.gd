@@ -400,7 +400,7 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	var color: Color = ramp[ramp_idx]
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
-	mi.material_override = VoxelMat.make(color)
+	mi.material_override = VoxelMat.make_foliage(color)
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
 	mi.position = Vector3(
 		lat + photo_offset.x,
@@ -491,7 +491,7 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	var stem_mi := MeshInstance3D.new()
 	stem_mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35))
 	var stem_color: Color = ramp[0] if ramp.size() > 0 else Color8(40, 70, 30)
-	stem_mi.material_override = VoxelMat.make(stem_color.darkened(0.1))
+	stem_mi.material_override = VoxelMat.make_foliage(stem_color.darkened(0.1))
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
 	stem_mi.position = Vector3(
 		lat + photo_offset.x,
@@ -661,22 +661,30 @@ func _clear_voxel_tint(vx: MeshInstance3D) -> void:
 	if not vx.has_meta("tint_mat"):
 		return
 	var orig: Color = vx.get_meta("base_albedo")
-	vx.material_override = VoxelMat.make(orig)
+	vx.material_override = VoxelMat.make_foliage(orig)
 	vx.remove_meta("tint_mat")
 
 
 # Called by SimDriver each tick.
 func tick(dt: float, substrate: SubstrateGrid) -> void:
+	# Refresh world-space anchor every tick. _ready() captures _world_pos
+	# from global_position, but several spawn paths (base Plant, BranchPlant,
+	# Coral, and the save-load _spawn_plant_from_dict path) assign
+	# global_position AFTER add_child() has already fired _ready(). The
+	# result was _world_pos stuck at (0,0,0) for most plants, so every
+	# substrate.get_at() and consume_at() call hit cell (0,0) instead of
+	# the plant's actual cell — collapsing the spatial nutrient model.
+	# Spiral plants worked because their init() override re-captured.
+	# Doing it here on every tick is one Vector3 read; trivial cost, and
+	# robust against future spawn paths.
+	_world_pos = global_position
 	_t += dt
 
 	# ---- Flow-based sway ----
-	# Base sway + asymmetric flow bias from aeration direction.
+	# The dynamic time-based sway is fully offloaded to the GPU foliage.gdshader.
+	# We only apply the slow-changing downstream flow lean on the CPU.
 	var flow_bias: float = _get_flow_bias()
-	var sway: float = sin(_t * 0.7 + _phase) * 0.08
-	sway += flow_bias * 0.04  # downstream lean
-	rotation.z = sway
-	# Leaf flutter: individual leaves get micro-oscillation.
-	_flutter_leaves(dt)
+	rotation.z = flow_bias * 0.04  # downstream lean
 
 	# ---- Health tracking ----
 	var available: float = substrate.get_at(_world_pos)
@@ -1128,27 +1136,7 @@ func _spawn_decay_waste(at: Vector3) -> void:
 # ---- Leaf flutter ----
 
 func _flutter_leaves(dt: float) -> void:
-	# IMPORTANT: this sets the *absolute* per-frame rotation from a sinusoid,
-	# it doesn't add a delta. The previous `+=` version was an unintended
-	# integrator — `dt * 60` framerate-normalised the increment so the math
-	# looks like an "amount per frame at 60fps," but the underlying value
-	# accumulated forever. Over an hour-long session leaves drifted to
-	# pretzel angles. Using `=` snaps them back to a bounded oscillation
-	# around their build-time orientation each frame.
-	# (`dt` is still here as a no-op tag in case we ever switch to a true
-	# damped-spring model, where dt would matter again.)
-	var _ignored_dt: float = dt
-	for i in _leaf_nodes.size():
-		if not is_instance_valid(_leaf_nodes[i]):
-			continue
-		var leaf: Node3D = _leaf_nodes[i]
-		var ph: float = _phase + float(i) * 1.7
-		# Very subtle micro-rotation. Amplitudes (~4-5°) match the steady-state
-		# excursion the previous accumulator settled at after a few seconds of
-		# integration — chosen so existing tanks visually look the same on
-		# average, just without the unbounded drift.
-		leaf.rotation.z = sin(_t * 2.5 + ph) * 0.072
-		leaf.rotation.x = cos(_t * 2.2 + ph * 1.3) * 0.048
+	pass
 
 
 # ---- Flow response ----

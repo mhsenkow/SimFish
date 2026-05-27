@@ -1,0 +1,19 @@
+shader_type spatial;
+render_mode unshaded, cull_back;
+
+uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+
+void fragment() {
+    vec3 n = normalize(NORMAL);
+    float f;
+    if (n.y > 0.7) {
+        f = 1.00;        // top
+    } else if (n.y < -0.7) {
+        f = 0.50;        // bottom
+    } else if (abs(n.x) > 0.7) {
+        f = 0.82;        // +X / -X sides
+    } else {
+        f = 0.68;        // +Z / -Z sides
+    }
+    ALBEDO = albedo.rgb * f;
+}

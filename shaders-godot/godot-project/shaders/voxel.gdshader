@@ -26,5 +26,4 @@ void fragment() {
         f = 0.68;        // +Z / -Z sides
     }
     ALBEDO = albedo.rgb * f;
-    ALPHA = albedo.a;
 }

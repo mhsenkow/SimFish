@@ -133,9 +133,7 @@ func _rebuild_at_depth(new_depth: int) -> void:
 		for v in _outermost_voxels:
 			if not is_instance_valid(v):
 				continue
-			var mat: Material = v.material_override
-			if mat is StandardMaterial3D:
-				(mat as StandardMaterial3D).albedo_color = natural_color
+			v.material_override = VoxelMat.make_foliage(natural_color)
 
 	var prev_tip_positions: Array[Vector3] = _tip_positions.duplicate()
 	_outermost_voxels = []
@@ -185,11 +183,7 @@ func _spawn_children_off(parent_pos: Vector3, size: float, gen: int) -> void:
 
 
 func tick(dt: float) -> void:
-	# Subtle swirl of the whole cluster - moss has a gentle drift in a
-	# planted tank when water flow brushes it.
 	_t += dt
-	rotation.y = sin(_t * 0.3 + _phase) * 0.04
-	rotation.x = cos(_t * 0.25 + _phase * 1.3) * 0.025
 
 	# ---- Incremental growth ----
 	# Every _growth_interval seconds, increase the fractal depth by 1.
@@ -276,8 +270,4 @@ func graze(amount: int) -> int:
 
 
 func _make_mat(c: Color) -> Material:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+	return VoxelMat.make_foliage(c)

@@ -76,6 +76,9 @@ var sex: int = 0                        # 0 male, 1 female
 
 # ---- Lineage ----
 var generation: int = 0   # max(parents) + 1 on birth; founders are 0
+var fish_name: String = ""
+var parent_lineage: String = "Founders"
+
 
 # ---- State (mutable) ----
 var age: float = 0.0
@@ -398,6 +401,11 @@ var _dying: bool = false
 var _dying_timer: float = 0.0
 const DEATH_DURATION: float = 3.5
 
+# Cached list of all MeshInstance3D descendants. Built once at the end of
+# _build_body() and reused by aging tint, maturity color, courtship color
+# boost, and restoration — avoids a recursive DFS tree walk every time.
+var _cached_meshes: Array = []
+
 # ---- Refs ----
 var sim: Node = null
 
@@ -411,6 +419,13 @@ var id: String = ""
 # from the same starting point (saving the post-transformation fields and
 # replaying init_genome on them would double-transform).
 var _saved_genome: Dictionary = {}
+
+
+# Public accessor for the cached genome dict. SpeciesLibrary reads this on
+# registration to record discoveries; we return a deep copy so the library
+# can serialise it without our mutations leaking back in.
+func get_saved_genome() -> Dictionary:
+	return _saved_genome.duplicate(true)
 
 
 func _ready() -> void:
@@ -470,6 +485,21 @@ func init_genome(genome: Dictionary) -> void:
 	preferred_y = genome.get("preferred_y", preferred_y)
 	sex = genome.get("sex", randi() % 2)
 	generation = genome.get("generation", 0)
+	
+	fish_name = genome.get("fish_name", "")
+	if fish_name == "":
+		if genome.has("_display_name"):
+			fish_name = String(genome["_display_name"])
+		else:
+			var adjs := ["Neon", "Crimson", "Lazuli", "Sunlit", "Twilight", "Lunar", "Ember", "Coral", "Frost", "Onyx", "Citrine", "Verdant", "Pearl", "Mirage"]
+			var nouns := ["Darter", "Glider", "Nibbler", "Shimmer", "Spike", "Wisp", "Crest", "Tang", "Sprite", "Slip", "Drake", "Veil", "Mote", "Lance"]
+			fish_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+	parent_lineage = genome.get("parent_lineage", "Founders")
+	
+	_saved_genome["fish_name"] = fish_name
+	_saved_genome["parent_lineage"] = parent_lineage
+	_saved_genome["generation"] = generation
+
 	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
 	body_elongation = genome.get("body_elongation", body_elongation)
 	body_depth_factor = genome.get("body_depth_factor", body_depth_factor)
@@ -1001,6 +1031,11 @@ func _build_body() -> void:
 	if _bank_pivot != null:
 		_bank_pivot.scale.z = body_elongation
 		_bank_pivot.scale.y = body_depth_factor
+
+	# Cache mesh list now that the body is fully built. All subsequent
+	# tint / color operations read from _cached_meshes instead of
+	# re-walking the node tree.
+	_cached_meshes = _all_meshes(self)
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -2412,7 +2447,7 @@ func _motion_substep(dt: float) -> void:
 		# otherwise we modify cached shared materials!
 		if not _courtship_color_active:
 			_courtship_color_active = true
-			for child in _all_meshes(self):
+			for child in _cached_meshes:
 				var mi: MeshInstance3D = child
 				var m: Material = mi.material_override
 				if m is ShaderMaterial:
@@ -2420,7 +2455,7 @@ func _motion_substep(dt: float) -> void:
 						mi.set_meta("orig_mat", m)
 					mi.material_override = m.duplicate()
 
-		for child in _all_meshes(self):
+		for child in _cached_meshes:
 			var mi: MeshInstance3D = child
 			if mi.has_meta("orig_mat"):
 				var orig_mat = mi.get_meta("orig_mat")
@@ -2432,7 +2467,7 @@ func _motion_substep(dt: float) -> void:
 	elif _courtship_color_active:
 		# Restore original colors when courtship ends
 		_courtship_color_active = false
-		for child in _all_meshes(self):
+		for child in _cached_meshes:
 			var mi: MeshInstance3D = child
 			if mi.has_meta("orig_mat"):
 				var orig = mi.get_meta("orig_mat")
@@ -2544,7 +2579,7 @@ func _apply_aging_tint() -> void:
 	_aged_applied = true
 	# Walk all MeshInstance3D descendants and tint their material to the
 	# faded color. Cheap since fish are small.
-	for child in _all_meshes(self):
+	for child in _cached_meshes:
 		var mi: MeshInstance3D = child
 		var m: Material = mi.material_override
 		if m is ShaderMaterial:
@@ -2585,7 +2620,7 @@ func _apply_maturity_color() -> void:
 	# toward a pale silvery tone. At 1.0 it’s at full genome color.
 	var desat: float = 0.45 * (1.0 - _color_maturity)
 	var wash: Color = Color(0.75, 0.75, 0.78)
-	for child in _all_meshes(self):
+	for child in _cached_meshes:
 		var mi: MeshInstance3D = child
 		var m: Material = mi.material_override
 		if m is ShaderMaterial:
@@ -2605,7 +2640,7 @@ func _apply_maturity_color() -> void:
 
 
 func _restore_original_colors() -> void:
-	for child in _all_meshes(self):
+	for child in _cached_meshes:
 		var mi: MeshInstance3D = child
 		if mi.has_meta("orig_mat"):
 			var orig = mi.get_meta("orig_mat")
@@ -2768,6 +2803,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"preferred_y": preferred_y + randf_range(-0.4, 0.4),
 		"sex": randi() % 2,
 		"generation": maxi(generation, partner.generation) + 1,
+		"parent_lineage": "%s & %s" % [fish_name, partner.fish_name],
 		"fin_length_factor": new_fin,
 		"body_elongation": new_elong,
 		"body_depth_factor": new_depth,

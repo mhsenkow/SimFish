@@ -128,15 +128,7 @@ func _add_leaf_blade(leaf_index: int) -> void:
 
 
 func tick(dt: float) -> void:
-	# Entire reed sways gently.
 	_t += dt
-	rotation.z = sin(_t * 0.7 + _phase) * 0.05
-	rotation.x = cos(_t * 0.65 + _phase * 1.1) * 0.035
-
-	# Leaf flutter: individual leaf pivots get micro-oscillation.
-	for lp in _leaf_pivots:
-		if is_instance_valid(lp):
-			lp.rotation.z = -0.4 + sin(_t * 1.8 + lp.rotation.y) * 0.03
 
 	# ---- Incremental growth ----
 	_growth_timer += dt
@@ -185,8 +177,4 @@ func _puff_seed() -> void:
 
 
 func _make_mat(c: Color) -> Material:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+	return VoxelMat.make_foliage(c)

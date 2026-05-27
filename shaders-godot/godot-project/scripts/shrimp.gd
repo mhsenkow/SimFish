@@ -37,6 +37,9 @@ var sex: int = 0
 
 # ---- Lineage ----
 var generation: int = 0
+var shrimp_name: String = ""
+var parent_lineage: String = "Founders"
+
 
 # ---- State ----
 var age: float = 0.0
@@ -151,6 +154,22 @@ func init_genome(genome: Dictionary) -> void:
 	sex = genome.get("sex", randi() % 2)
 	substrate_top_y = genome.get("substrate_top_y", substrate_top_y)
 	is_cleaner = bool(genome.get("is_cleaner", is_cleaner))
+	generation = int(genome.get("generation", 0))
+	
+	shrimp_name = genome.get("shrimp_name", "")
+	if shrimp_name == "":
+		if genome.has("_display_name"):
+			shrimp_name = String(genome["_display_name"])
+		else:
+			var adjs := ["Cherry", "Ghost", "Crystal", "Velvet", "Sunkist", "Blue", "Amano", "Cardinal", "Bamboo", "Bee"]
+			var nouns := ["Scuttler", "Picker", "Pincher", "Nibbler", "Rover", "Crawler", "Glider", "Skitter"]
+			shrimp_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+	parent_lineage = genome.get("parent_lineage", "Founders")
+	
+	_saved_genome["shrimp_name"] = shrimp_name
+	_saved_genome["parent_lineage"] = parent_lineage
+	_saved_genome["generation"] = generation
+	
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
 	# Start each shrimp facing a random horizontal direction.
@@ -928,6 +947,7 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"sex": randi() % 2,
 		"substrate_top_y": substrate_top_y,
 		"generation": maxi(generation, other.generation) + 1,
+		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
 	}
 
 

@@ -113,9 +113,6 @@ func _add_pad_voxel() -> void:
 
 func tick(dt: float) -> void:
 	_t += dt
-	# Slow gentle tilt - pad rocks on the meniscus.
-	rotation.z = sin(_t * 0.6 + _phase) * 0.03
-	rotation.x = cos(_t * 0.55 + _phase * 1.1) * 0.025
 
 	# ---- Incremental pad growth ----
 	_growth_timer += dt
@@ -316,8 +313,4 @@ func _is_inside_tank_xz(x: float, z: float, margin: float) -> bool:
 
 
 func _make_mat(c: Color) -> Material:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+	return VoxelMat.make_foliage(c)

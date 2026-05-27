@@ -85,6 +85,7 @@ func _add_spiral_voxel() -> void:
 	else:
 		color = Color8(60, 130, 70)
 	mi.material_override = _make_mat(color)
+	mi.set_meta("base_color", color)
 	add_child(mi)
 	_all_voxels.append(mi)
 	_voxel_birth_times.append(_t)
@@ -92,10 +93,7 @@ func _add_spiral_voxel() -> void:
 
 
 func tick(dt: float) -> void:
-	# Whole spiral gently bobs around its base.
 	_t += dt
-	rotation.z = sin(_t * 0.5 + _phase) * 0.05
-	rotation.x = cos(_t * 0.45 + _phase * 1.2) * 0.04
 
 	# ---- Incremental spiral growth ----
 	_growth_timer += dt
@@ -120,15 +118,9 @@ func _age_voxels() -> void:
 			continue
 		if age > 5.0:
 			var darken: float = clampf((age - 5.0) / 5.0, 0.0, 0.15)
-			var mat: Material = _all_voxels[i].material_override
-			if mat is StandardMaterial3D:
-				(mat as StandardMaterial3D).albedo_color = \
-					(mat as StandardMaterial3D).albedo_color.darkened(darken * 0.02)
+			var base_col: Color = _all_voxels[i].get_meta("base_color", Color.WHITE)
+			_all_voxels[i].material_override = VoxelMat.make_foliage(base_col.darkened(darken * 0.15))
 
 
 func _make_mat(c: Color) -> Material:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = c
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+	return VoxelMat.make_foliage(c)

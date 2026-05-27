@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3 uid="uid://main_vivarium"]
+[gd_scene load_steps=10 format=3 uid="uid://main_vivarium"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/world.gd" id="2_world"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://scripts/fish_store.gd" id="9_store"]
 [ext_resource type="Shader" path="res://shaders/circle_mask.gdshader" id="10_circle_mask"]
 [ext_resource type="Script" path="res://scripts/mobile_hud.gd" id="11_mobile_hud"]
+[ext_resource type="Script" path="res://scripts/library_panel.gd" id="12_library"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_portal_mask"]
 shader = ExtResource("10_circle_mask")
@@ -310,6 +311,17 @@ theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
+[node name="LibraryToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+tooltip_text = "Species library"
+text = " 📚 "
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
 [node name="SettingsToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 28)
@@ -343,6 +355,16 @@ offset_top = -240.0
 offset_right = 220.0
 offset_bottom = 240.0
 script = ExtResource("9_store")
+
+[node name="LibraryPanel" type="PanelContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 32.0
+offset_top = 56.0
+offset_right = -32.0
+offset_bottom = -40.0
+mouse_filter = 1
+script = ExtResource("12_library")
 
 [node name="ControlsHint" type="Label" parent="."]
 anchor_left = 0.0
