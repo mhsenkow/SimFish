@@ -278,6 +278,10 @@ func _ready() -> void:
 	_spawn_initial_microfauna(MICROFAUNA_TARGET)
 	# Make sure SimDriver can find the snails container for predator AI.
 	sim.snails_root = get_node_or_null("Snails")
+	# Snails spawn before clear_tank(); fish/shrimp register on spawn. Sync
+	# once so founders of every type appear in the Life Library.
+	if sim.has_method("sync_species_discoveries"):
+		sim.sync_species_discoveries()
 	# Hardscape container - fry hide-at-log behavior reads this.
 	sim.hardscape_root = get_node_or_null("Hardscape")
 	# Seed the substrate with some uneven nutrients so plants in nutrient-rich
@@ -1132,6 +1136,8 @@ func _build_snails() -> void:
 		snail.set("shell_shape", shape)
 		c.add_child(snail)
 		_build_snail_body(snail)
+		if sim != null:
+			sim.register_snail(snail)
 
 
 func _build_snail_body(snail: Node3D) -> void:
@@ -1291,6 +1297,8 @@ func _respawn_extinct_fauna() -> void:
 	# point at it (the initial setup at line 186 does the same).
 	_build_snails()
 	sim.snails_root = get_node_or_null("Snails")
+	if sim.has_method("sync_species_discoveries"):
+		sim.sync_species_discoveries()
 
 
 func _spawn_initial_plants() -> void:
@@ -1651,6 +1659,13 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	
 	# Initialize the child plant using the parent's genetic traits
 	p.init(1, child_cfg)
+	if child_cfg.has("generation"):
+		p.generation = int(child_cfg["generation"])
+	if child_cfg.has("parent_lineage"):
+		p.parent_lineage = String(child_cfg["parent_lineage"])
+	var pk: Variant = child_cfg.get("parent_keys", [])
+	if pk is Array:
+		p._parent_keys = pk.duplicate()
 	
 	# Apply specialized traits if they exist in the config
 	if "branch_chance" in child_cfg:
@@ -3490,6 +3505,7 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 func _spawn_initial_shrimp() -> void:
 	# Neocaridina-style shrimp. Two color morphs for visual interest.
 	var red_genome: Dictionary = {
+		"organism_type": "shrimp",
 		"species": "shrimp",
 		"base_color": Color8(195, 65, 55),    # cherry red
 		"accent_color": Color8(245, 220, 200),
@@ -3499,6 +3515,7 @@ func _spawn_initial_shrimp() -> void:
 		"substrate_top_y": SUBSTRATE_DEPTH,
 	}
 	var amber_genome: Dictionary = {
+		"organism_type": "shrimp",
 		"species": "shrimp",
 		"base_color": Color8(195, 145, 70),   # amber/honey
 		"accent_color": Color8(245, 220, 200),
@@ -3540,6 +3557,7 @@ func _spawn_marine_shrimp() -> void:
 	# with a stark white spine stripe and oversize white antennae.
 	# Cleaning-station behavior tier in shrimp.gd handles the gameplay.
 	var cleaner_genome: Dictionary = {
+		"organism_type": "shrimp",
 		"species": "shrimp",
 		"base_color": Color8(195, 50, 45),       # deep tomato red
 		"accent_color": Color8(245, 230, 215),   # cream belly

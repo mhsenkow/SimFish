@@ -124,32 +124,63 @@ const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
 func register_fish(f: Fish) -> void:
 	fish.append(f)
 	f.sim = self
-	_record_species_discovery(f)
+	_record_organism_discovery(f.get_saved_genome())
 
 
-# Notify the SpeciesLibrary autoload that a fish entered the world. Source is
-# inferred from genome shape: store stock uses synthetic "stranger_N" species
-# ids; everything else is a founder if it has no recorded generation, an
-# offspring otherwise. Silent if SpeciesLibrary isn't available (it's an
-# autoload in project.godot, but be defensive — bare unit-test scenes might
-# instantiate SimDriver without it).
-func _record_species_discovery(f: Fish) -> void:
+func register_shrimp(s: Shrimp) -> void:
+	shrimp.append(s)
+	s.sim = self
+	_record_organism_discovery(s.get_saved_genome())
+
+
+func register_snail(sn: Node) -> void:
+	if sn == null or not is_instance_valid(sn):
+		return
+	if not sn.has_method("get_saved_genome"):
+		return
+	_record_organism_discovery(sn.get_saved_genome())
+
+
+# Backfill the species library from everything currently alive. Snails are
+# built before clear_tank() in world._ready, and load_state skips per-entity
+# registration — call this after stocking finishes.
+func sync_species_discoveries() -> void:
+	for f in fish:
+		if is_instance_valid(f):
+			_record_organism_discovery(f.get_saved_genome(), true)
+	for s in shrimp:
+		if is_instance_valid(s):
+			_record_organism_discovery(s.get_saved_genome(), true)
+	if snails_root != null:
+		for sn in snails_root.get_children():
+			if is_instance_valid(sn) and sn.has_method("get_saved_genome"):
+				_record_organism_discovery(sn.get_saved_genome(), true)
+	for p in plants:
+		if is_instance_valid(p) and p.has_method("get_plant_genome"):
+			_record_organism_discovery(p.get_plant_genome(), true)
+
+
+# Notify the SpeciesLibrary autoload that an organism entered the world.
+func _record_organism_discovery(g: Dictionary, silent: bool = false) -> void:
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib == null:
 		return
-	var g: Dictionary = f.get_saved_genome()
 	if g.is_empty():
 		return
+	var gen: int = int(g.get("generation", 0))
+	var species_id: String = String(g.get("species", ""))
 	var source: String = "evolved"
-	if String(f.species).begins_with("stranger_"):
+	if species_id.begins_with("stranger_"):
 		source = "store"
-	elif int(f.generation) == 0:
+	elif gen == 0:
 		source = "founder"
-	lib.record_discovery(g, source)
+	lib.record_discovery(g, source, silent)
 
 
 func register_plant(p: Plant) -> void:
 	plants.append(p)
+	if p.has_method("get_plant_genome"):
+		_record_organism_discovery(p.get_plant_genome())
 
 
 func register_waste(w: WasteParticle) -> void:
@@ -158,11 +189,6 @@ func register_waste(w: WasteParticle) -> void:
 
 func register_egg(e: FishEgg) -> void:
 	eggs.append(e)
-
-
-func register_shrimp(s: Shrimp) -> void:
-	shrimp.append(s)
-	s.sim = self
 
 
 func _physics_process(dt: float) -> void:
@@ -1179,6 +1205,8 @@ func load_state(d: Dictionary) -> void:
 	# 10. Cross-reference pass: resolve partner_id → partner Node refs.
 	_resolve_refs(d, id_map)
 
+	sync_species_discoveries()
+
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.
 	time_scale = float(sim_d.get("time_scale", 1.0))
@@ -1249,6 +1277,8 @@ func _spawn_snail_from_dict(d: Dictionary) -> Node3D:
 	sn.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	if sn.has_method("apply_save_dict"):
 		sn.apply_save_dict(d)
+	if sn.has_method("get_saved_genome"):
+		_record_organism_discovery(sn.get_saved_genome())
 	return sn
 
 

@@ -225,6 +225,9 @@ var _tutorial_overlay: Control = null
 # Floating Label shown briefly on resume when we detect the user was away.
 var _welcome_label: Label = null
 
+# ---- Species discovery toast ----
+var _discovery_toast: Label = null
+
 
 func _is_mobile() -> bool:
 	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
@@ -257,6 +260,9 @@ func _ready() -> void:
 		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
 	if library_toggle != null and library_panel != null:
 		library_toggle.pressed.connect(library_panel.toggle)
+	var species_lib := get_node_or_null("/root/SpeciesLibrary")
+	if species_lib != null and species_lib.has_signal("species_discovered"):
+		species_lib.species_discovered.connect(_on_species_discovered)
 	if aquascape_toggle != null:
 		aquascape_toggle.pressed.connect(_toggle_aquascape)
 	if menu_button != null:
@@ -2415,12 +2421,9 @@ func _format_story_t(t: float) -> String:
 	if s < 60:
 		return "%ds" % s
 	if s < 3600:
-		@warning_ignore("integer_division")
-		return "%dm" % (s / 60)
-	@warning_ignore("integer_division")
-	var h: int = s / 3600
-	@warning_ignore("integer_division")
-	var m: int = (s % 3600) / 60
+		return "%dm" % int(s / 60.0)
+	var h: int = int(s / 3600.0)
+	var m: int = int((s % 3600) / 60.0)
 	return "%dh %dm" % [h, m]
 
 
@@ -2874,6 +2877,56 @@ func _show_welcome_back_if_returning() -> void:
 	_spawn_welcome_label(msg)
 
 
+func _on_species_discovered(entry: Dictionary) -> void:
+	_show_discovery_toast(entry)
+
+
+func _show_discovery_toast(entry: Dictionary) -> void:
+	if entry.is_empty():
+		return
+	var otype: String = String(entry.get("organism_type", "fish"))
+	var icon: String = "🐟"
+	match otype:
+		"shrimp":
+			icon = "🦐"
+		"snail":
+			icon = "🐌"
+		"plant":
+			icon = "🌿"
+	var display: String = String(entry.get("display_name", "?"))
+	var gen: int = int(entry.get("generation", 0))
+	var src: String = String(entry.get("source", ""))
+	var src_hint: String = ""
+	if src == "founder":
+		src_hint = " · founder"
+	elif src == "store":
+		src_hint = " · store"
+	if _discovery_toast != null and is_instance_valid(_discovery_toast):
+		_discovery_toast.queue_free()
+	var lab := Label.new()
+	lab.text = "%s New discovery: %s (gen %d)%s" % [icon, display, gen, src_hint]
+	lab.add_theme_color_override("font_color", Color(0.88, 0.96, 1.0, 1.0))
+	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+	lab.add_theme_constant_override("outline_size", 4)
+	lab.add_theme_font_size_override("font_size", 14 if _is_mobile() else 13)
+	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lab.anchor_left = 0.0
+	lab.anchor_right = 1.0
+	lab.anchor_top = 0.0
+	lab.anchor_bottom = 0.0
+	lab.offset_top = 108.0
+	lab.offset_bottom = 140.0
+	add_child(lab)
+	_discovery_toast = lab
+	var tw := create_tween()
+	tw.tween_interval(3.2)
+	tw.tween_property(lab, "modulate:a", 0.0, 0.9)
+	tw.tween_callback(func():
+		if is_instance_valid(lab):
+			lab.queue_free())
+
+
 func _spawn_welcome_label(text: String) -> void:
 	if _welcome_label != null and is_instance_valid(_welcome_label):
 		_welcome_label.queue_free()
@@ -2907,18 +2960,14 @@ func _format_duration(seconds: int) -> String:
 	if seconds < 60:
 		return "%d seconds" % seconds
 	if seconds < 3600:
-		@warning_ignore("integer_division")
-		return "%d min" % (seconds / 60)
+		return "%d min" % int(seconds / 60.0)
 	if seconds < 86400:
-		@warning_ignore("integer_division")
-		var h: int = seconds / 3600
-		@warning_ignore("integer_division")
-		var m: int = (seconds % 3600) / 60
+		var h: int = int(seconds / 3600.0)
+		var m: int = int((seconds % 3600) / 60.0)
 		if m == 0:
 			return "%d hr" % h
 		return "%d hr %d min" % [h, m]
-	@warning_ignore("integer_division")
-	return "%d days" % (seconds / 86400)
+	return "%d days" % int(seconds / 86400.0)
 
 
 # ---- Haptic feedback ----
