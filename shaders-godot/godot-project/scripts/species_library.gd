@@ -121,15 +121,15 @@ func set_tank_entries(entries: Array) -> void:
 # Genome → canonical key
 # ============================================================================
 
-static func organism_type(genome: Dictionary) -> String:
+func organism_type(genome: Dictionary) -> String:
 	return String(genome.get("organism_type", ORGANISM_FISH))
 
 
-static func parent_keys_for_breeding(genomes: Array) -> Array:
+func parent_keys_for_breeding(genomes: Array) -> Array:
 	var out: Array = []
 	for g in genomes:
 		if g is Dictionary and not (g as Dictionary).is_empty():
-			var key: String = _species_key_static(g)
+			var key: String = make_species_key(g)
 			if key != "" and not out.has(key):
 				out.append(key)
 	return out
@@ -139,12 +139,11 @@ func species_key(g: Dictionary) -> String:
 	return make_species_key(g)
 
 
-# Callable without the autoload instance (strict typing / static contexts).
-static func make_species_key(g: Dictionary) -> String:
-	return _species_key_static(g)
+func make_species_key(g: Dictionary) -> String:
+	return _species_key_from_genome(g)
 
 
-static func _species_key_static(g: Dictionary) -> String:
+func _species_key_from_genome(g: Dictionary) -> String:
 	match organism_type(g):
 		ORGANISM_SHRIMP:
 			return _species_key_shrimp(g)
@@ -156,7 +155,7 @@ static func _species_key_static(g: Dictionary) -> String:
 			return _species_key_fish(g)
 
 
-static func _species_key_fish(g: Dictionary) -> String:
+func _species_key_fish(g: Dictionary) -> String:
 	var parts: Array = [
 		"fish",
 		String(g.get("species", "?")),
@@ -178,7 +177,7 @@ static func _species_key_fish(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-static func _species_key_shrimp(g: Dictionary) -> String:
+func _species_key_shrimp(g: Dictionary) -> String:
 	var parts: Array = [
 		"shrimp",
 		String(g.get("species", "shrimp")),
@@ -190,7 +189,7 @@ static func _species_key_shrimp(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-static func _species_key_snail(g: Dictionary) -> String:
+func _species_key_snail(g: Dictionary) -> String:
 	var parts: Array = [
 		"snail",
 		_color_to_hex(g.get("shell_color", Color.WHITE)),
@@ -200,7 +199,7 @@ static func _species_key_snail(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-static func _species_key_plant(g: Dictionary) -> String:
+func _species_key_plant(g: Dictionary) -> String:
 	var ramp_parts: Array = []
 	var ramp: Variant = g.get("ramp_override", [])
 	if ramp is Array:
@@ -243,7 +242,7 @@ func _make_entry(genome: Dictionary, key: String, source: String) -> Dictionary:
 	}
 
 
-static func _display_name_for(genome: Dictionary, otype: String) -> String:
+func _display_name_for(genome: Dictionary, otype: String) -> String:
 	match otype:
 		ORGANISM_SHRIMP:
 			var n: String = String(genome.get("shrimp_name", ""))
@@ -292,7 +291,7 @@ func _genome_to_serialisable(g: Dictionary) -> Dictionary:
 	return out
 
 
-static func genome_from_serialisable(g: Dictionary) -> Dictionary:
+func genome_from_serialisable(g: Dictionary) -> Dictionary:
 	const COLOR_KEYS: Array[String] = [
 		"base_color", "accent_color", "tail_color", "shell_color",
 	]
@@ -320,7 +319,7 @@ static func genome_from_serialisable(g: Dictionary) -> Dictionary:
 	return out
 
 
-static func _color_to_hex(c: Variant) -> String:
+func _color_to_hex(c: Variant) -> String:
 	if c is Color:
 		return (c as Color).to_html(false)
 	if c is Array and (c as Array).size() >= 3:

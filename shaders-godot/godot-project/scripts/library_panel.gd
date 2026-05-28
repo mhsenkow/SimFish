@@ -849,7 +849,7 @@ func _populate_swatches(genome: Dictionary, otype: String) -> void:
 		SpeciesLibrary.ORGANISM_PLANT:
 			var ramp: Variant = genome.get("ramp_override", [])
 			if ramp is Array:
-				var step: int = maxi(1, (ramp as Array).size() / 4)
+				var step: int = maxi(1, int((ramp as Array).size() / 4.0))
 				for i in range(0, (ramp as Array).size(), step):
 					_add_swatch((ramp as Array)[i], 22)
 		_:

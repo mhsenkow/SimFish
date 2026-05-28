@@ -26,7 +26,6 @@ const PLANT_RAMP: Array[Color] = [
 	Color8(121, 192, 105),
 ]
 const VOXEL_SIZE: float = 0.32
-const _SPECIES_LIB := preload("res://scripts/species_library.gd")
 
 # Stress palette for nutrient deficiency (yellowing / browning).
 const STRESS_RAMP: Array[Color] = [
@@ -1306,7 +1305,7 @@ func _cast_seed() -> void:
 # Returns a dictionary of heritable traits so seedlings spawn as the same species.
 func get_seed_config() -> Dictionary:
 	_ensure_plant_named()
-	var my_key: String = _SPECIES_LIB.make_species_key(get_plant_genome())
+	var my_key: String = SpeciesLibrary.make_species_key(get_plant_genome())
 	return {
 		"script": get_script(),
 		"max_height": max_height,
