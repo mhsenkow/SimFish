@@ -58,18 +58,30 @@ func _ready() -> void:
 	_build_ui()
 	_pull_from_config()
 	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event.is_action_pressed("ui_cancel"):
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_O:
-			toggle()
+		if event.keycode == KEY_O or event.keycode == KEY_ESCAPE:
+			visible = false
+			mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func toggle() -> void:
 	visible = not visible
 	if visible:
+		mouse_filter = Control.MOUSE_FILTER_STOP
 		_pull_from_config()
+	else:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 # Build the inner control tree once. Layout is a VBoxContainer with a title

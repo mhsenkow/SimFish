@@ -39,13 +39,26 @@ const NAME_NOUN: Array[String] = [
 
 func _ready() -> void:
 	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build_ui()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event.is_action_pressed("ui_cancel"):
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		get_viewport().set_input_as_handled()
 
 
 func toggle() -> void:
 	visible = not visible
 	if visible:
+		mouse_filter = Control.MOUSE_FILTER_STOP
 		_regenerate()
+	else:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _build_ui() -> void:

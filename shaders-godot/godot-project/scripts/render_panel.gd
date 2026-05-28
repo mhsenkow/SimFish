@@ -36,9 +36,15 @@ func _ready() -> void:
 	_build_ui()
 	_pull_from_config()
 	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _input(event: InputEvent) -> void:
+	if visible and event.is_action_pressed("ui_cancel"):
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		get_viewport().set_input_as_handled()
+		return
 	# R toggles this panel. (O toggles the settings panel.) We use unhandled
 	# input so the corner button can still toggle programmatically.
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -49,7 +55,10 @@ func _input(event: InputEvent) -> void:
 func toggle() -> void:
 	visible = not visible
 	if visible:
+		mouse_filter = Control.MOUSE_FILTER_STOP
 		_pull_from_config()
+	else:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _build_ui() -> void:

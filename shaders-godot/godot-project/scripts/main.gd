@@ -1622,6 +1622,11 @@ func _input(event: InputEvent) -> void:
 			event is InputEventKey:
 		_notify_hud_input()
 
+	if event.is_action_pressed("ui_cancel"):
+		if _dismiss_blocking_overlays():
+			get_viewport().set_input_as_handled()
+			return
+
 	# ---- Touch events ----
 	if event is InputEventScreenTouch:
 		_handle_screen_touch(event as InputEventScreenTouch)
@@ -2984,6 +2989,38 @@ func _haptic(duration_ms: int = 15) -> void:
 # panel with gesture hints and a single OK button that persists
 # tutorial_seen=true so it never returns. Doesn't block sim — user can
 # dismiss instantly or admire the tank behind it.
+func _dismiss_blocking_overlays() -> bool:
+	var dismissed := false
+	if library_panel != null and library_panel.visible:
+		if library_panel.has_method("close"):
+			library_panel.close()
+		else:
+			library_panel.visible = false
+		dismissed = true
+	if settings_panel != null and settings_panel.visible:
+		settings_panel.visible = false
+		settings_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dismissed = true
+	if render_panel != null and render_panel.visible:
+		render_panel.visible = false
+		render_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dismissed = true
+	if fish_store_panel != null and fish_store_panel.visible:
+		fish_store_panel.visible = false
+		fish_store_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dismissed = true
+	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
+		var cfg := get_node_or_null("/root/TankConfig")
+		if cfg != null:
+			cfg.tutorial_seen = true
+			cfg.save_to_disk()
+		_tutorial_overlay.queue_free()
+		_tutorial_overlay = null
+		dismissed = true
+	_dismiss_radial_menu()
+	return dismissed
+
+
 func _maybe_show_tutorial() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null or bool(cfg.tutorial_seen):
@@ -2991,15 +3028,28 @@ func _maybe_show_tutorial() -> void:
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		return
 	var overlay := Control.new()
-	overlay.anchor_right = 1.0
-	overlay.anchor_bottom = 1.0
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.set_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP  # block input behind
+	overlay.z_index = 300
 	add_child(overlay)
 	# Dim background so the panel reads as a modal.
 	var bg := ColorRect.new()
 	bg.color = Color(0, 0, 0, 0.55)
-	bg.anchor_right = 1.0
-	bg.anchor_bottom = 1.0
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.set_offsets_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	bg.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
+			cfg.tutorial_seen = true
+			cfg.save_to_disk()
+			overlay.queue_free()
+			_tutorial_overlay = null
+		elif ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
+			cfg.tutorial_seen = true
+			cfg.save_to_disk()
+			overlay.queue_free()
+			_tutorial_overlay = null)
 	overlay.add_child(bg)
 	# Centered panel with the gesture cheat-sheet.
 	var panel := PanelContainer.new()

@@ -26,8 +26,6 @@
 
 extends PanelContainer
 
-const _SPECIES_LIB := preload("res://scripts/species_library.gd")
-
 # Visual constants -----------------------------------------------------------
 
 const PREVIEW_SIZE := Vector2i(384, 384)
@@ -92,36 +90,74 @@ var _selected_key: String = ""
 
 
 func _ready() -> void:
-	visible = false
-	# Full-screen modal that catches input. Anchors set in main.tscn cover the
-	# whole viewport; we just make sure mouse events stop here.
-	mouse_filter = Control.MOUSE_FILTER_STOP
+	_close_panel()
 	_build_ui()
 	_build_preview_world()
+	_apply_mobile_layout()
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib != null:
 		lib.library_changed.connect(_on_library_changed)
 
 
 func toggle() -> void:
-	visible = not visible
 	if visible:
-		_backfill_discoveries_from_tank()
-		_refresh_list()
-		set_process(true)
-		_resume_preview_rendering()
+		close()
 	else:
-		set_process(false)
-		_pause_preview_rendering()
+		open()
+
+
+func open() -> void:
+	if visible:
+		return
+	visible = true
+	show()
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	z_index = 200
+	_apply_mobile_layout()
+	_backfill_discoveries_from_tank()
+	_refresh_list()
+	set_process(true)
+	_resume_preview_rendering()
+
+
+func close() -> void:
+	if not visible:
+		_close_panel()
+		return
+	_close_panel()
+
+
+func _close_panel() -> void:
+	visible = false
+	hide()
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	z_index = 0
+	set_process(false)
+	_pause_preview_rendering()
+	if _preview_texture_rect != null:
+		_preview_texture_rect.visible = false
+
+
+func _apply_mobile_layout() -> void:
+	if not (OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")):
+		return
+	# Full-screen on phones so the modal reads clearly and the preview
+	# SubViewport cannot sit as a stray black rect in the corner.
+	set_anchors_preset(Control.PRESET_FULL_RECT)
+	set_offsets_preset(Control.PRESET_FULL_RECT)
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
 		return
+	if event.is_action_pressed("ui_cancel"):
+		close()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventKey and event.pressed:
 		var k: InputEventKey = event
 		if k.keycode == KEY_ESCAPE:
-			toggle()
+			close()
 			get_viewport().set_input_as_handled()
 
 
@@ -157,7 +193,7 @@ func _build_ui() -> void:
 	header.add_child(_tab_global)
 
 	var close_btn := PanelTheme.make_secondary_button("CLOSE")
-	close_btn.pressed.connect(func(): toggle())
+	close_btn.pressed.connect(close)
 	header.add_child(close_btn)
 
 	outer.add_child(PanelTheme.make_rule())
@@ -306,9 +342,9 @@ func _build_preview_column() -> Control:
 	_preview_viewport.msaa_3d = Viewport.MSAA_2X
 	# Start disabled — panel opens hidden, no reason to render until toggle().
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	# Parent to the panel itself; the SubViewport renders regardless of where
-	# it sits in the canvas tree so this is safe.
-	add_child(_preview_viewport)
+	# Do not parent until the panel opens — SubViewport has no `visible`
+	# property, and an idle viewport in the tree can show as a black square
+	# on Android. _resume_preview_rendering() adds it when needed.
 
 	_preview_texture_rect = TextureRect.new()
 	_preview_texture_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -510,13 +546,23 @@ func _process(dt: float) -> void:
 
 
 func _resume_preview_rendering() -> void:
-	if _preview_viewport != null:
-		_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if _preview_viewport == null:
+		return
+	if _preview_viewport.get_parent() != self:
+		add_child(_preview_viewport)
+		move_child(_preview_viewport, 0)
+	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if _preview_texture_rect != null:
+		_preview_texture_rect.texture = _preview_viewport.get_texture()
+		_preview_texture_rect.visible = true
 
 
 func _pause_preview_rendering() -> void:
-	if _preview_viewport != null:
-		_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if _preview_viewport == null:
+		return
+	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if _preview_viewport.get_parent() == self:
+		remove_child(_preview_viewport)
 
 
 # ---- List + scope -----------------------------------------------------------
@@ -783,8 +829,8 @@ func _select_entry(entry: Dictionary) -> void:
 	if _lineage_tree != null:
 		_lineage_tree.set_selected_key(_selected_key)
 	var genome_raw: Dictionary = entry.get("genome", {})
-	var genome: Dictionary = _SPECIES_LIB.genome_from_serialisable(genome_raw)
-	var otype: String = String(entry.get("organism_type", _SPECIES_LIB.organism_type(genome)))
+	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
+	var otype: String = String(entry.get("organism_type", SpeciesLibrary.organism_type(genome)))
 
 	_detail_name.text = "%s %s" % [_organism_icon(otype), String(entry.get("display_name", "?"))]
 	var src: String = String(entry.get("source", ""))
