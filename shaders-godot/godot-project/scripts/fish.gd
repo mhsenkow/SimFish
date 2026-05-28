@@ -54,6 +54,7 @@ enum Mode { CRUISE, FORAGE, COURT, SPAWN, FLEE, REST }
 
 # ---- Genome (set at spawn, immutable for this individual) ----
 var species: String = "glassdart"
+var subspecies_id: String = ""
 var base_color: Color = Color8(195, 59, 59)
 var accent_color: Color = Color8(230, 201, 42)
 # Tail tint - a SEPARATE bright color zone applied to the tail fin voxels
@@ -63,6 +64,13 @@ var accent_color: Color = Color8(230, 201, 42)
 # time (no behavior change for older fish).
 var tail_color: Color = Color8(0, 0, 0)
 var _tail_color_set: bool = false
+# Marking tint - a SECONDARY marking color zone, distinct from base/accent.
+# Used by the two-tone lateral band (cardinal tetra blue-over-red), the
+# rear-flank wedge (harlequin rasbora), the caudal eye-spot ring, and the
+# gourami two-tone flank. If the genome doesn't supply one we fall back to
+# accent_color at build time (no behavior change for fish without it).
+var marking_color: Color = Color8(0, 0, 0)
+var _marking_color_set: bool = false
 var adult_voxel_scale: float = 0.18
 var max_age_s: float = 240.0            # ~4 minutes lifespan for visible cycles
 var max_speed: float = 1.8
@@ -161,8 +169,10 @@ var locomotion_type: String = "subcarangiform"
 # generic boids brain. The fish brain checks these flags before deciding
 # what to chase.
 #   snail_predator   loach + puffer types preferentially target baby snails
+#   shrimp_predator  niche that preferentially crops shrimp fry
 #   algae_grazer     cory + small herbivores graze algae clusters
 var snail_predator: bool = false
+var shrimp_predator: bool = false
 var algae_grazer: bool = false
 
 # ---- Territory / swim pattern (heritable) ----
@@ -226,6 +236,10 @@ func morph_label() -> String:
 		tags.append("d")
 	if absf(eye_size_factor - float(template.get("eye_size_factor", 1.0))) > 0.55:
 		tags.append("e")
+	if subspecies_id != "" and subspecies_id != species:
+		var sid: String = _short_subspecies_tag(subspecies_id)
+		if sid != "":
+			tags.append(sid)
 	if tags.is_empty():
 		return species
 	return "%s sp. %s" % [species, "".join(tags)]
@@ -326,6 +340,8 @@ var _startle_heading: Vector3 = Vector3.ZERO
 # used for size-based predation (bigger fish hunt smaller ones).
 var growth_factor: float = 1.0
 var max_growth: float = 1.4     # apex species (betta) override higher (~2.0)
+var size_potential: float = 1.0
+var jaw_claw_size: float = 0.0
 
 # Visible phenotypes - heritable traits affecting body proportions + pattern.
 # Drift over generations and create lineages that look distinct.
@@ -335,8 +351,15 @@ var body_depth_factor: float = 1.0   # body height stretch factor (0.7-1.4) - pu
 var head_proportion: float = 1.0     # head size relative to body (0.7-1.3)
 var dorsal_height_factor: float = 1.0  # dorsal fin height multiplier (0.6-1.6)
 var tail_fork_depth: float = 1.0     # how spread the top/bottom prongs are (0.5-1.5)
-var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars
+var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars,
+									 # 4=two-tone band (tetra), 5=rear-flank wedge (rasbora)
 var color_dot_count: int = 0         # extra accent dots (0-4)
+# Ornamentation flags / factors (heritable; render-only beyond the breather).
+var bar_edged: bool = false          # crisp dark-edged vertical bars (clownfish/angelfish)
+var eye_spot: bool = false           # caudal ocellus near the tail base
+var ventral_feelers: bool = false    # gourami pelvic feeler threads
+var finnage: float = 1.0             # fin elaboration multiplier (>1 = flowing veil, betta)
+var labyrinth_breather: bool = false # anabantid periodic surface-gulp mannerism
 # Lifetime breed count - successful breeders are slightly more attractive.
 var breed_count: int = 0
 
@@ -471,11 +494,17 @@ func init_genome(genome: Dictionary) -> void:
 		# body roll for THIS fish) is what we replay on restore.
 		_saved_genome = genome.duplicate(true)
 	species = genome.get("species", species)
+	subspecies_id = String(genome.get("subspecies_id", species))
+	if subspecies_id == "":
+		subspecies_id = species
 	base_color = genome.get("base_color", base_color)
 	accent_color = genome.get("accent_color", accent_color)
 	if genome.has("tail_color"):
 		tail_color = genome["tail_color"]
 		_tail_color_set = true
+	if genome.has("marking_color"):
+		marking_color = genome["marking_color"]
+		_marking_color_set = true
 	adult_voxel_scale = genome.get("adult_voxel_scale", adult_voxel_scale)
 	max_age_s = genome.get("max_age_s", max_age_s)
 	max_speed = genome.get("max_speed", max_speed)
@@ -501,6 +530,7 @@ func init_genome(genome: Dictionary) -> void:
 	_saved_genome["fish_name"] = fish_name
 	_saved_genome["parent_lineage"] = parent_lineage
 	_saved_genome["generation"] = generation
+	_saved_genome["subspecies_id"] = subspecies_id
 
 	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
 	body_elongation = genome.get("body_elongation", body_elongation)
@@ -510,6 +540,12 @@ func init_genome(genome: Dictionary) -> void:
 	tail_fork_depth = genome.get("tail_fork_depth", tail_fork_depth)
 	pattern_type = int(genome.get("pattern_type", pattern_type))
 	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
+	# Ornamentation phenotypes.
+	bar_edged = bool(genome.get("bar_edged", bar_edged))
+	eye_spot = bool(genome.get("eye_spot", eye_spot))
+	ventral_feelers = bool(genome.get("ventral_feelers", ventral_feelers))
+	finnage = float(genome.get("finnage", finnage))
+	labyrinth_breather = bool(genome.get("labyrinth_breather", labyrinth_breather))
 	# Body skeleton phenotypes (heritable - drift in produce_offspring_genome).
 	has_barbels = bool(genome.get("has_barbels", has_barbels))
 	mouth_orientation = int(genome.get("mouth_orientation", mouth_orientation))
@@ -526,6 +562,13 @@ func init_genome(genome: Dictionary) -> void:
 	adipose_fin = bool(genome.get("adipose_fin", adipose_fin))
 	snout_pointed = bool(genome.get("snout_pointed", snout_pointed))
 	body_shape = String(genome.get("body_shape", body_shape))
+	size_potential = clampf(float(genome.get("size_potential", size_potential)), 0.6, 2.4)
+	jaw_claw_size = clampf(float(genome.get("jaw_claw_size", jaw_claw_size)), 0.0, 1.2)
+	var inherited_max_growth: float = float(genome.get("max_growth", max_growth))
+	var size_potential_t: float = clampf((size_potential - 0.6) / 1.8, 0.0, 1.0)
+	max_growth = clampf(
+		inherited_max_growth * lerpf(0.82, 1.45, size_potential_t),
+		1.05, 2.8)
 	# Sexual dimorphism. Must run AFTER all genome.get reads above — earlier
 	# the block sat before the genome reads, so any female overrides to
 	# fin_length_factor / body_depth_factor / dorsal_height_factor /
@@ -565,6 +608,8 @@ func init_genome(genome: Dictionary) -> void:
 				locomotion_type = "subcarangiform"
 	# Food preferences (species-level, not heritable).
 	snail_predator = bool(genome.get("snail_predator", snail_predator))
+	shrimp_predator = bool(genome.get("shrimp_predator", shrimp_predator))
+	_apply_predator_morphology()
 	algae_grazer = bool(genome.get("algae_grazer", algae_grazer))
 	# Swim pattern + territory (heritable).
 	swim_pattern = String(genome.get("swim_pattern", swim_pattern))
@@ -640,6 +685,32 @@ func _apply_swim_pattern_defaults() -> void:
 			max_turn_rate = 2.2
 
 
+func _apply_predator_morphology() -> void:
+	# Predator niches nudge visible morphology so predator lineages diverge
+	# from grazing/generalist branches in a way the player can spot quickly.
+	if not snail_predator and not shrimp_predator:
+		return
+	if snail_predator:
+		mouth_orientation = clampi(maxi(mouth_orientation, 0), -1, 1)
+		snout_pointed = true
+		head_proportion = clampf(head_proportion * 1.08, 0.7, 1.5)
+		body_depth_factor = clampf(body_depth_factor * 1.06, 0.7, 1.6)
+		jaw_claw_size = clampf(jaw_claw_size + 0.16, 0.0, 1.2)
+		if body_shape == "fusiform":
+			body_shape = "anguilliform"
+	if shrimp_predator:
+		mouth_orientation = clampi(mini(mouth_orientation, 0), -1, 1)
+		eye_size_factor = clampf(eye_size_factor * 1.05, 0.55, 1.8)
+		body_elongation = clampf(body_elongation * 1.05, 0.85, 1.4)
+		jaw_claw_size = clampf(jaw_claw_size + 0.12, 0.0, 1.2)
+		if not snail_predator and body_shape == "compressed":
+			body_shape = "fusiform"
+	if snail_predator and shrimp_predator:
+		body_shape = "globiform"
+		armor_plates = true
+		jaw_claw_size = clampf(jaw_claw_size + 0.20, 0.0, 1.2)
+
+
 func _maturity_scale() -> float:
 	match maturity:
 		MATURITY_FRY:        return 0.35
@@ -669,9 +740,13 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 		[Color8(220, 60, 50), Color8(255, 245, 180)],   # squirrelfish red + cream
 		[Color8(40, 80, 60), Color8(255, 200, 90)],     # moorish idol dark + yellow
 	]
-	var p: Array = palettes[randi() % palettes.size()]
+	var palette_idx: int = randi() % palettes.size()
+	var p: Array = palettes[palette_idx]
 	genome["base_color"] = p[0]
 	genome["accent_color"] = p[1]
+	# The accent doubles as marking_color so morph patterns (two-tone band,
+	# rear wedge, edged bars) read in the morph's own contrasting hue.
+	genome["marking_color"] = p[1]
 	# Tail color: 50/50 chance to be a third contrasting hue or match
 	# accent. Real reef fish often have a bright tail flash.
 	if randf() < 0.5:
@@ -682,8 +757,15 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	# tangs / angelfish. Smaller chance of fusiform (anthias / chromis).
 	genome["body_shape"] = "compressed" if randf() < 0.65 else "fusiform"
 	# Pattern: random pick. Vertical bars (clownfish, damselfish),
-	# horizontal stripes, spots, or solid.
-	genome["pattern_type"] = randi() % 4
+	# horizontal stripes, spots, or solid. The clownfish palette (index 0)
+	# is forced to crisp edged white vertical bars - the unmistakable
+	# Amphiprion look - rather than a random pattern.
+	if palette_idx == 0:
+		genome["pattern_type"] = 3
+		genome["bar_edged"] = true
+	else:
+		genome["pattern_type"] = randi() % 4
+		genome["bar_edged"] = randf() < 0.25
 	# Tail shape: square paddle (tang / chromis), fan (anthias), or
 	# forked (chromis); avoid lyre (cichlid).
 	genome["tail_shape"] = [0, 1, 3][randi() % 3]
@@ -693,6 +775,8 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	genome["body_depth_factor"] = randf_range(0.95, 1.65)
 	genome["fin_length_factor"] = randf_range(0.7, 1.4)
 	genome["dorsal_height_factor"] = randf_range(0.7, 1.4)
+	genome["size_potential"] = randf_range(0.8, 2.2)
+	genome["jaw_claw_size"] = randf_range(0.0, 0.9)
 	# Anal fin matches dorsal-ish for the symmetric tang look.
 	genome["anal_fin_length_factor"] = randf_range(0.5, 1.5)
 	# Random dot count (some morphs have peppered flanks).
@@ -748,6 +832,12 @@ func _build_body() -> void:
 	var effective_tail: Color = tail_color if _tail_color_set \
 		else base_color.darkened(0.15)
 	var mat_tail := _make_mat(effective_tail)
+	# Marking material: the secondary ornament color zone (tetra blue band,
+	# rasbora rear wedge, gourami flank, eye-spot ring). Falls back to accent
+	# when the genome supplies no explicit marking_color.
+	var effective_marking: Color = marking_color if _marking_color_set \
+		else accent_color
+	var mat_marking := _make_mat(effective_marking)
 
 	_bank_pivot = Node3D.new()
 	_bank_pivot.name = "BankPivot"
@@ -788,6 +878,16 @@ func _build_body() -> void:
 	var mouth_y: float = -v * 0.25 * hp * float(mouth_orientation) - v * 0.1 * hp
 	_add_voxel_to(head, Vector3(0, mouth_y, -3.0 * v),
 		Vector3(v * 0.35 * hp, v * 0.2 * hp, v * 0.2 * hp), mat_belly)
+	if jaw_claw_size > 0.08:
+		var mat_claw := _make_mat(base_color.darkened(0.35).lerp(accent_color, 0.22))
+		var hook_len: float = v * (0.12 + jaw_claw_size * 0.28) * hp
+		var hook_thickness: float = v * (0.05 + jaw_claw_size * 0.06) * hp
+		var hook_span: float = v * (0.18 + jaw_claw_size * 0.10) * hp
+		for side in [-1.0, 1.0]:
+			_add_voxel_to(head, Vector3(side * hook_span, mouth_y - v * 0.02, -3.12 * v),
+				Vector3(hook_thickness, hook_thickness, hook_len), mat_claw)
+			_add_voxel_to(head, Vector3(side * hook_span * 0.78, mouth_y - v * 0.10, -3.00 * v),
+				Vector3(hook_thickness * 0.9, hook_thickness * 0.9, hook_len * 0.55), mat_claw)
 	# Pointed snout: cichlid-style face (angelfish). Adds a slim forward
 	# voxel ahead of the mouth so the profile reads as wedge / pointed
 	# instead of blunt-round. Skipped for blunt species (puffer, cory).
@@ -807,6 +907,19 @@ func _build_body() -> void:
 		for x_side in [-0.30, -0.18, 0.18, 0.30]:
 			_add_voxel_to(head, Vector3(x_side * v * hp, barbel_y, barbel_z),
 				Vector3(v * 0.06, v * 0.08, v * 0.25), mat_barbel)
+	# Predator specializations:
+	# - snail_predator: thicker crusher jaw / head profile
+	# - shrimp_predator: longer rostrum for pecking in tight cover
+	if snail_predator:
+		var mat_jaw := _make_mat(accent_color.lightened(0.08))
+		_add_voxel_to(head, Vector3(0, mouth_y - v * 0.08, -3.02 * v),
+			Vector3(v * 0.50 * hp, v * 0.24 * hp, v * 0.28 * hp), mat_jaw)
+		_add_voxel_to(head, Vector3(0, mouth_y + v * 0.12, -2.98 * v),
+			Vector3(v * 0.42 * hp, v * 0.14 * hp, v * 0.25 * hp), mat_jaw)
+	if shrimp_predator:
+		var mat_rostrum := _make_mat(base_color.lightened(0.20))
+		_add_voxel_to(head, Vector3(0, mouth_y * 0.3, -3.45 * v),
+			Vector3(v * 0.18 * hp, v * 0.16 * hp, v * 0.55 * hp), mat_rostrum)
 
 	# ---- BODY MID (gentle counter-wag) - thickest part of the fish ----
 	_body_mid_pivot = Node3D.new()
@@ -898,8 +1011,39 @@ func _build_body() -> void:
 				_add_voxel_to(_body_mid_pivot,
 					Vector3(x_side * v * 0.52, 0, i * v + v * 0.45),
 					Vector3(v * 0.08, v * 0.95, v * 0.22), mat_armor)
+	if snail_predator or shrimp_predator:
+		var mat_pred := _make_mat(accent_color.lightened(0.18))
+		var ridge_y: float = v * (0.52 if snail_predator else 0.42)
+		for i in seg_widths.size():
+			_add_voxel_to(_body_mid_pivot, Vector3(0, ridge_y, i * v),
+				Vector3(v * 0.12, v * 0.12, v * 0.55), mat_pred)
+	# Morphological elaboration from existing architecture genes:
+	#   - long fins => trailing flank streamers
+	#   - fast cruisers => caudal keels near peduncle
+	#   - older lineages => dorsal ornament nubs
+	if fin_length_factor > 1.15:
+		var mat_stream := _make_mat(accent_color.lightened(0.10))
+		var streamer_n: int = 1 + int(clampf((fin_length_factor - 1.15) * 2.0, 0.0, 2.0))
+		for i in streamer_n:
+			var zf: float = lerpf(0.1, 1.8, float(i) / float(maxi(1, streamer_n)))
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.68, -v * 0.02, zf * v),
+					Vector3(v * 0.06, v * 0.18, v * 0.55), mat_stream)
+	if max_speed > 1.75 or dart_speed_mult > 1.85:
+		var mat_keel := _make_mat(base_color.darkened(0.40))
+		for x_side in [-1.0, 1.0]:
+			_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.56, 0, v * 2.35),
+				Vector3(v * 0.08, v * 0.32, v * 0.55), mat_keel)
+	if generation >= 3 and dorsal_height_factor > 1.05:
+		var mat_orn := _make_mat(accent_color.lightened(0.20))
+		var ornament_n: int = clampi(1 + int(generation / 4), 1, 4)
+		for i in ornament_n:
+			var z: float = (0.25 + float(i) * 0.55) * v
+			_add_voxel_to(_body_mid_pivot, Vector3(0, v * 0.95, z),
+				Vector3(v * 0.08, v * 0.18, v * 0.16), mat_orn)
 	# Lateral pattern - varies by pattern_type genotype.
-	# 0 = solid (no accents), 1 = horizontal stripe, 2 = spots, 3 = vertical bars
+	# 0 = solid (no accents), 1 = horizontal stripe, 2 = spots, 3 = vertical bars,
+	# 4 = two-tone lateral band (tetra), 5 = rear-flank wedge (rasbora)
 	if pattern_type == 1:
 		# Horizontal stripe along both sides.
 		for i in seg_widths.size():
@@ -917,11 +1061,47 @@ func _build_body() -> void:
 				Vector3(v * 0.15, v * 0.3, v * 0.3), mat_accent)
 	elif pattern_type == 3:
 		# Vertical bars: tall thin accent stripes across the body height.
+		# bar_edged adds a thin dark border voxel fore + aft of each bar so
+		# the bars read crisp against a pale body (clownfish white bars with
+		# black edging, angelfish black bars).
+		var mat_bar_edge := _make_mat(base_color.darkened(0.55))
 		for i in seg_widths.size():
-			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, 0, i * v),
-				Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
-			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, 0, i * v),
-				Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, 0, i * v),
+					Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
+				if bar_edged:
+					for zoff_edge in [-v * 0.22, v * 0.22]:
+						_add_voxel_to(_body_mid_pivot,
+							Vector3(x_side * v * 0.5, 0, i * v + zoff_edge),
+							Vector3(v * 0.16, v * 1.02, v * 0.06), mat_bar_edge)
+	elif pattern_type == 4:
+		# Two-tone lateral band: the iconic cardinal/neon tetra look. A bright
+		# marking_color stripe runs along the UPPER flank while a darker accent
+		# shadow rides the LOWER flank, so the body reads split top/bottom.
+		for i in seg_widths.size():
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, v * 0.22, i * v),
+					Vector3(v * 0.16, v * 0.42, v * 0.95), mat_marking)
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, -v * 0.28, i * v),
+					Vector3(v * 0.15, v * 0.38, v * 0.95), mat_accent)
+	elif pattern_type == 5:
+		# Rear-flank wedge: harlequin rasbora black triangle. A marking_color
+		# block over the rear two segments, tapering toward the tail.
+		for i in range(1, seg_widths.size()):
+			var wedge_h: float = v * (1.0 - 0.32 * float(i - 1))
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot,
+					Vector3(x_side * v * 0.46, -v * 0.1, i * v + v * 0.2),
+					Vector3(v * 0.16, wedge_h, v * 0.7), mat_marking)
+	# Caudal eye-spot (ocellus): a ringed marking near the tail base. Many
+	# cichlids + some tetras carry one as a false-eye predator deterrent.
+	if eye_spot:
+		var mat_ocellus_ring := _make_mat(base_color.darkened(0.6))
+		for x_side in [-1.0, 1.0]:
+			_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, v * 0.05, v * 2.35),
+				Vector3(v * 0.16, v * 0.46, v * 0.46), mat_ocellus_ring)
+			_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.52, v * 0.05, v * 2.35),
+				Vector3(v * 0.14, v * 0.26, v * 0.26), mat_marking)
 	# Extra dots scattered on top of the body (independent decorative trait).
 	for i in color_dot_count:
 		var zoff: float = (float(i) / float(maxi(1, color_dot_count - 1)) - 0.5) * v * 2.0
@@ -977,6 +1157,19 @@ func _build_body() -> void:
 	_body_mid_pivot.add_child(_pec_left_pivot)
 	_add_voxel_to(_pec_left_pivot, Vector3(-v * 0.1, 0, 0),
 		Vector3(v * 0.12, v * 0.25, v * 0.5), mat_fin)
+	# Ventral feelers: gouramis (and other anabantids) have their pelvic fins
+	# reduced to long thread-like "feelers" that trail well below the body.
+	# Two slim voxel filaments hanging from the front belly, swept slightly
+	# back. Tinted with the marking color so they read as a distinct feature.
+	if ventral_feelers:
+		var mat_feeler := _make_mat(effective_marking)
+		for x_side in [-1.0, 1.0]:
+			_add_voxel_to(_body_mid_pivot,
+				Vector3(x_side * v * 0.18, -v * 0.95, -v * 0.1),
+				Vector3(v * 0.06, v * 0.9, v * 0.08), mat_feeler)
+			_add_voxel_to(_body_mid_pivot,
+				Vector3(x_side * v * 0.18, -v * 1.6, v * 0.15),
+				Vector3(v * 0.05, v * 0.75, v * 0.07), mat_feeler)
 
 	# ---- TAIL (strong wag) - tail base at the rear of the body ----
 	_tail_pivot = Node3D.new()
@@ -1028,6 +1221,28 @@ func _build_body() -> void:
 			_add_voxel_to(_tail_pivot,
 				Vector3(0, v * (-0.7 * fl * tf), v * (1.4 * fl)),
 				Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_tail)
+	# Finnage elaboration: flowing veil fins (betta / fancy livebearers). When
+	# finnage > 1.0, append long trailing ray voxels to the caudal, dorsal and
+	# anal fins so the silhouette reads as billowing drapery rather than a
+	# tight functional tail.
+	if finnage > 1.0:
+		var veil: float = finnage
+		var mat_veil := _make_mat(effective_tail)
+		# Caudal veil streamers sweeping back well past the tail template.
+		for ang in [-1.0, -0.4, 0.4, 1.0]:
+			_add_voxel_to(_tail_pivot,
+				Vector3(0, v * ang * 0.7 * veil, v * (1.6 * fl * veil)),
+				Vector3(v * 0.11, v * (0.45 * veil), v * (0.9 * fl * veil)), mat_veil)
+		_add_voxel_to(_tail_pivot,
+			Vector3(0, 0, v * (2.3 * fl * veil)),
+			Vector3(v * 0.10, v * (1.0 * veil), v * (0.7 * fl)), mat_veil)
+		# Dorsal + anal veil trails (the sweeping top + bottom fans).
+		if _dorsal_pivot != null:
+			_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.75 * dorsal_height_factor, v * 0.7),
+				Vector3(v * 0.10, v * (0.7 * veil), v * (1.1 * veil)), mat_veil)
+		if _anal_pivot != null:
+			_add_voxel_to(_anal_pivot, Vector3(0, -v * 0.7 * veil, v * 0.9),
+				Vector3(v * 0.10, v * (0.7 * veil), v * (1.0 * veil)), mat_veil)
 	# Apply body elongation + depth scaling. The bank pivot's local Y stretches
 	# the body height (puffer = 1.4, minnow = 0.7), Z stretches length.
 	if _bank_pivot != null:
@@ -1119,15 +1334,20 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					if w.has_method("spawn_substrate_dust"):
 						w.spawn_substrate_dust(global_position)
 
-	# Cory / loach aerial respiration. Every ~25-40 sim seconds, a
-	# "shuffle" pattern fish darts to the surface, gulps, and sinks back.
-	# The trip is implemented by overriding home_y temporarily via the
-	# _aerial_timer + _aerial_target_y fields - see Y-enforcement block.
-	if swim_pattern == "shuffle":
+	# Surface air-gulping. Two niches use the same machinery:
+	#   - "shuffle" cory/loach aerial respiration (~25-40s between trips)
+	#   - labyrinth_breather anabantids (gourami, betta) that breathe
+	#     atmospheric air at the surface far more habitually (~15-28s).
+	# A trip darts the fish to just under the water surface, then it sinks
+	# back. Implemented by overriding home_y via _aerial_timer +
+	# _aerial_target_y - see the Y-enforcement block.
+	if swim_pattern == "shuffle" or labyrinth_breather:
 		if _aerial_timer <= 0.0:
 			# Idle - count down to next trip OR start a trip.
 			_aerial_timer -= dt
-			if _aerial_timer < -randf_range(25.0, 40.0):
+			var next_trip: float = randf_range(15.0, 28.0) if labyrinth_breather \
+				else randf_range(25.0, 40.0)
+			if _aerial_timer < -next_trip:
 				# Begin the gulp trip - target Y just below water surface.
 				var surface_y: float = 0.0
 				if sim != null and sim.get("substrate_top_y") != null:
@@ -1184,6 +1404,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Tier 0: wall avoidance always runs (additive).
 	desired += _wall_avoid(world_bounds) * 3.0
+	# Tier 0.1: soft anti-intersection steering. Keeps body volumes from
+	# visually occupying the same space (other fish / dense plants /
+	# hardscape) while staying subtle enough to preserve schooling.
+	desired += _local_clearance_push(neighbors, plants) * 1.25
+	desired += _hardscape_clearance_push() * 1.6
 
 	# Tier 0.2: SURFACE GULPING (hypoxia response). When dissolved O₂ drops
 	# below SURFACE_GULP_O2, fish swim to the meniscus and hold there. Real
@@ -1521,6 +1746,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var is_predator_class: bool = growth_factor >= 1.3 or species == "betta"
 	if is_predator_class and maturity == MATURITY_ADULT and hunger > 0.45 and randf() < 0.10:
 		var my_size: float = effective_size()
+		var kill_advantage: float = clampf(1.95 - jaw_claw_size * 0.35, 1.45, 2.05)
+		var kill_reach: float = 0.45 + jaw_claw_size * 0.16
 		var best_prey: Node3D = null
 		var best_prey_d2: float = 4.5 * 4.5
 		# Smaller fish
@@ -1536,7 +1763,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					continue
 			# Need a stronger size advantage now (1.8x). At spawn the betta
 			# is only 1.56x a glassdart - it has to grow before it can hunt.
-			if my_size > of.effective_size() * 1.8:
+			if my_size > of.effective_size() * kill_advantage:
 				var d2: float = of.position.distance_squared_to(position)
 				if d2 < best_prey_d2:
 					best_prey_d2 = d2
@@ -1552,7 +1779,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					continue
 				if s.get("_dying") == true:
 					continue
-				if my_size > s.adult_voxel_scale * 3.0:
+				if my_size > s.adult_voxel_scale * (3.0 - jaw_claw_size * 0.45):
 					var d2: float = s.position.distance_squared_to(position)
 					if d2 < best_prey_d2:
 						best_prey_d2 = d2
@@ -1560,7 +1787,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if best_prey != null and is_instance_valid(best_prey):
 			current_mode = Mode.FORAGE
 			var to_prey: Vector3 = (best_prey as Node3D).global_position - position
-			if to_prey.length() < 0.45:
+			if to_prey.length() < kill_reach:
 				events["kill_prey"] = best_prey
 				hunger = maxf(0.0, hunger - 0.50)
 				energy = minf(1.0, energy + 0.18)
@@ -1579,11 +1806,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				target_velocity = desired.limit_length(effective_max)
 				return events
 
-	# Tier 1c: PREDATION on baby shrimp by any fish (smaller-target case the
-	# size check above might miss). VERY rare for normal fish - high fish
-	# populations were stripping shrimp fry faster than shrimp could recruit.
-	# Betta still 4x more aggressive than schoolers.
-	var predation_chance: float = 0.08 if species == "betta" else 0.02
+	# Tier 1c: PREDATION on baby shrimp.
+	# shrimp_predator lineages are much more likely to pursue shrimp fry.
+	var predation_chance: float = 0.10 if (species == "betta" or shrimp_predator) else 0.02
 	if maturity == MATURITY_ADULT and hunger > 0.65 and not baby_shrimp.is_empty() \
 			and randf() < predation_chance:
 		var prey: Shrimp = null
@@ -1597,11 +1822,32 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				prey = s
 		if prey != null:
 			current_mode = Mode.FORAGE
+			var prey_spines: float = 0.0
+			var prey_toxin: float = 0.0
+			var prey_shelter: float = 0.0
+			var sp_v: Variant = prey.get("defense_spines")
+			var tx_v: Variant = prey.get("toxin_level")
+			var sh_v: Variant = prey.get("shelter_bonus")
+			if sp_v != null:
+				prey_spines = clampf(float(sp_v), 0.0, 1.0)
+			if tx_v != null:
+				prey_toxin = clampf(float(tx_v), 0.0, 1.0)
+			if sh_v != null:
+				prey_shelter = clampf(float(sh_v), 0.0, 1.0)
+			var repel: float = clampf(
+				prey_spines * 0.45 + prey_toxin * 0.55 + prey_shelter * 0.65,
+				0.0, 0.94)
+			if randf() < repel * 0.55:
+				stress = minf(1.0, stress + repel * 0.08)
+				target_velocity = desired.limit_length(effective_max)
+				return events
 			var to_prey: Vector3 = prey.global_position - position
 			if to_prey.length() < 0.35:
 				events["kill_prey"] = prey
-				hunger = maxf(0.0, hunger - 0.40)
-				energy = minf(1.0, energy + 0.12)
+				var meal_mult: float = clampf(1.0 - repel * 0.65, 0.2, 1.0)
+				hunger = maxf(0.0, hunger - 0.40 * meal_mult)
+				energy = minf(1.0, energy + 0.12 * meal_mult)
+				stress = minf(1.0, stress + prey_toxin * 0.16)
 				age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 				events["waste_at"] = position + Vector3(0, -0.1, 0)
 				events["waste_amount"] = 0.15
@@ -1628,6 +1874,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			for s in sim.snails_root.get_children():
 				if not is_instance_valid(s) or s.get("is_baby") != true:
 					continue
+				var shell_spines: float = 0.0
+				var toxin: float = 0.0
+				var ss: Variant = s.get("shell_spines")
+				var tx: Variant = s.get("toxin_level")
+				if ss != null:
+					shell_spines = clampf(float(ss), 0.0, 1.0)
+				if tx != null:
+					toxin = clampf(float(tx), 0.0, 1.0)
+				var danger: float = shell_spines * 0.55 + toxin * 0.6
+				if randf() < danger * 0.42:
+					continue
 				var d2: float = (s.global_position - position).length_squared()
 				if d2 < best_snail_d2:
 					best_snail_d2 = d2
@@ -1636,8 +1893,18 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				current_mode = Mode.FORAGE
 				var to_snail: Vector3 = best_snail.global_position - position
 				if best_snail_d2 < 0.25:
+					var shell_spines: float = 0.0
+					var toxin: float = 0.0
+					var ss2: Variant = best_snail.get("shell_spines")
+					var tx2: Variant = best_snail.get("toxin_level")
+					if ss2 != null:
+						shell_spines = clampf(float(ss2), 0.0, 1.0)
+					if tx2 != null:
+						toxin = clampf(float(tx2), 0.0, 1.0)
+					var meal_mult: float = clampf(1.0 - (shell_spines * 0.45 + toxin * 0.65), 0.18, 1.0)
 					events["kill_snail"] = best_snail
-					hunger = maxf(0.0, hunger - 0.35)
+					hunger = maxf(0.0, hunger - 0.35 * meal_mult)
+					stress = minf(1.0, stress + toxin * 0.18)
 					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 					# Snail-snap done: return so the algae loop below doesn't
 					# overwrite events["kill_snail"] with an eat_algae target.
@@ -2042,9 +2309,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# the size-based predation dynamic.
 	if maturity == MATURITY_ADULT:
 		if hunger < 0.35:
-			growth_factor = minf(growth_factor + 0.0008 * dt, max_growth)
+			growth_factor = minf(
+				growth_factor + 0.0008 * dt * (0.75 + size_potential * 0.65), max_growth)
 		elif hunger > 0.7:
-			growth_factor = maxf(growth_factor - 0.0004 * dt, 0.6)
+			growth_factor = maxf(
+				growth_factor - 0.0004 * dt * (1.18 - size_potential * 0.35), 0.6)
 
 	# Update body scale across maturity AND growth_factor.
 	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
@@ -2227,6 +2496,15 @@ func _motion_substep(dt: float) -> void:
 	# ---- Apply translation ----
 	velocity = heading * speed
 	position += velocity * dt
+	# Soft-brain wall avoidance can still overshoot on high timescale + burst.
+	# Hard clamp keeps bodies from visibly intersecting glass geometry.
+	if sim != null:
+		var b: AABB = sim.world_bounds
+		position.x = clampf(position.x, b.position.x + 0.20, b.end.x - 0.20)
+		position.y = clampf(position.y,
+			maxf(b.position.y + 0.20, sim.substrate_top_y + 0.08),
+			b.end.y - 0.20)
+		position.z = clampf(position.z, b.position.z + 0.20, b.end.z - 0.20)
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
 	# built so its forward = -Z, so the fish faces its motion correctly.
@@ -2677,12 +2955,69 @@ func _wall_avoid(b: AABB) -> Vector3:
 	return v
 
 
+func _local_clearance_push(neighbors: Array, plants: Array) -> Vector3:
+	var push := Vector3.ZERO
+	const FISH_PERSONAL_SPACE: float = 0.26
+	const PLANT_CLEARANCE: float = 0.20
+	var fish_r2: float = FISH_PERSONAL_SPACE * FISH_PERSONAL_SPACE
+	var plant_r2: float = PLANT_CLEARANCE * PLANT_CLEARANCE
+	for n in neighbors:
+		if not (n is Fish):
+			continue
+		var nf: Fish = n
+		var d: Vector3 = position - nf.position
+		var d2: float = d.length_squared()
+		if d2 < 1e-6 or d2 >= fish_r2:
+			continue
+		push += d.normalized() * (FISH_PERSONAL_SPACE - sqrt(d2)) * 1.9
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		var to_p: Vector3 = position - p._world_pos
+		to_p.y *= 0.55
+		var d2p: float = to_p.length_squared()
+		if d2p < 1e-6 or d2p >= plant_r2:
+			continue
+		push += to_p.normalized() * (PLANT_CLEARANCE - sqrt(d2p)) * 1.3
+	return push
+
+
+func _hardscape_clearance_push() -> Vector3:
+	if sim == null:
+		return Vector3.ZERO
+	var root: Variant = sim.get("hardscape_root")
+	if root == null or not (root is Node3D):
+		return Vector3.ZERO
+	const CLEAR_R: float = 0.26
+	var clear_r2: float = CLEAR_R * CLEAR_R
+	var push := Vector3.ZERO
+	var count: int = 0
+	for h in (root as Node3D).get_children():
+		if not is_instance_valid(h):
+			continue
+		var d: Vector3 = position - h.global_position
+		d.y *= 0.45
+		var d2: float = d.length_squared()
+		if d2 >= clear_r2:
+			continue
+		if d2 < 1e-6:
+			d = Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
+			if d.length_squared() < 1e-6:
+				d = Vector3(1.0, 0.0, 0.0)
+			d2 = maxf(d.length_squared(), 1e-6)
+		push += d.normalized() * (CLEAR_R - sqrt(d2)) * 1.4
+		count += 1
+		if count >= 10:
+			break
+	return push
+
+
 func _find_breeding_partner(neighbors: Array) -> Fish:
 	# Same-species, opposite sex, available, healthy, within 3 units.
 	# Among valid candidates, prefer the one with the best *attractiveness*
-	# score = lower distance bonus + breed_count bias (successful breeders
-	# are more attractive). This creates very mild sexual selection -
-	# lineages with successful ancestors get picked slightly more often.
+	# score = local fitness + lower distance bonus + breed_count bias.
+	# This strengthens selection pressure: robust, less-stressed, well-fed
+	# fish pair more often and pass those traits forward.
 	var best: Fish = null
 	var best_score: float = -INF
 	for n in neighbors:
@@ -2695,17 +3030,153 @@ func _find_breeding_partner(neighbors: Array) -> Fish:
 			continue
 		if f.partner != null:
 			continue
+		# Assortative mating: lineages prefer their own subspecies.
+		if subspecies_id != "" and f.subspecies_id != "" and subspecies_id != f.subspecies_id:
+			if randf() > 0.06:
+				continue
 		if f.hunger > 0.5 or f.energy < 0.55 or f.stress > 0.4:
 			continue
 		var d2: float = f.position.distance_squared_to(position)
 		if d2 > 9.0:
 			continue
-		# Lower distance is better, more breed_count is better.
-		var score: float = -d2 + sqrt(float(f.breed_count)) * 0.5
+		# Lower distance is better, more breed_count is better, and fitter
+		# candidates have a stronger mate-choice advantage.
+		var fitness: float = _mate_fitness_score(f)
+		var score: float = -d2 * 0.6 + sqrt(float(f.breed_count)) * 0.4 + fitness * 2.5
 		if score > best_score:
 			best_score = score
 			best = f
 	return best
+
+
+func _mate_fitness_score(f: Fish) -> float:
+	var stress_score: float = 1.0 - clampf(f.stress, 0.0, 1.0)
+	var hunger_score: float = 1.0 - clampf(f.hunger, 0.0, 1.0)
+	var energy_score: float = clampf(f.energy, 0.0, 1.0)
+	var size_score: float = clampf(
+		f.growth_factor / maxf(0.01, f.max_growth), 0.0, 1.0)
+	var vivid_score: float = (_color_vibrancy(f.base_color)
+		+ _color_vibrancy(f.accent_color)) * 0.5
+	var habitat_score: float = _habitat_trait_match_score(f)
+	return stress_score * 0.35 + energy_score * 0.25 + hunger_score * 0.20 \
+		+ size_score * 0.10 + vivid_score * 0.03 + habitat_score * 0.07
+
+
+func _color_vibrancy(c: Color) -> float:
+	var cmax: float = maxf(c.r, maxf(c.g, c.b))
+	var cmin: float = minf(c.r, minf(c.g, c.b))
+	if cmax <= 0.0001:
+		return 0.0
+	return clampf((cmax - cmin) / cmax, 0.0, 1.0)
+
+
+func _habitat_trait_match_score(f: Fish) -> float:
+	if sim == null:
+		return 0.5
+	var world: Node = sim.get_parent()
+	if world == null or not world.has_method("habitat_profile_at"):
+		return 0.5
+	var hv: Variant = world.habitat_profile_at(f.position)
+	if not (hv is Dictionary):
+		return 0.5
+	var h: Dictionary = hv
+	var cover: float = float(h.get("cover", 0.0))
+	var edge: float = float(h.get("edge", 0.5))
+	var depth: float = float(h.get("depth", 0.5))
+	var score: float = 0.5
+	if cover > 0.45:
+		if f.armor_plates:
+			score += 0.16
+		if f.has_barbels:
+			score += 0.09
+		if f.body_shape == "compressed" or f.body_shape == "anguilliform":
+			score += 0.08
+	if edge < 0.35:
+		if f.body_shape == "fusiform":
+			score += 0.10
+		if f.schooling_strength > 0.9:
+			score += 0.10
+	if depth > 0.65 and f.mouth_orientation == 1:
+		score += 0.12
+	elif depth < 0.35 and f.mouth_orientation == -1:
+		score += 0.12
+	return clampf(score, 0.0, 1.0)
+
+
+func _short_subspecies_tag(id: String) -> String:
+	if id == "" or id == species:
+		return ""
+	var parts: PackedStringArray = id.split(".")
+	var tail: String = parts[parts.size() - 1] if parts.size() > 0 else id
+	return tail.right(4)
+
+
+func _founder_divergence_score(genome: Dictionary) -> int:
+	var lib = get_tree().root.get_node_or_null("TankConfig")
+	if lib == null or not lib.SPECIES_LIBRARY.has(species):
+		return 0
+	var template: Dictionary = lib.SPECIES_LIBRARY[species].get("genome", {})
+	var score: int = 0
+	if int(genome.get("tail_shape", 0)) != int(template.get("tail_shape", 0)):
+		score += 1
+	if bool(genome.get("has_barbels", false)) != bool(template.get("has_barbels", false)):
+		score += 1
+	if bool(genome.get("armor_plates", false)) != bool(template.get("armor_plates", false)):
+		score += 1
+	if bool(genome.get("snout_pointed", false)) != bool(template.get("snout_pointed", false)):
+		score += 1
+	if String(genome.get("body_shape", "fusiform")) != String(template.get("body_shape", "fusiform")):
+		score += 1
+	if absf(float(genome.get("body_elongation", 1.0))
+			- float(template.get("body_elongation", 1.0))) > 0.25:
+		score += 1
+	if absf(float(genome.get("body_depth_factor", 1.0))
+			- float(template.get("body_depth_factor", 1.0))) > 0.35:
+		score += 1
+	if absf(float(genome.get("eye_size_factor", 1.0))
+			- float(template.get("eye_size_factor", 1.0))) > 0.35:
+		score += 1
+	if absf(float(genome.get("jaw_claw_size", 0.0))
+			- float(template.get("jaw_claw_size", 0.0))) > 0.25:
+		score += 1
+	if absf(float(genome.get("size_potential", 1.0))
+			- float(template.get("size_potential", 1.0))) > 0.28:
+		score += 1
+	return score
+
+
+func _subspecies_signature(genome: Dictionary) -> String:
+	var q_e: int = int(round(clampf(float(genome.get("body_elongation", 1.0)), 0.55, 1.7) * 10.0))
+	var q_d: int = int(round(clampf(float(genome.get("body_depth_factor", 1.0)), 0.55, 1.9) * 10.0))
+	var q_eye: int = int(round(clampf(float(genome.get("eye_size_factor", 1.0)), 0.5, 1.8) * 10.0))
+	var q_claw: int = int(round(clampf(float(genome.get("jaw_claw_size", 0.0)), 0.0, 1.2) * 10.0))
+	return "%s%d%d%d%d%d%s%s%d" % [
+		String(genome.get("body_shape", "f")).left(1),
+		int(genome.get("tail_shape", 0)),
+		1 if bool(genome.get("has_barbels", false)) else 0,
+		1 if bool(genome.get("armor_plates", false)) else 0,
+		q_e,
+		q_d,
+		str(q_eye),
+		"h" if bool(genome.get("snout_pointed", false)) else "n",
+		q_claw,
+	]
+
+
+func _derive_subspecies_id(partner: Fish, child_genome: Dictionary) -> String:
+	var base: String = species
+	var a: String = subspecies_id if subspecies_id != "" else species
+	var b: String = partner.subspecies_id if partner.subspecies_id != "" else species
+	if a == b and randf() < 0.92:
+		base = a
+	elif randf() < 0.55:
+		base = a
+	else:
+		base = b
+	var divergence: int = _founder_divergence_score(child_genome)
+	if divergence >= 3:
+		return "%s.%s" % [species, _subspecies_signature(child_genome)]
+	return base
 
 
 func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
@@ -2761,8 +3232,8 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		(fin_length_factor + partner.fin_length_factor) * 0.5 + randf_range(-0.12, 0.12),
 		0.6, 1.6)
 	var new_elong: float = clampf(
-		(body_elongation + partner.body_elongation) * 0.5 + randf_range(-0.05, 0.05),
-		0.85, 1.15)
+		(body_elongation + partner.body_elongation) * 0.5 + randf_range(-0.10, 0.10),
+		0.65, 1.55)
 	var new_depth: float = clampf(
 		(body_depth_factor + partner.body_depth_factor) * 0.5 + randf_range(-0.10, 0.10),
 		0.7, 1.4)
@@ -2775,6 +3246,12 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var new_fork: float = clampf(
 		(tail_fork_depth + partner.tail_fork_depth) * 0.5 + randf_range(-0.10, 0.10),
 		0.5, 1.5)
+	var new_size_potential: float = clampf(
+		(size_potential + partner.size_potential) * 0.5 + randf_range(-0.12, 0.15),
+		0.6, 2.4)
+	var new_jaw_claw: float = clampf(
+		(jaw_claw_size + partner.jaw_claw_size) * 0.5 + randf_range(-0.12, 0.18),
+		0.0, 1.2)
 	# Pattern: usually inherits from one parent, small chance to mutate to
 	# a different pattern entirely.
 	var new_pattern: int = pattern_type if randf() < 0.5 else partner.pattern_type
@@ -2784,6 +3261,62 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var new_dots: int = clampi(
 		int((color_dot_count + partner.color_dot_count) * 0.5 + randf_range(-1.0, 1.0)),
 		0, 4)
+	# Previously species-locked silhouette/lifestyle genes can now drift at
+	# low rates, letting lineages branch into visibly new forms over long runs.
+	var prey_pressure: float = 0.0
+	if sim != null:
+		var fish_n: float = maxf(1.0, float(sim.fish.size()))
+		var shrimp_n: float = float(sim.shrimp.size())
+		var snail_n: float = 0.0
+		var sn_root: Variant = sim.get("snails_root")
+		if sn_root != null and is_instance_valid(sn_root):
+			snail_n = float((sn_root as Node).get_child_count())
+		prey_pressure = clampf((shrimp_n * 0.7 + snail_n * 0.9) / (fish_n * 3.2), 0.0, 1.0)
+	var predator_mut_boost: float = prey_pressure * 0.08
+	var new_snail_predator: bool = (snail_predator if randf() < (0.985 - predator_mut_boost)
+		else (partner.snail_predator if randf() < 0.5 else not snail_predator))
+	var new_shrimp_predator: bool = (shrimp_predator if randf() < (0.985 - predator_mut_boost)
+		else (partner.shrimp_predator if randf() < 0.5 else not shrimp_predator))
+	var new_algae_grazer: bool = (algae_grazer if randf() < 0.985
+		else (partner.algae_grazer if randf() < 0.5 else not algae_grazer))
+	var new_livebearer: bool = (is_livebearer if randf() < 0.995
+		else partner.is_livebearer)
+	var new_guards_clutch: bool = (guards_clutch if randf() < 0.97
+		else (partner.guards_clutch if randf() < 0.5 else not guards_clutch))
+	var new_adipose_fin: bool = (adipose_fin if randf() < 0.985
+		else (partner.adipose_fin if randf() < 0.5 else not adipose_fin))
+	var new_snout_pointed: bool = (snout_pointed if randf() < 0.985
+		else (partner.snout_pointed if randf() < 0.5 else not snout_pointed))
+	var new_body_shape: String = body_shape if randf() < 0.86 else partner.body_shape
+	if randf() < 0.04:
+		var shapes: Array[String] = ["fusiform", "compressed", "globiform", "anguilliform"]
+		new_body_shape = shapes[randi() % shapes.size()]
+	var new_mouth_orientation: int = (mouth_orientation if randf() < 0.93
+		else partner.mouth_orientation if randf() < 0.5
+		else clampi(mouth_orientation + (1 if randf() < 0.5 else -1), -1, 1))
+	# Predator-branch morphology pressure. As prey pressure rises, predator
+	# lineages get stronger selection toward specialized mouth/body forms.
+	if new_snail_predator:
+		new_mouth_orientation = clampi(
+			maxi(new_mouth_orientation, 0)
+			+ (1 if randf() < 0.45 + prey_pressure * 0.30 else 0),
+			-1, 1)
+		new_snout_pointed = new_snout_pointed or randf() < 0.58 + prey_pressure * 0.18
+		new_head = clampf(new_head + randf_range(0.02, 0.07), 0.7, 1.5)
+		if randf() < 0.50 + prey_pressure * 0.22:
+			new_body_shape = "anguilliform"
+	if new_shrimp_predator:
+		if not new_snail_predator:
+			new_mouth_orientation = clampi(
+				mini(new_mouth_orientation, 0)
+				- (1 if randf() < 0.32 + prey_pressure * 0.28 else 0),
+				-1, 1)
+		new_elong = clampf(new_elong + randf_range(0.01, 0.06), 0.85, 1.25)
+		if randf() < 0.42 + prey_pressure * 0.20:
+			new_body_shape = "fusiform"
+	if new_snail_predator and new_shrimp_predator and randf() < 0.42 + prey_pressure * 0.25:
+		new_body_shape = "globiform"
+		new_snout_pointed = true
 	var g: Dictionary = {
 		"species": species,
 		"base_color": base_color.lerp(partner.base_color, mix).lerp(
@@ -2794,7 +3327,14 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"tail_color": (tail_color if _tail_color_set else accent_color).lerp(
 			partner.tail_color if partner._tail_color_set else partner.accent_color,
 			mix).lerp(Color(randf(), randf(), randf()), color_muta * 0.5),
+		# Marking color inherits the same way - keeps tetra bands / rasbora
+		# wedges / gourami flanks coherent down a lineage.
+		"marking_color": (marking_color if _marking_color_set else accent_color).lerp(
+			partner.marking_color if partner._marking_color_set else partner.accent_color,
+			mix).lerp(Color(randf(), randf(), randf()), color_muta * 0.5),
 		"adult_voxel_scale": new_size,
+		"size_potential": new_size_potential,
+		"max_growth": clampf((max_growth + partner.max_growth) * 0.5 * randf_range(0.94, 1.06), 1.05, 2.8),
 		"max_age_s": (max_age_s + partner.max_age_s) * 0.5 + randf_range(-25.0, 25.0),
 		"max_speed": (max_speed + partner.max_speed) * 0.5 + randf_range(-0.15, 0.15),
 		"schooling_strength": (schooling_strength + partner.schooling_strength) * 0.5,
@@ -2842,9 +3382,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 			else (partner.has_barbels if randf() < 0.5 else not has_barbels)),
 		"armor_plates": (armor_plates if randf() < 0.97
 			else (partner.armor_plates if randf() < 0.5 else not armor_plates)),
-		"mouth_orientation": (mouth_orientation if randf() < 0.93
-			else partner.mouth_orientation if randf() < 0.5
-			else clampi(mouth_orientation + (1 if randf() < 0.5 else -1), -1, 1)),
+		"mouth_orientation": new_mouth_orientation,
 		"tail_shape": (tail_shape if randf() < 0.94
 			else partner.tail_shape if randf() < 0.5
 			else randi() % 4),
@@ -2854,30 +3392,44 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 			+ randf_range(-0.08, 0.08), 0.55, 1.7),
 		"back_arch": clampf((back_arch + partner.back_arch) * 0.5
 			+ randf_range(-0.08, 0.08), 0.65, 1.6),
-		# Food preferences inherited as-is (species-defining, not really mutable).
-		"snail_predator": snail_predator,
-		"algae_grazer": algae_grazer,
-		# Livebearer trait is species-locked too - inherited identically.
-		"is_livebearer": is_livebearer,
-		"guards_clutch": guards_clutch,
+		# Lifestyle traits can mutate slowly to support niche shifts.
+		"snail_predator": new_snail_predator,
+		"shrimp_predator": new_shrimp_predator,
+		"algae_grazer": new_algae_grazer,
+		"is_livebearer": new_livebearer,
+		"guards_clutch": new_guards_clutch,
 		"sterile": sterile or partner.sterile or (randf() < 0.01),
 		"viable": not (sterile or partner.sterile or (species != partner.species) or (randf() < 0.03)),
-		# Silhouette traits. anal_fin_length_factor drifts continuously like
-		# fin_length_factor; the booleans + body_shape are species-locked
-		# (no realistic mutation path on a 4-5 generation timescale).
+		# Silhouette traits. Most drift continuously; select booleans + shape
+		# now mutate rarely to create emergent long-run morphology splits.
 		"anal_fin_length_factor": clampf(
 			(anal_fin_length_factor + partner.anal_fin_length_factor) * 0.5
 			+ randf_range(-0.10, 0.10), 0.3, 2.0),
-		"adipose_fin": adipose_fin,
-		"snout_pointed": snout_pointed,
-		"body_shape": body_shape,
+		"adipose_fin": new_adipose_fin,
+		"snout_pointed": new_snout_pointed,
+		"body_shape": new_body_shape,
+		"jaw_claw_size": new_jaw_claw,
+		# Ornamentation traits stay in the lineage with rare flips so a
+		# bar-edged or eye-spotted founder line keeps its look but can drift.
+		"bar_edged": (bar_edged if randf() < 0.97
+			else (partner.bar_edged if randf() < 0.5 else not bar_edged)),
+		"eye_spot": (eye_spot if randf() < 0.97
+			else (partner.eye_spot if randf() < 0.5 else not eye_spot)),
+		"ventral_feelers": (ventral_feelers if randf() < 0.98
+			else (partner.ventral_feelers if randf() < 0.5 else not ventral_feelers)),
+		"finnage": clampf((finnage + partner.finnage) * 0.5
+			+ randf_range(-0.08, 0.08), 1.0, 2.2),
+		"labyrinth_breather": (labyrinth_breather if randf() < 0.99
+			else partner.labyrinth_breather),
 		"organism_type": "fish",
 		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
 			get_saved_genome(), partner.get_saved_genome(),
 		]),
 	}
+	g["subspecies_id"] = _derive_subspecies_id(partner, g)
 	if sim != null:
-		EvolutionPressure.apply_fish_offspring(g, EvolutionPressure.sample_from_sim(sim))
+		EvolutionPressure.apply_fish_offspring(
+			g, EvolutionPressure.sample_from_sim(sim, position))
 	return g
 
 
@@ -2887,7 +3439,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 # when saving and as a static utility from the loader side.
 static func _genome_to_json(g: Dictionary) -> Dictionary:
 	var out: Dictionary = g.duplicate(true)
-	for key in ["base_color", "accent_color", "tail_color"]:
+	for key in ["base_color", "accent_color", "tail_color", "marking_color"]:
 		if out.has(key) and out[key] is Color:
 			out[key] = SaveHelpers.color_to_array(out[key])
 	return out
@@ -2895,7 +3447,7 @@ static func _genome_to_json(g: Dictionary) -> Dictionary:
 
 static func _genome_from_json(g: Dictionary) -> Dictionary:
 	var out: Dictionary = g.duplicate(true)
-	for key in ["base_color", "accent_color", "tail_color"]:
+	for key in ["base_color", "accent_color", "tail_color", "marking_color"]:
 		if out.has(key) and out[key] is Array:
 			out[key] = SaveHelpers.array_to_color(out[key])
 	return out

@@ -39,6 +39,11 @@ const GOLDEN_ANGLE: float = 2.39996322972865332
 var _fern_tips: Array = []
 # Precalculated positions for the Gyroid reaction-diffusion brain coral dome
 var _brain_positions: Array[Vector3] = []
+var _anemone_tentacles: Array[Node3D] = []
+var _hydra_tentacles: Array[Node3D] = []
+var _clam_shell_parts: Array[Node3D] = []
+var _sessile_phase: float = 0.0
+var _topology_seed: float = 0.0
 
 
 
@@ -64,6 +69,12 @@ func apply_save_dict(d: Dictionary) -> void:
 	super.apply_save_dict(d)
 
 
+func _ready() -> void:
+	super._ready()
+	_sessile_phase = randf() * TAU
+	_topology_seed = randf() * TAU
+
+
 func _grow_one() -> bool:
 	if current_height >= max_height:
 		return false
@@ -78,8 +89,20 @@ func _grow_one() -> bool:
 			_grow_brain()
 		"staghorn_fern":
 			_grow_staghorn_fern()
+		"anemone":
+			_grow_anemone()
+		"sponge":
+			_grow_sponge(false)
+		"sponge_fresh":
+			_grow_sponge(true)
+		"clam":
+			_grow_clam()
+		"hydra_fresh":
+			_grow_hydra_fresh()
 		_:
 			_grow_dome()
+	if generation >= 2 and randf() < clampf(0.08 + float(generation) * 0.015, 0.08, 0.25):
+		_add_architecture_accent()
 	current_height += 1
 	return true
 
@@ -409,6 +432,181 @@ func _grow_plate() -> void:
 	p.position = Vector3(cos(theta) * r, disc_y, sin(theta) * r)
 	add_child(p)
 	voxels.append(p)
+
+
+func _make_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(size)
+	mi.material_override = VoxelMat.make_foliage(col)
+	mi.position = pos
+	add_child(mi)
+	voxels.append(mi)
+	return mi
+
+
+func _add_architecture_accent() -> void:
+	# Extra lineage ornament modules so mature coral lineages become visibly
+	# more elaborate over generations without requiring new genome keys.
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var accent: Color = ramp[ramp.size() - 1]
+	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
+	var ang: float = _topology_seed + float(current_height) * 1.3
+	var r: float = VOXEL_SIZE * lerpf(0.30, 1.25, clampf(rel, 0.0, 1.0))
+	var base_pos := Vector3(cos(ang) * r, VOXEL_SIZE * (0.25 + rel * 0.95), sin(ang) * r * 0.85)
+	match coral_form:
+		"plate", "clam":
+			_make_coral_voxel(base_pos + Vector3(0, VOXEL_SIZE * 0.05, 0),
+				Vector3(VOXEL_SIZE * 0.26, VOXEL_SIZE * 0.06, VOXEL_SIZE * 0.26),
+				accent.lightened(0.12))
+		"sponge", "sponge_fresh":
+			_make_coral_voxel(base_pos,
+				Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.18),
+				accent.lightened(0.06))
+		_:
+			for x_side in [-1.0, 1.0]:
+				_make_coral_voxel(
+					base_pos + Vector3(x_side * VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.05, 0),
+					Vector3(VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.24, VOXEL_SIZE * 0.10),
+					accent.lightened(0.10))
+
+
+func _grow_anemone() -> void:
+	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	if current_height < 2:
+		_make_coral_voxel(
+			Vector3(0.0, current_height * VOXEL_SIZE * 0.35, 0.0),
+			Vector3(VOXEL_SIZE * 0.65, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.65),
+			ramp[1])
+		return
+	var tentacle_count: int = 8
+	var ring: float = VOXEL_SIZE * (0.35 + rel * 0.55)
+	var y: float = VOXEL_SIZE * (0.55 + rel * 1.35)
+	for i in tentacle_count:
+		var a: float = float(i) / float(tentacle_count) * TAU + rel * 0.35
+		var body: MeshInstance3D = _make_coral_voxel(
+			Vector3(cos(a) * ring, y, sin(a) * ring),
+			Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.52, VOXEL_SIZE * 0.18),
+			ramp[clampi(2 + i % 3, 0, ramp.size() - 1)])
+		_anemone_tentacles.append(body)
+		if rel > 0.72:
+			var tip: MeshInstance3D = _make_coral_voxel(
+				body.position + Vector3(0.0, VOXEL_SIZE * 0.33, 0.0),
+				Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
+				tip_color)
+			body.set_meta("tip_ref", tip)
+
+
+func _grow_hydra_fresh() -> void:
+	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	if current_height < 2:
+		_make_coral_voxel(
+			Vector3(0.0, current_height * VOXEL_SIZE * 0.32, 0.0),
+			Vector3(VOXEL_SIZE * 0.42, VOXEL_SIZE * 0.36, VOXEL_SIZE * 0.42),
+			ramp[1])
+		return
+	var count: int = 6
+	var y: float = VOXEL_SIZE * (0.35 + rel * 1.2)
+	for i in count:
+		var a: float = float(i) / float(count) * TAU + rel * 0.6
+		var tent: MeshInstance3D = _make_coral_voxel(
+			Vector3(cos(a) * VOXEL_SIZE * 0.22, y + VOXEL_SIZE * 0.18, sin(a) * VOXEL_SIZE * 0.22),
+			Vector3(VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.12),
+			ramp[clampi(3 + (i % 2), 0, ramp.size() - 1)])
+		_hydra_tentacles.append(tent)
+
+
+func _grow_sponge(is_fresh: bool) -> void:
+	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var radius: float = VOXEL_SIZE * (0.42 + rel * 0.32)
+	var y: float = current_height * VOXEL_SIZE * 0.42
+	for j in 2:
+		var ang: float = _topology_seed + float(current_height * 2 + j) * 1.9
+		var offset := Vector3(cos(ang) * radius * 0.45, 0.0, sin(ang) * radius * 0.45)
+		_make_coral_voxel(
+			Vector3(offset.x, y + j * VOXEL_SIZE * 0.18, offset.z),
+			Vector3(VOXEL_SIZE * (0.26 + rel * 0.12), VOXEL_SIZE * 0.46, VOXEL_SIZE * (0.26 + rel * 0.12)),
+			ramp[clampi(1 + j + int(rel * 3.0), 0, ramp.size() - 1)])
+	# Porous opening ring near the top reads as sponge osculum.
+	if current_height > 3 and current_height % 3 == 0:
+		var hole_col: Color = tip_color if not is_fresh else ramp[5]
+		_make_coral_voxel(
+			Vector3(0.0, y + VOXEL_SIZE * 0.26, 0.0),
+			Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
+			hole_col)
+
+
+func _grow_clam() -> void:
+	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
+	if current_height < 1:
+		_make_coral_voxel(
+			Vector3(0.0, 0.0, 0.0),
+			Vector3(VOXEL_SIZE * 0.8, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.65),
+			Color8(82, 70, 88))
+		return
+	var shell_col: Color = (ramp_override if ramp_override.size() == 6 else PLANT_RAMP)[clampi(2 + int(rel * 2.0), 0, 5)]
+	var hinge_y: float = VOXEL_SIZE * 0.15
+	var upper: MeshInstance3D = _make_coral_voxel(
+		Vector3(0.0, hinge_y + VOXEL_SIZE * 0.16, -VOXEL_SIZE * 0.04),
+		Vector3(VOXEL_SIZE * 0.72, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.52),
+		shell_col)
+	var lower: MeshInstance3D = _make_coral_voxel(
+		Vector3(0.0, hinge_y - VOXEL_SIZE * 0.05, VOXEL_SIZE * 0.04),
+		Vector3(VOXEL_SIZE * 0.72, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.52),
+		shell_col.darkened(0.18))
+	_clam_shell_parts.append(upper)
+	_clam_shell_parts.append(lower)
+	if rel > 0.45:
+		_make_coral_voxel(
+			Vector3(0.0, hinge_y + VOXEL_SIZE * 0.06, 0.0),
+			Vector3(VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.24),
+			tip_color)
+
+
+func _process(dt: float) -> void:
+	# Stagger updates so dozens of anemone/hydra/clam instances don't all
+	# touch transforms on the same frame (macOS Metal fence pressure).
+	const ANIM_STEP: int = 2
+	var frame: int = Engine.get_process_frames()
+	if (frame + get_instance_id()) % ANIM_STEP != 0:
+		return
+	var sdt: float = dt * float(ANIM_STEP)
+	var sim_n: Node = _find_sim()
+	if sim_n != null:
+		sdt *= float(sim_n.time_scale)
+	if sdt <= 0.0:
+		return
+	_sessile_phase += sdt * (0.8 + sway_amplitude * 1.4)
+	_animate_sessile_motion()
+
+
+func _animate_sessile_motion() -> void:
+	if coral_form == "anemone":
+		for i in _anemone_tentacles.size():
+			var t: Node3D = _anemone_tentacles[i]
+			if t == null or not is_instance_valid(t):
+				continue
+			t.rotation.x = sin(_sessile_phase * 1.8 + float(i) * 0.9) * 0.22
+			t.rotation.z = cos(_sessile_phase * 1.4 + float(i) * 0.7) * 0.18
+	elif coral_form == "hydra_fresh":
+		for i in _hydra_tentacles.size():
+			var h: Node3D = _hydra_tentacles[i]
+			if h == null or not is_instance_valid(h):
+				continue
+			h.rotation.x = sin(_sessile_phase * 1.5 + float(i) * 0.7) * 0.28
+			h.rotation.z = cos(_sessile_phase * 1.2 + float(i) * 0.6) * 0.22
+	elif coral_form == "clam":
+		var open_amount: float = 0.18 + 0.16 * (0.5 + 0.5 * sin(_sessile_phase * 0.8))
+		for i in _clam_shell_parts.size():
+			var p: Node3D = _clam_shell_parts[i]
+			if p == null or not is_instance_valid(p):
+				continue
+			if i % 2 == 0:
+				p.rotation.x = -open_amount
+			else:
+				p.rotation.x = open_amount * 0.45
 
 
 # Corals don't propagate via runners or seeds (could be modeled as

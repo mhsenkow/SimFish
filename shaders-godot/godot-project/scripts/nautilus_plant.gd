@@ -35,7 +35,7 @@ var _current_theta: float = 0.0
 var _max_theta: float = 0.0
 var _step: float = 0.0
 var _growth_timer: float = 0.0
-var _growth_interval: float = 1.5   # seconds per voxel
+var _growth_interval: float = 2.2   # seconds per voxel (was 1.5 — gentler GPU load)
 var _all_voxels: Array[MeshInstance3D] = []
 var _voxel_birth_times: Array[float] = []  # for aging color shift
 
@@ -68,9 +68,10 @@ func _add_spiral_voxel() -> void:
 	if is_tip:
 		s *= 1.15  # new growth slightly bigger
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(VOXEL_SIZE * s, VOXEL_SIZE * s, VOXEL_SIZE * s)
-	mi.mesh = bm
+	# Reuse the shared unit box mesh + scale — unique BoxMesh per voxel was
+	# triggering GPU fence timeouts on macOS when several spirals grew.
+	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
+	mi.scale = Vector3(s, s, s)
 	mi.position = Vector3(x, y, z)
 	var color: Color
 	if ramp.size() >= 5:
@@ -84,8 +85,9 @@ func _add_spiral_voxel() -> void:
 			color = color.lightened(0.12)
 	else:
 		color = Color8(60, 130, 70)
-	mi.material_override = _make_mat(color)
+	mi.material_override = VoxelMat.make_foliage(color)
 	mi.set_meta("base_color", color)
+	mi.set_meta("aged", false)
 	add_child(mi)
 	_all_voxels.append(mi)
 	_voxel_birth_times.append(_t)
@@ -112,14 +114,14 @@ func _age_voxels() -> void:
 	for i in _all_voxels.size():
 		if not is_instance_valid(_all_voxels[i]):
 			continue
-		var age: float = _t - _voxel_birth_times[i]
-		if age > 10.0:
-			# Already aged - skip expensive material re-creation.
+		if _all_voxels[i].get_meta("aged", false):
 			continue
+		var age: float = _t - _voxel_birth_times[i]
 		if age > 5.0:
 			var darken: float = clampf((age - 5.0) / 5.0, 0.0, 0.15)
 			var base_col: Color = _all_voxels[i].get_meta("base_color", Color.WHITE)
 			_all_voxels[i].material_override = VoxelMat.make_foliage(base_col.darkened(darken * 0.15))
+			_all_voxels[i].set_meta("aged", true)
 
 
 func _make_mat(c: Color) -> Material:

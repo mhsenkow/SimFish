@@ -13,6 +13,13 @@ extends Node3D
 @export var inherited_shell_size: float = 1.0
 @export var inherited_generation: int = 0
 @export var inherited_shell_shape: String = "turbo"
+@export var inherited_shell_spines: float = 0.0
+@export var inherited_toxin_level: float = 0.0
+@export var inherited_body_color: Color = Color8(44, 31, 21)
+@export var inherited_shell_accent_color: Color = Color(0, 0, 0, 0)
+@export var inherited_crawl_speed: float = 1.0
+@export var inherited_appetite: float = 1.0
+@export var inherited_max_age_s: float = 720.0
 @export var inherited_parent_lineage: String = "Founders"
 @export var inherited_parent_keys: Array = []
 
@@ -37,6 +44,14 @@ func to_save_dict() -> Dictionary:
 		"inherited_shell_color": SaveHelpers.color_to_array(inherited_shell_color),
 		"inherited_shell_size": inherited_shell_size,
 		"inherited_generation": inherited_generation,
+		"inherited_shell_shape": inherited_shell_shape,
+		"inherited_shell_spines": inherited_shell_spines,
+		"inherited_toxin_level": inherited_toxin_level,
+		"inherited_body_color": SaveHelpers.color_to_array(inherited_body_color),
+		"inherited_shell_accent_color": SaveHelpers.color_to_array(inherited_shell_accent_color),
+		"inherited_crawl_speed": inherited_crawl_speed,
+		"inherited_appetite": inherited_appetite,
+		"inherited_max_age_s": inherited_max_age_s,
 		"age": _age,
 	}
 
@@ -48,6 +63,14 @@ func apply_save_dict(d: Dictionary) -> void:
 	inherited_shell_color = SaveHelpers.array_to_color(d.get("inherited_shell_color", []), inherited_shell_color)
 	inherited_shell_size = float(d.get("inherited_shell_size", inherited_shell_size))
 	inherited_generation = int(d.get("inherited_generation", 0))
+	inherited_shell_shape = String(d.get("inherited_shell_shape", inherited_shell_shape))
+	inherited_shell_spines = clampf(float(d.get("inherited_shell_spines", inherited_shell_spines)), 0.0, 1.0)
+	inherited_toxin_level = clampf(float(d.get("inherited_toxin_level", inherited_toxin_level)), 0.0, 1.0)
+	inherited_body_color = SaveHelpers.array_to_color(d.get("inherited_body_color", []), inherited_body_color)
+	inherited_shell_accent_color = SaveHelpers.array_to_color(d.get("inherited_shell_accent_color", []), inherited_shell_accent_color)
+	inherited_crawl_speed = float(d.get("inherited_crawl_speed", inherited_crawl_speed))
+	inherited_appetite = float(d.get("inherited_appetite", inherited_appetite))
+	inherited_max_age_s = float(d.get("inherited_max_age_s", inherited_max_age_s))
 	_age = float(d.get("age", 0.0))
 
 
@@ -90,6 +113,7 @@ func _process(dt: float) -> void:
 
 # Walk up the scene tree to find a SimDriver. Cached on first hit.
 var _sim_driver_ref: Node = null
+var _world_ref: Node = null
 
 func _get_sim() -> Node:
 	if _sim_driver_ref != null and is_instance_valid(_sim_driver_ref):
@@ -100,6 +124,18 @@ func _get_sim() -> Node:
 		if d != null:
 			_sim_driver_ref = d
 			return d
+		n = n.get_parent()
+	return null
+
+
+func _get_world() -> Node:
+	if _world_ref != null and is_instance_valid(_world_ref):
+		return _world_ref
+	var n: Node = get_parent()
+	while n != null:
+		if n.has_method("_build_snail_body"):
+			_world_ref = n
+			return n
 		n = n.get_parent()
 	return null
 
@@ -127,12 +163,23 @@ func _hatch() -> void:
 	baby.set("shell_size", inherited_shell_size)
 	baby.set("generation", inherited_generation)
 	baby.set("shell_shape", inherited_shell_shape)
+	baby.set("shell_spines", inherited_shell_spines)
+	baby.set("toxin_level", inherited_toxin_level)
+	baby.set("body_color", inherited_body_color)
+	baby.set("shell_accent_color", inherited_shell_accent_color)
+	baby.set("crawl_speed", inherited_crawl_speed)
+	baby.set("appetite", inherited_appetite)
+	baby.set("max_age_s", inherited_max_age_s)
 	baby.set("parent_lineage", inherited_parent_lineage)
 	baby.set("_parent_keys", inherited_parent_keys.duplicate())
 	if baby.has_method("_ensure_named"):
 		baby._ensure_named()
-	# Build the baby's body using the inherited shell color + size.
-	_build_baby_body(baby, inherited_shell_color, inherited_shell_size)
+	# Reuse world-side builder for all shell morphs; fallback keeps old behavior.
+	var world := _get_world()
+	if world != null and world.has_method("_build_snail_body"):
+		world._build_snail_body(baby)
+	else:
+		_build_baby_body(baby, inherited_shell_color, inherited_shell_size)
 	var sim := _get_sim()
 	if sim != null and sim.has_method("register_snail"):
 		sim.register_snail(baby)

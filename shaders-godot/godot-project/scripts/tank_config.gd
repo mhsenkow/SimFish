@@ -50,6 +50,10 @@ var fps_cap: int = 0
 var device_tier: String = ""
 # True once the player has seen and dismissed the gesture tutorial overlay.
 var tutorial_seen: bool = false
+# Runtime-only flag (not persisted): set by the tank menu's "Guided setup"
+# entry so main.gd launches the step-by-step walkthrough when the tank opens.
+# Consumed (cleared) once the walkthrough begins.
+var walkthrough_pending: bool = false
 # Unix seconds at last clean quit. Used to show "you were away for X" on
 # resume. 0 = never quit cleanly (first launch).
 var last_quit_unix: int = 0
@@ -181,7 +185,7 @@ var auto_feed_fauna: bool = false
 # Selects the initial stocking of the tank. Each preset specifies how many
 # of each species spawn AND a phenotype-range modifier so the founding
 # generation has a distinctive look. Custom uses the inline counts.
-var tank_preset: String = "community"
+var tank_preset: String = "classic_community"
 var custom_glassdart_count: int = 14
 var custom_mudsifter_count: int = 5
 var custom_shrimp_count: int = 12
@@ -202,14 +206,20 @@ var custom_shrimp_count: int = 12
 # head_proportion, dorsal_height_factor, tail_fork_depth, pattern_type).
 const SPECIES_LIBRARY: Dictionary = {
 	"glassdart": {
-		"label": "Glassdart tetra",
-		"description": "Mid-water schoolers. Electric blue stripe over scarlet body. Streamlined and fast.",
+		"label": "Cardinal tetra",
+		"description": "Mid-water schoolers. The signature neon-blue stripe runs the full body over a deep scarlet lower flank. Streamlined and fast.",
 		"genome": {
 			"species": "glassdart",
-			# Cardinal-tetra inspired: vivid scarlet body, electric blue accent.
-			"base_color": Color8(230, 35, 55),
-			"accent_color": Color8(60, 170, 240),
+			# Cardinal tetra: the iconic two-tone flank. base_color is the
+			# scarlet body, marking_color is the electric neon-blue dorsal
+			# stripe, accent is a slightly deeper scarlet shadow on the lower
+			# flank (pattern_type 4 paints upper=marking, lower=accent).
+			"base_color": Color8(220, 32, 50),
+			"marking_color": Color8(70, 185, 245),
+			"accent_color": Color8(190, 26, 42),
 			"adult_voxel_scale": 0.18,
+			"size_potential": 0.95,
+			"jaw_claw_size": 0.05,
 			"max_age_s": 220.0,
 			"max_speed": 2.0,
 			"schooling_strength": 1.6,
@@ -221,6 +231,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"body_elongation": 1.10,
 			"body_depth_factor": 0.85,
 			"swim_pattern": "school",
+			"pattern_type": 4,                # two-tone band - blue over red
 			"tail_shape": 0,                  # forked - signature tetra tail
 			"eye_size_factor": 1.0,
 			# Tetras have a distinctive adipose fin between the dorsal and
@@ -239,6 +250,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(225, 130, 50),
 			"accent_color": Color8(60, 35, 25),
 			"adult_voxel_scale": 0.22,
+			"size_potential": 1.15,
+			"jaw_claw_size": 0.42,
 			"max_age_s": 280.0,
 			"max_speed": 1.2,
 			"schooling_strength": 0.5,
@@ -272,10 +285,15 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Solitary carnivore. Iridescent royal-blue with magenta finnage. Long sweeping arcs.",
 		"genome": {
 			"species": "betta",
-			# Vibrant royal blue with hot magenta accents.
+			# Vibrant royal blue with hot magenta finnage; iridescent
+			# turquoise marking flash on the flank.
 			"base_color": Color8(40, 90, 235),
 			"accent_color": Color8(245, 90, 180),
+			"tail_color": Color8(235, 70, 165),
+			"marking_color": Color8(60, 215, 200),
 			"adult_voxel_scale": 0.28,
+			"size_potential": 1.35,
+			"jaw_claw_size": 0.38,
 			"max_age_s": 420.0,
 			"max_speed": 1.6,
 			"schooling_strength": 0.0,
@@ -284,7 +302,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"fecundity": 0.0,
 			"clutch_size": 0,
 			"preferred_y": 3.8,
-			"fin_length_factor": 1.4,
+			"fin_length_factor": 1.45,
 			"dorsal_height_factor": 1.35,
 			"tail_fork_depth": 0.7,
 			"swim_pattern": "cruise",
@@ -295,6 +313,11 @@ const SPECIES_LIBRARY: Dictionary = {
 			# sweeping back behind them. Combined with the long lyre tail
 			# and tall dorsal, the silhouette reads as "all flowing fin".
 			"anal_fin_length_factor": 1.5,
+			# Veil finnage: billowing trailing caudal/dorsal/anal drapery -
+			# the unmistakable show-betta silhouette.
+			"finnage": 1.6,
+			# Labyrinth organ: bettas breathe atmospheric air at the surface.
+			"labyrinth_breather": true,
 		},
 	},
 	"killifish": {
@@ -306,6 +329,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(20, 200, 215),
 			"accent_color": Color8(255, 110, 35),
 			"adult_voxel_scale": 0.14,
+			"size_potential": 1.0,
+			"jaw_claw_size": 0.14,
 			"max_age_s": 150.0,
 			"max_speed": 1.7,
 			"schooling_strength": 0.4,
@@ -346,6 +371,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"tail_color": Color8(240, 55, 30),
 			"dimorphic": true,                   # males flashy, females silver
 			"adult_voxel_scale": 0.11,
+			"size_potential": 1.10,
+			"jaw_claw_size": 0.08,
 			"max_age_s": 180.0,
 			"max_speed": 1.5,
 			"schooling_strength": 0.7,
@@ -359,6 +386,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"fin_length_factor": 1.55,           # extra long signature tail
 			"tail_fork_depth": 0.3,
 			"pattern_type": 2,
+			"finnage": 1.3,                      # fancy-male flowing fan tail
 			"swim_pattern": "shoal",
 			"tail_shape": 1,                     # fan - signature guppy
 			"eye_size_factor": 1.05,
@@ -378,6 +406,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(255, 220, 60),
 			"accent_color": Color8(50, 40, 25),
 			"adult_voxel_scale": 0.22,
+			"size_potential": 1.50,
+			"jaw_claw_size": 0.72,
 			"max_age_s": 360.0,
 			"max_speed": 0.7,
 			"schooling_strength": 0.0,
@@ -418,6 +448,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(220, 235, 250),
 			"accent_color": Color8(20, 80, 220),
 			"adult_voxel_scale": 0.15,
+			"size_potential": 0.95,
+			"jaw_claw_size": 0.04,
 			"max_age_s": 200.0,
 			"max_speed": 2.4,
 			"schooling_strength": 1.8,
@@ -443,6 +475,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(210, 165, 95),
 			"accent_color": Color8(40, 30, 20),
 			"adult_voxel_scale": 0.18,
+			"size_potential": 1.05,
+			"jaw_claw_size": 0.36,
 			"max_age_s": 360.0,
 			"max_speed": 0.9,
 			"schooling_strength": 1.0,
@@ -479,6 +513,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(250, 250, 252),
 			"accent_color": Color8(15, 15, 25),
 			"adult_voxel_scale": 0.26,
+			"size_potential": 1.20,
+			"jaw_claw_size": 0.18,
 			"max_age_s": 480.0,
 			"max_speed": 0.9,
 			"schooling_strength": 0.3,
@@ -493,6 +529,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"dorsal_height_factor": 1.7,
 			"tail_fork_depth": 0.9,
 			"pattern_type": 3,
+			"bar_edged": true,                  # crisp jet-black vertical bars
 			"swim_pattern": "hover",
 			# Angelfish signature: tall arched body, lyre tail, mid-sized eyes.
 			"tail_shape": 2,                    # lyre
@@ -513,6 +550,76 @@ const SPECIES_LIBRARY: Dictionary = {
 			"guards_clutch": true,
 		},
 	},
+	"harlequin_rasbora": {
+		"label": "Harlequin rasbora",
+		"description": "Tight copper-orange shoal with the signature jet-black 'pork-chop' wedge over the rear flank. Peaceful mid-water schoolers.",
+		"genome": {
+			"species": "harlequin_rasbora",
+			# Warm copper-orange body with a deep black rear wedge.
+			"base_color": Color8(225, 130, 70),
+			"accent_color": Color8(235, 150, 95),
+			"marking_color": Color8(22, 20, 28),
+			"adult_voxel_scale": 0.13,
+			"size_potential": 0.85,
+			"jaw_claw_size": 0.03,
+			"max_age_s": 230.0,
+			"max_speed": 1.7,
+			"schooling_strength": 1.5,
+			"separation_radius": 0.5,
+			"herbivory": 0.45,
+			"fecundity": 0.9,
+			"clutch_size": 2,
+			"preferred_y": 4.0,
+			"body_elongation": 0.95,
+			"body_depth_factor": 1.05,           # slightly deep rasbora body
+			"pattern_type": 5,                   # rear-flank black wedge
+			"swim_pattern": "shoal",
+			"tail_shape": 0,                     # forked
+			"eye_size_factor": 1.05,
+			"body_shape": "fusiform",
+		},
+	},
+	"dwarf_gourami": {
+		"label": "Dwarf gourami",
+		"description": "Deep-bodied labyrinth centerpiece. Flame-red flanks washed with iridescent turquoise, long pelvic feelers, and habitual surface air-gulping.",
+		"genome": {
+			"species": "dwarf_gourami",
+			# Flame red base with a turquoise two-tone wash and red finnage.
+			"base_color": Color8(205, 55, 45),
+			"marking_color": Color8(55, 175, 195),
+			"accent_color": Color8(170, 40, 35),
+			"tail_color": Color8(220, 80, 60),
+			"adult_voxel_scale": 0.23,
+			"size_potential": 1.25,
+			"jaw_claw_size": 0.10,
+			"max_age_s": 400.0,
+			"max_speed": 0.95,
+			"schooling_strength": 0.2,
+			"separation_radius": 1.0,
+			"herbivory": 0.5,
+			"fecundity": 0.3,
+			"clutch_size": 2,
+			"preferred_y": 4.4,                  # upper-mid; visits the surface
+			"body_elongation": 0.8,
+			"body_depth_factor": 1.6,            # deep, laterally compressed
+			"fin_length_factor": 1.15,
+			"dorsal_height_factor": 1.3,
+			"tail_fork_depth": 0.4,
+			"pattern_type": 4,                   # two-tone turquoise-over-red band
+			"swim_pattern": "cruise",
+			"tail_shape": 1,                     # fan
+			"eye_size_factor": 1.1,
+			"back_arch": 1.3,                    # arched anabantid profile
+			"ventral_profile": 1.1,
+			"anal_fin_length_factor": 1.3,       # long anabantid anal fin
+			# Anabantid signatures: thread-like pelvic feelers + labyrinth
+			# organ for atmospheric surface breathing.
+			"ventral_feelers": true,
+			"labyrinth_breather": true,
+			"body_shape": "compressed",
+			"guards_clutch": true,
+		},
+	},
 	"reef_fish": {
 		"label": "Mixed reef school",
 		"description": "Single 'species' built to look like a mixed reef community - clownfish, tangs, chromis, anthias. Every individual rolls a unique morph at spawn.",
@@ -526,6 +633,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(245, 165, 40),       # Clownfish orange default
 			"accent_color": Color8(255, 255, 255),    # crisp white bars
 			"adult_voxel_scale": 0.16,
+			"size_potential": 1.15,
+			"jaw_claw_size": 0.20,
 			"max_age_s": 260.0,
 			"max_speed": 1.6,
 			"schooling_strength": 0.6,                # loose - reef fish don't tight-school
@@ -559,6 +668,21 @@ func species_label(key: String) -> String:
 # be added without changing world.gd - just append them to a stocking
 # dict here.
 const TANK_PRESETS: Dictionary = {
+	"empty": {
+		"label": "Empty (build it yourself)",
+		"stocking": {},
+		"phenotype_spread": 0.0,
+		"description": "A bare tank with substrate only - no plants, fauna, or hardscape. Used by the guided walkthrough so you stock everything by hand.",
+	},
+	"classic_community": {
+		"label": "Classic community",
+		"stocking": {
+			"glassdart": 10, "harlequin_rasbora": 8, "corydoras": 6,
+			"dwarf_gourami": 2, "shrimp": 10,
+		},
+		"phenotype_spread": 0.6,
+		"description": "The textbook beginner freshwater community: a cardinal tetra school, a harlequin rasbora shoal, a corydoras bottom group, a dwarf gourami centerpiece pair, and a cherry shrimp cleanup crew.",
+	},
 	"community": {
 		"label": "Community (balanced)",
 		"stocking": {
@@ -593,6 +717,16 @@ const TANK_PRESETS: Dictionary = {
 		},
 		"phenotype_spread": 2.5,
 		"description": "Wide phenotype spread + every species. Evolution diverges fast.",
+	},
+	"crazy": {
+		"label": "Crazy evolution",
+		"stocking": {
+			"glassdart": 7, "danio": 5, "guppy": 5, "killifish": 4,
+			"mudsifter": 4, "corydoras": 4, "angelfish": 2, "pufferfish": 2,
+			"betta": 1, "shrimp": 20,
+		},
+		"phenotype_spread": 5.0,
+		"description": "Extreme founder variation: oversized, elongated, and claw-heavy morphs from day one.",
 	},
 	"single_species": {
 		"label": "Single species (clones)",
@@ -946,7 +1080,7 @@ func reset_to_defaults() -> void:
 	auto_respawn_fauna = false
 	auto_feed_fauna = false
 	# Preset + custom counts.
-	tank_preset = "community"
+	tank_preset = "classic_community"
 	custom_glassdart_count = 14
 	custom_mudsifter_count = 5
 	custom_shrimp_count = 12

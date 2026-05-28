@@ -21,9 +21,26 @@ extends Node3D
 @export var sex: int = 0   # 0/1 - used for snail breeding later if added
 # Shell silhouette. "turbo" = freshwater default (round low spiral),
 # "trochus" = tall pointed cone (marine algae grazer), "nassarius" =
-# small flat oval that rides the substrate plane (marine scavenger).
+# small flat oval that rides the substrate plane (marine scavenger),
+# "apple" = big rounded globose shell.
 # world.gd's _build_snail_body branches on this.
 @export var shell_shape: String = "turbo"
+@export var shell_spines: float = 0.0  # 0..1 shell protrusions; deters predators
+@export var toxin_level: float = 0.0   # 0..1 warning chemistry / bright pattern
+# Body (foot + eye-stalk) tint. Defaults to the classic dark snail flesh.
+@export var body_color: Color = Color8(44, 31, 21)
+# Shell banding / accent color used for the alternating shell whorls. Alpha 0
+# is a sentinel meaning "unset" — the renderer then auto-derives a darker
+# shade of shell_color (the original look). Anything with alpha > 0 overrides
+# it, giving two-tone banded shells.
+@export var shell_accent_color: Color = Color(0, 0, 0, 0)
+# Crawl speed multiplier on the base SPEED. <1 = sluggish, >1 = brisk.
+@export var crawl_speed: float = 1.0
+# Appetite: multiplier on how fast hunger climbs. Hungrier snails graze more
+# (clear detritus/algae faster) but starve sooner when food is scarce.
+@export var appetite: float = 1.0
+# Genome-overridable lifespan (seconds). Defaults to the class lifespan.
+@export var max_age_s: float = 720.0
 var snail_name: String = ""
 var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
@@ -42,6 +59,22 @@ const MATURITY_AGE: float = 60.0          # baby -> adult after a minute
 const LIFESPAN_S: float = 720.0           # 12-minute lifespan; senescence at end
 const POPULATION_CAP: int = 38            # global cap. Above this, no laying.
 
+# Hunger / energy. Snails are grazers: hunger climbs steadily and is only
+# pushed back down by eating detritus, algae, or biofilm/plant tissue. If
+# hunger stays pinned (no food in reach) the snail's body condition (energy)
+# drains and it eventually starves. This couples the snail population to the
+# tank's food supply, so a clean, algae-free tank starves the colony down
+# while a detritus-rich tank lets it boom - the real Walstad feedback loop.
+const HUNGER_RATE: float = 0.011          # /s hunger climb (~75s fed -> hungry)
+const STARVE_HUNGER: float = 0.85         # above this, energy drains
+const STARVE_DRAIN: float = 0.030         # /s energy lost while starving (~110s empty -> dead)
+const ENERGY_REGEN: float = 0.06          # /s energy regained when well-fed
+const FEED_WASTE: float = 0.55            # hunger relief from a waste particle
+const FEED_ALGAE: float = 0.5             # hunger relief from algae
+const FEED_PLANT: float = 0.28            # hunger relief from rasping plant/coral
+const BREED_ENERGY_MIN: float = 0.55      # body condition needed to lay eggs
+const BREED_HUNGER_MAX: float = 0.7       # too hungry to breed above this
+
 var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
 var _t_until_turn: float = 0.0
@@ -55,7 +88,13 @@ var _wall_anchor_offset: float = 0.0
 # crawl pulse runs faster while this is set, so the snail visibly
 # accelerates on the food trail.
 var _pursuing_waste: bool = false
-var _age: float = 0.0
+# Public so the inspector / portal HUD can read it (it queries `age`).
+var age: float = 0.0
+# Hunger: 0 = just fed, 1 = starving (same convention as Fish.hunger).
+var hunger: float = 0.25
+# Energy / body condition: 1 = healthy, drops while starving, regenerates
+# when well-fed. Hitting 0 kills the snail (starvation).
+var energy: float = 1.0
 var _t_until_breed: float = 0.0
 # Foot-pulse phase: snails locomote by rhythmic muscular waves through their
 # foot. We mimic this by oscillating the body's vertical scale + a tiny
@@ -82,6 +121,10 @@ var _clamped: bool = false
 const CLAMP_RADIUS: float = 1.6
 const CLAMP_RELEASE_GRACE: float = 0.7   # extra time clamped after threat leaves
 var _clamp_grace_remaining: float = 0.0
+const RETREAT_DURATION: float = 8.0
+const RETREAT_SPEED_MULT: float = 1.45
+var _retreat_remaining: float = 0.0
+var _retreat_target: Vector3 = Vector3.INF
 
 # Predator + food scans throttled to ~3 Hz. A real snail's chemosense is
 # slow (it's tasting the water column, not seeing); the visible result
@@ -104,6 +147,13 @@ func get_saved_genome() -> Dictionary:
 		"shell_color": shell_color,
 		"shell_size": shell_size,
 		"shell_shape": shell_shape,
+		"shell_spines": shell_spines,
+		"toxin_level": toxin_level,
+		"body_color": body_color,
+		"shell_accent_color": shell_accent_color,
+		"crawl_speed": crawl_speed,
+		"appetite": appetite,
+		"max_age_s": max_age_s,
 		"generation": generation,
 		"snail_name": snail_name,
 		"parent_lineage": parent_lineage,
@@ -117,6 +167,13 @@ func apply_genome_metadata(g: Dictionary) -> void:
 	shell_color = g.get("shell_color", shell_color)
 	shell_size = float(g.get("shell_size", shell_size))
 	shell_shape = String(g.get("shell_shape", shell_shape))
+	shell_spines = clampf(float(g.get("shell_spines", shell_spines)), 0.0, 1.0)
+	toxin_level = clampf(float(g.get("toxin_level", toxin_level)), 0.0, 1.0)
+	body_color = g.get("body_color", body_color)
+	shell_accent_color = g.get("shell_accent_color", shell_accent_color)
+	crawl_speed = clampf(float(g.get("crawl_speed", crawl_speed)), 0.3, 2.5)
+	appetite = clampf(float(g.get("appetite", appetite)), 0.4, 2.0)
+	max_age_s = maxf(60.0, float(g.get("max_age_s", max_age_s)))
 	generation = int(g.get("generation", generation))
 	snail_name = String(g.get("snail_name", snail_name))
 	parent_lineage = String(g.get("parent_lineage", parent_lineage))
@@ -159,16 +216,31 @@ func _process(dt: float) -> void:
 		dt *= float(sim.time_scale)
 		if dt <= 0.0:
 			return
-	_age += dt
+	age += dt
 	# Death by old age. queue_free with a small chance of leaving a shell
-	# voxel behind (not done here - just remove).
-	if _age >= LIFESPAN_S:
+	# voxel behind (not done here - just remove). Lifespan is genome-driven
+	# (max_age_s), defaulting to the class LIFESPAN_S.
+	if age >= max_age_s:
 		queue_free()
 		return
-	# Babies grow into adults over time. _apply_squash() reads is_baby + _age
+	# Babies grow into adults over time. _apply_squash() reads is_baby + age
 	# to compute scale, so we just flip the flag here.
-	if is_baby and _age >= MATURITY_AGE:
+	if is_baby and age >= MATURITY_AGE:
 		is_baby = false
+
+	# Hunger + body condition. Hunger climbs every tick; eating (handled in
+	# _check_waste_nearby) pushes it back down. When hunger is pinned high
+	# the snail burns body condition and eventually starves; when well-fed it
+	# recovers. Babies are buffered by yolk reserves so they don't instantly
+	# starve before they can forage.
+	hunger = clampf(hunger + HUNGER_RATE * appetite * dt, 0.0, 1.0)
+	if hunger >= STARVE_HUNGER:
+		energy = clampf(energy - STARVE_DRAIN * dt, 0.0, 1.0)
+	elif hunger < 0.5:
+		energy = clampf(energy + ENERGY_REGEN * dt, 0.0, 1.0)
+	if energy <= 0.0 and not is_baby:
+		_die_starved()
+		return
 
 	# Scan cadence: predator + food scans iterate sim.fish / sim.waste /
 	# sim.algae linearly, so per-frame runs were the single biggest CPU
@@ -202,6 +274,12 @@ func _process(dt: float) -> void:
 		_apply_squash(0.35, Vector3.UP)  # body flattened into shell
 		return
 
+	# Post-threat behavior: once we un-clamp, continue a short retreat toward
+	# nearby hardscape so snail-predator encounters produce visible "hide"
+	# movement rather than immediate normal grazing.
+	if _retreat_remaining > 0.0:
+		_retreat_remaining = maxf(0.0, _retreat_remaining - dt)
+
 	_t_until_turn -= dt
 	if _t_until_turn <= 0.0:
 		_choose_new_direction()
@@ -219,8 +297,15 @@ func _process(dt: float) -> void:
 	if not is_baby:
 		_t_until_breed -= dt
 		if _t_until_breed <= 0.0:
-			if _count_snails() < POPULATION_CAP:
+			# Breeding now costs body condition and is gated on it: a snail
+			# only lays when it's well-fed (energy high, hunger low). Starving
+			# colonies stop reproducing, so the population busts when food runs
+			# out instead of breeding blindly on a timer.
+			if _count_snails() < POPULATION_CAP \
+					and energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
 				_lay_egg_sac()
+				energy = clampf(energy - 0.2, 0.0, 1.0)
+				hunger = clampf(hunger + 0.15, 0.0, 1.0)
 			var rebound: float = 1.0
 			if sim != null and int(sim.snail_predator_count) == 0:
 				rebound = 0.5
@@ -253,8 +338,16 @@ func _process(dt: float) -> void:
 	# detect detritus from a moderate distance and slow-crawl over to consume.
 	# Same throttle as the predator scan — _direction stays set between
 	# scans, so the snail continues crawling toward the last-detected target.
-	if scan_due:
+	if scan_due and _retreat_remaining <= 0.0:
 		_check_waste_nearby(tangent, bitangent)
+	elif _retreat_remaining > 0.0 and _retreat_target != Vector3.INF:
+		var to_cover: Vector3 = _retreat_target - global_position
+		var rx: float = to_cover.dot(tangent)
+		var ry: float = to_cover.dot(bitangent)
+		var retreat_dir := Vector2(rx, ry)
+		if retreat_dir.length() > 0.01:
+			_direction = retreat_dir.normalized()
+			_paused = false
 
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails
@@ -273,7 +366,9 @@ func _process(dt: float) -> void:
 	# Pulse-driven forward velocity: peaks at +SPEED * 1.6, dips to ~0.
 	var pulse_factor: float = 0.5 + 0.5 * sin(_pulse_phase)  # 0..1
 	var speed_mult: float = 1.4 if _pursuing_waste else 1.0
-	var gait_speed: float = SPEED * (0.4 + 1.2 * pulse_factor) * speed_mult
+	if _retreat_remaining > 0.0:
+		speed_mult *= RETREAT_SPEED_MULT
+	var gait_speed: float = SPEED * crawl_speed * (0.4 + 1.2 * pulse_factor) * speed_mult
 	# Move along the wall plane: tangent for "horizontal" on the wall,
 	# bitangent for "vertical." Both are perpendicular to wall_normal so
 	# there is no in-axis motion component pushing us out of the glass.
@@ -299,6 +394,8 @@ func _process(dt: float) -> void:
 	var plane_drift: float = wall_normal.dot(position) - _wall_anchor_offset
 	if absf(plane_drift) > 0.0001:
 		position -= wall_normal * plane_drift
+	# Local spacing so wall snails don't visually stack into one clump.
+	_apply_local_spacing(tangent, bitangent)
 
 
 func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
@@ -347,6 +444,21 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
 			if d2 < best_d2:
 				best_d2 = d2
 				best = a
+	# If food is scarce, snails rasp soft plant/coral tissue too (slowly).
+	if best == null and sim.get("plants") != null and randf() < 0.45:
+		best_d2 = 2.8 * 2.8
+		for p in sim.plants:
+			if not is_instance_valid(p):
+				continue
+			if not p.has_method("nibble") or p.biomass() < 8:
+				continue
+			var to_p_pos: Vector3 = (p as Node3D).global_position - global_position
+			if absf(wall_normal.dot(to_p_pos)) > OFF_PLANE_MAX:
+				continue
+			var d2p: float = to_p_pos.length_squared()
+			if d2p < best_d2:
+				best_d2 = d2p
+				best = p
 
 	if best == null:
 		return
@@ -359,10 +471,16 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
 			# It's waste
 			sim.waste.erase(best)
 			(best as Node3D).queue_free()
+			hunger = clampf(hunger - FEED_WASTE, 0.0, 1.0)
 		else:
 			# It's algae - just nibble it away entirely since snails are slow
 			if best.has_method("nibble"):
-				best.nibble(999)
+				if best.has_method("top_world_y"):
+					best.nibble(1)   # rooted plant/coral: slow rasping
+					hunger = clampf(hunger - FEED_PLANT, 0.0, 1.0)
+				else:
+					best.nibble(999) # algae cluster: can clear quickly
+					hunger = clampf(hunger - FEED_ALGAE, 0.0, 1.0)
 
 		# Tiny snail pellet on the substrate at our position.
 		if sim.has_method("_spawn_waste"):
@@ -404,7 +522,7 @@ func _apply_squash(squash_y: float, _up: Vector3) -> void:
 	var base: float = 0.5 if is_baby else 1.0
 	# Animate growth from 0.5 -> 1.0 for babies as they age.
 	if is_baby:
-		base = 0.5 + 0.5 * clampf(_age / MATURITY_AGE, 0.0, 1.0)
+		base = 0.5 + 0.5 * clampf(age / MATURITY_AGE, 0.0, 1.0)
 	# Squash along wall_normal direction (the "thickness" of the snail).
 	# Approximation: just scale on Y if wall is vertical-ish.
 	scale = Vector3(base, base * squash_y, base)
@@ -435,15 +553,43 @@ func _lay_egg_sac() -> void:
 	var color_muta := 0.18
 	var new_color: Color = shell_color.lerp(
 		Color(randf(), randf() * 0.6 + 0.2, randf()), color_muta)
-	var pressure: Dictionary = EvolutionPressure.sample_from_sim(_get_sim())
+	var pressure: Dictionary = EvolutionPressure.sample_from_sim(_get_sim(), position)
 	new_color = EvolutionPressure.apply_snail_shell_color(new_color, pressure)
 	var new_size: float = clampf(shell_size + randf_range(-0.08, 0.08), 0.65, 1.5)
+	var new_shape: String = _mutate_shell_shape(shell_shape)
+	var new_spines: float = clampf(shell_spines + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_toxin: float = clampf(toxin_level + randf_range(-0.10, 0.10), 0.0, 1.0)
 	sac.set("inherited_shell_color", new_color)
 	sac.set("inherited_shell_size", new_size)
 	sac.set("inherited_generation", generation + 1)
-	sac.set("inherited_shell_shape", shell_shape)
+	sac.set("inherited_shell_shape", new_shape)
+	sac.set("inherited_shell_spines", new_spines)
+	sac.set("inherited_toxin_level", new_toxin)
+	# New heritable traits: body color drifts slightly; banding color, crawl
+	# speed, appetite, and lifespan pass through with small mutation so a
+	# designed lineage stays recognisable but still evolves.
+	sac.set("inherited_body_color", body_color.lerp(
+		Color(randf() * 0.5, randf() * 0.4, randf() * 0.4), 0.08))
+	sac.set("inherited_shell_accent_color", shell_accent_color)
+	sac.set("inherited_crawl_speed", clampf(crawl_speed + randf_range(-0.1, 0.1), 0.3, 2.5))
+	sac.set("inherited_appetite", clampf(appetite + randf_range(-0.08, 0.08), 0.4, 2.0))
+	sac.set("inherited_max_age_s", maxf(60.0, max_age_s + randf_range(-30.0, 30.0)))
 	sac.set("inherited_parent_lineage", snail_name)
 	sac.set("inherited_parent_keys", SpeciesLibrary.parent_keys_for_breeding([get_saved_genome()]))
+
+
+func _mutate_shell_shape(base_shape: String) -> String:
+	var shape: String = base_shape
+	# Rare shape mutation keeps local lineages mostly coherent while allowing
+	# long-run emergence of visibly distinct shell classes.
+	if randf() < 0.08:
+		var options: Array[String] = ["turbo", "trochus", "nassarius", "apple"]
+		for _attempt in 5:
+			var candidate: String = options[randi() % options.size()]
+			if candidate != base_shape:
+				shape = candidate
+				break
+	return shape
 
 
 func _tick_eye_stalks(dt: float) -> void:
@@ -496,22 +642,43 @@ func _check_predator_threat(dt: float) -> void:
 		return
 	var threat_close: bool = false
 	var radius_sq: float = CLAMP_RADIUS * CLAMP_RADIUS
+	var nearest_threat: Node3D = null
+	var nearest_d2: float = INF
 	for f in sim.fish:
 		if not is_instance_valid(f):
 			continue
 		if not bool(f.snail_predator):
 			continue
-		if f.position.distance_squared_to(position) < radius_sq:
+		var d2: float = f.position.distance_squared_to(position)
+		if d2 < nearest_d2:
+			nearest_d2 = d2
+			nearest_threat = f
+		if d2 < radius_sq:
 			threat_close = true
-			break
 	if threat_close:
 		_clamped = true
 		_clamp_grace_remaining = CLAMP_RELEASE_GRACE
 		_pursuing_waste = false
+		_retreat_remaining = RETREAT_DURATION
+		_retreat_target = _pick_hardscape_retreat_point(sim)
+		if _retreat_target == Vector3.INF and nearest_threat != null:
+			var away: Vector3 = (global_position - nearest_threat.global_position).normalized()
+			if away.length_squared() > 0.001:
+				_retreat_target = global_position + away * 1.2
 	elif _clamped:
 		_clamp_grace_remaining = maxf(0.0, _clamp_grace_remaining - dt)
 		if _clamp_grace_remaining <= 0.0:
 			_clamped = false
+
+
+func _die_starved() -> void:
+	# Starvation death. The decomposing snail drops a small detritus pellet
+	# back into the system (returning its nutrients), then frees itself.
+	var sim := _get_sim()
+	if sim != null and sim.has_method("_spawn_waste"):
+		sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.05,
+			WasteParticle.KIND_SNAIL)
+	queue_free()
 
 
 func _choose_new_direction() -> void:
@@ -527,6 +694,65 @@ func _choose_new_direction() -> void:
 	_direction = Vector2(cos(ang), sin(ang))
 
 
+func _pick_hardscape_retreat_point(sim: Node) -> Vector3:
+	var root: Variant = sim.get("hardscape_root")
+	if root == null or not is_instance_valid(root):
+		return Vector3.INF
+	var best: Vector3 = Vector3.INF
+	var best_d2: float = INF
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			stack.append(c)
+		if n == root:
+			continue
+		if not (n is Node3D):
+			continue
+		var p: Vector3 = (n as Node3D).global_position
+		var d2: float = p.distance_squared_to(global_position)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = p
+	return best
+
+
+func _apply_local_spacing(tangent: Vector3, bitangent: Vector3) -> void:
+	var sim := _get_sim()
+	if sim == null:
+		return
+	var root: Variant = sim.get("snails_root")
+	if root == null or not (root is Node3D):
+		return
+	const SPACE_R: float = 0.22
+	var pushed: int = 0
+	for s in (root as Node3D).get_children():
+		if s == self or not is_instance_valid(s):
+			continue
+		var script: Script = s.get_script()
+		var path: String = script.resource_path if script != null else ""
+		if not path.ends_with("snail.gd"):
+			continue
+		var to_other: Vector3 = global_position - (s as Node3D).global_position
+		# Only repel neighbors on roughly the same wall plane.
+		if absf(wall_normal.dot(to_other)) > 0.22:
+			continue
+		var dx: float = to_other.dot(tangent)
+		var dy: float = to_other.dot(bitangent)
+		var d2: float = dx * dx + dy * dy
+		if d2 < 1e-6 or d2 >= SPACE_R * SPACE_R:
+			continue
+		var dir2 := Vector2(dx, dy).normalized()
+		var merged: Vector2 = _direction + dir2 * 0.9
+		if merged.length_squared() > 1e-6:
+			_direction = merged.normalized()
+		position += (tangent * dir2.x + bitangent * dir2.y) \
+			* (SPACE_R - sqrt(d2)) * 0.55
+		pushed += 1
+		if pushed >= 4:
+			break
+
+
 # ---- Save / load ----
 
 func to_save_dict() -> Dictionary:
@@ -540,12 +766,21 @@ func to_save_dict() -> Dictionary:
 		"shell_color": SaveHelpers.color_to_array(shell_color),
 		"shell_size": shell_size,
 		"shell_shape": shell_shape,
+		"shell_spines": shell_spines,
+		"toxin_level": toxin_level,
+		"body_color": SaveHelpers.color_to_array(body_color),
+		"shell_accent_color": SaveHelpers.color_to_array(shell_accent_color),
+		"crawl_speed": crawl_speed,
+		"appetite": appetite,
+		"max_age_s": max_age_s,
 		"generation": generation,
 		"sex": sex,
 		"direction": SaveHelpers.vec2_to_array(_direction),
 		"facing": SaveHelpers.vec2_to_array(_facing),
 		"wall_anchor_offset": _wall_anchor_offset,
-		"age": _age,
+		"age": age,
+		"hunger": hunger,
+		"energy": energy,
 		"t_until_breed": _t_until_breed,
 		"t_until_turn": _t_until_turn,
 		"paused": _paused,
@@ -566,12 +801,21 @@ func apply_save_dict(d: Dictionary) -> void:
 	shell_color = SaveHelpers.array_to_color(d.get("shell_color", []), shell_color)
 	shell_size = float(d.get("shell_size", shell_size))
 	shell_shape = String(d.get("shell_shape", shell_shape))
+	shell_spines = clampf(float(d.get("shell_spines", shell_spines)), 0.0, 1.0)
+	toxin_level = clampf(float(d.get("toxin_level", toxin_level)), 0.0, 1.0)
+	body_color = SaveHelpers.array_to_color(d.get("body_color", []), body_color)
+	shell_accent_color = SaveHelpers.array_to_color(d.get("shell_accent_color", []), shell_accent_color)
+	crawl_speed = clampf(float(d.get("crawl_speed", crawl_speed)), 0.3, 2.5)
+	appetite = clampf(float(d.get("appetite", appetite)), 0.4, 2.0)
+	max_age_s = maxf(60.0, float(d.get("max_age_s", max_age_s)))
 	generation = int(d.get("generation", 0))
 	sex = int(d.get("sex", 0))
 	_direction = SaveHelpers.array_to_vec2(d.get("direction", []), Vector2.RIGHT)
 	_facing = SaveHelpers.array_to_vec2(d.get("facing", []), Vector2.RIGHT)
 	_wall_anchor_offset = float(d.get("wall_anchor_offset", _wall_anchor_offset))
-	_age = float(d.get("age", 0.0))
+	age = float(d.get("age", 0.0))
+	hunger = clampf(float(d.get("hunger", hunger)), 0.0, 1.0)
+	energy = clampf(float(d.get("energy", energy)), 0.0, 1.0)
 	_t_until_breed = float(d.get("t_until_breed", _t_until_breed))
 	_t_until_turn = float(d.get("t_until_turn", _t_until_turn))
 	_paused = bool(d.get("paused", false))

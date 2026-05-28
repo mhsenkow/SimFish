@@ -78,10 +78,10 @@ func _build_node(local_pos: Vector3, size: float, gen: int, parent: Node3D,
 
 	# Drop one voxel at this node.
 	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(size, size, size)
-	mi.mesh = bm
-	mi.material_override = _make_mat(color)
+	var scale_v: float = size / VOXEL_SIZE
+	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
+	mi.scale = Vector3(scale_v, scale_v, scale_v)
+	mi.material_override = VoxelMat.make_foliage(color)
 	mi.position = local_pos
 	parent.add_child(mi)
 	_all_voxels.append(mi)
@@ -171,10 +171,10 @@ func _spawn_children_off(parent_pos: Vector3, size: float, gen: int) -> void:
 		)
 		var child_pos: Vector3 = parent_pos + dir * parent_size * 0.9
 		var mi := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		bm.size = Vector3(size, size, size)
-		mi.mesh = bm
-		mi.material_override = _make_mat(color)
+		var scale_v: float = size / VOXEL_SIZE
+		mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
+		mi.scale = Vector3(scale_v, scale_v, scale_v)
+		mi.material_override = VoxelMat.make_foliage(color)
 		mi.position = child_pos
 		add_child(mi)
 		_all_voxels.append(mi)

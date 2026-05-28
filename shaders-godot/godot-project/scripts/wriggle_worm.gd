@@ -33,6 +33,8 @@ var _drift: Vector3 = Vector3.ZERO
 var _next_jitter_t: float = 0.0
 var _head: MeshInstance3D = null
 var _body: MeshInstance3D = null
+var _tail: MeshInstance3D = null
+var _bristles: Array[MeshInstance3D] = []
 
 
 func _ready() -> void:
@@ -40,16 +42,31 @@ func _ready() -> void:
 	_home = position
 	_seed_drift()
 	_next_jitter_t = randf_range(1.2, 3.0)
-	# Two segments: a slightly darker head + a body. Both very thin voxels.
-	# The head leads with the phase wave; the body trails by ~PI/2 to
-	# produce a visible undulation.
-	var v: float = 0.045
-	_head = _make_seg(Vector3(v * 0.9, v * 0.7, v * 0.45), Color8(95, 70, 50))
+	# Multi-segment variants so worm microfauna architecture diverges:
+	# slim nematode vs chunkier detritivore with side bristles.
+	var v: float = randf_range(0.040, 0.054)
+	var chunky: bool = randf() < 0.38
+	var body_col: Color = Color8(115, 85, 60) if not chunky else Color8(126, 95, 66)
+	_head = _make_seg(Vector3(v * 0.9, v * (0.7 if not chunky else 0.85), v * 0.45),
+		Color8(95, 70, 50))
 	_head.position = Vector3(0, v * 0.35, 0)
 	add_child(_head)
-	_body = _make_seg(Vector3(v * 0.7, v * 0.6, v * 0.85), Color8(115, 85, 60))
+	_body = _make_seg(Vector3(v * 0.7, v * (0.6 if not chunky else 0.75), v * 0.85), body_col)
 	_body.position = Vector3(0, v * 0.2, v * 0.5)
 	add_child(_body)
+	_tail = _make_seg(Vector3(v * 0.55, v * (0.48 if not chunky else 0.58), v * 0.75),
+		body_col.darkened(0.10))
+	_tail.position = Vector3(0, v * 0.12, v * 1.0)
+	add_child(_tail)
+	_bristles.clear()
+	if chunky:
+		for zf in [v * 0.42, v * 0.82]:
+			for x_side in [-1.0, 1.0]:
+				var b := _make_seg(Vector3(v * 0.12, v * 0.10, v * 0.35),
+					Color8(145, 120, 88))
+				b.position = Vector3(x_side * v * 0.36, v * 0.18, zf)
+				add_child(b)
+				_bristles.append(b)
 
 
 func _make_seg(size: Vector3, color: Color) -> MeshInstance3D:
@@ -109,3 +126,10 @@ func _process(dt: float) -> void:
 		_head.position.x = sin(_phase) * WRIGGLE_AMP
 	if _body != null:
 		_body.position.x = sin(_phase - PI * 0.5) * WRIGGLE_AMP
+	if _tail != null:
+		_tail.position.x = sin(_phase - PI * 0.95) * WRIGGLE_AMP * 0.9
+	for i in _bristles.size():
+		var b: MeshInstance3D = _bristles[i]
+		if b == null or not is_instance_valid(b):
+			continue
+		b.rotation.z = sin(_phase * 1.8 + float(i)) * 0.35

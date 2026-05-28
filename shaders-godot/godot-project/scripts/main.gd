@@ -21,6 +21,8 @@ extends Node
 @onready var render_panel: PanelContainer = $RenderPanel
 @onready var fish_store_panel: PanelContainer = $FishStorePanel
 @onready var library_panel: PanelContainer = $LibraryPanel
+@onready var creature_creator_panel: PanelContainer = $CreatureCreatorPanel
+@onready var walkthrough_overlay: Control = $WalkthroughOverlay
 @onready var aquascape_palette: PanelContainer = $AquascapeToolPalette
 
 # Top-bar HUD — restructured 2026 into clusters + chip strip. All buttons are
@@ -33,6 +35,7 @@ extends Node
 @onready var render_toggle: Button = %RenderToggle
 @onready var fish_store_toggle: Button = %FishStoreToggle
 @onready var library_toggle: Button = %LibraryToggle
+@onready var creature_creator_toggle: Button = %CreatureCreatorToggle
 @onready var aquascape_toggle: Button = %AquascapeToggle
 @onready var menu_button: Button = %MenuButton
 @onready var portal_toggle: Button = %PortalToggle
@@ -134,6 +137,8 @@ var _aquascape_mode: bool = false
 var _aquascape_placed: Array[Node3D] = []
 var _aquascape_preview: MeshInstance3D = null
 var _aquascape_saved_time_scale: float = 1.0
+# Saved sim speed while the guided walkthrough holds the sim paused.
+var _wt_saved_time_scale: float = 1.0
 var _aquascape_tool: String = "dirt"
 const AQUASCAPE_TOOLS: Array[String] = ["dirt", "stone", "wood", "dig"]
 # Drag-existing-driftwood state. While in aquascape mode, an LMB hold that
@@ -143,6 +148,11 @@ const AQUASCAPE_TOOLS: Array[String] = ["dirt", "stone", "wood", "dig"]
 # of stamping single voxels.
 var _wood_drag: Node3D = null
 var _wood_drag_y_offset: float = 0.0
+# Last substrate-projected cursor point during a hardscape-piece drag, used
+# for delta-based movement so picking a big piece doesn't teleport it.
+var _wood_drag_last_hit: Vector3 = Vector3(INF, INF, INF)
+# Ad-hoc cluster of loose procedural hardscape voxels being dragged together.
+var _drag_cluster: Array[Node3D] = []
 # Paint-brush throttle. When LMB is held in aquascape mode (no log under
 # cursor) we drop voxels along the drag path; this prevents stacking
 # dozens of them per second on the same cell.
@@ -227,6 +237,8 @@ var _welcome_label: Label = null
 
 # ---- Species discovery toast ----
 var _discovery_toast: Label = null
+var _discovery_toast_tween: Tween = null
+var _welcome_toast_tween: Tween = null
 
 
 func _is_mobile() -> bool:
@@ -260,6 +272,13 @@ func _ready() -> void:
 		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
 	if library_toggle != null and library_panel != null:
 		library_toggle.pressed.connect(library_panel.toggle)
+	if creature_creator_toggle != null and creature_creator_panel != null:
+		creature_creator_toggle.pressed.connect(creature_creator_panel.toggle)
+	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
+		walkthrough_overlay.setup(self)
+		# Launch the guided walkthrough if the tank menu flagged this tank for
+		# it. Deferred so world/sim are fully ready first.
+		call_deferred("_maybe_start_walkthrough")
 	var species_lib := get_node_or_null("/root/SpeciesLibrary")
 	if species_lib != null and species_lib.has_signal("species_discovered"):
 		species_lib.species_discovered.connect(_on_species_discovered)
@@ -378,6 +397,8 @@ func _apply_render_config() -> void:
 	# Fog: read from environment if available.
 	var we := world.get_node_or_null("WorldEnvironment")
 	if we != null and we.environment != null:
+		# Keep volumetric fog off on Metal/macOS — it was a major fence-timeout source.
+		we.environment.volumetric_fog_enabled = false
 		we.environment.volumetric_fog_density = float(cfg.fog_density)
 		we.environment.volumetric_fog_anisotropy = float(cfg.fog_anisotropy)
 		we.environment.volumetric_fog_ambient_inject = float(cfg.fog_ambient_inject)
@@ -417,6 +438,8 @@ func _process(dt: float) -> void:
 			if _aquascape_mode:
 				_drag_mode = ""
 				_wood_drag = null
+				_drag_cluster.clear()
+				_wood_drag_last_hit = INVALID_HIT
 				_haptic(22)
 				_show_radial_menu(_tap_start_pos)
 			else:
@@ -504,11 +527,7 @@ func _process_mouse_input(dt: float) -> void:
 			if pan_modifier:
 				_drag_mode = "pan"
 			elif _aquascape_mode:
-				var picked: Node3D = _pick_wood_log(mouse_now)
-				if picked != null:
-					_wood_drag = picked
-					_wood_drag_y_offset = picked.global_position.y \
-						- _substrate_top_y()
+				if _begin_aquascape_drag(mouse_now):
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
@@ -519,6 +538,8 @@ func _process_mouse_input(dt: float) -> void:
 	elif not any_btn and _orbiting:
 		_orbiting = false
 		_wood_drag = null
+		_drag_cluster.clear()
+		_wood_drag_last_hit = INVALID_HIT
 		_drag_mode = ""
 		_drag_button = 0
 
@@ -543,13 +564,7 @@ func _process_mouse_input(dt: float) -> void:
 						_aquascape_place(mouse_now)
 						_paint_cooldown = PAINT_INTERVAL
 				"wood_drag":
-					if _wood_drag != null and is_instance_valid(_wood_drag):
-						var hit: Vector3 = _project_to_substrate(mouse_now)
-						if hit != INVALID_HIT:
-							_wood_drag.global_position = Vector3(
-								hit.x,
-								_substrate_top_y() + _wood_drag_y_offset,
-								hit.z)
+					_drag_hardscape_piece(mouse_now)
 				_:
 					yaw -= delta.x * SENSITIVITY
 					pitch -= delta.y * SENSITIVITY
@@ -594,9 +609,9 @@ func _process_mouse_input(dt: float) -> void:
 		_timelapse_accum += dt
 		if _timelapse_accum >= TIMELAPSE_INTERVAL:
 			_timelapse_accum = 0.0
-			var img: Image = sub_viewport.get_texture().get_image()
-			img.save_png("%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index])
+			var frame_path: String = "%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index]
 			_timelapse_index += 1
+			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
 
 	# Keep header in sync with time-scale + day phase live, not just at 1Hz.
 	_render_header()
@@ -664,8 +679,10 @@ func _on_four() -> void:
 
 
 func _take_photo() -> void:
-	var img: Image = sub_viewport.get_texture().get_image()
-	# Save into the user's app-data dir under ./captures
+	_request_viewport_image(_finish_photo)
+
+
+func _finish_photo(img: Image) -> void:
 	var dir: String = OS.get_user_data_dir() + "/captures"
 	DirAccess.make_dir_recursive_absolute(dir)
 	var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
@@ -674,6 +691,36 @@ func _take_photo() -> void:
 	print_verbose("[vivarium] photo saved: ", path)
 	_haptic(25)
 	_show_photo_toast(path)
+
+
+func _save_timelapse_frame(img: Image, frame_path: String) -> void:
+	img.save_png(frame_path)
+
+
+# Defer GPU readback until after the viewport finishes presenting.
+func _request_viewport_image(on_ready: Callable) -> void:
+	if sub_viewport == null or not is_instance_valid(sub_viewport):
+		return
+	var frame: int = Engine.get_process_frames()
+	if _viewport_capture_busy \
+			or frame - _last_viewport_capture_frame < VIEWPORT_CAPTURE_FRAME_GAP:
+		return
+	_viewport_capture_busy = true
+	_run_viewport_capture(on_ready)
+
+
+func _run_viewport_capture(on_ready: Callable) -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var img: Image = null
+	if sub_viewport != null and is_instance_valid(sub_viewport):
+		var tex: ViewportTexture = sub_viewport.get_texture()
+		if tex != null:
+			img = tex.get_image()
+	_viewport_capture_busy = false
+	_last_viewport_capture_frame = Engine.get_process_frames()
+	if img != null and img.get_width() > 0 and img.get_height() > 0:
+		on_ready.call(img)
 
 
 # ---- Timelapse mode ----
@@ -1066,7 +1113,7 @@ func _toggle_aquascape() -> void:
 		if aquascape_palette != null:
 			aquascape_palette.visible = true
 		_refresh_tool_buttons()
-		print_verbose("[vivarium] aquascape ON. click to place stones, shift-click for driftwood, backspace undo, B exit.")
+		print_verbose("[vivarium] aquascape ON. 1 dirt / 2 stone / 3 wood / 4 dig; drag a piece to move it; BACKSPACE undo; B exit.")
 	else:
 		if _sim != null:
 			_sim.time_scale = _aquascape_saved_time_scale
@@ -1078,6 +1125,63 @@ func _toggle_aquascape() -> void:
 	# Notify mobile HUD to show/hide the undo button.
 	if _mobile_hud != null and _mobile_hud.has_method("set_aquascape_mode"):
 		_mobile_hud.set_aquascape_mode(_aquascape_mode)
+
+
+# ---- Walkthrough hooks (called by walkthrough.gd) ----
+
+func _maybe_start_walkthrough() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.walkthrough_pending):
+		return
+	# Consume the flag so it doesn't re-trigger on the next scene load.
+	cfg.walkthrough_pending = false
+	if walkthrough_overlay != null and walkthrough_overlay.has_method("begin"):
+		walkthrough_overlay.begin()
+
+
+func wt_pause_sim(on: bool) -> void:
+	if _sim == null:
+		return
+	if on:
+		var cur: float = float(_sim.time_scale)
+		_wt_saved_time_scale = cur if cur > 0.0 else 1.0
+		_sim.time_scale = 0.0
+	else:
+		_sim.time_scale = _wt_saved_time_scale
+
+
+func wt_set_aquascape(on: bool) -> void:
+	if _aquascape_mode != on:
+		_toggle_aquascape()
+
+
+func wt_open_creator(kind_str: String) -> void:
+	if creature_creator_panel != null and creature_creator_panel.has_method("open_to_kind"):
+		creature_creator_panel.open_to_kind(kind_str)
+
+
+func wt_close_creator() -> void:
+	if creature_creator_panel != null and creature_creator_panel.visible \
+			and creature_creator_panel.has_method("close"):
+		creature_creator_panel.close()
+
+
+func wt_counts() -> Dictionary:
+	var d: Dictionary = {"fish": 0, "shrimp": 0, "snail": 0, "plant": 0}
+	if _sim == null:
+		return d
+	d["fish"] = _sim.fish.size()
+	d["shrimp"] = _sim.shrimp.size()
+	d["plant"] = _sim.plants.size()
+	var sr: Variant = _sim.get("snails_root")
+	if sr != null and is_instance_valid(sr):
+		var n: int = 0
+		for c in (sr as Node).get_children():
+			var scr: Script = c.get_script()
+			if scr != null and scr.resource_path.ends_with("snail.gd"):
+				n += 1
+		d["snail"] = n
+	return d
 
 
 # Build the floating tool palette shown at top-center while in aquascape
@@ -1185,7 +1289,22 @@ const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
 # _aquascape_placed, ray-tests against each log's bounding sphere computed
 # from its first child voxel's distance to centroid. Cheap because the
 # list is small (usually < 8 logs).
-func _pick_wood_log(mouse_pos: Vector2) -> Node3D:
+func _hardscape_node() -> Node3D:
+	# The Hardscape container holds all editable pieces (procedural driftwood/
+	# rocks + player-placed stones and logs). Falls back to world root if it
+	# wasn't built (shouldn't happen — _build_hardscape always makes it).
+	if world == null:
+		return null
+	var hs: Node = world.get_node_or_null("Hardscape")
+	return (hs as Node3D) if hs != null else world
+
+
+# Pick a draggable player-placed piece under the cursor: wood logs and
+# stones. Dirt is terrain (only diggable). Procedural driftwood/rocks are
+# handled separately by _gather_procedural_cluster (they aren't grouped into
+# single nodes, so fish per-voxel clearance keeps working). Returns null if
+# nothing placed is hit.
+func _pick_hardscape_piece(mouse_pos: Vector2) -> Node3D:
 	if camera == null:
 		return null
 	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
@@ -1196,22 +1315,62 @@ func _pick_wood_log(mouse_pos: Vector2) -> Node3D:
 	for v in _aquascape_placed:
 		if not is_instance_valid(v):
 			continue
-		# Wood logs are Node3D containers with multiple voxel children;
-		# single-voxel placements (dirt, stone) are MeshInstance3D leaves.
-		# Tool meta tells us the kind reliably.
-		if v.get_meta("aquascape_tool", "") != "wood":
+		if String(v.get_meta("aquascape_tool", "")) == "dirt":
 			continue
-		# Sphere test: log "radius" approximated as 1.6 (~5 voxels of 0.7).
+		var radius: float = 1.6 if String(v.get_meta("aquascape_tool", "")) == "wood" else 0.9
 		var to_c: Vector3 = v.global_position - origin
 		var t: float = to_c.dot(dir)
 		if t < 0.0:
 			continue
 		var closest: Vector3 = origin + dir * t
 		var perp_sq: float = (closest - v.global_position).length_squared()
-		if perp_sq < 1.6 * 1.6 and t < best_t:
+		if perp_sq < radius * radius and t < best_t:
 			best_t = t
 			best = v
 	return best
+
+
+# Collect the loose procedural hardscape voxels (driftwood / rocks) within a
+# small XZ radius of a point. These aren't grouped into one node, so we drag
+# them together as an ad-hoc cluster for the duration of one drag.
+func _gather_procedural_cluster(hit: Vector3) -> Array[Node3D]:
+	var out: Array[Node3D] = []
+	var hs: Node3D = _hardscape_node()
+	if hs == null:
+		return out
+	const CLUSTER_R: float = 1.2
+	for child in hs.get_children():
+		if not (child is MeshInstance3D) or not is_instance_valid(child):
+			continue
+		if _aquascape_placed.has(child):
+			continue  # player placement - handled by _pick_hardscape_piece
+		var gp: Vector3 = (child as Node3D).global_position
+		if Vector2(gp.x - hit.x, gp.z - hit.z).length() < CLUSTER_R:
+			out.append(child)
+	return out
+
+
+# Try to start dragging hardscape at the cursor: a placed piece first, then a
+# procedural cluster. Returns true if a drag began.
+func _begin_aquascape_drag(pos: Vector2) -> bool:
+	if _aquascape_tool == "dig":
+		return false
+	var picked: Node3D = _pick_hardscape_piece(pos)
+	if picked != null:
+		_wood_drag = picked
+		_drag_cluster.clear()
+		_wood_drag_y_offset = picked.global_position.y - _substrate_top_y()
+		_wood_drag_last_hit = _project_to_substrate(pos)
+		return true
+	var hit: Vector3 = _project_to_substrate(pos)
+	if hit != INVALID_HIT:
+		var cluster: Array[Node3D] = _gather_procedural_cluster(hit)
+		if not cluster.is_empty():
+			_wood_drag = null
+			_drag_cluster = cluster
+			_wood_drag_last_hit = hit
+			return true
+	return false
 
 
 func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
@@ -1395,11 +1554,17 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 		var sm := StandardMaterial3D.new()
 		sm.albedo_color = color
 		mi.material_override = sm
+	# Parent under Hardscape so the piece is real hardscape: fish/fry hide
+	# behavior, plant-spawn avoidance, and snail retreat all read this
+	# container, and the occupancy grid keeps creatures from clipping it.
 	# add_child first, then global_position (Godot 4 transform ordering).
-	world.add_child(mi)
+	var hs := _hardscape_node()
+	hs.add_child(mi)
 	mi.global_position = hit
 	mi.set_meta("aquascape_tool", _aquascape_tool)
 	_aquascape_placed.append(mi)
+	if world.has_method("_mark_hardscape_occupancy"):
+		world._mark_hardscape_occupancy(hit, voxel_size)
 	print_verbose("[vivarium] placed %s at %s (total %d)" % [_aquascape_tool, hit, _aquascape_placed.size()])
 
 
@@ -1456,45 +1621,119 @@ func _aquascape_place_log(base: Vector3) -> void:
 	print_verbose("[vivarium] placed driftwood log at %s" % base)
 
 
-func _column_top_y(x: float, z: float) -> float:
-	# Walk through all the placed objects + existing substrate visuals to
-	# find the topmost Y in this XZ column. Cheap because we just iterate
-	# the aquascape_placed list + the world's Substrate container.
+func _column_top_y(x: float, z: float, exclude: Node = null) -> float:
+	# Find the topmost Y in this XZ column by scanning every hardscape voxel
+	# (procedural driftwood/rocks + player-placed dirt/stone/wood, which all
+	# live under the Hardscape container). `exclude` skips a node + its
+	# subtree so a piece being dragged doesn't stack on top of itself.
 	# Returns the world-space Y of the top face of the topmost voxel.
 	var top: float = _substrate_top_y()
-	# Aquascape placements first (these are the things the user just made).
+	var hs: Node3D = _hardscape_node()
+	if hs != null:
+		top = _scan_column_top(hs, x, z, exclude, top)
+	# Legacy: any placement still parented to the world root (old saves).
 	for v in _aquascape_placed:
-		if not is_instance_valid(v):
+		if not is_instance_valid(v) or v == exclude:
 			continue
+		if v.get_parent() == hs:
+			continue  # already counted by the recursive scan
 		var gp: Vector3 = v.global_position
 		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
-			# Use the voxel's mesh size to compute its top.
 			var size_y: float = 0.5
 			if v is MeshInstance3D:
 				var bm := (v as MeshInstance3D).mesh as BoxMesh
 				if bm != null:
 					size_y = bm.size.y
-			var voxel_top: float = gp.y + size_y * 0.5
-			if voxel_top > top:
-				top = voxel_top
+			top = maxf(top, gp.y + size_y * 0.5)
 	return top
 
 
+func _scan_column_top(node: Node, x: float, z: float, exclude: Node, top: float) -> float:
+	if node == exclude:
+		return top
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		var gp: Vector3 = mi.global_position
+		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
+			var sy: float = 0.5
+			var bm := mi.mesh as BoxMesh
+			if bm != null:
+				sy = bm.size.y
+			top = maxf(top, gp.y + sy * 0.5)
+	for c in node.get_children():
+		top = _scan_column_top(c, x, z, exclude, top)
+	return top
+
+
+# Move the currently-grabbed hardscape piece by the cursor delta (so big
+# procedural pieces don't teleport when picked) and rest it on the terrain
+# column beneath, excluding itself so it doesn't climb its own height.
+func _drag_hardscape_piece(mouse_pos: Vector2) -> void:
+	var has_single: bool = _wood_drag != null and is_instance_valid(_wood_drag)
+	if not has_single and _drag_cluster.is_empty():
+		return
+	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	if hit == INVALID_HIT:
+		return
+	if _wood_drag_last_hit == INVALID_HIT:
+		_wood_drag_last_hit = hit
+	var d: Vector3 = hit - _wood_drag_last_hit
+	_wood_drag_last_hit = hit
+	var dxz: Vector3 = Vector3(d.x, 0.0, d.z)
+	if has_single:
+		# Single placed piece: follow terrain height (excluding itself).
+		var np: Vector3 = _wood_drag.global_position + dxz
+		np.y = _column_top_y(np.x, np.z, _wood_drag) + _wood_drag_y_offset
+		_wood_drag.global_position = np
+	else:
+		# Procedural cluster: translate horizontally as a rigid clump.
+		for v in _drag_cluster:
+			if is_instance_valid(v):
+				v.global_position += dxz
+
+
 func _aquascape_dig(hit: Vector3) -> void:
-	# Find the topmost aquascape-placed voxel at this cursor XZ and remove it.
-	var best: Node3D = null
-	var best_y: float = -INF
-	for v in _aquascape_placed:
-		if not is_instance_valid(v):
-			continue
-		var gp: Vector3 = v.global_position
-		if absf(gp.x - hit.x) < 0.45 and absf(gp.z - hit.z) < 0.45 and gp.y > best_y:
-			best_y = gp.y
-			best = v
+	# Chip away the topmost hardscape voxel at this cursor XZ — works on both
+	# player placements AND the procedural driftwood / rocks (they all live
+	# under Hardscape). Grouped pieces lose one voxel per dig.
+	var hs: Node3D = _hardscape_node()
+	if hs == null:
+		return
+	var acc: Dictionary = {"node": null, "y": -INF}
+	_scan_top_voxel(hs, hit.x, hit.z, acc)
+	var best: Node = acc["node"]
+	if best == null:
+		# Fall back to any legacy world-parented placement.
+		var by: float = -INF
+		for v in _aquascape_placed:
+			if not is_instance_valid(v):
+				continue
+			var gp: Vector3 = v.global_position
+			if absf(gp.x - hit.x) < 0.45 and absf(gp.z - hit.z) < 0.45 and gp.y > by:
+				by = gp.y
+				best = v
 	if best == null:
 		return
 	_aquascape_placed.erase(best)
 	best.queue_free()
+	_haptic(12)
+
+
+func _scan_top_voxel(node: Node, x: float, z: float, acc: Dictionary) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		var gp: Vector3 = mi.global_position
+		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
+			var sy: float = 0.5
+			var bm := mi.mesh as BoxMesh
+			if bm != null:
+				sy = bm.size.y
+			var topy: float = gp.y + sy * 0.5
+			if topy > float(acc["y"]):
+				acc["y"] = topy
+				acc["node"] = mi
+	for c in node.get_children():
+		_scan_top_voxel(c, x, z, acc)
 
 
 # ---- Aquascape save / load ----
@@ -1574,10 +1813,12 @@ func _restore_aquascape(arr: Array) -> void:
 				var sm := StandardMaterial3D.new()
 				sm.albedo_color = color
 				mi.material_override = sm
-			world.add_child(mi)
+			hardscape.add_child(mi)
 			mi.global_position = pos
 			mi.set_meta("aquascape_tool", tool)
 			_aquascape_placed.append(mi)
+			if world.has_method("_mark_hardscape_occupancy"):
+				world._mark_hardscape_occupancy(pos, size)
 		elif kind == "log":
 			var log_node := Node3D.new()
 			log_node.name = "AquaLog"
@@ -1710,11 +1951,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 
 			# Aquascape: start painting immediately on touch-down (like LMB).
 			if _aquascape_mode:
-				var picked: Node3D = _pick_wood_log(ev.position)
-				if picked != null:
-					_wood_drag = picked
-					_wood_drag_y_offset = picked.global_position.y \
-						- _substrate_top_y()
+				if _begin_aquascape_drag(ev.position):
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
@@ -1733,6 +1970,8 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 			if _drag_mode == "paint":
 				_drag_mode = ""
 			_wood_drag = null
+			_drag_cluster.clear()
+			_wood_drag_last_hit = INVALID_HIT
 			# Cancel any in-flight edge swipe — multi-touch overrides it.
 			_edge_swipe_active = false
 	else:
@@ -1783,6 +2022,8 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 
 			# End aquascape drag.
 			_wood_drag = null
+			_drag_cluster.clear()
+			_wood_drag_last_hit = INVALID_HIT
 			_drag_mode = ""
 
 		_touches.erase(ev.index)
@@ -1812,13 +2053,7 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 						_aquascape_place(ev.position)
 						_paint_cooldown = PAINT_INTERVAL
 				"wood_drag":
-					if _wood_drag != null and is_instance_valid(_wood_drag):
-						var hit: Vector3 = _project_to_substrate(ev.position)
-						if hit != INVALID_HIT:
-							_wood_drag.global_position = Vector3(
-								hit.x,
-								_substrate_top_y() + _wood_drag_y_offset,
-								hit.z)
+					_drag_hardscape_piece(ev.position)
 				_:
 					# Even in aquascape, allow orbit if no tool action locked.
 					yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
@@ -1899,6 +2134,7 @@ func _setup_mobile_ui() -> void:
 	if settings_toggle != null: toggle_buttons.append(settings_toggle)
 	if render_toggle != null: toggle_buttons.append(render_toggle)
 	if fish_store_toggle != null: toggle_buttons.append(fish_store_toggle)
+	if creature_creator_toggle != null: toggle_buttons.append(creature_creator_toggle)
 	if aquascape_toggle != null: toggle_buttons.append(aquascape_toggle)
 	if portal_toggle != null: toggle_buttons.append(portal_toggle)
 	for btn in toggle_buttons:
@@ -2498,8 +2734,14 @@ func _make_sparkline() -> Control:
 	# Use a script-on-the-fly via a connected _draw lambda. Godot 4 supports
 	# the `draw` signal that fires when a Control redraws, which lets us
 	# paint without a separate .gd file.
-	c.draw.connect(func(): _draw_sparkline(c))
+	c.draw.connect(_draw_sparkline_on.bind(c))
 	return c
+
+
+func _draw_sparkline_on(c: Control) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	_draw_sparkline(c)
 
 
 func _draw_sparkline(c: Control) -> void:
@@ -2619,7 +2861,10 @@ func _day_label(p: float) -> String:
 # via NOTIFICATION_WM_GO_BACK_REQUEST in _notification.
 func _on_back_to_menu() -> void:
 	if _save_restored:
-		save_active_tank()
+		# Avoid GPU readback on menu navigation. On Metal/macOS the thumbnail
+		# capture can still hit "timeout waiting for fence" if the render queue
+		# is saturated right when leaving the scene.
+		save_active_tank(true)
 	_haptic(15)
 	get_tree().change_scene_to_file("res://tank_menu.tscn")
 
@@ -2635,6 +2880,11 @@ func _on_back_to_menu() -> void:
 # of progress, infrequent enough that the cost is negligible.
 const AUTOSAVE_INTERVAL_S: float = 300.0
 var _autosave_accum: float = 0.0
+# GPU readback guard — synchronous get_image() on macOS often trips
+# "timeout waiting for fence" if we read while the viewport is still drawing.
+var _viewport_capture_busy: bool = false
+var _last_viewport_capture_frame: int = -9999
+const VIEWPORT_CAPTURE_FRAME_GAP: int = 45
 # True once we've successfully restored state (or determined there's nothing
 # to restore). Guards against running load_state twice.
 var _save_restored: bool = false
@@ -2700,7 +2950,8 @@ func save_active_tank(skip_thumbnail: bool = false) -> void:
 		return
 	# Capture a thumbnail for the menu card. Cheap — pulls the existing
 	# SubViewport texture, no extra rendering.
-	if not skip_thumbnail:
+	# On macOS/Metal this readback is the top freeze trigger under load.
+	if not skip_thumbnail and not OS.has_feature("macos"):
 		_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
 	# Update per-tank meta: accumulated runtime + last-opened.
 	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
@@ -2721,11 +2972,10 @@ func _save_thumbnail(path: String) -> void:
 		return
 	if not get_window().has_focus():
 		return
-	var img: Image = sub_viewport.get_texture().get_image()
-	if img == null:
-		return
-	# Downscale for storage; 480-wide gives a sharp menu card without taking
-	# 200KB per thumbnail.
+	_request_viewport_image(_finish_save_thumbnail.bind(path))
+
+
+func _finish_save_thumbnail(img: Image, path: String) -> void:
 	var w: int = 480
 	var h: int = int(round(float(img.get_height()) * (float(w) / float(img.get_width()))))
 	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
@@ -2906,8 +3156,10 @@ func _show_discovery_toast(entry: Dictionary) -> void:
 		src_hint = " · founder"
 	elif src == "store":
 		src_hint = " · store"
+	_kill_discovery_toast_tween()
 	if _discovery_toast != null and is_instance_valid(_discovery_toast):
 		_discovery_toast.queue_free()
+		_discovery_toast = null
 	var lab := Label.new()
 	lab.text = "%s New discovery: %s (gen %d)%s" % [icon, display, gen, src_hint]
 	lab.add_theme_color_override("font_color", Color(0.88, 0.96, 1.0, 1.0))
@@ -2924,17 +3176,32 @@ func _show_discovery_toast(entry: Dictionary) -> void:
 	lab.offset_bottom = 140.0
 	add_child(lab)
 	_discovery_toast = lab
-	var tw := create_tween()
-	tw.tween_interval(3.2)
-	tw.tween_property(lab, "modulate:a", 0.0, 0.9)
-	tw.tween_callback(func():
-		if is_instance_valid(lab):
-			lab.queue_free())
+	_discovery_toast_tween = create_tween()
+	_discovery_toast_tween.tween_interval(3.2)
+	_discovery_toast_tween.tween_property(lab, "modulate:a", 0.0, 0.9)
+	_discovery_toast_tween.tween_callback(_clear_discovery_toast)
+
+
+func _kill_discovery_toast_tween() -> void:
+	if _discovery_toast_tween != null and _discovery_toast_tween.is_valid():
+		_discovery_toast_tween.kill()
+	_discovery_toast_tween = null
+
+
+func _clear_discovery_toast() -> void:
+	_discovery_toast_tween = null
+	if _discovery_toast != null and is_instance_valid(_discovery_toast):
+		_discovery_toast.queue_free()
+	_discovery_toast = null
 
 
 func _spawn_welcome_label(text: String) -> void:
+	if _welcome_toast_tween != null and _welcome_toast_tween.is_valid():
+		_welcome_toast_tween.kill()
+		_welcome_toast_tween = null
 	if _welcome_label != null and is_instance_valid(_welcome_label):
 		_welcome_label.queue_free()
+		_welcome_label = null
 	var lab := Label.new()
 	lab.text = text
 	lab.add_theme_color_override("font_color", Color(1, 1, 0.85, 1))
@@ -2953,12 +3220,17 @@ func _spawn_welcome_label(text: String) -> void:
 	_welcome_label = lab
 	# Fade out after 4 seconds. Use a tween so the message gently disappears
 	# instead of yanking on/off.
-	var tw := create_tween()
-	tw.tween_interval(4.0)
-	tw.tween_property(lab, "modulate:a", 0.0, 1.5)
-	tw.tween_callback(func():
-		if is_instance_valid(lab):
-			lab.queue_free())
+	_welcome_toast_tween = create_tween()
+	_welcome_toast_tween.tween_interval(4.0)
+	_welcome_toast_tween.tween_property(lab, "modulate:a", 0.0, 1.5)
+	_welcome_toast_tween.tween_callback(_clear_welcome_label)
+
+
+func _clear_welcome_label() -> void:
+	_welcome_toast_tween = null
+	if _welcome_label != null and is_instance_valid(_welcome_label):
+		_welcome_label.queue_free()
+	_welcome_label = null
 
 
 func _format_duration(seconds: int) -> String:
@@ -3008,6 +3280,19 @@ func _dismiss_blocking_overlays() -> bool:
 	if fish_store_panel != null and fish_store_panel.visible:
 		fish_store_panel.visible = false
 		fish_store_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dismissed = true
+	if creature_creator_panel != null and creature_creator_panel.visible:
+		if creature_creator_panel.has_method("close"):
+			creature_creator_panel.close()
+		else:
+			creature_creator_panel.visible = false
+		dismissed = true
+	if walkthrough_overlay != null and walkthrough_overlay.visible:
+		# ESC during the walkthrough finishes it (resumes the sim).
+		if walkthrough_overlay.has_method("_finish"):
+			walkthrough_overlay._finish()
+		else:
+			walkthrough_overlay.visible = false
 		dismissed = true
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		var cfg := get_node_or_null("/root/TankConfig")
@@ -3195,6 +3480,4 @@ func _show_photo_toast(path: String) -> void:
 	var tw := create_tween()
 	tw.tween_interval(1.5)
 	tw.tween_property(lab, "modulate:a", 0.0, 0.8)
-	tw.tween_callback(func():
-		if is_instance_valid(lab):
-			lab.queue_free())
+	tw.tween_callback(lab.queue_free)

@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3 uid="uid://main_vivarium"]
+[gd_scene load_steps=12 format=3 uid="uid://main_vivarium"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/world.gd" id="2_world"]
@@ -11,6 +11,8 @@
 [ext_resource type="Shader" path="res://shaders/circle_mask.gdshader" id="10_circle_mask"]
 [ext_resource type="Script" path="res://scripts/mobile_hud.gd" id="11_mobile_hud"]
 [ext_resource type="Script" path="res://scripts/library_panel.gd" id="12_library"]
+[ext_resource type="Script" path="res://scripts/creature_creator.gd" id="13_creature"]
+[ext_resource type="Script" path="res://scripts/walkthrough.gd" id="14_walkthrough"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_portal_mask"]
 shader = ExtResource("10_circle_mask")
@@ -300,6 +302,17 @@ theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
+[node name="CreatureCreatorToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+tooltip_text = "Creature creator: design custom fish / shrimp / snails / plants"
+text = " ✦ "
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
 [node name="FishStoreToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 28)
@@ -366,6 +379,26 @@ offset_right = -32.0
 offset_bottom = -40.0
 mouse_filter = 2
 script = ExtResource("12_library")
+
+[node name="CreatureCreatorPanel" type="PanelContainer" parent="."]
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -400.0
+offset_top = -280.0
+offset_right = 400.0
+offset_bottom = 280.0
+mouse_filter = 2
+script = ExtResource("13_creature")
+
+[node name="WalkthroughOverlay" type="Control" parent="."]
+visible = false
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+script = ExtResource("14_walkthrough")
 
 [node name="ControlsHint" type="Label" parent="."]
 anchor_left = 0.0

@@ -26,6 +26,17 @@ size_flags_horizontal = 3
 theme_override_font_sizes/font_size = 28
 theme_override_colors/font_color = Color(1, 0.94, 0.78, 1)
 
+[node name="SelectAllCheck" type="CheckBox" parent="TopBar"]
+text = "Select all"
+custom_minimum_size = Vector2(120, 40)
+theme_override_font_sizes/font_size = 14
+
+[node name="DeleteSelectedBtn" type="Button" parent="TopBar"]
+text = "Delete selected"
+disabled = true
+custom_minimum_size = Vector2(140, 44)
+theme_override_font_sizes/font_size = 14
+
 [node name="NewButton" type="Button" parent="TopBar"]
 text = "+ New tank"
 custom_minimum_size = Vector2(140, 56)

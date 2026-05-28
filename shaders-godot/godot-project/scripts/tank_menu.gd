@@ -15,23 +15,71 @@ const MAIN_SCENE := "res://main.tscn"
 @onready var _grid: GridContainer = $Scroll/Grid
 @onready var _empty_label: Label = $EmptyLabel
 @onready var _new_btn: Button = $TopBar/NewButton
+@onready var _select_all: CheckBox = $TopBar/SelectAllCheck
+@onready var _delete_selected_btn: Button = $TopBar/DeleteSelectedBtn
+
+var _selected_slots: Dictionary = {}
+var _slot_checkboxes: Dictionary = {}
+var _listed_slots: Array[int] = []
+var _syncing_select_all: bool = false
 
 
 func _ready() -> void:
 	_new_btn.pressed.connect(_on_new_pressed)
+	_select_all.toggled.connect(_on_select_all_toggled)
+	_delete_selected_btn.pressed.connect(_on_delete_selected_confirm)
+	_add_guided_button()
 	_refresh()
+
+
+# Add a "Guided setup" button next to "+ New tank" that creates an empty tank
+# and launches the step-by-step walkthrough.
+func _add_guided_button() -> void:
+	var top_bar: Node = _new_btn.get_parent()
+	if top_bar == null:
+		return
+	var b := Button.new()
+	b.text = "✦ Guided setup"
+	b.tooltip_text = "Create an empty tank and walk through stocking it step by step"
+	b.custom_minimum_size = Vector2(0, maxf(36.0, _new_btn.custom_minimum_size.y))
+	b.pressed.connect(_on_guided_pressed)
+	top_bar.add_child(b)
+	top_bar.move_child(b, _new_btn.get_index() + 1)
+
+
+func _on_guided_pressed() -> void:
+	var saves := get_node_or_null("/root/TankSaves")
+	var cfg := get_node_or_null("/root/TankConfig")
+	if saves == null or cfg == null:
+		return
+	var slot: int = saves.new_tank("Guided tank")
+	cfg.switch_to_slot(slot)
+	# Start empty so the player stocks everything during the walkthrough.
+	cfg.tank_preset = "empty"
+	cfg.walkthrough_pending = true
+	cfg.save_to_disk()
+	get_tree().change_scene_to_file(MAIN_SCENE)
 
 
 func _refresh() -> void:
 	for c in _grid.get_children():
 		c.queue_free()
+	_slot_checkboxes.clear()
+	_listed_slots.clear()
 	var saves := get_node_or_null("/root/TankSaves")
 	if saves == null:
 		return
 	var tanks: Array = saves.list_tanks()
 	_empty_label.visible = tanks.is_empty()
+	_select_all.visible = not tanks.is_empty()
+	_delete_selected_btn.visible = not tanks.is_empty()
 	for entry in tanks:
+		var slot: int = int(entry["slot"])
+		_listed_slots.append(slot)
 		_grid.add_child(_make_card(entry))
+	_prune_stale_selection()
+	_sync_select_all_checkbox()
+	_update_bulk_delete_ui()
 
 
 # Build a single tank card with thumbnail, name, runtime, and the small
@@ -45,6 +93,17 @@ func _make_card(entry: Dictionary) -> Control:
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 4)
 	card.add_child(vb)
+
+	# Selection row sits above the thumbnail so bulk actions are obvious.
+	var select_row := HBoxContainer.new()
+	select_row.add_theme_constant_override("separation", 6)
+	vb.add_child(select_row)
+	var select_cb := CheckBox.new()
+	select_cb.text = "Select"
+	select_cb.button_pressed = _selected_slots.has(slot)
+	select_cb.toggled.connect(func(on: bool): _set_slot_selected(slot, on))
+	select_row.add_child(select_cb)
+	_slot_checkboxes[slot] = select_cb
 
 	# Thumbnail (or placeholder if none yet).
 	var thumb := TextureRect.new()
@@ -88,7 +147,7 @@ func _make_card(entry: Dictionary) -> Control:
 	del_btn.text = "🗑"
 	del_btn.tooltip_text = "Delete"
 	del_btn.custom_minimum_size = Vector2(36, 36)
-	del_btn.pressed.connect(func(): _on_delete_confirm(slot, String(entry.get("name", "this tank"))))
+	del_btn.pressed.connect(func(): _on_delete_confirm([slot], ["%s" % String(entry.get("name", "this tank"))]))
 	title_row.add_child(del_btn)
 
 	# Subtitle: accumulated runtime + last opened.
@@ -107,6 +166,55 @@ func _make_card(entry: Dictionary) -> Control:
 	vb.add_child(open_btn)
 
 	return card
+
+
+func _set_slot_selected(slot: int, selected: bool) -> void:
+	if selected:
+		_selected_slots[slot] = true
+	else:
+		_selected_slots.erase(slot)
+	_sync_select_all_checkbox()
+	_update_bulk_delete_ui()
+
+
+func _on_select_all_toggled(on: bool) -> void:
+	if _syncing_select_all:
+		return
+	_selected_slots.clear()
+	if on:
+		for slot in _listed_slots:
+			_selected_slots[slot] = true
+	for slot in _slot_checkboxes.keys():
+		var cb: CheckBox = _slot_checkboxes[slot]
+		if cb != null and is_instance_valid(cb):
+			cb.button_pressed = on
+	_update_bulk_delete_ui()
+
+
+func _sync_select_all_checkbox() -> void:
+	_syncing_select_all = true
+	if _listed_slots.is_empty():
+		_select_all.button_pressed = false
+	else:
+		var all_selected: bool = true
+		for slot in _listed_slots:
+			if not _selected_slots.has(slot):
+				all_selected = false
+				break
+		_select_all.button_pressed = all_selected
+	_syncing_select_all = false
+
+
+func _update_bulk_delete_ui() -> void:
+	var n: int = _selected_slots.size()
+	_delete_selected_btn.disabled = n <= 0
+	_delete_selected_btn.text = "Delete selected" if n <= 1 else "Delete selected (%d)" % n
+
+
+func _prune_stale_selection() -> void:
+	for slot in _selected_slots.keys():
+		if slot not in _listed_slots:
+			_selected_slots.erase(slot)
 
 
 func _format_subtitle(entry: Dictionary) -> String:
@@ -160,15 +268,42 @@ func _on_duplicate(slot: int) -> void:
 	_refresh()
 
 
-func _on_delete_confirm(slot: int, tank_name: String) -> void:
+func _on_delete_selected_confirm() -> void:
+	if _selected_slots.is_empty():
+		return
+	var slots: Array[int] = []
+	var names: Array[String] = []
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return
+	for entry in saves.list_tanks():
+		var slot: int = int(entry["slot"])
+		if not _selected_slots.has(slot):
+			continue
+		slots.append(slot)
+		names.append(String(entry.get("name", "Tank %d" % slot)))
+	if slots.is_empty():
+		return
+	_on_delete_confirm(slots, names)
+
+
+func _on_delete_confirm(slots: Array, names: Array) -> void:
 	var dialog := ConfirmationDialog.new()
-	dialog.dialog_text = "Delete \"%s\"?\nThis cannot be undone." % tank_name
+	if slots.size() == 1:
+		dialog.dialog_text = "Delete \"%s\"?\nThis cannot be undone." % names[0]
+	else:
+		var preview: String = ", ".join(names.slice(0, 3))
+		if names.size() > 3:
+			preview += ", …"
+		dialog.dialog_text = "Delete %d tanks?\n\n%s\n\nThis cannot be undone." % [slots.size(), preview]
 	dialog.ok_button_text = "Delete"
 	add_child(dialog)
 	dialog.confirmed.connect(func():
 		var saves := get_node_or_null("/root/TankSaves")
 		if saves != null:
-			saves.delete_tank(slot)
+			for slot in slots:
+				saves.delete_tank(int(slot))
+			_selected_slots.clear()
 			_refresh()
 		dialog.queue_free())
 	dialog.canceled.connect(func(): dialog.queue_free())

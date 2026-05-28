@@ -225,9 +225,7 @@ func _make_card(idx: int) -> Control:
 	var buy_pressed := buy_normal.duplicate() as StyleBoxFlat
 	buy_pressed.bg_color = Color8(40, 170, 220)
 	buy.add_theme_stylebox_override("pressed", buy_pressed)
-	# Capture idx; pressed.connect lambda needs to bind it.
-	var captured_idx: int = idx
-	buy.pressed.connect(func(): _on_buy(captured_idx, frame, buy))
+	buy.pressed.connect(_on_buy.bind(idx))
 	hb.add_child(buy)
 	return frame
 
@@ -354,6 +352,8 @@ func _random_genome(slot_idx: int) -> Dictionary:
 		"fin_length_factor": randf_range(0.8, 1.7),
 		"dorsal_height_factor": randf_range(0.75, 1.5),
 		"tail_fork_depth": randf_range(0.5, 1.3),
+		"size_potential": randf_range(0.75, 2.2),
+		"jaw_claw_size": randf_range(0.0, 1.0),
 		"pattern_type": randi() % 4,
 		"color_dot_count": randi_range(0, 3),
 		"has_barbels": has_barbels,
@@ -362,8 +362,10 @@ func _random_genome(slot_idx: int) -> Dictionary:
 	}
 
 
-func _on_buy(idx: int, card_frame: PanelContainer, buy_btn: Button) -> void:
+func _on_buy(idx: int) -> void:
 	if _purchased >= MAX_PURCHASES:
+		return
+	if idx < 0 or idx >= _options.size():
 		return
 	if _world == null:
 		_world = get_tree().current_scene.get_node_or_null("SubViewport/World")
@@ -372,10 +374,14 @@ func _on_buy(idx: int, card_frame: PanelContainer, buy_btn: Button) -> void:
 	var g: Dictionary = _options[idx]
 	_world.spawn_purchased_fish(g)
 	_purchased += 1
-	buy_btn.disabled = true
-	buy_btn.text = "ADDED"
-	# Dim the card.
+	var card_frame: PanelContainer = _cards_container.get_child(idx) as PanelContainer
+	if card_frame == null:
+		return
 	card_frame.modulate = Color(0.6, 0.6, 0.6, 1.0)
+	var buy_btn: Button = _find_buy_button(card_frame)
+	if buy_btn != null:
+		buy_btn.disabled = true
+		buy_btn.text = "ADDED"
 	_status_label.text = "%d / %d caught" % [_purchased, MAX_PURCHASES]
 	if _purchased >= MAX_PURCHASES:
 		_status_label.text = "%d / %d caught - SOLD OUT" % [_purchased, MAX_PURCHASES]
@@ -383,6 +389,16 @@ func _on_buy(idx: int, card_frame: PanelContainer, buy_btn: Button) -> void:
 		for c in _cards_container.get_children():
 			for sub in c.get_children():
 				_disable_children(sub)
+
+
+func _find_buy_button(root: Node) -> Button:
+	if root is Button and (root as Button).text == "BUY":
+		return root as Button
+	for child in root.get_children():
+		var found: Button = _find_buy_button(child)
+		if found != null:
+			return found
+	return null
 
 
 func _disable_children(node: Node) -> void:

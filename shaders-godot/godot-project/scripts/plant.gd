@@ -416,6 +416,14 @@ func _grow_one() -> bool:
 			_grow_needle_leaf(effective_ramp, age_frac, rel, photo_offset)
 		_:
 			_grow_column_voxel(effective_ramp, rel, photo_offset)
+	# Morphological elaboration from lineage + health:
+	# mature, thriving lineages occasionally add accessory modules
+	# (side fronds / branchlets / nodules) so architecture complexity
+	# becomes visibly heritable over short runs.
+	if generation >= 2 and _health_smooth > 0.58:
+		var evo_chance: float = clampf(0.07 + float(generation) * 0.015, 0.07, 0.24)
+		if randf() < evo_chance:
+			_add_evolutionary_accessory(effective_ramp, rel, photo_offset)
 
 	current_height += 1
 
@@ -578,6 +586,52 @@ func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 	_leaf_nodes.append(leaf_node)
 	_leaf_ages.append(_t)
 	_animate_leaf_unfurl(leaf_node)
+
+
+func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2) -> void:
+	var accent: Color = ramp[clampi(int(rel * 5.0), 0, 5)]
+	var n := Node3D.new()
+	n.name = "Accessory_%d" % current_height
+	add_child(n)
+	var y: float = current_height * VOXEL_SIZE * 0.82 + VOXEL_SIZE * 0.45
+	var side: float = -1.0 if (current_height % 2 == 0) else 1.0
+	n.position = Vector3(
+		photo_offset.x + side * VOXEL_SIZE * randf_range(0.45, 1.2),
+		y,
+		photo_offset.y + randf_range(-VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5))
+	match leaf_form:
+		"ribbon":
+			for i in 2 + int(randf() < 0.45):
+				var mi := MeshInstance3D.new()
+				mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.28))
+				mi.material_override = VoxelMat.make_foliage(accent.lightened(0.04 * float(i)))
+				mi.position = Vector3(side * VOXEL_SIZE * 0.18 * float(i), VOXEL_SIZE * 0.28 * float(i), 0)
+				n.add_child(mi)
+				voxels.append(mi)
+		"needle":
+			for x_side in [-1.0, 1.0]:
+				var mi2 := MeshInstance3D.new()
+				mi2.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.36))
+				mi2.material_override = VoxelMat.make_foliage(accent.lightened(0.08))
+				mi2.position = Vector3(x_side * VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.1, 0)
+				n.add_child(mi2)
+				voxels.append(mi2)
+		"lance":
+			for i in 2:
+				var mi3 := MeshInstance3D.new()
+				mi3.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.20))
+				mi3.material_override = VoxelMat.make_foliage(accent.lerp(Color8(225, 205, 120), 0.05))
+				mi3.position = Vector3(side * VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.24 * float(i), VOXEL_SIZE * 0.16 * float(i))
+				n.add_child(mi3)
+				voxels.append(mi3)
+		_:
+			var mi4 := MeshInstance3D.new()
+			mi4.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28))
+			mi4.material_override = VoxelMat.make_foliage(accent.lightened(0.10))
+			n.add_child(mi4)
+			voxels.append(mi4)
+	_leaf_nodes.append(n)
+	_leaf_ages.append(_t)
 
 
 func _build_stressed_ramp(base_ramp: Array) -> Array:
@@ -1298,7 +1352,7 @@ func _cast_seed() -> void:
 		var sim_n: Node = _find_sim()
 		if sim_n != null:
 			EvolutionPressure.apply_plant_ramp(
-				mutated_ramp, EvolutionPressure.sample_from_sim(sim_n))
+				mutated_ramp, EvolutionPressure.sample_from_sim(sim_n, global_position))
 	world.spawn_seedling(seed_pos, mutated_ramp, generation + 1, get_seed_config())
 
 
@@ -1306,19 +1360,33 @@ func _cast_seed() -> void:
 func get_seed_config() -> Dictionary:
 	_ensure_plant_named()
 	var my_key: String = SpeciesLibrary.make_species_key(get_plant_genome())
-	return {
+	var seed_leaf_form: String = leaf_form
+	if randf() < 0.04:
+		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
+		seed_leaf_form = forms[randi() % forms.size()]
+	var seed_max_height: int = clampi(max_height + _rng_range(-2, 2), 6, 42)
+	var seed_growth_rate: float = clampf(growth_rate + randf_range(-0.02, 0.02), 0.06, 0.42)
+	var seed_sway: float = clampf(sway_amplitude + randf_range(-0.05, 0.05), 0.08, 0.7)
+	var seed_leaf_length: int = clampi(leaf_length + _rng_range(-1, 1), 2, 14)
+	var seed_max_roots: int = clampi(_max_roots + _rng_range(-1, 1), 3, 14)
+	var cfg: Dictionary = {
 		"script": get_script(),
-		"max_height": max_height,
-		"growth_rate": growth_rate,
-		"sway_amplitude": sway_amplitude,
-		"leaf_form": leaf_form,
-		"leaf_length": leaf_length,
-		"max_roots": _max_roots,
+		"max_height": seed_max_height,
+		"growth_rate": seed_growth_rate,
+		"sway_amplitude": seed_sway,
+		"leaf_form": seed_leaf_form,
+		"leaf_length": seed_leaf_length,
+		"max_roots": seed_max_roots,
 		"generation": generation + 1,
 		"parent_lineage": plant_name,
 		"parent_keys": [my_key] if my_key != "" else [],
 		"plant_name": "",
 	}
+	var sim_n: Node = _find_sim()
+	if sim_n != null:
+		EvolutionPressure.apply_plant_seed_config(
+			cfg, EvolutionPressure.sample_from_sim(sim_n, global_position))
+	return cfg
 
 
 

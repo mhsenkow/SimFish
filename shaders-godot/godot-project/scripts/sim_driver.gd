@@ -69,6 +69,10 @@ var bloom_intensity: float = 0.0
 # Plant biomass exposed at the same cadence so other systems don't
 # have to iterate plants[] themselves.
 var snail_predator_count: int = 0
+# Live adult+baby snail count, refreshed each tick from the baby-snail scan
+# loop. Used by the O2 model for snail respiration (cheap: avoids a second
+# walk of snails_root just for the oxygen step).
+var snail_count: int = 0
 var total_plant_biomass: int = 0
 
 var _accum: float = 0.0
@@ -76,6 +80,40 @@ var _stats_timer: float = 0.0
 var _extinction_timer: float = 0.0
 var _auto_feed_timer: float = 0.0
 var _has_logged_sterile_dissolve: bool = false
+var _eco_engineering_timer: float = 0.8
+var _overlap_resolve_timer: float = 0.0
+
+# Adaptive resilience seeding.
+# When populations dip too low, spawn mutated descendants from currently
+# successful lineages so the tank keeps evolving instead of flatlining.
+const RESILIENCE_INTERVAL_S: float = 18.0
+const RESILIENCE_BANK_REFRESH_S: float = 7.0
+const RESILIENCE_FISH_FLOOR: int = 6
+const RESILIENCE_SHRIMP_FLOOR: int = 5
+const RESILIENCE_SNAIL_FLOOR: int = 4
+const RESILIENCE_PLANT_FLOOR: int = 26
+const RESILIENCE_PLANT_BIOMASS_FLOOR: int = 180
+const RESILIENCE_MAX_SNAIL_EGGS: int = 8
+var _resilience_timer: float = 4.0
+var _resilience_bank_timer: float = 1.0
+var _resilience_bank: Dictionary = {
+	"fish": {},
+	"shrimp": {},
+	"snail": {},
+	"plant": {},
+}
+const LIBRARY_ANALYSIS_REFRESH_S: float = 8.0
+var _library_analysis_timer: float = 0.5
+var _library_analysis_cache: Dictionary = {
+	"fish": {},
+	"shrimp": {},
+	"snail": {},
+	"plant": {},
+}
+const EVO_BURST_INTERVAL_S: float = 24.0
+const EVO_BURST_CLUSTER_MIN: int = 2
+const EVO_BURST_CLUSTER_MAX: int = 5
+var _evo_burst_timer: float = 10.0
 
 # ---- Save/load: stable per-entity IDs ----
 # instance_id() is not stable across sessions, so anything that needs a
@@ -115,10 +153,17 @@ var aeration_fixture: String = "disk"
 const O2_INJECT_PER_RATE: float = 0.20    # disk at strength=1 -> 0.20/s peak input
 const O2_FLOW_BONUS_PER_RATE: float = 0.08
 const O2_PHOTO_PER_PLANT: float = 0.0008  # multiplied by daylight + biomass term
+const O2_PHOTO_FLOATER: float = 0.0006    # surface floating plants (duckweed etc.)
 const O2_RESPIRE_FISH: float = 0.0040
 const O2_RESPIRE_SHRIMP: float = 0.0020
+const O2_RESPIRE_SNAIL: float = 0.0011
 const O2_PASSIVE_SURFACE_GAS: float = 0.015   # tank breathing on its own
 const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
+const ECO_ENGINEERING_INTERVAL: float = 1.2
+const ECO_MAX_FISH_SAMPLES: int = 10
+const ECO_MAX_SHRIMP_SAMPLES: int = 14
+const ECO_MAX_SNAIL_SAMPLES: int = 12
+const OVERLAP_RESOLVE_INTERVAL: float = 0.45
 
 
 func register_fish(f: Fish) -> void:
@@ -139,6 +184,48 @@ func register_snail(sn: Node) -> void:
 	if not sn.has_method("get_saved_genome"):
 		return
 	_record_organism_discovery(sn.get_saved_genome())
+
+
+# Bind snails_root to the populated Snails container (not a queued-free stub).
+func ensure_snails_root() -> Node3D:
+	if snails_root != null and is_instance_valid(snails_root):
+		return snails_root
+	var w: Node = get_parent()
+	if w == null:
+		return null
+	var best: Node3D = null
+	var best_n: int = -1
+	if w.has_method("_find_snails_container"):
+		best = w._find_snails_container()
+	else:
+		for child in w.get_children():
+			if child.name == "Snails" and is_instance_valid(child):
+				var n: int = child.get_child_count()
+				if n > best_n:
+					best_n = n
+					best = child as Node3D
+	snails_root = best
+	return snails_root
+
+
+# Shrimp in Fauna but missing from the sim array still render but read as 0
+# in the HUD. Re-attach orphans so stats, AI, and saves stay consistent.
+func _reconcile_shrimp_registry() -> void:
+	if fauna_root == null:
+		return
+	var seen: Dictionary = {}
+	for s in shrimp:
+		if is_instance_valid(s):
+			seen[s.get_instance_id()] = true
+	for child in fauna_root.get_children():
+		if child is Shrimp and is_instance_valid(child):
+			var sid: int = child.get_instance_id()
+			if seen.has(sid):
+				continue
+			var sh: Shrimp = child as Shrimp
+			shrimp.append(sh)
+			sh.sim = self
+			seen[sid] = true
 
 
 # Backfill the species library from everything currently alive. Snails are
@@ -170,10 +257,13 @@ func _record_organism_discovery(g: Dictionary, silent: bool = false) -> void:
 	var gen: int = int(g.get("generation", 0))
 	var species_id: String = String(g.get("species", ""))
 	var source: String = "evolved"
+	var subspecies_id: String = String(g.get("subspecies_id", species_id))
 	if species_id.begins_with("stranger_"):
 		source = "store"
 	elif gen == 0:
 		source = "founder"
+	elif species_id != "" and subspecies_id != "" and subspecies_id != species_id:
+		source = "speciated"
 	lib.record_discovery(g, source, silent)
 
 
@@ -263,6 +353,149 @@ func _spatial_query(pos: Vector3, radius_sq: float, exclude: Node3D = null) -> A
 	return result
 
 
+func _push_apart_pair(a: Node3D, b: Node3D, min_dist: float,
+		push_frac: float = 0.5, y_weight: float = 0.55) -> void:
+	if a == null or b == null or not is_instance_valid(a) or not is_instance_valid(b):
+		return
+	var pa: Vector3 = a.global_position
+	var pb: Vector3 = b.global_position
+	var diff: Vector3 = pa - pb
+	diff.y *= y_weight
+	var d2: float = diff.length_squared()
+	var min_d2: float = min_dist * min_dist
+	if d2 >= min_d2:
+		return
+	var dir: Vector3
+	if d2 < 1e-6:
+		var ang: float = randf() * TAU
+		dir = Vector3(cos(ang), 0.0, sin(ang))
+	else:
+		dir = diff / sqrt(d2)
+	var penetration: float = min_dist - sqrt(maxf(d2, 1e-6))
+	var push: Vector3 = dir * penetration * push_frac
+	pa += push
+	pb -= push
+	if pa.is_finite():
+		a.global_position = pa
+	if pb.is_finite():
+		b.global_position = pb
+
+
+func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
+		substrate_margin: float = 0.06) -> void:
+	if e == null or not is_instance_valid(e):
+		return
+	var p: Vector3 = e.global_position
+	p.x = clampf(p.x, world_bounds.position.x + margin, world_bounds.end.x - margin)
+	p.y = clampf(p.y, maxf(substrate_top_y + substrate_margin, world_bounds.position.y + margin),
+		world_bounds.end.y - margin)
+	p.z = clampf(p.z, world_bounds.position.z + margin, world_bounds.end.z - margin)
+	e.global_position = p
+
+
+func _resolve_entity_group_overlaps(group: Array, min_dist: float,
+		group_limit: int = 120) -> void:
+	var n: int = mini(group.size(), group_limit)
+	for i in n:
+		var a: Node3D = group[i] as Node3D
+		if a == null or not is_instance_valid(a):
+			continue
+		for j in range(i + 1, n):
+			var b: Node3D = group[j] as Node3D
+			if b == null or not is_instance_valid(b):
+				continue
+			_push_apart_pair(a, b, min_dist, 0.5, 0.6)
+
+
+func _resolve_cross_overlaps(primary: Array, other: Array, min_dist: float,
+		primary_limit: int = 140, other_limit: int = 140) -> void:
+	var n1: int = mini(primary.size(), primary_limit)
+	var n2: int = mini(other.size(), other_limit)
+	for i in n1:
+		var a: Node3D = primary[i] as Node3D
+		if a == null or not is_instance_valid(a):
+			continue
+		for j in n2:
+			var b: Node3D = other[j] as Node3D
+			if b == null or not is_instance_valid(b):
+				continue
+			_push_apart_pair(a, b, min_dist, 0.34, 0.45)
+
+
+func _resolve_hardscape_overlaps(group: Array, min_dist: float,
+		entity_limit: int = 140, hardscape_limit: int = 220) -> void:
+	if hardscape_root == null or not is_instance_valid(hardscape_root):
+		return
+	var hardscape_children: Array = hardscape_root.get_children()
+	var hn: int = mini(hardscape_children.size(), hardscape_limit)
+	if hn <= 0:
+		return
+	var en: int = mini(group.size(), entity_limit)
+	for i in en:
+		var e: Node3D = group[i] as Node3D
+		if e == null or not is_instance_valid(e):
+			continue
+		# Sample a subset of hardscape voxels — full O(n*m) against every
+		# driftwood cube was contributing to GPU fence stalls on macOS.
+		var step: int = maxi(1, int(ceil(float(hn) / 48.0)))
+		for j in range(0, hn, step):
+			var h: Node3D = hardscape_children[j] as Node3D
+			if h == null or not is_instance_valid(h):
+				continue
+			var pe: Vector3 = e.global_position
+			var ph: Vector3 = h.global_position
+			var diff: Vector3 = pe - ph
+			diff.y *= 0.35
+			var d2: float = diff.length_squared()
+			if d2 >= min_dist * min_dist:
+				continue
+			var dir: Vector3
+			if d2 > 1e-6:
+				dir = diff.normalized()
+			else:
+				var seed := Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
+				if seed.length_squared() < 1e-6:
+					seed = Vector3(1.0, 0.0, 0.0)
+				dir = seed.normalized()
+			pe += dir * (min_dist - sqrt(maxf(d2, 1e-6))) * 0.55
+			if pe.is_finite():
+				e.global_position = pe
+		_clamp_entity_to_bounds(e)
+
+
+func _resolve_soft_overlaps() -> void:
+	# Soft collision-fiction pass:
+	# - prevents obvious interpenetration between schooling entities
+	# - keeps small fauna from sitting inside hardscape voxels
+	# - remains gentle so movement still feels biological (not physics-rigid)
+	var live_fish: Array = []
+	for f in fish:
+		if is_instance_valid(f) and f.get("_dying") != true:
+			live_fish.append(f)
+	var live_shrimp: Array = []
+	for s in shrimp:
+		if is_instance_valid(s) and s.get("_dying") != true:
+			live_shrimp.append(s)
+	var live_snails: Array = []
+	if snails_root != null and is_instance_valid(snails_root):
+		for c in snails_root.get_children():
+			if not is_instance_valid(c):
+				continue
+			var script: Script = c.get_script()
+			var path: String = script.resource_path if script != null else ""
+			if path.ends_with("snail.gd"):
+				live_snails.append(c)
+
+	_resolve_entity_group_overlaps(live_fish, 0.30, 90)
+	_resolve_entity_group_overlaps(live_shrimp, 0.16, 120)
+	_resolve_entity_group_overlaps(live_snails, 0.20, 80)
+	_resolve_cross_overlaps(live_fish, live_shrimp, 0.19, 90, 120)
+	_resolve_cross_overlaps(live_shrimp, live_snails, 0.16, 120, 80)
+
+	_resolve_hardscape_overlaps(live_fish, 0.30, 60, 120)
+	_resolve_hardscape_overlaps(live_shrimp, 0.20, 80, 120)
+	_resolve_hardscape_overlaps(live_snails, 0.18, 50, 120)
+
 # In-place removal of invalidated refs. Iterates backward and uses
 # remove_at() so we never allocate a new Array — eliminates the GC
 # pressure of the old Array.filter() approach.
@@ -272,13 +505,31 @@ static func _prune_invalid(arr: Array) -> void:
 			arr.remove_at(i)
 
 
+func _prune_non_finite_positions(arr: Array) -> void:
+	for i in range(arr.size() - 1, -1, -1):
+		var n: Node3D = arr[i] as Node3D
+		if n == null or not is_instance_valid(n):
+			arr.remove_at(i)
+			continue
+		if not n.global_position.is_finite():
+			n.queue_free()
+			arr.remove_at(i)
+
+
 func _tick(dt: float) -> void:
+	ensure_snails_root()
 	# 1. Prune invalid refs (queue_freed nodes) — in-place, no allocation.
 	_prune_invalid(fish)
 	_prune_invalid(shrimp)
 	_prune_invalid(plants)
 	_prune_invalid(waste)
 	_prune_invalid(eggs)
+	_prune_non_finite_positions(fish)
+	_prune_non_finite_positions(shrimp)
+	_library_analysis_timer = maxf(0.0, _library_analysis_timer - dt)
+	if _library_analysis_timer <= 0.0:
+		_library_analysis_timer = LIBRARY_ANALYSIS_REFRESH_S
+		_refresh_library_analysis_cache()
 
 	# 1b. Tank-wide dissolved-O2 update.
 	#
@@ -290,14 +541,22 @@ func _tick(dt: float) -> void:
 	#   Outputs:
 	#     fish respiration     -(n_fish * RESPIRE_FISH)
 	#     shrimp respiration   -(n_shrimp * RESPIRE_SHRIMP)
+	#     snail respiration    -(n_snails * RESPIRE_SNAIL)
 	#
 	# Clamped 0..1.2 so plant blooms during the day can briefly push the tank
 	# slightly supersaturated, which fish "notice" only when they need it.
 	var inject: float = aeration_air_rate * O2_INJECT_PER_RATE \
 		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE
-	var photo: float = daylight() * float(plants.size()) * O2_PHOTO_PER_PLANT
+	# Surface floating plants photosynthesise too (read live count from World).
+	var floater_n: int = 0
+	var w_o2: Node = get_parent()
+	if w_o2 != null and w_o2.has_method("floater_count"):
+		floater_n = w_o2.floater_count()
+	var photo: float = daylight() * (float(plants.size()) * O2_PHOTO_PER_PLANT \
+		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var respire: float = float(fish.size()) * O2_RESPIRE_FISH \
-		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP
+		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP \
+		+ float(snail_count) * O2_RESPIRE_SNAIL
 	# Drift toward the natural target if there's no equipment.
 	var drift: float = O2_PASSIVE_SURFACE_GAS * (O2_TARGET_NATURAL - dissolved_o2)
 	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
@@ -323,14 +582,19 @@ func _tick(dt: float) -> void:
 		if s.maturity == Shrimp.MATURITY_FRY:
 			baby_shrimp_list.append(s)
 	var baby_snail_list: Array = []
+	var snail_n: int = 0
 	if snails_root != null:
 		for c in snails_root.get_children():
 			# queue_free is deferred — children freed on the previous tick can
 			# still appear here. Filter so predator AI doesn't lock onto a ghost.
 			if not is_instance_valid(c):
 				continue
-			if c.get("is_baby") == true:
-				baby_snail_list.append(c)
+			var c_script: Script = c.get_script()
+			if c_script != null and c_script.resource_path.ends_with("snail.gd"):
+				snail_n += 1
+				if c.get("is_baby") == true:
+					baby_snail_list.append(c)
+	snail_count = snail_n
 
 	# Build spatial hash grid from all live (non-dying) fish. One O(N)
 	# insert pass replaces the old O(N²) nested neighbor loop.
@@ -372,6 +636,14 @@ func _tick(dt: float) -> void:
 			ev["actor_kind"] = "shrimp"
 			events.append(ev)
 
+	# 4c. Soft overlap pass every ~0.2 sim-seconds. Keeps fish/shrimp/snails
+	# from visibly occupying the same space while preserving organic motion.
+	_overlap_resolve_timer = maxf(0.0, _overlap_resolve_timer - dt)
+	if _overlap_resolve_timer <= 0.0:
+		_overlap_resolve_timer = OVERLAP_RESOLVE_INTERVAL
+		ensure_snails_root()
+		_resolve_soft_overlaps()
+
 	# 5. Waste.
 	var dead_waste: Array[WasteParticle] = []
 	for w in waste:
@@ -399,6 +671,9 @@ func _tick(dt: float) -> void:
 		if not _has_logged_sterile_dissolve:
 			_has_logged_sterile_dissolve = true
 			log_story_event("Non-viable eggs dissolved — genetic incompatibility")
+
+	_run_resilience_seed(dt)
+	_run_evolution_burst(dt)
 
 	# 6a. Auto-Respawn Fauna if completely empty
 	var cfg = get_node_or_null("/root/TankConfig")
@@ -457,6 +732,7 @@ func _tick(dt: float) -> void:
 		if is_instance_valid(p):
 			plant_biomass += p.biomass()
 	total_plant_biomass = plant_biomass
+	_apply_ecosystem_engineering(dt)
 	# Refresh snail-predator count for snail.gd's rebound logic. Cheap
 	# (iterating fish is already done elsewhere; here we just count flags).
 	var sp_count: int = 0
@@ -490,6 +766,12 @@ func _tick(dt: float) -> void:
 	# Spawn-rate ramps from 5% (baseline trickle) up to ~45% per-tick when
 	# the bloom is full. Plus a force-spawn when we're below the floor.
 	var spawn_chance: float = 0.05 + bloom_pressure * 0.40
+	# Surface floating plants shade the water column and soak up the same
+	# nutrients algae want, so a duckweed mat strongly suppresses algae blooms
+	# (the real Walstad "float plants to beat algae" trick).
+	var w_shade: Node = get_parent()
+	if w_shade != null and w_shade.has_method("floater_coverage"):
+		spawn_chance *= (1.0 - float(w_shade.floater_coverage()) * 0.7)
 	if (below_floor or randf() < spawn_chance) and algae.size() < bloom_cap \
 			and algae_root != null:
 		var a := Algae.new()
@@ -844,12 +1126,652 @@ func _play_ambient_event(event_name: String) -> void:
 			audio.play_event_plink(intensity)
 
 
+func _apply_ecosystem_engineering(dt: float) -> void:
+	# Creature movement reshapes the substrate mosaic:
+	# - fish stir upper substrate (slight depletion + nearby redeposit),
+	# - shrimp/snails enrich local cells with detrital pellets.
+	# The resulting nutrient map biases seedling/coral settlement sites.
+	if substrate == null:
+		return
+	_eco_engineering_timer = maxf(0.0, _eco_engineering_timer - dt)
+	if _eco_engineering_timer > 0.0:
+		return
+	_eco_engineering_timer = ECO_ENGINEERING_INTERVAL
+
+	var fish_n: int = 0
+	for f in fish:
+		if fish_n >= ECO_MAX_FISH_SAMPLES:
+			break
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true:
+			continue
+		var p: Vector3 = f.position
+		# Fish stir the top layer while foraging: tiny local drawdown...
+		substrate.consume_at(Vector3(p.x, substrate_top_y, p.z), 0.0016)
+		# ...and nearby redeposition plume (keeps mass in the neighborhood).
+		var plume: Vector3 = Vector3(
+			p.x + randf_range(-0.75, 0.75),
+			substrate_top_y,
+			p.z + randf_range(-0.75, 0.75))
+		substrate.add_at(plume, 0.0012)
+		fish_n += 1
+
+	var shrimp_n: int = 0
+	for s in shrimp:
+		if shrimp_n >= ECO_MAX_SHRIMP_SAMPLES:
+			break
+		if not is_instance_valid(s):
+			continue
+		if s.get("_dying") == true:
+			continue
+		var sp: Vector3 = s.position
+		substrate.add_at(Vector3(sp.x, substrate_top_y, sp.z), 0.0018)
+		shrimp_n += 1
+
+	var sn_root: Node3D = ensure_snails_root()
+	if sn_root == null:
+		return
+	var snail_n: int = 0
+	for n in sn_root.get_children():
+		if snail_n >= ECO_MAX_SNAIL_SAMPLES:
+			break
+		if not is_instance_valid(n):
+			continue
+		var script: Script = n.get_script()
+		var script_path: String = script.resource_path if script != null else ""
+		if not script_path.ends_with("snail.gd"):
+			continue
+		var np: Vector3 = (n as Node3D).global_position
+		substrate.add_at(Vector3(np.x, substrate_top_y, np.z), 0.0015)
+		snail_n += 1
+
+
+func _count_live_fish() -> int:
+	var n: int = 0
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true:
+			continue
+		n += 1
+	return n
+
+
+func _count_live_shrimp() -> int:
+	var n: int = 0
+	for s in shrimp:
+		if not is_instance_valid(s):
+			continue
+		if s.get("_dying") == true:
+			continue
+		n += 1
+	return n
+
+
+func _count_snails_and_eggs() -> Dictionary:
+	var snails: int = 0
+	var eggs_n: int = 0
+	var root: Node3D = ensure_snails_root()
+	if root == null:
+		return {"snails": 0, "eggs": 0}
+	for c in root.get_children():
+		if not is_instance_valid(c):
+			continue
+		var script: Script = c.get_script()
+		var path: String = script.resource_path if script != null else ""
+		if path.ends_with("snail.gd"):
+			snails += 1
+		elif path.ends_with("snail_egg.gd"):
+			eggs_n += 1
+	return {"snails": snails, "eggs": eggs_n}
+
+
+func _refresh_library_analysis_cache() -> void:
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null or not lib.has_method("analyze_organism"):
+		return
+	_library_analysis_cache["fish"] = lib.analyze_organism("fish", true)
+	_library_analysis_cache["shrimp"] = lib.analyze_organism("shrimp", true)
+	_library_analysis_cache["snail"] = lib.analyze_organism("snail", true)
+	_library_analysis_cache["plant"] = lib.analyze_organism("plant", true)
+
+
+func _library_analysis(organism_type: String) -> Dictionary:
+	var d: Variant = _library_analysis_cache.get(organism_type, {})
+	if d is Dictionary:
+		return d
+	return {}
+
+
+func _analysis_strength(d: Dictionary) -> float:
+	var n: int = int(d.get("entry_count", 0))
+	return clampf(float(n) / 12.0, 0.0, 1.0)
+
+
+func _apply_library_guided_fish_tuning(g: Dictionary) -> Dictionary:
+	var a: Dictionary = _library_analysis("fish")
+	if int(a.get("entry_count", 0)) <= 0:
+		return g
+	var k: float = _analysis_strength(a)
+	g["body_elongation"] = clampf(
+		lerpf(float(g.get("body_elongation", 1.0)), float(a.get("avg_elongation", 1.0)), 0.20 + k * 0.25)
+			+ randf_range(-0.07, 0.07),
+		0.5, 2.0)
+	g["body_depth_factor"] = clampf(
+		lerpf(float(g.get("body_depth_factor", 1.0)), float(a.get("avg_depth", 1.0)), 0.20 + k * 0.25)
+			+ randf_range(-0.06, 0.06),
+		0.5, 2.0)
+	g["head_proportion"] = clampf(
+		lerpf(float(g.get("head_proportion", 1.0)), float(a.get("avg_head", 1.0)), 0.16 + k * 0.20)
+			+ randf_range(-0.06, 0.06),
+		0.5, 2.0)
+	g["fin_length_factor"] = clampf(
+		lerpf(float(g.get("fin_length_factor", 1.0)), float(a.get("avg_fin_length", 1.0)), 0.15 + k * 0.22)
+			+ randf_range(-0.08, 0.08),
+		0.5, 2.5)
+	g["max_speed"] = clampf(
+		lerpf(float(g.get("max_speed", 1.2)), float(a.get("avg_speed", 1.2)), 0.18 + k * 0.24)
+			+ randf_range(-0.08, 0.08),
+		0.55, 3.0)
+	g["jaw_claw_size"] = clampf(
+		lerpf(float(g.get("jaw_claw_size", 0.0)), float(a.get("avg_jaw_claw_size", 0.0)), 0.18 + k * 0.24)
+			+ randf_range(-0.10, 0.12),
+		0.0, 1.2)
+	g["size_potential"] = clampf(
+		lerpf(float(g.get("size_potential", 1.0)), float(a.get("avg_size_potential", 1.0)), 0.20 + k * 0.22)
+			+ randf_range(-0.09, 0.10),
+		0.6, 2.4)
+	var pred_bias: float = clampf(
+		(float(a.get("snail_predator_ratio", 0.0)) + float(a.get("shrimp_predator_ratio", 0.0))) * 0.5,
+		0.0, 1.0)
+	if randf() < 0.22 + pred_bias * 0.38:
+		g["snail_predator"] = bool(g.get("snail_predator", false)) or randf() < float(a.get("snail_predator_ratio", 0.0))
+	if randf() < 0.22 + pred_bias * 0.38:
+		g["shrimp_predator"] = bool(g.get("shrimp_predator", false)) or randf() < float(a.get("shrimp_predator_ratio", 0.0))
+	if randf() < 0.10 + float(a.get("armor_ratio", 0.0)) * 0.35:
+		g["armor_plates"] = bool(g.get("armor_plates", false)) or randf() < float(a.get("armor_ratio", 0.0))
+	if randf() < 0.10 + float(a.get("barbels_ratio", 0.0)) * 0.30:
+		g["has_barbels"] = bool(g.get("has_barbels", false)) or randf() < float(a.get("barbels_ratio", 0.0))
+	var dom_shape: String = String(a.get("dominant_body_shape", ""))
+	if dom_shape != "" and randf() < 0.15 + k * 0.22:
+		g["body_shape"] = dom_shape
+	return g
+
+
+func _apply_library_guided_shrimp_tuning(g: Dictionary) -> Dictionary:
+	var a: Dictionary = _library_analysis("shrimp")
+	if int(a.get("entry_count", 0)) <= 0:
+		return g
+	var k: float = _analysis_strength(a)
+	g["defense_spines"] = clampf(
+		lerpf(float(g.get("defense_spines", 0.0)), float(a.get("avg_spines", 0.0)), 0.18 + k * 0.25)
+			+ randf_range(-0.07, 0.08),
+		0.0, 1.0)
+	g["toxin_level"] = clampf(
+		lerpf(float(g.get("toxin_level", 0.0)), float(a.get("avg_toxin", 0.0)), 0.18 + k * 0.25)
+			+ randf_range(-0.06, 0.08),
+		0.0, 1.0)
+	g["adult_voxel_scale"] = clampf(
+		lerpf(float(g.get("adult_voxel_scale", 0.10)), float(a.get("avg_size", 0.10)), 0.15 + k * 0.20)
+			+ randf_range(-0.008, 0.010),
+		0.07, 0.30)
+	g["max_speed"] = clampf(
+		lerpf(float(g.get("max_speed", 0.85)), float(a.get("avg_speed", 0.85)), 0.16 + k * 0.20)
+			+ randf_range(-0.05, 0.06),
+		0.45, 1.55)
+	g["claw_size"] = clampf(
+		lerpf(float(g.get("claw_size", 0.25)), float(a.get("avg_claw_size", 0.25)), 0.20 + k * 0.24)
+			+ randf_range(-0.10, 0.14),
+		0.0, 1.2)
+	g["body_length_factor"] = clampf(
+		lerpf(float(g.get("body_length_factor", 1.0)), float(a.get("avg_length_factor", 1.0)), 0.18 + k * 0.22)
+			+ randf_range(-0.10, 0.12),
+		0.75, 1.7)
+	if randf() < 0.10 + float(a.get("cleaner_ratio", 0.0)) * 0.28:
+		g["is_cleaner"] = bool(g.get("is_cleaner", false)) or randf() < float(a.get("cleaner_ratio", 0.0))
+	return g
+
+
+func _apply_library_guided_snail_tuning(g: Dictionary) -> Dictionary:
+	var a: Dictionary = _library_analysis("snail")
+	if int(a.get("entry_count", 0)) <= 0:
+		return g
+	var k: float = _analysis_strength(a)
+	g["shell_size"] = clampf(
+		lerpf(float(g.get("shell_size", 1.0)), float(a.get("avg_shell_size", 1.0)), 0.18 + k * 0.24)
+			+ randf_range(-0.05, 0.06),
+		0.65, 1.6)
+	g["shell_spines"] = clampf(
+		lerpf(float(g.get("shell_spines", 0.0)), float(a.get("avg_spines", 0.0)), 0.20 + k * 0.24)
+			+ randf_range(-0.08, 0.09),
+		0.0, 1.0)
+	g["toxin_level"] = clampf(
+		lerpf(float(g.get("toxin_level", 0.0)), float(a.get("avg_toxin", 0.0)), 0.18 + k * 0.24)
+			+ randf_range(-0.06, 0.08),
+		0.0, 1.0)
+	var dom_shape: String = String(a.get("dominant_shell_shape", ""))
+	if dom_shape != "" and randf() < 0.18 + k * 0.26:
+		g["shell_shape"] = dom_shape
+	return g
+
+
+func _apply_library_guided_plant_tuning(seed: Dictionary) -> Dictionary:
+	var a: Dictionary = _library_analysis("plant")
+	if int(a.get("entry_count", 0)) <= 0:
+		return seed
+	var out: Dictionary = seed.duplicate(true)
+	var cfg: Dictionary = out.get("seed_config", {}).duplicate(true)
+	var k: float = _analysis_strength(a)
+	cfg["max_height"] = clampi(int(round(
+		lerpf(float(cfg.get("max_height", 14)), float(a.get("avg_height", 14.0)), 0.14 + k * 0.22)
+		+ randf_range(-2.0, 2.5))), 6, 48)
+	cfg["growth_rate"] = clampf(
+		lerpf(float(cfg.get("growth_rate", 0.18)), float(a.get("avg_growth_rate", 0.18)), 0.18 + k * 0.24)
+			+ randf_range(-0.03, 0.035),
+		0.06, 0.62)
+	cfg["sway_amplitude"] = clampf(
+		lerpf(float(cfg.get("sway_amplitude", 0.22)), float(a.get("avg_sway", 0.22)), 0.14 + k * 0.20)
+			+ randf_range(-0.03, 0.04),
+		0.02, 0.90)
+	cfg["leaf_length"] = clampi(int(round(
+		lerpf(float(cfg.get("leaf_length", 4)), float(a.get("avg_leaf_length", 4.0)), 0.18 + k * 0.22)
+		+ randf_range(-1.0, 1.2))), 2, 16)
+	cfg["max_roots"] = clampi(int(round(
+		lerpf(float(cfg.get("max_roots", 6)), float(a.get("avg_max_roots", 6.0)), 0.16 + k * 0.18)
+		+ randf_range(-1.0, 1.0))), 3, 16)
+	var dom_form: String = String(a.get("dominant_leaf_form", ""))
+	if dom_form != "" and randf() < 0.16 + k * 0.24:
+		cfg["leaf_form"] = dom_form
+	out["seed_config"] = cfg
+	return out
+
+
+func _score_fish_resilience(f: Fish) -> float:
+	var hunger_score: float = 1.0 - clampf(float(f.hunger), 0.0, 1.0)
+	var energy_score: float = clampf(float(f.energy), 0.0, 1.0)
+	var age_score: float = 0.0
+	if float(f.max_age_s) > 0.0:
+		age_score = clampf(float(f.age) / float(f.max_age_s), 0.0, 1.0)
+	var mg: float = maxf(1.0, f.max_growth)
+	var growth_score: float = clampf(f.growth_factor / mg, 0.0, 1.0)
+	return hunger_score * 0.34 + energy_score * 0.34 + age_score * 0.18 + growth_score * 0.14
+
+
+func _score_shrimp_resilience(s: Shrimp) -> float:
+	var hunger_score: float = 1.0 - clampf(float(s.hunger), 0.0, 1.0)
+	var energy_score: float = clampf(float(s.energy), 0.0, 1.0)
+	var age_score: float = 0.0
+	if float(s.max_age_s) > 0.0:
+		age_score = clampf(float(s.age) / float(s.max_age_s), 0.0, 1.0)
+	var growth_score: float = clampf(float(s.growth_factor) / maxf(1.0, float(Shrimp.MAX_GROWTH)), 0.0, 1.0)
+	return hunger_score * 0.36 + energy_score * 0.30 + age_score * 0.18 + growth_score * 0.16
+
+
+func _pick_elite_fish() -> Fish:
+	var best: Fish = null
+	var best_score: float = -INF
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true or f.maturity != Fish.MATURITY_ADULT:
+			continue
+		var score: float = _score_fish_resilience(f)
+		if score > best_score:
+			best_score = score
+			best = f
+	return best
+
+
+func _pick_elite_shrimp() -> Shrimp:
+	var best: Shrimp = null
+	var best_score: float = -INF
+	for s in shrimp:
+		if not is_instance_valid(s):
+			continue
+		if s.get("_dying") == true or s.maturity != Shrimp.MATURITY_ADULT:
+			continue
+		var score: float = _score_shrimp_resilience(s)
+		if score > best_score:
+			best_score = score
+			best = s
+	return best
+
+
+func _pick_elite_plant() -> Plant:
+	var best: Plant = null
+	var best_score: float = -INF
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		var score: float = float(p.biomass()) + float(p.generation) * 4.0
+		if score > best_score:
+			best_score = score
+			best = p
+	return best
+
+
+func _pick_random_adult_fish() -> Fish:
+	var adults: Array[Fish] = []
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true or f.maturity != Fish.MATURITY_ADULT:
+			continue
+		adults.append(f)
+	if adults.is_empty():
+		return null
+	return adults[randi() % adults.size()]
+
+
+func _pick_random_adult_shrimp() -> Shrimp:
+	var adults: Array[Shrimp] = []
+	for s in shrimp:
+		if not is_instance_valid(s):
+			continue
+		if s.get("_dying") == true or s.maturity != Shrimp.MATURITY_ADULT:
+			continue
+		adults.append(s)
+	if adults.is_empty():
+		return null
+	return adults[randi() % adults.size()]
+
+
+func _pick_elite_snail() -> Node3D:
+	var best: Node3D = null
+	var best_age: float = -INF
+	var root: Node3D = ensure_snails_root()
+	if root == null:
+		return null
+	for s in root.get_children():
+		if not is_instance_valid(s):
+			continue
+		var script: Script = s.get_script()
+		var path: String = script.resource_path if script != null else ""
+		if not path.ends_with("snail.gd"):
+			continue
+		if s.get("is_baby") == true:
+			continue
+		var age: float = float(s.get("_age")) if s.get("_age") != null else 0.0
+		if age > best_age:
+			best_age = age
+			best = s as Node3D
+	return best
+
+
+func _mutate_color(c: Color, amt: float) -> Color:
+	return c.lerp(Color(randf(), randf(), randf()), amt)
+
+
+func _make_resilience_fish_genome() -> Dictionary:
+	var parent: Fish = _pick_elite_fish()
+	# Keep lineage diversity: occasionally seed from a non-elite adult too.
+	if randf() < 0.35:
+		var alt: Fish = _pick_random_adult_fish()
+		if alt != null:
+			parent = alt
+	if parent != null and parent.has_method("produce_offspring_genome"):
+		return _apply_library_guided_fish_tuning(parent.produce_offspring_genome(parent))
+	return _apply_library_guided_fish_tuning(
+		_mutate_bank_genome(_resilience_bank.get("fish", {}), "fish"))
+
+
+func _make_resilience_shrimp_genome() -> Dictionary:
+	var parent: Shrimp = _pick_elite_shrimp()
+	if randf() < 0.35:
+		var alt: Shrimp = _pick_random_adult_shrimp()
+		if alt != null:
+			parent = alt
+	if parent != null and parent.has_method("produce_offspring_genome"):
+		var g: Dictionary = parent.produce_offspring_genome(parent)
+		g["defense_spines"] = clampf(float(g.get("defense_spines", 0.0)) + randf_range(-0.06, 0.10), 0.0, 1.0)
+		g["toxin_level"] = clampf(float(g.get("toxin_level", 0.0)) + randf_range(-0.05, 0.09), 0.0, 1.0)
+		return _apply_library_guided_shrimp_tuning(g)
+	return _apply_library_guided_shrimp_tuning(
+		_mutate_bank_genome(_resilience_bank.get("shrimp", {}), "shrimp"))
+
+
+func _make_resilience_snail_genome() -> Dictionary:
+	var elite: Node3D = _pick_elite_snail()
+	if elite != null and elite.has_method("get_saved_genome"):
+		var g: Dictionary = elite.get_saved_genome().duplicate(true)
+		g["generation"] = int(g.get("generation", 0)) + 1
+		g["shell_color"] = _mutate_color(g.get("shell_color", Color8(135, 44, 176)), 0.12)
+		g["shell_size"] = clampf(float(g.get("shell_size", 1.0)) + randf_range(-0.05, 0.07), 0.65, 1.5)
+		g["shell_spines"] = clampf(float(g.get("shell_spines", 0.0)) + randf_range(-0.08, 0.10), 0.0, 1.0)
+		g["toxin_level"] = clampf(float(g.get("toxin_level", 0.0)) + randf_range(-0.08, 0.08), 0.0, 1.0)
+		if randf() < 0.06:
+			var shapes: Array = ["turbo", "trochus", "nassarius", "apple"]
+			g["shell_shape"] = String(shapes[randi() % shapes.size()])
+		g["organism_type"] = "snail"
+		return _apply_library_guided_snail_tuning(g)
+	return _apply_library_guided_snail_tuning(
+		_mutate_bank_genome(_resilience_bank.get("snail", {}), "snail"))
+
+
+func _make_resilience_plant_seed() -> Dictionary:
+	var p: Plant = _pick_elite_plant()
+	if p != null and p.has_method("get_seed_config") and p.has_method("get_plant_genome"):
+		var g: Dictionary = p.get_plant_genome()
+		var ramp: Array = g.get("ramp_override", []).duplicate(true)
+		for i in ramp.size():
+			ramp[i] = _mutate_color(ramp[i], 0.07)
+		var cfg: Dictionary = p.get_seed_config()
+		cfg["growth_rate"] = clampf(float(cfg.get("growth_rate", 0.18)) * randf_range(0.96, 1.14), 0.06, 0.45)
+		cfg["max_height"] = clampi(int(cfg.get("max_height", 14)) + randi_range(-2, 3), 6, 44)
+		return _apply_library_guided_plant_tuning({
+			"ramp": ramp, "generation": int(g.get("generation", 0)) + 1, "seed_config": cfg})
+	var bank: Dictionary = _resilience_bank.get("plant", {})
+	if bank.is_empty():
+		return {}
+	var ramp_b: Array = bank.get("ramp_override", []).duplicate(true)
+	for i in ramp_b.size():
+		ramp_b[i] = _mutate_color(ramp_b[i], 0.06)
+	var cfg_b: Dictionary = {
+		"script": load("res://scripts/plant.gd"),
+		"max_height": clampi(int(bank.get("max_height", 14)) + randi_range(-2, 2), 6, 40),
+		"growth_rate": clampf(float(bank.get("growth_rate", 0.18)) + randf_range(-0.03, 0.03), 0.06, 0.42),
+		"sway_amplitude": clampf(float(bank.get("sway_amplitude", 0.22)) + randf_range(-0.05, 0.05), 0.08, 0.70),
+		"leaf_form": String(bank.get("leaf_form", "column")),
+		"leaf_length": clampi(int(bank.get("leaf_length", 4)) + randi_range(-1, 1), 2, 14),
+		"max_roots": clampi(int(bank.get("max_roots", 6)), 3, 14),
+		"generation": int(bank.get("generation", 0)) + 1,
+		"parent_lineage": String(bank.get("plant_name", "Reseed")),
+		"parent_keys": bank.get("parent_keys", []).duplicate(),
+		"plant_name": "",
+	}
+	return _apply_library_guided_plant_tuning({
+		"ramp": ramp_b, "generation": int(bank.get("generation", 0)) + 1, "seed_config": cfg_b})
+
+
+func _mutate_bank_genome(raw: Dictionary, organism_type: String) -> Dictionary:
+	if raw == null or raw.is_empty():
+		return {}
+	var g: Dictionary = raw.duplicate(true)
+	g["organism_type"] = organism_type
+	g["generation"] = int(g.get("generation", 0)) + 1
+	g["sex"] = randi() % 2
+	match organism_type:
+		"fish":
+			g["base_color"] = _mutate_color(g.get("base_color", Color8(90, 140, 180)), 0.10)
+			g["accent_color"] = _mutate_color(g.get("accent_color", Color8(180, 190, 210)), 0.08)
+			g["tail_color"] = _mutate_color(g.get("tail_color", g.get("accent_color", Color8(180, 190, 210))), 0.08)
+			g["max_age_s"] = clampf(float(g.get("max_age_s", 240.0)) * randf_range(0.95, 1.12), 120.0, 520.0)
+			g["max_speed"] = clampf(float(g.get("max_speed", 1.4)) * randf_range(0.95, 1.10), 0.55, 3.0)
+			g["jaw_claw_size"] = clampf(float(g.get("jaw_claw_size", 0.0)) + randf_range(-0.10, 0.14), 0.0, 1.2)
+			g["size_potential"] = clampf(float(g.get("size_potential", 1.0)) + randf_range(-0.08, 0.12), 0.6, 2.4)
+			g = _apply_library_guided_fish_tuning(g)
+		"shrimp":
+			g["base_color"] = _mutate_color(g.get("base_color", Color8(180, 90, 70)), 0.14)
+			g["accent_color"] = _mutate_color(g.get("accent_color", Color8(245, 220, 200)), 0.08)
+			g["adult_voxel_scale"] = clampf(float(g.get("adult_voxel_scale", 0.10)) + randf_range(-0.01, 0.015), 0.07, 0.30)
+			g["max_age_s"] = clampf(float(g.get("max_age_s", 360.0)) * randf_range(0.95, 1.12), 160.0, 620.0)
+			g["max_speed"] = clampf(float(g.get("max_speed", 0.85)) * randf_range(0.95, 1.08), 0.45, 1.45)
+			g["claw_size"] = clampf(float(g.get("claw_size", 0.25)) + randf_range(-0.12, 0.16), 0.0, 1.2)
+			g["body_length_factor"] = clampf(float(g.get("body_length_factor", 1.0)) + randf_range(-0.12, 0.14), 0.75, 1.7)
+			g = _apply_library_guided_shrimp_tuning(g)
+		"snail":
+			g["shell_color"] = _mutate_color(g.get("shell_color", Color8(135, 44, 176)), 0.10)
+			g["shell_size"] = clampf(float(g.get("shell_size", 1.0)) + randf_range(-0.05, 0.08), 0.65, 1.6)
+			if randf() < 0.08:
+				var shapes: Array = ["turbo", "trochus", "nassarius", "apple"]
+				g["shell_shape"] = String(shapes[randi() % shapes.size()])
+			g = _apply_library_guided_snail_tuning(g)
+	return g
+
+
+func _update_resilience_bank() -> void:
+	var best_fish: Fish = _pick_elite_fish()
+	if best_fish != null and best_fish.has_method("get_saved_genome"):
+		_resilience_bank["fish"] = best_fish.get_saved_genome().duplicate(true)
+	var best_shrimp: Shrimp = _pick_elite_shrimp()
+	if best_shrimp != null and best_shrimp.has_method("get_saved_genome"):
+		_resilience_bank["shrimp"] = best_shrimp.get_saved_genome().duplicate(true)
+	var best_snail: Node3D = _pick_elite_snail()
+	if best_snail != null and best_snail.has_method("get_saved_genome"):
+		_resilience_bank["snail"] = best_snail.get_saved_genome().duplicate(true)
+	var best_plant: Plant = _pick_elite_plant()
+	if best_plant != null and best_plant.has_method("get_plant_genome"):
+		_resilience_bank["plant"] = best_plant.get_plant_genome().duplicate(true)
+
+
+func _spawn_resilience_genome(genome: Dictionary, organism_type: String) -> bool:
+	if genome.is_empty():
+		return false
+	var w: Node = get_parent()
+	if w == null or not w.has_method("spawn_library_entry"):
+		return false
+	return bool(w.spawn_library_entry(genome, organism_type))
+
+
+func _spawn_resilience_plant(seed: Dictionary) -> bool:
+	if seed.is_empty():
+		return false
+	var w: Node = get_parent()
+	if w == null or not w.has_method("spawn_seedling"):
+		return false
+	var xz: Vector2 = Vector2.ZERO
+	if w.has_method("sample_xz_in_tank"):
+		xz = w.sample_xz_in_tank(0.55)
+	var sub_y: float = float(w.get("SUBSTRATE_DEPTH")) if w.get("SUBSTRATE_DEPTH") != null else substrate_top_y
+	var pos: Vector3 = Vector3(xz.x, sub_y, xz.y)
+	w.spawn_seedling(pos, seed.get("ramp", []), int(seed.get("generation", 1)), seed.get("seed_config", {}))
+	return true
+
+
+func _run_resilience_seed(dt: float) -> void:
+	_resilience_bank_timer = maxf(0.0, _resilience_bank_timer - dt)
+	if _resilience_bank_timer <= 0.0:
+		_resilience_bank_timer = RESILIENCE_BANK_REFRESH_S
+		_update_resilience_bank()
+
+	_resilience_timer = maxf(0.0, _resilience_timer - dt)
+	if _resilience_timer > 0.0:
+		return
+
+	var fish_live: int = _count_live_fish()
+	var shrimp_live: int = _count_live_shrimp()
+	var snail_counts: Dictionary = _count_snails_and_eggs()
+	var snails_live: int = int(snail_counts.get("snails", 0))
+	var snail_eggs: int = int(snail_counts.get("eggs", 0))
+	var plant_live: int = plants.size()
+	var plant_biomass: int = total_plant_biomass
+
+	var spawned: bool = false
+	if fish_live > 0 and fish_live < RESILIENCE_FISH_FLOOR and eggs.size() <= 2:
+		spawned = _spawn_resilience_genome(_make_resilience_fish_genome(), "fish")
+	elif fish_live == 0 and eggs.is_empty():
+		spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("fish", {}), "fish"), "fish")
+
+	if not spawned:
+		if shrimp_live > 0 and shrimp_live < RESILIENCE_SHRIMP_FLOOR:
+			spawned = _spawn_resilience_genome(_make_resilience_shrimp_genome(), "shrimp")
+		elif shrimp_live == 0:
+			spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("shrimp", {}), "shrimp"), "shrimp")
+
+	if not spawned:
+		if snails_live > 0 and snails_live < RESILIENCE_SNAIL_FLOOR and snail_eggs < RESILIENCE_MAX_SNAIL_EGGS:
+			spawned = _spawn_resilience_genome(_make_resilience_snail_genome(), "snail")
+		elif snails_live == 0 and snail_eggs == 0:
+			spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("snail", {}), "snail"), "snail")
+
+	if not spawned and (plant_live < RESILIENCE_PLANT_FLOOR or plant_biomass < RESILIENCE_PLANT_BIOMASS_FLOOR):
+		spawned = _spawn_resilience_plant(_make_resilience_plant_seed())
+
+	if spawned and fish_live < RESILIENCE_FISH_FLOOR:
+		var w: Node = get_parent()
+		if w != null:
+			var xz: Vector2 = Vector2.ZERO
+			if w.has_method("sample_xz_in_tank"):
+				xz = w.sample_xz_in_tank(0.45)
+			var fy: float = 6.3
+			var water_h: Variant = w.get("WATER_HEIGHT")
+			if water_h != null:
+				fy = float(water_h) - 0.12
+			_spawn_waste(Vector3(xz.x, fy, xz.y), 0.22, WasteParticle.KIND_FOOD)
+
+	_resilience_timer = RESILIENCE_INTERVAL_S if spawned else 6.0
+
+
+func _run_evolution_burst(dt: float) -> void:
+	# Visual succession pulse: periodically spawn a clustered burst of mutated
+	# plant/coral descendants so morphology turnover is visible on minute scales.
+	_evo_burst_timer = maxf(0.0, _evo_burst_timer - dt)
+	if _evo_burst_timer > 0.0:
+		return
+	# Keep cadence dynamic: stronger algae bloom => faster community turnover.
+	_evo_burst_timer = EVO_BURST_INTERVAL_S * (0.70 if bloom_intensity > 0.55 else 1.0)
+	if plants.size() >= 330:
+		return
+	var seed: Dictionary = _make_resilience_plant_seed()
+	if seed.is_empty():
+		return
+	var w: Node = get_parent()
+	if w == null or not w.has_method("spawn_seedling"):
+		return
+	var is_saltwater: bool = false
+	var sw: Variant = w.get("_active_substrate_profile")
+	if sw is Dictionary:
+		is_saltwater = bool((sw as Dictionary).get("is_saltwater", false))
+	var center: Vector2 = Vector2.ZERO
+	if w.has_method("_pick_ecology_site"):
+		var half_d: float = float(w.get("TANK_HALF_D")) if w.get("TANK_HALF_D") != null else 4.0
+		center = w._pick_ecology_site(
+			is_saltwater, -half_d * 0.82, half_d * 0.82, 0.35, 0.45)
+	elif w.has_method("sample_xz_in_tank"):
+		center = w.sample_xz_in_tank(0.45)
+	var base_ramp: Array = seed.get("ramp", []).duplicate(true)
+	var base_cfg: Dictionary = seed.get("seed_config", {}).duplicate(true)
+	var cluster_n: int = randi_range(EVO_BURST_CLUSTER_MIN, EVO_BURST_CLUSTER_MAX)
+	for i in cluster_n:
+		if plants.size() >= 350:
+			break
+		var child_ramp: Array = base_ramp.duplicate(true)
+		for j in child_ramp.size():
+			child_ramp[j] = _mutate_color(child_ramp[j], 0.10 + bloom_intensity * 0.06)
+		var child_cfg: Dictionary = base_cfg.duplicate(true)
+		child_cfg["growth_rate"] = clampf(
+			float(child_cfg.get("growth_rate", 0.18)) * randf_range(1.08, 1.34),
+			0.08, 0.62)
+		child_cfg["max_height"] = clampi(
+			int(child_cfg.get("max_height", 14)) + randi_range(-2, 5), 5, 48)
+		child_cfg["sway_amplitude"] = clampf(
+			float(child_cfg.get("sway_amplitude", 0.18)) + randf_range(0.00, 0.10),
+			0.02, 0.80)
+		var ang: float = randf() * TAU
+		var rad: float = randf_range(0.18, 1.10)
+		var p := Vector3(center.x + cos(ang) * rad, substrate_top_y, center.y + sin(ang) * rad)
+		w.spawn_seedling(p, child_ramp, int(seed.get("generation", 1)) + 1, child_cfg)
+
+
 func _emit_stats() -> void:
 	# Re-filter here: _emit_stats runs at 1Hz, independent of the 10Hz _tick
 	# filter. Between two _tick calls, the engine may actually delete a
 	# queue_freed Fish/Plant; the array still holds the stale ref. Iterating
 	# without is_instance_valid causes "previously freed" crashes after long
 	# runs with high mortality.
+	_reconcile_shrimp_registry()
+	var snails_container: Node3D = ensure_snails_root()
 	var total_biomass: int = 0
 	var n_adults: int = 0
 	var n_fry: int = 0
@@ -879,10 +1801,12 @@ func _emit_stats() -> void:
 		total_biomass += p.biomass()
 	var shrimp_adults: int = 0
 	var shrimp_fry: int = 0
+	var shrimp_total: int = 0
 	var max_gen: int = 0
 	for sh in shrimp:
 		if not is_instance_valid(sh):
 			continue
+		shrimp_total += 1
 		if sh.maturity == Shrimp.MATURITY_ADULT:
 			shrimp_adults += 1
 		elif sh.maturity == Shrimp.MATURITY_FRY:
@@ -897,10 +1821,12 @@ func _emit_stats() -> void:
 	var snail_total: int = 0
 	var snail_adults: int = 0
 	var snail_babies: int = 0
-	if snails_root != null:
-		for s in snails_root.get_children():
+	if snails_container != null:
+		for s in snails_container.get_children():
+			if not is_instance_valid(s):
+				continue
 			# Only count nodes that look like snails (have a generation field +
-			# is_baby property). Skip stray markers / decoration.
+			# is_baby property). Skip stray markers / decoration / egg sacs.
 			if s.get("generation") == null:
 				continue
 			snail_total += 1
@@ -914,7 +1840,7 @@ func _emit_stats() -> void:
 		"fish_adults": n_adults,
 		"fish_fry": n_fry,
 		"eggs": eggs.size(),
-		"shrimp_total": shrimp.size(),
+		"shrimp_total": shrimp_total,
 		"shrimp_adults": shrimp_adults,
 		"shrimp_fry": shrimp_fry,
 		"snails_total": snail_total,
@@ -1093,6 +2019,11 @@ func save_state() -> Dictionary:
 	for a in algae:
 		if is_instance_valid(a) and a.has_method("to_save_dict"):
 			out["algae"].append(a.to_save_dict())
+	# Floating surface plants live on World (not in plants[]). Persist them so
+	# custom Creature-Creator floaters survive a reload.
+	var w_save: Node = get_parent()
+	if w_save != null and w_save.has_method("floaters_to_save"):
+		out["floaters"] = w_save.floaters_to_save()
 	return out
 
 
@@ -1202,6 +2133,11 @@ func load_state(d: Dictionary) -> void:
 		if w != null:
 			waste.append(w)
 
+	# 9b. Floating surface plants (stored on World, not in plants[]).
+	var w_load: Node = get_parent()
+	if w_load != null and w_load.has_method("restore_floaters"):
+		w_load.restore_floaters(d.get("floaters", []))
+
 	# 10. Cross-reference pass: resolve partner_id → partner Node refs.
 	_resolve_refs(d, id_map)
 
@@ -1267,13 +2203,14 @@ func _spawn_shrimp_from_dict(d: Dictionary) -> Shrimp:
 
 
 func _spawn_snail_from_dict(d: Dictionary) -> Node3D:
-	if snails_root == null:
+	var snails_parent: Node3D = ensure_snails_root()
+	if snails_parent == null:
 		return null
 	var snail_script := load("res://scripts/snail.gd")
 	if snail_script == null:
 		return null
 	var sn: Node3D = snail_script.new()
-	snails_root.add_child(sn)
+	snails_parent.add_child(sn)
 	sn.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	if sn.has_method("apply_save_dict"):
 		sn.apply_save_dict(d)
@@ -1283,13 +2220,14 @@ func _spawn_snail_from_dict(d: Dictionary) -> Node3D:
 
 
 func _spawn_snail_egg_from_dict(d: Dictionary) -> Node3D:
-	if snails_root == null:
+	var snails_parent: Node3D = ensure_snails_root()
+	if snails_parent == null:
 		return null
 	var egg_script := load("res://scripts/snail_egg.gd")
 	if egg_script == null:
 		return null
 	var se: Node3D = egg_script.new()
-	snails_root.add_child(se)
+	snails_parent.add_child(se)
 	se.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	if se.has_method("apply_save_dict"):
 		se.apply_save_dict(d)

@@ -4,8 +4,8 @@
 # across fish, shrimp, snails, and plants.
 # (per-tank + globally pinned), shows one selected species spinning inside
 # a faint containment sphere in its own SubViewport, and exposes a genome
-# readout. Per the design pass this is read-only — no live param sliders,
-# no spawn buttons — those land in a later iteration.
+# readout. Supports pinning and re-spawning discovered genomes back into
+# the active tank so selection can be intentionally guided by the player.
 #
 # Layout:
 #   [ tabs: This Tank | Global ]
@@ -36,6 +36,8 @@ const AUTO_ORBIT_SPEED: float = 0.35   # rad/s
 const DRAG_SENSITIVITY: float = 0.012
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
+const PREVIEW_FRAME_INTERVAL: float = 1.0 / 12.0
+const MAX_LIST_LINEAGE_EDGES: int = 180
 
 # Tabs -----------------------------------------------------------------------
 
@@ -78,6 +80,9 @@ var _preview_pitch: float = 0.05
 var _preview_auto: bool = true
 var _preview_dragging: bool = false
 var _preview_drag_last: Vector2 = Vector2.ZERO
+var _preview_frame_accum: float = 0.0
+var _sim_saved_time_scale: float = 1.0
+var _sim_paused_for_panel: bool = false
 
 var _detail_name: Label = null
 var _detail_source_badge: Label = null
@@ -85,8 +90,12 @@ var _detail_meta: Label = null
 var _detail_swatches: HBoxContainer = null
 var _detail_traits: VBoxContainer = null
 var _pin_button: Button = null
+var _spawn_button: Button = null
 
 var _selected_key: String = ""
+var _selected_genome: Dictionary = {}
+var _selected_organism_type: String = ""
+var _list_refresh_pending: bool = false
 
 
 func _ready() -> void:
@@ -117,6 +126,7 @@ func open() -> void:
 	_backfill_discoveries_from_tank()
 	_refresh_list()
 	set_process(true)
+	_pause_sim_for_modal()
 	_resume_preview_rendering()
 
 
@@ -133,6 +143,7 @@ func _close_panel() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	z_index = 0
 	set_process(false)
+	_resume_sim_after_modal()
 	_pause_preview_rendering()
 	if _preview_texture_rect != null:
 		_preview_texture_rect.visible = false
@@ -339,7 +350,7 @@ func _build_preview_column() -> Control:
 	_preview_viewport.size = PREVIEW_SIZE
 	_preview_viewport.transparent_bg = true
 	_preview_viewport.own_world_3d = true
-	_preview_viewport.msaa_3d = Viewport.MSAA_2X
+	_preview_viewport.msaa_3d = Viewport.MSAA_DISABLED
 	# Start disabled — panel opens hidden, no reason to render until toggle().
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	# Do not parent until the panel opens — SubViewport has no `visible`
@@ -365,7 +376,9 @@ func _build_preview_column() -> Control:
 	var auto := CheckBox.new()
 	auto.text = "Auto-rotate"
 	auto.button_pressed = _preview_auto
-	auto.toggled.connect(func(p): _preview_auto = p)
+	auto.toggled.connect(func(p):
+		_preview_auto = p
+		_request_preview_frame())
 	auto.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	controls.add_child(auto)
 
@@ -432,6 +445,10 @@ func _build_detail_column() -> Control:
 	_pin_button.pressed.connect(_on_pin_pressed)
 	_pin_button.disabled = true
 	v.add_child(_pin_button)
+	_spawn_button = PanelTheme.make_secondary_button("Spawn in Tank")
+	_spawn_button.pressed.connect(_on_spawn_pressed)
+	_spawn_button.disabled = true
+	v.add_child(_spawn_button)
 	return v
 
 
@@ -451,8 +468,7 @@ func _build_preview_world() -> void:
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	e.ambient_light_color = Color(0.75, 0.82, 0.95, 1.0)
 	e.ambient_light_energy = 0.85
-	e.glow_enabled = true
-	e.glow_intensity = 0.6
+	e.glow_enabled = false
 	env.environment = e
 	_preview_root.add_child(env)
 
@@ -497,7 +513,6 @@ func _build_preview_world() -> void:
 	_preview_cam.near = 0.05
 	_preview_cam.far = 50.0
 	_preview_root.add_child(_preview_cam)
-	_apply_preview_camera()
 
 
 func _apply_preview_camera() -> void:
@@ -506,8 +521,13 @@ func _apply_preview_camera() -> void:
 	var x: float = sin(_preview_yaw) * cos(_preview_pitch) * PREVIEW_CAM_DISTANCE
 	var z: float = cos(_preview_yaw) * cos(_preview_pitch) * PREVIEW_CAM_DISTANCE
 	var y: float = sin(_preview_pitch) * PREVIEW_CAM_DISTANCE + PREVIEW_CAM_HEIGHT
-	_preview_cam.position = Vector3(x, y, z)
-	_preview_cam.look_at(Vector3(0, PREVIEW_CAM_HEIGHT * 0.4, 0), Vector3.UP)
+	var origin := Vector3(x, y, z)
+	var target := Vector3(0, PREVIEW_CAM_HEIGHT * 0.4, 0)
+	_preview_cam.position = origin
+	var dir := target - origin
+	if dir.length_squared() < 0.0001:
+		return
+	_preview_cam.basis = Basis.looking_at(dir.normalized(), Vector3.UP)
 
 
 func _reset_preview_view() -> void:
@@ -515,6 +535,7 @@ func _reset_preview_view() -> void:
 	_preview_pitch = 0.05
 	_preview_auto = true
 	_apply_preview_camera()
+	_request_preview_frame()
 
 
 # ---- Preview interaction ----
@@ -535,14 +556,19 @@ func _on_preview_input(event: InputEvent) -> void:
 		_preview_yaw -= dx * DRAG_SENSITIVITY
 		_preview_pitch = clampf(_preview_pitch + dy * DRAG_SENSITIVITY, -1.2, 1.2)
 		_apply_preview_camera()
+		_request_preview_frame()
 
 
 func _process(dt: float) -> void:
 	if not visible:
 		return
 	if _preview_auto:
-		_preview_yaw -= dt * AUTO_ORBIT_SPEED
-		_apply_preview_camera()
+		_preview_frame_accum += dt
+		if _preview_frame_accum >= PREVIEW_FRAME_INTERVAL:
+			_preview_frame_accum = 0.0
+			_preview_yaw -= PREVIEW_FRAME_INTERVAL * AUTO_ORBIT_SPEED
+			_apply_preview_camera()
+			_request_preview_frame()
 
 
 func _resume_preview_rendering() -> void:
@@ -551,10 +577,13 @@ func _resume_preview_rendering() -> void:
 	if _preview_viewport.get_parent() != self:
 		add_child(_preview_viewport)
 		move_child(_preview_viewport, 0)
-	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if _preview_texture_rect != null:
 		_preview_texture_rect.texture = _preview_viewport.get_texture()
 		_preview_texture_rect.visible = true
+	_apply_preview_camera()
+	_preview_frame_accum = 0.0
+	_request_preview_frame()
 
 
 func _pause_preview_rendering() -> void:
@@ -563,6 +592,39 @@ func _pause_preview_rendering() -> void:
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if _preview_viewport.get_parent() == self:
 		remove_child(_preview_viewport)
+
+
+func _request_preview_frame() -> void:
+	if _preview_viewport == null:
+		return
+	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+
+func _pause_sim_for_modal() -> void:
+	var sim := get_tree().root.find_child("SimDriver", true, false)
+	if sim == null:
+		return
+	var ts_v: Variant = sim.get("time_scale")
+	if ts_v == null:
+		return
+	var ts: float = float(ts_v)
+	if ts <= 0.0:
+		_sim_paused_for_panel = false
+		return
+	_sim_saved_time_scale = ts
+	sim.set("time_scale", 0.0)
+	_sim_paused_for_panel = true
+
+
+func _resume_sim_after_modal() -> void:
+	if not _sim_paused_for_panel:
+		return
+	var sim := get_tree().root.find_child("SimDriver", true, false)
+	if sim == null:
+		_sim_paused_for_panel = false
+		return
+	sim.set("time_scale", _sim_saved_time_scale)
+	_sim_paused_for_panel = false
 
 
 # ---- List + scope -----------------------------------------------------------
@@ -632,6 +694,16 @@ func _backfill_discoveries_from_tank() -> void:
 
 
 func _on_library_changed() -> void:
+	if not visible:
+		return
+	if _list_refresh_pending:
+		return
+	_list_refresh_pending = true
+	call_deferred("_deferred_refresh_list")
+
+
+func _deferred_refresh_list() -> void:
+	_list_refresh_pending = false
 	if visible:
 		_refresh_list()
 
@@ -671,7 +743,12 @@ func _refresh_list() -> void:
 		if k != "":
 			_row_by_key[k] = item
 	if _view_mode == ViewMode.LIST:
-		_build_lineage_edges(entries)
+		# Large libraries can generate hundreds of overlay lines; cap to keep
+		# UI rendering lightweight when the panel opens.
+		if entries.size() <= MAX_LIST_LINEAGE_EDGES:
+			_build_lineage_edges(entries)
+		else:
+			_lineage_edges.clear()
 		call_deferred("_sync_lineage_overlay")
 	if _lineage_tree != null:
 		_lineage_tree.set_entries(entries, _selected_key)
@@ -816,12 +893,15 @@ func _on_list_item_pressed(species_key: String) -> void:
 func _select_entry(entry: Dictionary) -> void:
 	if entry.is_empty():
 		_selected_key = ""
+		_selected_genome = {}
+		_selected_organism_type = ""
 		_detail_name.text = "Select a species"
 		_detail_source_badge.text = ""
 		_detail_meta.text = ""
 		_clear_children(_detail_swatches)
 		_clear_children(_detail_traits)
 		_pin_button.disabled = true
+		_spawn_button.disabled = true
 		_clear_preview_creature()
 		return
 
@@ -831,6 +911,8 @@ func _select_entry(entry: Dictionary) -> void:
 	var genome_raw: Dictionary = entry.get("genome", {})
 	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
 	var otype: String = String(entry.get("organism_type", SpeciesLibrary.organism_type(genome)))
+	_selected_genome = genome.duplicate(true)
+	_selected_organism_type = otype
 
 	_detail_name.text = "%s %s" % [_organism_icon(otype), String(entry.get("display_name", "?"))]
 	var src: String = String(entry.get("source", ""))
@@ -838,6 +920,7 @@ func _select_entry(entry: Dictionary) -> void:
 		"founder": "Founder cohort",
 		"store": "Store purchase",
 		"evolved": "Bred in tank",
+		"speciated": "Emergent subspecies",
 	}.get(src, src)
 	var gen: int = int(entry.get("generation", 0))
 	var lineage: String = String(entry.get("parent_lineage", "Founders"))
@@ -872,6 +955,7 @@ func _select_entry(entry: Dictionary) -> void:
 	else:
 		_pin_button.text = "Unpin from Global" if pinned else "Pin to Global"
 		_pin_button.disabled = false
+	_spawn_button.disabled = false
 
 	call_deferred("_load_preview_creature", genome, otype)
 
@@ -910,6 +994,8 @@ func _populate_traits(genome: Dictionary, otype: String) -> void:
 		SpeciesLibrary.ORGANISM_SHRIMP:
 			_add_trait("Species", String(genome.get("species", "shrimp")))
 			_add_trait("Size", "%.2f" % float(genome.get("adult_voxel_scale", 0.1)))
+			_add_trait("Length", "%.2f" % float(genome.get("body_length_factor", 1.0)))
+			_add_trait("Claws", "%.2f" % float(genome.get("claw_size", 0.25)))
 			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 0.85)))
 			if bool(genome.get("is_cleaner", false)):
 				_add_trait("Role", "cleaner shrimp")
@@ -922,13 +1008,18 @@ func _populate_traits(genome: Dictionary, otype: String) -> void:
 			_add_trait("Growth", "%.2f" % float(genome.get("growth_rate", 0.18)))
 		_:
 			_add_trait("Species", String(genome.get("species", "?")))
+			var sid: String = String(genome.get("subspecies_id", ""))
+			if sid != "" and sid != String(genome.get("species", "")):
+				_add_trait("Subspecies", sid)
 			_add_trait("Swim", String(genome.get("swim_pattern", "?")))
 			_add_trait("Body", String(genome.get("body_shape", "(default)")))
 			_add_trait("Locomotion", _infer_locomotion(genome))
 			_add_trait("Layer", _layer_label(float(genome.get("preferred_y", 3.5))))
 			_add_trait("Size", "%.2f" % float(genome.get("adult_voxel_scale", 0.18)))
+			_add_trait("Size potential", "%.2f" % float(genome.get("size_potential", 1.0)))
 			_add_trait("Elongation", "%.2f" % float(genome.get("body_elongation", 1.0)))
 			_add_trait("Depth", "%.2f" % float(genome.get("body_depth_factor", 1.0)))
+			_add_trait("Jaw claws", "%.2f" % float(genome.get("jaw_claw_size", 0.0)))
 			_add_trait("Schooling", "%.2f" % float(genome.get("schooling_strength", 1.0)))
 			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 1.8)))
 			_add_trait("Herbivory", "%.2f" % float(genome.get("herbivory", 0.0)))
@@ -943,6 +1034,20 @@ func _on_pin_pressed() -> void:
 		lib.unpin_from_global(_selected_key)
 	else:
 		lib.pin_to_global(_selected_key)
+
+
+func _on_spawn_pressed() -> void:
+	if _selected_key == "" or _selected_genome.is_empty():
+		return
+	var world: Node = get_tree().root.find_child("World", true, false)
+	if world == null:
+		world = get_tree().current_scene
+	if world == null or not world.has_method("spawn_library_entry"):
+		_detail_meta.text = "Cannot spawn: world not available."
+		return
+	var ok: bool = bool(world.spawn_library_entry(
+		_selected_genome.duplicate(true), _selected_organism_type))
+	_detail_meta.text = "Spawned into tank." if ok else "Spawn failed for this entry."
 
 
 # ---- Preview creature lifecycle ---------------------------------------------
@@ -967,6 +1072,7 @@ func _load_preview_creature(genome: Dictionary, otype: String) -> void:
 			_preview_creature = _spawn_preview_plant(g)
 		_:
 			_preview_creature = _spawn_preview_fish(g)
+	_request_preview_frame()
 
 
 func _spawn_preview_fish(g: Dictionary) -> Fish:
@@ -980,7 +1086,7 @@ func _spawn_preview_fish(g: Dictionary) -> Fish:
 	f.target_velocity = Vector3.ZERO
 	f.speed = 0.0
 	f.heading = Vector3(3, 0, -1)
-	f.look_at(f.position + Vector3(0, 0, -1), Vector3.UP)
+	f.basis = Basis.looking_at(Vector3(0, 0, -1), Vector3.UP)
 	_freeze_preview_creature(f)
 	return f
 
@@ -1045,6 +1151,19 @@ func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:
 			mi.mesh = VoxelMat.get_box(Vector3(0.14 * shell_size, 0.08 * shell_size, 0.18 * shell_size))
 			mi.material_override = shell_mat
 			snail.add_child(mi)
+		"apple":
+			var body_whorl := MeshInstance3D.new()
+			body_whorl.mesh = VoxelMat.get_box(
+				Vector3(0.24 * shell_size, 0.21 * shell_size, 0.24 * shell_size))
+			body_whorl.position = Vector3(0, 0.05 * shell_size, 0.0)
+			body_whorl.material_override = shell_mat
+			snail.add_child(body_whorl)
+			var apex := MeshInstance3D.new()
+			apex.mesh = VoxelMat.get_box(
+				Vector3(0.12 * shell_size, 0.10 * shell_size, 0.12 * shell_size))
+			apex.position = Vector3(0, 0.17 * shell_size, -0.04 * shell_size)
+			apex.material_override = shell_dark_mat
+			snail.add_child(apex)
 		_:
 			for i in 4:
 				var ang: float = i * 0.7
@@ -1058,8 +1177,15 @@ func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:
 				mi.material_override = mat
 				snail.add_child(mi)
 	var foot := MeshInstance3D.new()
-	foot.mesh = VoxelMat.get_box(Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size))
-	foot.position = Vector3(0, -0.12 * shell_size, 0)
+	var foot_size: Vector3 = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
+	var foot_y: float = -0.12 * shell_size
+	if shell_shape == "nassarius":
+		foot_size = Vector3(0.28 * shell_size, 0.04 * shell_size, 0.20 * shell_size)
+		foot_y = -0.05 * shell_size
+	elif shell_shape == "apple":
+		foot_size = Vector3(0.30 * shell_size, 0.07 * shell_size, 0.22 * shell_size)
+	foot.mesh = VoxelMat.get_box(foot_size)
+	foot.position = Vector3(0, foot_y, 0)
 	foot.material_override = body_mat
 	snail.add_child(foot)
 
