@@ -1,6 +1,6 @@
-# Vivarium — Goals & Ideas Backlog
+# walstad loom — Goals & Ideas Backlog
 
-A working checklist of things we *could* do to push Vivarium further toward
+A working checklist of things we *could* do to push walstad loom further toward
 the Walstad-style hyper-realistic ecosystem feel.
 
 **How to use this doc:**

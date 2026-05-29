@@ -1,4 +1,4 @@
-# Vivarium sim driver - skeleton that writes the texture inputs the shaders read.
+# walstad loom sim driver - skeleton that writes the texture inputs the shaders read.
 #
 # Until sim-rust/ is wired in via GDExtension, this script generates fake data
 # so you can see the rendering pipeline working end to end. It produces:

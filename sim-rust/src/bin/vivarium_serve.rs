@@ -317,10 +317,10 @@ const TELEMETRY_SHIM: &str = r#"<script>
   requestAnimationFrame(fpsTick);
 
   // Latest stats pushed from GDScript via JavaScriptBridge.eval(...). The
-  // GDScript side calls window.__vivariumPushStats(obj) on every 1Hz
+  // GDScript side calls window.__walstadLoomPushStats(obj) on every 1Hz
   // stats_changed signal.
   var latestStats = null;
-  window.__vivariumPushStats = function (obj) {
+  window.__walstadLoomPushStats = function (obj) {
     latestStats = obj;
   };
 

@@ -1,0 +1,16 @@
+"appbuild"
+{
+	"appid" "@STEAM_APP_ID@"
+	"desc" "walstad loom desktop build"
+	"buildoutput" "output/"
+	"contentroot" "content/"
+	"setlive" ""
+	"preview" "0"
+	"local" ""
+	"depots"
+	{
+		"@STEAM_DEPOT_WINDOWS@" "depot_build_win.vdf"
+		"@STEAM_DEPOT_LINUX@" "depot_build_linux.vdf"
+		"@STEAM_DEPOT_MACOS@" "depot_build_mac.vdf"
+	}
+}

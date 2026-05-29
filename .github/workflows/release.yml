@@ -1,4 +1,4 @@
-# Build Vivarium for macOS, Windows, and Linux when you push a version tag (v*).
+# Build walstad loom for macOS, Windows, and Linux when you push a version tag (v*).
 # Artifacts are attached to the matching GitHub Release.
 #
 # Create a release:
@@ -33,22 +33,27 @@ jobs:
           - name: macOS
             runner: macos-latest
             preset: macOS
-            artifact: Vivarium-mac.zip
+            artifact: walstad-loom-mac.zip
           - name: Windows
             runner: windows-latest
             preset: Windows Desktop
-            artifact: Vivarium-windows.zip
+            artifact: walstad-loom-windows.zip
           - name: Linux
             runner: ubuntu-latest
             preset: Linux
-            artifact: Vivarium-linux.tar.gz
+            artifact: walstad-loom-linux.tar.gz
           - name: Android
             runner: ubuntu-latest
             preset: Android
-            artifact: Vivarium.apk
+            artifact: walstad-loom.apk
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Install GodotSteam (desktop)
+        if: matrix.name != 'Android'
+        shell: bash
+        run: bash steam/install_godotsteam.sh
 
       - name: Install Godot + export templates (Linux)
         if: runner.os == 'Linux'
@@ -156,34 +161,36 @@ jobs:
             "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --export-debug "${{ matrix.preset }}"
           else
             "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --export-release "${{ matrix.preset }}"
+            cp "${{ env.PROJECT_PATH }}/steam_appid.txt" build/
           fi
 
       - name: Package macOS
         if: matrix.name == 'macOS'
         run: |
-          mkdir -p artifacts
+          mkdir -p artifacts build/WalstadLoom.app/Contents/MacOS
+          cp shaders-godot/godot-project/steam_appid.txt build/WalstadLoom.app/Contents/MacOS/
           cd build
-          zip -r ../artifacts/Vivarium-mac.zip Vivarium.app
+          zip -r ../artifacts/walstad-loom-mac.zip WalstadLoom.app
 
       - name: Package Windows
         if: matrix.name == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Compress-Archive -Path build\* -DestinationPath artifacts\Vivarium-windows.zip -Force
+          Compress-Archive -Path build\* -DestinationPath artifacts\walstad-loom-windows.zip -Force
 
       - name: Package Linux
         if: matrix.name == 'Linux'
         run: |
-          chmod +x build/Vivarium-linux.x86_64
+          chmod +x build/WalstadLoom-linux.x86_64
           mkdir -p artifacts
-          tar -czf artifacts/Vivarium-linux.tar.gz -C build Vivarium-linux.x86_64
+          tar -czf artifacts/walstad-loom-linux.tar.gz -C build WalstadLoom-linux.x86_64 steam_appid.txt
 
       - name: Package Android
         if: matrix.name == 'Android'
         run: |
           mkdir -p artifacts
-          cp build/Vivarium.apk artifacts/Vivarium.apk
+          cp build/WalstadLoom.apk artifacts/walstad-loom.apk
 
       - uses: actions/upload-artifact@v5
         with:

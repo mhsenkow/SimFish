@@ -1887,7 +1887,7 @@ func _emit_stats() -> void:
 	# pop_front per metric per second).
 	_push_history_sample(s)
 	stats_changed.emit(s)
-	print_verbose("[vivarium] ", s)
+	print_verbose("[walstad_loom] ", s)
 
 
 # ---- Population history ring buffer ----
@@ -2084,7 +2084,7 @@ func _ensure_ids() -> void:
 # bare tank (glass, substrate grid, aeration). We populate it.
 func load_state(d: Dictionary) -> void:
 	if int(d.get("version", 0)) != SAVE_STATE_VERSION:
-		push_warning("[vivarium] save version mismatch; got %s, expected %d. Loading anyway." % [d.get("version"), SAVE_STATE_VERSION])
+		push_warning("[walstad_loom] save version mismatch; got %s, expected %d. Loading anyway." % [d.get("version"), SAVE_STATE_VERSION])
 
 	# 0. Restore species discoveries BEFORE any spawn happens. Spawn helpers
 	# in load_state bypass register_fish (no double-recording risk), but we

@@ -71,7 +71,7 @@ stability, and persistence.
 | `Display / Window / Stretch / Mode` | viewport |
 | `Display / Window / Handheld / Orientation` | sensor |
 | `2D / Snap / Snap 2D Transforms to Pixel` | true |
-| Project name | Vivarium |
+| Project name | walstad loom |
 | Main scene | `res://tank_menu.tscn` |
 
 ## Quickstart

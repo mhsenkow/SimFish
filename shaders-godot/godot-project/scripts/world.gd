@@ -1,4 +1,4 @@
-# Vivarium 3D voxel world.
+# walstad loom 3D voxel world.
 #
 # Builds the static environment (substrate, hardscape, water volume, glass)
 # and the initial population (plants, fish, snails). Then hands off to a
@@ -146,9 +146,9 @@ func _ready() -> void:
 	else:
 		ACTIVE_SOIL_RAMP = C_SOIL_RAMP
 
-	# Seed comes from env var VIVARIUM_SEED if set, otherwise default. Lets
+	# Seed comes from env var WALSTAD_LOOM_SEED if set, otherwise default. Lets
 	# users replay a specific tank by exporting the env var before launch.
-	var seed_env: String = OS.get_environment("VIVARIUM_SEED")
+	var seed_env: String = OS.get_environment("WALSTAD_LOOM_SEED")
 	var seed_value: int = 0xCAFEF155
 	if seed_env != "":
 		seed_value = seed_env.hash() if not seed_env.is_valid_int() else int(seed_env)
@@ -233,7 +233,7 @@ func _ready() -> void:
 		if saves.has_state_for_active_slot() and not saves.is_active_save_compatible():
 			var cfg_for_log := get_node_or_null("/root/TankConfig")
 			var cur_sub: String = String(cfg_for_log.substrate_type) if cfg_for_log != null else "?"
-			print_verbose("[vivarium] save substrate mismatch (saved=%s, current=%s); discarding state.json" % [
+			print_verbose("[walstad_loom] save substrate mismatch (saved=%s, current=%s); discarding state.json" % [
 				saves.peek_saved_substrate_type(), cur_sub,
 			])
 			saves.clear_active_state()
@@ -316,7 +316,7 @@ func _ready() -> void:
 		# The light beams are now drawn via super-performant shader meshes.
 		we.environment.volumetric_fog_enabled = false
 
-	print_verbose("[vivarium] world built: ", get_child_count(), " top-level nodes; ",
+	print_verbose("[walstad_loom] world built: ", get_child_count(), " top-level nodes; ",
 		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
 		  sim.plants.size(), " plants")
 
@@ -2260,7 +2260,7 @@ func _spawn_initial_fish() -> void:
 			continue
 		var entry: Dictionary = TankConfig.SPECIES_LIBRARY.get(species_name, {})
 		if entry.is_empty():
-			push_warning("[vivarium] unknown species in stocking: " + species_name)
+			push_warning("[walstad_loom] unknown species in stocking: " + species_name)
 			continue
 		var template: Dictionary = entry.get("genome", {})
 		for i in count:

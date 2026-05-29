@@ -779,7 +779,7 @@ func current_tank_preset() -> Dictionary:
 
 
 # ---- Aeration / air system ----
-# Vivarium models a tank-wide dissolved-O2 level (0..1, 1=saturated) that
+# walstad loom models a tank-wide dissolved-O2 level (0..1, 1=saturated) that
 # is filled by the chosen aeration fixture, replenished by plant photosynthesis
 # during the day, and consumed by fish + shrimp respiration. Fish gulp at the
 # surface when O2 falls too low.

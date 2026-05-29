@@ -1,8 +1,8 @@
 """
-Render a Vivarium tank preview - the real palette pipeline, applied to a
+Render a walstad loom tank preview - the real palette pipeline, applied to a
 hand-built scene. Produces:
-  output/vivarium_preview.png   (single chunky pixel-art frame, upscaled 4x)
-  output/vivarium_bubbles.gif   (12-frame loop showing rising bubbles)
+  output/walstad_loom_preview.png   (single chunky pixel-art frame, upscaled 4x)
+  output/walstad_loom_bubbles.gif   (12-frame loop showing rising bubbles)
 
 This is not the Rust sim's output - it's a Python recreation of the same
 rendering rules (palette quantize + Bayer dither, depth-attenuated water,
@@ -478,7 +478,7 @@ def main():
     print("Rendering still frame...")
     frame = build_scene(time=0.0, seed=42)
     big = upscale(frame, UPSCALE)
-    out_png = OUT_DIR / "vivarium_preview.png"
+    out_png = OUT_DIR / "walstad_loom_preview.png"
     big.save(out_png)
     print(f"  -> {out_png}  ({big.width}x{big.height})")
 
@@ -487,7 +487,7 @@ def main():
     for i in range(12):
         f = build_scene(time=i / 12.0, seed=42)
         frames.append(upscale(f, UPSCALE))
-    out_gif = OUT_DIR / "vivarium_bubbles.gif"
+    out_gif = OUT_DIR / "walstad_loom_bubbles.gif"
     frames[0].save(
         out_gif,
         save_all=True,

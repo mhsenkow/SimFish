@@ -10,8 +10,8 @@ config_version=5
 
 [application]
 
-config/name="Vivarium"
-config/description="Generative pixel-art aquarium. 3D voxel content rendered through palette-quantized 384x216 SubViewport."
+config/name="walstad loom"
+config/description="Generative pixel-art Walstad aquarium. 3D voxel content rendered through palette-quantized 384x216 SubViewport."
 run/main_scene="res://tank_menu.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
 
@@ -20,6 +20,7 @@ config/features=PackedStringArray("4.6", "Mobile")
 TankSaves="*res://scripts/tank_saves.gd"
 TankConfig="*res://scripts/tank_config.gd"
 SpeciesLibrary="*res://scripts/species_library.gd"
+SteamService="*res://scripts/steam_service.gd"
 
 [display]
 

@@ -1,4 +1,4 @@
-# Vivarium pixel-art style guide
+# walstad loom pixel-art style guide
 
 The look is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a small palette. Animation comes from the sim, not from sprite frames.
 

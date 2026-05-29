@@ -1,6 +1,6 @@
 # vivarium-sim
 
-Core simulation for the Vivarium pixel-art aquarium project: substrate
+Core simulation for the walstad loom pixel-art aquarium project: substrate
 falling-sand + chemistry diffusion + nitrogen cycle with two bacterial
 populations (nitrosomonas, nitrobacter).
 

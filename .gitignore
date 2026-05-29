@@ -33,6 +33,11 @@ shaders-godot/godot-project/.godot/
 shaders-godot/godot-project/capture_raw.png
 shaders-godot/godot-project/capture_quantized.png
 
+shaders-godot/godot-project/addons/godotsteam/
+steam/content/
+steam/output/
+steam/app_build.vdf
+steam/depot_build_*.vdf
 # Built macOS app + release artifacts - distributed via GitHub Releases.
 build/
 

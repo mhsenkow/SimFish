@@ -333,7 +333,7 @@ func _toggle_portal() -> void:
 		portal_hint.visible = _portal_target == null
 	if _portal_open:
 		_update_portal_pip()
-	print_verbose("[vivarium] PiP portal %s" % ("OPEN" if _portal_open else "CLOSED"))
+	print_verbose("[walstad_loom] PiP portal %s" % ("OPEN" if _portal_open else "CLOSED"))
 
 
 func _restore_camera_state() -> void:
@@ -445,7 +445,7 @@ func _process(dt: float) -> void:
 			else:
 				_auto_orbit = not _auto_orbit
 				_haptic(15)
-				print_verbose("[vivarium] long-press: auto-orbit %s" % ("ON" if _auto_orbit else "OFF"))
+				print_verbose("[walstad_loom] long-press: auto-orbit %s" % ("ON" if _auto_orbit else "OFF"))
 	
 	# ---- Mouse input (skipped when touch is active to avoid double-fire) ----
 	if _is_touch_active():
@@ -689,9 +689,9 @@ func _finish_photo(img: Image) -> void:
 	var dir: String = OS.get_user_data_dir() + "/captures"
 	DirAccess.make_dir_recursive_absolute(dir)
 	var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
-	var path: String = dir + "/vivarium_" + ts + ".png"
+	var path: String = dir + "/walstad_loom_" + ts + ".png"
 	img.save_png(path)
-	print_verbose("[vivarium] photo saved: ", path)
+	print_verbose("[walstad_loom] photo saved: ", path)
 	_haptic(25)
 	_show_photo_toast(path)
 
@@ -740,7 +740,7 @@ const TIMELAPSE_INTERVAL: float = 0.5
 func _toggle_timelapse() -> void:
 	if _timelapse_active:
 		_timelapse_active = false
-		print_verbose("[vivarium] timelapse stopped: ", _timelapse_index, " frames in ", _timelapse_dir)
+		print_verbose("[walstad_loom] timelapse stopped: ", _timelapse_index, " frames in ", _timelapse_dir)
 	else:
 		var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
 		_timelapse_dir = OS.get_user_data_dir() + "/captures/timelapse_" + ts
@@ -748,7 +748,7 @@ func _toggle_timelapse() -> void:
 		_timelapse_index = 0
 		_timelapse_accum = 0.0
 		_timelapse_active = true
-		print_verbose("[vivarium] timelapse started: ", _timelapse_dir)
+		print_verbose("[walstad_loom] timelapse started: ", _timelapse_dir)
 
 
 # ---- Follow-cam ----
@@ -1072,11 +1072,11 @@ func _assign_creature_target(creature: Node3D) -> void:
 	if _portal_open:
 		_portal_target = creature
 		_update_portal_pip()
-		print_verbose("[vivarium] portal tracking %s" % _creature_label(creature))
+		print_verbose("[walstad_loom] portal tracking %s" % _creature_label(creature))
 	else:
 		_follow_target = creature
 		_update_portal_pip()
-		print_verbose("[vivarium] following %s" % _creature_label(creature))
+		print_verbose("[walstad_loom] following %s" % _creature_label(creature))
 
 
 func _click_targets_creature() -> bool:
@@ -1098,7 +1098,7 @@ func _click_targets_creature() -> bool:
 	var picked: Node3D = _pick_creature_from_display(creatures)
 	if picked == null:
 		if _portal_open or creatures.size() > 0:
-			print_verbose("[vivarium] pick miss: creatures=%d mouse=%s sv=%s" % [
+			print_verbose("[walstad_loom] pick miss: creatures=%d mouse=%s sv=%s" % [
 				creatures.size(),
 				display.get_local_mouse_position(),
 				_window_mouse_to_viewport(get_viewport().get_mouse_position()),
@@ -1122,7 +1122,7 @@ func _toggle_aquascape() -> void:
 		if aquascape_palette != null:
 			aquascape_palette.visible = true
 		_refresh_tool_buttons()
-		print_verbose("[vivarium] aquascape ON. 1 dirt / 2 stone / 3 wood / 4 dig; drag a piece to move it; BACKSPACE undo; B exit.")
+		print_verbose("[walstad_loom] aquascape ON. 1 dirt / 2 stone / 3 wood / 4 dig; drag a piece to move it; BACKSPACE undo; B exit.")
 	else:
 		if _sim != null:
 			_sim.time_scale = _aquascape_saved_time_scale
@@ -1130,7 +1130,7 @@ func _toggle_aquascape() -> void:
 			_aquascape_preview.visible = false
 		if aquascape_palette != null:
 			aquascape_palette.visible = false
-		print_verbose("[vivarium] aquascape OFF (resumed at %gx)" % _aquascape_saved_time_scale)
+		print_verbose("[walstad_loom] aquascape OFF (resumed at %gx)" % _aquascape_saved_time_scale)
 	# Notify mobile HUD to show/hide the undo button.
 	if _mobile_hud != null and _mobile_hud.has_method("set_aquascape_mode"):
 		_mobile_hud.set_aquascape_mode(_aquascape_mode)
@@ -1489,7 +1489,7 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 		var jz: float = randf_range(-0.18, 0.18)
 		var pos: Vector3 = Vector3(hit.x + jx, hit.y - 0.02, hit.z + jz)
 		_sim._spawn_waste(pos, 0.45, 3)  # 3 = KIND_FOOD
-	print_verbose("[vivarium] tap-feed: %d flakes at %s" % [count, hit])
+	print_verbose("[walstad_loom] tap-feed: %d flakes at %s" % [count, hit])
 	return true
 
 
@@ -1501,7 +1501,7 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 	# this is the fix for "dirt placed in empty space when clicking outside
 	# the tank glass".
 	if hit == INVALID_HIT:
-		print_verbose("[vivarium] aquascape: cursor not over tank, skipping placement")
+		print_verbose("[walstad_loom] aquascape: cursor not over tank, skipping placement")
 		return
 	# Snap horizontally to a 0.5-unit grid so placement reads tidy.
 	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
@@ -1574,7 +1574,7 @@ func _aquascape_place(mouse_pos: Vector2) -> void:
 	_aquascape_placed.append(mi)
 	if world.has_method("_mark_hardscape_occupancy"):
 		world._mark_hardscape_occupancy(hit, voxel_size)
-	print_verbose("[vivarium] placed %s at %s (total %d)" % [_aquascape_tool, hit, _aquascape_placed.size()])
+	print_verbose("[walstad_loom] placed %s at %s (total %d)" % [_aquascape_tool, hit, _aquascape_placed.size()])
 
 
 # Spawn a driftwood "log" as a 5-7 voxel chain in a gentle curve, parented
@@ -1627,7 +1627,7 @@ func _aquascape_place_log(base: Vector3) -> void:
 		seg.position = offset
 	log_node.set_meta("aquascape_tool", "wood")
 	_aquascape_placed.append(log_node)
-	print_verbose("[vivarium] placed driftwood log at %s" % base)
+	print_verbose("[walstad_loom] placed driftwood log at %s" % base)
 
 
 func _column_top_y(x: float, z: float, exclude: Node = null) -> float:
@@ -2006,7 +2006,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_auto_orbit = false
 					_apply_camera()
 					_last_tap_time = -1.0
-					print_verbose("[vivarium] double-tap: reset camera")
+					print_verbose("[walstad_loom] double-tap: reset camera")
 				else:
 					# Single tap → try to pick a creature.
 					_last_tap_time = now
@@ -2127,12 +2127,12 @@ func _touch_pick_creature(screen_pos: Vector2) -> void:
 	var picked: Node3D = _pick_creature_at_viewport(sv_pos, creatures)
 	if picked != null:
 		_assign_creature_target(picked)
-		print_verbose("[vivarium] touch-tap: picked %s" % _creature_label(picked))
+		print_verbose("[walstad_loom] touch-tap: picked %s" % _creature_label(picked))
 	else:
 		# Tap on empty area clears follow (replaces ESC on desktop).
 		if _follow_target != null:
 			_follow_target = null
-			print_verbose("[vivarium] touch-tap: cleared follow")
+			print_verbose("[walstad_loom] touch-tap: cleared follow")
 
 
 # ---- Mobile UI setup ----
@@ -2218,7 +2218,7 @@ func _on_stats_changed(stats: Dictionary) -> void:
 # Web-only: forward the current stats snapshot to the host page so it can
 # POST it to the headless launcher's /telemetry endpoint. No-op on native
 # builds (no JavaScriptBridge there). The injected page-side shim defines
-# window.__vivariumPushStats; if we're hosted somewhere else, this just
+# window.__walstadLoomPushStats; if we're hosted somewhere else, this just
 # silently does nothing.
 func _push_telemetry_to_js() -> void:
 	if not OS.has_feature("web"):
@@ -2236,9 +2236,9 @@ func _push_telemetry_to_js() -> void:
 	# Use compact JSON; the host shim parses it as a plain JS object.
 	var body: String = JSON.stringify(payload)
 	# eval(code, use_global_execution_context). Global context is what we
-	# want. The shim defined window.__vivariumPushStats at top level.
+	# want. The shim defined window.__walstadLoomPushStats at top level.
 	JavaScriptBridge.eval(
-		"if (window.__vivariumPushStats) { window.__vivariumPushStats(" + body + "); }",
+		"if (window.__walstadLoomPushStats) { window.__walstadLoomPushStats(" + body + "); }",
 		true,
 	)
 
@@ -2958,7 +2958,7 @@ func _try_load_saved_state() -> void:
 	# Aquascape lives outside the sim dict.
 	if d.has("aquascape"):
 		_restore_aquascape(d["aquascape"])
-	print_verbose("[vivarium] restored save from ", path)
+	print_verbose("[walstad_loom] restored save from ", path)
 
 
 # Snapshot the world to disk. Called by:
@@ -2985,7 +2985,7 @@ func save_active_tank(skip_thumbnail: bool = false) -> void:
 	var path: String = saves.state_path(int(saves.active_slot))
 	var err: int = saves.write_text_atomic(path, JSON.stringify(state_d, "  "))
 	if err != OK:
-		push_warning("[vivarium] save failed at %s: err %d" % [path, err])
+		push_warning("[walstad_loom] save failed at %s: err %d" % [path, err])
 		return
 	# Capture a thumbnail for the menu card. Cheap — pulls the existing
 	# SubViewport texture, no extra rendering.
@@ -3134,7 +3134,7 @@ func _pick_device_tier_if_unset() -> void:
 		cfg.render_width = 384
 		cfg.render_height = 216
 	cfg.save_to_disk()
-	print_verbose("[vivarium] device_tier picked: %s (short side %d px)" % [cfg.device_tier, short_side])
+	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px)" % [cfg.device_tier, short_side])
 
 
 # ---- FPS cap (battery saver) ----

@@ -1,4 +1,4 @@
-# Vivarium data schemas
+# walstad loom data schemas
 
 Three JSON Schemas + example data files. Drop content into the example folders
 to add species, substrates, and hardscape without recompiling the sim.

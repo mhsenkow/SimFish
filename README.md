@@ -1,4 +1,4 @@
-# Vivarium
+# walstad loom
 <img width="2560" height="1440" alt="image" src="https://github.com/user-attachments/assets/82432dbc-8338-4bc1-9313-0b54c24aff27" />
 
 <img width="2560" height="1440" alt="Screenshot 2026-05-20 at 10 57 35 AM" src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
@@ -17,31 +17,35 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 
 All builds live on the [Releases page](https://github.com/mhsenkow/SimFish/releases). Pick your platform:
 
-### macOS — [`Vivarium-mac.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-mac.zip) (universal, Intel + Apple Silicon)
+### macOS — [`walstad-loom-mac.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/walstad-loom-mac.zip) (universal, Intel + Apple Silicon)
 
-Unzip, then double-click `Vivarium.app`. The app is **ad-hoc signed** but not Apple-notarized, so Gatekeeper will warn you on first launch:
+Unzip, then double-click `WalstadLoom.app`. The app is **ad-hoc signed** but not Apple-notarized, so Gatekeeper will warn you on first launch:
 
-1. **Right-click `Vivarium.app` → Open → Open** in the dialog.
-2. If macOS instead says *"Vivarium.app is damaged and can't be opened"* (Chrome downloads sometimes trigger this), open Terminal and run:
+1. **Right-click `WalstadLoom.app` → Open → Open** in the dialog.
+2. If macOS instead says *"WalstadLoom.app is damaged and can't be opened"* (Chrome downloads sometimes trigger this), open Terminal and run:
    ```bash
-   xattr -dr com.apple.quarantine ~/Downloads/Vivarium.app
+   xattr -dr com.apple.quarantine ~/Downloads/WalstadLoom.app
    ```
    then double-click again.
 
 macOS only nags once.
 
-### Windows — [`Vivarium-windows.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-windows.zip) (x86_64)
+### Windows — [`walstad-loom-windows.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/walstad-loom-windows.zip) (x86_64)
 
-Unzip, then double-click `Vivarium.exe`. SmartScreen will warn that the publisher is unknown — click **More info** → **Run anyway**.
+Unzip, then double-click `WalstadLoom.exe`. SmartScreen will warn that the publisher is unknown — click **More info** → **Run anyway**.
 
-### Linux — [`Vivarium-linux.tar.gz`](https://github.com/mhsenkow/SimFish/releases/latest/download/Vivarium-linux.tar.gz) (x86_64)
+### Linux — [`walstad-loom-linux.tar.gz`](https://github.com/mhsenkow/SimFish/releases/latest/download/walstad-loom-linux.tar.gz) (x86_64)
 
 ```bash
-tar -xzf Vivarium-linux.tar.gz
-./Vivarium-linux.x86_64
+tar -xzf walstad-loom-linux.tar.gz
+./WalstadLoom-linux.x86_64
 ```
 
 Tested on Ubuntu / Debian-based distros. The binary already has the exec bit set.
+
+### Steam
+
+Coming to Steam as **walstad loom** (App ID `4796460`). See [`steam/README.md`](steam/README.md) for depot setup, GodotSteam install, and upload steps.
 
 ## What's in the tank
 
@@ -150,6 +154,12 @@ to free a slot.
 
 Requires [Godot 4.2+](https://godotengine.org/download).
 
+For desktop Steam integration, install GodotSteam once:
+
+```bash
+./steam/install_godotsteam.sh
+```
+
 ```bash
 git clone https://github.com/mhsenkow/SimFish.git
 cd SimFish/shaders-godot/godot-project
@@ -162,7 +172,7 @@ To export your own macOS build:
 
 ```bash
 cd shaders-godot/godot-project
-godot --path . --headless --export-debug "macOS" build/Vivarium.app
+godot --path . --headless --export-debug "macOS" ../../build/WalstadLoom.app
 ```
 
 ### CI releases (macOS + Windows + Linux)
@@ -232,6 +242,10 @@ SimFish/
 │   ├── GOALS.md                    # 50-item backlog + bonus ideas
 │   ├── index.html / style.css      # github-pages landing
 │   └── img/                        # screenshots
+├── steam/                          # Steamworks depots, upload scripts, store copy
+│   ├── README.md
+│   ├── install_godotsteam.sh
+│   └── store/STORE_PAGE.md
 ├── style-guide/STYLE_GUIDE.md      # palettes, pixel rules, dithering
 └── render_preview.py               # static pixel-art preview generator
 ```
