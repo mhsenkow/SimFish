@@ -128,9 +128,17 @@ var _pearling_particles: GPUParticles3D = null
 var _pearling_active: bool = false
 
 # ---- Leaf structure tracking ----
-# Each "growth unit" can be a leaf node containing multiple voxels.
-var _leaf_nodes: Array[Node3D] = []
+# Leaf voxels render through a single per-plant MultiMesh (one draw call for all
+# of a plant's leaves) instead of one MeshInstance3D node each. _leaf_groups
+# holds, per leaf/accessory, the list of VoxelBatch handles that make it up, so
+# a whole leaf can be shed/decayed as a unit. _leaf_ages stays parallel.
+var _foliage_batch: VoxelBatch = null
+var _foliage_mat: ShaderMaterial = null
+var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
+# Subclasses (SpiralPlant) still use a node-based leaf model and reference this;
+# base Plant leaves go through _leaf_groups / the foliage MultiMesh instead.
+var _leaf_nodes: Array[Node3D] = []
 
 # ---- Runner propagation ----
 # Vegetative spread (stolons). Ribbon-form plants (Vallisneria) periodically
@@ -486,11 +494,53 @@ func _animate_leaf_unfurl(leaf_node: Node3D) -> void:
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
+# Lazily create the per-plant foliage MultiMesh batch (one draw call for all of
+# this plant's leaf voxels). The foliage_mm shader keeps the GPU current-sway.
+func _ensure_foliage_batch() -> VoxelBatch:
+	if _foliage_batch == null:
+		if _foliage_mat == null:
+			_foliage_mat = ShaderMaterial.new()
+			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
+		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 128)
+	return _foliage_batch
+
+
+# Bake a freshly-built leaf into the foliage MultiMesh. LeafShapes returns
+# MeshInstance3D *templates* (positioned relative to leaf_node, never added to
+# the tree); we read each one's transform, box size and color, fold in
+# leaf_node's orientation, push it into the batch as an instance, then free the
+# template. Returns the list of handles so the leaf can be shed as a unit. The
+# leaf_node itself is a transient transform holder — the caller frees it.
+func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
+	var batch := _ensure_foliage_batch()
+	var leaf_xform: Transform3D = leaf_node.transform
+	var group: Array = []
+	for v in leaf_voxels:
+		var mi: MeshInstance3D = v as MeshInstance3D
+		if mi == null:
+			continue
+		var size := Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
+		var bm := mi.mesh as BoxMesh
+		if bm != null:
+			size = bm.size
+		var col: Color = Color(1, 1, 1, 1)
+		var sm := mi.material_override as ShaderMaterial
+		if sm != null:
+			var a = sm.get_shader_parameter("albedo")
+			if a != null:
+				col = a
+		var inst_xform: Transform3D = leaf_xform * mi.transform
+		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
+		group.append(batch.add(scaled, col))
+		mi.free()  # discard the transient template (was never in the tree)
+	return group
+
+
 func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2) -> void:
+	# leaf_node is a transient transform holder (never added to the tree); its
+	# orientation is baked into the foliage MultiMesh by _bake_leaf.
 	var leaf_node := Node3D.new()
-	leaf_node.name = "Leaf_%d" % current_height
-	add_child(leaf_node)
 	# Position along the stem with phototropism.
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
 	leaf_node.position = Vector3(
@@ -504,19 +554,14 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	# Build the paddle leaf.
 	var leaf_voxels: Array = LeafShapes.build_paddle(
 		clampi(leaf_length, 2, 6), ramp, age_frac, 2, 0.5)
-	for v in leaf_voxels:
-		leaf_node.add_child(v)
-		voxels.append(v)
-	_leaf_nodes.append(leaf_node)
-	_animate_leaf_unfurl(leaf_node)
+	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
+	leaf_node.free()
 
 
 func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
 	var leaf_node := Node3D.new()
-	leaf_node.name = "Blade_%d" % current_height
-	add_child(leaf_node)
 	leaf_node.position = Vector3(
 		photo_offset.x + randf_range(-0.1, 0.1),
 		VOXEL_SIZE * 0.3,
@@ -528,17 +573,15 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 	var sway_seed: float = randf() * TAU
 	var leaf_voxels: Array = LeafShapes.build_ribbon(
 		blade_len, ramp, age_frac, sway_seed)
-	for v in leaf_voxels:
-		leaf_node.add_child(v)
-		voxels.append(v)
-	_leaf_nodes.append(leaf_node)
+	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
-	_animate_leaf_unfurl(leaf_node)
+	leaf_node.free()
 
 
 func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2) -> void:
-	# Stem voxel first.
+	# Stem voxel first — stays a real MeshInstance3D node (it's structural, in
+	# the `voxels` array, and drives height / nibble / tint).
 	var stem_mi := MeshInstance3D.new()
 	stem_mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35))
 	var stem_color: Color = ramp[0] if ramp.size() > 0 else Color8(40, 70, 30)
@@ -551,28 +594,21 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	)
 	add_child(stem_mi)
 	voxels.append(stem_mi)
-	# Leaf pair every 2nd node.
+	# Leaf pair every 2nd node — baked into the foliage MultiMesh.
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
-		leaf_node.name = "LeafPair_%d" % current_height
 		leaf_node.position = stem_mi.position
-		add_child(leaf_node)
 		@warning_ignore("integer_division")
 		var leaf_voxels: Array = LeafShapes.build_lance_pair(
 			ramp, age_frac, current_height / 2)
-		for v in leaf_voxels:
-			leaf_node.add_child(v)
-			voxels.append(v)
-		_leaf_nodes.append(leaf_node)
+		_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 		_leaf_ages.append(_t)
-		_animate_leaf_unfurl(leaf_node)
+		leaf_node.free()
 
 
 func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
 	var leaf_node := Node3D.new()
-	leaf_node.name = "Needle_%d" % current_height
-	add_child(leaf_node)
 	leaf_node.position = Vector3(
 		photo_offset.x + randf_range(-0.05, 0.05),
 		VOXEL_SIZE * 0.2,
@@ -580,25 +616,23 @@ func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 	)
 	var needle_len: int = clampi(leaf_length, 2, 6)
 	var leaf_voxels: Array = LeafShapes.build_needle(needle_len, ramp, age_frac)
-	for v in leaf_voxels:
-		leaf_node.add_child(v)
-		voxels.append(v)
-	_leaf_nodes.append(leaf_node)
+	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
-	_animate_leaf_unfurl(leaf_node)
+	leaf_node.free()
 
 
 func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	var accent: Color = ramp[clampi(int(rel * 5.0), 0, 5)]
+	# n is a transient transform holder; accessory voxels bake into the foliage
+	# MultiMesh just like leaves.
 	var n := Node3D.new()
-	n.name = "Accessory_%d" % current_height
-	add_child(n)
 	var y: float = current_height * VOXEL_SIZE * 0.82 + VOXEL_SIZE * 0.45
 	var side: float = -1.0 if (current_height % 2 == 0) else 1.0
 	n.position = Vector3(
 		photo_offset.x + side * VOXEL_SIZE * randf_range(0.45, 1.2),
 		y,
 		photo_offset.y + randf_range(-VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5))
+	var acc_voxels: Array = []
 	match leaf_form:
 		"ribbon":
 			for i in 2 + int(randf() < 0.45):
@@ -606,32 +640,29 @@ func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2)
 				mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.28))
 				mi.material_override = VoxelMat.make_foliage(accent.lightened(0.04 * float(i)))
 				mi.position = Vector3(side * VOXEL_SIZE * 0.18 * float(i), VOXEL_SIZE * 0.28 * float(i), 0)
-				n.add_child(mi)
-				voxels.append(mi)
+				acc_voxels.append(mi)
 		"needle":
 			for x_side in [-1.0, 1.0]:
 				var mi2 := MeshInstance3D.new()
 				mi2.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.36))
 				mi2.material_override = VoxelMat.make_foliage(accent.lightened(0.08))
 				mi2.position = Vector3(x_side * VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.1, 0)
-				n.add_child(mi2)
-				voxels.append(mi2)
+				acc_voxels.append(mi2)
 		"lance":
 			for i in 2:
 				var mi3 := MeshInstance3D.new()
 				mi3.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.20))
 				mi3.material_override = VoxelMat.make_foliage(accent.lerp(Color8(225, 205, 120), 0.05))
 				mi3.position = Vector3(side * VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.24 * float(i), VOXEL_SIZE * 0.16 * float(i))
-				n.add_child(mi3)
-				voxels.append(mi3)
+				acc_voxels.append(mi3)
 		_:
 			var mi4 := MeshInstance3D.new()
 			mi4.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28))
 			mi4.material_override = VoxelMat.make_foliage(accent.lightened(0.10))
-			n.add_child(mi4)
-			voxels.append(mi4)
-	_leaf_nodes.append(n)
+			acc_voxels.append(mi4)
+	_leaf_groups.append(_bake_leaf(n, acc_voxels))
 	_leaf_ages.append(_t)
+	n.free()
 
 
 func _build_stressed_ramp(base_ramp: Array) -> Array:
@@ -843,7 +874,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# ---- Starvation → leaf shedding ----
 	if _health_smooth < 0.45:
 		_starvation_timer += dt
-		if _starvation_timer > 25.0 and not _leaf_nodes.is_empty():
+		if _starvation_timer > 25.0 and not _leaf_groups.is_empty():
 			_starvation_timer = 0.0
 			_shed_oldest_leaf()
 
@@ -1197,19 +1228,16 @@ func _decay_one_voxel() -> void:
 
 
 func _shed_oldest_leaf() -> void:
-	# Drop the oldest (bottom) leaf node, creating detritus.
-	if _leaf_nodes.is_empty():
+	# Drop the oldest (bottom) leaf, creating detritus. Leaves are MultiMesh
+	# instances now, so we hide the whole handle group instead of freeing a node.
+	if _leaf_groups.is_empty():
 		return
-	var oldest: Node3D = _leaf_nodes.pop_front()
+	var oldest: Array = _leaf_groups.pop_front()
 	if _leaf_ages.size() > 0:
 		_leaf_ages.pop_front()
-	if is_instance_valid(oldest):
-		# Remove its voxels from the main array too.
-		for child in oldest.get_children():
-			if child is MeshInstance3D:
-				voxels.erase(child)
-		_spawn_decay_waste(oldest.global_position)
-		oldest.queue_free()
+	for h in oldest:
+		h.hide()
+	_spawn_decay_waste(global_position)
 
 
 func trigger_crypt_melt() -> void:
@@ -1217,13 +1245,15 @@ func trigger_crypt_melt() -> void:
 	_melt_active = true
 	_melt_regrow_timer = 0.0
 	_pre_melt_height = current_height
-	# Burst: remove all leaf voxels rapidly.
+	# Burst: remove all stem voxels rapidly + clear the foliage MultiMesh.
 	for v in voxels:
 		if is_instance_valid(v):
 			_spawn_decay_waste(v.global_position)
 			v.queue_free()
 	voxels.clear()
-	_leaf_nodes.clear()
+	if _foliage_batch != null:
+		_foliage_batch.clear()
+	_leaf_groups.clear()
 	_leaf_ages.clear()
 	current_height = 0
 	_clear_bloom()
@@ -1286,21 +1316,52 @@ func _apply_pinholes() -> void:
 func nibble(amount: int) -> int:
 	var removed: int = 0
 	for i in amount:
-		if voxels.is_empty():
+		if not voxels.is_empty():
+			# Eat a stem voxel from the top.
+			var v: MeshInstance3D = voxels.pop_back()
+			if is_instance_valid(v):
+				v.queue_free()
+			removed += 1
+		elif _take_one_leaf_voxel():
+			# No stems left (or this is a leaf-only form): eat a leaf voxel out
+			# of the newest leaf group instead, so grazers still visibly thin it.
+			removed += 1
+		else:
 			break
-		var v: MeshInstance3D = voxels.pop_back()
-		if is_instance_valid(v):
-			v.queue_free()
-		removed += 1
 		# Reset growth progress so the regrow doesn't snap a new voxel in instantly.
 		growth_progress = 0.0
-		
+
 	_recalc_height()
-	
-	if current_height <= 0 and voxels.is_empty():
+
+	if current_height <= 0 and voxels.is_empty() and not _has_live_leaf_voxel():
 		_on_death()
 		queue_free()
 	return removed
+
+
+# Hide one leaf voxel from the most-recent non-empty leaf group; pops the group
+# once fully eaten. Returns false when no leaf voxels remain.
+func _take_one_leaf_voxel() -> bool:
+	while not _leaf_groups.is_empty():
+		var grp: Array = _leaf_groups[_leaf_groups.size() - 1]
+		while not grp.is_empty():
+			var h = grp.pop_back()
+			if h != null and h.alive:
+				h.hide()
+				return true
+		# Group fully consumed — drop it and its parallel age entry.
+		_leaf_groups.pop_back()
+		if _leaf_ages.size() > 0:
+			_leaf_ages.pop_back()
+	return false
+
+
+func _has_live_leaf_voxel() -> bool:
+	for group in _leaf_groups:
+		for h in group:
+			if h != null and h.alive:
+				return true
+	return false
 
 
 func _recalc_height() -> void:
@@ -1313,7 +1374,17 @@ func _recalc_height() -> void:
 	var max_local_y: float = 0.0
 	for v in voxels:
 		if is_instance_valid(v) and not v.is_queued_for_deletion():
-			max_local_y = maxf(max_local_y, v.position.y)
+			# to_local handles both direct-child stem voxels and the grandchild
+			# voxels SpiralPlant nests under a leaf_root — only runs on nibble /
+			# decay, not per frame, so the transform read is cheap here.
+			max_local_y = maxf(max_local_y, to_local(v.global_position).y)
+	# Base-Plant leaf voxels live in the foliage MultiMesh (not the `voxels` node
+	# array), so fold their baked plant-local heights in too — many plant forms
+	# (paddle / ribbon / needle) grow only leaves and have no stem voxels at all.
+	for group in _leaf_groups:
+		for h in group:
+			if h.alive:
+				max_local_y = maxf(max_local_y, h.local_pos.y)
 	current_height = maxi(0, int(max_local_y / VOXEL_SIZE))
 
 
