@@ -478,6 +478,31 @@ func _ready() -> void:
 
 # ---- Setup ----
 
+# Coerce a genome color value to a Color regardless of how it arrived. Breeding
+# produces Colors, save/load round-trips through Arrays, but a genome that has
+# passed through JSON.stringify comes back with colors as the string "(r, g, b, a)"
+# — assigning that straight to a typed Color field throws "Invalid color name"
+# on every hatch and floods the remote debugger. This accepts Color, [r,g,b,a],
+# or that stringified form and falls back cleanly.
+static func _coerce_color(v: Variant, fallback: Color) -> Color:
+	if v is Color:
+		return v
+	if v is Array and (v as Array).size() >= 3:
+		var arr: Array = v
+		var aa: float = float(arr[3]) if arr.size() >= 4 else 1.0
+		return Color(float(arr[0]), float(arr[1]), float(arr[2]), aa)
+	if v is String:
+		var s: String = (v as String).strip_edges()
+		if s.begins_with("(") and s.ends_with(")"):
+			var parts: PackedStringArray = s.substr(1, s.length() - 2).split(",")
+			if parts.size() >= 3:
+				var sa: float = parts[3].to_float() if parts.size() >= 4 else 1.0
+				return Color(parts[0].to_float(), parts[1].to_float(), parts[2].to_float(), sa)
+		if Color.html_is_valid(s):
+			return Color.html(s)
+	return fallback
+
+
 func init_genome(genome: Dictionary) -> void:
 	# Cache the genome that built this fish so we can replay init_genome on
 	# load. We duplicate(true) so later mutation by the caller doesn't reach
@@ -500,13 +525,13 @@ func init_genome(genome: Dictionary) -> void:
 	subspecies_id = String(genome.get("subspecies_id", species))
 	if subspecies_id == "":
 		subspecies_id = species
-	base_color = genome.get("base_color", base_color)
-	accent_color = genome.get("accent_color", accent_color)
+	base_color = _coerce_color(genome.get("base_color", base_color), base_color)
+	accent_color = _coerce_color(genome.get("accent_color", accent_color), accent_color)
 	if genome.has("tail_color"):
-		tail_color = genome["tail_color"]
+		tail_color = _coerce_color(genome["tail_color"], tail_color)
 		_tail_color_set = true
 	if genome.has("marking_color"):
-		marking_color = genome["marking_color"]
+		marking_color = _coerce_color(genome["marking_color"], marking_color)
 		_marking_color_set = true
 	adult_voxel_scale = genome.get("adult_voxel_scale", adult_voxel_scale)
 	max_age_s = genome.get("max_age_s", max_age_s)
