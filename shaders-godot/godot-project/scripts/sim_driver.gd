@@ -74,6 +74,15 @@ var snail_predator_count: int = 0
 # walk of snails_root just for the oxygen step).
 var snail_count: int = 0
 var total_plant_biomass: int = 0
+# All live snail nodes, rebuilt once per _tick from the "snails" group. Lets the
+# same-tick overlap pass reuse the list instead of re-walking snails_root and
+# string-comparing each child's script path.
+var _live_snails: Array = []
+# Cached autoloads / scene nodes — resolved lazily, reused thereafter. The
+# per-tick "/root/TankConfig" lookup and per-event "AmbientAudio" tree walk were
+# pure overhead since neither node ever moves.
+var _cfg_cache: Node = null
+var _ambient_audio_cache: Node = null
 
 var _accum: float = 0.0
 var _stats_timer: float = 0.0
@@ -310,6 +319,24 @@ func daylight() -> float:
 	return 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
 
 
+# Cached TankConfig autoload accessor. The autoload never moves, so the per-tick
+# "/root/TankConfig" path lookups this replaces were pure overhead.
+func _cfg() -> Node:
+	if _cfg_cache == null or not is_instance_valid(_cfg_cache):
+		_cfg_cache = get_node_or_null("/root/TankConfig")
+	return _cfg_cache
+
+
+# Cached AmbientAudio node accessor (sibling under the running scene). Replaces a
+# get_tree().current_scene + get_node_or_null tree walk on every food/death event.
+func _ambient_audio() -> Node:
+	if _ambient_audio_cache == null or not is_instance_valid(_ambient_audio_cache):
+		var scene := get_tree().current_scene
+		if scene != null:
+			_ambient_audio_cache = scene.get_node_or_null("AmbientAudio")
+	return _ambient_audio_cache
+
+
 # ---- Spatial hash grid for neighbor lookups ----
 # Cell size chosen to match the fish neighbor radius (3.0 units) so each
 # query only needs to check the 9 surrounding cells in 2D (Y is ignored
@@ -317,6 +344,10 @@ func daylight() -> float:
 # scratch — the insert is O(N), and queries are O(neighbors) instead of
 # the previous O(N²) brute-force scan.
 const SPATIAL_CELL_SIZE: float = 3.0
+# Neighbor-cell offsets, hoisted to a constant so _spatial_query (called once
+# per fish + once per shrimp every tick) doesn't allocate two [-1,0,1] array
+# literals on every single call.
+const _CELL_OFFSETS: Array[int] = [-1, 0, 1]
 var _spatial_grid: Dictionary = {}  # Vector2i → Array[Node3D]
 
 
@@ -341,8 +372,8 @@ func _spatial_query(pos: Vector3, radius_sq: float, exclude: Node3D = null) -> A
 	var result: Array = []
 	var cx: int = int(floor(pos.x / SPATIAL_CELL_SIZE))
 	var cz: int = int(floor(pos.z / SPATIAL_CELL_SIZE))
-	for dx in [-1, 0, 1]:
-		for dz in [-1, 0, 1]:
+	for dx in _CELL_OFFSETS:
+		for dz in _CELL_OFFSETS:
 			var cell := Vector2i(cx + dx, cz + dz)
 			var bucket: Array = _spatial_grid.get(cell, [])
 			for e in bucket:
@@ -476,15 +507,10 @@ func _resolve_soft_overlaps() -> void:
 	for s in shrimp:
 		if is_instance_valid(s) and s.get("_dying") != true:
 			live_shrimp.append(s)
-	var live_snails: Array = []
-	if snails_root != null and is_instance_valid(snails_root):
-		for c in snails_root.get_children():
-			if not is_instance_valid(c):
-				continue
-			var script: Script = c.get_script()
-			var path: String = script.resource_path if script != null else ""
-			if path.ends_with("snail.gd"):
-				live_snails.append(c)
+	# Reuse the snail list built this tick in _tick — same frame, refs still
+	# valid (queue_free is deferred to frame end), so no need to re-walk and
+	# re-filter snails_root here.
+	var live_snails: Array = _live_snails
 
 	_resolve_entity_group_overlaps(live_fish, 0.30, 90)
 	_resolve_entity_group_overlaps(live_shrimp, 0.16, 120)
@@ -583,17 +609,22 @@ func _tick(dt: float) -> void:
 			baby_shrimp_list.append(s)
 	var baby_snail_list: Array = []
 	var snail_n: int = 0
+	# Rebuild the shared live-snail list once here; the same-tick overlap pass
+	# reuses it instead of re-walking snails_root.
+	_live_snails.clear()
 	if snails_root != null:
 		for c in snails_root.get_children():
 			# queue_free is deferred — children freed on the previous tick can
 			# still appear here. Filter so predator AI doesn't lock onto a ghost.
 			if not is_instance_valid(c):
 				continue
-			var c_script: Script = c.get_script()
-			if c_script != null and c_script.resource_path.ends_with("snail.gd"):
-				snail_n += 1
-				if c.get("is_baby") == true:
-					baby_snail_list.append(c)
+			# Fast group check instead of comparing each child's script path.
+			if not c.is_in_group("snails"):
+				continue
+			snail_n += 1
+			_live_snails.append(c)
+			if c.get("is_baby") == true:
+				baby_snail_list.append(c)
 	snail_count = snail_n
 
 	# Build spatial hash grid from all live (non-dying) fish. One O(N)
@@ -676,7 +707,7 @@ func _tick(dt: float) -> void:
 	_run_evolution_burst(dt)
 
 	# 6a. Auto-Respawn Fauna if completely empty
-	var cfg = get_node_or_null("/root/TankConfig")
+	var cfg = _cfg()
 	if cfg != null and cfg.auto_respawn_fauna:
 		if fish.is_empty() and shrimp.is_empty() and eggs.is_empty():
 			_extinction_timer += dt
@@ -1111,10 +1142,7 @@ func _hatch(e: FishEgg) -> void:
 
 # Helper - look up the audio node and emit a specific musical event.
 func _play_ambient_event(event_name: String) -> void:
-	var root := get_tree().current_scene
-	if root == null:
-		return
-	var audio := root.get_node_or_null("AmbientAudio")
+	var audio := _ambient_audio()
 	if audio != null:
 		if audio.has_method("play_aquarium_event"):
 			audio.play_aquarium_event(event_name)
@@ -1178,9 +1206,7 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 			break
 		if not is_instance_valid(n):
 			continue
-		var script: Script = n.get_script()
-		var script_path: String = script.resource_path if script != null else ""
-		if not script_path.ends_with("snail.gd"):
+		if not n.is_in_group("snails"):
 			continue
 		var np: Vector3 = (n as Node3D).global_position
 		substrate.add_at(Vector3(np.x, substrate_top_y, np.z), 0.0015)
@@ -1218,12 +1244,12 @@ func _count_snails_and_eggs() -> Dictionary:
 	for c in root.get_children():
 		if not is_instance_valid(c):
 			continue
-		var script: Script = c.get_script()
-		var path: String = script.resource_path if script != null else ""
-		if path.ends_with("snail.gd"):
+		if c.is_in_group("snails"):
 			snails += 1
-		elif path.ends_with("snail_egg.gd"):
-			eggs_n += 1
+		else:
+			var script: Script = c.get_script()
+			if script != null and script.resource_path.ends_with("snail_egg.gd"):
+				eggs_n += 1
 	return {"snails": snails, "eggs": eggs_n}
 
 
@@ -1486,9 +1512,7 @@ func _pick_elite_snail() -> Node3D:
 	for s in root.get_children():
 		if not is_instance_valid(s):
 			continue
-		var script: Script = s.get_script()
-		var path: String = script.resource_path if script != null else ""
-		if not path.ends_with("snail.gd"):
+		if not s.is_in_group("snails"):
 			continue
 		if s.get("is_baby") == true:
 			continue
@@ -1782,6 +1806,9 @@ func _emit_stats() -> void:
 	# lineages have actually diverged.
 	var morphs: Dictionary = {}
 	var morph_drifted: int = 0
+	# Tracked across fish + shrimp + snails. Declared here so the single fish
+	# pass below folds in generation (was a second full fish loop).
+	var max_gen: int = 0
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
@@ -1789,6 +1816,7 @@ func _emit_stats() -> void:
 			n_adults += 1
 		elif f.maturity == Fish.MATURITY_FRY:
 			n_fry += 1
+		max_gen = maxi(max_gen, int(f.generation))
 		var ml: String = f.morph_label()
 		if ml != f.species:
 			# Count distinct drifted labels (not individuals).
@@ -1802,7 +1830,6 @@ func _emit_stats() -> void:
 	var shrimp_adults: int = 0
 	var shrimp_fry: int = 0
 	var shrimp_total: int = 0
-	var max_gen: int = 0
 	for sh in shrimp:
 		if not is_instance_valid(sh):
 			continue
@@ -1812,9 +1839,6 @@ func _emit_stats() -> void:
 		elif sh.maturity == Shrimp.MATURITY_FRY:
 			shrimp_fry += 1
 		max_gen = maxi(max_gen, int(sh.generation))
-	for f in fish:
-		if is_instance_valid(f):
-			max_gen = maxi(max_gen, int(f.generation))
 	# Snails: peek at the children of snails_root - they don't live in a
 	# typed array on SimDriver. Count adults vs babies via the per-snail
 	# is_baby flag set by snail.gd.
@@ -1925,7 +1949,7 @@ func log_story_event(text: String) -> void:
 		story_events.pop_front()
 	# Trigger an ambient plink so the player hears a story beat even if
 	# the dialog is closed.
-	var amb: Node = get_tree().current_scene.get_node_or_null("AmbientAudio")
+	var amb: Node = _ambient_audio()
 	if amb != null and amb.has_method("play_event_plink"):
 		amb.play_event_plink(0.7)
 
