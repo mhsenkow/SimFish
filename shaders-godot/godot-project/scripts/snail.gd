@@ -192,6 +192,10 @@ func _ensure_named() -> void:
 
 
 func _ready() -> void:
+	# Join the "snails" group so neighbor scans (local spacing, overlap
+	# resolution) can identify sibling snails with a fast group check instead
+	# of comparing each sibling's script resource_path string.
+	add_to_group("snails")
 	_ensure_named()
 	_choose_new_direction()
 	_facing = _direction
@@ -394,8 +398,12 @@ func _process(dt: float) -> void:
 	var plane_drift: float = wall_normal.dot(position) - _wall_anchor_offset
 	if absf(plane_drift) > 0.0001:
 		position -= wall_normal * plane_drift
-	# Local spacing so wall snails don't visually stack into one clump.
-	_apply_local_spacing(tangent, bitangent)
+	# Local spacing so wall snails don't visually stack into one clump. Runs on
+	# the same 0.3 s scan cadence as the predator/food scans — it iterates all
+	# sibling snails, so per-frame was wasteful; snails crawl slowly enough that
+	# 0.3 s spacing updates are visually identical.
+	if scan_due:
+		_apply_local_spacing(tangent, bitangent)
 
 
 func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
@@ -729,9 +737,9 @@ func _apply_local_spacing(tangent: Vector3, bitangent: Vector3) -> void:
 	for s in (root as Node3D).get_children():
 		if s == self or not is_instance_valid(s):
 			continue
-		var script: Script = s.get_script()
-		var path: String = script.resource_path if script != null else ""
-		if not path.ends_with("snail.gd"):
+		# Fast group check instead of per-sibling script resource_path string
+		# compare. Snails join the "snails" group in _ready.
+		if not s.is_in_group("snails"):
 			continue
 		var to_other: Vector3 = global_position - (s as Node3D).global_position
 		# Only repel neighbors on roughly the same wall plane.

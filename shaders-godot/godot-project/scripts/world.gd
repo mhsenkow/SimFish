@@ -115,6 +115,7 @@ func _ready() -> void:
 	# Pull tank dimensions + substrate profile from the autoload config.
 	# Settings panel writes here and reloads the scene to apply.
 	var cfg := get_node_or_null("/root/TankConfig")
+	_cfg_node = cfg
 	# Active substrate profile - normally driven by cfg.substrate_type, but
 	# certain presets (e.g. "reef") declare a substrate override that wins
 	# without writing back to the saved config. We resolve once here and
@@ -344,6 +345,20 @@ var _light_cycle_accum: float = 0.0
 var _last_caustic_intensity: float = -1.0
 var _last_caustic_color: Color = Color(-1.0, -1.0, -1.0, -1.0)
 
+# Cosmetic ambient animation (stars, clock hands, vinyl disc, lava lamp, water
+# tint, floater drift, math-plant / lily-pad sway) is throttled to 10 Hz. It's
+# purely visual and slow enough that 10 Hz is indistinguishable from per-frame,
+# but at 60+ fps the sin/cos/sqrt loops + Vector3 allocations were a measurable
+# per-frame cost in a populated tank. The accumulated dt (`adt`) is passed in so
+# phase-based motion advances at exactly the same rate as before.
+const AMBIENT_VISUAL_INTERVAL: float = 0.1
+var _ambient_accum: float = 0.0
+# Reused across frames so the floater-drift cleanup never allocates a fresh Array.
+var _dead_floaters_scratch: Array = []
+# Cached TankConfig autoload — never moves, so the per-frame /root/TankConfig
+# path lookups in _process are wasteful. Resolved once in _ready.
+var _cfg_node: Node = null
+
 
 
 func _process(dt: float) -> void:
@@ -353,10 +368,22 @@ func _process(dt: float) -> void:
 
 	# Update lofi room environment animations
 	_room_time_passed += sdt
-	
-	if sim != null:
+
+	# Cosmetic ambient visuals (sky/stars/clock/disc/lava/water tint/floater
+	# drift/sway) are throttled to 10 Hz. `_ambient_due` gates each block below;
+	# `adt` is the sim-scaled time elapsed since the last cosmetic update so
+	# phase- and rate-based motion advances exactly as it did per-frame.
+	_ambient_accum += dt
+	var _ambient_due: bool = _ambient_accum >= AMBIENT_VISUAL_INTERVAL
+	var adt: float = sdt
+	if _ambient_due:
+		var _amb_ts: float = float(sim.time_scale) if sim != null else 1.0
+		adt = _ambient_accum * _amb_ts
+		_ambient_accum = 0.0
+
+	if _ambient_due and sim != null:
 		var dl: float = sim.daylight()
-		
+
 		# 1. Update Sky Color
 		if _room_sky_mat != null:
 			var sky_col: Color
@@ -379,7 +406,7 @@ func _process(dt: float) -> void:
 					star.scale = Vector3(scale_factor, scale_factor, scale_factor)
 
 	# 3. Update Clock hands (real-world local time)
-	if _room_clock_hour_pivot != null and _room_clock_min_pivot != null:
+	if _ambient_due and _room_clock_hour_pivot != null and _room_clock_min_pivot != null:
 		var sys_time := Time.get_time_dict_from_system()
 		var hr: float = float(sys_time.hour)
 		var mn: float = float(sys_time.minute)
@@ -389,15 +416,15 @@ func _process(dt: float) -> void:
 		_room_clock_min_pivot.rotation.z = -(mn + sc / 60.0) * (TAU / 60.0)
 
 	# 4. Update spinning vinyl record disc (synced to music state)
-	if _room_record_disc != null:
-		var cfg_player := get_node_or_null("/root/TankConfig")
+	if _ambient_due and _room_record_disc != null:
+		var cfg_player := _cfg_node
 		var target_speed: float = 1.5 if (cfg_player != null and cfg_player.music_enabled) else 0.0
-		_room_record_speed = lerpf(_room_record_speed, target_speed, sdt * 2.0)
+		_room_record_speed = lerpf(_room_record_speed, target_speed, adt * 2.0)
 		if _room_record_speed > 0.001:
-			_room_record_disc.rotate_y(-sdt * _room_record_speed)
+			_room_record_disc.rotate_y(-adt * _room_record_speed)
 
 	# 5. Update Lava Lamp blobs & glow
-	if _room_lava_lamp_blobs.size() >= 2:
+	if _ambient_due and _room_lava_lamp_blobs.size() >= 2:
 		var blob1 := _room_lava_lamp_blobs[0]
 		if is_instance_valid(blob1):
 			var b1_y: float = -0.6 + 0.35 + sin(_room_time_passed * 0.45) * 0.20
@@ -453,9 +480,9 @@ func _process(dt: float) -> void:
 			_maybe_recruit_coral()
 	# Tannins: slow rise toward a cap (driftwood + leaves leak organics into
 	# the water column). Visible as a warm brown tint that deepens over time.
-	if tannins < 0.35:
-		tannins = minf(0.35, tannins + 0.00005 * sdt)
-	if _water_material_ref != null:
+	if _ambient_due and tannins < 0.35:
+		tannins = minf(0.35, tannins + 0.00005 * adt)
+	if _ambient_due and _water_material_ref != null:
 		var tannin_color := Color(0.83, 0.55, 0.25)
 		var base_water := Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b)
 		# Tannin tint first (slow brown shift from driftwood).
@@ -484,7 +511,7 @@ func _process(dt: float) -> void:
 	if sim != null and _light_cycle_accum >= LIGHT_CYCLE_INTERVAL:
 		_light_cycle_accum = 0.0
 		var dl: float = sim.daylight()
-		var cfg2 := get_node_or_null("/root/TankConfig")
+		var cfg2 := _cfg_node
 		var max_energy: float = 0.5
 		var warmth: float = 0.6
 		if cfg2 != null:
@@ -545,41 +572,11 @@ func _process(dt: float) -> void:
 				mat.set_shader_parameter("beam_color", ray_color)
 				mat.set_shader_parameter("falloff_exponent", exponent)
 
-	# Floater drift: each surface plant wanders gently on a sin curve.
-	# Filter out queue_freed floaters (e.g. eaten by surface-feeding guppies).
-	_floater_t += sdt
-	var dead_floaters: Array = []
-	for f in _floaters:
-		if not is_instance_valid(f):
-			dead_floaters.append(f)
-			continue
-		var fn: Node3D = f
-		var ph: float = fn.get_meta("phase", 0.0)
-		fn.position.x += sin(_floater_t * 0.15 + ph) * 0.05 * sdt
-		fn.position.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.05 * sdt
-		# Slight bob.
-		fn.position.y = WATER_HEIGHT - 0.05 + sin(_floater_t * 0.7 + ph) * 0.015
-		# Soft clamp inside the tank.
-		fn.position.x = clampf(fn.position.x, -TANK_HALF_W * 0.9, TANK_HALF_W * 0.9)
-		fn.position.z = clampf(fn.position.z, -TANK_HALF_D * 0.9, TANK_HALF_D * 0.9)
-	for df in dead_floaters:
-		_floaters.erase(df)
-
-	# Lily pad gentle sway. Each pad runs its own _t-based sin curve.
-	# Math plants - their tick is what makes the nautilus / cattail / moss
-	# nodes visibly sway. Filter dead refs in case any get queue_freed (eg
-	# eaten by future grazer pass).
-	for mp in _math_plants:
-		if not is_instance_valid(mp):
-			continue
-		if mp.has_method("tick"):
-			mp.tick(sdt)
-	_lily_pad_t += sdt
-	for lp in _lily_pads:
-		if not is_instance_valid(lp):
-			continue
-		if lp.has_method("tick"):
-			lp.tick(sdt)
+	# Floater drift + surface-plant sway are cosmetic and slow; run them on the
+	# 10 Hz ambient cadence with accumulated dt so motion looks identical.
+	if _ambient_due:
+		_drift_floaters(adt)
+		_sway_surface_plants(adt)
 
 	# Floating-plant growth: a light + nutrient + grazing driven step that
 	# spreads the surface mat when conditions favor it and thins it back when
@@ -588,6 +585,46 @@ func _process(dt: float) -> void:
 	if _duckweed_accum >= FLOATER_GROWTH_INTERVAL:
 		_duckweed_accum = 0.0
 		_floater_growth_step()
+
+
+# Gentle sin-curve wander for surface floaters. Runs at 10 Hz with accumulated
+# dt (`adt`); the displacement is rate-correct so it looks the same as the old
+# per-frame version. Reuses `_dead_floaters_scratch` to avoid a per-call Array.
+func _drift_floaters(adt: float) -> void:
+	_floater_t += adt
+	_dead_floaters_scratch.clear()
+	for f in _floaters:
+		if not is_instance_valid(f):
+			_dead_floaters_scratch.append(f)
+			continue
+		var fn: Node3D = f
+		var ph: float = fn.get_meta("phase", 0.0)
+		fn.position.x += sin(_floater_t * 0.15 + ph) * 0.05 * adt
+		fn.position.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.05 * adt
+		# Slight bob.
+		fn.position.y = WATER_HEIGHT - 0.05 + sin(_floater_t * 0.7 + ph) * 0.015
+		# Soft clamp inside the tank.
+		fn.position.x = clampf(fn.position.x, -TANK_HALF_W * 0.9, TANK_HALF_W * 0.9)
+		fn.position.z = clampf(fn.position.z, -TANK_HALF_D * 0.9, TANK_HALF_D * 0.9)
+	for df in _dead_floaters_scratch:
+		_floaters.erase(df)
+
+
+# Lily-pad + math-plant (nautilus / cattail / moss) sway. Their tick() advances
+# an internal sin phase, so running at 10 Hz with accumulated dt keeps the sway
+# rate identical — slow sway reads as perfectly smooth at 10 Hz.
+func _sway_surface_plants(adt: float) -> void:
+	for mp in _math_plants:
+		if not is_instance_valid(mp):
+			continue
+		if mp.has_method("tick"):
+			mp.tick(adt)
+	_lily_pad_t += adt
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		if lp.has_method("tick"):
+			lp.tick(adt)
 
 
 # ---- Materials ----

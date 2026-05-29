@@ -613,8 +613,11 @@ func _process_mouse_input(dt: float) -> void:
 			_timelapse_index += 1
 			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
 
-	# Keep header in sync with time-scale + day phase live, not just at 1Hz.
-	_render_header()
+	# Keep the speed / day-phase chip live without rebuilding all 9 chips every
+	# frame. The full header re-renders on stats_changed (1 Hz); here we only
+	# touch the UI when the state text actually changes (speed nudge, pause,
+	# phase rollover), so idle frames cost two string builds and a compare.
+	_refresh_state_chip()
 
 
 # ---- Time controls + photo mode ----
@@ -877,6 +880,8 @@ func _creature_label(creature: Node) -> String:
 	return creature.name
 
 
+var _portal_label_skip: int = 0
+
 func _update_portal_pip() -> void:
 	if camera == null:
 		return
@@ -944,8 +949,12 @@ func _update_portal_pip() -> void:
 			_portal_info_panel.offset_bottom = 96.0
 			_portal_info_panel.visible = true
 
-	# Update the dynamic creature stats and lineage labels
-	if _portal_info_panel != null and _portal_info_panel.visible:
+	# Update the dynamic creature stats and lineage labels. The center_uv zoom
+	# above is updated every frame so portal tracking stays smooth, but the
+	# name / lineage / age / hunger text barely changes — rebuild those strings
+	# at ~10 Hz instead of every frame.
+	_portal_label_skip = (_portal_label_skip + 1) % 6
+	if _portal_label_skip == 0 and _portal_info_panel != null and _portal_info_panel.visible:
 		# Name
 		var c_name := ""
 		if target_node.get("fish_name") != null and String(target_node.get("fish_name")) != "":
@@ -2244,6 +2253,36 @@ func _update_hud(_mouse_pos: Vector2, _any_btn: bool) -> void:
 # place here. Warnings (low O₂, algae outbreak, paused, etc.) re-tint the
 # affected chip without rebuilding it. Visibility per-chip is driven by
 # _apply_hud_layout() — compact breakpoints hide secondary chips.
+var _last_state_value: String = ""
+var _last_state_sub: String = ""
+
+# Lightweight per-frame refresh of just the speed / day-phase chip. Computes the
+# two short strings the state chip shows and only repaints the chip when they
+# change — so a paused or steady-speed tank does zero UI work on idle frames,
+# while a speed nudge or phase rollover still updates instantly.
+func _refresh_state_chip() -> void:
+	if _chips.is_empty():
+		return
+	var state_value: String = "1×"
+	var state_sub: String = "—"
+	var state_warn: bool = false
+	if _sim != null:
+		var ts: float = float(_sim.time_scale)
+		if ts == 0.0:
+			state_value = "⏸"
+			state_warn = true
+		elif is_equal_approx(ts, 1.0):
+			state_value = "1×"
+		else:
+			state_value = "%s×" % ts
+		state_sub = _day_label(float(_sim.day_phase))
+	if state_value == _last_state_value and state_sub == _last_state_sub:
+		return
+	_last_state_value = state_value
+	_last_state_sub = state_sub
+	_update_chip("state", state_value, state_sub, true, state_warn)
+
+
 func _render_header() -> void:
 	if _chips.is_empty():
 		return

@@ -309,6 +309,9 @@ var _courtship_pulse_phase: float = 0.0
 # rather than being an on/off display.
 var _courtship_intensity: float = 0.0
 var _courtship_color_active: bool = false
+# Last quantized courtship saturation step actually pushed to the shader; lets
+# the per-voxel albedo writes skip frames/substeps where the boost is unchanged.
+var _last_courtship_color_step: int = -999
 # Pheromone trail: GPUParticles3D that trails a receptive female to
 # visually signal she's in heat. Created on demand, freed when she's
 # no longer receptive.
@@ -2727,6 +2730,7 @@ func _motion_substep(dt: float) -> void:
 		# otherwise we modify cached shared materials!
 		if not _courtship_color_active:
 			_courtship_color_active = true
+			_last_courtship_color_step = -999  # force the first apply below
 			for child in _cached_meshes:
 				var mi: MeshInstance3D = child
 				var m: Material = mi.material_override
@@ -2735,18 +2739,27 @@ func _motion_substep(dt: float) -> void:
 						mi.set_meta("orig_mat", m)
 					mi.material_override = m.duplicate()
 
-		for child in _cached_meshes:
-			var mi: MeshInstance3D = child
-			if mi.has_meta("orig_mat"):
-				var orig_mat = mi.get_meta("orig_mat")
-				if orig_mat is ShaderMaterial:
-					var orig_color: Color = orig_mat.get_shader_parameter("albedo")
-					var vivid: Color = orig_color.lightened(sat_boost * 0.3)
-					vivid.s = minf(1.0, vivid.s + sat_boost)
-					(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", vivid)
+		# Quantize the boost to discrete steps and skip the per-voxel albedo
+		# writes when it hasn't moved. _courtship_intensity only changes at tick
+		# rate (10 Hz), so this drops the writes from per-voxel-per-motion-substep
+		# (up to 16×/frame at high time-scale) to at most a handful per second,
+		# with no visible difference. Mirrors _apply_maturity_color's step guard.
+		var step: int = int(round(sat_boost * 50.0))
+		if step != _last_courtship_color_step:
+			_last_courtship_color_step = step
+			for child in _cached_meshes:
+				var mi: MeshInstance3D = child
+				if mi.has_meta("orig_mat"):
+					var orig_mat = mi.get_meta("orig_mat")
+					if orig_mat is ShaderMaterial:
+						var orig_color: Color = orig_mat.get_shader_parameter("albedo")
+						var vivid: Color = orig_color.lightened(sat_boost * 0.3)
+						vivid.s = minf(1.0, vivid.s + sat_boost)
+						(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", vivid)
 	elif _courtship_color_active:
 		# Restore original colors when courtship ends
 		_courtship_color_active = false
+		_last_courtship_color_step = -999
 		for child in _cached_meshes:
 			var mi: MeshInstance3D = child
 			if mi.has_meta("orig_mat"):
