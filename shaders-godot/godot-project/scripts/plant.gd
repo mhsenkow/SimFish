@@ -1102,6 +1102,10 @@ func _clear_bloom() -> void:
 	bloom_voxels.clear()
 
 var _sim_driver_ref: Node = null
+# Cached TankConfig autoload — resolved once, reused. _get_flow_bias runs in the
+# per-tick plant tick(), so the old per-call "/root/TankConfig" lookup cost one
+# autoload resolve per plant per tick.
+var _cfg_ref: Node = null
 
 func _find_sim() -> Node:
 	if _sim_driver_ref != null and is_instance_valid(_sim_driver_ref):
@@ -1253,7 +1257,9 @@ func _get_flow_bias() -> float:
 	if sim_driver == null:
 		return 0.0
 	var aeration_x: float = 0.0
-	var cfg := sim_driver.get_node_or_null("/root/TankConfig")
+	if _cfg_ref == null or not is_instance_valid(_cfg_ref):
+		_cfg_ref = sim_driver.get_node_or_null("/root/TankConfig")
+	var cfg := _cfg_ref
 	if cfg != null:
 		aeration_x = float(cfg.get("aeration_x_frac")) * 8.0  # rough world space
 	var dx: float = _world_pos.x - aeration_x
@@ -1298,11 +1304,16 @@ func nibble(amount: int) -> int:
 
 
 func _recalc_height() -> void:
+	# Stem voxels are direct children of the plant, so their local position.y is
+	# already the height offset — reading it avoids the global-transform flush
+	# that v.global_position forced on every voxel (this runs on every nibble
+	# and decay step, which fish grazing triggers constantly). The plant's only
+	# transform is a ~2° downstream lean, so the topmost local-y voxel is still
+	# the topmost, and local_y / VOXEL_SIZE is exactly the column index.
 	var max_local_y: float = 0.0
 	for v in voxels:
 		if is_instance_valid(v) and not v.is_queued_for_deletion():
-			var ly = v.global_position.y - global_position.y
-			max_local_y = maxf(max_local_y, ly)
+			max_local_y = maxf(max_local_y, v.position.y)
 	current_height = maxi(0, int(max_local_y / VOXEL_SIZE))
 
 
