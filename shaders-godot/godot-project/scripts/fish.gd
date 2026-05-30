@@ -2527,12 +2527,16 @@ func _motion_substep(dt: float) -> void:
 	# Soft-brain wall avoidance can still overshoot on high timescale + burst.
 	# Hard clamp keeps bodies from visibly intersecting glass geometry.
 	if sim != null:
-		var b: AABB = sim.world_bounds
-		position.x = clampf(position.x, b.position.x + 0.20, b.end.x - 0.20)
-		position.y = clampf(position.y,
-			maxf(b.position.y + 0.20, sim.substrate_top_y + 0.08),
-			b.end.y - 0.20)
-		position.z = clampf(position.z, b.position.z + 0.20, b.end.z - 0.20)
+		var w: Node = sim.get_parent()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			position = w.clamp_xyz_in_tank(position, 0.22)
+		else:
+			var b: AABB = sim.world_bounds
+			position.x = clampf(position.x, b.position.x + 0.20, b.end.x - 0.20)
+			position.y = clampf(position.y,
+				maxf(b.position.y + 0.20, sim.substrate_top_y + 0.08),
+				b.end.y - 0.20)
+			position.z = clampf(position.z, b.position.z + 0.20, b.end.z - 0.20)
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
 	# built so its forward = -Z, so the fish faces its motion correctly.

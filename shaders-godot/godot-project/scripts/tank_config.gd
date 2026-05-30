@@ -112,20 +112,20 @@ var music_mood: String = "auto"
 # ambient | trance | hybrid — continuous bed character
 var music_style: String = "hybrid"
 # 0..1 — BPM, kick, arp density, filter sweep intensity
-var music_energy: float = 0.55
+var music_energy: float = 0.42
 # Sound studio — tank coupling & layer mix (0..1 unless noted).
 var music_coupling_floor: float = 0.55
 var music_smooth_rate: float = 0.55
 var music_phrase_churn: float = 0.5
 var music_tempo_follow: float = 0.72
-var music_kick_mix: float = 0.65
-var music_bass_mix: float = 0.75
-var music_arp_mix: float = 0.85
-var music_pad_mix: float = 0.7
-var music_hat_mix: float = 0.55
-var music_sidechain: float = 0.72
-var music_filter_open: float = 0.5
-var music_delay_amount: float = 0.35
+var music_kick_mix: float = 0.5
+var music_bass_mix: float = 0.6
+var music_arp_mix: float = 0.62
+var music_pad_mix: float = 0.78
+var music_hat_mix: float = 0.38
+var music_sidechain: float = 0.55
+var music_filter_open: float = 0.38
+var music_delay_amount: float = 0.22
 var music_accent_density: float = 0.5
 var music_influence_fish: float = 1.0
 var music_influence_plants: float = 1.0

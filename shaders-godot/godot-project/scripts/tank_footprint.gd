@@ -73,7 +73,8 @@ func _emergent_max_y(margin: float = 0.0) -> float:
 
 
 func _hemisphere_dy(y: float) -> float:
-	return maxf(0.0, y - substrate_y)
+	# Distance from the bowl center (substrate top / dome origin).
+	return absf(y - substrate_y)
 
 
 func radius_at_height(y: float, margin: float = 0.0) -> float:
@@ -84,7 +85,9 @@ func radius_at_height(y: float, margin: float = 0.0) -> float:
 			return rad
 		"sphere":
 			var R: float = _bowl_radius(margin)
-			var dy: float = _hemisphere_dy(y)
+			if y < substrate_y:
+				return 0.0
+			var dy: float = y - substrate_y
 			var dy_water: float = _water_dy()
 			if dy > dy_water:
 				return effective_radius(margin)
@@ -158,12 +161,13 @@ func fits_point_with_radius(x: float, z: float, radius: float, margin: float = 0
 
 
 func is_inside_3d(x: float, y: float, z: float, margin: float = 0.0) -> bool:
-	if y < substrate_y - margin:
-		return false
 	match shape:
 		"sphere":
+			# Water lives in the upper bowl only (y >= substrate top).
+			if y < substrate_y - margin * 0.5:
+				return false
 			var R: float = _bowl_radius(margin)
-			var dy: float = _hemisphere_dy(y)
+			var dy: float = maxf(0.0, y - substrate_y)
 			var xz2: float = x * x + z * z
 			if y > water_y + margin:
 				var open_r: float = effective_radius(margin)
@@ -174,6 +178,8 @@ func is_inside_3d(x: float, y: float, z: float, margin: float = 0.0) -> bool:
 				return false
 			return xz2 + dy * dy <= R * R
 		_:
+			if y < substrate_y - margin:
+				return false
 			if y > water_y + margin:
 				return false
 			return is_inside(x, z, margin, y)
@@ -185,7 +191,8 @@ func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
 	match shape:
 		"sphere":
 			var R: float = _bowl_radius(margin) * 0.985
-			var dy: float = clampf(_hemisphere_dy(p.y), 0.0, R)
+			p.y = maxf(p.y, substrate_y + margin)
+			var dy: float = clampf(p.y - substrate_y, 0.0, R)
 			var xz := Vector2(p.x, p.z)
 			var xz_len: float = xz.length()
 			if p.y > water_y:
@@ -272,41 +279,91 @@ func clamp_inside(x: float, z: float, margin: float = 0.0, world_y: float = NAN)
 	return p.lerp(Vector2.ZERO, lo)
 
 
+func bounding_half_extents(margin: float = 0.0) -> Vector2:
+	# Tight AABB half-sizes for voxel grids / spawn boxes (not the inscribed shape).
+	var max_x: float = 0.05
+	var max_z: float = 0.05
+	for c in footprint_corners(12):
+		max_x = maxf(max_x, absf(c.x))
+		max_z = maxf(max_z, absf(c.z))
+	if shape == "sphere":
+		var rim: float = effective_radius(margin)
+		max_x = maxf(max_x, rim)
+		max_z = maxf(max_z, rim)
+	return Vector2(max_x + margin, max_z + margin)
+
+
+func _sample_xz(r: RandomNumberGenerator, margin: float, z_min: float, z_max: float) -> Vector2:
+	var z: float = r.randf_range(z_min, z_max)
+	if shape == "cylinder" or shape == "sphere":
+		var ang: float = r.randf() * TAU
+		var y_ref: float = substrate_y
+		var rad: float = radius_at_height(y_ref, margin) * 0.96
+		var dist: float = sqrt(r.randf()) * rad
+		return Vector2(cos(ang) * dist, sin(ang) * dist)
+	if shape == "triangle":
+		var hd: float = half_d - margin
+		z = r.randf_range(maxf(-hd, z_min), minf(hd, z_max))
+		var hw: float = half_width_at_z(z, margin)
+		return Vector2(r.randf_range(-hw, hw), z)
+	if shape == "hex":
+		z = r.randf_range(maxf(-(half_d - margin), z_min), minf(half_d - margin, z_max))
+		var hw: float = half_w - margin
+		var hd: float = half_d - margin
+		return Vector2(r.randf_range(-hw, hw), z)
+	return Vector2(r.randf_range(-(half_w - margin), half_w - margin), z)
+
+
 func random_point(margin: float = 0.4, rng: RandomNumberGenerator = null) -> Vector2:
 	var r: RandomNumberGenerator = rng if rng != null else RandomNumberGenerator.new()
+	var ext: Vector2 = bounding_half_extents(margin)
 	for _attempt in 48:
-		var x: float = 0.0
-		var z: float = 0.0
-		if shape == "cylinder" or shape == "sphere":
-			var ang: float = r.randf() * TAU
-			var y_ref: float = substrate_y
-			var rad: float = radius_at_height(y_ref, margin) * 0.96
-			var dist: float = sqrt(r.randf()) * rad
-			x = cos(ang) * dist
-			z = sin(ang) * dist
-		else:
-			x = r.randf_range(-half_w, half_w)
-			z = r.randf_range(-half_d, half_d)
-		if is_inside(x, z, margin):
-			return Vector2(x, z)
+		var xz: Vector2 = _sample_xz(r, margin, -ext.y, ext.y)
+		if is_inside(xz.x, xz.y, margin):
+			return xz
 	return clamp_inside(0.0, 0.0, margin)
 
 
 func random_point_in_band(z_min: float, z_max: float, margin: float = 0.4,
 		rng: RandomNumberGenerator = null, min_lateral_room: float = 0.0) -> Vector2:
 	var r: RandomNumberGenerator = rng if rng != null else RandomNumberGenerator.new()
+	if z_min > z_max:
+		var tmp: float = z_min
+		z_min = z_max
+		z_max = tmp
 	for _attempt in 48:
-		var x: float = r.randf_range(-half_w, half_w)
-		var z: float = r.randf_range(z_min, z_max)
-		if is_inside(x, z, margin) and lateral_room(x, z, margin) >= min_lateral_room:
-			return Vector2(x, z)
-	# Fall back to any interior point, then clamp Z toward the band center.
+		var xz: Vector2 = _sample_xz(r, margin, z_min, z_max)
+		if is_inside(xz.x, xz.y, margin) and lateral_room(xz.x, xz.y, margin) >= min_lateral_room:
+			return xz
 	var fallback: Vector2 = random_point(margin, r)
-	fallback.y = clampf((z_min + z_max) * 0.5, -half_d, half_d)
-	fallback = clamp_inside(fallback.x, fallback.y, margin)
+	fallback = clamp_inside(fallback.x, clampf((z_min + z_max) * 0.5, -half_d, half_d), margin)
 	if min_lateral_room > 0.0 and lateral_room(fallback.x, fallback.y, margin) < min_lateral_room:
-		return clamp_inside(0.0, 0.0, margin)
+		return clamp_inside(0.0, 0.0, margin + min_lateral_room)
 	return fallback
+
+
+func random_point_in_volume(y_min: float, y_max: float, margin: float = 0.4,
+		rng: RandomNumberGenerator = null) -> Vector3:
+	var r: RandomNumberGenerator = rng if rng != null else RandomNumberGenerator.new()
+	if y_min > y_max:
+		var tmp: float = y_min
+		y_min = y_max
+		y_max = tmp
+	for _attempt in 48:
+		var xz: Vector2 = _sample_xz(r, margin, -bounding_half_extents(margin).y,
+				bounding_half_extents(margin).y)
+		var y: float = r.randf_range(y_min, y_max)
+		if is_inside_3d(xz.x, y, xz.y, margin):
+			return Vector3(xz.x, y, xz.y)
+	var xz_fb: Vector2 = random_point(margin, r)
+	return Vector3(xz_fb.x, clampf(y_min, substrate_y, y_max), xz_fb.y)
+
+
+func is_substrate_voxel(x: float, y: float, z: float, margin: float = 0.0) -> bool:
+	# Vertical prism: footprint at each XZ, stacked up to the substrate surface.
+	if y < 0.0 or y > substrate_y + 0.02:
+		return false
+	return is_inside(x, z, margin)
 
 
 func footprint_corners(segments: int = 24) -> Array[Vector3]:

@@ -944,12 +944,14 @@ func _process(dt: float) -> void:
 	# Keep shrimp comfortably inside the tank volume; wall_avoid is soft and
 	# this clamp prevents occasional geometry intersections on fast timesteps.
 	if sim != null:
-		var b: AABB = sim.world_bounds
-		position.x = clampf(position.x, b.position.x + 0.18, b.end.x - 0.18)
-		position.z = clampf(position.z, b.position.z + 0.18, b.end.z - 0.18)
-
-	# Clamp to substrate. Shrimp can climb up but never sink below substrate top.
-	position.y = maxf(position.y, substrate_top_y + 0.05)
+		var w: Node = sim.get_parent()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			position = w.clamp_xyz_in_tank(position, 0.2)
+		else:
+			var b: AABB = sim.world_bounds
+			position.x = clampf(position.x, b.position.x + 0.18, b.end.x - 0.18)
+			position.z = clampf(position.z, b.position.z + 0.18, b.end.z - 0.18)
+		position.y = maxf(position.y, substrate_top_y + 0.05)
 
 	# Face heading (look_at with body built facing -Z). Skip when nearly
 	# stationary — the brain may flip target_velocity direction frame-to-

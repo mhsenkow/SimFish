@@ -168,7 +168,12 @@ func _ready() -> void:
 	substrate_grid = SubstrateGrid.new()
 	substrate_grid.name = "SubstrateGrid"
 	add_child(substrate_grid)
-	substrate_grid.init(TANK_HALF_W, TANK_HALF_D, 1.0)
+	var fp_grid := TankFootprint.from_values(TANK_SHAPE, TANK_HALF_W, TANK_HALF_D)
+	fp_grid.substrate_y = SUBSTRATE_DEPTH
+	fp_grid.water_y = WATER_HEIGHT
+	fp_grid.tank_height = TANK_HEIGHT
+	var grid_ext: Vector2 = fp_grid.bounding_half_extents(0.5)
+	substrate_grid.init(grid_ext.x, grid_ext.y, 1.0)
 	# Apply substrate fertility from the resolved active profile (honors
 	# any preset.substrate override - see top of _ready).
 	if not _active_substrate_profile.is_empty():
@@ -179,9 +184,9 @@ func _ready() -> void:
 	sim.substrate = substrate_grid
 	sim.substrate_top_y = SUBSTRATE_DEPTH
 	sim.world_bounds = AABB(
-		Vector3(-TANK_HALF_W + 0.3, SUBSTRATE_DEPTH + 0.2, -TANK_HALF_D + 0.3),
-		Vector3((TANK_HALF_W - 0.3) * 2.0, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.4,
-				(TANK_HALF_D - 0.3) * 2.0)
+		Vector3(-grid_ext.x + 0.3, SUBSTRATE_DEPTH + 0.2, -grid_ext.y + 0.3),
+		Vector3((grid_ext.x - 0.3) * 2.0, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.4,
+				(grid_ext.y - 0.3) * 2.0)
 	)
 
 	plants_root = Node3D.new(); plants_root.name = "Plants"; add_child(plants_root)
@@ -719,18 +724,10 @@ func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
 
 
 func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25) -> Vector3:
-	if TANK_SHAPE == "sphere":
-		var c: Vector3 = _footprint().clamp_inside_3d(p, margin)
-		# Submerged life stays below the open water surface.
-		if p.y <= WATER_HEIGHT + 0.12:
-			c.y = minf(c.y, WATER_HEIGHT - margin)
-		return c
-	var xz: Vector2 = clamp_xz_in_tank(p.x, p.z, margin)
-	return Vector3(
-		xz.x,
-		clampf(p.y, SUBSTRATE_DEPTH + margin, WATER_HEIGHT - margin),
-		xz.y,
-	)
+	var c: Vector3 = _footprint().clamp_inside_3d(p, margin)
+	if p.y <= WATER_HEIGHT + 0.12:
+		c.y = minf(c.y, WATER_HEIGHT - margin)
+	return c
 
 
 func is_inside_tank_volume(x: float, y: float, z: float, margin: float = 0.0) -> bool:
@@ -762,6 +759,16 @@ func sample_xz_in_tank(margin: float = 0.4) -> Vector2:
 
 func _is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
 	return _footprint().is_inside(x, z, margin)
+
+
+func _substrate_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
+	if TANK_SHAPE == "sphere":
+		return _sphere_substrate_voxel_ok(x, y, z, margin)
+	return _footprint().is_substrate_voxel(x, y, z, margin * 0.35)
+
+
+func _sample_point_in_tank(y_min: float, y_max: float, margin: float = 0.35) -> Vector3:
+	return _footprint().random_point_in_volume(y_min, y_max, margin, _rng)
 
 
 func _random_inside_tank(margin: float = 0.4) -> Vector3:
@@ -954,15 +961,50 @@ func _setup_caustics() -> void:
 	pass # All caustics are now computed in a single opaque shader pass.
 
 
+func _sphere_substrate_column_floor(x: float, z: float, bowl: Dictionary) -> float:
+	var R: float = float(bowl["R"])
+	var cy: float = float(bowl["cy"])
+	var xz2: float = x * x + z * z
+	if xz2 >= R * R:
+		return cy
+	return maxf(0.0, cy - sqrt(maxf(0.0, R * R - xz2)))
+
+
+func _sphere_substrate_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
+	# Soil stack under the bowl floor (y <= cy), clipped to the same hull as the glass.
+	var bowl: Dictionary = _sphere_bowl_params()
+	var R: float = float(bowl["R"]) - margin - 0.14
+	var cy: float = float(bowl["cy"])
+	if y < 0.0 or y > cy + 0.02:
+		return false
+	var r_max: float = _bowl_ring_radius(R, cy, y)
+	if y < cy - 0.05:
+		var dy_below: float = cy - y
+		if dy_below > R:
+			return false
+		r_max = minf(r_max, sqrt(maxf(0.0, R * R - dy_below * dy_below)))
+	return x * x + z * z <= r_max * r_max
+
+
 func _build_substrate() -> void:
 	var container := Node3D.new()
 	container.name = "Substrate"
 	add_child(container)
 
 	var voxel_size := 0.4
-	var rows: int = int(SUBSTRATE_DEPTH / voxel_size)
-	var cols: int = int((TANK_HALF_W * 2.0) / voxel_size)
-	var depths: int = int((TANK_HALF_D * 2.0) / voxel_size)
+	var bowl: Dictionary = {}
+	var y_max: float = SUBSTRATE_DEPTH
+	var rows: int = int(ceil(SUBSTRATE_DEPTH / voxel_size)) + 1
+	if TANK_SHAPE == "sphere":
+		bowl = _sphere_bowl_params()
+	var ext: Vector2 = _footprint().bounding_half_extents(voxel_size * 0.15)
+	if TANK_SHAPE == "sphere" and not bowl.is_empty():
+		var build_rad: float = float(bowl["R"]) - 0.12
+		ext = Vector2(build_rad, build_rad)
+	var build_half_w: float = ext.x
+	var build_half_d: float = ext.y
+	var cols: int = int((build_half_w * 2.0) / voxel_size)
+	var depths: int = int((build_half_d * 2.0) / voxel_size)
 
 	# First pass: collect transforms grouped by snapped color key and caustic status.
 	# Each bucket is key -> {transforms: Array[Vector3], caustic: bool, color: Color}
@@ -971,25 +1013,43 @@ func _build_substrate() -> void:
 	for r in rows:
 		for c in cols:
 			for d in depths:
-				var x: float = -TANK_HALF_W + (c + 0.5) * voxel_size
-				var z: float = -TANK_HALF_D + (d + 0.5) * voxel_size
+				var x: float = -build_half_w + (c + 0.5) * voxel_size
+				var z: float = -build_half_d + (d + 0.5) * voxel_size
 				var y: float = (r + 0.5) * voxel_size
-				# Skip voxels outside the tank shape (hex / triangle clip).
-				if not _is_inside_tank(x, z, voxel_size * 0.25):
+				if y > y_max:
 					continue
-				if r == rows - 1 and _rng.randf() < 0.15:
+				if not _substrate_voxel_ok(x, y, z, voxel_size * 0.12):
+					continue
+				if TANK_SHAPE != "sphere" and r == rows - 1 and _rng.randf() < 0.12:
 					continue
 				var color: Color
 				var ramp: Array = ACTIVE_SOIL_RAMP if ACTIVE_SOIL_RAMP.size() == 6 else C_SOIL_RAMP
-				if r < rows - soil_rows:
-					color = C_GRAVEL.lerp(ramp[0], _rng.randf() * 0.4)
+				var floor_y: float = 0.0
+				var rel: float = 0.5
+				if TANK_SHAPE == "sphere" and not bowl.is_empty():
+					var cy_bed: float = float(bowl["cy"])
+					floor_y = _sphere_substrate_column_floor(x, z, bowl)
+					rel = (y - floor_y) / maxf(voxel_size, cy_bed - floor_y)
+					if y < floor_y + voxel_size * 0.6:
+						color = C_GRAVEL.lerp(ramp[0], _rng.randf() * 0.25)
+					else:
+						var idx_s: int = clampi(int(round(rel * 5.0 + _rng.randf() * 1.5)), 0, 5)
+						color = ramp[idx_s]
 				else:
-					var rel: float = float(r - (rows - soil_rows)) / float(maxi(1, soil_rows))
-					var idx: int = clampi(int(rel * 5.0 + _rng.randf() * 1.5), 0, 5)
-					color = ramp[idx]
+					if y < float(soil_rows) * voxel_size:
+						color = C_GRAVEL.lerp(ramp[0], _rng.randf() * 0.4)
+					else:
+						rel = (y - float(soil_rows) * voxel_size) / maxf(
+							voxel_size, float(rows - soil_rows) * voxel_size)
+						var idx_b: int = clampi(int(round(rel * 5.0 + _rng.randf() * 1.5)), 0, 5)
+						color = ramp[idx_b]
 				# Snap color to match VoxelMat cache granularity.
 				var key := Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
-				var is_caustic: bool = (r >= rows - 2)
+				var is_caustic: bool = false
+				if TANK_SHAPE == "sphere" and not bowl.is_empty():
+					is_caustic = y > float(bowl["cy"]) - voxel_size * 0.5 and y < float(bowl["cy"]) + voxel_size * 1.5
+				else:
+					is_caustic = r >= rows - 2
 				var bucket_key := "%s_%d" % [key.to_html(false), 1 if is_caustic else 0]
 				if not buckets.has(bucket_key):
 					buckets[bucket_key] = {"transforms": [], "caustic": is_caustic, "color": key}
@@ -1038,7 +1098,7 @@ func _build_hardscape(populate: bool = true) -> void:
 		var p: Vector3 = Vector3(fit.x, center.y, fit.y)
 		# Keep hardscape inside the active water volume.
 		p.y = clampf(p.y, SUBSTRATE_DEPTH - 0.25, WATER_HEIGHT - 0.35)
-		if not _is_inside_tank(p.x, p.z, 0.2):
+		if not is_inside_tank_volume(p.x, p.y, p.z, 0.2):
 			return null
 		var mi := _add_cube(c, p, size, mat)
 		_mark_hardscape_occupancy(p, size)
@@ -1935,7 +1995,7 @@ func _spawn_initial_plants() -> void:
 			_rng.randf_range(0.20, 0.48),
 			_rng.randf_range(-0.15, 0.15))
 		var moss_pos: Vector3 = anchor.global_position + off
-		if not _is_inside_tank(moss_pos.x, moss_pos.z, 0.2):
+		if not is_inside_tank_volume(moss_pos.x, moss_pos.y, moss_pos.z, 0.2):
 			continue
 		_spawn_plant(species_specs[4], moss_pos, _rng.randi_range(1, 2))
 	await get_tree().process_frame
@@ -2298,6 +2358,7 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	pos.z = fit.y
 	if pos.y <= SUBSTRATE_DEPTH + 0.15 and _is_hardscape_occupied(pos.x, pos.z, 0.45):
 		return
+	pos = clamp_xyz_in_tank(pos, 0.3)
 	var p := Plant.new()
 	plants_root.add_child(p)
 	p.global_position = pos
@@ -2685,7 +2746,8 @@ func _spawn_floaters() -> void:
 	add_child(container)
 	for i in 14:
 		var f_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
-		_add_floater_at(Vector3(f_xz.x, WATER_HEIGHT - 0.05, f_xz.y),
+		_add_floater_at(
+			clamp_xyz_in_tank(Vector3(f_xz.x, WATER_HEIGHT - 0.05, f_xz.y), 0.35),
 			_random_floater_genome())
 
 
@@ -2733,7 +2795,7 @@ func _spawn_math_plants() -> void:
 		p.b = _rng.randf_range(0.09, 0.13)
 		p.total_turns = _rng.randf_range(3.0, 3.8)
 		p.y_per_turn = _rng.randf_range(0.6, 0.85)
-		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y), ramp_choice)
+		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y), 0.35), ramp_choice)
 		_math_plants.append(p)
 
 	# Cattail reeds.
@@ -2747,7 +2809,7 @@ func _spawn_math_plants() -> void:
 		p.lean_amplitude = _rng.randf_range(0.4, 0.8)
 		p.head_voxels = _rng.randi_range(4, 6)
 		p.water_surface_y = WATER_HEIGHT
-		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + 0.05, xz.y),
+		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + 0.05, xz.y), 0.35),
 			Color8(110, 145, 75),
 			Color8(110, 78, 48),
 			Color8(95, 140, 75))
@@ -2770,7 +2832,7 @@ func _spawn_math_plants() -> void:
 		# heights - we anchor to substrate here; future "moss on log"
 		# pass could parent these to a hardscape log instead.
 		var y_jitter: float = randf_range(0.1, 0.6)
-		p.init_at(Vector3(xz.x, SUBSTRATE_DEPTH + y_jitter, xz.y), moss_ramp)
+		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + y_jitter, xz.y), 0.35), moss_ramp)
 		_math_plants.append(p)
 
 
@@ -4205,16 +4267,15 @@ func _spawn_one_microfauna() -> void:
 	# hex / triangle tanks don't get microfauna floating in the corner air.
 	# Tries up to 6 times before giving up — at 90 microfauna a single
 	# missed spawn isn't visible.
-	for _attempt in 6:
-		var x: float = randf_range(b.position.x, b.position.x + b.size.x)
-		var z: float = randf_range(b.position.z, b.position.z + b.size.z)
-		if not _is_inside_tank(x, z, 0.3):
+	for _attempt in 16:
+		var pt: Vector3 = _sample_point_in_tank(
+			b.position.y, b.position.y + b.size.y, 0.35)
+		if not is_inside_tank_volume(pt.x, pt.y, pt.z, 0.35):
 			continue
-		var y: float = randf_range(b.position.y, b.position.y + b.size.y)
 		var m := Microfauna.new()
 		microfauna_root.add_child(m)
 		m.sim = sim
-		m.position = Vector3(x, y, z)
+		m.position = pt
 		# Stagger initial age so the population doesn't all die at once.
 		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.6)
 		return
@@ -4241,7 +4302,7 @@ func _spawn_one_wriggle() -> void:
 	wriggle_root.add_child(w)
 	w.sim = sim
 	w.substrate_top_y = SUBSTRATE_DEPTH
-	w.position = p
+	w.position = clamp_xyz_in_tank(p, 0.25)
 
 
 func _library_tiny_life_scalars() -> Dictionary:
@@ -4401,7 +4462,7 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	# subsequent init_genome() reads the corrected values.
 	_apply_water_column_scale(genome)
 	fauna_root.add_child(f)
-	f.global_position = pos
+	f.global_position = clamp_xyz_in_tank(pos, 0.35)
 	f.init_genome(genome)
 	sim.register_fish(f)
 
@@ -4415,7 +4476,7 @@ func _spawn_shrimp_at(genome: Dictionary, pos: Vector3) -> void:
 	var sh := Shrimp.new()
 	sh.age = float(g.get("max_age_s", 360.0)) * randf_range(0.05, 0.35)
 	fauna_root.add_child(sh)
-	sh.global_position = pos
+	sh.global_position = clamp_xyz_in_tank(pos, 0.3)
 	sh.init_genome(g)
 	sim.register_shrimp(sh)
 

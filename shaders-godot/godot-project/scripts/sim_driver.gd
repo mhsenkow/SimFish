@@ -833,8 +833,10 @@ func _tick(dt: float) -> void:
 				world_bounds.end.x - 0.5)
 			spawn_z = randf_range(world_bounds.position.z + 0.5,
 				world_bounds.end.z - 0.5)
-		a.global_position = Vector3(spawn_x,
-			substrate_top_y + randf_range(0.3, 1.2), spawn_z)
+		var apos := Vector3(spawn_x, substrate_top_y + randf_range(0.3, 1.2), spawn_z)
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			apos = w.clamp_xyz_in_tank(apos, 0.35)
+		a.global_position = apos
 		var palette: Array[Color] = [
 			Color8(120, 165, 60),
 			Color8(95, 145, 70),

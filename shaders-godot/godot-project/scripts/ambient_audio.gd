@@ -92,6 +92,8 @@ var _hat_env: float = 0.0
 var _pad_phases: Array[float] = [0.0, 0.0, 0.0]
 var _lpf_arp: float = 0.0
 var _lpf_pad: float = 0.0
+var _lpf_hat: float = 0.0
+var _lpf_master: float = 0.0
 var _lfo_phase: float = 0.0
 var _delay_buf: PackedFloat32Array = PackedFloat32Array()
 var _delay_pos: int = 0
@@ -121,17 +123,20 @@ var _cached_energy: float = 0.55
 var _cached_arp_decay: float = 0.995
 var _cached_bass_active: bool = true
 var _arp_inc: float = 440.0 * INV_SAMPLE_RATE
+var _arp_inc_target: float = 440.0 * INV_SAMPLE_RATE
 var _bass_inc: float = 110.0 * INV_SAMPLE_RATE
+var _dc_x_prev: float = 0.0
+var _dc_y_prev: float = 0.0
 var _kick_pitch_decay: float = 28.0 * INV_SAMPLE_RATE
 
 
 func _ready() -> void:
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = SAMPLE_RATE
-	gen.buffer_length = 0.05
+	gen.buffer_length = 0.12
 	_stream_player = AudioStreamPlayer.new()
 	_stream_player.stream = gen
-	_stream_player.volume_db = -8.0
+	_stream_player.volume_db = -12.0
 	add_child(_stream_player)
 	_stream_player.play()
 	_playback = _stream_player.get_stream_playback() as AudioStreamGeneratorPlayback
@@ -432,13 +437,13 @@ func _bpm() -> float:
 	var bloom: float = float(_smooth.get("bloom", 0.0)) * _influence("music_influence_bloom")
 	var dl: float = float(_smooth.get("daylight", 1.0)) * _influence("music_influence_day")
 	var fish: float = float(_smooth.get("fish", 0)) * _influence("music_influence_fish")
-	var base: float = lerpf(82.0, 142.0, e * 0.55 + vit * tempo_follow * 0.45)
+	var base: float = lerpf(78.0, 128.0, e * 0.5 + vit * tempo_follow * 0.4)
 	base *= lerpf(0.92, 1.08, bloom * _drive())
 	base *= lerpf(0.94, 1.06, dl)
 	base += clampf(fish * 0.35, 0.0, 8.0)
 	if float(_smooth.get("o2", 0.85)) < 0.45:
 		base *= 0.88
-	return clampf(base, 76.0, 152.0)
+	return clampf(base, 72.0, 138.0)
 
 
 func _scale_freq(degree: int, octave: int = 0) -> float:
@@ -456,6 +461,7 @@ func _rebuild_tonal_cache() -> void:
 		_pad_increments[i] = _cached_scale[idx] * INV_SAMPLE_RATE
 	_bass_inc = _bass_freq * INV_SAMPLE_RATE
 	_arp_inc = _arp_freq * INV_SAMPLE_RATE
+	_arp_inc_target = _arp_inc
 
 
 func _lpf_alpha(cutoff_hz: float) -> float:
@@ -475,14 +481,14 @@ func _refresh_mix_cache() -> void:
 	_cached_pad_mix = _cfg_float("music_pad_mix", 0.7)
 	_cached_hat_mix = _cfg_float("music_hat_mix", 0.55)
 	var filter_bias: float = _cfg_float("music_filter_open", 0.5)
-	_cached_kick_gain = lerpf(0.22, 0.42, clampf(
+	_cached_kick_gain = lerpf(0.14, 0.28, clampf(
 		float(_smooth.get("fish", 0)) / 24.0 + float(_smooth.get("bloom", 0.0)) * 0.4, 0.0, 1.0))
-	_cached_bass_amp = 0.14 * _cached_bass_mix * lerpf(1.15, 0.75, float(_smooth.get("o2", 0.85)))
-	_cached_pad_level = lerpf(0.018, 0.038, clampf(float(_smooth.get("biomass", 0)) / 400.0, 0.0, 1.0))
-	_cached_arp_level = lerpf(0.06, 0.13, vit) * _cached_arp_mix
-	_cached_hat_mul = lerpf(0.03, 0.07, float(_smooth.get("aeration", 0.0))) * _cached_hat_mix
+	_cached_bass_amp = 0.10 * _cached_bass_mix * lerpf(1.0, 0.68, float(_smooth.get("o2", 0.85)))
+	_cached_pad_level = lerpf(0.012, 0.026, clampf(float(_smooth.get("biomass", 0)) / 400.0, 0.0, 1.0))
+	_cached_arp_level = lerpf(0.035, 0.08, vit) * _cached_arp_mix
+	_cached_hat_mul = lerpf(0.015, 0.04, float(_smooth.get("aeration", 0.0))) * _cached_hat_mix
 	_cached_lfo_hz = lerpf(0.03, 0.18, float(_smooth.get("aeration", 0.0)) * 0.5 + vit * 0.5)
-	_cached_arp_decay = lerpf(0.9978, 0.9925, _cached_energy)
+	_cached_arp_decay = lerpf(0.9984, 0.9945, _cached_energy)
 	var pad_cutoff: float = lerpf(500.0, 5200.0, float(_smooth.get("daylight", 1.0)))
 	pad_cutoff *= lerpf(0.85, 1.15, float(_smooth.get("bloom", 0.0)))
 	pad_cutoff *= lerpf(0.75, 1.35, filter_bias)
@@ -490,7 +496,7 @@ func _refresh_mix_cache() -> void:
 	_cached_pad_lpf_alpha = _lpf_alpha(pad_cutoff)
 	var arp_open: float = lerpf(0.25, 1.0, float(_smooth.get("bloom", 0.0)) * 0.6 + vit * 0.4)
 	arp_open = lerpf(arp_open * 0.65, arp_open, filter_bias)
-	var arp_cut: float = lerpf(700.0, 10000.0, arp_open * (sin(_lfo_phase * 0.5 * TAU) * 0.5 + 0.5))
+	var arp_cut: float = lerpf(520.0, 6200.0, arp_open * (sin(_lfo_phase * 0.5 * TAU) * 0.5 + 0.5))
 	_cached_arp_lpf_alpha = _lpf_alpha(arp_cut)
 	_cached_bass_active = int(float(_sample_clock) * _cached_beat_scale) % 2 == 0
 	_rebuild_tonal_cache()
@@ -512,7 +518,7 @@ func play_note(freq: float, amp: float, dur: float, mod_ratio: float = 2.01,
 		is_event: bool = false) -> void:
 	if not _master_enabled():
 		return
-	if _pending.size() > 12:
+	if _pending.size() > 8:
 		return
 	var final_amp: float = _note_gain(amp, is_event)
 	if final_amp <= 0.001:
@@ -524,8 +530,8 @@ func play_note(freq: float, amp: float, dur: float, mod_ratio: float = 2.01,
 
 
 func play_supersaw(freq: float, amp: float, dur: float, is_event: bool = false) -> void:
-	play_note(freq * 0.996, amp * 0.45, dur, 1.0, 0.0, 1.6, 0.008, is_event)
-	play_note(freq * 1.004, amp * 0.45, dur, 1.0, 0.0, 1.6, 0.008, is_event)
+	play_note(freq * 0.996, amp * 0.32, dur, 1.0, 0.0, 1.4, 0.018, is_event)
+	play_note(freq * 1.004, amp * 0.32, dur, 1.0, 0.0, 1.4, 0.018, is_event)
 
 
 func play_event_plink(intensity: float = 0.5, is_event: bool = false) -> void:
@@ -542,11 +548,11 @@ func play_event_plink(intensity: float = 0.5, is_event: bool = false) -> void:
 	var detune: float = lerpf(0.985, 1.015, float(_smooth.get("daylight", 1.0)))
 	var freq: float = scale[note_idx] * detune
 	if _trance_bed_active() and not is_event:
-		play_note(freq, 0.03 + intensity * 0.04, 0.35, 2.4, 1.2, 3.5, 0.0, false)
+		play_note(freq, 0.02 + intensity * 0.025, 0.28, 2.4, 1.2, 4.5, 0.006, false)
 	else:
 		var mod_idx: float = lerpf(1.2, 2.2, float(_smooth.get("daylight", 1.0)))
-		var dur: float = lerpf(0.45, 0.72, _tank_vitality)
-		play_note(freq, 0.04 + intensity * 0.06, dur, 2.01, mod_idx, 2.0, 0.0, is_event)
+		var dur: float = lerpf(0.55, 0.85, _tank_vitality)
+		play_note(freq, 0.03 + intensity * 0.04, dur, 2.01, mod_idx, 1.6, 0.012, is_event)
 
 
 func play_aquarium_event(event_name: String, intensity: float = -1.0) -> void:
@@ -580,7 +586,7 @@ func play_eat_sfx(intensity: float = 0.5) -> void:
 	var note_idx: int = clampi(int(intensity * 4.0) + int(float(_smooth.get("fish", 0)) * 0.15) + 5, 0, scale.size() - 1)
 	var freq: float = scale[note_idx] * lerpf(0.99, 1.01, float(_smooth.get("bloom", 0.0)))
 	if _trance_bed_active():
-		play_note(freq, 0.05 + intensity * 0.04, 0.12, 1.0, 0.4, 6.0, 0.0, true)
+		play_note(freq, 0.035 + intensity * 0.03, 0.14, 1.0, 0.4, 4.0, 0.01, true)
 	else:
 		play_note(freq, 0.07 + intensity * 0.05, 0.18, 1.0, 0.5, 5.5, 0.0, true)
 
@@ -594,7 +600,7 @@ func play_plant_sfx(intensity: float = 0.4) -> void:
 func play_bubble_sfx(intensity: float = 0.35) -> void:
 	var base: float = lerpf(880.0, 1600.0, intensity + float(_smooth.get("aeration", 0.0)) * 0.15)
 	var detune: float = lerpf(0.97, 1.03, float(_smooth.get("flow", 0.0)) * 0.5 + 0.5)
-	play_note(base * detune, 0.022 + intensity * 0.018, 0.07, 1.0, 0.2, 9.0, 0.0, false)
+	play_note(base * detune, 0.016 + intensity * 0.012, 0.09, 1.0, 0.2, 5.5, 0.008, false)
 
 
 func play_flow_sfx() -> void:
@@ -644,10 +650,11 @@ func play_spawn_sfx() -> void:
 
 
 func _trigger_kick() -> void:
+	if _kick_env < 0.06:
+		_kick_phase = 0.0
 	_kick_env = 1.0
-	_kick_phase = 0.0
-	_kick_pitch = lerpf(62.0, 78.0, _energy())
-	_sidechain = lerpf(0.55, 0.12, _cfg_float("music_sidechain", 0.72))
+	_kick_pitch = lerpf(58.0, 72.0, _energy())
+	_sidechain = lerpf(0.72, 0.38, _cfg_float("music_sidechain", 0.55))
 
 
 func _trigger_hat() -> void:
@@ -685,9 +692,8 @@ func _advance_sequencer(quarter: int, sixteenth: int) -> void:
 			if float(_smooth.get("o2", 0.85)) < 0.5:
 				oct = maxi(oct - 1, -1)
 			_arp_freq = _scale_freq(degree, oct)
-			_arp_inc = _arp_freq * INV_SAMPLE_RATE
-			_arp_env = lerpf(0.45, 1.0, _tank_vitality)
-			_arp_phase = 0.0
+			_arp_inc_target = _arp_freq * INV_SAMPLE_RATE
+			_arp_env = lerpf(0.22, 0.58, _tank_vitality)
 
 	if quarter != _last_quarter:
 		_last_quarter = quarter
@@ -703,8 +709,6 @@ func _advance_sequencer(quarter: int, sixteenth: int) -> void:
 			_bass_freq = _scale_freq(0, -1 if float(_smooth.get("bloom", 0.0)) < 0.4 else 0)
 			_bass_inc = _bass_freq * INV_SAMPLE_RATE
 			_rebuild_tonal_cache()
-		if quarter % 2 == 0:
-			_bass_phase = 0.0
 		_cached_bass_active = quarter % 2 == 0
 
 
@@ -717,13 +721,34 @@ func _one_pole_cached(input: float, state: float, alpha: float) -> float:
 	return state + alpha * (input - state)
 
 
+func _soft_wave(phase: float) -> float:
+	# Triangle-ish blend — warmer than a naked sine, less buzzy than a square.
+	var s: float = sin(phase * TAU)
+	var t: float = 2.0 * absf(2.0 * phase - 1.0) - 1.0
+	return lerpf(s, t, 0.38)
+
+
+func _soft_clip(sample: float) -> float:
+	# Gentle saturation before the hard DAC clamp.
+	return tanh(sample * 1.15) * 0.78
+
+
+func _dc_block(sample: float) -> float:
+	# High-pass DC blocker — stops low-frequency thumps when layers stack.
+	const coeff: float = 0.996
+	var out: float = sample - _dc_x_prev + coeff * _dc_y_prev
+	_dc_x_prev = sample
+	_dc_y_prev = out
+	return out
+
+
 func _mix_trance_sample() -> float:
 	var beat_time: float = float(_sample_clock) * _cached_beat_scale
 	var quarter: int = int(beat_time)
 	var sixteenth: int = int(beat_time * 4.0)
 	_advance_sequencer(quarter, sixteenth)
 
-	_sidechain = lerpf(_sidechain, 1.0, 0.0016)
+	_sidechain = lerpf(_sidechain, 1.0, 0.00085)
 	var sc: float = _sidechain
 	var vol: float = _cached_vol
 	var out: float = 0.0
@@ -731,33 +756,39 @@ func _mix_trance_sample() -> float:
 	if _kick_env > 0.001:
 		_kick_phase += _kick_pitch * INV_SAMPLE_RATE
 		_kick_pitch = maxf(42.0, _kick_pitch - _kick_pitch_decay)
-		out += sin(_kick_phase * TAU) * _kick_env * vol * _cached_kick_gain * _cached_kick_mix
-		_kick_env *= 0.9990
+		var kick_body: float = sin(_kick_phase * TAU) * _kick_env * _kick_env
+		out += kick_body * vol * _cached_kick_gain * _cached_kick_mix
+		_kick_env *= 0.9994
 
 	if _cached_bass_active:
-		_bass_phase += _bass_inc
-		out += sin(_bass_phase * TAU) * _cached_bass_amp * vol * sc
+		_bass_phase = fposmod(_bass_phase + _bass_inc, 1.0)
+		out += _soft_wave(_bass_phase) * _cached_bass_amp * vol * sc
 
 	if _hat_env > 0.001:
-		out += _noise_sample() * _hat_env * vol * _cached_hat_mul
-		_hat_env *= 0.992
+		var hat_raw: float = _noise_sample() * _hat_env
+		_lpf_hat = _one_pole_cached(hat_raw, _lpf_hat, _lpf_alpha(2800.0))
+		out += _lpf_hat * vol * _cached_hat_mul
+		_hat_env *= 0.9935
 
 	var pad_raw: float = 0.0
 	for i in 3:
 		_pad_phases[i] = fposmod(_pad_phases[i] + _pad_increments[i], 1.0)
-		pad_raw += sin(_pad_phases[i] * TAU)
+		pad_raw += _soft_wave(_pad_phases[i])
+	pad_raw *= 0.333333
 	_lpf_pad = _one_pole_cached(pad_raw, _lpf_pad, _cached_pad_lpf_alpha)
 	out += _lpf_pad * _cached_pad_level * vol * sc * _cached_pad_mix
 
+	_arp_inc = lerpf(_arp_inc, _arp_inc_target, 0.0018)
 	if _arp_env > 0.0005:
 		_arp_phase = fposmod(_arp_phase + _arp_inc, 1.0)
-		var arp_raw: float = sin(_arp_phase * TAU)
+		var arp_raw: float = _soft_wave(_arp_phase)
 		_lpf_arp = _one_pole_cached(arp_raw, _lpf_arp, _cached_arp_lpf_alpha)
 		out += _lpf_arp * _arp_env * _cached_arp_level * vol * sc
 		_arp_env *= _cached_arp_decay
 
 	_lfo_phase = fposmod(_lfo_phase + _cached_lfo_hz * INV_SAMPLE_RATE, 1.0)
-	return out
+	_lpf_master = _one_pole_cached(out, _lpf_master, _lpf_alpha(6800.0))
+	return _lpf_master
 
 
 func _process(_dt: float) -> void:
@@ -785,13 +816,13 @@ func _process(_dt: float) -> void:
 	else:
 		_smooth_environment(sim_dt * 0.35)
 
-	if _plink_bed_active() and _sim_ref != null:
+	if _plink_bed_active() and _sim_ref != null and not _trance_bed_active():
 		_accent_t -= sim_dt
 		if _accent_t <= 0.0:
 			var vit: float = _tank_vitality
-			if vit > 0.08:
+			if vit > 0.08 and _pending.size() < 4:
 				var dl: float = float(_smooth.get("daylight", 1.0))
-				_accent_t = lerpf(14.0, 1.8, vit * _cfg_float("music_accent_density", 0.5)) * lerpf(1.2, 0.75, dl)
+				_accent_t = lerpf(18.0, 2.4, vit * _cfg_float("music_accent_density", 0.5)) * lerpf(1.2, 0.75, dl)
 				var accent_i: float = clampf(
 					vit * 0.7 + float(_smooth.get("bloom", 0.0)) * 0.25, 0.1, 0.95)
 				play_event_plink(accent_i, false)
@@ -813,8 +844,8 @@ func _process(_dt: float) -> void:
 			_stream_player.volume_db = -80.0
 		else:
 			var dl: float = float(_smooth.get("daylight", 1.0))
-			var max_db: float = lerpf(-28.0, -4.0, user_volume)
-			var min_db: float = lerpf(-38.0, -12.0, user_volume)
+			var max_db: float = lerpf(-32.0, -8.0, user_volume)
+			var min_db: float = lerpf(-42.0, -16.0, user_volume)
 			_stream_player.volume_db = lerpf(min_db, max_db, dl)
 
 	var frames_available: int = mini(_playback.get_frames_available(), MAX_SAMPLES_PER_FRAME)
@@ -823,8 +854,8 @@ func _process(_dt: float) -> void:
 
 	var trance_on: bool = _trance_bed_active()
 	var delay_amt: float = _cfg_float("music_delay_amount", 0.35)
-	var delay_fb: float = lerpf(0.22, 0.42, _cached_energy) if trance_on else 0.0
-	var delay_mix: float = lerpf(0.12, 0.28, _cached_energy) * delay_amt if trance_on else 0.0
+	var delay_fb: float = lerpf(0.14, 0.28, _cached_energy) if trance_on else 0.0
+	var delay_mix: float = lerpf(0.06, 0.16, _cached_energy) * delay_amt if trance_on else 0.0
 	var pending_n: int = _pending.size()
 
 	for _f in frames_available:
@@ -850,11 +881,13 @@ func _process(_dt: float) -> void:
 			var env: float = 1.0
 			var elapsed: float = initial_dur - dur
 			if attack_time > 0.0 and elapsed < attack_time:
-				env = elapsed / attack_time
+				var atk_denom: float = maxf(attack_time, INV_SAMPLE_RATE * 4.0)
+				env = smoothstep(0.0, 1.0, elapsed / atk_denom)
 			else:
-				env = clampf(dur * decay_speed, 0.0, 1.0)
+				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
+				env = rel * rel * (3.0 - 2.0 * rel)
 
-			v += sin(phase * TAU) * amp * env
+			v += _soft_wave(phase) * amp * env
 
 			note[3] = fposmod(phase + freq * INV_SAMPLE_RATE, 1.0)
 			note[1] = dur - INV_SAMPLE_RATE
@@ -866,7 +899,8 @@ func _process(_dt: float) -> void:
 			_delay_pos = (_delay_pos + 1) % DELAY_LEN
 			v = v * (1.0 - delay_mix) + delayed * delay_mix
 
-		_playback.push_frame(Vector2(clampf(v, -1.0, 1.0), clampf(v, -1.0, 1.0)))
+		v = _dc_block(_soft_clip(v))
+		_playback.push_frame(Vector2(v, v))
 		_sample_clock += 1
 
 
