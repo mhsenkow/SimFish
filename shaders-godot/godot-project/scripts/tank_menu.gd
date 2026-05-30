@@ -127,16 +127,23 @@ func _make_card(entry: Dictionary) -> Control:
 	else:
 		vb.add_child(thumb)
 
-	# Title row: name + small action buttons.
+	# Title row: editable name + small action buttons.
 	var title_row := HBoxContainer.new()
 	title_row.add_theme_constant_override("separation", 8)
 	vb.add_child(title_row)
-	var name_lab := Label.new()
-	name_lab.text = String(entry.get("name", "Tank %d" % slot))
-	name_lab.add_theme_color_override("font_color", Color(1, 0.95, 0.85, 1))
-	name_lab.add_theme_font_size_override("font_size", 16)
-	name_lab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title_row.add_child(name_lab)
+	var name_edit := LineEdit.new()
+	name_edit.text = String(entry.get("name", "Tank %d" % slot))
+	name_edit.placeholder_text = "Tank name"
+	name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_edit.custom_minimum_size = Vector2(0, 32)
+	name_edit.add_theme_font_size_override("font_size", 16)
+	name_edit.caret_blink = true
+	name_edit.focus_entered.connect(func(): name_edit.select_all())
+	name_edit.text_submitted.connect(func(new_name: String):
+		_commit_tank_rename(slot, new_name, name_edit))
+	name_edit.focus_exited.connect(func():
+		_commit_tank_rename(slot, name_edit.text, name_edit))
+	title_row.add_child(name_edit)
 	var dup_btn := Button.new()
 	dup_btn.text = "⧉"
 	dup_btn.tooltip_text = "Duplicate"
@@ -166,6 +173,22 @@ func _make_card(entry: Dictionary) -> Control:
 	vb.add_child(open_btn)
 
 	return card
+
+
+func _commit_tank_rename(slot: int, new_name: String, field: LineEdit) -> void:
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return
+	var meta: Dictionary = saves.get_tank_meta(slot)
+	var old_name: String = String(meta.get("name", ""))
+	var trimmed: String = new_name.strip_edges()
+	if trimmed == "":
+		trimmed = "Tank %d" % slot
+	if trimmed == old_name:
+		field.text = old_name if old_name != "" else trimmed
+		return
+	var saved: String = saves.rename_tank(slot, trimmed)
+	field.text = saved
 
 
 func _set_slot_selected(slot: int, selected: bool) -> void:

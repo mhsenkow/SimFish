@@ -21,6 +21,12 @@ var _last_branch_at: int = -99
 var _branches: Array[BranchPlant] = []
 
 
+func init(initial_height: int = 1, params: Dictionary = {}) -> void:
+	monocarpic = true
+	emergent_growth = true
+	super.init(initial_height, params)
+
+
 func _grow_one() -> bool:
 	# Grow a stem voxel like the parent class does, then maybe spawn a branch.
 	var grew: bool = super._grow_one()

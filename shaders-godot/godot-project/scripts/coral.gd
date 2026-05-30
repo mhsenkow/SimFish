@@ -73,10 +73,21 @@ func _ready() -> void:
 	super._ready()
 	_sessile_phase = randf() * TAU
 	_topology_seed = randf() * TAU
+	uses_flowering = false
+	emergent_growth = true
+
+
+func _spawn_canopy_propagule() -> void:
+	if _seeds_cast_this_cycle >= 2 or randf() > 0.45:
+		return
+	if _cast_seed():
+		_seeds_cast_this_cycle += 1
 
 
 func _grow_one() -> bool:
 	if current_height >= max_height:
+		return false
+	if emergent_growth and _at_surface_cap():
 		return false
 	match coral_form:
 		"branching":

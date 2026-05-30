@@ -19,6 +19,7 @@ extends Node
 @onready var world: Node3D = $SubViewport/World
 @onready var settings_panel: PanelContainer = $SettingsPanel
 @onready var render_panel: PanelContainer = $RenderPanel
+@onready var sound_panel: PanelContainer = $SoundPanel
 @onready var fish_store_panel: PanelContainer = $FishStorePanel
 @onready var library_panel: PanelContainer = $LibraryPanel
 @onready var creature_creator_panel: PanelContainer = $CreatureCreatorPanel
@@ -33,12 +34,18 @@ extends Node
 @onready var stats_bar: PanelContainer = %StatsBar
 @onready var settings_toggle: Button = %SettingsToggle
 @onready var render_toggle: Button = %RenderToggle
+@onready var sound_toggle: Button = %SoundToggle
 @onready var fish_store_toggle: Button = %FishStoreToggle
 @onready var library_toggle: Button = %LibraryToggle
 @onready var creature_creator_toggle: Button = %CreatureCreatorToggle
 @onready var aquascape_toggle: Button = %AquascapeToggle
 @onready var menu_button: Button = %MenuButton
 @onready var portal_toggle: Button = %PortalToggle
+@onready var controls_hint: Label = $ControlsHint
+
+# Focus / immersive mode — hides chrome for an unobstructed tank view.
+var _immersive_mode: bool = false
+var _immersive_exit_btn: Button = null
 
 # Stat chip refs — built once in _ready, value labels updated on stats_changed.
 # Keys: "state", "fauna", "flora", "water", "alert".
@@ -268,6 +275,8 @@ func _ready() -> void:
 		settings_toggle.pressed.connect(settings_panel.toggle)
 	if render_toggle != null and render_panel != null:
 		render_toggle.pressed.connect(render_panel.toggle)
+	if sound_toggle != null and sound_panel != null:
+		sound_toggle.pressed.connect(sound_panel.toggle)
 	if fish_store_toggle != null and fish_store_panel != null:
 		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
 	if library_toggle != null and library_panel != null:
@@ -286,6 +295,7 @@ func _ready() -> void:
 		aquascape_toggle.pressed.connect(_toggle_aquascape)
 	if menu_button != null:
 		menu_button.pressed.connect(_on_back_to_menu)
+	_add_immersive_toggle_button()
 	_build_aquascape_palette()
 	
 	if portal_toggle != null:
@@ -595,6 +605,7 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_C, _toggle_portal)
 		_handle_shortcut(KEY_T, _toggle_timelapse)
 		_handle_shortcut(KEY_B, _toggle_aquascape)
+		_handle_shortcut(KEY_H, _toggle_immersive_mode)
 		_handle_shortcut(KEY_BACKSPACE, _aquascape_undo)
 		_handle_shortcut(KEY_DELETE, _aquascape_undo)
 
@@ -2142,6 +2153,7 @@ func _setup_mobile_ui() -> void:
 	var toggle_buttons: Array[Button] = []
 	if settings_toggle != null: toggle_buttons.append(settings_toggle)
 	if render_toggle != null: toggle_buttons.append(render_toggle)
+	if sound_toggle != null: toggle_buttons.append(sound_toggle)
 	if fish_store_toggle != null: toggle_buttons.append(fish_store_toggle)
 	if creature_creator_toggle != null: toggle_buttons.append(creature_creator_toggle)
 	if aquascape_toggle != null: toggle_buttons.append(aquascape_toggle)
@@ -2894,16 +2906,86 @@ func _day_label(p: float) -> String:
 	else: return "dawn"
 
 
+# ---- Focus / immersive mode ----
+# Hides top HUD, bottom hints, mobile controls, and open panels so the tank
+# fills the screen. Press H or the ⛶ button to toggle; a small pill restores UI.
+func _add_immersive_toggle_button() -> void:
+	if menu_button == null:
+		return
+	var hbox: Node = menu_button.get_parent()
+	if hbox == null:
+		return
+	var btn := Button.new()
+	btn.text = "⛶"
+	btn.tooltip_text = "Focus mode — hide menus (H)"
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = menu_button.custom_minimum_size
+	btn.pressed.connect(_toggle_immersive_mode)
+	hbox.add_child(btn)
+	hbox.move_child(btn, menu_button.get_index() + 1)
+
+
+func _toggle_immersive_mode() -> void:
+	_immersive_mode = not _immersive_mode
+	_apply_immersive_mode()
+
+
+func _apply_immersive_mode() -> void:
+	if top_hud != null:
+		top_hud.visible = not _immersive_mode
+	if controls_hint != null:
+		controls_hint.visible = not _immersive_mode
+	if _mobile_hud != null and _mobile_hud.visible:
+		_mobile_hud.visible = not _immersive_mode
+	if aquascape_palette != null and _immersive_mode:
+		aquascape_palette.visible = false
+	if portal_container != null and _immersive_mode:
+		portal_container.visible = false
+	if _immersive_mode:
+		_close_panels_for_immersive()
+	_ensure_immersive_exit_button()
+	if _immersive_exit_btn != null:
+		_immersive_exit_btn.visible = _immersive_mode
+	if not _immersive_mode and _portal_open and portal_container != null:
+		portal_container.visible = true
+
+
+func _close_panels_for_immersive() -> void:
+	for panel in [
+		settings_panel, render_panel, sound_panel, fish_store_panel,
+		library_panel, creature_creator_panel,
+	]:
+		if panel != null and panel.visible:
+			panel.visible = false
+
+
+func _ensure_immersive_exit_button() -> void:
+	if _immersive_exit_btn != null:
+		return
+	_immersive_exit_btn = Button.new()
+	_immersive_exit_btn.name = "ImmersiveExit"
+	_immersive_exit_btn.text = "Show UI  (H)"
+	_immersive_exit_btn.tooltip_text = "Exit focus mode"
+	_immersive_exit_btn.anchor_left = 0.0
+	_immersive_exit_btn.anchor_top = 0.0
+	_immersive_exit_btn.anchor_right = 0.0
+	_immersive_exit_btn.anchor_bottom = 0.0
+	_immersive_exit_btn.offset_left = 12.0
+	_immersive_exit_btn.offset_top = 12.0
+	_immersive_exit_btn.custom_minimum_size = Vector2(108, 36)
+	_immersive_exit_btn.modulate = Color(1, 1, 1, 0.82)
+	_immersive_exit_btn.visible = false
+	_immersive_exit_btn.pressed.connect(_toggle_immersive_mode)
+	add_child(_immersive_exit_btn)
+
+
 # ---- Back-to-menu navigation ----
 # The Menu button (top-left of main.tscn) saves the active tank and
 # transitions back to the tank picker. Also bound to Android's back button
 # via NOTIFICATION_WM_GO_BACK_REQUEST in _notification.
 func _on_back_to_menu() -> void:
 	if _save_restored:
-		# Avoid GPU readback on menu navigation. On Metal/macOS the thumbnail
-		# capture can still hit "timeout waiting for fence" if the render queue
-		# is saturated right when leaving the scene.
-		save_active_tank(true)
+		await _save_active_tank_with_thumbnail()
 	_haptic(15)
 	get_tree().change_scene_to_file("res://tank_menu.tscn")
 
@@ -2987,10 +3069,9 @@ func save_active_tank(skip_thumbnail: bool = false) -> void:
 	if err != OK:
 		push_warning("[walstad_loom] save failed at %s: err %d" % [path, err])
 		return
-	# Capture a thumbnail for the menu card. Cheap — pulls the existing
-	# SubViewport texture, no extra rendering.
-	# On macOS/Metal this readback is the top freeze trigger under load.
-	if not skip_thumbnail and not OS.has_feature("macos"):
+	# Deferred thumbnail for autosave / focus-out. Menu exit uses
+	# _save_active_tank_with_thumbnail() which awaits readback first.
+	if not skip_thumbnail:
 		_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
 	# Update per-tank meta: accumulated runtime + last-opened.
 	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
@@ -3006,19 +3087,48 @@ func save_active_tank(skip_thumbnail: bool = false) -> void:
 	saves.update_tank_meta(int(saves.active_slot), meta)
 
 
+# Write state + block until the menu-card thumbnail is on disk.
+func _save_active_tank_with_thumbnail() -> void:
+	save_active_tank(true)
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return
+	await _capture_thumbnail_to_path(saves.thumbnail_path(int(saves.active_slot)))
+
+
 func _save_thumbnail(path: String) -> void:
 	if sub_viewport == null:
-		return
-	if not get_window().has_focus():
 		return
 	_request_viewport_image(_finish_save_thumbnail.bind(path))
 
 
+func _capture_thumbnail_to_path(path: String) -> void:
+	if sub_viewport == null or not is_instance_valid(sub_viewport):
+		return
+	# Wait for the SubViewport to present before GPU readback (avoids Metal
+	# fence timeouts on macOS when grabbing mid-frame).
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var img: Image = null
+	var tex: ViewportTexture = sub_viewport.get_texture()
+	if tex != null:
+		img = tex.get_image()
+	if img != null and img.get_width() > 0 and img.get_height() > 0:
+		_finish_save_thumbnail(img, path)
+	else:
+		push_warning("[walstad_loom] thumbnail capture failed for %s" % path)
+
+
 func _finish_save_thumbnail(img: Image, path: String) -> void:
+	var dir: String = path.get_base_dir()
+	if dir != "":
+		DirAccess.make_dir_recursive_absolute(dir)
 	var w: int = 480
 	var h: int = int(round(float(img.get_height()) * (float(w) / float(img.get_width()))))
 	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
-	img.save_png(path)
+	var err: int = img.save_png(path)
+	if err != OK:
+		push_warning("[walstad_loom] thumbnail save failed at %s: err %d" % [path, err])
 
 
 # Show a modal prompt offering to start fresh or attempt the .bak file. Only
@@ -3315,6 +3425,10 @@ func _dismiss_blocking_overlays() -> bool:
 	if render_panel != null and render_panel.visible:
 		render_panel.visible = false
 		render_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		dismissed = true
+	if sound_panel != null and sound_panel.visible:
+		sound_panel.visible = false
+		sound_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		dismissed = true
 	if fish_store_panel != null and fish_store_panel.visible:
 		fish_store_panel.visible = false

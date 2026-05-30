@@ -816,6 +816,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				if not is_instance_valid(p) or p.biomass() < 15:
 					continue
 				var d2: float = p.global_position.distance_squared_to(position)
+				if p.has_method("has_grazeable_flower") and p.has_grazeable_flower():
+					d2 *= 0.4
 				if d2 < best_p_d2:
 					best_p_d2 = d2
 					best_p = p
@@ -830,7 +832,10 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			climb_remaining_time -= dt
 			current_mode = Mode.CLIMB
 			var top: Vector3 = climb_target.global_position
-			top.y = climb_target.top_world_y()
+			if climb_target.has_method("graze_target_world_y"):
+				top.y = climb_target.graze_target_world_y()
+			else:
+				top.y = climb_target.top_world_y()
 			var to_top: Vector3 = top - position
 			if to_top.length() < 0.45:
 				current_mode = Mode.NIBBLE

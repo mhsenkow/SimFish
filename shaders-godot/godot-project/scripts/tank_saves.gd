@@ -324,6 +324,14 @@ func update_tank_meta(slot: int, patch: Dictionary) -> void:
 	_write_meta(slot, m)
 
 
+func rename_tank(slot: int, new_name: String) -> String:
+	var trimmed: String = new_name.strip_edges()
+	if trimmed == "":
+		trimmed = "Tank %d" % slot
+	update_tank_meta(slot, {"name": trimmed})
+	return trimmed
+
+
 func _read_meta(slot: int) -> Dictionary:
 	var path: String = _slot_dir(slot) + "/meta.cfg"
 	if not FileAccess.file_exists(path):

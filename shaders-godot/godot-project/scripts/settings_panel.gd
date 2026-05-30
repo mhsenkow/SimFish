@@ -27,10 +27,7 @@ var _light_size_label: Label
 var _light_volumetric_check: CheckBox
 var _light_caustics_check: CheckBox
 var _music_enabled_check: CheckBox
-var _music_volume: HSlider
-var _music_complexity: HSlider
-var _music_volume_label: Label
-var _music_complexity_label: Label
+var _sound_studio_btn: Button
 var _substrate_option: OptionButton
 var _substrate_desc: Label
 var _aeration_option: OptionButton
@@ -125,6 +122,8 @@ func _build_ui() -> void:
 			{"key": "cube",     "label": "Cube (square)"},
 			{"key": "hex",      "label": "Hexagon"},
 			{"key": "triangle", "label": "Triangle"},
+			{"key": "cylinder", "label": "Cylinder (round)"},
+			{"key": "sphere",   "label": "Sphere (dome bowl)"},
 		]:
 		_shape_option.add_item(String(entry["label"]))
 		_shape_option.set_item_metadata(_shape_option.item_count - 1, entry["key"])
@@ -189,21 +188,21 @@ func _build_ui() -> void:
 	_light_caustics_check.toggled.connect(func(v): _on_caustics(v))
 	vbox.add_child(_light_caustics_check)
 
-	# -- Procedural Music section --
-	_add_section(vbox, "Procedural Music")
+	# -- Sound (quick access; full studio is the ♪ panel) --
+	_add_section(vbox, "Sound & Music")
 
 	_music_enabled_check = CheckBox.new()
-	_music_enabled_check.text = "Enable procedural music"
+	_music_enabled_check.text = "Enable sound"
 	_music_enabled_check.toggled.connect(func(v): _on_music_enabled(v))
 	vbox.add_child(_music_enabled_check)
 
-	_music_volume_label = Label.new()
-	_music_volume = PanelTheme.add_slider_row(vbox, "Music volume", 0.0, 1.0, 0.05, _music_volume_label)
-	_music_volume.value_changed.connect(func(v): _on_music_volume(v))
+	var sound_hint := PanelTheme.make_description()
+	sound_hint.text = "Open Sound Studio (♪ or M) for layers, tank coupling, influences, and randomize."
+	vbox.add_child(sound_hint)
 
-	_music_complexity_label = Label.new()
-	_music_complexity = PanelTheme.add_slider_row(vbox, "Melodic complexity", 0.0, 1.0, 0.05, _music_complexity_label)
-	_music_complexity.value_changed.connect(func(v): _on_music_complexity(v))
+	_sound_studio_btn = PanelTheme.make_primary_button("Open Sound Studio…")
+	_sound_studio_btn.pressed.connect(_open_sound_studio)
+	vbox.add_child(_sound_studio_btn)
 
 	# -- Stocking preset section --
 	_add_section(vbox, "Stocking preset")
@@ -348,8 +347,6 @@ func _pull_from_config() -> void:
 	_light_volumetric_check.button_pressed = TankConfig.light_volumetric
 	_light_caustics_check.button_pressed = TankConfig.light_caustics
 	_music_enabled_check.button_pressed = TankConfig.music_enabled
-	_music_volume.value = TankConfig.music_volume
-	_music_complexity.value = TankConfig.music_complexity
 	# Pick the fixture option matching current type.
 	for i in _light_fixture_option.item_count:
 		if _light_fixture_option.get_item_metadata(i) == TankConfig.light_fixture:
@@ -403,8 +400,6 @@ func _update_value_labels() -> void:
 	_light_warmth_label.text = "%.2f" % _light_warmth.value
 	_light_height_label.text = "%.1f" % _light_height.value
 	_light_size_label.text = "%.2f" % _light_size.value
-	_music_volume_label.text = "%d%%" % int(_music_volume.value * 100.0)
-	_music_complexity_label.text = "%d%%" % int(_music_complexity.value * 100.0)
 
 
 func _on_light_height(v: float) -> void:
@@ -436,14 +431,13 @@ func _on_music_enabled(v: bool) -> void:
 		amb.silence_immediately()
 
 
-func _on_music_volume(v: float) -> void:
-	TankConfig.music_volume = v
-	_music_volume_label.text = "%d%%" % int(v * 100.0)
-
-
-func _on_music_complexity(v: float) -> void:
-	TankConfig.music_complexity = v
-	_music_complexity_label.text = "%d%%" % int(v * 100.0)
+func _open_sound_studio() -> void:
+	var main := get_tree().current_scene
+	if main == null:
+		return
+	var panel := main.get_node_or_null("SoundPanel")
+	if panel != null and panel.has_method("toggle"):
+		panel.toggle()
 
 
 func _update_substrate_desc() -> void:

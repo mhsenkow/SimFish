@@ -1982,13 +1982,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if target_plant != null:
 			current_mode = Mode.FORAGE
 			var top: Vector3 = target_plant.global_position
-			top.y = target_plant.top_world_y()
+			top.y = _plant_graze_y(target_plant)
 			var dist_sq: float = top.distance_squared_to(position)
 			if dist_sq < 0.25 and nibble_cooldown <= 0.0:
 				var taken := target_plant.nibble(1)
 				if taken > 0:
 					hunger = maxf(0.0, hunger - 0.30 * float(taken))
-					energy = minf(1.0, energy + 0.06)
+					energy = minf(1.0, energy + 0.06 * float(taken))
 					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC * float(taken))
 					nibble_cooldown = 0.9
 					events["waste_at"] = position + Vector3(0, -0.1, 0)
@@ -3217,6 +3217,12 @@ func _derive_subspecies_id(partner: Fish, child_genome: Dictionary) -> String:
 	return base
 
 
+func _plant_graze_y(p: Plant) -> float:
+	if p.has_method("graze_target_world_y"):
+		return p.graze_target_world_y()
+	return p.top_world_y()
+
+
 func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 	var best: Plant = null
 	var best_d2: float = max_dist * max_dist
@@ -3224,7 +3230,7 @@ func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 		if not is_instance_valid(p) or p.biomass() <= 0:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
-		top_pos.y = (p as Plant).top_world_y()
+		top_pos.y = _plant_graze_y(p as Plant)
 		var d2: float = top_pos.distance_squared_to(position)
 		if d2 < best_d2:
 			best_d2 = d2
@@ -3234,15 +3240,17 @@ func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 
 func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) -> Plant:
 	# Fish only nibble plants that are at least min_biomass voxels tall.
-	# Spares saplings + carpets.
+	# Spares saplings + carpets. Prefer open canopy flowers when hungry.
 	var best: Plant = null
 	var best_d2: float = max_dist * max_dist
 	for p in plants:
 		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
-		top_pos.y = (p as Plant).top_world_y()
+		top_pos.y = _plant_graze_y(p as Plant)
 		var d2: float = top_pos.distance_squared_to(position)
+		if p.has_method("has_grazeable_flower") and p.has_grazeable_flower():
+			d2 *= 0.35
 		if d2 < best_d2:
 			best_d2 = d2
 			best = p

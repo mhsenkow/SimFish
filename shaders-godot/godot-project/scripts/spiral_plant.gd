@@ -23,11 +23,14 @@ const VOXEL_FOOTPRINT: float = VOXEL_SIZE * 0.55
 
 
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
+	monocarpic = true
+	emergent_growth = true
 	sway_amplitude = 0.0
 	params["sway_amplitude"] = 0.0
 	_world_pos = global_position
 	super.init(initial_height, params)
 	rotation = Vector3.ZERO
+	_refresh_horizontal_budget()
 	_clamp_all_leaves_inside()
 
 
@@ -36,7 +39,17 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# push voxels outside the tank. Run full lifecycle, then lock upright.
 	super.tick(dt, substrate)
 	rotation = Vector3.ZERO
+	_refresh_horizontal_budget()
 	_clamp_all_leaves_inside()
+
+
+func _refresh_horizontal_budget() -> void:
+	var w := _aquarium_world()
+	if w == null or not w.has_method("lateral_room_at"):
+		return
+	var room: float = w.lateral_room_at(
+		global_position.x, global_position.z, tank_wall_margin, global_position.y)
+	max_horizontal_extent = clampf(room * 0.72, 0.03, 0.12)
 
 
 func _flutter_leaves(_dt: float) -> void:
@@ -45,6 +58,8 @@ func _flutter_leaves(_dt: float) -> void:
 
 func _grow_one() -> bool:
 	if current_height >= max_height:
+		return false
+	if emergent_growth and _at_surface_cap():
 		return false
 	var idx: int = current_height
 	var theta: float = float(idx) * GOLDEN_ANGLE
@@ -155,11 +170,25 @@ func _fit_placement(
 
 func _reflect_placement(ideal_local: Vector3, leaf_reach: float) -> Dictionary:
 	var margin: float = tank_wall_margin + leaf_reach
+	var world: Vector3 = global_position + ideal_local
+	var reflected: bool = false
+	var local_pos: Vector3 = ideal_local
+	var w := _aquarium_world()
+	if w != null and w.has_method("clamp_xz_in_tank"):
+		var clamped: Vector2 = w.clamp_xz_in_tank(world.x, world.z, margin)
+		reflected = clamped.distance_squared_to(Vector2(world.x, world.z)) > 1e-5
+		local_pos = Vector3(
+			clamped.x - global_position.x,
+			ideal_local.y,
+			clamped.y - global_position.z,
+		)
+		return {"position": local_pos, "reflected": reflected}
+	# Fallback: axis-aligned box bounce (legacy).
 	var bounds: Dictionary = _tank_inner_bounds(margin)
 	var hw: float = bounds["hw"]
 	var hd: float = bounds["hd"]
-	var world: Vector3 = global_position + ideal_local
-	var reflected: bool = false
+	world = global_position + ideal_local
+	reflected = false
 	var local_y: float = ideal_local.y
 
 	for _bounce in MAX_WALL_BOUNCES:
@@ -186,7 +215,7 @@ func _reflect_placement(ideal_local: Vector3, leaf_reach: float) -> Dictionary:
 			reflected = true
 			break
 
-	var local_pos: Vector3 = world - global_position
+	local_pos = world - global_position
 	local_pos.y = local_y
 	return {"position": local_pos, "reflected": reflected}
 
@@ -197,19 +226,35 @@ func _clamp_all_leaves_inside() -> void:
 			_clamp_leaf_inside(leaf as Node3D)
 
 
+func _inside_tank_world(x: float, z: float, margin: float, y: float = NAN) -> bool:
+	var w := _aquarium_world()
+	if w != null:
+		if not is_nan(y) and w.has_method("is_inside_tank_volume"):
+			return w.is_inside_tank_volume(x, y, z, margin)
+		if w.has_method("is_inside_tank"):
+			return w.is_inside_tank(x, z, margin, y)
+	return _inside_shape(x, z, _tank_inner_bounds(margin))
+
+
 func _clamp_leaf_inside(leaf: Node3D) -> void:
 	var margin: float = tank_wall_margin + VOXEL_FOOTPRINT
+	var w := _aquarium_world()
 	for _i in 32:
 		if _leaf_fully_inside(leaf, margin):
 			return
-		var g: Vector3 = leaf.global_position
+		if w != null and w.has_method("clamp_xz_in_tank"):
+			var g: Vector3 = leaf.global_position
+			var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, margin)
+			leaf.global_position = Vector3(xz.x, g.y, xz.y)
+			continue
+		var g_fb: Vector3 = leaf.global_position
 		var stem: Vector3 = global_position
-		var xz := Vector2(g.x - stem.x, g.z - stem.z)
-		if xz.length_squared() < 1e-8:
+		var xz_fb := Vector2(g_fb.x - stem.x, g_fb.z - stem.z)
+		if xz_fb.length_squared() < 1e-8:
 			leaf.position = Vector3(0.0, leaf.position.y, 0.0)
 		else:
-			xz = xz.lerp(Vector2.ZERO, 0.28)
-			leaf.global_position = Vector3(stem.x + xz.x, g.y, stem.z + xz.y)
+			xz_fb = xz_fb.lerp(Vector2.ZERO, 0.28)
+			leaf.global_position = Vector3(stem.x + xz_fb.x, g_fb.y, stem.z + xz_fb.y)
 	# Hard clamp to stem if still escaping.
 	if not _leaf_fully_inside(leaf, margin):
 		leaf.position = Vector3(0.0, leaf.position.y, 0.0)
@@ -217,16 +262,17 @@ func _clamp_leaf_inside(leaf: Node3D) -> void:
 
 func _leaf_base_inside_world(local_pos: Vector3) -> bool:
 	var w: Vector3 = global_position + local_pos
-	return _inside_tank_world(w.x, w.z, tank_wall_margin + VOXEL_FOOTPRINT)
+	return _inside_tank_world(w.x, w.z, tank_wall_margin + VOXEL_FOOTPRINT, w.y)
 
 
 func _leaf_fully_inside(leaf: Node3D, margin: float) -> bool:
-	if not _inside_tank_world(leaf.global_position.x, leaf.global_position.z, margin):
+	if not _inside_tank_world(leaf.global_position.x, leaf.global_position.z, margin,
+			leaf.global_position.y):
 		return false
 	for child in leaf.get_children():
 		if child is MeshInstance3D:
 			var p: Vector3 = child.global_position
-			if not _inside_tank_world(p.x, p.z, margin):
+			if not _inside_tank_world(p.x, p.z, margin, p.y):
 				return false
 	return true
 
@@ -238,13 +284,6 @@ func _aquarium_world() -> Node:
 			return n
 		n = n.get_parent()
 	return null
-
-
-func _inside_tank_world(x: float, z: float, margin: float) -> bool:
-	var w := _aquarium_world()
-	if w != null:
-		return w.is_inside_tank(x, z, margin)
-	return _inside_shape(x, z, _tank_inner_bounds(margin))
 
 
 func _tank_inner_bounds(margin: float) -> Dictionary:
@@ -274,5 +313,8 @@ func _inside_shape(x: float, z: float, bounds: Dictionary) -> bool:
 				return false
 			var base_half: float = hw * (hd - z) / (2.0 * hd)
 			return absf(x) <= base_half
+		"cylinder", "sphere":
+			var rad: float = minf(hw, hd)
+			return x * x + z * z <= rad * rad
 		_:
 			return absf(x) <= hw and absf(z) <= hd

@@ -26,6 +26,7 @@ var algae_root: Node3D = null
 var _driftwood_voxels: Array[MeshInstance3D] = []
 var _hardscape_occupancy: Dictionary = {}
 const HARDSCAPE_CELL_SIZE: float = 0.55
+const VOXEL_SIZE: float = 0.32
 # Glass mineral spots — tiny pale voxels that accumulate at the waterline
 # over time, mimicking the calcium / hard-water spots that real tanks
 # develop after a few weeks. Caps at MINERAL_SPOT_CAP so the glass
@@ -80,8 +81,9 @@ var _coral_recruit_timer: float = 30.0   # first recruit after ~30s
 const CORAL_RECRUIT_MIN: float = 22.0
 const CORAL_RECRUIT_MAX: float = 42.0
 const CORAL_MAX: int = 84                 # cap so reefs don't carpet
-# Tank shape: "box" / "cube" / "hex" / "triangle". Read from TankConfig.
+# Tank shape: "box" / "cube" / "hex" / "triangle" / "cylinder" / "sphere". Read from TankConfig.
 var TANK_SHAPE: String = "box"
+var _footprint_cache: TankFootprint = null
 
 # ---- Palette (chosen so the quantize shader has good targets) ----
 const C_WATER_DEEP    := Color(0.04, 0.10, 0.14)
@@ -127,10 +129,15 @@ func _ready() -> void:
 		TANK_HEIGHT = float(cfg.tank_height)
 		# Cube shape: enforce equal W=D (use the smaller of the two so it fits).
 		TANK_SHAPE = String(cfg.tank_shape)
+		_footprint_cache = null
 		if TANK_SHAPE == "cube":
 			var m: float = minf(TANK_HALF_W, TANK_HALF_D)
 			TANK_HALF_W = m
 			TANK_HALF_D = m
+		elif TANK_SHAPE == "cylinder" or TANK_SHAPE == "sphere":
+			var rad: float = minf(TANK_HALF_W, TANK_HALF_D)
+			TANK_HALF_W = rad
+			TANK_HALF_D = rad
 		WATER_HEIGHT = TANK_HEIGHT * float(cfg.water_surface_fraction)
 		SUBSTRATE_DEPTH = TANK_HEIGHT * float(cfg.substrate_depth_fraction)
 		_active_substrate_profile = cfg.current_substrate_profile()
@@ -603,9 +610,10 @@ func _drift_floaters(adt: float) -> void:
 		fn.position.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.05 * adt
 		# Slight bob.
 		fn.position.y = WATER_HEIGHT - 0.05 + sin(_floater_t * 0.7 + ph) * 0.015
-		# Soft clamp inside the tank.
-		fn.position.x = clampf(fn.position.x, -TANK_HALF_W * 0.9, TANK_HALF_W * 0.9)
-		fn.position.z = clampf(fn.position.z, -TANK_HALF_D * 0.9, TANK_HALF_D * 0.9)
+		# Keep floaters inside the actual tank footprint, not the bounding box.
+		var xz: Vector2 = clamp_xz_in_tank(fn.position.x, fn.position.z, 0.35)
+		fn.position.x = xz.x
+		fn.position.z = xz.y
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
 
@@ -671,75 +679,130 @@ func _add_cube(parent: Node, pos: Vector3, size: Vector3, mat: Material) -> Mesh
 
 
 # Public so main.gd / aquascape mode can clamp clicks to the tank footprint.
-func is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
-	return _is_inside_tank(x, z, margin)
+func is_inside_tank(x: float, z: float, margin: float = 0.0, world_y: float = NAN) -> bool:
+	if is_nan(world_y):
+		world_y = SUBSTRATE_DEPTH
+	return _footprint().is_inside(x, z, margin, world_y)
+
+
+func clamp_xz_in_tank(x: float, z: float, margin: float = 0.25) -> Vector2:
+	return _footprint().clamp_inside(x, z, margin)
+
+
+func fits_plant_at(x: float, z: float, radius: float, margin: float = 0.25,
+		world_y: float = NAN) -> bool:
+	if is_nan(world_y):
+		world_y = SUBSTRATE_DEPTH
+	return _footprint().fits_point_with_radius(x, z, radius, margin, world_y)
+
+
+func lateral_room_at(x: float, z: float, margin: float = 0.25,
+		world_y: float = NAN) -> float:
+	if is_nan(world_y):
+		world_y = SUBSTRATE_DEPTH
+	return _footprint().lateral_room(x, z, margin, world_y)
+
+
+func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
+		world_y: float = NAN) -> Vector2:
+	if is_nan(world_y):
+		world_y = SUBSTRATE_DEPTH
+	var fp := _footprint()
+	var xz: Vector2 = fp.clamp_inside(x, z, margin + radius, world_y)
+	if fp.fits_point_with_radius(xz.x, xz.y, radius, margin, world_y):
+		return xz
+	for t in [0.15, 0.3, 0.45, 0.6, 0.75, 0.9]:
+		var q: Vector2 = xz.lerp(Vector2.ZERO, t)
+		if fp.fits_point_with_radius(q.x, q.y, radius, margin, world_y):
+			return q
+	return fp.clamp_inside(0.0, 0.0, margin + radius, world_y)
+
+
+func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25) -> Vector3:
+	if TANK_SHAPE == "sphere":
+		var c: Vector3 = _footprint().clamp_inside_3d(p, margin)
+		# Submerged life stays below the open water surface.
+		if p.y <= WATER_HEIGHT + 0.12:
+			c.y = minf(c.y, WATER_HEIGHT - margin)
+		return c
+	var xz: Vector2 = clamp_xz_in_tank(p.x, p.z, margin)
+	return Vector3(
+		xz.x,
+		clampf(p.y, SUBSTRATE_DEPTH + margin, WATER_HEIGHT - margin),
+		xz.y,
+	)
+
+
+func is_inside_tank_volume(x: float, y: float, z: float, margin: float = 0.0) -> bool:
+	return _footprint().is_inside_3d(x, y, z, margin)
+
+
+func clamp_emergent_in_tank(p: Vector3, margin: float = 0.25) -> Vector3:
+	# Canopy / flowers may rise above the water line (sphere bowl opening).
+	if TANK_SHAPE == "sphere":
+		return _footprint().clamp_inside_3d(p, margin)
+	return clamp_xyz_in_tank(p, margin)
+
+
+func _footprint() -> TankFootprint:
+	if _footprint_cache == null:
+		_footprint_cache = TankFootprint.from_values(TANK_SHAPE, TANK_HALF_W, TANK_HALF_D)
+		_footprint_cache.substrate_y = SUBSTRATE_DEPTH
+		_footprint_cache.water_y = WATER_HEIGHT
+		_footprint_cache.tank_height = TANK_HEIGHT
+	return _footprint_cache
 
 
 # Public XZ sampler. Used by SimDriver when it needs a random tank-interior
 # position for algae or anything else spawned at runtime, without exposing
 # the private RNG / sampling internals.
 func sample_xz_in_tank(margin: float = 0.4) -> Vector2:
-	return _random_xz_in_band(-TANK_HALF_D + margin, TANK_HALF_D - margin, margin)
+	return _footprint().random_point(margin, _rng)
 
 
 func _is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
-	# Point-in-shape test for the tank footprint. margin > 0 returns true
-	# only for points well inside the shape (used for spawn placement).
-	var hw: float = TANK_HALF_W - margin
-	var hd: float = TANK_HALF_D - margin
-	if hw <= 0.0 or hd <= 0.0:
-		return false
-	match TANK_SHAPE:
-		"hex":
-			# Regular hexagon inscribed in 2*hw x 2*hd rect. Use normalised
-			# coords; standard point-in-hex test.
-			var q: float = absf(x) / hw
-			var r: float = absf(z) / hd
-			return q + r * 0.5 < 1.0 and r < 1.0
-		"triangle":
-			# Equilateral triangle pointing in +Z direction. Apex at z=+hd,
-			# base at z=-hd between x=-hw..hw.
-			if z > hd or z < -hd:
-				return false
-			var base_half: float = hw * (hd - z) / (2.0 * hd)
-			return absf(x) <= base_half
-		_:
-			# box / cube - axis-aligned rectangle.
-			return absf(x) <= hw and absf(z) <= hd
+	return _footprint().is_inside(x, z, margin)
 
 
 func _random_inside_tank(margin: float = 0.4) -> Vector3:
-	# Rejection sampling to spawn inside non-rectangular shapes safely.
-	for _i in 32:
-		var x: float = _rng.randf_range(-TANK_HALF_W, TANK_HALF_W)
-		var z: float = _rng.randf_range(-TANK_HALF_D, TANK_HALF_D)
-		if _is_inside_tank(x, z, margin):
-			return Vector3(x, 0, z)
-	return Vector3.ZERO
+	var xz: Vector2 = _footprint().random_point(margin, _rng)
+	return Vector3(xz.x, 0.0, xz.y)
 
 
-# Like _random_inside_tank but allows constraining Z to a band (e.g. background
-# strip, foreground carpet). Resamples until the (x, z) is inside the tank
-# shape, falling back to (0, mid-of-band) if nothing fits in 32 tries (tiny
-# triangle case).
-func _random_xz_in_band(z_min: float, z_max: float, margin: float = 0.4) -> Vector2:
-	for _i in 32:
-		var x: float = _rng.randf_range(-TANK_HALF_W, TANK_HALF_W)
-		var z: float = _rng.randf_range(z_min, z_max)
-		if _is_inside_tank(x, z, margin):
-			return Vector2(x, z)
-	return Vector2(0.0, clampf((z_min + z_max) * 0.5, -TANK_HALF_D, TANK_HALF_D))
+func _random_xz_in_band(z_min: float, z_max: float, margin: float = 0.4,
+		min_lateral_room: float = 0.0) -> Vector2:
+	return _footprint().random_point_in_band(
+		z_min, z_max, margin, _rng, min_lateral_room)
+
+
+func _spawn_z_band(role: String) -> Vector2:
+	# Triangle apex is at +Z — keep dense carpets on the wide base, not the point.
+	match TANK_SHAPE:
+		"triangle":
+			match role:
+				"background":
+					return Vector2(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.45)
+				"mid":
+					return Vector2(-TANK_HALF_D * 0.55, TANK_HALF_D * 0.05)
+				"foreground":
+					return Vector2(-TANK_HALF_D * 0.88, -TANK_HALF_D * 0.30)
+				"scatter":
+					return Vector2(-TANK_HALF_D * 0.75, TANK_HALF_D * 0.12)
+		_:
+			match role:
+				"background":
+					return Vector2(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.45)
+				"mid":
+					return Vector2(-TANK_HALF_D * 0.5, TANK_HALF_D * 1.5)
+				"foreground":
+					return Vector2(TANK_HALF_D * 0.2, TANK_HALF_D * 0.95)
+				"scatter":
+					return Vector2(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5)
+	return Vector2(-TANK_HALF_D * 0.5, TANK_HALF_D * 0.5)
 
 
 func _fit_xz_inside_tank(x: float, z: float, margin: float = 0.25) -> Vector2:
-	if _is_inside_tank(x, z, margin):
-		return Vector2(x, z)
-	var p := Vector2(x, z)
-	for _i in 10:
-		p *= 0.85
-		if _is_inside_tank(p.x, p.y, margin):
-			return p
-	return Vector2.ZERO
+	return _footprint().clamp_inside(x, z, margin)
 
 
 func _hardscape_cell_key(x: float, z: float) -> String:
@@ -785,12 +848,24 @@ func _is_hardscape_occupied(x: float, z: float, clearance: float = 0.6) -> bool:
 
 func _sample_clear_xz_in_band(
 		z_min: float, z_max: float, margin: float = 0.4,
-		clearance: float = 0.6, tries: int = 36) -> Vector2:
+		clearance: float = 0.6, tries: int = 36,
+		lateral_radius: float = 0.0) -> Vector2:
 	for _i in tries:
-		var xz: Vector2 = _random_xz_in_band(z_min, z_max, margin)
+		var xz: Vector2 = _random_xz_in_band(z_min, z_max, margin, lateral_radius)
+		if lateral_radius > 0.0 and not _footprint().fits_point_with_radius(
+				xz.x, xz.y, lateral_radius, margin):
+			continue
 		if not _is_hardscape_occupied(xz.x, xz.y, clearance):
 			return xz
-	return _random_xz_in_band(z_min, z_max, margin)
+	for shrink in [lateral_radius * 0.55, lateral_radius * 0.25, 0.0]:
+		for _i in tries:
+			var xz: Vector2 = _random_xz_in_band(z_min, z_max, margin, shrink)
+			if shrink > 0.0 and not _footprint().fits_point_with_radius(
+					xz.x, xz.y, shrink, margin):
+				continue
+			if not _is_hardscape_occupied(xz.x, xz.y, clearance):
+				return xz
+	return _random_xz_in_band(z_min, z_max, margin, 0.0)
 
 
 func _pick_ecology_site(is_saltwater: bool, z_min: float, z_max: float,
@@ -1148,6 +1223,13 @@ func _build_hardscape(populate: bool = true) -> void:
 
 
 func _build_water_volume() -> void:
+	match TANK_SHAPE:
+		"cylinder":
+			_build_cylinder_water()
+			return
+		"sphere":
+			_build_sphere_water()
+			return
 	# Water volume as a polygon prism extruded from the tank footprint. The
 	# old version was a fixed BoxMesh which poked through hex/triangle glass
 	# walls and visibly broke the illusion of a non-rectangular tank.
@@ -1234,11 +1316,49 @@ func _build_water_volume() -> void:
 	add_child(water)
 
 
+func _build_cylinder_water() -> void:
+	var rad: float = _footprint().effective_radius(0.12)
+	var depth: float = maxf(0.2, WATER_HEIGHT - SUBSTRATE_DEPTH)
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = rad
+	cyl.bottom_radius = rad
+	cyl.height = depth
+	cyl.radial_segments = 32
+	var water := MeshInstance3D.new()
+	water.name = "Water"
+	water.mesh = cyl
+	_water_material_ref = _water_mat()
+	water.material_override = _water_material_ref
+	_water_mesh = water
+	add_child(water)
+	water.position = Vector3(0.0, SUBSTRATE_DEPTH + depth * 0.5, 0.0)
+
+
+func _build_sphere_water() -> void:
+	var bowl: Dictionary = _sphere_bowl_params()
+	var mesh: ArrayMesh = _build_sphere_bowl_mesh(
+		bowl, bowl["y_water"], 0.14, 32, 22, true, false)
+	var water := MeshInstance3D.new()
+	water.name = "Water"
+	water.mesh = mesh
+	_water_material_ref = _water_mat()
+	water.material_override = _water_material_ref
+	_water_mesh = water
+	add_child(water)
+
+
 func _build_glass() -> void:
 	var c := Node3D.new()
 	c.name = "Glass"
 	add_child(c)
 	var glass := _glass_mat()
+	match TANK_SHAPE:
+		"cylinder":
+			_build_cylinder_glass(c, glass)
+			return
+		"sphere":
+			_build_sphere_glass(c, glass)
+			return
 	# Build a polygon of glass walls around the tank's footprint. The
 	# footprint is approximated as N corner points; each adjacent pair is
 	# connected by a thin wall mesh.
@@ -1250,28 +1370,7 @@ func _build_glass() -> void:
 
 
 func _tank_footprint_corners() -> Array[Vector3]:
-	# Return the corner points of the tank footprint at Y=0 in world space.
-	# Order is CCW so wall normals point outward.
-	var pts: Array[Vector3] = []
-	match TANK_SHAPE:
-		"hex":
-			# Hexagon inscribed in the (2*hw) x (2*hd) box. 6 evenly spaced
-			# points around the center.
-			for i in 6:
-				var a: float = (float(i) / 6.0) * TAU
-				pts.append(Vector3(cos(a) * TANK_HALF_W, 0, sin(a) * TANK_HALF_D))
-		"triangle":
-			# Equilateral-ish triangle pointing in +Z.
-			pts.append(Vector3(0, 0, TANK_HALF_D))
-			pts.append(Vector3(-TANK_HALF_W, 0, -TANK_HALF_D))
-			pts.append(Vector3(TANK_HALF_W, 0, -TANK_HALF_D))
-		_:
-			# Box / cube - 4 corners.
-			pts.append(Vector3(TANK_HALF_W, 0, TANK_HALF_D))
-			pts.append(Vector3(-TANK_HALF_W, 0, TANK_HALF_D))
-			pts.append(Vector3(-TANK_HALF_W, 0, -TANK_HALF_D))
-			pts.append(Vector3(TANK_HALF_W, 0, -TANK_HALF_D))
-	return pts
+	return _footprint().footprint_corners()
 
 
 func _add_wall_between(parent: Node3D, p1: Vector3, p2: Vector3,
@@ -1288,6 +1387,132 @@ func _add_wall_between(parent: Node3D, p1: Vector3, p2: Vector3,
 	wall.global_position = mid
 	# Rotate so the wall's local +X axis lies along (p1 -> p2).
 	wall.rotation.y = -atan2(p2.z - p1.z, p2.x - p1.x)
+
+
+func _sphere_bowl_params() -> Dictionary:
+	var fp := _footprint()
+	var opening: float = fp.effective_radius(0.06)
+	var dy_w: float = maxf(0.05, WATER_HEIGHT - SUBSTRATE_DEPTH)
+	var R: float = sqrt(opening * opening + dy_w * dy_w)
+	return {
+		"R": R,
+		"opening": opening,
+		"cy": SUBSTRATE_DEPTH,
+		"y_sub": SUBSTRATE_DEPTH,
+		"y_water": WATER_HEIGHT,
+	}
+
+
+func _bowl_ring_radius(R: float, cy: float, y: float) -> float:
+	var dy: float = maxf(0.0, y - cy)
+	return sqrt(maxf(0.0, R * R - dy * dy))
+
+
+func _build_sphere_bowl_mesh(bowl: Dictionary, y_top: float, inset: float,
+		segs: int, rings: int, cap_bottom: bool, add_rim: bool) -> ArrayMesh:
+	var R: float = float(bowl["R"]) - inset
+	var cy: float = float(bowl["cy"])
+	var y_bot: float = float(bowl["y_sub"]) + inset * 0.5
+	y_top = maxf(y_bot + 0.05, y_top - inset * 0.35)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	for ri in rings:
+		var t_a: float = float(ri) / float(rings)
+		var t_b: float = float(ri + 1) / float(rings)
+		var y_a: float = lerpf(y_bot, y_top, t_a)
+		var y_b: float = lerpf(y_bot, y_top, t_b)
+		var r_a: float = _bowl_ring_radius(R, cy, y_a)
+		var r_b: float = _bowl_ring_radius(R, cy, y_b)
+		for si in segs:
+			var ang_a: float = (float(si) / float(segs)) * TAU
+			var ang_b: float = (float(si + 1) / float(segs)) * TAU
+			var pa := Vector3(cos(ang_a) * r_a, y_a, sin(ang_a) * r_a)
+			var pb := Vector3(cos(ang_b) * r_a, y_a, sin(ang_b) * r_a)
+			var pc := Vector3(cos(ang_b) * r_b, y_b, sin(ang_b) * r_b)
+			var pd := Vector3(cos(ang_a) * r_b, y_b, sin(ang_a) * r_b)
+			var na: Vector3 = Vector3(pa.x, pa.y - cy, pa.z).normalized()
+			var nb: Vector3 = Vector3(pb.x, pb.y - cy, pb.z).normalized()
+			var nc: Vector3 = Vector3(pc.x, pc.y - cy, pc.z).normalized()
+			var nd: Vector3 = Vector3(pd.x, pd.y - cy, pd.z).normalized()
+			st.set_normal(na)
+			st.add_vertex(pa)
+			st.set_normal(nb)
+			st.add_vertex(pb)
+			st.set_normal(nc)
+			st.add_vertex(pc)
+			st.set_normal(na)
+			st.add_vertex(pa)
+			st.set_normal(nc)
+			st.add_vertex(pc)
+			st.set_normal(nd)
+			st.add_vertex(pd)
+
+	if cap_bottom:
+		var r_base: float = _bowl_ring_radius(R, cy, y_bot)
+		var cen := Vector3(0.0, y_bot, 0.0)
+		for si in segs:
+			var ang_a: float = (float(si) / float(segs)) * TAU
+			var ang_b: float = (float(si + 1) / float(segs)) * TAU
+			var pa := Vector3(cos(ang_a) * r_base, y_bot, sin(ang_a) * r_base)
+			var pb := Vector3(cos(ang_b) * r_base, y_bot, sin(ang_b) * r_base)
+			st.set_normal(Vector3.DOWN)
+			st.add_vertex(cen)
+			st.set_normal(Vector3.DOWN)
+			st.add_vertex(pb)
+			st.set_normal(Vector3.DOWN)
+			st.add_vertex(pa)
+
+	if add_rim:
+		var y_rim: float = float(bowl["y_water"])
+		var r_outer: float = _bowl_ring_radius(R + inset * 0.6, cy, y_rim)
+		var r_inner: float = maxf(0.05, r_outer - 0.14)
+		for si in segs:
+			var ang_a: float = (float(si) / float(segs)) * TAU
+			var ang_b: float = (float(si + 1) / float(segs)) * TAU
+			var pa_o := Vector3(cos(ang_a) * r_outer, y_rim, sin(ang_a) * r_outer)
+			var pb_o := Vector3(cos(ang_b) * r_outer, y_rim, sin(ang_b) * r_outer)
+			var pa_i := Vector3(cos(ang_a) * r_inner, y_rim, sin(ang_a) * r_inner)
+			var pb_i := Vector3(cos(ang_b) * r_inner, y_rim, sin(ang_b) * r_inner)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pa_i)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pb_o)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pa_o)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pa_i)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pb_i)
+			st.set_normal(Vector3.UP)
+			st.add_vertex(pb_o)
+
+	return st.commit()
+
+
+func _build_cylinder_glass(parent: Node3D, mat: Material) -> void:
+	var rad: float = _footprint().effective_radius(0.05)
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = rad
+	cyl.bottom_radius = rad
+	cyl.height = TANK_HEIGHT
+	cyl.radial_segments = 32
+	var wall := MeshInstance3D.new()
+	wall.mesh = cyl
+	wall.material_override = mat
+	parent.add_child(wall)
+	wall.position = Vector3(0.0, TANK_HEIGHT * 0.5, 0.0)
+
+
+func _build_sphere_glass(parent: Node3D, mat: Material) -> void:
+	var bowl: Dictionary = _sphere_bowl_params()
+	var y_lip: float = float(bowl["y_water"]) + 0.07
+	var mesh: ArrayMesh = _build_sphere_bowl_mesh(
+		bowl, y_lip, 0.05, 32, 24, false, true)
+	var wall := MeshInstance3D.new()
+	wall.mesh = mesh
+	wall.material_override = mat
+	parent.add_child(wall)
 
 
 # Remove every Snails container immediately. queue_free() leaves a stale empty
@@ -1654,38 +1879,42 @@ func _spawn_initial_plants() -> void:
 				  Color8(98, 140, 78), Color8(125, 168, 100), Color8(150, 190, 125)]},
 	]
 
-	# --- Background wall: thick valli forest ---
-	for x_frac in [-0.92, -0.78, -0.65, -0.52, -0.38, -0.22, -0.08, 0.08,
-				   0.22, 0.38, 0.52, 0.65, 0.78, 0.92]:
-		var cx: float = x_frac * TANK_HALF_W
-		var cz: float = _rng.randf_range(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.5)
-		var n_blades: int = _rng.randi_range(5, 9)
+	# --- Background wall: thick valli forest (shape-aware placement) ---
+	var bg_band: Vector2 = _spawn_z_band("background")
+	for _row in 12:
+		var xz: Vector2 = _sample_clear_xz_in_band(
+			bg_band.x, bg_band.y, 0.35, 0.55, 36, 0.35)
+		var n_blades: int = _rng.randi_range(4, 7)
 		for i in n_blades:
-			var px: float = cx + _rng.randf_range(-0.5, 0.5)
-			var pz: float = cz + _rng.randf_range(-0.5, 0.5)
-			# Skip if the jittered position pokes outside non-rect tank shapes.
-			if not _is_inside_tank(px, pz, 0.3):
+			var px: float = xz.x + _rng.randf_range(-0.35, 0.35)
+			var pz: float = xz.y + _rng.randf_range(-0.35, 0.35)
+			var fit: Vector2 = clamp_plant_site(px, pz, 0.35, 0.3)
+			if not fits_plant_at(fit.x, fit.y, 0.35, 0.3):
 				continue
-			_spawn_plant(species_specs[0], Vector3(px, SUBSTRATE_DEPTH, pz),
+			_spawn_plant(species_specs[0], Vector3(fit.x, SUBSTRATE_DEPTH, fit.y),
 				_rng.randi_range(2, 5))
 	await get_tree().process_frame
 
 	# --- Midground rosettes (crypts) + red accent stems scattered ---
+	var mid_band: Vector2 = _spawn_z_band("mid")
 	for i in 28:
-		var xz: Vector2 = _sample_clear_xz_in_band(-0.5, 1.5, 0.3, 0.55)
+		var xz: Vector2 = _sample_clear_xz_in_band(
+			mid_band.x, mid_band.y, 0.3, 0.55, 36, 0.45)
 		_spawn_plant(species_specs[1], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
 			_rng.randi_range(2, 4))
 	await get_tree().process_frame
 	for i in 14:
-		var xz: Vector2 = _sample_clear_xz_in_band(-1.5, 1.5, 0.3, 0.55)
+		var xz: Vector2 = _sample_clear_xz_in_band(
+			mid_band.x, mid_band.y, 0.3, 0.55, 36, 0.45)
 		_spawn_plant(species_specs[3], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
 			_rng.randi_range(2, 4))
 	await get_tree().process_frame
 
 	# --- Foreground carpet: very dense ---
+	var fg_band: Vector2 = _spawn_z_band("foreground")
 	for i in 55:
 		var xz: Vector2 = _sample_clear_xz_in_band(
-			TANK_HALF_D * 0.2, TANK_HALF_D * 0.95, 0.3, 0.45)
+			fg_band.x, fg_band.y, 0.3, 0.45, 36, 0.25)
 		_spawn_plant(species_specs[2], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
 			_rng.randi_range(1, 3))
 		# Yield mid-carpet too - this is the densest single block (55 plants).
@@ -1722,16 +1951,16 @@ func _spawn_initial_plants() -> void:
 	for i in 6:
 		var sp := SpiralPlant.new()
 		plants_root.add_child(sp)
+		var scatter_band: Vector2 = _spawn_z_band("scatter")
 		var sp_xz: Vector2 = _sample_clear_xz_in_band(
-			-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.55, 0.7)
+			scatter_band.x, scatter_band.y, 0.55, 0.7, 36, 0.55)
+		sp_xz = clamp_plant_site(sp_xz.x, sp_xz.y, 0.55, 0.5)
 		sp.global_position = Vector3(sp_xz.x, SUBSTRATE_DEPTH, sp_xz.y)
 		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
 		sp.water_surface_y = WATER_HEIGHT
 		sp.generation = 0
-		# Per-spawn horizontal budget: stay inside glass even near walls.
-		var wall_x: float = TANK_HALF_W - absf(sp_xz.x) - 0.55
-		var wall_z: float = TANK_HALF_D - absf(sp_xz.y) - 0.55
-		sp.max_horizontal_extent = clampf(minf(wall_x, wall_z) * 0.85, 0.06, 0.12)
+		var wall_slack: float = lateral_room_at(sp_xz.x, sp_xz.y, 0.55)
+		sp.max_horizontal_extent = clampf(wall_slack * 0.72, 0.03, 0.12)
 		sp.tank_wall_margin = 0.55
 		sp.init(_rng.randi_range(3, 5), {
 			"max_height": _rng.randi_range(8, 14),
@@ -1836,15 +2065,13 @@ func _spawn_initial_corals() -> void:
 		 Color8(210, 175, 85), Color8(235, 210, 130), Color8(250, 235, 180)],
 	]
 
-	# --- Background: staghorn forest ---
-	for x_frac in [-0.90, -0.74, -0.58, -0.42, -0.24, -0.08, 0.08, 0.24, 0.42, 0.58, 0.74, 0.90]:
-		var cx: float = x_frac * TANK_HALF_W
-		var cz: float = _rng.randf_range(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.55)
-		if not _is_inside_tank(cx, cz, 0.4):
-			continue
+	# --- Background: staghorn forest (shape-aware) ---
+	for _row in 10:
+		var xz: Vector2 = _sample_clear_xz_in_band(
+			-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.55, 0.4, 0.55)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(cx, SUBSTRATE_DEPTH, cz)
+		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
 		c.coral_form = "branching" if _rng.randf() < 0.6 else "staghorn_fern"
 		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
 		c.ramp_override = pal
@@ -2063,6 +2290,12 @@ func _maybe_recruit_coral() -> void:
 
 
 func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
+	var reach: float = float(spec.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
+	var fit: Vector2 = clamp_plant_site(pos.x, pos.z, reach, 0.28)
+	if not fits_plant_at(fit.x, fit.y, reach, 0.28):
+		return
+	pos.x = fit.x
+	pos.z = fit.y
 	if pos.y <= SUBSTRATE_DEPTH + 0.15 and _is_hardscape_occupied(pos.x, pos.z, 0.45):
 		return
 	var p := Plant.new()
@@ -2093,15 +2326,16 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	if sim.plants.size() >= 320:
 		return
 	var is_saltwater: bool = bool(_active_substrate_profile.get("is_saltwater", false))
-	# Clamp to substrate level and tank bounds.
-	var sp: Vector3 = Vector3(
-		clampf(pos.x, -TANK_HALF_W * 0.95, TANK_HALF_W * 0.95),
-		SUBSTRATE_DEPTH,
-		clampf(pos.z, -TANK_HALF_D * 0.95, TANK_HALF_D * 0.95),
-	)
-	if not _is_inside_tank(sp.x, sp.z, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45):
+	var seed_reach: float = float(seed_config.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
+	if seed_config.has("max_horizontal_extent"):
+		seed_reach = maxf(seed_reach, float(seed_config["max_horizontal_extent"]) + 0.08)
+	var fit: Vector2 = clamp_plant_site(pos.x, pos.z, seed_reach, 0.25)
+	var sp: Vector3 = Vector3(fit.x, SUBSTRATE_DEPTH, fit.y)
+	if not fits_plant_at(sp.x, sp.z, seed_reach, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45):
+		var alt_band: Vector2 = _spawn_z_band("scatter")
 		var alt: Vector2 = _pick_ecology_site(
-			is_saltwater, -TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.35, 0.45)
+			is_saltwater, alt_band.x, alt_band.y, 0.35, 0.45)
+		alt = clamp_plant_site(alt.x, alt.y, seed_reach, 0.25)
 		sp.x = alt.x
 		sp.z = alt.y
 	var script: Script = seed_config.get("script", load("res://scripts/plant.gd"))

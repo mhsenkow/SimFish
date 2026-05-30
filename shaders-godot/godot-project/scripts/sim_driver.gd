@@ -100,8 +100,8 @@ const RESILIENCE_BANK_REFRESH_S: float = 7.0
 const RESILIENCE_FISH_FLOOR: int = 6
 const RESILIENCE_SHRIMP_FLOOR: int = 5
 const RESILIENCE_SNAIL_FLOOR: int = 4
-const RESILIENCE_PLANT_FLOOR: int = 26
-const RESILIENCE_PLANT_BIOMASS_FLOOR: int = 180
+const RESILIENCE_PLANT_FLOOR: int = 8
+const RESILIENCE_PLANT_BIOMASS_FLOOR: int = 60
 const RESILIENCE_MAX_SNAIL_EGGS: int = 8
 var _resilience_timer: float = 4.0
 var _resilience_bank_timer: float = 1.0
@@ -417,10 +417,19 @@ func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
 	if e == null or not is_instance_valid(e):
 		return
 	var p: Vector3 = e.global_position
-	p.x = clampf(p.x, world_bounds.position.x + margin, world_bounds.end.x - margin)
+	var w: Node = get_parent()
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		e.global_position = w.clamp_xyz_in_tank(p, margin)
+		return
+	if w != null and w.has_method("clamp_xz_in_tank"):
+		var xz: Vector2 = w.clamp_xz_in_tank(p.x, p.z, margin)
+		p.x = xz.x
+		p.z = xz.y
+	else:
+		p.x = clampf(p.x, world_bounds.position.x + margin, world_bounds.end.x - margin)
+		p.z = clampf(p.z, world_bounds.position.z + margin, world_bounds.end.z - margin)
 	p.y = clampf(p.y, maxf(substrate_top_y + substrate_margin, world_bounds.position.y + margin),
 		world_bounds.end.y - margin)
-	p.z = clampf(p.z, world_bounds.position.z + margin, world_bounds.end.z - margin)
 	e.global_position = p
 
 
@@ -1141,17 +1150,10 @@ func _hatch(e: FishEgg) -> void:
 
 
 # Helper - look up the audio node and emit a specific musical event.
-func _play_ambient_event(event_name: String) -> void:
+func _play_ambient_event(event_name: String, intensity: float = -1.0) -> void:
 	var audio := _ambient_audio()
-	if audio != null:
-		if audio.has_method("play_aquarium_event"):
-			audio.play_aquarium_event(event_name)
-		elif audio.has_method("play_event_plink"):
-			var intensity: float = 0.5
-			if event_name == "birth": intensity = 0.7
-			elif event_name == "spawn": intensity = 0.4
-			elif event_name == "death": intensity = 0.2
-			audio.play_event_plink(intensity)
+	if audio != null and audio.has_method("play_aquarium_event"):
+		audio.play_aquarium_event(event_name, intensity)
 
 
 func _apply_ecosystem_engineering(dt: float) -> void:
@@ -1719,7 +1721,8 @@ func _run_resilience_seed(dt: float) -> void:
 		elif snails_live == 0 and snail_eggs == 0:
 			spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("snail", {}), "snail"), "snail")
 
-	if not spawned and (plant_live < RESILIENCE_PLANT_FLOOR or plant_biomass < RESILIENCE_PLANT_BIOMASS_FLOOR):
+	if not spawned and plant_live < RESILIENCE_PLANT_FLOOR \
+			and plant_biomass < RESILIENCE_PLANT_BIOMASS_FLOOR:
 		spawned = _spawn_resilience_plant(_make_resilience_plant_seed())
 
 	if spawned and fish_live < RESILIENCE_FISH_FLOOR:
@@ -1950,8 +1953,8 @@ func log_story_event(text: String) -> void:
 	# Trigger an ambient plink so the player hears a story beat even if
 	# the dialog is closed.
 	var amb: Node = _ambient_audio()
-	if amb != null and amb.has_method("play_event_plink"):
-		amb.play_event_plink(0.7)
+	if amb != null and amb.has_method("play_aquarium_event"):
+		amb.play_aquarium_event("story", 0.72)
 
 
 # ============================================================================

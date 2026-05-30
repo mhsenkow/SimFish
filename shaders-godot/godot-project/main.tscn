@@ -7,6 +7,7 @@
 [ext_resource type="Script" path="res://scripts/ambient_audio.gd" id="6_audio"]
 [ext_resource type="Script" path="res://scripts/settings_panel.gd" id="7_settings"]
 [ext_resource type="Script" path="res://scripts/render_panel.gd" id="8_render"]
+[ext_resource type="Script" path="res://scripts/sound_panel.gd" id="8_sound"]
 [ext_resource type="Script" path="res://scripts/fish_store.gd" id="9_store"]
 [ext_resource type="Shader" path="res://shaders/circle_mask.gdshader" id="10_circle_mask"]
 [ext_resource type="Script" path="res://scripts/mobile_hud.gd" id="11_mobile_hud"]
@@ -212,6 +213,17 @@ offset_right = 480.0
 offset_bottom = -40.0
 script = ExtResource("8_render")
 
+[node name="SoundPanel" type="PanelContainer" parent="."]
+anchor_left = 0.5
+anchor_top = 0.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = 56.0
+offset_right = 260.0
+offset_bottom = -40.0
+script = ExtResource("8_sound")
+
 [node name="TopHUD" type="Control" parent="."]
 mouse_filter = 2
 anchor_right = 1.0
@@ -246,6 +258,17 @@ unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 28)
 tooltip_text = "Rendering panel"
 text = " ▦ "
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
+[node name="SoundToggle" type="Button" parent="TopHUD/LeftCluster/HBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+tooltip_text = "Sound Studio (M)"
+text = " ♪ "
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
@@ -412,7 +435,7 @@ offset_bottom = -6.0
 mouse_filter = 2
 label_settings = SubResource("HUDHintSettings")
 horizontal_alignment = 1
-text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE pan · P pause · 1/2/3 speed · click creature · ⌃click feed · C PiP · ESC clear · F12 photo · T timelapse · O settings · B aquascape"
+text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE pan · P pause · 1/2/3 speed · click creature · ⌃click feed · C PiP · H focus · ESC clear · F12 photo · T timelapse · O settings · B aquascape"
 
 [node name="MobileHUD" type="Control" parent="."]
 anchors_preset = 15

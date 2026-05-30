@@ -65,6 +65,8 @@ var last_quit_unix: int = 0
 #   cube      - same rectangular geom but enforces W=D (single dimension)
 #   hex       - regular hexagonal prism (6 walls)
 #   triangle  - equilateral triangular prism (3 walls)
+#   cylinder  - vertical round tank (constant circular footprint)
+#   sphere    - dome bowl (hemisphere — walls taper inward with height)
 var tank_shape: String = "box"
 var tank_half_w: float = 8.0
 var tank_half_d: float = 4.0
@@ -99,6 +101,40 @@ var light_caustics: bool = true
 var music_enabled: bool = true
 var music_volume: float = 0.7
 var music_complexity: float = 0.5
+# Layer toggles + how strongly the tank ecosystem steers tone/tempo.
+var music_ambient_enabled: bool = true
+var music_events_enabled: bool = true
+var music_environment_enabled: bool = true
+var music_event_volume: float = 0.75
+var music_reactivity: float = 0.65
+# auto | calm | bright | deep
+var music_mood: String = "auto"
+# ambient | trance | hybrid — continuous bed character
+var music_style: String = "hybrid"
+# 0..1 — BPM, kick, arp density, filter sweep intensity
+var music_energy: float = 0.55
+# Sound studio — tank coupling & layer mix (0..1 unless noted).
+var music_coupling_floor: float = 0.55
+var music_smooth_rate: float = 0.55
+var music_phrase_churn: float = 0.5
+var music_tempo_follow: float = 0.72
+var music_kick_mix: float = 0.65
+var music_bass_mix: float = 0.75
+var music_arp_mix: float = 0.85
+var music_pad_mix: float = 0.7
+var music_hat_mix: float = 0.55
+var music_sidechain: float = 0.72
+var music_filter_open: float = 0.5
+var music_delay_amount: float = 0.35
+var music_accent_density: float = 0.5
+var music_influence_fish: float = 1.0
+var music_influence_plants: float = 1.0
+var music_influence_bloom: float = 1.0
+var music_influence_o2: float = 1.0
+var music_influence_day: float = 1.0
+var music_influence_aeration: float = 1.0
+var music_influence_biomass: float = 1.0
+var music_seed: int = 1
 
 # ---- Room environment ----
 # A "scene" around the tank — desk, wall, lamp, props. Lifts the tank
@@ -924,6 +960,7 @@ func save_to_disk() -> void:
 	cfg.set_value("tank", "half_d", tank_half_d)
 	cfg.set_value("tank", "height", tank_height)
 	cfg.set_value("tank", "shape", tank_shape)
+	cfg.set_value("tank", "dome", tank_shape == "sphere")
 	cfg.set_value("light", "energy", light_energy)
 	cfg.set_value("light", "yaw", light_yaw)
 	cfg.set_value("light", "pitch", light_pitch)
@@ -936,6 +973,35 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "enabled", music_enabled)
 	cfg.set_value("music", "volume", music_volume)
 	cfg.set_value("music", "complexity", music_complexity)
+	cfg.set_value("music", "ambient_enabled", music_ambient_enabled)
+	cfg.set_value("music", "events_enabled", music_events_enabled)
+	cfg.set_value("music", "environment_enabled", music_environment_enabled)
+	cfg.set_value("music", "event_volume", music_event_volume)
+	cfg.set_value("music", "reactivity", music_reactivity)
+	cfg.set_value("music", "mood", music_mood)
+	cfg.set_value("music", "style", music_style)
+	cfg.set_value("music", "energy", music_energy)
+	cfg.set_value("music", "coupling_floor", music_coupling_floor)
+	cfg.set_value("music", "smooth_rate", music_smooth_rate)
+	cfg.set_value("music", "phrase_churn", music_phrase_churn)
+	cfg.set_value("music", "tempo_follow", music_tempo_follow)
+	cfg.set_value("music", "kick_mix", music_kick_mix)
+	cfg.set_value("music", "bass_mix", music_bass_mix)
+	cfg.set_value("music", "arp_mix", music_arp_mix)
+	cfg.set_value("music", "pad_mix", music_pad_mix)
+	cfg.set_value("music", "hat_mix", music_hat_mix)
+	cfg.set_value("music", "sidechain", music_sidechain)
+	cfg.set_value("music", "filter_open", music_filter_open)
+	cfg.set_value("music", "delay_amount", music_delay_amount)
+	cfg.set_value("music", "accent_density", music_accent_density)
+	cfg.set_value("music", "influence_fish", music_influence_fish)
+	cfg.set_value("music", "influence_plants", music_influence_plants)
+	cfg.set_value("music", "influence_bloom", music_influence_bloom)
+	cfg.set_value("music", "influence_o2", music_influence_o2)
+	cfg.set_value("music", "influence_day", music_influence_day)
+	cfg.set_value("music", "influence_aeration", music_influence_aeration)
+	cfg.set_value("music", "influence_biomass", music_influence_biomass)
+	cfg.set_value("music", "seed", music_seed)
 	cfg.set_value("environment", "preset", environment_preset)
 	cfg.set_value("substrate", "type", substrate_type)
 	cfg.set_value("aeration", "type", aeration_type)
@@ -984,6 +1050,9 @@ func load_from_disk() -> void:
 	tank_half_d = cfg.get_value("tank", "half_d", tank_half_d)
 	tank_height = cfg.get_value("tank", "height", tank_height)
 	tank_shape = cfg.get_value("tank", "shape", tank_shape)
+	# Legacy saves used "sphere" for the vertical cylinder tank.
+	if tank_shape == "sphere" and not bool(cfg.get_value("tank", "dome", false)):
+		tank_shape = "cylinder"
 	light_energy = cfg.get_value("light", "energy", light_energy)
 	light_yaw = cfg.get_value("light", "yaw", light_yaw)
 	light_pitch = cfg.get_value("light", "pitch", light_pitch)
@@ -996,6 +1065,35 @@ func load_from_disk() -> void:
 	music_enabled = cfg.get_value("music", "enabled", music_enabled)
 	music_volume = cfg.get_value("music", "volume", music_volume)
 	music_complexity = cfg.get_value("music", "complexity", music_complexity)
+	music_ambient_enabled = cfg.get_value("music", "ambient_enabled", music_ambient_enabled)
+	music_events_enabled = cfg.get_value("music", "events_enabled", music_events_enabled)
+	music_environment_enabled = cfg.get_value("music", "environment_enabled", music_environment_enabled)
+	music_event_volume = cfg.get_value("music", "event_volume", music_event_volume)
+	music_reactivity = cfg.get_value("music", "reactivity", music_reactivity)
+	music_mood = cfg.get_value("music", "mood", music_mood)
+	music_style = cfg.get_value("music", "style", music_style)
+	music_energy = cfg.get_value("music", "energy", music_energy)
+	music_coupling_floor = cfg.get_value("music", "coupling_floor", music_coupling_floor)
+	music_smooth_rate = cfg.get_value("music", "smooth_rate", music_smooth_rate)
+	music_phrase_churn = cfg.get_value("music", "phrase_churn", music_phrase_churn)
+	music_tempo_follow = cfg.get_value("music", "tempo_follow", music_tempo_follow)
+	music_kick_mix = cfg.get_value("music", "kick_mix", music_kick_mix)
+	music_bass_mix = cfg.get_value("music", "bass_mix", music_bass_mix)
+	music_arp_mix = cfg.get_value("music", "arp_mix", music_arp_mix)
+	music_pad_mix = cfg.get_value("music", "pad_mix", music_pad_mix)
+	music_hat_mix = cfg.get_value("music", "hat_mix", music_hat_mix)
+	music_sidechain = cfg.get_value("music", "sidechain", music_sidechain)
+	music_filter_open = cfg.get_value("music", "filter_open", music_filter_open)
+	music_delay_amount = cfg.get_value("music", "delay_amount", music_delay_amount)
+	music_accent_density = cfg.get_value("music", "accent_density", music_accent_density)
+	music_influence_fish = cfg.get_value("music", "influence_fish", music_influence_fish)
+	music_influence_plants = cfg.get_value("music", "influence_plants", music_influence_plants)
+	music_influence_bloom = cfg.get_value("music", "influence_bloom", music_influence_bloom)
+	music_influence_o2 = cfg.get_value("music", "influence_o2", music_influence_o2)
+	music_influence_day = cfg.get_value("music", "influence_day", music_influence_day)
+	music_influence_aeration = cfg.get_value("music", "influence_aeration", music_influence_aeration)
+	music_influence_biomass = cfg.get_value("music", "influence_biomass", music_influence_biomass)
+	music_seed = int(cfg.get_value("music", "seed", music_seed))
 	environment_preset = cfg.get_value("environment", "preset", environment_preset)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
 	aeration_type = cfg.get_value("aeration", "type", aeration_type)
@@ -1075,6 +1173,35 @@ func reset_to_defaults() -> void:
 	music_enabled = true
 	music_volume = 0.7
 	music_complexity = 0.5
+	music_ambient_enabled = true
+	music_events_enabled = true
+	music_environment_enabled = true
+	music_event_volume = 0.75
+	music_reactivity = 0.65
+	music_mood = "auto"
+	music_style = "hybrid"
+	music_energy = 0.55
+	music_coupling_floor = 0.55
+	music_smooth_rate = 0.55
+	music_phrase_churn = 0.5
+	music_tempo_follow = 0.72
+	music_kick_mix = 0.65
+	music_bass_mix = 0.75
+	music_arp_mix = 0.85
+	music_pad_mix = 0.7
+	music_hat_mix = 0.55
+	music_sidechain = 0.72
+	music_filter_open = 0.5
+	music_delay_amount = 0.35
+	music_accent_density = 0.5
+	music_influence_fish = 1.0
+	music_influence_plants = 1.0
+	music_influence_bloom = 1.0
+	music_influence_o2 = 1.0
+	music_influence_day = 1.0
+	music_influence_aeration = 1.0
+	music_influence_biomass = 1.0
+	music_seed = 1
 	environment_preset = "void"
 	# Fauna behavior.
 	auto_respawn_fauna = false
@@ -1108,3 +1235,43 @@ func reset_to_defaults() -> void:
 	camera_target_x = 0.0
 	camera_target_y = 3.0
 	camera_target_z = 0.0
+
+
+func randomize_music_params(wild: bool = false) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	music_seed = rng.randi_range(1, 999999)
+	music_volume = rng.randf_range(0.45, 0.9)
+	music_complexity = rng.randf_range(0.25, 0.95)
+	music_event_volume = rng.randf_range(0.35, 1.0)
+	music_reactivity = rng.randf_range(0.4, 1.0)
+	music_energy = rng.randf_range(0.25, 0.95)
+	music_coupling_floor = rng.randf_range(0.35, 0.85)
+	music_smooth_rate = rng.randf_range(0.2, 0.95)
+	music_phrase_churn = rng.randf_range(0.15, 0.95)
+	music_tempo_follow = rng.randf_range(0.35, 1.0)
+	music_kick_mix = rng.randf_range(0.2, 1.0)
+	music_bass_mix = rng.randf_range(0.25, 1.0)
+	music_arp_mix = rng.randf_range(0.2, 1.0)
+	music_pad_mix = rng.randf_range(0.15, 1.0)
+	music_hat_mix = rng.randf_range(0.1, 0.95)
+	music_sidechain = rng.randf_range(0.25, 1.0)
+	music_filter_open = rng.randf_range(0.15, 1.0)
+	music_delay_amount = rng.randf_range(0.0, 0.75)
+	music_accent_density = rng.randf_range(0.15, 1.0)
+	music_influence_fish = rng.randf_range(0.35, 1.5)
+	music_influence_plants = rng.randf_range(0.35, 1.5)
+	music_influence_bloom = rng.randf_range(0.35, 1.5)
+	music_influence_o2 = rng.randf_range(0.35, 1.5)
+	music_influence_day = rng.randf_range(0.35, 1.5)
+	music_influence_aeration = rng.randf_range(0.25, 1.5)
+	music_influence_biomass = rng.randf_range(0.35, 1.5)
+	music_ambient_enabled = rng.randf() > 0.15
+	music_events_enabled = rng.randf() > 0.08
+	music_environment_enabled = rng.randf() > 0.2
+	if wild or rng.randf() > 0.35:
+		var moods: Array[String] = ["auto", "calm", "bright", "deep"]
+		music_mood = moods[rng.randi_range(0, moods.size() - 1)]
+	if wild or rng.randf() > 0.25:
+		var styles: Array[String] = ["ambient", "hybrid", "trance"]
+		music_style = styles[rng.randi_range(0, styles.size() - 1)]

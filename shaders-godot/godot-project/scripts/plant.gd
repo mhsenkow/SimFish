@@ -11,6 +11,8 @@
 #   Nutrient health — deficiency symptoms (yellowing, pinholes, melting)
 #   Pearling       — O2 bubbles on healthy leaves in bright light
 #   Flowering      — bud → open → seed pod → seed release lifecycle
+#   Canopy cycle   — emergent stems stop at water surface, flower, seed,
+#                    senesce (monocarpic) or reflower (perennial)
 #   Decay          — gradual browning, leaf detachment, crypt melt
 #   Flow response  — asymmetric bending, leaf flutter
 
@@ -63,6 +65,19 @@ var has_flower: bool = false
 var has_emerged: bool = false   # true once tip has reached the water surface
 var bloom_voxels: Array[MeshInstance3D] = []
 var seed_timer: float = 0.0
+
+# Canopy life cycle: vegetative growth stops at the water surface, then
+# flower/seed/senescence closes the Walstad nutrient loop.
+enum LifePhase { VEGETATIVE, CANOPY, SENESCENT }
+var life_phase: int = LifePhase.VEGETATIVE
+var emergent_growth: bool = true   # tall stems/corals stop at water_surface_y
+var uses_flowering: bool = true    # corals override to false (planula instead)
+var monocarpic: bool = false       # die after one reproductive cycle
+var _canopy_timer: float = 0.0
+var _seeds_cast_this_cycle: int = 0
+const MAX_SEEDS_PER_CYCLE: int = 3
+const SEED_SITE_NUTRIENT_MIN: float = 0.08  # above SubstrateGrid baseline
+const SURFACE_MARGIN: float = 0.15
 @warning_ignore("unused_private_class_variable")
 var _flower_voxel: MeshInstance3D = null
 var _phase: float = 0.0
@@ -207,6 +222,14 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	var pk: Variant = params.get("parent_keys", [])
 	if pk is Array:
 		_parent_keys = pk.duplicate()
+	if params.has("emergent_growth"):
+		emergent_growth = bool(params["emergent_growth"])
+	if params.has("monocarpic"):
+		monocarpic = bool(params["monocarpic"])
+	if params.has("uses_flowering"):
+		uses_flowering = bool(params["uses_flowering"])
+	else:
+		_apply_default_growth_strategy()
 	_ensure_plant_named()
 	# Build initial roots.
 	_build_initial_roots()
@@ -249,6 +272,12 @@ func to_save_dict() -> Dictionary:
 		"has_flower": has_flower,
 		"has_emerged": has_emerged,
 		"seed_timer": seed_timer,
+		"life_phase": int(life_phase),
+		"emergent_growth": emergent_growth,
+		"uses_flowering": uses_flowering,
+		"monocarpic": monocarpic,
+		"_canopy_timer": _canopy_timer,
+		"_seeds_cast_this_cycle": _seeds_cast_this_cycle,
 		"health": health,
 		"_health_smooth": _health_smooth,
 		"flower_stage": int(flower_stage),
@@ -279,6 +308,12 @@ func apply_save_dict(d: Dictionary) -> void:
 	has_flower = bool(d.get("has_flower", false))
 	has_emerged = bool(d.get("has_emerged", false))
 	seed_timer = float(d.get("seed_timer", 0.0))
+	life_phase = int(d.get("life_phase", LifePhase.VEGETATIVE if not has_emerged else LifePhase.CANOPY))
+	emergent_growth = bool(d.get("emergent_growth", emergent_growth))
+	uses_flowering = bool(d.get("uses_flowering", uses_flowering))
+	monocarpic = bool(d.get("monocarpic", monocarpic))
+	_canopy_timer = float(d.get("_canopy_timer", 0.0))
+	_seeds_cast_this_cycle = int(d.get("_seeds_cast_this_cycle", 0))
 	health = float(d.get("health", 1.0))
 	_health_smooth = float(d.get("_health_smooth", health))
 	flower_stage = int(d.get("flower_stage", 0)) as FlowerStage
@@ -395,8 +430,55 @@ func _setup_pearling() -> void:
 	add_child(_pearling_particles)
 
 
+func _apply_default_growth_strategy() -> void:
+	match leaf_form:
+		"paddle", "needle":
+			emergent_growth = false
+		_:
+			emergent_growth = true
+
+
+func _at_surface_cap() -> bool:
+	return top_world_y() >= water_surface_y - SURFACE_MARGIN
+
+
+func _enter_canopy() -> void:
+	if life_phase == LifePhase.CANOPY:
+		return
+	life_phase = LifePhase.CANOPY
+	has_emerged = true
+	max_height = current_height
+	_canopy_timer = 0.0
+	if uses_flowering and flower_stage == FlowerStage.NONE:
+		_begin_flowering()
+	elif not uses_flowering and has_method("_spawn_canopy_propagule"):
+		call("_spawn_canopy_propagule")
+
+
+func _enter_senescence() -> void:
+	if life_phase == LifePhase.SENESCENT or is_dying:
+		return
+	life_phase = LifePhase.SENESCENT
+	if _pearling_active and _pearling_particles != null:
+		_pearling_active = false
+		_pearling_particles.emitting = false
+	_begin_dying()
+
+
+func _finish_reproduction_cycle() -> void:
+	if monocarpic:
+		_enter_senescence()
+	else:
+		has_flower = false
+		flower_stage = FlowerStage.NONE
+		_canopy_timer = 0.0
+		_seeds_cast_this_cycle = 0
+
+
 func _grow_one() -> bool:
 	if current_height >= max_height:
+		return false
+	if emergent_growth and _at_surface_cap():
 		return false
 	if is_dying or _melt_active:
 		return false
@@ -461,13 +543,12 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
 	mi.material_override = VoxelMat.make_foliage(color)
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
-	mi.position = Vector3(
+	mi.position = _clamp_growth_offset(Vector3(
 		lat + photo_offset.x,
 		current_height * VOXEL_SIZE + VOXEL_SIZE * 0.5,
 		photo_offset.y,
-	)
-	add_child(mi)
-	voxels.append(mi)
+	))
+	_register_stem_voxel(mi)
 
 
 # Animate a freshly-spawned leaf node from a curled-up start (small scale,
@@ -543,11 +624,11 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	var leaf_node := Node3D.new()
 	# Position along the stem with phototropism.
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
-	leaf_node.position = Vector3(
+	leaf_node.position = _clamp_growth_offset(Vector3(
 		lat + photo_offset.x,
 		current_height * VOXEL_SIZE * 0.9 + VOXEL_SIZE * 0.5,
 		photo_offset.y,
-	)
+	))
 	# Fan outward from center, alternating sides.
 	var side: float = 1.0 if (current_height % 2 == 0) else -1.0
 	leaf_node.rotation.y = side * 0.4 + rel * 0.2
@@ -562,11 +643,11 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
 	var leaf_node := Node3D.new()
-	leaf_node.position = Vector3(
+	leaf_node.position = _clamp_growth_offset(Vector3(
 		photo_offset.x + randf_range(-0.1, 0.1),
 		VOXEL_SIZE * 0.3,
 		photo_offset.y + randf_range(-0.1, 0.1),
-	)
+	))
 	# Each blade emerges from the base and goes up. For ribbon plants,
 	# current_height tracks number of blades, not individual voxels.
 	var blade_len: int = clampi(leaf_length + _rng_range(-1, 2), 4, 14)
@@ -587,14 +668,12 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	var stem_color: Color = ramp[0] if ramp.size() > 0 else Color8(40, 70, 30)
 	stem_mi.material_override = VoxelMat.make_foliage(stem_color.darkened(0.1))
 	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
-	stem_mi.position = Vector3(
+	stem_mi.position = _clamp_growth_offset(Vector3(
 		lat + photo_offset.x,
 		current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.5,
 		photo_offset.y,
-	)
-	add_child(stem_mi)
-	voxels.append(stem_mi)
-	# Leaf pair every 2nd node — baked into the foliage MultiMesh.
+	))
+	_register_stem_voxel(stem_mi)
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
 		leaf_node.position = stem_mi.position
@@ -609,11 +688,11 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
 	var leaf_node := Node3D.new()
-	leaf_node.position = Vector3(
+	leaf_node.position = _clamp_growth_offset(Vector3(
 		photo_offset.x + randf_range(-0.05, 0.05),
 		VOXEL_SIZE * 0.2,
 		photo_offset.y + randf_range(-0.05, 0.05),
-	)
+	))
 	var needle_len: int = clampi(leaf_length, 2, 6)
 	var leaf_voxels: Array = LeafShapes.build_needle(needle_len, ramp, age_frac)
 	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
@@ -628,10 +707,11 @@ func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2)
 	var n := Node3D.new()
 	var y: float = current_height * VOXEL_SIZE * 0.82 + VOXEL_SIZE * 0.45
 	var side: float = -1.0 if (current_height % 2 == 0) else 1.0
-	n.position = Vector3(
+	n.position = _clamp_growth_offset(Vector3(
 		photo_offset.x + side * VOXEL_SIZE * randf_range(0.45, 1.2),
 		y,
-		photo_offset.y + randf_range(-VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5))
+		photo_offset.y + randf_range(-VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.5),
+	))
 	var acc_voxels: Array = []
 	match leaf_form:
 		"ribbon":
@@ -793,6 +873,107 @@ func _clear_voxel_tint(vx: MeshInstance3D) -> void:
 	vx.remove_meta("tint_mat")
 
 
+var _footprint_enforce_timer: float = 0.0
+
+
+func _footprint_world() -> Node:
+	var n: Node = self
+	while n != null:
+		if n.has_method("clamp_xz_in_tank"):
+			return n
+		n = n.get_parent()
+	return null
+
+
+func _plant_lateral_reach() -> float:
+	match leaf_form:
+		"ribbon":
+			return float(clampi(leaf_length, 4, 14)) * VOXEL_SIZE * 0.45
+		"paddle":
+			return float(clampi(leaf_length, 2, 6)) * VOXEL_SIZE * 0.55
+		"lance":
+			return VOXEL_SIZE * 1.4
+		"needle":
+			return float(clampi(leaf_length, 2, 6)) * VOXEL_SIZE * 0.35
+		_:
+			return VOXEL_SIZE * 0.9
+
+
+func _clamp_growth_offset(local: Vector3, reach: float = -1.0) -> Vector3:
+	if reach < 0.0:
+		reach = _plant_lateral_reach()
+	var w := _footprint_world()
+	if w == null:
+		return local
+	var g: Vector3 = global_position
+	var wx: float = g.x + local.x
+	var wy: float = g.y + local.y
+	var wz: float = g.z + local.z
+	if w.has_method("fits_plant_at") and w.fits_plant_at(wx, wz, reach, 0.22, wy):
+		return local
+	var clamped: Vector2 = w.clamp_xz_in_tank(wx, wz, 0.22 + reach)
+	var out := Vector3(clamped.x - g.x, local.y, clamped.y - g.z)
+	for _i in 8:
+		var test_y: float = g.y + out.y
+		if w.fits_plant_at(g.x + out.x, g.z + out.z, reach, 0.22, test_y):
+			return out
+		out.x *= 0.68
+		out.z *= 0.68
+	return Vector3(0.0, local.y, 0.0)
+
+
+func _clamp_root_to_footprint() -> void:
+	var w := _footprint_world()
+	if w == null:
+		return
+	var reach: float = _plant_lateral_reach()
+	var g: Vector3 = global_position
+	if w.has_method("fits_plant_at") and w.fits_plant_at(g.x, g.z, reach, 0.2):
+		return
+	var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, 0.2 + reach)
+	if w.has_method("clamp_plant_site"):
+		xz = w.clamp_plant_site(g.x, g.z, reach, 0.2)
+	global_position = Vector3(xz.x, g.y, xz.y)
+
+
+func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
+	var w := _footprint_world()
+	if w == null:
+		return
+	var g: Vector3 = node.global_position
+	if g.y > water_surface_y - 0.08 and w.has_method("clamp_emergent_in_tank"):
+		node.global_position = w.clamp_emergent_in_tank(g, margin)
+		return
+	var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, margin)
+	node.global_position = Vector3(xz.x, g.y, xz.y)
+
+
+func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
+	add_child(mi)
+	_clamp_node_xz_to_footprint(mi, margin)
+	voxels.append(mi)
+
+
+func _reclamp_voxels_to_footprint() -> void:
+	if _footprint_world() == null:
+		return
+	for v in voxels:
+		if is_instance_valid(v) and not v.is_queued_for_deletion():
+			_clamp_node_xz_to_footprint(v, 0.2)
+	for leaf in _leaf_nodes:
+		if leaf != null and is_instance_valid(leaf):
+			_clamp_node_xz_to_footprint(leaf, 0.28)
+			for child in leaf.get_children():
+				if child is Node3D:
+					_clamp_node_xz_to_footprint(child, 0.2)
+	for v in bloom_voxels:
+		if is_instance_valid(v):
+			_clamp_node_xz_to_footprint(v, 0.18)
+	for v in root_voxels:
+		if is_instance_valid(v):
+			_clamp_node_xz_to_footprint(v, 0.15)
+
+
 # Called by SimDriver each tick.
 func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Refresh world-space anchor every tick. _ready() captures _world_pos
@@ -806,6 +987,11 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Doing it here on every tick is one Vector3 read; trivial cost, and
 	# robust against future spawn paths.
 	_world_pos = global_position
+	_clamp_root_to_footprint()
+	_footprint_enforce_timer -= dt
+	if _footprint_enforce_timer <= 0.0:
+		_footprint_enforce_timer = 1.0 if _footprint_world() != null else 2.5
+		_reclamp_voxels_to_footprint()
 	_t += dt
 
 	# ---- Flow-based sway ----
@@ -902,32 +1088,11 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		return
 
 	# ---- Growth ----
-	if current_height >= max_height:
-		# Mature: manage flowering + seeding.
-		_tick_flowering(dt)
-		_tick_seeding(dt)
-		_tick_pearling(dt)
-		
-		# Indeterminate slow growth
-		var eff_rate: float = growth_rate * (0.05 + 0.15 * nutrient_mult)
-		growth_progress += eff_rate * dt
-		if growth_progress >= 1.0:
-			growth_progress = 0.0
-			# Tentatively raise the cap, then attempt to grow into the new
-			# space. If `_grow_one()` fails (plant is dying / melting / has
-			# some other hard veto), REVERT the cap raise. Without this
-			# revert, `max_height` ratcheted up on every failed grow attempt,
-			# which over a long-running tank let dying plants record
-			# preposterously large maximum heights that affected leaf
-			# placement math later on.
-			max_height += 1
-			if _grow_one():
-				substrate.consume_at(_world_pos, nutrient_demand)
-			else:
-				max_height -= 1
-		else:
-			# Maintenance
-			substrate.consume_at(_world_pos, nutrient_demand * 0.1 * dt)
+	if emergent_growth and life_phase == LifePhase.VEGETATIVE and _at_surface_cap():
+		_enter_canopy()
+
+	if life_phase == LifePhase.CANOPY or current_height >= max_height:
+		_tick_canopy(dt, nutrient_mult, substrate)
 		return
 
 	var effective_rate: float = growth_rate * (0.4 + 0.8 * nutrient_mult)
@@ -936,23 +1101,37 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		growth_progress = 0.0
 		if _grow_one():
 			substrate.consume_at(_world_pos, nutrient_demand)
+			_notify_growth_audio()
+			if emergent_growth and _at_surface_cap():
+				_enter_canopy()
 
 	# ---- Pearling ----
 	_tick_pearling(dt)
 
-	# ---- Flowering trigger ----
-	if not has_flower and current_height >= max_height - 1 and randf() < 0.0005:
+	# Submerged plants can still flower at genetic max height.
+	if not emergent_growth and not has_flower \
+			and current_height >= max_height - 1 and randf() < 0.0005:
 		_begin_flowering()
 
-	# Emergent check.
-	if not has_emerged and top_world_y() >= water_surface_y - 0.15:
-		_emerge_above_water()
-
-	# Seeding.
+	# Seeding (submerged mature plants).
 	_tick_seeding(dt)
 
 	# Vegetative spread via runners (ribbon-form plants only).
 	_tick_runner(dt)
+
+
+func _tick_canopy(dt: float, nutrient_mult: float, substrate: SubstrateGrid) -> void:
+	_tick_flowering(dt)
+	_tick_seeding(dt)
+	_tick_pearling(dt)
+	_tick_runner(dt)
+	if life_phase == LifePhase.CANOPY and not has_flower and uses_flowering \
+			and not monocarpic and not is_dying:
+		_canopy_timer += dt
+		if _canopy_timer >= 25.0:
+			_canopy_timer = 0.0
+			_begin_flowering()
+	substrate.consume_at(_world_pos, nutrient_demand * 0.08 * dt)
 
 
 # Ribbon-form plants extend a horizontal stolon along the substrate that
@@ -1105,7 +1284,7 @@ func _tick_flowering(dt: float) -> void:
 				flower_stage = FlowerStage.RELEASING
 				_flower_timer = 0.0
 		FlowerStage.RELEASING:
-			# Release 1-3 seeds over a few seconds.
+			# Release seeds, then senesce (monocarpic) or rest (perennial).
 			if _flower_timer > 2.0:
 				_cast_seed()
 				_clear_bloom()
@@ -1114,6 +1293,7 @@ func _tick_flowering(dt: float) -> void:
 					_flower_node = null
 				flower_stage = FlowerStage.NONE
 				has_flower = false
+				_finish_reproduction_cycle()
 
 
 func _build_flower_meshes_once() -> void:
@@ -1137,6 +1317,15 @@ var _sim_driver_ref: Node = null
 # per-tick plant tick(), so the old per-call "/root/TankConfig" lookup cost one
 # autoload resolve per plant per tick.
 var _cfg_ref: Node = null
+
+func _notify_growth_audio() -> void:
+	if randf() > 0.12:
+		return
+	var sim_driver: Node = _find_sim()
+	if sim_driver != null and sim_driver.has_method("_play_ambient_event"):
+		var intensity: float = clampf(float(current_height) / float(maxi(max_height, 1)), 0.2, 0.9)
+		sim_driver._play_ambient_event("plant", intensity)
+
 
 func _find_sim() -> Node:
 	if _sim_driver_ref != null and is_instance_valid(_sim_driver_ref):
@@ -1196,7 +1385,10 @@ func _tick_seeding(dt: float) -> void:
 	if has_emerged:
 		if seed_timer >= 18.0 and randf() < 0.5:
 			seed_timer = 0.0
-			_cast_seed()
+			if _cast_seed():
+				_seeds_cast_this_cycle += 1
+				if _seeds_cast_this_cycle >= MAX_SEEDS_PER_CYCLE:
+					_finish_reproduction_cycle()
 	elif current_height >= max_height and seed_timer >= 60.0 and randf() < 0.25:
 		seed_timer = 0.0
 		_cast_seed()
@@ -1311,9 +1503,54 @@ func _apply_pinholes() -> void:
 			voxels[idx].visible = false
 
 
-# Fish nibbling: remove up to `amount` voxels from the top. Returns the
-# number removed (= food value the fish gained).
+# Fish nibbling: remove up to `amount` bites from flower or stem tip.
+# Return value = food units gained (flowers count double).
+func has_grazeable_flower() -> bool:
+	return has_flower and flower_stage >= FlowerStage.MATURE \
+		and not bloom_voxels.is_empty()
+
+
+func graze_target_world_y() -> float:
+	if has_flower and not bloom_voxels.is_empty() \
+			and _flower_node != null and is_instance_valid(_flower_node):
+		return _flower_node.global_position.y + VOXEL_SIZE * 0.2
+	return top_world_y()
+
+
+func _nibble_flower(amount: int) -> int:
+	var food: int = 0
+	for _i in amount:
+		if bloom_voxels.is_empty():
+			break
+		var v: MeshInstance3D = bloom_voxels.pop_back()
+		if is_instance_valid(v):
+			v.queue_free()
+		if flower_stage >= FlowerStage.MATURE:
+			food += 2
+		else:
+			food += 1
+	if bloom_voxels.is_empty():
+		_on_flower_consumed()
+	return food
+
+
+func _on_flower_consumed() -> void:
+	_clear_bloom()
+	if _flower_node != null and is_instance_valid(_flower_node):
+		_flower_node.queue_free()
+		_flower_node = null
+	has_flower = false
+	flower_stage = FlowerStage.NONE
+	if monocarpic:
+		_finish_reproduction_cycle()
+	else:
+		_canopy_timer = 0.0
+
+
 func nibble(amount: int) -> int:
+	if has_flower and not bloom_voxels.is_empty() \
+			and flower_stage >= FlowerStage.BUD:
+		return _nibble_flower(amount)
 	var removed: int = 0
 	for i in amount:
 		if not voxels.is_empty():
@@ -1399,31 +1636,50 @@ func _on_death() -> void:
 
 
 func _emerge_above_water() -> void:
-	has_emerged = true
-	_begin_flowering()
+	_enter_canopy()
 
 
-func _flower() -> void:
-	# Legacy single-voxel flower for backward compatibility.
-	_begin_flowering()
+func _seed_site_viable(seed_pos: Vector3, sim_driver: Node) -> bool:
+	if sim_driver == null or sim_driver.get("substrate") == null:
+		return true
+	var sub: SubstrateGrid = sim_driver.substrate
+	var n: float = sub.get_at(Vector3(seed_pos.x, 0.0, seed_pos.z))
+	var baseline: float = SubstrateGrid.NUTRIENT_BASELINE
+	if sub.baseline_override >= 0.0:
+		baseline = sub.baseline_override
+	return n >= baseline + SEED_SITE_NUTRIENT_MIN
 
 
-func _cast_seed() -> void:
-	# Drop a small seed voxel nearby. SimDriver picks it up via a Plant.gd
-	# tick check - we rely on the world spawning a new plant at the seed
-	# position. Cheap approach: directly request the world spawn a child
-	# plant near us, inheriting the parent's ramp_override with mutation.
+func _spawn_failed_seed_waste(at: Vector3, sim_driver: Node) -> void:
+	if sim_driver != null and sim_driver.has_method("_spawn_waste"):
+		sim_driver._spawn_waste(at, 0.04, 0)
+
+
+func _cast_seed() -> bool:
+	# Drop a seed nearby. Only sprouts on nutrient-rich substrate; failed
+	# seeds become detritus so the loop still closes.
 	var sim_driver: Node = _find_sim()
 	if sim_driver == null:
-		return
+		return false
 	var world: Node = sim_driver.get_parent()
 	if world == null or not world.has_method("spawn_seedling"):
-		return
+		return false
 	var seed_pos: Vector3 = global_position + Vector3(
 		randf_range(-1.5, 1.5),
 		0.0,
 		randf_range(-1.5, 1.5),
 	)
+	var w := _footprint_world()
+	if w != null and w.has_method("clamp_plant_site"):
+		var reach: float = _plant_lateral_reach()
+		var xz: Vector2 = w.clamp_plant_site(seed_pos.x, seed_pos.z, reach, 0.25)
+		seed_pos.x = xz.x
+		seed_pos.z = xz.y
+	if not _seed_site_viable(seed_pos, sim_driver):
+		_spawn_failed_seed_waste(
+			Vector3(seed_pos.x, global_position.y, seed_pos.z),
+			sim_driver)
+		return false
 	# Mutated ramp = parent's ramp lerped toward a random color slightly.
 	var mutated_ramp: Array = ramp_override.duplicate()
 	if mutated_ramp.size() == 6:
@@ -1436,9 +1692,12 @@ func _cast_seed() -> void:
 			EvolutionPressure.apply_plant_ramp(
 				mutated_ramp, EvolutionPressure.sample_from_sim(sim_n, global_position))
 	world.spawn_seedling(seed_pos, mutated_ramp, generation + 1, get_seed_config())
+	return true
 
 
-# Returns a dictionary of heritable traits so seedlings spawn as the same species.
+func _flower() -> void:
+	# Legacy single-voxel flower for backward compatibility.
+	_begin_flowering()
 func get_seed_config() -> Dictionary:
 	_ensure_plant_named()
 	var my_key: String = SpeciesLibrary.make_species_key(get_plant_genome())
@@ -1463,6 +1722,9 @@ func get_seed_config() -> Dictionary:
 		"parent_lineage": plant_name,
 		"parent_keys": [my_key] if my_key != "" else [],
 		"plant_name": "",
+		"emergent_growth": emergent_growth,
+		"monocarpic": monocarpic,
+		"uses_flowering": uses_flowering,
 	}
 	var sim_n: Node = _find_sim()
 	if sim_n != null:
