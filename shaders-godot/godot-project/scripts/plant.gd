@@ -141,6 +141,11 @@ var _pre_melt_height: int = 0
 # ---- Pearling particles ----
 var _pearling_particles: GPUParticles3D = null
 var _pearling_active: bool = false
+var _pearling_eligible: bool = false
+var _pearling_opacity: float = 0.18
+var _pearling_strength: float = 1.0
+static var _shared_pearling_material: ParticleProcessMaterial = null
+static var _shared_pearling_mesh: SphereMesh = null
 
 # ---- Leaf structure tracking ----
 # Leaf voxels render through a single per-plant MultiMesh (one draw call for all
@@ -328,8 +333,10 @@ func apply_save_dict(d: Dictionary) -> void:
 func _ready() -> void:
 	_phase = float(get_instance_id() % 1000) * 0.013
 	_world_pos = global_position
-	# Set up pearling particle system.
-	_setup_pearling()
+	# Pearling is lazy + shared — only ~1/8 plants ever allocate a GPUParticles3D.
+	_pearling_eligible = (get_instance_id() % 8) == 0
+	_pearling_opacity = randf_range(0.08, 0.22)
+	_pearling_strength = randf_range(0.35, 1.0)
 
 
 func _build_initial_roots() -> void:
@@ -382,49 +389,62 @@ func _add_root(root_ramp: Array) -> void:
 	_root_count += 1
 
 
-func _setup_pearling() -> void:
-	# Pearling = O2 micro-bubbles clinging to leaves in bright light. Should
-	# read as a faint shimmer, never confused with the chunky opaque aerator
-	# stream. Kept small in count, scale, and alpha intentionally.
-	_pearling_particles = GPUParticles3D.new()
-	_pearling_particles.name = "Pearling"
-	_pearling_particles.emitting = false
-	_pearling_particles.amount = 4
-	_pearling_particles.lifetime = 4.0
-	_pearling_particles.local_coords = false
-	_pearling_particles.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
+func _ensure_shared_pearling_assets() -> void:
+	if _shared_pearling_material != null and _shared_pearling_mesh != null:
+		return
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0, 1, 0)
 	pm.initial_velocity_min = 0.2
 	pm.initial_velocity_max = 0.45
-	pm.gravity = Vector3(0, 0.15, 0)  # bubbles rise slowly
+	pm.gravity = Vector3(0, 0.15, 0)
 	pm.spread = 12.0
-	pm.scale_min = 0.2
-	pm.scale_max = 0.55
+	pm.scale_min = 0.14
+	pm.scale_max = 0.38
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	pm.emission_sphere_radius = 0.3
-	# Gentle alpha curve: fade in, hold faint, fade out. Never opaque.
+	pm.emission_sphere_radius = 0.22
 	var alpha_curve := CurveTexture.new()
 	var curve := Curve.new()
 	curve.add_point(Vector2(0.0, 0.0))
-	curve.add_point(Vector2(0.15, 0.6))
-	curve.add_point(Vector2(0.7, 0.5))
+	curve.add_point(Vector2(0.18, 0.32))
+	curve.add_point(Vector2(0.65, 0.26))
 	curve.add_point(Vector2(1.0, 0.0))
 	alpha_curve.curve = curve
 	pm.alpha_curve = alpha_curve
-	_pearling_particles.process_material = pm
-	# Tiny near-clear sphere mesh for the bubbles. Base alpha is the cap
-	# the curve scales against, so keep it well below the aerator's opaque
-	# look.
+	_shared_pearling_material = pm
 	var bubble_mesh := SphereMesh.new()
-	bubble_mesh.radius = 0.028
-	bubble_mesh.height = 0.056
+	bubble_mesh.radius = 0.022
+	bubble_mesh.height = 0.044
 	bubble_mesh.radial_segments = 4
 	bubble_mesh.rings = 2
 	var bubble_mat := StandardMaterial3D.new()
-	bubble_mat.albedo_color = Color(0.92, 0.96, 1.0, 0.35)
+	bubble_mat.albedo_color = Color(0.92, 0.96, 1.0, 0.16)
 	bubble_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	bubble_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bubble_mesh.material = bubble_mat
+	_shared_pearling_mesh = bubble_mesh
+
+
+func _setup_pearling() -> void:
+	# Pearling = O2 micro-bubbles clinging to leaves in bright light.
+	if _pearling_particles != null or not _pearling_eligible:
+		return
+	_ensure_shared_pearling_assets()
+	_pearling_particles = GPUParticles3D.new()
+	_pearling_particles.name = "Pearling"
+	_pearling_particles.emitting = false
+	_pearling_particles.amount = 3
+	_pearling_particles.lifetime = randf_range(2.8, 4.2)
+	_pearling_particles.local_coords = false
+	_pearling_particles.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
+	# Per-plant variation: duplicate assets so opacity/scale differ subtly.
+	var pm: ParticleProcessMaterial = _shared_pearling_material.duplicate()
+	pm.scale_min = randf_range(0.10, 0.18)
+	pm.scale_max = randf_range(0.22, 0.36)
+	_pearling_particles.process_material = pm
+	var bubble_mesh: SphereMesh = _shared_pearling_mesh.duplicate()
+	var bubble_mat: StandardMaterial3D = bubble_mesh.material.duplicate()
+	bubble_mat.albedo_color = Color(
+		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity)
 	bubble_mesh.material = bubble_mat
 	_pearling_particles.draw_pass_1 = bubble_mesh
 	add_child(_pearling_particles)
@@ -582,7 +602,7 @@ func _ensure_foliage_batch() -> VoxelBatch:
 		if _foliage_mat == null:
 			_foliage_mat = ShaderMaterial.new()
 			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
-		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 128)
+		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
 	return _foliage_batch
 
 
@@ -613,7 +633,8 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 		var inst_xform: Transform3D = leaf_xform * mi.transform
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
 		group.append(batch.add(scaled, col))
-		mi.free()  # discard the transient template (was never in the tree)
+		mi.queue_free()
+	batch.flush()
 	return group
 
 
@@ -1099,7 +1120,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	growth_progress += effective_rate * dt
 	if growth_progress >= 1.0:
 		growth_progress = 0.0
-		if _grow_one():
+		if _try_consume_growth_budget() and _grow_one():
 			substrate.consume_at(_world_pos, nutrient_demand)
 			_notify_growth_audio()
 			if emergent_growth and _at_surface_cap():
@@ -1342,7 +1363,16 @@ func _find_sim() -> Node:
 
 # ---- Pearling ----
 
+func _try_consume_growth_budget() -> bool:
+	var sim_driver: Node = _find_sim()
+	if sim_driver != null and sim_driver.has_method("try_consume_plant_growth"):
+		return bool(sim_driver.try_consume_plant_growth())
+	return true
+
+
 func _tick_pearling(_dt: float) -> void:
+	if not _pearling_eligible:
+		return
 	var sim_driver: Node = _find_sim()
 	if sim_driver == null:
 		return
@@ -1356,26 +1386,33 @@ func _tick_pearling(_dt: float) -> void:
 	# bigger, healthier plant under brighter light, and thins as those
 	# inputs drop — real planted-tank pearling fades in/out, it doesn't
 	# pop. Total amount = O2 saturation × light × health × biomass-factor.
-	var pearl_factor: float = clampf((o2 - 0.75) / 0.25, 0.0, 1.0) \
-		* clampf((daylight - 0.4) / 0.6, 0.0, 1.0) \
-		* clampf((health - 0.5) / 0.5, 0.0, 1.0) \
-		* clampf(float(current_height - 2) / 10.0, 0.0, 1.0)
-	var should_pearl: bool = pearl_factor > 0.05
+	var pearl_factor: float = clampf((o2 - 0.78) / 0.22, 0.0, 1.0) \
+		* clampf((daylight - 0.45) / 0.55, 0.0, 1.0) \
+		* clampf((health - 0.55) / 0.45, 0.0, 1.0) \
+		* clampf(float(current_height - 3) / 12.0, 0.0, 1.0)
+	var global_damp: float = 1.0
+	var should_pearl: bool = pearl_factor > 0.10
+	if should_pearl and sim_driver.has_method("try_claim_pearling_slot"):
+		global_damp = float(sim_driver.try_claim_pearling_slot(pearl_factor))
+		should_pearl = global_damp > 0.02
 	if should_pearl:
+		if _pearling_particles == null:
+			_setup_pearling()
+		if _pearling_particles == null:
+			return
 		if not _pearling_active:
 			_pearling_active = true
 			_pearling_particles.emitting = true
-		# Scale emission rate with the gradient so a fully healthy big
-		# plant streams bubbles fast and a marginal one trickles. The
-		# emitter exposes `amount_ratio` in Godot 4 for runtime intensity
-		# without rebuilding the particle system.
-		var amount_ratio: float = clampf(0.25 + pearl_factor * 0.85, 0.25, 1.0)
+		var amount_ratio: float = clampf(
+			(0.12 + pearl_factor * 0.55) * _pearling_strength * global_damp,
+			0.06, 0.62)
 		_pearling_particles.set("amount_ratio", amount_ratio)
 		# Position at the top of the plant, tracking growth.
 		_pearling_particles.position = Vector3(0, _get_stem_top(), 0)
 	elif _pearling_active:
 		_pearling_active = false
-		_pearling_particles.emitting = false
+		if _pearling_particles != null:
+			_pearling_particles.emitting = false
 
 
 # ---- Seeding ----
@@ -1404,7 +1441,8 @@ func _begin_dying() -> void:
 	# Stop pearling.
 	if _pearling_active:
 		_pearling_active = false
-		_pearling_particles.emitting = false
+		if _pearling_particles != null:
+			_pearling_particles.emitting = false
 
 
 func _decay_one_voxel() -> void:

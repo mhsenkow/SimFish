@@ -50,14 +50,12 @@ const TURN_INTERVAL_MIN: float = 6.0
 const TURN_INTERVAL_MAX: float = 14.0
 const PAUSE_CHANCE: float = 0.3            # when turning, sometimes just sit still
 
-# Breeding + lifecycle. Snails are prolific in real tanks; unchecked their
-# voxel footprint smothers the whole substrate. We cap population and give
-# them a finite lifespan so the system stays bounded.
+# Breeding + lifecycle. Snails are prolific; reproduction is gated on
+# energy/hunger and limited by food supply, predators, and finite lifespan.
 const BREEDING_INTERVAL_MIN: float = 120.0
 const BREEDING_INTERVAL_MAX: float = 240.0
 const MATURITY_AGE: float = 60.0          # baby -> adult after a minute
 const LIFESPAN_S: float = 720.0           # 12-minute lifespan; senescence at end
-const POPULATION_CAP: int = 38            # global cap. Above this, no laying.
 
 # Hunger / energy. Snails are grazers: hunger climbs steadily and is only
 # pushed back down by eating detritus, algae, or biofilm/plant tissue. If
@@ -288,16 +286,14 @@ func _process(dt: float) -> void:
 	if _t_until_turn <= 0.0:
 		_choose_new_direction()
 
-	# Breeding: lay an egg sac once the timer expires, BUT only if the global
-	# snail population is below the cap. Otherwise just reset and try again
-	# later. Without this guard, snails carpet the entire tank floor in
-	# minutes - they're nature's r-strategists.
+	# Breeding: lay an egg sac once the timer expires when well-fed. Predators,
+	# starvation, and substrate competition keep the colony in check.
 	#
 	# Predator-rebound: when no snail-hunters (loach / puffer) are in the
 	# tank, snail breeding accelerates — the visible "no predators, snail
 	# boom" dynamic you see in real tanks after a loach dies. We halve the
 	# next breeding interval, doubling the laying rate. When a hunter is
-	# present, intervals are normal and the cap-driven equilibrium holds.
+	# present, intervals are normal and hunger/energy gates keep growth in check.
 	if not is_baby:
 		_t_until_breed -= dt
 		if _t_until_breed <= 0.0:
@@ -305,8 +301,7 @@ func _process(dt: float) -> void:
 			# only lays when it's well-fed (energy high, hunger low). Starving
 			# colonies stop reproducing, so the population busts when food runs
 			# out instead of breeding blindly on a timer.
-			if _count_snails() < POPULATION_CAP \
-					and energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
+			if energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
 				_lay_egg_sac()
 				energy = clampf(energy - 0.2, 0.0, 1.0)
 				hunger = clampf(hunger + 0.15, 0.0, 1.0)

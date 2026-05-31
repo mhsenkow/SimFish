@@ -42,6 +42,7 @@ class Handle extends RefCounted:
 var mmi: MultiMeshInstance3D = null
 var _mm: MultiMesh = null
 var _count: int = 0
+var _visible: int = 0
 var _xforms: Array[Transform3D] = []
 var _colors: PackedColorArray = PackedColorArray()
 
@@ -73,13 +74,21 @@ func add(xform: Transform3D, color: Color) -> Handle:
 	_ensure_capacity(_count)
 	_mm.set_instance_transform(i, xform)
 	_mm.set_instance_color(i, color)
-	_mm.visible_instance_count = _count
 	var h := Handle.new()
 	h.batch = self
 	h.index = i
 	h.local_pos = xform.origin
 	h.base_color = color
 	return h
+
+
+# Commit pending instance writes in one GPU upload (avoids Metal fence stalls
+# when hundreds of plants bake leaves in the same frame).
+func flush() -> void:
+	if _count == _visible:
+		return
+	_visible = _count
+	_mm.visible_instance_count = _visible
 
 
 func _ensure_capacity(n: int) -> void:
@@ -93,7 +102,8 @@ func _ensure_capacity(n: int) -> void:
 	for i in _count - 1:
 		_mm.set_instance_transform(i, _xforms[i])
 		_mm.set_instance_color(i, _colors[i])
-	_mm.visible_instance_count = _count
+	_visible = mini(_visible, _count)
+	_mm.visible_instance_count = _visible
 
 
 func _apply_color(i: int, c: Color) -> void:
@@ -113,6 +123,7 @@ func _hide(i: int) -> void:
 
 func clear() -> void:
 	_count = 0
+	_visible = 0
 	_xforms.clear()
 	_colors.resize(0)
 	if _mm != null:

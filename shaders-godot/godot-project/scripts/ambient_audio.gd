@@ -8,7 +8,8 @@ extends Node
 
 const SAMPLE_RATE: int = 22050
 const DELAY_LEN: int = 4096
-const MAX_SAMPLES_PER_FRAME: int = 256
+const MAX_SAMPLES_PER_FRAME: int = 512
+const BUBBLE_MAX: int = 5
 const ENV_REFRESH_INTERVAL: float = 0.1
 const INV_SAMPLE_RATE: float = 1.0 / 22050.0
 
@@ -43,6 +44,7 @@ const CHORD_NIGHT: Array[int] = [0, 5, 3, 4, 2, 5, 0, 3]
 var _stream_player: AudioStreamPlayer = null
 var _playback: AudioStreamGeneratorPlayback = null
 var _pending: Array = []
+var _bubble_bursts: Array = []
 
 var _bubble_t: float = 0.0
 var _accent_t: float = 0.0
@@ -133,7 +135,7 @@ var _kick_pitch_decay: float = 28.0 * INV_SAMPLE_RATE
 func _ready() -> void:
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = SAMPLE_RATE
-	gen.buffer_length = 0.12
+	gen.buffer_length = 0.1
 	_stream_player = AudioStreamPlayer.new()
 	_stream_player.stream = gen
 	_stream_player.volume_db = -12.0
@@ -225,6 +227,7 @@ func _plink_bed_active() -> bool:
 
 func silence_immediately() -> void:
 	_pending.clear()
+	_bubble_bursts.clear()
 	_kick_env = 0.0
 	_sidechain = 1.0
 	if _stream_player != null:
@@ -598,9 +601,24 @@ func play_plant_sfx(intensity: float = 0.4) -> void:
 
 
 func play_bubble_sfx(intensity: float = 0.35) -> void:
-	var base: float = lerpf(880.0, 1600.0, intensity + float(_smooth.get("aeration", 0.0)) * 0.15)
-	var detune: float = lerpf(0.97, 1.03, float(_smooth.get("flow", 0.0)) * 0.5 + 0.5)
-	play_note(base * detune, 0.016 + intensity * 0.012, 0.09, 1.0, 0.2, 5.5, 0.008, false)
+	if not _environment_enabled():
+		return
+	if _bubble_bursts.size() >= BUBBLE_MAX:
+		return
+	var aer: float = float(_smooth.get("aeration", 0.0))
+	var flow: float = float(_smooth.get("flow", 0.0))
+	# Soft noise chirp — not a scale-tone ping that fights the trance bed.
+	var start_hz: float = lerpf(520.0, 980.0, intensity + aer * 0.08)
+	var amp: float = lerpf(0.006, 0.014, intensity)
+	if _trance_bed_active():
+		amp *= 0.42
+	_bubble_bursts.append({
+		"phase": _seed_mix(int(_bubble_bursts.size() + 7)),
+		"pitch_hz": start_hz,
+		"env": 1.0,
+		"life": lerpf(0.035, 0.065, intensity + flow * 0.1),
+		"amp": amp,
+	})
 
 
 func play_flow_sfx() -> void:
@@ -742,6 +760,32 @@ func _dc_block(sample: float) -> float:
 	return out
 
 
+func _mix_bubble_bursts() -> float:
+	var out: float = 0.0
+	var n: int = _bubble_bursts.size()
+	for i in range(n - 1, -1, -1):
+		var b: Dictionary = _bubble_bursts[i]
+		var life: float = float(b["life"])
+		if life <= INV_SAMPLE_RATE:
+			_bubble_bursts.remove_at(i)
+			continue
+		var env: float = float(b["env"])
+		var pitch_hz: float = float(b["pitch_hz"])
+		var phase: float = float(b["phase"])
+		var amp: float = float(b["amp"])
+		# Downward chirp + airy noise reads as a bubble, not a synth note.
+		pitch_hz = maxf(180.0, pitch_hz * 0.9994)
+		var chirp: float = sin(phase * TAU) * env * env
+		var airy: float = _noise_sample() * env * 0.28
+		out += (chirp * 0.38 + airy) * amp
+		b["phase"] = fposmod(phase + pitch_hz * INV_SAMPLE_RATE, 1.0)
+		b["pitch_hz"] = pitch_hz
+		b["env"] = env * 0.991
+		b["life"] = life - INV_SAMPLE_RATE
+		_bubble_bursts[i] = b
+	return out
+
+
 func _mix_trance_sample() -> float:
 	var beat_time: float = float(_sample_clock) * _cached_beat_scale
 	var quarter: int = int(beat_time)
@@ -834,8 +878,11 @@ func _process(_dt: float) -> void:
 		if bubble_rate > 0.04:
 			_bubble_t -= sim_dt
 			if _bubble_t <= 0.0:
-				_bubble_t = lerpf(2.8, 0.28, clampf(bubble_rate, 0.0, 1.0))
-				_bubble_t *= lerpf(1.15, 0.85, _tank_vitality)
+				var interval: float = lerpf(2.8, 0.28, clampf(bubble_rate, 0.0, 1.0))
+				interval *= lerpf(1.15, 0.85, _tank_vitality)
+				if _trance_bed_active():
+					interval *= 1.65
+				_bubble_t = interval
 				play_bubble_sfx(clampf(bubble_rate * 0.35 + aeration * 0.2, 0.15, 0.65))
 
 	if _stream_player != null:
@@ -859,10 +906,12 @@ func _process(_dt: float) -> void:
 	var pending_n: int = _pending.size()
 
 	for _f in frames_available:
-		var v: float = 0.0
+		var bed: float = 0.0
 		if trance_on:
-			v += _mix_trance_sample()
+			bed = _mix_trance_sample()
+			bed = _dc_block(bed)
 
+		var plinks: float = 0.0
 		for j in range(pending_n - 1, -1, -1):
 			var note = _pending[j]
 			var dur: float = note[1]
@@ -887,19 +936,22 @@ func _process(_dt: float) -> void:
 				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
 				env = rel * rel * (3.0 - 2.0 * rel)
 
-			v += _soft_wave(phase) * amp * env
+			plinks += _soft_wave(phase) * amp * env
 
 			note[3] = fposmod(phase + freq * INV_SAMPLE_RATE, 1.0)
 			note[1] = dur - INV_SAMPLE_RATE
 			_pending[j] = note
 
-		if delay_mix > 0.0:
-			var delayed: float = _delay_buf[_delay_pos]
-			_delay_buf[_delay_pos] = v + delayed * delay_fb
-			_delay_pos = (_delay_pos + 1) % DELAY_LEN
-			v = v * (1.0 - delay_mix) + delayed * delay_mix
+		var bubbles: float = _mix_bubble_bursts()
+		var v: float = bed + plinks + bubbles
 
-		v = _dc_block(_soft_clip(v))
+		if trance_on and delay_mix > 0.0:
+			var delayed: float = _delay_buf[_delay_pos]
+			_delay_buf[_delay_pos] = bed + delayed * delay_fb
+			_delay_pos = (_delay_pos + 1) % DELAY_LEN
+			v = bed * (1.0 - delay_mix) + delayed * delay_mix + plinks + bubbles
+
+		v = _soft_clip(v)
 		_playback.push_frame(Vector2(v, v))
 		_sample_clock += 1
 

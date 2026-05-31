@@ -724,8 +724,7 @@ func _request_viewport_image(on_ready: Callable) -> void:
 
 
 func _run_viewport_capture(on_ready: Callable) -> void:
-	await get_tree().process_frame
-	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
 	var img: Image = null
 	if sub_viewport != null and is_instance_valid(sub_viewport):
 		var tex: ViewportTexture = sub_viewport.get_texture()
@@ -3105,10 +3104,8 @@ func _save_thumbnail(path: String) -> void:
 func _capture_thumbnail_to_path(path: String) -> void:
 	if sub_viewport == null or not is_instance_valid(sub_viewport):
 		return
-	# Wait for the SubViewport to present before GPU readback (avoids Metal
-	# fence timeouts on macOS when grabbing mid-frame).
-	await get_tree().process_frame
-	await get_tree().process_frame
+	# Wait for the SubViewport to finish presenting before GPU readback.
+	await RenderingServer.frame_post_draw
 	var img: Image = null
 	var tex: ViewportTexture = sub_viewport.get_texture()
 	if tex != null:

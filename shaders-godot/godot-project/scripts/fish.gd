@@ -408,6 +408,7 @@ var _wander_refresh_timer: float = 0.0
 # loaches explore the entire bottom over hours; bettas patrol different
 # corners. Timer counts down, refreshes to a random interval.
 var _home_drift_timer: float = 0.0
+var _home_y_drift_timer: float = randf_range(8.0, 24.0)
 
 # Heading + speed motion model (separates direction from magnitude). Real
 # fish accelerate forward via tail thrust and steer via slow heading changes,
@@ -1377,12 +1378,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				else randf_range(25.0, 40.0)
 			if _aerial_timer < -next_trip:
 				# Begin the gulp trip - target Y just below water surface.
-				var surface_y: float = 0.0
-				if sim != null and sim.get("substrate_top_y") != null:
-					surface_y = float(sim.substrate_top_y) + 5.0
-				else:
-					surface_y = home_y + 4.0
-				_aerial_target_y = surface_y - 0.2
+				_aerial_target_y = _water_surface_y() - 0.2
 				_aerial_timer = randf_range(2.0, 3.5)   # trip duration
 		else:
 			_aerial_timer -= dt
@@ -1445,7 +1441,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# in the hobby. Highest priority after wall avoid since asphyxiation
 	# trumps every other goal.
 	if sim != null and float(sim.dissolved_o2) < SURFACE_GULP_O2:
-		var surface_y: float = world_bounds.position.y + world_bounds.size.y - 0.15
+		var surface_y: float = _water_surface_y() - 0.15
 		var gulp_dir: Vector3 = Vector3(0, surface_y - position.y, 0)
 		# Add a small lateral random walk so the school of gulpers doesn't
 		# converge to one column.
@@ -2002,12 +1998,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				return events
 
 	# Tier 3: SEEK PARTNER. Adult, well-fed, not on cooldown, no current
-	# partner. Cap includes eggs-in-flight (otherwise the 30s incubation
-	# pipeline overflows the cap by a factor of 4-5x).
-	const FISH_POPULATION_CAP: int = 35
-	var current_fish_pop: int = 0
-	if sim != null:
-		current_fish_pop = sim.fish.size() + sim.eggs.size()
+	# partner. No global population cap — density is limited by food,
+	# predation, and territory instead.
 	# Livebearer males don't initiate courtship. Real guppy / platy
 	# females cruise to sheltered cover and the male follows her there;
 	# we approximate that here by letting only the female (sex == 1) of
@@ -2017,8 +2009,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var female_initiator_only: bool = is_livebearer and sex == 0
 	if not female_initiator_only and maturity == MATURITY_ADULT \
 			and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.5 and energy > 0.65 and stress < 0.4 \
-			and current_fish_pop < FISH_POPULATION_CAP:
+			and hunger < 0.5 and energy > 0.65 and stress < 0.4:
 		var candidate: Fish = _find_breeding_partner(neighbors)
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
@@ -2077,7 +2068,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var o2: float = float(sim.dissolved_o2)
 		if o2 < 0.4:
 			var severity: float = clampf((0.4 - o2) / 0.4, 0.0, 1.0)
-			var surface_y: float = float(sim.get("substrate_top_y")) + 5.0
+			var surface_y: float = _water_surface_y()
 			target_y = lerpf(home_y, surface_y, severity)
 			stress = clampf(stress + dt * severity * 0.05, 0.0, 1.0)
 	var dy: float = target_y - position.y
@@ -2220,9 +2211,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			interval = 5.0 + randf() * 6.0  # loaches: frequent zig-zags
 		_wander_refresh_timer = interval
 		var ang: float = randf() * TAU
+		var y_wander: float = 0.15
+		if _tank_is_dome() or _water_column_height() > 6.0:
+			y_wander = 0.42
 		heading_offset = Vector3(
 			sin(ang) * randf_range(0.3, 0.6),
-			randf_range(-0.15, 0.15),
+			randf_range(-y_wander, y_wander),
 			cos(ang) * randf_range(0.3, 0.6),
 		)
 
@@ -2241,12 +2235,31 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			drift_interval = 20.0 + randf() * 15.0  # solo fish: moderate drift
 			drift_radius = 2.5
 		_home_drift_timer = drift_interval
-		# Nudge home within tank bounds. The world_bounds AABB keeps
-		# the drift from pushing home outside the tank.
-		home_x = clampf(home_x + randf_range(-drift_radius, drift_radius),
-			world_bounds.position.x + 1.0, world_bounds.end.x - 1.0)
-		home_z = clampf(home_z + randf_range(-drift_radius, drift_radius),
-			world_bounds.position.z + 1.0, world_bounds.end.z - 1.0)
+		var w := _world_node()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			var new_x: float = home_x + randf_range(-drift_radius, drift_radius)
+			var new_z: float = home_z + randf_range(-drift_radius, drift_radius)
+			var p: Vector3 = w.clamp_xyz_in_tank(Vector3(new_x, home_y, new_z), 0.4)
+			home_x = p.x
+			home_z = p.z
+		else:
+			# Nudge home within tank bounds. The world_bounds AABB keeps
+			# the drift from pushing home outside the tank.
+			home_x = clampf(home_x + randf_range(-drift_radius, drift_radius),
+				world_bounds.position.x + 1.0, world_bounds.end.x - 1.0)
+			home_z = clampf(home_z + randf_range(-drift_radius, drift_radius),
+				world_bounds.position.z + 1.0, world_bounds.end.z - 1.0)
+
+	# Vertical territory drift — dome bowls and tall columns need fish to
+	# roam upward over time, not pin to the spawn layer forever.
+	if _tank_is_dome() or _water_column_height() > 6.5:
+		_home_y_drift_timer -= dt
+		if _home_y_drift_timer <= 0.0:
+			_home_y_drift_timer = 18.0 + randf() * 32.0
+			var top_y: float = _water_surface_y() - 0.35
+			var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.45
+			var target_home_y: float = lerpf(bot_y, top_y, randf())
+			home_y = lerpf(home_y, target_home_y, lerpf(0.22, 0.5, wander_strength))
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
 	# meanderers wander more, hoverers wander less. During startle propagation,
@@ -2979,7 +2992,52 @@ func _all_meshes(node: Node) -> Array:
 	return out
 
 
+	return out
+
+
+func _world_node() -> Node:
+	if sim == null:
+		return null
+	return sim.get_parent()
+
+
+func _tank_is_dome() -> bool:
+	var w := _world_node()
+	return w != null and String(w.get("TANK_SHAPE")) == "sphere"
+
+
+func _water_surface_y() -> float:
+	var w := _world_node()
+	if w != null and w.get("WATER_HEIGHT") != null:
+		return float(w.WATER_HEIGHT)
+	if sim != null and sim.get("substrate_top_y") != null:
+		return float(sim.substrate_top_y) + 5.0
+	return home_y + 4.0
+
+
+func _water_column_height() -> float:
+	var w := _world_node()
+	if w != null and w.get("WATER_HEIGHT") != null and w.get("SUBSTRATE_DEPTH") != null:
+		return maxf(1.0, float(w.WATER_HEIGHT) - float(w.SUBSTRATE_DEPTH))
+	if sim != null and sim.get("substrate_top_y") != null:
+		return maxf(1.0, 5.0)
+	return 5.0
+
+
 func _wall_avoid(b: AABB) -> Vector3:
+	var w := _world_node()
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		var margin: float = 0.42
+		if w.has_method("is_inside_tank_volume") \
+				and not w.is_inside_tank_volume(position.x, position.y, position.z, margin):
+			var c: Vector3 = w.clamp_xyz_in_tank(position, margin)
+			var push: Vector3 = c - position
+			if push.length_squared() > 1e-6:
+				return push.normalized() * clampf(push.length() / margin, 0.45, 1.25)
+		var c_soft: Vector3 = w.clamp_xyz_in_tank(position, margin * 0.5)
+		var soft: Vector3 = c_soft - position
+		if soft.length_squared() > 1e-6:
+			return soft.normalized() * clampf(soft.length() / (margin * 0.5), 0.0, 0.7)
 	var margin := 1.0
 	var v := Vector3.ZERO
 	if position.x < b.position.x + margin:

@@ -4,8 +4,8 @@
 # the golden angle (137.5°) around the central axis. When growth would cross
 # the glass, it reflects off the wall and keeps spiraling inward.
 #
-# Leaves are strictly vertical (no look_at / pitch) and clamped to the live
-# tank footprint so voxels never end up in the void.
+# Leaves are strictly vertical (no look_at / pitch). Placement is validated at
+# grow time via the tank footprint; foliage renders through one MultiMesh batch.
 
 extends Plant
 class_name SpiralPlant
@@ -31,7 +31,6 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	super.init(initial_height, params)
 	rotation = Vector3.ZERO
 	_refresh_horizontal_budget()
-	_clamp_all_leaves_inside()
 
 
 func tick(dt: float, substrate: SubstrateGrid) -> void:
@@ -40,7 +39,6 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	super.tick(dt, substrate)
 	rotation = Vector3.ZERO
 	_refresh_horizontal_budget()
-	_clamp_all_leaves_inside()
 
 
 func _refresh_horizontal_budget() -> void:
@@ -78,21 +76,16 @@ func _grow_one() -> bool:
 	var placement: Dictionary = _fit_placement(
 		outward, local_y, r_start, leaf_reach)
 
-	var leaf_voxels: Array = LeafShapes.build_paddle(leaf_len, ramp, 1.0 - rel, 1, 0.45)
-	var leaf_root := Node3D.new()
-	leaf_root.position = placement["position"]
-	# Vertical columns only — look_at + pitch were pushing voxels through glass.
+	# Bake into the per-plant foliage MultiMesh — one draw call per plant, not
+	# one MeshInstance3D per leaf voxel (unique meshes wedge the Metal driver).
+	var leaf_node := Node3D.new()
+	leaf_node.position = placement["position"]
 	if placement.get("reflected", false):
-		leaf_root.set_meta("wall_reflected", true)
-
-	add_child(leaf_root)
-	for v in leaf_voxels:
-		leaf_root.add_child(v)
-		voxels.append(v)
-
-	_leaf_nodes.append(leaf_root)
-	_leaf_ages.append(0.0)
-	_clamp_leaf_inside(leaf_root)
+		leaf_node.set_meta("wall_reflected", true)
+	var leaf_voxels: Array = LeafShapes.build_paddle(leaf_len, ramp, 1.0 - rel, 1, 0.45)
+	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+	_leaf_ages.append(_t)
+	leaf_node.free()
 
 	current_height += 1
 	return true
@@ -123,8 +116,6 @@ func apply_save_dict(d: Dictionary) -> void:
 
 
 func top_world_y() -> float:
-	if voxels.is_empty():
-		return global_position.y
 	var crown_y: float = float(current_height) * height_step
 	var leaf_extension: float = float(2) * VOXEL_SIZE * 0.85
 	return global_position.y + crown_y + leaf_extension
@@ -220,12 +211,6 @@ func _reflect_placement(ideal_local: Vector3, leaf_reach: float) -> Dictionary:
 	return {"position": local_pos, "reflected": reflected}
 
 
-func _clamp_all_leaves_inside() -> void:
-	for leaf in _leaf_nodes:
-		if leaf != null and is_instance_valid(leaf):
-			_clamp_leaf_inside(leaf as Node3D)
-
-
 func _inside_tank_world(x: float, z: float, margin: float, y: float = NAN) -> bool:
 	var w := _aquarium_world()
 	if w != null:
@@ -236,45 +221,9 @@ func _inside_tank_world(x: float, z: float, margin: float, y: float = NAN) -> bo
 	return _inside_shape(x, z, _tank_inner_bounds(margin))
 
 
-func _clamp_leaf_inside(leaf: Node3D) -> void:
-	var margin: float = tank_wall_margin + VOXEL_FOOTPRINT
-	var w := _aquarium_world()
-	for _i in 32:
-		if _leaf_fully_inside(leaf, margin):
-			return
-		if w != null and w.has_method("clamp_xz_in_tank"):
-			var g: Vector3 = leaf.global_position
-			var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, margin)
-			leaf.global_position = Vector3(xz.x, g.y, xz.y)
-			continue
-		var g_fb: Vector3 = leaf.global_position
-		var stem: Vector3 = global_position
-		var xz_fb := Vector2(g_fb.x - stem.x, g_fb.z - stem.z)
-		if xz_fb.length_squared() < 1e-8:
-			leaf.position = Vector3(0.0, leaf.position.y, 0.0)
-		else:
-			xz_fb = xz_fb.lerp(Vector2.ZERO, 0.28)
-			leaf.global_position = Vector3(stem.x + xz_fb.x, g_fb.y, stem.z + xz_fb.y)
-	# Hard clamp to stem if still escaping.
-	if not _leaf_fully_inside(leaf, margin):
-		leaf.position = Vector3(0.0, leaf.position.y, 0.0)
-
-
 func _leaf_base_inside_world(local_pos: Vector3) -> bool:
 	var w: Vector3 = global_position + local_pos
 	return _inside_tank_world(w.x, w.z, tank_wall_margin + VOXEL_FOOTPRINT, w.y)
-
-
-func _leaf_fully_inside(leaf: Node3D, margin: float) -> bool:
-	if not _inside_tank_world(leaf.global_position.x, leaf.global_position.z, margin,
-			leaf.global_position.y):
-		return false
-	for child in leaf.get_children():
-		if child is MeshInstance3D:
-			var p: Vector3 = child.global_position
-			if not _inside_tank_world(p.x, p.z, margin, p.y):
-				return false
-	return true
 
 
 func _aquarium_world() -> Node:

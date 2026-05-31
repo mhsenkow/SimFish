@@ -74,6 +74,9 @@ var snail_predator_count: int = 0
 # walk of snails_root just for the oxygen step).
 var snail_count: int = 0
 var total_plant_biomass: int = 0
+var plant_growth_budget: int = 0
+var _pearling_slots_used: int = 0
+const PEARLING_MAX_SLOTS: int = 22
 # All live snail nodes, rebuilt once per _tick from the "snails" group. Lets the
 # same-tick overlap pass reuse the list instead of re-walking snails_root and
 # string-comparing each child's script path.
@@ -91,18 +94,30 @@ var _auto_feed_timer: float = 0.0
 var _has_logged_sterile_dissolve: bool = false
 var _eco_engineering_timer: float = 0.8
 var _overlap_resolve_timer: float = 0.0
+# Ecosystem diary — Walstad cycle headlines beyond first-death milestones.
+var _diary_pulse_t: float = 240.0
+var _diary_bloom_phase: int = 0          # 0 calm 1 rising 2 peak 3 crash
+var _diary_o2_stressed: bool = false
+var _diary_milestone_shrimp: int = 0
+var _diary_milestone_fish: int = 0
+var _diary_milestone_gen: int = 0
+var _diary_last_morph_distinct: int = 0
+var _logged_fish_extinct: bool = false
+var _logged_shrimp_extinct: bool = false
+var _logged_snail_extinct: bool = false
+var _logged_plant_extinct: bool = false
 
-# Adaptive resilience seeding.
-# When populations dip too low, spawn mutated descendants from currently
-# successful lineages so the tank keeps evolving instead of flatlining.
-const RESILIENCE_INTERVAL_S: float = 18.0
+# Rare rescue when a lineage is nearly gone — never repopulate from zero.
+const RESILIENCE_INTERVAL_S: float = 24.0
 const RESILIENCE_BANK_REFRESH_S: float = 7.0
-const RESILIENCE_FISH_FLOOR: int = 6
-const RESILIENCE_SHRIMP_FLOOR: int = 5
-const RESILIENCE_SNAIL_FLOOR: int = 4
-const RESILIENCE_PLANT_FLOOR: int = 8
-const RESILIENCE_PLANT_BIOMASS_FLOOR: int = 60
-const RESILIENCE_MAX_SNAIL_EGGS: int = 8
+const RESILIENCE_FISH_FLOOR: int = 2
+const RESILIENCE_SHRIMP_FLOOR: int = 2
+const RESILIENCE_SNAIL_FLOOR: int = 2
+const RESILIENCE_PLANT_FLOOR: int = 4
+const RESILIENCE_PLANT_BIOMASS_FLOOR: int = 40
+const RESILIENCE_MAX_SNAIL_EGGS: int = 4
+const RESILIENCE_RESCUE_CHANCE: float = 0.12
+const RESILIENCE_WIND_SEED_CHANCE: float = 0.05
 var _resilience_timer: float = 4.0
 var _resilience_bank_timer: float = 1.0
 var _resilience_bank: Dictionary = {
@@ -280,6 +295,25 @@ func register_plant(p: Plant) -> void:
 	plants.append(p)
 	if p.has_method("get_plant_genome"):
 		_record_organism_discovery(p.get_plant_genome())
+
+
+func try_consume_plant_growth() -> bool:
+	if plant_growth_budget <= 0:
+		return false
+	plant_growth_budget -= 1
+	return true
+
+
+# Returns 0..1 dampening so dense tanks don't turn into a bubble blizzard.
+# Plants tick in order; later plants get softer pearling once the cap fills.
+func try_claim_pearling_slot(pearl_factor: float) -> float:
+	if pearl_factor < 0.10:
+		return 0.0
+	if _pearling_slots_used >= PEARLING_MAX_SLOTS:
+		return 0.0
+	_pearling_slots_used += 1
+	var fill: float = float(_pearling_slots_used) / float(PEARLING_MAX_SLOTS)
+	return clampf(1.05 - fill * 0.75, 0.22, 1.0) * clampf(pearl_factor * 1.15, 0.0, 1.0)
 
 
 func register_waste(w: WasteParticle) -> void:
@@ -601,7 +635,9 @@ func _tick(dt: float) -> void:
 	if substrate != null:
 		substrate.tick(dt)
 
-	# 3. Plants.
+	# 3. Plants — cap GPU-heavy growth steps per tick (Metal fence safety).
+	plant_growth_budget = clampi(28 + plants.size() / 12, 28, 96)
+	_pearling_slots_used = 0
 	for p in plants:
 		p.tick(dt, substrate)
 
@@ -714,6 +750,7 @@ func _tick(dt: float) -> void:
 
 	_run_resilience_seed(dt)
 	_run_evolution_burst(dt)
+	_run_ecosystem_diary(dt)
 
 	# 6a. Auto-Respawn Fauna if completely empty
 	var cfg = _cfg()
@@ -793,9 +830,13 @@ func _tick(dt: float) -> void:
 	bloom_intensity = lerpf(bloom_intensity, bloom_pressure, clampf(dt * 0.25, 0.0, 1.0))
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
-	# Cap rises with bloom intensity — a fully blooming tank can carpet up
-	# to ~110 clusters; a balanced one tops out around 50.
-	var bloom_cap: int = int(lerpf(50.0, 110.0, bloom_intensity))
+	var w_shade: Node = get_parent()
+	# Soft crowding: dense algae patches spawn less often instead of hitting
+	# a hard population ceiling.
+	var algae_capacity: float = 80.0
+	if w_shade != null and w_shade.has_method("algae_carrying_capacity"):
+		algae_capacity = float(w_shade.algae_carrying_capacity())
+	var algae_crowding: float = clampf(float(algae.size()) / algae_capacity, 0.0, 1.0)
 	# Algae floor: always keep at least 3 clusters drifting so the cory /
 	# algae_grazer food chain has something to graze even in a "clean"
 	# tank. Without this baseline, the moment algae crashes the grazers
@@ -809,11 +850,10 @@ func _tick(dt: float) -> void:
 	# Surface floating plants shade the water column and soak up the same
 	# nutrients algae want, so a duckweed mat strongly suppresses algae blooms
 	# (the real Walstad "float plants to beat algae" trick).
-	var w_shade: Node = get_parent()
 	if w_shade != null and w_shade.has_method("floater_coverage"):
 		spawn_chance *= (1.0 - float(w_shade.floater_coverage()) * 0.7)
-	if (below_floor or randf() < spawn_chance) and algae.size() < bloom_cap \
-			and algae_root != null:
+	spawn_chance *= (1.0 - algae_crowding * 0.88)
+	if (below_floor or randf() < spawn_chance) and algae_root != null:
 		var a := Algae.new()
 		algae_root.add_child(a)
 		# Spawn position uses the world's tank-aware sampler so algae stay
@@ -1706,26 +1746,31 @@ func _run_resilience_seed(dt: float) -> void:
 	var plant_biomass: int = total_plant_biomass
 
 	var spawned: bool = false
-	if fish_live > 0 and fish_live < RESILIENCE_FISH_FLOOR and eggs.size() <= 2:
+	# Only rescue lineages that still have survivors — no respawn from zero.
+	if fish_live > 0 and fish_live <= RESILIENCE_FISH_FLOOR \
+			and eggs.size() <= 1 and randf() < RESILIENCE_RESCUE_CHANCE:
 		spawned = _spawn_resilience_genome(_make_resilience_fish_genome(), "fish")
-	elif fish_live == 0 and eggs.is_empty():
-		spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("fish", {}), "fish"), "fish")
 
 	if not spawned:
-		if shrimp_live > 0 and shrimp_live < RESILIENCE_SHRIMP_FLOOR:
+		if shrimp_live > 0 and shrimp_live <= RESILIENCE_SHRIMP_FLOOR \
+				and randf() < RESILIENCE_RESCUE_CHANCE:
 			spawned = _spawn_resilience_genome(_make_resilience_shrimp_genome(), "shrimp")
-		elif shrimp_live == 0:
-			spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("shrimp", {}), "shrimp"), "shrimp")
 
 	if not spawned:
-		if snails_live > 0 and snails_live < RESILIENCE_SNAIL_FLOOR and snail_eggs < RESILIENCE_MAX_SNAIL_EGGS:
+		if snails_live > 0 and snails_live <= RESILIENCE_SNAIL_FLOOR \
+				and snail_eggs < RESILIENCE_MAX_SNAIL_EGGS \
+				and randf() < RESILIENCE_RESCUE_CHANCE:
 			spawned = _spawn_resilience_genome(_make_resilience_snail_genome(), "snail")
-		elif snails_live == 0 and snail_eggs == 0:
-			spawned = _spawn_resilience_genome(_mutate_bank_genome(_resilience_bank.get("snail", {}), "snail"), "snail")
 
-	if not spawned and plant_live < RESILIENCE_PLANT_FLOOR \
-			and plant_biomass < RESILIENCE_PLANT_BIOMASS_FLOOR:
-		spawned = _spawn_resilience_plant(_make_resilience_plant_seed())
+	if not spawned:
+		if plant_live == 0 and randf() < RESILIENCE_WIND_SEED_CHANCE:
+			spawned = _spawn_resilience_plant(_make_resilience_plant_seed())
+			if spawned:
+				log_story_event("Wind-blown spore — a lone plant colonizes bare substrate.")
+		elif plant_live > 0 and plant_live < RESILIENCE_PLANT_FLOOR \
+				and plant_biomass < RESILIENCE_PLANT_BIOMASS_FLOOR \
+				and randf() < RESILIENCE_RESCUE_CHANCE * 1.5:
+			spawned = _spawn_resilience_plant(_make_resilience_plant_seed())
 
 	if spawned and fish_live < RESILIENCE_FISH_FLOOR:
 		var w: Node = get_parent()
@@ -1750,8 +1795,6 @@ func _run_evolution_burst(dt: float) -> void:
 		return
 	# Keep cadence dynamic: stronger algae bloom => faster community turnover.
 	_evo_burst_timer = EVO_BURST_INTERVAL_S * (0.70 if bloom_intensity > 0.55 else 1.0)
-	if plants.size() >= 330:
-		return
 	var seed: Dictionary = _make_resilience_plant_seed()
 	if seed.is_empty():
 		return
@@ -1773,8 +1816,6 @@ func _run_evolution_burst(dt: float) -> void:
 	var base_cfg: Dictionary = seed.get("seed_config", {}).duplicate(true)
 	var cluster_n: int = randi_range(EVO_BURST_CLUSTER_MIN, EVO_BURST_CLUSTER_MAX)
 	for i in cluster_n:
-		if plants.size() >= 350:
-			break
 		var child_ramp: Array = base_ramp.duplicate(true)
 		for j in child_ramp.size():
 			child_ramp[j] = _mutate_color(child_ramp[j], 0.10 + bloom_intensity * 0.06)
@@ -1791,6 +1832,140 @@ func _run_evolution_burst(dt: float) -> void:
 		var rad: float = randf_range(0.18, 1.10)
 		var p := Vector3(center.x + cos(ang) * rad, substrate_top_y, center.y + sin(ang) * rad)
 		w.spawn_seedling(p, child_ramp, int(seed.get("generation", 1)) + 1, child_cfg)
+
+
+func _run_ecosystem_diary(dt: float) -> void:
+	# Headline the Walstad cycles — bloom, crash, booms, busts, and balance.
+	_diary_pulse_t = maxf(0.0, _diary_pulse_t - dt)
+	var fish_n: int = fish.size()
+	var shrimp_n: int = shrimp.size()
+	var snail_n: int = snail_count
+	var algae_n: int = algae.size()
+	var plant_n: int = plants.size()
+	var biomass: int = total_plant_biomass
+	var n_total: float = substrate.total_above_baseline() if substrate != null else 0.0
+	var o2: float = dissolved_o2
+	var bloom: float = bloom_intensity
+	var morph_d: int = 0
+	var morph_seen: Dictionary = {}
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		var ml: String = f.morph_label()
+		if ml != f.species and not morph_seen.has(ml):
+			morph_seen[ml] = true
+			morph_d += 1
+
+	# --- Extinction headlines (true zeros — no resilience from nothing) ---
+	if fish_n == 0 and eggs.is_empty():
+		if not _logged_fish_extinct:
+			_logged_fish_extinct = true
+			log_story_event("Fish extirpated — the tank runs without predators.")
+	elif fish_n > 4:
+		_logged_fish_extinct = false
+	if shrimp_n == 0:
+		if not _logged_shrimp_extinct:
+			_logged_shrimp_extinct = true
+			log_story_event("Shrimp colony collapsed — detritus loop thinning.")
+	elif shrimp_n > 8:
+		_logged_shrimp_extinct = false
+	if snail_n == 0:
+		if not _logged_snail_extinct:
+			_logged_snail_extinct = true
+			log_story_event("Snail grazers gone — algae may surge unchecked.")
+	elif snail_n > 6:
+		_logged_snail_extinct = false
+	if plant_n == 0 and biomass == 0:
+		if not _logged_plant_extinct:
+			_logged_plant_extinct = true
+			log_story_event("Plant cover lost — bare Walstad substrate cycling alone.")
+	elif plant_n > 12:
+		_logged_plant_extinct = false
+
+	# --- Bloom phase transitions ---
+	var phase: int = 0
+	if bloom >= 0.52:
+		phase = 2
+	elif bloom >= 0.22:
+		phase = 1
+	elif _diary_bloom_phase >= 2 and bloom < 0.14:
+		phase = 3
+	if phase != _diary_bloom_phase:
+		match phase:
+			1:
+				if _diary_bloom_phase == 0:
+					log_story_event("Nutrients climbing — algae bloom beginning (N %.1f, plants %d)." % [n_total, plant_n])
+			2:
+				log_story_event("Green-water phase — bloom peak (algae %d, intensity %.0f%%)." % [algae_n, bloom * 100.0])
+			3:
+				log_story_event("Plants outcompeting the bloom — green water clearing (biomass %d)." % biomass)
+		if phase != 3:
+			_diary_bloom_phase = phase
+		else:
+			_diary_bloom_phase = 0
+
+	# --- O₂ stress / recovery ---
+	if o2 < 0.38 and not _diary_o2_stressed:
+		_diary_o2_stressed = true
+		log_story_event("Dissolved O₂ dipping — surface gas exchange struggling (%.0f%%)." % (o2 * 100.0))
+	elif o2 > 0.62 and _diary_o2_stressed:
+		_diary_o2_stressed = false
+		log_story_event("O₂ recovering — photosynthesis catching up with respiration.")
+
+	# --- Population milestones (log once per threshold crossed) ---
+	for threshold in [25, 50, 100, 200, 400]:
+		if shrimp_n >= threshold and _diary_milestone_shrimp < threshold:
+			_diary_milestone_shrimp = threshold
+			log_story_event("Shrimp colony swelling — %d adults and fry in the water column." % shrimp_n)
+	for threshold in [8, 15, 30, 60]:
+		if fish_n >= threshold and _diary_milestone_fish < threshold:
+			_diary_milestone_fish = threshold
+			log_story_event("Fish population at %d — territory and predation shaping the web." % fish_n)
+
+	# --- Generation depth ---
+	var max_gen: int = 0
+	for f in fish:
+		if is_instance_valid(f):
+			max_gen = maxi(max_gen, int(f.get("generation")))
+	for s in shrimp:
+		if is_instance_valid(s):
+			max_gen = maxi(max_gen, int(s.get("generation")))
+	for threshold in [10, 25, 50, 100, 200]:
+		if max_gen >= threshold and _diary_milestone_gen < threshold:
+			_diary_milestone_gen = threshold
+			log_story_event("Lineages deepening — generation %d reached in the tank." % max_gen)
+
+	# --- New morphs discovered ---
+	if morph_d > _diary_last_morph_distinct and _diary_last_morph_distinct > 0:
+		log_story_event("New morphs drifting in the gene pool (+%d distinct forms)." % (morph_d - _diary_last_morph_distinct))
+	_diary_last_morph_distinct = morph_d
+
+	# --- Periodic Walstad pulse (every ~4 sim-minutes) ---
+	if _diary_pulse_t > 0.0:
+		return
+	_diary_pulse_t = randf_range(210.0, 300.0)
+	var pulse: String = _compose_walstad_pulse(
+		fish_n, shrimp_n, snail_n, plant_n, algae_n, biomass, n_total, o2, bloom)
+	log_story_event(pulse)
+
+
+func _compose_walstad_pulse(fish_n: int, shrimp_n: int, snail_n: int, plant_n: int,
+		algae_n: int, biomass: int, n_total: float, o2: float, bloom: float) -> String:
+	# One scannable sentence capturing the tank's current ecological character.
+	if bloom > 0.45 and plant_n < 40:
+		return "Walstad pulse: cycling tank — bloom %.0f%%, sparse planting, N %.1f." % [bloom * 100.0, n_total]
+	if biomass > 1200 and bloom < 0.2:
+		return "Walstad pulse: mature jungle — biomass %d, %d plants, O₂ %.0f%%." % [biomass, plant_n, o2 * 100.0]
+	if shrimp_n > fish_n * 3 and fish_n < 12:
+		return "Walstad pulse: invertebrate-dominated — %d shrimp, %d fish, snails %d." % [shrimp_n, fish_n, snail_n]
+	if fish_n > 20 and shrimp_n < fish_n:
+		return "Walstad pulse: predator-forward — %d fish hunting %d shrimp." % [fish_n, shrimp_n]
+	if algae_n < 5 and snail_n > 20:
+		return "Walstad pulse: grazers keeping algae thin — snails %d, algae %d." % [snail_n, algae_n]
+	if n_total > 6.0 and bloom > 0.3:
+		return "Walstad pulse: nutrient-rich water — N %.1f, algae %d, plants %d." % [n_total, algae_n, plant_n]
+	return "Walstad pulse: %d fish, %d shrimp, %d plants, biomass %d, bloom %.0f%%." % [
+		fish_n, shrimp_n, plant_n, biomass, bloom * 100.0]
 
 
 func _emit_stats() -> void:

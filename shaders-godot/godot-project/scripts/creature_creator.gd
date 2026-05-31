@@ -24,7 +24,7 @@ const SPHERE_RADIUS: float = 1.55
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
 
-enum Kind { FISH, SHRIMP, SNAIL, PLANT, FLOATING }
+enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING }
 
 const SWIM_PATTERNS: Array = [
 	["School", "school"], ["Shoal", "shoal"], ["Dart", "dart"],
@@ -49,6 +49,14 @@ const SHELL_SHAPES: Array = [
 const LEAF_FORMS: Array = [
 	["Ribbon", "ribbon"], ["Paddle", "paddle"], ["Lance", "lance"],
 	["Needle", "needle"], ["Column", "column"],
+]
+const CORAL_FORMS: Array = [
+	["Dome / boulder", "dome"], ["Branching staghorn", "branching"],
+	["Soft feathery", "feathery"], ["Table plate", "plate"],
+	["Brain folds", "brain"], ["Staghorn fern", "staghorn_fern"],
+	["Anemone", "anemone"], ["Sponge", "sponge"],
+	["Fresh sponge", "sponge_fresh"], ["Giant clam", "clam"],
+	["Fresh hydra", "hydra_fresh"],
 ]
 const FLOAT_MORPHS: Array = [
 	["Duckweed", "duckweed"], ["Frogbit", "frogbit"],
@@ -118,6 +126,7 @@ func open_to_kind(kind_str: String) -> void:
 		"shrimp": k = Kind.SHRIMP
 		"snail": k = Kind.SNAIL
 		"plant": k = Kind.PLANT
+		"coral": k = Kind.CORAL
 		_: k = Kind.FISH
 	if not visible:
 		open()
@@ -173,6 +182,7 @@ func _build_ui() -> void:
 	_add_tab(tabs, Kind.SHRIMP, "🦐 Shrimp")
 	_add_tab(tabs, Kind.SNAIL, "🐌 Snail")
 	_add_tab(tabs, Kind.PLANT, "🌿 Plant")
+	_add_tab(tabs, Kind.CORAL, "🪸 Coral")
 	_add_tab(tabs, Kind.FLOATING, "🪷 Floating")
 
 	outer.add_child(PanelTheme.make_rule())
@@ -272,6 +282,9 @@ func _select_kind(kind: int, force: bool = false) -> void:
 		Kind.PLANT:
 			_cam_distance = 4.3
 			_cam_target_y = 0.55
+		Kind.CORAL:
+			_cam_distance = 4.0
+			_cam_target_y = 0.45
 		Kind.FLOATING:
 			_cam_distance = 2.4
 			_cam_target_y = 0.0
@@ -325,6 +338,16 @@ func _default_genome_for(kind: int) -> Dictionary:
 				"_ramp_base": Color8(35, 120, 55),
 				"_ramp_tip": Color8(155, 220, 95),
 			}
+		Kind.CORAL:
+			return {
+				"max_height": 14.0,
+				"growth_rate": 0.20,
+				"sway_amplitude": 0.08,
+				"coral_form": "dome",
+				"_ramp_base": Color8(175, 65, 55),
+				"_ramp_tip": Color8(255, 225, 175),
+				"_tip_color": Color8(255, 245, 210),
+			}
 		Kind.FLOATING:
 			return {
 				"morph": "frogbit",
@@ -374,6 +397,7 @@ func _rebuild_controls() -> void:
 		Kind.SHRIMP:  _build_shrimp_controls()
 		Kind.SNAIL:   _build_snail_controls()
 		Kind.PLANT:   _build_plant_controls()
+		Kind.CORAL:   _build_coral_controls()
 		Kind.FLOATING: _build_floating_controls()
 
 
@@ -447,6 +471,19 @@ func _build_plant_controls() -> void:
 	_add_slider("Roots", "max_roots", 2.0, 12.0, 1.0, "%.0f")
 	_controls_root.add_child(PanelTheme.make_section("Form"))
 	_add_dropdown("Leaf form", "leaf_form", LEAF_FORMS)
+
+
+func _build_coral_controls() -> void:
+	_controls_root.add_child(PanelTheme.make_section("Polyp color"))
+	_add_color("Base", "_ramp_base")
+	_add_color("Tip ramp", "_ramp_tip")
+	_add_color("Growth tip", "_tip_color")
+	_controls_root.add_child(PanelTheme.make_section("Growth"))
+	_add_slider("Max height", "max_height", 4.0, 28.0, 1.0, "%.0f")
+	_add_slider("Growth rate", "growth_rate", 0.06, 0.45, 0.01)
+	_add_slider("Sway", "sway_amplitude", 0.0, 0.45, 0.01)
+	_controls_root.add_child(PanelTheme.make_section("Form"))
+	_add_dropdown("Coral form", "coral_form", CORAL_FORMS)
 
 
 func _build_floating_controls() -> void:
@@ -529,6 +566,7 @@ func _otype_string() -> String:
 		Kind.SHRIMP: return "shrimp"
 		Kind.SNAIL:  return "snail"
 		Kind.PLANT:  return "plant"
+		Kind.CORAL:  return "coral"
 		Kind.FLOATING: return "plant"
 		_:           return "fish"
 
@@ -555,6 +593,14 @@ func _current_genome() -> Dictionary:
 			g["ramp_override"] = _plant_ramp()
 			g.erase("_ramp_base")
 			g.erase("_ramp_tip")
+		Kind.CORAL:
+			g["species"] = "custom_coral"
+			g["plant_name"] = "Designer Coral"
+			g["ramp_override"] = _plant_ramp()
+			g["tip_color"] = g.get("_tip_color", Color8(255, 245, 210))
+			g.erase("_ramp_base")
+			g.erase("_ramp_tip")
+			g.erase("_tip_color")
 		Kind.FLOATING:
 			g["floating"] = true
 			g["species"] = "floating_" + String(g.get("morph", "duckweed"))
@@ -629,6 +675,14 @@ func _randomize() -> void:
 			_genome["leaf_length"] = float(randi_range(2, 11))
 			_genome["max_roots"] = float(randi_range(3, 11))
 			_genome["leaf_form"] = LEAF_FORMS[randi() % LEAF_FORMS.size()][1]
+		Kind.CORAL:
+			_genome["_ramp_base"] = Color.from_hsv(randf_range(0.0, 0.12), randf_range(0.45, 0.95), randf_range(0.45, 0.85))
+			_genome["_ramp_tip"] = Color.from_hsv(randf_range(0.05, 0.18), randf_range(0.35, 0.85), randf_range(0.75, 1.0))
+			_genome["_tip_color"] = Color.from_hsv(randf_range(0.08, 0.2), randf_range(0.2, 0.7), randf_range(0.85, 1.0))
+			_genome["max_height"] = float(randi_range(6, 22))
+			_genome["growth_rate"] = randf_range(0.1, 0.38)
+			_genome["sway_amplitude"] = randf_range(0.02, 0.35)
+			_genome["coral_form"] = CORAL_FORMS[randi() % CORAL_FORMS.size()][1]
 		Kind.FLOATING:
 			var fh: float = randf_range(0.22, 0.38)
 			_genome["morph"] = FLOAT_MORPHS[randi() % FLOAT_MORPHS.size()][1]
@@ -675,6 +729,7 @@ func _kind_plural(n: int) -> String:
 		Kind.SHRIMP: return "shrimp"
 		Kind.SNAIL:  return "snail" if n == 1 else "snails"
 		Kind.PLANT:  return "plant" if n == 1 else "plants"
+		Kind.CORAL:  return "coral" if n == 1 else "corals"
 		Kind.FLOATING: return "floating plant" if n == 1 else "floating plants"
 		_:           return "fish"
 
@@ -775,6 +830,7 @@ func _reload_preview() -> void:
 		Kind.SHRIMP: _preview_creature = _spawn_preview_shrimp(g)
 		Kind.SNAIL:  _preview_creature = _spawn_preview_snail(g)
 		Kind.PLANT:  _preview_creature = _spawn_preview_plant(g)
+		Kind.CORAL:  _preview_creature = _spawn_preview_coral(g)
 		Kind.FLOATING: _preview_creature = _spawn_preview_floating(g)
 		_:           _preview_creature = _spawn_preview_fish(g)
 	_request_preview_frame()
@@ -831,6 +887,24 @@ func _spawn_preview_plant(g: Dictionary) -> Node3D:
 	})
 	_freeze(p)
 	return p
+
+
+func _spawn_preview_coral(g: Dictionary) -> Node3D:
+	var c := Coral.new()
+	_preview_pivot.add_child(c)
+	c.position = Vector3(0, -0.7, 0)
+	c.coral_form = String(g.get("coral_form", "dome"))
+	c.tip_color = g.get("tip_color", Color8(255, 245, 215))
+	var ramp: Variant = g.get("ramp_override", [])
+	if ramp is Array and (ramp as Array).size() == 6:
+		c.ramp_override = (ramp as Array).duplicate()
+	c.init(mini(5, int(g.get("max_height", 10))), {
+		"max_height": int(g.get("max_height", 12)),
+		"growth_rate": float(g.get("growth_rate", 0.18)),
+		"sway_amplitude": float(g.get("sway_amplitude", 0.08)),
+	})
+	_freeze(c)
+	return c
 
 
 func _spawn_preview_floating(g: Dictionary) -> Node3D:

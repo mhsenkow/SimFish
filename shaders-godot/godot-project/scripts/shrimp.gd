@@ -115,7 +115,6 @@ var substrate_top_y: float = 1.6
 # cannibalism size comparison.
 var growth_factor: float = 1.0
 const MAX_GROWTH: float = 1.5
-const SHRIMP_POPULATION_CAP: int = 28
 
 
 func effective_size() -> float:
@@ -671,11 +670,10 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				return events
 
 	# Tier 4: seek breeding partner. Shrimp are happy to breed even when
-	# moderately hungry as long as they have energy reserves AND the global
-	# population is below cap.
-	var current_pop: int = sim.shrimp.size() if sim != null else 0
+	# moderately hungry as long as they have energy reserves. Crowding is
+	# handled by cannibalism and food competition, not a hard cap.
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.6 and energy > 0.5 and current_pop < SHRIMP_POPULATION_CAP:
+			and hunger < 0.6 and energy > 0.5:
 		var best_mate: Shrimp = null
 		var best_score: float = -INF
 		for n in neighbors:

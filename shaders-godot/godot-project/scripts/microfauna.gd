@@ -48,6 +48,15 @@ var _step_accum: float = 0.0
 static var _piece_material_cache: Dictionary = {}
 
 
+var visibility_scale: float = 1.0
+
+
+func set_swarm_presence(fill: float) -> void:
+	visibility_scale = lerpf(1.0, 1.85, clampf(fill, 0.0, 1.0))
+	if _body_root != null:
+		_body_root.scale = Vector3.ONE * visibility_scale
+
+
 func _ready() -> void:
 	_bob_phase = randf() * TAU
 	_next_jitter_t = randf_range(REJITTER_INTERVAL_MIN, REJITTER_INTERVAL_MAX)
@@ -66,6 +75,8 @@ func _ready() -> void:
 		glow_col = Color8(176, 206, 160)
 	_anim_tick = randi() % APPENDAGE_ANIM_STEP
 	_build_morphology(scale_v, body_col, glow_col)
+	if visibility_scale != 1.0:
+		_body_root.scale = Vector3.ONE * visibility_scale
 
 
 func _seed_drift() -> void:
