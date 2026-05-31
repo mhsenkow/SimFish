@@ -23,6 +23,20 @@ const RULE_FG: Color = Color(0.35, 0.45, 0.6, 0.45)
 const PRIMARY_BG: Color = Color(0.22, 0.58, 0.88, 0.9)
 const PRIMARY_BG_HOVER: Color = Color(0.32, 0.68, 0.96, 0.95)
 const PRIMARY_FG: Color = Color(0.98, 0.99, 1.0)
+const HUD_BG: Color = Color(0.06, 0.07, 0.12, 0.78)
+const HUD_BORDER: Color = Color(0.35, 0.45, 0.6, 0.5)
+const RAIL_ACTIVE_BG: Color = Color(0.28, 0.42, 0.58, 0.85)
+
+
+# ---- HUD layout constants ----------------------------------------------------
+
+const HUD_TOP: float = 52.0
+const HUD_BOTTOM: float = 34.0
+const EDGE_MARGIN: float = 12.0
+const RAIL_WIDTH: float = 56.0
+const RAIL_BUTTON: float = 48.0
+const PANEL_MIN_W: float = 360.0
+const PANEL_MAX_W: float = 520.0
 
 
 # ---- Panel chrome ------------------------------------------------------------
@@ -232,3 +246,95 @@ static func _outlined_stylebox() -> StyleBoxFlat:
 	s.content_margin_top = 6
 	s.content_margin_bottom = 6
 	return s
+
+
+# ---- HUD / rail chrome -------------------------------------------------------
+
+# Top-bar cluster backdrop — matches main.tscn SBF_cluster but sourced here
+# so future tweaks stay in one place.
+static func make_hud_cluster_style() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = HUD_BG
+	s.border_color = HUD_BORDER
+	s.border_width_left = 1
+	s.border_width_top = 1
+	s.border_width_right = 1
+	s.border_width_bottom = 1
+	s.corner_radius_top_left = 10
+	s.corner_radius_top_right = 10
+	s.corner_radius_bottom_left = 10
+	s.corner_radius_bottom_right = 10
+	s.content_margin_left = 8.0
+	s.content_margin_top = 6.0
+	s.content_margin_right = 8.0
+	s.content_margin_bottom = 6.0
+	s.shadow_color = Color(0, 0, 0, 0.25)
+	s.shadow_size = 4
+	s.shadow_offset = Vector2(0, 2)
+	return s
+
+
+# Vertical rail dock — taller, softer shadow so it reads as a sidebar.
+static func make_rail_cluster_style() -> StyleBoxFlat:
+	var s := make_hud_cluster_style()
+	s.content_margin_left = 4.0
+	s.content_margin_right = 4.0
+	s.content_margin_top = 8.0
+	s.content_margin_bottom = 8.0
+	s.shadow_size = 6
+	s.shadow_offset = Vector2(-2, 0)
+	return s
+
+
+static func _rail_button_stylebox(bg: Color, radius: int = 8) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = bg
+	s.corner_radius_top_left = radius
+	s.corner_radius_top_right = radius
+	s.corner_radius_bottom_left = radius
+	s.corner_radius_bottom_right = radius
+	s.content_margin_left = 4
+	s.content_margin_right = 4
+	s.content_margin_top = 4
+	s.content_margin_bottom = 4
+	return s
+
+
+# Style a rail icon button. `active` tints the background when its panel/mode
+# is open so the dock communicates state at a glance.
+static func style_rail_button(btn: Button, active: bool = false) -> void:
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(RAIL_BUTTON, RAIL_BUTTON)
+	btn.add_theme_font_size_override("font_size", 20)
+	btn.add_theme_stylebox_override("normal",
+		_rail_button_stylebox(Color(0, 0, 0, 0)))
+	btn.add_theme_stylebox_override("hover",
+		_rail_button_stylebox(Color(0.18, 0.24, 0.34, 0.55)))
+	btn.add_theme_stylebox_override("pressed",
+		_rail_button_stylebox(Color(0.32, 0.46, 0.62, 0.7)))
+	btn.add_theme_stylebox_override("focus",
+		_rail_button_stylebox(Color(0, 0, 0, 0)))
+	if active:
+		btn.add_theme_stylebox_override("normal",
+			_rail_button_stylebox(RAIL_ACTIVE_BG))
+		btn.modulate = Color(1.0, 1.0, 1.0, 1.0)
+	else:
+		btn.modulate = Color(0.92, 0.94, 0.98, 0.92)
+
+
+static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 32)
+	btn.add_theme_font_size_override("font_size", 14)
+	var normal_bg: Color = RAIL_ACTIVE_BG if active else Color(0, 0, 0, 0)
+	btn.add_theme_stylebox_override("normal",
+		_rail_button_stylebox(normal_bg, 6))
+	btn.add_theme_stylebox_override("hover",
+		_rail_button_stylebox(Color(0.18, 0.24, 0.34, 0.55), 6))
+	btn.add_theme_stylebox_override("pressed",
+		_rail_button_stylebox(Color(0.32, 0.46, 0.62, 0.7), 6))
+	btn.add_theme_stylebox_override("focus",
+		_rail_button_stylebox(Color(0, 0, 0, 0), 6))
+	btn.modulate = Color(1, 1, 1, 1) if active else Color(0.92, 0.94, 0.98, 0.95)

@@ -950,6 +950,9 @@ func _process(dt: float) -> void:
 			position.x = clampf(position.x, b.position.x + 0.18, b.end.x - 0.18)
 			position.z = clampf(position.z, b.position.z + 0.18, b.end.z - 0.18)
 		position.y = maxf(position.y, substrate_top_y + 0.05)
+		if w != null and w.has_method("column_surface_y"):
+			var floor_y: float = w.column_surface_y(position.x, position.z)
+			position.y = maxf(position.y, floor_y + 0.05)
 
 	# Face heading (look_at with body built facing -Z). Skip when nearly
 	# stationary — the brain may flip target_velocity direction frame-to-

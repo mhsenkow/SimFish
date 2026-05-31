@@ -29,6 +29,7 @@ extends Node
 # Top-bar HUD — restructured 2026 into clusters + chip strip. All buttons are
 # unique_name_in_owner so the script paths survive future re-parenting.
 @onready var top_hud: Control = $TopHUD
+@onready var right_rail: Control = %RightRail
 @onready var left_cluster: PanelContainer = %LeftCluster
 @onready var right_cluster: PanelContainer = %RightCluster
 @onready var stats_bar: PanelContainer = %StatsBar
@@ -52,6 +53,7 @@ var _immersive_exit_btn: Button = null
 var _chips: Dictionary = {}
 # Layout breakpoint — last computed, drives _apply_hud_layout decisions.
 var _hud_layout: String = ""
+var _last_rail_sync_hash: int = -1
 # Idle-dim state for the top HUD (mirrors MobileHUD's behavior).
 var _hud_idle_seconds: float = 0.0
 const HUD_IDLE_DIM_SECONDS: float = 6.0
@@ -74,11 +76,6 @@ var _portal_info_panel: PanelContainer = null
 var _portal_name_lbl: Label = null
 var _portal_lineage_lbl: Label = null
 var _portal_stats_lbl: Label = null
-
-# The four tool buttons inside the palette - built procedurally in _ready
-# because we want one button per AQUASCAPE_TOOLS entry without locking
-# in a fixed scene tree.
-var _tool_buttons: Dictionary = {}
 
 # Cached SimDriver ref for time_scale + seed + day_phase queries.
 var _sim: Node = null
@@ -133,38 +130,11 @@ var _follow_target: Node3D = null
 # Cleared the next frame LMB releases.
 var _suppress_drag_until_release: bool = false
 
-# Aquascape mode: when active, sim is paused, mouse cursor projects to the
-# substrate, and clicks place voxels according to the current tool. Tools:
-#   1 = dirt   (raise substrate by stacking a soil voxel)
-#   2 = stone  (gray hardscape)
-#   3 = wood   (driftwood / dark brown)
-#   4 = dig    (remove the topmost voxel under cursor)
-# Tool changes via number keys while in aquascape mode. HUD shows current.
-var _aquascape_mode: bool = false
-var _aquascape_placed: Array[Node3D] = []
-var _aquascape_preview: MeshInstance3D = null
-var _aquascape_saved_time_scale: float = 1.0
+# Aquascape sculpting (terrain, hardscape, trim, unified undo).
+var _aquascape := AquascapeController.new()
+const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
 # Saved sim speed while the guided walkthrough holds the sim paused.
 var _wt_saved_time_scale: float = 1.0
-var _aquascape_tool: String = "dirt"
-const AQUASCAPE_TOOLS: Array[String] = ["dirt", "stone", "wood", "dig"]
-# Drag-existing-driftwood state. While in aquascape mode, an LMB hold that
-# starts on a placed wood log enters drag mode for that log: the entire
-# log Node3D follows the cursor's substrate projection until LMB releases.
-# This is what makes the wood tool feel like aquascaping software instead
-# of stamping single voxels.
-var _wood_drag: Node3D = null
-var _wood_drag_y_offset: float = 0.0
-# Last substrate-projected cursor point during a hardscape-piece drag, used
-# for delta-based movement so picking a big piece doesn't teleport it.
-var _wood_drag_last_hit: Vector3 = Vector3(INF, INF, INF)
-# Ad-hoc cluster of loose procedural hardscape voxels being dragged together.
-var _drag_cluster: Array[Node3D] = []
-# Paint-brush throttle. When LMB is held in aquascape mode (no log under
-# cursor) we drop voxels along the drag path; this prevents stacking
-# dozens of them per second on the same cell.
-var _paint_cooldown: float = 0.0
-const PAINT_INTERVAL: float = 0.08   # seconds between brush samples
 # Screen-space pick radius in SubViewport pixels (what you click on screen).
 const PICK_RADIUS_PX: float = 48.0
 const PORTAL_PICK_RADIUS_PX: float = 72.0
@@ -296,7 +266,7 @@ func _ready() -> void:
 	if menu_button != null:
 		menu_button.pressed.connect(_on_back_to_menu)
 	_add_immersive_toggle_button()
-	_build_aquascape_palette()
+	_aquascape.setup(self, camera, world, aquascape_palette)
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
@@ -309,9 +279,10 @@ func _ready() -> void:
 		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
+	_setup_hud_styling()
 	_build_hud_chips()
-	_apply_hud_layout()
-	get_viewport().size_changed.connect(_apply_hud_layout)
+	_on_viewport_resized()
+	get_viewport().size_changed.connect(_on_viewport_resized)
 
 	# ---- Mobile setup ----
 	if _is_mobile():
@@ -343,6 +314,7 @@ func _toggle_portal() -> void:
 		portal_hint.visible = _portal_target == null
 	if _portal_open:
 		_update_portal_pip()
+	_sync_rail_toggles()
 	print_verbose("[walstad_loom] PiP portal %s" % ("OPEN" if _portal_open else "CLOSED"))
 
 
@@ -415,22 +387,22 @@ func _apply_render_config() -> void:
 
 
 func _process(dt: float) -> void:
-	# Tick the aquascape brush cooldown so drag-painting deposits voxels
-	# at a steady rate regardless of frame timing.
-	_paint_cooldown = maxf(0.0, _paint_cooldown - dt)
+	_aquascape.tick_paint_cooldown(dt)
 
 	# Top-HUD idle-dim. Mirrors MobileHUD: after HUD_IDLE_DIM_SECONDS of no
 	# input, fade the top bar so it stops competing with the scene.
 	# _notify_hud_input() (called from _input + touch handlers) resets this.
 	_hud_idle_seconds += dt
-	if top_hud != null and _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
-		if top_hud.modulate != HUD_DIM_MODULATE:
+	if _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
+		if top_hud != null and top_hud.modulate != HUD_DIM_MODULATE:
 			top_hud.modulate = HUD_DIM_MODULATE
+		if right_rail != null and right_rail.modulate != HUD_DIM_MODULATE:
+			right_rail.modulate = HUD_DIM_MODULATE
 
 	# Periodic autosave. Only ticks the accumulator when we're actually
 	# playing (not aquascape-paused, not manually paused) so the 5-minute
 	# clock measures user-attention not wall-clock.
-	if _sim != null and not _aquascape_mode and float(_sim.time_scale) > 0.0:
+	if _sim != null and not _aquascape.is_active and float(_sim.time_scale) > 0.0:
 		_autosave_accum += dt
 		if _autosave_accum >= AUTOSAVE_INTERVAL_S:
 			_autosave_accum = 0.0
@@ -445,11 +417,9 @@ func _process(dt: float) -> void:
 			# Normal mode: keep the existing auto-orbit toggle. Painting that
 			# was started on touch-down gets cancelled so the menu doesn't
 			# also drop a voxel.
-			if _aquascape_mode:
+			if _aquascape.is_active:
 				_drag_mode = ""
-				_wood_drag = null
-				_drag_cluster.clear()
-				_wood_drag_last_hit = INVALID_HIT
+				_aquascape.end_drag()
 				_haptic(22)
 				_show_radial_menu(_tap_start_pos)
 			else:
@@ -482,6 +452,8 @@ func _process(dt: float) -> void:
 	if _portal_open or _follow_target != null or (_portal_info_panel != null and _portal_info_panel.visible):
 		_update_portal_pip()
 
+	_sync_rail_toggles()
+
 	# WASD pan target along view direction (desktop only — no keyboard on mobile).
 	if not _is_touch_active():
 		var fwd: Vector3 = (target - camera.global_position)
@@ -508,6 +480,17 @@ func _process(dt: float) -> void:
 			if moved:
 				_apply_camera()
 
+	# Timelapse + live state chip (needs dt from _process).
+	if _timelapse_active:
+		_timelapse_accum += dt
+		if _timelapse_accum >= TIMELAPSE_INTERVAL:
+			_timelapse_accum = 0.0
+			var frame_path: String = "%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index]
+			_timelapse_index += 1
+			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
+	_refresh_state_chip()
+
+
 # Extracted mouse-polling logic. Called from _process() only when touch
 # is NOT active (prevents emulated mouse events from fighting touch).
 func _process_mouse_input(dt: float) -> void:
@@ -531,25 +514,22 @@ func _process_mouse_input(dt: float) -> void:
 			_drag_button = MOUSE_BUTTON_MIDDLE
 		elif rmb:
 			_drag_button = MOUSE_BUTTON_RIGHT
-			_drag_mode = "orbit" if _aquascape_mode else "dolly"
+			_drag_mode = "orbit" if _aquascape.is_active else "dolly"
 		else:
 			_drag_button = MOUSE_BUTTON_LEFT
 			if pan_modifier:
 				_drag_mode = "pan"
-			elif _aquascape_mode:
+			elif _aquascape.is_active:
 				if _begin_aquascape_drag(mouse_now):
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
-					_paint_cooldown = 0.0
-					_aquascape_place(mouse_now)
+					_aquascape.place(mouse_now)
 			else:
 				_drag_mode = "orbit"
 	elif not any_btn and _orbiting:
 		_orbiting = false
-		_wood_drag = null
-		_drag_cluster.clear()
-		_wood_drag_last_hit = INVALID_HIT
+		_aquascape.end_drag()
 		_drag_mode = ""
 		_drag_button = 0
 
@@ -570,11 +550,11 @@ func _process_mouse_input(dt: float) -> void:
 						MIN_RADIUS, MAX_RADIUS)
 					_apply_camera()
 				"paint":
-					if _paint_cooldown <= 0.0:
-						_aquascape_place(mouse_now)
-						_paint_cooldown = PAINT_INTERVAL
+					if _aquascape.can_paint():
+						_aquascape.place(mouse_now)
+						_aquascape.mark_painted()
 				"wood_drag":
-					_drag_hardscape_piece(mouse_now)
+					_aquascape.drag_hardscape(mouse_now)
 				_:
 					yaw -= delta.x * SENSITIVITY
 					pitch -= delta.y * SENSITIVITY
@@ -600,6 +580,13 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_2, func(): _on_two())
 		_handle_shortcut(KEY_3, func(): _on_three())
 		_handle_shortcut(KEY_4, func(): _on_four())
+		_handle_shortcut(KEY_5, func(): _on_five())
+		_handle_shortcut(KEY_6, func(): _on_six())
+		_handle_shortcut(KEY_7, func(): _on_seven())
+		_handle_shortcut(KEY_8, func(): _on_eight())
+		if _aquascape.is_active:
+			_handle_shortcut(KEY_BRACKETLEFT, func(): _aquascape.adjust_brush(-1))
+			_handle_shortcut(KEY_BRACKETRIGHT, func(): _aquascape.adjust_brush(1))
 		_handle_shortcut(KEY_F12, _take_photo)
 		_handle_shortcut(KEY_ESCAPE, _clear_follow)
 		_handle_shortcut(KEY_C, _toggle_portal)
@@ -612,23 +599,72 @@ func _process_mouse_input(dt: float) -> void:
 	# Aquascape preview voxel: shown at the substrate projection of the
 	# current mouse/touch position, ONLY when in aquascape mode.
 	var cursor_pos: Vector2 = _touches.values()[0] if _touches.size() > 0 else get_window().get_mouse_position()
-	if _aquascape_mode:
-		_update_aquascape_preview(cursor_pos)
+	if _aquascape.is_active:
+		_aquascape.update_preview(cursor_pos)
 
-	# Timelapse: dump a frame every TIMELAPSE_INTERVAL real seconds.
-	if _timelapse_active:
-		_timelapse_accum += dt
-		if _timelapse_accum >= TIMELAPSE_INTERVAL:
-			_timelapse_accum = 0.0
-			var frame_path: String = "%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index]
-			_timelapse_index += 1
-			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
 
-	# Keep the speed / day-phase chip live without rebuilding all 9 chips every
-	# frame. The full header re-renders on stats_changed (1 Hz); here we only
-	# touch the UI when the state text actually changes (speed nudge, pause,
-	# phase rollover), so idle frames cost two string builds and a compare.
-	_refresh_state_chip()
+func _update_aquascape_preview(mouse_pos: Vector2) -> void:
+	_aquascape.update_preview(mouse_pos)
+
+
+func _project_to_surface(mouse_pos: Vector2) -> Vector3:
+	if camera == null or world == null:
+		return INVALID_HIT
+	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
+	var origin: Vector3 = camera.project_ray_origin(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos)
+	var surface_y: float = float(world.get("WATER_HEIGHT")) if world.get("WATER_HEIGHT") != null else 6.5
+	if dir.y > -0.01:
+		return INVALID_HIT
+	var t: float = (surface_y - origin.y) / dir.y
+	if t < 0.0:
+		return INVALID_HIT
+	var hit: Vector3 = origin + dir * t
+	if world.has_method("is_inside_tank"):
+		if not world.is_inside_tank(hit.x, hit.z, 0.3):
+			return INVALID_HIT
+	return hit
+
+
+const STARTLE_RADIUS_SQ: float = 9.0
+
+
+func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
+	if _sim == null:
+		return
+	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	if hit == INVALID_HIT:
+		return
+	for f in _sim.fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true:
+			continue
+		if f.position.distance_squared_to(hit) > STARTLE_RADIUS_SQ:
+			continue
+		var away: Vector3 = (f.position - hit)
+		if away.length_squared() < 1e-4:
+			away = Vector3(randf_range(-1, 1), 0.1, randf_range(-1, 1))
+		away = away.normalized()
+		f.burst_remaining = 0.5
+		f.heading_offset = away * 1.4
+		f._startle_heading = away
+		f._startle_remaining = 0.4
+
+
+func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
+	if _sim == null:
+		return false
+	var hit: Vector3 = _project_to_surface(mouse_pos)
+	if hit == INVALID_HIT:
+		return false
+	var count: int = randi_range(4, 6)
+	for i in count:
+		var jx: float = randf_range(-0.18, 0.18)
+		var jz: float = randf_range(-0.18, 0.18)
+		var pos: Vector3 = Vector3(hit.x + jx, hit.y - 0.02, hit.z + jz)
+		_sim._spawn_waste(pos, 0.45, 3)
+	return true
 
 
 # ---- Time controls + photo mode ----
@@ -663,33 +699,49 @@ func _set_time_scale(s: float) -> void:
 
 
 func _on_one() -> void:
-	if _aquascape_mode:
-		_aquascape_tool = "dirt"
-		_refresh_tool_buttons()
+	if _aquascape.is_active:
+		_aquascape.set_tool("aquasoil")
 	else:
 		_set_time_scale(1.0)
 
 
 func _on_two() -> void:
-	if _aquascape_mode:
-		_aquascape_tool = "stone"
-		_refresh_tool_buttons()
+	if _aquascape.is_active:
+		_aquascape.set_tool("sand")
 	else:
 		_set_time_scale(4.0)
 
 
 func _on_three() -> void:
-	if _aquascape_mode:
-		_aquascape_tool = "wood"
-		_refresh_tool_buttons()
+	if _aquascape.is_active:
+		_aquascape.set_tool("gravel")
 	else:
 		_set_time_scale(16.0)
 
 
 func _on_four() -> void:
-	if _aquascape_mode:
-		_aquascape_tool = "dig"
-		_refresh_tool_buttons()
+	if _aquascape.is_active:
+		_aquascape.set_tool("peat")
+
+
+func _on_five() -> void:
+	if _aquascape.is_active:
+		_aquascape.set_tool("stone")
+
+
+func _on_six() -> void:
+	if _aquascape.is_active:
+		_aquascape.set_tool("wood")
+
+
+func _on_seven() -> void:
+	if _aquascape.is_active:
+		_aquascape.set_tool("dig")
+
+
+func _on_eight() -> void:
+	if _aquascape.is_active:
+		_aquascape.set_tool("trim")
 
 
 func _take_photo() -> void:
@@ -1090,7 +1142,7 @@ func _assign_creature_target(creature: Node3D) -> void:
 
 
 func _click_targets_creature() -> bool:
-	if _aquascape_mode:
+	if _aquascape.is_active:
 		return false
 	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_SPACE):
 		return false
@@ -1118,32 +1170,36 @@ func _click_targets_creature() -> bool:
 	return true
 
 
-# ---- Aquascape mode ----
-
 func _toggle_aquascape() -> void:
-	_aquascape_mode = not _aquascape_mode
-	if _aquascape_mode:
-		# Pause sim (if available) + clear any follow target.
-		if _sim != null:
-			_aquascape_saved_time_scale = float(_sim.time_scale)
-			_sim.time_scale = 0.0
-		_follow_target = null
-		_ensure_aquascape_preview()
-		if aquascape_palette != null:
-			aquascape_palette.visible = true
-		_refresh_tool_buttons()
-		print_verbose("[walstad_loom] aquascape ON. 1 dirt / 2 stone / 3 wood / 4 dig; drag a piece to move it; BACKSPACE undo; B exit.")
-	else:
-		if _sim != null:
-			_sim.time_scale = _aquascape_saved_time_scale
-		if _aquascape_preview != null:
-			_aquascape_preview.visible = false
-		if aquascape_palette != null:
-			aquascape_palette.visible = false
-		print_verbose("[walstad_loom] aquascape OFF (resumed at %gx)" % _aquascape_saved_time_scale)
-	# Notify mobile HUD to show/hide the undo button.
-	if _mobile_hud != null and _mobile_hud.has_method("set_aquascape_mode"):
-		_mobile_hud.set_aquascape_mode(_aquascape_mode)
+	_aquascape.toggle()
+
+
+func _aquascape_undo() -> void:
+	_aquascape.undo()
+
+
+func _begin_aquascape_drag(pos: Vector2) -> bool:
+	return _aquascape.begin_drag(pos)
+
+
+func _aquascape_place(mouse_pos: Vector2) -> void:
+	_aquascape.place(mouse_pos)
+
+
+func _drag_hardscape_piece(mouse_pos: Vector2) -> void:
+	_aquascape.drag_hardscape(mouse_pos)
+
+
+func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
+	return _aquascape.project_to_substrate(mouse_pos)
+
+
+func _aquascape_to_save_arr() -> Array:
+	return _aquascape.to_save_arr()
+
+
+func _restore_aquascape(arr: Array) -> void:
+	_aquascape.restore_from_save(arr)
 
 
 # ---- Walkthrough hooks (called by walkthrough.gd) ----
@@ -1170,7 +1226,7 @@ func wt_pause_sim(on: bool) -> void:
 
 
 func wt_set_aquascape(on: bool) -> void:
-	if _aquascape_mode != on:
+	if _aquascape.is_active != on:
 		_toggle_aquascape()
 
 
@@ -1202,676 +1258,6 @@ func wt_counts() -> Dictionary:
 		d["snail"] = n
 	return d
 
-
-# Build the floating tool palette shown at top-center while in aquascape
-# mode. Each tool gets a button; the currently-selected tool is
-# highlighted. Buttons forward to the existing number-key handlers so
-# the keyboard + UI paths stay consistent.
-func _build_aquascape_palette() -> void:
-	if aquascape_palette == null:
-		return
-	for c in aquascape_palette.get_children():
-		c.queue_free()
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 6)
-	aquascape_palette.add_child(hb)
-	var header := Label.new()
-	header.text = "AQUASCAPE  →"
-	header.add_theme_color_override("font_color", Color8(255, 220, 80))
-	header.add_theme_font_size_override("font_size", 12)
-	hb.add_child(header)
-	var defs := [
-		{"key": "dirt",  "label": "1·dirt",  "color": Color8(150, 110, 70)},
-		{"key": "stone", "label": "2·stone", "color": Color8(120, 120, 130)},
-		{"key": "wood",  "label": "3·wood",  "color": Color8(95, 65, 35)},
-		{"key": "dig",   "label": "4·dig",   "color": Color8(220, 90, 90)},
-	]
-	for def in defs:
-		var btn := Button.new()
-		btn.text = String(def["label"])
-		btn.add_theme_color_override("font_color", Color(1, 1, 1))
-		btn.add_theme_font_size_override("font_size", 12)
-		var key: String = String(def["key"])
-		btn.pressed.connect(func():
-			_aquascape_tool = key
-			_refresh_tool_buttons())
-		hb.add_child(btn)
-		_tool_buttons[key] = btn
-	# Help hint at the right side.
-	var hint := Label.new()
-	hint.text = "  drag a log to move · BACKSPACE undo · B exit"
-	hint.add_theme_color_override("font_color", Color(0.75, 0.85, 0.95))
-	hint.add_theme_font_size_override("font_size", 10)
-	hb.add_child(hint)
-
-
-# Update which tool button looks selected. Called whenever the tool
-# changes - either by keyboard (1/2/3/4) or by clicking the palette.
-func _refresh_tool_buttons() -> void:
-	for k in _tool_buttons.keys():
-		var btn: Button = _tool_buttons[k]
-		if btn == null:
-			continue
-		if k == _aquascape_tool:
-			btn.modulate = Color(1.4, 1.4, 0.7)
-		else:
-			btn.modulate = Color(0.85, 0.85, 0.85)
-
-
-func _ensure_aquascape_preview() -> void:
-	if _aquascape_preview != null:
-		_aquascape_preview.visible = true
-		return
-	# Build a small wireframe-like preview cube. We attach it to the World
-	# node so its position is in world space.
-	if world == null:
-		return
-	_aquascape_preview = MeshInstance3D.new()
-	_aquascape_preview.name = "AquascapePreview"
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.9, 0.9, 0.9)
-	_aquascape_preview.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1, 1, 0.6, 0.35)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.emission_enabled = true
-	mat.emission = Color(1, 1, 0.4)
-	mat.emission_energy_multiplier = 0.6
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_aquascape_preview.material_override = mat
-	world.add_child(_aquascape_preview)
-
-
-func _update_aquascape_preview(mouse_pos: Vector2) -> void:
-	if _aquascape_preview == null or camera == null or world == null:
-		return
-	var hit: Vector3 = _project_to_substrate(mouse_pos)
-	# If the cursor isn't pointing at a valid substrate cell inside the tank,
-	# hide the preview so the user gets clear feedback that placement won't
-	# happen here.
-	if hit == INVALID_HIT:
-		_aquascape_preview.visible = false
-		return
-	_aquascape_preview.visible = true
-	# Snap to a 0.5-unit grid on X/Z so placement is tidy.
-	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
-	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
-	# Y just above substrate.
-	hit.y = _substrate_top_y() + 0.45
-	_aquascape_preview.global_position = hit
-
-
-const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
-
-
-# Pick the topmost placed wood log under the cursor (or null). Iterates
-# _aquascape_placed, ray-tests against each log's bounding sphere computed
-# from its first child voxel's distance to centroid. Cheap because the
-# list is small (usually < 8 logs).
-func _hardscape_node() -> Node3D:
-	# The Hardscape container holds all editable pieces (procedural driftwood/
-	# rocks + player-placed stones and logs). Falls back to world root if it
-	# wasn't built (shouldn't happen — _build_hardscape always makes it).
-	if world == null:
-		return null
-	var hs: Node = world.get_node_or_null("Hardscape")
-	return (hs as Node3D) if hs != null else world
-
-
-# Pick a draggable player-placed piece under the cursor: wood logs and
-# stones. Dirt is terrain (only diggable). Procedural driftwood/rocks are
-# handled separately by _gather_procedural_cluster (they aren't grouped into
-# single nodes, so fish per-voxel clearance keeps working). Returns null if
-# nothing placed is hit.
-func _pick_hardscape_piece(mouse_pos: Vector2) -> Node3D:
-	if camera == null:
-		return null
-	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
-	var origin: Vector3 = camera.project_ray_origin(sv_pos)
-	var dir: Vector3 = camera.project_ray_normal(sv_pos)
-	var best: Node3D = null
-	var best_t: float = 1e9
-	for v in _aquascape_placed:
-		if not is_instance_valid(v):
-			continue
-		if String(v.get_meta("aquascape_tool", "")) == "dirt":
-			continue
-		var radius: float = 1.6 if String(v.get_meta("aquascape_tool", "")) == "wood" else 0.9
-		var to_c: Vector3 = v.global_position - origin
-		var t: float = to_c.dot(dir)
-		if t < 0.0:
-			continue
-		var closest: Vector3 = origin + dir * t
-		var perp_sq: float = (closest - v.global_position).length_squared()
-		if perp_sq < radius * radius and t < best_t:
-			best_t = t
-			best = v
-	return best
-
-
-# Collect the loose procedural hardscape voxels (driftwood / rocks) within a
-# small XZ radius of a point. These aren't grouped into one node, so we drag
-# them together as an ad-hoc cluster for the duration of one drag.
-func _gather_procedural_cluster(hit: Vector3) -> Array[Node3D]:
-	var out: Array[Node3D] = []
-	var hs: Node3D = _hardscape_node()
-	if hs == null:
-		return out
-	const CLUSTER_R: float = 1.2
-	for child in hs.get_children():
-		if not (child is MeshInstance3D) or not is_instance_valid(child):
-			continue
-		if _aquascape_placed.has(child):
-			continue  # player placement - handled by _pick_hardscape_piece
-		var gp: Vector3 = (child as Node3D).global_position
-		if Vector2(gp.x - hit.x, gp.z - hit.z).length() < CLUSTER_R:
-			out.append(child)
-	return out
-
-
-# Try to start dragging hardscape at the cursor: a placed piece first, then a
-# procedural cluster. Returns true if a drag began.
-func _begin_aquascape_drag(pos: Vector2) -> bool:
-	if _aquascape_tool == "dig":
-		return false
-	var picked: Node3D = _pick_hardscape_piece(pos)
-	if picked != null:
-		_wood_drag = picked
-		_drag_cluster.clear()
-		_wood_drag_y_offset = picked.global_position.y - _substrate_top_y()
-		_wood_drag_last_hit = _project_to_substrate(pos)
-		return true
-	var hit: Vector3 = _project_to_substrate(pos)
-	if hit != INVALID_HIT:
-		var cluster: Array[Node3D] = _gather_procedural_cluster(hit)
-		if not cluster.is_empty():
-			_wood_drag = null
-			_drag_cluster = cluster
-			_wood_drag_last_hit = hit
-			return true
-	return false
-
-
-func _project_to_substrate(mouse_pos: Vector2) -> Vector3:
-	# Project the cursor's ray onto the horizontal plane y = SUBSTRATE_TOP.
-	# Returns INVALID_HIT if the ray doesn't hit the plane in front of the
-	# camera OR if the hit falls outside the tank's footprint. Callers must
-	# check before placing.
-	if camera == null:
-		return INVALID_HIT
-	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
-	var origin: Vector3 = camera.project_ray_origin(sv_pos)
-	var dir: Vector3 = camera.project_ray_normal(sv_pos)
-	var top_y: float = _substrate_top_y()
-	# Ray must be going DOWN for it to hit the substrate plane from above.
-	if dir.y > -0.01:
-		return INVALID_HIT
-	var t: float = (top_y - origin.y) / dir.y
-	if t < 0.0:
-		return INVALID_HIT
-	var hit: Vector3 = origin + dir * t
-	# Reject points outside the tank's footprint - prevents placing dirt
-	# in empty space when the cursor is past the glass wall.
-	if world != null and world.has_method("is_inside_tank"):
-		if not world.is_inside_tank(hit.x, hit.z, 0.3):
-			return INVALID_HIT
-	return hit
-
-
-func _substrate_top_y() -> float:
-	# World keeps SUBSTRATE_DEPTH publicly accessible.
-	return float(world.get("SUBSTRATE_DEPTH")) if world != null else 1.6
-
-
-# Project cursor onto the water surface plane (y = WATER_HEIGHT). Symmetric
-# with _project_to_substrate but hits the *top* of the water. Used by the
-# Ctrl+LMB tap-to-feed gesture so flakes drop at the precise surface point
-# the player tapped, then bob there for 8 sim-seconds before falling
-# (waste_particle.gd handles the bob).
-func _project_to_surface(mouse_pos: Vector2) -> Vector3:
-	if camera == null or world == null:
-		return INVALID_HIT
-	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
-	var origin: Vector3 = camera.project_ray_origin(sv_pos)
-	var dir: Vector3 = camera.project_ray_normal(sv_pos)
-	var surface_y: float = float(world.get("WATER_HEIGHT")) if world.get("WATER_HEIGHT") != null else 6.5
-	if dir.y > -0.01:
-		return INVALID_HIT
-	var t: float = (surface_y - origin.y) / dir.y
-	if t < 0.0:
-		return INVALID_HIT
-	var hit: Vector3 = origin + dir * t
-	if world.has_method("is_inside_tank"):
-		if not world.is_inside_tank(hit.x, hit.z, 0.3):
-			return INVALID_HIT
-	return hit
-
-
-# Tap-glass startle. The player clicked somewhere in the tank but didn't
-# pick a creature and didn't drop food. Project the click into the tank
-# and trigger a brief flee burst on any fish within STARTLE_RADIUS. Real
-# fish do exactly this when something thuds on the glass — the visible
-# "the school just bolted" response sells the interactivity of the tank
-# without needing a separate UI affordance.
-const STARTLE_RADIUS_SQ: float = 9.0  # 3-unit blast radius
-func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
-	if _sim == null:
-		return
-	var hit: Vector3 = _project_to_substrate(mouse_pos)
-	if hit == INVALID_HIT:
-		return
-	for f in _sim.fish:
-		if not is_instance_valid(f):
-			continue
-		if f.get("_dying") == true:
-			continue
-		if f.position.distance_squared_to(hit) > STARTLE_RADIUS_SQ:
-			continue
-		# Inject a flee burst away from the tap point. We poke the
-		# burst_remaining + heading_offset directly because there's no
-		# event channel for "external scare" — keeps the change local
-		# to main.gd without modifying fish.gd's tick signature.
-		var away: Vector3 = (f.position - hit)
-		if away.length_squared() < 1e-4:
-			away = Vector3(randf_range(-1, 1), 0.1, randf_range(-1, 1))
-		away = away.normalized()
-		f.burst_remaining = 0.5
-		f.heading_offset = away * 1.4
-		f._startle_heading = away
-		f._startle_remaining = 0.4
-
-
-# Drop a cluster of 4-6 food pellets at the surface point under the cursor.
-# Returns true if the cluster spawned (used by the caller to suppress orbit
-# drag for that gesture so the camera doesn't yank during feeding).
-# Each pellet bobs on the surface for ~8s before sinking — exactly like
-# real flake food. Fish converge on it via the existing food-pickup tier.
-func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
-	if _sim == null:
-		return false
-	var hit: Vector3 = _project_to_surface(mouse_pos)
-	if hit == INVALID_HIT:
-		return false
-	var count: int = randi_range(4, 6)
-	for i in count:
-		# Small jitter so the cluster reads as a sprinkle, not a stack.
-		var jx: float = randf_range(-0.18, 0.18)
-		var jz: float = randf_range(-0.18, 0.18)
-		var pos: Vector3 = Vector3(hit.x + jx, hit.y - 0.02, hit.z + jz)
-		_sim._spawn_waste(pos, 0.45, 3)  # 3 = KIND_FOOD
-	print_verbose("[walstad_loom] tap-feed: %d flakes at %s" % [count, hit])
-	return true
-
-
-func _aquascape_place(mouse_pos: Vector2) -> void:
-	if world == null:
-		return
-	var hit: Vector3 = _project_to_substrate(mouse_pos)
-	# Refuse to place when the cursor isn't over a valid substrate cell -
-	# this is the fix for "dirt placed in empty space when clicking outside
-	# the tank glass".
-	if hit == INVALID_HIT:
-		print_verbose("[walstad_loom] aquascape: cursor not over tank, skipping placement")
-		return
-	# Snap horizontally to a 0.5-unit grid so placement reads tidy.
-	hit.x = floorf(hit.x / 0.5) * 0.5 + 0.25
-	hit.z = floorf(hit.z / 0.5) * 0.5 + 0.25
-
-	if _aquascape_tool == "dig":
-		_aquascape_dig(hit)
-		return
-
-	# Look up the current top of the column (stack height under cursor) so
-	# we place ON TOP of whatever is already there - this is what makes the
-	# dirt tool feel like sculpting.
-	var top_y: float = _column_top_y(hit.x, hit.z)
-	var size_y: float = 0.5
-	hit.y = top_y + size_y * 0.5
-
-	# Wood is special: spawn a multi-voxel "log" (5-7 voxels in a gentle
-	# curve) parented onto the world's Hardscape container so the fry
-	# hide-at-log behavior can find it. Returns early after spawning the
-	# log so we don't fall into the generic single-voxel path below.
-	if _aquascape_tool == "wood":
-		_aquascape_place_log(Vector3(hit.x, top_y, hit.z))
-		return
-
-	# Pick color + voxel size based on tool.
-	var color: Color
-	var voxel_size: Vector3 = Vector3(0.5, size_y, 0.5)
-	match _aquascape_tool:
-		"dirt":
-			# Substrate voxel - blends with the existing soil. Use the active
-			# ramp's mid tones so it visually merges with the rest of the floor.
-			var ramp: Array = world.get("ACTIVE_SOIL_RAMP")
-			if ramp != null and ramp.size() == 6:
-				color = ramp[3 + randi() % 2]   # one of the lighter soil tones
-			else:
-				color = Color8(95, 70, 45)
-		"stone":
-			var palette: Array[Color] = [
-				Color8(85, 85, 96), Color8(75, 70, 78),
-				Color8(105, 100, 92), Color8(60, 60, 70),
-			]
-			color = palette[randi() % palette.size()]
-			voxel_size = Vector3(0.9, 0.9, 0.9)
-		_:
-			color = Color8(120, 120, 120)
-			voxel_size = Vector3(0.5, 0.5, 0.5)
-
-	# For stones, adjust hit.y so the bigger voxel rests on the column.
-	hit.y = top_y + voxel_size.y * 0.5
-
-	var mi := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = voxel_size
-	mi.mesh = bm
-	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
-	if voxel_mat_script != null:
-		mi.material_override = voxel_mat_script.make(color)
-	else:
-		var sm := StandardMaterial3D.new()
-		sm.albedo_color = color
-		mi.material_override = sm
-	# Parent under Hardscape so the piece is real hardscape: fish/fry hide
-	# behavior, plant-spawn avoidance, and snail retreat all read this
-	# container, and the occupancy grid keeps creatures from clipping it.
-	# add_child first, then global_position (Godot 4 transform ordering).
-	var hs := _hardscape_node()
-	hs.add_child(mi)
-	mi.global_position = hit
-	mi.set_meta("aquascape_tool", _aquascape_tool)
-	_aquascape_placed.append(mi)
-	if world.has_method("_mark_hardscape_occupancy"):
-		world._mark_hardscape_occupancy(hit, voxel_size)
-	print_verbose("[walstad_loom] placed %s at %s (total %d)" % [_aquascape_tool, hit, _aquascape_placed.size()])
-
-
-# Spawn a driftwood "log" as a 5-7 voxel chain in a gentle curve, parented
-# to the world's Hardscape container so fry can hide against it. The log
-# is a Node3D so the entire piece moves as one when the user drags it
-# during aquascape mode.
-func _aquascape_place_log(base: Vector3) -> void:
-	if world == null:
-		return
-	var hardscape := world.get_node_or_null("Hardscape")
-	if hardscape == null:
-		# Fall back to world root if Hardscape wasn't built yet.
-		hardscape = world
-	var log_node := Node3D.new()
-	log_node.name = "AquaLog"
-	hardscape.add_child(log_node)
-	log_node.global_position = base + Vector3(0, 0.35, 0)
-	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
-	# Random orientation: pick an angle in the XZ plane + a curve sign.
-	var theta: float = randf_range(0.0, TAU)
-	var forward: Vector3 = Vector3(cos(theta), 0, sin(theta))
-	var curve_sign: float = 1.0 if randf() < 0.5 else -1.0
-	var dark := Color8(58, 38, 22)
-	var mid := Color8(78, 52, 32)
-	var light := Color8(98, 70, 46)
-	var palette: Array[Color] = [dark, mid, light, mid, dark]
-	var n_segments: int = randi_range(5, 7)
-	for i in n_segments:
-		var t: float = float(i) / float(maxi(1, n_segments - 1))
-		# Curve offset perpendicular to forward.
-		var perp: Vector3 = Vector3(-forward.z, 0, forward.x) * curve_sign
-		var offset: Vector3 = forward * (i - n_segments * 0.5) * 0.6 \
-			+ perp * sin(t * PI) * 0.35
-		# Slight Y arc (logs are not flat).
-		offset.y = sin(t * PI) * 0.2
-		var seg := MeshInstance3D.new()
-		var bm := BoxMesh.new()
-		# Slight size variation so the log doesn't look made of identical bricks.
-		var s: float = 0.7 + randf_range(-0.1, 0.1)
-		bm.size = Vector3(s, s * 0.85, s)
-		seg.mesh = bm
-		var c: Color = palette[i % palette.size()]
-		if voxel_mat_script != null:
-			seg.material_override = voxel_mat_script.make(c)
-		else:
-			var sm := StandardMaterial3D.new()
-			sm.albedo_color = c
-			seg.material_override = sm
-		log_node.add_child(seg)
-		seg.position = offset
-	log_node.set_meta("aquascape_tool", "wood")
-	_aquascape_placed.append(log_node)
-	print_verbose("[walstad_loom] placed driftwood log at %s" % base)
-
-
-func _column_top_y(x: float, z: float, exclude: Node = null) -> float:
-	# Find the topmost Y in this XZ column by scanning every hardscape voxel
-	# (procedural driftwood/rocks + player-placed dirt/stone/wood, which all
-	# live under the Hardscape container). `exclude` skips a node + its
-	# subtree so a piece being dragged doesn't stack on top of itself.
-	# Returns the world-space Y of the top face of the topmost voxel.
-	var top: float = _substrate_top_y()
-	var hs: Node3D = _hardscape_node()
-	if hs != null:
-		top = _scan_column_top(hs, x, z, exclude, top)
-	# Legacy: any placement still parented to the world root (old saves).
-	for v in _aquascape_placed:
-		if not is_instance_valid(v) or v == exclude:
-			continue
-		if v.get_parent() == hs:
-			continue  # already counted by the recursive scan
-		var gp: Vector3 = v.global_position
-		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
-			var size_y: float = 0.5
-			if v is MeshInstance3D:
-				var bm := (v as MeshInstance3D).mesh as BoxMesh
-				if bm != null:
-					size_y = bm.size.y
-			top = maxf(top, gp.y + size_y * 0.5)
-	return top
-
-
-func _scan_column_top(node: Node, x: float, z: float, exclude: Node, top: float) -> float:
-	if node == exclude:
-		return top
-	if node is MeshInstance3D:
-		var mi := node as MeshInstance3D
-		var gp: Vector3 = mi.global_position
-		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
-			var sy: float = 0.5
-			var bm := mi.mesh as BoxMesh
-			if bm != null:
-				sy = bm.size.y
-			top = maxf(top, gp.y + sy * 0.5)
-	for c in node.get_children():
-		top = _scan_column_top(c, x, z, exclude, top)
-	return top
-
-
-# Move the currently-grabbed hardscape piece by the cursor delta (so big
-# procedural pieces don't teleport when picked) and rest it on the terrain
-# column beneath, excluding itself so it doesn't climb its own height.
-func _drag_hardscape_piece(mouse_pos: Vector2) -> void:
-	var has_single: bool = _wood_drag != null and is_instance_valid(_wood_drag)
-	if not has_single and _drag_cluster.is_empty():
-		return
-	var hit: Vector3 = _project_to_substrate(mouse_pos)
-	if hit == INVALID_HIT:
-		return
-	if _wood_drag_last_hit == INVALID_HIT:
-		_wood_drag_last_hit = hit
-	var d: Vector3 = hit - _wood_drag_last_hit
-	_wood_drag_last_hit = hit
-	var dxz: Vector3 = Vector3(d.x, 0.0, d.z)
-	if has_single:
-		# Single placed piece: follow terrain height (excluding itself).
-		var np: Vector3 = _wood_drag.global_position + dxz
-		np.y = _column_top_y(np.x, np.z, _wood_drag) + _wood_drag_y_offset
-		_wood_drag.global_position = np
-	else:
-		# Procedural cluster: translate horizontally as a rigid clump.
-		for v in _drag_cluster:
-			if is_instance_valid(v):
-				v.global_position += dxz
-
-
-func _aquascape_dig(hit: Vector3) -> void:
-	# Chip away the topmost hardscape voxel at this cursor XZ — works on both
-	# player placements AND the procedural driftwood / rocks (they all live
-	# under Hardscape). Grouped pieces lose one voxel per dig.
-	var hs: Node3D = _hardscape_node()
-	if hs == null:
-		return
-	var acc: Dictionary = {"node": null, "y": -INF}
-	_scan_top_voxel(hs, hit.x, hit.z, acc)
-	var best: Node = acc["node"]
-	if best == null:
-		# Fall back to any legacy world-parented placement.
-		var by: float = -INF
-		for v in _aquascape_placed:
-			if not is_instance_valid(v):
-				continue
-			var gp: Vector3 = v.global_position
-			if absf(gp.x - hit.x) < 0.45 and absf(gp.z - hit.z) < 0.45 and gp.y > by:
-				by = gp.y
-				best = v
-	if best == null:
-		return
-	_aquascape_placed.erase(best)
-	best.queue_free()
-	_haptic(12)
-
-
-func _scan_top_voxel(node: Node, x: float, z: float, acc: Dictionary) -> void:
-	if node is MeshInstance3D:
-		var mi := node as MeshInstance3D
-		var gp: Vector3 = mi.global_position
-		if absf(gp.x - x) < 0.45 and absf(gp.z - z) < 0.45:
-			var sy: float = 0.5
-			var bm := mi.mesh as BoxMesh
-			if bm != null:
-				sy = bm.size.y
-			var topy: float = gp.y + sy * 0.5
-			if topy > float(acc["y"]):
-				acc["y"] = topy
-				acc["node"] = mi
-	for c in node.get_children():
-		_scan_top_voxel(c, x, z, acc)
-
-
-# ---- Aquascape save / load ----
-# _aquascape_placed holds two kinds of nodes:
-#   - MeshInstance3D (single voxel, kind "voxel"): dirt or stone
-#   - Node3D container (kind "log"): wood, with N MeshInstance3D children
-# Both have set_meta("aquascape_tool", "dirt"|"stone"|"wood") on the root.
-func _aquascape_to_save_arr() -> Array:
-	var out: Array = []
-	for v in _aquascape_placed:
-		if not is_instance_valid(v):
-			continue
-		var tool: String = String(v.get_meta("aquascape_tool", ""))
-		if v is MeshInstance3D:
-			var mi: MeshInstance3D = v
-			var bm: BoxMesh = mi.mesh as BoxMesh
-			var color: Color = Color.WHITE
-			if mi.material_override is BaseMaterial3D:
-				color = (mi.material_override as BaseMaterial3D).albedo_color
-			out.append({
-				"kind": "voxel",
-				"tool": tool,
-				"pos": SaveHelpers.vec3_to_array(mi.global_position),
-				"size": SaveHelpers.vec3_to_array(bm.size if bm != null else Vector3.ONE),
-				"color": SaveHelpers.color_to_array(color),
-			})
-		else:
-			# Log: walk children to capture each segment.
-			var segs: Array = []
-			for child in v.get_children():
-				if not (child is MeshInstance3D):
-					continue
-				var seg: MeshInstance3D = child
-				var seg_bm: BoxMesh = seg.mesh as BoxMesh
-				var seg_color: Color = Color.WHITE
-				if seg.material_override is BaseMaterial3D:
-					seg_color = (seg.material_override as BaseMaterial3D).albedo_color
-				segs.append({
-					"offset": SaveHelpers.vec3_to_array(seg.position),
-					"size": SaveHelpers.vec3_to_array(seg_bm.size if seg_bm != null else Vector3.ONE),
-					"color": SaveHelpers.color_to_array(seg_color),
-				})
-			out.append({
-				"kind": "log",
-				"tool": tool,
-				"pos": SaveHelpers.vec3_to_array(v.global_position),
-				"segments": segs,
-			})
-	return out
-
-
-# Restore aquascape from a previously-saved array. Builds nodes with the
-# exact saved positions/colors/sizes — no procedural jitter.
-func _restore_aquascape(arr: Array) -> void:
-	if world == null:
-		return
-	var voxel_mat_script := load("res://scripts/voxel_mat.gd")
-	var hardscape := world.get_node_or_null("Hardscape")
-	if hardscape == null:
-		hardscape = world
-	for entry in arr:
-		if not (entry is Dictionary):
-			continue
-		var kind: String = String(entry.get("kind", ""))
-		var tool: String = String(entry.get("tool", ""))
-		var pos: Vector3 = SaveHelpers.array_to_vec3(entry.get("pos", []), Vector3.ZERO)
-		if kind == "voxel":
-			var size: Vector3 = SaveHelpers.array_to_vec3(entry.get("size", []), Vector3(0.5, 0.5, 0.5))
-			var color: Color = SaveHelpers.array_to_color(entry.get("color", []), Color.WHITE)
-			var mi := MeshInstance3D.new()
-			var bm := BoxMesh.new()
-			bm.size = size
-			mi.mesh = bm
-			if voxel_mat_script != null:
-				mi.material_override = voxel_mat_script.make(color)
-			else:
-				var sm := StandardMaterial3D.new()
-				sm.albedo_color = color
-				mi.material_override = sm
-			hardscape.add_child(mi)
-			mi.global_position = pos
-			mi.set_meta("aquascape_tool", tool)
-			_aquascape_placed.append(mi)
-			if world.has_method("_mark_hardscape_occupancy"):
-				world._mark_hardscape_occupancy(pos, size)
-		elif kind == "log":
-			var log_node := Node3D.new()
-			log_node.name = "AquaLog"
-			hardscape.add_child(log_node)
-			log_node.global_position = pos
-			for seg_entry in entry.get("segments", []):
-				if not (seg_entry is Dictionary):
-					continue
-				var seg := MeshInstance3D.new()
-				var bm := BoxMesh.new()
-				bm.size = SaveHelpers.array_to_vec3(seg_entry.get("size", []), Vector3(0.7, 0.6, 0.7))
-				seg.mesh = bm
-				var c: Color = SaveHelpers.array_to_color(seg_entry.get("color", []), Color.WHITE)
-				if voxel_mat_script != null:
-					seg.material_override = voxel_mat_script.make(c)
-				else:
-					var sm := StandardMaterial3D.new()
-					sm.albedo_color = c
-					seg.material_override = sm
-				log_node.add_child(seg)
-				seg.position = SaveHelpers.array_to_vec3(seg_entry.get("offset", []), Vector3.ZERO)
-			log_node.set_meta("aquascape_tool", tool)
-			_aquascape_placed.append(log_node)
-
-
-func _aquascape_undo() -> void:
-	if not _aquascape_mode:
-		return
-	while _aquascape_placed.size() > 0:
-		var v: Node3D = _aquascape_placed.pop_back()
-		if is_instance_valid(v):
-			v.queue_free()
-			_haptic(15)
-			return
 
 
 # Scroll wheel + creature clicks come through as events (not reliable via polling).
@@ -1964,18 +1350,17 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 			# edge; the actual decision happens on lift in case the user
 			# changes their mind mid-drag.
 			var win_w: float = get_viewport().get_visible_rect().size.x
-			if not _aquascape_mode and ev.position.x >= win_w - EDGE_SWIPE_TRIGGER_PX:
+			if not _aquascape.is_active and ev.position.x >= win_w - EDGE_SWIPE_TRIGGER_PX:
 				_edge_swipe_active = true
 				_edge_swipe_start_x = ev.position.x
 
 			# Aquascape: start painting immediately on touch-down (like LMB).
-			if _aquascape_mode:
-				if _begin_aquascape_drag(ev.position):
+			if _aquascape.is_active:
+				if _aquascape.begin_drag(ev.position):
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
-					_paint_cooldown = 0.0
-					_aquascape_place(ev.position)
+					_aquascape.place(ev.position)
 		elif _touches.size() == 2:
 			# Second finger: record pinch baseline distance + angle.
 			var positions: Array = _touches.values()
@@ -1988,9 +1373,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 			# Cancel aquascape paint if we were in it — 2-finger means navigate.
 			if _drag_mode == "paint":
 				_drag_mode = ""
-			_wood_drag = null
-			_drag_cluster.clear()
-			_wood_drag_last_hit = INVALID_HIT
+			_aquascape.end_drag()
 			# Cancel any in-flight edge swipe — multi-touch overrides it.
 			_edge_swipe_active = false
 	else:
@@ -2040,9 +1423,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_edge_swipe_active = false
 
 			# End aquascape drag.
-			_wood_drag = null
-			_drag_cluster.clear()
-			_wood_drag_last_hit = INVALID_HIT
+			_aquascape.end_drag()
 			_drag_mode = ""
 
 		_touches.erase(ev.index)
@@ -2065,14 +1446,14 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 	
 	if _touches.size() == 1:
 		# ---- Single finger: orbit or aquascape paint ----
-		if _aquascape_mode:
+		if _aquascape.is_active:
 			match _drag_mode:
 				"paint":
-					if _paint_cooldown <= 0.0:
-						_aquascape_place(ev.position)
-						_paint_cooldown = PAINT_INTERVAL
+					if _aquascape.can_paint():
+						_aquascape.place(ev.position)
+						_aquascape.mark_painted()
 				"wood_drag":
-					_drag_hardscape_piece(ev.position)
+					_aquascape.drag_hardscape(ev.position)
 				_:
 					# Even in aquascape, allow orbit if no tool action locked.
 					yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
@@ -2157,9 +1538,11 @@ func _setup_mobile_ui() -> void:
 	if creature_creator_toggle != null: toggle_buttons.append(creature_creator_toggle)
 	if aquascape_toggle != null: toggle_buttons.append(aquascape_toggle)
 	if portal_toggle != null: toggle_buttons.append(portal_toggle)
+	if library_toggle != null: toggle_buttons.append(library_toggle)
 	for btn in toggle_buttons:
-		btn.custom_minimum_size = Vector2(64, 48)
-		btn.add_theme_font_size_override("font_size", 16)
+		btn.custom_minimum_size = Vector2(52, 52)
+		btn.add_theme_font_size_override("font_size", 18)
+	_sync_rail_toggles()
 	
 	# Update the controls hint to show touch gestures instead of keyboard.
 	var hint: Label = get_node_or_null("ControlsHint")
@@ -2356,8 +1739,9 @@ func _render_header() -> void:
 	# Flora chip.
 	_update_chip("flora", str(plants), "biomass %d" % biomass, true, false)
 
-	# Water chip: O₂ percentage + fixture name; warn-tinted below 50%.
-	_update_chip("water", "%d%%" % o2_pct, fixture, true, o2_pct < 50)
+	# Water chip: O₂ percentage + cycle phase; warn-tinted below 50%.
+	var water_sub: String = HudController.water_chip_subtitle(_stats)
+	_update_chip("water", "%d%%" % o2_pct, water_sub, true, o2_pct < 50)
 
 	# Morphs chip — only meaningful once speciation has produced variants.
 	_update_chip("morphs", "+%d" % distinct_morphs, "morphs", distinct_morphs > 0, false)
@@ -2368,10 +1752,13 @@ func _render_header() -> void:
 	# changes meaningfully as the tank trends rather than flipping at
 	# one threshold. Mood is computed here rather than on sim_driver so
 	# it can read the same _stats snapshot already in scope.
+	var ammonia: float = float(_stats.get("ammonia", 0.0))
 	var mood: float = 0.30 * o2 \
 		+ 0.30 * clampf(float(biomass) / 600.0, 0.0, 1.0) \
 		+ 0.20 * clampf(1.0 - float(algae) / 60.0, 0.0, 1.0) \
-		+ 0.20 * clampf(1.0 - float(waste) / 100.0, 0.0, 1.0)
+		+ 0.20 * clampf(1.0 - float(waste) / 100.0, 0.0, 1.0) \
+		- clampf(ammonia * 0.25, 0.0, 0.35)
+	mood = clampf(mood, 0.0, 1.0)
 	var mood_label: String
 	var mood_glyph: String
 	if mood >= 0.78:
@@ -2407,8 +1794,29 @@ func _render_header() -> void:
 
 	# Aquascape mode replaces the state chip's sublabel with the tool name so
 	# the player sees the active tool at a glance.
-	if _aquascape_mode:
-		_update_chip("state", "AQUA", _aquascape_tool.to_upper(), true, false)
+	if _aquascape.is_active:
+		_update_chip("state", "AQUA", _aquascape_tool_label(), true, false)
+
+
+func _aquascape_tool_label() -> String:
+	match _aquascape.tool:
+		"aquasoil", "dirt":
+			return "SOIL"
+		"sand":
+			return "SAND r%d" % _aquascape.brush_radius
+		"gravel":
+			return "GRVL r%d" % _aquascape.brush_radius
+		"peat":
+			return "PEAT"
+		"stone":
+			return "STONE"
+		"wood":
+			return "WOOD"
+		"dig":
+			return "DIG r%d" % _aquascape.brush_radius
+		"trim":
+			return "TRIM"
+	return _aquascape.tool.to_upper()
 
 
 # Build the chip widgets inside the StatsBar's HBox. Called once from _ready
@@ -2470,29 +1878,29 @@ func _make_chip(icon: String, accent: Color) -> Control:
 	style.corner_radius_bottom_left = 4
 	style.corner_radius_bottom_right = 4
 	style.content_margin_left = 8
-	style.content_margin_right = 8
-	style.content_margin_top = 2
-	style.content_margin_bottom = 2
+	style.content_margin_right = 10
+	style.content_margin_top = 4
+	style.content_margin_bottom = 4
 	pc.add_theme_stylebox_override("panel", style)
 
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 6)
+	hb.add_theme_constant_override("separation", 8)
 	pc.add_child(hb)
 
 	var icon_lbl := Label.new()
 	icon_lbl.text = icon
-	icon_lbl.add_theme_font_size_override("font_size", 14)
+	icon_lbl.add_theme_font_size_override("font_size", 15)
 	icon_lbl.add_theme_color_override("font_color", accent)
 	hb.add_child(icon_lbl)
 
 	var value_lbl := Label.new()
-	value_lbl.add_theme_font_size_override("font_size", 13)
+	value_lbl.add_theme_font_size_override("font_size", 14)
 	value_lbl.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
 	hb.add_child(value_lbl)
 
 	var sublabel_lbl := Label.new()
 	sublabel_lbl.add_theme_font_size_override("font_size", 10)
-	sublabel_lbl.add_theme_color_override("font_color", Color(0.72, 0.78, 0.85, 0.85))
+	sublabel_lbl.add_theme_color_override("font_color", Color(0.72, 0.78, 0.85, 0.8))
 	hb.add_child(sublabel_lbl)
 
 	pc.set_meta("value_label", value_lbl)
@@ -2522,12 +1930,157 @@ func _update_chip(key: String, value: String, sublabel: String,
 
 
 # Responsive layout. Three breakpoints driven by viewport width + touch:
-#   wide   (≥1100):     all chips visible WITH sublabels, both clusters at top
+#   wide   (≥1100):     all chips visible WITH sublabels
 #   medium (700-1099):  all chips visible, sublabels hidden to save space
-#   compact (<700, or
-#           touch+<900): minimal chips (state/fish/flora/water/alert), right
-#                       cluster moves to bottom-right thumb zone
+#   compact (<700, or touch+<900): minimal chips, tighter stats bar margins
 # Called once at _ready and on every viewport size_changed.
+func _on_viewport_resized() -> void:
+	_apply_hud_layout()
+	_apply_panel_layout()
+
+
+func _rail_edge_inset() -> float:
+	return PanelTheme.RAIL_WIDTH + PanelTheme.EDGE_MARGIN + 4.0
+
+
+func _setup_hud_styling() -> void:
+	if left_cluster != null:
+		left_cluster.add_theme_stylebox_override("panel",
+			PanelTheme.make_hud_cluster_style())
+	if stats_bar != null:
+		stats_bar.add_theme_stylebox_override("panel",
+			PanelTheme.make_hud_cluster_style())
+	if right_cluster != null:
+		right_cluster.add_theme_stylebox_override("panel",
+			PanelTheme.make_rail_cluster_style())
+
+	var left_buttons: Array[Button] = []
+	if menu_button != null:
+		left_buttons.append(menu_button)
+	for btn in left_buttons:
+		PanelTheme.style_hud_toggle_button(btn)
+
+	var rail_buttons: Array[Button] = []
+	if portal_toggle != null:
+		rail_buttons.append(portal_toggle)
+	if aquascape_toggle != null:
+		rail_buttons.append(aquascape_toggle)
+	if creature_creator_toggle != null:
+		rail_buttons.append(creature_creator_toggle)
+	if fish_store_toggle != null:
+		rail_buttons.append(fish_store_toggle)
+	if library_toggle != null:
+		rail_buttons.append(library_toggle)
+	if render_toggle != null:
+		rail_buttons.append(render_toggle)
+	if sound_toggle != null:
+		rail_buttons.append(sound_toggle)
+	if settings_toggle != null:
+		rail_buttons.append(settings_toggle)
+	for btn in rail_buttons:
+		PanelTheme.style_rail_button(btn, false)
+
+	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator
+	if divider != null:
+		var rule_style := StyleBoxFlat.new()
+		rule_style.bg_color = PanelTheme.RULE_FG
+		divider.add_theme_stylebox_override("separator", rule_style)
+
+
+func _sync_rail_toggles() -> void:
+	var h: int = 0
+	h = h * 31 + int(_portal_open)
+	h = h * 31 + int(_aquascape.is_active)
+	h = h * 31 + int(settings_panel != null and settings_panel.visible)
+	h = h * 31 + int(render_panel != null and render_panel.visible)
+	h = h * 31 + int(sound_panel != null and sound_panel.visible)
+	h = h * 31 + int(fish_store_panel != null and fish_store_panel.visible)
+	h = h * 31 + int(library_panel != null and library_panel.visible)
+	h = h * 31 + int(creature_creator_panel != null and creature_creator_panel.visible)
+	if h == _last_rail_sync_hash:
+		return
+	_last_rail_sync_hash = h
+	if portal_toggle != null:
+		PanelTheme.style_rail_button(portal_toggle, _portal_open)
+	if aquascape_toggle != null:
+		PanelTheme.style_rail_button(aquascape_toggle, _aquascape.is_active)
+	if settings_toggle != null:
+		PanelTheme.style_rail_button(settings_toggle,
+			settings_panel != null and settings_panel.visible)
+	if render_toggle != null:
+		PanelTheme.style_rail_button(render_toggle,
+			render_panel != null and render_panel.visible)
+	if sound_toggle != null:
+		PanelTheme.style_rail_button(sound_toggle,
+			sound_panel != null and sound_panel.visible)
+	if fish_store_toggle != null:
+		PanelTheme.style_rail_button(fish_store_toggle,
+			fish_store_panel != null and fish_store_panel.visible)
+	if library_toggle != null:
+		PanelTheme.style_rail_button(library_toggle,
+			library_panel != null and library_panel.visible)
+	if creature_creator_toggle != null:
+		PanelTheme.style_rail_button(creature_creator_toggle,
+			creature_creator_panel != null and creature_creator_panel.visible)
+
+
+func _apply_panel_layout() -> void:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var top: float = PanelTheme.HUD_TOP
+	var bottom: float = PanelTheme.HUD_BOTTOM
+	var edge: float = PanelTheme.EDGE_MARGIN
+	var rail: float = _rail_edge_inset()
+	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
+
+	if settings_panel != null:
+		settings_panel.offset_top = top
+		settings_panel.offset_bottom = -bottom
+		settings_panel.offset_right = -rail
+		settings_panel.offset_left = -(rail + panel_w)
+
+	if render_panel != null:
+		render_panel.offset_top = top
+		render_panel.offset_bottom = -bottom
+		render_panel.offset_left = edge
+		render_panel.offset_right = edge + panel_w
+
+	var sound_w: float = clampf(vp.x * 0.38, 400.0, 560.0)
+	if sound_panel != null:
+		sound_panel.offset_top = top
+		sound_panel.offset_bottom = -bottom
+		sound_panel.offset_left = -sound_w * 0.5
+		sound_panel.offset_right = sound_w * 0.5
+
+	if library_panel != null:
+		library_panel.offset_left = edge
+		library_panel.offset_top = top
+		library_panel.offset_right = -rail
+		library_panel.offset_bottom = -bottom
+
+	var modal_w: float = clampf(vp.x * 0.55, 560.0, 820.0)
+	var modal_h: float = clampf(vp.y * 0.62, 420.0, 620.0)
+	if creature_creator_panel != null:
+		creature_creator_panel.offset_left = -modal_w * 0.5
+		creature_creator_panel.offset_right = modal_w * 0.5
+		creature_creator_panel.offset_top = -modal_h * 0.5
+		creature_creator_panel.offset_bottom = modal_h * 0.5
+
+	var store_w: float = clampf(minf(vp.x * 0.42, 480.0), 320.0, 480.0)
+	var store_h: float = clampf(vp.y * 0.52, 360.0, 520.0)
+	if fish_store_panel != null:
+		fish_store_panel.offset_left = -store_w * 0.5
+		fish_store_panel.offset_right = store_w * 0.5
+		fish_store_panel.offset_top = -store_h * 0.5
+		fish_store_panel.offset_bottom = store_h * 0.5
+
+	if portal_container != null:
+		var pip: float = minf(192.0, vp.x * 0.14)
+		portal_container.offset_right = -rail
+		portal_container.offset_left = -(rail + pip)
+		portal_container.offset_top = top + 4.0
+		portal_container.offset_bottom = top + 4.0 + pip
+
+
 func _apply_hud_layout() -> void:
 	if top_hud == null or stats_bar == null:
 		return
@@ -2560,30 +2113,23 @@ func _apply_hud_layout() -> void:
 			if layout == "compact":
 				chip.visible = false
 
-	# Right cluster: top-right on wide/medium, bottom-right (FAB zone) on compact.
-	if right_cluster != null:
+	var rail_edge: float = _rail_edge_inset()
+	var left_inset: float = 128.0 if layout != "compact" else 112.0
+	if stats_bar != null:
+		stats_bar.offset_left = left_inset
+		stats_bar.offset_right = -rail_edge
+
+	if right_rail != null:
 		if layout == "compact":
-			right_cluster.anchor_left = 1.0
-			right_cluster.anchor_top = 1.0
-			right_cluster.anchor_right = 1.0
-			right_cluster.anchor_bottom = 1.0
-			right_cluster.offset_left = -12.0
-			right_cluster.offset_top = -12.0
-			right_cluster.offset_right = -12.0
-			right_cluster.offset_bottom = -12.0
-			right_cluster.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-			right_cluster.grow_vertical = Control.GROW_DIRECTION_BEGIN
+			right_rail.offset_left = -56.0
+			right_rail.offset_top = 44.0
+			right_rail.offset_right = -4.0
+			right_rail.offset_bottom = -76.0
 		else:
-			right_cluster.anchor_left = 1.0
-			right_cluster.anchor_top = 0.0
-			right_cluster.anchor_right = 1.0
-			right_cluster.anchor_bottom = 0.0
-			right_cluster.offset_left = -12.0
-			right_cluster.offset_top = 8.0
-			right_cluster.offset_right = -12.0
-			right_cluster.offset_bottom = 8.0
-			right_cluster.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-			right_cluster.grow_vertical = Control.GROW_DIRECTION_END
+			right_rail.offset_left = -64.0
+			right_rail.offset_top = 48.0
+			right_rail.offset_right = -8.0
+			right_rail.offset_bottom = -32.0
 
 	# Re-render chip values so the compact-fauna branch kicks in immediately.
 	_render_header()
@@ -2614,6 +2160,9 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	# this tank's life so far."
 	if key == "mood":
 		_show_story_popup(color)
+		return
+	if key == "water":
+		_show_water_chemistry_popup(color)
 		return
 	var hist_key: String = _CHIP_TO_HISTORY.get(key, "")
 	if hist_key == "":
@@ -2702,6 +2251,47 @@ func _show_story_popup(_chip_color: Color) -> void:
 	_story_popup.position = Vector2(
 		(vp.x - _story_popup.size.x) * 0.5, 56.0)
 	_story_popup.visible = true
+
+
+var _water_popup: PanelContainer = null
+var _water_detail: Label = null
+
+
+func _ensure_water_popup() -> void:
+	if _water_popup != null:
+		return
+	_water_popup = PanelContainer.new()
+	_water_popup.custom_minimum_size = Vector2(220, 120)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
+	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 14
+	style.content_margin_right = 14
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	_water_popup.add_theme_stylebox_override("panel", style)
+	var vb := VBoxContainer.new()
+	_water_popup.add_child(vb)
+	var title := Label.new()
+	title.text = "Water chemistry"
+	title.add_theme_font_size_override("font_size", 13)
+	vb.add_child(title)
+	_water_detail = Label.new()
+	_water_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(_water_detail)
+	add_child(_water_popup)
+
+
+func _show_water_chemistry_popup(_chip_color: Color) -> void:
+	_ensure_water_popup()
+	var lines: PackedStringArray = HudController.water_detail_lines(_stats)
+	_water_detail.text = "\n".join(lines)
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	_water_popup.size = _water_popup.custom_minimum_size
+	_water_popup.position = Vector2((vp.x - _water_popup.size.x) * 0.5, 56.0)
+	_water_popup.visible = true
 
 
 # Render an elapsed sim-time into a short "Xm" / "Xh Ym" string for the
@@ -2881,6 +2471,8 @@ func _notify_hud_input() -> void:
 	_hud_idle_seconds = 0.0
 	if top_hud != null and top_hud.modulate != HUD_LIT_MODULATE:
 		top_hud.modulate = HUD_LIT_MODULATE
+	if right_rail != null and right_rail.modulate != HUD_LIT_MODULATE:
+		right_rail.modulate = HUD_LIT_MODULATE
 
 
 # Format "{total} / {adults}{a_suf} {kids}{k_suf}" with the breakdown hidden
@@ -2932,6 +2524,8 @@ func _toggle_immersive_mode() -> void:
 func _apply_immersive_mode() -> void:
 	if top_hud != null:
 		top_hud.visible = not _immersive_mode
+	if right_rail != null:
+		right_rail.visible = not _immersive_mode
 	if controls_hint != null:
 		controls_hint.visible = not _immersive_mode
 	if _mobile_hud != null and _mobile_hud.visible:
@@ -3015,31 +2609,7 @@ var _save_pending_time_scale: float = 1.0
 
 
 func _try_load_saved_state() -> void:
-	if _save_restored:
-		return
-	_save_restored = true
-	var saves := get_node_or_null("/root/TankSaves")
-	if saves == null:
-		return
-	# world.gd already deleted incompatible state files before its spawn
-	# decision, but check again here so a race in autoload order can't
-	# resurrect a stale load.
-	if not saves.is_active_save_compatible():
-		return
-	var path: String = saves.state_path(int(saves.active_slot))
-	if not FileAccess.file_exists(path):
-		return
-	var d: Dictionary = saves.read_json(path)
-	if d.is_empty():
-		# Parse failed — likely corruption. Surface the prompt.
-		_show_corrupt_save_prompt(path)
-		return
-	if _sim != null and _sim.has_method("load_state"):
-		_sim.load_state(d)
-	# Aquascape lives outside the sim dict.
-	if d.has("aquascape"):
-		_restore_aquascape(d["aquascape"])
-	print_verbose("[walstad_loom] restored save from ", path)
+	SaveManager.try_load(self, _sim, world, _aquascape, &"_save_restored")
 
 
 # Snapshot the world to disk. Called by:
@@ -3050,40 +2620,8 @@ func _try_load_saved_state() -> void:
 # Skip if we're in the middle of aquascape mode (time_scale=0 from that path
 # would freeze the session at "paused" forever).
 func save_active_tank(skip_thumbnail: bool = false) -> void:
-	if _sim == null or not _sim.has_method("save_state"):
-		return
-	var saves := get_node_or_null("/root/TankSaves")
-	if saves == null:
-		return
-	# Don't write a paused-by-aquascape time_scale. Save the running speed
-	# the player chose so reload picks up at that speed.
-	var live_ts: float = float(_sim.time_scale)
-	if live_ts > 0.0:
-		_save_pending_time_scale = live_ts
-	var state_d: Dictionary = _sim.save_state()
-	state_d["sim"]["time_scale"] = _save_pending_time_scale
-	state_d["aquascape"] = _aquascape_to_save_arr()
-	var path: String = saves.state_path(int(saves.active_slot))
-	var err: int = saves.write_text_atomic(path, JSON.stringify(state_d, "  "))
-	if err != OK:
-		push_warning("[walstad_loom] save failed at %s: err %d" % [path, err])
-		return
-	# Deferred thumbnail for autosave / focus-out. Menu exit uses
-	# _save_active_tank_with_thumbnail() which awaits readback first.
-	if not skip_thumbnail:
-		_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
-	# Update per-tank meta: accumulated runtime + last-opened.
-	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
-	if meta.is_empty():
-		meta = {
-			"name": "Tank %d" % int(saves.active_slot),
-			"runtime_s": 0,
-			"created_unix": int(Time.get_unix_time_from_system()),
-			"last_opened_unix": int(Time.get_unix_time_from_system()),
-		}
-	meta["runtime_s"] = int(_sim.elapsed_runtime_s) if _sim.get("elapsed_runtime_s") != null else int(meta.get("runtime_s", 0))
-	meta["last_opened_unix"] = int(Time.get_unix_time_from_system())
-	saves.update_tank_meta(int(saves.active_slot), meta)
+	_save_pending_time_scale = SaveManager.save_active(
+		self, _sim, world, _aquascape, _save_pending_time_scale, skip_thumbnail)
 
 
 # Write state + block until the menu-card thumbnail is on disk.
@@ -3148,6 +2686,9 @@ func _show_corrupt_save_prompt(state_path: String) -> void:
 				var d: Dictionary = saves.read_json(bak_path)
 				if not d.is_empty() and _sim != null:
 					_sim.load_state(d)
+					if d.has("terrain") and world != null \
+							and world.has_method("terrain_apply_save_dict"):
+						world.terrain_apply_save_dict(d["terrain"])
 					if d.has("aquascape"):
 						_restore_aquascape(d["aquascape"])
 		dialog.queue_free())
@@ -3563,10 +3104,10 @@ func _show_radial_menu(center: Vector2) -> void:
 	overlay.add_child(bg)
 	# 4 tool buttons around the touch point. Lay out at 0/90/180/270 degrees.
 	var defs := [
-		{"key": "dirt",  "label": "dirt",  "angle": -PI / 2, "color": Color8(150, 110, 70)},
-		{"key": "stone", "label": "stone", "angle": 0.0,     "color": Color8(120, 120, 130)},
-		{"key": "wood",  "label": "wood",  "angle": PI / 2,  "color": Color8(95, 65, 35)},
-		{"key": "dig",   "label": "dig",   "angle": PI,      "color": Color8(220, 90, 90)},
+		{"key": "aquasoil", "label": "soil",   "angle": -PI / 2, "color": Color8(120, 85, 56)},
+		{"key": "sand",     "label": "sand",   "angle": 0.0,     "color": Color8(225, 215, 185)},
+		{"key": "gravel",   "label": "gravel", "angle": PI / 2,  "color": Color8(125, 125, 135)},
+		{"key": "dig",      "label": "dig",    "angle": PI,      "color": Color8(220, 90, 90)},
 	]
 	var ring_radius: float = 90.0
 	var btn_size: Vector2 = Vector2(72, 56)
@@ -3578,8 +3119,7 @@ func _show_radial_menu(center: Vector2) -> void:
 		btn.add_theme_color_override("font_color", def["color"])
 		var key: String = String(def["key"])
 		btn.pressed.connect(func():
-			_aquascape_tool = key
-			_refresh_tool_buttons()
+			_aquascape.set_tool(key)
 			_haptic(18)
 			_dismiss_radial_menu())
 		var angle: float = float(def["angle"])

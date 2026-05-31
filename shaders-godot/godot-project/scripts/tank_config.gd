@@ -871,6 +871,9 @@ func current_aeration_profile() -> Dictionary:
 # affects plant growth via SubstrateGrid.NUTRIENT_BASELINE and the
 # RESERVOIR_LEAK_PER_TICK (organic richness slowly seeping into water).
 var substrate_type: String = "aquasoil"
+# Set by settings Apply so the next scene load rebuilds terrain from the
+# newly chosen substrate instead of restoring the old saved voxel grid.
+var rebuild_terrain_on_load: bool = false
 
 const SUBSTRATE_PROFILES: Dictionary = {
 	"aquasoil": {
@@ -1004,6 +1007,7 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "seed", music_seed)
 	cfg.set_value("environment", "preset", environment_preset)
 	cfg.set_value("substrate", "type", substrate_type)
+	cfg.set_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
 	cfg.set_value("aeration", "type", aeration_type)
 	cfg.set_value("aeration", "strength", aeration_strength)
 	cfg.set_value("aeration", "x_frac", aeration_x_frac)
@@ -1096,6 +1100,7 @@ func load_from_disk() -> void:
 	music_seed = int(cfg.get_value("music", "seed", music_seed))
 	environment_preset = cfg.get_value("environment", "preset", environment_preset)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
+	rebuild_terrain_on_load = cfg.get_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
 	aeration_type = cfg.get_value("aeration", "type", aeration_type)
 	aeration_strength = cfg.get_value("aeration", "strength", aeration_strength)
 	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)

@@ -158,10 +158,10 @@ anchor_left = 1.0
 anchor_top = 0.0
 anchor_right = 1.0
 anchor_bottom = 0.0
-offset_left = -208.0
-offset_top = 48.0
-offset_right = -16.0
-offset_bottom = 240.0
+offset_left = -272.0
+offset_top = 56.0
+offset_right = -80.0
+offset_bottom = 248.0
 
 [node name="PortalDisplay" type="TextureRect" parent="PortalContainer"]
 mouse_filter = 2
@@ -196,10 +196,10 @@ anchor_left = 1.0
 anchor_top = 0.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -480.0
-offset_top = 56.0
-offset_right = -16.0
-offset_bottom = -40.0
+offset_left = -500.0
+offset_top = 52.0
+offset_right = -72.0
+offset_bottom = -34.0
 script = ExtResource("7_settings")
 
 [node name="RenderPanel" type="PanelContainer" parent="."]
@@ -207,10 +207,10 @@ anchor_left = 0.0
 anchor_top = 0.0
 anchor_right = 0.0
 anchor_bottom = 1.0
-offset_left = 16.0
-offset_top = 56.0
-offset_right = 480.0
-offset_bottom = -40.0
+offset_left = 12.0
+offset_top = 52.0
+offset_right = 472.0
+offset_bottom = -34.0
 script = ExtResource("8_render")
 
 [node name="SoundPanel" type="PanelContainer" parent="."]
@@ -219,32 +219,32 @@ anchor_top = 0.0
 anchor_right = 0.5
 anchor_bottom = 1.0
 offset_left = -260.0
-offset_top = 56.0
+offset_top = 52.0
 offset_right = 260.0
-offset_bottom = -40.0
+offset_bottom = -34.0
 script = ExtResource("8_sound")
 
 [node name="TopHUD" type="Control" parent="."]
 mouse_filter = 2
 anchor_right = 1.0
-offset_bottom = 80.0
+offset_bottom = 52.0
 grow_horizontal = 2
 
 [node name="LeftCluster" type="PanelContainer" parent="TopHUD"]
 unique_name_in_owner = true
-offset_left = 12.0
-offset_top = 8.0
-offset_right = 12.0
-offset_bottom = 8.0
+offset_left = 8.0
+offset_top = 6.0
+offset_right = 8.0
+offset_bottom = 6.0
 mouse_filter = 1
 theme_override_styles/panel = SubResource("SBF_cluster")
 
 [node name="HBox" type="HBoxContainer" parent="TopHUD/LeftCluster"]
-theme_override_constants/separation = 2
+theme_override_constants/separation = 4
 
 [node name="MenuButton" type="Button" parent="TopHUD/LeftCluster/HBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(0, 32)
 tooltip_text = "Save and return to tank menu"
 text = " ≡ Menu "
 flat = true
@@ -253,116 +253,137 @@ theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="RenderToggle" type="Button" parent="TopHUD/LeftCluster/HBox"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
-tooltip_text = "Rendering panel"
-text = " ▦ "
-flat = true
-theme_override_styles/normal = SubResource("SBE_button_flat")
-theme_override_styles/hover = SubResource("SBF_button_hover")
-theme_override_styles/pressed = SubResource("SBF_button_pressed")
-theme_override_styles/focus = SubResource("SBE_button_flat")
-
-[node name="SoundToggle" type="Button" parent="TopHUD/LeftCluster/HBox"]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
-tooltip_text = "Sound Studio (M)"
-text = " ♪ "
-flat = true
-theme_override_styles/normal = SubResource("SBE_button_flat")
-theme_override_styles/hover = SubResource("SBF_button_hover")
-theme_override_styles/pressed = SubResource("SBF_button_pressed")
-theme_override_styles/focus = SubResource("SBE_button_flat")
-
 [node name="StatsBar" type="PanelContainer" parent="TopHUD"]
 unique_name_in_owner = true
-anchor_left = 0.5
-anchor_right = 0.5
-offset_top = 8.0
-offset_bottom = 8.0
+anchor_left = 0.0
+anchor_right = 1.0
+offset_left = 128.0
+offset_top = 6.0
+offset_right = -72.0
+offset_bottom = 46.0
 grow_horizontal = 2
 mouse_filter = 1
 theme_override_styles/panel = SubResource("SBF_cluster")
 
 [node name="HBox" type="HBoxContainer" parent="TopHUD/StatsBar"]
-theme_override_constants/separation = 10
+theme_override_constants/separation = 8
 
-[node name="RightCluster" type="PanelContainer" parent="TopHUD"]
+[node name="RightRail" type="Control" parent="."]
 unique_name_in_owner = true
+mouse_filter = 1
 anchor_left = 1.0
+anchor_top = 0.0
 anchor_right = 1.0
-offset_left = -12.0
-offset_top = 8.0
-offset_right = -12.0
-offset_bottom = 8.0
+anchor_bottom = 1.0
+offset_left = -64.0
+offset_top = 48.0
+offset_right = -8.0
+offset_bottom = -32.0
 grow_horizontal = 0
+grow_vertical = 2
+
+[node name="RightCluster" type="PanelContainer" parent="RightRail"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 mouse_filter = 1
 theme_override_styles/panel = SubResource("SBF_cluster")
 
-[node name="HBox" type="HBoxContainer" parent="TopHUD/RightCluster"]
-theme_override_constants/separation = 2
+[node name="VBox" type="VBoxContainer" parent="RightRail/RightCluster"]
+layout_mode = 2
+theme_override_constants/separation = 4
+alignment = 1
 
-[node name="PortalToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="PortalToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Follow portal (C)"
-text = " 👁 "
+text = "👁"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="AquascapeToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="AquascapeToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Aquascape mode (B): place dirt / stone / wood, dig, drag logs"
-text = " 🪨 "
+text = "🪨"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="CreatureCreatorToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="CreatureCreatorToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Creature creator: design custom fish / shrimp / snails / plants"
-text = " ✦ "
+text = "✦"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="FishStoreToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="FishStoreToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Buy new fish"
-text = " 🐟 "
+text = "🐟"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="LibraryToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="LibraryToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Species library"
-text = " 📚 "
+text = "📚"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="SettingsToggle" type="Button" parent="TopHUD/RightCluster/HBox"]
+[node name="RailDivider" type="HSeparator" parent="RightRail/RightCluster/VBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 8)
+
+[node name="RenderToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
-custom_minimum_size = Vector2(0, 28)
+custom_minimum_size = Vector2(48, 48)
+tooltip_text = "Rendering panel (R)"
+text = "▦"
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
+[node name="SoundToggle" type="Button" parent="RightRail/RightCluster/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
+tooltip_text = "Sound Studio (M)"
+text = "♪"
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
+[node name="SettingsToggle" type="Button" parent="RightRail/RightCluster/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
 tooltip_text = "Settings panel (O)"
-text = " ⚙ "
+text = "⚙"
 flat = true
 theme_override_styles/normal = SubResource("SBE_button_flat")
 theme_override_styles/hover = SubResource("SBF_button_hover")
@@ -376,9 +397,9 @@ anchor_top = 0.0
 anchor_right = 0.5
 anchor_bottom = 0.0
 offset_left = -180.0
-offset_top = 56.0
+offset_top = 52.0
 offset_right = 180.0
-offset_bottom = 100.0
+offset_bottom = 96.0
 mouse_filter = 2
 
 [node name="FishStorePanel" type="PanelContainer" parent="."]
@@ -396,10 +417,10 @@ script = ExtResource("9_store")
 visible = false
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 32.0
-offset_top = 56.0
-offset_right = -32.0
-offset_bottom = -40.0
+offset_left = 12.0
+offset_top = 52.0
+offset_right = -72.0
+offset_bottom = -34.0
 mouse_filter = 2
 script = ExtResource("12_library")
 

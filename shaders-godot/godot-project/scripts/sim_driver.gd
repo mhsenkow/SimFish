@@ -165,6 +165,9 @@ var elapsed_runtime_s: float = 0.0
 # photosynthesis during daylight, drawn down by fish + shrimp respiration.
 # Fish read this to decide whether to gulp at the surface.
 var dissolved_o2: float = 0.85
+var water_chemistry: WaterChemistry = WaterChemistry.new()
+var _terrain_sync_timer: float = 0.0
+const TERRAIN_SYNC_INTERVAL_S: float = 6.0
 # Rates set by world.gd._spawn_aeration_system() based on the current
 # TankConfig. air_rate ~ 0..1 from profile, flow_rate ~ 0..1 surface agitation.
 var aeration_air_rate: float = 0.6
@@ -631,9 +634,15 @@ func _tick(dt: float) -> void:
 	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
 		0.0, 1.2)
 
-	# 2. Substrate field.
+	# 2. Substrate field + periodic 3D terrain nutrient sync.
 	if substrate != null:
 		substrate.tick(dt)
+	_terrain_sync_timer += dt
+	if _terrain_sync_timer >= TERRAIN_SYNC_INTERVAL_S:
+		_terrain_sync_timer = 0.0
+		var w_sync: Node = get_parent()
+		if w_sync != null and w_sync.has_method("sync_terrain_nutrients"):
+			w_sync.sync_terrain_nutrients()
 
 	# 3. Plants — cap GPU-heavy growth steps per tick (Metal fence safety).
 	plant_growth_budget = clampi(28 + plants.size() / 12, 28, 96)
@@ -819,8 +828,10 @@ func _tick(dt: float) -> void:
 		if bool(f.get("snail_predator")):
 			sp_count += 1
 	snail_predator_count = sp_count
-	# Nutrient pressure: 0 at <=2.0 N, 1.0 at >=8.0 N.
+	# Nutrient pressure: 0 at <=2.0 N, 1.0 at >=8.0 N; blend nitrate from N-cycle.
 	var n_pressure: float = clampf((n_total - 2.0) / 6.0, 0.0, 1.0)
+	var nitrate_p: float = clampf(water_chemistry.nitrate / 1.5, 0.0, 1.0)
+	n_pressure = clampf(n_pressure * 0.65 + nitrate_p * 0.35, 0.0, 1.0)
 	# Plant-shortage pressure: 0 when biomass >=450 (mature planted tank),
 	# 1.0 when biomass <=150 (sparse / cycling tank).
 	var plant_shortage: float = clampf((450.0 - float(plant_biomass)) / 300.0, 0.0, 1.0)
@@ -828,6 +839,8 @@ func _tick(dt: float) -> void:
 	# low plant biomass to bloom. Either factor at 0 zeroes the bloom.
 	var bloom_pressure: float = n_pressure * plant_shortage
 	bloom_intensity = lerpf(bloom_intensity, bloom_pressure, clampf(dt * 0.25, 0.0, 1.0))
+	var waste_nh3: float = float(waste.size()) * 0.0004
+	water_chemistry.tick(dt, self, get_parent(), plant_biomass, waste_nh3)
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
 	var w_shade: Node = get_parent()
@@ -874,6 +887,8 @@ func _tick(dt: float) -> void:
 			spawn_z = randf_range(world_bounds.position.z + 0.5,
 				world_bounds.end.z - 0.5)
 		var apos := Vector3(spawn_x, substrate_top_y + randf_range(0.3, 1.2), spawn_z)
+		if w != null and w.has_method("column_surface_y"):
+			apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			apos = w.clamp_xyz_in_tank(apos, 0.35)
 		a.global_position = apos
@@ -2059,6 +2074,11 @@ func _emit_stats() -> void:
 		"waste_particles": waste.size(),
 		"substrate_nutrients_total": substrate.total_above_baseline() if substrate else 0.0,
 		"dissolved_o2": dissolved_o2,
+		"ammonia": water_chemistry.ammonia,
+		"nitrite": water_chemistry.nitrite,
+		"nitrate": water_chemistry.nitrate,
+		"cycle_phase": water_chemistry.cycle_phase,
+		"cycle_label": WaterChemistry.phase_label(water_chemistry.cycle_phase),
 		"aeration_fixture": aeration_fixture,
 	}
 	# Capture this snapshot into the ring buffer so chip-tap sparklines have
@@ -2087,6 +2107,8 @@ var population_history: Dictionary = {
 	"plant_total_biomass": [],
 	"substrate_nutrients_total": [],
 	"dissolved_o2": [],
+	"ammonia": [],
+	"nitrate": [],
 }
 
 
@@ -2143,7 +2165,7 @@ func log_story_event(text: String) -> void:
 # plants for breeding), then creatures, then transient particles, then
 # resolving cross-references in a final pass.
 
-const SAVE_STATE_VERSION: int = 1
+const SAVE_STATE_VERSION: int = 2
 
 
 func save_state() -> Dictionary:
@@ -2190,6 +2212,8 @@ func save_state() -> Dictionary:
 		"algae": [],
 		"discovered_species": _get_discovered_species_for_save(),
 	}
+	if water_chemistry != null:
+		out["water_chemistry"] = water_chemistry.to_save_dict()
 	for p in plants:
 		if is_instance_valid(p):
 			out["plants"].append(p.to_save_dict())
@@ -2263,8 +2287,9 @@ func _ensure_ids() -> void:
 # branch ensures _spawn_initial_* didn't run, so the scene is currently a
 # bare tank (glass, substrate grid, aeration). We populate it.
 func load_state(d: Dictionary) -> void:
-	if int(d.get("version", 0)) != SAVE_STATE_VERSION:
-		push_warning("[walstad_loom] save version mismatch; got %s, expected %d. Loading anyway." % [d.get("version"), SAVE_STATE_VERSION])
+	var save_ver: int = int(d.get("version", 0))
+	if save_ver != SAVE_STATE_VERSION:
+		push_warning("[walstad_loom] save version mismatch; got %s, expected %d." % [save_ver, SAVE_STATE_VERSION])
 
 	# 0. Restore species discoveries BEFORE any spawn happens. Spawn helpers
 	# in load_state bypass register_fish (no double-recording risk), but we
@@ -2283,6 +2308,8 @@ func load_state(d: Dictionary) -> void:
 	aeration_fixture = String(sim_d.get("aeration_fixture", aeration_fixture))
 	elapsed_runtime_s = float(sim_d.get("elapsed_runtime_s", 0.0))
 	_next_entity_id = int(sim_d.get("next_entity_id", _next_entity_id))
+	if water_chemistry != null:
+		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
 
 	# 2. Substrate (re-init was already done by world; overwrite nutrients).
 	if substrate != null and d.has("substrate"):

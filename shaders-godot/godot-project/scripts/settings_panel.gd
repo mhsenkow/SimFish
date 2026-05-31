@@ -696,6 +696,7 @@ func _on_apply() -> void:
 	var main := get_tree().current_scene
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
+	TankConfig.rebuild_terrain_on_load = true
 	TankConfig.save_to_disk()
 	apply_requested.emit()
 	get_tree().reload_current_scene()

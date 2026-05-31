@@ -3,6 +3,9 @@ extends Node
 
 
 func _ready() -> void:
+	# Steam API is for shipped desktop builds; skip editor to avoid init noise.
+	if Engine.is_editor_hint():
+		return
 	if OS.has_feature("web") or OS.has_feature("android"):
 		return
 	if not ClassDB.class_exists("Steam"):

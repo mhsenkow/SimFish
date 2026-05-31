@@ -75,6 +75,8 @@ const BREED_HUNGER_MAX: float = 0.7       # too hungry to breed above this
 
 var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
+var _crawl_speed_smoothed: float = 0.0      # eased scalar speed (avoids pulse stutter)
+var _spacing_push: Vector3 = Vector3.ZERO   # soft overlap resolve, decayed per frame
 var _t_until_turn: float = 0.0
 var _paused: bool = false
 # Wall-plane anchor. Captured in _ready from the spawn position projected
@@ -131,6 +133,10 @@ var _retreat_target: Vector3 = Vector3.INF
 # wiggle, foot pulse, facing lerp etc. all still update per frame so the
 # motion stays smooth.
 const SCAN_INTERVAL: float = 0.3
+const MAX_STEP_DT: float = 0.05             # stabilizes motion at high time_scale
+const FACING_TURN_RATE: float = 5.5
+const STEER_RATE: float = 4.0               # food / retreat heading blend
+const ORIENT_RATE: float = 6.0
 var _scan_accum: float = 0.0
 
 # Save/load id (see fish.gd for rationale).
@@ -197,6 +203,7 @@ func _ready() -> void:
 	_ensure_named()
 	_choose_new_direction()
 	_facing = _direction
+	_crawl_speed_smoothed = SPEED * crawl_speed
 	_t_until_breed = randf_range(BREEDING_INTERVAL_MIN, BREEDING_INTERVAL_MAX)
 	_pulse_phase = randf() * TAU
 	_eye_phase = randf() * TAU
@@ -209,6 +216,7 @@ func _ready() -> void:
 	# motion to stay on that exact plane forever, regardless of what the
 	# wall_min / wall_max box-clamp would otherwise permit.
 	_wall_anchor_offset = wall_normal.dot(position)
+	call_deferred("_sync_initial_orientation")
 
 
 func _process(dt: float) -> void:
@@ -218,6 +226,7 @@ func _process(dt: float) -> void:
 		dt *= float(sim.time_scale)
 		if dt <= 0.0:
 			return
+	dt = minf(dt, MAX_STEP_DT)
 	age += dt
 	# Death by old age. queue_free with a small chance of leaving a shell
 	# voxel behind (not done here - just remove). Lifespan is genome-driven
@@ -273,7 +282,7 @@ func _process(dt: float) -> void:
 	# crawling, no foraging, no breeding decision needed. Skip the rest
 	# of the tick.
 	if _clamped:
-		_apply_squash(0.35, Vector3.UP)  # body flattened into shell
+		_apply_squash(0.35)  # body flattened into shell
 		return
 
 	# Post-threat behavior: once we un-clamp, continue a short retreat toward
@@ -311,21 +320,16 @@ func _process(dt: float) -> void:
 			_t_until_breed = randf_range(BREEDING_INTERVAL_MIN,
 				BREEDING_INTERVAL_MAX) * rebound
 
-	# Smoothly turn the visual "facing" toward the target direction. Snails
-	# don't snap directions; they pivot slowly.
-	_facing = _facing.lerp(_direction, clampf(dt * 1.2, 0.0, 1.0))
-
 	# Build tangent + bitangent vectors for this wall. Both must lie IN the
 	# wall plane (perpendicular to wall_normal); using `up` as the second axis
 	# was broken for floor/ceiling walls (where wall_normal ≈ up), because
 	# then the "vertical" move on the wall actually pushed the snail through
 	# the wall normal — straight out of the glass.
-	var up := Vector3.UP
 	var tangent: Vector3
-	if absf(wall_normal.dot(up)) > 0.95:
+	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
 		tangent = Vector3.RIGHT
 	else:
-		tangent = wall_normal.cross(up).normalized()
+		tangent = wall_normal.cross(Vector3.UP).normalized()
 	# bitangent completes a right-handed frame inside the wall plane. For
 	# vertical walls this resolves to ±UP (preserving the old "+y = climb up
 	# the glass" semantic); for floor/ceiling walls it resolves to ±FORWARD,
@@ -338,15 +342,20 @@ func _process(dt: float) -> void:
 	# Same throttle as the predator scan — _direction stays set between
 	# scans, so the snail continues crawling toward the last-detected target.
 	if scan_due and _retreat_remaining <= 0.0:
-		_check_waste_nearby(tangent, bitangent)
+		_check_waste_nearby(tangent, bitangent, dt)
 	elif _retreat_remaining > 0.0 and _retreat_target != Vector3.INF:
 		var to_cover: Vector3 = _retreat_target - global_position
 		var rx: float = to_cover.dot(tangent)
 		var ry: float = to_cover.dot(bitangent)
 		var retreat_dir := Vector2(rx, ry)
 		if retreat_dir.length() > 0.01:
-			_direction = retreat_dir.normalized()
+			_steer_direction(retreat_dir.normalized(), dt)
 			_paused = false
+
+	# Smoothly turn crawl heading toward the target direction.
+	_facing = _facing.lerp(_direction, clampf(dt * FACING_TURN_RATE, 0.0, 1.0))
+	if _facing.length_squared() > 1e-6:
+		_facing = _facing.normalized()
 
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails
@@ -355,29 +364,41 @@ func _process(dt: float) -> void:
 		# Still pulse a little when paused (breathing).
 		_pulse_phase += dt * 0.6
 		var idle_squash: float = 1.0 + sin(_pulse_phase) * 0.04
-		_apply_squash(idle_squash, up)
+		_apply_squash(idle_squash)
+		_apply_wall_orientation(tangent * _facing.x + bitangent * _facing.y, dt)
 		return
 
 	# Pulse rate jumps when pursuing detritus - the snail visibly speeds up
 	# toward food, which is the real "cleaner crew converging" pattern.
-	var pulse_rate: float = 2.4 if _pursuing_waste else 1.5
+	var pulse_rate: float = 2.2 if _pursuing_waste else 1.35
 	_pulse_phase += dt * pulse_rate
-	# Pulse-driven forward velocity: peaks at +SPEED * 1.6, dips to ~0.
 	var pulse_factor: float = 0.5 + 0.5 * sin(_pulse_phase)  # 0..1
-	var speed_mult: float = 1.4 if _pursuing_waste else 1.0
+	var speed_mult: float = 1.25 if _pursuing_waste else 1.0
 	if _retreat_remaining > 0.0:
 		speed_mult *= RETREAT_SPEED_MULT
-	var gait_speed: float = SPEED * crawl_speed * (0.4 + 1.2 * pulse_factor) * speed_mult
-	# Move along the wall plane: tangent for "horizontal" on the wall,
-	# bitangent for "vertical." Both are perpendicular to wall_normal so
-	# there is no in-axis motion component pushing us out of the glass.
-	var delta: Vector3 = tangent * _facing.x + bitangent * _facing.y
-	position += delta * gait_speed * dt
+	# Keep crawl speed mostly steady; pulse drives the foot wave, not stop-go.
+	var target_speed: float = SPEED * crawl_speed * speed_mult
+	_crawl_speed_smoothed = move_toward(
+		_crawl_speed_smoothed, target_speed, 0.45 * dt)
+	var gait_speed: float = _crawl_speed_smoothed * (0.94 + 0.06 * pulse_factor)
+	var crawl_dir: Vector3 = tangent * _facing.x + bitangent * _facing.y
+	if crawl_dir.length_squared() > 1e-6:
+		crawl_dir = crawl_dir.normalized()
+		var pre_move: Vector3 = position
+		position += crawl_dir * gait_speed * dt
+		_apply_wall_orientation(crawl_dir, dt)
+		_handle_boundary_bounce(tangent, bitangent, pre_move)
+	else:
+		_apply_wall_orientation(tangent, dt)
 
-	# Visual squash: shell expands then compresses through the pulse, like the
-	# body wave passing through it.
-	var squash: float = 1.0 + (pulse_factor - 0.5) * 0.18
-	_apply_squash(squash, up)
+	# Visual squash: subtle foot wave (decoupled from translation speed).
+	var squash: float = 1.0 + (pulse_factor - 0.5) * 0.12
+	_apply_squash(squash)
+
+	# Soft spacing nudge (accumulated on scan ticks, eased here every frame).
+	if _spacing_push.length_squared() > 1e-8:
+		position += _spacing_push * clampf(dt * 14.0, 0.0, 1.0)
+		_spacing_push = _spacing_push.lerp(Vector3.ZERO, clampf(dt * 10.0, 0.0, 1.0))
 
 	# Clamp to wall rectangle (per-axis box clamp; this is the gross "stay in
 	# the rect" bound).
@@ -401,7 +422,7 @@ func _process(dt: float) -> void:
 		_apply_local_spacing(tangent, bitangent)
 
 
-func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
+func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> void:
 	# Scan the world for waste particles near our wall. If one is close
 	# enough, point our motion toward it in the wall-tangent plane. When we
 	# get very close, consume it (produces a tiny snail pellet).
@@ -464,6 +485,7 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
 				best = p
 
 	if best == null:
+		_pursuing_waste = false
 		return
 	# Compare in global space consistently — both endpoints in global, so
 	# the snail's parent transform doesn't skew the comparison.
@@ -495,7 +517,7 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3) -> void:
 	var dy: float = to_w.dot(bitangent)
 	var dir := Vector2(dx, dy)
 	if dir.length() > 0.01:
-		_direction = dir.normalized()
+		_steer_direction(dir.normalized(), dt)
 		_paused = false
 		# Trail-mode flag: while pursuing, the foot pulse goes faster so the
 		# snail visibly speeds up toward food. Reset by _choose_new_direction
@@ -518,16 +540,82 @@ func _get_sim() -> Node:
 	return null
 
 
-func _apply_squash(squash_y: float, _up: Vector3) -> void:
-	# Apply vertical squash by scaling on the wall-normal axis (which is the
-	# snail's "up" relative to its wall). Use absolute scale (preserve current
-	# baby/adult size factor).
+func _sync_initial_orientation() -> void:
+	var tangent: Vector3
+	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
+		tangent = Vector3.RIGHT
+	else:
+		tangent = wall_normal.cross(Vector3.UP).normalized()
+	var bitangent: Vector3 = tangent.cross(wall_normal).normalized()
+	_apply_wall_orientation(tangent * _facing.x + bitangent * _facing.y, 1.0)
+
+
+func _steer_direction(target: Vector2, dt: float) -> void:
+	if target.length_squared() < 1e-6:
+		return
+	_direction = _direction.lerp(target, clampf(dt * STEER_RATE, 0.0, 1.0))
+	if _direction.length_squared() > 1e-6:
+		_direction = _direction.normalized()
+
+
+func _shell_up() -> Vector3:
+	# Dorsal axis: into the tank on vertical glass, world-up on the substrate.
+	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
+		return Vector3.UP
+	return (-wall_normal).normalized()
+
+
+func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
+	var crawl_dir: Vector3 = crawl_hint
+	if crawl_dir.length_squared() < 1e-6:
+		return
+	crawl_dir = crawl_dir.normalized()
+	var up: Vector3 = _shell_up()
+	if absf(crawl_dir.dot(up)) > 0.92:
+		var tangent: Vector3 = wall_normal.cross(Vector3.UP)
+		if tangent.length_squared() < 1e-6:
+			tangent = Vector3.RIGHT
+		crawl_dir = tangent.normalized()
+	var target_basis: Basis = Basis.looking_at(crawl_dir, up)
+	var current: Basis = transform.basis.orthonormalized()
+	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
+
+
+func _handle_boundary_bounce(tangent: Vector3, bitangent: Vector3, pre_move: Vector3) -> void:
+	const EPS: float = 0.04
+	var hit := false
+	if position.x <= wall_min.x + EPS and pre_move.x > position.x:
+		hit = true
+	elif position.x >= wall_max.x - EPS and pre_move.x < position.x:
+		hit = true
+	if position.y <= wall_min.y + EPS and pre_move.y > position.y:
+		hit = true
+	elif position.y >= wall_max.y - EPS and pre_move.y < position.y:
+		hit = true
+	if position.z <= wall_min.z + EPS and pre_move.z > position.z:
+		hit = true
+	elif position.z >= wall_max.z - EPS and pre_move.z < position.z:
+		hit = true
+	if not hit:
+		return
+	# Slide along the wall instead of vibrating into the bound.
+	var slide := Vector2(_direction.x, _direction.y)
+	if slide.length_squared() < 1e-6:
+		slide = Vector2(
+			randf_range(-1.0, 1.0),
+			randf_range(-1.0, 1.0),
+		)
+	slide = slide.rotated(PI * 0.5 * (1.0 if randf() > 0.5 else -1.0))
+	if slide.length_squared() > 1e-6:
+		_direction = slide.normalized()
+	_t_until_turn = minf(_t_until_turn, randf_range(1.5, 3.5))
+
+
+func _apply_squash(squash_y: float) -> void:
+	# Apply vertical squash in local space (shell height pulse on the foot).
 	var base: float = 0.5 if is_baby else 1.0
-	# Animate growth from 0.5 -> 1.0 for babies as they age.
 	if is_baby:
 		base = 0.5 + 0.5 * clampf(age / MATURITY_AGE, 0.0, 1.0)
-	# Squash along wall_normal direction (the "thickness" of the snail).
-	# Approximation: just scale on Y if wall is vertical-ish.
 	scale = Vector3(base, base * squash_y, base)
 
 
@@ -746,11 +834,11 @@ func _apply_local_spacing(tangent: Vector3, bitangent: Vector3) -> void:
 		if d2 < 1e-6 or d2 >= SPACE_R * SPACE_R:
 			continue
 		var dir2 := Vector2(dx, dy).normalized()
-		var merged: Vector2 = _direction + dir2 * 0.9
+		var merged: Vector2 = _direction + dir2 * 0.55
 		if merged.length_squared() > 1e-6:
 			_direction = merged.normalized()
-		position += (tangent * dir2.x + bitangent * dir2.y) \
-			* (SPACE_R - sqrt(d2)) * 0.55
+		_spacing_push += (tangent * dir2.x + bitangent * dir2.y) \
+			* (SPACE_R - sqrt(d2)) * 0.35
 		pushed += 1
 		if pushed >= 4:
 			break

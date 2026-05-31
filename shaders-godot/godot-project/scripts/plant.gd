@@ -1457,6 +1457,19 @@ func _decay_one_voxel() -> void:
 	_recalc_height()
 
 
+# Aquascape trim tool — remove top fraction of stem, return snapshot for undo.
+func trim_for_aquascape(frac: float) -> Dictionary:
+	if is_dying or voxels.is_empty():
+		return {}
+	var snap: Dictionary = to_save_dict()
+	var remove_n: int = maxi(1, int(ceil(float(voxels.size()) * clampf(frac, 0.05, 0.75))))
+	for _i in remove_n:
+		if voxels.is_empty():
+			break
+		_decay_one_voxel()
+	return snap
+
+
 func _shed_oldest_leaf() -> void:
 	# Drop the oldest (bottom) leaf, creating detritus. Leaves are MultiMesh
 	# instances now, so we hide the whole handle group instead of freeing a node.

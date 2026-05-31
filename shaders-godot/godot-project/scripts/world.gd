@@ -108,6 +108,8 @@ const C_STONE_LIGHT := Color8(85, 85, 96)
 var _rng := RandomNumberGenerator.new()
 var sim: SimDriver = null
 var substrate_grid: SubstrateGrid = null
+var terrain_grid: TerrainVoxelGrid = null
+var _substrate_container: Node3D = null
 var fauna_root: Node3D = null
 var plants_root: Node3D = null
 var waste_root: Node3D = null
@@ -716,21 +718,21 @@ func clamp_xz_in_tank(x: float, z: float, margin: float = 0.25) -> Vector2:
 func fits_plant_at(x: float, z: float, radius: float, margin: float = 0.25,
 		world_y: float = NAN) -> bool:
 	if is_nan(world_y):
-		world_y = SUBSTRATE_DEPTH
+		world_y = column_surface_y(x, z)
 	return _footprint().fits_point_with_radius(x, z, radius, margin, world_y)
 
 
 func lateral_room_at(x: float, z: float, margin: float = 0.25,
 		world_y: float = NAN) -> float:
 	if is_nan(world_y):
-		world_y = SUBSTRATE_DEPTH
+		world_y = column_surface_y(x, z)
 	return _footprint().lateral_room(x, z, margin, world_y)
 
 
 func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
 		world_y: float = NAN) -> Vector2:
 	if is_nan(world_y):
-		world_y = SUBSTRATE_DEPTH
+		world_y = column_surface_y(x, z)
 	var fp := _footprint()
 	var xz: Vector2 = fp.clamp_inside(x, z, margin + radius, world_y)
 	if fp.fits_point_with_radius(xz.x, xz.y, radius, margin, world_y):
@@ -783,7 +785,40 @@ func _is_inside_tank(x: float, z: float, margin: float = 0.0) -> bool:
 func _substrate_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
 	if TANK_SHAPE == "sphere":
 		return _sphere_substrate_voxel_ok(x, y, z, margin)
-	return _footprint().is_substrate_voxel(x, y, z, margin * 0.35)
+	return _footprint().is_substrate_voxel(x, y, z, margin)
+
+
+# Aquascape sculpting: allow stacking above the default substrate depth up to
+# the water line, as long as XZ stays inside the tank footprint.
+func _sculpt_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
+	if y < -0.05 or y > WATER_HEIGHT - 0.35:
+		return false
+	if TANK_SHAPE == "sphere":
+		return _sphere_sculpt_voxel_ok(x, y, z, margin)
+	return _footprint().is_inside(x, z, margin)
+
+
+func _sphere_sculpt_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
+	var bowl: Dictionary = _sphere_bowl_params()
+	if bowl.is_empty():
+		return false
+	var R: float = float(bowl["R"]) - margin - 0.14
+	var cy: float = float(bowl["cy"])
+	if y < 0.0 or y > WATER_HEIGHT - 0.35:
+		return false
+	var r_max: float = _bowl_ring_radius(R, cy, y)
+	if y < cy - 0.05:
+		var dy_below: float = cy - y
+		if dy_below > R:
+			return false
+		r_max = minf(r_max, sqrt(maxf(0.0, R * R - dy_below * dy_below)))
+	return x * x + z * z <= r_max * r_max
+
+
+func _terrain_cell_ok(x: float, y: float, z: float, margin: float) -> bool:
+	if y <= SUBSTRATE_DEPTH + TerrainVoxelGrid.CELL_SIZE * 0.6:
+		return _substrate_voxel_ok(x, y, z, margin)
+	return _sculpt_voxel_ok(x, y, z, margin)
 
 
 func _sample_point_in_tank(y_min: float, y_max: float, margin: float = 0.35) -> Vector3:
@@ -1019,7 +1054,8 @@ func _pick_ecology_site(is_saltwater: bool, z_min: float, z_max: float,
 	for _i in 14:
 		var c: Vector2 = _sample_clear_xz_in_band(
 			z_min, z_max, margin, clearance, 36, 0.0, edge_bias)
-		var h: Dictionary = habitat_profile_at(Vector3(c.x, SUBSTRATE_DEPTH, c.y))
+		var h: Dictionary = habitat_profile_at(
+			Vector3(c.x, column_surface_y(c.x, c.y), c.y))
 		var substrate_local: float = float(h.get("substrate_local", 0.5))
 		var cover: float = float(h.get("cover", 0.0))
 		var edge: float = float(h.get("edge", 0.5))
@@ -1044,10 +1080,11 @@ func habitat_profile_at(pos: Vector3) -> Dictionary:
 	var cover: float = _hardscape_cover_density(x, z, 1.0)
 	var edge: float = _edge_proximity(x, z)
 	var col_h: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH)
-	var depth: float = clampf((y - SUBSTRATE_DEPTH) / col_h, 0.0, 1.0)
+	var floor_y: float = column_surface_y(x, z)
+	var depth: float = clampf((y - floor_y) / col_h, 0.0, 1.0)
 	var substrate_richness: float = 0.5
 	if substrate_grid != null:
-		var raw: float = substrate_grid.get_at(Vector3(x, SUBSTRATE_DEPTH, z))
+		var raw: float = substrate_grid.get_at(Vector3(x, floor_y, z))
 		substrate_richness = clampf(
 			(raw - substrate_grid.NUTRIENT_BASELINE) / 0.5, 0.0, 1.0)
 	return {
@@ -1123,101 +1160,169 @@ func _sphere_substrate_voxel_ok(x: float, y: float, z: float, margin: float) -> 
 
 
 func _build_substrate() -> void:
-	var container := Node3D.new()
-	container.name = "Substrate"
-	add_child(container)
+	_substrate_container = Node3D.new()
+	_substrate_container.name = "Substrate"
+	add_child(_substrate_container)
 
-	var voxel_size := 0.4
-	var bowl: Dictionary = {}
-	var y_max: float = SUBSTRATE_DEPTH
-	var rows: int = int(ceil(SUBSTRATE_DEPTH / voxel_size)) + 1
-	if TANK_SHAPE == "sphere":
-		bowl = _sphere_bowl_params()
+	terrain_grid = TerrainVoxelGrid.new()
+	var voxel_size: float = TerrainVoxelGrid.CELL_SIZE
 	var ext: Vector2 = _footprint().bounding_half_extents(voxel_size * 0.15)
-	if TANK_SHAPE == "sphere" and not bowl.is_empty():
-		var build_rad: float = float(bowl["R"]) - 0.12
-		ext = Vector2(build_rad, build_rad)
-	var build_half_w: float = ext.x
-	var build_half_d: float = ext.y
-	var cols: int = int((build_half_w * 2.0) / voxel_size)
-	var depths: int = int((build_half_d * 2.0) / voxel_size)
+	if TANK_SHAPE == "sphere":
+		var bowl: Dictionary = _sphere_bowl_params()
+		if not bowl.is_empty():
+			var build_rad: float = float(bowl["R"]) - 0.12
+			ext = Vector2(build_rad, build_rad)
+	var default_cap: int = TerrainVoxelGrid.CellMaterial.AQUASOIL
+	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		default_cap = TerrainVoxelGrid.material_from_substrate_type(String(cfg.substrate_type))
 
-	# First pass: collect transforms grouped by snapped color key and caustic status.
-	# Each bucket is key -> {transforms: Array[Vector3], caustic: bool, color: Color}
-	var buckets: Dictionary = {}
-	var soil_rows: int = int(rows * 0.7)
-	for r in rows:
-		for c in cols:
-			for d in depths:
-				var x: float = -build_half_w + (c + 0.5) * voxel_size
-				var z: float = -build_half_d + (d + 0.5) * voxel_size
-				var y: float = (r + 0.5) * voxel_size
-				if y > y_max:
-					continue
-				if not _substrate_voxel_ok(x, y, z, voxel_size * 0.12):
-					continue
-				if TANK_SHAPE != "sphere" and r == rows - 1 and _rng.randf() < 0.12:
-					continue
-				var color: Color
-				var ramp: Array = ACTIVE_SOIL_RAMP if ACTIVE_SOIL_RAMP.size() == 6 else C_SOIL_RAMP
-				var floor_y: float = 0.0
-				var rel: float = 0.5
-				var ramp_idx: int = 0
-				if TANK_SHAPE == "sphere" and not bowl.is_empty():
-					var cy_bed: float = float(bowl["cy"])
-					floor_y = _sphere_substrate_column_floor(x, z, bowl)
-					rel = (y - floor_y) / maxf(voxel_size, cy_bed - floor_y)
-					if y < floor_y + voxel_size * 0.6:
-						color = C_GRAVEL.lerp(ramp[0], 0.2)
-						ramp_idx = 0
-					else:
-						ramp_idx = clampi(int(round(rel * 5.0)), 0, 5)
-						color = ramp[ramp_idx]
-				else:
-					if y < float(soil_rows) * voxel_size:
-						color = C_GRAVEL.lerp(ramp[0], 0.2)
-						ramp_idx = 0
-					else:
-						rel = (y - float(soil_rows) * voxel_size) / maxf(
-							voxel_size, float(rows - soil_rows) * voxel_size)
-						ramp_idx = clampi(int(round(rel * 5.0)), 0, 5)
-						color = ramp[ramp_idx]
-				# Bucket by ramp slot + caustic flag — not per-voxel random color.
-				var is_caustic: bool = false
-				if TANK_SHAPE == "sphere" and not bowl.is_empty():
-					is_caustic = y > float(bowl["cy"]) - voxel_size * 0.5 and y < float(bowl["cy"]) + voxel_size * 1.5
-				else:
-					is_caustic = r >= rows - 2
-				var bucket_key := "%d_%d" % [ramp_idx, 1 if is_caustic else 0]
-				if not buckets.has(bucket_key):
-					buckets[bucket_key] = {"transforms": [], "caustic": is_caustic, "color": color}
-				buckets[bucket_key]["transforms"].append(Vector3(x, y, z))
+	terrain_grid.configure(TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ext.x, ext.y)
+	var bowl_params: Dictionary = _sphere_bowl_params() if TANK_SHAPE == "sphere" else {}
+	terrain_grid.populate_initial(
+		func(x: float, y: float, z: float, margin: float) -> bool:
+			return _substrate_voxel_ok(x, y, z, margin),
+		default_cap,
+		_rng,
+		TANK_SHAPE,
+		bowl_params,
+	)
+	rebuild_substrate_mesh()
 
-	# Second pass: create one MultiMeshInstance3D per bucket (color + caustic status).
+
+func rebuild_substrate_mesh() -> void:
+	if terrain_grid == null or _substrate_container == null:
+		return
+	for child in _substrate_container.get_children():
+		child.queue_free()
+	var voxel_size: float = TerrainVoxelGrid.CELL_SIZE
+	var buckets: Dictionary = terrain_grid.build_render_buckets(
+		SUBSTRATE_DEPTH,
+		2,
+		func(x: float, y: float, z: float, margin: float) -> bool:
+			return _terrain_cell_ok(x, y, z, margin),
+	)
 	var box_mesh: BoxMesh = VoxelMat.get_box(Vector3(voxel_size, voxel_size, voxel_size))
 	for b_key in buckets:
 		var bucket: Dictionary = buckets[b_key]
 		var positions: Array = bucket["transforms"]
+		if positions.is_empty():
+			continue
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
 		mm.mesh = box_mesh
 		mm.instance_count = positions.size()
+		mm.visible_instance_count = positions.size()
 		for i in positions.size():
 			var t := Transform3D()
 			t.origin = positions[i]
 			mm.set_instance_transform(i, t)
-
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
-		# Use the dedicated opaque/caustic substrate shaders to avoid transparency sorting/flickering.
+		# Substrate voxels are small; default MultiMesh AABB can frustum-cull rows.
+		mmi.custom_aabb = AABB(
+			Vector3(-TANK_HALF_W - 1.0, -0.5, -TANK_HALF_D - 1.0),
+			Vector3(TANK_HALF_W * 2.0 + 2.0, WATER_HEIGHT + 1.0, TANK_HALF_D * 2.0 + 2.0),
+		)
 		var mat: ShaderMaterial
+		var mat_id: int = int(bucket.get("material_id", 0))
 		if bucket["caustic"]:
-			mat = VoxelMat.make_substrate_caustic(bucket["color"])
+			mat = VoxelMat.make_substrate_caustic(bucket["color"], mat_id)
 		else:
-			mat = VoxelMat.make_substrate_opaque(bucket["color"])
+			mat = VoxelMat.make_substrate_opaque(bucket["color"], mat_id)
 		mmi.material_override = mat
-		container.add_child(mmi)
+		_substrate_container.add_child(mmi)
+	if substrate_grid != null:
+		terrain_grid.sync_nutrients_to_substrate(substrate_grid)
 
+
+func column_surface_y(x: float, z: float) -> float:
+	if terrain_grid != null:
+		return terrain_grid.surface_y_at(x, z)
+	return SUBSTRATE_DEPTH
+
+
+func floor_at(x: float, z: float) -> Vector3:
+	return Vector3(x, column_surface_y(x, z), z)
+
+
+func spawn_position_on_floor(x: float, z: float, y_offset: float = 0.0) -> Vector3:
+	return Vector3(x, column_surface_y(x, z) + y_offset, z)
+
+
+func _terrain_sculpt_ok() -> Callable:
+	return func(px: float, py: float, pz: float, margin: float) -> bool:
+		return _sculpt_voxel_ok(px, py, pz, margin)
+
+
+func terrain_place_tool(x: float, z: float, tool: String) -> Dictionary:
+	if terrain_grid == null or not TerrainVoxelGrid.tool_is_terrain(tool):
+		return {}
+	var mat: int = TerrainVoxelGrid.material_from_tool(tool)
+	var sculpt_ok: Callable = _terrain_sculpt_ok()
+	var undo: Dictionary = terrain_grid.place_at_column(x, z, mat, sculpt_ok)
+	if not undo.is_empty() and TerrainVoxelGrid.is_fallable(mat):
+		terrain_grid.settle_gravity(sculpt_ok)
+	return undo
+
+
+func terrain_place_brush(x: float, z: float, radius_cells: int, tool: String) -> Array:
+	if terrain_grid == null or not TerrainVoxelGrid.tool_is_terrain(tool):
+		return []
+	var mat: int = TerrainVoxelGrid.material_from_tool(tool)
+	var sculpt_ok: Callable = _terrain_sculpt_ok()
+	var undos: Array = terrain_grid.place_brush(x, z, radius_cells, mat, sculpt_ok)
+	if not undos.is_empty() and TerrainVoxelGrid.is_fallable(mat):
+		terrain_grid.settle_gravity(sculpt_ok)
+	return undos
+
+
+func terrain_dig(x: float, z: float) -> Dictionary:
+	if terrain_grid == null:
+		return {}
+	var undo: Dictionary = terrain_grid.dig_at_column(x, z)
+	if not undo.is_empty():
+		terrain_grid.settle_gravity(_terrain_sculpt_ok())
+	return undo
+
+
+func terrain_dig_brush(x: float, z: float, radius_cells: int) -> Array:
+	if terrain_grid == null:
+		return []
+	var undos: Array = terrain_grid.dig_brush(x, z, radius_cells)
+	if not undos.is_empty():
+		terrain_grid.settle_gravity(_terrain_sculpt_ok())
+	return undos
+
+
+func terrain_restore_cell(rec: Dictionary) -> void:
+	if terrain_grid == null:
+		return
+	terrain_grid.restore_cell(rec)
+
+
+func terrain_to_save_dict() -> Dictionary:
+	if terrain_grid == null:
+		return {}
+	return terrain_grid.to_save_dict()
+
+
+func terrain_apply_save_dict(d: Dictionary) -> bool:
+	if terrain_grid == null or d.is_empty():
+		return false
+	var ok: bool = terrain_grid.apply_save_dict(d)
+	if ok:
+		rebuild_substrate_mesh()
+	return ok
+
+
+func sync_terrain_nutrients() -> void:
+	if terrain_grid == null or substrate_grid == null:
+		return
+	terrain_grid.sync_nutrients_to_substrate(substrate_grid)
+	var peat_n: int = terrain_grid.count_exposed_peat()
+	if peat_n > 0:
+		tannins = clampf(tannins + float(peat_n) * 0.000002, 0.0, 1.0)
 
 
 func _build_hardscape(populate: bool = true) -> void:
@@ -2023,7 +2128,7 @@ func _respawn_extinct_fauna() -> void:
 		for i in shrimp_count:
 			var xz: Vector2 = _sample_clear_xz_in_band(
 				-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6, 0.45, 36, 0.0, 0.44)
-			var sp := Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y)
+			var sp := spawn_position_on_floor(xz.x, xz.y, 0.1)
 			var s := Shrimp.new()
 			fauna_root.add_child(s)
 			s.global_position = sp
@@ -2084,7 +2189,7 @@ func _spawn_initial_plants() -> void:
 			var fit: Vector2 = clamp_plant_site(px, pz, 0.35, 0.3)
 			if not fits_plant_at(fit.x, fit.y, 0.35, 0.3):
 				continue
-			_spawn_plant(species_specs[0], Vector3(fit.x, SUBSTRATE_DEPTH, fit.y),
+			_spawn_plant(species_specs[0], spawn_position_on_floor(fit.x, fit.y),
 				_rng.randi_range(2, 5))
 	await get_tree().process_frame
 
@@ -2093,13 +2198,13 @@ func _spawn_initial_plants() -> void:
 	for i in 28:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			mid_band.x, mid_band.y, 0.3, 0.55, 36, 0.45, 0.48)
-		_spawn_plant(species_specs[1], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+		_spawn_plant(species_specs[1], spawn_position_on_floor(xz.x, xz.y),
 			_rng.randi_range(2, 4))
 	await get_tree().process_frame
 	for i in 14:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			mid_band.x, mid_band.y, 0.3, 0.55, 36, 0.45, 0.48)
-		_spawn_plant(species_specs[3], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+		_spawn_plant(species_specs[3], spawn_position_on_floor(xz.x, xz.y),
 			_rng.randi_range(2, 4))
 	await get_tree().process_frame
 
@@ -2108,7 +2213,7 @@ func _spawn_initial_plants() -> void:
 	for i in 55:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			fg_band.x, fg_band.y, 0.3, 0.45, 36, 0.25, 0.58)
-		_spawn_plant(species_specs[2], Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+		_spawn_plant(species_specs[2], spawn_position_on_floor(xz.x, xz.y),
 			_rng.randi_range(1, 3))
 		# Yield mid-carpet too - this is the densest single block (55 plants).
 		if i == 27:
@@ -2148,7 +2253,7 @@ func _spawn_initial_plants() -> void:
 		var sp_xz: Vector2 = _sample_clear_xz_in_band(
 			scatter_band.x, scatter_band.y, 0.55, 0.7, 36, 0.55, 0.50)
 		sp_xz = clamp_plant_site(sp_xz.x, sp_xz.y, 0.55, 0.5)
-		sp.global_position = Vector3(sp_xz.x, SUBSTRATE_DEPTH, sp_xz.y)
+		sp.global_position = spawn_position_on_floor(sp_xz.x, sp_xz.y)
 		sp.ramp_override = spiral_ramps[i % spiral_ramps.size()]
 		sp.water_surface_y = WATER_HEIGHT
 		sp.generation = 0
@@ -2174,7 +2279,7 @@ func _spawn_initial_plants() -> void:
 		plants_root.add_child(bp)
 		var bp_xz: Vector2 = _sample_clear_xz_in_band(
 			-TANK_HALF_D * 0.85, TANK_HALF_D * 0.7, 0.4, 0.6, 36, 0.40, 0.46)
-		bp.global_position = Vector3(bp_xz.x, SUBSTRATE_DEPTH, bp_xz.y)
+		bp.global_position = spawn_position_on_floor(bp_xz.x, bp_xz.y)
 		bp.ramp_override = fern_ramp
 		bp.water_surface_y = WATER_HEIGHT
 		bp.generation = 0
@@ -2197,7 +2302,7 @@ func _spawn_initial_plants() -> void:
 			false, -TANK_HALF_D * 0.8, TANK_HALF_D * 0.8, 0.4, 0.45)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = "hydra_fresh" if randf() < 0.55 else "sponge_fresh"
 		if c.coral_form == "hydra_fresh":
 			c.ramp_override = [
@@ -2264,7 +2369,7 @@ func _spawn_initial_corals() -> void:
 			-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.55, 0.4, 0.55, 36, 0.35, 0.52)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = "branching" if _rng.randf() < 0.6 else "staghorn_fern"
 		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
 		c.ramp_override = pal
@@ -2284,7 +2389,7 @@ func _spawn_initial_corals() -> void:
 		var xz: Vector2 = _sample_clear_xz_in_band(-0.5, 1.0, 0.4, 0.45, 36, 0.0, 0.40)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = "dome" if _rng.randf() < 0.5 else "brain"
 		var pal: Array = coral_palettes[2 + _rng.randi() % 2]  # palettes 2 or 3
 		c.ramp_override = pal
@@ -2304,7 +2409,7 @@ func _spawn_initial_corals() -> void:
 		var xz: Vector2 = _sample_clear_xz_in_band(-1.5, 1.5, 0.5, 0.5, 36, 0.0, 0.44)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = "feathery"
 		c.ramp_override = coral_palettes[4]   # lavender
 		c.tip_color = coral_palettes[4][5]
@@ -2324,7 +2429,7 @@ func _spawn_initial_corals() -> void:
 			TANK_HALF_D * 0.25, TANK_HALF_D * 0.95, 0.4, 0.45, 36, 0.30, 0.56)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = "plate"
 		c.ramp_override = coral_palettes[5]   # yellow-amber
 		c.tip_color = coral_palettes[5][5]
@@ -2344,7 +2449,7 @@ func _spawn_initial_corals() -> void:
 			true, -TANK_HALF_D * 0.7, TANK_HALF_D * 0.85, 0.45, 0.45, 0.48)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		var form_roll: float = randf()
 		if form_roll < 0.45:
 			c.coral_form = "anemone"
@@ -2462,7 +2567,7 @@ func _maybe_recruit_coral() -> void:
 				0.04 + bloom * 0.08)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = Vector3(xz.x, SUBSTRATE_DEPTH, xz.y)
+		c.global_position = spawn_position_on_floor(xz.x, xz.y)
 		c.coral_form = form
 		c.ramp_override = pal
 		c.tip_color = pal[pal.size() - 1].lightened(0.08)
@@ -2513,7 +2618,7 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	if seed_config.has("max_horizontal_extent"):
 		seed_reach = maxf(seed_reach, float(seed_config["max_horizontal_extent"]) + 0.08)
 	var fit: Vector2 = clamp_plant_site(pos.x, pos.z, seed_reach, 0.25)
-	var sp: Vector3 = Vector3(fit.x, SUBSTRATE_DEPTH, fit.y)
+	var sp: Vector3 = spawn_position_on_floor(fit.x, fit.y)
 	if not fits_plant_at(sp.x, sp.z, seed_reach, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45):
 		var alt_band: Vector2 = _spawn_z_band("scatter")
 		var alt: Vector2 = _pick_ecology_site(
@@ -2926,7 +3031,7 @@ func _spawn_math_plants() -> void:
 		p.b = _rng.randf_range(0.09, 0.13)
 		p.total_turns = _rng.randf_range(3.0, 3.8)
 		p.y_per_turn = _rng.randf_range(0.6, 0.85)
-		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + 0.1, xz.y), 0.35), ramp_choice)
+		p.init_at(clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.35), ramp_choice)
 		_math_plants.append(p)
 
 	# Cattail reeds.
@@ -2940,7 +3045,7 @@ func _spawn_math_plants() -> void:
 		p.lean_amplitude = _rng.randf_range(0.4, 0.8)
 		p.head_voxels = _rng.randi_range(4, 6)
 		p.water_surface_y = WATER_HEIGHT
-		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + 0.05, xz.y), 0.35),
+		p.init_at(clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.05), 0.35),
 			Color8(110, 145, 75),
 			Color8(110, 78, 48),
 			Color8(95, 140, 75))
@@ -2963,7 +3068,7 @@ func _spawn_math_plants() -> void:
 		# heights - we anchor to substrate here; future "moss on log"
 		# pass could parent these to a hardscape log instead.
 		var y_jitter: float = randf_range(0.1, 0.6)
-		p.init_at(clamp_xyz_in_tank(Vector3(xz.x, SUBSTRATE_DEPTH + y_jitter, xz.y), 0.35), moss_ramp)
+		p.init_at(clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, y_jitter), 0.35), moss_ramp)
 		_math_plants.append(p)
 
 
@@ -3043,7 +3148,7 @@ func spawn_coral_from_genome(genome: Dictionary) -> bool:
 		return false
 	if _is_hardscape_occupied(fit.x, fit.y, 0.45):
 		return false
-	var pos: Vector3 = clamp_xyz_in_tank(Vector3(fit.x, SUBSTRATE_DEPTH, fit.y), 0.3)
+	var pos: Vector3 = clamp_xyz_in_tank(spawn_position_on_floor(fit.x, fit.y), 0.3)
 	var c := Coral.new()
 	plants_root.add_child(c)
 	c.global_position = pos
@@ -4279,7 +4384,7 @@ func _spawn_mulm_layer() -> void:
 		bm.size = Vector3(0.20, 0.07, 0.20)
 		mi.mesh = bm
 		var m_xz: Vector2 = _sample_substrate_xz(0.2, 0.44)
-		mi.position = Vector3(m_xz.x, SUBSTRATE_DEPTH + 0.05, m_xz.y)
+		mi.position = Vector3(m_xz.x, column_surface_y(m_xz.x, m_xz.y) + 0.05, m_xz.y)
 		mi.material_override = VoxelMat.make(Color8(34, 26, 18))
 		container.add_child(mi)
 		_mulm_voxels.append(mi)
@@ -4402,7 +4507,7 @@ func add_mulm_voxel(pos: Vector3) -> void:
 	var bm := BoxMesh.new()
 	bm.size = Vector3(0.20, 0.07, 0.20)
 	mi.mesh = bm
-	mi.position = Vector3(pos.x, SUBSTRATE_DEPTH + 0.05, pos.z)
+	mi.position = Vector3(pos.x, column_surface_y(pos.x, pos.z) + 0.05, pos.z)
 	mi.material_override = VoxelMat.make(Color8(34, 26, 18))
 	container.add_child(mi)
 	_mulm_voxels.append(mi)
@@ -4430,7 +4535,7 @@ func _spawn_substrate_film_voxel() -> void:
 	var bm := BoxMesh.new()
 	bm.size = Vector3(0.22, 0.04, 0.22)
 	mi.mesh = bm
-	mi.position = Vector3(xz.x, SUBSTRATE_DEPTH + 0.08, xz.y)
+	mi.position = Vector3(xz.x, column_surface_y(xz.x, xz.y) + 0.08, xz.y)
 	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
 	var green: Color = Color8(72, 118, 58)
 	var brown: Color = Color8(88, 72, 44)
@@ -4489,7 +4594,7 @@ func _maybe_walstad_understory() -> void:
 		if _is_hardscape_occupied(xz.x, xz.y, 0.4):
 			continue
 		spawn_seedling(
-			Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
+			spawn_position_on_floor(xz.x, xz.y),
 			carpet_ramp, _rng.randi_range(1, 4), cfg)
 
 
@@ -4670,11 +4775,11 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 			return true
 		"shrimp":
 			var sh_xz: Vector2 = _sample_substrate_xz(0.45, 0.35)
-			_spawn_shrimp_at(genome.duplicate(true), Vector3(sh_xz.x, SUBSTRATE_DEPTH + 0.15, sh_xz.y))
+			_spawn_shrimp_at(genome.duplicate(true), spawn_position_on_floor(sh_xz.x, sh_xz.y, 0.15))
 			return true
 		"snail":
 			var sn_xz: Vector2 = _sample_substrate_xz(0.45, 0.38)
-			_spawn_snail_at(genome.duplicate(true), Vector3(sn_xz.x, SUBSTRATE_DEPTH + 0.12, sn_xz.y))
+			_spawn_snail_at(genome.duplicate(true), spawn_position_on_floor(sn_xz.x, sn_xz.y, 0.12))
 			return true
 		"coral":
 			return spawn_coral_from_genome(genome.duplicate(true))
@@ -4692,7 +4797,7 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 				"generation": int(genome.get("generation", 0)) + 1,
 				"parent_lineage": String(genome.get("plant_name", "Library stock")),
 			}
-			spawn_seedling(Vector3(p_xz.x, SUBSTRATE_DEPTH, p_xz.y),
+			spawn_seedling(spawn_position_on_floor(p_xz.x, p_xz.y),
 				genome.get("ramp_override", []), cfg["generation"], cfg)
 			return true
 		_:
@@ -4871,7 +4976,7 @@ func _spawn_initial_shrimp() -> void:
 		sh.age = g["max_age_s"] * randf_range(0.15, 0.6)
 		fauna_root.add_child(sh)
 		var sh_xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 0.4)
-		sh.global_position = Vector3(sh_xz.x, SUBSTRATE_DEPTH + 0.15, sh_xz.y)
+		sh.global_position = spawn_position_on_floor(sh_xz.x, sh_xz.y, 0.15)
 		sh.init_genome(g)
 		sim.register_shrimp(sh)
 		# Yield every 4 shrimp - each builds ~15 voxels + an egg cluster.
@@ -4912,7 +5017,7 @@ func _spawn_marine_shrimp(yield_during: bool = true) -> void:
 		fauna_root.add_child(sh)
 		var sh_xz: Vector2 = _random_xz_in_band(
 			-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 0.4)
-		sh.global_position = Vector3(sh_xz.x, SUBSTRATE_DEPTH + 0.15, sh_xz.y)
+		sh.global_position = spawn_position_on_floor(sh_xz.x, sh_xz.y, 0.15)
 		sh.init_genome(g)
 		sim.register_shrimp(sh)
 		if yield_during and (i + 1) % 3 == 0:

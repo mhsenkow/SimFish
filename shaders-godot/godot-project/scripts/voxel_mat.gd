@@ -53,14 +53,14 @@ static func _get_sub_opaque_shader() -> Shader:
 
 static var _sub_opaque_mat_cache: Dictionary = {}
 
-static func make_substrate_opaque(color: Color) -> ShaderMaterial:
-	var cache_key: Color = Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
+static func make_substrate_opaque(color: Color, material_id: int = 0) -> ShaderMaterial:
+	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
 	if _sub_opaque_mat_cache.has(cache_key):
 		return _sub_opaque_mat_cache[cache_key]
-		
 	var m := ShaderMaterial.new()
 	m.shader = _get_sub_opaque_shader()
 	m.set_shader_parameter("albedo", color)
+	m.set_shader_parameter("material_id", material_id)
 	_sub_opaque_mat_cache[cache_key] = m
 	return m
 
@@ -75,14 +75,14 @@ static func _get_sub_caustic_shader() -> Shader:
 
 static var _sub_caustic_mat_cache: Dictionary = {}
 
-static func make_substrate_caustic(color: Color) -> ShaderMaterial:
-	var cache_key: Color = Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
+static func make_substrate_caustic(color: Color, material_id: int = 0) -> ShaderMaterial:
+	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
 	if _sub_caustic_mat_cache.has(cache_key):
 		return _sub_caustic_mat_cache[cache_key]
-		
 	var m := ShaderMaterial.new()
 	m.shader = _get_sub_caustic_shader()
 	m.set_shader_parameter("albedo", color)
+	m.set_shader_parameter("material_id", material_id)
 	_sub_caustic_mat_cache[cache_key] = m
 	return m
 

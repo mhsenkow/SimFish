@@ -81,6 +81,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 	if _life >= MAX_LIFE:
 		return true
 	if not settled:
+		var floor_y: float = substrate_top_y
+		var w: Node = get_tree().current_scene.get_node_or_null("SubViewport/World")
+		if w != null and w.has_method("column_surface_y"):
+			floor_y = w.column_surface_y(position.x, position.z)
 		var can_fall: bool = true
 		if kind == KIND_FOOD and _life < 8.0:
 			can_fall = false
@@ -93,16 +97,14 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 			position.y -= FALL_SPEED * dt
 			position.x += sin(_life * 1.7) * 0.04 * dt
 			
-		if position.y <= substrate_top_y + voxel_size * 0.5:
-			position.y = substrate_top_y + voxel_size * 0.5
+		if position.y <= floor_y + voxel_size * 0.5:
+			position.y = floor_y + voxel_size * 0.5
 			settled = true
 			substrate.add_at(position, nutrient_value)
 			# Visible mulm: tiny chance to add a permanent dark voxel at this
 			# spot. The world node provides add_mulm_voxel; cheap and capped.
-			if randf() < 0.17:
-				var w := get_tree().current_scene.get_node_or_null("SubViewport/World")
-				if w != null and w.has_method("add_mulm_voxel"):
-					w.add_mulm_voxel(global_position)
+			if randf() < 0.17 and w != null and w.has_method("add_mulm_voxel"):
+				w.add_mulm_voxel(global_position)
 	else:
 		_settle_timer += dt
 		if _settle_timer > 4.0:
