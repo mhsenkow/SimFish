@@ -58,6 +58,9 @@ var _rail_vbox: VBoxContainer = null
 var _rail_hbox: HBoxContainer = null
 var _rail_spacer: Control = null
 var _last_rail_sync_hash: int = -1
+# Tracks last mobile orientation used for internal render sizing.
+# -1 = unset, 0 = landscape, 1 = portrait.
+var _mobile_render_orientation: int = -1
 # Idle-dim state for the top HUD (mirrors MobileHUD's behavior).
 var _hud_idle_seconds: float = 0.0
 const HUD_IDLE_DIM_SECONDS: float = 6.0
@@ -238,6 +241,7 @@ func _ready() -> void:
 	# Restore camera state if we saved it before a scene reload. Otherwise
 	# fall back to defaults set at declaration.
 	_restore_camera_state()
+	_apply_portrait_camera_defaults_if_unsaved()
 	_apply_camera()
 	# Subscribe to SimDriver stats - they emit at ~1Hz with the ecosystem snapshot.
 	await get_tree().process_frame
@@ -339,6 +343,23 @@ func _restore_camera_state() -> void:
 	)
 
 
+func _apply_portrait_camera_defaults_if_unsaved() -> void:
+	if not _is_mobile():
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or bool(cfg.camera_state_saved):
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if vp.y <= vp.x * 1.02:
+		return
+	# Portrait-first framing: pull in and tilt down a little so tall tanks read
+	# as vertical immediately on first launch (before the user saves a camera).
+	target = Vector3(0.0, 3.4, 0.0)
+	radius = 14.8
+	yaw = -0.45
+	pitch = 0.62
+
+
 # Called by the settings + render panels just before they call
 # reload_current_scene(). Stashes the current view so we can restore it
 # in the next _ready().
@@ -362,8 +383,14 @@ func _apply_render_config() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
+	var render_w: int = int(cfg.render_width)
+	var render_h: int = int(cfg.render_height)
+	if _is_mobile():
+		var oriented: Vector2i = _oriented_mobile_render_size(render_w, render_h)
+		render_w = oriented.x
+		render_h = oriented.y
 	# SubViewport size.
-	sub_viewport.size = Vector2i(int(cfg.render_width), int(cfg.render_height))
+	sub_viewport.size = Vector2i(render_w, render_h)
 	# MSAA: 0=disabled, 1=2x, 2=4x, 3=8x (matches Viewport.MSAA enum).
 	sub_viewport.msaa_3d = int(cfg.msaa) as Viewport.MSAA
 	# Palette quantize shader uniforms.
@@ -372,7 +399,7 @@ func _apply_render_config() -> void:
 		# Set dither strength + internal resolution.
 		sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
 		sm.set_shader_parameter("internal_resolution",
-			Vector2(float(cfg.render_width), float(cfg.render_height)))
+			Vector2(float(render_w), float(render_h)))
 	# If palette is disabled, swap the Display's shader to a passthrough by
 	# setting dither_strength to 0 AND increasing palette_size temporarily.
 	# Simpler: just set dither to 0 - the quantize still happens but no dither.
@@ -1941,6 +1968,7 @@ func _update_chip(key: String, value: String, sublabel: String,
 #   compact (<700, or touch+<900): minimal chips, tighter stats bar margins
 # Called once at _ready and on every viewport size_changed.
 func _on_viewport_resized() -> void:
+	_apply_mobile_render_orientation_if_needed()
 	_apply_hud_layout()
 	_apply_rail_dock_layout()
 	_apply_panel_layout()
@@ -1959,7 +1987,36 @@ func _hud_bottom_inset() -> float:
 
 
 func _want_bottom_rail(vp: Vector2) -> bool:
-	return _is_mobile() and vp.y > vp.x * 1.02
+	# Keep controls as a true right-side vertical rail on mobile portrait.
+	# The old bottom dock read as "landscape" and hid options from the right.
+	return false
+
+
+func _oriented_mobile_render_size(base_w: int, base_h: int) -> Vector2i:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if vp.x <= 0.0 or vp.y <= 0.0:
+		return Vector2i(base_w, base_h)
+	var portrait: bool = vp.y > vp.x * 1.02
+	var base_landscape: bool = base_w >= base_h
+	if portrait and base_landscape:
+		return Vector2i(base_h, base_w)
+	if not portrait and not base_landscape:
+		return Vector2i(base_h, base_w)
+	return Vector2i(base_w, base_h)
+
+
+func _apply_mobile_render_orientation_if_needed() -> void:
+	if not _is_mobile():
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if vp.x <= 0.0 or vp.y <= 0.0:
+		return
+	var portrait: bool = vp.y > vp.x * 1.02
+	var current: int = 1 if portrait else 0
+	if current == _mobile_render_orientation:
+		return
+	_mobile_render_orientation = current
+	_apply_render_config()
 
 
 func _setup_hud_styling() -> void:
