@@ -34,8 +34,7 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 		var profile: float = 1.0 - absf(t - 0.4) / 0.6
 		profile = clampf(profile, 0.2, 1.0)
 		var row_width: int = maxi(1, int(float(width) * profile))
-		@warning_ignore("integer_division")
-		var row_half: int = row_width / 2
+		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
 			var is_midrib: bool = (dx == 0)
 			var color: Color = _leaf_color(ramp, t, age_frac, is_midrib)
@@ -185,8 +184,7 @@ static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
 		# Width oscillates to create lobe effect.
 		var lobe: float = 1.0 + sin(float(i) * 1.8) * 0.4
 		var row_width: int = maxi(1, int(2.0 * lobe))
-		@warning_ignore("integer_division")
-		var row_half: int = row_width / 2
+		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
 			var is_midrib: bool = (dx == 0)
 			var color: Color = _leaf_color(ramp, t, age_frac, is_midrib)

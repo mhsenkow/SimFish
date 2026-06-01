@@ -1060,7 +1060,7 @@ func load_from_disk() -> void:
 	tank_height = cfg.get_value("tank", "height", tank_height)
 	tank_shape = cfg.get_value("tank", "shape", tank_shape)
 	# Legacy saves used "sphere" for the vertical cylinder tank.
-	if tank_shape == "sphere" and not bool(cfg.get_value("tank", "dome", false)):
+	if tank_shape == "sphere" and not cfg.get_value("tank", "dome", false):
 		tank_shape = "cylinder"
 	light_energy = cfg.get_value("light", "energy", light_energy)
 	light_yaw = cfg.get_value("light", "yaw", light_yaw)
@@ -1310,7 +1310,6 @@ static func is_desktop_platform() -> bool:
 func apply_screen_fitted_dimensions() -> void:
 	var vp: Vector2 = logical_screen_size()
 	var portrait: bool = vp.y > vp.x * 1.02
-	var mobile: bool = is_mobile_platform()
 	var desktop: bool = is_desktop_platform()
 
 	if desktop:

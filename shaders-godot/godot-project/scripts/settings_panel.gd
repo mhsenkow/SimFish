@@ -664,11 +664,11 @@ func _build_diet_chart() -> String:
 		# accent color so the eye picks them out — they're load-bearing
 		# for picking presets (don't put snails in with puffers).
 		var specials: Array[String] = []
-		if bool(g.get("snail_predator", false)):
+		if g.get("snail_predator", false):
 			specials.append("[color=%s]snail-hunter[/color]" % c_special)
-		if bool(g.get("algae_grazer", false)):
+		if g.get("algae_grazer", false):
 			specials.append("[color=%s]algae-grazer[/color]" % c_special)
-		if bool(g.get("mixed_morphs", false)):
+		if g.get("mixed_morphs", false):
 			specials.append("[color=%s]mixed morphs[/color]" % c_special)
 
 		var dim_tags: String = "[color=%s]%s · %s · %s[/color]" % [

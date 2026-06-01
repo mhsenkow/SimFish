@@ -309,7 +309,6 @@ func _sample_xz(r: RandomNumberGenerator, margin: float, z_min: float, z_max: fl
 	if shape == "hex":
 		z = r.randf_range(maxf(-(half_d - margin), z_min), minf(half_d - margin, z_max))
 		var hw: float = half_w - margin
-		var hd: float = half_d - margin
 		return Vector2(r.randf_range(-hw, hw), z)
 	return Vector2(r.randf_range(-(half_w - margin), half_w - margin), z)
 

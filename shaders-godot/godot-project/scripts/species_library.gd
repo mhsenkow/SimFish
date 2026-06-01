@@ -130,13 +130,13 @@ func _analyze_fish(entries: Array) -> Dictionary:
 	var shape_counts: Dictionary = {}
 	for e in entries:
 		var g: Dictionary = genome_from_serialisable(e.get("genome", {}))
-		if bool(g.get("snail_predator", false)):
+		if g.get("snail_predator", false):
 			pred_snail_n += 1
-		if bool(g.get("shrimp_predator", false)):
+		if g.get("shrimp_predator", false):
 			pred_shrimp_n += 1
-		if bool(g.get("armor_plates", false)):
+		if g.get("armor_plates", false):
 			armor_n += 1
-		if bool(g.get("has_barbels", false)):
+		if g.get("has_barbels", false):
 			barbels_n += 1
 		max_gen = maxi(max_gen, int(e.get("generation", 0)))
 		elong_sum += clampf(float(g.get("body_elongation", 1.0)), 0.5, 2.0)
@@ -179,7 +179,7 @@ func _analyze_shrimp(entries: Array) -> Dictionary:
 	var length_sum: float = 0.0
 	for e in entries:
 		var g: Dictionary = genome_from_serialisable(e.get("genome", {}))
-		if bool(g.get("is_cleaner", false)):
+		if g.get("is_cleaner", false):
 			cleaner_n += 1
 		max_gen = maxi(max_gen, int(e.get("generation", 0)))
 		spines_sum += clampf(float(g.get("defense_spines", 0.0)), 0.0, 1.0)
@@ -363,15 +363,15 @@ func _species_key_fish(g: Dictionary) -> String:
 		"ts" + str(int(g.get("tail_shape", 0))),
 		"mo" + str(int(g.get("mouth_orientation", 0))),
 		"pt" + str(int(g.get("pattern_type", 0))),
-		"be" + ("1" if bool(g.get("bar_edged", false)) else "0"),
-		"es" + ("1" if bool(g.get("eye_spot", false)) else "0"),
-		"vf" + ("1" if bool(g.get("ventral_feelers", false)) else "0"),
+		"be" + ("1" if g.get("bar_edged", false) else "0"),
+		"es" + ("1" if g.get("eye_spot", false) else "0"),
+		"vf" + ("1" if g.get("ventral_feelers", false) else "0"),
 		"fn" + str(int(round(clampf(float(g.get("finnage", 1.0)), 1.0, 2.2) * 2.0))),
-		"b" + ("1" if bool(g.get("has_barbels", false)) else "0"),
-		"a" + ("1" if bool(g.get("armor_plates", false)) else "0"),
-		"sp" + ("1" if bool(g.get("snail_predator", false)) else "0"),
-		"hp" + ("1" if bool(g.get("shrimp_predator", false)) else "0"),
-		"ad" + ("1" if bool(g.get("adipose_fin", false)) else "0"),
+		"b" + ("1" if g.get("has_barbels", false) else "0"),
+		"a" + ("1" if g.get("armor_plates", false) else "0"),
+		"sp" + ("1" if g.get("snail_predator", false) else "0"),
+		"hp" + ("1" if g.get("shrimp_predator", false) else "0"),
+		"ad" + ("1" if g.get("adipose_fin", false) else "0"),
 		"e" + str(int(round(clampf(float(g.get("body_elongation", 1.0)), 0.5, 2.0) * 2.0))),
 		"d" + str(int(round(clampf(float(g.get("body_depth_factor", 1.0)), 0.5, 2.0) * 2.0))),
 		"h" + str(int(round(clampf(float(g.get("head_proportion", 1.0)), 0.5, 2.0) * 2.0))),
@@ -388,7 +388,7 @@ func _species_key_shrimp(g: Dictionary) -> String:
 		_color_to_hex(g.get("base_color", Color.WHITE)),
 		_color_to_hex(g.get("accent_color", Color.GRAY)),
 		"s" + str(int(round(clampf(float(g.get("adult_voxel_scale", 0.1)), 0.06, 0.30) * 30.0))),
-		"c" + ("1" if bool(g.get("is_cleaner", false)) else "0"),
+		"c" + ("1" if g.get("is_cleaner", false) else "0"),
 		"sp" + str(int(round(clampf(float(g.get("defense_spines", 0.0)), 0.0, 1.0) * 5.0))),
 		"tx" + str(int(round(clampf(float(g.get("toxin_level", 0.0)), 0.0, 1.0) * 5.0))),
 		"cl" + str(int(round(clampf(float(g.get("claw_size", 0.25)), 0.0, 1.2) * 5.0))),
@@ -411,9 +411,9 @@ func _species_key_snail(g: Dictionary) -> String:
 
 func _species_key_plant(g: Dictionary) -> String:
 	var ramp_parts: Array = []
-	var ramp: Variant = g.get("ramp_override", [])
-	if ramp is Array:
-		for c in ramp:
+	var ramp_override_v: Variant = g.get("ramp_override", [])
+	if ramp_override_v is Array:
+		for c in ramp_override_v:
 			ramp_parts.append(_color_to_hex(c))
 	var parts: Array = [
 		"plant",
@@ -519,16 +519,16 @@ func genome_from_serialisable(g: Dictionary) -> Dictionary:
 				float(arr[0]), float(arr[1]), float(arr[2]),
 				float(arr[3]) if arr.size() >= 4 else 1.0)
 		elif k == "ramp_override" and v is Array:
-			var ramp: Array = []
+			var ramp_colors: Array = []
 			for c in v:
 				if c is Array and (c as Array).size() >= 3:
 					var a: Array = c
-					ramp.append(Color(
+					ramp_colors.append(Color(
 						float(a[0]), float(a[1]), float(a[2]),
 						float(a[3]) if a.size() >= 4 else 1.0))
 				else:
-					ramp.append(c)
-			out[k] = ramp
+					ramp_colors.append(c)
+			out[k] = ramp_colors
 		else:
 			out[k] = v
 	return out

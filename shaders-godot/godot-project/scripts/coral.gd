@@ -243,8 +243,8 @@ func _grow_staghorn_fern() -> void:
 		
 		var base_vox := MeshInstance3D.new()
 		base_vox.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.55))
-		var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-		base_vox.material_override = VoxelMat.make_foliage(ramp[0])
+		var base_ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+		base_vox.material_override = VoxelMat.make_foliage(base_ramp[0])
 		base_vox.position = Vector3.ZERO
 		add_child(base_vox)
 		voxels.append(base_vox)
@@ -255,8 +255,8 @@ func _grow_staghorn_fern() -> void:
 	var new_pos: Vector3 = tip.pos + tip.dir * VOXEL_SIZE * 0.75
 	
 	# Determine color based on generation
-	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-	var c: Color = ramp[clampi(1 + tip.gen, 0, ramp.size() - 1)]
+	var grow_ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var c: Color = grow_ramp[clampi(1 + tip.gen, 0, grow_ramp.size() - 1)]
 	if tip.gen >= 2:
 		c = tip_color
 		
@@ -320,7 +320,7 @@ const BRANCH_LENGTH: int = 3
 func _grow_branching() -> void:
 	var idx: int = current_height
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-	var stem_color: Color = ramp[clampi(2 + (idx / 4), 0, ramp.size() - 1)]
+	var stem_color: Color = ramp[clampi(2 + int(idx / 4.0), 0, ramp.size() - 1)]
 	# Main stem voxel. Slightly thicker at the base, taper toward the top.
 	var taper: float = clampf(1.0 - float(idx) / float(maxi(1, max_height)) * 0.45, 0.4, 1.0)
 	var stem := MeshInstance3D.new()
@@ -355,7 +355,6 @@ func _spawn_side_branch(idx: int, ramp: Array) -> void:
 	var dy_step: float = 0.5
 	var base_y: float = idx * VOXEL_SIZE * 0.85
 	for j in BRANCH_LENGTH:
-		var t: float = float(j + 1) / float(BRANCH_LENGTH)
 		var c: Color = ramp[clampi(1 + j, 0, ramp.size() - 1)]
 		# Branch tip color = glowing polyp.
 		if j == BRANCH_LENGTH - 1:

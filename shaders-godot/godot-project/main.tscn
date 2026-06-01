@@ -353,6 +353,17 @@ theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
+[node name="NotificationsToggle" type="Button" parent="RightRail/RightCluster/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
+tooltip_text = "Notifications"
+text = "🔔"
+flat = true
+theme_override_styles/normal = SubResource("SBE_button_flat")
+theme_override_styles/hover = SubResource("SBF_button_hover")
+theme_override_styles/pressed = SubResource("SBF_button_pressed")
+theme_override_styles/focus = SubResource("SBE_button_flat")
+
 [node name="RailDivider" type="HSeparator" parent="RightRail/RightCluster/VBox"]
 layout_mode = 2
 custom_minimum_size = Vector2(0, 8)

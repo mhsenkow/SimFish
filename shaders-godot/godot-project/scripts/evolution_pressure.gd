@@ -34,7 +34,7 @@ static func sample_from_sim(sim: Node, pos: Variant = null) -> Dictionary:
 			var prof: Dictionary = prof_v
 			var baseline: float = float(prof.get("nutrient_baseline", 0.3))
 			p.substrate = clampf(baseline / 0.85, 0.0, 1.0)
-			p.saltwater = bool(prof.get("is_saltwater", false))
+			p.saltwater = not not prof.get("is_saltwater", false)
 	if sim != null and sim.get("dissolved_o2") != null:
 		p.o2 = clampf(float(sim.dissolved_o2), 0.0, 1.0)
 	if sim != null and pos is Vector3:
@@ -42,19 +42,19 @@ static func sample_from_sim(sim: Node, pos: Variant = null) -> Dictionary:
 		if world != null and world.has_method("habitat_profile_at"):
 			var h: Variant = world.habitat_profile_at(pos)
 			if h is Dictionary:
-				var hd: Dictionary = h
-				p.cover = clampf(float(hd.get("cover", p.cover)), 0.0, 1.0)
-				p.edge = clampf(float(hd.get("edge", p.edge)), 0.0, 1.0)
-				p.depth = clampf(float(hd.get("depth", p.depth)), 0.0, 1.0)
+				var habitat_d: Dictionary = h
+				p.cover = clampf(float(habitat_d.get("cover", p.cover)), 0.0, 1.0)
+				p.edge = clampf(float(habitat_d.get("edge", p.edge)), 0.0, 1.0)
+				p.depth = clampf(float(habitat_d.get("depth", p.depth)), 0.0, 1.0)
 				p.substrate_local = clampf(
-					float(hd.get("substrate_local", p.substrate_local)), 0.0, 1.0)
+					float(habitat_d.get("substrate_local", p.substrate_local)), 0.0, 1.0)
 	return p
 
 
 static func _env_tint(pressure: Dictionary) -> Color:
 	var light: float = float(pressure.get("light", 0.5))
 	var warmth: float = float(pressure.get("warmth", 0.5))
-	var salt: bool = bool(pressure.get("saltwater", false))
+	var salt: bool = not not pressure.get("saltwater", false)
 	if salt:
 		return Color(0.35 + warmth * 0.2, 0.55 + light * 0.15, 0.75 + light * 0.2)
 	return Color(0.45 + warmth * 0.35, 0.38 + light * 0.28, 0.18 + (1.0 - warmth) * 0.12)

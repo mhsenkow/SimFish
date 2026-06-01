@@ -25,8 +25,10 @@ func _process(_dt: float) -> void:
     if _frame == 240:
         var sub_img: Image = sub_viewport.get_texture().get_image()
         # Sample a few pixels to verify the SubViewport contains actual 3D content.
-        var center: Color = sub_img.get_pixel(sub_img.get_width() / 2, sub_img.get_height() / 2)
-        var bottom: Color = sub_img.get_pixel(sub_img.get_width() / 2, int(sub_img.get_height() * 0.85))
+        var cx: int = int(sub_img.get_width() / 2.0)
+        var cy: int = int(sub_img.get_height() / 2.0)
+        var center: Color = sub_img.get_pixel(cx, cy)
+        var bottom: Color = sub_img.get_pixel(cx, int(sub_img.get_height() * 0.85))
         print_verbose("[capture] subviewport size=", sub_img.get_size(),
               " center=", center, " bottom=", bottom)
         sub_img.save_png("res://capture_raw.png")

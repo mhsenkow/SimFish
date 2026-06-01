@@ -377,9 +377,9 @@ func column_top_y(x: float, z: float, exclude: Node = null) -> float:
 func _place_terrain(hit: Vector3) -> void:
 	if brush_radius <= 1:
 		if _world.has_method("terrain_place_tool"):
-			var undo: Dictionary = _world.terrain_place_tool(hit.x, hit.z, tool)
-			if not undo.is_empty():
-				_push_undo({"kind": "terrain_cell", "payload": undo, "label": tool})
+			var terrain_undo: Dictionary = _world.terrain_place_tool(hit.x, hit.z, tool)
+			if not terrain_undo.is_empty():
+				_push_undo({"kind": "terrain_cell", "payload": terrain_undo, "label": tool})
 				_rebuild_substrate_mesh(false)
 				_haptic(8)
 	else:
@@ -410,11 +410,11 @@ func _dig(hit: Vector3) -> void:
 		return
 	if brush_radius <= 1:
 		if _world.has_method("terrain_dig"):
-			var undo: Dictionary = _world.terrain_dig(hit.x, hit.z)
-			if undo.is_empty() or int(undo.get("mat", TerrainVoxelGrid.CellMaterial.EMPTY)) \
+			var terrain_undo: Dictionary = _world.terrain_dig(hit.x, hit.z)
+			if terrain_undo.is_empty() or int(terrain_undo.get("mat", TerrainVoxelGrid.CellMaterial.EMPTY)) \
 					== TerrainVoxelGrid.CellMaterial.EMPTY:
 				return
-			_push_undo({"kind": "terrain_cell", "payload": undo, "label": "dig"})
+			_push_undo({"kind": "terrain_cell", "payload": terrain_undo, "label": "dig"})
 			_rebuild_substrate_mesh(false)
 			_haptic(12)
 	elif _world.has_method("terrain_dig_brush"):

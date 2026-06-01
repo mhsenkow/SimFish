@@ -165,7 +165,7 @@ func init_genome(genome: Dictionary) -> void:
 	max_speed = genome.get("max_speed", max_speed)
 	sex = genome.get("sex", randi() % 2)
 	substrate_top_y = genome.get("substrate_top_y", substrate_top_y)
-	is_cleaner = bool(genome.get("is_cleaner", is_cleaner))
+	is_cleaner = not not genome.get("is_cleaner", is_cleaner)
 	defense_spines = clampf(float(genome.get("defense_spines", defense_spines)), 0.0, 1.0)
 	toxin_level = clampf(float(genome.get("toxin_level", toxin_level)), 0.0, 1.0)
 	claw_size = clampf(float(genome.get("claw_size", claw_size)), 0.0, 1.2)
@@ -474,7 +474,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			if not is_instance_valid(f):
 				continue
 			var species_v: Variant = f.get("species")
-			var predatory: bool = bool(f.get("shrimp_predator")) \
+			var predatory: bool = not not f.get("shrimp_predator") \
 				or String(species_v if species_v != null else "") == "betta"
 			if not predatory:
 				continue
@@ -1324,7 +1324,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	breed_cooldown = float(d.get("breed_cooldown", 0.0))
 	breed_count = int(d.get("breed_count", 0))
 	clutch_size = int(d.get("clutch_size", clutch_size))
-	is_gravid = bool(d.get("is_gravid", false))
+	is_gravid = not not d.get("is_gravid", false)
 	gravid_timer = float(d.get("gravid_timer", 0.0))
 	gravid_partner_genome = _genome_from_json(d.get("gravid_partner_genome", {}))
 	court_timer = float(d.get("court_timer", 0.0))

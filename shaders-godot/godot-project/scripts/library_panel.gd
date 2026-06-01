@@ -997,7 +997,7 @@ func _populate_traits(genome: Dictionary, otype: String) -> void:
 			_add_trait("Length", "%.2f" % float(genome.get("body_length_factor", 1.0)))
 			_add_trait("Claws", "%.2f" % float(genome.get("claw_size", 0.25)))
 			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 0.85)))
-			if bool(genome.get("is_cleaner", false)):
+			if genome.get("is_cleaner", false):
 				_add_trait("Role", "cleaner shrimp")
 		SpeciesLibrary.ORGANISM_SNAIL:
 			_add_trait("Shell shape", String(genome.get("shell_shape", "turbo")))
@@ -1045,8 +1045,8 @@ func _on_spawn_pressed() -> void:
 	if world == null or not world.has_method("spawn_library_entry"):
 		_detail_meta.text = "Cannot spawn: world not available."
 		return
-	var ok: bool = bool(world.spawn_library_entry(
-		_selected_genome.duplicate(true), _selected_organism_type))
+	var ok: bool = not not world.spawn_library_entry(
+		_selected_genome.duplicate(true), _selected_organism_type)
 	_detail_meta.text = "Spawned into tank." if ok else "Spawn failed for this entry."
 
 

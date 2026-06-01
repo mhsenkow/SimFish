@@ -17,7 +17,13 @@ func _ready() -> void:
 			user_label = Steam.getPersonaName()
 		print("[walstad_loom] Steam initialized (AppID %d, user %s)" % [APP_ID, user_label])
 	else:
-		push_warning("[walstad_loom] Steam init failed: %s" % str(init.get("verbal", init)))
+		var verbal: String = str(init.get("verbal", init))
+		# Running outside the Steam client is common during local/dev launches.
+		# Treat this as informational so the debugger isn't spammed with warnings.
+		if verbal.findn("Could not determine Steam client install directory") != -1:
+			print_verbose("[walstad_loom] Steam unavailable in this session: %s" % verbal)
+		else:
+			push_warning("[walstad_loom] Steam init failed: %s" % verbal)
 
 
 func _process(_delta: float) -> void:

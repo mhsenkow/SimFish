@@ -222,9 +222,9 @@ func morph_label() -> String:
 	# Discrete trait changes - each maps to a single distinct morph letter.
 	if int(template.get("tail_shape", 0)) != tail_shape:
 		tags.append(["F", "R", "L", "S"][clampi(tail_shape, 0, 3)])
-	if bool(template.get("has_barbels", false)) != has_barbels:
+	if (not not template.get("has_barbels", false)) != has_barbels:
 		tags.append("B" if has_barbels else "b")
-	if bool(template.get("armor_plates", false)) != armor_plates:
+	if (not not template.get("armor_plates", false)) != armor_plates:
 		tags.append("A" if armor_plates else "a")
 	if int(template.get("mouth_orientation", 0)) != mouth_orientation:
 		tags.append(["U", "M", "D"][clampi(mouth_orientation + 1, 0, 2)])
@@ -517,7 +517,7 @@ func init_genome(genome: Dictionary) -> void:
 	# (clownfish, tang, chromis, anthias, etc.). Applied BEFORE color
 	# extraction so the rolled values land in the genome dict that the
 	# rest of init_genome reads from.
-	if bool(genome.get("mixed_morphs", false)):
+	if genome.get("mixed_morphs", false):
 		_apply_mixed_morph_jitter(genome)
 		# Re-cache after jitter so the post-jitter genome (specific colour /
 		# body roll for THIS fish) is what we replay on restore.
@@ -570,26 +570,26 @@ func init_genome(genome: Dictionary) -> void:
 	pattern_type = int(genome.get("pattern_type", pattern_type))
 	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
 	# Ornamentation phenotypes.
-	bar_edged = bool(genome.get("bar_edged", bar_edged))
-	eye_spot = bool(genome.get("eye_spot", eye_spot))
-	ventral_feelers = bool(genome.get("ventral_feelers", ventral_feelers))
+	bar_edged = not not genome.get("bar_edged", bar_edged)
+	eye_spot = not not genome.get("eye_spot", eye_spot)
+	ventral_feelers = not not genome.get("ventral_feelers", ventral_feelers)
 	finnage = float(genome.get("finnage", finnage))
-	labyrinth_breather = bool(genome.get("labyrinth_breather", labyrinth_breather))
+	labyrinth_breather = not not genome.get("labyrinth_breather", labyrinth_breather)
 	# Body skeleton phenotypes (heritable - drift in produce_offspring_genome).
-	has_barbels = bool(genome.get("has_barbels", has_barbels))
+	has_barbels = not not genome.get("has_barbels", has_barbels)
 	mouth_orientation = int(genome.get("mouth_orientation", mouth_orientation))
 	eye_size_factor = float(genome.get("eye_size_factor", eye_size_factor))
 	ventral_profile = float(genome.get("ventral_profile", ventral_profile))
 	back_arch = float(genome.get("back_arch", back_arch))
 	tail_shape = int(genome.get("tail_shape", tail_shape))
-	armor_plates = bool(genome.get("armor_plates", armor_plates))
-	is_livebearer = bool(genome.get("is_livebearer", is_livebearer))
-	guards_clutch = bool(genome.get("guards_clutch", guards_clutch))
-	sterile = bool(genome.get("sterile", sterile))
+	armor_plates = not not genome.get("armor_plates", armor_plates)
+	is_livebearer = not not genome.get("is_livebearer", is_livebearer)
+	guards_clutch = not not genome.get("guards_clutch", guards_clutch)
+	sterile = not not genome.get("sterile", sterile)
 	anal_fin_length_factor = float(genome.get("anal_fin_length_factor",
 		anal_fin_length_factor))
-	adipose_fin = bool(genome.get("adipose_fin", adipose_fin))
-	snout_pointed = bool(genome.get("snout_pointed", snout_pointed))
+	adipose_fin = not not genome.get("adipose_fin", adipose_fin)
+	snout_pointed = not not genome.get("snout_pointed", snout_pointed)
 	body_shape = String(genome.get("body_shape", body_shape))
 	size_potential = clampf(float(genome.get("size_potential", size_potential)), 0.6, 2.4)
 	jaw_claw_size = clampf(float(genome.get("jaw_claw_size", jaw_claw_size)), 0.0, 1.2)
@@ -606,7 +606,7 @@ func init_genome(genome: Dictionary) -> void:
 	# now correctly applies on top of the final genome-resolved values.
 	# Drift-through-generations still works because the underlying stored
 	# values are shared at the genome level.
-	if bool(genome.get("dimorphic", false)) and sex == 1:
+	if genome.get("dimorphic", false) and sex == 1:
 		# Female form: drop saturation, enlarge body, shrink fins.
 		base_color = Color(base_color.r, base_color.g, base_color.b) \
 			.lerp(Color(0.78, 0.78, 0.80), 0.55)   # silvery wash
@@ -636,10 +636,10 @@ func init_genome(genome: Dictionary) -> void:
 			_:
 				locomotion_type = "subcarangiform"
 	# Food preferences (species-level, not heritable).
-	snail_predator = bool(genome.get("snail_predator", snail_predator))
-	shrimp_predator = bool(genome.get("shrimp_predator", shrimp_predator))
+	snail_predator = not not genome.get("snail_predator", snail_predator)
+	shrimp_predator = not not genome.get("shrimp_predator", shrimp_predator)
 	_apply_predator_morphology()
-	algae_grazer = bool(genome.get("algae_grazer", algae_grazer))
+	algae_grazer = not not genome.get("algae_grazer", algae_grazer)
 	# Swim pattern + territory (heritable).
 	swim_pattern = String(genome.get("swim_pattern", swim_pattern))
 	# Apply pattern-derived defaults FIRST so explicit genome values can
@@ -1065,7 +1065,7 @@ func _build_body() -> void:
 				Vector3(v * 0.08, v * 0.32, v * 0.55), mat_keel)
 	if generation >= 3 and dorsal_height_factor > 1.05:
 		var mat_orn := _make_mat(accent_color.lightened(0.20))
-		var ornament_n: int = clampi(1 + int(generation / 4), 1, 4)
+		var ornament_n: int = clampi(1 + int(generation / 4.0), 1, 4)
 		for i in ornament_n:
 			var z: float = (0.25 + float(i) * 0.55) * v
 			_add_voxel_to(_body_mid_pivot, Vector3(0, v * 0.95, z),
@@ -2066,11 +2066,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		target_y = _aerial_target_y
 	if sim != null and sim.get("dissolved_o2") != null:
 		var o2: float = float(sim.dissolved_o2)
-		if o2 < 0.4:
-			var severity: float = clampf((0.4 - o2) / 0.4, 0.0, 1.0)
+		var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+		# At deep night, diurnal fish rest and tolerate mildly lower O2 without
+		# panic-darting. Keep emergency behavior for truly low values.
+		var gulp_threshold: float = lerpf(0.30, 0.40, dl)
+		if o2 < gulp_threshold:
+			var severity: float = clampf((gulp_threshold - o2) / maxf(gulp_threshold, 0.001), 0.0, 1.0)
 			var surface_y: float = _water_surface_y()
 			target_y = lerpf(home_y, surface_y, severity)
-			stress = clampf(stress + dt * severity * 0.05, 0.0, 1.0)
+			var stress_gain: float = lerpf(0.55, 1.0, dl)
+			stress = clampf(stress + dt * severity * 0.05 * stress_gain, 0.0, 1.0)
 	var dy: float = target_y - position.y
 	# Stronger Y pull beyond home_y_radius; gentle within it. Result: fish
 	# actively defend their water column layer instead of all sinking to
@@ -2992,9 +2997,6 @@ func _all_meshes(node: Node) -> Array:
 	return out
 
 
-	return out
-
-
 func _world_node() -> Node:
 	if sim == null:
 		return null
@@ -3027,30 +3029,30 @@ func _water_column_height() -> float:
 func _wall_avoid(b: AABB) -> Vector3:
 	var w := _world_node()
 	if w != null and w.has_method("clamp_xyz_in_tank"):
-		var margin: float = 0.42
+		var tank_margin: float = 0.42
 		if w.has_method("is_inside_tank_volume") \
-				and not w.is_inside_tank_volume(position.x, position.y, position.z, margin):
-			var c: Vector3 = w.clamp_xyz_in_tank(position, margin)
+				and not w.is_inside_tank_volume(position.x, position.y, position.z, tank_margin):
+			var c: Vector3 = w.clamp_xyz_in_tank(position, tank_margin)
 			var push: Vector3 = c - position
 			if push.length_squared() > 1e-6:
-				return push.normalized() * clampf(push.length() / margin, 0.45, 1.25)
-		var c_soft: Vector3 = w.clamp_xyz_in_tank(position, margin * 0.5)
+				return push.normalized() * clampf(push.length() / tank_margin, 0.45, 1.25)
+		var c_soft: Vector3 = w.clamp_xyz_in_tank(position, tank_margin * 0.5)
 		var soft: Vector3 = c_soft - position
 		if soft.length_squared() > 1e-6:
-			return soft.normalized() * clampf(soft.length() / (margin * 0.5), 0.0, 0.7)
-	var margin := 1.0
+			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.5), 0.0, 0.7)
+	var bounds_margin := 1.0
 	var v := Vector3.ZERO
-	if position.x < b.position.x + margin:
+	if position.x < b.position.x + bounds_margin:
 		v.x += 1.0
-	if position.x > b.position.x + b.size.x - margin:
+	if position.x > b.position.x + b.size.x - bounds_margin:
 		v.x -= 1.0
-	if position.y < b.position.y + margin:
+	if position.y < b.position.y + bounds_margin:
 		v.y += 1.0
-	if position.y > b.position.y + b.size.y - margin:
+	if position.y > b.position.y + b.size.y - bounds_margin:
 		v.y -= 1.0
-	if position.z < b.position.z + margin:
+	if position.z < b.position.z + bounds_margin:
 		v.z += 1.0
-	if position.z > b.position.z + b.size.z - margin:
+	if position.z > b.position.z + b.size.z - bounds_margin:
 		v.z -= 1.0
 	return v
 
@@ -3203,11 +3205,11 @@ func _habitat_trait_match_score(f: Fish) -> float:
 	return clampf(score, 0.0, 1.0)
 
 
-func _short_subspecies_tag(id: String) -> String:
-	if id == "" or id == species:
+func _short_subspecies_tag(subspecies: String) -> String:
+	if subspecies == "" or subspecies == species:
 		return ""
-	var parts: PackedStringArray = id.split(".")
-	var tail: String = parts[parts.size() - 1] if parts.size() > 0 else id
+	var parts: PackedStringArray = subspecies.split(".")
+	var tail: String = parts[parts.size() - 1] if parts.size() > 0 else subspecies
 	return tail.right(4)
 
 
@@ -3219,11 +3221,11 @@ func _founder_divergence_score(genome: Dictionary) -> int:
 	var score: int = 0
 	if int(genome.get("tail_shape", 0)) != int(template.get("tail_shape", 0)):
 		score += 1
-	if bool(genome.get("has_barbels", false)) != bool(template.get("has_barbels", false)):
+	if (not not genome.get("has_barbels", false)) != (not not template.get("has_barbels", false)):
 		score += 1
-	if bool(genome.get("armor_plates", false)) != bool(template.get("armor_plates", false)):
+	if (not not genome.get("armor_plates", false)) != (not not template.get("armor_plates", false)):
 		score += 1
-	if bool(genome.get("snout_pointed", false)) != bool(template.get("snout_pointed", false)):
+	if (not not genome.get("snout_pointed", false)) != (not not template.get("snout_pointed", false)):
 		score += 1
 	if String(genome.get("body_shape", "fusiform")) != String(template.get("body_shape", "fusiform")):
 		score += 1
@@ -3253,20 +3255,20 @@ func _subspecies_signature(genome: Dictionary) -> String:
 	return "%s%d%d%d%d%d%s%s%d" % [
 		String(genome.get("body_shape", "f")).left(1),
 		int(genome.get("tail_shape", 0)),
-		1 if bool(genome.get("has_barbels", false)) else 0,
-		1 if bool(genome.get("armor_plates", false)) else 0,
+		1 if genome.get("has_barbels", false) else 0,
+		1 if genome.get("armor_plates", false) else 0,
 		q_e,
 		q_d,
 		str(q_eye),
-		"h" if bool(genome.get("snout_pointed", false)) else "n",
+		"h" if genome.get("snout_pointed", false) else "n",
 		q_claw,
 	]
 
 
-func _derive_subspecies_id(partner: Fish, child_genome: Dictionary) -> String:
+func _derive_subspecies_id(mate: Fish, child_genome: Dictionary) -> String:
 	var base: String = species
 	var a: String = subspecies_id if subspecies_id != "" else species
-	var b: String = partner.subspecies_id if partner.subspecies_id != "" else species
+	var b: String = mate.subspecies_id if mate.subspecies_id != "" else species
 	if a == b and randf() < 0.92:
 		base = a
 	elif randf() < 0.55:

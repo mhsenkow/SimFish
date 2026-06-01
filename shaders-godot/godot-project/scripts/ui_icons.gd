@@ -9,6 +9,7 @@ const RAIL: Dictionary = {
 	"creator": {"emoji": "✦", "text": "Cr", "tip": "Creature creator"},
 	"store": {"emoji": "🐟", "text": "St", "tip": "Fish store"},
 	"library": {"emoji": "📚", "text": "Lb", "tip": "Species library"},
+	"notifications": {"emoji": "🔔", "text": "Nt", "tip": "Notification center"},
 	"render": {"emoji": "▦", "text": "Rd", "tip": "Rendering panel"},
 	"sound": {"emoji": "♪", "text": "Sn", "tip": "Sound studio"},
 	"settings": {"emoji": "⚙", "text": "Gt", "tip": "Settings"},

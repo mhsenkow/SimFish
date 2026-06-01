@@ -215,12 +215,12 @@ func _add_slider_group(parent: Node, defs: Array) -> void:
 		slider.value_changed.connect(func(v: float):
 			TankConfig.set(key, v)
 			_update_slider_label(key))
-		_slider_rows[key] = {"slider": slider, "label": label, "pct": bool(def.get("pct", false))}
+		_slider_rows[key] = {"slider": slider, "label": label, "pct": not not def.get("pct", false)}
 
 
 func _pull_from_config() -> void:
 	for key in _check_rows.keys():
-		(_check_rows[key] as CheckBox).button_pressed = bool(TankConfig.get(key))
+		(_check_rows[key] as CheckBox).button_pressed = not not TankConfig.get(key)
 	for key in _slider_rows.keys():
 		var row: Dictionary = _slider_rows[key]
 		(row["slider"] as HSlider).value = float(TankConfig.get(key))
@@ -241,7 +241,7 @@ func _update_slider_label(key: String) -> void:
 	var row: Dictionary = _slider_rows[key]
 	var v: float = float((row["slider"] as HSlider).value)
 	var lbl: Label = row["label"] as Label
-	if bool(row["pct"]):
+	if row["pct"]:
 		lbl.text = "%d%%" % int(v * 100.0)
 	else:
 		lbl.text = "%.2f" % v

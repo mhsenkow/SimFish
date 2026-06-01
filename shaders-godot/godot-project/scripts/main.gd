@@ -40,6 +40,7 @@ extends Node
 @onready var library_toggle: Button = %LibraryToggle
 @onready var creature_creator_toggle: Button = %CreatureCreatorToggle
 @onready var aquascape_toggle: Button = %AquascapeToggle
+@onready var notifications_toggle: Button = %NotificationsToggle
 @onready var menu_button: Button = %MenuButton
 @onready var portal_toggle: Button = %PortalToggle
 @onready var controls_hint: Label = $ControlsHint
@@ -218,10 +219,44 @@ var _tutorial_overlay: Control = null
 # ---- Welcome-back toast (time-skip recap) ----
 # Floating Label shown briefly on resume when we detect the user was away.
 var _welcome_label: Label = null
-
-# ---- Species discovery toast ----
-var _discovery_toast: Label = null
+# Compatibility fields for older discovery-toast UI flow.
+# Current path routes discovery events through notification toasts, but keeping
+# these declarations avoids parser/runtime issues if older references remain.
+var _discovery_toast: Control = null
 var _discovery_toast_tween: Tween = null
+
+# ---- Notification center + toast feed ----
+const NOTIF_MAX_HISTORY: int = 300
+const NOTIF_TOAST_MAX_ACTIVE: int = 3
+const NOTIF_SORT_NEWEST: int = 0
+const NOTIF_SORT_OLDEST: int = 1
+const NOTIF_SORT_SEVERITY: int = 2
+const NOTIF_FILTER_ALL: String = "all"
+const NOTIF_SEVERITY_INFO: String = "info"
+const NOTIF_SEVERITY_IMPORTANT: String = "important"
+const NOTIF_SEVERITY_CRITICAL: String = "critical"
+
+var _notifications: Array[Dictionary] = []
+var _notification_next_id: int = 1
+var _notification_filter_kind: String = NOTIF_FILTER_ALL
+var _notification_filter_severity: String = NOTIF_FILTER_ALL
+var _notification_sort: int = NOTIF_SORT_NEWEST
+var _notification_story_idx: int = 0
+var _notification_toast_queue: Array[Dictionary] = []
+var _notification_toast_active: int = 0
+
+var _notifications_panel: PanelContainer = null
+var _notifications_list: VBoxContainer = null
+var _notifications_empty_label: Label = null
+var _notifications_filter_kind: OptionButton = null
+var _notifications_filter_severity: OptionButton = null
+var _notifications_sort: OptionButton = null
+var _notifications_toast_layer: Control = null
+
+var _water_alert_low_o2_active: bool = false
+var _water_alert_ammonia_active: bool = false
+var _water_alert_nitrite_active: bool = false
+
 var _welcome_toast_tween: Tween = null
 
 
@@ -261,6 +296,8 @@ func _ready() -> void:
 		library_toggle.pressed.connect(library_panel.toggle)
 	if creature_creator_toggle != null and creature_creator_panel != null:
 		creature_creator_toggle.pressed.connect(creature_creator_panel.toggle)
+	if notifications_toggle != null:
+		notifications_toggle.pressed.connect(_toggle_notifications_panel)
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
 		# Launch the guided walkthrough if the tank menu flagged this tank for
@@ -288,6 +325,7 @@ func _ready() -> void:
 
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
 	_setup_hud_styling()
+	_ensure_notifications_ui()
 	_build_hud_chips()
 	_on_viewport_resized()
 	get_viewport().size_changed.connect(_on_viewport_resized)
@@ -331,7 +369,7 @@ func _restore_camera_state() -> void:
 	# user has saved it (i.e. they Applied settings at least once and we
 	# stashed the current view before reload).
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or not bool(cfg.camera_state_saved):
+	if cfg == null or not cfg.camera_state_saved:
 		return
 	yaw = float(cfg.camera_yaw)
 	pitch = float(cfg.camera_pitch)
@@ -347,7 +385,7 @@ func _apply_portrait_camera_defaults_if_unsaved() -> void:
 	if not _is_mobile():
 		return
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or bool(cfg.camera_state_saved):
+	if cfg == null or cfg.camera_state_saved:
 		return
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	if vp.y <= vp.x * 1.02:
@@ -1094,7 +1132,7 @@ func _update_portal_pip() -> void:
 			sex_str = " · Male" if target_node.sex == 0 else " · Female"
 			
 		var sterile_str := ""
-		if target_node.get("sterile") != null and bool(target_node.sterile):
+		if target_node.get("sterile") != null and target_node.sterile:
 			sterile_str = " · Sterile"
 			
 		_portal_stats_lbl.text = "Age: %s · Hunger: %d%%%s%s" % [age_str, hunger_pct, sex_str, sterile_str]
@@ -1237,7 +1275,7 @@ func _restore_aquascape(arr: Array) -> void:
 
 func _maybe_start_walkthrough() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or not bool(cfg.walkthrough_pending):
+	if cfg == null or not cfg.walkthrough_pending:
 		return
 	# Consume the flag so it doesn't re-trigger on the next scene load.
 	cfg.walkthrough_pending = false
@@ -1334,6 +1372,12 @@ func _input(event: InputEvent) -> void:
 				if _story_popup != null and _story_popup.visible \
 						and not _story_popup.get_global_rect().has_point(mb.position):
 					_story_popup.visible = false
+				if _notifications_panel != null and _notifications_panel.visible \
+						and not _notifications_panel.get_global_rect().has_point(mb.position) \
+						and notifications_toggle != null \
+						and not notifications_toggle.get_global_rect().has_point(mb.position):
+					_notifications_panel.visible = false
+					_sync_rail_toggles()
 				# Ctrl+LMB = tap-to-feed. Projects the cursor onto the water
 				# surface and drops a small cluster of food pellets there;
 				# nearby fish converge from below. Suppresses orbit so the
@@ -1570,6 +1614,7 @@ func _setup_mobile_ui() -> void:
 	if aquascape_toggle != null: toggle_buttons.append(aquascape_toggle)
 	if portal_toggle != null: toggle_buttons.append(portal_toggle)
 	if library_toggle != null: toggle_buttons.append(library_toggle)
+	if notifications_toggle != null: toggle_buttons.append(notifications_toggle)
 	for btn in toggle_buttons:
 		btn.custom_minimum_size = Vector2(52, 52)
 		btn.add_theme_font_size_override("font_size", 18)
@@ -1639,6 +1684,8 @@ func _pan_target(delta: Vector2) -> void:
 func _on_stats_changed(stats: Dictionary) -> void:
 	_stats = stats
 	_render_header()
+	_collect_story_notifications()
+	_collect_water_alert_notifications()
 	_push_telemetry_to_js()
 
 
@@ -1728,7 +1775,6 @@ func _render_header() -> void:
 	var biomass: int = int(_stats.get("plant_total_biomass", 0))
 	var waste: int = int(_stats.get("waste_particles", 0))
 	var o2: float = float(_stats.get("dissolved_o2", 1.0))
-	var fixture: String = String(_stats.get("aeration_fixture", "?"))
 	var o2_pct: int = int(round(o2 * 100.0))
 	var distinct_morphs: int = int(_stats.get("morph_distinct", 0))
 
@@ -1986,7 +2032,7 @@ func _hud_bottom_inset() -> float:
 	return PanelTheme.HUD_BOTTOM
 
 
-func _want_bottom_rail(vp: Vector2) -> bool:
+func _want_bottom_rail(_vp: Vector2) -> bool:
 	# Keep controls as a true right-side vertical rail on mobile portrait.
 	# The old bottom dock read as "landscape" and hid options from the right.
 	return false
@@ -2069,6 +2115,7 @@ func _sync_rail_toggles() -> void:
 	h = h * 31 + int(fish_store_panel != null and fish_store_panel.visible)
 	h = h * 31 + int(library_panel != null and library_panel.visible)
 	h = h * 31 + int(creature_creator_panel != null and creature_creator_panel.visible)
+	h = h * 31 + int(_notifications_panel != null and _notifications_panel.visible)
 	if h == _last_rail_sync_hash:
 		return
 	_last_rail_sync_hash = h
@@ -2094,6 +2141,9 @@ func _sync_rail_toggles() -> void:
 	if creature_creator_toggle != null:
 		PanelTheme.style_rail_button(creature_creator_toggle,
 			creature_creator_panel != null and creature_creator_panel.visible)
+	if notifications_toggle != null:
+		PanelTheme.style_rail_button(notifications_toggle,
+			_notifications_panel != null and _notifications_panel.visible)
 	_apply_rail_button_labels(_rail_dock == "bottom")
 
 
@@ -2101,7 +2151,8 @@ func _ordered_rail_buttons() -> Array[Button]:
 	var out: Array[Button] = []
 	for btn in [
 		portal_toggle, aquascape_toggle, creature_creator_toggle,
-		fish_store_toggle, library_toggle, render_toggle, sound_toggle, settings_toggle,
+		fish_store_toggle, library_toggle, notifications_toggle,
+		render_toggle, sound_toggle, settings_toggle,
 	]:
 		if btn != null:
 			out.append(btn)
@@ -2120,6 +2171,8 @@ func _apply_rail_button_labels(force_short: bool) -> void:
 		UiIcons.apply_rail_button(fish_store_toggle, "store", short)
 	if library_toggle != null:
 		UiIcons.apply_rail_button(library_toggle, "library", short)
+	if notifications_toggle != null:
+		UiIcons.apply_rail_button(notifications_toggle, "notifications", short)
 	if render_toggle != null:
 		UiIcons.apply_rail_button(render_toggle, "render", short)
 	if sound_toggle != null:
@@ -2135,8 +2188,11 @@ func _apply_rail_dock_layout() -> void:
 	var dock: String = "bottom" if _want_bottom_rail(vp) else "right"
 	if dock != _rail_dock:
 		_rail_dock = dock
-		var target: BoxContainer = _rail_hbox if dock == "bottom" else _rail_vbox
-		var source: BoxContainer = _rail_vbox if dock == "bottom" else _rail_hbox
+		var rail_target: BoxContainer = _rail_vbox
+		var source: BoxContainer = _rail_hbox
+		if dock == "bottom":
+			rail_target = _rail_hbox
+			source = _rail_vbox
 		if dock == "bottom" and _rail_spacer == null:
 			_rail_spacer = Control.new()
 			_rail_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -2144,7 +2200,7 @@ func _apply_rail_dock_layout() -> void:
 		for btn in _ordered_rail_buttons():
 			if btn.get_parent() == source:
 				source.remove_child(btn)
-				target.add_child(btn)
+				rail_target.add_child(btn)
 		if dock == "bottom":
 			if _rail_spacer != null and _rail_spacer.get_parent() != _rail_hbox:
 				var idx: int = mini(5, _rail_hbox.get_child_count())
@@ -2310,6 +2366,426 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	if hist_key == "":
 		return  # state/morphs chips have no useful history
 	_show_history_popup(hist_key, key, color)
+
+
+func _toggle_notifications_panel() -> void:
+	_ensure_notifications_ui()
+	if _notifications_panel == null:
+		return
+	_notifications_panel.visible = not _notifications_panel.visible
+	if _notifications_panel.visible:
+		_refresh_notifications_panel()
+	_sync_rail_toggles()
+
+
+func _ensure_notifications_ui() -> void:
+	if _notifications_panel != null and is_instance_valid(_notifications_panel):
+		return
+	_notifications_toast_layer = Control.new()
+	_notifications_toast_layer.name = "NotificationToasts"
+	_notifications_toast_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_notifications_toast_layer.anchor_left = 1.0
+	_notifications_toast_layer.anchor_top = 0.0
+	_notifications_toast_layer.anchor_right = 1.0
+	_notifications_toast_layer.anchor_bottom = 0.0
+	_notifications_toast_layer.offset_left = -360.0
+	_notifications_toast_layer.offset_top = 56.0
+	_notifications_toast_layer.offset_right = -74.0
+	_notifications_toast_layer.offset_bottom = 300.0
+	add_child(_notifications_toast_layer)
+
+	_notifications_panel = PanelContainer.new()
+	_notifications_panel.visible = false
+	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_notifications_panel.custom_minimum_size = Vector2(560, 360)
+	_notifications_panel.anchor_left = 1.0
+	_notifications_panel.anchor_top = 0.0
+	_notifications_panel.anchor_right = 1.0
+	_notifications_panel.anchor_bottom = 1.0
+	_notifications_panel.offset_left = -640.0
+	_notifications_panel.offset_top = 56.0
+	_notifications_panel.offset_right = -74.0
+	_notifications_panel.offset_bottom = -40.0
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.07, 0.12, 0.95)
+	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	style.shadow_color = Color(0, 0, 0, 0.45)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0, 6)
+	_notifications_panel.add_theme_stylebox_override("panel", style)
+	add_child(_notifications_panel)
+
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 8)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_notifications_panel.add_child(root)
+
+	var title := Label.new()
+	title.text = "Notifications"
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(0.96, 0.97, 0.99))
+	root.add_child(title)
+
+	var controls := HBoxContainer.new()
+	controls.add_theme_constant_override("separation", 6)
+	root.add_child(controls)
+
+	_notifications_filter_kind = OptionButton.new()
+	_notifications_filter_kind.add_item("Kind: All", 0)
+	_notifications_filter_kind.add_item("Kind: Discovery", 1)
+	_notifications_filter_kind.add_item("Kind: Population", 2)
+	_notifications_filter_kind.add_item("Kind: Water", 3)
+	_notifications_filter_kind.add_item("Kind: Milestone", 4)
+	_notifications_filter_kind.add_item("Kind: Welcome", 5)
+	_notifications_filter_kind.item_selected.connect(_on_notifications_kind_filter_selected)
+	controls.add_child(_notifications_filter_kind)
+
+	_notifications_filter_severity = OptionButton.new()
+	_notifications_filter_severity.add_item("Severity: All", 0)
+	_notifications_filter_severity.add_item("Severity: Info", 1)
+	_notifications_filter_severity.add_item("Severity: Important", 2)
+	_notifications_filter_severity.add_item("Severity: Critical", 3)
+	_notifications_filter_severity.item_selected.connect(_on_notifications_severity_filter_selected)
+	controls.add_child(_notifications_filter_severity)
+
+	_notifications_sort = OptionButton.new()
+	_notifications_sort.add_item("Sort: Newest", NOTIF_SORT_NEWEST)
+	_notifications_sort.add_item("Sort: Oldest", NOTIF_SORT_OLDEST)
+	_notifications_sort.add_item("Sort: Severity", NOTIF_SORT_SEVERITY)
+	_notifications_sort.item_selected.connect(_on_notifications_sort_selected)
+	controls.add_child(_notifications_sort)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "Clear"
+	clear_btn.pressed.connect(_clear_notifications)
+	controls.add_child(clear_btn)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(scroll)
+
+	_notifications_list = VBoxContainer.new()
+	_notifications_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_notifications_list.add_theme_constant_override("separation", 6)
+	scroll.add_child(_notifications_list)
+
+	_notifications_empty_label = Label.new()
+	_notifications_empty_label.text = "No notifications yet."
+	_notifications_empty_label.add_theme_color_override("font_color", Color(0.70, 0.76, 0.86, 0.9))
+	_notifications_list.add_child(_notifications_empty_label)
+
+
+func _on_notifications_kind_filter_selected(idx: int) -> void:
+	match idx:
+		1: _notification_filter_kind = "discovery"
+		2: _notification_filter_kind = "population"
+		3: _notification_filter_kind = "water_alert"
+		4: _notification_filter_kind = "milestone"
+		5: _notification_filter_kind = "welcome_back"
+		_: _notification_filter_kind = NOTIF_FILTER_ALL
+	_refresh_notifications_panel()
+
+
+func _on_notifications_severity_filter_selected(idx: int) -> void:
+	match idx:
+		1: _notification_filter_severity = NOTIF_SEVERITY_INFO
+		2: _notification_filter_severity = NOTIF_SEVERITY_IMPORTANT
+		3: _notification_filter_severity = NOTIF_SEVERITY_CRITICAL
+		_: _notification_filter_severity = NOTIF_FILTER_ALL
+	_refresh_notifications_panel()
+
+
+func _on_notifications_sort_selected(idx: int) -> void:
+	_notification_sort = idx
+	_refresh_notifications_panel()
+
+
+func _clear_notifications() -> void:
+	_notifications.clear()
+	if _sim != null:
+		_notification_story_idx = (_sim.story_events as Array).size()
+	else:
+		_notification_story_idx = 0
+	_refresh_notifications_panel()
+
+
+func _kind_icon(kind: String) -> String:
+	match kind:
+		"discovery":
+			return UiIcons.fauna_label("fish")
+		"population":
+			return "◉"
+		"water_alert":
+			return "!"
+		"milestone":
+			return "*"
+		"welcome_back":
+			return "↺"
+		_:
+			return "•"
+
+
+func _severity_rank(sev: String) -> int:
+	match sev:
+		NOTIF_SEVERITY_CRITICAL:
+			return 2
+		NOTIF_SEVERITY_IMPORTANT:
+			return 1
+		_:
+			return 0
+
+
+func _format_notification_age(unix_ts: int) -> String:
+	var delta: int = max(0, int(Time.get_unix_time_from_system()) - unix_ts)
+	if delta < 60:
+		return "%ds ago" % delta
+	if delta < 3600:
+		return "%dm ago" % int(delta / 60.0)
+	var h: int = int(delta / 3600.0)
+	if h < 24:
+		return "%dh ago" % h
+	return "%dd ago" % int(delta / 86400.0)
+
+
+func _refresh_notifications_panel() -> void:
+	if _notifications_list == null:
+		return
+	for c in _notifications_list.get_children():
+		c.queue_free()
+	var rows: Array[Dictionary] = []
+	for n in _notifications:
+		var kind: String = String(n.get("kind", "system"))
+		var sev: String = String(n.get("severity", NOTIF_SEVERITY_INFO))
+		if _notification_filter_kind != NOTIF_FILTER_ALL and kind != _notification_filter_kind:
+			continue
+		if _notification_filter_severity != NOTIF_FILTER_ALL and sev != _notification_filter_severity:
+			continue
+		rows.append(n)
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if _notification_sort == NOTIF_SORT_OLDEST:
+			return int(a.get("ts", 0)) < int(b.get("ts", 0))
+		if _notification_sort == NOTIF_SORT_SEVERITY:
+			var ar: int = _severity_rank(String(a.get("severity", NOTIF_SEVERITY_INFO)))
+			var br: int = _severity_rank(String(b.get("severity", NOTIF_SEVERITY_INFO)))
+			if ar == br:
+				return int(a.get("ts", 0)) > int(b.get("ts", 0))
+			return ar > br
+		return int(a.get("ts", 0)) > int(b.get("ts", 0))
+	)
+	if rows.is_empty():
+		var empty := Label.new()
+		empty.text = "No notifications match this filter."
+		empty.add_theme_color_override("font_color", Color(0.70, 0.76, 0.86, 0.9))
+		_notifications_list.add_child(empty)
+		return
+	for n in rows:
+		_notifications_list.add_child(_build_notification_row(n))
+
+
+func _build_notification_row(n: Dictionary) -> Control:
+	var row := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.10, 0.12, 0.18, 0.78)
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 10
+	style.content_margin_top = 8
+	style.content_margin_right = 10
+	style.content_margin_bottom = 8
+	row.add_theme_stylebox_override("panel", style)
+
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 8)
+	row.add_child(hb)
+
+	var icon := Label.new()
+	icon.text = _kind_icon(String(n.get("kind", "system")))
+	icon.custom_minimum_size = Vector2(20, 0)
+	hb.add_child(icon)
+
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hb.add_child(vb)
+
+	var title := Label.new()
+	var title_txt: String = String(n.get("title", "Notification"))
+	var age_txt: String = _format_notification_age(int(n.get("ts", 0)))
+	title.text = "%s · %s" % [title_txt, age_txt]
+	title.add_theme_color_override("font_color", Color(0.92, 0.95, 0.99))
+	title.add_theme_font_size_override("font_size", 12)
+	vb.add_child(title)
+
+	var body := Label.new()
+	body.text = String(n.get("body", ""))
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_color_override("font_color", Color(0.80, 0.86, 0.94, 0.95))
+	body.add_theme_font_size_override("font_size", 11)
+	vb.add_child(body)
+	return row
+
+
+func _push_notification(kind: String, severity: String, title: String, body: String,
+		show_toast: bool = false, meta: Dictionary = {}) -> void:
+	var now: int = int(Time.get_unix_time_from_system())
+	var notif: Dictionary = {
+		"id": _notification_next_id,
+		"ts": now,
+		"kind": kind,
+		"severity": severity,
+		"title": title,
+		"body": body,
+		"meta": meta,
+	}
+	_notification_next_id += 1
+	_notifications.append(notif)
+	if _notifications.size() > NOTIF_MAX_HISTORY:
+		_notifications.pop_front()
+	if show_toast:
+		_notification_toast_queue.append(notif)
+		_pump_notification_toast_queue()
+	if _notifications_panel != null and _notifications_panel.visible:
+		_refresh_notifications_panel()
+
+
+func _pump_notification_toast_queue() -> void:
+	if _notifications_toast_layer == null:
+		return
+	while _notification_toast_active < NOTIF_TOAST_MAX_ACTIVE and not _notification_toast_queue.is_empty():
+		var notif: Dictionary = _notification_toast_queue.pop_front()
+		_spawn_notification_toast(notif)
+
+
+func _spawn_notification_toast(notif: Dictionary) -> void:
+	_notification_toast_active += 1
+	var card := PanelContainer.new()
+	card.modulate.a = 0.0
+	card.position = Vector2(28, float(_notification_toast_active - 1) * 74.0)
+	card.scale = Vector2(0.96, 0.96)
+	card.custom_minimum_size = Vector2(250, 64)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.09, 0.12, 0.19, 0.96)
+	style.border_color = Color(0.35, 0.45, 0.6, 0.75)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 10
+	style.content_margin_right = 10
+	style.content_margin_top = 7
+	style.content_margin_bottom = 7
+	card.add_theme_stylebox_override("panel", style)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 2)
+	card.add_child(vb)
+
+	var title := Label.new()
+	title.text = "%s %s" % [_kind_icon(String(notif.get("kind", "system"))), String(notif.get("title", ""))]
+	title.add_theme_color_override("font_color", Color(0.95, 0.97, 1.0))
+	title.add_theme_font_size_override("font_size", 12)
+	vb.add_child(title)
+
+	var body := Label.new()
+	body.text = String(notif.get("body", ""))
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_color_override("font_color", Color(0.80, 0.88, 0.96, 0.95))
+	body.add_theme_font_size_override("font_size", 10)
+	vb.add_child(body)
+	_notifications_toast_layer.add_child(card)
+
+	var tw := create_tween()
+	tw.tween_property(card, "modulate:a", 1.0, 0.20)
+	tw.parallel().tween_property(card, "scale", Vector2.ONE, 0.20)
+	tw.tween_interval(4.2)
+	tw.tween_property(card, "modulate:a", 0.0, 1.15)
+	tw.parallel().tween_property(card, "position:y", card.position.y - 14.0, 1.15)
+	tw.tween_callback(func() -> void:
+		if is_instance_valid(card):
+			card.queue_free()
+		_notification_toast_active = maxi(0, _notification_toast_active - 1)
+		_pump_notification_toast_queue()
+	)
+
+
+func _collect_story_notifications() -> void:
+	if _sim == null:
+		return
+	var events: Array = _sim.story_events
+	if _notification_story_idx < 0:
+		_notification_story_idx = 0
+	if _notification_story_idx > events.size():
+		_notification_story_idx = events.size()
+	for i in range(_notification_story_idx, events.size()):
+		var e: Dictionary = events[i]
+		var text: String = String(e.get("text", ""))
+		if text == "":
+			continue
+		var info: Dictionary = _classify_story_notification(text)
+		_push_notification(
+			String(info.get("kind", "milestone")),
+			String(info.get("severity", NOTIF_SEVERITY_INFO)),
+			String(info.get("title", "Tank event")),
+			text,
+			bool(info.get("toast", false))
+		)
+	_notification_story_idx = events.size()
+
+
+func _classify_story_notification(text: String) -> Dictionary:
+	var low: String = text.to_lower()
+	if low.contains("collapsed") or low.contains("extirpated") or low.contains("gone"):
+		return {"kind": "population", "severity": NOTIF_SEVERITY_CRITICAL, "title": "Population collapse", "toast": true}
+	if low.contains("swelling") or low.contains("population at"):
+		return {"kind": "population", "severity": NOTIF_SEVERITY_IMPORTANT, "title": "Population shift", "toast": true}
+	if low.contains("generation") or low.contains("lineages deepening") or low.contains("reached"):
+		return {"kind": "milestone", "severity": NOTIF_SEVERITY_IMPORTANT, "title": "Milestone reached", "toast": true}
+	if low.contains("bloom") or low.contains("walstad pulse"):
+		return {"kind": "population", "severity": NOTIF_SEVERITY_INFO, "title": "Ecosystem update", "toast": false}
+	return {"kind": "milestone", "severity": NOTIF_SEVERITY_INFO, "title": "Story event", "toast": false}
+
+
+func _collect_water_alert_notifications() -> void:
+	if _stats.is_empty():
+		return
+	var o2: float = float(_stats.get("dissolved_o2", 1.0))
+	var ammonia: float = float(_stats.get("ammonia", 0.0))
+	var nitrite: float = float(_stats.get("nitrite", 0.0))
+
+	var o2_crit: bool = o2 < 0.42
+	if o2_crit and not _water_alert_low_o2_active:
+		_water_alert_low_o2_active = true
+		_push_notification("water_alert", NOTIF_SEVERITY_CRITICAL,
+			"Critical O2", "Dissolved oxygen dropped to %d%%." % int(round(o2 * 100.0)), true)
+	elif not o2_crit and _water_alert_low_o2_active and o2 > 0.56:
+		_water_alert_low_o2_active = false
+		_push_notification("water_alert", NOTIF_SEVERITY_IMPORTANT,
+			"O2 recovering", "Dissolved oxygen recovered to %d%%." % int(round(o2 * 100.0)), false)
+
+	var ammonia_crit: bool = ammonia >= 0.35
+	if ammonia_crit and not _water_alert_ammonia_active:
+		_water_alert_ammonia_active = true
+		_push_notification("water_alert", NOTIF_SEVERITY_CRITICAL,
+			"Ammonia spike", "Ammonia reached %.2f ppm." % ammonia, true)
+	elif not ammonia_crit and _water_alert_ammonia_active and ammonia < 0.22:
+		_water_alert_ammonia_active = false
+		_push_notification("water_alert", NOTIF_SEVERITY_IMPORTANT,
+			"Ammonia easing", "Ammonia fell to %.2f ppm." % ammonia, false)
+
+	var nitrite_crit: bool = nitrite >= 0.30
+	if nitrite_crit and not _water_alert_nitrite_active:
+		_water_alert_nitrite_active = true
+		_push_notification("water_alert", NOTIF_SEVERITY_CRITICAL,
+			"Nitrite spike", "Nitrite reached %.2f ppm." % nitrite, true)
+	elif not nitrite_crit and _water_alert_nitrite_active and nitrite < 0.20:
+		_water_alert_nitrite_active = false
+		_push_notification("water_alert", NOTIF_SEVERITY_IMPORTANT,
+			"Nitrite easing", "Nitrite fell to %.2f ppm." % nitrite, false)
 
 
 # Story popup — scrollable list of milestone events from sim.story_events.
@@ -2958,7 +3434,7 @@ func _show_welcome_back_if_returning() -> void:
 	if delta < 30:
 		return  # ignore brief reloads
 	var msg: String = "Welcome back. You were away for %s." % _format_duration(delta)
-	_spawn_welcome_label(msg)
+	_push_notification("welcome_back", NOTIF_SEVERITY_IMPORTANT, "Welcome back", msg, true)
 
 
 func _on_species_discovered(entry: Dictionary) -> void:
@@ -2968,9 +3444,16 @@ func _on_species_discovered(entry: Dictionary) -> void:
 func _show_discovery_toast(entry: Dictionary) -> void:
 	if entry.is_empty():
 		return
+	# Legacy discovery-toast state (pre-notification-center). We keep these
+	# fields nulled so old hot-reload references stay valid without rendering
+	# duplicate UI.
+	if _discovery_toast_tween != null and _discovery_toast_tween.is_valid():
+		_discovery_toast_tween.kill()
+	_discovery_toast_tween = null
+	_discovery_toast = null
 	var otype: String = String(entry.get("organism_type", "fish"))
 	var icon: String = UiIcons.fauna_label(otype)
-	var display: String = String(entry.get("display_name", "?"))
+	var display_name: String = String(entry.get("display_name", "?"))
 	var gen: int = int(entry.get("generation", 0))
 	var src: String = String(entry.get("source", ""))
 	var src_hint: String = ""
@@ -2978,43 +3461,13 @@ func _show_discovery_toast(entry: Dictionary) -> void:
 		src_hint = " · founder"
 	elif src == "store":
 		src_hint = " · store"
-	_kill_discovery_toast_tween()
-	if _discovery_toast != null and is_instance_valid(_discovery_toast):
-		_discovery_toast.queue_free()
-		_discovery_toast = null
-	var lab := Label.new()
-	lab.text = "%s New discovery: %s (gen %d)%s" % [icon, display, gen, src_hint]
-	lab.add_theme_color_override("font_color", Color(0.88, 0.96, 1.0, 1.0))
-	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	lab.add_theme_constant_override("outline_size", 4)
-	lab.add_theme_font_size_override("font_size", 14 if _is_mobile() else 13)
-	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lab.anchor_left = 0.0
-	lab.anchor_right = 1.0
-	lab.anchor_top = 0.0
-	lab.anchor_bottom = 0.0
-	lab.offset_top = 108.0
-	lab.offset_bottom = 140.0
-	add_child(lab)
-	_discovery_toast = lab
-	_discovery_toast_tween = create_tween()
-	_discovery_toast_tween.tween_interval(3.2)
-	_discovery_toast_tween.tween_property(lab, "modulate:a", 0.0, 0.9)
-	_discovery_toast_tween.tween_callback(_clear_discovery_toast)
-
-
-func _kill_discovery_toast_tween() -> void:
-	if _discovery_toast_tween != null and _discovery_toast_tween.is_valid():
-		_discovery_toast_tween.kill()
-	_discovery_toast_tween = null
-
-
-func _clear_discovery_toast() -> void:
-	_discovery_toast_tween = null
-	if _discovery_toast != null and is_instance_valid(_discovery_toast):
-		_discovery_toast.queue_free()
-	_discovery_toast = null
+	_push_notification(
+		"discovery",
+		NOTIF_SEVERITY_INFO,
+		"New discovery",
+		"%s %s (gen %d)%s" % [icon, display_name, gen, src_hint],
+		false
+	)
 
 
 func _spawn_welcome_label(text: String) -> void:
@@ -3134,7 +3587,7 @@ func _dismiss_blocking_overlays() -> bool:
 
 func _maybe_show_tutorial() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or bool(cfg.tutorial_seen):
+	if cfg == null or cfg.tutorial_seen:
 		return
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		return
@@ -3289,6 +3742,7 @@ func _show_photo_toast(path: String) -> void:
 	# Show just the filename, not the full path — useful but not noisy.
 	var file_name: String = path.get_file()
 	lab.text = "Photo saved: %s" % file_name
+	_push_notification("system", NOTIF_SEVERITY_INFO, "Photo saved", file_name, false)
 	lab.add_theme_color_override("font_color", Color(0.85, 1.0, 0.85, 1))
 	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	lab.add_theme_constant_override("outline_size", 4)

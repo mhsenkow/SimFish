@@ -186,6 +186,13 @@ const O2_RESPIRE_SHRIMP: float = 0.0020
 const O2_RESPIRE_SNAIL: float = 0.0011
 const O2_PASSIVE_SURFACE_GAS: float = 0.015   # tank breathing on its own
 const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
+# Night exchange boost + lower fauna respiration model "sleeping tank" behavior:
+# plants stop photosynthesizing after dusk, but fish/shrimp also settle down and
+# the water column tends to stay calmer/cooler. This prevents nightly O2 crashes
+# that can trigger perpetual panic loops in otherwise healthy tanks.
+const O2_NIGHT_SURFACE_BONUS: float = 0.010
+const O2_FISH_NIGHT_RESP_SCALE: float = 0.72
+const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.82
 const ECO_ENGINEERING_INTERVAL: float = 1.2
 const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
@@ -530,10 +537,10 @@ func _resolve_hardscape_overlaps(group: Array, min_dist: float,
 			if d2 > 1e-6:
 				dir = diff.normalized()
 			else:
-				var seed := Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
-				if seed.length_squared() < 1e-6:
-					seed = Vector3(1.0, 0.0, 0.0)
-				dir = seed.normalized()
+				var jitter_seed := Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
+				if jitter_seed.length_squared() < 1e-6:
+					jitter_seed = Vector3(1.0, 0.0, 0.0)
+				dir = jitter_seed.normalized()
 			pe += dir * (min_dist - sqrt(maxf(d2, 1e-6))) * 0.55
 			if pe.is_finite():
 				e.global_position = pe
@@ -624,13 +631,19 @@ func _tick(dt: float) -> void:
 	var w_o2: Node = get_parent()
 	if w_o2 != null and w_o2.has_method("floater_count"):
 		floater_n = w_o2.floater_count()
-	var photo: float = daylight() * (float(plants.size()) * O2_PHOTO_PER_PLANT \
+	var dl: float = daylight()
+	var night: float = 1.0 - dl
+	var photo: float = dl * (float(plants.size()) * O2_PHOTO_PER_PLANT \
 		+ float(floater_n) * O2_PHOTO_FLOATER)
-	var respire: float = float(fish.size()) * O2_RESPIRE_FISH \
-		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP \
+	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
+	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
+	var respire: float = float(fish.size()) * O2_RESPIRE_FISH * fish_resp_scale \
+		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
 		+ float(snail_count) * O2_RESPIRE_SNAIL
 	# Drift toward the natural target if there's no equipment.
-	var drift: float = O2_PASSIVE_SURFACE_GAS * (O2_TARGET_NATURAL - dissolved_o2)
+	var drift_target: float = O2_TARGET_NATURAL + night * 0.10
+	var drift_rate: float = O2_PASSIVE_SURFACE_GAS + night * O2_NIGHT_SURFACE_BONUS
+	var drift: float = drift_rate * (drift_target - dissolved_o2)
 	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
 		0.0, 1.2)
 
@@ -645,7 +658,7 @@ func _tick(dt: float) -> void:
 			w_sync.sync_terrain_nutrients()
 
 	# 3. Plants — cap GPU-heavy growth steps per tick (Metal fence safety).
-	plant_growth_budget = clampi(28 + plants.size() / 12, 28, 96)
+	plant_growth_budget = clampi(28 + int(plants.size() / 12.0), 28, 96)
 	_pearling_slots_used = 0
 	for p in plants:
 		p.tick(dt, substrate)
@@ -825,7 +838,7 @@ func _tick(dt: float) -> void:
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
-		if bool(f.get("snail_predator")):
+		if f.get("snail_predator"):
 			sp_count += 1
 	snail_predator_count = sp_count
 	# Nutrient pressure: 0 at <=2.0 N, 1.0 at >=8.0 N; blend nitrate from N-cycle.
@@ -1371,13 +1384,13 @@ func _apply_library_guided_fish_tuning(g: Dictionary) -> Dictionary:
 		(float(a.get("snail_predator_ratio", 0.0)) + float(a.get("shrimp_predator_ratio", 0.0))) * 0.5,
 		0.0, 1.0)
 	if randf() < 0.22 + pred_bias * 0.38:
-		g["snail_predator"] = bool(g.get("snail_predator", false)) or randf() < float(a.get("snail_predator_ratio", 0.0))
+		g["snail_predator"] = g.get("snail_predator", false) or randf() < float(a.get("snail_predator_ratio", 0.0))
 	if randf() < 0.22 + pred_bias * 0.38:
-		g["shrimp_predator"] = bool(g.get("shrimp_predator", false)) or randf() < float(a.get("shrimp_predator_ratio", 0.0))
+		g["shrimp_predator"] = g.get("shrimp_predator", false) or randf() < float(a.get("shrimp_predator_ratio", 0.0))
 	if randf() < 0.10 + float(a.get("armor_ratio", 0.0)) * 0.35:
-		g["armor_plates"] = bool(g.get("armor_plates", false)) or randf() < float(a.get("armor_ratio", 0.0))
+		g["armor_plates"] = g.get("armor_plates", false) or randf() < float(a.get("armor_ratio", 0.0))
 	if randf() < 0.10 + float(a.get("barbels_ratio", 0.0)) * 0.30:
-		g["has_barbels"] = bool(g.get("has_barbels", false)) or randf() < float(a.get("barbels_ratio", 0.0))
+		g["has_barbels"] = g.get("has_barbels", false) or randf() < float(a.get("barbels_ratio", 0.0))
 	var dom_shape: String = String(a.get("dominant_body_shape", ""))
 	if dom_shape != "" and randf() < 0.15 + k * 0.22:
 		g["body_shape"] = dom_shape
@@ -1414,7 +1427,7 @@ func _apply_library_guided_shrimp_tuning(g: Dictionary) -> Dictionary:
 			+ randf_range(-0.10, 0.12),
 		0.75, 1.7)
 	if randf() < 0.10 + float(a.get("cleaner_ratio", 0.0)) * 0.28:
-		g["is_cleaner"] = bool(g.get("is_cleaner", false)) or randf() < float(a.get("cleaner_ratio", 0.0))
+		g["is_cleaner"] = g.get("is_cleaner", false) or randf() < float(a.get("cleaner_ratio", 0.0))
 	return g
 
 
@@ -1441,11 +1454,11 @@ func _apply_library_guided_snail_tuning(g: Dictionary) -> Dictionary:
 	return g
 
 
-func _apply_library_guided_plant_tuning(seed: Dictionary) -> Dictionary:
+func _apply_library_guided_plant_tuning(seed_data: Dictionary) -> Dictionary:
 	var a: Dictionary = _library_analysis("plant")
 	if int(a.get("entry_count", 0)) <= 0:
-		return seed
-	var out: Dictionary = seed.duplicate(true)
+		return seed_data
+	var out: Dictionary = seed_data.duplicate(true)
 	var cfg: Dictionary = out.get("seed_config", {}).duplicate(true)
 	var k: float = _analysis_strength(a)
 	cfg["max_height"] = clampi(int(round(
@@ -1724,11 +1737,11 @@ func _spawn_resilience_genome(genome: Dictionary, organism_type: String) -> bool
 	var w: Node = get_parent()
 	if w == null or not w.has_method("spawn_library_entry"):
 		return false
-	return bool(w.spawn_library_entry(genome, organism_type))
+	return not not w.spawn_library_entry(genome, organism_type)
 
 
-func _spawn_resilience_plant(seed: Dictionary) -> bool:
-	if seed.is_empty():
+func _spawn_resilience_plant(seed_data: Dictionary) -> bool:
+	if seed_data.is_empty():
 		return false
 	var w: Node = get_parent()
 	if w == null or not w.has_method("spawn_seedling"):
@@ -1738,7 +1751,7 @@ func _spawn_resilience_plant(seed: Dictionary) -> bool:
 		xz = w.sample_xz_in_tank(0.55)
 	var sub_y: float = float(w.get("SUBSTRATE_DEPTH")) if w.get("SUBSTRATE_DEPTH") != null else substrate_top_y
 	var pos: Vector3 = Vector3(xz.x, sub_y, xz.y)
-	w.spawn_seedling(pos, seed.get("ramp", []), int(seed.get("generation", 1)), seed.get("seed_config", {}))
+	w.spawn_seedling(pos, seed_data.get("ramp", []), int(seed_data.get("generation", 1)), seed_data.get("seed_config", {}))
 	return true
 
 
@@ -1810,8 +1823,8 @@ func _run_evolution_burst(dt: float) -> void:
 		return
 	# Keep cadence dynamic: stronger algae bloom => faster community turnover.
 	_evo_burst_timer = EVO_BURST_INTERVAL_S * (0.70 if bloom_intensity > 0.55 else 1.0)
-	var seed: Dictionary = _make_resilience_plant_seed()
-	if seed.is_empty():
+	var seed_data: Dictionary = _make_resilience_plant_seed()
+	if seed_data.is_empty():
 		return
 	var w: Node = get_parent()
 	if w == null or not w.has_method("spawn_seedling"):
@@ -1819,7 +1832,7 @@ func _run_evolution_burst(dt: float) -> void:
 	var is_saltwater: bool = false
 	var sw: Variant = w.get("_active_substrate_profile")
 	if sw is Dictionary:
-		is_saltwater = bool((sw as Dictionary).get("is_saltwater", false))
+		is_saltwater = not not (sw as Dictionary).get("is_saltwater", false)
 	var center: Vector2 = Vector2.ZERO
 	if w.has_method("_pick_ecology_site"):
 		var half_d: float = float(w.get("TANK_HALF_D")) if w.get("TANK_HALF_D") != null else 4.0
@@ -1827,8 +1840,8 @@ func _run_evolution_burst(dt: float) -> void:
 			is_saltwater, -half_d * 0.82, half_d * 0.82, 0.35, 0.45)
 	elif w.has_method("sample_xz_in_tank"):
 		center = w.sample_xz_in_tank(0.45)
-	var base_ramp: Array = seed.get("ramp", []).duplicate(true)
-	var base_cfg: Dictionary = seed.get("seed_config", {}).duplicate(true)
+	var base_ramp: Array = seed_data.get("ramp", []).duplicate(true)
+	var base_cfg: Dictionary = seed_data.get("seed_config", {}).duplicate(true)
 	var cluster_n: int = randi_range(EVO_BURST_CLUSTER_MIN, EVO_BURST_CLUSTER_MAX)
 	for i in cluster_n:
 		var child_ramp: Array = base_ramp.duplicate(true)
@@ -1846,7 +1859,7 @@ func _run_evolution_burst(dt: float) -> void:
 		var ang: float = randf() * TAU
 		var rad: float = randf_range(0.18, 1.10)
 		var p := Vector3(center.x + cos(ang) * rad, substrate_top_y, center.y + sin(ang) * rad)
-		w.spawn_seedling(p, child_ramp, int(seed.get("generation", 1)) + 1, child_cfg)
+		w.spawn_seedling(p, child_ramp, int(seed_data.get("generation", 1)) + 1, child_cfg)
 
 
 func _run_ecosystem_diary(dt: float) -> void:

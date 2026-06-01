@@ -26,7 +26,7 @@ var viable: bool = true
 func init(genome_dict: Dictionary) -> void:
 	genome = genome_dict
 	species = genome.get("species", species)
-	viable = bool(genome.get("viable", true))
+	viable = not not genome.get("viable", true)
 	# Derive egg tint from the parents' base_color: lighten by 40% and
 	# desaturate toward a warm translucent look so the species identity
 	# shows through. E.g. scarlet glassdart → pink-ish eggs.

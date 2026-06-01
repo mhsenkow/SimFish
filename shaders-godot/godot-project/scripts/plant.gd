@@ -228,11 +228,11 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	if pk is Array:
 		_parent_keys = pk.duplicate()
 	if params.has("emergent_growth"):
-		emergent_growth = bool(params["emergent_growth"])
+		emergent_growth = not not params["emergent_growth"]
 	if params.has("monocarpic"):
-		monocarpic = bool(params["monocarpic"])
+		monocarpic = not not params["monocarpic"]
 	if params.has("uses_flowering"):
-		uses_flowering = bool(params["uses_flowering"])
+		uses_flowering = not not params["uses_flowering"]
 	else:
 		_apply_default_growth_strategy()
 	_ensure_plant_named()
@@ -310,13 +310,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	init(h, params)
 	# Patch dynamic state AFTER init so init() doesn't clobber it.
 	growth_progress = float(d.get("growth_progress", 0.0))
-	has_flower = bool(d.get("has_flower", false))
-	has_emerged = bool(d.get("has_emerged", false))
+	has_flower = not not d.get("has_flower", false)
+	has_emerged = not not d.get("has_emerged", false)
 	seed_timer = float(d.get("seed_timer", 0.0))
 	life_phase = int(d.get("life_phase", LifePhase.VEGETATIVE if not has_emerged else LifePhase.CANOPY))
-	emergent_growth = bool(d.get("emergent_growth", emergent_growth))
-	uses_flowering = bool(d.get("uses_flowering", uses_flowering))
-	monocarpic = bool(d.get("monocarpic", monocarpic))
+	emergent_growth = not not d.get("emergent_growth", emergent_growth)
+	uses_flowering = not not d.get("uses_flowering", uses_flowering)
+	monocarpic = not not d.get("monocarpic", monocarpic)
 	_canopy_timer = float(d.get("_canopy_timer", 0.0))
 	_seeds_cast_this_cycle = int(d.get("_seeds_cast_this_cycle", 0))
 	health = float(d.get("health", 1.0))
@@ -326,7 +326,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	_flower_open_frac = float(d.get("_flower_open_frac", 0.0))
 	_flower_petal_color = SaveHelpers.array_to_color(d.get("_flower_petal_color", []), _flower_petal_color)
 	_flower_center_color = SaveHelpers.array_to_color(d.get("_flower_center_color", []), _flower_center_color)
-	is_dying = bool(d.get("is_dying", false))
+	is_dying = not not d.get("is_dying", false)
 	generation = int(d.get("generation", 0))
 
 
@@ -698,9 +698,8 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
 		leaf_node.position = stem_mi.position
-		@warning_ignore("integer_division")
 		var leaf_voxels: Array = LeafShapes.build_lance_pair(
-			ramp, age_frac, current_height / 2)
+			ramp, age_frac, int(current_height / 2.0))
 		_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 		_leaf_ages.append(_t)
 		leaf_node.free()
@@ -1141,7 +1140,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_tick_runner(dt)
 
 
-func _tick_canopy(dt: float, nutrient_mult: float, substrate: SubstrateGrid) -> void:
+func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) -> void:
 	_tick_flowering(dt)
 	_tick_seeding(dt)
 	_tick_pearling(dt)
@@ -1366,7 +1365,7 @@ func _find_sim() -> Node:
 func _try_consume_growth_budget() -> bool:
 	var sim_driver: Node = _find_sim()
 	if sim_driver != null and sim_driver.has_method("try_consume_plant_growth"):
-		return bool(sim_driver.try_consume_plant_growth())
+		return not not sim_driver.try_consume_plant_growth()
 	return true
 
 
@@ -1516,7 +1515,7 @@ func _spawn_decay_waste(at: Vector3) -> void:
 
 # ---- Leaf flutter ----
 
-func _flutter_leaves(dt: float) -> void:
+func _flutter_leaves(_dt: float) -> void:
 	pass
 
 
@@ -1546,8 +1545,7 @@ func _get_flow_bias() -> float:
 func _apply_pinholes() -> void:
 	_has_pinholes = true
 	# Make some voxels in the middle of the plant invisible (gaps in leaves).
-	@warning_ignore("integer_division")
-	var n_holes: int = maxi(1, voxels.size() / 6)
+	var n_holes: int = maxi(1, int(voxels.size() / 6.0))
 	for i in n_holes:
 		var idx: int = randi() % maxi(1, voxels.size())
 		if idx < voxels.size() and is_instance_valid(voxels[idx]):

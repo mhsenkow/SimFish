@@ -581,7 +581,7 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
 
 
-func _handle_boundary_bounce(tangent: Vector3, bitangent: Vector3, pre_move: Vector3) -> void:
+func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: Vector3) -> void:
 	const EPS: float = 0.04
 	var hit := false
 	if position.x <= wall_min.x + EPS and pre_move.x > position.x:
@@ -738,7 +738,7 @@ func _check_predator_threat(dt: float) -> void:
 	for f in sim.fish:
 		if not is_instance_valid(f):
 			continue
-		if not bool(f.snail_predator):
+		if not f.snail_predator:
 			continue
 		var d2: float = f.position.distance_squared_to(position)
 		if d2 < nearest_d2:
@@ -888,7 +888,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	wall_normal = SaveHelpers.array_to_vec3(d.get("wall_normal", []), wall_normal)
 	wall_min = SaveHelpers.array_to_vec3(d.get("wall_min", []), wall_min)
 	wall_max = SaveHelpers.array_to_vec3(d.get("wall_max", []), wall_max)
-	is_baby = bool(d.get("is_baby", is_baby))
+	is_baby = not not d.get("is_baby", is_baby)
 	shell_color = SaveHelpers.array_to_color(d.get("shell_color", []), shell_color)
 	shell_size = float(d.get("shell_size", shell_size))
 	shell_shape = String(d.get("shell_shape", shell_shape))
@@ -909,9 +909,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	energy = clampf(float(d.get("energy", energy)), 0.0, 1.0)
 	_t_until_breed = float(d.get("t_until_breed", _t_until_breed))
 	_t_until_turn = float(d.get("t_until_turn", _t_until_turn))
-	_paused = bool(d.get("paused", false))
-	_pursuing_waste = bool(d.get("pursuing_waste", false))
-	_clamped = bool(d.get("clamped", false))
+	_paused = not not d.get("paused", false)
+	_pursuing_waste = not not d.get("pursuing_waste", false)
+	_clamped = not not d.get("clamped", false)
 	_clamp_grace_remaining = float(d.get("clamp_grace_remaining", 0.0))
 	_eye_retract_remaining = float(d.get("eye_retract_remaining", 0.0))
 	_eye_retract_timer = float(d.get("eye_retract_timer", _eye_retract_timer))

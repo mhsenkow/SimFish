@@ -46,7 +46,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	init(float(d.get("nutrient_value", 0.2)),
 		float(d.get("substrate_top_y", 1.6)),
 		int(d.get("kind", KIND_FISH)))
-	settled = bool(d.get("settled", false))
+	settled = not not d.get("settled", false)
 	_life = float(d.get("life", 0.0))
 	_settle_timer = float(d.get("settle_timer", 0.0))
 

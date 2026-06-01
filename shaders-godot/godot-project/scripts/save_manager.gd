@@ -23,7 +23,7 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 	if sim != null and sim.has_method("load_state"):
 		sim.load_state(d)
 	if d.has("terrain") and world != null and world.has_method("terrain_apply_save_dict") \
-			and not bool(TankConfig.rebuild_terrain_on_load):
+			and not TankConfig.rebuild_terrain_on_load:
 		world.terrain_apply_save_dict(d["terrain"])
 	if TankConfig.rebuild_terrain_on_load:
 		TankConfig.rebuild_terrain_on_load = false

@@ -15,7 +15,6 @@ extends Node3D
 var tannins: float = 0.0
 var _water_mesh: MeshInstance3D = null
 var _water_material_ref: StandardMaterial3D = null
-var _caustic_meshes: Array[MeshInstance3D] = []
 var _caustics_mat: ShaderMaterial = null
 var _mulm_voxels: Array = []
 var _film_voxels: Array = []
@@ -263,7 +262,7 @@ func _ready() -> void:
 		# walkthrough using the creature creator + aquascape tools.
 		pass
 	elif not loading_from_save:
-		if bool(_active_substrate_profile.get("is_saltwater", false)):
+		if _active_substrate_profile.get("is_saltwater", false):
 			await _spawn_initial_corals()
 			await get_tree().process_frame
 		else:
@@ -276,7 +275,7 @@ func _ready() -> void:
 			await get_tree().process_frame
 
 		await _spawn_initial_fish()
-		if bool(_active_substrate_profile.get("is_saltwater", false)):
+		if _active_substrate_profile.get("is_saltwater", false):
 			await _spawn_marine_shrimp()
 		else:
 			await _spawn_initial_shrimp()
@@ -286,7 +285,7 @@ func _ready() -> void:
 		# respawn them. Floaters ARE persisted now (custom designs survive)
 		# and are restored by SimDriver.load_state -> restore_floaters, which
 		# falls back to a default spawn for pre-feature saves.
-		if not bool(_active_substrate_profile.get("is_saltwater", false)):
+		if not _active_substrate_profile.get("is_saltwater", false):
 			_spawn_lily_pads()
 			_spawn_math_plants()
 			await get_tree().process_frame
@@ -491,7 +490,7 @@ func _process(dt: float) -> void:
 		_apply_biofilm_tints()
 	# Coral recruitment (saltwater tanks only). Larval settlement is limited
 	# by substrate space and competition, not a global count cap.
-	if bool(_active_substrate_profile.get("is_saltwater", false)):
+	if _active_substrate_profile.get("is_saltwater", false):
 		_coral_recruit_timer = maxf(0.0, _coral_recruit_timer - sdt)
 		if _coral_recruit_timer <= 0.0:
 			_coral_recruit_timer = randf_range(CORAL_RECRUIT_MIN, CORAL_RECRUIT_MAX)
@@ -566,7 +565,7 @@ func _process(dt: float) -> void:
 		if _caustics_mat != null:
 			var show_caustics: bool = true
 			if cfg2 != null:
-				show_caustics = bool(cfg2.light_caustics)
+				show_caustics = not not cfg2.light_caustics
 			
 			var intensity: float = 0.0
 			if show_caustics:
@@ -869,17 +868,17 @@ func algae_carrying_capacity() -> int:
 
 
 func microfauna_carrying_capacity() -> int:
-	var scale: float = float(_library_tiny_life_scalars().get("micro", 1.0))
+	var tiny_scale: float = float(_library_tiny_life_scalars().get("micro", 1.0))
 	var base: float = _tank_volume_proxy() * 0.42
 	var mulm: float = float(_mulm_voxels.size()) * 0.55
 	var bio: float = biofilm_progress * 140.0
 	var bloom: float = float(sim.bloom_intensity) * 90.0 if sim != null else 0.0
-	return maxi(4, int((base + mulm + bio + bloom) * scale))
+	return maxi(4, int((base + mulm + bio + bloom) * tiny_scale))
 
 
 func wriggle_carrying_capacity() -> int:
-	var scale: float = float(_library_tiny_life_scalars().get("wriggle", 1.0))
-	return int(float(_mulm_voxels.size()) * WRIGGLE_PER_MULM_FRAC * scale)
+	var tiny_scale: float = float(_library_tiny_life_scalars().get("wriggle", 1.0))
+	return int(float(_mulm_voxels.size()) * WRIGGLE_PER_MULM_FRAC * tiny_scale)
 
 
 func _mulm_carrying_capacity() -> int:
@@ -1348,10 +1347,10 @@ func _build_hardscape(populate: bool = true) -> void:
 		return mi
 
 	# 1. Procedural Driftwood Spline (Bezier Curve)
-	var bezier: Callable = func(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: float) -> Vector3:
-		var q0 := p0.lerp(p1, t)
-		var q1 := p1.lerp(p2, t)
-		var q2 := p2.lerp(p3, t)
+	var bezier: Callable = func(c0: Vector3, c1: Vector3, c2: Vector3, c3: Vector3, t: float) -> Vector3:
+		var q0 := c0.lerp(c1, t)
+		var q1 := c1.lerp(c2, t)
+		var q2 := c2.lerp(c3, t)
 		var r0 := q0.lerp(q1, t)
 		var r1 := q1.lerp(q2, t)
 		return r0.lerp(r1, t)
@@ -1858,7 +1857,7 @@ func _build_snails(populate: bool = true) -> Node3D:
 	# Saltwater branches into a marine snail mix (turbo / trochus on the
 	# glass, plus nassarius scavengers on the substrate). Freshwater
 	# keeps the original purple-leaning founder palette.
-	var is_saltwater: bool = bool(_active_substrate_profile.get("is_saltwater", false))
+	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
 	var founder_palette: Array[Color]
 	if is_saltwater:
 		# Marine palette: pearl whites, sand creams, dark banding.
@@ -2032,7 +2031,7 @@ func _build_snail_body(snail: Node3D) -> void:
 	var gen_n: int = int(gen_v if gen_v != null else 0)
 	if gen_n >= 3:
 		var ring_mat := _solid_mat(shell_dark.lightened(0.18))
-		var ring_count: int = clampi(1 + int(gen_n / 3), 1, 4)
+		var ring_count: int = clampi(1 + int(gen_n / 3.0), 1, 4)
 		for i in ring_count:
 			var frac: float = float(i + 1) / float(ring_count + 1)
 			var ry: float = 0.02 * shell_size + frac * 0.16 * shell_size
@@ -2120,7 +2119,7 @@ func _respawn_extinct_fauna() -> void:
 			_spawn_fish_at(g, _sample_fish_spawn_pos(g))
 
 	# Shrimp: reef tanks use the marine cleaning crew, not freshwater stocking.
-	var is_saltwater: bool = bool(_active_substrate_profile.get("is_saltwater", false))
+	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
 	if is_saltwater:
 		_spawn_marine_shrimp(false)
 	elif stocking.has("shrimp"):
@@ -2613,7 +2612,7 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dictionary) -> void:
 	if plants_root == null or sim == null:
 		return
-	var is_saltwater: bool = bool(_active_substrate_profile.get("is_saltwater", false))
+	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
 	var seed_reach: float = float(seed_config.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
 	if seed_config.has("max_horizontal_extent"):
 		seed_reach = maxf(seed_reach, float(seed_config["max_horizontal_extent"]) + 0.08)
@@ -2862,7 +2861,7 @@ func _build_light_fixture() -> void:
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
 
-		if cfg != null and bool(cfg.light_volumetric):
+		if cfg != null and cfg.light_volumetric:
 			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle, height_above)
 	else:
 		# Bar - long thin housing across the tank width.
@@ -2902,7 +2901,7 @@ func _build_light_fixture() -> void:
 			_light_fixture_root.add_child(spot)
 			_light_fixture_spots.append(spot)
 
-			if cfg != null and bool(cfg.light_volumetric):
+			if cfg != null and cfg.light_volumetric:
 				_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle, height_above)
 
 	if TANK_SHAPE == "sphere":
@@ -3875,7 +3874,7 @@ func _build_room_environment() -> void:
 	var cols: int = int(wall_half_w * 2.0 / brick_w) + 1
 	
 	# Wall cutout coordinates for window
-	var include_window: bool = bool(preset.get("include_window", false))
+	var include_window: bool = not not preset.get("include_window", false)
 	var window_w_half: float = 3.5
 	var window_h_half: float = 2.5
 	var window_center_y: float = desk_y + 4.5
@@ -3918,40 +3917,40 @@ func _build_room_environment() -> void:
 
 	# Lamp (preset-controlled). Tall thin stand + a glowing shade on the
 	# left side of the desk, just outside the tank's footprint.
-	if bool(preset.get("include_lamp", false)):
+	if preset.get("include_lamp", false):
 		_build_room_lamp(room, Vector3(-desk_half_w + 2.0, desk_y, -desk_half_d + 1.6),
 			accent_color, light_color)
 
 	# Book stack on the right side of the desk.
-	if bool(preset.get("include_books", false)):
+	if preset.get("include_books", false):
 		_build_room_books(room, Vector3(desk_half_w - 2.4, desk_y + 0.05,
 			-desk_half_d + 1.4))
 
 	# Small house plant in front of the wall, to one side.
-	if bool(preset.get("include_plant", false)):
+	if preset.get("include_plant", false):
 		_build_room_plant(room, Vector3(-desk_half_w + 2.0, desk_y + 0.05,
 			-desk_half_d + 2.6))
 
 	# Cozy Steaming Coffee/Tea Mug
-	if bool(preset.get("include_mug", false)):
+	if preset.get("include_mug", false):
 		_build_room_mug(room, Vector3(desk_half_w - 3.4, desk_y, -desk_half_d + 1.8), accent_color)
 
 	# Vintage Alarm Clock (Functioning)
-	if bool(preset.get("include_clock", false)):
+	if preset.get("include_clock", false):
 		_build_room_clock(room, Vector3(desk_half_w - 1.2, desk_y, -desk_half_d + 1.8), accent_color)
 
 	# Interactive Record Player
-	if bool(preset.get("include_record_player", false)):
+	if preset.get("include_record_player", false):
 		_build_room_record_player(room, Vector3(-desk_half_w + 4.2, desk_y, -desk_half_d + 1.8))
 
 	# Dynamic Lava Lamp
-	if bool(preset.get("include_lava_lamp", false)):
+	if preset.get("include_lava_lamp", false):
 		_build_room_lava_lamp(room, Vector3(-desk_half_w + 2.0, desk_y, -desk_half_d + 1.6),
 			Color8(160, 160, 165), accent_color)
 
 
 
-func _build_room_window(parent: Node3D, wall_z: float, wall_mat: Material,
+func _build_room_window(parent: Node3D, wall_z: float, _wall_mat: Material,
 		frame_mat: Material, preset: Dictionary) -> void:
 	# Sky Backing: placed slightly behind the wall.
 	# Size: 7.0 wide, 5.0 tall, 0.1 deep.
@@ -4784,7 +4783,7 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 		"coral":
 			return spawn_coral_from_genome(genome.duplicate(true))
 		"plant":
-			if bool(genome.get("floating", false)):
+			if genome.get("floating", false):
 				return spawn_floating_plant(genome)
 			var p_xz: Vector2 = _sample_substrate_xz(0.35, 0.46, 0.45)
 			var cfg: Dictionary = {

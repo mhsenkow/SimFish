@@ -441,7 +441,7 @@ func material_shader_id(mat: int) -> int:
 	return mat
 
 
-func build_render_buckets(y_max_limit: float, caustic_rows_from_top: int,
+func build_render_buckets(y_max_limit: float, _caustic_rows_from_top: int,
 		voxel_ok: Callable) -> Dictionary:
 	var buckets: Dictionary = {}
 	for cy in rows:

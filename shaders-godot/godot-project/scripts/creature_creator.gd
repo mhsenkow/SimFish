@@ -240,9 +240,9 @@ func _build_ui() -> void:
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
 	outer.add_child(footer)
-	var randomize := PanelTheme.make_secondary_button("🎲 Randomize")
-	randomize.pressed.connect(_randomize)
-	footer.add_child(randomize)
+	var randomize_btn := PanelTheme.make_secondary_button("🎲 Randomize")
+	randomize_btn.pressed.connect(_randomize)
+	footer.add_child(randomize_btn)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	footer.add_child(spacer)
@@ -527,7 +527,7 @@ func _add_dropdown(label: String, key: String, options: Array) -> void:
 func _add_check(label: String, key: String) -> void:
 	var cb := CheckBox.new()
 	cb.text = label
-	cb.button_pressed = bool(_genome.get(key, false))
+	cb.button_pressed = not not _genome.get(key, false)
 	cb.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	cb.toggled.connect(func(p: bool):
 		_genome[key] = p
@@ -716,7 +716,7 @@ func _add_to_tank(count: int) -> void:
 	var otype: String = _otype_string()
 	var added: int = 0
 	for i in count:
-		if bool(_world.spawn_library_entry(_current_genome(), otype)):
+		if _world.spawn_library_entry(_current_genome(), otype):
 			added += 1
 	if added > 0:
 		_status.text = "Added %d %s to the tank." % [added, _kind_plural(added)]
@@ -971,9 +971,9 @@ func _spawn_preview_snail(g: Dictionary) -> Node3D:
 	return sn
 
 
-func _snail_box(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
+func _snail_box(parent: Node3D, pos: Vector3, box_size: Vector3, mat: Material) -> void:
 	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(size)
+	mi.mesh = VoxelMat.get_box(box_size)
 	mi.position = pos
 	mi.material_override = mat
 	parent.add_child(mi)

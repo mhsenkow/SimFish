@@ -159,28 +159,28 @@ func _cfg() -> Node:
 
 func _master_enabled() -> bool:
 	var cfg := _cfg()
-	return bool(cfg.music_enabled) if cfg != null else true
+	return (not not cfg.music_enabled) if cfg != null else true
 
 
 func _ambient_enabled() -> bool:
 	if not _master_enabled():
 		return false
 	var cfg := _cfg()
-	return bool(cfg.music_ambient_enabled) if cfg != null else true
+	return (not not cfg.music_ambient_enabled) if cfg != null else true
 
 
 func _events_enabled() -> bool:
 	if not _master_enabled():
 		return false
 	var cfg := _cfg()
-	return bool(cfg.music_events_enabled) if cfg != null else true
+	return (not not cfg.music_events_enabled) if cfg != null else true
 
 
 func _environment_enabled() -> bool:
 	if not _master_enabled():
 		return false
 	var cfg := _cfg()
-	return bool(cfg.music_environment_enabled) if cfg != null else true
+	return (not not cfg.music_environment_enabled) if cfg != null else true
 
 
 func _reactivity() -> float:
@@ -287,7 +287,7 @@ func _refresh_environment() -> void:
 		_env["tannins"] = clampf(float(_world_ref.tannins), 0.0, 1.0)
 	var cfg := _cfg()
 	if cfg != null and cfg.has_method("current_substrate_profile"):
-		_env["saltwater"] = bool(cfg.current_substrate_profile().get("is_saltwater", false))
+		_env["saltwater"] = not not cfg.current_substrate_profile().get("is_saltwater", false)
 
 
 func _smooth_environment(dt: float) -> void:
@@ -367,7 +367,7 @@ func _apply_ecosystem_shift() -> void:
 func _pick_arp_from_tank(_initial: bool) -> void:
 	var vit: float = _tank_vitality
 	var bloom: float = float(_smooth.get("bloom", 0.0)) * _influence("music_influence_bloom")
-	var salt: float = 1.0 if bool(_smooth.get("saltwater", false)) else 0.0
+	var salt: float = 1.0 if _smooth.get("saltwater", false) else 0.0
 	var seed_n: float = _seed_mix(17)
 	var idx: int = int(round(vit * float(ARP_BANK.size() - 1)))
 	idx = (idx + int(bloom * 2.0) + int(salt * 2.0) + int(seed_n * 3.0)) % ARP_BANK.size()
@@ -417,7 +417,7 @@ func _get_current_scale() -> Array[float]:
 	var dl: float = float(_smooth.get("daylight", _env.get("daylight", 1.0))) * _influence("music_influence_day")
 	var bloom: float = float(_smooth.get("bloom", 0.0)) * _influence("music_influence_bloom")
 	var o2: float = float(_smooth.get("o2", 0.85)) * _influence("music_influence_o2")
-	var salt: bool = bool(_smooth.get("saltwater", false))
+	var salt: bool = not not _smooth.get("saltwater", false)
 	var tannins: float = float(_smooth.get("tannins", 0.0))
 
 	var major_weight: float = clampf(dl, 0.0, 1.0)
@@ -721,7 +721,7 @@ func _advance_sequencer(quarter: int, sixteenth: int) -> void:
 			_trigger_hat()
 		if quarter % 4 == 0 and quarter > 0:
 			var bank: Array = CHORD_DAY if _daylight_zone == 1 else CHORD_NIGHT
-			var bar_num: int = quarter / 4
+			var bar_num: int = int(quarter / 4.0)
 			var step: int = (_phrase_idx + (bar_num % _bars_per_phrase)) % bank.size()
 			_chord_root = int(bank[step]) % 5
 			_bass_freq = _scale_freq(0, -1 if float(_smooth.get("bloom", 0.0)) < 0.4 else 0)
