@@ -34,6 +34,7 @@ const HUD_TOP: float = 52.0
 const HUD_BOTTOM: float = 34.0
 const EDGE_MARGIN: float = 12.0
 const RAIL_WIDTH: float = 56.0
+const RAIL_BOTTOM_HEIGHT: float = 60.0
 const RAIL_BUTTON: float = 48.0
 const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0

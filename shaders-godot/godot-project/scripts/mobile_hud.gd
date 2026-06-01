@@ -126,10 +126,11 @@ func _build_speed_row() -> void:
 	_speed_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_speed_container)
 
-	_pause_btn = _make_btn("⏸", Color8(220, 180, 80))
+	_pause_btn = _make_btn(UiIcons.mobile_hud_label("pause"), Color8(220, 180, 80))
 	_pause_btn.pressed.connect(func():
 		_is_paused = not _is_paused
-		_pause_btn.text = "▶" if _is_paused else "⏸"
+		_pause_btn.text = UiIcons.mobile_hud_label("play") if _is_paused \
+				else UiIcons.mobile_hud_label("pause")
 		pause_pressed.emit())
 	_speed_container.add_child(_pause_btn)
 
@@ -143,7 +144,7 @@ func _build_speed_row() -> void:
 		btn.pressed.connect(func():
 			_current_speed = s
 			_is_paused = false
-			_pause_btn.text = "⏸"
+			_pause_btn.text = UiIcons.mobile_hud_label("pause")
 			_highlight_speed(s)
 			speed_pressed.emit(s))
 		_speed_container.add_child(btn)
@@ -158,11 +159,11 @@ func _build_action_row() -> void:
 	_action_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_action_container)
 
-	_photo_btn = _make_btn("📷", Color8(150, 200, 170))
+	_photo_btn = _make_btn(UiIcons.mobile_hud_label("photo"), Color8(150, 200, 170))
 	_photo_btn.pressed.connect(func(): photo_pressed.emit())
 	_action_container.add_child(_photo_btn)
 
-	_undo_btn = _make_btn("↩", Color8(220, 130, 130))
+	_undo_btn = _make_btn(UiIcons.mobile_hud_label("undo"), Color8(220, 130, 130))
 	_undo_btn.pressed.connect(func(): undo_pressed.emit())
 	_undo_btn.visible = false  # Only shown in aquascape mode.
 	_action_container.add_child(_undo_btn)
@@ -176,7 +177,10 @@ func _apply_layout() -> void:
 	# Bottom edge of buttons - 12px above the safe-area bottom, which leaves
 	# clearance for the gesture pill on phones that hide the safe-area bottom
 	# inset under their nav bar.
-	var bottom_y: float = safe.position.y + safe.size.y - 12.0
+	var bottom_extra: float = 0.0
+	if get_viewport().get_visible_rect().size.y > get_viewport().get_visible_rect().size.x:
+		bottom_extra = PanelTheme.RAIL_BOTTOM_HEIGHT
+	var bottom_y: float = safe.position.y + safe.size.y - 12.0 - bottom_extra
 	# Speed row: anchored to bottom-left of safe area.
 	if _speed_container != null:
 		_speed_container.anchor_left = 0.0

@@ -12,6 +12,7 @@ extends PanelContainer
 signal apply_requested
 
 var _shape_option: OptionButton
+var _new_tank_fit_option: OptionButton
 var _w_slider: HSlider
 var _d_slider: HSlider
 var _h_slider: HSlider
@@ -129,6 +130,20 @@ func _build_ui() -> void:
 		_shape_option.set_item_metadata(_shape_option.item_count - 1, entry["key"])
 	_shape_option.item_selected.connect(func(idx):
 		TankConfig.tank_shape = _shape_option.get_item_metadata(idx))
+
+	_new_tank_fit_option = PanelTheme.add_dropdown_row(vbox, "New tank footprint")
+	for entry in [
+			{"key": "auto", "label": "Auto (screen + orientation)"},
+			{"key": "rect", "label": "Rectangle (tall/wide box)"},
+			{"key": "round", "label": "Round (cylinder)"},
+		]:
+		_new_tank_fit_option.add_item(String(entry["label"]))
+		_new_tank_fit_option.set_item_metadata(_new_tank_fit_option.item_count - 1, entry["key"])
+	_new_tank_fit_option.item_selected.connect(func(idx):
+		TankConfig.new_tank_fit = _new_tank_fit_option.get_item_metadata(idx))
+	var fit_hint := PanelTheme.make_description()
+	fit_hint.text = "Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger."
+	vbox.add_child(fit_hint)
 
 	_w_label = Label.new()
 	_w_slider = PanelTheme.add_slider_row(vbox, "Width", 4.0, 24.0, 0.5, _w_label)
@@ -335,6 +350,11 @@ func _pull_from_config() -> void:
 		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
 			_shape_option.select(i)
 			break
+	if _new_tank_fit_option != null:
+		for i in _new_tank_fit_option.item_count:
+			if _new_tank_fit_option.get_item_metadata(i) == TankConfig.new_tank_fit:
+				_new_tank_fit_option.select(i)
+				break
 	_w_slider.value = TankConfig.tank_half_w * 2.0
 	_d_slider.value = TankConfig.tank_half_d * 2.0
 	_h_slider.value = TankConfig.tank_height

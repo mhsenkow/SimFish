@@ -71,6 +71,10 @@ var tank_shape: String = "box"
 var tank_half_w: float = 8.0
 var tank_half_d: float = 4.0
 var tank_height: float = 7.0
+# How new tanks pick footprint before the player edits shape sliders.
+# auto = portrait → tall round (cylinder), landscape → wide rectangle;
+# rect = always box; round = cylinder (square/cube uses shape picker).
+var new_tank_fit: String = "auto"
 var water_surface_fraction: float = 0.93  # water reaches 93% up the tank
 var substrate_depth_fraction: float = 0.23  # substrate is 23% of tank height
 
@@ -1037,6 +1041,7 @@ func save_to_disk() -> void:
 	cfg.set_value("mobile", "device_tier", device_tier)
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
+	cfg.set_value("mobile", "new_tank_fit", new_tank_fit)
 	cfg.save(_current_save_path())
 
 
@@ -1130,6 +1135,7 @@ func load_from_disk() -> void:
 	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
+	new_tank_fit = cfg.get_value("mobile", "new_tank_fit", new_tank_fit)
 
 
 func _ready() -> void:
@@ -1165,6 +1171,7 @@ func reset_to_defaults() -> void:
 	tank_half_w = 8.0
 	tank_half_d = 4.0
 	tank_height = 7.0
+	apply_screen_fitted_dimensions()
 	# Lighting.
 	light_energy = 0.5
 	light_yaw = 0.5
@@ -1280,3 +1287,65 @@ func randomize_music_params(wild: bool = false) -> void:
 	if wild or rng.randf() > 0.25:
 		var styles: Array[String] = ["ambient", "hybrid", "trance"]
 		music_style = styles[rng.randi_range(0, styles.size() - 1)]
+
+
+static func logical_screen_size() -> Vector2:
+	var win: Vector2i = DisplayServer.window_get_size()
+	if win.x > 0 and win.y > 0:
+		return Vector2(win)
+	var scr: Vector2i = DisplayServer.screen_get_size()
+	if scr.x > 0 and scr.y > 0:
+		return Vector2(scr)
+	return Vector2(1536, 864)
+
+
+static func is_mobile_platform() -> bool:
+	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
+
+
+static func is_desktop_platform() -> bool:
+	return not is_mobile_platform() and not OS.has_feature("web")
+
+
+func apply_screen_fitted_dimensions() -> void:
+	var vp: Vector2 = logical_screen_size()
+	var portrait: bool = vp.y > vp.x * 1.02
+	var mobile: bool = is_mobile_platform()
+	var desktop: bool = is_desktop_platform()
+
+	if desktop:
+		tank_shape = "box"
+		tank_half_w = 14.0
+		tank_half_d = 10.0
+		tank_height = 10.0
+		return
+
+	var ref: float = minf(vp.x, vp.y)
+	var scale: float = clampf(ref / 400.0, 0.72, 1.28)
+
+	var want_round: bool = false
+	match new_tank_fit:
+		"round":
+			want_round = true
+		"rect":
+			want_round = false
+		_:
+			want_round = portrait
+
+	if want_round:
+		tank_shape = "cylinder"
+		var r: float = clampf(4.6 * scale, 3.4, 7.2)
+		tank_half_w = r
+		tank_half_d = r
+		tank_height = clampf((9.2 if portrait else 7.0) * scale, 5.8, 11.5)
+		return
+
+	tank_shape = "box"
+	if portrait:
+		tank_half_w = clampf(3.6 * scale, 2.8, 5.8)
+		tank_half_d = clampf(3.0 * scale, 2.4, 5.0)
+		tank_height = clampf(8.8 * scale, 6.2, 11.0)
+	else:
+		tank_half_w = clampf(6.8 * scale, 4.8, 9.5)
+		tank_half_d = clampf(4.2 * scale, 3.0, 7.0)
+		tank_height = clampf(6.8 * scale, 5.2, 9.0)

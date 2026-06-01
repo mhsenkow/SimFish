@@ -53,6 +53,10 @@ var _immersive_exit_btn: Button = null
 var _chips: Dictionary = {}
 # Layout breakpoint — last computed, drives _apply_hud_layout decisions.
 var _hud_layout: String = ""
+var _rail_dock: String = ""
+var _rail_vbox: VBoxContainer = null
+var _rail_hbox: HBoxContainer = null
+var _rail_spacer: Control = null
 var _last_rail_sync_hash: int = -1
 # Idle-dim state for the top HUD (mirrors MobileHUD's behavior).
 var _hud_idle_seconds: float = 0.0
@@ -1542,7 +1546,9 @@ func _setup_mobile_ui() -> void:
 	for btn in toggle_buttons:
 		btn.custom_minimum_size = Vector2(52, 52)
 		btn.add_theme_font_size_override("font_size", 18)
+	_apply_rail_button_labels(true)
 	_sync_rail_toggles()
+	_apply_rail_dock_layout()
 	
 	# Update the controls hint to show touch gestures instead of keyboard.
 	var hint: Label = get_node_or_null("ControlsHint")
@@ -1839,15 +1845,15 @@ func _build_hud_chips() -> void:
 	# Defs: ordered list of (key, icon, accent_color). Order = visual order
 	# left-to-right in the bar.
 	var defs: Array = [
-		{"key": "state",  "icon": "◴", "color": Color8(154, 168, 200)},
-		{"key": "mood",   "icon": "♥", "color": Color8(170, 220, 170)},
-		{"key": "fish",   "icon": "🐟", "color": Color8(214, 176, 112)},
-		{"key": "shrimp", "icon": "🦐", "color": Color8(214, 176, 112)},
-		{"key": "snails", "icon": "🐌", "color": Color8(214, 176, 112)},
-		{"key": "flora",  "icon": "🌿", "color": Color8(134, 192, 132)},
-		{"key": "water",  "icon": "💧", "color": Color8(127, 183, 216)},
-		{"key": "morphs", "icon": "✦", "color": Color8(224, 192, 96)},
-		{"key": "alert",  "icon": "⚠", "color": Color8(224, 112, 112)},
+		{"key": "state",  "icon": UiIcons.chip_glyph("state"), "color": Color8(154, 168, 200)},
+		{"key": "mood",   "icon": UiIcons.chip_glyph("mood"), "color": Color8(170, 220, 170)},
+		{"key": "fish",   "icon": UiIcons.chip_glyph("fish"), "color": Color8(214, 176, 112)},
+		{"key": "shrimp", "icon": UiIcons.chip_glyph("shrimp"), "color": Color8(214, 176, 112)},
+		{"key": "snails", "icon": UiIcons.chip_glyph("snails"), "color": Color8(214, 176, 112)},
+		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132)},
+		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216)},
+		{"key": "morphs", "icon": UiIcons.chip_glyph("morphs"), "color": Color8(224, 192, 96)},
+		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112)},
 	]
 	for d in defs:
 		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color)
@@ -1936,11 +1942,24 @@ func _update_chip(key: String, value: String, sublabel: String,
 # Called once at _ready and on every viewport size_changed.
 func _on_viewport_resized() -> void:
 	_apply_hud_layout()
+	_apply_rail_dock_layout()
 	_apply_panel_layout()
 
 
 func _rail_edge_inset() -> float:
+	if _rail_dock == "bottom":
+		return PanelTheme.EDGE_MARGIN + 4.0
 	return PanelTheme.RAIL_WIDTH + PanelTheme.EDGE_MARGIN + 4.0
+
+
+func _hud_bottom_inset() -> float:
+	if _rail_dock == "bottom":
+		return PanelTheme.HUD_BOTTOM + PanelTheme.RAIL_BOTTOM_HEIGHT
+	return PanelTheme.HUD_BOTTOM
+
+
+func _want_bottom_rail(vp: Vector2) -> bool:
+	return _is_mobile() and vp.y > vp.x * 1.02
 
 
 func _setup_hud_styling() -> void:
@@ -1959,26 +1978,22 @@ func _setup_hud_styling() -> void:
 		left_buttons.append(menu_button)
 	for btn in left_buttons:
 		PanelTheme.style_hud_toggle_button(btn)
+	if menu_button != null:
+		UiIcons.apply_rail_button(menu_button, "menu", _is_mobile())
 
-	var rail_buttons: Array[Button] = []
-	if portal_toggle != null:
-		rail_buttons.append(portal_toggle)
-	if aquascape_toggle != null:
-		rail_buttons.append(aquascape_toggle)
-	if creature_creator_toggle != null:
-		rail_buttons.append(creature_creator_toggle)
-	if fish_store_toggle != null:
-		rail_buttons.append(fish_store_toggle)
-	if library_toggle != null:
-		rail_buttons.append(library_toggle)
-	if render_toggle != null:
-		rail_buttons.append(render_toggle)
-	if sound_toggle != null:
-		rail_buttons.append(sound_toggle)
-	if settings_toggle != null:
-		rail_buttons.append(settings_toggle)
+	_rail_vbox = right_cluster.get_node_or_null("VBox") as VBoxContainer
+	if _rail_hbox == null and right_cluster != null:
+		_rail_hbox = HBoxContainer.new()
+		_rail_hbox.name = "RailHBox"
+		_rail_hbox.add_theme_constant_override("separation", 4)
+		_rail_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+		_rail_hbox.visible = false
+		right_cluster.add_child(_rail_hbox)
+
+	var rail_buttons: Array[Button] = _ordered_rail_buttons()
 	for btn in rail_buttons:
 		PanelTheme.style_rail_button(btn, false)
+	_apply_rail_button_labels(false)
 
 	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator
 	if divider != null:
@@ -2022,12 +2037,102 @@ func _sync_rail_toggles() -> void:
 	if creature_creator_toggle != null:
 		PanelTheme.style_rail_button(creature_creator_toggle,
 			creature_creator_panel != null and creature_creator_panel.visible)
+	_apply_rail_button_labels(_rail_dock == "bottom")
+
+
+func _ordered_rail_buttons() -> Array[Button]:
+	var out: Array[Button] = []
+	for btn in [
+		portal_toggle, aquascape_toggle, creature_creator_toggle,
+		fish_store_toggle, library_toggle, render_toggle, sound_toggle, settings_toggle,
+	]:
+		if btn != null:
+			out.append(btn)
+	return out
+
+
+func _apply_rail_button_labels(force_short: bool) -> void:
+	var short: bool = force_short or _is_mobile()
+	if portal_toggle != null:
+		UiIcons.apply_rail_button(portal_toggle, "portal", short)
+	if aquascape_toggle != null:
+		UiIcons.apply_rail_button(aquascape_toggle, "aquascape", short)
+	if creature_creator_toggle != null:
+		UiIcons.apply_rail_button(creature_creator_toggle, "creator", short)
+	if fish_store_toggle != null:
+		UiIcons.apply_rail_button(fish_store_toggle, "store", short)
+	if library_toggle != null:
+		UiIcons.apply_rail_button(library_toggle, "library", short)
+	if render_toggle != null:
+		UiIcons.apply_rail_button(render_toggle, "render", short)
+	if sound_toggle != null:
+		UiIcons.apply_rail_button(sound_toggle, "sound", short)
+	if settings_toggle != null:
+		UiIcons.apply_rail_button(settings_toggle, "settings", short)
+
+
+func _apply_rail_dock_layout() -> void:
+	if right_rail == null or right_cluster == null or _rail_vbox == null:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var dock: String = "bottom" if _want_bottom_rail(vp) else "right"
+	if dock != _rail_dock:
+		_rail_dock = dock
+		var target: BoxContainer = _rail_hbox if dock == "bottom" else _rail_vbox
+		var source: BoxContainer = _rail_vbox if dock == "bottom" else _rail_hbox
+		if dock == "bottom" and _rail_spacer == null:
+			_rail_spacer = Control.new()
+			_rail_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			_rail_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		for btn in _ordered_rail_buttons():
+			if btn.get_parent() == source:
+				source.remove_child(btn)
+				target.add_child(btn)
+		if dock == "bottom":
+			if _rail_spacer != null and _rail_spacer.get_parent() != _rail_hbox:
+				var idx: int = mini(5, _rail_hbox.get_child_count())
+				_rail_hbox.add_child(_rail_spacer)
+				_rail_hbox.move_child(_rail_spacer, idx)
+			_rail_vbox.visible = false
+			_rail_hbox.visible = true
+		else:
+			if _rail_spacer != null and _rail_spacer.get_parent() == _rail_hbox:
+				_rail_hbox.remove_child(_rail_spacer)
+			_rail_hbox.visible = false
+			_rail_vbox.visible = true
+		_apply_rail_button_labels(dock == "bottom")
+
+	if dock == "bottom":
+		right_rail.anchor_left = 0.0
+		right_rail.anchor_top = 1.0
+		right_rail.anchor_right = 1.0
+		right_rail.anchor_bottom = 1.0
+		right_rail.offset_left = PanelTheme.EDGE_MARGIN
+		right_rail.offset_top = -PanelTheme.RAIL_BOTTOM_HEIGHT
+		right_rail.offset_right = -PanelTheme.EDGE_MARGIN
+		right_rail.offset_bottom = -PanelTheme.EDGE_MARGIN
+	else:
+		var compact: bool = _hud_layout == "compact"
+		right_rail.anchor_left = 1.0
+		right_rail.anchor_top = 0.0
+		right_rail.anchor_right = 1.0
+		right_rail.anchor_bottom = 1.0
+		if compact:
+			right_rail.offset_left = -56.0
+			right_rail.offset_top = 44.0
+			right_rail.offset_right = -4.0
+			right_rail.offset_bottom = -76.0
+		else:
+			right_rail.offset_left = -64.0
+			right_rail.offset_top = 48.0
+			right_rail.offset_right = -8.0
+			right_rail.offset_bottom = -32.0
 
 
 func _apply_panel_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	var top: float = PanelTheme.HUD_TOP
-	var bottom: float = PanelTheme.HUD_BOTTOM
+	var bottom: float = _hud_bottom_inset()
 	var edge: float = PanelTheme.EDGE_MARGIN
 	var rail: float = _rail_edge_inset()
 	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
@@ -2092,25 +2197,17 @@ func _apply_hud_layout() -> void:
 		layout = "compact"
 	elif w < 1100.0:
 		layout = "medium"
-	if layout == _hud_layout:
-		return
-	_hud_layout = layout
-
-	# Sublabel visibility: only shown on the wide breakpoint.
-	for chip in _chips.values():
-		var s: Label = (chip as Control).get_meta("sublabel_label", null) as Label
-		if s != null:
-			s.visible = layout == "wide"
-
-	# Compact: hide secondary fauna chips (their data folds into the "fish"
-	# chip via _render_header's compact branch).
-	var compact_only_chips := ["shrimp", "snails", "morphs"]
-	for k in compact_only_chips:
-		var chip: Control = _chips.get(k, null) as Control
-		if chip != null:
-			# Visibility is also gated by _render_header (morphs only shown
-			# when >0). In compact, force-hide regardless.
-			if layout == "compact":
+	var layout_changed: bool = layout != _hud_layout
+	if layout_changed:
+		_hud_layout = layout
+		for chip in _chips.values():
+			var s: Label = (chip as Control).get_meta("sublabel_label", null) as Label
+			if s != null:
+				s.visible = layout == "wide"
+		var compact_only_chips := ["shrimp", "snails", "morphs"]
+		for k in compact_only_chips:
+			var chip: Control = _chips.get(k, null) as Control
+			if chip != null and layout == "compact":
 				chip.visible = false
 
 	var rail_edge: float = _rail_edge_inset()
@@ -2119,20 +2216,8 @@ func _apply_hud_layout() -> void:
 		stats_bar.offset_left = left_inset
 		stats_bar.offset_right = -rail_edge
 
-	if right_rail != null:
-		if layout == "compact":
-			right_rail.offset_left = -56.0
-			right_rail.offset_top = 44.0
-			right_rail.offset_right = -4.0
-			right_rail.offset_bottom = -76.0
-		else:
-			right_rail.offset_left = -64.0
-			right_rail.offset_top = 48.0
-			right_rail.offset_right = -8.0
-			right_rail.offset_bottom = -32.0
-
-	# Re-render chip values so the compact-fauna branch kicks in immediately.
-	_render_header()
+	if layout_changed:
+		_render_header()
 
 
 # Chip-tap handler — opens a sparkline popup with the last ~2 minutes of
@@ -2507,8 +2592,8 @@ func _add_immersive_toggle_button() -> void:
 	if hbox == null:
 		return
 	var btn := Button.new()
-	btn.text = "⛶"
-	btn.tooltip_text = "Focus mode — hide menus (H)"
+	btn.text = UiIcons.rail_label("immersive", _is_mobile())
+	btn.tooltip_text = UiIcons.rail_tooltip("immersive")
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = menu_button.custom_minimum_size
 	btn.pressed.connect(_toggle_immersive_mode)
@@ -2827,14 +2912,7 @@ func _show_discovery_toast(entry: Dictionary) -> void:
 	if entry.is_empty():
 		return
 	var otype: String = String(entry.get("organism_type", "fish"))
-	var icon: String = "🐟"
-	match otype:
-		"shrimp":
-			icon = "🦐"
-		"snail":
-			icon = "🐌"
-		"plant":
-			icon = "🌿"
+	var icon: String = UiIcons.fauna_label(otype)
 	var display: String = String(entry.get("display_name", "?"))
 	var gen: int = int(entry.get("generation", 0))
 	var src: String = String(entry.get("source", ""))

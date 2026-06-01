@@ -29,6 +29,8 @@ func _ready() -> void:
 	_select_all.toggled.connect(_on_select_all_toggled)
 	_delete_selected_btn.pressed.connect(_on_delete_selected_confirm)
 	_add_guided_button()
+	get_viewport().size_changed.connect(_apply_responsive_layout)
+	_apply_responsive_layout()
 	_refresh()
 
 
@@ -39,7 +41,7 @@ func _add_guided_button() -> void:
 	if top_bar == null:
 		return
 	var b := Button.new()
-	b.text = "✦ Guided setup"
+	b.text = "+ Guided setup"
 	b.tooltip_text = "Create an empty tank and walk through stocking it step by step"
 	b.custom_minimum_size = Vector2(0, maxf(36.0, _new_btn.custom_minimum_size.y))
 	b.pressed.connect(_on_guided_pressed)
@@ -59,6 +61,15 @@ func _on_guided_pressed() -> void:
 	cfg.walkthrough_pending = true
 	cfg.save_to_disk()
 	get_tree().change_scene_to_file(MAIN_SCENE)
+
+
+func _apply_responsive_layout() -> void:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var portrait: bool = vp.y > vp.x * 1.02
+	if portrait:
+		_grid.columns = 1
+	else:
+		_grid.columns = 1 if vp.x < 520.0 else (2 if vp.x < 900.0 else 3)
 
 
 func _refresh() -> void:
