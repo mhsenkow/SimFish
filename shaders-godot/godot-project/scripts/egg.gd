@@ -85,7 +85,7 @@ func _build_visual() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
 		mi.position = positions[i]
-		mi.material_override = VoxelMat.make(_egg_tint if (i & 1) == 0 else _egg_tint_alt)
+		mi.material_override = VoxelMat.make_fauna(_egg_tint if (i & 1) == 0 else _egg_tint_alt)
 		_wobble_pivot.add_child(mi)
 
 

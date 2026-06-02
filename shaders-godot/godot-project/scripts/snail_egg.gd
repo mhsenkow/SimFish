@@ -91,7 +91,7 @@ func _build_visual() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(0.06, 0.06, 0.06))
 		mi.position = positions[i]
-		mi.material_override = VoxelMat.make(c if (i & 1) == 0 else c2)
+		mi.material_override = VoxelMat.make_fauna(c if (i & 1) == 0 else c2)
 		add_child(mi)
 
 
@@ -191,9 +191,9 @@ func _build_baby_body(snail: Node3D, shell_color: Color, shell_size: float) -> v
 	# + size scaling each voxel by shell_size. Bigger shells = bigger snail.
 	var shell_dark := shell_color.darkened(0.22)
 	var body := Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make(shell_color)
-	var shell_dark_mat := VoxelMat.make(shell_dark)
-	var body_mat := VoxelMat.make(body)
+	var shell_mat := VoxelMat.make_fauna(shell_color)
+	var shell_dark_mat := VoxelMat.make_fauna(shell_dark)
+	var body_mat := VoxelMat.make_fauna(body)
 	for i in 4:
 		var ang: float = i * 0.7
 		var r: float = (0.05 + i * 0.06) * shell_size

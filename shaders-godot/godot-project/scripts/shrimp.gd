@@ -223,14 +223,14 @@ func _build_body() -> void:
 	#   - Legs (visual only): tiny voxels under the body
 	var v: float = adult_voxel_scale
 	var lenf: float = body_length_factor
-	var mat_body := VoxelMat.make(base_color)
-	var mat_belly := VoxelMat.make(accent_color)
+	var mat_body := VoxelMat.make_fauna(base_color)
+	var mat_belly := VoxelMat.make_fauna(accent_color)
 	var mat_eye := VoxelMat.make(Color8(11, 11, 14))
-	var mat_dark := VoxelMat.make(base_color.darkened(0.3))
-	var mat_antenna := VoxelMat.make(base_color.darkened(0.15))
+	var mat_dark := VoxelMat.make_fauna(base_color.darkened(0.3))
+	var mat_antenna := VoxelMat.make_fauna(base_color.darkened(0.15))
 	if toxin_level > 0.35:
 		var warn: Color = base_color.lerp(Color8(245, 235, 80), clampf(toxin_level * 0.55, 0.0, 0.55))
-		mat_body = VoxelMat.make(warn)
+		mat_body = VoxelMat.make_fauna(warn)
 
 	_bank_pivot = Node3D.new()
 	_bank_pivot.name = "BankPivot"
@@ -256,7 +256,7 @@ func _build_body() -> void:
 	var antenna_mat: Material = mat_antenna
 	var antenna_len: float = 0.9
 	if is_cleaner:
-		antenna_mat = VoxelMat.make(Color8(250, 250, 250))
+		antenna_mat = VoxelMat.make_fauna(Color8(250, 250, 250))
 		antenna_len = 1.6
 	_voxel(_antenna_pivot, Vector3(v * 0.2, v * 0.1, -v * antenna_len * 0.45),
 		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
@@ -280,7 +280,7 @@ func _build_body() -> void:
 		Vector3(v * 0.7, v * 0.2, v * 0.3 * lenf), mat_dark)
 
 	if claw_size > 0.05:
-		var claw_mat: Material = VoxelMat.make(base_color.darkened(0.38).lerp(accent_color, 0.16))
+		var claw_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.38).lerp(accent_color, 0.16))
 		var claw_len: float = v * (0.40 + claw_size * 1.05) * lenf
 		var claw_thick: float = v * (0.08 + claw_size * 0.10)
 		for side in [-1.0, 1.0]:
@@ -307,7 +307,7 @@ func _build_body() -> void:
 	_egg_cluster.position = Vector3(0, -v * 0.15, v * 0.3)
 	_egg_cluster.visible = false
 	_tail_pivot.add_child(_egg_cluster)
-	var mat_egg := VoxelMat.make(Color8(240, 165, 60))
+	var mat_egg := VoxelMat.make_fauna(Color8(240, 165, 60))
 	for ex in [-0.18, 0.0, 0.18]:
 		for ez in [-0.1, 0.1]:
 			_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
@@ -317,7 +317,7 @@ func _build_body() -> void:
 	# along the top of the body from carapace through mid through tail.
 	# The signature "skunk" stripe that ID's Lysmata amboinensis.
 	if is_cleaner:
-		var stripe_mat := VoxelMat.make(Color8(252, 252, 252))
+		var stripe_mat := VoxelMat.make_fauna(Color8(252, 252, 252))
 		# Three segments along the spine, matching the three body
 		# segments. Y offset puts the stripe on the very top.
 		_voxel(_bank_pivot, Vector3(0, v * 0.65, -v * 0.8),
@@ -330,7 +330,7 @@ func _build_body() -> void:
 	# Defensive dorsal spines (Amano/cherry-style exaggerated trait). Higher
 	# values add a more pronounced ridge, acting as visible anti-predator armor.
 	if defense_spines > 0.12:
-		var spine_mat: Material = VoxelMat.make(base_color.lightened(0.12))
+		var spine_mat: Material = VoxelMat.make_fauna(base_color.lightened(0.12))
 		var spine_n: int = clampi(int(round(1.0 + defense_spines * 4.0)), 1, 5)
 		for i in spine_n:
 			var t: float = float(i) / float(maxi(1, spine_n - 1))
@@ -342,7 +342,7 @@ func _build_body() -> void:
 	#   - large/grown shrimp gain pleopod fan detail
 	#   - toxic lines gain lateral warning flanges
 	if growth_factor > 1.05 or adult_voxel_scale > 0.12:
-		var fan_mat: Material = VoxelMat.make(accent_color.lightened(0.05))
+		var fan_mat: Material = VoxelMat.make_fauna(accent_color.lightened(0.05))
 		var fan_n: int = clampi(2 + int((growth_factor - 1.0) * 5.0), 2, 5)
 		for i in fan_n:
 			var t: float = float(i) / float(maxi(1, fan_n - 1))
@@ -352,7 +352,7 @@ func _build_body() -> void:
 			_voxel(_bank_pivot, Vector3(-v * 0.22, -v * 0.28, zf),
 				Vector3(v * 0.09, v * 0.07, v * 0.24), fan_mat)
 	if toxin_level > 0.32:
-		var warn_mat: Material = VoxelMat.make(base_color.lerp(Color8(250, 228, 110),
+		var warn_mat: Material = VoxelMat.make_fauna(base_color.lerp(Color8(250, 228, 110),
 			clampf(toxin_level * 0.55, 0.0, 0.55)))
 		var flange_h: float = v * (0.10 + toxin_level * 0.20)
 		for zf in [-v * 0.35, v * 0.05, v * 0.45]:
@@ -1105,7 +1105,7 @@ func _spawn_egg_cluster() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(0.12, 0.12, 0.12))
 		mi.position = positions[i]
-		mi.material_override = VoxelMat.make(c_egg if (i & 1) == 0 else c_egg_dark)
+		mi.material_override = VoxelMat.make_fauna(c_egg if (i & 1) == 0 else c_egg_dark)
 		_egg_cluster.add_child(mi)
 
 

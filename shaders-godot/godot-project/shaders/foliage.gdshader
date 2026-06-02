@@ -6,6 +6,7 @@ shader_type spatial;
 render_mode unshaded, cull_back;
 
 uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+uniform float color_vibrancy : hint_range(0.5, 2.0) = 1.0;
 uniform float sway_speed = 1.6;
 uniform float sway_amplitude = 0.08;
 uniform float flutter_speed = 3.6;
@@ -33,6 +34,16 @@ void vertex() {
     VERTEX.y += flutter * height_factor * 0.3;
 }
 
+vec3 apply_vibrancy(vec3 col, float vib) {
+    if (vib <= 1.001) {
+        return col;
+    }
+    float luma = dot(col, vec3(0.299, 0.587, 0.114));
+    float sat = 1.0 + (vib - 1.0) * 0.75;
+    col = mix(vec3(luma), col, sat);
+    return col * (1.0 + (vib - 1.0) * 0.10);
+}
+
 void fragment() {
     // Face-based voxel shading
     vec3 n = normalize(NORMAL);
@@ -40,11 +51,11 @@ void fragment() {
     if (n.y > 0.7) {
         f = 1.00;        // top
     } else if (n.y < -0.7) {
-        f = 0.50;        // bottom
+        f = 0.58;        // bottom
     } else if (abs(n.x) > 0.7) {
-        f = 0.82;        // +X / -X sides
+        f = 0.88;        // +X / -X sides
     } else {
-        f = 0.68;        // +Z / -Z sides
+        f = 0.76;        // +Z / -Z sides
     }
-    ALBEDO = albedo.rgb * f;
+    ALBEDO = apply_vibrancy(albedo.rgb * f, color_vibrancy);
 }

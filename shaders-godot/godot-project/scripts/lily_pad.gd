@@ -295,7 +295,7 @@ func _lay_runner_trail(a: Vector3, b: Vector3, parent_node: Node) -> void:
 		var bm := BoxMesh.new()
 		bm.size = Vector3(0.12, 0.05, 0.12)
 		mi.mesh = bm
-		mi.material_override = VoxelMat.make(runner_color)
+		mi.material_override = VoxelMat.make_foliage(runner_color)
 		mi.position = p
 		parent_node.add_child(mi)
 

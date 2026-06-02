@@ -378,7 +378,7 @@ func _add_root(root_ramp: Array) -> void:
 			VOXEL_SIZE * 0.55,
 			VOXEL_SIZE * 0.22 * taper,
 		))
-		mi.material_override = VoxelMat.make(root_color.lerp(root_light, t * 0.3))
+		mi.material_override = VoxelMat.make_foliage(root_color.lerp(root_light, t * 0.3))
 		mi.position = Vector3(
 			cos(angle) * spread,
 			-float(j) * VOXEL_SIZE * 0.5,
@@ -1204,7 +1204,7 @@ func _advance_runner(dt: float) -> void:
 			VOXEL_SIZE * 0.30,
 			VOXEL_SIZE * 0.45,
 		))
-		rv.material_override = VoxelMat.make(ramp[1])  # darker green, runner is woody
+		rv.material_override = VoxelMat.make_foliage(ramp[1])  # darker green, runner is woody
 		rv.position = local_pos
 		add_child(rv)
 		_runner_voxels.append(rv)

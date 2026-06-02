@@ -1132,9 +1132,9 @@ func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:
 	var shell_shape: String = String(g.get("shell_shape", "turbo"))
 	var shell_dark := shell_color.darkened(0.22)
 	var body := Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make(shell_color)
-	var shell_dark_mat := VoxelMat.make(shell_dark)
-	var body_mat := VoxelMat.make(body)
+	var shell_mat := VoxelMat.make_fauna(shell_color)
+	var shell_dark_mat := VoxelMat.make_fauna(shell_dark)
+	var body_mat := VoxelMat.make_fauna(body)
 	match shell_shape:
 		"trochus":
 			for i in 6:

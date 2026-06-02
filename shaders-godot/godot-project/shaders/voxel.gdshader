@@ -4,12 +4,23 @@ shader_type spatial;
 render_mode unshaded, cull_back;
 
 uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+uniform float color_vibrancy : hint_range(0.5, 2.0) = 1.0;
 uniform float aquatic_caustic_intensity : hint_range(0.0, 1.0) = 0.0;
 uniform float water_surface_y = 99.0;
 uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
 uniform float day_phase_offset = 0.0;
 uniform float belly_flash : hint_range(0.0, 1.0) = 0.0;
+
+vec3 apply_vibrancy(vec3 col, float vib) {
+	if (vib <= 1.001) {
+		return col;
+	}
+	float luma = dot(col, vec3(0.299, 0.587, 0.114));
+	float sat = 1.0 + (vib - 1.0) * 0.75;
+	col = mix(vec3(luma), col, sat);
+	return col * (1.0 + (vib - 1.0) * 0.10);
+}
 
 varying vec3 v_world_pos;
 
@@ -23,13 +34,14 @@ void fragment() {
 	if (n.y > 0.7) {
 		f = 1.00;
 	} else if (n.y < -0.7) {
-		f = 0.50 + belly_flash * 0.35;
+		f = 0.58 + belly_flash * 0.35;
 	} else if (abs(n.x) > 0.7) {
-		f = 0.82;
+		f = 0.88;
 	} else {
-		f = 0.68;
+		f = 0.76;
 	}
 	vec3 col = albedo.rgb * f;
+	col = apply_vibrancy(col, color_vibrancy);
 
 	if (aquatic_caustic_intensity > 0.001 && v_world_pos.y < water_surface_y - 0.08) {
 		vec2 cuv = v_world_pos.xz * 1.12;
@@ -37,7 +49,7 @@ void fragment() {
 		float cwave = sin(cuv.x * 2.0 + t) * sin(cuv.y * 1.65 - t * 0.9)
 			+ sin((cuv.x + cuv.y) * 1.3 + t);
 		float caustics = smoothstep(0.08, 0.75, cwave) * aquatic_caustic_intensity;
-		col += aquatic_light_color * caustics * 0.16;
+		col += aquatic_light_color * caustics * 0.22;
 		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
 		col += vec3(shim, shim * 0.6, -shim * 0.4);
 	}

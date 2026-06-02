@@ -225,7 +225,7 @@ static func build_roots(count: int, ramp: Array, depth: float = 1.0) -> Array:
 				VOXEL_SIZE * 0.7,
 				VOXEL_SIZE * 0.25 * taper,
 			))
-			mi.material_override = VoxelMat.make(
+			mi.material_override = VoxelMat.make_foliage(
 				root_color.lerp(root_light, t * 0.3))
 			mi.position = Vector3(
 				cos(angle) * spread,
@@ -250,7 +250,7 @@ static func build_runner(start: Vector3, end: Vector3, color: Color) -> Array:
 		var pos: Vector3 = start.lerp(end, t)
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.2, VOXEL_SIZE * 0.15, VOXEL_SIZE * 0.2))
-		mi.material_override = VoxelMat.make(color)
+		mi.material_override = VoxelMat.make_foliage(color)
 		mi.position = pos
 		nodes.append(mi)
 	return nodes

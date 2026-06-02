@@ -18,7 +18,22 @@ static func _get_shader() -> Shader:
 
 
 static var _mat_cache: Dictionary = {}
+static var _fauna_mat_cache: Dictionary = {}
 static var _mesh_cache: Dictionary = {}
+
+const FAUNA_SATURATION: float = 1.30
+const FAUNA_VALUE: float = 1.12
+const FAUNA_LIGHTEN: float = 0.05
+
+
+static func boost_life_color(color: Color) -> Color:
+	if color.a < 0.04:
+		return color
+	var h: float = color.h
+	var s: float = clampf(color.s * FAUNA_SATURATION, 0.0, 1.0)
+	var v: float = clampf(color.v * FAUNA_VALUE + FAUNA_LIGHTEN, 0.0, 1.0)
+	return Color.from_hsv(h, s, v, color.a)
+
 
 static func get_box(size: Vector3) -> BoxMesh:
 	var key: Vector3 = Vector3(snappedf(size.x, 0.01), snappedf(size.y, 0.01), snappedf(size.z, 0.01))
@@ -40,6 +55,18 @@ static func make(color: Color) -> ShaderMaterial:
 	m.shader = _get_shader()
 	m.set_shader_parameter("albedo", color)
 	_mat_cache[cache_key] = m
+	return m
+
+
+static func make_fauna(color: Color) -> ShaderMaterial:
+	var boosted: Color = boost_life_color(color)
+	var cache_key: Color = Color(
+		snappedf(boosted.r, 0.01), snappedf(boosted.g, 0.01), snappedf(boosted.b, 0.01))
+	if _fauna_mat_cache.has(cache_key):
+		return _fauna_mat_cache[cache_key]
+	var m: ShaderMaterial = make(boosted).duplicate()
+	m.set_shader_parameter("color_vibrancy", 1.20)
+	_fauna_mat_cache[cache_key] = m
 	return m
 
 
@@ -97,13 +124,16 @@ static func _get_foliage_shader() -> Shader:
 static var _foliage_mat_cache: Dictionary = {}
 
 static func make_foliage(color: Color) -> ShaderMaterial:
-	var cache_key: Color = Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
+	var boosted: Color = boost_life_color(color)
+	var cache_key: Color = Color(
+		snappedf(boosted.r, 0.01), snappedf(boosted.g, 0.01), snappedf(boosted.b, 0.01))
 	if _foliage_mat_cache.has(cache_key):
 		return _foliage_mat_cache[cache_key]
 		
 	var m := ShaderMaterial.new()
 	m.shader = _get_foliage_shader()
-	m.set_shader_parameter("albedo", color)
+	m.set_shader_parameter("albedo", boosted)
+	m.set_shader_parameter("color_vibrancy", 1.16)
 	_foliage_mat_cache[cache_key] = m
 	return m
 
@@ -221,6 +251,13 @@ static func get_bubble_material() -> ShaderMaterial:
 static func update_aquatic_uniforms(intensity: float, light_color: Color, water_y: float,
 		day_offset: float, shimmer: float) -> void:
 	for mat in _mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
+			mat.set_shader_parameter("aquatic_light_color", light_color)
+			mat.set_shader_parameter("water_surface_y", water_y)
+			mat.set_shader_parameter("day_phase_offset", day_offset)
+			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+	for mat in _fauna_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
 			mat.set_shader_parameter("aquatic_light_color", light_color)

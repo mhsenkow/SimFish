@@ -104,8 +104,8 @@ const C_SOIL_RAMP := [
 const C_GRAVEL := Color8(85, 85, 96)
 const C_DRIFTWOOD_DARK := Color8(44, 31, 21)
 const C_DRIFTWOOD_LIGHT := Color8(93, 65, 40)
-const C_SNAIL_SHELL := Color8(135, 44, 176)
-const C_SNAIL_BODY := Color8(44, 31, 21)
+const C_SNAIL_SHELL := Color8(165, 55, 210)
+const C_SNAIL_BODY := Color8(55, 38, 28)
 const C_STONE_DARK := Color8(42, 42, 48)
 const C_STONE_LIGHT := Color8(85, 85, 96)
 
@@ -722,9 +722,11 @@ func _sway_surface_plants(adt: float) -> void:
 # ---- Materials ----
 
 func _solid_mat(color: Color, _emission_strength: float = 0.55) -> ShaderMaterial:
-	# Use the faceted voxel shader so cubes self-light. `_emission_strength` is
-	# accepted for backwards compatibility with old call sites but ignored.
 	return VoxelMat.make(color)
+
+
+func _fauna_mat(color: Color) -> ShaderMaterial:
+	return VoxelMat.make_fauna(color)
 
 
 func _glass_mat() -> ShaderMaterial:
@@ -2200,9 +2202,9 @@ func _build_snail_body(snail: Node3D) -> void:
 	# dark flesh color for any snail that didn't set one.
 	var body_v: Variant = snail.get("body_color") if "body_color" in snail else null
 	var body_color: Color = body_v if body_v is Color else C_SNAIL_BODY
-	var shell_mat := _solid_mat(shell_color)
-	var shell_dark_mat := _solid_mat(shell_dark)
-	var body_mat := _solid_mat(body_color)
+	var shell_mat := _fauna_mat(shell_color)
+	var shell_dark_mat := _fauna_mat(shell_dark)
+	var body_mat := _fauna_mat(body_color)
 
 	match shell_shape:
 		"trochus":
@@ -2247,7 +2249,7 @@ func _build_snail_body(snail: Node3D) -> void:
 	# Defensive shell spines: sparse ridges that make snail morphs visibly
 	# distinct and slightly less appealing to fish predators.
 	if shell_spines > 0.12:
-		var spine_mat := _solid_mat(shell_dark.lightened(0.08))
+		var spine_mat := _fauna_mat(shell_dark.lightened(0.08))
 		var spine_count: int = clampi(int(round(2.0 + shell_spines * 6.0)), 2, 8)
 		for i in spine_count:
 			var t: float = float(i) / float(maxi(1, spine_count - 1))

@@ -943,9 +943,9 @@ func _spawn_preview_snail(g: Dictionary) -> Node3D:
 		else shell_color.darkened(0.22)
 	var body_v: Variant = g.get("body_color", null)
 	var body_color: Color = body_v if body_v is Color else Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make(shell_color)
-	var shell_dark_mat := VoxelMat.make(shell_dark)
-	var body_mat := VoxelMat.make(body_color)
+	var shell_mat := VoxelMat.make_fauna(shell_color)
+	var shell_dark_mat := VoxelMat.make_fauna(shell_dark)
+	var body_mat := VoxelMat.make_fauna(body_color)
 	match shell_shape:
 		"trochus":
 			for i in 6:

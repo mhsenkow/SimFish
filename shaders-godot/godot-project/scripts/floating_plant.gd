@@ -82,7 +82,7 @@ func _ring_color(i: int, n: int) -> Color:
 func _leaf(pos: Vector3, size: Vector3, color: Color, rot: Vector3 = Vector3.ZERO) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(size)
-	mi.material_override = VoxelMat.make(color)
+	mi.material_override = VoxelMat.make_foliage(color)
 	add_child(mi)
 	mi.position = pos
 	if rot != Vector3.ZERO:
@@ -92,7 +92,7 @@ func _leaf(pos: Vector3, size: Vector3, color: Color, rot: Vector3 = Vector3.ZER
 
 func _root_strands(count: int, length: float, spread: float = 1.0) -> void:
 	var root_color: Color = base_color.darkened(0.45)
-	var mat := VoxelMat.make(root_color)
+	var mat := VoxelMat.make_foliage(root_color)
 	for i in count:
 		var ang: float = float(i) / float(maxi(1, count)) * TAU
 		var rx: float = cos(ang) * leaf_size * 0.18 * spread

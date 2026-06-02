@@ -110,7 +110,7 @@ func _piece_mat(color: Color, emission: Color) -> Material:
 	mat.albedo_color = color
 	mat.emission = emission
 	mat.emission_enabled = true
-	mat.emission_energy_multiplier = 0.35
+	mat.emission_energy_multiplier = 0.55
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_piece_material_cache[key] = mat
 	return mat

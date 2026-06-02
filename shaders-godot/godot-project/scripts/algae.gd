@@ -100,7 +100,7 @@ func _add_voxel(local_pos: Vector3, scale_factor: float) -> void:
 		clampf(_color.g + shade, 0.0, 1.0),
 		clampf(_color.b + shade, 0.0, 1.0),
 	)
-	mi.material_override = VoxelMat.make(voxel_color)
+	mi.material_override = VoxelMat.make_fauna(voxel_color)
 	mi.position = local_pos
 	add_child(mi)
 	_voxels.append(mi)

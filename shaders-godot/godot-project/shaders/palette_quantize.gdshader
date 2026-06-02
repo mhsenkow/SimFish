@@ -33,6 +33,9 @@ void fragment() {
     vec3 src = texture(TEXTURE, UV).rgb;
     src = mix(src, src * vec3(1.06, 1.0, 0.94), max(seasonal_warmth, 0.0));
     src = mix(src, src * vec3(0.94, 0.98, 1.06), max(-seasonal_warmth, 0.0));
+    float luma = dot(src, vec3(0.299, 0.587, 0.114));
+    src = mix(vec3(luma), src, 1.08);
+    src *= 1.04;
 
     // Find two nearest palette colors.
     int ai = 0;

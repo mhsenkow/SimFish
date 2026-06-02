@@ -857,7 +857,7 @@ func _build_body() -> void:
 	var mat_top := _make_mat(base_color.lightened(0.15))
 	var mat_belly := _make_mat(base_color.darkened(0.35))
 	var mat_accent := _make_mat(accent_color)
-	var mat_eye := _make_mat(Color8(11, 26, 34))
+	var mat_eye := VoxelMat.make(Color8(11, 26, 34))
 	var mat_fin := _make_mat(base_color.darkened(0.15))
 	# Tail fin material: defaults to a darker shade of base_color, but if
 	# the genome supplied an explicit tail_color we use that (male guppies'
@@ -1298,7 +1298,7 @@ func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -
 
 
 func _make_mat(color: Color) -> ShaderMaterial:
-	return VoxelMat.make(color)
+	return VoxelMat.make_fauna(color)
 
 
 func _apply_belly_flash_uniform(strength: float) -> void:
@@ -3091,7 +3091,7 @@ func _apply_maturity_color() -> void:
 	_last_maturity_color_step = step
 	# Desaturation factor: at _color_maturity 0 the fish is 45% washed
 	# toward a pale silvery tone. At 1.0 it’s at full genome color.
-	var desat: float = 0.45 * (1.0 - _color_maturity)
+	var desat: float = 0.32 * (1.0 - _color_maturity)
 	var wash: Color = Color(0.75, 0.75, 0.78)
 	for child in _cached_meshes:
 		var mi: MeshInstance3D = child
