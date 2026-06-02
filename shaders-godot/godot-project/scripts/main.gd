@@ -659,6 +659,7 @@ func _process_mouse_input(dt: float) -> void:
 		if _aquascape.is_active:
 			_handle_shortcut(KEY_BRACKETLEFT, func(): _aquascape.adjust_brush(-1))
 			_handle_shortcut(KEY_BRACKETRIGHT, func(): _aquascape.adjust_brush(1))
+		_handle_shortcut(KEY_M, _toggle_motion_debug)
 		_handle_shortcut(KEY_F12, _take_photo)
 		_handle_shortcut(KEY_ESCAPE, _clear_follow)
 		_handle_shortcut(KEY_C, _toggle_portal)
@@ -760,6 +761,16 @@ func _toggle_pause() -> void:
 	else:
 		_sim.time_scale = _saved_time_scale
 	_haptic(12)
+
+
+func _toggle_motion_debug() -> void:
+	if world == null or not world.has_method("toggle_motion_debug"):
+		return
+	var on: bool = world.toggle_motion_debug()
+	if controls_hint != null:
+		controls_hint.text = "Motion debug ON — cyan=preferred_y green=home_y gold=band red=wall push (M)"
+		controls_hint.visible = on
+	_haptic(8)
 
 
 func _set_time_scale(s: float) -> void:

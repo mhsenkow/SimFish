@@ -475,20 +475,8 @@ func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
 	if w != null and w.has_method("enforce_entity_in_tank"):
 		w.enforce_entity_in_tank(e, margin, body_radius)
 		return
-	var p: Vector3 = e.global_position
 	if w != null and w.has_method("clamp_xyz_in_tank"):
-		e.global_position = w.clamp_xyz_in_tank(p, margin, body_radius)
-		return
-	if w != null and w.has_method("clamp_xz_in_tank"):
-		var xz: Vector2 = w.clamp_xz_in_tank(p.x, p.z, margin)
-		p.x = xz.x
-		p.z = xz.y
-	else:
-		p.x = clampf(p.x, world_bounds.position.x + margin, world_bounds.end.x - margin)
-		p.z = clampf(p.z, world_bounds.position.z + margin, world_bounds.end.z - margin)
-	p.y = clampf(p.y, maxf(substrate_top_y + substrate_margin, world_bounds.position.y + margin),
-		world_bounds.end.y - margin)
-	e.global_position = p
+		e.global_position = w.clamp_xyz_in_tank(e.global_position, margin, body_radius)
 
 
 # Keep body position AND territory anchors inside the tank. Clamping position
@@ -504,7 +492,7 @@ func _clamp_fish_territory(f: Fish) -> void:
 
 
 func _resolve_entity_group_overlaps(group: Array, min_dist: float,
-		group_limit: int = 120) -> void:
+		group_limit: int = 120, y_weight: float = 0.55) -> void:
 	var n: int = mini(group.size(), group_limit)
 	for i in n:
 		var a: Node3D = group[i] as Node3D
@@ -514,11 +502,11 @@ func _resolve_entity_group_overlaps(group: Array, min_dist: float,
 			var b: Node3D = group[j] as Node3D
 			if b == null or not is_instance_valid(b):
 				continue
-			_push_apart_pair(a, b, min_dist, 0.5, 0.6)
+			_push_apart_pair(a, b, min_dist, 0.5, y_weight)
 
 
 func _resolve_cross_overlaps(primary: Array, other: Array, min_dist: float,
-		primary_limit: int = 140, other_limit: int = 140) -> void:
+		primary_limit: int = 140, other_limit: int = 140, y_weight: float = 0.38) -> void:
 	var n1: int = mini(primary.size(), primary_limit)
 	var n2: int = mini(other.size(), other_limit)
 	for i in n1:
@@ -529,7 +517,7 @@ func _resolve_cross_overlaps(primary: Array, other: Array, min_dist: float,
 			var b: Node3D = other[j] as Node3D
 			if b == null or not is_instance_valid(b):
 				continue
-			_push_apart_pair(a, b, min_dist, 0.34, 0.45)
+			_push_apart_pair(a, b, min_dist, 0.34, y_weight)
 
 
 func _resolve_hardscape_overlaps(group: Array, min_dist: float,
@@ -591,11 +579,11 @@ func _resolve_soft_overlaps() -> void:
 	# re-filter snails_root here.
 	var live_snails: Array = _live_snails
 
-	_resolve_entity_group_overlaps(live_fish, 0.30, 90)
-	_resolve_entity_group_overlaps(live_shrimp, 0.16, 120)
-	_resolve_entity_group_overlaps(live_snails, 0.20, 80)
-	_resolve_cross_overlaps(live_fish, live_shrimp, 0.19, 90, 120)
-	_resolve_cross_overlaps(live_shrimp, live_snails, 0.16, 120, 80)
+	_resolve_entity_group_overlaps(live_fish, 0.30, 90, 0.28)
+	_resolve_entity_group_overlaps(live_shrimp, 0.16, 120, 0.42)
+	_resolve_entity_group_overlaps(live_snails, 0.20, 80, 0.22)
+	_resolve_cross_overlaps(live_fish, live_shrimp, 0.19, 90, 120, 0.30)
+	_resolve_cross_overlaps(live_shrimp, live_snails, 0.16, 120, 80, 0.35)
 
 	_resolve_hardscape_overlaps(live_fish, 0.30, 60, 120)
 	_resolve_hardscape_overlaps(live_shrimp, 0.20, 80, 120)
@@ -866,15 +854,20 @@ func _tick(dt: float) -> void:
 		else:
 			_extinction_timer = 0.0
 
-	# 6b. Auto-Feed at surface — skip when nutrients already high (Walstad self-feed).
+	# 6b. Auto-Feed at surface — user opted in via settings; always drops
+	# pellets on schedule. Scale amount down when the tank is already rich so
+	# we don't pile on during spikes (absolute total_above_baseline scales
+	# with grid size, so use per-cell density for that check).
 	if cfg != null and cfg.auto_feed_fauna:
 		_auto_feed_timer += dt
-		var n_feed: float = 0.0
-		if substrate != null:
-			n_feed = substrate.total_above_baseline()
-		var feed_ok: bool = n_feed < 5.5 and water_chemistry.ammonia < 0.35
-		if _auto_feed_timer >= 12.0 and feed_ok:
+		if _auto_feed_timer >= 12.0:
 			_auto_feed_timer = 0.0
+			var pellet: float = 0.5
+			if substrate != null:
+				var cell_count: float = float(substrate.cells_x * substrate.cells_z)
+				var n_density: float = substrate.total_above_baseline() / maxf(1.0, cell_count)
+				if n_density > 0.10 or water_chemistry.ammonia > 0.35:
+					pellet = 0.22
 			var spawn_x: float = 0.0
 			var spawn_z: float = 0.0
 			var w := get_parent()
@@ -882,9 +875,6 @@ func _tick(dt: float) -> void:
 				var xz: Vector2 = w.sample_xz_in_tank(0.5)
 				spawn_x = xz.x
 				spawn_z = xz.y
-			else:
-				spawn_x = randf_range(world_bounds.position.x + 0.5, world_bounds.end.x - 0.5)
-				spawn_z = randf_range(world_bounds.position.z + 0.5, world_bounds.end.z - 0.5)
 			# WATER_HEIGHT may be unset on the parent in unusual tank presets;
 			# null-subtract would crash. Fall back to a safe near-surface Y.
 			var fy: float = 6.4
@@ -892,9 +882,7 @@ func _tick(dt: float) -> void:
 				var water_h = w.get("WATER_HEIGHT")
 				if water_h != null:
 					fy = float(water_h) - 0.1
-			_spawn_waste(Vector3(spawn_x, fy, spawn_z), 0.5, 3) # 3 = KIND_FOOD
-		elif _auto_feed_timer >= 12.0:
-			_auto_feed_timer = 0.0
+			_spawn_waste(Vector3(spawn_x, fy, spawn_z), pellet, WasteParticle.KIND_FOOD)
 
 	# 6c. Algae bloom dynamics.
 	#
@@ -982,11 +970,6 @@ func _tick(dt: float) -> void:
 			var xz: Vector2 = w.sample_xz_in_tank(0.5)
 			spawn_x = xz.x
 			spawn_z = xz.y
-		else:
-			spawn_x = randf_range(world_bounds.position.x + 0.5,
-				world_bounds.end.x - 0.5)
-			spawn_z = randf_range(world_bounds.position.z + 0.5,
-				world_bounds.end.z - 0.5)
 		var apos := Vector3(spawn_x, substrate_top_y + randf_range(0.3, 1.2), spawn_z)
 		if w != null and w.has_method("column_surface_y"):
 			apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)

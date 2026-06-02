@@ -52,6 +52,7 @@ var _biofilm_apply_t: float = 0.0
 # drift and squirm. Adds tank-feel at small scale (real Walstad tanks
 # always have a teeming film of copepods + worms).
 var microfauna_root: Node3D = null
+var motion_debug: MotionDebugOverlay = null
 var wriggle_root: Node3D = null
 # Worms spawn proportional to mulm carpet density — no fixed ceiling.
 const WRIGGLE_PER_MULM_FRAC: float = 0.55
@@ -201,6 +202,10 @@ func _ready() -> void:
 	algae_root = Node3D.new(); algae_root.name = "Algae"; add_child(algae_root)
 	microfauna_root = Node3D.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
 	wriggle_root = Node3D.new(); wriggle_root.name = "WriggleWorms"; add_child(wriggle_root)
+	motion_debug = MotionDebugOverlay.new()
+	motion_debug.name = "MotionDebug"
+	motion_debug.sim = sim
+	add_child(motion_debug)
 	sim.plants_root = plants_root
 	sim.fauna_root = fauna_root
 	sim.waste_root = waste_root
@@ -280,10 +285,11 @@ func _ready() -> void:
 			await get_tree().process_frame
 
 		await _spawn_initial_fish()
-		if _active_substrate_profile.get("is_saltwater", false):
-			await _spawn_marine_shrimp()
-		else:
-			await _spawn_initial_shrimp()
+		if _stocking_shrimp_count() > 0:
+			if _active_substrate_profile.get("is_saltwater", false):
+				await _spawn_marine_shrimp()
+			else:
+				await _spawn_initial_shrimp()
 		await get_tree().process_frame
 	else:
 		# Loading from save: lily pads + math plants aren't persisted, so
@@ -819,6 +825,32 @@ func lateral_room_at(x: float, z: float, margin: float = 0.25,
 	if is_nan(world_y):
 		world_y = column_surface_y(x, z)
 	return _footprint().lateral_room(x, z, margin, world_y)
+
+
+func tank_boundary_info(p: Vector3, margin: float = 0.25) -> Dictionary:
+	return _footprint().boundary_info(p.x, p.y, p.z, margin)
+
+
+func tank_lateral_boundary_info(p: Vector3, margin: float = 0.25) -> Dictionary:
+	return _footprint().lateral_boundary_info(p.x, p.y, p.z, margin)
+
+
+func tank_vertical_boundary_info(p: Vector3, margin: float = 0.25,
+		floor_band: float = -1.0, ceil_band: float = -1.0) -> Dictionary:
+	var fb: float = 0.50 if floor_band < 0.0 else floor_band
+	var cb: float = 0.42 if ceil_band < 0.0 else ceil_band
+	return _footprint().vertical_boundary_info(p.x, p.y, p.z, margin, fb, cb)
+
+
+func preferred_y_at(x: float, z: float, frac: float, floor_y: float = NAN) -> float:
+	return _footprint().column_fraction_to_y(x, z, frac, 0.35, floor_y)
+
+
+func toggle_motion_debug() -> bool:
+	if motion_debug == null:
+		return false
+	motion_debug.toggle()
+	return motion_debug.enabled
 
 
 func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
@@ -2330,25 +2362,26 @@ func _respawn_extinct_fauna() -> void:
 				g["preferred_y_frac"] = clampf(float(i) / float(count - 1), 0.08, 0.92)
 			_spawn_fish_at(g, _sample_fish_spawn_pos(g))
 
-	# Shrimp: reef tanks use the marine cleaning crew, not freshwater stocking.
+	# Shrimp: only when the preset stocking dict includes them.
 	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
-	if is_saltwater:
-		_spawn_marine_shrimp(false)
-	elif stocking.has("shrimp"):
-		var shrimp_count: int = int(stocking["shrimp"])
-		for i in shrimp_count:
-			var xz: Vector2 = _sample_clear_xz_in_band(
-				-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6, 0.45, 36, 0.0, 0.44)
-			var sp := clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.3)
-			var s := Shrimp.new()
-			fauna_root.add_child(s)
-			s.global_position = sp
-			s.base_color = Color.from_hsv(randf(), randf_range(0.6, 0.9), randf_range(0.5, 0.9))
-			s.max_speed = randf_range(0.4, 0.6)
-			s.max_age_s = randf_range(120.0, 180.0)
-			s.age = randf_range(10.0, 40.0)
-			s.maturity = Shrimp.MATURITY_ADULT
-			sim.register_shrimp(s)
+	if _stocking_shrimp_count() > 0:
+		if is_saltwater:
+			_spawn_marine_shrimp(false)
+		elif stocking.has("shrimp"):
+			var shrimp_count: int = int(stocking["shrimp"])
+			for i in shrimp_count:
+				var xz: Vector2 = _sample_clear_xz_in_band(
+					-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6, 0.45, 36, 0.0, 0.44)
+				var sp := clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.3)
+				var s := Shrimp.new()
+				fauna_root.add_child(s)
+				s.global_position = sp
+				s.base_color = Color.from_hsv(randf(), randf_range(0.6, 0.9), randf_range(0.5, 0.9))
+				s.max_speed = randf_range(0.4, 0.6)
+				s.max_age_s = randf_range(120.0, 180.0)
+				s.age = randf_range(10.0, 40.0)
+				s.maturity = Shrimp.MATURITY_ADULT
+				sim.register_shrimp(s)
 
 	sim.snails_root = _build_snails()
 	if sim.has_method("sync_species_discoveries"):
@@ -2955,6 +2988,27 @@ func _apply_initial_phenotype_spread(genome: Dictionary, mult: float) -> void:
 			genome["pattern_type"] = 1
 	if not genome.has("color_dot_count"):
 		genome["color_dot_count"] = clampi(int(_rng.randf_range(0, 2.5) * mult), 0, 4)
+
+
+func _current_stocking_dict() -> Dictionary:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return {}
+	if cfg.tank_preset == "custom":
+		return {
+			"glassdart": int(cfg.custom_glassdart_count),
+			"mudsifter": int(cfg.custom_mudsifter_count),
+			"betta": 1,
+			"shrimp": int(cfg.custom_shrimp_count),
+		}
+	return cfg.current_tank_preset().get("stocking", {})
+
+
+func _stocking_shrimp_count() -> int:
+	var stocking: Dictionary = _current_stocking_dict()
+	if not stocking.has("shrimp"):
+		return 0
+	return maxi(0, int(stocking["shrimp"]))
 
 
 func _spawn_initial_fish() -> void:
@@ -5160,6 +5214,7 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	# pin to the bottom 1-2 units. Mutates the genome in place so the
 	# subsequent init_genome() reads the corrected values.
 	_apply_water_column_scale(genome)
+	_apply_shape_aware_preferred_y(genome, pos.x, pos.z)
 	fauna_root.add_child(f)
 	f.global_position = clamp_xyz_in_tank(pos, 0.35)
 	f.init_genome(genome)
@@ -5233,6 +5288,8 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 	else:
 		var legacy: float = float(genome.get("preferred_y", 3.5))
 		frac = clampf((legacy - _REF_SUBSTRATE_Y) / _REF_COLUMN_HEIGHT, 0.05, 0.95)
+	genome["preferred_y_frac"] = frac
+	# Nominal column Y — refined per-spawn in _apply_shape_aware_preferred_y.
 	genome["preferred_y"] = SUBSTRATE_DEPTH + frac * col
 
 	# Vertical territory radius:
@@ -5248,6 +5305,17 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 	if TANK_SHAPE == "sphere":
 		genome["home_y_radius"] = float(genome.get("home_y_radius", 0.8)) * 1.65
 		genome["home_radius"] = float(genome.get("home_radius", 2.5)) * 0.9
+
+
+func _apply_shape_aware_preferred_y(genome: Dictionary, x: float, z: float) -> void:
+	var frac: float = clampf(float(genome.get("preferred_y_frac", 0.5)), 0.05, 0.95)
+	var floor_y: float = column_surface_y(x, z)
+	genome["preferred_y"] = preferred_y_at(x, z, frac, floor_y)
+	var local_col: float = _footprint().local_column_height(x, z, 0.35, floor_y)
+	var global_col: float = maxf(1.0, WATER_HEIGHT - SUBSTRATE_DEPTH)
+	var local_ratio: float = clampf(local_col / global_col, 0.55, 1.35)
+	if genome.has("home_y_radius"):
+		genome["home_y_radius"] = float(genome["home_y_radius"]) * local_ratio
 
 
 func _spawn_initial_shrimp() -> void:
@@ -5280,15 +5348,10 @@ func _spawn_initial_shrimp() -> void:
 		"claw_size": 0.22,
 		"body_length_factor": 0.96,
 	}
-	# Number from TankConfig preset.
-	var sh_cfg := get_node_or_null("/root/TankConfig")
-	var shrimp_n: int = 12
-	if sh_cfg != null:
-		var preset: Dictionary = sh_cfg.current_tank_preset()
-		if sh_cfg.tank_preset == "custom":
-			shrimp_n = int(sh_cfg.custom_shrimp_count)
-		else:
-			shrimp_n = int(preset.get("shrimp", 12))
+	# Number from TankConfig preset stocking dict.
+	var shrimp_n: int = _stocking_shrimp_count()
+	if shrimp_n <= 0:
+		return
 	var phenotype_mult: float = _initial_phenotype_spread()
 	# Roughly 2/3 reds + 1/3 ambers. Start as adults so breeding kicks in soon.
 	var red_n: int = int(shrimp_n * 2.0 / 3.0)

@@ -199,6 +199,15 @@ func _sim_step(dt: float) -> void:
 	position += _drift * dt
 	_bob_phase += dt * BOB_SPEED
 	position.y += sin(_bob_phase) * BOB_AMP * dt * 6.0
+	var w: Node = FaunaBoundary.world_from_sim(sim)
+	if w != null:
+		var margin: float = 0.22
+		var steer: Vector3 = FaunaBoundary.lateral_push(w, global_position, margin, 0.55, _drift)
+		steer += FaunaBoundary.vertical_push(w, global_position, margin * 0.65, 0.38, 0.32, 0.45)
+		if steer.length_squared() > 1e-6:
+			_drift += steer * dt * 2.2
+			if _drift.length_squared() > 1e-6:
+				_drift = _drift.normalized() * DRIFT_SPEED * clampf(_drift.length() / DRIFT_SPEED, 0.5, 1.4)
 	_next_jitter_t -= dt
 	if _next_jitter_t <= 0.0:
 		_seed_drift()
@@ -230,8 +239,6 @@ func _sim_step(dt: float) -> void:
 					queue_free()
 					return
 	if sim != null:
-		var w: Node = sim.get_parent()
-		if w != null and w.has_method("clamp_xyz_in_tank"):
-			global_position = w.clamp_xyz_in_tank(global_position, 0.22, 0.04)
+		global_position = FaunaBoundary.clamp_position(w, global_position, 0.22, 0.04)
 	if not global_position.is_finite():
 		queue_free()

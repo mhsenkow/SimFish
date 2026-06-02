@@ -51,6 +51,11 @@ var _light_energy_label: Label
 var _light_yaw_label: Label
 var _light_pitch_label: Label
 var _light_warmth_label: Label
+# Snapshot taken when the panel opens. Preset/substrate stay staged here until
+# Apply so autosave can't write a new preset header over an old fauna list.
+var _panel_snapshot: Dictionary = {}
+var _pending_preset: String = "community"
+var _pending_substrate: String = "aquasoil"
 
 
 func _ready() -> void:
@@ -64,23 +69,27 @@ func _input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event.is_action_pressed("ui_cancel"):
+		_revert_staged_stocking()
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_O or event.keycode == KEY_ESCAPE:
+			_revert_staged_stocking()
 			visible = false
 			mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func toggle() -> void:
-	visible = not visible
 	if visible:
+		_revert_staged_stocking()
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+	else:
+		visible = true
 		mouse_filter = Control.MOUSE_FILTER_STOP
 		_pull_from_config()
-	else:
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 # Build the inner control tree once. Layout is a VBoxContainer with a title
@@ -325,7 +334,10 @@ func _build_ui() -> void:
 	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
 	var close := PanelTheme.make_secondary_button("Close")
-	close.pressed.connect(func(): visible = false)
+	close.pressed.connect(func():
+		_revert_staged_stocking()
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE)
 	hb.add_child(close)
 	var apply := PanelTheme.make_primary_button("Apply (reload tank)")
 	apply.pressed.connect(_on_apply)
@@ -342,6 +354,12 @@ func _add_section(parent: Node, label: String) -> void:
 # ---- Push/pull TankConfig ----
 
 func _pull_from_config() -> void:
+	_panel_snapshot = {
+		"tank_preset": TankConfig.tank_preset,
+		"substrate_type": TankConfig.substrate_type,
+	}
+	_pending_preset = TankConfig.tank_preset
+	_pending_substrate = TankConfig.substrate_type
 	# Tank shape dropdown.
 	for i in _shape_option.item_count:
 		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
@@ -370,15 +388,14 @@ func _pull_from_config() -> void:
 			_light_fixture_option.select(i)
 			break
 	_update_value_labels()
-	# Heal legacy save data: if the current preset forces a substrate (e.g.
-	# reef → ocean_sand) but TankConfig.substrate_type doesn't match, fix it
-	# silently. This catches old saves written before the cascade existed.
-	# _sync_substrate_dropdown then selects + locks + describes in one pass.
-	var cur_preset: Dictionary = TankConfig.TANK_PRESETS.get(TankConfig.tank_preset, {})
+	# Heal legacy save data: if the staged preset forces a substrate (e.g.
+	# reef → ocean_sand) but pending substrate doesn't match, fix the staging
+	# silently so the UI matches what Apply will build.
+	var cur_preset: Dictionary = TankConfig.TANK_PRESETS.get(_pending_preset, {})
 	var forced_sub: String = String(cur_preset.get("substrate", ""))
 	if forced_sub != "" and TankConfig.SUBSTRATE_PROFILES.has(forced_sub) \
-			and TankConfig.substrate_type != forced_sub:
-		TankConfig.substrate_type = forced_sub
+			and _pending_substrate != forced_sub:
+		_pending_substrate = forced_sub
 	_sync_substrate_dropdown()
 	# Aeration.
 	for i in _aeration_option.item_count:
@@ -403,7 +420,7 @@ func _pull_from_config() -> void:
 	# can't fire _on_preset and mutate TankConfig while we're syncing UI.
 	_preset_option.set_block_signals(true)
 	for i in _preset_option.item_count:
-		if _preset_option.get_item_metadata(i) == TankConfig.tank_preset:
+		if _preset_option.get_item_metadata(i) == _pending_preset:
 			_preset_option.select(i)
 			break
 	_preset_option.set_block_signals(false)
@@ -502,8 +519,8 @@ func _on_light_warmth(v: float) -> void:
 
 
 func _on_substrate(idx: int) -> void:
-	TankConfig.substrate_type = _substrate_option.get_item_metadata(idx)
-	_update_substrate_desc()
+	_pending_substrate = _substrate_option.get_item_metadata(idx)
+	_sync_substrate_dropdown()
 
 
 func _on_aeration(idx: int) -> void:
@@ -541,19 +558,13 @@ func _update_aeration_desc() -> void:
 
 func _on_preset(idx: int) -> void:
 	var new_key: String = _preset_option.get_item_metadata(idx)
-	TankConfig.tank_preset = new_key
+	_pending_preset = new_key
 	# Some presets force a specific substrate (e.g. "reef" → "ocean_sand").
-	# Cascade that choice into TankConfig.substrate_type so the UI doesn't
-	# claim "aquasoil" while the world is built with ocean sand. Without
-	# this, saved state.json's substrate_type drifted from what the world
-	# actually contained, and the save-compatibility check passed for tanks
-	# that ecologically shouldn't load (saltwater corals into a freshwater
-	# spawn). Whether or not the new preset forces a substrate, re-sync the
-	# dropdown — its disabled state depends on the preset.
+	# Stage that choice so autosave can't desync preset header from fauna.
 	var preset: Dictionary = TankConfig.TANK_PRESETS.get(new_key, {})
 	var forced: String = String(preset.get("substrate", ""))
 	if forced != "" and TankConfig.SUBSTRATE_PROFILES.has(forced):
-		TankConfig.substrate_type = forced
+		_pending_substrate = forced
 	_sync_substrate_dropdown()
 	_update_preset_desc()
 	_update_diet_chart()
@@ -568,17 +579,17 @@ func _sync_substrate_dropdown() -> void:
 		return
 	_substrate_option.set_block_signals(true)
 	for i in _substrate_option.item_count:
-		if _substrate_option.get_item_metadata(i) == TankConfig.substrate_type:
+		if _substrate_option.get_item_metadata(i) == _pending_substrate:
 			_substrate_option.select(i)
 			break
 	_substrate_option.set_block_signals(false)
-	var preset: Dictionary = TankConfig.TANK_PRESETS.get(TankConfig.tank_preset, {})
+	var preset: Dictionary = TankConfig.TANK_PRESETS.get(_pending_preset, {})
 	var forced: String = String(preset.get("substrate", ""))
 	_substrate_option.disabled = forced != ""
 	# A muted hint reminds the player why the control is locked.
 	if _substrate_desc != null:
 		if forced != "":
-			var preset_label: String = String(preset.get("label", TankConfig.tank_preset))
+			var preset_label: String = String(preset.get("label", _pending_preset))
 			var profile: Dictionary = TankConfig.SUBSTRATE_PROFILES.get(forced, {})
 			_substrate_desc.text = "%s\n(locked by preset: %s)" % [
 				String(profile.get("description", "")),
@@ -586,7 +597,7 @@ func _sync_substrate_dropdown() -> void:
 			]
 		else:
 			var cur_profile: Dictionary = TankConfig.SUBSTRATE_PROFILES.get(
-				TankConfig.substrate_type, {})
+				_pending_substrate, {})
 			_substrate_desc.text = String(cur_profile.get("description", ""))
 
 
@@ -597,7 +608,7 @@ func _update_diet_chart() -> void:
 
 
 func _preset_stocking_dict() -> Dictionary:
-	var key: String = TankConfig.tank_preset
+	var key: String = _pending_preset
 	if key == "custom":
 		return {
 			"glassdart": TankConfig.custom_glassdart_count,
@@ -611,7 +622,7 @@ func _preset_stocking_dict() -> Dictionary:
 
 func _build_diet_chart() -> String:
 	var c_dim := "#9aa8c8"
-	var preset_key: String = TankConfig.tank_preset
+	var preset_key: String = _pending_preset
 	var preset: Dictionary = TankConfig.TANK_PRESETS.get(preset_key, {})
 	var stocking: Dictionary = _preset_stocking_dict()
 
@@ -727,15 +738,10 @@ func _format_diet_lines(stocking: Dictionary) -> String:
 
 
 func _update_preset_desc() -> void:
-	var key: String = TankConfig.tank_preset
+	var key: String = _pending_preset
 	var preset: Dictionary = TankConfig.TANK_PRESETS.get(key, {})
 	var desc: String = preset.get("description", "")
 	if key != "custom":
-		# Build the stocking summary by iterating the preset's stocking dict
-		# (species_name -> count). Use the friendly label from the species
-		# library so the panel reads "Glassdart tetra 12" rather than
-		# "glassdart 12". Shrimp is special-cased - it doesn't live in the
-		# species library.
 		var stocking_dict: Dictionary = preset.get("stocking", {})
 		var stocking_parts: Array[String] = []
 		for species_name in stocking_dict.keys():
@@ -748,11 +754,35 @@ func _update_preset_desc() -> void:
 			elif TankConfig.SPECIES_LIBRARY.has(species_name):
 				label = TankConfig.SPECIES_LIBRARY[species_name]["label"]
 			stocking_parts.append("%s %d" % [label, count])
-		var stocking: String = "Stocking: " + ", ".join(stocking_parts)
+		var stocking: String = "Initial stocking: " + ", ".join(stocking_parts)
 		var spread: String = "Phenotype spread: %.1f×" % float(preset.get("phenotype_spread", 1.0))
-		desc = desc + "\n" + stocking + "\n" + spread
+		var forced_sub: String = String(preset.get("substrate", ""))
+		var snail_note: String = ""
+		if forced_sub == "ocean_sand":
+			snail_note = "\nAlso spawns 8 marine founder snails on glass/substrate."
+		elif not stocking_dict.is_empty():
+			snail_note = "\nAlso spawns 6 founder snails on glass/substrate."
+		desc = desc + "\n" + stocking + snail_note + "\n" + spread
+		desc += "\nApply reloads the tank; population may differ if a save is restored."
 	_preset_desc.text = desc
 	_update_diet_chart()
+
+
+func _commit_staged_stocking() -> void:
+	TankConfig.tank_preset = _pending_preset
+	TankConfig.substrate_type = _pending_substrate
+
+
+func _revert_staged_stocking() -> void:
+	if _panel_snapshot.is_empty():
+		return
+	TankConfig.tank_preset = String(_panel_snapshot.get("tank_preset", TankConfig.tank_preset))
+	TankConfig.substrate_type = String(_panel_snapshot.get("substrate_type", TankConfig.substrate_type))
+
+
+func _stocking_settings_changed() -> bool:
+	return _pending_preset != String(_panel_snapshot.get("tank_preset", "")) \
+		or _pending_substrate != String(_panel_snapshot.get("substrate_type", ""))
 
 
 func _on_apply() -> void:
@@ -762,15 +792,22 @@ func _on_apply() -> void:
 	var main := get_tree().current_scene
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
-	# If the player changed stocking preset or substrate, the saved fish
-	# list is stale. Drop it now so the reload always spawns the selected
-	# preset instead of restoring the previous community into a reef tank.
+	_commit_staged_stocking()
+	# Drop stale fauna whenever stocking/substrate changed in this panel OR
+	# the on-disk save's header doesn't match what we're applying. Without
+	# staging, autosave could rewrite tank_preset while keeping old fish.
 	var saves := get_node_or_null("/root/TankSaves")
-	if saves != null and saves.has_method("is_active_save_compatible"):
-		if not saves.is_active_save_compatible():
-			if saves.has_method("clear_active_state"):
-				saves.clear_active_state()
+	if saves != null:
+		var clear_save: bool = _stocking_settings_changed()
+		if not clear_save and saves.has_method("is_active_save_compatible"):
+			clear_save = not saves.is_active_save_compatible()
+		if not clear_save and saves.has_method("is_stocking_fauna_compatible"):
+			clear_save = not saves.is_stocking_fauna_compatible(
+				TankConfig.tank_preset, TankConfig.substrate_type)
+		if clear_save and saves.has_method("clear_active_state"):
+			saves.clear_active_state()
 	TankConfig.rebuild_terrain_on_load = true
 	TankConfig.save_to_disk()
+	_panel_snapshot = {}
 	apply_requested.emit()
 	get_tree().reload_current_scene()

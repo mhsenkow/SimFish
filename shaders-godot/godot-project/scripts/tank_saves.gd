@@ -235,7 +235,62 @@ func is_active_save_compatible() -> bool:
 		return false
 	if not cur_is_salt and save_has_coral and not save_has_freshwater_plant:
 		return false
+	if not is_stocking_fauna_compatible():
+		return false
 	return true
+
+
+# Saved fish/shrimp species must match the active preset's stocking dict.
+# Catches saves where tank_preset was rewritten (e.g. by autosave) but fauna
+# was never respawned — reef header with community glassdarts, etc.
+func is_stocking_fauna_compatible(preset_key: String = "", substrate_type: String = "") -> bool:
+	if not has_state_for_active_slot():
+		return true
+	var cfg := get_node_or_null("/root/TankConfig")
+	var p_key: String = preset_key
+	if p_key == "":
+		p_key = String(cfg.tank_preset) if cfg != null else ""
+	var sub: String = substrate_type
+	if sub == "":
+		sub = String(cfg.substrate_type) if cfg != null else ""
+	var preset: Dictionary = TankConfig.TANK_PRESETS.get(p_key, {})
+	var stocking: Dictionary = preset.get("stocking", {})
+	if stocking.is_empty():
+		return true
+	var d: Dictionary = read_json(state_path(active_slot))
+	if d.is_empty():
+		return true
+	var allowed_fish: Array[String] = []
+	for k in stocking.keys():
+		if k != "shrimp":
+			allowed_fish.append(String(k))
+	for f in d.get("fish", []):
+		if not f is Dictionary:
+			continue
+		var species: String = _species_from_creature_save(f)
+		if species != "" and species not in allowed_fish:
+			return false
+	var wants_shrimp: bool = stocking.has("shrimp") and int(stocking["shrimp"]) > 0
+	if not wants_shrimp and d.get("shrimp", []).size() > 0:
+		return false
+	var is_salt: bool = _substrate_is_saltwater(sub)
+	if is_salt:
+		for p in d.get("plants", []):
+			if p is Dictionary:
+				var subc: String = String(p.get("subclass", ""))
+				if subc == "plant" or subc == "spiral_plant" or subc == "branch_plant":
+					return false
+	return true
+
+
+func _species_from_creature_save(d: Dictionary) -> String:
+	var species: String = String(d.get("species", ""))
+	if species != "":
+		return species
+	var g: Variant = d.get("genome", {})
+	if g is Dictionary:
+		return String((g as Dictionary).get("species", ""))
+	return ""
 
 
 func _substrate_is_saltwater(sub_type: String) -> bool:

@@ -36,7 +36,7 @@ const FOOD_GLOW_ENERGY: float = 2.0
 # ~3 mg/L (about 35% saturation); we use 0.45 (45% of saturated 1.0) so
 # the visible response kicks in before fish actually start dying — the
 # behavior is meant to read as "something's wrong, look at your aerator".
-const SURFACE_GULP_O2: float = 0.45
+const SURFACE_GULP_O2: float = 0.32
 # Stress threshold above which fish actively seek plant cover to hide.
 # Real fish under chronic stress (pheromones, predators, water-quality
 # spikes) retreat to shaded foliage; the response sells the "tank in
@@ -324,6 +324,7 @@ var _belly_flash: float = 0.0
 # trip (the negative value drives the upward bias).
 var _aerial_timer: float = -1.0
 var _aerial_target_y: float = 0.0
+var _aerial_return_y: float = INF
 # Substrate sifting: "shuffle" species (cory, loach) periodically tilt
 # nose-down at the substrate and stay put for a couple of seconds, working
 # their barbels through the mulm. Real Walstad behavior - the alternative
@@ -1394,10 +1395,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				else randf_range(25.0, 40.0)
 			if _aerial_timer < -next_trip:
 				# Begin the gulp trip - target Y just below water surface.
+				_aerial_return_y = home_y
 				_aerial_target_y = _water_surface_y() - 0.2
 				_aerial_timer = randf_range(2.0, 3.5)   # trip duration
 		else:
 			_aerial_timer -= dt
+			if _aerial_timer <= 0.0:
+				if is_finite(_aerial_return_y):
+					home_y = _aerial_return_y
+				_aerial_return_y = INF
+				_aerial_timer = -0.01
 
 	# Schooling stress climbs if too few conspecifics nearby.
 	var conspecifics_nearby: int = 0
@@ -1444,29 +1451,32 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var effective_max := max_speed * (burst_mult if burst_remaining > 0.0 else 1.0)
 	current_mode = Mode.CRUISE
 
-	# Tier 0: wall avoidance always runs (additive).
-	desired += _wall_avoid(world_bounds) * 3.0
+	# Tier 0: wall avoidance always runs (additive). Lateral glass only — floor
+	# repulsion is handled by vertical band + home_y so fish don't climb the column.
+	desired += _wall_avoid(world_bounds) * 4.0
 	# Tier 0.1: soft anti-intersection steering. Keeps body volumes from
 	# visually occupying the same space (other fish / dense plants /
 	# hardscape) while staying subtle enough to preserve schooling.
 	desired += _local_clearance_push(neighbors, plants) * 1.25
 	desired += _hardscape_clearance_push() * 1.6
 
-	# Tier 0.2: SURFACE GULPING (hypoxia response). When dissolved O₂ drops
-	# below SURFACE_GULP_O2, fish swim to the meniscus and hold there. Real
-	# fish gulp atmospheric oxygen at the surface when the water is hypoxic
-	# — it's the most recognizable "this tank is in trouble" body language
-	# in the hobby. Highest priority after wall avoid since asphyxiation
-	# trumps every other goal.
+	# Tier 0.2: SURFACE GULPING (hypoxia response). Only surface-adapted fish
+	# panic-gulp at the meniscus; mid-column species rely on the softer home_y
+	# lerp in the cruise tier instead of racing the whole school to the top.
 	if sim != null and float(sim.dissolved_o2) < SURFACE_GULP_O2:
-		var surface_y: float = _water_surface_y() - 0.15
-		var gulp_dir: Vector3 = Vector3(0, surface_y - position.y, 0)
-		# Add a small lateral random walk so the school of gulpers doesn't
-		# converge to one column.
-		gulp_dir.x += sin(_swim_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
-		desired += gulp_dir.normalized() * effective_max * 1.4
-		current_mode = Mode.FORAGE
-		# Don't return — let wall avoid still mix in so we don't pin to glass.
+		var col_h: float = maxf(_water_column_height(), 0.5)
+		var top_frac: float = clampf((preferred_y - float(sim.substrate_top_y)) / col_h, 0.0, 1.0)
+		var surface_adapted: bool = mouth_orientation == -1 or labyrinth_breather \
+			or top_frac >= 0.62 or swim_pattern == "dart"
+		if surface_adapted:
+			var surface_y: float = _water_surface_y() - 0.15
+			var gulp_dir: Vector3 = Vector3(0, surface_y - position.y, 0)
+			# Add a small lateral random walk so the school of gulpers doesn't
+			# converge to one column.
+			gulp_dir.x += sin(_swim_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
+			desired += gulp_dir.normalized() * effective_max * 1.4
+			current_mode = Mode.FORAGE
+			# Don't return — let wall avoid still mix in so we don't pin to glass.
 
 	# Tier 0.3: EGG-GUARDING / BROODING. Pair-bonding species (currently
 	# the "hover" pattern, i.e. angelfish) stay near the egg cluster for
@@ -1479,6 +1489,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if brooding_remaining > 0.0:
 		brooding_remaining = maxf(0.0, brooding_remaining - dt)
 		current_mode = Mode.COURT  # closest mode we have to "guarding"
+		# Keep nests below the meniscus — brooding parents shouldn't pin at surface.
+		var nest_ceiling: float = _water_surface_y() - 0.55
+		if brooding_at.y > nest_ceiling:
+			brooding_at.y = nest_ceiling
 		# Hold position at the nest. Damp velocity so the fish actually
 		# settles instead of orbiting.
 		var to_nest: Vector3 = brooding_at - position
@@ -1504,7 +1518,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				desired += to_t.normalized() * effective_max * 1.8
 				if burst_remaining < 0.25:
 					burst_remaining = 0.25
-		target_velocity = desired.limit_length(effective_max)
+		target_velocity = _apply_target_from_desired(desired, effective_max)
 		return events
 
 	# Tier 0.35: FRY PLANT SHELTER. Fresh fry seek the densest nearby plant
@@ -1607,12 +1621,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if p.biomass() < 6:
 				continue
 			var d2: float = p._world_pos.distance_squared_to(position)
+			d2 += absf(p._world_pos.y - preferred_y) * 0.35
 			if d2 < cover_d2:
 				cover_d2 = d2
 				nearest_cover = p
 		if nearest_cover != null:
 			var to_cover: Vector3 = nearest_cover._world_pos - position
-			to_cover.y += 0.4  # aim for mid-plant height, not the substrate
+			to_cover.y = lerpf(preferred_y, nearest_cover._world_pos.y + 0.4, 0.55)
 			desired += to_cover.normalized() * effective_max * 0.7
 			current_mode = Mode.FLEE
 
@@ -1631,6 +1646,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# Swim alongside (not into) the partner: target a point slightly to one side.
 			var side: Vector3 = to_partner.cross(Vector3.UP).normalized() * 0.4
 			var courtship_target: Vector3 = partner.position + side
+			courtship_target.y = lerpf(home_y, partner.home_y, 0.5)
 			# Courtship intensity ramp: builds from 0 to 1 over the full
 			# COURT_DURATION. Drives the gradual acceleration of the S-curve
 			# dance, fin flare, and color saturation boost so the display
@@ -1700,7 +1716,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				_courtship_flare = false
 				_courtship_sync = false
 				_courtship_intensity = 0.0
-			target_velocity = desired.limit_length(effective_max)
+			target_velocity = _apply_target_from_desired(desired, effective_max)
 			return events
 
 	# Tier 1b: SCAVENGE WASTE. Fish opportunistically eat waste particles
@@ -1734,6 +1750,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var w_y: float = (w as Node3D).global_position.y
 				var y_delta: float = absf(w_y - preferred_y)
 				d2 *= 1.0 + clampf(y_delta * 0.18, 0.0, 0.5)
+				if y_delta > home_y_radius * 1.5:
+					d2 *= 1.0 + clampf((y_delta - home_y_radius * 1.5) * 0.45, 0.0, 1.0)
 			if d2 < max_dist_sq and d2 < best_d2:
 				best_d2 = d2
 				best_w = w
@@ -1760,7 +1778,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# return, the fish falls through into predation/breeding
 				# tiers and can record multiple conflicting events that
 				# overwrite each other in the same dict.
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 			else:
 				var pull: float = 0.9
@@ -1777,7 +1795,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 						_startle_heading = to_w.normalized()
 						_startle_remaining = 0.5
 				desired += to_w.normalized() * effective_max * pull
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 
 	# Tier 1b2: SIZE-BASED PREDATION on smaller fish + adult shrimp. Gated so
@@ -1839,13 +1857,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# A successful kill ends the tick. Falling through would
 				# overwrite events["kill_prey"] / events["waste_at"] with a
 				# later tier's target and drop the actual predation.
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 			else:
 				if burst_remaining <= 0.0 and energy > 0.3:
 					burst_remaining = 0.5
 				desired += to_prey.normalized() * effective_max * 1.3
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 
 	# Tier 1c: PREDATION on baby shrimp.
@@ -1881,7 +1899,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				0.0, 0.94)
 			if randf() < repel * 0.55:
 				stress = minf(1.0, stress + repel * 0.08)
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 			var to_prey: Vector3 = prey.global_position - position
 			if to_prey.length() < 0.35:
@@ -1895,13 +1913,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				events["waste_amount"] = 0.15
 				# Successful baby-shrimp kill: end the tick so events don't
 				# get stomped by Tier 1.9 / 2 below.
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 			else:
 				if burst_remaining <= 0.0 and energy > 0.3:
 					burst_remaining = 0.4
 				desired += to_prey.normalized() * effective_max * 1.2
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 
 	# Tier 1.9: SPECIALIST DIET. Loach + puffer hunt baby snails preferentially;
@@ -1950,13 +1968,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 					# Snail-snap done: return so the algae loop below doesn't
 					# overwrite events["kill_snail"] with an eat_algae target.
-					target_velocity = desired.limit_length(effective_max)
+					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
 				else:
 					if burst_remaining <= 0.0 and energy > 0.3:
 						burst_remaining = 0.35
 					desired += to_snail.normalized() * effective_max * 1.1
-					target_velocity = desired.limit_length(effective_max)
+					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
 		if herbivory > 0.0 and algae_array.size() > 0:
 			var best_alga: Node3D = null
@@ -1977,12 +1995,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					# Algae crop done: return so Tier 2 herbivore plant-nibbling
 					# below doesn't add an events["waste_at"] entry for this
 					# same tick and double-count nutrients.
-					target_velocity = desired.limit_length(effective_max)
+					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
 				else:
 					var to_alga: Vector3 = best_alga.global_position - position
 					desired += to_alga.normalized() * effective_max * 0.9
-					target_velocity = desired.limit_length(effective_max)
+					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
 
 	# Tier 2: HUNGRY HERBIVORE. Plants need at least 15 voxels of biomass
@@ -2012,7 +2030,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if hunger > 0.8 and burst_remaining <= 0.0 and energy > 0.3:
 					burst_remaining = 0.6
 				desired += (top - position).normalized() * effective_max
-				target_velocity = desired.limit_length(effective_max)
+				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
 
 	# Tier 3: SEEK PARTNER. Adult, well-fed, not on cooldown, no current
@@ -2087,19 +2105,25 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
 		# At deep night, diurnal fish rest and tolerate mildly lower O2 without
 		# panic-darting. Keep emergency behavior for truly low values.
-		var gulp_threshold: float = lerpf(0.30, 0.40, dl)
+		var gulp_threshold: float = lerpf(0.22, SURFACE_GULP_O2, dl)
 		if o2 < gulp_threshold:
 			var severity: float = clampf((gulp_threshold - o2) / maxf(gulp_threshold, 0.001), 0.0, 1.0)
 			var surface_y: float = _water_surface_y()
-			target_y = lerpf(home_y, surface_y, severity)
+			target_y = lerpf(home_y, surface_y, severity * 0.65)
 			var stress_gain: float = lerpf(0.55, 1.0, dl)
 			stress = clampf(stress + dt * severity * 0.05 * stress_gain, 0.0, 1.0)
+	# Zero-mean depth wobble — keeps layers alive without drifting up/down.
+	target_y += sin(_swim_phase * 0.45 + float(get_instance_id() % 53) * 0.11) \
+		* home_y_radius * 0.16
 	var dy: float = target_y - position.y
 	# Stronger Y pull beyond home_y_radius; gentle within it. Result: fish
 	# actively defend their water column layer instead of all sinking to
-	# the substrate at night.
-	var dy_outside: float = maxf(0.0, absf(dy) - home_y_radius)
-	desired.y += signf(dy) * (home_y_radius * 0.4 + dy_outside * 1.4)
+	# the substrate at night. At night, tighten the band so fish rest in-layer.
+	var effective_y_radius: float = home_y_radius
+	if sim != null and float(sim.daylight()) < 0.25:
+		effective_y_radius *= 0.62
+	var dy_outside: float = maxf(0.0, absf(dy) - effective_y_radius)
+	desired.y += signf(dy) * (effective_y_radius * 0.55 + dy_outside * 1.65)
 
 	# FRY HIDE-AT-LOG. Baby fish in real Walstad tanks survive by clinging
 	# to driftwood, dense plants, or moss - anywhere larger fish can't
@@ -2123,6 +2147,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					hide_target = h.global_position
 		if not is_inf(hide_target.x):
 			var to_hide: Vector3 = hide_target - position
+			to_hide.y *= 0.35
 			# Pull toward the log, but stop ~0.3 units short so the fry
 			# hovers next to it rather than penetrating the voxel.
 			var dist: float = to_hide.length()
@@ -2145,6 +2170,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var pull_mult: float = 0.5
 		if swim_pattern == "hover":
 			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
+		# Don't tug fish through glass when a saved home sits outside the footprint.
+		if to_home.length_squared() > 1e-6:
+			var home_dir: Vector3 = to_home.normalized()
+			var bnd: Dictionary = _boundary_context(global_position)
+			var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
+			if inward.length_squared() > 1e-6 and home_dir.dot(inward) < -0.12:
+				pull_strength *= 0.15
 		desired += to_home.normalized() * effective_max * pull_mult * pull_strength
 
 	# STARTLE PROPAGATION. School / shoal species are prey - in nature they
@@ -2163,7 +2195,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if nf.burst_remaining > 0.2 and nf._startle_heading.length_squared() > 0.01:
 				# Conspecific bolted recently - join the panic in their direction.
 				_startle_remaining = 0.4
-				_startle_heading = nf._startle_heading
+				var sh: Vector3 = nf._startle_heading
+				sh.y *= 0.22
+				if sh.length_squared() > 1e-6:
+					_startle_heading = sh.normalized()
+				else:
+					_startle_heading = Vector3(sh.x, 0.0, sh.z).normalized()
 				burst_remaining = 0.35
 				break
 
@@ -2183,8 +2220,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var ang: float = randf() * TAU
 		var dart_dir := Vector3(sin(ang), randf_range(-0.15, 0.15), cos(ang))
 		heading_offset = dart_dir * (1.0 + wander_strength)
-		# Record startle heading so school-mates can copy it.
-		_startle_heading = dart_dir
+		# Record startle heading so school-mates can copy it (mostly horizontal).
+		_startle_heading = Vector3(dart_dir.x, dart_dir.y * 0.2, dart_dir.z).normalized()
 		_startle_remaining = 0.4
 		# Surface ripple — if the fish darts near the meniscus, the
 		# motion breaks surface tension and we spawn an expanding ring
@@ -2214,7 +2251,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and randf() < dt * 0.12 and energy > 0.3:
 		# 15% of max speed → enough motion to slide off a wall, slow enough to
 		# read as "pausing to look around."
-		target_velocity = desired.limit_length(effective_max * 0.15)
+		target_velocity = _apply_target_from_desired(desired, effective_max * 0.15)
 		return events
 		
 	# PLAYFUL DART (ZOOMIES). Even non-dart species occasionally get a burst of
@@ -2236,14 +2273,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		elif swim_pattern == "shuffle":
 			interval = 5.0 + randf() * 6.0  # loaches: frequent zig-zags
 		_wander_refresh_timer = interval
-		var ang: float = randf() * TAU
+		var phase: float = _swim_phase + float(get_instance_id() % 97) * 0.09
 		var y_wander: float = 0.15
 		if _tank_is_dome() or _water_column_height() > 6.0:
-			y_wander = 0.42
+			y_wander = 0.38
+		if swim_pattern == "shuffle":
+			y_wander *= 0.55
 		heading_offset = Vector3(
-			sin(ang) * randf_range(0.3, 0.6),
-			randf_range(-y_wander, y_wander),
-			cos(ang) * randf_range(0.3, 0.6),
+			sin(phase) * randf_range(0.35, 0.62),
+			sin(phase * 1.37) * y_wander,
+			cos(phase * 0.93) * randf_range(0.35, 0.62),
 		)
 
 	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
@@ -2270,16 +2309,31 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			home_x = p.x
 			home_z = p.z
 
-	# Vertical territory drift — dome bowls and tall columns need fish to
-	# roam upward over time, not pin to the spawn layer forever.
+	# Vertical territory drift — dome bowls and tall columns let fish roam, but
+	# stay near each individual's preferred water column instead of random full-column hops.
 	if _tank_is_dome() or _water_column_height() > 6.5:
 		_home_y_drift_timer -= dt
 		if _home_y_drift_timer <= 0.0:
 			_home_y_drift_timer = 18.0 + randf() * 32.0
-			var top_y: float = _water_surface_y() - 0.35
-			var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.45
-			var target_home_y: float = lerpf(bot_y, top_y, randf())
-			home_y = lerpf(home_y, target_home_y, lerpf(0.22, 0.5, wander_strength))
+			var target_home_y: float
+			var w_drift := _world_node()
+			if w_drift != null and w_drift.has_method("preferred_y_at"):
+				var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.45
+				var col_h: float = maxf(_water_surface_y() - bot_y, 0.5)
+				var pref_frac: float = clampf((preferred_y - bot_y) / col_h, 0.12, 0.88)
+				pref_frac = clampf(pref_frac + randf_range(-0.14, 0.14), 0.08, 0.92)
+				var floor_y: float = bot_y
+				if w_drift.has_method("column_surface_y"):
+					floor_y = w_drift.column_surface_y(home_x, home_z)
+				target_home_y = w_drift.preferred_y_at(home_x, home_z, pref_frac, floor_y)
+			else:
+				var top_y: float = _water_surface_y() - 0.35
+				var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.45
+				var col_h: float = maxf(top_y - bot_y, 0.5)
+				var pref_frac: float = clampf((preferred_y - bot_y) / col_h, 0.12, 0.88)
+				target_home_y = bot_y + col_h * clampf(
+					pref_frac + randf_range(-0.14, 0.14), 0.08, 0.92)
+			home_y = lerpf(home_y, target_home_y, lerpf(0.18, 0.38, wander_strength))
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
 	# meanderers wander more, hoverers wander less. During startle propagation,
@@ -2352,7 +2406,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				desired += to_shelter.normalized() * effective_max * 0.35
 				current_mode = Mode.REST
 
-	target_velocity = desired.limit_length(effective_max)
+	target_velocity = _apply_target_from_desired(desired, effective_max)
 	# Position + facing now updated in _process at render rate.
 
 	# Senescence speeds hunger a little but no longer punishes; meals
@@ -2424,7 +2478,7 @@ func _process(dt: float) -> void:
 	# keeps Euler integration stable while preserving the nominal sim
 	# rate. One sub-step at 1× time_scale (the common case) so there's
 	# no cost when it doesn't matter.
-	var n_steps: int = clampi(int(ceil(dt / 0.05)), 1, 16)
+	var n_steps: int = clampi(int(ceil(dt / maxf(0.05 / clampf(speed / maxf(max_speed, 0.15), 0.55, 1.6), 0.028))), 1, 20)
 	var sub_dt: float = dt / float(n_steps)
 	for _step in n_steps:
 		_motion_substep(sub_dt)
@@ -2533,15 +2587,37 @@ func _motion_substep(dt: float) -> void:
 	# the tank should never feel frozen, even at deep midnight.
 	target_spd *= _day_activity_mult()
 
+	var body_m: float = _body_tank_margin()
+	var margin: float = 0.22
+	var body_r: float = body_m * 0.55
+
+	# Never steer toward the glass — strip outward velocity before turning.
+	var constrained: Vector3 = _constrain_velocity_to_tank(target_dir * target_spd)
+	if constrained.length_squared() > 1e-6:
+		target_dir = constrained.normalized()
+		target_spd = constrained.length()
+	# Non-surface species resist slow upward creep above their home band.
+	if _aerial_timer <= 0.0 and mouth_orientation > -1:
+		var o2_ok: bool = sim == null or float(sim.dissolved_o2) >= SURFACE_GULP_O2
+		if o2_ok and position.y > home_y + home_y_radius * 1.25 and target_dir.y > 0.12:
+			var capped: Vector3 = Vector3(target_dir.x, target_dir.y * 0.3, target_dir.z)
+			if capped.length_squared() > 1e-6:
+				target_dir = capped.normalized()
+				target_spd *= 0.92
+
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
+	var bnd: Dictionary = _lateral_boundary_context(global_position, body_m, target_dir)
+	var clearance: float = float(bnd.get("clearance", 99.0))
+	var repel_dist: float = body_m * 2.4 + 0.45
+	var wall_t: float = 1.0 - clampf(clearance / repel_dist, 0.0, 1.0)
 	var angle: float = heading.angle_to(target_dir)
 	if angle > 0.0005:
 		var axis: Vector3 = heading.cross(target_dir)
 		if axis.length_squared() < 1e-6:
-			# Heading and target are antiparallel - pick a sensible axis.
 			axis = Vector3.UP
 		axis = axis.normalized()
-		var max_step: float = max_turn_rate * dt
+		var turn_boost: float = lerpf(1.0, 2.2, wall_t * wall_t)
+		var max_step: float = max_turn_rate * turn_boost * dt
 		# Fish turn slower vertically than horizontally - real fish have a hard
 		# time pitching up/down sharply. Project the turn onto a mostly-horizontal
 		# axis by reducing its UP component.
@@ -2557,22 +2633,50 @@ func _motion_substep(dt: float) -> void:
 		# (look_at(NaN) silently corrupts the transform basis).
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	# Limit pitch for mid-water cruisers — real fish rarely climb/dive steeply.
+	if _sift_timer <= 0.0 and mouth_orientation != 1 and swim_pattern != "dart":
+		var flat: Vector3 = Vector3(heading.x, 0.0, heading.z)
+		if flat.length_squared() > 0.04:
+			var max_pitch: float = 0.40 if mouth_orientation == 0 else 0.52
+			if absf(heading.y) > max_pitch:
+				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
 	# ---- Accelerate speed toward target_spd, bounded by linear_accel ----
 	speed = move_toward(speed, target_spd, linear_accel * dt)
+	if wall_t > 0.35:
+		speed = minf(speed, target_spd * lerpf(1.0, 0.68, wall_t))
 
-	# ---- Apply translation ----
-	velocity = heading * speed
-	position += velocity * dt
+	# ---- Move only as far as the tank allows (never swim into glass) ----
+	var gp: Vector3 = global_position
+	var move_dir: Vector3 = heading
+	if move_dir.length_squared() < 1e-6:
+		move_dir = target_dir
+	if move_dir.length_squared() > 1e-6:
+		move_dir = move_dir.normalized()
+		var want_len: float = speed * dt
+		var allowed: float = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
+		if allowed < want_len * 0.92:
+			var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
+			inward.y = 0.0
+			if inward.length_squared() > 1e-6:
+				inward = inward.normalized()
+			if inward.length_squared() > 1e-6:
+				var outward: Vector3 = -inward
+				var out_comp: float = move_dir.dot(outward)
+				if out_comp > 0.05:
+					var slid: Vector3 = move_dir - outward * out_comp
+					if slid.length_squared() > 0.04:
+						move_dir = slid.normalized()
+					else:
+						move_dir = _pick_wall_escape_heading(inward, move_dir)
+					heading = move_dir
+					allowed = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
+		global_position = gp + move_dir * allowed
+		speed = allowed / maxf(dt, 1e-5)
+		heading = move_dir
+	velocity = move_dir * speed if move_dir.length_squared() > 1e-6 else Vector3.ZERO
 	if velocity.y > 0.12:
 		_belly_flash = 1.0
-	# Soft-brain wall avoidance can still overshoot on high timescale + burst.
-	# Hard clamp keeps bodies from visibly intersecting glass geometry.
-	if sim != null:
-		var w: Node = sim.get_parent()
-		if w != null and w.has_method("clamp_xyz_in_tank"):
-			var m: float = _body_tank_margin()
-			global_position = w.clamp_xyz_in_tank(global_position, 0.22, m)
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
 	# built so its forward = -Z, so the fish faces its motion correctly.
@@ -2891,9 +2995,16 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 			continue
 		# Separation considers all species (you don't want to swim into anyone).
 		if d2 < sep_r2:
-			sep += diff.normalized() / maxf(sqrt(d2), 0.1)
+			var sep_push: Vector3 = diff
+			if mouth_orientation == 0:
+				sep_push.y *= 0.38
+			elif mouth_orientation == 1:
+				sep_push.y *= 0.55
+			sep += sep_push.normalized() / maxf(sqrt(d2), 0.1)
 		# Alignment + cohesion are conspecific-only and view-cone-gated.
 		if f.species != species:
+			continue
+		if absf(diff.y) > maxf(home_y_radius, f.home_y_radius) * 2.4:
 			continue
 		var to_neighbor: Vector3 = -diff  # f.position - position
 		var dot_v: float = heading.dot(to_neighbor.normalized())
@@ -2904,6 +3015,9 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 		coh += predicted_pos
 		school_speed_sum += f.speed
 		count_conspecific += 1
+		# Vertical de-stack: nudge away from conspecifics on the same plane.
+		if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
+			sep.y += signf(-diff.y) * 0.28
 
 	var steer := sep * 2.4
 
@@ -2918,6 +3032,7 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 			steer += ali.normalized() * ali_strength
 		# Cohesion: steer toward predicted center of mass.
 		var to_center: Vector3 = coh - position
+		to_center.y *= 0.52
 		if to_center.length() > 0.001:
 			steer += to_center.normalized() * coh_strength
 		# Speed matching: nudge in heading direction proportional to school
@@ -3045,22 +3160,32 @@ func _water_column_height() -> float:
 
 
 func _wall_avoid(_b: AABB) -> Vector3:
-	var w := _world_node()
-	if w != null and w.has_method("clamp_xyz_in_tank"):
-		var body_m: float = _body_tank_margin()
-		var tank_margin: float = body_m
-		var gp: Vector3 = global_position
-		if w.has_method("is_inside_tank_volume") \
-				and not w.is_inside_tank_volume(gp.x, gp.y, gp.z, tank_margin * 0.35):
-			var c: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.35, body_m)
-			var push: Vector3 = c - gp
-			if push.length_squared() > 1e-6:
-				return push.normalized() * clampf(push.length() / tank_margin, 0.45, 1.25)
-		var c_soft: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.2, body_m * 0.5)
-		var soft: Vector3 = c_soft - gp
-		if soft.length_squared() > 1e-6:
-			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.2), 0.0, 0.7)
-	return Vector3.ZERO
+	var push := Vector3.ZERO
+	var hint: Vector3 = heading if heading.length_squared() > 1e-6 else target_velocity
+	var lat: Dictionary = _lateral_boundary_context(global_position, -1.0, hint)
+	var clearance: float = float(lat.get("clearance", 99.0))
+	var inward: Vector3 = lat.get("inward", Vector3.ZERO)
+	var body_m: float = float(lat.get("body_m", _body_tank_margin()))
+	if inward.length_squared() > 1e-6:
+		var repel_dist: float = body_m * 2.5 + 0.45
+		if clearance < repel_dist:
+			var t: float = 1.0 - clampf(clearance / repel_dist, 0.0, 1.0)
+			t = t * t * (3.0 - 2.0 * t)
+			var steer_dir: Vector3 = heading
+			if steer_dir.length_squared() < 1e-6 and target_velocity.length_squared() > 1e-6:
+				steer_dir = target_velocity.normalized()
+			var outward: Vector3 = -inward
+			var into_wall: float = maxf(0.0, steer_dir.dot(outward))
+			var strength: float = t * (0.75 + into_wall * 1.1)
+			push += inward * strength * maxf(max_speed, 0.45)
+	var vert: Dictionary = _vertical_boundary_context(global_position)
+	if bool(vert.get("active", false)):
+		var v_clear: float = float(vert.get("clearance", 99.0))
+		var v_in: Vector3 = vert.get("inward", Vector3.ZERO)
+		if v_in.length_squared() > 1e-6 and v_clear < 0.42:
+			var vt: float = 1.0 - clampf(v_clear / 0.42, 0.0, 1.0)
+			push += v_in * vt * vt * maxf(max_speed * 0.55, 0.35)
+	return push
 
 
 func _local_clearance_push(neighbors: Array, plants: Array) -> Vector3:
@@ -3074,6 +3199,7 @@ func _local_clearance_push(neighbors: Array, plants: Array) -> Vector3:
 			continue
 		var nf: Fish = n
 		var d: Vector3 = position - nf.position
+		d.y *= 0.42 if mouth_orientation == 0 else 0.55
 		var d2: float = d.length_squared()
 		if d2 < 1e-6 or d2 >= fish_r2:
 			continue
@@ -3648,7 +3774,30 @@ func apply_save_dict(d: Dictionary) -> void:
 # box tanks (or pre-curved-wall builds) can carry home coords outside a
 # cylinder — clamping position alone leaves fish swimming into the void.
 func _body_tank_margin() -> float:
-	return clampf(adult_voxel_scale * _maturity_scale() * 2.4 + 0.32, 0.38, 0.65)
+	var base: float = clampf(adult_voxel_scale * _maturity_scale() * 2.4 + 0.32, 0.38, 0.65)
+	match swim_pattern:
+		"hover":
+			return base * 0.88
+		"dart":
+			return base * 0.94
+		"school", "shoal":
+			return base * 1.04
+		"shuffle":
+			return base * 1.02
+		_:
+			return base
+
+
+func _vertical_bands() -> Vector2:
+	var floor_band: float = 0.50
+	var ceil_band: float = 0.42
+	if mouth_orientation == 1:
+		floor_band = 0.72
+	elif mouth_orientation == -1:
+		ceil_band = 0.58
+	if swim_pattern == "shuffle":
+		floor_band = 0.85
+	return Vector2(floor_band, ceil_band)
 
 
 func _reclamp_territory_to_tank() -> void:
@@ -3658,13 +3807,140 @@ func _reclamp_territory_to_tank() -> void:
 	if w == null or not w.has_method("clamp_xyz_in_tank"):
 		return
 	var m: float = _body_tank_margin()
-	global_position = w.clamp_xyz_in_tank(global_position, 0.28, m)
+	# Territory anchors only — body position is integrated in _motion_substep.
 	var hp: Vector3 = w.clamp_xyz_in_tank(Vector3(home_x, home_y, home_z), 0.35, m * 0.5)
 	home_x = hp.x
 	home_y = hp.y
 	home_z = hp.z
 	if brooding_remaining > 0.0:
 		brooding_at = w.clamp_xyz_in_tank(brooding_at, 0.30)
+
+
+func _apply_target_from_desired(desired: Vector3, max_spd: float) -> Vector3:
+	return _constrain_velocity_to_tank(desired.limit_length(max_spd))
+
+
+func _lateral_boundary_context(gp: Vector3 = global_position, body_m: float = -1.0,
+		heading_hint: Vector3 = Vector3.ZERO) -> Dictionary:
+	if body_m < 0.0:
+		body_m = _body_tank_margin()
+	var w := _world_node()
+	if w == null or not w.has_method("tank_lateral_boundary_info"):
+		return {"clearance": 99.0, "inward": Vector3.ZERO, "body_m": body_m}
+	var margin: float = body_m * 0.85 + 0.22
+	var info: Dictionary = w.tank_lateral_boundary_info(gp, margin)
+	if heading_hint.length_squared() > 0.01:
+		var hz: Vector3 = Vector3(heading_hint.x, 0.0, heading_hint.z)
+		if hz.length_squared() > 1e-6:
+			hz = hz.normalized()
+			var ahead: Vector3 = gp + hz * (body_m * 1.2 + 0.42)
+			var ahead_info: Dictionary = w.tank_lateral_boundary_info(ahead, margin)
+			if float(ahead_info.get("clearance", 99.0)) < float(info.get("clearance", 99.0)):
+				info = ahead_info
+	info["body_m"] = body_m
+	return info
+
+
+func _vertical_boundary_context(gp: Vector3 = global_position, body_m: float = -1.0) -> Dictionary:
+	if body_m < 0.0:
+		body_m = _body_tank_margin()
+	var w := _world_node()
+	if w == null or not w.has_method("tank_vertical_boundary_info"):
+		return {"clearance": 99.0, "inward": Vector3.ZERO, "active": false}
+	var bands: Vector2 = _vertical_bands()
+	return w.tank_vertical_boundary_info(
+		gp, body_m * 0.55 + 0.12, bands.x, bands.y)
+
+
+func _boundary_context(gp: Vector3 = global_position, body_m: float = -1.0) -> Dictionary:
+	return _lateral_boundary_context(gp, body_m)
+
+
+func _max_inside_travel(from: Vector3, dir: Vector3, max_len: float,
+		margin: float, body_r: float) -> float:
+	var w := _world_node()
+	if w == null or not w.has_method("clamp_xyz_in_tank") or max_len <= 0.0:
+		return 0.0
+	if dir.length_squared() < 1e-8:
+		return 0.0
+	dir = dir.normalized()
+	var lo: float = 0.0
+	var hi: float = max_len
+	for _i in 14:
+		var mid: float = (lo + hi) * 0.5
+		var probe: Vector3 = from + dir * mid
+		var clamped: Vector3 = w.clamp_xyz_in_tank(probe, margin, body_r)
+		if probe.distance_squared_to(clamped) < 1e-10:
+			lo = mid
+		else:
+			hi = mid
+	return lo
+
+
+func _constrain_velocity_to_tank(vel: Vector3) -> Vector3:
+	if vel.length_squared() < 1e-8:
+		return vel
+	vel = _constrain_velocity_lateral(vel)
+	vel = _constrain_velocity_vertical(vel)
+	return vel
+
+
+func _constrain_velocity_lateral(vel: Vector3) -> Vector3:
+	var hint: Vector3 = vel if vel.length_squared() > 1e-6 else heading
+	var bnd: Dictionary = _lateral_boundary_context(global_position, -1.0, hint)
+	var clearance: float = float(bnd.get("clearance", 99.0))
+	var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
+	var body_m: float = float(bnd.get("body_m", _body_tank_margin()))
+	if inward.length_squared() < 1e-6:
+		return vel
+	var h_in: Vector3 = inward
+	h_in.y = 0.0
+	if h_in.length_squared() < 1e-6:
+		return vel
+	h_in = h_in.normalized()
+	var h_vel: Vector3 = Vector3(vel.x, 0.0, vel.z)
+	if h_vel.length_squared() < 1e-8:
+		return vel
+	var repel_dist: float = body_m * 2.4 + 0.42
+	var outward: Vector3 = -h_in
+	var out_speed: float = h_vel.dot(outward)
+	if out_speed > 0.0:
+		if clearance < repel_dist:
+			h_vel -= outward * out_speed
+		elif clearance < repel_dist * 1.8:
+			var fade: float = 1.0 - (clearance - repel_dist) / (repel_dist * 0.8)
+			h_vel -= outward * (out_speed * clampf(fade, 0.0, 1.0))
+	if clearance < body_m * 0.55:
+		h_vel += h_in * (body_m * 0.55 - clearance) * 0.85
+	return Vector3(h_vel.x, vel.y, h_vel.z)
+
+
+func _constrain_velocity_vertical(vel: Vector3) -> Vector3:
+	var vert: Dictionary = _vertical_boundary_context(global_position)
+	if not bool(vert.get("active", false)):
+		return vel
+	var clearance: float = float(vert.get("clearance", 99.0))
+	var inward: Vector3 = vert.get("inward", Vector3.ZERO)
+	if inward.length_squared() < 1e-6:
+		return vel
+	var outward: Vector3 = -inward
+	var out_speed: float = vel.dot(outward)
+	if out_speed > 0.0 and clearance < 0.48:
+		var fade: float = 1.0 - clampf(clearance / 0.48, 0.0, 1.0)
+		vel -= outward * (out_speed * fade)
+	if clearance < 0.28:
+		vel += inward * (0.28 - clearance) * 0.75
+	return vel
+
+
+func _pick_wall_escape_heading(inward: Vector3, blocked: Vector3) -> Vector3:
+	var outward: Vector3 = -inward
+	var tangent: Vector3 = blocked - outward * blocked.dot(outward)
+	if tangent.length_squared() > 0.06:
+		return tangent.normalized()
+	if absf(inward.y) < 0.9:
+		return Vector3(-inward.z, 0.0, inward.x).normalized()
+	return Vector3(1.0, 0.0, 0.0)
 
 
 static func _id_of(n: Node) -> String:

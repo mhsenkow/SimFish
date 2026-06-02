@@ -151,6 +151,113 @@ func lateral_room(x: float, z: float, margin: float = 0.0, world_y: float = NAN)
 			return minf(hw - absf(x), hd - absf(z))
 
 
+func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
+	var inward := Vector3.ZERO
+	match shape:
+		"cylinder", "sphere":
+			var xz := Vector2(x, z)
+			if xz.length_squared() > 1e-8:
+				inward = Vector3(-xz.x, 0.0, -xz.y) / xz.length()
+			else:
+				inward = Vector3(1.0, 0.0, 0.0)
+		_:
+			var hw: float = half_w - margin
+			var hd: float = half_d - margin
+			var clear_x: float = hw - absf(x)
+			var clear_z: float = hd - absf(z)
+			if clear_x <= clear_z:
+				inward = Vector3(-1.0 if x >= 0.0 else 1.0, 0.0, 0.0)
+			else:
+				inward = Vector3(0.0, 0.0, -1.0 if z >= 0.0 else 1.0)
+			if shape == "hex" or shape == "triangle":
+				var to_center := Vector3(-x, 0.0, -z)
+				if to_center.length_squared() > 1e-6:
+					inward = (inward + to_center.normalized() * 0.55).normalized()
+	if inward.length_squared() < 1e-6:
+		inward = Vector3(1.0, 0.0, 0.0)
+	return inward
+
+
+# Horizontal glass only — substrate and meniscus are handled separately so
+# mid-column fish are not perpetually steered upward toward the surface.
+func lateral_boundary_info(x: float, y: float, z: float, margin: float = 0.0) -> Dictionary:
+	var lat: float = lateral_room(x, z, margin, y)
+	return {"clearance": maxf(0.0, lat), "inward": _lateral_inward(x, z, margin)}
+
+
+# Floor / ceiling repulsion activates only within a narrow band near each plane.
+func vertical_boundary_info(x: float, y: float, z: float, margin: float = 0.0,
+		floor_band: float = 0.50, ceil_band: float = 0.42) -> Dictionary:
+	var floor_m: float = substrate_y + margin
+	var ceil_m: float = water_y - margin
+	var clear_down: float = y - floor_m
+	var clear_up: float = ceil_m - y
+	if clear_down < floor_band and clear_down <= clear_up:
+		return {
+			"clearance": maxf(0.0, clear_down),
+			"inward": Vector3(0.0, 1.0, 0.0),
+			"active": true,
+		}
+	if clear_up < ceil_band and clear_up < clear_down:
+		return {
+			"clearance": maxf(0.0, clear_up),
+			"inward": Vector3(0.0, -1.0, 0.0),
+			"active": true,
+		}
+	return {"clearance": 99.0, "inward": Vector3.ZERO, "active": false}
+
+
+# Nearest-boundary clearance + unit normal pointing into the tank interior.
+# Used for clamp / overlap resolution. Fauna steering should prefer
+# lateral_boundary_info + vertical_boundary_info instead.
+func boundary_info(x: float, y: float, z: float, margin: float = 0.0) -> Dictionary:
+	var floor_m: float = substrate_y + margin
+	var ceil_m: float = water_y - margin
+	var clear_down: float = y - floor_m
+	var clear_up: float = ceil_m - y
+	var lat: float = lateral_room(x, z, margin, y)
+	var best: float = minf(minf(clear_down, clear_up), lat)
+	var inward := Vector3.ZERO
+	if best <= clear_down + 0.0001:
+		inward = Vector3(0.0, 1.0, 0.0)
+	elif best <= clear_up + 0.0001:
+		inward = Vector3(0.0, -1.0, 0.0)
+	else:
+		inward = _lateral_inward(x, z, margin)
+	return {"clearance": maxf(0.0, best), "inward": inward}
+
+
+# Map a 0..1 water-column fraction to world Y at a specific XZ. On dome /
+# cylinder tanks the highest in-bounds Y at the rim can sit below the global
+# meniscus — using a flat column would place fish outside the glass.
+func column_fraction_to_y(x: float, z: float, frac: float, margin: float = 0.0,
+		floor_y: float = NAN) -> float:
+	var floor_m: float = substrate_y + margin
+	if not is_nan(floor_y):
+		floor_m = maxf(floor_m, floor_y + margin * 0.35)
+	var hi: float = water_y - margin
+	if shape == "sphere" or shape == "cylinder":
+		if not is_inside(x, z, margin, hi):
+			var y_lo: float = floor_m
+			var y_hi: float = hi
+			for _i in 16:
+				var mid: float = (y_lo + y_hi) * 0.5
+				if is_inside(x, z, margin, mid):
+					y_lo = mid
+				else:
+					y_hi = mid
+			hi = y_lo
+	hi = maxf(floor_m + 0.08, hi)
+	return lerpf(floor_m, hi, clampf(frac, 0.0, 1.0))
+
+
+func local_column_height(x: float, z: float, margin: float = 0.0,
+		floor_y: float = NAN) -> float:
+	var lo: float = column_fraction_to_y(x, z, 0.0, margin, floor_y)
+	var hi: float = column_fraction_to_y(x, z, 1.0, margin, floor_y)
+	return maxf(0.12, hi - lo)
+
+
 func fits_point_with_radius(x: float, z: float, radius: float, margin: float = 0.0,
 		world_y: float = NAN) -> bool:
 	if radius <= 0.0:

@@ -878,11 +878,63 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 
 
 func _apply_target(t: Vector3) -> void:
-	# Cache for physics step in _process.
-	_target_velocity = t
+	_target_velocity = _constrain_velocity_to_tank(t)
+
+
+func _constrain_velocity_to_tank(vel: Vector3) -> Vector3:
+	var w: Node = null
+	if sim != null:
+		w = sim.get_parent()
+	return FaunaBoundary.constrain_velocity(w, global_position, vel, 0.32, 0.58, 0.38)
 
 
 var _target_velocity: Vector3 = Vector3.ZERO
+
+
+func _motion_substep(dt: float) -> void:
+	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
+	if climb_target == null:
+		_target_velocity.y -= 1.2 * dt
+	var target_dir: Vector3 = heading
+	var target_spd: float = 0.0
+	if _target_velocity.length_squared() > 1e-4:
+		target_spd = _target_velocity.length()
+		target_dir = _target_velocity.normalized()
+	target_spd *= _day_activity_mult()
+	var constrained: Vector3 = _constrain_velocity_to_tank(target_dir * target_spd)
+	if constrained.length_squared() > 1e-6:
+		target_dir = constrained.normalized()
+		target_spd = constrained.length()
+	var angle: float = heading.angle_to(target_dir)
+	if angle > 0.0005:
+		var axis: Vector3 = heading.cross(target_dir)
+		if axis.length_squared() < 1e-6:
+			axis = Vector3.UP
+		axis = axis.normalized()
+		var turn: float = minf(max_turn_rate * dt, angle)
+		heading = heading.rotated(axis, turn).normalized()
+		if not heading.is_finite() or heading.length_squared() < 0.5:
+			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	speed = move_toward(speed, target_spd, 3.0 * dt)
+	velocity = heading * speed
+	position += velocity * dt
+	if sim != null:
+		var w: Node = sim.get_parent()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
+	if speed > 0.04 and heading.length_squared() > 1e-4:
+		var d: Vector3 = heading
+		if absf(d.dot(Vector3.UP)) > 0.95:
+			d = (d + Vector3(0.05, 0, 0)).normalized()
+		look_at(position + d, Vector3.UP)
+	var current_yaw: float = atan2(heading.x, -heading.z)
+	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
+	_last_yaw = current_yaw
+	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
+	var bank_target: float = clampf(-yaw_rate * 0.2, -0.4, 0.4)
+	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
+	if _bank_pivot != null:
+		_bank_pivot.rotation.z = _bank
 
 
 # ---- Physics + animation (render rate) ----
@@ -899,72 +951,11 @@ func _process(dt: float) -> void:
 		_animate_death(dt)
 		return
 
-	# Cap per-step dt for integration stability. At time_scale=16 a single
-	# frame's dt would otherwise be ~0.27 s — large enough that the shrimp's
-	# Euler-integrated position overshoots its steering target, the brain
-	# inverts target_velocity next frame, and the shrimp ping-pongs in place
-	# (the "spinning" symptom shared with fish.gd). Slightly conservative
-	# 0.04 s here because shrimp have a higher turn rate than fish, so they
-	# need a tighter step to stay stable.
-	dt = minf(dt, 0.04)
-	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
-	if climb_target == null:
-		_target_velocity.y -= 1.2 * dt
-
-	# Decompose into heading + speed.
-	var target_dir: Vector3 = heading
-	var target_spd: float = 0.0
-	if _target_velocity.length_squared() > 1e-4:
-		target_spd = _target_velocity.length()
-		target_dir = _target_velocity.normalized()
-	# Day/night activity. Shrimp are crepuscular — most active at dawn /
-	# dusk, calmer at midday and dim at midnight. We compute a soft bell
-	# centered on day_phase 0.0 and 0.5 (the dawn / dusk transitions).
-	target_spd *= _day_activity_mult()
-
-	# Bounded turn (shrimp are nimble - higher turn rate than fish).
-	var angle: float = heading.angle_to(target_dir)
-	if angle > 0.0005:
-		var axis: Vector3 = heading.cross(target_dir)
-		if axis.length_squared() < 1e-6:
-			axis = Vector3.UP
-		axis = axis.normalized()
-		var turn: float = minf(max_turn_rate * dt, angle)
-		heading = heading.rotated(axis, turn).normalized()
-		# NaN guard — see fish.gd's matching guard for the failure mode.
-		if not heading.is_finite() or heading.length_squared() < 0.5:
-			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
-
-	# Linear accel toward target speed.
-	speed = move_toward(speed, target_spd, 3.0 * dt)
-
-	velocity = heading * speed
-	position += velocity * dt
-	# Keep shrimp comfortably inside the tank volume; wall_avoid is soft and
-	# this clamp prevents occasional geometry intersections on fast timesteps.
-	if sim != null:
-		var w: Node = sim.get_parent()
-		if w != null and w.has_method("clamp_xyz_in_tank"):
-			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
-
-	# Face heading (look_at with body built facing -Z). Skip when nearly
-	# stationary — the brain may flip target_velocity direction frame-to-
-	# frame at low speed and look_at would snap the shrimp around.
-	if speed > 0.04 and heading.length_squared() > 1e-4:
-		var d: Vector3 = heading
-		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.05, 0, 0)).normalized()
-		look_at(position + d, Vector3.UP)
-
-	# Banking on yaw rate (shrimp lean into turns less than fish).
-	var current_yaw: float = atan2(heading.x, -heading.z)
-	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
-	_last_yaw = current_yaw
-	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
-	var bank_target: float = clampf(-yaw_rate * 0.2, -0.4, 0.4)
-	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
-	if _bank_pivot != null:
-		_bank_pivot.rotation.z = _bank
+	# Substep at high time_scale — same stability rationale as fish.gd.
+	var n_steps: int = clampi(int(ceil(minf(dt, 0.32) / maxf(0.035 / clampf(speed / maxf(max_speed, 0.12), 0.5, 1.4), 0.022))), 1, 14)
+	var sub_dt: float = dt / float(n_steps)
+	for _step_i in n_steps:
+		_motion_substep(sub_dt)
 
 	# Animation: tail flicks + antennae twitch + walking bob.
 	_swim_phase += dt * (3.0 + speed * 4.0)
@@ -1131,22 +1122,30 @@ func _update_maturity() -> void:
 
 
 func _wall_avoid(_b: AABB) -> Vector3:
+	var push := Vector3.ZERO
 	var w: Node = null
 	if sim != null:
 		w = sim.get_parent()
-	if w != null and w.has_method("clamp_xyz_in_tank"):
-		var tank_margin: float = 0.38
-		var gp: Vector3 = global_position
-		if w.has_method("is_inside_tank_volume") \
-				and not w.is_inside_tank_volume(gp.x, gp.y, gp.z, tank_margin * 0.35):
-			var c: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.35, 0.14)
-			var push: Vector3 = c - gp
-			if push.length_squared() > 1e-6:
-				return push.normalized() * clampf(push.length() / tank_margin, 0.45, 1.15)
-		var c_soft: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.2, 0.08)
-		var soft: Vector3 = c_soft - gp
-		if soft.length_squared() > 1e-6:
-			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.2), 0.0, 0.65)
+	if w != null and w.has_method("tank_lateral_boundary_info"):
+		var body_m: float = 0.38
+		var info: Dictionary = w.tank_lateral_boundary_info(global_position, body_m * 0.75 + 0.18)
+		var clearance: float = float(info.get("clearance", 99.0))
+		var inward: Vector3 = info.get("inward", Vector3.ZERO)
+		if inward.length_squared() > 1e-6:
+			var repel_dist: float = body_m * 2.2 + 0.35
+			if clearance < repel_dist:
+				var t: float = 1.0 - clampf(clearance / repel_dist, 0.0, 1.0)
+				push += inward * t * t * 0.95
+		if w.has_method("tank_vertical_boundary_info"):
+			var vert: Dictionary = w.tank_vertical_boundary_info(global_position, 0.22)
+			if bool(vert.get("active", false)):
+				var v_clear: float = float(vert.get("clearance", 99.0))
+				var v_in: Vector3 = vert.get("inward", Vector3.ZERO)
+				if v_in.length_squared() > 1e-6 and v_clear < 0.38:
+					var vt: float = 1.0 - clampf(v_clear / 0.38, 0.0, 1.0)
+					push += v_in * vt * vt * 0.7
+		if push.length_squared() > 1e-6:
+			return push
 	return Vector3.ZERO
 
 

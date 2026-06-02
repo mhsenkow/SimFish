@@ -611,13 +611,6 @@ func _reclamp_to_footprint() -> void:
 			global_position -= wall_normal * (
 				wall_normal.dot(global_position) - _wall_anchor_offset)
 		return
-	# Legacy rectangular fallback (editor previews without World parent).
-	position.x = clampf(position.x, wall_min.x, wall_max.x)
-	position.y = clampf(position.y, wall_min.y, wall_max.y)
-	position.z = clampf(position.z, wall_min.z, wall_max.z)
-	var legacy_drift: float = wall_normal.dot(position) - _wall_anchor_offset
-	if absf(legacy_drift) > 0.0001:
-		position -= wall_normal * legacy_drift
 
 
 func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: Vector3) -> void:
@@ -627,8 +620,20 @@ func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: V
 		if w.is_inside_tank_volume(
 				global_position.x, global_position.y, global_position.z, margin * 0.35):
 			return
-		# Hit the curved / polygon wall — slide along the plane.
+		# Hit the curved / polygon wall — slide along the glass tangent.
 		var plane_slide := Vector2(_direction.x, _direction.y)
+		if w.has_method("tank_lateral_boundary_info"):
+			var info: Dictionary = w.tank_lateral_boundary_info(global_position, margin * 0.55)
+			var inward: Vector3 = info.get("inward", Vector3.ZERO)
+			inward.y = 0.0
+			if inward.length_squared() > 1e-6:
+				inward = inward.normalized()
+				var tangent3: Vector3 = Vector3(-inward.z, 0.0, inward.x)
+				if tangent3.dot(_tangent * _direction.x + _bitangent * _direction.y) < 0.0:
+					tangent3 = -tangent3
+				plane_slide = Vector2(
+					tangent3.dot(_tangent),
+					tangent3.dot(_bitangent))
 		if plane_slide.length_squared() < 1e-6:
 			plane_slide = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0))
 		plane_slide = plane_slide.rotated(PI * 0.5 * (1.0 if randf() > 0.5 else -1.0))
@@ -636,33 +641,8 @@ func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: V
 			_direction = plane_slide.normalized()
 		_t_until_turn = minf(_t_until_turn, randf_range(1.5, 3.5))
 		return
-	const EPS: float = 0.04
-	var hit := false
-	if position.x <= wall_min.x + EPS and pre_move.x > position.x:
-		hit = true
-	elif position.x >= wall_max.x - EPS and pre_move.x < position.x:
-		hit = true
-	if position.y <= wall_min.y + EPS and pre_move.y > position.y:
-		hit = true
-	elif position.y >= wall_max.y - EPS and pre_move.y < position.y:
-		hit = true
-	if position.z <= wall_min.z + EPS and pre_move.z > position.z:
-		hit = true
-	elif position.z >= wall_max.z - EPS and pre_move.z < position.z:
-		hit = true
-	if not hit:
+	if w == null:
 		return
-	# Slide along the wall instead of vibrating into the bound.
-	var slide := Vector2(_direction.x, _direction.y)
-	if slide.length_squared() < 1e-6:
-		slide = Vector2(
-			randf_range(-1.0, 1.0),
-			randf_range(-1.0, 1.0),
-		)
-	slide = slide.rotated(PI * 0.5 * (1.0 if randf() > 0.5 else -1.0))
-	if slide.length_squared() > 1e-6:
-		_direction = slide.normalized()
-	_t_until_turn = minf(_t_until_turn, randf_range(1.5, 3.5))
 
 
 func _apply_squash(squash_y: float) -> void:

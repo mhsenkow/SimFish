@@ -105,6 +105,14 @@ func _process(dt: float) -> void:
 	# represent. Without the home pull the carpet would visibly drift
 	# off-center over a few minutes.
 	position += _drift * dt
+	var w: Node = FaunaBoundary.world_from_sim(sim)
+	if w != null:
+		var margin: float = 0.20
+		var steer: Vector3 = FaunaBoundary.lateral_push(w, global_position, margin, 0.48, _drift)
+		if steer.length_squared() > 1e-6:
+			_drift += Vector3(steer.x, 0.0, steer.z) * dt * 1.6
+			if _drift.length_squared() > 1e-6:
+				_drift = _drift.normalized() * DRIFT_SPEED * clampf(_drift.length() / DRIFT_SPEED, 0.55, 1.2)
 	var to_home: Vector3 = _home - position
 	to_home.y = 0.0
 	if to_home.length() > HOME_RADIUS:
@@ -115,9 +123,7 @@ func _process(dt: float) -> void:
 	position.y = substrate_top_y + 0.025
 
 	if sim != null:
-		var w: Node = sim.get_parent()
-		if w != null and w.has_method("clamp_xyz_in_tank"):
-			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.06)
+		global_position = FaunaBoundary.clamp_position(w, global_position, 0.20, 0.06)
 
 	_next_jitter_t -= dt
 	if _next_jitter_t <= 0.0:
