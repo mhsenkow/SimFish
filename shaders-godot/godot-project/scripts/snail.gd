@@ -306,16 +306,19 @@ func _process(dt: float) -> void:
 	if not is_baby:
 		_t_until_breed -= dt
 		if _t_until_breed <= 0.0:
-			# Breeding now costs body condition and is gated on it: a snail
-			# only lays when it's well-fed (energy high, hunger low). Starving
-			# colonies stop reproducing, so the population busts when food runs
-			# out instead of breeding blindly on a timer.
-			if energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
+			var w := _world_node()
+			var at_cap: bool = false
+			if w != null and w.has_method("snail_carrying_capacity"):
+				var sim_n := _get_sim()
+				if sim_n != null:
+					at_cap = _count_snails() >= int(w.snail_carrying_capacity())
+			if not at_cap and energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
 				_lay_egg_sac()
 				energy = clampf(energy - 0.2, 0.0, 1.0)
 				hunger = clampf(hunger + 0.15, 0.0, 1.0)
 			var rebound: float = 1.0
-			if sim != null and int(sim.snail_predator_count) == 0:
+			var sim_n2 := _get_sim()
+			if sim_n2 != null and int(sim_n2.snail_predator_count) == 0:
 				rebound = 0.5
 			_t_until_breed = randf_range(BREEDING_INTERVAL_MIN,
 				BREEDING_INTERVAL_MAX) * rebound
@@ -400,20 +403,17 @@ func _process(dt: float) -> void:
 		position += _spacing_push * clampf(dt * 14.0, 0.0, 1.0)
 		_spacing_push = _spacing_push.lerp(Vector3.ZERO, clampf(dt * 10.0, 0.0, 1.0))
 
-	# Clamp to wall rectangle (per-axis box clamp; this is the gross "stay in
-	# the rect" bound).
-	position.x = clampf(position.x, wall_min.x, wall_max.x)
-	position.y = clampf(position.y, wall_min.y, wall_max.y)
-	position.z = clampf(position.z, wall_min.z, wall_max.z)
-	# Then re-project onto the spawn-time wall plane. The basis fix above
-	# already keeps motion in-plane, but float drift over thousands of ticks
-	# (and the box-clamp above on a corner-adjacent snail) can nudge us
-	# fractionally off. Snapping back here is a defensive, near-zero-cost
-	# safety net — if you spawn a snail on the right glass at x=7.6 it
-	# stays at x=7.6 for the lifetime of the run.
-	var plane_drift: float = wall_normal.dot(position) - _wall_anchor_offset
-	if absf(plane_drift) > 0.0001:
-		position -= wall_normal * plane_drift
+	_reclamp_to_footprint()
+	if not _paused and gait_speed > 0.02:
+		var wn := _world_node()
+		if wn != null:
+			var av = wn.get_node_or_null("AquariumVisuals")
+			if av != null:
+				if randf() < dt * 0.06:
+					av.spawn_snail_slime(global_position, wall_normal)
+					av.record_compaction(global_position.x, global_position.z)
+				if randf() < dt * 0.012:
+					av.spawn_snail_bubble(global_position + wall_normal * 0.05)
 	# Local spacing so wall snails don't visually stack into one clump. Runs on
 	# the same 0.3 s scan cadence as the predator/food scans — it iterates all
 	# sibling snails, so per-frame was wasteful; snails crawl slowly enough that
@@ -581,7 +581,61 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
 
 
+func _world_node() -> Node:
+	var sim := _get_sim()
+	if sim == null:
+		return null
+	return sim.get_parent()
+
+
+# Shape-aware bounds: the legacy wall_min/wall_max AABB lies outside hex,
+# triangle, cylinder, and sphere glass. Crawl stays on the spawn wall plane
+# but X/Y/Z are pulled back inside the tank footprint every frame.
+func _reclamp_to_footprint() -> void:
+	var w := _world_node()
+	var margin: float = 0.28 + shell_size * 0.08
+	var body_r: float = shell_size * 0.10
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		var plane_drift: float = wall_normal.dot(global_position) - _wall_anchor_offset
+		if absf(plane_drift) > 1e-5:
+			global_position -= wall_normal * plane_drift
+		global_position = w.clamp_xyz_in_tank(global_position, margin, body_r)
+		plane_drift = wall_normal.dot(global_position) - _wall_anchor_offset
+		global_position -= wall_normal * plane_drift
+		if w.has_method("is_inside_tank_volume") \
+				and not w.is_inside_tank_volume(
+					global_position.x, global_position.y, global_position.z, margin * 0.35):
+			var safe: Vector3 = w.clamp_xyz_in_tank(
+				Vector3(0.0, global_position.y, 0.0), margin, body_r)
+			global_position = safe
+			global_position -= wall_normal * (
+				wall_normal.dot(global_position) - _wall_anchor_offset)
+		return
+	# Legacy rectangular fallback (editor previews without World parent).
+	position.x = clampf(position.x, wall_min.x, wall_max.x)
+	position.y = clampf(position.y, wall_min.y, wall_max.y)
+	position.z = clampf(position.z, wall_min.z, wall_max.z)
+	var legacy_drift: float = wall_normal.dot(position) - _wall_anchor_offset
+	if absf(legacy_drift) > 0.0001:
+		position -= wall_normal * legacy_drift
+
+
 func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: Vector3) -> void:
+	var w := _world_node()
+	if w != null and w.has_method("is_inside_tank_volume"):
+		var margin: float = 0.28 + shell_size * 0.06
+		if w.is_inside_tank_volume(
+				global_position.x, global_position.y, global_position.z, margin * 0.35):
+			return
+		# Hit the curved / polygon wall — slide along the plane.
+		var plane_slide := Vector2(_direction.x, _direction.y)
+		if plane_slide.length_squared() < 1e-6:
+			plane_slide = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0))
+		plane_slide = plane_slide.rotated(PI * 0.5 * (1.0 if randf() > 0.5 else -1.0))
+		if plane_slide.length_squared() > 1e-6:
+			_direction = plane_slide.normalized()
+		_t_until_turn = minf(_t_until_turn, randf_range(1.5, 3.5))
+		return
 	const EPS: float = 0.04
 	var hit := false
 	if position.x <= wall_min.x + EPS and pre_move.x > position.x:
@@ -636,6 +690,10 @@ func _lay_egg_sac() -> void:
 	sac.set_script(load("res://scripts/snail_egg.gd"))
 	get_parent().add_child(sac)
 	sac.position = position + wall_normal * 0.04
+	var w := _world_node()
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		sac.global_position = w.clamp_xyz_in_tank(
+			sac.global_position, 0.30, shell_size * 0.08)
 	sac.set("wall_normal", wall_normal)
 	sac.set("wall_min", wall_min)
 	sac.set("wall_max", wall_max)
@@ -917,3 +975,4 @@ func apply_save_dict(d: Dictionary) -> void:
 	_eye_retract_timer = float(d.get("eye_retract_timer", _eye_retract_timer))
 	if is_baby:
 		scale = Vector3.ONE * 0.5
+	_reclamp_to_footprint()

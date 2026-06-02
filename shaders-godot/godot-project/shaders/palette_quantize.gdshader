@@ -9,6 +9,7 @@ render_mode unshaded;
 uniform sampler2D palette_tex : source_color, filter_nearest, repeat_disable;
 uniform int palette_size : hint_range(1, 64) = 48;
 uniform float dither_strength : hint_range(0.0, 1.0) = 0.85;
+uniform float seasonal_warmth : hint_range(-0.15, 0.15) = 0.0;
 uniform vec2 internal_resolution = vec2(384.0, 216.0);
 
 const float bayer4[16] = float[16](
@@ -30,6 +31,8 @@ vec3 palette_color(int idx) {
 
 void fragment() {
     vec3 src = texture(TEXTURE, UV).rgb;
+    src = mix(src, src * vec3(1.06, 1.0, 0.94), max(seasonal_warmth, 0.0));
+    src = mix(src, src * vec3(0.94, 0.98, 1.06), max(-seasonal_warmth, 0.0));
 
     // Find two nearest palette colors.
     int ai = 0;

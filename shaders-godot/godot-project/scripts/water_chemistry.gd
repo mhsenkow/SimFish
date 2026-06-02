@@ -28,8 +28,11 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 	if world != null and world.get("biofilm_progress") != null:
 		biofilm = clampf(float(world.biofilm_progress), 0.0, 1.0)
 	var bacteria: float = clampf(biofilm * 0.6 + 0.15, 0.05, 1.0)
+	# Planted Walstad tanks cycle faster — roots + biofilm host nitrifiers.
+	var plant_boost: float = clampf(float(plant_biomass) / 420.0, 0.0, 1.0)
+	bacteria = clampf(bacteria + plant_boost * 0.35, 0.05, 1.35)
 	ammonia += waste_ammonia * dt
-	ammonia += dt * 0.002
+	ammonia += dt * 0.0016
 	var nh3_to_no2: float = ammonia * bacteria * 0.35 * dt
 	ammonia = maxf(0.0, ammonia - nh3_to_no2)
 	nitrite += nh3_to_no2
@@ -37,8 +40,8 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 	nitrite = maxf(0.0, nitrite - no2_to_no3)
 	nitrate += no2_to_no3
 	var plant_uptake: float = clampf(float(plant_biomass) / 500.0, 0.0, 1.0)
-	nitrate = maxf(0.0, nitrate - plant_uptake * 0.04 * dt)
-	nitrate = maxf(0.0, nitrate - dt * 0.001)
+	nitrate = maxf(0.0, nitrate - plant_uptake * 0.055 * dt)
+	nitrate = maxf(0.0, nitrate - dt * 0.0012)
 	ammonia = clampf(ammonia, 0.0, 2.0)
 	nitrite = clampf(nitrite, 0.0, 2.0)
 	nitrate = clampf(nitrate, 0.0, 3.0)

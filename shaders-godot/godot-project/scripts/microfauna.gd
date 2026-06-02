@@ -232,11 +232,6 @@ func _sim_step(dt: float) -> void:
 	if sim != null:
 		var w: Node = sim.get_parent()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
-			position = w.clamp_xyz_in_tank(position, 0.15)
-		else:
-			var b: AABB = sim.world_bounds
-			position.x = clampf(position.x, b.position.x, b.position.x + b.size.x)
-			position.y = clampf(position.y, b.position.y, b.position.y + b.size.y)
-			position.z = clampf(position.z, b.position.z, b.position.z + b.size.z)
-	if not position.is_finite():
+			global_position = w.clamp_xyz_in_tank(global_position, 0.22, 0.04)
+	if not global_position.is_finite():
 		queue_free()

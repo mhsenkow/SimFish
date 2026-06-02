@@ -219,12 +219,21 @@ func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
 						return q
 			return p
 		_:
-			var xz2: Vector2 = clamp_inside(p.x, p.z, margin)
-			return Vector3(
+			var xz2: Vector2 = clamp_inside(p.x, p.z, margin, p.y)
+			p = Vector3(
 				xz2.x,
 				clampf(p.y, substrate_y + margin, water_y - margin),
 				xz2.y,
 			)
+			if is_inside_3d(p.x, p.y, p.z, margin):
+				return p
+			for _i in 12:
+				var t: float = float(_i + 1) / 12.0
+				var q: Vector3 = p.lerp(
+					Vector3(0.0, substrate_y + (water_y - substrate_y) * 0.35, 0.0), t)
+				if is_inside_3d(q.x, q.y, q.z, margin):
+					return q
+			return p
 
 
 func is_inside(x: float, z: float, margin: float = 0.0, world_y: float = NAN) -> bool:
@@ -293,14 +302,31 @@ func bounding_half_extents(margin: float = 0.0) -> Vector2:
 	return Vector2(max_x + margin, max_z + margin)
 
 
+func _sample_xz_at_height(r: RandomNumberGenerator, margin: float, world_y: float) -> Vector2:
+	if shape == "cylinder" or shape == "sphere":
+		var ang: float = r.randf() * TAU
+		var rad: float = radius_at_height(world_y, margin) * 0.96
+		var dist: float = sqrt(r.randf()) * rad
+		return Vector2(cos(ang) * dist, sin(ang) * dist)
+	if shape == "triangle":
+		var hd: float = half_d - margin
+		var z: float = r.randf_range(-hd, hd)
+		var hw: float = half_width_at_z(z, margin, world_y)
+		return Vector2(r.randf_range(-hw, hw), z)
+	if shape == "hex":
+		var hd: float = half_d - margin
+		var hw: float = half_w - margin
+		var z: float = r.randf_range(-hd, hd)
+		return Vector2(r.randf_range(-hw, hw), z)
+	var hw_box: float = half_w - margin
+	var hd_box: float = half_d - margin
+	return Vector2(r.randf_range(-hw_box, hw_box), r.randf_range(-hd_box, hd_box))
+
+
 func _sample_xz(r: RandomNumberGenerator, margin: float, z_min: float, z_max: float) -> Vector2:
 	var z: float = r.randf_range(z_min, z_max)
 	if shape == "cylinder" or shape == "sphere":
-		var ang: float = r.randf() * TAU
-		var y_ref: float = substrate_y
-		var rad: float = radius_at_height(y_ref, margin) * 0.96
-		var dist: float = sqrt(r.randf()) * rad
-		return Vector2(cos(ang) * dist, sin(ang) * dist)
+		return _sample_xz_at_height(r, margin, substrate_y)
 	if shape == "triangle":
 		var hd: float = half_d - margin
 		z = r.randf_range(maxf(-hd, z_min), minf(hd, z_max))
@@ -349,13 +375,14 @@ func random_point_in_volume(y_min: float, y_max: float, margin: float = 0.4,
 		y_min = y_max
 		y_max = tmp
 	for _attempt in 48:
-		var xz: Vector2 = _sample_xz(r, margin, -bounding_half_extents(margin).y,
-				bounding_half_extents(margin).y)
 		var y: float = r.randf_range(y_min, y_max)
+		var xz: Vector2 = _sample_xz_at_height(r, margin, y)
 		if is_inside_3d(xz.x, y, xz.y, margin):
 			return Vector3(xz.x, y, xz.y)
 	var xz_fb: Vector2 = random_point(margin, r)
-	return Vector3(xz_fb.x, clampf(y_min, substrate_y, y_max), xz_fb.y)
+	var y_fb: float = clampf(r.randf_range(y_min, y_max), substrate_y + margin, water_y - margin)
+	xz_fb = clamp_inside(xz_fb.x, xz_fb.y, margin, y_fb)
+	return Vector3(xz_fb.x, y_fb, xz_fb.y)
 
 
 func is_substrate_voxel(x: float, y: float, z: float, margin: float = 0.0) -> bool:

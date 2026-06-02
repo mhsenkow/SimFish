@@ -14,7 +14,9 @@ extends Node3D
 # slowly; visible as a brown tint in the water material.
 var tannins: float = 0.0
 var _water_mesh: MeshInstance3D = null
-var _water_material_ref: StandardMaterial3D = null
+var _water_material_ref: ShaderMaterial = null
+var _visuals: AquariumVisuals = null
+var _glass_material_ref: ShaderMaterial = null
 var _caustics_mat: ShaderMaterial = null
 var _mulm_voxels: Array = []
 var _film_voxels: Array = []
@@ -60,6 +62,8 @@ var _wriggle_refill_t: float = 0.0
 var _microfauna_bootstrap_remaining: int = 0
 var _tiny_life_scalar_cache: Dictionary = {"micro": 1.0, "wriggle": 1.0}
 var _tiny_life_scalar_ttl: float = 0.0
+var _life_bounds_timer: float = 0.0
+const LIFE_BOUNDS_INTERVAL: float = 0.22
 
 # Tank dimensions read from TankConfig at _ready so the user can resize.
 # Treated as plain vars (was const) so settings can change them.
@@ -189,6 +193,7 @@ func _ready() -> void:
 		Vector3((grid_ext.x - 0.3) * 2.0, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.4,
 				(grid_ext.y - 0.3) * 2.0)
 	)
+	sim.world = self
 
 	plants_root = Node3D.new(); plants_root.name = "Plants"; add_child(plants_root)
 	fauna_root = Node3D.new(); fauna_root.name = "Fauna"; add_child(fauna_root)
@@ -292,7 +297,14 @@ func _ready() -> void:
 
 	_spawn_aeration_system()
 	_spawn_mulm_layer()
-	_spawn_surface_ripples()
+	_spawn_water_ambience()
+	_visuals = AquariumVisuals.new()
+	_visuals.name = "AquariumVisuals"
+	add_child(_visuals)
+	_visuals.setup(self, sim)
+	var glass_node := get_node_or_null("Glass")
+	if glass_node != null and _glass_material_ref != null:
+		_visuals.register_glass(glass_node, _glass_material_ref)
 	# Tank heater — a small red rod tucked behind the substrate with a
 	# faint warm glow. Cheap visual cue that the tank is "running."
 	_build_heater()
@@ -463,6 +475,10 @@ func _process(dt: float) -> void:
 	# child_count + a handful of conditional spawns per ~1 s window).
 	_maintain_microfauna(sdt)
 	_maintain_wriggle_worms(sdt)
+	_life_bounds_timer = maxf(0.0, _life_bounds_timer - sdt)
+	if _life_bounds_timer <= 0.0:
+		_life_bounds_timer = LIFE_BOUNDS_INTERVAL
+		_enforce_all_life_bounds()
 	_maintain_substrate_film(sdt)
 	_understory_t = maxf(0.0, _understory_t - sdt)
 	if _understory_t <= 0.0:
@@ -488,6 +504,7 @@ func _process(dt: float) -> void:
 		var delta: float = (target - biofilm_progress) * sdt * 0.004 + sdt * 0.0008
 		biofilm_progress = clampf(biofilm_progress + delta, 0.0, 0.7)
 		_apply_biofilm_tints()
+		_apply_driftwood_wet_lines()
 	# Coral recruitment (saltwater tanks only). Larval settlement is limited
 	# by substrate space and competition, not a global count cap.
 	if _active_substrate_profile.get("is_saltwater", false):
@@ -497,26 +514,45 @@ func _process(dt: float) -> void:
 			_maybe_recruit_coral()
 	# Tannins: slow rise toward a cap (driftwood + leaves leak organics into
 	# the water column). Visible as a warm brown tint that deepens over time.
+	if _ambient_due and _visuals != null:
+		_visuals.tick(adt, true)
 	if _ambient_due and tannins < 0.35:
 		tannins = minf(0.35, tannins + 0.00005 * adt)
 	if _ambient_due and _water_material_ref != null:
 		var tannin_color := Color(0.83, 0.55, 0.25)
 		var base_water := Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b)
-		# Tannin tint first (slow brown shift from driftwood).
 		var tinted: Color = base_water.lerp(tannin_color, tannins * 0.55)
-		# Algae bloom tint: lerp toward a soft green proportional to
-		# sim.bloom_intensity. The green also boosts opacity — a fully
-		# bloomed tank reads as cloudy / green-water, not just slightly
-		# tinted. Capped at 0.55 lerp so the worst-case still shows the
-		# fish silhouettes through the haze.
 		var bloom: float = 0.0
 		if sim != null:
 			bloom = float(sim.bloom_intensity)
 		if bloom > 0.01:
 			var algae_green := Color(0.36, 0.62, 0.32)
 			tinted = tinted.lerp(algae_green, bloom * 0.55)
-		tinted.a = 0.10 + tannins * 0.10 + bloom * 0.18
-		_water_material_ref.albedo_color = tinted
+		var tint_strength: float = tannins * 0.55 + bloom * 0.45
+		var shallow_a: float = 0.12 + tannins * 0.08 + bloom * 0.10
+		var deep_a: float = 0.20 + tannins * 0.12 + bloom * 0.18
+		_water_material_ref.set_shader_parameter("tint_color", tinted)
+		_water_material_ref.set_shader_parameter("tint_strength", clampf(tint_strength, 0.0, 0.85))
+		_water_material_ref.set_shader_parameter("bloom_haze", bloom)
+		_water_material_ref.set_shader_parameter("shallow_color",
+			Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b, shallow_a))
+		_water_material_ref.set_shader_parameter("deep_color",
+			Color(C_WATER_DEEP.r, C_WATER_DEEP.g, C_WATER_DEEP.b, deep_a))
+		if sim != null:
+			var dl: float = sim.daylight()
+			var dp: float = float(sim.day_phase)
+			var sunset: float = clampf(1.0 - absf(dp - 0.75) / 0.08, 0.0, 1.0) * (1.0 - dl)
+			var moon: float = clampf((0.35 - dl) / 0.35, 0.0, 1.0)
+			_water_material_ref.set_shader_parameter("sunset_warmth", sunset)
+			_water_material_ref.set_shader_parameter("moonlight", moon)
+			_water_material_ref.set_shader_parameter("day_phase_offset", dp)
+			_water_material_ref.set_shader_parameter("depth_fog", 0.42 + bloom * 0.12)
+			if _cfg_node != null and String(_cfg_node.get("environment_preset")) == "forest_window":
+				_water_material_ref.set_shader_parameter("ice_lens", clampf((0.4 - dl) * 0.5, 0.0, 0.35))
+			if _visuals != null:
+				var caust_i: float = _last_caustic_intensity if _last_caustic_intensity >= 0.0 else 0.55
+				_visuals.sync_aquatic_uniforms(caust_i, _last_caustic_color, WATER_HEIGHT, dp, 0.35)
+				_visuals.sync_foliage_uniforms(clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, dl)
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
@@ -583,6 +619,22 @@ func _process(dt: float) -> void:
 				else:
 					_caustics_mat.set_shader_parameter("caustic_intensity", 0.0)
 				VoxelMat.update_caustic_uniforms(intensity if show_caustics else 0.0, beam_color)
+				if _water_material_ref != null:
+					_water_material_ref.set_shader_parameter(
+						"caustic_intensity", intensity if show_caustics else 0.0)
+					_water_material_ref.set_shader_parameter("light_color", beam_color)
+					_water_material_ref.set_shader_parameter("day_phase_offset",
+						float(sim.day_phase) if sim != null else 0.0)
+				if _glass_material_ref != null:
+					var shape_id: float = 0.0
+					if TANK_SHAPE == "cylinder":
+						shape_id = 1.0
+					elif TANK_SHAPE == "sphere":
+						shape_id = 2.0
+					_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
+					_glass_material_ref.set_shader_parameter("shape_band", 0.45 + dl * 0.35)
+					_glass_material_ref.set_shader_parameter("reflection_strength", 0.15 + dl * 0.12)
+					_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
 
 		# Sync god ray materials to the light cycle and Render panel parameters.
 		var density: float = 0.02
@@ -636,7 +688,8 @@ func _drift_floaters(adt: float) -> void:
 		# Slight bob.
 		fn.position.y = WATER_HEIGHT - 0.05 + sin(_floater_t * 0.7 + ph) * 0.015
 		# Keep floaters inside the actual tank footprint, not the bounding box.
-		var xz: Vector2 = clamp_xz_in_tank(fn.position.x, fn.position.z, 0.35)
+		var xz: Vector2 = clamp_xz_in_tank(
+			fn.position.x, fn.position.z, 0.35, WATER_HEIGHT - 0.05)
 		fn.position.x = xz.x
 		fn.position.z = xz.y
 	for df in _dead_floaters_scratch:
@@ -668,27 +721,66 @@ func _solid_mat(color: Color, _emission_strength: float = 0.55) -> ShaderMateria
 	return VoxelMat.make(color)
 
 
-func _glass_mat() -> StandardMaterial3D:
-	# Nearly invisible - voxels behind shouldn't be masked.
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(0.7, 0.85, 0.9, 0.04)
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.roughness = 0.05
-	m.metallic = 0.0
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+func _glass_mat() -> ShaderMaterial:
+	var shape_id: float = 0.0
+	if TANK_SHAPE == "cylinder":
+		shape_id = 1.0
+	elif TANK_SHAPE == "sphere":
+		shape_id = 2.0
+	_glass_material_ref = VoxelMat.make_glass(shape_id, WATER_HEIGHT)
+	return _glass_material_ref
+
+
+func _water_mat() -> ShaderMaterial:
+	var shallow := Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b, 0.12)
+	var deep := Color(C_WATER_DEEP.r, C_WATER_DEEP.g, C_WATER_DEEP.b, 0.20)
+	var m := VoxelMat.make_water(shallow, deep, SUBSTRATE_DEPTH, WATER_HEIGHT)
+	m.set_shader_parameter("wave_amplitude", 0.028)
+	m.set_shader_parameter("caustic_intensity", 0.55)
+	var shape_id: float = 0.0
+	if TANK_SHAPE == "cylinder":
+		shape_id = 1.0
+	elif TANK_SHAPE == "sphere":
+		shape_id = 2.0
+	m.set_shader_parameter("tank_shape_id", shape_id)
 	return m
 
 
-func _water_mat() -> StandardMaterial3D:
-	# Faint blue wash. Heavy water alpha was making everything murky; the
-	# palette handles the underwater mood from the limited palette set.
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b, 0.10)
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.roughness = 1.0
-	m.metallic = 0.0
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+# Shape-aware particle emission — box tanks use rectangular extents; curved
+# tanks use ring/sphere so ripples and haze don't spawn in the void outside glass.
+func configure_meniscus_emission(pm: ParticleProcessMaterial, band_height: float = 0.02) -> void:
+	if TANK_SHAPE == "cylinder":
+		var r: float = _footprint().effective_radius(0.5)
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_RING
+		pm.emission_ring_radius = r
+		pm.emission_ring_inner_radius = 0.0
+		pm.emission_ring_height = band_height
+	elif TANK_SHAPE == "sphere":
+		var r: float = _footprint().effective_radius(0.45)
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+		pm.emission_sphere_radius = r * 0.88
+	else:
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+		pm.emission_box_extents = Vector3(
+			TANK_HALF_W - 0.5, band_height, TANK_HALF_D - 0.5)
+
+
+func configure_column_emission(pm: ParticleProcessMaterial, half_height: float,
+		inset: float = 0.65) -> void:
+	if TANK_SHAPE == "cylinder":
+		var r: float = _footprint().effective_radius(inset)
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_RING
+		pm.emission_ring_radius = r
+		pm.emission_ring_inner_radius = 0.0
+		pm.emission_ring_height = half_height
+	elif TANK_SHAPE == "sphere":
+		var r: float = _footprint().effective_radius(inset)
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+		pm.emission_sphere_radius = r * 0.72
+	else:
+		pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+		pm.emission_box_extents = Vector3(
+			TANK_HALF_W - 0.8, half_height, TANK_HALF_D - 0.8)
 
 
 # ---- Static environment builders ----
@@ -710,8 +802,9 @@ func is_inside_tank(x: float, z: float, margin: float = 0.0, world_y: float = NA
 	return _footprint().is_inside(x, z, margin, world_y)
 
 
-func clamp_xz_in_tank(x: float, z: float, margin: float = 0.25) -> Vector2:
-	return _footprint().clamp_inside(x, z, margin)
+func clamp_xz_in_tank(x: float, z: float, margin: float = 0.25,
+		world_y: float = NAN) -> Vector2:
+	return _footprint().clamp_inside(x, z, margin, world_y)
 
 
 func fits_plant_at(x: float, z: float, radius: float, margin: float = 0.25,
@@ -743,11 +836,70 @@ func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
 	return fp.clamp_inside(0.0, 0.0, margin + radius, world_y)
 
 
-func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25) -> Vector3:
-	var c: Vector3 = _footprint().clamp_inside_3d(p, margin)
+func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25,
+		body_radius: float = 0.0) -> Vector3:
+	var total_margin: float = margin + maxf(0.0, body_radius)
+	var c: Vector3 = _footprint().clamp_inside_3d(p, total_margin)
 	if p.y <= WATER_HEIGHT + 0.12:
-		c.y = minf(c.y, WATER_HEIGHT - margin)
+		c.y = minf(c.y, WATER_HEIGHT - total_margin)
+	if body_radius > 0.0 and not _footprint().fits_point_with_radius(
+			c.x, c.z, body_radius, margin, c.y):
+		var xz: Vector2 = _footprint().clamp_inside(p.x, p.z, margin + body_radius, c.y)
+		c.x = xz.x
+		c.z = xz.y
+		c = _footprint().clamp_inside_3d(c, total_margin)
 	return c
+
+
+func enforce_entity_in_tank(node: Node3D, margin: float = 0.25,
+		body_radius: float = 0.0) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	var c: Vector3 = clamp_xyz_in_tank(node.global_position, margin, body_radius)
+	node.global_position = c
+	if not is_inside_tank_volume(c.x, c.y, c.z, margin + body_radius * 0.5):
+		var fp := _footprint()
+		var safe_y: float = clampf(
+			c.y, fp.substrate_y + margin, fp.water_y - margin)
+		node.global_position = Vector3(0.0, safe_y, 0.0)
+
+
+func _enforce_all_life_bounds() -> void:
+	if sim == null:
+		return
+	for f in sim.fish:
+		if is_instance_valid(f) and f.get("_dying") != true \
+				and f.has_method("_reclamp_territory_to_tank"):
+			f._reclamp_territory_to_tank()
+	for s in sim.shrimp:
+		if is_instance_valid(s) and s.get("_dying") != true:
+			enforce_entity_in_tank(s, 0.22, 0.14)
+	if sim.has_method("_clamp_entity_to_bounds"):
+		for e in sim.eggs:
+			if is_instance_valid(e):
+				sim._clamp_entity_to_bounds(e, 0.22, 0.06)
+		for w_part in sim.waste:
+			if is_instance_valid(w_part):
+				sim._clamp_entity_to_bounds(w_part, 0.16, 0.03)
+		sim.ensure_snails_root()
+		if sim.snails_root != null:
+			for sn in sim.snails_root.get_children():
+				if is_instance_valid(sn) and sn is Node3D:
+					if sn.has_method("_reclamp_to_footprint"):
+						sn.call("_reclamp_to_footprint")
+					else:
+						sim._clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
+	for a in sim.algae:
+		if is_instance_valid(a) and a is Node3D:
+			enforce_entity_in_tank(a as Node3D, 0.22, 0.12)
+	if microfauna_root != null:
+		for m in microfauna_root.get_children():
+			if is_instance_valid(m) and m is Node3D:
+				enforce_entity_in_tank(m as Node3D, 0.20, 0.04)
+	if wriggle_root != null:
+		for w in wriggle_root.get_children():
+			if is_instance_valid(w) and w is Node3D:
+				enforce_entity_in_tank(w as Node3D, 0.20, 0.06)
 
 
 func is_inside_tank_volume(x: float, y: float, z: float, margin: float = 0.0) -> bool:
@@ -842,8 +994,8 @@ func _sample_fish_spawn_pos(g: Dictionary = {}) -> Vector3:
 			var pt: Vector3 = _sample_point_in_tank(
 				target_y - col * 0.08, target_y + col * 0.08, 0.35)
 			if is_inside_tank_volume(pt.x, pt.y, pt.z, 0.32):
-				return pt
-	return _sample_point_in_tank(y_min, y_max, 0.35)
+				return clamp_xyz_in_tank(pt, 0.35)
+	return clamp_xyz_in_tank(_sample_point_in_tank(y_min, y_max, 0.35), 0.35)
 
 
 func _substrate_edge_bias(default: float = 0.48) -> float:
@@ -865,6 +1017,80 @@ func _tank_volume_proxy() -> float:
 func algae_carrying_capacity() -> int:
 	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
 	return maxi(24, int(_tank_volume_proxy() * (1.8 + bloom * 2.2)))
+
+
+func snail_carrying_capacity() -> int:
+	return maxi(4, int(_tank_volume_proxy() * 0.22))
+
+
+func shrimp_carrying_capacity() -> int:
+	return maxi(6, int(_tank_volume_proxy() * 0.38))
+
+
+func boundary_point_on_wall(y: float, wall_n: Vector3, inset: float = 0.07) -> Vector3:
+	var n: Vector3 = wall_n.normalized()
+	if n.dot(Vector3.UP) > 0.85:
+		var xz: Vector2 = _sample_substrate_xz(0.35, 0.18, 0.15)
+		return clamp_xyz_in_tank(
+			Vector3(xz.x, SUBSTRATE_DEPTH + 0.08, xz.y), 0.32, 0.08)
+	var fp := _footprint()
+	var from := Vector3(0.0, y, 0.0)
+	var dir: Vector3 = -n
+	if dir.length_squared() < 1e-6:
+		dir = Vector3(1.0, 0.0, 0.0)
+	dir = dir.normalized()
+	var max_scan: float = maxf(fp.half_w, fp.half_d) * 2.4
+	var step: float = maxf(0.08, max_scan / 56.0)
+	var last_good: Vector3 = from
+	var dist: float = 0.0
+	while dist <= max_scan:
+		var q: Vector3 = from + dir * dist
+		if fp.is_inside_3d(q.x, q.y, q.z, 0.22):
+			last_good = q
+		elif dist > step:
+			return clamp_xyz_in_tank(last_good - n * inset, 0.30, 0.08)
+		dist += step
+	return clamp_xyz_in_tank(last_good - n * inset, 0.30, 0.08)
+
+
+func _snail_founder_layout(is_saltwater: bool) -> Array:
+	var wall_dirs: Array = [
+		Vector3(-1, 0, 0), Vector3(1, 0, 0),
+		Vector3(0, 0, 1), Vector3(0, 0, -1),
+	]
+	var y_fracs: Array = [0.32, 0.52, 0.28, 0.46, 0.38, 0.58]
+	var shapes_fw: Array = ["turbo", "apple", "turbo", "turbo", "apple", "turbo"]
+	var out: Array = []
+	var count: int = 8 if is_saltwater else 6
+	for i in count:
+		var wn: Vector3 = wall_dirs[i % wall_dirs.size()]
+		var shape: String = shapes_fw[i % shapes_fw.size()]
+		var yf: float = float(y_fracs[i % y_fracs.size()])
+		if is_saltwater and i >= 5:
+			wn = Vector3.UP
+			shape = "nassarius"
+			yf = 0.0
+		var y: float = SUBSTRATE_DEPTH + 0.08 if wn.dot(Vector3.UP) > 0.85 \
+			else lerpf(SUBSTRATE_DEPTH + 0.35, WATER_HEIGHT - 0.28, yf)
+		var pos: Vector3 = boundary_point_on_wall(y, wn)
+		out.append([pos, wn, shape])
+	return out
+
+
+func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
+		shape: String, palette: Array, palette_i: int) -> void:
+	snail.position = pos
+	snail.set("wall_normal", wall_n)
+	snail.set("wall_min", Vector3(-TANK_HALF_W + 0.4, SUBSTRATE_DEPTH + 0.05,
+		-TANK_HALF_D + 0.4))
+	snail.set("wall_max", Vector3(TANK_HALF_W - 0.4, WATER_HEIGHT - 0.2,
+		TANK_HALF_D - 0.4))
+	snail.set("shell_color", palette[palette_i % palette.size()])
+	snail.set("shell_size", _rng.randf_range(0.85, 1.15))
+	snail.set("generation", 0)
+	snail.set("shell_shape", shape)
+	snail.set("shell_spines", _rng.randf_range(0.0, 0.45))
+	snail.set("toxin_level", _rng.randf_range(0.0, 0.35))
 
 
 func microfauna_carrying_capacity() -> int:
@@ -1040,7 +1266,8 @@ func _sample_clear_xz_in_band(
 				continue
 			if not _is_hardscape_occupied(xz.x, xz.y, clearance):
 				return xz
-	return _random_xz_in_band(z_min, z_max, margin, 0.0, edge_bias)
+	var fallback: Vector2 = _random_xz_in_band(z_min, z_max, margin, 0.0, edge_bias)
+	return _footprint().clamp_inside(fallback.x, fallback.y, margin)
 
 
 func _pick_ecology_site(is_saltwater: bool, z_min: float, z_max: float,
@@ -1143,11 +1370,14 @@ func _sphere_substrate_column_floor(x: float, z: float, bowl: Dictionary) -> flo
 
 
 func _sphere_substrate_voxel_ok(x: float, y: float, z: float, margin: float) -> bool:
-	# Soil stack under the bowl floor (y <= cy), clipped to the same hull as the glass.
+	# Fill each XZ column from the curved bowl floor up to the opening plane (cy).
 	var bowl: Dictionary = _sphere_bowl_params()
+	if bowl.is_empty():
+		return false
 	var R: float = float(bowl["R"]) - margin - 0.14
 	var cy: float = float(bowl["cy"])
-	if y < 0.0 or y > cy + 0.02:
+	var floor_y: float = _sphere_substrate_column_floor(x, z, bowl) - margin * 0.35
+	if y < floor_y - TerrainVoxelGrid.CELL_SIZE * 0.45 or y > cy + 0.02:
 		return false
 	var r_max: float = _bowl_ring_radius(R, cy, y)
 	if y < cy - 0.05:
@@ -1166,17 +1396,30 @@ func _build_substrate() -> void:
 	terrain_grid = TerrainVoxelGrid.new()
 	var voxel_size: float = TerrainVoxelGrid.CELL_SIZE
 	var ext: Vector2 = _footprint().bounding_half_extents(voxel_size * 0.15)
+	var grid_hw: float = TANK_HALF_W
+	var grid_hd: float = TANK_HALF_D
+	var floor_y: float = 0.0
+	var top_y: float = SUBSTRATE_DEPTH
 	if TANK_SHAPE == "sphere":
 		var bowl: Dictionary = _sphere_bowl_params()
 		if not bowl.is_empty():
 			var build_rad: float = float(bowl["R"]) - 0.12
 			ext = Vector2(build_rad, build_rad)
+			grid_hw = build_rad
+			grid_hd = build_rad
+			top_y = float(bowl["cy"])
+			floor_y = top_y - float(bowl["R"]) + 0.08
+	elif TANK_SHAPE == "cylinder":
+		var grid_r: float = _footprint().effective_radius(0.12)
+		ext = Vector2(grid_r, grid_r)
+		grid_hw = grid_r
+		grid_hd = grid_r
 	var default_cap: int = TerrainVoxelGrid.CellMaterial.AQUASOIL
 	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
 	if cfg != null:
 		default_cap = TerrainVoxelGrid.material_from_substrate_type(String(cfg.substrate_type))
 
-	terrain_grid.configure(TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ext.x, ext.y)
+	terrain_grid.configure(grid_hw, grid_hd, top_y, ext.x, ext.y, floor_y)
 	var bowl_params: Dictionary = _sphere_bowl_params() if TANK_SHAPE == "sphere" else {}
 	terrain_grid.populate_initial(
 		func(x: float, y: float, z: float, margin: float) -> bool:
@@ -1246,7 +1489,11 @@ func floor_at(x: float, z: float) -> Vector3:
 
 
 func spawn_position_on_floor(x: float, z: float, y_offset: float = 0.0) -> Vector3:
-	return Vector3(x, column_surface_y(x, z) + y_offset, z)
+	var margin: float = 0.28
+	var floor_y: float = column_surface_y(x, z)
+	var xz: Vector2 = _footprint().clamp_inside(x, z, margin, floor_y)
+	floor_y = column_surface_y(xz.x, xz.y)
+	return clamp_xyz_in_tank(Vector3(xz.x, floor_y + y_offset, xz.y), margin, 0.08)
 
 
 func _terrain_sculpt_ok() -> Callable:
@@ -1878,50 +2125,15 @@ func _build_snails(populate: bool = true) -> Node3D:
 			Color8(70, 140, 110),   # teal
 			Color8(190, 160, 60),   # ochre
 		]
-	# Position list. Each entry: [position, wall_normal, shell_shape].
-	# Freshwater = mixed turbo + apple shells on the glass walls.
-	# Marine = mix of turbo, trochus, and nassarius (the nassarius ride the substrate plane
-	# with wall_normal pointing UP so they "stick" to the floor).
-	var positions_and_walls: Array
-	if is_saltwater:
-		positions_and_walls = [
-			# Glass-walking algae grazers (mix turbo + trochus).
-			[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0), "turbo"],
-			[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0), "trochus"],
-			[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0), "trochus"],
-			[Vector3(7.95, 4.5, -1.0), Vector3(1, 0, 0), "turbo"],
-			[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1), "turbo"],
-			# Nassarius scavengers riding the substrate floor.
-			[Vector3(-3.0, SUBSTRATE_DEPTH + 0.1, 1.5), Vector3(0, 1, 0), "nassarius"],
-			[Vector3(2.5, SUBSTRATE_DEPTH + 0.1, -2.0), Vector3(0, 1, 0), "nassarius"],
-			[Vector3(0.0, SUBSTRATE_DEPTH + 0.1, 0.5), Vector3(0, 1, 0), "nassarius"],
-		]
-	else:
-		positions_and_walls = [
-			[Vector3(-7.95, 3.2, 0.0), Vector3(-1, 0, 0), "turbo"],
-			[Vector3(-7.95, 4.8, -1.5), Vector3(-1, 0, 0), "apple"],
-			[Vector3(7.95, 2.5, 1.0), Vector3(1, 0, 0), "turbo"],
-			[Vector3(7.95, 4.5, -1.0), Vector3(1, 0, 0), "apple"],
-			[Vector3(0.0, 2.5, 3.95), Vector3(0, 0, 1), "turbo"],
-			[Vector3(-2.0, 3.8, -3.95), Vector3(0, 0, -1), "turbo"],
-		]
+	var positions_and_walls: Array = _snail_founder_layout(is_saltwater)
 	for i in positions_and_walls.size():
 		var pw = positions_and_walls[i]
 		var pos: Vector3 = pw[0]
 		var wall_n: Vector3 = pw[1]
-		var shape: String = String(pw[2]) if pw.size() > 2 else "turbo"
+		var shape: String = String(pw[2])
 		var snail := Node3D.new()
 		snail.set_script(load("res://scripts/snail.gd"))
-		snail.position = pos
-		snail.set("wall_normal", wall_n)
-		snail.set("wall_min", Vector3(-TANK_HALF_W + 0.4, SUBSTRATE_DEPTH + 0.4, -TANK_HALF_D + 0.4))
-		snail.set("wall_max", Vector3(TANK_HALF_W - 0.4, WATER_HEIGHT - 0.2, TANK_HALF_D - 0.4))
-		snail.set("shell_color", founder_palette[i % founder_palette.size()])
-		snail.set("shell_size", _rng.randf_range(0.85, 1.15))
-		snail.set("generation", 0)
-		snail.set("shell_shape", shape)
-		snail.set("shell_spines", _rng.randf_range(0.0, 0.45))
-		snail.set("toxin_level", _rng.randf_range(0.0, 0.35))
+		_configure_snail_node(snail, pos, wall_n, shape, founder_palette, i)
 		c.add_child(snail)
 		_build_snail_body(snail)
 		if sim != null:
@@ -2127,7 +2339,7 @@ func _respawn_extinct_fauna() -> void:
 		for i in shrimp_count:
 			var xz: Vector2 = _sample_clear_xz_in_band(
 				-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6, 0.45, 36, 0.0, 0.44)
-			var sp := spawn_position_on_floor(xz.x, xz.y, 0.1)
+			var sp := clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.3)
 			var s := Shrimp.new()
 			fauna_root.add_child(s)
 			s.global_position = sp
@@ -2878,6 +3090,10 @@ func _build_light_fixture() -> void:
 		# Emissive panel running along the underside.
 		_add_cube(_light_fixture_root, Vector3(0, -0.13, 0),
 			Vector3(bar_length * 0.9, 0.05, bar_width * 0.65), panel_emit)
+		# Fixture bloom — overbright pixel where beam meets housing.
+		_add_cube(_light_fixture_root, Vector3(0, -0.17, 0),
+			Vector3(bar_length * 0.12, 0.03, bar_width * 0.2),
+			VoxelMat.make(Color8(255, 252, 235)))
 		# Suspension cords at both ends.
 		_add_cube(_light_fixture_root, Vector3(bar_length * 0.35, 0.4, 0),
 			Vector3(0.05, 0.6, 0.05), dark)
@@ -3315,6 +3531,8 @@ func restore_floaters(arr: Variant) -> void:
 # and fades. Cheap; we cap concurrent ripples informally via short
 # lifespan rather than an explicit pool.
 func spawn_burst_ripple(pos: Vector3) -> void:
+	if _visuals != null:
+		_visuals.spawn_pop_spray(pos)
 	var ring := MeshInstance3D.new()
 	ring.mesh = VoxelMat.get_box(Vector3(0.45, 0.04, 0.45))
 	ring.material_override = VoxelMat.make(Color8(225, 240, 245))
@@ -3343,15 +3561,18 @@ func _set_ripple_albedo(c: Color, mat: ShaderMaterial) -> void:
 	mat.set_shader_parameter("albedo", c)
 
 
+func _spawn_water_ambience() -> void:
+	_spawn_surface_ripples()
+	_spawn_ambient_bubbles()
+
+
 func _spawn_surface_ripples() -> void:
-	# Sparse, slow ripples on the water surface - tiny pale voxels that
-	# appear briefly and fade. Cheap stand-in for proper surface-tension
-	# rendering. Emits from a particles3D at the meniscus.
+	# Sparse ripples on the meniscus — flat shader quads that expand and fade.
 	var p := GPUParticles3D.new()
 	p.name = "SurfaceRipples"
-	p.amount = 14
-	p.lifetime = 2.0
-	p.preprocess = 1.0
+	p.amount = 18
+	p.lifetime = 2.4
+	p.preprocess = 1.2
 	p.local_coords = false
 	p.position = Vector3(0, WATER_HEIGHT - 0.05, 0)
 	var pm := ParticleProcessMaterial.new()
@@ -3360,16 +3581,102 @@ func _spawn_surface_ripples() -> void:
 	pm.initial_velocity_max = 0.0
 	pm.gravity = Vector3(0, 0, 0)
 	pm.spread = 0.0
-	pm.scale_min = 0.4
-	pm.scale_max = 1.2
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = Vector3(TANK_HALF_W - 0.5, 0.02, TANK_HALF_D - 0.5)
+	pm.scale_min = 0.35
+	pm.scale_max = 1.35
+	configure_meniscus_emission(pm, 0.02)
+	var scale_curve := Curve.new()
+	scale_curve.add_point(Vector2(0.0, 0.15))
+	scale_curve.add_point(Vector2(0.35, 1.0))
+	scale_curve.add_point(Vector2(1.0, 1.45))
+	var scale_tex := CurveTexture.new()
+	scale_tex.curve = scale_curve
+	pm.scale_curve = scale_tex
+	var alpha_curve := Curve.new()
+	alpha_curve.add_point(Vector2(0.0, 0.0))
+	alpha_curve.add_point(Vector2(0.12, 0.55))
+	alpha_curve.add_point(Vector2(0.65, 0.35))
+	alpha_curve.add_point(Vector2(1.0, 0.0))
+	var alpha_tex := CurveTexture.new()
+	alpha_tex.curve = alpha_curve
+	pm.alpha_curve = alpha_tex
 	p.process_material = pm
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.4, 0.04, 0.4)
-	bm.material = VoxelMat.make(Color8(220, 235, 240))
+	var bm := QuadMesh.new()
+	bm.size = Vector2(0.55, 0.55)
+	bm.orientation = PlaneMesh.FACE_Y
+	bm.material = VoxelMat.make_surface_ripple()
 	p.draw_pass_1 = bm
 	add_child(p)
+
+
+func _spawn_ambient_bubbles() -> void:
+	# Suspended micro-bubbles — one cheap emitter for the whole column.
+	var p := GPUParticles3D.new()
+	p.name = "AmbientBubbles"
+	p.amount = 14
+	p.lifetime = 9.0
+	p.preprocess = 4.5
+	p.local_coords = false
+	var col_h: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH)
+	p.position = Vector3(0.0, SUBSTRATE_DEPTH + col_h * 0.5, 0.0)
+	var pm := _make_bubble_process_material(
+		Vector3(0, 1, 0), 0.12, 0.28, 0.22, 0.55, 14.0)
+	configure_column_emission(pm, col_h * 0.45, 0.65)
+	pm.turbulence_enabled = true
+	pm.turbulence_noise_strength = 0.35
+	pm.turbulence_noise_scale = 2.4
+	pm.turbulence_influence_min = 0.12
+	pm.turbulence_influence_max = 0.55
+	pm.turbulence_influence_over_life = _bubble_turbulence_curve()
+	p.process_material = pm
+	var bm := SphereMesh.new()
+	bm.radius = 0.035
+	bm.height = 0.07
+	bm.radial_segments = 5
+	bm.rings = 3
+	bm.material = VoxelMat.make_bubble(Color(0.82, 0.94, 0.98, 0.28))
+	p.draw_pass_1 = bm
+	add_child(p)
+
+
+func _make_bubble_process_material(direction: Vector3, vel_min: float, vel_max: float,
+		gravity_y: float, spread: float, turbulence_strength: float = 0.0) -> ParticleProcessMaterial:
+	var pm := ParticleProcessMaterial.new()
+	pm.direction = direction.normalized()
+	pm.initial_velocity_min = vel_min
+	pm.initial_velocity_max = vel_max
+	pm.gravity = Vector3(0, gravity_y, 0)
+	pm.spread = spread
+	pm.scale_min = 0.55
+	pm.scale_max = 1.25
+	pm.damping_min = 0.08
+	pm.damping_max = 0.22
+	pm.linear_accel_min = 0.05
+	pm.linear_accel_max = 0.18
+	if turbulence_strength > 0.0:
+		pm.turbulence_enabled = true
+		pm.turbulence_noise_strength = turbulence_strength
+		pm.turbulence_noise_scale = 3.2
+		pm.turbulence_influence_min = 0.18
+		pm.turbulence_influence_max = 0.85
+		pm.turbulence_influence_over_life = _bubble_turbulence_curve()
+	var merge_curve := Curve.new()
+	merge_curve.add_point(Vector2(0.0, 0.75))
+	merge_curve.add_point(Vector2(0.55, 1.05))
+	merge_curve.add_point(Vector2(1.0, 1.35))
+	var merge_tex := CurveTexture.new()
+	merge_tex.curve = merge_curve
+	pm.scale_curve = merge_tex
+	return pm
+
+
+func _bubble_turbulence_curve() -> CurveTexture:
+	var infl := Curve.new()
+	infl.add_point(Vector2(0.0, 0.25))
+	infl.add_point(Vector2(0.45, 0.85))
+	infl.add_point(Vector2(1.0, 0.35))
+	var tex := CurveTexture.new()
+	tex.curve = infl
+	return tex
 
 
 # Top-level aeration dispatcher. Looks at TankConfig and builds the chosen
@@ -3589,18 +3896,12 @@ func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
 		rise_distance: float, amount: int, bubble_radius: float) -> void:
 	var p := GPUParticles3D.new()
 	p.amount = amount
-	p.lifetime = clampf(rise_distance / 1.3, 2.5, 6.0)
+	p.lifetime = clampf(rise_distance / 1.1, 2.8, 7.0)
 	p.preprocess = p.lifetime * 0.5
 	p.local_coords = false
 	p.position = base_pos
-	var pm := ParticleProcessMaterial.new()
-	pm.direction = Vector3(0, 1, 0)
-	pm.initial_velocity_min = 0.4
-	pm.initial_velocity_max = 0.7
-	pm.gravity = Vector3(0, 0.9, 0)
-	pm.spread = 5.0
-	pm.scale_min = 0.7
-	pm.scale_max = 1.3
+	var pm := _make_bubble_process_material(
+		Vector3(0, 1, 0), 0.45, 0.95, 0.95, 8.0, 18.0)
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = extents
 	p.process_material = pm
@@ -3609,7 +3910,7 @@ func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
 	bm.height = bubble_radius * 2.0
 	bm.radial_segments = 5
 	bm.rings = 3
-	bm.material = VoxelMat.make(Color8(200, 230, 235))
+	bm.material = VoxelMat.make_bubble(Color(0.78, 0.92, 0.96, 0.48))
 	p.draw_pass_1 = bm
 	parent.add_child(p)
 
@@ -3619,19 +3920,13 @@ func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
 # stream curves down into the tank before rising again.
 func _emit_filter_outflow(parent: Node, spout_end: Vector3) -> void:
 	var p := GPUParticles3D.new()
-	p.amount = 14
-	p.lifetime = 2.0
-	p.preprocess = 0.5
+	p.amount = 16
+	p.lifetime = 2.4
+	p.preprocess = 0.6
 	p.local_coords = false
 	p.position = spout_end
-	var pm := ParticleProcessMaterial.new()
-	pm.direction = Vector3(0, -0.2, 1).normalized()
-	pm.initial_velocity_min = 0.9
-	pm.initial_velocity_max = 1.3
-	pm.gravity = Vector3(0, 0.7, 0)         # buoyancy reasserts itself
-	pm.spread = 12.0
-	pm.scale_min = 0.6
-	pm.scale_max = 1.2
+	var pm := _make_bubble_process_material(
+		Vector3(0, -0.2, 1), 0.85, 1.35, 0.75, 14.0, 12.0)
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = Vector3(0.05, 0.08, 0.02)
 	p.process_material = pm
@@ -3640,7 +3935,7 @@ func _emit_filter_outflow(parent: Node, spout_end: Vector3) -> void:
 	bm.height = 0.14
 	bm.radial_segments = 5
 	bm.rings = 3
-	bm.material = VoxelMat.make(Color8(200, 230, 235))
+	bm.material = VoxelMat.make_bubble(Color(0.76, 0.90, 0.95, 0.44))
 	p.draw_pass_1 = bm
 	parent.add_child(p)
 
@@ -3695,10 +3990,10 @@ func _spawn_surface_pop_emitter(parent: Node, pos: Vector3, bubble_lifetime: flo
 	grad_tex.gradient = grad
 	pm.color_ramp = grad_tex
 	ring.process_material = pm
-	# Flat ring mesh - just a thin box that scales up.
-	var rm := BoxMesh.new()
-	rm.size = Vector3(0.55, 0.04, 0.55)
-	rm.material = VoxelMat.make(Color8(220, 235, 240))
+	var rm := QuadMesh.new()
+	rm.size = Vector2(0.55, 0.55)
+	rm.orientation = PlaneMesh.FACE_Y
+	rm.material = VoxelMat.make_surface_ripple(Color(0.92, 0.97, 1.0, 0.62))
 	ring.draw_pass_1 = rm
 	parent.add_child(ring)
 
@@ -4429,6 +4724,24 @@ func _apply_biofilm_tints() -> void:
 			_clear_driftwood_biofilm(vx)
 
 
+func _apply_driftwood_wet_lines() -> void:
+	for vx in _driftwood_voxels:
+		if not is_instance_valid(vx):
+			continue
+		var y: float = vx.global_position.y
+		if absf(y - WATER_HEIGHT) > 0.38:
+			continue
+		var sm: ShaderMaterial = vx.material_override as ShaderMaterial
+		if sm == null:
+			continue
+		var orig: Color = sm.get_shader_parameter("albedo") if not vx.has_meta("base_albedo") \
+			else vx.get_meta("base_albedo")
+		if not vx.has_meta("base_albedo"):
+			vx.set_meta("base_albedo", orig)
+		var wet: float = 1.0 - smoothstep(0.0, 0.35, absf(y - WATER_HEIGHT))
+		sm.set_shader_parameter("albedo", orig.lerp(orig.darkened(0.22), wet * 0.65))
+
+
 func _apply_driftwood_biofilm(vx: MeshInstance3D, tint: Color) -> void:
 	var sm: ShaderMaterial = vx.material_override as ShaderMaterial
 	if sm == null:
@@ -4481,7 +4794,7 @@ func spawn_substrate_dust(pos: Vector3) -> void:
 			randf_range(0.02, 0.10),
 			randf_range(-0.18, 0.18),
 		)
-		mi.position = pos + spread
+		mi.position = clamp_xyz_in_tank(pos + spread, 0.25, 0.06)
 		container.add_child(mi)
 		# Tween: rise 0.25 units further + drift outward + shrink + free.
 		var rise: Vector3 = mi.position + Vector3(
@@ -4506,10 +4819,35 @@ func add_mulm_voxel(pos: Vector3) -> void:
 	var bm := BoxMesh.new()
 	bm.size = Vector3(0.20, 0.07, 0.20)
 	mi.mesh = bm
-	mi.position = Vector3(pos.x, column_surface_y(pos.x, pos.z) + 0.05, pos.z)
-	mi.material_override = VoxelMat.make(Color8(34, 26, 18))
+	var clamped: Vector3 = clamp_xyz_in_tank(
+		Vector3(pos.x, column_surface_y(pos.x, pos.z) + 0.05, pos.z), 0.25, 0.08)
+	mi.position = clamped
+	var corner_dark: float = 0.0
+	if not is_inside_tank(clamped.x, clamped.z, 1.2, clamped.y):
+		corner_dark = 0.15
+	var flow_shade: float = clampf(absf(clamped.x) / maxf(TANK_HALF_W, 0.1), 0.0, 1.0) * 0.08
+	var mulm_col := Color8(34, 26, 18).darkened(corner_dark + flow_shade)
+	mi.material_override = VoxelMat.make(mulm_col)
 	container.add_child(mi)
 	_mulm_voxels.append(mi)
+	if substrate_grid != null:
+		substrate_grid.add_at(
+			Vector3(clamped.x, SUBSTRATE_DEPTH, clamped.z), 0.0035)
+
+
+func tint_substrate_cell(x: float, z: float, _color: Color, strength: float) -> void:
+	if substrate_grid == null or strength <= 0.001:
+		return
+	substrate_grid.add_at(Vector3(x, SUBSTRATE_DEPTH, z), 0.001 * strength)
+
+
+func begin_screenshot_boost(duration: float = 3.0) -> void:
+	if _visuals != null:
+		_visuals.begin_screenshot_boost(duration)
+
+
+func get_water_surface_y() -> float:
+	return WATER_HEIGHT
 
 
 func _film_carrying_capacity() -> int:
@@ -4632,21 +4970,16 @@ func _spawn_one_microfauna() -> void:
 	if microfauna_root == null or sim == null:
 		return
 	var fill: float = _microfauna_swarm_fill()
-	var b: AABB = sim.world_bounds
-	# Reject samples outside the (possibly non-rectangular) tank shape, so
-	# hex / triangle tanks don't get microfauna floating in the corner air.
-	# Tries up to 6 times before giving up — at 90 microfauna a single
-	# missed spawn isn't visible.
 	for _attempt in 16:
 		var pt: Vector3 = _sample_point_in_tank(
-			b.position.y, b.position.y + b.size.y, 0.35)
+			SUBSTRATE_DEPTH + 0.2, WATER_HEIGHT - 0.3, 0.35)
 		if not is_inside_tank_volume(pt.x, pt.y, pt.z, 0.35):
 			continue
 		var m := Microfauna.new()
 		m.set_swarm_presence(fill)
 		microfauna_root.add_child(m)
 		m.sim = sim
-		m.position = pt
+		m.position = clamp_xyz_in_tank(pt, 0.35, 0.04)
 		# Stagger initial age so the population doesn't all die at once.
 		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.6)
 		return
@@ -4861,10 +5194,14 @@ func _spawn_snail_at(genome: Dictionary, pos: Vector3) -> void:
 		sn_root = sim.snails_root
 	var sn := Node3D.new()
 	sn.set_script(load("res://scripts/snail.gd"))
-	sn.position = pos
-	sn.set("wall_normal", Vector3.UP)
-	sn.set("wall_min", Vector3(-TANK_HALF_W + 0.4, SUBSTRATE_DEPTH + 0.05, -TANK_HALF_D + 0.4))
-	sn.set("wall_max", Vector3(TANK_HALF_W - 0.4, WATER_HEIGHT - 0.2, TANK_HALF_D - 0.4))
+	var wall_n: Vector3 = Vector3.UP
+	var spawn_pos: Vector3 = clamp_xyz_in_tank(pos, 0.32, 0.08)
+	if spawn_pos.y > SUBSTRATE_DEPTH + 0.25:
+		wall_n = Vector3(0, 0, 1)
+		spawn_pos = boundary_point_on_wall(spawn_pos.y, wall_n)
+	_configure_snail_node(sn, spawn_pos, wall_n,
+		String(genome.get("shell_shape", "turbo")),
+		[genome.get("shell_color", Color8(135, 44, 176))], 0)
 	if sn.has_method("apply_genome_metadata"):
 		sn.apply_genome_metadata(genome)
 	sn_root.add_child(sn)

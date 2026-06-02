@@ -670,44 +670,45 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				return events
 
 	# Tier 4: seek breeding partner. Shrimp are happy to breed even when
-	# moderately hungry as long as they have energy reserves. Crowding is
-	# handled by cannibalism and food competition, not a hard cap.
+	# moderately hungry as long as they have energy reserves. Crowding slows
+	# reproduction — real colonies self-limit when the glass is full.
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
 			and hunger < 0.6 and energy > 0.5:
-		var best_mate: Shrimp = null
-		var best_score: float = -INF
-		for n in neighbors:
-			if not (n is Shrimp):
-				continue
-			var s: Shrimp = n
-			if s == self or s.species != species:
-				continue
-			if s.sex == sex or s.maturity != MATURITY_ADULT \
-					or s.breed_cooldown > 0.0:
-				continue
-			# `s.partner != null` was the only check before — a freed-but-
-			# not-yet-cleaned-up partner reference is non-null in Godot,
-			# so `s` looked permanently paired and was skipped forever
-			# (until its own tick ran the validity-cleanup at line 317).
-			# In a fast-dying colony this silently killed breeding for the
-			# survivors. Validate the partner ref properly here.
-			if s.partner != null and is_instance_valid(s.partner):
-				continue
-			if s.hunger > 0.6 or s.energy < 0.45:
-				continue
-			var d2: float = s.position.distance_squared_to(position)
-			if d2 > 9.0:
-				continue
-			var score: float = -d2 * 0.55 + _mate_habitat_score(s) * 1.8 \
-				+ clampf(s.growth_factor / MAX_GROWTH, 0.0, 1.0) * 0.9
-			if score > best_score:
-				best_score = score
-				best_mate = s
-		if best_mate != null:
-			partner = best_mate
-			best_mate.partner = self
-			court_timer = 0.0
-			best_mate.court_timer = 0.0
+		var colony_cap: int = 24
+		if sim != null:
+			var w: Node = sim.get_parent()
+			if w != null and w.has_method("shrimp_carrying_capacity"):
+				colony_cap = int(w.shrimp_carrying_capacity())
+		var overcrowded: bool = sim != null and sim.shrimp.size() >= colony_cap
+		if not overcrowded:
+			var best_mate: Shrimp = null
+			var best_score: float = -INF
+			for n in neighbors:
+				if not (n is Shrimp):
+					continue
+				var s: Shrimp = n
+				if s == self or s.species != species:
+					continue
+				if s.sex == sex or s.maturity != MATURITY_ADULT \
+						or s.breed_cooldown > 0.0:
+					continue
+				if s.partner != null and is_instance_valid(s.partner):
+					continue
+				if s.hunger > 0.6 or s.energy < 0.45:
+					continue
+				var d2: float = s.position.distance_squared_to(position)
+				if d2 > 9.0:
+					continue
+				var score: float = -d2 * 0.55 + _mate_habitat_score(s) * 1.8 \
+					+ clampf(s.growth_factor / MAX_GROWTH, 0.0, 1.0) * 0.9
+				if score > best_score:
+					best_score = score
+					best_mate = s
+			if best_mate != null:
+				partner = best_mate
+				best_mate.partner = self
+				court_timer = 0.0
+				best_mate.court_timer = 0.0
 
 	# Tier 5: claim nearby waste. The actual eat is resolved by SimDriver.
 	var best_w: WasteParticle = null
@@ -944,15 +945,7 @@ func _process(dt: float) -> void:
 	if sim != null:
 		var w: Node = sim.get_parent()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
-			position = w.clamp_xyz_in_tank(position, 0.2)
-		else:
-			var b: AABB = sim.world_bounds
-			position.x = clampf(position.x, b.position.x + 0.18, b.end.x - 0.18)
-			position.z = clampf(position.z, b.position.z + 0.18, b.end.z - 0.18)
-		position.y = maxf(position.y, substrate_top_y + 0.05)
-		if w != null and w.has_method("column_surface_y"):
-			var floor_y: float = w.column_surface_y(position.x, position.z)
-			position.y = maxf(position.y, floor_y + 0.05)
+			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
 
 	# Face heading (look_at with body built facing -Z). Skip when nearly
 	# stationary — the brain may flip target_velocity direction frame-to-
@@ -983,8 +976,9 @@ func _process(dt: float) -> void:
 	if _tail_pivot != null:
 		_tail_pivot.rotation.x = sin(_swim_phase) * tail_amp
 	if _antenna_pivot != null:
-		_antenna_pivot.rotation.y = sin(_swim_phase * 1.7) * 0.20
-		_antenna_pivot.rotation.x = sin(_swim_phase * 2.1) * 0.10
+		_antenna_pivot.rotation.y = sin(_swim_phase * 1.7) * 0.28
+		_antenna_pivot.rotation.x = sin(_swim_phase * 2.1) * 0.16
+		_antenna_pivot.rotation.z = sin(_swim_phase * 2.8) * 0.08
 	# Walking bob: a small vertical pulse at twice the tail frequency
 	# mimics the alternating-leg gait of crawling. Suppressed at very
 	# low speeds (resting) and at high speeds (the shrimp is tail-
@@ -1136,18 +1130,24 @@ func _update_maturity() -> void:
 		maturity = MATURITY_SENESCENT
 
 
-func _wall_avoid(b: AABB) -> Vector3:
-	var margin := 0.8
-	var v := Vector3.ZERO
-	if position.x < b.position.x + margin:
-		v.x += 1.0
-	if position.x > b.position.x + b.size.x - margin:
-		v.x -= 1.0
-	if position.z < b.position.z + margin:
-		v.z += 1.0
-	if position.z > b.position.z + b.size.z - margin:
-		v.z -= 1.0
-	return v
+func _wall_avoid(_b: AABB) -> Vector3:
+	var w: Node = null
+	if sim != null:
+		w = sim.get_parent()
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		var tank_margin: float = 0.38
+		var gp: Vector3 = global_position
+		if w.has_method("is_inside_tank_volume") \
+				and not w.is_inside_tank_volume(gp.x, gp.y, gp.z, tank_margin * 0.35):
+			var c: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.35, 0.14)
+			var push: Vector3 = c - gp
+			if push.length_squared() > 1e-6:
+				return push.normalized() * clampf(push.length() / tank_margin, 0.45, 1.15)
+		var c_soft: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.2, 0.08)
+		var soft: Vector3 = c_soft - gp
+		if soft.length_squared() > 1e-6:
+			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.2), 0.0, 0.65)
+	return Vector3.ZERO
 
 
 func _neighbor_clearance_push(neighbors: Array) -> Vector3:

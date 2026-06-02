@@ -43,6 +43,7 @@ var _auto_respawn_check: CheckBox
 var _auto_feed_check: CheckBox
 var _preset_option: OptionButton
 var _preset_desc: Label
+var _diet_chart: RichTextLabel
 var _w_label: Label
 var _d_label: Label
 var _h_label: Label
@@ -301,22 +302,18 @@ func _build_ui() -> void:
 	vbox.add_child(_environment_desc)
 
 	# -- Species & diet chart --
-	# Read-only listing showing which species in the library hunt what. Lets
-	# the player understand WHY their puffer is eating their snails or their
-	# cory is grazing algae rather than pellets — and pick presets accordingly.
-	# Built as a RichTextLabel so the trophic / habitat / size tags can be
-	# color-tinted; the previous plain-Label version produced lines that
-	# read identically (e.g. all "omnivore, mid-water") for half the library.
+	# Lists the species the *selected stocking preset* actually spawns (not
+	# the whole library — showing every species here made it look like the
+	# dropdown was broken when e.g. Killifish appeared under Reef).
 	_add_section(vbox, "Species & diet")
-	var diet_chart := RichTextLabel.new()
-	diet_chart.bbcode_enabled = true
-	diet_chart.fit_content = true
-	diet_chart.scroll_active = false
-	diet_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
-	diet_chart.add_theme_font_size_override("normal_font_size", 11)
-	diet_chart.text = _build_diet_chart()
-	vbox.add_child(diet_chart)
+	_diet_chart = RichTextLabel.new()
+	_diet_chart.bbcode_enabled = true
+	_diet_chart.fit_content = true
+	_diet_chart.scroll_active = false
+	_diet_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
+	_diet_chart.add_theme_font_size_override("normal_font_size", 11)
+	vbox.add_child(_diet_chart)
 
 	# Footer buttons — attached to `outer` (NOT `vbox`) so they stay pinned at
 	# the bottom of the panel below the scroll area. Without this, when the
@@ -402,11 +399,14 @@ func _pull_from_config() -> void:
 		_update_environment_desc()
 	_auto_respawn_check.button_pressed = TankConfig.auto_respawn_fauna
 	_auto_feed_check.button_pressed = TankConfig.auto_feed_fauna
-	# Pick the option matching current preset.
+	# Pick the option matching current preset. Block signals so select()
+	# can't fire _on_preset and mutate TankConfig while we're syncing UI.
+	_preset_option.set_block_signals(true)
 	for i in _preset_option.item_count:
 		if _preset_option.get_item_metadata(i) == TankConfig.tank_preset:
 			_preset_option.select(i)
 			break
+	_preset_option.set_block_signals(false)
 	_update_preset_desc()
 
 
@@ -556,6 +556,7 @@ func _on_preset(idx: int) -> void:
 		TankConfig.substrate_type = forced
 	_sync_substrate_dropdown()
 	_update_preset_desc()
+	_update_diet_chart()
 
 
 # Re-select the substrate dropdown item that matches TankConfig.substrate_type
@@ -565,10 +566,12 @@ func _on_preset(idx: int) -> void:
 func _sync_substrate_dropdown() -> void:
 	if _substrate_option == null:
 		return
+	_substrate_option.set_block_signals(true)
 	for i in _substrate_option.item_count:
 		if _substrate_option.get_item_metadata(i) == TankConfig.substrate_type:
 			_substrate_option.select(i)
 			break
+	_substrate_option.set_block_signals(false)
 	var preset: Dictionary = TankConfig.TANK_PRESETS.get(TankConfig.tank_preset, {})
 	var forced: String = String(preset.get("substrate", ""))
 	_substrate_option.disabled = forced != ""
@@ -587,35 +590,76 @@ func _sync_substrate_dropdown() -> void:
 			_substrate_desc.text = String(cur_profile.get("description", ""))
 
 
+func _update_diet_chart() -> void:
+	if _diet_chart == null:
+		return
+	_diet_chart.text = _build_diet_chart()
+
+
+func _preset_stocking_dict() -> Dictionary:
+	var key: String = TankConfig.tank_preset
+	if key == "custom":
+		return {
+			"glassdart": TankConfig.custom_glassdart_count,
+			"mudsifter": TankConfig.custom_mudsifter_count,
+			"betta": 1,
+			"shrimp": TankConfig.custom_shrimp_count,
+		}
+	var preset: Dictionary = TankConfig.TANK_PRESETS.get(key, {})
+	return preset.get("stocking", {})
+
+
 func _build_diet_chart() -> String:
-	# Per-species diet summary, sorted by water-column position so the
-	# eye walks top→bottom of the tank as it reads the list. Each line
-	# is BBCode-tinted: the species label in a neutral tone, then a
-	# trophic chip (green/yellow/red), then habitat + size/social tags
-	# in muted gray. Without the extra size + schooling dimensions, half
-	# the library (glassdart, danio, guppy, angelfish, reef_fish) all
-	# collapsed to "omnivore, mid-water" and looked identical here.
+	var c_dim := "#9aa8c8"
+	var preset_key: String = TankConfig.tank_preset
+	var preset: Dictionary = TankConfig.TANK_PRESETS.get(preset_key, {})
+	var stocking: Dictionary = _preset_stocking_dict()
+
+	if preset_key == "empty":
+		return "[color=%s]No preset fauna — stock by hand with the Creature Creator.[/color]" % c_dim
+
+	if stocking.is_empty():
+		return "[color=%s]This preset spawns no fish. Use the Creature Creator to add fauna.[/color]" % c_dim
+
+	var preset_label: String = String(preset.get("label", preset_key))
+	var header: String = "[color=%s]In \"%s\" preset:[/color]" % [c_dim, preset_label]
+	return header + "\n" + _format_diet_lines(stocking)
+
+
+func _format_diet_lines(stocking: Dictionary) -> String:
+	# Per-species diet summary for the preset's stocking dict, sorted by
+	# water-column position so the eye walks top→bottom of the tank.
 	var c_herb := "#86c084"
 	var c_omni := "#d6b070"
 	var c_carn := "#e07070"
-	var c_special := "#e0c060"  # snail-hunter / algae-grazer
+	var c_special := "#e0c060"
 	var c_dim := "#9aa8c8"
 	var entries: Array = []
-	for key in TankConfig.SPECIES_LIBRARY.keys():
-		var entry: Dictionary = TankConfig.SPECIES_LIBRARY[key]
+	for species_name in stocking.keys():
+		if species_name == "shrimp":
+			continue
+		if not TankConfig.SPECIES_LIBRARY.has(species_name):
+			continue
+		var entry: Dictionary = TankConfig.SPECIES_LIBRARY[species_name]
 		var g: Dictionary = entry.get("genome", {})
 		var py: float = float(g.get("preferred_y", 3.5))
-		entries.append({"key": key, "label": entry.get("label", key), "g": g, "py": py})
-	# Sort surface → bottom so the chart reads like a tank cross-section.
+		entries.append({
+			"label": entry.get("label", species_name),
+			"g": g,
+			"py": py,
+			"count": int(stocking[species_name]),
+		})
 	entries.sort_custom(func(a, b): return float(a["py"]) > float(b["py"]))
 
 	var lines: Array[String] = []
 	for e in entries:
+		var count: int = int(e["count"])
+		if count <= 0:
+			continue
 		var label: String = String(e["label"])
 		var g: Dictionary = e["g"]
 		var py: float = float(e["py"])
 
-		# Trophic chip — color = diet category.
 		var herb: float = float(g.get("herbivory", 0.0))
 		var trophic: String
 		if herb >= 0.9:
@@ -625,7 +669,6 @@ func _build_diet_chart() -> String:
 		else:
 			trophic = "[color=%s]carnivore[/color]" % c_carn
 
-		# Habitat (water column).
 		var habitat: String
 		if py >= 4.8:
 			habitat = "surface"
@@ -634,9 +677,6 @@ func _build_diet_chart() -> String:
 		else:
 			habitat = "mid"
 
-		# Size class — uses adult_voxel_scale because it's the field that
-		# actually drives rendered fish size. Distinguishes tiny guppies
-		# from large angelfish even when their other tags collide.
 		var sz: float = float(g.get("adult_voxel_scale", 0.18))
 		var size_class: String
 		if sz < 0.14:
@@ -648,9 +688,6 @@ func _build_diet_chart() -> String:
 		else:
 			size_class = "large"
 
-		# Social mode — schooling vs. solitary. Driven by schooling_strength
-		# which the brain uses for flock cohesion. Adds visible variation
-		# between schoolers (glassdart, danio) and loners (betta, puffer).
 		var sch: float = float(g.get("schooling_strength", 0.5))
 		var social: String
 		if sch >= 1.2:
@@ -660,9 +697,6 @@ func _build_diet_chart() -> String:
 		else:
 			social = "solo"
 
-		# Specialist tags (snail-hunter / algae-grazer) get the warm
-		# accent color so the eye picks them out — they're load-bearing
-		# for picking presets (don't put snails in with puffers).
 		var specials: Array[String] = []
 		if g.get("snail_predator", false):
 			specials.append("[color=%s]snail-hunter[/color]" % c_special)
@@ -677,7 +711,18 @@ func _build_diet_chart() -> String:
 		var special_str: String = ""
 		if not specials.is_empty():
 			special_str = "  " + " ".join(specials)
-		lines.append("• %s  %s  %s%s" % [label, trophic, dim_tags, special_str])
+		lines.append("• %s ×%d  %s  %s%s" % [label, count, trophic, dim_tags, special_str])
+
+	if stocking.has("shrimp"):
+		var shrimp_n: int = int(stocking["shrimp"])
+		if shrimp_n > 0:
+			lines.append(
+				"• Shrimp ×%d  [color=%s]omnivore[/color]  [color=%s]bottom · tiny · shoal[/color]"
+				% [shrimp_n, c_omni, c_dim]
+			)
+
+	if lines.is_empty():
+		return "[color=%s](no fish in this preset)[/color]" % c_dim
 	return "\n".join(lines)
 
 
@@ -707,6 +752,7 @@ func _update_preset_desc() -> void:
 		var spread: String = "Phenotype spread: %.1f×" % float(preset.get("phenotype_spread", 1.0))
 		desc = desc + "\n" + stocking + "\n" + spread
 	_preset_desc.text = desc
+	_update_diet_chart()
 
 
 func _on_apply() -> void:
@@ -716,6 +762,14 @@ func _on_apply() -> void:
 	var main := get_tree().current_scene
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
+	# If the player changed stocking preset or substrate, the saved fish
+	# list is stale. Drop it now so the reload always spawns the selected
+	# preset instead of restoring the previous community into a reef tank.
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves != null and saves.has_method("is_active_save_compatible"):
+		if not saves.is_active_save_compatible():
+			if saves.has_method("clear_active_state"):
+				saves.clear_active_state()
 	TankConfig.rebuild_terrain_on_load = true
 	TankConfig.save_to_disk()
 	apply_requested.emit()

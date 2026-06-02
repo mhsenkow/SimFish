@@ -94,6 +94,7 @@ var _auto_feed_timer: float = 0.0
 var _has_logged_sterile_dissolve: bool = false
 var _eco_engineering_timer: float = 0.8
 var _overlap_resolve_timer: float = 0.0
+var _bounds_enforce_timer: float = 0.0
 # Ecosystem diary — Walstad cycle headlines beyond first-death milestones.
 var _diary_pulse_t: float = 240.0
 var _diary_bloom_phase: int = 0          # 0 calm 1 rising 2 peak 3 crash
@@ -198,17 +199,21 @@ const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
 const ECO_MAX_SNAIL_SAMPLES: int = 12
 const OVERLAP_RESOLVE_INTERVAL: float = 0.45
+const BOUNDS_ENFORCE_INTERVAL: float = 0.22
 
 
 func register_fish(f: Fish) -> void:
 	fish.append(f)
 	f.sim = self
+	if f.has_method("_reclamp_territory_to_tank"):
+		f._reclamp_territory_to_tank()
 	_record_organism_discovery(f.get_saved_genome())
 
 
 func register_shrimp(s: Shrimp) -> void:
 	shrimp.append(s)
 	s.sim = self
+	_clamp_entity_to_bounds(s, 0.20, 0.04)
 	_record_organism_discovery(s.get_saved_genome())
 
 
@@ -217,6 +222,10 @@ func register_snail(sn: Node) -> void:
 		return
 	if not sn.has_method("get_saved_genome"):
 		return
+	if sn is Node3D and sn.has_method("_reclamp_to_footprint"):
+		sn.call("_reclamp_to_footprint")
+	elif sn is Node3D:
+		_clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
 	_record_organism_discovery(sn.get_saved_genome())
 
 
@@ -360,7 +369,9 @@ func _physics_process(dt: float) -> void:
 # Day/night light multiplier 0..1. Cosine over the cycle so it's a smooth
 # bell. day_phase 0.25 = peak (midday), 0.75 = trough (midnight).
 func daylight() -> float:
-	return 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
+	var raw: float = 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
+	# Smooth dawn/dusk ramp (photoperiod crossfade ~30 sim-seconds at 1×).
+	return raw * raw * (3.0 - 2.0 * raw)
 
 
 # Cached TankConfig autoload accessor. The autoload never moves, so the per-tick
@@ -457,13 +468,16 @@ func _push_apart_pair(a: Node3D, b: Node3D, min_dist: float,
 
 
 func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
-		substrate_margin: float = 0.06) -> void:
+		substrate_margin: float = 0.06, body_radius: float = 0.0) -> void:
 	if e == null or not is_instance_valid(e):
 		return
-	var p: Vector3 = e.global_position
 	var w: Node = get_parent()
+	if w != null and w.has_method("enforce_entity_in_tank"):
+		w.enforce_entity_in_tank(e, margin, body_radius)
+		return
+	var p: Vector3 = e.global_position
 	if w != null and w.has_method("clamp_xyz_in_tank"):
-		e.global_position = w.clamp_xyz_in_tank(p, margin)
+		e.global_position = w.clamp_xyz_in_tank(p, margin, body_radius)
 		return
 	if w != null and w.has_method("clamp_xz_in_tank"):
 		var xz: Vector2 = w.clamp_xz_in_tank(p.x, p.z, margin)
@@ -475,6 +489,18 @@ func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
 	p.y = clampf(p.y, maxf(substrate_top_y + substrate_margin, world_bounds.position.y + margin),
 		world_bounds.end.y - margin)
 	e.global_position = p
+
+
+# Keep body position AND territory anchors inside the tank. Clamping position
+# alone is not enough — saved home_x/home_z from a box tank still pull fish
+# toward coordinates outside a cylinder wall every tick.
+func _clamp_fish_territory(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	if f.has_method("_reclamp_territory_to_tank"):
+		f._reclamp_territory_to_tank()
+	else:
+		_clamp_entity_to_bounds(f, 0.28, 0.06)
 
 
 func _resolve_entity_group_overlaps(group: Array, min_dist: float,
@@ -574,6 +600,41 @@ func _resolve_soft_overlaps() -> void:
 	_resolve_hardscape_overlaps(live_fish, 0.30, 60, 120)
 	_resolve_hardscape_overlaps(live_shrimp, 0.20, 80, 120)
 	_resolve_hardscape_overlaps(live_snails, 0.18, 50, 120)
+	# One clamp pass after all separation — pushing pairs apart can eject
+	# fish past curved walls, but clamping inside every pair interaction
+	# caused rim-clustering and fought saved home territories.
+	for e in live_fish:
+		_clamp_fish_territory(e)
+	for e in live_shrimp:
+		_clamp_entity_to_bounds(e, 0.18, 0.04)
+	for e in live_snails:
+		if is_instance_valid(e) and e.has_method("_reclamp_to_footprint"):
+			e.call("_reclamp_to_footprint")
+		else:
+			_clamp_entity_to_bounds(e, 0.28, 0.06, 0.10)
+
+
+func _enforce_all_fauna_in_tank() -> void:
+	for f in fish:
+		if is_instance_valid(f) and f.get("_dying") != true:
+			_clamp_fish_territory(f)
+	for s in shrimp:
+		if is_instance_valid(s) and s.get("_dying") != true:
+			_clamp_entity_to_bounds(s, 0.20, 0.04, 0.14)
+	ensure_snails_root()
+	if snails_root != null:
+		for sn in snails_root.get_children():
+			if is_instance_valid(sn) and sn is Node3D:
+				if sn.has_method("_reclamp_to_footprint"):
+					sn.call("_reclamp_to_footprint")
+				else:
+					_clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
+	for e in eggs:
+		if is_instance_valid(e):
+			_clamp_entity_to_bounds(e, 0.20, 0.04)
+	for w_part in waste:
+		if is_instance_valid(w_part):
+			_clamp_entity_to_bounds(w_part, 0.16, 0.03)
 
 # In-place removal of invalidated refs. Iterates backward and uses
 # remove_at() so we never allocate a new Array — eliminates the GC
@@ -633,7 +694,9 @@ func _tick(dt: float) -> void:
 		floater_n = w_o2.floater_count()
 	var dl: float = daylight()
 	var night: float = 1.0 - dl
-	var photo: float = dl * (float(plants.size()) * O2_PHOTO_PER_PLANT \
+	var photo: float = dl * (
+		float(total_plant_biomass) * O2_PHOTO_PER_PLANT * 0.0012
+		+ float(plants.size()) * O2_PHOTO_PER_PLANT * 0.35
 		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
 	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
@@ -658,7 +721,16 @@ func _tick(dt: float) -> void:
 			w_sync.sync_terrain_nutrients()
 
 	# 3. Plants — cap GPU-heavy growth steps per tick (Metal fence safety).
-	plant_growth_budget = clampi(28 + int(plants.size() / 12.0), 28, 96)
+	# Walstad balance: more growth budget when cycled + planted; less during spikes.
+	var cycle_bonus: float = 1.0
+	if water_chemistry.cycle_phase >= WaterChemistry.CyclePhase.CYCLING:
+		cycle_bonus = 1.12
+	if water_chemistry.cycle_phase >= WaterChemistry.CyclePhase.ESTABLISHED:
+		cycle_bonus = 1.28
+	var biomass_bonus: int = int(float(total_plant_biomass) / 55.0)
+	plant_growth_budget = clampi(
+		int((28 + int(plants.size() / 12.0) + biomass_bonus) * cycle_bonus),
+		24, 110)
 	_pearling_slots_used = 0
 	for p in plants:
 		p.tick(dt, substrate)
@@ -742,6 +814,13 @@ func _tick(dt: float) -> void:
 		ensure_snails_root()
 		_resolve_soft_overlaps()
 
+	# 4d. Periodic footprint enforcement — catches stragglers that drifted
+	# outside curved walls via saved homes, overlap pushes, or AABB fallbacks.
+	_bounds_enforce_timer = maxf(0.0, _bounds_enforce_timer - dt)
+	if _bounds_enforce_timer <= 0.0:
+		_bounds_enforce_timer = BOUNDS_ENFORCE_INTERVAL
+		_enforce_all_fauna_in_tank()
+
 	# 5. Waste.
 	var dead_waste: Array[WasteParticle] = []
 	for w in waste:
@@ -787,10 +866,14 @@ func _tick(dt: float) -> void:
 		else:
 			_extinction_timer = 0.0
 
-	# 6b. Auto-Feed at surface
+	# 6b. Auto-Feed at surface — skip when nutrients already high (Walstad self-feed).
 	if cfg != null and cfg.auto_feed_fauna:
 		_auto_feed_timer += dt
-		if _auto_feed_timer >= 12.0:
+		var n_feed: float = 0.0
+		if substrate != null:
+			n_feed = substrate.total_above_baseline()
+		var feed_ok: bool = n_feed < 5.5 and water_chemistry.ammonia < 0.35
+		if _auto_feed_timer >= 12.0 and feed_ok:
 			_auto_feed_timer = 0.0
 			var spawn_x: float = 0.0
 			var spawn_z: float = 0.0
@@ -810,6 +893,8 @@ func _tick(dt: float) -> void:
 				if water_h != null:
 					fy = float(water_h) - 0.1
 			_spawn_waste(Vector3(spawn_x, fy, spawn_z), 0.5, 3) # 3 = KIND_FOOD
+		elif _auto_feed_timer >= 12.0:
+			_auto_feed_timer = 0.0
 
 	# 6c. Algae bloom dynamics.
 	#
@@ -848,15 +933,18 @@ func _tick(dt: float) -> void:
 	# Plant-shortage pressure: 0 when biomass >=450 (mature planted tank),
 	# 1.0 when biomass <=150 (sparse / cycling tank).
 	var plant_shortage: float = clampf((450.0 - float(plant_biomass)) / 300.0, 0.0, 1.0)
+	var w_shade: Node = get_parent()
 	# Combined bloom pressure. Multiplicative: needs BOTH high nutrients AND
-	# low plant biomass to bloom. Either factor at 0 zeroes the bloom.
+	# low plant biomass to bloom. Floaters and snails suppress runaway blooms.
 	var bloom_pressure: float = n_pressure * plant_shortage
+	if w_shade != null and w_shade.has_method("floater_coverage"):
+		bloom_pressure *= 1.0 - float(w_shade.floater_coverage()) * 0.45
+	bloom_pressure *= 1.0 - clampf(float(snail_count) / 18.0, 0.0, 0.35)
 	bloom_intensity = lerpf(bloom_intensity, bloom_pressure, clampf(dt * 0.25, 0.0, 1.0))
 	var waste_nh3: float = float(waste.size()) * 0.0004
 	water_chemistry.tick(dt, self, get_parent(), plant_biomass, waste_nh3)
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
-	var w_shade: Node = get_parent()
 	# Soft crowding: dense algae patches spawn less often instead of hitting
 	# a hard population ceiling.
 	var algae_capacity: float = 80.0
@@ -916,7 +1004,7 @@ func _tick(dt: float) -> void:
 	# high) AND nutrients have dropped (n_total low), algae die faster.
 	# This is the visible "plants outcompete the bloom" payoff that closes
 	# the cycle — without it the bloom would just plateau.
-	var crash: bool = plant_biomass > 380 and n_total < 3.5
+	var crash: bool = plant_biomass > 360 and n_total < 4.0
 	var dead_algae: Array = []
 	for a in algae:
 		if not is_instance_valid(a):
@@ -1086,6 +1174,7 @@ func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
 		baby.age = 0.0
 		baby.maturity = Shrimp.MATURITY_FRY
 		register_shrimp(baby)
+		_clamp_entity_to_bounds(baby, 0.18, 0.04)
 
 
 func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
@@ -1111,6 +1200,7 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 		fry.hunger = 0.25
 		fry.energy = 0.95
 		register_fish(fry)
+		fry._reclamp_territory_to_tank()
 	# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 	mother.energy = maxf(0.0, mother.energy - 0.20)
 	_play_ambient_event("birth")
@@ -1144,6 +1234,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 			fry.hunger = 0.25
 			fry.energy = 0.95
 			register_fish(fry)
+			fry._reclamp_territory_to_tank()
 		# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 		mother.energy = maxf(0.0, mother.energy - 0.20)
 		_play_ambient_event("birth")
@@ -1176,6 +1267,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 			randf_range(0.0, 0.15),
 			randf_range(-0.2, 0.2),
 		)
+		_clamp_entity_to_bounds(e, 0.22, 0.06)
 		e.init(g)
 		register_egg(e)
 	# Story log: first egg event for the session is a milestone worth
@@ -1209,10 +1301,11 @@ func _hatch(e: FishEgg) -> void:
 	fauna_root.add_child(fry)
 	fry.global_position = e.global_position + Vector3(0, 0.1, 0)
 	fry.init_genome(e.genome)
-	# Newborn fry start hungry but with full energy.
+	fry.maturity = Fish.MATURITY_FRY
 	fry.hunger = 0.3
 	fry.energy = 1.0
 	register_fish(fry)
+	fry._reclamp_territory_to_tank()
 	_play_ambient_event("birth")
 	if not _logged_first_hatch:
 		_logged_first_hatch = true
@@ -1237,6 +1330,7 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 	if _eco_engineering_timer > 0.0:
 		return
 	_eco_engineering_timer = ECO_ENGINEERING_INTERVAL
+	var w: Node = get_parent()
 
 	var fish_n: int = 0
 	for f in fish:
@@ -1246,15 +1340,16 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 			continue
 		if f.get("_dying") == true:
 			continue
-		var p: Vector3 = f.position
-		# Fish stir the top layer while foraging: tiny local drawdown...
-		substrate.consume_at(Vector3(p.x, substrate_top_y, p.z), 0.0016)
-		# ...and nearby redeposition plume (keeps mass in the neighborhood).
+		var p: Vector3 = f.global_position
+		if w != null and w.has_method("is_inside_tank") \
+				and not w.is_inside_tank(p.x, p.z, 0.35, p.y):
+			continue
+		substrate.consume_at(Vector3(p.x, substrate_top_y, p.z), 0.0014)
 		var plume: Vector3 = Vector3(
 			p.x + randf_range(-0.75, 0.75),
 			substrate_top_y,
 			p.z + randf_range(-0.75, 0.75))
-		substrate.add_at(plume, 0.0012)
+		substrate.add_at(plume, 0.0010)
 		fish_n += 1
 
 	var shrimp_n: int = 0
@@ -1265,8 +1360,11 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 			continue
 		if s.get("_dying") == true:
 			continue
-		var sp: Vector3 = s.position
-		substrate.add_at(Vector3(sp.x, substrate_top_y, sp.z), 0.0018)
+		var sp: Vector3 = s.global_position
+		if w != null and w.has_method("is_inside_tank") \
+				and not w.is_inside_tank(sp.x, sp.z, 0.35, sp.y):
+			continue
+		substrate.add_at(Vector3(sp.x, substrate_top_y, sp.z), 0.0016)
 		shrimp_n += 1
 
 	var sn_root: Node3D = ensure_snails_root()
@@ -1281,7 +1379,10 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 		if not n.is_in_group("snails"):
 			continue
 		var np: Vector3 = (n as Node3D).global_position
-		substrate.add_at(Vector3(np.x, substrate_top_y, np.z), 0.0015)
+		if w != null and w.has_method("is_inside_tank") \
+				and not w.is_inside_tank(np.x, np.z, 0.35, np.y):
+			continue
+		substrate.add_at(Vector3(np.x, substrate_top_y, np.z), 0.0013)
 		snail_n += 1
 
 
@@ -2387,9 +2488,38 @@ func load_state(d: Dictionary) -> void:
 
 	sync_species_discoveries()
 
+	# Clamp every restored entity — saves from box tanks or pre-clamp builds
+	# can land outside curved (cylinder / sphere) walls.
+	_clamp_loaded_entities()
+
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.
 	time_scale = float(sim_d.get("time_scale", 1.0))
+
+
+func _clamp_loaded_entities() -> void:
+	for f in fish:
+		if is_instance_valid(f):
+			_clamp_fish_territory(f)
+	for sh in shrimp:
+		if is_instance_valid(sh):
+			_clamp_entity_to_bounds(sh, 0.22, 0.04)
+	for e in eggs:
+		if is_instance_valid(e):
+			_clamp_entity_to_bounds(e, 0.22, 0.06)
+	for w_part in waste:
+		if is_instance_valid(w_part):
+			_clamp_entity_to_bounds(w_part, 0.18, 0.04)
+	if snails_root != null:
+		for sn in snails_root.get_children():
+			if is_instance_valid(sn) and sn is Node3D:
+				if sn.has_method("_reclamp_to_footprint"):
+					sn.call("_reclamp_to_footprint")
+				else:
+					_clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
+	# Plants / algae: skip — clamping roots on load stacked corals on the
+	# rim and made outward growth read as a mass escape. Their tick pass
+	# reclamps voxels via _reclamp_voxels_to_footprint().
 
 
 # ---- Spawn helpers (one per entity type) ----

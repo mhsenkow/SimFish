@@ -115,4 +115,131 @@ static func update_caustic_uniforms(intensity: float, color: Color) -> void:
 			mat.set_shader_parameter("light_color", color)
 
 
+static var _water_shader: Shader = null
+const WATER_SHADER_PATH := "res://shaders/water.gdshader"
+
+static func _get_water_shader() -> Shader:
+	if _water_shader == null:
+		_water_shader = load(WATER_SHADER_PATH) as Shader
+	return _water_shader
+
+
+static func make_water(shallow: Color, deep: Color, floor_y: float, surface_y: float) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = _get_water_shader()
+	m.set_shader_parameter("shallow_color", shallow)
+	m.set_shader_parameter("deep_color", deep)
+	m.set_shader_parameter("water_floor_y", floor_y)
+	m.set_shader_parameter("water_surface_y", surface_y)
+	return m
+
+
+static var _bubble_shader: Shader = null
+const BUBBLE_SHADER_PATH := "res://shaders/bubble.gdshader"
+static var _bubble_mat: ShaderMaterial = null
+
+static func _get_bubble_shader() -> Shader:
+	if _bubble_shader == null:
+		_bubble_shader = load(BUBBLE_SHADER_PATH) as Shader
+	return _bubble_shader
+
+
+static func make_bubble(color: Color = Color(0.78, 0.92, 0.96, 0.42)) -> ShaderMaterial:
+	if _bubble_mat != null:
+		return _bubble_mat
+	_bubble_mat = ShaderMaterial.new()
+	_bubble_mat.shader = _get_bubble_shader()
+	_bubble_mat.set_shader_parameter("bubble_color", color)
+	return _bubble_mat
+
+
+static var _ripple_shader: Shader = null
+const RIPPLE_SHADER_PATH := "res://shaders/surface_ripple.gdshader"
+static var _ripple_mat: ShaderMaterial = null
+
+static func _get_ripple_shader() -> Shader:
+	if _ripple_shader == null:
+		_ripple_shader = load(RIPPLE_SHADER_PATH) as Shader
+	return _ripple_shader
+
+
+static func make_surface_ripple(color: Color = Color(0.86, 0.92, 0.96, 0.55)) -> ShaderMaterial:
+	if _ripple_mat != null:
+		return _ripple_mat
+	_ripple_mat = ShaderMaterial.new()
+	_ripple_mat.shader = _get_ripple_shader()
+	_ripple_mat.set_shader_parameter("ripple_color", color)
+	return _ripple_mat
+
+
+static var _glass_shader: Shader = null
+const GLASS_SHADER_PATH := "res://shaders/glass.gdshader"
+static var _glass_mat: ShaderMaterial = null
+
+static func make_glass(shape_id: float, water_y: float) -> ShaderMaterial:
+	if _glass_mat == null:
+		_glass_shader = load(GLASS_SHADER_PATH) as Shader
+		_glass_mat = ShaderMaterial.new()
+		_glass_mat.shader = _glass_shader
+	_glass_mat.set_shader_parameter("tank_shape_id", shape_id)
+	_glass_mat.set_shader_parameter("water_surface_y", water_y)
+	return _glass_mat
+
+
+static var _trans_shader: Shader = null
+static var _trans_cache: Dictionary = {}
+
+static func make_translucent(color: Color) -> ShaderMaterial:
+	var key: Color = Color(snappedf(color.r, 0.02), snappedf(color.g, 0.02), snappedf(color.b, 0.02), snappedf(color.a, 0.05))
+	if _trans_cache.has(key):
+		return _trans_cache[key]
+	if _trans_shader == null:
+		_trans_shader = load("res://shaders/voxel_translucent.gdshader") as Shader
+	var m := ShaderMaterial.new()
+	m.shader = _trans_shader
+	m.set_shader_parameter("albedo", color)
+	_trans_cache[key] = m
+	return m
+
+
+static var _stem_shader: Shader = null
+
+static func make_stem(color: Color, daylight: float = 1.0) -> ShaderMaterial:
+	if _stem_shader == null:
+		_stem_shader = load("res://shaders/stem_subsurface.gdshader") as Shader
+	var m := ShaderMaterial.new()
+	m.shader = _stem_shader
+	m.set_shader_parameter("albedo", color)
+	m.set_shader_parameter("daylight", daylight)
+	return m
+
+
+static func get_bubble_material() -> ShaderMaterial:
+	return make_bubble()
+
+
+static func update_aquatic_uniforms(intensity: float, light_color: Color, water_y: float,
+		day_offset: float, shimmer: float) -> void:
+	for mat in _mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
+			mat.set_shader_parameter("aquatic_light_color", light_color)
+			mat.set_shader_parameter("water_surface_y", water_y)
+			mat.set_shader_parameter("day_phase_offset", day_offset)
+			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+
+
+static var _foliage_mm_mats: Array = []
+
+static func register_foliage_mm(mat: ShaderMaterial) -> void:
+	if mat != null and not _foliage_mm_mats.has(mat):
+		_foliage_mm_mats.append(mat)
+
+
+static func update_foliage_uniforms(canopy_shade: float, water_y: float, daylight: float) -> void:
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("canopy_shade", canopy_shade)
+			mat.set_shader_parameter("water_surface_y", water_y)
+			mat.set_shader_parameter("daylight", daylight)
 

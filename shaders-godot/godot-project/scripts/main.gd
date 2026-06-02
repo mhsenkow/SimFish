@@ -438,6 +438,9 @@ func _apply_render_config() -> void:
 		sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
 		sm.set_shader_parameter("internal_resolution",
 			Vector2(float(render_w), float(render_h)))
+		var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
+		if world_vis != null:
+			sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
 	# If palette is disabled, swap the Display's shader to a passthrough by
 	# setting dither_strength to 0 AND increasing palette_size temporarily.
 	# Simpler: just set dither to 0 - the quantize still happens but no dither.
@@ -814,7 +817,23 @@ func _on_eight() -> void:
 
 
 func _take_photo() -> void:
-	_request_viewport_image(_finish_photo)
+	var world_node := get_node_or_null("SubViewport/World")
+	if world_node != null and world_node.has_method("begin_screenshot_boost"):
+		world_node.begin_screenshot_boost(3.0)
+	_set_hud_visible_for_photo(false)
+	_request_viewport_image(_finish_photo_with_hud_restore)
+
+
+func _set_hud_visible_for_photo(visible: bool) -> void:
+	if top_hud != null:
+		top_hud.visible = visible
+	if right_rail != null:
+		right_rail.visible = visible
+
+
+func _finish_photo_with_hud_restore(img: Image) -> void:
+	_set_hud_visible_for_photo(true)
+	_finish_photo(img)
 
 
 func _finish_photo(img: Image) -> void:

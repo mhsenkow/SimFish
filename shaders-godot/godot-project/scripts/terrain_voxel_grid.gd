@@ -67,6 +67,7 @@ const DISPLAY_RAMP: Dictionary = {
 var half_w: float = 8.0
 var half_d: float = 4.0
 var y_max: float = 1.6
+var y_origin: float = 0.0
 var cols: int = 0
 var depths: int = 0
 var rows: int = 0
@@ -120,14 +121,14 @@ func _in_bounds(cx: int, cy: int, cz: int) -> bool:
 func cell_center(cx: int, cy: int, cz: int) -> Vector3:
 	return Vector3(
 		-half_w + (float(cx) + 0.5) * CELL_SIZE,
-		(float(cy) + 0.5) * CELL_SIZE,
+		y_origin + (float(cy) + 0.5) * CELL_SIZE,
 		-half_d + (float(cz) + 0.5) * CELL_SIZE,
 	)
 
 
 func world_to_cell(pos: Vector3) -> Vector3i:
 	var cx: int = int(floor((pos.x + half_w) / CELL_SIZE))
-	var cy: int = int(floor(pos.y / CELL_SIZE))
+	var cy: int = int(floor((pos.y - y_origin) / CELL_SIZE))
 	var cz: int = int(floor((pos.z + half_d) / CELL_SIZE))
 	return Vector3i(cx, cy, cz)
 
@@ -171,14 +172,15 @@ func restore_cell(rec: Dictionary) -> void:
 	_set_cell(cx, cy, cz, int(rec.get("mat", CellMaterial.EMPTY)), float(rec.get("nut", 0.0)))
 
 
-func configure(half_width: float, half_depth: float, substrate_depth: float,
-		build_half_w: float, build_half_d: float) -> void:
+func configure(half_width: float, half_depth: float, substrate_top_y: float,
+		build_half_w: float, build_half_d: float, floor_y: float = 0.0) -> void:
 	half_w = half_width
 	half_d = half_depth
-	y_max = substrate_depth
+	y_origin = floor_y
+	y_max = substrate_top_y
 	cols = maxi(1, int((build_half_w * 2.0) / CELL_SIZE))
 	depths = maxi(1, int((build_half_d * 2.0) / CELL_SIZE))
-	base_rows = maxi(1, int(ceil(substrate_depth / CELL_SIZE)))
+	base_rows = maxi(1, int(ceil((y_max - y_origin) / CELL_SIZE)))
 	rows = base_rows + EXTRA_SCULPT_ROWS
 	var count: int = cols * depths * rows
 	materials = PackedByteArray()
@@ -481,6 +483,7 @@ func to_save_dict() -> Dictionary:
 		"half_w": half_w,
 		"half_d": half_d,
 		"y_max": y_max,
+		"y_origin": y_origin,
 		"cols": cols,
 		"depths": depths,
 		"rows": rows,
@@ -505,6 +508,7 @@ func apply_save_dict(d: Dictionary) -> bool:
 	half_w = float(d.get("half_w", half_w))
 	half_d = float(d.get("half_d", half_d))
 	y_max = float(d.get("y_max", y_max))
+	y_origin = float(d.get("y_origin", 0.0))
 	var count: int = cols * depths * rows
 	var mat_arr: Array = d.get("materials", [])
 	var nut_arr: Array = d.get("nutrients", [])

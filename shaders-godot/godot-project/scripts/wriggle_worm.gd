@@ -114,6 +114,11 @@ func _process(dt: float) -> void:
 	# crawls on the surface rather than burying.
 	position.y = substrate_top_y + 0.025
 
+	if sim != null:
+		var w: Node = sim.get_parent()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.06)
+
 	_next_jitter_t -= dt
 	if _next_jitter_t <= 0.0:
 		_seed_drift()

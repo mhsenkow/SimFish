@@ -517,11 +517,20 @@ func _add_dropdown(label: String, key: String, options: Array) -> void:
 	for i in options.size():
 		ob.add_item(String(options[i][0]))
 		ob.set_item_metadata(i, options[i][1])
-		if options[i][1] == cur:
+		if _dropdown_value_matches(options[i][1], cur):
 			ob.select(i)
 	ob.item_selected.connect(func(idx: int):
 		_genome[key] = ob.get_item_metadata(idx)
 		_on_param_changed())
+
+
+func _dropdown_value_matches(option_val: Variant, cur: Variant) -> bool:
+	if option_val == cur:
+		return true
+	# Tail/pattern indices can arrive as int or float from sliders / saves.
+	if (option_val is int or option_val is float) and (cur is int or cur is float):
+		return int(option_val) == int(cur)
+	return false
 
 
 func _add_check(label: String, key: String) -> void:

@@ -416,11 +416,7 @@ func _ensure_shared_pearling_assets() -> void:
 	bubble_mesh.height = 0.044
 	bubble_mesh.radial_segments = 4
 	bubble_mesh.rings = 2
-	var bubble_mat := StandardMaterial3D.new()
-	bubble_mat.albedo_color = Color(0.92, 0.96, 1.0, 0.16)
-	bubble_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	bubble_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bubble_mesh.material = bubble_mat
+	bubble_mesh.material = VoxelMat.make_bubble(Color(0.92, 0.96, 1.0, 0.22))
 	_shared_pearling_mesh = bubble_mesh
 
 
@@ -442,9 +438,9 @@ func _setup_pearling() -> void:
 	pm.scale_max = randf_range(0.22, 0.36)
 	_pearling_particles.process_material = pm
 	var bubble_mesh: SphereMesh = _shared_pearling_mesh.duplicate()
-	var bubble_mat: StandardMaterial3D = bubble_mesh.material.duplicate()
-	bubble_mat.albedo_color = Color(
-		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity)
+	var bubble_mat: ShaderMaterial = bubble_mesh.material.duplicate()
+	bubble_mat.set_shader_parameter("bubble_color", Color(
+		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity))
 	bubble_mesh.material = bubble_mat
 	_pearling_particles.draw_pass_1 = bubble_mesh
 	add_child(_pearling_particles)
@@ -536,6 +532,7 @@ func _grow_one() -> bool:
 			_add_evolutionary_accessory(effective_ramp, rel, photo_offset)
 
 	current_height += 1
+	_cast_root_shadow()
 
 	# Root growth: add a root every 3-4 stem voxels. As the plant matures
 	# (current_height climbs), bump the root cap so the root mat keeps
@@ -602,6 +599,8 @@ func _ensure_foliage_batch() -> VoxelBatch:
 		if _foliage_mat == null:
 			_foliage_mat = ShaderMaterial.new()
 			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
+			VoxelMat.register_foliage_mm(_foliage_mat)
+			_foliage_mat.set_shader_parameter("tip_sway_mult", 2.15)
 		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
 	return _foliage_batch
 
@@ -1369,6 +1368,16 @@ func _try_consume_growth_budget() -> bool:
 	return true
 
 
+func _cast_root_shadow() -> void:
+	var sim_driver: Node = _find_sim()
+	if sim_driver == null:
+		return
+	var w: Node = sim_driver.get_parent()
+	if w != null and w.has_method("tint_substrate_cell"):
+		w.tint_substrate_cell(global_position.x, global_position.z,
+			Color(0.16, 0.20, 0.12), 0.22)
+
+
 func _tick_pearling(_dt: float) -> void:
 	if not _pearling_eligible:
 		return
@@ -1406,8 +1415,11 @@ func _tick_pearling(_dt: float) -> void:
 			(0.12 + pearl_factor * 0.55) * _pearling_strength * global_damp,
 			0.06, 0.62)
 		_pearling_particles.set("amount_ratio", amount_ratio)
-		# Position at the top of the plant, tracking growth.
-		_pearling_particles.position = Vector3(0, _get_stem_top(), 0)
+		# Position at canopy tips for pearling hotspots.
+		var tip_y: float = _get_stem_top()
+		if leaf_form in ["paddle", "lily", "pad"]:
+			tip_y += VOXEL_SIZE * 0.8
+		_pearling_particles.position = Vector3(0, tip_y, 0)
 	elif _pearling_active:
 		_pearling_active = false
 		if _pearling_particles != null:

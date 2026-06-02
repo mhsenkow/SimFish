@@ -6,6 +6,7 @@ uniform float speed : hint_range(0.1, 5.0) = 1.0;
 uniform float noise_scale : hint_range(0.1, 10.0) = 1.8;
 uniform float edge_fade : hint_range(0.0, 1.0) = 0.15;
 uniform float falloff_exponent : hint_range(1.0, 5.0) = 2.0;
+uniform float occlusion : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 local_pos;
 
@@ -42,6 +43,7 @@ void fragment() {
 	
 	// Combine the calculations
 	float alpha = beam_color.a * pow(fresnel, falloff_exponent) * top_bottom_fade * shimmer;
+	alpha *= 1.0 - occlusion * 0.72;
 	
 	ALBEDO = beam_color.rgb;
 	ALPHA = alpha;

@@ -316,6 +316,7 @@ var _last_courtship_color_step: int = -999
 # visually signal she's in heat. Created on demand, freed when she's
 # no longer receptive.
 var _pheromone_trail: GPUParticles3D = null
+var _belly_flash: float = 0.0
 # Aerial respiration: cories + loaches periodically dart to the surface to
 # gulp atmospheric air, then sink back to the substrate. Real Walstad
 # behavior - it's a stress signal in healthy tanks but routine in any
@@ -663,6 +664,8 @@ func init_genome(genome: Dictionary) -> void:
 		home_z = global_position.z + randf_range(-1.5, 1.5)
 	if is_inf(home_y):
 		home_y = preferred_y + randf_range(-0.6, 0.6)
+	if sim != null:
+		_reclamp_territory_to_tank()
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -860,7 +863,8 @@ func _build_body() -> void:
 	# bright red/orange fan against a dark body).
 	var effective_tail: Color = tail_color if _tail_color_set \
 		else base_color.darkened(0.15)
-	var mat_tail := _make_mat(effective_tail)
+	var mat_tail := VoxelMat.make_translucent(
+		Color(effective_tail.r, effective_tail.g, effective_tail.b, 0.52))
 	# Marking material: the secondary ornament color zone (tetra blue band,
 	# rasbora rear wedge, gourami flank, eye-spot ring). Falls back to accent
 	# when the genome supplies no explicit marking_color.
@@ -1296,6 +1300,14 @@ func _make_mat(color: Color) -> ShaderMaterial:
 	return VoxelMat.make(color)
 
 
+func _apply_belly_flash_uniform(strength: float) -> void:
+	for c in get_children():
+		if c is MeshInstance3D:
+			var sm := (c as MeshInstance3D).material_override as ShaderMaterial
+			if sm != null and sm.get_shader_parameter("belly_flash") != null:
+				sm.set_shader_parameter("belly_flash", strength)
+
+
 func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(size)
@@ -1324,6 +1336,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# to starvation if the fish never finds a bite (longer than most
 	# fish lifespans, so starvation is a real but uncommon kill switch).
 	hunger = clampf(hunger + dt * 0.006, 0.0, 1.0)
+	# Walstad balance: well-planted, oxygenated tanks support fish with less
+	# supplemental feeding pressure.
+	if sim != null and sim.dissolved_o2 > 0.72 and sim.total_plant_biomass > 280:
+		hunger = maxf(0.0, hunger - dt * 0.0018)
 	var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
 	energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 	burst_remaining = maxf(0.0, burst_remaining - dt)
@@ -1392,6 +1408,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		stress = clampf(stress + dt * 0.05, 0.0, 1.0)
 	else:
 		stress = maxf(0.0, stress - dt * 0.08)
+	if sim != null and sim.total_plant_biomass > 320 and sim.dissolved_o2 > 0.65:
+		stress = maxf(0.0, stress - dt * 0.025)
 
 	_update_maturity()
 
@@ -2177,8 +2195,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if position.y > home_y * 0.85 and preferred_y >= 4.0 \
 				and sim != null and sim.has_method("get_parent"):
 			var w := sim.get_parent()
-			if w != null and w.has_method("spawn_burst_ripple"):
-				w.spawn_burst_ripple(position)
+			if w != null:
+				if w.has_method("spawn_burst_ripple"):
+					w.spawn_burst_ripple(position)
+				if w.has_method("get_node") and w.get_node_or_null("AquariumVisuals") != null:
+					w.get_node("AquariumVisuals").spawn_splash_crown(position)
 
 	# HOVER / INVESTIGATE TRIGGER. Any fish might occasionally stop mid-water to
 	# look around. This breaks up the constant swimming and adds lifelike personality.
@@ -2244,16 +2265,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			var new_x: float = home_x + randf_range(-drift_radius, drift_radius)
 			var new_z: float = home_z + randf_range(-drift_radius, drift_radius)
-			var p: Vector3 = w.clamp_xyz_in_tank(Vector3(new_x, home_y, new_z), 0.4)
+			var p: Vector3 = w.clamp_xyz_in_tank(
+				Vector3(new_x, home_y, new_z), 0.4, _body_tank_margin() * 0.5)
 			home_x = p.x
 			home_z = p.z
-		else:
-			# Nudge home within tank bounds. The world_bounds AABB keeps
-			# the drift from pushing home outside the tank.
-			home_x = clampf(home_x + randf_range(-drift_radius, drift_radius),
-				world_bounds.position.x + 1.0, world_bounds.end.x - 1.0)
-			home_z = clampf(home_z + randf_range(-drift_radius, drift_radius),
-				world_bounds.position.z + 1.0, world_bounds.end.z - 1.0)
 
 	# Vertical territory drift — dome bowls and tall columns need fish to
 	# roam upward over time, not pin to the spawn layer forever.
@@ -2382,6 +2397,9 @@ func _process(dt: float) -> void:
 			return  # paused
 
 	_update_pheromone_trail()
+	if _belly_flash > 0.0:
+		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
+		_apply_belly_flash_uniform(_belly_flash)
 
 	# Apply pregnancy bulge if gestating
 	if _body_mid_pivot != null:
@@ -2475,6 +2493,10 @@ func _animate_death(dt: float) -> void:
 	# clipping through it. SimDriver's substrate_top_y is the floor.
 	if sim != null and position.y < sim.substrate_top_y + 0.1:
 		position.y = sim.substrate_top_y + 0.1
+	if sim != null:
+		var w: Node = sim.get_parent()
+		if w != null and w.has_method("clamp_xyz_in_tank"):
+			global_position = w.clamp_xyz_in_tank(global_position, 0.24, _body_tank_margin())
 	# At the end of the sequence, drop the mulm and remove the node.
 	if _dying_timer <= 0.0:
 		if sim != null and sim.has_method("_spawn_waste"):
@@ -2542,19 +2564,15 @@ func _motion_substep(dt: float) -> void:
 	# ---- Apply translation ----
 	velocity = heading * speed
 	position += velocity * dt
+	if velocity.y > 0.12:
+		_belly_flash = 1.0
 	# Soft-brain wall avoidance can still overshoot on high timescale + burst.
 	# Hard clamp keeps bodies from visibly intersecting glass geometry.
 	if sim != null:
 		var w: Node = sim.get_parent()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
-			position = w.clamp_xyz_in_tank(position, 0.22)
-		else:
-			var b: AABB = sim.world_bounds
-			position.x = clampf(position.x, b.position.x + 0.20, b.end.x - 0.20)
-			position.y = clampf(position.y,
-				maxf(b.position.y + 0.20, sim.substrate_top_y + 0.08),
-				b.end.y - 0.20)
-			position.z = clampf(position.z, b.position.z + 0.20, b.end.z - 0.20)
+			var m: float = _body_tank_margin()
+			global_position = w.clamp_xyz_in_tank(global_position, 0.22, m)
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
 	# built so its forward = -Z, so the fish faces its motion correctly.
@@ -2893,8 +2911,8 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 		ali /= float(count_conspecific)
 		coh /= float(count_conspecific)
 		var school_avg_speed: float = school_speed_sum / float(count_conspecific)
-		var ali_strength: float = 0.9
-		var coh_strength: float = 0.7 * tightness
+		var ali_strength: float = 1.15
+		var coh_strength: float = 0.82 * tightness
 		# Alignment: steer toward avg heading.
 		if ali.length() > 0.001:
 			steer += ali.normalized() * ali_strength
@@ -3026,35 +3044,23 @@ func _water_column_height() -> float:
 	return 5.0
 
 
-func _wall_avoid(b: AABB) -> Vector3:
+func _wall_avoid(_b: AABB) -> Vector3:
 	var w := _world_node()
 	if w != null and w.has_method("clamp_xyz_in_tank"):
-		var tank_margin: float = 0.42
+		var body_m: float = _body_tank_margin()
+		var tank_margin: float = body_m
+		var gp: Vector3 = global_position
 		if w.has_method("is_inside_tank_volume") \
-				and not w.is_inside_tank_volume(position.x, position.y, position.z, tank_margin):
-			var c: Vector3 = w.clamp_xyz_in_tank(position, tank_margin)
-			var push: Vector3 = c - position
+				and not w.is_inside_tank_volume(gp.x, gp.y, gp.z, tank_margin * 0.35):
+			var c: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.35, body_m)
+			var push: Vector3 = c - gp
 			if push.length_squared() > 1e-6:
 				return push.normalized() * clampf(push.length() / tank_margin, 0.45, 1.25)
-		var c_soft: Vector3 = w.clamp_xyz_in_tank(position, tank_margin * 0.5)
-		var soft: Vector3 = c_soft - position
+		var c_soft: Vector3 = w.clamp_xyz_in_tank(gp, tank_margin * 0.2, body_m * 0.5)
+		var soft: Vector3 = c_soft - gp
 		if soft.length_squared() > 1e-6:
-			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.5), 0.0, 0.7)
-	var bounds_margin := 1.0
-	var v := Vector3.ZERO
-	if position.x < b.position.x + bounds_margin:
-		v.x += 1.0
-	if position.x > b.position.x + b.size.x - bounds_margin:
-		v.x -= 1.0
-	if position.y < b.position.y + bounds_margin:
-		v.y += 1.0
-	if position.y > b.position.y + b.size.y - bounds_margin:
-		v.y -= 1.0
-	if position.z < b.position.z + bounds_margin:
-		v.z += 1.0
-	if position.z > b.position.z + b.size.z - bounds_margin:
-		v.z -= 1.0
-	return v
+			return soft.normalized() * clampf(soft.length() / (tank_margin * 0.2), 0.0, 0.7)
+	return Vector3.ZERO
 
 
 func _local_clearance_push(neighbors: Array, plants: Array) -> Vector3:
@@ -3631,10 +3637,34 @@ func apply_save_dict(d: Dictionary) -> void:
 		home_x = float(home[0])
 		home_y = float(home[1])
 		home_z = float(home[2])
+	_reclamp_territory_to_tank()
 	# Transient refs are NOT restored — they're cheap to re-pick next tick
 	# and trying to resolve them across saves is fragile (the plant might
 	# have just been nibbled to death). Clear them so the AI starts fresh.
 	target_plant = null
+
+
+# Pull body + territory anchors inside the tank footprint. Saved games from
+# box tanks (or pre-curved-wall builds) can carry home coords outside a
+# cylinder — clamping position alone leaves fish swimming into the void.
+func _body_tank_margin() -> float:
+	return clampf(adult_voxel_scale * _maturity_scale() * 2.4 + 0.32, 0.38, 0.65)
+
+
+func _reclamp_territory_to_tank() -> void:
+	if sim == null:
+		return
+	var w: Node = sim.get_parent()
+	if w == null or not w.has_method("clamp_xyz_in_tank"):
+		return
+	var m: float = _body_tank_margin()
+	global_position = w.clamp_xyz_in_tank(global_position, 0.28, m)
+	var hp: Vector3 = w.clamp_xyz_in_tank(Vector3(home_x, home_y, home_z), 0.35, m * 0.5)
+	home_x = hp.x
+	home_y = hp.y
+	home_z = hp.z
+	if brooding_remaining > 0.0:
+		brooding_at = w.clamp_xyz_in_tank(brooding_at, 0.30)
 
 
 static func _id_of(n: Node) -> String:

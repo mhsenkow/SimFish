@@ -76,6 +76,11 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 		_add_voxel(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.9, -VOXEL_SIZE * 0.6), 0.7)
 	if _voxels.size() < 5 and life_frac > 0.85:
 		_add_voxel(Vector3(0, VOXEL_SIZE * 1.4, 0), 0.6)
+	var w: Node = null
+	if get_tree() != null:
+		w = get_tree().current_scene.get_node_or_null("SubViewport/World")
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		global_position = w.clamp_xyz_in_tank(global_position, 0.22, VOXEL_SIZE * 2.0)
 	# Senescence fade: in the last 15 % of life, scale shrinks slightly so
 	# the cluster visibly retreats before disappearing.
 	if life_frac > 0.85:
