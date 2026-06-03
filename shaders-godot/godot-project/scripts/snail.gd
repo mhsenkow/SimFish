@@ -613,7 +613,7 @@ func _reclamp_to_footprint() -> void:
 		return
 
 
-func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, pre_move: Vector3) -> void:
+func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, _pre_move: Vector3) -> void:
 	var w := _world_node()
 	if w != null and w.has_method("is_inside_tank_volume"):
 		var margin: float = 0.28 + shell_size * 0.06

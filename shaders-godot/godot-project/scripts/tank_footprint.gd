@@ -186,7 +186,7 @@ func lateral_boundary_info(x: float, y: float, z: float, margin: float = 0.0) ->
 
 
 # Floor / ceiling repulsion activates only within a narrow band near each plane.
-func vertical_boundary_info(x: float, y: float, z: float, margin: float = 0.0,
+func vertical_boundary_info(_x: float, y: float, _z: float, margin: float = 0.0,
 		floor_band: float = 0.50, ceil_band: float = 0.42) -> Dictionary:
 	var floor_m: float = substrate_y + margin
 	var ceil_m: float = water_y - margin

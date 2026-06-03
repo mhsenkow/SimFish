@@ -11,6 +11,16 @@ uniform float sway_speed = 1.6;
 uniform float sway_amplitude = 0.08;
 uniform float flutter_speed = 3.6;
 uniform float flutter_amplitude = 0.03;
+// Subsurface-scattering rim — thin leaves get a warm translucent edge
+// when they catch grazing light. View-space fresnel proxy lets us
+// approximate the backlit-rim effect without a real light pass.
+// Daylight gate matches foliage_mm so the rim fades to almost nothing
+// at night (no sun → no backlight); the previous always-on version was
+// brightening every leaf edge at midnight and turning the tank into a
+// neon forest.
+uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
+uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
+uniform float sss_daylight : hint_range(0.0, 1.0) = 1.0;
 
 void vertex() {
     // 1. Get world space position for spatial variance
@@ -57,5 +67,13 @@ void fragment() {
     } else {
         f = 0.76;        // +Z / -Z sides
     }
-    ALBEDO = apply_vibrancy(albedo.rgb * f, color_vibrancy);
+    vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
+    // Subsurface rim — at grazing view angles the leaf reads as
+    // translucent and picks up a warm tint from light passing through.
+    // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.
+    // Day-tracked so the rim disappears at night (matches foliage_mm).
+    float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
+    float rim_amt = sss_strength * (0.25 + 0.75 * sss_daylight);
+    col = mix(col, col * 0.7 + sss_color * 0.55, rim * rim_amt);
+    ALBEDO = col;
 }

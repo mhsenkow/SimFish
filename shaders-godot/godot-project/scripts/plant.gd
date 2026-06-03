@@ -66,6 +66,21 @@ var has_emerged: bool = false   # true once tip has reached the water surface
 var bloom_voxels: Array[MeshInstance3D] = []
 var seed_timer: float = 0.0
 
+# Epiphyte: plant anchors to a host (driftwood, rock) rather than the
+# substrate. Skips root growth, doesn't draw nutrients from the substrate
+# grid, and gets a modest fixed nutrient_mult (water-column micros). Set
+# by world.gd at spawn for moss / java fern style species.
+var is_epiphyte: bool = false
+const EPIPHYTE_NUTRIENT_MULT: float = 0.55
+
+# Trim-response branching: when fish nibble a stem voxel, we record the
+# cut height. The next growth tick sprouts a small side shoot from that
+# node — real plant response to grazing (apical dominance lost → lateral
+# buds activate). Cleared once the side shoot is placed so each cut
+# produces one branch, not an endless cascade.
+var _pending_trim_nodes: Array[int] = []
+const MAX_PENDING_TRIM_NODES: int = 4
+
 # Canopy life cycle: vegetative growth stops at the water surface, then
 # flower/seed/senescence closes the Walstad nutrient loop.
 enum LifePhase { VEGETATIVE, CANOPY, SENESCENT }
@@ -235,9 +250,16 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		uses_flowering = not not params["uses_flowering"]
 	else:
 		_apply_default_growth_strategy()
+	if params.has("is_epiphyte"):
+		is_epiphyte = not not params["is_epiphyte"]
 	_ensure_plant_named()
-	# Build initial roots.
-	_build_initial_roots()
+	# Epiphytes don't grow roots into substrate — they cling to a host.
+	# Subclasses (Coral) also no-op _build_initial_roots, so this composes
+	# cleanly without subclass-specific knowledge.
+	if not is_epiphyte:
+		_build_initial_roots()
+	else:
+		_build_holdfast_anchor()
 	for i in initial_height:
 		_grow_one()
 
@@ -269,6 +291,7 @@ func to_save_dict() -> Dictionary:
 			"leaf_form": leaf_form,
 			"leaf_length": leaf_length,
 			"max_roots": _max_roots,
+			"is_epiphyte": is_epiphyte,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -345,6 +368,29 @@ func _build_initial_roots() -> void:
 	var initial_roots: int = _rng_range(2, mini(3, _max_roots))
 	for i in initial_roots:
 		_add_root(root_ramp)
+
+
+# Epiphyte holdfast: a small spread of thin fibers gripping the host
+# surface. Visible "this plant is attached to driftwood" cue without the
+# 12-voxel deep root mat that substrate-rooted plants get.
+func _build_holdfast_anchor() -> void:
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var holdfast_color: Color = ramp[0].darkened(0.25)
+	var fiber_count: int = 4
+	for i in fiber_count:
+		var ang: float = float(i) / float(fiber_count) * TAU + randf_range(-0.3, 0.3)
+		var spread: float = VOXEL_SIZE * randf_range(0.18, 0.34)
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.16))
+		mi.material_override = VoxelMat.make_foliage(holdfast_color)
+		mi.position = Vector3(
+			cos(ang) * spread,
+			-VOXEL_SIZE * 0.08,
+			sin(ang) * spread)
+		add_child(mi)
+		root_voxels.append(mi)
+	_root_count = fiber_count
 
 
 func _add_root(root_ramp: Array) -> void:
@@ -511,6 +557,16 @@ func _grow_one() -> bool:
 	# Phototropism: bias the new voxel's lateral offset toward the light.
 	var photo_offset: Vector2 = _phototropic_offset()
 
+	# Trim response: if a recent nibble cut the top off, this growth tick
+	# spawns a side shoot from the cut node instead of resuming vertical
+	# growth. The lateral cluster reads as the plant pushing a branch
+	# where its apical bud was lost. current_height is NOT incremented —
+	# we let the main stem resume from the next tick.
+	if not _pending_trim_nodes.is_empty():
+		var cut_y: int = _pending_trim_nodes.pop_front()
+		_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
+		return true
+
 	match leaf_form:
 		"paddle":
 			_grow_paddle_leaf(effective_ramp, age_frac, rel, photo_offset)
@@ -566,6 +622,59 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 		photo_offset.y,
 	))
 	_register_stem_voxel(mi)
+
+
+# Lateral shoot pushed from a cut node after a fish nibbles the apex.
+# Spawns 2-3 angled voxels off to one side at the cut height, plus a
+# tip leaf cluster baked into the foliage MultiMesh so the side shoot
+# is visibly alive (not just a stub). Doesn't change current_height —
+# the main stem regrows on subsequent ticks.
+func _grow_side_shoot_at(ramp: Array, cut_y: int, photo_offset: Vector2) -> void:
+	var theta: float = randf() * TAU
+	var dx: float = cos(theta)
+	var dz: float = sin(theta)
+	var ramp_idx: int = clampi(maxi(2, int(cut_y / 3.0)), 0, ramp.size() - 1)
+	var stem_color: Color = ramp[ramp_idx]
+	var shoot_len: int = 2 + (1 if randf() < 0.5 else 0)
+	var base_y: float = float(cut_y) * VOXEL_SIZE
+	for j in shoot_len:
+		var t: float = float(j) / float(maxi(1, shoot_len))
+		var mi := MeshInstance3D.new()
+		var thickness: float = lerpf(0.38, 0.26, t)
+		mi.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * thickness,
+			VOXEL_SIZE * 0.65,
+			VOXEL_SIZE * thickness))
+		mi.material_override = VoxelMat.make_foliage(stem_color)
+		var reach: float = VOXEL_SIZE * 0.5 * float(j + 1)
+		mi.position = _clamp_growth_offset(Vector3(
+			photo_offset.x + dx * reach,
+			base_y + VOXEL_SIZE * 0.3 * float(j + 1),
+			photo_offset.y + dz * reach))
+		_register_stem_voxel(mi)
+	# Tip cluster — a couple of leaf voxels baked into the foliage batch
+	# so the side shoot reads as a sprouting twig with new growth.
+	var tip_node := Node3D.new()
+	tip_node.position = _clamp_growth_offset(Vector3(
+		photo_offset.x + dx * VOXEL_SIZE * 0.5 * float(shoot_len + 1),
+		base_y + VOXEL_SIZE * 0.3 * float(shoot_len + 1),
+		photo_offset.y + dz * VOXEL_SIZE * 0.5 * float(shoot_len + 1)))
+	tip_node.rotation.y = theta
+	var leaf_color: Color = ramp[clampi(ramp.size() - 2, 0, ramp.size() - 1)]
+	var tip_voxels: Array = []
+	for k in 3:
+		var lv := MeshInstance3D.new()
+		lv.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.32))
+		lv.material_override = VoxelMat.make_foliage(leaf_color.lightened(0.04 * float(k)))
+		lv.position = Vector3(
+			VOXEL_SIZE * 0.18 * float(k),
+			VOXEL_SIZE * 0.18 * float(k),
+			0.0)
+		tip_voxels.append(lv)
+	_leaf_groups.append(_bake_leaf(tip_node, tip_voxels))
+	_leaf_ages.append(_t)
+	tip_node.free()
 
 
 # Animate a freshly-spawned leaf node from a curled-up start (small scale,
@@ -1020,9 +1129,18 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	rotation.z = flow_bias * 0.04  # downstream lean
 
 	# ---- Health tracking ----
-	var available: float = substrate.get_at(_world_pos)
-	var nutrient_mult: float = clampf(
-		(available - substrate.NUTRIENT_BASELINE) / 0.4, 0.0, 1.0)
+	# Epiphytes don't tap the substrate grid — they cling to a host and
+	# pull micros from the water column. We give them a modest, constant
+	# nutrient_mult so they grow steadily but slowly, and skip the
+	# substrate.consume_at() call further down so they don't drain the
+	# soil under wherever they happen to be hovering.
+	var nutrient_mult: float
+	if is_epiphyte:
+		nutrient_mult = EPIPHYTE_NUTRIENT_MULT
+	else:
+		var available: float = substrate.get_at(_world_pos)
+		nutrient_mult = clampf(
+			(available - substrate.NUTRIENT_BASELINE) / 0.4, 0.0, 1.0)
 
 	# Shade competition. Refresh every ~4-6 sim seconds (cheap to scan
 	# sibling plants, but no need to do it per tick — taller neighbors
@@ -1119,7 +1237,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if growth_progress >= 1.0:
 		growth_progress = 0.0
 		if _try_consume_growth_budget() and _grow_one():
-			substrate.consume_at(_world_pos, nutrient_demand)
+			if not is_epiphyte:
+				substrate.consume_at(_world_pos, nutrient_demand)
 			_notify_growth_audio()
 			if emergent_growth and _at_surface_cap():
 				_enter_canopy()
@@ -1150,7 +1269,8 @@ func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) ->
 		if _canopy_timer >= 25.0:
 			_canopy_timer = 0.0
 			_begin_flowering()
-	substrate.consume_at(_world_pos, nutrient_demand * 0.08 * dt)
+	if not is_epiphyte:
+		substrate.consume_at(_world_pos, nutrient_demand * 0.08 * dt)
 
 
 # Ribbon-form plants extend a horizontal stolon along the substrate that
@@ -1242,17 +1362,7 @@ func _begin_flowering() -> void:
 	flower_stage = FlowerStage.BUD
 	_flower_timer = 0.0
 	has_flower = true
-	# Choose flower colors.
-	var palettes: Array = [
-		[Color8(230, 130, 200), Color8(245, 220, 90)],   # pink + gold
-		[Color8(245, 220, 90), Color8(255, 180, 60)],    # daffodil
-		[Color8(170, 130, 220), Color8(200, 180, 60)],   # lavender + gold
-		[Color8(240, 240, 240), Color8(245, 195, 100)],  # white + gold
-		[Color8(220, 100, 100), Color8(230, 200, 60)],   # red + yellow
-	]
-	var pal: Array = palettes[randi() % palettes.size()]
-	_flower_petal_color = pal[0]
-	_flower_center_color = pal[1]
+	_pick_flower_palette()
 	# Build bud.
 	_flower_node = Node3D.new()
 	_flower_node.name = "Flower"
@@ -1262,6 +1372,96 @@ func _begin_flowering() -> void:
 	for v in bud_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
+
+
+# Pick a petal + center color pair, biased by the current tank's light /
+# warmth / saltwater / substrate so blooms feel like an event tied to the
+# environment instead of a random sticker. ~14 palettes — players still
+# see fresh tints after many seasons. A small "rare bloom" branch (~6 %
+# chance) produces saturated jewel tones that have no environment bias.
+func _pick_flower_palette() -> void:
+	# Sample environment. Falls back to neutral defaults if no sim found.
+	var sim_n: Node = _find_sim()
+	var pressure: Dictionary = {
+		"light": 0.5, "warmth": 0.6, "saltwater": false,
+		"substrate": 0.5, "cover": 0.0, "edge": 0.5, "depth": 0.5,
+		"substrate_local": 0.5, "o2": 0.55,
+	}
+	if sim_n != null:
+		pressure = EvolutionPressure.sample_from_sim(sim_n, global_position)
+	var light: float = float(pressure.get("light", 0.5))
+	var warmth: float = float(pressure.get("warmth", 0.6))
+	var sub: float = float(pressure.get("substrate", 0.5))
+	var salt: bool = not not pressure.get("saltwater", false)
+
+	# Rare-bloom branch: full-saturation tropical tones, no env bias.
+	# Fires ~6 % of blooms — visible as a clear "wow, look at that one"
+	# event without overwhelming the more common environment-fitted tints.
+	if randf() < 0.06:
+		var rare_palettes: Array = [
+			[Color8(255, 70, 130),  Color8(255, 240, 90)],   # hot magenta + bright gold
+			[Color8(110, 70, 220),  Color8(245, 220, 140)],  # vivid violet + cream
+			[Color8(40, 220, 200),  Color8(245, 220, 100)],  # cyan teal + gold
+			[Color8(255, 130, 30),  Color8(255, 230, 110)],  # tangerine + sunlight
+			[Color8(255, 245, 240), Color8(255, 110, 110)],  # pale blush + ember
+		]
+		var rare: Array = rare_palettes[randi() % rare_palettes.size()]
+		_flower_petal_color = rare[0]
+		_flower_center_color = rare[1]
+		return
+
+	# Build a weighted candidate list. Weights reflect how well a hue
+	# pair fits the current tank — bright light favors golds and oranges,
+	# warm tanks favor reds and corals, cool tanks favor whites and blues,
+	# saltwater shifts toward violet / aqua, rich substrate biases dense
+	# pinks.
+	var palettes: Array = [
+		[Color8(230, 130, 200), Color8(245, 220, 90)],   # pink + gold
+		[Color8(245, 220, 90),  Color8(255, 180, 60)],   # daffodil
+		[Color8(170, 130, 220), Color8(200, 180, 60)],   # lavender + gold
+		[Color8(240, 240, 240), Color8(245, 195, 100)],  # white + gold
+		[Color8(220, 100, 100), Color8(230, 200, 60)],   # red + yellow
+		[Color8(255, 165, 80),  Color8(240, 100, 60)],   # tangerine + ember (warm)
+		[Color8(255, 215, 130), Color8(235, 145, 60)],   # apricot + amber (sunlit)
+		[Color8(120, 195, 230), Color8(245, 230, 140)],  # ice-blue + soft gold (cool)
+		[Color8(155, 120, 195), Color8(220, 195, 220)],  # mauve + pale lilac
+		[Color8(85, 145, 200),  Color8(220, 230, 255)],  # cornflower + frost (salt)
+		[Color8(95, 200, 175),  Color8(245, 245, 200)],  # aqua + pale cream (salt)
+		[Color8(245, 165, 195), Color8(255, 240, 200)],  # peony pink + cream
+		[Color8(200, 60, 80),   Color8(255, 220, 150)],  # crimson + buttercream (rich sub)
+		[Color8(80, 160, 100),  Color8(245, 235, 130)],  # mint + gold (mild)
+	]
+	var weights: Array[float] = [
+		1.0, 1.0, 1.0, 1.0, 1.0,
+		warmth * 1.4 + 0.2,           # tangerine
+		light * 1.6 + warmth * 0.4,   # apricot
+		(1.0 - warmth) * 1.3 + 0.2,   # ice-blue
+		(1.0 - light) * 0.8 + 0.4,    # mauve
+		(2.0 if salt else 0.05),      # cornflower (salt-only)
+		(1.6 if salt else 0.05),      # aqua (salt-only)
+		sub * 1.2 + 0.4,              # peony
+		sub * 1.4 + warmth * 0.3,     # crimson
+		0.6 + (1.0 - warmth) * 0.4,   # mint
+	]
+	var total: float = 0.0
+	for w in weights:
+		total += w
+	var pick: float = randf() * total
+	var idx: int = 0
+	for i in weights.size():
+		pick -= weights[i]
+		if pick <= 0.0:
+			idx = i
+			break
+	var pal: Array = palettes[idx]
+	# Small per-bloom hue jitter so even repeated picks vary.
+	var jitter := Color(randf_range(-0.04, 0.04), randf_range(-0.04, 0.04), randf_range(-0.04, 0.04))
+	_flower_petal_color = (pal[0] as Color) + jitter
+	_flower_petal_color = Color(
+		clampf(_flower_petal_color.r, 0.0, 1.0),
+		clampf(_flower_petal_color.g, 0.0, 1.0),
+		clampf(_flower_petal_color.b, 0.0, 1.0))
+	_flower_center_color = pal[1]
 
 
 func _tick_flowering(dt: float) -> void:
@@ -1613,6 +1813,7 @@ func nibble(amount: int) -> int:
 			and flower_stage >= FlowerStage.BUD:
 		return _nibble_flower(amount)
 	var removed: int = 0
+	var any_stem_lost: bool = false
 	for i in amount:
 		if not voxels.is_empty():
 			# Eat a stem voxel from the top.
@@ -1620,6 +1821,7 @@ func nibble(amount: int) -> int:
 			if is_instance_valid(v):
 				v.queue_free()
 			removed += 1
+			any_stem_lost = true
 		elif _take_one_leaf_voxel():
 			# No stems left (or this is a leaf-only form): eat a leaf voxel out
 			# of the newest leaf group instead, so grazers still visibly thin it.
@@ -1630,6 +1832,14 @@ func nibble(amount: int) -> int:
 		growth_progress = 0.0
 
 	_recalc_height()
+	# Real plants respond to apical loss by activating lateral buds — when
+	# fish bite the top off, side shoots push from the cut node on the
+	# next growth tick. We record the height at the cut so _grow_one can
+	# place a lateral cluster there. Capped so a flock of grazers doesn't
+	# queue up dozens of branches.
+	if any_stem_lost and current_height > 0 \
+			and _pending_trim_nodes.size() < MAX_PENDING_TRIM_NODES:
+		_pending_trim_nodes.append(current_height)
 
 	if current_height <= 0 and voxels.is_empty() and not _has_live_leaf_voxel():
 		_on_death()
@@ -1786,6 +1996,7 @@ func get_seed_config() -> Dictionary:
 		"emergent_growth": emergent_growth,
 		"monocarpic": monocarpic,
 		"uses_flowering": uses_flowering,
+		"is_epiphyte": is_epiphyte,
 	}
 	var sim_n: Node = _find_sim()
 	if sim_n != null:

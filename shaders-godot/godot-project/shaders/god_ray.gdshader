@@ -7,11 +7,18 @@ uniform float noise_scale : hint_range(0.1, 10.0) = 1.8;
 uniform float edge_fade : hint_range(0.0, 1.0) = 0.15;
 uniform float falloff_exponent : hint_range(1.0, 5.0) = 2.0;
 uniform float occlusion : hint_range(0.0, 1.0) = 0.0;
+// Per-fish soft occluders. xyz = world position, w = effective radius.
+// w == 0 marks an unused slot. World.gd refreshes the active 8 closest
+// fish per visual tick so this is cheap to evaluate per fragment.
+uniform vec4 occluders[8];
+uniform float occluder_strength : hint_range(0.0, 1.0) = 0.65;
 
 varying vec3 local_pos;
+varying vec3 world_vertex;
 
 void vertex() {
 	local_pos = VERTEX;
+	world_vertex = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -44,7 +51,21 @@ void fragment() {
 	// Combine the calculations
 	float alpha = beam_color.a * pow(fresnel, falloff_exponent) * top_bottom_fade * shimmer;
 	alpha *= 1.0 - occlusion * 0.72;
-	
+
+	// Per-fish soft occluders. For each active slot, attenuate the ray
+	// alpha if the fragment is inside the fish's sphere of influence.
+	// Smooth falloff so the shadow shaft has a soft edge, not a hard hole.
+	float fish_block = 0.0;
+	for (int i = 0; i < 8; i++) {
+		vec4 oc = occluders[i];
+		if (oc.w < 0.001) {
+			continue;
+		}
+		float d = distance(world_vertex, oc.xyz);
+		fish_block = max(fish_block, smoothstep(oc.w, oc.w * 0.35, d));
+	}
+	alpha *= 1.0 - fish_block * occluder_strength;
+
 	ALBEDO = beam_color.rgb;
 	ALPHA = alpha;
 }

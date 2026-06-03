@@ -11,6 +11,10 @@ uniform float tip_sway_mult : hint_range(1.0, 3.0) = 2.1;
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 uniform float water_surface_y = 99.0;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
+// Subsurface rim — same warm translucent rim as foliage.gdshader so the
+// node-based and MultiMesh paths look identical.
+uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
+uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -52,5 +56,10 @@ void fragment() {
 	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);
 	}
+	// Subsurface rim — thin grazing-angle warm halo. Day-tracked so the
+	// effect peaks at midday when real backlight is strongest and fades
+	// to almost nothing at night.
+	float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
+	col = mix(col, col * 0.7 + sss_color * 0.55, rim * sss_strength * (0.4 + 0.6 * daylight));
 	ALBEDO = col;
 }

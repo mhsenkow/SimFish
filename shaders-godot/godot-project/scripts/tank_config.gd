@@ -17,6 +17,38 @@ var render_width: int = 512
 var render_height: int = 288
 # Palette quantize shader strength.
 var dither_strength: float = 0.85
+# When true, dither strength varies by region (heavy on low-saturation
+# water/fog, light on saturated fauna). When false, the legacy uniform
+# dither applies everywhere.
+var dither_region_aware: bool = true
+# When true, the active palette is locally restricted to a hue-bank of
+# ~16 nearest indices for each fragment, enforcing the "real" 8-bit feel
+# instead of a downsampled HDR blend. Cosmetic — bank picking is per
+# fragment, no asset change.
+var palette_bank_lock: bool = true
+# Soft global outline at color-discontinuities (NES-style readability).
+# 0 = off (default), up to 1 = strong dark line on every silhouette.
+var outline_strength: float = 0.0
+# CRT scanline overlay strength. 0 = off (default). Pairs with palette
+# quantize for a heavier retro display feel.
+var crt_strength: float = 0.0
+# Force integer (nearest-multiple) scaling between SubViewport and the
+# display rect so each rendered pixel snaps to a fixed integer block on
+# the final monitor. Eliminates subpixel shimmer on creature motion at
+# the cost of letterboxing.
+var integer_upscale: bool = false
+# Adaptive quality — main.gd watches a rolling FPS average and steps the
+# SubViewport resolution (plus optionally MSAA / fog) down when frame
+# rate falls below the target, then back up when there's headroom.
+# Lets a single TankConfig render the tank correctly across desktop +
+# mobile without manual tuning.
+var adaptive_quality: bool = false
+var adaptive_quality_target_fps: int = 55
+# Snap the orbit camera to the world-space size of a single render pixel
+# so swimming creatures don't sub-pixel-jitter against the static
+# substrate / hardscape. Off by default — interferes slightly with very
+# smooth auto-orbit cinematography.
+var pixel_snap_camera: bool = false
 # If false, the palette pass is bypassed and you see raw HDR colors. Useful
 # for spotting bugs in lighting + composition.
 var palette_enabled: bool = true
@@ -358,6 +390,11 @@ const SPECIES_LIBRARY: Dictionary = {
 			"finnage": 1.6,
 			# Labyrinth organ: bettas breathe atmospheric air at the surface.
 			"labyrinth_breather": true,
+			# Bettas are obligate territorial: alpha males relentlessly
+			# chase any same-species intruder out of their zone. With one
+			# betta per tank this rarely fires (no conspecific to chase),
+			# but two bettas immediately reveal the behavior.
+			"is_territorial": true,
 		},
 	},
 	"killifish": {
@@ -477,6 +514,9 @@ const SPECIES_LIBRARY: Dictionary = {
 			# branch in fish.gd adds wraparound voxels (front + rear caps
 			# and lateral cheeks) that close out the silhouette.
 			"body_shape": "globiform",
+			# Dwarf puffers are fiercely territorial in real life — they
+			# claim a corner and chase out anything that tries to share it.
+			"is_territorial": true,
 		},
 	},
 	"danio": {
@@ -588,6 +628,12 @@ const SPECIES_LIBRARY: Dictionary = {
 			"anal_fin_length_factor": 1.7,
 			"snout_pointed": true,
 			"guards_clutch": true,
+			# Angelfish are cichlids — territorial pair-bonders that
+			# defend a small zone around their spawning site. With
+			# mouthbrooding active too, breeding pairs visibly carry fry
+			# in the throat before release.
+			"is_territorial": true,
+			"is_mouthbrooder": true,
 		},
 	},
 	"harlequin_rasbora": {
@@ -658,6 +704,13 @@ const SPECIES_LIBRARY: Dictionary = {
 			"labyrinth_breather": true,
 			"body_shape": "compressed",
 			"guards_clutch": true,
+			# Dwarf gourami defend a territory around their bubble nest;
+			# alpha males chase rivals out of home_radius. Mouthbrooding
+			# is a creative liberty (real dwarf gourami are bubble-nest
+			# builders) — the visible throat-bulge cue reads as parental
+			# care, which is the gameplay we want.
+			"is_territorial": true,
+			"is_mouthbrooder": true,
 		},
 	},
 	"reef_fish": {
@@ -718,10 +771,16 @@ const TANK_PRESETS: Dictionary = {
 		"label": "Classic community",
 		"stocking": {
 			"glassdart": 10, "harlequin_rasbora": 8, "corydoras": 6,
-			"dwarf_gourami": 2, "shrimp": 10,
+			"dwarf_gourami": 2, "shrimp": 12,
 		},
 		"phenotype_spread": 0.6,
-		"description": "The textbook beginner freshwater community: a cardinal tetra school, a harlequin rasbora shoal, a corydoras bottom group, a dwarf gourami centerpiece pair, and a cherry shrimp cleanup crew.",
+		# Default Walstad jungle — every plant species at full density.
+		"plant_palette": {
+			"valli": 1.0, "crypt": 1.0, "red_stem": 1.0,
+			"carpet": 1.0, "moss": 1.0, "java_fern": 1.0,
+		},
+		"hardscape_style": "default",
+		"description": "The textbook beginner freshwater community: a cardinal tetra school + harlequin rasbora shoal + corydoras bottom team + a dwarf gourami territorial pair (watch the alpha chase the other off his patch and incubate fry in his throat). Cherry shrimp cleanup crew includes 2 amano-style cleaners that station near stressed fish.",
 	},
 	"community": {
 		"label": "Community (balanced)",
@@ -747,7 +806,21 @@ const TANK_PRESETS: Dictionary = {
 			"betta": 1, "pufferfish": 1, "shrimp": 20,
 		},
 		"phenotype_spread": 0.8,
-		"description": "Lots of prey + a betta and a puffer competing for the snacks.",
+		# Sparse plants on the predator tank — leaves clean sight-lines
+		# so the betta vs. puffer territorial chases read against the
+		# substrate. Two mossy corners give shrimp + prey schools refuge.
+		"plant_palette": {
+			"valli": 0.3, "crypt": 0.4, "red_stem": 0.2,
+			"carpet": 0.55, "moss": 1.2, "java_fern": 0.8,
+		},
+		"hardscape_style": "predator_corners",
+		"terrain_relief": [
+			# Two opposing corner mounds give each apex a defensible
+			# territory; the middle stays open for chases.
+			{"x": -0.65, "z": -0.55, "radius": 4, "mode": "raise"},
+			{"x":  0.65, "z":  0.55, "radius": 4, "mode": "raise"},
+		],
+		"description": "Lots of prey + a betta and a puffer claiming opposite corners. Each apex gets a raised territorial mound; the prey schools try to hold the open middle.",
 	},
 	"diverse": {
 		"label": "Diverse founding stock",
@@ -786,11 +859,25 @@ const TANK_PRESETS: Dictionary = {
 	"showcase": {
 		"label": "Showcase tank",
 		"stocking": {
-			"angelfish": 2, "killifish": 4, "guppy": 6, "corydoras": 4,
-			"shrimp": 12,
+			"angelfish": 2, "dwarf_gourami": 2, "killifish": 4,
+			"guppy": 6, "corydoras": 4, "shrimp": 14,
 		},
 		"phenotype_spread": 0.8,
-		"description": "Tall angelfish over a guppy + corydoras + killifish community. No predators.",
+		# Every plant type at moderate density so the showcase has the
+		# whole catalogue of leaf forms (ribbon, paddle, lance, needle,
+		# moss, paddle-epiphyte) visible at once.
+		"plant_palette": {
+			"valli": 0.85, "crypt": 1.0, "red_stem": 1.1,
+			"carpet": 0.9, "moss": 1.3, "java_fern": 1.3,
+		},
+		"hardscape_style": "twin_logs",
+		"terrain_relief": [
+			# Central planted ridge runs front-to-back, with a small
+			# foreground dip where the cory team patrols.
+			{"x": 0.0,  "z": 0.0,  "radius": 5, "mode": "raise"},
+			{"x": 0.0,  "z": 0.65, "radius": 3, "mode": "dig"},
+		],
+		"description": "Showcase of every behavior: angelfish + dwarf gourami pairs both incubate fry in their throats (visible bulge), defend territories from same-species rivals, and dance distinct courtship patterns. Killifish dart at the surface, guppies parallel-display, corydoras shuffle the substrate. A planted central ridge + twin driftwood logs frame the action.",
 	},
 	"custom": {
 		"label": "Custom",
@@ -810,6 +897,104 @@ const TANK_PRESETS: Dictionary = {
 		"phenotype_spread": 3.5,
 		"substrate": "ocean_sand",
 		"description": "Coral reef + mixed tropical school. Each fish unique. Plants replaced by corals.",
+	},
+	# ---- Scenario-specific presets ----
+	# Tightly-curated stocking dicts that pair with the new-tank scenario
+	# picker. Each is shaped around what THAT scenario wants to show off.
+	"polyp_lab": {
+		"label": "Polyp lab (no fish)",
+		# Zero fish — the showcase here is the sessile + microfauna layer.
+		# Heavy shrimp colony so the scavenger loop reads, but the visual
+		# centerpiece is the freshwater hydra polyps (hydra_fresh coral
+		# form) that world.gd auto-seeds on eco_complete substrate.
+		"stocking": {"shrimp": 24},
+		"phenotype_spread": 1.4,
+		# Visual signature: a single moss-and-needle-grass tuft in the
+		# middle of the sphere, no other plants — keeps the polyps and
+		# clams visually dominant but with a green island for life. A
+		# small driftwood nub sticks up like a fallen branch.
+		"plant_palette": {
+			"carpet": 0.55, "moss": 0.40, "java_fern": 0.30,
+			"valli": 0.0, "crypt": 0.0, "red_stem": 0.0,
+		},
+		"hardscape_style": "polyp_jar",
+		"terrain_relief": [
+			# Central low mound where the polyps gather, ringed by a
+			# shallow trough so the eye reads it as an "island".
+			{"x": 0.0, "z": 0.0, "radius": 3, "mode": "raise"},
+			{"x": 0.0, "z": 1.6, "radius": 2, "mode": "dig"},
+			{"x": 0.0, "z": -1.6, "radius": 2, "mode": "dig"},
+		],
+		"description": "Fishless biosphere: dense cherry shrimp colony + freshwater hydra polyps + filter-feeding clams. A single moss-and-grass island in the middle gives shrimp cover; the rest is open substrate.",
+	},
+	"iwagumi_school": {
+		"label": "Iwagumi (single school)",
+		# Pure cardinal-tetra school, no apex, sparse cleanup crew.
+		"stocking": {"glassdart": 18, "shrimp": 4},
+		"phenotype_spread": 0.2,
+		# Pure carpet — no stem plants, no rosettes. The negative space
+		# carries the composition.
+		"plant_palette": {
+			"valli": 0.0, "crypt": 0.0, "red_stem": 0.0,
+			"carpet": 0.85, "moss": 0.0, "java_fern": 0.0,
+		},
+		"hardscape_style": "iwagumi",
+		"terrain_relief": [
+			# Two gentle dunes on either side of the central stone
+			# arrangement, classic Iwagumi composition.
+			{"x": -0.45, "z": 0.0, "radius": 4, "mode": "raise"},
+			{"x":  0.55, "z": 0.0, "radius": 5, "mode": "raise"},
+		],
+		"description": "Zen-garden minimalism: a single tight cardinal tetra school over sand. Just three stones + a clean carpet — no driftwood, no stems. Two gentle dunes rise on either side of the stones.",
+	},
+	"cichlid_pairs": {
+		"label": "Cichlid pairs",
+		# Two centerpiece pairs (angelfish + dwarf gourami) on a corydoras
+		# bottom team. No schooling fish, no shrimp — territorial drama is
+		# the entertainment.
+		"stocking": {
+			"angelfish": 2, "dwarf_gourami": 2, "corydoras": 5,
+		},
+		"phenotype_spread": 0.6,
+		# Sword-like blade plants flanking the rocks, with epiphytic java
+		# fern on the boulders. No dense back-wall valli forest — clean
+		# sight-lines so you can watch the territorial chases.
+		"plant_palette": {
+			"valli": 0.45, "crypt": 0.8, "red_stem": 0.5,
+			"carpet": 0.4, "moss": 0.6, "java_fern": 1.4,
+		},
+		"hardscape_style": "boulder_field",
+		"terrain_relief": [
+			# Two raised plateaus (the dominant pair's territories) with
+			# a low trough running between them.
+			{"x": -0.55, "z": 0.0, "radius": 4, "mode": "raise"},
+			{"x":  0.55, "z": 0.0, "radius": 4, "mode": "raise"},
+			{"x":  0.0,  "z": 0.0, "radius": 3, "mode": "dig"},
+		],
+		"description": "Cichlid social drama. Two stone plateaus rise on either side of a central trough — each pair claims one. Java fern on the boulders. Cory team patrols the open lane between.",
+	},
+	"blackwater_biotope": {
+		"label": "Blackwater biotope",
+		# Surface darts + bottom shufflers + small guppy mid-water school.
+		# No betta/puffer — biotope is peaceful but ecologically rich.
+		"stocking": {
+			"killifish": 6, "corydoras": 5, "guppy": 4, "shrimp": 8,
+		},
+		"phenotype_spread": 1.1,
+		# Sparse stems, lots of moss-on-driftwood, ribbon vallisneria
+		# only at the back. The wood is the star.
+		"plant_palette": {
+			"valli": 0.8, "crypt": 0.4, "red_stem": 0.2,
+			"carpet": 0.25, "moss": 1.6, "java_fern": 1.2,
+		},
+		"hardscape_style": "blackwater_heavy_wood",
+		"terrain_relief": [
+			# Asymmetric: one side mounded (where the wood pile sits),
+			# the other side dug down so leaf litter pools there.
+			{"x": -0.45, "z": -0.30, "radius": 4, "mode": "raise"},
+			{"x":  0.45, "z":  0.40, "radius": 3, "mode": "dig"},
+		],
+		"description": "Amazonian biotope: surface-darting killifish, bottom-sifting cory, livebearer guppies. A tangle of driftwood dominates one side, with a leaf-litter hollow on the other. Moss + java fern carpet the wood.",
 	},
 }
 
@@ -1024,6 +1209,14 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "width", render_width)
 	cfg.set_value("render", "height", render_height)
 	cfg.set_value("render", "dither", dither_strength)
+	cfg.set_value("render", "dither_region_aware", dither_region_aware)
+	cfg.set_value("render", "palette_bank_lock", palette_bank_lock)
+	cfg.set_value("render", "outline_strength", outline_strength)
+	cfg.set_value("render", "crt_strength", crt_strength)
+	cfg.set_value("render", "integer_upscale", integer_upscale)
+	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
+	cfg.set_value("render", "adaptive_quality", adaptive_quality)
+	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
 	cfg.set_value("render", "fog_density", fog_density)
 	cfg.set_value("render", "fog_anisotropy", fog_anisotropy)
@@ -1118,6 +1311,14 @@ func load_from_disk() -> void:
 	render_width = cfg.get_value("render", "width", render_width)
 	render_height = cfg.get_value("render", "height", render_height)
 	dither_strength = cfg.get_value("render", "dither", dither_strength)
+	dither_region_aware = cfg.get_value("render", "dither_region_aware", dither_region_aware)
+	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
+	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
+	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
+	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
+	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
+	adaptive_quality = cfg.get_value("render", "adaptive_quality", adaptive_quality)
+	adaptive_quality_target_fps = cfg.get_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	palette_enabled = cfg.get_value("render", "palette_enabled", palette_enabled)
 	fog_density = cfg.get_value("render", "fog_density", fog_density)
 	fog_anisotropy = cfg.get_value("render", "fog_anisotropy", fog_anisotropy)
@@ -1233,6 +1434,14 @@ func reset_to_defaults() -> void:
 	render_width = 512
 	render_height = 288
 	dither_strength = 0.85
+	dither_region_aware = true
+	palette_bank_lock = true
+	outline_strength = 0.0
+	crt_strength = 0.0
+	integer_upscale = false
+	pixel_snap_camera = false
+	adaptive_quality = false
+	adaptive_quality_target_fps = 55
 	palette_enabled = true
 	fog_density = 0.02
 	fog_anisotropy = 0.3

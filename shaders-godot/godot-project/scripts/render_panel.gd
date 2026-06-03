@@ -21,6 +21,12 @@ var _fog_ambient_label: Label
 var _fov: HSlider
 var _fov_label: Label
 var _msaa_option: OptionButton
+var _adaptive_check: CheckBox
+var _adaptive_target: HSlider
+var _adaptive_target_label: Label
+# Frame-time mini-sparkline drawn as a Control with a custom _draw.
+var _frame_graph: Control = null
+var _frame_graph_label: Label = null
 
 const RESOLUTIONS: Array = [
 	{"label": "256x144 (chunky)", "w": 256, "h": 144},
@@ -131,6 +137,27 @@ func _build_ui() -> void:
 		_msaa_option.add_item(label)
 	_msaa_option.item_selected.connect(func(idx): TankConfig.msaa = idx)
 
+	# -- Adaptive quality + frame-budget mini-graph --
+	_add_section(vbox, "Frame budget")
+	_frame_graph_label = Label.new()
+	_frame_graph_label.text = "—"
+	vbox.add_child(_frame_graph_label)
+	_frame_graph = Control.new()
+	_frame_graph.custom_minimum_size = Vector2(0, 48)
+	_frame_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_frame_graph.draw.connect(_draw_frame_graph)
+	vbox.add_child(_frame_graph)
+	_adaptive_check = CheckBox.new()
+	_adaptive_check.text = "Adaptive quality (auto-step resolution)"
+	_adaptive_check.toggled.connect(func(v): TankConfig.adaptive_quality = v)
+	vbox.add_child(_adaptive_check)
+	_adaptive_target_label = Label.new()
+	_adaptive_target = PanelTheme.add_slider_row(
+		vbox, "Target FPS", 30.0, 120.0, 5.0, _adaptive_target_label)
+	_adaptive_target.value_changed.connect(func(v):
+		TankConfig.adaptive_quality_target_fps = int(v)
+		_adaptive_target_label.text = "%d" % int(v))
+
 	# Footer buttons — attached to `outer` (NOT `vbox`) so Close + Apply
 	# stay pinned at the bottom of the panel below the scroll area.
 	outer.add_child(PanelTheme.make_rule())
@@ -167,7 +194,83 @@ func _pull_from_config() -> void:
 	_fog_ambient.value = TankConfig.fog_ambient_inject
 	_fov.value = TankConfig.camera_fov
 	_msaa_option.select(int(TankConfig.msaa))
+	if _adaptive_check != null:
+		_adaptive_check.button_pressed = TankConfig.adaptive_quality
+	if _adaptive_target != null:
+		_adaptive_target.value = float(TankConfig.adaptive_quality_target_fps)
+	if _adaptive_target_label != null:
+		_adaptive_target_label.text = "%d" % TankConfig.adaptive_quality_target_fps
 	_update_labels()
+
+
+func _process(_dt: float) -> void:
+	# Repaint the sparkline while the panel is visible. Cheap (custom
+	# _draw, polyline only) and the user is presumably watching it.
+	if visible and _frame_graph != null:
+		_frame_graph.queue_redraw()
+		_update_frame_graph_label()
+
+
+func _update_frame_graph_label() -> void:
+	if _frame_graph_label == null:
+		return
+	var main := get_tree().current_scene
+	if main == null or not main.has_method("get_frame_history_ordered"):
+		return
+	var hist: PackedFloat32Array = main.get_frame_history_ordered()
+	var sum: float = 0.0
+	var n: int = 0
+	var worst: float = 0.0
+	for v in hist:
+		if v > 0.0001:
+			sum += v
+			n += 1
+			if v > worst:
+				worst = v
+	if n == 0:
+		_frame_graph_label.text = "—"
+		return
+	var avg_dt: float = sum / float(n)
+	var avg_fps: float = 1.0 / avg_dt
+	var worst_fps: float = 1.0 / maxf(worst, 0.0001)
+	_frame_graph_label.text = "avg %.0f fps · 1%% low %.0f fps" % [avg_fps, worst_fps]
+
+
+func _draw_frame_graph() -> void:
+	if _frame_graph == null:
+		return
+	var main := get_tree().current_scene
+	if main == null or not main.has_method("get_frame_history_ordered"):
+		return
+	var hist: PackedFloat32Array = main.get_frame_history_ordered()
+	var w: float = _frame_graph.size.x
+	var h: float = _frame_graph.size.y
+	if w <= 4 or h <= 4 or hist.size() == 0:
+		return
+	# Background.
+	_frame_graph.draw_rect(Rect2(Vector2.ZERO, _frame_graph.size),
+		Color(0.06, 0.07, 0.12, 0.6), true)
+	# Budget reference line at 1/target_fps frame time (the "good" line).
+	var target_fps: float = float(TankConfig.adaptive_quality_target_fps)
+	var budget_dt: float = 1.0 / maxf(target_fps, 10.0)
+	# Y axis maps 0..2× budget to bottom..top. >2× budget = pinned to top.
+	var y_max_dt: float = budget_dt * 2.0
+	var budget_y: float = h - clampf(budget_dt / y_max_dt, 0.0, 1.0) * h
+	_frame_graph.draw_line(
+		Vector2(0, budget_y), Vector2(w, budget_y),
+		Color(0.55, 0.85, 0.55, 0.45), 1.0)
+	# Sample line.
+	var pts: PackedVector2Array = PackedVector2Array()
+	for i in hist.size():
+		var dt_v: float = hist[i]
+		if dt_v <= 0.0:
+			dt_v = 0.0
+		var x: float = float(i) / float(maxi(1, hist.size() - 1)) * w
+		var ynorm: float = clampf(dt_v / y_max_dt, 0.0, 1.0)
+		var y: float = h - ynorm * h
+		pts.append(Vector2(x, y))
+	if pts.size() >= 2:
+		_frame_graph.draw_polyline(pts, Color(0.85, 0.92, 0.55, 0.95), 1.2)
 
 
 func _update_labels() -> void:

@@ -279,4 +279,33 @@ static func update_foliage_uniforms(canopy_shade: float, water_y: float, dayligh
 			mat.set_shader_parameter("canopy_shade", canopy_shade)
 			mat.set_shader_parameter("water_surface_y", water_y)
 			mat.set_shader_parameter("daylight", daylight)
+	# Push daylight into node-based foliage too so the SSS rim there
+	# fades at night, matching the MultiMesh variant.
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("sss_daylight", daylight)
+
+
+# Push a substrate ripple_phase value to every cached substrate_caustic
+# material. World.gd advances this slowly with sim time so the sand bed's
+# imprinted ripple pattern walks forward over many sim-minutes — visible
+# evolution without needing per-voxel state.
+static func update_substrate_ripple(phase: float, strength: float, dir: Vector2) -> void:
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("ripple_phase", phase)
+			mat.set_shader_parameter("ripple_strength", strength)
+			mat.set_shader_parameter("ripple_dir", dir)
+
+
+# Update SSS rim strength on every foliage material (both node-based and
+# MultiMesh). Wires into TankConfig's plant_sss_strength field so the rim
+# brightens/dims as the player tunes it.
+static func update_foliage_sss(strength: float) -> void:
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("sss_strength", strength)
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("sss_strength", strength)
 

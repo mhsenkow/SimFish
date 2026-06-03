@@ -174,6 +174,11 @@ var locomotion_type: String = "subcarangiform"
 var snail_predator: bool = false
 var shrimp_predator: bool = false
 var algae_grazer: bool = false
+# Bioluminescent — body voxels glow softly when the tank is dark.
+# Heritable, rare (~3% of new fish). Visually the fish reads as a deep-
+# sea lanternfish drifting at night; harmless during the day (no glow).
+var is_bioluminescent: bool = false
+var _biolum_t: float = 0.0
 
 # ---- Territory / swim pattern (heritable) ----
 # Each fish has a "home point" it loosely orbits, plus a swim_pattern that
@@ -287,6 +292,65 @@ var brooding_remaining: float = 0.0
 const BROODING_DURATION: float = 90.0    # ~1.5 sim minutes of guarding
 const BROODING_DURATION_LIGHT: float = 45.0  # lighter guarding for non-hover species
 const BROODING_RADIUS: float = 1.2       # how far intruders trip a chase
+
+# ---- Mouthbrooding ----
+# Real cichlids (Cyrtocara, mbuna, jawfish) carry fertilized eggs in
+# their throat pouch for several days. Visible throat bulge while the
+# female is incubating; fry tumble out when ready. Genome-driven so
+# only mouthbrooder species express it.
+var is_mouthbrooder: bool = false
+var _mouthbrood_progress: float = 0.0       # 0 = empty, 1 = ready to release
+var _mouthbrood_genome: Dictionary = {}      # cached offspring genome
+var _mouthbrood_count: int = 0
+const MOUTHBROOD_DURATION: float = 40.0      # sim seconds of carrying
+# Visible throat bulge node attached on demand to the head bone. Sized
+# to clutch_size and progress so it visibly fills + recedes.
+var _mouthbrood_bulge: MeshInstance3D = null
+
+# ---- Hierarchical territory defense ----
+# Some species establish a personal territory and chase conspecific
+# intruders out of it. Alpha rank = size_potential × age_factor. The
+# higher-ranked individual wins challenges; the lower-ranked one yields.
+var is_territorial: bool = false
+var _territory_chase_target: Fish = null
+var _territory_chase_t: float = 0.0
+const TERRITORY_CHASE_DURATION: float = 1.8
+const TERRITORY_CHASE_COOLDOWN: float = 3.5
+var _territory_cooldown: float = 0.0
+
+# ---- Cleaning station (fish side) ----
+# When stressed and a cleaner shrimp/wrasse is nearby, the fish swims
+# to the cleaner, slows to a stop, and tilts slightly while being
+# cleaned. shrimp.gd already pursues stressed fish; this gates the
+# fish to also seek out a clean.
+var _seeking_clean: bool = false
+var _being_cleaned: float = 0.0              # seconds remaining at station
+
+# ---- Sleep posture (diurnal night rest) ----
+# Diurnal fish at night drift gently with a slight body tilt and the
+# occasional twitch. Independent from the hide-in-plants pull above —
+# this drives the visual posture once the fish has settled near cover.
+var _sleep_tilt: float = 0.0                 # smoothed roll for posture
+var _sleep_twitch_t: float = 0.0             # countdown to next twitch
+
+# ---- Pre-stress gill flush ----
+# A rare gill cough animation that fires when stress is climbing but
+# hasn't crossed the visible hide threshold yet. Early-warning visual
+# the player can read before the fish actually panics.
+var _gill_flush_t: float = 0.0               # animation phase (0 = idle)
+var _gill_flush_check: float = 0.0           # countdown to next eligibility check
+var _gill_pivot: Node3D = null               # set by _build_body when available
+
+# ---- Pecking-order boldness ----
+# Cached personality scalar: bold fish reach food first; timid hang back.
+# Computed once per food query from (dart_chance + courage from low stress).
+# Higher = more eager to chase distant food.
+func _boldness() -> float:
+	# dart_chance 0..0.5, stress 0..1, schooling_strength 0..2. Bold =
+	# darty + calm + loose schooler. Timid = low dart + stressed + tight
+	# schooler. Range roughly 0.4..1.8.
+	return clampf(0.6 + dart_chance * 1.6 - stress * 0.6
+		+ (1.5 - schooling_strength) * 0.10, 0.4, 1.8)
 
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
@@ -586,6 +650,8 @@ func init_genome(genome: Dictionary) -> void:
 	tail_shape = int(genome.get("tail_shape", tail_shape))
 	armor_plates = not not genome.get("armor_plates", armor_plates)
 	is_livebearer = not not genome.get("is_livebearer", is_livebearer)
+	is_mouthbrooder = not not genome.get("is_mouthbrooder", is_mouthbrooder)
+	is_territorial = not not genome.get("is_territorial", is_territorial)
 	guards_clutch = not not genome.get("guards_clutch", guards_clutch)
 	sterile = not not genome.get("sterile", sterile)
 	anal_fin_length_factor = float(genome.get("anal_fin_length_factor",
@@ -642,6 +708,14 @@ func init_genome(genome: Dictionary) -> void:
 	shrimp_predator = not not genome.get("shrimp_predator", shrimp_predator)
 	_apply_predator_morphology()
 	algae_grazer = not not genome.get("algae_grazer", algae_grazer)
+	# Bioluminescence. Either set explicitly in genome, or rolled fresh at
+	# ~3% for first-generation founders so any tank eventually accumulates
+	# a few glowing individuals.
+	if genome.has("is_bioluminescent"):
+		is_bioluminescent = not not genome["is_bioluminescent"]
+	elif generation == 0 and randf() < 0.03:
+		is_bioluminescent = true
+		_saved_genome["is_bioluminescent"] = true
 	# Swim pattern + territory (heritable).
 	swim_pattern = String(genome.get("swim_pattern", swim_pattern))
 	# Apply pattern-derived defaults FIRST so explicit genome values can
@@ -670,6 +744,11 @@ func init_genome(genome: Dictionary) -> void:
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
+	# Apply distance-LOD to voxels — tiny details drop out beyond ~8m,
+	# secondary details beyond ~14m. Portal PiP camera is close so it
+	# still sees full detail; the orbit camera at typical distance keeps
+	# silhouettes but skips fin-bone-level voxels.
+	_apply_lod_ranges()
 
 
 # Apply per-pattern defaults. Only fills in fields the genome hasn't already
@@ -1297,8 +1376,113 @@ func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -
 	parent.add_child(mi)
 
 
+# Walk the body hierarchy once after _build_body and assign per-voxel
+# `visibility_range_end` based on size. Smallest voxels (eyes, tiny fin
+# bones, barbels) drop out first; larger structural voxels (head, body,
+# tail) stay visible at longer distances. Godot's renderer does the
+# distance check itself, per camera — so the portal PiP (very close
+# camera) still sees full detail.
+const _LOD_TINY_MAX_VOXEL: float = 0.07   # under this → tiny detail (barbels, eye glints)
+const _LOD_SMALL_MAX_VOXEL: float = 0.13  # under this → secondary detail
+# Ranges measured in world units. Default camera radius is 17.5, so the
+# LOD threshold must sit well past that to keep fins/eyes visible at the
+# normal viewing distance — only fish across the room from the camera
+# should drop detail.
+const _LOD_TINY_RANGE: float = 22.0       # range_end for tiny voxels
+const _LOD_SMALL_RANGE: float = 32.0      # range_end for small voxels
+const _LOD_BIG_RANGE: float = 0.0         # 0 = never LOD out (default)
+
+
+func _apply_lod_ranges() -> void:
+	var stack: Array = [self]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			if c is MeshInstance3D:
+				var mi: MeshInstance3D = c
+				var bm := mi.mesh as BoxMesh
+				if bm != null:
+					var biggest: float = maxf(bm.size.x, maxf(bm.size.y, bm.size.z))
+					var range_end: float
+					if biggest < _LOD_TINY_MAX_VOXEL:
+						range_end = _LOD_TINY_RANGE
+					elif biggest < _LOD_SMALL_MAX_VOXEL:
+						range_end = _LOD_SMALL_RANGE
+					else:
+						range_end = _LOD_BIG_RANGE
+					if range_end > 0.0:
+						# Hide small voxels when the camera is far away.
+						# begin=0 keeps full detail up close (library preview,
+						# portal PiP); end culls at distance. Wider margin
+						# softens the fade so detail doesn't pop on/off as
+						# the camera dollies.
+						mi.visibility_range_begin = 0.0
+						mi.visibility_range_begin_margin = 0.0
+						mi.visibility_range_end = range_end
+						mi.visibility_range_end_margin = 3.0
+			if c.get_child_count() > 0:
+				stack.push_back(c)
+
+
 func _make_mat(color: Color) -> ShaderMaterial:
 	return VoxelMat.make_fauna(color)
+
+
+# Locate the closest cleaner shrimp/wrasse within `radius`. Walks
+# sim.shrimp + sim.fish (other fish flagged with `is_cleaner` later if
+# we add cleaner-wrasse fish). Returns null if none qualify.
+func _find_nearest_cleaner(radius: float) -> Node3D:
+	if sim == null:
+		return null
+	var best: Node3D = null
+	var best_d2: float = radius * radius
+	# Cleaner shrimp.
+	for s in sim.shrimp:
+		if not is_instance_valid(s):
+			continue
+		if not s.is_cleaner:
+			continue
+		if s.maturity == 0:  # MATURITY_FRY
+			continue
+		var d2: float = (s as Node3D).position.distance_squared_to(position)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = s
+	return best
+
+
+# Update the mouthbrood throat bulge. Lazily allocates a small voxel
+# under the head; sized to `_mouthbrood_count` and `_mouthbrood_progress`
+# so the bulge visibly grows as the brood matures, then disappears on
+# release.
+func _update_mouthbrood_bulge() -> void:
+	if _mouthbrood_progress <= 0.0:
+		if _mouthbrood_bulge != null and is_instance_valid(_mouthbrood_bulge):
+			_mouthbrood_bulge.queue_free()
+			_mouthbrood_bulge = null
+		return
+	if _mouthbrood_bulge == null or not is_instance_valid(_mouthbrood_bulge):
+		_mouthbrood_bulge = MeshInstance3D.new()
+		var v: float = adult_voxel_scale
+		# Bulge is a slightly elongated box sitting under and forward of
+		# the head pivot; we tuck it into the body-front group so head
+		# rotation carries it. Falls back to self if no head pivot found.
+		var anchor: Node = get_node_or_null("Bank/BodyMid/BodyFront")
+		if anchor == null:
+			anchor = self
+		_mouthbrood_bulge.mesh = VoxelMat.get_box(
+			Vector3(v * 1.9, v * 1.1, v * 2.4))
+		_mouthbrood_bulge.material_override = VoxelMat.make_fauna(
+			accent_color.lerp(Color(0.92, 0.88, 0.78), 0.55))
+		anchor.add_child(_mouthbrood_bulge)
+		# Below + slightly forward of the head: real cichlid throat
+		# pouches sit under the lower jaw.
+		_mouthbrood_bulge.position = Vector3(0.0, -v * 1.2, -v * 1.8)
+	# Scale grows from 0.35 → 1.0 with progress + clutch_size weight.
+	var prog: float = clampf(_mouthbrood_progress, 0.0, 1.0)
+	var clutch_w: float = clampf(float(_mouthbrood_count) / 4.0, 0.4, 1.0)
+	var s: float = (0.35 + 0.75 * prog) * clutch_w
+	_mouthbrood_bulge.scale = Vector3(s, s, s)
 
 
 func _apply_belly_flash_uniform(strength: float) -> void:
@@ -1307,6 +1491,30 @@ func _apply_belly_flash_uniform(strength: float) -> void:
 			var sm := (c as MeshInstance3D).material_override as ShaderMaterial
 			if sm != null and sm.get_shader_parameter("belly_flash") != null:
 				sm.set_shader_parameter("belly_flash", strength)
+
+
+# Push the bioluminescence uniform to every body voxel. VoxelMat caches
+# materials by color so a plain set_shader_parameter would leak the glow
+# to every fish sharing the color. We duplicate the material per fish on
+# the first call so each bioluminescent individual carries its own copy;
+# the duplicate is tagged via meta so subsequent calls reuse it.
+func _apply_bioluminescence_uniform(strength: float) -> void:
+	for c in get_children():
+		if not (c is MeshInstance3D):
+			continue
+		var mi: MeshInstance3D = c
+		var sm: ShaderMaterial = mi.material_override as ShaderMaterial
+		if sm == null:
+			continue
+		if sm.get_shader_parameter("bioluminescence") == null:
+			continue
+		if not mi.has_meta("biolum_owned"):
+			mi.material_override = sm.duplicate() as ShaderMaterial
+			mi.set_meta("biolum_owned", true)
+			sm = mi.material_override as ShaderMaterial
+		sm.set_shader_parameter("bioluminescence", strength)
+		sm.set_shader_parameter("biolum_color", Vector3(
+			accent_color.r, accent_color.g, accent_color.b))
 
 
 func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -1355,6 +1563,22 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			events["release_livebearer_fry"] = _gestation_genome.duplicate(true)
 			_gestation_progress = 0.0
 			_gestation_genome = {}
+	# Mouthbrooding: bulge grows for MOUTHBROOD_DURATION, then the
+	# female releases her brood. Stress / heavy chase can spit early
+	# (real cichlid behavior).
+	if _mouthbrood_progress > 0.0:
+		_mouthbrood_progress += dt / MOUTHBROOD_DURATION
+		# Stressed mothers spit early: stress > 0.7 + recent dart → drop now.
+		if stress > 0.72 and burst_remaining > 0.15:
+			_mouthbrood_progress = 1.0
+		if _mouthbrood_progress >= 1.0:
+			events["release_brooded_fry"] = {
+				"genome": _mouthbrood_genome.duplicate(true),
+				"count": _mouthbrood_count,
+			}
+			_mouthbrood_progress = 0.0
+			_mouthbrood_genome = {}
+			_mouthbrood_count = 0
 
 	# Substrate sifting (shuffle species only). Slow countdown to next
 	# sift. While _sift_timer > 0 the brain damps velocity to almost
@@ -1521,6 +1745,106 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		target_velocity = _apply_target_from_desired(desired, effective_max)
 		return events
 
+	# Tier 0.32: TERRITORY DEFENSE. Territorial species enforce a personal
+	# zone around home_x/y/z. Same-species intruders inside home_radius
+	# get chased out; subordinates (smaller, younger) yield instead. Alpha
+	# rank = size_potential × age_factor — bigger and older wins. Real
+	# cichlid + betta + gourami behavior.
+	_territory_cooldown = maxf(0.0, _territory_cooldown - dt)
+	if is_territorial and maturity == MATURITY_ADULT \
+			and _territory_cooldown <= 0.0 and brooding_remaining <= 0.0:
+		# Validate ongoing chase.
+		if _territory_chase_target != null:
+			if not is_instance_valid(_territory_chase_target) \
+					or _territory_chase_target.maturity == MATURITY_FRY \
+					or _territory_chase_target.position.distance_squared_to(position) \
+						> (home_radius * 2.5) * (home_radius * 2.5):
+				_territory_chase_target = null
+				_territory_chase_t = 0.0
+				_territory_cooldown = TERRITORY_CHASE_COOLDOWN
+		# Pick a new target if needed.
+		if _territory_chase_target == null:
+			var my_rank: float = size_potential * (0.5 + 0.5 * clampf(age / max_age_s, 0.0, 1.0))
+			var best_int: Fish = null
+			var best_score: float = 0.0
+			for n in neighbors:
+				if not (n is Fish):
+					continue
+				var nf: Fish = n
+				if nf == self or nf == partner or nf.species != species:
+					continue
+				if nf.maturity == MATURITY_FRY:
+					continue
+				# Is the intruder inside my home zone?
+				var dx: float = nf.position.x - home_x
+				var dz: float = nf.position.z - home_z
+				if dx * dx + dz * dz > home_radius * home_radius:
+					continue
+				var their_rank: float = nf.size_potential \
+					* (0.5 + 0.5 * clampf(nf.age / nf.max_age_s, 0.0, 1.0))
+				if their_rank >= my_rank:
+					# Subordinate-to-them — we yield rather than chase.
+					continue
+				# Score = how deep they are inside my radius (closer to my
+				# center = higher priority chase).
+				var depth: float = home_radius * home_radius - (dx * dx + dz * dz)
+				if depth > best_score:
+					best_score = depth
+					best_int = nf
+			if best_int != null:
+				_territory_chase_target = best_int
+				_territory_chase_t = 0.0
+		if _territory_chase_target != null and is_instance_valid(_territory_chase_target):
+			_territory_chase_t += dt
+			var to_t: Vector3 = _territory_chase_target.position - position
+			if to_t.length_squared() > 1e-4:
+				desired += to_t.normalized() * effective_max * 1.6
+				if burst_remaining < 0.2:
+					burst_remaining = 0.2
+			# Hit the intruder with a small stress nudge so a chase produces
+			# the visible flee response on their end.
+			(_territory_chase_target as Fish).stress = clampf(
+				(_territory_chase_target as Fish).stress + dt * 0.20, 0.0, 1.0)
+			# End the chase after a short bout — the intruder gets the
+			# message; we go on cooldown so chases don't loop forever.
+			if _territory_chase_t >= TERRITORY_CHASE_DURATION:
+				_territory_chase_target = null
+				_territory_chase_t = 0.0
+				_territory_cooldown = TERRITORY_CHASE_COOLDOWN
+			target_velocity = _apply_target_from_desired(desired, effective_max)
+			return events
+
+	# Tier 0.34: CLEANING STATION (fish side). When stress is elevated and
+	# a cleaner shrimp/wrasse is within reach, the fish swims over and
+	# parks for a clean. Real coral-reef + freshwater behavior — the
+	# recipient slows, tilts, and visibly "presents" gills/flanks for
+	# parasite-pick service. Shrimp side handles the actual stress drop;
+	# this just steers the fish into position.
+	if maturity != MATURITY_FRY and stress > 0.45 and sim != null:
+		var cleaner: Node3D = _find_nearest_cleaner(3.0)
+		if cleaner != null:
+			_seeking_clean = true
+			var to_c: Vector3 = (cleaner as Node3D).position - position
+			var d: float = to_c.length()
+			if d > 0.45:
+				# Approach the cleaning station — moderate pull so we
+				# arrive without overshoot.
+				desired += to_c.normalized() * effective_max * 0.65
+			else:
+				# Parked: damp velocity, hold a small tilt, gain a tiny
+				# stress relief (mirrors the shrimp's contribution so
+				# fast-disappearing shrimp still produce some calm).
+				_being_cleaned = 1.0
+				stress = maxf(0.0, stress - dt * 0.18)
+				desired *= 0.05
+			target_velocity = _apply_target_from_desired(desired, effective_max)
+			return events
+	else:
+		_seeking_clean = false
+	# Cleaned-flag decays so the tilt smoothly clears.
+	if _being_cleaned > 0.0:
+		_being_cleaned = maxf(0.0, _being_cleaned - dt * 1.2)
+
 	# Tier 0.35: FRY PLANT SHELTER. Fresh fry seek the densest nearby plant
 	# patch and hold position inside it until they hit juvenile stage. Real
 	# fry do this instinctively — the foliage hides them from adult
@@ -1532,7 +1856,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if maturity == MATURITY_FRY:
 		var shelter: Plant = null
 		var shelter_d2: float = 16.0  # within 4 units
-		for p in plants:
+		var candidates: Array = sim.query_plants_in_radius(position, 4.0) \
+			if sim != null and sim.has_method("query_plants_in_radius") else plants
+		for p in candidates:
 			if not is_instance_valid(p):
 				continue
 			if p.biomass() < 8:
@@ -1615,7 +1941,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if stress > STRESS_HIDE_THRESHOLD:
 		var nearest_cover: Plant = null
 		var cover_d2: float = 9.0  # within 3 units to count as reachable
-		for p in plants:
+		var cover_candidates: Array = sim.query_plants_in_radius(position, 3.0) \
+			if sim != null and sim.has_method("query_plants_in_radius") else plants
+		for p in cover_candidates:
 			if not is_instance_valid(p):
 				continue
 			if p.biomass() < 6:
@@ -1661,10 +1989,36 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if sex == 0 and dist < 1.8:
 				# Phase speed ramps from 3.0 → 6.0 as intensity builds.
 				var t_phase: float = court_timer * lerpf(3.0, 6.0, _courtship_intensity)
-				# S-curve amplitude ramps from 0.15 → 0.45.
+				# Per-species courtship choreography. Each pattern picks a
+				# distinct lateral / vertical envelope so the dance reads
+				# differently per fish without needing per-species presets.
 				var s_amp: float = lerpf(0.15, 0.45, _courtship_intensity)
-				var s_offset: Vector3 = to_partner.cross(Vector3.UP).normalized() \
-					* sin(t_phase) * s_amp
+				var lateral: Vector3 = to_partner.cross(Vector3.UP).normalized()
+				var s_offset: Vector3 = Vector3.ZERO
+				match swim_pattern:
+					"dart":
+						# Jerky lateral flash + brief pauses. Sin-square gives
+						# a sharper "snap forward / hold" pulse than smooth sin.
+						var snap: float = sign(sin(t_phase))
+						s_offset = lateral * snap * s_amp * 1.2
+					"hover":
+						# Tight vertical figure-8 around the partner — real
+						# angelfish + discus court. Adds a Y-component that
+						# crosses lateral on a different beat.
+						s_offset = lateral * sin(t_phase) * s_amp * 0.55
+						s_offset.y += sin(t_phase * 2.0) * s_amp * 0.7
+					"meander":
+						# Slow wide lateral display — long-fin show species.
+						s_offset = lateral * sin(t_phase * 0.6) * s_amp * 1.4
+					"cruise":
+						# Wide circling — fast open-water species (danios,
+						# rainbows). Lateral with a forward push so the
+						# orbit reads as forward motion.
+						s_offset = lateral * sin(t_phase) * s_amp
+						s_offset += to_partner.normalized() * sin(t_phase * 0.5) * s_amp * 0.4
+					_:
+						# Default school / shoal: side-by-side parallel S-curve.
+						s_offset = lateral * sin(t_phase) * s_amp
 				desired += (courtship_target + s_offset - position).normalized() \
 					* effective_max * 0.85
 				# Mark the renderer flag - _apply_render() uses it to flare the
@@ -1697,6 +2051,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					if female != null and male != null:
 						female._gestation_progress = 0.01
 						female._gestation_genome = female.produce_offspring_genome(male)
+				elif is_mouthbrooder or (partner != null and partner.is_mouthbrooder):
+					# Mouthbrooders: the female scoops up the fertilized
+					# eggs and incubates them in her throat. Visible bulge
+					# grows for MOUTHBROOD_DURATION before fry release.
+					var mom: Fish = self if sex == 1 else partner
+					var dad: Fish = partner if sex == 1 else self
+					if mom != null and dad != null:
+						mom._mouthbrood_progress = 0.01
+						mom._mouthbrood_genome = mom.produce_offspring_genome(dad)
+						mom._mouthbrood_count = mini(mom.clutch_size, 4)
 				else:
 					events["lay_egg_with"] = partner
 				breed_cooldown = 35.0
@@ -1731,8 +2095,24 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# sunk pellets and grab surface ones first, while bottom dwellers do
 	# the opposite (loaches and cory hoover sunk food).
 	if hunger > 0.3 and maturity != MATURITY_FRY:
+		# Pecking order at feed events. Bold fish (high dart_chance, low
+		# stress) see food from farther away and pursue more aggressively
+		# than timid fish, so dropped pellets visibly draw a queue: bold
+		# ones up front, timid ones lagging at the back.
+		var boldness: float = _boldness()
 		var best_w: WasteParticle = null
-		var best_d2: float = 144.0  # 12.0^2 max range for food! High awareness.
+		# Range scales with boldness: timid fish see ~6u, bold ones see ~14u.
+		var awareness: float = 36.0 + boldness * 72.0
+		var best_d2: float = awareness
+		# Spatial memory of recent feed taps — drag the awareness radius
+		# toward recently-fed spots so the fish "remembers" where pellets
+		# usually land.
+		var memory_bias: Vector3 = Vector3.ZERO
+		var memory_pull: float = 0.0
+		if sim != null and sim.has_method("recent_feed_spot_bias"):
+			var bias: Dictionary = sim.recent_feed_spot_bias(position, 16.0)
+			memory_bias = bias.get("offset", Vector3.ZERO)
+			memory_pull = float(bias.get("strength", 0.0))
 		for w in waste:
 			if not is_instance_valid(w):
 				continue
@@ -1752,9 +2132,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				d2 *= 1.0 + clampf(y_delta * 0.18, 0.0, 0.5)
 				if y_delta > home_y_radius * 1.5:
 					d2 *= 1.0 + clampf((y_delta - home_y_radius * 1.5) * 0.45, 0.0, 1.0)
+				# Bold fish discount food cost; timid fish inflate it.
+				d2 *= lerpf(1.6, 0.55, clampf(boldness / 1.8, 0.0, 1.0))
 			if d2 < max_dist_sq and d2 < best_d2:
 				best_d2 = d2
 				best_w = w
+		# If no food in sight but we remember a recent drop, drift toward
+		# the remembered spot so the school converges before the pellets
+		# even hit our awareness range.
+		if best_w == null and memory_pull > 0.0 and hunger > 0.45:
+			desired += memory_bias.normalized() * effective_max * memory_pull * boldness
 		if best_w != null:
 			current_mode = Mode.FORAGE
 			var to_w: Vector3 = best_w.global_position - position
@@ -2179,30 +2566,52 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				pull_strength *= 0.15
 		desired += to_home.normalized() * effective_max * pull_mult * pull_strength
 
-	# STARTLE PROPAGATION. School / shoal species are prey - in nature they
-	# evade predators by all flipping the same direction at once. If any
-	# CONSPECIFIC neighbor just started a dart burst, copy its heading.
-	# This is what creates the dramatic "the whole school turns at once"
-	# moment when something spooks them.
-	if _startle_remaining <= 0.0 and burst_remaining <= 0.0 \
-			and (swim_pattern == "school" or swim_pattern == "shoal"):
+	# STRESS CONTAGION + STARTLE PROPAGATION. Every fish — not just
+	# school/shoal species — picks up the panic of conspecifics in
+	# neighborhood range. The signal weakens with distance so a panic
+	# ring radiates outward through the population rather than firing
+	# simultaneously. Closely-bonded species (school/shoal) copy the
+	# heading exactly; looser groupings just dart away from the panic
+	# source. Stress itself climbs slightly for every fish near a
+	# panicking conspecific, so a single scare ripples through the tank.
+	if _startle_remaining <= 0.0 and burst_remaining <= 0.0:
+		var nearest_panic: Fish = null
+		var nearest_panic_d2: float = 16.0  # 4u influence radius
 		for n in neighbors:
 			if not (n is Fish):
 				continue
 			var nf: Fish = n
-			if nf.species != species:
+			if nf == self or nf.species != species:
 				continue
 			if nf.burst_remaining > 0.2 and nf._startle_heading.length_squared() > 0.01:
-				# Conspecific bolted recently - join the panic in their direction.
-				_startle_remaining = 0.4
-				var sh: Vector3 = nf._startle_heading
-				sh.y *= 0.22
-				if sh.length_squared() > 1e-6:
-					_startle_heading = sh.normalized()
-				else:
-					_startle_heading = Vector3(sh.x, 0.0, sh.z).normalized()
-				burst_remaining = 0.35
-				break
+				var d2: float = nf.position.distance_squared_to(position)
+				if d2 < nearest_panic_d2:
+					nearest_panic_d2 = d2
+					nearest_panic = nf
+		if nearest_panic != null:
+			# Stress jumps a little for everyone in earshot, faster the closer
+			# the panicking neighbor is. Visible as the school tightening
+			# before the dart fires.
+			var prox: float = 1.0 - sqrt(nearest_panic_d2) / 4.0
+			stress = clampf(stress + prox * 0.18, 0.0, 1.0)
+			# Tight-schoolers copy the heading; loose-groupers flee away.
+			var tight: bool = swim_pattern == "school" or swim_pattern == "shoal"
+			var sh: Vector3
+			if tight:
+				sh = nearest_panic._startle_heading
+			else:
+				# Flee directly away from the panic origin.
+				var away: Vector3 = position - nearest_panic.position
+				sh = away if away.length_squared() > 1e-4 else Vector3.FORWARD
+			sh.y *= 0.22
+			if sh.length_squared() > 1e-6:
+				_startle_heading = sh.normalized()
+			else:
+				_startle_heading = Vector3(sh.x, 0.0, sh.z).normalized()
+			# Burst scales with proximity so the panic ring weakens as it
+			# spreads — closer fish snap, distant fish twitch.
+			_startle_remaining = lerpf(0.18, 0.45, prox)
+			burst_remaining = lerpf(0.15, 0.40, prox)
 
 	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
 	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
@@ -2391,7 +2800,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					or swim_pattern == "hover" or swim_pattern == "meander"):
 			var shelter: Plant = null
 			var sd2: float = 16.0  # within 4 units
-			for p in plants:
+			var sleep_candidates: Array = sim.query_plants_in_radius(position, 4.0) \
+				if sim != null and sim.has_method("query_plants_in_radius") else plants
+			for p in sleep_candidates:
 				if not is_instance_valid(p):
 					continue
 				if p.biomass() < 6:
@@ -2450,6 +2861,22 @@ func _process(dt: float) -> void:
 		if dt <= 0.0:
 			return  # paused
 
+	# Bioluminescence sweep — only bioluminescent individuals push the
+	# uniform, and we update once a second to keep the cost trivial.
+	# The pulse animation runs in-shader (TIME based), so we just set
+	# the strength scalar; no per-frame work needed beyond the gate.
+	if is_bioluminescent:
+		_biolum_t += dt
+		if _biolum_t > 1.0:
+			_biolum_t = 0.0
+			var dl: float = 1.0
+			if sim != null and sim.has_method("daylight"):
+				dl = float(sim.daylight())
+			# Strength ramps from 0 (dawn/dusk) to ~1 (midnight). Mute
+			# entirely during the day so the fish reads normal then.
+			var strength: float = smoothstep(0.32, 0.05, dl)
+			_apply_bioluminescence_uniform(strength)
+
 	_update_pheromone_trail()
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
@@ -2462,6 +2889,9 @@ func _process(dt: float) -> void:
 			_body_mid_pivot.scale = Vector3(bulge * 0.8 + 0.2, bulge, 1.0)
 		else:
 			_body_mid_pivot.scale = Vector3.ONE
+	# Mouthbrooding throat bulge — lazy-created when the female starts
+	# incubating; scaled by progress so it visibly fills + recedes.
+	_update_mouthbrood_bulge()
 
 	# Death sequence — drifts sideways, sinks, fades over DEATH_DURATION
 	# before the sim_driver actually frees us. Skips the normal motion
@@ -2482,6 +2912,90 @@ func _process(dt: float) -> void:
 	var sub_dt: float = dt / float(n_steps)
 	for _step in n_steps:
 		_motion_substep(sub_dt)
+
+	# Posture overlays. Layered on top of the bank pivot's natural roll
+	# from _motion_substep so the cleaning + sleep poses ride on top of
+	# whatever motion lean the fish has earned in this frame.
+	_apply_posture_overlays(dt)
+	_tick_gill_flush(dt)
+
+
+# Apply two ambient pose adjustments on top of the bank pivot's
+# motion-driven roll: cleaning-station tilt (head-down + flank tilt
+# while parked at a cleaner) and night-sleep posture (slow roll + tiny
+# twitches for diurnal fish at deep night).
+func _apply_posture_overlays(dt: float) -> void:
+	if _bank_pivot == null:
+		return
+	# Cleaning tilt — the recipient presents flank to the cleaner.
+	if _being_cleaned > 0.05:
+		var target_roll: float = 0.42 * sign(sin(get_instance_id() * 0.01))
+		_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z, target_roll, dt * 3.0)
+		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.18, dt * 3.0)
+		return
+	# Sleep posture — diurnal species at deep night drift gently with a
+	# slight body tilt and occasional twitches.
+	if sim != null and swim_pattern != "shuffle":
+		var dl: float = float(sim.daylight())
+		if dl < 0.18 and maturity != MATURITY_FRY:
+			# Smooth toward a small per-fish roll; keep direction stable
+			# by deriving from instance id so each sleeper picks a side.
+			var side: float = -1.0 if (get_instance_id() % 2 == 0) else 1.0
+			var sleep_roll: float = side * 0.22 * (1.0 - clampf(dl / 0.18, 0.0, 1.0))
+			_sleep_tilt = lerpf(_sleep_tilt, sleep_roll, dt * 1.5)
+			_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z,
+				_bank_pivot.rotation.z + _sleep_tilt * 0.4, dt * 2.0)
+			# Occasional twitch — a small dart that the brain will absorb
+			# on the next tick. Real sleeping fish twitch every few minutes.
+			_sleep_twitch_t -= dt
+			if _sleep_twitch_t <= 0.0:
+				_sleep_twitch_t = randf_range(8.0, 25.0)
+				if energy > 0.2 and burst_remaining <= 0.0:
+					burst_remaining = 0.18
+					heading_offset += Vector3(
+						randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4))
+		else:
+			_sleep_tilt = lerpf(_sleep_tilt, 0.0, dt * 2.0)
+
+
+# Pre-stress gill flush. Periodically rolls a chance to play a short
+# "gill cough" animation: a brief outward pulse of the head pivot's
+# scale, mimicking the gill flare a real fish does when water quality
+# is borderline. Triggers ONLY when stress is climbing (0.30..0.55) and
+# either O2 is mid-low or recent waste is high — so the player gets a
+# visual early warning before the actual hide-in-plants threshold.
+func _tick_gill_flush(dt: float) -> void:
+	# Animate any in-flight flush — even if conditions no longer warrant.
+	if _gill_flush_t > 0.0:
+		_gill_flush_t = maxf(0.0, _gill_flush_t - dt)
+		var pivot: Node3D = _gill_pivot if _gill_pivot != null else _head_pivot
+		if pivot != null:
+			# Phase 0..1 — out at 0..0.5, settle at 0.5..1. Use sin(πt) for
+			# a smooth pulse.
+			var p: float = 1.0 - _gill_flush_t / 0.5
+			var pulse: float = sin(p * PI) * 0.18
+			pivot.scale = Vector3(1.0 + pulse, 1.0 + pulse * 0.6, 1.0)
+		return
+	# Eligibility check at a slow cadence — never per-frame.
+	_gill_flush_check -= dt
+	if _gill_flush_check > 0.0:
+		return
+	_gill_flush_check = randf_range(2.5, 5.5)
+	if sim == null or maturity == MATURITY_FRY:
+		return
+	# Pre-stress window only — once stress crosses the hide threshold the
+	# flee/hide tiers take over and the cough would be lost in the panic.
+	if stress < 0.30 or stress > 0.55:
+		return
+	# Water-quality cue: mildly low O2 OR rising waste density. Both are
+	# proxies for "the water is starting to get unpleasant."
+	var o2: float = float(sim.dissolved_o2) if sim.get("dissolved_o2") != null else 0.6
+	var waste_load: float = float(sim.waste.size()) / 30.0 if sim.get("waste") != null else 0.0
+	if o2 > 0.52 and waste_load < 0.4:
+		return
+	# Rare — about one cough per ~30s under bad water.
+	if randf() < 0.5:
+		_gill_flush_t = 0.5
 
 
 # Day/night activity multiplier. 1.0 = nominal speed, <1 = drowsy / asleep
@@ -3422,7 +3936,9 @@ func _plant_graze_y(p: Plant) -> float:
 func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 	var best: Plant = null
 	var best_d2: float = max_dist * max_dist
-	for p in plants:
+	var candidates: Array = sim.query_plants_in_radius(position, max_dist) \
+		if sim != null and sim.has_method("query_plants_in_radius") else plants
+	for p in candidates:
 		if not is_instance_valid(p) or p.biomass() <= 0:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position
@@ -3439,7 +3955,9 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 	# Spares saplings + carpets. Prefer open canopy flowers when hungry.
 	var best: Plant = null
 	var best_d2: float = max_dist * max_dist
-	for p in plants:
+	var candidates: Array = sim.query_plants_in_radius(position, max_dist) \
+		if sim != null and sim.has_method("query_plants_in_radius") else plants
+	for p in candidates:
 		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
 		var top_pos: Vector3 = (p as Plant).global_position

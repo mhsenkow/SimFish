@@ -11,18 +11,39 @@ class_name Algae
 const MAX_LIFE: float = 90.0
 const VOXEL_SIZE: float = 0.12
 
+# Distinct algae morphologies. Same lifetime + sim behavior, but each
+# type lays out its voxels differently and lives in a different niche so
+# the tank reads as a real ecosystem with multiple algae species rather
+# than identical green blobs.
+#   CLUSTER  — classic biofilm clump, scattered cluster of small cubes (default)
+#   SURFACE  — flat scum on the water surface, single wide thin sheet
+#   HAIR     — tall filamentous strands attached near a rock or driftwood
+#   GSA      — green-spot algae, tiny tightly-packed dots on the tank glass
+enum AlgaeKind { CLUSTER, SURFACE, HAIR, GSA }
+
 # Up to 5 voxels make up the cluster; new ones appear at growth milestones.
 var _voxels: Array[MeshInstance3D] = []
 var _age: float = 0.0
 var _phase: float = 0.0
 var _color: Color = Color8(120, 165, 60)
+var _kind: int = AlgaeKind.CLUSTER
 
 
-func init(color: Color = Color8(120, 165, 60)) -> void:
+func init(color: Color = Color8(120, 165, 60), kind: int = AlgaeKind.CLUSTER) -> void:
 	_color = color
+	_kind = kind
 	_phase = randf() * TAU
-	# Start with a single seed voxel; more sprout in tick() as we mature.
-	_add_voxel(Vector3.ZERO, 1.0)
+	# Surface scum is born as a wide thin sheet, hair as a thin vertical
+	# strand, GSA as a single tiny dot; the cluster grows the normal way.
+	match _kind:
+		AlgaeKind.SURFACE:
+			_add_voxel(Vector3.ZERO, 1.6, Vector3(2.4, 0.18, 2.4))
+		AlgaeKind.HAIR:
+			_add_voxel(Vector3.ZERO, 1.0, Vector3(0.22, 1.4, 0.22))
+		AlgaeKind.GSA:
+			_add_voxel(Vector3.ZERO, 0.7)
+		_:
+			_add_voxel(Vector3.ZERO, 1.0)
 
 
 # ---- Save / load ----
@@ -34,11 +55,13 @@ func to_save_dict() -> Dictionary:
 		"age": _age,
 		"phase": _phase,
 		"voxel_count": _voxels.size(),
+		"kind": _kind,
 	}
 
 
 func apply_save_dict(d: Dictionary) -> void:
-	init(SaveHelpers.array_to_color(d.get("color", []), _color))
+	init(SaveHelpers.array_to_color(d.get("color", []), _color),
+		int(d.get("kind", AlgaeKind.CLUSTER)))
 	_age = float(d.get("age", 0.0))
 	_phase = float(d.get("phase", randf() * TAU))
 	# Re-add voxels to roughly match the saved cluster size. tick() will
@@ -61,21 +84,57 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 	else:
 		_age += dt * 1.5
 	_phase += dt
-	# Gentle drift on a sine curve so the cluster has visible life. Real
-	# algae biofilms don't sit perfectly still - they ripple with water flow.
-	rotation.y = sin(_phase * 0.6) * 0.18
-	# Growth milestones: add a voxel at 25 %, 50 %, 75 % of MAX_LIFE.
-	# The cluster gets bigger as it spreads, then fades when conditions
-	# stop favoring it.
+	# Cluster + GSA ripple with flow; surface scum slides without rotating
+	# (it's anchored to the water film); hair algae waves in two axes.
+	match _kind:
+		AlgaeKind.SURFACE:
+			# Hardly moves — just a soft bob.
+			position.y += sin(_phase * 0.8) * 0.0008
+		AlgaeKind.HAIR:
+			rotation.z = sin(_phase * 1.2) * 0.22
+			rotation.x = cos(_phase * 0.9) * 0.10
+		AlgaeKind.GSA:
+			pass  # GSA dots stick rigidly to glass
+		_:
+			rotation.y = sin(_phase * 0.6) * 0.18
+	# Growth milestones differ per kind: cluster spreads in 3D, surface
+	# scum widens, hair gets taller, GSA spreads as a clump of dots.
 	var life_frac: float = _age / MAX_LIFE
-	if _voxels.size() < 2 and life_frac > 0.25:
-		_add_voxel(Vector3(VOXEL_SIZE * 0.9, 0, 0), 0.9)
-	if _voxels.size() < 3 and life_frac > 0.5:
-		_add_voxel(Vector3(-VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.4), 0.8)
-	if _voxels.size() < 4 and life_frac > 0.7:
-		_add_voxel(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.9, -VOXEL_SIZE * 0.6), 0.7)
-	if _voxels.size() < 5 and life_frac > 0.85:
-		_add_voxel(Vector3(0, VOXEL_SIZE * 1.4, 0), 0.6)
+	match _kind:
+		AlgaeKind.SURFACE:
+			if _voxels.size() < 2 and life_frac > 0.35:
+				_add_voxel(Vector3(VOXEL_SIZE * 2.0, 0, 0), 1.4,
+					Vector3(2.0, 0.16, 2.0))
+			if _voxels.size() < 3 and life_frac > 0.6:
+				_add_voxel(Vector3(-VOXEL_SIZE * 1.4, 0, VOXEL_SIZE * 1.6), 1.2,
+					Vector3(1.8, 0.14, 1.8))
+		AlgaeKind.HAIR:
+			if _voxels.size() < 2 and life_frac > 0.25:
+				_add_voxel(Vector3(0, VOXEL_SIZE * 1.1, 0), 1.0,
+					Vector3(0.22, 1.4, 0.22))
+			if _voxels.size() < 3 and life_frac > 0.55:
+				_add_voxel(Vector3(VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.5, 0), 0.85,
+					Vector3(0.20, 1.0, 0.20))
+			if _voxels.size() < 4 and life_frac > 0.8:
+				_add_voxel(Vector3(-VOXEL_SIZE * 0.3, VOXEL_SIZE * 1.7, 0), 0.7,
+					Vector3(0.18, 0.7, 0.18))
+		AlgaeKind.GSA:
+			if _voxels.size() < 3 and life_frac > 0.25:
+				_add_voxel(Vector3(VOXEL_SIZE * 0.5, 0, 0), 0.6)
+			if _voxels.size() < 6 and life_frac > 0.45:
+				_add_voxel(Vector3(0, VOXEL_SIZE * 0.5, 0), 0.55)
+			if _voxels.size() < 10 and life_frac > 0.7:
+				_add_voxel(Vector3(randf_range(-0.4, 0.4) * VOXEL_SIZE,
+					randf_range(-0.3, 0.3) * VOXEL_SIZE, 0), 0.45)
+		_:
+			if _voxels.size() < 2 and life_frac > 0.25:
+				_add_voxel(Vector3(VOXEL_SIZE * 0.9, 0, 0), 0.9)
+			if _voxels.size() < 3 and life_frac > 0.5:
+				_add_voxel(Vector3(-VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.4), 0.8)
+			if _voxels.size() < 4 and life_frac > 0.7:
+				_add_voxel(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.9, -VOXEL_SIZE * 0.6), 0.7)
+			if _voxels.size() < 5 and life_frac > 0.85:
+				_add_voxel(Vector3(0, VOXEL_SIZE * 1.4, 0), 0.6)
 	var w: Node = null
 	if get_tree() != null:
 		w = get_tree().current_scene.get_node_or_null("SubViewport/World")
@@ -89,9 +148,16 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 	return _age >= MAX_LIFE
 
 
-func _add_voxel(local_pos: Vector3, scale_factor: float) -> void:
+func _add_voxel(local_pos: Vector3, scale_factor: float,
+		shape_scale: Vector3 = Vector3.ONE) -> void:
 	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * scale_factor, VOXEL_SIZE * scale_factor, VOXEL_SIZE * scale_factor))
+	# shape_scale lets each algae kind pick a non-cube voxel: flat sheet
+	# (surface scum), thin column (hair), tiny dot (GSA). Defaults to a
+	# uniform cube for the classic cluster.
+	mi.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * scale_factor * shape_scale.x,
+		VOXEL_SIZE * scale_factor * shape_scale.y,
+		VOXEL_SIZE * scale_factor * shape_scale.z))
 	# Slight per-voxel color variation so the cluster reads as organic
 	# rather than monolithic.
 	var shade: float = randf_range(-0.08, 0.08)

@@ -38,9 +38,13 @@ var eggs: Array[FishEgg] = []
 var algae: Array = []   # Algae nodes; untyped so the script loads even if
 						# the Algae class hasn't reimported into the global
 						# registry yet on a fresh project scan.
+var clams: Array = []   # Clam filter feeders. Untyped for the same reason
+						# as algae — the class is new, untyped avoids load
+						# order brittleness on fresh project scans.
 var substrate: SubstrateGrid = null
 var snails_root: Node3D = null   # set by world so SimDriver can scan snail children
 var algae_root: Node3D = null    # container for algae voxels
+var clams_root: Node3D = null    # bivalve filter feeders on the substrate
 var hardscape_root: Node3D = null  # driftwood + stones the fry hide against
 var world_bounds: AABB = AABB(Vector3(-8, 1.6, -4), Vector3(16, 5, 8))
 var substrate_top_y: float = 1.6
@@ -69,6 +73,55 @@ var bloom_intensity: float = 0.0
 # Plant biomass exposed at the same cadence so other systems don't
 # have to iterate plants[] themselves.
 var snail_predator_count: int = 0
+
+# ---- Player feed-tap memory ----
+# Each ⌘+LMB drop records the position; the fish food finder reads this
+# to bias its search toward recently-fed spots, simulating real fish
+# learning to congregate where pellets habitually land. Entries expire
+# after FEED_MEMORY_TTL seconds so old habit-spots fade.
+const FEED_MEMORY_TTL: float = 30.0
+const FEED_MEMORY_CAP: int = 5
+# Each entry: {pos: Vector3, t: float (seconds since recorded)}
+var _feed_memory: Array = []
+
+
+func record_feed_drop(world_pos: Vector3) -> void:
+	_feed_memory.append({"pos": world_pos, "t": 0.0})
+	while _feed_memory.size() > FEED_MEMORY_CAP:
+		_feed_memory.pop_front()
+
+
+# Return {offset: Vector3, strength: float} where offset points from
+# `pos` toward the average of active feed memories within `radius`, and
+# strength is 0..1 (higher = more / fresher memories). Used by fish.gd
+# to bias the food finder. No allocations when memory is empty.
+func recent_feed_spot_bias(pos: Vector3, radius: float) -> Dictionary:
+	if _feed_memory.is_empty():
+		return {"offset": Vector3.ZERO, "strength": 0.0}
+	var sum: Vector3 = Vector3.ZERO
+	var weight_total: float = 0.0
+	var r2: float = radius * radius
+	for entry in _feed_memory:
+		var e: Dictionary = entry
+		var p: Vector3 = e.get("pos", Vector3.ZERO)
+		var t: float = float(e.get("t", 0.0))
+		if t >= FEED_MEMORY_TTL:
+			continue
+		var d2: float = pos.distance_squared_to(p)
+		if d2 > r2:
+			continue
+		# Weight = freshness × proximity. Both 0..1.
+		var freshness: float = 1.0 - t / FEED_MEMORY_TTL
+		var prox: float = 1.0 - sqrt(d2) / radius
+		var w: float = freshness * prox
+		sum += (p - pos) * w
+		weight_total += w
+	if weight_total <= 0.0001:
+		return {"offset": Vector3.ZERO, "strength": 0.0}
+	return {
+		"offset": sum / weight_total,
+		"strength": clampf(weight_total / float(FEED_MEMORY_CAP), 0.0, 1.0),
+	}
 # Live adult+baby snail count, refreshed each tick from the baby-snail scan
 # loop. Used by the O2 model for snail respiration (cheap: avoids a second
 # walk of snails_root just for the oxygen step).
@@ -227,6 +280,17 @@ func register_snail(sn: Node) -> void:
 	elif sn is Node3D:
 		_clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
 	_record_organism_discovery(sn.get_saved_genome())
+
+
+func register_clam(c: Node) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	c.sim = self
+	clams.append(c)
+	if c is Node3D:
+		_clamp_entity_to_bounds(c as Node3D, 0.28, 0.04, 0.06)
+	if c.has_method("get_saved_genome"):
+		_record_organism_discovery(c.get_saved_genome())
 
 
 # Bind snails_root to the populated Snails container (not a queued-free stub).
@@ -405,6 +469,50 @@ const SPATIAL_CELL_SIZE: float = 3.0
 const _CELL_OFFSETS: Array[int] = [-1, 0, 1]
 var _spatial_grid: Dictionary = {}  # Vector2i → Array[Node3D]
 
+# Plant spatial grid — sessile so we only need to rebuild every few
+# sim-seconds instead of every tick. Each fish brain does up to 5
+# plant-radius scans (shelter, cover, food target, dim-light rest,
+# herbivore target), so with 750 plants and 30 fish the old O(plants ×
+# fish) per-tick scan was ~225k distance checks/sec; this drops it to
+# the cells the fish actually overlaps.
+const PLANT_GRID_CELL_SIZE: float = 2.0
+const PLANT_GRID_REBUILD_S: float = 0.5
+var _plants_grid: Dictionary = {}  # Vector2i → Array[Plant]
+var _plants_grid_t: float = 0.0
+
+
+func _rebuild_plants_grid() -> void:
+	_plants_grid.clear()
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		var cell := Vector2i(
+			int(floor(p._world_pos.x / PLANT_GRID_CELL_SIZE)),
+			int(floor(p._world_pos.z / PLANT_GRID_CELL_SIZE)))
+		if _plants_grid.has(cell):
+			_plants_grid[cell].append(p)
+		else:
+			_plants_grid[cell] = [p]
+
+
+# Return all plants within max_dist of pos. Caller does the final
+# distance check + biomass/state filters; this just narrows the search.
+func query_plants_in_radius(pos: Vector3, max_dist: float) -> Array:
+	var result: Array = []
+	if _plants_grid.is_empty():
+		# Cold start: bootstrap once so callers don't see a stall.
+		_rebuild_plants_grid()
+	var cx: int = int(floor(pos.x / PLANT_GRID_CELL_SIZE))
+	var cz: int = int(floor(pos.z / PLANT_GRID_CELL_SIZE))
+	var reach: int = maxi(1, int(ceil(max_dist / PLANT_GRID_CELL_SIZE)))
+	for dx in range(-reach, reach + 1):
+		for dz in range(-reach, reach + 1):
+			var cell := Vector2i(cx + dx, cz + dz)
+			var bucket: Array = _plants_grid.get(cell, [])
+			for p in bucket:
+				result.append(p)
+	return result
+
 
 func _spatial_rebuild(entities: Array) -> void:
 	_spatial_grid.clear()
@@ -468,7 +576,7 @@ func _push_apart_pair(a: Node3D, b: Node3D, min_dist: float,
 
 
 func _clamp_entity_to_bounds(e: Node3D, margin: float = 0.22,
-		substrate_margin: float = 0.06, body_radius: float = 0.0) -> void:
+		_substrate_margin: float = 0.06, body_radius: float = 0.0) -> void:
 	if e == null or not is_instance_valid(e):
 		return
 	var w: Node = get_parent()
@@ -754,6 +862,24 @@ func _tick(dt: float) -> void:
 				baby_snail_list.append(c)
 	snail_count = snail_n
 
+	# Plant spatial grid — refreshed on a slow cadence since plants are
+	# sessile. Fish brains query it via query_plants_in_radius below.
+	_plants_grid_t -= dt
+	if _plants_grid_t <= 0.0:
+		_plants_grid_t = PLANT_GRID_REBUILD_S
+		_rebuild_plants_grid()
+
+	# Age feed-tap memories. Entries older than FEED_MEMORY_TTL are
+	# pruned so the bias fades naturally between feedings.
+	if not _feed_memory.is_empty():
+		var keep: Array = []
+		for entry in _feed_memory:
+			var e: Dictionary = entry
+			e["t"] = float(e.get("t", 0.0)) + dt
+			if float(e["t"]) < FEED_MEMORY_TTL:
+				keep.append(e)
+		_feed_memory = keep
+
 	# Build spatial hash grid from all live (non-dying) fish. One O(N)
 	# insert pass replaces the old O(N²) nested neighbor loop.
 	_spatial_rebuild(fish)
@@ -816,6 +942,23 @@ func _tick(dt: float) -> void:
 			dead_waste.append(w)
 	for w in dead_waste:
 		w.queue_free()
+
+	# 5b. Clams. Filter feeders that pull waste particles within radius.
+	# Runs after the waste-decay step so naturally-aging waste is gone
+	# before clams scan; what they consume here drains the live pool.
+	# Dead clams (energy 0 or age past max) drop a shell-fragment waste
+	# inside their own tick before queue_free'ing themselves.
+	var dead_clams: Array = []
+	for cl in clams:
+		if not is_instance_valid(cl):
+			dead_clams.append(cl)
+			continue
+		cl.tick(dt, waste, substrate)
+		if not is_instance_valid(cl):
+			# tick() called queue_free on death — clear from our list too.
+			dead_clams.append(cl)
+	for cl in dead_clams:
+		clams.erase(cl)
 
 	# 6. Eggs - tick incubation, hatch when ready.
 	var hatched: Array[FishEgg] = []
@@ -958,21 +1101,104 @@ func _tick(dt: float) -> void:
 	if (below_floor or randf() < spawn_chance) and algae_root != null:
 		var a := Algae.new()
 		algae_root.add_child(a)
-		# Spawn position uses the world's tank-aware sampler so algae stay
-		# inside hex/triangle/cube tanks instead of clipping through walls.
-		# Y is anchored near the substrate (0.3-1.2 above) where algae
-		# would actually grow in a real tank AND where algae_grazer
-		# corydoras can reach them.
+		# Pick which niche this clump occupies, biased by tank state:
+		#   SURFACE scum thrives where the surface gets bright light and
+		#     few floaters are blocking it.
+		#   HAIR algae prefers hardscape and high-flow zones.
+		#   GSA appears on the glass walls under bright light.
+		#   CLUSTER is the default substrate biofilm clump.
+		var w := get_parent()
+		var floater_cov: float = 0.0
+		if w != null and w.has_method("floater_coverage"):
+			floater_cov = float(w.floater_coverage())
+		var kind: int = Algae.AlgaeKind.CLUSTER
+		var pick_kind: float = randf()
+		# Strong bloom + clear surface → scum thrives at the air-water film.
+		if pick_kind < 0.18 and floater_cov < 0.35:
+			kind = Algae.AlgaeKind.SURFACE
+		elif pick_kind < 0.35:
+			kind = Algae.AlgaeKind.HAIR
+		elif pick_kind < 0.50 and plant_biomass < 280:
+			# GSA shows up in sparse / cycling tanks where plants aren't
+			# outcompeting it yet.
+			kind = Algae.AlgaeKind.GSA
+		# Spawn position depends on kind. CLUSTER uses the tank-aware
+		# sampler; SURFACE picks the same XZ but pinned to the waterline;
+		# HAIR picks a hardscape anchor; GSA pins to a glass wall.
 		var spawn_x: float = 0.0
 		var spawn_z: float = 0.0
-		var w := get_parent()
 		if w != null and w.has_method("sample_xz_in_tank"):
 			var xz: Vector2 = w.sample_xz_in_tank(0.5)
 			spawn_x = xz.x
 			spawn_z = xz.y
 		var apos := Vector3(spawn_x, substrate_top_y + randf_range(0.3, 1.2), spawn_z)
-		if w != null and w.has_method("column_surface_y"):
-			apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)
+		match kind:
+			Algae.AlgaeKind.SURFACE:
+				# Pin to the local water-column surface so cylindrical /
+				# sphere tanks still place scum at the air-water film.
+				var surf_y: float = substrate_top_y + 6.0
+				if w != null and w.has_method("column_surface_y"):
+					surf_y = w.column_surface_y(spawn_x, spawn_z)
+				apos = Vector3(spawn_x, surf_y - 0.05, spawn_z)
+			Algae.AlgaeKind.HAIR:
+				# Try to anchor near a piece of hardscape; otherwise fall
+				# back to a low column position. _rock_voxels live on
+				# world.gd; we look it up dynamically since SimDriver
+				# doesn't normally touch hardscape internals.
+				if w != null:
+					var rocks_v: Variant = w.get("_rock_voxels")
+					var drift_v: Variant = w.get("_driftwood_voxels")
+					var anchors: Array = []
+					if rocks_v is Array:
+						for rv in (rocks_v as Array):
+							if rv != null and is_instance_valid(rv):
+								anchors.append(rv)
+					if drift_v is Array:
+						for dv in (drift_v as Array):
+							if dv != null and is_instance_valid(dv):
+								anchors.append(dv)
+					if not anchors.is_empty():
+						var host: MeshInstance3D = anchors[randi() % anchors.size()]
+						apos = host.global_position + Vector3(
+							randf_range(-0.18, 0.18),
+							randf_range(0.18, 0.45),
+							randf_range(-0.18, 0.18))
+				if w != null and w.has_method("column_surface_y"):
+					apos.y = clampf(apos.y, substrate_top_y + 0.1,
+						w.column_surface_y(apos.x, apos.z) - 0.1)
+			Algae.AlgaeKind.GSA:
+				# Pin to the nearest glass wall. We pick a side at random
+				# and snap X or Z to the tank wall half-extent.
+				var tc: Node = get_node_or_null("/root/TankConfig")
+				var half_w: float = 6.0
+				var half_d: float = 4.5
+				if tc != null:
+					var hwv: Variant = tc.get("tank_half_w")
+					var hdv: Variant = tc.get("tank_half_d")
+					if hwv != null:
+						half_w = float(hwv)
+					if hdv != null:
+						half_d = float(hdv)
+				var side: int = randi() % 4
+				if side == 0:
+					apos = Vector3(half_w - 0.08,
+						substrate_top_y + randf_range(0.5, 4.2),
+						randf_range(-half_d * 0.7, half_d * 0.7))
+				elif side == 1:
+					apos = Vector3(-(half_w - 0.08),
+						substrate_top_y + randf_range(0.5, 4.2),
+						randf_range(-half_d * 0.7, half_d * 0.7))
+				elif side == 2:
+					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
+						substrate_top_y + randf_range(0.5, 4.2),
+						half_d - 0.08)
+				else:
+					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
+						substrate_top_y + randf_range(0.5, 4.2),
+						-(half_d - 0.08))
+			_:
+				if w != null and w.has_method("column_surface_y"):
+					apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			apos = w.clamp_xyz_in_tank(apos, 0.35)
 		a.global_position = apos
@@ -981,7 +1207,18 @@ func _tick(dt: float) -> void:
 			Color8(95, 145, 70),
 			Color8(140, 180, 80),
 		]
-		a.init(palette[randi() % palette.size()])
+		# Surface scum has the pale yellow-green of dust biofilm; GSA
+		# reads as dark green dots; hair is brighter; cluster stays the
+		# normal palette pick.
+		var col: Color = palette[randi() % palette.size()]
+		match kind:
+			Algae.AlgaeKind.SURFACE:
+				col = Color8(180, 200, 110)
+			Algae.AlgaeKind.GSA:
+				col = Color8(60, 105, 50)
+			Algae.AlgaeKind.HAIR:
+				col = Color8(125, 175, 80)
+		a.init(col, kind)
 		algae.append(a)
 	# Tick existing algae. Crash phase: when plants are healthy (biomass
 	# high) AND nutrients have dropped (n_total low), algae die faster.
@@ -1033,6 +1270,15 @@ func _tick(dt: float) -> void:
 			var brood_genome: Dictionary = ev["release_livebearer_fry"]
 			if brood_genome.size() > 0:
 				_release_livebearer_fry(actor as Fish, brood_genome)
+
+		# Mouthbrooder release — same shape as livebearer release but the
+		# event also carries the cached clutch size so a mature brood
+		# spawns intact even if the mother's hunger/stress changed mid-incubation.
+		if ev.has("release_brooded_fry"):
+			var brood_pack: Dictionary = ev["release_brooded_fry"]
+			var bg: Dictionary = brood_pack.get("genome", {})
+			if bg.size() > 0:
+				_release_brooded_fry(actor as Fish, bg, int(brood_pack.get("count", 2)))
 
 		# Shrimp release fry (after gravidity period). Genome was pre-computed
 		# at fertilization time and stashed on the female; we just spawn the
@@ -1187,6 +1433,42 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 	# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 	mother.energy = maxf(0.0, mother.energy - 0.20)
 	_play_ambient_event("birth")
+
+
+# Mouthbrooder fry release. Drops a small clutch from the female's
+# throat — they swim out around her face for a moment, then disperse.
+# Same fry registration path as livebearer drops.
+func _release_brooded_fry(mother: Fish, brood_genome: Dictionary, count: int) -> void:
+	if fauna_root == null:
+		return
+	var n: int = clampi(count, 1, 4)
+	for i in n:
+		var g: Dictionary = brood_genome.duplicate(true)
+		g["sex"] = randi() % 2
+		if g.has("base_color"):
+			g["base_color"] = (g["base_color"] as Color).lerp(
+				Color(randf(), randf(), randf()), 0.05)
+		var fry := Fish.new()
+		fauna_root.add_child(fry)
+		# Pop out from in front of the mother's head, slightly spread.
+		var fwd: Vector3 = mother.heading * 0.18
+		fry.global_position = mother.global_position + fwd + Vector3(
+			randf_range(-0.18, 0.18),
+			randf_range(-0.05, 0.10),
+			randf_range(-0.18, 0.18))
+		fry.init_genome(g)
+		fry.maturity = Fish.MATURITY_FRY
+		fry.hunger = 0.20
+		fry.energy = 0.95
+		register_fish(fry)
+		fry._reclamp_territory_to_tank()
+	# Mother bottoms out — caring for a brood is expensive.
+	mother.energy = maxf(0.0, mother.energy - 0.25)
+	mother.stress = clampf(mother.stress * 0.5, 0.0, 0.5)
+	_play_ambient_event("birth")
+	if not _logged_first_hatch:
+		_logged_first_hatch = true
+		log_story_event("First fry released from mouthbrooding")
 
 
 func _lay_eggs(a: Fish, b: Fish) -> void:
@@ -2307,6 +2589,7 @@ func save_state() -> Dictionary:
 		"fish_eggs": [],
 		"waste": [],
 		"algae": [],
+		"clams": [],
 		"discovered_species": _get_discovered_species_for_save(),
 	}
 	if water_chemistry != null:
@@ -2344,6 +2627,9 @@ func save_state() -> Dictionary:
 	for a in algae:
 		if is_instance_valid(a) and a.has_method("to_save_dict"):
 			out["algae"].append(a.to_save_dict())
+	for cl in clams:
+		if is_instance_valid(cl) and cl.has_method("to_save_dict"):
+			out["clams"].append(cl.to_save_dict())
 	# Floating surface plants live on World (not in plants[]). Persist them so
 	# custom Creature-Creator floaters survive a reload.
 	var w_save: Node = get_parent()
@@ -2426,6 +2712,12 @@ func load_state(d: Dictionary) -> void:
 		var a: Node = _spawn_algae_from_dict(alga_dict)
 		if a != null:
 			algae.append(a)
+
+	# 4b. Clams.
+	for clam_dict in d.get("clams", []):
+		var cl: Node = _spawn_clam_from_dict(clam_dict)
+		if cl != null:
+			id_map[String(cl.id)] = cl
 
 	# 5. Fish.
 	for fish_dict in d.get("fish", []):
@@ -2535,6 +2827,26 @@ func _spawn_algae_from_dict(d: Dictionary) -> Node:
 	a.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	a.apply_save_dict(d)
 	return a
+
+
+func _spawn_clam_from_dict(d: Dictionary) -> Node:
+	if clams_root == null:
+		# Fall back to fauna_root so saved clams aren't dropped on load when
+		# the world hasn't built the dedicated container yet.
+		if fauna_root == null:
+			return null
+		clams_root = fauna_root
+	var cl_script: Script = load("res://scripts/clam.gd")
+	if cl_script == null:
+		return null
+	var cl: Node = cl_script.new()
+	clams_root.add_child(cl)
+	cl.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+	cl.sim = self
+	if cl.has_method("apply_save_dict"):
+		cl.apply_save_dict(d)
+	clams.append(cl)
+	return cl
 
 
 func _spawn_fish_from_dict(d: Dictionary) -> Fish:

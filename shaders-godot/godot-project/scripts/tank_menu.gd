@@ -275,11 +275,29 @@ func _fmt_duration(seconds: int) -> String:
 # ---- Actions ----
 
 func _on_new_pressed() -> void:
+	# Open the scenario picker first. The picker emits `scenario_chosen`
+	# with the picked config dict; we then mint a fresh slot, apply the
+	# scenario overrides to TankConfig, and open the tank.
+	var picker: ScenarioPicker = ScenarioPicker.new()
+	picker.name = "ScenarioPicker"
+	add_child(picker)
+	picker.scenario_chosen.connect(_on_scenario_chosen)
+	picker.canceled.connect(func(): pass)
+
+
+func _on_scenario_chosen(scenario: Dictionary) -> void:
 	var saves := get_node_or_null("/root/TankSaves")
-	if saves == null:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if saves == null or cfg == null:
 		return
-	var slot: int = saves.new_tank("New tank")
-	_open_slot(slot)
+	var tank_name: String = String(scenario.get("name", "New tank"))
+	var slot: int = saves.new_tank(tank_name)
+	cfg.switch_to_slot(slot)
+	# Push the scenario's config overrides into TankConfig before the
+	# main scene loads — world.gd reads these on _ready.
+	ScenarioPicker.apply_scenario(scenario, cfg)
+	cfg.save_to_disk()
+	get_tree().change_scene_to_file(MAIN_SCENE)
 
 
 func _on_open(slot: int) -> void:

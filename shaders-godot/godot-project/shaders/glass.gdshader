@@ -44,10 +44,27 @@ void fragment() {
 	room_ref *= 0.35 + 0.65 * fresnel;
 	col = mix(col, vec3(0.55, 0.48, 0.42), room_ref * reflection_strength);
 
-	// Waterline meniscus brightening on interior glass.
-	float wl = abs(world_pos.y - water_surface_y);
+	// Waterline meniscus brightening on interior glass. The real meniscus
+	// is a tiny curved ring where surface tension pulls the water up
+	// against the glass. We sell it as:
+	//   - a bright thin ring centered just above the water line
+	//   - a faint dark hairline just below (the curvature throws a
+	//     shadow on real meniscus, a classic faux-3D trick)
+	//   - a small horizontal undulation along x/z so the ring has
+	//     visible per-pixel variation, not a flat band
+	float wl_signed = world_pos.y - water_surface_y;
+	float wl = abs(wl_signed);
+	float undulate = 0.5 + 0.5 * sin(world_pos.x * 4.2 + world_pos.z * 3.6);
+	float ring_w = mix(0.05, 0.10, undulate);
+	float ring_above = smoothstep(ring_w * 1.6, 0.0, abs(wl_signed - 0.025))
+		* step(abs(n.y), 0.35) * step(0.0, wl_signed);
+	float ring_below = smoothstep(0.025, 0.0, abs(wl_signed + 0.018))
+		* step(abs(n.y), 0.35) * step(wl_signed, 0.0);
+	col += vec3(0.92, 0.99, 1.0) * ring_above * 0.55;
+	col -= vec3(0.10, 0.14, 0.18) * ring_below * 0.35;
+	// Broader falloff so the original soft glow still reads.
 	float meniscus = (1.0 - smoothstep(0.0, 0.18, wl)) * step(abs(n.y), 0.35);
-	col += vec3(0.88, 0.96, 1.0) * meniscus * 0.28;
+	col += vec3(0.88, 0.96, 1.0) * meniscus * 0.16;
 
 	// Biofilm + condensation green/brown creep from corners.
 	float corner = smoothstep(0.55, 1.0, fresnel);
@@ -58,7 +75,7 @@ void fragment() {
 	float sp = pow(max(dot(n, normalize(view_dir + vec3(0.2, 0.8, 0.1))), 0.0), 48.0);
 	col += vec3(1.0) * sp * sparkle * 0.85;
 
-	float alpha = glass_color.a + fresnel * 0.04 + top_rim * 0.03 + meniscus * 0.02;
+	float alpha = glass_color.a + fresnel * 0.04 + top_rim * 0.03 + meniscus * 0.02 + ring_above * 0.05;
 	ALBEDO = col;
 	ALPHA = clamp(alpha, 0.02, 0.22);
 }

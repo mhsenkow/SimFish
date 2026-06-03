@@ -40,11 +40,26 @@ var _fern_tips: Array = []
 # Precalculated positions for the Gyroid reaction-diffusion brain coral dome
 var _brain_positions: Array[Vector3] = []
 var _anemone_tentacles: Array[Node3D] = []
+var _anemone_tip_voxels: Array[Node3D] = []
 var _hydra_tentacles: Array[Node3D] = []
 var _clam_shell_parts: Array[Node3D] = []
 var _sessile_phase: float = 0.0
 var _topology_seed: float = 0.0
 
+# Polyp tips — bright voxels at the growing edge of each form. We pulse
+# them open/closed in _process so the coral has the rhythmic respiration
+# you see on a real reef (zooxanthellae extending tentacles, retracting
+# at rest). One entry per tip voxel; we read the original albedo + scale
+# from each entry so the pulse rides on top of grow-time appearance.
+var _polyp_tips: Array = []  # Array[{node, phase, base_scale, base_albedo}]
+
+# Bleaching — when warmth runs too hot or O2 crashes, zooxanthellae are
+# expelled and the coral pales toward bone white. Recovers if conditions
+# return to safe within a few minutes. Cosmetic + growth penalty; doesn't
+# kill the coral outright (plant decay handles real death).
+var _bleach_level: float = 0.0
+var _last_bleach_applied: float = 0.0
+var _base_growth_rate: float = 0.0
 
 
 func _build_initial_roots() -> void:
@@ -60,12 +75,14 @@ func to_save_dict() -> Dictionary:
 	var d: Dictionary = super.to_save_dict()
 	d["coral_form"] = coral_form
 	d["tip_color"] = SaveHelpers.color_to_array(tip_color)
+	d["bleach_level"] = _bleach_level
 	return d
 
 
 func apply_save_dict(d: Dictionary) -> void:
 	coral_form = String(d.get("coral_form", coral_form))
 	tip_color = SaveHelpers.array_to_color(d.get("tip_color", []), tip_color)
+	_bleach_level = clampf(float(d.get("bleach_level", 0.0)), 0.0, 1.0)
 	super.apply_save_dict(d)
 
 
@@ -75,6 +92,20 @@ func _ready() -> void:
 	_topology_seed = randf() * TAU
 	uses_flowering = false
 	emergent_growth = true
+	_base_growth_rate = growth_rate
+
+
+func _register_polyp_tip(node: MeshInstance3D, base_scale: float = 1.0) -> void:
+	# Track a voxel as a respirating polyp tip. Phase staggered by index
+	# so a colony doesn't pulse in unison.
+	if node == null:
+		return
+	var entry: Dictionary = {
+		"node": node,
+		"phase": float(_polyp_tips.size()) * 0.41 + randf() * 0.6,
+		"base_scale": base_scale,
+	}
+	_polyp_tips.append(entry)
 
 
 func _spawn_canopy_propagule() -> void:
@@ -144,6 +175,9 @@ func _grow_dome() -> void:
 	mi.position = Vector3(cos(theta) * r, y, sin(theta) * r)
 	add_child(mi)
 	voxels.append(mi)
+	# Top half of the dome reads as live polyp surface — pulse those.
+	if rel > 0.55:
+		_register_polyp_tip(mi)
 
 
 # ---- Brain coral with reaction-diffusion style folds ----
@@ -226,6 +260,9 @@ func _grow_brain() -> void:
 	mi.position = pos
 	add_child(mi)
 	voxels.append(mi)
+	# Outer Gyroid ridges = live polyp surface — pulse the outer shell.
+	if rel > 0.55:
+		_register_polyp_tip(mi)
 
 
 # ---- Staghorn Fern Coral ----
@@ -266,15 +303,18 @@ func _grow_staghorn_fern() -> void:
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * thickness, VOXEL_SIZE * 0.75, VOXEL_SIZE * thickness))
 	mi.material_override = VoxelMat.make_foliage(c)
 	mi.position = new_pos
-	
+
 	add_child(mi)
-	
+
 	# Align the voxel mesh with its growth direction
 	if tip.dir != Vector3.UP:
 		mi.look_at(new_pos + tip.dir, Vector3.UP)
 		mi.rotate_x(PI * 0.5)
-		
+
 	voxels.append(mi)
+	# Highest-gen tip voxels are the youngest fronds with active polyps.
+	if tip.gen >= 2:
+		_register_polyp_tip(mi)
 	
 	# Increment tip length
 	tip.length += 1
@@ -345,6 +385,7 @@ func _grow_branching() -> void:
 		tip.position = Vector3(0.0, idx * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4, 0.0)
 		add_child(tip)
 		voxels.append(tip)
+		_register_polyp_tip(tip)
 
 
 func _spawn_side_branch(idx: int, ramp: Array) -> void:
@@ -370,6 +411,9 @@ func _spawn_side_branch(idx: int, ramp: Array) -> void:
 		)
 		add_child(bv)
 		voxels.append(bv)
+		# Outermost side-branch voxel is the live polyp tip.
+		if j == BRANCH_LENGTH - 1:
+			_register_polyp_tip(bv)
 
 
 # ---- Feathery / soft coral ----
@@ -408,6 +452,9 @@ func _grow_feathery() -> void:
 		# Rotate so the feather points outward along XZ.
 		fv.look_at(fv.position + Vector3(fx, 0.0, fz), Vector3.UP)
 		voxels.append(fv)
+		# Topmost feathers are the actively-feeding polyps.
+		if rel > 0.55:
+			_register_polyp_tip(fv)
 
 
 # ---- Plate / table coral ----
@@ -442,6 +489,8 @@ func _grow_plate() -> void:
 	p.position = Vector3(cos(theta) * r, disc_y, sin(theta) * r)
 	add_child(p)
 	voxels.append(p)
+	# All disc polyps face up and respire — pulse them.
+	_register_polyp_tip(p)
 
 
 func _make_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> MeshInstance3D:
@@ -498,6 +547,8 @@ func _grow_anemone() -> void:
 			Vector3(cos(a) * ring, y, sin(a) * ring),
 			Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.52, VOXEL_SIZE * 0.18),
 			ramp[clampi(2 + i % 3, 0, ramp.size() - 1)])
+		body.set_meta("anemone_phase", float(i) * 0.79 + rel * 0.4)
+		body.set_meta("anemone_outward", Vector3(cos(a), 0.0, sin(a)))
 		_anemone_tentacles.append(body)
 		if rel > 0.72:
 			var tip: MeshInstance3D = _make_coral_voxel(
@@ -505,6 +556,7 @@ func _grow_anemone() -> void:
 				Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
 				tip_color)
 			body.set_meta("tip_ref", tip)
+			_anemone_tip_voxels.append(tip)
 
 
 func _grow_hydra_fresh() -> void:
@@ -593,30 +645,242 @@ func _process(dt: float) -> void:
 
 
 func _animate_sessile_motion() -> void:
+	# Flow sample for asymmetric ribbon undulation (anemones in particular).
+	var flow_bias: float = _get_flow_bias()
+	# All three branches below read each list entry into a Variant first
+	# and validate it before casting to Node3D. The typed-local assignment
+	# `var t: Node3D = _arr[i]` triggers a "previously freed instance"
+	# error when grazing/decay has queue_free'd the underlying voxel —
+	# Variant carries the stale reference without validating on store, so
+	# is_instance_valid + is_queued_for_deletion can filter it cleanly.
 	if coral_form == "anemone":
+		# Two-axis ribbon wave: each tentacle has its own phase, and the
+		# wave amplitude is modulated by flow so the colony lazily drifts
+		# downstream. Tips get a small outward lift on top of the rotation
+		# so the very ends ribbon visibly rather than swinging as rigid rods.
 		for i in _anemone_tentacles.size():
-			var t: Node3D = _anemone_tentacles[i]
-			if t == null or not is_instance_valid(t):
+			var t_v: Variant = _anemone_tentacles[i]
+			if t_v == null or not (t_v is Node3D) or not is_instance_valid(t_v):
 				continue
-			t.rotation.x = sin(_sessile_phase * 1.8 + float(i) * 0.9) * 0.22
-			t.rotation.z = cos(_sessile_phase * 1.4 + float(i) * 0.7) * 0.18
+			var t: Node3D = t_v as Node3D
+			if t.is_queued_for_deletion():
+				continue
+			var tp: float = float(t.get_meta("anemone_phase", float(i) * 0.79))
+			var wave_x: float = sin(_sessile_phase * 1.8 + tp) * 0.22
+			var wave_z: float = cos(_sessile_phase * 1.4 + tp * 0.85) * 0.18
+			# Bias the wave downstream with flow — gentle in still water,
+			# obvious near the aerator.
+			t.rotation.x = wave_x + flow_bias * 0.18
+			t.rotation.z = wave_z + flow_bias * 0.12
+			# Tips lifted/displaced an extra step so the ribbon end snaps
+			# slightly past the base axis (real anemone tip motion).
+			if t.has_meta("tip_ref"):
+				var tip_var: Variant = t.get_meta("tip_ref")
+				if tip_var != null and tip_var is Node3D and is_instance_valid(tip_var):
+					var tip: Node3D = tip_var as Node3D
+					if not tip.is_queued_for_deletion():
+						var lift: float = sin(_sessile_phase * 2.4 + tp * 1.3) * VOXEL_SIZE * 0.06
+						tip.position.y = VOXEL_SIZE * 0.33 + lift
 	elif coral_form == "hydra_fresh":
 		for i in _hydra_tentacles.size():
-			var h: Node3D = _hydra_tentacles[i]
-			if h == null or not is_instance_valid(h):
+			var h_v: Variant = _hydra_tentacles[i]
+			if h_v == null or not (h_v is Node3D) or not is_instance_valid(h_v):
 				continue
-			h.rotation.x = sin(_sessile_phase * 1.5 + float(i) * 0.7) * 0.28
+			var h: Node3D = h_v as Node3D
+			if h.is_queued_for_deletion():
+				continue
+			h.rotation.x = sin(_sessile_phase * 1.5 + float(i) * 0.7) * 0.28 + flow_bias * 0.16
 			h.rotation.z = cos(_sessile_phase * 1.2 + float(i) * 0.6) * 0.22
 	elif coral_form == "clam":
 		var open_amount: float = 0.18 + 0.16 * (0.5 + 0.5 * sin(_sessile_phase * 0.8))
 		for i in _clam_shell_parts.size():
-			var p: Node3D = _clam_shell_parts[i]
-			if p == null or not is_instance_valid(p):
+			var p_v: Variant = _clam_shell_parts[i]
+			if p_v == null or not (p_v is Node3D) or not is_instance_valid(p_v):
+				continue
+			var p: Node3D = p_v as Node3D
+			if p.is_queued_for_deletion():
 				continue
 			if i % 2 == 0:
 				p.rotation.x = -open_amount
 			else:
 				p.rotation.x = open_amount * 0.45
+	# Polyp tips pulse for every coral form. Cheap: a single sin per tip,
+	# scale assignment only. Pulse range is narrow (~0.78..1.08) so the
+	# pulse reads as breathing, not bouncing.
+	_animate_polyp_tips()
+	# Re-paint bleach tint when it changes meaningfully.
+	if absf(_bleach_level - _last_bleach_applied) > 0.04:
+		_apply_bleach_tint()
+		_last_bleach_applied = _bleach_level
+
+
+func _animate_polyp_tips() -> void:
+	if _polyp_tips.is_empty():
+		return
+	# Bleached polyps retract — pulse amplitude collapses as bleach climbs.
+	var amp: float = lerpf(0.15, 0.02, clampf(_bleach_level, 0.0, 1.0))
+	# Bioluminescence: coral tips emit a soft glow at night. The voxel
+	# materials are unshaded, so we add emission by raising the albedo
+	# brightness on the tip mesh. Day-phase fetched from SimDriver: glow
+	# peaks during the deep-night window (phase ~0.5..0.95) and fades to
+	# nothing at dawn / dusk.
+	var night_glow: float = 0.0
+	var sim_n: Node = _find_sim()
+	if sim_n != null and sim_n.has_method("daylight"):
+		var dl: float = float(sim_n.daylight())
+		# daylight() is 0 at night, 1 at noon. Strong glow when dl < 0.25.
+		night_glow = (1.0 - bleach_glow_dim()) * smoothstep(0.32, 0.05, dl)
+	# Prune freed polyp tips lazily. Reading the dict entry into a
+	# Variant first (not a typed Node3D) avoids the "assign to invalid
+	# previously freed instance" error when fish grazing or decay has
+	# queue_free'd the underlying voxel — typed assignment validates
+	# on store, but Variant just carries the (now-null) reference.
+	var live_count: int = 0
+	for i in _polyp_tips.size():
+		var entry: Dictionary = _polyp_tips[i]
+		var n_v: Variant = entry.get("node")
+		if n_v == null or not (n_v is Node3D) or not is_instance_valid(n_v):
+			entry["node"] = null  # mark stale so we can drop later
+			continue
+		var n: Node3D = n_v as Node3D
+		if n.is_queued_for_deletion():
+			entry["node"] = null
+			continue
+		live_count += 1
+		var phase: float = float(entry.get("phase", 0.0))
+		# Range ~(1 - amp .. 1 + amp). Slightly squashed on the closed
+		# half so the rest pose reads as a recessed polyp.
+		var s: float = 1.0 + sin(_sessile_phase * 1.6 + phase) * amp
+		var base_scale: float = float(entry.get("base_scale", 1.0))
+		n.scale = Vector3.ONE * (base_scale * s)
+		# Apply bioluminescent glow as an albedo lift. Pulse the glow with
+		# the same phase so the polyp visibly breathes light.
+		if night_glow > 0.01 and n is MeshInstance3D:
+			var mi: MeshInstance3D = n as MeshInstance3D
+			var sm: ShaderMaterial = mi.material_override as ShaderMaterial
+			if sm != null:
+				var base_alb: Color
+				if mi.has_meta("base_albedo_glow"):
+					base_alb = mi.get_meta("base_albedo_glow")
+				else:
+					base_alb = sm.get_shader_parameter("albedo")
+					mi.set_meta("base_albedo_glow", base_alb)
+				var glow_pulse: float = 0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase)
+				var glow: float = night_glow * (0.6 + 0.4 * glow_pulse)
+				# Boost albedo additively toward white; voxel shader is
+				# unshaded so this reads as direct emission.
+				if not mi.has_meta("glow_mat"):
+					var dup: ShaderMaterial = sm.duplicate() as ShaderMaterial
+					mi.material_override = dup
+					mi.set_meta("glow_mat", true)
+				var lit: Color = base_alb.lightened(0.45 * glow)
+				(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", lit)
+		elif n is MeshInstance3D:
+			var mi2: MeshInstance3D = n as MeshInstance3D
+			# Restore base when night ended. Cheap idempotent check.
+			if mi2.has_meta("base_albedo_glow") and mi2.has_meta("glow_mat"):
+				var sm2: ShaderMaterial = mi2.material_override as ShaderMaterial
+				if sm2 != null:
+					sm2.set_shader_parameter("albedo", mi2.get_meta("base_albedo_glow"))
+	# Compact the list when stale entries pile up — drop everything
+	# whose node was nilled above. Runs only when the survivor count
+	# falls below ~half so the resize churn stays rare.
+	if live_count > 0 and live_count < _polyp_tips.size() / 2:
+		var keep: Array = []
+		for e in _polyp_tips:
+			if e.get("node") != null:
+				keep.append(e)
+		_polyp_tips = keep
+
+
+# Bleach lowers the polyp glow proportionally — fully-bleached coral
+# can't sustain zooxanthellae, so the night glow goes nearly dark.
+func bleach_glow_dim() -> float:
+	return clampf(_bleach_level, 0.0, 1.0)
+
+
+# Pale the coral voxels toward bone-white in proportion to _bleach_level.
+# Heaviest on the topmost (youngest) voxels — that's where zooxanthellae
+# turnover is fastest and bleaching shows first. Restored from cached
+# base_albedo when bleach drops back to safe.
+func _apply_bleach_tint() -> void:
+	if voxels.is_empty():
+		return
+	var b: float = clampf(_bleach_level, 0.0, 1.0)
+	var pale := Color(0.96, 0.92, 0.86)
+	var n: int = voxels.size()
+	for i in n:
+		# Load via Variant first so a freed entry doesn't blow up the
+		# typed assignment on Plant.voxels (Plant.nibble may have just
+		# queue_free'd one but not yet pruned the array slot).
+		var vx_v: Variant = voxels[i]
+		if vx_v == null or not (vx_v is MeshInstance3D) or not is_instance_valid(vx_v):
+			continue
+		var vx: MeshInstance3D = vx_v as MeshInstance3D
+		if vx.is_queued_for_deletion():
+			continue
+		var sm: ShaderMaterial = vx.material_override as ShaderMaterial
+		if sm == null:
+			continue
+		var orig: Color
+		if vx.has_meta("base_albedo_bleach"):
+			orig = vx.get_meta("base_albedo_bleach")
+		else:
+			orig = sm.get_shader_parameter("albedo")
+			vx.set_meta("base_albedo_bleach", orig)
+		# Top quarter of voxels takes the full bleach hit; older base
+		# stays closer to its true color.
+		var depth_w: float = clampf(float(i) / float(maxi(1, n - 1)), 0.0, 1.0)
+		var local_b: float = b * (0.45 + 0.55 * depth_w)
+		var target: Color = orig.lerp(pale, local_b)
+		if not vx.has_meta("bleach_mat"):
+			var dup: ShaderMaterial = sm.duplicate() as ShaderMaterial
+			vx.material_override = dup
+			vx.set_meta("bleach_mat", true)
+		(vx.material_override as ShaderMaterial).set_shader_parameter("albedo", target)
+
+
+# Mirror the substrate-flow lean Plant computes in its tick, so polyp /
+# tentacle motion can bend downstream consistently. Cheap — just reads
+# the cached Plant rotation.z.
+func _get_flow_bias() -> float:
+	return rotation.z / 0.04 if absf(rotation.z) > 0.0001 else 0.0
+
+
+# ---- Bleaching tick ----
+# Runs on top of Plant.tick. Pulls warmth from TankConfig and O2 from sim;
+# climbs bleach when either crosses its threshold, decays when both are
+# safe. Slows growth in proportion to bleach so a bleached colony visibly
+# pauses. Doesn't kill the coral — that's still Plant's normal decay path
+# if health drops far enough.
+func tick(dt: float, substrate: SubstrateGrid) -> void:
+	if _base_growth_rate <= 0.0:
+		_base_growth_rate = growth_rate
+	# Read environmental stressors.
+	var sim_n: Node = _find_sim()
+	var o2: float = 0.65
+	if sim_n != null and sim_n.get("dissolved_o2") != null:
+		o2 = clampf(float(sim_n.dissolved_o2), 0.0, 1.0)
+	var warmth: float = 0.5
+	if sim_n != null:
+		var cfg: Node = sim_n.get_node_or_null("/root/TankConfig")
+		if cfg != null:
+			var wv: Variant = cfg.get("light_warmth")
+			if wv != null:
+				warmth = clampf(float(wv), 0.0, 1.0)
+	# Climb when warmth >=0.78 or o2 <=0.35; decay when both safe.
+	# Decay is slower than climb — recovering from bleaching is a slow
+	# process on a real reef. Both rates are per-second.
+	var heat_stress: float = clampf((warmth - 0.78) / 0.20, 0.0, 1.0)
+	var hypoxia_stress: float = clampf((0.35 - o2) / 0.25, 0.0, 1.0)
+	var stress: float = maxf(heat_stress, hypoxia_stress)
+	if stress > 0.0:
+		_bleach_level = clampf(_bleach_level + stress * dt * 0.014, 0.0, 1.0)
+	else:
+		_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
+	# Bleached polyps photosynthesize less — slow growth in proportion.
+	growth_rate = _base_growth_rate * lerpf(1.0, 0.3, _bleach_level)
+	super.tick(dt, substrate)
 
 
 # Corals don't propagate via runners or seeds (could be modeled as

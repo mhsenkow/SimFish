@@ -438,9 +438,19 @@ func _apply_render_config() -> void:
 		sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
 		sm.set_shader_parameter("internal_resolution",
 			Vector2(float(render_w), float(render_h)))
+		sm.set_shader_parameter("region_aware_dither",
+			1.0 if cfg.dither_region_aware else 0.0)
+		sm.set_shader_parameter("palette_bank_lock",
+			1.0 if cfg.palette_bank_lock else 0.0)
+		sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
+		sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
 		var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
 		if world_vis != null:
 			sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
+	# Integer upscale: lock the display rect to an integer multiple of the
+	# SubViewport size, centered, letterboxed with the parent control's
+	# background. Off → full-rect anchored display (default).
+	_apply_display_layout()
 	# If palette is disabled, swap the Display's shader to a passthrough by
 	# setting dither_strength to 0 AND increasing palette_size temporarily.
 	# Simpler: just set dither to 0 - the quantize still happens but no dither.
@@ -470,6 +480,18 @@ func _process(dt: float) -> void:
 			top_hud.modulate = HUD_DIM_MODULATE
 		if right_rail != null and right_rail.modulate != HUD_DIM_MODULATE:
 			right_rail.modulate = HUD_DIM_MODULATE
+
+	# Time-of-day palette tint. Drives the palette_quantize shader's
+	# multiplicative tint so the same 48-color palette breathes between
+	# dawn / day / dusk / night without needing 4 distinct PNGs. Cheap:
+	# a vec3 set per frame on a single ShaderMaterial.
+	_update_palette_tod_tint()
+
+	# Frame-time sampling — feeds the render panel's mini-graph + the
+	# adaptive quality controller below. Both are no-ops without the
+	# corresponding TankConfig toggle, so the cost is just one append.
+	_record_frame_time(dt)
+	_adaptive_quality_tick(dt)
 
 	# Periodic autosave. Only ticks the accumulator when we're actually
 	# playing (not aquascape-paused, not manually paused) so the 5-minute
@@ -737,6 +759,10 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 		var jz: float = randf_range(-0.18, 0.18)
 		var pos: Vector3 = Vector3(hit.x + jx, hit.y - 0.02, hit.z + jz)
 		_sim._spawn_waste(pos, 0.45, 3)
+	# Remember this drop so the fish AI biases its hunting toward
+	# habitual feed spots — visible learning behavior.
+	if _sim.has_method("record_feed_drop"):
+		_sim.record_feed_drop(hit)
 	return true
 
 
@@ -1684,7 +1710,21 @@ func _apply_camera() -> void:
 	var x := cos(pitch) * sin(yaw)
 	var y := sin(pitch)
 	var z := cos(pitch) * cos(yaw)
-	camera.global_position = target + Vector3(x, y, z) * radius
+	var pos: Vector3 = target + Vector3(x, y, z) * radius
+	# Pixel-snap camera: round the eye position to multiples of the
+	# world-space size of a single render pixel. Eliminates the sub-pixel
+	# jitter you see on swimming fish when the camera is drifting.
+	# world_per_pixel ≈ 2·tan(fov/2)·radius / render_height
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and bool(cfg.get("pixel_snap_camera")):
+		var fov_rad: float = deg_to_rad(float(camera.fov))
+		var rh: float = maxf(64.0, float(sub_viewport.size.y))
+		var wpp: float = 2.0 * tan(fov_rad * 0.5) * radius / rh
+		if wpp > 0.0001:
+			pos.x = snappedf(pos.x, wpp)
+			pos.y = snappedf(pos.y, wpp)
+			pos.z = snappedf(pos.z, wpp)
+	camera.global_position = pos
 	camera.look_at(target, Vector3.UP)
 
 
@@ -2048,6 +2088,186 @@ func _on_viewport_resized() -> void:
 	_apply_hud_layout()
 	_apply_rail_dock_layout()
 	_apply_panel_layout()
+	_apply_display_layout()
+
+
+# Resize the Display TextureRect based on the current TankConfig settings.
+# Two modes:
+#   integer_upscale = false (default) → full-rect anchored display, stretched
+#     to the window. Subpixel shimmer is possible at non-integer ratios but
+#     the image fills the screen.
+#   integer_upscale = true → display sized to (sub_viewport.size × N) where
+#     N is the largest integer that fits, centered, letterboxed. Every
+#     render pixel maps to an exact N×N block on the monitor — no shimmer.
+# Rolling buffer of recent frame times. The Render panel reads this to
+# draw its mini-sparkline; the adaptive-quality controller reads it to
+# decide when to step the resolution up or down.
+const _FRAME_HISTORY_LEN: int = 120
+var _frame_history: PackedFloat32Array = PackedFloat32Array()
+var _frame_history_head: int = 0
+var _adaptive_t: float = 0.0
+const _ADAPTIVE_TICK_S: float = 1.2
+
+
+func _record_frame_time(dt: float) -> void:
+	if _frame_history.size() < _FRAME_HISTORY_LEN:
+		_frame_history.resize(_FRAME_HISTORY_LEN)
+	_frame_history[_frame_history_head] = dt
+	_frame_history_head = (_frame_history_head + 1) % _FRAME_HISTORY_LEN
+
+
+func _frame_history_avg_fps() -> float:
+	# Return rolling average FPS across the buffer. Discards zeros so a
+	# half-filled buffer doesn't pull the average down.
+	var sum: float = 0.0
+	var n: int = 0
+	for v in _frame_history:
+		if v > 0.0001:
+			sum += v
+			n += 1
+	if n == 0:
+		return 60.0
+	return float(n) / sum
+
+
+# Pull the most recent N frame samples into a flat array ordered oldest
+# → newest. Used by RenderPanel to draw the sparkline left-to-right.
+func get_frame_history_ordered() -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(_FRAME_HISTORY_LEN)
+	for i in _FRAME_HISTORY_LEN:
+		out[i] = _frame_history[(_frame_history_head + i) % _FRAME_HISTORY_LEN]
+	return out
+
+
+# Step the SubViewport resolution + MSAA down when sustained FPS sits
+# below target, and back up when there's headroom. Only runs when
+# TankConfig.adaptive_quality is on. Stepping is conservative — one
+# resolution tier per check, with a long hold between steps so we don't
+# thrash near the threshold.
+const _ADAPTIVE_RES_TIERS: Array = [
+	{"w": 256, "h": 144},
+	{"w": 384, "h": 216},
+	{"w": 512, "h": 288},
+	{"w": 768, "h": 432},
+	{"w": 1024, "h": 576},
+]
+
+
+func _adaptive_quality_tick(dt: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("adaptive_quality")):
+		return
+	_adaptive_t += dt
+	if _adaptive_t < _ADAPTIVE_TICK_S:
+		return
+	_adaptive_t = 0.0
+	# Need a half-full buffer before we trust the average.
+	var filled: int = 0
+	for v in _frame_history:
+		if v > 0.0001:
+			filled += 1
+	if filled < _FRAME_HISTORY_LEN / 2.0:
+		return
+	var fps: float = _frame_history_avg_fps()
+	var target_fps: float = float(cfg.get("adaptive_quality_target_fps"))
+	# Find current tier index.
+	var cur_w: int = int(cfg.get("render_width"))
+	var cur_h: int = int(cfg.get("render_height"))
+	var cur_idx: int = -1
+	for i in _ADAPTIVE_RES_TIERS.size():
+		var t: Dictionary = _ADAPTIVE_RES_TIERS[i]
+		if int(t["w"]) == cur_w and int(t["h"]) == cur_h:
+			cur_idx = i
+			break
+	if cur_idx < 0:
+		return  # custom resolution; don't auto-adjust
+	# Step down if we're missing target by >10%.
+	if fps < target_fps * 0.90 and cur_idx > 0:
+		var nt: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx - 1]
+		cfg.set("render_width", int(nt["w"]))
+		cfg.set("render_height", int(nt["h"]))
+		_apply_render_config()
+		_frame_history.fill(0.0)  # invalidate history so next decision uses fresh frames
+		return
+	# Step up if we have >25% headroom and could increase quality.
+	if fps > target_fps * 1.25 and cur_idx < _ADAPTIVE_RES_TIERS.size() - 1:
+		var nt2: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx + 1]
+		cfg.set("render_width", int(nt2["w"]))
+		cfg.set("render_height", int(nt2["h"]))
+		_apply_render_config()
+		_frame_history.fill(0.0)
+
+
+# Update the palette_quantize shader's `palette_tint` uniform based on
+# the current SimDriver day_phase. Picks one of four anchor tints and
+# blends smoothly between them so the visual transition is continuous,
+# not stepwise. Anchors:
+#   day_phase 0.00 (dawn)    → warm rose
+#   day_phase 0.25 (midday)  → neutral 1,1,1
+#   day_phase 0.50 (dusk)    → amber
+#   day_phase 0.75 (midnight)→ cool blue
+const _TOD_DAWN: Vector3 = Vector3(1.08, 0.95, 0.90)
+const _TOD_DAY: Vector3 = Vector3(1.00, 1.00, 1.00)
+const _TOD_DUSK: Vector3 = Vector3(1.06, 0.88, 0.80)
+const _TOD_NIGHT: Vector3 = Vector3(0.78, 0.86, 1.04)
+
+
+func _update_palette_tod_tint() -> void:
+	if display == null or not (display.material is ShaderMaterial):
+		return
+	var phase: float = 0.25  # default to midday if no sim yet
+	if _sim != null and _sim.get("day_phase") != null:
+		phase = fposmod(float(_sim.day_phase), 1.0)
+	# Four-segment lerp on the unit circle: 0→0.25 dawn→day, 0.25→0.5 day→dusk,
+	# 0.5→0.75 dusk→night, 0.75→1 night→dawn.
+	var t: Vector3
+	if phase < 0.25:
+		t = _TOD_DAWN.lerp(_TOD_DAY, phase / 0.25)
+	elif phase < 0.5:
+		t = _TOD_DAY.lerp(_TOD_DUSK, (phase - 0.25) / 0.25)
+	elif phase < 0.75:
+		t = _TOD_DUSK.lerp(_TOD_NIGHT, (phase - 0.5) / 0.25)
+	else:
+		t = _TOD_NIGHT.lerp(_TOD_DAWN, (phase - 0.75) / 0.25)
+	(display.material as ShaderMaterial).set_shader_parameter("palette_tint", t)
+
+
+func _apply_display_layout() -> void:
+	if display == null:
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	var integer_lock: bool = cfg != null and bool(cfg.get("integer_upscale"))
+	if not integer_lock:
+		# Restore full-rect anchored layout (matches the .tscn default).
+		display.anchor_left = 0.0
+		display.anchor_top = 0.0
+		display.anchor_right = 1.0
+		display.anchor_bottom = 1.0
+		display.offset_left = 0.0
+		display.offset_top = 0.0
+		display.offset_right = 0.0
+		display.offset_bottom = 0.0
+		return
+	# Integer letterbox. Read the window size, divide by render size, floor,
+	# then center.
+	var win: Vector2 = Vector2(get_window().size)
+	var sv: Vector2 = Vector2(sub_viewport.size)
+	if sv.x <= 0.0 or sv.y <= 0.0:
+		return
+	var scale_x: float = floorf(win.x / sv.x)
+	var scale_y: float = floorf(win.y / sv.y)
+	var n: float = maxf(1.0, minf(scale_x, scale_y))
+	var out_size: Vector2 = sv * n
+	var origin: Vector2 = ((win - out_size) * 0.5).floor()
+	display.anchor_left = 0.0
+	display.anchor_top = 0.0
+	display.anchor_right = 0.0
+	display.anchor_bottom = 0.0
+	display.offset_left = origin.x
+	display.offset_top = origin.y
+	display.offset_right = origin.x + out_size.x
+	display.offset_bottom = origin.y + out_size.y
 
 
 func _rail_edge_inset() -> float:

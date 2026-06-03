@@ -169,11 +169,23 @@ func spawn_pop_spray(pos: Vector3) -> void:
 	get_tree().create_timer(0.6).timeout.connect(p.queue_free)
 
 
-func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
-	if _slime_marks.size() >= SLIME_CAP:
-		var old: MeshInstance3D = _slime_marks.pop_front()
+func _release_slime_mark(mi: MeshInstance3D) -> void:
+	_slime_marks.erase(mi)
+	if is_instance_valid(mi):
+		mi.queue_free()
+
+
+func _pop_slime_mark() -> void:
+	while not _slime_marks.is_empty():
+		var old = _slime_marks.pop_front()
 		if is_instance_valid(old):
 			old.queue_free()
+			return
+
+
+func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
+	if _slime_marks.size() >= SLIME_CAP:
+		_pop_slime_mark()
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(0.06, 0.02, 0.06))
 	mi.material_override = VoxelMat.make(Color(0.72, 0.82, 0.78, 0.35))
@@ -183,7 +195,7 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 	else:
 		_world.add_child(mi)
 	_slime_marks.append(mi)
-	get_tree().create_timer(10.0).timeout.connect(mi.queue_free)
+	get_tree().create_timer(10.0).timeout.connect(_release_slime_mark.bind(mi))
 
 
 func spawn_snail_bubble(pos: Vector3) -> void:
@@ -528,7 +540,7 @@ func _add_glass_rim_bevels(root: Node3D) -> void:
 
 
 func _add_mineral_streak() -> void:
-	if _glass_walls.is_empty() or _world == null:
+	if _glass_walls.is_empty() or _world == null or _glass_root == null:
 		return
 	var wall: MeshInstance3D = _glass_walls[randi() % _glass_walls.size()]
 	var streak := MeshInstance3D.new()
@@ -536,12 +548,14 @@ func _add_mineral_streak() -> void:
 	streak.material_override = VoxelMat.make(Color8(225, 230, 235))
 	var gp: Vector3 = wall.global_position
 	var wh: float = float(_world.WATER_HEIGHT)
+	# Add to the tree FIRST so the global_position setter doesn't bail out
+	# with the "!is_inside_tree()" warning (the setter needs a parent
+	# transform to derive the local position).
+	_glass_root.add_child(streak)
 	streak.global_position = Vector3(
 		gp.x + randf_range(-0.1, 0.1),
 		randf_range(wh - 0.45, wh - 0.05),
 		gp.z + randf_range(-0.1, 0.1))
-	if _glass_root != null:
-		_glass_root.add_child(streak)
 	_mineral_streaks.append(streak)
 	if _mineral_streaks.size() > 28:
 		var old = _mineral_streaks.pop_front()
@@ -550,10 +564,13 @@ func _add_mineral_streak() -> void:
 
 
 func _cleanup_slime() -> void:
+	var i: int = _slime_marks.size() - 1
+	while i >= 0:
+		if not is_instance_valid(_slime_marks[i]):
+			_slime_marks.remove_at(i)
+		i -= 1
 	while _slime_marks.size() > SLIME_CAP:
-		var old: MeshInstance3D = _slime_marks.pop_front()
-		if is_instance_valid(old):
-			old.queue_free()
+		_pop_slime_mark()
 
 
 func _compute_seasonal_hue() -> float:

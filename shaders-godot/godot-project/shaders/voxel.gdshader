@@ -11,6 +11,11 @@ uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
 uniform float day_phase_offset = 0.0;
 uniform float belly_flash : hint_range(0.0, 1.0) = 0.0;
+// Bioluminescence — fish.gd raises this at night for is_bioluminescent
+// individuals. 0 = no glow (day or non-bioluminescent), up to 1 = soft
+// halo. Reads as direct emission against the unshaded voxel face.
+uniform float bioluminescence : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 biolum_color : source_color = vec3(0.65, 0.85, 1.0);
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -52,6 +57,15 @@ void fragment() {
 		col += aquatic_light_color * caustics * 0.22;
 		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
 		col += vec3(shim, shim * 0.6, -shim * 0.4);
+	}
+
+	// Bioluminescence — soft pulsing additive glow. Pulse phase keyed off
+	// world_pos so different voxels on the same fish breathe slightly out
+	// of sync, giving a living-organism feel rather than a uniform lamp.
+	if (bioluminescence > 0.001) {
+		float pulse = 0.65 + 0.35 * sin(TIME * 1.8
+			+ v_world_pos.x * 0.7 + v_world_pos.z * 0.5);
+		col += biolum_color * bioluminescence * pulse * 0.55;
 	}
 
 	ALBEDO = col;
