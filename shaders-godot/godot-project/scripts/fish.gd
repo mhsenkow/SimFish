@@ -174,11 +174,23 @@ var locomotion_type: String = "subcarangiform"
 var snail_predator: bool = false
 var shrimp_predator: bool = false
 var algae_grazer: bool = false
+# Wood-grazer — clings to driftwood + rasps biofilm. Bristlenose plecos
+# express this; the AI tier below it biases the fish to spend time
+# near hardscape voxels (driftwood, stones) instead of cruising the
+# water column.
+var wood_grazer: bool = false
 # Bioluminescent — body voxels glow softly when the tank is dark.
 # Heritable, rare (~3% of new fish). Visually the fish reads as a deep-
 # sea lanternfish drifting at night; harmless during the day (no glow).
 var is_bioluminescent: bool = false
 var _biolum_t: float = 0.0
+
+# Acclimation buffer — new fish (just dropped in via fish store, or
+# newly hatched) get ACCLIMATION_DURATION seconds of stress immunity
+# while they adjust to the tank. After that, full ammonia / nitrite
+# stress accrual kicks in. Real-world quarantine analog.
+const ACCLIMATION_DURATION: float = 120.0
+var _acclimation_remaining: float = ACCLIMATION_DURATION
 
 # ---- Territory / swim pattern (heritable) ----
 # Each fish has a "home point" it loosely orbits, plus a swim_pattern that
@@ -708,6 +720,7 @@ func init_genome(genome: Dictionary) -> void:
 	shrimp_predator = not not genome.get("shrimp_predator", shrimp_predator)
 	_apply_predator_morphology()
 	algae_grazer = not not genome.get("algae_grazer", algae_grazer)
+	wood_grazer = not not genome.get("wood_grazer", wood_grazer)
 	# Bioluminescence. Either set explicitly in genome, or rolled fresh at
 	# ~3% for first-generation founders so any tank eventually accumulates
 	# a few glowing individuals.
@@ -1555,6 +1568,37 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
 	_startle_remaining = maxf(0.0, _startle_remaining - dt)
+	# Acclimation: counts down from ACCLIMATION_DURATION when the fish
+	# is newly spawned. Caps cycle-spike stress accrual while it ticks.
+	_acclimation_remaining = maxf(0.0, _acclimation_remaining - dt)
+
+	# Cycling-stage water-quality stress. Ammonia + nitrite are toxic
+	# to fish at elevated concentrations; healthy established tanks read
+	# them as near-zero. Fresh tanks during the cycle dump high levels
+	# of both. Acclimating fish only feel a fraction of this stress, so
+	# the player CAN drop fish into a new tank without immediate
+	# panic — but they'll start stressing once acclimation ends if the
+	# chemistry hasn't cleared.
+	if sim != null and sim.water_chemistry != null and maturity != MATURITY_FRY:
+		var nh3: float = float(sim.water_chemistry.ammonia)
+		var no2: float = float(sim.water_chemistry.nitrite)
+		# Ammonia: tolerable below 0.25, panic-inducing at >1.0.
+		# Nitrite: tolerable below 0.35, panic-inducing at >1.2.
+		var nh3_stress: float = clampf((nh3 - 0.25) / 0.75, 0.0, 1.0)
+		var no2_stress: float = clampf((no2 - 0.35) / 0.85, 0.0, 1.0)
+		var total_chem: float = maxf(nh3_stress, no2_stress * 0.85)
+		# Acclimation discount: at full acclimation, 30% of normal
+		# accrual; tapers to 100% once the buffer runs out.
+		var accl_frac: float = clampf(
+			_acclimation_remaining / ACCLIMATION_DURATION, 0.0, 1.0)
+		var accl_mult: float = lerpf(1.0, 0.30, accl_frac)
+		stress = clampf(stress + total_chem * accl_mult * dt * 0.045, 0.0, 1.0)
+		# Severe + sustained chemistry kills. Real ammonia poisoning is
+		# slow; we expose it as the "stress crosses 0.95 with bad chem"
+		# branch so the existing die path picks it up naturally.
+		if total_chem > 0.7 and stress > 0.95 and randf() < dt * 0.05:
+			events["die"] = true
+			return events
 
 	# Gestation progress (livebearer females only)
 	if is_livebearer and sex == 1 and _gestation_progress > 0.0:
@@ -1844,6 +1888,28 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Cleaned-flag decays so the tilt smoothly clears.
 	if _being_cleaned > 0.0:
 		_being_cleaned = maxf(0.0, _being_cleaned - dt * 1.2)
+
+	# Tier 0.34b: WOOD GRAZER. Bristlenose plecos + similar species
+	# spend their lives clinging to driftwood, rasping biofilm. When
+	# hungry they actively seek out the nearest log; when satiated they
+	# hover near it. Real plecos basically don't leave the wood.
+	if wood_grazer and maturity != MATURITY_FRY and sim != null:
+		var wood_pos: Vector3 = sim.nearest_driftwood_pos(position)
+		if wood_pos != Vector3.ZERO:
+			var to_wood: Vector3 = wood_pos - position
+			var d_wood: float = to_wood.length()
+			# Hungry plecos pull hard; satiated ones gently hold a
+			# rest position next to the log.
+			var hunger_pull: float = lerpf(0.35, 1.05, clampf(hunger * 1.5, 0.0, 1.0))
+			if d_wood > 0.45:
+				desired += to_wood.normalized() * effective_max * hunger_pull
+			else:
+				# At the log — damp velocity, nibble waste/algae locally.
+				desired *= 0.25
+				# Reading the wood as a meal: low-rate hunger relief
+				# proportional to existing biofilm on this driftwood.
+				if hunger > 0.2:
+					hunger = maxf(0.0, hunger - dt * 0.012)
 
 	# Tier 0.35: FRY PLANT SHELTER. Fresh fry seek the densest nearby plant
 	# patch and hold position inside it until they hit juvenile stage. Real
@@ -4231,6 +4297,7 @@ func to_save_dict() -> Dictionary:
 		"speed": speed,
 		"current_mode": int(current_mode),
 		"breed_cooldown": breed_cooldown,
+		"acclimation_remaining": _acclimation_remaining,
 		"nibble_cooldown": nibble_cooldown,
 		"breed_count": breed_count,
 		"growth_factor": growth_factor,
@@ -4266,6 +4333,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	speed = float(d.get("speed", 0.0))
 	current_mode = int(d.get("current_mode", Mode.CRUISE)) as Mode
 	breed_cooldown = float(d.get("breed_cooldown", 0.0))
+	# Default: fully acclimated on load (assume reloaded fish are
+	# already established; this avoids unfair stress for saved tanks).
+	_acclimation_remaining = float(d.get("acclimation_remaining", 0.0))
 	nibble_cooldown = float(d.get("nibble_cooldown", 0.0))
 	breed_count = int(d.get("breed_count", 0))
 	growth_factor = float(d.get("growth_factor", 1.0))

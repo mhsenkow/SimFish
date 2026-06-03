@@ -665,6 +665,86 @@ const SPECIES_LIBRARY: Dictionary = {
 			"body_shape": "fusiform",
 		},
 	},
+	"otocinclus": {
+		"label": "Otocinclus (algae grazer)",
+		"description": "Small armored catfish that clings to glass + broad-leaf plants and rasps algae. Schools loosely; ignored by most fish. The dedicated freshwater algae-eater the snails can't quite replace.",
+		"genome": {
+			"species": "otocinclus",
+			# Pale tan-brown with a dark lateral stripe running snout-to-tail.
+			"base_color": Color8(180, 155, 115),
+			"accent_color": Color8(58, 48, 38),
+			"marking_color": Color8(85, 70, 55),
+			"adult_voxel_scale": 0.12,
+			"size_potential": 0.85,
+			"jaw_claw_size": 0.04,
+			"max_age_s": 280.0,
+			"max_speed": 0.85,
+			"schooling_strength": 0.85,
+			"separation_radius": 0.45,
+			# Strong herbivory + the algae_grazer flag drives the existing
+			# fish-graze-algae path. Otos make algae a real food source
+			# for fish, not just a visual problem for the player.
+			"herbivory": 1.0,
+			"fecundity": 0.3,
+			"clutch_size": 2,
+			"preferred_y": 1.4,                  # bottom + glass crawler
+			"body_elongation": 1.10,
+			"body_depth_factor": 0.85,
+			"fin_length_factor": 0.85,
+			"dorsal_height_factor": 0.7,
+			"tail_fork_depth": 0.35,
+			"pattern_type": 1,                   # horizontal stripe
+			"swim_pattern": "shuffle",           # glass-cling crawl
+			"tail_shape": 0,
+			"eye_size_factor": 1.05,
+			"mouth_orientation": 1,              # downturned (rasping)
+			"armor_plates": true,                # scaleless catfish armor
+			"algae_grazer": true,
+		},
+	},
+	"bristlenose_pleco": {
+		"label": "Bristlenose pleco (wood rasper)",
+		"description": "Stout armored catfish that rasps driftwood for fiber + algae. The big chunky bottom dweller that finally makes driftwood ecologically meaningful. One per tank — they're territorial about their log.",
+		"genome": {
+			"species": "bristlenose_pleco",
+			# Dark mottled brown body with paler belly + bristly snout.
+			"base_color": Color8(78, 62, 48),
+			"accent_color": Color8(135, 110, 82),
+			"marking_color": Color8(45, 35, 28),
+			"adult_voxel_scale": 0.20,
+			"size_potential": 1.30,
+			"jaw_claw_size": 0.10,
+			"max_age_s": 540.0,
+			"max_speed": 0.55,
+			"schooling_strength": 0.0,
+			"separation_radius": 1.4,
+			"herbivory": 0.9,
+			"fecundity": 0.15,
+			"clutch_size": 2,
+			"preferred_y": 1.0,                  # hugs the bottom + wood
+			"body_elongation": 1.25,
+			"body_depth_factor": 1.10,
+			"head_proportion": 1.30,
+			"fin_length_factor": 1.10,
+			"dorsal_height_factor": 1.45,
+			"tail_fork_depth": 0.30,
+			"pattern_type": 2,                   # mottled spots
+			"color_dot_count": 5,
+			"swim_pattern": "shuffle",
+			"tail_shape": 3,                     # square paddle
+			"eye_size_factor": 0.85,
+			"mouth_orientation": 1,              # underslung rasping mouth
+			"has_barbels": true,                 # bristle snout proxy
+			"armor_plates": true,
+			"algae_grazer": true,
+			"is_territorial": true,              # owns the driftwood log
+			# Wood-grazing mark — fish.gd reads this to bias scavenge
+			# behavior toward driftwood voxels. With wood_grazer=true,
+			# the bristlenose visibly hangs on the wood rasping at
+			# biofilm instead of cruising the substrate.
+			"wood_grazer": true,
+		},
+	},
 	"dwarf_gourami": {
 		"label": "Dwarf gourami",
 		"description": "Deep-bodied labyrinth centerpiece. Flame-red flanks washed with iridescent turquoise, long pelvic feelers, and habitual surface air-gulping.",
@@ -771,7 +851,7 @@ const TANK_PRESETS: Dictionary = {
 		"label": "Classic community",
 		"stocking": {
 			"glassdart": 10, "harlequin_rasbora": 8, "corydoras": 6,
-			"dwarf_gourami": 2, "shrimp": 12,
+			"dwarf_gourami": 2, "otocinclus": 3, "shrimp": 12,
 		},
 		"phenotype_spread": 0.6,
 		# Default Walstad jungle — every plant species at full density.
@@ -860,7 +940,8 @@ const TANK_PRESETS: Dictionary = {
 		"label": "Showcase tank",
 		"stocking": {
 			"angelfish": 2, "dwarf_gourami": 2, "killifish": 4,
-			"guppy": 6, "corydoras": 4, "shrimp": 14,
+			"guppy": 6, "corydoras": 4, "otocinclus": 3,
+			"bristlenose_pleco": 1, "shrimp": 14,
 		},
 		"phenotype_spread": 0.8,
 		# Every plant type at moderate density so the showcase has the

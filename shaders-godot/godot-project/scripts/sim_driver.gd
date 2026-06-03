@@ -127,6 +127,86 @@ func recent_feed_spot_bias(pos: Vector3, radius: float) -> Dictionary:
 # walk of snails_root just for the oxygen step).
 var snail_count: int = 0
 var total_plant_biomass: int = 0
+
+# ---- Carrying-capacity model ----
+# Plants are the bottleneck for sustainable fish stocking — they oxygenate
+# the water, soak ammonia/nitrate, and provide cover for fry. We expose a
+# soft cap derived from plant biomass + an aeration bonus + a tank-volume
+# multiplier. The cap is "soft" in that breeding doesn't hard-stop at the
+# threshold — instead every fish over the cap accumulates background
+# stress proportional to the overshoot, which throttles breeding via the
+# existing stress-blocks-courtship gate. The HUD also shows the
+# current/cap ratio so the player gets a visible warning before the
+# tank crashes.
+const CARRYING_CAPACITY_PLANT_DIVISOR: float = 18.0
+const CARRYING_CAPACITY_AERATION_BONUS: int = 3
+const CARRYING_CAPACITY_MIN: int = 6
+const CARRYING_CAPACITY_MAX: int = 80
+
+
+# Return the world-space position of the closest driftwood voxel to
+# `pos`, or Vector3.ZERO if none / world has no driftwood. Used by
+# wood-grazer fish (bristlenose pleco) to bias toward the log when
+# they're hungry. Cheap — walks world._driftwood_voxels which is bounded
+# to a few hundred voxels at most. Throttled to once a second per fish
+# via the caller's gating.
+func nearest_driftwood_pos(pos: Vector3) -> Vector3:
+	var w: Node = get_parent()
+	if w == null:
+		return Vector3.ZERO
+	var dw_v: Variant = w.get("_driftwood_voxels")
+	if not (dw_v is Array):
+		return Vector3.ZERO
+	var dw: Array = dw_v
+	if dw.is_empty():
+		return Vector3.ZERO
+	var best: Vector3 = Vector3.ZERO
+	var best_d2: float = 1e9
+	for v in dw:
+		if v == null or not is_instance_valid(v):
+			continue
+		var d2: float = (v.global_position - pos).length_squared()
+		if d2 < best_d2:
+			best_d2 = d2
+			best = v.global_position
+	return best
+
+
+func fish_carrying_capacity() -> int:
+	var w_volume_mult: float = 1.0
+	var w: Node = get_parent()
+	if w != null:
+		# Scale gently with tank volume. Tiny scenarios (polyp jar) get a
+		# proportionally lower cap; big show tanks get a little more.
+		var hw: Variant = w.get("TANK_HALF_W")
+		var hd: Variant = w.get("TANK_HALF_D")
+		var h: Variant = w.get("TANK_HEIGHT")
+		if hw != null and hd != null and h != null:
+			var ref_vol: float = 8.0 * 4.0 * 7.0 * 4.0  # the default-tank volume
+			var live_vol: float = float(hw) * float(hd) * float(h) * 4.0
+			w_volume_mult = clampf(live_vol / ref_vol, 0.4, 1.6)
+	var biomass_cap: int = int(float(total_plant_biomass) / CARRYING_CAPACITY_PLANT_DIVISOR)
+	var aeration_bonus: int = 0
+	match aeration_fixture:
+		"filter":
+			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS + 2
+		"disk":
+			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS
+		"stick":
+			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS - 1
+		_:
+			aeration_bonus = 0
+	var raw: float = (float(biomass_cap) + float(aeration_bonus)) * w_volume_mult
+	return clampi(int(round(raw)), CARRYING_CAPACITY_MIN, CARRYING_CAPACITY_MAX)
+
+
+# Returns the live fish count / capacity ratio. Above 1.0 = over-stocked
+# and fish are accumulating stress at the rate (ratio - 1.0) * 0.06/s.
+func fish_stocking_ratio() -> float:
+	var cap: int = fish_carrying_capacity()
+	if cap <= 0:
+		return 0.0
+	return float(fish.size()) / float(cap)
 var plant_growth_budget: int = 0
 var _pearling_slots_used: int = 0
 const PEARLING_MAX_SLOTS: int = 22
@@ -1057,6 +1137,34 @@ func _tick(dt: float) -> void:
 		if f.get("snail_predator"):
 			sp_count += 1
 	snail_predator_count = sp_count
+
+	# Carrying-capacity overshoot stress. The cap is plant-biomass-driven
+	# (more plants → bigger sustainable population). Every fish over the
+	# cap accumulates background stress at a rate proportional to how far
+	# the population sits past it. Since the existing breed branch
+	# already requires `stress < 0.4`, this throttles reproduction
+	# automatically once the tank is over-stocked — without imposing a
+	# hard population cap that would feel arbitrary.
+	var stocking_ratio: float = fish_stocking_ratio()
+	if stocking_ratio > 1.0:
+		var overshoot: float = clampf(stocking_ratio - 1.0, 0.0, 1.5)
+		for f in fish:
+			if not is_instance_valid(f):
+				continue
+			if f.get("_dying") == true:
+				continue
+			# Adults feel the squeeze first; fry get a discount so they
+			# can grow up before the population pressure pushes them
+			# out. Senescent fish basically don't care.
+			var mat_v: Variant = f.get("maturity")
+			var maturity_w: float = 0.4
+			if mat_v != null:
+				if int(mat_v) == Fish.MATURITY_ADULT:
+					maturity_w = 1.0
+				elif int(mat_v) == Fish.MATURITY_JUVENILE:
+					maturity_w = 0.65
+			f.stress = clampf(float(f.stress) + overshoot * 0.006 * maturity_w, 0.0, 1.0)
+
 	# Nutrient pressure: 0 at <=2.0 N, 1.0 at >=8.0 N; blend nitrate from N-cycle.
 	var n_pressure: float = clampf((n_total - 2.0) / 6.0, 0.0, 1.0)
 	var nitrate_p: float = clampf(water_chemistry.nitrate / 1.5, 0.0, 1.0)
@@ -2450,6 +2558,8 @@ func _emit_stats() -> void:
 		"morph_distinct": morph_drifted,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,
+		"fish_carrying_capacity": fish_carrying_capacity(),
+		"fish_stocking_ratio": fish_stocking_ratio(),
 		"waste_particles": waste.size(),
 		"substrate_nutrients_total": substrate.total_above_baseline() if substrate else 0.0,
 		"dissolved_o2": dissolved_o2,

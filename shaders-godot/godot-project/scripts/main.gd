@@ -1870,14 +1870,27 @@ func _render_header() -> void:
 
 	# Fauna chips. On compact layout the shrimp+snails chips are hidden and
 	# the "fish" chip shows the grand fauna total instead.
+	# Carrying-capacity readout: fish/cap with warn-tint when over cap.
+	# Pulled from SimDriver.fish_carrying_capacity() via the stats dict.
+	var fish_cap: int = int(_stats.get("fish_carrying_capacity", 0))
+	var stocking_ratio: float = float(_stats.get("fish_stocking_ratio", 0.0))
+	var over_cap: bool = stocking_ratio > 1.05
 	var fauna_compact: bool = _hud_layout == "compact"
 	if fauna_compact:
 		var fauna_total: int = fish_total + shrimp_total + snail_total
-		_update_chip("fish", str(fauna_total), "fauna", true, false)
+		var compact_sub: String = "fauna"
+		if fish_cap > 0:
+			compact_sub = "%d/%d cap" % [fish_total, fish_cap]
+		_update_chip("fish", str(fauna_total), compact_sub, true, over_cap)
 	else:
-		_update_chip("fish", str(fish_total),
-			("%dA %dF" % [fish_adults, fish_fry]) if fish_total > 0 else "—",
-			true, false)
+		var fish_sub: String
+		if fish_total <= 0:
+			fish_sub = "—"
+		elif fish_cap > 0:
+			fish_sub = "%dA %dF · %d/%d" % [fish_adults, fish_fry, fish_total, fish_cap]
+		else:
+			fish_sub = "%dA %dF" % [fish_adults, fish_fry]
+		_update_chip("fish", str(fish_total), fish_sub, true, over_cap)
 		_update_chip("shrimp", str(shrimp_total),
 			("%dA %dF" % [shrimp_adults, shrimp_fry]) if shrimp_total > 0 else "—",
 			true, false)

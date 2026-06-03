@@ -64,6 +64,8 @@ var _biofilm_apply_t: float = 0.0
 # drift and squirm. Adds tank-feel at small scale (real Walstad tanks
 # always have a teeming film of copepods + worms).
 var microfauna_root: Node3D = null
+var tubifex_root: Node3D = null
+var _tubifex_check_t: float = 0.0
 var motion_debug: MotionDebugOverlay = null
 var wriggle_root: Node3D = null
 # Worms spawn proportional to mulm carpet density — no fixed ceiling.
@@ -214,6 +216,7 @@ func _ready() -> void:
 	algae_root = Node3D.new(); algae_root.name = "Algae"; add_child(algae_root)
 	clams_root = Node3D.new(); clams_root.name = "Clams"; add_child(clams_root)
 	microfauna_root = Node3D.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
+	tubifex_root = Node3D.new(); tubifex_root.name = "Tubifex"; add_child(tubifex_root)
 	wriggle_root = Node3D.new(); wriggle_root.name = "WriggleWorms"; add_child(wriggle_root)
 	motion_debug = MotionDebugOverlay.new()
 	motion_debug.name = "MotionDebug"
@@ -505,6 +508,7 @@ func _process(dt: float) -> void:
 	# child_count + a handful of conditional spawns per ~1 s window).
 	_maintain_microfauna(sdt)
 	_maintain_wriggle_worms(sdt)
+	_maintain_tubifex_patches(sdt)
 	_life_bounds_timer = maxf(0.0, _life_bounds_timer - sdt)
 	if _life_bounds_timer <= 0.0:
 		_life_bounds_timer = LIFE_BOUNDS_INTERVAL
@@ -2852,6 +2856,59 @@ func _spawn_initial_plants() -> void:
 		c.water_surface_y = WATER_HEIGHT
 		c.generation = 0
 		sim.register_plant(c)
+
+	# --- Marimo moss balls ---
+	# Spherical algae colonies. 2–3 per tank, dropped at scattered
+	# floor positions. They draw nitrate fast (real marimo are nitrate
+	# sponges), grow extremely slowly, and sit immovably on the substrate.
+	for i in _rng.randi_range(2, 3):
+		var mx: Vector2 = _pick_ecology_site(
+			false, -TANK_HALF_D * 0.75, TANK_HALF_D * 0.75, 0.5, 0.5)
+		var marimo := Coral.new()
+		plants_root.add_child(marimo)
+		marimo.global_position = spawn_position_on_floor(mx.x, mx.y, 0.04)
+		marimo.coral_form = "marimo"
+		marimo.ramp_override = [
+			Color8(28, 56, 30), Color8(42, 78, 42), Color8(58, 102, 56),
+			Color8(76, 124, 70), Color8(96, 148, 85), Color8(118, 172, 100),
+		]
+		marimo.tip_color = Color8(140, 192, 120)
+		marimo.init(_rng.randi_range(18, 30), {
+			"max_height": _rng.randi_range(38, 60),
+			"growth_rate": 0.05,        # marimo grow ~5 mm / YEAR in real life
+			"sway_amplitude": 0.02,     # they barely move
+			"nutrient_demand": 0.10,    # heavy nitrate uptake
+		})
+		marimo.water_surface_y = WATER_HEIGHT
+		marimo.generation = 0
+		sim.register_plant(marimo)
+
+	# --- Riccia pearling carpet ---
+	# Bright lime-green liverwort patches. Each produces dramatic O2
+	# pearling under good light — visible bubble columns that read as
+	# "this tank is healthy." 3–5 small carpets at random foreground
+	# positions.
+	for i in _rng.randi_range(3, 5):
+		var rxz: Vector2 = _pick_ecology_site(
+			false, -TANK_HALF_D * 0.6, TANK_HALF_D * 0.6, 0.35, 0.45)
+		var riccia := Coral.new()
+		plants_root.add_child(riccia)
+		riccia.global_position = spawn_position_on_floor(rxz.x, rxz.y, 0.04)
+		riccia.coral_form = "riccia"
+		riccia.ramp_override = [
+			Color8(58, 110, 42), Color8(82, 140, 58), Color8(110, 168, 78),
+			Color8(140, 195, 100), Color8(170, 218, 125), Color8(195, 235, 150),
+		]
+		riccia.tip_color = Color8(215, 245, 170)
+		riccia.init(_rng.randi_range(6, 10), {
+			"max_height": _rng.randi_range(14, 22),
+			"growth_rate": 0.22,        # moderate carpet spread
+			"sway_amplitude": 0.04,     # carpet barely moves
+			"nutrient_demand": 0.06,
+		})
+		riccia.water_surface_y = WATER_HEIGHT
+		riccia.generation = 0
+		sim.register_plant(riccia)
 
 
 # Reef-tank coral spawn (called instead of _spawn_initial_plants when
@@ -5460,6 +5517,14 @@ func _refresh_microfauna_visibility() -> void:
 func _spawn_one_microfauna() -> void:
 	if microfauna_root == null or sim == null:
 		return
+	# Occasionally drop a localized swarm instead of a scattered single
+	# individual. Real daphnia / copepod populations cluster around food
+	# pulses; a few visible clouds reads much more "alive" than uniform
+	# Brownian dots. Swarms are ~8 individuals dropped into a 0.4-unit
+	# bubble at one sampled point.
+	if randf() < 0.18:
+		_spawn_microfauna_swarm()
+		return
 	var fill: float = _microfauna_swarm_fill()
 	for _attempt in 16:
 		var pt: Vector3 = _sample_point_in_tank(
@@ -5474,6 +5539,41 @@ func _spawn_one_microfauna() -> void:
 		# Stagger initial age so the population doesn't all die at once.
 		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.6)
 		return
+
+
+# Drop a tight bubble of ~8 daphnia at a sampled point so the swarm
+# reads as a localized cloud the fish can chase, rather than uniform
+# scatter across the whole tank.
+func _spawn_microfauna_swarm() -> void:
+	if microfauna_root == null or sim == null:
+		return
+	var fill: float = _microfauna_swarm_fill()
+	var center: Vector3 = Vector3.ZERO
+	var found: bool = false
+	for _attempt in 16:
+		var pt: Vector3 = _sample_point_in_tank(
+			SUBSTRATE_DEPTH + 0.4, WATER_HEIGHT - 0.5, 0.5)
+		if is_inside_tank_volume(pt.x, pt.y, pt.z, 0.5):
+			center = pt
+			found = true
+			break
+	if not found:
+		return
+	var swarm_n: int = randi_range(6, 10)
+	for _i in swarm_n:
+		var offset := Vector3(
+			randf_range(-0.35, 0.35),
+			randf_range(-0.20, 0.20),
+			randf_range(-0.35, 0.35))
+		var p: Vector3 = clamp_xyz_in_tank(center + offset, 0.35, 0.04)
+		var m := Microfauna.new()
+		m.set_swarm_presence(fill)
+		microfauna_root.add_child(m)
+		m.sim = sim
+		m.position = p
+		# Tight ages so the swarm reads as a synchronous cloud, not
+		# already-decaying individuals.
+		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.25)
 
 
 # Wriggle worms — proportional to current mulm carpet. As mulm accumulates,
@@ -5577,6 +5677,64 @@ func _maintain_wriggle_worms(sdt: float) -> void:
 	var to_spawn: int = mini(target - have, 2)
 	for i in to_spawn:
 		_spawn_one_wriggle()
+
+
+# Tubifex patch maintenance. Patches spawn when ammonia / nitrite are
+# elevated (poor cycling) and despawn as soon as chemistry clears. Read
+# the visual cue: red patches on the substrate = your tank has unprocessed
+# nitrogen. Each patch is a small bundle of writhing red worms.
+const _TUBIFEX_TARGET_MAX: int = 8
+const _TUBIFEX_NH3_TRIGGER: float = 0.40
+const _TUBIFEX_NO2_TRIGGER: float = 0.55
+
+
+func _maintain_tubifex_patches(sdt: float) -> void:
+	_tubifex_check_t = maxf(0.0, _tubifex_check_t - sdt)
+	if _tubifex_check_t > 0.0:
+		return
+	_tubifex_check_t = randf_range(3.5, 5.5)
+	if tubifex_root == null or sim == null:
+		return
+	# Reap dead patches from natural aging or fish grazing.
+	var to_free: Array = []
+	for c in tubifex_root.get_children():
+		if c is TubifexPatch and (c as TubifexPatch).is_dead():
+			to_free.append(c)
+	for c in to_free:
+		c.queue_free()
+	# Read chemistry — patches only thrive in dirty water.
+	var nh3: float = 0.0
+	var no2: float = 0.0
+	if sim.water_chemistry != null:
+		nh3 = float(sim.water_chemistry.ammonia)
+		no2 = float(sim.water_chemistry.nitrite)
+	var pressure: float = 0.0
+	if nh3 > _TUBIFEX_NH3_TRIGGER:
+		pressure += (nh3 - _TUBIFEX_NH3_TRIGGER) * 1.8
+	if no2 > _TUBIFEX_NO2_TRIGGER:
+		pressure += (no2 - _TUBIFEX_NO2_TRIGGER) * 1.4
+	pressure = clampf(pressure, 0.0, 1.6)
+	var target: int = clampi(int(round(pressure * _TUBIFEX_TARGET_MAX)),
+		0, _TUBIFEX_TARGET_MAX)
+	# Decay any surplus toward target by marking older patches dead.
+	# Reverse iteration so the visibly-oldest (first-spawned) dies first.
+	var have: int = tubifex_root.get_child_count()
+	if have > target:
+		var kill_n: int = mini(have - target, 2)
+		var children: Array = tubifex_root.get_children()
+		for i in kill_n:
+			var p = children[i] if i < children.size() else null
+			if p is TubifexPatch:
+				(p as TubifexPatch).mark_dead()
+	elif have < target:
+		# Spawn one patch per cycle so the population grows visibly,
+		# not all-at-once.
+		var p2 := TubifexPatch.new()
+		p2.sim = sim
+		var xz: Vector2 = _sample_substrate_xz(0.45, 0.4)
+		p2.global_position = spawn_position_on_floor(xz.x, xz.y, 0.05)
+		p2.substrate_top_y = SUBSTRATE_DEPTH
+		tubifex_root.add_child(p2)
 
 
 # Public entry point for the retro fish store. Picks a sensible spawn

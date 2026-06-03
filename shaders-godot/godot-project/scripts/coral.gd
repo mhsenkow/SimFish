@@ -141,6 +141,10 @@ func _grow_one() -> bool:
 			_grow_clam()
 		"hydra_fresh":
 			_grow_hydra_fresh()
+		"marimo":
+			_grow_marimo()
+		"riccia":
+			_grow_riccia()
 		_:
 			_grow_dome()
 	if generation >= 2 and randf() < clampf(0.08 + float(generation) * 0.015, 0.08, 0.25):
@@ -178,6 +182,85 @@ func _grow_dome() -> void:
 	# Top half of the dome reads as live polyp surface — pulse those.
 	if rel > 0.55:
 		_register_polyp_tip(mi)
+
+
+# ---- Marimo moss ball ----
+# A spherical algae colony (real Aegagropila linnaei). Voxels distribute
+# over a near-perfect sphere using golden-angle spiral mapping. Tiny —
+# adult marimo are 3–5 cm across in real life — so we cap max_height
+# low to keep the ball compact. Almost immortal in real tanks: high
+# nutrient-uptake rate, very slow growth, no flowering, no seeding.
+func _grow_marimo() -> void:
+	var idx: int = current_height
+	# Golden-angle Fibonacci sphere — produces an even point distribution
+	# over the unit sphere as `idx` grows. Each voxel sits at a different
+	# spherical coordinate.
+	var n: float = float(maxi(1, max_height))
+	var t: float = (float(idx) + 0.5) / n
+	# y maps from 1 to -1 over the population.
+	var y: float = 1.0 - 2.0 * t
+	var r_ring: float = sqrt(maxf(0.0, 1.0 - y * y))
+	var theta: float = float(idx) * GOLDEN_ANGLE
+	var R: float = VOXEL_SIZE * 0.65
+	var px: float = cos(theta) * r_ring * R
+	var pz: float = sin(theta) * r_ring * R
+	var py: float = y * R + R * 0.95  # lift the ball so it sits on the substrate
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	# Tight band of greens — marimo are a single uniform mossy green
+	# without the brighter tip color. Pick from the middle of the ramp.
+	var col: Color = ramp[clampi(2 + (idx % 3), 0, ramp.size() - 1)]
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34))
+	mi.material_override = VoxelMat.make_foliage(col)
+	mi.position = Vector3(px, py, pz)
+	add_child(mi)
+	voxels.append(mi)
+	# Every voxel reads as a polyp surface — pulse the whole sphere
+	# subtly so it visibly breathes.
+	if rng_chance_for_polyp_register(idx):
+		_register_polyp_tip(mi)
+
+
+# Sparse polyp-tip registration for marimo so the whole ball doesn't
+# pulse in lockstep — only a fraction of the voxels respire visibly.
+func rng_chance_for_polyp_register(idx: int) -> bool:
+	return (idx % 5) == 0
+
+
+# ---- Riccia (pearling carpet) ----
+# A bright lime-green liverwort carpet that produces dramatic O2
+# pearling under bright light. Real Riccia fluitans forms dense
+# carpets attached to substrate or driftwood; bubbles cling to it.
+# We force-enable the inherited Plant pearling system so every riccia
+# patch actually pearls (the default 1-in-8 eligible rate would make
+# this read as a regular carpet).
+func _grow_riccia() -> void:
+	# Phyllotaxis distribution on a flat-ish dome — the carpet is wider
+	# than tall, and bunches up in the middle.
+	var idx: int = current_height
+	var theta: float = float(idx) * GOLDEN_ANGLE
+	var r: float = minf(VOXEL_SIZE * 0.26 * sqrt(float(idx) + 1.0), VOXEL_SIZE * 1.4)
+	# Mostly flat — y only varies by a tiny amount.
+	var y: float = VOXEL_SIZE * (0.18 + sin(float(idx) * 0.7) * 0.04)
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	# Vivid lime — riccia is one of the brightest greens in a planted
+	# tank. Pick from the top of the ramp.
+	var col: Color = ramp[clampi(3 + (idx % 3), 0, ramp.size() - 1)]
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * 0.30, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.30))
+	mi.material_override = VoxelMat.make_foliage(col)
+	mi.position = Vector3(cos(theta) * r, y, sin(theta) * r)
+	add_child(mi)
+	voxels.append(mi)
+	# Every voxel is a live pearling site — riccia is famous for
+	# producing dramatic O2 bubble columns.
+	_register_polyp_tip(mi)
+	# Force pearling on every riccia carpet. Plant.gd defaults
+	# `_pearling_eligible` to (instance_id % 8 == 0); we override to
+	# true so riccia visibly bubbles even in small populations.
+	_pearling_eligible = true
 
 
 # ---- Brain coral with reaction-diffusion style folds ----
