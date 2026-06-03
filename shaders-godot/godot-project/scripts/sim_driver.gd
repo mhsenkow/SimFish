@@ -311,22 +311,30 @@ var aeration_fixture: String = "disk"
 # community tank with the disk fixture sits around 0.85-0.95 O2 in steady
 # state, drops noticeably to 0.4-0.6 if you switch to "none" with a full bio
 # load, and recovers within ~1 in-game minute if you turn aeration back on.
+#
+# v0.1.69 retune: the prior values left mature planted tanks at chronic
+# low-O2 because the photosynthesis terms were too weak vs. respiration.
+# Real Walstad tanks (no equipment, dense plants) sit comfortably at
+# 80–95 % daytime O2 without any aeration; that's the target steady
+# state with these constants.
 const O2_INJECT_PER_RATE: float = 0.20    # disk at strength=1 -> 0.20/s peak input
 const O2_FLOW_BONUS_PER_RATE: float = 0.08
-const O2_PHOTO_PER_PLANT: float = 0.0008  # multiplied by daylight + biomass term
-const O2_PHOTO_FLOATER: float = 0.0006    # surface floating plants (duckweed etc.)
-const O2_RESPIRE_FISH: float = 0.0040
-const O2_RESPIRE_SHRIMP: float = 0.0020
-const O2_RESPIRE_SNAIL: float = 0.0011
-const O2_PASSIVE_SURFACE_GAS: float = 0.015   # tank breathing on its own
-const O2_TARGET_NATURAL: float = 0.55         # passive only ever drifts to this
+const O2_PHOTO_PER_PLANT: float = 0.0014  # was 0.0008; biomass + count scalar
+const O2_PHOTO_FLOATER: float = 0.0012    # was 0.0006; surface floaters punch above weight
+const O2_PHOTO_BIOMASS_MULT: float = 0.0040  # was 0.0012; mature tank carries the load
+const O2_PHOTO_PLANTS_MULT: float = 0.55  # was 0.35; raw plant count contribution
+const O2_RESPIRE_FISH: float = 0.0030     # was 0.0040; gentler fish breathing
+const O2_RESPIRE_SHRIMP: float = 0.0016   # was 0.0020
+const O2_RESPIRE_SNAIL: float = 0.0009    # was 0.0011
+const O2_PASSIVE_SURFACE_GAS: float = 0.022   # was 0.015; faster boundary exchange
+const O2_TARGET_NATURAL: float = 0.65         # was 0.55; healthier ambient
 # Night exchange boost + lower fauna respiration model "sleeping tank" behavior:
 # plants stop photosynthesizing after dusk, but fish/shrimp also settle down and
 # the water column tends to stay calmer/cooler. This prevents nightly O2 crashes
 # that can trigger perpetual panic loops in otherwise healthy tanks.
-const O2_NIGHT_SURFACE_BONUS: float = 0.010
-const O2_FISH_NIGHT_RESP_SCALE: float = 0.72
-const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.82
+const O2_NIGHT_SURFACE_BONUS: float = 0.014
+const O2_FISH_NIGHT_RESP_SCALE: float = 0.65
+const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.78
 const ECO_ENGINEERING_INTERVAL: float = 1.2
 const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
@@ -871,8 +879,8 @@ func _tick(dt: float) -> void:
 	var dl: float = daylight()
 	var night: float = 1.0 - dl
 	var photo: float = dl * (
-		float(total_plant_biomass) * O2_PHOTO_PER_PLANT * 0.0012
-		+ float(plants.size()) * O2_PHOTO_PER_PLANT * 0.35
+		float(total_plant_biomass) * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
+		+ float(plants.size()) * O2_PHOTO_PER_PLANT * O2_PHOTO_PLANTS_MULT
 		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
 	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
