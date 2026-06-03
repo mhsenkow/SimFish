@@ -219,6 +219,8 @@ var _detail_source_badge: Label = null
 var _detail_meta: Label = null
 var _detail_swatches: HBoxContainer = null
 var _detail_traits: VBoxContainer = null
+var _detail_genome_label: Label = null
+var _preview_column: Control = null
 var _pin_button: Button = null
 var _spawn_button: Button = null
 
@@ -350,7 +352,8 @@ func _build_ui() -> void:
 	outer.add_child(body)
 
 	body.add_child(_build_list_column())
-	body.add_child(_build_preview_column())
+	_preview_column = _build_preview_column()
+	body.add_child(_preview_column)
 	body.add_child(_build_detail_column())
 
 
@@ -554,7 +557,8 @@ func _build_detail_column() -> Control:
 	v.add_child(_detail_swatches)
 
 	v.add_child(PanelTheme.make_rule())
-	v.add_child(PanelTheme.make_section("Genome"))
+	_detail_genome_label = PanelTheme.make_section("Genome")
+	v.add_child(_detail_genome_label)
 
 	_detail_traits = VBoxContainer.new()
 	_detail_traits.add_theme_constant_override("separation", 2)
@@ -1116,6 +1120,12 @@ func _select_entry(entry: Dictionary) -> void:
 		_clear_children(_detail_traits)
 		_pin_button.disabled = true
 		_spawn_button.disabled = true
+		# Reset preview visibility + section label so a tab switch
+		# back to Tank/Global doesn't leave the ecosystem-hidden state.
+		if _preview_column != null:
+			_preview_column.visible = _scope != Scope.ECOSYSTEM
+		if _detail_genome_label != null:
+			_detail_genome_label.text = "Field guide" if _scope == Scope.ECOSYSTEM else "Genome"
 		_clear_preview_creature()
 		return
 
@@ -1129,6 +1139,12 @@ func _select_entry(entry: Dictionary) -> void:
 	if String(entry.get("organism_type", "")) == "ecosystem":
 		_select_ecosystem_entry(entry)
 		return
+	# Re-show preview column + restore Genome section label in case the
+	# last selection was an ecosystem entry (which hides both).
+	if _preview_column != null:
+		_preview_column.visible = true
+	if _detail_genome_label != null:
+		_detail_genome_label.text = "Genome"
 	var genome_raw: Dictionary = entry.get("genome", {})
 	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
 	var otype: String = String(entry.get("organism_type", SpeciesLibrary.organism_type(genome)))
@@ -1275,6 +1291,15 @@ func _select_ecosystem_entry(entry: Dictionary) -> void:
 	_add_trait("Grazed by", String(entry.get("grazed_by", "—")))
 	_add_trait_block("Description", String(entry.get("description", "")))
 	_detail_meta.text = ""
+	# Relabel "Genome" section to "Field guide" — these aren't genomes.
+	if _detail_genome_label != null:
+		_detail_genome_label.text = "Field guide"
+	# Hide the preview column entirely. Ecosystem entities don't have
+	# a single canonical preview creature (a "tubifex patch" is many
+	# worms; a "biofilm patch" is slime; a "swarm" is a cloud) — the
+	# 3D preview would either mislead or look empty.
+	if _preview_column != null:
+		_preview_column.visible = false
 	# These are environmental — pinning + spawning are off-flow.
 	_pin_button.disabled = true
 	_pin_button.text = "(environmental)"
