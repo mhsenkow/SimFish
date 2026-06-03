@@ -41,7 +41,136 @@ const MAX_LIST_LINEAGE_EDGES: int = 180
 
 # Tabs -----------------------------------------------------------------------
 
-enum Scope { TANK, GLOBAL }
+enum Scope { TANK, GLOBAL, ECOSYSTEM }
+
+# Static catalog of the maintenance / environmental entities that don't
+# go through the regular SpeciesLibrary discovery flow. These appear
+# automatically when conditions warrant — bristle worms surface at
+# night, tubifex patches grow in dirty water, biofilm peaks as the
+# tank ages, etc. The Ecosystem tab pulls from this list with live
+# counts patched in from the active world.
+const ECOSYSTEM_CATALOG: Array[Dictionary] = [
+	{
+		"species_key": "ecosystem:clam",
+		"display_name": "Freshwater clam",
+		"organism_type": "ecosystem",
+		"role": "Filter feeder",
+		"icon": "🦪",
+		"swatches": [Color8(170, 145, 110), Color8(225, 185, 170), Color8(195, 140, 140)],
+		"description": "Sessile bivalves planted on the substrate. Open their hinged shells to siphon-feed on waste particles drifting nearby, depositing nutrients back to the substrate. The third major detritivore alongside shrimp + snails.",
+		"trigger": "Spawned with the initial freshwater stocking; 3–6 per tank.",
+		"grazed_by": "Mantis shrimp (saltwater predator only).",
+		"world_count_path": "clams_size",
+	},
+	{
+		"species_key": "ecosystem:trumpet_snail",
+		"display_name": "Malaysian trumpet snail",
+		"organism_type": "ecosystem",
+		"role": "Substrate burrower",
+		"icon": "🌀",
+		"swatches": [Color8(150, 122, 84), Color8(170, 142, 102), Color8(190, 162, 122)],
+		"description": "Tube-shelled burrowers that spend the day buried with only their shell tip visible. Emerge at night to crawl + graze. Slowly aerate the substrate from below — a real benefit in dense planted tanks.",
+		"trigger": "Spawned with the initial freshwater stocking; 4–7 per tank.",
+		"grazed_by": "Snail-predator fish (puffer, loaches).",
+		"world_count_path": "group:trumpet_snails",
+	},
+	{
+		"species_key": "ecosystem:bristle_worm",
+		"display_name": "Bristle worm",
+		"organism_type": "ecosystem",
+		"role": "Nocturnal detritivore",
+		"icon": "〰️",
+		"swatches": [Color8(220, 200, 170), Color8(245, 235, 210)],
+		"description": "Pale tan worms with white side-bristles that hide in the substrate during the day, then emerge after dusk to crawl and eat decaying matter. Distinct from the brown mulm-bound wriggle worms — bristle worms wave-wriggle the full length of their thin body.",
+		"trigger": "Freshwater spawn; 2–4 per tank. Hide during the day, surface at night.",
+		"grazed_by": "Larger fish during night feeds.",
+		"world_count_path": "wriggle_root:BristleWorm",
+	},
+	{
+		"species_key": "ecosystem:sea_cucumber",
+		"display_name": "Sea cucumber",
+		"organism_type": "ecosystem",
+		"role": "Sand-bed sifter",
+		"icon": "🥒",
+		"swatches": [Color8(150, 116, 80), Color8(112, 84, 56), Color8(195, 165, 125)],
+		"description": "Saltwater-only floor crawler with a segmented body and feeding-tentacle fan at its head. Glacial pace; every few seconds it sweeps nearby waste into itself and deposits oxygenating pellets back to the sand. Essential to keeping a reef sand bed from going anaerobic.",
+		"trigger": "Spawned with saltwater scenarios only; 2–3 per reef tank.",
+		"grazed_by": "Not preyed on in this sim (real ones have toxic anti-predator defenses).",
+		"world_count_path": "group:sea_cucumbers",
+	},
+	{
+		"species_key": "ecosystem:tubifex",
+		"display_name": "Tubifex worm patch",
+		"organism_type": "ecosystem",
+		"role": "Chemistry warning",
+		"icon": "🩸",
+		"swatches": [Color8(145, 38, 32), Color8(180, 58, 48), Color8(210, 90, 70)],
+		"description": "Bundles of writhing red worms that appear on the substrate when ammonia > 0.40 or nitrite > 0.55. The visible signal that your tank chemistry is rough — they thrive in unprocessed nitrogen. Despawn as the cycle clears or get grazed by bottom-feeding fish.",
+		"trigger": "Triggered by ammonia or nitrite spikes during cycling.",
+		"grazed_by": "Bottom-dwelling fish (cory, mudsifter).",
+		"world_count_path": "tubifex_root:size",
+	},
+	{
+		"species_key": "ecosystem:mycelium",
+		"display_name": "Mycelium patch",
+		"organism_type": "ecosystem",
+		"role": "Decomposer fungus",
+		"icon": "🤍",
+		"swatches": [Color8(245, 240, 230), Color8(232, 226, 215), Color8(252, 248, 240)],
+		"description": "Pale white filaments that emerge on decaying fish corpses post-death (about 55% of deaths produce a visible patch). Filaments grow over 15 sim seconds, then taper out as the body breaks down. Grazeable by shrimp + snails.",
+		"trigger": "Spawned on fish deaths when the cleanup crew can't keep up.",
+		"grazed_by": "Shrimp, snails.",
+		"world_count_path": "mycelium_root:size",
+	},
+	{
+		"species_key": "ecosystem:biofilm",
+		"display_name": "Biofilm patch",
+		"organism_type": "ecosystem",
+		"role": "Microbial mat",
+		"icon": "✨",
+		"swatches": [Color8(238, 232, 218), Color8(225, 220, 200), Color8(232, 225, 210)],
+		"description": "Pale slime sheets that grow on driftwood + rocks as the tank matures. Distinct from the shader biofilm tint on the wood — these are physical voxel patches that snails + shrimp can graze. Tracks the wood-biofilm aging progress, so they peak around 5 sim-minutes in.",
+		"trigger": "Grows on driftwood (~70%) + rocks (~30%) as tank ages.",
+		"grazed_by": "Shrimp, snails.",
+		"world_count_path": "biofilm_root:size",
+	},
+	{
+		"species_key": "ecosystem:wriggle_worm",
+		"display_name": "Wriggle worm (mulm)",
+		"organism_type": "ecosystem",
+		"role": "Mulm carpet detritivore",
+		"icon": "🪱",
+		"swatches": [Color8(115, 85, 60), Color8(126, 95, 66), Color8(145, 120, 88)],
+		"description": "Small brown worms that live on the mulm carpet — visible signal that your detrital cycle is healthy. They wave-wriggle in place + drift slowly along the substrate. Population tracks the mulm density: more poop, more worms, more processing.",
+		"trigger": "Population scales with mulm carpet density.",
+		"grazed_by": "Bottom-dwelling fish, shrimp.",
+		"world_count_path": "wriggle_root:size",
+	},
+	{
+		"species_key": "ecosystem:microfauna",
+		"display_name": "Daphnia / copepod swarm",
+		"organism_type": "ecosystem",
+		"role": "Tiny prey",
+		"icon": "🌫️",
+		"swatches": [Color8(220, 230, 250), Color8(200, 215, 245)],
+		"description": "Drifting clouds of microscopic crustaceans. About 18% of microfauna spawns drop as a tight 6–10 individual cluster instead of scattered singles, so swarms read as localized prey clouds the fish actively pursue. Filtered out by hang-on-back filter intakes.",
+		"trigger": "Always present; population tracked by world's microfauna carrying capacity.",
+		"grazed_by": "All fish, especially fry; bladderwort (carnivorous plant, future).",
+		"world_count_path": "microfauna_root:size",
+	},
+	{
+		"species_key": "ecosystem:algae_cluster",
+		"display_name": "Algae cluster",
+		"organism_type": "ecosystem",
+		"role": "Primary producer + indicator",
+		"icon": "🟢",
+		"swatches": [Color8(120, 165, 60), Color8(95, 145, 70), Color8(140, 180, 80)],
+		"description": "Photosynthetic algae spawning in four distinct kinds: substrate clusters (default), surface scum at the air-water film, hair algae on hardscape, and GSA (green spot algae) dots on the glass. Bloom dynamics tie to nutrient pressure × plant shortage × floater coverage.",
+		"trigger": "Spawns based on bloom_pressure (nutrients vs. plant biomass).",
+		"grazed_by": "Otocinclus, plecos, shrimp, algae-grazer fish.",
+		"world_count_path": "sim:algae",
+	},
+]
 enum TypeFilter { ALL, FISH, SHRIMP, SNAIL, PLANT }
 enum ViewMode { LIST, TREE }
 
@@ -68,6 +197,7 @@ var _tree_scroll: ScrollContainer = null
 var _lineage_tree: LineageTreeView = null
 var _tab_tank: Button = null
 var _tab_global: Button = null
+var _tab_ecosystem: Button = null
 
 var _preview_viewport: SubViewport = null
 var _preview_root: Node3D = null
@@ -202,6 +332,9 @@ func _build_ui() -> void:
 	_tab_global = _make_tab_button("Global  📌", false)
 	_tab_global.pressed.connect(func(): _set_scope(Scope.GLOBAL))
 	header.add_child(_tab_global)
+	_tab_ecosystem = _make_tab_button("Ecosystem 🦠", false)
+	_tab_ecosystem.pressed.connect(func(): _set_scope(Scope.ECOSYSTEM))
+	header.add_child(_tab_ecosystem)
 
 	var close_btn := PanelTheme.make_secondary_button("CLOSE")
 	close_btn.pressed.connect(close)
@@ -635,6 +768,8 @@ func _set_scope(s: int) -> void:
 	_scope = s
 	_tab_tank.button_pressed = s == Scope.TANK
 	_tab_global.button_pressed = s == Scope.GLOBAL
+	if _tab_ecosystem != null:
+		_tab_ecosystem.button_pressed = s == Scope.ECOSYSTEM
 	_refresh_list()
 
 
@@ -762,13 +897,92 @@ func _refresh_list() -> void:
 
 
 func _current_scope_entries() -> Array:
+	if _scope == Scope.ECOSYSTEM:
+		return _ecosystem_entries_with_live_counts()
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib == null:
 		return []
 	return lib.get_tank_entries() if _scope == Scope.TANK else lib.get_global_entries()
 
 
+# Walk the static ECOSYSTEM_CATALOG and patch in live counts from the
+# active world so the entry rows can show "Clams: 5" / "Tubifex: 0".
+# Counts are derived from each entry's `world_count_path` field, which
+# encodes how to find the live population. See the helper below.
+func _ecosystem_entries_with_live_counts() -> Array:
+	var world: Node = get_tree().root.find_child("World", true, false)
+	if world == null:
+		world = get_tree().current_scene
+	var out: Array = []
+	for entry_const in ECOSYSTEM_CATALOG:
+		var entry: Dictionary = entry_const.duplicate(true)
+		entry["count_seen"] = _ecosystem_live_count(world,
+			String(entry.get("world_count_path", "")))
+		out.append(entry)
+	return out
+
+
+# Resolve a `world_count_path` string into the live population count.
+# Supported shapes:
+#   "clams_size"          → world.sim.clams.size()
+#   "tubifex_root:size"   → world.tubifex_root.get_child_count()
+#   "group:trumpet_snails" → group "trumpet_snails" total
+#   "sim:algae"           → world.sim.algae.size()
+func _ecosystem_live_count(world: Node, path: String) -> int:
+	if world == null or path == "":
+		return 0
+	if path == "clams_size":
+		var sim: Node = world.get_node_or_null("SimDriver")
+		if sim != null:
+			var v: Variant = sim.get("clams")
+			if v is Array:
+				return (v as Array).size()
+		return 0
+	if path.begins_with("group:"):
+		var grp: String = path.substr(6)
+		return get_tree().get_nodes_in_group(grp).size()
+	if path.begins_with("sim:"):
+		var key: String = path.substr(4)
+		var sim2: Node = world.get_node_or_null("SimDriver")
+		if sim2 != null:
+			var v2: Variant = sim2.get(key)
+			if v2 is Array:
+				return (v2 as Array).size()
+		return 0
+	# Default: "root:size" → world.<root>.get_child_count()
+	# Or "<root>:Klass"     → count of children of class Klass under <root>
+	var parts: PackedStringArray = path.split(":")
+	if parts.size() == 2:
+		var root_name: String = parts[0]
+		var leaf: String = parts[1]
+		var root: Node = world.get_node_or_null(root_name)
+		if root == null:
+			return 0
+		if leaf == "size":
+			return root.get_child_count()
+		# Class filter — walk children, count those whose script's
+		# class_name matches the leaf string.
+		var n: int = 0
+		for c in root.get_children():
+			if c == null or not is_instance_valid(c):
+				continue
+			var s: Script = c.get_script()
+			if s == null:
+				continue
+			# Compare by resource_path filename root since class_name
+			# isn't directly queryable from a script ref in GDScript 4.
+			var rp: String = s.resource_path.get_file().get_basename()
+			if rp.to_lower() == leaf.to_lower():
+				n += 1
+		return n
+	return 0
+
+
 func _filter_entries(entries: Array) -> Array:
+	# Ecosystem scope skips the genome-type filter — the catalog is
+	# always shown in full there.
+	if _scope == Scope.ECOSYSTEM:
+		return entries
 	if _type_filter == TypeFilter.ALL:
 		return entries
 	var want: String = {
@@ -908,6 +1122,13 @@ func _select_entry(entry: Dictionary) -> void:
 	_selected_key = String(entry.get("species_key", ""))
 	if _lineage_tree != null:
 		_lineage_tree.set_selected_key(_selected_key)
+	# Ecosystem entries use a different render path — they have no
+	# genome / generation / parent_keys, just a role description + a
+	# trigger + a grazed-by list. Branch early so the rest of this
+	# function (which assumes a real genome) doesn't run.
+	if String(entry.get("organism_type", "")) == "ecosystem":
+		_select_ecosystem_entry(entry)
+		return
 	var genome_raw: Dictionary = entry.get("genome", {})
 	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
 	var otype: String = String(entry.get("organism_type", SpeciesLibrary.organism_type(genome)))
@@ -955,7 +1176,10 @@ func _select_entry(entry: Dictionary) -> void:
 	else:
 		_pin_button.text = "Unpin from Global" if pinned else "Pin to Global"
 		_pin_button.disabled = false
+	_pin_button.tooltip_text = ""
 	_spawn_button.disabled = false
+	_spawn_button.text = "Spawn in Tank"
+	_spawn_button.tooltip_text = ""
 
 	call_deferred("_load_preview_creature", genome, otype)
 
@@ -1024,6 +1248,72 @@ func _populate_traits(genome: Dictionary, otype: String) -> void:
 			_add_trait("Max speed", "%.2f" % float(genome.get("max_speed", 1.8)))
 			_add_trait("Herbivory", "%.2f" % float(genome.get("herbivory", 0.0)))
 			_add_trait("Fecundity", "%.2f" % float(genome.get("fecundity", 0.7)))
+
+
+func _select_ecosystem_entry(entry: Dictionary) -> void:
+	# Render an ecosystem catalog entry. No genome, no lineage — just
+	# role + description + trigger + grazed_by + live count. Pin and
+	# spawn are disabled because these are environmental (you can't
+	# "pin" a tubifex outbreak; it's not a lineage).
+	_selected_genome = {}
+	_selected_organism_type = "ecosystem"
+	_detail_name.text = "%s  %s" % [
+		String(entry.get("icon", "🦠")),
+		String(entry.get("display_name", "?")),
+	]
+	_detail_source_badge.text = "%s · live count %d" % [
+		String(entry.get("role", "—")),
+		int(entry.get("count_seen", 0)),
+	]
+	_clear_children(_detail_swatches)
+	for c in entry.get("swatches", []):
+		if c is Color:
+			_populate_swatch_single(c)
+	_clear_children(_detail_traits)
+	_add_trait("Role", String(entry.get("role", "—")))
+	_add_trait("Trigger", String(entry.get("trigger", "—")))
+	_add_trait("Grazed by", String(entry.get("grazed_by", "—")))
+	_add_trait_block("Description", String(entry.get("description", "")))
+	_detail_meta.text = ""
+	# These are environmental — pinning + spawning are off-flow.
+	_pin_button.disabled = true
+	_pin_button.text = "(environmental)"
+	_pin_button.tooltip_text = "Ecosystem entities aren't lineages — they appear automatically based on tank conditions."
+	_spawn_button.disabled = true
+	_spawn_button.text = "(automatic)"
+	_spawn_button.tooltip_text = "These spawn from chemistry, death, age, or stocking — not directly."
+	# No preview creature.
+	_clear_preview_creature()
+
+
+# Helper: add a single color swatch to the detail panel. Mirrors the
+# inline swatch builder in _populate_swatches but for a single color.
+func _populate_swatch_single(c: Color) -> void:
+	if _detail_swatches == null:
+		return
+	var rect := ColorRect.new()
+	rect.color = c
+	rect.custom_minimum_size = Vector2(24, 24)
+	_detail_swatches.add_child(rect)
+
+
+# Multi-line trait entry — for long descriptions that need wrapping.
+func _add_trait_block(label: String, value: String) -> void:
+	if _detail_traits == null:
+		return
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	var l := Label.new()
+	l.text = label
+	l.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	l.add_theme_font_size_override("font_size", 11)
+	v.add_child(l)
+	var t := Label.new()
+	t.text = value
+	t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	t.add_theme_font_size_override("font_size", 12)
+	v.add_child(t)
+	_detail_traits.add_child(v)
 
 
 func _on_pin_pressed() -> void:
