@@ -66,6 +66,10 @@ var _biofilm_apply_t: float = 0.0
 var microfauna_root: Node3D = null
 var tubifex_root: Node3D = null
 var _tubifex_check_t: float = 0.0
+var mycelium_root: Node3D = null
+var _mycelium_check_t: float = 0.0
+var biofilm_root: Node3D = null
+var _biofilm_check_t: float = 0.0
 var motion_debug: MotionDebugOverlay = null
 var wriggle_root: Node3D = null
 # Worms spawn proportional to mulm carpet density — no fixed ceiling.
@@ -217,6 +221,8 @@ func _ready() -> void:
 	clams_root = Node3D.new(); clams_root.name = "Clams"; add_child(clams_root)
 	microfauna_root = Node3D.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
 	tubifex_root = Node3D.new(); tubifex_root.name = "Tubifex"; add_child(tubifex_root)
+	mycelium_root = Node3D.new(); mycelium_root.name = "Mycelium"; add_child(mycelium_root)
+	biofilm_root = Node3D.new(); biofilm_root.name = "BiofilmPatches"; add_child(biofilm_root)
 	wriggle_root = Node3D.new(); wriggle_root.name = "WriggleWorms"; add_child(wriggle_root)
 	motion_debug = MotionDebugOverlay.new()
 	motion_debug.name = "MotionDebug"
@@ -308,6 +314,9 @@ func _ready() -> void:
 			else:
 				await _spawn_initial_shrimp()
 		_build_clams()
+		_build_trumpet_snails()
+		_build_bristle_worms()
+		_build_sea_cucumbers()
 		await get_tree().process_frame
 	else:
 		# Loading from save: lily pads + math plants aren't persisted, so
@@ -509,6 +518,8 @@ func _process(dt: float) -> void:
 	_maintain_microfauna(sdt)
 	_maintain_wriggle_worms(sdt)
 	_maintain_tubifex_patches(sdt)
+	_maintain_mycelium_patches(sdt)
+	_maintain_biofilm_patches(sdt)
 	_life_bounds_timer = maxf(0.0, _life_bounds_timer - sdt)
 	if _life_bounds_timer <= 0.0:
 		_life_bounds_timer = LIFE_BOUNDS_INTERVAL
@@ -568,6 +579,17 @@ func _process(dt: float) -> void:
 		_water_material_ref.set_shader_parameter("tint_color", tinted)
 		_water_material_ref.set_shader_parameter("tint_strength", clampf(tint_strength, 0.0, 0.85))
 		_water_material_ref.set_shader_parameter("bloom_haze", bloom)
+		# Bacterial bloom — milky-white cast that's strongest during the
+		# ammonia spike of a new tank's cycle. Reads as "the water hasn't
+		# cleared yet" and naturally fades as the cycle establishes.
+		var bact_bloom: float = 0.0
+		if sim != null and sim.water_chemistry != null:
+			var nh3: float = float(sim.water_chemistry.ammonia)
+			var no2: float = float(sim.water_chemistry.nitrite)
+			# Peak during ammonia spike; tapers as nitrite rises then
+			# clears. Roughly: bloom = clamp((nh3+0.5*no2 - 0.4) / 0.8).
+			bact_bloom = clampf(((nh3 + no2 * 0.5) - 0.4) / 0.8, 0.0, 1.0)
+		_water_material_ref.set_shader_parameter("bacterial_bloom", bact_bloom)
 		_water_material_ref.set_shader_parameter("shallow_color",
 			Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b, shallow_a))
 		_water_material_ref.set_shader_parameter("deep_color",
@@ -2559,8 +2581,80 @@ func _respawn_extinct_fauna() -> void:
 
 	sim.snails_root = _build_snails()
 	_build_clams()
+	_build_trumpet_snails()
+	_build_bristle_worms()
+	_build_sea_cucumbers()
 	if sim.has_method("sync_species_discoveries"):
 		sim.sync_species_discoveries()
+
+
+# Spawn a small starting colony of Malaysian trumpet snails — burrowing
+# substrate dwellers that emerge at night. Skipped on saltwater tanks
+# (MTS are strictly freshwater).
+func _build_trumpet_snails() -> void:
+	if _active_substrate_profile.get("is_saltwater", false):
+		return
+	if sim == null or sim.snails_root == null:
+		return
+	var count: int = _rng.randi_range(4, 7)
+	for i in count:
+		var xz: Vector2 = _sample_substrate_xz(0.45, 0.35)
+		var pos: Vector3 = spawn_position_on_floor(xz.x, xz.y, 0.04)
+		if not is_inside_tank_volume(pos.x, pos.y, pos.z, 0.25):
+			continue
+		var ts: Node3D = preload("res://scripts/trumpet_snail.gd").new()
+		sim.snails_root.add_child(ts)
+		ts.global_position = pos
+		ts.sim = sim
+		ts.substrate_top_y = SUBSTRATE_DEPTH
+		# Stagger ages so the colony doesn't synchronously die-off.
+		ts._age = _rng.randf_range(0.0, 120.0)
+
+
+# Spawn pale secretive bristle worms — substrate detritivores that
+# emerge mostly at night. Lower count than trumpet snails since they're
+# meant to be a rare reveal.
+func _build_bristle_worms() -> void:
+	if _active_substrate_profile.get("is_saltwater", false):
+		# Saltwater bristle worms ARE real (Eunice / Hermodice), but
+		# we ship them as part of the saltwater cleanup crew separately.
+		# For now, freshwater-only.
+		return
+	if wriggle_root == null or sim == null:
+		return
+	var count: int = _rng.randi_range(2, 4)
+	for i in count:
+		var xz: Vector2 = _sample_substrate_xz(0.45, 0.35)
+		var pos: Vector3 = spawn_position_on_floor(xz.x, xz.y, 0.04)
+		if not is_inside_tank_volume(pos.x, pos.y, pos.z, 0.25):
+			continue
+		var bw: Node3D = preload("res://scripts/bristle_worm.gd").new()
+		wriggle_root.add_child(bw)
+		bw.global_position = pos
+		bw.sim = sim
+		bw.substrate_top_y = SUBSTRATE_DEPTH
+		bw._age = _rng.randf_range(0.0, 60.0)
+
+
+# Spawn sea cucumbers — slow-moving saltwater floor-sifters. Skipped on
+# freshwater tanks.
+func _build_sea_cucumbers() -> void:
+	if not _active_substrate_profile.get("is_saltwater", false):
+		return
+	if fauna_root == null or sim == null:
+		return
+	var count: int = _rng.randi_range(2, 3)
+	for i in count:
+		var xz: Vector2 = _sample_substrate_xz(0.45, 0.40)
+		var pos: Vector3 = spawn_position_on_floor(xz.x, xz.y, 0.05)
+		if not is_inside_tank_volume(pos.x, pos.y, pos.z, 0.30):
+			continue
+		var sc: Node3D = preload("res://scripts/sea_cucumber.gd").new()
+		fauna_root.add_child(sc)
+		sc.global_position = pos
+		sc.sim = sim
+		sc.substrate_top_y = SUBSTRATE_DEPTH
+		sc._age = _rng.randf_range(0.0, 180.0)
 
 
 # Spawn a small starting population of freshwater clams. Sessile filter
@@ -5735,6 +5829,98 @@ func _maintain_tubifex_patches(sdt: float) -> void:
 		p2.global_position = spawn_position_on_floor(xz.x, xz.y, 0.05)
 		p2.substrate_top_y = SUBSTRATE_DEPTH
 		tubifex_root.add_child(p2)
+
+
+# Mycelium patch maintenance. Patches don't self-spawn (they're emitted
+# from death events via spawn_mycelium_patch); the maintenance loop's
+# only job is reaping aged-out / fully-grazed patches.
+func _maintain_mycelium_patches(sdt: float) -> void:
+	_mycelium_check_t = maxf(0.0, _mycelium_check_t - sdt)
+	if _mycelium_check_t > 0.0:
+		return
+	_mycelium_check_t = 6.5
+	if mycelium_root == null:
+		return
+	for c in mycelium_root.get_children():
+		if c is MyceliumPatch and (c as MyceliumPatch).is_dead():
+			c.queue_free()
+
+
+# Biofilm patch maintenance. Patches grow on driftwood + rock voxels
+# over time, peaking once the tank has matured (~5 sim-minutes), then
+# get grazed down by snails / shrimp. Target count tracks the
+# `biofilm_progress` value the driftwood-aging system already runs so
+# the visible patches line up with the wood's biofilm tint.
+const _BIOFILM_TARGET_MAX: int = 14
+
+
+func _maintain_biofilm_patches(sdt: float) -> void:
+	_biofilm_check_t = maxf(0.0, _biofilm_check_t - sdt)
+	if _biofilm_check_t > 0.0:
+		return
+	_biofilm_check_t = randf_range(4.5, 6.5)
+	if biofilm_root == null:
+		return
+	# Reap dead / fully-grazed patches.
+	for c in biofilm_root.get_children():
+		if c is BiofilmPatch and (c as BiofilmPatch).is_dead():
+			c.queue_free()
+	# Grow toward target. biofilm_progress is 0..0.65 from the
+	# driftwood-aging system; we scale that to a target patch count.
+	var target: int = clampi(int(round(
+		biofilm_progress / 0.65 * float(_BIOFILM_TARGET_MAX))),
+		0, _BIOFILM_TARGET_MAX)
+	var have: int = biofilm_root.get_child_count()
+	if have < target:
+		_spawn_one_biofilm_patch()
+
+
+func _spawn_one_biofilm_patch() -> void:
+	if biofilm_root == null:
+		return
+	# Pick a host voxel from driftwood OR rock. Driftwood gets ~70 %
+	# of patches because real biofilm prefers wood (more organic
+	# substrate to colonize).
+	var hosts: Array = []
+	if randf() < 0.7 and not _driftwood_voxels.is_empty():
+		hosts = _driftwood_voxels
+	elif not _rock_voxels.is_empty():
+		hosts = _rock_voxels
+	elif not _driftwood_voxels.is_empty():
+		hosts = _driftwood_voxels
+	if hosts.is_empty():
+		return
+	var host: MeshInstance3D = hosts[randi() % hosts.size()]
+	if host == null or not is_instance_valid(host):
+		return
+	# Place the patch on top of the host voxel with a small jitter.
+	var p := BiofilmPatch.new()
+	p.sim = sim
+	biofilm_root.add_child(p)
+	p.global_position = host.global_position + Vector3(
+		randf_range(-0.08, 0.08),
+		host.scale.y * 0.18 + 0.04,
+		randf_range(-0.08, 0.08))
+
+
+# Spawn a mycelium patch at the given world position. Called by fish /
+# shrimp / snail death finalizers when a body dissolves on the
+# substrate. Returns the new patch (or null if no container).
+func spawn_mycelium_patch(at: Vector3) -> Node3D:
+	if mycelium_root == null:
+		return null
+	# Cap so a mass extinction doesn't carpet the floor.
+	if mycelium_root.get_child_count() >= 12:
+		return null
+	# Only ~55% of deaths produce a visible mycelium patch — most
+	# decompose cleanly via the shrimp / snail / waste loop.
+	if randf() > 0.55:
+		return null
+	var p := MyceliumPatch.new()
+	p.sim = sim
+	mycelium_root.add_child(p)
+	p.global_position = at
+	return p
 
 
 # Public entry point for the retro fish store. Picks a sensible spawn

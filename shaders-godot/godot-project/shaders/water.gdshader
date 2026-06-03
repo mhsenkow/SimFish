@@ -22,6 +22,12 @@ uniform float ice_lens : hint_range(0.0, 1.0) = 0.0;
 uniform float moonlight : hint_range(0.0, 1.0) = 0.0;
 uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 uniform float tank_shape_id : hint_range(0.0, 3.0) = 0.0;
+// Bacterial bloom — milky pale cast during the early cycling phase.
+// Real tanks during ammonia-spike cycles look hazy white as
+// heterotrophic bacteria explode and fail to colonize substrate. Clears
+// once the cycle establishes and ammonia drops.
+uniform float bacterial_bloom : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 bloom_color : source_color = vec3(0.92, 0.94, 0.96);
 
 varying vec3 world_pos;
 varying float surface_lift;
@@ -83,6 +89,10 @@ void fragment() {
 	col = mix(col, tint_color.rgb, tint_strength);
 	col = mix(col, col * vec3(1.08, 0.92, 0.82), sunset_warmth * 0.35);
 	col = mix(col, col * vec3(0.72, 0.82, 1.05), moonlight * 0.28);
+	// Bacterial bloom haze — push the whole column toward bloom_color
+	// (warm-white). Adds opacity too so the haze visibly obscures the
+	// far side of the tank during heavy blooms.
+	col = mix(col, bloom_color, bacterial_bloom * 0.55);
 
 	// Ice lens — frosted rim at waterline in cold presets.
 	float ice_rim = near_surface * (0.4 + vertical * 0.6) * ice_lens;
@@ -94,6 +104,7 @@ void fragment() {
 	alpha += fresnel * 0.05;
 	alpha += caustics * 0.04;
 	alpha += ice_rim * 0.06;
+	alpha += bacterial_bloom * 0.18;
 
 	ALBEDO = col;
 	ALPHA = clamp(alpha, 0.04, 0.52);

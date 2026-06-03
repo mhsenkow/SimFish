@@ -3136,6 +3136,14 @@ func _animate_death(dt: float) -> void:
 		if sim != null and sim.has_method("_spawn_waste"):
 			var kind: int = WasteParticle.KIND_FISH
 			sim._spawn_waste(position, 0.4, kind)
+		# Mycelium spawn — pale fungal threads grow on the decaying
+		# corpse if the cleanup crew doesn't grab the waste fast enough.
+		# About 55% of deaths produce a visible patch.
+		if sim != null:
+			var w_node: Node = sim.get_parent()
+			if w_node != null and w_node.has_method("spawn_mycelium_patch"):
+				var mc_pos := Vector3(position.x, sim.substrate_top_y + 0.04, position.z)
+				w_node.spawn_mycelium_patch(mc_pos)
 		queue_free()
 
 
