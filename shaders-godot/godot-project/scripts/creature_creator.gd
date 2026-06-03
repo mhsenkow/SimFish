@@ -24,7 +24,7 @@ const SPHERE_RADIUS: float = 1.55
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
 
-enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING }
+enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING, CLAM }
 
 const SWIM_PATTERNS: Array = [
 	["School", "school"], ["Shoal", "shoal"], ["Dart", "dart"],
@@ -57,6 +57,7 @@ const CORAL_FORMS: Array = [
 	["Anemone", "anemone"], ["Sponge", "sponge"],
 	["Fresh sponge", "sponge_fresh"], ["Giant clam", "clam"],
 	["Fresh hydra", "hydra_fresh"],
+	["Marimo moss ball", "marimo"], ["Riccia carpet", "riccia"],
 ]
 const FLOAT_MORPHS: Array = [
 	["Duckweed", "duckweed"], ["Frogbit", "frogbit"],
@@ -184,6 +185,7 @@ func _build_ui() -> void:
 	_add_tab(tabs, Kind.PLANT, "🌿 Plant")
 	_add_tab(tabs, Kind.CORAL, "🪸 Coral")
 	_add_tab(tabs, Kind.FLOATING, "🪷 Floating")
+	_add_tab(tabs, Kind.CLAM, "🦪 Clam")
 
 	outer.add_child(PanelTheme.make_rule())
 
@@ -288,6 +290,11 @@ func _select_kind(kind: int, force: bool = false) -> void:
 		Kind.FLOATING:
 			_cam_distance = 2.4
 			_cam_target_y = 0.0
+		Kind.CLAM:
+			# Clams are small + lie low on the substrate; pull the camera
+			# close + drop the look-at so the shell + siphon dominate.
+			_cam_distance = 2.0
+			_cam_target_y = 0.0
 		_:
 			_cam_distance = 3.6
 			_cam_target_y = PREVIEW_CAM_HEIGHT * 0.3
@@ -358,6 +365,17 @@ func _default_genome_for(kind: int) -> Dictionary:
 				"base_color": Color8(65, 135, 65),
 				"tip_color": Color8(125, 195, 100),
 			}
+		Kind.CLAM:
+			# Matches the Clam.init_genome shape. shell_size is the main
+			# dial; colors give the player a quick visual signature.
+			return {
+				"shell_color": Color8(170, 145, 110),
+				"body_color": Color8(225, 185, 170),
+				"siphon_color": Color8(195, 140, 140),
+				"shell_size": 1.0,
+				"max_age_s": 260.0,
+				"filter_radius": 1.6,
+			}
 		_:
 			return {
 				"base_color": Color8(70, 150, 230),
@@ -399,6 +417,7 @@ func _rebuild_controls() -> void:
 		Kind.PLANT:   _build_plant_controls()
 		Kind.CORAL:   _build_coral_controls()
 		Kind.FLOATING: _build_floating_controls()
+		Kind.CLAM:    _build_clam_controls()
 
 
 func _build_fish_controls() -> void:
@@ -497,6 +516,18 @@ func _build_floating_controls() -> void:
 	_add_slider("Spread rate", "spread_rate", 0.2, 2.5, 0.05)
 
 
+func _build_clam_controls() -> void:
+	_controls_root.add_child(PanelTheme.make_section("Shell"))
+	_add_color("Shell color", "shell_color")
+	_add_slider("Shell size", "shell_size", 0.6, 1.6, 0.02)
+	_controls_root.add_child(PanelTheme.make_section("Mantle & siphon"))
+	_add_color("Mantle color", "body_color")
+	_add_color("Siphon color", "siphon_color")
+	_controls_root.add_child(PanelTheme.make_section("Life cycle"))
+	_add_slider("Lifespan (s)", "max_age_s", 120.0, 480.0, 10.0, "%.0f")
+	_add_slider("Filter radius", "filter_radius", 0.8, 2.4, 0.05)
+
+
 # ---- Control widget builders -----------------------------------------------
 
 func _add_slider(label: String, key: String, mn: float, mx: float,
@@ -577,6 +608,7 @@ func _otype_string() -> String:
 		Kind.PLANT:  return "plant"
 		Kind.CORAL:  return "coral"
 		Kind.FLOATING: return "plant"
+		Kind.CLAM:   return "clam"
 		_:           return "fish"
 
 
@@ -614,6 +646,9 @@ func _current_genome() -> Dictionary:
 			g["floating"] = true
 			g["species"] = "floating_" + String(g.get("morph", "duckweed"))
 			g["plant_name"] = "Designer floating plant"
+		Kind.CLAM:
+			g["species"] = "custom_clam"
+			g["clam_name"] = "Designer Clam"
 	return g
 
 
@@ -740,6 +775,7 @@ func _kind_plural(n: int) -> String:
 		Kind.PLANT:  return "plant" if n == 1 else "plants"
 		Kind.CORAL:  return "coral" if n == 1 else "corals"
 		Kind.FLOATING: return "floating plant" if n == 1 else "floating plants"
+		Kind.CLAM:   return "clam" if n == 1 else "clams"
 		_:           return "fish"
 
 
@@ -841,6 +877,7 @@ func _reload_preview() -> void:
 		Kind.PLANT:  _preview_creature = _spawn_preview_plant(g)
 		Kind.CORAL:  _preview_creature = _spawn_preview_coral(g)
 		Kind.FLOATING: _preview_creature = _spawn_preview_floating(g)
+		Kind.CLAM:   _preview_creature = _spawn_preview_clam(g)
 		_:           _preview_creature = _spawn_preview_fish(g)
 	_request_preview_frame()
 
@@ -924,6 +961,19 @@ func _spawn_preview_floating(g: Dictionary) -> Node3D:
 	fp.scale = Vector3.ONE * 2.6
 	fp.init_genome(g)
 	return fp
+
+
+func _spawn_preview_clam(g: Dictionary) -> Node3D:
+	var cl: Node3D = preload("res://scripts/clam.gd").new()
+	_preview_pivot.add_child(cl)
+	# Anchor low + scale up so the small shell + siphon read in the
+	# preview sphere. Clams hug the substrate in real placement.
+	cl.position = Vector3(0, -0.55, 0)
+	cl.scale = Vector3.ONE * 3.6
+	cl.maturity = 1   # MATURITY_ADULT
+	cl.init_genome(g)
+	_freeze(cl)
+	return cl
 
 
 # Snail: a plain Node3D with a small voxel shell (do NOT attach snail.gd —

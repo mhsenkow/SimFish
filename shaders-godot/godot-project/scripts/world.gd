@@ -5950,6 +5950,28 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 			return true
 		"coral":
 			return spawn_coral_from_genome(genome.duplicate(true))
+		"clam":
+			# Drop a custom-designed clam from the creature creator onto
+			# the substrate. Reuses the existing clams_root + sim.register_clam
+			# path so save/load + tick wiring work transparently.
+			if clams_root == null or sim == null:
+				return false
+			var cxz: Vector2 = _sample_substrate_xz(0.45, 0.40)
+			var cpos: Vector3 = spawn_position_on_floor(cxz.x, cxz.y, 0.05)
+			if not is_inside_tank_volume(cpos.x, cpos.y, cpos.z, 0.25):
+				return false
+			var cl_script: Script = load("res://scripts/clam.gd")
+			if cl_script == null:
+				return false
+			var cl: Node = cl_script.new()
+			clams_root.add_child(cl)
+			cl.global_position = cpos
+			cl.init_genome(genome.duplicate(true))
+			# Spawn as an adult so the player sees their design immediately.
+			cl.maturity = 1
+			cl.scale = Vector3.ONE
+			sim.register_clam(cl)
+			return true
 		"plant":
 			if genome.get("floating", false):
 				return spawn_floating_plant(genome)
