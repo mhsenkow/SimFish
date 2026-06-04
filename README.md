@@ -1,6 +1,5 @@
 # walstad loom
 
-![Tank menu — eight thematic scenario tanks each built with different shapes, substrates, lighting, and stocking](docs/img/tank-menu-scenarios.png)
 
 
 <img width="2560" height="1440" alt="Screenshot 2026-05-20 at 10 57 35 AM" src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
