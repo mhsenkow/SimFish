@@ -119,6 +119,13 @@ def main() -> int:
 
     session = chrome_session()
     sessionid = session.cookies.get("sessionid")
+    session.headers.update(
+        {
+            "Referer": f"https://partner.steamgames.com/admin/game/edit/{ITEM_ID}?activetab=tab_graphicalassets",
+            "Origin": "https://partner.steamgames.com",
+            "X-Requested-With": "XMLHttpRequest",
+        }
+    )
     form, files, notes = build_form(paths, sessionid)
     for line in notes:
         print(line)
