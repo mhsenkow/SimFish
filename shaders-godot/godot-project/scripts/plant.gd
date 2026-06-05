@@ -171,6 +171,10 @@ var _foliage_batch: VoxelBatch = null
 var _foliage_mat: ShaderMaterial = null
 var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
+# Last wilt level we wrote into the leaf-tip handles. Tracked so the
+# per-tick wilt pass only touches the multimesh when health has moved
+# noticeably — repaint cost stays near-zero when nothing's changing.
+var _wilt_applied: float = 0.0
 # Subclasses (SpiralPlant) still use a node-based leaf model and reference this;
 # base Plant leaves go through _leaf_groups / the foliage MultiMesh instead.
 var _leaf_nodes: Array[Node3D] = []
@@ -356,10 +360,14 @@ func apply_save_dict(d: Dictionary) -> void:
 func _ready() -> void:
 	_phase = float(get_instance_id() % 1000) * 0.013
 	_world_pos = global_position
-	# Pearling is lazy + shared — only ~1/8 plants ever allocate a GPUParticles3D.
-	_pearling_eligible = (get_instance_id() % 8) == 0
-	_pearling_opacity = randf_range(0.08, 0.22)
-	_pearling_strength = randf_range(0.35, 1.0)
+	# Pearling is lazy + shared — about 1/5 plants are eligible to allocate
+	# a GPUParticles3D. Raised from 1/8 because the visible pearling stream
+	# is one of the strongest "this tank is alive and oxygenating" cues, and
+	# the global pearling_slot throttle in sim_driver keeps total particle
+	# budget bounded regardless of how many plants are eligible.
+	_pearling_eligible = (get_instance_id() % 5) == 0
+	_pearling_opacity = randf_range(0.12, 0.28)
+	_pearling_strength = randf_range(0.45, 1.0)
 
 
 func _build_initial_roots() -> void:
@@ -440,29 +448,45 @@ func _ensure_shared_pearling_assets() -> void:
 		return
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0, 1, 0)
-	pm.initial_velocity_min = 0.2
-	pm.initial_velocity_max = 0.45
-	pm.gravity = Vector3(0, 0.15, 0)
-	pm.spread = 12.0
-	pm.scale_min = 0.14
-	pm.scale_max = 0.38
+	# Slower initial velocity so bubbles linger on leaves before ascending —
+	# the giveaway of real planted-tank pearling is the brief "stuck on the
+	# leaf" moment before the bubble breaks free. Combined with a wider
+	# spread so a few bubbles drift sideways and bounce off neighbouring
+	# voxels rather than all rocketing straight up.
+	pm.initial_velocity_min = 0.06
+	pm.initial_velocity_max = 0.22
+	pm.gravity = Vector3(0, 0.10, 0)
+	pm.spread = 22.0
+	# Tiny bubbles so the palette quantizer locks them into single sharp
+	# pixel specks rather than soft blobs. After quantization a 0.06 scale
+	# bubble at typical camera distance reads as a 1-2 pixel highlight —
+	# exactly the classic pixel-art pearling look.
+	pm.scale_min = 0.06
+	pm.scale_max = 0.18
+	# Wider emission column so bubbles appear along the whole canopy rather
+	# than only at the topmost tip. _setup_pearling positions the emitter
+	# at the stem top; the sphere radius extends down into the foliage.
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	pm.emission_sphere_radius = 0.22
+	pm.emission_sphere_radius = 0.32
 	var alpha_curve := CurveTexture.new()
 	var curve := Curve.new()
+	# Hold the "stuck on leaf" frame longer (high alpha plateau between 0.15
+	# and 0.8 of lifetime) before the bubble fades as it ascends past the
+	# canopy. Two distinct breath-out beats per emit cycle.
 	curve.add_point(Vector2(0.0, 0.0))
-	curve.add_point(Vector2(0.18, 0.32))
-	curve.add_point(Vector2(0.65, 0.26))
+	curve.add_point(Vector2(0.12, 0.55))
+	curve.add_point(Vector2(0.55, 0.42))
+	curve.add_point(Vector2(0.85, 0.22))
 	curve.add_point(Vector2(1.0, 0.0))
 	alpha_curve.curve = curve
 	pm.alpha_curve = alpha_curve
 	_shared_pearling_material = pm
 	var bubble_mesh := SphereMesh.new()
-	bubble_mesh.radius = 0.022
-	bubble_mesh.height = 0.044
+	bubble_mesh.radius = 0.018
+	bubble_mesh.height = 0.036
 	bubble_mesh.radial_segments = 4
 	bubble_mesh.rings = 2
-	bubble_mesh.material = VoxelMat.make_bubble(Color(0.92, 0.96, 1.0, 0.22))
+	bubble_mesh.material = VoxelMat.make_bubble(Color(0.92, 0.96, 1.0, 0.30))
 	_shared_pearling_mesh = bubble_mesh
 
 
@@ -474,8 +498,12 @@ func _setup_pearling() -> void:
 	_pearling_particles = GPUParticles3D.new()
 	_pearling_particles.name = "Pearling"
 	_pearling_particles.emitting = false
-	_pearling_particles.amount = 3
-	_pearling_particles.lifetime = randf_range(2.8, 4.2)
+	# Slightly denser stream than the old amount=3 — the per-particle scale
+	# dropped to 0.06..0.18 so total visible pixel coverage stays modest,
+	# but the eye reads a 6-bubble fountain as "really pearling" where 3
+	# bubbles felt incidental.
+	_pearling_particles.amount = 6
+	_pearling_particles.lifetime = randf_range(3.4, 5.0)
 	_pearling_particles.local_coords = false
 	_pearling_particles.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
 	# Per-plant variation: duplicate assets so opacity/scale differ subtly.
@@ -969,6 +997,41 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 			_clear_voxel_tint(vx)
 
 
+# Per-tick leaf wilt + recovery. Walks _leaf_groups and recolors only
+# each leaf's last (tip) handle by lerping its base color toward a dull
+# yellow-brown when _health_smooth drops, and back when it rises. The
+# rest of the leaf voxels stay their original tint, so a struggling
+# plant reads as "tips browning first" — the way real aquatic plants
+# show stress. Cost is one set_color() per leaf only when the target
+# wilt level moves more than a small epsilon from the last applied
+# level, so a steady-state healthy plant pays nothing per tick.
+const _WILT_TIP_COLOR: Color = Color(0.46, 0.39, 0.22)
+
+func _apply_leaf_wilt() -> void:
+	if _leaf_groups.is_empty():
+		return
+	# Target wilt: 0 at health >= 0.65, climbs to 1 as health falls to 0.10.
+	# Smoothstep gives an easing rather than a hard knee.
+	var target_wilt: float = smoothstep(0.65, 0.10, _health_smooth)
+	# Only repaint if the change is meaningful — keeps a healthy plant
+	# from re-writing the multimesh every tick.
+	if absf(target_wilt - _wilt_applied) < 0.06:
+		return
+	_wilt_applied = target_wilt
+	for group in _leaf_groups:
+		var arr: Array = group as Array
+		if arr.is_empty():
+			continue
+		# Tip = last handle in the leaf's bake order. LeafShapes builds
+		# outward from base to tip, so this maps cleanly to the most
+		# distal voxel — what the eye reads as "the tip."
+		var tip: VoxelBatch.Handle = arr[arr.size() - 1] as VoxelBatch.Handle
+		if tip == null or not tip.alive:
+			continue
+		var wilted: Color = tip.base_color.lerp(_WILT_TIP_COLOR, target_wilt * 0.70)
+		tip.set_color(wilted)
+
+
 # Apply a multiplicative tint to a voxel by duplicating its (cached, shared)
 # ShaderMaterial and rewriting albedo on the copy. Stores the original
 # albedo in a meta so _clear_voxel_tint can restore it. Idempotent — if
@@ -1193,6 +1256,14 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if _deficiency_check_t <= 0.0:
 		_deficiency_check_t = randf_range(2.5, 4.0)
 		_apply_deficiency_tints(nutrient_mult)
+
+	# Per-leaf wilt + recovery on the tip voxel. Reads _health_smooth
+	# (low-pass-filtered health) so the visible droop tracks several
+	# seconds behind the underlying state — wilting is gradual, recovery
+	# more so. Only the tip handle of each leaf is tinted; the rest of
+	# the leaf stays its base color so a plant that's recovering reads as
+	# "healthy stem, struggling new growth" rather than uniformly dull.
+	_apply_leaf_wilt()
 
 	# ---- Starvation → leaf shedding ----
 	if _health_smooth < 0.45:

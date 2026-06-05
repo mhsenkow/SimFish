@@ -16,6 +16,14 @@ uniform float belly_flash : hint_range(0.0, 1.0) = 0.0;
 // halo. Reads as direct emission against the unshaded voxel face.
 uniform float bioluminescence : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 biolum_color : source_color = vec3(0.65, 0.85, 1.0);
+// Room haze — view-distance fog that fades the voxel's color toward a
+// warm tint. Default 0 (no fog) keeps in-tank voxels crisp; room
+// materials set this to ~0.6 so the desk/wall geometry recedes behind
+// the tank visually. Tuned in view-space metres.
+uniform float room_haze_strength : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 room_haze_color : source_color = vec3(0.92, 0.84, 0.74);
+uniform float room_haze_near : hint_range(0.0, 40.0) = 8.0;
+uniform float room_haze_far : hint_range(2.0, 80.0) = 28.0;
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -66,6 +74,16 @@ void fragment() {
 		float pulse = 0.65 + 0.35 * sin(TIME * 1.8
 			+ v_world_pos.x * 0.7 + v_world_pos.z * 0.5);
 		col += biolum_color * bioluminescence * pulse * 0.55;
+	}
+
+	// Room depth haze — lerp toward warm haze colour by view distance.
+	// view_z is positive forward; smoothstep over [near, far] gives a
+	// 0→1 fog factor scaled by room_haze_strength. Default strength 0
+	// makes this a no-op for tank voxels.
+	if (room_haze_strength > 0.001) {
+		float view_z = -VERTEX.z;
+		float fog = smoothstep(room_haze_near, room_haze_far, view_z) * room_haze_strength;
+		col = mix(col, room_haze_color, fog);
 	}
 
 	ALBEDO = col;

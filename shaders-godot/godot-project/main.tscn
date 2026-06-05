@@ -1,9 +1,10 @@
-[gd_scene load_steps=12 format=3 uid="uid://main_vivarium"]
+[gd_scene load_steps=13 format=3 uid="uid://main_vivarium"]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://scripts/world.gd" id="2_world"]
 [ext_resource type="Shader" path="res://shaders/palette_quantize.gdshader" id="3_quantize"]
 [ext_resource type="Texture2D" path="res://palettes/planted_48.png" id="4_palette"]
+[ext_resource type="Texture2D" path="res://palettes/planted_48_night.png" id="4b_palette_night"]
 [ext_resource type="Script" path="res://scripts/ambient_audio.gd" id="6_audio"]
 [ext_resource type="Script" path="res://scripts/settings_panel.gd" id="7_settings"]
 [ext_resource type="Script" path="res://scripts/render_panel.gd" id="8_render"]
@@ -28,6 +29,10 @@ shader_parameter/palette_size = 48
 shader_parameter/dither_strength = 0.85
 shader_parameter/internal_resolution = Vector2(512, 288)
 shader_parameter/palette_tex = ExtResource("4_palette")
+shader_parameter/palette_tex_night = ExtResource("4b_palette_night")
+shader_parameter/palette_night_blend = 0.0
+shader_parameter/bloom_threshold = 0.68
+shader_parameter/bloom_strength = 0.85
 
 [sub_resource type="Environment" id="Env_default"]
 background_mode = 1

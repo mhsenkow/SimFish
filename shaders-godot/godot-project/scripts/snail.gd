@@ -48,7 +48,13 @@ var _parent_keys: Array = []
 const SPEED: float = 0.18                  # units per second; ~3 minutes coast-to-coast
 const TURN_INTERVAL_MIN: float = 6.0
 const TURN_INTERVAL_MAX: float = 14.0
-const PAUSE_CHANCE: float = 0.3            # when turning, sometimes just sit still
+# Halved from 0.30 — the old chance produced multi-second freezes every
+# few turns, which read as "broken" rather than "resting." 0.15 keeps
+# the resting-pause behavior occasional, and PAUSE_DURATION_* below
+# caps each pause to a short interval so motion resumes quickly.
+const PAUSE_CHANCE: float = 0.15
+const PAUSE_DURATION_MIN: float = 1.0
+const PAUSE_DURATION_MAX: float = 4.0
 
 # Breeding + lifecycle. Snails are prolific; reproduction is gated on
 # energy/hunger and limited by food supply, predators, and finite lifespan.
@@ -110,6 +116,48 @@ var _eye_stalks: Node3D = null
 var _eye_phase: float = 0.0
 var _eye_retract_timer: float = 0.0
 var _eye_retract_remaining: float = 0.0
+# Eye scan saccade — when paused, the snail twitches its stalks toward a
+# random target every ~2.4 s, then drifts back. The brief look-around
+# read is the difference between "alive but resting" and "frozen voxel."
+var _eye_scan_t: float = 0.0
+var _eye_scan_target: Vector2 = Vector2.ZERO
+# Stuck detection — accumulates when the snail tries to crawl but barely
+# moves. Catches hardscape collisions, corner clipping, and any other
+# obstruction generically without per-voxel hardscape scanning. Reset on
+# successful progress; when it crosses STUCK_THRESHOLD the snail picks
+# a fresh heading and a short re-orient pause.
+var _stuck_timer: float = 0.0
+var _last_progress_pos: Vector3 = Vector3.ZERO
+const STUCK_THRESHOLD: float = 1.4
+const STUCK_PROGRESS_MIN_SQ: float = 0.008 * 0.008  # ~8 mm minimum progress
+# Cooldown between wall transitions so a snail at the substrate-glass
+# corner doesn't oscillate between climbing and descending each scan
+# tick. 1.5 s is enough for the snail to crawl meaningfully away from
+# the corner on its new wall before another transition can fire.
+var _wall_transition_cooldown: float = 0.0
+const WALL_TRANSITION_COOLDOWN: float = 1.5
+# Set when the snail is attached to a CURVED tank wall (cylinder or
+# sphere). Curved walls don't have a single fixed inward normal —
+# wall_normal varies continuously around the surface. When this is
+# true, _reclamp_to_footprint recomputes wall_normal each tick from
+# the current radial direction and snaps the snail back to the curve
+# instead of constraining it to a fixed plane via _wall_anchor_offset.
+var _curved_attached: bool = false
+# When the snail is climbing a plant trunk, hold a weak ref to that
+# plant so _reclamp_to_footprint can project the snail back to the
+# trunk surface each tick (the trunk is a per-plant cylinder, not a
+# tank-level curve — tank_lateral_boundary_info doesn't help here).
+# Cleared whenever the snail transitions to a different surface.
+var _attached_plant: Node3D = null
+# Eating pulse — set whenever the snail consumes something (waste, algae,
+# biofilm, plant rasp). Drives a 1.2 s amplified body wave so the bite
+# reads visually instead of being silent. Decays per tick.
+var _eating_pulse_remaining: float = 0.0
+const EATING_PULSE_DURATION: float = 1.2
+# Wander heading drift — every tick we rotate _direction by a small
+# random angle so the crawl curves naturally instead of straight-lining
+# between major turns. Phase carried so the drift isn't pure noise.
+var _wander_phase: float = 0.0
 const EYE_RETRACT_INTERVAL_MIN: float = 6.0
 const EYE_RETRACT_INTERVAL_MAX: float = 14.0
 const EYE_RETRACT_DURATION: float = 0.8
@@ -168,13 +216,16 @@ func get_saved_genome() -> Dictionary:
 func apply_genome_metadata(g: Dictionary) -> void:
 	if g.is_empty():
 		return
-	shell_color = g.get("shell_color", shell_color)
+	# Library + save data store colors as [r,g,b,a] arrays. Convert before
+	# assigning to the typed Color fields — passing the Array directly
+	# crashes ("Trying to assign value of type 'Array' to 'Color'").
+	shell_color = _coerce_color(g.get("shell_color", shell_color), shell_color)
 	shell_size = float(g.get("shell_size", shell_size))
 	shell_shape = String(g.get("shell_shape", shell_shape))
 	shell_spines = clampf(float(g.get("shell_spines", shell_spines)), 0.0, 1.0)
 	toxin_level = clampf(float(g.get("toxin_level", toxin_level)), 0.0, 1.0)
-	body_color = g.get("body_color", body_color)
-	shell_accent_color = g.get("shell_accent_color", shell_accent_color)
+	body_color = _coerce_color(g.get("body_color", body_color), body_color)
+	shell_accent_color = _coerce_color(g.get("shell_accent_color", shell_accent_color), shell_accent_color)
 	crawl_speed = clampf(float(g.get("crawl_speed", crawl_speed)), 0.3, 2.5)
 	appetite = clampf(float(g.get("appetite", appetite)), 0.4, 2.0)
 	max_age_s = maxf(60.0, float(g.get("max_age_s", max_age_s)))
@@ -193,6 +244,18 @@ func _ensure_named() -> void:
 	var adjs := ["Spiral", "Glass", "Pearl", "Moss", "Ivory", "Copper", "Jade", "Dusk"]
 	var nouns := ["Crawler", "Glider", "Wanderer", "Drifter", "Pacer", "Rambler"]
 	snail_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+
+
+# Coerce any color-shaped value (Color, [r,g,b,a] Array, or other) into a
+# Color. Centralised because the library/save layer hands us arrays
+# while runtime callers hand us Colors, and a typed assign of an Array
+# crashes the engine.
+func _coerce_color(v: Variant, default_c: Color) -> Color:
+	if v is Color:
+		return v
+	if v is Array:
+		return SaveHelpers.array_to_color(v, default_c)
+	return default_c
 
 
 func _ready() -> void:
@@ -269,7 +332,36 @@ func _process(dt: float) -> void:
 	# Throttled — 0.3 s detection latency reads as natural reaction time.
 	if scan_due:
 		_check_predator_threat(scan_dt)
+		# Wall transition checks — try every scan tick if we just haven't
+		# recently transitioned. Cooldown prevents a snail at the
+		# substrate-glass corner from oscillating climb/descend every
+		# scan tick.
+		_wall_transition_cooldown = maxf(0.0, _wall_transition_cooldown - scan_dt)
+		if _retreat_remaining <= 0.0 and not _clamped and _wall_transition_cooldown <= 0.0:
+			# Glass → substrate descent for snails on vertical glass.
+			if _try_descend_to_substrate():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
+			# Substrate → glass climb for snails on the floor near a
+			# wall. The boundary-bounce hook this used to live in
+			# never actually fires (the reclamp keeps substrate snails
+			# >0.34 from any wall, well clear of the bounce trigger),
+			# so the climb has to be proactive on a proximity check.
+			elif _try_climb_onto_glass():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
+			# Hardscape attach — climb onto rocks / driftwood when
+			# crawling close to one.
+			elif _try_attach_to_hardscape():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
+			# Plant attach — climb up a stem to graze canopy algae.
+			elif _try_attach_to_plant():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
 
+	# Fast-path predator retract — checked every tick (not gated by the
+	# 0.3 s scan accumulator). The 0.3 s latency of _check_predator_threat
+	# was reading as "frozen, not responsive" when a fast fish darted past;
+	# this gives an immediate stalk-pull while leaving the heavier clamp
+	# decision on the throttled scan. Cheap: bails when no predators exist.
+	_check_immediate_predator_retract()
 	# Eye stalk animation runs in every state (clamped, paused, crawling).
 	# Slow sway is the resting wiggle real snails do as they sense around;
 	# periodic retraction is the brief stalk-pull when they reset their
@@ -284,6 +376,12 @@ func _process(dt: float) -> void:
 	if _clamped:
 		_apply_squash(0.35)  # body flattened into shell
 		return
+
+	# Decay the eating-pulse amplifier. Set in _check_waste_nearby on a
+	# consume event; _apply_squash reads it to amplify the body wave for
+	# the duration so the bite has visible weight.
+	if _eating_pulse_remaining > 0.0:
+		_eating_pulse_remaining = maxf(0.0, _eating_pulse_remaining - dt)
 
 	# Post-threat behavior: once we un-clamp, continue a short retreat toward
 	# nearby hardscape so snail-predator encounters produce visible "hide"
@@ -355,6 +453,21 @@ func _process(dt: float) -> void:
 			_steer_direction(retreat_dir.normalized(), dt)
 			_paused = false
 
+	# Wander drift — tiny continuous heading perturbation between major
+	# turns so the crawl path curves naturally instead of straight-lining
+	# from one turn to the next. The drift is sin-driven so it visibly
+	# wanders S-shaped on a long crawl, with a small random component on
+	# top so two snails on the same wall don't trace identical paths.
+	# Skipped while pursuing food (we want a direct line) or retreating.
+	if not _pursuing_waste and _retreat_remaining <= 0.0:
+		_wander_phase += dt * 0.8
+		var wander_amp: float = 0.018 * dt * 60.0  # framerate-independent
+		var wander_angle: float = sin(_wander_phase) * wander_amp \
+			+ randf_range(-wander_amp * 0.4, wander_amp * 0.4)
+		_direction = _direction.rotated(wander_angle)
+		if _direction.length_squared() > 1e-6:
+			_direction = _direction.normalized()
+
 	# Smoothly turn crawl heading toward the target direction.
 	_facing = _facing.lerp(_direction, clampf(dt * FACING_TURN_RATE, 0.0, 1.0))
 	if _facing.length_squared() > 1e-6:
@@ -391,6 +504,26 @@ func _process(dt: float) -> void:
 		position += crawl_dir * gait_speed * dt
 		_apply_wall_orientation(crawl_dir, dt)
 		_handle_boundary_bounce(tangent, bitangent, pre_move)
+		# Stuck-detection. If the snail wanted to move (gait_speed
+		# meaningful) but the boundary bounce / reclamp / hardscape pulled
+		# us back to almost-the-same position, accumulate the stuck timer
+		# and eventually force a turn. This generic version replaces
+		# per-voxel hardscape scanning — catches any obstacle.
+		if gait_speed > 0.02:
+			var actual_move_sq: float = (position - pre_move).length_squared()
+			if actual_move_sq < STUCK_PROGRESS_MIN_SQ:
+				_stuck_timer += dt
+				if _stuck_timer > STUCK_THRESHOLD:
+					_stuck_timer = 0.0
+					_choose_new_direction()
+					# Force unpause if _choose rolled a pause — being
+					# stuck and then deciding to sit still reads as
+					# broken; we want a heading change.
+					_paused = false
+					# Quick re-attempt so we don't sit still again.
+					_t_until_turn = randf_range(0.4, 1.2)
+			else:
+				_stuck_timer = maxf(0.0, _stuck_timer - dt * 1.5)
 	else:
 		_apply_wall_orientation(tangent, dt)
 
@@ -409,7 +542,17 @@ func _process(dt: float) -> void:
 		if wn != null:
 			var av = wn.get_node_or_null("AquariumVisuals")
 			if av != null:
-				if randf() < dt * 0.06:
+				# State-driven slime intensity. Real snails produce more
+				# mucus when feeding (the rasping radula needs lubrication)
+				# and less when just transiting. Pursuit-of-food mode
+				# bumps the rate ~2×, recent eating pulse bumps it ~3×,
+				# normal crawl uses the baseline rate.
+				var rate: float = 0.32
+				if _pursuing_waste:
+					rate = 0.55
+				if _eating_pulse_remaining > 0.0:
+					rate = 0.90
+				if randf() < dt * rate:
 					av.spawn_snail_slime(global_position, wall_normal)
 					av.record_compaction(global_position.x, global_position.z)
 				if randf() < dt * 0.012:
@@ -506,11 +649,21 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 				else:
 					best.nibble(999) # algae cluster: can clear quickly
 					hunger = clampf(hunger - FEED_ALGAE, 0.0, 1.0)
-
+		# Trigger the visible eating pulse — _apply_squash amplifies the
+		# body wave for EATING_PULSE_DURATION so the bite reads as a
+		# distinct beat instead of a silent consume.
+		_eating_pulse_remaining = EATING_PULSE_DURATION
 		# Tiny snail pellet on the substrate at our position.
 		if sim.has_method("_spawn_waste"):
 			sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.04,
 				WasteParticle.KIND_SNAIL)
+		# Squeeze of slime at the bite point — real snails leave a thicker
+		# mucus deposit where they've been actively rasping.
+		var wn := _world_node()
+		if wn != null:
+			var av = wn.get_node_or_null("AquariumVisuals")
+			if av != null and av.has_method("spawn_snail_slime"):
+				av.spawn_snail_slime(global_position, wall_normal)
 		return
 	# Project the to_w vector into wall-tangent space and override direction.
 	var dx: float = to_w.dot(tangent)
@@ -550,6 +703,346 @@ func _sync_initial_orientation() -> void:
 	_apply_wall_orientation(tangent * _facing.x + bitangent * _facing.y, 1.0)
 
 
+# Wall transition probability. A snail that hits a corner only climbs /
+# descends most of the time — sometimes they turn back, which keeps the
+# population spread across multiple surfaces rather than draining onto
+# the glass.
+const WALL_TRANSITION_CHANCE: float = 0.80
+# When transitioning, how far to nudge the snail onto the new wall so
+# it doesn't immediately re-trigger the boundary handler.
+const WALL_TRANSITION_NUDGE: float = 0.10
+
+
+# Try to climb from the substrate onto an adjacent vertical glass wall.
+# Returns true if a transition happened. Called from the crawl path
+# whenever the snail is within CLIMB_PROXIMITY of a tank wall — earlier
+# this was hooked into _handle_boundary_bounce, but that path only
+# triggers when the snail has pushed PAST the lateral boundary, and the
+# reclamp keeps them clear of that boundary entirely. Proximity-based
+# triggering means a substrate snail walking near the glass will reach
+# the corner and start climbing as expected.
+const CLIMB_PROXIMITY: float = 0.32
+
+func _try_climb_onto_glass() -> bool:
+	# Only meaningful for substrate snails.
+	if absf(wall_normal.dot(Vector3.UP)) < 0.95:
+		return false
+	var w := _world_node()
+	if w == null or not w.has_method("tank_lateral_boundary_info"):
+		return false
+	# `inward` points perpendicular to the closest tank wall, INTO the
+	# tank interior. For an axis-aligned tank this is one of (±1,0,0) /
+	# (0,0,±1); for cylinder/sphere it's the radial direction from the
+	# tank's central axis to the wall surface.
+	var info: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
+	var inward: Vector3 = info.get("inward", Vector3.ZERO)
+	var clearance: float = float(info.get("clearance", 99.0))
+	if inward.length_squared() < 0.1:
+		return false
+	# Only climb when we're within CLIMB_PROXIMITY of the wall.
+	if clearance > CLIMB_PROXIMITY:
+		return false
+	inward = inward.normalized()
+	# Detect curved vs flat walls. For axis-aligned (box) tanks `inward`
+	# is close to a cardinal direction; for cylinder/sphere it points
+	# radially at any angle.
+	var max_axis: float = maxf(maxf(absf(inward.x), absf(inward.y)), absf(inward.z))
+	var is_curved: bool = max_axis < 0.92
+	if is_curved:
+		# Only accept curved climbs on tank shapes that actually have a
+		# well-defined curved wall surface — cylinder + sphere. Other
+		# polygon tanks fall through to the flat-wall test instead.
+		var shape_v: Variant = w.get("TANK_SHAPE")
+		var shape: String = String(shape_v) if shape_v != null else "box"
+		if shape != "cylinder" and shape != "sphere":
+			return false
+	if randf() > WALL_TRANSITION_CHANCE:
+		return false
+
+	# Commit the transition.
+	wall_normal = inward
+	_curved_attached = is_curved
+	_attached_plant = null  # leaving any plant trunk attachment
+	# Snap Y just above the substrate so the snail visibly sits on the
+	# glass right above the substrate-glass corner. The lateral X/Z
+	# stay where they are (we were already at the boundary).
+	var substrate_y: float = 1.6
+	var sub_v: Variant = w.get("SUBSTRATE_DEPTH")
+	if sub_v != null:
+		substrate_y = float(sub_v)
+	global_position.y = substrate_y + WALL_TRANSITION_NUDGE
+	# Re-anchor the plane. _wall_anchor_offset is the projection of
+	# position onto the new wall_normal — for flat walls this is the
+	# fixed plane offset. For curved walls it's recomputed every tick
+	# in _reclamp_to_footprint, but we set a sensible initial value.
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# For curved attaches, snap the snail to the actual wall surface
+	# first by stepping outward (opposite of inward) by the clearance.
+	if is_curved:
+		global_position -= inward * clearance
+	# Set heading to "climb up." On any vertical glass wall:
+	#   tangent  = horizontal-in-wall  (depends on wall_normal)
+	#   bitangent = world UP
+	# so _facing.y > 0 → upward motion.
+	_direction = Vector2(randf_range(-0.20, 0.20), 1.0).normalized()
+	_facing = _direction
+	# Reset stuck timer + force orientation re-sync immediately (not
+	# deferred — the next crawl tick needs the correct basis).
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
+# Try to descend from a vertical glass wall down onto the substrate.
+# Called periodically (scan_due) — a glass snail crawling along the
+# substrate-glass corner doesn't go OUTSIDE the tank, so boundary_bounce
+# never fires for them; this is the path that catches that case.
+func _try_descend_to_substrate() -> bool:
+	# Only meaningful for snails on vertical glass.
+	if absf(wall_normal.dot(Vector3.UP)) > 0.55:
+		return false
+	var w := _world_node()
+	if w == null:
+		return false
+	var substrate_y: float = 1.6
+	var sub_v: Variant = w.get("SUBSTRATE_DEPTH")
+	if sub_v != null:
+		substrate_y = float(sub_v)
+	# Only descend when we're already very close to the substrate floor.
+	if global_position.y > substrate_y + 0.18:
+		return false
+	if randf() > WALL_TRANSITION_CHANCE:
+		return false
+
+	# Commit the transition.
+	var old_wall_normal: Vector3 = wall_normal
+	wall_normal = Vector3.UP
+	_curved_attached = false  # substrate is flat
+	_attached_plant = null
+	# Land just above the substrate, and nudge slightly AWAY from the
+	# old glass so the next tick doesn't immediately re-trigger climb.
+	global_position.y = substrate_y + WALL_TRANSITION_NUDGE
+	global_position += old_wall_normal * WALL_TRANSITION_NUDGE
+	# Re-clamp inside the tank in case the nudge pushed us out.
+	if w.has_method("clamp_xyz_in_tank"):
+		global_position = w.clamp_xyz_in_tank(global_position, 0.30, 0.10)
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# On the substrate: tangent = RIGHT, bitangent = RIGHT × UP = (0,0,-1).
+	# We want to head AWAY from the glass we just descended from. The
+	# old wall_normal was the perpendicular-into-tank direction of that
+	# glass, so moving in +old_wall_normal moves us into the tank.
+	var new_tangent: Vector3 = Vector3.RIGHT
+	var new_bitangent: Vector3 = new_tangent.cross(Vector3.UP).normalized()
+	_direction = Vector2(
+		old_wall_normal.dot(new_tangent),
+		old_wall_normal.dot(new_bitangent))
+	if _direction.length_squared() < 1e-6:
+		_direction = Vector2(1.0, 0.0)
+	_direction = _direction.normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
+# Try to attach to a hardscape voxel (rock or driftwood) the snail is
+# crawling near. Picks the closest hardscape voxel within HARDSCAPE_PROX,
+# determines which face the snail is approaching from, and re-anchors
+# wall_normal to that face's outward normal. Returns true on transition.
+#
+# Real freshwater snails (especially nerites, ramshorns) spend most of
+# their grazing time on hardscape — that's where the biofilm + algae
+# coats actually accumulate in a planted tank. Without this path the
+# snails were stuck on the glass + substrate even when food was on the
+# wood right next to them.
+const HARDSCAPE_PROX: float = 0.42
+
+func _try_attach_to_hardscape() -> bool:
+	# Eligible from any starting wall. We skip if already on a curved
+	# surface; "is on glass / substrate" is the only case currently.
+	var sim := _get_sim()
+	if sim == null:
+		return false
+	var root_v: Variant = sim.get("hardscape_root")
+	if root_v == null or not (root_v is Node3D):
+		return false
+	var root: Node3D = root_v as Node3D
+	if not is_instance_valid(root):
+		return false
+	# Walk hardscape voxels, find the closest one whose surface is within
+	# HARDSCAPE_PROX of us. Capped iteration so a large hardscape doesn't
+	# burn the tick.
+	var children: Array = root.get_children()
+	var n: int = mini(children.size(), 96)
+	if n <= 0:
+		return false
+	var best: Node3D = null
+	var best_d2: float = HARDSCAPE_PROX * HARDSCAPE_PROX
+	for i in n:
+		var h: Node3D = children[i] as Node3D
+		if h == null or not is_instance_valid(h):
+			continue
+		var d2: float = (h.global_position - global_position).length_squared()
+		if d2 < best_d2:
+			best_d2 = d2
+			best = h
+	if best == null:
+		return false
+	if randf() > WALL_TRANSITION_CHANCE:
+		return false
+
+	# Figure out which face we're nearest. Treat the voxel as a box;
+	# whichever component of (snail - voxel) has the largest absolute
+	# value points to the dominant face.
+	var rel: Vector3 = global_position - best.global_position
+	var ax: float = absf(rel.x)
+	var ay: float = absf(rel.y)
+	var az: float = absf(rel.z)
+	var face_normal: Vector3
+	if ay >= ax and ay >= az:
+		# Top or bottom face — snails almost always sit on the top, so
+		# bias UP when the relative Y is near zero (avoid hanging from
+		# the underside of a driftwood log).
+		if rel.y >= -0.02:
+			face_normal = Vector3.UP
+		else:
+			face_normal = Vector3.DOWN
+	elif ax >= az:
+		face_normal = Vector3.RIGHT if rel.x >= 0.0 else Vector3.LEFT
+	else:
+		face_normal = Vector3.BACK if rel.z >= 0.0 else Vector3.FORWARD
+
+	# Snap onto that face. Approximate voxel half-size from its mesh; we
+	# don't read the BoxMesh.size directly because Plant voxels could be
+	# multimeshed (no per-voxel mesh) — fall back to 0.25 as a typical
+	# hardscape cube extent if we can't introspect.
+	var voxel_half: float = 0.25
+	var mi: MeshInstance3D = best as MeshInstance3D
+	if mi != null and mi.mesh is BoxMesh:
+		var bm: BoxMesh = mi.mesh as BoxMesh
+		# Pick the half-size on the dominant axis.
+		if face_normal.y != 0.0:
+			voxel_half = bm.size.y * 0.5
+		elif face_normal.x != 0.0:
+			voxel_half = bm.size.x * 0.5
+		else:
+			voxel_half = bm.size.z * 0.5
+	# New attach point: voxel center + face_normal * (half + small offset
+	# so the snail's foot sits on the face surface, not inside it).
+	var snail_offset: float = shell_size * 0.10 + 0.02
+	var attach_pos: Vector3 = best.global_position + face_normal * (voxel_half + snail_offset)
+
+	wall_normal = face_normal
+	_curved_attached = false  # hardscape voxels have flat box faces
+	_attached_plant = null
+	global_position = attach_pos
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# Pick a sensible initial heading on the new face. For top faces use
+	# substrate-like tangent (RIGHT); for side faces, climb up first.
+	if absf(face_normal.dot(Vector3.UP)) > 0.95:
+		# Top of a rock — head in a random tangent direction.
+		var ang: float = randf() * TAU
+		_direction = Vector2(cos(ang), sin(ang))
+	else:
+		# Side face — head upward (positive bitangent ≡ UP for vertical
+		# face_normals), with a small lateral random component.
+		_direction = Vector2(randf_range(-0.30, 0.30), 1.0).normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
+# Try to attach to a plant the snail is crawling near. Treats each plant
+# as a vertical cylinder (trunk) at plant.global_position; the snail
+# attaches to the radial outward face when close enough. Once attached
+# the wall_normal is the horizontal direction from the trunk axis toward
+# the snail's position, so the snail crawls AROUND the stem (positive
+# tangent) or UP/DOWN it (bitangent = UP for vertical wall normals).
+const PLANT_PROX: float = 0.36
+const PLANT_TRUNK_RADIUS: float = 0.18
+
+func _try_attach_to_plant() -> bool:
+	var sim := _get_sim()
+	if sim == null:
+		return false
+	var plants_v: Variant = sim.get("plants")
+	if plants_v == null or not (plants_v is Array):
+		return false
+	var plants_arr: Array = plants_v
+	if plants_arr.is_empty():
+		return false
+	var best: Node3D = null
+	var best_d2: float = PLANT_PROX * PLANT_PROX
+	# Cap to avoid scanning hundreds of plants per scan tick.
+	var n: int = mini(plants_arr.size(), 64)
+	for i in n:
+		var p_v: Variant = plants_arr[i]
+		if not (p_v is Node3D) or not is_instance_valid(p_v):
+			continue
+		var p: Node3D = p_v as Node3D
+		# Project distance into the horizontal plane only — vertical
+		# clearance is unbounded along the trunk's length.
+		var dx: float = p.global_position.x - global_position.x
+		var dz: float = p.global_position.z - global_position.z
+		var d2_xz: float = dx * dx + dz * dz
+		# Snail must also be within the plant's vertical extent (trunk
+		# height). Read current_height if available; fall back to 4 voxels.
+		var trunk_top: float = p.global_position.y + 0.32 * 4.0
+		var ch_v: Variant = p.get("current_height")
+		if ch_v != null:
+			trunk_top = p.global_position.y + 0.32 * float(int(ch_v))
+		if global_position.y < p.global_position.y - 0.2 or global_position.y > trunk_top + 0.1:
+			continue
+		if d2_xz < best_d2:
+			best_d2 = d2_xz
+			best = p
+	if best == null:
+		return false
+	if randf() > WALL_TRANSITION_CHANCE:
+		return false
+
+	# Compute the outward radial direction from trunk axis to snail.
+	var radial: Vector3 = Vector3(
+		global_position.x - best.global_position.x,
+		0.0,
+		global_position.z - best.global_position.z)
+	if radial.length_squared() < 1e-4:
+		# Snail is essentially ON the trunk axis — pick a random outward
+		# direction so the new wall_normal is well-defined.
+		var ang: float = randf() * TAU
+		radial = Vector3(cos(ang), 0.0, sin(ang))
+	radial = radial.normalized()
+
+	# Wall normal = the outward radial direction (snail's shell points
+	# outward from the trunk). The trunk is a per-plant cylinder, so
+	# we track _attached_plant + clear _curved_attached (which is for
+	# tank curves). _reclamp_to_footprint handles the plant case
+	# separately by projecting back to the trunk surface each tick.
+	wall_normal = radial
+	_curved_attached = false
+	_attached_plant = best
+	# Snap snail position to the trunk surface at the current Y.
+	var snail_offset: float = shell_size * 0.10 + 0.02
+	global_position = Vector3(
+		best.global_position.x + radial.x * (PLANT_TRUNK_RADIUS + snail_offset),
+		global_position.y,
+		best.global_position.z + radial.z * (PLANT_TRUNK_RADIUS + snail_offset))
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# Head upward along the stem with a tiny lateral wobble — snails
+	# climbing a plant typically work upward to reach the canopy where
+	# the freshest algae lives.
+	_direction = Vector2(randf_range(-0.25, 0.25), 1.0).normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
 func _steer_direction(target: Vector2, dt: float) -> void:
 	if target.length_squared() < 1e-6:
 		return
@@ -559,10 +1052,19 @@ func _steer_direction(target: Vector2, dt: float) -> void:
 
 
 func _shell_up() -> Vector3:
-	# Dorsal axis: into the tank on vertical glass, world-up on the substrate.
+	# Dorsal axis: world-up on the substrate, INTO the tank on vertical
+	# glass. wall_normal is stored as the inward normal of the glass
+	# (perpendicular pointing INTO the tank from the wall surface), and
+	# Basis.looking_at(forward, up) aligns local +Y with `up`. The snail
+	# body builds its shell at local +Y, so shell_up must equal the
+	# inward normal = wall_normal itself, NOT its negation.
+	#
+	# The previous version returned -wall_normal, which put the shell on
+	# the OUTWARD side of the snail — i.e. embedded in the glass with
+	# the foot pointing INTO the tank. Reads as "snail facing wrong way."
 	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
 		return Vector3.UP
-	return (-wall_normal).normalized()
+	return wall_normal.normalized()
 
 
 func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
@@ -593,9 +1095,91 @@ func _world_node() -> Node:
 # but X/Y/Z are pulled back inside the tank footprint every frame.
 func _reclamp_to_footprint() -> void:
 	var w := _world_node()
-	var margin: float = 0.28 + shell_size * 0.08
+	# Tighter clamp margin so snails can actually crawl right up to the
+	# glass surface (and approach hardscape voxels close enough to attach).
+	# The previous 0.28 + shell_size*0.08 ≈ 0.34 kept them too far from
+	# any wall to ever trigger the climb transition. Snail bodies are
+	# small (shell_size * 0.20 across) so a margin matched to body_r is
+	# plenty to keep voxels visibly inside the glass.
 	var body_r: float = shell_size * 0.10
-	if w != null and w.has_method("clamp_xyz_in_tank"):
+	var margin: float = body_r + 0.04
+	if w == null:
+		return
+	# Plant-attached path: the trunk is a per-plant cylinder, so we
+	# project back onto its surface at the snail's current Y. Walk away
+	# from this branch if the plant has been freed (grazed down, died,
+	# tank reset). When that happens, drop the snail to substrate so it
+	# doesn't get stuck in air.
+	if _attached_plant != null:
+		if not is_instance_valid(_attached_plant):
+			_attached_plant = null
+		else:
+			var pp: Vector3 = _attached_plant.global_position
+			# Outward radial direction from trunk axis to snail (XZ only).
+			var rad: Vector3 = Vector3(
+				global_position.x - pp.x, 0.0, global_position.z - pp.z)
+			if rad.length_squared() < 1e-4:
+				# Snail wandered into the trunk axis (rare). Pick the
+				# old wall_normal direction as outward.
+				rad = Vector3(wall_normal.x, 0.0, wall_normal.z)
+				if rad.length_squared() < 1e-4:
+					rad = Vector3.RIGHT
+			rad = rad.normalized()
+			# Snap XZ to the trunk surface.
+			global_position.x = pp.x + rad.x * PLANT_TRUNK_RADIUS
+			global_position.z = pp.z + rad.z * PLANT_TRUNK_RADIUS
+			# Keep Y inside the trunk's vertical extent — if the snail
+			# climbed off the top, treat it as a drop and clear the
+			# attachment so the next scan tick can pick a new surface.
+			var trunk_top: float = pp.y + 0.32 * 4.0
+			var ch_v: Variant = _attached_plant.get("current_height")
+			if ch_v != null:
+				trunk_top = pp.y + 0.32 * float(int(ch_v))
+			if global_position.y > trunk_top + 0.05:
+				_attached_plant = null  # off the top
+			elif global_position.y < pp.y - 0.1:
+				_attached_plant = null  # off the bottom
+			else:
+				wall_normal = rad
+				_wall_anchor_offset = wall_normal.dot(global_position)
+				return
+	# Curved-wall path: the wall normal isn't fixed — it points radially
+	# inward at every position on the curve. Snap the snail to the
+	# nearest point on the tank's curved surface and recompute
+	# wall_normal from the local inward direction. tank_lateral_boundary
+	# _info gives us both: `clearance` is the distance from the snail to
+	# the wall surface, and `inward` is the radial inward unit vector
+	# at the snail's location.
+	if _curved_attached and w.has_method("tank_lateral_boundary_info"):
+		var info: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
+		var inward: Vector3 = info.get("inward", Vector3.ZERO)
+		var clearance: float = float(info.get("clearance", 0.0))
+		if inward.length_squared() > 0.01:
+			inward = inward.normalized()
+			# Project the snail onto the curve. clearance > 0 means we
+			# drifted inward away from the wall; clearance < 0 means we
+			# pushed through to the outside. Either way, subtract
+			# `inward * clearance` to land on the surface.
+			global_position -= inward * clearance
+			wall_normal = inward
+			# Maintain the scalar projection so any code reading
+			# _wall_anchor_offset (mostly save/load) sees a consistent
+			# value. For curved walls this scalar is only meaningful at
+			# THIS instant — it gets recomputed next tick.
+			_wall_anchor_offset = wall_normal.dot(global_position)
+		# Clamp Y so we don't burrow into the substrate or break the
+		# surface. Y stays whatever the crawl set it to within these
+		# limits.
+		var substrate_y_v: Variant = w.get("SUBSTRATE_DEPTH")
+		var sub_y: float = 1.6 if substrate_y_v == null else float(substrate_y_v)
+		var water_y_v: Variant = w.get("WATER_HEIGHT")
+		var water_y: float = 6.5 if water_y_v == null else float(water_y_v)
+		global_position.y = clampf(global_position.y, sub_y + 0.05, water_y - 0.10)
+		return
+	# Flat-wall + substrate path (unchanged): the wall is a fixed plane,
+	# so we project onto _wall_anchor_offset and rely on clamp_xyz_in_tank
+	# for tank-volume containment.
+	if w.has_method("clamp_xyz_in_tank"):
 		var plane_drift: float = wall_normal.dot(global_position) - _wall_anchor_offset
 		if absf(plane_drift) > 1e-5:
 			global_position -= wall_normal * plane_drift
@@ -620,6 +1204,10 @@ func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, _pre_move: 
 		if w.is_inside_tank_volume(
 				global_position.x, global_position.y, global_position.z, margin * 0.35):
 			return
+		# (Substrate→glass climbing now lives on the scan-tick proximity
+		# check, not here — the reclamp keeps substrate snails far enough
+		# from the boundary that this branch never fires for them. This
+		# path now only handles curved-tank wall slides.)
 		# Hit the curved / polygon wall — slide along the glass tangent.
 		var plane_slide := Vector2(_direction.x, _direction.y)
 		if w.has_method("tank_lateral_boundary_info"):
@@ -636,21 +1224,52 @@ func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, _pre_move: 
 					tangent3.dot(_bitangent))
 		if plane_slide.length_squared() < 1e-6:
 			plane_slide = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0))
-		plane_slide = plane_slide.rotated(PI * 0.5 * (1.0 if randf() > 0.5 else -1.0))
+		# Soften the boundary reflection. The previous 90° flip made every
+		# wall hit read as a hard snap turn; a smaller randomized angle
+		# (45..80°) on whichever side actually points back inward gives
+		# the snail a smooth curl along the curved glass instead of a
+		# right-angle clip.
+		var turn_sign: float = 1.0 if randf() > 0.5 else -1.0
+		var turn_angle: float = randf_range(PI * 0.25, PI * 0.45) * turn_sign
+		plane_slide = plane_slide.rotated(turn_angle)
 		if plane_slide.length_squared() > 1e-6:
-			_direction = plane_slide.normalized()
-		_t_until_turn = minf(_t_until_turn, randf_range(1.5, 3.5))
+			# Lerp the new heading in rather than snapping — _facing's
+			# slerp will catch up, but the underlying _direction also
+			# eases so the next few ticks don't fight the old direction.
+			_direction = _direction.lerp(plane_slide.normalized(), 0.65)
+			if _direction.length_squared() > 1e-6:
+				_direction = _direction.normalized()
+		_t_until_turn = minf(_t_until_turn, randf_range(2.5, 5.0))
 		return
 	if w == null:
 		return
 
 
 func _apply_squash(squash_y: float) -> void:
-	# Apply vertical squash in local space (shell height pulse on the foot).
+	# Foot-wave creep — instead of a single uniform Y squash (which read
+	# as "bouncing block"), modulate three axes so the body visibly
+	# COMPRESSES on the back stroke and STRETCHES forward on the push.
+	# Real snail crawl is a wave of muscular contraction running tail →
+	# head; we approximate by tying Z stretch to the same _pulse_phase
+	# but at quarter-period offset so the body lengthens just as the foot
+	# pushes down. X jitters slightly out of phase for the side-to-side
+	# inching feel.
 	var base: float = 0.5 if is_baby else 1.0
 	if is_baby:
 		base = 0.5 + 0.5 * clampf(age / MATURITY_AGE, 0.0, 1.0)
-	scale = Vector3(base, base * squash_y, base)
+	# Eating pulse — bigger compress/release during a consumption beat.
+	var eat_amp: float = 1.0
+	if _eating_pulse_remaining > 0.0:
+		var ep_t: float = 1.0 - (_eating_pulse_remaining / EATING_PULSE_DURATION)
+		# Bell curve over the eating window — peak amplitude mid-pulse.
+		eat_amp = 1.0 + 0.30 * sin(clampf(ep_t, 0.0, 1.0) * PI)
+	# Z creep: stretches forward on push (sin of phase + π/2), squashes back.
+	var creep_z: float = 1.0 + sin(_pulse_phase + PI * 0.5) * 0.10 * eat_amp
+	# X side-shimmy: tiny lateral wobble for body weight transfer.
+	var shimmy_x: float = 1.0 + sin(_pulse_phase * 0.65 + 0.7) * 0.04 * eat_amp
+	# Y squash: the original foot pulse, amplified by eating.
+	var y_axis: float = 1.0 + (squash_y - 1.0) * eat_amp
+	scale = Vector3(base * shimmy_x, base * y_axis, base * creep_z)
 
 
 func _count_snails() -> int:
@@ -750,14 +1369,70 @@ func _tick_eye_stalks(dt: float) -> void:
 		# Bell-shape: 0 → 1 → 0 over the duration, so we retract then re-extend.
 		ext = 1.0 - sin(t * PI)
 		ext = maxf(0.15, ext)
-	# Slow sway (resting wiggle), suppressed during retraction.
+	# Base sway — slow resting wiggle, suppressed during retraction.
 	var sway_y: float = sin(_eye_phase) * 0.18 * ext
 	var sway_x: float = sin(_eye_phase * 0.7 + 1.1) * 0.10 * ext
+	# Crawl bias — when actively crawling, the eye stalks lean forward
+	# (negative X pitch on the EyeStalks pivot, which is offset along
+	# local +X from the head). Stronger lean during fast pursuit-of-food
+	# crawl so the snail visibly "leans into" the chase.
+	if not _paused and not _clamped and _crawl_speed_smoothed > 0.02:
+		var lean_strength: float = (0.30 if _pursuing_waste else 0.18) * ext
+		sway_x -= lean_strength
+		# Yaw bias toward heading curve — if the snail is mid-turn the
+		# stalks pre-point in the new direction, like a real snail
+		# orienting before the body catches up.
+		var turn_lean: float = clampf(_direction.x - _facing.x, -1.0, 1.0)
+		sway_y += turn_lean * 0.22 * ext
+	else:
+		# Paused: wider scan amplitude — looking around for food / threats.
+		# Random saccades stacked on the base sway every ~2.4 s.
+		_eye_scan_t -= dt
+		if _eye_scan_t <= 0.0:
+			_eye_scan_t = randf_range(1.8, 3.4)
+			_eye_scan_target = Vector2(
+				randf_range(-0.32, 0.32),
+				randf_range(-0.15, 0.18))
+		# Decay scan target toward 0 so the saccade is a brief twitch
+		# rather than a permanent head-cock.
+		_eye_scan_target = _eye_scan_target.lerp(Vector2.ZERO, clampf(dt * 1.2, 0.0, 1.0))
+		sway_y += _eye_scan_target.x * ext
+		sway_x += _eye_scan_target.y * ext
 	_eye_stalks.rotation.y = sway_y
 	_eye_stalks.rotation.x = sway_x
 	# Scale the stalks along Y so they visually pull into the body
 	# during retraction. Width stays steady so they don't look thinner.
 	_eye_stalks.scale = Vector3(1.0, lerpf(0.1, 1.0, ext), 1.0)
+
+
+# Fast per-tick check for a predator inside the immediate-retract radius.
+# Only the cheap distance loop here — the heavier "should clamp" decision
+# stays on the 0.3 s scan tick in _check_predator_threat. Triggers an
+# instant eye-stalk pull-in so a fish darting past gets a reactive read.
+const _IMMEDIATE_RETRACT_RADIUS_SQ: float = 0.7 * 0.7
+
+func _check_immediate_predator_retract() -> void:
+	# Already retracting / clamped → nothing to do.
+	if _clamped or _eye_retract_remaining > 0.0:
+		return
+	var sim := _get_sim()
+	if sim == null:
+		return
+	# Bail fast when no snail-hunting fish are in the tank at all.
+	var predator_count_v: Variant = sim.get("snail_predator_count")
+	if predator_count_v != null and int(predator_count_v) == 0:
+		return
+	var self_pos: Vector3 = global_position
+	for f in sim.fish:
+		if not is_instance_valid(f):
+			continue
+		var is_pred_v: Variant = f.get("snail_predator")
+		if is_pred_v == null or not bool(is_pred_v):
+			continue
+		var d2: float = (f.global_position - self_pos).length_squared()
+		if d2 < _IMMEDIATE_RETRACT_RADIUS_SQ:
+			_eye_retract_remaining = EYE_RETRACT_DURATION
+			return
 
 
 func _check_predator_threat(dt: float) -> void:
@@ -818,9 +1493,26 @@ func _choose_new_direction() -> void:
 	_t_until_turn = randf_range(TURN_INTERVAL_MIN, TURN_INTERVAL_MAX)
 	_paused = randf() < PAUSE_CHANCE
 	if _paused:
+		# Cap the pause to a short interval so it reads as "resting" not
+		# "frozen." When the timer expires we run _choose_new_direction
+		# again, which usually rolls a new heading rather than another
+		# pause.
+		_t_until_turn = randf_range(PAUSE_DURATION_MIN, PAUSE_DURATION_MAX)
 		return
-	var ang := randf() * TAU
-	_direction = Vector2(cos(ang), sin(ang))
+	# Bias the new heading toward the current heading so the turn reads
+	# as a gentle redirection rather than a 180° flip. We rotate the old
+	# direction by a moderate random angle instead of picking pure uniform
+	# random — keeps the crawl path coherent.
+	var turn: float = randf_range(-PI * 0.55, PI * 0.55)
+	# Occasionally (~25%) take a bigger turn, including the rare reversal.
+	if randf() < 0.25:
+		turn = randf_range(-PI, PI)
+	if _direction.length_squared() < 1e-6:
+		var ang := randf() * TAU
+		_direction = Vector2(cos(ang), sin(ang))
+	else:
+		_direction = _direction.rotated(turn)
+		_direction = _direction.normalized()
 
 
 func _pick_hardscape_retreat_point(sim: Node) -> Vector3:
@@ -918,6 +1610,12 @@ func to_save_dict() -> Dictionary:
 		"clamp_grace_remaining": _clamp_grace_remaining,
 		"eye_retract_remaining": _eye_retract_remaining,
 		"eye_retract_timer": _eye_retract_timer,
+		# Curved-tank flag — _reclamp_to_footprint uses it to decide
+		# whether to project to a fixed plane or to the curved surface.
+		# Plant attachment isn't saved (it's a node ref, which doesn't
+		# survive save/load); on load the snail starts on whatever wall
+		# its wall_normal indicates and the next scan tick can reattach.
+		"curved_attached": _curved_attached,
 	}
 
 
@@ -953,6 +1651,15 @@ func apply_save_dict(d: Dictionary) -> void:
 	_clamp_grace_remaining = float(d.get("clamp_grace_remaining", 0.0))
 	_eye_retract_remaining = float(d.get("eye_retract_remaining", 0.0))
 	_eye_retract_timer = float(d.get("eye_retract_timer", _eye_retract_timer))
+	_curved_attached = not not d.get("curved_attached", false)
+	_attached_plant = null  # plant refs don't survive save/load
 	if is_baby:
 		scale = Vector3.ONE * 0.5
 	_reclamp_to_footprint()
+	# Re-apply orientation so the loaded snail snaps to its saved wall
+	# pose immediately. Without this, the basis stays at engine-default
+	# until the next crawl tick, and a paused snail visibly "lays on its
+	# side" for a frame or two before the orientation catches up. The
+	# call is deferred to next-frame so the parent transform is settled.
+	_last_progress_pos = global_position
+	call_deferred("_sync_initial_orientation")

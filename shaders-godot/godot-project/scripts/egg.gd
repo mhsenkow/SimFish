@@ -14,6 +14,12 @@ var genome: Dictionary = {}
 var species: String = "glassdart"
 var _age: float = 0.0
 var _wobble_pivot: Node3D = null
+# Cached per-egg-cell materials so the hatch pulse-glow can lift their
+# albedo each tick. The base color is what _build_visual originally set;
+# we lerp between base and a near-white "embryo light" tint as hatch
+# approaches. Cleared in _build_visual + repopulated as it builds.
+var _egg_materials: Array[ShaderMaterial] = []
+var _egg_base_colors: Array[Color] = []
 # Egg tint derived from the parents' base_color. Lightened + desaturated so
 # eggs look translucent with a species-specific hue: glassdart → pinkish,
 # mudsifter → peachy, angelfish → ivory. Falls back to a generic pale-orange
@@ -75,6 +81,8 @@ func _build_visual() -> void:
 	# A cluster of 3-5 tiny eggs, tinted per species.
 	_wobble_pivot = Node3D.new()
 	add_child(_wobble_pivot)
+	_egg_materials.clear()
+	_egg_base_colors.clear()
 	var positions: Array[Vector3] = [
 		Vector3(0, 0, 0),
 		Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.1, 0),
@@ -85,7 +93,14 @@ func _build_visual() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
 		mi.position = positions[i]
-		mi.material_override = VoxelMat.make_fauna(_egg_tint if (i & 1) == 0 else _egg_tint_alt)
+		var base_col: Color = _egg_tint if (i & 1) == 0 else _egg_tint_alt
+		# Duplicate the shared cached material so the pulse-glow path can
+		# write per-egg albedo each tick without bleeding into other eggs
+		# of the same species.
+		var mat: ShaderMaterial = VoxelMat.make_fauna(base_col).duplicate()
+		mi.material_override = mat
+		_egg_materials.append(mat)
+		_egg_base_colors.append(mat.get_shader_parameter("albedo"))
 		_wobble_pivot.add_child(mi)
 
 
@@ -96,6 +111,34 @@ func tick(dt: float) -> bool:
 	if _wobble_pivot != null and _age > INCUBATION_S * 0.7:
 		var wobble_t := (_age - INCUBATION_S * 0.7) / (INCUBATION_S * 0.3)
 		_wobble_pivot.rotation.z = sin(_age * 8.0) * 0.1 * wobble_t
+	# Hatch pulse-glow. Egg albedo lifts toward an embryo-light cream as
+	# incubation completes; pulse frequency also climbs so a near-hatch
+	# egg visibly flickers. Only viable eggs glow — dead eggs stay dull
+	# so the player reads "this clutch isn't going to develop."
+	if viable and _egg_materials.size() > 0:
+		var hatch_t: float = clampf(_age / INCUBATION_S, 0.0, 1.0)
+		# Glow eases in over the second half so early incubation looks
+		# inert and the last 15s reads as "actively quickening." Quartic
+		# ramp emphasises the final stretch.
+		var glow_ramp: float = pow(clampf((hatch_t - 0.45) / 0.55, 0.0, 1.0), 1.6)
+		# Pulse frequency rises with hatch progress — slow heartbeat at
+		# mid-incubation, faster flutter at hatch. Plus a small phase per
+		# egg-cell index so the cluster reads as multiple things glowing
+		# slightly out of step.
+		var pulse_freq: float = lerpf(1.6, 5.2, hatch_t)
+		var glow_strength: float = glow_ramp * 0.45
+		for i in _egg_materials.size():
+			var mat: ShaderMaterial = _egg_materials[i]
+			if mat == null:
+				continue
+			var phase: float = float(i) * 0.9
+			var pulse: float = 0.5 + 0.5 * sin(_age * pulse_freq + phase)
+			var lift: float = glow_strength * (0.55 + 0.45 * pulse)
+			# Lerp toward an embryo-cream — keeps the species hue intact
+			# but the pixel reads as emissive against the dither.
+			var base_c: Color = _egg_base_colors[i]
+			var target: Color = base_c.lightened(0.55)
+			mat.set_shader_parameter("albedo", base_c.lerp(target, lift))
 	return _age >= INCUBATION_S
 
 

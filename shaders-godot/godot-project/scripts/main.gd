@@ -2243,7 +2243,16 @@ func _update_palette_tod_tint() -> void:
 		t = _TOD_DUSK.lerp(_TOD_NIGHT, (phase - 0.5) / 0.25)
 	else:
 		t = _TOD_NIGHT.lerp(_TOD_DAWN, (phase - 0.75) / 0.25)
-	(display.material as ShaderMaterial).set_shader_parameter("palette_tint", t)
+	var mat: ShaderMaterial = display.material as ShaderMaterial
+	mat.set_shader_parameter("palette_tint", t)
+	# Drive the day/night palette blend off the same daylight curve the
+	# sim uses for photosynthesis. Smoothstep on top of the cosine bell so
+	# the transition has a defined "dusk" knee instead of feeling washy.
+	var dl: float = 1.0
+	if _sim != null and _sim.has_method("daylight"):
+		dl = float(_sim.daylight())
+	var night_blend: float = smoothstep(0.05, 0.55, 1.0 - dl)
+	mat.set_shader_parameter("palette_night_blend", night_blend)
 
 
 func _apply_display_layout() -> void:

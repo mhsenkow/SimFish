@@ -223,14 +223,24 @@ func _build_body() -> void:
 	#   - Legs (visual only): tiny voxels under the body
 	var v: float = adult_voxel_scale
 	var lenf: float = body_length_factor
-	var mat_body := VoxelMat.make_fauna(base_color)
-	var mat_belly := VoxelMat.make_fauna(accent_color)
+	# Shrimp bodies are TRANSLUCENT — real freshwater shrimp (neocaridina,
+	# crystal, amano) read as glassy with internal organs faintly visible
+	# through the carapace. Body + belly use the translucent voxel shader
+	# with alpha baked into the color; eyes/claws/antennae stay opaque so
+	# they read as solid against the see-through body.
+	var body_color: Color = Color(base_color.r, base_color.g, base_color.b, 0.72)
+	var belly_color: Color = Color(accent_color.r, accent_color.g, accent_color.b, 0.65)
+	var mat_body := VoxelMat.make_translucent(body_color)
+	var mat_belly := VoxelMat.make_translucent(belly_color)
 	var mat_eye := VoxelMat.make(Color8(11, 11, 14))
 	var mat_dark := VoxelMat.make_fauna(base_color.darkened(0.3))
 	var mat_antenna := VoxelMat.make_fauna(base_color.darkened(0.15))
 	if toxin_level > 0.35:
 		var warn: Color = base_color.lerp(Color8(245, 235, 80), clampf(toxin_level * 0.55, 0.0, 0.55))
-		mat_body = VoxelMat.make_fauna(warn)
+		# Warning coloration stays translucent — the toxin signal is the
+		# yellow lerp, the shrimp is still see-through.
+		var warn_color: Color = Color(warn.r, warn.g, warn.b, 0.78)
+		mat_body = VoxelMat.make_translucent(warn_color)
 
 	_bank_pivot = Node3D.new()
 	_bank_pivot.name = "BankPivot"

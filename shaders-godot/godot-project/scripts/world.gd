@@ -561,21 +561,29 @@ func _process(dt: float) -> void:
 	# the water column). Visible as a warm brown tint that deepens over time.
 	if _ambient_due and _visuals != null:
 		_visuals.tick(adt, true)
-	if _ambient_due and tannins < 0.35:
-		tannins = minf(0.35, tannins + 0.00005 * adt)
+	# Tannin cap + tint response raised so the warm-brown character of a
+	# driftwood-loaded tank actually reads in the water column instead of
+	# being a near-invisible 12% lerp. Real blackwater biotopes look
+	# unmistakably amber; we now reach that look at the equilibrium level
+	# rather than only at maxed-out values.
+	if _ambient_due and tannins < 0.55:
+		tannins = minf(0.55, tannins + 0.00007 * adt)
 	if _ambient_due and _water_material_ref != null:
 		var tannin_color := Color(0.83, 0.55, 0.25)
 		var base_water := Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b)
-		var tinted: Color = base_water.lerp(tannin_color, tannins * 0.55)
+		var tinted: Color = base_water.lerp(tannin_color, tannins * 0.80)
 		var bloom: float = 0.0
 		if sim != null:
 			bloom = float(sim.bloom_intensity)
 		if bloom > 0.01:
 			var algae_green := Color(0.36, 0.62, 0.32)
-			tinted = tinted.lerp(algae_green, bloom * 0.55)
-		var tint_strength: float = tannins * 0.55 + bloom * 0.45
-		var shallow_a: float = 0.12 + tannins * 0.08 + bloom * 0.10
-		var deep_a: float = 0.20 + tannins * 0.12 + bloom * 0.18
+			tinted = tinted.lerp(algae_green, bloom * 0.65)
+		# Final tint reaches the 0.85 cap at simultaneous-full inputs; the
+		# bumped multipliers mean a typical established tank is visibly
+		# tinted, not only the extreme cases.
+		var tint_strength: float = tannins * 0.70 + bloom * 0.55
+		var shallow_a: float = 0.12 + tannins * 0.12 + bloom * 0.14
+		var deep_a: float = 0.20 + tannins * 0.18 + bloom * 0.22
 		_water_material_ref.set_shader_parameter("tint_color", tinted)
 		_water_material_ref.set_shader_parameter("tint_strength", clampf(tint_strength, 0.0, 0.85))
 		_water_material_ref.set_shader_parameter("bloom_haze", bloom)
@@ -699,14 +707,26 @@ func _process(dt: float) -> void:
 			density = float(cfg2.fog_density)
 			anisotropy = float(cfg2.fog_anisotropy)
 		
-		# Base beam opacity scales with daylight + user density settings
-		var base_alpha: float = density * 4.0
-		var ray_alpha: float = base_alpha * (0.15 + dl * 0.85) * (max_energy / 0.5)
+		# Base beam opacity scales with daylight + user density settings.
+		# Multiplier bumped from 4.0 → 10.0 because the prior tuning left
+		# the shafts barely visible at moderate fog_density values; with
+		# the asymmetric depth dissipation in god_ray.gdshader, more alpha
+		# at the top still falls off naturally toward the substrate so the
+		# shafts read as bright shafts, not opaque cones.
+		var base_alpha: float = density * 10.0
+		# Night floor raised from 0.15 → 0.25 so the beams remain visible
+		# at dusk/dawn instead of disappearing entirely — moonlight rays
+		# are part of the night atmosphere now that we have a true night
+		# palette to contrast them against.
+		var ray_alpha: float = base_alpha * (0.25 + dl * 0.75) * (max_energy / 0.5)
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
-		var exponent: float = lerp(1.5, 4.0, (anisotropy + 0.9) / 1.8)
-		
+		# Matches the range used in _add_god_ray_beam — lowered from
+		# 1.5..4.0 to 1.0..2.4 so even the most anisotropic config still
+		# gives a beam wide enough to read as a shaft.
+		var exponent: float = lerp(1.0, 2.4, (anisotropy + 0.9) / 1.8)
+
 		for mat in _god_ray_materials:
 			if mat != null:
 				mat.set_shader_parameter("beam_color", ray_color)
@@ -1915,6 +1935,59 @@ func _build_hardscape(populate: bool = true) -> void:
 	elif hs_stones_mult > 0.01:
 		_build_iwagumi_clusters(add_rock_voxel, add_hardscape_cube,
 			stone_mat, stone_dark, hs_pebbles_mult)
+
+	# Publish hardscape contact-AO footprints to the substrate shaders.
+	# We pick the 8 lowest hardscape voxels (those nearest the substrate
+	# surface) as proxy contact points — driftwood/rock that sits ON the
+	# sand. Real AO would project from full mesh footprints; this proxy
+	# darkens a soft circle on the substrate beneath each anchor, which
+	# is the visible cue the player reads ("the wood is resting on the
+	# bed, not floating above it"). Radius scaled by voxel size so a
+	# wide rock base AOs over a wider patch than a thin twig.
+	_publish_substrate_contact_ao()
+	# Publish the filter intake position as the flow-origin so the
+	# substrate_caustic ripple-deepening kicks in. sim.filter_intake_pos
+	# is set later in the bootstrap flow, so we publish a zero-gain
+	# default now and let sim_driver re-publish when it's ready.
+	VoxelMat.update_substrate_flow_origin(Vector3.ZERO, 0.0)
+
+
+# Pick up to 8 hardscape voxels closest to the substrate surface and
+# publish their xz positions + a radius as contact-AO footprints. Called
+# at end of _build_hardscape; safe to call again if hardscape changes.
+func _publish_substrate_contact_ao() -> void:
+	# Score = how close the voxel sits to substrate top; lower is better.
+	var pool: Array = []
+	for mi in _driftwood_voxels:
+		if not is_instance_valid(mi):
+			continue
+		var p: Vector3 = mi.position
+		# Only voxels within 0.4 m of the substrate top count as "contact" —
+		# anything higher is mid-trunk wood and shouldn't cast AO down.
+		if p.y > SUBSTRATE_DEPTH + 0.40:
+			continue
+		var bm := mi.mesh as BoxMesh
+		var size: float = 0.5
+		if bm != null:
+			size = (bm.size.x + bm.size.z) * 0.5
+		pool.append({"y": p.y, "x": p.x, "z": p.z, "r": maxf(size * 1.4, 0.45)})
+	for mi in _rock_voxels:
+		if not is_instance_valid(mi):
+			continue
+		var p: Vector3 = mi.position
+		if p.y > SUBSTRATE_DEPTH + 0.45:
+			continue
+		var bm := mi.mesh as BoxMesh
+		var size: float = 0.6
+		if bm != null:
+			size = (bm.size.x + bm.size.z) * 0.5
+		pool.append({"y": p.y, "x": p.x, "z": p.z, "r": maxf(size * 1.5, 0.55)})
+	pool.sort_custom(func(a, b): return a["y"] < b["y"])
+	var pts: Array = []
+	for i in mini(8, pool.size()):
+		var e = pool[i]
+		pts.append(Vector4(e["x"], e["y"], e["z"], e["r"]))
+	VoxelMat.update_substrate_contact_ao(pts)
 
 
 # Original three-island Iwagumi (Oyaishi / Fukuishi / Soishi) + pebble
@@ -3679,21 +3752,97 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 		var mat := ShaderMaterial.new()
 		mat.shader = shader
 		
-		# Set initial parameters
+		# Set initial parameters. beam_color.a is overwritten every frame
+		# from the daylight curve in the _process loop; the initial 0 is
+		# just so the first frame before the loop runs doesn't flash.
 		mat.set_shader_parameter("beam_color", Color(1.0, 0.95, 0.80, 0.0))
 		mat.set_shader_parameter("speed", 1.2)
 		mat.set_shader_parameter("noise_scale", 1.8)
-		mat.set_shader_parameter("edge_fade", 0.15)
-		
-		var exponent: float = 2.0
+		# Tight top/bottom seal — the asymmetric depth dissipation handles
+		# the gradient falloff now, so the explicit edge fade only needs
+		# to hide the cylinder cap, not also dim the middle.
+		mat.set_shader_parameter("edge_fade", 0.06)
+		mat.set_shader_parameter("forward_scatter", 0.55)
+		mat.set_shader_parameter("depth_dissipation", 0.72)
+
+		# Falloff exponent is overwritten each frame from TankConfig fog
+		# anisotropy. Lowered base range (1.0..2.4 from 1.5..4.0) so the
+		# beam is visible across more viewing angles, not only side-on.
+		var exponent: float = 1.4
 		if TankConfig != null:
-			exponent = lerp(1.5, 4.0, (TankConfig.fog_anisotropy + 0.9) / 1.8)
+			exponent = lerp(1.0, 2.4, (TankConfig.fog_anisotropy + 0.9) / 1.8)
 		mat.set_shader_parameter("falloff_exponent", exponent)
 		
 		mi.material_override = mat
 		_god_ray_materials.append(mat)
 
 	parent.add_child(mi)
+
+	# Dust motes inside the beam volume. The eye reads "volumetric" mostly
+	# from the suspended particulates drifting through the light, not from
+	# the shaft surface itself — so a denser, brighter particle system per
+	# beam carries most of the visual impact. After the palette quantizer
+	# these read as crisp 1-2 pixel sparkles drifting through the shaft.
+	var motes := GPUParticles3D.new()
+	motes.name = "DustMotes"
+	motes.amount = 32
+	motes.lifetime = 9.0
+	motes.preprocess = motes.lifetime * 0.5
+	motes.randomness = 0.45
+	motes.local_coords = false
+	motes.visibility_aabb = AABB(
+		Vector3(-mesh.bottom_radius * 1.2, -dist * 0.55, -mesh.bottom_radius * 1.2),
+		Vector3(mesh.bottom_radius * 2.4, dist * 1.1, mesh.bottom_radius * 2.4))
+	motes.position = mi.position
+	var mote_pm := ParticleProcessMaterial.new()
+	mote_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	# Emission box covers most of the beam cone's footprint, top-loaded
+	# slightly via the directional bias below so motes appear denser near
+	# the lamp and disperse as they drift down.
+	mote_pm.emission_box_extents = Vector3(
+		mesh.bottom_radius * 0.75, dist * 0.48, mesh.bottom_radius * 0.75)
+	# Motes drift slowly downward with a gentle lateral wobble — gravity
+	# tiny so they sway in the simulated water column instead of falling
+	# like terrestrial dust. Initial velocity adds a wisp of horizontal
+	# drift; turbulence gives the random-walk look that sells suspended
+	# particulates rather than rigid sprites.
+	mote_pm.gravity = Vector3(0.0, -0.05, 0.0)
+	mote_pm.initial_velocity_min = 0.03
+	mote_pm.initial_velocity_max = 0.14
+	mote_pm.direction = Vector3(0.0, -1.0, 0.0)
+	mote_pm.spread = 40.0
+	mote_pm.turbulence_enabled = true
+	mote_pm.turbulence_noise_strength = 0.24
+	mote_pm.turbulence_noise_speed_random = 0.5
+	mote_pm.turbulence_noise_scale = 2.0
+	# Larger motes — 0.035..0.075 — render as bright single pixels after
+	# the palette quantizer instead of getting sub-pixel-averaged into the
+	# beam color. This is the difference between "the beam has texture"
+	# and "I can see specks floating in the beam."
+	mote_pm.scale_min = 0.035
+	mote_pm.scale_max = 0.075
+	# Alpha curve holds the bright plateau longer + at higher value so
+	# motes are clearly visible. Fade in fast, hold, fade out as they
+	# descend below the active beam region.
+	var alpha_curve := CurveTexture.new()
+	var ac := Curve.new()
+	ac.add_point(Vector2(0.0, 0.0))
+	ac.add_point(Vector2(0.10, 0.85))
+	ac.add_point(Vector2(0.70, 0.80))
+	ac.add_point(Vector2(1.0, 0.0))
+	alpha_curve.curve = ac
+	mote_pm.alpha_curve = alpha_curve
+	motes.process_material = mote_pm
+	var mote_mesh := SphereMesh.new()
+	mote_mesh.radius = 0.020
+	mote_mesh.height = 0.040
+	mote_mesh.radial_segments = 4
+	mote_mesh.rings = 2
+	# Warm-white scatter color, alpha bumped from 0.34 → 0.60 so individual
+	# motes have presence rather than dissolving into the cone's wash.
+	mote_mesh.material = VoxelMat.make_bubble(Color(1.0, 0.97, 0.84, 0.60))
+	motes.draw_pass_1 = mote_mesh
+	parent.add_child(motes)
 
 
 # Sample the 8 closest fish to the camera and push their positions +
@@ -4106,7 +4255,12 @@ func restore_floaters(arr: Variant) -> void:
 # tension). Voxel-styled: a thin flat box that scales outward via Tween
 # and fades. Cheap; we cap concurrent ripples informally via short
 # lifespan rather than an explicit pool.
-func spawn_burst_ripple(pos: Vector3) -> void:
+func spawn_burst_ripple(pos: Vector3, intensity: float = 1.0) -> void:
+	# Intensity scales the final ring size + alpha so different event types
+	# can fire visually distinct ripples without each caller building its
+	# own MeshInstance3D. Predation strikes near surface → 1.4; fish
+	# breach → 1.0; food drop → 1.2; bubble pop on surface → 0.55.
+	intensity = clampf(intensity, 0.25, 2.0)
 	if _visuals != null:
 		_visuals.spawn_pop_spray(pos)
 	var ring := MeshInstance3D.new()
@@ -4114,18 +4268,25 @@ func spawn_burst_ripple(pos: Vector3) -> void:
 	ring.material_override = VoxelMat.make(Color8(225, 240, 245))
 	ring.position = Vector3(pos.x, WATER_HEIGHT - 0.04, pos.z)
 	add_child(ring)
-	var final_scale: Vector3 = Vector3(4.0, 0.6, 4.0)
+	var ring_size: float = 4.0 * intensity
+	var final_scale: Vector3 = Vector3(ring_size, 0.6, ring_size)
+	var duration: float = 0.75 * sqrt(intensity)
 	var tw: Tween = create_tween().set_parallel(true)
-	tw.tween_property(ring, "scale", final_scale, 0.75) \
+	tw.tween_property(ring, "scale", final_scale, duration) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	# Material albedo fade — duplicate first so we don't tint the shared
 	# cached material for every other ripple in the tank.
 	var fade_mat: ShaderMaterial = ring.material_override.duplicate() as ShaderMaterial
 	ring.material_override = fade_mat
-	var faded := Color8(225, 240, 245)
+	# Initial alpha scales with intensity so a small bubble-pop ripple is
+	# fainter than a fish breach.
+	var start_c := Color8(225, 240, 245)
+	start_c.a = clampf(intensity, 0.4, 1.0)
+	fade_mat.set_shader_parameter("albedo", start_c)
+	var faded := start_c
 	faded.a = 0.0
 	tw.tween_method(_set_ripple_albedo.bind(fade_mat),
-		Color8(225, 240, 245), faded, 0.75) \
+		start_c, faded, duration) \
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.chain().tween_callback(ring.queue_free)
 
@@ -4430,6 +4591,11 @@ func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
 	# that as "no intake, ignore").
 	if sim != null:
 		sim.filter_intake_pos = intake.position
+	# Publish the intake position to substrate_caustic.gdshader so the
+	# ripple sculpting near the current deepens visibly. Gain 0.45 gives
+	# a noticeable but not over-the-top boost; the falloff in the shader
+	# limits the effect to ~2 m radius around the intake.
+	VoxelMat.update_substrate_flow_origin(intake.position, 0.45)
 	# Continuous bubble column rising from the intake to the surface.
 	# Distinct from substrate gas-escape: this is a steady, fine stream of
 	# pale micro-bubbles that curl gently downstream (toward the spout end
@@ -4740,10 +4906,22 @@ func _build_room_environment() -> void:
 	var wall_color: Color = Color8(wall_rgb[0], wall_rgb[1], wall_rgb[2])
 	var accent_color: Color = Color8(accent_rgb[0], accent_rgb[1], accent_rgb[2])
 	var light_color: Color = Color8(light_rgb[0], light_rgb[1], light_rgb[2])
-	var desk_mat: ShaderMaterial = VoxelMat.make(desk_color)
-	var desk_dark_mat: ShaderMaterial = VoxelMat.make(desk_color.darkened(0.18))
-	var wall_mat: ShaderMaterial = VoxelMat.make(wall_color)
-	var accent_mat: ShaderMaterial = VoxelMat.make(accent_color)
+	# Cache four shades of the desk colour so the surface reads as
+	# organic wood grain instead of a 2-tone checkerboard. Hash-noise
+	# below picks one of these per cell so the pattern looks irregular.
+	# Use VoxelMat.make_room so the desk + wall fade toward the warm
+	# haze colour with view distance — pushes the room geometry back
+	# behind the tank visually.
+	var haze_tint: Color = Color(
+		light_color.r * 0.92 + 0.08,
+		light_color.g * 0.86 + 0.06,
+		light_color.b * 0.78 + 0.04)
+	var desk_mat: ShaderMaterial = VoxelMat.make_room(desk_color, 0.55, haze_tint)
+	var desk_dark_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.18), 0.55, haze_tint)
+	var desk_mid_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.08), 0.55, haze_tint)
+	var desk_light_mat: ShaderMaterial = VoxelMat.make_room(desk_color.lightened(0.10), 0.55, haze_tint)
+	var wall_mat: ShaderMaterial = VoxelMat.make_room(wall_color, 0.65, haze_tint)
+	var accent_mat: ShaderMaterial = VoxelMat.make_room(accent_color, 0.50, haze_tint)
 
 	# Desk surface. Three-ish-voxel-thick wooden slab the tank sits on,
 	# extending out from the tank footprint on all sides so the bottom of
@@ -4752,9 +4930,11 @@ func _build_room_environment() -> void:
 	var desk_half_w: float = TANK_HALF_W + 5.0
 	var desk_half_d: float = TANK_HALF_D + 4.0
 	var desk_thickness: float = 1.2
-	# Build the desk as a 2D grid of "plank" voxels with light grain.
-	# Each row alternates dark / light so the wood has a visible grain
-	# without a custom texture.
+	# Build the desk as a 2D grid of "plank" voxels. Material per voxel is
+	# picked by a hash of (ix, iz) running through four shade bands —
+	# light, default, mid, dark — so the surface looks like irregular
+	# wood grain instead of the previous rigid alternating checkerboard
+	# (which read as a wallpaper or pink lattice in warmer presets).
 	var plank_size: float = 0.7
 	var nx: int = int(desk_half_w * 2.0 / plank_size) + 1
 	var nz: int = int(desk_half_d * 2.0 / plank_size) + 1
@@ -4762,11 +4942,22 @@ func _build_room_environment() -> void:
 		for iz in nz:
 			var px: float = -desk_half_w + (float(ix) + 0.5) * plank_size
 			var pz: float = -desk_half_d + (float(iz) + 0.5) * plank_size
-			var grain: bool = (ix + iz) % 2 == 0
+			# Hash-noise: cheap deterministic per-cell value in [0..1].
+			var h: float = fposmod(
+				sin(float(ix) * 12.9898 + float(iz) * 78.233) * 43758.5453, 1.0)
+			var mat: Material
+			if h < 0.18:
+				mat = desk_dark_mat
+			elif h < 0.46:
+				mat = desk_mid_mat
+			elif h < 0.78:
+				mat = desk_mat
+			else:
+				mat = desk_light_mat
 			var mi := MeshInstance3D.new()
 			mi.mesh = VoxelMat.get_box(Vector3(plank_size * 0.96,
 				desk_thickness, plank_size * 0.96))
-			mi.material_override = desk_mat if grain else desk_dark_mat
+			mi.material_override = mat
 			mi.position = Vector3(px, desk_y - desk_thickness * 0.5, pz)
 			room.add_child(mi)
 	# Front lip of the desk: a slightly raised edge to suggest a real
@@ -4797,11 +4988,18 @@ func _build_room_environment() -> void:
 	var window_h_half: float = 2.5
 	var window_center_y: float = desk_y + 4.5
 	
+	# Wall shade variation. The previous (r*3 + col) % 5 pattern produced
+	# visible diagonal stripes; we replace it with hash-noise + a
+	# subtle vertical lightness gradient (darker near the floor, lighter
+	# near the ceiling — simulates indirect light spilling down from a
+	# room light above). The wall now reads as an actual painted surface.
+	var wall_dim_mat: ShaderMaterial = VoxelMat.make_room(wall_color.darkened(0.10), 0.65, haze_tint)
+	var wall_light_mat: ShaderMaterial = VoxelMat.make_room(wall_color.lightened(0.07), 0.65, haze_tint)
 	for r in rows:
 		for col in cols:
 			var bx: float = -wall_half_w + (float(col) + 0.5) * brick_w
 			var by: float = wall_y_min + (float(r) + 0.5) * brick_h
-			
+
 			if include_window:
 				var brick_left: float = bx - brick_w * 0.5
 				var brick_right: float = bx + brick_w * 0.5
@@ -4811,11 +5009,25 @@ func _build_room_environment() -> void:
 				if brick_right > -window_w_half and brick_left < window_w_half and \
 				   brick_top > (window_center_y - window_h_half) and brick_bottom < (window_center_y + window_h_half):
 					continue
-					
-			var subtle: bool = ((r * 3 + col) % 5) == 0
+			# Hash-noise + vertical lightness gradient. h ∈ [0..1] picks
+			# a shade; vfac (0 at floor, 1 at ceiling) biases brighter
+			# voxels toward the top of the wall.
+			var h: float = fposmod(
+				sin(float(col) * 17.317 + float(r) * 39.713) * 12961.7, 1.0)
+			var vfac: float = clampf(float(r) / float(maxi(1, rows - 1)), 0.0, 1.0)
+			var biased: float = clampf(h + (vfac - 0.5) * 0.20, 0.0, 1.0)
+			var bmat: Material
+			if biased < 0.08:
+				bmat = accent_mat       # rare warm accent brick
+			elif biased < 0.40:
+				bmat = wall_dim_mat
+			elif biased < 0.82:
+				bmat = wall_mat
+			else:
+				bmat = wall_light_mat
 			var brick := MeshInstance3D.new()
 			brick.mesh = VoxelMat.get_box(Vector3(brick_w * 0.96, brick_h * 0.96, 0.4))
-			brick.material_override = accent_mat if subtle else wall_mat
+			brick.material_override = bmat
 			brick.position = Vector3(bx, by, wall_z)
 			room.add_child(brick)
 
@@ -4832,6 +5044,101 @@ func _build_room_environment() -> void:
 	room_light.omni_attenuation = 1.6
 	room_light.position = Vector3(desk_half_w + 2.0, desk_y + 6.0, wall_z + 4.0)
 	room.add_child(room_light)
+
+	# Tank-cast warm light — sits just below the tank fixture so the
+	# desk under and around the tank picks up the same warm spill the
+	# water column does. Without this, the tank floats in a "lamp on
+	# but desk lit by some other unseen source" disconnect.
+	var tank_spill := OmniLight3D.new()
+	tank_spill.name = "TankSpill"
+	tank_spill.light_color = Color(1.0, 0.92, 0.78)
+	tank_spill.light_energy = 0.45
+	tank_spill.omni_range = maxf(TANK_HALF_W, TANK_HALF_D) * 2.8 + 4.0
+	tank_spill.omni_attenuation = 1.4
+	tank_spill.shadow_enabled = false
+	tank_spill.position = Vector3(0.0, desk_y + 0.05, 0.0)
+	room.add_child(tank_spill)
+
+	# Contact shadow under the tank — implemented by RECOLORING the desk
+	# planks that fall inside the tank's footprint, NOT by adding a
+	# separate layer of shadow voxels. The previous version laid down a
+	# 6×6 grid of dark cells which from a low camera angle read as a
+	# tiled mosaic of dark trapezoids ("weird reflections"). Recoloring
+	# the existing planks keeps the desk seamless — the shadow IS the
+	# desk grain at that location.
+	var shadow_r2: float = (maxf(TANK_HALF_W, TANK_HALF_D) + 0.35) * (maxf(TANK_HALF_W, TANK_HALF_D) + 0.35)
+	var shadow_mat: ShaderMaterial = VoxelMat.make_room(
+		Color(desk_color.r * 0.45, desk_color.g * 0.42, desk_color.b * 0.40),
+		0.30, haze_tint)
+	# Edge-softened shadow: at the centre the plank is the full shadow
+	# colour; near the radius edge we lerp back toward the original
+	# plank material. We accomplish this by walking the desk children
+	# we just spawned and substituting materials inside the footprint.
+	# The desk planks are the last children we added before this — walk
+	# `room`'s children backward until we hit a non-plank child.
+	for ci in range(room.get_child_count() - 1, -1, -1):
+		var pn: Node = room.get_child(ci)
+		if not (pn is MeshInstance3D):
+			break
+		var pp: Vector3 = (pn as MeshInstance3D).position
+		# Only top-of-desk planks (the front lip sits at desk_y + 0.02,
+		# planks sit at desk_y - desk_thickness * 0.5).
+		if absf(pp.y - (desk_y - desk_thickness * 0.5)) > 0.05:
+			continue
+		var d2: float = pp.x * pp.x + pp.z * pp.z
+		if d2 < shadow_r2:
+			# Soft edge: keep full shadow inside 0.85 of the radius;
+			# fade back to a mid-shade in the outer 0.15.
+			(pn as MeshInstance3D).material_override = shadow_mat
+
+	# Room dust motes. Sparse slow-drifting particles in the air above
+	# the desk for ambient atmosphere. Distinct from the in-beam motes
+	# inside the tank (those live INSIDE the god-ray cones); these are
+	# in the room volume and visible against the wall + ceiling.
+	var room_motes := GPUParticles3D.new()
+	room_motes.name = "RoomDustMotes"
+	room_motes.amount = 18
+	room_motes.lifetime = 14.0
+	room_motes.preprocess = room_motes.lifetime * 0.5
+	room_motes.randomness = 0.55
+	room_motes.local_coords = false
+	room_motes.visibility_aabb = AABB(
+		Vector3(-desk_half_w, desk_y, wall_z),
+		Vector3(desk_half_w * 2.0, 12.0, desk_half_d * 2.0 + 4.0))
+	room_motes.position = Vector3(0.0, desk_y + 5.0, wall_z + desk_half_d)
+	var room_pm := ParticleProcessMaterial.new()
+	room_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	room_pm.emission_box_extents = Vector3(desk_half_w, 3.5, desk_half_d)
+	# Very gentle downdrift — room dust slowly settles. Turbulence
+	# makes the path organic.
+	room_pm.gravity = Vector3(0.0, -0.02, 0.0)
+	room_pm.initial_velocity_min = 0.01
+	room_pm.initial_velocity_max = 0.05
+	room_pm.direction = Vector3(0.0, -1.0, 0.0)
+	room_pm.spread = 90.0
+	room_pm.turbulence_enabled = true
+	room_pm.turbulence_noise_strength = 0.08
+	room_pm.turbulence_noise_speed_random = 0.4
+	room_pm.turbulence_noise_scale = 1.4
+	room_pm.scale_min = 0.025
+	room_pm.scale_max = 0.060
+	var room_alpha := CurveTexture.new()
+	var rac := Curve.new()
+	rac.add_point(Vector2(0.0, 0.0))
+	rac.add_point(Vector2(0.15, 0.45))
+	rac.add_point(Vector2(0.75, 0.40))
+	rac.add_point(Vector2(1.0, 0.0))
+	room_alpha.curve = rac
+	room_pm.alpha_curve = room_alpha
+	room_motes.process_material = room_pm
+	var rmote_mesh := SphereMesh.new()
+	rmote_mesh.radius = 0.018
+	rmote_mesh.height = 0.036
+	rmote_mesh.radial_segments = 4
+	rmote_mesh.rings = 2
+	rmote_mesh.material = VoxelMat.make_bubble(Color(0.98, 0.92, 0.80, 0.38))
+	room_motes.draw_pass_1 = rmote_mesh
+	room.add_child(room_motes)
 
 	# Lamp (preset-controlled). Tall thin stand + a glowing shade on the
 	# left side of the desk, just outside the tank's footprint.
@@ -6019,7 +6326,43 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 	_apply_water_column_scale(genome)
 	_apply_shape_aware_preferred_y(genome, pos.x, pos.z)
 	fauna_root.add_child(f)
-	f.global_position = clamp_xyz_in_tank(pos, 0.35)
+	# Size-aware spawn margin. The old fixed 0.35 left big fish (custom
+	# library creatures, apex species at growth 2.0) clipping into the
+	# glass on spawn because their voxel bodies extend well past the
+	# centre. body_margin ≈ half-body-length; a typical fish is ~12
+	# voxels long, so 6 × voxel_scale × max_growth covers the
+	# silhouette plus a small safety pad.
+	var voxel_scale: float = float(genome.get("adult_voxel_scale", 0.18))
+	var max_g: float = float(genome.get("max_growth", f.max_growth))
+	var body_margin: float = clampf(voxel_scale * 7.5 * max_g, 0.45, 1.6)
+	f.global_position = clamp_xyz_in_tank(pos, body_margin)
+	# If the position is still uncomfortably close to a wall AND we have
+	# the lateral-boundary helper, nudge inward along the inward normal
+	# so the body has clearance to swim before the brain can react.
+	if has_method("tank_lateral_boundary_info"):
+		var info: Dictionary = tank_lateral_boundary_info(f.global_position, 0.0)
+		var clearance: float = float(info.get("clearance", 99.0))
+		var inward: Vector3 = info.get("inward", Vector3.ZERO)
+		if clearance < body_margin and inward.length_squared() > 0.1:
+			f.global_position += inward.normalized() * (body_margin - clearance + 0.05)
+			f.global_position = clamp_xyz_in_tank(f.global_position, body_margin * 0.9)
+		# Bias the random initial heading away from the nearest wall.
+		# Fish._ready picks a random theta which could face them straight
+		# at a wall — combined with a near-wall spawn position, they'd
+		# embed in the glass before the brain's first tick could react.
+		# Forcing the X/Z heading to point inward at spawn fixes that.
+		if inward.length_squared() > 0.1:
+			var current_heading: Vector3 = f.get("heading") if "heading" in f else Vector3.ZERO
+			if current_heading.length_squared() < 0.01 \
+					or current_heading.dot(inward) < -0.15:
+				# Random angle within ±70° of inward to avoid every fish
+				# at the same wall facing the exact same direction.
+				var inward_xz: Vector3 = Vector3(inward.x, 0.0, inward.z).normalized()
+				if inward_xz.length_squared() < 0.5:
+					inward_xz = Vector3.FORWARD
+				var twist: float = randf_range(-PI * 0.4, PI * 0.4)
+				var biased: Vector3 = inward_xz.rotated(Vector3.UP, twist)
+				f.set("heading", biased)
 	f.init_genome(genome)
 	sim.register_fish(f)
 
@@ -6057,9 +6400,21 @@ func _spawn_snail_at(genome: Dictionary, pos: Vector3) -> void:
 	if spawn_pos.y > SUBSTRATE_DEPTH + 0.25:
 		wall_n = Vector3(0, 0, 1)
 		spawn_pos = boundary_point_on_wall(spawn_pos.y, wall_n)
+	# Library genomes store colors as [r,g,b,a] arrays (SaveHelpers.color_to_array).
+	# Convert back to Color before handing to _configure_snail_node — passing an
+	# Array directly would crash the typed `shell_color: Color` field on the
+	# snail node ("Trying to assign value of type 'Array' to ... 'Color'").
+	var sc_raw: Variant = genome.get("shell_color", Color8(135, 44, 176))
+	var shell_c: Color
+	if sc_raw is Color:
+		shell_c = sc_raw
+	elif sc_raw is Array:
+		shell_c = SaveHelpers.array_to_color(sc_raw, Color8(135, 44, 176))
+	else:
+		shell_c = Color8(135, 44, 176)
 	_configure_snail_node(sn, spawn_pos, wall_n,
 		String(genome.get("shell_shape", "turbo")),
-		[genome.get("shell_color", Color8(135, 44, 176))], 0)
+		[shell_c], 0)
 	if sn.has_method("apply_genome_metadata"):
 		sn.apply_genome_metadata(genome)
 	sn_root.add_child(sn)
