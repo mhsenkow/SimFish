@@ -23,6 +23,24 @@ void fragment() {
     vec2 uv = world_pos.xz * caustic_scale;
     float t = TIME * caustic_speed;
 
+    // Surface-wave displacement of the caustic UVs. The position the
+    // photon converges to on the substrate is offset laterally by the
+    // slope of the water surface directly above — so we sample the
+    // surface wave's spatial derivative and shift the UV by it. The
+    // pattern visibly slides + warps with the surface motion instead
+    // of holding its shape and only flickering brighter/dimmer.
+    vec2 surf_uv = world_pos.xz * wave_scale;
+    float ts = TIME * wave_speed;
+    vec2 surf_grad = vec2(
+        cos(surf_uv.x + ts) * cos(surf_uv.y * 0.91 - ts * 0.74)
+        + cos(surf_uv.x * 1.55 - ts * 1.05) * sin(surf_uv.y * 1.35 + ts * 0.88) * 1.55,
+        -sin(surf_uv.x + ts) * sin(surf_uv.y * 0.91 - ts * 0.74) * 0.91
+        + sin(surf_uv.x * 1.55 - ts * 1.05) * cos(surf_uv.y * 1.35 + ts * 0.88) * 1.35);
+    // Scale the distortion by amplitude * coupling so a calm surface
+    // (low amp / coupling) gives nearly-stationary caustics, while an
+    // agitated surface visibly drags the pattern around.
+    uv += surf_grad * wave_amplitude * wave_coupling * 6.0;
+
     // Smooth sine-wave interference pattern (simulating wave crests crossing)
     float w1 = sin(uv.x * 1.2 + t * 0.7) * cos(uv.y * 0.8 - t * 0.5);
     float w2 = sin(uv.y * 1.4 + t * 0.9) * cos(uv.x * 1.1 + t * 0.6);

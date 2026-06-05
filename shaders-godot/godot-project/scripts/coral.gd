@@ -59,6 +59,11 @@ var _polyp_tips: Array = []  # Array[{node, phase, base_scale, base_albedo}]
 # kill the coral outright (plant decay handles real death).
 var _bleach_level: float = 0.0
 var _last_bleach_applied: float = 0.0
+# Tentacle / polyp extension state. 1.0 = corals actively feeding, fully
+# extended; 0.0 = retracted (stressed, bleached, or low-O2). Lerps toward
+# the target derived in tick() so the visual extension/retraction reads
+# as a slow biological response rather than an instant pose change.
+var _feeding_extension: float = 0.5
 var _base_growth_rate: float = 0.0
 
 
@@ -749,8 +754,13 @@ func _animate_sessile_motion() -> void:
 			if t.is_queued_for_deletion():
 				continue
 			var tp: float = float(t.get_meta("anemone_phase", float(i) * 0.79))
-			var wave_x: float = sin(_sessile_phase * 1.8 + tp) * 0.22
-			var wave_z: float = cos(_sessile_phase * 1.4 + tp * 0.85) * 0.18
+			# Wave amplitude scales with feeding extension — a fed anemone
+			# sweeps wider arcs, a retracted one barely moves. Range
+			# (0.06..0.32) gives a clear visual gap between hungry and
+			# satiated colonies.
+			var ext_amp: float = lerpf(0.06, 0.32, _feeding_extension)
+			var wave_x: float = sin(_sessile_phase * 1.8 + tp) * ext_amp
+			var wave_z: float = cos(_sessile_phase * 1.4 + tp * 0.85) * (ext_amp * 0.82)
 			# Bias the wave downstream with flow — gentle in still water,
 			# obvious near the aerator.
 			t.rotation.x = wave_x + flow_bias * 0.18
@@ -834,8 +844,18 @@ func _animate_polyp_tips() -> void:
 		# Range ~(1 - amp .. 1 + amp). Slightly squashed on the closed
 		# half so the rest pose reads as a recessed polyp.
 		var s: float = 1.0 + sin(_sessile_phase * 1.6 + phase) * amp
+		# Scale-with-glow: glowing polyps swell slightly so a bright pulse
+		# also reads as a physical "breath out" rather than only a color
+		# change. Bumped by night_glow so this only kicks in after dusk.
+		var glow_swell: float = 1.0 + night_glow * 0.10 * (0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase))
+		# Feeding extension — actively-feeding polyps swell ~25% larger
+		# than retracted ones. Combined with the pulse + glow swell this
+		# gives "a hungry coral with shrunken polyps" vs "a fed coral
+		# with fat exposed feeding bodies." Phase-offset so a colony
+		# extends polyps in a soft wave rather than all simultaneously.
+		var feed_swell: float = 1.0 + _feeding_extension * (0.18 + 0.07 * sin(_sessile_phase * 0.8 + phase * 0.5))
 		var base_scale: float = float(entry.get("base_scale", 1.0))
-		n.scale = Vector3.ONE * (base_scale * s)
+		n.scale = Vector3.ONE * (base_scale * s * glow_swell * feed_swell)
 		# Apply bioluminescent glow as an albedo lift. Pulse the glow with
 		# the same phase so the polyp visibly breathes light.
 		if night_glow > 0.01 and n is MeshInstance3D:
@@ -851,12 +871,15 @@ func _animate_polyp_tips() -> void:
 				var glow_pulse: float = 0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase)
 				var glow: float = night_glow * (0.6 + 0.4 * glow_pulse)
 				# Boost albedo additively toward white; voxel shader is
-				# unshaded so this reads as direct emission.
+				# unshaded so this reads as direct emission. Strength bumped
+				# from 0.45 to 0.72 to push the source pixel firmly above
+				# the palette_quantize bloom_threshold (0.68) so glowing
+				# polyps burn through to the day palette at night.
 				if not mi.has_meta("glow_mat"):
 					var dup: ShaderMaterial = sm.duplicate() as ShaderMaterial
 					mi.material_override = dup
 					mi.set_meta("glow_mat", true)
-				var lit: Color = base_alb.lightened(0.45 * glow)
+				var lit: Color = base_alb.lightened(0.72 * glow)
 				(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", lit)
 		elif n is MeshInstance3D:
 			var mi2: MeshInstance3D = n as MeshInstance3D
@@ -963,6 +986,28 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
 	# Bleached polyps photosynthesize less — slow growth in proportion.
 	growth_rate = _base_growth_rate * lerpf(1.0, 0.3, _bleach_level)
+	# Feeding state — drives tentacle / polyp extension in
+	# _animate_polyp_tips + _animate_sessile_motion. Real corals only
+	# extend tentacles when conditions are good: high oxygen, healthy
+	# zooxanthellae (not bleached), and either daytime feeding (photo-
+	# synthesis) for symbiont corals OR night-time prey capture for the
+	# heterotrophic species. We approximate with a smooth function of
+	# O2 + (1 - bleach) and let day vs night both qualify so corals
+	# always look alive when healthy.
+	var daylight_factor: float = 0.5
+	if sim_n != null and sim_n.has_method("daylight"):
+		daylight_factor = float(sim_n.daylight())
+	# Both day and night extension is full; only twilight transitions
+	# pinch slightly. Health × O2 × not-bleached drives the magnitude.
+	var dawn_dusk_factor: float = 1.0 - 4.0 * absf(daylight_factor - 0.5) * absf(daylight_factor - 0.5)
+	dawn_dusk_factor = clampf(0.55 + dawn_dusk_factor * 0.45, 0.0, 1.0)
+	var target_feeding: float = clampf(o2 / 0.85, 0.0, 1.0) \
+		* clampf(_health_smooth, 0.0, 1.0) \
+		* (1.0 - _bleach_level) \
+		* dawn_dusk_factor
+	# Lerp to target slowly — tentacles take seconds to extend / retract,
+	# they don't snap like a fish reaction.
+	_feeding_extension = lerpf(_feeding_extension, target_feeding, clampf(dt * 0.6, 0.0, 1.0))
 	super.tick(dt, substrate)
 
 

@@ -5,7 +5,7 @@ extends Node3D
 class_name AquariumVisuals
 
 const TICK_INTERVAL: float = 0.1
-const SLIME_CAP: int = 48
+const SLIME_CAP: int = 96
 const SPARKLE_CAP: int = 12
 
 var _world: Node3D
@@ -188,14 +188,30 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 		_pop_slime_mark()
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(0.06, 0.02, 0.06))
-	mi.material_override = VoxelMat.make(Color(0.72, 0.82, 0.78, 0.35))
+	# Duplicate the cached material so a fade tween on this mark doesn't
+	# alpha-down every other slime mark sharing the cache entry. Then
+	# tween the mark from its full alpha down to zero over the lifetime
+	# so the trail visibly *recedes* behind the snail instead of all
+	# marks popping out simultaneously at the end of the 14s window.
+	var base_mat: ShaderMaterial = VoxelMat.make(Color(0.72, 0.82, 0.78, 0.35))
+	var mat: ShaderMaterial = base_mat.duplicate()
+	mi.material_override = mat
 	mi.position = pos + wall_n * 0.02
 	if _glass_root != null:
 		_glass_root.add_child(mi)
 	else:
 		_world.add_child(mi)
 	_slime_marks.append(mi)
-	get_tree().create_timer(10.0).timeout.connect(_release_slime_mark.bind(mi))
+	# Hold full alpha for the first ~30% of the mark's life, then fade
+	# linearly to zero over the remaining 70%. The fifo will pop the
+	# oldest if SLIME_CAP is hit before the tween completes anyway.
+	const LIFETIME: float = 14.0
+	var tw := create_tween()
+	tw.tween_interval(LIFETIME * 0.30)
+	var start_col: Color = mat.get_shader_parameter("albedo")
+	var end_col: Color = Color(start_col.r, start_col.g, start_col.b, 0.0)
+	tw.tween_property(mat, "shader_parameter/albedo", end_col, LIFETIME * 0.70)
+	get_tree().create_timer(LIFETIME).timeout.connect(_release_slime_mark.bind(mi))
 
 
 func spawn_snail_bubble(pos: Vector3) -> void:
@@ -225,6 +241,37 @@ func spawn_snail_bubble(pos: Vector3) -> void:
 	_world.add_child(p)
 	p.emitting = true
 	get_tree().create_timer(1.5).timeout.connect(p.queue_free)
+
+
+func spawn_predation_flash(pos: Vector3) -> void:
+	# A short-lived bright burst at the bite site. Reads as the visceral
+	# "kill landed" beat — distinct from the steady waste-spawning that
+	# happens after. Just an expanding warm-white sphere with a fade
+	# tween; cheap enough we never cap the spawn rate (predation events
+	# are sparse to begin with, throttled by sim food chains).
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.18
+	sm.height = 0.36
+	sm.radial_segments = 6
+	sm.rings = 4
+	# Translucent additive-feel material — high luma so the bloom path
+	# in palette_quantize lifts it toward warm white at any time of day.
+	# Duplicating so the tween doesn't bleed into other call sites
+	# sharing the cached material.
+	var mat: ShaderMaterial = VoxelMat.make_translucent(Color(1.0, 0.85, 0.55, 0.85)).duplicate()
+	mi.mesh = sm
+	mi.material_override = mat
+	mi.position = pos
+	_world.add_child(mi)
+	const FLASH_DURATION: float = 0.28
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3.ONE * 1.6, FLASH_DURATION) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(mat, "shader_parameter/albedo",
+		Color(1.0, 0.85, 0.55, 0.0), FLASH_DURATION) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(mi.queue_free)
 
 
 func spawn_burst_ripple_proxy(pos: Vector3) -> void:

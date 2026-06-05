@@ -95,8 +95,42 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 			
 		if can_fall:
 			position.y -= FALL_SPEED * dt
-			position.x += sin(_life * 1.7) * 0.04 * dt
-			
+			# Detritus drifts laterally on a synthesised flow field rather
+			# than only the legacy single-axis sine. The drift is the sum
+			# of three components, all space-parameterised so different
+			# particles in the tank follow visibly different paths:
+			#   1. A slow XZ vortex tied to position (a particle near
+			#      origin spirals tighter than one at the corners).
+			#   2. A noise wander seeded by _life × position so particles
+			#      released at the same place still diverge over time.
+			#   3. A pull toward the filter intake when one is published
+			#      by SimDriver — closer particles get tugged harder.
+			var swirl_t: float = _life * 1.1
+			var px: float = position.x
+			var pz: float = position.z
+			var swirl: Vector2 = Vector2(
+				sin(swirl_t + pz * 0.55) * 0.085,
+				cos(swirl_t * 0.83 - px * 0.55) * 0.085)
+			var wander: Vector2 = Vector2(
+				sin(_life * 2.3 + px * 0.4) * 0.04,
+				sin(_life * 1.9 + pz * 0.4 + 1.3) * 0.04)
+			var intake_pull: Vector2 = Vector2.ZERO
+			if w != null:
+				var sim_n: Variant = w.get("sim")
+				if sim_n != null:
+					var intake_pos_v: Variant = sim_n.get("filter_intake_pos")
+					if intake_pos_v != null and intake_pos_v is Vector3:
+						var dx: float = (intake_pos_v as Vector3).x - position.x
+						var dz: float = (intake_pos_v as Vector3).z - position.z
+						var d2: float = dx * dx + dz * dz
+						# Pull strength falls off with distance² and saturates
+						# so a particle right next to the intake doesn't
+						# teleport into it.
+						var pull_k: float = 0.18 / (1.0 + d2 * 0.6)
+						intake_pull = Vector2(dx, dz) * pull_k
+			position.x += (swirl.x + wander.x + intake_pull.x) * dt
+			position.z += (swirl.y + wander.y + intake_pull.y) * dt
+
 		if position.y <= floor_y + voxel_size * 0.5:
 			position.y = floor_y + voxel_size * 0.5
 			settled = true

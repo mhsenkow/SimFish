@@ -219,6 +219,15 @@ var _live_snails: Array = []
 # pure overhead since neither node ever moves.
 var _cfg_cache: Node = null
 var _ambient_audio_cache: Node = null
+# Cached active 3D camera for off-frustum brain-skip. Refreshed lazily when
+# null/invalid. The camera is parented under SubViewport/World so we walk
+# down from the running scene to find it once and reuse the reference.
+var _cam_cache: Camera3D = null
+# Alternates 0/1 each sim tick; off-frustum fish only run their brain when
+# (instance_id % 2) == this phase, halving brain cost for entities the
+# player can't see. Position integration still runs every render frame so
+# fish stay where they should when the camera swings back to them.
+var _off_frustum_phase: int = 0
 
 var _accum: float = 0.0
 var _stats_timer: float = 0.0
@@ -532,6 +541,26 @@ func _cfg() -> Node:
 	if _cfg_cache == null or not is_instance_valid(_cfg_cache):
 		_cfg_cache = get_node_or_null("/root/TankConfig")
 	return _cfg_cache
+
+
+# Cached Camera3D accessor. Used to off-frustum-skip the brain tick of
+# fish/shrimp the player can't see — the brain AI is the most expensive
+# per-entity cost in the sim, and the position integration already runs
+# at render rate from the last brain output, so off-screen entities stay
+# coherent even if their brain runs at 5 Hz instead of 10.
+func _get_camera() -> Camera3D:
+	if _cam_cache != null and is_instance_valid(_cam_cache):
+		return _cam_cache
+	var scene := get_tree().current_scene
+	if scene == null:
+		return null
+	# The camera lives under SubViewport/World/Camera3D in main.tscn but
+	# scene structure may evolve — find_child handles both flat and nested
+	# layouts. recursive=true so we find it wherever it ended up.
+	var found := scene.find_child("Camera3D", true, false)
+	if found is Camera3D:
+		_cam_cache = found as Camera3D
+	return _cam_cache
 
 
 # Cached AmbientAudio node accessor (sibling under the running scene). Replaces a
@@ -972,6 +1001,26 @@ func _tick(dt: float) -> void:
 	# insert pass replaces the old O(N²) nested neighbor loop.
 	_spatial_rebuild(fish)
 
+	# Off-frustum brain throttle. Flip the phase each tick so off-screen
+	# fish whose (instance_id % 2) matches run their brain; the other half
+	# skip. Net effect: brain ticks at 5 Hz for entities the player can't
+	# see, 10 Hz for what they're looking at. Position integration runs at
+	# render rate from each fish's current velocity regardless, so off-
+	# screen fish keep drifting and remain coherent when the camera pans
+	# back to them.
+	#
+	# IMPORTANT exception: entities near a tank wall always get their full
+	# 10 Hz brain so the wall-avoidance reactions don't lag. Throttling on
+	# wall approach was causing fish to visibly embed in surfaces before
+	# the brain re-issued a heading-away command. world_bounds carries the
+	# tank AABB; a fish within 0.6 m of any edge keeps full brain rate.
+	_off_frustum_phase = 1 - _off_frustum_phase
+	var cam: Camera3D = _get_camera()
+	var have_cam: bool = cam != null
+	var bounds_min: Vector3 = world_bounds.position
+	var bounds_max: Vector3 = world_bounds.position + world_bounds.size
+	const WALL_MARGIN: float = 0.6
+
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
@@ -981,6 +1030,20 @@ func _tick(dt: float) -> void:
 		# corpse and predators don't try to eat it mid-death.
 		if f.get("_dying") == true:
 			continue
+		# Off-frustum brain skip. is_position_in_frustum is cheap (4 plane
+		# tests). We only skip half the off-screen fish per tick, but we
+		# never skip fish near a tank wall — keeping the brain at 10 Hz
+		# there avoids wall-stuck artifacts when reflection commands lag.
+		if have_cam and not cam.is_position_in_frustum(f.position):
+			var near_wall: bool = \
+				f.position.x < bounds_min.x + WALL_MARGIN \
+				or f.position.x > bounds_max.x - WALL_MARGIN \
+				or f.position.y < bounds_min.y + WALL_MARGIN \
+				or f.position.y > bounds_max.y - WALL_MARGIN \
+				or f.position.z < bounds_min.z + WALL_MARGIN \
+				or f.position.z > bounds_max.z - WALL_MARGIN
+			if not near_wall and (f.get_instance_id() & 1) != _off_frustum_phase:
+				continue
 		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
 		var neighbors: Array = _spatial_query(f.position, 9.0, f)
 		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
@@ -999,6 +1062,21 @@ func _tick(dt: float) -> void:
 		# fish loop above — corpses shouldn't drive courtship or schooling).
 		if s.get("_dying") == true:
 			continue
+		# Same off-frustum throttle as fish — shrimp brains do a lot of
+		# pheromone-trail and plant-scan work that's wasted when the player
+		# can't see them. Same wall-proximity guard so shrimp don't get
+		# embedded against a corner with their brain stuck on the wrong
+		# pheromone gradient.
+		if have_cam and not cam.is_position_in_frustum(s.position):
+			var s_near_wall: bool = \
+				s.position.x < bounds_min.x + WALL_MARGIN \
+				or s.position.x > bounds_max.x - WALL_MARGIN \
+				or s.position.y < bounds_min.y + WALL_MARGIN \
+				or s.position.y > bounds_max.y - WALL_MARGIN \
+				or s.position.z < bounds_min.z + WALL_MARGIN \
+				or s.position.z > bounds_max.z - WALL_MARGIN
+			if not s_near_wall and (s.get_instance_id() & 1) != _off_frustum_phase:
+				continue
 		# Spatial query: radius² = 4.0 (2.0 unit radius for shrimp)
 		var sn: Array = _spatial_query(s.position, 4.0, s)
 		var ev: Dictionary = s.tick(dt, plants, algae, waste, fry_list, baby_snail_list,
@@ -1432,6 +1510,26 @@ func _tick(dt: float) -> void:
 					_play_ambient_event("death")
 				else:
 					_play_ambient_event("eat")
+				# Visual flash at the bite — short bright burst at the
+				# prey's last position. The audio event covers the beat;
+				# the flash covers the eye. Spawned BEFORE queue_free
+				# so we can read prey.global_position safely.
+				var prey_pos: Vector3 = (prey as Node3D).global_position
+				var av := get_tree().current_scene.get_node_or_null("AquariumVisuals")
+				if av != null and av.has_method("spawn_predation_flash"):
+					av.call("spawn_predation_flash", prey_pos)
+				# Surface-disturbance ripple if the strike happened near
+				# the waterline. World caps via spawn_burst_ripple's own
+				# tween lifespan, no extra throttle needed.
+				var w_node: Node = get_parent()
+				if w_node != null and w_node.has_method("spawn_burst_ripple"):
+					# Try to find the water surface height — most tanks
+					# expose WATER_HEIGHT via the world script. Fall back
+					# to a generous threshold otherwise.
+					var water_y_v: Variant = w_node.get("WATER_HEIGHT")
+					var water_y: float = 6.5 if water_y_v == null else float(water_y_v)
+					if prey_pos.y > water_y - 1.2:
+						w_node.call("spawn_burst_ripple", prey_pos, 1.3)
 				if prey is Fish:
 					fish.erase(prey)
 				elif prey is Shrimp:

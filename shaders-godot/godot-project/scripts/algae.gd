@@ -22,7 +22,12 @@ const VOXEL_SIZE: float = 0.12
 enum AlgaeKind { CLUSTER, SURFACE, HAIR, GSA }
 
 # Up to 5 voxels make up the cluster; new ones appear at growth milestones.
-var _voxels: Array[MeshInstance3D] = []
+# Each voxel is a per-instance entry in a per-cluster MultiMesh batch — one
+# draw call for the whole cluster instead of one per voxel. The Handle
+# carries the API the old MeshInstance3D path used (hide on nibble; color
+# read for shading) so the rest of the file barely changes.
+var _voxels: Array[VoxelBatch.Handle] = []
+var _batch: VoxelBatch = null
 var _age: float = 0.0
 var _phase: float = 0.0
 var _color: Color = Color8(120, 165, 60)
@@ -97,6 +102,23 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 			pass  # GSA dots stick rigidly to glass
 		_:
 			rotation.y = sin(_phase * 0.6) * 0.18
+	# Slow undulating brightness wave across the cluster — looks like
+	# sunlight hitting different parts of a wet algae mat as the water
+	# above ripples. Only meaningful for cluster + surface kinds (HAIR
+	# already sways visibly, GSA voxels are too small for the shimmer to
+	# read). Per-instance index drives the phase offset so the wave
+	# visibly travels through the cluster instead of pulsing in unison.
+	if _kind == AlgaeKind.CLUSTER or _kind == AlgaeKind.SURFACE:
+		for i in _voxels.size():
+			var h: VoxelBatch.Handle = _voxels[i]
+			if h == null or not h.alive:
+				continue
+			var wave: float = 0.5 + 0.5 * sin(_phase * 0.85 + float(i) * 0.85)
+			# Subtle lift — 0..30% toward a lightened version. Quantizer
+			# bounces between the base and one-step-brighter palette slot
+			# along the wave, reading as a slow shimmer.
+			var lit: Color = h.base_color.lerp(h.base_color.lightened(0.30), wave)
+			h.set_color(lit)
 	# Growth milestones differ per kind: cluster spreads in 3D, surface
 	# scum widens, hair gets taller, GSA spreads as a clump of dots.
 	var life_frac: float = _age / MAX_LIFE
@@ -150,26 +172,35 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 
 func _add_voxel(local_pos: Vector3, scale_factor: float,
 		shape_scale: Vector3 = Vector3.ONE) -> void:
-	var mi := MeshInstance3D.new()
+	if _batch == null:
+		# One MultiMesh per algae cluster — its parent is this Algae Node3D,
+		# so when tick() rotates this node the whole batch rotates with it.
+		# Capacity 8 covers every kind's max voxel count (HAIR=4, GSA=10,
+		# others ≤5); the batch auto-grows if needed.
+		_batch = VoxelBatch.new(self, VoxelMat.make_voxel_mm(), 8)
 	# shape_scale lets each algae kind pick a non-cube voxel: flat sheet
 	# (surface scum), thin column (hair), tiny dot (GSA). Defaults to a
-	# uniform cube for the classic cluster.
-	mi.mesh = VoxelMat.get_box(Vector3(
+	# uniform cube for the classic cluster. The size is baked into the
+	# per-instance basis scale instead of a unique BoxMesh per voxel.
+	var size: Vector3 = Vector3(
 		VOXEL_SIZE * scale_factor * shape_scale.x,
 		VOXEL_SIZE * scale_factor * shape_scale.y,
-		VOXEL_SIZE * scale_factor * shape_scale.z))
+		VOXEL_SIZE * scale_factor * shape_scale.z)
+	var xform := Transform3D(Basis().scaled(size), local_pos)
 	# Slight per-voxel color variation so the cluster reads as organic
-	# rather than monolithic.
+	# rather than monolithic. boost_life_color matches the saturation +
+	# value lift the old make_fauna() path applied via its color_vibrancy
+	# shader uniform — bake it into the per-instance color now that
+	# voxel_mm.gdshader reads COLOR directly.
 	var shade: float = randf_range(-0.08, 0.08)
 	var voxel_color: Color = Color(
 		clampf(_color.r + shade, 0.0, 1.0),
 		clampf(_color.g + shade, 0.0, 1.0),
 		clampf(_color.b + shade, 0.0, 1.0),
 	)
-	mi.material_override = VoxelMat.make_fauna(voxel_color)
-	mi.position = local_pos
-	add_child(mi)
-	_voxels.append(mi)
+	var boosted: Color = VoxelMat.boost_life_color(voxel_color)
+	_voxels.append(_batch.add(xform, boosted))
+	_batch.flush()
 
 
 func biomass() -> int:
@@ -181,9 +212,9 @@ func nibble(amount: int) -> int:
 	for i in amount:
 		if _voxels.is_empty():
 			break
-		var v = _voxels.pop_back()
-		if is_instance_valid(v):
-			v.queue_free()
+		var h: VoxelBatch.Handle = _voxels.pop_back()
+		if h != null and h.alive:
+			h.hide()
 		taken += 1
 	if _voxels.is_empty():
 		_age = MAX_LIFE # mark for death

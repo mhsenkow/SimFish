@@ -21,6 +21,26 @@ shader_type canvas_item;
 render_mode unshaded;
 
 uniform sampler2D palette_tex : source_color, filter_nearest, repeat_disable;
+// Night palette LUT. Same 48 indices, same hue banks; just darker/cooler
+// per slot so the quantize result at night is a true moonlit palette
+// instead of the day palette darkened uniformly via palette_tint. Main.gd
+// drives palette_night_blend from SimDriver.daylight() inverted so the
+// transition is smooth across dawn / dusk.
+uniform sampler2D palette_tex_night : source_color, filter_nearest, repeat_disable;
+uniform float palette_night_blend : hint_range(0.0, 1.0) = 0.0;
+// Highlight burnthrough — when source luma is well above the threshold
+// AND it is night, the chosen palette color is lerped back toward the
+// DAY palette so emissive content (coral biolum, biofilm shimmer, light
+// fixtures) reads as a bright island against the moonlit field. This is
+// the "bioluminescent bloom" feel without a full bloom post pass.
+uniform float bloom_threshold : hint_range(0.0, 1.0) = 0.68;
+uniform float bloom_strength : hint_range(0.0, 1.0) = 0.85;
+// Standalone vignette — runs independently of the CRT overlay so the
+// frame always has a soft dark corner that pulls the eye to the tank.
+// 0 = off, 1 = full corner darkening.
+uniform float vignette_strength : hint_range(0.0, 1.0) = 0.35;
+// How tightly the vignette falls off. Higher = darker corners earlier.
+uniform float vignette_falloff : hint_range(0.5, 4.0) = 1.6;
 uniform int palette_size : hint_range(1, 64) = 48;
 uniform float dither_strength : hint_range(0.0, 1.0) = 0.85;
 uniform float seasonal_warmth : hint_range(-0.15, 0.15) = 0.0;
@@ -54,6 +74,16 @@ float bayer_at(vec2 pixel_xy) {
 }
 
 vec3 palette_color(int idx) {
+	float u = (float(idx) + 0.5) / float(palette_size);
+	vec3 day_c = texture(palette_tex, vec2(u, 0.5)).rgb;
+	vec3 night_c = texture(palette_tex_night, vec2(u, 0.5)).rgb;
+	return mix(day_c, night_c, palette_night_blend);
+}
+
+// Pure day-palette lookup. Used by the highlight burnthrough path so the
+// bright pixels of a glowing coral can punch out of the night palette in
+// the same warm colors they had during the day.
+vec3 palette_color_day(int idx) {
 	float u = (float(idx) + 0.5) / float(palette_size);
 	return texture(palette_tex, vec2(u, 0.5)).rgb;
 }
@@ -172,24 +202,90 @@ void fragment() {
 	int chosen = (t > threshold) ? bi : ai;
 	vec3 result = palette_color(chosen);
 
-	// ---- Edge outline ----
-	// One-pixel-thin dark stroke at strong luminance discontinuities. We
-	// sample 4 immediate neighbors of the unquantized source so the outline
-	// follows the actual geometry boundaries, not the dithered tiles.
+	// ---- Bioluminescent bloom (HDR-ish highlight handling) ----
+	// Two paths combined:
+	//   1. Night burnthrough — bright source pixels at night get lerped
+	//      back toward the DAY palette so emissive content (coral biolum,
+	//      biofilm shimmer, light fixtures) reads as warm islands against
+	//      the moonlit field. Same idea as the previous version, but
+	//      slightly stronger.
+	//   2. Always-on overbright lift — when source luma is well above
+	//      1.0 (set by emissive coral via .lightened(>0)), additively
+	//      push the result toward warm white. This is the "HDR-ish"
+	//      shoulder: pixels that the sim labelled as emitting more than
+	//      diffuse-white intensity actually punch out of the palette
+	//      instead of being clamped to the nearest 8-bit slot.
+	float src_luma = luma_of(src);
+	if (palette_night_blend > 0.01) {
+		float bloom = smoothstep(bloom_threshold, 1.0, src_luma)
+		            * palette_night_blend
+		            * bloom_strength;
+		if (bloom > 0.001) {
+			vec3 day_c = palette_color_day(chosen);
+			result = mix(result, day_c, bloom);
+		}
+	}
+	// HDR shoulder — input luma over ~0.85 lifts the output toward a
+	// warm white. Strength scales with how far above the shoulder the
+	// source sits, so a gentle 0.92 reads as "a bit hot" while a 1.4
+	// (very emissive coral or fixture) actually saturates to bloom.
+	float over = max(src_luma - 0.85, 0.0);
+	float hdr_lift = clamp(over * 1.6, 0.0, 0.85);
+	if (hdr_lift > 0.001) {
+		vec3 hot_white = vec3(1.0, 0.97, 0.90);
+		result = mix(result, hot_white, hdr_lift);
+	}
+
+	// ---- Edge outline with depth-aware thickness ----
+	// Two-band detector: a 1-px neighborhood for the standard thin stroke
+	// AND a 2-px neighborhood to catch high-contrast silhouettes (closer
+	// fish, foreground plants) where the gradient persists over a wider
+	// span. Closer objects fire BOTH bands → a 2-px thick outline; flat
+	// gradients in the water column or distant geometry fire only the
+	// thin band → a 1-px stroke. The result reads as "closer = thicker"
+	// without needing the SubViewport's depth texture wired through.
 	if (outline_strength > 0.001) {
 		vec2 step_uv = 1.0 / internal_resolution;
 		float lc = luma_of(src);
-		float ln = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb * palette_tint);
-		float ls = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv.y)).rgb * palette_tint);
-		float le = luma_of(texture(TEXTURE, UV + vec2( step_uv.x, 0.0)).rgb * palette_tint);
-		float lw = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb * palette_tint);
-		// Edge magnitude = max absolute luma delta vs any neighbor. Threshold
-		// kills noise at smoothly-shaded areas (water column gradients).
-		float dmax = max(max(abs(lc - ln), abs(lc - ls)),
-						 max(abs(lc - le), abs(lc - lw)));
-		float edge = smoothstep(0.10, 0.32, dmax);
-		float k = outline_strength * edge;
-		result *= mix(1.0, 0.35, k);
+		float ln1 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb * palette_tint);
+		float ls1 = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv.y)).rgb * palette_tint);
+		float le1 = luma_of(texture(TEXTURE, UV + vec2( step_uv.x, 0.0)).rgb * palette_tint);
+		float lw1 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb * palette_tint);
+		float dmax_near = max(max(abs(lc - ln1), abs(lc - ls1)),
+		                     max(abs(lc - le1), abs(lc - lw1)));
+		float edge_near = smoothstep(0.10, 0.32, dmax_near);
+
+		// Wider-baseline tap to catch silhouettes that survive 2 px out.
+		float ln2 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y * 2.0)).rgb * palette_tint);
+		float ls2 = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv.y * 2.0)).rgb * palette_tint);
+		float le2 = luma_of(texture(TEXTURE, UV + vec2( step_uv.x * 2.0, 0.0)).rgb * palette_tint);
+		float lw2 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x * 2.0, 0.0)).rgb * palette_tint);
+		float dmax_far = max(max(abs(lc - ln2), abs(lc - ls2)),
+		                    max(abs(lc - le2), abs(lc - lw2)));
+		// Higher threshold for the far tap so only strong silhouettes
+		// promote to the thick band — small ornamental detail stays at
+		// the 1-px line.
+		float edge_far = smoothstep(0.18, 0.42, dmax_far);
+
+		// Thick band: both fire (close, high-contrast). Thin band: only
+		// near fires. mix() blends darkening factor between the two so
+		// the transition is graded rather than stepwise.
+		float k_thin = outline_strength * edge_near * (1.0 - edge_far * 0.6);
+		float k_thick = outline_strength * edge_near * edge_far;
+		float darken = mix(1.0, 0.35, k_thin) * mix(1.0, 0.22, k_thick);
+		result *= darken;
+	}
+
+	// ---- Standalone vignette ----
+	// Independent of CRT. Always-on soft corner darkening that pulls the
+	// eye to the tank centre. UV is 0..1; dot(uv_centered, uv_centered)
+	// gives squared distance from frame centre. pow() controls falloff
+	// curve — vignette_falloff=1.0 is linear, higher = darker corners.
+	if (vignette_strength > 0.001) {
+		vec2 vc = UV - 0.5;
+		float r2 = dot(vc, vc) * 4.0;  // 0 at centre, 1 at frame corners
+		float v = pow(clamp(r2, 0.0, 1.0), vignette_falloff);
+		result *= mix(1.0, 1.0 - vignette_strength * 0.55, v);
 	}
 
 	// ---- CRT scanline + vignette overlay ----

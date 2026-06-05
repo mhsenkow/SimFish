@@ -17,6 +17,12 @@ uniform vec3 light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float water_floor_y = 1.0;
 uniform float water_surface_y = 6.5;
 uniform float depth_fog : hint_range(0.0, 1.0) = 0.45;
+// Posterize the depth fog into discrete bands instead of a smooth
+// gradient — keeps the look consistent with the 48-color palette and
+// makes the depth dropoff read as a chunky pixel-art lineweight
+// rather than blended ramp. 0 = smooth (legacy); 1 = fully posterized.
+uniform float depth_fog_bands : hint_range(0.0, 1.0) = 0.75;
+uniform int depth_fog_band_count : hint_range(2, 12) = 6;
 uniform float day_phase_offset = 0.0;
 uniform float ice_lens : hint_range(0.0, 1.0) = 0.0;
 uniform float moonlight : hint_range(0.0, 1.0) = 0.0;
@@ -53,10 +59,20 @@ void vertex() {
 void fragment() {
 	float depth_span = max(water_surface_y - water_floor_y, 0.15);
 	float depth_norm = clamp((water_surface_y - world_pos.y) / depth_span, 0.0, 1.0);
-	vec3 col = mix(shallow_color.rgb, deep_color.rgb, depth_norm * depth_norm);
+	// Quantize depth_norm into N discrete bands for the posterized
+	// look, then blend back toward the smooth value by (1 - bands).
+	// Result: smooth gradient when depth_fog_bands == 0, hard step
+	// terraces when == 1. depth_fog_band_count controls the visible
+	// step count; 6 is calibrated so each band is roughly one chunky
+	// pixel-art tonal step in a 1.5 m-tall water column.
+	float band_count = float(depth_fog_band_count);
+	float depth_quant = floor(depth_norm * band_count + 0.5) / band_count;
+	float depth_used = mix(depth_norm, depth_quant, depth_fog_bands);
+	vec3 col = mix(shallow_color.rgb, deep_color.rgb, depth_used * depth_used);
 
-	// Depth fog toward deep color.
-	col = mix(col, deep_color.rgb, depth_norm * depth_fog * 0.35);
+	// Depth fog toward deep color — also uses the quantized depth so
+	// the fog density steps in the same bands as the depth gradient.
+	col = mix(col, deep_color.rgb, depth_used * depth_fog * 0.35);
 
 	vec2 cuv = world_pos.xz * 1.15;
 	float t = TIME * 0.78 + day_phase_offset * 6.28318;

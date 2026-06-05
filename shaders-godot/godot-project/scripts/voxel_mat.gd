@@ -45,12 +45,34 @@ static func get_box(size: Vector3) -> BoxMesh:
 	return bm
 
 
+static var _room_mat_cache: Dictionary = {}
+
+# Room-side materials. Same voxel.gdshader as `make()` but with the
+# room_haze_strength uniform pre-set so the desk + wall + props fade
+# toward a warm haze with view distance. Tank-side voxels keep using
+# `make()` and stay crisp.
+static func make_room(color: Color, haze_strength: float = 0.65,
+		haze_color: Color = Color(0.92, 0.84, 0.74)) -> ShaderMaterial:
+	var key: String = "%s_%s" % [
+		Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01)),
+		snappedf(haze_strength, 0.05)]
+	if _room_mat_cache.has(key):
+		return _room_mat_cache[key]
+	var m := ShaderMaterial.new()
+	m.shader = _get_shader()
+	m.set_shader_parameter("albedo", color)
+	m.set_shader_parameter("room_haze_strength", haze_strength)
+	m.set_shader_parameter("room_haze_color", Vector3(haze_color.r, haze_color.g, haze_color.b))
+	_room_mat_cache[key] = m
+	return m
+
+
 static func make(color: Color) -> ShaderMaterial:
 	# Round color slightly to ensure caching of nearly-identical procedural colors.
 	var cache_key: Color = Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
 	if _mat_cache.has(cache_key):
 		return _mat_cache[cache_key]
-		
+
 	var m := ShaderMaterial.new()
 	m.shader = _get_shader()
 	m.set_shader_parameter("albedo", color)
@@ -273,6 +295,22 @@ static func register_foliage_mm(mat: ShaderMaterial) -> void:
 		_foliage_mm_mats.append(mat)
 
 
+# Shared MultiMesh-aware voxel material — voxel_mm.gdshader reads color from
+# the per-instance MultiMesh COLOR buffer instead of an `albedo` uniform, so a
+# single instance of this material is sufficient for every algae cluster +
+# biofilm patch in the scene. Each entity still gets its OWN VoxelBatch (one
+# MultiMeshInstance3D per cluster, one draw call), but all those batches
+# point at this same material — keeping the shader pipeline compile + uniform
+# cost flat regardless of how many algae are alive.
+static var _voxel_mm_mat: ShaderMaterial = null
+
+static func make_voxel_mm() -> ShaderMaterial:
+	if _voxel_mm_mat == null:
+		_voxel_mm_mat = ShaderMaterial.new()
+		_voxel_mm_mat.shader = load("res://shaders/voxel_mm.gdshader") as Shader
+	return _voxel_mm_mat
+
+
 static func update_foliage_uniforms(canopy_shade: float, water_y: float, daylight: float) -> void:
 	for mat in _foliage_mm_mats:
 		if is_instance_valid(mat):
@@ -296,6 +334,40 @@ static func update_substrate_ripple(phase: float, strength: float, dir: Vector2)
 			mat.set_shader_parameter("ripple_phase", phase)
 			mat.set_shader_parameter("ripple_strength", strength)
 			mat.set_shader_parameter("ripple_dir", dir)
+
+
+# Push the substrate's "flow origin" (filter intake position) into every
+# cached substrate_caustic material so the ripple shader can deepen its
+# pattern near the current source. xyz = world position, w = max-radius
+# gain (0 disables the system). Called from world.gd at hardscape build
+# or whenever the intake position changes.
+static func update_substrate_flow_origin(origin: Vector3, gain: float) -> void:
+	var v: Vector4 = Vector4(origin.x, origin.y, origin.z, gain)
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("flow_origin", v)
+
+
+# Push hardscape contact-AO footprints (driftwood roots, rock bases) into
+# every substrate material so they darken the substrate where wood meets
+# sand. Accepts an Array of Vector4 (xyz = world position, w = radius);
+# the first 8 entries land in the shader's uniform array, the rest are
+# silently dropped. Pass an empty array to clear AO.
+static func update_substrate_contact_ao(points: Array) -> void:
+	var packed: Array[Vector4] = []
+	for i in 8:
+		if i < points.size():
+			var v_in: Variant = points[i]
+			if v_in is Vector4:
+				packed.append(v_in as Vector4)
+				continue
+		packed.append(Vector4.ZERO)
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("contact_ao_points", packed)
+	for mat in _sub_opaque_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("contact_ao_points", packed)
 
 
 # Update SSS rim strength on every foliage material (both node-based and

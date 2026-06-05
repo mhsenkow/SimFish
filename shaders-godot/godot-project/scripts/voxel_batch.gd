@@ -33,6 +33,13 @@ class Handle extends RefCounted:
 		if alive and batch != null:
 			batch._apply_color(index, c)
 
+	# Re-write this voxel's per-instance transform. Used by entities that
+	# animate individual voxels (biofilm sheet sway, algae waver) without
+	# moving the whole batch via the parent Node3D's transform.
+	func set_transform(xform: Transform3D) -> void:
+		if alive and batch != null:
+			batch._apply_transform(index, xform)
+
 	func hide() -> void:
 		if alive and batch != null:
 			batch._hide(index)
@@ -110,6 +117,12 @@ func _apply_color(i: int, c: Color) -> void:
 	if i >= 0 and i < _count:
 		_colors[i] = c
 		_mm.set_instance_color(i, c)
+
+
+func _apply_transform(i: int, x: Transform3D) -> void:
+	if i >= 0 and i < _count:
+		_xforms[i] = x
+		_mm.set_instance_transform(i, x)
 
 
 func _hide(i: int) -> void:

@@ -467,6 +467,16 @@ var _pec_left_pivot: Node3D = null
 var _pec_right_pivot: Node3D = null
 var _anal_pivot: Node3D = null
 var _swim_phase: float = 0.0
+# Per-fish wag-frequency jitter — ±12% multiplier on every species' wag_freq
+# so a tight school doesn't all tail-flick in lockstep. Combined with the
+# already-random _swim_phase initial offset, this keeps phase relationships
+# drifting continuously rather than holding fixed offsets.
+var _wag_freq_jitter: float = 1.0
+# Fry-dart trail emitter cadence. Only used when maturity == MATURITY_FRY and
+# the fry is currently in a dart burst (burst_remaining > 0). The trail
+# afterimages are world-positioned so the smear visibly trails the fry
+# rather than dragging behind in body-local space.
+var _fry_trail_timer: float = 0.0
 var _last_yaw: float = 0.0
 var _bank: float = 0.0
 # Eye-saccade state. Drives a brief micro-yaw on _head_pivot when the
@@ -540,6 +550,7 @@ func _ready() -> void:
 		randf_range(-0.5, 0.5),
 	)
 	_swim_phase = randf() * TAU
+	_wag_freq_jitter = randf_range(0.88, 1.12)
 	# Start each fish facing a random horizontal direction so newborn fry
 	# don't all stare the same way.
 	var theta: float = randf() * TAU
@@ -1288,7 +1299,12 @@ func _build_body() -> void:
 	# Two slim voxel filaments hanging from the front belly, swept slightly
 	# back. Tinted with the marking color so they read as a distinct feature.
 	if ventral_feelers:
-		var mat_feeler := _make_mat(effective_marking)
+		# Gourami feelers are translucent in real life — the eye reads
+		# them as fine threads where the water column is faintly visible
+		# through. Use the translucent voxel material with marking color
+		# so the species ID stays clear but the feeler reads delicate.
+		var feeler_color: Color = Color(effective_marking.r, effective_marking.g, effective_marking.b, 0.65)
+		var mat_feeler := VoxelMat.make_translucent(feeler_color)
 		for x_side in [-1.0, 1.0]:
 			_add_voxel_to(_body_mid_pivot,
 				Vector3(x_side * v * 0.18, -v * 0.95, -v * 0.1),
@@ -1353,7 +1369,14 @@ func _build_body() -> void:
 	# tight functional tail.
 	if finnage > 1.0:
 		var veil: float = finnage
-		var mat_veil := _make_mat(effective_tail)
+		# Veil fins use the translucent voxel material so the silhouette
+		# reads as "you can see the water behind the trailing rays" — the
+		# defining look of betta / fancy livebearer fins. Alpha is set on
+		# the color so the cached translucent shader handles it; vibrancy
+		# stays at default (no boost) so the veil reads as delicate, not
+		# the saturated body color.
+		var veil_color: Color = Color(effective_tail.r, effective_tail.g, effective_tail.b, 0.55)
+		var mat_veil := VoxelMat.make_translucent(veil_color)
 		# Caudal veil streamers sweeping back well past the tail template.
 		for ang in [-1.0, -0.4, 0.4, 1.0]:
 			_add_voxel_to(_tail_pivot,
@@ -1439,6 +1462,43 @@ func _apply_lod_ranges() -> void:
 
 func _make_mat(color: Color) -> ShaderMaterial:
 	return VoxelMat.make_fauna(color)
+
+
+# Spawn a brief afterimage at the fry's current world position. Used by
+# the dart-trail path in _process. The smear is a tiny tinted box that
+# tweens to zero scale and alpha over ~0.35s, then queue_free's. Color
+# matches the fry's body so the smear reads as a streak of the fish
+# itself, not a generic puff.
+func _spawn_fry_trail_smear() -> void:
+	var parent: Node = get_parent()
+	if parent == null:
+		return
+	var mi := MeshInstance3D.new()
+	var v: float = 0.10  # fry voxel scale
+	mi.mesh = VoxelMat.get_box(Vector3(v, v * 0.6, v * 1.4))
+	var smear_color: Color = Color(base_color.r, base_color.g, base_color.b, 0.45)
+	var mat: ShaderMaterial = VoxelMat.make_translucent(smear_color).duplicate()
+	mi.material_override = mat
+	# Order matters: add to the scene tree FIRST so global_position +
+	# look_at have a valid global transform to work against. The earlier
+	# version called look_at before add_child, which Godot reports as
+	# "Node not inside tree" and returns identity Transform3D — that's
+	# what was spamming the debugger.
+	parent.add_child(mi)
+	mi.global_position = global_position
+	if heading.length_squared() > 0.001:
+		# look_at_from_position is the tree-safe variant — it works even
+		# if the node is just barely in the tree this frame and skips
+		# any extra global-basis math.
+		mi.look_at_from_position(global_position, global_position + heading, Vector3.UP)
+	const TRAIL_LIFETIME: float = 0.35
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3(0.4, 0.4, 0.2), TRAIL_LIFETIME) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	var faded: Color = Color(smear_color.r, smear_color.g, smear_color.b, 0.0)
+	tw.tween_property(mat, "shader_parameter/albedo", faded, TRAIL_LIFETIME) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(mi.queue_free)
 
 
 # Locate the closest cleaner shrimp/wrasse within `radius`. Walks
@@ -2927,6 +2987,16 @@ func _process(dt: float) -> void:
 		if dt <= 0.0:
 			return  # paused
 
+	# Fry dart trail — only emit when this fish is actually a fry AND in
+	# a burst. The fry-juvenile-play burst sets burst_remaining to 0.4s,
+	# so a typical dart spawns 4-6 afterimages. Filtered by speed so
+	# slow drifting in a wander phase doesn't spam.
+	if maturity == MATURITY_FRY and burst_remaining > 0.0 and speed > max_speed * 0.45:
+		_fry_trail_timer -= dt
+		if _fry_trail_timer <= 0.0:
+			_fry_trail_timer = 0.065
+			_spawn_fry_trail_smear()
+
 	# Bioluminescence sweep — only bioluminescent individuals push the
 	# uniform, and we update once a second to keep the cost trivial.
 	# The pulse animation runs in-shader (TIME based), so we just set
@@ -3396,7 +3466,7 @@ func _motion_substep(dt: float) -> void:
 			# subcarangiform default — current schooler behavior.
 			pass
 
-	_swim_phase += dt * wag_freq
+	_swim_phase += dt * wag_freq * _wag_freq_jitter
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
 			+ minf(speed * 0.18, 0.25))
