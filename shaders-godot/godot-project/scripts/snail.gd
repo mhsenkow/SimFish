@@ -6,6 +6,8 @@
 
 extends Node3D
 
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+
 @export var wall_normal: Vector3 = Vector3.RIGHT
 @export var wall_min: Vector3 = Vector3(-7.6, 2.0, -3.6)
 @export var wall_max: Vector3 = Vector3(7.6, 6.0, 3.6)
@@ -85,6 +87,11 @@ var _crawl_speed_smoothed: float = 0.0      # eased scalar speed (avoids pulse s
 var _spacing_push: Vector3 = Vector3.ZERO   # soft overlap resolve, decayed per frame
 var _t_until_turn: float = 0.0
 var _paused: bool = false
+# True when ANY fish is hovering close above us — even a non-predator fish.
+# Snails freeze entirely (no crawl, no breeding) until the fish moves on.
+# Kept separate from _paused so the other pause reasons (turn-pause, food
+# break, etc.) aren't disrupted by adding/removing this signal.
+var _fish_hover_freeze: bool = false
 # Wall-plane anchor. Captured in _ready from the spawn position projected
 # onto wall_normal — i.e. the snail's "depth into the wall." After motion,
 # we re-project position onto this plane so floating-point drift in the
@@ -241,9 +248,18 @@ func apply_genome_metadata(g: Dictionary) -> void:
 func _ensure_named() -> void:
 	if snail_name != "":
 		return
-	var adjs := ["Spiral", "Glass", "Pearl", "Moss", "Ivory", "Copper", "Jade", "Dusk"]
-	var nouns := ["Crawler", "Glider", "Wanderer", "Drifter", "Pacer", "Rambler"]
-	snail_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+	# AIDirector path (with offline fallback). Snails don't carry
+	# personality or bio — they're too uniform behaviorally for the
+	# personality vector to read as anything — but they still get
+	# AI-flavored names when Ollama is on.
+	var ai: Node = null
+	if is_inside_tree():
+		ai = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("consume_name"):
+		var picked: Dictionary = ai.consume_name("snail", {})
+		snail_name = String(picked.get("name", "Snail"))
+	else:
+		snail_name = CreatureNaming.generate_name("snail", {})
 
 
 # Coerce any color-shaped value (Color, [r,g,b,a] Array, or other) into a
@@ -332,6 +348,10 @@ func _process(dt: float) -> void:
 	# Throttled — 0.3 s detection latency reads as natural reaction time.
 	if scan_due:
 		_check_predator_threat(scan_dt)
+		# Freeze-under-fish: even a harmless fish hovering close makes the
+		# snail go still. Re-checks every scan tick so it un-freezes the
+		# moment the fish drifts away.
+		_check_fish_hover_freeze()
 		# Wall transition checks — try every scan tick if we just haven't
 		# recently transitioned. Cooldown prevents a snail at the
 		# substrate-glass corner from oscillating climb/descend every
@@ -375,6 +395,13 @@ func _process(dt: float) -> void:
 	# of the tick.
 	if _clamped:
 		_apply_squash(0.35)  # body flattened into shell
+		return
+
+	# Fish-hover freeze: even harmless tankmates make the snail go still
+	# while they hover overhead. Skip movement/breed/feed decisions until
+	# the fish drifts away — eye stalks already retracted in the check.
+	if _fish_hover_freeze:
+		_apply_squash(0.55)  # body slightly tucked
 		return
 
 	# Decay the eating-pulse amplifier. Set in _check_waste_nearby on a
@@ -1433,6 +1460,41 @@ func _check_immediate_predator_retract() -> void:
 		if d2 < _IMMEDIATE_RETRACT_RADIUS_SQ:
 			_eye_retract_remaining = EYE_RETRACT_DURATION
 			return
+
+
+# Set _fish_hover_freeze when any (non-darting) fish is hovering close.
+# Snails freeze entirely while this is true — separate from the predator
+# clamp so a non-snail-eating tetra hovering above still triggers the
+# "stay still until it moves on" reflex real snails have. Cheap: walks
+# sim.fish but bails on first match; called only when scan_due fires.
+const _HOVER_FREEZE_RADIUS_SQ: float = 1.2 * 1.2
+const _HOVER_FREEZE_MAX_FISH_SPEED: float = 0.85
+
+func _check_fish_hover_freeze() -> void:
+	var sim := _get_sim()
+	if sim == null:
+		_fish_hover_freeze = false
+		return
+	var self_pos: Vector3 = global_position
+	for f in sim.fish:
+		if not is_instance_valid(f):
+			continue
+		# Only hovering fish (not zooming past) trigger the freeze.
+		var sp_v: Variant = f.get("speed")
+		if sp_v == null or float(sp_v) > _HOVER_FREEZE_MAX_FISH_SPEED:
+			continue
+		# Skip fry — too small to read as a threat.
+		var mat_v: Variant = f.get("maturity")
+		if mat_v != null and int(mat_v) == 0:  # MATURITY_FRY
+			continue
+		var d2: float = (f.global_position - self_pos).length_squared()
+		if d2 < _HOVER_FREEZE_RADIUS_SQ:
+			_fish_hover_freeze = true
+			# Also pull the stalks in so the visual reads as "noticed it."
+			if _eye_retract_remaining <= 0.0:
+				_eye_retract_remaining = EYE_RETRACT_DURATION * 0.6
+			return
+	_fish_hover_freeze = false
 
 
 func _check_predator_threat(dt: float) -> void:

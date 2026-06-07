@@ -12,6 +12,11 @@
 
 extends Node
 
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
+
+const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
+
 
 @onready var sub_viewport: SubViewport = $SubViewport
 @onready var display: TextureRect = $Display
@@ -48,6 +53,77 @@ extends Node
 # Focus / immersive mode — hides chrome for an unobstructed tank view.
 var _immersive_mode: bool = false
 var _immersive_exit_btn: Button = null
+var _light_btn: Button = null
+var _light_panel: PanelContainer = null
+# Top-of-panel preset picker. "custom" means "user is on their own".
+var _light_preset_option: OptionButton = null
+# --- Global section (drives the postprocess tint, sun, room) ---
+var _light_master_check: CheckBox = null
+var _light_day_cycle_check: CheckBox = null
+var _light_day_phase_slider: HSlider = null
+var _light_day_phase_value: Label = null
+var _light_day_length_slider: HSlider = null
+var _light_day_length_value: Label = null
+var _light_sunset_drama_slider: HSlider = null
+var _light_sunset_drama_value: Label = null
+var _light_global_intensity_slider: HSlider = null
+var _light_global_intensity_value: Label = null
+var _light_global_warmth_slider: HSlider = null
+var _light_global_warmth_value: Label = null
+# --- Tank fixture section (artificial light only) ---
+var _light_tank_check: CheckBox = null
+var _light_caustics_check: CheckBox = null
+var _light_fixture_intensity_slider: HSlider = null
+var _light_fixture_intensity_value: Label = null
+var _light_fixture_color_picker: ColorPickerButton = null
+# --- Accent & moonlight section ---
+var _light_moon_check: CheckBox = null
+var _light_moon_intensity_slider: HSlider = null
+var _light_moon_intensity_value: Label = null
+var _light_moon_color_picker: ColorPickerButton = null
+var _light_accent1_check: CheckBox = null
+var _light_accent1_intensity_slider: HSlider = null
+var _light_accent1_intensity_value: Label = null
+var _light_accent1_color_picker: ColorPickerButton = null
+var _light_accent2_check: CheckBox = null
+var _light_accent2_intensity_slider: HSlider = null
+var _light_accent2_intensity_value: Label = null
+var _light_accent2_color_picker: ColorPickerButton = null
+# --- Post-process section (surfaces palette_quantize uniforms) ---
+var _light_pp_vignette_slider: HSlider = null
+var _light_pp_vignette_value: Label = null
+var _light_pp_vignette_falloff_slider: HSlider = null
+var _light_pp_vignette_falloff_value: Label = null
+var _light_pp_bloom_threshold_slider: HSlider = null
+var _light_pp_bloom_threshold_value: Label = null
+var _light_pp_bloom_strength_slider: HSlider = null
+var _light_pp_bloom_strength_value: Label = null
+var _light_pp_outline_slider: HSlider = null
+var _light_pp_outline_value: Label = null
+var _light_pp_dither_slider: HSlider = null
+var _light_pp_dither_value: Label = null
+var _light_pp_crt_slider: HSlider = null
+var _light_pp_crt_value: Label = null
+var _light_pp_region_dither_check: CheckBox = null
+var _light_pp_bank_lock_check: CheckBox = null
+# --- Ambient / biolum / caustic strength (the "v2 quick wins") ---
+var _light_ambient_floor_slider: HSlider = null
+var _light_ambient_floor_value: Label = null
+var _light_biolum_slider: HSlider = null
+var _light_biolum_value: Label = null
+var _light_caustic_strength_slider: HSlider = null
+var _light_caustic_strength_value: Label = null
+# --- Per-phase color override (#14) ---
+var _light_tod_override_check: CheckBox = null
+var _light_tod_dawn_picker: ColorPickerButton = null
+var _light_tod_day_picker: ColorPickerButton = null
+var _light_tod_dusk_picker: ColorPickerButton = null
+var _light_tod_night_picker: ColorPickerButton = null
+# --- Sun direction 2D pad (#5) ---
+var _light_sun_pad: Control = null
+# Set to true while a preset is being applied programmatically so the
+# slider-change handlers don't snap the preset back to "custom".
+var _light_applying_preset: bool = false
 
 # Stat chip refs — built once in _ready, value labels updated on stats_changed.
 # Keys: "state", "fauna", "flora", "water", "alert".
@@ -145,6 +221,8 @@ const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
 var _wt_saved_time_scale: float = 1.0
 # Screen-space pick radius in SubViewport pixels (what you click on screen).
 const PICK_RADIUS_PX: float = 48.0
+# Desktop LMB: tight radius so open-water clicks feed instead of snapping to fish.
+const PICK_RADIUS_PX_CLICK: float = 26.0
 const PORTAL_PICK_RADIUS_PX: float = 72.0
 # Fingers are less precise than a mouse cursor — bump the pick radius up so
 # small fish are tappable. Applied in _pick_creature_at_viewport when touch
@@ -259,6 +337,32 @@ var _water_alert_nitrite_active: bool = false
 
 var _welcome_toast_tween: Tween = null
 
+# Panel exclusivity + modal backdrop.
+var _ui_panels: UiPanelManager = UiPanelManagerScript.new()
+
+# Consolidated rail (5 groups).
+var _rail_create_btn: Button = null
+var _rail_world_btn: Button = null
+var _rail_appearance_btn: Button = null
+var _rail_system_btn: Button = null
+var _rail_alerts_btn: Button = null
+var _rail_flyout: PanelContainer = null
+var _rail_flyout_vbox: VBoxContainer = null
+var _notif_badge: Label = null
+
+# Cheat sheet + first-session coachmarks.
+var _cheat_sheet: Control = null
+var _coachmark_overlay: Control = null
+var _coachmark_step: int = 0
+
+# Tap-to-feed: 9/0 cycles type; plain click/tap on water drops food.
+var _feed_subtype: int = WasteParticle.FOOD_SUB_PELLET
+const _FEED_TYPE_LABELS: Array[String] = [
+	"Flakes", "Pellets", "Bloodworm", "Algae wafer",
+]
+var _feed_toast: Label = null
+var _feed_toast_tween: Tween = null
+
 
 func _is_mobile() -> bool:
 	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
@@ -283,21 +387,23 @@ func _ready() -> void:
 	_sim = world.get_node_or_null("SimDriver")
 	if _sim != null and _sim.has_signal("stats_changed"):
 		_sim.connect("stats_changed", _on_stats_changed)
-	# Hook toggle buttons to the panels' toggle methods.
-	if settings_toggle != null and settings_panel != null:
-		settings_toggle.pressed.connect(settings_panel.toggle)
-	if render_toggle != null and render_panel != null:
-		render_toggle.pressed.connect(render_panel.toggle)
-	if sound_toggle != null and sound_panel != null:
-		sound_toggle.pressed.connect(sound_panel.toggle)
-	if fish_store_toggle != null and fish_store_panel != null:
-		fish_store_toggle.pressed.connect(fish_store_panel.toggle)
-	if library_toggle != null and library_panel != null:
-		library_toggle.pressed.connect(library_panel.toggle)
-	if creature_creator_toggle != null and creature_creator_panel != null:
-		creature_creator_toggle.pressed.connect(creature_creator_panel.toggle)
+	_ui_panels.setup(self)
+	# Hook rail buttons through the panel manager (exclusivity + modal backdrop).
+	if settings_toggle != null:
+		settings_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS))
+	if render_toggle != null:
+		render_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_RENDER))
+	if sound_toggle != null:
+		sound_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_SOUND))
+	if fish_store_toggle != null:
+		fish_store_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_STORE))
+	if library_toggle != null:
+		library_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY))
+	if creature_creator_toggle != null:
+		creature_creator_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_CREATOR))
 	if notifications_toggle != null:
-		notifications_toggle.pressed.connect(_toggle_notifications_panel)
+		notifications_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_NOTIFICATIONS))
+	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
 		# Launch the guided walkthrough if the tank menu flagged this tank for
@@ -325,8 +431,10 @@ func _ready() -> void:
 
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
 	_setup_hud_styling()
+	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
 	_build_hud_chips()
+	_setup_rail_groups()
 	_on_viewport_resized()
 	get_viewport().size_changed.connect(_on_viewport_resized)
 
@@ -334,6 +442,10 @@ func _ready() -> void:
 	if _is_mobile():
 		_pick_device_tier_if_unset()
 		_setup_mobile_ui()
+	call_deferred("_maybe_show_tutorial")
+	call_deferred("_maybe_show_coachmarks")
+	if controls_hint != null:
+		controls_hint.visible = false
 	# Always apply the fps cap (works on desktop too, so the user can choose
 	# a 60-fps lock to reduce GPU heat). Mobile gets a 60-fps default on first
 	# launch if no cap has been set.
@@ -501,6 +613,13 @@ func _process(dt: float) -> void:
 		if _autosave_accum >= AUTOSAVE_INTERVAL_S:
 			_autosave_accum = 0.0
 			save_active_tank(not get_window().has_focus())
+
+	# Player-glance hook. Push the camera's world position into the sim
+	# so bold fish can drift over when the player leans into the glass.
+	# Cheap (1 vec assignment + a few clamps + a distance) — runs every
+	# frame is fine. The fish.gd side only consults it on its 10 Hz tick.
+	if _sim != null and camera != null and _sim.has_method("update_player_glance"):
+		_sim.update_player_glance(camera.global_position)
 	
 	# ---- Touch: long-press detection (runs every frame while finger is down) ----
 	if _touches.size() == 1 and not _long_press_fired:
@@ -583,6 +702,8 @@ func _process(dt: float) -> void:
 			_timelapse_index += 1
 			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
 	_refresh_state_chip()
+	if _light_panel != null and _light_panel.visible:
+		_refresh_light_panel_live()
 
 
 # Extracted mouse-polling logic. Called from _process() only when touch
@@ -681,7 +802,17 @@ func _process_mouse_input(dt: float) -> void:
 		if _aquascape.is_active:
 			_handle_shortcut(KEY_BRACKETLEFT, func(): _aquascape.adjust_brush(-1))
 			_handle_shortcut(KEY_BRACKETRIGHT, func(): _aquascape.adjust_brush(1))
-		_handle_shortcut(KEY_M, _toggle_motion_debug)
+		var m_down: bool = Input.is_key_pressed(KEY_M)
+		var m_was: bool = _key_was_pressed.get(KEY_M, false)
+		if m_down and not m_was:
+			if Input.is_key_pressed(KEY_SHIFT):
+				_toggle_motion_debug()
+			else:
+				_ui_toggle_side(UiPanelManager.SIDE_SOUND)
+		_key_was_pressed[KEY_M] = m_down
+		_handle_shortcut(KEY_O, func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS))
+		_handle_shortcut(KEY_9, func(): _cycle_feed_subtype(-1))
+		_handle_shortcut(KEY_0, func(): _cycle_feed_subtype(1))
 		_handle_shortcut(KEY_F12, _take_photo)
 		_handle_shortcut(KEY_ESCAPE, _clear_follow)
 		_handle_shortcut(KEY_C, _toggle_portal)
@@ -721,49 +852,126 @@ func _project_to_surface(mouse_pos: Vector2) -> Vector3:
 	return hit
 
 
-const STARTLE_RADIUS_SQ: float = 9.0
+const GLASS_TAP_RADIUS: float = 14.0
+const GLASS_TAP_RADIUS_SQ: float = GLASS_TAP_RADIUS * GLASS_TAP_RADIUS
 
 
 func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 	if _sim == null:
 		return
-	var hit: Vector3 = _project_to_substrate(mouse_pos)
+	if _click_hits_interactive_hud(mouse_pos):
+		return
+	var hit: Vector3 = _project_to_surface(mouse_pos)
 	if hit == INVALID_HIT:
 		return
+	if world != null and world.has_method("spawn_glass_tap_ripples"):
+		world.spawn_glass_tap_ripples(hit)
+	elif world != null and world.has_method("spawn_burst_ripple"):
+		world.spawn_burst_ripple(hit, 1.75)
+	if _sim.has_method("pulse_glass_tap"):
+		_sim.pulse_glass_tap(hit)
+	_haptic(14)
 	for f in _sim.fish:
-		if not is_instance_valid(f):
+		if not is_instance_valid(f) or f.get("_dying") == true:
 			continue
-		if f.get("_dying") == true:
+		var dx: float = f.position.x - hit.x
+		var dz: float = f.position.z - hit.z
+		var d2_xz: float = dx * dx + dz * dz
+		if d2_xz > GLASS_TAP_RADIUS_SQ:
 			continue
-		if f.position.distance_squared_to(hit) > STARTLE_RADIUS_SQ:
-			continue
-		var away: Vector3 = (f.position - hit)
-		if away.length_squared() < 1e-4:
-			away = Vector3(randf_range(-1, 1), 0.1, randf_range(-1, 1))
-		away = away.normalized()
-		f.burst_remaining = 0.5
-		f.heading_offset = away * 1.4
-		f._startle_heading = away
-		f._startle_remaining = 0.4
+		var dist: float = sqrt(d2_xz)
+		var prox: float = 1.0 - clampf(dist / GLASS_TAP_RADIUS, 0.0, 1.0)
+		var away_xz: Vector3 = Vector3(dx, 0.0, dz)
+		if away_xz.length_squared() < 1e-4:
+			away_xz = Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
+		var away: Vector3 = away_xz.normalized()
+		var toward: Vector3 = -away
+		# Inner ring: some fish dart toward the tap (curiosity). Outer: flee.
+		var curious: bool = dist < 7.0 and prox > 0.42 and randf() < 0.38
+		if curious:
+			f.heading_offset = toward * lerpf(0.55, 1.1, prox)
+			f._startle_heading = toward
+			f._startle_remaining = lerpf(0.22, 0.42, prox)
+			f.burst_remaining = maxf(float(f.burst_remaining), lerpf(0.22, 0.38, prox))
+		else:
+			f.burst_remaining = maxf(float(f.burst_remaining), lerpf(0.38, 0.78, prox))
+			f.heading_offset = away * lerpf(0.9, 1.9, prox)
+			f._startle_heading = away
+			f._startle_remaining = lerpf(0.28, 0.58, prox)
+			f.stress = clampf(float(f.stress) + prox * 0.14, 0.0, 1.0)
 
 
 func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
-	if _sim == null:
+	if _sim == null or _aquascape.is_active:
+		return false
+	if display == null or not display.get_global_rect().has_point(mouse_pos):
+		return false
+	if _click_hits_interactive_hud(mouse_pos):
 		return false
 	var hit: Vector3 = _project_to_surface(mouse_pos)
 	if hit == INVALID_HIT:
 		return false
-	var count: int = randi_range(4, 6)
-	for i in count:
-		var jx: float = randf_range(-0.18, 0.18)
-		var jz: float = randf_range(-0.18, 0.18)
-		var pos: Vector3 = Vector3(hit.x + jx, hit.y - 0.02, hit.z + jz)
-		_sim._spawn_waste(pos, 0.45, 3)
-	# Remember this drop so the fish AI biases its hunting toward
-	# habitual feed spots — visible learning behavior.
-	if _sim.has_method("record_feed_drop"):
-		_sim.record_feed_drop(hit)
+	if _sim.has_method("spawn_player_food"):
+		_sim.spawn_player_food(hit, _feed_subtype)
+	else:
+		_sim._spawn_waste(hit, 0.45, WasteParticle.KIND_FOOD, _feed_subtype)
+	_alert_fish_to_feed(hit, _feed_subtype)
+	_show_feed_toast(_FEED_TYPE_LABELS[_feed_subtype])
+	_haptic(10)
 	return true
+
+
+func _cycle_feed_subtype(delta: int) -> void:
+	_feed_subtype = posmod(_feed_subtype + delta, _FEED_TYPE_LABELS.size())
+	_show_feed_toast("Food: %s (tap water to drop)" % _FEED_TYPE_LABELS[_feed_subtype])
+
+
+func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> void:
+	if _sim == null:
+		return
+	var radius_sq: float = 196.0 if food_subtype == WasteParticle.FOOD_SUB_WORM else 81.0
+	for f in _sim.fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var d2: float = f.position.distance_squared_to(hit)
+		if d2 > radius_sq:
+			continue
+		var to_food: Vector3 = hit - f.position
+		if to_food.length_squared() < 1e-4:
+			continue
+		to_food = to_food.normalized()
+		f.heading_offset = to_food * lerpf(0.5, 1.2, 1.0 - sqrt(d2 / radius_sq))
+		if food_subtype == WasteParticle.FOOD_SUB_WORM:
+			f.burst_remaining = maxf(float(f.burst_remaining), 0.55)
+			f._startle_heading = to_food
+			f._startle_remaining = 0.35
+		elif food_subtype == WasteParticle.FOOD_SUB_FLAKE and int(f.mouth_orientation) < 0:
+			f.burst_remaining = maxf(float(f.burst_remaining), 0.35)
+
+
+func _show_feed_toast(text: String) -> void:
+	if _feed_toast == null or not is_instance_valid(_feed_toast):
+		_feed_toast = Label.new()
+		_feed_toast.name = "FeedToast"
+		_feed_toast.add_theme_font_size_override("font_size", 13)
+		_feed_toast.add_theme_color_override("font_color", Color(0.95, 0.92, 0.75))
+		_feed_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_feed_toast.anchor_left = 0.5
+		_feed_toast.anchor_right = 0.5
+		_feed_toast.anchor_top = 1.0
+		_feed_toast.offset_left = -160.0
+		_feed_toast.offset_right = 160.0
+		_feed_toast.offset_top = -(_hud_bottom_inset() + 28.0)
+		_feed_toast.offset_bottom = -(_hud_bottom_inset() + 8.0)
+		_feed_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(_feed_toast)
+	if _feed_toast_tween != null and is_instance_valid(_feed_toast_tween):
+		_feed_toast_tween.kill()
+	_feed_toast.text = text
+	_feed_toast.modulate.a = 1.0
+	_feed_toast_tween = create_tween()
+	_feed_toast_tween.tween_interval(1.8)
+	_feed_toast_tween.tween_property(_feed_toast, "modulate:a", 0.0, 0.5)
 
 
 # ---- Time controls + photo mode ----
@@ -774,6 +982,35 @@ func _handle_shortcut(key: int, action: Callable) -> void:
 	if pressed and not was:
 		action.call()
 	_key_was_pressed[key] = pressed
+
+
+func _typing_focus_in_ui() -> bool:
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	return focus is LineEdit or focus is TextEdit
+
+
+func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
+	if _ui_panels != null and _ui_panels.is_modal_open():
+		return true
+	for panel in [settings_panel, render_panel, sound_panel, library_panel,
+			creature_creator_panel, fish_store_panel]:
+		if panel != null and panel.visible \
+				and panel.get_global_rect().has_point(mouse_pos):
+			return true
+	if right_rail != null and right_rail.visible \
+			and right_rail.get_global_rect().has_point(mouse_pos):
+		return true
+	if stats_bar != null and stats_bar.visible \
+			and stats_bar.get_global_rect().has_point(mouse_pos):
+		return true
+	if left_cluster != null and left_cluster.visible \
+			and left_cluster.get_global_rect().has_point(mouse_pos):
+		return true
+	var hovered: Control = get_viewport().gui_get_hovered_control()
+	if hovered != null and hovered.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+		if hovered is BaseButton:
+			return true
+	return false
 
 
 var _saved_time_scale: float = 1.0
@@ -1006,7 +1243,8 @@ func _gather_creatures() -> Array:
 	return creatures
 
 
-func _pick_creature_at_viewport(sv_pos: Vector2, creatures: Array) -> Node3D:
+func _pick_creature_at_viewport(sv_pos: Vector2, creatures: Array,
+		radius_override: float = -1.0) -> Node3D:
 	if camera == null:
 		return null
 	# Pick radius: portal mode is most permissive; touch input gets a
@@ -1014,7 +1252,9 @@ func _pick_creature_at_viewport(sv_pos: Vector2, creatures: Array) -> Node3D:
 	# desktop default. This makes small fish actually tappable on a phone
 	# without sacrificing precision when a mouse is in use.
 	var radius_px: float
-	if _portal_open:
+	if radius_override > 0.0:
+		radius_px = radius_override
+	elif _portal_open:
 		radius_px = PORTAL_PICK_RADIUS_PX
 	elif _is_touch_active():
 		radius_px = PICK_RADIUS_PX_TOUCH
@@ -1142,16 +1382,25 @@ func _update_portal_pip() -> void:
 	# at ~10 Hz instead of every frame.
 	_portal_label_skip = (_portal_label_skip + 1) % 6
 	if _portal_label_skip == 0 and _portal_info_panel != null and _portal_info_panel.visible:
-		# Name
+		# Name — prefer the persistent display_name. When personality is
+		# present we append an epithet ("Atlas the Bold") earned from the
+		# top trait, so the player sees character at a glance.
 		var c_name := ""
 		if target_node.get("fish_name") != null and String(target_node.get("fish_name")) != "":
 			c_name = String(target_node.get("fish_name"))
 		elif target_node.get("shrimp_name") != null and String(target_node.get("shrimp_name")) != "":
 			c_name = String(target_node.get("shrimp_name"))
+		elif target_node.get("snail_name") != null and String(target_node.get("snail_name")) != "":
+			c_name = String(target_node.get("snail_name"))
 		elif target_node.get("_display_name") != null and String(target_node.get("_display_name")) != "":
 			c_name = String(target_node.get("_display_name"))
 		else:
 			c_name = _creature_label(target_node).capitalize()
+		var personality_v: Variant = target_node.get("personality")
+		if personality_v is Dictionary and not (personality_v as Dictionary).is_empty():
+			var epithet: String = CreatureNaming.epithet_for_personality(personality_v)
+			if epithet != "":
+				c_name = "%s %s" % [c_name, epithet]
 		_portal_name_lbl.text = c_name
 		
 		# Lineage (Generation & Parents)
@@ -1192,6 +1441,26 @@ func _update_portal_pip() -> void:
 			sterile_str = " · Sterile"
 			
 		_portal_stats_lbl.text = "Age: %s · Hunger: %d%%%s%s" % [age_str, hunger_pct, sex_str, sterile_str]
+		# Lifetime journal — meals eaten, offspring sired. Only render when
+		# the target carries a bio dict (added by the AIDirector pass).
+		var bio_v: Variant = target_node.get("bio")
+		if bio_v is Dictionary and not (bio_v as Dictionary).is_empty():
+			var bio_d: Dictionary = bio_v
+			var meals: int = int(bio_d.get("meals_eaten", 0))
+			var kids: int = int(bio_d.get("offspring", 0))
+			var fights: int = int(bio_d.get("fights_won", 0))
+			var bio_parts: PackedStringArray = PackedStringArray()
+			if meals > 0:
+				bio_parts.append("%d %s" % [meals, "meal" if meals == 1 else "meals"])
+			if kids > 0:
+				bio_parts.append("%d %s" % [kids, "child" if kids == 1 else "children"])
+			if fights > 0:
+				bio_parts.append("%d %s won" % [fights, "fight" if fights == 1 else "fights"])
+			if bio_parts.size() > 0:
+				# Append to the existing stats line; the label is already
+				# autowrap-disabled but the text overflow shows ellipsis,
+				# which is fine — anyone curious can rescale the panel.
+				_portal_stats_lbl.text += "\n" + " · ".join(bio_parts)
 
 
 func _build_portal_info_ui() -> void:
@@ -1266,30 +1535,23 @@ func _assign_creature_target(creature: Node3D) -> void:
 		print_verbose("[walstad_loom] following %s" % _creature_label(creature))
 
 
-func _click_targets_creature() -> bool:
+func _pick_creature_at_click(screen_pos: Vector2, radius_px: float = PICK_RADIUS_PX_CLICK) -> Node3D:
 	if _aquascape.is_active:
-		return false
+		return null
 	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_SPACE):
-		return false
-	if display == null:
-		return false
-	var hovered: Control = get_viewport().gui_get_hovered_control()
-	if hovered != null and hovered != display:
-		if hovered.mouse_filter != Control.MOUSE_FILTER_IGNORE:
-			if hovered is BaseButton or hovered is PanelContainer:
-				return false
-	var gp: Vector2 = display.get_global_mouse_position()
-	if not display.get_global_rect().has_point(gp):
-		return false
-	var creatures: Array = _gather_creatures()
-	var picked: Node3D = _pick_creature_from_display(creatures)
+		return null
+	if display == null or not display.get_global_rect().has_point(screen_pos):
+		return null
+	if _click_hits_interactive_hud(screen_pos):
+		return null
+	var sv_pos: Vector2 = _window_mouse_to_viewport(screen_pos)
+	return _pick_creature_at_viewport(sv_pos, _gather_creatures(), radius_px)
+
+
+func _click_targets_creature() -> bool:
+	var picked: Node3D = _pick_creature_at_click(
+		get_viewport().get_mouse_position(), PICK_RADIUS_PX_CLICK)
 	if picked == null:
-		if _portal_open or creatures.size() > 0:
-			print_verbose("[walstad_loom] pick miss: creatures=%d mouse=%s sv=%s" % [
-				creatures.size(),
-				display.get_local_mouse_position(),
-				_window_mouse_to_viewport(get_viewport().get_mouse_position()),
-			])
 		return false
 	_assign_creature_target(picked)
 	return true
@@ -1398,6 +1660,14 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
+	if event is InputEventKey and event.pressed and not event.echo \
+			and not _typing_focus_in_ui():
+		var ek: InputEventKey = event as InputEventKey
+		if (ek.keycode == KEY_SLASH and ek.shift_pressed) or ek.keycode == KEY_QUESTION:
+			_toggle_cheat_sheet()
+			get_viewport().set_input_as_handled()
+			return
+
 	# ---- Touch events ----
 	if event is InputEventScreenTouch:
 		_handle_screen_touch(event as InputEventScreenTouch)
@@ -1419,42 +1689,47 @@ func _input(event: InputEvent) -> void:
 				radius = minf(MAX_RADIUS, radius * ZOOM_FACTOR)
 				_apply_camera()
 			elif mb.button_index == MOUSE_BUTTON_LEFT:
-				# Close history / story popups on any click outside them
-				# (chips themselves go through their own gui_input handler
-				# before this runs).
+				# Close chip popups on any click outside them (chips
+				# themselves go through their own gui_input handler before
+				# this runs, so taps that hit a chip never reach here).
+				var closed_chip_popup: bool = false
 				if _history_popup != null and _history_popup.visible \
 						and not _history_popup.get_global_rect().has_point(mb.position):
 					_history_popup.visible = false
+					closed_chip_popup = true
 				if _story_popup != null and _story_popup.visible \
 						and not _story_popup.get_global_rect().has_point(mb.position):
 					_story_popup.visible = false
+					closed_chip_popup = true
+				if _water_popup != null and _water_popup.visible \
+						and not _water_popup.get_global_rect().has_point(mb.position):
+					_water_popup.visible = false
+					closed_chip_popup = true
+				if closed_chip_popup:
+					_chip_popup_key = ""
 				if _notifications_panel != null and _notifications_panel.visible \
 						and not _notifications_panel.get_global_rect().has_point(mb.position) \
 						and notifications_toggle != null \
 						and not notifications_toggle.get_global_rect().has_point(mb.position):
 					_notifications_panel.visible = false
 					_sync_rail_toggles()
-				# Ctrl+LMB = tap-to-feed. Projects the cursor onto the water
-				# surface and drops a small cluster of food pellets there;
-				# nearby fish converge from below. Suppresses orbit so the
-				# camera doesn't yank during the feed gesture.
-				if Input.is_key_pressed(KEY_CTRL) \
-						or Input.is_key_pressed(KEY_META):
-					if _drop_food_at_cursor(mb.position):
-						_suppress_drag_until_release = true
-				# If the click hit a creature, suppress the polled orbit drag
-				# for this LMB gesture — without this, every successful pick
-				# also yanked the camera as the user moved the cursor.
-				elif _click_targets_creature():
+				if _light_panel != null and _light_panel.visible \
+						and not _light_panel.get_global_rect().has_point(mb.position) \
+						and (_light_btn == null \
+							or not _light_btn.get_global_rect().has_point(mb.position)):
+					_light_panel.visible = false
+					_sync_light_btn()
+				# LMB on a creature (tight pick) → follow. Open water → feed.
+				# Shift+LMB on water → startle (tap on glass).
+				var picked: Node3D = _pick_creature_at_click(mb.position)
+				if picked != null:
+					_assign_creature_target(picked)
 					_suppress_drag_until_release = true
-				else:
-					# Tap-glass: the click hit empty water (or the glass).
-					# Project to substrate and spook any fish within the
-					# tap radius — real fish bolt when something thuds on
-					# the glass. We don't return / consume the gesture,
-					# so the orbit drag still works if the player intended
-					# to drag the camera (a true tap = small drag_total).
+				elif Input.is_key_pressed(KEY_SHIFT):
 					_startle_fish_near_tap(mb.position)
+					_suppress_drag_until_release = true
+				elif _drop_food_at_cursor(mb.position):
+					_suppress_drag_until_release = true
 
 
 # ---- Touch gesture handlers ----
@@ -1532,10 +1807,10 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_last_tap_time = -1.0
 					print_verbose("[walstad_loom] double-tap: reset camera")
 				else:
-					# Single tap → try to pick a creature.
 					_last_tap_time = now
 					_last_tap_pos = ev.position
-					_touch_pick_creature(ev.position)
+					if not _touch_pick_creature(ev.position):
+						_drop_food_at_cursor(ev.position)
 			
 			# Check for completed edge-swipe gesture: started near right edge,
 			# moved at least EDGE_SWIPE_MIN_PX to the left. Fire BEFORE we
@@ -1544,12 +1819,11 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 				var dx: float = _edge_swipe_start_x - ev.position.x
 				if dx >= EDGE_SWIPE_MIN_PX:
 					_edge_swipe_active = false
-					if settings_panel != null and settings_panel.has_method("toggle"):
-						settings_panel.toggle()
-						_haptic(15)
-						# Treat the swipe as consumed — don't also reset camera
-						# via the tap/double-tap path.
-						_long_press_fired = true
+					_ui_toggle_side(UiPanelManager.SIDE_SETTINGS)
+					_haptic(15)
+					# Treat the swipe as consumed — don't also reset camera
+					# via the tap/double-tap path.
+					_long_press_fired = true
 				else:
 					_edge_swipe_active = false
 
@@ -1640,21 +1914,20 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 			_pan_target(avg_delta * (TOUCH_PAN_SENSITIVITY / PAN_MOUSE_SENSITIVITY))
 
 
-func _touch_pick_creature(screen_pos: Vector2) -> void:
-	# Convert touch position to SubViewport coordinates and pick.
+func _touch_pick_creature(screen_pos: Vector2) -> bool:
 	if display == null or sub_viewport == null:
-		return
+		return false
 	var sv_pos: Vector2 = _window_mouse_to_viewport(screen_pos)
 	var creatures: Array = _gather_creatures()
 	var picked: Node3D = _pick_creature_at_viewport(sv_pos, creatures)
 	if picked != null:
 		_assign_creature_target(picked)
 		print_verbose("[walstad_loom] touch-tap: picked %s" % _creature_label(picked))
-	else:
-		# Tap on empty area clears follow (replaces ESC on desktop).
-		if _follow_target != null:
-			_follow_target = null
-			print_verbose("[walstad_loom] touch-tap: cleared follow")
+		return true
+	if _follow_target != null:
+		_follow_target = null
+		print_verbose("[walstad_loom] touch-tap: cleared follow")
+	return false
 
 
 # ---- Mobile UI setup ----
@@ -2012,22 +2285,43 @@ func _build_hud_chips() -> void:
 		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112)},
 	]
 	for d in defs:
-		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color)
+		var key: String = String(d["key"])
+		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color, key)
 		bar.add_child(chip)
-		_chips[d["key"]] = chip
+		_chips[key] = chip
 		# Tapping a chip opens a sparkline popup showing the last ~2 minutes
 		# of that metric's history. PanelContainer accepts gui_input out of
 		# the box; we route the key + accent color along so the popup can
 		# title + tint itself.
-		var key: String = String(d["key"])
 		var color: Color = d["color"] as Color
 		chip.mouse_filter = Control.MOUSE_FILTER_STOP
 		chip.gui_input.connect(func(ev): _on_chip_gui_input(ev, key, color))
+	if not bool(_global_pref("chip_pulse_seen", false)):
+		call_deferred("_pulse_stat_chips_once")
+
+
+func _chip_tooltip(key: String) -> String:
+	match key:
+		"state": return "Tank time — tap for history"
+		"mood": return "Ecosystem mood — tap for story log"
+		"water": return "Water chemistry — tap for details"
+		"alert": return "Active alerts — tap for details"
+		"fish", "shrimp", "snails", "flora", "morphs": return "Population — tap for sparkline"
+	return "Tap for details"
+
+
+func _pulse_stat_chips_once() -> void:
+	for chip in _chips.values():
+		var tw := create_tween()
+		tw.set_loops(2)
+		tw.tween_property(chip, "modulate", Color(1.2, 1.2, 1.15, 1.0), 0.35)
+		tw.tween_property(chip, "modulate", Color.WHITE, 0.35)
+	_set_global_pref("chip_pulse_seen", true)
 
 
 # Construct a single chip widget. Caches the value + sublabel Labels via meta
 # so _update_chip can find them without walking the subtree on every tick.
-func _make_chip(icon: String, accent: Color) -> Control:
+func _make_chip(icon: String, accent: Color, key: String = "") -> Control:
 	var pc := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	# Chips sit inside the StatsBar's tinted panel — no fill, just a 2-px
@@ -2068,6 +2362,8 @@ func _make_chip(icon: String, accent: Color) -> Control:
 	pc.set_meta("value_label", value_lbl)
 	pc.set_meta("sublabel_label", sublabel_lbl)
 	pc.set_meta("accent", accent)
+	if not key.is_empty():
+		pc.tooltip_text = _chip_tooltip(key)
 	return pc
 
 
@@ -2219,11 +2515,16 @@ func _adaptive_quality_tick(dt: float) -> void:
 #   day_phase 0.00 (dawn)    → warm rose
 #   day_phase 0.25 (midday)  → neutral 1,1,1
 #   day_phase 0.50 (dusk)    → amber
-#   day_phase 0.75 (midnight)→ cool blue
-const _TOD_DAWN: Vector3 = Vector3(1.08, 0.95, 0.90)
+#   day_phase 0.75 (midnight)→ dark cool blue (actually dark this time)
+#
+# Anchors below set the BASE tint per phase. The Light panel's intensity /
+# warmth / master controls then multiply on top so the user gets visible
+# feedback when they touch the sliders. _TOD_NIGHT used to be (0.78, 0.86,
+# 1.04) which just shifted hue without darkening — night looked like day.
+const _TOD_DAWN: Vector3 = Vector3(1.02, 0.88, 0.82)
 const _TOD_DAY: Vector3 = Vector3(1.00, 1.00, 1.00)
-const _TOD_DUSK: Vector3 = Vector3(1.06, 0.88, 0.80)
-const _TOD_NIGHT: Vector3 = Vector3(0.78, 0.86, 1.04)
+const _TOD_DUSK: Vector3 = Vector3(1.04, 0.82, 0.70)
+const _TOD_NIGHT: Vector3 = Vector3(0.38, 0.42, 0.52)
 
 
 func _update_palette_tod_tint() -> void:
@@ -2232,17 +2533,56 @@ func _update_palette_tod_tint() -> void:
 	var phase: float = 0.25  # default to midday if no sim yet
 	if _sim != null and _sim.get("day_phase") != null:
 		phase = fposmod(float(_sim.day_phase), 1.0)
+	# Pick the four anchor tints — built-in unless the user has overridden
+	# them in the per-phase color section of the Light panel.
+	var cfg_pre := get_node_or_null("/root/TankConfig")
+	var dawn_v: Vector3 = _TOD_DAWN
+	var day_v: Vector3 = _TOD_DAY
+	var dusk_v: Vector3 = _TOD_DUSK
+	var night_v: Vector3 = _TOD_NIGHT
+	if cfg_pre != null and bool(cfg_pre.tod_use_overrides):
+		dawn_v = Vector3(cfg_pre.tod_dawn_color.r, cfg_pre.tod_dawn_color.g, cfg_pre.tod_dawn_color.b)
+		day_v = Vector3(cfg_pre.tod_day_color.r, cfg_pre.tod_day_color.g, cfg_pre.tod_day_color.b)
+		dusk_v = Vector3(cfg_pre.tod_dusk_color.r, cfg_pre.tod_dusk_color.g, cfg_pre.tod_dusk_color.b)
+		night_v = Vector3(cfg_pre.tod_night_color.r, cfg_pre.tod_night_color.g, cfg_pre.tod_night_color.b)
 	# Four-segment lerp on the unit circle: 0→0.25 dawn→day, 0.25→0.5 day→dusk,
 	# 0.5→0.75 dusk→night, 0.75→1 night→dawn.
 	var t: Vector3
 	if phase < 0.25:
-		t = _TOD_DAWN.lerp(_TOD_DAY, phase / 0.25)
+		t = dawn_v.lerp(day_v, phase / 0.25)
 	elif phase < 0.5:
-		t = _TOD_DAY.lerp(_TOD_DUSK, (phase - 0.25) / 0.25)
+		t = day_v.lerp(dusk_v, (phase - 0.25) / 0.25)
 	elif phase < 0.75:
-		t = _TOD_DUSK.lerp(_TOD_NIGHT, (phase - 0.5) / 0.25)
+		t = dusk_v.lerp(night_v, (phase - 0.5) / 0.25)
 	else:
-		t = _TOD_NIGHT.lerp(_TOD_DAWN, (phase - 0.75) / 0.25)
+		t = night_v.lerp(dawn_v, (phase - 0.75) / 0.25)
+	# Apply user controls so the sliders are NOT cosmetic. Order matters:
+	#   1. Intensity scales overall brightness (cfg.light_energy 0..1).
+	#   2. Warmth nudges hue between cool and warm (cfg.light_warmth 0..1).
+	#   3. Master kill switch overrides everything → near-black.
+	# Defaults preserve the legacy feel when sliders sit at their mid-points.
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		# Global intensity is a 2-segment curve anchored at 0.5 → 1.0 so saved
+		# tanks keep their look. Below 0.5 the scene dims down toward 0.15;
+		# above 0.5 it lifts to 1.4 for an over-bright "noon" feel.
+		var e: float = clampf(float(cfg.global_intensity), 0.0, 1.0)
+		var bright: float = (0.15 + (e / 0.5) * 0.85) if e <= 0.5 \
+			else (1.0 + ((e - 0.5) / 0.5) * 0.25)
+		t *= bright
+		# Warmth tint: 0.0 cools (boost blue, drop red), 1.0 warms (boost red,
+		# drop blue). 0.5 is neutral. Effect is multiplicative on top of the
+		# phase tint so dusk + max warmth reads as a deep amber.
+		var warmth: float = clampf(float(cfg.global_warmth), 0.0, 1.0)
+		var warm_mod: Vector3 = Vector3(
+			lerpf(0.90, 1.06, warmth),  # red
+			lerpf(0.96, 1.00, warmth),  # green
+			lerpf(1.06, 0.86, warmth))  # blue (inverse)
+		t *= warm_mod
+		# Master off: the tank effectively goes black. Tiny ambient floor so
+		# silhouettes are still readable enough to find the rail buttons.
+		if not bool(cfg.light_master_enabled):
+			t = Vector3(0.04, 0.04, 0.07)
 	var mat: ShaderMaterial = display.material as ShaderMaterial
 	mat.set_shader_parameter("palette_tint", t)
 	# Drive the day/night palette blend off the same daylight curve the
@@ -2252,7 +2592,41 @@ func _update_palette_tod_tint() -> void:
 	if _sim != null and _sim.has_method("daylight"):
 		dl = float(_sim.daylight())
 	var night_blend: float = smoothstep(0.05, 0.55, 1.0 - dl)
+	if _sim != null:
+		var sunset_hour: float = clampf(
+			1.0 - absf(fposmod(float(_sim.day_phase), 1.0) - 0.5) / 0.12, 0.0, 1.0)
+		night_blend *= 1.0 - sunset_hour * 0.28
+		var deep_night: float = 1.0 - smoothstep(0.08, 0.38, dl)
+		var tank_on: bool = cfg == null or cfg.tank_lights_on
+		if tank_on and deep_night > 0.35:
+			night_blend *= lerpf(1.0, 0.38, smoothstep(0.35, 1.0, deep_night))
+			mat.set_shader_parameter("bloom_strength", 0.85 + deep_night * 0.14)
+			mat.set_shader_parameter("bloom_threshold", 0.68 - deep_night * 0.14)
+		else:
+			mat.set_shader_parameter("bloom_strength", 0.85)
+			mat.set_shader_parameter("bloom_threshold", 0.68)
 	mat.set_shader_parameter("palette_night_blend", night_blend)
+	# Push user-controlled post-process uniforms every tick. Cheap (constant
+	# count of small uniforms) and lets the sliders react live.
+	if cfg != null:
+		mat.set_shader_parameter("vignette_strength", float(cfg.pp_vignette_strength))
+		mat.set_shader_parameter("vignette_falloff", float(cfg.pp_vignette_falloff))
+		# Bloom + outline + dither + CRT only override the defaults when the
+		# user has actually moved them off the legacy values (we still set
+		# every frame for simplicity — the shader handles 0 gracefully).
+		mat.set_shader_parameter("outline_strength", float(cfg.outline_strength))
+		mat.set_shader_parameter("dither_strength", float(cfg.dither_strength))
+		mat.set_shader_parameter("crt_strength", float(cfg.crt_strength))
+		mat.set_shader_parameter("region_aware_dither",
+			1.0 if cfg.dither_region_aware else 0.0)
+		mat.set_shader_parameter("palette_bank_lock",
+			1.0 if cfg.palette_bank_lock else 0.0)
+		# Bloom is now a real user control — always push the slider value so
+		# the panel feels responsive. The dynamic night-bloom boost is
+		# preserved by the per-section logic above, which writes BEFORE this
+		# line — so we override it with the user's pick if they touched it.
+		mat.set_shader_parameter("bloom_strength", float(cfg.pp_bloom_strength))
+		mat.set_shader_parameter("bloom_threshold", float(cfg.pp_bloom_threshold))
 
 
 func _apply_display_layout() -> void:
@@ -2384,6 +2758,7 @@ func _sync_rail_toggles() -> void:
 	h = h * 31 + int(settings_panel != null and settings_panel.visible)
 	h = h * 31 + int(render_panel != null and render_panel.visible)
 	h = h * 31 + int(sound_panel != null and sound_panel.visible)
+	h = h * 31 + int(_light_panel != null and _light_panel.visible)
 	h = h * 31 + int(fish_store_panel != null and fish_store_panel.visible)
 	h = h * 31 + int(library_panel != null and library_panel.visible)
 	h = h * 31 + int(creature_creator_panel != null and creature_creator_panel.visible)
@@ -2391,40 +2766,30 @@ func _sync_rail_toggles() -> void:
 	if h == _last_rail_sync_hash:
 		return
 	_last_rail_sync_hash = h
-	if portal_toggle != null:
-		PanelTheme.style_rail_button(portal_toggle, _portal_open)
-	if aquascape_toggle != null:
-		PanelTheme.style_rail_button(aquascape_toggle, _aquascape.is_active)
-	if settings_toggle != null:
-		PanelTheme.style_rail_button(settings_toggle,
+	if _rail_create_btn != null:
+		var create_on: bool = (creature_creator_panel != null and creature_creator_panel.visible) \
+			or (fish_store_panel != null and fish_store_panel.visible) \
+			or (library_panel != null and library_panel.visible)
+		PanelTheme.style_rail_button(_rail_create_btn, create_on)
+	if _rail_world_btn != null:
+		PanelTheme.style_rail_button(_rail_world_btn, _portal_open or _aquascape.is_active)
+	if _rail_appearance_btn != null:
+		var look_on: bool = (_light_panel != null and _light_panel.visible) \
+			or (render_panel != null and render_panel.visible) \
+			or (sound_panel != null and sound_panel.visible)
+		PanelTheme.style_rail_button(_rail_appearance_btn, look_on)
+	if _rail_system_btn != null:
+		PanelTheme.style_rail_button(_rail_system_btn,
 			settings_panel != null and settings_panel.visible)
-	if render_toggle != null:
-		PanelTheme.style_rail_button(render_toggle,
-			render_panel != null and render_panel.visible)
-	if sound_toggle != null:
-		PanelTheme.style_rail_button(sound_toggle,
-			sound_panel != null and sound_panel.visible)
-	if fish_store_toggle != null:
-		PanelTheme.style_rail_button(fish_store_toggle,
-			fish_store_panel != null and fish_store_panel.visible)
-	if library_toggle != null:
-		PanelTheme.style_rail_button(library_toggle,
-			library_panel != null and library_panel.visible)
-	if creature_creator_toggle != null:
-		PanelTheme.style_rail_button(creature_creator_toggle,
-			creature_creator_panel != null and creature_creator_panel.visible)
-	if notifications_toggle != null:
-		PanelTheme.style_rail_button(notifications_toggle,
-			_notifications_panel != null and _notifications_panel.visible)
+	_update_notification_badge()
 	_apply_rail_button_labels(_rail_dock == "bottom")
 
 
 func _ordered_rail_buttons() -> Array[Button]:
 	var out: Array[Button] = []
 	for btn in [
-		portal_toggle, aquascape_toggle, creature_creator_toggle,
-		fish_store_toggle, library_toggle, notifications_toggle,
-		render_toggle, sound_toggle, settings_toggle,
+		_rail_create_btn, _rail_world_btn, _rail_appearance_btn,
+		_rail_system_btn, _rail_alerts_btn,
 	]:
 		if btn != null:
 			out.append(btn)
@@ -2625,6 +2990,13 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	var mb: InputEventMouseButton = ev
 	if not mb.pressed or mb.button_index != MOUSE_BUTTON_LEFT:
 		return
+	# Clicking the same chip twice closes the open popup; clicking a different
+	# chip swaps the popup over. Both paths funnel through _close_chip_popups
+	# so we never leave two modals stacked on top of each other.
+	var was_open: bool = _chip_popup_key == key
+	_close_chip_popups()
+	if was_open:
+		return
 	# Mood chip opens the story log instead of a sparkline. The aggregate
 	# "how is the tank doing" feel routes naturally to "what happened in
 	# this tank's life so far."
@@ -2640,14 +3012,244 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	_show_history_popup(hist_key, key, color)
 
 
-func _toggle_notifications_panel() -> void:
+# Tracks which chip's popup is currently open (mood/water/<history-key>).
+# Empty string when nothing is open.
+var _chip_popup_key: String = ""
+
+
+func _close_chip_popups() -> void:
+	if _history_popup != null and _history_popup.visible:
+		_history_popup.visible = false
+	if _story_popup != null and _story_popup.visible:
+		_story_popup.visible = false
+	if _water_popup != null and _water_popup.visible:
+		_water_popup.visible = false
+	_chip_popup_key = ""
+
+
+func _ui_toggle_side(id: String) -> void:
+	_ui_panels.toggle_side(id)
+	_sync_rail_toggles()
+
+
+func _ui_toggle_modal(id: String) -> void:
+	_ui_panels.toggle_modal(id)
+	_sync_rail_toggles()
+
+
+func _on_modal_closed(id: String) -> void:
+	_ui_panels.notify_modal_closed(id)
+	_sync_rail_toggles()
+
+
+func _ui_open_side(id: String) -> void:
+	_ui_panels.open_side(id)
+	_sync_rail_toggles()
+
+
+func _setup_panel_close_hooks() -> void:
+	for panel in [settings_panel, render_panel, sound_panel]:
+		if panel != null:
+			panel.visibility_changed.connect(_on_managed_panel_visibility_changed)
+
+
+func _on_managed_panel_visibility_changed() -> void:
+	if settings_panel != null and not settings_panel.visible:
+		_ui_panels.notify_side_closed(UiPanelManager.SIDE_SETTINGS)
+	if render_panel != null and not render_panel.visible:
+		_ui_panels.notify_side_closed(UiPanelManager.SIDE_RENDER)
+	if sound_panel != null and not sound_panel.visible:
+		_ui_panels.notify_side_closed(UiPanelManager.SIDE_SOUND)
+	_sync_rail_toggles()
+
+
+func _open_light_panel_exclusive() -> void:
+	_ensure_light_panel()
+	if _light_panel == null:
+		return
+	_pull_light_panel_values()
+	_light_panel.visible = true
+	_light_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	call_deferred("_position_light_panel")
+	_sync_light_btn()
+
+
+func _close_light_panel() -> void:
+	if _light_panel != null and _light_panel.visible:
+		_light_panel.visible = false
+		_light_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_sync_light_btn()
+
+
+func _open_notifications_panel_exclusive() -> void:
 	_ensure_notifications_ui()
 	if _notifications_panel == null:
 		return
-	_notifications_panel.visible = not _notifications_panel.visible
-	if _notifications_panel.visible:
-		_refresh_notifications_panel()
-	_sync_rail_toggles()
+	_notifications_panel.visible = true
+	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_refresh_notifications_panel()
+
+
+func _close_notifications_panel() -> void:
+	if _notifications_panel != null:
+		_notifications_panel.visible = false
+		_notifications_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+
+func _toggle_notifications_panel() -> void:
+	_ui_toggle_side(UiPanelManager.SIDE_NOTIFICATIONS)
+
+
+func _global_pref(key: String, default_val: Variant) -> Variant:
+	var cfg := ConfigFile.new()
+	if cfg.load(GLOBAL_PREFS_PATH) == OK:
+		return cfg.get_value("app", key, default_val)
+	return default_val
+
+
+func _set_global_pref(key: String, value: Variant) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(GLOBAL_PREFS_PATH)
+	cfg.set_value("app", key, value)
+	cfg.save(GLOBAL_PREFS_PATH)
+
+
+func _setup_rail_groups() -> void:
+	if _rail_vbox == null:
+		return
+	# Hide legacy per-feature rail buttons; group flyouts replace them.
+	for btn in [
+		portal_toggle, aquascape_toggle, creature_creator_toggle,
+		fish_store_toggle, library_toggle, notifications_toggle,
+		_light_btn, render_toggle, sound_toggle, settings_toggle,
+	]:
+		if btn != null:
+			btn.visible = false
+	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator \
+		if right_cluster != null else null
+	if divider != null:
+		divider.visible = false
+
+	_rail_create_btn = _make_rail_group_button("create", "Create")
+	_rail_world_btn = _make_rail_group_button("world", "World")
+	_rail_appearance_btn = _make_rail_group_button("appearance", "Look")
+	_rail_system_btn = _make_rail_group_button("system", "System")
+	_rail_alerts_btn = _make_rail_group_button("alerts", "Alerts")
+	for gb in [_rail_create_btn, _rail_world_btn, _rail_appearance_btn, _rail_system_btn, _rail_alerts_btn]:
+		if gb != null:
+			_rail_vbox.add_child(gb)
+
+	_rail_flyout = PanelContainer.new()
+	_rail_flyout.name = "RailFlyout"
+	_rail_flyout.visible = false
+	_rail_flyout.mouse_filter = Control.MOUSE_FILTER_STOP
+	_rail_flyout.z_index = 120
+	PanelTheme.apply_panel_chrome(_rail_flyout)
+	add_child(_rail_flyout)
+	_rail_flyout_vbox = VBoxContainer.new()
+	_rail_flyout_vbox.add_theme_constant_override("separation", 4)
+	_rail_flyout.add_child(_rail_flyout_vbox)
+
+	_notif_badge = Label.new()
+	_notif_badge.text = ""
+	_notif_badge.add_theme_font_size_override("font_size", 9)
+	_notif_badge.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35))
+	_notif_badge.position = Vector2(34, 2)
+	_notif_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if _rail_alerts_btn != null:
+		_rail_alerts_btn.add_child(_notif_badge)
+
+
+func _make_rail_group_button(group_id: String, _label: String) -> Button:
+	var btn := Button.new()
+	btn.name = "RailGroup_%s" % group_id
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(PanelTheme.RAIL_BUTTON, PanelTheme.RAIL_BUTTON)
+	UiIcons.apply_rail_button(btn, group_id, _is_mobile())
+	btn.pressed.connect(func(): _toggle_rail_flyout(group_id, btn))
+	PanelTheme.style_rail_button(btn, false)
+	return btn
+
+
+func _toggle_rail_flyout(group_id: String, anchor: Button) -> void:
+	if _rail_flyout == null or _rail_flyout_vbox == null:
+		return
+	if _rail_flyout.visible and _rail_flyout.has_meta("group") \
+			and String(_rail_flyout.get_meta("group")) == group_id:
+		_rail_flyout.visible = false
+		return
+	for c in _rail_flyout_vbox.get_children():
+		c.queue_free()
+	_rail_flyout.set_meta("group", group_id)
+	var items: Array[Dictionary] = _rail_flyout_items(group_id)
+	for item in items:
+		var b := Button.new()
+		b.text = String(item.get("label", "?"))
+		b.tooltip_text = String(item.get("tip", ""))
+		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		b.custom_minimum_size = Vector2(200, 36)
+		b.pressed.connect(func():
+			_rail_flyout.visible = false
+			var action: Callable = item.get("action")
+			if action.is_valid():
+				action.call())
+		_rail_flyout_vbox.add_child(b)
+	_rail_flyout.visible = true
+	var grect: Rect2 = anchor.get_global_rect()
+	_rail_flyout.global_position = Vector2(grect.position.x - 210.0, grect.position.y)
+	_rail_flyout.size = Vector2(200, 8 + items.size() * 40)
+
+
+func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
+	match group_id:
+		"create":
+			return [
+				{"label": "Creature Creator", "tip": "Design fish, shrimp, plants…",
+					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_CREATOR)},
+				{"label": "Fish Store", "tip": "Buy procedurally generated fish",
+					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_STORE)},
+				{"label": "Life Library", "tip": "Discovered species collection",
+					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY)},
+			]
+		"world":
+			return [
+				{"label": "Aquascape", "tip": "Sculpt substrate and hardscape (B)",
+					"action": _toggle_aquascape},
+				{"label": "Follow Portal", "tip": "Creature picture-in-picture (C)",
+					"action": _toggle_portal},
+			]
+		"appearance":
+			return [
+				{"label": "Lighting", "tip": "Sun, day cycle, post-process",
+					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_LIGHT)},
+				{"label": "Rendering", "tip": "Resolution, fog, MSAA (R)",
+					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_RENDER)},
+				{"label": "Sound Studio", "tip": "Procedural music (M)",
+					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_SOUND)},
+			]
+		"system":
+			return [
+				{"label": "Settings", "tip": "Tank shape, stocking, AI (O)",
+					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS)},
+			]
+		"alerts":
+			return [
+				{"label": "Notifications", "tip": "Events, discoveries, alerts",
+					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_NOTIFICATIONS)},
+			]
+	return []
+
+
+func _update_notification_badge() -> void:
+	if _notif_badge == null:
+		return
+	var unread: int = 0
+	for n in _notifications:
+		if not bool(n.get("read", false)):
+			unread += 1
+	_notif_badge.text = str(unread) if unread > 0 else ""
+	if _rail_alerts_btn != null:
+		PanelTheme.style_rail_button(_rail_alerts_btn, unread > 0)
 
 
 func _ensure_notifications_ui() -> void:
@@ -2917,9 +3519,11 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 		"meta": meta,
 	}
 	_notification_next_id += 1
+	notif["read"] = false
 	_notifications.append(notif)
 	if _notifications.size() > NOTIF_MAX_HISTORY:
 		_notifications.pop_front()
+	_update_notification_badge()
 	if show_toast:
 		_notification_toast_queue.append(notif)
 		_pump_notification_toast_queue()
@@ -3141,6 +3745,7 @@ func _show_story_popup(_chip_color: Color) -> void:
 	_story_popup.position = Vector2(
 		(vp.x - _story_popup.size.x) * 0.5, 56.0)
 	_story_popup.visible = true
+	_chip_popup_key = "mood"
 
 
 var _water_popup: PanelContainer = null
@@ -3151,6 +3756,8 @@ func _ensure_water_popup() -> void:
 	if _water_popup != null:
 		return
 	_water_popup = PanelContainer.new()
+	_water_popup.visible = false
+	_water_popup.mouse_filter = Control.MOUSE_FILTER_STOP
 	_water_popup.custom_minimum_size = Vector2(220, 120)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
@@ -3182,6 +3789,7 @@ func _show_water_chemistry_popup(_chip_color: Color) -> void:
 	_water_popup.size = _water_popup.custom_minimum_size
 	_water_popup.position = Vector2((vp.x - _water_popup.size.x) * 0.5, 56.0)
 	_water_popup.visible = true
+	_chip_popup_key = "water"
 
 
 # Render an elapsed sim-time into a short "Xm" / "Xh Ym" string for the
@@ -3343,6 +3951,7 @@ func _show_history_popup(hist_key: String, chip_key: String, color: Color) -> vo
 		56.0,
 	)
 	_history_popup.visible = true
+	_chip_popup_key = chip_key
 
 
 # Tight number formatter: integers as-is, fractions to 2 decimals.
@@ -3385,6 +3994,1090 @@ func _day_label(p: float) -> String:
 	elif p < 0.5: return "dusk"
 	elif p < 0.875: return "night"
 	else: return "dawn"
+
+
+func _is_night_time() -> bool:
+	if _sim == null:
+		return false
+	var p: float = fposmod(float(_sim.day_phase), 1.0)
+	return p >= 0.5 and p < 0.875
+
+
+func _add_tank_lights_toggle() -> void:
+	# Always-visible Light rail button. Click opens _light_panel where the
+	# tank-lights toggle, intensity, warmth, and caustics live together.
+	if _rail_vbox == null:
+		return
+	_light_btn = Button.new()
+	_light_btn.name = "LightToggle"
+	_light_btn.focus_mode = Control.FOCUS_NONE
+	_light_btn.pressed.connect(_toggle_light_panel)
+	_rail_vbox.add_child(_light_btn)
+	# Slot between Notifications and the RailDivider so it groups with the
+	# transient alert-style toggles, not the settings cluster below.
+	var notif_idx: int = notifications_toggle.get_index() if notifications_toggle != null else -1
+	if notif_idx >= 0:
+		_rail_vbox.move_child(_light_btn, notif_idx + 1)
+	UiIcons.apply_rail_button(_light_btn, "light", _is_mobile())
+	PanelTheme.style_rail_button(_light_btn, false)
+
+
+func _toggle_light_panel() -> void:
+	_ui_toggle_side(UiPanelManager.SIDE_LIGHT)
+
+
+func _ensure_light_panel() -> void:
+	if _light_panel != null and is_instance_valid(_light_panel):
+		return
+	_light_panel = PanelContainer.new()
+	_light_panel.name = "LightPanel"
+	_light_panel.visible = false
+	_light_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_light_panel.custom_minimum_size = Vector2(380, 0)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.07, 0.12, 0.95)
+	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 14
+	style.content_margin_right = 14
+	style.content_margin_top = 12
+	style.content_margin_bottom = 12
+	style.shadow_color = Color(0, 0, 0, 0.45)
+	style.shadow_size = 10
+	style.shadow_offset = Vector2(0, 6)
+	_light_panel.add_theme_stylebox_override("panel", style)
+	add_child(_light_panel)
+
+	# Panel grew quite tall (preset row + 4 sections) so wrap the body in a
+	# ScrollContainer; the panel itself is height-capped in _position_light_panel.
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 8)
+	_light_panel.add_child(outer)
+
+	var title := Label.new()
+	title.text = "Light"
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(0.96, 0.97, 0.99))
+	outer.add_child(title)
+
+	# Preset row: dropdown at the top so users can grab a curated look in
+	# one click. Selecting a non-custom preset applies its values; touching
+	# any slider/checkbox snaps back to "custom" (via _light_applying_preset
+	# guard).
+	var preset_row := HBoxContainer.new()
+	preset_row.add_theme_constant_override("separation", 8)
+	outer.add_child(preset_row)
+	var preset_lbl := Label.new()
+	preset_lbl.text = "Preset"
+	preset_lbl.custom_minimum_size = Vector2(72, 0)
+	preset_row.add_child(preset_lbl)
+	_light_preset_option = OptionButton.new()
+	_light_preset_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_light_preset_option.add_item("Custom")
+	_light_preset_option.set_item_metadata(0, "custom")
+	for key in TankConfig.LIGHTING_PRESETS.keys():
+		var preset: Dictionary = TankConfig.LIGHTING_PRESETS[key]
+		_light_preset_option.add_item(String(preset.get("label", key)))
+		_light_preset_option.set_item_metadata(_light_preset_option.item_count - 1, key)
+	_light_preset_option.item_selected.connect(_on_lighting_preset_selected)
+	preset_row.add_child(_light_preset_option)
+	# Randomize button — picks a preset at random and jitters the values
+	# so successive presses still give variety.
+	var random_btn := Button.new()
+	random_btn.text = "🎲"
+	random_btn.tooltip_text = "Randomize lighting (picks a preset and jitters its values)"
+	random_btn.custom_minimum_size = Vector2(36, 0)
+	random_btn.focus_mode = Control.FOCUS_NONE
+	random_btn.pressed.connect(_on_lighting_randomize_pressed)
+	preset_row.add_child(random_btn)
+
+	# Scroll body — every section gets added to `vbox` inside the scroll.
+	# ScrollContainer's natural vertical size is 0; without a min height
+	# it collapses to a single pixel and the user sees only the preset row.
+	# Give it a generous height that _position_light_panel can re-clamp once
+	# the viewport size is known.
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(0, 560)
+	outer.add_child(scroll)
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+	# Stash so _position_light_panel can resize it to fit the viewport.
+	_light_panel.set_meta("scroll_container", scroll)
+
+	# ---- Global section ----
+	_add_light_section(vbox, "Global")
+
+	_light_master_check = CheckBox.new()
+	_light_master_check.text = "Lights enabled (master)"
+	_light_master_check.toggled.connect(_on_light_master_toggled)
+	vbox.add_child(_light_master_check)
+	_attach_reset(_light_master_check, "light_master_enabled")
+
+	_light_day_cycle_check = CheckBox.new()
+	_light_day_cycle_check.text = "Day / night cycle running"
+	_light_day_cycle_check.toggled.connect(_on_day_cycle_toggled)
+	vbox.add_child(_light_day_cycle_check)
+	_attach_reset(_light_day_cycle_check, "day_cycle_enabled")
+
+	_light_day_phase_value = Label.new()
+	_light_day_phase_slider = PanelTheme.add_slider_row(
+		vbox, "Day phase (dawn→noon→dusk→night)", 0.0, 1.0, 0.01,
+		_light_day_phase_value)
+	_light_day_phase_slider.value_changed.connect(_on_day_phase_changed)
+	# (No reset — day phase is sim runtime state, not a user-default.)
+
+	_light_day_length_value = Label.new()
+	_light_day_length_slider = PanelTheme.add_slider_row(
+		vbox, "Day length (seconds)", 30.0, 3600.0, 15.0, _light_day_length_value)
+	_light_day_length_slider.value_changed.connect(_on_day_length_changed)
+	_attach_reset(_light_day_length_slider, "day_length_s")
+
+	_light_sunset_drama_value = Label.new()
+	_light_sunset_drama_slider = PanelTheme.add_slider_row(
+		vbox, "Sunset drama", 0.0, 2.5, 0.05, _light_sunset_drama_value)
+	_light_sunset_drama_slider.value_changed.connect(_on_sunset_drama_changed)
+	_attach_reset(_light_sunset_drama_slider, "sunset_drama")
+
+	_light_global_intensity_value = Label.new()
+	_light_global_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Global intensity", 0.0, 1.0, 0.05, _light_global_intensity_value)
+	_light_global_intensity_slider.value_changed.connect(_on_global_intensity_changed)
+	_attach_reset(_light_global_intensity_slider, "global_intensity")
+
+	_light_global_warmth_value = Label.new()
+	_light_global_warmth_slider = PanelTheme.add_slider_row(
+		vbox, "Global warmth (cool→warm)", 0.0, 1.0, 0.05, _light_global_warmth_value)
+	_light_global_warmth_slider.value_changed.connect(_on_global_warmth_changed)
+	_attach_reset(_light_global_warmth_slider, "global_warmth")
+
+	_light_ambient_floor_value = Label.new()
+	_light_ambient_floor_slider = PanelTheme.add_slider_row(
+		vbox, "Ambient floor (dark-floor lift)", 0.0, 1.0, 0.05, _light_ambient_floor_value)
+	_light_ambient_floor_slider.value_changed.connect(_on_ambient_floor_changed)
+	_attach_reset(_light_ambient_floor_slider, "ambient_floor")
+
+	_light_biolum_value = Label.new()
+	_light_biolum_slider = PanelTheme.add_slider_row(
+		vbox, "Bioluminescence ×", 0.0, 3.0, 0.1, _light_biolum_value)
+	_light_biolum_slider.value_changed.connect(_on_biolum_changed)
+	_attach_reset(_light_biolum_slider, "biolum_multiplier")
+
+	# Sun direction 2D pad. Click/drag inside the box to set yaw (X axis) and
+	# pitch (Y axis). The pad mirrors cfg.light_yaw + cfg.light_pitch and
+	# replaces the two separate sliders that used to live in Settings.
+	_light_sun_pad = _make_sun_direction_pad(vbox)
+
+	# Phase chips — quick jump-to-anchor buttons under the Day phase slider.
+	# Trivial code, big convenience: tap to land on dawn/noon/dusk/midnight.
+	var chip_row := HBoxContainer.new()
+	chip_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(chip_row)
+	var chip_lbl := Label.new()
+	chip_lbl.text = "Jump"
+	chip_lbl.custom_minimum_size = Vector2(160, 0)
+	chip_row.add_child(chip_lbl)
+	for chip in [
+		{"label": "Dawn", "phase": 0.0},
+		{"label": "Noon", "phase": 0.25},
+		{"label": "Dusk", "phase": 0.5},
+		{"label": "Night", "phase": 0.75},
+	]:
+		var b := Button.new()
+		b.text = String(chip["label"])
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var p: float = float(chip["phase"])
+		b.pressed.connect(func(): _jump_to_phase(p))
+		chip_row.add_child(b)
+
+	# ---- Tank fixture section ----
+	_add_light_section(vbox, "Tank fixture")
+
+	_light_tank_check = CheckBox.new()
+	_light_tank_check.text = "Tank lights on (artificial fixture at night)"
+	_light_tank_check.toggled.connect(_on_light_tank_toggled)
+	vbox.add_child(_light_tank_check)
+	_attach_reset(_light_tank_check, "tank_lights_on")
+
+	_light_fixture_intensity_value = Label.new()
+	_light_fixture_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Fixture intensity", 0.0, 1.0, 0.05, _light_fixture_intensity_value)
+	_light_fixture_intensity_slider.value_changed.connect(_on_fixture_intensity_changed)
+	_attach_reset(_light_fixture_intensity_slider, "tank_fixture_intensity")
+
+	_light_fixture_color_picker = _make_color_row(vbox, "Fixture color",
+		_on_fixture_color_changed)
+	_attach_reset(_light_fixture_color_picker, "tank_fixture_color")
+
+	_light_caustics_check = CheckBox.new()
+	_light_caustics_check.text = "Show surface caustics"
+	_light_caustics_check.toggled.connect(_on_light_caustics_toggled)
+	vbox.add_child(_light_caustics_check)
+	_attach_reset(_light_caustics_check, "light_caustics")
+
+	_light_caustic_strength_value = Label.new()
+	_light_caustic_strength_slider = PanelTheme.add_slider_row(
+		vbox, "Caustic intensity ×", 0.0, 2.0, 0.05, _light_caustic_strength_value)
+	_light_caustic_strength_slider.value_changed.connect(_on_caustic_strength_changed)
+	_attach_reset(_light_caustic_strength_slider, "caustic_intensity_user")
+
+	# ---- Accent & moonlight section ----
+	_add_light_section(vbox, "Accent & moonlight")
+
+	_light_moon_check = CheckBox.new()
+	_light_moon_check.text = "Moonlight (cool nighttime fill)"
+	_light_moon_check.toggled.connect(_on_moon_toggled)
+	vbox.add_child(_light_moon_check)
+	_attach_reset(_light_moon_check, "moonlight_enabled")
+	_light_moon_intensity_value = Label.new()
+	_light_moon_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Moon intensity", 0.0, 1.0, 0.05, _light_moon_intensity_value)
+	_light_moon_intensity_slider.value_changed.connect(_on_moon_intensity_changed)
+	_attach_reset(_light_moon_intensity_slider, "moonlight_intensity")
+	_light_moon_color_picker = _make_color_row(vbox, "Moon color", _on_moon_color_changed)
+	_attach_reset(_light_moon_color_picker, "moonlight_color")
+
+	_light_accent1_check = CheckBox.new()
+	_light_accent1_check.text = "Accent 1 (front-left, mid-water)"
+	_light_accent1_check.toggled.connect(_on_accent1_toggled)
+	vbox.add_child(_light_accent1_check)
+	_attach_reset(_light_accent1_check, "accent1_enabled")
+	_light_accent1_intensity_value = Label.new()
+	_light_accent1_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Accent 1 intensity", 0.0, 1.5, 0.05, _light_accent1_intensity_value)
+	_light_accent1_intensity_slider.value_changed.connect(_on_accent1_intensity_changed)
+	_attach_reset(_light_accent1_intensity_slider, "accent1_intensity")
+	_light_accent1_color_picker = _make_color_row(vbox, "Accent 1 color", _on_accent1_color_changed)
+	_attach_reset(_light_accent1_color_picker, "accent1_color")
+
+	_light_accent2_check = CheckBox.new()
+	_light_accent2_check.text = "Accent 2 (back-right, mid-water)"
+	_light_accent2_check.toggled.connect(_on_accent2_toggled)
+	vbox.add_child(_light_accent2_check)
+	_attach_reset(_light_accent2_check, "accent2_enabled")
+	_light_accent2_intensity_value = Label.new()
+	_light_accent2_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Accent 2 intensity", 0.0, 1.5, 0.05, _light_accent2_intensity_value)
+	_light_accent2_intensity_slider.value_changed.connect(_on_accent2_intensity_changed)
+	_attach_reset(_light_accent2_intensity_slider, "accent2_intensity")
+	_light_accent2_color_picker = _make_color_row(vbox, "Accent 2 color", _on_accent2_color_changed)
+	_attach_reset(_light_accent2_color_picker, "accent2_color")
+
+	# ---- Post-process section ----
+	_add_light_section(vbox, "Post-process")
+
+	_light_pp_vignette_value = Label.new()
+	_light_pp_vignette_slider = PanelTheme.add_slider_row(
+		vbox, "Vignette", 0.0, 1.0, 0.05, _light_pp_vignette_value)
+	_light_pp_vignette_slider.value_changed.connect(_on_pp_vignette_changed)
+	_attach_reset(_light_pp_vignette_slider, "pp_vignette_strength")
+
+	_light_pp_vignette_falloff_value = Label.new()
+	_light_pp_vignette_falloff_slider = PanelTheme.add_slider_row(
+		vbox, "Vignette falloff", 0.5, 4.0, 0.1, _light_pp_vignette_falloff_value)
+	_light_pp_vignette_falloff_slider.value_changed.connect(_on_pp_vignette_falloff_changed)
+	_attach_reset(_light_pp_vignette_falloff_slider, "pp_vignette_falloff")
+
+	_light_pp_bloom_threshold_value = Label.new()
+	_light_pp_bloom_threshold_slider = PanelTheme.add_slider_row(
+		vbox, "Bloom threshold", 0.0, 1.0, 0.02, _light_pp_bloom_threshold_value)
+	_light_pp_bloom_threshold_slider.value_changed.connect(_on_pp_bloom_threshold_changed)
+	_attach_reset(_light_pp_bloom_threshold_slider, "pp_bloom_threshold")
+
+	_light_pp_bloom_strength_value = Label.new()
+	_light_pp_bloom_strength_slider = PanelTheme.add_slider_row(
+		vbox, "Bloom strength", 0.0, 1.0, 0.02, _light_pp_bloom_strength_value)
+	_light_pp_bloom_strength_slider.value_changed.connect(_on_pp_bloom_strength_changed)
+	_attach_reset(_light_pp_bloom_strength_slider, "pp_bloom_strength")
+
+	_light_pp_outline_value = Label.new()
+	_light_pp_outline_slider = PanelTheme.add_slider_row(
+		vbox, "Edge outline", 0.0, 1.0, 0.05, _light_pp_outline_value)
+	_light_pp_outline_slider.value_changed.connect(_on_pp_outline_changed)
+	_attach_reset(_light_pp_outline_slider, "outline_strength")
+
+	_light_pp_dither_value = Label.new()
+	_light_pp_dither_slider = PanelTheme.add_slider_row(
+		vbox, "Dither", 0.0, 1.0, 0.05, _light_pp_dither_value)
+	_light_pp_dither_slider.value_changed.connect(_on_pp_dither_changed)
+	_attach_reset(_light_pp_dither_slider, "dither_strength")
+
+	_light_pp_crt_value = Label.new()
+	_light_pp_crt_slider = PanelTheme.add_slider_row(
+		vbox, "CRT scanline", 0.0, 1.0, 0.05, _light_pp_crt_value)
+	_light_pp_crt_slider.value_changed.connect(_on_pp_crt_changed)
+	_attach_reset(_light_pp_crt_slider, "crt_strength")
+
+	_light_pp_region_dither_check = CheckBox.new()
+	_light_pp_region_dither_check.text = "Region-aware dither (heavy on water, light on fauna)"
+	_light_pp_region_dither_check.toggled.connect(_on_pp_region_dither_toggled)
+	vbox.add_child(_light_pp_region_dither_check)
+	_attach_reset(_light_pp_region_dither_check, "dither_region_aware")
+
+	_light_pp_bank_lock_check = CheckBox.new()
+	_light_pp_bank_lock_check.text = "Lock palette to nearest hue bank (16-color feel)"
+	_light_pp_bank_lock_check.toggled.connect(_on_pp_bank_lock_toggled)
+	vbox.add_child(_light_pp_bank_lock_check)
+	_attach_reset(_light_pp_bank_lock_check, "palette_bank_lock")
+
+	# ---- Per-phase color override section (#14) ----
+	_add_light_section(vbox, "Per-phase colors")
+
+	_light_tod_override_check = CheckBox.new()
+	_light_tod_override_check.text = "Use these instead of the built-in dawn/day/dusk/night"
+	_light_tod_override_check.toggled.connect(_on_tod_override_toggled)
+	vbox.add_child(_light_tod_override_check)
+	_attach_reset(_light_tod_override_check, "tod_use_overrides")
+
+	_light_tod_dawn_picker = _make_color_row(vbox, "Dawn", _on_tod_dawn_changed)
+	_attach_reset(_light_tod_dawn_picker, "tod_dawn_color")
+	_light_tod_day_picker = _make_color_row(vbox, "Day (noon)", _on_tod_day_changed)
+	_attach_reset(_light_tod_day_picker, "tod_day_color")
+	_light_tod_dusk_picker = _make_color_row(vbox, "Dusk", _on_tod_dusk_changed)
+	_attach_reset(_light_tod_dusk_picker, "tod_dusk_color")
+	_light_tod_night_picker = _make_color_row(vbox, "Night", _on_tod_night_changed)
+	_attach_reset(_light_tod_night_picker, "tod_night_color")
+
+	var hint := PanelTheme.make_description()
+	hint.text = "Master off renders the tank near-black. For fixture type, direction, and beams open Settings."
+	vbox.add_child(hint)
+
+
+# 2D pad widget for the sun direction. The X axis maps to cfg.light_yaw
+# (0..1, full circle) and Y axis to cfg.light_pitch (0 top-down → 1 horizontal).
+# Drawing draws a faint axis cross + a marker at the current value.
+# Default values for every Light-panel control. Keyed by TankConfig var name
+# so _attach_reset can look up "what does ↻ on this slider mean?" Defaults
+# here MUST stay in sync with TankConfig.reset_to_defaults().
+const _LIGHT_DEFAULTS: Dictionary = {
+	"light_master_enabled": true,
+	"day_cycle_enabled": true,
+	"day_length_s": 360.0,
+	"sunset_drama": 0.75,
+	"global_intensity": 0.5,
+	"global_warmth": 0.6,
+	"tank_lights_on": true,
+	"tank_fixture_intensity": 0.5,
+	"tank_fixture_color": Color(1.0, 0.95, 0.85),
+	"light_caustics": true,
+	"caustic_intensity_user": 1.0,
+	"moonlight_enabled": true,
+	"moonlight_intensity": 0.4,
+	"moonlight_color": Color(0.55, 0.70, 1.0),
+	"accent1_enabled": false,
+	"accent1_intensity": 0.6,
+	"accent1_color": Color(1.0, 0.45, 0.75),
+	"accent2_enabled": false,
+	"accent2_intensity": 0.6,
+	"accent2_color": Color(0.45, 0.85, 1.0),
+	"pp_vignette_strength": 0.24,
+	"pp_vignette_falloff": 1.6,
+	"pp_bloom_threshold": 0.72,
+	"pp_bloom_strength": 0.68,
+	"outline_strength": 0.0,
+	"dither_strength": 0.85,
+	"crt_strength": 0.0,
+	"dither_region_aware": true,
+	"palette_bank_lock": true,
+	"ambient_floor": 0.0,
+	"biolum_multiplier": 1.0,
+	"tod_use_overrides": false,
+	"tod_dawn_color": Color(1.02, 0.88, 0.82),
+	"tod_day_color": Color(1.00, 1.00, 1.00),
+	"tod_dusk_color": Color(1.04, 0.82, 0.70),
+	"tod_night_color": Color(0.38, 0.42, 0.52),
+}
+
+
+# Attach a small "↻" reset button to the right of an HSlider / CheckBox /
+# ColorPickerButton, looking up its default from _LIGHT_DEFAULTS by key.
+# Setting the control programmatically fires its change signal, so cfg
+# and value label both update.
+func _attach_reset(control: Control, cfg_key: String) -> void:
+	if control == null:
+		return
+	var row: Node = control.get_parent()
+	if row == null:
+		return
+	if not _LIGHT_DEFAULTS.has(cfg_key):
+		return
+	var default_v: Variant = _LIGHT_DEFAULTS[cfg_key]
+	var btn := Button.new()
+	btn.text = "↻"
+	btn.tooltip_text = "Reset to default"
+	btn.custom_minimum_size = Vector2(22, 0)
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85, 0.7))
+	btn.pressed.connect(func():
+		if control is HSlider:
+			(control as HSlider).value = float(default_v)
+		elif control is CheckBox:
+			(control as CheckBox).button_pressed = bool(default_v)
+		elif control is ColorPickerButton:
+			var cb: ColorPickerButton = control
+			cb.color = default_v
+			cb.color_changed.emit(default_v)
+	)
+	row.add_child(btn)
+
+
+func _make_sun_direction_pad(parent: Node) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	parent.add_child(row)
+	var l := Label.new()
+	l.text = "Sun direction"
+	l.custom_minimum_size = Vector2(160, 0)
+	row.add_child(l)
+	var pad := Control.new()
+	pad.custom_minimum_size = Vector2(120, 90)
+	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pad.mouse_filter = Control.MOUSE_FILTER_STOP
+	pad.gui_input.connect(_on_sun_pad_input.bind(pad))
+	pad.draw.connect(_on_sun_pad_draw.bind(pad))
+	row.add_child(pad)
+	return pad
+
+
+func _on_sun_pad_input(ev: InputEvent, pad: Control) -> void:
+	var drag: bool = false
+	var pos: Vector2 = Vector2.ZERO
+	if ev is InputEventMouseButton:
+		var mb: InputEventMouseButton = ev
+		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+			drag = true
+			pos = mb.position
+	elif ev is InputEventMouseMotion:
+		var mm: InputEventMouseMotion = ev
+		if mm.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			drag = true
+			pos = mm.position
+	if not drag:
+		return
+	var sz: Vector2 = pad.size
+	if sz.x <= 0.0 or sz.y <= 0.0:
+		return
+	var yaw: float = clampf(pos.x / sz.x, 0.0, 1.0)
+	var pitch: float = clampf(pos.y / sz.y, 0.0, 1.0)
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.light_yaw = yaw
+		cfg.light_pitch = pitch
+	pad.queue_redraw()
+	_light_mark_custom()
+
+
+func _on_sun_pad_draw(pad: Control) -> void:
+	var sz: Vector2 = pad.size
+	# Background frame
+	pad.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.10, 0.12, 0.18, 0.95), true)
+	pad.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.35, 0.45, 0.6, 0.6), false)
+	# Faint cross
+	pad.draw_line(Vector2(sz.x * 0.5, 0), Vector2(sz.x * 0.5, sz.y),
+		Color(0.4, 0.45, 0.55, 0.4))
+	pad.draw_line(Vector2(0, sz.y * 0.5), Vector2(sz.x, sz.y * 0.5),
+		Color(0.4, 0.45, 0.55, 0.4))
+	# Marker for the current sun position
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	var yaw: float = clampf(float(cfg.light_yaw), 0.0, 1.0)
+	var pitch: float = clampf(float(cfg.light_pitch), 0.0, 1.0)
+	var p: Vector2 = Vector2(yaw * sz.x, pitch * sz.y)
+	pad.draw_circle(p, 5.0, Color(1.0, 0.85, 0.45, 0.9))
+	pad.draw_circle(p, 2.0, Color(1.0, 1.0, 1.0, 1.0))
+
+
+# Snap day_phase to one of the four anchors and refresh the slider/value
+# label so the UI reflects the jump immediately.
+func _jump_to_phase(p: float) -> void:
+	if _sim != null:
+		_sim.day_phase = fposmod(p, 1.0)
+	if _light_day_phase_slider != null:
+		_light_day_phase_slider.set_value_no_signal(p)
+	if _light_day_phase_value != null:
+		_light_day_phase_value.text = _day_phase_label(p)
+
+
+# Helper for "label  [ColorPickerButton]" rows in the Light popup. Keeps the
+# section markup consistent without dragging in a third PanelTheme variant.
+func _make_color_row(parent: Node, label_text: String, on_changed: Callable) -> ColorPickerButton:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	parent.add_child(row)
+	var l := Label.new()
+	l.text = label_text
+	l.custom_minimum_size = Vector2(160, 0)
+	row.add_child(l)
+	var btn := ColorPickerButton.new()
+	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn.custom_minimum_size = Vector2(0, 26)
+	btn.edit_alpha = false
+	btn.color_changed.connect(on_changed)
+	row.add_child(btn)
+	return btn
+
+
+func _add_light_section(parent: Node, label_text: String) -> void:
+	parent.add_child(PanelTheme.make_spacer(4))
+	var hdr := Label.new()
+	hdr.text = label_text
+	hdr.add_theme_font_size_override("font_size", 11)
+	hdr.add_theme_color_override("font_color", Color(0.72, 0.78, 0.85, 0.85))
+	parent.add_child(hdr)
+	parent.add_child(PanelTheme.make_rule())
+
+
+func _pull_light_panel_values() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	# Suppress the "user touched a control → switch to Custom" hook while we
+	# rewrite UI state from cfg.
+	_light_applying_preset = true
+	if _light_preset_option != null:
+		var slug: String = String(cfg.lighting_preset)
+		for i in _light_preset_option.item_count:
+			if String(_light_preset_option.get_item_metadata(i)) == slug:
+				_light_preset_option.select(i)
+				break
+	if _light_master_check != null:
+		_light_master_check.set_pressed_no_signal(bool(cfg.light_master_enabled))
+	if _light_day_cycle_check != null:
+		_light_day_cycle_check.set_pressed_no_signal(bool(cfg.day_cycle_enabled))
+	if _light_day_phase_slider != null:
+		var phase: float = float(_sim.day_phase) if _sim != null else 0.25
+		_light_day_phase_slider.set_value_no_signal(phase)
+		_light_day_phase_value.text = _day_phase_label(phase)
+	if _light_day_length_slider != null:
+		_light_day_length_slider.set_value_no_signal(float(cfg.day_length_s))
+		_light_day_length_value.text = _fmt_duration(float(cfg.day_length_s))
+	if _light_sunset_drama_slider != null:
+		_light_sunset_drama_slider.set_value_no_signal(float(cfg.sunset_drama))
+		_light_sunset_drama_value.text = "%.2f" % float(cfg.sunset_drama)
+	if _light_global_intensity_slider != null:
+		_light_global_intensity_slider.set_value_no_signal(float(cfg.global_intensity))
+		_light_global_intensity_value.text = "%.2f" % float(cfg.global_intensity)
+	if _light_global_warmth_slider != null:
+		_light_global_warmth_slider.set_value_no_signal(float(cfg.global_warmth))
+		_light_global_warmth_value.text = "%.2f" % float(cfg.global_warmth)
+	if _light_tank_check != null:
+		_light_tank_check.set_pressed_no_signal(bool(cfg.tank_lights_on))
+	if _light_caustics_check != null:
+		_light_caustics_check.set_pressed_no_signal(bool(cfg.light_caustics))
+	if _light_fixture_intensity_slider != null:
+		_light_fixture_intensity_slider.set_value_no_signal(float(cfg.tank_fixture_intensity))
+		_light_fixture_intensity_value.text = "%.2f" % float(cfg.tank_fixture_intensity)
+	if _light_fixture_color_picker != null:
+		_light_fixture_color_picker.color = cfg.tank_fixture_color
+	if _light_moon_check != null:
+		_light_moon_check.set_pressed_no_signal(bool(cfg.moonlight_enabled))
+	if _light_moon_intensity_slider != null:
+		_light_moon_intensity_slider.set_value_no_signal(float(cfg.moonlight_intensity))
+		_light_moon_intensity_value.text = "%.2f" % float(cfg.moonlight_intensity)
+	if _light_moon_color_picker != null:
+		_light_moon_color_picker.color = cfg.moonlight_color
+	if _light_accent1_check != null:
+		_light_accent1_check.set_pressed_no_signal(bool(cfg.accent1_enabled))
+	if _light_accent1_intensity_slider != null:
+		_light_accent1_intensity_slider.set_value_no_signal(float(cfg.accent1_intensity))
+		_light_accent1_intensity_value.text = "%.2f" % float(cfg.accent1_intensity)
+	if _light_accent1_color_picker != null:
+		_light_accent1_color_picker.color = cfg.accent1_color
+	if _light_accent2_check != null:
+		_light_accent2_check.set_pressed_no_signal(bool(cfg.accent2_enabled))
+	if _light_accent2_intensity_slider != null:
+		_light_accent2_intensity_slider.set_value_no_signal(float(cfg.accent2_intensity))
+		_light_accent2_intensity_value.text = "%.2f" % float(cfg.accent2_intensity)
+	if _light_accent2_color_picker != null:
+		_light_accent2_color_picker.color = cfg.accent2_color
+	if _light_pp_vignette_slider != null:
+		_light_pp_vignette_slider.set_value_no_signal(float(cfg.pp_vignette_strength))
+		_light_pp_vignette_value.text = "%.2f" % float(cfg.pp_vignette_strength)
+	if _light_pp_bloom_threshold_slider != null:
+		_light_pp_bloom_threshold_slider.set_value_no_signal(float(cfg.pp_bloom_threshold))
+		_light_pp_bloom_threshold_value.text = "%.2f" % float(cfg.pp_bloom_threshold)
+	if _light_pp_bloom_strength_slider != null:
+		_light_pp_bloom_strength_slider.set_value_no_signal(float(cfg.pp_bloom_strength))
+		_light_pp_bloom_strength_value.text = "%.2f" % float(cfg.pp_bloom_strength)
+	if _light_pp_outline_slider != null:
+		_light_pp_outline_slider.set_value_no_signal(float(cfg.outline_strength))
+		_light_pp_outline_value.text = "%.2f" % float(cfg.outline_strength)
+	if _light_pp_dither_slider != null:
+		_light_pp_dither_slider.set_value_no_signal(float(cfg.dither_strength))
+		_light_pp_dither_value.text = "%.2f" % float(cfg.dither_strength)
+	if _light_pp_crt_slider != null:
+		_light_pp_crt_slider.set_value_no_signal(float(cfg.crt_strength))
+		_light_pp_crt_value.text = "%.2f" % float(cfg.crt_strength)
+	if _light_pp_vignette_falloff_slider != null:
+		_light_pp_vignette_falloff_slider.set_value_no_signal(float(cfg.pp_vignette_falloff))
+		_light_pp_vignette_falloff_value.text = "%.2f" % float(cfg.pp_vignette_falloff)
+	if _light_pp_region_dither_check != null:
+		_light_pp_region_dither_check.set_pressed_no_signal(bool(cfg.dither_region_aware))
+	if _light_pp_bank_lock_check != null:
+		_light_pp_bank_lock_check.set_pressed_no_signal(bool(cfg.palette_bank_lock))
+	if _light_ambient_floor_slider != null:
+		_light_ambient_floor_slider.set_value_no_signal(float(cfg.ambient_floor))
+		_light_ambient_floor_value.text = "%.2f" % float(cfg.ambient_floor)
+	if _light_biolum_slider != null:
+		_light_biolum_slider.set_value_no_signal(float(cfg.biolum_multiplier))
+		_light_biolum_value.text = "%.2f" % float(cfg.biolum_multiplier)
+	if _light_caustic_strength_slider != null:
+		_light_caustic_strength_slider.set_value_no_signal(float(cfg.caustic_intensity_user))
+		_light_caustic_strength_value.text = "%.2f" % float(cfg.caustic_intensity_user)
+	if _light_tod_override_check != null:
+		_light_tod_override_check.set_pressed_no_signal(bool(cfg.tod_use_overrides))
+	if _light_tod_dawn_picker != null:
+		_light_tod_dawn_picker.color = cfg.tod_dawn_color
+	if _light_tod_day_picker != null:
+		_light_tod_day_picker.color = cfg.tod_day_color
+	if _light_tod_dusk_picker != null:
+		_light_tod_dusk_picker.color = cfg.tod_dusk_color
+	if _light_tod_night_picker != null:
+		_light_tod_night_picker.color = cfg.tod_night_color
+	if _light_sun_pad != null:
+		_light_sun_pad.queue_redraw()
+	_light_applying_preset = false
+
+
+# Format a seconds count as "Xs" / "Xm" / "Xh" for the day-length slider value column.
+func _fmt_duration(s: float) -> String:
+	if s < 90.0:
+		return "%ds" % int(s)
+	if s < 3600.0:
+		return "%dm" % int(round(s / 60.0))
+	return "%.1fh" % (s / 3600.0)
+
+
+# "0.62  dusk" — gives the slider both a numeric and a phase-word readout.
+func _day_phase_label(p: float) -> String:
+	return "%.2f  %s" % [p, _day_label(p)]
+
+
+# While the Light panel is open and the cycle is running, mirror sim.day_phase
+# into the slider so the user sees the sun actually moving. Skip when the
+# user is grabbing the slider, otherwise the live update fights their drag.
+func _refresh_light_panel_live() -> void:
+	if _light_day_phase_slider == null or _sim == null:
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.day_cycle_enabled):
+		return
+	if _light_day_phase_slider.has_focus():
+		return
+	var phase: float = float(_sim.day_phase)
+	_light_day_phase_slider.set_value_no_signal(phase)
+	if _light_day_phase_value != null:
+		_light_day_phase_value.text = _day_phase_label(phase)
+
+
+func _position_light_panel() -> void:
+	if _light_panel == null:
+		return
+	# Float the panel just left of the rail. Rather than fight the layout
+	# after the fact, size the ScrollContainer to ~75% of the viewport
+	# height *before* reset_size() so the panel grows to a known target
+	# height and the scroll body always has a real clip rect.
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var scroll: Control = _light_panel.get_meta("scroll_container", null) as Control
+	if scroll != null:
+		var target_h: float = clampf(vp.y * 0.75, 360.0, 760.0)
+		scroll.custom_minimum_size = Vector2(0, target_h)
+	_light_panel.size = Vector2.ZERO  # let it shrink to content
+	_light_panel.reset_size()
+	var sz: Vector2 = _light_panel.size
+	if sz.x < _light_panel.custom_minimum_size.x:
+		sz.x = _light_panel.custom_minimum_size.x
+	var btn_rect: Rect2 = Rect2()
+	if _light_btn != null:
+		btn_rect = _light_btn.get_global_rect()
+	var x: float
+	var y: float
+	if _rail_dock == "bottom":
+		# Bottom-docked rail: float above the button.
+		x = clampf(btn_rect.position.x + btn_rect.size.x * 0.5 - sz.x * 0.5,
+			8.0, vp.x - sz.x - 8.0)
+		y = btn_rect.position.y - sz.y - 8.0
+		if y < 8.0:
+			y = 8.0
+	else:
+		# Right-docked rail: float to the left of the button.
+		x = btn_rect.position.x - sz.x - 8.0
+		if x < 8.0:
+			x = 8.0
+		y = clampf(btn_rect.position.y, 8.0, vp.y - sz.y - 8.0)
+	_light_panel.position = Vector2(x, y)
+
+
+func _sync_light_btn() -> void:
+	if _light_btn == null:
+		return
+	var open: bool = _light_panel != null and _light_panel.visible
+	PanelTheme.style_rail_button(_light_btn, open)
+
+
+# Any user-driven control change snaps the preset selector back to "Custom"
+# so the dropdown doesn't lie about which preset is currently active. The
+# _light_applying_preset guard skips this when we're the ones writing.
+func _light_mark_custom() -> void:
+	if _light_applying_preset:
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.lighting_preset = "custom"
+	if _light_preset_option != null and _light_preset_option.item_count > 0:
+		_light_preset_option.select(0)  # index 0 is Custom
+
+
+func _on_light_tank_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tank_lights_on = v
+	_light_mark_custom()
+
+
+func _on_light_caustics_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.light_caustics = v
+	_light_mark_custom()
+
+
+func _on_global_intensity_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.global_intensity = v
+	if _light_global_intensity_value != null:
+		_light_global_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_global_warmth_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.global_warmth = v
+	if _light_global_warmth_value != null:
+		_light_global_warmth_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_fixture_intensity_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tank_fixture_intensity = v
+	if _light_fixture_intensity_value != null:
+		_light_fixture_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_fixture_color_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tank_fixture_color = c
+	_light_mark_custom()
+
+
+func _on_light_master_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.light_master_enabled = v
+	_light_mark_custom()
+
+
+func _on_day_cycle_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.day_cycle_enabled = v
+	_light_mark_custom()
+
+
+func _on_day_phase_changed(v: float) -> void:
+	if _sim != null:
+		_sim.day_phase = fposmod(v, 1.0)
+	if _light_day_phase_value != null:
+		_light_day_phase_value.text = _day_phase_label(v)
+	# Day phase is a runtime value, not part of the preset definition, so
+	# don't snap to Custom here — the user wants to scrub freely.
+
+
+func _on_day_length_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.day_length_s = v
+	if _light_day_length_value != null:
+		_light_day_length_value.text = _fmt_duration(v)
+	_light_mark_custom()
+
+
+func _on_sunset_drama_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.sunset_drama = v
+	if _light_sunset_drama_value != null:
+		_light_sunset_drama_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_moon_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.moonlight_enabled = v
+	_light_mark_custom()
+
+
+func _on_moon_intensity_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.moonlight_intensity = v
+	if _light_moon_intensity_value != null:
+		_light_moon_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_moon_color_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.moonlight_color = c
+	_light_mark_custom()
+
+
+func _on_accent1_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent1_enabled = v
+	_light_mark_custom()
+
+
+func _on_accent1_intensity_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent1_intensity = v
+	if _light_accent1_intensity_value != null:
+		_light_accent1_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_accent1_color_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent1_color = c
+	_light_mark_custom()
+
+
+func _on_accent2_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent2_enabled = v
+	_light_mark_custom()
+
+
+func _on_accent2_intensity_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent2_intensity = v
+	if _light_accent2_intensity_value != null:
+		_light_accent2_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_accent2_color_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.accent2_color = c
+	_light_mark_custom()
+
+
+func _on_pp_vignette_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.pp_vignette_strength = v
+	if _light_pp_vignette_value != null:
+		_light_pp_vignette_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_bloom_threshold_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.pp_bloom_threshold = v
+	if _light_pp_bloom_threshold_value != null:
+		_light_pp_bloom_threshold_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_bloom_strength_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.pp_bloom_strength = v
+	if _light_pp_bloom_strength_value != null:
+		_light_pp_bloom_strength_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_outline_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.outline_strength = v
+	if _light_pp_outline_value != null:
+		_light_pp_outline_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_dither_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.dither_strength = v
+	if _light_pp_dither_value != null:
+		_light_pp_dither_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_crt_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.crt_strength = v
+	if _light_pp_crt_value != null:
+		_light_pp_crt_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_vignette_falloff_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.pp_vignette_falloff = v
+	if _light_pp_vignette_falloff_value != null:
+		_light_pp_vignette_falloff_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_pp_region_dither_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.dither_region_aware = v
+	_light_mark_custom()
+
+
+func _on_pp_bank_lock_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.palette_bank_lock = v
+	_light_mark_custom()
+
+
+func _on_ambient_floor_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.ambient_floor = v
+	if _light_ambient_floor_value != null:
+		_light_ambient_floor_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_biolum_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.biolum_multiplier = v
+	if _light_biolum_value != null:
+		_light_biolum_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_caustic_strength_changed(v: float) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.caustic_intensity_user = v
+	if _light_caustic_strength_value != null:
+		_light_caustic_strength_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_tod_override_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tod_use_overrides = v
+	_light_mark_custom()
+
+
+func _on_tod_dawn_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tod_dawn_color = c
+	_light_mark_custom()
+
+
+func _on_tod_day_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tod_day_color = c
+	_light_mark_custom()
+
+
+func _on_tod_dusk_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tod_dusk_color = c
+	_light_mark_custom()
+
+
+func _on_tod_night_changed(c: Color) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.tod_night_color = c
+	_light_mark_custom()
+
+
+# Randomize button: picks a random non-custom preset, jitters its values
+# ±15% to keep the result varied even when the user mashes the button.
+func _on_lighting_randomize_pressed() -> void:
+	var slugs: Array = TankConfig.LIGHTING_PRESETS.keys()
+	if slugs.is_empty():
+		return
+	var pick: String = String(slugs[randi() % slugs.size()])
+	# Apply through the same path as the dropdown so UI stays in sync, then
+	# nudge a few key values for variety. Marking custom afterwards so the
+	# dropdown reflects the manual tweak.
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	_light_applying_preset = true
+	if cfg.has_method("apply_lighting_preset"):
+		cfg.apply_lighting_preset(pick)
+	# Jitter a handful of numeric fields ±15% — bounded into legal ranges.
+	cfg.global_intensity = clampf(float(cfg.global_intensity) * randf_range(0.85, 1.15), 0.0, 1.0)
+	cfg.global_warmth = clampf(float(cfg.global_warmth) + randf_range(-0.12, 0.12), 0.0, 1.0)
+	cfg.tank_fixture_intensity = clampf(
+		float(cfg.tank_fixture_intensity) * randf_range(0.85, 1.15), 0.0, 1.0)
+	cfg.sunset_drama = clampf(
+		float(cfg.sunset_drama) * randf_range(0.85, 1.20), 0.0, 2.5)
+	cfg.lighting_preset = "custom"  # randomized → no longer pure preset
+	_pull_light_panel_values()
+	_light_applying_preset = false
+
+
+# Preset selector: writes the preset's values into TankConfig, then pulls
+# them back into the UI so every slider/picker updates visually too. The
+# _light_applying_preset guard prevents the slider change events from
+# snapping the dropdown back to "Custom" mid-apply.
+func _on_lighting_preset_selected(idx: int) -> void:
+	if _light_preset_option == null:
+		return
+	var slug: String = String(_light_preset_option.get_item_metadata(idx))
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	_light_applying_preset = true
+	if cfg.has_method("apply_lighting_preset"):
+		cfg.apply_lighting_preset(slug)
+	else:
+		cfg.lighting_preset = slug
+	_pull_light_panel_values()
+	_light_applying_preset = false
 
 
 # ---- Focus / immersive mode ----
@@ -3436,10 +5129,12 @@ func _apply_immersive_mode() -> void:
 func _close_panels_for_immersive() -> void:
 	for panel in [
 		settings_panel, render_panel, sound_panel, fish_store_panel,
-		library_panel, creature_creator_panel,
+		library_panel, creature_creator_panel, _light_panel,
 	]:
 		if panel != null and panel.visible:
 			panel.visible = false
+	if _light_btn != null:
+		_sync_light_btn()
 
 
 func _ensure_immersive_exit_button() -> void:
@@ -3803,8 +5498,133 @@ func _haptic(duration_ms: int = 15) -> void:
 		Input.vibrate_handheld(duration_ms)
 
 
+func _toggle_cheat_sheet() -> void:
+	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
+		_cheat_sheet.queue_free()
+		_cheat_sheet = null
+		return
+	_cheat_sheet = Control.new()
+	_cheat_sheet.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_cheat_sheet.mouse_filter = Control.MOUSE_FILTER_STOP
+	_cheat_sheet.z_index = 280
+	add_child(_cheat_sheet)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	bg.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
+			_toggle_cheat_sheet())
+	_cheat_sheet.add_child(bg)
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -240
+	panel.offset_top = -220
+	panel.offset_right = 240
+	panel.offset_bottom = 220
+	PanelTheme.apply_panel_chrome(panel)
+	_cheat_sheet.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	panel.add_child(vb)
+	vb.add_child(PanelTheme.make_title("Controls"))
+	vb.add_child(PanelTheme.make_rule())
+	var lines: PackedStringArray = PackedStringArray([
+		"O — Settings", "R — Rendering", "M — Sound Studio", "Shift+M — Motion debug",
+		"C — Follow portal", "B — Aquascape", "H — Focus mode", "P — Pause",
+		"1–8 — Sim speed", "T — Timelapse", "F12 — Photo", "? / Shift+/ — This help",
+		"Click water — feed fish", "9 / 0 — cycle food type",
+		"Shift+click water — tap glass (ripples + fish react)",
+		"Click stat chips — history / water / mood details",
+		"Right rail — Create · World · Look · System · Alerts",
+	])
+	for line in lines:
+		var lab := Label.new()
+		lab.text = line
+		lab.add_theme_font_size_override("font_size", 13)
+		lab.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+		vb.add_child(lab)
+	var close := PanelTheme.make_primary_button("Close")
+	close.pressed.connect(_toggle_cheat_sheet)
+	vb.add_child(close)
+
+
+func _maybe_show_coachmarks() -> void:
+	if bool(_global_pref("coachmarks_seen", false)):
+		return
+	if walkthrough_overlay != null and walkthrough_overlay.visible:
+		return
+	_show_coachmark_step(0)
+
+
+func _show_coachmark_step(step: int) -> void:
+	if _coachmark_overlay != null and is_instance_valid(_coachmark_overlay):
+		_coachmark_overlay.queue_free()
+		_coachmark_overlay = null
+	var hints: Array[String] = [
+		"Use the right rail: Create · World · Look · System · Alerts",
+		"Tap the stat chips at the top for water chemistry and history",
+		"Click water to feed fish (9/0 to change food). Drag to orbit.",
+	]
+	if step >= hints.size():
+		_set_global_pref("coachmarks_seen", true)
+		return
+	_coachmark_step = step
+	_coachmark_overlay = Control.new()
+	_coachmark_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_coachmark_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	_coachmark_overlay.z_index = 290
+	add_child(_coachmark_overlay)
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 1.0
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 1.0
+	panel.offset_left = -260
+	panel.offset_top = -120
+	panel.offset_right = 260
+	panel.offset_bottom = -24
+	PanelTheme.apply_panel_chrome(panel)
+	_coachmark_overlay.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Tip %d of %d" % [step + 1, hints.size()]
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
+	vb.add_child(title)
+	var body := Label.new()
+	body.text = hints[step]
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_font_size_override("font_size", 14)
+	body.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	vb.add_child(body)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	vb.add_child(row)
+	var skip := PanelTheme.make_secondary_button("Skip")
+	skip.pressed.connect(func():
+		_set_global_pref("coachmarks_seen", true)
+		if is_instance_valid(_coachmark_overlay):
+			_coachmark_overlay.queue_free()
+		_coachmark_overlay = null)
+	row.add_child(skip)
+	var next := PanelTheme.make_primary_button("Next" if step + 1 < hints.size() else "Done")
+	next.pressed.connect(func():
+		if is_instance_valid(_coachmark_overlay):
+			_coachmark_overlay.queue_free()
+		_coachmark_overlay = null
+		_show_coachmark_step(step + 1))
+	row.add_child(next)
+
+
 # ---- Tutorial overlay ----
-# Built on first mobile launch from main._setup_mobile_ui. A semi-transparent
+# Built on first launch (desktop + mobile). A semi-transparent
 # panel with gesture hints and a single OK button that persists
 # tutorial_seen=true so it never returns. Doesn't block sim — user can
 # dismiss instantly or admire the tank behind it.
@@ -3846,20 +5666,24 @@ func _dismiss_blocking_overlays() -> bool:
 			walkthrough_overlay.visible = false
 		dismissed = true
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
-		var cfg := get_node_or_null("/root/TankConfig")
-		if cfg != null:
-			cfg.tutorial_seen = true
-			cfg.save_to_disk()
+		_set_global_pref("tutorial_seen", true)
 		_tutorial_overlay.queue_free()
 		_tutorial_overlay = null
+		dismissed = true
+	if _ui_panels.is_modal_open():
+		_ui_panels.close_modal()
+		_sync_rail_toggles()
 		dismissed = true
 	_dismiss_radial_menu()
 	return dismissed
 
 
 func _maybe_show_tutorial() -> void:
+	if bool(_global_pref("tutorial_seen", false)):
+		return
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or cfg.tutorial_seen:
+	if cfg != null and cfg.tutorial_seen:
+		_set_global_pref("tutorial_seen", true)
 		return
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		return
@@ -3877,13 +5701,11 @@ func _maybe_show_tutorial() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_STOP
 	bg.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
-			cfg.tutorial_seen = true
-			cfg.save_to_disk()
+			_set_global_pref("tutorial_seen", true)
 			overlay.queue_free()
 			_tutorial_overlay = null
 		elif ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
-			cfg.tutorial_seen = true
-			cfg.save_to_disk()
+			_set_global_pref("tutorial_seen", true)
 			overlay.queue_free()
 			_tutorial_overlay = null)
 	overlay.add_child(bg)
@@ -3908,15 +5730,19 @@ func _maybe_show_tutorial() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
 	var hints: Array[String] = [
-		"• Drag to orbit",
-		"• Pinch to zoom",
-		"• Two-finger drag to pan",
-		"• Twist two fingers to rotate",
-		"• Tap a creature to follow",
-		"• Double-tap to reset view",
-		"• Long-press for auto-orbit",
-		"• Swipe in from right edge for settings",
+		"• Drag to orbit the tank",
+		"• Click / tap water to feed (9/0 cycles food type)",
+		"• Tap a creature to follow it",
+		"• Stat chips at top — tap for water & history",
+		"• Right rail — Create · World · Look · System · Alerts",
+		"• Press ? for keyboard shortcuts",
 	]
+	if _is_mobile():
+		hints.append_array([
+			"• Pinch to zoom",
+			"• Two-finger drag to pan",
+			"• Swipe from right edge for settings",
+		])
 	for h in hints:
 		var lab := Label.new()
 		lab.text = h
@@ -3928,12 +5754,12 @@ func _maybe_show_tutorial() -> void:
 	ok.custom_minimum_size = Vector2(0, 48)
 	ok.add_theme_font_size_override("font_size", 16)
 	ok.pressed.connect(func():
-		cfg.tutorial_seen = true
-		cfg.save_to_disk()
+		_set_global_pref("tutorial_seen", true)
 		_haptic(12)
 		if is_instance_valid(overlay):
 			overlay.queue_free()
-		_tutorial_overlay = null)
+		_tutorial_overlay = null
+		call_deferred("_maybe_show_coachmarks"))
 	vb.add_child(ok)
 	_tutorial_overlay = overlay
 

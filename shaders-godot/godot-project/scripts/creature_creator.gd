@@ -148,6 +148,9 @@ func close() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_process(false)
 	_pause_preview_rendering()
+	var main: Node = get_tree().current_scene
+	if main != null and main.has_method("_on_modal_closed"):
+		main.call("_on_modal_closed", "creator")
 
 
 # ---- UI construction --------------------------------------------------------

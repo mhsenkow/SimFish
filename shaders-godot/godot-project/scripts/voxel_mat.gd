@@ -288,6 +288,36 @@ static func update_aquatic_uniforms(intensity: float, light_color: Color, water_
 			mat.set_shader_parameter("aquatic_shimmer", shimmer)
 
 
+static func update_fixture_glow(glow: float, color: Color, water_y: float,
+		water_floor: float) -> void:
+	for mat in _mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("tank_fixture_glow", glow)
+			mat.set_shader_parameter("tank_fixture_color", color)
+			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	for mat in _fauna_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("tank_fixture_glow", glow)
+			mat.set_shader_parameter("tank_fixture_color", color)
+			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("tank_fixture_glow", glow)
+			mat.set_shader_parameter("tank_fixture_color", color)
+			mat.set_shader_parameter("fixture_water_top", water_y)
+			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("tank_fixture_glow", glow)
+			mat.set_shader_parameter("tank_fixture_color", color)
+			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	if _voxel_mm_mat != null and is_instance_valid(_voxel_mm_mat):
+		_voxel_mm_mat.set_shader_parameter("tank_fixture_glow", glow)
+		_voxel_mm_mat.set_shader_parameter("tank_fixture_color", color)
+		_voxel_mm_mat.set_shader_parameter("fixture_water_top", water_y)
+		_voxel_mm_mat.set_shader_parameter("fixture_water_floor", water_floor)
+
+
 static var _foliage_mm_mats: Array = []
 
 static func register_foliage_mm(mat: ShaderMaterial) -> void:

@@ -55,7 +55,11 @@ func _input(event: InputEvent) -> void:
 	# input so the corner button can still toggle programmatically.
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
-			toggle()
+			var main: Node = get_tree().current_scene
+			if main != null and main.has_method("_ui_toggle_side"):
+				main.call("_ui_toggle_side", "render")
+			else:
+				toggle()
 
 
 func toggle() -> void:

@@ -9,6 +9,10 @@
 
 extends PanelContainer
 
+# Preloaded for the same reason ai_director.gd / fish.gd do — the global
+# class_name registry isn't reliable before the editor scan completes.
+const OllamaOnboarding = preload("res://scripts/ollama_onboarding.gd")
+
 signal apply_requested
 
 var _shape_option: OptionButton
@@ -16,17 +20,12 @@ var _new_tank_fit_option: OptionButton
 var _w_slider: HSlider
 var _d_slider: HSlider
 var _h_slider: HSlider
-var _light_energy: HSlider
-var _light_yaw: HSlider
-var _light_pitch: HSlider
-var _light_warmth: HSlider
 var _light_fixture_option: OptionButton
 var _light_height: HSlider
 var _light_size: HSlider
 var _light_height_label: Label
 var _light_size_label: Label
 var _light_volumetric_check: CheckBox
-var _light_caustics_check: CheckBox
 var _music_enabled_check: CheckBox
 var _sound_studio_btn: Button
 var _substrate_option: OptionButton
@@ -47,10 +46,14 @@ var _diet_chart: RichTextLabel
 var _w_label: Label
 var _d_label: Label
 var _h_label: Label
-var _light_energy_label: Label
-var _light_yaw_label: Label
-var _light_pitch_label: Label
-var _light_warmth_label: Label
+# AI companion widgets
+var _ai_enabled_check: CheckBox
+var _ai_chronicle_check: CheckBox
+var _ai_endpoint_edit: LineEdit
+var _ai_model_edit: LineEdit
+var _ai_theme_edit: LineEdit
+var _ai_status_label: Label
+var _ai_status_timer: float = 0.0
 # Snapshot taken when the panel opens. Preset/substrate stay staged here until
 # Apply so autosave can't write a new preset header over an old fauna list.
 var _panel_snapshot: Dictionary = {}
@@ -110,24 +113,20 @@ func _build_ui() -> void:
 	outer.add_child(PanelTheme.make_title("Settings"))
 	outer.add_child(PanelTheme.make_rule())
 
-	# Scrolling body. The section vbox lives inside this so when there are
-	# more controls than fit on screen, the user can scroll — and the Apply
-	# button stays reachable at the bottom of the panel.
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer.add_child(scroll)
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(tabs)
 
-	# Row separation = 8 (was 6) so form rows aren't crammed against each other.
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
+	var vbox_tank := _new_settings_tab(tabs, "Tank")
+	var vbox_stock := _new_settings_tab(tabs, "Stocking")
+	var vbox_env := _new_settings_tab(tabs, "Environment")
+	var vbox_ai := _new_settings_tab(tabs, "AI")
+	var vbox_adv := _new_settings_tab(tabs, "Advanced")
 
-	# -- Tank section --
-	_add_section(vbox, "Tank")
-	_shape_option = PanelTheme.add_dropdown_row(vbox, "Shape")
+	# -- Tank tab --
+	_add_section(vbox_tank, "Shape & size")
+	_shape_option = PanelTheme.add_dropdown_row(vbox_tank, "Shape")
 	for entry in [
 			{"key": "box",      "label": "Box (rectangle)"},
 			{"key": "cube",     "label": "Cube (square)"},
@@ -141,7 +140,7 @@ func _build_ui() -> void:
 	_shape_option.item_selected.connect(func(idx):
 		TankConfig.tank_shape = _shape_option.get_item_metadata(idx))
 
-	_new_tank_fit_option = PanelTheme.add_dropdown_row(vbox, "New tank footprint")
+	_new_tank_fit_option = PanelTheme.add_dropdown_row(vbox_tank, "New tank footprint")
 	for entry in [
 			{"key": "auto", "label": "Auto (screen + orientation)"},
 			{"key": "rect", "label": "Rectangle (tall/wide box)"},
@@ -153,40 +152,37 @@ func _build_ui() -> void:
 		TankConfig.new_tank_fit = _new_tank_fit_option.get_item_metadata(idx))
 	var fit_hint := PanelTheme.make_description()
 	fit_hint.text = "Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger."
-	vbox.add_child(fit_hint)
+	vbox_tank.add_child(fit_hint)
 
 	_w_label = Label.new()
-	_w_slider = PanelTheme.add_slider_row(vbox, "Width", 4.0, 24.0, 0.5, _w_label)
+	_w_slider = PanelTheme.add_slider_row(vbox_tank, "Width", 4.0, 24.0, 0.5, _w_label)
 	_w_slider.value_changed.connect(func(v): _on_w(v))
 
 	_d_label = Label.new()
-	_d_slider = PanelTheme.add_slider_row(vbox, "Depth", 2.0, 14.0, 0.5, _d_label)
+	_d_slider = PanelTheme.add_slider_row(vbox_tank, "Depth", 2.0, 14.0, 0.5, _d_label)
 	_d_slider.value_changed.connect(func(v): _on_d(v))
 
 	_h_label = Label.new()
-	_h_slider = PanelTheme.add_slider_row(vbox, "Height", 4.0, 20.0, 0.5, _h_label)
+	_h_slider = PanelTheme.add_slider_row(vbox_tank, "Height", 4.0, 20.0, 0.5, _h_label)
 	_h_slider.value_changed.connect(func(v): _on_h(v))
 
-	# -- Light section --
-	_add_section(vbox, "Light")
-	_light_energy_label = Label.new()
-	_light_energy = PanelTheme.add_slider_row(vbox, "Intensity", 0.0, 1.0, 0.05, _light_energy_label)
-	_light_energy.value_changed.connect(func(v): _on_light_energy(v))
+	var reload_badge := PanelTheme.make_description()
+	reload_badge.text = "Width / depth / height need Apply (reload) to rebuild the tank."
+	vbox_tank.add_child(reload_badge)
 
-	_light_yaw_label = Label.new()
-	_light_yaw = PanelTheme.add_slider_row(vbox, "Direction (yaw)", 0.0, 1.0, 0.05, _light_yaw_label)
-	_light_yaw.value_changed.connect(func(v): _on_light_yaw(v))
+	# -- Light fixture (tank setup) --
+	# Intensity, warmth, caustics, and the tank-lights toggle live in the
+	# always-visible Light rail popup (💡). Keep the structural fixture
+	# placement controls here since they're "tank setup" rather than
+	# moment-to-moment lighting feel.
+	_add_section(vbox_tank, "Light fixture")
 
-	_light_pitch_label = Label.new()
-	_light_pitch = PanelTheme.add_slider_row(vbox, "Direction (pitch)", 0.0, 1.0, 0.05, _light_pitch_label)
-	_light_pitch.value_changed.connect(func(v): _on_light_pitch(v))
-
-	_light_warmth_label = Label.new()
-	_light_warmth = PanelTheme.add_slider_row(vbox, "Warmth (cool→warm)", 0.0, 1.0, 0.05, _light_warmth_label)
-	_light_warmth.value_changed.connect(func(v): _on_light_warmth(v))
+	# (Sun direction moved to the Light panel's 2D pad — see _make_sun_direction_pad
+	# in main.gd. Yaw/pitch sliders deleted here so there's only one place to
+	# touch them.)
 
 	# Fixture selection (bar vs spotlight).
-	_light_fixture_option = PanelTheme.add_dropdown_row(vbox, "Fixture")
+	_light_fixture_option = PanelTheme.add_dropdown_row(vbox_tank, "Fixture")
 	_light_fixture_option.add_item("Bar (long LED)")
 	_light_fixture_option.set_item_metadata(0, "bar")
 	_light_fixture_option.add_item("Spotlight (pendant)")
@@ -194,53 +190,24 @@ func _build_ui() -> void:
 	_light_fixture_option.item_selected.connect(func(idx): _on_fixture(idx))
 
 	_light_height_label = Label.new()
-	_light_height = PanelTheme.add_slider_row(vbox, "Fixture height", 0.5, 4.0, 0.1, _light_height_label)
+	_light_height = PanelTheme.add_slider_row(vbox_tank, "Fixture height", 0.5, 4.0, 0.1, _light_height_label)
 	_light_height.value_changed.connect(func(v): _on_light_height(v))
 
 	_light_size_label = Label.new()
-	_light_size = PanelTheme.add_slider_row(vbox, "Fixture size", 0.3, 1.0, 0.05, _light_size_label)
+	_light_size = PanelTheme.add_slider_row(vbox_tank, "Fixture size", 0.3, 1.0, 0.05, _light_size_label)
 	_light_size.value_changed.connect(func(v): _on_light_size(v))
 
-	# Beams toggle.
 	_light_volumetric_check = CheckBox.new()
 	_light_volumetric_check.text = "Show light beams (god rays)"
 	_light_volumetric_check.toggled.connect(func(v): _on_volumetric(v))
-	vbox.add_child(_light_volumetric_check)
+	vbox_tank.add_child(_light_volumetric_check)
 
-	# Caustics toggle.
-	_light_caustics_check = CheckBox.new()
-	_light_caustics_check.text = "Show surface caustics"
-	_light_caustics_check.toggled.connect(func(v): _on_caustics(v))
-	vbox.add_child(_light_caustics_check)
+	var look_hint := PanelTheme.make_description()
+	look_hint.text = "Sun, warmth, and post-process live in Look → Lighting on the right rail."
+	vbox_tank.add_child(look_hint)
 
-	# -- Sound (quick access; full studio is the ♪ panel) --
-	_add_section(vbox, "Sound & Music")
-
-	_music_enabled_check = CheckBox.new()
-	_music_enabled_check.text = "Enable sound"
-	_music_enabled_check.toggled.connect(func(v): _on_music_enabled(v))
-	vbox.add_child(_music_enabled_check)
-
-	var sound_hint := PanelTheme.make_description()
-	sound_hint.text = "Open Sound Studio (♪ or M) for layers, tank coupling, influences, and randomize."
-	vbox.add_child(sound_hint)
-
-	_sound_studio_btn = PanelTheme.make_primary_button("Open Sound Studio…")
-	_sound_studio_btn.pressed.connect(_open_sound_studio)
-	vbox.add_child(_sound_studio_btn)
-
-	# -- Stocking preset section --
-	_add_section(vbox, "Stocking preset")
-
-	_auto_respawn_check = CheckBox.new()
-	_auto_respawn_check.text = "Auto-respawn extinct creatures (10 per species)"
-	_auto_respawn_check.toggled.connect(func(v): TankConfig.auto_respawn_fauna = v)
-	vbox.add_child(_auto_respawn_check)
-
-	_auto_feed_check = CheckBox.new()
-	_auto_feed_check.text = "Auto-feed surface (simulate manual feeding)"
-	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
-	vbox.add_child(_auto_feed_check)
+	# -- Stocking tab --
+	_add_section(vbox_stock, "Preset")
 
 	_preset_option = OptionButton.new()
 	_preset_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -250,12 +217,22 @@ func _build_ui() -> void:
 		_preset_option.add_item(label)
 		_preset_option.set_item_metadata(_preset_option.item_count - 1, key)
 	_preset_option.item_selected.connect(func(idx): _on_preset(idx))
-	vbox.add_child(_preset_option)
+	vbox_stock.add_child(_preset_option)
 	_preset_desc = PanelTheme.make_description()
-	vbox.add_child(_preset_desc)
+	vbox_stock.add_child(_preset_desc)
 
-	# -- Substrate section --
-	_add_section(vbox, "Substrate")
+	_add_section(vbox_stock, "Species & diet")
+	_diet_chart = RichTextLabel.new()
+	_diet_chart.bbcode_enabled = true
+	_diet_chart.fit_content = true
+	_diet_chart.scroll_active = false
+	_diet_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
+	_diet_chart.add_theme_font_size_override("normal_font_size", 11)
+	vbox_stock.add_child(_diet_chart)
+
+	# -- Environment tab --
+	_add_section(vbox_env, "Substrate")
 	_substrate_option = OptionButton.new()
 	_substrate_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_substrate_option.custom_minimum_size = Vector2(0, 30)
@@ -264,15 +241,15 @@ func _build_ui() -> void:
 		_substrate_option.add_item(label)
 		_substrate_option.set_item_metadata(_substrate_option.item_count - 1, key)
 	_substrate_option.item_selected.connect(func(idx): _on_substrate(idx))
-	vbox.add_child(_substrate_option)
+	vbox_env.add_child(_substrate_option)
 	_substrate_desc = PanelTheme.make_description()
-	vbox.add_child(_substrate_desc)
+	vbox_env.add_child(_substrate_desc)
 
-	# -- Aeration section --
+	# -- Aeration --
 	# Picks a fixture type (disk / stick / filter / none) which is rebuilt on
 	# Apply, plus strength + lateral position that the rebuild reads from
 	# TankConfig.
-	_add_section(vbox, "Aeration")
+	_add_section(vbox_env, "Aeration")
 	_aeration_option = OptionButton.new()
 	_aeration_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_aeration_option.custom_minimum_size = Vector2(0, 30)
@@ -281,23 +258,23 @@ func _build_ui() -> void:
 		_aeration_option.add_item(label)
 		_aeration_option.set_item_metadata(_aeration_option.item_count - 1, key)
 	_aeration_option.item_selected.connect(func(idx): _on_aeration(idx))
-	vbox.add_child(_aeration_option)
+	vbox_env.add_child(_aeration_option)
 	_aeration_desc = PanelTheme.make_description()
-	vbox.add_child(_aeration_desc)
+	vbox_env.add_child(_aeration_desc)
 	_aeration_strength_label = Label.new()
-	_aeration_strength = PanelTheme.add_slider_row(vbox, "Air strength", 0.0, 1.0, 0.05,
+	_aeration_strength = PanelTheme.add_slider_row(vbox_env, "Air strength", 0.0, 1.0, 0.05,
 		_aeration_strength_label)
 	_aeration_strength.value_changed.connect(func(v): _on_aeration_strength(v))
 	_aeration_x_label = Label.new()
-	_aeration_x = PanelTheme.add_slider_row(vbox, "Position (left↔right)", -1.0, 1.0, 0.05,
+	_aeration_x = PanelTheme.add_slider_row(vbox_env, "Position (left↔right)", -1.0, 1.0, 0.05,
 		_aeration_x_label)
 	_aeration_x.value_changed.connect(func(v): _on_aeration_x(v))
 
-	# -- Room environment --
+	# -- Room --
 	# The "scene" around the tank — desk, wall, lamp, plant. Default is
 	# "void" (no room) to preserve the classic isolated look; other
 	# presets dress up the tank for a cozier feel.
-	_add_section(vbox, "Room")
+	_add_section(vbox_env, "Room")
 	_environment_option = OptionButton.new()
 	_environment_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_environment_option.custom_minimum_size = Vector2(0, 30)
@@ -306,25 +283,107 @@ func _build_ui() -> void:
 		_environment_option.add_item(label)
 		_environment_option.set_item_metadata(_environment_option.item_count - 1, key)
 	_environment_option.item_selected.connect(func(idx): _on_environment(idx))
-	vbox.add_child(_environment_option)
+	vbox_env.add_child(_environment_option)
 	_environment_desc = PanelTheme.make_description()
-	vbox.add_child(_environment_desc)
+	vbox_env.add_child(_environment_desc)
 
-	# -- Species & diet chart --
-	# Lists the species the *selected stocking preset* actually spawns (not
-	# the whole library — showing every species here made it look like the
-	# dropdown was broken when e.g. Killifish appeared under Reef).
-	_add_section(vbox, "Species & diet")
-	_diet_chart = RichTextLabel.new()
-	_diet_chart.bbcode_enabled = true
-	_diet_chart.fit_content = true
-	_diet_chart.scroll_active = false
-	_diet_chart.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
-	_diet_chart.add_theme_font_size_override("normal_font_size", 11)
-	vbox.add_child(_diet_chart)
+	# -- Advanced tab --
+	_add_section(vbox_adv, "Automation")
+	_auto_respawn_check = CheckBox.new()
+	_auto_respawn_check.text = "Auto-respawn extinct creatures (10 per species)"
+	_auto_respawn_check.toggled.connect(func(v): TankConfig.auto_respawn_fauna = v)
+	vbox_adv.add_child(_auto_respawn_check)
 
-	# Footer buttons — attached to `outer` (NOT `vbox`) so they stay pinned at
+	_auto_feed_check = CheckBox.new()
+	_auto_feed_check.text = "Auto-feed surface (simulate manual feeding)"
+	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
+	vbox_adv.add_child(_auto_feed_check)
+
+	_add_section(vbox_adv, "Sound")
+	var sound_hint := PanelTheme.make_description()
+	sound_hint.text = "Enable sound and mix layers in Sound Studio (Look → Sound, or M)."
+	vbox_adv.add_child(sound_hint)
+	_sound_studio_btn = PanelTheme.make_primary_button("Open Sound Studio…")
+	_sound_studio_btn.pressed.connect(_open_sound_studio)
+	vbox_adv.add_child(_sound_studio_btn)
+
+	# -- AI tab --
+	# Local Ollama bridge. Off ships with the same offline name pool the AI
+	# uses as fallback, so toggling this is purely additive — nothing breaks
+	# when it's unreachable, players just keep the built-in experience.
+	_add_section(vbox_ai, "AI Companion")
+	_ai_enabled_check = CheckBox.new()
+	_ai_enabled_check.text = "Enable AI (local Ollama)"
+	_ai_enabled_check.toggled.connect(_on_ai_enabled_toggled)
+	vbox_ai.add_child(_ai_enabled_check)
+	var ai_desc := PanelTheme.make_description()
+	ai_desc.text = "Adds AI-generated names, moods, and (optional) tank chronicle lines. Runs locally — no data leaves your machine."
+	vbox_ai.add_child(ai_desc)
+	# Status line — driven by AIDirector.status_summary()
+	_ai_status_label = Label.new()
+	_ai_status_label.add_theme_font_size_override("font_size", 11)
+	_ai_status_label.add_theme_color_override("font_color", Color8(180, 195, 220))
+	_ai_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox_ai.add_child(_ai_status_label)
+	var ai_row1 := HBoxContainer.new()
+	ai_row1.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(ai_row1)
+	var ep_lbl := Label.new()
+	ep_lbl.text = "Endpoint:"
+	ep_lbl.add_theme_font_size_override("font_size", 11)
+	ai_row1.add_child(ep_lbl)
+	_ai_endpoint_edit = LineEdit.new()
+	_ai_endpoint_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_endpoint_edit.placeholder_text = "http://localhost:11434"
+	_ai_endpoint_edit.text_changed.connect(_on_ai_endpoint_changed)
+	ai_row1.add_child(_ai_endpoint_edit)
+	var ai_row2 := HBoxContainer.new()
+	ai_row2.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(ai_row2)
+	var md_lbl := Label.new()
+	md_lbl.text = "Model:"
+	md_lbl.add_theme_font_size_override("font_size", 11)
+	ai_row2.add_child(md_lbl)
+	_ai_model_edit = LineEdit.new()
+	_ai_model_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_model_edit.placeholder_text = "llama3.2:3b"
+	_ai_model_edit.text_changed.connect(_on_ai_model_changed)
+	ai_row2.add_child(_ai_model_edit)
+	# Naming theme
+	var ai_row3 := HBoxContainer.new()
+	ai_row3.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(ai_row3)
+	var th_lbl := Label.new()
+	th_lbl.text = "Naming theme:"
+	th_lbl.add_theme_font_size_override("font_size", 11)
+	ai_row3.add_child(th_lbl)
+	_ai_theme_edit = LineEdit.new()
+	_ai_theme_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_theme_edit.placeholder_text = "(optional) e.g. Greek gods, trees, planets"
+	_ai_theme_edit.text_changed.connect(_on_ai_theme_changed)
+	ai_row3.add_child(_ai_theme_edit)
+	# Chronicle toggle
+	_ai_chronicle_check = CheckBox.new()
+	_ai_chronicle_check.text = "Write tank chronicle (ambient sentences)"
+	_ai_chronicle_check.toggled.connect(_on_ai_chronicle_toggled)
+	vbox_ai.add_child(_ai_chronicle_check)
+	var ai_btn_row := HBoxContainer.new()
+	ai_btn_row.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(ai_btn_row)
+	var test_btn := PanelTheme.make_secondary_button("Test connection")
+	test_btn.pressed.connect(_on_ai_test_pressed)
+	ai_btn_row.add_child(test_btn)
+	# "Use installed" auto-substitutes a sensible model from whatever the
+	# user already has pulled. Removes the friction of typing model names
+	# or downloading new ones when their Ollama already has llama3/qwen/etc.
+	var pick_btn := PanelTheme.make_secondary_button("Use installed model")
+	pick_btn.pressed.connect(_on_ai_pick_installed)
+	ai_btn_row.add_child(pick_btn)
+	var onboard_btn := PanelTheme.make_secondary_button("Install Ollama…")
+	onboard_btn.pressed.connect(_on_ai_onboard_pressed)
+	ai_btn_row.add_child(onboard_btn)
+
+	# Footer buttons — attached to `outer` so they stay pinned at
 	# the bottom of the panel below the scroll area. Without this, when the
 	# section list grew past the screen height the Apply button scrolled off
 	# the bottom and became unreachable.
@@ -342,6 +401,20 @@ func _build_ui() -> void:
 	var apply := PanelTheme.make_primary_button("Apply (reload tank)")
 	apply.pressed.connect(_on_apply)
 	hb.add_child(apply)
+
+
+func _new_settings_tab(tabs: TabContainer, title: String) -> VBoxContainer:
+	var scroll := ScrollContainer.new()
+	scroll.name = title
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(scroll)
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
+	return vbox
 
 
 # Section header with a 4-px spacer above so each group reads as a chunk
@@ -373,15 +446,11 @@ func _pull_from_config() -> void:
 	_w_slider.value = TankConfig.tank_half_w * 2.0
 	_d_slider.value = TankConfig.tank_half_d * 2.0
 	_h_slider.value = TankConfig.tank_height
-	_light_energy.value = TankConfig.light_energy
-	_light_yaw.value = TankConfig.light_yaw
-	_light_pitch.value = TankConfig.light_pitch
-	_light_warmth.value = TankConfig.light_warmth
 	_light_height.value = TankConfig.light_height
 	_light_size.value = TankConfig.light_size
 	_light_volumetric_check.button_pressed = TankConfig.light_volumetric
-	_light_caustics_check.button_pressed = TankConfig.light_caustics
-	_music_enabled_check.button_pressed = TankConfig.music_enabled
+	if _music_enabled_check != null:
+		_music_enabled_check.button_pressed = TankConfig.music_enabled
 	# Pick the fixture option matching current type.
 	for i in _light_fixture_option.item_count:
 		if _light_fixture_option.get_item_metadata(i) == TankConfig.light_fixture:
@@ -425,16 +494,169 @@ func _pull_from_config() -> void:
 			break
 	_preset_option.set_block_signals(false)
 	_update_preset_desc()
+	# AI Companion widgets
+	if _ai_enabled_check != null:
+		_ai_enabled_check.set_block_signals(true)
+		_ai_enabled_check.button_pressed = TankConfig.ai_enabled
+		_ai_enabled_check.set_block_signals(false)
+	if _ai_chronicle_check != null:
+		_ai_chronicle_check.set_block_signals(true)
+		_ai_chronicle_check.button_pressed = TankConfig.ai_chronicle
+		_ai_chronicle_check.set_block_signals(false)
+	if _ai_endpoint_edit != null:
+		_ai_endpoint_edit.text = TankConfig.ai_endpoint
+	if _ai_model_edit != null:
+		_ai_model_edit.text = TankConfig.ai_model
+	if _ai_theme_edit != null:
+		_ai_theme_edit.text = TankConfig.ai_naming_theme
+	_refresh_ai_status()
+
+
+func _refresh_ai_status() -> void:
+	if _ai_status_label == null:
+		return
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai == null:
+		_ai_status_label.text = "AI Director unavailable."
+		return
+	_ai_status_label.text = String(ai.status_summary())
+
+
+func _process(_dt: float) -> void:
+	if not visible:
+		return
+	# Refresh AI status periodically while the panel is open (cheap;
+	# AIDirector.status_summary is a single string format).
+	_ai_status_timer += _dt
+	if _ai_status_timer >= 1.0:
+		_ai_status_timer = 0.0
+		_refresh_ai_status()
+
+
+func _push_ai_to_director() -> void:
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai == null:
+		return
+	ai.apply_config({
+		"ai_enabled": TankConfig.ai_enabled,
+		"ai_endpoint": TankConfig.ai_endpoint,
+		"ai_model": TankConfig.ai_model,
+		"ai_naming_theme": TankConfig.ai_naming_theme,
+		"ai_chronicle": TankConfig.ai_chronicle,
+	})
+
+
+func _on_ai_enabled_toggled(on: bool) -> void:
+	TankConfig.ai_enabled = on
+	_push_ai_to_director()
+	# If the user just turned it on and has never seen the onboarding
+	# modal, pop it automatically — saves them hunting for the button.
+	if on and not TankConfig.ai_onboarding_seen:
+		_on_ai_onboard_pressed()
+
+
+func _on_ai_chronicle_toggled(on: bool) -> void:
+	TankConfig.ai_chronicle = on
+	_push_ai_to_director()
+
+
+func _on_ai_endpoint_changed(text: String) -> void:
+	TankConfig.ai_endpoint = text.strip_edges()
+	_push_ai_to_director()
+
+
+func _on_ai_model_changed(text: String) -> void:
+	TankConfig.ai_model = text.strip_edges()
+	_push_ai_to_director()
+
+
+func _on_ai_theme_changed(text: String) -> void:
+	TankConfig.ai_naming_theme = text.strip_edges()
+	_push_ai_to_director()
+
+
+func _on_ai_test_pressed() -> void:
+	_push_ai_to_director()
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai != null:
+		if not TankConfig.ai_enabled:
+			TankConfig.ai_enabled = true
+			_ai_enabled_check.button_pressed = true
+			_push_ai_to_director()
+		ai.test_connection()
+		_refresh_ai_status()
+
+
+func _on_ai_pick_installed() -> void:
+	# Make sure we have a fresh list, then auto-swap the model field to
+	# the best installed candidate. Two-step: if available_models is empty
+	# (never tested), fire a test first and re-enter on the connection
+	# signal; otherwise pick + apply + re-test immediately.
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai == null:
+		return
+	if not TankConfig.ai_enabled:
+		TankConfig.ai_enabled = true
+		_ai_enabled_check.button_pressed = true
+		_push_ai_to_director()
+	if (ai.available_models as PackedStringArray).is_empty():
+		# No model list yet — fire a test. The test response will populate
+		# available_models; the user can click this button again afterward.
+		# We also subscribe one-shot to the signal so the swap happens
+		# automatically without a second click.
+		_ai_status_label.add_theme_color_override("font_color", Color8(180, 195, 220))
+		_ai_status_label.text = "Probing Ollama…"
+		ai.test_connection()
+		if not ai.connection_tested.is_connected(_on_ai_pick_after_probe):
+			ai.connection_tested.connect(_on_ai_pick_after_probe, CONNECT_ONE_SHOT)
+		return
+	_apply_picked_model(ai)
+
+
+func _on_ai_pick_after_probe(_success: bool, _msg: String) -> void:
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai != null:
+		_apply_picked_model(ai)
+
+
+func _apply_picked_model(ai: Node) -> void:
+	var pick: String = String(ai.pick_best_installed_model())
+	if pick == "":
+		_ai_status_label.add_theme_color_override("font_color", Color8(230, 120, 120))
+		_ai_status_label.text = "No suitable installed model found. Try `ollama pull qwen2.5:3b` in a terminal."
+		return
+	TankConfig.ai_model = pick
+	_ai_model_edit.text = pick
+	_push_ai_to_director()
+	ai.test_connection()
+	_ai_status_label.add_theme_color_override("font_color", Color8(150, 230, 150))
+	_ai_status_label.text = "Switched to `%s` and re-testing…" % pick
+
+
+func _on_ai_onboard_pressed() -> void:
+	TankConfig.ai_onboarding_seen = true
+	# Attach the modal to the scene root. current_scene returns a generic
+	# Node (main.gd extends Node, not Control) so we don't typecast it —
+	# add_child works on any Node and the modal positions itself.
+	var root: Node = get_tree().current_scene
+	if root == null:
+		return
+	var modal: PanelContainer = OllamaOnboarding.new()
+	root.add_child(modal)
+	modal.z_index = 200
+	modal.anchors_preset = Control.PRESET_CENTER
+	# Re-centre after the layout pass so size is known. Use the window
+	# size as the reference rect since the parent Node may not have a size.
+	var win_size: Vector2 = Vector2(get_window().size)
+	modal.call_deferred("set_position", (win_size - modal.size) * 0.5)
+	if modal.has_signal("closed"):
+		modal.closed.connect(_refresh_ai_status)
 
 
 func _update_value_labels() -> void:
 	_w_label.text = "%.1f" % _w_slider.value
 	_d_label.text = "%.1f" % _d_slider.value
 	_h_label.text = "%.1f" % _h_slider.value
-	_light_energy_label.text = "%.2f" % _light_energy.value
-	_light_yaw_label.text = "%.2f" % _light_yaw.value
-	_light_pitch_label.text = "%.2f" % _light_pitch.value
-	_light_warmth_label.text = "%.2f" % _light_warmth.value
 	_light_height_label.text = "%.1f" % _light_height.value
 	_light_size_label.text = "%.2f" % _light_size.value
 
@@ -457,10 +679,6 @@ func _on_volumetric(v: bool) -> void:
 	TankConfig.light_volumetric = v
 
 
-func _on_caustics(v: bool) -> void:
-	TankConfig.light_caustics = v
-
-
 func _on_music_enabled(v: bool) -> void:
 	TankConfig.music_enabled = v
 	var amb = get_tree().current_scene.get_node_or_null("AmbientAudio")
@@ -472,9 +690,8 @@ func _open_sound_studio() -> void:
 	var main := get_tree().current_scene
 	if main == null:
 		return
-	var panel := main.get_node_or_null("SoundPanel")
-	if panel != null and panel.has_method("toggle"):
-		panel.toggle()
+	if main.has_method("_ui_open_side"):
+		main.call("_ui_open_side", "sound")
 
 
 func _update_substrate_desc() -> void:
@@ -498,26 +715,6 @@ func _on_h(v: float) -> void:
 	_h_label.text = "%.1f" % v
 
 
-func _on_light_energy(v: float) -> void:
-	TankConfig.light_energy = v
-	_light_energy_label.text = "%.2f" % v
-
-
-func _on_light_yaw(v: float) -> void:
-	TankConfig.light_yaw = v
-	_light_yaw_label.text = "%.2f" % v
-
-
-func _on_light_pitch(v: float) -> void:
-	TankConfig.light_pitch = v
-	_light_pitch_label.text = "%.2f" % v
-
-
-func _on_light_warmth(v: float) -> void:
-	TankConfig.light_warmth = v
-	_light_warmth_label.text = "%.2f" % v
-
-
 func _on_substrate(idx: int) -> void:
 	_pending_substrate = _substrate_option.get_item_metadata(idx)
 	_sync_substrate_dropdown()
@@ -531,6 +728,9 @@ func _on_aeration(idx: int) -> void:
 func _on_environment(idx: int) -> void:
 	TankConfig.environment_preset = _environment_option.get_item_metadata(idx)
 	_update_environment_desc()
+	var suggested: String = TankConfig.suggested_lighting_for_environment(TankConfig.environment_preset)
+	if suggested != "" and TankConfig.has_method("apply_lighting_preset"):
+		TankConfig.apply_lighting_preset(suggested)
 
 
 func _update_environment_desc() -> void:

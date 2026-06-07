@@ -56,10 +56,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 7.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.23,
-			"light_warmth": 0.55,
-			"light_energy": 0.58,
 			"light_fixture": "bar",
 			"environment_preset": "bedroom_desk",
+			"lighting_preset": "cozy_shop",
 		},
 	},
 	{
@@ -78,10 +77,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 5.0,
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.18,
-			"light_warmth": 0.38,
-			"light_energy": 0.72,
 			"light_fixture": "bar",
 			"environment_preset": "sunny_window",
+			"lighting_preset": "sunny",
 		},
 	},
 	{
@@ -100,10 +98,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 9.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.18,
-			"light_warmth": 0.85,
-			"light_energy": 0.38,
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
+			"lighting_preset": "dim_warm",
 		},
 	},
 	{
@@ -122,10 +119,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 7.0,
 			"water_surface_fraction": 0.95,
 			"substrate_depth_fraction": 0.14,
-			"light_warmth": 0.30,
-			"light_energy": 0.82,
 			"light_fixture": "spotlight",
 			"environment_preset": "sunny_window",
+			"lighting_preset": "reef",
 		},
 	},
 	{
@@ -144,10 +140,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 8.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.22,
-			"light_warmth": 0.58,
-			"light_energy": 0.62,
 			"light_fixture": "spotlight",
 			"environment_preset": "bedroom_desk",
+			"lighting_preset": "cozy_shop",
 		},
 	},
 	{
@@ -166,10 +161,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 6.0,
 			"water_surface_fraction": 0.90,
 			"substrate_depth_fraction": 0.26,
-			"light_warmth": 0.48,
-			"light_energy": 0.52,
 			"light_fixture": "spotlight",
 			"environment_preset": "forest_window",
+			"lighting_preset": "planted",
 		},
 	},
 	{
@@ -188,10 +182,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 8.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.20,
-			"light_warmth": 0.52,
-			"light_energy": 0.68,
 			"light_fixture": "spotlight",
 			"environment_preset": "bedroom_desk",
+			"lighting_preset": "planted",
 		},
 	},
 	{
@@ -210,10 +203,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_height": 6.0,
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.24,
-			"light_warmth": 0.66,
-			"light_energy": 0.46,
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
+			"lighting_preset": "dim_warm",
 		},
 	},
 ]
@@ -377,5 +369,11 @@ static func apply_scenario(scenario: Dictionary, cfg: Node) -> void:
 	if cfg == null:
 		return
 	var config: Dictionary = scenario.get("config", {})
+	var lighting_slug: String = ""
 	for key in config.keys():
+		if key == "lighting_preset":
+			lighting_slug = String(config[key])
+			continue
 		cfg.set(String(key), config[key])
+	if lighting_slug != "" and cfg.has_method("apply_lighting_preset"):
+		cfg.apply_lighting_preset(lighting_slug)

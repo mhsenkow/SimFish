@@ -1,0 +1,585 @@
+extends Node
+
+# Preloaded so we don't depend on the global class_name registry — that
+# registry is populated by the editor's resource scan, and a freshly
+# imported project (or a headless --check-only run) may fail before the
+# scan completes. preload() resolves immediately at parse time.
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+
+# AIDirector — optional local-Ollama bridge that adds names, bios, mood
+# nudges, and ambient narration WITHOUT any cloud calls.
+#
+# Design rules:
+#   1. If Ollama is unreachable, every public method returns sensible
+#      offline defaults. The sim never blocks on the network.
+#   2. We never call once-per-creature per-frame. Names + bios are batched
+#      (one HTTP call refills a pool of 24). The intent field is one call
+#      every ~60 sim seconds, sampled locally by all creatures. Chronicle
+#      lines are produced opportunistically when interesting events fire.
+#   3. All requests fail-soft. A transient HTTP error flips conn_state to
+#      ERROR and the offline pool takes over until the next successful
+#      call (any successful call clears the error).
+#
+# Wired into the project as an autoload (see project.godot).
+
+signal connection_tested(success: bool, message: String)
+signal chronicle_line(text: String, tags: PackedStringArray)
+signal name_pool_refilled(count: int)
+signal config_changed()
+
+
+# ---- Public state (read freely) -----------------------------------------
+enum ConnState { UNKNOWN, OK, CHECKING, OFFLINE, ERROR }
+var conn_state: int = ConnState.UNKNOWN
+var last_error: String = ""
+var last_ok_unix: int = 0
+# Populated by test_connection — every model the local Ollama instance
+# reports installed. The settings panel reads this to power its
+# "Use installed model" picker.
+var available_models: PackedStringArray = PackedStringArray()
+
+
+# ---- Config (mirrors TankConfig; set via apply_config()) ----------------
+var enabled: bool = false
+var endpoint: String = "http://localhost:11434"
+# Default to qwen2.5:3b — small (~2GB), fast, strong at structured JSON
+# outputs, and not Meta. If the user has already installed something else
+# the "Use installed model" button auto-substitutes from their list.
+var model: String = "qwen2.5:3b"
+var naming_theme: String = ""        # free-text e.g. "Greek gods", "trees"
+var chronicle_enabled: bool = false
+var intent_refresh_period_s: float = 60.0
+
+
+# ---- Name pool ----------------------------------------------------------
+var _ai_name_pool: Array = []
+const NAME_POOL_TARGET: int = 24
+const NAME_POOL_REFILL_BELOW: int = 6
+var _name_fetch_in_flight: bool = false
+
+
+# ---- Intent field -------------------------------------------------------
+# A 4x4x4 grid (64 cells) of soft "mood attractors". Each cell holds:
+#   {mood: String, drift: Vector3 (precomputed), intensity: float 0..1}
+# Cells are addressed by normalized tank-relative position (0..1 on each
+# axis). Creatures sample the closest cell and apply a tiny additive
+# steering term — 0.05..0.15 units/sec at most. The point is to bias
+# group behavior over a minute or two, not to override local steering.
+const INTENT_GRID: int = 4
+var _intent_cells: Array = []   # length 64, each Dictionary or null
+var _intent_timer: float = 0.0
+var _intent_in_flight: bool = false
+var _intent_last_refresh_unix: int = 0
+
+
+# ---- Per-named-fish mood ---------------------------------------------
+# id -> {mood: String, drift: Vector3, expires_unix: int}
+var _fish_moods: Dictionary = {}
+
+
+# ---- HTTP clients (one per task type so requests don't serialize) ------
+var _http_test: HTTPRequest
+var _http_names: HTTPRequest
+var _http_intent: HTTPRequest
+var _http_chronicle: HTTPRequest
+
+
+# ---- Lifecycle ---------------------------------------------------------
+# _ready runs after every other autoload that lists this one as a
+# dependency, but TankConfig (also an autoload) fires BEFORE us in the
+# project.godot order — and its load_from_disk() can call apply_config()
+# straight away, which (for a saved ai_enabled=true tank) calls
+# test_connection() before our _ready has built the HTTPRequest nodes.
+# Solution: build them lazily via _ensure_http(), so the first call after
+# autoload instantiation triggers creation regardless of _ready timing.
+func _ready() -> void:
+	_ensure_http()
+	# Pre-fill an empty intent grid so get_intent_drift() is safe before
+	# the first refresh lands. Empty cells return Vector3.ZERO.
+	if _intent_cells.is_empty():
+		_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+
+
+func _ensure_http() -> void:
+	if _http_test == null:
+		_http_test = _make_http("HttpTest", _on_test_response)
+	if _http_names == null:
+		_http_names = _make_http("HttpNames", _on_names_response)
+	if _http_intent == null:
+		_http_intent = _make_http("HttpIntent", _on_intent_response)
+	if _http_chronicle == null:
+		_http_chronicle = _make_http("HttpChronicle", _on_chronicle_response)
+
+
+func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
+	var h := HTTPRequest.new()
+	h.name = node_name
+	h.timeout = 8.0
+	h.request_completed.connect(callback)
+	add_child(h)
+	return h
+
+
+func _process(dt: float) -> void:
+	if not enabled:
+		return
+	# Drive the throttle. SimDriver polls intent_refresh_due() and calls
+	# push_tank_summary() when ready, so we only track elapsed seconds here.
+	_intent_timer += dt
+	# Background top-up of the name pool. Free, no game impact when off.
+	if conn_state == ConnState.OK and _ai_name_pool.size() < NAME_POOL_REFILL_BELOW \
+			and not _name_fetch_in_flight:
+		_request_name_batch()
+
+
+# True when enough time has passed since the last intent refresh AND no
+# refresh is currently in flight. SimDriver calls this once per sim tick;
+# when true, it builds a tank summary and calls push_tank_summary().
+func intent_refresh_due() -> bool:
+	if not enabled or conn_state != ConnState.OK:
+		return false
+	if _intent_in_flight:
+		return false
+	return _intent_timer >= intent_refresh_period_s
+
+
+# ---- Config plumbing ---------------------------------------------------
+# Called by main / tank_config whenever AI settings change. Re-checks
+# the connection if 'enabled' just flipped on.
+func apply_config(cfg: Dictionary) -> void:
+	var was_enabled: bool = enabled
+	enabled = bool(cfg.get("ai_enabled", enabled))
+	endpoint = String(cfg.get("ai_endpoint", endpoint)).strip_edges()
+	if endpoint.ends_with("/"):
+		endpoint = endpoint.substr(0, endpoint.length() - 1)
+	model = String(cfg.get("ai_model", model)).strip_edges()
+	naming_theme = String(cfg.get("ai_naming_theme", naming_theme)).strip_edges()
+	chronicle_enabled = bool(cfg.get("ai_chronicle", chronicle_enabled))
+	if enabled and not was_enabled:
+		test_connection()
+	elif not enabled:
+		conn_state = ConnState.UNKNOWN
+		_ai_name_pool.clear()
+		_intent_cells.clear()
+		_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+	emit_signal("config_changed")
+
+
+# Probe /api/tags to verify the endpoint responds AND the configured
+# model is installed. Emits connection_tested(success, message).
+func test_connection() -> void:
+	_ensure_http()
+	if endpoint == "":
+		conn_state = ConnState.ERROR
+		last_error = "Endpoint is empty."
+		emit_signal("connection_tested", false, last_error)
+		return
+	conn_state = ConnState.CHECKING
+	var url: String = endpoint + "/api/tags"
+	var err: int = _http_test.request(url, PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_GET)
+	if err != OK:
+		conn_state = ConnState.ERROR
+		last_error = "Could not start request (Godot error %d)." % err
+		emit_signal("connection_tested", false, last_error)
+
+
+func _on_test_response(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		conn_state = ConnState.OFFLINE
+		last_error = "Ollama did not respond at %s (HTTP %d, result %d). Is `ollama serve` running?" % [endpoint, code, result]
+		emit_signal("connection_tested", false, last_error)
+		return
+	var text: String = body.get_string_from_utf8()
+	var parsed: Variant = JSON.parse_string(text)
+	if not (parsed is Dictionary):
+		conn_state = ConnState.ERROR
+		last_error = "Ollama returned malformed JSON."
+		emit_signal("connection_tested", false, last_error)
+		return
+	var models_arr: Array = parsed.get("models", [])
+	var have_model: bool = false
+	available_models = PackedStringArray()
+	for m in models_arr:
+		var nm: String = String(m.get("name", ""))
+		available_models.append(nm)
+		if nm == model or nm.begins_with(model + ":"):
+			have_model = true
+	if not have_model:
+		conn_state = ConnState.ERROR
+		last_error = "Connected, but `%s` is not installed. Pick one of your installed models (button below) or run `ollama pull %s`." % [model, model]
+		emit_signal("connection_tested", false, last_error)
+		return
+	conn_state = ConnState.OK
+	last_error = ""
+	last_ok_unix = int(Time.get_unix_time_from_system())
+	emit_signal("connection_tested", true, "Connected to Ollama. Model `%s` ready." % model)
+
+
+# Pick the most sensible model from `available_models` for our workload
+# (short JSON outputs: names + region moods + 1-sentence chronicle).
+# Priority order — Meta/Llama models are deliberately excluded from the
+# preference list:
+#   1. Anything already matching the user's configured `model` family
+#   2. qwen2.5 (3B–7B is the sweet spot for short JSON)
+#   3. mistral
+#   4. granite4 (small + fast IBM model)
+#   5. gemma3 (Google)
+#   6. qwen2 / qwen3 (broader Qwen family)
+#   7. deepseek-r1 (reasoning model — capable but slower due to thinking
+#      tokens; placed last among non-Llama options)
+# Anything else only fires as a true last-resort fallback, and even then
+# we skip llama/llava/tinyllama families and vision/embedder models.
+func pick_best_installed_model() -> String:
+	if available_models.is_empty():
+		return ""
+	# 1. Family match against current configured model.
+	var family: String = model.split(":")[0]
+	if family != "" and not _is_meta_family(family):
+		for m in available_models:
+			if String(m).begins_with(family + ":"):
+				return String(m)
+	# 2..N: hardcoded preference list (non-Meta only).
+	var prefs: PackedStringArray = PackedStringArray([
+		"qwen2.5", "mistral", "granite4", "gemma3",
+		"qwen2", "qwen3", "deepseek-r1",
+	])
+	for pref in prefs:
+		for m in available_models:
+			if String(m).begins_with(pref + ":") or String(m) == pref:
+				return String(m)
+	# Fallback: first installed model that isn't a vision-only / embedder
+	# / Llama-family model. We'd rather return "" (and let the caller
+	# show an error) than silently pick something the user explicitly
+	# said they don't want.
+	for m in available_models:
+		var s: String = String(m).to_lower()
+		if "vision" in s or "embed" in s or "moondream" in s:
+			continue
+		if _is_meta_family(s.split(":")[0]):
+			continue
+		return String(m)
+	return ""
+
+
+func _is_meta_family(name_prefix: String) -> bool:
+	# Llama, llava (built on Llama), tinyllama, llama2-uncensored, etc.
+	# Anything starting with "llama" or "llava" or "tinyllama" is Meta-derived.
+	var s: String = name_prefix.to_lower()
+	return s.begins_with("llama") or s.begins_with("llava") or s == "tinyllama"
+
+
+# ---- Naming -----------------------------------------------------------
+# Returns a name immediately. When the AI pool has one queued we use that;
+# otherwise we use the offline fallback AND kick off a background refill.
+# This means the very first fish in a session uses an offline name (no
+# blocking wait) and subsequent fish get LLM names as the pool fills.
+func consume_name(organism_kind: String, already_used: Dictionary = {}) -> Dictionary:
+	if enabled and conn_state == ConnState.OK and _ai_name_pool.size() > 0:
+		# Find first pool entry not already in use.
+		for i in range(_ai_name_pool.size()):
+			var candidate: String = String(_ai_name_pool[i])
+			if not already_used.has(candidate.to_lower()):
+				_ai_name_pool.remove_at(i)
+				if _ai_name_pool.size() < NAME_POOL_REFILL_BELOW and not _name_fetch_in_flight:
+					_request_name_batch()
+				return {"name": candidate, "source": "ai"}
+		# All pool entries clashed — fall through to offline.
+	if enabled and conn_state != ConnState.OK and not _name_fetch_in_flight:
+		# Opportunistic: try a refill so the next fish benefits.
+		_request_name_batch()
+	return {"name": CreatureNaming.generate_name(organism_kind, already_used), "source": "offline"}
+
+
+func _request_name_batch() -> void:
+	if not enabled or endpoint == "":
+		return
+	_ensure_http()
+	_name_fetch_in_flight = true
+	var theme_clause: String = ""
+	if naming_theme != "":
+		theme_clause = " The names should feel like: %s." % naming_theme
+	var prompt: String = "Return a JSON object with one key 'names' whose value is an array of exactly %d distinct short pet names suitable for individual aquarium creatures.%s Each name is 1-2 syllables, gender-neutral, no titles, no surnames. Return ONLY the JSON." % [NAME_POOL_TARGET, theme_clause]
+	var payload: Dictionary = {
+		"model": model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": {"temperature": 1.05}
+	}
+	var url: String = endpoint + "/api/generate"
+	var err: int = _http_names.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		_name_fetch_in_flight = false
+
+
+func _on_names_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	_name_fetch_in_flight = false
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		conn_state = ConnState.OFFLINE
+		return
+	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not (outer is Dictionary):
+		return
+	var inner_text: String = String(outer.get("response", ""))
+	var inner: Variant = JSON.parse_string(inner_text)
+	if not (inner is Dictionary):
+		return
+	var names: Variant = inner.get("names", [])
+	if not (names is Array):
+		return
+	var added: int = 0
+	for n in names:
+		var s: String = String(n).strip_edges().capitalize()
+		# Filter: keep 2-20 chars; drop anything obviously not a name
+		# (numbers, punctuation-only, very long phrases the model may emit).
+		if s.length() < 2 or s.length() > 20:
+			continue
+		_ai_name_pool.append(s)
+		added += 1
+	conn_state = ConnState.OK
+	last_ok_unix = int(Time.get_unix_time_from_system())
+	emit_signal("name_pool_refilled", added)
+
+
+# ---- Intent field ------------------------------------------------------
+# Sample the intent grid at a tank-relative position [0..1, 0..1, 0..1].
+# Returns a small drift Vector3 (length ≤ 0.15) suitable for adding to
+# a creature's desired velocity, plus a mood word for debug HUDs.
+func get_intent_drift(rel_pos: Vector3) -> Dictionary:
+	if _intent_cells.is_empty():
+		return {"drift": Vector3.ZERO, "mood": "", "intensity": 0.0}
+	var ix: int = clampi(int(rel_pos.x * INTENT_GRID), 0, INTENT_GRID - 1)
+	var iy: int = clampi(int(rel_pos.y * INTENT_GRID), 0, INTENT_GRID - 1)
+	var iz: int = clampi(int(rel_pos.z * INTENT_GRID), 0, INTENT_GRID - 1)
+	var idx: int = ix + iy * INTENT_GRID + iz * INTENT_GRID * INTENT_GRID
+	var cell: Variant = _intent_cells[idx]
+	if not (cell is Dictionary):
+		return {"drift": Vector3.ZERO, "mood": "", "intensity": 0.0}
+	return cell
+
+
+# Called by SimDriver each refresh window. The summary dict is small:
+#   { fish_count, shrimp_count, snail_count, o2, ammonia, day_phase,
+#     named_fish: [{id, name, hunger, stress}], recent_events: [...] }
+# The LLM converts it to coarse "regions of feeling" which we encode
+# locally into drift vectors. We deliberately keep the LLM output small
+# (≤ 12 region descriptors + ≤ 8 fish moods + 1 narration line) so it
+# fits in a single sub-second response on a 3B model.
+func push_tank_summary(summary: Dictionary) -> void:
+	if not enabled or conn_state != ConnState.OK or _intent_in_flight:
+		return
+	_ensure_http()
+	_intent_in_flight = true
+	_intent_timer = 0.0   # reset so intent_refresh_due() doesn't fire again until period elapses
+	var prompt: String = _build_intent_prompt(summary)
+	var payload: Dictionary = {
+		"model": model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": {"temperature": 0.85}
+	}
+	var url: String = endpoint + "/api/generate"
+	var err: int = _http_intent.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		_intent_in_flight = false
+
+
+func _build_intent_prompt(summary: Dictionary) -> String:
+	# We hand the LLM a compact 'world report' and ask for a structured
+	# response. Regions use named cubes: x ∈ {left, mid, right}, y ∈ {bottom,
+	# middle, top}, z ∈ {front, mid, back}. Names compress 4×4×4 -> 27 cells
+	# the model can talk about. We post-process by mapping each named region
+	# to its grid cells.
+	return "You are an aquarium narrator. Given this tank state, output JSON with three keys: regions (array of {region, mood}), fish_moods (array of {id, mood}), narration (1 sentence). Valid regions: top-front, top-back, mid-front, mid-back, bottom-front, bottom-back, center. Valid moods: calm, curious, hungry, restless, sleepy, playful, shy, alert. Tank state: %s" % JSON.stringify(summary)
+
+
+func _on_intent_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	_intent_in_flight = false
+	_intent_last_refresh_unix = int(Time.get_unix_time_from_system())
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		conn_state = ConnState.OFFLINE
+		return
+	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not (outer is Dictionary):
+		return
+	var inner_text: String = String(outer.get("response", ""))
+	var inner: Variant = JSON.parse_string(inner_text)
+	if not (inner is Dictionary):
+		return
+	_apply_intent_payload(inner)
+	conn_state = ConnState.OK
+	last_ok_unix = int(Time.get_unix_time_from_system())
+
+
+func _apply_intent_payload(payload: Dictionary) -> void:
+	# Reset the grid
+	_intent_cells.clear()
+	_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+	var regions: Variant = payload.get("regions", [])
+	if regions is Array:
+		for r_v in regions:
+			if not (r_v is Dictionary):
+				continue
+			var region_name: String = String(r_v.get("region", "")).to_lower()
+			var mood: String = String(r_v.get("mood", "")).to_lower()
+			_apply_region_mood(region_name, mood)
+	# Per-named-fish moods, expire after ~3 intent windows so they fade
+	# gracefully if the LLM stops mentioning that fish.
+	var fish_moods: Variant = payload.get("fish_moods", [])
+	var now: int = int(Time.get_unix_time_from_system())
+	var expiry: int = now + int(intent_refresh_period_s * 3.0)
+	if fish_moods is Array:
+		for fm_v in fish_moods:
+			if not (fm_v is Dictionary):
+				continue
+			var fid: String = String(fm_v.get("id", ""))
+			var fm: String = String(fm_v.get("mood", "")).to_lower()
+			if fid != "" and fm != "":
+				_fish_moods[fid] = {
+					"mood": fm,
+					"drift": _mood_drift(fm) * 0.6,
+					"expires_unix": expiry,
+				}
+	# Prune expired
+	var stale: Array = []
+	for k in _fish_moods.keys():
+		if int(_fish_moods[k].get("expires_unix", 0)) < now:
+			stale.append(k)
+	for k in stale:
+		_fish_moods.erase(k)
+	# Chronicle line
+	if chronicle_enabled:
+		var line: String = String(payload.get("narration", "")).strip_edges()
+		if line != "":
+			emit_signal("chronicle_line", line, PackedStringArray(["intent"]))
+
+
+func _apply_region_mood(region_name: String, mood: String) -> void:
+	# Map named region -> (x range, y range, z range) on the 4×4×4 grid.
+	var x_range: Vector2i
+	var y_range: Vector2i
+	var z_range: Vector2i
+	match region_name:
+		"top-front":    x_range = Vector2i(0,3); y_range = Vector2i(2,3); z_range = Vector2i(0,1)
+		"top-back":     x_range = Vector2i(0,3); y_range = Vector2i(2,3); z_range = Vector2i(2,3)
+		"mid-front":   x_range = Vector2i(0,3); y_range = Vector2i(1,2); z_range = Vector2i(0,1)
+		"mid-back":    x_range = Vector2i(0,3); y_range = Vector2i(1,2); z_range = Vector2i(2,3)
+		"bottom-front": x_range = Vector2i(0,3); y_range = Vector2i(0,1); z_range = Vector2i(0,1)
+		"bottom-back":  x_range = Vector2i(0,3); y_range = Vector2i(0,1); z_range = Vector2i(2,3)
+		"center":       x_range = Vector2i(1,2); y_range = Vector2i(1,2); z_range = Vector2i(1,2)
+		_:              return
+	var drift: Vector3 = _mood_drift(mood)
+	var cell: Dictionary = {"drift": drift, "mood": mood, "intensity": 1.0}
+	for xi in range(x_range.x, x_range.y + 1):
+		for yi in range(y_range.x, y_range.y + 1):
+			for zi in range(z_range.x, z_range.y + 1):
+				var idx: int = xi + yi * INTENT_GRID + zi * INTENT_GRID * INTENT_GRID
+				_intent_cells[idx] = cell.duplicate()
+
+
+# Translate a mood word into a small drift vector. Drifts are in
+# tank-relative space (the caller multiplies by a world scale).
+func _mood_drift(mood: String) -> Vector3:
+	match mood:
+		"calm":     return Vector3(0.0, 0.0, 0.0)
+		"sleepy":   return Vector3(0.0, -0.1, 0.0)
+		"curious":  return Vector3(randf_range(-1, 1), 0.05, randf_range(-1, 1)).normalized() * 0.12
+		"hungry":   return Vector3(0.0, 0.15, 0.0)  # bias upward (food is dropped from above)
+		"restless": return Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)).normalized() * 0.15
+		"playful":  return Vector3(randf_range(-1, 1), 0.1, randf_range(-1, 1)).normalized() * 0.13
+		"shy":      return Vector3(0.0, -0.05, 0.0)
+		"alert":    return Vector3(0.0, 0.08, 0.0)
+		_:          return Vector3.ZERO
+
+
+# Per-named-fish mood drift (or zero). Called by fish.gd for fish that
+# have a stable id and a recent LLM mention.
+func get_fish_mood_drift(fish_id: String) -> Vector3:
+	if fish_id == "" or not _fish_moods.has(fish_id):
+		return Vector3.ZERO
+	var v: Variant = _fish_moods[fish_id].get("drift", Vector3.ZERO)
+	return v if v is Vector3 else Vector3.ZERO
+
+
+# ---- Chronicle (event-driven narration) -------------------------------
+# SimDriver / fish / shrimp call this when something notable happens.
+# We queue events and flush them in batches (every ~3 events or ~15 s)
+# to keep LLM calls bounded.
+var _chronicle_queue: Array = []
+var _chronicle_flush_timer: float = 0.0
+const CHRONICLE_FLUSH_INTERVAL: float = 18.0
+const CHRONICLE_FLUSH_AT_SIZE: int = 4
+
+
+func note_event(event_type: String, summary: String) -> void:
+	if not enabled or not chronicle_enabled:
+		return
+	_chronicle_queue.append({"type": event_type, "summary": summary})
+	if _chronicle_queue.size() >= CHRONICLE_FLUSH_AT_SIZE:
+		_flush_chronicle()
+
+
+func _physics_process(dt: float) -> void:
+	if not enabled or not chronicle_enabled:
+		return
+	_chronicle_flush_timer += dt
+	if _chronicle_flush_timer >= CHRONICLE_FLUSH_INTERVAL and _chronicle_queue.size() > 0:
+		_flush_chronicle()
+
+
+func _flush_chronicle() -> void:
+	_chronicle_flush_timer = 0.0
+	if _chronicle_queue.is_empty():
+		return
+	if conn_state != ConnState.OK:
+		_chronicle_queue.clear()  # don't accumulate unbounded when offline
+		return
+	_ensure_http()
+	var batch: Array = _chronicle_queue.duplicate()
+	_chronicle_queue.clear()
+	var prompt: String = "You are an aquarium chronicler. Compose ONE sentence (max 20 words) summarising these tank events in past tense, warm and observational. Output JSON with one key 'line'. Events: %s" % JSON.stringify(batch)
+	var payload: Dictionary = {
+		"model": model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": {"temperature": 0.9}
+	}
+	var url: String = endpoint + "/api/generate"
+	_http_chronicle.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+
+
+func _on_chronicle_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		return
+	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not (outer is Dictionary):
+		return
+	var inner: Variant = JSON.parse_string(String(outer.get("response", "")))
+	if not (inner is Dictionary):
+		return
+	var line: String = String(inner.get("line", "")).strip_edges()
+	if line != "":
+		emit_signal("chronicle_line", line, PackedStringArray(["chronicle"]))
+
+
+# ---- UI helpers --------------------------------------------------------
+func status_summary() -> String:
+	match conn_state:
+		ConnState.UNKNOWN:  return "Not tested"
+		ConnState.OK:       return "Connected · %s · %d names queued" % [model, _ai_name_pool.size()]
+		ConnState.CHECKING: return "Checking..."
+		ConnState.OFFLINE:  return "Ollama offline · using built-in names"
+		ConnState.ERROR:    return "Error: %s" % last_error
+		_:                  return ""

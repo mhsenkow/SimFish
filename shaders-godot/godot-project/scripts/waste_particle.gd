@@ -17,9 +17,16 @@ const KIND_SHRIMP: int = 1
 const KIND_SNAIL: int = 2
 const KIND_FOOD: int = 3
 
+# Player-dropped food variants (only meaningful when kind == KIND_FOOD).
+const FOOD_SUB_FLAKE: int = 0   # floats on surface — top feeders rush
+const FOOD_SUB_PELLET: int = 1  # sinks to substrate — bottom feeders
+const FOOD_SUB_WORM: int = 2    # mid-water wriggle — carnivores frenzy
+const FOOD_SUB_WAFER: int = 3   # slow sink — herbivores / algae grazers
+
 var nutrient_value: float = 0.2
 var substrate_top_y: float = 1.6
 var kind: int = KIND_FISH
+var food_subtype: int = FOOD_SUB_PELLET
 var voxel_size: float = 0.12
 var settled: bool = false
 var _life: float = 0.0
@@ -34,6 +41,7 @@ func to_save_dict() -> Dictionary:
 		"nutrient_value": nutrient_value,
 		"substrate_top_y": substrate_top_y,
 		"kind": kind,
+		"food_subtype": food_subtype,
 		"settled": settled,
 		"life": _life,
 		"settle_timer": _settle_timer,
@@ -45,16 +53,19 @@ func apply_save_dict(d: Dictionary) -> void:
 	# the dynamic settle state.
 	init(float(d.get("nutrient_value", 0.2)),
 		float(d.get("substrate_top_y", 1.6)),
-		int(d.get("kind", KIND_FISH)))
+		int(d.get("kind", KIND_FISH)),
+		int(d.get("food_subtype", FOOD_SUB_PELLET)))
 	settled = not not d.get("settled", false)
 	_life = float(d.get("life", 0.0))
 	_settle_timer = float(d.get("settle_timer", 0.0))
 
 
-func init(value: float, top_y: float, particle_kind: int = KIND_FISH) -> void:
+func init(value: float, top_y: float, particle_kind: int = KIND_FISH,
+		subtype: int = FOOD_SUB_PELLET) -> void:
 	nutrient_value = value
 	substrate_top_y = top_y
 	kind = particle_kind
+	food_subtype = subtype
 	var color: Color
 	match kind:
 		KIND_SHRIMP:
@@ -64,8 +75,19 @@ func init(value: float, top_y: float, particle_kind: int = KIND_FISH) -> void:
 			voxel_size = 0.05
 			color = Color8(40, 32, 22)  # tiny dark pellet
 		KIND_FOOD:
-			voxel_size = 0.16
-			color = Color8(210, 150, 90)  # fish food pellet
+			match food_subtype:
+				FOOD_SUB_FLAKE:
+					voxel_size = 0.09
+					color = Color8(255, 228, 130)
+				FOOD_SUB_WORM:
+					voxel_size = 0.11
+					color = Color8(175, 55, 48)
+				FOOD_SUB_WAFER:
+					voxel_size = 0.19
+					color = Color8(88, 138, 72)
+				_:
+					voxel_size = 0.16
+					color = Color8(210, 150, 90)  # sinking pellet
 		_:
 			voxel_size = 0.12
 			color = Color8(60, 45, 30)  # standard fish brown
@@ -86,15 +108,36 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 		if w != null and w.has_method("column_surface_y"):
 			floor_y = w.column_surface_y(position.x, position.z)
 		var can_fall: bool = true
-		if kind == KIND_FOOD and _life < 8.0:
-			can_fall = false
-			# Bob gently on the surface
-			position.y += sin(_life * 3.0) * 0.015 * dt
-			position.x += sin(_life * 1.2) * 0.04 * dt
-			position.z += cos(_life * 0.9) * 0.04 * dt
-			
+		var fall_rate: float = FALL_SPEED
+		if kind == KIND_FOOD:
+			match food_subtype:
+				FOOD_SUB_FLAKE:
+					if _life < 16.0:
+						can_fall = false
+						position.y += sin(_life * 4.2) * 0.02 * dt
+						position.x += sin(_life * 1.6 + position.z) * 0.06 * dt
+						position.z += cos(_life * 1.3 + position.x) * 0.06 * dt
+				FOOD_SUB_WORM:
+					if _life < 12.0:
+						can_fall = false
+						fall_rate = FALL_SPEED * 0.25
+						position.y += sin(_life * 6.0) * 0.03 * dt
+						position.x += sin(_life * 3.1) * 0.09 * dt
+						position.z += cos(_life * 2.4) * 0.09 * dt
+				FOOD_SUB_WAFER:
+					if _life < 6.0:
+						can_fall = false
+						position.y += sin(_life * 2.0) * 0.012 * dt
+					fall_rate = FALL_SPEED * 0.32
+				_:
+					if _life < 3.0:
+						can_fall = false
+						position.y += sin(_life * 3.0) * 0.015 * dt
+						position.x += sin(_life * 1.2) * 0.04 * dt
+						position.z += cos(_life * 0.9) * 0.04 * dt
+
 		if can_fall:
-			position.y -= FALL_SPEED * dt
+			position.y -= fall_rate * dt
 			# Detritus drifts laterally on a synthesised flow field rather
 			# than only the legacy single-axis sine. The drift is the sum
 			# of three components, all space-parameterised so different

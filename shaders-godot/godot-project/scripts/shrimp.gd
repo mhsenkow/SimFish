@@ -18,6 +18,10 @@
 extends Node3D
 class_name Shrimp
 
+# See fish.gd for why we preload instead of relying on class_name.
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
+
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
 const MATURITY_ADULT := 2
@@ -125,6 +129,7 @@ var _swim_phase: float = 0.0
 var _tail_pivot: Node3D = null
 var _antenna_pivot: Node3D = null
 var _bank_pivot: Node3D = null
+var _voxel_builder: FaunaVoxelBuilder = null
 var _last_yaw: float = 0.0
 var _bank: float = 0.0
 
@@ -145,6 +150,14 @@ var sim: Node = null
 # rationale — same pattern, applied to shrimp.
 var id: String = ""
 var _saved_genome: Dictionary = {}
+
+# ---- AIDirector additions: personality + bio + name source ----
+# Mirror of fish.gd's pattern. Shrimp skip the feed_heatmap (they forage
+# by waste trail / wall crawl — too localized for a 3D heatmap to help)
+# but get the same personality scalars and lifetime journal.
+var name_source: String = "offline"
+var personality: Dictionary = {}
+var bio: Dictionary = {}
 
 
 # ---- Setup ----
@@ -180,10 +193,32 @@ func init_genome(genome: Dictionary) -> void:
 		if genome.has("_display_name"):
 			shrimp_name = String(genome["_display_name"])
 		else:
-			var adjs := ["Cherry", "Ghost", "Crystal", "Velvet", "Sunkist", "Blue", "Amano", "Cardinal", "Bamboo", "Bee"]
-			var nouns := ["Scuttler", "Picker", "Pincher", "Nibbler", "Rover", "Crawler", "Glider", "Skitter"]
-			shrimp_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+			# Same offline-or-Ollama path as fish — AIDirector falls back to
+			# CreatureNaming when the model is offline.
+			var ai: Node = null
+			if is_inside_tree():
+				ai = get_node_or_null("/root/AIDirector")
+			var picked: Dictionary
+			if ai != null and ai.has_method("consume_name"):
+				picked = ai.consume_name("shrimp", {})
+			else:
+				picked = {"name": CreatureNaming.generate_name("shrimp", {}), "source": "offline"}
+			shrimp_name = String(picked.get("name", "Shrimp"))
+			name_source = String(picked.get("source", "offline"))
 	parent_lineage = genome.get("parent_lineage", "Founders")
+	# Personality + bio (inherit from genome if breeding hook set it).
+	var inherited_p: Dictionary = genome.get("personality", {})
+	if inherited_p.is_empty():
+		personality = CreatureNaming.roll_personality()
+	else:
+		personality = CreatureNaming.roll_personality(inherited_p)
+	if bio.is_empty():
+		bio = {
+			"birth_unix": int(Time.get_unix_time_from_system()),
+			"meals_eaten": 0,
+			"offspring": 0,
+			"name_source": name_source,
+		}
 	
 	_saved_genome["shrimp_name"] = shrimp_name
 	_saved_genome["parent_lineage"] = parent_lineage
@@ -215,6 +250,7 @@ func _maturity_scale() -> float:
 
 
 func _build_body() -> void:
+	_voxel_builder = FaunaVoxelBuilder.new()
 	# Voxel shrimp facing -Z. Components:
 	#   - Carapace (front body): 2 stacked voxels with eyes on sides
 	#   - Mid segment: thickest
@@ -373,14 +409,14 @@ func _build_body() -> void:
 
 	# Stagger first molt so the population doesn't molt in lock-step.
 	_molt_timer = randf_range(MOLT_INTERVAL_MIN, MOLT_INTERVAL_MAX)
+	if _voxel_builder != null:
+		_voxel_builder.flush_all()
 
 
 func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(size)
-	mi.position = pos
-	mi.material_override = mat
-	parent.add_child(mi)
+	if _voxel_builder == null:
+		_voxel_builder = FaunaVoxelBuilder.new()
+	_voxel_builder.add_voxel(parent, pos, size, mat)
 
 
 func _is_shelter_plant(p: Plant) -> bool:
@@ -552,6 +588,10 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				partner.energy = maxf(0.0, partner.energy - 0.30)
 				breed_count += 1
 				partner.breed_count += 1
+				if not bio.is_empty():
+					bio["offspring"] = int(bio.get("offspring", 0)) + 1
+				if partner != null and not partner.bio.is_empty():
+					partner.bio["offspring"] = int(partner.bio.get("offspring", 0)) + 1
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
@@ -1315,6 +1355,11 @@ func to_save_dict() -> Dictionary:
 		"court_timer": court_timer,
 		"growth_factor": growth_factor,
 		"generation": generation,
+		# Persistent identity (AIDirector pass)
+		"display_name": shrimp_name,
+		"name_source": name_source,
+		"personality": personality.duplicate(),
+		"bio": bio.duplicate(),
 	}
 
 
@@ -1339,6 +1384,18 @@ func apply_save_dict(d: Dictionary) -> void:
 	court_timer = float(d.get("court_timer", 0.0))
 	growth_factor = float(d.get("growth_factor", 1.0))
 	generation = int(d.get("generation", 0))
+	# Persistent identity (AIDirector). When the save predates the AI pass
+	# the fields are absent and we keep whatever init_genome rolled.
+	if d.has("display_name") and String(d["display_name"]) != "":
+		shrimp_name = String(d["display_name"])
+	if d.has("name_source"):
+		name_source = String(d["name_source"])
+	var saved_p: Variant = d.get("personality", null)
+	if saved_p is Dictionary and not (saved_p as Dictionary).is_empty():
+		personality = (saved_p as Dictionary).duplicate()
+	var saved_b: Variant = d.get("bio", null)
+	if saved_b is Dictionary and not (saved_b as Dictionary).is_empty():
+		bio = (saved_b as Dictionary).duplicate()
 	# Maturity-dependent scale needs to be re-applied since init_genome ran
 	# before we'd set the maturity.
 	scale = Vector3.ONE * _maturity_scale()

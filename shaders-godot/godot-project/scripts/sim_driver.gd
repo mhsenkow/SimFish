@@ -84,11 +84,212 @@ const FEED_MEMORY_CAP: int = 5
 # Each entry: {pos: Vector3, t: float (seconds since recorded)}
 var _feed_memory: Array = []
 
+# ---- Feed-time anticipation ----
+# Wall-clock minute-of-day of every feed drop, capped to 30 entries (covers
+# ~a month of once-daily feeds). The anticipation gate fires when at least
+# 3 historical drops sit within ±5 minutes of the current minute-of-day —
+# a robust "the player usually feeds around now" signal that doesn't fire
+# on a single coincidence. Persists in save_state so the pattern survives
+# across sessions.
+const FEED_TIME_HISTORY_CAP: int = 30
+const FEED_ANTICIPATION_WINDOW_MIN: int = 5
+const FEED_ANTICIPATION_THRESHOLD: int = 3
+var _feed_time_history: Array = []  # ints, minute-of-day (0..1439)
 
-func record_feed_drop(world_pos: Vector3) -> void:
-	_feed_memory.append({"pos": world_pos, "t": 0.0})
+# ---- Player glance ("look at the glass") ----
+# main.gd pushes the camera's world position once per frame; we compute a
+# nearby "interest point" inside the tank and a 0..1 proximity scalar.
+# Bold fish (personality.boldness > 0.6) bias their wander toward this
+# point — the result is the real-aquarium moment of fish drifting over
+# when you walk up to the glass.
+var _player_glance_point: Vector3 = Vector3.ZERO
+var _player_glance_strength: float = 0.0
+var _player_glance_hold_s: float = 0.0
+var _player_glance_last_pos: Vector3 = Vector3.ZERO
+
+# ---- Schooling pulse ----
+# Tank-wide phase that all fish sample to modulate their school tightness.
+# Reads on screen as the school "breathing" — synchronized expand/contract
+# every ~30 sim-seconds. Costs one float increment per tick and one sin()
+# per fish per tick.
+var _school_pulse_phase: float = 0.0
+const SCHOOL_PULSE_PERIOD: float = 28.0
+
+# ---- Mourning ----
+# When a named fish dies, school-mates of the same species near the death
+# point slow down and tighten cohesion for ~60s. Each entry is
+# {species, position, until_unix}. Pruned in _tick when expired.
+const MOURNING_DURATION_S: int = 60
+const MOURNING_RADIUS: float = 6.0
+var _mourning_events: Array = []
+
+
+func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
+	_feed_memory.append({"pos": world_pos, "t": 0.0, "subtype": food_subtype})
 	while _feed_memory.size() > FEED_MEMORY_CAP:
 		_feed_memory.pop_front()
+	# Also record the wall-clock minute-of-day for anticipation tracking.
+	# Dedup the same minute so a player who drops 5 pellets in a row only
+	# counts as one "feeding event" — pattern matters, frequency doesn't.
+	var t: Dictionary = Time.get_time_dict_from_system()
+	var mod: int = int(t.get("hour", 0)) * 60 + int(t.get("minute", 0))
+	if _feed_time_history.is_empty() or int(_feed_time_history[-1]) != mod:
+		_feed_time_history.append(mod)
+		while _feed_time_history.size() > FEED_TIME_HISTORY_CAP:
+			_feed_time_history.pop_front()
+
+
+# True when the current wall-clock minute is close to a minute the player
+# has historically fed at (≥ FEED_ANTICIPATION_THRESHOLD matches within
+# ±FEED_ANTICIPATION_WINDOW_MIN minutes). Cheap to call per fish — O(30).
+func feed_anticipation_active() -> bool:
+	if _feed_time_history.size() < FEED_ANTICIPATION_THRESHOLD:
+		return false
+	var t: Dictionary = Time.get_time_dict_from_system()
+	var now_mod: int = int(t.get("hour", 0)) * 60 + int(t.get("minute", 0))
+	var matches: int = 0
+	for m_v in _feed_time_history:
+		var m: int = int(m_v)
+		# Wrap-around distance on a 24h clock.
+		var d: int = absi(m - now_mod)
+		if d > 720:
+			d = 1440 - d
+		if d <= FEED_ANTICIPATION_WINDOW_MIN:
+			matches += 1
+			if matches >= FEED_ANTICIPATION_THRESHOLD:
+				return true
+	return false
+
+
+# Called by main.gd._process with the camera's world position. We compute
+# a glance point INSIDE the tank near the camera (so fish can swim toward
+# it without diving through the wall) and a 0..1 proximity strength. The
+# strength rises further when the camera holds still — proxy for "the
+# player has been staring at the tank, the fish notice."
+func update_player_glance(camera_pos: Vector3) -> void:
+	var w: Node = get_parent()
+	if w == null:
+		_player_glance_strength = 0.0
+		return
+	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)
+	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
+	var hh: float = float(w.get("TANK_HEIGHT") if w.get("TANK_HEIGHT") != null else 7.0)
+	# Project camera into tank-space and clamp to the inner volume. The
+	# clamped point is where bold fish will swim toward.
+	var inner: Vector3 = Vector3(
+		clampf(camera_pos.x, -hw + 0.5, hw - 0.5),
+		clampf(camera_pos.y, 0.4, hh - 0.4),
+		clampf(camera_pos.z, -hd + 0.5, hd - 0.5),
+	)
+	_player_glance_point = inner
+	# Distance from camera to the clamped inner point measures how close
+	# the player has their face to the glass. Threshold = 2 × the tank's
+	# largest half-dim; outside that the strength is zero.
+	var dist: float = camera_pos.distance_to(inner)
+	var threshold: float = maxf(hw, hd) * 2.2
+	var raw: float = clampf(1.0 - dist / threshold, 0.0, 1.0)
+	# Hold bonus — when the camera barely moves, strength climbs toward 1.
+	var moved: float = camera_pos.distance_to(_player_glance_last_pos)
+	if moved < 0.05:
+		_player_glance_hold_s = minf(_player_glance_hold_s + 0.016, 6.0)
+	else:
+		_player_glance_hold_s = 0.0
+	_player_glance_last_pos = camera_pos
+	var hold_bonus: float = clampf(_player_glance_hold_s / 3.0, 0.0, 0.4)
+	_player_glance_strength = clampf(raw * (0.6 + hold_bonus), 0.0, 1.0)
+
+
+func get_player_glance() -> Dictionary:
+	return {
+		"point": _player_glance_point,
+		"strength": _player_glance_strength,
+	}
+
+
+# Shift+click glass tap — brief attract pulse so bold fish drift toward the ripple.
+func pulse_glass_tap(world_pos: Vector3) -> void:
+	_player_glance_point = world_pos
+	_player_glance_strength = 1.0
+	_player_glance_hold_s = 3.0
+
+
+# Sample the tank-wide schooling pulse phase. Returns -1..1, sin-shaped.
+# Fish.gd multiplies their school tightness by (1.0 + this * 0.15) so the
+# tank visibly breathes in unison. Phase ticks in _tick.
+func school_pulse() -> float:
+	return sin(_school_pulse_phase)
+
+
+# Append a mourning event (called when a named fish dies). Pruned in _tick.
+func _record_mourning(species_id: String, pos: Vector3) -> void:
+	if species_id == "":
+		return
+	_mourning_events.append({
+		"species": species_id,
+		"position": pos,
+		"until_unix": int(Time.get_unix_time_from_system()) + MOURNING_DURATION_S,
+	})
+	# Cap so a long crash doesn't grow this unbounded.
+	while _mourning_events.size() > 20:
+		_mourning_events.pop_front()
+
+
+# Return 0..1 mourning intensity for a fish of the given species at the
+# given position. Fish.gd reads this in tick and uses it to dampen its
+# top speed and tighten schooling cohesion — the school visibly slows
+# around a recent death. O(active mournings); typically 0..2 entries.
+func mourning_intensity_for(species_id: String, pos: Vector3) -> float:
+	if _mourning_events.is_empty():
+		return 0.0
+	var now: int = int(Time.get_unix_time_from_system())
+	var strongest: float = 0.0
+	for entry in _mourning_events:
+		var e: Dictionary = entry
+		if String(e.get("species", "")) != species_id:
+			continue
+		var until: int = int(e.get("until_unix", 0))
+		if until <= now:
+			continue
+		var ep: Vector3 = e.get("position", Vector3.ZERO)
+		var d: float = ep.distance_to(pos)
+		if d > MOURNING_RADIUS:
+			continue
+		# Distance + time falloff. Recent + close = ~1.0, far + about to
+		# expire = ~0. Time normalisation goes (until - now) / DURATION.
+		var time_w: float = float(until - now) / float(MOURNING_DURATION_S)
+		var dist_w: float = 1.0 - d / MOURNING_RADIUS
+		strongest = maxf(strongest, time_w * dist_w)
+	return strongest
+
+
+# Build the personalized epitaph for a named fish death. Reads bio dict so
+# the story log says "Mira passed peacefully — 47 meals, 8 children, 3
+# fights won" instead of the generic "First natural death — a tetra…".
+# Returns "" if the fish lacks a name; caller falls back to the generic
+# message in that case.
+func _epitaph_for_fish(actor: Node) -> String:
+	if actor == null or actor.get("fish_name") == null:
+		return ""
+	var fname: String = String(actor.fish_name)
+	if fname == "":
+		return ""
+	var species_id: String = String(actor.species) if actor.get("species") != null else "fish"
+	var parts: PackedStringArray = PackedStringArray()
+	parts.append("%s, a %s, has passed" % [fname, species_id])
+	var bio_v: Variant = actor.get("bio")
+	if bio_v is Dictionary:
+		var bio_d: Dictionary = bio_v
+		var meals: int = int(bio_d.get("meals_eaten", 0))
+		var kids: int = int(bio_d.get("offspring", 0))
+		var fights: int = int(bio_d.get("fights_won", 0))
+		var stats: PackedStringArray = PackedStringArray()
+		if meals > 0: stats.append("%d meals" % meals)
+		if kids > 0: stats.append("%d children" % kids)
+		if fights > 0: stats.append("%d fights won" % fights)
+		if stats.size() > 0:
+			parts.append(" — " + ", ".join(stats))
+	parts.append(".")
+	return "".join(parts)
 
 
 # Return {offset: Vector3, strength: float} where offset points from
@@ -517,7 +718,16 @@ func _physics_process(dt: float) -> void:
 	# faster than it drains and the game-loop locks. Cap at 4 ticks (0.4s of
 	# sim work) so we drop sim-time on a hitch instead of freezing the render.
 	_accum = minf(_accum, SIM_DT * 4.0)
-	day_phase = fposmod(day_phase + sdt / DAY_LENGTH_S, 1.0)
+	# Day phase only advances if the user hasn't frozen the cycle in the
+	# Light panel. The rest of the sim keeps ticking either way. Cycle
+	# length is also slider-driven (TankConfig.day_length_s); the constant
+	# DAY_LENGTH_S is now just a fallback when no cfg is mounted (tests).
+	var cfg_tc := get_node_or_null("/root/TankConfig")
+	if cfg_tc == null or bool(cfg_tc.day_cycle_enabled):
+		var cycle_len: float = DAY_LENGTH_S
+		if cfg_tc != null:
+			cycle_len = maxf(15.0, float(cfg_tc.day_length_s))
+		day_phase = fposmod(day_phase + sdt / cycle_len, 1.0)
 	while _accum >= SIM_DT:
 		_accum -= SIM_DT
 		_tick(SIM_DT)
@@ -871,6 +1081,11 @@ func _prune_non_finite_positions(arr: Array) -> void:
 
 func _tick(dt: float) -> void:
 	ensure_snails_root()
+	# Tank-wide schooling pulse. Phase advance is constant; fish.gd reads
+	# school_pulse() each tick to modulate cohesion strength.
+	_school_pulse_phase += dt * TAU / SCHOOL_PULSE_PERIOD
+	if _school_pulse_phase > TAU * 1000.0:
+		_school_pulse_phase = fmod(_school_pulse_phase, TAU)
 	# 1. Prune invalid refs (queue_freed nodes) — in-place, no allocation.
 	_prune_invalid(fish)
 	_prune_invalid(shrimp)
@@ -1566,6 +1781,26 @@ func _tick(dt: float) -> void:
 			if not consumed.has(actor):
 				consumed[actor] = true
 				_play_ambient_event("death")
+				# Death ritual + mourning hook. For named fish we record a
+				# mourning event so schoolmates visibly slow down for ~60s,
+				# and we log a personalized epitaph using their lifetime
+				# bio numbers — the player sees Mira's death as a sentence
+				# about Mira, not a generic "a tetra died" line. Generic
+				# message still fires on the very first unnamed death so
+				# tutorials / first-launch tanks still get a marker line.
+				if actor_kind == "fish" and actor.get("fish_name") != null \
+						and String(actor.fish_name) != "":
+					var species_id: String = String(actor.species) if actor.get("species") != null else ""
+					_record_mourning(species_id, actor.position)
+					var epitaph: String = _epitaph_for_fish(actor)
+					if epitaph != "":
+						log_story_event(epitaph)
+						# Visible marker at the death point — re-uses the
+						# existing burst ripple shader for a clean
+						# "something happened here" pulse.
+						var w_node: Node = get_parent()
+						if w_node != null and w_node.has_method("spawn_burst_ripple"):
+							w_node.spawn_burst_ripple(actor.position)
 				if actor.has_method("start_dying"):
 					actor.start_dying()
 				else:
@@ -1581,15 +1816,107 @@ func _tick(dt: float) -> void:
 						species_name = String(actor.species)
 					log_story_event("First natural death — a %s reached the end of its lifespan." % species_name)
 
+	# Push a tank summary to AIDirector when the LLM is ready for a new
+	# intent refresh. The whole call is a single HTTP POST every ~60 s and
+	# returns asynchronously; no per-tick latency. Off when AI is disabled
+	# or Ollama is unreachable.
+	var ai_d: Node = get_node_or_null("/root/AIDirector")
+	if ai_d != null and ai_d.has_method("intent_refresh_due") and ai_d.intent_refresh_due():
+		ai_d.push_tank_summary(_build_ai_summary())
 
-func _spawn_waste(at: Vector3, amount: float, kind: int = 0) -> void:
+
+# Build the compact JSON-able summary handed to AIDirector. Kept under
+# ~2 KB so a 3B-parameter model can produce a sub-second response. We
+# pick up to 6 named fish (highest age * boldness so the most "characterful"
+# ones are featured) and one-line aggregate stats.
+func _build_ai_summary() -> Dictionary:
+	var named: Array = []
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		if String(f.get("fish_name") if f.get("fish_name") != null else "") == "":
+			continue
+		var personality_v: Variant = f.get("personality")
+		var bold_p: float = 0.5
+		if personality_v is Dictionary:
+			bold_p = float((personality_v as Dictionary).get("boldness", 0.5))
+		named.append({
+			"fish": f,
+			"score": float(f.age) * (0.5 + bold_p),
+		})
+	named.sort_custom(func(a: Dictionary, b: Dictionary):
+		return float(a["score"]) > float(b["score"]))
+	var max_named: int = mini(6, named.size())
+	var named_out: Array = []
+	for i in range(max_named):
+		var f: Node = named[i]["fish"]
+		var personality_v: Variant = f.get("personality")
+		var traits_s: String = ""
+		if personality_v is Dictionary:
+			var pd: Dictionary = personality_v
+			var top: String = "average"
+			var top_val: float = 0.6
+			for k in pd.keys():
+				if float(pd[k]) > top_val:
+					top_val = float(pd[k]); top = String(k)
+			traits_s = top
+		named_out.append({
+			"id": String(f.get("id") if f.get("id") != null else ""),
+			"name": String(f.get("fish_name") if f.get("fish_name") != null else ""),
+			"trait": traits_s,
+			"hunger": int(clampf(float(f.get("hunger") if f.get("hunger") != null else 0.0), 0.0, 1.0) * 100),
+			"stress": int(clampf(float(f.get("stress") if f.get("stress") != null else 0.0), 0.0, 1.0) * 100),
+		})
+	var nh3: float = water_chemistry.ammonia if water_chemistry != null else 0.0
+	return {
+		"fish_count": fish.size(),
+		"shrimp_count": shrimp.size(),
+		"snail_count": snail_count,
+		"o2_pct": int(clampf(dissolved_o2 / 1.2, 0.0, 1.0) * 100),
+		"ammonia": "%.2f" % nh3,
+		"day_phase": "%.2f" % day_phase,
+		"is_daylight": daylight() > 0.5,
+		"named_fish": named_out,
+	}
+
+
+func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
+		food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
 	if waste_root == null:
 		return
 	var w := WasteParticle.new()
 	waste_root.add_child(w)
 	w.global_position = at
-	w.init(amount, substrate_top_y, kind)
+	w.init(amount, substrate_top_y, kind, food_subtype)
 	register_waste(w)
+
+
+# Player tap-to-feed: spawns a small cluster at the water surface.
+func spawn_player_food(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
+	var count: int = 4
+	var spread: float = 0.18
+	var value: float = 0.45
+	match food_subtype:
+		WasteParticle.FOOD_SUB_FLAKE:
+			count = randi_range(7, 10)
+			spread = 0.28
+			value = 0.32
+		WasteParticle.FOOD_SUB_WORM:
+			count = randi_range(3, 5)
+			spread = 0.22
+			value = 0.62
+		WasteParticle.FOOD_SUB_WAFER:
+			count = randi_range(2, 3)
+			spread = 0.14
+			value = 0.55
+		_:
+			count = randi_range(4, 6)
+	for i in count:
+		var jx: float = randf_range(-spread, spread)
+		var jz: float = randf_range(-spread, spread)
+		var pos: Vector3 = Vector3(world_pos.x + jx, world_pos.y - 0.02, world_pos.z + jz)
+		_spawn_waste(pos, value, WasteParticle.KIND_FOOD, food_subtype)
+	record_feed_drop(world_pos, food_subtype)
 
 
 func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
@@ -2795,6 +3122,10 @@ func save_state() -> Dictionary:
 			"next_entity_id": _next_entity_id,
 			"substrate_type": cfg_substrate,
 			"tank_preset": cfg_preset,
+			# Feed-time history — persisted so the player's feeding schedule
+			# survives across sessions. Without this, anticipation resets to
+			# zero on every reload and never builds up.
+			"feed_time_history": _feed_time_history.duplicate(),
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],
@@ -2907,6 +3238,9 @@ func load_state(d: Dictionary) -> void:
 	aeration_fixture = String(sim_d.get("aeration_fixture", aeration_fixture))
 	elapsed_runtime_s = float(sim_d.get("elapsed_runtime_s", 0.0))
 	_next_entity_id = int(sim_d.get("next_entity_id", _next_entity_id))
+	var saved_fth: Variant = sim_d.get("feed_time_history", null)
+	if saved_fth is Array:
+		_feed_time_history = (saved_fth as Array).duplicate()
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
 
@@ -2986,6 +3320,57 @@ func load_state(d: Dictionary) -> void:
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.
 	time_scale = float(sim_d.get("time_scale", 1.0))
+
+	# "Previously on the tank" recap. When the gap since the last save is
+	# meaningful (≥ 15 min real time) and the AI is enabled+narrating, ask
+	# Ollama to compose a one-liner about what changed during the absence.
+	# Offline path: log a built-in line so the player at least sees the
+	# gap acknowledged ("You were away for 3 hours — the tank kept ticking").
+	var saved_unix: int = int(d.get("saved_unix", 0))
+	if saved_unix > 0:
+		var gap_s: int = int(Time.get_unix_time_from_system()) - saved_unix
+		if gap_s >= 900:  # 15 min
+			_emit_away_recap(gap_s)
+
+
+# Compose a "you were away for X" line. Tries Ollama first (when chronicle
+# is on); falls back to a built-in human-readable description. Either way
+# the result flows into the existing story_events log.
+func _emit_away_recap(gap_s: int) -> void:
+	var human_gap: String = _format_gap_human(gap_s)
+	# Snapshot stats the LLM can talk about: counts of living creatures,
+	# how many bio'd fish (proxy for "named individuals"), tank cycle phase.
+	var ai_d: Node = get_node_or_null("/root/AIDirector")
+	var ai_on: bool = ai_d != null and bool(ai_d.enabled) and bool(ai_d.chronicle_enabled) \
+		and int(ai_d.conn_state) == int(ai_d.ConnState.OK)
+	if not ai_on:
+		log_story_event("You were away for %s. The tank kept ticking." % human_gap)
+		return
+	# AIDirector composes the line via its chronicle path (note_event).
+	var named: int = 0
+	for f in fish:
+		if is_instance_valid(f) and f.get("fish_name") != null \
+				and String(f.fish_name) != "":
+			named += 1
+	ai_d.note_event("away_recap", "Player returned after %s. %d fish, %d shrimp, %d named individuals. Water O2 %.0f%%." % [
+		human_gap, fish.size(), shrimp.size(), named,
+		clampf(dissolved_o2 / 1.2, 0.0, 1.0) * 100.0,
+	])
+	# Force a flush so the line appears immediately rather than waiting
+	# for the next 18 s batch window — the recap reads as stale otherwise.
+	if ai_d.has_method("_flush_chronicle"):
+		ai_d._flush_chronicle()
+
+
+static func _format_gap_human(s: int) -> String:
+	if s < 3600:
+		var m: int = int(round(s / 60.0))
+		return "%d minutes" % m
+	if s < 86400:
+		var h: float = float(s) / 3600.0
+		return "%.1f hours" % h
+	var d: float = float(s) / 86400.0
+	return "%.1f days" % d
 
 
 func _clamp_loaded_entities() -> void:

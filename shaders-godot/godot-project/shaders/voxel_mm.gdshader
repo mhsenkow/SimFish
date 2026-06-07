@@ -8,11 +8,18 @@
 shader_type spatial;
 render_mode unshaded, cull_back;
 
+uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
+uniform float fixture_water_top = 99.0;
+uniform float fixture_water_floor = 0.0;
+
 varying vec3 v_inst_color;
+varying vec3 v_world_pos;
 
 void vertex() {
 	// MultiMesh per-instance color arrives multiplied into COLOR.
 	v_inst_color = COLOR.rgb;
+	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -27,5 +34,14 @@ void fragment() {
 	} else {
 		f = 0.68;        // +Z / -Z sides
 	}
-	ALBEDO = v_inst_color * f;
+	vec3 col = v_inst_color * f;
+	if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
+		float span = max(fixture_water_top - fixture_water_floor, 0.5);
+		float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);
+		float wash = (1.0 - depth * 0.42) * tank_fixture_glow;
+		float top_catch = smoothstep(0.25, 0.88, n.y);
+		col += tank_fixture_color * wash * mix(0.28, 0.50, top_catch);
+		col *= 1.0 + wash * (0.50 + top_catch * 0.30);
+	}
+	ALBEDO = col;
 }

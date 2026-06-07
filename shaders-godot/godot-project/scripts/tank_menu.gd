@@ -290,12 +290,94 @@ func _on_scenario_chosen(scenario: Dictionary) -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if saves == null or cfg == null:
 		return
+	if not _walkthrough_offer_seen():
+		_pending_scenario = scenario
+		_show_walkthrough_offer()
+		return
+	_finish_new_tank(scenario)
+
+
+var _pending_scenario: Dictionary = {}
+
+
+func _walkthrough_offer_seen() -> bool:
+	var path := "user://global_prefs.cfg"
+	var file := ConfigFile.new()
+	if file.load(path) == OK:
+		return bool(file.get_value("app", "walkthrough_offer_seen", false))
+	return false
+
+
+func _set_walkthrough_offer_seen() -> void:
+	var file := ConfigFile.new()
+	file.load("user://global_prefs.cfg")
+	file.set_value("app", "walkthrough_offer_seen", true)
+	file.save("user://global_prefs.cfg")
+
+
+func _show_walkthrough_offer() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = 400
+	add_child(overlay)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(bg)
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -220
+	panel.offset_top = -100
+	panel.offset_right = 220
+	panel.offset_bottom = 100
+	overlay.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Take a guided tour?"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(title)
+	var body := Label.new()
+	body.text = "Walk through aquascaping and stocking step by step, or jump straight into your new tank."
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(body)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	vb.add_child(row)
+	var skip := Button.new()
+	skip.text = "Skip"
+	skip.pressed.connect(func():
+		_set_walkthrough_offer_seen()
+		overlay.queue_free()
+		_finish_new_tank(_pending_scenario))
+	row.add_child(skip)
+	var yes := Button.new()
+	yes.text = "Guided tour"
+	yes.pressed.connect(func():
+		_set_walkthrough_offer_seen()
+		overlay.queue_free()
+		_finish_new_tank(_pending_scenario, true))
+	row.add_child(yes)
+
+
+func _finish_new_tank(scenario: Dictionary, guided: bool = false) -> void:
+	var saves := get_node_or_null("/root/TankSaves")
+	var cfg := get_node_or_null("/root/TankConfig")
+	if saves == null or cfg == null:
+		return
 	var tank_name: String = String(scenario.get("name", "New tank"))
 	var slot: int = saves.new_tank(tank_name)
 	cfg.switch_to_slot(slot)
-	# Push the scenario's config overrides into TankConfig before the
-	# main scene loads — world.gd reads these on _ready.
 	ScenarioPicker.apply_scenario(scenario, cfg)
+	if guided:
+		cfg.tank_preset = "empty"
+		cfg.walkthrough_pending = true
 	cfg.save_to_disk()
 	get_tree().change_scene_to_file(MAIN_SCENE)
 

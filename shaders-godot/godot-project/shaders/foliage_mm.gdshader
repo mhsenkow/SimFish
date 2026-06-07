@@ -11,6 +11,9 @@ uniform float tip_sway_mult : hint_range(1.0, 3.0) = 2.1;
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 uniform float water_surface_y = 99.0;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
+uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
+uniform float fixture_water_floor = 0.0;
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
@@ -60,6 +63,15 @@ void fragment() {
 	// effect peaks at midday when real backlight is strongest and fades
 	// to almost nothing at night.
 	float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
-	col = mix(col, col * 0.7 + sss_color * 0.55, rim * sss_strength * (0.4 + 0.6 * daylight));
+	float lit = max(daylight, tank_fixture_glow * 0.85);
+	col = mix(col, col * 0.7 + sss_color * 0.55, rim * sss_strength * (0.4 + 0.6 * lit));
+	if (tank_fixture_glow > 0.001 && v_world_pos.y < water_surface_y - 0.05) {
+		float span = max(water_surface_y - fixture_water_floor, 0.5);
+		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
+		float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
+		float top_catch = smoothstep(0.20, 0.88, n.y);
+		col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
+		col *= 1.0 + wash * (0.62 + top_catch * 0.42);
+	}
 	ALBEDO = col;
 }

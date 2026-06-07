@@ -272,6 +272,9 @@ func close() -> void:
 func _close_panel() -> void:
 	visible = false
 	hide()
+	var main: Node = get_tree().current_scene
+	if main != null and main.has_method("_on_modal_closed"):
+		main.call("_on_modal_closed", "library")
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	z_index = 0
 	set_process(false)
@@ -1439,6 +1442,21 @@ func _spawn_preview_snail(g: Dictionary) -> Node3D:
 func _freeze_preview_creature(node: Node) -> void:
 	node.set_process(false)
 	node.set_physics_process(false)
+	_disable_preview_lod(node)
+
+
+# Preview camera is ~4u away; tank LOD ranges can hide MultiMesh fauna batches.
+func _disable_preview_lod(node: Node) -> void:
+	var stack: Array = [node]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n is GeometryInstance3D:
+			var gi: GeometryInstance3D = n
+			gi.visibility_range_begin = 0.0
+			gi.visibility_range_end = 0.0
+			gi.visibility_range_end_margin = 0.0
+		for c in n.get_children():
+			stack.push_back(c)
 
 
 func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:

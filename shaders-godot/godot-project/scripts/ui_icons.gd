@@ -15,6 +15,12 @@ const RAIL: Dictionary = {
 	"settings": {"emoji": "⚙", "text": "Gt", "tip": "Settings"},
 	"menu": {"emoji": "≡", "text": "Mn", "tip": "Save and return to tank menu"},
 	"immersive": {"emoji": "⛶", "text": "Fs", "tip": "Focus mode — hide menus"},
+	"light": {"emoji": "💡", "text": "Lt", "tip": "Light settings — tank lights, intensity, warmth, caustics"},
+	"create": {"emoji": "✦", "text": "Mk", "tip": "Create — creature designer, fish store, life library"},
+	"world": {"emoji": "🪨", "text": "Wr", "tip": "World — aquascape sculpting and follow portal"},
+	"appearance": {"emoji": "▦", "text": "Lk", "tip": "Look & feel — lighting, rendering, sound"},
+	"system": {"emoji": "⚙", "text": "Sy", "tip": "System — tank settings and stocking"},
+	"alerts": {"emoji": "🔔", "text": "Al", "tip": "Alerts — notifications and discoveries"},
 }
 
 const CHIPS: Dictionary = {

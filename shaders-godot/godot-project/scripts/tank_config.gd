@@ -90,6 +90,28 @@ var walkthrough_pending: bool = false
 # resume. 0 = never quit cleanly (first launch).
 var last_quit_unix: int = 0
 
+# ---- AI Companion (optional local Ollama bridge) ----
+# When enabled, AIDirector batches calls to a local Ollama instance for
+# creature names, biographies, ambient mood drifts, and chronicle lines.
+# Defaults are off — the sim is fully playable without it, and offline
+# fallback names always work even when toggled on but Ollama isn't running.
+var ai_enabled: bool = false
+var ai_endpoint: String = "http://localhost:11434"
+# Default to qwen2.5:3b — small (~2GB), fast, strong at structured JSON
+# outputs, no Meta involvement. The "Use installed model" button in the
+# settings panel auto-substitutes from the user's actual installed list.
+var ai_model: String = "qwen2.5:3b"
+# Optional flavor instruction passed to the name generator: "Greek gods",
+# "Lord of the Rings", "Tropical reef", etc. Empty = neutral pool.
+var ai_naming_theme: String = ""
+# When true, AIDirector composes one-sentence narrations from notable tank
+# events. Surfaces via the main HUD when wired. Independent toggle so
+# players who like AI names but find narration noisy can keep just names.
+var ai_chronicle: bool = false
+# True once the user has dismissed the onboarding modal at least once. The
+# settings panel uses this to stop nagging.
+var ai_onboarding_seen: bool = false
+
 # ---- Tank shape + dimensions ----
 # Glass + substrate geometry. Each shape clips substrate fill + spawn
 # regions appropriately so creatures don't appear outside the walls.
@@ -132,6 +154,82 @@ var light_size: float = 0.75
 var light_volumetric: bool = true
 # Show surface caustics scrolling across the substrate. On by default.
 var light_caustics: bool = true
+# Night-only player toggle — when false the aquarium fixture is off but the
+# sim day/night cycle keeps running.
+var tank_lights_on: bool = true
+# Master kill switch for all aquarium lighting (sun + fixture + ambient).
+# When false the tank is essentially pitch black so the user can see how
+# their bioluminescence/effects read without the room light fighting them.
+var light_master_enabled: bool = true
+# When false the day_phase value is frozen — the sun stops moving but the
+# rest of the sim (animals, growth, water chem) keeps ticking.
+var day_cycle_enabled: bool = true
+
+# ---- Split global vs tank-fixture controls (introduced 2026 lighting pass) ----
+# light_energy / light_warmth historically controlled BOTH the postprocess
+# tint and the artificial tank fixture. Now they're split so the user can
+# dim the global scene while keeping the tank lights bright (or vice versa).
+# global_* drives the palette_quantize tint (sun, sky, room).
+# tank_fixture_* drives the overhead artificial fixture only.
+var global_intensity: float = 0.5
+var global_warmth: float = 0.6
+var tank_fixture_intensity: float = 0.5
+# Full RGB color for the fixture (replaces the warmth axis). Default ≈ warm
+# white. Reef tanks like a strong blue here, planted tanks a pink-magenta.
+var tank_fixture_color: Color = Color(1.0, 0.95, 0.85)
+
+# ---- Day length + sunset drama ----
+# Sim day cycle length in seconds (real time at 1× sim speed). Used to be
+# the locked 360s SIM_DRIVER.DAY_LENGTH_S const; now slider-driven.
+var day_length_s: float = 360.0
+# Multiplier on dusk warmth + deep-night dip. 0 = flat (no sunset drama),
+# 1 = legacy default, 2 = exaggerated golden hour + very dark midnight.
+var sunset_drama: float = 0.75
+
+# ---- Moonlight + accent point lights ----
+var moonlight_enabled: bool = true
+var moonlight_intensity: float = 0.4
+var moonlight_color: Color = Color(0.55, 0.70, 1.0)
+var accent1_enabled: bool = false
+var accent1_intensity: float = 0.6
+var accent1_color: Color = Color(1.0, 0.45, 0.75)
+var accent2_enabled: bool = false
+var accent2_intensity: float = 0.6
+var accent2_color: Color = Color(0.45, 0.85, 1.0)
+
+# ---- Post-process exposure (palette_quantize uniforms surfaced to user) ----
+# Vignette + bloom are new; dither / outline / crt already live in the render
+# section of TankConfig (see top of file) — the Light panel writes to those
+# directly so there's only one source of truth.
+var pp_vignette_strength: float = 0.24
+var pp_vignette_falloff: float = 1.6
+var pp_bloom_threshold: float = 0.72
+var pp_bloom_strength: float = 0.68
+
+# ---- Ambient + sim-driven additions ----
+# Lifts the "darkness floor" of master-on night scenes so the user can keep
+# moonlit shapes legible. 0 = legacy (pitch night), 1 = bright ambient floor.
+var ambient_floor: float = 0.0
+# Multiplier on every fish/coral biolum strength uniform. >1 boosts the glow;
+# 0 hides biolum entirely. Animation curve in fish.gd is preserved.
+var biolum_multiplier: float = 1.0
+# Multiplier on the computed caustic intensity. Lets the user dial caustics
+# down without flipping the on/off toggle.
+var caustic_intensity_user: float = 1.0
+
+# ---- Per-phase tint overrides (advanced custom palette) ----
+# When tod_use_overrides is on, _update_palette_tod_tint reads these four
+# anchor colors instead of the built-in _TOD_* constants. Lets the user
+# paint dawn/day/dusk/night their way.
+var tod_use_overrides: bool = false
+var tod_dawn_color: Color = Color(1.02, 0.88, 0.82)
+var tod_day_color: Color = Color(1.00, 1.00, 1.00)
+var tod_dusk_color: Color = Color(1.04, 0.82, 0.70)
+var tod_night_color: Color = Color(0.38, 0.42, 0.52)
+
+# Active preset slug. "custom" means "user has touched sliders / not on
+# a preset". Setting this to a slug applies the preset's values.
+var lighting_preset: String = "custom"
 
 # Procedural music settings.
 var music_enabled: bool = true
@@ -187,7 +285,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 	},
 	"bedroom_desk": {
 		"label": "Bedroom desk",
-		"description": "Warm wooden desk + plaster back wall + a small bedside lamp. Cozy nighttime feel.",
+		"description": "Warm wooden desk + plaster wall + bedside lamp. Pairs with Warm desk lamp lighting.",
+		"suggested_lighting": "cozy_shop",
 		"desk_color": [128, 88, 56],
 		"wall_color": [212, 200, 178],
 		"accent_color": [220, 165, 90],
@@ -202,7 +301,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 	},
 	"sunny_window": {
 		"label": "Sunny window",
-		"description": "Pale wood ledge + bright daylight from a virtual window. Crisp daytime feel.",
+		"description": "Pale wood ledge + daylight from a window. Pairs with Window daylight lighting.",
+		"suggested_lighting": "sunny",
 		"desk_color": [200, 175, 142],
 		"wall_color": [232, 224, 208],
 		"accent_color": [200, 220, 240],
@@ -215,8 +315,9 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_mug": true,
 	},
 	"dark_cabinet": {
-		"label": "Dark cabinet",
-		"description": "Black-walnut cabinet with cool fluorescent fill. Aquarium-shop / display feel.",
+		"label": "Display cabinet",
+		"description": "Walnut cabinet + cool room fill. Pairs with Shop display or Dim warm lamp lighting.",
+		"suggested_lighting": "shop_display",
 		"desk_color": [56, 40, 32],
 		"wall_color": [42, 38, 44],
 		"accent_color": [110, 130, 140],
@@ -229,7 +330,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 	},
 	"forest_window": {
 		"label": "Forest window",
-		"description": "Mossy log shelf + cool green light filtered through trees outside. Quiet, plant-forward.",
+		"description": "Mossy log shelf + soft green daylight through trees. Pairs with Planted tank lighting.",
+		"suggested_lighting": "planted",
 		"desk_color": [88, 76, 60],
 		"wall_color": [128, 148, 120],
 		"accent_color": [130, 170, 110],
@@ -840,6 +942,133 @@ func species_label(key: String) -> String:
 # handled by world's _spawn_initial_shrimp() separately. New species can
 # be added without changing world.gd - just append them to a stocking
 # dict here.
+# Lighting presets — applied by Light panel. Each entry sets a subset of
+# the lighting vars. Keys omitted in a preset stay at the user's current
+# value, so a preset is a "delta" not a full reset. "custom" is the empty
+# default for "user is on their own".
+const LIGHTING_PRESETS: Dictionary = {
+	"sunny": {
+		"label": "Window daylight",
+		"global_intensity": 0.58, "global_warmth": 0.52,
+		"tank_fixture_intensity": 0.36,
+		"tank_fixture_color": Color(0.98, 0.96, 0.90),
+		"tank_lights_on": false,
+		"light_caustics": true,
+		"sunset_drama": 0.62,
+		"pp_vignette_strength": 0.20, "pp_bloom_strength": 0.62,
+	},
+	"cozy_shop": {
+		"label": "Warm desk lamp",
+		"global_intensity": 0.48, "global_warmth": 0.72,
+		"tank_fixture_intensity": 0.56,
+		"tank_fixture_color": Color(1.0, 0.90, 0.78),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.72,
+		"pp_vignette_strength": 0.26, "pp_bloom_strength": 0.66,
+	},
+	"shop_display": {
+		"label": "Shop display",
+		"global_intensity": 0.44, "global_warmth": 0.48,
+		"tank_fixture_intensity": 0.58,
+		"tank_fixture_color": Color(0.94, 0.96, 1.0),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.58,
+		"pp_vignette_strength": 0.22, "pp_bloom_strength": 0.64,
+	},
+	"moonlit": {
+		"label": "Moonlit room",
+		"global_intensity": 0.34, "global_warmth": 0.28,
+		"tank_fixture_intensity": 0.30,
+		"tank_fixture_color": Color(0.84, 0.88, 0.94),
+		"tank_lights_on": false,
+		"moonlight_enabled": true, "moonlight_intensity": 0.42,
+		"moonlight_color": Color(0.62, 0.72, 0.88),
+		"sunset_drama": 0.82,
+		"pp_vignette_strength": 0.28, "pp_bloom_strength": 0.58,
+		"pp_bloom_threshold": 0.72,
+	},
+	"sunset": {
+		"label": "Golden hour",
+		"global_intensity": 0.54, "global_warmth": 0.76,
+		"tank_fixture_intensity": 0.38,
+		"tank_fixture_color": Color(1.0, 0.84, 0.70),
+		"tank_lights_on": false,
+		"sunset_drama": 0.88,
+		"pp_vignette_strength": 0.32, "pp_bloom_strength": 0.72,
+	},
+	"storm": {
+		"label": "Overcast day",
+		"global_intensity": 0.42, "global_warmth": 0.46,
+		"tank_fixture_intensity": 0.40,
+		"tank_fixture_color": Color(0.92, 0.94, 0.98),
+		"tank_lights_on": false,
+		"light_caustics": false,
+		"sunset_drama": 0.50,
+		"pp_vignette_strength": 0.24, "dither_strength": 0.72,
+		"pp_bloom_strength": 0.58,
+	},
+	"reef": {
+		"label": "Reef LEDs",
+		"global_intensity": 0.54, "global_warmth": 0.44,
+		"tank_fixture_intensity": 0.66,
+		"tank_fixture_color": Color(0.78, 0.88, 1.0),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.52,
+		"pp_bloom_threshold": 0.68, "pp_bloom_strength": 0.70,
+	},
+	"planted": {
+		"label": "Planted tank",
+		"global_intensity": 0.56, "global_warmth": 0.58,
+		"tank_fixture_intensity": 0.60,
+		"tank_fixture_color": Color(0.94, 0.98, 0.90),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.68,
+		"pp_bloom_strength": 0.66,
+	},
+	"dim_warm": {
+		"label": "Dim warm lamp",
+		"global_intensity": 0.38, "global_warmth": 0.76,
+		"tank_fixture_intensity": 0.48,
+		"tank_fixture_color": Color(1.0, 0.86, 0.72),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.55,
+		"pp_vignette_strength": 0.26, "pp_bloom_strength": 0.60,
+	},
+}
+
+
+func apply_lighting_preset(slug: String) -> void:
+	lighting_preset = slug
+	if slug == "custom" or not LIGHTING_PRESETS.has(slug):
+		return
+	var preset: Dictionary = LIGHTING_PRESETS[slug]
+	for key in preset.keys():
+		if key == "label":
+			continue
+		set(key, preset[key])
+
+
+func suggested_lighting_for_environment(env_slug: String) -> String:
+	var prof: Dictionary = ENVIRONMENT_PRESETS.get(env_slug, {})
+	return String(prof.get("suggested_lighting", ""))
+
+
+# One-time pairing for saves that picked a room but never chose a lighting preset.
+func _pair_environment_lighting_if_legacy() -> void:
+	if lighting_preset != "custom" or environment_preset == "void":
+		return
+	var looks_legacy: bool = (
+		is_equal_approx(pp_vignette_strength, 0.35)
+		and is_equal_approx(pp_bloom_strength, 0.85)
+		and sunset_drama >= 0.95
+	)
+	if not looks_legacy:
+		return
+	var suggested: String = suggested_lighting_for_environment(environment_preset)
+	if suggested != "":
+		apply_lighting_preset(suggested)
+
+
 const TANK_PRESETS: Dictionary = {
 	"empty": {
 		"label": "Empty (build it yourself)",
@@ -1243,6 +1472,45 @@ func save_to_disk() -> void:
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
 	cfg.set_value("light", "caustics", light_caustics)
+	cfg.set_value("light", "tank_on", tank_lights_on)
+	cfg.set_value("light", "master_enabled", light_master_enabled)
+	cfg.set_value("light", "day_cycle_enabled", day_cycle_enabled)
+	cfg.set_value("light", "global_intensity", global_intensity)
+	cfg.set_value("light", "global_warmth", global_warmth)
+	cfg.set_value("light", "tank_fixture_intensity", tank_fixture_intensity)
+	cfg.set_value("light", "tank_fixture_color",
+		[tank_fixture_color.r, tank_fixture_color.g, tank_fixture_color.b])
+	cfg.set_value("light", "day_length_s", day_length_s)
+	cfg.set_value("light", "sunset_drama", sunset_drama)
+	cfg.set_value("light", "moonlight_enabled", moonlight_enabled)
+	cfg.set_value("light", "moonlight_intensity", moonlight_intensity)
+	cfg.set_value("light", "moonlight_color",
+		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
+	cfg.set_value("light", "accent1_enabled", accent1_enabled)
+	cfg.set_value("light", "accent1_intensity", accent1_intensity)
+	cfg.set_value("light", "accent1_color",
+		[accent1_color.r, accent1_color.g, accent1_color.b])
+	cfg.set_value("light", "accent2_enabled", accent2_enabled)
+	cfg.set_value("light", "accent2_intensity", accent2_intensity)
+	cfg.set_value("light", "accent2_color",
+		[accent2_color.r, accent2_color.g, accent2_color.b])
+	cfg.set_value("light", "pp_vignette_strength", pp_vignette_strength)
+	cfg.set_value("light", "pp_vignette_falloff", pp_vignette_falloff)
+	cfg.set_value("light", "pp_bloom_threshold", pp_bloom_threshold)
+	cfg.set_value("light", "pp_bloom_strength", pp_bloom_strength)
+	cfg.set_value("light", "ambient_floor", ambient_floor)
+	cfg.set_value("light", "biolum_multiplier", biolum_multiplier)
+	cfg.set_value("light", "caustic_intensity_user", caustic_intensity_user)
+	cfg.set_value("light", "tod_use_overrides", tod_use_overrides)
+	cfg.set_value("light", "tod_dawn_color",
+		[tod_dawn_color.r, tod_dawn_color.g, tod_dawn_color.b])
+	cfg.set_value("light", "tod_day_color",
+		[tod_day_color.r, tod_day_color.g, tod_day_color.b])
+	cfg.set_value("light", "tod_dusk_color",
+		[tod_dusk_color.r, tod_dusk_color.g, tod_dusk_color.b])
+	cfg.set_value("light", "tod_night_color",
+		[tod_night_color.r, tod_night_color.g, tod_night_color.b])
+	cfg.set_value("light", "preset", lighting_preset)
 	cfg.set_value("music", "enabled", music_enabled)
 	cfg.set_value("music", "volume", music_volume)
 	cfg.set_value("music", "complexity", music_complexity)
@@ -1316,6 +1584,12 @@ func save_to_disk() -> void:
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
 	cfg.set_value("mobile", "new_tank_fit", new_tank_fit)
+	cfg.set_value("ai", "enabled", ai_enabled)
+	cfg.set_value("ai", "endpoint", ai_endpoint)
+	cfg.set_value("ai", "model", ai_model)
+	cfg.set_value("ai", "naming_theme", ai_naming_theme)
+	cfg.set_value("ai", "chronicle", ai_chronicle)
+	cfg.set_value("ai", "onboarding_seen", ai_onboarding_seen)
 	cfg.save(_current_save_path())
 
 
@@ -1345,6 +1619,56 @@ func load_from_disk() -> void:
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
 	light_caustics = cfg.get_value("light", "caustics", light_caustics)
+	tank_lights_on = cfg.get_value("light", "tank_on", tank_lights_on)
+	light_master_enabled = cfg.get_value("light", "master_enabled", light_master_enabled)
+	day_cycle_enabled = cfg.get_value("light", "day_cycle_enabled", day_cycle_enabled)
+	# New split intensity/warmth. Defaults fall back to legacy light_energy
+	# /light_warmth so saved tanks from before the split keep their look.
+	global_intensity = cfg.get_value("light", "global_intensity", light_energy)
+	global_warmth = cfg.get_value("light", "global_warmth", light_warmth)
+	tank_fixture_intensity = cfg.get_value("light", "tank_fixture_intensity", light_energy)
+	var fix_rgb: Array = cfg.get_value("light", "tank_fixture_color",
+		[tank_fixture_color.r, tank_fixture_color.g, tank_fixture_color.b])
+	if fix_rgb.size() >= 3:
+		tank_fixture_color = Color(float(fix_rgb[0]), float(fix_rgb[1]), float(fix_rgb[2]))
+	day_length_s = cfg.get_value("light", "day_length_s", day_length_s)
+	sunset_drama = cfg.get_value("light", "sunset_drama", sunset_drama)
+	moonlight_enabled = cfg.get_value("light", "moonlight_enabled", moonlight_enabled)
+	moonlight_intensity = cfg.get_value("light", "moonlight_intensity", moonlight_intensity)
+	var moon_rgb: Array = cfg.get_value("light", "moonlight_color",
+		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
+	if moon_rgb.size() >= 3:
+		moonlight_color = Color(float(moon_rgb[0]), float(moon_rgb[1]), float(moon_rgb[2]))
+	accent1_enabled = cfg.get_value("light", "accent1_enabled", accent1_enabled)
+	accent1_intensity = cfg.get_value("light", "accent1_intensity", accent1_intensity)
+	var a1_rgb: Array = cfg.get_value("light", "accent1_color",
+		[accent1_color.r, accent1_color.g, accent1_color.b])
+	if a1_rgb.size() >= 3:
+		accent1_color = Color(float(a1_rgb[0]), float(a1_rgb[1]), float(a1_rgb[2]))
+	accent2_enabled = cfg.get_value("light", "accent2_enabled", accent2_enabled)
+	accent2_intensity = cfg.get_value("light", "accent2_intensity", accent2_intensity)
+	var a2_rgb: Array = cfg.get_value("light", "accent2_color",
+		[accent2_color.r, accent2_color.g, accent2_color.b])
+	if a2_rgb.size() >= 3:
+		accent2_color = Color(float(a2_rgb[0]), float(a2_rgb[1]), float(a2_rgb[2]))
+	pp_vignette_strength = cfg.get_value("light", "pp_vignette_strength", pp_vignette_strength)
+	pp_vignette_falloff = cfg.get_value("light", "pp_vignette_falloff", pp_vignette_falloff)
+	pp_bloom_threshold = cfg.get_value("light", "pp_bloom_threshold", pp_bloom_threshold)
+	pp_bloom_strength = cfg.get_value("light", "pp_bloom_strength", pp_bloom_strength)
+	ambient_floor = cfg.get_value("light", "ambient_floor", ambient_floor)
+	biolum_multiplier = cfg.get_value("light", "biolum_multiplier", biolum_multiplier)
+	caustic_intensity_user = cfg.get_value("light", "caustic_intensity_user", caustic_intensity_user)
+	tod_use_overrides = cfg.get_value("light", "tod_use_overrides", tod_use_overrides)
+	var _read_color := func(key: String, fallback: Color) -> Color:
+		var arr: Array = cfg.get_value("light", key, [fallback.r, fallback.g, fallback.b])
+		if arr.size() >= 3:
+			return Color(float(arr[0]), float(arr[1]), float(arr[2]))
+		return fallback
+	tod_dawn_color = _read_color.call("tod_dawn_color", tod_dawn_color)
+	tod_day_color = _read_color.call("tod_day_color", tod_day_color)
+	tod_dusk_color = _read_color.call("tod_dusk_color", tod_dusk_color)
+	tod_night_color = _read_color.call("tod_night_color", tod_night_color)
+	lighting_preset = cfg.get_value("light", "preset", lighting_preset)
 	music_enabled = cfg.get_value("music", "enabled", music_enabled)
 	music_volume = cfg.get_value("music", "volume", music_volume)
 	music_complexity = cfg.get_value("music", "complexity", music_complexity)
@@ -1418,6 +1742,24 @@ func load_from_disk() -> void:
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
 	new_tank_fit = cfg.get_value("mobile", "new_tank_fit", new_tank_fit)
+	ai_enabled = cfg.get_value("ai", "enabled", ai_enabled)
+	ai_endpoint = cfg.get_value("ai", "endpoint", ai_endpoint)
+	ai_model = cfg.get_value("ai", "model", ai_model)
+	ai_naming_theme = cfg.get_value("ai", "naming_theme", ai_naming_theme)
+	ai_chronicle = cfg.get_value("ai", "chronicle", ai_chronicle)
+	ai_onboarding_seen = cfg.get_value("ai", "onboarding_seen", ai_onboarding_seen)
+	_pair_environment_lighting_if_legacy()
+	# Push the freshly-loaded AI settings into the live director (autoload
+	# instantiated before us). Safe no-op if AIDirector autoload is missing.
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("apply_config"):
+		ai.apply_config({
+			"ai_enabled": ai_enabled,
+			"ai_endpoint": ai_endpoint,
+			"ai_model": ai_model,
+			"ai_naming_theme": ai_naming_theme,
+			"ai_chronicle": ai_chronicle,
+		})
 
 
 func _ready() -> void:
@@ -1464,6 +1806,37 @@ func reset_to_defaults() -> void:
 	light_size = 0.75
 	light_volumetric = true
 	light_caustics = true
+	tank_lights_on = true
+	light_master_enabled = true
+	day_cycle_enabled = true
+	global_intensity = 0.5
+	global_warmth = 0.6
+	tank_fixture_intensity = 0.5
+	tank_fixture_color = Color(1.0, 0.95, 0.85)
+	day_length_s = 360.0
+	sunset_drama = 0.75
+	moonlight_enabled = true
+	moonlight_intensity = 0.4
+	moonlight_color = Color(0.55, 0.70, 1.0)
+	accent1_enabled = false
+	accent1_intensity = 0.6
+	accent1_color = Color(1.0, 0.45, 0.75)
+	accent2_enabled = false
+	accent2_intensity = 0.6
+	accent2_color = Color(0.45, 0.85, 1.0)
+	pp_vignette_strength = 0.24
+	pp_vignette_falloff = 1.6
+	pp_bloom_threshold = 0.72
+	pp_bloom_strength = 0.68
+	ambient_floor = 0.0
+	biolum_multiplier = 1.0
+	caustic_intensity_user = 1.0
+	tod_use_overrides = false
+	tod_dawn_color = Color(1.02, 0.88, 0.82)
+	tod_day_color = Color(1.00, 1.00, 1.00)
+	tod_dusk_color = Color(1.04, 0.82, 0.70)
+	tod_night_color = Color(0.38, 0.42, 0.52)
+	lighting_preset = "custom"
 	music_enabled = true
 	music_volume = 0.7
 	music_complexity = 0.5

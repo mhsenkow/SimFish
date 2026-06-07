@@ -21,10 +21,17 @@ uniform float flutter_amplitude = 0.03;
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
 uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
 uniform float sss_daylight : hint_range(0.0, 1.0) = 1.0;
+uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
+uniform float fixture_water_top = 99.0;
+uniform float fixture_water_floor = 0.0;
+
+varying vec3 v_world_pos;
 
 void vertex() {
     // 1. Get world space position for spatial variance
     vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+    v_world_pos = world_pos;
     
     // 2. Slow gentle sway (swimming pool current / wind)
     float time_sway = TIME * sway_speed;
@@ -73,7 +80,15 @@ void fragment() {
     // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.
     // Day-tracked so the rim disappears at night (matches foliage_mm).
     float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
-    float rim_amt = sss_strength * (0.25 + 0.75 * sss_daylight);
+    float rim_amt = sss_strength * (0.25 + 0.75 * max(sss_daylight, tank_fixture_glow * 0.85));
     col = mix(col, col * 0.7 + sss_color * 0.55, rim * rim_amt);
+    if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
+        float span = max(fixture_water_top - fixture_water_floor, 0.5);
+        float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);
+        float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
+        float top_catch = smoothstep(0.20, 0.88, n.y);
+        col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
+        col *= 1.0 + wash * (0.62 + top_catch * 0.42);
+    }
     ALBEDO = col;
 }

@@ -14,6 +14,11 @@
 extends Node3D
 class_name Fish
 
+# Preloaded so parse works even before the editor has populated the
+# global class_name registry — see ai_director.gd for the same trick.
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
+
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
 const MATURITY_ADULT := 2
@@ -85,7 +90,83 @@ var sex: int = 0                        # 0 male, 1 female
 # ---- Lineage ----
 var generation: int = 0   # max(parents) + 1 on birth; founders are 0
 var fish_name: String = ""
+var name_source: String = "offline"   # "ai" if AIDirector minted it, else "offline"
 var parent_lineage: String = "Founders"
+
+# ---- Personality ----
+# Five trait scalars in [0,1]. Set on init_genome via CreatureNaming.roll_personality
+# (or inherited from parents on breeding). Tunes existing behavior knobs at
+# read time — keeps the per-tick cost flat. Saved/loaded as a flat dict.
+#   boldness    -> nearer to glass / less startle, more dart_chance
+#   curiosity   -> longer pause-and-look windows, more novelty interest
+#   sociability -> tighter schooling, more cleaning-station seeking
+#   gluttony    -> stronger food bias, longer feeding hover
+#   calm        -> slower base wag freq, less spontaneous stress
+var personality: Dictionary = {}
+
+# ---- Lifetime journal ----
+# Aggregate stats that survive saves. Surface on hover; the player builds
+# attachment by watching numbers grow next to a named fish. Incremented in
+# the existing event hooks (eat, breed, fight win, age tick).
+#   meals_eaten        every successful nibble/pellet bite
+#   offspring          every successful breed event
+#   fights_won         every territorial chase where this fish was the chaser
+#   age_peak_s         max age reached (in case of senescence rollback via food)
+#   longest_friend_id  partner with the most shared time (set on breed pairing)
+#   birth_unix         wall-clock seconds at hatch (Time.get_unix_time_from_system)
+var bio: Dictionary = {}
+
+# ---- Persistent memory ----
+# feed_heatmap: tiny 4×4×4=64 scalar field of "I have eaten here before"
+#   weights. Sampled on food search to bias toward proven spots. Decays
+#   slowly (5% per minute) so abandoned spots fade. Persisted across saves
+#   so a returning fish remembers its favorite corner.
+var feed_heatmap: PackedFloat32Array = PackedFloat32Array()
+const FEED_HEATMAP_SIZE: int = 4   # 4³ = 64 cells; cheap, plenty of resolution
+# grudges: id (other fish stable id) -> remaining seconds. Set on chase
+#   events; the predator-avoidance code reads this to give wider berth to
+#   the specific bully rather than the bully's whole species.
+var grudges: Dictionary = {}
+# habituated: stimulus key (string) -> novelty 0..1. 1 = never seen, 0 = bored.
+#   Used by the look-at-glass and novelty-pause code so repeated exposures
+#   stop drawing attention.
+var habituated: Dictionary = {}
+
+# ---- Dominance ----
+# Per-fish rank within its species — drifts toward 0.5 (neutral) but updates
+# on territorial wins/losses. Higher rank gets first dibs on feed spots and
+# breeding partners. Cheap: only updates when a fight resolves.
+var rank_within_species: float = 0.5
+
+# ---- Novelty: regions visited ----
+# Tiny 4×4×4 bitmap (64 cells, 8 bytes) tracking tank regions this fish
+# has been in. When entering an unvisited cell, briefly slow + face the
+# new area before resuming. Personality.curiosity tunes how strongly
+# unvisited reads as "novel" (and therefore how long the pause lasts).
+# Cleared every ~30 minutes of game time so the fish eventually rediscovers
+# its tank — fresh play after a long break feels novel again.
+const NOVELTY_GRID: int = 4
+var visited_regions: PackedByteArray = PackedByteArray()
+var _novelty_pause_remaining: float = 0.0
+var _novelty_reset_timer: float = 0.0
+
+# ---- Gaze contagion ----
+# When this fish is actively investigating something (the glass, a novel
+# food cluster), it sets _interest_target to that world position and
+# _interest_remaining > 0. Neighbors read these in their cruise tier and
+# pick up a small additional steering pull toward the SAME point — so
+# when one fish swims over to inspect the player, three more follow a
+# beat later. Decays automatically; no per-frame book-keeping needed.
+var _interest_target: Vector3 = Vector3.ZERO
+var _interest_remaining: float = 0.0
+
+# ---- Gaze target ----
+# When the tick code spots a fast-moving neighbor, it sets a target head
+# yaw angle (radians) here. The per-frame saccade reader prefers this
+# value over a random twitch when it's recent, so a passing fish actually
+# turns to look. Decays back to zero in the same lerp as random saccades.
+var _gaze_yaw: float = 0.0
+var _gaze_remaining: float = 0.0
 
 
 # ---- State (mutable) ----
@@ -360,9 +441,129 @@ var _gill_pivot: Node3D = null               # set by _build_body when available
 func _boldness() -> float:
 	# dart_chance 0..0.5, stress 0..1, schooling_strength 0..2. Bold =
 	# darty + calm + loose schooler. Timid = low dart + stressed + tight
-	# schooler. Range roughly 0.4..1.8.
+	# schooler. Personality.boldness (0..1) shifts the range another ±0.4 so
+	# the player-visible "bold one" and "shy one" reads at a glance.
+	var p_bold: float = float(personality.get("boldness", 0.5)) if not personality.is_empty() else 0.5
 	return clampf(0.6 + dart_chance * 1.6 - stress * 0.6
-		+ (1.5 - schooling_strength) * 0.10, 0.4, 1.8)
+		+ (1.5 - schooling_strength) * 0.10
+		+ (p_bold - 0.5) * 0.8, 0.4, 1.8)
+
+
+# Player food subtype preference. Lower = more appealing (reduces effective distance).
+func _food_appeal_multiplier(w: WasteParticle) -> float:
+	if w.kind != WasteParticle.KIND_FOOD:
+		return 1.0
+	match w.food_subtype:
+		WasteParticle.FOOD_SUB_FLAKE:
+			if mouth_orientation == -1:
+				return 0.42
+			if mouth_orientation == 1:
+				return 2.4
+			return 0.95
+		WasteParticle.FOOD_SUB_PELLET:
+			if mouth_orientation == 1:
+				return 0.48
+			if mouth_orientation == -1:
+				return 1.9
+			return 0.9
+		WasteParticle.FOOD_SUB_WORM:
+			if herbivory > 0.55:
+				return 2.8
+			if herbivory < 0.25:
+				return 0.45
+			return 1.1
+		WasteParticle.FOOD_SUB_WAFER:
+			if herbivory > 0.45 or algae_grazer:
+				return 0.38
+			if herbivory < 0.2:
+				return 2.0
+			return 1.0
+		_:
+			return 1.0
+
+
+# Convenience accessor — returns the personality value or 0.5 default. Used
+# by the look-at-glass, gaze-contagion, and pause-and-look code to stay
+# fast in the hot loop (no dict null check at every callsite).
+func _trait(key: String) -> float:
+	return float(personality.get(key, 0.5)) if not personality.is_empty() else 0.5
+
+
+# Record a meal at the current position into both the bio counter and the
+# spatial feed_heatmap. Called from every food-consumption site so the
+# fish actually learns where it has eaten before. Costs a single int add
+# and ~3 float ops — fine in the hot path.
+func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
+	if bio.is_empty():
+		bio["meals_eaten"] = 0
+	bio["meals_eaten"] = int(bio.get("meals_eaten", 0)) + 1
+	if feed_heatmap.size() == 0:
+		return
+	var w: Node = _world_node()
+	if w == null:
+		return
+	# Tank-relative position. World exposes TANK_HALF_W / D / HEIGHT.
+	var hw_v: Variant = w.get("TANK_HALF_W")
+	var hd_v: Variant = w.get("TANK_HALF_D")
+	var hh_v: Variant = w.get("TANK_HEIGHT")
+	if hw_v == null or hd_v == null or hh_v == null:
+		return
+	var rx: float = clampf((pos.x + float(hw_v)) / (float(hw_v) * 2.0), 0.0, 0.999)
+	var ry: float = clampf(pos.y / float(hh_v), 0.0, 0.999)
+	var rz: float = clampf((pos.z + float(hd_v)) / (float(hd_v) * 2.0), 0.0, 0.999)
+	var ix: int = int(rx * FEED_HEATMAP_SIZE)
+	var iy: int = int(ry * FEED_HEATMAP_SIZE)
+	var iz: int = int(rz * FEED_HEATMAP_SIZE)
+	var idx: int = ix + iy * FEED_HEATMAP_SIZE + iz * FEED_HEATMAP_SIZE * FEED_HEATMAP_SIZE
+	feed_heatmap[idx] = minf(1.0, feed_heatmap[idx] + 0.30 * weight)
+
+
+# Sample the feed_heatmap at a given world position. Returns 0..1 — higher
+# means "I've eaten here a lot." Cheap; nearest-neighbor lookup, no interp.
+func _feed_memory_at(pos: Vector3) -> float:
+	if feed_heatmap.size() == 0:
+		return 0.0
+	var w: Node = _world_node()
+	if w == null:
+		return 0.0
+	var hw_v: Variant = w.get("TANK_HALF_W")
+	var hd_v: Variant = w.get("TANK_HALF_D")
+	var hh_v: Variant = w.get("TANK_HEIGHT")
+	if hw_v == null or hd_v == null or hh_v == null:
+		return 0.0
+	var rx: float = clampf((pos.x + float(hw_v)) / (float(hw_v) * 2.0), 0.0, 0.999)
+	var ry: float = clampf(pos.y / float(hh_v), 0.0, 0.999)
+	var rz: float = clampf((pos.z + float(hd_v)) / (float(hd_v) * 2.0), 0.0, 0.999)
+	var ix: int = int(rx * FEED_HEATMAP_SIZE)
+	var iy: int = int(ry * FEED_HEATMAP_SIZE)
+	var iz: int = int(rz * FEED_HEATMAP_SIZE)
+	var idx: int = ix + iy * FEED_HEATMAP_SIZE + iz * FEED_HEATMAP_SIZE * FEED_HEATMAP_SIZE
+	return feed_heatmap[idx]
+
+
+# Render a one-line bio summary for the portal info panel. Format:
+#   "Atlas the Bold · 23 meals · 4 offspring · 12m old"
+# Returns "" if the fish has no name yet (very early in init).
+func get_bio_summary() -> String:
+	if fish_name == "":
+		return ""
+	var epithet: String = CreatureNaming.epithet_for_personality(personality)
+	var title: String
+	if epithet != "":
+		title = "%s %s" % [fish_name, epithet]
+	else:
+		title = fish_name
+	var meals: int = int(bio.get("meals_eaten", 0))
+	var kids: int = int(bio.get("offspring", 0))
+	var age_min: int = int(age / 60.0)
+	var parts: PackedStringArray = PackedStringArray([title])
+	if meals > 0:
+		parts.append("%d %s" % [meals, "meal" if meals == 1 else "meals"])
+	if kids > 0:
+		parts.append("%d %s" % [kids, "child" if kids == 1 else "children"])
+	if age_min > 0:
+		parts.append("%dm old" % age_min)
+	return " · ".join(parts)
 
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
@@ -516,10 +717,11 @@ var _dying: bool = false
 var _dying_timer: float = 0.0
 const DEATH_DURATION: float = 3.5
 
-# Cached list of all MeshInstance3D descendants. Built once at the end of
+# Cached voxel handles (MultiMesh instances). Built once at the end of
 # _build_body() and reused by aging tint, maturity color, courtship color
-# boost, and restoration — avoids a recursive DFS tree walk every time.
+# boost, and restoration.
 var _cached_meshes: Array = []
+var _voxel_builder: FaunaVoxelBuilder = null
 
 # ---- Refs ----
 var sim: Node = null
@@ -640,10 +842,45 @@ func init_genome(genome: Dictionary) -> void:
 		if genome.has("_display_name"):
 			fish_name = String(genome["_display_name"])
 		else:
-			var adjs := ["Neon", "Crimson", "Lazuli", "Sunlit", "Twilight", "Lunar", "Ember", "Coral", "Frost", "Onyx", "Citrine", "Verdant", "Pearl", "Mirage"]
-			var nouns := ["Darter", "Glider", "Nibbler", "Shimmer", "Spike", "Wisp", "Crest", "Tang", "Sprite", "Slip", "Drake", "Veil", "Mote", "Lance"]
-			fish_name = "%s %s" % [adjs[randi() % adjs.size()], nouns[randi() % nouns.size()]]
+			# AIDirector pulls from the same offline pool when Ollama is
+			# off or unreachable, so this works in every mode. Gate on
+			# is_inside_tree so a fish constructed before being attached
+			# (rare) cleanly falls back to offline.
+			var ai: Node = null
+			if is_inside_tree():
+				ai = get_node_or_null("/root/AIDirector")
+			var picked: Dictionary
+			if ai != null and ai.has_method("consume_name"):
+				picked = ai.consume_name("fish", {})
+			else:
+				picked = {"name": CreatureNaming.generate_name("fish", {}), "source": "offline"}
+			fish_name = String(picked.get("name", "Fish"))
+			name_source = String(picked.get("source", "offline"))
 	parent_lineage = genome.get("parent_lineage", "Founders")
+	# Personality + bio. Inherit personality from parents when present in
+	# the genome (set by the breeding hook); otherwise roll fresh. Bio
+	# starts as a stat sheet of zeros.
+	var inherited: Dictionary = genome.get("personality", {})
+	if inherited.is_empty():
+		personality = CreatureNaming.roll_personality()
+	else:
+		personality = CreatureNaming.roll_personality(inherited)
+	if bio.is_empty():
+		bio = {
+			"birth_unix": int(Time.get_unix_time_from_system()),
+			"meals_eaten": 0,
+			"offspring": 0,
+			"fights_won": 0,
+			"age_peak_s": 0.0,
+			"name_source": name_source,
+		}
+	# Pre-allocate feed_heatmap on first init.
+	if feed_heatmap.size() == 0:
+		feed_heatmap.resize(FEED_HEATMAP_SIZE * FEED_HEATMAP_SIZE * FEED_HEATMAP_SIZE)
+	# Pre-allocate the novelty bitmap (64 cells, 1 byte each — wasteful
+	# vs a bitset but trivial in size and the index math stays simple).
+	if visited_regions.size() == 0:
+		visited_regions.resize(NOVELTY_GRID * NOVELTY_GRID * NOVELTY_GRID)
 	
 	_saved_genome["fish_name"] = fish_name
 	_saved_genome["parent_lineage"] = parent_lineage
@@ -941,6 +1178,7 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 
 
 func _build_body() -> void:
+	_voxel_builder = FaunaVoxelBuilder.new()
 	# Voxel fish facing -Z (Godot's default "forward"). With look_at, the fish
 	# faces its velocity correctly without extra rotation tricks.
 	#
@@ -1398,18 +1636,16 @@ func _build_body() -> void:
 		_bank_pivot.scale.z = body_elongation
 		_bank_pivot.scale.y = body_depth_factor
 
-	# Cache mesh list now that the body is fully built. All subsequent
-	# tint / color operations read from _cached_meshes instead of
-	# re-walking the node tree.
-	_cached_meshes = _all_meshes(self)
+	if _voxel_builder != null:
+		_voxel_builder.flush_all()
+		_cached_meshes = _voxel_builder.handles.duplicate()
+	_apply_lod_ranges()
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(size)
-	mi.position = pos
-	mi.material_override = mat
-	parent.add_child(mi)
+	if _voxel_builder == null:
+		_voxel_builder = FaunaVoxelBuilder.new()
+	_voxel_builder.add_voxel(parent, pos, size, mat)
 
 
 # Walk the body hierarchy once after _build_body and assign per-voxel
@@ -1430,32 +1666,22 @@ const _LOD_BIG_RANGE: float = 0.0         # 0 = never LOD out (default)
 
 
 func _apply_lod_ranges() -> void:
+	if _voxel_builder == null:
+		return
+	for batch: VoxelBatch in _voxel_builder.get_batches():
+		if batch.mmi != null:
+			batch.mmi.visibility_range_begin = 0.0
+			batch.mmi.visibility_range_end = _LOD_SMALL_RANGE
+			batch.mmi.visibility_range_end_margin = 3.0
 	var stack: Array = [self]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
 		for c in n.get_children():
 			if c is MeshInstance3D:
 				var mi: MeshInstance3D = c
-				var bm := mi.mesh as BoxMesh
-				if bm != null:
-					var biggest: float = maxf(bm.size.x, maxf(bm.size.y, bm.size.z))
-					var range_end: float
-					if biggest < _LOD_TINY_MAX_VOXEL:
-						range_end = _LOD_TINY_RANGE
-					elif biggest < _LOD_SMALL_MAX_VOXEL:
-						range_end = _LOD_SMALL_RANGE
-					else:
-						range_end = _LOD_BIG_RANGE
-					if range_end > 0.0:
-						# Hide small voxels when the camera is far away.
-						# begin=0 keeps full detail up close (library preview,
-						# portal PiP); end culls at distance. Wider margin
-						# softens the fade so detail doesn't pop on/off as
-						# the camera dollies.
-						mi.visibility_range_begin = 0.0
-						mi.visibility_range_begin_margin = 0.0
-						mi.visibility_range_end = range_end
-						mi.visibility_range_end_margin = 3.0
+				mi.visibility_range_begin = 0.0
+				mi.visibility_range_end = _LOD_TINY_RANGE
+				mi.visibility_range_end_margin = 3.0
 			if c.get_child_count() > 0:
 				stack.push_back(c)
 
@@ -1612,6 +1838,33 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		return events
 
 	age += dt
+	# Lifetime journal: track the highest age reached so a senescence
+	# rollback from a meal doesn't erase the player-visible age peak.
+	if not bio.is_empty():
+		if age > float(bio.get("age_peak_s", 0.0)):
+			bio["age_peak_s"] = age
+	# Memory decay. Grudges and habituation are real time, not sim ticks
+	# (so a paused tank doesn't accumulate fake decay). Heatmap decays
+	# slowly — abandoned spots fade over ~20 minutes of real play.
+	if not grudges.is_empty():
+		var expired: Array = []
+		for k in grudges.keys():
+			grudges[k] = float(grudges[k]) - dt
+			if float(grudges[k]) <= 0.0:
+				expired.append(k)
+		for k in expired:
+			grudges.erase(k)
+	if not habituated.is_empty():
+		# Novelty regenerates very slowly toward 1 — same stimulus stays
+		# boring for a long time, but eventually becomes interesting again.
+		for k in habituated.keys():
+			habituated[k] = clampf(float(habituated[k]) + dt * 0.0008, 0.0, 1.0)
+	if feed_heatmap.size() > 0 and randf() < dt * 0.05:
+		# Stochastic decay step (~once every 20s per cell, on average) so
+		# the heatmap doesn't grow stale. Multiplicative so peaks fade
+		# proportionally instead of all going to zero.
+		for i in range(feed_heatmap.size()):
+			feed_heatmap[i] *= 0.985
 	# Hunger accumulates slowly. Real fish go days without eating; we keep
 	# the rate gentle so fish can spend more time on courtship / schooling
 	# / exploration than on frantic foraging. 0.006/s = ~165s from sated
@@ -1785,7 +2038,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Tier 0.1: soft anti-intersection steering. Keeps body volumes from
 	# visually occupying the same space (other fish / dense plants /
 	# hardscape) while staying subtle enough to preserve schooling.
-	desired += _local_clearance_push(neighbors, plants) * 1.25
+	var clearance_plants: Array = sim.query_plants_in_radius(position, 0.45) \
+		if sim != null and sim.has_method("query_plants_in_radius") else plants
+	desired += _local_clearance_push(neighbors, clearance_plants) * 1.25
 	desired += _hardscape_clearance_push() * 1.6
 
 	# Tier 0.2: SURFACE GULPING (hypoxia response). Only surface-adapted fish
@@ -1907,11 +2162,25 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					burst_remaining = 0.2
 			# Hit the intruder with a small stress nudge so a chase produces
 			# the visible flee response on their end.
-			(_territory_chase_target as Fish).stress = clampf(
-				(_territory_chase_target as Fish).stress + dt * 0.20, 0.0, 1.0)
+			var tgt: Fish = _territory_chase_target
+			tgt.stress = clampf(tgt.stress + dt * 0.20, 0.0, 1.0)
+			# Grudge formation: the chasee remembers WHO chased it (by id).
+			# 10 real-time minutes. The food-finder and home-pull code can
+			# read grudges[chaser_id] to give the bully extra berth instead
+			# of just "predator-class avoidance".
+			if id != "" and not tgt.grudges.has(id):
+				tgt.grudges[id] = 600.0
 			# End the chase after a short bout — the intruder gets the
 			# message; we go on cooldown so chases don't loop forever.
 			if _territory_chase_t >= TERRITORY_CHASE_DURATION:
+				# Dominance + bio: chaser earns a fight win, both fish drift
+				# in rank. The drift is small (0.02) so a single fight doesn't
+				# flip the hierarchy — but consistent winners accumulate
+				# clear alpha status across many bouts.
+				if not bio.is_empty():
+					bio["fights_won"] = int(bio.get("fights_won", 0)) + 1
+				rank_within_species = clampf(rank_within_species + 0.02, 0.0, 1.0)
+				tgt.rank_within_species = clampf(tgt.rank_within_species - 0.02, 0.0, 1.0)
 				_territory_chase_target = null
 				_territory_chase_t = 0.0
 				_territory_cooldown = TERRITORY_CHASE_COOLDOWN
@@ -2200,6 +2469,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				partner.burst_remaining = 0.4
 				breed_count += 1
 				partner.breed_count += 1
+				# Bio: both parents log an offspring. Each spawn produces a
+				# variable clutch but we count the *event* (one breeding
+				# moment) — the player sees "4 offspring" and reads that
+				# as four successful breeds, which matches reality better
+				# than fry-counted-on-egg-hatch.
+				if not bio.is_empty():
+					bio["offspring"] = int(bio.get("offspring", 0)) + 1
+				if partner != null and not partner.bio.is_empty():
+					partner.bio["offspring"] = int(partner.bio.get("offspring", 0)) + 1
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
@@ -2258,6 +2536,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				d2 *= 1.0 + clampf(y_delta * 0.18, 0.0, 0.5)
 				if y_delta > home_y_radius * 1.5:
 					d2 *= 1.0 + clampf((y_delta - home_y_radius * 1.5) * 0.45, 0.0, 1.0)
+				d2 *= _food_appeal_multiplier(w)
 				# Bold fish discount food cost; timid fish inflate it.
 				d2 *= lerpf(1.6, 0.55, clampf(boldness / 1.8, 0.0, 1.0))
 			if d2 < max_dist_sq and d2 < best_d2:
@@ -2274,6 +2553,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if to_w.length() < 0.4:
 				events["eat_waste"] = best_w
 				var is_food: bool = best_w.kind == 3
+				_record_meal_at(position, 1.5 if is_food else 0.7)
 				hunger = maxf(0.0, hunger - (FOOD_HUNGER_DELTA if is_food else WASTE_HUNGER_DELTA))
 				energy = minf(1.0, energy + (FOOD_ENERGY_DELTA if is_food else WASTE_ENERGY_DELTA))
 				# All meals rewind the age clock a little.
@@ -2282,6 +2562,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					# High-quality food stacks an additional big revival.
 					age = maxf(0.0, age - max_age_s * FOOD_AGE_REVIVAL_FRAC)
 					stress = 0.0
+					match best_w.food_subtype:
+						WasteParticle.FOOD_SUB_WORM:
+							hunger = maxf(0.0, hunger - FOOD_HUNGER_DELTA * 0.35)
+							burst_remaining = maxf(burst_remaining, 0.65)
+						WasteParticle.FOOD_SUB_FLAKE:
+							if mouth_orientation == -1:
+								burst_remaining = maxf(burst_remaining, 0.4)
+						WasteParticle.FOOD_SUB_WAFER:
+							if herbivory > 0.4 or algae_grazer:
+								energy = minf(1.0, energy + FOOD_ENERGY_DELTA * 0.25)
 					if maturity == MATURITY_SENESCENT and age < max_age_s:
 						maturity = MATURITY_ADULT
 					if _food_glow != null:
@@ -2296,15 +2586,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			else:
 				var pull: float = 0.9
 				if best_w.kind == 3: # FOOD
-					pull = 1.9
-					# Older fish try harder to get food!
+					var appeal: float = _food_appeal_multiplier(best_w)
+					pull = lerpf(1.4, 2.4, 1.0 - clampf(appeal - 0.4, 0.0, 1.6) / 1.6)
 					var age_factor: float = clampf(age / max_age_s, 0.0, 1.2)
 					pull += age_factor * 1.5
-					
-					# Dart towards food and trigger a feeding frenzy!
-					if burst_remaining <= 0.0 and energy > 0.15 and randf() < 0.4:
-						burst_remaining = randf_range(0.4, 0.7) + (age_factor * 0.3)
-						# This fish bolting for food will spook/alert the school!
+					var frenzy_chance: float = 0.4
+					if best_w.food_subtype == WasteParticle.FOOD_SUB_WORM and herbivory < 0.35:
+						frenzy_chance = 0.78
+					elif best_w.food_subtype == WasteParticle.FOOD_SUB_FLAKE and mouth_orientation == -1:
+						frenzy_chance = 0.62
+					if burst_remaining <= 0.0 and energy > 0.15 and randf() < frenzy_chance:
+						burst_remaining = randf_range(0.4, 0.75) + (age_factor * 0.3)
 						_startle_heading = to_w.normalized()
 						_startle_remaining = 0.5
 				desired += to_w.normalized() * effective_max * pull
@@ -2362,6 +2654,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var to_prey: Vector3 = (best_prey as Node3D).global_position - position
 			if to_prey.length() < kill_reach:
 				events["kill_prey"] = best_prey
+				_record_meal_at(position, 2.0)
 				hunger = maxf(0.0, hunger - 0.50)
 				energy = minf(1.0, energy + 0.18)
 				age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
@@ -2418,6 +2711,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if to_prey.length() < 0.35:
 				events["kill_prey"] = prey
 				var meal_mult: float = clampf(1.0 - repel * 0.65, 0.2, 1.0)
+				_record_meal_at(position, meal_mult * 1.5)
 				hunger = maxf(0.0, hunger - 0.40 * meal_mult)
 				energy = minf(1.0, energy + 0.12 * meal_mult)
 				stress = minf(1.0, stress + prey_toxin * 0.16)
@@ -2598,7 +2892,49 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	current_mode = Mode.CRUISE
 	# When stressed (too few neighbors), tighten the school dramatically.
 	var tightness: float = 1.0 + stress * 1.5
+	# Tank-wide school pulse: -0.15..+0.15. Synchronised across every
+	# fish that samples sim.school_pulse(), so the entire group visibly
+	# breathes in and out over ~28 sim-seconds.
+	if sim != null and sim.has_method("school_pulse"):
+		tightness *= 1.0 + sim.school_pulse() * 0.15
+	# Mourning: when a same-species schoolmate just died nearby, intensify
+	# cohesion and dampen our top speed for ~60s. Reads as the school
+	# closing around a recent loss, then slowly drifting apart again.
+	var mourning_w: float = 0.0
+	if sim != null and sim.has_method("mourning_intensity_for"):
+		mourning_w = sim.mourning_intensity_for(species, position)
+		if mourning_w > 0.01:
+			tightness *= 1.0 + mourning_w * 0.8
 	desired += _boids(neighbors, tightness) * schooling_strength
+
+	# PERSONAL SPACE. When a fish has many same-species neighbors crowded
+	# inside ~2 units, push away from the local centroid. The standard
+	# boids separation handles 1-on-1 spacing; this adds a soft "I don't
+	# love being in a clump" bias that makes 30-fish schools distribute
+	# naturally instead of converging on a single tight ball.
+	var crowd_count: int = 0
+	var crowd_centroid: Vector3 = Vector3.ZERO
+	for n in neighbors:
+		if not (n is Fish):
+			continue
+		var nf3: Fish = n
+		if nf3 == self or nf3.species != species:
+			continue
+		var d2c: float = nf3.position.distance_squared_to(position)
+		if d2c < 4.0:  # 2 unit personal-space zone
+			crowd_count += 1
+			crowd_centroid += nf3.position
+	if crowd_count > 5:
+		var center: Vector3 = crowd_centroid / float(crowd_count)
+		var away: Vector3 = position - center
+		if away.length_squared() > 1e-4:
+			desired += away.normalized() * effective_max * 0.20
+
+	# Mourning slowdown — apply to effective_max so the school visibly
+	# drifts rather than sprints. Light (~30% top-speed cap at peak
+	# intensity) so it reads as solemn, not broken.
+	if mourning_w > 0.01:
+		effective_max *= 1.0 - mourning_w * 0.30
 
 	# Drift toward this fish's vertical territory (home_y). Each fish has
 	# its own anchor (not just the species preferred_y) so 30 cory don't
@@ -2691,6 +3027,226 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if inward.length_squared() > 1e-6 and home_dir.dot(inward) < -0.12:
 				pull_strength *= 0.15
 		desired += to_home.normalized() * effective_max * pull_mult * pull_strength
+
+	# PLAYER GLANCE. Bold fish drift toward the spot the player is staring
+	# at — the real-aquarium moment of fish noticing you've leaned into
+	# the glass. Three gates keep this from being annoying:
+	#   1. Personality.boldness must clear 0.55 (shy fish stay back)
+	#   2. Sim must report a glance strength > 0.30 (player is genuinely
+	#      close + holding still, not panning the camera past)
+	#   3. Fish must not be in a high-stress mode — flee / spawn / etc.
+	#      already short-circuit the tier above this one.
+	# Habituation: each time the glance fires for a given fish, novelty
+	# decays. After many sessions of being stared at, the fish reads the
+	# player as background and stops swimming over. Real fish do this.
+	if sim != null and sim.has_method("get_player_glance"):
+		var glance: Dictionary = sim.get_player_glance()
+		var g_strength: float = float(glance.get("strength", 0.0))
+		var b_personality: float = _trait("boldness")
+		if g_strength > 0.30 and b_personality > 0.55:
+			var novelty: float = float(habituated.get("player", 1.0))
+			var pull: float = g_strength * (b_personality - 0.55) * 1.4 * novelty
+			var g_point: Vector3 = glance.get("point", Vector3.ZERO)
+			var to_glass: Vector3 = g_point - position
+			if to_glass.length_squared() > 0.04:
+				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.55)
+				# Broadcast interest so school-mates can copy. Costs nothing
+				# unless a neighbor reads it — the gaze contagion block below
+				# is the only consumer.
+				_interest_target = g_point
+				_interest_remaining = 1.2
+			# Decay novelty very slowly — 1 → 0.5 takes ~10 minutes of
+			# constant glance time, after which the effect halves.
+			habituated["player"] = clampf(novelty - dt * 0.0008, 0.15, 1.0)
+	_interest_remaining = maxf(0.0, _interest_remaining - dt)
+
+	# GAZE CONTAGION. When a neighbor of the same species is actively
+	# investigating something, this fish picks up a small pull toward
+	# the same point. Lower threshold than the originating fish (anyone
+	# with boldness > 0.4 follows), so a single curious individual draws
+	# a small entourage — the "uh-oh, whatever Atlas is looking at, I
+	# should look too" reflex. Reuses the startle-propagation iteration
+	# pattern from a few lines below.
+	if _trait("boldness") > 0.4:
+		var copied: Vector3 = Vector3.ZERO
+		var copied_w: float = 0.0
+		for n in neighbors:
+			if not (n is Fish):
+				continue
+			var nf: Fish = n
+			if nf == self or nf.species != species:
+				continue
+			if nf._interest_remaining <= 0.0:
+				continue
+			var d2: float = nf.position.distance_squared_to(position)
+			if d2 > 16.0:  # ~4 unit eyeshot for gaze contagion
+				continue
+			var w: float = (1.0 - sqrt(d2) / 4.0) * nf._interest_remaining
+			copied += (nf._interest_target - position) * w
+			copied_w += w
+		if copied_w > 0.01:
+			var pull_dir: Vector3 = (copied / copied_w)
+			if pull_dir.length_squared() > 0.04:
+				desired += pull_dir.normalized() * effective_max * 0.25 * clampf(copied_w, 0.0, 1.0)
+
+	# GAZE TARGETING. When a fast-moving neighbor passes through eyeshot
+	# while WE are slow / resting, we turn to look. Sets _gaze_yaw which
+	# the per-frame saccade reader uses in place of its random twitch —
+	# so a swimming-by fish actually catches the eye of a resting one.
+	# Cheap: only runs when our own speed is low and we have a free gaze
+	# window. The brain only does the math once per tick.
+	_gaze_remaining = maxf(0.0, _gaze_remaining - dt)
+	if speed < 0.6 and _gaze_remaining <= 0.0:
+		var fast_neighbor: Fish = null
+		var best_speed: float = 1.2  # only neighbors faster than this qualify
+		for n in neighbors:
+			if not (n is Fish):
+				continue
+			var nf2: Fish = n
+			if nf2 == self:
+				continue
+			if nf2.speed < best_speed:
+				continue
+			var d2g: float = nf2.position.distance_squared_to(position)
+			if d2g > 25.0:  # 5 unit eyeshot
+				continue
+			best_speed = nf2.speed
+			fast_neighbor = nf2
+		if fast_neighbor != null:
+			# Compute the yaw angle from our facing to the neighbor — head
+			# turns toward them by that small angle (clamped). This is local
+			# yaw, so we project the relative position into our heading basis.
+			var to_n: Vector3 = fast_neighbor.position - position
+			var fwd: Vector3 = Vector3(-sin(_last_yaw), 0.0, -cos(_last_yaw))
+			var right: Vector3 = Vector3(cos(_last_yaw), 0.0, -sin(_last_yaw))
+			var local_x: float = to_n.dot(right)
+			var local_z: float = to_n.dot(fwd)
+			if absf(local_z) > 0.001:
+				_gaze_yaw = clampf(atan2(local_x, local_z) * 0.35, -0.35, 0.35)
+				_gaze_remaining = randf_range(1.2, 2.4)
+
+	# GRUDGES. A specific neighbor with an active grudge reads as "the
+	# bully" — we add a small repulsion vector away from them. Reads on
+	# screen as the harassed fish hovering one body-length further from
+	# the alpha than other tankmates, which is precisely what real
+	# subordinate fish do.
+	if not grudges.is_empty():
+		var grudge_push: Vector3 = Vector3.ZERO
+		for n in neighbors:
+			if not (n is Fish):
+				continue
+			var nf: Fish = n
+			if nf == self or nf.id == "" or not grudges.has(nf.id):
+				continue
+			var d2: float = nf.position.distance_squared_to(position)
+			if d2 > 9.0:  # 3 unit personal-space radius for grudge bias
+				continue
+			var dirv: Vector3 = position - nf.position
+			if dirv.length_squared() > 1e-4:
+				var w: float = 1.0 - sqrt(d2) / 3.0
+				grudge_push += dirv.normalized() * w
+		if grudge_push.length_squared() > 0.04:
+			desired += grudge_push.normalized() * effective_max * 0.30
+
+	# LEAN INTO CURRENT. Fish near the aeration / filter intake brace
+	# slightly into the flow — the real-aquarium behavior of fish holding
+	# position against the filter outflow. Cheap: just adds a small
+	# heading-direction term when within range of the intake. Effect
+	# scales with aeration_flow_rate so a barely-on filter doesn't make
+	# everyone face the wall.
+	if sim != null:
+		var intake_pos_v: Variant = sim.get("filter_intake_pos")
+		if intake_pos_v is Vector3 and (intake_pos_v as Vector3).length_squared() > 0.01:
+			var intake_pos: Vector3 = intake_pos_v
+			var to_intake: Vector3 = intake_pos - position
+			var intake_d: float = to_intake.length()
+			if intake_d < 3.5:
+				var flow_strength: float = 0.0
+				var afr_v: Variant = sim.get("aeration_flow_rate")
+				if afr_v != null:
+					flow_strength = clampf(float(afr_v) * 0.7, 0.0, 1.0)
+				if flow_strength > 0.05:
+					# Bias heading toward the intake (fish face into flow).
+					# Magnitude tapers with distance so only fish actually
+					# in the current respond.
+					var falloff: float = 1.0 - intake_d / 3.5
+					desired += to_intake.normalized() * effective_max * 0.18 * flow_strength * falloff
+
+	# AI DIRECTOR INTENT DRIFT. When the LLM is running and has populated
+	# its 4×4×4 mood grid, sample the cell our tank-relative position is
+	# in and add the tiny drift vector. Magnitude ≤ 0.15 of effective_max
+	# so existing steering remains primary. Also pull a per-fish mood
+	# delta when the LLM mentioned us specifically by id.
+	var ai_node: Node = null
+	if is_inside_tree():
+		ai_node = get_node_or_null("/root/AIDirector")
+	if ai_node != null and ai_node.has_method("get_intent_drift"):
+		var w_node: Node = _world_node()
+		if w_node != null:
+			var hw_a: float = float(w_node.get("TANK_HALF_W") if w_node.get("TANK_HALF_W") != null else 8.0)
+			var hd_a: float = float(w_node.get("TANK_HALF_D") if w_node.get("TANK_HALF_D") != null else 4.0)
+			var hh_a: float = float(w_node.get("TANK_HEIGHT") if w_node.get("TANK_HEIGHT") != null else 7.0)
+			var rel: Vector3 = Vector3(
+				clampf((position.x + hw_a) / (hw_a * 2.0), 0.0, 0.999),
+				clampf(position.y / hh_a, 0.0, 0.999),
+				clampf((position.z + hd_a) / (hd_a * 2.0), 0.0, 0.999),
+			)
+			var cell: Dictionary = ai_node.get_intent_drift(rel)
+			var d_drift: Vector3 = cell.get("drift", Vector3.ZERO)
+			if d_drift.length_squared() > 1e-5:
+				desired += d_drift * effective_max
+			if id != "" and ai_node.has_method("get_fish_mood_drift"):
+				var pf: Vector3 = ai_node.get_fish_mood_drift(id)
+				if pf.length_squared() > 1e-5:
+					desired += pf * effective_max
+
+	# NOVELTY: pause-and-look when entering an unvisited tank region.
+	# Curious fish (personality.curiosity > 0.5) trigger longer pauses on
+	# novel cells. Habituation: every NOVELTY_RESET_S the bitmap clears
+	# so well-explored tanks eventually feel fresh again. This makes
+	# every fish read as having a small spatial map they're filling in.
+	const NOVELTY_RESET_S: float = 1800.0  # 30 min of game time
+	_novelty_reset_timer += dt
+	if _novelty_reset_timer >= NOVELTY_RESET_S:
+		_novelty_reset_timer = 0.0
+		for vi in range(visited_regions.size()):
+			visited_regions[vi] = 0
+	_novelty_pause_remaining = maxf(0.0, _novelty_pause_remaining - dt)
+	if visited_regions.size() > 0 and _novelty_pause_remaining <= 0.0 \
+			and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
+		var w_nov: Node = _world_node()
+		if w_nov != null:
+			var hw_n: float = float(w_nov.get("TANK_HALF_W") if w_nov.get("TANK_HALF_W") != null else 8.0)
+			var hd_n: float = float(w_nov.get("TANK_HALF_D") if w_nov.get("TANK_HALF_D") != null else 4.0)
+			var hh_n: float = float(w_nov.get("TANK_HEIGHT") if w_nov.get("TANK_HEIGHT") != null else 7.0)
+			var rxn: float = clampf((position.x + hw_n) / (hw_n * 2.0), 0.0, 0.999)
+			var ryn: float = clampf(position.y / hh_n, 0.0, 0.999)
+			var rzn: float = clampf((position.z + hd_n) / (hd_n * 2.0), 0.0, 0.999)
+			var ixn: int = int(rxn * NOVELTY_GRID)
+			var iyn: int = int(ryn * NOVELTY_GRID)
+			var izn: int = int(rzn * NOVELTY_GRID)
+			var idxn: int = ixn + iyn * NOVELTY_GRID + izn * NOVELTY_GRID * NOVELTY_GRID
+			if visited_regions[idxn] == 0:
+				visited_regions[idxn] = 1
+				# Pause-and-look. Curious fish hold longer.
+				var curiosity: float = _trait("curiosity")
+				if curiosity > 0.35:
+					_novelty_pause_remaining = lerpf(0.4, 1.4, curiosity)
+	# When pausing, dampen speed so the fish visibly slows + looks around.
+	# Other steering terms still apply at reduced strength so wall_avoid
+	# can still nudge it out of trouble.
+	if _novelty_pause_remaining > 0.0:
+		desired *= 0.25
+
+	# FEED ANTICIPATION. When the wall-clock minute matches the player's
+	# historical feed times, hungry fish drift upward toward the surface
+	# in advance — they "know" food is coming. Cheap: SimDriver checks
+	# the time history once and caches the boolean; we just read it here.
+	if hunger > 0.4 and sim != null and sim.has_method("feed_anticipation_active") \
+			and sim.feed_anticipation_active():
+		var surface_y: float = _water_surface_y()
+		var anticipation_bias: float = clampf((surface_y - position.y) * 0.25, -0.5, 1.2)
+		desired.y += anticipation_bias * effective_max * 0.35
 
 	# STRESS CONTAGION + STARTLE PROPAGATION. Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
@@ -3011,6 +3567,10 @@ func _process(dt: float) -> void:
 			# Strength ramps from 0 (dawn/dusk) to ~1 (midnight). Mute
 			# entirely during the day so the fish reads normal then.
 			var strength: float = smoothstep(0.32, 0.05, dl)
+			# Light panel master multiplier — 0 hides biolum entirely, >1 over-bright.
+			var tc := get_node_or_null("/root/TankConfig")
+			if tc != null:
+				strength *= clampf(float(tc.biolum_multiplier), 0.0, 3.0)
 			_apply_bioluminescence_uniform(strength)
 
 	_update_pheromone_trail()
@@ -3119,7 +3679,15 @@ func _tick_gill_flush(dt: float) -> void:
 	_gill_flush_check = randf_range(2.5, 5.5)
 	if sim == null or maturity == MATURITY_FRY:
 		return
-	# Pre-stress window only — once stress crosses the hide threshold the
+	# CONTENT BRANCH: when stress is very low and the fish is essentially
+	# parked, fire a relaxed gill pulse occasionally. Reads as the fish
+	# breathing visibly while at rest — the most universal "alive" tell.
+	# Rate is gated so it doesn't fire during active swimming.
+	if stress < 0.10 and speed < 0.5 and energy > 0.4:
+		if randf() < 0.35:
+			_gill_flush_t = 0.5
+		return
+	# Pre-stress window — once stress crosses the hide threshold the
 	# flee/hide tiers take over and the cough would be lost in the panic.
 	if stress < 0.30 or stress > 0.55:
 		return
@@ -3466,6 +4034,16 @@ func _motion_substep(dt: float) -> void:
 			# subcarangiform default — current schooler behavior.
 			pass
 
+	# Mood modulation. Stressed fish visibly beat their tails faster,
+	# calm-personality fish beat slower. The effect is subtle (±20%) but
+	# stacks across a school — a stressed school reads as restless even
+	# when stationary, a calm one as drowsy. Personality.calm is the
+	# trait scalar from the AIDirector pass; defaults to 0.5 when absent.
+	var mood_freq_mult: float = 1.0 + stress * 0.35
+	if not personality.is_empty():
+		mood_freq_mult -= float(personality.get("calm", 0.5)) * 0.20 - 0.10
+	wag_freq *= clampf(mood_freq_mult, 0.6, 1.5)
+
 	_swim_phase += dt * wag_freq * _wag_freq_jitter
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
@@ -3487,7 +4065,13 @@ func _motion_substep(dt: float) -> void:
 		_saccade_t -= dt
 		if rest_factor > 0.5 and _saccade_t <= 0.0:
 			_saccade_t = randf_range(2.5, 5.5)
-			_saccade_target = randf_range(-0.22, 0.22)
+			# Gaze target — when a fast neighbor just passed, prefer turning
+			# toward them. Otherwise random micro-twitch as before. The
+			# gaze yaw is set in tick() and decays via _gaze_remaining.
+			if _gaze_remaining > 0.0 and absf(_gaze_yaw) > 0.02:
+				_saccade_target = _gaze_yaw
+			else:
+				_saccade_target = randf_range(-0.22, 0.22)
 		# Decay the saccade target back toward 0 so the twitch is a brief
 		# pulse, not a sustained head-cock.
 		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
@@ -3557,43 +4141,25 @@ func _motion_substep(dt: float) -> void:
 		# otherwise we modify cached shared materials!
 		if not _courtship_color_active:
 			_courtship_color_active = true
-			_last_courtship_color_step = -999  # force the first apply below
-			for child in _cached_meshes:
-				var mi: MeshInstance3D = child
-				var m: Material = mi.material_override
-				if m is ShaderMaterial:
-					if not mi.has_meta("orig_mat"):
-						mi.set_meta("orig_mat", m)
-					mi.material_override = m.duplicate()
+			_last_courtship_color_step = -999
 
-		# Quantize the boost to discrete steps and skip the per-voxel albedo
-		# writes when it hasn't moved. _courtship_intensity only changes at tick
-		# rate (10 Hz), so this drops the writes from per-voxel-per-motion-substep
-		# (up to 16×/frame at high time-scale) to at most a handful per second,
-		# with no visible difference. Mirrors _apply_maturity_color's step guard.
 		var step: int = int(round(sat_boost * 50.0))
 		if step != _last_courtship_color_step:
 			_last_courtship_color_step = step
 			for child in _cached_meshes:
-				var mi: MeshInstance3D = child
-				if mi.has_meta("orig_mat"):
-					var orig_mat = mi.get_meta("orig_mat")
-					if orig_mat is ShaderMaterial:
-						var orig_color: Color = orig_mat.get_shader_parameter("albedo")
-						var vivid: Color = orig_color.lightened(sat_boost * 0.3)
-						vivid.s = minf(1.0, vivid.s + sat_boost)
-						(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", vivid)
+				if child is VoxelBatch.Handle:
+					var h: VoxelBatch.Handle = child
+					var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
+					var vivid: Color = orig_color.lightened(sat_boost * 0.3)
+					vivid.s = minf(1.0, vivid.s + sat_boost)
+					h.set_color(vivid)
 	elif _courtship_color_active:
-		# Restore original colors when courtship ends
 		_courtship_color_active = false
 		_last_courtship_color_step = -999
 		for child in _cached_meshes:
-			var mi: MeshInstance3D = child
-			if mi.has_meta("orig_mat"):
-				var orig = mi.get_meta("orig_mat")
-				if orig != null:
-					mi.material_override = orig
-				mi.remove_meta("orig_mat")
+			if child is VoxelBatch.Handle:
+				var h2: VoxelBatch.Handle = child
+				h2.set_color(FaunaVoxelBuilder.handle_orig_color(h2))
 
 
 func _update_maturity() -> void:
@@ -3711,22 +4277,10 @@ func _apply_aging_tint() -> void:
 	# Walk all MeshInstance3D descendants and tint their material to the
 	# faded color. Cheap since fish are small.
 	for child in _cached_meshes:
-		var mi: MeshInstance3D = child
-		var m: Material = mi.material_override
-		if m is ShaderMaterial:
-			var orig_mat: Material = null
-			if mi.has_meta("orig_mat"):
-				orig_mat = mi.get_meta("orig_mat")
-			if orig_mat == null:
-				orig_mat = m
-				mi.set_meta("orig_mat", orig_mat)
-			
-			var orig_color: Color = (orig_mat as ShaderMaterial).get_shader_parameter("albedo")
-			var fade: Color = orig_color.lerp(Color8(120, 110, 100), 0.45)
-			
-			if mi.material_override == orig_mat:
-				mi.material_override = (orig_mat as ShaderMaterial).duplicate()
-			(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", fade)
+		if child is VoxelBatch.Handle:
+			var h: VoxelBatch.Handle = child
+			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
+			h.set_color(orig_color.lerp(Color8(120, 110, 100), 0.45))
 
 
 var _aged_applied: bool = false
@@ -3752,32 +4306,17 @@ func _apply_maturity_color() -> void:
 	var desat: float = 0.32 * (1.0 - _color_maturity)
 	var wash: Color = Color(0.75, 0.75, 0.78)
 	for child in _cached_meshes:
-		var mi: MeshInstance3D = child
-		var m: Material = mi.material_override
-		if m is ShaderMaterial:
-			var orig_mat: Material = null
-			if mi.has_meta("orig_mat"):
-				orig_mat = mi.get_meta("orig_mat")
-			if orig_mat == null:
-				orig_mat = m
-				mi.set_meta("orig_mat", orig_mat)
-			
-			var orig_color: Color = (orig_mat as ShaderMaterial).get_shader_parameter("albedo")
-			var tinted: Color = orig_color.lerp(wash, desat)
-			
-			if mi.material_override == orig_mat:
-				mi.material_override = (orig_mat as ShaderMaterial).duplicate()
-			(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", tinted)
+		if child is VoxelBatch.Handle:
+			var h: VoxelBatch.Handle = child
+			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
+			h.set_color(orig_color.lerp(wash, desat))
 
 
 func _restore_original_colors() -> void:
 	for child in _cached_meshes:
-		var mi: MeshInstance3D = child
-		if mi.has_meta("orig_mat"):
-			var orig = mi.get_meta("orig_mat")
-			if orig != null:
-				mi.material_override = orig
-			mi.remove_meta("orig_mat")
+		if child is VoxelBatch.Handle:
+			var h: VoxelBatch.Handle = child
+			h.set_color(FaunaVoxelBuilder.handle_orig_color(h))
 
 func _all_meshes(node: Node) -> Array:
 	var out: Array = []
@@ -4388,6 +4927,19 @@ func to_save_dict() -> Dictionary:
 		"gestation_progress": _gestation_progress,
 		"gestation_genome": _genome_to_json(_gestation_genome),
 		"home": [home_x, home_y, home_z],
+		# Persistent identity + memory (added with the AIDirector pass).
+		# Names persist so a "Mira" in your tank stays Mira next session.
+		# Bio + feed_heatmap give the player a sense of continuity with
+		# specific individuals.
+		"display_name": fish_name,
+		"name_source": name_source,
+		"personality": personality.duplicate(),
+		"bio": bio.duplicate(),
+		"feed_heatmap": Array(feed_heatmap),
+		"grudges": grudges.duplicate(),
+		"habituated": habituated.duplicate(),
+		"rank_within_species": rank_within_species,
+		"visited_regions": Array(visited_regions),
 	}
 
 
@@ -4434,6 +4986,34 @@ func apply_save_dict(d: Dictionary) -> void:
 	# and trying to resolve them across saves is fragile (the plant might
 	# have just been nibbled to death). Clear them so the AI starts fresh.
 	target_plant = null
+	# Persistent identity + memory. init_genome already populated defaults;
+	# we overwrite with the saved values when present so the player's named
+	# fish keep their stats and personality across sessions.
+	if d.has("display_name") and String(d["display_name"]) != "":
+		fish_name = String(d["display_name"])
+	if d.has("name_source"):
+		name_source = String(d["name_source"])
+	var saved_personality: Variant = d.get("personality", null)
+	if saved_personality is Dictionary and not (saved_personality as Dictionary).is_empty():
+		personality = (saved_personality as Dictionary).duplicate()
+	var saved_bio: Variant = d.get("bio", null)
+	if saved_bio is Dictionary and not (saved_bio as Dictionary).is_empty():
+		bio = (saved_bio as Dictionary).duplicate()
+	var saved_heatmap: Variant = d.get("feed_heatmap", null)
+	if saved_heatmap is Array and (saved_heatmap as Array).size() == feed_heatmap.size():
+		for i in range(feed_heatmap.size()):
+			feed_heatmap[i] = float((saved_heatmap as Array)[i])
+	var saved_grudges: Variant = d.get("grudges", null)
+	if saved_grudges is Dictionary:
+		grudges = (saved_grudges as Dictionary).duplicate()
+	var saved_hab: Variant = d.get("habituated", null)
+	if saved_hab is Dictionary:
+		habituated = (saved_hab as Dictionary).duplicate()
+	rank_within_species = float(d.get("rank_within_species", 0.5))
+	var saved_visited: Variant = d.get("visited_regions", null)
+	if saved_visited is Array and (saved_visited as Array).size() == visited_regions.size():
+		for i in range(visited_regions.size()):
+			visited_regions[i] = int((saved_visited as Array)[i])
 
 
 # Pull body + territory anchors inside the tank footprint. Saved games from

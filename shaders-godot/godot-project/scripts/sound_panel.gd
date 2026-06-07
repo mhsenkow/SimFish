@@ -54,12 +54,16 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_M:
-			toggle()
+		if event.keycode == KEY_M and not event.shift_pressed:
+			var main: Node = get_tree().current_scene
+			if main != null and main.has_method("_ui_toggle_side"):
+				main.call("_ui_toggle_side", "sound")
+				get_viewport().set_input_as_handled()
 
 
 func _process(dt: float) -> void:
 	if not visible:
+		set_process(false)
 		return
 	_telemetry_t -= dt
 	if _telemetry_t <= 0.0:
@@ -73,6 +77,7 @@ func toggle() -> void:
 	else:
 		visible = true
 		mouse_filter = Control.MOUSE_FILTER_STOP
+		set_process(true)
 		_pull_from_config()
 		_refresh_live_readout()
 

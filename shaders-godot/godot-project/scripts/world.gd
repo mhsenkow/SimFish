@@ -189,6 +189,14 @@ func _ready() -> void:
 	sim.name = "SimDriver"
 	sim.tank_seed = seed_value
 	add_child(sim)
+	# Pipe AIDirector chronicle lines into the sim's story_events log so
+	# they surface in the existing story dialog. Cheap connection; fires
+	# at most every 18 seconds when AI chronicle is on, never otherwise.
+	var ai_d: Node = get_node_or_null("/root/AIDirector")
+	if ai_d != null and ai_d.has_signal("chronicle_line"):
+		ai_d.chronicle_line.connect(func(text: String, _tags: PackedStringArray):
+			if sim != null and sim.has_method("log_story_event"):
+				sim.log_story_event(text))
 	substrate_grid = SubstrateGrid.new()
 	substrate_grid.name = "SubstrateGrid"
 	add_child(substrate_grid)
@@ -366,6 +374,7 @@ func _ready() -> void:
 	# Find the directional light so we can dim it on the day/night cycle.
 	# The light is a sibling under SubViewport/World, accessible by name.
 	_directional_light = get_parent().get_node_or_null("DirectionalLight3D")
+	_world_environment = get_parent().get_node_or_null("WorldEnvironment")
 
 	# Toggle volumetric beams based on TankConfig.light_volumetric.
 	var we := get_parent().get_node_or_null("WorldEnvironment")
@@ -381,6 +390,16 @@ func _ready() -> void:
 
 
 var _directional_light: DirectionalLight3D = null
+var _world_environment: WorldEnvironment = null
+# Optional accent / moonlight nodes — created on first _update_accent_lights
+# call so they only exist when the user enables them. Each is an OmniLight3D
+# positioned mid-water; moonlight is a faint cool DirectionalLight3D that
+# only contributes at deep night.
+var _moonlight: DirectionalLight3D = null
+var _accent1_light: OmniLight3D = null
+var _accent2_light: OmniLight3D = null
+const _ENV_AMBIENT_DAY: float = 0.5
+const _ENV_AMBIENT_NIGHT: float = 0.035
 
 # Lofi room environment dynamic variables
 var _room_sky_mat: ShaderMaterial = null
@@ -418,6 +437,34 @@ var _dead_floaters_scratch: Array = []
 var _cfg_node: Node = null
 
 
+# Shared day/night lighting curves for room sky, tank fixture, and water tint.
+func _day_night_lighting(sim: Node) -> Dictionary:
+	var dl: float = 1.0
+	var dp: float = 0.25
+	if sim != null:
+		dl = float(sim.daylight())
+		dp = fposmod(float(sim.day_phase), 1.0)
+	# Golden hour peaks at dusk (phase 0.5) with a softer dawn shoulder.
+	var sunset_hour: float = clampf(1.0 - absf(dp - 0.5) / 0.12, 0.0, 1.0)
+	var dawn_glow: float = 0.0
+	if dp < 0.12:
+		dawn_glow = 1.0 - dp / 0.12
+	elif dp > 0.92:
+		dawn_glow = (dp - 0.92) / 0.08
+	sunset_hour = maxf(sunset_hour, dawn_glow * 0.5)
+	# Deep night: room goes dark, aquarium fixture carries the scene.
+	var deep_night: float = 1.0 - smoothstep(0.08, 0.38, dl)
+	var tank_lights_on: bool = true
+	if _cfg_node != null:
+		tank_lights_on = not not _cfg_node.tank_lights_on
+	return {
+		"dl": dl,
+		"dp": dp,
+		"sunset_hour": sunset_hour,
+		"deep_night": deep_night,
+		"tank_lights_on": tank_lights_on,
+	}
+
 
 func _process(dt: float) -> void:
 	var sdt: float = dt
@@ -449,17 +496,28 @@ func _process(dt: float) -> void:
 		_ambient_accum = 0.0
 
 	if _ambient_due and sim != null:
-		var dl: float = sim.daylight()
+		var ln: Dictionary = _day_night_lighting(sim)
+		var dl: float = ln["dl"]
+		var sunset_hour: float = ln["sunset_hour"]
+		var deep_night: float = ln["deep_night"]
 
 		# 1. Update Sky Color
 		if _room_sky_mat != null:
 			var sky_col: Color
+			var golden: Color = Color8(245, 168, 108)
+			var dusk_orange: Color = Color8(210, 175, 155)
+			var day_blue: Color = Color8(145, 188, 228)
+			var night_dark: Color = Color8(22, 24, 36)
 			if dl > 0.65:
-				sky_col = Color8(235, 110, 85).lerp(Color8(115, 185, 245), (dl - 0.65) / 0.35)
+				sky_col = dusk_orange.lerp(day_blue, (dl - 0.65) / 0.35)
 			elif dl > 0.2:
-				sky_col = Color8(12, 10, 24).lerp(Color8(235, 110, 85), (dl - 0.2) / 0.45)
+				sky_col = night_dark.lerp(dusk_orange, (dl - 0.2) / 0.45)
 			else:
-				sky_col = Color8(12, 10, 24)
+				sky_col = night_dark
+			if sunset_hour > 0.01:
+				sky_col = sky_col.lerp(golden, sunset_hour * 0.48)
+			if deep_night > 0.45:
+				sky_col = sky_col.lerp(night_dark, smoothstep(0.45, 1.0, deep_night) * 0.62)
 			_room_sky_mat.set_shader_parameter("albedo", sky_col)
 			
 		# 2. Update Twinkling stars
@@ -603,10 +661,16 @@ func _process(dt: float) -> void:
 		_water_material_ref.set_shader_parameter("deep_color",
 			Color(C_WATER_DEEP.r, C_WATER_DEEP.g, C_WATER_DEEP.b, deep_a))
 		if sim != null:
-			var dl: float = sim.daylight()
-			var dp: float = float(sim.day_phase)
-			var sunset: float = clampf(1.0 - absf(dp - 0.75) / 0.08, 0.0, 1.0) * (1.0 - dl)
-			var moon: float = clampf((0.35 - dl) / 0.35, 0.0, 1.0)
+			var ln2: Dictionary = _day_night_lighting(sim)
+			var dl: float = ln2["dl"]
+			var dp: float = ln2["dp"]
+			var sunset_hour: float = ln2["sunset_hour"]
+			var deep_night: float = ln2["deep_night"]
+			var tank_lights_on: bool = ln2["tank_lights_on"]
+			var sunset: float = sunset_hour * clampf(1.0 - deep_night * 0.35, 0.0, 1.0)
+			var moon: float = clampf((0.22 - dl) / 0.22, 0.0, 1.0) * deep_night
+			if tank_lights_on:
+				moon *= 1.0 - deep_night * 0.92
 			_water_material_ref.set_shader_parameter("sunset_warmth", sunset)
 			_water_material_ref.set_shader_parameter("moonlight", moon)
 			_water_material_ref.set_shader_parameter("day_phase_offset", dp)
@@ -616,7 +680,12 @@ func _process(dt: float) -> void:
 			if _visuals != null:
 				var caust_i: float = _last_caustic_intensity if _last_caustic_intensity >= 0.0 else 0.55
 				_visuals.sync_aquatic_uniforms(caust_i, _last_caustic_color, WATER_HEIGHT, dp, 0.35)
-				_visuals.sync_foliage_uniforms(clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, dl)
+				var fixture_glow_amb: float = ln2["deep_night"] * (1.0 if ln2["tank_lights_on"] else 0.0)
+				var foliage_light: float = maxf(dl, fixture_glow_amb * 0.82)
+				_visuals.sync_foliage_uniforms(
+					clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light)
+				VoxelMat.update_fixture_glow(
+					fixture_glow_amb, _last_caustic_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
@@ -627,49 +696,135 @@ func _process(dt: float) -> void:
 	_light_cycle_accum += dt
 	if sim != null and _light_cycle_accum >= LIGHT_CYCLE_INTERVAL:
 		_light_cycle_accum = 0.0
-		var dl: float = sim.daylight()
+		var ln: Dictionary = _day_night_lighting(sim)
+		var dl: float = ln["dl"]
+		var sunset_hour: float = ln["sunset_hour"]
+		var deep_night: float = ln["deep_night"]
+		var tank_lights_on: bool = ln["tank_lights_on"]
 		var cfg2 := _cfg_node
-		var max_energy: float = 0.5
-		var warmth: float = 0.6
+		# Split controls (see TankConfig comments): global_* drives sun + room
+		# colour, tank_fixture_* drives the artificial overhead.
+		var global_energy: float = 0.5
+		var global_warmth: float = 0.6
+		var fixture_energy: float = 0.5
+		var fixture_color: Color = Color(1.0, 0.95, 0.85)
+		var sunset_drama: float = 1.0
 		if cfg2 != null:
-			max_energy = float(cfg2.light_energy)
-			warmth = float(cfg2.light_warmth)
-		var beam_color: Color = Color(0.55, 0.65, 0.95).lerp(
-			Color(1.0, 0.95, 0.80), warmth)
-		# Fixture spot lights: strong focused beam (softened on sphere bowls).
+			global_energy = float(cfg2.global_intensity)
+			global_warmth = float(cfg2.global_warmth)
+			fixture_energy = float(cfg2.tank_fixture_intensity)
+			fixture_color = cfg2.tank_fixture_color
+			sunset_drama = float(cfg2.sunset_drama)
+		# Sunset drama amplifies dusk warmth + how deep night dips. 0 flattens
+		# the cycle to a steady mid-day, 2 makes sunset golden and midnight
+		# truly dark. Clamped so users can't crash deep_night past 1.0.
+		sunset_drama = clampf(sunset_drama, 0.0, 2.5)
+		sunset_hour = clampf(sunset_hour * sunset_drama, 0.0, 1.5)
+		deep_night = clampf(deep_night * lerpf(0.55, 1.25, sunset_drama * 0.45), 0.0, 1.0)
+		# Master kill switch: zero out energies so every downstream multiplier
+		# collapses to ~0 (directional/spot/fill all read from these).
+		var master_on: bool = cfg2 == null or bool(cfg2.light_master_enabled)
+		if not master_on:
+			global_energy = 0.0
+			fixture_energy = 0.0
+			tank_lights_on = false
+		var day_beam: Color = Color(0.55, 0.65, 0.95).lerp(
+			Color(1.0, 0.95, 0.80), global_warmth)
+		var sunset_beam: Color = Color(1.0, 0.78, 0.58)
+		var night_beam: Color = Color(1.0, 0.96, 0.88).lerp(
+			Color(1.0, 0.94, 0.78), global_warmth * 0.55)
+		var beam_color: Color = day_beam
+		if sunset_hour > 0.01:
+			beam_color = day_beam.lerp(sunset_beam, minf(sunset_hour, 1.0))
+		if deep_night > 0.35:
+			beam_color = beam_color.lerp(night_beam, smoothstep(0.35, 1.0, deep_night))
+		# Room fill fades at night; sunset keeps a warm wash in the room.
+		var room_dl: float = dl * (1.0 - deep_night * 0.94) + sunset_hour * 0.18
+		room_dl = clampf(room_dl, 0.0, 1.0)
+		var room_warm: Color = Color(1.0, 0.82, 0.68)
+		var room_color: Color = beam_color.lerp(room_warm, minf(sunset_hour, 1.0) * 0.38)
 		if _directional_light != null:
-			_directional_light.light_color = beam_color
-		var spot_energy: float = 0.4 + dl * (max_energy * 6.0)
+			_directional_light.light_color = room_color
+		# Tank fixture: tracks daylight during the day, stays bright at night
+		# when the player leaves tank_lights_on enabled. Uses the user-picked
+		# fixture color (not the global beam color) so reef-blue, planted-pink,
+		# etc. read correctly.
+		var spot_day: float = 0.4 + dl * (fixture_energy * 6.0)
+		var spot_night: float = fixture_energy * 8.0 if tank_lights_on else 0.0
+		var spot_energy: float = lerpf(spot_day, spot_night, deep_night)
 		var sphere_soft: bool = TANK_SHAPE == "sphere"
 		if sphere_soft:
 			spot_energy *= 0.68
+		# Fixture spotlights take the user's RGB at night; day blends toward
+		# the global beam so the cycle still feels like a sun arc.
+		var fixture_lit: Color = fixture_color.lerp(beam_color, 1.0 - deep_night)
 		for spot in _light_fixture_spots:
 			if not is_instance_valid(spot):
 				continue
-			spot.light_color = beam_color
+			spot.light_color = fixture_lit
 			spot.light_energy = spot_energy
 		if _sphere_fill_light != null and is_instance_valid(_sphere_fill_light):
-			_sphere_fill_light.light_color = beam_color
-			var fill_e: float = 0.08 + dl * (max_energy * 0.55)
+			_sphere_fill_light.light_color = fixture_lit
+			var fill_day: float = 0.08 + dl * (fixture_energy * 0.55)
+			var fill_night: float = fixture_energy * 0.42 if tank_lights_on else 0.0
+			var fill_e: float = lerpf(fill_day, fill_night, deep_night)
 			if sphere_soft:
 				fill_e *= 1.35
 			_sphere_fill_light.light_energy = fill_e
-		# Ambient room light: low energy, broad — extra fill for curved glass.
 		if _directional_light != null:
-			var dir_e: float = 0.05 + dl * (max_energy * 0.45)
+			var dir_e: float = 0.012 + room_dl * (global_energy * 0.48)
 			if sphere_soft:
 				dir_e *= 1.28
 			_directional_light.light_energy = dir_e
+			# Sun direction — yaw 0..1 maps to full circle, pitch 0..1 maps from
+			# top-down (-90°) to horizontal (0°). Now actually drives the sun
+			# instead of just biasing plant phototropism.
+			if cfg2 != null:
+				var yaw_deg: float = (float(cfg2.light_yaw) - 0.5) * 360.0
+				var pitch_deg: float = lerpf(-90.0, -10.0, clampf(float(cfg2.light_pitch), 0.0, 1.0))
+				_directional_light.rotation = Vector3(
+					deg_to_rad(pitch_deg), deg_to_rad(yaw_deg), 0.0)
+		_update_accent_lights(cfg2, deep_night, master_on)
+		var fixture_glow: float = deep_night * (1.0 if tank_lights_on else 0.0)
+		if _world_environment != null and _world_environment.environment != null:
+			var env: Environment = _world_environment.environment
+			if master_on:
+				var base_amb: float = lerpf(
+					_ENV_AMBIENT_DAY, _ENV_AMBIENT_NIGHT, deep_night)
+				# Ambient floor lifts the night minimum so dark scenes stay legible
+				# without the user having to crank intensity. 0 = legacy (very dark).
+				var floor_v: float = 0.0
+				if cfg2 != null:
+					floor_v = clampf(float(cfg2.ambient_floor), 0.0, 1.0) * 0.6
+				env.ambient_light_energy = maxf(base_amb, floor_v)
+				var amb_day := Color(0.7, 0.75, 0.82)
+				var amb_night := Color(0.12, 0.10, 0.18)
+				env.ambient_light_color = amb_day.lerp(amb_night, deep_night)
+			else:
+				env.ambient_light_energy = 0.0
+		# Fixture wash uses the user-picked fixture color at night so a blue
+		# reef fixture lights the water blue from the top down.
+		var glow_color: Color = fixture_color.lerp(beam_color, 1.0 - deep_night)
+		VoxelMat.update_fixture_glow(fixture_glow, glow_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
 
-		# Sync caustics material.
+		# Sync caustics material — global_energy drives the daytime caustic
+		# intensity, fixture_energy gates the night-time pattern when tank lights
+		# stay on.
 		if _caustics_mat != null:
 			var show_caustics: bool = true
 			if cfg2 != null:
 				show_caustics = not not cfg2.light_caustics
-			
+
 			var intensity: float = 0.0
 			if show_caustics:
-				intensity = clampf(dl * max_energy * 2.0, 0.0, 1.0)
+				var caust_day: float = clampf(dl * global_energy * 2.0, 0.0, 1.0)
+				var caust_night: float = clampf(fixture_energy * 1.25, 0.0, 1.0) \
+					if tank_lights_on else 0.0
+				intensity = lerpf(caust_day, caust_night, deep_night)
+				# User multiplier on top so caustics can be dialed without flip-flopping
+				# the on/off toggle. Clamped so the shader gets a sane range.
+				if cfg2 != null:
+					intensity *= clampf(float(cfg2.caustic_intensity_user), 0.0, 2.0)
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
 				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
 				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
@@ -696,8 +851,15 @@ func _process(dt: float) -> void:
 					elif TANK_SHAPE == "sphere":
 						shape_id = 2.0
 					_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
-					_glass_material_ref.set_shader_parameter("shape_band", 0.45 + dl * 0.35)
-					_glass_material_ref.set_shader_parameter("reflection_strength", 0.15 + dl * 0.12)
+					var fixture_glow_g: float = deep_night * (1.0 if tank_lights_on else 0.0)
+					_glass_material_ref.set_shader_parameter(
+						"shape_band", 0.45 + dl * 0.35 + fixture_glow_g * 0.55)
+					_glass_material_ref.set_shader_parameter(
+						"reflection_strength", 0.15 + dl * 0.12 + fixture_glow_g * 0.22)
+					_glass_material_ref.set_shader_parameter(
+						"sparkle", fixture_glow_g * 0.9)
+					_glass_material_ref.set_shader_parameter(
+						"rim_chrome", 0.55 + fixture_glow_g * 0.35)
 					_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
 
 		# Sync god ray materials to the light cycle and Render panel parameters.
@@ -708,17 +870,14 @@ func _process(dt: float) -> void:
 			anisotropy = float(cfg2.fog_anisotropy)
 		
 		# Base beam opacity scales with daylight + user density settings.
-		# Multiplier bumped from 4.0 → 10.0 because the prior tuning left
-		# the shafts barely visible at moderate fog_density values; with
-		# the asymmetric depth dissipation in god_ray.gdshader, more alpha
-		# at the top still falls off naturally toward the substrate so the
-		# shafts read as bright shafts, not opaque cones.
+		# At deep night only the aquarium fixture contributes — no moonlight floor.
 		var base_alpha: float = density * 10.0
-		# Night floor raised from 0.15 → 0.25 so the beams remain visible
-		# at dusk/dawn instead of disappearing entirely — moonlight rays
-		# are part of the night atmosphere now that we have a true night
-		# palette to contrast them against.
-		var ray_alpha: float = base_alpha * (0.25 + dl * 0.75) * (max_energy / 0.5)
+		var ray_day: float = dl * 0.75
+		var ray_night: float = 1.05 if tank_lights_on else 0.0
+		var ray_mix: float = lerpf(ray_day, ray_night, deep_night)
+		# God-ray opacity blends day side (global) with night side (fixture).
+		var ray_energy_mix: float = lerpf(global_energy, fixture_energy, deep_night)
+		var ray_alpha: float = base_alpha * ray_mix * (ray_energy_mix / 0.5)
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
@@ -3703,6 +3862,68 @@ func _build_light_fixture() -> void:
 		_apply_sphere_aquarium_lighting()
 
 
+# Moonlight + 2 accent point lights. All optional; created lazily the first
+# time the user toggles them on. deep_night gates the moonlight ramp so it
+# only adds its tint when the sun is actually below the horizon.
+func _update_accent_lights(cfg2: Node, deep_night: float, master_on: bool) -> void:
+	# Moonlight — fades in past deep_night > 0.4 so dusk doesn't get a double-source feel.
+	var moon_on: bool = master_on and cfg2 != null \
+		and bool(cfg2.moonlight_enabled) and deep_night > 0.05
+	if moon_on:
+		if _moonlight == null:
+			_moonlight = DirectionalLight3D.new()
+			_moonlight.name = "Moonlight"
+			_moonlight.shadow_enabled = false
+			# Aim from above and slightly forward so it grazes the tank top.
+			_moonlight.rotation = Vector3(deg_to_rad(-72.0), deg_to_rad(28.0), 0)
+			add_child(_moonlight)
+		_moonlight.visible = true
+		_moonlight.light_color = cfg2.moonlight_color
+		var moon_ramp: float = smoothstep(0.05, 0.85, deep_night)
+		_moonlight.light_energy = float(cfg2.moonlight_intensity) * moon_ramp * 0.6
+	elif _moonlight != null:
+		_moonlight.visible = false
+
+	# Accent point lights — independent, always on (no day/night gate) so the
+	# user can use them as plant-tank stage lighting that runs 24/7.
+	_apply_accent(_accent1_light, "Accent1",
+		Vector3(-2.6, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, -2.4),
+		cfg2 != null and master_on and bool(cfg2.accent1_enabled),
+		float(cfg2.accent1_intensity) if cfg2 != null else 0.6,
+		cfg2.accent1_color if cfg2 != null else Color.WHITE,
+		1)
+	_apply_accent(_accent2_light, "Accent2",
+		Vector3(2.6, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, 2.4),
+		cfg2 != null and master_on and bool(cfg2.accent2_enabled),
+		float(cfg2.accent2_intensity) if cfg2 != null else 0.6,
+		cfg2.accent2_color if cfg2 != null else Color.WHITE,
+		2)
+
+
+func _apply_accent(existing: OmniLight3D, light_name: String, pos: Vector3,
+		on: bool, intensity: float, color: Color, slot: int) -> void:
+	if not on:
+		if existing != null and is_instance_valid(existing):
+			existing.visible = false
+		return
+	var node: OmniLight3D = existing
+	if node == null:
+		node = OmniLight3D.new()
+		node.name = light_name
+		node.position = pos
+		node.omni_range = 5.5
+		node.omni_attenuation = 1.2
+		node.shadow_enabled = false
+		add_child(node)
+		if slot == 1:
+			_accent1_light = node
+		else:
+			_accent2_light = node
+	node.visible = true
+	node.light_color = color
+	node.light_energy = intensity * 1.4
+
+
 func _apply_sphere_aquarium_lighting() -> void:
 	# Wider beams + internal fill so the bowl rim isn't harsh spotlight pools.
 	for spot in _light_fixture_spots:
@@ -4289,6 +4510,46 @@ func spawn_burst_ripple(pos: Vector3, intensity: float = 1.0) -> void:
 		start_c, faded, duration) \
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.chain().tween_callback(ring.queue_free)
+
+
+# Glass tap — concentric meniscus rings expanding from the strike point.
+func spawn_glass_tap_ripples(pos: Vector3) -> void:
+	spawn_burst_ripple(pos, 1.75)
+	_spawn_tap_ripple_ring(pos, 0.10, 0.95, 2.4)
+	_spawn_tap_ripple_ring(pos, 0.26, 0.78, 3.8)
+	_spawn_tap_ripple_ring(pos, 0.44, 0.58, 5.2)
+
+
+func _spawn_tap_ripple_ring(pos: Vector3, delay: float, alpha: float, end_size: float) -> void:
+	var ring := MeshInstance3D.new()
+	var qm := QuadMesh.new()
+	qm.size = Vector2(1.0, 1.0)
+	qm.orientation = PlaneMesh.FACE_Y
+	ring.mesh = qm
+	var base_col := Color(0.90, 0.96, 1.0, alpha)
+	var mat := VoxelMat.make_surface_ripple(base_col).duplicate() as ShaderMaterial
+	mat.set_shader_parameter("ripple_color", base_col)
+	mat.set_shader_parameter("ring_strength", 0.88)
+	ring.material_override = mat
+	ring.position = Vector3(pos.x, WATER_HEIGHT - 0.025, pos.z)
+	ring.scale = Vector3(0.3, 1.0, 0.3)
+	add_child(ring)
+	var tw := create_tween()
+	if delay > 0.0:
+		tw.tween_interval(delay)
+	tw.set_parallel(true)
+	tw.tween_property(ring, "scale", Vector3(end_size, 1.0, end_size), 0.95) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	var faded := base_col
+	faded.a = 0.0
+	tw.tween_method(_set_surface_ripple_color.bind(mat), base_col, faded, 0.95) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.chain().tween_callback(ring.queue_free)
+
+
+func _set_surface_ripple_color(c: Color, mat: ShaderMaterial) -> void:
+	if mat != null and is_instance_valid(mat):
+		mat.set_shader_parameter("ripple_color", c)
 
 
 # tween_method passes the interpolated Color first; .bind(mat) appends it.

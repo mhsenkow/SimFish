@@ -49,6 +49,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_on_modal_closed"):
+			main.call("_on_modal_closed", "store")
 		get_viewport().set_input_as_handled()
 
 
