@@ -1360,6 +1360,11 @@ func to_save_dict() -> Dictionary:
 		"name_source": name_source,
 		"personality": personality.duplicate(),
 		"bio": bio.duplicate(),
+		# Death animation state — prevents the looping-death bug where a
+		# dying shrimp saved mid-animation gets resurrected by load and
+		# immediately re-dies (same fix as fish.gd).
+		"_dying": _dying,
+		"_dying_timer": _dying_timer,
 	}
 
 
@@ -1396,6 +1401,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	var saved_b: Variant = d.get("bio", null)
 	if saved_b is Dictionary and not (saved_b as Dictionary).is_empty():
 		bio = (saved_b as Dictionary).duplicate()
+	# Restore death-animation state so a dying shrimp doesn't get
+	# resurrected on reload only to immediately re-die (the looping
+	# death animation bug).
+	_dying = bool(d.get("_dying", false))
+	_dying_timer = float(d.get("_dying_timer", 0.0))
+	if _dying and _dying_timer <= 0.0:
+		_dying_timer = 0.1
 	# Maturity-dependent scale needs to be re-applied since init_genome ran
 	# before we'd set the maturity.
 	scale = Vector3.ONE * _maturity_scale()

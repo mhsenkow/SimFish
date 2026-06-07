@@ -4940,6 +4940,12 @@ func to_save_dict() -> Dictionary:
 		"habituated": habituated.duplicate(),
 		"rank_within_species": rank_within_species,
 		"visited_regions": Array(visited_regions),
+		# Death animation state — persisting these means a fish that was
+		# mid-death-pose when autosave fired comes back still dying instead
+		# of being "resurrected" only to immediately re-die (which reads as
+		# a looping death animation to the player).
+		"_dying": _dying,
+		"_dying_timer": _dying_timer,
 	}
 
 
@@ -5014,6 +5020,22 @@ func apply_save_dict(d: Dictionary) -> void:
 	if saved_visited is Array and (saved_visited as Array).size() == visited_regions.size():
 		for i in range(visited_regions.size()):
 			visited_regions[i] = int((saved_visited as Array)[i])
+	# Restore death-animation state. Without this, a dying fish reloaded
+	# from save comes back at full health and immediately re-dies — the
+	# "fish death animation looping" bug.
+	_dying = bool(d.get("_dying", false))
+	_dying_timer = float(d.get("_dying_timer", 0.0))
+	# Safety: if the loaded state says we're dying but the timer is past
+	# DEATH_DURATION (shouldn't happen, but defends against corrupted saves),
+	# clamp to a small positive value so the fish completes the animation.
+	if _dying and _dying_timer <= 0.0:
+		_dying_timer = 0.1
+	# Apply the dying pose immediately so the reloaded fish doesn't pop
+	# from swimming to tilted on the first frame.
+	if _dying and _bank_pivot != null:
+		_bank_pivot.rotation.z = PI * 0.5
+		var shrink: float = lerpf(1.0, 0.15, clampf(1.0 - _dying_timer / DEATH_DURATION, 0.0, 1.0))
+		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
 
 
 # Pull body + territory anchors inside the tank footprint. Saved games from
