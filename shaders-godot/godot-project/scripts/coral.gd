@@ -891,7 +891,8 @@ func _animate_polyp_tips() -> void:
 	# Compact the list when stale entries pile up — drop everything
 	# whose node was nilled above. Runs only when the survivor count
 	# falls below ~half so the resize churn stays rare.
-	if live_count > 0 and live_count < _polyp_tips.size() / 2:
+	# Bitshift to halve — explicit divide-by-2 with no integer-division warning.
+	if live_count > 0 and live_count < (_polyp_tips.size() >> 1):
 		var keep: Array = []
 		for e in _polyp_tips:
 			if e.get("node") != null:

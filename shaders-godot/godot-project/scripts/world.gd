@@ -10,6 +10,8 @@
 
 extends Node3D
 
+const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
 var tannins: float = 0.0
@@ -438,12 +440,13 @@ var _cfg_node: Node = null
 
 
 # Shared day/night lighting curves for room sky, tank fixture, and water tint.
-func _day_night_lighting(sim: Node) -> Dictionary:
+func _day_night_lighting(sim_n: Node) -> Dictionary:
+	# Param renamed sim → sim_n to avoid shadowing the class `sim` member.
 	var dl: float = 1.0
 	var dp: float = 0.25
-	if sim != null:
-		dl = float(sim.daylight())
-		dp = fposmod(float(sim.day_phase), 1.0)
+	if sim_n != null:
+		dl = float(sim_n.daylight())
+		dp = fposmod(float(sim_n.day_phase), 1.0)
 	# Golden hour peaks at dusk (phase 0.5) with a softer dawn shoulder.
 	var sunset_hour: float = clampf(1.0 - absf(dp - 0.5) / 0.12, 0.0, 1.0)
 	var dawn_glow: float = 0.0
@@ -3538,6 +3541,111 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 
 
 # Called by Plant.gd when an emergent (above-water) plant casts a seed.
+# Return a hardscape voxel position close to `near_pos` suitable for
+# epiphyte attachment, or Vector3.ZERO if no hardscape is available.
+# Used by spawn_library_entry for Anubias/Buce/Java fern style species.
+# Apply a curated aquascape template — drops a coordinated planting layout
+# matching a real aquascaping style. Called from the settings panel. Each
+# template specifies a foreground carpet, midground rosettes, background
+# stems, and hardscape epiphytes pulled from RealSpeciesLibrary.
+func apply_aquascape_template(template_name: String) -> int:
+	if sim == null:
+		return 0
+	# Predefined recipes — IDs reference RealSpeciesLibrary entries.
+	# (count, species_id, zone) zones: "fg" = front strip, "mg" = mid band,
+	# "bg" = back row, "epi" = on hardscape.
+	var recipes: Dictionary = {
+		"nature": [
+			[8, "monte_carlo", "fg"],
+			[3, "crypt_wendtii_green", "mg"],
+			[3, "rotala_rotundifolia", "bg"],
+			[2, "anubias_nana", "epi"],
+			[1, "java_fern", "epi"],
+		],
+		"iwagumi": [
+			[12, "dwarf_hairgrass", "fg"],
+			[1, "blyxa_japonica", "mg"],
+		],
+		"dutch": [
+			[2, "crypt_wendtii_brown", "mg"],
+			[4, "rotala_hra", "bg"],
+			[3, "ludwigia_super_red", "bg"],
+			[2, "alternanthera_reineckii", "mg"],
+			[1, "java_fern", "epi"],
+		],
+		"jungle": [
+			[2, "amazon_sword", "bg"],
+			[4, "vallisneria_spiralis", "bg"],
+			[3, "anubias_barteri", "epi"],
+			[5, "dwarf_sag", "fg"],
+		],
+		"shrimp_tank": [
+			[6, "monte_carlo", "fg"],
+			[2, "buce_kedagang", "epi"],
+			[1, "java_fern_windelov", "epi"],
+			[2, "anubias_petite", "epi"],
+			[3, "christmas_moss", "epi"],
+		],
+	}
+	if not recipes.has(template_name):
+		return 0
+	var species_dict: Dictionary = RealSpeciesLibrary.by_id()
+	var planted: int = 0
+	for entry in recipes[template_name]:
+		var n: int = int(entry[0])
+		var sid: String = String(entry[1])
+		# zone (foreground/midground/background/epiphyte) is encoded in the
+		# recipe for future targeted-placement, but the current spawn path
+		# auto-selects placement from genome.is_epiphyte / is_carpet so we
+		# don't read it yet — underscore-prefix to silence the warning.
+		var _zone: String = String(entry[2])
+		if not species_dict.has(sid):
+			continue
+		var sp: Dictionary = species_dict[sid]
+		var genome: Dictionary = sp.get("genome", {}).duplicate(true)
+		genome["organism_type"] = "plant"
+		genome["latin_name"] = String(sp.get("latin_name", ""))
+		genome["common_name"] = String(sp.get("common_name", ""))
+		genome["species_id"] = sid
+		for i in n:
+			if spawn_library_entry(genome.duplicate(true), "plant"):
+				planted += 1
+	return planted
+
+
+func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
+	if _driftwood_voxels.is_empty():
+		var hs: Node = get_node_or_null("Hardscape")
+		if hs == null:
+			return Vector3.ZERO
+		# Scan hardscape root children as fallback (rocks are stored there).
+		var best_stone: MeshInstance3D = null
+		var best_stone_d2: float = INF
+		for c in hs.get_children():
+			if not (c is MeshInstance3D):
+				continue
+			var d2: float = (c.global_position - near_pos).length_squared()
+			if d2 < best_stone_d2:
+				best_stone_d2 = d2
+				best_stone = c
+		return Vector3.ZERO if best_stone == null else best_stone.global_position
+	# Driftwood: pick the closest top-side voxel so the rhizome rests on
+	# the wood surface and the leaves emerge upward.
+	var best: MeshInstance3D = null
+	var best_d2: float = INF
+	for mi in _driftwood_voxels:
+		if mi == null or not is_instance_valid(mi):
+			continue
+		var d2: float = (mi.global_position - near_pos).length_squared()
+		if d2 < best_d2:
+			best_d2 = d2
+			best = mi
+	if best == null:
+		return Vector3.ZERO
+	# Offset slightly upward so the epiphyte rhizome sits on top of the wood.
+	return best.global_position + Vector3(0, 0.25, 0)
+
+
 func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dictionary) -> void:
 	if plants_root == null or sim == null:
 		return
@@ -3570,13 +3678,16 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	p.water_surface_y = WATER_HEIGHT
 	p.generation = generation
 	
-	# Inherit properties from parent and slightly mutate max_height
+	# Inherit properties from parent and slightly mutate max_height. Library
+	# spawns set no_mutate so the preset reads exactly — emergent seedlings
+	# go through the jitter path so generations actually drift.
 	var child_cfg: Dictionary = seed_config.duplicate()
-	var parent_max: int = seed_config.get("max_height", 10)
-	child_cfg["max_height"] = clampi(parent_max + _rng.randi_range(-2, 2), 4, 30)
-	child_cfg["growth_rate"] = clampf(
-		float(child_cfg.get("growth_rate", 0.18)) * randf_range(1.00, 1.18),
-		0.06, 0.55)
+	if not bool(seed_config.get("no_mutate", false)):
+		var parent_max: int = seed_config.get("max_height", 10)
+		child_cfg["max_height"] = clampi(parent_max + _rng.randi_range(-2, 2), 4, 30)
+		child_cfg["growth_rate"] = clampf(
+			float(child_cfg.get("growth_rate", 0.18)) * randf_range(1.00, 1.18),
+			0.06, 0.55)
 	
 	# Initialize the child plant using the parent's genetic traits
 	p.init(1, child_cfg)
@@ -4292,6 +4403,11 @@ func _add_floater_at(pos: Vector3, genome: Dictionary = {}) -> void:
 # at a random surface spot. Creates the Floaters container if it's missing
 # (e.g. on an empty / guided tank).
 func spawn_floating_plant(genome: Dictionary) -> bool:
+	# Surface coverage cap — at >70% coverage, floater growth halts. Removing
+	# some unlocks bloom-back. Real-tank behavior: a fully-covered surface
+	# starves the floaters of new growth space.
+	if floater_coverage() > 0.7:
+		return false
 	var xz: Vector2 = _sample_surface_xz(0.4, 0.34)
 	_add_floater_at(
 		clamp_xyz_in_tank(Vector3(xz.x, WATER_HEIGHT - 0.05, xz.y), 0.35),
@@ -6544,18 +6660,29 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 			if genome.get("floating", false):
 				return spawn_floating_plant(genome)
 			var p_xz: Vector2 = _sample_substrate_xz(0.35, 0.46, 0.45)
-			var cfg: Dictionary = {
-				"max_height": int(genome.get("max_height", 12)),
-				"growth_rate": float(genome.get("growth_rate", 0.18)),
-				"sway_amplitude": float(genome.get("sway_amplitude", 0.25)),
-				"leaf_form": String(genome.get("leaf_form", "column")),
-				"leaf_length": int(genome.get("leaf_length", 4)),
-				"max_roots": int(genome.get("max_roots", 5)),
-				"generation": int(genome.get("generation", 0)) + 1,
-				"parent_lineage": String(genome.get("plant_name", "Library stock")),
-			}
-			spawn_seedling(spawn_position_on_floor(p_xz.x, p_xz.y),
-				genome.get("ramp_override", []), cfg["generation"], cfg)
+			# Forward the entire genome dict as the seed config so all new
+			# trait fields (variegation, quilted, wavy_edges, iridescence,
+			# red_potential, co2_demand, melt_susceptibility, has_plantlets,
+			# is_carpet, whorled_leaves, leaf_size_mult, underside_tone,
+			# latin_name, common_name, species_id, is_epiphyte) reach
+			# plant.init() without needing per-field plumbing.
+			var cfg: Dictionary = genome.duplicate(true)
+			cfg["generation"] = int(genome.get("generation", 0)) + 1
+			if not cfg.has("parent_lineage"):
+				cfg["parent_lineage"] = String(genome.get("plant_name", "Library stock"))
+			# Library spawns are exact presets — no mutation jitter.
+			cfg["no_mutate"] = true
+			# Epiphytes need a host: drop them onto the nearest driftwood/
+			# rock instead of the substrate. We translate via the helper
+			# below; if no hardscape exists yet, fall back to substrate
+			# placement which will still render but not feel right.
+			var spawn_pos: Vector3 = spawn_position_on_floor(p_xz.x, p_xz.y)
+			if bool(cfg.get("is_epiphyte", false)):
+				var anchor: Vector3 = _find_nearest_hardscape_anchor(spawn_pos)
+				if anchor != Vector3.ZERO:
+					spawn_pos = anchor
+			spawn_seedling(spawn_pos,
+				genome.get("ramp_override", []), int(cfg["generation"]), cfg)
 			return true
 		_:
 			return false
@@ -6778,7 +6905,9 @@ func _spawn_initial_shrimp() -> void:
 	# default tank visibly demonstrates the cleaning symbiosis behavior
 	# tier. Cleaners hunt high-stress fish; non-cleaner cherries scavenge
 	# detritus. Guaranteed at least one if the colony is large enough.
-	var cleaner_target: int = maxi(1, shrimp_n / 6) if shrimp_n >= 4 else 0
+	# Cast to float for the divide, floor back to int — silences the
+	# integer-division precision warning while keeping the intent.
+	var cleaner_target: int = maxi(1, int(floor(float(shrimp_n) / 6.0))) if shrimp_n >= 4 else 0
 	var cleaner_picked: int = 0
 	for i in shrimp_n:
 		var g: Dictionary = red_genome.duplicate() if i < red_n else amber_genome.duplicate()
@@ -6799,7 +6928,7 @@ func _spawn_initial_shrimp() -> void:
 		# they don't cluster — every (shrimp_n / cleaner_target)-th index
 		# gets the flag.
 		if cleaner_target > 0 and cleaner_picked < cleaner_target \
-				and (i % maxi(1, shrimp_n / cleaner_target)) == 0:
+				and (i % maxi(1, int(floor(float(shrimp_n) / float(cleaner_target))))) == 0:
 			g["is_cleaner"] = true
 			# Cleaner cherries are slightly larger + paler than the
 			# scavengers so the player can read them at a glance.

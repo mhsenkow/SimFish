@@ -90,6 +90,24 @@ var walkthrough_pending: bool = false
 # resume. 0 = never quit cleanly (first launch).
 var last_quit_unix: int = 0
 
+# ---- Light spectrum ----
+# 0.0 = cool / blue-shifted LED (boosts greens, suppresses reds)
+# 0.5 = neutral white (default)
+# 1.0 = warm / red-shifted LED (boosts reds, dims greens)
+# Plant red_potential intensification is scaled by this — real keepers
+# pick warm-spectrum bulbs specifically to make red plants pop.
+var light_spectrum: float = 0.5
+
+# ---- CO2 dosing ----
+# 0.0 = off (no injection, ambient ~equilibrium CO2 only)
+# 0.3 = low (passive yeast / DIY, mild boost)
+# 0.6 = medium (entry-level regulator, supports most stems)
+# 1.0 = high (pressurized + drop checker, supports demanding species like
+#       Rotala macrandra, HC Cuba, Eriocaulon)
+# Plant red-intensification, pearling intensity, and growth-rate floors
+# all read this value via SimDriver.co2_level().
+var co2_level: float = 0.0
+
 # ---- AI Companion (optional local Ollama bridge) ----
 # When enabled, AIDirector batches calls to a local Ollama instance for
 # creature names, biographies, ambient mood drifts, and chronicle lines.
@@ -1584,6 +1602,8 @@ func save_to_disk() -> void:
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
 	cfg.set_value("mobile", "new_tank_fit", new_tank_fit)
+	cfg.set_value("plants", "co2_level", co2_level)
+	cfg.set_value("plants", "light_spectrum", light_spectrum)
 	cfg.set_value("ai", "enabled", ai_enabled)
 	cfg.set_value("ai", "endpoint", ai_endpoint)
 	cfg.set_value("ai", "model", ai_model)
@@ -1742,6 +1762,8 @@ func load_from_disk() -> void:
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
 	new_tank_fit = cfg.get_value("mobile", "new_tank_fit", new_tank_fit)
+	co2_level = cfg.get_value("plants", "co2_level", co2_level)
+	light_spectrum = cfg.get_value("plants", "light_spectrum", light_spectrum)
 	ai_enabled = cfg.get_value("ai", "enabled", ai_enabled)
 	ai_endpoint = cfg.get_value("ai", "endpoint", ai_endpoint)
 	ai_model = cfg.get_value("ai", "model", ai_model)

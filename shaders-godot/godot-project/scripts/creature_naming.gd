@@ -1,5 +1,8 @@
 extends RefCounted
-class_name CreatureNaming
+
+# class_name intentionally omitted — every caller preloads this script as
+# `const CreatureNaming = preload(...)`, and a class_name on top of that
+# fires "constant shadows global class" warnings in the editor.
 
 # Offline name generator + epithet helper for fish / shrimp / snails.
 # Used as the always-available fallback when AIDirector is disabled or

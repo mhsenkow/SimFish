@@ -43,6 +43,13 @@ func _ready() -> void:
 # Discovery
 # ============================================================================
 
+const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+
+# Track which real species have already been "recreated" so the discovery
+# story event fires only on the first match — re-discoveries don't spam.
+var _real_species_matched: Dictionary = {}
+
+
 # Record a discovery. Returns true iff this is a NEW species_key in tank scope.
 func record_discovery(genome: Dictionary, source: String, silent: bool = false) -> bool:
 	if genome == null or genome.is_empty():
@@ -54,11 +61,49 @@ func record_discovery(genome: Dictionary, source: String, silent: bool = false) 
 		return false
 
 	var entry: Dictionary = _make_entry(genome, key, source)
+	# Fingerprint match against the real-species library for plants — when
+	# an emergent genome lands close to a known species, tag it so the UI
+	# can show "Looks like: Anubias barteri" and fire a story-event the
+	# first time the match occurs in this tank.
+	if String(genome.get("organism_type", "")) == ORGANISM_PLANT:
+		var match_res: Dictionary = RealSpeciesLibrary.match_genome(genome)
+		if not match_res.is_empty():
+			var dist: float = float(match_res.get("distance", INF))
+			var match_id: String = String(match_res.get("id", ""))
+			if dist < 0.85 and match_id != "":
+				# Embed the match metadata into the discovery entry for UI use.
+				entry["real_species_id"] = match_id
+				entry["real_species_distance"] = dist
+				# Strong matches (< 0.35) fire a discovery story-event the
+				# first time we see them in this tank.
+				if dist < 0.35 and not _real_species_matched.has(match_id):
+					_real_species_matched[match_id] = true
+					_fire_real_species_discovery(match_id)
 	tank_entries.append(entry)
 	library_changed.emit()
 	if not _loading and not silent:
 		species_discovered.emit(entry)
 	return true
+
+
+# Fire a story-event when a player's tank conditions produce a plant that
+# closely matches one of the real-world catalog entries. Looks up the
+# common name and posts to SimDriver.log_story_event so the achievement
+# flows through the existing chronicle pipeline.
+func _fire_real_species_discovery(species_id: String) -> void:
+	var by: Dictionary = RealSpeciesLibrary.by_id()
+	if not by.has(species_id):
+		return
+	var entry: Dictionary = by[species_id]
+	var common: String = String(entry.get("common_name", species_id))
+	var latin: String = String(entry.get("latin_name", ""))
+	var sim: Node = get_tree().root.find_child("SimDriver", true, false)
+	if sim == null or not sim.has_method("log_story_event"):
+		return
+	if latin != "":
+		sim.log_story_event("Discovered: %s (%s) growing in your tank." % [common, latin])
+	else:
+		sim.log_story_event("Discovered: %s growing in your tank." % common)
 
 
 func get_tank_entries() -> Array:

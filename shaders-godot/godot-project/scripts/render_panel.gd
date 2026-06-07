@@ -12,6 +12,14 @@ var _res_option: OptionButton
 var _dither: HSlider
 var _dither_label: Label
 var _palette_check: CheckBox
+var _region_aware_check: CheckBox
+var _bank_lock_check: CheckBox
+var _outline: HSlider
+var _outline_label: Label
+var _crt: HSlider
+var _crt_label: Label
+var _integer_upscale_check: CheckBox
+var _pixel_snap_check: CheckBox
 var _fog_density: HSlider
 var _fog_density_label: Label
 var _fog_anisotropy: HSlider
@@ -24,6 +32,7 @@ var _msaa_option: OptionButton
 var _adaptive_check: CheckBox
 var _adaptive_target: HSlider
 var _adaptive_target_label: Label
+var _save_status: Label
 # Frame-time mini-sparkline drawn as a Control with a custom _draw.
 var _frame_graph: Control = null
 var _frame_graph_label: Label = null
@@ -107,6 +116,8 @@ func _build_ui() -> void:
 	vbox.add_child(_res_option)
 
 	# -- Palette / dither section --
+	# Every setting here is hot-reloaded into the post-process shader via
+	# main.gd._update_palette_uniforms — no reload required to preview.
 	_add_section(vbox, "Palette quantize")
 	_palette_check = CheckBox.new()
 	_palette_check.text = "Enable palette quantization"
@@ -115,6 +126,69 @@ func _build_ui() -> void:
 	_dither_label = Label.new()
 	_dither = PanelTheme.add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
 	_dither.value_changed.connect(func(v): _on_dither(v))
+	# Region-aware dither: when on, low-saturation regions (substrate,
+	# water, fog) get heavier dither and saturated regions (fauna, plants)
+	# get lighter dither so silhouettes stay clean. Turn off if you want
+	# uniform dither across everything.
+	_region_aware_check = CheckBox.new()
+	_region_aware_check.text = "Region-aware dither (recommended)"
+	_region_aware_check.toggled.connect(func(v):
+		TankConfig.dither_region_aware = v)
+	vbox.add_child(_region_aware_check)
+	var rad_desc := PanelTheme.make_description()
+	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."
+	vbox.add_child(rad_desc)
+	# Palette bank lock restricts each fragment to its hue-bank's 16
+	# nearest palette entries. Off = full palette per fragment (smoother
+	# gradients but less "8-bit" feel).
+	_bank_lock_check = CheckBox.new()
+	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
+	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
+	vbox.add_child(_bank_lock_check)
+	var bl_desc := PanelTheme.make_description()
+	bl_desc.text = "Restricts each pixel to nearby palette colors. Off = smoother gradients across the whole palette."
+	vbox.add_child(bl_desc)
+
+	# -- Pixel-art polish section --
+	# All four uniforms apply live via the post-process shader; no reload
+	# needed. Save persists them across sessions.
+	_add_section(vbox, "Pixel art polish")
+	_outline_label = Label.new()
+	_outline = PanelTheme.add_slider_row(vbox, "Outline strength", 0.0, 1.0, 0.05, _outline_label)
+	_outline.value_changed.connect(func(v):
+		TankConfig.outline_strength = v
+		_outline_label.text = "%.2f" % v)
+	var ol_desc := PanelTheme.make_description()
+	ol_desc.text = "Dark line at color discontinuities — adds NES-style readability."
+	vbox.add_child(ol_desc)
+	_crt_label = Label.new()
+	_crt = PanelTheme.add_slider_row(vbox, "CRT scanlines", 0.0, 1.0, 0.05, _crt_label)
+	_crt.value_changed.connect(func(v):
+		TankConfig.crt_strength = v
+		_crt_label.text = "%.2f" % v)
+	var crt_desc := PanelTheme.make_description()
+	crt_desc.text = "Faint horizontal scanlines for a retro CRT feel. Off by default."
+	vbox.add_child(crt_desc)
+	_integer_upscale_check = CheckBox.new()
+	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
+	_integer_upscale_check.toggled.connect(func(v):
+		TankConfig.integer_upscale = v
+		# Tell main.gd to re-layout immediately so the toggle is visible
+		# on the next frame instead of after a reload.
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_apply_display_layout"):
+			main.call("_apply_display_layout"))
+	vbox.add_child(_integer_upscale_check)
+	var iu_desc := PanelTheme.make_description()
+	iu_desc.text = "Snaps render to nearest integer scale (2×, 3×…). Auto-falls back to stretched if integer scale would shrink the tank below 70% of the window."
+	vbox.add_child(iu_desc)
+	_pixel_snap_check = CheckBox.new()
+	_pixel_snap_check.text = "Pixel-snap camera"
+	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
+	vbox.add_child(_pixel_snap_check)
+	var ps_desc := PanelTheme.make_description()
+	ps_desc.text = "Snaps camera to world-pixel units. Stops sub-pixel jitter on fish, may feel rigid."
+	vbox.add_child(ps_desc)
 
 	# -- Volumetric fog section --
 	_add_section(vbox, "Volumetric fog")
@@ -162,9 +236,24 @@ func _build_ui() -> void:
 		TankConfig.adaptive_quality_target_fps = int(v)
 		_adaptive_target_label.text = "%d" % int(v))
 
-	# Footer buttons — attached to `outer` (NOT `vbox`) so Close + Apply
-	# stay pinned at the bottom of the panel below the scroll area.
+	# Footer buttons — attached to `outer` (NOT `vbox`) so Close + Save +
+	# Apply stay pinned at the bottom of the panel below the scroll area.
+	#
+	# Three buttons:
+	#   Close  — dismiss the panel, no persistence step (changes already
+	#            apply live but won't survive next launch).
+	#   Save   — persist current TankConfig render fields to disk WITHOUT
+	#            reloading the scene. Use this when you've found a dither
+	#            / pixel-art combo you like and want it to stick across
+	#            sessions while keeping your tank state intact.
+	#   Apply  — save + reload the scene (required for resolution / MSAA
+	#            changes; optional for everything else).
 	outer.add_child(PanelTheme.make_rule())
+	_save_status = Label.new()
+	_save_status.add_theme_font_size_override("font_size", 10)
+	_save_status.add_theme_color_override("font_color", Color8(150, 230, 150))
+	_save_status.text = ""
+	outer.add_child(_save_status)
 	var hb := HBoxContainer.new()
 	hb.alignment = BoxContainer.ALIGNMENT_END
 	hb.add_theme_constant_override("separation", 8)
@@ -172,9 +261,22 @@ func _build_ui() -> void:
 	var close := PanelTheme.make_secondary_button("Close")
 	close.pressed.connect(func(): visible = false)
 	hb.add_child(close)
+	var save_btn := PanelTheme.make_secondary_button("Save (no reload)")
+	save_btn.pressed.connect(_on_save_only)
+	hb.add_child(save_btn)
 	var apply := PanelTheme.make_primary_button("Apply (reload)")
 	apply.pressed.connect(_on_apply)
 	hb.add_child(apply)
+
+
+# Persist render settings to disk without rebuilding the scene. Use case:
+# you've dialed in a dither + outline combo you like, want it to survive
+# next launch, but don't want to lose your tank's current state. Resolution
+# / MSAA changes won't visually take effect until next Apply or restart.
+func _on_save_only() -> void:
+	TankConfig.save_to_disk()
+	if _save_status != null:
+		_save_status.text = "✓ Saved. Settings will persist across reloads."
 
 
 # Section header with a 4-px spacer above so each group reads as a chunk
@@ -193,6 +295,36 @@ func _pull_from_config() -> void:
 			break
 	_dither.value = TankConfig.dither_strength
 	_palette_check.button_pressed = TankConfig.palette_enabled
+	# Pixel-art polish controls — block signals so set_pressed doesn't
+	# bounce back through the toggled callback and overwrite TankConfig.
+	if _region_aware_check != null:
+		_region_aware_check.set_block_signals(true)
+		_region_aware_check.button_pressed = TankConfig.dither_region_aware
+		_region_aware_check.set_block_signals(false)
+	if _bank_lock_check != null:
+		_bank_lock_check.set_block_signals(true)
+		_bank_lock_check.button_pressed = TankConfig.palette_bank_lock
+		_bank_lock_check.set_block_signals(false)
+	if _outline != null:
+		_outline.set_block_signals(true)
+		_outline.value = TankConfig.outline_strength
+		_outline.set_block_signals(false)
+		if _outline_label != null:
+			_outline_label.text = "%.2f" % TankConfig.outline_strength
+	if _crt != null:
+		_crt.set_block_signals(true)
+		_crt.value = TankConfig.crt_strength
+		_crt.set_block_signals(false)
+		if _crt_label != null:
+			_crt_label.text = "%.2f" % TankConfig.crt_strength
+	if _integer_upscale_check != null:
+		_integer_upscale_check.set_block_signals(true)
+		_integer_upscale_check.button_pressed = TankConfig.integer_upscale
+		_integer_upscale_check.set_block_signals(false)
+	if _pixel_snap_check != null:
+		_pixel_snap_check.set_block_signals(true)
+		_pixel_snap_check.button_pressed = TankConfig.pixel_snap_camera
+		_pixel_snap_check.set_block_signals(false)
 	_fog_density.value = TankConfig.fog_density
 	_fog_anisotropy.value = TankConfig.fog_anisotropy
 	_fog_ambient.value = TankConfig.fog_ambient_inject

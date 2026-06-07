@@ -41,7 +41,9 @@ const MAX_LIST_LINEAGE_EDGES: int = 180
 
 # Tabs -----------------------------------------------------------------------
 
-enum Scope { TANK, GLOBAL, ECOSYSTEM }
+enum Scope { TANK, GLOBAL, ECOSYSTEM, SPECIES }
+
+const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 
 # Static catalog of the maintenance / environmental entities that don't
 # go through the regular SpeciesLibrary discovery flow. These appear
@@ -198,6 +200,7 @@ var _lineage_tree: LineageTreeView = null
 var _tab_tank: Button = null
 var _tab_global: Button = null
 var _tab_ecosystem: Button = null
+var _tab_species: Button = null
 
 var _preview_viewport: SubViewport = null
 var _preview_root: Node3D = null
@@ -340,6 +343,9 @@ func _build_ui() -> void:
 	_tab_ecosystem = _make_tab_button("Ecosystem 🦠", false)
 	_tab_ecosystem.pressed.connect(func(): _set_scope(Scope.ECOSYSTEM))
 	header.add_child(_tab_ecosystem)
+	_tab_species = _make_tab_button("Species 🌿", false)
+	_tab_species.pressed.connect(func(): _set_scope(Scope.SPECIES))
+	header.add_child(_tab_species)
 
 	var close_btn := PanelTheme.make_secondary_button("CLOSE")
 	close_btn.pressed.connect(close)
@@ -777,6 +783,8 @@ func _set_scope(s: int) -> void:
 	_tab_global.button_pressed = s == Scope.GLOBAL
 	if _tab_ecosystem != null:
 		_tab_ecosystem.button_pressed = s == Scope.ECOSYSTEM
+	if _tab_species != null:
+		_tab_species.button_pressed = s == Scope.SPECIES
 	_refresh_list()
 
 
@@ -906,10 +914,74 @@ func _refresh_list() -> void:
 func _current_scope_entries() -> Array:
 	if _scope == Scope.ECOSYSTEM:
 		return _ecosystem_entries_with_live_counts()
+	if _scope == Scope.SPECIES:
+		return _real_species_entries()
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib == null:
 		return []
 	return lib.get_tank_entries() if _scope == Scope.TANK else lib.get_global_entries()
+
+
+# Convert RealSpeciesLibrary entries into the dict shape the library list
+# already renders. Each entry becomes a discovery-like record with the
+# species_key, display name, swatches (sampled from the genome ramp), care
+# tags rolled into the description.
+func _real_species_entries() -> Array:
+	var out: Array = []
+	for e_v in RealSpeciesLibrary.entries():
+		var e: Dictionary = e_v
+		var genome: Dictionary = e.get("genome", {})
+		var ramp: Array = genome.get("ramp_override", [])
+		var swatches: Array = []
+		# Sample 4 colors from the ramp for the row swatch strip.
+		for i in [0, 2, 3, 5]:
+			if i < ramp.size():
+				swatches.append(ramp[i])
+		var care: String = "%s light · CO2 %s · %s · %s" % [
+			String(e.get("light", "med")).capitalize(),
+			String(e.get("co2", "opt")),
+			"Epiphyte" if String(e.get("substrate", "yes")) == "epi" else "Substrate-rooted",
+			String(e.get("difficulty", "easy")).capitalize() + " care",
+		]
+		var origin: String = String(e.get("origin", ""))
+		var role: String = String(e.get("role", ""))
+		var description: String = "%s\n\n%s\n\n%s%s" % [
+			String(e.get("description", "")),
+			care,
+			"Role: " + role,
+			"\nOrigin: " + origin if origin != "" else "",
+		]
+		# Build the full genome dict the standard `_select_entry` → preview
+		# path expects. Must include `organism_type: "plant"` so the spawn
+		# helper picks the plant branch, plus the latin/common name and
+		# species_id so plant.init() can stamp them onto the instance.
+		var full_genome: Dictionary = genome.duplicate(true)
+		full_genome["organism_type"] = "plant"
+		full_genome["species"] = "plant"
+		full_genome["latin_name"] = String(e.get("latin_name", ""))
+		full_genome["common_name"] = String(e.get("common_name", ""))
+		full_genome["species_id"] = String(e.get("id", ""))
+		full_genome["plant_name"] = String(e.get("common_name", ""))
+		full_genome["parent_lineage"] = "Real species"
+		out.append({
+			"species_key": "species:" + String(e.get("id", "")),
+			"display_name": String(e.get("common_name", "")),
+			"organism_type": "plant",
+			"role": role,
+			"icon": "🌱",
+			"swatches": swatches,
+			"description": description,
+			"trigger": "Spawn from the library — click 'Spawn this species' below.",
+			"grazed_by": "Snails / shrimp graze surface algae on slow-growers.",
+			"world_count_path": "",
+			# Standard `genome` key so _select_entry / _spawn_preview_plant
+			# can read it without a special-case for real-species entries.
+			"genome": full_genome,
+			"_real_species_id": String(e.get("id", "")),
+			"_real_latin": String(e.get("latin_name", "")),
+			"_real_category": String(e.get("category", "")),
+		})
+	return out
 
 
 # Walk the static ECOSYSTEM_CATALOG and patch in live counts from the
@@ -1540,13 +1612,39 @@ func _spawn_preview_plant(g: Dictionary) -> Plant:
 	var ramp: Variant = g.get("ramp_override", [])
 	if ramp is Array and (ramp as Array).size() == 6:
 		p.ramp_override = (ramp as Array).duplicate()
-	p.init(mini(6, int(g.get("max_height", 8))), {
+	# Forward the FULL trait set so real-species presets actually render as
+	# themselves in preview (Anubias as a spade, Buce with iridescence,
+	# Java Fern on a rhizome, RRF as a cordate, etc.). Plant.init() reads
+	# what it knows and ignores the rest.
+	var preview_height: int = mini(6, int(g.get("max_height", 8)))
+	p.init(preview_height, {
 		"max_height": int(g.get("max_height", 12)),
 		"growth_rate": float(g.get("growth_rate", 0.18)),
 		"sway_amplitude": float(g.get("sway_amplitude", 0.25)),
 		"leaf_form": String(g.get("leaf_form", "column")),
 		"leaf_length": int(g.get("leaf_length", 4)),
+		"leaf_size_mult": float(g.get("leaf_size_mult", 1.0)),
+		"is_epiphyte": bool(g.get("is_epiphyte", false)),
+		"is_carpet": bool(g.get("is_carpet", false)),
+		"whorled_leaves": bool(g.get("whorled_leaves", false)),
+		"variegation": float(g.get("variegation", 0.0)),
+		"quilted": bool(g.get("quilted", false)),
+		"wavy_edges": bool(g.get("wavy_edges", false)),
+		"iridescence": float(g.get("iridescence", 0.0)),
+		"red_potential": float(g.get("red_potential", 0.0)),
+		"co2_demand": float(g.get("co2_demand", 0.3)),
+		"melt_susceptibility": float(g.get("melt_susceptibility", 0.0)),
+		"has_plantlets": bool(g.get("has_plantlets", false)),
+		"underside_tone": g.get("underside_tone", null),
+		"latin_name": String(g.get("latin_name", "")),
+		"common_name": String(g.get("common_name", "")),
+		"species_id": String(g.get("species_id", "")),
+		"plant_name": String(g.get("plant_name", "")),
+		"parent_lineage": String(g.get("parent_lineage", "")),
 	})
+	# Preview plants don't have a SimDriver so the emersed-form animation
+	# wouldn't auto-fade. Skip it entirely so the preview reads "final form."
+	p._emersed_remaining = 0.0
 	_freeze_preview_creature(p)
 	return p
 

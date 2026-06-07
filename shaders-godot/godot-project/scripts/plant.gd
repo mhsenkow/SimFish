@@ -49,14 +49,80 @@ var nutrient_demand: float = 0.05  # nutrients consumed per voxel grown
 var sway_amplitude: float = 0.25
 
 # Leaf form type: determines which LeafShapes builder is used.
-# "column" = legacy 1-voxel stacking (backward compat)
-# "paddle" = rosette leaves (Crypts, Swords)
-# "ribbon" = blade leaves (Vallisneria)
-# "lance"  = stem plant paired leaves (Ludwigia, Rotala)
-# "needle" = carpet grasses (Eleocharis)
+# "column"     = legacy 1-voxel stacking (backward compat)
+# "paddle"     = rosette leaves (Crypts, Swords)
+# "ribbon"     = blade leaves (Vallisneria)
+# "lance"      = stem plant paired leaves (Ludwigia, Rotala)
+# "needle"     = carpet grasses (Eleocharis)
+# "spade"      = broad rounded spade (Anubias barteri)
+# "cordate"    = heart shape (Red Root Floater)
+# "pinnate"    = fern-divided (Hygrophila pinnatifida, Bolbitis)
+# "starburst"  = radial rosette (Eriocaulon, Blyxa)
+# "four_leaf"  = Marsilea clover
+# "fingered"   = branched-tip lance (Java Fern Windelov, Trident)
+# "downy"      = crinkled mini rosette (Pogostemon helferi)
+# "round"      = circular pad (lily pads)
+# "lobed"      = irregular Java Fern broad blades
 var leaf_form: String = "column"
 # How many voxels make up each leaf structure.
 var leaf_length: int = 4
+# Uniform scale modifier for leaf builders (1.0 = default; <1 smaller, >1 bigger).
+# Lets a Bucephalandra mini and a Bucephalandra brownie share leaf_form but
+# read as different scales.
+var leaf_size_mult: float = 1.0
+
+# ---- Textural modifiers (read by leaf builders) ----
+# variegation: per-voxel chance of rendering white/cream (Anubias Stardust,
+#   Pinto, variegated mosses). 0..1.
+# quilted: small per-voxel vertical jitter — reads as hammered/bullate texture
+#   (Anubias coffeefolia, Crypt balansae).
+# wavy_edges: sine-offset along leaf width (Crypt wendtii ruffled, Buce
+#   wavy green).
+# iridescence: shader param 0..1 — view-angle-dependent blue/purple sheen
+#   for Bucephalandra. Threaded through to foliage_mm shader via material.
+# underside_tone: optional Color rendered at the leaf-tip extreme — used as
+#   a venation / under-leaf tint slot. Null = ignored.
+var variegation: float = 0.0
+var quilted: bool = false
+var wavy_edges: bool = false
+var iridescence: float = 0.0
+var underside_tone: Variant = null
+
+# ---- Behavioral traits (driven by new mechanics layered on top) ----
+# red_potential: 0..1, how much a plant shifts toward red/purple under
+#   strong light + low nitrogen. Rotala H'ra ~1.0, Anubias ~0.0.
+# co2_demand: 0..1, plant's preferred CO2 level. Higher demand = penalty
+#   to growth + color when the tank's CO2 dosing is low; reward when high.
+# melt_susceptibility: 0..1, Crypt-melt likelihood per chemistry crash.
+# has_plantlets: when true, mature leaves randomly spawn baby plantlets
+#   (Java fern + Echinodorus signature).
+# is_carpet: true for carpet species — multi-runner spread + flat habit.
+# whorled_leaves: stem-plant leaves emerge in whorls/pairs (Rotala) vs
+#   single-side alternate (Ludwigia).
+var red_potential: float = 0.0
+var co2_demand: float = 0.3
+var melt_susceptibility: float = 0.0
+var has_plantlets: bool = false
+var is_carpet: bool = false
+var whorled_leaves: bool = false
+
+# Latin + common name (set by real-species library, "" for emergent plants
+# which fall back to plant_name's auto-generated handle).
+var latin_name: String = ""
+var common_name: String = ""
+# Real-species library key (matches RealSpeciesLibrary entry id), or "" when
+# the plant was emergent / hand-tuned.
+var species_id: String = ""
+
+# ---- Emersed → submersed transition ----
+# Real aquarium plants ship in their EMERSED (above-water) form — bigger,
+# glossier, slightly warmer-colored leaves. Once submerged they spend the
+# first ~minute of game time melting their emersed leaves off and growing
+# their submersed form. We approximate by: applying a +15% leaf_size_mult
+# and a warmer-ramp shift while _emersed_remaining > 0, then linearly
+# fading back to genome values as the timer drains.
+const EMERSED_DURATION_S: float = 60.0
+var _emersed_remaining: float = EMERSED_DURATION_S
 
 var current_height: int = 0
 var growth_progress: float = 0.0
@@ -152,6 +218,18 @@ var _decay_timer: float = 0.0
 var _melt_active: bool = false  # crypt melt in progress
 var _melt_regrow_timer: float = 0.0
 var _pre_melt_height: int = 0
+# Crypt melt scheduling — when chemistry crashes / replant happens, the
+# susceptible plant enters MELTING phase: leaves drop over MELT_SHED_S,
+# then regrow over MELT_REGROW_S. Once per real-world crash event, gated
+# on melt_susceptibility (set per species in real_species_library.gd).
+const MELT_SHED_S: float = 30.0
+const MELT_REGROW_S: float = 240.0
+const MELT_TRIGGER_AMMONIA: float = 1.2
+const MELT_TRIGGER_STRESS: float = 0.9
+# Set true after the plant has finished its first melt — we don't melt
+# twice from the same chemistry event, only re-trigger after a clear period.
+var _last_melt_unix: int = 0
+const MELT_REARM_S: int = 300
 
 # ---- Pearling particles ----
 var _pearling_particles: GPUParticles3D = null
@@ -239,10 +317,32 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	sway_amplitude = params.get("sway_amplitude", sway_amplitude)
 	leaf_form = params.get("leaf_form", leaf_form)
 	leaf_length = params.get("leaf_length", leaf_length)
+	leaf_size_mult = float(params.get("leaf_size_mult", leaf_size_mult))
 	_max_roots = params.get("max_roots", _max_roots)
 	generation = int(params.get("generation", generation))
 	plant_name = String(params.get("plant_name", plant_name))
 	parent_lineage = String(params.get("parent_lineage", parent_lineage))
+	# Textural modifiers (Phase: leaf-form expansion).
+	variegation = clampf(float(params.get("variegation", variegation)), 0.0, 1.0)
+	quilted = bool(params.get("quilted", quilted))
+	wavy_edges = bool(params.get("wavy_edges", wavy_edges))
+	iridescence = clampf(float(params.get("iridescence", iridescence)), 0.0, 1.0)
+	if params.has("underside_tone"):
+		var ut: Variant = params["underside_tone"]
+		if ut is Color:
+			underside_tone = ut
+	# Behavioral traits.
+	red_potential = clampf(float(params.get("red_potential", red_potential)), 0.0, 1.0)
+	co2_demand = clampf(float(params.get("co2_demand", co2_demand)), 0.0, 1.0)
+	melt_susceptibility = clampf(
+		float(params.get("melt_susceptibility", melt_susceptibility)), 0.0, 1.0)
+	has_plantlets = bool(params.get("has_plantlets", has_plantlets))
+	is_carpet = bool(params.get("is_carpet", is_carpet))
+	whorled_leaves = bool(params.get("whorled_leaves", whorled_leaves))
+	# Real-species labels.
+	latin_name = String(params.get("latin_name", latin_name))
+	common_name = String(params.get("common_name", common_name))
+	species_id = String(params.get("species_id", species_id))
 	var pk: Variant = params.get("parent_keys", [])
 	if pk is Array:
 		_parent_keys = pk.duplicate()
@@ -294,8 +394,26 @@ func to_save_dict() -> Dictionary:
 			"sway_amplitude": sway_amplitude,
 			"leaf_form": leaf_form,
 			"leaf_length": leaf_length,
+			"leaf_size_mult": leaf_size_mult,
 			"max_roots": _max_roots,
 			"is_epiphyte": is_epiphyte,
+			"variegation": variegation,
+			"quilted": quilted,
+			"wavy_edges": wavy_edges,
+			"iridescence": iridescence,
+			# Underside tone is optional — empty array means "no override".
+			# Using [] instead of null avoids a ternary-type-mismatch warning
+			# (Array vs Variant null can't unify under static typing).
+			"underside_tone": (SaveHelpers.color_to_array(underside_tone) if underside_tone is Color else []),
+			"red_potential": red_potential,
+			"co2_demand": co2_demand,
+			"melt_susceptibility": melt_susceptibility,
+			"has_plantlets": has_plantlets,
+			"is_carpet": is_carpet,
+			"whorled_leaves": whorled_leaves,
+			"latin_name": latin_name,
+			"common_name": common_name,
+			"species_id": species_id,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -355,6 +473,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	_flower_center_color = SaveHelpers.array_to_color(d.get("_flower_center_color", []), _flower_center_color)
 	is_dying = not not d.get("is_dying", false)
 	generation = int(d.get("generation", 0))
+	# Loaded plants are established — no emersed-form display. Setting to
+	# 0 skips the size/color boost we apply to brand-new spawns.
+	_emersed_remaining = 0.0
 
 
 func _ready() -> void:
@@ -378,27 +499,70 @@ func _build_initial_roots() -> void:
 		_add_root(root_ramp)
 
 
-# Epiphyte holdfast: a small spread of thin fibers gripping the host
-# surface. Visible "this plant is attached to driftwood" cue without the
-# 12-voxel deep root mat that substrate-rooted plants get.
+# Epiphyte holdfast / rhizome: real anubias, buce, java fern, bolbitis
+# grow as a horizontal rhizome along a wood/rock surface with leaves
+# emerging perpendicular every ~voxel and pale white-cream root hairs
+# anchoring the rhizome to the host. We build the rhizome as a short
+# voxel trunk extending along the X axis at base, with the root hairs
+# tucked under it. The leaf-spawn path in _grow_shaped_leaf reads
+# _rhizome_attach_points to position leaves along the trunk instead of
+# stacking them on a single column.
+var _rhizome_attach_points: PackedVector3Array = PackedVector3Array()
+var _rhizome_voxels: Array[MeshInstance3D] = []
+
 func _build_holdfast_anchor() -> void:
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-	var holdfast_color: Color = ramp[0].darkened(0.25)
-	var fiber_count: int = 4
-	for i in fiber_count:
-		var ang: float = float(i) / float(fiber_count) * TAU + randf_range(-0.3, 0.3)
-		var spread: float = VOXEL_SIZE * randf_range(0.18, 0.34)
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.16))
-		mi.material_override = VoxelMat.make_foliage(holdfast_color)
-		mi.position = Vector3(
-			cos(ang) * spread,
-			-VOXEL_SIZE * 0.08,
-			sin(ang) * spread)
-		add_child(mi)
-		root_voxels.append(mi)
-	_root_count = fiber_count
+	# Rhizome length scales with max_height — small petite anubias get 3-4
+	# segments, full-size barteri get 6-7. Cap so it doesn't run past the
+	# host driftwood voxel.
+	# Cast through float to skip the int-division-loses-precision warning.
+	var rhizome_len: int = clampi(int(float(max_height) / 3.0) + 2, 3, 7)
+	# Rhizome direction: a randomized axis in the XZ plane so multiple
+	# epiphytes on the same wood look like they spread in different
+	# directions, not all parallel.
+	var dir_angle: float = randf() * TAU
+	var dir: Vector3 = Vector3(cos(dir_angle), 0.0, sin(dir_angle))
+	var rhizome_color: Color = (ramp[0] as Color).darkened(0.15)
+	# Pale root-hair color — slightly cream-tinted off-white, the visible
+	# signal that "this plant has rhizome roots on display."
+	var hair_color: Color = Color(0.86, 0.84, 0.74)
+	for i in rhizome_len:
+		# Trunk segment.
+		var seg := MeshInstance3D.new()
+		seg.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.45))
+		seg.material_override = VoxelMat.make_foliage(rhizome_color)
+		var seg_pos: Vector3 = dir * float(i) * VOXEL_SIZE * 0.55
+		seg.position = seg_pos
+		add_child(seg)
+		_rhizome_voxels.append(seg)
+		# Leaf attachment point — store for the leaf-spawn path.
+		_rhizome_attach_points.append(seg_pos)
+		# Root hairs underneath each segment — 2 tiny pale voxels splayed
+		# outward + downward. These are the iconic "wispy white root hairs"
+		# that hobbyists recognize as "this is a healthy rhizome plant."
+		for side in [-1.0, 1.0]:
+			var hair := MeshInstance3D.new()
+			hair.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.10))
+			hair.material_override = VoxelMat.make_foliage(hair_color)
+			# Cross direction of the rhizome so hairs splay sideways.
+			var cross: Vector3 = Vector3(-dir.z, 0.0, dir.x)
+			hair.position = seg_pos + cross * side * VOXEL_SIZE * 0.30 \
+				+ Vector3(0.0, -VOXEL_SIZE * 0.20, 0.0)
+			# Tilt the hair so it looks pulled down by gravity.
+			hair.rotation.z = -side * 0.35
+			add_child(hair)
+			root_voxels.append(hair)
+		# Tiny anchor stub between segment and host surface.
+		var anchor := MeshInstance3D.new()
+		anchor.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.16))
+		anchor.material_override = VoxelMat.make_foliage(hair_color.darkened(0.20))
+		anchor.position = seg_pos + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
+		add_child(anchor)
+		root_voxels.append(anchor)
+	_root_count = root_voxels.size()
 
 
 func _add_root(root_ramp: Array) -> void:
@@ -581,6 +745,13 @@ func _grow_one() -> bool:
 	var effective_ramp: Array = ramp
 	if _health_smooth < 0.7:
 		effective_ramp = _build_stressed_ramp(ramp)
+	# Red intensification — plants with red_potential > 0 shift their bright
+	# half of the ramp toward red/orange/magenta as light + CO2 + low-N drive
+	# anthocyanin synthesis in real life. The visible result is the
+	# "advanced planted tank" look: Rotala H'ra tips going orange, Ludwigia
+	# Super Red staying solid red, Alternanthera reineckii blushing pink.
+	if red_potential > 0.0:
+		effective_ramp = _red_boosted_ramp(effective_ramp)
 
 	# Phototropism: bias the new voxel's lateral offset toward the light.
 	var photo_offset: Vector2 = _phototropic_offset()
@@ -604,6 +775,26 @@ func _grow_one() -> bool:
 			_grow_lance_pair(effective_ramp, age_frac, rel, photo_offset)
 		"needle":
 			_grow_needle_leaf(effective_ramp, age_frac, rel, photo_offset)
+		"spade":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "spade")
+		"cordate":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "cordate")
+		"pinnate":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "pinnate")
+		"starburst":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "starburst")
+		"four_leaf":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "four_leaf")
+		"fingered":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "fingered")
+		"downy":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "downy")
+		"round":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "round")
+		"oval":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "oval")
+		"lobed":
+			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "lobed")
 		_:
 			_grow_column_voxel(effective_ramp, rel, photo_offset)
 	# Morphological elaboration from lineage + health:
@@ -856,6 +1047,124 @@ func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 	leaf_node.free()
 
 
+# Compose the modifier Dictionary handed to the leaf builders. Populated
+# from genome traits set in init() — variegation, quilted, wavy_edges, the
+# optional underside tone. The builders accept missing keys (default 0/false).
+func _leaf_mods() -> Dictionary:
+	return {
+		"variegation": variegation,
+		"quilted": quilted,
+		"wavy": wavy_edges,
+		"tone_under": underside_tone,
+	}
+
+
+# Unified grow path for the new (post-expansion) leaf forms. Each shape has
+# a sensible default node placement; the builder is dispatched on `kind`.
+# Returns the placed leaf_node's voxel array via _bake_leaf into _leaf_groups.
+func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
+		photo_offset: Vector2, kind: String) -> void:
+	var leaf_node := Node3D.new()
+	var side: float = 1.0 if (current_height % 2 == 0) else -1.0
+	# Epiphytes with a rhizome trunk attach each new leaf at the next
+	# attachment point along the trunk, cycling through. Reads as the
+	# rhizome producing leaves along its length — not all stacked at base.
+	# Non-epiphytes use the legacy vertical stacking.
+	if is_epiphyte and _rhizome_attach_points.size() > 0:
+		var attach: Vector3 = _rhizome_attach_points[
+			current_height % _rhizome_attach_points.size()]
+		leaf_node.position = attach + Vector3(
+			photo_offset.x * 0.4,
+			VOXEL_SIZE * 0.35,
+			photo_offset.y * 0.4,
+		)
+		# Leaves emerge perpendicular to the rhizome direction.
+		leaf_node.rotation.y = side * 0.35 + randf_range(-0.2, 0.2)
+	else:
+		var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.55
+		leaf_node.position = _clamp_growth_offset(Vector3(
+			lat + photo_offset.x,
+			current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4,
+			photo_offset.y,
+		))
+		leaf_node.rotation.y = side * 0.35 + rel * 0.18
+	# Apply emersed-form size boost when the plant is still in its first
+	# minute. Linear fade so the transition reads as growth changing form.
+	var emersed_k: float = clampf(_emersed_remaining / EMERSED_DURATION_S, 0.0, 1.0)
+	var lsm: float = clampf(leaf_size_mult * (1.0 + emersed_k * 0.15), 0.5, 1.8)
+	var mods: Dictionary = _leaf_mods()
+	# Stem internode — visible thin stem segment for whorled-leaf plants
+	# (Rotala, Limnophila). Without this they read as a stack of leaves
+	# with no stem connecting them. Skipped for epiphytes (the rhizome IS
+	# the visible structural element).
+	if whorled_leaves and not is_epiphyte:
+		var stem_color: Color = (ramp[1] as Color).darkened(0.05) \
+			if ramp.size() > 1 else Color8(60, 80, 40)
+		var stem_mi := MeshInstance3D.new()
+		stem_mi.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.18))
+		stem_mi.material_override = VoxelMat.make_foliage(stem_color)
+		stem_mi.position = leaf_node.position + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
+		add_child(stem_mi)
+		voxels.append(stem_mi)
+	var leaf_voxels: Array = []
+	match kind:
+		"spade":
+			var sl: int = clampi(int(leaf_length * lsm), 3, 8)
+			var sw: int = clampi(int(3.0 * lsm + 0.5), 2, 5)
+			leaf_voxels = LeafShapes.build_spade(ramp, age_frac, sl, sw, mods)
+		"cordate":
+			# Cordate leaves stay flat-ish; bias rotation to camera plane.
+			leaf_node.rotation.y = side * 0.2
+			leaf_voxels = LeafShapes.build_cordate(ramp, age_frac, mods)
+		"pinnate":
+			var pl: int = clampi(int(leaf_length * lsm), 3, 7)
+			leaf_voxels = LeafShapes.build_pinnate(pl, ramp, age_frac, mods)
+		"starburst":
+			# Starburst is a one-time rosette; only build at very low height
+			# (the rosette IS the plant) — otherwise it stacks weirdly.
+			if current_height > 2:
+				_grow_column_voxel(ramp, rel, photo_offset)
+				leaf_node.free()
+				return
+			var blades: int = clampi(int(7.0 * lsm), 5, 12)
+			var blade_len: int = clampi(int(leaf_length * lsm), 3, 7)
+			leaf_voxels = LeafShapes.build_starburst(
+				blades, blade_len, ramp, age_frac, mods)
+		"four_leaf":
+			# Marsilea is a carpet rosette; only one cross per "plant".
+			if current_height > 1:
+				_grow_column_voxel(ramp, rel, photo_offset)
+				leaf_node.free()
+				return
+			leaf_voxels = LeafShapes.build_four_leaf(ramp, age_frac, mods)
+		"fingered":
+			var fl: int = clampi(int(leaf_length * lsm), 4, 8)
+			leaf_voxels = LeafShapes.build_fingered(fl, ramp, age_frac, 3, mods)
+		"downy":
+			leaf_voxels = LeafShapes.build_downy(ramp, age_frac, mods)
+		"round":
+			# Pads sit flat — kill the tilt and lay them on the surface plane.
+			leaf_node.rotation = Vector3.ZERO
+			var radius: int = clampi(int(2.0 * lsm), 2, 4)
+			leaf_voxels = LeafShapes.build_round_pad(radius, ramp, age_frac, mods)
+		"oval":
+			leaf_voxels = LeafShapes.build_oval(ramp, age_frac)
+		"lobed":
+			var ll: int = clampi(int(leaf_length * lsm), 3, 8)
+			leaf_voxels = LeafShapes.build_lobed(ll, ramp, age_frac)
+		_:
+			_grow_column_voxel(ramp, rel, photo_offset)
+			leaf_node.free()
+			return
+	if leaf_voxels.is_empty():
+		leaf_node.free()
+		return
+	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+	_leaf_ages.append(_t)
+	leaf_node.free()
+
+
 func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	var accent: Color = ramp[clampi(int(rel * 5.0), 0, 5)]
 	# n is a transient transform holder; accessory voxels bake into the foliage
@@ -908,6 +1217,60 @@ func _build_stressed_ramp(base_ramp: Array) -> Array:
 		var sc: Color = LeafShapes.stress_color(c as Color, stress_amt, STRESS_RAMP)
 		stressed.append(sc)
 	return stressed
+
+
+# Compute the "anthocyanin response" ramp — the brighter half of the ramp
+# (sun-facing leaves) is lerped toward a red/orange/magenta target color
+# proportional to:
+#   red_potential * light * (1 - shade) * (0.6 + 0.4 * co2_met)
+# Where co2_met = co2_level >= co2_demand (smooth).
+# Real-tank parallel: red plants need high light + CO2 + lean nitrogen to
+# produce visible anthocyanin. We approximate the lean-N requirement via
+# the health/stress system implicitly — plants under nutrient stress get
+# less green chlorophyll showing, letting the red drive through.
+func _red_boosted_ramp(base_ramp: Array) -> Array:
+	if base_ramp.size() < 4 or red_potential <= 0.0:
+		return base_ramp
+	var sim_d: Node = _find_sim()
+	var light: float = 1.0
+	if sim_d != null and sim_d.has_method("daylight"):
+		light = clampf(float(sim_d.daylight()), 0.0, 1.0)
+	var shade_term: float = clampf(_shade_mult, 0.5, 1.0)
+	var co2_now: float = 0.0
+	if sim_d != null and sim_d.has_method("co2_level"):
+		co2_now = sim_d.co2_level()
+	# Smooth co2_met: 0 when CO2 << demand, 1 when CO2 >= demand
+	var co2_met: float = clampf((co2_now - co2_demand * 0.3) / maxf(co2_demand, 0.001), 0.0, 1.0)
+	# Light spectrum multiplier — warm bulbs (>0.5) boost reds, cool bulbs
+	# (<0.5) dampen them. Effect is mild (±35%) so it composes with the
+	# bigger drivers (red_potential × light × co2_met).
+	var spectrum: float = 0.5
+	if sim_d != null and sim_d.has_method("light_spectrum"):
+		spectrum = sim_d.light_spectrum()
+	var spectrum_mult: float = 0.65 + spectrum * 0.7
+	var k: float = red_potential * light * shade_term * (0.55 + 0.45 * co2_met) * spectrum_mult
+	if k < 0.05:
+		return base_ramp
+	# Red target reads from the ramp's existing top color and lerps toward
+	# a saturated red/magenta — we want "this plant's red", not arbitrary.
+	# When ramp_override already has red bias (e.g. Ludwigia Super Red),
+	# the lerp is gentle; when ramp is green, the lerp transforms.
+	var hot: Color = Color(0.92, 0.32, 0.32)
+	# Tinted hot: pull toward whatever the ramp's top color suggests so a
+	# magenta-leaning ramp goes magenta and a peach-leaning ramp goes
+	# orange. 30% of "hot" comes from ramp_top, 70% from our default.
+	var top: Color = base_ramp[base_ramp.size() - 1]
+	hot = hot.lerp(Color(top.r * 1.2, top.g * 0.55, top.b * 0.55), 0.30)
+	var out: Array = []
+	for i in base_ramp.size():
+		var rel: float = float(i) / float(base_ramp.size() - 1)
+		# Only the bright half (rel > 0.4) shifts — base / shade voxels keep
+		# their original tone, giving the gradient a visible "red on top,
+		# green at base" silhouette like a real Rotala H'ra stem.
+		var per_voxel_k: float = k * smoothstep(0.4, 1.0, rel)
+		var c: Color = (base_ramp[i] as Color).lerp(hot, per_voxel_k)
+		out.append(c)
+	return out
 
 
 func biomass() -> int:
@@ -1217,6 +1580,34 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_recompute_shade()
 	nutrient_mult *= _shade_mult
 
+	# Substrate boost: heavy root feeders (crypts, swords, anything with
+	# is_carpet=false AND non-epiphyte AND tall max_height) get a +20%
+	# nutrient_mult when planted in aquasoil / eco_complete, and a −20%
+	# penalty in sand / gravel. Epiphytes ignore the substrate entirely.
+	# Pulls substrate_type from TankConfig once per tick — cheap.
+	if not is_epiphyte:
+		var cfg: Node = get_node_or_null("/root/TankConfig")
+		if cfg != null:
+			var st_v: Variant = cfg.get("substrate_type")
+			if st_v != null:
+				var st: String = String(st_v)
+				var is_heavy_feeder: bool = max_height >= 12 and not is_carpet
+				if is_heavy_feeder:
+					match st:
+						"aquasoil", "eco_complete":
+							nutrient_mult *= 1.20
+						"sand", "inert_gravel":
+							nutrient_mult *= 0.80
+				# CO2-met plants also get a modest growth boost since they
+				# can keep up with their potential — visible "lush dosed tank"
+				# effect on the carpet zone.
+				var sim_d_n: Node = _find_sim()
+				if sim_d_n != null and sim_d_n.has_method("co2_level"):
+					var co2_n: float = sim_d_n.co2_level()
+					if co2_n > 0.3 and co2_demand > 0.4:
+						nutrient_mult *= 1.0 + minf(co2_n - 0.3, 0.4) * 0.3
+		nutrient_mult = clampf(nutrient_mult, 0.0, 1.5)
+
 	# Health trends toward nutrient satisfaction, with slow decay when starved.
 	var target_health: float = 0.35 + 0.65 * nutrient_mult
 	health = lerpf(health, target_health, dt * 0.03) # slower health changes
@@ -1328,6 +1719,37 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Vegetative spread via runners (ribbon-form plants only).
 	_tick_runner(dt)
 
+	# Emersed → submersed transition. While remaining > 0 the plant
+	# reads as larger and slightly warmer-colored; new growth picks up
+	# the modified leaf_size_mult via _emersed_size_boost(). Real-tank
+	# parallel: plants come in from emersed cultivation looking different
+	# from how they grow underwater.
+	if _emersed_remaining > 0.0:
+		_emersed_remaining = maxf(0.0, _emersed_remaining - dt)
+
+	# Crypt melt trigger: when chemistry crashes (ammonia + nitrite spike)
+	# and this species is susceptible, fire the existing trigger_crypt_melt
+	# pipeline. Real-world parallel: Crypts drop all leaves on chemistry
+	# shock and regrow over days. Gated so re-arming requires the storm to
+	# clear (MELT_REARM_S) and rolled against susceptibility.
+	if melt_susceptibility >= 0.4 and not _melt_active:
+		var now_unix: int = int(Time.get_unix_time_from_system())
+		if now_unix - _last_melt_unix >= MELT_REARM_S:
+			var sim_d: Node = _find_sim()
+			if sim_d != null and sim_d.get("water_chemistry") != null:
+				var nh3: float = float(sim_d.water_chemistry.ammonia)
+				var no2: float = float(sim_d.water_chemistry.nitrite)
+				if nh3 + no2 > MELT_TRIGGER_AMMONIA \
+						and randf() < melt_susceptibility * dt * 0.5:
+					_last_melt_unix = now_unix
+					trigger_crypt_melt()
+					if sim_d.has_method("log_story_event"):
+						var label: String = common_name if common_name != "" \
+							else (plant_name if plant_name != "" else "A crypt")
+						sim_d.log_story_event(
+							"%s is melting — leaves dropping, will regrow from the rhizome."
+							% label)
+
 
 func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) -> void:
 	_tick_flowering(dt)
@@ -1350,7 +1772,20 @@ func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) ->
 # stretch. Skips if not mature enough, the cooldown is still active, or
 # this individual is already running one.
 func _tick_runner(dt: float) -> void:
-	if leaf_form != "ribbon":
+	# Ribbon plants (Vallisneria/Sag) and carpet species (MC/HC/hairgrass)
+	# both spread by runner — carpets fire faster + at lower minimum height
+	# so a Monte Carlo tile actually fills its zone in reasonable time.
+	# Plantlet plants (Java fern, Echinodorus) also use this path, gated
+	# on has_plantlets — the visual is "a baby growing on a leaf tip,
+	# detaching, rooting nearby" rather than a long horizontal stolon.
+	var eligible: bool = false
+	if leaf_form == "ribbon" and current_height >= 8:
+		eligible = true
+	if is_carpet and current_height >= 1:
+		eligible = true
+	if has_plantlets and current_height >= 4:
+		eligible = true
+	if not eligible:
 		return
 	if _runner_active:
 		_advance_runner(dt)
@@ -1358,9 +1793,8 @@ func _tick_runner(dt: float) -> void:
 	_runner_cooldown = maxf(0.0, _runner_cooldown - dt)
 	if _runner_cooldown > 0.0:
 		return
-	if current_height < 8 or is_dying:
+	if is_dying:
 		return
-	# Don't endlessly spam runners if the parent plant is unhealthy.
 	if health < 0.55:
 		return
 	_begin_runner()
@@ -1419,10 +1853,38 @@ func _finalize_runner() -> void:
 			# Inherit ramp but with very mild drift so the daughter is
 			# clearly the same species.
 			var mutated_ramp: Array = ramp_override.duplicate() if ramp_override.size() == 6 else PLANT_RAMP.duplicate()
-			w.spawn_seedling(world_pos, mutated_ramp, generation + 1, get_seed_config())
+			# Carry full genome including new traits via get_seed_config,
+			# AND mark no_mutate for carpet/plantlet propagation so the
+			# daughter reads as the same species rather than slowly drifting
+			# into something else.
+			var cfg: Dictionary = get_seed_config()
+			if is_carpet or has_plantlets:
+				cfg["no_mutate"] = true
+			cfg["variegation"] = variegation
+			cfg["quilted"] = quilted
+			cfg["wavy_edges"] = wavy_edges
+			cfg["iridescence"] = iridescence
+			cfg["red_potential"] = red_potential
+			cfg["co2_demand"] = co2_demand
+			cfg["melt_susceptibility"] = melt_susceptibility
+			cfg["has_plantlets"] = has_plantlets
+			cfg["is_carpet"] = is_carpet
+			cfg["whorled_leaves"] = whorled_leaves
+			cfg["leaf_size_mult"] = leaf_size_mult
+			cfg["latin_name"] = latin_name
+			cfg["common_name"] = common_name
+			cfg["species_id"] = species_id
+			w.spawn_seedling(world_pos, mutated_ramp, generation + 1, cfg)
 	_runner_active = false
 	_runner_progress = 0.0
-	_runner_cooldown = randf_range(RUNNER_COOLDOWN_MIN, RUNNER_COOLDOWN_MAX)
+	# Carpet species fire more often than vallisneria — that's what makes
+	# them carpet. Plantlets sit between the two.
+	if is_carpet:
+		_runner_cooldown = randf_range(35.0, 70.0)
+	elif has_plantlets:
+		_runner_cooldown = randf_range(60.0, 120.0)
+	else:
+		_runner_cooldown = randf_range(RUNNER_COOLDOWN_MIN, RUNNER_COOLDOWN_MAX)
 
 
 # ---- Flowering lifecycle ----
@@ -1650,25 +2112,41 @@ func _cast_root_shadow() -> void:
 
 
 func _tick_pearling(_dt: float) -> void:
-	if not _pearling_eligible:
-		return
+	# CO2-met plants become pearling-eligible even when the genome rng didn't
+	# pick them at spawn time — that's how real CO2-injected tanks light up
+	# half their stems with champagne bubbles instead of the random subset.
 	var sim_driver: Node = _find_sim()
 	if sim_driver == null:
+		return
+	var co2_now: float = 0.0
+	if sim_driver.has_method("co2_level"):
+		co2_now = sim_driver.co2_level()
+	var co2_met: float = clampf((co2_now - co2_demand * 0.3) / maxf(co2_demand, 0.001), 0.0, 1.0)
+	if not _pearling_eligible and co2_met > 0.6 and randf() < 0.04:
+		# Promote this plant into the pearling pool when CO2 is dosed. The
+		# random gate spreads the promotion across ticks so a sudden CO2
+		# bump doesn't turn every plant on simultaneously.
+		_pearling_eligible = true
+		_pearling_strength = randf_range(0.6, 1.1)
+	if not _pearling_eligible:
 		return
 	var o2: float = float(sim_driver.get("dissolved_o2"))
 	var daylight: float = 1.0
 	if sim_driver.has_method("daylight"):
 		daylight = sim_driver.daylight()
 	# Pearl when: O2 super-saturated + bright light + plant healthy + tall
-	# enough that you'd actually see the bubble stream. Intensity is now
-	# graded rather than binary so the stream visibly thickens with a
-	# bigger, healthier plant under brighter light, and thins as those
-	# inputs drop — real planted-tank pearling fades in/out, it doesn't
-	# pop. Total amount = O2 saturation × light × health × biomass-factor.
+	# enough that you'd actually see the bubble stream. CO2-met plants
+	# get a multiplicative boost so a dosed tank reads dramatically — the
+	# difference between an okay tank and an aquascaping-magazine tank is
+	# visible bubble streams on most of the stems.
 	var pearl_factor: float = clampf((o2 - 0.78) / 0.22, 0.0, 1.0) \
 		* clampf((daylight - 0.45) / 0.55, 0.0, 1.0) \
 		* clampf((health - 0.55) / 0.45, 0.0, 1.0) \
 		* clampf(float(current_height - 3) / 12.0, 0.0, 1.0)
+	# CO2 multiplier: 1.0 at no-CO2, up to 2.2× when fully dosed AND the
+	# plant's co2_demand is being met. Pearling cranks visibly under good
+	# conditions, fades to subtle under poor ones.
+	pearl_factor *= (1.0 + co2_met * 1.2)
 	var global_damp: float = 1.0
 	var should_pearl: bool = pearl_factor > 0.10
 	if should_pearl and sim_driver.has_method("try_claim_pearling_slot"):
@@ -2081,7 +2559,12 @@ func _phototropic_offset() -> Vector2:
 	var cfg := _find_sim()
 	if cfg == null:
 		return Vector2.ZERO
-	var tc := cfg.get_node("/root/TankConfig") if cfg.has_node("/root/TankConfig") else null
+	# Resolve TankConfig autoload explicitly — the conditional branch types
+	# are different (Node vs null) so split into a real if/else to silence
+	# the ternary-type-mismatch warning.
+	var tc: Node = null
+	if cfg.has_node("/root/TankConfig"):
+		tc = cfg.get_node("/root/TankConfig")
 	if tc == null:
 		return Vector2.ZERO
 	var yaw_rad: float = float(tc.light_yaw) * TAU

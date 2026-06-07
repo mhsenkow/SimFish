@@ -206,6 +206,34 @@ func get_player_glance() -> Dictionary:
 	}
 
 
+# Read the user's CO2 dosing config (0..1). Plants compare against their
+# own co2_demand to compute growth + color + pearling response. The
+# config is in TankConfig (set via the settings panel); we wrap it here
+# so plants can query a single owner instead of touching TankConfig direct.
+func co2_level() -> float:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 0.0
+	var v: Variant = cfg.get("co2_level")
+	if v == null:
+		return 0.0
+	return clampf(float(v), 0.0, 1.0)
+
+
+# Light spectrum 0..1 (cool→warm). Used by plant red intensification:
+# warm-leaning bulbs boost red plants further, cool-leaning bulbs dampen
+# them. Same plumbing pattern as co2_level — single read, cached implicitly
+# by the per-tick caller.
+func light_spectrum() -> float:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 0.5
+	var v: Variant = cfg.get("light_spectrum")
+	if v == null:
+		return 0.5
+	return clampf(float(v), 0.0, 1.0)
+
+
 # Shift+click glass tap — brief attract pulse so bold fish drift toward the ripple.
 func pulse_glass_tap(world_pos: Vector3) -> void:
 	_player_glance_point = world_pos
@@ -1627,8 +1655,23 @@ func _tick(dt: float) -> void:
 				col = Color8(60, 105, 50)
 			Algae.AlgaeKind.HAIR:
 				col = Color8(125, 175, 80)
+			Algae.AlgaeKind.GDA:
+				col = Color8(145, 195, 95)
+			Algae.AlgaeKind.BBA:
+				col = Color8(28, 30, 26)  # near-black dark filaments
+			Algae.AlgaeKind.DIATOM:
+				col = Color8(165, 142, 92)  # tan brown
+			Algae.AlgaeKind.CYANO:
+				col = Color8(62, 142, 132)  # distinctive blue-green
 		a.init(col, kind)
 		algae.append(a)
+		# Cyano bloom is the smelly-water signal real keepers know — log a
+		# one-time story event the first time it appears this session so the
+		# player knows what they're looking at.
+		if kind == Algae.AlgaeKind.CYANO and not _logged_first_cyano:
+			_logged_first_cyano = true
+			log_story_event(
+				"Blue-green algae (cyanobacteria) has appeared — smells musky and signals nutrient imbalance. Increase aeration, dose less.")
 	# Tick existing algae. Crash phase: when plants are healthy (biomass
 	# high) AND nutrients have dropped (n_total low), algae die faster.
 	# This is the visible "plants outcompete the bloom" payoff that closes
@@ -3057,6 +3100,9 @@ var story_events: Array = []
 var _logged_first_egg: bool = false
 var _logged_first_hatch: bool = false
 var _logged_first_death: bool = false
+# One-shot story event flag for cyanobacteria appearance — the iconic "smelly
+# water" indicator gets a single contextual log on first sighting.
+var _logged_first_cyano: bool = false
 
 
 func log_story_event(text: String) -> void:

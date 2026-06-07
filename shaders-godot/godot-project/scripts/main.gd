@@ -2655,6 +2655,24 @@ func _apply_display_layout() -> void:
 	var scale_y: float = floorf(win.y / sv.y)
 	var n: float = maxf(1.0, minf(scale_x, scale_y))
 	var out_size: Vector2 = sv * n
+	# Coverage guard — if integer scaling would shrink the tank to less
+	# than 70% of the window dimension on either axis, the letterboxing
+	# is worse than the shimmer it's supposed to fix. Fall back to the
+	# stretched full-rect layout in that case so the player isn't staring
+	# at a tiny tank inside a huge black border. This typically fires when
+	# the render resolution is high relative to a small window.
+	var coverage_x: float = out_size.x / win.x
+	var coverage_y: float = out_size.y / win.y
+	if coverage_x < 0.70 or coverage_y < 0.70:
+		display.anchor_left = 0.0
+		display.anchor_top = 0.0
+		display.anchor_right = 1.0
+		display.anchor_bottom = 1.0
+		display.offset_left = 0.0
+		display.offset_top = 0.0
+		display.offset_right = 0.0
+		display.offset_bottom = 0.0
+		return
 	var origin: Vector2 = ((win - out_size) * 0.5).floor()
 	display.anchor_left = 0.0
 	display.anchor_top = 0.0
@@ -4463,12 +4481,14 @@ func _on_sun_pad_input(ev: InputEvent, pad: Control) -> void:
 	var sz: Vector2 = pad.size
 	if sz.x <= 0.0 or sz.y <= 0.0:
 		return
-	var yaw: float = clampf(pos.x / sz.x, 0.0, 1.0)
-	var pitch: float = clampf(pos.y / sz.y, 0.0, 1.0)
+	# Locals named `light_yaw_v` / `light_pitch_v` to avoid shadowing the
+	# camera's `yaw` / `pitch` class members at line 180/181.
+	var light_yaw_v: float = clampf(pos.x / sz.x, 0.0, 1.0)
+	var light_pitch_v: float = clampf(pos.y / sz.y, 0.0, 1.0)
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg != null:
-		cfg.light_yaw = yaw
-		cfg.light_pitch = pitch
+		cfg.light_yaw = light_yaw_v
+		cfg.light_pitch = light_pitch_v
 	pad.queue_redraw()
 	_light_mark_custom()
 
@@ -4487,9 +4507,10 @@ func _on_sun_pad_draw(pad: Control) -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
-	var yaw: float = clampf(float(cfg.light_yaw), 0.0, 1.0)
-	var pitch: float = clampf(float(cfg.light_pitch), 0.0, 1.0)
-	var p: Vector2 = Vector2(yaw * sz.x, pitch * sz.y)
+	# See _on_sun_pad_input — these locals avoid shadowing camera yaw/pitch.
+	var light_yaw_v: float = clampf(float(cfg.light_yaw), 0.0, 1.0)
+	var light_pitch_v: float = clampf(float(cfg.light_pitch), 0.0, 1.0)
+	var p: Vector2 = Vector2(light_yaw_v * sz.x, light_pitch_v * sz.y)
 	pad.draw_circle(p, 5.0, Color(1.0, 0.85, 0.45, 0.9))
 	pad.draw_circle(p, 2.0, Color(1.0, 1.0, 1.0, 1.0))
 

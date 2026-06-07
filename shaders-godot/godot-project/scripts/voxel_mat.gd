@@ -22,8 +22,20 @@ static var _fauna_mat_cache: Dictionary = {}
 static var _mesh_cache: Dictionary = {}
 
 const FAUNA_SATURATION: float = 1.30
-const FAUNA_VALUE: float = 1.12
-const FAUNA_LIGHTEN: float = 0.05
+# Originally 1.12. Bumping past ~1.15 makes the palette-quantize dither
+# pattern read as a visible grid on bright fish — neighbouring palette
+# entries land too far apart in value. 1.14 keeps fauna slightly above
+# plants without tripping the dither moiré.
+const FAUNA_VALUE: float = 1.14
+const FAUNA_LIGHTEN: float = 0.05    # restored from 0.07 — same dither reason
+# Plants get a separate, more aggressive saturation push so the greens
+# read as planted-tank-green rather than muted forest-green. Reds + tans
+# (stems, leaf undersides, bronze new growth) keep the base boost so they
+# don't oversaturate into neon.
+const FOLIAGE_GREEN_SATURATION: float = 1.55  # hue in green band
+const FOLIAGE_OTHER_SATURATION: float = 1.30  # all other hues
+const FOLIAGE_VALUE: float = 1.08             # subtler than fauna so plants
+                                              # don't outshine creatures
 
 
 static func boost_life_color(color: Color) -> Color:
@@ -32,6 +44,25 @@ static func boost_life_color(color: Color) -> Color:
 	var h: float = color.h
 	var s: float = clampf(color.s * FAUNA_SATURATION, 0.0, 1.0)
 	var v: float = clampf(color.v * FAUNA_VALUE + FAUNA_LIGHTEN, 0.0, 1.0)
+	return Color.from_hsv(h, s, v, color.a)
+
+
+# Plant-specific color boost. Pushes greens to "vibrant aquarium green"
+# saturation while keeping other hues (red/copper/bronze leaf accents)
+# at the default boost. Reads naturally on the existing palette ramps
+# without breaking red plants like Ludwigia / Rotala macrandra.
+# Green band in Godot's HSV is roughly hue 0.22..0.42 (≈80°..150°).
+static func boost_foliage_color(color: Color) -> Color:
+	if color.a < 0.04:
+		return color
+	var h: float = color.h
+	var sat_mult: float
+	if h >= 0.22 and h <= 0.42:
+		sat_mult = FOLIAGE_GREEN_SATURATION
+	else:
+		sat_mult = FOLIAGE_OTHER_SATURATION
+	var s: float = clampf(color.s * sat_mult, 0.0, 1.0)
+	var v: float = clampf(color.v * FOLIAGE_VALUE, 0.0, 1.0)
 	return Color.from_hsv(h, s, v, color.a)
 
 
@@ -87,7 +118,10 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	if _fauna_mat_cache.has(cache_key):
 		return _fauna_mat_cache[cache_key]
 	var m: ShaderMaterial = make(boosted).duplicate()
-	m.set_shader_parameter("color_vibrancy", 1.20)
+	# 1.24 — was 1.32 which over-saturated bright fish into the palette
+	# quantize's dither-grid territory. 1.24 still rides above foliage
+	# (1.22 below) without tripping moiré on fish bodies.
+	m.set_shader_parameter("color_vibrancy", 1.24)
 	_fauna_mat_cache[cache_key] = m
 	return m
 
@@ -146,16 +180,23 @@ static func _get_foliage_shader() -> Shader:
 static var _foliage_mat_cache: Dictionary = {}
 
 static func make_foliage(color: Color) -> ShaderMaterial:
-	var boosted: Color = boost_life_color(color)
+	# Plants use the green-aware boost so canopy reads as vibrant aquarium
+	# green while still letting red plants (Ludwigia, Rotala, AR) keep
+	# their saturated reds. Shader color_vibrancy is bumped 1.16 → 1.28
+	# to push the plants visibly past their old muted-green look.
+	var boosted: Color = boost_foliage_color(color)
 	var cache_key: Color = Color(
 		snappedf(boosted.r, 0.01), snappedf(boosted.g, 0.01), snappedf(boosted.b, 0.01))
 	if _foliage_mat_cache.has(cache_key):
 		return _foliage_mat_cache[cache_key]
-		
+
 	var m := ShaderMaterial.new()
 	m.shader = _get_foliage_shader()
 	m.set_shader_parameter("albedo", boosted)
-	m.set_shader_parameter("color_vibrancy", 1.16)
+	# 1.22 — was 1.28. Plants kept the green-aware boost in
+	# boost_foliage_color so they still read vibrant, but lowering the
+	# shader vibrancy a notch reduces palette banding on dense leaves.
+	m.set_shader_parameter("color_vibrancy", 1.22)
 	_foliage_mat_cache[cache_key] = m
 	return m
 

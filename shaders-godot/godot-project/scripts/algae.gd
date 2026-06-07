@@ -19,7 +19,11 @@ const VOXEL_SIZE: float = 0.12
 #   SURFACE  — flat scum on the water surface, single wide thin sheet
 #   HAIR     — tall filamentous strands attached near a rock or driftwood
 #   GSA      — green-spot algae, tiny tightly-packed dots on the tank glass
-enum AlgaeKind { CLUSTER, SURFACE, HAIR, GSA }
+#   GDA      — green dust algae, micro fuzz spread across glass at higher density
+#   BBA      — black beard algae, dark fine filaments on slow-growers + filter outlets
+#   DIATOM   — brown diatoms, dull tan sheet on substrate + glass in new tanks
+#   CYANO    — blue-green sheet, distinct teal color, the "smelly mat" indicator
+enum AlgaeKind { CLUSTER, SURFACE, HAIR, GSA, GDA, BBA, DIATOM, CYANO }
 
 # Up to 5 voxels make up the cluster; new ones appear at growth milestones.
 # Each voxel is a per-instance entry in a per-cluster MultiMesh batch — one
@@ -47,6 +51,25 @@ func init(color: Color = Color8(120, 165, 60), kind: int = AlgaeKind.CLUSTER) ->
 			_add_voxel(Vector3.ZERO, 1.0, Vector3(0.22, 1.4, 0.22))
 		AlgaeKind.GSA:
 			_add_voxel(Vector3.ZERO, 0.7)
+		AlgaeKind.GDA:
+			# Green dust algae: tiny micro-flecks spread across a wider patch.
+			# Initial size: a thin disc of fuzz, ~3-4 specks.
+			_add_voxel(Vector3.ZERO, 0.5)
+			for i in 3:
+				var a: float = randf() * TAU
+				var r: float = randf_range(0.10, 0.20)
+				_add_voxel(Vector3(cos(a) * r, 0.0, sin(a) * r), 0.42)
+		AlgaeKind.BBA:
+			# Black beard algae: a thin dark filamentous strand. Spawn as a
+			# single tall strand; growth phase adds adjacent filaments.
+			_add_voxel(Vector3.ZERO, 0.85, Vector3(0.18, 0.95, 0.18))
+		AlgaeKind.DIATOM:
+			# Brown diatoms: a soft tan mat patch. Wider + flatter than GSA.
+			_add_voxel(Vector3.ZERO, 1.2, Vector3(1.8, 0.10, 1.8))
+		AlgaeKind.CYANO:
+			# Blue-green sheet: distinctively teal cyanobacterial mat. The
+			# "smelly water" indicator algae.
+			_add_voxel(Vector3.ZERO, 1.4, Vector3(2.0, 0.16, 2.0))
 		_:
 			_add_voxel(Vector3.ZERO, 1.0)
 

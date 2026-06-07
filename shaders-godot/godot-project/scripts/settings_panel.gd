@@ -54,6 +54,11 @@ var _ai_model_edit: LineEdit
 var _ai_theme_edit: LineEdit
 var _ai_status_label: Label
 var _ai_status_timer: float = 0.0
+var _co2_slider: HSlider
+var _co2_label: Label
+var _spectrum_slider: HSlider
+var _spectrum_label: Label
+var _aquascape_feedback: Label
 # Snapshot taken when the panel opens. Preset/substrate stay staged here until
 # Apply so autosave can't write a new preset header over an old fauna list.
 var _panel_snapshot: Dictionary = {}
@@ -269,6 +274,66 @@ func _build_ui() -> void:
 	_aeration_x = PanelTheme.add_slider_row(vbox_env, "Position (left↔right)", -1.0, 1.0, 0.05,
 		_aeration_x_label)
 	_aeration_x.value_changed.connect(func(v): _on_aeration_x(v))
+
+	# -- Aquascape templates --
+	# One-click planting layouts from curated real-world styles. Each pulls
+	# from RealSpeciesLibrary so the planting reads as a coordinated theme
+	# rather than a random scatter. The template ADDS plants live (no
+	# reload required) and immediately autosaves so the new plants survive
+	# the next Apply / reload of the scene.
+	_add_section(vbox_env, "Plants — Aquascape Templates")
+	var aq_desc := PanelTheme.make_description()
+	aq_desc.text = "Drop a curated planting from a real aquascape style. Adds plants live — no Apply needed."
+	vbox_env.add_child(aq_desc)
+	var aq_row1 := HBoxContainer.new()
+	aq_row1.add_theme_constant_override("separation", 6)
+	vbox_env.add_child(aq_row1)
+	for tpl in [["nature", "🌿 Nature"], ["iwagumi", "🪨 Iwagumi"], ["dutch", "🌹 Dutch"]]:
+		var b := PanelTheme.make_secondary_button(tpl[1])
+		var tname: String = tpl[0]
+		b.tooltip_text = _aquascape_template_tooltip(tname)
+		b.pressed.connect(func(): _apply_aquascape_template(tname))
+		aq_row1.add_child(b)
+	var aq_row2 := HBoxContainer.new()
+	aq_row2.add_theme_constant_override("separation", 6)
+	vbox_env.add_child(aq_row2)
+	for tpl2 in [["jungle", "🌳 Jungle"], ["shrimp_tank", "🦐 Shrimp Tank"]]:
+		var b2 := PanelTheme.make_secondary_button(tpl2[1])
+		var tname2: String = tpl2[0]
+		b2.tooltip_text = _aquascape_template_tooltip(tname2)
+		b2.pressed.connect(func(): _apply_aquascape_template(tname2))
+		aq_row2.add_child(b2)
+	# Inline feedback label — sits directly under the buttons so the
+	# "X plants placed" toast is actually visible. Previously the toast
+	# went to the AI status label, which was scrolled off-screen.
+	_aquascape_feedback = Label.new()
+	_aquascape_feedback.add_theme_font_size_override("font_size", 11)
+	_aquascape_feedback.add_theme_color_override("font_color", Color8(180, 195, 220))
+	_aquascape_feedback.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_aquascape_feedback.text = ""
+	vbox_env.add_child(_aquascape_feedback)
+
+	# -- CO2 dosing --
+	# Drives plant growth rate floors, red-pigment intensification, and
+	# pearling bubble streams. Off = passive equilibrium; high = a
+	# pressurized dosing rig supporting demanding species like Rotala
+	# macrandra and HC Cuba.
+	_add_section(vbox_env, "Plants — CO2 dosing")
+	_co2_label = Label.new()
+	_co2_slider = PanelTheme.add_slider_row(vbox_env, "CO2 level", 0.0, 1.0, 0.05, _co2_label)
+	_co2_slider.value_changed.connect(_on_co2_level_changed)
+	var co2_desc := PanelTheme.make_description()
+	co2_desc.text = "0 = off · 0.3 = passive · 0.6 = medium · 1.0 = pressurized. Higher CO2 makes red plants redden and stems pearl visibly."
+	vbox_env.add_child(co2_desc)
+	# Light spectrum slider — cool↔warm LED tuning. Real aquascapers swap
+	# bulbs to bring out reds or greens; we expose the same lever.
+	_spectrum_label = Label.new()
+	_spectrum_slider = PanelTheme.add_slider_row(vbox_env, "Light spectrum",
+		0.0, 1.0, 0.05, _spectrum_label)
+	_spectrum_slider.value_changed.connect(_on_light_spectrum_changed)
+	var sp_desc := PanelTheme.make_description()
+	sp_desc.text = "0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds)."
+	vbox_env.add_child(sp_desc)
 
 	# -- Room --
 	# The "scene" around the tank — desk, wall, lamp, plant. Default is
@@ -494,6 +559,20 @@ func _pull_from_config() -> void:
 			break
 	_preset_option.set_block_signals(false)
 	_update_preset_desc()
+	# CO2 slider
+	if _co2_slider != null:
+		_co2_slider.set_block_signals(true)
+		_co2_slider.value = float(TankConfig.co2_level)
+		_co2_slider.set_block_signals(false)
+		if _co2_label != null:
+			_co2_label.text = "%.2f" % TankConfig.co2_level
+	# Light spectrum slider
+	if _spectrum_slider != null:
+		_spectrum_slider.set_block_signals(true)
+		_spectrum_slider.value = float(TankConfig.light_spectrum)
+		_spectrum_slider.set_block_signals(false)
+		if _spectrum_label != null:
+			_spectrum_label.text = "%.2f" % TankConfig.light_spectrum
 	# AI Companion widgets
 	if _ai_enabled_check != null:
 		_ai_enabled_check.set_block_signals(true)
@@ -544,6 +623,73 @@ func _push_ai_to_director() -> void:
 		"ai_naming_theme": TankConfig.ai_naming_theme,
 		"ai_chronicle": TankConfig.ai_chronicle,
 	})
+
+
+func _apply_aquascape_template(template_name: String) -> void:
+	# Param renamed from `name` (shadows Node.name) so the editor stops
+	# flagging this on every reload.
+	var world: Node = get_tree().root.find_child("World", true, false)
+	if world == null:
+		_set_aquascape_feedback("World not found — can't place plants.", false)
+		return
+	if not world.has_method("apply_aquascape_template"):
+		_set_aquascape_feedback("Template support missing — restart the app.", false)
+		return
+	var planted: int = int(world.apply_aquascape_template(template_name))
+	# Force an immediate autosave so the new plants survive the next
+	# scene reload (Apply, autosave, tank-switch). Without this, hitting
+	# Apply right after templating wipes the plants because save_state
+	# hadn't captured them yet.
+	var main: Node = get_tree().current_scene
+	if main != null and main.has_method("save_active_tank"):
+		main.save_active_tank(true)  # skip_thumbnail
+	var label: String
+	if planted > 0:
+		label = "✓ %s template — %d plants added live. Already saved." % [
+			template_name.capitalize(), planted]
+		_set_aquascape_feedback(label, true)
+	else:
+		label = "%s template — no plants placed (tank may be full or hardscape missing)." \
+			% template_name.capitalize()
+		_set_aquascape_feedback(label, false)
+
+
+func _set_aquascape_feedback(text: String, ok: bool) -> void:
+	if _aquascape_feedback == null:
+		return
+	var col: Color = Color8(150, 230, 150) if ok else Color8(230, 165, 120)
+	_aquascape_feedback.add_theme_color_override("font_color", col)
+	_aquascape_feedback.text = text
+
+
+# Human-readable tooltip describing what each template plants. Shown on
+# button hover so the player knows the style before committing.
+func _aquascape_template_tooltip(template_id: String) -> String:
+	match template_id:
+		"nature":
+			return "Nature aquarium — Monte Carlo carpet (8), Cryptocoryne wendtii (3), Rotala rotundifolia (3), Anubias nana (2), Java fern (1)."
+		"iwagumi":
+			return "Iwagumi minimalist — Dwarf hairgrass carpet (12), Blyxa japonica (1). Pairs best with a few rocks."
+		"dutch":
+			return "Dutch street — Crypt wendtii brown (2), Rotala H'ra (4), Ludwigia Super Red (3), Alternanthera reineckii (2), Java fern (1). Red plant heaven."
+		"jungle":
+			return "Wild jungle — Amazon swords (2), Vallisneria curtain (4), Anubias barteri (3), Dwarf sagittaria (5)."
+		"shrimp_tank":
+			return "Shrimp playground — Monte Carlo (6), Bucephalandra kedagang (2), Java fern Windelov (1), Anubias petite (2), Christmas moss (3)."
+		_:
+			return "Aquascape template."
+
+
+func _on_co2_level_changed(v: float) -> void:
+	TankConfig.co2_level = clampf(v, 0.0, 1.0)
+	if _co2_label != null:
+		_co2_label.text = "%.2f" % v
+
+
+func _on_light_spectrum_changed(v: float) -> void:
+	TankConfig.light_spectrum = clampf(v, 0.0, 1.0)
+	if _spectrum_label != null:
+		_spectrum_label.text = "%.2f" % v
 
 
 func _on_ai_enabled_toggled(on: bool) -> void:

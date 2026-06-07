@@ -149,6 +149,16 @@ void fragment() {
 	// game. Saturated pixels (fauna, coral, plants) get light dither so
 	// silhouettes stay clean.
 	float region_d = mix(dither_strength * 1.10, dither_strength * 0.35, smoothstep(0.18, 0.55, sat));
+	// Luma-aware suppression: as a low-sat region brightens past ~0.55
+	// luma, adjacent palette entries land further apart and the dither
+	// pattern reads as a visible "grid" of chunks instead of smooth noise.
+	// Scale dither toward 0.45× at full bright so the substrate at noon
+	// stops grid-aliasing while dark scenes keep the smooth-gradient
+	// benefit they need. Only applied to LOW-saturation pixels — saturated
+	// fauna/plants already drop to 0.35× via region_d above.
+	float bright_suppress = mix(1.0, 0.45, smoothstep(0.55, 0.95, luma));
+	float low_sat_factor = 1.0 - smoothstep(0.18, 0.55, sat);
+	region_d *= mix(1.0, bright_suppress, low_sat_factor);
 	float eff_dither = mix(dither_strength, region_d, region_aware_dither);
 
 	// ---- Palette-bank candidate selection ----
@@ -253,7 +263,11 @@ void fragment() {
 		float lw1 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb * palette_tint);
 		float dmax_near = max(max(abs(lc - ln1), abs(lc - ls1)),
 		                     max(abs(lc - le1), abs(lc - lw1)));
-		float edge_near = smoothstep(0.10, 0.32, dmax_near);
+		// Threshold raised from 0.10 → 0.18 so dither-pattern luma jitter
+		// (typically 0.03–0.12) stops triggering false outlines on
+		// otherwise-smooth surfaces (substrate, water, fog). Real
+		// silhouettes have a 0.2+ luma jump and still trigger cleanly.
+		float edge_near = smoothstep(0.18, 0.38, dmax_near);
 
 		// Wider-baseline tap to catch silhouettes that survive 2 px out.
 		float ln2 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y * 2.0)).rgb * palette_tint);
@@ -262,10 +276,10 @@ void fragment() {
 		float lw2 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x * 2.0, 0.0)).rgb * palette_tint);
 		float dmax_far = max(max(abs(lc - ln2), abs(lc - ls2)),
 		                    max(abs(lc - le2), abs(lc - lw2)));
-		// Higher threshold for the far tap so only strong silhouettes
-		// promote to the thick band — small ornamental detail stays at
-		// the 1-px line.
-		float edge_far = smoothstep(0.18, 0.42, dmax_far);
+		// Far tap threshold also raised (0.18 → 0.26) — only strong
+		// silhouettes promote to the thick band; small ornamental detail
+		// stays at the 1-px line.
+		float edge_far = smoothstep(0.26, 0.48, dmax_far);
 
 		// Thick band: both fire (close, high-contrast). Thin band: only
 		// near fires. mix() blends darkening factor between the two so

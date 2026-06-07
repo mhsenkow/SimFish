@@ -4,13 +4,27 @@
 # leaf, positioned in local space ready to be parented to a plant node.
 # Leaf shapes are the key visual differentiator between plant species:
 #
-#   paddle  — wide, flat, pointed oval (Cryptocoryne, Amazon Sword)
-#   ribbon  — long, narrow, tapered tip (Vallisneria, Sagittaria)
-#   lance   — medium width, pointed both ends (Ludwigia, Rotala)
-#   needle  — very thin, grass-like (Eleocharis, Hairgrass)
-#   oval    — short, rounded (Anubias, Bucephalandra)
-#   round   — circular pad (lily pads, floating leaves)
-#   lobed   — irregular edges (Java Fern, Bolbitis)
+#   paddle      — wide, flat, pointed oval (Cryptocoryne, Amazon Sword)
+#   ribbon      — long, narrow, tapered tip (Vallisneria, Sagittaria)
+#   lance       — medium width, pointed both ends (Ludwigia, Rotala)
+#   needle      — very thin, grass-like (Eleocharis, Hairgrass)
+#   oval        — short, rounded (Anubias, Bucephalandra)
+#   round       — circular pad (lily pads, floating leaves)
+#   lobed       — irregular edges (Java Fern, Bolbitis)
+#   spade       — broad rounded-spade (Anubias barteri, A. coffeefolia)
+#   cordate     — heart-shaped (Red Root Floater, Limnobium)
+#   pinnate     — fern-divided / lobed (Hygrophila pinnatifida, Bolbitis)
+#   starburst   — radial rosette (Eriocaulon, Blyxa)
+#   four_leaf   — Marsilea-style four-leaf clover
+#   fingered    — branched / trident-lobed (Java Fern Windelov, Trident)
+#   downy       — crinkled-curly mini-rosette (Pogostemon helferi)
+#
+# === Textural modifiers ===
+# All builders accept an optional `modifiers` Dictionary with:
+#   variegation: float  — 0..1, chance per voxel of renders white/cream
+#   quilted: bool       — small per-voxel vertical jitter (Anubias coffeefolia)
+#   wavy: bool          — sine offset along leaf width (Crypt wendtii ruffled)
+#   tone_under: Color   — undercolor used at extreme leaf positions
 #
 # The voxel aesthetic is preserved: leaves are built from BoxMesh voxels
 # arranged to approximate the shape. Dither volume comes from the palette
@@ -20,6 +34,42 @@ extends RefCounted
 class_name LeafShapes
 
 const VOXEL_SIZE: float = 0.32
+
+# ---- Texture modifier helpers ----
+# Apply variegation chance + tone_under venation + iridescent sheen overlay.
+# tone_under_v can be a Color (used near leaf tip) or null (skip).
+# iridescence in 0..1 — Bucephalandra purple/teal grazing-angle shift.
+static func _modify_color(base: Color, t: float, varieg: float,
+		tone_under_v: Variant, iridescence: float = 0.0) -> Color:
+	var c: Color = base
+	if varieg > 0.0 and randf() < varieg:
+		c = Color(
+			randf_range(0.88, 0.96),
+			randf_range(0.92, 0.98),
+			randf_range(0.88, 0.95),
+		)
+	if tone_under_v is Color and t > 0.85:
+		var k: float = (t - 0.85) / 0.15
+		c = c.lerp(tone_under_v, k * 0.35)
+	if iridescence > 0.0:
+		c = iridescent_shift(c, t, iridescence)
+	return c
+
+
+# Apply quilted texture: tiny vertical jitter on the voxel position.
+static func _quilt_offset(quilted: bool, idx: int) -> float:
+	if not quilted:
+		return 0.0
+	# Deterministic per-voxel based on idx so the bumps don't shimmer.
+	var phase: float = float(idx % 7) * 0.9 + float(idx % 3) * 0.3
+	return sin(phase) * VOXEL_SIZE * 0.08
+
+
+# Apply wavy edge: lateral offset on a leaf's edge voxel only.
+static func _wave_x_offset(wavy: bool, dx: int, row: int) -> float:
+	if not wavy or dx == 0:
+		return 0.0
+	return sin(float(row) * 0.6 + float(dx) * 0.5) * VOXEL_SIZE * 0.18
 
 
 # ---- Paddle leaf (rosette plants: Crypts, Swords) ----
@@ -204,6 +254,299 @@ static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
 	return nodes
 
 
+# ---- Spade leaf (Anubias barteri, A. coffeefolia, sword-form epiphytes) ----
+# Broad rounded-spade shape, 3-4 wide × 4-5 tall, plumper than oval, with
+# a noticeable tip taper. Optional quilted texture for coffeefolia.
+static func build_spade(ramp: Array, age_frac: float, length: int = 5,
+		width: int = 3, mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var quilted: bool = bool(mods.get("quilted", false))
+	var wavy: bool = bool(mods.get("wavy", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	for row in length:
+		var t: float = float(row) / float(maxi(1, length - 1))
+		# Spade profile: narrow at base, wide at 60% height, taper to point.
+		var profile: float
+		if t < 0.20:
+			profile = 0.45 + t * 1.75
+		elif t < 0.65:
+			profile = 0.85 + (t - 0.20) * 0.35
+		else:
+			profile = 1.05 - (t - 0.65) * 2.4
+		var row_width: int = clampi(int(float(width) * profile), 1, width + 1)
+		var row_half: int = int(row_width / 2.0)
+		for dx in range(-row_half, row_half + 1):
+			var is_midrib: bool = (dx == 0)
+			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
+			var mi := MeshInstance3D.new()
+			var sy: float = VOXEL_SIZE * 0.4
+			# Tip and base voxels slightly smaller for rounded silhouette.
+			if row == length - 1 or row == 0:
+				sy *= 0.7
+			mi.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.95, sy, VOXEL_SIZE * 0.85))
+			mi.material_override = VoxelMat.make_foliage(color)
+			mi.position = Vector3(
+				float(dx) * VOXEL_SIZE * 0.7 + _wave_x_offset(wavy, dx, row),
+				float(row) * VOXEL_SIZE * 0.72 + _quilt_offset(quilted, row * 3 + dx),
+				0.0,
+			)
+			nodes.append(mi)
+	return nodes
+
+
+# ---- Cordate (heart) leaf (Red Root Floater, Limnobium) ----
+# Heart shape with a notch at the base. 4 voxels wide × 3-4 tall.
+static func build_cordate(ramp: Array, age_frac: float,
+		mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var quilted: bool = bool(mods.get("quilted", false))
+	var wavy: bool = bool(mods.get("wavy", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	# Pattern: 1 = voxel, 0 = empty. Heart shape laid out top-down.
+	var pattern: Array = [
+		[0, 1, 1, 1, 1, 0],  # top (widest)
+		[1, 1, 1, 1, 1, 1],
+		[1, 1, 1, 1, 1, 1],
+		[0, 1, 1, 1, 1, 0],
+		[0, 0, 1, 0, 1, 0],  # base notch
+	]
+	for row in pattern.size():
+		for col in pattern[row].size():
+			if pattern[row][col] == 0:
+				continue
+			var t: float = float(row) / float(pattern.size() - 1)
+			var col_centered: int = col - 3
+			var is_midrib: bool = (col == 2 or col == 3)
+			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.85,
+				VOXEL_SIZE * 0.35,
+				VOXEL_SIZE * 0.85,
+			))
+			mi.material_override = VoxelMat.make_foliage(color)
+			mi.position = Vector3(
+				float(col_centered) * VOXEL_SIZE * 0.7
+					+ _wave_x_offset(wavy, col_centered, row),
+				float(pattern.size() - 1 - row) * VOXEL_SIZE * 0.55
+					+ _quilt_offset(quilted, row * 3 + col),
+				0.0,
+			)
+			nodes.append(mi)
+	return nodes
+
+
+# ---- Pinnate / fern-divided leaf (Hygrophila pinnatifida, Bolbitis) ----
+# A central rachis with paired leaflets branching off. Each leaflet shrinks
+# toward the tip, giving the distinct fern silhouette.
+static func build_pinnate(length: int, ramp: Array, age_frac: float,
+		mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var quilted: bool = bool(mods.get("quilted", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	for i in length:
+		var t: float = float(i) / float(maxi(1, length - 1))
+		var rachis_color: Color = _leaf_color(ramp, t, age_frac, true)
+		# Central rachis (midrib).
+		var stem := MeshInstance3D.new()
+		stem.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.32))
+		stem.material_override = VoxelMat.make_foliage(rachis_color)
+		stem.position = Vector3(0.0, float(i) * VOXEL_SIZE * 0.75
+			+ _quilt_offset(quilted, i), 0.0)
+		nodes.append(stem)
+		# Leaflets: paired, length tapers toward the tip.
+		var leaflet_len: int = clampi(3 - int(t * 2.0), 1, 3)
+		for side in [-1, 1]:
+			for j in leaflet_len:
+				var leaflet := MeshInstance3D.new()
+				var c: Color = _modify_color(
+					_leaf_color(ramp, t, age_frac, j == 0), t, varieg, tone_under_v, iridescence)
+				leaflet.mesh = VoxelMat.get_box(Vector3(
+					VOXEL_SIZE * 0.55,
+					VOXEL_SIZE * 0.35,
+					VOXEL_SIZE * 0.45,
+				))
+				leaflet.material_override = VoxelMat.make_foliage(c)
+				leaflet.position = Vector3(
+					float(side) * (VOXEL_SIZE * 0.55 + float(j) * VOXEL_SIZE * 0.55),
+					float(i) * VOXEL_SIZE * 0.75,
+					0.0,
+				)
+				nodes.append(leaflet)
+	return nodes
+
+
+# ---- Starburst rosette (Eriocaulon, Blyxa) ----
+# Many narrow blades radiating from a central crown.
+static func build_starburst(blades: int, blade_len: int, ramp: Array,
+		age_frac: float, mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	for b in blades:
+		var angle: float = float(b) / float(maxi(1, blades)) * TAU
+		var tilt: float = randf_range(0.15, 0.45) * PI * 0.5
+		for j in blade_len:
+			var t: float = float(j) / float(maxi(1, blade_len - 1))
+			var c: Color = _modify_color(
+				_leaf_color(ramp, t, age_frac, false), t, varieg, tone_under_v, iridescence)
+			var mi := MeshInstance3D.new()
+			var w: float = (1.0 - t * 0.6) * VOXEL_SIZE * 0.3
+			mi.mesh = VoxelMat.get_box(Vector3(w, VOXEL_SIZE * 0.65, w))
+			mi.material_override = VoxelMat.make_foliage(c)
+			var r: float = float(j) * VOXEL_SIZE * 0.55
+			mi.position = Vector3(
+				cos(angle) * r * cos(tilt),
+				sin(tilt) * r,
+				sin(angle) * r * cos(tilt),
+			)
+			nodes.append(mi)
+	return nodes
+
+
+# ---- Four-leaf clover (Marsilea hirsuta) ----
+static func build_four_leaf(ramp: Array, age_frac: float,
+		mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	# Tiny vertical stem.
+	var stem := MeshInstance3D.new()
+	stem.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.25))
+	stem.material_override = VoxelMat.make_foliage(_leaf_color(ramp, 0.0, age_frac, true))
+	stem.position = Vector3.ZERO
+	nodes.append(stem)
+	# Four leaflets at 90° offsets.
+	for i in 4:
+		var angle: float = float(i) * PI * 0.5
+		var leaflet := MeshInstance3D.new()
+		var c: Color = _modify_color(
+			_leaf_color(ramp, 1.0, age_frac, false), 1.0, varieg, tone_under_v, iridescence)
+		leaflet.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.55))
+		leaflet.material_override = VoxelMat.make_foliage(c)
+		leaflet.position = Vector3(
+			cos(angle) * VOXEL_SIZE * 0.55,
+			VOXEL_SIZE * 0.55,
+			sin(angle) * VOXEL_SIZE * 0.55,
+		)
+		nodes.append(leaflet)
+	return nodes
+
+
+# ---- Fingered / Windelov tips (Java fern Windelov, Trident, Bolbitis) ----
+static func build_fingered(length: int, ramp: Array, age_frac: float,
+		fingers: int = 3, mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var quilted: bool = bool(mods.get("quilted", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	var base_len: int = int(length * 0.65)
+	for i in base_len:
+		var t: float = float(i) / float(maxi(1, length - 1))
+		var c: Color = _modify_color(
+			_leaf_color(ramp, t, age_frac, true), t, varieg, tone_under_v, iridescence)
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.4))
+		mi.material_override = VoxelMat.make_foliage(c)
+		mi.position = Vector3(0, float(i) * VOXEL_SIZE * 0.78
+			+ _quilt_offset(quilted, i), 0)
+		nodes.append(mi)
+	var tip_start_y: float = float(base_len) * VOXEL_SIZE * 0.78
+	for f in fingers:
+		var rel: float = float(f) / float(maxi(1, fingers - 1)) - 0.5
+		var fang: float = rel * 0.9
+		var finger_len: int = length - base_len
+		for j in finger_len:
+			var t2: float = float(base_len + j) / float(maxi(1, length - 1))
+			var c2: Color = _modify_color(
+				_leaf_color(ramp, t2, age_frac, false), t2, varieg, tone_under_v, iridescence)
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.32))
+			mi.material_override = VoxelMat.make_foliage(c2)
+			var r: float = float(j) * VOXEL_SIZE * 0.7
+			mi.position = Vector3(
+				sin(fang) * r,
+				tip_start_y + cos(fang) * r,
+				0.0,
+			)
+			nodes.append(mi)
+	return nodes
+
+
+# ---- Downy / Pogostemon helferi ----
+static func build_downy(ramp: Array, age_frac: float,
+		mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	var n: int = 9
+	for i in n:
+		var angle: float = randf() * TAU
+		var r: float = randf_range(0.0, VOXEL_SIZE * 0.6)
+		var t: float = randf_range(0.4, 1.0)
+		var c: Color = _modify_color(
+			_leaf_color(ramp, t, age_frac, false), t, varieg, tone_under_v, iridescence)
+		var mi := MeshInstance3D.new()
+		var sz: float = VOXEL_SIZE * randf_range(0.35, 0.5)
+		mi.mesh = VoxelMat.get_box(Vector3(sz, sz, sz))
+		mi.material_override = VoxelMat.make_foliage(c)
+		mi.position = Vector3(
+			cos(angle) * r,
+			randf_range(0.0, VOXEL_SIZE * 0.5),
+			sin(angle) * r,
+		)
+		mi.rotation.z = randf_range(-0.4, 0.4)
+		nodes.append(mi)
+	return nodes
+
+
+# ---- Round pad (lily pads, surface floaters) ----
+static func build_round_pad(radius: int, ramp: Array, age_frac: float,
+		mods: Dictionary = {}) -> Array:
+	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var tone_under_v: Variant = mods.get("tone_under", null)
+	var r2: int = radius * radius
+	for dx in range(-radius, radius + 1):
+		for dz in range(-radius, radius + 1):
+			if dx * dx + dz * dz > r2:
+				continue
+			var t: float = sqrt(float(dx * dx + dz * dz)) / float(radius)
+			if t > 0.85 and randf() < 0.3:
+				continue
+			var color: Color = _modify_color(
+				_leaf_color(ramp, 1.0 - t, age_frac, false), 1.0 - t, varieg, tone_under_v, iridescence)
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.85))
+			mi.material_override = VoxelMat.make_foliage(color)
+			mi.position = Vector3(
+				float(dx) * VOXEL_SIZE * 0.75,
+				0.0,
+				float(dz) * VOXEL_SIZE * 0.75,
+			)
+			nodes.append(mi)
+	return nodes
+
+
 # ---- Root system ----
 # Downward-branching root voxels anchoring the plant into the substrate.
 static func build_roots(count: int, ramp: Array, depth: float = 1.0) -> Array:
@@ -362,7 +705,31 @@ static func _leaf_color(ramp: Array, t: float, age_frac: float,
 	# Old leaves darken overall.
 	if age_frac > 0.7:
 		color = color.darkened((age_frac - 0.7) * 0.3)
+	# Bronze new-growth tint — Anubias coffeefolia / Crypt brown wendtii
+	# read as bronze-purple when leaves first emerge, then green up over
+	# their first ~minute. We apply a small lerp toward a bronze target
+	# when age_frac is very young (< 0.15).
+	if age_frac < 0.15:
+		var youth: float = 1.0 - age_frac / 0.15
+		var bronze: Color = Color(0.62, 0.40, 0.25)
+		color = color.lerp(bronze, youth * 0.22)
 	return color
+
+
+# Apply Bucephalandra-style iridescent sheen — a view-angle independent
+# soft purple-blue overlay on the brightest voxels. Done CPU-side at
+# build time as a color shift; per-instance shader variants would need
+# the multimesh path to carry an extra custom data slot which is overkill
+# for the visual we want. Called from _modify_color path when the genome
+# carries `iridescence > 0`.
+static func iridescent_shift(base: Color, t: float, strength: float) -> Color:
+	if strength <= 0.0:
+		return base
+	# Stronger near the tip (brightest part of the leaf), zero near base.
+	var k: float = smoothstep(0.4, 1.0, t) * strength
+	# Iridescent target — cool purple/teal with extra value boost.
+	var iri: Color = Color(0.45, 0.42, 0.72)
+	return base.lerp(iri, k * 0.35)
 
 
 # Compute a stress/deficiency color by lerping toward a stress palette.

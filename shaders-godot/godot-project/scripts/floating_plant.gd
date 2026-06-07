@@ -13,7 +13,7 @@
 extends Node3D
 class_name FloatingPlant
 
-const MORPHS: Array[String] = ["duckweed", "frogbit", "salvinia", "water_lettuce"]
+const MORPHS: Array[String] = ["duckweed", "frogbit", "salvinia", "water_lettuce", "red_root"]
 
 # ---- Genome ----
 var morph: String = "duckweed"
@@ -23,6 +23,10 @@ var root_length: float = 0.4
 var base_color: Color = Color8(70, 130, 60)
 var tip_color: Color = Color8(120, 180, 90)
 var spread_rate: float = 1.0     # multiplier on propagation likelihood
+# Red Root Floater (Phyllanthus fluitans) signature trait — roots redden
+# under bright light + low nitrogen. Other floaters keep root_color as the
+# darkened base color.
+var redroot_response: float = 0.0  # 0..1, how strongly roots redden under light
 
 # Per-instance drift phase (set by World).
 var id: String = ""
@@ -36,7 +40,38 @@ func init_genome(g: Dictionary) -> void:
 	base_color = _to_color(g.get("base_color", base_color))
 	tip_color = _to_color(g.get("tip_color", tip_color))
 	spread_rate = clampf(float(g.get("spread_rate", spread_rate)), 0.2, 2.5)
+	redroot_response = clampf(float(g.get("redroot_response", redroot_response)), 0.0, 1.0)
+	# Red Root Floater preset — when the morph is "red_root", coerce
+	# trait defaults to RRF signatures: small cordate leaves, longish
+	# bright-red roots, redroot_response = 1.0.
+	if morph == "red_root":
+		if redroot_response < 0.5:
+			redroot_response = 1.0
+		root_length = clampf(maxf(root_length, 0.6), 0.1, 1.4)
 	_build()
+
+
+# Per-tick update — currently used to react to light by reddening RRF roots.
+# Called from world (every floater) at ~5 Hz cadence. Cheap; only modulates
+# root material color when redroot_response > 0.
+func tick_light_response(daylight: float) -> void:
+	if redroot_response <= 0.0:
+		return
+	# Compute the target root tint: dark green when redroot_response is 0,
+	# bright red when high light × high redroot_response.
+	var redness: float = clampf(redroot_response * daylight, 0.0, 1.0)
+	var dark_root: Color = base_color.darkened(0.35)
+	var red_root: Color = Color(0.78, 0.28, 0.30)
+	var target: Color = dark_root.lerp(red_root, redness * 0.85)
+	# Apply to any child node tagged with "root" in its name. We tag
+	# during build so this is just a name walk + material recolor.
+	for c in get_children():
+		if c is MeshInstance3D and String(c.name).begins_with("root"):
+			var mi: MeshInstance3D = c
+			if mi.material_override is ShaderMaterial:
+				# Cheap re-tint: replace the foliage material with a fresh
+				# one rather than fishing into uniform values.
+				mi.material_override = VoxelMat.make_foliage(target)
 
 
 func get_genome() -> Dictionary:
@@ -60,6 +95,7 @@ func _morph_label() -> String:
 		"frogbit": return "Frogbit"
 		"salvinia": return "Salvinia"
 		"water_lettuce": return "Water lettuce"
+		"red_root": return "Red Root Floater"
 		_: return "Duckweed"
 
 
@@ -72,7 +108,38 @@ func _build() -> void:
 		"frogbit": _build_frogbit()
 		"salvinia": _build_salvinia()
 		"water_lettuce": _build_water_lettuce()
+		"red_root": _build_red_root()
 		_: _build_duckweed()
+
+
+# Red Root Floater (Phyllanthus fluitans) — small cordate leaves, signature
+# bright-red trailing roots. Reuses the frogbit-style leaf placement with
+# slightly smaller leaves and a dedicated root build path.
+func _build_red_root() -> void:
+	var n: int = clampi(leaf_count, 2, 5)
+	for i in n:
+		var ang: float = float(i) / float(n) * TAU + randf_range(-0.2, 0.2)
+		var r: float = leaf_size * 0.6
+		var pos: Vector3 = Vector3(cos(ang) * r, 0.0, sin(ang) * r)
+		var c: Color = _ring_color(i, n)
+		var leaf := _leaf(pos, Vector3(leaf_size * 0.9, 0.06, leaf_size * 0.9), c)
+		leaf.name = "leaf_%d" % i
+	# Root cluster: 3-4 trailing root voxels. Marked "root_*" so the
+	# light_response tick can find and recolor them.
+	var rn: int = 3 + (1 if redroot_response > 0.5 else 0)
+	var root_color: Color = base_color.darkened(0.35)
+	for i in rn:
+		var seg_y: float = -root_length * 0.5 - float(i) * root_length * 0.18
+		var rmi := MeshInstance3D.new()
+		rmi.mesh = VoxelMat.get_box(Vector3(0.06, root_length * 0.22, 0.06))
+		rmi.material_override = VoxelMat.make_foliage(root_color)
+		rmi.name = "root_%d" % i
+		add_child(rmi)
+		rmi.position = Vector3(
+			randf_range(-leaf_size * 0.3, leaf_size * 0.3),
+			seg_y,
+			randf_range(-leaf_size * 0.3, leaf_size * 0.3),
+		)
 
 
 func _ring_color(i: int, n: int) -> Color:

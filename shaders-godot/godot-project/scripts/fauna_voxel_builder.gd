@@ -1,5 +1,10 @@
 # Batches fauna voxels into per-pivot MultiMesh draw calls (same pattern as plants).
-class_name FaunaVoxelBuilder
+#
+# class_name intentionally omitted — fish.gd / shrimp.gd preload this via
+# `const FaunaVoxelBuilder = preload(...)` and use the const as a type
+# annotation. Keeping a class_name on top of that fires SHADOWED_GLOBAL_IDENTIFIER
+# warnings on every reload. The const itself is a valid type in Godot 4
+# variable annotations, so removing class_name doesn't break anything.
 extends RefCounted
 
 var _batches: Dictionary = {}
