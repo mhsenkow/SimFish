@@ -740,6 +740,13 @@ var linear_accel: float = 2.5    # units/sec^2 - how fast speed changes
 # as eaten rather than dying of natural causes).
 var _dying: bool = false
 var _dying_timer: float = 0.0
+# Wall-clock stamp when the fish entered dying state. Safety net for
+# "stuck dying forever" — if real-world time since this exceeds
+# DEATH_WALL_CLOCK_MAX, force queue_free regardless of _dying_timer.
+# Covers cases where dt gets starved (time_scale flicker, _process gate
+# misfire) or repeated save/load resets keep the timer alive.
+var _dying_wall_start_unix: int = 0
+const DEATH_WALL_CLOCK_MAX: int = 12
 const DEATH_DURATION: float = 3.5
 
 # Cached voxel handles (MultiMesh instances). Built once at the end of
@@ -3789,6 +3796,10 @@ func start_dying() -> void:
 		return
 	_dying = true
 	_dying_timer = DEATH_DURATION
+	# Stamp wall-clock so the safety net in _animate_death can force-free
+	# a fish that's been stuck in dying state for too long (e.g. if
+	# _process is getting starved or dt is being suppressed somehow).
+	_dying_wall_start_unix = int(Time.get_unix_time_from_system())
 	# Stop all forward motion + steering targets so the brain's last
 	# commanded velocity doesn't keep the corpse swimming.
 	target_velocity = Vector3.ZERO
@@ -3805,7 +3816,19 @@ func start_dying() -> void:
 # write per frame. Combined with the sink + tilt + final mulm drop, the
 # visual story is: tip, drift, dissolve.
 func _animate_death(dt: float) -> void:
-	_dying_timer = maxf(0.0, _dying_timer - dt)
+	# Wall-clock safety net — if the fish has been dying for more than
+	# DEATH_WALL_CLOCK_MAX seconds of REAL time (independent of sim time
+	# scale or dt starvation), force-complete the animation. Catches any
+	# scenario where the visual loops because dt never accumulates.
+	if _dying_wall_start_unix > 0:
+		var elapsed: int = int(Time.get_unix_time_from_system()) - _dying_wall_start_unix
+		if elapsed >= DEATH_WALL_CLOCK_MAX:
+			_dying_timer = 0.0  # force exit branch below
+	# Ensure progress is monotonic even when dt is suspiciously small.
+	# This adds a tiny floor so a fish that's been dying for at least a
+	# frame always loses a sliver of timer per call.
+	var dt_use: float = maxf(dt, 0.001)
+	_dying_timer = maxf(0.0, _dying_timer - dt_use)
 	var progress: float = clampf(1.0 - (_dying_timer / DEATH_DURATION), 0.0, 1.0)
 	# Tilt: rotate onto right flank over the first ~30% of the death
 	# duration. Real fish flip belly-up or onto a flank when they die; the
@@ -5006,9 +5029,11 @@ func to_save_dict() -> Dictionary:
 		# Death animation state — persisting these means a fish that was
 		# mid-death-pose when autosave fired comes back still dying instead
 		# of being "resurrected" only to immediately re-die (which reads as
-		# a looping death animation to the player).
+		# a looping death animation to the player). Wall-clock start also
+		# persisted so the 12s safety timeout doesn't reset on each reload.
 		"_dying": _dying,
 		"_dying_timer": _dying_timer,
+		"_dying_wall_start_unix": _dying_wall_start_unix,
 	}
 
 
@@ -5088,6 +5113,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	# "fish death animation looping" bug.
 	_dying = bool(d.get("_dying", false))
 	_dying_timer = float(d.get("_dying_timer", 0.0))
+	# Persist wall-clock start across reloads. If the save predates this
+	# field, treat the fish as "just started dying" (stamp now). Without
+	# this the 12s safety timeout would refresh on every reload and the
+	# fish could spin forever in dying state.
+	_dying_wall_start_unix = int(d.get("_dying_wall_start_unix", 0))
+	if _dying and _dying_wall_start_unix == 0:
+		_dying_wall_start_unix = int(Time.get_unix_time_from_system())
 	# Safety: if the loaded state says we're dying but the timer is past
 	# DEATH_DURATION (shouldn't happen, but defends against corrupted saves),
 	# clamp to a small positive value so the fish completes the animation.
