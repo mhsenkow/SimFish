@@ -1682,11 +1682,26 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_apply_leaf_wilt()
 
 	# ---- Starvation → leaf shedding ----
+	# Throttled (25s → 60s) AND gated on global waste pressure. With many
+	# stressed plants and no cleanup crew, each shed dropped a waste
+	# particle, producing 5+ particles/sec across the tank — read as a
+	# constant rain of falling stuff. Now most plants skip the shed when
+	# the tank is already drowning in detritus.
 	if _health_smooth < 0.45:
 		_starvation_timer += dt
-		if _starvation_timer > 25.0 and not _leaf_groups.is_empty():
+		if _starvation_timer > 60.0 and not _leaf_groups.is_empty():
 			_starvation_timer = 0.0
-			_shed_oldest_leaf()
+			# Skip shed when global waste pile is over half cap. The leaf
+			# stays attached (still wilted via _apply_leaf_wilt) but no new
+			# waste particle joins the falling-rain effect.
+			var sim_w: Node = _find_sim()
+			var skip_shed: bool = false
+			if sim_w != null:
+				var w_arr: Variant = sim_w.get("waste")
+				if w_arr is Array and (w_arr as Array).size() > 120:
+					skip_shed = true
+			if not skip_shed:
+				_shed_oldest_leaf()
 
 	# ---- Crypt melt recovery ----
 	if _melt_active:

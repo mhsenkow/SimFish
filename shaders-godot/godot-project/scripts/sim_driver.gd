@@ -81,6 +81,13 @@ var snail_predator_count: int = 0
 # after FEED_MEMORY_TTL seconds so old habit-spots fade.
 const FEED_MEMORY_TTL: float = 30.0
 const FEED_MEMORY_CAP: int = 5
+
+# Global waste-particle cap. Each WasteParticle is a Node3D + animation;
+# once a tank has many plants + no cleanup crew, decay byproducts can
+# accumulate into thousands of particles, killing framerate AND visually
+# reading as a constant rain of falling stuff. Cap at 240 — above that,
+# decay spawns silently drop (food always still lands).
+const WASTE_CAP: int = 240
 # Each entry: {pos: Vector3, t: float (seconds since recorded)}
 var _feed_memory: Array = []
 
@@ -1927,6 +1934,24 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 		food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
 	if waste_root == null:
 		return
+	# Global waste cap. Without it, an unattended cycling tank with many
+	# plants and no cleanup crew accumulates thousands of waste particles
+	# (each one a Node3D + animation), tanking framerate AND giving the
+	# visual impression of "things falling forever." When the cap is hit,
+	# food (kind=3) always lands (so feeding still works) but decay
+	# byproducts (kind 0/1/2) are dropped silently.
+	if waste.size() >= WASTE_CAP:
+		if kind != WasteParticle.KIND_FOOD:
+			return
+		# At cap with a food spawn, recycle the oldest decay particle
+		# so the cap stays at WASTE_CAP overall.
+		for i in range(waste.size()):
+			var old: WasteParticle = waste[i] as WasteParticle
+			if old != null and old.kind != WasteParticle.KIND_FOOD:
+				if is_instance_valid(old):
+					old.queue_free()
+				waste.remove_at(i)
+				break
 	var w := WasteParticle.new()
 	waste_root.add_child(w)
 	w.global_position = at
