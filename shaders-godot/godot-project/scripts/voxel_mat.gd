@@ -21,6 +21,42 @@ static var _mat_cache: Dictionary = {}
 static var _fauna_mat_cache: Dictionary = {}
 static var _mesh_cache: Dictionary = {}
 
+# Color quantization for cache keys. Bumped 0.01 → 0.04 — 256 levels per
+# channel was ~16M unique colors, way more than the palette quantize
+# shader could distinguish anyway. 25 levels (0.04) per channel = 15,625
+# unique colors total, still way past the visible palette. Result: 10×
+# smaller caches without any visual difference.
+const _CACHE_SNAP: float = 0.04
+# Bound the foliage + fauna caches so a long play session with mutated
+# plant colors doesn't grow the cache to thousands of materials. When
+# we cross the limit we drop the oldest entries via a queue of keys.
+const _CACHE_MAX: int = 800
+static var _foliage_key_queue: Array = []
+static var _fauna_key_queue: Array = []
+
+
+# Snap a color to the cache's quantization grid. Used as the dict key.
+static func _snap(c: Color) -> Color:
+	return Color(
+		snappedf(c.r, _CACHE_SNAP),
+		snappedf(c.g, _CACHE_SNAP),
+		snappedf(c.b, _CACHE_SNAP))
+
+
+# Evict the oldest entries from a cache when it exceeds _CACHE_MAX.
+# Pops half the over-quota so we don't churn one-pop-per-add. Materials
+# go to garbage collection naturally — they're RefCounted.
+static func _cache_admit(cache: Dictionary, queue: Array, key, value) -> void:
+	if cache.size() >= _CACHE_MAX:
+		var drop_count: int = (_CACHE_MAX / 4)
+		for i in range(drop_count):
+			if queue.is_empty():
+				break
+			var old_key = queue.pop_front()
+			cache.erase(old_key)
+	cache[key] = value
+	queue.append(key)
+
 const FAUNA_SATURATION: float = 1.30
 # Originally 1.12. Bumping past ~1.15 makes the palette-quantize dither
 # pattern read as a visible grid on bright fish — neighbouring palette
@@ -99,8 +135,9 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 
 
 static func make(color: Color) -> ShaderMaterial:
-	# Round color slightly to ensure caching of nearly-identical procedural colors.
-	var cache_key: Color = Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01))
+	# Snap + cache; _mat_cache isn't queue-tracked because the base mat
+	# stays under ~200 entries naturally (substrate + hardscape voxel set).
+	var cache_key: Color = _snap(color)
 	if _mat_cache.has(cache_key):
 		return _mat_cache[cache_key]
 
@@ -113,8 +150,7 @@ static func make(color: Color) -> ShaderMaterial:
 
 static func make_fauna(color: Color) -> ShaderMaterial:
 	var boosted: Color = boost_life_color(color)
-	var cache_key: Color = Color(
-		snappedf(boosted.r, 0.01), snappedf(boosted.g, 0.01), snappedf(boosted.b, 0.01))
+	var cache_key: Color = _snap(boosted)
 	if _fauna_mat_cache.has(cache_key):
 		return _fauna_mat_cache[cache_key]
 	var m: ShaderMaterial = make(boosted).duplicate()
@@ -122,7 +158,7 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	# quantize's dither-grid territory. 1.24 still rides above foliage
 	# (1.22 below) without tripping moiré on fish bodies.
 	m.set_shader_parameter("color_vibrancy", 1.24)
-	_fauna_mat_cache[cache_key] = m
+	_cache_admit(_fauna_mat_cache, _fauna_key_queue, cache_key, m)
 	return m
 
 
@@ -182,11 +218,9 @@ static var _foliage_mat_cache: Dictionary = {}
 static func make_foliage(color: Color) -> ShaderMaterial:
 	# Plants use the green-aware boost so canopy reads as vibrant aquarium
 	# green while still letting red plants (Ludwigia, Rotala, AR) keep
-	# their saturated reds. Shader color_vibrancy is bumped 1.16 → 1.28
-	# to push the plants visibly past their old muted-green look.
+	# their saturated reds.
 	var boosted: Color = boost_foliage_color(color)
-	var cache_key: Color = Color(
-		snappedf(boosted.r, 0.01), snappedf(boosted.g, 0.01), snappedf(boosted.b, 0.01))
+	var cache_key: Color = _snap(boosted)
 	if _foliage_mat_cache.has(cache_key):
 		return _foliage_mat_cache[cache_key]
 
@@ -197,7 +231,7 @@ static func make_foliage(color: Color) -> ShaderMaterial:
 	# boost_foliage_color so they still read vibrant, but lowering the
 	# shader vibrancy a notch reduces palette banding on dense leaves.
 	m.set_shader_parameter("color_vibrancy", 1.22)
-	_foliage_mat_cache[cache_key] = m
+	_cache_admit(_foliage_mat_cache, _foliage_key_queue, cache_key, m)
 	return m
 
 

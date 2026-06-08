@@ -114,6 +114,17 @@ var common_name: String = ""
 # the plant was emergent / hand-tuned.
 var species_id: String = ""
 
+# ---- Perf: cached substrate boost ----
+# Computed once at init from TankConfig.substrate_type. Substrate doesn't
+# change without scene reload so polling it every tick × 100 plants × 10 Hz
+# was 1000 wasted lookups/sec. 1.0 = neutral, 1.20 = aquasoil boost for
+# heavy feeders, 0.80 = sand penalty.
+var _substrate_boost: float = 1.0
+# Throttle the crypt-melt chemistry check — water chemistry doesn't crash
+# in a single tick, checking once every 5 sec is plenty.
+var _melt_check_t: float = 0.0
+const MELT_CHECK_PERIOD: float = 5.0
+
 # ---- Emersed → submersed transition ----
 # Real aquarium plants ship in their EMERSED (above-water) form — bigger,
 # glossier, slightly warmer-colored leaves. Once submerged they spend the
@@ -343,6 +354,9 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	latin_name = String(params.get("latin_name", latin_name))
 	common_name = String(params.get("common_name", common_name))
 	species_id = String(params.get("species_id", species_id))
+	# Cache substrate boost computed below — read TankConfig ONCE here so
+	# the per-tick path can skip the autoload lookup × 100 plants × 10 Hz.
+	_substrate_boost = _compute_substrate_boost()
 	var pk: Variant = params.get("parent_keys", [])
 	if pk is Array:
 		_parent_keys = pk.duplicate()
@@ -366,6 +380,30 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_build_holdfast_anchor()
 	for i in initial_height:
 		_grow_one()
+
+
+# Pull TankConfig.substrate_type once and translate it into the per-plant
+# nutrient multiplier. Heavy root feeders (max_height >= 12, non-carpet)
+# get +20% in aquasoil / eco_complete and −20% in sand / inert gravel;
+# epiphytes are unaffected; small plants don't care.
+func _compute_substrate_boost() -> float:
+	if is_epiphyte:
+		return 1.0
+	if max_height < 12 or is_carpet:
+		return 1.0
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 1.0
+	var st_v: Variant = cfg.get("substrate_type")
+	if st_v == null:
+		return 1.0
+	match String(st_v):
+		"aquasoil", "eco_complete":
+			return 1.20
+		"sand", "inert_gravel":
+			return 0.80
+		_:
+			return 1.0
 
 
 # ---- Save / load ----
@@ -1580,32 +1618,19 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_recompute_shade()
 	nutrient_mult *= _shade_mult
 
-	# Substrate boost: heavy root feeders (crypts, swords, anything with
-	# is_carpet=false AND non-epiphyte AND tall max_height) get a +20%
-	# nutrient_mult when planted in aquasoil / eco_complete, and a −20%
-	# penalty in sand / gravel. Epiphytes ignore the substrate entirely.
-	# Pulls substrate_type from TankConfig once per tick — cheap.
+	# Substrate boost cached at init time — substrate type doesn't change
+	# without a scene reload, so re-reading TankConfig every tick × 100
+	# plants × 10 Hz was 1000 autoload lookups/sec for a constant.
+	# CO2 still polled live (the user can change it at runtime via slider).
+	if not is_epiphyte and _substrate_boost != 1.0:
+		nutrient_mult *= _substrate_boost
+	if not is_epiphyte and co2_demand > 0.4:
+		var sim_d_n: Node = _find_sim()
+		if sim_d_n != null and sim_d_n.has_method("co2_level"):
+			var co2_n: float = sim_d_n.co2_level()
+			if co2_n > 0.3:
+				nutrient_mult *= 1.0 + minf(co2_n - 0.3, 0.4) * 0.3
 	if not is_epiphyte:
-		var cfg: Node = get_node_or_null("/root/TankConfig")
-		if cfg != null:
-			var st_v: Variant = cfg.get("substrate_type")
-			if st_v != null:
-				var st: String = String(st_v)
-				var is_heavy_feeder: bool = max_height >= 12 and not is_carpet
-				if is_heavy_feeder:
-					match st:
-						"aquasoil", "eco_complete":
-							nutrient_mult *= 1.20
-						"sand", "inert_gravel":
-							nutrient_mult *= 0.80
-				# CO2-met plants also get a modest growth boost since they
-				# can keep up with their potential — visible "lush dosed tank"
-				# effect on the carpet zone.
-				var sim_d_n: Node = _find_sim()
-				if sim_d_n != null and sim_d_n.has_method("co2_level"):
-					var co2_n: float = sim_d_n.co2_level()
-					if co2_n > 0.3 and co2_demand > 0.4:
-						nutrient_mult *= 1.0 + minf(co2_n - 0.3, 0.4) * 0.3
 		nutrient_mult = clampf(nutrient_mult, 0.0, 1.5)
 
 	# Health trends toward nutrient satisfaction, with slow decay when starved.
@@ -1719,36 +1744,35 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Vegetative spread via runners (ribbon-form plants only).
 	_tick_runner(dt)
 
-	# Emersed → submersed transition. While remaining > 0 the plant
-	# reads as larger and slightly warmer-colored; new growth picks up
-	# the modified leaf_size_mult via _emersed_size_boost(). Real-tank
-	# parallel: plants come in from emersed cultivation looking different
-	# from how they grow underwater.
+	# Emersed → submersed transition. Skipped entirely once the timer
+	# has run out (which is the case for any plant older than ~1 minute).
 	if _emersed_remaining > 0.0:
 		_emersed_remaining = maxf(0.0, _emersed_remaining - dt)
 
-	# Crypt melt trigger: when chemistry crashes (ammonia + nitrite spike)
-	# and this species is susceptible, fire the existing trigger_crypt_melt
-	# pipeline. Real-world parallel: Crypts drop all leaves on chemistry
-	# shock and regrow over days. Gated so re-arming requires the storm to
-	# clear (MELT_REARM_S) and rolled against susceptibility.
+	# Crypt melt trigger throttled to every 5 sec. Water chemistry doesn't
+	# crash in a single tick, so checking it every 0.1s was wasteful. The
+	# trigger probability is scaled by the throttle period so the overall
+	# rate of melts matches the un-throttled version.
 	if melt_susceptibility >= 0.4 and not _melt_active:
-		var now_unix: int = int(Time.get_unix_time_from_system())
-		if now_unix - _last_melt_unix >= MELT_REARM_S:
-			var sim_d: Node = _find_sim()
-			if sim_d != null and sim_d.get("water_chemistry") != null:
-				var nh3: float = float(sim_d.water_chemistry.ammonia)
-				var no2: float = float(sim_d.water_chemistry.nitrite)
-				if nh3 + no2 > MELT_TRIGGER_AMMONIA \
-						and randf() < melt_susceptibility * dt * 0.5:
-					_last_melt_unix = now_unix
-					trigger_crypt_melt()
-					if sim_d.has_method("log_story_event"):
-						var label: String = common_name if common_name != "" \
-							else (plant_name if plant_name != "" else "A crypt")
-						sim_d.log_story_event(
-							"%s is melting — leaves dropping, will regrow from the rhizome."
-							% label)
+		_melt_check_t -= dt
+		if _melt_check_t <= 0.0:
+			_melt_check_t = MELT_CHECK_PERIOD
+			var now_unix: int = int(Time.get_unix_time_from_system())
+			if now_unix - _last_melt_unix >= MELT_REARM_S:
+				var sim_d: Node = _find_sim()
+				if sim_d != null and sim_d.get("water_chemistry") != null:
+					var nh3: float = float(sim_d.water_chemistry.ammonia)
+					var no2: float = float(sim_d.water_chemistry.nitrite)
+					if nh3 + no2 > MELT_TRIGGER_AMMONIA \
+							and randf() < melt_susceptibility * MELT_CHECK_PERIOD * 0.5:
+						_last_melt_unix = now_unix
+						trigger_crypt_melt()
+						if sim_d.has_method("log_story_event"):
+							var label: String = common_name if common_name != "" \
+								else (plant_name if plant_name != "" else "A crypt")
+							sim_d.log_story_event(
+								"%s is melting — leaves dropping, will regrow from the rhizome."
+								% label)
 
 
 func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) -> void:

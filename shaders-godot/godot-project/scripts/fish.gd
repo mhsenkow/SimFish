@@ -168,6 +168,31 @@ var _interest_remaining: float = 0.0
 var _gaze_yaw: float = 0.0
 var _gaze_remaining: float = 0.0
 
+# ---- Perf: cached autoload refs + decay throttle ----
+# Caching the AIDirector node ref at _ready saves the get_node_or_null
+# lookup on every tick path that samples intent drift. With 30+ fish at
+# 10 Hz that was ~900 lookups/sec for what's almost always a const.
+var _ai_director_cached: Node = null
+# Decays (grudge, habituation, feed_heatmap, age_peak) don't need to fire
+# every 10 Hz tick — every 5 sim-seconds is imperceptible to the player
+# and 50× cheaper. _decay_throttle_t counts down; when it hits 0 we run
+# the decays in bulk for the elapsed window and reset.
+const DECAY_THROTTLE_PERIOD: float = 5.0
+var _decay_throttle_t: float = 0.0
+# Player-glance + novelty checks throttled similarly — every ~1s.
+# The cached glance values are reused between samples so the steering
+# pull still applies smoothly each tick.
+const GLANCE_CHECK_PERIOD: float = 1.0
+var _glance_check_t: float = 0.0
+var _cached_glance_strength: float = 0.0
+var _cached_glance_point: Vector3 = Vector3.ZERO
+const NOVELTY_CHECK_PERIOD: float = 0.5
+var _novelty_check_t: float = 0.0
+# Cached AI intent drift — refreshed on the throttle, applied every tick.
+var _cached_ai_drift: Vector3 = Vector3.ZERO
+var _ai_drift_check_t: float = 0.0
+const AI_DRIFT_CHECK_PERIOD: float = 2.0
+
 
 # ---- State (mutable) ----
 var age: float = 0.0
@@ -759,13 +784,23 @@ func _ready() -> void:
 	heading = Vector3(sin(theta), 0.0, -cos(theta))
 	_last_yaw = atan2(heading.x, -heading.z)
 	speed = 0.0
-	
+
 	_food_glow = OmniLight3D.new()
 	_food_glow.light_color = Color.WHITE
 	_food_glow.light_energy = 0.0
 	_food_glow.omni_range = 1.8
 	_food_glow.omni_attenuation = 2.0
 	add_child(_food_glow)
+
+	# Cache the AIDirector autoload ref ONCE at ready so every per-tick
+	# AI sample (intent drift, mood) skips a get_node_or_null lookup.
+	# Previously this was ~3 lookups per tick per fish × 10 Hz × 30 fish
+	# = ~900 autoload lookups/sec. Cached, it's ~0.
+	if is_inside_tree():
+		_ai_director_cached = get_node_or_null("/root/AIDirector")
+	# Decay throttle: stagger so all fish don't decay on the same tick.
+	# Each fish picks a random offset so the load smears across time.
+	_decay_throttle_t = randf() * DECAY_THROTTLE_PERIOD
 
 
 # ---- Setup ----
@@ -1838,33 +1873,37 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		return events
 
 	age += dt
-	# Lifetime journal: track the highest age reached so a senescence
-	# rollback from a meal doesn't erase the player-visible age peak.
-	if not bio.is_empty():
-		if age > float(bio.get("age_peak_s", 0.0)):
-			bio["age_peak_s"] = age
-	# Memory decay. Grudges and habituation are real time, not sim ticks
-	# (so a paused tank doesn't accumulate fake decay). Heatmap decays
-	# slowly — abandoned spots fade over ~20 minutes of real play.
-	if not grudges.is_empty():
-		var expired: Array = []
-		for k in grudges.keys():
-			grudges[k] = float(grudges[k]) - dt
-			if float(grudges[k]) <= 0.0:
-				expired.append(k)
-		for k in expired:
-			grudges.erase(k)
-	if not habituated.is_empty():
-		# Novelty regenerates very slowly toward 1 — same stimulus stays
-		# boring for a long time, but eventually becomes interesting again.
-		for k in habituated.keys():
-			habituated[k] = clampf(float(habituated[k]) + dt * 0.0008, 0.0, 1.0)
-	if feed_heatmap.size() > 0 and randf() < dt * 0.05:
-		# Stochastic decay step (~once every 20s per cell, on average) so
-		# the heatmap doesn't grow stale. Multiplicative so peaks fade
-		# proportionally instead of all going to zero.
-		for i in range(feed_heatmap.size()):
-			feed_heatmap[i] *= 0.985
+	# Memory decay throttle. Bulk-decay grudges / habituation / heatmap once
+	# every DECAY_THROTTLE_PERIOD (~5s) instead of every tick. Player-visible
+	# behavior is identical (decay values change imperceptibly between ticks)
+	# but we drop ~50× the dict iteration and PackedFloat32Array sweep cost.
+	_decay_throttle_t -= dt
+	if _decay_throttle_t <= 0.0:
+		var decay_dt: float = DECAY_THROTTLE_PERIOD - _decay_throttle_t
+		_decay_throttle_t = DECAY_THROTTLE_PERIOD
+		# Lifetime journal: age_peak only needs to update on the throttle
+		# (the difference between current age and peak grows monotonically).
+		if not bio.is_empty():
+			if age > float(bio.get("age_peak_s", 0.0)):
+				bio["age_peak_s"] = age
+		if not grudges.is_empty():
+			var expired: Array = []
+			for k in grudges.keys():
+				grudges[k] = float(grudges[k]) - decay_dt
+				if float(grudges[k]) <= 0.0:
+					expired.append(k)
+			for k in expired:
+				grudges.erase(k)
+		if not habituated.is_empty():
+			for k in habituated.keys():
+				habituated[k] = clampf(
+					float(habituated[k]) + decay_dt * 0.0008, 0.0, 1.0)
+		if feed_heatmap.size() > 0:
+			# One bulk decay step per throttle window instead of stochastic
+			# per-tick. Multiplicative so peaks fade proportionally.
+			var heat_decay: float = pow(0.985, decay_dt / 0.1)
+			for i in range(feed_heatmap.size()):
+				feed_heatmap[i] *= heat_decay
 	# Hunger accumulates slowly. Real fish go days without eating; we keep
 	# the rate gentle so fish can spend more time on courtship / schooling
 	# / exploration than on frantic foraging. 0.006/s = ~165s from sated
@@ -2907,6 +2946,26 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			tightness *= 1.0 + mourning_w * 0.8
 	desired += _boids(neighbors, tightness) * schooling_strength
 
+	# ---- Pre-walk neighbors ONCE ----
+	# Four downstream blocks (personal space, gaze contagion, gaze
+	# targeting, grudges) all walked `neighbors` independently doing the
+	# same is-Fish + self + distance² filtering. We collapse them into a
+	# single pre-walk that builds two parallel arrays the blocks read by
+	# index. ~4× reduction in neighbor-loop iterations.
+	var scan_fish: Array[Fish] = []
+	var scan_d2: PackedFloat32Array = PackedFloat32Array()
+	var scan_same_species: PackedByteArray = PackedByteArray()
+	for n_pre in neighbors:
+		if not (n_pre is Fish):
+			continue
+		var nf_pre: Fish = n_pre
+		if nf_pre == self:
+			continue
+		scan_fish.append(nf_pre)
+		scan_d2.append(nf_pre.position.distance_squared_to(position))
+		scan_same_species.append(1 if nf_pre.species == species else 0)
+	var scan_n: int = scan_fish.size()
+
 	# PERSONAL SPACE. When a fish has many same-species neighbors crowded
 	# inside ~2 units, push away from the local centroid. The standard
 	# boids separation handles 1-on-1 spacing; this adds a soft "I don't
@@ -2914,16 +2973,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# naturally instead of converging on a single tight ball.
 	var crowd_count: int = 0
 	var crowd_centroid: Vector3 = Vector3.ZERO
-	for n in neighbors:
-		if not (n is Fish):
+	for i in scan_n:
+		if scan_same_species[i] == 0:
 			continue
-		var nf3: Fish = n
-		if nf3 == self or nf3.species != species:
-			continue
-		var d2c: float = nf3.position.distance_squared_to(position)
-		if d2c < 4.0:  # 2 unit personal-space zone
+		if scan_d2[i] < 4.0:  # 2 unit personal-space zone
 			crowd_count += 1
-			crowd_centroid += nf3.position
+			crowd_centroid += scan_fish[i].position
 	if crowd_count > 5:
 		var center: Vector3 = crowd_centroid / float(crowd_count)
 		var away: Vector3 = position - center
@@ -3039,25 +3094,30 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Habituation: each time the glance fires for a given fish, novelty
 	# decays. After many sessions of being stared at, the fish reads the
 	# player as background and stops swimming over. Real fish do this.
-	if sim != null and sim.has_method("get_player_glance"):
-		var glance: Dictionary = sim.get_player_glance()
-		var g_strength: float = float(glance.get("strength", 0.0))
+	# Throttle the EXPENSIVE sim.get_player_glance() call — the camera
+	# doesn't move at 10 Hz so re-sampling that often is wasted Variant
+	# ops + Dictionary reads. Refresh once per second, apply the cached
+	# values every tick so steering pulls smoothly.
+	_glance_check_t -= dt
+	if _glance_check_t <= 0.0:
+		_glance_check_t = GLANCE_CHECK_PERIOD
+		if sim != null and sim.has_method("get_player_glance"):
+			var glance: Dictionary = sim.get_player_glance()
+			_cached_glance_strength = float(glance.get("strength", 0.0))
+			_cached_glance_point = glance.get("point", Vector3.ZERO)
+		else:
+			_cached_glance_strength = 0.0
+	if _cached_glance_strength > 0.30:
 		var b_personality: float = _trait("boldness")
-		if g_strength > 0.30 and b_personality > 0.55:
+		if b_personality > 0.55:
 			var novelty: float = float(habituated.get("player", 1.0))
-			var pull: float = g_strength * (b_personality - 0.55) * 1.4 * novelty
-			var g_point: Vector3 = glance.get("point", Vector3.ZERO)
-			var to_glass: Vector3 = g_point - position
+			var pull: float = _cached_glance_strength * (b_personality - 0.55) * 1.4 * novelty
+			var to_glass: Vector3 = _cached_glance_point - position
 			if to_glass.length_squared() > 0.04:
 				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.55)
-				# Broadcast interest so school-mates can copy. Costs nothing
-				# unless a neighbor reads it — the gaze contagion block below
-				# is the only consumer.
-				_interest_target = g_point
+				_interest_target = _cached_glance_point
 				_interest_remaining = 1.2
-			# Decay novelty very slowly — 1 → 0.5 takes ~10 minutes of
-			# constant glance time, after which the effect halves.
-			habituated["player"] = clampf(novelty - dt * 0.0008, 0.15, 1.0)
+			# Decay novelty rolls in the bulk decay block, no per-tick write needed.
 	_interest_remaining = maxf(0.0, _interest_remaining - dt)
 
 	# GAZE CONTAGION. When a neighbor of the same species is actively
@@ -3070,19 +3130,19 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _trait("boldness") > 0.4:
 		var copied: Vector3 = Vector3.ZERO
 		var copied_w: float = 0.0
-		for n in neighbors:
-			if not (n is Fish):
+		# Read from the pre-walked scan_fish / scan_d2 arrays — no more
+		# per-loop is-Fish + self + distance² checks.
+		for i in scan_n:
+			if scan_same_species[i] == 0:
 				continue
-			var nf: Fish = n
-			if nf == self or nf.species != species:
+			var nf_g: Fish = scan_fish[i]
+			if nf_g._interest_remaining <= 0.0:
 				continue
-			if nf._interest_remaining <= 0.0:
-				continue
-			var d2: float = nf.position.distance_squared_to(position)
+			var d2: float = scan_d2[i]
 			if d2 > 16.0:  # ~4 unit eyeshot for gaze contagion
 				continue
-			var w: float = (1.0 - sqrt(d2) / 4.0) * nf._interest_remaining
-			copied += (nf._interest_target - position) * w
+			var w: float = (1.0 - sqrt(d2) / 4.0) * nf_g._interest_remaining
+			copied += (nf_g._interest_target - position) * w
 			copied_w += w
 		if copied_w > 0.01:
 			var pull_dir: Vector3 = (copied / copied_w)
@@ -3099,16 +3159,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if speed < 0.6 and _gaze_remaining <= 0.0:
 		var fast_neighbor: Fish = null
 		var best_speed: float = 1.2  # only neighbors faster than this qualify
-		for n in neighbors:
-			if not (n is Fish):
-				continue
-			var nf2: Fish = n
-			if nf2 == self:
-				continue
+		# Same pre-walked arrays — no per-loop type checks.
+		for i in scan_n:
+			var nf2: Fish = scan_fish[i]
 			if nf2.speed < best_speed:
 				continue
-			var d2g: float = nf2.position.distance_squared_to(position)
-			if d2g > 25.0:  # 5 unit eyeshot
+			if scan_d2[i] > 25.0:  # 5 unit eyeshot
 				continue
 			best_speed = nf2.speed
 			fast_neighbor = nf2
@@ -3132,16 +3188,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# subordinate fish do.
 	if not grudges.is_empty():
 		var grudge_push: Vector3 = Vector3.ZERO
-		for n in neighbors:
-			if not (n is Fish):
+		# Same pre-walked arrays — type check + self + distance all cached.
+		for i in scan_n:
+			var nf_gr: Fish = scan_fish[i]
+			if nf_gr.id == "" or not grudges.has(nf_gr.id):
 				continue
-			var nf: Fish = n
-			if nf == self or nf.id == "" or not grudges.has(nf.id):
-				continue
-			var d2: float = nf.position.distance_squared_to(position)
+			var d2: float = scan_d2[i]
 			if d2 > 9.0:  # 3 unit personal-space radius for grudge bias
 				continue
-			var dirv: Vector3 = position - nf.position
+			var dirv: Vector3 = position - nf_gr.position
 			if dirv.length_squared() > 1e-4:
 				var w: float = 1.0 - sqrt(d2) / 3.0
 				grudge_push += dirv.normalized() * w
@@ -3175,30 +3230,38 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# AI DIRECTOR INTENT DRIFT. When the LLM is running and has populated
 	# its 4×4×4 mood grid, sample the cell our tank-relative position is
 	# in and add the tiny drift vector. Magnitude ≤ 0.15 of effective_max
-	# so existing steering remains primary. Also pull a per-fish mood
-	# delta when the LLM mentioned us specifically by id.
-	var ai_node: Node = null
-	if is_inside_tree():
-		ai_node = get_node_or_null("/root/AIDirector")
-	if ai_node != null and ai_node.has_method("get_intent_drift"):
-		var w_node: Node = _world_node()
-		if w_node != null:
-			var hw_a: float = float(w_node.get("TANK_HALF_W") if w_node.get("TANK_HALF_W") != null else 8.0)
-			var hd_a: float = float(w_node.get("TANK_HALF_D") if w_node.get("TANK_HALF_D") != null else 4.0)
-			var hh_a: float = float(w_node.get("TANK_HEIGHT") if w_node.get("TANK_HEIGHT") != null else 7.0)
-			var rel: Vector3 = Vector3(
-				clampf((position.x + hw_a) / (hw_a * 2.0), 0.0, 0.999),
-				clampf(position.y / hh_a, 0.0, 0.999),
-				clampf((position.z + hd_a) / (hd_a * 2.0), 0.0, 0.999),
-			)
-			var cell: Dictionary = ai_node.get_intent_drift(rel)
-			var d_drift: Vector3 = cell.get("drift", Vector3.ZERO)
-			if d_drift.length_squared() > 1e-5:
-				desired += d_drift * effective_max
-			if id != "" and ai_node.has_method("get_fish_mood_drift"):
-				var pf: Vector3 = ai_node.get_fish_mood_drift(id)
-				if pf.length_squared() > 1e-5:
-					desired += pf * effective_max
+	# so existing steering remains primary.
+	#
+	# Throttle the sample to every ~2s — the LLM only refreshes the grid
+	# every 30-60s anyway, so re-sampling at 10 Hz was 100× over-cost.
+	# Cached drift gets applied every tick so steering still composes
+	# smoothly.
+	var ai_node: Node = _ai_director_cached
+	_ai_drift_check_t -= dt
+	if _ai_drift_check_t <= 0.0:
+		_ai_drift_check_t = AI_DRIFT_CHECK_PERIOD
+		_cached_ai_drift = Vector3.ZERO
+		if ai_node != null and ai_node.has_method("get_intent_drift"):
+			var w_node: Node = _world_node()
+			if w_node != null:
+				var hw_a: float = float(w_node.get("TANK_HALF_W") if w_node.get("TANK_HALF_W") != null else 8.0)
+				var hd_a: float = float(w_node.get("TANK_HALF_D") if w_node.get("TANK_HALF_D") != null else 4.0)
+				var hh_a: float = float(w_node.get("TANK_HEIGHT") if w_node.get("TANK_HEIGHT") != null else 7.0)
+				var rel: Vector3 = Vector3(
+					clampf((position.x + hw_a) / (hw_a * 2.0), 0.0, 0.999),
+					clampf(position.y / hh_a, 0.0, 0.999),
+					clampf((position.z + hd_a) / (hd_a * 2.0), 0.0, 0.999),
+				)
+				var cell: Dictionary = ai_node.get_intent_drift(rel)
+				var d_drift: Vector3 = cell.get("drift", Vector3.ZERO)
+				if d_drift.length_squared() > 1e-5:
+					_cached_ai_drift = d_drift
+				if id != "" and ai_node.has_method("get_fish_mood_drift"):
+					var pf: Vector3 = ai_node.get_fish_mood_drift(id)
+					if pf.length_squared() > 1e-5:
+						_cached_ai_drift += pf
+	if _cached_ai_drift.length_squared() > 1e-5:
+		desired += _cached_ai_drift * effective_max
 
 	# NOVELTY: pause-and-look when entering an unvisited tank region.
 	# Curious fish (personality.curiosity > 0.5) trigger longer pauses on

@@ -98,6 +98,11 @@ func _ready() -> void:
 	# the first refresh lands. Empty cells return Vector3.ZERO.
 	if _intent_cells.is_empty():
 		_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+	# Suspend per-frame _process / _physics_process when AI is disabled so
+	# the engine doesn't invoke a method-that-returns-immediately every
+	# frame. apply_config flips these back on when the user enables AI.
+	set_process(enabled)
+	set_physics_process(enabled)
 
 
 func _ensure_http() -> void:
@@ -162,6 +167,10 @@ func apply_config(cfg: Dictionary) -> void:
 		_ai_name_pool.clear()
 		_intent_cells.clear()
 		_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+	# Sync per-frame processing to the current enabled state so the engine
+	# stops calling _process / _physics_process when AI is off.
+	set_process(enabled)
+	set_physics_process(enabled)
 	emit_signal("config_changed")
 
 
