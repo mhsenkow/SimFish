@@ -59,6 +59,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "bar",
 			"environment_preset": "bedroom_desk",
 			"lighting_preset": "cozy_shop",
+			"co2_level": 0.3,
+			"light_spectrum": 0.55,
 		},
 	},
 	{
@@ -80,6 +82,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "bar",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "sunny",
+			"co2_level": 0.6,
+			"light_spectrum": 0.35,
 		},
 	},
 	{
@@ -101,6 +105,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
 			"lighting_preset": "dim_warm",
+			"co2_level": 0.0,
+			"light_spectrum": 0.80,
 		},
 	},
 	{
@@ -122,6 +128,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "reef",
+			"co2_level": 0.0,
+			"light_spectrum": 0.20,
 		},
 	},
 	{
@@ -143,6 +151,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "bedroom_desk",
 			"lighting_preset": "cozy_shop",
+			"co2_level": 0.2,
+			"light_spectrum": 0.50,
 		},
 	},
 	{
@@ -164,6 +174,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "forest_window",
 			"lighting_preset": "planted",
+			"co2_level": 0.0,
+			"light_spectrum": 0.45,
 		},
 	},
 	{
@@ -185,6 +197,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "bedroom_desk",
 			"lighting_preset": "planted",
+			"co2_level": 0.6,
+			"light_spectrum": 0.60,
 		},
 	},
 	{
@@ -206,9 +220,161 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
 			"lighting_preset": "dim_warm",
+			"co2_level": 0.0,
+			"light_spectrum": 0.65,
+		},
+	},
+	# ---- New scenarios (added with the plant-realism + AI pass) ----
+	{
+		"id": "shrimp_sanctuary",
+		"name": "Shrimp Sanctuary",
+		"tagline": "Small planted box · cherry colony · no fish predators",
+		"body": "Nano shrimp-focused tank — small footprint (5×4×5), dense Monte Carlo carpet + bucephalandra on small stones, Christmas moss on a tiny driftwood branch. No predator fish, just a heavy cherry shrimp colony with amano cleaners + a few snails. Eco-complete fertile substrate, gentle disk aeration, planted-spectrum LED for the carpet.",
+		"accent_color": Color8(220, 90, 110),
+		"config": {
+			"tank_preset": "polyp_lab",
+			"substrate_type": "eco_complete",
+			"aeration_type": "disk",
+			"tank_shape": "box",
+			"tank_half_w": 5.0,
+			"tank_half_d": 4.0,
+			"tank_height": 5.0,
+			"water_surface_fraction": 0.94,
+			"substrate_depth_fraction": 0.24,
+			"light_fixture": "bar",
+			"environment_preset": "bedroom_desk",
+			"lighting_preset": "planted",
+			"co2_level": 0.45,
+			"light_spectrum": 0.55,
+		},
+	},
+	{
+		"id": "dutch_competition",
+		"name": "Dutch Competition",
+		"tagline": "Wide tank · pressurized CO2 · red-plant heaven",
+		"body": "Aquascaping-competition Dutch street. Wide footprint (10×4×8) showcases parallel rows of red plants — Rotala H'ra, Ludwigia Super Red, Alternanthera reineckii — vivid against deep green Crypts. High CO2 + warm-spectrum bulb push the reds. Filter for flow, aquasoil substrate. Centerpiece fish: a small cardinal tetra school + corydoras team to keep the carpet clean.",
+		"accent_color": Color8(230, 110, 90),
+		"config": {
+			"tank_preset": "tetra_school",
+			"substrate_type": "aquasoil",
+			"aeration_type": "filter",
+			"tank_shape": "box",
+			"tank_half_w": 10.0,
+			"tank_half_d": 4.0,
+			"tank_height": 8.0,
+			"water_surface_fraction": 0.94,
+			"substrate_depth_fraction": 0.22,
+			"light_fixture": "bar",
+			"environment_preset": "sunny_window",
+			"lighting_preset": "planted",
+			"co2_level": 0.85,
+			"light_spectrum": 0.75,
+		},
+	},
+	{
+		"id": "nano_reef",
+		"name": "Nano Reef",
+		"tagline": "Tiny cube · coral focus · single clownfish",
+		"body": "Pico-reef cube (4×4×5). Ocean sand substrate spawns a tight coral cluster as the visual centerpiece. One clownfish + a small mixed reef-fish school. Tight footprint means the corals fill the eye; the lone clownfish hosts in the anemones. Bright cool-spectrum LED for coral pop.",
+		"accent_color": Color8(255, 175, 95),
+		"config": {
+			"tank_preset": "reef",
+			"substrate_type": "ocean_sand",
+			"aeration_type": "stick",
+			"tank_shape": "cube",
+			"tank_half_w": 4.0,
+			"tank_half_d": 4.0,
+			"tank_height": 5.0,
+			"water_surface_fraction": 0.94,
+			"substrate_depth_fraction": 0.16,
+			"light_fixture": "spotlight",
+			"environment_preset": "bedroom_desk",
+			"lighting_preset": "reef",
+			"co2_level": 0.0,
+			"light_spectrum": 0.20,
+		},
+	},
+	# ---- Wildcard: AI-or-random tank generation ----
+	# When AIDirector is enabled + connected, this scenario opens a text
+	# input dialog ("Describe your dream tank…") and asks Ollama to design
+	# a coherent set of TankConfig overrides. Without AI it rolls a random
+	# valid combination from constrained pools. The "config" dict here is
+	# only used as a fallback if both AI and random paths fail; normally
+	# the scenario chosen handler overwrites it with the generated config
+	# before applying.
+	{
+		"id": "wildcard",
+		"name": "✨ Surprise Me",
+		"tagline": "Random tank — or AI-designed if Ollama is connected",
+		"body": "Roll the dice on a fresh tank. If you have AI enabled, this asks Ollama to design a coherent tank around a short prompt you type in ('zen carpet only', 'chaotic alien biosphere', 'red plant showcase'). Otherwise it picks a valid combination at random — substrate, shape, dimensions, stocking, lighting — that won't crash but might surprise you.",
+		"accent_color": Color8(220, 200, 255),
+		"is_wildcard": true,
+		"config": {
+			"tank_preset": "community",
+			"substrate_type": "aquasoil",
+			"aeration_type": "filter",
+			"tank_shape": "box",
+			"tank_half_w": 8.0,
+			"tank_half_d": 4.0,
+			"tank_height": 7.0,
+			"water_surface_fraction": 0.93,
+			"substrate_depth_fraction": 0.22,
+			"light_fixture": "bar",
+			"environment_preset": "bedroom_desk",
+			"lighting_preset": "cozy_shop",
 		},
 	},
 ]
+
+
+# Pool of valid options the wildcard random path samples from. Tuned so
+# every combination produces a coherent (non-broken) tank.
+const _WILD_SUBSTRATES: Array = ["aquasoil", "sand", "eco_complete", "inert_gravel"]
+const _WILD_SHAPES: Array = ["box", "cylinder", "cube", "hex"]
+const _WILD_PRESETS: Array = ["classic_community", "community", "tetra_school",
+	"showcase", "apex_tank", "blackwater_biotope", "cichlid_pairs", "polyp_lab"]
+const _WILD_AERATIONS: Array = ["filter", "disk", "stick", "none"]
+const _WILD_LIGHTING: Array = ["planted", "cozy_shop", "sunny", "dim_warm", "reef"]
+const _WILD_ENVS: Array = ["bedroom_desk", "sunny_window", "dark_cabinet", "forest_window"]
+
+
+# Roll a random scenario config. Picks coherent values from the pools
+# above and stamps them into a fresh config Dictionary. Tank dimensions
+# are constrained to a sensible footprint so we don't spawn a 1×40×1
+# noodle. Saltwater substrate forces reef preset to avoid plants-on-
+# coral-sand mismatch.
+static func random_wildcard_config() -> Dictionary:
+	var sub: String = _WILD_SUBSTRATES[randi() % _WILD_SUBSTRATES.size()]
+	# 20% chance to upgrade to saltwater reef.
+	if randf() < 0.2:
+		sub = "ocean_sand"
+	var preset: String = "reef" if sub == "ocean_sand" \
+		else _WILD_PRESETS[randi() % _WILD_PRESETS.size()]
+	var shape: String = _WILD_SHAPES[randi() % _WILD_SHAPES.size()]
+	# Dimensions: small to large, but always plausible for the shape.
+	var half_w: float = randf_range(4.5, 11.0)
+	var half_d: float = randf_range(3.5, 7.0) if shape == "box" else half_w
+	var height: float = randf_range(5.0, 9.0)
+	# CO2 + spectrum pair sensibly: high CO2 + warm spectrum for planted,
+	# zero CO2 + cool spectrum for reef.
+	var co2: float = 0.0 if sub == "ocean_sand" else randf_range(0.0, 0.9)
+	var spectrum: float = 0.25 if sub == "ocean_sand" else randf_range(0.4, 0.8)
+	return {
+		"tank_preset": preset,
+		"substrate_type": sub,
+		"aeration_type": _WILD_AERATIONS[randi() % _WILD_AERATIONS.size()],
+		"tank_shape": shape,
+		"tank_half_w": half_w,
+		"tank_half_d": half_d,
+		"tank_height": height,
+		"water_surface_fraction": randf_range(0.88, 0.95),
+		"substrate_depth_fraction": randf_range(0.16, 0.26),
+		"light_fixture": "spotlight" if randf() < 0.4 else "bar",
+		"environment_preset": _WILD_ENVS[randi() % _WILD_ENVS.size()],
+		"lighting_preset": _WILD_LIGHTING[randi() % _WILD_LIGHTING.size()],
+		"co2_level": co2,
+		"light_spectrum": spectrum,
+	}
 
 
 # Build the modal procedurally so we don't have to ship a .tscn for it.
@@ -352,9 +518,167 @@ func _build_card(sc: Dictionary) -> Control:
 
 
 func _pick(sc: Dictionary) -> void:
+	# Wildcard branch — either roll random or pop a prompt for AI.
+	if bool(sc.get("is_wildcard", false)):
+		_pick_wildcard(sc)
+		return
 	# Emit a duplicate so the caller can't accidentally mutate the
 	# global SCENARIOS constant.
 	scenario_chosen.emit(sc.duplicate(true))
+	queue_free()
+
+
+# Wildcard click handler. If AIDirector is enabled + connected, pop a
+# small prompt input dialog and ask Ollama to design a tank around the
+# user's description. Otherwise (or if AI fails) generate a random valid
+# combination via random_wildcard_config().
+func _pick_wildcard(sc: Dictionary) -> void:
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	var ai_ready: bool = ai != null and bool(ai.enabled) \
+		and int(ai.conn_state) == int(ai.ConnState.OK)
+	if not ai_ready:
+		# Pure random path. Replace the config with a freshly-rolled one,
+		# then emit as if the user had clicked a normal scenario card.
+		var rolled: Dictionary = sc.duplicate(true)
+		rolled["config"] = random_wildcard_config()
+		rolled["name"] = "✨ Surprise tank"
+		rolled["body"] = "Randomly generated. " + String(rolled["body"])
+		scenario_chosen.emit(rolled)
+		queue_free()
+		return
+	# AI path — pop a tiny input dialog over the picker. The user types
+	# a description, we ask Ollama to translate it into a config dict,
+	# then emit. Falls back to random on any failure.
+	_open_ai_prompt(sc, ai)
+
+
+# Build a small text-input modal layered above the picker. On submit we
+# call AIDirector to translate the prompt into a config dict; on cancel
+# we drop back to the picker.
+func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.anchor_right = 1.0
+	dim.anchor_bottom = 1.0
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(dim)
+
+	var center := CenterContainer.new()
+	center.anchor_right = 1.0
+	center.anchor_bottom = 1.0
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(540, 0)
+	center.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "✨ Describe your dream tank"
+	title.add_theme_font_size_override("font_size", 18)
+	vb.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "Ollama (%s) will design a tank around your description." % String(ai.model)
+	subtitle.add_theme_font_size_override("font_size", 11)
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(subtitle)
+	var hint := Label.new()
+	hint.text = "Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'."
+	hint.add_theme_font_size_override("font_size", 10)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(hint)
+
+	var input := LineEdit.new()
+	input.placeholder_text = "your tank vibe…"
+	input.custom_minimum_size = Vector2(0, 32)
+	vb.add_child(input)
+	var status := Label.new()
+	status.add_theme_font_size_override("font_size", 11)
+	status.add_theme_color_override("font_color", Color8(180, 195, 220))
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(status)
+
+	var btns := HBoxContainer.new()
+	btns.alignment = BoxContainer.ALIGNMENT_END
+	btns.add_theme_constant_override("separation", 8)
+	vb.add_child(btns)
+	var cancel_btn := Button.new()
+	cancel_btn.text = "Cancel"
+	btns.add_child(cancel_btn)
+	var roll_btn := Button.new()
+	roll_btn.text = "Skip AI — roll random"
+	btns.add_child(roll_btn)
+	var go_btn := Button.new()
+	go_btn.text = "Design tank"
+	btns.add_child(go_btn)
+
+	# Cancel just removes the prompt overlay; user can pick another card.
+	cancel_btn.pressed.connect(func():
+		dim.queue_free()
+		center.queue_free())
+	# Skip AI → random path (same as the no-AI branch in _pick_wildcard).
+	roll_btn.pressed.connect(func():
+		var rolled: Dictionary = sc.duplicate(true)
+		rolled["config"] = random_wildcard_config()
+		rolled["name"] = "✨ Surprise tank"
+		scenario_chosen.emit(rolled)
+		queue_free())
+	# Design via AI: send the prompt to AIDirector.design_tank.
+	go_btn.pressed.connect(func():
+		var prompt: String = input.text.strip_edges()
+		if prompt == "":
+			status.text = "Type a few words first, or hit 'Skip AI'."
+			return
+		status.add_theme_color_override("font_color", Color8(180, 195, 220))
+		status.text = "Asking %s to design your tank…" % String(ai.model)
+		go_btn.disabled = true
+		_request_ai_design(sc, ai, prompt, status, go_btn))
+
+
+# Fire the AI design request. AIDirector.design_tank emits a one-shot
+# `tank_designed(config)` signal back when the LLM response lands; we
+# subscribe with CONNECT_ONE_SHOT so the picker doesn't accumulate
+# listeners across retries.
+func _request_ai_design(sc: Dictionary, ai: Node, prompt: String,
+		status: Label, go_btn: Button) -> void:
+	if not ai.has_method("design_tank"):
+		# Fallback: roll random if the director doesn't have the helper.
+		status.text = "AI design helper missing — rolling random instead."
+		var rolled: Dictionary = sc.duplicate(true)
+		rolled["config"] = random_wildcard_config()
+		scenario_chosen.emit(rolled)
+		queue_free()
+		return
+	if not ai.is_connected("tank_designed", _on_ai_tank_designed):
+		ai.tank_designed.connect(_on_ai_tank_designed.bind(sc, status, go_btn), CONNECT_ONE_SHOT)
+	ai.design_tank(prompt)
+
+
+# AIDirector emits tank_designed when the LLM returns a config. Apply
+# defaults for any missing fields (the LLM may omit some) before emitting.
+func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_btn: Button) -> void:
+	if config.is_empty():
+		status.add_theme_color_override("font_color", Color8(230, 165, 120))
+		status.text = "AI returned an empty design — rolling random instead."
+		if go_btn != null:
+			go_btn.disabled = false
+		var rolled: Dictionary = sc.duplicate(true)
+		rolled["config"] = random_wildcard_config()
+		scenario_chosen.emit(rolled)
+		queue_free()
+		return
+	var rolled2: Dictionary = sc.duplicate(true)
+	# Merge AI-supplied fields over the wildcard defaults so any missing
+	# keys (LLM partial output) get a safe baseline.
+	var merged: Dictionary = rolled2.get("config", {}).duplicate(true)
+	for k in config.keys():
+		merged[k] = config[k]
+	rolled2["config"] = merged
+	rolled2["name"] = "✨ AI-designed tank"
+	scenario_chosen.emit(rolled2)
 	queue_free()
 
 

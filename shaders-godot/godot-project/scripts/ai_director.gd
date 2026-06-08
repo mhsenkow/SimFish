@@ -26,6 +26,10 @@ signal connection_tested(success: bool, message: String)
 signal chronicle_line(text: String, tags: PackedStringArray)
 signal name_pool_refilled(count: int)
 signal config_changed()
+# Fired by design_tank() when Ollama returns a tank-config dict (or empty
+# dict on failure). The scenario picker subscribes one-shot to get the
+# generated config and apply it to TankConfig.
+signal tank_designed(config: Dictionary)
 
 
 # ---- Public state (read freely) -----------------------------------------
@@ -82,6 +86,8 @@ var _http_test: HTTPRequest
 var _http_names: HTTPRequest
 var _http_intent: HTTPRequest
 var _http_chronicle: HTTPRequest
+var _http_design: HTTPRequest
+var _design_in_flight: bool = false
 
 
 # ---- Lifecycle ---------------------------------------------------------
@@ -114,6 +120,8 @@ func _ensure_http() -> void:
 		_http_intent = _make_http("HttpIntent", _on_intent_response)
 	if _http_chronicle == null:
 		_http_chronicle = _make_http("HttpChronicle", _on_chronicle_response)
+	if _http_design == null:
+		_http_design = _make_http("HttpDesign", _on_design_response)
 
 
 func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
@@ -584,6 +592,118 @@ func _on_chronicle_response(result: int, code: int, _h: PackedStringArray, body:
 
 
 # ---- UI helpers --------------------------------------------------------
+# ---- Wildcard tank designer -------------------------------------------
+# Ask Ollama to translate a freeform tank prompt ("zen carpet only", "red
+# plant showcase", "chaotic alien biosphere") into a TankConfig override
+# dict the scenario picker can apply. Fires `tank_designed(config)` when
+# the LLM response lands (empty dict on failure). One request in flight
+# at a time — second calls bail until the first finishes.
+func design_tank(user_prompt: String) -> void:
+	if not enabled or conn_state != ConnState.OK:
+		emit_signal("tank_designed", {})
+		return
+	if _design_in_flight:
+		return
+	_ensure_http()
+	_design_in_flight = true
+	var sys_prompt: String = (
+		"You design aquarium tanks. Given the user's vibe, return JSON with "
+		+ "these keys ONLY: tank_preset (one of: classic_community, community, "
+		+ "tetra_school, apex_tank, showcase, reef, polyp_lab, iwagumi_school, "
+		+ "cichlid_pairs, blackwater_biotope), substrate_type (one of: aquasoil, "
+		+ "sand, eco_complete, inert_gravel, ocean_sand), aeration_type (filter, "
+		+ "disk, stick, none), tank_shape (box, cylinder, cube, hex, sphere), "
+		+ "tank_half_w (float 3-12), tank_half_d (float 3-8), tank_height (float "
+		+ "5-10), light_fixture (bar, spotlight), lighting_preset (planted, "
+		+ "cozy_shop, sunny, dim_warm, reef), co2_level (float 0-1), "
+		+ "light_spectrum (float 0-1 where 0=cool blue, 1=warm red). Pick a "
+		+ "preset that matches the vibe. Use ocean_sand ONLY with the reef "
+		+ "preset. User vibe: "
+		+ user_prompt)
+	var payload: Dictionary = {
+		"model": model,
+		"prompt": sys_prompt,
+		"stream": false,
+		"format": "json",
+		"options": {"temperature": 0.9}
+	}
+	var url: String = endpoint + "/api/generate"
+	var err: int = _http_design.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		_design_in_flight = false
+		emit_signal("tank_designed", {})
+
+
+func _on_design_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	_design_in_flight = false
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		emit_signal("tank_designed", {})
+		return
+	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not (outer is Dictionary):
+		emit_signal("tank_designed", {})
+		return
+	var inner_text: String = String(outer.get("response", ""))
+	var inner: Variant = JSON.parse_string(inner_text)
+	if not (inner is Dictionary):
+		emit_signal("tank_designed", {})
+		return
+	# Validate + sanitize: LLM can produce nonsense values. Clamp floats,
+	# whitelist enum-style strings, drop anything we don't recognize.
+	var clean: Dictionary = _sanitize_design(inner)
+	emit_signal("tank_designed", clean)
+
+
+# Whitelist + clamp the LLM-supplied design dict so a hallucinated value
+# can't crash the spawn pipeline. Keys not in the whitelist are dropped.
+func _sanitize_design(d: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	var presets: PackedStringArray = PackedStringArray([
+		"classic_community", "community", "tetra_school", "apex_tank",
+		"showcase", "reef", "polyp_lab", "iwagumi_school",
+		"cichlid_pairs", "blackwater_biotope"])
+	var substrates: PackedStringArray = PackedStringArray([
+		"aquasoil", "sand", "eco_complete", "inert_gravel", "ocean_sand"])
+	var aerations: PackedStringArray = PackedStringArray([
+		"filter", "disk", "stick", "none"])
+	var shapes: PackedStringArray = PackedStringArray([
+		"box", "cylinder", "cube", "hex", "sphere"])
+	var fixtures: PackedStringArray = PackedStringArray(["bar", "spotlight"])
+	var lightings: PackedStringArray = PackedStringArray([
+		"planted", "cozy_shop", "sunny", "dim_warm", "reef"])
+	if d.has("tank_preset") and String(d["tank_preset"]) in presets:
+		out["tank_preset"] = String(d["tank_preset"])
+	if d.has("substrate_type") and String(d["substrate_type"]) in substrates:
+		out["substrate_type"] = String(d["substrate_type"])
+	if d.has("aeration_type") and String(d["aeration_type"]) in aerations:
+		out["aeration_type"] = String(d["aeration_type"])
+	if d.has("tank_shape") and String(d["tank_shape"]) in shapes:
+		out["tank_shape"] = String(d["tank_shape"])
+	if d.has("light_fixture") and String(d["light_fixture"]) in fixtures:
+		out["light_fixture"] = String(d["light_fixture"])
+	if d.has("lighting_preset") and String(d["lighting_preset"]) in lightings:
+		out["lighting_preset"] = String(d["lighting_preset"])
+	if d.has("tank_half_w"):
+		out["tank_half_w"] = clampf(float(d["tank_half_w"]), 3.0, 12.0)
+	if d.has("tank_half_d"):
+		out["tank_half_d"] = clampf(float(d["tank_half_d"]), 3.0, 8.0)
+	if d.has("tank_height"):
+		out["tank_height"] = clampf(float(d["tank_height"]), 5.0, 10.0)
+	if d.has("co2_level"):
+		out["co2_level"] = clampf(float(d["co2_level"]), 0.0, 1.0)
+	if d.has("light_spectrum"):
+		out["light_spectrum"] = clampf(float(d["light_spectrum"]), 0.0, 1.0)
+	# Coherence guards: ocean_sand only with reef preset.
+	if String(out.get("substrate_type", "")) == "ocean_sand":
+		out["tank_preset"] = "reef"
+	elif String(out.get("tank_preset", "")) == "reef":
+		out["substrate_type"] = "ocean_sand"
+	return out
+
+
 func status_summary() -> String:
 	match conn_state:
 		ConnState.UNKNOWN:  return "Not tested"
