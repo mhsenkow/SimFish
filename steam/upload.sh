@@ -21,6 +21,7 @@ for var in STEAM_APP_ID STEAM_DEPOT_WINDOWS STEAM_DEPOT_LINUX STEAM_DEPOT_MACOS;
 done
 
 STEAM_USERNAME="${STEAM_USERNAME:-mhsenkow}"
+STEAM_SETLIVE="${STEAM_SETLIVE-default}"
 
 if ! command -v steamcmd >/dev/null 2>&1; then
 	echo "Install steamcmd first: https://partner.steamgames.com/doc/sdk/uploading" >&2
@@ -36,6 +37,7 @@ gen_vdf() {
 		-e "s/@STEAM_DEPOT_WINDOWS@/$STEAM_DEPOT_WINDOWS/g" \
 		-e "s/@STEAM_DEPOT_LINUX@/$STEAM_DEPOT_LINUX/g" \
 		-e "s/@STEAM_DEPOT_MACOS@/$STEAM_DEPOT_MACOS/g" \
+		-e "s/@STEAM_SETLIVE@/$STEAM_SETLIVE/g" \
 		"$template" > "$out"
 }
 
@@ -74,7 +76,7 @@ run_upload() {
 
 password="${STEAM_PASSWORD:-}"
 guard="${STEAM_GUARD_CODE:-}"
-echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME..."
+echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft})..."
 
 set +e
 if [[ -n "$password" ]]; then
