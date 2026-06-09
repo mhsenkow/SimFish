@@ -1248,6 +1248,21 @@ func _sample_point_in_tank(y_min: float, y_max: float, margin: float = 0.35) -> 
 
 # Shape-aware 3D spawn for fish — spreads schools through the water column,
 # critical for dome bowls where the usable XZ ring shrinks with height.
+func _apply_founding_cohort_spread(g: Dictionary, i: int, count: int) -> void:
+	if count <= 1:
+		return
+	# Vertical spread on every tank shape — schools shouldn't seed as one slab.
+	g["preferred_y_frac"] = clampf(
+		float(i) / float(maxi(count - 1, 1)) * 0.76 + 0.10
+		+ randf_range(-0.06, 0.06), 0.08, 0.92)
+	# Ring-seed home territories so patrol zones cover the footprint from day one.
+	var fp := _footprint()
+	var ring_a: float = TAU * float(i) / float(count) + randf_range(-0.3, 0.3)
+	var ring_r: float = fp.effective_radius(0.35) * randf_range(0.32, 0.78)
+	g["home_x"] = cos(ring_a) * ring_r
+	g["home_z"] = sin(ring_a) * ring_r
+
+
 func _sample_fish_spawn_pos(g: Dictionary = {}) -> Vector3:
 	var y_min: float = SUBSTRATE_DEPTH + 0.35
 	var y_max: float = WATER_HEIGHT - 0.45
@@ -2789,8 +2804,7 @@ func _respawn_extinct_fauna() -> void:
 			g["sex"] = i % 2
 			g["max_age_s"] = float(g.get("max_age_s", 240.0)) + randf_range(-30, 30)
 			_apply_initial_phenotype_spread(g, phenotype_mult)
-			if TANK_SHAPE == "sphere" and count > 1:
-				g["preferred_y_frac"] = clampf(float(i) / float(count - 1), 0.08, 0.92)
+			_apply_founding_cohort_spread(g, i, count)
 			_spawn_fish_at(g, _sample_fish_spawn_pos(g))
 
 	# Shrimp: only when the preset stocking dict includes them.
@@ -3852,8 +3866,7 @@ func _spawn_initial_fish() -> void:
 			g["max_age_s"] = float(g.get("max_age_s", 240.0)) + randf_range(-30, 30)
 			# Founding phenotype spread - varies by preset.
 			_apply_initial_phenotype_spread(g, phenotype_mult)
-			if TANK_SHAPE == "sphere" and count > 1:
-				g["preferred_y_frac"] = clampf(float(i) / float(count - 1), 0.08, 0.92)
+			_apply_founding_cohort_spread(g, i, count)
 			_spawn_fish_at(g, _sample_fish_spawn_pos(g))
 			_fish_built += 1
 			if _fish_built % 4 == 0:

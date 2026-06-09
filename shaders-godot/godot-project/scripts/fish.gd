@@ -1038,8 +1038,9 @@ func init_genome(genome: Dictionary) -> void:
 	# fish ends up with its own 3D territory rather than every fish
 	# converging on the tank centroid AT preferred_y.
 	if is_inf(home_x):
-		home_x = global_position.x + randf_range(-1.5, 1.5)
-		home_z = global_position.z + randf_range(-1.5, 1.5)
+		var spread_xz: float = _tank_home_spread_xz()
+		home_x = global_position.x + randf_range(-spread_xz, spread_xz)
+		home_z = global_position.z + randf_range(-spread_xz, spread_xz)
 	if is_inf(home_y):
 		home_y = preferred_y + randf_range(-0.6, 0.6)
 	if sim != null:
@@ -1062,8 +1063,8 @@ func _apply_swim_pattern_defaults() -> void:
 	max_turn_rate = 2.6 # default reset
 	match swim_pattern:
 		"school":
-			home_radius = 2.5
-			wander_strength = 1.0
+			home_radius = 4.0
+			wander_strength = 1.15
 			dart_chance = 0.005
 			max_turn_rate = 2.6
 		"shoal":
@@ -2952,6 +2953,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if mourning_w > 0.01:
 			tightness *= 1.0 + mourning_w * 0.8
 	desired += _boids(neighbors, tightness) * schooling_strength
+	# Soft territorial anchor — even inside home_radius, a gentle pull keeps
+	# each schooler loosely tethered to its patrol zone so boids cohesion
+	# can't collapse the whole population onto one centroid.
+	if swim_pattern == "school" or swim_pattern == "shoal":
+		var soft_home: Vector3 = Vector3(home_x - position.x, 0.0, home_z - position.z)
+		var soft_d: float = soft_home.length()
+		if soft_d > 0.05:
+			var anchor_w: float = 0.14 if swim_pattern == "school" else 0.10
+			desired += soft_home.normalized() * effective_max * anchor_w \
+				* minf(soft_d / maxf(home_radius, 0.5), 1.0)
 
 	# ---- Pre-walk neighbors ONCE ----
 	# Four downstream blocks (personal space, gaze contagion, gaze
@@ -2983,14 +2994,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	for i in scan_n:
 		if scan_same_species[i] == 0:
 			continue
-		if scan_d2[i] < 4.0:  # 2 unit personal-space zone
+		if scan_d2[i] < 6.25:  # 2.5 unit personal-space zone
 			crowd_count += 1
 			crowd_centroid += scan_fish[i].position
-	if crowd_count > 5:
+	if crowd_count > 3:
 		var center: Vector3 = crowd_centroid / float(crowd_count)
 		var away: Vector3 = position - center
 		if away.length_squared() > 1e-4:
-			desired += away.normalized() * effective_max * 0.20
+			var clump_push: float = 0.22 + 0.06 * float(crowd_count - 3)
+			desired += away.normalized() * effective_max * clampf(clump_push, 0.22, 0.42)
 
 	# Mourning slowdown — apply to effective_max so the school visibly
 	# drifts rather than sprints. Light (~30% top-speed cap at peak
@@ -3428,7 +3440,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# the school boids already provide direction variety.
 	_wander_refresh_timer -= dt
 	if _wander_refresh_timer <= 0.0:
-		var interval: float = 15.0 + randf() * 10.0  # schooler default
+		var interval: float = 8.0 + randf() * 6.0  # schooler default
 		if schooling_strength < 0.4:
 			interval = 4.0 + randf() * 4.0  # solo fish: much more frequent
 		elif swim_pattern == "shuffle":
@@ -3460,6 +3472,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		elif schooling_strength < 0.4:
 			drift_interval = 20.0 + randf() * 15.0  # solo fish: moderate drift
 			drift_radius = 2.5
+		elif swim_pattern == "school" or swim_pattern == "shoal":
+			drift_interval = 20.0 + randf() * 16.0
+			drift_radius = 3.2 if swim_pattern == "school" else 4.0
 		_home_drift_timer = drift_interval
 		var w := _world_node()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
@@ -4329,19 +4344,36 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 		if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
 			sep.y += signf(-diff.y) * 0.28
 
-	var steer := sep * 2.4
+	var steer := sep * 2.85
 
 	if count_conspecific > 0:
 		ali /= float(count_conspecific)
 		coh /= float(count_conspecific)
 		var school_avg_speed: float = school_speed_sum / float(count_conspecific)
 		var ali_strength: float = 1.15
-		var coh_strength: float = 0.82 * tightness
+		# Dense local groups soften cohesion so the school reads as a loose
+		# cloud instead of a single tight ball.
+		var density_factor: float = 1.0
+		if count_conspecific >= 6:
+			density_factor = 0.42
+		elif count_conspecific >= 4:
+			density_factor = 0.62
+		elif count_conspecific >= 3:
+			density_factor = 0.80
+		var coh_strength: float = 0.82 * tightness * density_factor
 		# Alignment: steer toward avg heading.
 		if ali.length() > 0.001:
 			steer += ali.normalized() * ali_strength
-		# Cohesion: steer toward predicted center of mass.
-		var to_center: Vector3 = coh - position
+		# Cohesion: steer toward predicted center of mass + a stable personal
+		# slot so conspecifics fan out around the group instead of stacking.
+		var slot_angle: float = float(get_instance_id() % 360) * 0.174532925
+		var slot_r: float = clampf(separation_radius * 2.35 / maxf(tightness, 0.7), 0.7, 2.0)
+		var formation_slot: Vector3 = Vector3(
+			cos(slot_angle) * slot_r,
+			sin(float(get_instance_id() % 127) * 0.11) * slot_r * 0.35,
+			sin(slot_angle) * slot_r
+		)
+		var to_center: Vector3 = coh + formation_slot - position
 		to_center.y *= 0.52
 		if to_center.length() > 0.001:
 			steer += to_center.normalized() * coh_strength
@@ -4417,6 +4449,17 @@ func _world_node() -> Node:
 	if sim == null:
 		return null
 	return sim.get_parent()
+
+
+func _tank_home_spread_xz() -> float:
+	# Horizontal jitter for per-fish home anchors — scales with tank width so
+	# large footprints seed patrol zones across the whole volume.
+	var w := _world_node()
+	if w == null:
+		return 1.8
+	var hw: float = float(w.get("TANK_HALF_W")) if w.get("TANK_HALF_W") != null else 4.0
+	var hd: float = float(w.get("TANK_HALF_D")) if w.get("TANK_HALF_D") != null else 4.0
+	return clampf(maxf(hw, hd) * 0.22, 1.8, 5.0)
 
 
 func _tank_is_dome() -> bool:
