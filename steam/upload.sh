@@ -78,6 +78,10 @@ password="${STEAM_PASSWORD:-}"
 guard="${STEAM_GUARD_CODE:-}"
 echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft})..."
 
+if [[ -z "$password" ]]; then
+	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME} (Cancel if using cached login):")"
+fi
+
 set +e
 if [[ -n "$password" ]]; then
 	output="$(run_upload "$STEAM_USERNAME" "$password" "$guard" 2>&1)"
