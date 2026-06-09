@@ -140,10 +140,17 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 	# counts as one "feeding event" — pattern matters, frequency doesn't.
 	var t: Dictionary = Time.get_time_dict_from_system()
 	var mod: int = int(t.get("hour", 0)) * 60 + int(t.get("minute", 0))
-	if _feed_time_history.is_empty() or int(_feed_time_history[-1]) != mod:
+	var new_minute: bool = _feed_time_history.is_empty() or int(_feed_time_history[-1]) != mod
+	if new_minute:
 		_feed_time_history.append(mod)
 		while _feed_time_history.size() > FEED_TIME_HISTORY_CAP:
 			_feed_time_history.pop_front()
+	# Music hook: food drop triggers a build → drop arc on the trance bed.
+	# Only fire once per minute so a flurry of pellets doesn't keep restarting it.
+	if new_minute:
+		var audio := _ambient_audio()
+		if audio != null and audio.has_method("play_feeding_event"):
+			audio.play_feeding_event()
 
 
 # True when the current wall-clock minute is close to a minute the player
@@ -1755,7 +1762,7 @@ func _tick(dt: float) -> void:
 			var w: WasteParticle = ev["eat_waste"]
 			if is_instance_valid(w) and not consumed.has(w):
 				consumed[w] = true
-				_play_ambient_event("eat")
+				_play_ambient_event("eat", -1.0, _node_species(actor))
 				var leftover: float = w.nutrient_value * 0.4
 				waste.erase(w)
 				w.queue_free()
@@ -1772,9 +1779,9 @@ func _tick(dt: float) -> void:
 			if is_instance_valid(prey) and not consumed.has(prey):
 				consumed[prey] = true
 				if prey is Fish or prey is Shrimp:
-					_play_ambient_event("death")
+					_play_ambient_event("death", -1.0, _node_species(prey))
 				else:
-					_play_ambient_event("eat")
+					_play_ambient_event("eat", -1.0, _node_species(actor))
 				# Visual flash at the bite — short bright burst at the
 				# prey's last position. The audio event covers the beat;
 				# the flash covers the eye. Spawned BEFORE queue_free
@@ -1811,7 +1818,7 @@ func _tick(dt: float) -> void:
 			var snail: Node = ev["kill_snail"]
 			if is_instance_valid(snail) and not consumed.has(snail):
 				consumed[snail] = true
-				_play_ambient_event("eat")
+				_play_ambient_event("eat", -1.0, _node_species(actor))
 				_spawn_waste(snail.global_position, 0.18, WasteParticle.KIND_FISH)
 				snail.queue_free()
 
@@ -1822,7 +1829,7 @@ func _tick(dt: float) -> void:
 			var alga = ev["eat_algae"]
 			if is_instance_valid(alga) and not consumed.has(alga):
 				consumed[alga] = true
-				_play_ambient_event("eat")
+				_play_ambient_event("eat", -1.0, _node_species(actor))
 				algae.erase(alga)
 				_spawn_waste(alga.global_position, 0.08, WasteParticle.KIND_FISH)
 				alga.queue_free()
@@ -1830,7 +1837,7 @@ func _tick(dt: float) -> void:
 		if ev.get("die", false):
 			if not consumed.has(actor):
 				consumed[actor] = true
-				_play_ambient_event("death")
+				_play_ambient_event("death", -1.0, _node_species(actor))
 				# Death ritual + mourning hook. For named fish we record a
 				# mourning event so schoolmates visibly slow down for ~60s,
 				# and we log a personalized epitaph using their lifetime
@@ -2041,7 +2048,7 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 		fry._reclamp_territory_to_tank()
 	# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 	mother.energy = maxf(0.0, mother.energy - 0.20)
-	_play_ambient_event("birth")
+	_play_ambient_event("birth", -1.0, _node_species(mother))
 
 
 # Mouthbrooder fry release. Drops a small clutch from the female's
@@ -2074,7 +2081,7 @@ func _release_brooded_fry(mother: Fish, brood_genome: Dictionary, count: int) ->
 	# Mother bottoms out — caring for a brood is expensive.
 	mother.energy = maxf(0.0, mother.energy - 0.25)
 	mother.stress = clampf(mother.stress * 0.5, 0.0, 0.5)
-	_play_ambient_event("birth")
+	_play_ambient_event("birth", -1.0, _node_species(mother))
 	if not _logged_first_hatch:
 		_logged_first_hatch = true
 		log_story_event("First fry released from mouthbrooding")
@@ -2111,7 +2118,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 			fry._reclamp_territory_to_tank()
 		# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 		mother.energy = maxf(0.0, mother.energy - 0.20)
-		_play_ambient_event("birth")
+		_play_ambient_event("birth", -1.0, _node_species(mother))
 		return
 
 	# Egg-layers: choose a plant leaf if available, else drop on substrate.
@@ -2164,7 +2171,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 		b.brooding_at = lay_at
 		b.brooding_remaining = Fish.BROODING_DURATION if b.swim_pattern == "hover" else Fish.BROODING_DURATION_LIGHT
 
-	_play_ambient_event("spawn")
+	_play_ambient_event("spawn", -1.0, _node_species(a))
 
 
 func _hatch(e: FishEgg) -> void:
@@ -2180,17 +2187,29 @@ func _hatch(e: FishEgg) -> void:
 	fry.energy = 1.0
 	register_fish(fry)
 	fry._reclamp_territory_to_tank()
-	_play_ambient_event("birth")
+	_play_ambient_event("birth", -1.0, _node_species(e))
 	if not _logged_first_hatch:
 		_logged_first_hatch = true
 		log_story_event("First fry hatched — a baby %s entered the tank." % e.species)
 
 
 # Helper - look up the audio node and emit a specific musical event.
-func _play_ambient_event(event_name: String, intensity: float = -1.0) -> void:
+# The optional `species` is used by the audio side to pick a per-species pitch
+# palette (small bright fish trend up, large predators trend down).
+func _play_ambient_event(event_name: String, intensity: float = -1.0, species: String = "") -> void:
 	var audio := _ambient_audio()
 	if audio != null and audio.has_method("play_aquarium_event"):
-		audio.play_aquarium_event(event_name, intensity)
+		audio.play_aquarium_event(event_name, intensity, species)
+
+
+# Cheap species-id reader — safe on any node that may or may not have it.
+func _node_species(n: Object) -> String:
+	if n == null:
+		return ""
+	var v: Variant = n.get("species")
+	if v == null:
+		return ""
+	return String(v)
 
 
 func _apply_ecosystem_engineering(dt: float) -> void:

@@ -287,6 +287,39 @@ var music_influence_day: float = 1.0
 var music_influence_aeration: float = 1.0
 var music_influence_biomass: float = 1.0
 var music_seed: int = 1
+# Festival vibe — build/drop architecture, lead, lo-fi character.
+# auto = follow tank ; trance = aggressive 16-bar verse / 8-bar build / 16-bar drop ;
+# loop = stay in verse (chill background) ; free = let events nudge it.
+var music_phrase_form: String = "auto"
+var music_drop_intensity: float = 0.7
+var music_breakdown_depth: float = 0.7
+var music_lead_mix: float = 0.55
+var music_lead_detune: float = 0.55
+var music_vinyl_crackle: float = 0.2
+var music_tape_wow: float = 0.18
+var music_jazziness: float = 0.4
+var music_swing: float = 0.06
+var music_offbeat_hat: float = 0.55
+var music_reverb_send: float = 0.45
+var music_humanize: float = 0.22
+var music_species_palette: float = 0.75
+# Extra voices.
+var music_sub_bass_mix: float = 0.55
+var music_offbeat_bass_mix: float = 0.35
+var music_granular_pad: float = 0.25
+var music_vocoder_pad: float = 0.25
+var music_shaker_mix: float = 0.4
+var music_clap_mix: float = 0.45
+# Build dramaturgy.
+var music_build_drama: float = 0.7
+# Tank-state driven sound (auto-tied; knobs scale sensitivity).
+var music_bitcrush_algae: float = 0.6
+var music_bass_grit: float = 0.5
+var music_pump_gate: float = 0.6
+# Harmony.
+var music_key_mod: float = 0.35
+# Master breathe LFO depth (0..1).
+var music_breathe_lfo: float = 0.35
 
 # ---- Room environment ----
 # A "scene" around the tank — desk, wall, lamp, props. Lifts the tank
@@ -1561,6 +1594,31 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "influence_aeration", music_influence_aeration)
 	cfg.set_value("music", "influence_biomass", music_influence_biomass)
 	cfg.set_value("music", "seed", music_seed)
+	cfg.set_value("music", "phrase_form", music_phrase_form)
+	cfg.set_value("music", "drop_intensity", music_drop_intensity)
+	cfg.set_value("music", "breakdown_depth", music_breakdown_depth)
+	cfg.set_value("music", "lead_mix", music_lead_mix)
+	cfg.set_value("music", "lead_detune", music_lead_detune)
+	cfg.set_value("music", "vinyl_crackle", music_vinyl_crackle)
+	cfg.set_value("music", "tape_wow", music_tape_wow)
+	cfg.set_value("music", "jazziness", music_jazziness)
+	cfg.set_value("music", "swing", music_swing)
+	cfg.set_value("music", "offbeat_hat", music_offbeat_hat)
+	cfg.set_value("music", "reverb_send", music_reverb_send)
+	cfg.set_value("music", "humanize", music_humanize)
+	cfg.set_value("music", "species_palette", music_species_palette)
+	cfg.set_value("music", "sub_bass_mix", music_sub_bass_mix)
+	cfg.set_value("music", "offbeat_bass_mix", music_offbeat_bass_mix)
+	cfg.set_value("music", "granular_pad", music_granular_pad)
+	cfg.set_value("music", "vocoder_pad", music_vocoder_pad)
+	cfg.set_value("music", "shaker_mix", music_shaker_mix)
+	cfg.set_value("music", "clap_mix", music_clap_mix)
+	cfg.set_value("music", "build_drama", music_build_drama)
+	cfg.set_value("music", "bitcrush_algae", music_bitcrush_algae)
+	cfg.set_value("music", "bass_grit", music_bass_grit)
+	cfg.set_value("music", "pump_gate", music_pump_gate)
+	cfg.set_value("music", "key_mod", music_key_mod)
+	cfg.set_value("music", "breathe_lfo", music_breathe_lfo)
 	cfg.set_value("environment", "preset", environment_preset)
 	cfg.set_value("substrate", "type", substrate_type)
 	cfg.set_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
@@ -1721,6 +1779,31 @@ func load_from_disk() -> void:
 	music_influence_aeration = cfg.get_value("music", "influence_aeration", music_influence_aeration)
 	music_influence_biomass = cfg.get_value("music", "influence_biomass", music_influence_biomass)
 	music_seed = int(cfg.get_value("music", "seed", music_seed))
+	music_phrase_form = String(cfg.get_value("music", "phrase_form", music_phrase_form))
+	music_drop_intensity = cfg.get_value("music", "drop_intensity", music_drop_intensity)
+	music_breakdown_depth = cfg.get_value("music", "breakdown_depth", music_breakdown_depth)
+	music_lead_mix = cfg.get_value("music", "lead_mix", music_lead_mix)
+	music_lead_detune = cfg.get_value("music", "lead_detune", music_lead_detune)
+	music_vinyl_crackle = cfg.get_value("music", "vinyl_crackle", music_vinyl_crackle)
+	music_tape_wow = cfg.get_value("music", "tape_wow", music_tape_wow)
+	music_jazziness = cfg.get_value("music", "jazziness", music_jazziness)
+	music_swing = cfg.get_value("music", "swing", music_swing)
+	music_offbeat_hat = cfg.get_value("music", "offbeat_hat", music_offbeat_hat)
+	music_reverb_send = cfg.get_value("music", "reverb_send", music_reverb_send)
+	music_humanize = cfg.get_value("music", "humanize", music_humanize)
+	music_species_palette = cfg.get_value("music", "species_palette", music_species_palette)
+	music_sub_bass_mix = cfg.get_value("music", "sub_bass_mix", music_sub_bass_mix)
+	music_offbeat_bass_mix = cfg.get_value("music", "offbeat_bass_mix", music_offbeat_bass_mix)
+	music_granular_pad = cfg.get_value("music", "granular_pad", music_granular_pad)
+	music_vocoder_pad = cfg.get_value("music", "vocoder_pad", music_vocoder_pad)
+	music_shaker_mix = cfg.get_value("music", "shaker_mix", music_shaker_mix)
+	music_clap_mix = cfg.get_value("music", "clap_mix", music_clap_mix)
+	music_build_drama = cfg.get_value("music", "build_drama", music_build_drama)
+	music_bitcrush_algae = cfg.get_value("music", "bitcrush_algae", music_bitcrush_algae)
+	music_bass_grit = cfg.get_value("music", "bass_grit", music_bass_grit)
+	music_pump_gate = cfg.get_value("music", "pump_gate", music_pump_gate)
+	music_key_mod = cfg.get_value("music", "key_mod", music_key_mod)
+	music_breathe_lfo = cfg.get_value("music", "breathe_lfo", music_breathe_lfo)
 	environment_preset = cfg.get_value("environment", "preset", environment_preset)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
 	rebuild_terrain_on_load = cfg.get_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
@@ -1891,6 +1974,31 @@ func reset_to_defaults() -> void:
 	music_influence_aeration = 1.0
 	music_influence_biomass = 1.0
 	music_seed = 1
+	music_phrase_form = "auto"
+	music_drop_intensity = 0.7
+	music_breakdown_depth = 0.7
+	music_lead_mix = 0.55
+	music_lead_detune = 0.55
+	music_vinyl_crackle = 0.2
+	music_tape_wow = 0.18
+	music_jazziness = 0.4
+	music_swing = 0.06
+	music_offbeat_hat = 0.55
+	music_reverb_send = 0.45
+	music_humanize = 0.22
+	music_species_palette = 0.75
+	music_sub_bass_mix = 0.55
+	music_offbeat_bass_mix = 0.35
+	music_granular_pad = 0.25
+	music_vocoder_pad = 0.25
+	music_shaker_mix = 0.4
+	music_clap_mix = 0.45
+	music_build_drama = 0.7
+	music_bitcrush_algae = 0.6
+	music_bass_grit = 0.5
+	music_pump_gate = 0.6
+	music_key_mod = 0.35
+	music_breathe_lfo = 0.35
 	environment_preset = "void"
 	# Fauna behavior.
 	auto_respawn_fauna = false
@@ -1972,6 +2080,34 @@ func randomize_music_params(wild: bool = false) -> void:
 	if wild or rng.randf() > 0.25:
 		var styles: Array[String] = ["ambient", "hybrid", "trance"]
 		music_style = styles[rng.randi_range(0, styles.size() - 1)]
+	music_drop_intensity = rng.randf_range(0.35, 1.0)
+	music_breakdown_depth = rng.randf_range(0.35, 1.0)
+	music_lead_mix = rng.randf_range(0.25, 0.9)
+	music_lead_detune = rng.randf_range(0.2, 1.0)
+	music_jazziness = rng.randf_range(0.0, 1.0)
+	# Lo-fi knobs — most tanks stay subtle, wild leans further into it.
+	music_vinyl_crackle = rng.randf_range(0.0, 0.7 if wild else 0.45)
+	music_tape_wow = rng.randf_range(0.0, 0.6 if wild else 0.35)
+	music_swing = rng.randf_range(0.0, 0.45)
+	music_offbeat_hat = rng.randf_range(0.15, 1.0)
+	music_reverb_send = rng.randf_range(0.2, 0.85)
+	music_humanize = rng.randf_range(0.05, 0.45)
+	music_species_palette = rng.randf_range(0.4, 1.0)
+	if wild or rng.randf() > 0.35:
+		var forms: Array[String] = ["auto", "trance", "loop", "free"]
+		music_phrase_form = forms[rng.randi_range(0, forms.size() - 1)]
+	music_sub_bass_mix = rng.randf_range(0.25, 0.85)
+	music_offbeat_bass_mix = rng.randf_range(0.0, 0.85)
+	music_granular_pad = rng.randf_range(0.0, 0.65 if wild else 0.45)
+	music_vocoder_pad = rng.randf_range(0.0, 0.55 if wild else 0.35)
+	music_shaker_mix = rng.randf_range(0.15, 0.8)
+	music_clap_mix = rng.randf_range(0.0, 0.85)
+	music_build_drama = rng.randf_range(0.3, 1.0)
+	music_bitcrush_algae = rng.randf_range(0.0, 0.9)
+	music_bass_grit = rng.randf_range(0.0, 0.85)
+	music_pump_gate = rng.randf_range(0.2, 0.95)
+	music_key_mod = rng.randf_range(0.0, 0.75)
+	music_breathe_lfo = rng.randf_range(0.0, 0.7)
 
 
 static func logical_screen_size() -> Vector2:
