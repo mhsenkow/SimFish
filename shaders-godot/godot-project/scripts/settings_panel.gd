@@ -40,6 +40,19 @@ var _aeration_x: HSlider
 var _aeration_x_label: Label
 var _auto_respawn_check: CheckBox
 var _auto_feed_check: CheckBox
+var _fauna_schooling_slider: HSlider
+var _fauna_schooling_label: Label
+var _fauna_separation_slider: HSlider
+var _fauna_separation_label: Label
+var _fauna_pulse_check: CheckBox
+var _fauna_pulse_amp_slider: HSlider
+var _fauna_pulse_amp_label: Label
+var _fauna_wander_slider: HSlider
+var _fauna_wander_label: Label
+var _fauna_speed_slider: HSlider
+var _fauna_speed_label: Label
+var _fauna_mourning_check: CheckBox
+var _fauna_glance_check: CheckBox
 var _preset_option: OptionButton
 var _preset_desc: Label
 var _diet_chart: RichTextLabel
@@ -126,6 +139,7 @@ func _build_ui() -> void:
 	var vbox_tank := _new_settings_tab(tabs, "Tank")
 	var vbox_stock := _new_settings_tab(tabs, "Stocking")
 	var vbox_env := _new_settings_tab(tabs, "Environment")
+	var vbox_fauna := _new_settings_tab(tabs, "Fauna")
 	var vbox_ai := _new_settings_tab(tabs, "AI")
 	var vbox_adv := _new_settings_tab(tabs, "Advanced")
 
@@ -352,6 +366,58 @@ func _build_ui() -> void:
 	_environment_desc = PanelTheme.make_description()
 	vbox_env.add_child(_environment_desc)
 
+	# -- Fauna tab (live swim/grouping — no Apply/reload required) --
+	_add_section(vbox_fauna, "Schooling")
+	var fauna_school_hint := PanelTheme.make_description()
+	fauna_school_hint.text = "Adjust how tightly fish school and spread through the tank. Changes apply immediately."
+	vbox_fauna.add_child(fauna_school_hint)
+	_fauna_schooling_label = Label.new()
+	_fauna_schooling_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Schooling intensity", 0.0, 2.0, 0.05, _fauna_schooling_label)
+	_fauna_schooling_slider.value_changed.connect(func(v):
+		TankConfig.fauna_schooling_mult = v
+		_fauna_schooling_label.text = "%.2f" % v)
+	_fauna_separation_label = Label.new()
+	_fauna_separation_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Personal space", 0.5, 2.0, 0.05, _fauna_separation_label)
+	_fauna_separation_slider.value_changed.connect(func(v):
+		TankConfig.fauna_separation_mult = v
+		_fauna_separation_label.text = "%.2f" % v)
+	_fauna_pulse_check = CheckBox.new()
+	_fauna_pulse_check.text = "School breathing pulse (synchronized tighten/loosen)"
+	_fauna_pulse_check.toggled.connect(func(v): TankConfig.fauna_school_pulse_enabled = v)
+	vbox_fauna.add_child(_fauna_pulse_check)
+	_fauna_pulse_amp_label = Label.new()
+	_fauna_pulse_amp_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Pulse amplitude", 0.0, 0.3, 0.01, _fauna_pulse_amp_label)
+	_fauna_pulse_amp_slider.value_changed.connect(func(v):
+		TankConfig.fauna_school_pulse_amplitude = v
+		_fauna_pulse_amp_label.text = "%.2f" % v)
+
+	_add_section(vbox_fauna, "Movement")
+	_fauna_wander_label = Label.new()
+	_fauna_wander_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Wander / roam", 0.0, 2.0, 0.05, _fauna_wander_label)
+	_fauna_wander_slider.value_changed.connect(func(v):
+		TankConfig.fauna_wander_mult = v
+		_fauna_wander_label.text = "%.2f" % v)
+	_fauna_speed_label = Label.new()
+	_fauna_speed_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Swim speed", 0.5, 2.0, 0.05, _fauna_speed_label)
+	_fauna_speed_slider.value_changed.connect(func(v):
+		TankConfig.fauna_speed_mult = v
+		_fauna_speed_label.text = "%.2f" % v)
+
+	_add_section(vbox_fauna, "Social reactions")
+	_fauna_mourning_check = CheckBox.new()
+	_fauna_mourning_check.text = "Mourning behavior after deaths (school tightens + slows)"
+	_fauna_mourning_check.toggled.connect(func(v): TankConfig.fauna_mourning_enabled = v)
+	vbox_fauna.add_child(_fauna_mourning_check)
+	_fauna_glance_check = CheckBox.new()
+	_fauna_glance_check.text = "Player attention (bold fish drift toward camera stare)"
+	_fauna_glance_check.toggled.connect(func(v): TankConfig.fauna_player_glance_enabled = v)
+	vbox_fauna.add_child(_fauna_glance_check)
+
 	# -- Advanced tab --
 	_add_section(vbox_adv, "Automation")
 	_auto_respawn_check = CheckBox.new()
@@ -550,6 +616,37 @@ func _pull_from_config() -> void:
 		_update_environment_desc()
 	_auto_respawn_check.button_pressed = TankConfig.auto_respawn_fauna
 	_auto_feed_check.button_pressed = TankConfig.auto_feed_fauna
+	if _fauna_schooling_slider != null:
+		_fauna_schooling_slider.set_block_signals(true)
+		_fauna_schooling_slider.value = TankConfig.fauna_schooling_mult
+		_fauna_schooling_slider.set_block_signals(false)
+		_fauna_schooling_label.text = "%.2f" % TankConfig.fauna_schooling_mult
+	if _fauna_separation_slider != null:
+		_fauna_separation_slider.set_block_signals(true)
+		_fauna_separation_slider.value = TankConfig.fauna_separation_mult
+		_fauna_separation_slider.set_block_signals(false)
+		_fauna_separation_label.text = "%.2f" % TankConfig.fauna_separation_mult
+	if _fauna_pulse_check != null:
+		_fauna_pulse_check.button_pressed = TankConfig.fauna_school_pulse_enabled
+	if _fauna_pulse_amp_slider != null:
+		_fauna_pulse_amp_slider.set_block_signals(true)
+		_fauna_pulse_amp_slider.value = TankConfig.fauna_school_pulse_amplitude
+		_fauna_pulse_amp_slider.set_block_signals(false)
+		_fauna_pulse_amp_label.text = "%.2f" % TankConfig.fauna_school_pulse_amplitude
+	if _fauna_wander_slider != null:
+		_fauna_wander_slider.set_block_signals(true)
+		_fauna_wander_slider.value = TankConfig.fauna_wander_mult
+		_fauna_wander_slider.set_block_signals(false)
+		_fauna_wander_label.text = "%.2f" % TankConfig.fauna_wander_mult
+	if _fauna_speed_slider != null:
+		_fauna_speed_slider.set_block_signals(true)
+		_fauna_speed_slider.value = TankConfig.fauna_speed_mult
+		_fauna_speed_slider.set_block_signals(false)
+		_fauna_speed_label.text = "%.2f" % TankConfig.fauna_speed_mult
+	if _fauna_mourning_check != null:
+		_fauna_mourning_check.button_pressed = TankConfig.fauna_mourning_enabled
+	if _fauna_glance_check != null:
+		_fauna_glance_check.button_pressed = TankConfig.fauna_player_glance_enabled
 	# Pick the option matching current preset. Block signals so select()
 	# can't fire _on_preset and mutate TankConfig while we're syncing UI.
 	_preset_option.set_block_signals(true)

@@ -864,9 +864,10 @@ func _animate_polyp_tips() -> void:
 			if sm != null:
 				var base_alb: Color
 				if mi.has_meta("base_albedo_glow"):
-					base_alb = mi.get_meta("base_albedo_glow")
+					var stored: Variant = mi.get_meta("base_albedo_glow")
+					base_alb = stored as Color if stored is Color else Color.WHITE
 				else:
-					base_alb = sm.get_shader_parameter("albedo")
+					base_alb = VoxelMat.read_albedo(sm)
 					mi.set_meta("base_albedo_glow", base_alb)
 				var glow_pulse: float = 0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase)
 				var glow: float = night_glow * (0.6 + 0.4 * glow_pulse)
@@ -931,9 +932,10 @@ func _apply_bleach_tint() -> void:
 			continue
 		var orig: Color
 		if vx.has_meta("base_albedo_bleach"):
-			orig = vx.get_meta("base_albedo_bleach")
+			var stored: Variant = vx.get_meta("base_albedo_bleach")
+			orig = stored as Color if stored is Color else Color.WHITE
 		else:
-			orig = sm.get_shader_parameter("albedo")
+			orig = VoxelMat.read_albedo(sm)
 			vx.set_meta("base_albedo_bleach", orig)
 		# Top quarter of voxels takes the full bleach hit; older base
 		# stays closer to its true color.

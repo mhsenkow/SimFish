@@ -1443,9 +1443,10 @@ func _apply_voxel_tint(vx: MeshInstance3D, tint: Color) -> void:
 		return
 	var orig: Color
 	if vx.has_meta("base_albedo"):
-		orig = vx.get_meta("base_albedo")
+		var stored: Variant = vx.get_meta("base_albedo")
+		orig = stored as Color if stored is Color else Color.WHITE
 	else:
-		orig = sm.get_shader_parameter("albedo")
+		orig = VoxelMat.read_albedo(sm)
 		vx.set_meta("base_albedo", orig)
 	if not vx.has_meta("tint_mat"):
 		var dup: ShaderMaterial = sm.duplicate() as ShaderMaterial
@@ -1460,7 +1461,8 @@ func _apply_voxel_tint(vx: MeshInstance3D, tint: Color) -> void:
 func _clear_voxel_tint(vx: MeshInstance3D) -> void:
 	if not vx.has_meta("tint_mat"):
 		return
-	var orig: Color = vx.get_meta("base_albedo")
+	var stored: Variant = vx.get_meta("base_albedo")
+	var orig: Color = stored as Color if stored is Color else Color.WHITE
 	vx.material_override = VoxelMat.make_foliage(orig)
 	vx.remove_meta("tint_mat")
 

@@ -25,6 +25,12 @@ uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_top = 99.0;
 uniform float fixture_water_floor = 0.0;
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 varying vec3 v_world_pos;
 
@@ -75,6 +81,8 @@ void fragment() {
         f = 0.76;        // +Z / -Z sides
     }
     vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
+    col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+        palette_warmth, palette_value);
     // Subsurface rim — at grazing view angles the leaf reads as
     // translucent and picks up a warm tint from light passing through.
     // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.

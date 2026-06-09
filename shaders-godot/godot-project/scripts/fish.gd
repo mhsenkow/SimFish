@@ -186,8 +186,6 @@ const GLANCE_CHECK_PERIOD: float = 1.0
 var _glance_check_t: float = 0.0
 var _cached_glance_strength: float = 0.0
 var _cached_glance_point: Vector3 = Vector3.ZERO
-const NOVELTY_CHECK_PERIOD: float = 0.5
-var _novelty_check_t: float = 0.0
 # Cached AI intent drift — refreshed on the throttle, applied every tick.
 var _cached_ai_drift: Vector3 = Vector3.ZERO
 var _ai_drift_check_t: float = 0.0
@@ -2077,6 +2075,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# (flee, chase) which still trigger burst_remaining.
 	var burst_mult: float = dart_speed_mult if dart_speed_mult > 1.0 else 1.5
 	var effective_max := max_speed * (burst_mult if burst_remaining > 0.0 else 1.0)
+	var fauna_rt: Dictionary = _fauna_runtime()
 	current_mode = Mode.CRUISE
 
 	# Tier 0: wall avoidance always runs (additive). Lateral glass only — floor
@@ -2937,22 +2936,25 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Tier 4: SCHOOL. Default behavior - boids with dynamic tightness.
 	current_mode = Mode.CRUISE
+	if burst_remaining <= 0.0:
+		effective_max *= float(fauna_rt.get("speed", 1.0))
 	# When stressed (too few neighbors), tighten the school dramatically.
 	var tightness: float = 1.0 + stress * 1.5
-	# Tank-wide school pulse: -0.15..+0.15. Synchronised across every
-	# fish that samples sim.school_pulse(), so the entire group visibly
-	# breathes in and out over ~28 sim-seconds.
-	if sim != null and sim.has_method("school_pulse"):
-		tightness *= 1.0 + sim.school_pulse() * 0.15
+	# Tank-wide school pulse. Synchronised across every fish that samples
+	# sim.school_pulse(), so the entire group visibly breathes in and out.
+	if bool(fauna_rt.get("pulse_on", true)) and sim != null and sim.has_method("school_pulse"):
+		tightness *= 1.0 + sim.school_pulse() * float(fauna_rt.get("pulse_amp", 0.15))
 	# Mourning: when a same-species schoolmate just died nearby, intensify
-	# cohesion and dampen our top speed for ~60s. Reads as the school
-	# closing around a recent loss, then slowly drifting apart again.
+	# cohesion and dampen our top speed for ~60s.
 	var mourning_w: float = 0.0
-	if sim != null and sim.has_method("mourning_intensity_for"):
+	if bool(fauna_rt.get("mourning", true)) and sim != null \
+			and sim.has_method("mourning_intensity_for"):
 		mourning_w = sim.mourning_intensity_for(species, position)
 		if mourning_w > 0.01:
 			tightness *= 1.0 + mourning_w * 0.8
-	desired += _boids(neighbors, tightness) * schooling_strength
+	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
+	desired += _boids(neighbors, tightness, fauna_sep) \
+		* schooling_strength * float(fauna_rt.get("schooling", 1.0))
 	# Soft territorial anchor — even inside home_radius, a gentle pull keeps
 	# each schooler loosely tethered to its patrol zone so boids cohesion
 	# can't collapse the whole population onto one centroid.
@@ -2991,10 +2993,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# naturally instead of converging on a single tight ball.
 	var crowd_count: int = 0
 	var crowd_centroid: Vector3 = Vector3.ZERO
+	var crowd_zone_r2: float = 6.25 * fauna_sep * fauna_sep
 	for i in scan_n:
 		if scan_same_species[i] == 0:
 			continue
-		if scan_d2[i] < 6.25:  # 2.5 unit personal-space zone
+		if scan_d2[i] < crowd_zone_r2:  # personal-space zone (scales with separation mult)
 			crowd_count += 1
 			crowd_centroid += scan_fish[i].position
 	if crowd_count > 3:
@@ -3126,7 +3129,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_cached_glance_point = glance.get("point", Vector3.ZERO)
 		else:
 			_cached_glance_strength = 0.0
-	if _cached_glance_strength > 0.30:
+	if bool(fauna_rt.get("glance", true)) and _cached_glance_strength > 0.30:
 		var b_personality: float = _trait("boldness")
 		if b_personality > 0.55:
 			var novelty: float = float(habituated.get("player", 1.0))
@@ -3475,6 +3478,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		elif swim_pattern == "school" or swim_pattern == "shoal":
 			drift_interval = 20.0 + randf() * 16.0
 			drift_radius = 3.2 if swim_pattern == "school" else 4.0
+		drift_radius *= float(fauna_rt.get("wander", 1.0))
 		_home_drift_timer = drift_interval
 		var w := _world_node()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
@@ -3517,7 +3521,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _startle_remaining > 0.0:
 		desired += _startle_heading * effective_max * 0.8
 	else:
-		desired += heading_offset * 0.5 * wander_strength
+		desired += heading_offset * 0.5 * wander_strength * float(fauna_rt.get("wander", 1.0))
 
 	# Diurnal / nocturnal / crepuscular activity. The generic "everyone slows
 	# at night" was wrong - real freshwater fish split by activity period.
@@ -4283,7 +4287,7 @@ func _update_maturity() -> void:
 
 # ---- Boids ----
 
-func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
+func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1.0) -> Vector3:
 	# Improved schooling. Three rules (sep + ali + coh) with three upgrades:
 	#   1. View cone - a fish ignores conspecifics outside ~120° of its forward
 	#      heading. You can't school with fish behind you.
@@ -4307,7 +4311,7 @@ func _boids(neighbors: Array, tightness: float = 1.0) -> Vector3:
 	var coh := Vector3.ZERO
 	var school_speed_sum: float = 0.0
 	var count_conspecific: int = 0
-	var effective_sep_radius: float = separation_radius / tightness
+	var effective_sep_radius: float = separation_radius * separation_mult / tightness
 	var sep_r2: float = effective_sep_radius * effective_sep_radius
 
 	for n in neighbors:
@@ -4449,6 +4453,31 @@ func _world_node() -> Node:
 	if sim == null:
 		return null
 	return sim.get_parent()
+
+
+func _fauna_runtime() -> Dictionary:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return {
+			"schooling": 1.0,
+			"separation": 1.0,
+			"wander": 1.0,
+			"speed": 1.0,
+			"pulse_on": true,
+			"pulse_amp": 0.15,
+			"mourning": true,
+			"glance": true,
+		}
+	return {
+		"schooling": float(cfg.fauna_schooling_mult),
+		"separation": float(cfg.fauna_separation_mult),
+		"wander": float(cfg.fauna_wander_mult),
+		"speed": float(cfg.fauna_speed_mult),
+		"pulse_on": bool(cfg.fauna_school_pulse_enabled),
+		"pulse_amp": float(cfg.fauna_school_pulse_amplitude),
+		"mourning": bool(cfg.fauna_mourning_enabled),
+		"glance": bool(cfg.fauna_player_glance_enabled),
+	}
 
 
 func _tank_home_spread_xz() -> float:

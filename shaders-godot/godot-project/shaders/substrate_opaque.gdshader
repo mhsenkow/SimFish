@@ -13,6 +13,12 @@ uniform float grain_variation : hint_range(0.0, 1.0) = 0.45;
 // darkens within the radius to fake an ambient occlusion / contact
 // shadow patch. Unused slots use w == 0.
 uniform vec4 contact_ao_points[8];
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -84,6 +90,8 @@ void fragment() {
 	}
 	vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	vec3 col = albedo.rgb * f;
+	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+		palette_warmth, palette_value);
 	col = apply_material_grain(col, n, material_id, world_pos, grain_variation);
 	// Hardscape contact shadow / AO — only meaningful on the top face
 	// (where the hardscape footprint touches the substrate). Side / bottom

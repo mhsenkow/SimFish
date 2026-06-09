@@ -39,6 +39,12 @@ uniform float grain_variation : hint_range(0.0, 1.0) = 0.45;
 // xyz = footprint center, w = radius. World.gd publishes one slot per
 // driftwood root + rock base it places. Up to 8 active points.
 uniform vec4 contact_ao_points[8];
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -107,6 +113,8 @@ void fragment() {
         f = 0.68;        // +Z / -Z sides
     }
     vec3 base_color = albedo.rgb * f;
+    base_color = apply_global_palette_tint(base_color, palette_hue_shift,
+        palette_saturation, palette_warmth, palette_value);
     vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
     base_color = apply_material_grain(base_color, material_id, world_pos, grain_variation);
     // Hardscape contact AO darkens the substrate within registered

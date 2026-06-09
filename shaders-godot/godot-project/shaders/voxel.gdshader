@@ -29,6 +29,12 @@ uniform float room_haze_strength : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 room_haze_color : source_color = vec3(0.92, 0.84, 0.74);
 uniform float room_haze_near : hint_range(0.0, 40.0) = 8.0;
 uniform float room_haze_far : hint_range(2.0, 80.0) = 28.0;
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -59,6 +65,8 @@ void fragment() {
 		f = 0.76;
 	}
 	vec3 col = albedo.rgb * f;
+	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+		palette_warmth, palette_value);
 	col = apply_vibrancy(col, color_vibrancy);
 
 	if (aquatic_caustic_intensity > 0.001 && v_world_pos.y < water_surface_y - 0.08) {

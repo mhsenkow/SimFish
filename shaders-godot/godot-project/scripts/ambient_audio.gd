@@ -255,7 +255,6 @@ var _clap_env: float = 0.0
 var _clap_lpf: float = 0.0
 var _shaker_env: float = 0.0
 var _shaker_lpf: float = 0.0
-var _shaker_t: float = 0.0
 var _tom_env: float = 0.0
 var _tom_phase: float = 0.0
 var _tom_pitch: float = 140.0
@@ -279,7 +278,6 @@ var _grain_buf: PackedFloat32Array = PackedFloat32Array()
 var _grain_pos: int = 0
 var _grain_read: float = 0.0
 var _grain_inc: float = 1.0   # 1.0 = same pitch; <1 down-pitched
-var _grain_age: int = 0
 var _grain_size: int = 5512   # ~0.25 s at 22050 Hz
 
 # Wavetable pad — single oscillator scanning sine→saw blend as daylight rises.
@@ -1003,7 +1001,7 @@ func _update_lead_increments(freq: float) -> void:
 		_lead_increments[i] = f * INV_SAMPLE_RATE
 
 
-func _react_to_event(event_name: String, species: String = "") -> void:
+func _react_to_event(event_name: String, _species: String = "") -> void:
 	# Most reactions only make sense when the trance bed is live, but we still
 	# allow events to nudge phrase state so the visual moment lines up.
 	var bed_on: bool = _trance_bed_active()
@@ -1183,7 +1181,6 @@ func _refresh_mix_cache() -> void:
 	# bass clip; aeration low cuts the kick; pH/water-quality drifts the pad.
 	var bloom: float = float(_smooth.get("bloom", 0.0))
 	var tannins: float = float(_smooth.get("tannins", 0.0))
-	var aer: float = float(_smooth.get("aeration", 0.0))
 	var o2: float = float(_smooth.get("o2", 0.85))
 	# Bitcrush kicks in when the tank is sick (high tannins/low O2/bloom).
 	var sick: float = clampf(tannins * 0.65 + (1.0 - o2) * 0.5 + bloom * 0.25, 0.0, 1.0)
@@ -1576,7 +1573,7 @@ func _maybe_retarget_lead(sixteenth: int, pattern: Array) -> void:
 	_update_lead_increments(_lead_freq)
 
 
-func _advance_sequencer(quarter: int, sixteenth: int, raw_16f: float) -> void:
+func _advance_sequencer(quarter: int, _sixteenth: int, raw_16f: float) -> void:
 	var pattern: Array = _active_arp_pattern()
 	# Apply swing only at the sixteenth-trigger level (kick stays on the grid).
 	var swung_16: int = _swung_sixteenth_int(raw_16f)
@@ -1620,7 +1617,7 @@ func _advance_sequencer(quarter: int, sixteenth: int, raw_16f: float) -> void:
 
 	if quarter != _last_quarter:
 		_last_quarter = quarter
-		var bar_num: int = quarter / 4
+		var bar_num: int = int(quarter / 4.0)
 		if bar_num != _last_bar:
 			_last_bar = bar_num
 			_advance_phrase_state_at_bar(bar_num)

@@ -48,7 +48,7 @@ static func _snap(c: Color) -> Color:
 # go to garbage collection naturally — they're RefCounted.
 static func _cache_admit(cache: Dictionary, queue: Array, key, value) -> void:
 	if cache.size() >= _CACHE_MAX:
-		var drop_count: int = (_CACHE_MAX / 4)
+		var drop_count: int = int(_CACHE_MAX / 4.0)
 		for i in range(drop_count):
 			if queue.is_empty():
 				break
@@ -485,4 +485,66 @@ static func update_foliage_sss(strength: float) -> void:
 	for mat in _foliage_mm_mats:
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_strength", strength)
+
+
+static func _apply_palette_to_material(mat: ShaderMaterial, hue: float, sat: float,
+		warmth: float, val: float) -> void:
+	if mat == null or not is_instance_valid(mat):
+		return
+	mat.set_shader_parameter("palette_hue_shift", hue)
+	mat.set_shader_parameter("palette_saturation", sat)
+	mat.set_shader_parameter("palette_warmth", warmth)
+	mat.set_shader_parameter("palette_value", val)
+
+
+static func _scaled_palette_params(cfg: Node, weight: float) -> Dictionary:
+	var w: float = clampf(weight, 0.0, 1.0)
+	return {
+		"hue": float(cfg.material_hue_shift) * w,
+		"sat": lerpf(1.0, float(cfg.material_saturation), w),
+		"warmth": float(cfg.material_warmth) * w,
+		"val": lerpf(1.0, float(cfg.material_value), w),
+	}
+
+
+static func read_albedo(mat: ShaderMaterial, fallback: Color = Color.WHITE) -> Color:
+	if mat == null or not is_instance_valid(mat):
+		return fallback
+	var v: Variant = mat.get_shader_parameter("albedo")
+	return v as Color if v is Color else fallback
+
+
+static func apply_global_palette(cfg: Node, water_mat: ShaderMaterial = null) -> void:
+	if cfg == null:
+		return
+	var fauna_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_fauna))
+	for mat in _fauna_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, fauna_p.hue, fauna_p.sat, fauna_p.warmth, fauna_p.val)
+	var foliage_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_foliage))
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, foliage_p.hue, foliage_p.sat, foliage_p.warmth, foliage_p.val)
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, foliage_p.hue, foliage_p.sat, foliage_p.warmth, foliage_p.val)
+	var hardscape_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_hardscape))
+	for mat in _mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, hardscape_p.hue, hardscape_p.sat, hardscape_p.warmth, hardscape_p.val)
+	for mat in _room_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, hardscape_p.hue * 0.5, hardscape_p.sat, hardscape_p.warmth * 0.5, hardscape_p.val)
+	if _voxel_mm_mat != null and is_instance_valid(_voxel_mm_mat):
+		_apply_palette_to_material(_voxel_mm_mat, hardscape_p.hue, hardscape_p.sat, hardscape_p.warmth, hardscape_p.val)
+	var sub_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_substrate))
+	for mat in _sub_opaque_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, sub_p.hue, sub_p.sat, sub_p.warmth, sub_p.val)
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(mat, sub_p.hue, sub_p.sat, sub_p.warmth, sub_p.val)
+	var water_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_water))
+	if water_mat != null and is_instance_valid(water_mat):
+		_apply_palette_to_material(water_mat, water_p.hue, water_p.sat, water_p.warmth, water_p.val)
 

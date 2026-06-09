@@ -18,6 +18,12 @@ uniform float fixture_water_floor = 0.0;
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
 uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -55,6 +61,8 @@ void fragment() {
 		f = 0.68;
 	}
 	vec3 col = v_inst_color * f;
+	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+		palette_warmth, palette_value);
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
 	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);

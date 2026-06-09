@@ -2627,7 +2627,8 @@ func _build_snail_body(snail: Node3D) -> void:
 	#   nassarius  small flat oval that lives on the substrate (marine
 	#              scavenger; sits flatter and lower than a turbo)
 	#   apple      rounded globose shell (freshwater apple-snail style)
-	var shell_color: Color = snail.get("shell_color")
+	var shell_color: Color = snail.get("shell_color") if snail.get("shell_color") is Color \
+		else Color8(135, 44, 176)
 	var shell_size: float = snail.get("shell_size")
 	var shell_shape: String = String(snail.get("shell_shape") if "shell_shape" in snail else "turbo")
 	var shell_spines: float = clampf(float(snail.get("shell_spines") if "shell_spines" in snail else 0.0), 0.0, 1.0)
@@ -6073,9 +6074,12 @@ func _apply_driftwood_wet_lines() -> void:
 		var sm: ShaderMaterial = vx.material_override as ShaderMaterial
 		if sm == null:
 			continue
-		var orig: Color = sm.get_shader_parameter("albedo") if not vx.has_meta("base_albedo") \
-			else vx.get_meta("base_albedo")
-		if not vx.has_meta("base_albedo"):
+		var orig: Color
+		if vx.has_meta("base_albedo"):
+			var stored: Variant = vx.get_meta("base_albedo")
+			orig = stored as Color if stored is Color else Color.WHITE
+		else:
+			orig = VoxelMat.read_albedo(sm)
 			vx.set_meta("base_albedo", orig)
 		var wet: float = 1.0 - smoothstep(0.0, 0.35, absf(y - WATER_HEIGHT))
 		sm.set_shader_parameter("albedo", orig.lerp(orig.darkened(0.22), wet * 0.65))
@@ -6087,9 +6091,10 @@ func _apply_driftwood_biofilm(vx: MeshInstance3D, tint: Color) -> void:
 		return
 	var orig: Color
 	if vx.has_meta("base_albedo"):
-		orig = vx.get_meta("base_albedo")
+		var stored: Variant = vx.get_meta("base_albedo")
+		orig = stored as Color if stored is Color else Color.WHITE
 	else:
-		orig = sm.get_shader_parameter("albedo")
+		orig = VoxelMat.read_albedo(sm)
 		vx.set_meta("base_albedo", orig)
 	if not vx.has_meta("tint_mat"):
 		vx.material_override = sm.duplicate() as ShaderMaterial
@@ -6101,7 +6106,8 @@ func _apply_driftwood_biofilm(vx: MeshInstance3D, tint: Color) -> void:
 func _clear_driftwood_biofilm(vx: MeshInstance3D) -> void:
 	if not vx.has_meta("tint_mat"):
 		return
-	var orig: Color = vx.get_meta("base_albedo")
+	var stored: Variant = vx.get_meta("base_albedo")
+	var orig: Color = stored as Color if stored is Color else Color.WHITE
 	vx.material_override = VoxelMat.make_substrate_caustic(orig)
 	vx.remove_meta("tint_mat")
 

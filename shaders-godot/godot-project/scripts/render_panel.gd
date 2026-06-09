@@ -36,6 +36,24 @@ var _save_status: Label
 # Frame-time mini-sparkline drawn as a Control with a custom _draw.
 var _frame_graph: Control = null
 var _frame_graph_label: Label = null
+var _mat_hue: HSlider
+var _mat_hue_label: Label
+var _mat_sat: HSlider
+var _mat_sat_label: Label
+var _mat_warmth: HSlider
+var _mat_warmth_label: Label
+var _mat_value: HSlider
+var _mat_value_label: Label
+var _mat_w_fauna: HSlider
+var _mat_w_fauna_label: Label
+var _mat_w_foliage: HSlider
+var _mat_w_foliage_label: Label
+var _mat_w_substrate: HSlider
+var _mat_w_substrate_label: Label
+var _mat_w_hardscape: HSlider
+var _mat_w_hardscape_label: Label
+var _mat_w_water: HSlider
+var _mat_w_water_label: Label
 
 const RESOLUTIONS: Array = [
 	{"label": "256x144 (chunky)", "w": 256, "h": 144},
@@ -93,150 +111,39 @@ func _build_ui() -> void:
 	outer.add_child(PanelTheme.make_title("Rendering"))
 	outer.add_child(PanelTheme.make_rule())
 
-	# Scrolling body.
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer.add_child(scroll)
+	var tabs := TabContainer.new()
+	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(tabs)
+
+	var render_scroll := ScrollContainer.new()
+	render_scroll.name = "Rendering"
+	render_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	render_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	render_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(render_scroll)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 8)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vbox)
+	render_scroll.add_child(vbox)
 
-	# -- Resolution section --
-	_add_section(vbox, "Resolution")
-	_res_option = OptionButton.new()
-	_res_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_res_option.custom_minimum_size = Vector2(0, 30)
-	for r in RESOLUTIONS:
-		_res_option.add_item(String(r["label"]))
-	_res_option.item_selected.connect(func(idx): _on_resolution(idx))
-	vbox.add_child(_res_option)
+	var color_scroll := ScrollContainer.new()
+	color_scroll.name = "Color theme"
+	color_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	color_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	color_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(color_scroll)
 
-	# -- Palette / dither section --
-	# Every setting here is hot-reloaded into the post-process shader via
-	# main.gd._update_palette_uniforms — no reload required to preview.
-	_add_section(vbox, "Palette quantize")
-	_palette_check = CheckBox.new()
-	_palette_check.text = "Enable palette quantization"
-	_palette_check.toggled.connect(func(v): TankConfig.palette_enabled = v)
-	vbox.add_child(_palette_check)
-	_dither_label = Label.new()
-	_dither = PanelTheme.add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
-	_dither.value_changed.connect(func(v): _on_dither(v))
-	# Region-aware dither: when on, low-saturation regions (substrate,
-	# water, fog) get heavier dither and saturated regions (fauna, plants)
-	# get lighter dither so silhouettes stay clean. Turn off if you want
-	# uniform dither across everything.
-	_region_aware_check = CheckBox.new()
-	_region_aware_check.text = "Region-aware dither (recommended)"
-	_region_aware_check.toggled.connect(func(v):
-		TankConfig.dither_region_aware = v)
-	vbox.add_child(_region_aware_check)
-	var rad_desc := PanelTheme.make_description()
-	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."
-	vbox.add_child(rad_desc)
-	# Palette bank lock restricts each fragment to its hue-bank's 16
-	# nearest palette entries. Off = full palette per fragment (smoother
-	# gradients but less "8-bit" feel).
-	_bank_lock_check = CheckBox.new()
-	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
-	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
-	vbox.add_child(_bank_lock_check)
-	var bl_desc := PanelTheme.make_description()
-	bl_desc.text = "Restricts each pixel to nearby palette colors. Off = smoother gradients across the whole palette."
-	vbox.add_child(bl_desc)
+	var vbox_color := VBoxContainer.new()
+	vbox_color.add_theme_constant_override("separation", 8)
+	vbox_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	color_scroll.add_child(vbox_color)
 
-	# -- Pixel-art polish section --
-	# All four uniforms apply live via the post-process shader; no reload
-	# needed. Save persists them across sessions.
-	_add_section(vbox, "Pixel art polish")
-	_outline_label = Label.new()
-	_outline = PanelTheme.add_slider_row(vbox, "Outline strength", 0.0, 1.0, 0.05, _outline_label)
-	_outline.value_changed.connect(func(v):
-		TankConfig.outline_strength = v
-		_outline_label.text = "%.2f" % v)
-	var ol_desc := PanelTheme.make_description()
-	ol_desc.text = "Dark line at color discontinuities — adds NES-style readability."
-	vbox.add_child(ol_desc)
-	_crt_label = Label.new()
-	_crt = PanelTheme.add_slider_row(vbox, "CRT scanlines", 0.0, 1.0, 0.05, _crt_label)
-	_crt.value_changed.connect(func(v):
-		TankConfig.crt_strength = v
-		_crt_label.text = "%.2f" % v)
-	var crt_desc := PanelTheme.make_description()
-	crt_desc.text = "Faint horizontal scanlines for a retro CRT feel. Off by default."
-	vbox.add_child(crt_desc)
-	_integer_upscale_check = CheckBox.new()
-	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
-	_integer_upscale_check.toggled.connect(func(v):
-		TankConfig.integer_upscale = v
-		# Tell main.gd to re-layout immediately so the toggle is visible
-		# on the next frame instead of after a reload.
-		var main: Node = get_tree().current_scene
-		if main != null and main.has_method("_apply_display_layout"):
-			main.call("_apply_display_layout"))
-	vbox.add_child(_integer_upscale_check)
-	var iu_desc := PanelTheme.make_description()
-	iu_desc.text = "Snaps render to nearest integer scale (2×, 3×…). Auto-falls back to stretched if integer scale would shrink the tank below 70% of the window."
-	vbox.add_child(iu_desc)
-	_pixel_snap_check = CheckBox.new()
-	_pixel_snap_check.text = "Pixel-snap camera"
-	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
-	vbox.add_child(_pixel_snap_check)
-	var ps_desc := PanelTheme.make_description()
-	ps_desc.text = "Snaps camera to world-pixel units. Stops sub-pixel jitter on fish, may feel rigid."
-	vbox.add_child(ps_desc)
+	_build_rendering_tab(vbox)
+	_build_color_tab(vbox_color)
 
-	# -- Volumetric fog section --
-	_add_section(vbox, "Volumetric fog")
-	_fog_density_label = Label.new()
-	_fog_density = PanelTheme.add_slider_row(vbox, "Density", 0.0, 0.08, 0.005, _fog_density_label)
-	_fog_density.value_changed.connect(func(v): _on_fog_density(v))
-	_fog_anisotropy_label = Label.new()
-	_fog_anisotropy = PanelTheme.add_slider_row(vbox, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
-	_fog_anisotropy.value_changed.connect(func(v): _on_fog_anisotropy(v))
-	_fog_ambient_label = Label.new()
-	_fog_ambient = PanelTheme.add_slider_row(vbox, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
-	_fog_ambient.value_changed.connect(func(v): _on_fog_ambient(v))
-
-	# -- Camera section --
-	_add_section(vbox, "Camera")
-	_fov_label = Label.new()
-	_fov = PanelTheme.add_slider_row(vbox, "Field of view", 30.0, 90.0, 1.0, _fov_label)
-	_fov.value_changed.connect(func(v): _on_fov(v))
-
-	# -- Quality section --
-	_add_section(vbox, "Quality")
-	_msaa_option = PanelTheme.add_dropdown_row(vbox, "MSAA")
-	for label in MSAA_LABELS:
-		_msaa_option.add_item(label)
-	_msaa_option.item_selected.connect(func(idx): TankConfig.msaa = idx)
-
-	# -- Adaptive quality + frame-budget mini-graph --
-	_add_section(vbox, "Frame budget")
-	_frame_graph_label = Label.new()
-	_frame_graph_label.text = "—"
-	vbox.add_child(_frame_graph_label)
-	_frame_graph = Control.new()
-	_frame_graph.custom_minimum_size = Vector2(0, 48)
-	_frame_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_frame_graph.draw.connect(_draw_frame_graph)
-	vbox.add_child(_frame_graph)
-	_adaptive_check = CheckBox.new()
-	_adaptive_check.text = "Adaptive quality (auto-step resolution)"
-	_adaptive_check.toggled.connect(func(v): TankConfig.adaptive_quality = v)
-	vbox.add_child(_adaptive_check)
-	_adaptive_target_label = Label.new()
-	_adaptive_target = PanelTheme.add_slider_row(
-		vbox, "Target FPS", 30.0, 120.0, 5.0, _adaptive_target_label)
-	_adaptive_target.value_changed.connect(func(v):
-		TankConfig.adaptive_quality_target_fps = int(v)
-		_adaptive_target_label.text = "%d" % int(v))
-
-	# Footer buttons — attached to `outer` (NOT `vbox`) so Close + Save +
+	# Footer buttons — attached to `outer` (NOT tab bodies) so Close + Save +
 	# Apply stay pinned at the bottom of the panel below the scroll area.
 	#
 	# Three buttons:
@@ -269,10 +176,186 @@ func _build_ui() -> void:
 	hb.add_child(apply)
 
 
-# Persist render settings to disk without rebuilding the scene. Use case:
-# you've dialed in a dither + outline combo you like, want it to survive
-# next launch, but don't want to lose your tank's current state. Resolution
-# / MSAA changes won't visually take effect until next Apply or restart.
+func _build_rendering_tab(vbox: VBoxContainer) -> void:
+	_add_section(vbox, "Resolution")
+	_res_option = OptionButton.new()
+	_res_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_res_option.custom_minimum_size = Vector2(0, 30)
+	for r in RESOLUTIONS:
+		_res_option.add_item(String(r["label"]))
+	_res_option.item_selected.connect(func(idx): _on_resolution(idx))
+	vbox.add_child(_res_option)
+
+	_add_section(vbox, "Palette quantize")
+	_palette_check = CheckBox.new()
+	_palette_check.text = "Enable palette quantization"
+	_palette_check.toggled.connect(func(v): TankConfig.palette_enabled = v)
+	vbox.add_child(_palette_check)
+	_dither_label = Label.new()
+	_dither = PanelTheme.add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
+	_dither.value_changed.connect(func(v): _on_dither(v))
+	_region_aware_check = CheckBox.new()
+	_region_aware_check.text = "Region-aware dither (recommended)"
+	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
+	vbox.add_child(_region_aware_check)
+	var rad_desc := PanelTheme.make_description()
+	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."
+	vbox.add_child(rad_desc)
+	_bank_lock_check = CheckBox.new()
+	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
+	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
+	vbox.add_child(_bank_lock_check)
+	var bl_desc := PanelTheme.make_description()
+	bl_desc.text = "Restricts each pixel to nearby palette colors. Off = smoother gradients across the whole palette."
+	vbox.add_child(bl_desc)
+
+	_add_section(vbox, "Pixel art polish")
+	_outline_label = Label.new()
+	_outline = PanelTheme.add_slider_row(vbox, "Outline strength", 0.0, 1.0, 0.05, _outline_label)
+	_outline.value_changed.connect(func(v):
+		TankConfig.outline_strength = v
+		_outline_label.text = "%.2f" % v)
+	var ol_desc := PanelTheme.make_description()
+	ol_desc.text = "Dark line at color discontinuities — adds NES-style readability."
+	vbox.add_child(ol_desc)
+	_crt_label = Label.new()
+	_crt = PanelTheme.add_slider_row(vbox, "CRT scanlines", 0.0, 1.0, 0.05, _crt_label)
+	_crt.value_changed.connect(func(v):
+		TankConfig.crt_strength = v
+		_crt_label.text = "%.2f" % v)
+	var crt_desc := PanelTheme.make_description()
+	crt_desc.text = "Faint horizontal scanlines for a retro CRT feel. Off by default."
+	vbox.add_child(crt_desc)
+	_integer_upscale_check = CheckBox.new()
+	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
+	_integer_upscale_check.toggled.connect(func(v):
+		TankConfig.integer_upscale = v
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_apply_display_layout"):
+			main.call("_apply_display_layout"))
+	vbox.add_child(_integer_upscale_check)
+	var iu_desc := PanelTheme.make_description()
+	iu_desc.text = "Snaps render to nearest integer scale (2×, 3×…). Auto-falls back to stretched if integer scale would shrink the tank below 70% of the window."
+	vbox.add_child(iu_desc)
+	_pixel_snap_check = CheckBox.new()
+	_pixel_snap_check.text = "Pixel-snap camera"
+	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
+	vbox.add_child(_pixel_snap_check)
+	var ps_desc := PanelTheme.make_description()
+	ps_desc.text = "Snaps camera to world-pixel units. Stops sub-pixel jitter on fish, may feel rigid."
+	vbox.add_child(ps_desc)
+
+	_add_section(vbox, "Volumetric fog")
+	_fog_density_label = Label.new()
+	_fog_density = PanelTheme.add_slider_row(vbox, "Density", 0.0, 0.08, 0.005, _fog_density_label)
+	_fog_density.value_changed.connect(func(v): _on_fog_density(v))
+	_fog_anisotropy_label = Label.new()
+	_fog_anisotropy = PanelTheme.add_slider_row(vbox, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
+	_fog_anisotropy.value_changed.connect(func(v): _on_fog_anisotropy(v))
+	_fog_ambient_label = Label.new()
+	_fog_ambient = PanelTheme.add_slider_row(vbox, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
+	_fog_ambient.value_changed.connect(func(v): _on_fog_ambient(v))
+
+	_add_section(vbox, "Camera")
+	_fov_label = Label.new()
+	_fov = PanelTheme.add_slider_row(vbox, "Field of view", 30.0, 90.0, 1.0, _fov_label)
+	_fov.value_changed.connect(func(v): _on_fov(v))
+
+	_add_section(vbox, "Quality")
+	_msaa_option = PanelTheme.add_dropdown_row(vbox, "MSAA")
+	for label in MSAA_LABELS:
+		_msaa_option.add_item(label)
+	_msaa_option.item_selected.connect(func(idx): TankConfig.msaa = idx)
+
+	_add_section(vbox, "Frame budget")
+	_frame_graph_label = Label.new()
+	_frame_graph_label.text = "—"
+	vbox.add_child(_frame_graph_label)
+	_frame_graph = Control.new()
+	_frame_graph.custom_minimum_size = Vector2(0, 48)
+	_frame_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_frame_graph.draw.connect(_draw_frame_graph)
+	vbox.add_child(_frame_graph)
+	_adaptive_check = CheckBox.new()
+	_adaptive_check.text = "Adaptive quality (auto-step resolution)"
+	_adaptive_check.toggled.connect(func(v): TankConfig.adaptive_quality = v)
+	vbox.add_child(_adaptive_check)
+	_adaptive_target_label = Label.new()
+	_adaptive_target = PanelTheme.add_slider_row(
+		vbox, "Target FPS", 30.0, 120.0, 5.0, _adaptive_target_label)
+	_adaptive_target.value_changed.connect(func(v):
+		TankConfig.adaptive_quality_target_fps = int(v)
+		_adaptive_target_label.text = "%d" % int(v))
+
+
+func _build_color_tab(vbox: VBoxContainer) -> void:
+	var hint := PanelTheme.make_description()
+	hint.text = "Global material tint overlay — does not change saved fish or plant genomes. Preview is live."
+	vbox.add_child(hint)
+
+	_add_section(vbox, "Global tint")
+	_mat_hue_label = Label.new()
+	_mat_hue = PanelTheme.add_slider_row(vbox, "Hue shift", -0.5, 0.5, 0.01, _mat_hue_label)
+	_mat_hue.value_changed.connect(func(v):
+		TankConfig.material_hue_shift = v
+		_mat_hue_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_sat_label = Label.new()
+	_mat_sat = PanelTheme.add_slider_row(vbox, "Saturation", 0.5, 1.5, 0.01, _mat_sat_label)
+	_mat_sat.value_changed.connect(func(v):
+		TankConfig.material_saturation = v
+		_mat_sat_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_warmth_label = Label.new()
+	_mat_warmth = PanelTheme.add_slider_row(vbox, "Warmth", -1.0, 1.0, 0.01, _mat_warmth_label)
+	_mat_warmth.value_changed.connect(func(v):
+		TankConfig.material_warmth = v
+		_mat_warmth_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_value_label = Label.new()
+	_mat_value = PanelTheme.add_slider_row(vbox, "Brightness", 0.7, 1.3, 0.01, _mat_value_label)
+	_mat_value.value_changed.connect(func(v):
+		TankConfig.material_value = v
+		_mat_value_label.text = "%.2f" % v
+		_apply_material_palette())
+
+	_add_section(vbox, "Category blend")
+	var blend_hint := PanelTheme.make_description()
+	blend_hint.text = "How strongly the global tint affects each material family (0 = unchanged)."
+	vbox.add_child(blend_hint)
+	_mat_w_fauna_label = Label.new()
+	_mat_w_fauna = PanelTheme.add_slider_row(vbox, "Fauna", 0.0, 1.0, 0.01, _mat_w_fauna_label)
+	_mat_w_fauna.value_changed.connect(func(v):
+		TankConfig.material_weight_fauna = v
+		_mat_w_fauna_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_w_foliage_label = Label.new()
+	_mat_w_foliage = PanelTheme.add_slider_row(vbox, "Plants", 0.0, 1.0, 0.01, _mat_w_foliage_label)
+	_mat_w_foliage.value_changed.connect(func(v):
+		TankConfig.material_weight_foliage = v
+		_mat_w_foliage_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_w_substrate_label = Label.new()
+	_mat_w_substrate = PanelTheme.add_slider_row(vbox, "Substrate", 0.0, 1.0, 0.01, _mat_w_substrate_label)
+	_mat_w_substrate.value_changed.connect(func(v):
+		TankConfig.material_weight_substrate = v
+		_mat_w_substrate_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_w_hardscape_label = Label.new()
+	_mat_w_hardscape = PanelTheme.add_slider_row(vbox, "Hardscape", 0.0, 1.0, 0.01, _mat_w_hardscape_label)
+	_mat_w_hardscape.value_changed.connect(func(v):
+		TankConfig.material_weight_hardscape = v
+		_mat_w_hardscape_label.text = "%.2f" % v
+		_apply_material_palette())
+	_mat_w_water_label = Label.new()
+	_mat_w_water = PanelTheme.add_slider_row(vbox, "Water", 0.0, 1.0, 0.01, _mat_w_water_label)
+	_mat_w_water.value_changed.connect(func(v):
+		TankConfig.material_weight_water = v
+		_mat_w_water_label.text = "%.2f" % v
+		_apply_material_palette())
+
+
+# Persist render settings to disk without rebuilding the scene.
 func _on_save_only() -> void:
 	TankConfig.save_to_disk()
 	if _save_status != null:
@@ -336,7 +419,49 @@ func _pull_from_config() -> void:
 		_adaptive_target.value = float(TankConfig.adaptive_quality_target_fps)
 	if _adaptive_target_label != null:
 		_adaptive_target_label.text = "%d" % TankConfig.adaptive_quality_target_fps
+	_sync_material_sliders()
 	_update_labels()
+
+
+func _sync_material_sliders() -> void:
+	if _mat_hue == null:
+		return
+	_mat_hue.set_block_signals(true)
+	_mat_hue.value = TankConfig.material_hue_shift
+	_mat_hue.set_block_signals(false)
+	_mat_hue_label.text = "%.2f" % TankConfig.material_hue_shift
+	_mat_sat.set_block_signals(true)
+	_mat_sat.value = TankConfig.material_saturation
+	_mat_sat.set_block_signals(false)
+	_mat_sat_label.text = "%.2f" % TankConfig.material_saturation
+	_mat_warmth.set_block_signals(true)
+	_mat_warmth.value = TankConfig.material_warmth
+	_mat_warmth.set_block_signals(false)
+	_mat_warmth_label.text = "%.2f" % TankConfig.material_warmth
+	_mat_value.set_block_signals(true)
+	_mat_value.value = TankConfig.material_value
+	_mat_value.set_block_signals(false)
+	_mat_value_label.text = "%.2f" % TankConfig.material_value
+	_mat_w_fauna.set_block_signals(true)
+	_mat_w_fauna.value = TankConfig.material_weight_fauna
+	_mat_w_fauna.set_block_signals(false)
+	_mat_w_fauna_label.text = "%.2f" % TankConfig.material_weight_fauna
+	_mat_w_foliage.set_block_signals(true)
+	_mat_w_foliage.value = TankConfig.material_weight_foliage
+	_mat_w_foliage.set_block_signals(false)
+	_mat_w_foliage_label.text = "%.2f" % TankConfig.material_weight_foliage
+	_mat_w_substrate.set_block_signals(true)
+	_mat_w_substrate.value = TankConfig.material_weight_substrate
+	_mat_w_substrate.set_block_signals(false)
+	_mat_w_substrate_label.text = "%.2f" % TankConfig.material_weight_substrate
+	_mat_w_hardscape.set_block_signals(true)
+	_mat_w_hardscape.value = TankConfig.material_weight_hardscape
+	_mat_w_hardscape.set_block_signals(false)
+	_mat_w_hardscape_label.text = "%.2f" % TankConfig.material_weight_hardscape
+	_mat_w_water.set_block_signals(true)
+	_mat_w_water.value = TankConfig.material_weight_water
+	_mat_w_water.set_block_signals(false)
+	_mat_w_water_label.text = "%.2f" % TankConfig.material_weight_water
 
 
 func _process(_dt: float) -> void:
@@ -473,6 +598,12 @@ func _on_fov(v: float) -> void:
 	var cam := main.get_node_or_null("SubViewport/World/Camera3D")
 	if cam != null:
 		cam.fov = v
+
+
+func _apply_material_palette() -> void:
+	var main := get_tree().current_scene
+	if main != null and main.has_method("apply_material_palette"):
+		main.call("apply_material_palette")
 
 
 func _on_apply() -> void:

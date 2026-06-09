@@ -556,6 +556,10 @@ func _apply_render_config() -> void:
 			1.0 if cfg.palette_bank_lock else 0.0)
 		sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
 		sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
+		sm.set_shader_parameter("material_hue_shift", float(cfg.material_hue_shift))
+		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
+		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
+		sm.set_shader_parameter("material_value", float(cfg.material_value))
 		var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
 		if world_vis != null:
 			sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
@@ -578,6 +582,25 @@ func _apply_render_config() -> void:
 		we.environment.volumetric_fog_density = float(cfg.fog_density)
 		we.environment.volumetric_fog_anisotropy = float(cfg.fog_anisotropy)
 		we.environment.volumetric_fog_ambient_inject = float(cfg.fog_ambient_inject)
+	apply_material_palette()
+
+
+func apply_material_palette() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	var water_mat: ShaderMaterial = null
+	if world != null and world.get("_water_material_ref") != null:
+		var wm: Variant = world.get("_water_material_ref")
+		if wm is ShaderMaterial:
+			water_mat = wm
+	VoxelMat.apply_global_palette(cfg, water_mat)
+	if display != null and display.material is ShaderMaterial:
+		var sm: ShaderMaterial = display.material
+		sm.set_shader_parameter("material_hue_shift", float(cfg.material_hue_shift))
+		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
+		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
+		sm.set_shader_parameter("material_value", float(cfg.material_value))
 
 
 func _process(dt: float) -> void:

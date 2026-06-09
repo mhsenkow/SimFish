@@ -60,6 +60,12 @@ uniform float crt_strength : hint_range(0.0, 1.0) = 0.0;
 // drives this from SimDriver.day_phase so the same palette breathes between
 // dawn / day / dusk / night without needing distinct PNGs.
 uniform vec3 palette_tint = vec3(1.0, 1.0, 1.0);
+uniform float material_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float material_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float material_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float material_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 const float bayer4[16] = float[16](
 	 0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
@@ -131,6 +137,8 @@ int classify_bank(vec3 c) {
 
 void fragment() {
 	vec3 src = texture(TEXTURE, UV).rgb;
+	src = apply_global_palette_tint(src, material_hue_shift, material_saturation,
+		material_warmth, material_value);
 	src = mix(src, src * vec3(1.06, 1.0, 0.94), max(seasonal_warmth, 0.0));
 	src = mix(src, src * vec3(0.94, 0.98, 1.06), max(-seasonal_warmth, 0.0));
 	// Time-of-day tint. Multiplicative so values that were already darkened

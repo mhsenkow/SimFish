@@ -20,7 +20,7 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 	var batch: VoxelBatch = _batches[key]
 	var albedo: Color = Color.WHITE
 	if mat is ShaderMaterial:
-		albedo = mat.get_shader_parameter("albedo")
+		albedo = VoxelMat.read_albedo(mat)
 	var xform := Transform3D(Basis.from_scale(size), pos)
 	var h: VoxelBatch.Handle = batch.add(xform, albedo)
 	h.set_meta("orig_color", albedo)

@@ -56,6 +56,16 @@ var palette_enabled: bool = true
 var fog_density: float = 0.02
 var fog_anisotropy: float = 0.3
 var fog_ambient_inject: float = 0.05
+# Global material tint — render overlay; does not mutate saved genomes.
+var material_hue_shift: float = 0.0
+var material_saturation: float = 1.0
+var material_warmth: float = 0.0
+var material_value: float = 1.0
+var material_weight_fauna: float = 1.0
+var material_weight_foliage: float = 1.0
+var material_weight_substrate: float = 1.0
+var material_weight_hardscape: float = 1.0
+var material_weight_water: float = 0.75
 # Camera.
 var camera_fov: float = 50.0
 # Anti-aliasing on the SubViewport. 0=off, 1=2x, 2=4x, 3=8x.
@@ -405,6 +415,15 @@ func current_environment_profile() -> Dictionary:
 # If true, respawn 10 of each creature if the tank is empty.
 var auto_respawn_fauna: bool = false
 var auto_feed_fauna: bool = false
+# Live swim/grouping multipliers — read every fish tick; no reload required.
+var fauna_schooling_mult: float = 1.0
+var fauna_separation_mult: float = 1.0
+var fauna_wander_mult: float = 1.0
+var fauna_speed_mult: float = 1.0
+var fauna_school_pulse_enabled: bool = true
+var fauna_school_pulse_amplitude: float = 0.15
+var fauna_mourning_enabled: bool = true
+var fauna_player_glance_enabled: bool = true
 
 # ---- Tank population preset ----
 # Selects the initial stocking of the tank. Each preset specifies how many
@@ -1627,6 +1646,14 @@ func save_to_disk() -> void:
 	cfg.set_value("aeration", "x_frac", aeration_x_frac)
 	cfg.set_value("fauna", "auto_respawn", auto_respawn_fauna)
 	cfg.set_value("fauna", "auto_feed", auto_feed_fauna)
+	cfg.set_value("fauna", "schooling_mult", fauna_schooling_mult)
+	cfg.set_value("fauna", "separation_mult", fauna_separation_mult)
+	cfg.set_value("fauna", "wander_mult", fauna_wander_mult)
+	cfg.set_value("fauna", "speed_mult", fauna_speed_mult)
+	cfg.set_value("fauna", "school_pulse_enabled", fauna_school_pulse_enabled)
+	cfg.set_value("fauna", "school_pulse_amplitude", fauna_school_pulse_amplitude)
+	cfg.set_value("fauna", "mourning_enabled", fauna_mourning_enabled)
+	cfg.set_value("fauna", "player_glance_enabled", fauna_player_glance_enabled)
 	cfg.set_value("preset", "tank", tank_preset)
 	cfg.set_value("preset", "glassdarts", custom_glassdart_count)
 	cfg.set_value("preset", "mudsifters", custom_mudsifter_count)
@@ -1646,6 +1673,15 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "fog_density", fog_density)
 	cfg.set_value("render", "fog_anisotropy", fog_anisotropy)
 	cfg.set_value("render", "fog_ambient_inject", fog_ambient_inject)
+	cfg.set_value("material", "hue_shift", material_hue_shift)
+	cfg.set_value("material", "saturation", material_saturation)
+	cfg.set_value("material", "warmth", material_warmth)
+	cfg.set_value("material", "value", material_value)
+	cfg.set_value("material", "weight_fauna", material_weight_fauna)
+	cfg.set_value("material", "weight_foliage", material_weight_foliage)
+	cfg.set_value("material", "weight_substrate", material_weight_substrate)
+	cfg.set_value("material", "weight_hardscape", material_weight_hardscape)
+	cfg.set_value("material", "weight_water", material_weight_water)
 	cfg.set_value("render", "fov", camera_fov)
 	cfg.set_value("render", "msaa", msaa)
 	cfg.set_value("camera", "saved", camera_state_saved)
@@ -1812,6 +1848,14 @@ func load_from_disk() -> void:
 	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)
 	auto_respawn_fauna = cfg.get_value("fauna", "auto_respawn", auto_respawn_fauna)
 	auto_feed_fauna = cfg.get_value("fauna", "auto_feed", auto_feed_fauna)
+	fauna_schooling_mult = cfg.get_value("fauna", "schooling_mult", fauna_schooling_mult)
+	fauna_separation_mult = cfg.get_value("fauna", "separation_mult", fauna_separation_mult)
+	fauna_wander_mult = cfg.get_value("fauna", "wander_mult", fauna_wander_mult)
+	fauna_speed_mult = cfg.get_value("fauna", "speed_mult", fauna_speed_mult)
+	fauna_school_pulse_enabled = cfg.get_value("fauna", "school_pulse_enabled", fauna_school_pulse_enabled)
+	fauna_school_pulse_amplitude = cfg.get_value("fauna", "school_pulse_amplitude", fauna_school_pulse_amplitude)
+	fauna_mourning_enabled = cfg.get_value("fauna", "mourning_enabled", fauna_mourning_enabled)
+	fauna_player_glance_enabled = cfg.get_value("fauna", "player_glance_enabled", fauna_player_glance_enabled)
 	tank_preset = cfg.get_value("preset", "tank", tank_preset)
 	custom_glassdart_count = cfg.get_value("preset", "glassdarts", custom_glassdart_count)
 	custom_mudsifter_count = cfg.get_value("preset", "mudsifters", custom_mudsifter_count)
@@ -1831,6 +1875,15 @@ func load_from_disk() -> void:
 	fog_density = cfg.get_value("render", "fog_density", fog_density)
 	fog_anisotropy = cfg.get_value("render", "fog_anisotropy", fog_anisotropy)
 	fog_ambient_inject = cfg.get_value("render", "fog_ambient_inject", fog_ambient_inject)
+	material_hue_shift = cfg.get_value("material", "hue_shift", material_hue_shift)
+	material_saturation = cfg.get_value("material", "saturation", material_saturation)
+	material_warmth = cfg.get_value("material", "warmth", material_warmth)
+	material_value = cfg.get_value("material", "value", material_value)
+	material_weight_fauna = cfg.get_value("material", "weight_fauna", material_weight_fauna)
+	material_weight_foliage = cfg.get_value("material", "weight_foliage", material_weight_foliage)
+	material_weight_substrate = cfg.get_value("material", "weight_substrate", material_weight_substrate)
+	material_weight_hardscape = cfg.get_value("material", "weight_hardscape", material_weight_hardscape)
+	material_weight_water = cfg.get_value("material", "weight_water", material_weight_water)
 	camera_fov = cfg.get_value("render", "fov", camera_fov)
 	msaa = cfg.get_value("render", "msaa", msaa)
 	camera_state_saved = cfg.get_value("camera", "saved", false)
@@ -2003,6 +2056,14 @@ func reset_to_defaults() -> void:
 	# Fauna behavior.
 	auto_respawn_fauna = false
 	auto_feed_fauna = false
+	fauna_schooling_mult = 1.0
+	fauna_separation_mult = 1.0
+	fauna_wander_mult = 1.0
+	fauna_speed_mult = 1.0
+	fauna_school_pulse_enabled = true
+	fauna_school_pulse_amplitude = 0.15
+	fauna_mourning_enabled = true
+	fauna_player_glance_enabled = true
 	# Preset + custom counts.
 	tank_preset = "classic_community"
 	custom_glassdart_count = 14
@@ -2030,6 +2091,15 @@ func reset_to_defaults() -> void:
 	fog_density = 0.02
 	fog_anisotropy = 0.3
 	fog_ambient_inject = 0.05
+	material_hue_shift = 0.0
+	material_saturation = 1.0
+	material_warmth = 0.0
+	material_value = 1.0
+	material_weight_fauna = 1.0
+	material_weight_foliage = 1.0
+	material_weight_substrate = 1.0
+	material_weight_hardscape = 1.0
+	material_weight_water = 0.75
 	camera_fov = 50.0
 	msaa = 0
 	# Camera view.

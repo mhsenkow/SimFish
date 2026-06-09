@@ -100,7 +100,7 @@ func _build_visual() -> void:
 		var mat: ShaderMaterial = VoxelMat.make_fauna(base_col).duplicate()
 		mi.material_override = mat
 		_egg_materials.append(mat)
-		_egg_base_colors.append(mat.get_shader_parameter("albedo"))
+		_egg_base_colors.append(VoxelMat.read_albedo(mat, base_col))
 		_wobble_pivot.add_child(mi)
 
 
@@ -159,7 +159,7 @@ func dissolve() -> void:
 				# Duplicate so we don't fade the cached material
 				var d_mat: ShaderMaterial = mat.duplicate()
 				child.material_override = d_mat
-				var orig_color: Color = d_mat.get_shader_parameter("albedo")
+				var orig_color: Color = VoxelMat.read_albedo(d_mat, _egg_tint)
 				var target_color := Color(orig_color.r, orig_color.g, orig_color.b, 0.0)
 				tween.tween_property(d_mat, "shader_parameter/albedo", target_color, 3.0)
 	tween.set_parallel(false)

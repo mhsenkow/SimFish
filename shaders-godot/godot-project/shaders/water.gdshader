@@ -34,6 +34,12 @@ uniform float tank_shape_id : hint_range(0.0, 3.0) = 0.0;
 // once the cycle establishes and ammonia drops.
 uniform float bacterial_bloom : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 bloom_color : source_color = vec3(0.92, 0.94, 0.96);
+uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
+uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
+uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
+uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+
+#include "res://shaders/palette_tint.gdshaderinc"
 
 varying vec3 world_pos;
 varying float surface_lift;
@@ -69,6 +75,8 @@ void fragment() {
 	float depth_quant = floor(depth_norm * band_count + 0.5) / band_count;
 	float depth_used = mix(depth_norm, depth_quant, depth_fog_bands);
 	vec3 col = mix(shallow_color.rgb, deep_color.rgb, depth_used * depth_used);
+	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+		palette_warmth, palette_value);
 
 	// Depth fog toward deep color — also uses the quantized depth so
 	// the fog density steps in the same bands as the depth gradient.

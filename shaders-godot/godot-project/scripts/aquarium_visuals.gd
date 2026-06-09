@@ -208,7 +208,7 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 	const LIFETIME: float = 14.0
 	var tw := create_tween()
 	tw.tween_interval(LIFETIME * 0.30)
-	var start_col: Color = mat.get_shader_parameter("albedo")
+	var start_col: Color = VoxelMat.read_albedo(mat, Color(0.72, 0.82, 0.78, 0.35))
 	var end_col: Color = Color(start_col.r, start_col.g, start_col.b, 0.0)
 	tw.tween_property(mat, "shader_parameter/albedo", end_col, LIFETIME * 0.70)
 	get_tree().create_timer(LIFETIME).timeout.connect(_release_slime_mark.bind(mi))
