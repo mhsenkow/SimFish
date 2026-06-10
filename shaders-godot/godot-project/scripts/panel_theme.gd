@@ -188,10 +188,19 @@ static func add_dropdown_row(parent: Node, label_text: String) -> OptionButton:
 
 # Primary action (Apply): filled tinted button. Visually stronger than
 # the secondary so the user knows which one commits.
+# Per-platform button height. Mobile gets 48dp to satisfy Material Design's
+# minimum tap target. Desktop keeps the denser 34px so a settings panel
+# doesn't feel cavernous on a mouse-driven display.
+static func _button_min_height() -> int:
+	if OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios"):
+		return 48
+	return 34
+
+
 static func make_primary_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(110, 34)
+	b.custom_minimum_size = Vector2(110, _button_min_height())
 	b.add_theme_color_override("font_color", PRIMARY_FG)
 	b.add_theme_color_override("font_hover_color", PRIMARY_FG)
 	b.add_theme_color_override("font_pressed_color", PRIMARY_FG)
@@ -207,7 +216,7 @@ static func make_primary_button(text: String) -> Button:
 static func make_secondary_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(88, 34)
+	b.custom_minimum_size = Vector2(88, _button_min_height())
 	b.add_theme_color_override("font_color", LABEL_FG)
 	b.add_theme_stylebox_override("normal", _outlined_stylebox())
 	b.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.22, 0.28, 0.36, 0.7)))
@@ -327,7 +336,7 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:
 	btn.flat = true
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = Vector2(0, 32)
+	btn.custom_minimum_size = Vector2(0, _button_min_height())
 	btn.add_theme_font_size_override("font_size", 14)
 	var normal_bg: Color = RAIL_ACTIVE_BG if active else Color(0, 0, 0, 0)
 	btn.add_theme_stylebox_override("normal",

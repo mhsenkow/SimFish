@@ -40,6 +40,9 @@ var _aeration_x: HSlider
 var _aeration_x_label: Label
 var _auto_respawn_check: CheckBox
 var _auto_feed_check: CheckBox
+# Performance / mobile battery controls (Advanced tab).
+var _battery_saver_check: CheckBox
+var _fps_cap_option: OptionButton
 var _fauna_schooling_slider: HSlider
 var _fauna_schooling_label: Label
 var _fauna_separation_slider: HSlider
@@ -438,6 +441,41 @@ func _build_ui() -> void:
 	_sound_studio_btn.pressed.connect(_open_sound_studio)
 	vbox_adv.add_child(_sound_studio_btn)
 
+	# Performance / battery. Surfaced everywhere but most relevant on mobile.
+	# Battery Saver forces fps_cap to 30 and reduces visual overhead; the
+	# user can also pick a specific cap (Off / 30 / 60 / 120) for finer
+	# control. Saved via TankConfig so it persists across sessions and is
+	# applied at scene-load by main._apply_fps_cap().
+	_add_section(vbox_adv, "Performance")
+	_battery_saver_check = CheckBox.new()
+	_battery_saver_check.text = "Battery saver (caps at 30fps, lighter visuals)"
+	_battery_saver_check.toggled.connect(func(v):
+		TankConfig.battery_saver = v
+		if v:
+			TankConfig.fps_cap = 30
+			_select_fps_option(30)
+		TankConfig.save_to_disk()
+		_apply_fps_cap_live())
+	vbox_adv.add_child(_battery_saver_check)
+	_fps_cap_option = PanelTheme.add_dropdown_row(vbox_adv, "Frame rate cap")
+	for entry in [
+			{"label": "Uncapped", "value": 0},
+			{"label": "30 fps (best battery)", "value": 30},
+			{"label": "60 fps", "value": 60},
+			{"label": "120 fps (high-refresh)", "value": 120},
+		]:
+		_fps_cap_option.add_item(String(entry["label"]))
+		_fps_cap_option.set_item_metadata(_fps_cap_option.item_count - 1, int(entry["value"]))
+	_fps_cap_option.item_selected.connect(func(idx):
+		var v: int = int(_fps_cap_option.get_item_metadata(idx))
+		TankConfig.fps_cap = v
+		# Choosing anything other than 30 implicitly turns battery saver off.
+		if v != 30 and bool(TankConfig.battery_saver):
+			TankConfig.battery_saver = false
+			_battery_saver_check.set_pressed_no_signal(false)
+		TankConfig.save_to_disk()
+		_apply_fps_cap_live())
+
 	# -- AI tab --
 	# Local Ollama bridge. Off ships with the same offline name pool the AI
 	# uses as fallback, so toggling this is purely additive — nothing breaks
@@ -616,6 +654,10 @@ func _pull_from_config() -> void:
 		_update_environment_desc()
 	_auto_respawn_check.button_pressed = TankConfig.auto_respawn_fauna
 	_auto_feed_check.button_pressed = TankConfig.auto_feed_fauna
+	if _battery_saver_check != null:
+		_battery_saver_check.button_pressed = bool(TankConfig.battery_saver)
+	if _fps_cap_option != null:
+		_select_fps_option(int(TankConfig.fps_cap))
 	if _fauna_schooling_slider != null:
 		_fauna_schooling_slider.set_block_signals(true)
 		_fauna_schooling_slider.value = TankConfig.fauna_schooling_mult
@@ -1254,3 +1296,20 @@ func _on_apply() -> void:
 	_panel_snapshot = {}
 	apply_requested.emit()
 	get_tree().reload_current_scene()
+
+
+# --- Performance helpers ---
+# Select the dropdown item whose metadata matches the given cap value.
+# Falls back to "Uncapped" if none match.
+func _select_fps_option(cap: int) -> void:
+	for i in _fps_cap_option.item_count:
+		if int(_fps_cap_option.get_item_metadata(i)) == cap:
+			_fps_cap_option.select(i)
+			return
+	_fps_cap_option.select(0)
+
+
+# Apply the chosen fps cap immediately so the user sees the change without
+# reloading the scene. Engine.max_fps = 0 means uncapped.
+func _apply_fps_cap_live() -> void:
+	Engine.max_fps = int(TankConfig.fps_cap)

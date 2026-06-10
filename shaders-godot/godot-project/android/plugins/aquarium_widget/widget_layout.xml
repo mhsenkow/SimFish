@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widget layout. Drop in android/res/layout/.
+     Minimal pixel-art look: dark background, palette-friendly accent colors,
+     condensed text. Keep total view count low — RemoteViews has a tight
+     element budget and AppWidgetProvider can't run arbitrary code on the
+     home screen, only set values on these views. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="10dp"
+    android:background="#1F1A2A">
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#F2E6A8"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:singleLine="true"/>
+
+    <TextView
+        android:id="@+id/widget_subtitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#90B4FF"
+        android:textSize="11sp"
+        android:singleLine="true"
+        android:paddingTop="2dp"/>
+
+    <TextView
+        android:id="@+id/widget_stats"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="#D8E0F0"
+        android:textSize="12sp"
+        android:paddingTop="6dp"/>
+
+</LinearLayout>

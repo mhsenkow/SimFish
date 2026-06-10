@@ -250,6 +250,15 @@ var _long_press_fired: bool = false
 const LONG_PRESS_TIME: float = 0.5  # seconds
 const TAP_MAX_MOVE: float = 20.0  # pixels; beyond this it's a drag, not a tap
 const TAP_MAX_TIME: float = 0.25  # seconds
+# Camera-motion deadzone. A drag has to move at least DRAG_DEADZONE_PX before
+# orbit/pan/dolly start applying. Without this, every tap that drifts a pixel
+# or two between touch-down and lift micro-rotates the camera AND eats the
+# tap event — the most common "this feels unfinished" mobile bug. 8dp is the
+# Material guideline for "touch slop".
+const DRAG_DEADZONE_PX: float = 8.0
+# Set once per drag-start; flips true the moment cumulative motion crosses
+# DRAG_DEADZONE_PX. Camera-motion code only fires when this is true.
+var _drag_committed: bool = false
 # Touch sensitivity (slightly higher than mouse because fingers are less precise).
 const TOUCH_ORBIT_SENSITIVITY: float = 0.004
 const TOUCH_PAN_SENSITIVITY: float = 0.015
@@ -747,6 +756,7 @@ func _process_mouse_input(dt: float) -> void:
 		_last_mouse = mouse_now
 		_drag_start = mouse_now
 		_drag_total = 0.0
+		_drag_committed = false
 		if mmb:
 			_drag_mode = "pan"
 			_drag_button = MOUSE_BUTTON_MIDDLE
@@ -779,7 +789,16 @@ func _process_mouse_input(dt: float) -> void:
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
 		_drag_total += delta.length()
-		if delta.length_squared() > 0.0:
+		# Deadzone: don't engage orbit/pan/dolly until the cursor has moved
+		# at least DRAG_DEADZONE_PX since mousedown. Paint and wood_drag are
+		# exempt — those are tool actions, not navigation, and need to fire
+		# on the click itself. Once committed, stays committed for the
+		# duration of this drag.
+		if not _drag_committed and _drag_total >= DRAG_DEADZONE_PX:
+			_drag_committed = true
+		var nav_committed: bool = _drag_committed \
+				or _drag_mode == "paint" or _drag_mode == "wood_drag"
+		if delta.length_squared() > 0.0 and nav_committed:
 			match _drag_mode:
 				"pan":
 					_pan_target(delta)
@@ -1773,6 +1792,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 			_tap_start_pos = ev.position
 			_tap_moved = 0.0
 			_long_press_fired = false
+			_drag_committed = false
 
 			# Edge-swipe from the right edge → opens settings. Only arm the
 			# tracker if the touch starts very close to the screen's right
@@ -1819,7 +1839,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 				if _last_tap_time > 0.0 \
 						and (now - _last_tap_time) < DOUBLE_TAP_WINDOW \
 						and ev.position.distance_to(_last_tap_pos) < DOUBLE_TAP_RADIUS:
-					# Double-tap → reset camera.
+					# Double-tap → reset camera. Short pulse confirms the snap.
 					target = DEFAULT_TARGET
 					radius = DEFAULT_RADIUS
 					yaw = DEFAULT_YAW
@@ -1827,12 +1847,17 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_follow_target = null
 					_auto_orbit = false
 					_apply_camera()
+					_haptic(20)
 					_last_tap_time = -1.0
 					print_verbose("[walstad_loom] double-tap: reset camera")
 				else:
 					_last_tap_time = now
 					_last_tap_pos = ev.position
-					if not _touch_pick_creature(ev.position):
+					# Tiny pulse on creature pick — confirms the tap landed on
+					# something selectable vs an empty-water tap (food drop).
+					if _touch_pick_creature(ev.position):
+						_haptic(10)
+					else:
 						_drop_food_at_cursor(ev.position)
 			
 			# Check for completed edge-swipe gesture: started near right edge,
@@ -1873,6 +1898,15 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 		_tap_moved += ev.relative.length()
 	
 	if _touches.size() == 1:
+		# Single-finger deadzone: don't orbit until the finger has moved
+		# DRAG_DEADZONE_PX since touch-down. Below the deadzone we keep the
+		# tap eligible; once crossed, the finger commits to navigation and
+		# can't trigger a tap on lift. Paint / wood_drag are tool actions
+		# and bypass the deadzone (they should fire on touch-down).
+		if not _drag_committed and _tap_moved >= DRAG_DEADZONE_PX:
+			_drag_committed = true
+		var nav_committed: bool = _drag_committed \
+				or _drag_mode == "paint" or _drag_mode == "wood_drag"
 		# ---- Single finger: orbit or aquascape paint ----
 		if _aquascape.is_active:
 			match _drag_mode:
@@ -1883,17 +1917,19 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 				"wood_drag":
 					_aquascape.drag_hardscape(ev.position)
 				_:
-					# Even in aquascape, allow orbit if no tool action locked.
-					yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
-					pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
-					pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-					_apply_camera()
+					if nav_committed:
+						# Even in aquascape, allow orbit if no tool action locked.
+						yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
+						pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
+						pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+						_apply_camera()
 		else:
-			# Normal mode: 1-finger drag orbits.
-			yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
-			pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
-			pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-			_apply_camera()
+			if nav_committed:
+				# Normal mode: 1-finger drag orbits.
+				yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
+				pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
+				pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+				_apply_camera()
 		
 		_touch_prev[ev.index] = ev.position
 	
@@ -5333,10 +5369,16 @@ func _show_corrupt_save_prompt(state_path: String) -> void:
 # zeroed time_scale we leave it alone so we don't accidentally un-pause.
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT \
-			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT:
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_OUT \
+			or what == NOTIFICATION_APPLICATION_PAUSED:
+		# APPLICATION_PAUSED is the Android lifecycle event that fires when
+		# the activity is moved to onPause (full backgrounding). FOCUS_OUT
+		# fires on overlays / lock screen too. We treat all three the same:
+		# stop ticking the sim so the device can sleep its CPU/GPU.
 		_on_focus_out()
 	elif what == NOTIFICATION_APPLICATION_FOCUS_IN \
-			or what == NOTIFICATION_WM_WINDOW_FOCUS_IN:
+			or what == NOTIFICATION_WM_WINDOW_FOCUS_IN \
+			or what == NOTIFICATION_APPLICATION_RESUMED:
 		_on_focus_in()
 	elif what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_persist_last_quit_unix()
@@ -5397,7 +5439,28 @@ func _pick_device_tier_if_unset() -> void:
 		return  # already picked
 	var sz: Vector2i = DisplayServer.screen_get_size()
 	var short_side: int = min(sz.x, sz.y) if sz.x > 0 and sz.y > 0 else 0
-	if short_side >= 1500:
+	# RAM-aware downshift: a phone with a 1440p screen and 3GB of RAM is a
+	# budget device that will choke if we render at the "high" tier just
+	# because the screen is big. Read the OS memory hint where available
+	# and force a low tier when total RAM is under ~3.5GB. Godot exposes
+	# get_memory_info() with a "free"/"available"/"total" map on most
+	# desktops, but on Android we fall back to a best-effort static usage
+	# check and assume conservative tier when info isn't available.
+	var ram_gb: float = 0.0
+	if OS.has_method("get_memory_info"):
+		var info: Dictionary = OS.get_memory_info()
+		var total: int = int(info.get("physical", 0))
+		if total > 0:
+			ram_gb = float(total) / (1024.0 * 1024.0 * 1024.0)
+	var low_ram: bool = ram_gb > 0.0 and ram_gb < 3.5
+	if low_ram:
+		# Force the low tier regardless of screen size. Tablet-size screen
+		# with low RAM (common on budget Android tablets) still wants the
+		# small render target.
+		cfg.device_tier = "low"
+		cfg.render_width = 256
+		cfg.render_height = 144
+	elif short_side >= 1500:
 		cfg.device_tier = "high"
 		# Bump render res so the tank fills the bigger tablet panel with
 		# more detail. Stays well within typical mobile GPU budgets.
@@ -5411,7 +5474,8 @@ func _pick_device_tier_if_unset() -> void:
 		cfg.render_width = 384
 		cfg.render_height = 216
 	cfg.save_to_disk()
-	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px)" % [cfg.device_tier, short_side])
+	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px, %.1f GB RAM)" \
+		% [cfg.device_tier, short_side, ram_gb])
 
 
 # ---- FPS cap (battery saver) ----
@@ -5419,10 +5483,16 @@ func _apply_fps_cap() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
-	# First-mobile-launch default: if no cap is set, lock to 60 to save
-	# battery + thermals. User can override in settings (when wired up).
+	# First-mobile-launch default: if no cap is set, lock to 30 — sim ticks
+	# at 10Hz independent of frame rate so 30fps is plenty smooth for the
+	# tank's gentle motion, and it ~halves GPU power vs 60. User can lift
+	# the cap in settings (Advanced → Performance).
 	if _is_mobile() and int(cfg.fps_cap) == 0:
-		cfg.fps_cap = 60
+		cfg.fps_cap = 30
+		cfg.save_to_disk()
+	# Battery saver forces 30 regardless of what fps_cap is set to.
+	if bool(cfg.get("battery_saver")) and int(cfg.fps_cap) != 30:
+		cfg.fps_cap = 30
 		cfg.save_to_disk()
 	if int(cfg.fps_cap) > 0:
 		Engine.max_fps = int(cfg.fps_cap)
@@ -5773,20 +5843,31 @@ func _maybe_show_tutorial() -> void:
 	title.add_theme_color_override("font_color", Color(1, 0.9, 0.6, 1))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
-	var hints: Array[String] = [
-		"• Drag to orbit the tank",
-		"• Click / tap water to feed (9/0 cycles food type)",
-		"• Tap a creature to follow it",
-		"• Stat chips at top — tap for water & history",
-		"• Right rail — Create · World · Look · System · Alerts",
-		"• Press ? for keyboard shortcuts",
-	]
+	# Touch-grammar vs keyboard/mouse-grammar hints. On mobile the user never
+	# touches a keyboard, so any mention of "press 9/0" or "press ?" reads as
+	# unfinished. Build the bullet list for the actual input modality.
+	var hints: Array[String] = []
 	if _is_mobile():
-		hints.append_array([
-			"• Pinch to zoom",
-			"• Two-finger drag to pan",
-			"• Swipe from right edge for settings",
-		])
+		hints = [
+			"• Drag to orbit the tank",
+			"• Pinch to zoom · two-finger drag to pan",
+			"• Two-finger twist to rotate the view",
+			"• Tap a creature to follow it",
+			"• Tap empty water to drop food",
+			"• Double-tap anywhere to reset the camera",
+			"• Long-press in build mode for the tool menu",
+			"• Swipe from the right edge to open settings",
+			"• Stat chips at top — tap for water & history",
+		]
+	else:
+		hints = [
+			"• Drag to orbit the tank",
+			"• Click water to feed (9/0 cycles food type)",
+			"• Tap a creature to follow it",
+			"• Stat chips at top — tap for water & history",
+			"• Right rail — Create · World · Look · System · Alerts",
+			"• Press ? for keyboard shortcuts",
+		]
 	for h in hints:
 		var lab := Label.new()
 		lab.text = h

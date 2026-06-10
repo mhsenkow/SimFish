@@ -1,11 +1,7 @@
 [gd_resource type="AudioBusLayout" format=3 uid="uid://cqi0emibqjsx5"]
 
 [sub_resource type="AudioEffectEQ6" id="eq_master"]
-band_db/32_hz = 0.0
-band_db/100_hz = 0.0
 band_db/320_hz = -0.3
-band_db/1000_hz = 0.0
-band_db/3200_hz = 0.0
 band_db/10000_hz = 0.4
 
 [sub_resource type="AudioEffectCompressor" id="cmp_master"]
@@ -13,8 +9,6 @@ threshold = -14.0
 ratio = 1.8
 attack_us = 60.0
 release_ms = 220.0
-gain = 0.0
-mix = 1.0
 
 [sub_resource type="AudioEffectStereoEnhance" id="stereo_master"]
 pan_pullout = 1.15
@@ -25,45 +19,36 @@ surround = 0.25
 ceiling_db = -1.2
 threshold_db = -0.8
 soft_clip_db = 2.5
-soft_clip_ratio = 10.0
 
 [sub_resource type="AudioEffectCompressor" id="cmp_drums"]
 threshold = -10.0
 ratio = 2.2
 attack_us = 12.0
 release_ms = 140.0
-gain = 0.0
-mix = 1.0
 
 [sub_resource type="AudioEffectReverb" id="rv_synth"]
 predelay_msec = 18.0
 predelay_feedback = 0.25
 room_size = 0.74
 damping = 0.35
-spread = 1.0
 hipass = 0.18
 dry = 0.78
 wet = 0.22
 
 [sub_resource type="AudioEffectReverb" id="rv_air"]
 predelay_msec = 28.0
-predelay_feedback = 0.4
 room_size = 0.85
 damping = 0.28
-spread = 1.0
 hipass = 0.1
 dry = 0.55
 wet = 0.45
 
 [sub_resource type="AudioEffectDelay" id="dly_air"]
 dry = 0.85
-tap1_active = true
 tap1_delay_ms = 375.0
 tap1_level_db = -10.0
 tap1_pan = -0.7
-tap2_active = true
 tap2_delay_ms = 562.5
-tap2_level_db = -12.0
 tap2_pan = 0.7
 feedback_active = true
 feedback_delay_ms = 750.0
@@ -71,12 +56,6 @@ feedback_level_db = -14.0
 feedback_lowpass = 5200.0
 
 [resource]
-bus/0/name = &"Master"
-bus/0/solo = false
-bus/0/mute = false
-bus/0/bypass_fx = false
-bus/0/volume_db = 0.0
-bus/0/send = &""
 bus/0/effect/0/effect = SubResource("eq_master")
 bus/0/effect/0/enabled = true
 bus/0/effect/1/effect = SubResource("cmp_master")

@@ -24,10 +24,6 @@ SpeciesLibrary="*res://scripts/species_library.gd"
 SteamService="*res://scripts/steam_service.gd"
 AIDirector="*res://scripts/ai_director.gd"
 
-[audio]
-
-buses/default_bus_layout="res://default_bus_layout.tres"
-
 [display]
 
 window/size/viewport_width=1536

@@ -572,8 +572,8 @@ var aeration_fixture: String = "disk"
 const O2_INJECT_PER_RATE: float = 0.20    # disk at strength=1 -> 0.20/s peak input
 const O2_FLOW_BONUS_PER_RATE: float = 0.08
 const O2_PHOTO_PER_PLANT: float = 0.0014  # was 0.0008; biomass + count scalar
-const O2_PHOTO_FLOATER: float = 0.0012    # was 0.0006; surface floaters punch above weight
-const O2_PHOTO_BIOMASS_MULT: float = 0.0040  # was 0.0012; mature tank carries the load
+const O2_PHOTO_FLOATER: float = 0.0016    # was 0.0012; surface contact + photo, the Walstad MVP
+const O2_PHOTO_BIOMASS_MULT: float = 0.0070  # was 0.0040; mature biomass carries the tank w/o aeration
 const O2_PHOTO_PLANTS_MULT: float = 0.55  # was 0.35; raw plant count contribution
 const O2_RESPIRE_FISH: float = 0.0030     # was 0.0040; gentler fish breathing
 const O2_RESPIRE_SHRIMP: float = 0.0016   # was 0.0020
@@ -751,6 +751,13 @@ func _physics_process(dt: float) -> void:
 	# Real-time runtime accumulator (unscaled — measures how long the user
 	# has had this tank open with focus). Used by the menu's "ran for X" line.
 	elapsed_runtime_s += dt
+	# Home-screen widget data export. Cheap: write a small JSON file every
+	# WIDGET_EXPORT_INTERVAL_S so an Android AppWidget can read the current
+	# tank state without IPC-ing into the running game. No-op on desktop.
+	_widget_export_timer += dt
+	if _widget_export_timer >= WIDGET_EXPORT_INTERVAL_S:
+		_widget_export_timer = 0.0
+		_export_widget_state()
 	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
 	var sdt: float = dt * time_scale
 	_accum += sdt
@@ -1443,11 +1450,14 @@ func _tick(dt: float) -> void:
 				spawn_z = xz.y
 			# WATER_HEIGHT may be unset on the parent in unusual tank presets;
 			# null-subtract would crash. Fall back to a safe near-surface Y.
-			var fy: float = 6.4
+			# Offset 0.55 below meniscus so pellets start within the fish's
+			# reachable zone (fish body margin ~0.58) and don't pull the whole
+			# school into the ceiling while chasing unreachable food.
+			var fy: float = 5.95
 			if w != null:
 				var water_h = w.get("WATER_HEIGHT")
 				if water_h != null:
-					fy = float(water_h) - 0.1
+					fy = float(water_h) - 0.55
 			_spawn_waste(Vector3(spawn_x, fy, spawn_z), pellet, WasteParticle.KIND_FOOD)
 
 	# 6c. Algae bloom dynamics.
@@ -1524,7 +1534,22 @@ func _tick(dt: float) -> void:
 	bloom_pressure *= 1.0 - clampf(float(snail_count) / 18.0, 0.0, 0.35)
 	bloom_intensity = lerpf(bloom_intensity, bloom_pressure, clampf(dt * 0.25, 0.0, 1.0))
 	var waste_nh3: float = float(waste.size()) * 0.0004
-	water_chemistry.tick(dt, self, get_parent(), plant_biomass, waste_nh3)
+	# Walstad coupling: substrate organics mineralize into ammonia. A clean
+	# substrate (near baseline) contributes nothing; a mulm-loaded substrate
+	# leaks NH3 the way a real tank does when poop and detritus accumulate
+	# faster than soil bacteria can process them. This closes the soil →
+	# ammonia → bacteria → nitrate → plant loop that makes Walstad tanks
+	# work without a filter.
+	#
+	# The 0.0001/excess-unit coefficient is calibrated so a clean tank
+	# (~0 excess) adds nothing, a normal stocked tank (~6 excess) adds
+	# ~0.0006 NH3/sec (a tap drip), and an overfed/over-stocked tank
+	# (~40 excess) climbs to ~0.004/sec — visible as an ammonia spike.
+	var substrate_nh3: float = 0.0
+	if substrate != null:
+		substrate_nh3 = substrate.total_above_baseline() * 0.0001
+	water_chemistry.tick(dt, self, get_parent(), plant_biomass,
+		waste_nh3 + substrate_nh3)
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
 	# Soft crowding: dense algae patches spawn less often instead of hitting
@@ -1763,7 +1788,8 @@ func _tick(dt: float) -> void:
 			if is_instance_valid(w) and not consumed.has(w):
 				consumed[w] = true
 				_play_ambient_event("eat", -1.0, _node_species(actor))
-				var leftover: float = w.nutrient_value * 0.4
+				var consumed_nv: float = w.nutrient_value
+				var leftover: float = consumed_nv * 0.4
 				waste.erase(w)
 				w.queue_free()
 				if leftover > 0.04:
@@ -1772,6 +1798,13 @@ func _tick(dt: float) -> void:
 						new_kind = WasteParticle.KIND_SHRIMP
 					_spawn_waste(actor.global_position + Vector3(0, -0.1, 0),
 						leftover, new_kind)
+				# Detritivore → biofilm feedback (see snail.gd for the
+				# matching call). The fragment the eater drops back into
+				# the substrate AND the act of breaking the particle both
+				# feed soil bacteria, speeding the N-cycle.
+				var w_bio: Node = get_parent()
+				if w_bio != null and w_bio.has_method("boost_biofilm"):
+					w_bio.boost_biofilm(consumed_nv)
 
 		# Predation - remove the prey.
 		if ev.has("kill_prey"):
@@ -1880,6 +1913,62 @@ func _tick(dt: float) -> void:
 	var ai_d: Node = get_node_or_null("/root/AIDirector")
 	if ai_d != null and ai_d.has_method("intent_refresh_due") and ai_d.intent_refresh_due():
 		ai_d.push_tank_summary(_build_ai_summary())
+
+
+# Home-screen widget snapshot. A flat JSON file at user://widget_state.json
+# that an Android AppWidgetProvider plugin can read on each widget refresh.
+# Resolves to /data/data/<package>/files/widget_state.json on Android, which
+# is readable by the widget code since it runs in the same UID as the game.
+# We rewrite every WIDGET_EXPORT_INTERVAL_S to keep the IO load trivial
+# (every 30 sim seconds = ~6 KB/min worst case).
+const WIDGET_EXPORT_INTERVAL_S: float = 30.0
+const WIDGET_EXPORT_PATH: String = "user://widget_state.json"
+var _widget_export_timer: float = 0.0
+
+
+func _export_widget_state() -> void:
+	# Only do this on mobile — desktop users don't have a home-screen widget,
+	# and the periodic write would just spin the disk for nothing.
+	if not (OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")):
+		return
+	var nh3: float = water_chemistry.ammonia if water_chemistry != null else 0.0
+	var no3: float = water_chemistry.nitrate if water_chemistry != null else 0.0
+	var phase_int: int = water_chemistry.cycle_phase if water_chemistry != null else 0
+	var phase_label: String = WaterChemistry.phase_label(phase_int) if water_chemistry != null else ""
+	# Last named birth: scan named fish for the youngest one as a proxy.
+	var last_birth_name: String = ""
+	var youngest_age: float = 99999.0
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		var nm: String = String(f.get("fish_name") if f.get("fish_name") != null else "")
+		if nm == "":
+			continue
+		var a: float = float(f.get("age") if f.get("age") != null else 99999.0)
+		if a < youngest_age:
+			youngest_age = a
+			last_birth_name = nm
+	var state: Dictionary = {
+		"schema": 1,
+		"updated_unix": int(Time.get_unix_time_from_system()),
+		"fish_count": fish.size(),
+		"shrimp_count": shrimp.size(),
+		"snail_count": snail_count,
+		"plant_count": plants.size(),
+		"plant_biomass": total_plant_biomass,
+		"o2_pct": int(clampf(dissolved_o2 / 1.2, 0.0, 1.0) * 100),
+		"ammonia_ppm": "%.2f" % nh3,
+		"nitrate_ppm": "%.2f" % no3,
+		"cycle_phase": phase_label,
+		"is_daylight": daylight() > 0.5,
+		"bloom_intensity": "%.2f" % bloom_intensity,
+		"last_named_fish": last_birth_name,
+	}
+	var f := FileAccess.open(WIDGET_EXPORT_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(state))
+	f.close()
 
 
 # Build the compact JSON-able summary handed to AIDirector. Kept under

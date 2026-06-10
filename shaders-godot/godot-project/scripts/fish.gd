@@ -2859,8 +2859,20 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Tier 2: HUNGRY HERBIVORE. Plants need at least 15 voxels of biomass
 	# so fish have more food options before the shrimp graze them
 	# down to nothing.
-	if herbivory > 0.0 and hunger > 0.55 and maturity != MATURITY_FRY \
-			and randf() < 0.5:
+	# Lush-tank cropping bonus: when total plant biomass is high, herbivores
+	# graze more eagerly (food is everywhere, less seeking cost). This is
+	# the negative-feedback brake on plant overgrowth — without it, plants
+	# coast to max_height and never get cropped back into a balanced
+	# canopy. The 0.6× lush_bonus shifts both the random gate (up to 80%)
+	# and the hunger threshold (down to 0.40) when biomass passes ~450.
+	var lush_bonus: float = 0.0
+	if sim != null:
+		var b: int = int(sim.get("total_plant_biomass") if sim.get("total_plant_biomass") != null else 0)
+		lush_bonus = clampf((float(b) - 150.0) / 300.0, 0.0, 0.6)
+	var herb_hunger_gate: float = 0.55 - lush_bonus * 0.25
+	var herb_random_gate: float = 0.5 + lush_bonus * 0.5
+	if herbivory > 0.0 and hunger > herb_hunger_gate and maturity != MATURITY_FRY \
+			and randf() < herb_random_gate:
 		if target_plant == null or not is_instance_valid(target_plant) \
 				or target_plant.biomass() < 15:
 			target_plant = _find_nearest_tall_plant(plants, 5.0, 15)
@@ -3989,6 +4001,12 @@ func _motion_substep(dt: float) -> void:
 		if allowed < want_len * 0.92:
 			var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
 			inward.y = 0.0
+			# Lateral escape only handled above; also catch the ceiling so fish
+			# don't get pinned motionless when pressing against the water surface.
+			if inward.length_squared() < 1e-6:
+				var vb: Dictionary = _vertical_boundary_context(global_position)
+				if bool(vb.get("active", false)) and float(vb.get("clearance", 99.0)) < 0.35:
+					inward = vb.get("inward", Vector3.ZERO)
 			if inward.length_squared() > 1e-6:
 				inward = inward.normalized()
 			if inward.length_squared() > 1e-6:

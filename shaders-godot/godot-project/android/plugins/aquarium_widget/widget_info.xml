@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App widget config. Drop in android/res/xml/. The 30-min update period
+     is Android's effective minimum since API 24; the in-game broadcast
+     (TANK_UPDATED) is what actually keeps the widget fresh while the user
+     is playing. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_layout"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:previewLayout="@layout/widget_layout"
+    android:description="@string/widget_desc" />

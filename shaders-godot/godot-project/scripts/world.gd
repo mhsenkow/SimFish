@@ -1378,6 +1378,26 @@ func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
 	snail.set("toxin_level", _rng.randf_range(0.0, 0.35))
 
 
+# Detritivore feedback: snails / shrimp / fish that consume a waste particle
+# call this with the consumed nutrient_value. The food feeds soil bacteria
+# (small biofilm_progress bump) which then ripples through the N-cycle via
+# water_chemistry.bacteria. Clamped so a feeding frenzy can't slam biofilm
+# to 1.0 in seconds — biofilm growth is still a slow process; the cleanup
+# crew just makes it not-quite-so-slow when a tank is well-cycled.
+func boost_biofilm(amount: float) -> void:
+	biofilm_progress = clampf(biofilm_progress + amount * 0.06, 0.0, 0.7)
+
+
+# Live count of swarming microfauna. Used by water_chemistry to give a
+# tiny extra bacteria multiplier — a dense swarm of paramecia / copepods
+# / rotifers indicates an active microbial layer and accelerates
+# nitrification past what biofilm_progress alone implies.
+func live_microfauna_count() -> int:
+	if microfauna_root == null:
+		return 0
+	return microfauna_root.get_child_count()
+
+
 func microfauna_carrying_capacity() -> int:
 	var tiny_scale: float = float(_library_tiny_life_scalars().get("micro", 1.0))
 	var base: float = _tank_volume_proxy() * 0.42

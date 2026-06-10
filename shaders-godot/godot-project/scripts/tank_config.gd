@@ -83,9 +83,13 @@ var camera_target_z: float = 0.0
 var camera_state_saved: bool = false
 
 # ---- Mobile / device settings ----
-# Engine.max_fps cap. 0 = uncapped (desktop default). On mobile we default to 60
-# to keep battery + thermals reasonable; user can change via settings.
+# Engine.max_fps cap. 0 = uncapped (desktop default). On mobile we default to
+# 30 on first launch to maximise battery life; user can change via settings.
 var fps_cap: int = 0
+# True when battery saver is on — forces fps_cap=30 and lighter visuals.
+# Independent of fps_cap so the dropdown can read the user's chosen number
+# while the saver overrides it. Set in settings_panel.gd; persisted here.
+var battery_saver: bool = false
 # Device tier guess - set once on first launch from screen size + DPI heuristic
 # (see main._auto_pick_device_tier). Used to set sensible initial render scale.
 # Values: "" (not yet picked), "low", "mid", "high".
@@ -412,9 +416,12 @@ func current_environment_profile() -> Dictionary:
 
 
 # ---- Fauna ----
-# If true, respawn 10 of each creature if the tank is empty.
-var auto_respawn_fauna: bool = false
-var auto_feed_fauna: bool = false
+# If true, respawn 10 of each creature if the tank is empty. Both default
+# ON so the tank behaves like a true ambient sim — the player can leave
+# the app for days and come back to a living tank instead of a graveyard.
+# Power users can switch either off in Settings → Advanced.
+var auto_respawn_fauna: bool = true
+var auto_feed_fauna: bool = true
 # Live swim/grouping multipliers — read every fish tick; no reload required.
 var fauna_schooling_mult: float = 1.0
 var fauna_separation_mult: float = 1.0
@@ -1692,6 +1699,7 @@ func save_to_disk() -> void:
 	cfg.set_value("camera", "target_y", camera_target_y)
 	cfg.set_value("camera", "target_z", camera_target_z)
 	cfg.set_value("mobile", "fps_cap", fps_cap)
+	cfg.set_value("mobile", "battery_saver", battery_saver)
 	cfg.set_value("mobile", "device_tier", device_tier)
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
@@ -1894,6 +1902,7 @@ func load_from_disk() -> void:
 	camera_target_y = cfg.get_value("camera", "target_y", camera_target_y)
 	camera_target_z = cfg.get_value("camera", "target_z", camera_target_z)
 	fps_cap = cfg.get_value("mobile", "fps_cap", fps_cap)
+	battery_saver = cfg.get_value("mobile", "battery_saver", battery_saver)
 	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
@@ -2053,9 +2062,10 @@ func reset_to_defaults() -> void:
 	music_key_mod = 0.35
 	music_breathe_lfo = 0.35
 	environment_preset = "void"
-	# Fauna behavior.
-	auto_respawn_fauna = false
-	auto_feed_fauna = false
+	# Fauna behavior. Default ON — the tank is an ambient sim and should
+	# self-sustain when left unattended.
+	auto_respawn_fauna = true
+	auto_feed_fauna = true
 	fauna_schooling_mult = 1.0
 	fauna_separation_mult = 1.0
 	fauna_wander_mult = 1.0

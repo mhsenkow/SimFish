@@ -211,7 +211,12 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 	var start_col: Color = VoxelMat.read_albedo(mat, Color(0.72, 0.82, 0.78, 0.35))
 	var end_col: Color = Color(start_col.r, start_col.g, start_col.b, 0.0)
 	tw.tween_property(mat, "shader_parameter/albedo", end_col, LIFETIME * 0.70)
-	get_tree().create_timer(LIFETIME).timeout.connect(_release_slime_mark.bind(mi))
+	# Use a lambda so the MeshInstance3D is never passed as a typed argument
+	# after it may have been freed — .bind(mi) causes a type-coercion error
+	# in emit_signalp when the object is no longer valid.
+	get_tree().create_timer(LIFETIME).timeout.connect(func() -> void:
+		if is_instance_valid(mi):
+			_release_slime_mark(mi))
 
 
 func spawn_snail_bubble(pos: Vector3) -> void:

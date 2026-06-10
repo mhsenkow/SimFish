@@ -639,7 +639,15 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 				best_d2 = d2
 				best = a
 	# If food is scarce, snails rasp soft plant/coral tissue too (slowly).
-	if best == null and sim.get("plants") != null and randf() < 0.45:
+	# Lush-tank bonus: when the tank's planted area is dense, snails crop
+	# more aggressively (more food in arm's reach, less wandering cost).
+	# This is the negative-feedback brake against monoculture takeover —
+	# without it, fast-growing stems just hit max_height and sit there.
+	var lush_plant_gate: float = 0.45
+	var lush_biomass: int = int(sim.get("total_plant_biomass") if sim.get("total_plant_biomass") != null else 0)
+	if lush_biomass > 250:
+		lush_plant_gate = clampf(0.45 + (float(lush_biomass) - 250.0) / 500.0, 0.45, 0.85)
+	if best == null and sim.get("plants") != null and randf() < lush_plant_gate:
 		best_d2 = 2.8 * 2.8
 		for p in sim.plants:
 			if not is_instance_valid(p):
@@ -664,9 +672,17 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	if to_w.length() < 0.25:
 		if best.get("kind") != null:
 			# It's waste
+			var nv_consumed: float = float(best.get("nutrient_value") if best.get("nutrient_value") != null else 0.1)
 			sim.waste.erase(best)
 			(best as Node3D).queue_free()
 			hunger = clampf(hunger - FEED_WASTE, 0.0, 1.0)
+			# Detritivore → biofilm feedback. The snail's rasping breaks
+			# the waste into bacteria-accessible fragments — biofilm grows
+			# slightly faster, which in turn speeds the N-cycle. This is
+			# the trophic level that makes a Walstad tank work.
+			var wn_bio := _world_node()
+			if wn_bio != null and wn_bio.has_method("boost_biofilm"):
+				wn_bio.boost_biofilm(nv_consumed)
 		else:
 			# It's algae - just nibble it away entirely since snails are slow
 			if best.has_method("nibble"):
@@ -1008,7 +1024,7 @@ func _try_attach_to_plant() -> bool:
 	var n: int = mini(plants_arr.size(), 64)
 	for i in n:
 		var p_v: Variant = plants_arr[i]
-		if not (p_v is Node3D) or not is_instance_valid(p_v):
+		if not is_instance_valid(p_v) or not (p_v is Node3D):
 			continue
 		var p: Node3D = p_v as Node3D
 		# Project distance into the horizontal plane only — vertical

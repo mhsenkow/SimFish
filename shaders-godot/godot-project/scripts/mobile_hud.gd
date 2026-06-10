@@ -121,16 +121,22 @@ func _safe_area() -> Rect2:
 
 func _build_speed_row() -> void:
 	# Bottom-left: ⏸ 1× 4× 16×
+	# Container type is swapped between H/V in _apply_layout based on
+	# orientation — landscape gets HBox along the bottom, portrait gets
+	# VBox up the left edge so the tank can use the full vertical real
+	# estate. Buttons are re-parented when the container is rebuilt.
 	_speed_container = HBoxContainer.new()
 	_speed_container.add_theme_constant_override("separation", 6)
 	_speed_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_speed_container)
 
 	_pause_btn = _make_btn(UiIcons.mobile_hud_label("pause"), Color8(220, 180, 80))
+	_pause_btn.tooltip_text = "Pause / resume the simulation"
 	_pause_btn.pressed.connect(func():
 		_is_paused = not _is_paused
 		_pause_btn.text = UiIcons.mobile_hud_label("play") if _is_paused \
 				else UiIcons.mobile_hud_label("pause")
+		_buzz(18)
 		pause_pressed.emit())
 	_speed_container.add_child(_pause_btn)
 
@@ -141,11 +147,13 @@ func _build_speed_row() -> void:
 	]:
 		var btn := _make_btn(String(entry["label"]), Color8(180, 200, 220))
 		var s: float = float(entry["scale"])
+		btn.tooltip_text = "Run sim at %s speed" % String(entry["label"])
 		btn.pressed.connect(func():
 			_current_speed = s
 			_is_paused = false
 			_pause_btn.text = UiIcons.mobile_hud_label("pause")
 			_highlight_speed(s)
+			_buzz(12)
 			speed_pressed.emit(s))
 		_speed_container.add_child(btn)
 		_speed_btns[s] = btn
@@ -160,38 +168,62 @@ func _build_action_row() -> void:
 	add_child(_action_container)
 
 	_photo_btn = _make_btn(UiIcons.mobile_hud_label("photo"), Color8(150, 200, 170))
-	_photo_btn.pressed.connect(func(): photo_pressed.emit())
+	_photo_btn.tooltip_text = "Take a screenshot of the tank"
+	_photo_btn.pressed.connect(func():
+		_buzz(25)
+		photo_pressed.emit())
 	_action_container.add_child(_photo_btn)
 
 	_undo_btn = _make_btn(UiIcons.mobile_hud_label("undo"), Color8(220, 130, 130))
-	_undo_btn.pressed.connect(func(): undo_pressed.emit())
+	_undo_btn.tooltip_text = "Undo the last aquascape change"
+	_undo_btn.pressed.connect(func():
+		_buzz(15)
+		undo_pressed.emit())
 	_undo_btn.visible = false  # Only shown in aquascape mode.
 	_action_container.add_child(_undo_btn)
 
 
 # Re-anchor both containers inside the safe area. Called on _ready and again
 # on viewport size_changed (rotation, nav-bar show/hide).
+# Portrait phones get a vertical speed stack up the left edge so the tank can
+# fill the wider vertical viewport without HUD eating the bottom strip.
+# Landscape keeps the classic bottom-row layout.
 func _apply_layout() -> void:
 	var safe: Rect2 = _safe_area()
-	var btn_h: float = _btn_size().y
+	var btn_size: Vector2 = _btn_size()
+	var win: Vector2 = get_viewport().get_visible_rect().size
+	var is_portrait: bool = win.y > win.x
 	# Bottom edge of buttons - 12px above the safe-area bottom, which leaves
 	# clearance for the gesture pill on phones that hide the safe-area bottom
-	# inset under their nav bar.
-	var bottom_extra: float = 0.0
-	if get_viewport().get_visible_rect().size.y > get_viewport().get_visible_rect().size.x:
-		bottom_extra = PanelTheme.RAIL_BOTTOM_HEIGHT
+	# inset under their nav bar. Extra clearance on phones with under-display
+	# nav (gesture pill area is rendered inside the safe rect on Android 12+).
+	var bottom_extra: float = PanelTheme.RAIL_BOTTOM_HEIGHT if is_portrait else 0.0
 	var bottom_y: float = safe.position.y + safe.size.y - 12.0 - bottom_extra
-	# Speed row: anchored to bottom-left of safe area.
+	# Match container axis to orientation (HBox in landscape, VBox in portrait).
+	_ensure_container_axis(_speed_container, is_portrait)
 	if _speed_container != null:
+		var speed_count: int = _speed_container.get_child_count()
 		_speed_container.anchor_left = 0.0
 		_speed_container.anchor_top = 0.0
 		_speed_container.anchor_right = 0.0
 		_speed_container.anchor_bottom = 0.0
-		_speed_container.offset_left = safe.position.x + 16.0
-		_speed_container.offset_top = bottom_y - btn_h
-		_speed_container.offset_right = _speed_container.offset_left + 320.0
-		_speed_container.offset_bottom = bottom_y
-	# Action row: anchored to bottom-right of safe area.
+		if is_portrait:
+			# Vertical stack up the left edge, anchored near the bottom so
+			# the thumb naturally reaches it. Width = one button; height =
+			# stack of N buttons plus separators.
+			var stack_h: float = btn_size.y * float(speed_count) + 6.0 * float(speed_count - 1)
+			_speed_container.offset_left = safe.position.x + 12.0
+			_speed_container.offset_right = _speed_container.offset_left + btn_size.x
+			_speed_container.offset_bottom = bottom_y
+			_speed_container.offset_top = bottom_y - stack_h
+		else:
+			# Classic bottom-row in landscape.
+			_speed_container.offset_left = safe.position.x + 16.0
+			_speed_container.offset_top = bottom_y - btn_size.y
+			_speed_container.offset_right = _speed_container.offset_left + 320.0
+			_speed_container.offset_bottom = bottom_y
+	# Action row: always horizontal, anchored to bottom-right of safe area.
+	# In portrait we lift it slightly so it doesn't crowd the gesture pill.
 	if _action_container != null:
 		var right_x: float = safe.position.x + safe.size.x - 16.0
 		_action_container.anchor_left = 0.0
@@ -199,9 +231,39 @@ func _apply_layout() -> void:
 		_action_container.anchor_right = 0.0
 		_action_container.anchor_bottom = 0.0
 		_action_container.offset_left = right_x - 160.0
-		_action_container.offset_top = bottom_y - btn_h
+		_action_container.offset_top = bottom_y - btn_size.y
 		_action_container.offset_right = right_x
 		_action_container.offset_bottom = bottom_y
+
+
+# Swap the speed container's BoxContainer subtype between HBox (landscape) and
+# VBox (portrait) without losing buttons or their signal connections. Cheap
+# enough to run on every rotation. Children are re-parented in place; their
+# `pressed` signals stay attached to the underlying Button objects.
+func _ensure_container_axis(box: BoxContainer, portrait: bool) -> void:
+	if box == null:
+		return
+	var want_vbox: bool = portrait
+	var is_vbox: bool = box is VBoxContainer
+	if want_vbox == is_vbox:
+		return
+	# Snapshot children, replace container, re-parent.
+	var children: Array = []
+	for c in box.get_children():
+		children.append(c)
+	for c in children:
+		box.remove_child(c)
+	var parent: Node = box.get_parent()
+	var idx: int = box.get_index()
+	box.queue_free()
+	var new_box: BoxContainer = (VBoxContainer.new() as BoxContainer) if want_vbox else (HBoxContainer.new() as BoxContainer)
+	new_box.add_theme_constant_override("separation", 6)
+	new_box.mouse_filter = Control.MOUSE_FILTER_STOP
+	parent.add_child(new_box)
+	parent.move_child(new_box, idx)
+	for c in children:
+		new_box.add_child(c)
+	_speed_container = new_box
 
 
 func _make_btn(label: String, color: Color) -> Button:
@@ -227,3 +289,12 @@ func _highlight_speed(active: float) -> void:
 func set_aquascape_mode(on: bool) -> void:
 	if _undo_btn != null:
 		_undo_btn.visible = on
+
+
+# Tiny haptic pulse on button press. Input.vibrate_handheld is a no-op on
+# desktop, so this is safe to call unconditionally — but we guard on the
+# mobile feature flag anyway to avoid the JNI roundtrip when the device
+# doesn't have a vibrator at all (tablets without haptic actuators).
+func _buzz(duration_ms: int) -> void:
+	if OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios"):
+		Input.vibrate_handheld(duration_ms)

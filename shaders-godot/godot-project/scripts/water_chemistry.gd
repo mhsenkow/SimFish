@@ -31,15 +31,32 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 	# Planted Walstad tanks cycle faster — roots + biofilm host nitrifiers.
 	var plant_boost: float = clampf(float(plant_biomass) / 420.0, 0.0, 1.0)
 	bacteria = clampf(bacteria + plant_boost * 0.35, 0.05, 1.35)
+	# Microfauna boost: a dense swarm of paramecia, copepods, and rotifers
+	# represents an active microbial loop. Their grazing on free bacteria
+	# keeps the colony young and reproducing (counter-intuitive but real —
+	# steady cropping prevents senescence). Caps at +20% so the swarm
+	# can't outrun the biofilm / plant bonuses.
+	if world != null and world.has_method("live_microfauna_count"):
+		var micro_boost: float = clampf(float(world.live_microfauna_count()) / 90.0, 0.0, 0.20)
+		bacteria = clampf(bacteria + micro_boost, 0.05, 1.55)
 	ammonia += waste_ammonia * dt
 	ammonia += dt * 0.0016
+	# Plants assimilate dissolved N directly from the water column. Real
+	# planted tanks prefer ammonium (NH4+) over nitrate by ~5× because
+	# assimilating NO3 costs extra energy to reduce — this is exactly why
+	# a heavily planted Walstad tank can "skip" the visible ammonia phase
+	# of a cycle. Plants race the bacteria to the NH3 and usually win.
+	var plant_uptake: float = clampf(float(plant_biomass) / 500.0, 0.0, 1.0)
+	var plant_nh3_uptake: float = ammonia * plant_uptake * 0.42 * dt
+	ammonia = maxf(0.0, ammonia - plant_nh3_uptake)
+	var plant_no2_uptake: float = nitrite * plant_uptake * 0.18 * dt
+	nitrite = maxf(0.0, nitrite - plant_no2_uptake)
 	var nh3_to_no2: float = ammonia * bacteria * 0.35 * dt
 	ammonia = maxf(0.0, ammonia - nh3_to_no2)
 	nitrite += nh3_to_no2
 	var no2_to_no3: float = nitrite * bacteria * 0.28 * dt
 	nitrite = maxf(0.0, nitrite - no2_to_no3)
 	nitrate += no2_to_no3
-	var plant_uptake: float = clampf(float(plant_biomass) / 500.0, 0.0, 1.0)
 	nitrate = maxf(0.0, nitrate - plant_uptake * 0.055 * dt)
 	nitrate = maxf(0.0, nitrate - dt * 0.0012)
 	ammonia = clampf(ammonia, 0.0, 2.0)
