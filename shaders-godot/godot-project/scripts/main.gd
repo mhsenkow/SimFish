@@ -174,11 +174,326 @@ const DEFAULT_TARGET := Vector3(0, 3.0, 0)
 const DEFAULT_RADIUS := 17.5
 const DEFAULT_YAW := -0.55
 const DEFAULT_PITCH := 0.48
+# Portrait-cylinder camera defaults. A tall round tank seen from a portrait
+# phone reads best with the camera level (low pitch), pulled back further
+# (cylinder is taller than the standard box), and looking at mid-height.
+# Computed dynamically in _default_camera_for_tank() so it tracks the
+# tank's actual height instead of hard-coding.
+const PORTRAIT_DEFAULT_PITCH := 0.18
+const PORTRAIT_DEFAULT_YAW := -0.35
 
 var target: Vector3 = DEFAULT_TARGET
 var radius: float = DEFAULT_RADIUS
 var yaw: float = DEFAULT_YAW
 var pitch: float = DEFAULT_PITCH
+
+
+# Pick camera defaults that frame the current tank well. Tall cylinders in
+# a portrait viewport get pulled back further and looked at level (low
+# pitch) so the user sees the full water column top-to-bottom. Wide boxes
+# in landscape keep the classic 3/4 perspective. Returns {target, radius,
+# yaw, pitch} so callers can apply uniformly.
+func _default_camera_for_tank() -> Dictionary:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var shape: String = String(cfg.get("tank_shape")) if cfg != null else "box"
+	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
+	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
+	var vp: Vector2 = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1536, 864)
+	var portrait: bool = vp.y > vp.x * 1.02
+	# Tall round tank seen on a tall screen: portrait camera.
+	if shape == "cylinder" and portrait:
+		var radius_px: float = clampf(tank_h * 1.65 + tank_hw * 1.6, 9.0, 28.0)
+		return {
+			"target": Vector3(0.0, tank_h * 0.42, 0.0),
+			"radius": radius_px,
+			"yaw": PORTRAIT_DEFAULT_YAW,
+			"pitch": PORTRAIT_DEFAULT_PITCH,
+		}
+	# Anything else: classic 3/4 box-tank defaults.
+	return {
+		"target": DEFAULT_TARGET,
+		"radius": DEFAULT_RADIUS,
+		"yaw": DEFAULT_YAW,
+		"pitch": DEFAULT_PITCH,
+	}
+
+
+# Apply the shape-aware defaults to the camera state. Used by F-key reset,
+# double-tap reset, and the new "Reset view" button in the Camera Views
+# panel. Calls _apply_camera() at the end so the change is immediate.
+func _reset_camera_to_default() -> void:
+	var d: Dictionary = _default_camera_for_tank()
+	target = d["target"]
+	radius = d["radius"]
+	yaw = d["yaw"]
+	pitch = d["pitch"]
+	_follow_target = null
+	_auto_orbit = false
+	_apply_camera()
+
+
+# ---- Camera Views panel API ----
+# Called by the Camera Views panel's preset buttons. Each preset frames the
+# tank from a distinctive angle. Cylinder tanks scale the radius up to keep
+# the full vertical column in frame. Box tanks use their half-width.
+func apply_camera_preset(preset_id: String) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var shape: String = String(cfg.get("tank_shape")) if cfg != null else "box"
+	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
+	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
+	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
+	var base_r: float = maxf(tank_h * 1.5, maxf(tank_hw, tank_hd) * 2.4)
+	_follow_target = null
+	_auto_orbit = false
+	match preset_id:
+		"front":
+			# Looking down the +Z axis at the front face. Camera level.
+			target = Vector3(0.0, tank_h * 0.42, 0.0)
+			yaw = 0.0
+			pitch = 0.0
+			radius = base_r
+		"side":
+			# Looking down the +X axis at the side. Camera level.
+			target = Vector3(0.0, tank_h * 0.42, 0.0)
+			yaw = -PI * 0.5
+			pitch = 0.0
+			radius = base_r
+		"top":
+			# Bird's-eye down. Particularly useful for cylinder tanks.
+			# In this codebase y = sin(pitch), so POSITIVE pitch puts the
+			# camera ABOVE the target — i.e. looking down. (DEFAULT_PITCH
+			# is +0.48 for the same reason.) Just shy of MAX_PITCH (1.45)
+			# so the up vector stays sane and look_at doesn't flip.
+			target = Vector3(0.0, tank_h * 0.5, 0.0)
+			yaw = 0.0
+			pitch = 1.40
+			radius = maxf(tank_hw, tank_hd) * 3.4
+		"three_quarter":
+			# Classic perspective from front-right, slight tilt down.
+			target = Vector3(0.0, tank_h * 0.4, 0.0)
+			yaw = -0.55
+			pitch = 0.48
+			radius = base_r * 1.05
+		_:
+			_reset_camera_to_default()
+			return
+	radius = clampf(radius, MIN_RADIUS, MAX_RADIUS)
+	pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+	_apply_camera()
+	_haptic(10)
+
+
+func save_camera_view_slot(idx: int) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	var view: Dictionary = {
+		"target_x": target.x, "target_y": target.y, "target_z": target.z,
+		"radius": radius, "yaw": yaw, "pitch": pitch,
+		"fov": float(camera.fov) if camera != null else 55.0,
+	}
+	match idx:
+		0: cfg.camera_view_slot_a = view
+		1: cfg.camera_view_slot_b = view
+		2: cfg.camera_view_slot_c = view
+	cfg.save_to_disk()
+	_haptic(18)
+
+
+func recall_camera_view_slot(idx: int) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	var view: Dictionary = {}
+	match idx:
+		0: view = cfg.camera_view_slot_a
+		1: view = cfg.camera_view_slot_b
+		2: view = cfg.camera_view_slot_c
+	if view.is_empty():
+		return  # never saved
+	target = Vector3(float(view.get("target_x", 0.0)),
+		float(view.get("target_y", 3.0)), float(view.get("target_z", 0.0)))
+	radius = clampf(float(view.get("radius", DEFAULT_RADIUS)), MIN_RADIUS, MAX_RADIUS)
+	yaw = float(view.get("yaw", DEFAULT_YAW))
+	pitch = clampf(float(view.get("pitch", DEFAULT_PITCH)), MIN_PITCH, MAX_PITCH)
+	_follow_target = null
+	_auto_orbit = false
+	_apply_camera()
+	if camera != null and view.has("fov"):
+		camera.fov = float(view["fov"])
+	_haptic(12)
+
+
+func set_auto_orbit_speed(v: float) -> void:
+	AUTO_ORBIT_SPEED = clampf(v, 0.0, 1.0)
+
+
+func set_camera_fov(v: float) -> void:
+	if camera != null:
+		camera.fov = clampf(v, 20.0, 110.0)
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.camera_fov = float(camera.fov) if camera != null else v
+
+
+# Orthographic-projection world-space "size" — analogue of FOV for ortho
+# cameras. Larger = wider view (zoom out). Stored on the camera; not
+# persisted to TankConfig because perspective is the primary mode and the
+# ortho size is recomputed when the user switches projection.
+func set_camera_ortho_size(v: float) -> void:
+	if camera != null:
+		camera.size = clampf(v, 2.0, 80.0)
+
+
+# Switch the camera projection. Each mode optionally snaps yaw/pitch to a
+# canonical angle so the result reads as "isometric" / "top-down" /etc
+# instead of needing the user to dial it in by hand. Pass-through camera
+# state is preserved otherwise (target + radius stay put).
+# All "looking down" angles are POSITIVE in this codebase's pitch convention
+# (y = sin(pitch), so +pitch puts the eye above the target). DEFAULT_PITCH
+# is +0.48 for the same reason — see _apply_camera.
+const _ISO_YAW: float = -PI * 0.25       # 45° around Y
+const _ISO_PITCH: float = 0.6155         # atan(1/sqrt(2)) ≈ 35.26° looking down
+const _DIMETRIC_PITCH: float = 0.4636    # atan(1/2) ≈ 26.57° (2:1 tile look)
+const _TOPDOWN_PITCH: float = 1.40       # near-vertical, just under MAX_PITCH 1.45
+
+var _current_projection_id: String = "perspective"
+
+
+func apply_camera_projection(proj_id: String) -> void:
+	if camera == null:
+		return
+	_current_projection_id = proj_id
+	match proj_id:
+		"perspective":
+			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+			# Restore the user's last FOV if Light panel had one saved.
+			var cfg := get_node_or_null("/root/TankConfig")
+			if cfg != null:
+				camera.fov = float(cfg.get("camera_fov") if cfg.get("camera_fov") != null else 55.0)
+		"orthographic":
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+			# Pick an ortho size that roughly matches what the current
+			# perspective view was showing — uses tank-relative metric so
+			# the switch isn't jarring. Falls back to a sensible default.
+			camera.size = _ortho_size_from_tank()
+		"isometric":
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+			camera.size = _ortho_size_from_tank()
+			yaw = _ISO_YAW
+			pitch = _ISO_PITCH
+			_auto_orbit = false
+			_follow_target = null
+			_apply_camera()
+			_haptic(15)
+		"dimetric":
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+			camera.size = _ortho_size_from_tank()
+			yaw = _ISO_YAW
+			pitch = _DIMETRIC_PITCH
+			_auto_orbit = false
+			_follow_target = null
+			_apply_camera()
+			_haptic(15)
+		"top_down_ortho":
+			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+			camera.size = _ortho_size_from_tank() * 1.2
+			pitch = _TOPDOWN_PITCH
+			_auto_orbit = false
+			_follow_target = null
+			_apply_camera()
+			_haptic(12)
+
+
+func get_camera_projection_id() -> String:
+	return _current_projection_id
+
+
+# Pick a reasonable ortho viewport size from the live tank dimensions.
+# Used both on initial projection switch and when the panel needs a
+# starting value for the size slider.
+func _ortho_size_from_tank() -> float:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 18.0
+	var tank_h: float = float(cfg.get("tank_height") if cfg.get("tank_height") != null else 7.0)
+	var tank_hw: float = float(cfg.get("tank_half_w") if cfg.get("tank_half_w") != null else 8.0)
+	return clampf(maxf(tank_h * 1.4, tank_hw * 2.6), 6.0, 60.0)
+
+
+func follow_random_fish() -> void:
+	if _sim == null:
+		return
+	var fish_arr: Variant = _sim.get("fish")
+	if not (fish_arr is Array) or (fish_arr as Array).is_empty():
+		return
+	var pool: Array = []
+	for f in (fish_arr as Array):
+		if is_instance_valid(f):
+			pool.append(f)
+	if pool.is_empty():
+		return
+	_follow_target = pool[randi() % pool.size()]
+	_auto_orbit = false
+	_haptic(12)
+
+
+func clear_follow_target() -> void:
+	_follow_target = null
+
+
+# Add a Camera Views toggle to the right rail at runtime. Keeps the .tscn
+# file simple and means the button picks up whatever theme/sizing the rest
+# of the cluster uses. Inserted above the existing RailDivider so it sits
+# in the "view tools" group (Light / Render / Sound) instead of the modal
+# cluster (Library / Store / Creator).
+func _install_camera_views_rail_button() -> void:
+	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
+	if cluster_vbox == null:
+		return
+	var btn := Button.new()
+	btn.name = "CameraViewsToggle"
+	btn.text = "📷"
+	btn.tooltip_text = "Camera views — presets, projection, FOV (V)"
+	btn.custom_minimum_size = Vector2(48, 48)
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.pressed.connect(_toggle_camera_views_panel)
+	cluster_vbox.add_child(btn)
+	# Place it just above the divider so it groups with the view-tool
+	# cluster (Render / Sound / Settings). If the divider isn't found
+	# (older scene), it stays at the end which is still discoverable.
+	var divider: Node = cluster_vbox.get_node_or_null("RailDivider")
+	if divider != null:
+		cluster_vbox.move_child(btn, divider.get_index())
+
+
+# Lazy-build the Camera Views panel and toggle its visibility. Anchored
+# bottom-right (above the mobile HUD action row); becomes visible/hidden
+# in place. Calls sync_from_main on open so toggles reflect current state.
+func _toggle_camera_views_panel() -> void:
+	if _camera_views_panel == null:
+		var script := load("res://scripts/camera_views_panel.gd")
+		_camera_views_panel = script.new() as Control
+		_camera_views_panel.name = "CameraViewsPanel"
+		_camera_views_panel.set("main_ref", self)
+		add_child(_camera_views_panel)
+		# Position: anchored top-right, indented from the right rail.
+		# Stays inside the viewport on rotation thanks to size_changed
+		# reflow handled by Control anchors.
+		_camera_views_panel.anchor_left = 1.0
+		_camera_views_panel.anchor_top = 0.0
+		_camera_views_panel.anchor_right = 1.0
+		_camera_views_panel.anchor_bottom = 0.0
+		_camera_views_panel.offset_left = -340.0
+		_camera_views_panel.offset_top = 64.0
+		_camera_views_panel.offset_right = -16.0
+		_camera_views_panel.offset_bottom = 580.0
+		_camera_views_panel.z_index = 130
+	_camera_views_panel.visible = not _camera_views_panel.visible
+	if _camera_views_panel.visible and _camera_views_panel.has_method("sync_from_main"):
+		_camera_views_panel.sync_from_main()
+
 
 const SENSITIVITY: float = 0.006
 const ZOOM_FACTOR: float = 1.12
@@ -187,7 +502,11 @@ const MAX_RADIUS: float = 40.0
 const MIN_PITCH: float = -1.45
 const MAX_PITCH: float = 1.45
 const PAN_SPEED: float = 6.0
-const AUTO_ORBIT_SPEED: float = 0.08
+# Auto-orbit angular speed (rad/sec). Now a var so the Camera Views panel
+# can tune it live; default mirrors the old const value.
+var AUTO_ORBIT_SPEED: float = 0.08
+# Camera Views panel instance (lazy-built in _ready).
+var _camera_views_panel: Control = null
 
 var _orbiting: bool = false
 # Drag gesture state. When a mouse button goes down we lock in which mode the
@@ -412,6 +731,12 @@ func _ready() -> void:
 		creature_creator_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_CREATOR))
 	if notifications_toggle != null:
 		notifications_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_NOTIFICATIONS))
+	# Insert a discoverable Camera Views rail button. Programmatic rather
+	# than in the .tscn so it picks up the same VBox styling and adapts to
+	# whatever rail dock the player ends up on. Inserted just above the
+	# RailDivider so it lives in the "view tools" group alongside the
+	# Light / Render / Sound toggles instead of the Modal cluster.
+	_install_camera_views_rail_button()
 	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
@@ -451,6 +776,12 @@ func _ready() -> void:
 	if _is_mobile():
 		_pick_device_tier_if_unset()
 		_setup_mobile_ui()
+		# Drop the physics tick rate. SimDriver._physics_process gates on its
+		# own SIM_DT accumulator (10Hz), so a 60Hz physics_process spends
+		# most ticks doing nothing but waking the CPU. 30Hz on mobile lets
+		# the chip coast between sim ticks and noticeably reduces thermal
+		# load on devices like the Pixel that throttle aggressively.
+		Engine.physics_ticks_per_second = 30
 	call_deferred("_maybe_show_tutorial")
 	call_deferred("_maybe_show_coachmarks")
 	if controls_hint != null:
@@ -508,15 +839,16 @@ func _apply_portrait_camera_defaults_if_unsaved() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null or cfg.camera_state_saved:
 		return
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	if vp.y <= vp.x * 1.02:
-		return
-	# Portrait-first framing: pull in and tilt down a little so tall tanks read
-	# as vertical immediately on first launch (before the user saves a camera).
-	target = Vector3(0.0, 3.4, 0.0)
-	radius = 14.8
-	yaw = -0.45
-	pitch = 0.62
+	# Use the shape-aware defaults helper. It already knows that a cylinder
+	# in a portrait viewport wants different framing from a box in landscape,
+	# and tracks the tank's actual height/half-width, so users get a tight
+	# default crop regardless of which orientation they picked at new-tank
+	# time. Falls through to the landscape defaults on a landscape phone.
+	var d: Dictionary = _default_camera_for_tank()
+	target = d["target"]
+	radius = d["radius"]
+	yaw = d["yaw"]
+	pitch = d["pitch"]
 
 
 # Called by the settings + render panels just before they call
@@ -715,13 +1047,8 @@ func _process(dt: float) -> void:
 			if Input.is_key_pressed(KEY_E): target.y += step; moved = true
 			if Input.is_key_pressed(KEY_Q): target.y -= step; moved = true
 			if Input.is_key_pressed(KEY_F):
-				target = DEFAULT_TARGET
-				radius = DEFAULT_RADIUS
-				yaw = DEFAULT_YAW
-				pitch = DEFAULT_PITCH
-				_follow_target = null
-				_auto_orbit = false
-				moved = true
+				_reset_camera_to_default()
+				moved = false  # _reset_camera_to_default already called _apply_camera
 			if moved:
 				_apply_camera()
 
@@ -833,6 +1160,7 @@ func _process_mouse_input(dt: float) -> void:
 	# Edge-triggered shortcuts (keyboard only — mobile gets on-screen buttons).
 	if not _is_touch_active():
 		_handle_shortcut(KEY_P, _toggle_pause)
+		_handle_shortcut(KEY_V, _toggle_camera_views_panel)
 		_handle_shortcut(KEY_1, func(): _on_one())
 		_handle_shortcut(KEY_2, func(): _on_two())
 		_handle_shortcut(KEY_3, func(): _on_three())
@@ -1840,13 +2168,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 						and (now - _last_tap_time) < DOUBLE_TAP_WINDOW \
 						and ev.position.distance_to(_last_tap_pos) < DOUBLE_TAP_RADIUS:
 					# Double-tap → reset camera. Short pulse confirms the snap.
-					target = DEFAULT_TARGET
-					radius = DEFAULT_RADIUS
-					yaw = DEFAULT_YAW
-					pitch = DEFAULT_PITCH
-					_follow_target = null
-					_auto_orbit = false
-					_apply_camera()
+					_reset_camera_to_default()
 					_haptic(20)
 					_last_tap_time = -1.0
 					print_verbose("[walstad_loom] double-tap: reset camera")
@@ -2022,6 +2344,8 @@ func _setup_mobile_ui() -> void:
 		_mobile_hud.connect("speed_pressed", _set_time_scale)
 		_mobile_hud.connect("photo_pressed", _take_photo)
 		_mobile_hud.connect("undo_pressed", _aquascape_undo)
+		if _mobile_hud.has_signal("camera_views_pressed"):
+			_mobile_hud.connect("camera_views_pressed", _toggle_camera_views_panel)
 
 	# Show the first-launch gesture tutorial on top of everything else.
 	# Defers a frame so the panel doesn't fight with other mobile-setup
@@ -5468,11 +5792,28 @@ func _pick_device_tier_if_unset() -> void:
 		cfg.render_height = 432
 	elif short_side >= 900:
 		cfg.device_tier = "mid"
+		# Phones with 1080p-ish short sides (Pixel 10 is 1080) — the
+		# palette-quantize shader runs at OUTPUT resolution, so any extra
+		# source pixels above 384×216 just pay for themselves twice (once
+		# to render, again to quantize+dither at output res). 384×216
+		# upscales to 1080 at 5x integer, which the palette shader handles
+		# cleanly. Was 512×288 — measurably hot on the Pixel 10.
+		cfg.render_width = 384
+		cfg.render_height = 216
 	else:
 		cfg.device_tier = "low"
 		# Tiny / old phones: drop one notch so we stay smooth.
 		cfg.render_width = 384
 		cfg.render_height = 216
+	# On mobile, enable adaptive quality on first launch with a 28fps floor.
+	# Pixel-class phones thermal-throttle the GPU during long sessions; the
+	# adaptive_quality tick will step the SubViewport down a tier when
+	# sustained fps drops below the floor, giving the chip room to cool.
+	# Steps back up when there's headroom, so the user gets the best res
+	# their thermal envelope can hold instead of a fixed-and-hot ceiling.
+	if not cfg.adaptive_quality:
+		cfg.adaptive_quality = true
+		cfg.adaptive_quality_target_fps = 28
 	cfg.save_to_disk()
 	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px, %.1f GB RAM)" \
 		% [cfg.device_tier, short_side, ram_gb])
@@ -5496,6 +5837,47 @@ func _apply_fps_cap() -> void:
 		cfg.save_to_disk()
 	if int(cfg.fps_cap) > 0:
 		Engine.max_fps = int(cfg.fps_cap)
+	# Apply the shader-cost knobs for battery saver. The palette-quantize
+	# shader on the Display TextureRect runs at OUTPUT resolution (~2.6M px
+	# on a Pixel 10), so each per-pixel branch we kill is real GPU work
+	# saved. Battery saver = no bloom post-process, no region-aware dither
+	# branch, no palette bank-lock second-search loop, and a dimmer dither.
+	# Visually quieter and noticeably cooler.
+	_apply_battery_saver_visuals()
+
+
+# Toggle the heavy parts of the palette / post-process pipeline based on
+# TankConfig.battery_saver. Called from _apply_fps_cap on startup and from
+# the settings toggle whenever the user flips it. Reads the current display
+# ShaderMaterial and writes uniforms; falls back to a no-op if the material
+# isn't ready yet (e.g. called before _apply_render_config in _ready).
+func _apply_battery_saver_visuals() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or display == null:
+		return
+	var saver: bool = bool(cfg.get("battery_saver"))
+	if not (display.material is ShaderMaterial):
+		return
+	var sm: ShaderMaterial = display.material
+	if saver:
+		sm.set_shader_parameter("bloom_strength", 0.0)
+		sm.set_shader_parameter("region_aware_dither", 0.0)
+		sm.set_shader_parameter("palette_bank_lock", 0.0)
+		sm.set_shader_parameter("outline_strength", 0.0)
+		sm.set_shader_parameter("crt_strength", 0.0)
+		sm.set_shader_parameter("dither_strength", 0.4)
+	else:
+		# Restore the user's last-saved values (the Light panel writes these
+		# to TankConfig). Reading from cfg keeps the user's preferences
+		# intact across saver toggles.
+		sm.set_shader_parameter("bloom_strength", float(cfg.get("pp_bloom_strength")))
+		sm.set_shader_parameter("region_aware_dither",
+			1.0 if cfg.get("dither_region_aware") else 0.0)
+		sm.set_shader_parameter("palette_bank_lock",
+			1.0 if cfg.get("palette_bank_lock") else 0.0)
+		sm.set_shader_parameter("outline_strength", float(cfg.get("outline_strength")))
+		sm.set_shader_parameter("crt_strength", float(cfg.get("crt_strength")))
+		sm.set_shader_parameter("dither_strength", float(cfg.get("dither_strength")))
 
 
 # ---- Welcome-back toast ----

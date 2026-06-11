@@ -18,11 +18,13 @@ signal pause_pressed
 signal speed_pressed(scale: float)
 signal photo_pressed
 signal undo_pressed
+signal camera_views_pressed
 
 var _pause_btn: Button
 var _speed_btns: Dictionary = {}
 var _photo_btn: Button
 var _undo_btn: Button
+var _camera_views_btn: Button
 var _current_speed: float = 1.0
 var _is_paused: bool = false
 
@@ -167,6 +169,16 @@ func _build_action_row() -> void:
 	_action_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_action_container)
 
+	# Camera views — opens the preset / saved-view / FOV panel. Placed
+	# before photo so it sits leftmost in the action cluster (closer to
+	# the thumb-zone center on portrait phones).
+	_camera_views_btn = _make_btn("CAM", Color8(180, 210, 240))
+	_camera_views_btn.tooltip_text = "Open Camera Views — presets, saved views, FOV, auto-orbit"
+	_camera_views_btn.pressed.connect(func():
+		_buzz(14)
+		camera_views_pressed.emit())
+	_action_container.add_child(_camera_views_btn)
+
 	_photo_btn = _make_btn(UiIcons.mobile_hud_label("photo"), Color8(150, 200, 170))
 	_photo_btn.tooltip_text = "Take a screenshot of the tank"
 	_photo_btn.pressed.connect(func():
@@ -230,7 +242,10 @@ func _apply_layout() -> void:
 		_action_container.anchor_top = 0.0
 		_action_container.anchor_right = 0.0
 		_action_container.anchor_bottom = 0.0
-		_action_container.offset_left = right_x - 160.0
+		# Width must grow with the action-button count (CAM + photo + undo).
+		# btn_size.x scales with DPI so we compute total from the live size.
+		var action_w: float = btn_size.x * 3.0 + 6.0 * 2.0 + 8.0
+		_action_container.offset_left = right_x - action_w
 		_action_container.offset_top = bottom_y - btn_size.y
 		_action_container.offset_right = right_x
 		_action_container.offset_bottom = bottom_y

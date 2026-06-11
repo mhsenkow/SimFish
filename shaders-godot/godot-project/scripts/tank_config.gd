@@ -82,6 +82,15 @@ var camera_target_z: float = 0.0
 # A "do we have one saved?" flag - false on first launch means use defaults.
 var camera_state_saved: bool = false
 
+# ---- Camera view slots (Camera Views panel) ----
+# 3 user-saveable view slots. Each is a Dictionary with keys target_x/y/z,
+# radius, yaw, pitch, fov. Empty Dictionary means "slot unused" — Recall
+# is a no-op in that case. Persisted so views survive scene reloads.
+var camera_view_slot_a: Dictionary = {}
+var camera_view_slot_b: Dictionary = {}
+var camera_view_slot_c: Dictionary = {}
+
+
 # ---- Mobile / device settings ----
 # Engine.max_fps cap. 0 = uncapped (desktop default). On mobile we default to
 # 30 on first launch to maximise battery life; user can change via settings.
@@ -1007,6 +1016,138 @@ const SPECIES_LIBRARY: Dictionary = {
 			"mixed_morphs": true,
 		},
 	},
+	"hillstream_loach": {
+		"label": "Hillstream loach",
+		"description": "Flattened torrent-dweller that clings to rock with a broad sucker belly and rasps algae film. Mottled tan over a pale underside; wide ray-like pectoral shelves.",
+		"genome": {
+			"species": "hillstream_loach",
+			"base_color": Color8(120, 105, 70),
+			"accent_color": Color8(55, 45, 30),
+			"marking_color": Color8(40, 32, 22),
+			"adult_voxel_scale": 0.17,
+			"size_potential": 0.9,
+			"max_age_s": 320.0,
+			"max_speed": 1.1,
+			"schooling_strength": 0.2,
+			"separation_radius": 0.6,
+			"herbivory": 1.0,
+			"fecundity": 0.4,
+			"clutch_size": 2,
+			"preferred_y": 2.1,                  # hugs substrate / hardscape
+			"body_elongation": 1.15,
+			"body_depth_factor": 0.6,            # very flat
+			"body_width_factor": 1.55,           # very wide (ray-like wings)
+			"head_proportion": 1.05,
+			"pattern_type": 7,                   # mottled / marbled
+			"swim_pattern": "shuffle",
+			"tail_shape": 3,                     # square paddle
+			"eye_size_factor": 0.7,
+			"ventral_profile": 0.7,
+			"mouth_orientation": 1,              # downturned grazing mouth
+			"body_shape": "depressed",
+			"ventral_sucker": true,
+			"algae_grazer": true,
+			"wood_grazer": true,
+		},
+	},
+	"freshwater_gar": {
+		"label": "Freshwater gar",
+		"description": "Long-bodied ambush predator with a needle snout. Hangs near the surface, then lunges. Olive-bronze flanks over a pale belly.",
+		"genome": {
+			"species": "freshwater_gar",
+			"base_color": Color8(95, 110, 70),
+			"accent_color": Color8(210, 205, 175),
+			"adult_voxel_scale": 0.2,
+			"size_potential": 1.8,
+			"jaw_claw_size": 0.55,
+			"max_age_s": 420.0,
+			"max_speed": 1.5,
+			"schooling_strength": 0.0,
+			"separation_radius": 1.1,
+			"herbivory": 0.0,
+			"fecundity": 0.3,
+			"clutch_size": 2,
+			"preferred_y": 4.6,                  # near the surface
+			"body_elongation": 1.5,              # very long
+			"body_depth_factor": 0.8,
+			"body_width_factor": 0.85,
+			"head_proportion": 1.1,
+			"snout_length_factor": 2.2,          # signature needle beak
+			"pattern_type": 0,
+			"swim_pattern": "cruise",
+			"tail_shape": 0,                     # forked
+			"eye_size_factor": 1.0,
+			"snout_pointed": true,
+			"shrimp_predator": true,
+			"body_shape": "sagittiform",
+		},
+	},
+	"goby": {
+		"label": "Bumblebee goby",
+		"description": "Tiny bottom-percher with two distinct dorsal fins and a fused pelvic sucker it rests on leaves and rock with. Bold dark bands on gold.",
+		"genome": {
+			"species": "goby",
+			"base_color": Color8(235, 195, 60),
+			"accent_color": Color8(40, 35, 40),
+			"marking_color": Color8(35, 30, 35),
+			"adult_voxel_scale": 0.13,
+			"size_potential": 0.7,
+			"max_age_s": 280.0,
+			"max_speed": 1.0,
+			"schooling_strength": 0.2,
+			"separation_radius": 0.6,
+			"herbivory": 0.2,
+			"fecundity": 0.5,
+			"clutch_size": 3,
+			"preferred_y": 2.2,                  # benthic perch
+			"body_elongation": 1.2,
+			"body_depth_factor": 0.85,
+			"body_width_factor": 1.05,
+			"pattern_type": 3,                   # vertical bars
+			"bar_edged": true,
+			"swim_pattern": "dart",
+			"tail_shape": 1,                     # fan
+			"eye_size_factor": 1.25,
+			"second_dorsal": true,
+			"ventral_sucker": true,
+			"body_shape": "fusiform",
+		},
+	},
+	"severum": {
+		"label": "Severum cichlid",
+		"description": "Deep disc-bodied cichlid. Dominant males swell a pronounced forehead hump. Gold-green flanks broken by speckled rows; guards its fry.",
+		"genome": {
+			"species": "severum",
+			"base_color": Color8(150, 170, 90),
+			"accent_color": Color8(60, 70, 45),
+			"marking_color": Color8(120, 60, 45),
+			"adult_voxel_scale": 0.26,
+			"size_potential": 1.9,
+			"jaw_claw_size": 0.2,
+			"max_age_s": 460.0,
+			"max_speed": 1.1,
+			"schooling_strength": 0.1,
+			"separation_radius": 1.2,
+			"herbivory": 0.5,
+			"fecundity": 0.4,
+			"clutch_size": 3,
+			"preferred_y": 3.4,
+			"body_elongation": 0.8,
+			"body_depth_factor": 1.55,           # deep disc
+			"body_width_factor": 0.85,
+			"head_proportion": 1.15,
+			"nuchal_hump": 0.8,                  # dominant-male forehead boss
+			"pattern_type": 9,                   # ocellated spot rows
+			"swim_pattern": "hover",
+			"tail_shape": 1,                     # fan
+			"eye_size_factor": 1.0,
+			"back_arch": 1.3,
+			"snout_pointed": true,
+			"body_shape": "compressed",
+			"is_territorial": true,
+			"guards_clutch": true,
+		},
+	},
 }
 
 
@@ -1700,6 +1841,9 @@ func save_to_disk() -> void:
 	cfg.set_value("camera", "target_z", camera_target_z)
 	cfg.set_value("mobile", "fps_cap", fps_cap)
 	cfg.set_value("mobile", "battery_saver", battery_saver)
+	cfg.set_value("camera", "view_slot_a", camera_view_slot_a)
+	cfg.set_value("camera", "view_slot_b", camera_view_slot_b)
+	cfg.set_value("camera", "view_slot_c", camera_view_slot_c)
 	cfg.set_value("mobile", "device_tier", device_tier)
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
@@ -1903,6 +2047,9 @@ func load_from_disk() -> void:
 	camera_target_z = cfg.get_value("camera", "target_z", camera_target_z)
 	fps_cap = cfg.get_value("mobile", "fps_cap", fps_cap)
 	battery_saver = cfg.get_value("mobile", "battery_saver", battery_saver)
+	camera_view_slot_a = cfg.get_value("camera", "view_slot_a", camera_view_slot_a)
+	camera_view_slot_b = cfg.get_value("camera", "view_slot_b", camera_view_slot_b)
+	camera_view_slot_c = cfg.get_value("camera", "view_slot_c", camera_view_slot_c)
 	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)

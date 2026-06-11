@@ -455,7 +455,13 @@ func _build_ui() -> void:
 			TankConfig.fps_cap = 30
 			_select_fps_option(30)
 		TankConfig.save_to_disk()
-		_apply_fps_cap_live())
+		_apply_fps_cap_live()
+		# Live-apply the visual side too — the main scene owns the display
+		# ShaderMaterial. Without this the toggle would only take effect
+		# after a scene reload.
+		var main := get_tree().current_scene
+		if main != null and main.has_method("_apply_battery_saver_visuals"):
+			main._apply_battery_saver_visuals())
 	vbox_adv.add_child(_battery_saver_check)
 	_fps_cap_option = PanelTheme.add_dropdown_row(vbox_adv, "Frame rate cap")
 	for entry in [

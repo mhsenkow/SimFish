@@ -113,6 +113,22 @@ static func apply_fish_offspring(g: Dictionary, pressure: Dictionary) -> void:
 		g["mouth_orientation"] = 1 if randf() < 0.65 else int(g["mouth_orientation"])
 	elif depth < 0.32 and g.has("mouth_orientation"):
 		g["mouth_orientation"] = -1 if randf() < 0.45 else int(g["mouth_orientation"])
+	# Benthic + sheltered niches favor flattened sucker-bellied bottom dwellers
+	# (hillstream loaches, plecos, gobies), with barbels for substrate sifting.
+	if depth > 0.62 and cover > 0.4:
+		if g.has("body_shape") and randf() < 0.10:
+			g["body_shape"] = "depressed"
+		if g.has("ventral_sucker") and randf() < cover * 0.3:
+			g["ventral_sucker"] = true
+		if g.has("body_width_factor"):
+			g["body_width_factor"] = clampf(
+				float(g["body_width_factor"]) + cover * 0.12, 0.5, 1.8)
+		if g.has("barbel_count") and randf() < 0.2:
+			g["barbel_count"] = clampi(int(g["barbel_count"]) + 2, 0, 8)
+			g["has_barbels"] = true
+	# Saltwater perciforms overwhelmingly carry the spiny + soft two-dorsal.
+	if bool(pressure.get("saltwater", false)) and g.has("second_dorsal") and randf() < 0.25:
+		g["second_dorsal"] = true
 	if g.has("size_potential"):
 		g["size_potential"] = clampf(
 			float(g["size_potential"]) + (0.5 - edge) * 0.08 + (sub - 0.5) * 0.10
@@ -142,6 +158,20 @@ static func apply_shrimp_offspring(g: Dictionary, pressure: Dictionary) -> void:
 		g["body_length_factor"] = clampf(
 			float(g["body_length_factor"]) + (0.5 - edge) * 0.12 + randf_range(-0.07, 0.09),
 			0.75, 1.7)
+	# Expanded crustacean architecture pressure. Sheltered saltwater hardscape
+	# occasionally pushes a lineage toward crab / mantis body plans; open, low-
+	# cover water favors filter-feeding fans. Rostrum + eye-stalks drift gently.
+	var salt: bool = bool(pressure.get("saltwater", false))
+	if g.has("body_shape") and salt and cover > 0.45 and randf() < 0.06:
+		g["body_shape"] = "crab" if randf() < 0.6 else "mantis"
+	if g.has("filter_fans") and cover < 0.3 and randf() < 0.08:
+		g["filter_fans"] = true
+	if g.has("rostrum_length"):
+		g["rostrum_length"] = clampf(
+			float(g["rostrum_length"]) + randf_range(-0.05, 0.08), 0.0, 1.5)
+	if g.has("eye_stalk_length"):
+		g["eye_stalk_length"] = clampf(
+			float(g["eye_stalk_length"]) + (cover - 0.5) * 0.06, 0.0, 1.0)
 
 
 static func apply_snail_shell_color(c: Color, pressure: Dictionary) -> Color:

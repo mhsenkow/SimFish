@@ -96,6 +96,31 @@ var defense_spines: float = 0.0  # 0..1, visual dorsal spines + anti-predator de
 var toxin_level: float = 0.0     # 0..1, warning coloration / distasteful prey
 var claw_size: float = 0.25      # 0..1.2, enlarged chelae improve close hunting
 var body_length_factor: float = 1.0  # 0.75..1.7, controls long-bodied morphs
+# ---- Expanded crustacean architecture (heritable) ----
+# body_shape branches the whole silhouette; the rest are continuous/discrete
+# refinements. Defaults reproduce the classic caridean shrimp so existing
+# saves and founder genomes render unchanged.
+#  - body_shape    "caridean" (curl-tail shrimp, default), "crab" (wide flat
+#                  carapace, tucked abdomen, splayed legs), "lobster"
+#                  (crayfish/lobster — long straight abdomen + big claws),
+#                  "mantis" (elongate, raptorial arms, stalked eyes).
+#  - rostrum_length 0..1.5 saw-snout spike between the eyes (caridina long).
+#  - eye_stalk_length 0..1 raised stalked eyes (crab/mantis); 0 = sessile.
+#  - abdomen_curl  0..1 arch of the tail/abdomen (shrimp curl vs straight lobster).
+#  - antenna_length_factor 0.5..2.5 (generalises the cleaner-shrimp long antennae).
+#  - leg_length_factor 0.5..2.0 walking-leg length.
+#  - claw_asymmetry 0..1 one claw enlarged (pistol shrimp, fiddler crab).
+#  - filter_fans   bamboo/wood-shrimp feeding fans on the front legs.
+#  - pattern_type  0 solid / 1 bands (crystal/bee) / 2 saddle spots / 3 stripe.
+var body_shape: String = "caridean"
+var rostrum_length: float = 0.3
+var eye_stalk_length: float = 0.0
+var abdomen_curl: float = 0.6
+var antenna_length_factor: float = 1.0
+var leg_length_factor: float = 1.0
+var claw_asymmetry: float = 0.0
+var filter_fans: bool = false
+var pattern_type: int = 0
 var shelter_bonus: float = 0.0   # runtime anti-predator cover bonus (read by fish AI)
 # Cleaning-station behavior state.
 var _clean_target: Node3D = null
@@ -189,6 +214,24 @@ func init_genome(genome: Dictionary) -> void:
 	toxin_level = clampf(float(genome.get("toxin_level", toxin_level)), 0.0, 1.0)
 	claw_size = clampf(float(genome.get("claw_size", claw_size)), 0.0, 1.2)
 	body_length_factor = clampf(float(genome.get("body_length_factor", body_length_factor)), 0.75, 1.7)
+	# Expanded crustacean architecture genes.
+	body_shape = String(genome.get("body_shape", body_shape))
+	rostrum_length = clampf(float(genome.get("rostrum_length", rostrum_length)), 0.0, 1.5)
+	eye_stalk_length = clampf(float(genome.get("eye_stalk_length", eye_stalk_length)), 0.0, 1.0)
+	abdomen_curl = clampf(float(genome.get("abdomen_curl", abdomen_curl)), 0.0, 1.0)
+	antenna_length_factor = clampf(float(genome.get("antenna_length_factor", antenna_length_factor)), 0.5, 2.5)
+	leg_length_factor = clampf(float(genome.get("leg_length_factor", leg_length_factor)), 0.5, 2.0)
+	claw_asymmetry = clampf(float(genome.get("claw_asymmetry", claw_asymmetry)), 0.0, 1.0)
+	filter_fans = not not genome.get("filter_fans", filter_fans)
+	pattern_type = int(genome.get("pattern_type", pattern_type))
+	# Body-plan defaults so a minimal founder genome still reads right: crab /
+	# mantis carry stalked eyes, crab tucks its abdomen, lobster holds it straight.
+	if (body_shape == "crab" or body_shape == "mantis") and not genome.has("eye_stalk_length"):
+		eye_stalk_length = maxf(eye_stalk_length, 0.6)
+	if body_shape == "crab" and not genome.has("abdomen_curl"):
+		abdomen_curl = 1.0
+	elif body_shape == "lobster" and not genome.has("abdomen_curl"):
+		abdomen_curl = 0.1
 	max_speed = clampf(
 		max_speed * (1.0 + claw_size * 0.10 - (body_length_factor - 1.0) * 0.18),
 		0.35, 1.6)
@@ -233,6 +276,15 @@ func init_genome(genome: Dictionary) -> void:
 	_saved_genome["toxin_level"] = toxin_level
 	_saved_genome["claw_size"] = claw_size
 	_saved_genome["body_length_factor"] = body_length_factor
+	_saved_genome["body_shape"] = body_shape
+	_saved_genome["rostrum_length"] = rostrum_length
+	_saved_genome["eye_stalk_length"] = eye_stalk_length
+	_saved_genome["abdomen_curl"] = abdomen_curl
+	_saved_genome["antenna_length_factor"] = antenna_length_factor
+	_saved_genome["leg_length_factor"] = leg_length_factor
+	_saved_genome["claw_asymmetry"] = claw_asymmetry
+	_saved_genome["filter_fans"] = filter_fans
+	_saved_genome["pattern_type"] = pattern_type
 	
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -257,12 +309,11 @@ func _maturity_scale() -> float:
 
 func _build_body() -> void:
 	_voxel_builder = FaunaVoxelBuilder.new()
-	# Voxel shrimp facing -Z. Components:
-	#   - Carapace (front body): 2 stacked voxels with eyes on sides
-	#   - Mid segment: thickest
-	#   - Tail segments: 2 voxels arching upward (the classic shrimp curl)
-	#   - Antennae: thin voxels projecting forward (animated to twitch)
-	#   - Legs (visual only): tiny voxels under the body
+	# Voxel crustacean facing -Z. body_shape branches the silhouette:
+	#   caridean  curl-tailed shrimp (default)
+	#   crab      wide flat carapace, tucked abdomen, splayed legs
+	#   lobster   long straight abdomen + big claws (crayfish / lobster)
+	#   mantis    elongate body, folded raptorial arms, stalked eyes
 	var v: float = adult_voxel_scale
 	var lenf: float = body_length_factor
 	# Shrimp bodies are TRANSLUCENT — real freshwater shrimp (neocaridina,
@@ -288,90 +339,69 @@ func _build_body() -> void:
 	_bank_pivot.name = "BankPivot"
 	add_child(_bank_pivot)
 
-	# Carapace - front segment.
-	_voxel(_bank_pivot, Vector3(0, v * 0.3, -v * 0.8 * lenf),
-		Vector3(v * 0.9, v * 0.9, v * 0.9 * lenf), mat_body)
-	_voxel(_bank_pivot, Vector3(0, -v * 0.3, -v * 0.8 * lenf),
-		Vector3(v * 0.7, v * 0.3, v * 0.7 * lenf), mat_belly)
-	# Eyes (small dark dots on the sides of the carapace).
-	_voxel(_bank_pivot, Vector3(v * 0.4, v * 0.3, -v * 1.1), Vector3(v * 0.18, v * 0.18, v * 0.18), mat_eye)
-	_voxel(_bank_pivot, Vector3(-v * 0.4, v * 0.3, -v * 1.1), Vector3(v * 0.18, v * 0.18, v * 0.18), mat_eye)
+	# ---- Body-plan core (carapace/thorax + abdomen + eyes + claws + legs +
+	# _tail_pivot). Each branch creates _tail_pivot so the shared egg cluster
+	# below can attach to it. ----
+	match body_shape:
+		"crab":
+			_build_crab_core(v, lenf, mat_body, mat_belly, mat_eye, mat_dark)
+		"lobster":
+			_build_lobster_core(v, lenf, mat_body, mat_belly, mat_eye, mat_dark)
+		"mantis":
+			_build_mantis_core(v, lenf, mat_body, mat_belly, mat_eye, mat_dark)
+		_:
+			_build_caridean_core(v, lenf, mat_body, mat_belly, mat_eye, mat_dark)
 
-	# Antennae - thin voxels jutting forward. We'll animate the pivot.
-	# Cleaner shrimp get noticeably longer + bright white antennae - one
-	# of the species' most recognisable features (they wave them at fish
-	# as a "I'll clean you" signal at cleaning stations).
+	# ---- Shared appendages & ornaments ----
+	# Antennae - thin voxels jutting forward on their own pivot so they twitch.
+	# Length scales with antenna_length_factor; cleaner shrimp wave long bright
+	# white antennae at fish (the "I'll clean you" cleaning-station signal).
+	# Crabs are stubby.
 	_antenna_pivot = Node3D.new()
 	_antenna_pivot.name = "Antennae"
 	_antenna_pivot.position = Vector3(0, v * 0.3, -v * 1.2)
 	_bank_pivot.add_child(_antenna_pivot)
 	var antenna_mat: Material = mat_antenna
-	var antenna_len: float = 0.9
+	var antenna_len: float = 0.9 * antenna_length_factor
 	if is_cleaner:
 		antenna_mat = VoxelMat.make_fauna(Color8(250, 250, 250))
-		antenna_len = 1.6
+		antenna_len = maxf(antenna_len, 1.6)
+	if body_shape == "crab":
+		antenna_len *= 0.4
 	_voxel(_antenna_pivot, Vector3(v * 0.2, v * 0.1, -v * antenna_len * 0.45),
 		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
 	_voxel(_antenna_pivot, Vector3(-v * 0.2, v * 0.1, -v * antenna_len * 0.45),
 		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
 
-	# Mid segment (thickest part of carapace).
-	_voxel(_bank_pivot, Vector3(0, v * 0.3, 0), Vector3(v * 1.1, v * 1.0, v * 0.9 * lenf), mat_body)
-	_voxel(_bank_pivot, Vector3(0, -v * 0.4, 0), Vector3(v * 0.9, v * 0.25, v * 0.7 * lenf), mat_belly)
+	# Rostrum - the saw-toothed snout spike between the eyes. Caridina carry a
+	# long one; crabs have none.
+	if rostrum_length > 0.05 and body_shape != "crab":
+		var rost_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.1))
+		_voxel(_bank_pivot, Vector3(0, v * 0.45, -v * (1.3 + rostrum_length * 0.8)),
+			Vector3(v * 0.07, v * 0.1, v * (0.4 + rostrum_length * 0.9)), rost_mat)
 
-	# Tail segments (curl upward and back).
-	_tail_pivot = Node3D.new()
-	_tail_pivot.name = "TailPivot"
-	_tail_pivot.position = Vector3(0, v * 0.4, v * 0.6 * lenf)
-	_bank_pivot.add_child(_tail_pivot)
-	_voxel(_tail_pivot, Vector3(0, 0, 0), Vector3(v * 0.8, v * 0.7, v * 0.6 * lenf), mat_body)
-	_voxel(_tail_pivot, Vector3(0, v * 0.3, v * 0.5 * lenf),
-		Vector3(v * 0.6, v * 0.5, v * 0.5 * lenf), mat_body)
-	# Tail fan (flat).
-	_voxel(_tail_pivot, Vector3(0, v * 0.5, v * 1.0 * lenf),
-		Vector3(v * 0.7, v * 0.2, v * 0.3 * lenf), mat_dark)
+	# Egg cluster (visible only when is_gravid). Bright yellow-orange spheres
+	# carried under the swimmerets; parented to the tail pivot so they bob.
+	if _tail_pivot != null:
+		_egg_cluster = Node3D.new()
+		_egg_cluster.name = "EggCluster"
+		_egg_cluster.position = Vector3(0, -v * 0.15, v * 0.3)
+		_egg_cluster.visible = false
+		_tail_pivot.add_child(_egg_cluster)
+		var mat_egg := VoxelMat.make_fauna(Color8(240, 165, 60))
+		for ex in [-0.18, 0.0, 0.18]:
+			for ez in [-0.1, 0.1]:
+				_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
+					Vector3(v * 0.18, v * 0.18, v * 0.18), mat_egg)
 
-	if claw_size > 0.05:
-		var claw_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.38).lerp(accent_color, 0.16))
-		var claw_len: float = v * (0.40 + claw_size * 1.05) * lenf
-		var claw_thick: float = v * (0.08 + claw_size * 0.10)
-		for side in [-1.0, 1.0]:
-			_voxel(_bank_pivot, Vector3(side * v * 0.62, v * 0.02, -v * (1.18 + claw_size * 0.26)),
-				Vector3(claw_thick, claw_thick, claw_len), claw_mat)
-			_voxel(_bank_pivot, Vector3(side * v * 0.70, -v * 0.03, -v * (1.48 + claw_size * 0.30)),
-				Vector3(claw_thick * 0.9, claw_thick * 0.85, claw_len * 0.48), claw_mat)
+	# Colour banding pattern across the carapace + abdomen.
+	if pattern_type > 0:
+		_build_shrimp_pattern(v, lenf)
 
-	# Legs (small dark voxels under the body - visual interest only).
-	for i in 3:
-		var xside: float = 0.5 - randf() * 0.3
-		var zoff: float = -0.4 + i * 0.4
-		_voxel(_bank_pivot, Vector3(xside * v, -v * 0.4, zoff * v),
-			   Vector3(v * 0.1, v * 0.3, v * 0.1), mat_dark)
-		_voxel(_bank_pivot, Vector3(-xside * v, -v * 0.4, zoff * v),
-			   Vector3(v * 0.1, v * 0.3, v * 0.1), mat_dark)
-
-	# Egg cluster (visible only when is_gravid). Real cherry-shrimp eggs
-	# are 25-30 bright yellow-orange spheres carried under the swimmerets.
-	# We approximate with a small voxel cluster parented under the tail
-	# pivot so it bobs naturally with the tail wag.
-	_egg_cluster = Node3D.new()
-	_egg_cluster.name = "EggCluster"
-	_egg_cluster.position = Vector3(0, -v * 0.15, v * 0.3)
-	_egg_cluster.visible = false
-	_tail_pivot.add_child(_egg_cluster)
-	var mat_egg := VoxelMat.make_fauna(Color8(240, 165, 60))
-	for ex in [-0.18, 0.0, 0.18]:
-		for ez in [-0.1, 0.1]:
-			_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
-				   Vector3(v * 0.18, v * 0.18, v * 0.18), mat_egg)
-
-	# Cleaner-shrimp spine stripe: a single bright white voxel running
-	# along the top of the body from carapace through mid through tail.
-	# The signature "skunk" stripe that ID's Lysmata amboinensis.
+	# Cleaner-shrimp spine stripe: a single bright white voxel running along
+	# the top of the body. The signature "skunk" stripe of Lysmata amboinensis.
 	if is_cleaner:
 		var stripe_mat := VoxelMat.make_fauna(Color8(252, 252, 252))
-		# Three segments along the spine, matching the three body
-		# segments. Y offset puts the stripe on the very top.
 		_voxel(_bank_pivot, Vector3(0, v * 0.65, -v * 0.8),
 			Vector3(v * 0.16, v * 0.08, v * 0.6), stripe_mat)
 		_voxel(_bank_pivot, Vector3(0, v * 0.7, 0),
@@ -390,10 +420,11 @@ func _build_body() -> void:
 			var h: float = v * (0.08 + defense_spines * 0.28) * (1.0 - absf(t - 0.5) * 0.4)
 			_voxel(_bank_pivot, Vector3(0.0, v * 0.68 + h * 0.5, z),
 				Vector3(v * 0.10, h, v * 0.08), spine_mat)
-	# Morphology elaboration from existing architecture traits:
-	#   - large/grown shrimp gain pleopod fan detail
-	#   - toxic lines gain lateral warning flanges
-	if growth_factor > 1.05 or adult_voxel_scale > 0.12:
+	# Filter-feeding fans (bamboo/wood shrimp) OR pleopod fan detail on large
+	# grown shrimp.
+	if filter_fans:
+		_build_filter_fans(v)
+	elif growth_factor > 1.05 or adult_voxel_scale > 0.12:
 		var fan_mat: Material = VoxelMat.make_fauna(accent_color.lightened(0.05))
 		var fan_n: int = clampi(2 + int((growth_factor - 1.0) * 5.0), 2, 5)
 		for i in fan_n:
@@ -417,6 +448,206 @@ func _build_body() -> void:
 	_molt_timer = randf_range(MOLT_INTERVAL_MIN, MOLT_INTERVAL_MAX)
 	if _voxel_builder != null:
 		_voxel_builder.flush_all()
+
+
+# ---- Body-plan cores ----
+# Each builds the carapace/thorax, abdomen (creating _tail_pivot), eyes,
+# claws and legs for one crustacean silhouette. Shared ornaments are added
+# back in _build_body after the dispatch.
+
+func _build_caridean_core(v: float, lenf: float, mat_body: Material, mat_belly: Material,
+		mat_eye: Material, mat_dark: Material) -> void:
+	# Classic shrimp: stacked carapace, thick mid, curl-up tail. With the
+	# default genes (eye_stalk_length 0, abdomen_curl 0.6, claw_asymmetry 0,
+	# leg_length_factor 1) this is byte-equivalent to the original body.
+	_voxel(_bank_pivot, Vector3(0, v * 0.3, -v * 0.8 * lenf),
+		Vector3(v * 0.9, v * 0.9, v * 0.9 * lenf), mat_body)
+	_voxel(_bank_pivot, Vector3(0, -v * 0.3, -v * 0.8 * lenf),
+		Vector3(v * 0.7, v * 0.3, v * 0.7 * lenf), mat_belly)
+	_build_eyes(v, -v * 1.1, mat_eye, mat_dark)
+	# Mid segment (thickest part of carapace).
+	_voxel(_bank_pivot, Vector3(0, v * 0.3, 0), Vector3(v * 1.1, v * 1.0, v * 0.9 * lenf), mat_body)
+	_voxel(_bank_pivot, Vector3(0, -v * 0.4, 0), Vector3(v * 0.9, v * 0.25, v * 0.7 * lenf), mat_belly)
+	# Tail segments (curl upward and back). abdomen_curl scales the arch;
+	# 0.6 reproduces the classic shrimp curl.
+	_tail_pivot = Node3D.new()
+	_tail_pivot.name = "TailPivot"
+	_tail_pivot.position = Vector3(0, v * 0.4, v * 0.6 * lenf)
+	_bank_pivot.add_child(_tail_pivot)
+	var curl: float = abdomen_curl / 0.6
+	_voxel(_tail_pivot, Vector3(0, 0, 0), Vector3(v * 0.8, v * 0.7, v * 0.6 * lenf), mat_body)
+	_voxel(_tail_pivot, Vector3(0, v * 0.3 * curl, v * 0.5 * lenf),
+		Vector3(v * 0.6, v * 0.5, v * 0.5 * lenf), mat_body)
+	_voxel(_tail_pivot, Vector3(0, v * 0.5 * curl, v * 1.0 * lenf),
+		Vector3(v * 0.7, v * 0.2, v * 0.3 * lenf), mat_dark)
+	_build_claws(v, lenf)
+	_build_legs(v, mat_dark)
+
+
+func _build_crab_core(v: float, lenf: float, mat_body: Material, mat_belly: Material,
+		mat_eye: Material, mat_dark: Material) -> void:
+	# Wide flat carapace (cephalothorax); the abdomen is reduced to a small
+	# flap tucked underneath. Walking legs splay to both sides.
+	_voxel(_bank_pivot, Vector3(0, v * 0.25, 0),
+		Vector3(v * 1.7, v * 0.5, v * 1.25 * lenf), mat_body)
+	_voxel(_bank_pivot, Vector3(0, v * 0.5, -v * 0.1),
+		Vector3(v * 1.3, v * 0.3, v * 0.9 * lenf), mat_body)
+	_voxel(_bank_pivot, Vector3(0, -v * 0.1, 0),
+		Vector3(v * 1.4, v * 0.25, v * 1.0 * lenf), mat_belly)
+	# Tucked abdomen flap = the _tail_pivot (berried females carry eggs here).
+	_tail_pivot = Node3D.new()
+	_tail_pivot.name = "TailPivot"
+	_tail_pivot.position = Vector3(0, -v * 0.12, v * 0.55 * lenf)
+	_bank_pivot.add_child(_tail_pivot)
+	_voxel(_tail_pivot, Vector3(0, 0, 0), Vector3(v * 0.5, v * 0.15, v * 0.45), mat_belly)
+	_build_eyes(v, -v * 0.55 * lenf, mat_eye, mat_dark)
+	_build_claws(v, lenf)
+	# Walking legs splayed wide to both sides (4 pairs).
+	var ll: float = leg_length_factor
+	for i in 4:
+		var zf: float = lerpf(-0.5, 0.7, float(i) / 3.0) * lenf
+		for x_side in [-1.0, 1.0]:
+			_voxel(_bank_pivot, Vector3(x_side * v * 1.05, -v * 0.05, v * zf),
+				Vector3(v * 0.7 * ll, v * 0.08, v * 0.1), mat_dark)
+			_voxel(_bank_pivot, Vector3(x_side * v * 1.45, -v * 0.25, v * zf),
+				Vector3(v * 0.18, v * 0.4 * ll, v * 0.09), mat_dark)
+
+
+func _build_lobster_core(v: float, lenf: float, mat_body: Material, mat_belly: Material,
+		mat_eye: Material, mat_dark: Material) -> void:
+	# Cephalothorax then a long STRAIGHT segmented abdomen — the crayfish /
+	# lobster silhouette. abdomen_curl (default 0.1 for this plan) keeps it
+	# extended rather than tucked.
+	_voxel(_bank_pivot, Vector3(0, v * 0.3, -v * 0.9 * lenf),
+		Vector3(v * 0.95, v * 0.9, v * 1.1 * lenf), mat_body)
+	_voxel(_bank_pivot, Vector3(0, -v * 0.3, -v * 0.9 * lenf),
+		Vector3(v * 0.75, v * 0.35, v * 0.9 * lenf), mat_belly)
+	_voxel(_bank_pivot, Vector3(0, v * 0.25, 0),
+		Vector3(v * 0.85, v * 0.8, v * 0.9 * lenf), mat_body)
+	_build_eyes(v, -v * 1.25 * lenf, mat_eye, mat_dark)
+	_tail_pivot = Node3D.new()
+	_tail_pivot.name = "TailPivot"
+	_tail_pivot.position = Vector3(0, v * 0.2, v * 0.5 * lenf)
+	_tail_pivot.rotation.x = -abdomen_curl * 0.5
+	_bank_pivot.add_child(_tail_pivot)
+	for s in 3:
+		var sz: float = v * (0.4 + s * 0.7) * lenf
+		_voxel(_tail_pivot, Vector3(0, 0, sz),
+			Vector3(v * (0.7 - s * 0.1), v * (0.55 - s * 0.08), v * 0.55 * lenf), mat_body)
+	# Tail fan (telson) at the end.
+	_voxel(_tail_pivot, Vector3(0, 0, v * 2.3 * lenf),
+		Vector3(v * 0.9, v * 0.18, v * 0.4 * lenf), mat_dark)
+	_build_claws(v, lenf)
+	_build_legs(v, mat_dark)
+
+
+func _build_mantis_core(v: float, lenf: float, mat_body: Material, mat_belly: Material,
+		mat_eye: Material, mat_dark: Material) -> void:
+	# Elongate strongly-segmented body with folded raptorial appendages under
+	# the head and highly mobile stalked eyes.
+	_voxel(_bank_pivot, Vector3(0, v * 0.3, -v * 1.0 * lenf),
+		Vector3(v * 0.7, v * 0.7, v * 1.0 * lenf), mat_body)
+	for s in 4:
+		var sz: float = v * (-0.2 + s * 0.7) * lenf
+		_voxel(_bank_pivot, Vector3(0, v * 0.28, sz),
+			Vector3(v * (0.78 - s * 0.04), v * 0.5, v * 0.6 * lenf), mat_body)
+		_voxel(_bank_pivot, Vector3(0, -v * 0.18, sz),
+			Vector3(v * 0.6, v * 0.16, v * 0.55 * lenf), mat_belly)
+	_build_eyes(v, -v * 1.4 * lenf, mat_eye, mat_dark)
+	# Raptorial appendages folded under the head (the smasher/spearer arms).
+	var rap_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.25).lerp(accent_color, 0.2))
+	for x_side in [-1.0, 1.0]:
+		_voxel(_bank_pivot, Vector3(x_side * v * 0.32, -v * 0.15, -v * 1.35 * lenf),
+			Vector3(v * 0.12, v * 0.12, v * 0.5 * lenf), rap_mat)
+		_voxel(_bank_pivot, Vector3(x_side * v * 0.32, -v * 0.4, -v * 1.05 * lenf),
+			Vector3(v * 0.1, v * 0.32, v * 0.12), rap_mat)
+	# Tail fan as the pivot (egg cluster attaches here).
+	_tail_pivot = Node3D.new()
+	_tail_pivot.name = "TailPivot"
+	_tail_pivot.position = Vector3(0, v * 0.25, v * 2.4 * lenf)
+	_bank_pivot.add_child(_tail_pivot)
+	_voxel(_tail_pivot, Vector3(0, 0, 0), Vector3(v * 0.8, v * 0.16, v * 0.4 * lenf), mat_dark)
+	_build_legs(v, mat_dark)
+
+
+# ---- Shared appendage builders ----
+
+func _build_eyes(v: float, z: float, mat_eye: Material, mat_dark: Material) -> void:
+	# Sessile eyes sit on the carapace (eye_stalk_length 0); raised eyes ride
+	# short stalks (crab, mantis, some shrimp).
+	var stalk: float = eye_stalk_length
+	for x_side in [-1.0, 1.0]:
+		if stalk > 0.05:
+			_voxel(_bank_pivot,
+				Vector3(x_side * v * 0.4, v * (0.3 + 0.27 * stalk), z - v * 0.05 * stalk),
+				Vector3(v * 0.07, v * (0.2 + 0.45 * stalk), v * 0.07), mat_dark)
+		_voxel(_bank_pivot,
+			Vector3(x_side * v * 0.4, v * (0.3 + 0.55 * stalk), z - v * 0.1 * stalk),
+			Vector3(v * 0.18, v * 0.18, v * 0.18), mat_eye)
+
+
+func _build_claws(v: float, lenf: float) -> void:
+	if claw_size <= 0.05:
+		return
+	var claw_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.38).lerp(accent_color, 0.16))
+	for side in [-1.0, 1.0]:
+		# claw_asymmetry enlarges the right claw and shrinks the left — the
+		# pistol shrimp / fiddler crab signature.
+		var side_scale: float = 1.0
+		if claw_asymmetry > 0.05:
+			side_scale = (1.0 + claw_asymmetry * 0.9) if side > 0.0 \
+				else maxf(0.25, 1.0 - claw_asymmetry * 0.7)
+		var cs: float = claw_size * side_scale
+		var claw_len: float = v * (0.40 + cs * 1.05) * lenf
+		var claw_thick: float = v * (0.08 + cs * 0.10)
+		_voxel(_bank_pivot, Vector3(side * v * 0.62, v * 0.02, -v * (1.18 + cs * 0.26)),
+			Vector3(claw_thick, claw_thick, claw_len), claw_mat)
+		_voxel(_bank_pivot, Vector3(side * v * 0.70, -v * 0.03, -v * (1.48 + cs * 0.30)),
+			Vector3(claw_thick * 0.9, claw_thick * 0.85, claw_len * 0.48), claw_mat)
+
+
+func _build_legs(v: float, mat_dark: Material) -> void:
+	# Small dark voxels under the body (visual interest). leg_length_factor
+	# scales their length.
+	var ll: float = leg_length_factor
+	for i in 3:
+		var xside: float = 0.5 - randf() * 0.3
+		var zoff: float = -0.4 + i * 0.4
+		_voxel(_bank_pivot, Vector3(xside * v, -v * 0.4, zoff * v),
+			Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)
+		_voxel(_bank_pivot, Vector3(-xside * v, -v * 0.4, zoff * v),
+			Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)
+
+
+func _build_filter_fans(v: float) -> void:
+	# Bamboo / wood shrimp hold feathery feeding fans forward of the mouth and
+	# sweep the current. Two splayed fan clusters.
+	var fan_mat: Material = VoxelMat.make_fauna(base_color.lightened(0.05))
+	for side in [-1.0, 1.0]:
+		for k in 3:
+			var spread: float = lerpf(0.2, 0.6, float(k) / 2.0)
+			_voxel(_bank_pivot,
+				Vector3(side * v * spread, v * 0.05, -v * (1.25 + k * 0.18)),
+				Vector3(v * 0.07, v * 0.12, v * 0.22), fan_mat)
+
+
+func _build_shrimp_pattern(v: float, lenf: float) -> void:
+	# 1 = bands (crystal/bee red-white rings), 2 = saddle spots (sexy/ghost),
+	# 3 = lateral stripe (amano dashes).
+	var pat_mat: Material = VoxelMat.make_fauna(accent_color)
+	match pattern_type:
+		1:
+			for z in [-v * 0.8 * lenf, 0.0, v * 0.6 * lenf]:
+				_voxel(_bank_pivot, Vector3(0, v * 0.55, z),
+					Vector3(v * 1.0, v * 0.12, v * 0.2), pat_mat)
+		2:
+			for zk in [-0.6, 0.0, 0.6]:
+				_voxel(_bank_pivot, Vector3(0, v * 0.6, v * zk * lenf),
+					Vector3(v * 0.3, v * 0.18, v * 0.22), pat_mat)
+		3:
+			for x_side in [-1.0, 1.0]:
+				_voxel(_bank_pivot, Vector3(x_side * v * 0.45, v * 0.2, 0),
+					Vector3(v * 0.12, v * 0.18, v * 1.6 * lenf), pat_mat)
 
 
 func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -1299,6 +1530,30 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	var new_length: float = clampf(
 		(body_length_factor + other.body_length_factor) * 0.5 + randf_range(-0.16, 0.16),
 		0.75, 1.7)
+	# Expanded architecture inheritance (continuous avg + jitter, clamped).
+	var new_rostrum: float = clampf(
+		(rostrum_length + other.rostrum_length) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.5)
+	var new_eye_stalk: float = clampf(
+		(eye_stalk_length + other.eye_stalk_length) * 0.5 + randf_range(-0.10, 0.10), 0.0, 1.0)
+	var new_abdomen_curl: float = clampf(
+		(abdomen_curl + other.abdomen_curl) * 0.5 + randf_range(-0.10, 0.10), 0.0, 1.0)
+	var new_antenna: float = clampf(
+		(antenna_length_factor + other.antenna_length_factor) * 0.5 + randf_range(-0.12, 0.12), 0.5, 2.5)
+	var new_leg: float = clampf(
+		(leg_length_factor + other.leg_length_factor) * 0.5 + randf_range(-0.10, 0.12), 0.5, 2.0)
+	var new_claw_asym: float = clampf(
+		(claw_asymmetry + other.claw_asymmetry) * 0.5 + randf_range(-0.10, 0.12), 0.0, 1.0)
+	var new_filter_fans: bool = (filter_fans if randf() < 0.95
+		else (other.filter_fans if randf() < 0.5 else not filter_fans))
+	# body_shape stays in the lineage; rare mutation to a sibling plan lets a
+	# colony slowly diverge into crabs / crayfish / mantis morphs over time.
+	var new_body_shape: String = body_shape if randf() < 0.9 else other.body_shape
+	if randf() < 0.04:
+		var plans: Array[String] = ["caridean", "crab", "lobster", "mantis"]
+		new_body_shape = plans[randi() % plans.size()]
+	var new_pattern: int = pattern_type if randf() < 0.85 else other.pattern_type
+	if randf() < 0.06:
+		new_pattern = randi() % 4
 	var g: Dictionary = {
 		"organism_type": "shrimp",
 		"species": species,
@@ -1316,6 +1571,15 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"toxin_level": new_toxin,
 		"claw_size": new_claw_size,
 		"body_length_factor": new_length,
+		"body_shape": new_body_shape,
+		"rostrum_length": new_rostrum,
+		"eye_stalk_length": new_eye_stalk,
+		"abdomen_curl": new_abdomen_curl,
+		"antenna_length_factor": new_antenna,
+		"leg_length_factor": new_leg,
+		"claw_asymmetry": new_claw_asym,
+		"filter_fans": new_filter_fans,
+		"pattern_type": new_pattern,
 		"generation": maxi(generation, other.generation) + 1,
 		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
 		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([

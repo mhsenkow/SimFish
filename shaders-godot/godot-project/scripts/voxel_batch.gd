@@ -76,10 +76,20 @@ func _init(parent: Node3D, material: Material, initial_capacity: int = 64) -> vo
 func add(xform: Transform3D, color: Color) -> Handle:
 	var i: int = _count
 	_count += 1
-	_xforms.append(xform)
+	# Guard against non-finite transforms (NaN/Inf) that would flood the
+	# Godot console with "instance_set_transform: !v.is_finite()" errors and
+	# corrupt the _xforms mirror (causing _ensure_capacity to re-fire the
+	# error for every existing instance on the next resize). Replace with a
+	# zero-scale hidden placeholder at the origin so the slot is occupied but
+	# invisible; the voxel will just be missing rather than spamming errors.
+	var safe_xform: Transform3D = xform
+	if not xform.is_finite():
+		push_warning("VoxelBatch.add: non-finite transform (pos=%s), hiding voxel." % xform.origin)
+		safe_xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	_xforms.append(safe_xform)
 	_colors.append(color)
 	_ensure_capacity(_count)
-	_mm.set_instance_transform(i, xform)
+	_mm.set_instance_transform(i, safe_xform)
 	_mm.set_instance_color(i, color)
 	var h := Handle.new()
 	h.batch = self
@@ -121,6 +131,10 @@ func _apply_color(i: int, c: Color) -> void:
 
 func _apply_transform(i: int, x: Transform3D) -> void:
 	if i >= 0 and i < _count:
+		if not x.is_finite():
+			# Same guard as add() — silently skip non-finite per-frame updates
+			# so a corrupted animation origin doesn't flood the console.
+			return
 		_xforms[i] = x
 		_mm.set_instance_transform(i, x)
 
@@ -128,7 +142,11 @@ func _apply_transform(i: int, x: Transform3D) -> void:
 func _hide(i: int) -> void:
 	if i >= 0 and i < _count:
 		# Zero-scale in place; keep the origin so any stray reference stays sane.
+		# If the stored origin was already non-finite (from a prior bad add()),
+		# fall back to Vector3.ZERO so the hide transform is always valid.
 		var origin: Vector3 = _xforms[i].origin
+		if not origin.is_finite():
+			origin = Vector3.ZERO
 		var hidden := Transform3D(Basis().scaled(Vector3.ZERO), origin)
 		_xforms[i] = hidden
 		_mm.set_instance_transform(i, hidden)

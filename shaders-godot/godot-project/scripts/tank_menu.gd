@@ -275,6 +275,21 @@ func _fmt_duration(seconds: int) -> String:
 # ---- Actions ----
 
 func _on_new_pressed() -> void:
+	# On mobile, ask the orientation first so the scenario picker (and the
+	# tank that ends up rendered) can size itself appropriately. Desktop
+	# users skip this step — windowed desktop has flexible aspect ratios
+	# and the existing landscape default works for both.
+	if _is_mobile():
+		_show_orientation_picker()
+		return
+	_open_scenario_picker()
+
+
+func _is_mobile() -> bool:
+	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
+
+
+func _open_scenario_picker() -> void:
 	# Open the scenario picker first. The picker emits `scenario_chosen`
 	# with the picked config dict; we then mint a fresh slot, apply the
 	# scenario overrides to TankConfig, and open the tank.
@@ -283,6 +298,68 @@ func _on_new_pressed() -> void:
 	add_child(picker)
 	picker.scenario_chosen.connect(_on_scenario_chosen)
 	picker.canceled.connect(func(): pass)
+
+
+# Mobile-only step before the scenario picker. Three options: Auto (let
+# screen orientation pick), Portrait (force tall cylinder), Landscape
+# (force wide box). Writes TankConfig.new_tank_fit which is what
+# apply_screen_fitted_dimensions() reads when minting a new tank.
+func _show_orientation_picker() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = 400
+	add_child(overlay)
+	var bg := ColorRect.new()
+	bg.color = Color(0, 0, 0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(bg)
+	var panel := PanelContainer.new()
+	panel.anchor_left = 0.5
+	panel.anchor_top = 0.5
+	panel.anchor_right = 0.5
+	panel.anchor_bottom = 0.5
+	panel.offset_left = -200
+	panel.offset_top = -180
+	panel.offset_right = 200
+	panel.offset_bottom = 180
+	overlay.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	var title := Label.new()
+	title.text = "Tank orientation"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 20)
+	vb.add_child(title)
+	var body := Label.new()
+	body.text = "Pick the shape that fits how you hold the phone. You can change this later in Settings → Tank."
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_font_size_override("font_size", 13)
+	vb.add_child(body)
+	var make_choice := func(label: String, fit: String, desc: String) -> Button:
+		var b := Button.new()
+		b.text = "%s — %s" % [label, desc]
+		b.custom_minimum_size = Vector2(0, 56)
+		b.pressed.connect(func():
+			var cfg := get_node_or_null("/root/TankConfig")
+			if cfg != null:
+				cfg.new_tank_fit = fit
+				cfg.save_to_disk()
+			overlay.queue_free()
+			_open_scenario_picker())
+		return b
+	vb.add_child(make_choice.call("Auto", "auto",
+		"match screen — portrait gives cylinder, landscape gives box"))
+	vb.add_child(make_choice.call("Portrait", "round",
+		"tall cylindrical tank, top-to-bottom view"))
+	vb.add_child(make_choice.call("Landscape", "rect",
+		"wide rectangular tank, classic side view"))
+	var cancel := Button.new()
+	cancel.text = "Cancel"
+	cancel.pressed.connect(func(): overlay.queue_free())
+	vb.add_child(cancel)
 
 
 func _on_scenario_chosen(scenario: Dictionary) -> void:

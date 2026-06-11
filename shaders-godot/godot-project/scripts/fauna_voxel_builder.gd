@@ -14,6 +14,13 @@ var handles: Array = []
 func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 	if parent == null:
 		return
+	# Catch non-finite inputs before they produce a bad transform. A single
+	# warning here is far more actionable than the cascade of
+	# "instance_set_transform: !v.is_finite()" errors that would follow.
+	if not pos.is_finite() or not size.is_finite():
+		push_warning("FaunaVoxelBuilder.add_voxel: non-finite pos=%s or size=%s on %s, skipping voxel." \
+			% [pos, size, parent.name if parent != null else "?"])
+		return
 	var key: String = "%d_%d" % [parent.get_instance_id(), mat.get_instance_id()]
 	if not _batches.has(key):
 		_batches[key] = VoxelBatch.new(parent, mat, 24)

@@ -43,6 +43,17 @@ const CreatureNaming = preload("res://scripts/creature_naming.gd")
 @export var appetite: float = 1.0
 # Genome-overridable lifespan (seconds). Defaults to the class lifespan.
 @export var max_age_s: float = 720.0
+# ---- Expanded shell architecture (heritable) ----
+# Defaults reproduce the original turbo spiral so existing saves are unchanged.
+# spire_height stretches the spire vertically (low turbo → tall tower/cerith),
+# whorl_count sets the number of coil segments, aperture_flare adds a flared
+# lip (conch/apple), operculum draws the trapdoor disc (nerite/turbo), and
+# shell_pattern picks the banding style.
+@export var spire_height: float = 1.0      # 0.4..2.0 vertical stretch of the spire
+@export var whorl_count: int = 4           # 3..8 number of shell coil segments
+@export var aperture_flare: float = 0.0    # 0..1 flared aperture lip (conch / apple)
+@export var operculum: bool = false        # trapdoor disc at the foot opening
+@export var shell_pattern: int = 0         # 0 plain / 1 bands / 2 spots / 3 zigzag (nerite)
 var snail_name: String = ""
 var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
@@ -213,6 +224,11 @@ func get_saved_genome() -> Dictionary:
 		"crawl_speed": crawl_speed,
 		"appetite": appetite,
 		"max_age_s": max_age_s,
+		"spire_height": spire_height,
+		"whorl_count": whorl_count,
+		"aperture_flare": aperture_flare,
+		"operculum": operculum,
+		"shell_pattern": shell_pattern,
 		"generation": generation,
 		"snail_name": snail_name,
 		"parent_lineage": parent_lineage,
@@ -236,6 +252,11 @@ func apply_genome_metadata(g: Dictionary) -> void:
 	crawl_speed = clampf(float(g.get("crawl_speed", crawl_speed)), 0.3, 2.5)
 	appetite = clampf(float(g.get("appetite", appetite)), 0.4, 2.0)
 	max_age_s = maxf(60.0, float(g.get("max_age_s", max_age_s)))
+	spire_height = clampf(float(g.get("spire_height", spire_height)), 0.4, 2.0)
+	whorl_count = clampi(int(g.get("whorl_count", whorl_count)), 3, 8)
+	aperture_flare = clampf(float(g.get("aperture_flare", aperture_flare)), 0.0, 1.0)
+	operculum = not not g.get("operculum", operculum)
+	shell_pattern = int(g.get("shell_pattern", shell_pattern))
 	generation = int(g.get("generation", generation))
 	snail_name = String(g.get("snail_name", snail_name))
 	parent_lineage = String(g.get("parent_lineage", parent_lineage))
@@ -1348,8 +1369,21 @@ func _lay_egg_sac() -> void:
 	new_color = EvolutionPressure.apply_snail_shell_color(new_color, pressure)
 	var new_size: float = clampf(shell_size + randf_range(-0.08, 0.08), 0.65, 1.5)
 	var new_shape: String = _mutate_shell_shape(shell_shape)
+	# Environmental nudge: saltwater occasionally favors tall marine spires
+	# (cerith / trumpet) or a flared conch lip; rich substrate grows shells
+	# with more whorls.
+	var is_salt: bool = bool(pressure.get("saltwater", false))
+	if is_salt and randf() < 0.05:
+		new_shape = "tower" if randf() < 0.6 else "conch"
+	var sub: float = float(pressure.get("substrate", 0.5))
 	var new_spines: float = clampf(shell_spines + randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_toxin: float = clampf(toxin_level + randf_range(-0.10, 0.10), 0.0, 1.0)
+	var new_spire: float = clampf(spire_height + randf_range(-0.12, 0.12)
+		+ (0.25 if new_shape == "tower" else 0.0), 0.4, 2.0)
+	var new_flare: float = clampf(aperture_flare + randf_range(-0.10, 0.10)
+		+ (0.3 if new_shape == "conch" else 0.0), 0.0, 1.0)
+	var new_whorls: int = clampi(whorl_count + ((randi() % 3 - 1) if randf() < 0.15 else 0)
+		+ (1 if sub > 0.6 and randf() < 0.3 else 0), 3, 8)
 	sac.set("inherited_shell_color", new_color)
 	sac.set("inherited_shell_size", new_size)
 	sac.set("inherited_generation", generation + 1)
@@ -1365,6 +1399,12 @@ func _lay_egg_sac() -> void:
 	sac.set("inherited_crawl_speed", clampf(crawl_speed + randf_range(-0.1, 0.1), 0.3, 2.5))
 	sac.set("inherited_appetite", clampf(appetite + randf_range(-0.08, 0.08), 0.4, 2.0))
 	sac.set("inherited_max_age_s", maxf(60.0, max_age_s + randf_range(-30.0, 30.0)))
+	# Expanded shell architecture drifts down the lineage too (pressure-nudged).
+	sac.set("inherited_spire_height", new_spire)
+	sac.set("inherited_whorl_count", new_whorls)
+	sac.set("inherited_aperture_flare", new_flare)
+	sac.set("inherited_operculum", operculum if randf() < 0.95 else not operculum)
+	sac.set("inherited_shell_pattern", shell_pattern if randf() < 0.9 else randi() % 4)
 	sac.set("inherited_parent_lineage", snail_name)
 	sac.set("inherited_parent_keys", SpeciesLibrary.parent_keys_for_breeding([get_saved_genome()]))
 
@@ -1374,7 +1414,8 @@ func _mutate_shell_shape(base_shape: String) -> String:
 	# Rare shape mutation keeps local lineages mostly coherent while allowing
 	# long-run emergence of visibly distinct shell classes.
 	if randf() < 0.08:
-		var options: Array[String] = ["turbo", "trochus", "nassarius", "apple"]
+		var options: Array[String] = ["turbo", "trochus", "nassarius", "apple",
+			"ramshorn", "tower", "limpet", "conch"]
 		for _attempt in 5:
 			var candidate: String = options[randi() % options.size()]
 			if candidate != base_shape:

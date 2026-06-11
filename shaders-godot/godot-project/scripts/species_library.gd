@@ -44,6 +44,7 @@ func _ready() -> void:
 # ============================================================================
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+const RealSpeciesFauna = preload("res://scripts/real_species_fauna.gd")
 
 # Track which real species have already been "recreated" so the discovery
 # story event fires only on the first match — re-discoveries don't spam.
@@ -79,6 +80,22 @@ func record_discovery(genome: Dictionary, source: String, silent: bool = false) 
 				if dist < 0.35 and not _real_species_matched.has(match_id):
 					_real_species_matched[match_id] = true
 					_fire_real_species_discovery(match_id)
+	# Fauna (fish / shrimp / snail) get the same "Looks like: …" fingerprint
+	# match against the real-species fauna catalog, so a lineage that drifts
+	# close to a real species is recognised. The threshold is looser than
+	# plants because fauna genomes compare across more trait fields.
+	var otype: String = String(genome.get("organism_type", ""))
+	if otype == ORGANISM_FISH or otype == ORGANISM_SHRIMP or otype == ORGANISM_SNAIL:
+		var fmatch: Dictionary = RealSpeciesFauna.match_genome(genome)
+		if not fmatch.is_empty():
+			var fdist: float = float(fmatch.get("distance", INF))
+			var fid: String = String(fmatch.get("id", ""))
+			if fdist < 1.4 and fid != "":
+				entry["real_species_id"] = fid
+				entry["real_species_distance"] = fdist
+				if fdist < 0.7 and not _real_species_matched.has(fid):
+					_real_species_matched[fid] = true
+					_fire_real_fauna_discovery(fid)
 	tank_entries.append(entry)
 	library_changed.emit()
 	if not _loading and not silent:
@@ -104,6 +121,26 @@ func _fire_real_species_discovery(species_id: String) -> void:
 		sim.log_story_event("Discovered: %s (%s) growing in your tank." % [common, latin])
 	else:
 		sim.log_story_event("Discovered: %s growing in your tank." % common)
+
+
+# Fauna counterpart of _fire_real_species_discovery: posts a story-event when
+# a fish / shrimp / snail lineage drifts close to a real-world species.
+func _fire_real_fauna_discovery(species_id: String) -> void:
+	var by: Dictionary = RealSpeciesFauna.by_id()
+	if not by.has(species_id):
+		return
+	var entry: Dictionary = by[species_id]
+	var common: String = String(entry.get("common_name", species_id))
+	var latin: String = String(entry.get("latin_name", ""))
+	var organism: String = String(entry.get("organism", "fish"))
+	var verb: String = "crawling" if organism == "snail" else "swimming"
+	var sim: Node = get_tree().root.find_child("SimDriver", true, false)
+	if sim == null or not sim.has_method("log_story_event"):
+		return
+	if latin != "":
+		sim.log_story_event("Discovered: %s (%s) %s in your tank." % [common, latin, verb])
+	else:
+		sim.log_story_event("Discovered: %s %s in your tank." % [common, verb])
 
 
 func get_tank_entries() -> Array:

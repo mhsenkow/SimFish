@@ -23,6 +23,7 @@ const PREVIEW_FRAME_INTERVAL: float = 1.0 / 12.0
 const SPHERE_RADIUS: float = 1.55
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
+const SnailShell = preload("res://scripts/snail_shell.gd")
 
 enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING, CLAM }
 
@@ -34,17 +35,33 @@ const SWIM_PATTERNS: Array = [
 const BODY_SHAPES: Array = [
 	["Fusiform (torpedo)", "fusiform"], ["Compressed (disc)", "compressed"],
 	["Globiform (round)", "globiform"], ["Anguilliform (eel)", "anguilliform"],
+	["Depressed (flat)", "depressed"], ["Sagittiform (pike)", "sagittiform"],
+	["Ribbon (eel/knife)", "ribbon"],
 ]
 const TAIL_SHAPES: Array = [
 	["Forked", 0], ["Fan", 1], ["Lyre", 2], ["Square", 3],
+	["Lunate (crescent)", 4], ["Lanceolate (point)", 5],
 ]
 const PATTERNS: Array = [
 	["Solid", 0], ["Lateral stripe", 1], ["Spots", 2], ["Vertical bars", 3],
-	["Two-tone band", 4], ["Rear wedge", 5],
+	["Two-tone band", 4], ["Rear wedge", 5], ["Reticulated (net)", 6],
+	["Marbled", 7], ["Head mask", 8], ["Ocellated rows", 9],
 ]
 const SHELL_SHAPES: Array = [
 	["Turbo (round)", "turbo"], ["Trochus (cone)", "trochus"],
 	["Nassarius (small)", "nassarius"], ["Apple (globose)", "apple"],
+	["Ramshorn (flat coil)", "ramshorn"], ["Tower (tall spire)", "tower"],
+	["Limpet (cap)", "limpet"], ["Conch (flared)", "conch"],
+]
+const SHRIMP_BODY_SHAPES: Array = [
+	["Caridean (shrimp)", "caridean"], ["Crab", "crab"],
+	["Lobster / crayfish", "lobster"], ["Mantis", "mantis"],
+]
+const SHRIMP_PATTERNS: Array = [
+	["Solid", 0], ["Bands", 1], ["Saddle spots", 2], ["Stripe", 3],
+]
+const SNAIL_PATTERNS: Array = [
+	["Default", 0], ["Bands", 1], ["Spots", 2], ["Zigzag", 3],
 ]
 const LEAF_FORMS: Array = [
 	["Ribbon", "ribbon"], ["Paddle", "paddle"], ["Lance", "lance"],
@@ -323,6 +340,15 @@ func _default_genome_for(kind: int) -> Dictionary:
 				"defense_spines": 0.0,
 				"toxin_level": 0.0,
 				"is_cleaner": false,
+				"body_shape": "caridean",
+				"rostrum_length": 0.3,
+				"eye_stalk_length": 0.0,
+				"abdomen_curl": 0.6,
+				"antenna_length_factor": 1.0,
+				"leg_length_factor": 1.0,
+				"claw_asymmetry": 0.0,
+				"filter_fans": false,
+				"pattern_type": 0,
 			}
 		Kind.SNAIL:
 			return {
@@ -336,6 +362,11 @@ func _default_genome_for(kind: int) -> Dictionary:
 				"crawl_speed": 1.0,
 				"appetite": 1.0,
 				"max_age_s": 720.0,
+				"spire_height": 1.0,
+				"whorl_count": 4,
+				"aperture_flare": 0.0,
+				"operculum": false,
+				"shell_pattern": 0,
 			}
 		Kind.PLANT:
 			return {
@@ -405,6 +436,13 @@ func _default_genome_for(kind: int) -> Dictionary:
 				"has_barbels": false,
 				"armor_plates": false,
 				"adipose_fin": false,
+				"body_width_factor": 1.0,
+				"snout_length_factor": 1.0,
+				"dorsal_length_factor": 1.0,
+				"nuchal_hump": 0.0,
+				"second_dorsal": false,
+				"ventral_sucker": false,
+				"barbel_count": 4,
 			}
 
 
@@ -433,6 +471,10 @@ func _build_fish_controls() -> void:
 	_add_slider("Size", "adult_voxel_scale", 0.10, 0.34, 0.01)
 	_add_slider("Elongation", "body_elongation", 0.6, 1.6, 0.01)
 	_add_slider("Depth", "body_depth_factor", 0.6, 1.8, 0.01)
+	_add_slider("Width", "body_width_factor", 0.5, 1.8, 0.01)
+	_add_slider("Snout length", "snout_length_factor", 0.5, 2.5, 0.05)
+	_add_slider("Dorsal length", "dorsal_length_factor", 0.5, 2.2, 0.05)
+	_add_slider("Nuchal hump", "nuchal_hump", 0.0, 1.0, 0.02)
 	_add_slider("Fin length", "fin_length_factor", 0.6, 2.0, 0.01)
 	_add_slider("Finnage (veil)", "finnage", 1.0, 2.0, 0.05)
 	_add_slider("Max speed", "max_speed", 0.5, 2.6, 0.05)
@@ -446,7 +488,10 @@ func _build_fish_controls() -> void:
 	_add_check("Edged bars", "bar_edged")
 	_add_check("Eye-spot", "eye_spot")
 	_add_check("Ventral feelers", "ventral_feelers")
+	_add_check("Second dorsal", "second_dorsal")
+	_add_check("Ventral sucker", "ventral_sucker")
 	_add_check("Barbels", "has_barbels")
+	_add_slider("Barbel count", "barbel_count", 0.0, 8.0, 1.0, "%.0f")
 	_add_check("Armor plates", "armor_plates")
 	_add_check("Adipose fin", "adipose_fin")
 
@@ -456,14 +501,24 @@ func _build_shrimp_controls() -> void:
 	_add_color("Body", "base_color")
 	_add_color("Accent", "accent_color")
 	_controls_root.add_child(PanelTheme.make_section("Body"))
+	_add_dropdown("Body shape", "body_shape", SHRIMP_BODY_SHAPES)
 	_add_slider("Size", "adult_voxel_scale", 0.06, 0.30, 0.01)
 	_add_slider("Length", "body_length_factor", 0.75, 1.7, 0.01)
-	_add_slider("Claw size", "claw_size", 0.0, 1.2, 0.02)
+	_add_slider("Rostrum length", "rostrum_length", 0.0, 1.5, 0.05)
+	_add_slider("Eye stalks", "eye_stalk_length", 0.0, 1.0, 0.02)
+	_add_slider("Abdomen curl", "abdomen_curl", 0.0, 1.0, 0.02)
+	_add_slider("Antenna length", "antenna_length_factor", 0.5, 2.5, 0.05)
+	_add_slider("Leg length", "leg_length_factor", 0.5, 2.0, 0.05)
 	_add_slider("Max speed", "max_speed", 0.4, 1.6, 0.05)
+	_controls_root.add_child(PanelTheme.make_section("Claws & pattern"))
+	_add_slider("Claw size", "claw_size", 0.0, 1.2, 0.02)
+	_add_slider("Claw asymmetry", "claw_asymmetry", 0.0, 1.0, 0.02)
+	_add_dropdown("Pattern", "pattern_type", SHRIMP_PATTERNS)
 	_controls_root.add_child(PanelTheme.make_section("Defenses & role"))
 	_add_slider("Defense spines", "defense_spines", 0.0, 1.0, 0.02)
 	_add_slider("Toxin level", "toxin_level", 0.0, 1.0, 0.02)
 	_add_check("Cleaner shrimp", "is_cleaner")
+	_add_check("Filter fans", "filter_fans")
 
 
 func _build_snail_controls() -> void:
@@ -472,8 +527,13 @@ func _build_snail_controls() -> void:
 	_add_color("Shell banding", "shell_accent_color")
 	_add_slider("Shell size", "shell_size", 0.5, 1.6, 0.02)
 	_add_dropdown("Shell shape", "shell_shape", SHELL_SHAPES)
+	_add_slider("Spire height", "spire_height", 0.4, 2.0, 0.05)
+	_add_slider("Whorls", "whorl_count", 3.0, 8.0, 1.0, "%.0f")
+	_add_slider("Aperture flare", "aperture_flare", 0.0, 1.0, 0.02)
+	_add_dropdown("Pattern", "shell_pattern", SNAIL_PATTERNS)
 	_add_slider("Shell spines", "shell_spines", 0.0, 1.0, 0.02)
 	_add_slider("Toxin level", "toxin_level", 0.0, 1.0, 0.02)
+	_add_check("Operculum", "operculum")
 	_controls_root.add_child(PanelTheme.make_section("Body & behavior"))
 	_add_color("Body color", "body_color")
 	_add_slider("Crawl speed", "crawl_speed", 0.4, 2.0, 0.05)
@@ -675,40 +735,122 @@ func _randomize() -> void:
 			_genome["tail_color"] = Color.from_hsv(fposmod(h + 0.33, 1.0), randf_range(0.7, 1.0), randf_range(0.8, 1.0))
 			_genome["marking_color"] = Color.from_hsv(fposmod(h + 0.15, 1.0), randf_range(0.3, 0.9), randf_range(0.85, 1.0))
 			_genome["adult_voxel_scale"] = randf_range(0.12, 0.30)
-			_genome["body_elongation"] = randf_range(0.7, 1.5)
-			_genome["body_depth_factor"] = randf_range(0.7, 1.7)
+			# Pick a body shape, then derive proportions that suit it so the
+			# roll reads as a plausible fish rather than random noise.
+			var shape: String = BODY_SHAPES[randi() % BODY_SHAPES.size()][1]
+			_genome["body_shape"] = shape
+			var elong: float = randf_range(0.9, 1.2)
+			var depth: float = randf_range(0.85, 1.15)
+			var width: float = randf_range(0.85, 1.15)
+			var snout: float = 1.0
+			var nuchal: float = 0.0
+			var sucker: bool = false
+			match shape:
+				"depressed":
+					depth = randf_range(0.55, 0.8); width = randf_range(1.3, 1.7)
+					sucker = randf() < 0.7
+				"sagittiform":
+					elong = randf_range(1.35, 1.6); snout = randf_range(1.6, 2.4)
+				"ribbon":
+					elong = randf_range(1.4, 1.6); depth = randf_range(0.6, 0.8); width = randf_range(0.7, 0.9)
+				"compressed":
+					depth = randf_range(1.4, 1.7); nuchal = randf_range(0.0, 0.8)
+				"globiform":
+					depth = randf_range(1.2, 1.5); width = randf_range(1.1, 1.4)
+			_genome["body_elongation"] = elong
+			_genome["body_depth_factor"] = depth
+			_genome["body_width_factor"] = width
+			_genome["snout_length_factor"] = snout
+			_genome["snout_pointed"] = snout > 1.3 or randf() < 0.2
+			_genome["nuchal_hump"] = nuchal
+			_genome["ventral_sucker"] = sucker
+			_genome["dorsal_length_factor"] = randf_range(0.8, 1.0) if randf() < 0.6 else randf_range(1.3, 2.1)
+			_genome["second_dorsal"] = randf() < 0.4
 			_genome["fin_length_factor"] = randf_range(0.7, 1.8)
 			_genome["finnage"] = 1.0 if randf() < 0.6 else randf_range(1.2, 1.9)
 			_genome["max_speed"] = randf_range(0.8, 2.4)
 			_genome["preferred_y"] = randf_range(2.2, 5.2)
 			_genome["swim_pattern"] = SWIM_PATTERNS[randi() % SWIM_PATTERNS.size()][1]
-			_genome["body_shape"] = BODY_SHAPES[randi() % BODY_SHAPES.size()][1]
 			_genome["tail_shape"] = TAIL_SHAPES[randi() % TAIL_SHAPES.size()][1]
 			_genome["pattern_type"] = PATTERNS[randi() % PATTERNS.size()][1]
 			_genome["bar_edged"] = randf() < 0.35
 			_genome["eye_spot"] = randf() < 0.3
 			_genome["ventral_feelers"] = randf() < 0.2
-			_genome["has_barbels"] = randf() < 0.25
-			_genome["armor_plates"] = randf() < 0.15
+			_genome["has_barbels"] = randf() < 0.3
+			_genome["barbel_count"] = [4, 4, 6, 8][randi() % 4]
+			_genome["armor_plates"] = randf() < 0.18
 			_genome["adipose_fin"] = randf() < 0.35
 		Kind.SHRIMP:
 			_genome["base_color"] = Color.from_hsv(randf(), randf_range(0.5, 1.0), randf_range(0.7, 1.0))
 			_genome["accent_color"] = Color.from_hsv(randf(), randf_range(0.2, 0.8), randf_range(0.85, 1.0))
 			_genome["adult_voxel_scale"] = randf_range(0.07, 0.26)
 			_genome["body_length_factor"] = randf_range(0.8, 1.6)
-			_genome["claw_size"] = randf_range(0.0, 1.1)
 			_genome["max_speed"] = randf_range(0.5, 1.5)
 			_genome["defense_spines"] = randf_range(0.0, 1.0)
 			_genome["toxin_level"] = randf_range(0.0, 1.0)
-			_genome["is_cleaner"] = randf() < 0.4
+			# Body plan drives the matching appendage genes (crab → stalked eyes
+			# + tucked abdomen, lobster → big claw + straight tail, etc.).
+			var sshape: String = SHRIMP_BODY_SHAPES[randi() % SHRIMP_BODY_SHAPES.size()][1]
+			_genome["body_shape"] = sshape
+			var claw: float = randf_range(0.1, 0.6)
+			var claw_asym: float = 0.0
+			var eye_stalk: float = 0.0
+			var abdomen: float = randf_range(0.4, 0.8)
+			var antenna: float = randf_range(0.8, 1.5)
+			var filter_fans: bool = false
+			var rostrum: float = randf_range(0.1, 0.8)
+			match sshape:
+				"crab":
+					eye_stalk = randf_range(0.5, 0.9); abdomen = randf_range(0.8, 1.0)
+					antenna = randf_range(0.3, 0.6); rostrum = 0.0
+					claw = randf_range(0.4, 0.9); claw_asym = randf_range(0.0, 0.9)
+				"lobster":
+					claw = randf_range(0.6, 1.1); abdomen = randf_range(0.0, 0.3)
+					antenna = randf_range(1.3, 2.2)
+				"mantis":
+					eye_stalk = randf_range(0.5, 0.9); claw = randf_range(0.4, 0.8)
+				_:
+					filter_fans = randf() < 0.25
+					_genome["is_cleaner"] = randf() < 0.35
+			_genome["claw_size"] = claw
+			_genome["claw_asymmetry"] = claw_asym
+			_genome["eye_stalk_length"] = eye_stalk
+			_genome["abdomen_curl"] = abdomen
+			_genome["antenna_length_factor"] = antenna
+			_genome["leg_length_factor"] = randf_range(0.7, 1.6)
+			_genome["rostrum_length"] = rostrum
+			_genome["filter_fans"] = filter_fans
+			_genome["pattern_type"] = SHRIMP_PATTERNS[randi() % SHRIMP_PATTERNS.size()][1]
+			if sshape != "caridean":
+				_genome["is_cleaner"] = false
 		Kind.SNAIL:
 			var sh: float = randf()
 			_genome["shell_color"] = Color.from_hsv(sh, randf_range(0.4, 1.0), randf_range(0.6, 1.0))
 			_genome["shell_accent_color"] = Color.from_hsv(fposmod(sh + randf_range(-0.1, 0.1), 1.0), randf_range(0.4, 1.0), randf_range(0.25, 0.7))
 			_genome["body_color"] = Color.from_hsv(randf(), randf_range(0.2, 0.7), randf_range(0.2, 0.6))
 			_genome["shell_size"] = randf_range(0.55, 1.55)
-			_genome["shell_shape"] = SHELL_SHAPES[randi() % SHELL_SHAPES.size()][1]
-			_genome["shell_spines"] = randf_range(0.0, 1.0)
+			# Shell shape drives spire / whorl / flare so a tower reads tall,
+			# a conch reads flared, etc.
+			var shsh: String = SHELL_SHAPES[randi() % SHELL_SHAPES.size()][1]
+			_genome["shell_shape"] = shsh
+			var spire: float = randf_range(0.8, 1.2)
+			var whorls: int = randi_range(3, 6)
+			var flare: float = randf_range(0.0, 0.2)
+			match shsh:
+				"tower":
+					spire = randf_range(1.3, 2.0); whorls = randi_range(6, 8)
+				"conch":
+					flare = randf_range(0.5, 0.9)
+				"trochus":
+					spire = randf_range(1.0, 1.5); whorls = randi_range(5, 7)
+				"ramshorn":
+					whorls = randi_range(5, 8)
+			_genome["spire_height"] = spire
+			_genome["whorl_count"] = whorls
+			_genome["aperture_flare"] = flare
+			_genome["operculum"] = randf() < 0.4
+			_genome["shell_pattern"] = SNAIL_PATTERNS[randi() % SNAIL_PATTERNS.size()][1]
+			_genome["shell_spines"] = randf_range(0.0, 0.6)
 			_genome["toxin_level"] = randf_range(0.0, 1.0)
 			_genome["crawl_speed"] = randf_range(0.5, 1.8)
 			_genome["appetite"] = randf_range(0.6, 1.6)
@@ -739,6 +881,16 @@ func _randomize() -> void:
 			_genome["leaf_count"] = float(randi_range(2, 8))
 			_genome["root_length"] = randf_range(0.15, 1.1)
 			_genome["spread_rate"] = randf_range(0.5, 2.0)
+		Kind.CLAM:
+			# Previously the Clam tab's Randomize did nothing — now it rolls a
+			# coherent clam like every other type.
+			var ch: float = randf_range(0.04, 0.16)
+			_genome["shell_color"] = Color.from_hsv(ch, randf_range(0.2, 0.5), randf_range(0.5, 0.85))
+			_genome["body_color"] = Color.from_hsv(fposmod(ch + 0.03, 1.0), randf_range(0.2, 0.5), randf_range(0.6, 0.9))
+			_genome["siphon_color"] = Color.from_hsv(fposmod(randf_range(0.92, 1.05), 1.0), randf_range(0.3, 0.6), randf_range(0.6, 0.9))
+			_genome["shell_size"] = randf_range(0.6, 1.6)
+			_genome["filter_radius"] = randf_range(1.0, 2.4)
+			_genome["max_age_s"] = float(randi_range(180, 360))
 	_rebuild_controls()
 	_reload_preview()
 
@@ -988,48 +1140,19 @@ func _spawn_preview_snail(g: Dictionary) -> Node3D:
 	sn.position = Vector3(0, 0.0, 0)
 	sn.rotation.y = PI * 0.5
 	sn.scale = Vector3.ONE * SNAIL_PREVIEW_SCALE
-	var shell_color: Color = g.get("shell_color", Color8(150, 95, 55))
-	var shell_size: float = float(g.get("shell_size", 1.0))
-	var shell_shape: String = String(g.get("shell_shape", "turbo"))
-	var accent_v: Variant = g.get("shell_accent_color", null)
-	var shell_dark: Color = accent_v if (accent_v is Color and (accent_v as Color).a > 0.5) \
-		else shell_color.darkened(0.22)
 	var body_v: Variant = g.get("body_color", null)
 	var body_color: Color = body_v if body_v is Color else Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make_fauna(shell_color)
-	var shell_dark_mat := VoxelMat.make_fauna(shell_dark)
-	var body_mat := VoxelMat.make_fauna(body_color)
-	match shell_shape:
-		"trochus":
-			for i in 6:
-				var y: float = 0.04 + i * 0.045 * shell_size
-				var s: float = (0.18 - i * 0.025) * shell_size
-				_snail_box(sn, Vector3(0, y, 0), Vector3(s, s * 0.85, s),
-					shell_mat if (i & 1) == 0 else shell_dark_mat)
-		"nassarius":
-			_snail_box(sn, Vector3.ZERO,
-				Vector3(0.14 * shell_size, 0.08 * shell_size, 0.18 * shell_size), shell_mat)
-		"apple":
-			_snail_box(sn, Vector3(0, 0.05 * shell_size, 0.0),
-				Vector3(0.24 * shell_size, 0.21 * shell_size, 0.24 * shell_size), shell_mat)
-			_snail_box(sn, Vector3(0, 0.17 * shell_size, -0.04 * shell_size),
-				Vector3(0.12 * shell_size, 0.10 * shell_size, 0.12 * shell_size), shell_dark_mat)
-		_:
-			for i in 4:
-				var ang: float = i * 0.7
-				var r: float = (0.05 + i * 0.06) * shell_size
-				var s2: float = (0.16 - i * 0.02) * shell_size
-				_snail_box(sn, Vector3(cos(ang) * r, sin(ang) * r, 0.0),
-					Vector3(s2, s2, s2), shell_mat if (i & 1) == 0 else shell_dark_mat)
-	# Shell spines: small protruding dark spikes.
-	var spines: float = float(g.get("shell_spines", 0.0))
-	if spines > 0.05:
-		for i in 4:
-			var a: float = i * (PI * 0.5)
-			_snail_box(sn, Vector3(cos(a) * 0.16 * shell_size, 0.06 * shell_size, sin(a) * 0.16 * shell_size),
-				Vector3(0.03, 0.04 + 0.08 * spines, 0.03) * shell_size, shell_dark_mat)
-	var foot_size: Vector3 = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
-	_snail_box(sn, Vector3(0, -0.12 * shell_size, 0), foot_size, body_mat)
+	# Build the shell from the shared module so the preview matches the live
+	# snail exactly — every shape, spire height, whorl count, pattern, flare
+	# and operculum, instead of the old 4-shape preview stub.
+	var add_box := func(par: Node3D, pos: Vector3, size: Vector3, col: Color) -> void:
+		_snail_box(par, pos, size, VoxelMat.make_fauna(col))
+	SnailShell.build(sn, g, add_box)
+	# Static eye-stalks for the preview (the live snail animates these).
+	var ss: float = float(g.get("shell_size", 1.0))
+	for zside in [0.06, -0.06]:
+		_snail_box(sn, Vector3(0.10, -0.01 * ss, zside),
+			Vector3(0.03, 0.10 * ss, 0.03), VoxelMat.make_fauna(body_color))
 	return sn
 
 

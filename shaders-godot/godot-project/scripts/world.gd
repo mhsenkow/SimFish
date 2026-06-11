@@ -1376,6 +1376,22 @@ func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
 	snail.set("shell_shape", shape)
 	snail.set("shell_spines", _rng.randf_range(0.0, 0.45))
 	snail.set("toxin_level", _rng.randf_range(0.0, 0.35))
+	# Founder shell variety: most keep their layout shape, but a quarter roll
+	# one of the expanded shells so a starting colony shows the range and can
+	# drift further. Spire / whorl / pattern get matching variety.
+	var rolled_shape: String = shape
+	if _rng.randf() < 0.25:
+		var pool: Array = ["ramshorn", "tower", "trochus", "limpet", "conch"]
+		rolled_shape = pool[_rng.randi() % pool.size()]
+		snail.set("shell_shape", rolled_shape)
+	snail.set("spire_height",
+		_rng.randf_range(0.7, 1.6) if rolled_shape == "tower" else _rng.randf_range(0.7, 1.25))
+	snail.set("whorl_count",
+		_rng.randi_range(5, 8) if rolled_shape == "tower" else _rng.randi_range(3, 6))
+	snail.set("shell_pattern", _rng.randi() % 4)
+	snail.set("operculum", _rng.randf() < 0.4)
+	snail.set("aperture_flare",
+		_rng.randf_range(0.4, 0.9) if rolled_shape == "conch" else _rng.randf_range(0.0, 0.3))
 
 
 # Detritivore feedback: snails / shrimp / fish that consume a waste particle
@@ -1808,6 +1824,11 @@ func rebuild_substrate_mesh() -> void:
 		for i in positions.size():
 			var t := Transform3D()
 			t.origin = positions[i]
+			# Guard: skip non-finite origins (shouldn't happen with terrain grid
+			# arithmetic, but saves a console flood if a cell_center goes bad).
+			if not t.is_finite():
+				push_warning("rebuild_substrate_mesh: non-finite origin at index %d, skipping." % i)
+				continue
 			mm.set_instance_transform(i, t)
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
@@ -2639,128 +2660,35 @@ func _build_snails(populate: bool = true) -> Node3D:
 	return c
 
 
+const SnailShell = preload("res://scripts/snail_shell.gd")
+
+
 func _build_snail_body(snail: Node3D) -> void:
-	# Read heritable traits and shell silhouette. shell_shape branches
-	# the construction into one of four forms:
-	#   turbo      classic round low spiral (default, freshwater + marine)
-	#   trochus    tall pointed cone (marine algae grazer)
-	#   nassarius  small flat oval that lives on the substrate (marine
-	#              scavenger; sits flatter and lower than a turbo)
-	#   apple      rounded globose shell (freshwater apple-snail style)
-	var shell_color: Color = snail.get("shell_color") if snail.get("shell_color") is Color \
-		else Color8(135, 44, 176)
-	var shell_size: float = snail.get("shell_size")
-	var shell_shape: String = String(snail.get("shell_shape") if "shell_shape" in snail else "turbo")
-	var shell_spines: float = clampf(float(snail.get("shell_spines") if "shell_spines" in snail else 0.0), 0.0, 1.0)
-	var toxin_level: float = clampf(float(snail.get("toxin_level") if "toxin_level" in snail else 0.0), 0.0, 1.0)
-	if toxin_level > 0.35:
-		shell_color = shell_color.lerp(Color8(246, 220, 64), toxin_level * 0.35)
-	# Shell banding color: use the genome's shell_accent_color when supplied
-	# (alpha > 0), otherwise auto-derive a darker shade (original look).
-	var accent_v: Variant = snail.get("shell_accent_color") if "shell_accent_color" in snail else null
-	var shell_dark: Color
-	if accent_v is Color and (accent_v as Color).a > 0.5:
-		shell_dark = accent_v
-	else:
-		shell_dark = shell_color.darkened(0.22)
-	# Body (foot + eye-stalk) tint is genome-driven; fall back to the classic
-	# dark flesh color for any snail that didn't set one.
+	# Shell + foot geometry is built by the shared SnailShell module so the
+	# live snail and the creature-creator preview render from one source of
+	# truth. Eye-stalks are added here (snail.gd animates the named pivot).
+	var shell_size: float = float(snail.get("shell_size"))
 	var body_v: Variant = snail.get("body_color") if "body_color" in snail else null
 	var body_color: Color = body_v if body_v is Color else C_SNAIL_BODY
-	var shell_mat := _fauna_mat(shell_color)
-	var shell_dark_mat := _fauna_mat(shell_dark)
 	var body_mat := _fauna_mat(body_color)
-
-	match shell_shape:
-		"trochus":
-			# Pointed cone: 6 voxels stacked vertically, shrinking toward
-			# the tip. Banded with alternating dark/light for the classic
-			# trochus stripe look.
-			for i in 6:
-				var y: float = 0.04 + i * 0.045 * shell_size
-				var s: float = (0.18 - i * 0.025) * shell_size
-				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
-				_add_cube(snail, Vector3(0, y, 0), Vector3(s, s * 0.85, s), mat)
-		"nassarius":
-			# Small flat oval - a stubby low egg shape. Two voxels:
-			# main body + a smaller cap.
-			_add_cube(snail, Vector3(0, 0.0, 0),
-				Vector3(0.18 * shell_size, 0.10 * shell_size,
-					0.22 * shell_size), shell_mat)
-			_add_cube(snail, Vector3(0, 0.06 * shell_size, -0.04),
-				Vector3(0.10 * shell_size, 0.06 * shell_size,
-					0.12 * shell_size), shell_dark_mat)
-		"apple":
-			# Rounded globose shell with a broad body whorl and small apex.
-			_add_cube(snail, Vector3(0, 0.05 * shell_size, 0.0),
-				Vector3(0.24 * shell_size, 0.21 * shell_size,
-					0.24 * shell_size), shell_mat)
-			_add_cube(snail, Vector3(0, 0.17 * shell_size, -0.04 * shell_size),
-				Vector3(0.12 * shell_size, 0.10 * shell_size,
-					0.12 * shell_size), shell_dark_mat)
-			_add_cube(snail, Vector3(0.03 * shell_size, 0.03 * shell_size, 0.08 * shell_size),
-				Vector3(0.08 * shell_size, 0.06 * shell_size,
-					0.08 * shell_size), shell_dark_mat)
-		_:
-			# turbo: round low spiral (the original snail shape).
-			for i in 4:
-				var ang: float = i * 0.7
-				var r: float = (0.05 + i * 0.06) * shell_size
-				var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
-				var s: float = (0.16 - i * 0.02) * shell_size
-				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
-				_add_cube(snail, sp, Vector3(s, s, s), mat)
-
-	# Defensive shell spines: sparse ridges that make snail morphs visibly
-	# distinct and slightly less appealing to fish predators.
-	if shell_spines > 0.12:
-		var spine_mat := _fauna_mat(shell_dark.lightened(0.08))
-		var spine_count: int = clampi(int(round(2.0 + shell_spines * 6.0)), 2, 8)
-		for i in spine_count:
-			var t: float = float(i) / float(maxi(1, spine_count - 1))
-			var ang: float = lerpf(-1.2, 1.2, t)
-			var r: float = (0.10 + 0.14 * shell_spines) * shell_size
-			var h: float = (0.03 + 0.08 * shell_spines) * shell_size
-			var spike_pos := Vector3(cos(ang) * r, 0.09 * shell_size + sin(ang) * r * 0.55, sin(ang) * r * 0.2)
-			_add_cube(snail, spike_pos, Vector3(0.03 * shell_size, h, 0.03 * shell_size), spine_mat)
-	# Mantle ornaments from defense chemistry / lineage age:
-	#   - toxic snails expose bright mantle frills (warning signal)
-	#   - older generations gain subtle growth-ring ridges
-	if toxin_level > 0.28:
-		var mantle_mat := _solid_mat(shell_color.lerp(Color8(246, 230, 128),
-			clampf(toxin_level * 0.42, 0.0, 0.42)))
-		var frill_n: int = clampi(3 + int(toxin_level * 4.0), 3, 7)
-		for i in frill_n:
-			var t: float = float(i) / float(maxi(1, frill_n - 1))
-			var ang: float = lerpf(-1.1, 1.1, t)
-			var r2: float = (0.12 + shell_size * 0.10) * shell_size
-			_add_cube(snail,
-				Vector3(cos(ang) * r2, -0.01 * shell_size, sin(ang) * r2 * 0.35),
-				Vector3(0.035 * shell_size, 0.028 * shell_size, 0.040 * shell_size),
-				mantle_mat)
-	var gen_v: Variant = snail.get("generation")
-	var gen_n: int = int(gen_v if gen_v != null else 0)
-	if gen_n >= 3:
-		var ring_mat := _solid_mat(shell_dark.lightened(0.18))
-		var ring_count: int = clampi(1 + int(gen_n / 3.0), 1, 4)
-		for i in ring_count:
-			var frac: float = float(i + 1) / float(ring_count + 1)
-			var ry: float = 0.02 * shell_size + frac * 0.16 * shell_size
-			var rs: float = (0.20 - frac * 0.04) * shell_size
-			_add_cube(snail, Vector3(0, ry, -0.02 * shell_size),
-				Vector3(rs, 0.016 * shell_size, rs), ring_mat)
-
-	# Foot scales with shell. Nassarius foot is wider + flatter since they
-	# crawl on substrate rather than glass.
-	var foot_y: float = -0.05 * shell_size if shell_shape == "nassarius" else -0.12 * shell_size
-	var foot_size: Vector3
-	if shell_shape == "nassarius":
-		foot_size = Vector3(0.28 * shell_size, 0.04 * shell_size, 0.20 * shell_size)
-	elif shell_shape == "apple":
-		foot_size = Vector3(0.30 * shell_size, 0.07 * shell_size, 0.22 * shell_size)
-	else:
-		foot_size = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
-	_add_cube(snail, Vector3(0, foot_y, 0), foot_size, body_mat)
+	var g: Dictionary = {
+		"shell_color": snail.get("shell_color") if snail.get("shell_color") is Color else Color8(135, 44, 176),
+		"shell_accent_color": snail.get("shell_accent_color") if "shell_accent_color" in snail else null,
+		"body_color": body_color,
+		"shell_size": shell_size,
+		"shell_shape": String(snail.get("shell_shape") if "shell_shape" in snail else "turbo"),
+		"spire_height": float(snail.get("spire_height")) if "spire_height" in snail else 1.0,
+		"whorl_count": int(snail.get("whorl_count")) if "whorl_count" in snail else 4,
+		"aperture_flare": float(snail.get("aperture_flare")) if "aperture_flare" in snail else 0.0,
+		"operculum": (snail.get("operculum") if "operculum" in snail else false),
+		"shell_pattern": int(snail.get("shell_pattern")) if "shell_pattern" in snail else 0,
+		"shell_spines": float(snail.get("shell_spines")) if "shell_spines" in snail else 0.0,
+		"toxin_level": float(snail.get("toxin_level")) if "toxin_level" in snail else 0.0,
+		"generation": int(snail.get("generation")) if "generation" in snail else 0,
+	}
+	var add_box := func(par: Node3D, pos: Vector3, size: Vector3, col: Color) -> void:
+		_add_cube(par, pos, size, _fauna_mat(col))
+	SnailShell.build(snail, g, add_box)
 	# Eye stalks - wrapped in a named pivot so snail.gd can animate them
 	# (slow sway, periodic retraction). Keep size fixed for visibility.
 	# Pivot sits at the stalk base so rotation tilts the eyes naturally.
@@ -6963,6 +6891,30 @@ func _spawn_initial_shrimp() -> void:
 		g["adult_voxel_scale"] = clampf(
 			float(g.get("adult_voxel_scale", 0.11)) + randf_range(-0.02, 0.03) * phenotype_mult,
 			0.07, 0.24)
+		# Founder morph variety: most stay classic neocaridina (caridean), but a
+		# minority roll the distinctive freshwater body plans so a colony shows
+		# off the expanded architecture and can drift further over generations.
+		g["rostrum_length"] = clampf(0.3 + randf_range(-0.15, 0.45) * phenotype_mult, 0.0, 1.5)
+		if randf() < 0.35:
+			g["pattern_type"] = randi() % 4
+		var morph_roll: float = randf()
+		if morph_roll < 0.08:
+			# Bamboo / wood shrimp — big filter-feeder with fan hands.
+			g["filter_fans"] = true
+			g["adult_voxel_scale"] = clampf(float(g.get("adult_voxel_scale", 0.11)) * 1.5, 0.07, 0.3)
+			g["body_length_factor"] = clampf(float(g.get("body_length_factor", 1.0)) + 0.3, 0.75, 1.7)
+			g["base_color"] = Color8(150, 110, 80)
+		elif morph_roll < 0.13:
+			# Crayfish — long straight body + big claws.
+			g["body_shape"] = "lobster"
+			g["claw_size"] = clampf(float(g.get("claw_size", 0.3)) + 0.5, 0.0, 1.2)
+			g["adult_voxel_scale"] = clampf(float(g.get("adult_voxel_scale", 0.11)) * 1.4, 0.07, 0.3)
+			g["base_color"] = Color8(90, 110, 70)
+		elif morph_roll < 0.16:
+			# Freshwater fiddler-style crab — one oversize claw.
+			g["body_shape"] = "crab"
+			g["claw_size"] = clampf(float(g.get("claw_size", 0.3)) + 0.4, 0.0, 1.2)
+			g["claw_asymmetry"] = randf_range(0.5, 0.9)
 		# Promote a handful to cleaner duty. Spread across the cohort so
 		# they don't cluster — every (shrimp_n / cleaner_target)-th index
 		# gets the flag.
@@ -7018,6 +6970,27 @@ func _spawn_marine_shrimp(yield_during: bool = true) -> void:
 		g["toxin_level"] = clampf(float(g.get("toxin_level", 0.0)) + randf_range(-0.08, 0.10), 0.0, 1.0)
 		g["claw_size"] = clampf(float(g.get("claw_size", 0.38)) + randf_range(-0.10, 0.14), 0.0, 1.2)
 		g["body_length_factor"] = clampf(float(g.get("body_length_factor", 1.18)) + randf_range(-0.14, 0.16), 0.75, 1.7)
+		# Marine variety: most of the crew stay skunk cleaners (with long
+		# antennae + rostrum genes set so they can drift), but a couple roll
+		# into bolder reef morphs — a mantis shrimp or a small reef crab.
+		var mvar: float = randf()
+		if mvar < 0.12:
+			g["body_shape"] = "mantis"
+			g["is_cleaner"] = false
+			g["base_color"] = Color8(60, 180, 120)
+			g["accent_color"] = Color8(240, 120, 60)
+			g["claw_size"] = clampf(float(g.get("claw_size", 0.38)) + 0.3, 0.0, 1.2)
+			g["body_length_factor"] = clampf(float(g.get("body_length_factor", 1.18)) + 0.25, 0.75, 1.7)
+			g["pattern_type"] = 2
+		elif mvar < 0.20:
+			g["body_shape"] = "crab"
+			g["is_cleaner"] = false
+			g["base_color"] = Color8(200, 90, 70)
+			g["claw_size"] = clampf(float(g.get("claw_size", 0.38)) + 0.35, 0.0, 1.2)
+			g["claw_asymmetry"] = randf_range(0.3, 0.8)
+		else:
+			g["antenna_length_factor"] = randf_range(1.4, 2.1)
+			g["rostrum_length"] = randf_range(0.4, 0.9)
 		var sh := Shrimp.new()
 		sh.age = g["max_age_s"] * randf_range(0.15, 0.6)
 		fauna_root.add_child(sh)

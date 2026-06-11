@@ -250,6 +250,34 @@ var anal_fin_length_factor: float = 0.5
 var adipose_fin: bool = false
 var snout_pointed: bool = false
 var body_shape: String = "fusiform"
+
+# ---- Expanded morphology (heritable) — widens real-species coverage ----
+# Each defaults to "no change from the original silhouette" so existing
+# genomes and saved tanks render byte-for-byte as before. They drift through
+# produce_offspring_genome exactly like the older skeleton genes.
+#  - body_width_factor   lateral width → _bank_pivot.scale.x. The missing
+#                        cross-section axis: <1 = slab-thin (laterally
+#                        compressed), >1 = flat-and-wide (rays, flatfish,
+#                        plecos, hillstream loaches, gobies).
+#  - snout_length_factor 0.5..2.5; long pointed snouts (gar, needlefish,
+#                        pipefish, elephantnose).
+#  - dorsal_length_factor 0.5..2.2; long-based dorsal fin running down the
+#                        back (plecos, bichirs, oscars, knifefish).
+#  - nuchal_hump         0..1; forehead / nape bulge (flowerhorn, severum,
+#                        humphead wrasse, mature male cichlids).
+#  - second_dorsal       spiny + soft dorsal — most perciforms (gobies,
+#                        cichlids, bass, the majority of marine fish).
+#  - ventral_sucker      ventral disc / sucker mouth (plecos, gobies,
+#                        hillstream loaches, remora).
+#  - barbel_count        whisker count. -1 sentinel = derive from has_barbels
+#                        (0 or 4); 4/6/8 give catfish, 4 gives loaches.
+var body_width_factor: float = 1.0
+var snout_length_factor: float = 1.0
+var dorsal_length_factor: float = 1.0
+var nuchal_hump: float = 0.0
+var second_dorsal: bool = false
+var ventral_sucker: bool = false
+var barbel_count: int = -1
 # Swimming style. Derived from body_shape at init unless the genome
 # overrides explicitly. Drives the per-frame animation amplitudes so
 # different body silhouettes move in physically appropriate ways:
@@ -342,13 +370,25 @@ func morph_label() -> String:
 	var tags: Array[String] = []
 	# Discrete trait changes - each maps to a single distinct morph letter.
 	if int(template.get("tail_shape", 0)) != tail_shape:
-		tags.append(["F", "R", "L", "S"][clampi(tail_shape, 0, 3)])
+		tags.append(["F", "R", "L", "S", "C", "P"][clampi(tail_shape, 0, 5)])
 	if (not not template.get("has_barbels", false)) != has_barbels:
 		tags.append("B" if has_barbels else "b")
 	if (not not template.get("armor_plates", false)) != armor_plates:
 		tags.append("A" if armor_plates else "a")
 	if int(template.get("mouth_orientation", 0)) != mouth_orientation:
 		tags.append(["U", "M", "D"][clampi(mouth_orientation + 1, 0, 2)])
+	# Body-plan shift away from the species template gets a two-letter code.
+	if String(template.get("body_shape", "fusiform")) != body_shape:
+		var shape_tag: Dictionary = {
+			"compressed": "Kp", "globiform": "Gb", "anguilliform": "An",
+			"depressed": "Fl", "sagittiform": "Pk", "ribbon": "Rb",
+		}
+		if shape_tag.has(body_shape):
+			tags.append(shape_tag[body_shape])
+	if (not not template.get("second_dorsal", false)) != second_dorsal and second_dorsal:
+		tags.append("2D")
+	if (not not template.get("ventral_sucker", false)) != ventral_sucker and ventral_sucker:
+		tags.append("Su")
 	# Continuous trait drift past LARGE thresholds - founders with normal
 	# phenotype spread shouldn't trigger; only multi-generation drift should.
 	if absf(body_elongation - float(template.get("body_elongation", 1.0))) > 0.45:
@@ -357,6 +397,8 @@ func morph_label() -> String:
 		tags.append("d")
 	if absf(eye_size_factor - float(template.get("eye_size_factor", 1.0))) > 0.55:
 		tags.append("e")
+	if absf(body_width_factor - float(template.get("body_width_factor", 1.0))) > 0.45:
+		tags.append("W")
 	if subspecies_id != "" and subspecies_id != species:
 		var sid: String = _short_subspecies_tag(subspecies_id)
 		if sid != "":
@@ -959,6 +1001,19 @@ func init_genome(genome: Dictionary) -> void:
 	adipose_fin = not not genome.get("adipose_fin", adipose_fin)
 	snout_pointed = not not genome.get("snout_pointed", snout_pointed)
 	body_shape = String(genome.get("body_shape", body_shape))
+	# Expanded morphology genes (heritable; default = original silhouette).
+	body_width_factor = clampf(float(genome.get("body_width_factor", body_width_factor)), 0.5, 1.8)
+	snout_length_factor = clampf(float(genome.get("snout_length_factor", snout_length_factor)), 0.5, 2.5)
+	dorsal_length_factor = clampf(float(genome.get("dorsal_length_factor", dorsal_length_factor)), 0.5, 2.2)
+	nuchal_hump = clampf(float(genome.get("nuchal_hump", nuchal_hump)), 0.0, 1.0)
+	second_dorsal = not not genome.get("second_dorsal", second_dorsal)
+	ventral_sucker = not not genome.get("ventral_sucker", ventral_sucker)
+	# barbel_count: -1 sentinel means "derive from has_barbels" so legacy
+	# genomes (which only carry has_barbels) keep the classic 4-whisker look.
+	barbel_count = int(genome.get("barbel_count", -1))
+	if barbel_count < 0:
+		barbel_count = 4 if has_barbels else 0
+	barbel_count = clampi(barbel_count, 0, 8)
 	size_potential = clampf(float(genome.get("size_potential", size_potential)), 0.6, 2.4)
 	jaw_claw_size = clampf(float(genome.get("jaw_claw_size", jaw_claw_size)), 0.0, 1.2)
 	var inherited_max_growth: float = float(genome.get("max_growth", max_growth))
@@ -995,13 +1050,17 @@ func init_genome(genome: Dictionary) -> void:
 		locomotion_type = String(genome["locomotion_type"])
 	else:
 		match body_shape:
-			"anguilliform":
+			"anguilliform", "ribbon":
+				# Ribbon eels / knifefish undulate the whole body like a true eel.
 				locomotion_type = "anguilliform"
 			"globiform":
 				locomotion_type = "ostraciiform"
-			"compressed":
+			"compressed", "depressed":
+				# Discs (angelfish/tangs) and flattened benthics (rays, hillstream
+				# loaches) both row mainly with their pectorals.
 				locomotion_type = "labriform"
 			_:
+				# fusiform + sagittiform (gar/pike) are body-caudal swimmers.
 				locomotion_type = "subcarangiform"
 	# Food preferences (species-level, not heritable).
 	snail_predator = not not genome.get("snail_predator", snail_predator)
@@ -1119,6 +1178,13 @@ func _apply_predator_morphology() -> void:
 		jaw_claw_size = clampf(jaw_claw_size + 0.12, 0.0, 1.2)
 		if not snail_predator and body_shape == "compressed":
 			body_shape = "fusiform"
+		# A long body + shrimp-hunting bias reads as a lurking pike/gar ambush
+		# predator: sagittiform silhouette with a lengthened pointed snout.
+		if not snail_predator and body_elongation > 1.12 \
+				and (body_shape == "fusiform" or body_shape == "sagittiform"):
+			body_shape = "sagittiform"
+			snout_length_factor = maxf(snout_length_factor, 1.3)
+			snout_pointed = true
 	if snail_predator and shrimp_predator:
 		body_shape = "globiform"
 		armor_plates = true
@@ -1195,6 +1261,23 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	genome["anal_fin_length_factor"] = randf_range(0.5, 1.5)
 	# Random dot count (some morphs have peppered flanks).
 	genome["color_dot_count"] = randi_range(0, 4)
+	# Marine perciforms almost all carry a spiny + soft two-dorsal arrangement;
+	# give most reef morphs a second dorsal plus some lateral-width variety.
+	genome["second_dorsal"] = randf() < 0.7
+	genome["body_width_factor"] = randf_range(0.7, 1.15)
+	# A fifth of reef morphs roll the richer marine patterns: reticulated
+	# boxfish net, masked butterflyfish band, ocellated spot rows.
+	if randf() < 0.20:
+		genome["pattern_type"] = [6, 8, 9][randi() % 3]
+	# Rare bold body plans seen on the reef: a flattened ray/flounder or a
+	# rounded boxfish.
+	var shape_roll: float = randf()
+	if shape_roll < 0.06:
+		genome["body_shape"] = "depressed"
+		genome["body_width_factor"] = randf_range(1.2, 1.6)
+		genome["body_depth_factor"] = randf_range(0.6, 0.85)
+	elif shape_roll < 0.10:
+		genome["body_shape"] = "globiform"
 	# Preferred Y as a FRACTION of the actual water column (0=substrate,
 	# 1=surface). World.gd's _apply_water_column_scale converts this to
 	# absolute Y at spawn based on the tank's real dimensions, so the
@@ -1277,6 +1360,15 @@ func _build_body() -> void:
 	# Forehead - lighter. Lifts on hump-backed phenotypes (angelfish, gourami).
 	_add_voxel_to(head, Vector3(0, v * 0.5 * hp * back_arch, -2.5 * v),
 		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_top)
+	# Nuchal hump: a bulging forehead / nape boss that grows up and forward
+	# over the head. Defines mature cichlids (flowerhorn, severum, midas) and
+	# the humphead wrasse / bumphead parrotfish on the reef.
+	if nuchal_hump > 0.05:
+		var hump: float = nuchal_hump
+		_add_voxel_to(head, Vector3(0, v * (0.7 + 0.5 * hump) * hp, -2.55 * v),
+			Vector3(v * 0.55 * hp, v * (0.4 + 0.6 * hump) * hp, v * 0.85 * hp), mat_top)
+		_add_voxel_to(head, Vector3(0, v * (0.55 + 0.45 * hump) * hp, -2.95 * v),
+			Vector3(v * 0.4 * hp, v * (0.3 + 0.45 * hump) * hp, v * 0.5 * hp), mat_body)
 	# Belly under head. ventral_profile pulls it lower for round-bellied
 	# species (puffer) or tightens it up for flat-bellied bottom dwellers
 	# (cory, loach).
@@ -1314,14 +1406,36 @@ func _build_body() -> void:
 		# forehead carrying forward.
 		_add_voxel_to(head, Vector3(0, mouth_y * 0.4 + v * 0.18 * hp, -3.3 * v),
 			Vector3(v * 0.22 * hp, v * 0.12 * hp, v * 0.35 * hp), mat_top)
+	# Elongated snout / beak. Independent of snout_pointed so gar, needlefish,
+	# pipefish (long beak) and elephantnose read distinctly. The voxel marches
+	# forward from the mouth; the longer the snout the thinner it gets.
+	if snout_length_factor > 1.05:
+		var snout_ext: float = (snout_length_factor - 1.0) * v * 1.5 * hp
+		var snout_thin: float = clampf(1.0 / snout_length_factor, 0.4, 1.0)
+		_add_voxel_to(head, Vector3(0, mouth_y * 0.5, -3.15 * v - snout_ext * 0.5),
+			Vector3(v * 0.22 * hp * snout_thin, v * 0.2 * hp * snout_thin,
+				v * 0.5 * hp + snout_ext), mat_body)
+		_add_voxel_to(head, Vector3(0, mouth_y * 0.5 + v * 0.1 * hp, -3.15 * v - snout_ext * 0.5),
+			Vector3(v * 0.14 * hp * snout_thin, v * 0.08 * hp,
+				v * 0.45 * hp + snout_ext), mat_top)
 	# Barbels - catfish/loach whiskers. Two pairs of tiny dark voxels under
 	# the mouth, angled forward + down. Only drawn if has_barbels.
-	if has_barbels:
+	if has_barbels and barbel_count > 0:
 		var mat_barbel := _make_mat(base_color.darkened(0.5))
 		var barbel_y: float = -v * 0.45 * hp
 		var barbel_z: float = -2.9 * v
-		for x_side in [-0.30, -0.18, 0.18, 0.30]:
-			_add_voxel_to(head, Vector3(x_side * v * hp, barbel_y, barbel_z),
+		# Spread barbel_count whiskers symmetrically under the mouth. Catfish
+		# carry 4/6/8, loaches 4; an odd count puts one whisker on the chin.
+		var pairs: int = barbel_count / 2
+		for p in pairs:
+			var x_off: float = 0.24
+			if pairs > 1:
+				x_off = lerpf(0.16, 0.34, float(p) / float(pairs - 1))
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(head, Vector3(x_side * x_off * v * hp, barbel_y, barbel_z),
+					Vector3(v * 0.06, v * 0.08, v * 0.25), mat_barbel)
+		if barbel_count % 2 == 1:
+			_add_voxel_to(head, Vector3(0, barbel_y - v * 0.05, barbel_z),
 				Vector3(v * 0.06, v * 0.08, v * 0.25), mat_barbel)
 	# Predator specializations:
 	# - snail_predator: thicker crusher jaw / head profile
@@ -1412,8 +1526,53 @@ func _build_body() -> void:
 				Vector3(v * 0.85, v * 0.85, v), mat_body)
 			_add_voxel_to(_body_mid_pivot, Vector3(0, 0, v * 4.2),
 				Vector3(v * 0.7, v * 0.7, v), mat_body)
+		"depressed":
+			# Dorsoventrally flattened bottom-hugger (rays, flatfish, plecos,
+			# hillstream loaches). Wide low lateral shelves run the body length;
+			# pairs with a high body_width_factor + low body_depth_factor.
+			for i in seg_widths.size():
+				var bw_d: float = seg_widths[i]
+				var bz_d: float = i * v
+				for x_side in [-1.0, 1.0]:
+					_add_voxel_to(_body_mid_pivot,
+						Vector3(x_side * v * bw_d * 0.55, -v * 0.16, bz_d),
+						Vector3(v * bw_d * 0.6, v * 0.26, v * 0.95), mat_body)
+			# A broad flat pectoral shelf near the head reads as ray "wings".
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot,
+					Vector3(x_side * v * 0.85, -v * 0.1, -v * 0.2),
+					Vector3(v * 0.7, v * 0.18, v * 0.9), mat_top)
+		"sagittiform":
+			# Pike / gar / needlefish: long cylindrical body carrying its mass
+			# forward with a long rear taper. Pairs with a long snout + high
+			# body_elongation; the dorsal sits far back (see dorsal placement).
+			_add_voxel_to(_body_mid_pivot, Vector3(0, 0, v * 3.1),
+				Vector3(v * 0.9, v * 0.85, v), mat_body)
+			_add_voxel_to(_body_mid_pivot, Vector3(0, 0, v * 4.0),
+				Vector3(v * 0.78, v * 0.72, v), mat_body)
+		"ribbon":
+			# Ribbon eel / knifefish: very long thin near-uniform tube with a
+			# continuous low fin ridge instead of discrete dorsal/anal fins.
+			for ri in 4:
+				_add_voxel_to(_body_mid_pivot, Vector3(0, 0, v * (3.0 + ri * 0.95)),
+					Vector3(v * 0.62, v * 0.66, v), mat_body)
+			var mat_ribbon := _make_mat(base_color.darkened(0.18))
+			for ri in 6:
+				var rz: float = v * (0.4 + ri * 0.9)
+				_add_voxel_to(_body_mid_pivot, Vector3(0, v * 0.55, rz),
+					Vector3(v * 0.08, v * 0.3, v * 0.7), mat_ribbon)
+				_add_voxel_to(_body_mid_pivot, Vector3(0, -v * 0.55, rz),
+					Vector3(v * 0.08, v * 0.3, v * 0.7), mat_ribbon)
 		_:
 			pass  # fusiform - no extra voxels
+	# Ventral sucker / oral disc: a wide flat pale disc under the front belly.
+	# Plecos, gobies, hillstream loaches and remoras anchor to surfaces with it.
+	if ventral_sucker:
+		var mat_sucker := _make_mat(base_color.darkened(0.28).lerp(accent_color, 0.18))
+		_add_voxel_to(_body_mid_pivot, Vector3(0, -v * 0.62 * ventral_profile, -v * 0.4),
+			Vector3(v * 1.05, v * 0.16, v * 1.1), mat_sucker)
+		_add_voxel_to(_body_mid_pivot, Vector3(0, -v * 0.7 * ventral_profile, -v * 0.4),
+			Vector3(v * 0.7, v * 0.12, v * 0.75), mat_belly)
 
 	# Armor plates: cory-style lateral plating. Drawn as 4 thin dark vertical
 	# bars across the lateral midline. Stacks ON TOP of pattern_type, so a
@@ -1509,6 +1668,42 @@ func _build_body() -> void:
 				_add_voxel_to(_body_mid_pivot,
 					Vector3(x_side * v * 0.46, -v * 0.1, i * v + v * 0.2),
 					Vector3(v * 0.16, wedge_h, v * 0.7), mat_marking)
+	elif pattern_type == 6:
+		# Reticulated / net: a fine grid of accent dots across the flanks
+		# (boesemani rainbow, giraffe catfish, some plecos).
+		for i in seg_widths.size():
+			for gy in [-0.3, 0.0, 0.3]:
+				var zjit: float = 0.0 if int(roundf(gy * 10.0)) % 2 == 0 else v * 0.3
+				for x_side in [-1.0, 1.0]:
+					_add_voxel_to(_body_mid_pivot,
+						Vector3(x_side * v * 0.5, v * gy, i * v + zjit),
+						Vector3(v * 0.14, v * 0.14, v * 0.14), mat_accent)
+	elif pattern_type == 7:
+		# Marbled / mottled: irregular accent blotches (many catfish, groupers,
+		# bichirs). Fixed offsets keep the pattern stable across rebuilds.
+		var blotch: Array = [
+			Vector3(0.5, 0.2, 0.1), Vector3(0.5, -0.25, 1.1), Vector3(0.5, 0.05, 2.0),
+		]
+		for b in blotch:
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot,
+					Vector3(x_side * v * b.x, v * b.y, v * b.z),
+					Vector3(v * 0.16, v * 0.34, v * 0.4), mat_marking)
+	elif pattern_type == 8:
+		# Head-band / mask: a dark vertical bar across the front of the body
+		# behind the eye (many tetras, loaches, kribensis, masked gobies).
+		for x_side in [-1.0, 1.0]:
+			_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, 0, 0),
+				Vector3(v * 0.16, v * 1.0, v * 0.45), mat_marking)
+	elif pattern_type == 9:
+		# Ocellated spot-rows: a row of ringed false-eye spots along the flank
+		# (many cichlids, pufferfish, some catfish).
+		for i in seg_widths.size():
+			for x_side in [-1.0, 1.0]:
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, v * 0.05, i * v),
+					Vector3(v * 0.16, v * 0.36, v * 0.36), mat_accent)
+				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.52, v * 0.05, i * v),
+					Vector3(v * 0.14, v * 0.18, v * 0.18), mat_marking)
 	# Caudal eye-spot (ocellus): a ringed marking near the tail base. Many
 	# cichlids + some tetras carry one as a false-eye predator deterrent.
 	if eye_spot:
@@ -1535,6 +1730,28 @@ func _build_body() -> void:
 		Vector3(v * 0.15, v * 0.4 * dh, v * 1.2), mat_fin)
 	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.45 * dh, v * 0.2),
 		Vector3(v * 0.12, v * 0.25 * dh, v * 0.6), mat_fin)
+	# Long-based dorsal: stretch the dorsal's base fore-and-aft along the back
+	# (plecos, bichirs, oscars, knifefish). Scales with dorsal_length_factor.
+	if dorsal_length_factor > 1.05:
+		var dlen: float = dorsal_length_factor
+		var dn: int = clampi(1 + int((dlen - 1.0) * 3.0), 1, 5)
+		for i in dn:
+			var dz: float = lerpf(-0.5, 1.2, float(i) / float(maxi(1, dn - 1))) * v * dlen
+			_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.18 * dh, dz),
+				Vector3(v * 0.12, v * 0.34 * dh, v * 0.5), mat_fin)
+	# Second (soft) dorsal: a separate fin block set behind the first. The
+	# spiny + soft two-dorsal arrangement of most perciforms — gobies,
+	# cichlids, bass, the majority of marine fish. Static (a soft dorsal
+	# barely moves), so it needs no animation pivot.
+	if second_dorsal:
+		var d2 := Node3D.new()
+		d2.name = "Dorsal2"
+		d2.position = Vector3(0, v * 0.75, v * 1.95)
+		_body_mid_pivot.add_child(d2)
+		_add_voxel_to(d2, Vector3(0, v * 0.16 * dh, 0),
+			Vector3(v * 0.13, v * 0.3 * dh, v * 0.7), mat_fin)
+		_add_voxel_to(d2, Vector3(0, v * 0.34 * dh, v * 0.12),
+			Vector3(v * 0.1, v * 0.2 * dh, v * 0.4), mat_fin)
 	# Anal fin (bottom). Default = small nub (anal_fin_length_factor < 1.0).
 	# When the factor is high, build a long trailing fin that mirrors the
 	# dorsal - this is what defines the angelfish + betta silhouette where
@@ -1631,6 +1848,24 @@ func _build_body() -> void:
 		3:  # square paddle
 			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (0.95 * fl)),
 				Vector3(v * 0.15, v * 1.0, v * (0.7 * fl)), mat_tail)
+		4:  # lunate / crescent — fast pelagic cruisers (tuna, jacks)
+			# Stiff narrow crescent: long swept tips top + bottom, pinched
+			# centre. tail_fork_depth widens the spread of the tips.
+			_add_voxel_to(_tail_pivot, Vector3(0, v * (0.9 * fl * tf), v * (1.0 * fl)),
+				Vector3(v * 0.12, v * (0.7 * fl), v * (0.45 * fl)), mat_tail)
+			_add_voxel_to(_tail_pivot, Vector3(0, v * (-0.9 * fl * tf), v * (1.0 * fl)),
+				Vector3(v * 0.12, v * (0.7 * fl), v * (0.45 * fl)), mat_tail)
+			_add_voxel_to(_tail_pivot, Vector3(0, v * (1.5 * fl * tf), v * (1.75 * fl)),
+				Vector3(v * 0.1, v * (0.5 * fl), v * (0.35 * fl)), mat_tail)
+			_add_voxel_to(_tail_pivot, Vector3(0, v * (-1.5 * fl * tf), v * (1.75 * fl)),
+				Vector3(v * 0.1, v * (0.5 * fl), v * (0.35 * fl)), mat_tail)
+		5:  # lanceolate — single pointed spear (many gobies, blennies, eels)
+			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (0.9 * fl)),
+				Vector3(v * 0.15, v * 0.7, v * (0.6 * fl)), mat_tail)
+			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (1.5 * fl)),
+				Vector3(v * 0.12, v * 0.32, v * (0.55 * fl)), mat_tail)
+			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (2.0 * fl)),
+				Vector3(v * 0.1, v * 0.12, v * (0.45 * fl)), mat_tail)
 		_:  # 0 = forked (default)
 			_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45 * tf, v * (0.9 * fl)),
 				Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_tail)
@@ -1676,6 +1911,9 @@ func _build_body() -> void:
 	if _bank_pivot != null:
 		_bank_pivot.scale.z = body_elongation
 		_bank_pivot.scale.y = body_depth_factor
+		# Lateral width — the third cross-section axis. <1 = slab-thin
+		# (laterally compressed), >1 = flat-and-wide (rays, flatfish, plecos).
+		_bank_pivot.scale.x = body_width_factor
 
 	if _voxel_builder != null:
 		_voxel_builder.flush_all()
@@ -3947,6 +4185,50 @@ func _motion_substep(dt: float) -> void:
 			if capped.length_squared() > 1e-6:
 				target_dir = capped.normalized()
 				target_spd *= 0.92
+	# Surface-pin release. Without this, fish that drift up to the meniscus
+	# (e.g. mid-cruise wobble + lateral collision-slide along the ceiling)
+	# get stuck swimming sideways at the surface because the cruise tier's
+	# downward bias enters as desired.y but gets masked by the much stronger
+	# lateral component. We FORCE a downward heading whenever the fish is
+	# pinned high without an active aerial trip / hypoxia gulp / brooding.
+	# Applies to all fish, not just non-surface species — even surface-
+	# adapted ones shouldn't stay at the ceiling once their reason is gone.
+	if _aerial_timer <= 0.0 and brooding_remaining <= 0.0 and sim != null:
+		var o2_now: float = float(sim.dissolved_o2) if sim.get("dissolved_o2") != null else 1.0
+		var hypoxia: bool = o2_now < SURFACE_GULP_O2
+		var ws: float = _water_surface_y()
+		var ceiling_dist: float = ws - position.y
+		# Trigger when within 0.6u of the meniscus AND well above home_y.
+		# 0.6 is large enough to catch the "pinned" state without firing
+		# on the descent itself.
+		if not hypoxia and ceiling_dist < 0.6 \
+				and position.y > home_y + maxf(home_y_radius * 0.8, 0.4):
+			# Hard downward bias: keep horizontal, but force at least 0.55
+			# of the heading magnitude to point down. The 0.55 magnitude is
+			# strong enough to overcome the wall-slide preserving horizontal
+			# motion, but not so strong it makes the fish dive-bomb the
+			# substrate visibly. Also boost target_spd a touch so the move
+			# actually happens this tick.
+			var hx: float = target_dir.x
+			var hz: float = target_dir.z
+			var horiz_len: float = sqrt(hx * hx + hz * hz)
+			# If the fish's lateral heading is tiny too (truly stuck), pick
+			# a random lateral so it doesn't dive straight down through its
+			# own column. seeded by instance id so it's stable per fish.
+			if horiz_len < 0.15:
+				var seed: float = float(get_instance_id() % 360)
+				hx = cos(seed)
+				hz = sin(seed)
+				horiz_len = 1.0
+			# Normalize so the new vector has unit length with the chosen
+			# down-component baked in.
+			var down_y: float = -0.55
+			var horiz_scale: float = sqrt(maxf(0.0, 1.0 - down_y * down_y))
+			target_dir = Vector3(
+				hx / horiz_len * horiz_scale,
+				down_y,
+				hz / horiz_len * horiz_scale)
+			target_spd = maxf(target_spd, max_speed * 0.55)
 
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
 	var bnd: Dictionary = _lateral_boundary_context(global_position, body_m, target_dir)
@@ -4032,6 +4314,17 @@ func _motion_substep(dt: float) -> void:
 	# We only re-orient when the fish has meaningful forward speed; when
 	# nearly stopped the brain may flip target_velocity direction frame-to-
 	# frame and look_at would snap the fish around (read as "spinning"). ----
+	#
+	# Belt-and-suspenders: also guard global_position here. A non-finite
+	# position produces a non-finite look_at target even with a valid heading,
+	# and look_at with a NaN target silently corrupts the Transform3D basis,
+	# which then propagates to every child MultiMeshInstance3D and floods the
+	# console with "instance_set_transform: !v.is_finite()" errors.
+	if not global_position.is_finite():
+		push_warning("[Fish] non-finite global_position detected; resetting to home_y.")
+		var _safe_y: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) else 2.5
+		global_position = Vector3(0.0, _safe_y, 0.0)
+		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
 	if speed > 0.04 and heading.length_squared() > 0.0001:
 		var d: Vector3 = heading
 		# Avoid look_at singularity when heading is straight up/down.
@@ -4040,7 +4333,8 @@ func _motion_substep(dt: float) -> void:
 		# certain platforms.
 		if absf(d.dot(Vector3.UP)) > 0.95:
 			d = (d + Vector3(0.05, 0, 0)).normalized()
-		look_at(position + d, Vector3.UP)
+		if d.is_finite():
+			look_at(position + d, Vector3.UP)
 
 	# ---- Banking into yaw turns ----
 	# Compute the world-space yaw of the heading on the XZ plane. The change
@@ -4871,11 +5165,34 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var new_jaw_claw: float = clampf(
 		(jaw_claw_size + partner.jaw_claw_size) * 0.5 + randf_range(-0.12, 0.18),
 		0.0, 1.2)
+	# Expanded morphology inheritance: continuous traits average + jitter,
+	# clamped to the same bounds init_genome enforces.
+	var new_body_width: float = clampf(
+		(body_width_factor + partner.body_width_factor) * 0.5 + randf_range(-0.10, 0.10),
+		0.5, 1.8)
+	var new_snout_len: float = clampf(
+		(snout_length_factor + partner.snout_length_factor) * 0.5 + randf_range(-0.10, 0.12),
+		0.5, 2.5)
+	var new_dorsal_len: float = clampf(
+		(dorsal_length_factor + partner.dorsal_length_factor) * 0.5 + randf_range(-0.10, 0.12),
+		0.5, 2.2)
+	var new_nuchal: float = clampf(
+		(nuchal_hump + partner.nuchal_hump) * 0.5 + randf_range(-0.08, 0.10),
+		0.0, 1.0)
+	# Discrete fin / sucker traits stay in the lineage with rare flips.
+	var new_second_dorsal: bool = (second_dorsal if randf() < 0.96
+		else (partner.second_dorsal if randf() < 0.5 else not second_dorsal))
+	var new_ventral_sucker: bool = (ventral_sucker if randf() < 0.97
+		else (partner.ventral_sucker if randf() < 0.5 else not ventral_sucker))
+	# Barbel count drifts ±1 occasionally; clamped 0..8.
+	var new_barbel_count: int = clampi(
+		int(round((barbel_count + partner.barbel_count) * 0.5))
+		+ ((randi() % 3 - 1) if randf() < 0.12 else 0), 0, 8)
 	# Pattern: usually inherits from one parent, small chance to mutate to
-	# a different pattern entirely.
+	# any pattern (0-9, now incl. reticulated / marbled / mask / ocellated).
 	var new_pattern: int = pattern_type if randf() < 0.5 else partner.pattern_type
 	if randf() < 0.06:
-		new_pattern = randi() % 4
+		new_pattern = randi() % 10
 	# Dots: average then small jitter, clamped 0-4.
 	var new_dots: int = clampi(
 		int((color_dot_count + partner.color_dot_count) * 0.5 + randf_range(-1.0, 1.0)),
@@ -4908,7 +5225,8 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		else (partner.snout_pointed if randf() < 0.5 else not snout_pointed))
 	var new_body_shape: String = body_shape if randf() < 0.86 else partner.body_shape
 	if randf() < 0.04:
-		var shapes: Array[String] = ["fusiform", "compressed", "globiform", "anguilliform"]
+		var shapes: Array[String] = ["fusiform", "compressed", "globiform",
+			"anguilliform", "depressed", "sagittiform", "ribbon"]
 		new_body_shape = shapes[randi() % shapes.size()]
 	var new_mouth_orientation: int = (mouth_orientation if randf() < 0.93
 		else partner.mouth_orientation if randf() < 0.5
@@ -5004,7 +5322,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"mouth_orientation": new_mouth_orientation,
 		"tail_shape": (tail_shape if randf() < 0.94
 			else partner.tail_shape if randf() < 0.5
-			else randi() % 4),
+			else randi() % 6),
 		"eye_size_factor": clampf((eye_size_factor + partner.eye_size_factor) * 0.5
 			+ randf_range(-0.10, 0.10), 0.55, 1.7),
 		"ventral_profile": clampf((ventral_profile + partner.ventral_profile) * 0.5
@@ -5027,6 +5345,13 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"adipose_fin": new_adipose_fin,
 		"snout_pointed": new_snout_pointed,
 		"body_shape": new_body_shape,
+		"body_width_factor": new_body_width,
+		"snout_length_factor": new_snout_len,
+		"dorsal_length_factor": new_dorsal_len,
+		"nuchal_hump": new_nuchal,
+		"second_dorsal": new_second_dorsal,
+		"ventral_sucker": new_ventral_sucker,
+		"barbel_count": new_barbel_count,
 		"jaw_claw_size": new_jaw_claw,
 		# Ornamentation traits stay in the lineage with rare flips so a
 		# bar-edged or eye-spotted founder line keeps its look but can drift.
