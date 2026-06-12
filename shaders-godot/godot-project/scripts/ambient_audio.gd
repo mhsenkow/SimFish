@@ -28,6 +28,83 @@ const SCALE_DEEP: Array[float] = [
 	220.00, 261.63, 293.66, 329.63, 392.00,
 ]
 
+# ---- Blues / modal / jazz scales (Sound Studio "Scale" dropdown + personas) ----
+# All rooted near A3 (220 Hz) so they sit in the same register as SCALE_MINOR.
+# The ♭5 "blue note" + ♭3/♭7 give the bluesy color; the modes/bebop/whole-tone
+# add jazz flavor. ~10 entries each so degree indexing (arps, voicings) is safe.
+# Minor blues: 1 ♭3 4 ♭5 5 ♭7
+const SCALE_BLUES_MINOR: Array[float] = [
+	220.00, 261.63, 293.66, 311.13, 329.63,
+	392.00, 440.00, 523.25, 587.33, 622.25,
+]
+# Major blues: 1 2 ♭3 3 5 6
+const SCALE_BLUES_MAJOR: Array[float] = [
+	220.00, 246.94, 261.63, 277.18, 329.63,
+	369.99, 440.00, 493.88, 523.25, 554.37,
+]
+# Dorian: 1 2 ♭3 4 5 6 ♭7 (minor with a bright 6th)
+const SCALE_DORIAN: Array[float] = [
+	220.00, 246.94, 261.63, 293.66, 329.63,
+	369.99, 392.00, 440.00, 493.88, 523.25,
+]
+# Mixolydian: 1 2 3 4 5 6 ♭7 (major with a dominant 7th)
+const SCALE_MIXOLYDIAN: Array[float] = [
+	220.00, 246.94, 277.18, 293.66, 329.63,
+	369.99, 392.00, 440.00, 493.88, 554.37,
+]
+# Bebop dominant: 1 2 3 4 5 6 ♭7 7 (chromatic passing tone)
+const SCALE_BEBOP: Array[float] = [
+	220.00, 246.94, 277.18, 293.66, 329.63,
+	369.99, 392.00, 415.30, 440.00, 493.88,
+]
+# Whole tone: all whole steps — dreamy, ambiguous (Monk / Debussy color)
+const SCALE_WHOLETONE: Array[float] = [
+	220.00, 246.94, 277.18, 311.13, 349.23,
+	392.00, 440.00, 493.88, 554.37, 622.25,
+]
+# Typed empty scale returned by _scale_by_name for "auto"/unknown so the caller
+# falls through to mood/tank-driven selection.
+const EMPTY_SCALE: Array[float] = []
+
+# ---- Musical personas ----
+# A persona is a named bundle that biases the SCALE, the rhythm feel (swing /
+# humanize / jazziness / off-beat hat / sidechain), the voice balance (supersaw
+# lead vs Rhodes/bell), the tempo (bpm_mul), and — via the "event" key — HOW
+# tank events reshape the music (see _react_to_event). Selected from the Sound
+# Studio "Persona" dropdown; "none" leaves the engine fully tank-driven.
+# Vibe values are lerp targets (see _pp), not hard overrides, so the user's
+# manual knobs still nudge the result.
+const PERSONAS: Dictionary = {
+	# Thelonious Monk — angular jazz-blues. Swung, dissonant, sparse; events
+	# trigger chord substitutions + Rhodes/bell stabs instead of drops.
+	"monk": {
+		"scale": "blues_minor", "bpm_mul": 0.72, "swing": 0.6, "humanize": 0.6,
+		"jazziness": 0.95, "offbeat_hat": 0.2, "lead_mix": 0.22, "sidechain": 0.3,
+		"reverb": 0.4, "event": "jazz",
+	},
+	# ABGT / Anjuna — uplifting trance. Straight, pumping, supersaw-led; events
+	# force builds/drops/breakdowns. Fastest of the set.
+	"abgt": {
+		"scale": "major", "bpm_mul": 1.16, "swing": 0.0, "humanize": 0.12,
+		"jazziness": 0.2, "offbeat_hat": 0.72, "lead_mix": 0.9, "sidechain": 0.92,
+		"reverb": 0.5, "event": "trance",
+	},
+	# Lo-fi / Dilla — dusty, drunk-swung downtempo. Vinyl + tape, Rhodes chords;
+	# events are soft, behind-the-beat accents.
+	"lofi": {
+		"scale": "blues_major", "bpm_mul": 0.6, "swing": 0.62, "humanize": 0.72,
+		"jazziness": 0.7, "offbeat_hat": 0.3, "lead_mix": 0.28, "sidechain": 0.45,
+		"reverb": 0.5, "vinyl": 0.7, "tape": 0.6, "event": "lofi",
+	},
+	# Dub techno / deep — spacious, hypnotic. Sparse, big reverb + delay throws;
+	# events echo out into the air bus and sweep the filter.
+	"dub": {
+		"scale": "dorian", "bpm_mul": 0.9, "swing": 0.12, "humanize": 0.3,
+		"jazziness": 0.4, "offbeat_hat": 0.5, "lead_mix": 0.24, "sidechain": 0.8,
+		"reverb": 0.85, "delay": 0.85, "event": "dub",
+	},
+}
+
 # Arp banks — pattern picked from current tank character.
 const ARP_BANK: Array = [
 	[0, 4, 7, 4, 2, 7, 4, 0, 0, 4, 9, 4, 2, 7, 4, 2],
@@ -463,14 +540,59 @@ func _style() -> String:
 	return String(cfg.music_style) if cfg != null else "hybrid"
 
 
+func _scale_cfg() -> String:
+	var cfg := _cfg()
+	return String(cfg.music_scale) if cfg != null and "music_scale" in cfg else "auto"
+
+
+func _scale_by_name(name: String) -> Array[float]:
+	match name:
+		"major": return SCALE_MAJOR
+		"minor": return SCALE_MINOR
+		"deep": return SCALE_DEEP
+		"blues_minor": return SCALE_BLUES_MINOR
+		"blues_major": return SCALE_BLUES_MAJOR
+		"dorian": return SCALE_DORIAN
+		"mixolydian": return SCALE_MIXOLYDIAN
+		"bebop": return SCALE_BEBOP
+		"whole_tone": return SCALE_WHOLETONE
+		_: return EMPTY_SCALE  # "auto"/unknown → caller falls through
+
+
+func _persona_key() -> String:
+	var cfg := _cfg()
+	return String(cfg.music_persona) if cfg != null and "music_persona" in cfg else "none"
+
+
+func _active_persona() -> Dictionary:
+	return PERSONAS.get(_persona_key(), {})
+
+
+# Blend a user knob value toward the active persona's value for `key`. With no
+# persona (or no such key) the user's value passes through unchanged, so the
+# persona biases the vibe without erasing the manual sliders.
+func _pp(user_val: float, key: String, strength: float = 0.7) -> float:
+	var p: Dictionary = _active_persona()
+	if p.has(key):
+		return lerpf(user_val, float(p[key]), strength)
+	return user_val
+
+
 func _trance_bed_active() -> bool:
 	if not _ambient_enabled() or _complexity() <= 0.06:
 		return false
+	# Any persona drives the full groove engine (its swing / tempo / sidechain /
+	# voicing biases reshape the bed into that vibe) regardless of Style.
+	if not _active_persona().is_empty():
+		return true
 	var st: String = _style()
 	return st == "trance" or st == "hybrid"
 
 
 func _plink_bed_active() -> bool:
+	# A persona takes over the bed entirely, so the sparse plink layer steps aside.
+	if not _active_persona().is_empty():
+		return false
 	var st: String = _style()
 	return _ambient_enabled() and (st == "ambient" or (st == "hybrid" and _complexity() < 0.45))
 
@@ -658,7 +780,7 @@ func _breakdown_depth() -> float:
 
 
 func _lead_mix_cfg() -> float:
-	return _cfg_float("music_lead_mix", 0.55)
+	return _pp(_cfg_float("music_lead_mix", 0.55), "lead_mix")
 
 
 func _lead_detune_cfg() -> float:
@@ -666,31 +788,31 @@ func _lead_detune_cfg() -> float:
 
 
 func _vinyl_cfg() -> float:
-	return _cfg_float("music_vinyl_crackle", 0.2)
+	return _pp(_cfg_float("music_vinyl_crackle", 0.2), "vinyl")
 
 
 func _tape_wow_cfg() -> float:
-	return _cfg_float("music_tape_wow", 0.18)
+	return _pp(_cfg_float("music_tape_wow", 0.18), "tape")
 
 
 func _jazziness_cfg() -> float:
-	return _cfg_float("music_jazziness", 0.4)
+	return _pp(_cfg_float("music_jazziness", 0.4), "jazziness")
 
 
 func _swing_cfg() -> float:
-	return _cfg_float("music_swing", 0.06)
+	return _pp(_cfg_float("music_swing", 0.06), "swing")
 
 
 func _offbeat_hat_cfg() -> float:
-	return _cfg_float("music_offbeat_hat", 0.55)
+	return _pp(_cfg_float("music_offbeat_hat", 0.55), "offbeat_hat")
 
 
 func _reverb_send_cfg() -> float:
-	return _cfg_float("music_reverb_send", 0.45)
+	return _pp(_cfg_float("music_reverb_send", 0.45), "reverb")
 
 
 func _humanize_cfg() -> float:
-	return _cfg_float("music_humanize", 0.22)
+	return _pp(_cfg_float("music_humanize", 0.22), "humanize")
 
 
 func _species_palette_cfg() -> float:
@@ -1005,6 +1127,18 @@ func _react_to_event(event_name: String, _species: String = "") -> void:
 	# Most reactions only make sense when the trance bed is live, but we still
 	# allow events to nudge phrase state so the visual moment lines up.
 	var bed_on: bool = _trance_bed_active()
+	# Personas remap how events reshape the music. ABGT (and no persona) keep
+	# the default build / drop / breakdown logic below.
+	match String(_active_persona().get("event", "")):
+		"jazz":
+			_react_jazz(event_name)
+			return
+		"lofi":
+			_react_lofi(event_name)
+			return
+		"dub":
+			_react_dub(event_name)
+			return
 	match event_name:
 		"birth":
 			if bed_on:
@@ -1038,12 +1172,78 @@ func _react_to_event(event_name: String, _species: String = "") -> void:
 			_apply_ecosystem_shift()
 
 
+func _react_jazz(event_name: String) -> void:
+	# Monk — chord substitutions + angular Rhodes / bell stabs; no festival drops.
+	match event_name:
+		"birth", "spawn":
+			_chord_root = (_chord_root + 3) % 5  # bright substitution
+			_rebuild_tonal_cache()
+			play_bell_pluck(_scale_freq(4, 0), 0.09, 0.9)
+			play_bell_pluck(_scale_freq(7, 0), 0.07, 0.8)
+		"death":
+			_chord_root = (_chord_root + 4) % 5  # dark substitution
+			_rebuild_tonal_cache()
+			play_rhodes(_scale_freq(2, -1), 0.10, 1.2)
+		"eat":
+			play_rhodes(_scale_freq(int(_seed_mix(3) * 4.0), 0), 0.08, 0.55)
+		"plant":
+			_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
+		"story":
+			_phrase_idx += 2
+			_apply_ecosystem_shift()
+
+
+func _react_lofi(event_name: String) -> void:
+	# Lo-fi — soft, behind-the-beat Rhodes / bell accents, occasional chord nudge.
+	match event_name:
+		"birth", "spawn":
+			play_rhodes(_scale_freq(4, 0), 0.07, 1.0)
+			if randf() < 0.3:
+				_chord_root = (_chord_root + 2) % 5
+				_rebuild_tonal_cache()
+		"death":
+			play_rhodes(_scale_freq(0, -1), 0.07, 1.3)
+		"eat":
+			play_bell_pluck(_scale_freq(7, 0), 0.05, 0.6)
+		"plant":
+			_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
+		"story":
+			_phrase_idx += 1
+
+
+func _react_dub(event_name: String) -> void:
+	# Dub — sparse chord stabs thrown into the reverb / delay air bus + breakdowns.
+	match event_name:
+		"birth", "spawn":
+			play_bell_pluck(_scale_freq(4, 0), 0.08, 1.1)
+		"death":
+			if _cached_breakdown_depth > 0.2 and _phrase_state != PhraseState.BREAKDOWN:
+				_phrase_force_state = PhraseState.BREAKDOWN
+		"eat":
+			play_event_plink(0.5, true)
+		"plant":
+			_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
+		"story":
+			_phrase_idx += 1
+			_apply_ecosystem_shift()
+
+
 func _mood_key() -> String:
 	var cfg := _cfg()
 	return String(cfg.music_mood) if cfg != null else "auto"
 
 
 func _get_current_scale() -> Array[float]:
+	# Explicit "Scale" dropdown wins; then the active persona's scale; then the
+	# original mood + tank-driven major/minor selection.
+	var forced: Array[float] = _scale_by_name(_scale_cfg())
+	if not forced.is_empty():
+		return forced
+	var persona: Dictionary = _active_persona()
+	if persona.has("scale"):
+		var ps: Array[float] = _scale_by_name(String(persona["scale"]))
+		if not ps.is_empty():
+			return ps
 	var mood: String = _mood_key()
 	if mood == "calm":
 		return SCALE_MINOR
@@ -1085,7 +1285,9 @@ func _bpm() -> float:
 	base += clampf(fish * 0.35, 0.0, 8.0)
 	if float(_smooth.get("o2", 0.85)) < 0.45:
 		base *= 0.88
-	return clampf(base, 72.0, 138.0)
+	# Persona tempo bias (Monk/Lo-fi slow it right down, ABGT pushes it up).
+	base *= float(_active_persona().get("bpm_mul", 1.0))
+	return clampf(base, 56.0, 142.0)
 
 
 func _scale_freq(degree: int, octave: int = 0) -> float:
@@ -1127,12 +1329,15 @@ func _refresh_mix_cache() -> void:
 	_cached_energy = _energy()
 	var vit: float = _tank_vitality
 	_cached_vol = _user_volume() * _complexity() * lerpf(0.45, 1.0, _cached_energy) * lerpf(0.65, 1.0, vit)
-	_cached_kick_mix = _cfg_float("music_kick_mix", 0.65)
-	_cached_bass_mix = _cfg_float("music_bass_mix", 0.75)
-	_cached_arp_mix = _cfg_float("music_arp_mix", 0.85)
-	_cached_pad_mix = _cfg_float("music_pad_mix", 0.7)
-	_cached_hat_mix = _cfg_float("music_hat_mix", 0.55)
-	var filter_bias: float = _cfg_float("music_filter_open", 0.5)
+	# Fallback defaults match TankConfig's defaults exactly so the mix sounds
+	# identical whether or not the autoload is mounted (it always is at runtime;
+	# this just removes a latent inconsistency for headless / test contexts).
+	_cached_kick_mix = _cfg_float("music_kick_mix", 0.5)
+	_cached_bass_mix = _cfg_float("music_bass_mix", 0.6)
+	_cached_arp_mix = _cfg_float("music_arp_mix", 0.62)
+	_cached_pad_mix = _cfg_float("music_pad_mix", 0.78)
+	_cached_hat_mix = _cfg_float("music_hat_mix", 0.38)
+	var filter_bias: float = _cfg_float("music_filter_open", 0.38)
 	_cached_kick_gain = lerpf(0.14, 0.28, clampf(
 		float(_smooth.get("fish", 0)) / 24.0 + float(_smooth.get("bloom", 0.0)) * 0.4, 0.0, 1.0))
 	_cached_bass_amp = 0.10 * _cached_bass_mix * lerpf(1.0, 0.68, float(_smooth.get("o2", 0.85)))
@@ -1415,7 +1620,7 @@ func _trigger_kick(velocity: float = 1.0) -> void:
 	var slam_mult: float = 0.85
 	if _phrase_state == PhraseState.DROP:
 		slam_mult = lerpf(0.7, 0.45, _cached_drop_intensity)
-	_sidechain = lerpf(0.72, 0.38, _cfg_float("music_sidechain", 0.55)) * slam_mult
+	_sidechain = lerpf(0.72, 0.38, _pp(_cfg_float("music_sidechain", 0.55), "sidechain")) * slam_mult
 
 
 func _trigger_hat(velocity: float = 1.0) -> void:

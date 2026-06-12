@@ -784,6 +784,7 @@ func _physics_process(dt: float) -> void:
 	if _stats_timer >= 1.0:
 		_stats_timer = 0.0
 		_emit_stats()
+		_push_swim_activity()
 
 
 # Day/night light multiplier 0..1. Cosine over the cycle so it's a smooth
@@ -1812,7 +1813,7 @@ func _tick(dt: float) -> void:
 			if is_instance_valid(prey) and not consumed.has(prey):
 				consumed[prey] = true
 				if prey is Fish or prey is Shrimp:
-					_play_ambient_event("death", -1.0, _node_species(prey))
+					_play_ambient_death(prey, "predation")
 				else:
 					_play_ambient_event("eat", -1.0, _node_species(actor))
 				# Visual flash at the bite — short bright burst at the
@@ -1870,7 +1871,16 @@ func _tick(dt: float) -> void:
 		if ev.get("die", false):
 			if not consumed.has(actor):
 				consumed[actor] = true
-				_play_ambient_event("death", -1.0, _node_species(actor))
+				# Infer the cause so the death note can bend (old age resolves,
+				# starvation goes dim). Predation deaths come through kill_prey.
+				var death_cause: String = ""
+				if actor.get("age") != null and actor.get("max_age_s") != null \
+						and float(actor.max_age_s) > 0.0 \
+						and float(actor.age) >= float(actor.max_age_s):
+					death_cause = "age"
+				elif actor.get("hunger") != null and float(actor.hunger) > 0.8:
+					death_cause = "starvation"
+				_play_ambient_death(actor, death_cause)
 				# Death ritual + mourning hook. For named fish we record a
 				# mourning event so schoolmates visibly slow down for ~60s,
 				# and we log a personalized epitaph using their lifetime
@@ -2289,6 +2299,56 @@ func _play_ambient_event(event_name: String, intensity: float = -1.0, species: S
 	var audio := _ambient_audio()
 	if audio != null and audio.has_method("play_aquarium_event"):
 		audio.play_aquarium_event(event_name, intensity, species)
+
+
+# Feed average creature swim speed into the music once per second so the
+# shaker / flow layer tracks how ACTIVE the tank is: a feeding frenzy or a
+# startled, darting school lifts the groove; a calm tank settles it. The audio
+# side (note_swim_activity) only raises the smoothed "flow" toward this value,
+# so it decays naturally when the tank quiets — no need to push every frame.
+func _push_swim_activity() -> void:
+	var audio := _ambient_audio()
+	if audio == null or not audio.has_method("note_swim_activity"):
+		return
+	var total: float = 0.0
+	var n: int = 0
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		var ms: float = float(f.max_speed)
+		if ms > 0.01:
+			total += clampf(float(f.speed) / ms, 0.0, 1.0)
+			n += 1
+	for s in shrimp:
+		if not is_instance_valid(s):
+			continue
+		var ms2: float = float(s.max_speed)
+		if ms2 > 0.01:
+			total += clampf(float(s.speed) / ms2, 0.0, 1.0)
+			n += 1
+	if n > 0:
+		audio.note_swim_activity(clampf(total / float(n), 0.0, 1.0))
+
+
+# Emit a death musically, colored by the creature's age + cause when the audio
+# engine supports the richer path (young deaths read higher/unresolved, old
+# deaths resolve to the tonic; starvation/hypoxia bend the chord). Falls back
+# to the plain death event on older audio builds.
+func _play_ambient_death(node: Node, cause: String = "") -> void:
+	var audio := _ambient_audio()
+	if audio == null:
+		return
+	var species: String = _node_species(node)
+	var age01: float = -1.0
+	if node != null:
+		var a: Variant = node.get("age")
+		var ma: Variant = node.get("max_age_s")
+		if a != null and ma != null and float(ma) > 0.0:
+			age01 = clampf(float(a) / float(ma), 0.0, 1.0)
+	if audio.has_method("play_aquarium_event_extended"):
+		audio.play_aquarium_event_extended("death", species, -1.0, age01, cause)
+	elif audio.has_method("play_aquarium_event"):
+		audio.play_aquarium_event("death", -1.0, species)
 
 
 # Cheap species-id reader — safe on any node that may or may not have it.

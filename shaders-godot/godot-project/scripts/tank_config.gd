@@ -314,6 +314,12 @@ var music_seed: int = 1
 # auto = follow tank ; trance = aggressive 16-bar verse / 8-bar build / 16-bar drop ;
 # loop = stay in verse (chill background) ; free = let events nudge it.
 var music_phrase_form: String = "auto"
+# Harmonic scale override ("auto" = tank-driven major/minor). Options: major,
+# minor, deep, blues_minor, blues_major, dorian, mixolydian, bebop, whole_tone.
+var music_scale: String = "auto"
+# Musical persona ("none" = pure tank-driven). Options: monk, abgt, lofi, dub.
+# A persona biases scale + rhythm feel + voices + how events reshape the music.
+var music_persona: String = "none"
 var music_drop_intensity: float = 0.7
 var music_breakdown_depth: float = 0.7
 var music_lead_mix: float = 0.55
@@ -1762,6 +1768,8 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "influence_biomass", music_influence_biomass)
 	cfg.set_value("music", "seed", music_seed)
 	cfg.set_value("music", "phrase_form", music_phrase_form)
+	cfg.set_value("music", "scale", music_scale)
+	cfg.set_value("music", "persona", music_persona)
 	cfg.set_value("music", "drop_intensity", music_drop_intensity)
 	cfg.set_value("music", "breakdown_depth", music_breakdown_depth)
 	cfg.set_value("music", "lead_mix", music_lead_mix)
@@ -1968,6 +1976,8 @@ func load_from_disk() -> void:
 	music_influence_biomass = cfg.get_value("music", "influence_biomass", music_influence_biomass)
 	music_seed = int(cfg.get_value("music", "seed", music_seed))
 	music_phrase_form = String(cfg.get_value("music", "phrase_form", music_phrase_form))
+	music_scale = String(cfg.get_value("music", "scale", music_scale))
+	music_persona = String(cfg.get_value("music", "persona", music_persona))
 	music_drop_intensity = cfg.get_value("music", "drop_intensity", music_drop_intensity)
 	music_breakdown_depth = cfg.get_value("music", "breakdown_depth", music_breakdown_depth)
 	music_lead_mix = cfg.get_value("music", "lead_mix", music_lead_mix)
@@ -2184,6 +2194,8 @@ func reset_to_defaults() -> void:
 	music_influence_biomass = 1.0
 	music_seed = 1
 	music_phrase_form = "auto"
+	music_scale = "auto"
+	music_persona = "none"
 	music_drop_intensity = 0.7
 	music_breakdown_depth = 0.7
 	music_lead_mix = 0.55

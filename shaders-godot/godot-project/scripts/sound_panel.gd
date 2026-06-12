@@ -11,6 +11,8 @@ var _state_badge: Label
 var _mood_option: OptionButton
 var _style_option: OptionButton
 var _form_option: OptionButton
+var _scale_option: OptionButton
+var _persona_option: OptionButton
 var _slider_rows: Dictionary = {}
 var _check_rows: Dictionary = {}
 var _telemetry_t: float = 0.0
@@ -380,6 +382,41 @@ func _build_ui() -> void:
 	_style_option.item_selected.connect(func(idx):
 		TankConfig.music_style = _style_option.get_item_metadata(idx))
 
+	# Persona — a named bundle that biases scale + rhythm feel + voices + how
+	# events reshape the music. "None" leaves the engine fully tank-driven.
+	_persona_option = PanelTheme.add_dropdown_row(vbox, "Persona")
+	for entry in [
+		{"key": "none", "label": "None (pure tank-driven)"},
+		{"key": "monk", "label": "Thelonious Monk (jazz-blues)"},
+		{"key": "abgt", "label": "ABGT / Anjuna (trance)"},
+		{"key": "lofi", "label": "Lo-fi / Dilla"},
+		{"key": "dub", "label": "Dub techno / deep"},
+	]:
+		_persona_option.add_item(String(entry["label"]))
+		_persona_option.set_item_metadata(_persona_option.item_count - 1, entry["key"])
+	_persona_option.item_selected.connect(func(idx):
+		TankConfig.music_persona = _persona_option.get_item_metadata(idx))
+
+	# Harmonic scale. "Auto" follows the tank (major/minor by daylight, O2,
+	# bloom...); the rest force a fixed scale, incl. the blues / modal flavors.
+	_scale_option = PanelTheme.add_dropdown_row(vbox, "Scale")
+	for entry in [
+		{"key": "auto", "label": "Auto (tank-driven)"},
+		{"key": "major", "label": "Major"},
+		{"key": "minor", "label": "Minor"},
+		{"key": "deep", "label": "Deep (low register)"},
+		{"key": "blues_minor", "label": "Minor blues"},
+		{"key": "blues_major", "label": "Major blues"},
+		{"key": "dorian", "label": "Dorian"},
+		{"key": "mixolydian", "label": "Mixolydian"},
+		{"key": "bebop", "label": "Bebop dominant"},
+		{"key": "whole_tone", "label": "Whole tone"},
+	]:
+		_scale_option.add_item(String(entry["label"]))
+		_scale_option.set_item_metadata(_scale_option.item_count - 1, entry["key"])
+	_scale_option.item_selected.connect(func(idx):
+		TankConfig.music_scale = _scale_option.get_item_metadata(idx))
+
 	_form_option = PanelTheme.add_dropdown_row(vbox, "Phrase form")
 	for entry in [
 		{"key": "auto", "label": "Auto (vitality-driven)"},
@@ -536,6 +573,8 @@ func _pull_from_config() -> void:
 		_update_slider_label(key)
 	_sync_option(_mood_option, String(TankConfig.music_mood))
 	_sync_option(_style_option, String(TankConfig.music_style))
+	_sync_option(_persona_option, String(TankConfig.music_persona))
+	_sync_option(_scale_option, String(TankConfig.music_scale))
 	_sync_option(_form_option, String(TankConfig.music_phrase_form))
 
 
