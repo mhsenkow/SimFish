@@ -333,7 +333,7 @@ func _build_ui() -> void:
 	# --- Live tank → music readout (phrase state badge + telemetry) ---
 	_add_section(vbox, "Live tank → music")
 	_state_badge = Label.new()
-	_state_badge.add_theme_font_size_override("font_size", 18)
+	PanelTheme.as_mono(_state_badge, PanelTheme.SIZE_ITEM)
 	_state_badge.text = "verse"
 	vbox.add_child(_state_badge)
 	_live_label = PanelTheme.make_description()

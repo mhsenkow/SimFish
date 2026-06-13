@@ -48,6 +48,7 @@ const SCENARIOS: Array[Dictionary] = [
 		"accent_color": Color8(120, 195, 110),
 		"config": {
 			"tank_preset": "classic_community",
+			"cycle_start_mode": "fresh",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
@@ -96,12 +97,7 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_preset": "blackwater_biotope",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
-			"tank_shape": "box",
-			"tank_half_w": 6.0,
-			"tank_half_d": 3.0,
-			"tank_height": 9.0,
-			"water_surface_fraction": 0.94,
-			"substrate_depth_fraction": 0.18,
+			"vessel_preset": "column_blackwater",
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
 			"lighting_preset": "dim_warm",
@@ -112,24 +108,21 @@ const SCENARIOS: Array[Dictionary] = [
 	{
 		"id": "reef",
 		"name": "Coral Reef Cube",
-		"tagline": "Cube tank · ocean sand · corals + clams + mixed reef school",
-		"body": "Saltwater rimless cube (7×7 footprint, 7 tall — equal sides for a proper coral-cube aesthetic). Ocean-sand substrate spawns corals, anemones, clams, sponges instead of plants. Coral tips pulse + bleach + glow at night; anemones ribbon-wave. Mixed reef fish — each individual rolls a unique tropical morph (clownfish, tangs, chromis, anthias).",
+		"tagline": "Cube tank · ocean sand · corals + clams · bleaching + night biolum",
+		"body": "Saltwater rimless cube (7×7 footprint, 7 tall — equal sides for a proper coral-cube aesthetic). Ocean-sand substrate spawns corals, anemones, clams, sponges instead of plants. Coral tips pulse + bleach under heat stress + glow in sync at night; anemones ribbon-wave. Mixed reef fish — each individual rolls a unique tropical morph (clownfish, tangs, chromis, anthias).",
 		"accent_color": Color8(255, 150, 110),
 		"config": {
 			"tank_preset": "reef",
 			"substrate_type": "ocean_sand",
 			"aeration_type": "stick",
-			"tank_shape": "cube",
-			"tank_half_w": 6.5,
-			"tank_half_d": 6.5,
-			"tank_height": 7.0,
-			"water_surface_fraction": 0.95,
-			"substrate_depth_fraction": 0.14,
+			"vessel_preset": "reef_cube",
 			"light_fixture": "spotlight",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "reef",
 			"co2_level": 0.0,
 			"light_spectrum": 0.20,
+			"cycle_start_mode": "established",
+			"light_warmth": 0.72,
 		},
 	},
 	{
@@ -186,6 +179,7 @@ const SCENARIOS: Array[Dictionary] = [
 		"accent_color": Color8(160, 220, 200),
 		"config": {
 			"tank_preset": "showcase",
+			"cycle_start_mode": "established",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "cylinder",
@@ -274,13 +268,13 @@ const SCENARIOS: Array[Dictionary] = [
 	{
 		"id": "nano_reef",
 		"name": "Nano Reef",
-		"tagline": "Tiny cube · coral focus · single clownfish",
-		"body": "Pico-reef cube (4×4×5). Ocean sand substrate spawns a tight coral cluster as the visual centerpiece. One clownfish + a small mixed reef-fish school. Tight footprint means the corals fill the eye; the lone clownfish hosts in the anemones. Bright cool-spectrum LED for coral pop.",
+		"tagline": "Tiny cube · high warmth · bleaching tutorial tank",
+		"body": "Pico-reef cube (4×4×5). Warm LEDs + minimal aeration — corals glow at night but heat stress can bleach colonies if you don't manage warmth. One clownfish hosts in anemones. Turn the heater off in the lights panel to watch warmth drop near the rod.",
 		"accent_color": Color8(255, 175, 95),
 		"config": {
 			"tank_preset": "reef",
 			"substrate_type": "ocean_sand",
-			"aeration_type": "stick",
+			"aeration_type": "none",
 			"tank_shape": "cube",
 			"tank_half_w": 4.0,
 			"tank_half_d": 4.0,
@@ -292,6 +286,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "reef",
 			"co2_level": 0.0,
 			"light_spectrum": 0.20,
+			"cycle_start_mode": "established",
+			"light_warmth": 0.82,
+			"heater_enabled": false,
 		},
 	},
 	# ---- Wildcard: AI-or-random tank generation ----
@@ -422,7 +419,7 @@ func _ready() -> void:
 	# Title + tagline.
 	var title := Label.new()
 	title.text = "Pick a tank scenario"
-	title.add_theme_font_size_override("font_size", 22)
+	PanelTheme.as_serif(title, PanelTheme.SIZE_TITLE, true)
 	vb.add_child(title)
 
 	var sub := Label.new()
@@ -485,7 +482,7 @@ func _build_card(sc: Dictionary) -> Control:
 	band.add_theme_stylebox_override("panel", band_sb)
 	var title := Label.new()
 	title.text = String(sc.get("name", "Scenario"))
-	title.add_theme_font_size_override("font_size", 17)
+	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color(0.06, 0.07, 0.10, 1.0))
 	band.add_child(title)
 	vb.add_child(band)
@@ -578,7 +575,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 	panel.add_child(vb)
 	var title := Label.new()
 	title.text = "✨ Describe your dream tank"
-	title.add_theme_font_size_override("font_size", 18)
+	PanelTheme.as_serif(title, PanelTheme.SIZE_SECTION, true)
 	vb.add_child(title)
 	var subtitle := Label.new()
 	subtitle.text = "Ollama (%s) will design a tank around your description." % String(ai.model)
@@ -694,10 +691,16 @@ static func apply_scenario(scenario: Dictionary, cfg: Node) -> void:
 		return
 	var config: Dictionary = scenario.get("config", {})
 	var lighting_slug: String = ""
+	if config.has("vessel_preset") and cfg.has_method("apply_vessel_preset"):
+		cfg.apply_vessel_preset(String(config["vessel_preset"]))
 	for key in config.keys():
+		if key == "vessel_preset":
+			continue
 		if key == "lighting_preset":
 			lighting_slug = String(config[key])
 			continue
 		cfg.set(String(key), config[key])
 	if lighting_slug != "" and cfg.has_method("apply_lighting_preset"):
 		cfg.apply_lighting_preset(lighting_slug)
+	if config.has("cycle_start_mode"):
+		cfg.start_matured = (String(cfg.cycle_start_mode) == "established")

@@ -112,12 +112,12 @@ func _build_ui() -> void:
 	_card.add_child(v)
 
 	_step_lbl = Label.new()
-	_step_lbl.add_theme_font_size_override("font_size", 12)
+	PanelTheme.as_mono(_step_lbl, PanelTheme.SIZE_SMALL)
 	_step_lbl.add_theme_color_override("font_color", Color8(120, 200, 255))
 	v.add_child(_step_lbl)
 
 	_title_lbl = Label.new()
-	_title_lbl.add_theme_font_size_override("font_size", 22)
+	PanelTheme.as_serif(_title_lbl, PanelTheme.SIZE_SECTION, true)
 	_title_lbl.add_theme_color_override("font_color", Color8(245, 240, 220))
 	v.add_child(_title_lbl)
 

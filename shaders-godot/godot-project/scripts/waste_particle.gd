@@ -31,6 +31,11 @@ var voxel_size: float = 0.12
 var settled: bool = false
 var _life: float = 0.0
 var _settle_timer: float = 0.0
+var last_deposit_amount: float = 0.0
+# Cached tank World node. tick() ran a string-path node lookup every tick for
+# every particle (up to ~240 × the sim rate); the World ref is stable for the
+# particle's life, so resolve it once.
+var _world: Node = null
 
 
 # ---- Save / load ----
@@ -102,7 +107,9 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 	_life += dt
 	if _life >= MAX_LIFE:
 		return true
-	var w: Node = get_tree().current_scene.get_node_or_null("SubViewport/World")
+	if _world == null or not is_instance_valid(_world):
+		_world = get_tree().current_scene.get_node_or_null("SubViewport/World")
+	var w: Node = _world
 	if not settled:
 		var floor_y: float = substrate_top_y
 		if w != null and w.has_method("column_surface_y"):
@@ -182,6 +189,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 				var n_total: float = substrate.total_above_baseline()
 				if n_total > 6.0:
 					deposit *= 0.55
+			last_deposit_amount = deposit
 			substrate.add_at(position, deposit)
 			# Visible mulm: tiny chance to add a permanent dark voxel at this
 			# spot. The world node provides add_mulm_voxel; cheap and capped.

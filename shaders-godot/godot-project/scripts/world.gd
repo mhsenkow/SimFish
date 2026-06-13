@@ -4,9 +4,7 @@
 # and the initial population (plants, fish, snails). Then hands off to a
 # SimDriver child for ongoing generative behavior.
 #
-# Coordinate system: Y is up. The tank floor is at y=0. Tank box spans
-# x in [-tank_half_w, +tank_half_w], z in [-tank_half_d, +tank_half_d].
-# Water surface sits at y=water_height.
+# Subsystems extracted to WorldWaterVisuals + WorldFloaterManager helpers.
 
 extends Node3D
 
@@ -54,6 +52,8 @@ const VOXEL_SIZE: float = 0.32
 var _mineral_spots: Array[MeshInstance3D] = []
 var _mineral_progress_t: float = 0.0
 const MINERAL_SPOT_CAP: int = 35
+var _heater_world_pos: Vector3 = Vector3.ZERO
+var _heater_glow: OmniLight3D = null
 # Biofilm progress 0..1. Climbs slowly over the first few real-time
 # minutes, peaks around 0.65, then decays back toward a balanced level
 # as the "biofilm gets grazed" — the visible bloom-and-settle that all
@@ -329,14 +329,8 @@ func _ready() -> void:
 		_build_sea_cucumbers()
 		await get_tree().process_frame
 	else:
-		# Loading from save: lily pads + math plants aren't persisted, so
-		# respawn them. Floaters ARE persisted now (custom designs survive)
-		# and are restored by SimDriver.load_state -> restore_floaters, which
-		# falls back to a default spawn for pre-feature saves.
-		if not _active_substrate_profile.get("is_saltwater", false):
-			_spawn_lily_pads()
-			_spawn_math_plants()
-			await get_tree().process_frame
+		# Lily pads + math plants restored via SimDriver.load_state → restore_ambient.
+		pass
 
 	_spawn_aeration_system()
 	_spawn_mulm_layer()
@@ -376,6 +370,9 @@ func _ready() -> void:
 	# (patina + lineage depth + mixed ages) instead of brand-new. Fresh spawn only.
 	if not start_empty and not loading_from_save and TankConfig.start_matured:
 		_apply_mature_cold_start()
+	if not start_empty and not loading_from_save and sim != null \
+			and sim.has_method("apply_cycle_start_from_config"):
+		sim.apply_cycle_start_from_config()
 
 	# Find the directional light so we can dim it on the day/night cycle.
 	# The light is a sibling under SubViewport/World, accessible by name.
@@ -409,7 +406,14 @@ const _ENV_AMBIENT_NIGHT: float = 0.035
 
 # Lofi room environment dynamic variables
 var _room_sky_mat: ShaderMaterial = null
+var _room_window_state: Dictionary = {}
 var _room_stars: Array[MeshInstance3D] = []
+var _room_tank_spill: OmniLight3D = null
+var _room_wall_bounce: OmniLight3D = null
+var _room_side_light: OmniLight3D = null
+var _room_desk_rim: SpotLight3D = null
+var _room_window_glow: OmniLight3D = null
+var _room_haze_base: Color = Color(0.92, 0.84, 0.74)
 var _room_clock_hour_pivot: Node3D = null
 var _room_clock_min_pivot: Node3D = null
 var _room_record_disc: MeshInstance3D = null
@@ -427,6 +431,8 @@ const LIGHT_CYCLE_INTERVAL: float = 0.1
 var _light_cycle_accum: float = 0.0
 var _last_caustic_intensity: float = -1.0
 var _last_caustic_color: Color = Color(-1.0, -1.0, -1.0, -1.0)
+var _cached_lighting: Dictionary = {}
+var _cached_water_column: Dictionary = {}
 
 # Cosmetic ambient animation (stars, clock hands, vinyl disc, lava lamp, water
 # tint, floater drift, math-plant / lily-pad sway) is throttled to 10 Hz. It's
@@ -443,34 +449,18 @@ var _dead_floaters_scratch: Array = []
 var _cfg_node: Node = null
 
 
-# Shared day/night lighting curves for room sky, tank fixture, and water tint.
-func _day_night_lighting(sim_n: Node) -> Dictionary:
-	# Param renamed sim → sim_n to avoid shadowing the class `sim` member.
-	var dl: float = 1.0
-	var dp: float = 0.25
-	if sim_n != null:
-		dl = float(sim_n.daylight())
-		dp = fposmod(float(sim_n.day_phase), 1.0)
-	# Golden hour peaks at dusk (phase 0.5) with a softer dawn shoulder.
-	var sunset_hour: float = clampf(1.0 - absf(dp - 0.5) / 0.12, 0.0, 1.0)
-	var dawn_glow: float = 0.0
-	if dp < 0.12:
-		dawn_glow = 1.0 - dp / 0.12
-	elif dp > 0.92:
-		dawn_glow = (dp - 0.92) / 0.08
-	sunset_hour = maxf(sunset_hour, dawn_glow * 0.5)
-	# Deep night: room goes dark, aquarium fixture carries the scene.
-	var deep_night: float = 1.0 - smoothstep(0.08, 0.38, dl)
-	var tank_lights_on: bool = true
-	if _cfg_node != null:
-		tank_lights_on = not not _cfg_node.tank_lights_on
-	return {
-		"dl": dl,
-		"dp": dp,
-		"sunset_hour": sunset_hour,
-		"deep_night": deep_night,
-		"tank_lights_on": tank_lights_on,
-	}
+func _refresh_atmosphere_caches(adt: float) -> void:
+	if sim == null:
+		return
+	_cached_lighting = WorldAtmosphere.day_night_lighting(sim, _cfg_node)
+	var bloom: float = float(sim.bloom_intensity)
+	var wc = sim.water_chemistry if sim.get("water_chemistry") != null else null
+	var atm: Dictionary = _cached_lighting.get("atmosphere", {})
+	_cached_water_column = WorldAtmosphere.water_column_bundle(
+		tannins, bloom, floater_coverage(), wc,
+		C_WATER_SHALLOW, C_WATER_DEEP, float(atm.get("tannin_affinity", 0.0)))
+	if tannins < 0.55:
+		tannins = minf(0.55, tannins + 0.00007 * adt)
 
 
 func _process(dt: float) -> void:
@@ -503,10 +493,15 @@ func _process(dt: float) -> void:
 		_ambient_accum = 0.0
 
 	if _ambient_due and sim != null:
-		var ln: Dictionary = _day_night_lighting(sim)
+		_refresh_atmosphere_caches(adt)
+		var ln: Dictionary = _cached_lighting
 		var dl: float = ln["dl"]
 		var sunset_hour: float = ln["sunset_hour"]
 		var deep_night: float = ln["deep_night"]
+		if _heater_glow != null and _cfg_node != null:
+			var hon: bool = not not _cfg_node.heater_enabled
+			_heater_glow.light_energy = 0.6 if hon else 0.04
+			_heater_glow.visible = hon
 
 		# 1. Update Sky Color
 		if _room_sky_mat != null:
@@ -525,27 +520,38 @@ func _process(dt: float) -> void:
 				sky_col = sky_col.lerp(golden, sunset_hour * 0.48)
 			if deep_night > 0.45:
 				sky_col = sky_col.lerp(night_dark, smoothstep(0.45, 1.0, deep_night) * 0.62)
-			_room_sky_mat.set_shader_parameter("albedo", sky_col)
-			
-		# 2. Update Twinkling stars
-		var show_stars: bool = (dl < 0.25)
-		for star in _room_stars:
-			if is_instance_valid(star):
-				star.visible = show_stars
-				if show_stars:
-					var offset_phase: float = star.position.x * 12.3 + star.position.y * 7.9
-					var scale_factor: float = 0.7 + 0.3 * sin(_room_time_passed * 3.5 + offset_phase)
-					star.scale = Vector3(scale_factor, scale_factor, scale_factor)
+			if not _room_window_state.is_empty():
+				sky_col = WorldRoomBuilder.tick_window(
+					_room_window_state, ln, _room_time_passed, sky_col)
+				_room_sky_mat = _room_window_state.get("sky_mat", _room_sky_mat)
+			else:
+				_room_sky_mat.set_shader_parameter("albedo", sky_col)
+				var show_stars: bool = (dl < 0.25)
+				for star in _room_stars:
+					if is_instance_valid(star):
+						star.visible = show_stars
+						if show_stars:
+							var offset_phase: float = star.position.x * 12.3 + star.position.y * 7.9
+							var scale_factor: float = 0.7 + 0.3 * sin(_room_time_passed * 3.5 + offset_phase)
+							star.scale = Vector3(scale_factor, scale_factor, scale_factor)
 
-	# 3. Update Clock hands (real-world local time)
+		# Tank fixture bleed onto desk + back wall.
+		if _room_tank_spill != null or _room_wall_bounce != null:
+			var fix_col: Color = Color(1.0, 0.95, 0.85)
+			var fix_e: float = 0.5
+			if _cfg_node != null:
+				fix_col = _cfg_node.tank_fixture_color
+				fix_e = float(_cfg_node.tank_fixture_intensity)
+			WorldRoomBuilder.tick_room_lights(
+				_room_tank_spill, _room_wall_bounce, _room_side_light,
+				_room_desk_rim, _room_window_glow, ln,
+				fix_col, fix_e, ln["tank_lights_on"], -0.6, _room_haze_base)
+
+	# 3. Update Clock hands (sim day-phase or wall time per room preset)
 	if _ambient_due and _room_clock_hour_pivot != null and _room_clock_min_pivot != null:
-		var sys_time := Time.get_time_dict_from_system()
-		var hr: float = float(sys_time.hour)
-		var mn: float = float(sys_time.minute)
-		var sc: float = float(sys_time.second)
-		
-		_room_clock_hour_pivot.rotation.z = -((int(hr) % 12) + mn / 60.0 + sc / 3600.0) * (TAU / 12.0)
-		_room_clock_min_pivot.rotation.z = -(mn + sc / 60.0) * (TAU / 60.0)
+		var clk: Dictionary = WorldAtmosphere.clock_hand_rotations(_cfg_node, sim)
+		_room_clock_hour_pivot.rotation.z = clk["hour_z"]
+		_room_clock_min_pivot.rotation.z = clk["min_z"]
 
 	# 4. Update spinning vinyl record disc (synced to music state)
 	if _ambient_due and _room_record_disc != null:
@@ -622,77 +628,33 @@ func _process(dt: float) -> void:
 		if _coral_recruit_timer <= 0.0:
 			_coral_recruit_timer = randf_range(CORAL_RECRUIT_MIN, CORAL_RECRUIT_MAX)
 			_maybe_recruit_coral()
-	# Tannins: slow rise toward a cap (driftwood + leaves leak organics into
-	# the water column). Visible as a warm brown tint that deepens over time.
 	if _ambient_due and _visuals != null:
 		_visuals.tick(adt, true)
-	# Tannin cap + tint response raised so the warm-brown character of a
-	# driftwood-loaded tank actually reads in the water column instead of
-	# being a near-invisible 12% lerp. Real blackwater biotopes look
-	# unmistakably amber; we now reach that look at the equilibrium level
-	# rather than only at maxed-out values.
-	if _ambient_due and tannins < 0.55:
-		tannins = minf(0.55, tannins + 0.00007 * adt)
-	if _ambient_due and _water_material_ref != null:
-		var tannin_color := Color(0.83, 0.55, 0.25)
-		var base_water := Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b)
-		var tinted: Color = base_water.lerp(tannin_color, tannins * 0.80)
-		var bloom: float = 0.0
-		if sim != null:
-			bloom = float(sim.bloom_intensity)
-		if bloom > 0.01:
-			var algae_green := Color(0.36, 0.62, 0.32)
-			tinted = tinted.lerp(algae_green, bloom * 0.65)
-		# Final tint reaches the 0.85 cap at simultaneous-full inputs; the
-		# bumped multipliers mean a typical established tank is visibly
-		# tinted, not only the extreme cases.
-		var tint_strength: float = tannins * 0.70 + bloom * 0.55
-		var shallow_a: float = 0.12 + tannins * 0.12 + bloom * 0.14
-		var deep_a: float = 0.20 + tannins * 0.18 + bloom * 0.22
-		_water_material_ref.set_shader_parameter("tint_color", tinted)
-		_water_material_ref.set_shader_parameter("tint_strength", clampf(tint_strength, 0.0, 0.85))
-		_water_material_ref.set_shader_parameter("bloom_haze", bloom)
-		# Bacterial bloom — milky-white cast that's strongest during the
-		# ammonia spike of a new tank's cycle. Reads as "the water hasn't
-		# cleared yet" and naturally fades as the cycle establishes.
-		var bact_bloom: float = 0.0
-		if sim != null and sim.water_chemistry != null:
-			var nh3: float = float(sim.water_chemistry.ammonia)
-			var no2: float = float(sim.water_chemistry.nitrite)
-			# Peak during ammonia spike; tapers as nitrite rises then
-			# clears. Roughly: bloom = clamp((nh3+0.5*no2 - 0.4) / 0.8).
-			bact_bloom = clampf(((nh3 + no2 * 0.5) - 0.4) / 0.8, 0.0, 1.0)
-		_water_material_ref.set_shader_parameter("bacterial_bloom", bact_bloom)
-		_water_material_ref.set_shader_parameter("shallow_color",
-			Color(C_WATER_SHALLOW.r, C_WATER_SHALLOW.g, C_WATER_SHALLOW.b, shallow_a))
-		_water_material_ref.set_shader_parameter("deep_color",
-			Color(C_WATER_DEEP.r, C_WATER_DEEP.g, C_WATER_DEEP.b, deep_a))
-		if sim != null:
-			var ln2: Dictionary = _day_night_lighting(sim)
-			var dl: float = ln2["dl"]
-			var dp: float = ln2["dp"]
-			var sunset_hour: float = ln2["sunset_hour"]
-			var deep_night: float = ln2["deep_night"]
-			var tank_lights_on: bool = ln2["tank_lights_on"]
-			var sunset: float = sunset_hour * clampf(1.0 - deep_night * 0.35, 0.0, 1.0)
-			var moon: float = clampf((0.22 - dl) / 0.22, 0.0, 1.0) * deep_night
-			if tank_lights_on:
-				moon *= 1.0 - deep_night * 0.92
-			_water_material_ref.set_shader_parameter("sunset_warmth", sunset)
-			_water_material_ref.set_shader_parameter("moonlight", moon)
-			_water_material_ref.set_shader_parameter("day_phase_offset", dp)
-			_water_material_ref.set_shader_parameter("depth_fog", 0.42 + bloom * 0.12)
-			if _cfg_node != null and String(_cfg_node.get("environment_preset")) == "forest_window":
-				_water_material_ref.set_shader_parameter("ice_lens", clampf((0.4 - dl) * 0.5, 0.0, 0.35))
-			if _visuals != null:
-				var caust_i: float = _last_caustic_intensity if _last_caustic_intensity >= 0.0 else 0.55
-				_visuals.sync_aquatic_uniforms(caust_i, _last_caustic_color, WATER_HEIGHT, dp, 0.35)
-				var fixture_glow_amb: float = ln2["deep_night"] * (1.0 if ln2["tank_lights_on"] else 0.0)
-				var foliage_light: float = maxf(dl, fixture_glow_amb * 0.82)
-				_visuals.sync_foliage_uniforms(
-					clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light)
-				VoxelMat.update_fixture_glow(
-					fixture_glow_amb, _last_caustic_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
+	if _ambient_due and _water_material_ref != null and not _cached_water_column.is_empty():
+		var column: Dictionary = _cached_water_column
+		var ln_w: Dictionary = _cached_lighting if not _cached_lighting.is_empty() \
+			else WorldAtmosphere.day_night_lighting(sim, _cfg_node)
+		var atm: Dictionary = ln_w.get("atmosphere", {})
+		var ice: float = WorldAtmosphere.ice_lens_uniform(ln_w, atm)
+		WorldAtmosphere.apply_water_shader(_water_material_ref, column, ln_w, ice)
+		if sim != null and _visuals != null:
+			var dp: float = ln_w["dp"]
+			var trans: float = float(column.get("transmittance", 1.0))
+			var bact: float = float(column.get("bacterial_bloom", 0.0))
+			var caust_base: float = _last_caustic_intensity if _last_caustic_intensity >= 0.0 else 0.55
+			var caust_i: float = WorldAtmosphere.modulate_caustic_intensity(
+				caust_base, trans, bact)
+			# Duckweed / lily mats steal surface light — dim caustics tank-wide
+			# and sell the "shaded column" read under dense floaters.
+			caust_i *= (1.0 - floater_coverage() * 0.42)
+			_visuals.sync_aquatic_uniforms(caust_i, _last_caustic_color, WATER_HEIGHT, dp, 0.35)
+			var fixture_glow_amb: float = ln_w["deep_night"] * (1.0 if ln_w["tank_lights_on"] else 0.0)
+			var foliage_light: float = maxf(ln_w["dl"], fixture_glow_amb * 0.82)
+			var bloom: float = float(column.get("bloom_haze", 0.0))
+			_visuals.sync_foliage_uniforms(
+				clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light)
+			VoxelMat.update_fixture_glow(
+				fixture_glow_amb, _last_caustic_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
@@ -703,7 +665,9 @@ func _process(dt: float) -> void:
 	_light_cycle_accum += dt
 	if sim != null and _light_cycle_accum >= LIGHT_CYCLE_INTERVAL:
 		_light_cycle_accum = 0.0
-		var ln: Dictionary = _day_night_lighting(sim)
+		if _cached_lighting.is_empty() or _cached_water_column.is_empty():
+			_refresh_atmosphere_caches(0.0)
+		var ln: Dictionary = _cached_lighting
 		var dl: float = ln["dl"]
 		var sunset_hour: float = ln["sunset_hour"]
 		var deep_night: float = ln["deep_night"]
@@ -828,10 +792,11 @@ func _process(dt: float) -> void:
 				var caust_night: float = clampf(fixture_energy * 1.25, 0.0, 1.0) \
 					if tank_lights_on else 0.0
 				intensity = lerpf(caust_day, caust_night, deep_night)
-				# User multiplier on top so caustics can be dialed without flip-flopping
-				# the on/off toggle. Clamped so the shader gets a sane range.
 				if cfg2 != null:
 					intensity *= clampf(float(cfg2.caustic_intensity_user), 0.0, 2.0)
+				var trans: float = float(_cached_water_column.get("transmittance", 1.0))
+				var bact: float = float(_cached_water_column.get("bacterial_bloom", 0.0))
+				intensity = WorldAtmosphere.modulate_caustic_intensity(intensity, trans, bact)
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
 				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
 				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
@@ -887,6 +852,8 @@ func _process(dt: float) -> void:
 		var ray_alpha: float = base_alpha * ray_mix * (ray_energy_mix / 0.5)
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
+		var trans_ray: float = float(_cached_water_column.get("transmittance", 1.0))
+		ray_alpha = WorldAtmosphere.modulate_god_ray_alpha(ray_alpha, trans_ray)
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
 		# Matches the range used in _add_god_ray_beam — lowered from
 		# 1.5..4.0 to 1.0..2.4 so even the most anisotropic config still
@@ -940,6 +907,8 @@ func _drift_floaters(adt: float) -> void:
 		fn.position.z = xz.y
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
+	if _visuals != null and _visuals.has_method("sync_floater_shadows"):
+		_visuals.sync_floater_shadows(_floaters, SUBSTRATE_DEPTH)
 
 
 # Lily-pad + math-plant (nautilus / cattail / moss) sway. Their tick() advances
@@ -1473,7 +1442,8 @@ func _mulm_carrying_capacity() -> int:
 
 func _surface_floater_capacity() -> int:
 	var r: float = _footprint().radius_at_height(WATER_HEIGHT - 0.05, 0.35)
-	return maxi(8, int(PI * r * r / 0.26))
+	var base: int = maxi(8, int(PI * r * r / 0.26))
+	return WorldFloaterManager.scaled_surface_capacity(base, TANK_SHAPE)
 
 
 # Sample XZ on the substrate disk. edge_bias 0 = uniform area; higher = rim.
@@ -3050,7 +3020,7 @@ func _spawn_initial_plants() -> void:
 	await get_tree().process_frame
 
 	# --- Moss on driftwood epiphyte points ---
-	var moss_n: int = maxi(0, int(round(10.0 * m_moss)))
+	var moss_n: int = maxi(0, int(round(10.0 * m_moss * _epiphyte_spawn_scalar())))
 	for i in moss_n:
 		if _driftwood_voxels.is_empty():
 			break
@@ -3078,7 +3048,7 @@ func _spawn_initial_plants() -> void:
 	for v in _driftwood_voxels:
 		if v != null and is_instance_valid(v) and v.global_position.y > SUBSTRATE_DEPTH + 0.35:
 			epiphyte_hosts.append(v)
-	var fern_n: int = maxi(0, int(round(8.0 * m_fern)))
+	var fern_n: int = maxi(0, int(round(8.0 * m_fern * _epiphyte_spawn_scalar())))
 	for i in fern_n:
 		if epiphyte_hosts.is_empty():
 			break
@@ -3492,7 +3462,15 @@ func _maybe_recruit_coral() -> void:
 		sim.register_plant(c)
 
 
+func _plant_youth_scale() -> float:
+	if _cfg_node != null and String(_cfg_node.get("cycle_start_mode")) == "fresh":
+		var raw: Variant = _cfg_node.get("plant_youth_scale")
+		return clampf(float(raw) if raw != null else 0.52, 0.25, 1.0)
+	return 1.0
+
+
 func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
+	initial_height = maxi(1, int(round(float(initial_height) * _plant_youth_scale())))
 	var is_epiphyte: bool = not not spec.get("is_epiphyte", false)
 	var reach: float = float(spec.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
 	# Epiphytes anchor to driftwood / rock above the substrate — skip the
@@ -3890,7 +3868,7 @@ func _build_light_fixture() -> void:
 
 	var dark := VoxelMat.make(Color8(28, 28, 32))
 	var panel := VoxelMat.make(Color8(245, 240, 220))   # warm panel face
-	var panel_emit := VoxelMat.make(Color8(255, 250, 210))
+	var panel_emit := VoxelMat.make_emissive(Color(1.22, 1.16, 0.98))
 
 	if fixture_type == "spotlight":
 		var radius: float = size_frac * TANK_HALF_W * 0.5
@@ -3942,7 +3920,7 @@ func _build_light_fixture() -> void:
 		# Fixture bloom — overbright pixel where beam meets housing.
 		_add_cube(_light_fixture_root, Vector3(0, -0.17, 0),
 			Vector3(bar_length * 0.12, 0.03, bar_width * 0.2),
-			VoxelMat.make(Color8(255, 252, 235)))
+			VoxelMat.make_emissive(Color(1.28, 1.24, 1.05)))
 		# Suspension cords at both ends.
 		_add_cube(_light_fixture_root, Vector3(bar_length * 0.35, 0.4, 0),
 			Vector3(0.05, 0.6, 0.05), dark)
@@ -4251,11 +4229,12 @@ func _spawn_floaters() -> void:
 	# Floating surface plants. Each is a parametric FloatingPlant (duckweed /
 	# frogbit / salvinia / water lettuce) that drifts, photosynthesises, casts
 	# shade, and propagates based on light + nutrients + grazing pressure.
-	# The default tank gets a duckweed-dominant mix with a few frogbit.
 	var container := Node3D.new()
 	container.name = "Floaters"
 	add_child(container)
-	for i in 14:
+	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
+	var count: int = WorldFloaterManager.initial_spawn_count(sim, bloom, TANK_SHAPE)
+	for i in count:
 		var f_xz: Vector2 = _sample_surface_xz(0.4, 0.36)
 		_add_floater_at(
 			clamp_xyz_in_tank(Vector3(f_xz.x, WATER_HEIGHT - 0.05, f_xz.y), 0.35),
@@ -4304,6 +4283,7 @@ func _spawn_math_plants() -> void:
 		p.total_turns = _rng.randf_range(3.0, 3.8)
 		p.y_per_turn = _rng.randf_range(0.6, 0.85)
 		p.init_at(clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.35), ramp_choice)
+		p.set_meta("math_kind", "nautilus")
 		_math_plants.append(p)
 
 	# Cattail reeds.
@@ -4321,6 +4301,7 @@ func _spawn_math_plants() -> void:
 			Color8(110, 145, 75),
 			Color8(110, 78, 48),
 			Color8(95, 140, 75))
+		p.set_meta("math_kind", "cattail")
 		_math_plants.append(p)
 
 	# Fractal moss patches.
@@ -4341,6 +4322,7 @@ func _spawn_math_plants() -> void:
 		# pass could parent these to a hardscape log instead.
 		var y_jitter: float = randf_range(0.1, 0.6)
 		p.init_at(clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, y_jitter), 0.35), moss_ramp)
+		p.set_meta("math_kind", "moss")
 		_math_plants.append(p)
 
 
@@ -4505,6 +4487,7 @@ func _floater_growth_step() -> void:
 	var n: int = live.size()
 	if n == 0:
 		return
+	var cap: int = WorldFloaterManager.duckweed_cap(sim, _surface_floater_capacity())
 	var light: float = 1.0
 	var nutrients: float = 0.6
 	var graze: float = 0.0
@@ -4526,7 +4509,7 @@ func _floater_growth_step() -> void:
 		sr += float(fp.spread_rate) if fp is FloatingPlant else 1.0
 	sr = clampf(sr / float(n), 0.4, 2.0)
 	var spread_p: float = 0.55 * light * nutrients * (1.0 - coverage) * sr - graze
-	if randf() < spread_p:
+	if n < cap and randf() < spread_p:
 		var parent: Node3D = live[_rng.randi_range(0, n - 1)]
 		var ang: float = randf() * TAU
 		var r: float = randf_range(0.5, 1.0)
@@ -4537,6 +4520,8 @@ func _floater_growth_step() -> void:
 			_add_floater_at(Vector3(nx, WATER_HEIGHT - 0.05, nz), _mutate_floater_genome(child_g))
 	# Die-back from crowding, grazing, or prolonged darkness.
 	var dieback_p: float = graze * 0.5
+	if n >= cap:
+		dieback_p += 0.22
 	if coverage > 0.82:
 		dieback_p += (coverage - 0.82) * 1.5
 	if light < 0.25:
@@ -4559,6 +4544,207 @@ func floater_count() -> int:
 
 func floater_coverage() -> float:
 	return clampf(float(floater_count()) / float(_surface_floater_capacity()), 0.0, 1.0)
+
+
+func light_penetration_at(world_pos: Vector3) -> float:
+	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
+	var local_shade: float = WorldWaterVisuals.local_floater_shade_at(world_pos, _floaters)
+	return WorldWaterVisuals.light_penetration(
+		local_shade, floater_coverage(), bloom, tannins)
+
+
+func effective_warmth_at(world_pos: Vector3) -> float:
+	var dl: float = 1.0
+	if sim != null and sim.has_method("daylight"):
+		dl = float(sim.daylight())
+	var heater_on: bool = true
+	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
+		heater_on = not not _cfg_node.heater_enabled
+	return WorldWaterVisuals.effective_warmth_at(
+		world_pos, sim, _cfg_node, _heater_world_pos, dl, heater_on)
+
+
+func _epiphyte_spawn_scalar() -> float:
+	var base: float = biofilm_progress
+	if base < 0.08 and _cfg_node != null:
+		var mode: String = String(_cfg_node.get("cycle_start_mode") if _cfg_node.get("cycle_start_mode") != null else "fresh")
+		base = 0.42 if mode == "established" else 0.14
+	return clampf(base / 0.42, 0.10, 1.0)
+
+
+# ---- Ambient world save / restore (save v4) ----
+
+func ambient_to_save() -> Dictionary:
+	var minerals: Array = []
+	for spot in _mineral_spots:
+		if is_instance_valid(spot):
+			minerals.append(SaveHelpers.vec3_to_array(spot.position))
+	var lilies: Array = []
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		lilies.append({
+			"pos": SaveHelpers.vec3_to_array(lp.global_position),
+			"pad_radius": float(lp.pad_radius) if lp.get("pad_radius") != null else 0.95,
+			"pad_voxels": int(lp.pad_voxels) if lp.get("pad_voxels") != null else 28,
+			"stem_y": float(lp.stem_y) if lp.get("stem_y") != null else 1.6,
+		})
+	var math_out: Array = []
+	for mp in _math_plants:
+		if not is_instance_valid(mp):
+			continue
+		var entry: Dictionary = {
+			"pos": SaveHelpers.vec3_to_array(mp.global_position),
+			"kind": String(mp.get_meta("math_kind", "")),
+		}
+		if mp.get("a") != null:
+			entry["a"] = float(mp.a)
+			entry["b"] = float(mp.b)
+			entry["total_turns"] = float(mp.total_turns)
+			entry["y_per_turn"] = float(mp.y_per_turn)
+		if mp.get("height_voxels") != null:
+			entry["height_voxels"] = int(mp.height_voxels)
+			entry["head_voxels"] = int(mp.head_voxels)
+		if mp.get("depth") != null:
+			entry["depth"] = int(mp.depth)
+			entry["children"] = int(mp.children)
+		math_out.append(entry)
+	return {
+		"tannins": tannins,
+		"biofilm_progress": biofilm_progress,
+		"mineral_spots": minerals,
+		"lily_pads": lilies,
+		"math_plants": math_out,
+	}
+
+
+func restore_ambient(d: Variant) -> void:
+	if _active_substrate_profile.get("is_saltwater", false):
+		return
+	var had_data: bool = d is Dictionary and not (d as Dictionary).is_empty()
+	if had_data:
+		var amb: Dictionary = d
+		tannins = clampf(float(amb.get("tannins", tannins)), 0.0, 1.0)
+		biofilm_progress = clampf(float(amb.get("biofilm_progress", biofilm_progress)), 0.0, 0.7)
+		_clear_mineral_spots()
+		for pos_a in amb.get("mineral_spots", []):
+			if pos_a is Array:
+				_add_mineral_spot_at(SaveHelpers.array_to_vec3(pos_a, Vector3.ZERO))
+		_restore_lily_pads_from_save(amb.get("lily_pads", []))
+		_restore_math_plants_from_save(amb.get("math_plants", []))
+		_apply_biofilm_tints()
+	elif _lily_pads.is_empty() and _math_plants.is_empty():
+		_spawn_lily_pads()
+		_spawn_math_plants()
+
+
+func backfill_legacy_ambient(tank_age_s: float) -> void:
+	if _active_substrate_profile.get("is_saltwater", false):
+		return
+	if tank_age_s < WaterChemistry.SIM_DAY_S * 3.0:
+		return
+	if not _driftwood_voxels.is_empty() or tannins > 0.02:
+		var age_days: float = tank_age_s / WaterChemistry.SIM_DAY_S
+		tannins = maxf(tannins, clampf(age_days / 30.0, 0.12, 0.42))
+	biofilm_progress = maxf(biofilm_progress,
+		clampf(tank_age_s / (WaterChemistry.SIM_DAY_S * 14.0) * 0.52, 0.15, 0.55))
+	_apply_biofilm_tints()
+
+
+func _clear_mineral_spots() -> void:
+	for spot in _mineral_spots:
+		if is_instance_valid(spot):
+			spot.queue_free()
+	_mineral_spots.clear()
+
+
+func _add_mineral_spot_at(pos: Vector3) -> void:
+	if _mineral_spots.size() >= MINERAL_SPOT_CAP:
+		return
+	var glass_root := get_node_or_null("Glass")
+	if glass_root == null:
+		return
+	var spot := MeshInstance3D.new()
+	spot.mesh = VoxelMat.get_box(Vector3(0.10, 0.06, 0.10))
+	spot.material_override = VoxelMat.make(Color8(225, 230, 235))
+	spot.position = pos
+	glass_root.add_child(spot)
+	_mineral_spots.append(spot)
+
+
+func _restore_lily_pads_from_save(arr: Variant) -> void:
+	if not (arr is Array) or (arr as Array).is_empty():
+		return
+	var container := get_node_or_null("LilyPads")
+	if container == null:
+		container = Node3D.new()
+		container.name = "LilyPads"
+		add_child(container)
+	var pad_script := load("res://scripts/lily_pad.gd")
+	for e in arr:
+		if not (e is Dictionary):
+			continue
+		var d: Dictionary = e
+		var pad = pad_script.new()
+		container.add_child(pad)
+		pad.pad_radius = float(d.get("pad_radius", 0.95))
+		pad.pad_voxels = int(d.get("pad_voxels", 28))
+		var pos: Vector3 = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+		pad.global_position = clamp_xyz_in_tank(pos, 0.35)
+		pad.init_at(pad.global_position, float(d.get("stem_y", SUBSTRATE_DEPTH)))
+		_lily_pads.append(pad)
+
+
+func _restore_math_plants_from_save(arr: Variant) -> void:
+	if not (arr is Array) or (arr as Array).is_empty():
+		return
+	var container := get_node_or_null("MathPlants")
+	if container == null:
+		container = Node3D.new()
+		container.name = "MathPlants"
+		add_child(container)
+	for e in arr:
+		if not (e is Dictionary):
+			continue
+		var d: Dictionary = e
+		var kind: String = String(d.get("kind", ""))
+		var pos: Vector3 = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+		pos = clamp_xyz_in_tank(pos, 0.35)
+		if kind == "nautilus":
+			var p = load("res://scripts/nautilus_plant.gd").new()
+			container.add_child(p)
+			p.a = float(d.get("a", 0.04))
+			p.b = float(d.get("b", 0.11))
+			p.total_turns = float(d.get("total_turns", 3.4))
+			p.y_per_turn = float(d.get("y_per_turn", 0.72))
+			p.set_meta("math_kind", "nautilus")
+			var ramp: Array = [
+				Color8(20, 60, 30), Color8(40, 95, 50), Color8(60, 130, 70),
+				Color8(90, 170, 95), Color8(140, 210, 130),
+			]
+			p.init_at(pos, ramp)
+			_math_plants.append(p)
+		elif kind == "cattail":
+			var p = load("res://scripts/cattail_plant.gd").new()
+			container.add_child(p)
+			p.height_voxels = int(d.get("height_voxels", 22))
+			p.head_voxels = int(d.get("head_voxels", 5))
+			p.water_surface_y = WATER_HEIGHT
+			p.set_meta("math_kind", "cattail")
+			p.init_at(pos, Color8(110, 145, 75), Color8(110, 78, 48), Color8(95, 140, 75))
+			_math_plants.append(p)
+		elif kind == "moss":
+			var p = load("res://scripts/fractal_moss.gd").new()
+			container.add_child(p)
+			p.depth = int(d.get("depth", 2))
+			p.children = int(d.get("children", 4))
+			p.set_meta("math_kind", "moss")
+			var moss_ramp: Array = [
+				Color8(25, 65, 40), Color8(45, 95, 55), Color8(75, 130, 70),
+				Color8(110, 170, 95), Color8(150, 200, 125),
+			]
+			p.init_at(pos, moss_ramp)
+			_math_plants.append(p)
 
 
 # ---- Floater save / restore (called by SimDriver save_state / load_state) ----
@@ -4823,15 +5009,15 @@ func _spawn_aeration_system() -> void:
 
 	match fixture:
 		"disk":
-			_build_disk_aerator(container, anchor_x)
+			_build_disk_aerator(container, anchor_x, flow_rate)
 		"stick":
-			_build_stick_aerator(container, anchor_x)
+			_build_stick_aerator(container, anchor_x, flow_rate)
 		"filter":
-			_build_filter_aerator(container, anchor_x)
+			_build_filter_aerator(container, anchor_x, flow_rate)
 		"none":
 			pass
 		_:
-			_build_disk_aerator(container, anchor_x)
+			_build_disk_aerator(container, anchor_x, flow_rate)
 
 	# Push the computed rates onto the SimDriver so it can run the O2 model.
 	if sim != null:
@@ -4840,12 +5026,19 @@ func _spawn_aeration_system() -> void:
 		sim.set("aeration_fixture", fixture)
 
 
+func _configure_substrate_flow(origin: Vector3, jet: Vector3, flow_rate: float) -> void:
+	var flow: Dictionary = WorldAtmosphere.substrate_flow_from_jet(origin, jet, flow_rate)
+	_substrate_ripple_dir = flow["dir"]
+	_substrate_ripple_strength = flow["strength"]
+	VoxelMat.update_substrate_flow_origin(origin, clampf(flow_rate * 0.75, 0.25, 0.55))
+
+
 # --- Bubble disk ---
 # Round porous air-stone sitting on the substrate. Dense column of fine
 # bubbles rises straight up to the surface. The disk itself is 5 dark gray
 # voxels arranged in a + pattern with a thin air-line snaking back to the
 # back wall.
-func _build_disk_aerator(parent: Node, anchor_x: float) -> void:
+func _build_disk_aerator(parent: Node, anchor_x: float, flow_rate: float) -> void:
 	var sz: float = -TANK_HALF_D * 0.65        # tuck close to back wall
 	if not _is_inside_tank(anchor_x, sz, 0.5):
 		# Tank shape too narrow at the back - bring it forward.
@@ -4878,12 +5071,14 @@ func _build_disk_aerator(parent: Node, anchor_x: float) -> void:
 	# Surface pop ripples at the meniscus directly above the disk.
 	_spawn_surface_pop_emitter(parent, Vector3(anchor_x, WATER_HEIGHT - 0.05, sz),
 		clampf(rise_dist / 1.3, 2.5, 6.0), 18)
+	var surface_jet := Vector3(anchor_x, WATER_HEIGHT - 0.05, sz + 0.35)
+	_configure_substrate_flow(Vector3(anchor_x, disk_y, sz), surface_jet, flow_rate)
 
 
 # --- Bubble stick (wand) ---
 # Long thin air-stone bar lying flat along the back wall. Wide, even bubble
 # curtain. Visually about 60% of tank width.
-func _build_stick_aerator(parent: Node, anchor_x: float) -> void:
+func _build_stick_aerator(parent: Node, anchor_x: float, flow_rate: float) -> void:
 	var sz: float = -TANK_HALF_D * 0.78
 	# Make sure both ends of the bar are inside the tank for hex/triangle.
 	var half_bar: float = TANK_HALF_W * 0.45
@@ -4922,6 +5117,9 @@ func _build_stick_aerator(parent: Node, anchor_x: float) -> void:
 	# Surface pops along the bar.
 	_spawn_surface_pop_emitter(parent, Vector3(center_x, WATER_HEIGHT - 0.05, sz),
 		clampf(rise_dist / 1.3, 2.5, 6.0), 24)
+	_configure_substrate_flow(
+		Vector3(center_x, bar_y, sz),
+		Vector3(center_x, WATER_HEIGHT - 0.05, sz + 0.5), flow_rate)
 
 
 # --- Filter (hang-on-back) ---
@@ -4929,7 +5127,7 @@ func _build_stick_aerator(parent: Node, anchor_x: float) -> void:
 # the tube rises through the water column to just above the surface where a
 # horizontal spout pushes water (and a trickle of air-entrained bubbles)
 # outward into the tank.
-func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
+func _build_filter_aerator(parent: Node, anchor_x: float, flow_rate: float) -> void:
 	var sz: float = -TANK_HALF_D * 0.82       # mount on the back wall
 	if not _is_inside_tank(anchor_x, sz, 0.4):
 		sz = -TANK_HALF_D * 0.3
@@ -4947,11 +5145,30 @@ func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
 		var bm := BoxMesh.new()
 		bm.size = Vector3(0.32, 0.42, 0.32)
 		mi.mesh = bm
-		# Top + bottom voxels are accent colored.
+	# Top + bottom voxels are accent colored.
 		var col: Color = trim if (i == 0 or i == n_seg - 1) else tube_color
-		mi.material_override = VoxelMat.make(col)
+		if i == n_seg - 1:
+			col = Color(1.14, 1.12, 1.06)  # emissive cap — night burnthrough
+		mi.material_override = VoxelMat.make_emissive(col) if i == n_seg - 1 \
+			else VoxelMat.make(col)
 		mi.position = Vector3(anchor_x, y, sz)
 		parent.add_child(mi)
+	# Power LED + emissive status strip on the housing (night burnthrough source).
+	var led := MeshInstance3D.new()
+	var lbm := BoxMesh.new()
+	lbm.size = Vector3(0.10, 0.08, 0.06)
+	led.mesh = lbm
+	led.material_override = VoxelMat.make_emissive(Color(1.18, 1.05, 0.72))
+	led.position = Vector3(anchor_x + 0.22, top_y - 0.08, sz + 0.12)
+	parent.add_child(led)
+	for j in 3:
+		var strip := MeshInstance3D.new()
+		var sbm := BoxMesh.new()
+		sbm.size = Vector3(0.06, 0.04, 0.28)
+		strip.mesh = sbm
+		strip.material_override = VoxelMat.make_emissive(Color(1.12, 1.14, 1.08))
+		strip.position = Vector3(anchor_x, base_y + 0.35 + j * 0.55, sz + 0.18)
+		parent.add_child(strip)
 	# Intake strainer at the bottom - a wider voxel with little slots (just one
 	# bigger box for visual chunk; the "slots" come from the palette dither).
 	var intake := MeshInstance3D.new()
@@ -4964,15 +5181,10 @@ func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
 	# Publish the intake world position so microfauna + waste particles can
 	# drift toward it and despawn — the visible "filter is doing something"
 	# loop. Only set when this fixture is the active one; disk/stick/none
-	# leave sim.filter_intake_pos at Vector3.ZERO (Microfauna.gd treats
+	# leave sim.filter_intake_pos at Vector3.ZERO (microfauna_swarm.gd treats
 	# that as "no intake, ignore").
 	if sim != null:
 		sim.filter_intake_pos = intake.position
-	# Publish the intake position to substrate_caustic.gdshader so the
-	# ripple sculpting near the current deepens visibly. Gain 0.45 gives
-	# a noticeable but not over-the-top boost; the falloff in the shader
-	# limits the effect to ~2 m radius around the intake.
-	VoxelMat.update_substrate_flow_origin(intake.position, 0.45)
 	# Continuous bubble column rising from the intake to the surface.
 	# Distinct from substrate gas-escape: this is a steady, fine stream of
 	# pale micro-bubbles that curl gently downstream (toward the spout end
@@ -4992,6 +5204,7 @@ func _build_filter_aerator(parent: Node, anchor_x: float) -> void:
 		parent.add_child(mi)
 	# Output stream: bubbles + flow emitting forward from the spout end.
 	var spout_end := Vector3(anchor_x, spout_y, sz + 0.32 + 3.5 * 0.32)
+	_configure_substrate_flow(intake.position, spout_end, flow_rate)
 	_emit_filter_outflow(parent, spout_end)
 	# Surface pop ripples downstream of the spout end.
 	_spawn_surface_pop_emitter(parent,
@@ -5035,7 +5248,7 @@ func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
 	bm.height = bubble_radius * 2.0
 	bm.radial_segments = 5
 	bm.rings = 3
-	bm.material = VoxelMat.make_bubble(Color(0.78, 0.92, 0.96, 0.48))
+	bm.material = VoxelMat.make_bubble(Color(0.92, 0.98, 1.05, 0.48), 1.22)
 	p.draw_pass_1 = bm
 	parent.add_child(p)
 
@@ -5076,7 +5289,7 @@ func _emit_filter_intake_stream(parent: Node, intake_pos: Vector3) -> void:
 	bm.height = 0.09
 	bm.radial_segments = 4
 	bm.rings = 2
-	bm.material = VoxelMat.make_bubble(Color(0.92, 0.96, 1.0, 0.35))
+	bm.material = VoxelMat.make_bubble(Color(0.94, 0.99, 1.06, 0.35), 1.20)
 	p.draw_pass_1 = bm
 	parent.add_child(p)
 
@@ -5101,7 +5314,7 @@ func _emit_filter_outflow(parent: Node, spout_end: Vector3) -> void:
 	bm.height = 0.14
 	bm.radial_segments = 5
 	bm.rings = 3
-	bm.material = VoxelMat.make_bubble(Color(0.76, 0.90, 0.95, 0.44))
+	bm.material = VoxelMat.make_bubble(Color(0.88, 0.96, 1.04, 0.44), 1.18)
 	p.draw_pass_1 = bm
 	parent.add_child(p)
 
@@ -5174,31 +5387,16 @@ func _maybe_add_mineral_spot() -> void:
 	var glass_root := get_node_or_null("Glass")
 	if glass_root == null:
 		return
-	# Pick a random wall and a position along it just below the waterline.
-	var wall_pick: int = randi() % 4
-	var x: float = 0.0
-	var z: float = 0.0
-	match wall_pick:
-		0:  # back wall
-			x = randf_range(-TANK_HALF_W + 0.5, TANK_HALF_W - 0.5)
-			z = -TANK_HALF_D + 0.04
-		1:  # front wall
-			x = randf_range(-TANK_HALF_W + 0.5, TANK_HALF_W - 0.5)
-			z = TANK_HALF_D - 0.04
-		2:  # left wall
-			x = -TANK_HALF_W + 0.04
-			z = randf_range(-TANK_HALF_D + 0.5, TANK_HALF_D - 0.5)
-		_:  # right wall
-			x = TANK_HALF_W - 0.04
-			z = randf_range(-TANK_HALF_D + 0.5, TANK_HALF_D - 0.5)
-	# Y just below the meniscus, with a small vertical jitter so the
-	# spots distribute as a smear along the waterline rather than a
-	# perfect line.
-	var y: float = WATER_HEIGHT - randf_range(0.04, 0.4)
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	var pos: Vector3 = WorldAtmosphere.pick_glass_mineral_position(
+		_footprint(), WATER_HEIGHT, TANK_HALF_W, TANK_HALF_D, rng)
+	if pos == Vector3.ZERO:
+		return
 	var spot := MeshInstance3D.new()
 	spot.mesh = VoxelMat.get_box(Vector3(0.10, 0.06, 0.10))
 	spot.material_override = VoxelMat.make(Color8(225, 230, 235))
-	spot.position = Vector3(x, y, z)
+	spot.position = pos
 	glass_root.add_child(spot)
 	_mineral_spots.append(spot)
 
@@ -5248,6 +5446,8 @@ func _build_heater() -> void:
 	glow.omni_attenuation = 2.4
 	glow.position = Vector3(heater_x, heater_base_y + rod_h * 0.5, heater_z)
 	c.add_child(glow)
+	_heater_glow = glow
+	_heater_world_pos = Vector3(heater_x, heater_base_y + rod_h * 0.5, heater_z)
 
 
 # ---- Room environment ----
@@ -5293,6 +5493,7 @@ func _build_room_environment() -> void:
 		light_color.r * 0.92 + 0.08,
 		light_color.g * 0.86 + 0.06,
 		light_color.b * 0.78 + 0.04)
+	_room_haze_base = haze_tint
 	var desk_mat: ShaderMaterial = VoxelMat.make_room(desk_color, 0.55, haze_tint)
 	var desk_dark_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.18), 0.55, haze_tint)
 	var desk_mid_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.08), 0.55, haze_tint)
@@ -5413,19 +5614,17 @@ func _build_room_environment() -> void:
 		_build_room_window(room, wall_z, wall_mat, desk_dark_mat, preset)
 
 	# Soft warm room light from the side — simulates a window or lamp.
-	# Energy is low (0.18) so it doesn't blow out the tank's own fixture.
 	var room_light := OmniLight3D.new()
+	room_light.name = "RoomSideFill"
 	room_light.light_color = light_color
 	room_light.light_energy = 0.18
 	room_light.omni_range = 36.0
 	room_light.omni_attenuation = 1.6
 	room_light.position = Vector3(desk_half_w + 2.0, desk_y + 6.0, wall_z + 4.0)
 	room.add_child(room_light)
+	_room_side_light = room_light
 
-	# Tank-cast warm light — sits just below the tank fixture so the
-	# desk under and around the tank picks up the same warm spill the
-	# water column does. Without this, the tank floats in a "lamp on
-	# but desk lit by some other unseen source" disconnect.
+	# Tank-cast warm light — desk spill synced to fixture color in _process.
 	var tank_spill := OmniLight3D.new()
 	tank_spill.name = "TankSpill"
 	tank_spill.light_color = Color(1.0, 0.92, 0.78)
@@ -5435,6 +5634,43 @@ func _build_room_environment() -> void:
 	tank_spill.shadow_enabled = false
 	tank_spill.position = Vector3(0.0, desk_y + 0.05, 0.0)
 	room.add_child(tank_spill)
+	_room_tank_spill = tank_spill
+
+	# Back-wall bounce — picks up reef blue / planted pink at night.
+	var wall_bounce := OmniLight3D.new()
+	wall_bounce.name = "TankWallBounce"
+	wall_bounce.light_color = light_color
+	wall_bounce.light_energy = 0.08
+	wall_bounce.omni_range = desk_half_w * 1.6
+	wall_bounce.omni_attenuation = 1.8
+	wall_bounce.shadow_enabled = false
+	wall_bounce.position = Vector3(0.0, desk_y + 4.5, wall_z + 1.2)
+	room.add_child(wall_bounce)
+	_room_wall_bounce = wall_bounce
+
+	# Front desk rim — visible pool of fixture color on the surface at night.
+	var desk_rim := SpotLight3D.new()
+	desk_rim.name = "TankDeskRim"
+	desk_rim.spot_range = maxf(TANK_HALF_W, TANK_HALF_D) * 2.2 + 3.0
+	desk_rim.spot_angle = 68.0
+	desk_rim.spot_attenuation = 1.2
+	desk_rim.light_energy = 0.0
+	desk_rim.shadow_enabled = false
+	desk_rim.position = Vector3(0.0, desk_y + 0.15, TANK_HALF_D * 0.25)
+	desk_rim.rotation_degrees = Vector3(-82.0, 0.0, 0.0)
+	room.add_child(desk_rim)
+	_room_desk_rim = desk_rim
+
+	# Soft wash on the wall around the window from the tank at night.
+	var window_glow := OmniLight3D.new()
+	window_glow.name = "TankWindowGlow"
+	window_glow.light_energy = 0.0
+	window_glow.omni_range = desk_half_w * 1.2
+	window_glow.omni_attenuation = 1.9
+	window_glow.shadow_enabled = false
+	window_glow.position = Vector3(0.0, desk_y + 4.2, wall_z + 0.6)
+	room.add_child(window_glow)
+	_room_window_glow = window_glow
 
 	# Contact shadow under the tank — implemented by RECOLORING the desk
 	# planks that fall inside the tank's footprint, NOT by adding a
@@ -5554,90 +5790,14 @@ func _build_room_environment() -> void:
 
 func _build_room_window(parent: Node3D, wall_z: float, _wall_mat: Material,
 		frame_mat: Material, preset: Dictionary) -> void:
-	# Sky Backing: placed slightly behind the wall.
-	# Size: 7.0 wide, 5.0 tall, 0.1 deep.
-	var sky_w := 7.0
-	var sky_h := 5.0
-	var sky_y := -0.6 + 4.5 # desk_y + 4.5 = 3.9
-	
-	var sky := MeshInstance3D.new()
-	sky.mesh = VoxelMat.get_box(Vector3(sky_w, sky_h, 0.1))
-	
-	# Create sky material (duplicated so we can change its color in _process)
-	var sky_base_col_rgb: Array = preset.get("light_color", [255, 235, 200])
-	var sky_base_col := Color8(sky_base_col_rgb[0], sky_base_col_rgb[1], sky_base_col_rgb[2])
-	_room_sky_mat = VoxelMat.make(sky_base_col).duplicate()
-	sky.material_override = _room_sky_mat
-	sky.position = Vector3(0.0, sky_y, wall_z - 0.2)
-	parent.add_child(sky)
-	
-	# Spawn stars outside the window (Z = wall_z - 0.15).
-	# Star meshes are tiny white voxel boxes.
+	var desk_y: float = -0.6
+	_room_window_state = WorldRoomBuilder.build_window(
+		parent, wall_z, desk_y, preset, frame_mat)
+	_room_sky_mat = _room_window_state.get("sky_mat", null)
 	_room_stars.clear()
-	var star_positions := [
-		Vector3(-2.2, sky_y + 1.6, wall_z - 0.18),
-		Vector3(-1.1, sky_y + 0.8, wall_z - 0.18),
-		Vector3(0.4, sky_y + 2.0, wall_z - 0.18),
-		Vector3(1.8, sky_y + 1.2, wall_z - 0.18),
-		Vector3(2.5, sky_y + 0.4, wall_z - 0.18),
-	]
-	var star_mat := VoxelMat.make(Color8(255, 255, 240)) # unshaded white
-	for pos in star_positions:
-		var star := MeshInstance3D.new()
-		star.mesh = VoxelMat.get_box(Vector3(0.08, 0.08, 0.08))
-		star.material_override = star_mat
-		star.position = pos
-		star.visible = false # starts hidden during daylight
-		parent.add_child(star)
-		_room_stars.append(star)
-		
-	# Window Frame (Z = wall_z):
-	# Outer frame: left, right, top, bottom border.
-	# We construct this from boxes to keep the voxel style clean.
-	var frame_thickness := 0.25
-	var frame_depth := 0.5
-	
-	# Left vertical frame
-	var f_left := MeshInstance3D.new()
-	f_left.mesh = VoxelMat.get_box(Vector3(frame_thickness, sky_h + frame_thickness, frame_depth))
-	f_left.material_override = frame_mat
-	f_left.position = Vector3(-sky_w * 0.5 - frame_thickness * 0.5, sky_y, wall_z)
-	parent.add_child(f_left)
-	
-	# Right vertical frame
-	var f_right := MeshInstance3D.new()
-	f_right.mesh = VoxelMat.get_box(Vector3(frame_thickness, sky_h + frame_thickness, frame_depth))
-	f_right.material_override = frame_mat
-	f_right.position = Vector3(sky_w * 0.5 + frame_thickness * 0.5, sky_y, wall_z)
-	parent.add_child(f_right)
-	
-	# Top horizontal frame
-	var f_top := MeshInstance3D.new()
-	f_top.mesh = VoxelMat.get_box(Vector3(sky_w + frame_thickness * 2.0, frame_thickness, frame_depth))
-	f_top.material_override = frame_mat
-	f_top.position = Vector3(0.0, sky_y + sky_h * 0.5 + frame_thickness * 0.5, wall_z)
-	parent.add_child(f_top)
-	
-	# Bottom horizontal frame (sill)
-	var f_bottom := MeshInstance3D.new()
-	f_bottom.mesh = VoxelMat.get_box(Vector3(sky_w + frame_thickness * 2.0, frame_thickness * 1.5, frame_depth * 1.2))
-	f_bottom.material_override = frame_mat
-	f_bottom.position = Vector3(0.0, sky_y - sky_h * 0.5 - frame_thickness * 0.75, wall_z + frame_depth * 0.05)
-	parent.add_child(f_bottom)
-	
-	# Mullions / Inner grid frames:
-	# We can do a vertical bar in the center and a horizontal bar.
-	var m_vert := MeshInstance3D.new()
-	m_vert.mesh = VoxelMat.get_box(Vector3(0.12, sky_h, frame_depth * 0.7))
-	m_vert.material_override = frame_mat
-	m_vert.position = Vector3(0.0, sky_y, wall_z + 0.05)
-	parent.add_child(m_vert)
-	
-	var m_horiz := MeshInstance3D.new()
-	m_horiz.mesh = VoxelMat.get_box(Vector3(sky_w, 0.12, frame_depth * 0.7))
-	m_horiz.material_override = frame_mat
-	m_horiz.position = Vector3(0.0, sky_y, wall_z + 0.05)
-	parent.add_child(m_horiz)
+	for s in _room_window_state.get("stars", []):
+		if s is MeshInstance3D:
+			_room_stars.append(s)
 
 
 func _build_room_mug(parent: Node3D, base_pos: Vector3, ceramic_color: Color) -> void:
@@ -6278,84 +6438,6 @@ func _spawn_initial_microfauna(count: int) -> void:
 		return
 	microfauna_root.set_target(count)
 	microfauna_root.seed(mini(count, 16))
-
-
-func _microfauna_swarm_fill() -> float:
-	if microfauna_root == null:
-		return 0.0
-	var cap: int = maxi(1, microfauna_carrying_capacity())
-	return clampf(float(microfauna_root.get_child_count()) / float(cap), 0.0, 1.0)
-
-
-func _refresh_microfauna_visibility() -> void:
-	if microfauna_root == null:
-		return
-	var fill: float = _microfauna_swarm_fill()
-	for child in microfauna_root.get_children():
-		if child is Microfauna:
-			(child as Microfauna).set_swarm_presence(fill)
-
-
-func _spawn_one_microfauna() -> void:
-	if microfauna_root == null or sim == null:
-		return
-	# Occasionally drop a localized swarm instead of a scattered single
-	# individual. Real daphnia / copepod populations cluster around food
-	# pulses; a few visible clouds reads much more "alive" than uniform
-	# Brownian dots. Swarms are ~8 individuals dropped into a 0.4-unit
-	# bubble at one sampled point.
-	if randf() < 0.18:
-		_spawn_microfauna_swarm()
-		return
-	var fill: float = _microfauna_swarm_fill()
-	for _attempt in 16:
-		var pt: Vector3 = _sample_point_in_tank(
-			SUBSTRATE_DEPTH + 0.2, WATER_HEIGHT - 0.3, 0.35)
-		if not is_inside_tank_volume(pt.x, pt.y, pt.z, 0.35):
-			continue
-		var m := Microfauna.new()
-		m.set_swarm_presence(fill)
-		microfauna_root.add_child(m)
-		m.sim = sim
-		m.position = clamp_xyz_in_tank(pt, 0.35, 0.04)
-		# Stagger initial age so the population doesn't all die at once.
-		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.6)
-		return
-
-
-# Drop a tight bubble of ~8 daphnia at a sampled point so the swarm
-# reads as a localized cloud the fish can chase, rather than uniform
-# scatter across the whole tank.
-func _spawn_microfauna_swarm() -> void:
-	if microfauna_root == null or sim == null:
-		return
-	var fill: float = _microfauna_swarm_fill()
-	var center: Vector3 = Vector3.ZERO
-	var found: bool = false
-	for _attempt in 16:
-		var pt: Vector3 = _sample_point_in_tank(
-			SUBSTRATE_DEPTH + 0.4, WATER_HEIGHT - 0.5, 0.5)
-		if is_inside_tank_volume(pt.x, pt.y, pt.z, 0.5):
-			center = pt
-			found = true
-			break
-	if not found:
-		return
-	var swarm_n: int = randi_range(6, 10)
-	for _i in swarm_n:
-		var offset := Vector3(
-			randf_range(-0.35, 0.35),
-			randf_range(-0.20, 0.20),
-			randf_range(-0.35, 0.35))
-		var p: Vector3 = clamp_xyz_in_tank(center + offset, 0.35, 0.04)
-		var m := Microfauna.new()
-		m.set_swarm_presence(fill)
-		microfauna_root.add_child(m)
-		m.sim = sim
-		m.position = p
-		# Tight ages so the swarm reads as a synchronous cloud, not
-		# already-decaying individuals.
-		m._age = randf_range(0.0, Microfauna.LIFESPAN_S * 0.25)
 
 
 # Wriggle worms — proportional to current mulm carpet. As mulm accumulates,

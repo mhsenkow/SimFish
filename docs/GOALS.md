@@ -10,7 +10,11 @@ the Walstad-style hyper-realistic ecosystem feel.
 - Impact: **S** (polish), **M** (noticeable), **L** (transforms how the tank feels).
 - Check items off as you ship them; add new ones as they come up.
 
-Last reviewed: see git log on this file.
+Last reviewed: 2026-06-13.
+
+**Source of truth:** shipped features are described in the top-level
+[README.md](../README.md) ("Recent additions" + "Roadmap"). This file tracks the
+remaining idea backlog. As of the last review only item **#50 (multi-tank wallpaper mode)** remains open from the original 50.
 
 ---
 
@@ -37,7 +41,7 @@ The reproduction loop is the heart of an ecosystem sim. Each visible step
 sells the "this is alive" feeling.
 
 - [x] **11. Intensifying courtship display.** Color pulse + fin spread ramps over the courtship window so the spawn moment reads as a flash. Some of this exists; needs tuning. *Effort: M · Impact: M*
-- [ ] **12. Mouthbrooder egg-carry.** Selected cichlid-likes carry visible eggs in the throat for the incubation period. *Effort: L · Impact: M*
+- [x] **12. Mouthbrooder egg-carry.** Selected cichlid-likes carry visible eggs in the throat for the incubation period. *Effort: L · Impact: M* — shipped: `is_mouthbrooder` genome flag drives a throat-bulge mesh + delayed fry release (`sim_driver._release_brooded_fry`) for angelfish + dwarf gourami.
 - [x] **13. Fry-in-plants shoaling.** Fresh fry seek the densest plant patch and shoal there until juvenile. *Effort: M · Impact: L*
 - [x] **14. Adult coloration deepening with age.** Juveniles slightly desaturated, adults full vivid. Currently jumps; should be gradual. *Effort: S · Impact: M*
 - [x] **15. Live-bearer pregnancy bulge.** Guppy females visibly grow rounder before birth. Already partly modeled; needs animation curve. *Effort: S · Impact: M*
@@ -45,14 +49,14 @@ sells the "this is alive" feeling.
 - [x] **17. Parental clutch guarding.** Egg-laying species defend their eggs from passing fish for the incubation window. *Effort: M · Impact: L*
 - [x] **18. Pheromone trails during heat.** Subtle particle trail from a receptive female that nearby males can follow. *Effort: M · Impact: M*
 - [x] **19. Species-tinted egg color.** Eggs currently look identical; tinting them per-species sells the variety. *Effort: S · Impact: S*
-- [ ] **20. Per-species mating dance.** Each species gets a distinct courtship choreography (spiral, parade, vertical bob, parallel cruise). *Effort: L · Impact: L*
+- [x] **20. Per-species mating dance.** Each species gets a distinct courtship choreography (spiral, parade, vertical bob, parallel cruise). *Effort: L · Impact: L* — shipped: five dance variants gated by `swim_pattern` in `fish.gd`'s breed branch (parallel S-curve, jerky lateral snap, vertical figure-8, wide circling, slow lateral display).
 
 ## C. Food web & ecology
 
 The trophic loop is already wired — these add visibility and dynamics.
 
 - [x] **21. Algae bloom dynamics.** When nutrients spike + plant biomass low, water gradually tints green; balance shift crashes it back. *Effort: L · Impact: L* — sim_driver computes continuous `bloom_pressure` from nutrients × plant-shortage, smoothed into `bloom_intensity`. Spawn rate, cap, and accelerated die-off during the crash phase (high biomass, low nutrients) all scale from it. world.gd lerps the water material toward green proportionally so a bad bloom literally clouds the tank.
-- [x] **22. Microfauna (copepods, daphnia).** Tiny moving white dots, snack food for fry. *Effort: M · Impact: L* — `microfauna.gd`; 90 drifting individuals refilled by `world._maintain_microfauna()`; two visual variants (copepods + paler-blue daphnia). Eaten by the filter intake currently; full predation hook still pending.
+- [x] **22. Microfauna (copepods, daphnia).** Tiny moving white dots, snack food for fry. *Effort: M · Impact: L* — `microfauna_swarm.gd`; drifting individuals refilled by `world._maintain_microfauna()`; two visual variants (copepods + paler-blue daphnia). Eaten by the filter intake currently; full predation hook still pending.
 - [x] **23. Tap-to-feed.** Tap the tank surface to drop a flake cloud; fish converge from below. *Effort: M · Impact: L* — Ctrl+LMB (or ⌘+LMB on macOS) projects the cursor onto the water surface and drops 4–6 KIND_FOOD pellets in a small jittered cluster. Pellets bob on the surface for 8 s before sinking — exactly like real flake food. Fish converge via the existing food-pickup tier.
 - [x] **24. Substrate worms.** Visible squirms in mulm patches — visual proof of the detrital loop. *Effort: M · Impact: M* — `wriggle_worm.gd`; two-segment voxel with head-leading phase wave; population scales with mulm carpet density.
 - [x] **25. Plant flowering events.** Lily pads, cattails, and emergent plants occasionally bloom for a few minutes. *Effort: M · Impact: M* — already present: lily_pad has full 6-petal bloom lifecycle, cattails have seed-head puffing, base plant.gd has bud→opening→mature→seed-pod stages inherited by spiral/branch plants. Tuning per species is open work.
@@ -89,7 +93,7 @@ The medium itself — water, light, surface, sound — sells the immersion.
 - [x] **45. Day/night ambient audio crossfade.** Morning birds, midday quiet, evening cricket / cicada layer through the speakers behind the tank. *Effort: M · Impact: L* — `ambient_audio.gd` now auto-triggers plinks at an interval that scales with `sim.daylight()` (3 s at midday → 12 s at midnight) and biases the pentatonic pitch higher in the day. The player's `volume_db` also lerps from -14 dB (midnight) to -6 dB (midday) so the day/night contrast reads as audible amplitude as well as cadence.
 - [x] **46. Heater glow.** A small visible heater rod with a faint warm light pulse. *Effort: S · Impact: S* — `world._build_heater()` drops a thin black-glass rod with a visible red filament strip at the back-right corner of the substrate, plus an OmniLight3D (warm orange, 1.4 unit range) so the rod genuinely glows in the corner.
 - [x] **47. Tank-condition mood indicator.** A subtle UI chip showing tank "vibe" — Thriving / Cycling / Stressed / Crashing — based on aggregate metrics. *Effort: M · Impact: M* — new "mood" chip in the top HUD. Aggregates `0.3 × O₂ + 0.3 × biomass-normalized + 0.2 × (1 - algae) + 0.2 × (1 - waste)` and maps to 🙂 thriving / 😌 ok / 😟 stressed / 🚨 crashing.
-- [ ] **48. Walstad cycle phase.** "Day 3: ammonia spike" / "Day 14: nitrites" / "Day 28: cycled" labels with appropriate algae behavior per phase. *Effort: L · Impact: L* — deferred (needs a tank-age counter wired through sim_driver + chip).
+- [x] **48. Walstad cycle phase.** "Day 3: ammonia spike" / "Day 14: nitrites" / "Day 28: cycled" labels with appropriate algae behavior per phase. *Effort: L · Impact: L* — `tank_age_s` + `bacteria_colony` in `water_chemistry.gd`; fresh vs established cold-start via `cycle_start_mode`; water chip + cycle banner + story log day prefixes; save v3.
 - [x] **49. Tank story log.** Auto-generated diary entries: "Day 5: glassdart pair formed" / "Day 12: first hatch" / "Day 18: betta lived 8 days, died of old age." *Effort: M · Impact: L* — sim_driver.gd has `story_events: Array` capped at MAX_STORY_EVENTS (200). First-egg, first-hatch, first-natural-death milestones each fire once. Tapping the mood chip opens a centered RichTextLabel scroll listing events newest-first with elapsed-time prefixes ("12m", "1h 4m").
 - [ ] **50. Multi-tank wallpaper mode.** Multiple tanks tiled across a wide window — the menu becomes a wall of tanks. *Effort: L · Impact: M* — deferred (needs scene-switching infrastructure + a separate "wallpaper" mode toggle).
 
@@ -101,16 +105,17 @@ The medium itself — water, light, surface, sound — sells the immersion.
 
 ## Bonus / out-of-the-fifty
 
-Stuff that didn't make the cut but is worth jotting down:
+Stuff that didn't make the cut but is worth jotting down (several have since
+shipped — marked below):
 
-- Cleaner shrimp grooming a fish (visible station, brief animation)
+- Cleaner shrimp grooming a fish (visible station, brief animation) — **shipped** (cleaning symbiosis)
 - Snail tower (real snails climb on each other)
 - Visible shrimp molt shells (white ghost shells briefly on substrate)
-- Generation tree visible — tap a fish to see lineage
+- Generation tree visible — tap a fish to see lineage — **shipped** (`lineage_tree_view.gd`)
 - Fish noticing the camera (occasional camera-orient pause)
 - Achievement system (first breed, first crash, first reef)
-- Auto-generated creature names ("Lazuli Veil #3")
+- Auto-generated creature names ("Lazuli Veil #3") — **shipped** (`creature_naming.gd`)
 - Visit other people's tanks (cloud share)
-- Performance: spatial grid for boids
-- Performance: LOD on far creatures
+- Performance: spatial grid for boids — **shipped** (plant spatial grid)
+- Performance: LOD on far creatures — **shipped** (voxel `visibility_range_end` LOD)
 - Persistent simulation when app backgrounded

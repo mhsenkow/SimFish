@@ -15,6 +15,7 @@ extends Node
 class_name SimDriver
 
 signal stats_changed(stats: Dictionary)
+signal eco_event(kind: String, text: String, severity: int)
 
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
@@ -260,6 +261,11 @@ func pulse_glass_tap(world_pos: Vector3) -> void:
 # tank visibly breathes in unison. Phase ticks in _tick.
 func school_pulse() -> float:
 	return sin(_school_pulse_phase)
+
+
+# Raw phase (radians) for tail-wag lock among conspecific schoolers.
+func school_pulse_phase() -> float:
+	return _school_pulse_phase
 
 
 # Append a mourning event (called when a named fish dies). Pruned in _tick.
@@ -540,10 +546,175 @@ func mint_id() -> String:
 	return s
 
 
+func sim_day() -> float:
+	return tank_age_s / WaterChemistry.SIM_DAY_S
+
+
+func sim_day_label() -> String:
+	return "Day %d" % maxi(1, int(sim_day()) + 1)
+
+
+func hud_ecology_mode() -> String:
+	if _is_saltwater_tank():
+		return "reef"
+	if water_chemistry == null:
+		return "established"
+	return WaterChemistry.hud_mode(water_chemistry.cycle_phase, sim_day(), false)
+
+
+func _is_saltwater_tank() -> bool:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not cfg.has_method("current_substrate_profile"):
+		return false
+	return not not cfg.current_substrate_profile().get("is_saltwater", false)
+
+
+func emit_eco_event(kind: String, text: String, severity: int = 1,
+		log_story: bool = true) -> void:
+	eco_event.emit(kind, text, severity)
+	if log_story:
+		log_story_event(text, true)
+
+
+func apply_cycle_start_from_config() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or water_chemistry == null:
+		return
+	var mode: String = String(cfg.get("cycle_start_mode") if cfg.get("cycle_start_mode") != null else "fresh")
+	if _is_saltwater_tank():
+		water_chemistry.apply_reef_start()
+		tank_age_s = WaterChemistry.SIM_DAY_S * 21.0
+		dissolved_o2 = 0.90
+	elif mode == "established":
+		water_chemistry.apply_established_start()
+		tank_age_s = WaterChemistry.SIM_DAY_S * 14.0
+		dissolved_o2 = 0.88
+	else:
+		water_chemistry.apply_fresh_start()
+		tank_age_s = 0.0
+		dissolved_o2 = 0.78
+
+
+func _record_trophic_produced(amount: float) -> void:
+	if amount <= 0.0:
+		return
+	trophic_ledger["produced"] = float(trophic_ledger.get("produced", 0.0)) + amount
+	_trophic_hour_produced += amount
+
+
+func _record_trophic_consumed(consumed_nv: float, leftover: float) -> void:
+	trophic_ledger["consumed"] = float(trophic_ledger.get("consumed", 0.0)) + consumed_nv
+	if leftover > 0.04:
+		trophic_ledger["produced"] = float(trophic_ledger.get("produced", 0.0)) + leftover
+		_trophic_hour_produced += leftover
+	else:
+		trophic_ledger["lost"] = float(trophic_ledger.get("lost", 0.0)) + consumed_nv
+	var recycled: float = consumed_nv - maxf(leftover, 0.0)
+	_trophic_hour_recycled += maxf(0.0, recycled * 0.4)
+
+
+func _record_trophic_deposited(amount: float) -> void:
+	if amount <= 0.0:
+		return
+	trophic_ledger["deposited"] = float(trophic_ledger.get("deposited", 0.0)) + amount
+	_trophic_hour_recycled += amount
+
+
+func _refresh_tank_vitals(bloom_pressure: float, n_total: float, plant_biomass: int) -> void:
+	var recycle_denom: float = maxf(0.001, float(trophic_ledger.get("consumed", 0.0)))
+	var recycle_pct: float = clampf(
+		(float(trophic_ledger.get("deposited", 0.0)) + _trophic_hour_recycled) / recycle_denom,
+		0.0, 1.0)
+	tank_vitals = {
+		"o2": dissolved_o2,
+		"nh3": water_chemistry.ammonia if water_chemistry != null else 0.0,
+		"no2": water_chemistry.nitrite if water_chemistry != null else 0.0,
+		"no3": water_chemistry.nitrate if water_chemistry != null else 0.0,
+		"n_total": n_total,
+		"bloom_pressure": bloom_pressure,
+		"bloom_intensity": bloom_intensity,
+		"cycle_phase": water_chemistry.cycle_phase if water_chemistry != null else 0,
+		"cycle_label": _cycle_label_for_hud(),
+		"bacteria_colony": water_chemistry.bacteria_colony if water_chemistry != null else 0.0,
+		"alkalinity_proxy": water_chemistry.alkalinity_proxy if water_chemistry != null else 8.0,
+		"reef_nutrients": water_chemistry.reef_nutrients if water_chemistry != null else 0.0,
+		"is_saltwater": _is_saltwater_tank(),
+		"tank_age_s": tank_age_s,
+		"sim_day": sim_day(),
+		"sim_day_label": sim_day_label(),
+		"hud_mode": hud_ecology_mode(),
+		"carrying_capacity": fish_carrying_capacity(),
+		"stocking_ratio": fish_stocking_ratio(),
+		"trophic_recycle_pct": recycle_pct,
+		"trophic_recycle_hour_pct": clampf(
+			_trophic_hour_recycled / maxf(0.001, _trophic_hour_produced), 0.0, 1.0),
+		"waste_particles": waste.size(),
+		"plant_biomass": plant_biomass,
+		"floater_coverage": _floater_coverage(),
+		"reef_bleach_level": _max_reef_bleach(),
+	}
+
+
+func _cycle_label_for_hud() -> String:
+	if _is_saltwater_tank():
+		return WaterChemistry.reef_phase_label()
+	if water_chemistry == null:
+		return ""
+	return WaterChemistry.phase_label(water_chemistry.cycle_phase)
+
+
+func _floater_coverage() -> float:
+	var w: Node = get_parent()
+	if w != null and w.has_method("floater_coverage"):
+		return float(w.floater_coverage())
+	return 0.0
+
+
+func _tank_warmth_sample() -> float:
+	var w: Node = get_parent()
+	if w != null and w.has_method("effective_warmth_at"):
+		return float(w.effective_warmth_at(Vector3.ZERO))
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and cfg.get("light_warmth") != null:
+		return float(cfg.light_warmth)
+	return 0.55
+
+
+func _max_reef_bleach() -> float:
+	if not _is_saltwater_tank():
+		return 0.0
+	var peak: float = 0.0
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		if p.get("_bleach_level") != null:
+			peak = maxf(peak, float(p._bleach_level))
+	return peak
+
+
 # Total real-world seconds this tank has been running with focus. Persisted
 # in tanks/<slot>/meta.cfg and shown on the menu card. Ticked per real
 # frame (NOT scaled by time_scale — this measures user attention).
 var elapsed_runtime_s: float = 0.0
+# Sim-time age (scaled by time_scale via tick dt). Drives cycle labels,
+# HUD modes, and story diary day prefixes — distinct from elapsed_runtime_s
+# which measures real wall-clock session time for the menu card.
+var tank_age_s: float = 0.0
+
+# Unified snapshot refreshed each sim tick — fauna, plants, algae, and HUD
+# read the same values so chemistry and behaviour never disagree.
+var tank_vitals: Dictionary = {}
+
+# Rolling trophic accounting (nutrient units, not ppm).
+var trophic_ledger: Dictionary = {
+	"produced": 0.0,
+	"consumed": 0.0,
+	"deposited": 0.0,
+	"lost": 0.0,
+}
+var _trophic_hour_timer: float = 0.0
+var _trophic_hour_produced: float = 0.0
+var _trophic_hour_recycled: float = 0.0
 
 # ---- Dissolved-O2 model ----
 # Tank-wide normalized scalar where 1.0 ≈ fully saturated, 0.0 = anoxic.
@@ -1130,6 +1301,12 @@ func _prune_non_finite_positions(arr: Array) -> void:
 
 
 func _tick(dt: float) -> void:
+	tank_age_s += dt
+	_trophic_hour_timer += dt
+	if _trophic_hour_timer >= 3600.0:
+		_trophic_hour_timer = 0.0
+		_trophic_hour_produced = 0.0
+		_trophic_hour_recycled = 0.0
 	ensure_snails_root()
 	# Tank-wide schooling pulse. Phase advance is constant; fish.gd reads
 	# school_pulse() each tick to modulate cohesion strength.
@@ -1205,6 +1382,7 @@ func _tick(dt: float) -> void:
 		cycle_bonus = 1.12
 	if water_chemistry.cycle_phase >= WaterChemistry.CyclePhase.ESTABLISHED:
 		cycle_bonus = 1.28
+	cycle_bonus *= 1.0 - clampf(bloom_intensity, 0.0, 1.0) * 0.18
 	var biomass_bonus: int = int(float(total_plant_biomass) / 55.0)
 	plant_growth_budget = clampi(
 		int((28 + int(plants.size() / 12.0) + biomass_bonus) * cycle_bonus),
@@ -1369,9 +1547,13 @@ func _tick(dt: float) -> void:
 	# 5. Waste.
 	var dead_waste: Array[WasteParticle] = []
 	for w in waste:
+		w.last_deposit_amount = 0.0
 		if w.tick(dt, substrate):
 			dead_waste.append(w)
+		elif w.last_deposit_amount > 0.0:
+			_record_trophic_deposited(w.last_deposit_amount)
 	for w in dead_waste:
+		waste.erase(w)
 		w.queue_free()
 
 	# 5b. Clams. Filter feeders that pull waste particles within radius.
@@ -1549,8 +1731,12 @@ func _tick(dt: float) -> void:
 	var substrate_nh3: float = 0.0
 	if substrate != null:
 		substrate_nh3 = substrate.total_above_baseline() * 0.0001
+	var pore_no3: float = 0.0
+	if substrate != null and substrate.has_method("pore_water_nitrate_leak"):
+		pore_no3 = substrate.pore_water_nitrate_leak()
 	water_chemistry.tick(dt, self, get_parent(), plant_biomass,
-		waste_nh3 + substrate_nh3)
+		waste_nh3 + substrate_nh3, pore_no3, _is_saltwater_tank())
+	_refresh_tank_vitals(bloom_pressure, n_total, plant_biomass)
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
 	# Soft crowding: dense algae patches spawn less often instead of hitting
@@ -1595,10 +1781,18 @@ func _tick(dt: float) -> void:
 			kind = Algae.AlgaeKind.SURFACE
 		elif pick_kind < 0.35:
 			kind = Algae.AlgaeKind.HAIR
-		elif pick_kind < 0.50 and plant_biomass < 280:
+		elif pick_kind < 0.58 and plant_biomass < 320:
 			# GSA shows up in sparse / cycling tanks where plants aren't
-			# outcompeting it yet.
+			# outcompeting it yet — slightly more common on neglected glass.
 			kind = Algae.AlgaeKind.GSA
+		elif pick_kind < 0.68 and bloom_pressure > 0.32:
+			# Green dust algae — micro fuzz on interior glass when nutrients
+			# run ahead of plant uptake (visible neglect on the walls).
+			kind = Algae.AlgaeKind.GDA
+		elif pick_kind < 0.72 and filter_intake_pos != Vector3.ZERO \
+				and bloom_pressure > 0.25:
+			# Black beard algae colonizes high-flow filter outlets.
+			kind = Algae.AlgaeKind.BBA
 		# Spawn position depends on kind. CLUSTER uses the tank-aware
 		# sampler; SURFACE picks the same XZ but pinned to the waterline;
 		# HAIR picks a hardscape anchor; GSA pins to a glass wall.
@@ -1643,7 +1837,7 @@ func _tick(dt: float) -> void:
 				if w != null and w.has_method("column_surface_y"):
 					apos.y = clampf(apos.y, substrate_top_y + 0.1,
 						w.column_surface_y(apos.x, apos.z) - 0.1)
-			Algae.AlgaeKind.GSA:
+			Algae.AlgaeKind.GSA, Algae.AlgaeKind.GDA:
 				# Pin to the nearest glass wall. We pick a side at random
 				# and snap X or Z to the tank wall half-extent.
 				var tc: Node = get_node_or_null("/root/TankConfig")
@@ -1657,22 +1851,32 @@ func _tick(dt: float) -> void:
 					if hdv != null:
 						half_d = float(hdv)
 				var side: int = randi() % 4
+				var y_lo: float = 0.5 if kind == Algae.AlgaeKind.GSA else 0.35
+				var y_hi: float = 4.2 if kind == Algae.AlgaeKind.GSA else 5.6
 				if side == 0:
 					apos = Vector3(half_w - 0.08,
-						substrate_top_y + randf_range(0.5, 4.2),
+						substrate_top_y + randf_range(y_lo, y_hi),
 						randf_range(-half_d * 0.7, half_d * 0.7))
 				elif side == 1:
 					apos = Vector3(-(half_w - 0.08),
-						substrate_top_y + randf_range(0.5, 4.2),
+						substrate_top_y + randf_range(y_lo, y_hi),
 						randf_range(-half_d * 0.7, half_d * 0.7))
 				elif side == 2:
 					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
-						substrate_top_y + randf_range(0.5, 4.2),
+						substrate_top_y + randf_range(y_lo, y_hi),
 						half_d - 0.08)
 				else:
 					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
-						substrate_top_y + randf_range(0.5, 4.2),
+						substrate_top_y + randf_range(y_lo, y_hi),
 						-(half_d - 0.08))
+			Algae.AlgaeKind.BBA:
+				if filter_intake_pos != Vector3.ZERO:
+					apos = filter_intake_pos + Vector3(
+						randf_range(-0.14, 0.14),
+						randf_range(0.04, 0.38),
+						randf_range(-0.14, 0.14))
+				else:
+					apos.y = substrate_top_y + randf_range(0.2, 0.8)
 			_:
 				if w != null and w.has_method("column_surface_y"):
 					apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)
@@ -1791,6 +1995,7 @@ func _tick(dt: float) -> void:
 				_play_ambient_event("eat", -1.0, _node_species(actor))
 				var consumed_nv: float = w.nutrient_value
 				var leftover: float = consumed_nv * 0.4
+				_record_trophic_consumed(consumed_nv, leftover if leftover > 0.04 else 0.0)
 				waste.erase(w)
 				w.queue_free()
 				if leftover > 0.04:
@@ -2063,6 +2268,7 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 	w.global_position = at
 	w.init(amount, substrate_top_y, kind, food_subtype)
 	register_waste(w)
+	_record_trophic_produced(amount)
 
 
 # Player tap-to-feed: spawns a small cluster at the water surface.
@@ -3236,8 +3442,24 @@ func _emit_stats() -> void:
 		"nitrite": water_chemistry.nitrite,
 		"nitrate": water_chemistry.nitrate,
 		"cycle_phase": water_chemistry.cycle_phase,
-		"cycle_label": WaterChemistry.phase_label(water_chemistry.cycle_phase),
+		"cycle_label": _cycle_label_for_hud(),
+		"bacteria_colony": water_chemistry.bacteria_colony,
+		"alkalinity_proxy": water_chemistry.alkalinity_proxy,
+		"reef_nutrients": water_chemistry.reef_nutrients,
+		"is_saltwater": _is_saltwater_tank(),
+		"effective_warmth": _tank_warmth_sample(),
+		"floater_coverage": _floater_coverage(),
+		"bloom_intensity": bloom_intensity,
+		"bloom_pressure": float(tank_vitals.get("bloom_pressure", bloom_intensity)),
+		"tank_age_s": tank_age_s,
+		"sim_day": sim_day(),
+		"sim_day_label": sim_day_label(),
+		"hud_mode": hud_ecology_mode(),
+		"trophic_recycle_pct": float(tank_vitals.get("trophic_recycle_pct", 0.0)),
+		"trophic_recycle_hour_pct": float(tank_vitals.get("trophic_recycle_hour_pct", 0.0)),
+		"cycle_banner": WaterChemistry.phase_banner(water_chemistry.cycle_phase, sim_day()),
 		"aeration_fixture": aeration_fixture,
+		"reef_bleach_level": _max_reef_bleach(),
 	}
 	# Capture this snapshot into the ring buffer so chip-tap sparklines have
 	# a 2-minute history to draw. _emit_stats fires at 1 Hz so HISTORY_LEN
@@ -3266,7 +3488,11 @@ var population_history: Dictionary = {
 	"substrate_nutrients_total": [],
 	"dissolved_o2": [],
 	"ammonia": [],
+	"nitrite": [],
 	"nitrate": [],
+	"bloom_intensity": [],
+	"waste_particles": [],
+	"cycle_phase": [],
 }
 
 
@@ -3298,14 +3524,14 @@ var _logged_first_death: bool = false
 var _logged_first_cyano: bool = false
 
 
-func log_story_event(text: String) -> void:
-	# Tag with elapsed runtime so the dialog can render "Day 3 morning"
-	# or "12 min ago" labels later. The text itself is kept short —
-	# headline-style — so the dialog stays scannable.
+func log_story_event(text: String, skip_notification: bool = false) -> void:
 	var entry: Dictionary = {
 		"t": elapsed_runtime_s,
+		"tank_age_s": tank_age_s,
+		"sim_day": sim_day_label(),
 		"day_phase": day_phase,
 		"text": text,
+		"skip_notification": skip_notification,
 	}
 	story_events.append(entry)
 	if story_events.size() > MAX_STORY_EVENTS:
@@ -3326,7 +3552,7 @@ func log_story_event(text: String) -> void:
 # plants for breeding), then creatures, then transient particles, then
 # resolving cross-references in a final pass.
 
-const SAVE_STATE_VERSION: int = 2
+const SAVE_STATE_VERSION: int = 4
 
 
 func save_state() -> Dictionary:
@@ -3358,6 +3584,7 @@ func save_state() -> Dictionary:
 			"aeration_flow_rate": aeration_flow_rate,
 			"aeration_fixture": aeration_fixture,
 			"elapsed_runtime_s": elapsed_runtime_s,
+			"tank_age_s": tank_age_s,
 			"next_entity_id": _next_entity_id,
 			"substrate_type": cfg_substrate,
 			"tank_preset": cfg_preset,
@@ -3377,6 +3604,8 @@ func save_state() -> Dictionary:
 		"algae": [],
 		"clams": [],
 		"discovered_species": _get_discovered_species_for_save(),
+		"story_events": story_events.duplicate(true),
+		"trophic_ledger": trophic_ledger.duplicate(true),
 	}
 	if water_chemistry != null:
 		out["water_chemistry"] = water_chemistry.to_save_dict()
@@ -3421,6 +3650,8 @@ func save_state() -> Dictionary:
 	var w_save: Node = get_parent()
 	if w_save != null and w_save.has_method("floaters_to_save"):
 		out["floaters"] = w_save.floaters_to_save()
+	if w_save != null and w_save.has_method("ambient_to_save"):
+		out["world_ambient"] = w_save.ambient_to_save()
 	return out
 
 
@@ -3457,7 +3688,7 @@ func _ensure_ids() -> void:
 # bare tank (glass, substrate grid, aeration). We populate it.
 func load_state(d: Dictionary) -> void:
 	var save_ver: int = int(d.get("version", 0))
-	if save_ver != SAVE_STATE_VERSION:
+	if save_ver != SAVE_STATE_VERSION and save_ver < SAVE_STATE_VERSION:
 		push_warning("[walstad_loom] save version mismatch; got %s, expected %d." % [save_ver, SAVE_STATE_VERSION])
 
 	# 0. Restore species discoveries BEFORE any spawn happens. Spawn helpers
@@ -3476,12 +3707,35 @@ func load_state(d: Dictionary) -> void:
 	aeration_flow_rate = float(sim_d.get("aeration_flow_rate", aeration_flow_rate))
 	aeration_fixture = String(sim_d.get("aeration_fixture", aeration_fixture))
 	elapsed_runtime_s = float(sim_d.get("elapsed_runtime_s", 0.0))
+	var has_tank_age: bool = sim_d.has("tank_age_s")
+	if has_tank_age:
+		tank_age_s = float(sim_d.get("tank_age_s", 0.0))
+	else:
+		tank_age_s = 0.0
 	_next_entity_id = int(sim_d.get("next_entity_id", _next_entity_id))
+	var saved_story: Variant = d.get("story_events", null)
+	if saved_story is Array:
+		story_events = (saved_story as Array).duplicate(true)
+	var saved_trophic: Variant = d.get("trophic_ledger", null)
+	if saved_trophic is Dictionary:
+		trophic_ledger = (saved_trophic as Dictionary).duplicate(true)
 	var saved_fth: Variant = sim_d.get("feed_time_history", null)
 	if saved_fth is Array:
 		_feed_time_history = (saved_fth as Array).duplicate()
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
+	if not has_tank_age and save_ver < SAVE_STATE_VERSION and water_chemistry != null:
+		match water_chemistry.cycle_phase:
+			WaterChemistry.CyclePhase.ESTABLISHED:
+				tank_age_s = WaterChemistry.SIM_DAY_S * 21.0
+			WaterChemistry.CyclePhase.NITRITE_SPIKE:
+				tank_age_s = WaterChemistry.SIM_DAY_S * 5.0
+			WaterChemistry.CyclePhase.AMMONIA_SPIKE:
+				tank_age_s = WaterChemistry.SIM_DAY_S * 2.0
+			WaterChemistry.CyclePhase.CYCLING:
+				tank_age_s = WaterChemistry.SIM_DAY_S * 1.0
+			_:
+				tank_age_s = 0.0
 
 	# 2. Substrate (re-init was already done by world; overwrite nutrients).
 	if substrate != null and d.has("substrate"):
@@ -3546,6 +3800,11 @@ func load_state(d: Dictionary) -> void:
 	var w_load: Node = get_parent()
 	if w_load != null and w_load.has_method("restore_floaters"):
 		w_load.restore_floaters(d.get("floaters", []))
+	if w_load != null and w_load.has_method("restore_ambient"):
+		w_load.restore_ambient(d.get("world_ambient", {}))
+	if save_ver < SAVE_STATE_VERSION and not d.has("world_ambient"):
+		if w_load != null and w_load.has_method("backfill_legacy_ambient"):
+			w_load.backfill_legacy_ambient(tank_age_s)
 
 	# 10. Cross-reference pass: resolve partner_id → partner Node refs.
 	_resolve_refs(d, id_map)

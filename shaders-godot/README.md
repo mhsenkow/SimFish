@@ -29,7 +29,10 @@ on its way to the window.
 | `palette_quantize.gdshader` | Output stage. Snaps every pixel to the nearest of 48 palette colors using a Bayer 4×4 dither between the two nearest hits. |
 | `voxel.gdshader` | Unshaded, face-based brightness (top 100%, sides 82% / 68%, bottom 50%). Lets cubes self-light without a directional light fighting the palette. |
 | `circle_mask.gdshader` | PiP portal — circular feathered cutout for the follow-camera bubble. |
-| `water_volumetrics.gdshader` | Legacy 2D-pipeline volumetric — not currently used in the 3D path; retained as reference. |
+
+The full shader set lives in `godot-project/shaders/` (water, glass, caustics,
+foliage/SSS, god rays, substrate, bubbles, plus the `voxel*` material family).
+See the root [README.md](../README.md) "shaders (the pipeline)" section for the map.
 
 ## Scene structure (current — Godot 4, 3D)
 
@@ -49,7 +52,8 @@ Main (Node)                          # main.gd, root
 ├── Display (TextureRect)            # palette_quantize material
 ├── PortalContainer (Control)        # PiP follow-cam
 ├── TopHUD (Control)                 # cluster pills + chip strip
-├── SettingsPanel / RenderPanel / FishStorePanel
+├── Panels                           # Settings / Render / Sound / Library /
+│                                    #   FishStore / ScenarioPicker / Walkthrough
 ├── AquascapeToolPalette             # build-mode dirt/stone/wood/dig
 ├── ControlsHint (Label)             # bottom-edge keyboard hint
 ├── MobileHUD                        # bottom-corner touch buttons

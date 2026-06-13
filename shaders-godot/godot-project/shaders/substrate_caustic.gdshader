@@ -122,6 +122,12 @@ void fragment() {
     if (n.y > 0.7) {
         base_color *= compute_contact_ao(world_pos);
     }
+    // Slope-edge Bayer dither on vertical substrate faces (angle of repose).
+    if (abs(n.y) < 0.72) {
+        vec2 bcell = floor(world_pos.xz * 10.0);
+        float bayer = fract(sin(dot(bcell, vec2(12.9898, 78.233))) * 43758.5453);
+        base_color = mix(base_color * 0.86, base_color * 1.07, step(0.5, bayer));
+    }
 
     // Sand-ripple sculpting on top-facing voxels. Build a long-wavelength
     // streak pattern along `ripple_dir`, plus a finer cross-pattern, then
@@ -183,25 +189,29 @@ void fragment() {
     float w3 = sin((uv.x + uv.y) * 0.6 - t * 0.3);
     
     float wave = (w1 + w2 + w3 + 1.5) / 3.0;
-    float caustics = smoothstep(0.2, 0.8, wave) * 0.40;
-    
-    float edge_fade_x = clamp(1.0 - abs(world_pos.x) / 7.5, 0.0, 1.0);
-    float edge_fade_z = clamp(1.0 - abs(world_pos.z) / 3.5, 0.0, 1.0);
-    float light_fade = edge_fade_x * edge_fade_z;
-    
-    vec3 world_normal = (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz;
-    float up_fade = clamp(world_normal.y, 0.0, 1.0);
+	float caustics = smoothstep(0.2, 0.8, wave) * 0.40;
 
-    // Surface-wave coupling: modulate intensity by overhead wave crests.
-    float sw1 = sin(world_pos.x * wave_scale + TIME * wave_speed)
-        * cos(world_pos.z * wave_scale * 0.91 - TIME * wave_speed * 0.74);
-    float sw2 = sin(world_pos.x * wave_scale * 1.55 - TIME * wave_speed * 1.05)
-        * sin(world_pos.z * wave_scale * 1.35 + TIME * wave_speed * 0.88);
-    float surface_lift = wave_amplitude * (sw1 * 0.52 + sw2 * 0.33);
-    float lift_n = clamp(0.5 + surface_lift / max(wave_amplitude * 0.85, 0.001), 0.0, 1.0);
-    float wave_mod = mix(1.0 - wave_coupling * 0.65,
-                        1.0 + wave_coupling * 0.65, lift_n);
-    float final_intensity = caustics * caustic_intensity * up_fade * light_fade * wave_mod;
+	float edge_fade_x = clamp(1.0 - abs(world_pos.x) / 7.5, 0.0, 1.0);
+	float edge_fade_z = clamp(1.0 - abs(world_pos.z) / 3.5, 0.0, 1.0);
+	float light_fade = edge_fade_x * edge_fade_z;
+
+	vec3 world_normal = (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz;
+	float up_fade = clamp(world_normal.y, 0.0, 1.0);
+
+	float sw1 = sin(world_pos.x * wave_scale + TIME * wave_speed)
+		* cos(world_pos.z * wave_scale * 0.91 - TIME * wave_speed * 0.74);
+	float sw2 = sin(world_pos.x * wave_scale * 1.55 - TIME * wave_speed * 1.05)
+		* sin(world_pos.z * wave_scale * 1.35 + TIME * wave_speed * 0.88);
+	float surface_lift = wave_amplitude * (sw1 * 0.52 + sw2 * 0.33);
+	float lift_n = clamp(0.5 + surface_lift / max(wave_amplitude * 0.85, 0.001), 0.0, 1.0);
+	float wave_mod = mix(1.0 - wave_coupling * 0.65,
+		1.0 + wave_coupling * 0.65, lift_n);
+	// Posterize caustic brightness into discrete bands so substrate
+	// light reads as chunky pixel-art steps (matches water.gdshader).
+	float caust_raw = caustics * caustic_intensity * up_fade * light_fade * wave_mod;
+	float band_count = 4.0;
+	float caust_quant = floor(caust_raw * band_count + 0.5) / band_count;
+	float final_intensity = mix(caust_raw, caust_quant, 0.72);
 
     // 3. Add caustics additively to the base voxel color
     ALBEDO = base_color + light_color.rgb * final_intensity;

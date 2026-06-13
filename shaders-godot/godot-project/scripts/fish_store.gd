@@ -192,7 +192,7 @@ func _make_card(idx: int) -> Control:
 	hb.add_child(vbox)
 	var name_label := Label.new()
 	name_label.text = String(g.get("_display_name", "fish"))
-	name_label.add_theme_font_size_override("font_size", 15)
+	PanelTheme.as_serif(name_label, PanelTheme.SIZE_ITEM)
 	name_label.add_theme_color_override("font_color", Color8(255, 220, 80))
 	vbox.add_child(name_label)
 	var desc := Label.new()

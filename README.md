@@ -259,7 +259,7 @@ to free a slot.
 
 ## Build it yourself
 
-Requires [Godot 4.2+](https://godotengine.org/download).
+Requires [Godot 4.6+](https://godotengine.org/download) (the project declares the `4.6` feature set).
 
 For desktop Steam integration, install GodotSteam once:
 
@@ -287,87 +287,54 @@ godot --path . --headless --export-debug "macOS" ../../build/WalstadLoom.app
 Pushing a version tag builds all three platforms on GitHub Actions and uploads the zips to [Releases](https://github.com/mhsenkow/SimFish/releases):
 
 ```bash
-git tag v0.1.30
-git push origin v0.1.30
+git tag v0.1.67
+git push origin v0.1.67
 ```
 
 Workflow: `.github/workflows/release.yml` (Godot 4.6.3, export presets in `export_presets.cfg`). You can also run it manually from **Actions → Release builds → Run workflow** (artifacts only; no Release unless you pushed a tag).
 
 ## Repository layout
 
+> Naming: the game is **walstad loom**. The GitHub repo is historically named
+> **SimFish** (clone URLs below) and the local working copy is `iAquarium` —
+> same project, three names.
+
 ```
 SimFish/
-├── shaders-godot/godot-project/    # the actual playable game
-│   ├── main.tscn                   # root scene with SubViewport + palette display + TopHUD
-│   ├── tank_menu.tscn              # tank-picker shown on launch
-│   ├── scripts/
-│   │   ├── main.gd                 # orbit camera + responsive top HUD + chip renderer
-│   │   ├── world.gd                # builds substrate, hardscape, initial population
-│   │   ├── sim_driver.gd           # fixed-tick coordinator (10 Hz) + save/load
-│   │   ├── tank_config.gd          # autoload: per-tank config + species library + presets
-│   │   ├── tank_saves.gd           # autoload: slot directories + compatibility checks
-│   │   ├── tank_menu.gd            # menu scene: tank cards, new/duplicate/delete
-│   │   ├── substrate_grid.gd       # nutrient field with diffusion + reservoir leak
-│   │   ├── plant.gd                # L-system-ish growing voxel plant
-│   │   ├── branch_plant.gd         # ... + branchy variants
-│   │   ├── spiral_plant.gd         # ... + spiral, nautilus, fractal moss
-│   │   ├── nautilus_plant.gd
-│   │   ├── fractal_moss.gd
-│   │   ├── cattail_plant.gd        # emergent cattail
-│   │   ├── lily_pad.gd             # floating lily + flower + runners
-│   │   ├── coral.gd                # saltwater plant equivalent
-│   │   ├── fish.gd                 # boids + courtship + lifecycle + death anim + mouthbrooding + territory
-│   │   ├── shrimp.gd               # walk + climb + forage + breed + cleaner station
-│   │   ├── snail.gd                # glass-cling crawl with foot-pulse gait
-│   │   ├── clam.gd                 # sessile bivalve filter feeder
-│   │   ├── algae.gd                # algae cluster / surface scum / hair / GSA glass
-│   │   ├── waste_particle.gd       # detritus with kind (fish/shrimp/snail)
-│   │   ├── egg.gd / snail_egg.gd   # incubating eggs
-│   │   ├── evolution_pressure.gd   # genome-nudge helpers tied to tank env
-│   │   ├── fish_store.gd           # procedurally-generated buy-new-fish shop
-│   │   ├── scenario_picker.gd      # new-tank modal — 8 themed scenarios
-│   │   ├── settings_panel.gd       # tank/light/substrate/preset/aeration UI
-│   │   ├── render_panel.gd         # resolution/dither/fog/FOV/MSAA + frame-budget sparkline
-│   │   ├── panel_theme.gd          # shared chrome + typography + form helpers
-│   │   ├── mobile_hud.gd           # bottom-corner controls on touch devices
-│   │   ├── ambient_audio.gd        # day/night ambient layer
-│   │   ├── aquarium_visuals.gd     # caustics, biofilm aging, mineral spots, slime
-│   │   ├── camera_orbit.gd
-│   │   ├── voxel_mat.gd            # ShaderMaterial factory + cache update helpers
-│   │   ├── leaf_shapes.gd          # plant stress-color ramp
-│   │   ├── save_helpers.gd
-│   │   └── capture.gd              # F12 photo + timelapse
-│   ├── shaders/
-│   │   ├── voxel.gdshader          # faceted unshaded voxel material + bioluminescence
-│   │   ├── voxel_mm.gdshader / voxel_translucent.gdshader
-│   │   ├── foliage.gdshader / foliage_mm.gdshader  # plant sway + SSS rim
-│   │   ├── water.gdshader          # surface waves + caustics + meniscus
-│   │   ├── glass.gdshader          # tank glass + meniscus ring + biofilm
-│   │   ├── caustics.gdshader / substrate_caustic.gdshader  # wave-coupled caustics + sand ripples
-│   │   ├── surface_ripple.gdshader / bubble.gdshader
-│   │   ├── god_ray.gdshader        # volumetric beams + fish-silhouette occluders
-│   │   ├── circle_mask.gdshader    # PiP portal mask
-│   │   └── palette_quantize.gdshader # palette LUT + Bayer + region dither + outline + CRT
-│   └── palettes/planted_48.png     # 48-color planted-biotope palette
-├── shaders-godot/                  # supporting tools
+├── shaders-godot/godot-project/    # THE GAME — open this in Godot
+│   ├── main.tscn                   # root scene: SubViewport (512×288) + palette Display + TopHUD
+│   ├── tank_menu.tscn              # tank-picker shown on launch (main scene)
+│   ├── project.godot               # autoloads: TankSaves, TankConfig, SpeciesLibrary, SteamService, AIDirector
+│   ├── scripts/                    # ~70 GDScript files, grouped by subsystem below
+│   ├── shaders/                    # ~18 .gdshader files (render pipeline below)
+│   ├── assets/                     # theme + fonts
+│   └── palettes/                   # 48-color planted + night palette PNGs
+├── shaders-godot/
 │   ├── make_palette.py             # generates palette PNGs from hex lists
-│   └── README.md
-├── sim-rust/                       # standalone Rust crate: chemistry sim
-│   ├── src/                        # falling-sand substrate, scalar fields,
-│   ├── examples/cycle.rs           #   two-population nitrogen cycle
-│   └── README.md
-├── data-schemas/                   # JSON Schemas for species data
-├── docs/
-│   ├── GOALS.md                    # 50-item backlog + bonus ideas
-│   ├── index.html / style.css      # github-pages landing
-│   └── img/                        # screenshots
-├── steam/                          # Steamworks depots, upload scripts, store copy
-│   ├── README.md
-│   ├── install_godotsteam.sh
-│   └── store/STORE_PAGE.md
+│   └── README.md                   # rendering-pipeline deep dive
+├── sim-rust/                       # reference Rust chemistry sim (nitrogen cycle) — NOT wired into the game
+├── data-schemas/                   # JSON Schemas + examples for species/plant/substrate data
+├── docs/                           # GitHub Pages landing (index.html/style.css/fonts/img) + GOALS.md backlog
+├── steam/                          # Steamworks depots, upload scripts, store copy (store/STORE_PAGE.md)
 ├── style-guide/STYLE_GUIDE.md      # palettes, pixel rules, dithering
-└── render_preview.py               # static pixel-art preview generator
+├── marketing/                      # capsule art, gameplay screenshots, logo lockups (sources/ = raw refs)
+└── tools/render_preview.py         # standalone Python pixel-art preview generator (doc asset)
 ```
+
+### `scripts/` by subsystem
+
+- **Coordination / autoloads** — `sim_driver.gd` (10 Hz tick + save/load), `tank_config.gd`, `tank_saves.gd`, `save_manager.gd` / `save_helpers.gd`, `species_library.gd`, `ai_director.gd`, `steam_service.gd` (+ `steam_service_desktop.gd`).
+- **World build** — `world.gd`, `terrain_voxel_grid.gd`, `substrate_grid.gd`, `water_chemistry.gd`, `tank_footprint.gd`, `aquascape_controller.gd`, `aquarium_visuals.gd`.
+- **Fauna** — `fish.gd`, `shrimp.gd`, `snail.gd` (+ `snail_egg.gd` / `snail_shell.gd`), `clam.gd`, `egg.gd`, `evolution_pressure.gd`, `fauna_voxel_builder.gd` / `fauna_boundary.gd`, `microfauna_swarm.gd`, and critter variants (`bristle_worm`, `sea_cucumber`, `trumpet_snail`, `wriggle_worm`, `tubifex_patch`, `mycelium_patch`, `biofilm_patch`).
+- **Flora** — `plant.gd`, `branch_plant.gd`, `spiral_plant.gd`, `nautilus_plant.gd`, `fractal_moss.gd`, `cattail_plant.gd`, `lily_pad.gd`, `floating_plant.gd`, `coral.gd`, `algae.gd`, `leaf_shapes.gd`, `waste_particle.gd`.
+- **UI / HUD** — `main.gd`, `hud_controller.gd`, `mobile_hud.gd`, `ui_panel_manager.gd`, `ui_icons.gd`, `panel_theme.gd`, `settings_panel.gd`, `render_panel.gd`, `sound_panel.gd`, `library_panel.gd`, `camera_views_panel.gd`, `fish_store.gd`, `scenario_picker.gd`, `creature_creator.gd` / `creature_naming.gd`, `lineage_tree_view.gd`, `walkthrough.gd`, `ollama_onboarding.gd`.
+- **Rendering helpers** — `voxel_mat.gd`, `voxel_batch.gd`, `capture.gd` (F12 photo + timelapse).
+- **Species data** — `real_species_library.gd` / `real_species_fauna.gd`.
+- **Dev-only** — `motion_debug_overlay.gd`, `smoke_tank_shapes.gd`.
+
+### `shaders/` (the pipeline)
+
+`palette_quantize.gdshader` is the output stage (48-color LUT + Bayer dither + region dither + outline + CRT). `voxel*.gdshader` family are the faceted unshaded voxel materials (+ `voxel_caustic`, `voxel_mm`, `voxel_translucent`). `foliage*.gdshader` adds plant sway + SSS rim; `stem_subsurface.gdshader` the rim term. Water/glass stack: `water.gdshader`, `glass.gdshader`, `caustics.gdshader`, `substrate_caustic.gdshader`, `substrate_opaque.gdshader`, `surface_ripple.gdshader`, `bubble.gdshader`, `god_ray.gdshader`. `circle_mask.gdshader` masks the PiP portal; `palette_tint.gdshaderinc` is the shared tint include.
 
 ## Architecture notes
 
@@ -410,8 +377,8 @@ Done since the original roadmap:
 Up next: see [`docs/GOALS.md`](docs/GOALS.md) for the full 50-item checklist
 organized by category (motion, breeding, food web, plants, environment, etc.).
 Remaining work clusters around the background-object mode (transparent
-window, click-through, multi-monitor), Walstad-cycle UI banner, more
-generative variety (markings, pattern types, asymmetry), and per-tier
+window, click-through, multi-monitor), **multi-tank wallpaper (#50)**,
+more generative variety (markings, pattern types, asymmetry), and per-tier
 mobile polish.
 
 ## License

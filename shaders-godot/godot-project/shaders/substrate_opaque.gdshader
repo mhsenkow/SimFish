@@ -99,5 +99,12 @@ void fragment() {
 	if (n.y > 0.7) {
 		col *= compute_contact_ao(world_pos);
 	}
+	// Angle-of-repose slope edges — 50% Bayer dither on vertical faces so
+	// sculpted hills read as pixel-art terracing, not smooth ramps.
+	if (abs(n.y) < 0.72) {
+		vec2 bcell = floor(world_pos.xz * 10.0);
+		float bayer = fract(sin(dot(bcell, vec2(12.9898, 78.233))) * 43758.5453);
+		col = mix(col * 0.86, col * 1.07, step(0.5, bayer));
+	}
 	ALBEDO = col;
 }

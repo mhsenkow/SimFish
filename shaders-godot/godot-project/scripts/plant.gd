@@ -241,6 +241,8 @@ const MELT_TRIGGER_STRESS: float = 0.9
 # twice from the same chemistry event, only re-trigger after a clear period.
 var _last_melt_unix: int = 0
 const MELT_REARM_S: int = 300
+static var _melt_cluster_times: Array = []
+static var _melt_wave_headline_unix: int = 0
 
 # ---- Pearling particles ----
 var _pearling_particles: GPUParticles3D = null
@@ -250,6 +252,7 @@ var _pearling_opacity: float = 0.18
 var _pearling_strength: float = 1.0
 static var _shared_pearling_material: ParticleProcessMaterial = null
 static var _shared_pearling_mesh: SphereMesh = null
+static var _shared_pearling_mesh_medium: SphereMesh = null
 
 # ---- Leaf structure tracking ----
 # Leaf voxels render through a single per-plant MultiMesh (one draw call for all
@@ -642,11 +645,28 @@ func _add_root(root_ramp: Array) -> void:
 		)
 		add_child(mi)
 		root_voxels.append(mi)
+		# Root-hair fuzz — 2 pale horizontal sub-voxels at the anchor tip.
+		if j == depth - 1:
+			var cross_x: float = cos(angle + PI * 0.5)
+			var cross_z: float = sin(angle + PI * 0.5)
+			for side in [-1.0, 1.0]:
+				var hair := MeshInstance3D.new()
+				hair.mesh = VoxelMat.get_box(Vector3(
+					VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.07, VOXEL_SIZE * 0.12))
+				hair.material_override = VoxelMat.make_foliage(root_light.lightened(0.12))
+				hair.position = mi.position + Vector3(
+					cross_x * side * VOXEL_SIZE * 0.14,
+					-VOXEL_SIZE * 0.06,
+					cross_z * side * VOXEL_SIZE * 0.14,
+				)
+				add_child(hair)
+				root_voxels.append(hair)
 	_root_count += 1
 
 
 func _ensure_shared_pearling_assets() -> void:
-	if _shared_pearling_material != null and _shared_pearling_mesh != null:
+	if _shared_pearling_material != null and _shared_pearling_mesh != null \
+			and _shared_pearling_mesh_medium != null:
 		return
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0, 1, 0)
@@ -663,8 +683,9 @@ func _ensure_shared_pearling_assets() -> void:
 	# pixel specks rather than soft blobs. After quantization a 0.06 scale
 	# bubble at typical camera distance reads as a 1-2 pixel highlight —
 	# exactly the classic pixel-art pearling look.
+	# Style-guide bubble ladder: micro (pass 1) + medium (pass 2 when pearling hard).
 	pm.scale_min = 0.06
-	pm.scale_max = 0.18
+	pm.scale_max = 0.12
 	# Wider emission column so bubbles appear along the whole canopy rather
 	# than only at the topmost tip. _setup_pearling positions the emitter
 	# at the stem top; the sphere radius extends down into the foliage.
@@ -684,12 +705,21 @@ func _ensure_shared_pearling_assets() -> void:
 	pm.alpha_curve = alpha_curve
 	_shared_pearling_material = pm
 	var bubble_mesh := SphereMesh.new()
-	bubble_mesh.radius = 0.018
-	bubble_mesh.height = 0.036
+	bubble_mesh.radius = 0.012
+	bubble_mesh.height = 0.024
 	bubble_mesh.radial_segments = 4
 	bubble_mesh.rings = 2
-	bubble_mesh.material = VoxelMat.make_bubble(Color(0.92, 0.96, 1.0, 0.30))
+	bubble_mesh.material = VoxelMat.make_bubble(
+		Color(1.06, 1.12, 1.18, 0.30), 1.28)
 	_shared_pearling_mesh = bubble_mesh
+	var medium_mesh := SphereMesh.new()
+	medium_mesh.radius = 0.032
+	medium_mesh.height = 0.064
+	medium_mesh.radial_segments = 4
+	medium_mesh.rings = 2
+	medium_mesh.material = VoxelMat.make_bubble(
+		Color(1.08, 1.14, 1.20, 0.26), 1.32)
+	_shared_pearling_mesh_medium = medium_mesh
 
 
 func _setup_pearling() -> void:
@@ -719,6 +749,9 @@ func _setup_pearling() -> void:
 		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity))
 	bubble_mesh.material = bubble_mat
 	_pearling_particles.draw_pass_1 = bubble_mesh
+	# Pre-register a second pass slot so _tick_pearling can enable medium
+	# bubbles without tripping set_draw_pass_mesh out-of-bounds errors.
+	_pearling_particles.draw_passes = 1
 	add_child(_pearling_particles)
 
 
@@ -741,10 +774,38 @@ func _enter_canopy() -> void:
 	has_emerged = true
 	max_height = current_height
 	_canopy_timer = 0.0
+	_spawn_meniscus_break()
 	if uses_flowering and flower_stage == FlowerStage.NONE:
 		_begin_flowering()
 	elif not uses_flowering and has_method("_spawn_canopy_propagule"):
 		call("_spawn_canopy_propagule")
+
+
+func _spawn_meniscus_break() -> void:
+	# 1–2 emergent stem voxels above the meniscus — wet sheen read.
+	if not emergent_growth:
+		return
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var surface_local_y: float = water_surface_y - global_position.y
+	var stem_top: float = _get_stem_top()
+	if stem_top >= surface_local_y + VOXEL_SIZE * 1.6:
+		return
+	var break_count: int = 1 + (1 if randf() < 0.55 else 0)
+	var wet_col: Color = (ramp[4] if ramp.size() > 4 else ramp[-1] as Color).lightened(0.16)
+	for i in break_count:
+		var y: float = maxf(stem_top, surface_local_y - VOXEL_SIZE * 0.12) \
+			+ float(i + 1) * VOXEL_SIZE * 0.82
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.82, VOXEL_SIZE * 0.88, VOXEL_SIZE * 0.82))
+		mi.material_override = VoxelMat.make_foliage(wet_col)
+		mi.position = Vector3(
+			randf_range(-VOXEL_SIZE * 0.06, VOXEL_SIZE * 0.06),
+			y,
+			randf_range(-VOXEL_SIZE * 0.06, VOXEL_SIZE * 0.06),
+		)
+		_register_stem_voxel(mi)
+		current_height += 1
 
 
 func _enter_senescence() -> void:
@@ -754,6 +815,8 @@ func _enter_senescence() -> void:
 	if _pearling_active and _pearling_particles != null:
 		_pearling_active = false
 		_pearling_particles.emitting = false
+		if _pearling_particles.draw_passes > 1:
+			_pearling_particles.draw_passes = 1
 	_begin_dying()
 
 
@@ -1020,7 +1083,7 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	leaf_node.rotation.y = side * 0.4 + rel * 0.2
 	# Build the paddle leaf.
 	var leaf_voxels: Array = LeafShapes.build_paddle(
-		clampi(leaf_length, 2, 6), ramp, age_frac, 2, 0.5)
+		clampi(leaf_length, 2, 6), ramp, age_frac, 2, 0.5, _leaf_mods())
 	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
 	leaf_node.free()
@@ -1039,7 +1102,7 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 	var blade_len: int = clampi(leaf_length + _rng_range(-1, 2), 4, 14)
 	var sway_seed: float = randf() * TAU
 	var leaf_voxels: Array = LeafShapes.build_ribbon(
-		blade_len, ramp, age_frac, sway_seed)
+		blade_len, ramp, age_frac, sway_seed, _leaf_mods())
 	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
 	leaf_node.free()
@@ -1064,7 +1127,7 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 		var leaf_node := Node3D.new()
 		leaf_node.position = stem_mi.position
 		var leaf_voxels: Array = LeafShapes.build_lance_pair(
-			ramp, age_frac, int(current_height / 2.0))
+			ramp, age_frac, int(current_height / 2.0), _leaf_mods())
 		_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 		_leaf_ages.append(_t)
 		leaf_node.free()
@@ -1094,6 +1157,7 @@ func _leaf_mods() -> Dictionary:
 		"quilted": quilted,
 		"wavy": wavy_edges,
 		"tone_under": underside_tone,
+		"iridescence": iridescence,
 	}
 
 
@@ -1315,17 +1379,70 @@ func biomass() -> int:
 	return current_height
 
 
+func _vitals_growth_mult(sim_driver: Node) -> float:
+	if sim_driver == null or sim_driver.get("tank_vitals") == null:
+		return 1.0
+	var vitals: Dictionary = sim_driver.tank_vitals
+	var mult: float = 1.0
+	match int(vitals.get("cycle_phase", 0)):
+		WaterChemistry.CyclePhase.CYCLING, WaterChemistry.CyclePhase.ESTABLISHED:
+			mult = 1.08
+		WaterChemistry.CyclePhase.AMMONIA_SPIKE, WaterChemistry.CyclePhase.NITRITE_SPIKE:
+			mult = 0.82
+		WaterChemistry.CyclePhase.NEW_TANK:
+			mult = 0.92
+	var bloom: float = float(vitals.get("bloom_pressure", 0.0))
+	mult *= 1.0 - bloom * 0.22
+	return clampf(mult, 0.55, 1.15)
+
+
+func _biofilm_spread_factor() -> float:
+	if not is_epiphyte and not has_plantlets:
+		return 1.0
+	var sim_driver: Node = _find_sim()
+	if sim_driver == null:
+		return 1.0
+	var w: Node = sim_driver.get_parent()
+	if w == null or w.get("biofilm_progress") == null:
+		return 0.5
+	var bio: float = clampf(float(w.biofilm_progress), 0.0, 0.7)
+	var graze: float = 0.0
+	if w.has_method("live_microfauna_count"):
+		graze = clampf(float(w.live_microfauna_count()) / 120.0, 0.0, 0.35)
+	return clampf(bio / 0.42 - graze * 0.4, 0.08, 1.0)
+
+
+static func _record_melt_cluster(sim_d: Node) -> void:
+	var now: int = int(Time.get_unix_time_from_system())
+	_melt_cluster_times.append(now)
+	while _melt_cluster_times.size() > 0 and now - int(_melt_cluster_times[0]) > 60:
+		_melt_cluster_times.pop_front()
+	if _melt_cluster_times.size() >= 3 and now - _melt_wave_headline_unix > 90:
+		_melt_wave_headline_unix = now
+		if sim_d.has_method("emit_eco_event"):
+			sim_d.emit_eco_event("flora",
+				"Plant melt wave — cycling stress across the crypts.", 2, true)
+
+
 # Scan sibling plants under plants_root for the tallest one within
 # SHADE_RADIUS. If at least one is meaningfully taller (SHADE_HEIGHT_DELTA),
 # this plant is shaded and grows slower. Called from tick() every few
 # seconds, not per-tick, since the answer is slow-moving.
 func _recompute_shade() -> void:
 	_shade_mult = 1.0
-	var parent := get_parent()
-	if parent == null:
-		return
+	var sim_driver: Node = _find_sim()
+	var candidates: Array = []
+	if sim_driver != null and sim_driver.has_method("query_plants_in_radius"):
+		candidates = sim_driver.query_plants_in_radius(_world_pos, SHADE_RADIUS)
+	else:
+		var parent := get_parent()
+		if parent == null:
+			return
+		for child in parent.get_children():
+			if child is Plant:
+				candidates.append(child)
 	var rad2: float = SHADE_RADIUS * SHADE_RADIUS
-	for child in parent.get_children():
+	for child in candidates:
 		if child == self or not (child is Plant):
 			continue
 		var op: Plant = child
@@ -1337,7 +1454,7 @@ func _recompute_shade() -> void:
 			continue
 		if op.current_height > current_height + SHADE_HEIGHT_DELTA:
 			_shade_mult = SHADE_PENALTY
-			return  # one is enough; no need to scan more
+			return
 
 
 # Compute & apply pale (CO₂) or yellow (iron) tint to the topmost voxels.
@@ -1362,6 +1479,14 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 	# starve stem plants of micronutrients).
 	var iron_stressed: bool = nutrient_mult > 0.25 and nutrient_mult < 0.6 \
 		and _health_smooth > 0.5
+	if sim_driver != null and sim_driver.get("tank_vitals") != null:
+		var phase: int = int(sim_driver.tank_vitals.get("cycle_phase", 0))
+		if phase == WaterChemistry.CyclePhase.AMMONIA_SPIKE:
+			iron_stressed = false
+			co2_stressed = false
+		elif phase >= WaterChemistry.CyclePhase.ESTABLISHED \
+				and nutrient_mult > 0.25 and nutrient_mult < 0.55:
+			iron_stressed = true
 	var new_state: String = ""
 	if co2_stressed:
 		new_state = "co2"
@@ -1620,6 +1745,18 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_recompute_shade()
 	nutrient_mult *= _shade_mult
 
+	var sim_v: Node = _find_sim()
+	var light_pen: float = 1.0
+	if sim_v != null:
+		var w: Node = sim_v.get_parent()
+		if w != null and w.has_method("light_penetration_at"):
+			light_pen = float(w.light_penetration_at(_world_pos))
+		nutrient_mult *= light_pen
+		if is_epiphyte and w != null and w.get("biofilm_progress") != null:
+			var bio: float = clampf(float(w.biofilm_progress), 0.0, 0.7)
+			nutrient_mult *= lerpf(0.72, 1.12, bio / 0.65)
+		nutrient_mult *= _vitals_growth_mult(sim_v)
+
 	# Substrate boost cached at init time — substrate type doesn't change
 	# without a scene reload, so re-reading TankConfig every tick × 100
 	# plants × 10 Hz was 1000 autoload lookups/sec for a constant.
@@ -1637,6 +1774,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 	# Health trends toward nutrient satisfaction, with slow decay when starved.
 	var target_health: float = 0.35 + 0.65 * nutrient_mult
+	if sim_v != null and sim_v.get("tank_vitals") != null:
+		var vitals: Dictionary = sim_v.tank_vitals
+		if int(vitals.get("cycle_phase", 0)) == WaterChemistry.CyclePhase.AMMONIA_SPIKE:
+			target_health = minf(1.0, target_health + 0.08 * nutrient_mult)
 	health = lerpf(health, target_health, dt * 0.03) # slower health changes
 	_health_smooth = lerpf(_health_smooth, health, dt * 0.05)
 
@@ -1711,10 +1852,15 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		if _melt_regrow_timer > 40.0:  # ~40 sim seconds to recover
 			_melt_active = false
 			_melt_regrow_timer = 0.0
-			# Regrow from the rhizome.
 			is_dying = false
 			health = 0.5
 			_health_smooth = 0.5
+			var sim_rec: Node = _find_sim()
+			if sim_rec != null and sim_rec.has_method("emit_eco_event"):
+				var rlabel: String = common_name if common_name != "" else plant_name
+				if rlabel != "":
+					sim_rec.emit_eco_event("flora",
+						"%s recovering from melt — new leaves emerging." % rlabel, 1)
 		return  # Don't grow during melt recovery.
 
 	# ---- Decay ----
@@ -1784,12 +1930,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 							and randf() < melt_susceptibility * MELT_CHECK_PERIOD * 0.5:
 						_last_melt_unix = now_unix
 						trigger_crypt_melt()
-						if sim_d.has_method("log_story_event"):
+						if sim_d.has_method("emit_eco_event"):
 							var label: String = common_name if common_name != "" \
 								else (plant_name if plant_name != "" else "A crypt")
-							sim_d.log_story_event(
+							sim_d.emit_eco_event("flora",
 								"%s is melting — leaves dropping, will regrow from the rhizome."
-								% label)
+								% label, 2)
+							_record_melt_cluster(sim_d)
 
 
 func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) -> void:
@@ -1838,21 +1985,43 @@ func _tick_runner(dt: float) -> void:
 		return
 	if health < 0.55:
 		return
+	if is_epiphyte or has_plantlets:
+		var spread_f: float = _biofilm_spread_factor()
+		if spread_f < 0.12:
+			return
+		if randf() > spread_f:
+			return
 	_begin_runner()
 
 
 func _begin_runner() -> void:
-	# Pick a random horizontal direction + distance. The runner stays
-	# parallel to the substrate (no Y change). _runner_target is in this
-	# plant's LOCAL space - we don't want the chain to drift when the
-	# plant sways.
-	var theta: float = randf() * TAU
+	var best_dir: Vector3 = _pick_runner_direction()
 	var dist: float = randf_range(RUNNER_DISTANCE_MIN, RUNNER_DISTANCE_MAX)
 	_runner_origin = Vector3(0.0, 0.0, 0.0)
-	_runner_target = Vector3(cos(theta) * dist, 0.0, sin(theta) * dist)
+	_runner_target = best_dir * dist
 	_runner_active = true
 	_runner_progress = 0.0
 	_runner_voxels.clear()
+
+
+func _pick_runner_direction() -> Vector3:
+	var sim_d: Node = _find_sim()
+	var substrate: SubstrateGrid = null
+	if sim_d != null and sim_d.get("substrate") != null:
+		substrate = sim_d.substrate
+	var best: Vector3 = Vector3(cos(randf() * TAU), 0.0, sin(randf() * TAU))
+	var best_n: float = -1.0
+	for _i in 8:
+		var theta: float = randf() * TAU
+		var dir := Vector3(cos(theta), 0.0, sin(theta))
+		var probe: Vector3 = _world_pos + dir * 1.6
+		var n_val: float = 0.35
+		if substrate != null:
+			n_val = substrate.get_at(probe)
+		if n_val > best_n:
+			best_n = n_val
+			best = dir.normalized()
+	return best
 
 
 func _advance_runner(dt: float) -> void:
@@ -1874,6 +2043,15 @@ func _advance_runner(dt: float) -> void:
 		rv.position = local_pos
 		add_child(rv)
 		_runner_voxels.append(rv)
+		for side in [-1.0, 1.0]:
+			var rhizome_hair := MeshInstance3D.new()
+			rhizome_hair.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.08, VOXEL_SIZE * 0.14))
+			rhizome_hair.material_override = VoxelMat.make_foliage(ramp[0].darkened(0.08))
+			rhizome_hair.position = local_pos + Vector3(
+				side * VOXEL_SIZE * 0.20, -VOXEL_SIZE * 0.10, 0.0)
+			add_child(rhizome_hair)
+			_runner_voxels.append(rhizome_hair)
 		placed += 1
 	if placed >= RUNNER_VOXEL_COUNT:
 		_finalize_runner()
@@ -1933,6 +2111,14 @@ func _finalize_runner() -> void:
 func _begin_flowering() -> void:
 	if flower_stage != FlowerStage.NONE:
 		return
+	var sim_gate: Node = _find_sim()
+	if sim_gate != null and sim_gate.get("tank_vitals") != null:
+		var vitals: Dictionary = sim_gate.tank_vitals
+		if int(vitals.get("cycle_phase", 0)) < WaterChemistry.CyclePhase.CYCLING:
+			return
+	if _health_smooth < 0.6:
+		return
+	var first_flower: bool = not has_flower
 	flower_stage = FlowerStage.BUD
 	_flower_timer = 0.0
 	has_flower = true
@@ -1946,6 +2132,10 @@ func _begin_flowering() -> void:
 	for v in bud_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
+	if first_flower and sim_gate != null and sim_gate.has_method("emit_eco_event"):
+		var fl: String = common_name if common_name != "" else plant_name
+		if fl != "":
+			sim_gate.emit_eco_event("flora", "%s flowering — tank cycle paying off." % fl, 1)
 
 
 # Pick a petal + center color pair, biased by the current tank's light /
@@ -2055,7 +2245,7 @@ func _tick_flowering(dt: float) -> void:
 		FlowerStage.OPENING:
 			# Open over 4 seconds.
 			_flower_open_frac = clampf(_flower_timer / 4.0, 0.0, 1.0)
-			LeafShapes.update_flower(bloom_voxels, 5, _flower_open_frac)
+			LeafShapes.update_flower(bloom_voxels, 7, _flower_open_frac)
 			if _flower_timer > 4.0:
 				flower_stage = FlowerStage.MATURE
 				_flower_timer = 0.0
@@ -2093,7 +2283,7 @@ func _build_flower_meshes_once() -> void:
 	if _flower_node == null or not is_instance_valid(_flower_node):
 		return
 	var flower_voxels: Array = LeafShapes.build_flower(
-		_flower_petal_color, _flower_center_color, 5, 0.0)
+		_flower_petal_color, _flower_center_color, 7, 0.0)
 	for v in flower_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
@@ -2188,6 +2378,9 @@ func _tick_pearling(_dt: float) -> void:
 	# plant's co2_demand is being met. Pearling cranks visibly under good
 	# conditions, fades to subtle under poor ones.
 	pearl_factor *= (1.0 + co2_met * 1.2)
+	var w: Node = sim_driver.get_parent()
+	if w != null and w.has_method("light_penetration_at"):
+		pearl_factor *= float(w.light_penetration_at(global_position))
 	var global_damp: float = 1.0
 	var should_pearl: bool = pearl_factor > 0.10
 	if should_pearl and sim_driver.has_method("try_claim_pearling_slot"):
@@ -2205,6 +2398,28 @@ func _tick_pearling(_dt: float) -> void:
 			(0.12 + pearl_factor * 0.55) * _pearling_strength * global_damp,
 			0.06, 0.62)
 		_pearling_particles.set("amount_ratio", amount_ratio)
+		# Bubble size ladder — micro specks at low O₂, larger pass-2 bubbles when
+		# pearling hard (style-guide 1px → 2×2 → 3×3 tiers after quantize).
+		var pm: ParticleProcessMaterial = _pearling_particles.process_material as ParticleProcessMaterial
+		if pm != null:
+			if pearl_factor > 0.72:
+				pm.scale_min = 0.10
+				pm.scale_max = 0.22
+			elif pearl_factor > 0.38:
+				pm.scale_min = 0.08
+				pm.scale_max = 0.16
+			else:
+				pm.scale_min = 0.06
+				pm.scale_max = 0.12
+		if pearl_factor > 0.55 and _shared_pearling_mesh_medium != null:
+			if _pearling_particles.draw_passes < 2:
+				var med: SphereMesh = _shared_pearling_mesh_medium.duplicate()
+				med.material = VoxelMat.make_bubble(
+					Color(1.08, 1.14, 1.20, _pearling_opacity * 0.85), 1.32)
+				_pearling_particles.draw_passes = 2
+				_pearling_particles.draw_pass_2 = med
+		elif _pearling_particles.draw_passes > 1:
+			_pearling_particles.draw_passes = 1
 		# Position at canopy tips for pearling hotspots.
 		var tip_y: float = _get_stem_top()
 		if leaf_form in ["paddle", "lily", "pad"]:
@@ -2214,6 +2429,8 @@ func _tick_pearling(_dt: float) -> void:
 		_pearling_active = false
 		if _pearling_particles != null:
 			_pearling_particles.emitting = false
+			if _pearling_particles.draw_passes > 1:
+				_pearling_particles.draw_passes = 1
 
 
 # ---- Seeding ----
@@ -2244,6 +2461,8 @@ func _begin_dying() -> void:
 		_pearling_active = false
 		if _pearling_particles != null:
 			_pearling_particles.emitting = false
+			if _pearling_particles.draw_passes > 1:
+				_pearling_particles.draw_passes = 1
 
 
 func _decay_one_voxel() -> void:
@@ -2289,9 +2508,19 @@ func trigger_crypt_melt() -> void:
 	_melt_active = true
 	_melt_regrow_timer = 0.0
 	_pre_melt_height = current_height
+	var top_y: float = _get_stem_top()
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	for i in mini(6, maxi(1, current_height)):
+		_spawn_melt_ghost(Vector3(
+			randf_range(-VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.55),
+			top_y + randf_range(-VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.65),
+			randf_range(-VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.55),
+		), ramp[clampi(int(randf() * 5.0), 0, 5)] as Color)
 	# Burst: remove all stem voxels rapidly + clear the foliage MultiMesh.
 	for v in voxels:
 		if is_instance_valid(v):
+			_spawn_melt_ghost(v.global_position - global_position,
+				VoxelMat.read_albedo(v.material_override as ShaderMaterial, Color.GREEN))
 			_spawn_decay_waste(v.global_position)
 			v.queue_free()
 	voxels.clear()
@@ -2304,6 +2533,26 @@ func trigger_crypt_melt() -> void:
 	has_flower = false
 	flower_stage = FlowerStage.NONE
 	# Roots stay! They're the rhizome that will regrow.
+
+
+func _spawn_melt_ghost(local_pos: Vector3, col: Color) -> void:
+	var ghost := MeshInstance3D.new()
+	ghost.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * randf_range(0.35, 0.75),
+		VOXEL_SIZE * randf_range(0.35, 0.75),
+		VOXEL_SIZE * randf_range(0.25, 0.55),
+	))
+	var mat: ShaderMaterial = VoxelMat.make_foliage(col).duplicate()
+	ghost.material_override = mat
+	ghost.position = local_pos
+	add_child(ghost)
+	var end_col: Color = Color(col.r, col.g, col.b, 0.0)
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(ghost, "position", local_pos + Vector3(
+		randf_range(-0.08, 0.08), -VOXEL_SIZE * 0.45, randf_range(-0.08, 0.08)), 1.35)
+	tw.tween_property(mat, "shader_parameter/albedo", end_col, 1.35)
+	tw.chain().tween_callback(ghost.queue_free)
 
 
 func _spawn_decay_waste(at: Vector3) -> void:

@@ -7,6 +7,7 @@ class_name AquariumVisuals
 const TICK_INTERVAL: float = 0.1
 const SLIME_CAP: int = 96
 const SPARKLE_CAP: int = 12
+const FLOATER_SHADOW_CAP: int = 64
 
 var _world: Node3D
 var _sim: Node
@@ -18,6 +19,7 @@ var _glass_walls: Array[MeshInstance3D] = []
 var _compaction: Dictionary = {}
 var _slime_marks: Array[MeshInstance3D] = []
 var _mineral_streaks: Array[MeshInstance3D] = []
+var _floater_shadows: Array[MeshInstance3D] = []
 
 var _haze_particles: GPUParticles3D
 var _debris_particles: GPUParticles3D
@@ -89,6 +91,7 @@ func tick(dt: float, ambient_due: bool) -> void:
 	_maybe_glass_sparkle(sdt)
 	_update_god_ray_occlusion()
 	_cleanup_slime()
+	_sync_floater_shadows()
 	if _screenshot_boost_t > 0.0:
 		_screenshot_boost_t = maxf(0.0, _screenshot_boost_t - dt)
 
@@ -115,7 +118,7 @@ func record_compaction(x: float, z: float, amount: float = 0.02) -> void:
 	var key: Vector2i = Vector2i(int(floor(x * 2.0)), int(floor(z * 2.0)))
 	_compaction[key] = clampf(float(_compaction.get(key, 0.0)) + amount, 0.0, 1.0)
 	if _world != null and _world.has_method("tint_substrate_cell"):
-		_world.tint_substrate_cell(x, z, Color(0.72, 0.68, 0.58), float(_compaction[key]) * 0.35)
+		_world.tint_substrate_cell(x, z, Color(0.72, 0.68, 0.58), float(_compaction[key]) * 0.48)
 
 
 func spawn_splash_crown(pos: Vector3) -> void:
@@ -623,6 +626,55 @@ func _cleanup_slime() -> void:
 		i -= 1
 	while _slime_marks.size() > SLIME_CAP:
 		_pop_slime_mark()
+
+
+func sync_floater_shadows(floaters: Array, substrate_y: float) -> void:
+	if _world == null:
+		return
+	var live: int = 0
+	for f in floaters:
+		if is_instance_valid(f):
+			live += 1
+	while _floater_shadows.size() > mini(live, FLOATER_SHADOW_CAP):
+		var old = _floater_shadows.pop_back()
+		if is_instance_valid(old):
+			old.queue_free()
+	var idx: int = 0
+	for f in floaters:
+		if not is_instance_valid(f):
+			continue
+		if idx >= FLOATER_SHADOW_CAP:
+			break
+		var fn: Node3D = f as Node3D
+		var mi: MeshInstance3D
+		if idx < _floater_shadows.size() and is_instance_valid(_floater_shadows[idx]):
+			mi = _floater_shadows[idx]
+		else:
+			mi = _make_floater_shadow()
+			if idx < _floater_shadows.size():
+				_floater_shadows[idx] = mi
+			else:
+				_floater_shadows.append(mi)
+		mi.global_position = Vector3(fn.position.x, substrate_y + 0.03, fn.position.z)
+		var shade: float = clampf(0.55 + fn.position.y * 0.02, 0.45, 0.75)
+		mi.scale = Vector3(shade, 1.0, shade)
+		idx += 1
+
+
+func _sync_floater_shadows() -> void:
+	if _world == null or _world.get("_floaters") == null:
+		return
+	sync_floater_shadows(_world._floaters, float(_world.SUBSTRATE_DEPTH))
+
+
+func _make_floater_shadow() -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.name = "FloaterShadow"
+	mi.mesh = VoxelMat.get_box(Vector3(0.42, 0.03, 0.42))
+	var mat: ShaderMaterial = VoxelMat.make(Color(0.08, 0.14, 0.20, 0.38))
+	mi.material_override = mat
+	_world.add_child(mi)
+	return mi
 
 
 func _compute_seasonal_hue() -> float:

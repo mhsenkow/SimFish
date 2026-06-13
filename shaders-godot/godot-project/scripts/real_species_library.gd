@@ -71,6 +71,7 @@ static func entries() -> Array:
 				"leaf_form": "spade", "max_height": 8, "leaf_length": 5,
 				"leaf_size_mult": 1.2, "growth_rate": 0.06,
 				"is_epiphyte": true, "sway_amplitude": 0.18,
+				"quilted": true,
 				"red_potential": 0.0, "co2_demand": 0.1,
 				"ramp_override": [
 					_c(18, 42, 22), _c(28, 60, 32), _c(40, 86, 44),
@@ -311,6 +312,7 @@ static func entries() -> Array:
 				"leaf_form": "ribbon", "max_height": 16, "leaf_length": 12,
 				"leaf_size_mult": 1.1, "growth_rate": 0.13,
 				"melt_susceptibility": 0.6, "sway_amplitude": 0.36,
+				"wavy_edges": true,
 				"ramp_override": [
 					_c(28, 48, 22), _c(40, 76, 32), _c(60, 108, 50),
 					_c(84, 138, 72), _c(108, 162, 90), _c(134, 184, 110),
@@ -333,6 +335,7 @@ static func entries() -> Array:
 				"leaf_size_mult": 0.7, "growth_rate": 0.20,
 				"whorled_leaves": true, "red_potential": 0.55,
 				"co2_demand": 0.5, "sway_amplitude": 0.30,
+				"iridescence": 0.12,
 				"ramp_override": [
 					_c(22, 58, 26), _c(40, 88, 42), _c(78, 124, 64),
 					_c(132, 138, 78), _c(176, 130, 80), _c(208, 122, 92),
@@ -759,6 +762,7 @@ static func entries() -> Array:
 				"leaf_form": "paddle", "max_height": 22, "leaf_length": 8,
 				"leaf_size_mult": 1.4, "growth_rate": 0.13,
 				"has_plantlets": true, "sway_amplitude": 0.28,
+				"variegation": 0.10,
 				"ramp_override": [
 					_c(28, 58, 28), _c(46, 92, 44), _c(70, 124, 62),
 					_c(96, 154, 82), _c(124, 178, 104), _c(154, 200, 128),
@@ -819,6 +823,7 @@ static func entries() -> Array:
 				"leaf_form": "ribbon", "max_height": 22, "leaf_length": 18,
 				"leaf_size_mult": 1.2, "growth_rate": 0.20,
 				"is_carpet": false, "sway_amplitude": 0.42,
+				"wavy_edges": true,
 				"ramp_override": [
 					_c(30, 60, 26), _c(48, 90, 42), _c(72, 122, 64),
 					_c(100, 152, 88), _c(130, 178, 112), _c(160, 200, 134),

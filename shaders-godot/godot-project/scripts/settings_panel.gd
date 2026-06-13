@@ -16,6 +16,8 @@ const OllamaOnboarding = preload("res://scripts/ollama_onboarding.gd")
 signal apply_requested
 
 var _shape_option: OptionButton
+var _vessel_option: OptionButton
+var _vessel_desc: Label
 var _new_tank_fit_option: OptionButton
 var _w_slider: HSlider
 var _d_slider: HSlider
@@ -148,6 +150,15 @@ func _build_ui() -> void:
 
 	# -- Tank tab --
 	_add_section(vbox_tank, "Shape & size")
+	_vessel_option = PanelTheme.add_dropdown_row(vbox_tank, "Vessel preset")
+	for key in TankConfig.VESSEL_PRESETS.keys():
+		var vlabel: String = TankConfig.VESSEL_PRESETS[key]["label"]
+		_vessel_option.add_item(vlabel)
+		_vessel_option.set_item_metadata(_vessel_option.item_count - 1, key)
+	_vessel_option.item_selected.connect(func(idx): _on_vessel(idx))
+	_vessel_desc = PanelTheme.make_description()
+	vbox_tank.add_child(_vessel_desc)
+
 	_shape_option = PanelTheme.add_dropdown_row(vbox_tank, "Shape")
 	for entry in [
 			{"key": "box",      "label": "Box (rectangle)"},
@@ -160,7 +171,9 @@ func _build_ui() -> void:
 		_shape_option.add_item(String(entry["label"]))
 		_shape_option.set_item_metadata(_shape_option.item_count - 1, entry["key"])
 	_shape_option.item_selected.connect(func(idx):
-		TankConfig.tank_shape = _shape_option.get_item_metadata(idx))
+		TankConfig.tank_shape = _shape_option.get_item_metadata(idx)
+		TankConfig.vessel_preset = "custom"
+		_sync_vessel_dropdown())
 
 	_new_tank_fit_option = PanelTheme.add_dropdown_row(vbox_tank, "New tank footprint")
 	for entry in [
@@ -429,7 +442,7 @@ func _build_ui() -> void:
 	vbox_adv.add_child(_auto_respawn_check)
 
 	_auto_feed_check = CheckBox.new()
-	_auto_feed_check.text = "Auto-feed surface (simulate manual feeding)"
+	_auto_feed_check.text = "Auto-feed (screensaver mode — simulates ⌘+click feeding)"
 	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
 	vbox_adv.add_child(_auto_feed_check)
 
@@ -609,6 +622,11 @@ func _pull_from_config() -> void:
 	_pending_preset = TankConfig.tank_preset
 	_pending_substrate = TankConfig.substrate_type
 	# Tank shape dropdown.
+	for i in _vessel_option.item_count:
+		if _vessel_option.get_item_metadata(i) == TankConfig.vessel_preset:
+			_vessel_option.select(i)
+			break
+	_update_vessel_desc()
 	for i in _shape_option.item_count:
 		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
 			_shape_option.select(i)
@@ -993,16 +1011,22 @@ func _update_substrate_desc() -> void:
 
 func _on_w(v: float) -> void:
 	TankConfig.tank_half_w = v * 0.5
+	TankConfig.vessel_preset = "custom"
+	_sync_vessel_dropdown()
 	_w_label.text = "%.1f" % v
 
 
 func _on_d(v: float) -> void:
 	TankConfig.tank_half_d = v * 0.5
+	TankConfig.vessel_preset = "custom"
+	_sync_vessel_dropdown()
 	_d_label.text = "%.1f" % v
 
 
 func _on_h(v: float) -> void:
 	TankConfig.tank_height = v
+	TankConfig.vessel_preset = "custom"
+	_sync_vessel_dropdown()
 	_h_label.text = "%.1f" % v
 
 
@@ -1014,6 +1038,38 @@ func _on_substrate(idx: int) -> void:
 func _on_aeration(idx: int) -> void:
 	TankConfig.aeration_type = _aeration_option.get_item_metadata(idx)
 	_update_aeration_desc()
+
+
+func _on_vessel(idx: int) -> void:
+	var slug: String = _vessel_option.get_item_metadata(idx)
+	TankConfig.apply_vessel_preset(slug)
+	_update_vessel_desc()
+	# Push preset dimensions into sliders + shape dropdown without marking custom.
+	for i in _shape_option.item_count:
+		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
+			_shape_option.select(i)
+			break
+	_w_slider.value = TankConfig.tank_half_w * 2.0
+	_d_slider.value = TankConfig.tank_half_d * 2.0
+	_h_slider.value = TankConfig.tank_height
+	_update_value_labels()
+
+
+func _sync_vessel_dropdown() -> void:
+	if _vessel_option == null:
+		return
+	for i in _vessel_option.item_count:
+		if _vessel_option.get_item_metadata(i) == TankConfig.vessel_preset:
+			_vessel_option.select(i)
+			break
+	_update_vessel_desc()
+
+
+func _update_vessel_desc() -> void:
+	var key: String = TankConfig.vessel_preset
+	var preset: Dictionary = TankConfig.VESSEL_PRESETS.get(key, {})
+	if _vessel_desc != null:
+		_vessel_desc.text = String(preset.get("description", ""))
 
 
 func _on_environment(idx: int) -> void:

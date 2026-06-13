@@ -259,7 +259,17 @@ func _format_subtitle(entry: Dictionary) -> String:
 	if last_opened > 0:
 		var ago: int = int(Time.get_unix_time_from_system()) - last_opened
 		when_str = _fmt_duration(ago) + " ago"
-	return "Ran for %s · last opened %s" % [run_str, when_str]
+	var eco: String = ""
+	var day_l: String = String(entry.get("sim_day_label", ""))
+	var cycle_l: String = String(entry.get("cycle_label", ""))
+	if day_l != "" and cycle_l != "":
+		eco = " · %s · %s" % [day_l, cycle_l]
+	elif cycle_l != "":
+		eco = " · %s" % cycle_l
+	var amb: String = String(entry.get("ambient_hint", ""))
+	if amb != "":
+		eco += " · %s" % amb
+	return "Ran for %s · last opened %s%s" % [run_str, when_str, eco]
 
 
 func _fmt_duration(seconds: int) -> String:
@@ -331,7 +341,7 @@ func _show_orientation_picker() -> void:
 	var title := Label.new()
 	title.text = "Tank orientation"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 20)
+	PanelTheme.as_serif(title, PanelTheme.SIZE_SECTION, true)
 	vb.add_child(title)
 	var body := Label.new()
 	body.text = "Pick the shape that fits how you hold the phone. You can change this later in Settings → Tank."

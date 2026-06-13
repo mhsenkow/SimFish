@@ -415,7 +415,7 @@ func _build_list_column() -> Control:
 
 	var lineage_hint := Label.new()
 	lineage_hint.text = "Lines link offspring → parents"
-	lineage_hint.add_theme_font_size_override("font_size", 9)
+	lineage_hint.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	lineage_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	_list_panel.add_child(lineage_hint)
 
@@ -535,7 +535,7 @@ func _build_preview_column() -> Control:
 
 	var hint := Label.new()
 	hint.text = "drag preview to rotate"
-	hint.add_theme_font_size_override("font_size", 10)
+	hint.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	controls.add_child(hint)
 
@@ -552,14 +552,14 @@ func _build_detail_column() -> Control:
 
 	_detail_name = Label.new()
 	_detail_name.text = "Select a species"
-	_detail_name.add_theme_font_size_override("font_size", 18)
+	PanelTheme.as_serif(_detail_name, PanelTheme.SIZE_SECTION, true)
 	_detail_name.add_theme_color_override("font_color", PanelTheme.TITLE_FG)
 	_detail_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_detail_name)
 
 	_detail_source_badge = Label.new()
 	_detail_source_badge.text = ""
-	_detail_source_badge.add_theme_font_size_override("font_size", 11)
+	PanelTheme.as_mono(_detail_source_badge, PanelTheme.SIZE_CAPTION)
 	_detail_source_badge.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 	v.add_child(_detail_source_badge)
 
@@ -1379,7 +1379,7 @@ func _select_ecosystem_entry(entry: Dictionary) -> void:
 	_add_trait("Role", String(entry.get("role", "—")))
 	_add_trait("Trigger", String(entry.get("trigger", "—")))
 	_add_trait("Grazed by", String(entry.get("grazed_by", "—")))
-	_add_trait_block("Description", String(entry.get("description", "")))
+	_add_trait_block("Description", String(entry.get("description", "")), true)
 	_detail_meta.text = ""
 	# Relabel "Genome" section to "Field guide" — these aren't genomes.
 	if _detail_genome_label != null:
@@ -1413,7 +1413,7 @@ func _populate_swatch_single(c: Color) -> void:
 
 
 # Multi-line trait entry — for long descriptions that need wrapping.
-func _add_trait_block(label: String, value: String) -> void:
+func _add_trait_block(label: String, value: String, serif_value: bool = false) -> void:
 	if _detail_traits == null:
 		return
 	var v := VBoxContainer.new()
@@ -1426,7 +1426,10 @@ func _add_trait_block(label: String, value: String) -> void:
 	var t := Label.new()
 	t.text = value
 	t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	t.add_theme_font_size_override("font_size", 12)
+	if serif_value:
+		PanelTheme.as_serif(t, PanelTheme.SIZE_BODY)
+	else:
+		t.add_theme_font_size_override("font_size", 12)
 	v.add_child(t)
 	_detail_traits.add_child(v)
 

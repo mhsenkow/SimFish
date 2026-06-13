@@ -20,6 +20,7 @@ App ID **4796460** · Store name **walstad loom**
    cp steam/depot_ids.env.example steam/depot_ids.env
    # edit steam/depot_ids.env with your depot IDs
    ```
+   `steam/depot_ids.env` is git-ignored (local only); only the `.example` is committed.
 
 ## Local development
 
@@ -50,11 +51,19 @@ STEAM_USERNAME=your_partner_account ./steam/upload.sh
 
 ## Store page checklist
 
-Generate capsule art and screenshots:
+Generate capsule art and screenshots. First-time setup creates a local venv
+(git-ignored) with Pillow:
 
 ```bash
-cd steam/store && .venv/bin/python generate_assets.py
+cd steam/store
+python3 -m venv .venv
+.venv/bin/pip install pillow playwright requests
+.venv/bin/python generate_assets.py
 ```
+
+On later runs just `.venv/bin/python generate_assets.py`. The generator reads
+hand-made capsule art + gameplay screenshots from `marketing/` (see
+`generate_assets.py` `MARKETING_CAPSULES`).
 
 Then upload everything under `steam/store/assets/` via **Edit Store Page → Graphical Assets → Drop images here**.
 

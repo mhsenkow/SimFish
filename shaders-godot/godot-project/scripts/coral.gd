@@ -3,7 +3,10 @@
 # growth-tick / substrate-consumption + voxel tracking; overrides only
 # the body-building part of _grow_one().
 #
-# Four shape templates, selected at spawn via `coral_form`:
+# Form registry: world._spawn_initial_corals uses coral_form strings
+# "dome", "branching", "anemone", "clam", "sponge" on this class.
+# Freshwater filter clams live in clam.gd separately — do not confuse
+# reef "clam" sessile forms here with those bivalves.
 #
 #   "dome"        Brain / boulder coral. A hemisphere of polyp voxels
 #                 stacked in golden-angle phyllotaxis. The classic
@@ -59,6 +62,8 @@ var _polyp_tips: Array = []  # Array[{node, phase, base_scale, base_albedo}]
 # kill the coral outright (plant decay handles real death).
 var _bleach_level: float = 0.0
 var _last_bleach_applied: float = 0.0
+var _bleach_event_band: int = -1
+var _bleach_recovery_logged: bool = false
 # Tentacle / polyp extension state. 1.0 = corals actively feeding, fully
 # extended; 0.0 = retracted (stressed, bleached, or low-O2). Lerps toward
 # the target derived in tick() so the visual extension/retraction reads
@@ -679,13 +684,23 @@ func _grow_sponge(is_fresh: bool) -> void:
 			Vector3(offset.x, y + j * VOXEL_SIZE * 0.18, offset.z),
 			Vector3(VOXEL_SIZE * (0.26 + rel * 0.12), VOXEL_SIZE * 0.46, VOXEL_SIZE * (0.26 + rel * 0.12)),
 			ramp[clampi(1 + j + int(rel * 3.0), 0, ramp.size() - 1)])
-	# Porous opening ring near the top reads as sponge osculum.
-	if current_height > 3 and current_height % 3 == 0:
-		var hole_col: Color = tip_color if not is_fresh else ramp[5]
+	# Porous oscula — dark 1-voxel pits on the sponge surface.
+	var pit_col: Color = (ramp[0] if ramp.size() > 0 else Color8(40, 55, 48)).darkened(0.42)
+	if is_fresh:
+		pit_col = pit_col.lightened(0.06)
+	if current_height > 2 and current_height % 3 == 0:
 		_make_coral_voxel(
 			Vector3(0.0, y + VOXEL_SIZE * 0.26, 0.0),
-			Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
-			hole_col)
+			Vector3(VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.12),
+			pit_col)
+	if current_height > 4:
+		for k in 2:
+			var pit_ang: float = _topology_seed + float(current_height + k) * 2.7
+			var pit_r: float = radius * 0.55
+			_make_coral_voxel(
+				Vector3(cos(pit_ang) * pit_r, y + VOXEL_SIZE * 0.18, sin(pit_ang) * pit_r),
+				Vector3(VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.10),
+				pit_col.darkened(0.08))
 
 
 func _grow_clam() -> void:
@@ -818,11 +833,19 @@ func _animate_polyp_tips() -> void:
 	# peaks during the deep-night window (phase ~0.5..0.95) and fades to
 	# nothing at dawn / dusk.
 	var night_glow: float = 0.0
+	var day_zoox: float = 0.0
 	var sim_n: Node = _find_sim()
 	if sim_n != null and sim_n.has_method("daylight"):
 		var dl: float = float(sim_n.daylight())
 		# daylight() is 0 at night, 1 at noon. Strong glow when dl < 0.25.
 		night_glow = (1.0 - bleach_glow_dim()) * smoothstep(0.32, 0.05, dl)
+		day_zoox = (1.0 - bleach_glow_dim()) * smoothstep(0.22, 0.88, dl)
+		var dp: float = fposmod(float(sim_n.day_phase), 1.0)
+		var reef_pulse: float = 0.55 + 0.45 * sin(dp * TAU)
+		night_glow *= reef_pulse
+		if sim_n.get("dissolved_o2") != null:
+			night_glow *= clampf(float(sim_n.dissolved_o2) / 0.88, 0.35, 1.0)
+			day_zoox *= clampf(float(sim_n.dissolved_o2) / 0.75, 0.45, 1.0)
 	# Prune freed polyp tips lazily. Reading the dict entry into a
 	# Variant first (not a typed Node3D) avoids the "assign to invalid
 	# previously freed instance" error when fish grazing or decay has
@@ -844,6 +867,11 @@ func _animate_polyp_tips() -> void:
 		# Range ~(1 - amp .. 1 + amp). Slightly squashed on the closed
 		# half so the rest pose reads as a recessed polyp.
 		var s: float = 1.0 + sin(_sessile_phase * 1.6 + phase) * amp
+		# Slow periodic retract — dome / plate polyps snap mostly closed
+		# every ~8–12 s so colonies read as actively respiring.
+		var retract_env: float = sin(_sessile_phase * 0.42 + phase * 0.15)
+		if retract_env < -0.72:
+			s *= 0.52
 		# Scale-with-glow: glowing polyps swell slightly so a bright pulse
 		# also reads as a physical "breath out" rather than only a color
 		# change. Bumped by night_glow so this only kicks in after dusk.
@@ -882,6 +910,25 @@ func _animate_polyp_tips() -> void:
 					mi.set_meta("glow_mat", true)
 				var lit: Color = base_alb.lightened(0.72 * glow)
 				(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", lit)
+		elif day_zoox > 0.02 and n is MeshInstance3D:
+			var mi_day: MeshInstance3D = n as MeshInstance3D
+			var sm_day: ShaderMaterial = mi_day.material_override as ShaderMaterial
+			if sm_day != null:
+				var base_day: Color
+				if mi_day.has_meta("base_albedo_glow"):
+					var stored_day: Variant = mi_day.get_meta("base_albedo_glow")
+					base_day = stored_day as Color if stored_day is Color else VoxelMat.read_albedo(sm_day)
+				else:
+					base_day = VoxelMat.read_albedo(sm_day)
+					mi_day.set_meta("base_albedo_glow", base_day)
+				var zoox_pulse: float = 0.55 + 0.45 * sin(_sessile_phase * 0.85 + phase * 0.7)
+				var tip_lift: float = day_zoox * zoox_pulse * 0.32
+				var zoox_col: Color = base_day.lerp(tip_color, tip_lift)
+				if not mi_day.has_meta("glow_mat"):
+					var dup_day: ShaderMaterial = sm_day.duplicate() as ShaderMaterial
+					mi_day.material_override = dup_day
+					mi_day.set_meta("glow_mat", true)
+				(mi_day.material_override as ShaderMaterial).set_shader_parameter("albedo", zoox_col)
 		elif n is MeshInstance3D:
 			var mi2: MeshInstance3D = n as MeshInstance3D
 			# Restore base when night ended. Cheap idempotent check.
@@ -972,11 +1019,16 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		o2 = clampf(float(sim_n.dissolved_o2), 0.0, 1.0)
 	var warmth: float = 0.5
 	if sim_n != null:
-		var cfg: Node = sim_n.get_node_or_null("/root/TankConfig")
-		if cfg != null:
-			var wv: Variant = cfg.get("light_warmth")
-			if wv != null:
-				warmth = clampf(float(wv), 0.0, 1.0)
+		var w: Node = sim_n.get_parent()
+		if w != null and w.has_method("effective_warmth_at"):
+			warmth = float(w.effective_warmth_at(global_position))
+		else:
+			var cfg: Node = sim_n.get_node_or_null("/root/TankConfig")
+			if cfg != null:
+				var wv: Variant = cfg.get("light_warmth")
+				if wv != null:
+					warmth = clampf(float(wv), 0.0, 1.0)
+	var prev_bleach: float = _bleach_level
 	# Climb when warmth >=0.78 or o2 <=0.35; decay when both safe.
 	# Decay is slower than climb — recovering from bleaching is a slow
 	# process on a real reef. Both rates are per-second.
@@ -987,8 +1039,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_bleach_level = clampf(_bleach_level + stress * dt * 0.014, 0.0, 1.0)
 	else:
 		_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
-	# Bleached polyps photosynthesize less — slow growth in proportion.
-	growth_rate = _base_growth_rate * lerpf(1.0, 0.3, _bleach_level)
+	_emit_bleach_eco_events(sim_n, prev_bleach)
+	var reef_growth: float = 1.0
+	if sim_n != null and sim_n.get("water_chemistry") != null:
+		var wc: WaterChemistry = sim_n.water_chemistry
+		reef_growth = clampf(float(wc.reef_nutrients) / 0.55, 0.35, 1.15) \
+			* clampf((float(wc.alkalinity_proxy) - 6.8) / 1.4, 0.45, 1.0)
+	growth_rate = _base_growth_rate * reef_growth * lerpf(1.0, 0.3, _bleach_level)
 	# Feeding state — drives tentacle / polyp extension in
 	# _animate_polyp_tips + _animate_sessile_motion. Real corals only
 	# extend tentacles when conditions are good: high oxygen, healthy
@@ -1012,6 +1069,29 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# they don't snap like a fish reaction.
 	_feeding_extension = lerpf(_feeding_extension, target_feeding, clampf(dt * 0.6, 0.0, 1.0))
 	super.tick(dt, substrate)
+
+
+func _emit_bleach_eco_events(sim_n: Node, prev: float) -> void:
+	if sim_n == null or not sim_n.has_method("emit_eco_event"):
+		return
+	var bands: Array = [0.25, 0.5, 0.75]
+	for i in bands.size():
+		var thr: float = float(bands[i])
+		if prev < thr and _bleach_level >= thr and i > _bleach_event_band:
+			_bleach_event_band = i
+			match i:
+				0:
+					sim_n.emit_eco_event("reef", "Coral paling — early bleaching stress.", 1)
+				1:
+					sim_n.emit_eco_event("reef", "Reef bleaching — colony losing zooxanthellae.", 2)
+				2:
+					sim_n.emit_eco_event("reef", "Severe bleaching — check warmth and O₂.", 2)
+	if _bleach_level < 0.15 and prev >= 0.25 and not _bleach_recovery_logged:
+		_bleach_recovery_logged = true
+		_bleach_event_band = -1
+		sim_n.emit_eco_event("reef", "Corals recovering color — stress easing.", 1)
+	elif _bleach_level >= 0.2:
+		_bleach_recovery_logged = false
 
 
 # Corals don't propagate via runners or seeds (could be modeled as

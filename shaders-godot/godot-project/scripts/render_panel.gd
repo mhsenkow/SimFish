@@ -202,18 +202,20 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
 	vbox.add_child(_region_aware_check)
 	_experimental_check = CheckBox.new()
-	_experimental_check.text = "Experimental visuals — jewel-like fauna (SSS + iridescence)"
+	_experimental_check.text = "Amplify fauna sheen (stronger SSS + iridescence)"
 	_experimental_check.toggled.connect(func(v): TankConfig.experimental_visuals = v)
 	vbox.add_child(_experimental_check)
 	var exp_desc := PanelTheme.make_description()
 	exp_desc.text = "Adds subsurface glow + view-angle shimmer to fish & shrimp. Click Apply to rebuild."
 	vbox.add_child(exp_desc)
 	_matured_check = CheckBox.new()
-	_matured_check.text = "New tanks start established (instant-mature)"
-	_matured_check.toggled.connect(func(v): TankConfig.start_matured = v)
+	_matured_check.text = "New tanks start established (skip the cycle)"
+	_matured_check.toggled.connect(func(v):
+		TankConfig.start_matured = v
+		TankConfig.cycle_start_mode = "established" if v else "fresh")
 	vbox.add_child(_matured_check)
 	var mat_desc := PanelTheme.make_description()
-	mat_desc.text = "Applies when you create a NEW tank: biofilm patina, a few generations of variety, mixed ages."
+	mat_desc.text = "Applies when you create a NEW tank: cycled chemistry, biofilm patina, mixed ages. Off = fresh Walstad cycle with visible ammonia phase."
 	vbox.add_child(mat_desc)
 	var rad_desc := PanelTheme.make_description()
 	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."

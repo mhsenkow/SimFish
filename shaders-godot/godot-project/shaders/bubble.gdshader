@@ -7,6 +7,8 @@ uniform vec4 bubble_color : source_color = vec4(0.78, 0.92, 0.96, 0.42);
 uniform float highlight : hint_range(0.0, 1.5) = 1.0;
 uniform float o2_tint : hint_range(0.0, 1.0) = 0.5;
 uniform float shadow_strength : hint_range(0.0, 1.0) = 0.35;
+// HDR shoulder for palette-quantize night burnthrough (pearling, filter bubbles).
+uniform float emissive_boost : hint_range(1.0, 1.6) = 1.0;
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
@@ -23,6 +25,7 @@ void fragment() {
 	col *= 1.0 - shadow_strength * (1.0 - ndv) * 0.25 * step(n.y, -0.55);
 
 	float alpha = bubble_color.a * (0.28 + rim * 0.62 + spec * 0.12);
+	col *= emissive_boost;
 	ALBEDO = col;
 	ALPHA = clamp(alpha, 0.08, 0.72);
 }

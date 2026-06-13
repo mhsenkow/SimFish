@@ -67,6 +67,20 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 			"last_opened_unix": int(Time.get_unix_time_from_system()),
 		}
 	meta["runtime_s"] = int(sim.elapsed_runtime_s) if sim.get("elapsed_runtime_s") != null else int(meta.get("runtime_s", 0))
+	if sim.get("tank_age_s") != null:
+		meta["tank_age_s"] = float(sim.tank_age_s)
+	if sim.get("water_chemistry") != null and sim.water_chemistry != null:
+		meta["cycle_label"] = WaterChemistry.phase_label(sim.water_chemistry.cycle_phase)
+	if sim.has_method("sim_day_label"):
+		meta["sim_day_label"] = sim.sim_day_label()
+	if sim.get("tank_vitals") != null and sim.tank_vitals is Dictionary:
+		var vitals: Dictionary = sim.tank_vitals
+		meta["hud_mode"] = String(vitals.get("hud_mode", ""))
+	if world != null:
+		if world.get("tannins") != null and float(world.tannins) > 0.28:
+			meta["ambient_hint"] = "tannins high"
+		elif world.get("biofilm_progress") != null and float(world.biofilm_progress) > 0.42:
+			meta["ambient_hint"] = "biofilm maturing"
 	meta["last_opened_unix"] = int(Time.get_unix_time_from_system())
 	saves.update_tank_meta(int(saves.active_slot), meta)
 	return pending_time_scale

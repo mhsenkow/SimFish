@@ -60,6 +60,10 @@ var experimental_visuals: bool = false
 # tank spawns already "established" — biofilm patina, a couple of generations of
 # lineage depth on the founders, and a spread of ages. Off = watch it grow in.
 var start_matured: bool = false
+# Ecology cold-start: "fresh" runs a visible nitrogen cycle; "established"
+# skips to a cycled, mature-looking tank (pairs with start_matured patina).
+var cycle_start_mode: String = "fresh"
+var plant_youth_scale: float = 0.52
 # Volumetric fog parameters.
 var fog_density: float = 0.02
 var fog_anisotropy: float = 0.3
@@ -211,6 +215,7 @@ var ai_onboarding_seen: bool = false
 #   cylinder  - vertical round tank (constant circular footprint)
 #   sphere    - dome bowl (hemisphere — walls taper inward with height)
 var tank_shape: String = "box"
+var vessel_preset: String = "custom"
 var tank_half_w: float = 8.0
 var tank_half_d: float = 4.0
 var tank_height: float = 7.0
@@ -246,6 +251,8 @@ var light_caustics: bool = true
 # Night-only player toggle — when false the aquarium fixture is off but the
 # sim day/night cycle keeps running.
 var tank_lights_on: bool = true
+# Substrate heater rod contributes warmth when on (see world.effective_warmth_at).
+var heater_enabled: bool = true
 # Master kill switch for all aquarium lighting (sun + fixture + ambient).
 # When false the tank is essentially pitch black so the user can see how
 # their bioluminescence/effects read without the room light fighting them.
@@ -426,6 +433,10 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_clock": true,
 		"include_record_player": true,
 		"include_mug": true,
+		"room_warmth": 0.50,
+		"sim_clock": true,
+		"window_backdrop": "city",
+		"window_weather": "clear",
 	},
 	"sunny_window": {
 		"label": "Sunny window",
@@ -441,6 +452,10 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_window": true,
 		"include_clock": true,
 		"include_mug": true,
+		"room_warmth": 0.58,
+		"sim_clock": false,
+		"window_backdrop": "clouds",
+		"window_weather": "clear",
 	},
 	"dark_cabinet": {
 		"label": "Display cabinet",
@@ -455,6 +470,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_plant": false,
 		"include_lava_lamp": true,
 		"include_clock": true,
+		"room_warmth": 0.48,
+		"night_depth_boost": 1.12,
 	},
 	"forest_window": {
 		"label": "Forest window",
@@ -470,6 +487,32 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"include_window": true,
 		"include_mug": true,
 		"include_lava_lamp": true,
+		"room_warmth": 0.58,
+		"sunset_boost": 1.35,
+		"night_depth_boost": 1.18,
+		"ice_lens_strength": 0.50,
+		"window_backdrop": "forest",
+		"window_weather": "clear",
+	},
+	"blackwater_den": {
+		"label": "Blackwater den",
+		"description": "Low lamp + dark wood shelf. Tannin-heavy biotope rooms with amber water glow.",
+		"suggested_lighting": "cozy_shop",
+		"desk_color": [72, 52, 38],
+		"wall_color": [48, 42, 36],
+		"accent_color": [140, 95, 55],
+		"light_color": [255, 210, 160],
+		"include_lamp": true,
+		"include_books": true,
+		"include_plant": false,
+		"include_window": false,
+		"include_clock": true,
+		"include_mug": true,
+		"room_warmth": 0.62,
+		"sunset_boost": 1.35,
+		"night_depth_boost": 1.18,
+		"tannin_affinity": 0.12,
+		"sim_clock": true,
 	},
 }
 
@@ -478,13 +521,128 @@ func current_environment_profile() -> Dictionary:
 	return ENVIRONMENT_PRESETS.get(environment_preset, ENVIRONMENT_PRESETS["void"])
 
 
+# ---- Vessel presets (shape + dimensions; independent of stocking biotope) ----
+const VESSEL_PRESETS: Dictionary = {
+	"custom": {
+		"label": "Custom",
+		"description": "Manual shape and size sliders. Pick a preset below to start from a known vessel.",
+	},
+	"standard_75g": {
+		"label": "75 gal rectangle",
+		"description": "Classic wide rectangle — default community footprint (16×8×14 in game units).",
+		"tank_shape": "box",
+		"tank_half_w": 8.0,
+		"tank_half_d": 4.0,
+		"tank_height": 7.0,
+		"water_surface_fraction": 0.93,
+		"substrate_depth_fraction": 0.23,
+	},
+	"rimless_60p": {
+		"label": "60P rimless",
+		"description": "Taller, narrower rectangle — planted-tank proportions.",
+		"tank_shape": "box",
+		"tank_half_w": 7.0,
+		"tank_half_d": 3.5,
+		"tank_height": 8.0,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
+	},
+	"nano_cube": {
+		"label": "Nano cube",
+		"description": "Small equal-sided cube — desk-scale aquascape.",
+		"tank_shape": "cube",
+		"tank_half_w": 4.0,
+		"tank_half_d": 4.0,
+		"tank_height": 4.5,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.22,
+	},
+	"reef_cube": {
+		"label": "Reef cube",
+		"description": "Rimless saltwater cube — equal footprint, moderate height.",
+		"tank_shape": "cube",
+		"tank_half_w": 6.5,
+		"tank_half_d": 6.5,
+		"tank_height": 7.0,
+		"water_surface_fraction": 0.95,
+		"substrate_depth_fraction": 0.14,
+	},
+	"column_blackwater": {
+		"label": "Blackwater column",
+		"description": "Tall narrow box — vertical driftwood and stained water read best here.",
+		"tank_shape": "box",
+		"tank_half_w": 6.0,
+		"tank_half_d": 3.0,
+		"tank_height": 9.0,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.18,
+	},
+	"breeder_shallow": {
+		"label": "Breeder tray",
+		"description": "Wide, shallow rectangle — carpet plants and surface floaters dominate.",
+		"tank_shape": "box",
+		"tank_half_w": 8.0,
+		"tank_half_d": 4.0,
+		"tank_height": 4.5,
+		"water_surface_fraction": 0.90,
+		"substrate_depth_fraction": 0.28,
+	},
+	"round_column": {
+		"label": "Round column",
+		"description": "Tall cylinder — portrait round tank.",
+		"tank_shape": "cylinder",
+		"tank_half_w": 3.5,
+		"tank_half_d": 3.5,
+		"tank_height": 10.0,
+		"water_surface_fraction": 0.93,
+		"substrate_depth_fraction": 0.20,
+	},
+	"fishbowl": {
+		"label": "Fishbowl",
+		"description": "Small dome bowl — compact hemisphere footprint.",
+		"tank_shape": "sphere",
+		"tank_half_w": 3.0,
+		"tank_half_d": 3.0,
+		"tank_height": 4.5,
+		"water_surface_fraction": 0.88,
+		"substrate_depth_fraction": 0.25,
+	},
+	"hex_pan": {
+		"label": "Hex pan",
+		"description": "Wide shallow hex — dish-style planted layout.",
+		"tank_shape": "hex",
+		"tank_half_w": 5.0,
+		"tank_half_d": 5.0,
+		"tank_height": 3.5,
+		"water_surface_fraction": 0.90,
+		"substrate_depth_fraction": 0.26,
+	},
+}
+
+
+func current_vessel_profile() -> Dictionary:
+	return VESSEL_PRESETS.get(vessel_preset, VESSEL_PRESETS["custom"])
+
+
+func apply_vessel_preset(slug: String) -> void:
+	vessel_preset = slug
+	if slug == "custom" or not VESSEL_PRESETS.has(slug):
+		return
+	var preset: Dictionary = VESSEL_PRESETS[slug]
+	for key in preset.keys():
+		if key in ["label", "description"]:
+			continue
+		if key in self:
+			set(key, preset[key])
+
+
 # ---- Fauna ----
 # If true, respawn 10 of each creature if the tank is empty. Both default
 # ON so the tank behaves like a true ambient sim — the player can leave
 # the app for days and come back to a living tank instead of a graveyard.
 # Power users can switch either off in Settings → Advanced.
 var auto_respawn_fauna: bool = true
-var auto_feed_fauna: bool = true
+var auto_feed_fauna: bool = false
 # Live swim/grouping multipliers — read every fish tick; no reload required.
 var fauna_schooling_mult: float = 1.0
 var fauna_separation_mult: float = 1.0
@@ -1734,6 +1892,7 @@ func save_to_disk() -> void:
 	cfg.set_value("tank", "half_d", tank_half_d)
 	cfg.set_value("tank", "height", tank_height)
 	cfg.set_value("tank", "shape", tank_shape)
+	cfg.set_value("tank", "vessel_preset", vessel_preset)
 	cfg.set_value("tank", "dome", tank_shape == "sphere")
 	cfg.set_value("light", "energy", light_energy)
 	cfg.set_value("light", "yaw", light_yaw)
@@ -1745,6 +1904,7 @@ func save_to_disk() -> void:
 	cfg.set_value("light", "volumetric", light_volumetric)
 	cfg.set_value("light", "caustics", light_caustics)
 	cfg.set_value("light", "tank_on", tank_lights_on)
+	cfg.set_value("light", "heater_enabled", heater_enabled)
 	cfg.set_value("light", "master_enabled", light_master_enabled)
 	cfg.set_value("light", "day_cycle_enabled", day_cycle_enabled)
 	cfg.set_value("light", "global_intensity", global_intensity)
@@ -1850,6 +2010,8 @@ func save_to_disk() -> void:
 	cfg.set_value("aeration", "x_frac", aeration_x_frac)
 	cfg.set_value("fauna", "auto_respawn", auto_respawn_fauna)
 	cfg.set_value("fauna", "auto_feed", auto_feed_fauna)
+	cfg.set_value("ecology", "cycle_start_mode", cycle_start_mode)
+	cfg.set_value("ecology", "plant_youth_scale", plant_youth_scale)
 	cfg.set_value("fauna", "schooling_mult", fauna_schooling_mult)
 	cfg.set_value("fauna", "separation_mult", fauna_separation_mult)
 	cfg.set_value("fauna", "wander_mult", fauna_wander_mult)
@@ -1931,6 +2093,7 @@ func load_from_disk() -> void:
 	tank_half_d = cfg.get_value("tank", "half_d", tank_half_d)
 	tank_height = cfg.get_value("tank", "height", tank_height)
 	tank_shape = cfg.get_value("tank", "shape", tank_shape)
+	vessel_preset = cfg.get_value("tank", "vessel_preset", vessel_preset)
 	# Legacy saves used "sphere" for the vertical cylinder tank.
 	if tank_shape == "sphere" and not cfg.get_value("tank", "dome", false):
 		tank_shape = "cylinder"
@@ -1944,6 +2107,7 @@ func load_from_disk() -> void:
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
 	light_caustics = cfg.get_value("light", "caustics", light_caustics)
 	tank_lights_on = cfg.get_value("light", "tank_on", tank_lights_on)
+	heater_enabled = cfg.get_value("light", "heater_enabled", heater_enabled)
 	light_master_enabled = cfg.get_value("light", "master_enabled", light_master_enabled)
 	day_cycle_enabled = cfg.get_value("light", "day_cycle_enabled", day_cycle_enabled)
 	# New split intensity/warmth. Defaults fall back to legacy light_energy
@@ -2060,6 +2224,10 @@ func load_from_disk() -> void:
 	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)
 	auto_respawn_fauna = cfg.get_value("fauna", "auto_respawn", auto_respawn_fauna)
 	auto_feed_fauna = cfg.get_value("fauna", "auto_feed", auto_feed_fauna)
+	cycle_start_mode = cfg.get_value("ecology", "cycle_start_mode", cycle_start_mode)
+	plant_youth_scale = cfg.get_value("ecology", "plant_youth_scale", plant_youth_scale)
+	if cycle_start_mode == "established":
+		start_matured = true
 	fauna_schooling_mult = cfg.get_value("fauna", "schooling_mult", fauna_schooling_mult)
 	fauna_separation_mult = cfg.get_value("fauna", "separation_mult", fauna_separation_mult)
 	fauna_wander_mult = cfg.get_value("fauna", "wander_mult", fauna_wander_mult)
@@ -2168,6 +2336,7 @@ func switch_to_slot(slot: int) -> void:
 func reset_to_defaults() -> void:
 	# Tank shape + dimensions.
 	tank_shape = "box"
+	vessel_preset = "custom"
 	tank_half_w = 8.0
 	tank_half_d = 4.0
 	tank_height = 7.0
@@ -2183,6 +2352,7 @@ func reset_to_defaults() -> void:
 	light_volumetric = true
 	light_caustics = true
 	tank_lights_on = true
+	heater_enabled = true
 	light_master_enabled = true
 	day_cycle_enabled = true
 	global_intensity = 0.5
@@ -2276,7 +2446,9 @@ func reset_to_defaults() -> void:
 	# Fauna behavior. Default ON — the tank is an ambient sim and should
 	# self-sustain when left unattended.
 	auto_respawn_fauna = true
-	auto_feed_fauna = true
+	auto_feed_fauna = false
+	cycle_start_mode = "fresh"
+	plant_youth_scale = 0.52
 	fauna_schooling_mult = 1.0
 	fauna_separation_mult = 1.0
 	fauna_wander_mult = 1.0

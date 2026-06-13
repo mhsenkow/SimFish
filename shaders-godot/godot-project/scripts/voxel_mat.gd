@@ -134,6 +134,14 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 	return m
 
 
+# Push a shared haze tint onto all cached room materials (desk/wall props).
+static func update_room_haze(color: Color) -> void:
+	var hc := Vector3(color.r, color.g, color.b)
+	for m in _room_mat_cache.values():
+		if m is ShaderMaterial:
+			(m as ShaderMaterial).set_shader_parameter("room_haze_color", hc)
+
+
 static func make(color: Color) -> ShaderMaterial:
 	# Snap + cache; _mat_cache isn't queue-tracked because the base mat
 	# stays under ~200 entries naturally (substrate + hardscape voxel set).
@@ -167,11 +175,11 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	# quantize's dither-grid territory. 1.24 still rides above foliage
 	# (1.22 below) without tripping moiré on fish bodies.
 	m.set_shader_parameter("color_vibrancy", 1.24)
-	# Experimental structural colour — jewel-like fauna. No-op uniforms (0) when
-	# the toggle is off, so the default look is unchanged.
+	# Subtle living-tissue rim + scale sheen by default; experimental toggle
+	# pushes toward jewel-like intensity.
 	var exp_on: bool = _experimental_on()
-	m.set_shader_parameter("sss_strength", 0.34 if exp_on else 0.0)
-	m.set_shader_parameter("irid_strength", 0.45 if exp_on else 0.0)
+	m.set_shader_parameter("sss_strength", 0.34 if exp_on else 0.15)
+	m.set_shader_parameter("irid_strength", 0.45 if exp_on else 0.08)
 	m.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
 	_cache_admit(_fauna_mat_cache, _fauna_key_queue, cache_key, m)
 	return m
@@ -286,13 +294,24 @@ static func _get_bubble_shader() -> Shader:
 	return _bubble_shader
 
 
-static func make_bubble(color: Color = Color(0.78, 0.92, 0.96, 0.42)) -> ShaderMaterial:
-	if _bubble_mat != null:
+static func make_bubble(color: Color = Color(0.78, 0.92, 0.96, 0.42),
+		emissive_boost: float = 1.0) -> ShaderMaterial:
+	if emissive_boost <= 1.001 and _bubble_mat != null:
 		return _bubble_mat
-	_bubble_mat = ShaderMaterial.new()
-	_bubble_mat.shader = _get_bubble_shader()
-	_bubble_mat.set_shader_parameter("bubble_color", color)
-	return _bubble_mat
+	var m := ShaderMaterial.new()
+	m.shader = _get_bubble_shader()
+	m.set_shader_parameter("bubble_color", color)
+	m.set_shader_parameter("emissive_boost", emissive_boost)
+	if emissive_boost <= 1.001:
+		_bubble_mat = m
+	return m
+
+
+# Overbright albedo for fixture LEDs / emissive voxels — punches through
+# the palette-quantize night burnthrough path without a separate shader.
+static func make_emissive(color: Color) -> ShaderMaterial:
+	var m: ShaderMaterial = make(color).duplicate() as ShaderMaterial
+	return m
 
 
 static var _ripple_shader: Shader = null

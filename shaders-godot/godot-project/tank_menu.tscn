@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://tank_menu_vivarium"]
+[gd_scene load_steps=3 format=3 uid="uid://tank_menu_vivarium"]
 
 [ext_resource type="Script" path="res://scripts/tank_menu.gd" id="1_menu"]
+[ext_resource type="FontFile" uid="uid://fwuvi5fyqusu" path="res://assets/fonts/IBMPlexSerif-Medium.woff2" id="2_serif"]
 
 [node name="TankMenu" type="Control"]
 anchor_right = 1.0
@@ -23,6 +24,7 @@ offset_bottom = 72.0
 [node name="Title" type="Label" parent="TopBar"]
 text = "Your tanks"
 size_flags_horizontal = 3
+theme_override_fonts/font = ExtResource("2_serif")
 theme_override_font_sizes/font_size = 28
 theme_override_colors/font_color = Color(1, 0.94, 0.78, 1)
 

@@ -1,0 +1,15 @@
+[gd_resource type="Theme" load_steps=4 format=3]
+
+[ext_resource type="FontFile" uid="uid://biy7tbi6rrodh" path="res://assets/fonts/IBMPlexSans-Regular.woff2" id="1_sans"]
+
+[sub_resource type="SystemFont" id="SystemFont_emoji"]
+font_names = PackedStringArray("Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Noto Sans Symbols2", "Apple Symbols", "Segoe UI Symbol")
+allow_system_fallback = true
+
+[sub_resource type="FontVariation" id="FontVariation_sans"]
+base_font = ExtResource("1_sans")
+fallbacks = Array[Font]([SubResource("SystemFont_emoji")])
+
+[resource]
+default_font = SubResource("FontVariation_sans")
+default_font_size = 14

@@ -564,7 +564,12 @@ func _trait(key: String) -> float:
 # spatial feed_heatmap. Called from every food-consumption site so the
 # fish actually learns where it has eaten before. Costs a single int add
 # and ~3 float ops — fine in the hot path.
+func _trigger_mouth_gape() -> void:
+	_mouth_gape = 1.0
+
+
 func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
+	_trigger_mouth_gape()
 	if bio.is_empty():
 		bio["meals_eaten"] = 0
 	bio["meals_eaten"] = int(bio.get("meals_eaten", 0)) + 1
@@ -665,6 +670,7 @@ var _last_courtship_color_step: int = -999
 # no longer receptive.
 var _pheromone_trail: GPUParticles3D = null
 var _belly_flash: float = 0.0
+var _mouth_gape: float = 0.0
 # Aerial respiration: cories + loaches periodically dart to the surface to
 # gulp atmospheric air, then sink back to the substrate. Real Walstad
 # behavior - it's a stress signal in healthy tanks but routine in any
@@ -760,6 +766,8 @@ var _swim_phase: float = 0.0
 # already-random _swim_phase initial offset, this keeps phase relationships
 # drifting continuously rather than holding fixed offsets.
 var _wag_freq_jitter: float = 1.0
+# Tight schoolers share tail-wag phase within ±0.1 rad of the tank pulse.
+var _school_phase_offset: float = 0.0
 # Fry-dart trail emitter cadence. Only used when maturity == MATURITY_FRY and
 # the fry is currently in a dart burst (burst_remaining > 0). The trail
 # afterimages are world-positioned so the smear visibly trails the fry
@@ -847,6 +855,7 @@ func _ready() -> void:
 	)
 	_swim_phase = randf() * TAU
 	_wag_freq_jitter = randf_range(0.88, 1.12)
+	_school_phase_offset = randf_range(-0.1, 0.1)
 	# Start each fish facing a random horizontal direction so newborn fry
 	# don't all stare the same way.
 	var theta: float = randf() * TAU
@@ -1430,13 +1439,15 @@ func _build_body() -> void:
 	# (cory, loach).
 	_add_voxel_to(head, Vector3(0, -v * 0.5 * hp * ventral_profile, -2.5 * v),
 		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_belly)
-	# Eyes - scaled by eye_size_factor. Killifish + puffer get bigger eyes
-	# (1.4+), corydoras + loach get small beady eyes (~0.7).
+	# Eyes — style-guide 1-voxel + highlight pixel for silhouette clarity.
 	var es: float = eye_size_factor
-	_add_voxel_to(head, Vector3(v * 0.4 * hp, v * 0.1 * hp, -2.4 * v),
-		Vector3(v * 0.2 * hp * es, v * 0.25 * hp * es, v * 0.25 * es), mat_eye)
-	_add_voxel_to(head, Vector3(-v * 0.4 * hp, v * 0.1 * hp, -2.4 * v),
-		Vector3(v * 0.2 * hp * es, v * 0.25 * hp * es, v * 0.25 * es), mat_eye)
+	var eye_core: float = v * 0.14 * hp * es
+	var mat_eye_hi := VoxelMat.make(Color8(210, 228, 235))
+	for x_side in [-1.0, 1.0]:
+		_add_voxel_to(head, Vector3(x_side * v * 0.4 * hp, v * 0.1 * hp, -2.38 * v),
+			Vector3(eye_core, eye_core, eye_core), mat_eye)
+		_add_voxel_to(head, Vector3(x_side * v * 0.42 * hp, v * 0.14 * hp, -2.44 * v),
+			Vector3(v * 0.08 * hp * es, v * 0.08 * hp * es, v * 0.08 * es), mat_eye_hi)
 	# Mouth indicator: a small accent voxel positioned by mouth_orientation.
 	# +1 = downturned (sifters), -1 = upturned (surface feeders), 0 = neutral.
 	var mouth_y: float = -v * 0.25 * hp * float(mouth_orientation) - v * 0.1 * hp
@@ -1673,6 +1684,8 @@ func _build_body() -> void:
 			var z: float = (0.25 + float(i) * 0.55) * v
 			_add_voxel_to(_body_mid_pivot, Vector3(0, v * 0.95, z),
 				Vector3(v * 0.08, v * 0.18, v * 0.16), mat_orn)
+	# Scale rows — subtle alternating lateral flecks between macro patterns.
+	_paint_scale_rows(_body_mid_pivot, v, seg_widths.size(), mat_marking)
 	# Lateral pattern. The discrete pattern_type chooses the macro layout; the
 	# continuous modulators (scale / intensity / density / coverage / contrast)
 	# reshape it, and an optional secondary motif blends in on top so a lineage
@@ -1704,10 +1717,12 @@ func _build_body() -> void:
 	_dorsal_pivot.name = "DorsalPivot"
 	_dorsal_pivot.position = Vector3(0, v * 0.75, v * 1.0)
 	_body_mid_pivot.add_child(_dorsal_pivot)
-	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.2 * dh, 0),
-		Vector3(v * 0.15, v * 0.4 * dh, v * 1.2), mat_fin)
-	_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.45 * dh, v * 0.2),
-		Vector3(v * 0.12, v * 0.25 * dh, v * 0.6), mat_fin)
+	var ray_n: int = 4
+	for r in ray_n:
+		var rz: float = lerpf(-0.15, 0.85, float(r) / float(maxi(1, ray_n - 1))) * v
+		var ray_h: float = v * (0.12 + 0.10 * float(r)) * dh
+		_add_voxel_to(_dorsal_pivot, Vector3(0, ray_h, rz),
+			Vector3(v * 0.07, v * (0.18 + 0.06 * float(r)) * dh, v * 0.32), mat_fin)
 	# Long-based dorsal: stretch the dorsal's base fore-and-aft along the back
 	# (plecos, bichirs, oscars, knifefish). Scales with dorsal_length_factor.
 	if dorsal_length_factor > 1.05:
@@ -1845,13 +1860,13 @@ func _build_body() -> void:
 			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (2.0 * fl)),
 				Vector3(v * 0.1, v * 0.12, v * (0.45 * fl)), mat_tail)
 		_:  # 0 = forked (default)
-			_add_voxel_to(_tail_pivot, Vector3(0, v * 0.45 * tf, v * (0.9 * fl)),
-				Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.45 * tf, v * (0.9 * fl)),
-				Vector3(v * 0.15, v * 0.4, v * (0.6 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot,
-				Vector3(0, v * (0.7 * fl * tf), v * (1.4 * fl)),
-				Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_tail)
+			for fork_i in 3:
+				var fork_y: float = lerpf(0.35, 0.75, float(fork_i) / 2.0) * tf
+				var fork_z: float = lerpf(0.75, 1.35, float(fork_i) / 2.0) * fl
+				_add_voxel_to(_tail_pivot, Vector3(0, v * fork_y, v * fork_z),
+					Vector3(v * 0.10, v * 0.22, v * (0.38 + 0.08 * float(fork_i))), mat_tail)
+				_add_voxel_to(_tail_pivot, Vector3(0, -v * fork_y, v * fork_z),
+					Vector3(v * 0.10, v * 0.22, v * (0.38 + 0.08 * float(fork_i))), mat_tail)
 			_add_voxel_to(_tail_pivot,
 				Vector3(0, v * (-0.7 * fl * tf), v * (1.4 * fl)),
 				Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_tail)
@@ -2047,6 +2062,50 @@ func _apply_belly_flash_uniform(strength: float) -> void:
 			var sm := (c as MeshInstance3D).material_override as ShaderMaterial
 			if sm != null and sm.get_shader_parameter("belly_flash") != null:
 				sm.set_shader_parameter("belly_flash", strength)
+
+
+func _apply_stress_flush() -> void:
+	if _cached_meshes.is_empty():
+		return
+	var k: float = clampf((stress - 0.40) / 0.60, 0.0, 1.0)
+	if k <= 0.001:
+		for child in _cached_meshes:
+			if child is VoxelBatch.Handle:
+				var h: VoxelBatch.Handle = child
+				h.set_color(FaunaVoxelBuilder.handle_orig_color(h))
+		return
+	var flush_col: Color = accent_color.lerp(Color8(210, 70, 55), 0.72)
+	var base_luma: float = base_color.r * 0.299 + base_color.g * 0.587 + base_color.b * 0.114
+	var belly_ref: Color = base_color.darkened(0.35)
+	for child in _cached_meshes:
+		if not (child is VoxelBatch.Handle):
+			continue
+		var h2: VoxelBatch.Handle = child
+		var orig: Color = FaunaVoxelBuilder.handle_orig_color(h2)
+		var luma: float = orig.r * 0.299 + orig.g * 0.587 + orig.b * 0.114
+		var d_acc: float = maxf(maxf(absf(orig.r - accent_color.r),
+			absf(orig.g - accent_color.g)), absf(orig.b - accent_color.b))
+		var d_belly: float = maxf(maxf(absf(orig.r - belly_ref.r),
+			absf(orig.g - belly_ref.g)), absf(orig.b - belly_ref.b))
+		var fin_or_belly: bool = luma < base_luma - 0.06 \
+			or d_acc <= 0.22 or d_belly <= 0.18
+		var amt: float = k * (0.62 if fin_or_belly else 0.22)
+		h2.set_color(orig.lerp(flush_col, amt))
+
+
+func _tick_substrate_compaction(dt: float) -> void:
+	if sim == null or speed < max_speed * 0.55:
+		return
+	if position.y > float(sim.substrate_top_y) + 1.35:
+		return
+	var w := sim.get_parent()
+	if w == null:
+		return
+	var av = w.get_node_or_null("AquariumVisuals")
+	if av == null or not av.has_method("record_compaction"):
+		return
+	if randf() < dt * (0.10 + speed * 0.06):
+		av.record_compaction(position.x, position.z, 0.006 + speed * 0.004)
 
 
 # Push the bioluminescence uniform to every body voxel. VoxelMat caches
@@ -3059,6 +3118,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				current_mode = Mode.FORAGE
 				if best_alga_d2 < 0.25:
 					events["eat_algae"] = best_alga
+					_trigger_mouth_gape()
 					hunger = maxf(0.0, hunger - 0.2)
 					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC)
 					# Algae crop done: return so Tier 2 herbivore plant-nibbling
@@ -3100,6 +3160,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if dist_sq < 0.25 and nibble_cooldown <= 0.0:
 				var taken := target_plant.nibble(1)
 				if taken > 0:
+					_trigger_mouth_gape()
 					hunger = maxf(0.0, hunger - 0.30 * float(taken))
 					energy = minf(1.0, energy + 0.06 * float(taken))
 					age = maxf(0.0, age - max_age_s * MEAL_AGE_REDUCTION_FRAC * float(taken))
@@ -3884,6 +3945,15 @@ func _process(dt: float) -> void:
 			# Strength ramps from 0 (dawn/dusk) to ~1 (midnight). Mute
 			# entirely during the day so the fish reads normal then.
 			var strength: float = smoothstep(0.32, 0.05, dl)
+			if sim != null:
+				var dp: float = fposmod(float(sim.day_phase), 1.0)
+				strength *= 0.55 + 0.45 * sin(dp * TAU)
+				if sim.has_method("_is_saltwater_tank") and sim._is_saltwater_tank():
+					var bleach: float = 0.0
+					if sim.get("tank_vitals") != null:
+						bleach = float(sim.tank_vitals.get("reef_bleach_level", 0.0))
+					strength *= (1.0 - bleach) \
+						* clampf(float(sim.dissolved_o2) / 0.88, 0.35, 1.0)
 			# Light panel master multiplier — 0 hides biolum entirely, >1 over-bright.
 			var tc := get_node_or_null("/root/TankConfig")
 			if tc != null:
@@ -3894,6 +3964,10 @@ func _process(dt: float) -> void:
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
 		_apply_belly_flash_uniform(_belly_flash)
+	if _mouth_gape > 0.0:
+		_mouth_gape = maxf(0.0, _mouth_gape - dt * 5.5)
+	_apply_stress_flush()
+	_tick_substrate_compaction(dt)
 
 	# Apply pregnancy bulge if gestating
 	if _body_mid_pivot != null:
@@ -4440,6 +4514,12 @@ func _motion_substep(dt: float) -> void:
 	wag_freq *= clampf(mood_freq_mult, 0.6, 1.5)
 
 	_swim_phase += dt * wag_freq * _wag_freq_jitter
+	if (swim_pattern == "school" or swim_pattern == "shoal") \
+			and schooling_strength >= 0.45 and sim != null \
+			and sim.has_method("school_pulse_phase"):
+		var shared: float = float(sim.school_pulse_phase()) + _school_phase_offset
+		var delta: float = wrapf(shared - _swim_phase, -PI, PI)
+		_swim_phase += delta * clampf(dt * 5.5, 0.0, 1.0)
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
 			+ minf(speed * 0.18, 0.25))
@@ -4480,7 +4560,8 @@ func _motion_substep(dt: float) -> void:
 		# Active swimming hides the pulse anyway (wag dominates the visual).
 		var breath_amp: float = 0.035 * rest_factor
 		var breath: float = 1.0 + sin(_swim_phase * 0.9) * breath_amp
-		_head_pivot.scale = Vector3(breath, 1.0, 1.0)
+		var gape_z: float = 1.0 + _mouth_gape * 0.28
+		_head_pivot.scale = Vector3(breath, 1.0, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08
@@ -5113,6 +5194,20 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 # pattern_type and again (faintly) for an optional secondary motif so two motifs
 # can co-exist. `strength` (1.0 primary, <1 secondary) scales prominence;
 # `seg_count` is the number of body mid-segments.
+func _paint_scale_rows(body: Node3D, v: float, seg_count: int, _mat_scale) -> void:
+	if seg_count <= 0 or pattern_density < 0.18:
+		return
+	var interval: int = clampi(int(round(3.0 - pattern_density * 2.0)), 1, 3)
+	var scale_col: Color = marking_color if _marking_color_set else accent_color
+	var row_mat := _make_mat(scale_col.darkened(0.06))
+	for i in seg_count:
+		if i % interval != 0:
+			continue
+		for xs in [-1.0, 1.0]:
+			_add_voxel_to(body, Vector3(xs * v * 0.52, v * 0.06, i * v),
+				Vector3(v * 0.07, v * 0.10, v * 0.72), row_mat)
+
+
 func _paint_lateral_pattern(ptype: int, body: Node3D, v: float, seg_count: int,
 		mat_a, mat_m, strength: float) -> void:
 	if ptype <= 0 or seg_count <= 0:

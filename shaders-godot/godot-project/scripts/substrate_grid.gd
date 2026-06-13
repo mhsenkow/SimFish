@@ -219,6 +219,15 @@ func total_above_baseline() -> float:
 	return sum
 
 
+# Pore-water exchange: organics in the substrate slowly leach nitrate into
+# the water column (real aquasoil / mulm behaviour).
+func pore_water_nitrate_leak() -> float:
+	var excess: float = total_above_baseline()
+	if excess <= 1.5:
+		return 0.0
+	return clampf((excess - 1.5) * 0.00035, 0.0, 0.0045)
+
+
 # ---- Save / load ----
 
 func to_save_dict() -> Dictionary:

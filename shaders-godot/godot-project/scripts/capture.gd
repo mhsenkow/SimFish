@@ -1,6 +1,6 @@
 # One-shot capture: wait for the SubViewport's first useful frame, save the
 # palette-quantized output to disk, and quit. Run via:
-#   Godot --path . --headless capture.tscn
+#   Godot --path . --headless dev/capture.tscn
 # Output: res://capture_out.png (which lives next to project.godot).
 
 extends Node

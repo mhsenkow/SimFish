@@ -123,6 +123,8 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 			rotation.x = cos(_phase * 0.9) * 0.10
 		AlgaeKind.GSA:
 			pass  # GSA dots stick rigidly to glass
+		AlgaeKind.GDA:
+			pass  # GDA micro-flecks stick to glass
 		_:
 			rotation.y = sin(_phase * 0.6) * 0.18
 	# Slow undulating brightness wave across the cluster — looks like
@@ -171,6 +173,20 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 			if _voxels.size() < 10 and life_frac > 0.7:
 				_add_voxel(Vector3(randf_range(-0.4, 0.4) * VOXEL_SIZE,
 					randf_range(-0.3, 0.3) * VOXEL_SIZE, 0), 0.45)
+		AlgaeKind.GDA:
+			# Green dust — dense micro-fleck spread across the glass patch.
+			if _voxels.size() < 6 and life_frac > 0.18:
+				var a0: float = randf() * TAU
+				var r0: float = randf_range(0.08, 0.22)
+				_add_voxel(Vector3(cos(a0) * r0, randf_range(-0.06, 0.06), sin(a0) * r0), 0.38)
+			if _voxels.size() < 12 and life_frac > 0.38:
+				for _i in 2:
+					var a1: float = randf() * TAU
+					var r1: float = randf_range(0.12, 0.28)
+					_add_voxel(Vector3(cos(a1) * r1, randf_range(-0.08, 0.08), sin(a1) * r1), 0.34)
+			if _voxels.size() < 18 and life_frac > 0.62:
+				_add_voxel(Vector3(randf_range(-0.32, 0.32), randf_range(-0.12, 0.12),
+					randf_range(-0.32, 0.32)), 0.30)
 		_:
 			if _voxels.size() < 2 and life_frac > 0.25:
 				_add_voxel(Vector3(VOXEL_SIZE * 0.9, 0, 0), 0.9)

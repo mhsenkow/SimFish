@@ -158,6 +158,7 @@ func effective_size() -> float:
 var _swim_phase: float = 0.0
 var _tail_pivot: Node3D = null
 var _antenna_pivot: Node3D = null
+var _antenna_seg_pivots: Array = []
 var _bank_pivot: Node3D = null
 var _voxel_builder: FaunaVoxelBuilder = null
 var _last_yaw: float = 0.0
@@ -379,10 +380,9 @@ func _build_body() -> void:
 		antenna_len = maxf(antenna_len, 1.6)
 	if body_shape == "crab":
 		antenna_len *= 0.4
-	_voxel(_antenna_pivot, Vector3(v * 0.2, v * 0.1, -v * antenna_len * 0.45),
-		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
-	_voxel(_antenna_pivot, Vector3(-v * 0.2, v * 0.1, -v * antenna_len * 0.45),
-		Vector3(v * 0.06, v * 0.06, v * antenna_len), antenna_mat)
+	_antenna_seg_pivots.clear()
+	_build_antenna_chain(_antenna_pivot, 1.0, v, antenna_len, antenna_mat)
+	_build_antenna_chain(_antenna_pivot, -1.0, v, antenna_len, antenna_mat)
 
 	# Rostrum - the saw-toothed snout spike between the eyes. Caridina carry a
 	# long one; crabs have none.
@@ -399,7 +399,7 @@ func _build_body() -> void:
 		_egg_cluster.position = Vector3(0, -v * 0.15, v * 0.3)
 		_egg_cluster.visible = false
 		_tail_pivot.add_child(_egg_cluster)
-		var mat_egg := VoxelMat.make_fauna(Color8(240, 165, 60))
+		var mat_egg := VoxelMat.make_translucent(Color(0.94, 0.65, 0.24, 0.58))
 		for ex in [-0.18, 0.0, 0.18]:
 			for ez in [-0.1, 0.1]:
 				_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
@@ -739,6 +739,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		if _molt_timer <= 0.0:
 			_molt_timer = randf_range(MOLT_INTERVAL_MIN, MOLT_INTERVAL_MAX)
 			_molt_flash = 1.0
+			_spawn_exuvia()
 			# Drop the exuvia at substrate as a small KIND_SHRIMP waste so
 			# snails / detritivores can graze it. sim_driver routes
 			# waste_at via actor_kind to the right WasteParticle kind.
@@ -1272,9 +1273,15 @@ func _process(dt: float) -> void:
 	if _tail_pivot != null:
 		_tail_pivot.rotation.x = sin(_swim_phase) * tail_amp
 	if _antenna_pivot != null:
-		_antenna_pivot.rotation.y = sin(_swim_phase * 1.7) * 0.28
-		_antenna_pivot.rotation.x = sin(_swim_phase * 2.1) * 0.16
-		_antenna_pivot.rotation.z = sin(_swim_phase * 2.8) * 0.08
+		for i in _antenna_seg_pivots.size():
+			var seg: Node3D = _antenna_seg_pivots[i] as Node3D
+			if not is_instance_valid(seg):
+				continue
+			var lag: float = float(i) * 0.38
+			var damp: float = 1.0 / (1.0 + float(i) * 0.45)
+			seg.rotation.y = sin(_swim_phase * 1.7 + lag) * 0.24 * damp
+			seg.rotation.x = sin(_swim_phase * 2.1 + lag * 1.2) * 0.14 * damp
+			seg.rotation.z = sin(_swim_phase * 2.8 + lag * 0.8) * 0.07 * damp
 	# Walking bob: a small vertical pulse at twice the tail frequency
 	# mimics the alternating-leg gait of crawling. Suppressed at very
 	# low speeds (resting) and at high speeds (the shrimp is tail-
@@ -1419,8 +1426,65 @@ func _spawn_egg_cluster() -> void:
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(0.12, 0.12, 0.12))
 		mi.position = positions[i]
-		mi.material_override = VoxelMat.make_fauna(c_egg if (i & 1) == 0 else c_egg_dark)
+		var egg_col: Color = c_egg if (i & 1) == 0 else c_egg_dark
+		mi.material_override = VoxelMat.make_translucent(
+			Color(egg_col.r, egg_col.g, egg_col.b, 0.62))
 		_egg_cluster.add_child(mi)
+
+
+func _build_antenna_chain(parent: Node3D, side: float, v: float, total_len: float,
+		mat: Material) -> void:
+	var segs: int = 3
+	var pivot: Node3D = parent
+	var seg_len: float = v * total_len / float(segs)
+	for i in segs:
+		var seg_pivot := Node3D.new()
+		seg_pivot.name = "AntSeg%d" % i
+		if i == 0:
+			seg_pivot.position = Vector3(side * v * 0.2, v * 0.1, 0.0)
+		else:
+			seg_pivot.position = Vector3(0.0, 0.0, -seg_len * 0.82)
+		pivot.add_child(seg_pivot)
+		_voxel(seg_pivot, Vector3(0.0, 0.0, -seg_len * 0.42),
+			Vector3(v * 0.05, v * 0.05, seg_len), mat)
+		_antenna_seg_pivots.append(seg_pivot)
+		pivot = seg_pivot
+
+
+func _spawn_exuvia() -> void:
+	var host: Node3D = get_parent() as Node3D
+	if host == null:
+		return
+	var root := Node3D.new()
+	root.name = "Exuvia"
+	root.position = Vector3(position.x, substrate_top_y + 0.025, position.z)
+	root.rotation.y = rotation.y
+	host.add_child(root)
+	var v: float = adult_voxel_scale * _maturity_scale() * growth_factor
+	var ghost := Color(base_color.r, base_color.g, base_color.b, 0.32)
+	var mat: ShaderMaterial = VoxelMat.make_translucent(ghost)
+	var parts: Array = [
+		[Vector3(0, v * 0.3, -v * 0.5), Vector3(v * 0.85, v * 0.85, v * 0.75)],
+		[Vector3(0, v * 0.3, 0), Vector3(v * 1.0, v * 0.95, v * 0.8)],
+		[Vector3(0, v * 0.35, v * 0.55), Vector3(v * 0.7, v * 0.55, v * 0.5)],
+		[Vector3(0, v * 0.55, v * 0.95), Vector3(v * 0.55, v * 0.18, v * 0.22)],
+	]
+	for p in parts:
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelMat.get_box(p[1])
+		mi.position = p[0]
+		mi.material_override = mat.duplicate()
+		root.add_child(mi)
+	const FADE_S: float = 28.0
+	var tw := create_tween()
+	tw.set_parallel(true)
+	for c in root.get_children():
+		if c is MeshInstance3D:
+			var sm: ShaderMaterial = (c as MeshInstance3D).material_override as ShaderMaterial
+			if sm != null:
+				var end_col: Color = Color(ghost.r, ghost.g, ghost.b, 0.0)
+				tw.tween_property(sm, "shader_parameter/albedo", end_col, FADE_S)
+	get_tree().create_timer(FADE_S + 0.5).timeout.connect(root.queue_free)
 
 
 func _update_maturity() -> void:

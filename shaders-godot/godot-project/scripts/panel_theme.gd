@@ -40,6 +40,69 @@ const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0
 
 
+# ---- Type system -------------------------------------------------------------
+#
+# One bundled superfamily (IBM Plex) across the whole UI. The project default
+# theme (assets/theme/walstad_theme.tres) already sets Plex Sans as the
+# inherited font, so most controls need no font override at all. These helpers
+# layer the two *other* voices on top where a role calls for it:
+#   Serif → identity & narrative (titles, species names + lore, the story log)
+#   Mono  → data & instruments  (stat values, parameters, slider readouts, ids)
+
+const FONT_SANS: FontFile = preload("res://assets/fonts/IBMPlexSans-Regular.woff2")
+const FONT_SANS_MED: FontFile = preload("res://assets/fonts/IBMPlexSans-Medium.woff2")
+const FONT_SERIF: FontFile = preload("res://assets/fonts/IBMPlexSerif-Regular.woff2")
+const FONT_SERIF_MED: FontFile = preload("res://assets/fonts/IBMPlexSerif-Medium.woff2")
+const FONT_SERIF_ITALIC: FontFile = preload("res://assets/fonts/IBMPlexSerif-Italic.woff2")
+const FONT_MONO: FontFile = preload("res://assets/fonts/IBMPlexMono-Regular.woff2")
+const FONT_MONO_MED: FontFile = preload("res://assets/fonts/IBMPlexMono-Medium.woff2")
+
+# Modular scale — replaces the old ad-hoc 9..28 spread. Floored at 11 so no UI
+# text drops below comfortable legibility.
+const SIZE_CAPTION: int = 11
+const SIZE_SMALL: int = 12
+const SIZE_BODY: int = 14
+const SIZE_ITEM: int = 16
+const SIZE_SECTION: int = 20
+const SIZE_TITLE: int = 26
+const SIZE_DISPLAY: int = 34
+
+
+# Apply a font family (+ optional size) to any text control. Hides the
+# per-class override-key differences between Label/Button and RichTextLabel.
+static func apply_font(node: Control, font: Font, size: int = -1) -> void:
+	if node is RichTextLabel:
+		node.add_theme_font_override("normal_font", font)
+		if size > 0:
+			node.add_theme_font_size_override("normal_font_size", size)
+	else:
+		node.add_theme_font_override("font", font)
+		if size > 0:
+			node.add_theme_font_size_override("font_size", size)
+
+
+# Voice helpers. Each returns the node, so a fresh Label can be wrapped inline:
+#   var l := PanelTheme.as_serif(Label.new(), PanelTheme.SIZE_SECTION, true)
+static func as_sans(node: Control, size: int = SIZE_BODY, medium: bool = false) -> Control:
+	apply_font(node, FONT_SANS_MED if medium else FONT_SANS, size)
+	return node
+
+
+static func as_serif(node: Control, size: int = SIZE_BODY, medium: bool = false) -> Control:
+	apply_font(node, FONT_SERIF_MED if medium else FONT_SERIF, size)
+	return node
+
+
+static func as_serif_italic(node: Control, size: int = SIZE_BODY) -> Control:
+	apply_font(node, FONT_SERIF_ITALIC, size)
+	return node
+
+
+static func as_mono(node: Control, size: int = SIZE_SMALL, medium: bool = false) -> Control:
+	apply_font(node, FONT_MONO_MED if medium else FONT_MONO, size)
+	return node
+
+
 # ---- Panel chrome ------------------------------------------------------------
 
 # Applies the dark rounded backdrop + generous padding to a PanelContainer.
@@ -75,7 +138,7 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 static func make_title(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", 22)
+	apply_font(l, FONT_SERIF_MED, SIZE_TITLE)
 	l.add_theme_color_override("font_color", TITLE_FG)
 	return l
 
@@ -85,7 +148,7 @@ static func make_title(text: String) -> Label:
 static func make_subtitle(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", 11)
+	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
 	l.add_theme_color_override("font_color", DIM_FG)
 	return l
 
@@ -96,7 +159,7 @@ static func make_subtitle(text: String) -> Label:
 static func make_section(text: String) -> Label:
 	var l := Label.new()
 	l.text = text.to_upper()
-	l.add_theme_font_size_override("font_size", 11)
+	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
 	l.add_theme_color_override("font_color", SECTION_FG)
 	return l
 
@@ -106,7 +169,7 @@ static func make_section(text: String) -> Label:
 static func make_description() -> Label:
 	var l := Label.new()
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_size_override("font_size", 11)
+	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
 	l.add_theme_color_override("font_color", DIM_FG)
 	return l
 
@@ -160,6 +223,8 @@ static func add_slider_row(parent: Node, label_text: String, min_val: float,
 	value_label.custom_minimum_size = Vector2(56, 0)
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value_label.add_theme_color_override("font_color", VALUE_FG)
+	# Numeric readout → Mono so decimals line up in the fixed-width column.
+	as_mono(value_label, SIZE_BODY)
 	row.add_child(value_label)
 	return s
 
@@ -201,6 +266,7 @@ static func make_primary_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.custom_minimum_size = Vector2(110, _button_min_height())
+	apply_font(b, FONT_SANS_MED, SIZE_BODY)
 	b.add_theme_color_override("font_color", PRIMARY_FG)
 	b.add_theme_color_override("font_hover_color", PRIMARY_FG)
 	b.add_theme_color_override("font_pressed_color", PRIMARY_FG)
@@ -217,6 +283,7 @@ static func make_secondary_button(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.custom_minimum_size = Vector2(88, _button_min_height())
+	apply_font(b, FONT_SANS_MED, SIZE_BODY)
 	b.add_theme_color_override("font_color", LABEL_FG)
 	b.add_theme_stylebox_override("normal", _outlined_stylebox())
 	b.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.22, 0.28, 0.36, 0.7)))

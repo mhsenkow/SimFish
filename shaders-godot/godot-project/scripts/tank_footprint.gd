@@ -499,6 +499,39 @@ func is_substrate_voxel(x: float, y: float, z: float, margin: float = 0.0) -> bo
 	return is_inside(x, z, margin)
 
 
+func is_revolution() -> bool:
+	return shape == "cylinder" or shape == "sphere"
+
+
+func is_regular_polygon() -> bool:
+	return shape == "hex" or shape == "triangle"
+
+
+# Glass/water shader family: 0 = prism, 1 = cylinder, 2 = sphere bowl.
+func shader_shape_class() -> int:
+	match shape:
+		"cylinder":
+			return 1
+		"sphere":
+			return 2
+		_:
+			return 0
+
+
+# Rough open-surface area proxy (XZ) for ecology caps and spawn density.
+func surface_area_proxy() -> float:
+	match shape:
+		"cylinder", "sphere":
+			var r: float = effective_radius(0.0)
+			return PI * r * r
+		"hex":
+			return half_w * half_d * 1.5
+		"triangle":
+			return half_w * half_d
+		_:
+			return (half_w * 2.0) * (half_d * 2.0)
+
+
 func footprint_corners(segments: int = 24) -> Array[Vector3]:
 	var pts: Array[Vector3] = []
 	match shape:

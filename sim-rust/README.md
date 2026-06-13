@@ -1,6 +1,13 @@
 # vivarium-sim
 
-Core simulation for the walstad loom pixel-art aquarium project: substrate
+> **Status: reference prototype — not wired into the game.** The shipping game
+> (`shaders-godot/godot-project/`) runs its chemistry in GDScript
+> (`water_chemistry.gd`, `substrate_grid.gd`). This Rust crate is a standalone,
+> higher-fidelity model of the same nitrogen cycle, kept as a correctness
+> reference and a possible future native backend. The "Wiring into Godot"
+> section below is aspirational and has not been implemented.
+
+A standalone simulation modeling the walstad loom aquarium chemistry: substrate
 falling-sand + chemistry diffusion + nitrogen cycle with two bacterial
 populations (nitrosomonas, nitrobacter).
 
@@ -49,9 +56,10 @@ Architecturally what you're watching:
 - **Reactions only fire on substrate cells with a water-cell neighbor.** That's basically the top row of substrate. Real tanks host biofilm everywhere oxygen reaches. Add a "biofilm penetration" concept: oxygen diffusion gradient into the substrate, with reactions happening at all cells above some O2 threshold.
 - **Rate constants are tuned for the demo, not for absolute accuracy.** They're high enough to make the cycle visible in a 42-day window. Once advection lands, dial them back.
 
-## Wiring into Godot
+## Wiring into Godot (aspirational — not implemented)
 
-Build with `crate-type = ["cdylib"]` and wrap with `gdext` (the Godot-Rust binding). Expose:
+If this crate ever becomes the native chemistry backend, the sketch would be:
+build with `crate-type = ["cdylib"]` and wrap with `gdext` (the Godot-Rust binding). Expose:
 
 ```rust
 World::new(width, height, seed) -> *mut World

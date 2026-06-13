@@ -76,8 +76,13 @@ static func _wave_x_offset(wavy: bool, dx: int, row: int) -> float:
 # A flat, 2-3 voxel wide, 4-7 voxel tall pointed oval. Wider in the middle,
 # tapering at both ends. The midrib (center column) is slightly darker.
 static func build_paddle(length: int, ramp: Array, age_frac: float,
-		width: int = 2, flatten: float = 0.55) -> Array:
+		width: int = 2, flatten: float = 0.55, mods: Dictionary = {}) -> Array:
 	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var quilted: bool = bool(mods.get("quilted", false))
+	var wavy: bool = bool(mods.get("wavy", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
 		# Width profile: diamond shape, widest at 40% of length.
@@ -87,7 +92,8 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
 			var is_midrib: bool = (dx == 0)
-			var color: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
 			var mi := MeshInstance3D.new()
 			var sx: float = VOXEL_SIZE * 0.9
 			var sy: float = VOXEL_SIZE * 0.9
@@ -99,8 +105,8 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 			mi.mesh = VoxelMat.get_box(Vector3(sx, sy, sz))
 			mi.material_override = VoxelMat.make_foliage(color)
 			mi.position = Vector3(
-				float(dx) * VOXEL_SIZE * 0.75,
-				float(i) * VOXEL_SIZE * 0.85,
+				float(dx) * VOXEL_SIZE * 0.75 + _wave_x_offset(wavy, dx, i),
+				float(i) * VOXEL_SIZE * 0.85 + _quilt_offset(quilted, i * 3 + dx),
 				0.0,
 			)
 			nodes.append(mi)
@@ -111,11 +117,17 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 # Long, single-voxel wide strip with a slightly wider base and tapered tip.
 # Gentle sinusoidal curve along its length for natural flowing look.
 static func build_ribbon(length: int, ramp: Array, age_frac: float,
-		sway_seed: float = 0.0) -> Array:
+		sway_seed: float = 0.0, mods: Dictionary = {}) -> Array:
 	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var wavy: bool = bool(mods.get("wavy", false))
+	var tone_under_v: Variant = mods.get("tone_under", null)
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
-		var color: Color = _leaf_color(ramp, t, age_frac, i < 2)
+		var is_midrib: bool = (i < 2)
+		var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+		var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
 		var mi := MeshInstance3D.new()
 		# Slight width taper: base is 1.0, tip is 0.5.
 		var width_factor: float = 1.0 - t * 0.5
@@ -130,6 +142,8 @@ static func build_ribbon(length: int, ramp: Array, age_frac: float,
 		mi.material_override = VoxelMat.make_foliage(color)
 		# Gentle S-curve along the blade.
 		var curve_x: float = sin(t * PI + sway_seed) * VOXEL_SIZE * 0.4
+		if wavy:
+			curve_x += sin(float(i) * 0.55) * VOXEL_SIZE * 0.12
 		mi.position = Vector3(
 			curve_x,
 			float(i) * VOXEL_SIZE * 0.9,
@@ -143,14 +157,19 @@ static func build_ribbon(length: int, ramp: Array, age_frac: float,
 # Medium length, pointed at both ends, 2 voxels wide in the middle.
 # These come in pairs (decussate phyllotaxis: each pair rotated 90°).
 static func build_lance_pair(ramp: Array, age_frac: float,
-		pair_index: int = 0) -> Array:
+		pair_index: int = 0, mods: Dictionary = {}) -> Array:
 	var nodes: Array = []
+	var varieg: float = float(mods.get("variegation", 0.0))
+	var iridescence: float = float(mods.get("iridescence", 0.0))
+	var tone_under_v: Variant = mods.get("tone_under", null)
 	var leaf_len: int = 3
 	var yaw_offset: float = float(pair_index % 2) * PI * 0.5
 	for side in [-1, 1]:
 		for i in leaf_len:
 			var t: float = float(i) / float(leaf_len - 1)
-			var color: Color = _leaf_color(ramp, t, age_frac, i == 0)
+			var is_midrib: bool = (i == 1)
+			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
+			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
 			var mi := MeshInstance3D.new()
 			# Width profile: widest in the middle.
 			var w: float = 0.7 if i == 1 else 0.45
@@ -622,21 +641,26 @@ static func build_bud(color: Color) -> Array:
 # 4-6 petal voxels arranged radially around a center pistil.
 # `open_frac` 0..1 controls how far the petals have spread.
 static func build_flower(petal_color: Color, center_color: Color,
-		n_petals: int = 5, open_frac: float = 1.0) -> Array:
+		n_petals: int = 7, open_frac: float = 1.0) -> Array:
 	var nodes: Array = []
-	# Center pistil / carpel.
+	# Center pistil / stamen cluster.
 	var center := MeshInstance3D.new()
 	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.4))
 	center.material_override = VoxelMat.make_foliage(center_color)
 	center.position = Vector3(0, VOXEL_SIZE * 0.1, 0)
 	nodes.append(center)
+	for side in [-1.0, 1.0]:
+		var stamen := MeshInstance3D.new()
+		stamen.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.12))
+		stamen.material_override = VoxelMat.make_foliage(center_color.lightened(0.15))
+		stamen.position = Vector3(side * VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.18, 0)
+		nodes.append(stamen)
 	# Petals fan outward as open_frac increases.
 	for i in n_petals:
 		var angle: float = float(i) / float(n_petals) * TAU
-		var spread: float = open_frac * VOXEL_SIZE * 0.85
+		var spread: float = open_frac * VOXEL_SIZE * 0.92
 		var petal := MeshInstance3D.new()
-		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.5))
-		# Slight color variation per petal for organic feel.
+		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.62, VOXEL_SIZE * 0.24, VOXEL_SIZE * 0.52))
 		var shade: float = sin(float(i) * 2.3) * 0.08
 		var pc: Color = Color(
 			clampf(petal_color.r + shade, 0.0, 1.0),
@@ -649,20 +673,39 @@ static func build_flower(petal_color: Color, center_color: Color,
 			VOXEL_SIZE * 0.05 - open_frac * VOXEL_SIZE * 0.15,
 			sin(angle) * spread,
 		)
-		# Petals tilt outward as they open.
 		petal.rotation.z = cos(angle) * open_frac * 0.4
 		petal.rotation.x = sin(angle) * open_frac * 0.4
 		nodes.append(petal)
+	# Inner petal ring — shorter, slightly lighter, fills the bloom center.
+	if open_frac > 0.35:
+		var inner_n: int = maxi(4, n_petals - 2)
+		for i in inner_n:
+			var angle2: float = float(i) / float(inner_n) * TAU + 0.22
+			var spread2: float = open_frac * VOXEL_SIZE * 0.48
+			var inner := MeshInstance3D.new()
+			inner.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.32))
+			inner.material_override = VoxelMat.make_foliage(petal_color.lightened(0.08))
+			inner.position = Vector3(
+				cos(angle2) * spread2,
+				VOXEL_SIZE * 0.08 - open_frac * VOXEL_SIZE * 0.08,
+				sin(angle2) * spread2,
+			)
+			nodes.append(inner)
 	return nodes
 
 
 static func update_flower(nodes: Array, n_petals: int, open_frac: float) -> void:
 	if nodes.size() < n_petals + 1:
 		return
+	# nodes[0]=center, [1..2]=stamen, [3..3+n_petals-1]=outer petals, rest=inner ring
+	var petal_start: int = 3
 	for i in n_petals:
 		var angle: float = float(i) / float(n_petals) * TAU
-		var spread: float = open_frac * VOXEL_SIZE * 0.85
-		var petal: Node3D = nodes[i + 1] # 0 is center
+		var spread: float = open_frac * VOXEL_SIZE * 0.92
+		var idx: int = petal_start + i
+		if idx >= nodes.size():
+			break
+		var petal: Node3D = nodes[idx]
 		if is_instance_valid(petal):
 			petal.position = Vector3(
 				cos(angle) * spread,
@@ -702,6 +745,9 @@ static func _leaf_color(ramp: Array, t: float, age_frac: float,
 	# Midrib is slightly darker for visible venation.
 	if is_midrib:
 		color = color.darkened(0.12)
+	# Fresh tip growth reads one step brighter than the blade interior.
+	if t > 0.82 and not is_midrib:
+		color = color.lightened((t - 0.82) * 0.55)
 	# Old leaves darken overall.
 	if age_frac > 0.7:
 		color = color.darkened((age_frac - 0.7) * 0.3)

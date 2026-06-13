@@ -235,7 +235,7 @@ void fragment() {
 	//      instead of being clamped to the nearest 8-bit slot.
 	float src_luma = luma_of(src);
 	if (palette_night_blend > 0.01) {
-		float bloom = smoothstep(bloom_threshold, 1.0, src_luma)
+		float bloom = smoothstep(bloom_threshold, 0.92, src_luma)
 		            * palette_night_blend
 		            * bloom_strength;
 		if (bloom > 0.001) {

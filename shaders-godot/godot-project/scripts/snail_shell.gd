@@ -215,5 +215,8 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 		foot_size = Vector3(0.24, 0.06, 0.16) * ss
 	add_box.call(parent, Vector3(0, foot_y, 0), foot_size, body_color)
 	if operculum:
-		add_box.call(parent, Vector3(0, foot_y + 0.05 * ss, 0.07 * ss),
+		var op_pivot := Node3D.new()
+		op_pivot.name = "Operculum"
+		parent.add_child(op_pivot)
+		add_box.call(op_pivot, Vector3(0, foot_y + 0.05 * ss, 0.07 * ss),
 			Vector3(0.12, 0.03, 0.1) * ss, shell_dark.darkened(0.1))

@@ -135,6 +135,8 @@ var _pulse_phase: float = 0.0
 # retract briefly — mimicking the real-life "stalk pull" snails do when
 # disturbed or while reorienting.
 var _eye_stalks: Node3D = null
+var _operculum_pivot: Node3D = null
+var _operculum_ext: float = 0.0
 var _eye_phase: float = 0.0
 var _eye_retract_timer: float = 0.0
 var _eye_retract_remaining: float = 0.0
@@ -317,6 +319,9 @@ func _ready() -> void:
 	_eye_phase = randf() * TAU
 	_eye_retract_timer = randf_range(EYE_RETRACT_INTERVAL_MIN, EYE_RETRACT_INTERVAL_MAX)
 	_eye_stalks = get_node_or_null("EyeStalks") as Node3D
+	_operculum_pivot = get_node_or_null("Operculum") as Node3D
+	if _operculum_pivot != null:
+		_operculum_pivot.visible = false
 	if is_baby:
 		scale = Vector3.ONE * 0.5
 	# Lock the wall plane to the spawn position. World.gd places snails on a
@@ -418,6 +423,7 @@ func _process(dt: float) -> void:
 	# are pulled in entirely (scale 0). Movement-state independent so the
 	# tank doesn't go visually dead when snails pause.
 	_tick_eye_stalks(dt)
+	_tick_operculum(dt)
 
 	# When clamped we suspend movement entirely - foot's pulled in, no
 	# crawling, no foraging, no breeding decision needed. Skip the rest
@@ -596,7 +602,7 @@ func _process(dt: float) -> void:
 	if not _paused and gait_speed > 0.02:
 		var wn := _world_node()
 		if wn != null:
-			var av = wn.get_node_or_null("AquariumVisuals")
+			var av = _aquarium_visuals()
 			if av != null:
 				# State-driven slime intensity. Real snails produce more
 				# mucus when feeding (the rasping radula needs lubrication)
@@ -733,7 +739,7 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		# mucus deposit where they've been actively rasping.
 		var wn := _world_node()
 		if wn != null:
-			var av = wn.get_node_or_null("AquariumVisuals")
+			var av = _aquarium_visuals()
 			if av != null and av.has_method("spawn_snail_slime"):
 				av.spawn_snail_slime(global_position, wall_normal)
 		return
@@ -1155,6 +1161,20 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
 
 
+var _av_cached: Node = null
+
+
+# Cached AquariumVisuals node — the per-tick string lookup (slime / compaction
+# while crawling) is resolved once; the node is stable for the tank's life.
+func _aquarium_visuals() -> Node:
+	if _av_cached != null and is_instance_valid(_av_cached):
+		return _av_cached
+	var wn := _world_node()
+	if wn != null:
+		_av_cached = wn.get_node_or_null("AquariumVisuals")
+	return _av_cached
+
+
 func _world_node() -> Node:
 	var sim := _get_sim()
 	if sim == null:
@@ -1500,6 +1520,19 @@ func _tick_eye_stalks(dt: float) -> void:
 	# Scale the stalks along Y so they visually pull into the body
 	# during retraction. Width stays steady so they don't look thinner.
 	_eye_stalks.scale = Vector3(1.0, lerpf(0.1, 1.0, ext), 1.0)
+
+
+func _tick_operculum(dt: float) -> void:
+	if _operculum_pivot == null or not operculum:
+		return
+	var target: float = 1.0 if _clamped else (0.55 if _fish_hover_freeze else 0.0)
+	_operculum_ext = lerpf(_operculum_ext, target, clampf(dt * 9.0, 0.0, 1.0))
+	_operculum_pivot.visible = _operculum_ext > 0.04
+	_operculum_pivot.scale = Vector3(
+		lerpf(0.65, 1.08, _operculum_ext),
+		lerpf(0.4, 1.0, _operculum_ext),
+		lerpf(0.35, 1.0, _operculum_ext),
+	)
 
 
 # Fast per-tick check for a predator inside the immediate-retract radius.

@@ -72,6 +72,7 @@ var _light_global_warmth_slider: HSlider = null
 var _light_global_warmth_value: Label = null
 # --- Tank fixture section (artificial light only) ---
 var _light_tank_check: CheckBox = null
+var _light_heater_check: CheckBox = null
 var _light_caustics_check: CheckBox = null
 var _light_fixture_intensity_slider: HSlider = null
 var _light_fixture_intensity_value: Label = null
@@ -714,6 +715,8 @@ func _ready() -> void:
 	_sim = world.get_node_or_null("SimDriver")
 	if _sim != null and _sim.has_signal("stats_changed"):
 		_sim.connect("stats_changed", _on_stats_changed)
+	if _sim != null and _sim.has_signal("eco_event"):
+		_sim.connect("eco_event", _on_eco_event)
 	_ui_panels.setup(self)
 	# Hook rail buttons through the panel manager (exclusivity + modal backdrop).
 	if settings_toggle != null:
@@ -1884,7 +1887,7 @@ func _build_portal_info_ui() -> void:
 	
 	_portal_stats_lbl = Label.new()
 	_portal_stats_lbl.text = "Age: 0s · Hunger: 0%"
-	_portal_stats_lbl.add_theme_font_size_override("font_size", 9)
+	PanelTheme.as_mono(_portal_stats_lbl, PanelTheme.SIZE_CAPTION)
 	_portal_stats_lbl.add_theme_color_override("font_color", Color8(150, 230, 150))
 	_portal_stats_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(_portal_stats_lbl)
@@ -2073,6 +2076,10 @@ func _input(event: InputEvent) -> void:
 				if _water_popup != null and _water_popup.visible \
 						and not _water_popup.get_global_rect().has_point(mb.position):
 					_water_popup.visible = false
+					closed_chip_popup = true
+				if _alert_popup != null and _alert_popup.visible \
+						and not _alert_popup.get_global_rect().has_point(mb.position):
+					_alert_popup.visible = false
 					closed_chip_popup = true
 				if closed_chip_popup:
 					_chip_popup_key = ""
@@ -2409,9 +2416,30 @@ func _pan_target(delta: Vector2) -> void:
 func _on_stats_changed(stats: Dictionary) -> void:
 	_stats = stats
 	_render_header()
+	_apply_ecology_hud_layout()
+	_refresh_cycle_banner()
 	_collect_story_notifications()
 	_collect_water_alert_notifications()
 	_push_telemetry_to_js()
+
+
+func _on_eco_event(kind: String, text: String, severity: int) -> void:
+	var sev: String = NOTIF_SEVERITY_INFO
+	if severity >= 2:
+		sev = NOTIF_SEVERITY_CRITICAL
+	elif severity >= 1:
+		sev = NOTIF_SEVERITY_IMPORTANT
+	var title: String = "Ecosystem"
+	match kind:
+		"cycle":
+			title = "Tank cycle"
+		"reef":
+			title = "Reef"
+		"trophic", "population":
+			title = "Food web"
+		"flora":
+			title = "Flora"
+	_push_notification(kind, sev, title, text, severity >= 2)
 
 
 # Web-only: forward the current stats snapshot to the host page so it can
@@ -2521,6 +2549,10 @@ func _render_header() -> void:
 			# str() on the value, which renders cleanly: 4.0 → "4", 1.5 → "1.5".
 			state_value = "%s×" % ts
 		state_sub = _day_label(float(_sim.day_phase))
+		if String(_stats.get("hud_mode", "")) == "cycle":
+			var day_l: String = String(_stats.get("sim_day_label", ""))
+			if not day_l.is_empty():
+				state_sub = "%s · %s" % [day_l, state_sub]
 	_update_chip("state", state_value, state_sub, true, state_warn)
 
 	# Fauna chips. On compact layout the shrimp+snails chips are hidden and
@@ -2554,11 +2586,15 @@ func _render_header() -> void:
 			true, false)
 
 	# Flora chip.
-	_update_chip("flora", str(plants), "biomass %d" % biomass, true, false)
+	var flora_sub: String = HudController.flora_chip_subtitle(_stats)
+	var flora_warn: bool = float(_stats.get("bloom_intensity", 0.0)) >= 0.40
+	_update_chip("flora", str(plants), flora_sub, true, flora_warn)
 
-	# Water chip: O₂ percentage + cycle phase; warn-tinted below 50%.
+	# Water chip — during cycle mode the phase is primary; O₂ moves to sublabel.
+	var water_primary: String = HudController.water_chip_primary(_stats)
 	var water_sub: String = HudController.water_chip_subtitle(_stats)
-	_update_chip("water", "%d%%" % o2_pct, water_sub, true, o2_pct < 50)
+	var water_warn: bool = HudController.water_chip_warn(_stats)
+	_update_chip("water", water_primary, water_sub, true, water_warn)
 
 	# Morphs chip — only meaningful once speciation has produced variants.
 	_update_chip("morphs", "+%d" % distinct_morphs, "morphs", distinct_morphs > 0, false)
@@ -2570,11 +2606,21 @@ func _render_header() -> void:
 	# one threshold. Mood is computed here rather than on sim_driver so
 	# it can read the same _stats snapshot already in scope.
 	var ammonia: float = float(_stats.get("ammonia", 0.0))
-	var mood: float = 0.30 * o2 \
-		+ 0.30 * clampf(float(biomass) / 600.0, 0.0, 1.0) \
-		+ 0.20 * clampf(1.0 - float(algae) / 60.0, 0.0, 1.0) \
-		+ 0.20 * clampf(1.0 - float(waste) / 100.0, 0.0, 1.0) \
-		- clampf(ammonia * 0.25, 0.0, 0.35)
+	var mood: float
+	if not not _stats.get("is_saltwater", false):
+		var bleach: float = float(_stats.get("reef_bleach_level", 0.0))
+		var alk: float = float(_stats.get("alkalinity_proxy", 8.0))
+		var warmth: float = float(_stats.get("effective_warmth", 0.55))
+		mood = 0.35 * o2 \
+			+ 0.28 * clampf(1.0 - bleach, 0.0, 1.0) \
+			+ 0.20 * clampf((alk - 6.8) / 1.4, 0.0, 1.0) \
+			+ 0.17 * clampf(1.0 - maxf(0.0, warmth - 0.78) * 3.2, 0.0, 1.0)
+	else:
+		mood = 0.30 * o2 \
+			+ 0.30 * clampf(float(biomass) / 600.0, 0.0, 1.0) \
+			+ 0.20 * clampf(1.0 - float(algae) / 60.0, 0.0, 1.0) \
+			+ 0.20 * clampf(1.0 - float(waste) / 100.0, 0.0, 1.0) \
+			- clampf(ammonia * 0.25, 0.0, 0.35)
 	mood = clampf(mood, 0.0, 1.0)
 	var mood_label: String
 	var mood_glyph: String
@@ -2607,6 +2653,18 @@ func _render_header() -> void:
 		has_alert = true
 		alert_value = "%d" % waste
 		alert_sub = "waste"
+	elif float(_stats.get("nitrite", 0.0)) >= 0.22:
+		has_alert = true
+		alert_value = "NO₂"
+		alert_sub = "nitrites"
+	elif float(_stats.get("ammonia", 0.0)) >= 0.25:
+		has_alert = true
+		alert_value = "NH₃"
+		alert_sub = "ammonia"
+	elif float(_stats.get("reef_bleach_level", 0.0)) >= 0.35:
+		has_alert = true
+		alert_value = "bleach"
+		alert_sub = "corals"
 	_update_chip("alert", alert_value, alert_sub, has_alert, true)
 
 	# Aquascape mode replaces the state chip's sublabel with the tool name so
@@ -2657,14 +2715,14 @@ func _build_hud_chips() -> void:
 	# left-to-right in the bar.
 	var defs: Array = [
 		{"key": "state",  "icon": UiIcons.chip_glyph("state"), "color": Color8(154, 168, 200)},
+		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216)},
 		{"key": "mood",   "icon": UiIcons.chip_glyph("mood"), "color": Color8(170, 220, 170)},
 		{"key": "fish",   "icon": UiIcons.chip_glyph("fish"), "color": Color8(214, 176, 112)},
+		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132)},
+		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112)},
 		{"key": "shrimp", "icon": UiIcons.chip_glyph("shrimp"), "color": Color8(214, 176, 112)},
 		{"key": "snails", "icon": UiIcons.chip_glyph("snails"), "color": Color8(214, 176, 112)},
-		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132)},
-		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216)},
 		{"key": "morphs", "icon": UiIcons.chip_glyph("morphs"), "color": Color8(224, 192, 96)},
-		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112)},
 	]
 	for d in defs:
 		var key: String = String(d["key"])
@@ -2684,10 +2742,10 @@ func _build_hud_chips() -> void:
 
 func _chip_tooltip(key: String) -> String:
 	match key:
-		"state": return "Tank time — tap for history"
+		"state": return "Sim day & time scale — tap for cycle history"
 		"mood": return "Ecosystem mood — tap for story log"
-		"water": return "Water chemistry — tap for details"
-		"alert": return "Active alerts — tap for details"
+		"water": return "N-cycle & O₂ — tap for chemistry details"
+		"alert": return "Active alerts — tap for guidance"
 		"fish", "shrimp", "snails", "flora", "morphs": return "Population — tap for sparkline"
 	return "Tap for details"
 
@@ -3368,6 +3426,63 @@ func _apply_hud_layout() -> void:
 
 	if layout_changed:
 		_render_header()
+	_apply_ecology_hud_layout()
+
+
+var _cycle_banner: Label = null
+var _cycle_banner_dismissed: bool = false
+
+
+func _ensure_cycle_banner() -> void:
+	if _cycle_banner != null:
+		return
+	_cycle_banner = Label.new()
+	_cycle_banner.visible = false
+	_cycle_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cycle_banner.add_theme_font_size_override("font_size", 12)
+	_cycle_banner.add_theme_color_override("font_color", Color(0.82, 0.92, 0.85, 1.0))
+	_cycle_banner.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	_cycle_banner.offset_top = 46.0
+	_cycle_banner.mouse_filter = Control.MOUSE_FILTER_STOP
+	_cycle_banner.gui_input.connect(_on_cycle_banner_input)
+	add_child(_cycle_banner)
+
+
+func _on_cycle_banner_input(ev: InputEvent) -> void:
+	if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
+		_cycle_banner_dismissed = true
+		var saves := get_node_or_null("/root/TankSaves")
+		if saves != null:
+			_set_global_pref("cycle_banner_dismissed_%d" % int(saves.active_slot), true)
+		_refresh_cycle_banner()
+
+
+func _refresh_cycle_banner() -> void:
+	_ensure_cycle_banner()
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves != null:
+		_cycle_banner_dismissed = bool(_global_pref(
+			"cycle_banner_dismissed_%d" % int(saves.active_slot), false))
+	if _cycle_banner_dismissed:
+		_cycle_banner.visible = false
+		return
+	var mode: String = String(_stats.get("hud_mode", ""))
+	var banner: String = String(_stats.get("cycle_banner", ""))
+	if mode != "cycle" or banner.is_empty():
+		_cycle_banner.visible = false
+		return
+	_cycle_banner.text = banner + "  (tap to dismiss)"
+	_cycle_banner.visible = true
+
+
+func _apply_ecology_hud_layout() -> void:
+	if _chips.is_empty():
+		return
+	var mode: String = String(_stats.get("hud_mode", "established"))
+	var morphs: int = int(_stats.get("morph_distinct", 0))
+	var morph_chip: Control = _chips.get("morphs", null) as Control
+	if morph_chip != null and _hud_layout != "compact":
+		morph_chip.visible = morphs > 0 or mode != "cycle"
 
 
 # Chip-tap handler — opens a sparkline popup with the last ~2 minutes of
@@ -3381,6 +3496,7 @@ const _CHIP_TO_HISTORY := {
 	"flora": "plants_alive",
 	"water": "dissolved_o2",
 	"alert": "algae_clusters",
+	"state": "cycle_phase",
 }
 
 
@@ -3406,9 +3522,15 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	if key == "water":
 		_show_water_chemistry_popup(color)
 		return
+	if key == "alert":
+		_show_alert_guidance_popup(color)
+		return
+	if key == "state":
+		_show_history_popup("cycle_phase", key, color)
+		return
 	var hist_key: String = _CHIP_TO_HISTORY.get(key, "")
 	if hist_key == "":
-		return  # state/morphs chips have no useful history
+		return  # morphs chip has no sparkline history
 	_show_history_popup(hist_key, key, color)
 
 
@@ -3424,6 +3546,8 @@ func _close_chip_popups() -> void:
 		_story_popup.visible = false
 	if _water_popup != null and _water_popup.visible:
 		_water_popup.visible = false
+	if _alert_popup != null and _alert_popup.visible:
+		_alert_popup.visible = false
 	_chip_popup_key = ""
 
 
@@ -4000,7 +4124,7 @@ func _collect_story_notifications() -> void:
 	for i in range(_notification_story_idx, events.size()):
 		var e: Dictionary = events[i]
 		var text: String = String(e.get("text", ""))
-		if text == "":
+		if text == "" or bool(e.get("skip_notification", false)):
 			continue
 		var info: Dictionary = _classify_story_notification(text)
 		_push_notification(
@@ -4104,7 +4228,7 @@ func _ensure_story_popup() -> void:
 
 	var title := Label.new()
 	title.text = "Tank story"
-	title.add_theme_font_size_override("font_size", 13)
+	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
 	vbox.add_child(title)
 
@@ -4117,7 +4241,8 @@ func _ensure_story_popup() -> void:
 	_story_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_story_list.custom_minimum_size = Vector2(390, 180)
 	_story_list.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
-	_story_list.add_theme_font_size_override("normal_font_size", 11)
+	# The tank's narrative voice → Serif.
+	PanelTheme.apply_font(_story_list, PanelTheme.FONT_SERIF, PanelTheme.SIZE_BODY)
 	vbox.add_child(_story_list)
 
 	add_child(_story_popup)
@@ -4137,7 +4262,7 @@ func _show_story_popup(_chip_color: Color) -> void:
 			var e: Dictionary = events[i]
 			var t: float = float(e.get("t", 0.0))
 			lines.append("[color=#9aa8c8]%s[/color]  %s" % [
-				_format_story_t(t), String(e.get("text", "")),
+				_format_story_t(t, e), String(e.get("text", "")),
 			])
 		_story_list.text = "\n".join(lines)
 	var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -4150,6 +4275,8 @@ func _show_story_popup(_chip_color: Color) -> void:
 
 var _water_popup: PanelContainer = null
 var _water_detail: Label = null
+var _alert_popup: PanelContainer = null
+var _alert_detail: Label = null
 
 
 func _ensure_water_popup() -> void:
@@ -4158,7 +4285,7 @@ func _ensure_water_popup() -> void:
 	_water_popup = PanelContainer.new()
 	_water_popup.visible = false
 	_water_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_water_popup.custom_minimum_size = Vector2(220, 120)
+	_water_popup.custom_minimum_size = Vector2(260, 160)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
 	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
@@ -4192,10 +4319,81 @@ func _show_water_chemistry_popup(_chip_color: Color) -> void:
 	_chip_popup_key = "water"
 
 
+func _ensure_alert_popup() -> void:
+	if _alert_popup != null:
+		return
+	_alert_popup = PanelContainer.new()
+	_alert_popup.visible = false
+	_alert_popup.mouse_filter = Control.MOUSE_FILTER_STOP
+	_alert_popup.custom_minimum_size = Vector2(300, 120)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.10, 0.06, 0.08, 0.96)
+	style.border_color = Color(0.72, 0.38, 0.38, 0.75)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 14
+	style.content_margin_right = 14
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	_alert_popup.add_theme_stylebox_override("panel", style)
+	var vb := VBoxContainer.new()
+	_alert_popup.add_child(vb)
+	var title := Label.new()
+	title.text = "Tank alert"
+	title.add_theme_font_size_override("font_size", 13)
+	vb.add_child(title)
+	_alert_detail = Label.new()
+	_alert_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(_alert_detail)
+	add_child(_alert_popup)
+
+
+func _current_alert_kind() -> String:
+	var o2_pct: int = int(round(float(_stats.get("dissolved_o2", 0.0)) * 100.0))
+	var algae: int = int(_stats.get("algae_clusters", 0))
+	var waste: int = int(_stats.get("waste_particles", 0))
+	if o2_pct < 30:
+		return "low_o2"
+	if algae > 20:
+		return "algae"
+	if waste > 30:
+		return "waste"
+	if float(_stats.get("nitrite", 0.0)) >= 0.22:
+		return "nitrite"
+	if float(_stats.get("ammonia", 0.0)) >= 0.25:
+		return "ammonia"
+	if float(_stats.get("reef_bleach_level", 0.0)) >= 0.35:
+		return "bleach"
+	return "none"
+
+
+func _show_alert_guidance_popup(_chip_color: Color) -> void:
+	var kind: String = _current_alert_kind()
+	if kind == "none":
+		_show_water_chemistry_popup(_chip_color)
+		return
+	_ensure_alert_popup()
+	var lines: PackedStringArray = HudController.alert_guidance_lines(_stats, kind)
+	_alert_detail.text = "\n".join(lines)
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	_alert_popup.size = _alert_popup.custom_minimum_size
+	_alert_popup.position = Vector2((vp.x - _alert_popup.size.x) * 0.5, 56.0)
+	_alert_popup.visible = true
+	_chip_popup_key = "alert"
+	if kind in ["bleach", "ammonia", "nitrite", "low_o2"]:
+		lines.append("")
+		lines.append("— Chemistry —")
+		for wl in HudController.water_detail_lines(_stats):
+			lines.append(wl)
+		_alert_detail.text = "\n".join(lines)
+
+
 # Render an elapsed sim-time into a short "Xm" / "Xh Ym" string for the
 # left margin of each story line. Keeps the diary scannable rather than
 # raw-second timestamped.
-func _format_story_t(t: float) -> String:
+func _format_story_t(t: float, ev: Dictionary = {}) -> String:
+	if ev.has("sim_day") and String(ev.get("sim_day", "")) != "":
+		return String(ev.get("sim_day"))
 	var s: int = int(t)
 	if s < 60:
 		return "%ds" % s
@@ -4604,6 +4802,12 @@ func _ensure_light_panel() -> void:
 	vbox.add_child(_light_tank_check)
 	_attach_reset(_light_tank_check, "tank_lights_on")
 
+	_light_heater_check = CheckBox.new()
+	_light_heater_check.text = "Substrate heater on (warmth near the rod)"
+	_light_heater_check.toggled.connect(_on_heater_toggled)
+	vbox.add_child(_light_heater_check)
+	_attach_reset(_light_heater_check, "heater_enabled")
+
 	_light_fixture_intensity_value = Label.new()
 	_light_fixture_intensity_slider = PanelTheme.add_slider_row(
 		vbox, "Fixture intensity", 0.0, 1.0, 0.05, _light_fixture_intensity_value)
@@ -4762,6 +4966,7 @@ const _LIGHT_DEFAULTS: Dictionary = {
 	"global_intensity": 0.5,
 	"global_warmth": 0.6,
 	"tank_lights_on": true,
+	"heater_enabled": true,
 	"tank_fixture_intensity": 0.5,
 	"tank_fixture_color": Color(1.0, 0.95, 0.85),
 	"light_caustics": true,
@@ -4972,6 +5177,8 @@ func _pull_light_panel_values() -> void:
 		_light_global_warmth_value.text = "%.2f" % float(cfg.global_warmth)
 	if _light_tank_check != null:
 		_light_tank_check.set_pressed_no_signal(bool(cfg.tank_lights_on))
+	if _light_heater_check != null:
+		_light_heater_check.set_pressed_no_signal(bool(cfg.heater_enabled))
 	if _light_caustics_check != null:
 		_light_caustics_check.set_pressed_no_signal(bool(cfg.light_caustics))
 	if _light_fixture_intensity_slider != null:
@@ -5142,6 +5349,12 @@ func _on_light_tank_toggled(v: bool) -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg != null:
 		cfg.tank_lights_on = v
+
+
+func _on_heater_toggled(v: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		cfg.heater_enabled = v
 	_light_mark_custom()
 
 

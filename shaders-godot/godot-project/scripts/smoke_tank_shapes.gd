@@ -23,6 +23,14 @@ func _initialize() -> void:
 			failed.append("%s: terrain_grid null" % shape)
 		elif w.get_child_count() < 2:
 			failed.append("%s: too few children (%d)" % [shape, w.get_child_count()])
+		if w.has_method("_surface_floater_capacity"):
+			var cap: int = int(w.call("_surface_floater_capacity"))
+			if cap < 4:
+				failed.append("%s: floater cap too low (%d)" % [shape, cap])
+			else:
+				print_verbose("[smoke] %s floater cap=%d mult=%.2f" % [
+					shape, cap, WorldFloaterManager.shape_capacity_multiplier(shape),
+				])
 		w.queue_free()
 		await process_frame
 	if failed.is_empty():

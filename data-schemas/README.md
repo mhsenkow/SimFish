@@ -1,7 +1,13 @@
 # walstad loom data schemas
 
-Three JSON Schemas + example data files. Drop content into the example folders
-to add species, substrates, and hardscape without recompiling the sim.
+> **Status: data-design reference — not yet consumed by the game.** The shipping
+> Godot game defines species/substrate data in GDScript (`tank_config.gd`'s
+> `SPECIES_LIBRARY`, `species_library.gd`). These schemas + examples document the
+> intended data contract for a future JSON-driven / moddable content path; the
+> example species names here are illustrative and may not match the in-game roster.
+
+Three JSON Schemas + example data files describing the intended content format
+for species, substrates, and hardscape.
 
 | Schema | Files describe... | Examples |
 |---|---|---|

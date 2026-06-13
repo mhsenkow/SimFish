@@ -1,5 +1,14 @@
 /* Vivarium GitHub Pages site — pixel-art aquarium aesthetic */
 
+/* ---- IBM Plex superfamily (self-hosted, matches the game UI) ---- */
+@font-face { font-family: "IBM Plex Sans";  font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/IBMPlexSans-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans";  font-weight: 500; font-style: normal; font-display: swap; src: url("fonts/IBMPlexSans-Medium.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Serif"; font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/IBMPlexSerif-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Serif"; font-weight: 500; font-style: normal; font-display: swap; src: url("fonts/IBMPlexSerif-Medium.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Serif"; font-weight: 400; font-style: italic; font-display: swap; src: url("fonts/IBMPlexSerif-Italic.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono";  font-weight: 400; font-style: normal; font-display: swap; src: url("fonts/IBMPlexMono-Regular.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono";  font-weight: 500; font-style: normal; font-display: swap; src: url("fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+
 :root {
   --bg-deep: #0a1820;
   --bg-mid: #102530;
@@ -25,7 +34,7 @@ body {
   margin: 0;
   background: var(--bg-deep);
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   font-size: 17px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
@@ -36,8 +45,8 @@ body {
 }
 
 h1, h2, h3 {
-  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  letter-spacing: -0.01em;
+  font-family: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  letter-spacing: -0.005em;
   color: var(--ink);
 }
 
@@ -53,7 +62,7 @@ a:hover {
 }
 
 code {
-  font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 0.9em;
   background: var(--bg-card);
   padding: 2px 6px;
@@ -98,7 +107,7 @@ pre code {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  font-weight: 700;
+  font-weight: 500;
 }
 
 .tagline {
@@ -124,7 +133,7 @@ pre code {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--ink);
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
   transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
   min-width: 160px;
 }
@@ -137,7 +146,7 @@ pre code {
 
 .dl-btn .platform {
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--accent-bright);
 }
 
@@ -228,7 +237,7 @@ h2::before {
   margin: 0 0 12px;
   font-size: 17px;
   color: var(--accent-bright);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .feature p {
