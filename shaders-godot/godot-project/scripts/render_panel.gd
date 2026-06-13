@@ -9,10 +9,13 @@ extends PanelContainer
 
 
 var _res_option: OptionButton
+var _film_option: OptionButton
 var _dither: HSlider
 var _dither_label: Label
 var _palette_check: CheckBox
 var _region_aware_check: CheckBox
+var _experimental_check: CheckBox
+var _matured_check: CheckBox
 var _bank_lock_check: CheckBox
 var _outline: HSlider
 var _outline_label: Label
@@ -198,6 +201,20 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_region_aware_check.text = "Region-aware dither (recommended)"
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
 	vbox.add_child(_region_aware_check)
+	_experimental_check = CheckBox.new()
+	_experimental_check.text = "Experimental visuals — jewel-like fauna (SSS + iridescence)"
+	_experimental_check.toggled.connect(func(v): TankConfig.experimental_visuals = v)
+	vbox.add_child(_experimental_check)
+	var exp_desc := PanelTheme.make_description()
+	exp_desc.text = "Adds subsurface glow + view-angle shimmer to fish & shrimp. Click Apply to rebuild."
+	vbox.add_child(exp_desc)
+	_matured_check = CheckBox.new()
+	_matured_check.text = "New tanks start established (instant-mature)"
+	_matured_check.toggled.connect(func(v): TankConfig.start_matured = v)
+	vbox.add_child(_matured_check)
+	var mat_desc := PanelTheme.make_description()
+	mat_desc.text = "Applies when you create a NEW tank: biofilm patina, a few generations of variety, mixed ages."
+	vbox.add_child(mat_desc)
 	var rad_desc := PanelTheme.make_description()
 	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."
 	vbox.add_child(rad_desc)
@@ -293,6 +310,18 @@ func _build_color_tab(vbox: VBoxContainer) -> void:
 	hint.text = "Global material tint overlay — does not change saved fish or plant genomes. Preview is live."
 	vbox.add_child(hint)
 
+	_add_section(vbox, "Film stock")
+	var film_hint := PanelTheme.make_description()
+	film_hint.text = "One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep."
+	vbox.add_child(film_hint)
+	_film_option = OptionButton.new()
+	for k in TankConfig.FILM_STOCKS.keys():
+		var stock: Dictionary = TankConfig.FILM_STOCKS[k]
+		_film_option.add_item(String(stock.get("label", k)))
+		_film_option.set_item_metadata(_film_option.item_count - 1, String(k))
+	_film_option.item_selected.connect(_on_film_stock_selected)
+	vbox.add_child(_film_option)
+
 	_add_section(vbox, "Global tint")
 	_mat_hue_label = Label.new()
 	_mat_hue = PanelTheme.add_slider_row(vbox, "Hue shift", -0.5, 0.5, 0.01, _mat_hue_label)
@@ -378,6 +407,10 @@ func _pull_from_config() -> void:
 			break
 	_dither.value = TankConfig.dither_strength
 	_palette_check.button_pressed = TankConfig.palette_enabled
+	if _experimental_check != null:
+		_experimental_check.button_pressed = TankConfig.experimental_visuals
+	if _matured_check != null:
+		_matured_check.button_pressed = TankConfig.start_matured
 	# Pixel-art polish controls — block signals so set_pressed doesn't
 	# bounce back through the toggled callback and overwrite TankConfig.
 	if _region_aware_check != null:
@@ -598,6 +631,19 @@ func _on_fov(v: float) -> void:
 	var cam := main.get_node_or_null("SubViewport/World/Camera3D")
 	if cam != null:
 		cam.fov = v
+
+
+func _on_film_stock_selected(idx: int) -> void:
+	if _film_option == null:
+		return
+	TankConfig.apply_film_stock(String(_film_option.get_item_metadata(idx)))
+	# Tint applies on demand; the post knobs (dither/vignette/bloom) are pushed
+	# every frame from TankConfig, so just refresh the panel + material tint.
+	_apply_material_palette()
+	_sync_material_sliders()
+	if _dither != null:
+		_dither.value = TankConfig.dither_strength
+	_update_labels()
 
 
 func _apply_material_palette() -> void:

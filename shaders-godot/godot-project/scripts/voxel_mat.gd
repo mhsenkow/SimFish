@@ -148,6 +148,15 @@ static func make(color: Color) -> ShaderMaterial:
 	return m
 
 
+static func _experimental_on() -> bool:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		var tc: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+		if tc != null:
+			return bool(tc.get("experimental_visuals"))
+	return false
+
+
 static func make_fauna(color: Color) -> ShaderMaterial:
 	var boosted: Color = boost_life_color(color)
 	var cache_key: Color = _snap(boosted)
@@ -158,6 +167,12 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	# quantize's dither-grid territory. 1.24 still rides above foliage
 	# (1.22 below) without tripping moiré on fish bodies.
 	m.set_shader_parameter("color_vibrancy", 1.24)
+	# Experimental structural colour — jewel-like fauna. No-op uniforms (0) when
+	# the toggle is off, so the default look is unchanged.
+	var exp_on: bool = _experimental_on()
+	m.set_shader_parameter("sss_strength", 0.34 if exp_on else 0.0)
+	m.set_shader_parameter("irid_strength", 0.45 if exp_on else 0.0)
+	m.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
 	_cache_admit(_fauna_mat_cache, _fauna_key_queue, cache_key, m)
 	return m
 

@@ -545,6 +545,7 @@ func _scale_cfg() -> String:
 	return String(cfg.music_scale) if cfg != null and "music_scale" in cfg else "auto"
 
 
+@warning_ignore("shadowed_variable_base_class")
 func _scale_by_name(name: String) -> Array[float]:
 	match name:
 		"major": return SCALE_MAJOR

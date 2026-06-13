@@ -121,6 +121,11 @@ var leg_length_factor: float = 1.0
 var claw_asymmetry: float = 0.0
 var filter_fans: bool = false
 var pattern_type: int = 0
+# Continuous pattern modulators (heritable; mirror the fish system). scale sizes
+# each band / spot, intensity sets boldness, density adds extra rings / spots.
+var pattern_scale: float = 0.5
+var pattern_intensity: float = 0.5
+var pattern_density: float = 0.5
 var shelter_bonus: float = 0.0   # runtime anti-predator cover bonus (read by fish AI)
 # Cleaning-station behavior state.
 var _clean_target: Node3D = null
@@ -224,6 +229,9 @@ func init_genome(genome: Dictionary) -> void:
 	claw_asymmetry = clampf(float(genome.get("claw_asymmetry", claw_asymmetry)), 0.0, 1.0)
 	filter_fans = not not genome.get("filter_fans", filter_fans)
 	pattern_type = int(genome.get("pattern_type", pattern_type))
+	pattern_scale = clampf(float(genome.get("pattern_scale", pattern_scale)), 0.0, 1.0)
+	pattern_intensity = clampf(float(genome.get("pattern_intensity", pattern_intensity)), 0.0, 1.0)
+	pattern_density = clampf(float(genome.get("pattern_density", pattern_density)), 0.0, 1.0)
 	# Body-plan defaults so a minimal founder genome still reads right: crab /
 	# mantis carry stalked eyes, crab tucks its abdomen, lobster holds it straight.
 	if (body_shape == "crab" or body_shape == "mantis") and not genome.has("eye_stalk_length"):
@@ -285,6 +293,9 @@ func init_genome(genome: Dictionary) -> void:
 	_saved_genome["claw_asymmetry"] = claw_asymmetry
 	_saved_genome["filter_fans"] = filter_fans
 	_saved_genome["pattern_type"] = pattern_type
+	_saved_genome["pattern_scale"] = pattern_scale
+	_saved_genome["pattern_intensity"] = pattern_intensity
+	_saved_genome["pattern_density"] = pattern_density
 	
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -633,21 +644,28 @@ func _build_filter_fans(v: float) -> void:
 
 func _build_shrimp_pattern(v: float, lenf: float) -> void:
 	# 1 = bands (crystal/bee red-white rings), 2 = saddle spots (sexy/ghost),
-	# 3 = lateral stripe (amano dashes).
+	# 3 = lateral stripe (amano dashes). Continuous modulators reshape each so a
+	# colony's markings drift wider / bolder / denser over generations.
 	var pat_mat: Material = VoxelMat.make_fauna(accent_color)
+	var sizem: float = 0.6 + pattern_scale * 0.8
+	var thickm: float = 0.6 + pattern_intensity * 0.8
 	match pattern_type:
 		1:
-			for z in [-v * 0.8 * lenf, 0.0, v * 0.6 * lenf]:
-				_voxel(_bank_pivot, Vector3(0, v * 0.55, z),
-					Vector3(v * 1.0, v * 0.12, v * 0.2), pat_mat)
+			var bands: Array = ([-v * 0.8 * lenf, 0.0, v * 0.6 * lenf] if pattern_density < 0.6
+				else [-v * 0.9 * lenf, -v * 0.3 * lenf, v * 0.2 * lenf, v * 0.7 * lenf])
+			for z in bands:
+				_voxel(_bank_pivot, Vector3(0, v * 0.55, float(z)),
+					Vector3(v * 1.0 * sizem, v * 0.12 * thickm, v * 0.2 * sizem), pat_mat)
 		2:
-			for zk in [-0.6, 0.0, 0.6]:
-				_voxel(_bank_pivot, Vector3(0, v * 0.6, v * zk * lenf),
-					Vector3(v * 0.3, v * 0.18, v * 0.22), pat_mat)
+			var spots: Array = ([-0.6, 0.0, 0.6] if pattern_density < 0.6
+				else [-0.7, -0.25, 0.2, 0.65])
+			for zk in spots:
+				_voxel(_bank_pivot, Vector3(0, v * 0.6, v * float(zk) * lenf),
+					Vector3(v * 0.3 * sizem, v * 0.18 * sizem, v * 0.22 * sizem), pat_mat)
 		3:
 			for x_side in [-1.0, 1.0]:
 				_voxel(_bank_pivot, Vector3(x_side * v * 0.45, v * 0.2, 0),
-					Vector3(v * 0.12, v * 0.18, v * 1.6 * lenf), pat_mat)
+					Vector3(v * 0.12 * thickm, v * 0.18 * sizem, v * 1.6 * lenf), pat_mat)
 
 
 func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -1554,6 +1572,12 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	var new_pattern: int = pattern_type if randf() < 0.85 else other.pattern_type
 	if randf() < 0.06:
 		new_pattern = randi() % 4
+	var new_pat_scale: float = clampf(
+		(pattern_scale + other.pattern_scale) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_pat_intensity: float = clampf(
+		(pattern_intensity + other.pattern_intensity) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_pat_density: float = clampf(
+		(pattern_density + other.pattern_density) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
 	var g: Dictionary = {
 		"organism_type": "shrimp",
 		"species": species,
@@ -1580,6 +1604,9 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"claw_asymmetry": new_claw_asym,
 		"filter_fans": new_filter_fans,
 		"pattern_type": new_pattern,
+		"pattern_scale": new_pat_scale,
+		"pattern_intensity": new_pat_intensity,
+		"pattern_density": new_pat_density,
 		"generation": maxi(generation, other.generation) + 1,
 		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
 		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
@@ -1589,7 +1616,40 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	if sim != null:
 		EvolutionPressure.apply_shrimp_offspring(
 			g, EvolutionPressure.sample_from_sim(sim, position))
+	_apply_shrimp_saltation(g)
 	return g
+
+
+# Rare shrimp "sport" morphs — the prized colony surprises (deep blue, golden,
+# snowball, carbon black, jumbo, neon). ~0.4% of fry. Tagged for discovery.
+static func _apply_shrimp_saltation(g: Dictionary) -> void:
+	if randf() > 0.004:
+		return
+	var kinds: Array[String] = ["blue", "golden", "snowball", "carbon", "jumbo", "neon"]
+	var kind: String = kinds[randi() % kinds.size()]
+	match kind:
+		"blue":
+			g["base_color"] = Color(0.12, 0.22, 0.62)
+			g["accent_color"] = Color(0.3, 0.5, 0.95)
+		"golden":
+			g["base_color"] = Color(0.95, 0.72, 0.12)
+			g["accent_color"] = Color(1.0, 0.88, 0.4)
+		"snowball":
+			g["base_color"] = Color(0.93, 0.95, 0.97)
+			g["accent_color"] = Color(0.8, 0.9, 1.0)
+			g["pattern_intensity"] = 0.2
+		"carbon":
+			for k in ["base_color", "accent_color"]:
+				if g.get(k) is Color:
+					g[k] = (g[k] as Color).darkened(0.72)
+		"jumbo":
+			g["adult_voxel_scale"] = clampf(float(g.get("adult_voxel_scale", 0.1)) * 1.4, 0.06, 0.4)
+		"neon":
+			g["pattern_density"] = clampf(float(g.get("pattern_density", 0.5)) + 0.4, 0.0, 1.0)
+			g["pattern_intensity"] = clampf(float(g.get("pattern_intensity", 0.5)) + 0.35, 0.0, 1.0)
+			if g.get("accent_color") is Color:
+				g["accent_color"] = (g["accent_color"] as Color).lerp(Color(0.2, 1.0, 0.7), 0.4)
+	g["saltation"] = kind
 
 
 # ---- Save / load ----

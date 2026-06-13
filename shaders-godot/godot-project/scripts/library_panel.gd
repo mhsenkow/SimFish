@@ -226,6 +226,8 @@ var _detail_genome_label: Label = null
 var _preview_column: Control = null
 var _pin_button: Button = null
 var _spawn_button: Button = null
+var _share_button: Button = null
+var _import_button: Button = null
 
 var _selected_key: String = ""
 var _selected_genome: Dictionary = {}
@@ -595,6 +597,15 @@ func _build_detail_column() -> Control:
 	_spawn_button.pressed.connect(_on_spawn_pressed)
 	_spawn_button.disabled = true
 	v.add_child(_spawn_button)
+	# Share / import a strain as a compact code so a discovered lineage can be
+	# traded and re-grown in another tank.
+	_share_button = PanelTheme.make_secondary_button("Share strain (copy code)")
+	_share_button.pressed.connect(_on_share_strain_pressed)
+	_share_button.disabled = true
+	v.add_child(_share_button)
+	_import_button = PanelTheme.make_secondary_button("Import strain (paste code)")
+	_import_button.pressed.connect(_on_import_strain_pressed)
+	v.add_child(_import_button)
 	return v
 
 
@@ -1195,6 +1206,8 @@ func _select_entry(entry: Dictionary) -> void:
 		_clear_children(_detail_traits)
 		_pin_button.disabled = true
 		_spawn_button.disabled = true
+		if _share_button != null:
+			_share_button.disabled = true
 		# Reset preview visibility + section label so a tab switch
 		# back to Tank/Global doesn't leave the ecosystem-hidden state.
 		if _preview_column != null:
@@ -1270,6 +1283,8 @@ func _select_entry(entry: Dictionary) -> void:
 	_pin_button.tooltip_text = ""
 	_spawn_button.disabled = false
 	_spawn_button.text = "Spawn in Tank"
+	if _share_button != null:
+		_share_button.disabled = false
 	_spawn_button.tooltip_text = ""
 
 	call_deferred("_load_preview_creature", genome, otype)
@@ -1424,6 +1439,39 @@ func _on_pin_pressed() -> void:
 		lib.unpin_from_global(_selected_key)
 	else:
 		lib.pin_to_global(_selected_key)
+
+
+func _on_share_strain_pressed() -> void:
+	if _selected_genome.is_empty():
+		return
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null:
+		return
+	var code: String = lib.encode_strain(_selected_genome)
+	if code == "":
+		_detail_meta.text = "Could not encode this strain."
+		return
+	DisplayServer.clipboard_set(code)
+	_detail_meta.text = "Strain code copied to clipboard (%d chars). Paste it to a friend." % code.length()
+
+
+func _on_import_strain_pressed() -> void:
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null:
+		return
+	var g: Dictionary = lib.decode_strain(DisplayServer.clipboard_get())
+	if g.is_empty():
+		_detail_meta.text = "No valid strain code on the clipboard."
+		return
+	var world: Node = get_tree().root.find_child("World", true, false)
+	if world == null:
+		world = get_tree().current_scene
+	if world == null or not world.has_method("spawn_library_entry"):
+		_detail_meta.text = "Cannot import: world not available."
+		return
+	var otype: String = String(g.get("organism_type", "fish"))
+	var ok: bool = not not world.spawn_library_entry(g, otype)
+	_detail_meta.text = "Imported strain into your tank." if ok else "Import failed (incompatible tank?)."
 
 
 func _on_spawn_pressed() -> void:

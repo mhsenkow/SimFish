@@ -52,6 +52,14 @@ var pixel_snap_camera: bool = false
 # If false, the palette pass is bypassed and you see raw HDR colors. Useful
 # for spotting bugs in lighting + composition.
 var palette_enabled: bool = true
+# Experimental GPU-shader visuals (subsurface scattering + iridescent scales on
+# fauna). Off by default; baked into fauna materials at creation, so the render
+# panel applies it via a scene rebuild.
+var experimental_visuals: bool = false
+# Instant-mature cold start: when set, a newly created (non-empty, non-loaded)
+# tank spawns already "established" — biofilm patina, a couple of generations of
+# lineage depth on the founders, and a spread of ages. Off = watch it grow in.
+var start_matured: bool = false
 # Volumetric fog parameters.
 var fog_density: float = 0.02
 var fog_anisotropy: float = 0.3
@@ -61,6 +69,46 @@ var material_hue_shift: float = 0.0
 var material_saturation: float = 1.0
 var material_warmth: float = 0.0
 var material_value: float = 1.0
+
+# Curated one-tap colour-grade "film stocks" — each sets the global tint plus the
+# dither / vignette / bloom post knobs together for an instant mood. Applied live
+# by the render panel; persisted with the other render settings on save.
+const FILM_STOCKS: Dictionary = {
+	"natural": {"label": "Natural", "material_hue_shift": 0.0, "material_saturation": 1.0,
+		"material_warmth": 0.0, "material_value": 1.0, "dither_strength": 0.85,
+		"pp_vignette_strength": 0.24, "pp_bloom_strength": 0.62},
+	"dawn": {"label": "Dawn", "material_hue_shift": 0.02, "material_saturation": 1.05,
+		"material_warmth": 0.35, "material_value": 1.05, "dither_strength": 0.80,
+		"pp_vignette_strength": 0.22, "pp_bloom_strength": 0.72},
+	"blackwater": {"label": "Blackwater", "material_hue_shift": 0.03, "material_saturation": 0.82,
+		"material_warmth": 0.45, "material_value": 0.92, "dither_strength": 0.85,
+		"pp_vignette_strength": 0.36, "pp_bloom_strength": 0.50},
+	"moonlit": {"label": "Moonlit", "material_hue_shift": -0.03, "material_saturation": 0.85,
+		"material_warmth": -0.45, "material_value": 0.86, "dither_strength": 0.85,
+		"pp_vignette_strength": 0.32, "pp_bloom_strength": 0.80},
+	"ghibli": {"label": "Ghibli-soft", "material_hue_shift": 0.0, "material_saturation": 1.25,
+		"material_warmth": 0.18, "material_value": 1.08, "dither_strength": 0.72,
+		"pp_vignette_strength": 0.18, "pp_bloom_strength": 0.66},
+	"crisp": {"label": "Crisp aquascape", "material_hue_shift": 0.0, "material_saturation": 1.15,
+		"material_warmth": 0.0, "material_value": 1.02, "dither_strength": 0.90,
+		"pp_vignette_strength": 0.20, "pp_bloom_strength": 0.55},
+}
+
+
+func apply_film_stock(key: String) -> void:
+	var p: Variant = FILM_STOCKS.get(key, null)
+	if not (p is Dictionary):
+		return
+	var d: Dictionary = p
+	material_hue_shift = float(d.get("material_hue_shift", material_hue_shift))
+	material_saturation = float(d.get("material_saturation", material_saturation))
+	material_warmth = float(d.get("material_warmth", material_warmth))
+	material_value = float(d.get("material_value", material_value))
+	dither_strength = float(d.get("dither_strength", dither_strength))
+	pp_vignette_strength = float(d.get("pp_vignette_strength", pp_vignette_strength))
+	pp_bloom_strength = float(d.get("pp_bloom_strength", pp_bloom_strength))
+
+
 var material_weight_fauna: float = 1.0
 var material_weight_foliage: float = 1.0
 var material_weight_substrate: float = 1.0
@@ -1826,6 +1874,8 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "adaptive_quality", adaptive_quality)
 	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
+	cfg.set_value("render", "experimental_visuals", experimental_visuals)
+	cfg.set_value("render", "start_matured", start_matured)
 	cfg.set_value("render", "fog_density", fog_density)
 	cfg.set_value("render", "fog_anisotropy", fog_anisotropy)
 	cfg.set_value("render", "fog_ambient_inject", fog_ambient_inject)
@@ -2029,6 +2079,8 @@ func load_from_disk() -> void:
 	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
+	experimental_visuals = cfg.get_value("render", "experimental_visuals", experimental_visuals)
+	start_matured = cfg.get_value("render", "start_matured", start_matured)
 	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
 	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
 	adaptive_quality = cfg.get_value("render", "adaptive_quality", adaptive_quality)

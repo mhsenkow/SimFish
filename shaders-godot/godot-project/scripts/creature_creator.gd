@@ -1145,8 +1145,8 @@ func _spawn_preview_snail(g: Dictionary) -> Node3D:
 	# Build the shell from the shared module so the preview matches the live
 	# snail exactly — every shape, spire height, whorl count, pattern, flare
 	# and operculum, instead of the old 4-shape preview stub.
-	var add_box := func(par: Node3D, pos: Vector3, size: Vector3, col: Color) -> void:
-		_snail_box(par, pos, size, VoxelMat.make_fauna(col))
+	var add_box := func(par: Node3D, pos: Vector3, sz: Vector3, col: Color) -> void:
+		_snail_box(par, pos, sz, VoxelMat.make_fauna(col))
 	SnailShell.build(sn, g, add_box)
 	# Static eye-stalks for the preview (the live snail animates these).
 	var ss: float = float(g.get("shell_size", 1.0))

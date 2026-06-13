@@ -459,6 +459,13 @@ func _species_key_fish(g: Dictionary) -> String:
 		"h" + str(int(round(clampf(float(g.get("head_proportion", 1.0)), 0.5, 2.0) * 2.0))),
 		"jc" + str(int(round(clampf(float(g.get("jaw_claw_size", 0.0)), 0.0, 1.2) * 6.0))),
 		"gp" + str(int(round(clampf(float(g.get("size_potential", 1.0)), 0.6, 2.4) * 4.0))),
+		"px" + str(int(round(clampf(float(g.get("pattern_scale", 0.5)), 0.0, 1.0) * 3.0))),
+		"pi" + str(int(round(clampf(float(g.get("pattern_intensity", 0.5)), 0.0, 1.0) * 3.0))),
+		"pd" + str(int(round(clampf(float(g.get("pattern_density", 0.5)), 0.0, 1.0) * 3.0))),
+		"p2" + str(int(g.get("pattern_type_b", -1))) + "x"
+			+ str(int(round(clampf(float(g.get("pattern_blend", 0.0)), 0.0, 1.0) * 3.0))),
+		"sal" + String(g.get("saltation", "")),
+		"dm" + str(int(round(clampf(float(g.get("dimorphism", 0.0)), 0.0, 1.0) * 3.0))),
 	]
 	return "::".join(parts)
 
@@ -475,6 +482,10 @@ func _species_key_shrimp(g: Dictionary) -> String:
 		"tx" + str(int(round(clampf(float(g.get("toxin_level", 0.0)), 0.0, 1.0) * 5.0))),
 		"cl" + str(int(round(clampf(float(g.get("claw_size", 0.25)), 0.0, 1.2) * 5.0))),
 		"lf" + str(int(round(clampf(float(g.get("body_length_factor", 1.0)), 0.75, 1.7) * 4.0))),
+		"pt" + str(int(g.get("pattern_type", 0))),
+		"pi" + str(int(round(clampf(float(g.get("pattern_intensity", 0.5)), 0.0, 1.0) * 3.0))),
+		"pd" + str(int(round(clampf(float(g.get("pattern_density", 0.5)), 0.0, 1.0) * 3.0))),
+		"sal" + String(g.get("saltation", "")),
 	]
 	return "::".join(parts)
 
@@ -487,6 +498,10 @@ func _species_key_snail(g: Dictionary) -> String:
 		String(g.get("shell_shape", "turbo")),
 		"sp" + str(int(round(clampf(float(g.get("shell_spines", 0.0)), 0.0, 1.0) * 5.0))),
 		"tx" + str(int(round(clampf(float(g.get("toxin_level", 0.0)), 0.0, 1.0) * 5.0))),
+		"sh" + str(int(g.get("shell_pattern", 0))),
+		"pd" + str(int(round(clampf(float(g.get("shell_pattern_density", 0.5)), 0.0, 1.0) * 3.0))),
+		"spi" + str(int(round(clampf(float(g.get("spire_height", 1.0)), 0.4, 2.0) * 2.0))),
+		"wh" + str(int(g.get("whorl_count", 4))),
 	]
 	return "::".join(parts)
 
@@ -586,6 +601,38 @@ func _genome_to_serialisable(g: Dictionary) -> Dictionary:
 		else:
 			out[k] = v
 	return out
+
+
+# ---- Shareable strain codes -------------------------------------------------
+# Encode a single creature/plant genome to a compact, copy-pasteable code so a
+# rare evolved lineage can be shared and re-grown in someone else's tank. The
+# code is gzipped JSON in base64 behind a versioned prefix, so it survives
+# pasting into chat / a text field and rejects unrelated clipboard junk.
+const STRAIN_PREFIX: String = "WLST1:"
+
+
+func encode_strain(genome: Dictionary) -> String:
+	if genome.is_empty():
+		return ""
+	var json: String = JSON.stringify(_genome_to_serialisable(genome))
+	var packed: PackedByteArray = json.to_utf8_buffer().compress(FileAccess.COMPRESSION_GZIP)
+	return STRAIN_PREFIX + Marshalls.raw_to_base64(packed)
+
+
+func decode_strain(code: String) -> Dictionary:
+	var c: String = code.strip_edges()
+	if not c.begins_with(STRAIN_PREFIX):
+		return {}
+	var packed: PackedByteArray = Marshalls.base64_to_raw(c.substr(STRAIN_PREFIX.length()))
+	if packed.is_empty():
+		return {}
+	var raw: PackedByteArray = packed.decompress_dynamic(1 << 20, FileAccess.COMPRESSION_GZIP)
+	if raw.is_empty():
+		return {}
+	var parsed: Variant = JSON.parse_string(raw.get_string_from_utf8())
+	if not (parsed is Dictionary):
+		return {}
+	return genome_from_serialisable(parsed)
 
 
 func genome_from_serialisable(g: Dictionary) -> Dictionary:

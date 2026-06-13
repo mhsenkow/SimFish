@@ -11,6 +11,7 @@
 extends Node3D
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -65,7 +66,7 @@ var _biofilm_apply_t: float = 0.0
 # brain tick loop because nothing makes decisions about them, they just
 # drift and squirm. Adds tank-feel at small scale (real Walstad tanks
 # always have a teeming film of copepods + worms).
-var microfauna_root: Node3D = null
+var microfauna_root: MicrofaunaSwarm = null
 var tubifex_root: Node3D = null
 var _tubifex_check_t: float = 0.0
 var mycelium_root: Node3D = null
@@ -78,9 +79,7 @@ var wriggle_root: Node3D = null
 const WRIGGLE_PER_MULM_FRAC: float = 0.55
 # Maintenance cadence — refilling every frame is fine cost-wise but the
 # RNG variance reads better when we batch into 0.8 s slices.
-var _microfauna_refill_t: float = 0.0
 var _wriggle_refill_t: float = 0.0
-var _microfauna_bootstrap_remaining: int = 0
 var _tiny_life_scalar_cache: Dictionary = {"micro": 1.0, "wriggle": 1.0}
 var _tiny_life_scalar_ttl: float = 0.0
 var _life_bounds_timer: float = 0.0
@@ -229,7 +228,8 @@ func _ready() -> void:
 	waste_root = Node3D.new(); waste_root.name = "Waste"; add_child(waste_root)
 	algae_root = Node3D.new(); algae_root.name = "Algae"; add_child(algae_root)
 	clams_root = Node3D.new(); clams_root.name = "Clams"; add_child(clams_root)
-	microfauna_root = Node3D.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
+	microfauna_root = MicrofaunaSwarm.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
+	microfauna_root.sim = sim
 	tubifex_root = Node3D.new(); tubifex_root.name = "Tubifex"; add_child(tubifex_root)
 	mycelium_root = Node3D.new(); mycelium_root.name = "Mycelium"; add_child(mycelium_root)
 	biofilm_root = Node3D.new(); biofilm_root.name = "BiofilmPatches"; add_child(biofilm_root)
@@ -372,6 +372,10 @@ func _ready() -> void:
 	# Seed the substrate with some uneven nutrients so plants in nutrient-rich
 	# spots immediately start to outpace the others - visible variance.
 	_seed_nutrient_hotspots()
+	# Instant-mature cold start: make a freshly-stocked tank read as established
+	# (patina + lineage depth + mixed ages) instead of brand-new. Fresh spawn only.
+	if not start_empty and not loading_from_save and TankConfig.start_matured:
+		_apply_mature_cold_start()
 
 	# Find the directional light so we can dim it on the day/night cycle.
 	# The light is a sibling under SubViewport/World, accessible by name.
@@ -1162,10 +1166,7 @@ func _enforce_all_life_bounds() -> void:
 	for a in sim.algae:
 		if is_instance_valid(a) and a is Node3D:
 			enforce_entity_in_tank(a as Node3D, 0.22, 0.12)
-	if microfauna_root != null:
-		for m in microfauna_root.get_children():
-			if is_instance_valid(m) and m is Node3D:
-				enforce_entity_in_tank(m as Node3D, 0.20, 0.04)
+	# Microfauna self-clamp inside the MicrofaunaSwarm tick — no per-node pass.
 	if wriggle_root != null:
 		for w in wriggle_root.get_children():
 			if is_instance_valid(w) and w is Node3D:
@@ -1400,6 +1401,44 @@ func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
 # water_chemistry.bacteria. Clamped so a feeding frenzy can't slam biofilm
 # to 1.0 in seconds — biofilm growth is still a slow process; the cleanup
 # crew just makes it not-quite-so-slow when a tank is well-cycled.
+# Instant-mature cold start. Make a freshly-stocked tank read as established
+# within the first second: biofilm patina on glass + driftwood, founders that
+# already carry a couple of generations of lineage depth, and a spread of ages
+# rather than one synchronized cohort. Aesthetic; persists via the normal save.
+func _apply_mature_cold_start() -> void:
+	biofilm_progress = maxf(biofilm_progress, 0.5)
+	if has_method("_apply_biofilm_tints"):
+		_apply_biofilm_tints()
+	if sim == null:
+		return
+	_mature_creatures(sim.fish)
+	_mature_creatures(sim.shrimp)
+	if sim.snails_root != null and is_instance_valid(sim.snails_root):
+		_mature_creatures(sim.snails_root.get_children())
+
+
+# Bump lineage depth + spread ages on a set of founder creatures. Static + duck-
+# typed (works on fish / shrimp / snails) so it can be unit-tested in isolation.
+static func _mature_creatures(creatures: Array) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	for c in creatures:
+		if c == null or not is_instance_valid(c):
+			continue
+		if c.get("generation") != null:
+			c.set("generation", maxi(int(c.get("generation")), 2))
+			# Fish/shrimp cache their genome; keep its generation in sync so the
+			# Life Library + breeding parent keys reflect the lineage depth.
+			var sg: Variant = c.get("_saved_genome")
+			if sg is Dictionary:
+				(sg as Dictionary)["generation"] = int(c.get("generation"))
+		var max_age_v: Variant = c.get("max_age_s")
+		if max_age_v != null and c.get("age") != null:
+			# Mid-life band: established-looking, clear of senescence so no founder
+			# spawns about to die.
+			c.set("age", rng.randf_range(0.2, 0.5) * float(max_age_v))
+
+
 func boost_biofilm(amount: float) -> void:
 	biofilm_progress = clampf(biofilm_progress + amount * 0.06, 0.0, 0.7)
 
@@ -1411,7 +1450,7 @@ func boost_biofilm(amount: float) -> void:
 func live_microfauna_count() -> int:
 	if microfauna_root == null:
 		return 0
-	return microfauna_root.get_child_count()
+	return microfauna_root.count()
 
 
 func microfauna_carrying_capacity() -> int:
@@ -3826,7 +3865,6 @@ var _light_fixture_root: Node3D = null
 var _light_fixture_spots: Array[SpotLight3D] = []
 var _sphere_fill_light: OmniLight3D = null
 var _god_ray_materials: Array[ShaderMaterial] = []
-var _microfauna_vis_t: float = 0.0
 
 
 func _build_light_fixture() -> void:
@@ -6234,13 +6272,12 @@ func _maybe_walstad_understory() -> void:
 # it topped up via _maintain_microfauna() as individuals age out or get
 # pulled into the filter intake.
 func _spawn_initial_microfauna(count: int) -> void:
-	# Bootstrap in two phases to avoid a startup GPU spike on Metal:
-	# seed a visible base population immediately, then refill the rest
-	# through the normal maintenance cadence.
-	var initial_seed: int = mini(count, 16)
-	_microfauna_bootstrap_remaining = maxi(0, count - initial_seed)
-	for i in initial_seed:
-		_spawn_one_microfauna()
+	# The MicrofaunaSwarm self-populates toward its target (fast cold-start fill,
+	# then a trickle), so we just seed a visible base + set the target capacity.
+	if microfauna_root == null:
+		return
+	microfauna_root.set_target(count)
+	microfauna_root.seed(mini(count, 16))
 
 
 func _microfauna_swarm_fill() -> float:
@@ -6385,28 +6422,10 @@ func _library_tiny_life_scalars() -> Dictionary:
 # — counts a child list once per refill window, doesn't iterate per entity.
 func _maintain_microfauna(sdt: float) -> void:
 	_tiny_life_scalar_ttl = maxf(0.0, _tiny_life_scalar_ttl - sdt)
-	_microfauna_refill_t = maxf(0.0, _microfauna_refill_t - sdt)
-	if _microfauna_refill_t > 0.0:
-		return
-	_microfauna_refill_t = 0.8  # next refill in ~0.8 sim-seconds
-	if microfauna_root == null:
-		return
-	var have: int = microfauna_root.get_child_count()
-	var target: int = microfauna_carrying_capacity()
-	# Spawn up to ~4 per window so the swarm refreshes gradually rather
-	# than popping in a burst whenever a few age out simultaneously.
-	if _microfauna_bootstrap_remaining > 0:
-		target = maxi(target, have + mini(_microfauna_bootstrap_remaining, 4))
-	var deficit: int = target - have
-	var to_spawn: int = mini(deficit, 3)
-	for i in to_spawn:
-		_spawn_one_microfauna()
-	if _microfauna_bootstrap_remaining > 0:
-		_microfauna_bootstrap_remaining = maxi(0, _microfauna_bootstrap_remaining - to_spawn)
-	_microfauna_vis_t = maxf(0.0, _microfauna_vis_t - sdt)
-	if _microfauna_vis_t <= 0.0:
-		_microfauna_vis_t = 2.5
-		_refresh_microfauna_visibility()
+	# The MicrofaunaSwarm refills + manages its own presence in its tick; we just
+	# feed it the current target capacity (tank volume / mulm / biofilm / bloom).
+	if microfauna_root != null:
+		microfauna_root.set_target(microfauna_carrying_capacity())
 
 
 func _maintain_wriggle_worms(sdt: float) -> void:

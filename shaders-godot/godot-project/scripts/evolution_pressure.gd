@@ -172,6 +172,27 @@ static func apply_shrimp_offspring(g: Dictionary, pressure: Dictionary) -> void:
 	if g.has("eye_stalk_length"):
 		g["eye_stalk_length"] = clampf(
 			float(g["eye_stalk_length"]) + (cover - 0.5) * 0.06, 0.0, 1.0)
+	# Aposematism vs camouflage. Toxic / well-armed lineages evolve brighter,
+	# bolder warning markings so predators learn to leave them alone; cryptic
+	# lineages in dense cover instead drift toward low-contrast, muted camo. This
+	# couples shrimp appearance to their own defenses and to the predators around
+	# them (fish only prey on shrimp below a toxin threshold).
+	var toxin: float = float(g.get("toxin_level", 0.0))
+	var spines: float = float(g.get("defense_spines", 0.0))
+	var warning: float = clampf(maxf(toxin, spines * 0.6), 0.0, 1.0)
+	if g.has("pattern_intensity"):
+		g["pattern_intensity"] = clampf(
+			float(g["pattern_intensity"]) + warning * 0.18 - cover * 0.12, 0.0, 1.0)
+	if g.has("pattern_density"):
+		g["pattern_density"] = clampf(
+			float(g["pattern_density"]) + warning * 0.15 - cover * 0.08, 0.0, 1.0)
+	if warning > 0.45 and g.get("accent_color") is Color:
+		var warn_hue: Color = (Color(1.0, 0.78, 0.1) if randf() < 0.6
+			else Color(0.95, 0.2, 0.12))
+		g["accent_color"] = (g["accent_color"] as Color).lerp(warn_hue, 0.12 + warning * 0.12)
+	elif cover > 0.5 and g.get("base_color") is Color:
+		g["base_color"] = (g["base_color"] as Color).lerp(
+			Color(0.32, 0.30, 0.22), 0.08 + cover * 0.06)
 
 
 static func apply_snail_shell_color(c: Color, pressure: Dictionary) -> Color:

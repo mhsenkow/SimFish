@@ -35,6 +35,8 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 	var spines: float = clampf(float(_field(g, "shell_spines", 0.0)), 0.0, 1.0)
 	var toxin: float = clampf(float(_field(g, "toxin_level", 0.0)), 0.0, 1.0)
 	var generation: int = int(_field(g, "generation", 0))
+	var pat_scale: float = clampf(float(_field(g, "shell_pattern_scale", 0.5)), 0.0, 1.0)
+	var pat_density: float = clampf(float(_field(g, "shell_pattern_density", 0.5)), 0.0, 1.0)
 
 	var sc_v: Variant = _field(g, "shell_color", Color8(135, 44, 176))
 	var shell_color: Color = sc_v if sc_v is Color else Color8(135, 44, 176)
@@ -133,18 +135,34 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 
 	# ---- Shell colour pattern overlay (on top of the per-whorl banding) ----
 	if pattern == 1:
-		for by in [0.04, 0.12]:
+		# Banding rings: density adds more bands, scale thickens them.
+		var band_n: int = clampi(1 + int(round(pat_density * 3.0)), 1, 4)
+		var bw: float = 0.018 + pat_scale * 0.02
+		var bsz: float = 0.18 + pat_scale * 0.06
+		for bi in band_n:
+			var bt: float = (float(bi) / float(maxi(1, band_n - 1))) if band_n > 1 else 0.0
+			var by: float = lerpf(0.04, 0.16, bt)
 			add_box.call(parent, Vector3(0, by * ss, 0.02 * ss),
-				Vector3(0.2, 0.025, 0.2) * ss, shell_dark)
+				Vector3(bsz, bw, bsz) * ss, shell_dark)
 	elif pattern == 2:
-		for sp_off in [Vector3(0.08, 0.06, 0.05), Vector3(-0.07, 0.1, -0.04), Vector3(0.02, 0.14, 0.08)]:
-			add_box.call(parent, sp_off * ss, Vector3(0.04, 0.04, 0.04) * ss, shell_dark)
+		# Spots: density adds more, scale enlarges them.
+		var spot_n: int = clampi(2 + int(round(pat_density * 3.0)), 2, 5)
+		var sps: float = 0.03 + pat_scale * 0.03
+		for si in spot_n:
+			var t2: float = float(si) / float(maxi(1, spot_n - 1))
+			var ang2: float = lerpf(-1.0, 1.0, t2)
+			add_box.call(parent,
+				Vector3(cos(ang2) * 0.08 * ss, (0.06 + t2 * 0.08) * ss, sin(ang2) * 0.06 * ss),
+				Vector3(sps, sps, sps) * ss, shell_dark)
 	elif pattern == 3:
-		for i in 5:
-			var ang: float = lerpf(-1.2, 1.2, float(i) / 4.0)
+		# Zigzag: density adds segments, scale thickens them.
+		var zz_n: int = clampi(4 + int(round(pat_density * 4.0)), 4, 8)
+		var zzs: float = 0.025 + pat_scale * 0.02
+		for i in zz_n:
+			var ang: float = lerpf(-1.2, 1.2, float(i) / float(maxi(1, zz_n - 1)))
 			var zz_y: float = (0.05 + (0.03 if i % 2 == 0 else -0.02)) * ss
 			add_box.call(parent, Vector3(cos(ang) * 0.13 * ss, zz_y, sin(ang) * 0.13 * ss * 0.4),
-				Vector3(0.03, 0.05, 0.03) * ss, shell_dark)
+				Vector3(zzs, 0.05, zzs) * ss, shell_dark)
 	# Flared aperture lip (conch / apple).
 	if flare > 0.05:
 		var flare_col: Color = shell_color.lightened(0.06)

@@ -86,6 +86,12 @@ var fecundity: float = 0.7
 var clutch_size: int = 2
 var preferred_y: float = 3.5            # mid-water by default
 var sex: int = 0                        # 0 male, 1 female
+# Sexual dimorphism strength 0..1 (heritable). 0 = monomorphic (both sexes look
+# the same — the default, so existing fish are unchanged). Higher values make
+# males showier (brighter, longer-finned) and females fuller + drabber. When the
+# genome leaves it unset it is derived from reproductive strategy (livebearers,
+# labyrinth fish and clutch-guarders are the dimorphic groups).
+var dimorphism: float = 0.0
 
 # ---- Lineage ----
 var generation: int = 0   # max(parents) + 1 on birth; founders are 0
@@ -701,6 +707,22 @@ var tail_fork_depth: float = 1.0     # how spread the top/bottom prongs are (0.5
 var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars,
 									 # 4=two-tone band (tetra), 5=rear-flank wedge (rasbora)
 var color_dot_count: int = 0         # extra accent dots (0-4)
+# Continuous pattern modulators (heritable). The discrete pattern_type picks the
+# macro layout; these floats reshape it so each lineage reads as a unique face:
+#   scale     = size of each pattern element (spot / bar / dash)
+#   intensity = boldness / thickness of the marking
+#   density   = how many repeated elements (spot rows, reticulation rows, bars)
+#   coverage  = fraction of the body length the pattern spans (head -> tail)
+#   contrast  = how dark / crisp the marking edges read
+# A secondary motif (pattern_type_b, blended at pattern_blend) can overlay the
+# primary so e.g. stripes + faint spots co-exist. Defaults reproduce the old look.
+var pattern_scale: float = 0.5
+var pattern_intensity: float = 0.5
+var pattern_density: float = 0.5
+var pattern_coverage: float = 1.0
+var pattern_contrast: float = 0.5
+var pattern_type_b: int = -1         # -1 = no secondary motif
+var pattern_blend: float = 0.0       # 0..1 strength of the secondary motif
 # Ornamentation flags / factors (heritable; render-only beyond the breather).
 var bar_edged: bool = false          # crisp dark-edged vertical bars (clownfish/angelfish)
 var eye_spot: bool = false           # caudal ocellus near the tail base
@@ -977,6 +999,13 @@ func init_genome(genome: Dictionary) -> void:
 	tail_fork_depth = genome.get("tail_fork_depth", tail_fork_depth)
 	pattern_type = int(genome.get("pattern_type", pattern_type))
 	color_dot_count = int(genome.get("color_dot_count", color_dot_count))
+	pattern_scale = clampf(float(genome.get("pattern_scale", pattern_scale)), 0.0, 1.0)
+	pattern_intensity = clampf(float(genome.get("pattern_intensity", pattern_intensity)), 0.0, 1.0)
+	pattern_density = clampf(float(genome.get("pattern_density", pattern_density)), 0.0, 1.0)
+	pattern_coverage = clampf(float(genome.get("pattern_coverage", pattern_coverage)), 0.2, 1.0)
+	pattern_contrast = clampf(float(genome.get("pattern_contrast", pattern_contrast)), 0.0, 1.0)
+	pattern_type_b = int(genome.get("pattern_type_b", pattern_type_b))
+	pattern_blend = clampf(float(genome.get("pattern_blend", pattern_blend)), 0.0, 1.0)
 	# Ornamentation phenotypes.
 	bar_edged = not not genome.get("bar_edged", bar_edged)
 	eye_spot = not not genome.get("eye_spot", eye_spot)
@@ -1021,28 +1050,55 @@ func init_genome(genome: Dictionary) -> void:
 	max_growth = clampf(
 		inherited_max_growth * lerpf(0.82, 1.45, size_potential_t),
 		1.05, 2.8)
-	# Sexual dimorphism. Must run AFTER all genome.get reads above — earlier
-	# the block sat before the genome reads, so any female overrides to
-	# fin_length_factor / body_depth_factor / dorsal_height_factor /
-	# ventral_profile got immediately stomped by the subsequent
-	# `genome.get(...)` calls and every female rendered as a male. The block
-	# now correctly applies on top of the final genome-resolved values.
-	# Drift-through-generations still works because the underlying stored
-	# values are shared at the genome level.
-	if genome.get("dimorphic", false) and sex == 1:
-		# Female form: drop saturation, enlarge body, shrink fins.
-		base_color = Color(base_color.r, base_color.g, base_color.b) \
-			.lerp(Color(0.78, 0.78, 0.80), 0.55)   # silvery wash
-		if _tail_color_set:
-			tail_color = tail_color.lerp(Color(0.7, 0.72, 0.75), 0.6)
-		accent_color = accent_color.lerp(Color(0.65, 0.65, 0.70), 0.45)
-		# Bigger, dumpier body.
-		adult_voxel_scale *= 1.35
-		body_depth_factor *= 1.15
-		ventral_profile = clampf(ventral_profile * 1.25, 0.55, 1.9)
-		# Smaller, drabber fins.
-		fin_length_factor = clampf(fin_length_factor * 0.55, 0.5, 1.8)
-		dorsal_height_factor = clampf(dorsal_height_factor * 0.7, 0.5, 1.8)
+	# Sexual dimorphism. Runs AFTER all genome.get reads above so it applies on
+	# top of the final genome-resolved values (the underlying stored genome is
+	# untouched, so lineage drift still works). dimorphism (0..1) scales the
+	# effect; at 0 both sexes render identically (the back-compat default). When
+	# the genome doesn't specify it, derive from reproductive strategy: livebearers
+	# (guppies/mollies), labyrinth fish (bettas/gouramis) and clutch-guarders
+	# (cichlids) are the strongly dimorphic groups; most shoaling fish are not.
+	dimorphism = float(genome.get("dimorphism", -1.0))
+	if dimorphism < 0.0:
+		dimorphism = 0.0
+		if is_livebearer:
+			dimorphism = 0.85
+		elif labyrinth_breather:
+			dimorphism = 0.7
+		elif guards_clutch:
+			dimorphism = 0.5
+	dimorphism = clampf(dimorphism, 0.0, 1.0)
+	_saved_genome["dimorphism"] = dimorphism
+	if dimorphism > 0.05:
+		var d: float = dimorphism
+		if sex == 1:
+			# Female form: drabber + fuller + shorter-finned, scaled by d.
+			base_color = base_color.lerp(Color(0.78, 0.78, 0.80), 0.55 * d)
+			if _tail_color_set:
+				tail_color = tail_color.lerp(Color(0.7, 0.72, 0.75), 0.6 * d)
+			accent_color = accent_color.lerp(Color(0.65, 0.65, 0.70), 0.45 * d)
+			adult_voxel_scale *= lerpf(1.0, 1.35, d)
+			body_depth_factor *= lerpf(1.0, 1.15, d)
+			ventral_profile = clampf(ventral_profile * lerpf(1.0, 1.25, d), 0.55, 1.9)
+			fin_length_factor = clampf(fin_length_factor * lerpf(1.0, 0.55, d), 0.5, 1.8)
+			dorsal_height_factor = clampf(dorsal_height_factor * lerpf(1.0, 0.7, d), 0.5, 1.8)
+		else:
+			# Male form: showier — more saturated + brighter body and longer,
+			# taller finnage, scaled by d.
+			var bc: Color = base_color
+			bc.s = minf(1.0, bc.s * (1.0 + 0.45 * d))
+			bc.v = minf(1.0, bc.v * (1.0 + 0.14 * d))
+			base_color = bc
+			var ac: Color = accent_color
+			ac.s = minf(1.0, ac.s * (1.0 + 0.4 * d))
+			ac.v = minf(1.0, ac.v * (1.0 + 0.16 * d))
+			accent_color = ac
+			if _tail_color_set:
+				var tc: Color = tail_color
+				tc.s = minf(1.0, tc.s * (1.0 + 0.4 * d))
+				tail_color = tc
+			fin_length_factor = clampf(fin_length_factor * lerpf(1.0, 1.32, d), 0.5, 1.9)
+			dorsal_height_factor = clampf(dorsal_height_factor * lerpf(1.0, 1.28, d), 0.5, 1.9)
+			finnage = clampf(finnage * lerpf(1.0, 1.18, d), 1.0, 2.2)
 	# Locomotion derives from body_shape unless explicitly overridden in
 	# the genome. The match expresses the real-world correlation between
 	# a fish's silhouette and how it produces thrust.
@@ -1426,6 +1482,7 @@ func _build_body() -> void:
 		var barbel_z: float = -2.9 * v
 		# Spread barbel_count whiskers symmetrically under the mouth. Catfish
 		# carry 4/6/8, loaches 4; an odd count puts one whisker on the chin.
+		@warning_ignore("integer_division")
 		var pairs: int = barbel_count / 2
 		for p in pairs:
 			var x_off: float = 0.24
@@ -1616,94 +1673,15 @@ func _build_body() -> void:
 			var z: float = (0.25 + float(i) * 0.55) * v
 			_add_voxel_to(_body_mid_pivot, Vector3(0, v * 0.95, z),
 				Vector3(v * 0.08, v * 0.18, v * 0.16), mat_orn)
-	# Lateral pattern - varies by pattern_type genotype.
-	# 0 = solid (no accents), 1 = horizontal stripe, 2 = spots, 3 = vertical bars,
-	# 4 = two-tone lateral band (tetra), 5 = rear-flank wedge (rasbora)
-	if pattern_type == 1:
-		# Horizontal stripe along both sides.
-		for i in seg_widths.size():
-			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, 0, i * v),
-				Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
-			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, 0, i * v),
-				Vector3(v * 0.15, v * 0.35, v * 0.9), mat_accent)
-	elif pattern_type == 2:
-		# Spots: 3 small dots along each side.
-		for i in seg_widths.size():
-			var dy: float = (-1.0 if i == 1 else 1.0) * v * 0.25
-			_add_voxel_to(_body_mid_pivot, Vector3(v * 0.5, dy, i * v),
-				Vector3(v * 0.15, v * 0.3, v * 0.3), mat_accent)
-			_add_voxel_to(_body_mid_pivot, Vector3(-v * 0.5, dy, i * v),
-				Vector3(v * 0.15, v * 0.3, v * 0.3), mat_accent)
-	elif pattern_type == 3:
-		# Vertical bars: tall thin accent stripes across the body height.
-		# bar_edged adds a thin dark border voxel fore + aft of each bar so
-		# the bars read crisp against a pale body (clownfish white bars with
-		# black edging, angelfish black bars).
-		var mat_bar_edge := _make_mat(base_color.darkened(0.55))
-		for i in seg_widths.size():
-			for x_side in [-1.0, 1.0]:
-				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, 0, i * v),
-					Vector3(v * 0.15, v * 1.0, v * 0.25), mat_accent)
-				if bar_edged:
-					for zoff_edge in [-v * 0.22, v * 0.22]:
-						_add_voxel_to(_body_mid_pivot,
-							Vector3(x_side * v * 0.5, 0, i * v + zoff_edge),
-							Vector3(v * 0.16, v * 1.02, v * 0.06), mat_bar_edge)
-	elif pattern_type == 4:
-		# Two-tone lateral band: the iconic cardinal/neon tetra look. A bright
-		# marking_color stripe runs along the UPPER flank while a darker accent
-		# shadow rides the LOWER flank, so the body reads split top/bottom.
-		for i in seg_widths.size():
-			for x_side in [-1.0, 1.0]:
-				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, v * 0.22, i * v),
-					Vector3(v * 0.16, v * 0.42, v * 0.95), mat_marking)
-				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, -v * 0.28, i * v),
-					Vector3(v * 0.15, v * 0.38, v * 0.95), mat_accent)
-	elif pattern_type == 5:
-		# Rear-flank wedge: harlequin rasbora black triangle. A marking_color
-		# block over the rear two segments, tapering toward the tail.
-		for i in range(1, seg_widths.size()):
-			var wedge_h: float = v * (1.0 - 0.32 * float(i - 1))
-			for x_side in [-1.0, 1.0]:
-				_add_voxel_to(_body_mid_pivot,
-					Vector3(x_side * v * 0.46, -v * 0.1, i * v + v * 0.2),
-					Vector3(v * 0.16, wedge_h, v * 0.7), mat_marking)
-	elif pattern_type == 6:
-		# Reticulated / net: a fine grid of accent dots across the flanks
-		# (boesemani rainbow, giraffe catfish, some plecos).
-		for i in seg_widths.size():
-			for gy in [-0.3, 0.0, 0.3]:
-				var zjit: float = 0.0 if int(roundf(gy * 10.0)) % 2 == 0 else v * 0.3
-				for x_side in [-1.0, 1.0]:
-					_add_voxel_to(_body_mid_pivot,
-						Vector3(x_side * v * 0.5, v * gy, i * v + zjit),
-						Vector3(v * 0.14, v * 0.14, v * 0.14), mat_accent)
-	elif pattern_type == 7:
-		# Marbled / mottled: irregular accent blotches (many catfish, groupers,
-		# bichirs). Fixed offsets keep the pattern stable across rebuilds.
-		var blotch: Array = [
-			Vector3(0.5, 0.2, 0.1), Vector3(0.5, -0.25, 1.1), Vector3(0.5, 0.05, 2.0),
-		]
-		for b in blotch:
-			for x_side in [-1.0, 1.0]:
-				_add_voxel_to(_body_mid_pivot,
-					Vector3(x_side * v * b.x, v * b.y, v * b.z),
-					Vector3(v * 0.16, v * 0.34, v * 0.4), mat_marking)
-	elif pattern_type == 8:
-		# Head-band / mask: a dark vertical bar across the front of the body
-		# behind the eye (many tetras, loaches, kribensis, masked gobies).
-		for x_side in [-1.0, 1.0]:
-			_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, 0, 0),
-				Vector3(v * 0.16, v * 1.0, v * 0.45), mat_marking)
-	elif pattern_type == 9:
-		# Ocellated spot-rows: a row of ringed false-eye spots along the flank
-		# (many cichlids, pufferfish, some catfish).
-		for i in seg_widths.size():
-			for x_side in [-1.0, 1.0]:
-				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.5, v * 0.05, i * v),
-					Vector3(v * 0.16, v * 0.36, v * 0.36), mat_accent)
-				_add_voxel_to(_body_mid_pivot, Vector3(x_side * v * 0.52, v * 0.05, i * v),
-					Vector3(v * 0.14, v * 0.18, v * 0.18), mat_marking)
+	# Lateral pattern. The discrete pattern_type chooses the macro layout; the
+	# continuous modulators (scale / intensity / density / coverage / contrast)
+	# reshape it, and an optional secondary motif blends in on top so a lineage
+	# can carry two patterns at once (stripes + faint spots, bars + mottling, ...).
+	_paint_lateral_pattern(pattern_type, _body_mid_pivot, v, seg_widths.size(),
+		mat_accent, mat_marking, 1.0)
+	if pattern_type_b >= 0 and pattern_type_b != pattern_type and pattern_blend > 0.12:
+		_paint_lateral_pattern(pattern_type_b, _body_mid_pivot, v, seg_widths.size(),
+			mat_accent, mat_marking, clampf(pattern_blend, 0.3, 0.85))
 	# Caudal eye-spot (ocellus): a ringed marking near the tail base. Many
 	# cichlids + some tetras carry one as a false-eye predator deterrent.
 	if eye_spot:
@@ -4216,9 +4194,9 @@ func _motion_substep(dt: float) -> void:
 			# a random lateral so it doesn't dive straight down through its
 			# own column. seeded by instance id so it's stable per fish.
 			if horiz_len < 0.15:
-				var seed: float = float(get_instance_id() % 360)
-				hx = cos(seed)
-				hz = sin(seed)
+				var phase_seed: float = float(get_instance_id() % 360)
+				hx = cos(phase_seed)
+				hz = sin(phase_seed)
 				horiz_len = 1.0
 			# Normalize so the new vector has unit length with the chosen
 			# down-component baked in.
@@ -4549,27 +4527,31 @@ func _motion_substep(dt: float) -> void:
 	# This is the "color pulse" from GOALS.md #11 — the fish visibly
 	# brightens from "interested" to "climax flash" at spawn. Applied
 	# by temporarily saturating the shader albedo on all mesh children.
+	# Courtship flare (males build to a vivid flash at spawn) + stress pallor
+	# (any fish drains color toward pale grey when badly stressed). Both write the
+	# same per-voxel albedo, so they share one writer to avoid fighting over it.
+	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
-		var sat_boost: float = _courtship_intensity * 0.30
-		if _courtship_sync:
-			sat_boost = 0.45
-
-		# Ensure we duplicate materials before modifying their parameters,
-		# otherwise we modify cached shared materials!
+		flare = 0.45 if _courtship_sync else _courtship_intensity * 0.30
+	var pallor: float = clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.5
+	if flare > 0.001 or pallor > 0.001:
 		if not _courtship_color_active:
 			_courtship_color_active = true
 			_last_courtship_color_step = -999
-
-		var step: int = int(round(sat_boost * 50.0))
+		var step: int = int(round(flare * 50.0)) * 1000 + int(round(pallor * 50.0))
 		if step != _last_courtship_color_step:
 			_last_courtship_color_step = step
 			for child in _cached_meshes:
 				if child is VoxelBatch.Handle:
 					var h: VoxelBatch.Handle = child
-					var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
-					var vivid: Color = orig_color.lightened(sat_boost * 0.3)
-					vivid.s = minf(1.0, vivid.s + sat_boost)
-					h.set_color(vivid)
+					var c: Color = FaunaVoxelBuilder.handle_orig_color(h)
+					if flare > 0.0:
+						c = c.lightened(flare * 0.3)
+						c.s = minf(1.0, c.s + flare)
+					if pallor > 0.0:
+						c.s = maxf(0.0, c.s * (1.0 - pallor))
+						c = c.lerp(Color(0.72, 0.74, 0.78), pallor * 0.5)
+					h.set_color(c)
 	elif _courtship_color_active:
 		_courtship_color_active = false
 		_last_courtship_color_step = -999
@@ -5126,6 +5108,108 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 
 # Used by SimDriver when this fish breeds with a partner.
 @warning_ignore("shadowed_variable")
+# Paints one lateral pattern motif onto the body, reshaped by the continuous
+# pattern modulators so each lineage reads uniquely. Called once for the primary
+# pattern_type and again (faintly) for an optional secondary motif so two motifs
+# can co-exist. `strength` (1.0 primary, <1 secondary) scales prominence;
+# `seg_count` is the number of body mid-segments.
+func _paint_lateral_pattern(ptype: int, body: Node3D, v: float, seg_count: int,
+		mat_a, mat_m, strength: float) -> void:
+	if ptype <= 0 or seg_count <= 0:
+		return
+	var sizem: float = 0.6 + pattern_scale * 0.8
+	var thickm: float = (0.58 + pattern_intensity * 0.84) * strength
+	var seg: int = clampi(int(ceil(float(seg_count) * pattern_coverage)), 1, seg_count)
+	var dens: float = pattern_density
+	var mat_edge = _make_mat(base_color.darkened(0.35 + pattern_contrast * 0.45))
+	match ptype:
+		1:
+			# Horizontal stripe; a dense genotype adds a second lower line.
+			for i in seg:
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.5, 0, i * v),
+						Vector3(v * 0.15 * sizem, v * 0.35 * thickm, v * 0.9 * sizem), mat_a)
+			if dens > 0.62:
+				for i in seg:
+					for xs in [-1.0, 1.0]:
+						_add_voxel_to(body, Vector3(xs * v * 0.5, -v * 0.32, i * v),
+							Vector3(v * 0.12 * sizem, v * 0.22 * thickm, v * 0.85 * sizem), mat_a)
+		2:
+			# Spots: rows scale with density.
+			var rows: int = clampi(1 + int(round(maxf(0.0, dens - 0.34) * 3.0)), 1, 3)
+			for i in seg:
+				for r in rows:
+					var dy: float = (0.0 if rows <= 1
+						else (float(r) / float(rows - 1) - 0.5) * v * 0.6)
+					for xs in [-1.0, 1.0]:
+						_add_voxel_to(body, Vector3(xs * v * 0.5, dy, i * v),
+							Vector3(v * 0.15 * sizem, v * 0.3 * sizem, v * 0.3 * sizem), mat_a)
+		3:
+			# Vertical bars; bar_edged adds crisp borders whose darkness tracks contrast.
+			for i in seg:
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.5, 0, i * v),
+						Vector3(v * 0.15 * sizem, v * 1.0 * thickm, v * 0.25 * sizem), mat_a)
+					if bar_edged:
+						for zoff_edge in [-v * 0.22 * sizem, v * 0.22 * sizem]:
+							_add_voxel_to(body, Vector3(xs * v * 0.5, 0, i * v + zoff_edge),
+								Vector3(v * 0.16 * sizem, v * 1.02 * thickm, v * 0.06), mat_edge)
+		4:
+			# Two-tone lateral band (tetra): bright upper marking + darker lower shadow.
+			for i in seg:
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.5, v * 0.22, i * v),
+						Vector3(v * 0.16 * sizem, v * 0.42 * thickm, v * 0.95 * sizem), mat_m)
+					_add_voxel_to(body, Vector3(xs * v * 0.5, -v * 0.28, i * v),
+						Vector3(v * 0.15 * sizem, v * 0.38 * thickm, v * 0.95 * sizem), mat_a)
+		5:
+			# Rear-flank wedge (rasbora): tapering block over the rear segments.
+			for i in range(1, seg):
+				var wedge_h: float = v * (1.0 - 0.32 * float(i - 1)) * thickm
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.46, -v * 0.1, i * v + v * 0.2),
+						Vector3(v * 0.16 * sizem, maxf(wedge_h, v * 0.1), v * 0.7 * sizem), mat_m)
+		6:
+			# Reticulated net: a grid of accent dots; density adds rows.
+			var grid: Array = ([-0.3, 0.0, 0.3] if dens < 0.66
+				else [-0.36, -0.12, 0.12, 0.36])
+			for i in seg:
+				for gy in grid:
+					var zjit: float = 0.0 if int(roundf(float(gy) * 10.0)) % 2 == 0 else v * 0.3
+					for xs in [-1.0, 1.0]:
+						_add_voxel_to(body, Vector3(xs * v * 0.5, v * float(gy), i * v + zjit),
+							Vector3(v * 0.14 * sizem, v * 0.14 * sizem, v * 0.14 * sizem), mat_a)
+		7:
+			# Marbled / mottled: irregular blotches; density adds more.
+			var blotch: Array = [
+				Vector3(0.5, 0.2, 0.1), Vector3(0.5, -0.25, 1.1), Vector3(0.5, 0.05, 2.0),
+			]
+			if dens > 0.6:
+				blotch.append(Vector3(0.5, 0.3, 1.6))
+				blotch.append(Vector3(0.5, -0.1, 0.6))
+			for b in blotch:
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body,
+						Vector3(xs * v * float(b.x), v * float(b.y), v * float(b.z)),
+						Vector3(v * 0.16 * sizem, v * 0.34 * sizem, v * 0.4 * sizem), mat_m)
+		8:
+			# Head-band / mask: a dark bar across the front of the body.
+			for xs in [-1.0, 1.0]:
+				_add_voxel_to(body, Vector3(xs * v * 0.5, 0, 0),
+					Vector3(v * 0.16 * sizem, v * 1.0 * thickm, v * 0.45 * sizem), mat_m)
+		9:
+			# Ocellated spot-rows: ringed false-eye spots along the flank.
+			for i in seg:
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.5, v * 0.05, i * v),
+						Vector3(v * 0.16 * sizem, v * 0.36 * sizem, v * 0.36 * sizem), mat_a)
+					_add_voxel_to(body, Vector3(xs * v * 0.52, v * 0.05, i * v),
+						Vector3(v * 0.14 * sizem, v * 0.18 * sizem, v * 0.18 * sizem), mat_m)
+		_:
+			pass
+
+
+@warning_ignore("shadowed_variable")
 func produce_offspring_genome(partner: Fish) -> Dictionary:
 	# Mix parental traits with moderate mutation so color + size drift is
 	# visible across 3-5 generations. Heritable: color, accent color,
@@ -5197,6 +5281,27 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var new_dots: int = clampi(
 		int((color_dot_count + partner.color_dot_count) * 0.5 + randf_range(-1.0, 1.0)),
 		0, 4)
+	# Continuous pattern modulators: average parents + jitter, clamped. These let
+	# a lineage's markings drift wider/finer/bolder over generations so siblings
+	# diverge into visibly distinct faces.
+	var new_pat_scale: float = clampf(
+		(pattern_scale + partner.pattern_scale) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_pat_intensity: float = clampf(
+		(pattern_intensity + partner.pattern_intensity) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_pat_density: float = clampf(
+		(pattern_density + partner.pattern_density) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	var new_pat_coverage: float = clampf(
+		(pattern_coverage + partner.pattern_coverage) * 0.5 + randf_range(-0.10, 0.10), 0.2, 1.0)
+	var new_pat_contrast: float = clampf(
+		(pattern_contrast + partner.pattern_contrast) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+	# Secondary motif: usually inherited from a parent; a rare new overlay can
+	# emerge, seeding two-pattern phenotypes that compound over later generations.
+	var new_pat_type_b: int = pattern_type_b if randf() < 0.6 else partner.pattern_type_b
+	var new_pat_blend: float = clampf(
+		(pattern_blend + partner.pattern_blend) * 0.5 + randf_range(-0.08, 0.08), 0.0, 1.0)
+	if new_pat_type_b < 0 and randf() < 0.04:
+		new_pat_type_b = randi() % 10
+		new_pat_blend = randf_range(0.2, 0.5)
 	# Previously species-locked silhouette/lifestyle genes can now drift at
 	# low rates, letting lineages branch into visibly new forms over long runs.
 	var prey_pressure: float = 0.0
@@ -5290,6 +5395,13 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"dorsal_height_factor": new_dorsal,
 		"tail_fork_depth": new_fork,
 		"pattern_type": new_pattern,
+		"pattern_scale": new_pat_scale,
+		"pattern_intensity": new_pat_intensity,
+		"pattern_density": new_pat_density,
+		"pattern_coverage": new_pat_coverage,
+		"pattern_contrast": new_pat_contrast,
+		"pattern_type_b": new_pat_type_b,
+		"pattern_blend": new_pat_blend,
 		"color_dot_count": new_dots,
 		# Swim pattern + territory inheritance. Pattern usually stays in the
 		# lineage; ~5% chance a fry tries a different niche. home_x/z drift
@@ -5335,6 +5447,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"algae_grazer": new_algae_grazer,
 		"is_livebearer": new_livebearer,
 		"guards_clutch": new_guards_clutch,
+		"dimorphism": clampf((dimorphism + partner.dimorphism) * 0.5 + randf_range(-0.05, 0.05), 0.0, 1.0),
 		"sterile": sterile or partner.sterile or (randf() < 0.01),
 		"viable": not (sterile or partner.sterile or (species != partner.species) or (randf() < 0.03)),
 		# Silhouette traits. Most drift continuously; select booleans + shape
@@ -5374,7 +5487,48 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	if sim != null:
 		EvolutionPressure.apply_fish_offspring(
 			g, EvolutionPressure.sample_from_sim(sim, position))
+	_apply_saltation(g)
 	return g
+
+
+# Rare, discontinuous "sport" mutations — the gasp moments. ~0.4% of offspring
+# get a dramatic jump (albino, melanistic, xanthic, veil-fin, balloon body, or a
+# bold disruptive overlay) that gradual drift would never produce. Tagged in the
+# genome so discovery + future specimen cards can call them out.
+static func _apply_saltation(g: Dictionary) -> void:
+	if randf() > 0.004:
+		return
+	var kinds: Array[String] = ["albino", "melanistic", "xanthic", "veil",
+		"balloon", "disruptive"]
+	var kind: String = kinds[randi() % kinds.size()]
+	match kind:
+		"albino":
+			var b: Color = g.get("base_color", Color(1, 1, 1))
+			g["base_color"] = Color(1.0, 0.88, 0.88).lerp(b, 0.12)
+			g["accent_color"] = Color(1.0, 0.74, 0.74)
+			g["marking_color"] = Color(1.0, 0.62, 0.56)
+			g["pattern_intensity"] = clampf(float(g.get("pattern_intensity", 0.5)) * 0.4, 0.0, 1.0)
+		"melanistic":
+			for k in ["base_color", "accent_color", "marking_color"]:
+				if g.get(k) is Color:
+					g[k] = (g[k] as Color).darkened(0.7)
+			g["pattern_contrast"] = 0.2
+		"xanthic":
+			g["base_color"] = Color(1.0, 0.72, 0.12)
+			g["accent_color"] = Color(1.0, 0.5, 0.06)
+		"veil":
+			g["fin_length_factor"] = clampf(float(g.get("fin_length_factor", 1.0)) * 1.5, 0.6, 1.6)
+			g["finnage"] = clampf(float(g.get("finnage", 1.0)) + 0.8, 1.0, 2.2)
+			g["tail_fork_depth"] = clampf(float(g.get("tail_fork_depth", 1.0)) * 1.3, 0.5, 1.5)
+		"balloon":
+			g["body_depth_factor"] = clampf(float(g.get("body_depth_factor", 1.0)) * 1.5, 0.7, 1.4)
+			g["body_elongation"] = clampf(float(g.get("body_elongation", 1.0)) * 0.7, 0.65, 1.55)
+		"disruptive":
+			g["pattern_type_b"] = randi() % 10
+			g["pattern_blend"] = randf_range(0.55, 0.9)
+			g["pattern_contrast"] = clampf(float(g.get("pattern_contrast", 0.5)) + 0.4, 0.0, 1.0)
+			g["pattern_density"] = clampf(float(g.get("pattern_density", 0.5)) + 0.3, 0.0, 1.0)
+	g["saltation"] = kind
 
 
 # ---- Save / load ----

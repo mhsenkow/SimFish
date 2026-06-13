@@ -238,7 +238,6 @@ func _reset_camera_to_default() -> void:
 # the full vertical column in frame. Box tanks use their half-width.
 func apply_camera_preset(preset_id: String) -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
-	var shape: String = String(cfg.get("tank_shape")) if cfg != null else "box"
 	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
 	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0

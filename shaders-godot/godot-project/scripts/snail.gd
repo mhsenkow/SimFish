@@ -54,6 +54,10 @@ const CreatureNaming = preload("res://scripts/creature_naming.gd")
 @export var aperture_flare: float = 0.0    # 0..1 flared aperture lip (conch / apple)
 @export var operculum: bool = false        # trapdoor disc at the foot opening
 @export var shell_pattern: int = 0         # 0 plain / 1 bands / 2 spots / 3 zigzag (nerite)
+# Continuous shell-pattern modulators: scale sizes each band / spot, density adds
+# more of them. Toxic lineages drift toward denser, bolder markings (aposematism).
+@export var shell_pattern_scale: float = 0.5
+@export var shell_pattern_density: float = 0.5
 var snail_name: String = ""
 var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
@@ -229,6 +233,8 @@ func get_saved_genome() -> Dictionary:
 		"aperture_flare": aperture_flare,
 		"operculum": operculum,
 		"shell_pattern": shell_pattern,
+		"shell_pattern_scale": shell_pattern_scale,
+		"shell_pattern_density": shell_pattern_density,
 		"generation": generation,
 		"snail_name": snail_name,
 		"parent_lineage": parent_lineage,
@@ -257,6 +263,8 @@ func apply_genome_metadata(g: Dictionary) -> void:
 	aperture_flare = clampf(float(g.get("aperture_flare", aperture_flare)), 0.0, 1.0)
 	operculum = not not g.get("operculum", operculum)
 	shell_pattern = int(g.get("shell_pattern", shell_pattern))
+	shell_pattern_scale = clampf(float(g.get("shell_pattern_scale", shell_pattern_scale)), 0.0, 1.0)
+	shell_pattern_density = clampf(float(g.get("shell_pattern_density", shell_pattern_density)), 0.0, 1.0)
 	generation = int(g.get("generation", generation))
 	snail_name = String(g.get("snail_name", snail_name))
 	parent_lineage = String(g.get("parent_lineage", parent_lineage))
@@ -1405,6 +1413,11 @@ func _lay_egg_sac() -> void:
 	sac.set("inherited_aperture_flare", new_flare)
 	sac.set("inherited_operculum", operculum if randf() < 0.95 else not operculum)
 	sac.set("inherited_shell_pattern", shell_pattern if randf() < 0.9 else randi() % 4)
+	sac.set("inherited_shell_pattern_scale",
+		clampf(shell_pattern_scale + randf_range(-0.1, 0.1), 0.0, 1.0))
+	# Aposematism: toxic lineages drift toward denser, bolder shell markings.
+	sac.set("inherited_shell_pattern_density",
+		clampf(shell_pattern_density + randf_range(-0.1, 0.1) + new_toxin * 0.12, 0.0, 1.0))
 	sac.set("inherited_parent_lineage", snail_name)
 	sac.set("inherited_parent_keys", SpeciesLibrary.parent_keys_for_breeding([get_saved_genome()]))
 
@@ -1713,6 +1726,13 @@ func to_save_dict() -> Dictionary:
 		"crawl_speed": crawl_speed,
 		"appetite": appetite,
 		"max_age_s": max_age_s,
+		"spire_height": spire_height,
+		"whorl_count": whorl_count,
+		"aperture_flare": aperture_flare,
+		"operculum": operculum,
+		"shell_pattern": shell_pattern,
+		"shell_pattern_scale": shell_pattern_scale,
+		"shell_pattern_density": shell_pattern_density,
 		"generation": generation,
 		"sex": sex,
 		"direction": SaveHelpers.vec2_to_array(_direction),
@@ -1754,6 +1774,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	crawl_speed = clampf(float(d.get("crawl_speed", crawl_speed)), 0.3, 2.5)
 	appetite = clampf(float(d.get("appetite", appetite)), 0.4, 2.0)
 	max_age_s = maxf(60.0, float(d.get("max_age_s", max_age_s)))
+	spire_height = clampf(float(d.get("spire_height", spire_height)), 0.4, 2.0)
+	whorl_count = clampi(int(d.get("whorl_count", whorl_count)), 3, 8)
+	aperture_flare = clampf(float(d.get("aperture_flare", aperture_flare)), 0.0, 1.0)
+	operculum = not not d.get("operculum", operculum)
+	shell_pattern = int(d.get("shell_pattern", shell_pattern))
+	shell_pattern_scale = clampf(float(d.get("shell_pattern_scale", shell_pattern_scale)), 0.0, 1.0)
+	shell_pattern_density = clampf(float(d.get("shell_pattern_density", shell_pattern_density)), 0.0, 1.0)
 	generation = int(d.get("generation", 0))
 	sex = int(d.get("sex", 0))
 	_direction = SaveHelpers.array_to_vec2(d.get("direction", []), Vector2.RIGHT)

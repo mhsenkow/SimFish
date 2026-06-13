@@ -33,6 +33,12 @@ uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+// Fauna-only structural colour (experimental). Default 0 = no-op, so non-fauna
+// voxels and the legacy look are unchanged; VoxelMat.make_fauna raises these
+// when TankConfig.experimental_visuals is on.
+uniform float sss_strength : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 sss_color : source_color = vec3(1.0, 0.85, 0.62);
+uniform float irid_strength : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -106,6 +112,23 @@ void fragment() {
 		float view_z = -VERTEX.z;
 		float fog = smoothstep(room_haze_near, room_haze_far, view_z) * room_haze_strength;
 		col = mix(col, room_haze_color, fog);
+	}
+
+	// Subsurface rim — warm translucent edge at grazing view angles (ported from
+	// foliage.gdshader). Reads as living flesh catching light. No-op at strength 0.
+	if (sss_strength > 0.001) {
+		float rim = pow(1.0 - clamp(dot(n, normalize(VIEW)), 0.0, 1.0), 3.0);
+		col = mix(col, col * 0.75 + sss_color * 0.5, rim * sss_strength);
+	}
+	// Iridescent / structural colour — subtle view-angle hue shimmer (thin-film,
+	// ported from the glass biofilm). Jewel-like sheen on scales. No-op at 0.
+	if (irid_strength > 0.001) {
+		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
+		float band = fres * 6.28318;
+		vec3 sheen = vec3(0.5 + 0.5 * sin(band),
+			0.5 + 0.5 * sin(band + 2.094),
+			0.5 + 0.5 * sin(band + 4.188));
+		col = mix(col, col * (0.65 + 0.7 * sheen), irid_strength * fres);
 	}
 
 	ALBEDO = col;

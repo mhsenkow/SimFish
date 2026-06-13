@@ -25,6 +25,8 @@ extends Node3D
 @export var inherited_aperture_flare: float = 0.0
 @export var inherited_operculum: bool = false
 @export var inherited_shell_pattern: int = 0
+@export var inherited_shell_pattern_scale: float = 0.5
+@export var inherited_shell_pattern_density: float = 0.5
 @export var inherited_parent_lineage: String = "Founders"
 @export var inherited_parent_keys: Array = []
 
@@ -62,6 +64,8 @@ func to_save_dict() -> Dictionary:
 		"inherited_aperture_flare": inherited_aperture_flare,
 		"inherited_operculum": inherited_operculum,
 		"inherited_shell_pattern": inherited_shell_pattern,
+		"inherited_shell_pattern_scale": inherited_shell_pattern_scale,
+		"inherited_shell_pattern_density": inherited_shell_pattern_density,
 		"age": _age,
 	}
 
@@ -86,6 +90,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	inherited_aperture_flare = float(d.get("inherited_aperture_flare", inherited_aperture_flare))
 	inherited_operculum = not not d.get("inherited_operculum", inherited_operculum)
 	inherited_shell_pattern = int(d.get("inherited_shell_pattern", inherited_shell_pattern))
+	inherited_shell_pattern_scale = float(d.get("inherited_shell_pattern_scale", inherited_shell_pattern_scale))
+	inherited_shell_pattern_density = float(d.get("inherited_shell_pattern_density", inherited_shell_pattern_density))
 	_age = float(d.get("age", 0.0))
 
 
@@ -190,6 +196,8 @@ func _hatch() -> void:
 	baby.set("aperture_flare", inherited_aperture_flare)
 	baby.set("operculum", inherited_operculum)
 	baby.set("shell_pattern", inherited_shell_pattern)
+	baby.set("shell_pattern_scale", inherited_shell_pattern_scale)
+	baby.set("shell_pattern_density", inherited_shell_pattern_density)
 	baby.set("parent_lineage", inherited_parent_lineage)
 	baby.set("_parent_keys", inherited_parent_keys.duplicate())
 	if baby.has_method("_ensure_named"):
