@@ -1985,10 +1985,14 @@ func _spawn_fry_trail_smear() -> void:
 	parent.add_child(mi)
 	mi.global_position = global_position
 	if heading.length_squared() > 0.001:
+		var d: Vector3 = heading
+		# Avoid look_at singularity when heading is straight up/down.
+		if absf(d.dot(Vector3.UP)) > 0.95:
+			d = (d + Vector3(0.05, 0, 0)).normalized()
 		# look_at_from_position is the tree-safe variant — it works even
 		# if the node is just barely in the tree this frame and skips
 		# any extra global-basis math.
-		mi.look_at_from_position(global_position, global_position + heading, Vector3.UP)
+		mi.look_at_from_position(global_position, global_position + d, Vector3.UP)
 	const TRAIL_LIFETIME: float = 0.35
 	var tw := create_tween().set_parallel(true)
 	tw.tween_property(mi, "scale", Vector3(0.4, 0.4, 0.2), TRAIL_LIFETIME) \
