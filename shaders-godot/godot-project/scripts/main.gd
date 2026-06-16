@@ -145,14 +145,22 @@ const HUD_IDLE_DIM_SECONDS: float = 6.0
 const HUD_DIM_MODULATE: Color = Color(1, 1, 1, 0.45)
 const HUD_LIT_MODULATE: Color = Color(1, 1, 1, 1)
 
-@onready var portal_viewport: SubViewport = $PortalViewport
-@onready var portal_camera: Camera3D = $PortalViewport/PortalCamera
 @onready var portal_container: Control = $PortalContainer
 @onready var portal_display: TextureRect = $PortalContainer/PortalDisplay
 @onready var portal_hint: Label = $PortalContainer/PortalHint
 
-var _portal_open: bool = false
-var _portal_target: Node3D = null
+# Follow system. ONE creature is followed at a time; _follow_mode decides how
+# it's presented. PIP = circular magnifier overlay (the main camera stays free);
+# CINEMATIC = the main camera glides to track it. This replaces the old split
+# between _portal_open/_portal_target (PiP) and a separate _follow_target.
+enum FollowMode { OFF, PIP, CINEMATIC }
+var _follow_mode: int = FollowMode.OFF
+# Scope that next/prev (← / →, portal arrows, panel) walks through.
+enum CycleScope { ALL, FAVORITES, SPECIES }
+var _cycle_scope: int = CycleScope.ALL
+# Emitted whenever the followed creature changes (null when follow stops) so the
+# Residents panel can sync its "now following" header and row highlight.
+signal follow_target_changed(creature: Node)
 var _portal_mat: ShaderMaterial = null
 const PORTAL_ZOOM: float = 3.5
 
@@ -160,7 +168,27 @@ const PORTAL_ZOOM: float = 3.5
 var _portal_info_panel: PanelContainer = null
 var _portal_name_lbl: Label = null
 var _portal_lineage_lbl: Label = null
+var _portal_relation_lbl: Label = null
 var _portal_stats_lbl: Label = null
+# Portal overlay controls (cycle / favorite / cinematic-toggle).
+var _portal_prev_btn: Button = null
+var _portal_next_btn: Button = null
+var _portal_fav_btn: Button = null
+var _portal_mode_btn: Button = null
+# In-tank favorite halos: instance_id -> Label3D star parented to the creature.
+var _fav_halos: Dictionary = {}
+# Selection reticle ring on the currently-followed creature (distinct from the
+# favorite halos). Lives under `world`, repositioned each frame.
+var _follow_reticle: MeshInstance3D = null
+var _reticle_phase: float = 0.0
+# Cinematic framing + auto-tour "cinema mode".
+var _follow_lock: bool = false            # true = rigidly centered; false = deadzone roam
+var _cinema_active: bool = false
+var _cinema_accum: float = 0.0
+const FOLLOW_LEAD_TIME: float = 0.4       # seconds of velocity lookahead
+const FOLLOW_LERP_K: float = 3.0
+const FOLLOW_DEADZONE: float = 0.9        # world units the subject may roam before the cam chases
+const CINEMA_INTERVAL_S: float = 12.0
 
 # Cached SimDriver ref for time_scale + seed + day_phase queries.
 var _sim: Node = null
@@ -228,7 +256,7 @@ func _reset_camera_to_default() -> void:
 	radius = d["radius"]
 	yaw = d["yaw"]
 	pitch = d["pitch"]
-	_follow_target = null
+	_release_cinematic_follow()
 	_auto_orbit = false
 	_apply_camera()
 
@@ -243,7 +271,7 @@ func apply_camera_preset(preset_id: String) -> void:
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
 	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
 	var base_r: float = maxf(tank_h * 1.5, maxf(tank_hw, tank_hd) * 2.4)
-	_follow_target = null
+	_release_cinematic_follow()
 	_auto_orbit = false
 	match preset_id:
 		"front":
@@ -316,7 +344,7 @@ func recall_camera_view_slot(idx: int) -> void:
 	radius = clampf(float(view.get("radius", DEFAULT_RADIUS)), MIN_RADIUS, MAX_RADIUS)
 	yaw = float(view.get("yaw", DEFAULT_YAW))
 	pitch = clampf(float(view.get("pitch", DEFAULT_PITCH)), MIN_PITCH, MAX_PITCH)
-	_follow_target = null
+	_release_cinematic_follow()
 	_auto_orbit = false
 	_apply_camera()
 	if camera != null and view.has("fov"):
@@ -383,7 +411,7 @@ func apply_camera_projection(proj_id: String) -> void:
 			yaw = _ISO_YAW
 			pitch = _ISO_PITCH
 			_auto_orbit = false
-			_follow_target = null
+			_release_cinematic_follow()
 			_apply_camera()
 			_haptic(15)
 		"dimetric":
@@ -392,7 +420,7 @@ func apply_camera_projection(proj_id: String) -> void:
 			yaw = _ISO_YAW
 			pitch = _DIMETRIC_PITCH
 			_auto_orbit = false
-			_follow_target = null
+			_release_cinematic_follow()
 			_apply_camera()
 			_haptic(15)
 		"top_down_ortho":
@@ -400,7 +428,7 @@ func apply_camera_projection(proj_id: String) -> void:
 			camera.size = _ortho_size_from_tank() * 1.2
 			pitch = _TOPDOWN_PITCH
 			_auto_orbit = false
-			_follow_target = null
+			_release_cinematic_follow()
 			_apply_camera()
 			_haptic(12)
 
@@ -433,13 +461,12 @@ func follow_random_fish() -> void:
 			pool.append(f)
 	if pool.is_empty():
 		return
-	_follow_target = pool[randi() % pool.size()]
-	_auto_orbit = false
+	follow_creature(pool[randi() % pool.size()], FollowMode.CINEMATIC)
 	_haptic(12)
 
 
 func clear_follow_target() -> void:
-	_follow_target = null
+	clear_follow()
 
 
 # Add a Camera Views toggle to the right rail at runtime. Keeps the .tscn
@@ -495,6 +522,55 @@ func _toggle_camera_views_panel() -> void:
 		_camera_views_panel.sync_from_main()
 
 
+# Add a Residents toggle to the right rail. Like Camera Views, it lives in the
+# view-tools group (above the divider), built at runtime so it inherits the
+# cluster's theme/sizing.
+func _install_residents_rail_button() -> void:
+	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
+	if cluster_vbox == null:
+		return
+	var btn := Button.new()
+	btn.name = "ResidentsToggle"
+	btn.text = "👥"
+	btn.tooltip_text = "Residents — follow & favorite your creatures (K)"
+	btn.custom_minimum_size = Vector2(48, 48)
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.pressed.connect(_toggle_residents_panel)
+	cluster_vbox.add_child(btn)
+	var divider: Node = cluster_vbox.get_node_or_null("RailDivider")
+	if divider != null:
+		cluster_vbox.move_child(btn, divider.get_index())
+
+
+# Lazy-build the Residents panel and toggle its visibility. Docks full-height on
+# the LEFT so the right-side follow portal (the live view of whoever you select)
+# stays visible beside it — "browse left, watch right". Opening it closes the
+# manager side panels (Render docks left too) so they don't collide.
+func _toggle_residents_panel() -> void:
+	if _residents_panel == null:
+		var script := load("res://scripts/residents_panel.gd")
+		_residents_panel = script.new() as Control
+		_residents_panel.name = "ResidentsPanel"
+		_residents_panel.set("main_ref", self)
+		add_child(_residents_panel)
+		_residents_panel.anchor_left = 0.0
+		_residents_panel.anchor_top = 0.0
+		_residents_panel.anchor_right = 0.0
+		_residents_panel.anchor_bottom = 1.0
+		_residents_panel.offset_left = 12.0
+		_residents_panel.offset_top = 64.0
+		_residents_panel.offset_right = 372.0
+		_residents_panel.offset_bottom = -64.0
+		_residents_panel.z_index = 130
+	_residents_panel.visible = not _residents_panel.visible
+	if _residents_panel.visible:
+		if _ui_panels != null:
+			_ui_panels.close_side_panels()
+		if _residents_panel.has_method("sync_from_main"):
+			_residents_panel.sync_from_main()
+
+
 const SENSITIVITY: float = 0.006
 const ZOOM_FACTOR: float = 1.12
 const MIN_RADIUS: float = 3.0
@@ -507,6 +583,8 @@ const PAN_SPEED: float = 6.0
 var AUTO_ORBIT_SPEED: float = 0.08
 # Camera Views panel instance (lazy-built in _ready).
 var _camera_views_panel: Control = null
+# Residents panel instance (lazy-built on first toggle).
+var _residents_panel: Control = null
 
 var _orbiting: bool = false
 # Drag gesture state. When a mouse button goes down we lock in which mode the
@@ -717,6 +795,11 @@ func _ready() -> void:
 		_sim.connect("stats_changed", _on_stats_changed)
 	if _sim != null and _sim.has_signal("eco_event"):
 		_sim.connect("eco_event", _on_eco_event)
+	if _sim != null and _sim.has_signal("creature_removed"):
+		_sim.connect("creature_removed", _on_creature_removed)
+	if _sim != null and _sim.has_signal("favorites_changed"):
+		_sim.connect("favorites_changed", _refresh_favorite_halos)
+		_refresh_favorite_halos.call_deferred()
 	_ui_panels.setup(self)
 	# Hook rail buttons through the panel manager (exclusivity + modal backdrop).
 	if settings_toggle != null:
@@ -739,6 +822,7 @@ func _ready() -> void:
 	# RailDivider so it lives in the "view tools" group alongside the
 	# Light / Render / Sound toggles instead of the Modal cluster.
 	_install_camera_views_rail_button()
+	_install_residents_rail_button()
 	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
@@ -762,8 +846,6 @@ func _ready() -> void:
 		portal_display.texture = sub_viewport.get_texture()
 		if portal_display.material is ShaderMaterial:
 			_portal_mat = portal_display.material as ShaderMaterial
-	if portal_viewport != null:
-		portal_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
 	_setup_hud_styling()
@@ -805,17 +887,20 @@ func _ready() -> void:
 
 
 func _toggle_portal() -> void:
-	_portal_open = not _portal_open
-	if portal_container != null:
-		portal_container.visible = _portal_open
-	if not _portal_open:
-		_portal_target = null
-	if portal_hint != null:
-		portal_hint.visible = _portal_target == null
-	if _portal_open:
+	if _follow_mode == FollowMode.PIP:
+		clear_follow()
+	else:
+		# Open the magnifier. Keep the current target if we were in cinematic
+		# (demotes to PiP); otherwise the portal opens empty awaiting a pick.
+		_follow_mode = FollowMode.PIP
+		if portal_container != null:
+			portal_container.visible = true
+		if portal_hint != null:
+			portal_hint.visible = _follow_target == null
 		_update_portal_pip()
-	_sync_rail_toggles()
-	print_verbose("[walstad_loom] PiP portal %s" % ("OPEN" if _portal_open else "CLOSED"))
+		_sync_rail_toggles()
+		follow_target_changed.emit(_follow_target)
+	print_verbose("[walstad_loom] PiP portal %s" % ("OPEN" if _follow_mode == FollowMode.PIP else "CLOSED"))
 
 
 func _restore_camera_state() -> void:
@@ -1020,21 +1105,41 @@ func _process(dt: float) -> void:
 	# 60, or 144 FPS. With the old form, at 30 FPS the lerp weight was 0.1
 	# (jumpy), at 144 FPS it was 0.02 (sluggish) — same `k=3` produced
 	# very different behavior on different displays.
-	if _follow_target != null:
+	if _follow_mode == FollowMode.CINEMATIC and _follow_target != null:
 		if not is_instance_valid(_follow_target):
-			_follow_target = null
+			clear_follow()
 		else:
-			var t: float = 1.0 - exp(-3.0 * dt)
-			target = target.lerp(_follow_target.global_position, t)
+			# Lead the subject by its velocity so the camera anticipates instead
+			# of trailing. Free framing lets it roam within a deadzone (less
+			# jitter); lock framing keeps it rigidly centered.
+			var aim: Vector3 = _follow_target.global_position
+			var vel_v: Variant = _follow_target.get("velocity")
+			if vel_v is Vector3:
+				aim += (vel_v as Vector3) * FOLLOW_LEAD_TIME
+			var t: float = 1.0 - exp(-FOLLOW_LERP_K * dt)
+			if _follow_lock:
+				target = target.lerp(aim, t)
+			else:
+				var d: Vector3 = aim - target
+				var dist: float = d.length()
+				if dist > FOLLOW_DEADZONE:
+					target = target.lerp(aim - d.normalized() * FOLLOW_DEADZONE, t)
 			_apply_camera()
 			
-	if _portal_open or _follow_target != null or (_portal_info_panel != null and _portal_info_panel.visible):
+	if _follow_mode != FollowMode.OFF or (_portal_info_panel != null and _portal_info_panel.visible):
 		_update_portal_pip()
+
+	_update_follow_reticle(dt)
+	if _cinema_active:
+		_cinema_accum += dt
+		if _cinema_accum >= CINEMA_INTERVAL_S:
+			_cinema_accum = 0.0
+			cycle_follow(1)
 
 	_sync_rail_toggles()
 
 	# WASD pan target along view direction (desktop only — no keyboard on mobile).
-	if not _is_touch_active():
+	if not _is_touch_active() and not _typing_focus_in_ui():
 		var fwd: Vector3 = (target - camera.global_position)
 		fwd.y = 0.0
 		if fwd.length_squared() > 0.001:
@@ -1150,7 +1255,7 @@ func _process_mouse_input(dt: float) -> void:
 
 	# G toggles auto-orbit. (Space used to do this; it's now reserved as the
 	# hold-to-pan modifier, matching Photoshop / Figma muscle memory.)
-	if not _is_touch_active():
+	if not _is_touch_active() and not _typing_focus_in_ui():
 		var g_now: bool = Input.is_key_pressed(KEY_G)
 		if g_now and not _auto_orbit_was_pressed:
 			_auto_orbit = not _auto_orbit
@@ -1160,7 +1265,7 @@ func _process_mouse_input(dt: float) -> void:
 		_apply_camera()
 
 	# Edge-triggered shortcuts (keyboard only — mobile gets on-screen buttons).
-	if not _is_touch_active():
+	if not _is_touch_active() and not _typing_focus_in_ui():
 		_handle_shortcut(KEY_P, _toggle_pause)
 		_handle_shortcut(KEY_V, _toggle_camera_views_panel)
 		_handle_shortcut(KEY_1, func(): _on_one())
@@ -1188,6 +1293,9 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_F12, _take_photo)
 		_handle_shortcut(KEY_ESCAPE, _clear_follow)
 		_handle_shortcut(KEY_C, _toggle_portal)
+		_handle_shortcut(KEY_LEFT, func(): cycle_follow(-1))
+		_handle_shortcut(KEY_RIGHT, func(): cycle_follow(1))
+		_handle_shortcut(KEY_K, _toggle_residents_panel)
 		_handle_shortcut(KEY_T, _toggle_timelapse)
 		_handle_shortcut(KEY_B, _toggle_aquascape)
 		_handle_shortcut(KEY_H, _toggle_immersive_mode)
@@ -1549,10 +1657,343 @@ func _toggle_timelapse() -> void:
 
 # ---- Follow-cam ----
 
-func _clear_follow() -> void:
-	_follow_target = null
-	_portal_target = null
+# Public follow API. One creature, one presentation mode. Used by the Residents
+# panel, click/tap picking, cycling, and the portal toggle.
+func follow_creature(creature: Node, mode: int = FollowMode.PIP) -> void:
+	if creature == null or not is_instance_valid(creature) or not (creature is Node3D):
+		return
+	_follow_target = creature as Node3D
+	_follow_mode = mode
+	_auto_orbit = false
+	if portal_container != null:
+		portal_container.visible = (mode != FollowMode.OFF)
 	_update_portal_pip()
+	_sync_rail_toggles()
+	follow_target_changed.emit(_follow_target)
+
+
+# Switch how the current target is presented (PIP <-> CINEMATIC). No-op when
+# nothing is being followed.
+func set_follow_mode(mode: int) -> void:
+	if _follow_target == null or not is_instance_valid(_follow_target):
+		return
+	_follow_mode = mode
+	if portal_container != null:
+		portal_container.visible = (mode != FollowMode.OFF)
+	_update_portal_pip()
+	_sync_rail_toggles()
+
+
+# Stop following entirely: clears the target and hides the portal + info panel.
+func clear_follow() -> void:
+	_follow_target = null
+	_follow_mode = FollowMode.OFF
+	_cinema_active = false
+	if portal_container != null:
+		portal_container.visible = false
+	_update_portal_pip()
+	_sync_rail_toggles()
+	follow_target_changed.emit(null)
+
+
+# Manual camera control (presets, projection, pan) breaks a CINEMATIC follow but
+# leaves a PIP overlay alone — the magnifier is independent of the main camera.
+func _release_cinematic_follow() -> void:
+	if _follow_mode == FollowMode.CINEMATIC:
+		clear_follow()
+
+
+# ESC handler — full stop (kept under the original bound name).
+func _clear_follow() -> void:
+	clear_follow()
+
+
+# ---- Cycling through residents ----
+
+func set_cycle_scope(scope: int) -> void:
+	_cycle_scope = scope
+
+
+func get_cycle_scope() -> int:
+	return _cycle_scope
+
+
+# Ordered roster that next/prev walks, filtered by the active scope.
+func _cycle_pool() -> Array:
+	if _sim == null or not _sim.has_method("living_creatures"):
+		return []
+	var all: Array = _sim.living_creatures()
+	match _cycle_scope:
+		CycleScope.FAVORITES:
+			var favs: Array = []
+			for c in all:
+				if _sim.has_method("is_favorite") and _sim.is_favorite(c):
+					favs.append(c)
+			return favs
+		CycleScope.SPECIES:
+			if _follow_target == null or not is_instance_valid(_follow_target) \
+					or _follow_target.get("species") == null:
+				return all
+			var sp: String = String(_follow_target.species)
+			var same: Array = []
+			for c in all:
+				if c.get("species") != null and String(c.species) == sp:
+					same.append(c)
+			return same
+		_:
+			return all
+
+
+# Advance follow to the next (+1) / previous (-1) creature in scope. Only acts
+# while already following — arrow keys don't start a follow from nothing.
+func cycle_follow(dir: int) -> void:
+	if _follow_mode == FollowMode.OFF:
+		return
+	var pool: Array = _cycle_pool()
+	if pool.is_empty():
+		return
+	var idx: int = pool.find(_follow_target)
+	var n: int = pool.size()
+	var next_idx: int = 0 if idx < 0 else (((idx + dir) % n) + n) % n
+	follow_creature(pool[next_idx], _follow_mode)
+	_haptic(8)
+
+
+# A followed creature left the tank — hand off to the next one in scope (or stop)
+# and let the player know who swam on.
+func _on_creature_removed(c: Node) -> void:
+	if c == null or c != _follow_target or not is_inside_tree():
+		return
+	var name_str: String = _creature_display_name(c)
+	var nxt: Node = null
+	for cand in _cycle_pool():
+		if cand != c and is_instance_valid(cand):
+			nxt = cand
+			break
+	if nxt != null:
+		follow_creature(nxt, _follow_mode)
+	else:
+		clear_follow()
+	if name_str != "" and has_method("_push_notification"):
+		_push_notification("residents", "info", "Residents", "%s swam on" % name_str, true)
+
+
+func _toggle_follow_favorite() -> void:
+	if _sim == null or _follow_target == null or not is_instance_valid(_follow_target):
+		return
+	if _sim.has_method("toggle_favorite"):
+		_sim.toggle_favorite(_follow_target)
+
+
+func _toggle_follow_presentation() -> void:
+	if _follow_target == null:
+		return
+	set_follow_mode(FollowMode.PIP if _follow_mode == FollowMode.CINEMATIC else FollowMode.CINEMATIC)
+
+
+# Best display name for a creature (fish/shrimp/snail/clam), else a type label.
+func _creature_display_name(node: Node) -> String:
+	if node == null or not is_instance_valid(node):
+		return ""
+	for key in ["fish_name", "shrimp_name", "snail_name", "clam_name", "_display_name"]:
+		if node.get(key) != null and String(node.get(key)) != "":
+			return String(node.get(key))
+	return _creature_label(node).capitalize()
+
+
+func _make_portal_ctrl_btn(txt: String, tip: String) -> Button:
+	var b := Button.new()
+	b.text = txt
+	b.tooltip_text = tip
+	b.flat = true
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(30, 24)
+	b.add_theme_font_size_override("font_size", 14)
+	return b
+
+
+# Keep a faint gold ★ floating above each favorited creature so you can spot
+# them swimming. Driven by SimDriver.favorites_changed; the star is a billboarded
+# fixed-size Label3D parented to the creature (so it tracks + survives its death
+# via the parent's queue_free). No creature-script changes needed.
+func _refresh_favorite_halos() -> void:
+	if _sim == null or not _sim.has_method("favorite_creatures"):
+		return
+	var want: Dictionary = {}
+	for c in _sim.favorite_creatures():
+		if c is Node3D and is_instance_valid(c):
+			want[c.get_instance_id()] = c
+	# Drop halos for creatures that are no longer favorites (or are gone).
+	for id in _fav_halos.keys():
+		if not want.has(id):
+			var h: Variant = _fav_halos[id]
+			if is_instance_valid(h):
+				h.queue_free()
+			_fav_halos.erase(id)
+	# Add a star for any newly favorited creature.
+	for id in want:
+		if _fav_halos.has(id):
+			continue
+		var c: Node3D = want[id]
+		var star := Label3D.new()
+		star.text = "★"
+		star.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		star.fixed_size = true
+		star.pixel_size = 0.0006
+		star.modulate = Color(1.0, 0.85, 0.3)
+		star.outline_modulate = Color(0, 0, 0, 0.75)
+		star.outline_size = 8
+		star.position = Vector3(0.0, 0.55, 0.0)
+		c.add_child(star)
+		_fav_halos[id] = star
+
+
+# Human-readable "what is this creature doing right now", from its state machine.
+func creature_activity_label(node: Node) -> String:
+	if node == null or not is_instance_valid(node):
+		return ""
+	if node is Fish:
+		var fa := ["Cruising", "Foraging", "Courting", "Spawning", "Fleeing", "Resting"]
+		var m: int = int(node.current_mode)
+		return fa[m] if m >= 0 and m < fa.size() else ""
+	if node is Shrimp:
+		var sa := ["Wandering", "Scavenging", "Climbing", "Nibbling", "Hunting", "Courting", "Resting", "Cleaning"]
+		var m2: int = int(node.current_mode)
+		return sa[m2] if m2 >= 0 and m2 < sa.size() else ""
+	var scr: Script = node.get_script()
+	var p: String = scr.resource_path if scr != null else ""
+	if p.ends_with("clam.gd") and node.get("current_mode") != null:
+		var ca := ["Resting", "Opening", "Filtering", "Closing"]
+		var m3: int = int(node.current_mode)
+		return ca[m3] if m3 >= 0 and m3 < ca.size() else ""
+	if p.ends_with("snail.gd"):
+		return "Grazing"  # snails have no state machine; they graze
+	return ""
+
+
+# A relationship blurb: a paired partner takes priority, else the strongest
+# grudge (a rival), resolved to a living creature's name. "" if neither.
+func _creature_relationship_line(node: Node) -> String:
+	if node == null or not is_instance_valid(node):
+		return ""
+	var partner_v: Variant = node.get("partner")
+	if partner_v != null and is_instance_valid(partner_v):
+		var pn: String = _creature_display_name(partner_v)
+		if pn != "":
+			return "♥ Paired with %s" % pn
+	var grudges_v: Variant = node.get("grudges")
+	if grudges_v is Dictionary and not (grudges_v as Dictionary).is_empty():
+		var best_id := ""
+		var best_t := 0.0
+		for gid in (grudges_v as Dictionary):
+			var tg: float = float((grudges_v as Dictionary)[gid])
+			if tg > best_t:
+				best_t = tg
+				best_id = String(gid)
+		var rival: Node = _find_creature_by_id(best_id)
+		if rival != null:
+			var rn: String = _creature_display_name(rival)
+			if rn != "":
+				return "⚔ Wary of %s" % rn
+	return ""
+
+
+func _find_creature_by_id(cid: String) -> Node:
+	if _sim == null or not _sim.has_method("living_creatures") or cid == "":
+		return null
+	for c in _sim.living_creatures():
+		if c.get("id") != null and String(c.id) == cid:
+			return c
+	return null
+
+
+# A pulsing cyan ring on the followed creature so it's findable in the tank even
+# outside the portal. Lives under `world`; repositioned + pulsed each frame.
+func _update_follow_reticle(dt: float) -> void:
+	var on: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
+		and is_instance_valid(_follow_target)
+	if not on:
+		if _follow_reticle != null and is_instance_valid(_follow_reticle):
+			_follow_reticle.visible = false
+		return
+	if _follow_reticle == null or not is_instance_valid(_follow_reticle):
+		if world == null or not is_instance_valid(world):
+			return
+		_follow_reticle = MeshInstance3D.new()
+		var torus := TorusMesh.new()
+		torus.inner_radius = 0.46
+		torus.outer_radius = 0.56
+		_follow_reticle.mesh = torus
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(0.35, 0.9, 1.0, 0.55)
+		mat.emission_enabled = true
+		mat.emission = Color(0.35, 0.9, 1.0)
+		mat.emission_energy_multiplier = 1.4
+		_follow_reticle.material_override = mat
+		_follow_reticle.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		world.add_child(_follow_reticle)
+	_follow_reticle.visible = true
+	_follow_reticle.global_position = _follow_target.global_position
+	_reticle_phase += dt
+	var pulse: float = 1.0 + 0.10 * sin(_reticle_phase * 3.0)
+	_follow_reticle.scale = Vector3(pulse, pulse, pulse)
+
+
+# Re-acquire and re-follow the saved creature after a tank load. Called by
+# SaveManager.try_load once creatures are spawned (see save_manager.gd).
+func restore_follow_from_save(d: Dictionary) -> void:
+	var sim_d: Dictionary = d.get("sim", {})
+	var fid: String = String(sim_d.get("followed_id", ""))
+	if fid == "" or _sim == null or not _sim.has_method("living_creatures"):
+		return
+	set_cycle_scope(int(sim_d.get("cycle_scope", CycleScope.ALL)))
+	var c: Node = _find_creature_by_id(fid)
+	if c != null:
+		follow_creature(c, int(sim_d.get("follow_mode", FollowMode.PIP)))
+
+
+# Open the Library modal focused on the followed creature's species.
+func view_followed_in_library() -> void:
+	if _follow_target == null or not is_instance_valid(_follow_target) \
+			or not _follow_target.has_method("get_saved_genome"):
+		return
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null or library_panel == null:
+		return
+	var key: String = ""
+	if lib.has_method("species_key"):
+		key = String(lib.species_key(_follow_target.get_saved_genome()))
+	if _ui_panels != null:
+		_ui_panels.open_modal(UiPanelManager.MODAL_LIBRARY)
+	if library_panel.has_method("select_species"):
+		library_panel.select_species(key)
+
+
+func toggle_follow_lock() -> void:
+	_follow_lock = not _follow_lock
+
+func is_follow_lock() -> bool:
+	return _follow_lock
+
+func is_cinema_active() -> bool:
+	return _cinema_active
+
+func toggle_cinema_mode() -> void:
+	set_cinema_mode(not _cinema_active)
+
+# Auto-tour: cinematic-follow the first creature in scope, then advance every
+# CINEMA_INTERVAL_S of no interaction (see _process + _notify_hud_input).
+func set_cinema_mode(on: bool) -> void:
+	_cinema_active = on
+	_cinema_accum = 0.0
+	if on:
+		var pool: Array = _cycle_pool()
+		if pool.is_empty() and _sim != null and _sim.has_method("living_creatures"):
+			pool = _sim.living_creatures()
+		if not pool.is_empty():
+			follow_creature(pool[0], FollowMode.CINEMATIC)
 
 
 func _window_mouse_to_viewport(mouse: Vector2) -> Vector2:
@@ -1626,7 +2067,7 @@ func _pick_creature_at_viewport(sv_pos: Vector2, creatures: Array,
 	var radius_px: float
 	if radius_override > 0.0:
 		radius_px = radius_override
-	elif _portal_open:
+	elif _follow_mode == FollowMode.PIP:
 		radius_px = PORTAL_PICK_RADIUS_PX
 	elif _is_touch_active():
 		radius_px = PICK_RADIUS_PX_TOUCH
@@ -1685,15 +2126,12 @@ func _update_portal_pip() -> void:
 	if camera == null:
 		return
 		
-	var target_node: Node3D = null
-	if _portal_open:
-		target_node = _portal_target
-	else:
-		target_node = _follow_target
-		
+	var pip: bool = _follow_mode == FollowMode.PIP
+	var target_node: Node3D = _follow_target
+
 	if target_node == null or not is_instance_valid(target_node):
 		# No target to track
-		if not _portal_open:
+		if not pip:
 			if portal_container != null:
 				portal_container.visible = false
 			if _portal_info_panel != null:
@@ -1716,8 +2154,8 @@ func _update_portal_pip() -> void:
 	# We have a valid target!
 	if portal_container != null:
 		portal_container.visible = true
-		
-	if _portal_open:
+
+	if pip:
 		if portal_display != null:
 			portal_display.visible = true
 		if portal_hint != null:
@@ -1774,6 +2212,13 @@ func _update_portal_pip() -> void:
 			if epithet != "":
 				c_name = "%s %s" % [c_name, epithet]
 		_portal_name_lbl.text = c_name
+
+		# Reflect favorite + presentation state on the overlay buttons.
+		if _portal_fav_btn != null:
+			var is_fav: bool = _sim != null and _sim.has_method("is_favorite") and _sim.is_favorite(target_node)
+			_portal_fav_btn.text = "★" if is_fav else "☆"
+		if _portal_mode_btn != null:
+			_portal_mode_btn.text = "🎬" if _follow_mode == FollowMode.CINEMATIC else "⛶"
 		
 		# Lineage (Generation & Parents)
 		var spec := _creature_label(target_node).capitalize()
@@ -1812,7 +2257,14 @@ func _update_portal_pip() -> void:
 		if target_node.get("sterile") != null and target_node.sterile:
 			sterile_str = " · Sterile"
 			
-		_portal_stats_lbl.text = "Age: %s · Hunger: %d%%%s%s" % [age_str, hunger_pct, sex_str, sterile_str]
+		var act: String = creature_activity_label(target_node)
+		var act_prefix: String = (act + " · ") if act != "" else ""
+		_portal_stats_lbl.text = "%sAge: %s · Hunger: %d%%%s%s" % [act_prefix, age_str, hunger_pct, sex_str, sterile_str]
+		# Relationships — partner or top rival, resolved to a living name.
+		if _portal_relation_lbl != null:
+			var rel: String = _creature_relationship_line(target_node)
+			_portal_relation_lbl.text = rel
+			_portal_relation_lbl.visible = rel != ""
 		# Lifetime journal — meals eaten, offspring sired. Only render when
 		# the target carries a bio dict (added by the AIDirector pass).
 		var bio_v: Variant = target_node.get("bio")
@@ -1884,6 +2336,13 @@ func _build_portal_info_ui() -> void:
 	_portal_lineage_lbl.add_theme_color_override("font_color", Color8(200, 210, 225))
 	_portal_lineage_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(_portal_lineage_lbl)
+
+	_portal_relation_lbl = Label.new()
+	PanelTheme.as_serif_italic(_portal_relation_lbl, PanelTheme.SIZE_CAPTION)
+	_portal_relation_lbl.add_theme_color_override("font_color", Color8(230, 200, 230))
+	_portal_relation_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_portal_relation_lbl.visible = false
+	vbox.add_child(_portal_relation_lbl)
 	
 	_portal_stats_lbl = Label.new()
 	_portal_stats_lbl.text = "Age: 0s · Hunger: 0%"
@@ -1891,20 +2350,36 @@ func _build_portal_info_ui() -> void:
 	_portal_stats_lbl.add_theme_color_override("font_color", Color8(150, 230, 150))
 	_portal_stats_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(_portal_stats_lbl)
-	
+
+	# Cycle / favorite / cinematic-toggle controls. Living inside the info
+	# panel means they travel with it in both PiP and cinematic layouts.
+	var ctrls := HBoxContainer.new()
+	ctrls.alignment = BoxContainer.ALIGNMENT_CENTER
+	ctrls.add_theme_constant_override("separation", 8)
+	vbox.add_child(ctrls)
+	_portal_prev_btn = _make_portal_ctrl_btn("◀", "Previous creature (←)")
+	_portal_prev_btn.pressed.connect(func(): cycle_follow(-1))
+	ctrls.add_child(_portal_prev_btn)
+	_portal_fav_btn = _make_portal_ctrl_btn("☆", "Favorite this creature")
+	_portal_fav_btn.pressed.connect(_toggle_follow_favorite)
+	ctrls.add_child(_portal_fav_btn)
+	_portal_mode_btn = _make_portal_ctrl_btn("⛶", "Cinematic / picture-in-picture")
+	_portal_mode_btn.pressed.connect(_toggle_follow_presentation)
+	ctrls.add_child(_portal_mode_btn)
+	_portal_next_btn = _make_portal_ctrl_btn("▶", "Next creature (→)")
+	_portal_next_btn.pressed.connect(func(): cycle_follow(1))
+	ctrls.add_child(_portal_next_btn)
+
 	portal_container.add_child(_portal_info_panel)
 	_portal_info_panel.visible = false
 
 
 func _assign_creature_target(creature: Node3D) -> void:
-	if _portal_open:
-		_portal_target = creature
-		_update_portal_pip()
-		print_verbose("[walstad_loom] portal tracking %s" % _creature_label(creature))
-	else:
-		_follow_target = creature
-		_update_portal_pip()
-		print_verbose("[walstad_loom] following %s" % _creature_label(creature))
+	# Keep the current viewing style when re-targeting; default to PiP for a
+	# fresh pick (design: a tap/click opens the portal, promotable to cinematic).
+	var mode: int = _follow_mode if _follow_mode != FollowMode.OFF else FollowMode.PIP
+	follow_creature(creature, mode)
+	print_verbose("[walstad_loom] following %s" % _creature_label(creature))
 
 
 func _pick_creature_at_click(screen_pos: Vector2, radius_px: float = PICK_RADIUS_PX_CLICK) -> Node3D:
@@ -2311,8 +2786,8 @@ func _touch_pick_creature(screen_pos: Vector2) -> bool:
 		_assign_creature_target(picked)
 		print_verbose("[walstad_loom] touch-tap: picked %s" % _creature_label(picked))
 		return true
-	if _follow_target != null:
-		_follow_target = null
+	if _follow_mode != FollowMode.OFF:
+		clear_follow()
 		print_verbose("[walstad_loom] touch-tap: cleared follow")
 	return false
 
@@ -2352,6 +2827,8 @@ func _setup_mobile_ui() -> void:
 		_mobile_hud.connect("undo_pressed", _aquascape_undo)
 		if _mobile_hud.has_signal("camera_views_pressed"):
 			_mobile_hud.connect("camera_views_pressed", _toggle_camera_views_panel)
+		if _mobile_hud.has_signal("residents_pressed"):
+			_mobile_hud.connect("residents_pressed", _toggle_residents_panel)
 
 	# Show the first-launch gesture tutorial on top of everything else.
 	# Defers a frame so the panel doesn't fight with other mobile-setup
@@ -2409,7 +2886,7 @@ func _pan_target(delta: Vector2) -> void:
 	# update path calls through there, so the clamp lives at the single
 	# convergence point).
 	# Clear follow-cam when the user manually pans - they're taking control back.
-	_follow_target = null
+	_release_cinematic_follow()
 	_apply_camera()
 
 
@@ -3211,7 +3688,7 @@ func _setup_hud_styling() -> void:
 
 func _sync_rail_toggles() -> void:
 	var h: int = 0
-	h = h * 31 + int(_portal_open)
+	h = h * 31 + _follow_mode
 	h = h * 31 + int(_aquascape.is_active)
 	h = h * 31 + int(settings_panel != null and settings_panel.visible)
 	h = h * 31 + int(render_panel != null and render_panel.visible)
@@ -3230,7 +3707,7 @@ func _sync_rail_toggles() -> void:
 			or (library_panel != null and library_panel.visible)
 		PanelTheme.style_rail_button(_rail_create_btn, create_on)
 	if _rail_world_btn != null:
-		PanelTheme.style_rail_button(_rail_world_btn, _portal_open or _aquascape.is_active)
+		PanelTheme.style_rail_button(_rail_world_btn, _follow_mode == FollowMode.PIP or _aquascape.is_active)
 	if _rail_appearance_btn != null:
 		var look_on: bool = (_light_panel != null and _light_panel.visible) \
 			or (render_panel != null and render_panel.visible) \
@@ -4566,6 +5043,9 @@ func _fmt_history(v: float) -> String:
 # every input handler. Restores full brightness if we were dimmed.
 func _notify_hud_input() -> void:
 	_hud_idle_seconds = 0.0
+	# Each interaction restarts the cinema-tour dwell so it advances only after
+	# you've stopped fiddling.
+	_cinema_accum = 0.0
 	if top_hud != null and top_hud.modulate != HUD_LIT_MODULATE:
 		top_hud.modulate = HUD_LIT_MODULATE
 	if right_rail != null and right_rail.modulate != HUD_LIT_MODULATE:
@@ -5738,7 +6218,7 @@ func _apply_immersive_mode() -> void:
 	_ensure_immersive_exit_button()
 	if _immersive_exit_btn != null:
 		_immersive_exit_btn.visible = _immersive_mode
-	if not _immersive_mode and _portal_open and portal_container != null:
+	if not _immersive_mode and _follow_mode != FollowMode.OFF and portal_container != null:
 		portal_container.visible = true
 
 

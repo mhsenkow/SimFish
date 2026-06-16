@@ -17,6 +17,15 @@ class_name SimDriver
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
 
+# Residents registry: fired as living creatures (fish/shrimp/snail/clam) enter
+# and leave the tank, so UI can keep a live roster without polling. Removal is
+# driven off each creature's tree_exiting (the node is still valid then), so no
+# per-creature death code needs to change.
+signal creature_added(creature: Node)
+signal creature_removed(creature: Node)
+# Fired when the player's favorite set changes (star toggled, or restored on load).
+signal favorites_changed()
+
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
 
@@ -539,6 +548,13 @@ var _evo_burst_timer: float = 10.0
 # ids that point to still-alive entities.
 var _next_entity_id: int = 1
 
+# ---- Residents: favorites (player-pinned individuals) ----
+# Set of creature ids (id -> true) the player has starred. Persisted in
+# state.json as a top-level "favorites" array. Ids are minted on demand the
+# first time a creature is favorited (see toggle_favorite), so a starred fish
+# keeps its star across save/load even though most ids are minted lazily.
+var favorite_ids: Dictionary = {}
+
 
 func mint_id() -> String:
 	var s: String = "e_" + str(_next_entity_id)
@@ -772,6 +788,7 @@ func register_fish(f: Fish) -> void:
 	if f.has_method("_reclamp_territory_to_tank"):
 		f._reclamp_territory_to_tank()
 	_record_organism_discovery(f.get_saved_genome())
+	_register_resident(f)
 
 
 func register_shrimp(s: Shrimp) -> void:
@@ -779,6 +796,7 @@ func register_shrimp(s: Shrimp) -> void:
 	s.sim = self
 	_clamp_entity_to_bounds(s, 0.20, 0.04)
 	_record_organism_discovery(s.get_saved_genome())
+	_register_resident(s)
 
 
 func register_snail(sn: Node) -> void:
@@ -791,6 +809,7 @@ func register_snail(sn: Node) -> void:
 	elif sn is Node3D:
 		_clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
 	_record_organism_discovery(sn.get_saved_genome())
+	_register_resident(sn)
 
 
 func register_clam(c: Node) -> void:
@@ -802,6 +821,137 @@ func register_clam(c: Node) -> void:
 		_clamp_entity_to_bounds(c as Node3D, 0.28, 0.04, 0.06)
 	if c.has_method("get_saved_genome"):
 		_record_organism_discovery(c.get_saved_genome())
+
+
+# ---- Residents registry ----
+# A "resident" is a followable, nameable individual: fish, shrimp, adult snail
+# (snail.gd), or clam. Trumpet snails and other microfauna are environmental and
+# excluded. living_creatures() is the canonical roster (UI populates from it on
+# open); creature_added/removed cover live deltas during a session.
+func _is_roster_creature(c: Node) -> bool:
+	if c == null or not is_instance_valid(c):
+		return false
+	if c is Fish or c is Shrimp:
+		return true
+	var scr: Script = c.get_script()
+	var p: String = scr.resource_path if scr != null else ""
+	return p.ends_with("snail.gd") or p.ends_with("clam.gd")
+
+
+# Snapshot of every living resident, deduped and validity-filtered.
+func living_creatures() -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for f in fish:
+		if is_instance_valid(f):
+			out.append(f)
+			seen[f.get_instance_id()] = true
+	for s in shrimp:
+		if is_instance_valid(s):
+			out.append(s)
+			seen[s.get_instance_id()] = true
+	for cl in clams:
+		if is_instance_valid(cl) and (cl as Node).get("id") != null:
+			out.append(cl)
+			seen[(cl as Node).get_instance_id()] = true
+	if snails_root != null and is_instance_valid(snails_root):
+		for sn in snails_root.get_children():
+			if not is_instance_valid(sn) or seen.has(sn.get_instance_id()):
+				continue
+			var scr: Script = sn.get_script()
+			var p: String = scr.resource_path if scr != null else ""
+			if p.ends_with("snail.gd"):
+				out.append(sn)
+	return out
+
+
+# Hook a creature into the registry: wire its tree_exiting once and announce it.
+# Called from register_* (live spawns/store/breeding).
+func _register_resident(c: Node) -> void:
+	if not _is_roster_creature(c):
+		return
+	_track_creature(c)
+	creature_added.emit(c)
+
+
+# Connect tree_exiting so creature_removed fires while the node is still valid.
+# Idempotent via a meta flag. Used by both _register_resident and (for
+# save-loaded creatures, which bypass register_*) track_all_living().
+func _track_creature(c: Node) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	if c.has_meta("_resident_tracked"):
+		return
+	c.set_meta("_resident_tracked", true)
+	c.tree_exiting.connect(_on_creature_exiting.bind(c))
+
+
+func _on_creature_exiting(c: Node) -> void:
+	if c != null and is_instance_valid(c):
+		creature_removed.emit(c)
+
+
+# Ensure tree_exiting is wired for every currently-living creature. load_state
+# spawns creatures without calling register_*, so call this after a load.
+func track_all_living() -> void:
+	for c in living_creatures():
+		_track_creature(c)
+
+
+# ---- Favorites ----
+# Mint an id on demand and return it (favorites need a stable key). Returns ""
+# if the node can't carry an id.
+func ensure_id(c: Node) -> String:
+	if c == null or not is_instance_valid(c) or c.get("id") == null:
+		return ""
+	if String(c.id) == "":
+		c.id = mint_id()
+	return String(c.id)
+
+
+func is_favorite(c: Node) -> bool:
+	if c == null or not is_instance_valid(c) or c.get("id") == null:
+		return false
+	var cid: String = String(c.id)
+	return cid != "" and favorite_ids.has(cid)
+
+
+# Toggle a creature's favorite flag. Returns the new state (true = favorited).
+func toggle_favorite(c: Node) -> bool:
+	var cid: String = ensure_id(c)
+	if cid == "":
+		return false
+	if favorite_ids.has(cid):
+		favorite_ids.erase(cid)
+	else:
+		favorite_ids[cid] = true
+	favorites_changed.emit()
+	return favorite_ids.has(cid)
+
+
+# Living creatures the player has starred (for cycling scope + in-tank halos).
+func favorite_creatures() -> Array:
+	var out: Array = []
+	if favorite_ids.is_empty():
+		return out
+	for c in living_creatures():
+		if (c as Node).get("id") != null and favorite_ids.has(String(c.id)):
+			out.append(c)
+	return out
+
+
+# Drop favorite ids that no longer resolve to a living creature (e.g. a starred
+# fish that died). Called at save time so the persisted set stays bounded.
+func _prune_dead_favorites() -> void:
+	if favorite_ids.is_empty():
+		return
+	var live_ids: Dictionary = {}
+	for c in living_creatures():
+		if (c as Node).get("id") != null and String(c.id) != "":
+			live_ids[String(c.id)] = true
+	for fid in favorite_ids.keys():
+		if not live_ids.has(fid):
+			favorite_ids.erase(fid)
 
 
 # Bind snails_root to the populated Snails container (not a queued-free stub).
@@ -3558,6 +3708,8 @@ const SAVE_STATE_VERSION: int = 4
 func save_state() -> Dictionary:
 	# Mint ids for any entity that doesn't have one yet.
 	_ensure_ids()
+	# Drop favorites whose creature is gone so the persisted set stays bounded.
+	_prune_dead_favorites()
 	# Substrate type is included in the sim header so we can detect saltwater
 	# ↔ freshwater swaps on load (those produce ecologically incompatible
 	# plant lists — corals can't live in freshwater, vice versa). If the
@@ -3606,6 +3758,9 @@ func save_state() -> Dictionary:
 		"discovered_species": _get_discovered_species_for_save(),
 		"story_events": story_events.duplicate(true),
 		"trophic_ledger": trophic_ledger.duplicate(true),
+		# Player-starred individuals (Residents panel). _ensure_ids() above
+		# guarantees every favorited creature already has a stable id.
+		"favorites": favorite_ids.keys(),
 	}
 	if water_chemistry != null:
 		out["water_chemistry"] = water_chemistry.to_save_dict()
@@ -3814,6 +3969,15 @@ func load_state(d: Dictionary) -> void:
 	# Clamp every restored entity — saves from box tanks or pre-clamp builds
 	# can land outside curved (cylinder / sphere) walls.
 	_clamp_loaded_entities()
+
+	# 11b. Residents: restore favorites and start tracking loaded creatures.
+	# load_state spawns creatures without calling register_*, so wire their
+	# tree_exiting here; otherwise creature_removed would never fire for them.
+	favorite_ids.clear()
+	for fid in d.get("favorites", []):
+		favorite_ids[String(fid)] = true
+	track_all_living()
+	favorites_changed.emit()
 
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.

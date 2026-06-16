@@ -30,6 +30,9 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 		TankConfig.save_to_disk()
 	if d.has("aquascape") and aquascape != null:
 		aquascape.restore_from_save(d["aquascape"])
+	# Re-follow the creature the player was watching (creatures are spawned now).
+	if host.has_method("restore_follow_from_save"):
+		host.call("restore_follow_from_save", d)
 	print_verbose("[walstad_loom] restored save from ", path)
 
 
@@ -45,6 +48,13 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 		pending_time_scale = live_ts
 	var state_d: Dictionary = sim.save_state()
 	state_d["sim"]["time_scale"] = pending_time_scale
+	# Persist the followed creature (+ mode/scope) so reopening resumes it.
+	# save_state() ran _ensure_ids(), so the followed creature already has an id.
+	var ft: Variant = host.get("_follow_target")
+	if ft != null and is_instance_valid(ft) and ft.get("id") != null and String(ft.id) != "":
+		state_d["sim"]["followed_id"] = String(ft.id)
+		state_d["sim"]["follow_mode"] = int(host.get("_follow_mode"))
+		state_d["sim"]["cycle_scope"] = int(host.get("_cycle_scope"))
 	if aquascape != null:
 		state_d["aquascape"] = aquascape.to_save_arr()
 	if world != null and world.has_method("terrain_to_save_dict"):

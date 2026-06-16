@@ -19,12 +19,14 @@ signal speed_pressed(scale: float)
 signal photo_pressed
 signal undo_pressed
 signal camera_views_pressed
+signal residents_pressed
 
 var _pause_btn: Button
 var _speed_btns: Dictionary = {}
 var _photo_btn: Button
 var _undo_btn: Button
 var _camera_views_btn: Button
+var _residents_btn: Button
 var _current_speed: float = 1.0
 var _is_paused: bool = false
 
@@ -178,6 +180,14 @@ func _build_action_row() -> void:
 		_buzz(14)
 		camera_views_pressed.emit())
 	_action_container.add_child(_camera_views_btn)
+
+	# Residents — opens the live roster (follow / favorite / cycle creatures).
+	_residents_btn = _make_btn("👥", Color8(200, 200, 240))
+	_residents_btn.tooltip_text = "Residents — follow & favorite your creatures"
+	_residents_btn.pressed.connect(func():
+		_buzz(14)
+		residents_pressed.emit())
+	_action_container.add_child(_residents_btn)
 
 	_photo_btn = _make_btn(UiIcons.mobile_hud_label("photo"), Color8(150, 200, 170))
 	_photo_btn.tooltip_text = "Take a screenshot of the tank"

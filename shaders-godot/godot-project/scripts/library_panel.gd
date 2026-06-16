@@ -267,6 +267,20 @@ func open() -> void:
 	_resume_preview_rendering()
 
 
+# Open (or, if already open, retarget) the panel onto a specific discovered
+# species. Used by the Residents "View species in Library" cross-link: live
+# creatures are tank discoveries, so switch to the Tank tab + All types so the
+# entry is present, then select it by its canonical species_key.
+func select_species(species_key: String) -> void:
+	open()
+	_set_scope(Scope.TANK)
+	_set_type_filter(TypeFilter.ALL)
+	if not _row_by_key.has(species_key):
+		_refresh_list()
+	if species_key != "" and _row_by_key.has(species_key):
+		_on_list_item_pressed(species_key)
+
+
 func close() -> void:
 	if not visible:
 		_close_panel()
@@ -491,8 +505,7 @@ func _build_preview_column() -> Control:
 	v.add_child(frame)
 
 	# We host the SubViewport off the visible tree so it renders in isolation,
-	# and route its texture into a TextureRect inside the panel. This is the
-	# same pattern as the PortalViewport in main.tscn.
+	# and route its texture into a TextureRect inside the panel.
 	_preview_viewport = SubViewport.new()
 	_preview_viewport.size = PREVIEW_SIZE
 	_preview_viewport.transparent_bg = true

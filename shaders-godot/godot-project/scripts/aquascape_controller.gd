@@ -52,9 +52,8 @@ func toggle() -> void:
 		if sim != null:
 			_saved_time_scale = float(sim.time_scale)
 			sim.time_scale = 0.0
-		if _host != null:
-			_host.set("_follow_target", null)
-		_host.set("_follow_target", null)
+		if _host != null and _host.has_method("clear_follow"):
+			_host.call("clear_follow")
 		_ensure_preview()
 		if _palette != null:
 			_palette.visible = true
