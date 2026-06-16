@@ -271,10 +271,11 @@ func open() -> void:
 # species. Used by the Residents "View species in Library" cross-link: live
 # creatures are tank discoveries, so switch to the Tank tab + All types so the
 # entry is present, then select it by its canonical species_key.
-func select_species(species_key: String) -> void:
+func select_species(species_key: String, tree: bool = false) -> void:
 	open()
 	_set_scope(Scope.TANK)
 	_set_type_filter(TypeFilter.ALL)
+	_set_view_mode(ViewMode.TREE if tree else ViewMode.LIST)
 	if not _row_by_key.has(species_key):
 		_refresh_list()
 	if species_key != "" and _row_by_key.has(species_key):

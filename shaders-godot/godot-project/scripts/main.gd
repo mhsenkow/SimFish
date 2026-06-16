@@ -163,6 +163,10 @@ var _cycle_scope: int = CycleScope.ALL
 signal follow_target_changed(creature: Node)
 var _portal_mat: ShaderMaterial = null
 const PORTAL_ZOOM: float = 3.5
+# Live magnifier zoom (scroll over the porthole to adjust); defaults to PORTAL_ZOOM.
+var _portal_zoom: float = PORTAL_ZOOM
+const PORTAL_ZOOM_MIN: float = 1.5
+const PORTAL_ZOOM_MAX: float = 7.0
 
 # PiP info panel elements
 var _portal_info_panel: MarginContainer = null
@@ -185,6 +189,10 @@ var _portal_glass_mat: ShaderMaterial = null
 var _portal_info_vbox: VBoxContainer = null
 var _portal_ctrls: HBoxContainer = null
 var _portal_scaffold: Control = null
+# Rename dialog (click the portal name to rename the followed creature).
+var _rename_dialog: AcceptDialog = null
+var _rename_edit: LineEdit = null
+var _rename_target: Node = null
 # In-tank favorite halos: instance_id -> Label3D star parented to the creature.
 var _fav_halos: Dictionary = {}
 # Selection reticle ring on the currently-followed creature (distinct from the
@@ -195,10 +203,12 @@ var _reticle_phase: float = 0.0
 var _follow_lock: bool = false            # true = rigidly centered; false = deadzone roam
 var _cinema_active: bool = false
 var _cinema_accum: float = 0.0
+var _cinema_auto: bool = false            # true when the idle screensaver started the tour
 const FOLLOW_LEAD_TIME: float = 0.4       # seconds of velocity lookahead
 const FOLLOW_LERP_K: float = 3.0
 const FOLLOW_DEADZONE: float = 0.9        # world units the subject may roam before the cam chases
 const CINEMA_INTERVAL_S: float = 12.0
+const SCREENSAVER_IDLE_S: float = 45.0    # idle time before an auto favorites-tour kicks in
 
 # Cached SimDriver ref for time_scale + seed + day_phase queries.
 var _sim: Node = null
@@ -1145,6 +1155,12 @@ func _process(dt: float) -> void:
 		if _cinema_accum >= CINEMA_INTERVAL_S:
 			_cinema_accum = 0.0
 			cycle_follow(1)
+	elif _follow_mode == FollowMode.OFF and _hud_idle_seconds > SCREENSAVER_IDLE_S \
+			and _sim != null and _sim.has_method("favorite_creatures") \
+			and not _sim.favorite_creatures().is_empty():
+		# Idle screensaver: drift through your favorites until you touch anything.
+		set_cycle_scope(CycleScope.FAVORITES)
+		set_cinema_mode(true, true)
 
 	_sync_rail_toggles()
 
@@ -1306,6 +1322,7 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_LEFT, func(): cycle_follow(-1))
 		_handle_shortcut(KEY_RIGHT, func(): cycle_follow(1))
 		_handle_shortcut(KEY_K, _toggle_residents_panel)
+		_handle_shortcut(KEY_APOSTROPHE, follow_primary_favorite)
 		_handle_shortcut(KEY_T, _toggle_timelapse)
 		_handle_shortcut(KEY_B, _toggle_aquascape)
 		_handle_shortcut(KEY_H, _toggle_immersive_mode)
@@ -1772,7 +1789,17 @@ func cycle_follow(dir: int) -> void:
 # A followed creature left the tank — hand off to the next one in scope (or stop)
 # and let the player know who swam on.
 func _on_creature_removed(c: Node) -> void:
-	if c == null or c != _follow_target or not is_inside_tree():
+	if c == null or not is_inside_tree():
+		return
+	# Memorial: a favorite has died — mark it even if we weren't following it.
+	if _sim != null and _sim.has_method("is_favorite") and _sim.is_favorite(c):
+		var fav_name: String = _creature_display_name(c)
+		if has_method("_push_notification"):
+			_push_notification("residents", "important", "In memoriam", "%s has passed on" % fav_name, true)
+		if _sim.has_method("_note_ai_event"):
+			_sim._note_ai_event("creature_died", "%s, a favorite, has died" % fav_name)
+	# Follow handoff — only when the departed creature was the one we followed.
+	if c != _follow_target:
 		return
 	var name_str: String = _creature_display_name(c)
 	var nxt: Node = null
@@ -1799,6 +1826,74 @@ func _toggle_follow_presentation() -> void:
 	if _follow_target == null:
 		return
 	set_follow_mode(FollowMode.PIP if _follow_mode == FollowMode.CINEMATIC else FollowMode.CINEMATIC)
+
+
+func _mouse_over_porthole() -> bool:
+	if portal_container == null or not portal_container.visible:
+		return false
+	if portal_display == null or not portal_display.visible:
+		return false
+	return portal_display.get_global_rect().has_point(portal_display.get_global_mouse_position())
+
+
+func _adjust_portal_zoom(factor: float) -> void:
+	_portal_zoom = clampf(_portal_zoom * factor, PORTAL_ZOOM_MIN, PORTAL_ZOOM_MAX)
+	if _portal_mat != null:
+		_portal_mat.set_shader_parameter("zoom", _portal_zoom)
+
+
+func _mouse_over_portal_card() -> bool:
+	if portal_container == null or not portal_container.visible:
+		return false
+	return portal_container.get_global_rect().has_point(portal_container.get_global_mouse_position())
+
+
+func _on_portal_name_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT and _follow_target != null:
+		_prompt_rename(_follow_target)
+
+
+# Small dialog to give a creature a custom name. Writes the instance field AND
+# the saved genome so it survives a reload (fish/shrimp persist via genome,
+# snail/clam via the instance field).
+func _prompt_rename(creature: Node) -> void:
+	if creature == null or not is_instance_valid(creature):
+		return
+	if _rename_dialog == null:
+		_rename_dialog = AcceptDialog.new()
+		_rename_dialog.title = "Rename creature"
+		_rename_dialog.ok_button_text = "Rename"
+		_rename_edit = LineEdit.new()
+		_rename_edit.custom_minimum_size = Vector2(260, 0)
+		_rename_edit.max_length = 24
+		_rename_dialog.add_child(_rename_edit)
+		_rename_dialog.register_text_enter(_rename_edit)
+		_rename_dialog.confirmed.connect(_on_rename_confirmed)
+		add_child(_rename_dialog)
+	_rename_target = creature
+	_rename_edit.text = _creature_display_name(creature)
+	_rename_dialog.popup_centered()
+	_rename_edit.grab_focus()
+	_rename_edit.select_all()
+
+
+func _on_rename_confirmed() -> void:
+	if _rename_target == null or not is_instance_valid(_rename_target) or _rename_edit == null:
+		return
+	var nm: String = _rename_edit.text.strip_edges()
+	if nm == "":
+		return
+	for k in ["fish_name", "shrimp_name", "snail_name", "clam_name"]:
+		if _rename_target.get(k) != null:
+			_rename_target.set(k, nm)
+			var g: Variant = _rename_target.get("_saved_genome")
+			if g is Dictionary:
+				(g as Dictionary)[k] = nm
+			break
+	if _portal_name_lbl != null and _rename_target == _follow_target:
+		_portal_name_lbl.text = nm
+	follow_target_changed.emit(_follow_target)
 
 
 # Best display name for a creature (fish/shrimp/snail/clam), else a type label.
@@ -1966,6 +2061,15 @@ func restore_follow_from_save(d: Dictionary) -> void:
 
 # Open the Library modal focused on the followed creature's species.
 func view_followed_in_library() -> void:
+	_open_followed_in_library(false)
+
+
+# Open the Library on the followed creature's species, in lineage (tree) view.
+func view_followed_lineage() -> void:
+	_open_followed_in_library(true)
+
+
+func _open_followed_in_library(tree: bool) -> void:
 	if _follow_target == null or not is_instance_valid(_follow_target) \
 			or not _follow_target.has_method("get_saved_genome"):
 		return
@@ -1978,7 +2082,48 @@ func view_followed_in_library() -> void:
 	if _ui_panels != null:
 		_ui_panels.open_modal(UiPanelManager.MODAL_LIBRARY)
 	if library_panel.has_method("select_species"):
-		library_panel.select_species(key)
+		library_panel.select_species(key, tree)
+
+
+# Quick-jump the camera to the player's primary favorite (cinematic).
+func follow_primary_favorite() -> void:
+	if _sim == null or not _sim.has_method("primary_favorite_creature"):
+		return
+	var c: Node = _sim.primary_favorite_creature()
+	if c != null and is_instance_valid(c):
+		follow_creature(c, FollowMode.CINEMATIC)
+		_haptic(10)
+
+
+# Follow a random creature within the current cycle scope (the Residents shuffle).
+func follow_random() -> void:
+	var pool: Array = _cycle_pool()
+	if pool.is_empty() and _sim != null and _sim.has_method("living_creatures"):
+		pool = _sim.living_creatures()
+	if pool.is_empty():
+		return
+	var pick: Node = pool[randi() % pool.size()]
+	if pick == _follow_target and pool.size() > 1:
+		pick = pool[(pool.find(_follow_target) + 1) % pool.size()]
+	follow_creature(pick, _follow_mode if _follow_mode != FollowMode.OFF else FollowMode.PIP)
+	_haptic(8)
+
+
+# Copy the followed creature's genome as a shareable strain code to the clipboard.
+func share_followed_strain() -> void:
+	if _follow_target == null or not is_instance_valid(_follow_target) \
+			or not _follow_target.has_method("get_saved_genome"):
+		return
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib == null or not lib.has_method("encode_strain"):
+		return
+	var code: String = lib.encode_strain(_follow_target.get_saved_genome())
+	if code == "":
+		return
+	DisplayServer.clipboard_set(code)
+	if has_method("_push_notification"):
+		_push_notification("residents", "info", "Strain copied",
+			"%s's strain code is on your clipboard" % _creature_display_name(_follow_target), true)
 
 
 func toggle_follow_lock() -> void:
@@ -1995,9 +2140,10 @@ func toggle_cinema_mode() -> void:
 
 # Auto-tour: cinematic-follow the first creature in scope, then advance every
 # CINEMA_INTERVAL_S of no interaction (see _process + _notify_hud_input).
-func set_cinema_mode(on: bool) -> void:
+func set_cinema_mode(on: bool, auto: bool = false) -> void:
 	_cinema_active = on
 	_cinema_accum = 0.0
+	_cinema_auto = on and auto
 	if on:
 		var pool: Array = _cycle_pool()
 		if pool.is_empty() and _sim != null and _sim.has_method("living_creatures"):
@@ -2154,7 +2300,7 @@ func _update_portal_pip() -> void:
 				_portal_mat.set_shader_parameter("center_uv", Vector2(
 					screen_pt.x / float(sub_viewport.size.x),
 					screen_pt.y / float(sub_viewport.size.y)))
-				_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
+				_portal_mat.set_shader_parameter("zoom", _portal_zoom)
 			elif not has_target:
 				_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
 	if portal_hint != null:
@@ -2321,6 +2467,9 @@ func _build_portal_info_ui() -> void:
 	_portal_name_lbl.text = "Select a creature"
 	PanelTheme.as_sans(_portal_name_lbl, PanelTheme.SIZE_ITEM, true)
 	_portal_name_lbl.add_theme_color_override("font_color", Color8(240, 237, 229))
+	_portal_name_lbl.mouse_filter = Control.MOUSE_FILTER_STOP
+	_portal_name_lbl.tooltip_text = "Click to rename"
+	_portal_name_lbl.gui_input.connect(_on_portal_name_input)
 	_portal_info_vbox.add_child(_portal_name_lbl)
 
 	_portal_lineage_lbl = Label.new()
@@ -2601,12 +2750,24 @@ func _input(event: InputEvent) -> void:
 		var mb: InputEventMouseButton = event
 		if mb.pressed:
 			if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-				radius = maxf(MIN_RADIUS, radius / ZOOM_FACTOR)
-				_apply_camera()
+				if _mouse_over_porthole():
+					_adjust_portal_zoom(1.1)
+				else:
+					radius = maxf(MIN_RADIUS, radius / ZOOM_FACTOR)
+					_apply_camera()
 			elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				radius = minf(MAX_RADIUS, radius * ZOOM_FACTOR)
-				_apply_camera()
+				if _mouse_over_porthole():
+					_adjust_portal_zoom(1.0 / 1.1)
+				else:
+					radius = minf(MAX_RADIUS, radius * ZOOM_FACTOR)
+					_apply_camera()
 			elif mb.button_index == MOUSE_BUTTON_LEFT:
+				# Clicks on the magnifier don't pick or drop food; a
+				# double-click there promotes the follow to cinematic.
+				if _mouse_over_portal_card():
+					if mb.double_click and _mouse_over_porthole():
+						_toggle_follow_presentation()
+					return
 				# Close chip popups on any click outside them (chips
 				# themselves go through their own gui_input handler before
 				# this runs, so taps that hit a chip never reach here).
@@ -5115,6 +5276,10 @@ func _notify_hud_input() -> void:
 	# Each interaction restarts the cinema-tour dwell so it advances only after
 	# you've stopped fiddling.
 	_cinema_accum = 0.0
+	# A real interaction ends the idle "screensaver" tour (but not one you
+	# started yourself with the Cinema button).
+	if _cinema_auto and _cinema_active:
+		set_cinema_mode(false)
 	if top_hud != null and top_hud.modulate != HUD_LIT_MODULATE:
 		top_hud.modulate = HUD_LIT_MODULATE
 	if right_rail != null and right_rail.modulate != HUD_LIT_MODULATE:

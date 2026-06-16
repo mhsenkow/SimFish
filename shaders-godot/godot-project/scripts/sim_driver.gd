@@ -554,6 +554,9 @@ var _next_entity_id: int = 1
 # first time a creature is favorited (see toggle_favorite), so a starred fish
 # keeps its star across save/load even though most ids are minted lazily.
 var favorite_ids: Dictionary = {}
+# The one "primary" favorite the HUD can quick-jump to. Defaults to the first
+# starred creature; persisted alongside favorites.
+var primary_favorite_id: String = ""
 
 
 func mint_id() -> String:
@@ -923,10 +926,52 @@ func toggle_favorite(c: Node) -> bool:
 		return false
 	if favorite_ids.has(cid):
 		favorite_ids.erase(cid)
+		if primary_favorite_id == cid:
+			primary_favorite_id = ""
 	else:
 		favorite_ids[cid] = true
+		if primary_favorite_id == "":
+			primary_favorite_id = cid
+		_note_ai_event("creature_favorited", "%s is now a favorite" % _creature_name_for(c))
 	favorites_changed.emit()
 	return favorite_ids.has(cid)
+
+
+# Pin a creature as THE primary favorite (also stars it).
+func set_primary_favorite(c: Node) -> void:
+	var cid: String = ensure_id(c)
+	if cid == "":
+		return
+	favorite_ids[cid] = true
+	primary_favorite_id = cid
+	favorites_changed.emit()
+
+
+# The primary favorite if alive, else the first living favorite, else null.
+func primary_favorite_creature() -> Node:
+	var favs: Array = favorite_creatures()
+	if primary_favorite_id != "":
+		for c in favs:
+			if (c as Node).get("id") != null and String(c.id) == primary_favorite_id:
+				return c
+	return favs[0] if not favs.is_empty() else null
+
+
+func _creature_name_for(c: Node) -> String:
+	if c == null or not is_instance_valid(c):
+		return "A creature"
+	for k in ["fish_name", "shrimp_name", "snail_name", "clam_name"]:
+		if c.get(k) != null and String(c.get(k)) != "":
+			return String(c.get(k))
+	return "A creature"
+
+
+# Feed a notable moment to the AI chronicle (no-op when AI/chronicle is off).
+func _note_ai_event(kind: String, summary: String) -> void:
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("note_event") \
+			and bool(ai.get("enabled")) and bool(ai.get("chronicle_enabled")):
+		ai.note_event(kind, summary)
 
 
 # Living creatures the player has starred (for cycling scope + in-tank halos).
@@ -952,6 +997,8 @@ func _prune_dead_favorites() -> void:
 	for fid in favorite_ids.keys():
 		if not live_ids.has(fid):
 			favorite_ids.erase(fid)
+	if primary_favorite_id != "" and not live_ids.has(primary_favorite_id):
+		primary_favorite_id = ""
 
 
 # Bind snails_root to the populated Snails container (not a queued-free stub).
@@ -3761,6 +3808,7 @@ func save_state() -> Dictionary:
 		# Player-starred individuals (Residents panel). _ensure_ids() above
 		# guarantees every favorited creature already has a stable id.
 		"favorites": favorite_ids.keys(),
+		"primary_favorite": primary_favorite_id,
 	}
 	if water_chemistry != null:
 		out["water_chemistry"] = water_chemistry.to_save_dict()
@@ -3976,6 +4024,7 @@ func load_state(d: Dictionary) -> void:
 	favorite_ids.clear()
 	for fid in d.get("favorites", []):
 		favorite_ids[String(fid)] = true
+	primary_favorite_id = String(d.get("primary_favorite", ""))
 	track_all_living()
 	favorites_changed.emit()
 

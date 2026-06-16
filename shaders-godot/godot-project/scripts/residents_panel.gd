@@ -15,11 +15,12 @@ extends PanelContainer
 class_name ResidentsPanel
 
 const EDGE_FADE_SHADER := preload("res://shaders/list_edge_fade.gdshader")
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
 
 # List type filter.
 enum Filter { ALL, FISH, SHRIMP, SNAIL, CLAM, FAV }
 # Sort key.
-enum Sort { NAME, AGE, SPECIES, ATTENTION }
+enum Sort { NAME, AGE, SPECIES, ATTENTION, NEWEST }
 
 var main_ref: Node = null
 var _sim: Node = null
@@ -111,29 +112,32 @@ func _build_ui() -> void:
 	stop_btn.pressed.connect(func(): _call_main("clear_follow", []))
 	nav.add_child(stop_btn)
 
-	# Tools row: cinematic framing toggle, auto-tour, and the Library cross-link.
-	var tools := HBoxContainer.new()
-	tools.add_theme_constant_override("separation", 6)
-	outer.add_child(tools)
+	# Tools — view/camera row, then per-creature actions row.
+	var tools1 := HBoxContainer.new()
+	tools1.add_theme_constant_override("separation", 6)
+	outer.add_child(tools1)
 	_lock_btn = PanelTheme.make_secondary_button("⤢ Lead")
 	_lock_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lock_btn.tooltip_text = "Cinematic framing: Lead (camera leads + lets it roam) vs Lock (centered)"
 	_lock_btn.pressed.connect(func():
 		_call_main("toggle_follow_lock", [])
 		_sync_tool_buttons())
-	tools.add_child(_lock_btn)
+	tools1.add_child(_lock_btn)
 	_cinema_btn = PanelTheme.make_secondary_button("🎬 Cinema")
 	_cinema_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_cinema_btn.tooltip_text = "Auto-tour your creatures — advances every few seconds when idle"
 	_cinema_btn.pressed.connect(func():
 		_call_main("toggle_cinema_mode", [])
 		_sync_tool_buttons())
-	tools.add_child(_cinema_btn)
-	var species_btn := PanelTheme.make_secondary_button("🔎 Species")
-	species_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	species_btn.tooltip_text = "View the followed creature's species in the Library"
-	species_btn.pressed.connect(func(): _call_main("view_followed_in_library", []))
-	tools.add_child(species_btn)
+	tools1.add_child(_cinema_btn)
+	tools1.add_child(_tools_btn("🎲 Shuffle", "Follow a random creature in the current scope", "follow_random"))
+
+	var tools2 := HBoxContainer.new()
+	tools2.add_theme_constant_override("separation", 6)
+	outer.add_child(tools2)
+	tools2.add_child(_tools_btn("Species", "View the followed creature's species in the Library", "view_followed_in_library"))
+	tools2.add_child(_tools_btn("Lineage", "View the followed creature's ancestry tree", "view_followed_lineage"))
+	tools2.add_child(_tools_btn("Share", "Copy the followed creature's strain code to the clipboard", "share_followed_strain"))
 
 	outer.add_child(PanelTheme.make_rule())
 
@@ -172,6 +176,7 @@ func _build_ui() -> void:
 	_sort_option.add_item("Age", Sort.AGE)
 	_sort_option.add_item("Species", Sort.SPECIES)
 	_sort_option.add_item("Needs attention", Sort.ATTENTION)
+	_sort_option.add_item("Newest", Sort.NEWEST)
 	_sort_option.item_selected.connect(func(i):
 		_sort = i
 		_queue_rebuild())
@@ -237,6 +242,14 @@ func _sync_chip_state() -> void:
 	for f in _filter_buttons:
 		var b: Button = _filter_buttons[f]
 		b.modulate = Color(1, 1, 1, 1) if f == _filter else Color(0.7, 0.74, 0.82, 0.8)
+
+
+func _tools_btn(label: String, tip: String, method: String) -> Button:
+	var b := PanelTheme.make_secondary_button(label)
+	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.tooltip_text = tip
+	b.pressed.connect(func(): _call_main(method, []))
+	return b
 
 
 func _sync_tool_buttons() -> void:
@@ -420,6 +433,8 @@ func _compare_creatures(a: Node, b: Node) -> bool:
 	match _sort:
 		Sort.AGE:
 			return _age_of(a) > _age_of(b)  # oldest first
+		Sort.NEWEST:
+			return _age_of(a) < _age_of(b)  # youngest (recently added) first
 		Sort.SPECIES:
 			var sa: String = _species_of(a)
 			var sb: String = _species_of(b)
@@ -477,7 +492,7 @@ func _make_card(c: Node) -> Control:
 	col.add_theme_constant_override("separation", 0)
 	var name_lbl := Label.new()
 	name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	name_lbl.text = _creature_name(c)
+	name_lbl.text = _card_name(c)
 	name_lbl.clip_text = true
 	PanelTheme.as_sans(name_lbl, PanelTheme.SIZE_BODY, true)
 	name_lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
@@ -620,6 +635,16 @@ func _creature_name(c: Node) -> String:
 		if c.get(k) != null and String(c.get(k)) != "":
 			return String(c.get(k))
 	return _species_of(c).capitalize()
+
+
+func _card_name(c: Node) -> String:
+	var nm: String = _creature_name(c)
+	var pers: Variant = c.get("personality")
+	if pers is Dictionary and not (pers as Dictionary).is_empty():
+		var ep: String = CreatureNaming.epithet_for_personality(pers)
+		if ep != "":
+			return "%s %s" % [nm, ep]
+	return nm
 
 
 func _species_of(c: Node) -> String:
