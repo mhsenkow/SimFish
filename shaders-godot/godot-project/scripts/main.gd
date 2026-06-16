@@ -165,7 +165,7 @@ var _portal_mat: ShaderMaterial = null
 const PORTAL_ZOOM: float = 3.5
 
 # PiP info panel elements
-var _portal_info_panel: PanelContainer = null
+var _portal_info_panel: MarginContainer = null
 var _portal_name_lbl: Label = null
 var _portal_lineage_lbl: Label = null
 var _portal_relation_lbl: Label = null
@@ -175,6 +175,16 @@ var _portal_prev_btn: Button = null
 var _portal_next_btn: Button = null
 var _portal_fav_btn: Button = null
 var _portal_mode_btn: Button = null
+var _portal_layout_btn: Button = null
+# Glass-card redesign: one frosted-glass card holds the porthole + info, with two
+# switchable arrangements (porthole above vs beside the info).
+enum PortalLayout { ABOVE, BESIDE }
+var _portal_layout: int = PortalLayout.ABOVE
+var _portal_glass_bg: ColorRect = null
+var _portal_glass_mat: ShaderMaterial = null
+var _portal_info_vbox: VBoxContainer = null
+var _portal_ctrls: HBoxContainer = null
+var _portal_scaffold: Control = null
 # In-tank favorite halos: instance_id -> Label3D star parented to the creature.
 var _fav_halos: Dictionary = {}
 # Selection reticle ring on the currently-followed creature (distinct from the
@@ -2123,75 +2133,47 @@ func _creature_label(creature: Node) -> String:
 var _portal_label_skip: int = 0
 
 func _update_portal_pip() -> void:
-	if camera == null:
+	if camera == null or portal_container == null:
 		return
-		
-	var pip: bool = _follow_mode == FollowMode.PIP
+	if _follow_mode == FollowMode.OFF:
+		portal_container.visible = false
+		return
+	portal_container.visible = true
+
 	var target_node: Node3D = _follow_target
+	var has_target: bool = target_node != null and is_instance_valid(target_node)
 
-	if target_node == null or not is_instance_valid(target_node):
-		# No target to track
-		if not pip:
-			if portal_container != null:
-				portal_container.visible = false
-			if _portal_info_panel != null:
-				_portal_info_panel.visible = false
-			return
-		else:
-			# Portal is open but has no target
-			if portal_container != null:
-				portal_container.visible = true
-			if portal_display != null:
-				portal_display.visible = true
-				if _portal_mat != null:
-					_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
-			if portal_hint != null:
-				portal_hint.visible = true
-			if _portal_info_panel != null:
-				_portal_info_panel.visible = false
-			return
-
-	# We have a valid target!
-	if portal_container != null:
-		portal_container.visible = true
-
-	if pip:
-		if portal_display != null:
-			portal_display.visible = true
-		if portal_hint != null:
-			portal_hint.visible = false
-			
+	# The porthole magnifier shows whenever we're following; it tracks the target
+	# (or shows the whole tank while awaiting a pick).
+	if portal_display != null:
+		portal_display.visible = true
 		if _portal_mat != null:
-			if not camera.is_position_behind(target_node.global_position):
+			if has_target and camera.is_inside_tree() and target_node.is_inside_tree() \
+					and not camera.is_position_behind(target_node.global_position):
 				var screen_pt: Vector2 = camera.unproject_position(target_node.global_position)
-				var center_uv: Vector2 = Vector2(
+				_portal_mat.set_shader_parameter("center_uv", Vector2(
 					screen_pt.x / float(sub_viewport.size.x),
-					screen_pt.y / float(sub_viewport.size.y),
-				)
-				_portal_mat.set_shader_parameter("center_uv", center_uv)
+					screen_pt.y / float(sub_viewport.size.y)))
 				_portal_mat.set_shader_parameter("zoom", PORTAL_ZOOM)
-				
-		if _portal_info_panel != null:
-			_portal_info_panel.offset_top = 196.0
-			_portal_info_panel.offset_bottom = 292.0
-			_portal_info_panel.visible = true
-	else:
-		if portal_display != null:
-			portal_display.visible = false
-		if portal_hint != null:
-			portal_hint.visible = false
-			
-		if _portal_info_panel != null:
-			_portal_info_panel.offset_top = 0.0
-			_portal_info_panel.offset_bottom = 96.0
-			_portal_info_panel.visible = true
+			elif not has_target:
+				_portal_mat.set_shader_parameter("center_uv", Vector2(0.5, 0.5))
+	if portal_hint != null:
+		portal_hint.visible = not has_target
+	if _portal_lineage_lbl != null:
+		_portal_lineage_lbl.visible = has_target
+	if _portal_stats_lbl != null:
+		_portal_stats_lbl.visible = has_target
+	if not has_target:
+		if _portal_relation_lbl != null:
+			_portal_relation_lbl.visible = false
+		if _portal_name_lbl != null:
+			_portal_name_lbl.text = "Select a creature"
+		return
 
-	# Update the dynamic creature stats and lineage labels. The center_uv zoom
-	# above is updated every frame so portal tracking stays smooth, but the
-	# name / lineage / age / hunger text barely changes — rebuild those strings
-	# at ~10 Hz instead of every frame.
+	# Refresh the name / lineage / stats at ~10 Hz (the magnifier tracks every
+	# frame above).
 	_portal_label_skip = (_portal_label_skip + 1) % 6
-	if _portal_label_skip == 0 and _portal_info_panel != null and _portal_info_panel.visible:
+	if _portal_label_skip == 0:
 		# Name — prefer the persistent display_name. When personality is
 		# present we append an epithet ("Atlas the Bold") earned from the
 		# top trait, so the player sees character at a glance.
@@ -2290,88 +2272,177 @@ func _update_portal_pip() -> void:
 func _build_portal_info_ui() -> void:
 	if portal_container == null:
 		return
-		
-	# Expand the portal container size so the text panel fits cleanly
-	portal_container.offset_bottom = 340.0
-	
-	_portal_info_panel = PanelContainer.new()
-	_portal_info_panel.name = "PortalInfoPanel"
-	_portal_info_panel.anchors_preset = Control.PRESET_BOTTOM_WIDE
-	_portal_info_panel.offset_top = 196.0
-	_portal_info_panel.offset_bottom = 292.0
-	_portal_info_panel.offset_left = 0
-	_portal_info_panel.offset_right = 0
-	
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.08, 0.14, 0.85)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.5)
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 8
-	style.corner_radius_top_right = 8
-	style.corner_radius_bottom_left = 8
-	style.corner_radius_bottom_right = 8
-	style.content_margin_left = 8
-	style.content_margin_right = 8
-	style.content_margin_top = 6
-	style.content_margin_bottom = 6
-	_portal_info_panel.add_theme_stylebox_override("panel", style)
-	
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 2)
-	_portal_info_panel.add_child(vbox)
-	
+	portal_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	# Frosted-glass background — a shaded ColorRect behind everything, sized to
+	# the card by _relayout_portal. Added FIRST so it draws behind the content.
+	_portal_glass_bg = ColorRect.new()
+	_portal_glass_bg.name = "PortalGlass"
+	_portal_glass_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_portal_glass_bg.color = Color(1, 1, 1, 1)
+	_portal_glass_mat = ShaderMaterial.new()
+	_portal_glass_mat.shader = load("res://shaders/glass_panel.gdshader")
+	_portal_glass_bg.material = _portal_glass_mat
+	portal_container.add_child(_portal_glass_bg)
+
+	# Card content holder (margins inside the glass). The scaffold lives here.
+	_portal_info_panel = MarginContainer.new()
+	_portal_info_panel.name = "PortalCard"
+	_portal_info_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	portal_container.add_child(_portal_info_panel)
+
+	# Porthole: reuse the magnifier TextureRect, pulled out of its scene slot so
+	# the scaffold can place it. The hint label rides on top of the circle.
+	if portal_display != null:
+		if portal_display.get_parent() != null:
+			portal_display.get_parent().remove_child(portal_display)
+		portal_display.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		portal_display.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		portal_display.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	if portal_hint != null:
+		if portal_hint.get_parent() != null:
+			portal_hint.get_parent().remove_child(portal_hint)
+		if portal_display != null:
+			portal_hint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+			portal_hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			portal_display.add_child(portal_hint)
+	if _portal_mat != null:
+		_portal_mat.set_shader_parameter("border_color", Color(1, 1, 1, 0.3))
+		if sub_viewport != null and sub_viewport.size.y > 0:
+			_portal_mat.set_shader_parameter("aspect",
+				float(sub_viewport.size.x) / float(sub_viewport.size.y))
+
+	# Info labels (persisted; reparented per layout by _relayout_portal).
+	_portal_info_vbox = VBoxContainer.new()
+	_portal_info_vbox.add_theme_constant_override("separation", 2)
+	_portal_info_vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
 	_portal_name_lbl = Label.new()
-	_portal_name_lbl.text = "Unknown"
-	_portal_name_lbl.add_theme_font_size_override("font_size", 12)
-	_portal_name_lbl.add_theme_color_override("font_color", Color8(255, 215, 80))
-	_portal_name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(_portal_name_lbl)
-	
+	_portal_name_lbl.text = "Select a creature"
+	PanelTheme.as_sans(_portal_name_lbl, PanelTheme.SIZE_ITEM, true)
+	_portal_name_lbl.add_theme_color_override("font_color", Color8(240, 237, 229))
+	_portal_info_vbox.add_child(_portal_name_lbl)
+
 	_portal_lineage_lbl = Label.new()
-	_portal_lineage_lbl.text = "Gen 0 · Founders"
-	_portal_lineage_lbl.add_theme_font_size_override("font_size", 9)
-	_portal_lineage_lbl.add_theme_color_override("font_color", Color8(200, 210, 225))
-	_portal_lineage_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(_portal_lineage_lbl)
+	_portal_lineage_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.as_sans(_portal_lineage_lbl, PanelTheme.SIZE_CAPTION)
+	_portal_lineage_lbl.add_theme_color_override("font_color", Color8(154, 160, 166))
+	_portal_info_vbox.add_child(_portal_lineage_lbl)
 
 	_portal_relation_lbl = Label.new()
 	PanelTheme.as_serif_italic(_portal_relation_lbl, PanelTheme.SIZE_CAPTION)
-	_portal_relation_lbl.add_theme_color_override("font_color", Color8(230, 200, 230))
-	_portal_relation_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_portal_relation_lbl.add_theme_color_override("font_color", Color8(198, 184, 206))
 	_portal_relation_lbl.visible = false
-	vbox.add_child(_portal_relation_lbl)
-	
-	_portal_stats_lbl = Label.new()
-	_portal_stats_lbl.text = "Age: 0s · Hunger: 0%"
-	PanelTheme.as_mono(_portal_stats_lbl, PanelTheme.SIZE_CAPTION)
-	_portal_stats_lbl.add_theme_color_override("font_color", Color8(150, 230, 150))
-	_portal_stats_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(_portal_stats_lbl)
+	_portal_info_vbox.add_child(_portal_relation_lbl)
 
-	# Cycle / favorite / cinematic-toggle controls. Living inside the info
-	# panel means they travel with it in both PiP and cinematic layouts.
-	var ctrls := HBoxContainer.new()
-	ctrls.alignment = BoxContainer.ALIGNMENT_CENTER
-	ctrls.add_theme_constant_override("separation", 8)
-	vbox.add_child(ctrls)
+	_portal_stats_lbl = Label.new()
+	_portal_stats_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.as_mono(_portal_stats_lbl, PanelTheme.SIZE_CAPTION)
+	_portal_stats_lbl.add_theme_color_override("font_color", Color8(199, 203, 209))
+	_portal_info_vbox.add_child(_portal_stats_lbl)
+
+	# Controls (persisted; reparented per layout). + a layout-toggle button.
+	_portal_ctrls = HBoxContainer.new()
+	_portal_ctrls.alignment = BoxContainer.ALIGNMENT_CENTER
+	_portal_ctrls.add_theme_constant_override("separation", 10)
 	_portal_prev_btn = _make_portal_ctrl_btn("◀", "Previous creature (←)")
 	_portal_prev_btn.pressed.connect(func(): cycle_follow(-1))
-	ctrls.add_child(_portal_prev_btn)
+	_portal_ctrls.add_child(_portal_prev_btn)
 	_portal_fav_btn = _make_portal_ctrl_btn("☆", "Favorite this creature")
 	_portal_fav_btn.pressed.connect(_toggle_follow_favorite)
-	ctrls.add_child(_portal_fav_btn)
+	_portal_ctrls.add_child(_portal_fav_btn)
 	_portal_mode_btn = _make_portal_ctrl_btn("⛶", "Cinematic / picture-in-picture")
 	_portal_mode_btn.pressed.connect(_toggle_follow_presentation)
-	ctrls.add_child(_portal_mode_btn)
+	_portal_ctrls.add_child(_portal_mode_btn)
+	_portal_layout_btn = _make_portal_ctrl_btn("▤", "Switch porthole layout")
+	_portal_layout_btn.pressed.connect(_toggle_portal_layout)
+	_portal_ctrls.add_child(_portal_layout_btn)
 	_portal_next_btn = _make_portal_ctrl_btn("▶", "Next creature (→)")
 	_portal_next_btn.pressed.connect(func(): cycle_follow(1))
-	ctrls.add_child(_portal_next_btn)
+	_portal_ctrls.add_child(_portal_next_btn)
 
-	portal_container.add_child(_portal_info_panel)
-	_portal_info_panel.visible = false
+	_relayout_portal()
+	portal_container.visible = false
+
+
+# Position + arrange the glass card for the current _portal_layout. The single
+# authority for portal geometry (the responsive HUD layout calls this too).
+func _relayout_portal() -> void:
+	if portal_container == null or _portal_info_panel == null:
+		return
+	var above: bool = _portal_layout == PortalLayout.ABOVE
+	var card_w: float = 208.0 if above else 312.0
+	var card_h: float = 330.0 if above else 176.0
+	var port: float = 156.0 if above else 104.0
+
+	# Dock the card top-right, clear of the rail + top HUD.
+	var right_inset: float = PanelTheme.RAIL_WIDTH + 10.0
+	var top_inset: float = PanelTheme.HUD_TOP + 6.0
+	portal_container.anchor_left = 1.0
+	portal_container.anchor_right = 1.0
+	portal_container.anchor_top = 0.0
+	portal_container.anchor_bottom = 0.0
+	portal_container.offset_right = -right_inset
+	portal_container.offset_left = -right_inset - card_w
+	portal_container.offset_top = top_inset
+	portal_container.offset_bottom = top_inset + card_h
+
+	if _portal_glass_bg != null:
+		_portal_glass_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		if _portal_glass_mat != null:
+			_portal_glass_mat.set_shader_parameter("rect_px", Vector2(card_w, card_h))
+			_portal_glass_mat.set_shader_parameter("radius_px", 18.0)
+
+	_portal_info_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_portal_info_panel.add_theme_constant_override("margin_left", 16)
+	_portal_info_panel.add_theme_constant_override("margin_right", 16)
+	_portal_info_panel.add_theme_constant_override("margin_top", 14)
+	_portal_info_panel.add_theme_constant_override("margin_bottom", 12)
+
+	if portal_display != null:
+		portal_display.custom_minimum_size = Vector2(port, port)
+
+	var halign := HORIZONTAL_ALIGNMENT_CENTER if above else HORIZONTAL_ALIGNMENT_LEFT
+	for lbl in [_portal_name_lbl, _portal_lineage_lbl, _portal_relation_lbl, _portal_stats_lbl]:
+		if lbl != null:
+			lbl.horizontal_alignment = halign
+	if _portal_info_vbox != null:
+		_portal_info_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# Detach persistent pieces from the previous scaffold, then rebuild it.
+	for piece in [portal_display, _portal_info_vbox, _portal_ctrls]:
+		if piece != null and piece.get_parent() != null:
+			piece.get_parent().remove_child(piece)
+	if _portal_scaffold != null and is_instance_valid(_portal_scaffold):
+		_portal_scaffold.queue_free()
+
+	var root := VBoxContainer.new()
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_theme_constant_override("separation", 8)
+	if above:
+		root.add_child(portal_display)
+		root.add_child(_portal_info_vbox)
+	else:
+		var hb := HBoxContainer.new()
+		hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_theme_constant_override("separation", 12)
+		hb.add_child(portal_display)
+		_portal_info_vbox.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		hb.add_child(_portal_info_vbox)
+		root.add_child(hb)
+	var spacer := Control.new()
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(spacer)
+	root.add_child(_portal_ctrls)
+	_portal_info_panel.add_child(root)
+	_portal_scaffold = root
+
+
+func _toggle_portal_layout() -> void:
+	_portal_layout = PortalLayout.BESIDE if _portal_layout == PortalLayout.ABOVE else PortalLayout.ABOVE
+	_relayout_portal()
+	_update_portal_pip()
 
 
 func _assign_creature_target(creature: Node3D) -> void:
@@ -3863,12 +3934,10 @@ func _apply_panel_layout() -> void:
 		fish_store_panel.offset_top = -store_h * 0.5
 		fish_store_panel.offset_bottom = store_h * 0.5
 
+	# The glass follow-card owns its own geometry (size depends on the chosen
+	# porthole layout); re-apply it on resize rather than forcing a square here.
 	if portal_container != null:
-		var pip: float = minf(192.0, vp.x * 0.14)
-		portal_container.offset_right = -rail
-		portal_container.offset_left = -(rail + pip)
-		portal_container.offset_top = top + 4.0
-		portal_container.offset_bottom = top + 4.0 + pip
+		_relayout_portal()
 
 
 func _apply_hud_layout() -> void:
