@@ -129,6 +129,16 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 			_low_light_ticks = 0
 			_visual_dirty = true
 			_update_root_lod()
+			# Resurface beside the dormant spot — not stacked on the same voxel.
+			position.x += randf_range(-0.35, 0.35)
+			position.z += randf_range(-0.35, 0.35)
+			if world != null and world.has_method("clamp_xz_in_tank"):
+				var surface_y: float = float(world.get("WATER_HEIGHT")) - 0.05 \
+					if world.get("WATER_HEIGHT") != null else position.y
+				var xz: Vector2 = world.clamp_xz_in_tank(
+					position.x, position.z, 0.35, surface_y)
+				position.x = xz.x
+				position.z = xz.y
 		elif turion_age_s > 90.0:
 			# Long-buried turions dissolve — keeps invisible clumps from piling up.
 			vitality = 0.0
@@ -214,39 +224,51 @@ func is_surface_active() -> bool:
 
 
 func _update_root_lod() -> void:
+	if not is_finite(position.x) or not is_finite(position.z):
+		return
 	# Dense mats + tiny morphs don't need hanging root columns — they read as
 	# white pillars and cost a draw call each.
-	var hide: bool = turion_buried
-	if not hide:
+	var hide_roots: bool = turion_buried
+	if not hide_roots:
 		if morph in ["duckweed", "azolla"]:
-			hide = _neighbor_density > 0.12
+			hide_roots = _neighbor_density > 0.12
 		else:
-			hide = _neighbor_density > 0.42
-	if hide == _roots_lod_hidden:
+			hide_roots = _neighbor_density > 0.42
+	if hide_roots == _roots_lod_hidden:
 		return
-	_roots_lod_hidden = hide
+	_roots_lod_hidden = hide_roots
+	# Headless soaks toggle visibility thousands of times/sec — skip mesh IO.
+	if DisplayServer.get_name() == "headless":
+		return
 	for c in get_children():
 		if c is MeshInstance3D and String(c.name).begins_with("root"):
-			(c as MeshInstance3D).visible = not hide
+			(c as MeshInstance3D).visible = not hide_roots
 
 
 func _tick_budding(dt: float, dl: float, nutrients: float) -> void:
 	if bud_stage == BudStage.DETACH:
 		return
-	if vitality < 0.45 or dl < 0.3:
+	if vitality < 0.45 or dl < 0.3 or _neighbor_density > 0.68:
 		return
 	bud_timer += dt
 	match bud_stage:
 		BudStage.NONE:
-			if bud_timer > 8.0 / spread_rate and randf() < dt * spread_rate * nutrients * dl:
-				bud_stage = BudStage.SWELL
-				bud_timer = 0.0
-				_visual_dirty = true
+			# Per-cycle roll — do NOT scale by dt. World passes dt=FLOATER_GROWTH_INTERVAL
+			# (3s), so `dt * spread * nutrients` would exceed 1.0 and budding became
+			# guaranteed every ~9s regardless of conditions.
+			if bud_timer > 8.0 / spread_rate:
+				var chance: float = clampf(0.07 * spread_rate * nutrients * dl, 0.0, 0.35)
+				if randf() < chance:
+					bud_stage = BudStage.SWELL
+					bud_timer = 0.0
+					_visual_dirty = true
+				else:
+					bud_timer = 8.0 / spread_rate * 0.55
 		BudStage.SWELL:
 			if bud_timer > 2.5:
 				bud_stage = BudStage.DETACH
 				var ang: float = randf() * TAU
-				var r: float = leaf_size * (0.55 if morph == "duckweed" else 0.85)
+				var r: float = leaf_size * (0.72 if morph == "duckweed" else 1.05)
 				_pending_bud = {
 					"genome": get_genome(),
 					"offset": Vector3(cos(ang) * r, 0.0, sin(ang) * r),

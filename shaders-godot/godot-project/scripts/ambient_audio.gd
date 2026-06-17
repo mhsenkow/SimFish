@@ -189,6 +189,7 @@ var _playback_synth: AudioStreamGeneratorPlayback = null
 var _playback_air: AudioStreamGeneratorPlayback = null
 var _pending: Array = []
 var _bubble_bursts: Array = []
+var _plink_lpf: float = 0.0
 
 var _bubble_t: float = 0.0
 var _accent_t: float = 0.0
@@ -1238,7 +1239,7 @@ func _react_dub(event_name: String) -> void:
 			if _cached_breakdown_depth > 0.2 and _phrase_state != PhraseState.BREAKDOWN:
 				_phrase_force_state = PhraseState.BREAKDOWN
 		"eat":
-			play_event_plink(0.5, true)
+			play_rhodes(_scale_freq(5), 0.04, 0.42)
 		"plant":
 			_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
 		"story":
@@ -1405,9 +1406,10 @@ func _refresh_mix_cache() -> void:
 	var bloom: float = float(_smooth.get("bloom", 0.0))
 	var tannins: float = float(_smooth.get("tannins", 0.0))
 	var o2: float = float(_smooth.get("o2", 0.85))
-	# Bitcrush kicks in when the tank is sick (high tannins/low O2/bloom).
-	var sick: float = clampf(tannins * 0.65 + (1.0 - o2) * 0.5 + bloom * 0.25, 0.0, 1.0)
-	_cached_bitcrush = sick * _bitcrush_algae_cfg()
+	# Bitcrush only when algae bloom is visibly high — low O₂ already ducks
+	# pads/events; crushing the bed on hypoxia read as a digital error tone.
+	var sick: float = clampf(tannins * 0.55 + bloom * 0.45, 0.0, 1.0)
+	_cached_bitcrush = sick * _bitcrush_algae_cfg() * 0.65
 	# Bass grit scales with vitality * energy (high-action tanks distort).
 	_cached_bass_grit = _bass_grit_cfg() * clampf(_tank_vitality * 0.5 + _cached_energy * 0.5, 0.0, 1.0)
 	_cached_pump_gate = _pump_gate_cfg()
@@ -1442,6 +1444,8 @@ func play_note(freq: float, amp: float, dur: float, mod_ratio: float = 2.01,
 	var final_amp: float = _note_gain(amp, is_event)
 	if final_amp <= 0.001:
 		return
+	if is_event and attack_time < 0.010:
+		attack_time = 0.010
 	_pending.append([
 		freq, dur, final_amp, 0.0, 0.0, mod_ratio, mod_index,
 		decay_speed, attack_time, dur,
@@ -1466,18 +1470,14 @@ func play_event_plink(intensity: float = 0.5, is_event: bool = false) -> void:
 		0, scale.size() - 1)
 	var detune: float = lerpf(0.985, 1.015, float(_smooth.get("daylight", 1.0)))
 	var freq: float = scale[note_idx] * detune
-	# Style-aware voice selection: lofi/ambient → Rhodes EP; trance → bell;
-	# else fall back to the original FM tone.
 	var style: String = _style()
+	# Musical voices only — the old bare play_note branch read as UI/error beeps.
 	if _trance_bed_active() and not is_event:
-		play_note(freq, 0.02 + intensity * 0.025, 0.28, 2.4, 1.2, 4.5, 0.006, false)
-	elif style == "ambient" or _mood_key() == "calm":
-		# Rhodes EP voice — gentle, lofi.
-		play_rhodes(freq, 0.04 + intensity * 0.04, lerpf(0.7, 1.0, _tank_vitality))
+		play_bell_pluck(freq, 0.018 + intensity * 0.016, 0.42)
+	elif style == "ambient" or _mood_key() == "calm" or style == "hybrid":
+		play_rhodes(freq, 0.032 + intensity * 0.028, lerpf(0.55, 0.85, _tank_vitality))
 	else:
-		var mod_idx: float = lerpf(1.2, 2.2, float(_smooth.get("daylight", 1.0)))
-		var dur: float = lerpf(0.55, 0.85, _tank_vitality)
-		play_note(freq, 0.03 + intensity * 0.04, dur, 2.01, mod_idx, 1.6, 0.012, is_event)
+		play_bell_pluck(freq, 0.028 + intensity * 0.022, 0.62)
 
 
 func play_aquarium_event(event_name: String, intensity: float = -1.0, species: String = "") -> void:
@@ -1503,7 +1503,7 @@ func play_aquarium_event(event_name: String, intensity: float = -1.0, species: S
 		"story":
 			play_riser_sfx(intensity if intensity >= 0.0 else 0.65)
 		_:
-			play_event_plink(intensity if intensity >= 0.0 else 0.5, true)
+			play_rhodes(_scale_freq(4), 0.04, 0.55)
 
 
 # Returns a (semitone_offset, octave_offset, freq_jitter) tuple based on species.
@@ -1528,26 +1528,22 @@ func _species_tone(species: String) -> Array:
 
 
 func play_eat_sfx(intensity: float = 0.5, species: String = "") -> void:
-	var scale := _get_current_scale()
-	var base_idx: int = int(intensity * 4.0) + int(float(_smooth.get("fish", 0)) * 0.15) + 5
 	var tone: Array = _species_tone(species)
-	var note_idx: int = clampi(base_idx + int(tone[0]), 0, scale.size() - 1)
-	var freq: float = scale[note_idx] * lerpf(0.99, 1.01, float(_smooth.get("bloom", 0.0))) * float(tone[2])
-	freq *= pow(2.0, float(tone[1]))
+	var freq: float = _scale_freq(4 + int(tone[0]), int(tone[1])) * float(tone[2])
 	if _trance_bed_active():
-		play_note(freq, 0.035 + intensity * 0.03, 0.14, 1.0, 0.4, 4.0, 0.01, true)
+		play_bell_pluck(freq, 0.022 + intensity * 0.018, 0.22)
 	else:
-		play_note(freq, 0.07 + intensity * 0.05, 0.18, 1.0, 0.5, 5.5, 0.0, true)
+		play_rhodes(freq, 0.038 + intensity * 0.028, 0.38)
 
 
 func play_plant_sfx(intensity: float = 0.4) -> void:
 	var plant_n: int = int(_smooth.get("plants", 0))
-	var freq: float = _scale_freq(int(intensity * 3.0) + (plant_n % 3) + 2) * lerpf(0.99, 1.01, float(_smooth.get("biomass", 0)) / 600.0)
-	# DX-bell pluck — Bonobo/lofi character. Falls back to the simple plink in
-	# very low-complexity (off) modes.
-	play_bell_pluck(freq, 0.045 + intensity * 0.035, 0.65)
-	# Descending tom underneath for "camera pans across the bloom".
-	_trigger_tom(lerpf(180.0, 120.0, intensity), 0.55 + intensity * 0.3)
+	var freq: float = _scale_freq(int(intensity * 3.0) + (plant_n % 3) + 2) \
+		* lerpf(0.99, 1.01, float(_smooth.get("biomass", 0)) / 600.0)
+	play_bell_pluck(freq, 0.032 + intensity * 0.022, 0.72)
+	# Soft low tom — plant events were firing a loud pitch sweep that
+	# sounded like an error thud on dense Walstad tanks.
+	_trigger_tom(lerpf(145.0, 110.0, intensity), 0.22 + intensity * 0.12)
 
 
 func play_bubble_sfx(intensity: float = 0.35) -> void:
@@ -1557,9 +1553,9 @@ func play_bubble_sfx(intensity: float = 0.35) -> void:
 		return
 	var aer: float = float(_smooth.get("aeration", 0.0))
 	var flow: float = float(_smooth.get("flow", 0.0))
-	# Soft noise chirp — not a scale-tone ping that fights the trance bed.
-	var start_hz: float = lerpf(520.0, 980.0, intensity + aer * 0.08)
-	var amp: float = lerpf(0.006, 0.014, intensity)
+	# Soft noise chirp — lowpassed so aeration reads as fizz, not error beeps.
+	var start_hz: float = lerpf(280.0, 620.0, intensity + aer * 0.08)
+	var amp: float = lerpf(0.0035, 0.009, intensity)
 	if _trance_bed_active():
 		amp *= 0.42
 	_bubble_bursts.append({
@@ -1576,11 +1572,13 @@ func play_flow_sfx() -> void:
 
 
 func play_riser_sfx(intensity: float = 0.65) -> void:
-	var scale := _get_current_scale()
-	var base_idx: int = clampi(int(intensity * 3.0), 0, scale.size() - 3)
-	for i in 4:
-		var freq: float = scale[base_idx + i] * lerpf(0.92, 1.08, float(i) / 3.0)
-		play_supersaw(freq, 0.06 + intensity * 0.05, 0.45 + float(i) * 0.08, true)
+	# Story / diary notifications — gentle bell run, not a supersaw alarm stack.
+	var degrees: Array = [0, 2, 4, 7]
+	for i in degrees.size():
+		play_bell_pluck(
+			_scale_freq(int(degrees[i])),
+			0.028 + intensity * 0.02,
+			0.38 + float(i) * 0.06)
 
 
 func play_birth_sfx(species: String = "") -> void:
@@ -1588,16 +1586,15 @@ func play_birth_sfx(species: String = "") -> void:
 	var oct_shift: float = pow(2.0, float(tone[1]))
 	var freq_jit: float = float(tone[2])
 	if _trance_bed_active():
-		play_supersaw(_scale_freq(0 + int(tone[0])) * oct_shift * freq_jit, 0.12, 0.55, true)
-		play_supersaw(_scale_freq(4 + int(tone[0])) * oct_shift * freq_jit, 0.10, 0.48, true)
-		play_supersaw(_scale_freq(7 + int(tone[0])) * oct_shift * freq_jit, 0.09, 0.42, true)
+		play_bell_pluck(_scale_freq(0 + int(tone[0])) * oct_shift * freq_jit, 0.055, 0.42)
+		play_bell_pluck(_scale_freq(4 + int(tone[0])) * oct_shift * freq_jit, 0.042, 0.36)
 		return
 	var scale := _get_current_scale()
 	var base_idx: int = (int(_smooth.get("fish", 0)) % 4) + int(tone[0])
 	for i in 3:
 		var note_idx: int = clampi([base_idx, base_idx + 2, base_idx + 4][i], 0, scale.size() - 1)
 		var f: float = scale[note_idx] * oct_shift * freq_jit
-		play_note(f, 0.09, 0.65, 2.01, 1.8, 2.2, float(i) * 0.08, true)
+		play_bell_pluck(f, 0.05, 0.55 + float(i) * 0.06)
 
 
 func play_death_sfx(species: String = "") -> void:
@@ -1609,7 +1606,7 @@ func play_death_sfx(species: String = "") -> void:
 	for i in 3:
 		var note_idx: int = clampi([base_idx + 4, base_idx + 2, base_idx][i], 0, scale.size() - 1)
 		var f: float = scale[note_idx] * oct_shift * float(tone[2])
-		play_note(f, 0.12, 1.0, 1.0, 0.6, 1.6, float(i) * 0.12, true)
+		play_rhodes(f, 0.055, 0.75 + float(i) * 0.08)
 
 
 func play_spawn_sfx(species: String = "") -> void:
@@ -1617,16 +1614,15 @@ func play_spawn_sfx(species: String = "") -> void:
 	var oct_shift: float = pow(2.0, float(tone[1]))
 	var freq_jit: float = float(tone[2])
 	if _trance_bed_active():
-		play_supersaw(_scale_freq(2 + int(tone[0])) * oct_shift * freq_jit, 0.11, 0.38, true)
-		play_supersaw(_scale_freq(4 + int(tone[0])) * oct_shift * freq_jit, 0.09, 0.34, true)
-		play_supersaw(_scale_freq(7 + int(tone[0])) * oct_shift * freq_jit, 0.08, 0.30, true)
+		play_bell_pluck(_scale_freq(2 + int(tone[0])) * oct_shift * freq_jit, 0.048, 0.32)
+		play_bell_pluck(_scale_freq(4 + int(tone[0])) * oct_shift * freq_jit, 0.038, 0.28)
 		return
 	var scale := _get_current_scale()
 	var base_idx: int = (int(_smooth.get("plants", 0)) % 3 + 2) + int(tone[0])
 	for i in 3:
 		var note_idx: int = clampi([base_idx, base_idx + 2, base_idx + 4][i], 0, scale.size() - 1)
 		var f: float = scale[note_idx] * oct_shift * freq_jit
-		play_note(f, 0.07, 0.95, 2.01, 2.2, 1.8, 0.0, true)
+		play_bell_pluck(f, 0.042, 0.62)
 
 
 func _trigger_kick(velocity: float = 1.0) -> void:
@@ -1895,6 +1891,29 @@ func _soft_wave(phase: float) -> float:
 	return lerpf(s, t, 0.38)
 
 
+func _render_pending_note(note: Array, env: float) -> float:
+	var freq: float = note[0]
+	var amp: float = note[2]
+	var phase: float = note[3]
+	var mod_phase: float = note[4]
+	var mod_ratio: float = note[5]
+	var mod_index: float = note[6]
+	if mod_index > 0.08 and mod_ratio > 0.05:
+		mod_phase = fposmod(mod_phase + freq * mod_ratio * INV_SAMPLE_RATE, 1.0)
+		note[4] = mod_phase
+		var mod_sig: float = sin(mod_phase * TAU)
+		phase = fposmod(
+			phase + freq * (1.0 + mod_sig * mod_index * 0.065) * INV_SAMPLE_RATE, 1.0)
+	else:
+		phase = fposmod(phase + freq * INV_SAMPLE_RATE, 1.0)
+	note[3] = phase
+	var body: float = _soft_wave(phase)
+	if mod_index > 0.9:
+		body = lerpf(body, sin(phase * TAU),
+			clampf((mod_index - 0.9) * 0.22, 0.0, 0.4))
+	return body * amp * env
+
+
 func _soft_clip(sample: float) -> float:
 	# Gentle saturation before the hard DAC clamp.
 	return tanh(sample * 1.15) * 0.78
@@ -1928,17 +1947,20 @@ func _vinyl_sample() -> float:
 		# Frequency of pops scales with knob; ~2..18 pops/sec at full.
 		var rate_hz: float = lerpf(0.8, 18.0, _cached_vinyl)
 		_vinyl_pop_t = lerpf(0.04, 1.2, randf()) / maxf(0.1, rate_hz)
-		_vinyl_pop_env = randf_range(0.5, 1.0) * _cached_vinyl
-		_vinyl_pop_freq = lerpf(900.0, 4200.0, randf())
+		_vinyl_pop_env = randf_range(0.35, 0.75) * _cached_vinyl
+		_vinyl_pop_freq = lerpf(400.0, 1800.0, randf())
 	var pop: float = 0.0
 	if _vinyl_pop_env > 0.001:
-		pop = sin(_vinyl_pop_freq * float(_sample_clock) * INV_SAMPLE_RATE * TAU) * _vinyl_pop_env
-		_vinyl_pop_env *= 0.974
+		# Bandpassed noise burst — sine pops at 900–4200 Hz read as UI clicks.
+		var pop_raw: float = _noise_sample() * _vinyl_pop_env
+		_vinyl_noise_lpf = _one_pole_cached(pop_raw, _vinyl_noise_lpf, _lpf_alpha(2400.0))
+		pop = _vinyl_noise_lpf
+		_vinyl_pop_env *= 0.968
 	# Low-level filtered noise floor — gives that 7" record hiss.
 	var hiss_raw: float = _noise_sample()
-	_vinyl_noise_lpf = _one_pole_cached(hiss_raw, _vinyl_noise_lpf, _lpf_alpha(3800.0))
-	var floor_amp: float = _cached_vinyl * 0.012
-	return (pop * 0.045 + _vinyl_noise_lpf * floor_amp)
+	_vinyl_noise_lpf = _one_pole_cached(hiss_raw, _vinyl_noise_lpf, _lpf_alpha(3200.0))
+	var floor_amp: float = _cached_vinyl * 0.008
+	return (pop * 0.032 + _vinyl_noise_lpf * floor_amp)
 
 
 # Tape-wow — write to ring buffer, read with LFO-modulated position so the
@@ -1990,10 +2012,10 @@ func _mix_bubble_bursts() -> float:
 		var phase: float = float(b["phase"])
 		var amp: float = float(b["amp"])
 		# Downward chirp + airy noise reads as a bubble, not a synth note.
-		pitch_hz = maxf(180.0, pitch_hz * 0.9994)
+		pitch_hz = maxf(120.0, pitch_hz * 0.9992)
 		var chirp: float = sin(phase * TAU) * env * env
-		var airy: float = _noise_sample() * env * 0.28
-		out += (chirp * 0.38 + airy) * amp
+		var airy: float = _noise_sample() * env * 0.18
+		out += (chirp * 0.22 + airy) * amp
 		b["phase"] = fposmod(phase + pitch_hz * INV_SAMPLE_RATE, 1.0)
 		b["pitch_hz"] = pitch_hz
 		b["env"] = env * 0.991
@@ -2305,10 +2327,10 @@ func _process(_dt: float) -> void:
 			var vit: float = _tank_vitality
 			if vit > 0.08 and _pending.size() < 4:
 				var dl: float = float(_smooth.get("daylight", 1.0))
-				_accent_t = lerpf(18.0, 2.4, vit * _cfg_float("music_accent_density", 0.5)) * lerpf(1.2, 0.75, dl)
+				_accent_t = lerpf(24.0, 4.2, vit * _cfg_float("music_accent_density", 0.5)) * lerpf(1.2, 0.75, dl)
 				var accent_i: float = clampf(
-					vit * 0.7 + float(_smooth.get("bloom", 0.0)) * 0.25, 0.1, 0.95)
-				play_event_plink(accent_i, false)
+					vit * 0.55 + float(_smooth.get("bloom", 0.0)) * 0.2, 0.08, 0.75)
+				play_rhodes(_scale_freq(2 + int(accent_i * 3.0)), 0.028 + accent_i * 0.02, 0.48)
 
 	if _environment_enabled() and _sim_ref != null:
 		var aeration: float = float(_smooth.get("aeration", 0.0))
@@ -2386,9 +2408,6 @@ func _process(_dt: float) -> void:
 				pending_n -= 1
 				continue
 
-			var freq: float = note[0]
-			var amp: float = note[2]
-			var phase: float = note[3]
 			var decay_speed: float = note[7]
 			var attack_time: float = note[8]
 			var initial_dur: float = note[9]
@@ -2402,11 +2421,13 @@ func _process(_dt: float) -> void:
 				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
 				env = rel * rel * (3.0 - 2.0 * rel)
 
-			plinks += _soft_wave(phase) * amp * env
+			plinks += _render_pending_note(note, env)
 
-			note[3] = fposmod(phase + freq * INV_SAMPLE_RATE, 1.0)
 			note[1] = dur - INV_SAMPLE_RATE
 			_pending[j] = note
+
+		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
+		plinks = _plink_lpf
 
 		var bubbles: float = _mix_bubble_bursts()
 		var event_vol: float = _cached_vol
@@ -2437,8 +2458,8 @@ func _process(_dt: float) -> void:
 		var amb_level: float = 0.010 + aeration_amb * 0.026
 		_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(1900.0))
 		_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(2100.0))
-		_water_hum_phase = fposmod(_water_hum_phase + 92.0 * INV_SAMPLE_RATE, 1.0)
-		var hum: float = sin(_water_hum_phase * TAU) * 0.5 * aeration_amb
+		_water_hum_phase = fposmod(_water_hum_phase + 58.0 * INV_SAMPLE_RATE, 1.0)
+		var hum: float = sin(_water_hum_phase * TAU) * 0.28 * aeration_amb
 		_f_air_l += (_water_lpf_l + hum) * amb_level
 		_f_air_r += (_water_lpf_r + hum * 0.92) * amb_level
 
@@ -2664,7 +2685,7 @@ func play_aquarium_event_extended(event_name: String, species: String = "",
 				base_idx + age_degree_bias][i]
 			var note_idx: int = clampi(deg, 0, scale.size() - 1)
 			var f: float = scale[note_idx] * oct_shift * float(tone[2])
-			play_note(f, 0.11, 0.95, 1.0, 0.6, 1.6, float(i) * 0.12, true)
+			play_rhodes(f, 0.055, 0.75 + float(i) * 0.08)
 		return
 	# Fall through to the regular event handler.
 	play_aquarium_event(event_name, intensity, species)

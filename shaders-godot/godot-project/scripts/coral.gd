@@ -1048,7 +1048,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		var hypoxia_stress: float = clampf((0.35 - o2) / 0.25, 0.0, 1.0)
 		var stress: float = maxf(heat_stress, hypoxia_stress)
 		if stress > 0.0:
-			_bleach_level = clampf(_bleach_level + stress * dt * 0.014, 0.0, 1.0)
+			_bleach_level = clampf(_bleach_level + stress * dt * 0.010, 0.0, 1.0)
 		else:
 			_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
 		_emit_bleach_eco_events(sim_n, prev_bleach)

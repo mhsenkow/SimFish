@@ -347,7 +347,7 @@ var music_complexity: float = 0.5
 var music_ambient_enabled: bool = true
 var music_events_enabled: bool = true
 var music_environment_enabled: bool = true
-var music_event_volume: float = 0.75
+var music_event_volume: float = 0.58
 var music_reactivity: float = 0.65
 # auto | calm | bright | deep
 var music_mood: String = "auto"
@@ -368,7 +368,7 @@ var music_hat_mix: float = 0.38
 var music_sidechain: float = 0.55
 var music_filter_open: float = 0.38
 var music_delay_amount: float = 0.22
-var music_accent_density: float = 0.5
+var music_accent_density: float = 0.32
 var music_influence_fish: float = 1.0
 var music_influence_plants: float = 1.0
 var music_influence_bloom: float = 1.0
@@ -391,7 +391,7 @@ var music_drop_intensity: float = 0.7
 var music_breakdown_depth: float = 0.7
 var music_lead_mix: float = 0.55
 var music_lead_detune: float = 0.55
-var music_vinyl_crackle: float = 0.2
+var music_vinyl_crackle: float = 0.08
 var music_tape_wow: float = 0.18
 var music_jazziness: float = 0.4
 var music_swing: float = 0.06
@@ -409,7 +409,7 @@ var music_clap_mix: float = 0.45
 # Build dramaturgy.
 var music_build_drama: float = 0.7
 # Tank-state driven sound (auto-tied; knobs scale sensitivity).
-var music_bitcrush_algae: float = 0.6
+var music_bitcrush_algae: float = 0.22
 var music_bass_grit: float = 0.5
 var music_pump_gate: float = 0.6
 # Harmony.
@@ -2426,7 +2426,7 @@ func reset_to_defaults() -> void:
 	music_ambient_enabled = true
 	music_events_enabled = true
 	music_environment_enabled = true
-	music_event_volume = 0.75
+	music_event_volume = 0.58
 	music_reactivity = 0.65
 	music_mood = "auto"
 	music_style = "hybrid"
@@ -2443,7 +2443,7 @@ func reset_to_defaults() -> void:
 	music_sidechain = 0.72
 	music_filter_open = 0.5
 	music_delay_amount = 0.35
-	music_accent_density = 0.5
+	music_accent_density = 0.32
 	music_influence_fish = 1.0
 	music_influence_plants = 1.0
 	music_influence_bloom = 1.0
@@ -2459,7 +2459,7 @@ func reset_to_defaults() -> void:
 	music_breakdown_depth = 0.7
 	music_lead_mix = 0.55
 	music_lead_detune = 0.55
-	music_vinyl_crackle = 0.2
+	music_vinyl_crackle = 0.08
 	music_tape_wow = 0.18
 	music_jazziness = 0.4
 	music_swing = 0.06
@@ -2474,7 +2474,7 @@ func reset_to_defaults() -> void:
 	music_shaker_mix = 0.4
 	music_clap_mix = 0.45
 	music_build_drama = 0.7
-	music_bitcrush_algae = 0.6
+	music_bitcrush_algae = 0.22
 	music_bass_grit = 0.5
 	music_pump_gate = 0.6
 	music_key_mod = 0.35

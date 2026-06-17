@@ -1048,6 +1048,7 @@ const O2_NIGHT_SURFACE_BONUS: float = 0.014
 const O2_FISH_NIGHT_RESP_SCALE: float = 0.65
 const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.78
 const O2_RESPIRE_PLANT: float = 0.0011
+const O2_AERATION_FLOOR_BASE: float = 0.24  # air stone prevents total anoxia
 const ECO_ENGINEERING_INTERVAL: float = 1.2
 const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
@@ -1890,8 +1891,14 @@ func _tick(dt: float) -> void:
 	if surf_scum > 0:
 		drift_rate *= 1.0 - clampf(float(surf_scum) / 9.0, 0.0, 0.30)
 	var drift: float = drift_rate * (drift_target - dissolved_o2)
+	var o2_floor: float = 0.0
+	if inject > 0.02 or aeration_flow_rate > 0.08:
+		o2_floor = O2_AERATION_FLOOR_BASE + aeration_air_rate * 0.12 + aeration_flow_rate * 0.08
+	# Planted tanks bleed a little O₂ at the surface even when the pump is off.
+	if not _is_saltwater_tank() and total_plant_biomass > 80:
+		o2_floor = maxf(o2_floor, 0.12 + clampf(float(total_plant_biomass) / 600.0, 0.0, 0.12))
 	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
-		0.0, 1.2)
+		o2_floor, 1.2)
 
 	# 2. Substrate field + periodic 3D terrain nutrient sync.
 	if substrate != null:

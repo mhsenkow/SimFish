@@ -894,18 +894,23 @@ func _process(dt: float) -> void:
 		_floater_growth_step()
 
 
-# Floaters v2 surface physics: clumping, wind, filter shove, glass pile-up,
-# hardscape snag, ripple bob, rosette spin, daughter tether. 10 Hz + adt.
+# Floaters v2 surface physics: meniscus drift, raft cohesion, soft collision,
+# glass bounce, filter shove, ripple bob, daughter tether. 10 Hz + adt.
 func _drift_floaters(adt: float) -> void:
 	_floater_t += adt
 	_rebuild_floater_grid()
 	_dead_floaters_scratch.clear()
-	# Global surface drift (#2): filter outflow + slow sin phase.
+	var surface_y: float = WATER_HEIGHT - 0.05
+	var margin: float = _FLOATER_SURFACE_MARGIN
+	# Global surface current: filter return + slow room air drift.
 	var drift_vec: Vector3 = Vector3.ZERO
 	if sim != null and sim.filter_intake_pos != Vector3.ZERO:
-		var outflow: Vector3 = sim.filter_intake_pos - Vector3(TANK_HALF_W * 0.5, 0, 0)
-		drift_vec = Vector3(outflow.x, 0, outflow.z).normalized() * 0.04
-	drift_vec += Vector3(sin(_floater_t * 0.08), 0, cos(_floater_t * 0.06)) * 0.025
+		var jet: Vector3 = sim.filter_intake_pos
+		jet.y = 0.0
+		if jet.length_squared() > 1e-4:
+			# Return jet pushes mats away from the intake corner.
+			drift_vec = -jet.normalized() * 0.028
+	drift_vec += Vector3(sin(_floater_t * 0.08), 0, cos(_floater_t * 0.06)) * 0.018
 	for f in _floaters:
 		if not is_instance_valid(f):
 			_dead_floaters_scratch.append(f)
@@ -918,10 +923,9 @@ func _drift_floaters(adt: float) -> void:
 		var iid: int = fp.get_instance_id()
 		var vel: Vector3 = _floater_vel.get(iid, Vector3.ZERO)
 		var ph: float = fp.get_meta("phase", 0.0)
-		# Wind / current (#2)
 		vel += drift_vec * adt
-		# Surface-tension clumping (#1)
-		var neighbors: Array = query_floaters_in_radius(fp.position, 0.6, true)
+		var neighbors: Array = query_floaters_in_radius(fp.position, 0.75, true)
+		# Surface-tension cohesion — drift toward raft centroid, not tank center.
 		if neighbors.size() > 1:
 			var centroid: Vector3 = Vector3.ZERO
 			var n_n: int = 0
@@ -934,62 +938,89 @@ func _drift_floaters(adt: float) -> void:
 				centroid /= float(n_n)
 				var to_c: Vector3 = centroid - fp.position
 				to_c.y = 0.0
-				# Gentle surface-tension cohesion. Kept low + with a small dead
-				# zone so a raft drifts together instead of jittering chaotically
-				# around its own centroid.
-				if to_c.length() > 0.12:
-					vel += to_c * adt * 0.16 * fp.vitality
-		# Filter-outflow shove (#3)
+				var dist_c: float = to_c.length()
+				var pack: float = clampf(float(neighbors.size()) / 10.0, 0.0, 1.0)
+				if dist_c > 0.14 and dist_c < 1.6:
+					var cohesion: float = lerpf(0.14, 0.03, pack) * fp.vitality
+					vel += to_c.normalized() * adt * cohesion
+		# Soft meniscus collision — floaters push apart instead of stacking.
+		for nb in neighbors:
+			if nb == fp:
+				continue
+			var other: FloatingPlant = nb
+			var sep: Vector3 = fp.position - other.position
+			sep.y = 0.0
+			var dist: float = sep.length()
+			var min_sep: float = maxf(0.14, (fp.leaf_size + other.leaf_size) * 0.52)
+			if dist < min_sep and dist > 1e-4:
+				var push: Vector3 = sep.normalized() * (min_sep - dist)
+				fp.position.x += push.x * 0.72
+				fp.position.z += push.z * 0.72
+				vel += push * (3.4 * adt)
 		if sim != null and sim.filter_intake_pos != Vector3.ZERO:
 			var to_out: Vector3 = fp.position - sim.filter_intake_pos
 			to_out.y = 0.0
 			var d_out: float = to_out.length()
 			if d_out < 1.2 and d_out > 0.01:
-				vel += to_out.normalized() * adt * (1.2 - d_out) * 0.5
-		# Hardscape snag (#5)
+				vel += to_out.normalized() * adt * (1.2 - d_out) * 0.42
 		var snagged: bool = _hardscape_cover_density(fp.position.x, fp.position.z, 0.3) > 0.35
 		if snagged:
-			vel *= 0.1
+			vel *= 0.12
 		else:
-			vel.x += sin(_floater_t * 0.15 + ph) * 0.03 * adt
-			vel.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.03 * adt
-		fp.position.x += vel.x
-		fp.position.z += vel.z
-		_floater_vel[iid] = vel * 0.92
-		# Ripple-coupled bob (#7)
-		var ripple_bob: float = sin(_floater_t * 0.7 + ph + fp.position.x * 0.4) * 0.015
-		fp.position.y = WATER_HEIGHT - 0.05 - fp.surface_sink() + ripple_bob
-		# Rosette spin (#8)
-		if fp.spin_rate > 0.0:
-			fp.rotation.y += adt * fp.spin_rate
-		# Daughter tether (#10)
-		if fp.linked_parent_id != "" and fp.tether_timer < 5.0:
+			vel.x += sin(_floater_t * 0.15 + ph) * 0.022 * adt
+			vel.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.022 * adt
+		# Daughter tether — spring to bud offset, not a fixed corner bias.
+		if fp.linked_parent_id != "" and fp.tether_timer < 4.5:
 			fp.tether_timer += adt
 			var parent_v: Variant = _floater_by_id.get(fp.linked_parent_id)
 			if parent_v is FloatingPlant and is_instance_valid(parent_v):
 				var parent: FloatingPlant = parent_v
-				var tether_t: float = clampf(fp.tether_timer / 4.0, 0.0, 1.0)
-				fp.position = fp.position.lerp(parent.position + Vector3(0.15, 0, 0.15), tether_t * adt * 2.0)
-		# Glass-edge handling (#4). The slow global drift would otherwise herd
-		# every floater into one wall, where they pack tight, shade each other,
-		# and slowly die — reading as "floaters vanish at the edge." Instead of
-		# just stopping them at the glass, give a gentle inward nudge so a raft
-		# that reaches the wall drifts back toward open water and redistributes.
-		var prev_xz: Vector2 = Vector2(fp.position.x, fp.position.z)
-		var xz: Vector2 = clamp_xz_in_tank(fp.position.x, fp.position.z, 0.35, WATER_HEIGHT - 0.05)
-		var hit_edge: bool = absf(xz.x - prev_xz.x) > 0.001 or absf(xz.y - prev_xz.y) > 0.001
-		fp.position.x = xz.x
-		fp.position.z = xz.y
-		if hit_edge:
-			var inward := Vector2(-xz.x, -xz.y)
-			if inward.length() > 1e-4:
-				inward = inward.normalized()
-				vel.x = inward.x * 0.05
-				vel.z = inward.y * 0.05
-			else:
-				vel.x = 0.0
-				vel.z = 0.0
-			_floater_vel[iid] = vel
+				var rest: Vector3 = fp.get_meta("tether_offset", Vector3.ZERO)
+				if rest.length_squared() < 1e-6:
+					rest = fp.position - parent.position
+					rest.y = 0.0
+					fp.set_meta("tether_offset", rest)
+				var anchor: Vector3 = parent.position + rest
+				anchor.y = surface_y
+				var spring: float = clampf(fp.tether_timer / 2.8, 0.0, 1.0)
+				var to_anchor: Vector3 = anchor - fp.position
+				to_anchor.y = 0.0
+				vel += to_anchor * adt * lerpf(1.0, 0.35, spring)
+		fp.position.x += vel.x
+		fp.position.z += vel.z
+		vel *= _FLOATER_DRAG
+		var ripple_bob: float = sin(_floater_t * 0.7 + ph + fp.position.x * 0.4) * 0.015
+		fp.position.y = surface_y - fp.surface_sink() + ripple_bob
+		if fp.spin_rate > 0.0:
+			fp.rotation.y += adt * fp.spin_rate
+		# Glass meniscus — clamp to footprint and bounce off the wall normal.
+		var prev_x: float = fp.position.x
+		var prev_z: float = fp.position.z
+		var lat: Dictionary = tank_lateral_boundary_info(
+			fp.position, margin)
+		var wall_n: Vector3 = lat.get("inward", Vector3.ZERO)
+		var clearance: float = float(lat.get("clearance", 99.0))
+		var clamped: Vector2 = clamp_xz_in_tank(prev_x, prev_z, margin, surface_y)
+		var hit_edge: bool = absf(clamped.x - prev_x) > 0.0005 \
+			or absf(clamped.y - prev_z) > 0.0005
+		fp.position.x = clamped.x
+		fp.position.z = clamped.y
+		if hit_edge or clearance < 0.06:
+			if wall_n.length_squared() < 1e-6:
+				wall_n = Vector3(-fp.position.x, 0.0, -fp.position.z)
+				if wall_n.length_squared() > 1e-6:
+					wall_n = wall_n.normalized()
+				else:
+					wall_n = Vector3(1.0, 0.0, 0.0)
+			var vn: float = vel.x * wall_n.x + vel.z * wall_n.z
+			if vn < 0.0:
+				vel.x -= 2.0 * vn * wall_n.x
+				vel.z -= 2.0 * vn * wall_n.z
+				vel *= _FLOATER_BOUNCE_DAMP
+			elif hit_edge:
+				vel.x *= 0.35
+				vel.z *= 0.35
+		_floater_vel[iid] = vel
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
 		_floater_vel.erase(df.get_instance_id() if is_instance_valid(df) else 0)
@@ -4402,6 +4433,9 @@ var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
 var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
 var _floater_by_id: Dictionary = {}  # id -> FloatingPlant (tether lookup)
 const _FLOATER_CELL: float = 1.2
+const _FLOATER_SURFACE_MARGIN: float = 0.35
+const _FLOATER_BOUNCE_DAMP: float = 0.68
+const _FLOATER_DRAG: float = 0.93
 # Surface coverage reference for floaters — scales with tank surface area.
 const FLOATER_GROWTH_INTERVAL: float = 3.0
 var _lily_pads: Array = []
@@ -4704,6 +4738,29 @@ func query_floaters_in_radius(pos: Vector3, radius: float, active_only: bool = f
 	return out
 
 
+# Nudge a budding spawn away from neighbors so daughters don't stack on parents.
+func _floater_spawn_position(anchor: Vector3, offset: Vector3) -> Vector3:
+	var pos: Vector3 = anchor + offset
+	pos.y = WATER_HEIGHT - 0.05
+	var base_r: float = maxf(0.22, offset.length())
+	for attempt in 6:
+		var crowded: bool = false
+		for nb in query_floaters_in_radius(pos, 0.3, true):
+			var other: FloatingPlant = nb
+			var sep: Vector3 = pos - other.position
+			sep.y = 0.0
+			if sep.length_squared() < 0.09:
+				crowded = true
+				break
+		if not crowded:
+			break
+		var ang: float = randf() * TAU
+		var r: float = base_r + 0.16 + float(attempt) * 0.14
+		pos = anchor + Vector3(cos(ang) * r, 0.0, sin(ang) * r)
+		pos.y = WATER_HEIGHT - 0.05
+	return clamp_xyz_in_tank(pos, 0.35)
+
+
 # Disturbed-mat scatter (#40): outward impulse on feed drop / large ripple.
 func scatter_floaters_at(pos: Vector3, radius: float, strength: float = 1.0) -> void:
 	for fp in query_floaters_in_radius(pos, radius):
@@ -4718,7 +4775,21 @@ func scatter_floaters_at(pos: Vector3, radius: float, strength: float = 1.0) -> 
 
 
 # Per-clump growth orchestration (Floaters v2). Replaces aggregate dieback.
+func _sanitize_floater_positions() -> void:
+	var surface_y: float = WATER_HEIGHT - 0.05
+	for f in _floaters:
+		if not is_instance_valid(f) or not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		if is_finite(fp.position.x) and is_finite(fp.position.z):
+			continue
+		var xz: Vector2 = _sample_surface_xz(0.35, 0.34)
+		fp.position = Vector3(xz.x, surface_y, xz.y)
+		_floater_vel.erase(fp.get_instance_id())
+
+
 func _floater_growth_step() -> void:
+	_sanitize_floater_positions()
 	var live: Array = []
 	for f in _floaters:
 		if is_instance_valid(f):
@@ -4763,14 +4834,19 @@ func _floater_growth_step() -> void:
 			continue
 		if floater.has_pending_bud():
 			var bud: Dictionary = floater.consume_pending_bud()
-			var offset: Vector3 = bud.get("offset", Vector3(0.5, 0, 0.5))
+			var bud_offset: Vector3 = bud.get("offset", Vector3(0.5, 0, 0.5))
 			if compact > 0.0:
-				offset *= lerpf(1.0, 0.45, compact)
+				# Crowded mats should spread outward, not spawn on top of parents.
+				bud_offset *= lerpf(1.0, 1.55, compact)
 			var child_g: Dictionary = _mutate_floater_genome(bud.get("genome", floater.get_genome()))
 			child_g["linked_parent_id"] = String(bud.get("parent_id", floater.id))
 			child_g["chain_siblings"] = int(bud.get("chain", 0))
 			child_g["tether_timer"] = 0.0
-			spawn_queue.append({"pos": floater.position + offset, "genome": child_g})
+			spawn_queue.append({
+				"pos": _floater_spawn_position(floater.position, bud_offset),
+				"genome": child_g,
+				"tether_offset": bud_offset,
+			})
 	# Nutrient bloom burst (#15) — duckweed morph spreads faster at high nutrients
 	if sim != null and float(sim.get("bloom_intensity")) > 0.7:
 		for fp2 in live:
@@ -4785,12 +4861,14 @@ func _floater_growth_step() -> void:
 		if victim is FloatingPlant and _is_active_floater(victim):
 			n -= 1
 	for sq in spawn_queue:
-		if n >= cap or coverage > 0.82:
+		if n >= cap or coverage > 0.78:
 			break
 		var sp: Vector3 = sq.pos
 		sp.y = WATER_HEIGHT - 0.05
 		if _is_inside_tank(sp.x, sp.z, 0.4):
-			_add_floater_at(clamp_xyz_in_tank(sp, 0.35), sq.genome)
+			var child_fp: FloatingPlant = _add_floater_at(sp, sq.genome)
+			if sq.has("tether_offset"):
+				child_fp.set_meta("tether_offset", sq.tether_offset)
 			n += 1
 	for victim in to_remove:
 		if victim is FloatingPlant:
@@ -5058,8 +5136,12 @@ func restore_floaters(arr: Variant) -> void:
 		if not (e is Dictionary):
 			continue
 		var d: Dictionary = FloaterGenome.enrich(e)
-		var pos: Vector3 = SaveHelpers.array_to_vec3(
-			d.get("pos", []), Vector3(0, WATER_HEIGHT - 0.05, 0))
+		var pos: Vector3 = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
+		if pos.length_squared() < 1e-4:
+			var xz: Vector2 = _sample_surface_xz(0.35, 0.34)
+			pos = Vector3(xz.x, WATER_HEIGHT - 0.05, xz.y)
+		elif absf(pos.y) < 0.01:
+			pos.y = WATER_HEIGHT - 0.05
 		var fp: FloatingPlant = _add_floater_at(pos, d)
 		if d.has("vitality"):
 			fp.vitality = clampf(float(d.vitality), 0.0, 1.0)
