@@ -49,6 +49,12 @@ var adaptive_quality_target_fps: int = 55
 # substrate / hardscape. Off by default — interferes slightly with very
 # smooth auto-orbit cinematography.
 var pixel_snap_camera: bool = false
+# Cinematic depth-of-field on the followed creature. When following a fish, the
+# far/near layers blur so the eye locks onto the subject. Off by default — on
+# the Mobile renderer the blur reads through the palette pass as a dreamy
+# full-frame smear that some find striking and others find wrong, so it's an
+# opt-in "look" rather than the default.
+var follow_depth_of_field: bool = false
 # If false, the palette pass is bypassed and you see raw HDR colors. Useful
 # for spotting bugs in lighting + composition.
 var palette_enabled: bool = true
@@ -2033,6 +2039,7 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "crt_strength", crt_strength)
 	cfg.set_value("render", "integer_upscale", integer_upscale)
 	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
+	cfg.set_value("render", "follow_depth_of_field", follow_depth_of_field)
 	cfg.set_value("render", "adaptive_quality", adaptive_quality)
 	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
@@ -2251,6 +2258,7 @@ func load_from_disk() -> void:
 	start_matured = cfg.get_value("render", "start_matured", start_matured)
 	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
 	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
+	follow_depth_of_field = cfg.get_value("render", "follow_depth_of_field", follow_depth_of_field)
 	adaptive_quality = cfg.get_value("render", "adaptive_quality", adaptive_quality)
 	adaptive_quality_target_fps = cfg.get_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	palette_enabled = cfg.get_value("render", "palette_enabled", palette_enabled)
@@ -2478,6 +2486,7 @@ func reset_to_defaults() -> void:
 	crt_strength = 0.0
 	integer_upscale = false
 	pixel_snap_camera = false
+	follow_depth_of_field = false
 	adaptive_quality = false
 	adaptive_quality_target_fps = 55
 	palette_enabled = true

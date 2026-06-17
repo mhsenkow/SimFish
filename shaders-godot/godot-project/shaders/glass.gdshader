@@ -25,6 +25,12 @@ uniform float rim_chrome : hint_range(0.0, 1.0) = 0.55;
 // the existing biofilm but adds a subtle pink/cyan view-angle shift
 // where the corner creep concentrates.
 uniform float biofilm_iridescence : hint_range(0.0, 1.0) = 0.5;
+// Screen-space reflection. The front pane ghosts a horizontally-mirrored,
+// fresnel-weighted sample of the scene, so the room and the tank's own
+// contents shimmer in the glass at grazing angles — the "real glass in a real
+// room" read. Subtle by default to preserve the pixel-art palette.
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float screen_reflection : hint_range(0.0, 1.0) = 0.22;
 
 varying vec3 world_pos;
 
@@ -57,6 +63,16 @@ void fragment() {
 	float room_ref = smoothstep(0.15, 0.85, world_pos.y / max(water_surface_y, 0.1));
 	room_ref *= 0.35 + 0.65 * fresnel;
 	col = mix(col, vec3(0.55, 0.48, 0.42), room_ref * reflection_strength);
+
+	// Screen-space reflection: mirror the framebuffer horizontally and nudge
+	// by the surface normal so the room + tank contents ghost across the pane.
+	// Weighted by fresnel so it only blooms at grazing angles, like real glass.
+	if (screen_reflection > 0.001) {
+		vec2 refl_uv = vec2(1.0 - SCREEN_UV.x, SCREEN_UV.y) + n.xy * 0.035;
+		vec3 refl = texture(screen_tex, clamp(refl_uv, vec2(0.001), vec2(0.999))).rgb;
+		float refl_w = fresnel * screen_reflection;
+		col = mix(col, refl, clamp(refl_w, 0.0, 0.5));
+	}
 
 	// Waterline meniscus brightening on interior glass. The real meniscus
 	// is a tiny curved ring where surface tension pulls the water up

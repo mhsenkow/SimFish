@@ -714,6 +714,14 @@ func _process(dt: float) -> void:
 		room_dl = clampf(room_dl, 0.0, 1.0)
 		var room_warm: Color = Color(1.0, 0.82, 0.68)
 		var room_color: Color = beam_color.lerp(room_warm, minf(sunset_hour, 1.0) * 0.38)
+		# Room mood: the weather outside the window bleeds into the tank. An
+		# overcast/rainy day cools and dims the room fill so the whole vivarium
+		# shares the gloom; clear/sunset days stay warm. Cheap dict read.
+		var weather: String = String(_room_window_state.get("weather", "clear"))
+		if weather == "rain" or weather == "overcast" or weather == "storm":
+			var gloom: float = 0.5 if weather == "storm" else 0.32
+			room_color = room_color.lerp(Color(0.62, 0.70, 0.85), gloom)
+			room_dl *= (1.0 - gloom * 0.45)
 		if _directional_light != null:
 			_directional_light.light_color = room_color
 		# Tank fixture: tracks daylight during the day, stays bright at night
@@ -868,6 +876,8 @@ func _process(dt: float) -> void:
 		# push their world positions + radii into the god_ray shader so
 		# beams visibly attenuate where a fish silhouette passes through.
 		_update_god_ray_occluders()
+		# Soft contact shadows: drop the lowest 8 fish onto the substrate.
+		_update_substrate_blob_shadows()
 
 	# Floater drift + surface-plant sway are cosmetic and slow; run them on the
 	# 10 Hz ambient cadence with accumulated dt so motion looks identical.
@@ -4223,6 +4233,54 @@ func _update_god_ray_occluders() -> void:
 	for mat in _god_ray_materials:
 		if mat != null:
 			mat.set_shader_parameter("occluders", packed)
+
+
+# Pick the 8 fish closest to the substrate bed and publish them as soft
+# blob-shadow casters so the floor darkens beneath them. Cheap: a bounded
+# insertion over fish[], reusing the occluder pattern. Fish far above the
+# bed are skipped (their shadow would be too faint to matter).
+var _blob_buf: Array = []
+
+
+func _update_substrate_blob_shadows() -> void:
+	if sim == null:
+		return
+	_blob_buf.clear()
+	var bed_y: float = sim.substrate_top_y
+	for f in sim.fish:
+		if not is_instance_valid(f):
+			continue
+		if f.get("_dying") == true:
+			continue
+		var h: float = f.global_position.y - bed_y
+		if h < 0.0 or h > 4.5:
+			continue
+		var inserted: bool = false
+		for i in _blob_buf.size():
+			if h < float(_blob_buf[i][1]):
+				_blob_buf.insert(i, [f, h])
+				inserted = true
+				break
+		if not inserted and _blob_buf.size() < 8:
+			_blob_buf.append([f, h])
+		if _blob_buf.size() > 8:
+			_blob_buf.resize(8)
+	var packed: Array[Vector4] = []
+	for i in 8:
+		if i < _blob_buf.size():
+			var fish_node: Node3D = _blob_buf[i][0]
+			var radius: float = 0.4
+			var advoxv: Variant = fish_node.get("adult_voxel_scale")
+			if advoxv != null:
+				radius = clampf(float(advoxv) * 3.4, 0.3, 1.1)
+			packed.append(Vector4(
+				fish_node.global_position.x,
+				fish_node.global_position.y,
+				fish_node.global_position.z,
+				radius))
+		else:
+			packed.append(Vector4.ZERO)
+	VoxelMat.update_substrate_blob_shadows(packed)
 
 
 func _spawn_floaters() -> void:

@@ -23,6 +23,7 @@ var _crt: HSlider
 var _crt_label: Label
 var _integer_upscale_check: CheckBox
 var _pixel_snap_check: CheckBox
+var _follow_dof_check: CheckBox
 var _fog_density: HSlider
 var _fog_density_label: Label
 var _fog_anisotropy: HSlider
@@ -263,6 +264,13 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	var ps_desc := PanelTheme.make_description()
 	ps_desc.text = "Snaps camera to world-pixel units. Stops sub-pixel jitter on fish, may feel rigid."
 	vbox.add_child(ps_desc)
+	_follow_dof_check = CheckBox.new()
+	_follow_dof_check.text = "Follow depth-of-field"
+	_follow_dof_check.toggled.connect(func(v): TankConfig.follow_depth_of_field = v)
+	vbox.add_child(_follow_dof_check)
+	var dof_desc := PanelTheme.make_description()
+	dof_desc.text = "When following a creature, blurs the rest of the tank into a dreamy haze. A stylised look — off by default."
+	vbox.add_child(dof_desc)
 
 	_add_section(vbox, "Volumetric fog")
 	_fog_density_label = Label.new()
@@ -443,6 +451,10 @@ func _pull_from_config() -> void:
 		_pixel_snap_check.set_block_signals(true)
 		_pixel_snap_check.button_pressed = TankConfig.pixel_snap_camera
 		_pixel_snap_check.set_block_signals(false)
+	if _follow_dof_check != null:
+		_follow_dof_check.set_block_signals(true)
+		_follow_dof_check.button_pressed = TankConfig.follow_depth_of_field
+		_follow_dof_check.set_block_signals(false)
 	_fog_density.value = TankConfig.fog_density
 	_fog_anisotropy.value = TankConfig.fog_anisotropy
 	_fog_ambient.value = TankConfig.fog_ambient_inject

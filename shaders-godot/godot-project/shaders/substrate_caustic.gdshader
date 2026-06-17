@@ -39,6 +39,11 @@ uniform float grain_variation : hint_range(0.0, 1.0) = 0.45;
 // xyz = footprint center, w = radius. World.gd publishes one slot per
 // driftwood root + rock base it places. Up to 8 active points.
 uniform vec4 contact_ao_points[8];
+// Soft blob shadows cast by the nearest fish. xyz = fish world position,
+// w = radius. World.gd refreshes these each ambient tick. The substrate
+// darkens beneath a fish, grounding it in the water column (all lights run
+// shadowless, so this fake contact shadow is the only depth cue on the floor).
+uniform vec4 blob_shadow_points[8];
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -48,6 +53,55 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+// Organic caustics via a drifting Worley web (see caustics.gdshader). Replaces
+// the old sine-interference grid so light filaments branch and morph naturally.
+vec2 caustic_hash(vec2 p) {
+	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+	return fract(sin(p) * 43758.5453);
+}
+
+float worley_caustic(vec2 uv, float t) {
+	vec2 g = floor(uv);
+	vec2 fr = fract(uv);
+	float d1 = 8.0;
+	float d2 = 8.0;
+	for (int y = -1; y <= 1; y++) {
+		for (int x = -1; x <= 1; x++) {
+			vec2 cell = vec2(float(x), float(y));
+			vec2 fp = caustic_hash(g + cell);
+			vec2 pt = cell + 0.5 + 0.42 * sin(t + 6.2831 * fp);
+			float d = length(pt - fr);
+			if (d < d1) { d2 = d1; d1 = d; }
+			else if (d < d2) { d2 = d; }
+		}
+	}
+	float web = clamp(d2 - d1, 0.0, 1.0);
+	return pow(web, 1.6);
+}
+
+// Soft blob shadow from fish above. Projects each fish straight down (the
+// fixture is roughly overhead) onto the floor and darkens a soft disc. Shadows
+// soften with the fish's height above the bed so a fish near the surface casts
+// a fainter, broader smudge than one hovering just over the sand.
+float compute_blob_shadow(vec3 world_pos) {
+	float shade = 1.0;
+	for (int i = 0; i < 8; i++) {
+		vec4 p = blob_shadow_points[i];
+		if (p.w < 0.001) {
+			continue;
+		}
+		vec2 d = vec2(world_pos.x - p.x, world_pos.z - p.z);
+		float height = max(p.y - world_pos.y, 0.0);
+		// Penumbra grows with height; opacity falls with height.
+		float radius = p.w * (1.0 + height * 0.35);
+		float n_d = length(d) / max(radius, 0.001);
+		float disc = 1.0 - smoothstep(0.4, 1.0, n_d);
+		float strength = 0.42 * clamp(1.0 - height * 0.12, 0.25, 1.0);
+		shade *= mix(1.0, 1.0 - strength, disc);
+	}
+	return shade;
 }
 
 // Soft AO around each registered hardscape contact point. Matches the
@@ -121,6 +175,7 @@ void fragment() {
     // footprints on the top face only — matches substrate_opaque.
     if (n.y > 0.7) {
         base_color *= compute_contact_ao(world_pos);
+        base_color *= compute_blob_shadow(world_pos);
     }
     // Slope-edge Bayer dither on vertical substrate faces (angle of repose).
     if (abs(n.y) < 0.72) {
@@ -184,12 +239,10 @@ void fragment() {
         + sin(surf_uv.x * 1.55 - ts * 1.05) * cos(surf_uv.y * 1.35 + ts * 0.88) * 1.35);
     uv += surf_grad * wave_amplitude * wave_coupling * 6.0;
 
-    float w1 = sin(uv.x * 1.2 + t * 0.7) * cos(uv.y * 0.8 - t * 0.5);
-    float w2 = sin(uv.y * 1.4 + t * 0.9) * cos(uv.x * 1.1 + t * 0.6);
-    float w3 = sin((uv.x + uv.y) * 0.6 - t * 0.3);
-    
-    float wave = (w1 + w2 + w3 + 1.5) / 3.0;
-	float caustics = smoothstep(0.2, 0.8, wave) * 0.40;
+    float cc1 = worley_caustic(uv * 0.85, t * 0.6);
+    float cc2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
+    float cweb = cc1 * 0.65 + cc1 * cc2 * 0.9;
+    float caustics = smoothstep(0.15, 0.85, cweb) * 0.46;
 
 	float edge_fade_x = clamp(1.0 - abs(world_pos.x) / 7.5, 0.0, 1.0);
 	float edge_fade_z = clamp(1.0 - abs(world_pos.z) / 3.5, 0.0, 1.0);

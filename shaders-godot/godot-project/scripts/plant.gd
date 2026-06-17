@@ -175,6 +175,15 @@ var _flower_voxel: MeshInstance3D = null
 var _phase: float = 0.0
 var _t: float = 0.0
 var _world_pos: Vector3 = Vector3.ZERO
+# Transient bend (radians) from a fish brushing past; springs back in tick().
+var _brush_bend: Vector2 = Vector2.ZERO
+
+
+# Called by a passing fish to deflect the plant. world_dir is the fish's
+# horizontal travel direction; amount scales with its speed/size.
+func brush(world_dir: Vector3, amount: float) -> void:
+	var add := Vector2(world_dir.x, world_dir.z) * clampf(amount, 0.0, 0.4)
+	_brush_bend = (_brush_bend + add).limit_length(0.4)
 # Surface for "emerged"/seeding check. Set by world.gd from WATER_HEIGHT
 # at spawn so plant.gd doesn't need to know world geometry constants.
 var water_surface_y: float = 6.5
@@ -679,6 +688,13 @@ func _ensure_shared_pearling_assets() -> void:
 	pm.initial_velocity_max = 0.22
 	pm.gravity = Vector3(0, 0.10, 0)
 	pm.spread = 22.0
+	# Gentle turbulence so rising bubbles waver and weave instead of tracking
+	# perfectly straight lines — the believable "wobble" of real pearling.
+	pm.turbulence_enabled = true
+	pm.turbulence_noise_strength = 0.18
+	pm.turbulence_noise_scale = 1.6
+	pm.turbulence_influence_min = 0.05
+	pm.turbulence_influence_max = 0.18
 	# Tiny bubbles so the palette quantizer locks them into single sharp
 	# pixel specks rather than soft blobs. After quantization a 0.06 scale
 	# bubble at typical camera distance reads as a 1-2 pixel highlight —
@@ -1717,7 +1733,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# The dynamic time-based sway is fully offloaded to the GPU foliage.gdshader.
 	# We only apply the slow-changing downstream flow lean on the CPU.
 	var flow_bias: float = _get_flow_bias()
-	rotation.z = flow_bias * 0.04  # downstream lean
+	# Brush bend: a fish that swam through the foliage left a transient push
+	# that springs back over ~1s, so the scenery visibly reacts to its
+	# inhabitants instead of ignoring them.
+	if _brush_bend.length_squared() > 1e-6:
+		_brush_bend = _brush_bend.lerp(Vector2.ZERO, clampf(dt * 3.5, 0.0, 1.0))
+	rotation.z = flow_bias * 0.04 + _brush_bend.x  # downstream lean + brush
+	rotation.x = _brush_bend.y
 
 	# ---- Health tracking ----
 	# Epiphytes don't tap the substrate grid — they cling to a host and

@@ -133,6 +133,13 @@ func _step(dt: float) -> void:
 	if sim != null and sim.get("filter_intake_pos") != null:
 		intake = sim.filter_intake_pos
 		has_intake = intake != Vector3.ZERO
+	# Phototaxis: real zooplankton rise toward light by day (and sink at night).
+	# We bias drift gently upward during daylight so swarms gather in the lit
+	# upper column / god-ray shafts, then disperse downward after dark.
+	var daylight: float = 1.0
+	if sim != null and sim.has_method("daylight"):
+		daylight = float(sim.daylight())
+	var photo_bias: float = (daylight - 0.45) * DRIFT_SPEED * 0.9
 	for p: Plankton in _plankton:
 		if not p.alive:
 			continue
@@ -141,6 +148,7 @@ func _step(dt: float) -> void:
 			_kill(p)
 			continue
 		p.pos += p.drift * dt
+		p.pos.y += photo_bias * dt
 		p.bob += dt * BOB_SPEED
 		p.pos.y += sin(p.bob) * BOB_AMP * dt * 6.0
 		if w != null:

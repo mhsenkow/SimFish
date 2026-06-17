@@ -509,6 +509,22 @@ static func update_substrate_contact_ao(points: Array) -> void:
 			mat.set_shader_parameter("contact_ao_points", packed)
 
 
+# Push soft blob-shadow casters (the nearest fish) into the substrate caustic
+# material so the floor darkens beneath swimming fish. Same packing convention
+# as contact AO: Array of Vector4 (xyz = world position, w = radius). Only the
+# top-face caustic material reads these. Pass an empty array to clear.
+static func update_substrate_blob_shadows(points: Array) -> void:
+	var packed: Array[Vector4] = []
+	for i in 8:
+		if i < points.size() and points[i] is Vector4:
+			packed.append(points[i] as Vector4)
+		else:
+			packed.append(Vector4.ZERO)
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("blob_shadow_points", packed)
+
+
 # Update SSS rim strength on every foliage material (both node-based and
 # MultiMesh). Wires into TankConfig's plant_sss_strength field so the rim
 # brightens/dims as the player tunes it.

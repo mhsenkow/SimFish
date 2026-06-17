@@ -1011,6 +1011,10 @@ func _apply_render_config() -> void:
 		var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
 		if world_vis != null:
 			sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
+		# Per-biotope palette swap: a blackwater tank quantizes through amber
+		# tannin colors, a reef through bright alkaline blues, planted through
+		# the verdant default. Built at runtime so no extra PNGs are needed.
+		_apply_biotope_palette(sm, cfg)
 	# Integer upscale: lock the display rect to an integer multiple of the
 	# SubViewport size, centered, letterboxed with the parent control's
 	# background. Off → full-rect anchored display (default).
@@ -1031,6 +1035,97 @@ func _apply_render_config() -> void:
 		we.environment.volumetric_fog_anisotropy = float(cfg.fog_anisotropy)
 		we.environment.volumetric_fog_ambient_inject = float(cfg.fog_ambient_inject)
 	apply_material_palette()
+
+
+# 48-color biotope palettes (hex), matching shaders-godot/make_palette.py.
+# Built into ImageTextures on demand so each biotope reads in its own color
+# story instead of forcing every tank through the planted palette.
+const BIOTOPE_PALETTES: Dictionary = {
+	"planted": [
+		"0b1a22","163040","23475a","356379","4b8095","69a1b3","92c3d0","c5e2e7",
+		"102614","1d3b22","2c5a30","3e7f40","57a253","79c069","a5d97e","d0eb9a",
+		"1a120c","2c1f15","432f1f","5d4128","785538","95714e","b18f6a","cdb088",
+		"1a1a1f","2a2a30","3d3d44","555560","707081","8c8ca0","a8a8bd","c4c4d6",
+		"ffffff","e0eef2","b9d6df","c33b3b","d97e2c","e6c92a","2a7a4b","4a52c4",
+		"872cb0","c44a8e","2c1810","1a0f08","0d0805","503820","000000","f8f4e0",
+	],
+	"blackwater": [
+		"0a0907","15110b","251c10","382a14","4d3a1c","6a5128","8c7042","b9986a",
+		"0c0905","1a130a","2b2014","3d2f1e","57442d","735c40","927758","b29575",
+		"0e1a0d","1b2d18","2c4527","4a6738","6c894e","95ad6f","0d1015","1a1d22",
+		"2c2f34","444751","5d6068","777a82","92959c","adb0b6","c8cad0","e2e3e7",
+		"ffffff","f4e4c8","e0c89a","a13a2a","b86a30","d4a838","2e5a3c","3a4ca0",
+		"5e2c80","9c3c70","000000","7d6240","5a4630","3c2f20","241b12","ffffff",
+	],
+	"hard_alkaline": [
+		"0d1f25","1a3947","2e5a6e","467c92","62a1b4","87c2cf","b3def0","dff1f6",
+		"2a2620","423d34","5d574b","7c7466","9e957f","c0b899","ddd6b5","f0ecd2",
+		"4a4943","6b685d","8b8678","aaa595","c5c0b0","ddd9c8","efeddc","fbfbf0",
+		"10301c","1d4a2c","2c6440","458056","6ba07a","94c0a0","ffffff","000000",
+		"c44848","d97e2c","e6c92a","2c6db3","3a4ca0","7c2cb0","c44a8e","202020",
+		"3a3a3a","5a5a5a","7a7a7a","9a9a9a","bababa","dadada","f0f0f0","ffffff",
+	],
+}
+var _biotope_palette_cache: Dictionary = {}
+
+
+# Pick the palette key for the current tank from its preset/biotope.
+func _current_biotope_palette_key(cfg: Node) -> String:
+	if cfg == null:
+		return "planted"
+	var preset_l := ""
+	var pv: Variant = cfg.get("tank_preset")
+	if pv != null:
+		preset_l = String(pv).to_lower()
+	# Saltwater presets read as bright hard-alkaline; checked from the dict.
+	if cfg.has_method("current_tank_preset"):
+		var p: Variant = cfg.current_tank_preset()
+		if p is Dictionary and bool((p as Dictionary).get("is_saltwater", false)):
+			return "hard_alkaline"
+	if preset_l.find("blackwater") != -1 or preset_l.find("tannin") != -1:
+		return "blackwater"
+	if preset_l.find("reef") != -1 or preset_l.find("polyp") != -1 \
+			or preset_l.find("marine") != -1 or preset_l.find("cichlid") != -1 \
+			or preset_l.find("rift") != -1:
+		return "hard_alkaline"
+	return "planted"
+
+
+# Build (and cache) day+night ImageTextures for a biotope palette key.
+# Night is a darkened, cooled copy of the day ramp, preserving the brightest
+# slots so emissive content still burns through the moonlit field.
+func _biotope_palette_textures(key: String) -> Array:
+	if _biotope_palette_cache.has(key):
+		return _biotope_palette_cache[key]
+	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
+	var day_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
+	var night_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
+	for i in range(min(48, hexes.size())):
+		var c := Color.from_string("#" + String(hexes[i]), Color.BLACK)
+		day_img.set_pixel(i, 0, c)
+		var lum: float = c.get_luminance()
+		# Darken + cool; keep near-white highlights mostly intact.
+		var night := c.darkened(0.42)
+		night = night.lerp(Color(night.r * 0.7, night.g * 0.82, night.b * 1.1, 1.0), 0.5)
+		night = c.lerp(night, clampf(1.0 - lum * 0.6, 0.3, 1.0))
+		night.a = 1.0
+		night_img.set_pixel(i, 0, night)
+	var day_tex := ImageTexture.create_from_image(day_img)
+	var night_tex := ImageTexture.create_from_image(night_img)
+	var out: Array = [day_tex, night_tex]
+	_biotope_palette_cache[key] = out
+	return out
+
+
+# Assign the biotope's palette textures to the quantize material.
+func _apply_biotope_palette(sm: ShaderMaterial, cfg: Node) -> void:
+	if sm == null:
+		return
+	var key := _current_biotope_palette_key(cfg)
+	var texs := _biotope_palette_textures(key)
+	if texs.size() == 2:
+		sm.set_shader_parameter("palette_tex", texs[0])
+		sm.set_shader_parameter("palette_tex_night", texs[1])
 
 
 func apply_material_palette() -> void:
@@ -1150,6 +1245,7 @@ func _process(dt: float) -> void:
 		_update_portal_pip()
 
 	_update_follow_reticle(dt)
+	_update_follow_dof()
 	if _cinema_active:
 		_cinema_accum += dt
 		if _cinema_accum >= CINEMA_INTERVAL_S:
@@ -2014,6 +2110,58 @@ func _find_creature_by_id(cid: String) -> Node:
 
 # A pulsing cyan ring on the followed creature so it's findable in the tank even
 # outside the portal. Lives under `world`; repositioned + pulsed each frame.
+# Subtle depth-of-field that focuses on the creature you're following, blurring
+# the far layers so the eye locks onto the subject — a cinematic, intimate read.
+# Disabled (and the blur eased off) when not following.
+var _follow_cam_attr: CameraAttributesPractical = null
+var _follow_dof_amount: float = 0.0
+
+
+func _update_follow_dof() -> void:
+	if camera == null:
+		return
+	var want: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
+		and is_instance_valid(_follow_target)
+	# Opt-in: the follow depth-of-field is off unless the player enables it in
+	# the Render panel. When disabled, `want` falls to false so any active blur
+	# eases out and the camera attributes are cleared below.
+	var cfg_dof := get_node_or_null("/root/TankConfig")
+	if cfg_dof == null or not bool(cfg_dof.follow_depth_of_field):
+		want = false
+	# Ease the effect in/out so toggling follow doesn't pop the focus.
+	_follow_dof_amount = lerpf(_follow_dof_amount, 1.0 if want else 0.0, 0.12)
+	if _follow_dof_amount < 0.01 and not want:
+		if _follow_cam_attr != null:
+			_follow_cam_attr.dof_blur_far_enabled = false
+			_follow_cam_attr.dof_blur_near_enabled = false
+		return
+	if _follow_cam_attr == null:
+		_follow_cam_attr = CameraAttributesPractical.new()
+	if camera.attributes != _follow_cam_attr:
+		camera.attributes = _follow_cam_attr
+	var dist: float = 6.0
+	if want:
+		dist = maxf(camera.global_position.distance_to(_follow_target.global_position), 0.5)
+	_follow_cam_attr.dof_blur_far_enabled = true
+	_follow_cam_attr.dof_blur_far_distance = dist + 1.2
+	_follow_cam_attr.dof_blur_far_transition = 2.0
+	_follow_cam_attr.dof_blur_near_enabled = true
+	_follow_cam_attr.dof_blur_near_distance = maxf(dist - 1.4, 0.2)
+	_follow_cam_attr.dof_blur_near_transition = 1.6
+	_follow_cam_attr.dof_blur_amount = 0.06 * _follow_dof_amount
+
+	# Per-fish audio presence: pan the aquatic ambience toward where the
+	# followed creature sits on screen, so the Portal cam feels intimate.
+	var audio := get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("set_presence_pan"):
+		if want and not camera.is_position_behind(_follow_target.global_position):
+			var sp: Vector2 = camera.unproject_position(_follow_target.global_position)
+			var vw: float = maxf(float(sub_viewport.size.x), 1.0)
+			audio.set_presence_pan(clampf((sp.x / vw) * 2.0 - 1.0, -1.0, 1.0) * _follow_dof_amount)
+		else:
+			audio.set_presence_pan(0.0)
+
+
 func _update_follow_reticle(dt: float) -> void:
 	var on: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
 		and is_instance_valid(_follow_target)

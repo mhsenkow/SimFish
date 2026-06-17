@@ -309,6 +309,23 @@ var _wow_lfo2: float = 0.0
 
 # Vinyl crackle layer — sparse pops + filtered noise floor.
 var _vinyl_noise_lpf: float = 0.0
+
+# ---- Aquatic ambience bed (the "tank sounds wet" layer) ----
+# Continuous filtered-noise wash + a faint filter-motor hum, mixed under the
+# music so the vivarium has a believable underwater room tone. Level tracks
+# aeration. Filter state kept per-channel for a touch of stereo width.
+var _water_lpf_l: float = 0.0
+var _water_lpf_r: float = 0.0
+var _water_hum_phase: float = 0.0
+# Per-fish presence pan in [-1, 1]: the follow camera biases the ambience
+# toward where the watched creature sits, so the Portal cam feels intimate.
+var _presence_pan: float = 0.0
+
+
+# Called by the follow camera to position the soundscape toward the creature
+# you're watching (x in viewport-normalized [-1,1]; 0 when not following).
+func set_presence_pan(p: float) -> void:
+	_presence_pan = clampf(p, -1.0, 1.0)
 var _vinyl_pop_env: float = 0.0
 var _vinyl_pop_freq: float = 1.0
 var _vinyl_pop_t: float = 0.0
@@ -2411,6 +2428,26 @@ func _process(_dt: float) -> void:
 			var vinyl: float = _vinyl_sample()
 			_f_air_l += vinyl
 			_f_air_r += vinyl * 0.78 + _noise_sample() * _cached_vinyl * 0.004
+
+		# ---- Aquatic ambience bed ----
+		# Soft lowpassed noise reads as water hiss / fine bubble fizz; a slow
+		# low sine adds the filter-motor hum. Level rises with aeration so a
+		# bubbler tank audibly fizzes. Subtle so it sits under the music.
+		var aeration_amb: float = float(_env.get("aeration", 0.0))
+		var amb_level: float = 0.010 + aeration_amb * 0.026
+		_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(1900.0))
+		_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(2100.0))
+		_water_hum_phase = fposmod(_water_hum_phase + 92.0 * INV_SAMPLE_RATE, 1.0)
+		var hum: float = sin(_water_hum_phase * TAU) * 0.5 * aeration_amb
+		_f_air_l += (_water_lpf_l + hum) * amb_level
+		_f_air_r += (_water_lpf_r + hum * 0.92) * amb_level
+
+		# Per-fish presence pan: bias the whole air bus toward the watched fish.
+		if _presence_pan != 0.0:
+			var pan_l: float = 1.0 - maxf(_presence_pan, 0.0) * 0.5
+			var pan_r: float = 1.0 + minf(_presence_pan, 0.0) * 0.5
+			_f_air_l *= pan_l
+			_f_air_r *= pan_r
 
 		# Tape wow — applied to the synth bus only so drums stay rhythmically tight.
 		if wow_active:

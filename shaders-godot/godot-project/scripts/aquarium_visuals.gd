@@ -27,6 +27,7 @@ var _rain_particles: GPUParticles3D
 var _condensation_particles: GPUParticles3D
 var _current_ribbons: GPUParticles3D
 var _gas_escape_particles: GPUParticles3D
+var _snow_particles: GPUParticles3D
 var _filter_cavitation_t: float = 0.0
 var _gas_escape_t: float = 0.0
 var _rain_t: float = 0.0
@@ -322,6 +323,12 @@ func _build_ambient_emitters() -> void:
 	_condensation_particles = _make_condensation_emitter()
 	_gas_escape_particles = _make_gas_emitter(col_h)
 	_current_ribbons = _make_current_ribbons(wh, hw, hd)
+	# Suspended particulate ("marine snow"): fine motes drifting slowly down
+	# through the whole column, catching the light. Gives the water tangible
+	# density. Density is nudged with murkiness in the world ambient tick.
+	_snow_particles = _make_box_emitter("MarineSnow", 26, 9.0,
+		Vector3(0, sd + col_h * 0.5, 0), Vector3(hw, col_h * 0.48, hd),
+		Vector3(0.05, -1.0, 0.03), 0.015, 0.05, Color(0.80, 0.86, 0.86, 0.10))
 
 
 func _make_box_emitter(n: String, amount: int, life: float, pos: Vector3, ext: Vector3,

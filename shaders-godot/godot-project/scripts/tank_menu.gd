@@ -128,11 +128,20 @@ func _make_card(entry: Dictionary) -> Control:
 		if img != null:
 			thumb.texture = ImageTexture.create_from_image(img)
 	if thumb.texture == null:
-		# Placeholder: dim color rect behind a "(no preview)" label.
+		# No saved thumbnail yet — give the card a living animated water preview
+		# instead of a flat rect, so the gallery shimmers with life. A full 3D
+		# SubViewport per card would be far too heavy; this is a cheap shader.
 		var ph := ColorRect.new()
 		ph.color = Color(0.10, 0.12, 0.18, 1.0)
 		ph.custom_minimum_size = Vector2(0, 140)
 		ph.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var prev_shader: Shader = load("res://shaders/tank_preview.gdshader")
+		if prev_shader != null:
+			var mat := ShaderMaterial.new()
+			mat.shader = prev_shader
+			# Per-slot seed so each card animates differently.
+			mat.set_shader_parameter("seed", float(slot) * 0.37)
+			ph.material = mat
 		thumb.queue_free()
 		vb.add_child(ph)
 	else:

@@ -38,11 +38,43 @@ uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+// Screen-space refraction — the single biggest "this is real water" lever.
+// The scene behind the glass is sampled with a UV offset driven by the
+// surface wave slope, so plants/fish/substrate seen through the water gently
+// wobble. Kept subtle by default so the chunky pixel look survives.
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform float refraction_strength : hint_range(0.0, 0.08) = 0.018;
+// Depth absorption — warm wavelengths (red, then green) fade with depth, the
+// way real water swallows red light first. Gives the column a sense of volume.
+uniform float depth_absorption : hint_range(0.0, 1.0) = 0.4;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
 varying vec3 world_pos;
 varying float surface_lift;
+
+// Organic caustics web (matches caustics.gdshader) — drifting Worley cells.
+vec2 caustic_hash(vec2 p) {
+	p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+	return fract(sin(p) * 43758.5453);
+}
+float worley_caustic(vec2 uv, float tt) {
+	vec2 g = floor(uv);
+	vec2 fr = fract(uv);
+	float d1 = 8.0;
+	float d2 = 8.0;
+	for (int y = -1; y <= 1; y++) {
+		for (int x = -1; x <= 1; x++) {
+			vec2 cell = vec2(float(x), float(y));
+			vec2 fp = caustic_hash(g + cell);
+			vec2 pt = cell + 0.5 + 0.42 * sin(tt + 6.2831 * fp);
+			float d = length(pt - fr);
+			if (d < d1) { d2 = d1; d1 = d; }
+			else if (d < d2) { d2 = d; }
+		}
+	}
+	return pow(clamp(d2 - d1, 0.0, 1.0), 1.6);
+}
 
 void vertex() {
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -82,17 +114,30 @@ void fragment() {
 	// the fog density steps in the same bands as the depth gradient.
 	col = mix(col, deep_color.rgb, depth_used * depth_fog * 0.35);
 
+	// Depth absorption: red goes first, then green, leaving the deep column
+	// blue-shifted. Subtle, scaled by depth_used so the surface stays neutral.
+	col *= mix(vec3(1.0),
+		vec3(1.0 - depth_used * 0.55, 1.0 - depth_used * 0.22, 1.0),
+		depth_absorption);
+
+	// Organic caustics web instead of sine interference.
 	vec2 cuv = world_pos.xz * 1.15;
 	float t = TIME * 0.78 + day_phase_offset * 6.28318;
-	float cwave = sin(cuv.x * 2.05 + t) * sin(cuv.y * 1.72 - t * 0.86)
-		+ sin((cuv.x + cuv.y) * 1.38 + t * 1.15);
-	float caustics = smoothstep(0.05, 0.72, cwave) * caustic_intensity;
+	float cw1 = worley_caustic(cuv * 0.7, t * 0.6);
+	float cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
+	float caustics = smoothstep(0.12, 0.85, cw1 * 0.6 + cw1 * cw2 * 0.9) * caustic_intensity;
 	caustics *= 1.0 - depth_norm * 0.35;
-	col += light_color * caustics * 0.22;
+	col += light_color * caustics * 0.24;
 
 	vec3 n = normalize(NORMAL);
 	float surface = smoothstep(0.55, 0.92, n.y);
 	col = mix(col, shallow_color.rgb * 1.18, surface * 0.42);
+	// Living ceiling: viewed from below, the surface fractures the light into a
+	// drifting bright web. Reuses the caustic Worley so it matches the floor.
+	if (surface > 0.01) {
+		float surf_web = worley_caustic(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
+		col += light_color * surf_web * surface * 0.18;
+	}
 
 	float meniscus = surface * (0.65 + 0.35 * sin(world_pos.x * 2.4 + world_pos.z * 2.1));
 	float near_surface = 1.0 - smoothstep(0.0, 0.25, abs(world_pos.y - water_surface_y));
@@ -130,6 +175,26 @@ void fragment() {
 	alpha += ice_rim * 0.06;
 	alpha += bacterial_bloom * 0.18;
 
+	// ---- Screen-space refraction ----
+	// Offset the screen sample by the surface wave slope (and a little by the
+	// surface normal) so the scene behind the water shimmers. We composite the
+	// refracted background into the water color and lift alpha where we do so,
+	// so the wobble is actually visible through the translucent volume.
+	if (refraction_strength > 0.0001) {
+		vec2 wob = vec2(
+			sin(world_pos.x * 1.7 + world_pos.z * 1.1 + TIME * 0.9),
+			cos(world_pos.z * 1.9 - world_pos.x * 0.8 - TIME * 0.75));
+		wob += n.xz * 1.5;
+		vec2 ruv = SCREEN_UV + wob * refraction_strength;
+		vec3 refr = texture(screen_tex, clamp(ruv, vec2(0.001), vec2(0.999))).rgb;
+		// Tint the refracted light by the water color (light that travels
+		// through more water picks up its hue) and fold it in. Stronger in the
+		// clear shallows, fades where the water is already murky/opaque.
+		float refr_mix = clamp(0.5 * (1.0 - depth_used) * (1.0 - bacterial_bloom), 0.0, 0.55);
+		col = mix(col, refr * mix(vec3(1.0), col + 0.5, 0.4), refr_mix);
+		alpha = max(alpha, refr_mix * 0.7);
+	}
+
 	ALBEDO = col;
-	ALPHA = clamp(alpha, 0.04, 0.52);
+	ALPHA = clamp(alpha, 0.04, 0.62);
 }

@@ -197,6 +197,75 @@ var _cached_ai_drift: Vector3 = Vector3.ZERO
 var _ai_drift_check_t: float = 0.0
 const AI_DRIFT_CHECK_PERIOD: float = 2.0
 
+# ---- Inner life (the "sentience" layer) ----
+# A unified, lightweight cognitive/emotional state that several behaviors and
+# the animation layer read so a fish reads as a continuous individual mind
+# instead of a per-tick rule evaluator. All scalars are cheap; the heavy
+# lifting is reusing the steering hooks already present in the cruise tier.
+#
+# mood: emotional valence in [-1,1]. <0 = unhappy/anxious, >0 = content/curious.
+#   Drifts every tick from satisfaction (low hunger, low stress, company,
+#   good water) toward a personality-anchored baseline. Reads out as color
+#   vividness, fin spread, swim cadence.
+var mood: float = 0.2
+# curiosity_drive: an appetite for novelty in [0,1]. Builds when nothing
+#   interesting happens; discharged by investigating. Bored fish go exploring.
+var curiosity_drive: float = 0.0
+# spooked: lingering fear in [0,1] that decays slowly after a scare so the
+#   fish stays jumpy and hugs cover for a while, instead of resetting instantly.
+var spooked: float = 0.0
+# familiarity: how much THIS fish trusts the player, in [0,1]. Rises when fed
+#   near the camera; bold fish learn fast, shy fish stay wary. Makes the tank
+#   feel like it knows you. Persisted across saves.
+var familiarity: float = 0.0
+# A committed short-term goal so the fish doesn't re-decide every frame. The
+# goal_kind string is diagnostic; goal_point is where it wants to go; goal_timer
+# is how long it stays committed before it can pick something new.
+var goal_kind: String = ""
+var goal_point: Vector3 = Vector3.ZERO
+var goal_timer: float = 0.0
+var _goal_pick_cooldown: float = 0.0
+# Working memory: a tiny ring of recent salient events (bullied/fed/saw player/
+# startled). Each entry is {kind, pos, t} with t a countdown. Biases goal
+# selection ("I found food over there a moment ago").
+var memory: Array = []
+const MEMORY_MAX: int = 6
+# Reaction shot: brief freeze-and-orient when something surprising appears.
+var _reaction_remaining: float = 0.0
+var _reaction_point: Vector3 = Vector3.ZERO
+# Idle fidget: a queued micro-gesture (shimmy / flash / yawn) and its timer.
+var _fidget_kind: int = 0   # 0 none, 1 shimmy, 2 yawn-gape, 3 substrate-flash
+var _fidget_remaining: float = 0.0
+var _fidget_cooldown: float = 0.0
+# Social bonds: other fish ids this individual has chosen to associate with,
+# id -> affinity [-1,1] (>0 friend, <0 rival). Built from repeated co-schooling
+# and grudges. Cheap to maintain (updated on the decay throttle).
+var bonds: Dictionary = {}
+# Leadership: a transient role within the local school. >0.5 means this fish is
+# currently leading; followers weight cohesion toward it. Hands off over time.
+var lead_score: float = 0.0
+# Patrol anchors: 0-2 learned favorite spots the fish loops between, instead of
+# pure random home drift. Each is a Vector3; _patrol_idx selects the active one.
+var patrol_anchors: Array = []
+var _patrol_idx: int = 0
+var _patrol_retarget_t: float = 0.0
+# Relief/escalation tracking for chemistry: remember last-tick chem stress so a
+# sudden improvement reads as visible relief and a sudden worsening as alarm.
+var _prev_chem_stress: float = 0.0
+var _relief_pulse: float = 0.0
+# Sleep: a real rest state at night for diurnal species (and inverted for
+# nocturnal). Distinct from the cosmetic tilt — lowers sensing + speed and
+# parks the fish at a chosen nook until disturbed.
+var _asleep: bool = false
+var _sleep_nook: Vector3 = Vector3.ZERO
+var _sleep_have_nook: bool = false
+# Eye highlight target (local yaw the eye-dot looks toward) and blink timer.
+var _eye_look: float = 0.0
+var _blink_t: float = 0.0
+var _blink_remaining: float = 0.0
+# Cached content shimmer + breathing load for the animation layer.
+var _breath_load: float = 1.0
+
 
 # ---- State (mutable) ----
 var age: float = 0.0
@@ -560,6 +629,126 @@ func _trait(key: String) -> float:
 	return float(personality.get(key, 0.5)) if not personality.is_empty() else 0.5
 
 
+# Seasonal breeding readiness in roughly [0.7, 1.3] from the real-world month:
+# peaks in spring (Mar-May), dips in winter. Matches the seasonal palette drift
+# so the tank's look and its biology share one annual rhythm.
+func _season_breed_mult() -> float:
+	var month: int = Time.get_datetime_dict_from_system().get("month", 6)
+	# Phase so April (month 4) sits near the peak.
+	return 1.0 + sin((float(month) - 4.0) / 12.0 * TAU) * 0.3
+
+
+# Push a salient event into working memory. Cheap ring buffer; oldest entry is
+# dropped when full. Used to bias goal selection and to seed mood changes.
+func remember(kind: String, pos: Vector3, ttl: float = 12.0) -> void:
+	memory.append({"kind": kind, "pos": pos, "t": ttl})
+	if memory.size() > MEMORY_MAX:
+		memory.pop_front()
+
+
+# Most recent remembered event of a given kind that hasn't expired, or null.
+func _recall(kind: String) -> Variant:
+	for i in range(memory.size() - 1, -1, -1):
+		var e: Dictionary = memory[i]
+		if String(e.get("kind", "")) == kind and float(e.get("t", 0.0)) > 0.0:
+			return e
+	return null
+
+
+# Maintain the unified inner-life state. Called once per brain tick BEFORE the
+# behavior tiers so mood/curiosity/spooked/familiarity are fresh when the
+# steering reads them. Returns nothing; mutates state in place. Throttle-safe:
+# everything here is O(1) plus a small memory sweep.
+func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
+	# Decay working memory.
+	if not memory.is_empty():
+		var keep: Array = []
+		for e in memory:
+			e["t"] = float(e.get("t", 0.0)) - dt
+			if float(e["t"]) > 0.0:
+				keep.append(e)
+		memory = keep
+
+	# Spooked decays slowly (lingering after-fear). A fresh startle tops it up.
+	if _startle_remaining > 0.0:
+		spooked = maxf(spooked, clampf(0.55 + (1.0 - _trait("boldness")) * 0.45, 0.0, 1.0))
+	spooked = maxf(0.0, spooked - dt * 0.12)
+
+	# Reaction-shot + fidget timers.
+	_reaction_remaining = maxf(0.0, _reaction_remaining - dt)
+	_fidget_remaining = maxf(0.0, _fidget_remaining - dt)
+	_fidget_cooldown = maxf(0.0, _fidget_cooldown - dt)
+	_goal_pick_cooldown = maxf(0.0, _goal_pick_cooldown - dt)
+	goal_timer = maxf(0.0, goal_timer - dt)
+	_relief_pulse = maxf(0.0, _relief_pulse - dt * 1.5)
+
+	# Curiosity builds when life is calm and uneventful; discharges when the
+	# fish is actively investigating (interest set) or recently startled.
+	var calm_now: bool = stress < 0.4 and _startle_remaining <= 0.0 and burst_remaining <= 0.0
+	if calm_now and _interest_remaining <= 0.0:
+		curiosity_drive = clampf(curiosity_drive + dt * (0.02 + _trait("curiosity") * 0.05), 0.0, 1.0)
+	else:
+		curiosity_drive = maxf(0.0, curiosity_drive - dt * 0.25)
+
+	# Mood: a smoothed read of wellbeing. Satisfaction from full belly, calm,
+	# company, oxygen; misery from hunger/stress/spook/isolation. Anchored
+	# toward a personality baseline (bold + calm fish sit happier).
+	var satisfaction: float = 0.0
+	satisfaction += (0.5 - hunger) * 0.6
+	satisfaction += (0.5 - stress) * 0.8
+	satisfaction -= spooked * 0.6
+	if conspecifics_nearby >= 2:
+		satisfaction += 0.25
+	elif maturity != MATURITY_FRY and schooling_strength > 0.4:
+		satisfaction -= 0.25
+	if sim != null and sim.get("dissolved_o2") != null:
+		satisfaction += (float(sim.dissolved_o2) - 0.6) * 0.4
+	var baseline: float = lerpf(-0.1, 0.4, (_trait("calm") + _trait("boldness")) * 0.5)
+	var mood_target: float = clampf(baseline + satisfaction, -1.0, 1.0)
+	mood = lerpf(mood, mood_target, clampf(dt * 0.4, 0.0, 1.0))
+
+	# Chemistry relief/escalation. Compare this tick's chem stress to last.
+	var chem_now: float = 0.0
+	if sim != null and sim.get("water_chemistry") != null:
+		var nh3c: float = float(sim.water_chemistry.ammonia)
+		var no2c: float = float(sim.water_chemistry.nitrite)
+		chem_now = maxf(clampf((nh3c - 0.25) / 0.75, 0.0, 1.0),
+			clampf((no2c - 0.35) / 0.85, 0.0, 1.0))
+	if _prev_chem_stress - chem_now > 0.04:
+		_relief_pulse = 1.0   # water just got noticeably better → visible easing
+	_prev_chem_stress = chem_now
+
+	# Sleep state. Diurnal species sleep in deep night; nocturnal (shuffle)
+	# invert. A scare wakes them. Sets _asleep which the tiers + animation read.
+	if sim != null:
+		var dl_s: float = float(sim.daylight())
+		var wants_sleep: bool
+		if swim_pattern == "shuffle":
+			wants_sleep = dl_s > 0.82   # nocturnal: rest in bright day
+		else:
+			wants_sleep = dl_s < 0.14   # diurnal: rest in deep night
+		# Hunger / breeding / panic override sleep.
+		if hunger > 0.6 or _startle_remaining > 0.0 or partner != null \
+				or brooding_remaining > 0.0:
+			wants_sleep = false
+		_asleep = wants_sleep and maturity != MATURITY_FRY
+
+	# Eye blink cadence — slower when calm, suppressed when active.
+	_blink_t -= dt
+	_blink_remaining = maxf(0.0, _blink_remaining - dt)
+	if _blink_t <= 0.0 and speed < 0.8:
+		_blink_t = randf_range(2.0, 6.0)
+		_blink_remaining = 0.12
+
+	# Leadership: a confident, high-ranking, mature fish drifts toward leading
+	# its local school. A slow random walk lets the role change hands over time
+	# so the same individual doesn't lead forever (organic, not rail-fixed).
+	var lead_target: float = _trait("boldness") * 0.4 + rank_within_species * 0.4 \
+		+ clampf(age / max_age_s, 0.0, 1.0) * 0.2
+	lead_target += sin(age * 0.13 + float(get_instance_id() % 100)) * 0.12
+	lead_score = lerpf(lead_score, clampf(lead_target, 0.0, 1.0), clampf(dt * 0.2, 0.0, 1.0))
+
+
 # Record a meal at the current position into both the bio counter and the
 # spatial feed_heatmap. Called from every food-consumption site so the
 # fish actually learns where it has eaten before. Costs a single int add
@@ -573,6 +762,15 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
 	if bio.is_empty():
 		bio["meals_eaten"] = 0
 	bio["meals_eaten"] = int(bio.get("meals_eaten", 0)) + 1
+	# Working memory + mood: a meal is a happy, salient event. Remember where
+	# it happened so the fish can return to a proven spot when hungry again.
+	remember("fed", pos, 14.0)
+	mood = clampf(mood + 0.12 * weight, -1.0, 1.0)
+	# Trust building: being fed while the player is watching teaches the fish
+	# that the looming presence at the glass means food. This is the core of
+	# "the tank knows you" — hand-fed fish learn to greet you.
+	if _cached_glance_strength > 0.25:
+		familiarity = clampf(familiarity + 0.03 * weight * (0.5 + _trait("boldness")), 0.0, 1.0)
 	if feed_heatmap.size() == 0:
 		return
 	var w: Node = _world_node()
@@ -2323,6 +2521,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if sim != null and sim.total_plant_biomass > 320 and sim.dissolved_o2 > 0.65:
 		stress = maxf(0.0, stress - dt * 0.025)
 
+	# Inner life: mood, curiosity, lingering fear, sleep, relief, blink, memory.
+	# Runs before the behavior tiers so steering reads a fresh emotional state.
+	_update_inner_life(dt, conspecifics_nearby)
+
 	_update_maturity()
 
 	# Senescent fish: slowly fade their colors.
@@ -2426,6 +2628,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				desired += to_t.normalized() * effective_max * 1.8
 				if burst_remaining < 0.25:
 					burst_remaining = 0.25
+		elif to_nest.length() < 0.6:
+			# PARENTAL CARE: with no intruder to chase, the parent hovers over
+			# the clutch and fans it — a gentle pectoral-driven shimmy that
+			# oxygenates the eggs. Reads as attentive, devoted tending.
+			if _fidget_remaining <= 0.0 and randf() < dt * 0.5:
+				_fidget_kind = 1   # shimmy = fanning motion
+				_fidget_remaining = 0.7
+			mood = clampf(mood + dt * 0.08, -1.0, 1.0)   # proud, settled parent
 		target_velocity = _apply_target_from_desired(desired, effective_max)
 		return events
 
@@ -2689,6 +2899,28 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_courtship_intensity = 0.0
 		else:
 			current_mode = Mode.COURT
+			# REJECTION BEAT. Courtship is a real negotiation, not a timer.
+			# Early in the dance the female may reject an unimpressive suitor
+			# (low rank/size, or she's stressed/unwell) — she breaks off, darts
+			# away, and the male is left displaying to no one. Only fires in the
+			# first third of the dance so committed pairs still spawn.
+			if sex == 1 and court_timer < COURT_DURATION * 0.33 and court_timer > 0.4:
+				var suitor_appeal: float = partner.rank_within_species * 0.5 \
+					+ clampf(partner.growth_factor - 0.8, 0.0, 0.6) + mood * 0.2
+				var reject_chance: float = clampf(0.06 - suitor_appeal * 0.05 + stress * 0.08, 0.0, 0.12)
+				if randf() < reject_chance * dt:
+					# She's not interested. Both reset; she flees a beat.
+					if is_instance_valid(partner):
+						partner.partner = null
+						partner.court_timer = 0.0
+						partner._courtship_flare = false
+						partner.mood = clampf(partner.mood - 0.15, -1.0, 1.0)
+					partner = null
+					court_timer = 0.0
+					_courtship_flare = false
+					_courtship_intensity = 0.0
+					burst_remaining = 0.35
+					return events
 			var to_partner: Vector3 = partner.position - position
 			var dist: float = to_partner.length()
 			# Swim alongside (not into) the partner: target a point slightly to one side.
@@ -2803,6 +3035,22 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					bio["offspring"] = int(bio.get("offspring", 0)) + 1
 				if partner != null and not partner.bio.is_empty():
 					partner.bio["offspring"] = int(partner.bio.get("offspring", 0)) + 1
+				# Pair bond + shared joy. Successful mates form a lasting
+				# positive affinity (recorded as longest_friend) and both get
+				# a mood lift — relationships you can read across the tank.
+				if partner != null:
+					if partner.id != "":
+						bonds[partner.id] = clampf(float(bonds.get(partner.id, 0.0)) + 0.5, -1.0, 1.0)
+					if id != "":
+						partner.bonds[id] = clampf(float(partner.bonds.get(id, 0.0)) + 0.5, -1.0, 1.0)
+					if not bio.is_empty():
+						bio["longest_friend_id"] = partner.id
+					if not partner.bio.is_empty():
+						partner.bio["longest_friend_id"] = id
+					mood = clampf(mood + 0.4, -1.0, 1.0)
+					partner.mood = clampf(partner.mood + 0.4, -1.0, 1.0)
+					remember("bred", position, 16.0)
+					partner.remember("bred", position, 16.0)
 				partner.partner = null
 				partner = null
 				court_timer = 0.0
@@ -3189,9 +3437,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# still ACCEPT a bond when a female pairs with him (handled by the
 	# `candidate.partner = self` line below).
 	var female_initiator_only: bool = is_livebearer and sex == 0
+	# Seasonal rhythm: fish breed readily in spring and slow in winter, so the
+	# population has a living annual cadence (driven by the real-world month,
+	# same source as the seasonal palette shift).
+	var season_breed: float = _season_breed_mult()
 	if not female_initiator_only and maturity == MATURITY_ADULT \
 			and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.5 and energy > 0.65 and stress < 0.4:
+			and hunger < 0.5 and energy > 0.65 / season_breed \
+			and stress < 0.4 * season_breed:
 		var candidate: Fish = _find_breeding_partner(neighbors)
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
@@ -3245,6 +3498,26 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		mourning_w = sim.mourning_intensity_for(species, position)
 		if mourning_w > 0.01:
 			tightness *= 1.0 + mourning_w * 0.8
+	# PREDATOR BALLING. When a much larger fish (a potential predator) is
+	# close, the school cinches into a tight defensive ball and everyone's
+	# fear spikes — the classic baitball response. Cheap manual scan; N small.
+	var predator_near: float = 0.0
+	for n in neighbors:
+		if not (n is Fish):
+			continue
+		var pf: Fish = n
+		if pf == self or pf.species == species:
+			continue
+		# "Threatening" = noticeably bigger than us (size-based predation uses
+		# growth_factor >= 1.3 elsewhere) and within a body-lengths radius.
+		if pf.growth_factor * pf.adult_voxel_scale > adult_voxel_scale * 1.25:
+			var pd2: float = pf.position.distance_squared_to(position)
+			if pd2 < 12.0:
+				predator_near = maxf(predator_near, 1.0 - sqrt(pd2) / 3.5)
+	if predator_near > 0.01:
+		tightness *= 1.0 + predator_near * 1.6
+		stress = clampf(stress + predator_near * dt * 0.6, 0.0, 1.0)
+		spooked = clampf(spooked + predator_near * 0.3, 0.0, 1.0)
 	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
 	desired += _boids(neighbors, tightness, fauna_sep) \
 		* schooling_strength * float(fauna_rt.get("schooling", 1.0))
@@ -3424,15 +3697,33 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_cached_glance_strength = 0.0
 	if bool(fauna_rt.get("glance", true)) and _cached_glance_strength > 0.30:
 		var b_personality: float = _trait("boldness")
-		if b_personality > 0.55:
+		# RECOGNITION: a fish that trusts the player approaches even when it is
+		# not naturally bold. Familiarity effectively lowers the boldness gate
+		# and amplifies the pull, so a hand-fed fish learns to come greet you.
+		var effective_bold: float = b_personality + familiarity * 0.4
+		if effective_bold > 0.55:
 			var novelty: float = float(habituated.get("player", 1.0))
-			var pull: float = _cached_glance_strength * (b_personality - 0.55) * 1.4 * novelty
+			# Trust replaces novelty as the driver once the fish knows you:
+			# habituation makes a stranger boring, but familiarity keeps a
+			# friend interesting.
+			var draw: float = maxf(novelty, familiarity)
+			var pull: float = _cached_glance_strength * (effective_bold - 0.55) * 1.4 * draw
 			var to_glass: Vector3 = _cached_glance_point - position
 			if to_glass.length_squared() > 0.04:
-				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.55)
+				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.6)
 				_interest_target = _cached_glance_point
 				_interest_remaining = 1.2
-			# Decay novelty rolls in the bulk decay block, no per-tick write needed.
+			# A brand-new strong glance is startling/interesting → reaction shot
+			# the first beat, then settles into approach.
+			if _reaction_remaining <= 0.0 and float(habituated.get("player", 1.0)) > 0.7:
+				_reaction_remaining = 0.5
+				_reaction_point = _cached_glance_point
+			# Familiarity creeps up slowly while the player holds attention; bold
+			# and curious fish bond faster. Capped so it takes real time.
+			familiarity = clampf(familiarity + dt * (0.01 + b_personality * 0.02 \
+				+ _trait("curiosity") * 0.01), 0.0, 1.0)
+			if _recall("saw_player") == null:
+				remember("saw_player", _cached_glance_point, 8.0)
 	_interest_remaining = maxf(0.0, _interest_remaining - dt)
 
 	# GAZE CONTAGION. When a neighbor of the same species is actively
@@ -3463,6 +3754,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var pull_dir: Vector3 = (copied / copied_w)
 			if pull_dir.length_squared() > 0.04:
 				desired += pull_dir.normalized() * effective_max * 0.25 * clampf(copied_w, 0.0, 1.0)
+				# CURIOSITY CONTAGION: a neighbor investigating something makes
+				# this fish curious too, so one explorer draws a small crowd
+				# that lingers even after the leader moves on.
+				curiosity_drive = clampf(curiosity_drive + dt * 0.4 * _trait("curiosity"), 0.0, 1.0)
+				if _interest_remaining <= 0.0:
+					_interest_target = position + pull_dir.normalized() * 2.0
+					_interest_remaining = 0.8
 
 	# GAZE TARGETING. When a fast-moving neighbor passes through eyeshot
 	# while WE are slow / resting, we turn to look. Sets _gaze_yaw which
@@ -3625,6 +3923,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var surface_y: float = _water_surface_y()
 		var anticipation_bias: float = clampf((surface_y - position.y) * 0.25, -0.5, 1.2)
 		desired.y += anticipation_bias * effective_max * 0.35
+		# Begging at the glass: familiar fish that associate the player with
+		# food crowd toward the last place they saw you and pace expectantly.
+		if familiarity > 0.25 and _cached_glance_point.length_squared() > 0.01:
+			var to_you: Vector3 = _cached_glance_point - position
+			if to_you.length_squared() > 0.25:
+				desired += to_you.normalized() * effective_max * 0.3 * familiarity
+		mood = clampf(mood + dt * 0.05, -1.0, 1.0)
 
 	# STRESS CONTAGION + STARTLE PROPAGATION. Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
@@ -3654,6 +3959,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# before the dart fires.
 			var prox: float = 1.0 - sqrt(nearest_panic_d2) / 4.0
 			stress = clampf(stress + prox * 0.18, 0.0, 1.0)
+			# Lingering fear + memory: a scare isn't forgotten the instant the
+			# burst ends. The fish stays jumpy (spooked) and remembers it.
+			spooked = clampf(spooked + prox * 0.6, 0.0, 1.0)
+			if _recall("startled") == null:
+				remember("startled", nearest_panic.position, 10.0)
 			# Tight-schoolers copy the heading; loose-groupers flee away.
 			var tight: bool = swim_pattern == "school" or swim_pattern == "shoal"
 			var sh: Vector3
@@ -3717,18 +4027,70 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# The fix preserves the wall-avoid (and schooling/home_pull) contributions
 	# already in `desired`, just heavily damped — fish drifts slowly while
 	# "investigating" instead of freezing.
-	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and randf() < dt * 0.12 and energy > 0.3:
+	# Hysteresis: don't interrupt a committed goal or sleep with a random pause
+	# (that flip-flopping is what reads as mechanical). Pause rate is shaped by
+	# temperament — curious fish stop to look around more, jumpy fish less.
+	var pause_rate: float = dt * lerpf(0.06, 0.18, _trait("curiosity"))
+	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and goal_timer <= 0.0 \
+			and not _asleep and randf() < pause_rate and energy > 0.3:
 		# 15% of max speed → enough motion to slide off a wall, slow enough to
 		# read as "pausing to look around."
 		target_velocity = _apply_target_from_desired(desired, effective_max * 0.15)
+		# Pausing to look is the moment the fish notices things — let curiosity
+		# discharge into a gaze so neighbors can pick it up.
+		if curiosity_drive > 0.3:
+			_interest_target = position + heading * 2.0
+			_interest_remaining = 1.0
 		return events
 		
 	# PLAYFUL DART (ZOOMIES). Even non-dart species occasionally get a burst of
-	# energy if they are well-fed and healthy.
-	if burst_remaining <= 0.0 and energy > 0.7 and hunger < 0.2 and randf() < dt * 0.05:
+	# energy if they are well-fed and healthy. Happy fish play more.
+	var zoom_rate: float = dt * (0.05 + clampf(mood, 0.0, 1.0) * 0.06)
+	if burst_remaining <= 0.0 and energy > 0.7 and hunger < 0.2 and randf() < zoom_rate:
 		burst_remaining = randf_range(0.3, 0.6)
 		var ang: float = randf() * TAU
 		heading_offset = Vector3(sin(ang), randf_range(-0.4, 0.6), cos(ang)) * 1.5
+
+	# IDLE FIDGETS. Small spontaneous gestures (a shimmy, a yawn-gape, a
+	# substrate flash) that break the metronome of constant swimming. Only when
+	# calm, slow, and not already busy. Cheap: just arms a timer the animation
+	# layer reads; the actual motion is applied in _motion_substep.
+	if _fidget_cooldown <= 0.0 and _fidget_remaining <= 0.0 and speed < 0.7 \
+			and burst_remaining <= 0.0 and _startle_remaining <= 0.0 \
+			and not _asleep and randf() < dt * 0.08:
+		var r: float = randf()
+		if r < 0.45:
+			_fidget_kind = 1   # shimmy
+			_fidget_remaining = 0.6
+		elif r < 0.8:
+			_fidget_kind = 2   # yawn-gape
+			_fidget_remaining = 0.5
+			_trigger_mouth_gape()
+		elif position.y < (sim.substrate_top_y + 1.2 if sim != null else 2.0):
+			_fidget_kind = 3   # substrate flash (only near the floor)
+			_fidget_remaining = 0.5
+			# Flashing against the substrate kicks up a little sediment puff —
+			# living substrate that reacts to its inhabitants.
+			var wf := _world_node()
+			if wf != null and wf.has_method("spawn_substrate_dust"):
+				wf.spawn_substrate_dust(global_position)
+		else:
+			_fidget_kind = 1
+			_fidget_remaining = 0.5
+		_fidget_cooldown = randf_range(5.0, 12.0)
+
+	# PLANT BRUSH: a fish swimming with some pace through foliage deflects it.
+	# Throttled to a probabilistic check so dense tanks stay cheap.
+	if speed > 0.55 and sim != null and sim.has_method("query_plants_in_radius") \
+			and randf() < dt * 0.6:
+		var brush_dir: Vector3 = velocity
+		if brush_dir.length_squared() > 1e-4:
+			brush_dir = brush_dir.normalized()
+			for bp in sim.query_plants_in_radius(position, 0.7):
+				if is_instance_valid(bp) and bp.has_method("brush"):
+					var bd: float = bp._world_pos.distance_to(position)
+					bp.brush(brush_dir, (1.0 - bd / 0.7) * speed * 0.12)
+					break
 
 	# Wander refresh: periodically rotate heading_offset to a new random
 	# direction. Interval is shorter for solo fish (every 4-8s) so they
@@ -3880,6 +4242,98 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				to_shelter.y += 0.5
 				desired += to_shelter.normalized() * effective_max * 0.35
 				current_mode = Mode.REST
+
+	# ---- COMMITTED GOALS + CURIOSITY + PATROL (the "it has a plan" layer) ----
+	# A fish that re-evaluates from scratch every tick reads as twitchy. Here it
+	# commits to a short-lived goal and steers toward it for several seconds.
+	if goal_timer > 0.0 and goal_point.length_squared() > 0.0:
+		var to_goal: Vector3 = goal_point - position
+		if to_goal.length() < 0.7:
+			goal_timer = 0.0   # arrived — free to pick a new goal next window
+		elif to_goal.length_squared() > 1e-4:
+			desired += to_goal.normalized() * effective_max * 0.5
+	elif _goal_pick_cooldown <= 0.0 and burst_remaining <= 0.0 \
+			and _startle_remaining <= 0.0 and not _asleep \
+			and current_mode == Mode.CRUISE:
+		_goal_pick_cooldown = randf_range(3.0, 7.0)
+		# Curiosity discharge: if bored, go inspect a remembered spot or a
+		# random unexplored point. Otherwise occasionally pick a wander goal.
+		if curiosity_drive > 0.6 or randf() < 0.25:
+			var picked: bool = false
+			var fed: Variant = _recall("fed")
+			if fed != null and hunger > 0.45:
+				goal_point = (fed as Dictionary).get("pos", position)
+				goal_kind = "revisit_food"
+				picked = true
+			if not picked:
+				var w_g: Node = _world_node()
+				if w_g != null and w_g.has_method("clamp_xyz_in_tank"):
+					var ang_g: float = randf() * TAU
+					var reach: float = lerpf(2.0, 5.5, _trait("curiosity"))
+					var cand: Vector3 = position + Vector3(
+						cos(ang_g) * reach,
+						randf_range(-1.0, 1.2),
+						sin(ang_g) * reach)
+					goal_point = w_g.clamp_xyz_in_tank(cand, 0.5, _body_tank_margin())
+					goal_kind = "explore"
+					picked = true
+			if picked:
+				goal_timer = randf_range(2.5, 5.0)
+				curiosity_drive = maxf(0.0, curiosity_drive - 0.5)
+				_interest_target = goal_point
+				_interest_remaining = 1.4   # let neighbors catch the curiosity
+
+	# Patrol anchors: loosely loop between 1-2 learned favorite spots instead of
+	# pure random drift. Built lazily from the current home once the fish has
+	# settled. Gentle pull so it reads as "doing its rounds", not rail-riding.
+	if patrol_anchors.is_empty() and is_finite(home_x) and is_finite(home_y) \
+			and randf() < dt * 0.05 and maturity == MATURITY_ADULT:
+		patrol_anchors.append(Vector3(home_x, home_y, home_z))
+		var w_p: Node = _world_node()
+		if w_p != null and w_p.has_method("clamp_xyz_in_tank"):
+			var off: Vector3 = Vector3(randf_range(-3.0, 3.0), randf_range(-0.8, 0.8), randf_range(-3.0, 3.0))
+			patrol_anchors.append(w_p.clamp_xyz_in_tank(
+				Vector3(home_x, home_y, home_z) + off, 0.5, _body_tank_margin()))
+	if patrol_anchors.size() >= 2 and goal_timer <= 0.0 and not _asleep:
+		_patrol_retarget_t -= dt
+		if _patrol_retarget_t <= 0.0:
+			_patrol_retarget_t = randf_range(8.0, 16.0)
+			_patrol_idx = (_patrol_idx + 1) % patrol_anchors.size()
+		var anchor: Vector3 = patrol_anchors[_patrol_idx]
+		var to_anchor: Vector3 = anchor - position
+		if to_anchor.length() > 1.0 and to_anchor.length_squared() > 1e-4:
+			desired += to_anchor.normalized() * effective_max * 0.18
+
+	# Reaction shot: a brief freeze-and-orient when something surprising just
+	# appeared. Strongly damps motion so the fish visibly "takes it in".
+	if _reaction_remaining > 0.0:
+		desired *= 0.2
+
+	# Real sleep: park at a chosen nook, sensing + motion way down. Distinct
+	# from the cosmetic night tilt — the fish actually settles.
+	if _asleep:
+		if not _sleep_have_nook:
+			# Prefer the nearest plant/hardscape; fall back to current spot.
+			_sleep_nook = position
+			_sleep_have_nook = true
+			var sd2n: float = 20.0
+			var sc: Array = sim.query_plants_in_radius(position, 4.5) \
+				if sim != null and sim.has_method("query_plants_in_radius") else plants
+			for p in sc:
+				if not is_instance_valid(p) or p.biomass() < 5:
+					continue
+				var d2n: float = p._world_pos.distance_squared_to(position)
+				if d2n < sd2n:
+					sd2n = d2n
+					_sleep_nook = p._world_pos + Vector3(0.0, 0.35, 0.0)
+		var to_nook: Vector3 = _sleep_nook - position
+		if to_nook.length() > 0.5 and to_nook.length_squared() > 1e-4:
+			desired = to_nook.normalized() * effective_max * 0.3
+		else:
+			desired *= 0.12
+		current_mode = Mode.REST
+	else:
+		_sleep_have_nook = false
 
 	target_velocity = _apply_target_from_desired(desired, effective_max)
 	# Position + facing now updated in _process at render rate.
@@ -4411,6 +4865,10 @@ func _motion_substep(dt: float) -> void:
 		var pitch_target: float = 0.0
 		if _sift_timer > 0.0:
 			pitch_target = 0.55
+		elif hunger > 0.5 and velocity.y < -0.12 and current_mode == Mode.FORAGE:
+			pitch_target = 0.34   # head-down: diving to forage at the bottom
+		elif current_mode == Mode.FORAGE and velocity.y > 0.12:
+			pitch_target = -0.18   # head-up: rising to surface-feed
 		elif _courtship_flare and sex == 0:
 			pitch_target = -0.14   # male: nose up for the parade display
 		elif partner != null and sex == 1:
@@ -4515,7 +4973,9 @@ func _motion_substep(dt: float) -> void:
 	var mood_freq_mult: float = 1.0 + stress * 0.35
 	if not personality.is_empty():
 		mood_freq_mult -= float(personality.get("calm", 0.5)) * 0.20 - 0.10
-	wag_freq *= clampf(mood_freq_mult, 0.6, 1.5)
+	# Lingering fear quickens the beat; contentment slows it to a lazy drift.
+	mood_freq_mult += spooked * 0.4 - clampf(mood, 0.0, 1.0) * 0.15
+	wag_freq *= clampf(mood_freq_mult, 0.55, 1.7)
 
 	_swim_phase += dt * wag_freq * _wag_freq_jitter
 	if (swim_pattern == "school" or swim_pattern == "shoal") \
@@ -4562,10 +5022,20 @@ func _motion_substep(dt: float) -> void:
 		# gill-cover breathing — a real fish at rest does this constantly
 		# and a still aquarium fish that DOESN'T do it reads as "frozen".
 		# Active swimming hides the pulse anyway (wag dominates the visual).
-		var breath_amp: float = 0.035 * rest_factor
-		var breath: float = 1.0 + sin(_swim_phase * 0.9) * breath_amp
+		# Breathing you can see: gill-cover pulse rate + depth scale with
+		# exertion and low oxygen. A fish that just sprinted, or one in a
+		# starved-for-air tank, visibly pants; a resting fish in good water
+		# breathes slow and shallow.
+		var o2_now2: float = float(sim.dissolved_o2) if sim != null and sim.get("dissolved_o2") != null else 1.0
+		var breath_load: float = clampf(0.4 + speed * 0.5 + (0.7 - o2_now2) * 1.2 + stress * 0.4, 0.4, 2.2)
+		_breath_load = lerpf(_breath_load, breath_load, clampf(dt * 3.0, 0.0, 1.0))
+		var breath_amp: float = (0.035 + clampf(_breath_load - 1.0, 0.0, 1.2) * 0.05) * maxf(rest_factor, 0.25)
+		var breath: float = 1.0 + sin(_swim_phase * 0.9 * _breath_load) * breath_amp
+		# Blink: a brief vertical squash of the head reads as an eye-blink at
+		# voxel resolution (no separate eyelid geometry needed).
+		var blink_sq: float = 1.0 - (0.18 if _blink_remaining > 0.0 else 0.0)
 		var gape_z: float = 1.0 + _mouth_gape * 0.28
-		_head_pivot.scale = Vector3(breath, 1.0, gape_z)
+		_head_pivot.scale = Vector3(breath, blink_sq, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08
@@ -4577,11 +5047,27 @@ func _motion_substep(dt: float) -> void:
 	# bigger amplitude because their bodies don't propel — the pecs do.
 	var pec_freq: float = pec_freq_base
 	var pec_amp: float = pec_amp_base + pec_amp_extra - minf(speed * 0.12, 0.30)
-	pec_amp = maxf(pec_amp, 0.10)
+	# FIN BODY LANGUAGE. Confidence and contentment flare the fins wider;
+	# fear and sickness clamp them tight against the body. Continuous so the
+	# fish's mood is legible at a glance even when it's holding still.
+	var fin_mood: float = clampf(mood, -1.0, 1.0) * 0.18 - spooked * 0.4 - clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.3
+	pec_amp = maxf(pec_amp + fin_mood, 0.06)
+	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
+	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
+	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18, -0.1, 0.28)
 	if _pec_right_pivot != null:
-		_pec_right_pivot.rotation.z = sin(_swim_phase * pec_freq / wag_freq) * pec_amp
+		_pec_right_pivot.rotation.z = sin(_swim_phase * pec_freq / wag_freq) * pec_amp + pec_spread
 	if _pec_left_pivot != null:
-		_pec_left_pivot.rotation.z = -sin(_swim_phase * pec_freq / wag_freq + PI * 0.5) * pec_amp
+		_pec_left_pivot.rotation.z = -sin(_swim_phase * pec_freq / wag_freq + PI * 0.5) * pec_amp - pec_spread
+
+	# ---- Idle fidgets: shimmy / substrate-flash micro-gestures ----
+	# Applied as transient roll/wiggle on the bank pivot, layered over banking.
+	if _fidget_remaining > 0.0 and _bank_pivot != null:
+		var fphase: float = _fidget_remaining * 18.0
+		if _fidget_kind == 1:      # shimmy: quick low-amplitude body shiver
+			_bank_pivot.rotation.z += sin(fphase) * 0.12
+		elif _fidget_kind == 3:    # substrate flash: a fast half-roll
+			_bank_pivot.rotation.z += sin(fphase * 0.7) * 0.5
 
 	# ---- Courtship body pulse ----
 	# Subtle scale shimmy that reads as "puffing up" during display.
@@ -4618,7 +5104,14 @@ func _motion_substep(dt: float) -> void:
 	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
 		flare = 0.45 if _courtship_sync else _courtship_intensity * 0.30
+	# CONTENTMENT SHIMMER + MOOD COLOR. A safe, fed, social fish glows a touch
+	# more vivid (positive emotional readout — the game previously only showed
+	# negative states). A sudden water-quality improvement adds a brief relief
+	# brightening. These ride the same albedo channel as courtship flare.
+	flare += clampf(mood, 0.0, 1.0) * 0.16 + _relief_pulse * 0.18
 	var pallor: float = clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.5
+	# Fear + sadness drain color: a frightened or miserable fish goes pale.
+	pallor = clampf(pallor + spooked * 0.35 + clampf(-mood, 0.0, 1.0) * 0.25, 0.0, 0.85)
 	if flare > 0.001 or pallor > 0.001:
 		if not _courtship_color_active:
 			_courtship_color_active = true
@@ -4692,6 +5185,13 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 	var count_conspecific: int = 0
 	var effective_sep_radius: float = separation_radius * separation_mult / tightness
 	var sep_r2: float = effective_sep_radius * effective_sep_radius
+	# Leader tracking: weight cohesion toward the highest-lead-score neighbor
+	# so a school visibly follows a leader rather than a faceless centroid.
+	var best_lead: float = lead_score
+	var leader_pos: Vector3 = Vector3.ZERO
+	var have_leader: bool = false
+	var friend_pull: Vector3 = Vector3.ZERO
+	var friend_w: float = 0.0
 
 	for n in neighbors:
 		if not n is Fish or n == self:
@@ -4708,10 +5208,30 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 				sep_push.y *= 0.38
 			elif mouth_orientation == 1:
 				sep_push.y *= 0.55
-			sep += sep_push.normalized() / maxf(sqrt(d2), 0.1)
+			# PECKING ORDER: a subordinate yields extra space to a dominant
+			# conspecific (and to a fish it bears a grudge against), so the
+			# social hierarchy is visible as deferential spacing.
+			var defer: float = 1.0
+			if f.species == species and f.rank_within_species > rank_within_species + 0.12:
+				defer = 1.6
+			if not grudges.is_empty() and f.id != "" and grudges.has(f.id):
+				defer = maxf(defer, 1.8)
+			sep += sep_push.normalized() / maxf(sqrt(d2), 0.1) * defer
 		# Alignment + cohesion are conspecific-only and view-cone-gated.
 		if f.species != species:
 			continue
+		# Track the most "leaderly" conspecific in view.
+		if f.lead_score > best_lead and d2 < 16.0:
+			best_lead = f.lead_score
+			leader_pos = f.position + f.velocity * 0.4
+			have_leader = true
+		# FRIENDSHIP: a fish keeps closer company with a bonded friend (a past
+		# mate or frequent companion), so named residents pair off visibly.
+		if not bonds.is_empty() and f.id != "":
+			var aff: float = float(bonds.get(f.id, 0.0))
+			if aff > 0.1 and d2 > 0.36:
+				friend_pull += (f.position - position).normalized() * aff
+				friend_w += aff
 		if absf(diff.y) > maxf(home_y_radius, f.home_y_radius) * 2.4:
 			continue
 		var to_neighbor: Vector3 = -diff  # f.position - position
@@ -4760,10 +5280,21 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		to_center.y *= 0.52
 		if to_center.length() > 0.001:
 			steer += to_center.normalized() * coh_strength
+		# Leader following: a follower biases toward the leader's predicted
+		# position. The more clearly someone out-leads us, the stronger the pull.
+		if have_leader:
+			var to_leader: Vector3 = leader_pos - position
+			to_leader.y *= 0.5
+			if to_leader.length() > 0.6 and to_leader.length_squared() > 1e-4:
+				steer += to_leader.normalized() * (best_lead - lead_score) * 0.9
 		# Speed matching: nudge in heading direction proportional to school
 		# speed delta. If the school is faster than us, accelerate.
 		var speed_delta: float = school_avg_speed - speed
 		steer += heading * clampf(speed_delta * 0.3, -0.4, 0.4)
+
+	# Friendship cohesion (applies even outside a formal school count).
+	if friend_w > 0.01:
+		steer += (friend_pull / friend_w).normalized() * clampf(friend_w, 0.0, 1.0) * 0.5
 
 	return steer
 
@@ -5694,6 +6225,12 @@ func to_save_dict() -> Dictionary:
 		"habituated": habituated.duplicate(),
 		"rank_within_species": rank_within_species,
 		"visited_regions": Array(visited_regions),
+		# Inner life persisted so a fish stays the individual you know: it keeps
+		# trusting you (familiarity), keeps its friends (bonds), and keeps its
+		# emotional baseline (mood) across sessions.
+		"familiarity": familiarity,
+		"mood": mood,
+		"bonds": bonds.duplicate(),
 		# Death animation state — persisting these means a fish that was
 		# mid-death-pose when autosave fired comes back still dying instead
 		# of being "resurrected" only to immediately re-die (which reads as
@@ -5772,6 +6309,11 @@ func apply_save_dict(d: Dictionary) -> void:
 	if saved_hab is Dictionary:
 		habituated = (saved_hab as Dictionary).duplicate()
 	rank_within_species = float(d.get("rank_within_species", 0.5))
+	familiarity = float(d.get("familiarity", 0.0))
+	mood = float(d.get("mood", 0.2))
+	var saved_bonds: Variant = d.get("bonds", null)
+	if saved_bonds is Dictionary:
+		bonds = (saved_bonds as Dictionary).duplicate()
 	var saved_visited: Variant = d.get("visited_regions", null)
 	if saved_visited is Array and (saved_visited as Array).size() == visited_regions.size():
 		for i in range(visited_regions.size()):

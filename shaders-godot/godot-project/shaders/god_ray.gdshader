@@ -60,13 +60,19 @@ void fragment() {
 	float u_angle = UV.x * 2.0 * 3.14159265;
 	vec2 circle_coord = vec2(cos(u_angle), sin(u_angle));
 	float time = TIME * speed;
-	float noise = sin(circle_coord.x * noise_scale + time) *
-	              cos(circle_coord.y * noise_scale - time * 0.7) *
-	              sin(v_y * noise_scale * 2.0 + time * 1.3);
+	// Two drifting octaves: a broad slow striation and a finer, faster sparkle
+	// travelling DOWN the shaft (the v_y - time term) so the light visibly
+	// pours downward like real suspended-particle scatter, not a static grid.
+	float n1 = sin(circle_coord.x * noise_scale + time) *
+	           cos(circle_coord.y * noise_scale - time * 0.7) *
+	           sin(v_y * noise_scale * 2.0 - time * 1.3);
+	float n2 = sin(circle_coord.x * noise_scale * 2.3 - time * 1.7) *
+	           sin(v_y * noise_scale * 4.1 - time * 2.4);
+	float noise = n1 * 0.7 + n2 * 0.3;
 	// Wider shimmer range than the old 0.875..1.0 — beams in real water
 	// have visibly stronger highlight/shadow striations from surface
-	// caustics; this brings the swing to ~0.7..1.1.
-	float shimmer = 0.90 + 0.20 * noise;
+	// caustics; this brings the swing to ~0.68..1.12.
+	float shimmer = 0.90 + 0.22 * noise;
 
 	// Forward scatter — the cylinder's local +Y is the beam axis. Brighter
 	// when the camera is looking along the beam, dimmer side-on.

@@ -79,6 +79,18 @@ float bayer_at(vec2 pixel_xy) {
 	return bayer4[p.y * 4 + p.x] - 0.5;
 }
 
+// Interleaved-gradient noise — a cheap, texture-free stand-in for blue noise.
+// Its energy spectrum is far more isotropic than the ordered Bayer matrix, so
+// smooth low-saturation gradients (water, fog, deep substrate) dissolve into
+// organic stipple instead of showing the tell-tale 4x4 grid the style guide
+// warns about for murk/detritus.
+float ign(vec2 p) {
+	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
+
+// 0 = pure Bayer (legacy). 1 = full blue-noise on low-saturation regions.
+uniform float blue_noise_amount : hint_range(0.0, 1.0) = 0.6;
+
 vec3 palette_color(int idx) {
 	float u = (float(idx) + 0.5) / float(palette_size);
 	vec3 day_c = texture(palette_tex, vec2(u, 0.5)).rgb;
@@ -216,7 +228,12 @@ void fragment() {
 	float t = clamp(dot(src - a, ab) / denom, 0.0, 1.0);
 
 	vec2 px = UV * internal_resolution;
-	float threshold = 0.5 + bayer_at(px) * eff_dither;
+	// Blend the dither kernel toward blue-noise on low-saturation pixels (the
+	// smooth water/fog/substrate gradients) where Bayer's grid is most visible;
+	// keep Bayer on saturated fauna/plants so their silhouettes stay crisp.
+	float bn_region = low_sat_factor * blue_noise_amount;
+	float dpat = mix(bayer_at(px), ign(px), bn_region);
+	float threshold = 0.5 + dpat * eff_dither;
 	int chosen = (t > threshold) ? bi : ai;
 	vec3 result = palette_color(chosen);
 

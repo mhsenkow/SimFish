@@ -15,6 +15,39 @@ uniform float wave_speed = 0.85;
 uniform float wave_scale = 0.42;
 uniform float wave_coupling : hint_range(0.0, 1.0) = 0.65;
 
+// ---- Organic caustics ----
+// Real caustics are sharp, branching light filaments that drift and morph, not
+// a smooth sine grid. We approximate them with a two-layer Worley (cellular)
+// pattern: the distance to the nearest of a set of moving feature points forms
+// the dark cell walls; the bright cores between them read as focused light.
+vec2 caustic_hash(vec2 p) {
+    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453);
+}
+
+// Returns ~[0,1] caustic brightness for a UV; animated by `t`.
+float worley_caustic(vec2 uv, float t) {
+    vec2 g = floor(uv);
+    vec2 f = fract(uv);
+    float d1 = 8.0;
+    float d2 = 8.0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            vec2 cell = vec2(float(x), float(y));
+            vec2 fp = caustic_hash(g + cell);
+            // Animate feature points on little orbits so cells drift + breathe.
+            vec2 pt = cell + 0.5 + 0.42 * sin(t + 6.2831 * fp);
+            float d = length(pt - f);
+            if (d < d1) { d2 = d1; d1 = d; }
+            else if (d < d2) { d2 = d; }
+        }
+    }
+    // F2 - F1 gives bright filaments along the cell boundaries (the classic
+    // caustic web). Sharpen with a power and lift the cores.
+    float web = clamp(d2 - d1, 0.0, 1.0);
+    return pow(web, 1.6);
+}
+
 void fragment() {
     // Get world-space coordinates of the pixel
     vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -41,17 +74,15 @@ void fragment() {
     // agitated surface visibly drags the pattern around.
     uv += surf_grad * wave_amplitude * wave_coupling * 6.0;
 
-    // Smooth sine-wave interference pattern (simulating wave crests crossing)
-    float w1 = sin(uv.x * 1.2 + t * 0.7) * cos(uv.y * 0.8 - t * 0.5);
-    float w2 = sin(uv.y * 1.4 + t * 0.9) * cos(uv.x * 1.1 + t * 0.6);
-    float w3 = sin((uv.x + uv.y) * 0.6 - t * 0.3);
-
-    // Combine waves and normalize to [0, 1] range
-    float wave = (w1 + w2 + w3 + 1.5) / 3.0;
-
-    // Use a soft smoothstep to get broad, flowing ripple bands instead of sharp dots.
-    // Keeps the color transition gentle so the palette quantizer/dither behaves smoothly.
-    float caustics = smoothstep(0.2, 0.8, wave) * 0.40;
+    // Two Worley layers at different scales + drift directions, multiplied so
+    // only where both overlap do we get the brightest convergence points —
+    // exactly how real caustic filaments cross and brighten. The result is
+    // an irregular, branching, drifting web with no visible sine tiling.
+    float c1 = worley_caustic(uv * 0.85, t * 0.6);
+    float c2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
+    float web = c1 * 0.65 + c1 * c2 * 0.9;
+    // Keep transitions gentle for the palette quantizer/dither.
+    float caustics = smoothstep(0.15, 0.85, web) * 0.46;
 
     // Fade out caustics near the edges of the tank to match the natural light pool falloff
     // (Tank boundary is approx X: [-8.0, 8.0], Z: [-4.0, 4.0])
