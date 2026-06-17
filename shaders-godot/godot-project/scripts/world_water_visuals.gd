@@ -36,6 +36,8 @@ static func local_floater_shade_at(world_pos: Vector3, floaters: Array,
 		var leaf_sz: float = 0.3
 		if f is FloatingPlant:
 			var fp: FloatingPlant = f
+			if not fp.is_surface_active():
+				continue
 			shade_r = fp.effective_shade_radius()
 			leaf_sz = fp.leaf_size
 		var falloff: float = 1.0 - sqrt(d2) / radius

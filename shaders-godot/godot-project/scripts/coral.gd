@@ -38,6 +38,17 @@ const GOLDEN_ANGLE: float = 2.39996322972865332
 # coral type.
 @export var tip_color: Color = Color8(255, 245, 215)
 
+# Freshwater sessile analogs (hydra, sponge, marimo, riccia) reuse Coral
+# geometry but are not reef zooxanthellae hosts — no bleaching mechanics.
+const FRESHWATER_FORMS: Array[String] = [
+	"hydra_fresh", "sponge_fresh", "marimo", "riccia",
+]
+
+
+func is_reef_coral() -> bool:
+	return coral_form not in FRESHWATER_FORMS
+
+
 # L-system branching state for staghorn fern coral
 var _fern_tips: Array = []
 # Precalculated positions for the Gyroid reaction-diffusion brain coral dome
@@ -1029,23 +1040,30 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 				if wv != null:
 					warmth = clampf(float(wv), 0.0, 1.0)
 	var prev_bleach: float = _bleach_level
-	# Climb when warmth >=0.78 or o2 <=0.35; decay when both safe.
-	# Decay is slower than climb — recovering from bleaching is a slow
-	# process on a real reef. Both rates are per-second.
-	var heat_stress: float = clampf((warmth - 0.78) / 0.20, 0.0, 1.0)
-	var hypoxia_stress: float = clampf((0.35 - o2) / 0.25, 0.0, 1.0)
-	var stress: float = maxf(heat_stress, hypoxia_stress)
-	if stress > 0.0:
-		_bleach_level = clampf(_bleach_level + stress * dt * 0.014, 0.0, 1.0)
-	else:
-		_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
-	_emit_bleach_eco_events(sim_n, prev_bleach)
+	if is_reef_coral():
+		# Climb when warmth >=0.78 or o2 <=0.35; decay when both safe.
+		# Decay is slower than climb — recovering from bleaching is a slow
+		# process on a real reef. Both rates are per-second.
+		var heat_stress: float = clampf((warmth - 0.78) / 0.20, 0.0, 1.0)
+		var hypoxia_stress: float = clampf((0.35 - o2) / 0.25, 0.0, 1.0)
+		var stress: float = maxf(heat_stress, hypoxia_stress)
+		if stress > 0.0:
+			_bleach_level = clampf(_bleach_level + stress * dt * 0.014, 0.0, 1.0)
+		else:
+			_bleach_level = clampf(_bleach_level - dt * 0.008, 0.0, 1.0)
+		_emit_bleach_eco_events(sim_n, prev_bleach)
+	elif _bleach_level > 0.0:
+		_bleach_level = 0.0
+		if absf(_bleach_level - _last_bleach_applied) > 0.01:
+			_apply_bleach_tint()
+			_last_bleach_applied = _bleach_level
 	var reef_growth: float = 1.0
-	if sim_n != null and sim_n.get("water_chemistry") != null:
+	if is_reef_coral() and sim_n != null and sim_n.get("water_chemistry") != null:
 		var wc: WaterChemistry = sim_n.water_chemistry
 		reef_growth = clampf(float(wc.reef_nutrients) / 0.55, 0.35, 1.15) \
 			* clampf((float(wc.alkalinity_proxy) - 6.8) / 1.4, 0.45, 1.0)
-	growth_rate = _base_growth_rate * reef_growth * lerpf(1.0, 0.3, _bleach_level)
+	growth_rate = _base_growth_rate * reef_growth \
+		* (lerpf(1.0, 0.3, _bleach_level) if is_reef_coral() else 1.0)
 	# Feeding state — drives tentacle / polyp extension in
 	# _animate_polyp_tips + _animate_sessile_motion. Real corals only
 	# extend tentacles when conditions are good: high oxygen, healthy
@@ -1082,6 +1100,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 
 func _emit_bleach_eco_events(sim_n: Node, prev: float) -> void:
+	if not is_reef_coral():
+		return
 	if sim_n == null or not sim_n.has_method("emit_eco_event"):
 		return
 	var bands: Array = [0.25, 0.5, 0.75]

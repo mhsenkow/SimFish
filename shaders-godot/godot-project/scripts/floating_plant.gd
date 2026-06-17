@@ -51,6 +51,7 @@ var root_length_current: float = 0.4
 var bud_timer: float = 0.0
 var bud_stage: int = BudStage.NONE
 var turion_buried: bool = false
+var turion_age_s: float = 0.0
 var flower_stage: int = FlowerStage.NONE
 var linked_parent_id: String = ""
 var tether_timer: float = 0.0
@@ -61,6 +62,8 @@ var _turion_recovery_ticks: int = 0
 var _neighbor_density: float = 0.0
 var _decay_sink: float = 0.0
 var _visual_dirty: bool = true
+var _light_response_t: float = 0.0
+var _roots_lod_hidden: bool = false
 
 
 func init_genome(g: Dictionary) -> void:
@@ -111,6 +114,7 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 		warmth = float(world.effective_warmth_at(global_position))
 	if turion_buried:
 		visible = false
+		turion_age_s += dt
 		# Dormant turions wait out a bad spell; they resurface when light returns.
 		if dl > 0.45 and warmth >= temp_min - 0.04:
 			_turion_recovery_ticks += 1
@@ -118,11 +122,16 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 			_turion_recovery_ticks = maxi(0, _turion_recovery_ticks - 2)
 		if _turion_recovery_ticks > 12:
 			turion_buried = false
+			turion_age_s = 0.0
 			visible = true
 			vitality = maxf(vitality, 0.5)
 			_turion_recovery_ticks = 0
 			_low_light_ticks = 0
 			_visual_dirty = true
+			_update_root_lod()
+		elif turion_age_s > 90.0:
+			# Long-buried turions dissolve — keeps invisible clumps from piling up.
+			vitality = 0.0
 		return
 	age_s += dt
 	var nutrients: float = 0.6
@@ -184,7 +193,10 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 		_decay_sink = lerpf(_decay_sink, 0.0, dt * 3.0)
 	position.y += _decay_sink * dt * -1.0
 	_apply_vitality_visual(dl, world)
-	tick_light_response(dl, world)
+	_light_response_t += dt
+	if _visual_dirty or _light_response_t >= 6.0:
+		_light_response_t = 0.0
+		tick_light_response(dl, world)
 	# Allelopathy at root tips (#25)
 	if world != null and sim != null and sim.get("substrate") != null and root_length_current > 0.2:
 		var tips: Array = root_world_positions()
@@ -194,6 +206,28 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 
 func set_neighbor_density(d: float) -> void:
 	_neighbor_density = clampf(d, 0.0, 1.0)
+	_update_root_lod()
+
+
+func is_surface_active() -> bool:
+	return not turion_buried and vitality > 0.02
+
+
+func _update_root_lod() -> void:
+	# Dense mats + tiny morphs don't need hanging root columns — they read as
+	# white pillars and cost a draw call each.
+	var hide: bool = turion_buried
+	if not hide:
+		if morph in ["duckweed", "azolla"]:
+			hide = _neighbor_density > 0.12
+		else:
+			hide = _neighbor_density > 0.42
+	if hide == _roots_lod_hidden:
+		return
+	_roots_lod_hidden = hide
+	for c in get_children():
+		if c is MeshInstance3D and String(c.name).begins_with("root"):
+			(c as MeshInstance3D).visible = not hide
 
 
 func _tick_budding(dt: float, dl: float, nutrients: float) -> void:
@@ -235,7 +269,9 @@ func has_pending_bud() -> bool:
 
 func _request_turion(world: Node) -> void:
 	turion_buried = true
+	turion_age_s = 0.0
 	visible = false
+	_update_root_lod()
 	if world == null:
 		return
 	var sim: Node = world.get("sim")
@@ -379,6 +415,7 @@ func _build() -> void:
 	if flower_stage != FlowerStage.NONE:
 		_add_flower_voxel()
 	_visual_dirty = true
+	_update_root_lod()
 
 
 func _ring_color(i: int, n: int) -> Color:

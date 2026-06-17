@@ -835,7 +835,7 @@ func apply_cycle_start_from_config() -> void:
 	else:
 		water_chemistry.apply_fresh_start()
 		tank_age_s = 0.0
-		dissolved_o2 = 0.78
+		dissolved_o2 = 0.85
 
 
 func _record_trophic_produced(amount: float) -> void:
@@ -974,6 +974,8 @@ func _max_reef_bleach() -> float:
 	for p in plants:
 		if not is_instance_valid(p):
 			continue
+		if p.has_method("is_reef_coral") and not p.is_reef_coral():
+			continue
 		if p.get("_bleach_level") != null:
 			peak = maxf(peak, float(p._bleach_level))
 	return peak
@@ -1031,8 +1033,8 @@ const O2_INJECT_PER_RATE: float = 0.20    # disk at strength=1 -> 0.20/s peak in
 const O2_FLOW_BONUS_PER_RATE: float = 0.08
 const O2_PHOTO_PER_PLANT: float = 0.0014  # was 0.0008; biomass + count scalar
 const O2_PHOTO_FLOATER: float = 0.0016    # was 0.0012; surface contact + photo, the Walstad MVP
-const O2_PHOTO_BIOMASS_MULT: float = 0.0070  # was 0.0040; mature biomass carries the tank w/o aeration
-const O2_PHOTO_PLANTS_MULT: float = 0.55  # was 0.35; raw plant count contribution
+const O2_PHOTO_BIOMASS_MULT: float = 0.0110  # dense Walstad biomass must carry daytime O₂
+const O2_PHOTO_PLANTS_MULT: float = 0.68  # stem count matters for pearling / gas exchange
 const O2_RESPIRE_FISH: float = 0.0030     # was 0.0040; gentler fish breathing
 const O2_RESPIRE_SHRIMP: float = 0.0016   # was 0.0020
 const O2_RESPIRE_SNAIL: float = 0.0009    # was 0.0011
@@ -1835,17 +1837,21 @@ func _tick(dt: float) -> void:
 		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
 	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
+	# ~half of plant nighttime demand is buffered in the soil (Walstad closed
+	# loop) and does not draw down the water-column O₂ budget.
+	var plant_night_resp: float = float(total_plant_biomass) * O2_RESPIRE_PLANT \
+		* night * 0.52
 	var respire: float = float(fish.size()) * O2_RESPIRE_FISH * fish_resp_scale \
 		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
 		+ float(snail_count) * O2_RESPIRE_SNAIL \
-		+ float(total_plant_biomass) * O2_RESPIRE_PLANT * night
+		+ plant_night_resp
 	# Pre-dawn O2 trough (#21): plant + bacterial respiration has been drawing
 	# down O2 all night; the minimum lands just before dawn. day_phase ~0.6→1.0
 	# is the deep-dark→dawn window.
 	var predawn: float = 0.0
 	if day_phase > 0.6 and day_phase < 1.0:
 		predawn = clampf((day_phase - 0.6) / 0.4, 0.0, 1.0)
-	respire += photo_biomass * O2_RESPIRE_PLANT * predawn * 0.6
+	respire += photo_biomass * O2_RESPIRE_PLANT * predawn * 0.32
 	# Bloom-crash overnight sag (#26): an algae bloom oxygenates by day but its
 	# decomposition spikes biological oxygen demand at night — the classic
 	# "green water killed my fish overnight."
@@ -1861,7 +1867,13 @@ func _tick(dt: float) -> void:
 	# Filtered tanks agitate the surface, topping up O2 overnight (#25): the
 	# dawn dip is gentler than an unfiltered or air-only tank.
 	if aeration_fixture == "filter":
-		drift_rate += night * 0.012
+		drift_rate += night * 0.022
+	# Planted freshwater tanks exchange gas at the surface even when lights
+	# are off — emergent growth + filter return keep the dawn dip survivable.
+	if not _is_saltwater_tank() and total_plant_biomass > 120:
+		var planted: float = clampf(float(total_plant_biomass) / 420.0, 0.0, 1.0)
+		drift_target += planted * 0.08
+		drift_rate += night * planted * 0.010
 	# Coverage O₂ choke (#17): dense mats reduce surface gas exchange.
 	if w_o2 != null and w_o2.has_method("floater_coverage"):
 		var fc: float = float(w_o2.floater_coverage())

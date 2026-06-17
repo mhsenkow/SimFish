@@ -659,7 +659,7 @@ func sync_floater_shadows(floaters: Array, substrate_y: float) -> void:
 		return
 	var live: int = 0
 	for f in floaters:
-		if is_instance_valid(f):
+		if f is FloatingPlant and (f as FloatingPlant).is_surface_active():
 			live += 1
 	while _floater_shadows.size() > mini(live, FLOATER_SHADOW_CAP):
 		var old = _floater_shadows.pop_back()
@@ -667,7 +667,7 @@ func sync_floater_shadows(floaters: Array, substrate_y: float) -> void:
 			old.queue_free()
 	var idx: int = 0
 	for f in floaters:
-		if not is_instance_valid(f):
+		if not (f is FloatingPlant) or not (f as FloatingPlant).is_surface_active():
 			continue
 		if idx >= FLOATER_SHADOW_CAP:
 			break

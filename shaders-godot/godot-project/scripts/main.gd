@@ -887,7 +887,6 @@ func _ready() -> void:
 		# load on devices like the Pixel that throttle aggressively.
 		Engine.physics_ticks_per_second = 30
 	call_deferred("_maybe_show_tutorial")
-	call_deferred("_maybe_show_coachmarks")
 	if controls_hint != null:
 		controls_hint.visible = false
 	# Always apply the fps cap (works on desktop too, so the user can choose
@@ -7136,6 +7135,8 @@ func _toggle_cheat_sheet() -> void:
 func _maybe_show_coachmarks() -> void:
 	if bool(_global_pref("coachmarks_seen", false)):
 		return
+	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
+		return
 	if walkthrough_overlay != null and walkthrough_overlay.visible:
 		return
 	_show_coachmark_step(0)
@@ -7155,10 +7156,12 @@ func _show_coachmark_step(step: int) -> void:
 		return
 	_coachmark_step = step
 	_coachmark_overlay = Control.new()
+	_coachmark_overlay.name = "CoachmarkOverlay"
 	_coachmark_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_coachmark_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
-	_coachmark_overlay.z_index = 290
+	_coachmark_overlay.z_index = 490
 	add_child(_coachmark_overlay)
+	move_child(_coachmark_overlay, get_child_count() - 1)
 	var panel := PanelContainer.new()
 	panel.anchor_left = 0.5
 	panel.anchor_top = 1.0
@@ -7247,9 +7250,7 @@ func _dismiss_blocking_overlays() -> bool:
 			walkthrough_overlay.visible = false
 		dismissed = true
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
-		_set_global_pref("tutorial_seen", true)
-		_tutorial_overlay.queue_free()
-		_tutorial_overlay = null
+		_dismiss_tutorial_overlay(_tutorial_overlay)
 		dismissed = true
 	if _ui_panels.is_modal_open():
 		_ui_panels.close_modal()
@@ -7269,12 +7270,14 @@ func _maybe_show_tutorial() -> void:
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		return
 	var overlay := Control.new()
+	overlay.name = "TutorialOverlay"
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.set_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.mouse_filter = Control.MOUSE_FILTER_STOP  # block input behind
-	overlay.z_index = 300
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = 500
 	add_child(overlay)
-	# Dim background so the panel reads as a modal.
+	move_child(overlay, get_child_count() - 1)
+	# Dim background — dismiss on tap outside the card only.
 	var bg := ColorRect.new()
 	bg.color = Color(0, 0, 0, 0.55)
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -7282,28 +7285,33 @@ func _maybe_show_tutorial() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_STOP
 	bg.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventScreenTouch and (ev as InputEventScreenTouch).pressed:
-			_set_global_pref("tutorial_seen", true)
-			overlay.queue_free()
-			_tutorial_overlay = null
+			_dismiss_tutorial_overlay(overlay)
 		elif ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
-			_set_global_pref("tutorial_seen", true)
-			overlay.queue_free()
-			_tutorial_overlay = null)
+			_dismiss_tutorial_overlay(overlay))
 	overlay.add_child(bg)
-	# Centered panel with the gesture cheat-sheet.
+	# Centered scrollable panel so the Got-it button stays reachable on
+	# small screens / Windows scaling where a fixed-height card clips.
 	var panel := PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	panel.anchor_left = 0.5
 	panel.anchor_top = 0.5
 	panel.anchor_right = 0.5
 	panel.anchor_bottom = 0.5
-	panel.offset_left = -200
-	panel.offset_top = -160
-	panel.offset_right = 200
-	panel.offset_bottom = 160
+	panel.offset_left = -220
+	panel.offset_top = -200
+	panel.offset_right = 220
+	panel.offset_bottom = 200
+	PanelTheme.apply_panel_chrome(panel)
 	overlay.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(400, 0)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 10)
-	panel.add_child(vb)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
 	var title := Label.new()
 	title.text = "Welcome to your tank"
 	title.add_theme_font_size_override("font_size", 20)
@@ -7341,19 +7349,23 @@ func _maybe_show_tutorial() -> void:
 		lab.add_theme_color_override("font_color", Color(0.92, 0.94, 0.98, 1))
 		lab.add_theme_font_size_override("font_size", 14)
 		vb.add_child(lab)
-	var ok := Button.new()
-	ok.text = "Got it"
+	var ok := PanelTheme.make_primary_button("Got it")
 	ok.custom_minimum_size = Vector2(0, 48)
-	ok.add_theme_font_size_override("font_size", 16)
+	ok.focus_mode = Control.FOCUS_ALL
 	ok.pressed.connect(func():
-		_set_global_pref("tutorial_seen", true)
-		_haptic(12)
-		if is_instance_valid(overlay):
-			overlay.queue_free()
-		_tutorial_overlay = null
-		call_deferred("_maybe_show_coachmarks"))
+		_dismiss_tutorial_overlay(overlay))
 	vb.add_child(ok)
 	_tutorial_overlay = overlay
+	ok.call_deferred("grab_focus")
+
+
+func _dismiss_tutorial_overlay(overlay: Control) -> void:
+	_set_global_pref("tutorial_seen", true)
+	_haptic(12)
+	if is_instance_valid(overlay):
+		overlay.queue_free()
+	_tutorial_overlay = null
+	call_deferred("_maybe_show_coachmarks")
 
 
 # ---- Aquascape long-press radial menu (mobile only) ----

@@ -921,7 +921,7 @@ func _drift_floaters(adt: float) -> void:
 		# Wind / current (#2)
 		vel += drift_vec * adt
 		# Surface-tension clumping (#1)
-		var neighbors: Array = query_floaters_in_radius(fp.position, 0.6)
+		var neighbors: Array = query_floaters_in_radius(fp.position, 0.6, true)
 		if neighbors.size() > 1:
 			var centroid: Vector3 = Vector3.ZERO
 			var n_n: int = 0
@@ -965,12 +965,11 @@ func _drift_floaters(adt: float) -> void:
 		# Daughter tether (#10)
 		if fp.linked_parent_id != "" and fp.tether_timer < 5.0:
 			fp.tether_timer += adt
-			for pf in _floaters:
-				if pf is FloatingPlant and (pf as FloatingPlant).id == fp.linked_parent_id:
-					var parent: FloatingPlant = pf
-					var tether_t: float = clampf(fp.tether_timer / 4.0, 0.0, 1.0)
-					fp.position = fp.position.lerp(parent.position + Vector3(0.15, 0, 0.15), tether_t * adt * 2.0)
-					break
+			var parent_v: Variant = _floater_by_id.get(fp.linked_parent_id)
+			if parent_v is FloatingPlant and is_instance_valid(parent_v):
+				var parent: FloatingPlant = parent_v
+				var tether_t: float = clampf(fp.tether_timer / 4.0, 0.0, 1.0)
+				fp.position = fp.position.lerp(parent.position + Vector3(0.15, 0, 0.15), tether_t * adt * 2.0)
 		# Glass-edge handling (#4). The slow global drift would otherwise herd
 		# every floater into one wall, where they pack tight, shade each other,
 		# and slowly die — reading as "floaters vanish at the edge." Instead of
@@ -994,8 +993,6 @@ func _drift_floaters(adt: float) -> void:
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
 		_floater_vel.erase(df.get_instance_id() if is_instance_valid(df) else 0)
-	if _visuals != null and _visuals.has_method("sync_floater_shadows"):
-		_visuals.sync_floater_shadows(_floaters, SUBSTRATE_DEPTH)
 
 
 # Lily-pad + math-plant (nautilus / cattail / moss) sway. Their tick() advances
@@ -4403,6 +4400,7 @@ var _floater_t: float = 0.0
 var _duckweed_accum: float = 0.0
 var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
 var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
+var _floater_by_id: Dictionary = {}  # id -> FloatingPlant (tether lookup)
 const _FLOATER_CELL: float = 1.2
 # Surface coverage reference for floaters — scales with tank surface area.
 const FLOATER_GROWTH_INTERVAL: float = 3.0
@@ -4667,17 +4665,24 @@ func _floater_cell_key(x: float, z: float) -> String:
 
 func _rebuild_floater_grid() -> void:
 	_floater_grid.clear()
+	_floater_by_id.clear()
 	for f in _floaters:
 		if not is_instance_valid(f) or not (f is FloatingPlant):
 			continue
 		var fp: FloatingPlant = f
+		if fp.id != "":
+			_floater_by_id[fp.id] = fp
 		var key: String = _floater_cell_key(fp.position.x, fp.position.z)
 		if not _floater_grid.has(key):
 			_floater_grid[key] = []
 		(_floater_grid[key] as Array).append(fp)
 
 
-func query_floaters_in_radius(pos: Vector3, radius: float) -> Array:
+func _is_active_floater(fp: FloatingPlant) -> bool:
+	return is_instance_valid(fp) and fp.is_surface_active()
+
+
+func query_floaters_in_radius(pos: Vector3, radius: float, active_only: bool = false) -> Array:
 	var out: Array = []
 	var r_cells: int = int(ceil(radius / _FLOATER_CELL)) + 1
 	var cx: int = int(floor(pos.x / _FLOATER_CELL))
@@ -4690,6 +4695,8 @@ func query_floaters_in_radius(pos: Vector3, radius: float) -> Array:
 				continue
 			for fp in _floater_grid[key]:
 				if not is_instance_valid(fp):
+					continue
+				if active_only and fp is FloatingPlant and not _is_active_floater(fp):
 					continue
 				var d2: float = (fp.position - pos).length_squared()
 				if d2 <= r2:
@@ -4720,18 +4727,35 @@ func _floater_growth_step() -> void:
 	if live.is_empty():
 		return
 	var cap: int = WorldFloaterManager.duckweed_cap(sim, _surface_floater_capacity())
-	var coverage: float = floater_coverage()
+	var surface_cap: int = _surface_floater_capacity()
+	var active_n: int = 0
+	for fp0 in live:
+		if fp0 is FloatingPlant and _is_active_floater(fp0):
+			active_n += 1
+	var coverage: float = clampf(float(active_n) / float(surface_cap), 0.0, 1.0)
 	var compact: float = clampf((coverage - 0.5) / 0.5, 0.0, 1.0)
 	var dt_step: float = FLOATER_GROWTH_INTERVAL
 	var to_remove: Array = []
 	var spawn_queue: Array = []
+	# Over-cap mats: drop dormant turions immediately instead of letting hundreds
+	# of invisible nodes accumulate (mesh + tick cost with no visual payoff).
+	if live.size() > cap:
+		for fp_purge in live:
+			if fp_purge is FloatingPlant and (fp_purge as FloatingPlant).turion_buried:
+				to_remove.append(fp_purge)
 	_rebuild_floater_grid()
 	for fp in live:
 		if not (fp is FloatingPlant):
 			continue
 		var floater: FloatingPlant = fp
+		if floater.turion_buried:
+			floater.turion_age_s += dt_step
+			if floater.turion_age_s > 90.0 or floater.should_remove():
+				to_remove.append(floater)
+			continue
 		# Neighbor density for self-shade + edge bronze (#16, #50)
-		var neighbors: Array = query_floaters_in_radius(floater.position, floater.effective_shade_radius())
+		var neighbors: Array = query_floaters_in_radius(
+			floater.position, floater.effective_shade_radius(), true)
 		floater.set_neighbor_density(clampf(float(neighbors.size()) / 6.0, 0.0, 1.0))
 		floater.tick(dt_step, self, sim)
 		if floater.should_remove():
@@ -4756,9 +4780,12 @@ func _floater_growth_step() -> void:
 	if coverage > 0.65 and randf() < 0.08:
 		_maybe_add_mineral_spot()
 	# Spawn children under cap
-	var n: int = live.size() - to_remove.size()
+	var n: int = active_n
+	for victim in to_remove:
+		if victim is FloatingPlant and _is_active_floater(victim):
+			n -= 1
 	for sq in spawn_queue:
-		if n >= cap or floater_coverage() > 0.82:
+		if n >= cap or coverage > 0.82:
 			break
 		var sp: Vector3 = sq.pos
 		sp.y = WATER_HEIGHT - 0.05
@@ -4766,14 +4793,25 @@ func _floater_growth_step() -> void:
 			_add_floater_at(clamp_xyz_in_tank(sp, 0.35), sq.genome)
 			n += 1
 	for victim in to_remove:
+		if victim is FloatingPlant:
+			var vid: String = (victim as FloatingPlant).id
+			if vid != "":
+				_floater_by_id.erase(vid)
 		_floaters.erase(victim)
 		_floater_vel.erase(victim.get_instance_id())
 		victim.queue_free()
 
 
-# Live floating-plant count + surface coverage fraction (read by SimDriver
-# for floater photosynthesis O2 and algae shading).
+# Live surface-active floater count + coverage (turion-buried clumps excluded).
 func floater_count() -> int:
+	var n: int = 0
+	for f in _floaters:
+		if f is FloatingPlant and _is_active_floater(f):
+			n += 1
+	return n
+
+
+func floater_total() -> int:
 	var n: int = 0
 	for f in _floaters:
 		if is_instance_valid(f):
@@ -4787,7 +4825,9 @@ func floater_coverage() -> float:
 
 func light_penetration_at(world_pos: Vector3) -> float:
 	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
-	var local_shade: float = WorldWaterVisuals.local_floater_shade_at(world_pos, _floaters)
+	var nearby: Array = query_floaters_in_radius(
+		world_pos, WorldWaterVisuals.LOCAL_SHADE_RADIUS, true)
+	var local_shade: float = WorldWaterVisuals.local_floater_shade_at(world_pos, nearby)
 	return WorldWaterVisuals.light_penetration(
 		local_shade, floater_coverage(), bloom, tannins)
 
