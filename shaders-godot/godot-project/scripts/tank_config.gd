@@ -55,6 +55,12 @@ var pixel_snap_camera: bool = false
 # full-frame smear that some find striking and others find wrong, so it's an
 # opt-in "look" rather than the default.
 var follow_depth_of_field: bool = false
+# Follow DOF tuning — only applied when follow_depth_of_field is on.
+var follow_dof_blur_strength: float = 0.06      # 0..0.25 — blur intensity
+var follow_dof_far_softness: float = 2.0        # far transition width (world units)
+var follow_dof_near_softness: float = 1.6       # near transition width
+var follow_dof_focus_margin: float = 1.2        # distance from subject to in-focus zone edge
+var follow_dof_near_enabled: bool = true        # blur in front of subject (can cause haze)
 # If false, the palette pass is bypassed and you see raw HDR colors. Useful
 # for spotting bugs in lighting + composition.
 var palette_enabled: bool = true
@@ -1554,9 +1560,13 @@ const TANK_PRESETS: Dictionary = {
 		# Sparse plants on the predator tank — leaves clean sight-lines
 		# so the betta vs. puffer territorial chases read against the
 		# substrate. Two mossy corners give shrimp + prey schools refuge.
+		# Apex Den bloom-risk fix (#63): eco_complete is the richest substrate
+		# ("algae risk"), so the sparse planting let nutrients run ahead of
+		# uptake. More low-profile carpet + java fern soaks the excess without
+		# cluttering the sight-lines the betta/puffer chases need.
 		"plant_palette": {
-			"valli": 0.3, "crypt": 0.4, "red_stem": 0.2,
-			"carpet": 0.55, "moss": 1.2, "java_fern": 0.8,
+			"valli": 0.3, "crypt": 0.6, "red_stem": 0.2,
+			"carpet": 0.8, "moss": 1.2, "java_fern": 1.1,
 		},
 		"hardscape_style": "predator_corners",
 		"terrain_relief": [
@@ -1659,8 +1669,11 @@ const TANK_PRESETS: Dictionary = {
 		# middle of the sphere, no other plants — keeps the polyps and
 		# clams visually dominant but with a green island for life. A
 		# small driftwood nub sticks up like a fallen branch.
+		# Fishless-tank O2 fix (#64): no aeration means plant photosynthesis is
+		# the only thing carrying the shrimp colony through the pre-dawn O2
+		# trough, so the moss-and-grass island is denser than purely cosmetic.
 		"plant_palette": {
-			"carpet": 0.55, "moss": 0.40, "java_fern": 0.30,
+			"carpet": 0.75, "moss": 0.70, "java_fern": 0.40,
 			"valli": 0.0, "crypt": 0.0, "red_stem": 0.0,
 		},
 		"hardscape_style": "polyp_jar",
@@ -1768,6 +1781,10 @@ func current_tank_preset() -> Dictionary:
 var aeration_type: String = "disk"
 var aeration_strength: float = 0.6      # 0..1, scales injection rate
 var aeration_x_frac: float = 0.0        # -1..1, lateral position in tank
+# Smart-air solenoid (#30): optional O2 controller that pulses the air pump
+# when dissolved O2 dips. Off by default — the dawn-trough tension is part of
+# the ecosystem feel, and this turns the tank into a self-stabilizer.
+var smart_air_enabled: bool = false
 
 const AERATION_PROFILES: Dictionary = {
 	"none": {
@@ -2014,6 +2031,7 @@ func save_to_disk() -> void:
 	cfg.set_value("aeration", "type", aeration_type)
 	cfg.set_value("aeration", "strength", aeration_strength)
 	cfg.set_value("aeration", "x_frac", aeration_x_frac)
+	cfg.set_value("aeration", "smart_air", smart_air_enabled)
 	cfg.set_value("fauna", "auto_respawn", auto_respawn_fauna)
 	cfg.set_value("fauna", "auto_feed", auto_feed_fauna)
 	cfg.set_value("ecology", "cycle_start_mode", cycle_start_mode)
@@ -2040,6 +2058,11 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "integer_upscale", integer_upscale)
 	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
 	cfg.set_value("render", "follow_depth_of_field", follow_depth_of_field)
+	cfg.set_value("render", "follow_dof_blur_strength", follow_dof_blur_strength)
+	cfg.set_value("render", "follow_dof_far_softness", follow_dof_far_softness)
+	cfg.set_value("render", "follow_dof_near_softness", follow_dof_near_softness)
+	cfg.set_value("render", "follow_dof_focus_margin", follow_dof_focus_margin)
+	cfg.set_value("render", "follow_dof_near_enabled", follow_dof_near_enabled)
 	cfg.set_value("render", "adaptive_quality", adaptive_quality)
 	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
@@ -2227,6 +2250,7 @@ func load_from_disk() -> void:
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
 	rebuild_terrain_on_load = cfg.get_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
 	aeration_type = cfg.get_value("aeration", "type", aeration_type)
+	smart_air_enabled = cfg.get_value("aeration", "smart_air", smart_air_enabled)
 	aeration_strength = cfg.get_value("aeration", "strength", aeration_strength)
 	aeration_x_frac = cfg.get_value("aeration", "x_frac", aeration_x_frac)
 	auto_respawn_fauna = cfg.get_value("fauna", "auto_respawn", auto_respawn_fauna)
@@ -2259,6 +2283,11 @@ func load_from_disk() -> void:
 	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
 	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
 	follow_depth_of_field = cfg.get_value("render", "follow_depth_of_field", follow_depth_of_field)
+	follow_dof_blur_strength = float(cfg.get_value("render", "follow_dof_blur_strength", follow_dof_blur_strength))
+	follow_dof_far_softness = float(cfg.get_value("render", "follow_dof_far_softness", follow_dof_far_softness))
+	follow_dof_near_softness = float(cfg.get_value("render", "follow_dof_near_softness", follow_dof_near_softness))
+	follow_dof_focus_margin = float(cfg.get_value("render", "follow_dof_focus_margin", follow_dof_focus_margin))
+	follow_dof_near_enabled = bool(cfg.get_value("render", "follow_dof_near_enabled", follow_dof_near_enabled))
 	adaptive_quality = cfg.get_value("render", "adaptive_quality", adaptive_quality)
 	adaptive_quality_target_fps = cfg.get_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	palette_enabled = cfg.get_value("render", "palette_enabled", palette_enabled)
@@ -2487,6 +2516,11 @@ func reset_to_defaults() -> void:
 	integer_upscale = false
 	pixel_snap_camera = false
 	follow_depth_of_field = false
+	follow_dof_blur_strength = 0.06
+	follow_dof_far_softness = 2.0
+	follow_dof_near_softness = 1.6
+	follow_dof_focus_margin = 1.2
+	follow_dof_near_enabled = true
 	adaptive_quality = false
 	adaptive_quality_target_fps = 55
 	palette_enabled = true

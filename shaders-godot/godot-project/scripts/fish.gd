@@ -272,6 +272,27 @@ var age: float = 0.0
 var hunger: float = 0.3        # 0 = full, 1 = starving
 var energy: float = 1.0
 var stress: float = 0.0
+# Nitrite "brown-blood" effect (#28): high nitrite binds the blood so the fish
+# perceives less O2 than is dissolved — it gulps at the surface even when the
+# water is well-oxygenated. Recomputed each tick from the nitrite reading.
+var _chem_o2_penalty: float = 0.0
+# Staggered maturation / senescence (#39): a small per-individual lifespan
+# offset so siblings born in the same clutch don't all mature and die on the
+# exact same tick — smooths the demographic into a believable age pyramid
+# instead of synchronized cohort die-offs.
+var _life_jitter: float = randf_range(-0.12, 0.15)
+# Rest debt (#84): night disturbances accumulate fatigue; a constantly-startled
+# fish is sluggish the next day until it catches up on sleep.
+var _rest_debt: float = 0.0
+# Per-individual growth variance (#89): produces a natural size hierarchy and
+# the occasional struggling runt within a single clutch.
+var _growth_variance: float = randf_range(0.86, 1.14)
+# Personality drift (#82): surviving a real fright leaves a lasting mark — the
+# fish grows a little warier over its life.
+var _scarred: bool = false
+# Mate loyalty (#83): id of the last partner, so a pair preferentially re-bonds
+# across spawns instead of re-rolling a random mate each cycle.
+var _mate_id: String = ""
 var maturity: int = MATURITY_FRY
 var velocity: Vector3 = Vector3.ZERO
 var breed_cooldown: float = 0.0
@@ -636,6 +657,33 @@ func _season_breed_mult() -> float:
 	var month: int = Time.get_datetime_dict_from_system().get("month", 6)
 	# Phase so April (month 4) sits near the peak.
 	return 1.0 + sin((float(month) - 4.0) / 12.0 * TAU) * 0.3
+
+
+# Logistic fecundity (#31): breeding is suppressed as the population approaches
+# carrying capacity, so it asymptotes toward K smoothly instead of overshooting
+# and then crashing on stress. Returns a 0..0.9 probability of skipping a
+# courtship attempt this tick.
+# Mate loyalty (#83): find the previous partner among neighbors if it's still
+# adult, single, and ready — so bonded pairs reunite across spawns.
+func _find_preferred_mate(neighbors: Array) -> Fish:
+	if _mate_id == "":
+		return null
+	for n in neighbors:
+		if not (n is Fish):
+			continue
+		var f: Fish = n
+		if String(f.id) == _mate_id and f.partner == null \
+				and f.maturity == MATURITY_ADULT and f.sex != sex \
+				and f.breed_cooldown <= 0.0:
+			return f
+	return null
+
+
+func _logistic_breed_suppress() -> float:
+	if sim == null or not sim.has_method("fish_stocking_ratio"):
+		return 0.0
+	var r: float = sim.fish_stocking_ratio()
+	return clampf((r - 0.6) / 0.4, 0.0, 0.9)
 
 
 # Push a salient event into working memory. Cheap ring buffer; oldest entry is
@@ -2397,6 +2445,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# supplemental feeding pressure.
 	if sim != null and sim.dissolved_o2 > 0.72 and sim.total_plant_biomass > 280:
 		hunger = maxf(0.0, hunger - dt * 0.0018)
+	# Fry graze microfauna (#42): the base of the food web feeds recruitment, so
+	# fry survival depends on a healthy copepod / daphnia bloom — and a tank
+	# with no microfauna starves its young.
+	if maturity == MATURITY_FRY and sim != null:
+		var w_micro: Node = sim.get_parent()
+		if w_micro != null and w_micro.has_method("live_microfauna_count"):
+			var micro_n: int = w_micro.live_microfauna_count()
+			if micro_n > 4:
+				hunger = maxf(0.0, hunger - dt * clampf(float(micro_n) / 60.0, 0.0, 1.0) * 0.012)
 	var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
 	energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 	burst_remaining = maxf(0.0, burst_remaining - dt)
@@ -2415,13 +2472,20 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# panic — but they'll start stressing once acclimation ends if the
 	# chemistry hasn't cleared.
 	if sim != null and sim.water_chemistry != null and maturity != MATURITY_FRY:
+		# Toxic (un-ionized) ammonia is what fish actually feel (#6): the same
+		# total ammonia is harmless at low pH and lethal at high pH.
 		var nh3: float = float(sim.water_chemistry.ammonia)
+		if sim.water_chemistry.has_method("toxic_ammonia_level"):
+			nh3 = float(sim.water_chemistry.toxic_ammonia_level())
 		var no2: float = float(sim.water_chemistry.nitrite)
-		# Ammonia: tolerable below 0.25, panic-inducing at >1.0.
+		# Toxic NH3: harmless below 0.02, lethal by ~0.2.
 		# Nitrite: tolerable below 0.35, panic-inducing at >1.2.
-		var nh3_stress: float = clampf((nh3 - 0.25) / 0.75, 0.0, 1.0)
+		var nh3_stress: float = clampf((nh3 - 0.02) / 0.18, 0.0, 1.0)
 		var no2_stress: float = clampf((no2 - 0.35) / 0.85, 0.0, 1.0)
 		var total_chem: float = maxf(nh3_stress, no2_stress * 0.85)
+		# Brown-blood (#28): nitrite cuts the O2 the fish can carry, so it gulps
+		# at the surface even when dissolved O2 is fine.
+		_chem_o2_penalty = no2_stress * 0.22
 		# Acclimation discount: at full acclimation, 30% of normal
 		# accrual; tapers to 100% once the buffer runs out.
 		var accl_frac: float = clampf(
@@ -2500,6 +2564,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# Begin the gulp trip - target Y just below water surface.
 				_aerial_return_y = home_y
 				_aerial_target_y = _water_surface_y() - 0.2
+				# Labyrinth surface association (#34): drift gulp under floater shade.
+				if labyrinth_breather and sim != null:
+					var w_lab: Node = sim.get_parent()
+					if w_lab != null and w_lab.has_method("query_floaters_in_radius"):
+						var near_fp: FloatingPlant = _find_nearest_floater(w_lab, 4.0)
+						if near_fp != null:
+							home_y = near_fp.position.y - 0.35
 				_aerial_timer = randf_range(2.0, 3.5)   # trip duration
 		else:
 			_aerial_timer -= dt
@@ -2514,12 +2585,39 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	for n in neighbors:
 		if n is Fish and (n as Fish).species == species:
 			conspecifics_nearby += 1
-	if conspecifics_nearby < 2 and maturity != MATURITY_FRY:
-		stress = clampf(stress + dt * 0.05, 0.0, 1.0)
+	# Social need scales with how strong a schooler the species is (#88): a
+	# tight schooler kept under-numbered is chronically stressed (teaching
+	# "don't keep just one tetra"), while a solitary species is content alone.
+	var ideal_shoal: int = int(round(clampf(schooling_strength, 0.0, 2.0) * 2.5))
+	if maturity != MATURITY_FRY and ideal_shoal >= 2 and conspecifics_nearby < ideal_shoal:
+		var deficit: float = clampf(
+			float(ideal_shoal - conspecifics_nearby) / float(ideal_shoal), 0.0, 1.0)
+		stress = clampf(stress + dt * 0.05 * deficit, 0.0, 1.0)
 	else:
 		stress = maxf(0.0, stress - dt * 0.08)
 	if sim != null and sim.total_plant_biomass > 320 and sim.dissolved_o2 > 0.65:
 		stress = maxf(0.0, stress - dt * 0.025)
+
+	# Rest debt (#84): a fish disturbed at night banks fatigue; sleeping pays it
+	# back. High rest debt makes it sluggish the next day (applied to the
+	# day-activity multiplier below).
+	var dl_rest: float = sim.daylight() if sim != null and sim.has_method("daylight") else 0.5
+	if dl_rest < 0.3:
+		_rest_debt = clampf(_rest_debt + stress * dt * 0.02, 0.0, 1.0)
+		if _asleep:
+			_rest_debt = maxf(0.0, _rest_debt - dt * 0.05)
+	else:
+		_rest_debt = maxf(0.0, _rest_debt - dt * 0.012)
+
+	# Personality drift (#82): surviving a real fright nudges the fish warier
+	# (lower boldness) once it calms — a lasting experiential mark, bounded so
+	# it's a gentle lifelong arc rather than a runaway.
+	if stress > 0.85:
+		_scarred = true
+	elif _scarred and stress < 0.25:
+		_scarred = false
+		if personality.has("boldness"):
+			personality["boldness"] = clampf(float(personality["boldness"]) - 0.03, 0.05, 1.0)
 
 	# Inner life: mood, curiosity, lingering fear, sleep, relief, blink, memory.
 	# Runs before the behavior tiers so steering reads a fresh emotional state.
@@ -2541,10 +2639,18 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Old fish can hang on for 25% past max_age_s. Meal-driven age
 	# reductions stack against this clock, so a well-fed senescent fish
 	# can hold its place for a long time before finally dying of old age.
-	if maturity == MATURITY_SENESCENT and age >= max_age_s * 1.25:
+	if maturity == MATURITY_SENESCENT and age >= max_age_s * (1.25 + _life_jitter):
 		events["die"] = true
 		return events
-	if hunger >= 1.0 and energy < 0.1:
+	# Diet-breadth starvation order (#34): narrow-diet specialists (obligate
+	# carnivores, snail-hunters) run out of options first when the food web
+	# collapses, so a die-off has a believable sequence and generalists outlast
+	# specialists.
+	var starve_thresh: float = 1.0
+	if sim != null and (snail_predator or float(herbivory) < 0.15):
+		var food_scarce: float = 1.0 - clampf(float(sim.total_plant_biomass) / 220.0, 0.0, 1.0)
+		starve_thresh -= food_scarce * 0.12
+	if hunger >= starve_thresh and energy < 0.12:
 		events["die"] = true
 		return events
 
@@ -2573,7 +2679,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Tier 0.2: SURFACE GULPING (hypoxia response). Only surface-adapted fish
 	# panic-gulp at the meniscus; mid-column species rely on the softer home_y
 	# lerp in the cruise tier instead of racing the whole school to the top.
-	if sim != null and float(sim.dissolved_o2) < SURFACE_GULP_O2:
+	var eff_o2: float = float(sim.dissolved_o2) - _chem_o2_penalty if sim != null else 1.0
+	# Spatial O2 (#23): in an unaerated tank the bottom + dead corners hold
+	# less O2, so bottom dwellers feel the squeeze first.
+	if sim != null and sim.aeration_air_rate < 0.2 and sim.aeration_flow_rate < 0.2:
+		var col_h0: float = maxf(_water_column_height(), 0.5)
+		var depth_frac: float = clampf(
+			1.0 - (position.y - float(sim.substrate_top_y)) / col_h0, 0.0, 1.0)
+		eff_o2 -= depth_frac * 0.08
+	if sim != null and eff_o2 < SURFACE_GULP_O2:
 		var col_h: float = maxf(_water_column_height(), 0.5)
 		var top_frac: float = clampf((preferred_y - float(sim.substrate_top_y)) / col_h, 0.0, 1.0)
 		var surface_adapted: bool = mouth_orientation == -1 or labyrinth_breather \
@@ -2797,7 +2911,24 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if d2 < shelter_d2:
 				shelter_d2 = d2
 				shelter = p
-		if shelter != null:
+		# Fry refuge under floater roots (#32).
+		var w_fry: Node = sim.get_parent() if sim != null else null
+		var floater_cover: FloatingPlant = null
+		if w_fry != null and w_fry.has_method("query_floaters_in_radius"):
+			for fp in w_fry.query_floaters_in_radius(position, 3.5):
+				if fp is FloatingPlant and (fp as FloatingPlant).is_fry_cover():
+					var fd2: float = fp.position.distance_squared_to(position)
+					if fd2 < shelter_d2:
+						shelter_d2 = fd2
+						floater_cover = fp
+		if floater_cover != null:
+			var to_roots: Vector3 = floater_cover.position - position
+			to_roots.y -= floater_cover.root_length_current * 0.4
+			if to_roots.length() > 0.5:
+				desired += to_roots.normalized() * effective_max * 0.55
+			else:
+				desired *= 0.12
+		elif shelter != null:
 			var to_plant: Vector3 = shelter._world_pos - position
 			to_plant.y += 0.3  # aim for mid-plant, not substrate base
 			var dist: float = to_plant.length()
@@ -2868,7 +2999,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# patch. Real fish do exactly this; reads as "this one is scared and
 	# wants out of the open." Big plants only (≥6 voxels) so a wisp of
 	# fresh growth doesn't count as cover.
-	if stress > STRESS_HIDE_THRESHOLD:
+	# Desperation overrides fear (#86): a starving fish braves the open to feed
+	# even when stressed — need-arbitration, not a fixed fear response.
+	if stress > STRESS_HIDE_THRESHOLD and hunger < 0.85:
 		var nearest_cover: Plant = null
 		var cover_d2: float = 9.0  # within 3 units to count as reachable
 		var cover_candidates: Array = sim.query_plants_in_radius(position, 3.0) \
@@ -3226,6 +3359,25 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			current_mode = Mode.FORAGE
 			var to_prey: Vector3 = (best_prey as Node3D).global_position - position
 			if to_prey.length() < kill_reach:
+				# Prey refuge (#33) + Holling-II functional response (#32): a
+				# well-planted tank lets prey hide, and the fewer prey remain
+				# the harder each is to catch (search time rises). Together
+				# these stop a predator from instantly wiping a school and make
+				# it starve in a depleted tank — producing real boom/bust cycles.
+				var escape: float = 0.0
+				if sim != null:
+					escape += clampf(float(sim.total_plant_biomass) / 900.0, 0.0, 0.35)
+					var prey_n: int = sim.fish.size() + sim.shrimp.size()
+					escape += clampf((8.0 - float(prey_n)) / 8.0, 0.0, 0.40)
+				if randf() < escape:
+					if best_prey is Fish:
+						(best_prey as Fish).stress = clampf(
+							(best_prey as Fish).stress + 0.10, 0.0, 1.0)
+					if burst_remaining <= 0.0 and energy > 0.3:
+						burst_remaining = 0.5
+					desired += to_prey.normalized() * effective_max * 1.3
+					target_velocity = _apply_target_from_desired(desired, effective_max)
+					return events
 				events["kill_prey"] = best_prey
 				_record_meal_at(position, 2.0)
 				hunger = maxf(0.0, hunger - 0.50)
@@ -3358,12 +3510,28 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					return events
 		if herbivory > 0.0 and algae_array.size() > 0:
 			var best_alga: Node3D = null
+			var best_alga_rank: float = 6.0
 			var best_alga_d2: float = 6.0
 			for a in algae_array:
 				if not is_instance_valid(a):
 					continue
 				var d2: float = (a.global_position - position).length_squared()
-				if d2 < best_alga_d2:
+				# Grazer-specific control (#59): algae-grazers (otos) prefer the
+				# glass films (GSA / GDA / diatoms) so they actually keep those
+				# in check; generalist herbivores prefer soft clusters. We bias
+				# the RANKING distance, not the real one, so eats still need
+				# true contact.
+				var rank: float = d2
+				if a.has_method("algae_kind"):
+					var ak: int = a.algae_kind()
+					if algae_grazer:
+						if ak == Algae.AlgaeKind.GSA or ak == Algae.AlgaeKind.GDA \
+								or ak == Algae.AlgaeKind.DIATOM:
+							rank *= 0.45
+					elif ak == Algae.AlgaeKind.CLUSTER:
+						rank *= 0.7
+				if rank < best_alga_rank:
+					best_alga_rank = rank
 					best_alga_d2 = d2
 					best_alga = a
 			if best_alga != null:
@@ -3383,6 +3551,45 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					desired += to_alga.normalized() * effective_max * 0.9
 					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
+
+	# Tier 1.9: SURFACE FLOATER GRAZE (#31). Herbivores / top feeders crop mats.
+	var surface_feeder: bool = preferred_y >= 4.2 or mouth_orientation < 0 or labyrinth_breather
+	if herbivory > 0.25 and surface_feeder and hunger > 0.35 and maturity != MATURITY_FRY \
+			and nibble_cooldown <= 0.0:
+		var w_graze: Node = sim.get_parent() if sim != null else null
+		if w_graze != null and w_graze.has_method("query_floaters_in_radius"):
+			var target_fp: FloatingPlant = _find_nearest_floater(w_graze, 3.5)
+			if target_fp != null:
+				current_mode = Mode.FORAGE
+				var fp_pos: Vector3 = target_fp.global_position
+				fp_pos.y = _water_surface_y() - 0.08
+				var fp_d2: float = fp_pos.distance_squared_to(position)
+				if fp_d2 < 0.36:
+					var ftaken: int = target_fp.nibble(1)
+					if ftaken > 0:
+						_trigger_mouth_gape()
+						hunger = maxf(0.0, hunger - 0.22 * float(ftaken))
+						energy = minf(1.0, energy + 0.05 * float(ftaken))
+						nibble_cooldown = 0.85
+						events["waste_at"] = position + Vector3(0, -0.08, 0)
+						events["waste_amount"] = 0.12 * float(ftaken)
+				else:
+					desired += (fp_pos - position).normalized() * effective_max * 0.85
+					target_velocity = _apply_target_from_desired(desired, effective_max)
+					return events
+
+	# Surface-feeder shade drift + stress relief (#38, #39).
+	if surface_feeder and hunger < 0.5 and stress > 0.08:
+		var w_shade: Node = sim.get_parent() if sim != null else null
+		if w_shade != null and w_shade.has_method("query_floaters_in_radius"):
+			var shade_fp: FloatingPlant = _find_nearest_floater(w_shade, 2.8)
+			if shade_fp != null:
+				var under: Vector3 = shade_fp.position - position
+				under.y = 0.0
+				if under.length() > 0.25:
+					desired += under.normalized() * effective_max * 0.25
+				else:
+					stress = maxf(0.0, stress - dt * 0.04)
 
 	# Tier 2: HUNGRY HERBIVORE. Plants need at least 15 voxels of biomass
 	# so fish have more food options before the shrimp graze them
@@ -3444,12 +3651,19 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if not female_initiator_only and maturity == MATURITY_ADULT \
 			and breed_cooldown <= 0.0 and partner == null \
 			and hunger < 0.5 and energy > 0.65 / season_breed \
-			and stress < 0.4 * season_breed:
-		var candidate: Fish = _find_breeding_partner(neighbors)
+			and stress < 0.4 * season_breed \
+			and randf() >= _logistic_breed_suppress():
+		# Mate loyalty (#83): prefer re-bonding with the previous partner if it's
+		# nearby and available, before rolling a fresh mate.
+		var candidate: Fish = _find_preferred_mate(neighbors)
+		if candidate == null:
+			candidate = _find_breeding_partner(neighbors)
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
 			partner = candidate
 			candidate.partner = self
+			_mate_id = String(candidate.id)
+			candidate._mate_id = String(id)
 			court_timer = 0.0
 			candidate.court_timer = 0.0
 
@@ -3958,7 +4172,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# the panicking neighbor is. Visible as the school tightening
 			# before the dart fires.
 			var prox: float = 1.0 - sqrt(nearest_panic_d2) / 4.0
-			stress = clampf(stress + prox * 0.18, 0.0, 1.0)
+			# Habituation (#81): a fish that's grown familiar with the tank /
+			# owner stays calmer in a panic — long-kept fish spook less.
+			var calm_fam: float = 1.0 - clampf(float(familiarity), 0.0, 1.0) * 0.4
+			stress = clampf(stress + prox * 0.18 * calm_fam, 0.0, 1.0)
 			# Lingering fear + memory: a scare isn't forgotten the instant the
 			# burst ends. The fish stays jumpy (spooked) and remembers it.
 			spooked = clampf(spooked + prox * 0.6, 0.0, 1.0)
@@ -4352,12 +4569,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# makes well-fed populations produce bigger fish over time and creates
 	# the size-based predation dynamic.
 	if maturity == MATURITY_ADULT:
+		# Per-individual growth variance (#89): a faster-growing fish tops out
+		# bigger; a runt tops out smaller — a natural size hierarchy within a
+		# clutch instead of identical adults.
+		var gv: float = _growth_variance
 		if hunger < 0.35:
 			growth_factor = minf(
-				growth_factor + 0.0008 * dt * (0.75 + size_potential * 0.65), max_growth)
+				growth_factor + 0.0008 * dt * (0.75 + size_potential * 0.65) * gv,
+				max_growth * gv)
 		elif hunger > 0.7:
 			growth_factor = maxf(
-				growth_factor - 0.0004 * dt * (1.18 - size_potential * 0.35), 0.6)
+				growth_factor - 0.0004 * dt * (1.18 - size_potential * 0.35), 0.6 * gv)
 
 	# Update body scale across maturity AND growth_factor.
 	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
@@ -4677,6 +4899,14 @@ func _motion_substep(dt: float) -> void:
 	# noticeably MORE active when the lights go down. Subtle by design —
 	# the tank should never feel frozen, even at deep midnight.
 	target_spd *= _day_activity_mult()
+	# Rest debt (#84): a sleep-deprived fish moves sluggishly through the day.
+	if _rest_debt > 0.05:
+		target_spd *= 1.0 - clampf(_rest_debt, 0.0, 1.0) * 0.25
+	# Enrichment vs boredom (#85): a barren tank is dull — fish drift listlessly;
+	# a complex, well-planted tank keeps them lively and exploring.
+	if sim != null:
+		var enrich: float = clampf(float(sim.total_plant_biomass) / 300.0, 0.0, 1.0)
+		target_spd *= lerpf(0.85, 1.0, enrich)
 
 	var body_m: float = _body_tank_margin()
 	var margin: float = 0.22
@@ -5014,8 +5244,14 @@ func _motion_substep(dt: float) -> void:
 		# Decay the saccade target back toward 0 so the twitch is a brief
 		# pulse, not a sustained head-cock.
 		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
+		# Eye gaze hold: between saccades the gaze settles toward whatever the
+		# fish is attending to (a passing neighbor / the watching player), so the
+		# head reads as "looking at something" rather than dead-ahead. Smoothed
+		# and subtle; the saccade above is the quick flick layered on top.
+		var gaze_hold: float = clampf(_gaze_yaw, -0.3, 0.3) if _gaze_remaining > 0.0 else 0.0
+		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, clampf(dt * 2.0, 0.0, 1.0))
 		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y,
-			head_target + _saccade_target * rest_factor,
+			head_target + (_saccade_target + _eye_look * 0.5) * rest_factor,
 			clampf(dt * 12.0, 0.0, 1.0))
 		# Gill flare at rest. When the fish is barely moving (drifting,
 		# sifting, sleeping), the eye reads a subtle head-width pulse as
@@ -5701,6 +5937,28 @@ func _find_nearest_plant(plants: Array, max_dist: float) -> Plant:
 	return best
 
 
+func _find_nearest_floater(world: Node, max_dist: float) -> FloatingPlant:
+	var best: FloatingPlant = null
+	var best_d2: float = max_dist * max_dist
+	if world == null or not world.has_method("query_floaters_in_radius"):
+		return null
+	for fp in world.query_floaters_in_radius(position, max_dist):
+		if not is_instance_valid(fp) or not (fp is FloatingPlant):
+			continue
+		var floater: FloatingPlant = fp
+		if floater.turion_buried or floater.biomass() < 0.15:
+			continue
+		if floater.graze_palatability() < 0.2 and randf() > 0.2:
+			continue
+		var top_pos: Vector3 = floater.global_position
+		top_pos.y = _water_surface_y() - 0.06
+		var d2: float = top_pos.distance_squared_to(position)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = floater
+	return best
+
+
 func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) -> Plant:
 	# Fish only nibble plants that are at least min_biomass voxels tall.
 	# Spares saplings + carpets. Prefer open canopy flowers when hungry.
@@ -5711,6 +5969,9 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 	for p in candidates:
 		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
+		if p.has_method("graze_palatability"):
+			if float(p.graze_palatability()) < 0.22 and randf() > 0.15:
+				continue
 		var top_pos: Vector3 = (p as Plant).global_position
 		top_pos.y = _plant_graze_y(p as Plant)
 		var d2: float = top_pos.distance_squared_to(position)
@@ -6231,6 +6492,13 @@ func to_save_dict() -> Dictionary:
 		"familiarity": familiarity,
 		"mood": mood,
 		"bonds": bonds.duplicate(),
+		# Individual-aliveness state (H9): lifelong size/lifespan variance, the
+		# wariness scar from past frights, and the bonded mate id so loyalty +
+		# the size hierarchy survive a reload.
+		"life_jitter": _life_jitter,
+		"growth_variance": _growth_variance,
+		"scarred": _scarred,
+		"mate_id": _mate_id,
 		# Death animation state — persisting these means a fish that was
 		# mid-death-pose when autosave fired comes back still dying instead
 		# of being "resurrected" only to immediately re-die (which reads as
@@ -6268,6 +6536,10 @@ func apply_save_dict(d: Dictionary) -> void:
 	nibble_cooldown = float(d.get("nibble_cooldown", 0.0))
 	breed_count = int(d.get("breed_count", 0))
 	growth_factor = float(d.get("growth_factor", 1.0))
+	_life_jitter = float(d.get("life_jitter", _life_jitter))
+	_growth_variance = float(d.get("growth_variance", _growth_variance))
+	_scarred = not not d.get("scarred", false)
+	_mate_id = String(d.get("mate_id", ""))
 	heading_offset = SaveHelpers.array_to_vec3(d.get("heading_offset", []), Vector3.ZERO)
 	court_timer = float(d.get("court_timer", 0.0))
 	brooding_at = SaveHelpers.array_to_vec3(d.get("brooding_at", []), Vector3.ZERO)

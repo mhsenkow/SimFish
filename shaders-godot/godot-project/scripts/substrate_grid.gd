@@ -28,6 +28,14 @@ const RESERVOIR_LEAK_PER_TICK: float = 0.00015
 # floating-point noise of diffusion doesn't keep dormant cells active.
 const EQUILIBRIUM_EPSILON: float = 0.004
 
+# Secondary scalar fields (Plants v2) — sparse dirty tracking like nutrients.
+const SEED_BANK_MAX: float = 1.0
+const ALLELO_MAX: float = 0.8
+const ROOT_O2_MAX: float = 1.0
+const ANAEROBIC_MAX: float = 1.0
+const CHANNEL_DIFFUSION: float = 0.06
+const CHANNEL_DECAY: float = 0.008
+
 # Hoisted out of tick(): GDScript reallocates an inline array literal
 # every time the for-loop is entered, so the old `for off in [Vector2i(...),
 # ...]` form was allocating 4 Vector2is per cell per tick.
@@ -42,13 +50,38 @@ const NEIGHBOR_OFFSETS: Array[Vector2i] = [
 var baseline_override: float = -1.0
 var reservoir_leak_override: float = -1.0
 
+# Aquasoil aging (#1). Fresh soil leaches richly; over a couple of sim-months
+# the organic reservoir is spent and the leak tapers toward a quarter strength.
+# A mature tank therefore transitions from soil-fed to fish-waste-fed — the
+# real Walstad arc and a reason to keep livestock / drop a root tab.
+const SIM_DAY_S_LOCAL: float = 864.0
+const SOIL_DEPLETION_DAYS: float = 60.0
+const SOIL_AGED_LEAK_FRAC: float = 0.25
+var soil_age_s: float = 0.0
+var soil_age_mult: float = 1.0
+
 
 func _active_baseline() -> float:
 	return baseline_override if baseline_override >= 0.0 else NUTRIENT_BASELINE
 
 
 func _active_reservoir_leak() -> float:
-	return reservoir_leak_override if reservoir_leak_override >= 0.0 else RESERVOIR_LEAK_PER_TICK
+	var base: float = reservoir_leak_override if reservoir_leak_override >= 0.0 else RESERVOIR_LEAK_PER_TICK
+	return base * soil_age_mult
+
+
+# Local root-tab injection (#14): bump a cell's nutrients well above baseline.
+func add_root_tab_at(world_pos: Vector3, amount: float = 1.4) -> void:
+	add_at(world_pos, amount)
+
+
+# Total dissolved anaerobic gas across the bed — denitrification potential (#5).
+func total_anaerobic() -> float:
+	var s: float = 0.0
+	for x in cells_x:
+		for z in cells_z:
+			s += anaerobic_gas[x][z]
+	return s
 
 
 func _equilibrium_value() -> float:
@@ -63,6 +96,12 @@ var cells_z: int
 var cell_size: float
 var origin: Vector3   # world-space corner of cell (0,0)
 var nutrients: Array  # of Array[float], [x][z]
+var seed_bank: Array = []
+var allelochemical: Array = []
+var root_oxygen: Array = []
+var anaerobic_gas: Array = []
+var _dirty_channels: Dictionary = {}
+var _next_dirty_channels: Dictionary = {}
 # Scratch buffer for diffusion. Preallocated once in init() so tick()
 # doesn't have to allocate cells_x × cells_z floats every sim frame.
 var _scratch: Array = []
@@ -95,6 +134,20 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 		sc.resize(cells_z)
 		_scratch.append(sc)
 	_dirty_cells.clear()
+	_init_channel_grid(seed_bank)
+	_init_channel_grid(allelochemical)
+	_init_channel_grid(root_oxygen)
+	_init_channel_grid(anaerobic_gas)
+	_dirty_channels.clear()
+
+
+func _init_channel_grid(grid: Array) -> void:
+	grid.clear()
+	for x in cells_x:
+		var col: Array = []
+		col.resize(cells_z)
+		col.fill(0.0)
+		grid.append(col)
 
 
 func _cell_at(world_pos: Vector3) -> Vector2i:
@@ -138,7 +191,130 @@ func consume_at(world_pos: Vector3, amount: float) -> float:
 	return taken
 
 
+func get_seed_bank_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return seed_bank[c.x][c.y]
+
+
+func add_seed_bank_at(world_pos: Vector3, amount: float) -> void:
+	var c := _cell_at(world_pos)
+	seed_bank[c.x][c.y] = minf(seed_bank[c.x][c.y] + amount, SEED_BANK_MAX)
+	_mark_channel_dirty(c)
+
+
+func consume_seed_bank_at(world_pos: Vector3, amount: float) -> float:
+	var c := _cell_at(world_pos)
+	var taken: float = minf(amount, seed_bank[c.x][c.y])
+	seed_bank[c.x][c.y] -= taken
+	if taken > 0.0:
+		_mark_channel_dirty(c)
+	return taken
+
+
+func get_allelochemical_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return allelochemical[c.x][c.y]
+
+
+func add_allelochemical_at(world_pos: Vector3, amount: float) -> void:
+	var c := _cell_at(world_pos)
+	allelochemical[c.x][c.y] = minf(allelochemical[c.x][c.y] + amount, ALLELO_MAX)
+	_mark_channel_dirty(c)
+
+
+func get_root_oxygen_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return root_oxygen[c.x][c.y]
+
+
+func add_root_oxygen_at(world_pos: Vector3, amount: float) -> void:
+	var c := _cell_at(world_pos)
+	root_oxygen[c.x][c.y] = minf(root_oxygen[c.x][c.y] + amount, ROOT_O2_MAX)
+	anaerobic_gas[c.x][c.y] = maxf(0.0, anaerobic_gas[c.x][c.y] - amount * 0.6)
+	_mark_channel_dirty(c)
+
+
+func get_anaerobic_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return anaerobic_gas[c.x][c.y]
+
+
+func add_anaerobic_at(world_pos: Vector3, amount: float) -> void:
+	var c := _cell_at(world_pos)
+	anaerobic_gas[c.x][c.y] = minf(anaerobic_gas[c.x][c.y] + amount, ANAEROBIC_MAX)
+	_mark_channel_dirty(c)
+
+
+func release_anaerobic_at(world_pos: Vector3, amount: float) -> float:
+	var c := _cell_at(world_pos)
+	var released: float = minf(amount, anaerobic_gas[c.x][c.y])
+	anaerobic_gas[c.x][c.y] -= released
+	if released > 0.0:
+		_mark_channel_dirty(c)
+	return released
+
+
+func _mark_channel_dirty(cell: Vector2i) -> void:
+	_dirty_channels[cell] = true
+	for off in NEIGHBOR_OFFSETS:
+		var n := Vector2i(cell.x + off.x, cell.y + off.y)
+		if n.x < 0 or n.y < 0 or n.x >= cells_x or n.y >= cells_z:
+			continue
+		_dirty_channels[n] = true
+
+
+func _tick_channel_field(grid: Array, max_val: float, dt: float) -> void:
+	if _dirty_channels.is_empty():
+		return
+	var to_process: Array = _dirty_channels.keys()
+	for cell_v in to_process:
+		var cell: Vector2i = cell_v
+		var x: int = cell.x
+		var z: int = cell.y
+		var c: float = grid[x][z]
+		var sum: float = 0.0
+		var count: float = 0.0
+		for off in NEIGHBOR_OFFSETS:
+			var nx: int = x + off.x
+			var nz: int = z + off.y
+			if nx < 0 or nz < 0 or nx >= cells_x or nz >= cells_z:
+				continue
+			sum += grid[nx][nz]
+			count += 1.0
+		var avg: float = sum / maxf(count, 1.0)
+		var new_val: float = c + (avg - c) * CHANNEL_DIFFUSION
+		new_val = maxf(0.0, new_val - CHANNEL_DECAY * dt * 10.0)
+		new_val = minf(new_val, max_val)
+		grid[x][z] = new_val
+
+
+func tick_channels(dt: float) -> void:
+	if _dirty_channels.is_empty():
+		return
+	_tick_channel_field(seed_bank, SEED_BANK_MAX, dt)
+	_tick_channel_field(allelochemical, ALLELO_MAX, dt)
+	_tick_channel_field(root_oxygen, ROOT_O2_MAX, dt)
+	_tick_channel_field(anaerobic_gas, ANAEROBIC_MAX, dt)
+	# Re-dirty cells with residual values for slow diffusion
+	_next_dirty_channels.clear()
+	for cell_v in _dirty_channels.keys():
+		var cell: Vector2i = cell_v
+		if seed_bank[cell.x][cell.y] > 0.01 \
+				or allelochemical[cell.x][cell.y] > 0.01 \
+				or root_oxygen[cell.x][cell.y] > 0.01 \
+				or anaerobic_gas[cell.x][cell.y] > 0.01:
+			_next_dirty_channels[cell] = true
+	var swap: Dictionary = _dirty_channels
+	_dirty_channels = _next_dirty_channels
+	_next_dirty_channels = swap
+
+
 func tick(_dt: float) -> void:
+	# Soil aging runs every tick (before the dirty-set early-out) so a settled
+	# tank still ages its substrate.
+	soil_age_s += _dt
+	soil_age_mult = lerpf(1.0, SOIL_AGED_LEAK_FRAC,
+		clampf(soil_age_s / (SIM_DAY_S_LOCAL * SOIL_DEPLETION_DAYS), 0.0, 1.0))
 	# Lazy diffusion + decay. Only walks dirty cells (and their immediate
 	# neighbors, captured via _mark_dirty on add/consume). Empty dirty set
 	# = nothing to do this tick — common case once the tank settles.
@@ -193,6 +369,14 @@ func tick(_dt: float) -> void:
 		new_val = clampf(new_val, 0.0, NUTRIENT_MAX)
 		nutrients[x][z] = new_val
 
+		# Overloaded cells go anaerobic (#11): organics piling up faster than
+		# soil bacteria can oxidize them turn into trapped gas pockets, which
+		# then feed denitrification (#5) and bioturbation burps (#16).
+		if new_val > 2.4:
+			anaerobic_gas[x][z] = minf(
+				anaerobic_gas[x][z] + (new_val - 2.4) * 0.02 * _dt, ANAEROBIC_MAX)
+			_mark_channel_dirty(Vector2i(x, z))
+
 		# Stay dirty if we haven't reached equilibrium yet OR if a sizable
 		# value change just happened (diffusion will still spread).
 		if absf(new_val - eq) > EQUILIBRIUM_EPSILON:
@@ -209,6 +393,7 @@ func tick(_dt: float) -> void:
 	var swap: Dictionary = _dirty_cells
 	_dirty_cells = _next_dirty
 	_next_dirty = swap
+	tick_channels(_dt)
 
 
 func total_above_baseline() -> float:
@@ -230,6 +415,30 @@ func pore_water_nitrate_leak() -> float:
 
 # ---- Save / load ----
 
+func _pack_channel_flat(grid: Array) -> Array:
+	var flat: PackedFloat32Array = PackedFloat32Array()
+	flat.resize(cells_x * cells_z)
+	for x in cells_x:
+		for z in cells_z:
+			flat[x * cells_z + z] = grid[x][z]
+	return Array(flat)
+
+
+func _apply_channel_flat(grid: Array, flat: Array, sx: int, sz: int) -> void:
+	if flat.is_empty():
+		return
+	var copy_x: int = mini(cells_x, sx)
+	var copy_z: int = mini(cells_z, sz)
+	for x in copy_x:
+		for z in copy_z:
+			if x * sz + z >= flat.size():
+				continue
+			var v: float = float(flat[x * sz + z])
+			grid[x][z] = v
+			if v > 0.01:
+				_mark_channel_dirty(Vector2i(x, z))
+
+
 func to_save_dict() -> Dictionary:
 	# Pack the 2D nutrient array as a flat float list so JSON encoding stays
 	# small (no nested array headers per row). cells_x/cells_z let us
@@ -246,7 +455,12 @@ func to_save_dict() -> Dictionary:
 		"origin": [origin.x, origin.y, origin.z],
 		"baseline_override": baseline_override,
 		"reservoir_leak_override": reservoir_leak_override,
+		"soil_age_s": soil_age_s,
 		"nutrients_flat": Array(flat),
+		"seed_bank_flat": _pack_channel_flat(seed_bank),
+		"allelochemical_flat": _pack_channel_flat(allelochemical),
+		"root_oxygen_flat": _pack_channel_flat(root_oxygen),
+		"anaerobic_flat": _pack_channel_flat(anaerobic_gas),
 	}
 
 
@@ -258,6 +472,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	# copy only the overlapping cells.
 	baseline_override = float(d.get("baseline_override", baseline_override))
 	reservoir_leak_override = float(d.get("reservoir_leak_override", reservoir_leak_override))
+	soil_age_s = float(d.get("soil_age_s", soil_age_s))
+	soil_age_mult = lerpf(1.0, SOIL_AGED_LEAK_FRAC,
+		clampf(soil_age_s / (SIM_DAY_S_LOCAL * SOIL_DEPLETION_DAYS), 0.0, 1.0))
 	var sx: int = int(d.get("cells_x", cells_x))
 	var sz: int = int(d.get("cells_z", cells_z))
 	var flat: Array = d.get("nutrients_flat", [])
@@ -275,3 +492,7 @@ func apply_save_dict(d: Dictionary) -> void:
 			# update picks it up.
 			if absf(v - eq) > EQUILIBRIUM_EPSILON:
 				_mark_dirty(Vector2i(x, z))
+	_apply_channel_flat(seed_bank, d.get("seed_bank_flat", []), sx, sz)
+	_apply_channel_flat(allelochemical, d.get("allelochemical_flat", []), sx, sz)
+	_apply_channel_flat(root_oxygen, d.get("root_oxygen_flat", []), sx, sz)
+	_apply_channel_flat(anaerobic_gas, d.get("anaerobic_flat", []), sx, sz)

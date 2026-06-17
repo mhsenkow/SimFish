@@ -27,6 +27,8 @@ func _initialize() -> void:
 			var cap: int = int(w.call("_surface_floater_capacity"))
 			if cap < 4:
 				failed.append("%s: floater cap too low (%d)" % [shape, cap])
+			elif shape in ["box", "cube", "hex", "triangle"] and cap < 40:
+				failed.append("%s: floater cap suspiciously low (%d)" % [shape, cap])
 			else:
 				print_verbose("[smoke] %s floater cap=%d mult=%.2f" % [
 					shape, cap, WorldFloaterManager.shape_capacity_multiplier(shape),

@@ -22,6 +22,9 @@ var _branches: Array[BranchPlant] = []
 
 
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
+	branch_angle_deg = float(params.get("ls_angle", params.get("branch_angle_deg", branch_angle_deg)))
+	max_branch_depth = int(params.get("ls_depth", params.get("max_branch_depth", max_branch_depth)))
+	branch_chance = clampf(float(params.get("ls_ratio", branch_chance)), 0.1, 0.9)
 	monocarpic = true
 	emergent_growth = true
 	super.init(initial_height, params)

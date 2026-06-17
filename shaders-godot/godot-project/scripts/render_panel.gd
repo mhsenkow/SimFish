@@ -24,6 +24,15 @@ var _crt_label: Label
 var _integer_upscale_check: CheckBox
 var _pixel_snap_check: CheckBox
 var _follow_dof_check: CheckBox
+var _follow_dof_near_check: CheckBox
+var _follow_dof_strength: HSlider
+var _follow_dof_strength_label: Label
+var _follow_dof_far_soft: HSlider
+var _follow_dof_far_soft_label: Label
+var _follow_dof_near_soft: HSlider
+var _follow_dof_near_soft_label: Label
+var _follow_dof_focus: HSlider
+var _follow_dof_focus_label: Label
 var _fog_density: HSlider
 var _fog_density_label: Label
 var _fog_anisotropy: HSlider
@@ -266,11 +275,40 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	vbox.add_child(ps_desc)
 	_follow_dof_check = CheckBox.new()
 	_follow_dof_check.text = "Follow depth-of-field"
-	_follow_dof_check.toggled.connect(func(v): TankConfig.follow_depth_of_field = v)
+	_follow_dof_check.toggled.connect(func(v):
+		TankConfig.follow_depth_of_field = v
+		_sync_follow_dof_controls())
 	vbox.add_child(_follow_dof_check)
 	var dof_desc := PanelTheme.make_description()
 	dof_desc.text = "When following a creature, blurs the rest of the tank into a dreamy haze. A stylised look — off by default."
 	vbox.add_child(dof_desc)
+	_follow_dof_strength_label = Label.new()
+	_follow_dof_strength = PanelTheme.add_slider_row(vbox, "DOF strength", 0.0, 0.25, 0.005, _follow_dof_strength_label)
+	_follow_dof_strength.value_changed.connect(func(v):
+		TankConfig.follow_dof_blur_strength = v
+		_follow_dof_strength_label.text = "%.3f" % v)
+	_follow_dof_focus_label = Label.new()
+	_follow_dof_focus = PanelTheme.add_slider_row(vbox, "Focus margin", 0.2, 4.0, 0.1, _follow_dof_focus_label)
+	_follow_dof_focus.value_changed.connect(func(v):
+		TankConfig.follow_dof_focus_margin = v
+		_follow_dof_focus_label.text = "%.1f" % v)
+	_follow_dof_far_soft_label = Label.new()
+	_follow_dof_far_soft = PanelTheme.add_slider_row(vbox, "Far softness", 0.3, 8.0, 0.1, _follow_dof_far_soft_label)
+	_follow_dof_far_soft.value_changed.connect(func(v):
+		TankConfig.follow_dof_far_softness = v
+		_follow_dof_far_soft_label.text = "%.1f" % v)
+	_follow_dof_near_soft_label = Label.new()
+	_follow_dof_near_soft = PanelTheme.add_slider_row(vbox, "Near softness", 0.3, 8.0, 0.1, _follow_dof_near_soft_label)
+	_follow_dof_near_soft.value_changed.connect(func(v):
+		TankConfig.follow_dof_near_softness = v
+		_follow_dof_near_soft_label.text = "%.1f" % v)
+	_follow_dof_near_check = CheckBox.new()
+	_follow_dof_near_check.text = "Blur foreground (near DOF)"
+	_follow_dof_near_check.toggled.connect(func(v): TankConfig.follow_dof_near_enabled = v)
+	vbox.add_child(_follow_dof_near_check)
+	var dof_tune_desc := PanelTheme.make_description()
+	dof_tune_desc.text = "Strength = blur amount. Focus margin = how much stays sharp around the subject. Turn off near DOF if the whole frame smears."
+	vbox.add_child(dof_tune_desc)
 
 	_add_section(vbox, "Volumetric fog")
 	_fog_density_label = Label.new()
@@ -455,6 +493,31 @@ func _pull_from_config() -> void:
 		_follow_dof_check.set_block_signals(true)
 		_follow_dof_check.button_pressed = TankConfig.follow_depth_of_field
 		_follow_dof_check.set_block_signals(false)
+	if _follow_dof_strength != null:
+		_follow_dof_strength.set_block_signals(true)
+		_follow_dof_strength.value = TankConfig.follow_dof_blur_strength
+		_follow_dof_strength.set_block_signals(false)
+		_follow_dof_strength_label.text = "%.3f" % TankConfig.follow_dof_blur_strength
+	if _follow_dof_focus != null:
+		_follow_dof_focus.set_block_signals(true)
+		_follow_dof_focus.value = TankConfig.follow_dof_focus_margin
+		_follow_dof_focus.set_block_signals(false)
+		_follow_dof_focus_label.text = "%.1f" % TankConfig.follow_dof_focus_margin
+	if _follow_dof_far_soft != null:
+		_follow_dof_far_soft.set_block_signals(true)
+		_follow_dof_far_soft.value = TankConfig.follow_dof_far_softness
+		_follow_dof_far_soft.set_block_signals(false)
+		_follow_dof_far_soft_label.text = "%.1f" % TankConfig.follow_dof_far_softness
+	if _follow_dof_near_soft != null:
+		_follow_dof_near_soft.set_block_signals(true)
+		_follow_dof_near_soft.value = TankConfig.follow_dof_near_softness
+		_follow_dof_near_soft.set_block_signals(false)
+		_follow_dof_near_soft_label.text = "%.1f" % TankConfig.follow_dof_near_softness
+	if _follow_dof_near_check != null:
+		_follow_dof_near_check.set_block_signals(true)
+		_follow_dof_near_check.button_pressed = TankConfig.follow_dof_near_enabled
+		_follow_dof_near_check.set_block_signals(false)
+	_sync_follow_dof_controls()
 	_fog_density.value = TankConfig.fog_density
 	_fog_anisotropy.value = TankConfig.fog_anisotropy
 	_fog_ambient.value = TankConfig.fog_ambient_inject
@@ -468,6 +531,17 @@ func _pull_from_config() -> void:
 		_adaptive_target_label.text = "%d" % TankConfig.adaptive_quality_target_fps
 	_sync_material_sliders()
 	_update_labels()
+
+
+func _sync_follow_dof_controls() -> void:
+	var on: bool = TankConfig.follow_depth_of_field
+	for ctrl in [_follow_dof_strength, _follow_dof_focus, _follow_dof_far_soft, _follow_dof_near_soft]:
+		if ctrl != null:
+			ctrl.editable = on
+			ctrl.modulate.a = 1.0 if on else 0.45
+	if _follow_dof_near_check != null:
+		_follow_dof_near_check.disabled = not on
+		_follow_dof_near_check.modulate.a = 1.0 if on else 0.45
 
 
 func _sync_material_sliders() -> void:

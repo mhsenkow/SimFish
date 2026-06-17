@@ -345,6 +345,7 @@ func _process(dt: float) -> void:
 	# voxel behind (not done here - just remove). Lifespan is genome-driven
 	# (max_age_s), defaulting to the class LIFESPAN_S.
 	if age >= max_age_s:
+		_return_shell_minerals()
 		queue_free()
 		return
 	# Babies grow into adults over time. _apply_squash() reads is_baby + age
@@ -480,8 +481,15 @@ func _process(dt: float) -> void:
 			var sim_n2 := _get_sim()
 			if sim_n2 != null and int(sim_n2.snail_predator_count) == 0:
 				rebound = 0.5
+			# Food-crash coupling (#37): when detritus runs low the colony's
+			# breeding slows sharply well before starvation, so the classic
+			# snail boom-then-bust plays out instead of a flat population.
+			var food_mult: float = 1.0
+			if sim_n2 != null:
+				food_mult = lerpf(2.4, 1.0,
+					clampf(float(sim_n2.waste.size()) / 24.0, 0.0, 1.0))
 			_t_until_breed = randf_range(BREEDING_INTERVAL_MIN,
-				BREEDING_INTERVAL_MAX) * rebound
+				BREEDING_INTERVAL_MAX) * rebound * food_mult
 
 	# Build tangent + bitangent vectors for this wall. Both must lie IN the
 	# wall plane (perpendicular to wall_normal); using `up` as the second axis
@@ -696,6 +704,16 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 			if d2p < best_d2:
 				best_d2 = d2p
 				best = p
+	# Rare climb floater roots (#36).
+	if best == null and sim != null and randf() < 0.06:
+		var w_sn: Node = sim.get_parent()
+		if w_sn != null and w_sn.has_method("query_floaters_in_radius"):
+			for fp in w_sn.query_floaters_in_radius(global_position, 1.8):
+				if fp is FloatingPlant and (fp as FloatingPlant).root_length_current > 0.25:
+					var d2f: float = fp.global_position.distance_squared_to(global_position)
+					if d2f < best_d2:
+						best_d2 = d2f
+						best = fp
 
 	if best == null:
 		_pursuing_waste = false
@@ -705,8 +723,9 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	var to_w: Vector3 = best.global_position - global_position
 	# Consume if very close.
 	if to_w.length() < 0.25:
-		if best.get("kind") != null:
-			# It's waste
+		if best is WasteParticle:
+			# It's waste — type-checked so we never try to erase a non-waste
+			# node (algae / plant / floater) from the typed waste array.
 			var nv_consumed: float = float(best.get("nutrient_value") if best.get("nutrient_value") != null else 0.1)
 			sim.waste.erase(best)
 			(best as Node3D).queue_free()
@@ -719,8 +738,11 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 			if wn_bio != null and wn_bio.has_method("boost_biofilm"):
 				wn_bio.boost_biofilm(nv_consumed)
 		else:
-			# It's algae - just nibble it away entirely since snails are slow
-			if best.has_method("nibble"):
+			# It's algae, plant, coral, or floater.
+			if best is FloatingPlant:
+				(best as FloatingPlant).nibble(1)
+				hunger = clampf(hunger - FEED_PLANT, 0.0, 1.0)
+			elif best.has_method("nibble"):
 				if best.has_method("top_world_y"):
 					best.nibble(1)   # rooted plant/coral: slow rasping
 					hunger = clampf(hunger - FEED_PLANT, 0.0, 1.0)
@@ -1647,7 +1669,19 @@ func _die_starved() -> void:
 	if sim != null and sim.has_method("_spawn_waste"):
 		sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.05,
 			WasteParticle.KIND_SNAIL)
+	_return_shell_minerals()
 	queue_free()
+
+
+# Dissolving shell slowly returns calcium carbonate to the water + bed (#19).
+func _return_shell_minerals() -> void:
+	var sim := _get_sim()
+	if sim == null:
+		return
+	if sim.water_chemistry != null and sim.water_chemistry.has_method("add_gh"):
+		sim.water_chemistry.add_gh(0.01 if is_baby else 0.05)
+	if sim.substrate != null:
+		sim.substrate.add_at(global_position, 0.02)
 
 
 func _choose_new_direction() -> void:

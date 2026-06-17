@@ -139,6 +139,8 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **Clams** — bivalve shells open and close on a cycle. While open, a small siphon extends and pulls nearby waste particles in, depositing nutrients back to the substrate
 - **Epiphytes** — moss and java fern attach to driftwood + rocks (not the substrate). They draw water-column micros instead of substrate nutrients
 - **Trim-response branching** — when a fish grazes a stem voxel off a plant, the plant sprouts a side shoot from the cut node on the next growth tick (real apical-dominance loss → lateral bud activation)
+- **Plants v2 realism** — night O₂ draw from dense planting; dawn pH/CO₂ swing; stem fragments drift and root; heterophylly at the waterline; aufwuchs on leaves grazed before tissue; seed bank germination; heritable plant genome drift across generations
+- **Floaters v2 realism** — duckweed mats clump and part for surface fish; fry shelter under frogbit roots; full-coverage O₂ dip; azolla nitrate trickle; per-clump grazing replaces random dieback; eight morphs including water hyacinth and azolla
 - **Distinct algae types** — surface scum at the air-water film, hair algae anchored to hardscape, green-spot dots on the glass walls, and the classic biofilm cluster all coexist instead of one global tint
 - **Caustic-wave coupling** — caustic light spots on the substrate dance with the surface ripple field; disturbances visibly modulate the spotlight pattern
 - **God-ray fish shadows** — when god rays are on, the 8 fish nearest the camera cast soft shafts of shadow through the beams
@@ -153,6 +155,36 @@ Substrate nutrients ← waste deposits + reservoir trickle
 ## Recent additions
 
 Major systems shipped in the v0.1.66+ window:
+
+### Living balance pass (100-item holistic sweep)
+
+A whole-system retune so every tank feels like a real, self-balancing,
+forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
+
+- **Chemistry depth** — pH-driven toxic-ammonia (the same reading is benign at
+  pH 6.6 and lethal at 8.5), KH buffering + GH/iron pools drawn down over a
+  tank's life, substrate denitrification, aging aquasoil that depletes over
+  sim-months, a biofilter that grows *and* dies back, and temperature/O₂-gated
+  nitrification so a hypoxia event causes an ammonia rebound.
+- **Circadian O₂** — a pre-dawn oxygen trough, warm-water O₂ ceiling, bloom-crash
+  overnight sag, nitrite "brown-blood" gulping, and an optional smart-air solenoid.
+- **Populations** — logistic breeding toward carrying capacity, Holling-II
+  predator response + plant-cover prey refuge (predators can't wipe a school and
+  starve in lean times), detritus-coupled shrimp/snail booms, staggered
+  maturation, and genetic bottleneck scars on rescued lineages.
+- **Trophic loop** — fry graze microfauna, corals feed at night, plant-health
+  allelopathy vs algae, decomposer blooms on death, a grazer cascade, and random
+  surface food pulses.
+- **Plants** — CO₂ growth ceiling + Liebig's-minimum limiting factor, multi-week
+  succession (fast stems early → slow rosettes/epiphytes), a young-tank diatom
+  phase, grazer-specific algae control, and an iron pool that mutes reds when run down.
+- **Long arc** — Day 30/60/90 maturation milestones, a stability curve, filter
+  media that matures then clogs, anniversary reflections, and a persisted tank legacy.
+- **Aliveness** — rest debt, mate loyalty, runts/size hierarchy, lifelong
+  personality drift from frights, shoal-size social need, and weighted mourning
+  for favorited individuals.
+- **The metaphor** — gentle (never naggy) care nudges, an away-summary on return,
+  and a quiet "the loop has closed" message once the tank truly self-sustains.
 
 ### Fauna intelligence (#16–24)
 - **Mouthbrooding** — `is_mouthbrooder` genome flag; throat bulge mesh + delayed fry release event in `sim_driver.gd._release_brooded_fry`

@@ -532,6 +532,31 @@ func surface_area_proxy() -> float:
 			return (half_w * 2.0) * (half_d * 2.0)
 
 
+# Usable water-surface area after a glass margin — drives floater capacity.
+# Cylinder/sphere use the horizontal slice at `world_y`; rectilinear shapes
+# use inset half-extents (radius_at_height returns 0 for box/hex/triangle).
+func usable_surface_area(margin: float = 0.0, world_y: float = NAN) -> float:
+	var y: float = water_y if is_nan(world_y) else world_y
+	match shape:
+		"cylinder", "sphere":
+			var r: float = radius_at_height(y, margin)
+			if r > 0.0:
+				return PI * r * r
+			return surface_area_proxy()
+		"hex":
+			var hw: float = maxf(0.0, half_w - margin)
+			var hd: float = maxf(0.0, half_d - margin)
+			return hw * hd * 1.5
+		"triangle":
+			var hw_t: float = maxf(0.0, half_w - margin)
+			var hd_t: float = maxf(0.0, half_d - margin)
+			return hw_t * hd_t
+		_:
+			var hw_b: float = maxf(0.0, half_w - margin)
+			var hd_b: float = maxf(0.0, half_d - margin)
+			return hw_b * 2.0 * hd_b * 2.0
+
+
 func footprint_corners(segments: int = 24) -> Array[Vector3]:
 	var pts: Array[Vector3] = []
 	match shape:

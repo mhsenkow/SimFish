@@ -43,6 +43,7 @@ var tank_seed: int = 0xCAFEF155
 var fish: Array[Fish] = []
 var shrimp: Array[Shrimp] = []
 var plants: Array[Plant] = []
+var plant_fragments: Array = []
 var waste: Array[WasteParticle] = []
 var eggs: Array[FishEgg] = []
 var algae: Array = []   # Algae nodes; untyped so the script loads even if
@@ -161,6 +162,10 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 		var audio := _ambient_audio()
 		if audio != null and audio.has_method("play_feeding_event"):
 			audio.play_feeding_event()
+	var w_feed: Node = get_parent()
+	if w_feed != null and w_feed.has_method("scatter_floaters_at") \
+			and world_pos.y > w_feed.WATER_HEIGHT - 0.5:
+		w_feed.scatter_floaters_at(world_pos, 1.6, 1.1)
 
 
 # True when the current wall-clock minute is close to a minute the player
@@ -235,13 +240,30 @@ func get_player_glance() -> Dictionary:
 # config is in TankConfig (set via the settings panel); we wrap it here
 # so plants can query a single owner instead of touching TankConfig direct.
 func co2_level() -> float:
+	return dissolved_co2_level()
+
+
+func dissolved_co2_level() -> float:
+	if water_chemistry != null:
+		return water_chemistry.dissolved_co2_level()
 	var cfg: Node = get_node_or_null("/root/TankConfig")
 	if cfg == null:
-		return 0.0
+		return 0.35
 	var v: Variant = cfg.get("co2_level")
 	if v == null:
-		return 0.0
+		return 0.35
 	return clampf(float(v), 0.0, 1.0)
+
+
+func spawn_plant_fragment(at: Vector3, genome: Dictionary, ramp: Array,
+		units: int, velocity: Vector3) -> void:
+	var frag := PlantFragment.new()
+	if plants_root != null:
+		plants_root.add_child(frag)
+	else:
+		add_child(frag)
+	frag.init(at, genome, ramp, units, velocity)
+	plant_fragments.append(frag)
 
 
 # Light spectrum 0..1 (cool→warm). Used by plant red intensification:
@@ -278,13 +300,17 @@ func school_pulse_phase() -> float:
 
 
 # Append a mourning event (called when a named fish dies). Pruned in _tick.
-func _record_mourning(species_id: String, pos: Vector3) -> void:
+func _record_mourning(species_id: String, pos: Vector3, weight: float = 1.0) -> void:
 	if species_id == "":
 		return
+	# Weighted mourning (#90): a favorited / long-lived / alpha individual's
+	# death mourns harder and longer than a random fry's.
+	var dur: int = int(MOURNING_DURATION_S * clampf(weight, 1.0, 2.5))
 	_mourning_events.append({
 		"species": species_id,
 		"position": pos,
-		"until_unix": int(Time.get_unix_time_from_system()) + MOURNING_DURATION_S,
+		"until_unix": int(Time.get_unix_time_from_system()) + dur,
+		"weight": clampf(weight, 1.0, 2.5),
 	})
 	# Cap so a long crash doesn't grow this unbounded.
 	while _mourning_events.size() > 20:
@@ -313,9 +339,13 @@ func mourning_intensity_for(species_id: String, pos: Vector3) -> float:
 			continue
 		# Distance + time falloff. Recent + close = ~1.0, far + about to
 		# expire = ~0. Time normalisation goes (until - now) / DURATION.
-		var time_w: float = float(until - now) / float(MOURNING_DURATION_S)
-		var dist_w: float = 1.0 - d / MOURNING_RADIUS
-		strongest = maxf(strongest, time_w * dist_w)
+		var ew: float = float(e.get("weight", 1.0))
+		var eff_dur: float = float(MOURNING_DURATION_S) * ew
+		var time_w: float = clampf(float(until - now) / eff_dur, 0.0, 1.0)
+		var dist_w: float = 1.0 - d / (MOURNING_RADIUS * ew)
+		if dist_w <= 0.0:
+			continue
+		strongest = maxf(strongest, time_w * dist_w * minf(ew, 1.4))
 	return strongest
 
 
@@ -385,6 +415,10 @@ func recent_feed_spot_bias(pos: Vector3, radius: float) -> Dictionary:
 # walk of snails_root just for the oxygen step).
 var snail_count: int = 0
 var total_plant_biomass: int = 0
+# Health-weighted biomass: melting / etiolating / bleaching plants count for
+# little, so a plant crash compounds into an O2 crisis (#29). Updated each tick
+# alongside total_plant_biomass.
+var total_photosynthetic_biomass: float = 0.0
 
 # ---- Carrying-capacity model ----
 # Plants are the bottleneck for sustainable fish stocking — they oxygenate
@@ -458,13 +492,180 @@ func fish_carrying_capacity() -> int:
 	return clampi(int(round(raw)), CARRYING_CAPACITY_MIN, CARRYING_CAPACITY_MAX)
 
 
+# Lagged carrying capacity (#35): the tank doesn't respond instantly to a
+# plant crash. _cap_smooth trails fish_carrying_capacity() so a sudden loss of
+# plants gives the fish a grace period before stocking pressure ramps —
+# delayed density-dependent feedback, the way a real tank's bioload lags its
+# biofiltration.
+var _cap_smooth: float = -1.0
+
+
+func _tick_carrying_capacity(dt: float) -> void:
+	var target: float = float(fish_carrying_capacity())
+	if _cap_smooth < 0.0:
+		_cap_smooth = target
+	else:
+		# ~30 s time constant; capacity drops are felt gently, gains arrive
+		# only as fast as plants actually regrow anyway.
+		_cap_smooth = lerpf(_cap_smooth, target, clampf(dt / 30.0, 0.0, 1.0))
+
+
+func fish_carrying_capacity_smoothed() -> int:
+	if _cap_smooth < 0.0:
+		return fish_carrying_capacity()
+	return maxi(CARRYING_CAPACITY_MIN, int(round(_cap_smooth)))
+
+
 # Returns the live fish count / capacity ratio. Above 1.0 = over-stocked
 # and fish are accumulating stress at the rate (ratio - 1.0) * 0.06/s.
 func fish_stocking_ratio() -> float:
-	var cap: int = fish_carrying_capacity()
+	var cap: int = fish_carrying_capacity_smoothed()
 	if cap <= 0:
 		return 0.0
 	return float(fish.size()) / float(cap)
+
+
+# Long-arc bookkeeping: maturation milestones, tank legacy, stability curve,
+# equipment aging, anniversary reflections. Runs every tick but does its heavy
+# work on slow cadences.
+func _tick_long_arc(dt: float) -> void:
+	# Equipment aging (#77): filter media matures over the first sim-days
+	# (better biofiltration) then slowly clogs until the player rinses it.
+	if aeration_fixture == "filter":
+		_filter_media_age_s += dt
+		_filter_clog = clampf(_filter_clog + dt * 0.0000045, 0.0, 0.5)
+	# Stability curve (#76): how steady the tank's chemistry is. 1.0 = serene,
+	# 0 = crashing. Smoothed so it reads as a slow-settling line.
+	_stability_sample_t -= dt
+	if _stability_sample_t <= 0.0:
+		_stability_sample_t = 1.0
+		var inst: float = 1.0
+		if water_chemistry != null:
+			inst -= clampf(float(water_chemistry.toxic_ammonia) * 4.0, 0.0, 0.5)
+			inst -= clampf(float(water_chemistry.nitrite) * 1.2, 0.0, 0.3)
+		inst -= clampf(absf(dissolved_o2 - 0.65) * 1.2, 0.0, 0.3)
+		inst -= clampf(bloom_intensity * 0.4, 0.0, 0.25)
+		stability = lerpf(stability, clampf(inst, 0.0, 1.0), 0.08)
+		# Crash legacy (#75): record when the tank dips into a real crash so the
+		# anniversary can recall "survived 2 crashes."
+		if stability < 0.30 and not _crash_latch:
+			_crash_latch = true
+			tank_legacy["crashes"] = int(tank_legacy.get("crashes", 0)) + 1
+		elif stability > 0.55:
+			_crash_latch = false
+	# Slow cadence: legacy peaks + day milestones + anniversary.
+	_long_arc_t -= dt
+	if _long_arc_t <= 0.0:
+		_long_arc_t = 5.0
+		tank_legacy["peak_fish"] = maxi(int(tank_legacy.get("peak_fish", 0)), fish.size())
+		tank_legacy["peak_shrimp"] = maxi(int(tank_legacy.get("peak_shrimp", 0)), shrimp.size())
+		tank_legacy["peak_biomass"] = maxi(int(tank_legacy.get("peak_biomass", 0)), total_plant_biomass)
+		_check_maturation_milestones()
+
+
+# Gentle care nudges (#91/#92): when the tank drifts toward imbalance, surface
+# ONE soft, optional suggestion framed as the tank asking for help — never a
+# failure popup, and never repeated back-to-back. Every problem has a visible
+# tell; this names it kindly and suggests a care action that matters (#93).
+func _tick_care_nudge(dt: float) -> void:
+	_nudge_timer -= dt
+	if _nudge_timer > 0.0:
+		return
+	_nudge_timer = 75.0
+	if water_chemistry == null:
+		return
+	var msg: String = ""
+	var key: String = ""
+	if float(water_chemistry.toxic_ammonia) > 0.06:
+		key = "nh3"
+		msg = "Ammonia is stressing the fish — ease off feeding while the biofilter catches up."
+	elif dissolved_o2 < 0.42:
+		key = "o2"
+		msg = "The fish are gulping near the surface — more plants, fewer fish, or a water change would help."
+	elif float(water_chemistry.nitrate) > 1.1:
+		key = "no3"
+		msg = "Nitrate is climbing — a partial water change or some floating plants would freshen it."
+	elif bloom_intensity > 0.55:
+		key = "bloom"
+		msg = "Algae is taking hold — more plants or floating cover will starve it out."
+	elif _filter_clog > 0.35:
+		key = "clog"
+		msg = "The filter flow is dropping — a quick rinse would restore it."
+	if msg == "" or key == _last_nudge:
+		# Don't repeat the same nudge twice in a row; let it breathe.
+		if msg == "":
+			_last_nudge = ""
+		return
+	_last_nudge = key
+	# Severity 1 = gentle. Don't spam the permanent story log with nudges.
+	emit_eco_event("care", msg, 1, false)
+
+
+# Maturation milestones (#71) + anniversary reflection (#80).
+func _check_maturation_milestones() -> void:
+	if _is_saltwater_tank():
+		return
+	var day: int = int(sim_day())
+	var beats: Dictionary = {
+		30: "Day 30: the biofilm has matured — the tank runs itself now.",
+		60: "Day 60: the soil has mellowed; growth steadies into old-growth calm.",
+		90: "Day 90: a settled, self-sustaining little world.",
+	}
+	for d in beats.keys():
+		if day >= int(d) and not _milestone_flags.has(d):
+			_milestone_flags[d] = true
+			log_story_event(String(beats[d]))
+	# Closing-loop message (#100): the quiet payoff. Once the tank is genuinely
+	# established and serene, name the Walstad metaphor the whole thing is for —
+	# a small complete world where waste becomes food, death becomes soil, and
+	# light becomes growth, keeping itself alive.
+	if not _milestone_flags.has("closing_loop") \
+			and water_chemistry != null \
+			and water_chemistry.cycle_phase >= WaterChemistry.CyclePhase.ESTABLISHED \
+			and stability > 0.7 and total_plant_biomass > 120:
+		_milestone_flags["closing_loop"] = true
+		log_story_event("The loop has closed — waste becomes food, death becomes soil, light becomes growth. The tank keeps itself alive now.")
+	# Anniversary reflection every 30 days past 90.
+	if day >= 120 and day % 30 == 0:
+		var key: String = "anniv_%d" % day
+		if not _milestone_flags.has(key):
+			_milestone_flags[key] = true
+			tank_legacy["anniversaries"] = int(tank_legacy.get("anniversaries", 0)) + 1
+			log_story_event(anniversary_line())
+
+
+# A quiet "this tank has lived" reflection (#80).
+func anniversary_line() -> String:
+	var day: int = maxi(1, int(sim_day()))
+	return "This tank has been alive %d days — peak of %d fish, %d shrimp; survived %d crash(es)." % [
+		day, int(tank_legacy.get("peak_fish", 0)),
+		int(tank_legacy.get("peak_shrimp", 0)),
+		int(tank_legacy.get("crashes", 0))]
+
+
+# Filter biofiltration + flow efficiency from media maturity − clogging (#77).
+func equipment_efficiency() -> float:
+	if aeration_fixture != "filter":
+		return 1.0
+	var mature: float = clampf(_filter_media_age_s / (WaterChemistry.SIM_DAY_S * 3.0), 0.0, 1.0)
+	return clampf(0.85 + mature * 0.25 - _filter_clog, 0.6, 1.1)
+
+
+# Player maintenance: rinse the filter (#77) — restores flow, costs a little
+# bacteria (you rinse some biofilm away).
+func rinse_filter() -> void:
+	_filter_clog = 0.0
+	if water_chemistry != null:
+		water_chemistry.bacteria_colony = maxf(0.04, float(water_chemistry.bacteria_colony) - 0.08)
+	log_story_event("Filter rinsed — flow restored.")
+
+
+# Player maintenance: water change (#93/#8) — dilutes nitrate, refreshes
+# minerals. Surfaced via the care-nudge path.
+func do_water_change(fraction: float = 0.35) -> void:
+	if water_chemistry != null and water_chemistry.has_method("apply_water_change"):
+		water_chemistry.apply_water_change(fraction)
+	log_story_event("Water change — nitrate diluted, minerals refreshed.")
 var plant_growth_budget: int = 0
 var _pearling_slots_used: int = 0
 const PEARLING_MAX_SLOTS: int = 22
@@ -491,6 +692,29 @@ var _accum: float = 0.0
 var _stats_timer: float = 0.0
 var _extinction_timer: float = 0.0
 var _auto_feed_timer: float = 0.0
+# Natural food pulse (#50): occasional "something fell in" surface event that
+# the whole web reacts to — keeps the tank pulsing instead of flat-lining at
+# equilibrium.
+var _food_pulse_timer: float = 150.0
+
+# ---- Long arc & time (H8) ----
+# Maturation milestones (#71), tank legacy (#75), stability curve (#76),
+# equipment aging (#77), anniversary reflection (#80).
+var _milestone_flags: Dictionary = {}
+var tank_legacy: Dictionary = {
+	"peak_fish": 0, "peak_shrimp": 0, "peak_biomass": 0,
+	"crashes": 0, "anniversaries": 0,
+}
+var stability: float = 1.0
+var _stability_sample_t: float = 0.0
+var _long_arc_t: float = 0.0
+# Filter media matures (better biofiltration) then slowly clogs until rinsed.
+var _filter_media_age_s: float = 0.0
+var _filter_clog: float = 0.0
+var _crash_latch: bool = false
+# Gentle care nudges (#91/#92): the tank asks for help softly, never nags.
+var _nudge_timer: float = 90.0
+var _last_nudge: String = ""
 var _has_logged_sterile_dissolve: bool = false
 var _eco_engineering_timer: float = 0.8
 var _overlap_resolve_timer: float = 0.0
@@ -671,6 +895,14 @@ func _refresh_tank_vitals(bloom_pressure: float, n_total: float, plant_biomass: 
 		"plant_biomass": plant_biomass,
 		"floater_coverage": _floater_coverage(),
 		"reef_bleach_level": _max_reef_bleach(),
+		"ph": water_chemistry.ph if water_chemistry != null else 7.2,
+		"dissolved_co2": water_chemistry.dissolved_co2 if water_chemistry != null else 0.4,
+		"kh": water_chemistry.kh if water_chemistry != null else 4.0,
+		"gh": water_chemistry.gh if water_chemistry != null else 6.0,
+		"iron": water_chemistry.iron if water_chemistry != null else 0.7,
+		"toxic_nh3": water_chemistry.toxic_ammonia if water_chemistry != null else 0.0,
+		"stability": stability,
+		"filter_clog": _filter_clog,
 	}
 
 
@@ -687,6 +919,42 @@ func _floater_coverage() -> float:
 	if w != null and w.has_method("floater_coverage"):
 		return float(w.floater_coverage())
 	return 0.0
+
+
+func _floater_count() -> int:
+	var w: Node = get_parent()
+	if w != null and w.has_method("floater_count"):
+		return int(w.floater_count())
+	return 0
+
+
+# Nitrate strip + Azolla N-fixation (#23, #24).
+func _tick_floater_nutrients(dt: float) -> void:
+	if water_chemistry == null:
+		return
+	var w: Node = get_parent()
+	if w == null or not w.has_method("floater_count"):
+		return
+	var floaters: Array = w.get("_floaters") if w.get("_floaters") != null else []
+	var consume: float = 0.0
+	var fix: float = 0.0
+	for f in floaters:
+		if not is_instance_valid(f) or not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		if fp.turion_buried:
+			continue
+		# Floaters as algae insurance (#55): fast surface growth makes them
+		# strong nitrate sponges, so a duckweed mat is the canonical emergency
+		# fix for a nutrient-driven bloom (with the O2-choke + shade tradeoff
+		# modeled elsewhere).
+		var demand: float = fp.biomass() * 0.0032
+		if fp.nitrogen_fixer > 0.1:
+			fix += fp.nitrogen_fixer * demand * 0.35
+		else:
+			consume += demand
+	water_chemistry.nitrate = maxf(0.0, water_chemistry.nitrate - consume * dt)
+	water_chemistry.nitrate = clampf(water_chemistry.nitrate + fix * dt, 0.0, 3.0)
 
 
 func _tank_warmth_sample() -> float:
@@ -777,6 +1045,7 @@ const O2_TARGET_NATURAL: float = 0.65         # was 0.55; healthier ambient
 const O2_NIGHT_SURFACE_BONUS: float = 0.014
 const O2_FISH_NIGHT_RESP_SCALE: float = 0.65
 const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.78
+const O2_RESPIRE_PLANT: float = 0.0011
 const ECO_ENGINEERING_INTERVAL: float = 1.2
 const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
@@ -1499,6 +1768,9 @@ func _prune_non_finite_positions(arr: Array) -> void:
 
 func _tick(dt: float) -> void:
 	tank_age_s += dt
+	_tick_carrying_capacity(dt)
+	_tick_long_arc(dt)
+	_tick_care_nudge(dt)
 	_trophic_hour_timer += dt
 	if _trophic_hour_timer >= 3600.0:
 		_trophic_hour_timer = 0.0
@@ -1537,8 +1809,14 @@ func _tick(dt: float) -> void:
 	#
 	# Clamped 0..1.2 so plant blooms during the day can briefly push the tank
 	# slightly supersaturated, which fish "notice" only when they need it.
-	var inject: float = aeration_air_rate * O2_INJECT_PER_RATE \
-		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE
+	var inject: float = (aeration_air_rate * O2_INJECT_PER_RATE \
+		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE) * equipment_efficiency()
+	# Smart-air solenoid (#30): an optional O2 controller kicks the air pump on
+	# when dissolved O2 dips, for players who want a self-stabilizing tank. Off
+	# by default so the dawn-trough tension stays intact.
+	var cfg_air: Node = _cfg()
+	if cfg_air != null and bool(cfg_air.get("smart_air_enabled")) and dissolved_o2 < 0.5:
+		inject += (0.5 - dissolved_o2) * 0.45
 	# Surface floating plants photosynthesise too (read live count from World).
 	var floater_n: int = 0
 	var w_o2: Node = get_parent()
@@ -1546,18 +1824,59 @@ func _tick(dt: float) -> void:
 		floater_n = w_o2.floater_count()
 	var dl: float = daylight()
 	var night: float = 1.0 - dl
+	# Sick-plant O2 dropout (#29): only healthy biomass photosynthesises, so a
+	# melting / etiolating planting stops carrying the tank's oxygen.
+	var photo_biomass: float = total_photosynthetic_biomass
+	if photo_biomass <= 0.0:
+		photo_biomass = float(total_plant_biomass)
 	var photo: float = dl * (
-		float(total_plant_biomass) * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
+		photo_biomass * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
 		+ float(plants.size()) * O2_PHOTO_PER_PLANT * O2_PHOTO_PLANTS_MULT
 		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
 	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
 	var respire: float = float(fish.size()) * O2_RESPIRE_FISH * fish_resp_scale \
 		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
-		+ float(snail_count) * O2_RESPIRE_SNAIL
+		+ float(snail_count) * O2_RESPIRE_SNAIL \
+		+ float(total_plant_biomass) * O2_RESPIRE_PLANT * night
+	# Pre-dawn O2 trough (#21): plant + bacterial respiration has been drawing
+	# down O2 all night; the minimum lands just before dawn. day_phase ~0.6→1.0
+	# is the deep-dark→dawn window.
+	var predawn: float = 0.0
+	if day_phase > 0.6 and day_phase < 1.0:
+		predawn = clampf((day_phase - 0.6) / 0.4, 0.0, 1.0)
+	respire += photo_biomass * O2_RESPIRE_PLANT * predawn * 0.6
+	# Bloom-crash overnight sag (#26): an algae bloom oxygenates by day but its
+	# decomposition spikes biological oxygen demand at night — the classic
+	# "green water killed my fish overnight."
+	respire += clampf(bloom_intensity, 0.0, 1.0) * 0.004 * night
+	# Warm water holds less O2 (#27): reef / warm tanks run a tighter margin.
+	var warmth_o2: float = 0.55
+	if w_o2 != null and w_o2.has_method("effective_warmth_at"):
+		warmth_o2 = float(w_o2.effective_warmth_at(Vector3.ZERO))
+	var warm_penalty: float = clampf((warmth_o2 - 0.55) / 0.45, 0.0, 1.0) * 0.12
 	# Drift toward the natural target if there's no equipment.
-	var drift_target: float = O2_TARGET_NATURAL + night * 0.10
+	var drift_target: float = (O2_TARGET_NATURAL - warm_penalty) + night * 0.10
 	var drift_rate: float = O2_PASSIVE_SURFACE_GAS + night * O2_NIGHT_SURFACE_BONUS
+	# Filtered tanks agitate the surface, topping up O2 overnight (#25): the
+	# dawn dip is gentler than an unfiltered or air-only tank.
+	if aeration_fixture == "filter":
+		drift_rate += night * 0.012
+	# Coverage O₂ choke (#17): dense mats reduce surface gas exchange.
+	if w_o2 != null and w_o2.has_method("floater_coverage"):
+		var fc: float = float(w_o2.floater_coverage())
+		if fc > 0.75:
+			drift_rate *= 1.0 - clampf((fc - 0.75) / 0.25, 0.0, 1.0) * 0.55
+	# Surface-film gas choke (#10): an oily surface-scum algae layer physically
+	# slows O2 exchange at the air-water interface — neglect literally
+	# suffocates the column.
+	var surf_scum: int = 0
+	for a_scum in algae:
+		if is_instance_valid(a_scum) and a_scum.has_method("algae_kind") \
+				and a_scum.algae_kind() == Algae.AlgaeKind.SURFACE:
+			surf_scum += 1
+	if surf_scum > 0:
+		drift_rate *= 1.0 - clampf(float(surf_scum) / 9.0, 0.0, 0.30)
 	var drift: float = drift_rate * (drift_target - dissolved_o2)
 	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
 		0.0, 1.2)
@@ -1565,6 +1884,7 @@ func _tick(dt: float) -> void:
 	# 2. Substrate field + periodic 3D terrain nutrient sync.
 	if substrate != null:
 		substrate.tick(dt)
+	_tick_floater_nutrients(dt)
 	_terrain_sync_timer += dt
 	if _terrain_sync_timer >= TERRAIN_SYNC_INTERVAL_S:
 		_terrain_sync_timer = 0.0
@@ -1587,6 +1907,37 @@ func _tick(dt: float) -> void:
 	_pearling_slots_used = 0
 	for p in plants:
 		p.tick(dt, substrate)
+	# Plant fragments (stem cuttings rooting).
+	var frag_i: int = plant_fragments.size() - 1
+	while frag_i >= 0:
+		var frag: Variant = plant_fragments[frag_i]
+		if not is_instance_valid(frag):
+			plant_fragments.remove_at(frag_i)
+		else:
+			frag.tick(dt, self, get_parent())
+			if not is_instance_valid(frag):
+				plant_fragments.remove_at(frag_i)
+		frag_i -= 1
+
+	# Nutrient competition (#36): plants strip excess substrate nutrients.
+	# Root-draw halo (#13): heavy root-feeders also deplete a ring of cells
+	# around their base, so a big sword carves a visible low-nutrient halo and
+	# plant spacing starts to matter.
+	if substrate != null and total_plant_biomass > 40:
+		var strip: float = clampf(float(total_plant_biomass) / 600.0, 0.0, 0.006) * dt
+		for p in plants:
+			if not is_instance_valid(p) or strip <= 0.0:
+				continue
+			var pp: Vector3 = p.global_position
+			substrate.consume_at(pp, strip * p.nutrient_demand * 0.4)
+			# Halo: bigger/older plants reach further for nutrients.
+			var reach: float = clampf(float(p.biomass()) / 30.0, 0.0, 1.0)
+			if reach > 0.25 and not p.get("is_epiphyte"):
+				var halo: float = strip * p.nutrient_demand * 0.18 * reach
+				substrate.consume_at(pp + Vector3(0.9, 0.0, 0.0), halo)
+				substrate.consume_at(pp + Vector3(-0.9, 0.0, 0.0), halo)
+				substrate.consume_at(pp + Vector3(0.0, 0.0, 0.9), halo)
+				substrate.consume_at(pp + Vector3(0.0, 0.0, -0.9), halo)
 
 	# 4. Fish: gather neighbors, tick, collect events.
 	var events: Array[Dictionary] = []
@@ -1840,6 +2191,30 @@ func _tick(dt: float) -> void:
 					fy = float(water_h) - 0.55
 			_spawn_waste(Vector3(spawn_x, fy, spawn_z), pellet, WasteParticle.KIND_FOOD)
 
+	# 6b2. Natural food pulse (#50). Skipped during an ammonia spike (don't pile
+	# food on a struggling tank) and in saltwater (handled by reef feeding).
+	_food_pulse_timer -= dt
+	if _food_pulse_timer <= 0.0:
+		_food_pulse_timer = randf_range(180.0, 420.0)
+		if (water_chemistry == null or water_chemistry.ammonia < 0.4) \
+				and not _is_saltwater_tank():
+			var wpz: Node = get_parent()
+			var fy2: float = 5.95
+			if wpz != null:
+				var wh: Variant = wpz.get("WATER_HEIGHT")
+				if wh != null:
+					fy2 = float(wh) - 0.3
+			var n_pellets: int = randi_range(3, 6)
+			for _pi in n_pellets:
+				var px: float = 0.0
+				var pz: float = 0.0
+				if wpz != null and wpz.has_method("sample_xz_in_tank"):
+					var xz2: Vector2 = wpz.sample_xz_in_tank(0.4)
+					px = xz2.x
+					pz = xz2.y
+				_spawn_waste(Vector3(px, fy2, pz), 0.4, WasteParticle.KIND_FOOD)
+			log_story_event("Something drifts in at the surface — a brief feeding frenzy.")
+
 	# 6c. Algae bloom dynamics.
 	#
 	# Real planted tanks cycle: nutrients spike from over-feeding or new
@@ -1856,10 +2231,18 @@ func _tick(dt: float) -> void:
 	if substrate != null:
 		n_total = substrate.total_above_baseline()
 	var plant_biomass: int = 0
+	var photo_bm: float = 0.0
 	for p in plants:
 		if is_instance_valid(p):
-			plant_biomass += p.biomass()
+			var bm: int = p.biomass()
+			plant_biomass += bm
+			# Health-weight for the O2 model (#29). Sick / melting plants barely
+			# photosynthesise.
+			var h_v: Variant = p.get("_health_smooth")
+			var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
+			photo_bm += float(bm) * hf
 	total_plant_biomass = plant_biomass
+	total_photosynthetic_biomass = photo_bm
 	_apply_ecosystem_engineering(dt)
 	# Refresh snail-predator count for snail.gd's rebound logic. Cheap
 	# (iterating fish is already done elsewhere; here we just count flags).
@@ -1911,7 +2294,26 @@ func _tick(dt: float) -> void:
 	var bloom_pressure: float = n_pressure * plant_shortage
 	if w_shade != null and w_shade.has_method("floater_coverage"):
 		bloom_pressure *= 1.0 - float(w_shade.floater_coverage()) * 0.45
-	bloom_pressure *= 1.0 - clampf(float(snail_count) / 18.0, 0.0, 0.35)
+	# Grazer cascade (#49): snails, shrimp, and herbivorous fish all crop algae,
+	# so adding or removing a grazer guild visibly shifts the bloom — a trophic
+	# cascade the player can watch.
+	var grazers: float = float(snail_count) + float(shrimp.size()) * 0.5
+	bloom_pressure *= 1.0 - clampf(grazers / 24.0, 0.0, 0.42)
+	# Plant-health allelopathy (#46): healthy, actively-growing plants release
+	# allelochemicals + outcompete algae for nutrients. Suppression tracks plant
+	# HEALTH, not just biomass — a melting planting stops fighting algae and the
+	# tank greens up.
+	if total_plant_biomass > 0:
+		var health_ratio: float = clampf(
+			total_photosynthetic_biomass / float(total_plant_biomass), 0.0, 1.0)
+		bloom_pressure *= 1.0 - health_ratio * 0.30
+	# Eco-Complete algae risk (#17): its very rich volcanic substrate runs a
+	# higher early bloom floor that tapers over the first ~2 weeks as plants
+	# and bacteria take over — matching the "algae risk" warning on the profile.
+	var cfg_b: Node = _cfg()
+	if cfg_b != null and String(cfg_b.substrate_type) == "eco_complete":
+		var young: float = clampf(1.0 - sim_day() / 14.0, 0.0, 1.0)
+		bloom_pressure = maxf(bloom_pressure, 0.20 * young)
 	bloom_intensity = lerpf(bloom_intensity, bloom_pressure, clampf(dt * 0.25, 0.0, 1.0))
 	var waste_nh3: float = float(waste.size()) * 0.0004
 	# Walstad coupling: substrate organics mineralize into ammonia. A clean
@@ -1928,6 +2330,15 @@ func _tick(dt: float) -> void:
 	var substrate_nh3: float = 0.0
 	if substrate != null:
 		substrate_nh3 = substrate.total_above_baseline() * 0.0001
+	# Fresh-soil ammonia leach (#20): a brand-new fertile substrate off-gasses
+	# ammonia on its own for the first days (the authentic new-aquasoil bump),
+	# fading as the soil settles. Only fertile substrates do this.
+	if substrate != null:
+		var leak_frac: float = float(substrate.reservoir_leak_override)
+		if leak_frac < 0.0:
+			leak_frac = 0.00015
+		var soil_young: float = clampf(1.0 - sim_day() / 6.0, 0.0, 1.0)
+		substrate_nh3 += soil_young * leak_frac * 14.0
 	var pore_no3: float = 0.0
 	if substrate != null and substrate.has_method("pore_water_nitrate_leak"):
 		pore_no3 = substrate.pore_water_nitrate_leak()
@@ -1973,8 +2384,13 @@ func _tick(dt: float) -> void:
 			floater_cov = float(w.floater_coverage())
 		var kind: int = Algae.AlgaeKind.CLUSTER
 		var pick_kind: float = randf()
+		# Young-tank diatom phase (#52): a brand-new tank reliably runs a brown
+		# diatom film for the first few days that fades as plants + bacteria
+		# establish — the universal new-tank experience.
+		if sim_day() < 5.0 and pick_kind < 0.5:
+			kind = Algae.AlgaeKind.DIATOM
 		# Strong bloom + clear surface → scum thrives at the air-water film.
-		if pick_kind < 0.18 and floater_cov < 0.35:
+		elif pick_kind < 0.18 and floater_cov < 0.35:
 			kind = Algae.AlgaeKind.SURFACE
 		elif pick_kind < 0.35:
 			kind = Algae.AlgaeKind.HAIR
@@ -2293,7 +2709,16 @@ func _tick(dt: float) -> void:
 				if actor_kind == "fish" and actor.get("fish_name") != null \
 						and String(actor.fish_name) != "":
 					var species_id: String = String(actor.species) if actor.get("species") != null else ""
-					_record_mourning(species_id, actor.position)
+					# Weighted mourning (#90): favorited / long-lived individuals
+					# leave a deeper, wider ripple through the tank.
+					var mourn_w: float = 1.0
+					if actor.get("id") != null and favorite_ids.has(String(actor.id)):
+						mourn_w += 0.9
+					if actor.get("age") != null and actor.get("max_age_s") != null \
+							and float(actor.max_age_s) > 0.0 \
+							and float(actor.age) / float(actor.max_age_s) > 0.9:
+						mourn_w += 0.4
+					_record_mourning(species_id, actor.position, mourn_w)
 					var epitaph: String = _epitaph_for_fish(actor)
 					if epitaph != "":
 						log_story_event(epitaph)
@@ -2640,6 +3065,21 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 	if best_plant != null:
 		lay_at = best_plant.global_position
 		lay_at.y = best_plant.top_world_y()
+	# Bubble-nest anchoring (#35): labyrinth breeders prefer floater shade.
+	var w_lay: Node = get_parent()
+	if (a.labyrinth_breather or b.labyrinth_breather) and w_lay != null \
+			and w_lay.has_method("query_floaters_in_radius"):
+		var near_floaters: Array = w_lay.query_floaters_in_radius(mid, 3.0)
+		var best_fp: FloatingPlant = null
+		var best_fp_d2: float = 9.0
+		for fp in near_floaters:
+			if fp is FloatingPlant:
+				var d2f: float = fp.position.distance_squared_to(mid)
+				if d2f < best_fp_d2:
+					best_fp_d2 = d2f
+					best_fp = fp
+		if best_fp != null:
+			lay_at = best_fp.global_position + Vector3(0, -0.12, 0)
 
 	for i in n:
 		var g: Dictionary = a.produce_offspring_genome(b)
@@ -2795,6 +3235,12 @@ func _apply_ecosystem_engineering(dt: float) -> void:
 			substrate_top_y,
 			p.z + randf_range(-0.75, 0.75))
 		substrate.add_at(plume, 0.0010)
+		# Bioturbation (#16): fish stirring the upper bed vent trapped anaerobic
+		# gas, keeping the substrate healthy — the cory/loach mutualism made
+		# mechanical. Bottom-dwellers stir hardest.
+		if substrate.has_method("release_anaerobic_at"):
+			var stir: float = 0.06 if p.y < substrate_top_y + 2.0 else 0.02
+			substrate.release_anaerobic_at(Vector3(p.x, substrate_top_y, p.z), stir)
 		fish_n += 1
 
 	var shrimp_n: int = 0
@@ -3262,6 +3708,26 @@ func _mutate_bank_genome(raw: Dictionary, organism_type: String) -> Dictionary:
 	return g
 
 
+# Bottleneck scar (#38): a lineage rescued from the brink carries the genetic
+# cost of inbreeding — reduced fecundity and the occasional minor deformity —
+# so a population crash leaves a visible mark even after recovery.
+func _apply_bottleneck_scar(genome: Dictionary, organism_type: String) -> Dictionary:
+	if genome.is_empty():
+		return genome
+	var g: Dictionary = genome
+	match organism_type:
+		"fish":
+			g["fecundity"] = clampf(float(g.get("fecundity", 0.6)) * 0.7, 0.0, 1.0)
+			if randf() < 0.25:
+				g["body_elongation"] = clampf(
+					float(g.get("body_elongation", 1.0)) * randf_range(0.85, 1.15), 0.7, 1.6)
+		"shrimp":
+			g["max_age_s"] = clampf(float(g.get("max_age_s", 360.0)) * 0.9, 120.0, 620.0)
+		"snail":
+			g["shell_size"] = clampf(float(g.get("shell_size", 1.0)) * randf_range(0.9, 1.0), 0.6, 1.6)
+	return g
+
+
 func _update_resilience_bank() -> void:
 	var best_fish: Fish = _pick_elite_fish()
 	if best_fish != null and best_fish.has_method("get_saved_genome"):
@@ -3323,18 +3789,27 @@ func _run_resilience_seed(dt: float) -> void:
 	# Only rescue lineages that still have survivors — no respawn from zero.
 	if fish_live > 0 and fish_live <= RESILIENCE_FISH_FLOOR \
 			and eggs.size() <= 1 and randf() < RESILIENCE_RESCUE_CHANCE:
-		spawned = _spawn_resilience_genome(_make_resilience_fish_genome(), "fish")
+		spawned = _spawn_resilience_genome(
+			_apply_bottleneck_scar(_make_resilience_fish_genome(), "fish"), "fish")
+		if spawned:
+			log_story_event("A late-born fry survives the bottleneck — the line holds on.")
 
 	if not spawned:
 		if shrimp_live > 0 and shrimp_live <= RESILIENCE_SHRIMP_FLOOR \
 				and randf() < RESILIENCE_RESCUE_CHANCE:
-			spawned = _spawn_resilience_genome(_make_resilience_shrimp_genome(), "shrimp")
+			spawned = _spawn_resilience_genome(
+				_apply_bottleneck_scar(_make_resilience_shrimp_genome(), "shrimp"), "shrimp")
+			if spawned:
+				log_story_event("A lone berried shrimp releases her last brood — the colony rebuilds.")
 
 	if not spawned:
 		if snails_live > 0 and snails_live <= RESILIENCE_SNAIL_FLOOR \
 				and snail_eggs < RESILIENCE_MAX_SNAIL_EGGS \
 				and randf() < RESILIENCE_RESCUE_CHANCE:
-			spawned = _spawn_resilience_genome(_make_resilience_snail_genome(), "snail")
+			spawned = _spawn_resilience_genome(
+				_apply_bottleneck_scar(_make_resilience_snail_genome(), "snail"), "snail")
+			if spawned:
+				log_story_event("A snail egg hitchhiked in on a leaf — a new clutch appears.")
 
 	if not spawned:
 		if plant_live == 0 and randf() < RESILIENCE_WIND_SEED_CHANCE:
@@ -3646,6 +4121,7 @@ func _emit_stats() -> void:
 		"is_saltwater": _is_saltwater_tank(),
 		"effective_warmth": _tank_warmth_sample(),
 		"floater_coverage": _floater_coverage(),
+		"floater_count": _floater_count(),
 		"bloom_intensity": bloom_intensity,
 		"bloom_pressure": float(tank_vitals.get("bloom_pressure", bloom_intensity)),
 		"tank_age_s": tank_age_s,
@@ -3657,6 +4133,15 @@ func _emit_stats() -> void:
 		"cycle_banner": WaterChemistry.phase_banner(water_chemistry.cycle_phase, sim_day()),
 		"aeration_fixture": aeration_fixture,
 		"reef_bleach_level": _max_reef_bleach(),
+		# Living-balance readouts surfaced in the water-detail panel.
+		"ph": water_chemistry.ph,
+		"dissolved_co2": water_chemistry.dissolved_co2,
+		"kh": water_chemistry.kh,
+		"gh": water_chemistry.gh,
+		"iron": water_chemistry.iron,
+		"toxic_nh3": water_chemistry.toxic_ammonia,
+		"stability": stability,
+		"filter_clog": _filter_clog,
 	}
 	# Capture this snapshot into the ring buffer so chip-tap sparklines have
 	# a 2-minute history to draw. _emit_stats fires at 1 Hz so HISTORY_LEN
@@ -3690,6 +4175,10 @@ var population_history: Dictionary = {
 	"bloom_intensity": [],
 	"waste_particles": [],
 	"cycle_phase": [],
+	# Living-balance history: the stability curve (#76) and the CO2 half of the
+	# breathing curve (#22) so chip-tap sparklines can plot them.
+	"stability": [],
+	"dissolved_co2": [],
 }
 
 
@@ -3749,7 +4238,7 @@ func log_story_event(text: String, skip_notification: bool = false) -> void:
 # plants for breeding), then creatures, then transient particles, then
 # resolving cross-references in a final pass.
 
-const SAVE_STATE_VERSION: int = 4
+const SAVE_STATE_VERSION: int = 5
 
 
 func save_state() -> Dictionary:
@@ -3791,6 +4280,13 @@ func save_state() -> Dictionary:
 			# survives across sessions. Without this, anticipation resets to
 			# zero on every reload and never builds up.
 			"feed_time_history": _feed_time_history.duplicate(),
+			# Long-arc state (H8): legacy stats, day milestones, equipment age,
+			# stability curve.
+			"tank_legacy": tank_legacy.duplicate(true),
+			"milestone_flags": _milestone_flags.duplicate(true),
+			"filter_media_age_s": _filter_media_age_s,
+			"filter_clog": _filter_clog,
+			"stability": stability,
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],
@@ -3815,6 +4311,10 @@ func save_state() -> Dictionary:
 	for p in plants:
 		if is_instance_valid(p):
 			out["plants"].append(p.to_save_dict())
+	out["plant_fragments"] = []
+	for frag in plant_fragments:
+		if is_instance_valid(frag) and frag.has_method("to_save_dict"):
+			out["plant_fragments"].append(frag.to_save_dict())
 	for f in fish:
 		if is_instance_valid(f):
 			out["fish"].append(f.to_save_dict())
@@ -3925,6 +4425,15 @@ func load_state(d: Dictionary) -> void:
 	var saved_fth: Variant = sim_d.get("feed_time_history", null)
 	if saved_fth is Array:
 		_feed_time_history = (saved_fth as Array).duplicate()
+	var saved_legacy: Variant = sim_d.get("tank_legacy", null)
+	if saved_legacy is Dictionary:
+		tank_legacy = (saved_legacy as Dictionary).duplicate(true)
+	var saved_milestones: Variant = sim_d.get("milestone_flags", null)
+	if saved_milestones is Dictionary:
+		_milestone_flags = (saved_milestones as Dictionary).duplicate(true)
+	_filter_media_age_s = float(sim_d.get("filter_media_age_s", 0.0))
+	_filter_clog = float(sim_d.get("filter_clog", 0.0))
+	stability = float(sim_d.get("stability", 1.0))
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
 	if not has_tank_age and save_ver < SAVE_STATE_VERSION and water_chemistry != null:
@@ -3952,6 +4461,13 @@ func load_state(d: Dictionary) -> void:
 		if p != null:
 			plants.append(p)
 			id_map[String(p.id)] = p
+
+	for frag_dict in d.get("plant_fragments", []):
+		var frag := PlantFragment.new()
+		if plants_root != null:
+			plants_root.add_child(frag)
+		frag.apply_save_dict(frag_dict)
+		plant_fragments.append(frag)
 
 	# 4. Algae.
 	for alga_dict in d.get("algae", []):
@@ -4055,7 +4571,14 @@ func _emit_away_recap(gap_s: int) -> void:
 	var ai_on: bool = ai_d != null and bool(ai_d.enabled) and bool(ai_d.chronicle_enabled) \
 		and int(ai_d.conn_state) == int(ai_d.ConnState.OK)
 	if not ai_on:
-		log_story_event("You were away for %s. The tank kept ticking." % human_gap)
+		# Away summary (#94): the tank lived independently while you were gone —
+		# note that it managed (or weathered a scare) so its autonomy reads.
+		var tail: String = "The tank kept itself going."
+		if int(tank_legacy.get("crashes", 0)) > 0 and stability > 0.5:
+			tail = "It weathered a rough patch and steadied itself."
+		elif fish.size() > int(tank_legacy.get("peak_fish", 0)) - 1 and fish.size() > 0:
+			tail = "Everyone's still here, holding steady."
+		log_story_event("You were away for %s. %s" % [human_gap, tail])
 		return
 	# AIDirector composes the line via its chronicle path (note_event).
 	var named: int = 0

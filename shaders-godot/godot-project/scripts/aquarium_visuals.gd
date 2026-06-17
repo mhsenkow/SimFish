@@ -179,6 +179,15 @@ func _release_slime_mark(mi: MeshInstance3D) -> void:
 		mi.queue_free()
 
 
+# Resolve a slime-mark by instance id and release it. Bound to SceneTreeTimers
+# so the timer's target is self (auto-disconnected on free) instead of a
+# capturing lambda.
+func _release_slime_mark_by_id(mid: int) -> void:
+	var n: Object = instance_from_id(mid)
+	if n is MeshInstance3D:
+		_release_slime_mark(n)
+
+
 func _pop_slime_mark() -> void:
 	while not _slime_marks.is_empty():
 		var old = _slime_marks.pop_front()
@@ -215,12 +224,13 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 	var start_col: Color = VoxelMat.read_albedo(mat, Color(0.72, 0.82, 0.78, 0.35))
 	var end_col: Color = Color(start_col.r, start_col.g, start_col.b, 0.0)
 	tw.tween_property(mat, "shader_parameter/albedo", end_col, LIFETIME * 0.70)
-	# Use a lambda so the MeshInstance3D is never passed as a typed argument
-	# after it may have been freed — .bind(mi) causes a type-coercion error
-	# in emit_signalp when the object is no longer valid.
-	get_tree().create_timer(LIFETIME).timeout.connect(func() -> void:
-		if is_instance_valid(mi):
-			_release_slime_mark(mi))
+	# Bind the instance id (an int, never freed) to a method on self. The
+	# connection target is self, so when this node is freed mid-timer (scene
+	# reload) Godot drops the connection cleanly — a capturing lambda would
+	# instead spam "Lambda capture was freed", and .bind(mi) would hit a
+	# type-coercion error once the MeshInstance3D is gone.
+	get_tree().create_timer(LIFETIME).timeout.connect(
+		_release_slime_mark_by_id.bind(mi.get_instance_id()))
 
 
 func spawn_snail_bubble(pos: Vector3) -> void:
@@ -289,8 +299,22 @@ func spawn_burst_ripple_proxy(pos: Vector3) -> void:
 	_active_ripples += 1
 	if _world.has_method("spawn_burst_ripple"):
 		_world.spawn_burst_ripple(pos)
-	get_tree().create_timer(0.8).timeout.connect(func() -> void:
-		_active_ripples = maxi(0, _active_ripples - 1))
+	get_tree().create_timer(0.8).timeout.connect(_dec_active_ripples)
+
+
+func _dec_active_ripples() -> void:
+	_active_ripples = maxi(0, _active_ripples - 1)
+
+
+func _stop_gas_escape() -> void:
+	if is_instance_valid(_gas_escape_particles):
+		_gas_escape_particles.emitting = false
+
+
+func _stop_rain() -> void:
+	if is_instance_valid(_rain_particles):
+		_rain_particles.emitting = false
+		_rain_particles.amount = 1
 
 
 func sync_aquatic_uniforms(intensity: float, light_color: Color, water_y: float,
@@ -518,9 +542,7 @@ func _maybe_gas_escape(sdt: float) -> void:
 	_gas_escape_t = randf_range(8.0, 22.0)
 	_gas_escape_particles.emitting = true
 	_gas_escape_particles.restart()
-	get_tree().create_timer(0.4).timeout.connect(func() -> void:
-		if is_instance_valid(_gas_escape_particles):
-			_gas_escape_particles.emitting = false)
+	get_tree().create_timer(0.4).timeout.connect(_stop_gas_escape)
 
 
 func _maybe_filter_cavitation(sdt: float) -> void:
@@ -549,10 +571,7 @@ func _maybe_rain_on_glass(sdt: float) -> void:
 	_rain_t = randf_range(15.0, 40.0)
 	_rain_particles.amount = 12
 	_rain_particles.emitting = true
-	get_tree().create_timer(1.2).timeout.connect(func() -> void:
-		if is_instance_valid(_rain_particles):
-			_rain_particles.emitting = false
-			_rain_particles.amount = 1)
+	get_tree().create_timer(1.2).timeout.connect(_stop_rain)
 
 
 func _maybe_glass_sparkle(sdt: float) -> void:
@@ -664,7 +683,12 @@ func sync_floater_shadows(floaters: Array, substrate_y: float) -> void:
 				_floater_shadows.append(mi)
 		mi.global_position = Vector3(fn.position.x, substrate_y + 0.03, fn.position.z)
 		var shade: float = clampf(0.55 + fn.position.y * 0.02, 0.45, 0.75)
-		mi.scale = Vector3(shade, 1.0, shade)
+		var disc: float = 0.42
+		if f is FloatingPlant:
+			var fp: FloatingPlant = f
+			disc = fp.effective_shade_radius() * lerpf(0.9, 1.35, fp.leaf_size / 0.5)
+			shade = clampf(0.45 + fp.vitality * 0.35, 0.35, 0.85)
+		mi.scale = Vector3(disc * shade, 1.0, disc * shade)
 		idx += 1
 
 

@@ -45,11 +45,15 @@ static func water_chip_warn(stats: Dictionary) -> bool:
 static func flora_chip_subtitle(stats: Dictionary) -> String:
 	var biomass: int = int(stats.get("plant_total_biomass", 0))
 	var bloom: float = float(stats.get("bloom_intensity", 0.0))
+	var floater_n: int = int(stats.get("floater_count", 0))
 	var floater: float = float(stats.get("floater_coverage", 0.0))
 	var base: String = "biomass %d" % biomass
+	if floater_n > 0:
+		base += " · %d floaters" % floater_n
 	if bloom >= 0.35:
 		base += " · bloom"
-	base += WorldFloaterManager.flora_coverage_sublabel(floater)
+	elif floater > 0.15:
+		base += " · surface %d%%" % int(round(floater * 100.0))
 	return base
 
 
@@ -98,12 +102,24 @@ static func water_detail_lines(stats: Dictionary) -> PackedStringArray:
 	if not day.is_empty():
 		lines.append("%s · %s" % [day, String(stats.get("cycle_label", "—"))])
 	lines.append("O₂: %d%%" % int(round(float(stats.get("dissolved_o2", 0.0)) * 100.0)))
-	lines.append("NH₃: %.2f" % float(stats.get("ammonia", 0.0)))
+	lines.append("NH₃: %.2f (toxic %.2f)" % [
+		float(stats.get("ammonia", 0.0)), float(stats.get("toxic_nh3", 0.0))])
 	lines.append("NO₂: %.2f" % float(stats.get("nitrite", 0.0)))
 	lines.append("NO₃: %.2f" % float(stats.get("nitrate", 0.0)))
+	# pH / CO₂ "breathing curve" (#22) + hardness (#7/#9) + iron (#58).
+	lines.append("pH: %.1f · CO₂: %d%%" % [
+		float(stats.get("ph", 7.2)),
+		int(round(float(stats.get("dissolved_co2", 0.4)) * 100.0))])
+	lines.append("KH: %.1f · GH: %.1f · Fe: %d%%" % [
+		float(stats.get("kh", 4.0)), float(stats.get("gh", 6.0)),
+		int(round(float(stats.get("iron", 0.7)) * 100.0))])
 	lines.append("Bacteria: %d%%" % int(round(float(stats.get("bacteria_colony", 0.0)) * 100.0)))
 	var recycle: float = float(stats.get("trophic_recycle_hour_pct", 0.0))
 	if recycle > 0.01:
 		lines.append("Nutrient recycle (1h): %d%%" % int(round(recycle * 100.0)))
+	# Stability curve (#76): the at-a-glance "is this tank serene?" number.
+	lines.append("Stability: %d%%" % int(round(clampf(float(stats.get("stability", 1.0)), 0.0, 1.0) * 100.0)))
+	if float(stats.get("filter_clog", 0.0)) > 0.35:
+		lines.append("Filter flow dropping — a rinse would help.")
 	lines.append("Phase: %s" % String(stats.get("cycle_label", "—")))
 	return lines

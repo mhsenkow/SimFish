@@ -894,29 +894,106 @@ func _process(dt: float) -> void:
 		_floater_growth_step()
 
 
-# Gentle sin-curve wander for surface floaters. Runs at 10 Hz with accumulated
-# dt (`adt`); the displacement is rate-correct so it looks the same as the old
-# per-frame version. Reuses `_dead_floaters_scratch` to avoid a per-call Array.
+# Floaters v2 surface physics: clumping, wind, filter shove, glass pile-up,
+# hardscape snag, ripple bob, rosette spin, daughter tether. 10 Hz + adt.
 func _drift_floaters(adt: float) -> void:
 	_floater_t += adt
+	_rebuild_floater_grid()
 	_dead_floaters_scratch.clear()
+	# Global surface drift (#2): filter outflow + slow sin phase.
+	var drift_vec: Vector3 = Vector3.ZERO
+	if sim != null and sim.filter_intake_pos != Vector3.ZERO:
+		var outflow: Vector3 = sim.filter_intake_pos - Vector3(TANK_HALF_W * 0.5, 0, 0)
+		drift_vec = Vector3(outflow.x, 0, outflow.z).normalized() * 0.04
+	drift_vec += Vector3(sin(_floater_t * 0.08), 0, cos(_floater_t * 0.06)) * 0.025
 	for f in _floaters:
 		if not is_instance_valid(f):
 			_dead_floaters_scratch.append(f)
 			continue
-		var fn: Node3D = f
-		var ph: float = fn.get_meta("phase", 0.0)
-		fn.position.x += sin(_floater_t * 0.15 + ph) * 0.05 * adt
-		fn.position.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.05 * adt
-		# Slight bob.
-		fn.position.y = WATER_HEIGHT - 0.05 + sin(_floater_t * 0.7 + ph) * 0.015
-		# Keep floaters inside the actual tank footprint, not the bounding box.
-		var xz: Vector2 = clamp_xz_in_tank(
-			fn.position.x, fn.position.z, 0.35, WATER_HEIGHT - 0.05)
-		fn.position.x = xz.x
-		fn.position.z = xz.y
+		if not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		if fp.turion_buried:
+			continue
+		var iid: int = fp.get_instance_id()
+		var vel: Vector3 = _floater_vel.get(iid, Vector3.ZERO)
+		var ph: float = fp.get_meta("phase", 0.0)
+		# Wind / current (#2)
+		vel += drift_vec * adt
+		# Surface-tension clumping (#1)
+		var neighbors: Array = query_floaters_in_radius(fp.position, 0.6)
+		if neighbors.size() > 1:
+			var centroid: Vector3 = Vector3.ZERO
+			var n_n: int = 0
+			for nb in neighbors:
+				if nb == fp:
+					continue
+				centroid += (nb as FloatingPlant).position
+				n_n += 1
+			if n_n > 0:
+				centroid /= float(n_n)
+				var to_c: Vector3 = centroid - fp.position
+				to_c.y = 0.0
+				# Gentle surface-tension cohesion. Kept low + with a small dead
+				# zone so a raft drifts together instead of jittering chaotically
+				# around its own centroid.
+				if to_c.length() > 0.12:
+					vel += to_c * adt * 0.16 * fp.vitality
+		# Filter-outflow shove (#3)
+		if sim != null and sim.filter_intake_pos != Vector3.ZERO:
+			var to_out: Vector3 = fp.position - sim.filter_intake_pos
+			to_out.y = 0.0
+			var d_out: float = to_out.length()
+			if d_out < 1.2 and d_out > 0.01:
+				vel += to_out.normalized() * adt * (1.2 - d_out) * 0.5
+		# Hardscape snag (#5)
+		var snagged: bool = _hardscape_cover_density(fp.position.x, fp.position.z, 0.3) > 0.35
+		if snagged:
+			vel *= 0.1
+		else:
+			vel.x += sin(_floater_t * 0.15 + ph) * 0.03 * adt
+			vel.z += cos(_floater_t * 0.12 + ph * 1.3) * 0.03 * adt
+		fp.position.x += vel.x
+		fp.position.z += vel.z
+		_floater_vel[iid] = vel * 0.92
+		# Ripple-coupled bob (#7)
+		var ripple_bob: float = sin(_floater_t * 0.7 + ph + fp.position.x * 0.4) * 0.015
+		fp.position.y = WATER_HEIGHT - 0.05 - fp.surface_sink() + ripple_bob
+		# Rosette spin (#8)
+		if fp.spin_rate > 0.0:
+			fp.rotation.y += adt * fp.spin_rate
+		# Daughter tether (#10)
+		if fp.linked_parent_id != "" and fp.tether_timer < 5.0:
+			fp.tether_timer += adt
+			for pf in _floaters:
+				if pf is FloatingPlant and (pf as FloatingPlant).id == fp.linked_parent_id:
+					var parent: FloatingPlant = pf
+					var tether_t: float = clampf(fp.tether_timer / 4.0, 0.0, 1.0)
+					fp.position = fp.position.lerp(parent.position + Vector3(0.15, 0, 0.15), tether_t * adt * 2.0)
+					break
+		# Glass-edge handling (#4). The slow global drift would otherwise herd
+		# every floater into one wall, where they pack tight, shade each other,
+		# and slowly die — reading as "floaters vanish at the edge." Instead of
+		# just stopping them at the glass, give a gentle inward nudge so a raft
+		# that reaches the wall drifts back toward open water and redistributes.
+		var prev_xz: Vector2 = Vector2(fp.position.x, fp.position.z)
+		var xz: Vector2 = clamp_xz_in_tank(fp.position.x, fp.position.z, 0.35, WATER_HEIGHT - 0.05)
+		var hit_edge: bool = absf(xz.x - prev_xz.x) > 0.001 or absf(xz.y - prev_xz.y) > 0.001
+		fp.position.x = xz.x
+		fp.position.z = xz.y
+		if hit_edge:
+			var inward := Vector2(-xz.x, -xz.y)
+			if inward.length() > 1e-4:
+				inward = inward.normalized()
+				vel.x = inward.x * 0.05
+				vel.z = inward.y * 0.05
+			else:
+				vel.x = 0.0
+				vel.z = 0.0
+			_floater_vel[iid] = vel
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
+		_floater_vel.erase(df.get_instance_id() if is_instance_valid(df) else 0)
 	if _visuals != null and _visuals.has_method("sync_floater_shadows"):
 		_visuals.sync_floater_shadows(_floaters, SUBSTRATE_DEPTH)
 
@@ -1154,6 +1231,10 @@ func _enforce_all_life_bounds() -> void:
 
 func is_inside_tank_volume(x: float, y: float, z: float, margin: float = 0.0) -> bool:
 	return _footprint().is_inside_3d(x, y, z, margin)
+
+
+func clamp_to_tank(p: Vector3, margin: float = 0.2) -> Vector3:
+	return clamp_xyz_in_tank(p, margin)
 
 
 func clamp_emergent_in_tank(p: Vector3, margin: float = 0.25) -> Vector3:
@@ -1438,7 +1519,11 @@ func microfauna_carrying_capacity() -> int:
 	var mulm: float = float(_mulm_voxels.size()) * 0.55
 	var bio: float = biofilm_progress * 140.0
 	var bloom: float = float(sim.bloom_intensity) * 90.0 if sim != null else 0.0
-	return maxi(4, int((base + mulm + bio + bloom) * tiny_scale))
+	var floater_bio: float = 0.0
+	for f in _floaters:
+		if f is FloatingPlant and (f as FloatingPlant).root_biofilm > 0.3:
+			floater_bio += 12.0
+	return maxi(4, int((base + mulm + bio + bloom + floater_bio) * tiny_scale))
 
 
 func wriggle_carrying_capacity() -> int:
@@ -1451,8 +1536,8 @@ func _mulm_carrying_capacity() -> int:
 
 
 func _surface_floater_capacity() -> int:
-	var r: float = _footprint().radius_at_height(WATER_HEIGHT - 0.05, 0.35)
-	var base: int = maxi(8, int(PI * r * r / 0.26))
+	var area: float = _footprint().usable_surface_area(0.35, WATER_HEIGHT - 0.05)
+	var base: int = maxi(8, int(area / 0.26))
 	return WorldFloaterManager.scaled_surface_capacity(base, TANK_SHAPE)
 
 
@@ -3636,6 +3721,20 @@ func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
 	return best.global_position + Vector3(0, 0.25, 0)
 
 
+func propagate_plant(source: Plant) -> bool:
+	if source == null or not is_instance_valid(source) or sim == null:
+		return false
+	if source.health < 0.55 or source.biomass() < 4:
+		return false
+	var g: Dictionary = PlantGenome.from_plant(source)
+	g["no_mutate"] = true
+	g["generation"] = source.generation
+	var ramp: Array = source.ramp_override if source.ramp_override.size() == 6 else []
+	var offset: Vector3 = Vector3(randf_range(-0.8, 0.8), 0.0, randf_range(-0.8, 0.8))
+	spawn_seedling(source.global_position + offset, ramp, source.generation, g)
+	return true
+
+
 func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dictionary) -> void:
 	if plants_root == null or sim == null:
 		return
@@ -3671,7 +3770,7 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	# Inherit properties from parent and slightly mutate max_height. Library
 	# spawns set no_mutate so the preset reads exactly — emergent seedlings
 	# go through the jitter path so generations actually drift.
-	var child_cfg: Dictionary = seed_config.duplicate()
+	var child_cfg: Dictionary = PlantGenome.enrich(seed_config.duplicate())
 	if not bool(seed_config.get("no_mutate", false)):
 		var parent_max: int = seed_config.get("max_height", 10)
 		child_cfg["max_height"] = clampi(parent_max + _rng.randi_range(-2, 2), 4, 30)
@@ -4302,6 +4401,9 @@ func _spawn_floaters() -> void:
 var _floaters: Array = []
 var _floater_t: float = 0.0
 var _duckweed_accum: float = 0.0
+var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
+var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
+const _FLOATER_CELL: float = 1.2
 # Surface coverage reference for floaters — scales with tank surface area.
 const FLOATER_GROWTH_INTERVAL: float = 3.0
 var _lily_pads: Array = []
@@ -4424,29 +4526,39 @@ func _spawn_lily_pads() -> void:
 # Spawn a single floating-plant clump from a genome dict at a world-space
 # position. Used by initial stocking, propagation, save-restore, and the
 # Creature Creator. Registered into _floaters so it drifts + propagates.
-func _add_floater_at(pos: Vector3, genome: Dictionary = {}) -> void:
+func _add_floater_at(pos: Vector3, genome: Dictionary = {}) -> FloatingPlant:
 	var container := get_node_or_null("Floaters")
 	if container == null:
 		container = Node3D.new()
 		container.name = "Floaters"
 		add_child(container)
-	var g: Dictionary = genome if not genome.is_empty() else _random_floater_genome()
+	var g: Dictionary = FloaterGenome.enrich(genome if not genome.is_empty() else _random_floater_genome())
 	var fp := FloatingPlant.new()
 	container.add_child(fp)
 	fp.position = pos
 	fp.init_genome(g)
 	fp.set_meta("phase", randf() * TAU)
+	if g.has("id"):
+		fp.id = String(g.id)
+	if g.has("linked_parent_id"):
+		fp.linked_parent_id = String(g.linked_parent_id)
+		fp.tether_timer = float(g.get("tether_timer", 0.0))
+	if g.has("rot_y"):
+		fp.rotation.y = float(g.rot_y)
+	if g.has("chain_siblings"):
+		fp.chain_siblings = int(g.chain_siblings)
 	_floaters.append(fp)
+	_floater_vel[fp.get_instance_id()] = Vector3.ZERO
+	return fp
 
 
 # Public entry point for the Creature Creator: drop a custom floating plant
 # at a random surface spot. Creates the Floaters container if it's missing
 # (e.g. on an empty / guided tank).
 func spawn_floating_plant(genome: Dictionary) -> bool:
-	# Surface coverage cap — at >70% coverage, floater growth halts. Removing
-	# some unlocks bloom-back. Real-tank behavior: a fully-covered surface
-	# starves the floaters of new growth space.
-	if floater_coverage() > 0.7:
+	# Player placement — allow packing the surface fairly tight; natural
+	# propagation uses a lower threshold in _floater_growth_step().
+	if floater_coverage() > 0.92:
 		return false
 	var xz: Vector2 = _sample_surface_xz(0.4, 0.34)
 	_add_floater_at(
@@ -4487,10 +4599,20 @@ func spawn_coral_from_genome(genome: Dictionary) -> bool:
 func _random_floater_genome() -> Dictionary:
 	var roll: float = randf()
 	var morph: String = "duckweed"
-	if roll < 0.18:
+	if roll < 0.14:
 		morph = "frogbit"
-	elif roll < 0.30:
+	elif roll < 0.24:
 		morph = "salvinia"
+	elif roll < 0.30:
+		morph = "water_lettuce"
+	elif roll < 0.34:
+		morph = "red_root"
+	elif roll < 0.38:
+		morph = "azolla"
+	elif roll < 0.41:
+		morph = "water_hyacinth"
+	elif roll < 0.44:
+		morph = "water_spangle"
 	var hue: float = _rng.randf_range(0.22, 0.36)
 	var base_c: Color = Color.from_hsv(hue, _rng.randf_range(0.45, 0.72), _rng.randf_range(0.40, 0.60))
 	var tip_c: Color = Color.from_hsv(fposmod(hue - 0.03, 1.0), _rng.randf_range(0.40, 0.65), _rng.randf_range(0.62, 0.85))
@@ -4500,93 +4622,152 @@ func _random_floater_genome() -> Dictionary:
 		"frogbit":
 			leaf_size = _rng.randf_range(0.34, 0.46)
 			leaf_count = _rng.randi_range(5, 7)
-		"salvinia":
+		"salvinia", "water_spangle":
 			leaf_size = _rng.randf_range(0.24, 0.32)
 			leaf_count = _rng.randi_range(4, 6)
-		"water_lettuce":
+		"water_lettuce", "water_hyacinth":
 			leaf_size = _rng.randf_range(0.34, 0.44)
 			leaf_count = _rng.randi_range(6, 8)
+		"azolla":
+			leaf_size = _rng.randf_range(0.14, 0.20)
+			leaf_count = _rng.randi_range(3, 5)
+		"red_root":
+			leaf_size = _rng.randf_range(0.22, 0.30)
+			leaf_count = _rng.randi_range(2, 4)
 		_:
 			leaf_size = _rng.randf_range(0.16, 0.22)
 			leaf_count = _rng.randi_range(1, 3)
-	return {
+	return FloaterGenome.enrich({
 		"morph": morph,
-		"leaf_size": leaf_size,
+		"leaf_size": leaf_size * randf_range(0.85, 1.15),
 		"leaf_count": leaf_count,
 		"root_length": _rng.randf_range(0.25, 0.6),
 		"base_color": base_c,
 		"tip_color": tip_c,
 		"spread_rate": _rng.randf_range(0.8, 1.2),
-	}
+	})
 
 
 func _mutate_floater_genome(g: Dictionary) -> Dictionary:
-	var out: Dictionary = g.duplicate(true)
+	var gen: int = int(g.get("generation", 0)) + 1
+	var out: Dictionary = FloaterGenome.duplicate_mutate(g, gen)
 	out["base_color"] = FloatingPlant._to_color(g.get("base_color", Color8(70, 130, 60))).lerp(
 		Color(randf(), randf() * 0.6 + 0.3, randf() * 0.5), 0.07)
 	out["tip_color"] = FloatingPlant._to_color(g.get("tip_color", Color8(120, 180, 90))).lerp(
 		Color(randf(), randf() * 0.7 + 0.3, randf() * 0.5), 0.07)
-	out["leaf_size"] = clampf(float(g.get("leaf_size", 0.3)) + randf_range(-0.02, 0.02), 0.12, 0.7)
-	out["root_length"] = clampf(float(g.get("root_length", 0.4)) + randf_range(-0.05, 0.05), 0.05, 1.4)
-	out["spread_rate"] = clampf(float(g.get("spread_rate", 1.0)) + randf_range(-0.08, 0.08), 0.2, 2.5)
+	out["parent_lineage"] = String(g.get("plant_name", g.get("morph", "floater")))
 	return out
 
 
-# Light + nutrient + grazing driven growth step (replaces the old fixed-timer
-# duckweed doubling). Excess nutrients + light grow the mat; herbivorous /
-# surface fish graze it; crowding and darkness thin it back out.
+func _floater_cell_key(x: float, z: float) -> String:
+	var cx: int = int(floor(x / _FLOATER_CELL))
+	var cz: int = int(floor(z / _FLOATER_CELL))
+	return "%d_%d" % [cx, cz]
+
+
+func _rebuild_floater_grid() -> void:
+	_floater_grid.clear()
+	for f in _floaters:
+		if not is_instance_valid(f) or not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		var key: String = _floater_cell_key(fp.position.x, fp.position.z)
+		if not _floater_grid.has(key):
+			_floater_grid[key] = []
+		(_floater_grid[key] as Array).append(fp)
+
+
+func query_floaters_in_radius(pos: Vector3, radius: float) -> Array:
+	var out: Array = []
+	var r_cells: int = int(ceil(radius / _FLOATER_CELL)) + 1
+	var cx: int = int(floor(pos.x / _FLOATER_CELL))
+	var cz: int = int(floor(pos.z / _FLOATER_CELL))
+	var r2: float = radius * radius
+	for dx in range(-r_cells, r_cells + 1):
+		for dz in range(-r_cells, r_cells + 1):
+			var key: String = "%d_%d" % [cx + dx, cz + dz]
+			if not _floater_grid.has(key):
+				continue
+			for fp in _floater_grid[key]:
+				if not is_instance_valid(fp):
+					continue
+				var d2: float = (fp.position - pos).length_squared()
+				if d2 <= r2:
+					out.append(fp)
+	return out
+
+
+# Disturbed-mat scatter (#40): outward impulse on feed drop / large ripple.
+func scatter_floaters_at(pos: Vector3, radius: float, strength: float = 1.0) -> void:
+	for fp in query_floaters_in_radius(pos, radius):
+		if not (fp is FloatingPlant):
+			continue
+		var away: Vector3 = (fp as FloatingPlant).position - pos
+		away.y = 0.0
+		if away.length_squared() < 1e-4:
+			away = Vector3(randf() - 0.5, 0, randf() - 0.5)
+		var iid: int = fp.get_instance_id()
+		_floater_vel[iid] = _floater_vel.get(iid, Vector3.ZERO) + away.normalized() * strength * 0.35
+
+
+# Per-clump growth orchestration (Floaters v2). Replaces aggregate dieback.
 func _floater_growth_step() -> void:
 	var live: Array = []
 	for f in _floaters:
 		if is_instance_valid(f):
 			live.append(f)
-		# Prune dead refs lazily.
 	_floaters = live
-	var n: int = live.size()
-	if n == 0:
+	if live.is_empty():
 		return
 	var cap: int = WorldFloaterManager.duckweed_cap(sim, _surface_floater_capacity())
-	var light: float = 1.0
-	var nutrients: float = 0.6
-	var graze: float = 0.0
-	if sim != null:
-		if sim.has_method("daylight"):
-			light = float(sim.daylight())
-		nutrients = 0.35 + 0.65 * clampf(float(sim.get("bloom_intensity")), 0.0, 1.0)
-		for fsh in sim.fish:
-			if not is_instance_valid(fsh):
-				continue
-			var herb: float = clampf(float(fsh.herbivory), 0.0, 1.0)
-			var surface: float = 1.0 if (float(fsh.preferred_y) >= 4.2 or int(fsh.mouth_orientation) < 0) else 0.25
-			graze += herb * surface
-		graze = clampf(graze * 0.06, 0.0, 0.8)
-	var coverage: float = float(n) / float(_surface_floater_capacity())
-	# Average spread_rate of the colony.
-	var sr: float = 0.0
+	var coverage: float = floater_coverage()
+	var compact: float = clampf((coverage - 0.5) / 0.5, 0.0, 1.0)
+	var dt_step: float = FLOATER_GROWTH_INTERVAL
+	var to_remove: Array = []
+	var spawn_queue: Array = []
+	_rebuild_floater_grid()
 	for fp in live:
-		sr += float(fp.spread_rate) if fp is FloatingPlant else 1.0
-	sr = clampf(sr / float(n), 0.4, 2.0)
-	var spread_p: float = 0.55 * light * nutrients * (1.0 - coverage) * sr - graze
-	if n < cap and randf() < spread_p:
-		var parent: Node3D = live[_rng.randi_range(0, n - 1)]
-		var ang: float = randf() * TAU
-		var r: float = randf_range(0.5, 1.0)
-		var nx: float = parent.position.x + cos(ang) * r
-		var nz: float = parent.position.z + sin(ang) * r
-		if _is_inside_tank(nx, nz, 0.4):
-			var child_g: Dictionary = parent.get_genome() if parent is FloatingPlant else _random_floater_genome()
-			_add_floater_at(Vector3(nx, WATER_HEIGHT - 0.05, nz), _mutate_floater_genome(child_g))
-	# Die-back from crowding, grazing, or prolonged darkness.
-	var dieback_p: float = graze * 0.5
-	if n >= cap:
-		dieback_p += 0.22
-	if coverage > 0.82:
-		dieback_p += (coverage - 0.82) * 1.5
-	if light < 0.25:
-		dieback_p += 0.10
-	if n > 3 and randf() < dieback_p:
-		var victim: Node3D = live[_rng.randi_range(0, n - 1)]
+		if not (fp is FloatingPlant):
+			continue
+		var floater: FloatingPlant = fp
+		# Neighbor density for self-shade + edge bronze (#16, #50)
+		var neighbors: Array = query_floaters_in_radius(floater.position, floater.effective_shade_radius())
+		floater.set_neighbor_density(clampf(float(neighbors.size()) / 6.0, 0.0, 1.0))
+		floater.tick(dt_step, self, sim)
+		if floater.should_remove():
+			to_remove.append(floater)
+			continue
+		if floater.has_pending_bud():
+			var bud: Dictionary = floater.consume_pending_bud()
+			var offset: Vector3 = bud.get("offset", Vector3(0.5, 0, 0.5))
+			if compact > 0.0:
+				offset *= lerpf(1.0, 0.45, compact)
+			var child_g: Dictionary = _mutate_floater_genome(bud.get("genome", floater.get_genome()))
+			child_g["linked_parent_id"] = String(bud.get("parent_id", floater.id))
+			child_g["chain_siblings"] = int(bud.get("chain", 0))
+			child_g["tether_timer"] = 0.0
+			spawn_queue.append({"pos": floater.position + offset, "genome": child_g})
+	# Nutrient bloom burst (#15) — duckweed morph spreads faster at high nutrients
+	if sim != null and float(sim.get("bloom_intensity")) > 0.7:
+		for fp2 in live:
+			if fp2 is FloatingPlant and (fp2 as FloatingPlant).morph == "duckweed":
+				(fp2 as FloatingPlant).vitality = minf(1.0, (fp2 as FloatingPlant).vitality + 0.02)
+	# Evapotranspiration haze (#29)
+	if coverage > 0.65 and randf() < 0.08:
+		_maybe_add_mineral_spot()
+	# Spawn children under cap
+	var n: int = live.size() - to_remove.size()
+	for sq in spawn_queue:
+		if n >= cap or floater_coverage() > 0.82:
+			break
+		var sp: Vector3 = sq.pos
+		sp.y = WATER_HEIGHT - 0.05
+		if _is_inside_tank(sp.x, sp.z, 0.4):
+			_add_floater_at(clamp_xyz_in_tank(sp, 0.35), sq.genome)
+			n += 1
+	for victim in to_remove:
 		_floaters.erase(victim)
+		_floater_vel.erase(victim.get_instance_id())
 		victim.queue_free()
 
 
@@ -4620,6 +4801,17 @@ func effective_warmth_at(world_pos: Vector3) -> float:
 		heater_on = not not _cfg_node.heater_enabled
 	return WorldWaterVisuals.effective_warmth_at(
 		world_pos, sim, _cfg_node, _heater_world_pos, dl, heater_on)
+
+
+func surface_warmth_at(world_pos: Vector3) -> float:
+	var dl: float = 1.0
+	if sim != null and sim.has_method("daylight"):
+		dl = float(sim.daylight())
+	var heater_on: bool = true
+	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
+		heater_on = not not _cfg_node.heater_enabled
+	return WorldWaterVisuals.surface_warmth_at(
+		world_pos, _cfg_node, _heater_world_pos, dl, heater_on)
 
 
 func _epiphyte_spawn_scalar() -> float:
@@ -4825,10 +5017,14 @@ func restore_floaters(arr: Variant) -> void:
 	for e in arr:
 		if not (e is Dictionary):
 			continue
-		var d: Dictionary = e
+		var d: Dictionary = FloaterGenome.enrich(e)
 		var pos: Vector3 = SaveHelpers.array_to_vec3(
 			d.get("pos", []), Vector3(0, WATER_HEIGHT - 0.05, 0))
-		_add_floater_at(pos, d)
+		var fp: FloatingPlant = _add_floater_at(pos, d)
+		if d.has("vitality"):
+			fp.vitality = clampf(float(d.vitality), 0.0, 1.0)
+		if d.has("id"):
+			fp.id = String(d.id)
 
 
 # One-shot expanding ripple ring at the surface. Called by fish.gd when a
@@ -6364,6 +6560,15 @@ func add_mulm_voxel(pos: Vector3) -> void:
 	var container := get_node_or_null("Mulm")
 	if container == null:
 		return
+	# Detritus settling (#12): nudge toward the lower of nearby spots so mulm
+	# pools in dug hollows / leaf-litter beds the way real detritus collects in
+	# the low points of the bed instead of spreading evenly.
+	var best_y: float = column_surface_y(pos.x, pos.z)
+	for off in [Vector3(0.7, 0, 0), Vector3(-0.7, 0, 0), Vector3(0, 0, 0.7), Vector3(0, 0, -0.7)]:
+		var sy: float = column_surface_y(pos.x + off.x, pos.z + off.z)
+		if sy < best_y - 0.05:
+			best_y = sy
+			pos = Vector3(pos.x + off.x, pos.y, pos.z + off.z)
 	var mi := MeshInstance3D.new()
 	var bm := BoxMesh.new()
 	bm.size = Vector3(0.20, 0.07, 0.20)
@@ -6382,6 +6587,17 @@ func add_mulm_voxel(pos: Vector3) -> void:
 	if substrate_grid != null:
 		substrate_grid.add_at(
 			Vector3(clamped.x, SUBSTRATE_DEPTH, clamped.z), 0.0035)
+
+
+func add_root_tab(pos: Vector3) -> void:
+	# Root tab (#14): a slow-release fertilizer pellet pushed into the bed gives
+	# a local nutrient bump so sand / inert-gravel tanks can keep root-feeders
+	# alive instead of slowly losing them.
+	if substrate_grid == null:
+		return
+	substrate_grid.add_root_tab_at(Vector3(pos.x, SUBSTRATE_DEPTH, pos.z), 1.4)
+	if has_method("spawn_substrate_dust"):
+		spawn_substrate_dust(Vector3(pos.x, column_surface_y(pos.x, pos.z), pos.z))
 
 
 func tint_substrate_cell(x: float, z: float, _color: Color, strength: float) -> void:
@@ -6730,6 +6946,14 @@ func spawn_mycelium_patch(at: Vector3) -> Node3D:
 	p.sim = sim
 	mycelium_root.add_child(p)
 	p.global_position = at
+	# Decomposer bloom (#48): a decomposing body enriches the bed and briefly
+	# spikes ammonia as bacteria break it down — death visibly feeds the soil
+	# and the nitrogen cycle, closing the loop.
+	if substrate_grid != null:
+		substrate_grid.add_at(Vector3(at.x, SUBSTRATE_DEPTH, at.z), 0.12)
+	if sim != null and sim.water_chemistry != null:
+		sim.water_chemistry.ammonia = clampf(
+			float(sim.water_chemistry.ammonia) + 0.02, 0.0, 2.0)
 	return p
 
 
@@ -6792,7 +7016,7 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 			# is_carpet, whorled_leaves, leaf_size_mult, underside_tone,
 			# latin_name, common_name, species_id, is_epiphyte) reach
 			# plant.init() without needing per-field plumbing.
-			var cfg: Dictionary = genome.duplicate(true)
+			var cfg: Dictionary = PlantGenome.enrich(genome.duplicate(true))
 			cfg["generation"] = int(genome.get("generation", 0)) + 1
 			if not cfg.has("parent_lineage"):
 				cfg["parent_lineage"] = String(genome.get("plant_name", "Library stock"))

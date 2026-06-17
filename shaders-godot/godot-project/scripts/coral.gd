@@ -1065,6 +1065,16 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		* clampf(_health_smooth, 0.0, 1.0) \
 		* (1.0 - _bleach_level) \
 		* dawn_dusk_factor
+	# Night heterotrophic feeding (#45): after dark, corals extend feeding
+	# tentacles to capture plankton, drawing down reef nutrients — a real
+	# nutrient sink for the reef and a reason the polyps are out at night.
+	var night_f: float = 1.0 - daylight_factor
+	if night_f > 0.4 and _bleach_level < 0.6:
+		target_feeding = maxf(target_feeding,
+			clampf(o2 / 0.85, 0.0, 1.0) * (1.0 - _bleach_level) * night_f)
+		if sim_n != null and sim_n.water_chemistry != null:
+			sim_n.water_chemistry.reef_nutrients = maxf(
+				0.08, float(sim_n.water_chemistry.reef_nutrients) - night_f * 0.0008 * dt)
 	# Lerp to target slowly — tentacles take seconds to extend / retract,
 	# they don't snap like a fish reaction.
 	_feeding_extension = lerpf(_feeding_extension, target_feeding, clampf(dt * 0.6, 0.0, 1.0))

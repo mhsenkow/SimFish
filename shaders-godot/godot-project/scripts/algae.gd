@@ -38,6 +38,10 @@ var _color: Color = Color8(120, 165, 60)
 var _kind: int = AlgaeKind.CLUSTER
 
 
+func algae_kind() -> int:
+	return _kind
+
+
 func init(color: Color = Color8(120, 165, 60), kind: int = AlgaeKind.CLUSTER) -> void:
 	_color = color
 	_kind = kind

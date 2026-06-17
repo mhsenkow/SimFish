@@ -83,7 +83,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "bar",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "sunny",
-			"co2_level": 0.6,
+			# Iwagumi paradox fix (#62): bright light + sand + almost no plants
+			# + high CO2 was an algae farm. Modest CO2 the carpet can actually
+			# use keeps the negative space clean instead of greening over.
+			"co2_level": 0.25,
 			"light_spectrum": 0.35,
 		},
 	},
@@ -356,10 +359,24 @@ static func random_wildcard_config() -> Dictionary:
 	# zero CO2 + cool spectrum for reef.
 	var co2: float = 0.0 if sub == "ocean_sand" else randf_range(0.0, 0.9)
 	var spectrum: float = 0.25 if sub == "ocean_sand" else randf_range(0.4, 0.8)
+	var aeration: String = _WILD_AERATIONS[randi() % _WILD_AERATIONS.size()]
+	# Coherence pass (#70): don't roll a tank that reliably crashes. A
+	# heavy-stocking preset on a poor (low-nutrient) substrate with no aeration
+	# has no O2 buffer and no plant uptake — force at least an air disk so the
+	# random tank can actually balance instead of suffocating overnight.
+	var heavy_presets: Array = ["classic_community", "community", "showcase",
+		"cichlid_pairs", "diverse"]
+	var poor_substrate: bool = sub == "sand" or sub == "inert_gravel"
+	if aeration == "none" and (poor_substrate or heavy_presets.has(preset)):
+		aeration = "disk"
+	# Demanding CO2 only makes sense with a substrate / spectrum that can use
+	# it; on a poor substrate keep CO2 modest so it doesn't just feed algae.
+	if poor_substrate and co2 > 0.4:
+		co2 = randf_range(0.0, 0.35)
 	return {
 		"tank_preset": preset,
 		"substrate_type": sub,
-		"aeration_type": _WILD_AERATIONS[randi() % _WILD_AERATIONS.size()],
+		"aeration_type": aeration,
 		"tank_shape": shape,
 		"tank_half_w": half_w,
 		"tank_half_d": half_d,
@@ -503,6 +520,17 @@ func _build_card(sc: Dictionary) -> Control:
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_child(body)
 
+	# Equilibrium preview (#69): show roughly where the tank will settle so the
+	# defaults visibly express their designed balanced end-state.
+	var eq_text: String = _equilibrium_hint(String(sc.get("config", {}).get("tank_preset", "")))
+	if eq_text != "":
+		var eq := Label.new()
+		eq.text = "⚖ " + eq_text
+		eq.add_theme_color_override("font_color", Color(0.62, 0.82, 0.70, 1.0))
+		eq.add_theme_font_size_override("font_size", 11)
+		eq.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(eq)
+
 	# Pick button.
 	var pick := Button.new()
 	pick.text = "Open this tank"
@@ -512,6 +540,33 @@ func _build_card(sc: Dictionary) -> Control:
 	vb.add_child(pick)
 
 	return card
+
+
+# Compute a rough "this tank wants to settle around N residents" line from the
+# scenario's stocking preset, so each card advertises its balanced end-state.
+func _equilibrium_hint(preset_key: String) -> String:
+	if preset_key == "":
+		return ""
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return ""
+	var preset: Dictionary = cfg.TANK_PRESETS.get(preset_key, {})
+	var stocking: Dictionary = preset.get("stocking", {})
+	var fish_n: int = 0
+	var shrimp_n: int = 0
+	for k in stocking.keys():
+		if String(k) == "shrimp":
+			shrimp_n = int(stocking[k])
+		else:
+			fish_n += int(stocking[k])
+	var parts: Array = []
+	if fish_n > 0:
+		parts.append("~%d fish" % fish_n)
+	if shrimp_n > 0:
+		parts.append("~%d shrimp" % shrimp_n)
+	if parts.is_empty():
+		return "Fishless — the detritus loop is the show"
+	return "Settles around " + ", ".join(parts) + " once balanced"
 
 
 func _pick(sc: Dictionary) -> void:

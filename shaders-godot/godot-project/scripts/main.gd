@@ -2142,13 +2142,24 @@ func _update_follow_dof() -> void:
 	var dist: float = 6.0
 	if want:
 		dist = maxf(camera.global_position.distance_to(_follow_target.global_position), 0.5)
+	var blur_strength: float = 0.06
+	var far_soft: float = 2.0
+	var near_soft: float = 1.6
+	var focus_margin: float = 1.2
+	var near_on: bool = true
+	if cfg_dof != null:
+		blur_strength = float(cfg_dof.follow_dof_blur_strength)
+		far_soft = float(cfg_dof.follow_dof_far_softness)
+		near_soft = float(cfg_dof.follow_dof_near_softness)
+		focus_margin = float(cfg_dof.follow_dof_focus_margin)
+		near_on = bool(cfg_dof.follow_dof_near_enabled)
 	_follow_cam_attr.dof_blur_far_enabled = true
-	_follow_cam_attr.dof_blur_far_distance = dist + 1.2
-	_follow_cam_attr.dof_blur_far_transition = 2.0
-	_follow_cam_attr.dof_blur_near_enabled = true
-	_follow_cam_attr.dof_blur_near_distance = maxf(dist - 1.4, 0.2)
-	_follow_cam_attr.dof_blur_near_transition = 1.6
-	_follow_cam_attr.dof_blur_amount = 0.06 * _follow_dof_amount
+	_follow_cam_attr.dof_blur_far_distance = dist + focus_margin
+	_follow_cam_attr.dof_blur_far_transition = far_soft
+	_follow_cam_attr.dof_blur_near_enabled = near_on
+	_follow_cam_attr.dof_blur_near_distance = maxf(dist - focus_margin * 1.15, 0.2)
+	_follow_cam_attr.dof_blur_near_transition = near_soft
+	_follow_cam_attr.dof_blur_amount = blur_strength * _follow_dof_amount
 
 	# Per-fish audio presence: pan the aquatic ambience toward where the
 	# followed creature sits on screen, so the Portal cam feels intimate.

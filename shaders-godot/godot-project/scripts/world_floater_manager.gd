@@ -47,7 +47,18 @@ static func duckweed_cap(sim: Node, surface_capacity: int) -> int:
 	var cap: int = surface_capacity
 	if ecology_mode(sim) == "cycle":
 		cap = mini(CYCLE_DUCKWEED_CAP, surface_capacity)
+	# Azolla colonies can pack tighter; duckweed mats use full surface cap.
 	return cap
+
+
+static func morph_spread_bias(morph: String) -> float:
+	match morph:
+		"duckweed", "azolla":
+			return 1.18
+		"water_hyacinth":
+			return 0.75
+		_:
+			return 1.0
 
 
 static func flora_coverage_sublabel(coverage: float) -> String:

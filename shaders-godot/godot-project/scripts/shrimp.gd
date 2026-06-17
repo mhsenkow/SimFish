@@ -979,7 +979,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# moderately hungry as long as they have energy reserves. Crowding slows
 	# reproduction — real colonies self-limit when the glass is full.
 	if maturity == MATURITY_ADULT and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.6 and energy > 0.5:
+			and hunger < 0.6 and energy > 0.5 and _detritus_breed_ok():
 		var colony_cap: int = 24
 		if sim != null:
 			var w: Node = sim.get_parent()
@@ -1063,6 +1063,34 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				target_velocity += to_a.normalized() * max_speed * 1.0
 				_apply_target(target_velocity)
 				return events
+
+	# Tier 5b: FLOATER ROOT AUFWUCHS (#33). Climb dangling roots before plants.
+	if hunger > 0.35 and sim != null:
+		var w_sh: Node = sim.get_parent()
+		if w_sh != null and w_sh.has_method("query_floaters_in_radius"):
+			var best_fp: FloatingPlant = null
+			var best_fp_d2: float = 4.0
+			for fp in w_sh.query_floaters_in_radius(position, 2.0):
+				if not (fp is FloatingPlant) or fp.root_biofilm < 0.12:
+					continue
+				for rp in fp.root_world_positions():
+					var d2r: float = (rp as Vector3).distance_squared_to(position)
+					if d2r < best_fp_d2:
+						best_fp_d2 = d2r
+						best_fp = fp
+			if best_fp != null:
+				current_mode = Mode.NIBBLE
+				var roots: Array = best_fp.root_world_positions()
+				var tgt: Vector3 = roots[0] if roots.size() > 0 else best_fp.global_position
+				if position.distance_squared_to(tgt) < 0.16:
+					var grazed: float = minf(0.15, best_fp.root_biofilm)
+					best_fp.root_biofilm = maxf(0.0, best_fp.root_biofilm - grazed)
+					hunger = maxf(0.0, hunger - grazed * 1.2)
+					energy = minf(1.0, energy + grazed * 0.4)
+				else:
+					target_velocity += (tgt - position).normalized() * max_speed * 0.9
+					_apply_target(target_velocity)
+					return events
 
 	# Tier 6: PLANTS - Only if plants are growing well and algae/food is scarce.
 	if hunger > 0.4:
@@ -1327,6 +1355,21 @@ func _day_activity_mult() -> float:
 		return 1.0
 	var daylight: float = float(sim.daylight())
 	return clampf(1.0 - absf(daylight - 0.5) * 0.9, 0.55, 1.0)
+
+
+# Detritus-coupled breeding (#36): a scavenger colony booms when there's
+# detritus + biofilm to eat and stalls when the tank is clean, so the shrimp
+# population self-regulates around the available food instead of a flat timer.
+func _detritus_breed_ok() -> bool:
+	if sim == null:
+		return true
+	var waste_n: int = sim.waste.size()
+	var bio_amt: float = 0.0
+	var w: Node = sim.get_parent()
+	if w != null and w.get("biofilm_progress") != null:
+		bio_amt = float(w.biofilm_progress)
+	var food: float = clampf(float(waste_n) / 30.0 + bio_amt, 0.0, 1.0)
+	return randf() < clampf(0.30 + food * 0.70, 0.0, 1.0)
 
 
 func _mate_habitat_score(s: Shrimp) -> float:
