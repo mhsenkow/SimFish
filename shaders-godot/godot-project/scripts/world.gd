@@ -894,6 +894,74 @@ func _process(dt: float) -> void:
 		_floater_growth_step()
 
 
+func _floater_glass_margin(fp: FloatingPlant) -> float:
+	return _FLOATER_SURFACE_MARGIN + fp.leaf_size * 0.38
+
+
+# Soft steering + step clamp so mats drift away from glass before a hard hit.
+func _constrain_floater_drift(vel: Vector3, pos: Vector3, margin: float) -> Vector3:
+	var push: Vector3 = FaunaBoundary.lateral_push(self, pos, margin, 0.62, vel)
+	if push.length_squared() > 1e-6:
+		var h_vel: Vector3 = Vector3(vel.x, 0.0, vel.z)
+		var outward: Vector3 = -push.normalized()
+		var out_spd: float = h_vel.dot(outward)
+		if out_spd > 0.0:
+			h_vel -= outward * out_spd
+		vel = Vector3(h_vel.x, vel.y, h_vel.z)
+	var lat: Dictionary = tank_lateral_boundary_info(pos, margin)
+	var clearance: float = float(lat.get("clearance", 99.0))
+	var inward: Vector3 = lat.get("inward", Vector3.ZERO)
+	inward.y = 0.0
+	if inward.length_squared() > 1e-6 and clearance < margin * 0.55:
+		inward = inward.normalized()
+		var nudge: float = (margin * 0.55 - clearance) * 0.55
+		vel.x += inward.x * nudge
+		vel.z += inward.z * nudge
+	var step: float = Vector2(vel.x, vel.z).length()
+	if step > 1e-6:
+		var ahead: Vector3 = pos + Vector3(vel.x, 0.0, vel.z)
+		var ahead_clear: float = float(
+			tank_lateral_boundary_info(ahead, margin).get("clearance", 99.0))
+		if ahead_clear < step * 0.85:
+			var step_scale: float = clampf(ahead_clear / maxf(step * 0.85, 0.01), 0.12, 1.0)
+			vel.x *= step_scale
+			vel.z *= step_scale
+	return vel
+
+
+# Hard clamp + specular bounce; tangential motion slides along curved glass.
+func _resolve_floater_glass(pos: Vector3, vel: Vector3, margin: float,
+		surface_y: float) -> Dictionary:
+	var px: float = pos.x
+	var pz: float = pos.z
+	var clamped: Vector2 = clamp_xz_in_tank(px, pz, margin, surface_y)
+	var hit: bool = absf(clamped.x - px) > 0.0004 or absf(clamped.y - pz) > 0.0004
+	var out_pos: Vector3 = pos
+	out_pos.x = clamped.x
+	out_pos.z = clamped.y
+	var lat: Dictionary = tank_lateral_boundary_info(out_pos, margin)
+	var wall_n: Vector3 = lat.get("inward", Vector3.ZERO)
+	wall_n.y = 0.0
+	if wall_n.length_squared() < 1e-6:
+		var xz: Vector2 = Vector2(out_pos.x, out_pos.z)
+		if xz.length_squared() > 1e-6:
+			wall_n = Vector3(-xz.x, 0.0, -xz.y) / xz.length()
+		else:
+			wall_n = Vector3(1.0, 0.0, 0.0)
+	else:
+		wall_n = wall_n.normalized()
+	var clearance: float = float(lat.get("clearance", 99.0))
+	var h_vel: Vector3 = Vector3(vel.x, 0.0, vel.z)
+	if hit or clearance < margin * 0.2:
+		var vn: float = h_vel.dot(wall_n)
+		if vn < 0.0:
+			var tangent: Vector3 = h_vel - wall_n * vn
+			h_vel = tangent + wall_n * (-vn * _FLOATER_BOUNCE_DAMP)
+		elif hit:
+			h_vel += wall_n * lerpf(0.012, 0.038, 1.0 - clampf(clearance / margin, 0.0, 1.0))
+	return {"position": out_pos, "vel": Vector3(h_vel.x, vel.y, h_vel.z)}
+
+
 # Floaters v2 surface physics: meniscus drift, raft cohesion, soft collision,
 # glass bounce, filter shove, ripple bob, daughter tether. 10 Hz + adt.
 func _drift_floaters(adt: float) -> void:
@@ -901,7 +969,6 @@ func _drift_floaters(adt: float) -> void:
 	_rebuild_floater_grid()
 	_dead_floaters_scratch.clear()
 	var surface_y: float = WATER_HEIGHT - 0.05
-	var margin: float = _FLOATER_SURFACE_MARGIN
 	# Global surface current: filter return + slow room air drift.
 	var drift_vec: Vector3 = Vector3.ZERO
 	if sim != null and sim.filter_intake_pos != Vector3.ZERO:
@@ -920,6 +987,7 @@ func _drift_floaters(adt: float) -> void:
 		var fp: FloatingPlant = f
 		if fp.turion_buried:
 			continue
+		var margin: float = _floater_glass_margin(fp)
 		var iid: int = fp.get_instance_id()
 		var vel: Vector3 = _floater_vel.get(iid, Vector3.ZERO)
 		var ph: float = fp.get_meta("phase", 0.0)
@@ -986,40 +1054,18 @@ func _drift_floaters(adt: float) -> void:
 				var to_anchor: Vector3 = anchor - fp.position
 				to_anchor.y = 0.0
 				vel += to_anchor * adt * lerpf(1.0, 0.35, spring)
+		vel = _constrain_floater_drift(vel, fp.position, margin)
 		fp.position.x += vel.x
 		fp.position.z += vel.z
+		var glass: Dictionary = _resolve_floater_glass(
+			fp.position, vel, margin, surface_y)
+		fp.position = glass["position"]
+		vel = glass["vel"]
 		vel *= _FLOATER_DRAG
 		var ripple_bob: float = sin(_floater_t * 0.7 + ph + fp.position.x * 0.4) * 0.015
 		fp.position.y = surface_y - fp.surface_sink() + ripple_bob
 		if fp.spin_rate > 0.0:
 			fp.rotation.y += adt * fp.spin_rate
-		# Glass meniscus — clamp to footprint and bounce off the wall normal.
-		var prev_x: float = fp.position.x
-		var prev_z: float = fp.position.z
-		var lat: Dictionary = tank_lateral_boundary_info(
-			fp.position, margin)
-		var wall_n: Vector3 = lat.get("inward", Vector3.ZERO)
-		var clearance: float = float(lat.get("clearance", 99.0))
-		var clamped: Vector2 = clamp_xz_in_tank(prev_x, prev_z, margin, surface_y)
-		var hit_edge: bool = absf(clamped.x - prev_x) > 0.0005 \
-			or absf(clamped.y - prev_z) > 0.0005
-		fp.position.x = clamped.x
-		fp.position.z = clamped.y
-		if hit_edge or clearance < 0.06:
-			if wall_n.length_squared() < 1e-6:
-				wall_n = Vector3(-fp.position.x, 0.0, -fp.position.z)
-				if wall_n.length_squared() > 1e-6:
-					wall_n = wall_n.normalized()
-				else:
-					wall_n = Vector3(1.0, 0.0, 0.0)
-			var vn: float = vel.x * wall_n.x + vel.z * wall_n.z
-			if vn < 0.0:
-				vel.x -= 2.0 * vn * wall_n.x
-				vel.z -= 2.0 * vn * wall_n.z
-				vel *= _FLOATER_BOUNCE_DAMP
-			elif hit_edge:
-				vel.x *= 0.35
-				vel.z *= 0.35
 		_floater_vel[iid] = vel
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
@@ -4434,8 +4480,8 @@ var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
 var _floater_by_id: Dictionary = {}  # id -> FloatingPlant (tether lookup)
 const _FLOATER_CELL: float = 1.2
 const _FLOATER_SURFACE_MARGIN: float = 0.35
-const _FLOATER_BOUNCE_DAMP: float = 0.68
-const _FLOATER_DRAG: float = 0.93
+const _FLOATER_BOUNCE_DAMP: float = 0.74
+const _FLOATER_DRAG: float = 0.91
 # Surface coverage reference for floaters — scales with tank surface area.
 const FLOATER_GROWTH_INTERVAL: float = 3.0
 var _lily_pads: Array = []
