@@ -1741,6 +1741,12 @@ func _clamp_fish_territory(f: Fish) -> void:
 		f._reclamp_territory_to_tank()
 	else:
 		_clamp_entity_to_bounds(f, 0.28, 0.06)
+	# Overlap separation can nudge fish past curved glass — clamp only, no
+	# center teleport (enforce_entity_in_tank fallback used to snap to 0,0).
+	var w: Node = f.sim.get_parent() if f.sim != null else null
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		var body_m: float = f._body_tank_margin() if f.has_method("_body_tank_margin") else 0.42
+		f.global_position = w.clamp_xyz_in_tank(f.global_position, 0.28, body_m * 0.55)
 
 
 func _resolve_entity_group_overlaps(group: Array, min_dist: float,

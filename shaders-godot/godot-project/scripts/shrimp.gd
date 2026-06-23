@@ -1221,6 +1221,14 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		var night_factor: float = 0.35 + 0.65 * dl
 		target_velocity *= night_factor
 
+	var mr := get_tree().get_first_node_in_group("music_reactive")
+	if mr != null and mr.has_method("fauna_behavior_mods"):
+		var mods: Dictionary = mr.fauna_behavior_mods(get_instance_id())
+		var spd_mul: float = float(mods.get("speed", 1.0))
+		target_velocity *= spd_mul
+		if bool(mods.get("beat_dart", false)):
+			target_velocity *= 1.45
+
 	# Size growth from feeding (mirrors Fish.growth_factor logic).
 	if maturity == MATURITY_ADULT:
 		if hunger < 0.35:
@@ -1244,6 +1252,14 @@ func _constrain_velocity_to_tank(vel: Vector3) -> Vector3:
 
 
 var _target_velocity: Vector3 = Vector3.ZERO
+
+
+func _look_up_for_direction(d: Vector3) -> Vector3:
+	if d.length_squared() < 1e-8:
+		return Vector3.UP
+	if absf(d.normalized().dot(Vector3.UP)) > 0.95:
+		return Vector3.FORWARD
+	return Vector3.UP
 
 
 func _motion_substep(dt: float) -> void:
@@ -1289,18 +1305,16 @@ func _motion_substep(dt: float) -> void:
 			global_position = Vector3(sx, safe_y, sz)
 		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
 		var recover_d: Vector3 = heading
-		if absf(recover_d.dot(Vector3.UP)) > 0.95:
-			recover_d = (recover_d + Vector3(0.05, 0, 0)).normalized()
 		if recover_d.is_finite():
-			transform.basis = Basis.looking_at(recover_d, Vector3.UP)
+			var up_r: Vector3 = _look_up_for_direction(recover_d)
+			transform.basis = Basis.looking_at(recover_d, up_r)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
 		var d: Vector3 = heading
-		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.05, 0, 0)).normalized()
 		if d.is_finite():
-			look_at(position + d, Vector3.UP)
+			var up: Vector3 = _look_up_for_direction(d)
+			look_at(position + d, up)
 			if not transform.is_finite():
-				transform.basis = Basis.looking_at(d, Vector3.UP)
+				transform.basis = Basis.looking_at(d, up)
 	var current_yaw: float = atan2(heading.x, -heading.z)
 	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 	_last_yaw = current_yaw
@@ -1380,7 +1394,11 @@ func _process(dt: float) -> void:
 		_bank_pivot.scale = Vector3.ONE
 
 	# Maturity scale lerps AND growth_factor so well-fed shrimp visibly bulk.
-	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
+	var scale_target: float = _maturity_scale() * growth_factor
+	var mr_s := get_tree().get_first_node_in_group("music_reactive")
+	if mr_s != null and mr_s.has_method("fauna_behavior_mods"):
+		scale_target *= float(mr_s.fauna_behavior_mods(get_instance_id()).get("scale", 1.0))
+	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
 
 	# Berried-female visual: small yellow egg cluster under the tail.
 	if is_gravid and _egg_cluster == null:

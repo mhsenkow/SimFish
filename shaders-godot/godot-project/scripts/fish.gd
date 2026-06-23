@@ -2387,6 +2387,45 @@ func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 
 # ---- Tick (called by SimDriver) ----
 
+func _music_mods() -> Dictionary:
+	var mr := get_tree().get_first_node_in_group("music_reactive")
+	if mr != null and mr.has_method("fauna_behavior_mods"):
+		return mr.fauna_behavior_mods(get_instance_id())
+	return {
+		"speed": 1.0, "wander": 1.0, "home_radius": 1.0, "home_pull": 1.0,
+		"tightness": 1.0, "accel": 1.0, "turn": 1.0, "dart_chance": 0.0,
+		"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0, "scale": 1.0,
+	}
+
+
+func _apply_music_beat_surge(mods: Dictionary, _effective_max: float) -> void:
+	if not bool(mods.get("beat_dart", false)):
+		return
+	burst_remaining = maxf(burst_remaining, randf_range(0.42, 0.72))
+	var w := _world_node()
+	if w == null:
+		return
+	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)
+	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
+	var target := Vector3(
+		randf_range(-hw * 0.88, hw * 0.88),
+		clampf(home_y, float(sim.substrate_top_y if sim != null else 0.0) + 0.5,
+			_water_surface_y() - 0.45),
+		randf_range(-hd * 0.88, hd * 0.88),
+	)
+	if w.has_method("clamp_xyz_in_tank"):
+		target = w.clamp_xyz_in_tank(target, 0.35, _body_tank_margin() * 0.45)
+	var dart_dir: Vector3 = target - position
+	dart_dir.y *= 0.35
+	if dart_dir.length_squared() < 0.08:
+		dart_dir = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+	if dart_dir.length_squared() > 1e-6:
+		dart_dir = dart_dir.normalized()
+		heading_offset = dart_dir * (2.2 + wander_strength)
+		_startle_heading = dart_dir
+		_startle_remaining = 0.28
+
+
 func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste: Array,
 		  baby_shrimp: Array, world_bounds: AABB) -> Dictionary:
 	# Returns events for the SimDriver to act on (lay egg, eat waste,
@@ -2657,6 +2696,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# (flee, chase) which still trigger burst_remaining.
 	var burst_mult: float = dart_speed_mult if dart_speed_mult > 1.0 else 1.5
 	var effective_max := max_speed * (burst_mult if burst_remaining > 0.0 else 1.0)
+	var music_mods: Dictionary = _music_mods()
+	effective_max *= float(music_mods.get("speed", 1.0))
+	_apply_music_beat_surge(music_mods, effective_max)
 	var fauna_rt: Dictionary = _fauna_runtime()
 	current_mode = Mode.CRUISE
 
@@ -3701,6 +3743,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		effective_max *= float(fauna_rt.get("speed", 1.0))
 	# When stressed (too few neighbors), tighten the school dramatically.
 	var tightness: float = 1.0 + stress * 1.5
+	tightness *= float(music_mods.get("tightness", 1.0))
 	# Tank-wide school pulse. Synchronised across every fish that samples
 	# sim.school_pulse(), so the entire group visibly breathes in and out.
 	if bool(fauna_rt.get("pulse_on", true)) and sim != null and sim.has_method("school_pulse"):
@@ -3744,8 +3787,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var soft_d: float = soft_home.length()
 		if soft_d > 0.05:
 			var anchor_w: float = 0.14 if swim_pattern == "school" else 0.10
+			anchor_w *= float(music_mods.get("home_pull", 1.0))
 			desired += soft_home.normalized() * effective_max * anchor_w \
-				* minf(soft_d / maxf(home_radius, 0.5), 1.0)
+				* minf(soft_d / maxf(home_radius * float(music_mods.get("home_radius", 1.0)), 0.5), 1.0)
 
 	# ---- Pre-walk neighbors ONCE ----
 	# Four downstream blocks (personal space, gaze contagion, gaze
@@ -3831,6 +3875,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		effective_y_radius *= 0.62
 	var dy_outside: float = maxf(0.0, absf(dy) - effective_y_radius)
 	desired.y += signf(dy) * (effective_y_radius * 0.55 + dy_outside * 1.65)
+	# Don't keep tugging toward the meniscus once the fish is already there —
+	# that pins mid-water species sideways under the ceiling.
+	if _aerial_timer <= 0.0 and sim != null and _meniscus_headroom() < 0.55:
+		var o2_pull: float = float(sim.dissolved_o2) - _chem_o2_penalty \
+			if sim.get("dissolved_o2") != null else 1.0
+		if o2_pull >= SURFACE_GULP_O2 and desired.y > 0.0:
+			desired.y = minf(desired.y, -effective_max * 0.22)
 
 	# FRY HIDE-AT-LOG. Baby fish in real Walstad tanks survive by clinging
 	# to driftwood, dense plants, or moss - anywhere larger fish can't
@@ -3871,10 +3922,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# close-to-home doesn't fight wander but far-from-home is firm.
 	var to_home: Vector3 = Vector3(home_x - position.x, 0.0, home_z - position.z)
 	var dist_home: float = to_home.length()
-	if dist_home > home_radius:
+	var eff_home_r: float = home_radius * float(music_mods.get("home_radius", 1.0))
+	if dist_home > eff_home_r:
 		var pull_strength: float = clampf(
-			(dist_home / maxf(home_radius, 0.5)) - 1.0, 0.0, 2.0)
-		var pull_mult: float = 0.5
+			(dist_home / maxf(eff_home_r, 0.5)) - 1.0, 0.0, 2.0)
+		var pull_mult: float = 0.5 * float(music_mods.get("home_pull", 1.0))
 		if swim_pattern == "hover":
 			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
 		# Don't tug fish through glass when a saved home sits outside the footprint.
@@ -4135,9 +4187,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# the time history once and caches the boolean; we just read it here.
 	if hunger > 0.4 and sim != null and sim.has_method("feed_anticipation_active") \
 			and sim.feed_anticipation_active():
-		var surface_y: float = _water_surface_y()
-		var anticipation_bias: float = clampf((surface_y - position.y) * 0.25, -0.5, 1.2)
-		desired.y += anticipation_bias * effective_max * 0.35
+		var headroom: float = _meniscus_headroom()
+		if headroom > 0.12:
+			var anticipation_bias: float = clampf(headroom * 0.25, -0.5, 1.2)
+			desired.y += anticipation_bias * effective_max * 0.35
 		# Begging at the glass: familiar fish that associate the player with
 		# food crowd toward the last place they saw you and pace expectantly.
 		if familiarity > 0.25 and _cached_glance_point.length_squared() > 0.01:
@@ -4235,6 +4288,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if w.has_method("get_node") and w.get_node_or_null("AquariumVisuals") != null:
 					w.get_node("AquariumVisuals").spawn_splash_crown(position)
 
+	# Music-sync darts — any species can get an extra groove-driven burst.
+	var music_dart: float = float(music_mods.get("dart_chance", 0.0))
+	if music_dart > 0.0 and burst_remaining <= 0.0 and energy > 0.3 \
+			and randf() < music_dart * dt:
+		burst_remaining = randf_range(0.35, 0.62)
+		var ang_m: float = randf() * TAU
+		var dart_m := Vector3(sin(ang_m), randf_range(-0.25, 0.35), cos(ang_m))
+		heading_offset = dart_m * (1.6 + wander_strength * float(music_mods.get("wander", 1.0)))
+
 	# HOVER / INVESTIGATE TRIGGER. Any fish might occasionally stop mid-water to
 	# look around. This breaks up the constant swimming and adds lifelike personality.
 	#
@@ -4249,6 +4311,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# (that flip-flopping is what reads as mechanical). Pause rate is shaped by
 	# temperament — curious fish stop to look around more, jumpy fish less.
 	var pause_rate: float = dt * lerpf(0.06, 0.18, _trait("curiosity"))
+	if float(music_mods.get("speed", 1.0)) > 1.2:
+		pause_rate *= 0.12
 	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and goal_timer <= 0.0 \
 			and not _asleep and randf() < pause_rate and energy > 0.3:
 		# 15% of max speed → enough motion to slide off a wall, slow enough to
@@ -4321,6 +4385,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			interval = 4.0 + randf() * 4.0  # solo fish: much more frequent
 		elif swim_pattern == "shuffle":
 			interval = 5.0 + randf() * 6.0  # loaches: frequent zig-zags
+		interval /= maxf(float(music_mods.get("wander_refresh", 1.0)), 1.0)
 		_wander_refresh_timer = interval
 		var phase: float = _swim_phase + float(get_instance_id() % 97) * 0.09
 		var y_wander: float = 0.15
@@ -4332,7 +4397,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			sin(phase) * randf_range(0.35, 0.62),
 			sin(phase * 1.37) * y_wander,
 			cos(phase * 0.93) * randf_range(0.35, 0.62),
-		)
+		) * float(music_mods.get("wander", 1.0))
 
 	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
 	# periodically shift their home_x/home_z so they roam the tank over time
@@ -4352,6 +4417,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			drift_interval = 20.0 + randf() * 16.0
 			drift_radius = 3.2 if swim_pattern == "school" else 4.0
 		drift_radius *= float(fauna_rt.get("wander", 1.0))
+		drift_radius *= float(music_mods.get("home_radius", 1.0))
+		drift_interval /= maxf(float(music_mods.get("home_drift", 1.0)), 1.0)
 		_home_drift_timer = drift_interval
 		var w := _world_node()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
@@ -4394,7 +4461,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _startle_remaining > 0.0:
 		desired += _startle_heading * effective_max * 0.8
 	else:
-		desired += heading_offset * 0.5 * wander_strength * float(fauna_rt.get("wander", 1.0))
+		desired += heading_offset * 0.5 * wander_strength \
+			* float(fauna_rt.get("wander", 1.0)) * float(music_mods.get("wander", 1.0))
 
 	# Diurnal / nocturnal / crepuscular activity. The generic "everyone slows
 	# at night" was wrong - real freshwater fish split by activity period.
@@ -4583,7 +4651,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				growth_factor - 0.0004 * dt * (1.18 - size_potential * 0.35), 0.6 * gv)
 
 	# Update body scale across maturity AND growth_factor.
-	scale = scale.lerp(Vector3.ONE * _maturity_scale() * growth_factor, dt * 0.5)
+	var scale_target: float = _maturity_scale() * growth_factor
+	scale_target *= float(_music_mods().get("scale", 1.0))
+	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
 
 	return events
 
@@ -4894,6 +4964,9 @@ func _face_direction(d: Vector3) -> void:
 
 
 func _motion_substep(dt: float) -> void:
+	var music_mm: Dictionary = _music_mods()
+	var eff_accel: float = linear_accel * float(music_mm.get("accel", 1.0))
+	var eff_turn: float = max_turn_rate * float(music_mm.get("turn", 1.0))
 	# Decompose the brain's target into a desired direction + desired speed.
 	# Sifting fish (cory mid-graze) almost stop while the timer is active.
 	var target_dir: Vector3 = heading
@@ -4944,48 +5017,14 @@ func _motion_substep(dt: float) -> void:
 				target_spd *= 0.92
 	# Surface-pin release. Without this, fish that drift up to the meniscus
 	# (e.g. mid-cruise wobble + lateral collision-slide along the ceiling)
-	# get stuck swimming sideways at the surface because the cruise tier's
-	# downward bias enters as desired.y but gets masked by the much stronger
-	# lateral component. We FORCE a downward heading whenever the fish is
-	# pinned high without an active aerial trip / hypoxia gulp / brooding.
-	# Applies to all fish, not just non-surface species — even surface-
-	# adapted ones shouldn't stay at the ceiling once their reason is gone.
-	if _aerial_timer <= 0.0 and brooding_remaining <= 0.0 and sim != null:
-		var o2_now: float = float(sim.dissolved_o2) if sim.get("dissolved_o2") != null else 1.0
-		var hypoxia: bool = o2_now < SURFACE_GULP_O2
-		var ws: float = _water_surface_y()
-		var ceiling_dist: float = ws - position.y
-		# Trigger when within 0.6u of the meniscus AND well above home_y.
-		# 0.6 is large enough to catch the "pinned" state without firing
-		# on the descent itself.
-		if not hypoxia and ceiling_dist < 0.6 \
-				and position.y > home_y + maxf(home_y_radius * 0.8, 0.4):
-			# Hard downward bias: keep horizontal, but force at least 0.55
-			# of the heading magnitude to point down. The 0.55 magnitude is
-			# strong enough to overcome the wall-slide preserving horizontal
-			# motion, but not so strong it makes the fish dive-bomb the
-			# substrate visibly. Also boost target_spd a touch so the move
-			# actually happens this tick.
-			var hx: float = target_dir.x
-			var hz: float = target_dir.z
-			var horiz_len: float = sqrt(hx * hx + hz * hz)
-			# If the fish's lateral heading is tiny too (truly stuck), pick
-			# a random lateral so it doesn't dive straight down through its
-			# own column. seeded by instance id so it's stable per fish.
-			if horiz_len < 0.15:
-				var phase_seed: float = float(get_instance_id() % 360)
-				hx = cos(phase_seed)
-				hz = sin(phase_seed)
-				horiz_len = 1.0
-			# Normalize so the new vector has unit length with the chosen
-			# down-component baked in.
-			var down_y: float = -0.55
-			var horiz_scale: float = sqrt(maxf(0.0, 1.0 - down_y * down_y))
-			target_dir = Vector3(
-				hx / horiz_len * horiz_scale,
-				down_y,
-				hz / horiz_len * horiz_scale)
-			target_spd = maxf(target_spd, max_speed * 0.55)
+	# get stuck swimming sideways at the surface because movement follows
+	# heading, which turns slowly, while upward cruise bias keeps fighting
+	# the ceiling. Snap heading + target_dir downward so the fish actually
+	# leaves the meniscus this tick.
+	if _surface_pin_release_active():
+		target_dir = _heading_away_from_meniscus(target_dir)
+		target_spd = maxf(target_spd, max_speed * 0.55)
+		heading = target_dir
 
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
 	var bnd: Dictionary = _lateral_boundary_context(global_position, body_m, target_dir)
@@ -4998,8 +5037,8 @@ func _motion_substep(dt: float) -> void:
 		if axis.length_squared() < 1e-6:
 			axis = Vector3.UP
 		axis = axis.normalized()
-		var turn_boost: float = lerpf(1.0, 2.2, wall_t * wall_t)
-		var max_step: float = max_turn_rate * turn_boost * dt
+		var turn_boost: float = lerpf(1.0, 1.14, wall_t * wall_t)
+		var max_step: float = eff_turn * turn_boost * dt
 		# Fish turn slower vertically than horizontally - real fish have a hard
 		# time pitching up/down sharply. Project the turn onto a mostly-horizontal
 		# axis by reducing its UP component.
@@ -5024,7 +5063,7 @@ func _motion_substep(dt: float) -> void:
 				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
 	# ---- Accelerate speed toward target_spd, bounded by linear_accel ----
-	speed = move_toward(speed, target_spd, linear_accel * dt)
+	speed = move_toward(speed, target_spd, eff_accel * dt)
 	if wall_t > 0.35:
 		speed = minf(speed, target_spd * lerpf(1.0, 0.68, wall_t))
 
@@ -5033,6 +5072,12 @@ func _motion_substep(dt: float) -> void:
 	var move_dir: Vector3 = heading
 	if move_dir.length_squared() < 1e-6:
 		move_dir = target_dir
+	# Belt-and-suspenders: if still pinned at the meniscus, don't let a
+	# horizontal heading keep skidding along the ceiling.
+	if _surface_pin_release_active() and move_dir.y > -0.15:
+		move_dir = _heading_away_from_meniscus(move_dir)
+		heading = move_dir
+		speed = maxf(speed, max_speed * 0.45)
 	if move_dir.length_squared() > 1e-6:
 		move_dir = move_dir.normalized()
 		var want_len: float = speed * dt
@@ -5052,12 +5097,8 @@ func _motion_substep(dt: float) -> void:
 				var outward: Vector3 = -inward
 				var out_comp: float = move_dir.dot(outward)
 				if out_comp > 0.05:
-					var slid: Vector3 = move_dir - outward * out_comp
-					if slid.length_squared() > 0.04:
-						move_dir = slid.normalized()
-					else:
-						move_dir = _pick_wall_escape_heading(inward, move_dir)
-					heading = move_dir
+					var bounced: Vector3 = _reflect_heading_at_wall(move_dir, inward)
+					move_dir = heading.lerp(bounced, 0.62).normalized()
 					allowed = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
 		global_position = gp + move_dir * allowed
 		speed = allowed / maxf(dt, 1e-5)
@@ -5700,8 +5741,10 @@ func _wall_avoid(_b: AABB) -> Vector3:
 				steer_dir = target_velocity.normalized()
 			var outward: Vector3 = -inward
 			var into_wall: float = maxf(0.0, steer_dir.dot(outward))
-			var strength: float = t * (0.75 + into_wall * 1.1)
-			push += inward * strength * maxf(max_speed, 0.45)
+			# Fish already cruising along the glass tangent — skip inward shove.
+			if into_wall >= 0.12:
+				var strength: float = t * (0.55 + into_wall * 0.65)
+				push += inward * strength * maxf(max_speed, 0.45)
 	var vert: Dictionary = _vertical_boundary_context(global_position)
 	if bool(vert.get("active", false)):
 		var v_clear: float = float(vert.get("clearance", 99.0))
@@ -6668,6 +6711,54 @@ func _vertical_bands() -> Vector2:
 	return Vector2(floor_band, ceil_band)
 
 
+func _meniscus_headroom() -> float:
+	return _water_surface_y() - position.y
+
+
+func _surface_niche() -> bool:
+	if mouth_orientation == -1 or labyrinth_breather or swim_pattern == "dart":
+		return true
+	if sim == null:
+		return preferred_y >= 4.2
+	var col_h: float = maxf(_water_column_height(), 0.5)
+	var top_frac: float = clampf(
+		(preferred_y - float(sim.substrate_top_y)) / col_h, 0.0, 1.0)
+	return top_frac >= 0.62
+
+
+func _surface_pin_release_active() -> bool:
+	if _aerial_timer > 0.0 or brooding_remaining > 0.0 or sim == null:
+		return false
+	var o2_now: float = float(sim.dissolved_o2) - _chem_o2_penalty \
+		if sim.get("dissolved_o2") != null else 1.0
+	if o2_now < SURFACE_GULP_O2:
+		return false
+	var headroom: float = _meniscus_headroom()
+	if headroom >= 0.65:
+		return false
+	if _surface_niche():
+		# Top dwellers belong high, but shouldn't skid sideways along the glass.
+		return headroom < 0.35
+	return position.y > home_y + maxf(home_y_radius * 0.8, 0.4)
+
+
+func _heading_away_from_meniscus(hz_hint: Vector3) -> Vector3:
+	var hx: float = hz_hint.x
+	var hz: float = hz_hint.z
+	var horiz_len: float = sqrt(hx * hx + hz * hz)
+	if horiz_len < 0.15:
+		var phase_seed: float = float(get_instance_id() % 360)
+		hx = cos(phase_seed)
+		hz = sin(phase_seed)
+		horiz_len = 1.0
+	var down_y: float = -0.55
+	var horiz_scale: float = sqrt(maxf(0.0, 1.0 - down_y * down_y))
+	return Vector3(
+		hx / horiz_len * horiz_scale,
+		down_y,
+		hz / horiz_len * horiz_scale)
+
+
 func _reclamp_territory_to_tank() -> void:
 	if sim == null:
 		return
@@ -6779,7 +6870,9 @@ func _constrain_velocity_lateral(vel: Vector3) -> Vector3:
 			var fade: float = 1.0 - (clearance - repel_dist) / (repel_dist * 0.8)
 			h_vel -= outward * (out_speed * clampf(fade, 0.0, 1.0))
 	if clearance < body_m * 0.55:
-		h_vel += h_in * (body_m * 0.55 - clearance) * 0.85
+		var into: float = maxf(0.0, h_vel.dot(outward))
+		if into > 0.08:
+			h_vel += h_in * (body_m * 0.55 - clearance) * 0.55
 	return Vector3(h_vel.x, vel.y, h_vel.z)
 
 
@@ -6809,6 +6902,32 @@ func _pick_wall_escape_heading(inward: Vector3, blocked: Vector3) -> Vector3:
 	if absf(inward.y) < 0.9:
 		return Vector3(-inward.z, 0.0, inward.x).normalized()
 	return Vector3(1.0, 0.0, 0.0)
+
+
+# Damped specular bounce off lateral glass (matches floater _resolve_floater_glass).
+func _reflect_heading_at_wall(move_dir: Vector3, inward: Vector3) -> Vector3:
+	const BOUNCE_DAMP: float = 0.72
+	inward.y = 0.0
+	if inward.length_squared() < 1e-6:
+		return move_dir
+	inward = inward.normalized()
+	var outward: Vector3 = -inward
+	var h_move: Vector3 = Vector3(move_dir.x, 0.0, move_dir.z)
+	if h_move.length_squared() < 1e-6:
+		return _pick_wall_escape_heading(inward, move_dir)
+	h_move = h_move.normalized()
+	var vn: float = h_move.dot(outward)
+	if vn <= 0.05:
+		return move_dir
+	var tangent: Vector3 = h_move - outward * vn
+	var reflected: Vector3 = tangent - outward * (vn * BOUNCE_DAMP)
+	if reflected.length_squared() < 0.04:
+		return _pick_wall_escape_heading(inward, move_dir)
+	var out: Vector3 = reflected.normalized()
+	out.y = clampf(move_dir.y * 0.85, -0.52, 0.52)
+	if out.length_squared() < 1e-6:
+		return _pick_wall_escape_heading(inward, move_dir)
+	return out.normalized()
 
 
 static func _id_of(n: Node) -> String:

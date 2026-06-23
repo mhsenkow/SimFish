@@ -40,8 +40,8 @@ static func enrich(src: Dictionary) -> Dictionary:
 	match morph:
 		"duckweed":
 			out.palatability = maxf(float(out.palatability), 0.88)
-			out.shade_radius = 0.22
-			out.spread_rate = maxf(float(out.spread_rate), 1.15)
+			out.shade_radius = 0.18
+			out.spread_rate = maxf(float(out.spread_rate), 0.82)
 		"frogbit", "water_lettuce":
 			out.shade_radius = maxf(float(out.shade_radius), 0.55)
 			out.root_biofilm_rate = maxf(float(out.root_biofilm_rate), 0.022)

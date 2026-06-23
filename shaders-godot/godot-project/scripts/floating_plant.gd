@@ -174,6 +174,8 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 	if _neighbor_density > 0.55:
 		vitality -= dt * (_neighbor_density - 0.55) * 0.04
 	vitality = clampf(vitality, 0.0, 1.0)
+	if not is_finite(vitality):
+		vitality = 0.0
 	# Root plasticity (#19)
 	var root_target: float = lerpf(root_length * 0.6, root_length * 1.25, 1.0 - nitrate)
 	root_length_current = lerpf(root_length_current, root_target, dt * 0.12)
@@ -193,19 +195,24 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 		_low_light_ticks = 0
 	# Flowering (#42)
 	_tick_flowering(dl)
-	# Size variety (#48)
-	if age_s < 120.0:
-		var grow: float = lerpf(0.88, 1.0, age_s / 120.0)
-		scale = Vector3.ONE * grow
-	# Decay visual (#49)
+	# Decay visual (#49) — surface_sink() applies the dip at drift time; don't
+	# also mutate position.y here or the transform can desync + go non-finite.
 	if vitality < 0.25:
 		_decay_sink = lerpf(_decay_sink, 0.02, dt * 2.0)
 		rotation.x = lerpf(rotation.x, 0.25, dt)
 	else:
 		_decay_sink = lerpf(_decay_sink, 0.0, dt * 3.0)
-	position.y += _decay_sink * dt * -1.0
+	if not rotation.is_finite():
+		rotation = Vector3.ZERO
+	if age_s < 120.0:
+		var grow: float = clampf(lerpf(0.88, 1.0, age_s / 120.0), 0.5, 1.0)
+		scale = Vector3.ONE * grow
+	elif not scale.is_finite() or scale.x < 0.01:
+		scale = Vector3.ONE
 	_apply_vitality_visual(dl, world)
-	_update_view_lod()
+	if transform.is_finite():
+		_update_view_lod()
+		_update_mat_lod()
 	_light_response_t += dt
 	if _visual_dirty or _light_response_t >= 6.0:
 		_light_response_t = 0.0
@@ -220,6 +227,8 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 func set_neighbor_density(d: float) -> void:
 	_neighbor_density = clampf(d, 0.0, 1.0)
 	_update_root_lod()
+	if transform.is_finite():
+		_update_mat_lod()
 
 
 func is_surface_active() -> bool:
@@ -227,8 +236,10 @@ func is_surface_active() -> bool:
 
 
 func _update_view_lod() -> void:
+	if not global_position.is_finite() or not transform.is_finite():
+		return
 	var cam: Camera3D = get_viewport().get_camera_3d()
-	if cam == null:
+	if cam == null or not cam.global_position.is_finite():
 		return
 	var hide_leaves: bool = global_position.distance_squared_to(cam.global_position) > VIEW_LOD_DIST_SQ
 	if hide_leaves == _view_lod_hidden:
@@ -239,6 +250,59 @@ func _update_view_lod() -> void:
 	for c in get_children():
 		if c is MeshInstance3D and String(c.name).begins_with("leaf"):
 			(c as MeshInstance3D).visible = not hide_leaves
+
+
+func _update_mat_lod() -> void:
+	if not transform.is_finite():
+		return
+	# Dense duckweed/azolla mats: one leaf voxel per clump is enough; extras
+	# only cost draw calls and cast ugly substrate shadows.
+	if morph not in ["duckweed", "azolla"]:
+		return
+	if DisplayServer.get_name() == "headless":
+		return
+	var compact: bool = _neighbor_density > 0.18
+	var leaf_i: int = 0
+	for c in get_children():
+		if not (c is MeshInstance3D):
+			continue
+		var mi: MeshInstance3D = c
+		var nm: String = String(mi.name)
+		if nm.begins_with("leaf"):
+			var leaf_visible: bool = not _view_lod_hidden and (not compact or leaf_i == 0)
+			mi.visible = leaf_visible
+			leaf_i += 1
+		elif nm == "meniscus":
+			mi.visible = not compact and not _view_lod_hidden
+
+
+func ensure_finite_transform() -> void:
+	if not is_finite(vitality):
+		vitality = 0.0
+	if not is_finite(_decay_sink):
+		_decay_sink = 0.0
+	else:
+		_decay_sink = clampf(_decay_sink, 0.0, 0.05)
+	if not position.is_finite():
+		position = Vector3.ZERO
+	if not scale.is_finite() or scale.x < 0.01 or scale.x > 4.0:
+		scale = Vector3.ONE
+	if not rotation.is_finite():
+		rotation = Vector3.ZERO
+	if not transform.is_finite():
+		transform = Transform3D.IDENTITY
+
+
+func apply_render_flags() -> void:
+	for c in get_children():
+		if c is MeshInstance3D:
+			_configure_mesh_instance(c as MeshInstance3D)
+
+
+func _configure_mesh_instance(mi: MeshInstance3D) -> void:
+	# Tiny surface voxels should not cast tank-scale shadow maps onto the substrate.
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 
 
 func _update_root_lod() -> void:
@@ -266,7 +330,7 @@ func _update_root_lod() -> void:
 func _tick_budding(dt: float, dl: float, nutrients: float) -> void:
 	if bud_stage == BudStage.DETACH:
 		return
-	if vitality < 0.45 or dl < 0.3 or _neighbor_density > 0.68:
+	if vitality < 0.45 or dl < 0.3 or _neighbor_density > 0.42:
 		return
 	bud_timer += dt
 	match bud_stage:
@@ -274,14 +338,17 @@ func _tick_budding(dt: float, dl: float, nutrients: float) -> void:
 			# Per-cycle roll — do NOT scale by dt. World passes dt=FLOATER_GROWTH_INTERVAL
 			# (3s), so `dt * spread * nutrients` would exceed 1.0 and budding became
 			# guaranteed every ~9s regardless of conditions.
-			if bud_timer > 8.0 / spread_rate:
-				var chance: float = clampf(0.07 * spread_rate * nutrients * dl, 0.0, 0.35)
+			if bud_timer > 12.0 / spread_rate:
+				var crowd: float = clampf(_neighbor_density / 0.42, 0.0, 1.0)
+				var chance: float = clampf(
+					0.045 * spread_rate * nutrients * dl * (1.0 - crowd * 0.85),
+					0.0, 0.22)
 				if randf() < chance:
 					bud_stage = BudStage.SWELL
 					bud_timer = 0.0
 					_visual_dirty = true
 				else:
-					bud_timer = 8.0 / spread_rate * 0.55
+					bud_timer = 12.0 / spread_rate * 0.55
 		BudStage.SWELL:
 			if bud_timer > 2.5:
 				bud_stage = BudStage.DETACH
@@ -381,7 +448,9 @@ func _apply_vitality_visual(dl: float, _world: Node) -> void:
 	var health: float = clampf(vitality, 0.0, 1.0)
 	var brown: Color = Color8(95, 70, 40)
 	var tint: Color = base_color.lerp(brown, (1.0 - health) * 0.65)
-	scale = Vector3.ONE * lerpf(0.75, 1.0, health) * lerpf(0.88, 1.0, minf(age_s / 120.0, 1.0))
+	var age_frac: float = clampf(age_s / 120.0, 0.0, 1.0)
+	var s: float = clampf(lerpf(0.75, 1.0, health) * lerpf(0.88, 1.0, age_frac), 0.5, 1.0)
+	scale = Vector3.ONE * s
 	if _visual_dirty or vitality < 0.3:
 		_recolor_leaves(tint, dl)
 
@@ -489,16 +558,18 @@ func _leaf(pos: Vector3, size: Vector3, color: Color, rot: Vector3 = Vector3.ZER
 	elif underside:
 		col = color.darkened(0.25)
 	mi.material_override = VoxelMat.make_foliage(col)
+	_configure_mesh_instance(mi)
 	add_child(mi)
 	mi.position = pos
 	if rot != Vector3.ZERO:
 		mi.rotation = rot
 	mi.name = "leaf_%d" % get_child_count()
-	# Wet meniscus rim (#45)
-	if absf(pos.y) < 0.05:
+	# Wet meniscus rim (#45) — skip on tiny mats; doubles mesh count for duckweed.
+	if absf(pos.y) < 0.05 and morph not in ["duckweed", "azolla"]:
 		var rim := MeshInstance3D.new()
 		rim.mesh = VoxelMat.get_box(Vector3(sz.x * 1.02, 0.03, sz.z * 1.02))
 		rim.material_override = VoxelMat.make(Color8(200, 235, 245))
+		_configure_mesh_instance(rim)
 		rim.position = pos + Vector3(0, -0.02, 0)
 		rim.name = "meniscus"
 		add_child(rim)
@@ -517,6 +588,7 @@ func _root_strands(count: int, length: float, spread: float = 1.0) -> void:
 		var mat: ShaderMaterial = VoxelMat.make_foliage(root_color)
 		mat.set_shader_parameter("sss_strength", 0.42)
 		mi.material_override = mat
+		_configure_mesh_instance(mi)
 		mi.name = "root_%d" % i
 		add_child(mi)
 		mi.position = Vector3(rx, -seg_len * 0.5 - 0.02, rz)
@@ -559,6 +631,7 @@ func _build_salvinia() -> void:
 			bump.mesh = VoxelMat.get_box(Vector3(leaf_size * 0.3, 0.05, leaf_size * 0.3))
 			var bmat: ShaderMaterial = VoxelMat.make_foliage(tip_color.lightened(0.25))
 			bump.material_override = bmat
+			_configure_mesh_instance(bump)
 			bump.position = Vector3(side * leaf_size * 0.5, 0.08, z)
 			bump.name = "bead"
 			add_child(bump)
@@ -592,6 +665,7 @@ func _build_red_root() -> void:
 		var rmat: ShaderMaterial = VoxelMat.make_foliage(root_color)
 		rmat.set_shader_parameter("sss_strength", 0.38)
 		rmi.material_override = rmat
+		_configure_mesh_instance(rmi)
 		rmi.name = "root_%d" % i
 		add_child(rmi)
 		rmi.position = Vector3(
@@ -640,6 +714,7 @@ func _add_flower_voxel() -> void:
 	fi.mesh = VoxelMat.get_box(Vector3(fsz, fsz * 1.2, fsz))
 	fi.material_override = VoxelMat.make_foliage(
 		Color8(240, 200, 220) if flower_stage == FlowerStage.OPEN else Color8(180, 140, 90))
+	_configure_mesh_instance(fi)
 	fi.position = Vector3(0, leaf_size * 0.25, 0)
 	fi.name = "flower"
 	add_child(fi)

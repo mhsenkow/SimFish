@@ -18,6 +18,19 @@ var _check_rows: Dictionary = {}
 var _telemetry_t: float = 0.0
 var _record_button: Button
 var _record_label: Label
+# Music sync (tank ↔ Spotify / local audio)
+var _sync_enable_check: CheckBox
+var _sync_intensity_slider: HSlider
+var _sync_intensity_label: Label
+var _sync_status_label: Label
+var _sync_now_playing: Label
+var _sync_search_edit: LineEdit
+var _sync_url_edit: LineEdit
+var _sync_client_id_edit: LineEdit
+var _sync_client_secret_edit: LineEdit
+var _sync_results: ItemList
+var _sync_bars: Array[ColorRect] = []
+var _sync_channel_checks: Dictionary = {}
 
 # Slider definitions — each `key` lines up with a TankConfig var.
 # `pct` shows the value as percent; otherwise raw 2-decimal float.
@@ -266,6 +279,14 @@ func _ready() -> void:
 	_pull_from_config()
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var mr := _music_reactive()
+	if mr != null:
+		if not mr.search_results_ready.is_connected(_on_sync_search_results):
+			mr.search_results_ready.connect(_on_sync_search_results)
+		if not mr.status_message.is_connected(_on_sync_status):
+			mr.status_message.connect(_on_sync_status)
+		if not mr.track_changed.is_connected(_on_sync_track_changed):
+			mr.track_changed.connect(_on_sync_track_changed)
 
 
 func _input(event: InputEvent) -> void:
@@ -290,6 +311,7 @@ func _process(dt: float) -> void:
 		_telemetry_t = 0.18
 		_refresh_live_readout()
 		_refresh_recording_label()
+		_refresh_sync_visualizer()
 
 
 func toggle() -> void:
@@ -329,6 +351,8 @@ func _build_ui() -> void:
 	vbox.add_theme_constant_override("separation", 8)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(vbox)
+
+	_build_music_sync_section(vbox)
 
 	# --- Live tank → music readout (phrase state badge + telemetry) ---
 	_add_section(vbox, "Live tank → music")
@@ -530,6 +554,228 @@ func _build_ui() -> void:
 	hb.add_child(save)
 
 
+func _build_music_sync_section(vbox: VBoxContainer) -> void:
+	_add_section(vbox, "Tank ↔ Music Sync")
+	var intro := PanelTheme.make_description()
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	intro.text = (
+		"Flip the switch and the tank dances to the beat — fish sprint across the full tank, "
+		+ "schools loosen and spread, beat surges send half the school darting end-to-end. "
+		+ "Colors shift with valence, lights pump on bass. Search Spotify or load a local track."
+	)
+	vbox.add_child(intro)
+
+	_sync_enable_check = CheckBox.new()
+	_sync_enable_check.text = "Sync tank to music"
+	_sync_enable_check.toggled.connect(_on_sync_enabled_toggled)
+	vbox.add_child(_sync_enable_check)
+
+	_sync_intensity_label = Label.new()
+	_sync_intensity_slider = PanelTheme.add_slider_row(
+		vbox, "Sync intensity", 0.0, 1.0, 0.05, _sync_intensity_label)
+	_sync_intensity_slider.value_changed.connect(func(v: float):
+		TankConfig.music_sync_intensity = v
+		_sync_intensity_label.text = "%.0f%%" % (v * 100.0)
+		var mr := _music_reactive()
+		if mr != null:
+			mr.set_intensity(v))
+
+	var channel_row := HBoxContainer.new()
+	channel_row.add_theme_constant_override("separation", 10)
+	vbox.add_child(channel_row)
+	for entry in [
+		{"key": "music_sync_fish", "label": "Fish"},
+		{"key": "music_sync_lights", "label": "Lights"},
+		{"key": "music_sync_color", "label": "Color"},
+		{"key": "music_sync_plants", "label": "Plants"},
+		{"key": "music_sync_bubbles", "label": "Bubbles"},
+	]:
+		var cb := CheckBox.new()
+		cb.text = String(entry["label"])
+		var k: String = String(entry["key"])
+		cb.toggled.connect(func(v: bool): TankConfig.set(k, v))
+		_sync_channel_checks[k] = cb
+		channel_row.add_child(cb)
+
+	var bar_row := HBoxContainer.new()
+	bar_row.add_theme_constant_override("separation", 4)
+	bar_row.custom_minimum_size.y = 36.0
+	vbox.add_child(bar_row)
+	for i in 4:
+		var bar := ColorRect.new()
+		bar.custom_minimum_size = Vector2(0, 28)
+		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		bar.color = Color(0.2, 0.25, 0.35, 0.85)
+		bar_row.add_child(bar)
+		_sync_bars.append(bar)
+
+	_sync_now_playing = Label.new()
+	PanelTheme.as_serif(_sync_now_playing, PanelTheme.SIZE_ITEM)
+	_sync_now_playing.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sync_now_playing.text = "—"
+	vbox.add_child(_sync_now_playing)
+
+	_sync_status_label = PanelTheme.make_description()
+	_sync_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_sync_status_label)
+
+	var cred_row := HBoxContainer.new()
+	cred_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(cred_row)
+	_sync_client_id_edit = LineEdit.new()
+	_sync_client_id_edit.placeholder_text = "Spotify Client ID"
+	_sync_client_id_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sync_client_id_edit.text_submitted.connect(func(_t): _save_spotify_creds())
+	cred_row.add_child(_sync_client_id_edit)
+	_sync_client_secret_edit = LineEdit.new()
+	_sync_client_secret_edit.placeholder_text = "Client Secret"
+	_sync_client_secret_edit.secret = true
+	_sync_client_secret_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sync_client_secret_edit.text_submitted.connect(func(_t): _save_spotify_creds())
+	cred_row.add_child(_sync_client_secret_edit)
+
+	var search_row := HBoxContainer.new()
+	search_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(search_row)
+	_sync_search_edit = LineEdit.new()
+	_sync_search_edit.placeholder_text = "Search Spotify…"
+	_sync_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sync_search_edit.text_submitted.connect(_on_sync_search)
+	search_row.add_child(_sync_search_edit)
+	var search_btn := PanelTheme.make_secondary_button("Search")
+	search_btn.pressed.connect(_on_sync_search)
+	search_row.add_child(search_btn)
+
+	_sync_results = ItemList.new()
+	_sync_results.custom_minimum_size.y = 96.0
+	_sync_results.item_activated.connect(_on_sync_result_picked)
+	vbox.add_child(_sync_results)
+
+	_sync_url_edit = LineEdit.new()
+	_sync_url_edit.placeholder_text = "Or paste open.spotify.com/track/…"
+	_sync_url_edit.text_submitted.connect(_on_sync_url_play)
+	vbox.add_child(_sync_url_edit)
+
+	var play_row := HBoxContainer.new()
+	play_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(play_row)
+	var local_btn := PanelTheme.make_secondary_button("Load local file")
+	local_btn.pressed.connect(_on_sync_local_file)
+	play_row.add_child(local_btn)
+	var url_btn := PanelTheme.make_secondary_button("Play link")
+	url_btn.pressed.connect(_on_sync_url_play)
+	play_row.add_child(url_btn)
+	var pause_btn := PanelTheme.make_secondary_button("Pause")
+	pause_btn.pressed.connect(func():
+		var mr := _music_reactive()
+		if mr != null:
+			mr.toggle_pause())
+	play_row.add_child(pause_btn)
+	var stop_btn := PanelTheme.make_secondary_button("Stop")
+	stop_btn.pressed.connect(func():
+		var mr := _music_reactive()
+		if mr != null:
+			mr.stop())
+	play_row.add_child(stop_btn)
+
+	vbox.add_child(PanelTheme.make_rule())
+
+
+func _on_sync_enabled_toggled(on: bool) -> void:
+	TankConfig.music_sync_enabled = on
+	var mr := _music_reactive()
+	if mr != null:
+		mr.set_enabled(on)
+
+
+func _on_sync_search(_text: String = "") -> void:
+	_save_spotify_creds()
+	var mr := _music_reactive()
+	if mr != null:
+		mr.search_spotify(_sync_search_edit.text)
+
+
+func _on_sync_url_play(_text: String = "") -> void:
+	_save_spotify_creds()
+	var mr := _music_reactive()
+	if mr != null:
+		mr.play_spotify_url(_sync_url_edit.text)
+
+
+func _on_sync_local_file() -> void:
+	var mr := _music_reactive()
+	if mr != null:
+		mr.pick_local_file()
+
+
+func _on_sync_result_picked(index: int) -> void:
+	var mr := _music_reactive()
+	if mr != null:
+		mr.play_search_result(index)
+
+
+func _on_sync_search_results(results: Array) -> void:
+	if _sync_results == null:
+		return
+	_sync_results.clear()
+	for item in results:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		_sync_results.add_item("%s — %s" % [item.get("name", "?"), item.get("artists", "")])
+
+
+func _on_sync_status(text: String, is_error: bool) -> void:
+	if _sync_status_label == null:
+		return
+	_sync_status_label.text = text
+	_sync_status_label.add_theme_color_override(
+		"font_color",
+		Color(1.0, 0.55, 0.5) if is_error else PanelTheme.DIM_FG)
+
+
+func _on_sync_track_changed(meta: Dictionary) -> void:
+	if _sync_now_playing == null:
+		return
+	_sync_now_playing.text = "%s\n%s" % [meta.get("name", "—"), meta.get("artists", "")]
+
+
+func _save_spotify_creds() -> void:
+	if _sync_client_id_edit != null:
+		TankConfig.spotify_client_id = _sync_client_id_edit.text.strip_edges()
+	if _sync_client_secret_edit != null:
+		TankConfig.spotify_client_secret = _sync_client_secret_edit.text.strip_edges()
+
+
+func _refresh_sync_visualizer() -> void:
+	var mr := _music_reactive()
+	if mr == null or _sync_bars.is_empty():
+		return
+	var drive: Dictionary = mr.get_drive()
+	var vals: Array = [
+		float(drive.get("bass", 0.0)),
+		float(drive.get("mid", 0.0)),
+		float(drive.get("high", 0.0)),
+		float(drive.get("beat", 0.0)),
+	]
+	var colors: Array = [
+		Color(0.95, 0.35, 0.45),
+		Color(0.45, 0.85, 0.95),
+		Color(0.75, 0.55, 1.0),
+		Color(1.0, 0.82, 0.35),
+	]
+	for i in mini(_sync_bars.size(), vals.size()):
+		var h: float = clampf(float(vals[i]), 0.04, 1.0)
+		_sync_bars[i].custom_minimum_size.y = 8.0 + h * 28.0
+		_sync_bars[i].color = (colors[i] as Color).lerp(Color(0.15, 0.18, 0.25), 1.0 - h)
+
+
+func _music_reactive() -> Node:
+	var main := get_tree().current_scene
+	if main == null:
+		return null
+	return main.get_node_or_null("MusicReactive")
+
+
 func _add_section(parent: Node, label: String) -> void:
 	parent.add_child(PanelTheme.make_spacer(4))
 	parent.add_child(PanelTheme.make_section(label))
@@ -576,6 +822,20 @@ func _pull_from_config() -> void:
 	_sync_option(_persona_option, String(TankConfig.music_persona))
 	_sync_option(_scale_option, String(TankConfig.music_scale))
 	_sync_option(_form_option, String(TankConfig.music_phrase_form))
+	if _sync_enable_check != null:
+		_sync_enable_check.button_pressed = TankConfig.music_sync_enabled
+	if _sync_intensity_slider != null:
+		_sync_intensity_slider.value = float(TankConfig.music_sync_intensity)
+		_sync_intensity_label.text = "%.0f%%" % (float(TankConfig.music_sync_intensity) * 100.0)
+	for key in _sync_channel_checks.keys():
+		(_sync_channel_checks[key] as CheckBox).button_pressed = not not TankConfig.get(key)
+	if _sync_client_id_edit != null:
+		_sync_client_id_edit.text = String(TankConfig.spotify_client_id)
+	if _sync_client_secret_edit != null:
+		_sync_client_secret_edit.text = String(TankConfig.spotify_client_secret)
+	var mr := _music_reactive()
+	if mr != null:
+		mr.apply_config()
 
 
 func _sync_option(opt: OptionButton, value: String) -> void:

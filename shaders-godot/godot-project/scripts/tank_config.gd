@@ -417,6 +417,18 @@ var music_key_mod: float = 0.35
 # Master breathe LFO depth (0..1).
 var music_breathe_lfo: float = 0.35
 
+# ---- Music sync (tank reacts to Spotify / local audio) ----
+var music_sync_enabled: bool = false
+var music_sync_intensity: float = 0.75
+var music_sync_fish: bool = true
+var music_sync_lights: bool = true
+var music_sync_color: bool = true
+var music_sync_plants: bool = true
+var music_sync_bubbles: bool = true
+var spotify_client_id: String = ""
+var spotify_client_secret: String = ""
+var music_sync_last_track_id: String = ""
+
 # ---- Room environment ----
 # A "scene" around the tank — desk, wall, lamp, props. Lifts the tank
 # from floating-in-void to "sitting in a room." Defaults to "void"
@@ -2025,6 +2037,16 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "pump_gate", music_pump_gate)
 	cfg.set_value("music", "key_mod", music_key_mod)
 	cfg.set_value("music", "breathe_lfo", music_breathe_lfo)
+	cfg.set_value("music_sync", "enabled", music_sync_enabled)
+	cfg.set_value("music_sync", "intensity", music_sync_intensity)
+	cfg.set_value("music_sync", "fish", music_sync_fish)
+	cfg.set_value("music_sync", "lights", music_sync_lights)
+	cfg.set_value("music_sync", "color", music_sync_color)
+	cfg.set_value("music_sync", "plants", music_sync_plants)
+	cfg.set_value("music_sync", "bubbles", music_sync_bubbles)
+	cfg.set_value("music_sync", "spotify_client_id", spotify_client_id)
+	cfg.set_value("music_sync", "spotify_client_secret", spotify_client_secret)
+	cfg.set_value("music_sync", "last_track_id", music_sync_last_track_id)
 	cfg.set_value("environment", "preset", environment_preset)
 	cfg.set_value("substrate", "type", substrate_type)
 	cfg.set_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)
@@ -2246,6 +2268,16 @@ func load_from_disk() -> void:
 	music_pump_gate = cfg.get_value("music", "pump_gate", music_pump_gate)
 	music_key_mod = cfg.get_value("music", "key_mod", music_key_mod)
 	music_breathe_lfo = cfg.get_value("music", "breathe_lfo", music_breathe_lfo)
+	music_sync_enabled = cfg.get_value("music_sync", "enabled", music_sync_enabled)
+	music_sync_intensity = cfg.get_value("music_sync", "intensity", music_sync_intensity)
+	music_sync_fish = cfg.get_value("music_sync", "fish", music_sync_fish)
+	music_sync_lights = cfg.get_value("music_sync", "lights", music_sync_lights)
+	music_sync_color = cfg.get_value("music_sync", "color", music_sync_color)
+	music_sync_plants = cfg.get_value("music_sync", "plants", music_sync_plants)
+	music_sync_bubbles = cfg.get_value("music_sync", "bubbles", music_sync_bubbles)
+	spotify_client_id = String(cfg.get_value("music_sync", "spotify_client_id", spotify_client_id))
+	spotify_client_secret = String(cfg.get_value("music_sync", "spotify_client_secret", spotify_client_secret))
+	music_sync_last_track_id = String(cfg.get_value("music_sync", "last_track_id", music_sync_last_track_id))
 	environment_preset = cfg.get_value("environment", "preset", environment_preset)
 	substrate_type = cfg.get_value("substrate", "type", substrate_type)
 	rebuild_terrain_on_load = cfg.get_value("substrate", "rebuild_terrain", rebuild_terrain_on_load)

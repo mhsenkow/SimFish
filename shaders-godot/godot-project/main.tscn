@@ -6,6 +6,7 @@
 [ext_resource type="Texture2D" path="res://palettes/planted_48.png" id="4_palette"]
 [ext_resource type="Texture2D" path="res://palettes/planted_48_night.png" id="4b_palette_night"]
 [ext_resource type="Script" path="res://scripts/ambient_audio.gd" id="6_audio"]
+[ext_resource type="Script" path="res://scripts/music_reactive.gd" id="6b_music_sync"]
 [ext_resource type="Script" path="res://scripts/settings_panel.gd" id="7_settings"]
 [ext_resource type="Script" path="res://scripts/render_panel.gd" id="8_render"]
 [ext_resource type="Script" path="res://scripts/sound_panel.gd" id="8_sound"]
@@ -184,6 +185,9 @@ label_settings = SubResource("HUDHintSettings")
 
 [node name="AmbientAudio" type="Node" parent="."]
 script = ExtResource("6_audio")
+
+[node name="MusicReactive" type="Node" parent="."]
+script = ExtResource("6b_music_sync")
 
 [node name="SettingsPanel" type="PanelContainer" parent="."]
 anchor_left = 1.0

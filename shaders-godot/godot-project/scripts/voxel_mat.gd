@@ -598,3 +598,32 @@ static func apply_global_palette(cfg: Node, water_mat: ShaderMaterial = null) ->
 	if water_mat != null and is_instance_valid(water_mat):
 		_apply_palette_to_material(water_mat, water_p.hue, water_p.sat, water_p.warmth, water_p.val)
 
+
+# Music-sync overlay — stacks on top of the global palette while a track drives
+# the tank. Fauna + foliage get the full tint; hardscape/substrate a gentler wash.
+static func apply_music_sync_overlay(overlay: Dictionary, shimmer: float) -> void:
+	var cfg: Node = Engine.get_main_loop().root.get_node_or_null("/root/TankConfig")
+	var fauna_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_fauna)) \
+		if cfg != null else {"hue": 0.0, "sat": 1.0, "warmth": 0.0, "val": 1.0}
+	var foliage_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_foliage)) \
+		if cfg != null else fauna_p
+	var oh: float = float(overlay.get("hue", 0.0))
+	var osat: float = float(overlay.get("sat", 1.0))
+	var owarm: float = float(overlay.get("warmth", 0.0))
+	var oval: float = float(overlay.get("val", 1.0))
+	for mat in _fauna_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(
+				mat, fauna_p.hue + oh, fauna_p.sat * osat, fauna_p.warmth + owarm, fauna_p.val * oval)
+			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			_apply_palette_to_material(
+				mat, foliage_p.hue + oh * 0.65, foliage_p.sat * lerpf(1.0, osat, 0.7),
+				foliage_p.warmth + owarm * 0.5, foliage_p.val * lerpf(1.0, oval, 0.7))
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			_apply_palette_to_material(
+				mat, foliage_p.hue + oh * 0.65, foliage_p.sat * lerpf(1.0, osat, 0.7),
+				foliage_p.warmth + owarm * 0.5, foliage_p.val * lerpf(1.0, oval, 0.7))
+

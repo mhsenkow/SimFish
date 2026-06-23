@@ -571,6 +571,10 @@ func _process(dt: float) -> void:
 	if _ambient_due and _room_record_disc != null:
 		var cfg_player := _cfg_node
 		var target_speed: float = 1.5 if (cfg_player != null and cfg_player.music_enabled) else 0.0
+		var mr_rec := get_tree().get_first_node_in_group("music_reactive")
+		if mr_rec != null and mr_rec.has_method("is_external_playing") and mr_rec.is_external_playing():
+			var drive: Dictionary = mr_rec.get_drive() if mr_rec.has_method("get_drive") else {}
+			target_speed = 2.2 + float(drive.get("energy", 0.5)) * 1.8
 		_room_record_speed = lerpf(_room_record_speed, target_speed, adt * 2.0)
 		if _room_record_speed > 0.001:
 			_room_record_disc.rotate_y(-adt * _room_record_speed)
@@ -701,6 +705,12 @@ func _process(dt: float) -> void:
 			fixture_energy = float(cfg2.tank_fixture_intensity)
 			fixture_color = cfg2.tank_fixture_color
 			sunset_drama = float(cfg2.sunset_drama)
+		var mr := get_tree().get_first_node_in_group("music_reactive")
+		if mr != null and mr.has_method("light_fixture_mul"):
+			fixture_energy *= float(mr.light_fixture_mul())
+			var warm_mix: float = float(mr.light_beam_warmth_mix())
+			if warm_mix > 0.001:
+				fixture_color = fixture_color.lerp(Color(1.0, 0.72, 0.48), warm_mix)
 		# Sunset drama amplifies dusk warmth + how deep night dips. 0 flattens
 		# the cycle to a steady mid-day, 2 makes sunset golden and midnight
 		# truly dark. Clamped so users can't crash deep_night past 1.0.
@@ -724,6 +734,10 @@ func _process(dt: float) -> void:
 			beam_color = day_beam.lerp(sunset_beam, minf(sunset_hour, 1.0))
 		if deep_night > 0.35:
 			beam_color = beam_color.lerp(night_beam, smoothstep(0.35, 1.0, deep_night))
+		if mr != null and mr.has_method("light_beam_warmth_mix"):
+			var beam_warm: float = float(mr.light_beam_warmth_mix())
+			if beam_warm > 0.001:
+				beam_color = beam_color.lerp(Color(1.0, 0.55, 0.38), beam_warm * 0.45)
 		# Room fill fades at night; sunset keeps a warm wash in the room.
 		var room_dl: float = dl * (1.0 - deep_night * 0.94) + sunset_hour * 0.18
 		room_dl = clampf(room_dl, 0.0, 1.0)
@@ -820,6 +834,8 @@ func _process(dt: float) -> void:
 				var trans: float = float(_cached_water_column.get("transmittance", 1.0))
 				var bact: float = float(_cached_water_column.get("bacterial_bloom", 0.0))
 				intensity = WorldAtmosphere.modulate_caustic_intensity(intensity, trans, bact)
+			if mr != null and mr.has_method("caustic_mul"):
+				intensity *= float(mr.caustic_mul())
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
 				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
 				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
@@ -970,16 +986,22 @@ func _resolve_floater_glass(pos: Vector3, vel: Vector3, margin: float,
 			h_vel = tangent + wall_n * (-vn * _FLOATER_BOUNCE_DAMP)
 		elif hit:
 			h_vel += wall_n * lerpf(0.012, 0.038, 1.0 - clampf(clearance / margin, 0.0, 1.0))
-	return {"position": out_pos, "vel": Vector3(h_vel.x, vel.y, h_vel.z)}
+	var out_vel: Vector3 = Vector3(h_vel.x, vel.y, h_vel.z)
+	if not out_pos.is_finite():
+		out_pos = Vector3(clamped.x, pos.y, clamped.y)
+	if not out_vel.is_finite():
+		out_vel = Vector3.ZERO
+	return {"position": out_pos, "vel": out_vel}
 
 
 # Floaters v2 surface physics: meniscus drift, raft cohesion, soft collision,
 # glass bounce, filter shove, ripple bob, daughter tether. 10 Hz + adt.
 func _drift_floaters(adt: float) -> void:
 	_floater_t += adt
+	var surface_y: float = WATER_HEIGHT - 0.05
+	_sanitize_floater_positions()
 	_rebuild_floater_grid()
 	_dead_floaters_scratch.clear()
-	var surface_y: float = WATER_HEIGHT - 0.05
 	# Global surface current: filter return + slow room air drift.
 	var drift_vec: Vector3 = Vector3.ZERO
 	if sim != null and sim.filter_intake_pos != Vector3.ZERO:
@@ -1005,13 +1027,16 @@ func _drift_floaters(adt: float) -> void:
 		vel += drift_vec * adt
 		var neighbors: Array = query_floaters_in_radius(fp.position, 0.75, true)
 		# Surface-tension cohesion — drift toward raft centroid, not tank center.
-		if neighbors.size() > 1:
+		if neighbors.size() > 1 and neighbors.size() < 14:
 			var centroid: Vector3 = Vector3.ZERO
 			var n_n: int = 0
 			for nb in neighbors:
 				if nb == fp:
 					continue
-				centroid += (nb as FloatingPlant).position
+				var nb_pos: Vector3 = (nb as FloatingPlant).position
+				if not nb_pos.is_finite():
+					continue
+				centroid += nb_pos
 				n_n += 1
 			if n_n > 0:
 				centroid /= float(n_n)
@@ -1019,7 +1044,7 @@ func _drift_floaters(adt: float) -> void:
 				to_c.y = 0.0
 				var dist_c: float = to_c.length()
 				var pack: float = clampf(float(neighbors.size()) / 10.0, 0.0, 1.0)
-				if dist_c > 0.14 and dist_c < 1.6:
+				if dist_c > 0.14 and dist_c < 1.6 and to_c.length_squared() > 1e-6:
 					var cohesion: float = lerpf(0.14, 0.03, pack) * fp.vitality
 					vel += to_c.normalized() * adt * cohesion
 		# Soft meniscus collision — floaters push apart instead of stacking.
@@ -1027,15 +1052,25 @@ func _drift_floaters(adt: float) -> void:
 			if nb == fp:
 				continue
 			var other: FloatingPlant = nb
+			if not other.position.is_finite():
+				continue
 			var sep: Vector3 = fp.position - other.position
 			sep.y = 0.0
 			var dist: float = sep.length()
 			var min_sep: float = maxf(0.14, (fp.leaf_size + other.leaf_size) * 0.52)
+			if fp.morph in ["duckweed", "azolla"]:
+				min_sep = maxf(min_sep, 0.22)
 			if dist < min_sep and dist > 1e-4:
 				var push: Vector3 = sep.normalized() * (min_sep - dist)
 				fp.position.x += push.x * 0.72
 				fp.position.z += push.z * 0.72
 				vel += push * (3.4 * adt)
+			elif dist <= 1e-4:
+				var jitter := Vector3(randf() - 0.5, 0.0, randf() - 0.5)
+				if jitter.length_squared() > 1e-6:
+					jitter = jitter.normalized() * min_sep * 0.35
+					fp.position.x += jitter.x
+					fp.position.z += jitter.z
 		if sim != null and sim.filter_intake_pos != Vector3.ZERO:
 			var to_out: Vector3 = fp.position - sim.filter_intake_pos
 			to_out.y = 0.0
@@ -1054,29 +1089,36 @@ func _drift_floaters(adt: float) -> void:
 			var parent_v: Variant = _floater_by_id.get(fp.linked_parent_id)
 			if parent_v is FloatingPlant and is_instance_valid(parent_v):
 				var parent: FloatingPlant = parent_v
-				var rest: Vector3 = fp.get_meta("tether_offset", Vector3.ZERO)
-				if rest.length_squared() < 1e-6:
-					rest = fp.position - parent.position
-					rest.y = 0.0
-					fp.set_meta("tether_offset", rest)
-				var anchor: Vector3 = parent.position + rest
-				anchor.y = surface_y
-				var spring: float = clampf(fp.tether_timer / 2.8, 0.0, 1.0)
-				var to_anchor: Vector3 = anchor - fp.position
-				to_anchor.y = 0.0
-				vel += to_anchor * adt * lerpf(1.0, 0.35, spring)
+				if parent.position.is_finite():
+					var rest: Vector3 = fp.get_meta("tether_offset", Vector3.ZERO)
+					if rest.length_squared() < 1e-6:
+						rest = fp.position - parent.position
+						rest.y = 0.0
+						fp.set_meta("tether_offset", rest)
+					var anchor: Vector3 = parent.position + rest
+					anchor.y = surface_y
+					var spring: float = clampf(fp.tether_timer / 2.8, 0.0, 1.0)
+					var to_anchor: Vector3 = anchor - fp.position
+					to_anchor.y = 0.0
+					if to_anchor.length_squared() > 1e-6:
+						vel += to_anchor.normalized() * adt * lerpf(1.0, 0.35, spring)
 		vel = _constrain_floater_drift(vel, fp.position, margin)
+		if not vel.is_finite():
+			vel = Vector3.ZERO
 		fp.position.x += vel.x
 		fp.position.z += vel.z
 		var glass: Dictionary = _resolve_floater_glass(
 			fp.position, vel, margin, surface_y)
 		fp.position = glass["position"]
 		vel = glass["vel"]
+		if vel is Vector3 and not (vel as Vector3).is_finite():
+			vel = Vector3.ZERO
 		vel *= _FLOATER_DRAG
 		var ripple_bob: float = sin(_floater_t * 0.7 + ph + fp.position.x * 0.4) * 0.015
 		fp.position.y = surface_y - fp.surface_sink() + ripple_bob
 		if fp.spin_rate > 0.0:
 			fp.rotation.y += adt * fp.spin_rate
+		_sanitize_floater_node(fp, surface_y)
 		_floater_vel[iid] = vel
 	for df in _dead_floaters_scratch:
 		_floaters.erase(df)
@@ -1087,17 +1129,21 @@ func _drift_floaters(adt: float) -> void:
 # an internal sin phase, so running at 10 Hz with accumulated dt keeps the sway
 # rate identical — slow sway reads as perfectly smooth at 10 Hz.
 func _sway_surface_plants(adt: float) -> void:
+	var sway_dt: float = adt
+	var mr := get_tree().get_first_node_in_group("music_reactive")
+	if mr != null and mr.has_method("plant_sway_mult"):
+		sway_dt *= float(mr.plant_sway_mult())
 	for mp in _math_plants:
 		if not is_instance_valid(mp):
 			continue
 		if mp.has_method("tick"):
-			mp.tick(adt)
+			mp.tick(sway_dt)
 	_lily_pad_t += adt
 	for lp in _lily_pads:
 		if not is_instance_valid(lp):
 			continue
 		if lp.has_method("tick"):
-			lp.tick(adt)
+			lp.tick(sway_dt)
 
 
 # ---- Materials ----
@@ -1270,13 +1316,21 @@ func enforce_entity_in_tank(node: Node3D, margin: float = 0.25,
 		body_radius: float = 0.0) -> void:
 	if node == null or not is_instance_valid(node):
 		return
+	var total_m: float = margin + maxf(0.0, body_radius)
 	var c: Vector3 = clamp_xyz_in_tank(node.global_position, margin, body_radius)
 	node.global_position = c
-	if not is_inside_tank_volume(c.x, c.y, c.z, margin + body_radius * 0.5):
-		var fp := _footprint()
-		var safe_y: float = clampf(
-			c.y, fp.substrate_y + margin, fp.water_y - margin)
-		node.global_position = Vector3(0.0, safe_y, 0.0)
+	if is_inside_tank_volume(c.x, c.y, c.z, total_m * 0.5):
+		return
+	# Curved / polygon tanks can still fail the volume probe after clamp.
+	# Slide onto the nearest wall — never snap to tank center (reads as a bounce).
+	var info: Dictionary = tank_lateral_boundary_info(c, total_m * 0.55)
+	var inward: Vector3 = info.get("inward", Vector3.ZERO)
+	inward.y = 0.0
+	if inward.length_squared() > 1e-6:
+		node.global_position = boundary_point_on_wall(
+			c.y, inward.normalized(), total_m * 0.45)
+	else:
+		node.global_position = clamp_xyz_in_tank(c, margin + 0.08, body_radius)
 
 
 func _enforce_all_life_bounds() -> void:
@@ -1603,7 +1657,9 @@ func _mulm_carrying_capacity() -> int:
 
 func _surface_floater_capacity() -> int:
 	var area: float = _footprint().usable_surface_area(0.35, WATER_HEIGHT - 0.05)
-	var base: int = maxi(8, int(area / 0.26))
+	# Larger divisor = fewer nominal slots; duckweed clumps are visually wider than
+	# 0.26u so count-based coverage was hitting 80% at hundreds of nodes.
+	var base: int = maxi(8, int(area / 0.38))
 	return WorldFloaterManager.scaled_surface_capacity(base, TANK_SHAPE)
 
 
@@ -4801,12 +4857,25 @@ func _sanitize_floater_positions() -> void:
 	for f in _floaters:
 		if not is_instance_valid(f) or not (f is FloatingPlant):
 			continue
-		var fp: FloatingPlant = f
-		if is_finite(fp.position.x) and is_finite(fp.position.z):
-			continue
+		_sanitize_floater_node(f as FloatingPlant, surface_y)
+
+
+func _sanitize_floater_node(fp: FloatingPlant, surface_y: float) -> void:
+	fp.ensure_finite_transform()
+	var iid: int = fp.get_instance_id()
+	if not is_finite(fp.position.x) or not is_finite(fp.position.y) or not is_finite(fp.position.z):
 		var xz: Vector2 = _sample_surface_xz(0.35, 0.34)
 		fp.position = Vector3(xz.x, surface_y, xz.y)
-		_floater_vel.erase(fp.get_instance_id())
+		_floater_vel.erase(iid)
+	var margin: float = _floater_glass_margin(fp)
+	var clamped: Vector2 = clamp_xz_in_tank(fp.position.x, fp.position.z, margin, surface_y)
+	fp.position.x = clamped.x
+	fp.position.z = clamped.y
+	fp.position.y = surface_y - fp.surface_sink()
+	var vel: Variant = _floater_vel.get(iid, Vector3.ZERO)
+	if vel is Vector3 and not (vel as Vector3).is_finite():
+		_floater_vel[iid] = Vector3.ZERO
+	fp.ensure_finite_transform()
 
 
 func _floater_growth_step() -> void:
@@ -4818,13 +4887,17 @@ func _floater_growth_step() -> void:
 	_floaters = live
 	if live.is_empty():
 		return
+	for fp_flags in live:
+		if fp_flags is FloatingPlant and not fp_flags.get_meta("render_flags", false):
+			(fp_flags as FloatingPlant).apply_render_flags()
+			fp_flags.set_meta("render_flags", true)
+			(fp_flags as FloatingPlant).ensure_finite_transform()
 	var cap: int = WorldFloaterManager.duckweed_cap(sim, _surface_floater_capacity())
-	var surface_cap: int = _surface_floater_capacity()
 	var active_n: int = 0
 	for fp0 in live:
 		if fp0 is FloatingPlant and _is_active_floater(fp0):
 			active_n += 1
-	var coverage: float = clampf(float(active_n) / float(surface_cap), 0.0, 1.0)
+	var coverage: float = clampf(float(active_n) / float(maxi(1, cap)), 0.0, 1.0)
 	var compact: float = clampf((coverage - 0.5) / 0.5, 0.0, 1.0)
 	var dt_step: float = FLOATER_GROWTH_INTERVAL
 	var to_remove: Array = []
@@ -4869,20 +4942,35 @@ func _floater_growth_step() -> void:
 				"tether_offset": bud_offset,
 			})
 	# Nutrient bloom burst (#15) — duckweed morph spreads faster at high nutrients
-	if sim != null and float(sim.get("bloom_intensity")) > 0.7:
+	if sim != null and float(sim.get("bloom_intensity")) > 0.82:
 		for fp2 in live:
 			if fp2 is FloatingPlant and (fp2 as FloatingPlant).morph == "duckweed":
-				(fp2 as FloatingPlant).vitality = minf(1.0, (fp2 as FloatingPlant).vitality + 0.02)
+				(fp2 as FloatingPlant).vitality = minf(1.0, (fp2 as FloatingPlant).vitality + 0.008)
 	# Evapotranspiration haze (#29)
 	if coverage > 0.65 and randf() < 0.08:
 		_maybe_add_mineral_spot()
+	# Thin overcrowded mats before spawning more (legacy saves, bloom bursts).
+	if active_n > cap:
+		var thin: Array = []
+		for fp_thin in live:
+			if fp_thin is FloatingPlant and _is_active_floater(fp_thin) \
+					and not to_remove.has(fp_thin):
+				thin.append(fp_thin)
+		thin.sort_custom(func(a, b): return (a as FloatingPlant).vitality < (b as FloatingPlant).vitality)
+		var excess: int = mini(thin.size(), active_n - cap)
+		for ti in excess:
+			var doomed: FloatingPlant = thin[ti]
+			doomed.vitality = 0.0
+			to_remove.append(doomed)
+		coverage = clampf(float(active_n - excess) / float(maxi(1, cap)), 0.0, 1.0)
 	# Spawn children under cap
 	var n: int = active_n
 	for victim in to_remove:
 		if victim is FloatingPlant and _is_active_floater(victim):
 			n -= 1
+	var spawn_cap_coverage: float = WorldFloaterManager.PROPAGATION_COVERAGE_MAX
 	for sq in spawn_queue:
-		if n >= cap or coverage > 0.78:
+		if n >= cap or coverage > spawn_cap_coverage:
 			break
 		var sp: Vector3 = sq.pos
 		sp.y = WATER_HEIGHT - 0.05
@@ -4891,6 +4979,7 @@ func _floater_growth_step() -> void:
 			if sq.has("tether_offset"):
 				child_fp.set_meta("tether_offset", sq.tether_offset)
 			n += 1
+			coverage = clampf(float(n) / float(maxi(1, cap)), 0.0, 1.0)
 	for victim in to_remove:
 		if victim is FloatingPlant:
 			var vid: String = (victim as FloatingPlant).id
@@ -4919,7 +5008,10 @@ func floater_total() -> int:
 
 
 func floater_coverage() -> float:
-	return clampf(float(floater_count()) / float(_surface_floater_capacity()), 0.0, 1.0)
+	var cap: int = WorldFloaterManager.duckweed_cap(sim, _surface_floater_capacity())
+	if cap <= 0:
+		return 0.0
+	return clampf(float(floater_count()) / float(cap), 0.0, 1.0)
 
 
 func light_penetration_at(world_pos: Vector3) -> float:

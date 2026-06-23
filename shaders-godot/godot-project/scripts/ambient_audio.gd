@@ -540,7 +540,11 @@ func _event_gain() -> float:
 
 func _user_volume() -> float:
 	var cfg := _cfg()
-	return clampf(float(cfg.music_volume), 0.0, 1.0) if cfg != null else 0.7
+	var base: float = clampf(float(cfg.music_volume), 0.0, 1.0) if cfg != null else 0.7
+	var mr := get_tree().get_first_node_in_group("music_reactive")
+	if mr != null and mr.has_method("is_external_playing") and mr.is_external_playing():
+		base *= 0.12
+	return base
 
 
 func _complexity() -> float:

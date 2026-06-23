@@ -2,10 +2,18 @@
 class_name WorldFloaterManager
 extends RefCounted
 
-const ESTABLISHED_SPAWN: int = 14
+const ESTABLISHED_SPAWN: int = 8
 const CYCLE_SPAWN_MIN: int = 4
 const CYCLE_SPAWN_MAX: int = 6
 const CYCLE_DUCKWEED_CAP: int = 12
+# Established tanks: cap clump *count* well below surface slots. Each node is a
+# visible mat patch; hundreds of tiny duckweed clumps tank perf without filling
+# the surface any faster than ~80 patches would.
+const ESTABLISHED_ACTIVE_CAP_FRAC: float = 0.24
+const ESTABLISHED_ACTIVE_CAP_MAX: int = 96
+const ESTABLISHED_ACTIVE_CAP_MIN: int = 18
+# Stop natural propagation once the weighted mat reaches this coverage.
+const PROPAGATION_COVERAGE_MAX: float = 0.58
 
 
 static func ecology_mode(sim: Node) -> String:
@@ -44,17 +52,18 @@ static func initial_spawn_count(sim: Node, bloom: float = 0.0, shape: String = "
 
 
 static func duckweed_cap(sim: Node, surface_capacity: int) -> int:
-	var cap: int = surface_capacity
 	if ecology_mode(sim) == "cycle":
-		cap = mini(CYCLE_DUCKWEED_CAP, surface_capacity)
-	# Azolla colonies can pack tighter; duckweed mats use full surface cap.
-	return cap
+		return mini(CYCLE_DUCKWEED_CAP, surface_capacity)
+	return clampi(
+		int(round(float(surface_capacity) * ESTABLISHED_ACTIVE_CAP_FRAC)),
+		ESTABLISHED_ACTIVE_CAP_MIN,
+		mini(ESTABLISHED_ACTIVE_CAP_MAX, surface_capacity))
 
 
 static func morph_spread_bias(morph: String) -> float:
 	match morph:
 		"duckweed", "azolla":
-			return 1.18
+			return 0.92
 		"water_hyacinth":
 			return 0.75
 		_:

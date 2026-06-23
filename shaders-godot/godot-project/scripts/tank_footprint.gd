@@ -169,10 +169,12 @@ func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
 				inward = Vector3(-1.0 if x >= 0.0 else 1.0, 0.0, 0.0)
 			else:
 				inward = Vector3(0.0, 0.0, -1.0 if z >= 0.0 else 1.0)
+			# Slight corner bias only — heavy center blend made rim fish steer inward
+			# and read as bouncing off the glass toward the middle.
 			if shape == "hex" or shape == "triangle":
 				var to_center := Vector3(-x, 0.0, -z)
 				if to_center.length_squared() > 1e-6:
-					inward = (inward + to_center.normalized() * 0.55).normalized()
+					inward = (inward + to_center.normalized() * 0.12).normalized()
 	if inward.length_squared() < 1e-6:
 		inward = Vector3(1.0, 0.0, 0.0)
 	return inward

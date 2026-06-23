@@ -116,8 +116,12 @@ func _ensure_capacity(n: int) -> void:
 		new_cap *= 2
 	_mm.instance_count = new_cap
 	# Re-apply from the mirror — resizing may have dropped existing instances.
-	for i in _count - 1:
-		_mm.set_instance_transform(i, _xforms[i])
+	for i in range(_count):
+		var xform: Transform3D = _xforms[i]
+		if not xform.is_finite():
+			xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+			_xforms[i] = xform
+		_mm.set_instance_transform(i, xform)
 		_mm.set_instance_color(i, _colors[i])
 	_visible = mini(_visible, _count)
 	_mm.visible_instance_count = _visible
