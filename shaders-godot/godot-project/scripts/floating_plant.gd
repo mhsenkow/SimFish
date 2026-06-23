@@ -64,6 +64,8 @@ var _decay_sink: float = 0.0
 var _visual_dirty: bool = true
 var _light_response_t: float = 0.0
 var _roots_lod_hidden: bool = false
+var _view_lod_hidden: bool = false
+const VIEW_LOD_DIST_SQ: float = 14.0 * 14.0
 
 
 func init_genome(g: Dictionary) -> void:
@@ -203,6 +205,7 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 		_decay_sink = lerpf(_decay_sink, 0.0, dt * 3.0)
 	position.y += _decay_sink * dt * -1.0
 	_apply_vitality_visual(dl, world)
+	_update_view_lod()
 	_light_response_t += dt
 	if _visual_dirty or _light_response_t >= 6.0:
 		_light_response_t = 0.0
@@ -221,6 +224,21 @@ func set_neighbor_density(d: float) -> void:
 
 func is_surface_active() -> bool:
 	return not turion_buried and vitality > 0.02
+
+
+func _update_view_lod() -> void:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		return
+	var hide_leaves: bool = global_position.distance_squared_to(cam.global_position) > VIEW_LOD_DIST_SQ
+	if hide_leaves == _view_lod_hidden:
+		return
+	_view_lod_hidden = hide_leaves
+	if DisplayServer.get_name() == "headless":
+		return
+	for c in get_children():
+		if c is MeshInstance3D and String(c.name).begins_with("leaf"):
+			(c as MeshInstance3D).visible = not hide_leaves
 
 
 func _update_root_lod() -> void:
@@ -315,6 +333,17 @@ func _tick_flowering(dl: float) -> void:
 		flower_stage = FlowerStage.NONE
 
 
+func _set_foliage_albedo(mi: MeshInstance3D, col: Color, sss: float = -1.0) -> void:
+	var mat: ShaderMaterial = mi.material_override as ShaderMaterial
+	if mat == null:
+		mat = VoxelMat.make_foliage(col)
+		mi.material_override = mat
+	else:
+		mat.set_shader_parameter("albedo", col)
+	if sss >= 0.0:
+		mat.set_shader_parameter("sss_strength", sss)
+
+
 func tick_light_response(daylight: float, world: Node = null) -> void:
 	# Tannin tint (#28)
 	var tannin: float = 0.0
@@ -324,22 +353,18 @@ func tick_light_response(daylight: float, world: Node = null) -> void:
 	for c in get_children():
 		if c is MeshInstance3D and String(c.name).begins_with("leaf"):
 			var mi: MeshInstance3D = c
-			if mi.material_override is ShaderMaterial:
-				var col: Color = leaf_tint
-				if redroot_response > 0.0 and String(c.name).begins_with("root"):
-					var redness: float = clampf(redroot_response * daylight, 0.0, 1.0)
-					col = base_color.darkened(0.35).lerp(Color(0.78, 0.28, 0.30), redness * 0.85)
-				else:
-					col = _edge_center_color(mi.position, leaf_tint)
-				mi.material_override = VoxelMat.make_foliage(col)
+			var col: Color = leaf_tint
+			if redroot_response > 0.0 and String(c.name).begins_with("root"):
+				var redness: float = clampf(redroot_response * daylight, 0.0, 1.0)
+				col = base_color.darkened(0.35).lerp(Color(0.78, 0.28, 0.30), redness * 0.85)
+			else:
+				col = _edge_center_color(mi.position, leaf_tint)
+			_set_foliage_albedo(mi, col)
 		elif c is MeshInstance3D and String(c.name).begins_with("root"):
 			var mi2: MeshInstance3D = c
-			if mi2.material_override is ShaderMaterial:
-				var redness2: float = clampf(redroot_response * daylight, 0.0, 1.0) if redroot_response > 0.0 else 0.0
-				var root_col: Color = base_color.darkened(0.35).lerp(Color(0.78, 0.28, 0.30), redness2 * 0.85)
-				var mat: ShaderMaterial = VoxelMat.make_foliage(root_col)
-				mat.set_shader_parameter("sss_strength", 0.35)
-				mi2.material_override = mat
+			var redness2: float = clampf(redroot_response * daylight, 0.0, 1.0) if redroot_response > 0.0 else 0.0
+			var root_col: Color = base_color.darkened(0.35).lerp(Color(0.78, 0.28, 0.30), redness2 * 0.85)
+			_set_foliage_albedo(mi2, root_col, 0.35)
 
 
 func _edge_center_color(local_pos: Vector3, base: Color) -> Color:
@@ -364,8 +389,7 @@ func _apply_vitality_visual(dl: float, _world: Node) -> void:
 func _recolor_leaves(tint: Color, _dl: float) -> void:
 	for c in get_children():
 		if c is MeshInstance3D and String(c.name).begins_with("leaf"):
-			(c as MeshInstance3D).material_override = VoxelMat.make_foliage(
-				_edge_center_color(c.position, tint))
+			_set_foliage_albedo(c as MeshInstance3D, _edge_center_color(c.position, tint))
 
 
 # ---- Interaction API ----

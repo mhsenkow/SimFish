@@ -34,6 +34,8 @@ var _voxels: Array[VoxelBatch.Handle] = []
 var _batch: VoxelBatch = null
 var _age: float = 0.0
 var _phase: float = 0.0
+var _shimmer_t: float = 0.0
+var _clamp_world: Node = null
 var _color: Color = Color8(120, 165, 60)
 var _kind: int = AlgaeKind.CLUSTER
 
@@ -131,21 +133,16 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 			pass  # GDA micro-flecks stick to glass
 		_:
 			rotation.y = sin(_phase * 0.6) * 0.18
-	# Slow undulating brightness wave across the cluster — looks like
-	# sunlight hitting different parts of a wet algae mat as the water
-	# above ripples. Only meaningful for cluster + surface kinds (HAIR
-	# already sways visibly, GSA voxels are too small for the shimmer to
-	# read). Per-instance index drives the phase offset so the wave
-	# visibly travels through the cluster instead of pulsing in unison.
-	if _kind == AlgaeKind.CLUSTER or _kind == AlgaeKind.SURFACE:
+	# Slow undulating brightness wave — throttled to 10 Hz to avoid per-voxel
+	# GPU color uploads every sim tick during blooms.
+	_shimmer_t += dt
+	if _shimmer_t >= 0.1 and (_kind == AlgaeKind.CLUSTER or _kind == AlgaeKind.SURFACE):
+		_shimmer_t = 0.0
 		for i in _voxels.size():
 			var h: VoxelBatch.Handle = _voxels[i]
 			if h == null or not h.alive:
 				continue
 			var wave: float = 0.5 + 0.5 * sin(_phase * 0.85 + float(i) * 0.85)
-			# Subtle lift — 0..30% toward a lightened version. Quantizer
-			# bounces between the base and one-step-brighter palette slot
-			# along the wave, reading as a slow shimmer.
 			var lit: Color = h.base_color.lerp(h.base_color.lightened(0.30), wave)
 			h.set_color(lit)
 	# Growth milestones differ per kind: cluster spreads in 3D, surface
@@ -200,9 +197,7 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 				_add_voxel(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.9, -VOXEL_SIZE * 0.6), 0.7)
 			if _voxels.size() < 5 and life_frac > 0.85:
 				_add_voxel(Vector3(0, VOXEL_SIZE * 1.4, 0), 0.6)
-	var w: Node = null
-	if get_tree() != null:
-		w = get_tree().current_scene.get_node_or_null("SubViewport/World")
+	var w: Node = _clamp_world_node()
 	if w != null and w.has_method("clamp_xyz_in_tank"):
 		global_position = w.clamp_xyz_in_tank(global_position, 0.22, VOXEL_SIZE * 2.0)
 	# Senescence fade: in the last 15 % of life, scale shrinks slightly so
@@ -211,6 +206,18 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 		var fade_t: float = clampf((1.0 - life_frac) / 0.15, 0.0, 1.0)
 		scale = Vector3.ONE * (0.65 + 0.35 * fade_t)
 	return _age >= MAX_LIFE
+
+
+func _clamp_world_node() -> Node:
+	if _clamp_world != null and is_instance_valid(_clamp_world):
+		return _clamp_world
+	var p: Node = get_parent()
+	while p != null:
+		if p.has_method("clamp_xyz_in_tank"):
+			_clamp_world = p
+			return p
+		p = p.get_parent()
+	return null
 
 
 func _add_voxel(local_pos: Vector3, scale_factor: float,

@@ -21,7 +21,9 @@ for var in STEAM_APP_ID STEAM_DEPOT_WINDOWS STEAM_DEPOT_LINUX STEAM_DEPOT_MACOS;
 done
 
 STEAM_USERNAME="${STEAM_USERNAME:-mhsenkow}"
-STEAM_SETLIVE="${STEAM_SETLIVE-default}"
+# Empty setlive = draft upload (set live manually in Steamworks → Builds).
+# To publish in one step: STEAM_SETLIVE=default ./steam/upload.sh
+STEAM_SETLIVE="${STEAM_SETLIVE:-}"
 
 if ! command -v steamcmd >/dev/null 2>&1; then
 	echo "Install steamcmd first: https://partner.steamgames.com/doc/sdk/uploading" >&2
@@ -76,7 +78,7 @@ run_upload() {
 
 password="${STEAM_PASSWORD:-}"
 guard="${STEAM_GUARD_CODE:-}"
-echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft})..."
+echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft — set live in Steamworks})..."
 
 if [[ -z "$password" ]]; then
 	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME} (Cancel if using cached login):")"

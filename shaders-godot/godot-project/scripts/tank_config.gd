@@ -42,7 +42,7 @@ var integer_upscale: bool = false
 # rate falls below the target, then back up when there's headroom.
 # Lets a single TankConfig render the tank correctly across desktop +
 # mobile without manual tuning.
-var adaptive_quality: bool = false
+var adaptive_quality: bool = true
 var adaptive_quality_target_fps: int = 55
 # Snap the orbit camera to the world-space size of a single render pixel
 # so swimming creatures don't sub-pixel-jitter against the static
@@ -2521,7 +2521,7 @@ func reset_to_defaults() -> void:
 	follow_dof_near_softness = 1.6
 	follow_dof_focus_margin = 1.2
 	follow_dof_near_enabled = true
-	adaptive_quality = false
+	adaptive_quality = true
 	adaptive_quality_target_fps = 55
 	palette_enabled = true
 	fog_density = 0.02

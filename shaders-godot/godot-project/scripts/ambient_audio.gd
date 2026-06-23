@@ -9,7 +9,7 @@ extends Node
 const SAMPLE_RATE: int = 22050
 const DELAY_LEN: int = 4096
 const MAX_SAMPLES_PER_FRAME: int = 512
-const BUBBLE_MAX: int = 5
+const BUBBLE_MAX: int = 8
 const ENV_REFRESH_INTERVAL: float = 0.1
 const INV_SAMPLE_RATE: float = 1.0 / 22050.0
 
@@ -311,13 +311,13 @@ var _wow_lfo2: float = 0.0
 # Vinyl crackle layer — sparse pops + filtered noise floor.
 var _vinyl_noise_lpf: float = 0.0
 
-# ---- Aquatic ambience bed (the "tank sounds wet" layer) ----
-# Continuous filtered-noise wash + a faint filter-motor hum, mixed under the
-# music so the vivarium has a believable underwater room tone. Level tracks
-# aeration. Filter state kept per-channel for a touch of stereo width.
+# ---- Aquatic ambience bed (delicate tank fizz, not a noise wash) ----
+# Sparse micro-fizz gated by aeration / pearling; breathes slowly so it reads as
+# live water rather than a constant whoosh. Stereo width from per-channel LPF.
 var _water_lpf_l: float = 0.0
 var _water_lpf_r: float = 0.0
-var _water_hum_phase: float = 0.0
+var _water_fizz_lfo: float = 0.0
+var _swim_activity: float = 0.0
 # Per-fish presence pan in [-1, 1]: the follow camera biases the ambience
 # toward where the watched creature sits, so the Portal cam feels intimate.
 var _presence_pan: float = 0.0
@@ -1546,24 +1546,28 @@ func play_plant_sfx(intensity: float = 0.4) -> void:
 	_trigger_tom(lerpf(145.0, 110.0, intensity), 0.22 + intensity * 0.12)
 
 
-func play_bubble_sfx(intensity: float = 0.35) -> void:
+func play_bubble_sfx(intensity: float = 0.35, pan: float = 99.0) -> void:
 	if not _environment_enabled():
 		return
 	if _bubble_bursts.size() >= BUBBLE_MAX:
 		return
 	var aer: float = float(_smooth.get("aeration", 0.0))
 	var flow: float = float(_smooth.get("flow", 0.0))
-	# Soft noise chirp — lowpassed so aeration reads as fizz, not error beeps.
-	var start_hz: float = lerpf(280.0, 620.0, intensity + aer * 0.08)
-	var amp: float = lerpf(0.0035, 0.009, intensity)
+	var o2: float = clampf(float(_smooth.get("o2", 0.85)), 0.0, 1.2)
+	# Delicate pop — low chirp + airy tail, not a synth beep or wind wash.
+	var pearling: float = clampf((o2 - 0.88) * 4.0, 0.0, 1.0)
+	var start_hz: float = lerpf(165.0, 420.0, intensity + aer * 0.06 + pearling * 0.08)
+	var amp: float = lerpf(0.0014, 0.0042, intensity)
 	if _trance_bed_active():
-		amp *= 0.42
+		amp *= 0.38
+	var bubble_pan: float = pan if pan < 90.0 else lerpf(-0.55, 0.55, _seed_mix(int(_bubble_bursts.size() + 11)))
 	_bubble_bursts.append({
 		"phase": _seed_mix(int(_bubble_bursts.size() + 7)),
 		"pitch_hz": start_hz,
 		"env": 1.0,
-		"life": lerpf(0.035, 0.065, intensity + flow * 0.1),
+		"life": lerpf(0.022, 0.048, intensity + flow * 0.08),
 		"amp": amp,
+		"pan": bubble_pan,
 	})
 
 
@@ -1998,8 +2002,9 @@ func _apply_tape_wow(in_l: float, in_r: float) -> Vector2:
 	return Vector2(lerpf(in_l, out_l, mix), lerpf(in_r, out_r, mix))
 
 
-func _mix_bubble_bursts() -> float:
-	var out: float = 0.0
+func _mix_bubble_bursts() -> Vector2:
+	var out_l: float = 0.0
+	var out_r: float = 0.0
 	var n: int = _bubble_bursts.size()
 	for i in range(n - 1, -1, -1):
 		var b: Dictionary = _bubble_bursts[i]
@@ -2011,17 +2016,23 @@ func _mix_bubble_bursts() -> float:
 		var pitch_hz: float = float(b["pitch_hz"])
 		var phase: float = float(b["phase"])
 		var amp: float = float(b["amp"])
-		# Downward chirp + airy noise reads as a bubble, not a synth note.
-		pitch_hz = maxf(120.0, pitch_hz * 0.9992)
-		var chirp: float = sin(phase * TAU) * env * env
-		var airy: float = _noise_sample() * env * 0.18
-		out += (chirp * 0.22 + airy) * amp
+		var pan: float = float(b.get("pan", 0.0))
+		# Quick downward chirp + soft airy tail — a tiny surface pop, not a tone.
+		pitch_hz = maxf(90.0, pitch_hz * 0.9988)
+		var atk: float = smoothstep(0.0, 1.0, 1.0 - env)
+		var chirp: float = sin(phase * TAU) * env * env * atk
+		var airy: float = _noise_sample() * env * env * 0.11
+		var sample: float = (chirp * 0.16 + airy) * amp
+		var pan_l: float = 1.0 - maxf(pan, 0.0) * 0.42
+		var pan_r: float = 1.0 + minf(pan, 0.0) * 0.42
+		out_l += sample * pan_l
+		out_r += sample * pan_r
 		b["phase"] = fposmod(phase + pitch_hz * INV_SAMPLE_RATE, 1.0)
 		b["pitch_hz"] = pitch_hz
-		b["env"] = env * 0.991
+		b["env"] = env * 0.988
 		b["life"] = life - INV_SAMPLE_RATE
 		_bubble_bursts[i] = b
-	return out
+	return Vector2(out_l, out_r)
 
 
 # Per-frame output accumulators — written by _render_trance_streams each sample.
@@ -2335,16 +2346,26 @@ func _process(_dt: float) -> void:
 	if _environment_enabled() and _sim_ref != null:
 		var aeration: float = float(_smooth.get("aeration", 0.0))
 		var flow: float = float(_smooth.get("flow", 0.0))
-		var bubble_rate: float = (aeration * 0.55 + flow * 0.25) * _drive()
-		if bubble_rate > 0.04:
+		var o2: float = clampf(float(_smooth.get("o2", 0.85)), 0.0, 1.2)
+		var pearling: float = clampf((o2 - 0.86) * 3.5, 0.0, 1.0)
+		var activity: float = maxf(flow, _swim_activity)
+		var bubble_rate: float = (
+			aeration * 0.42 + flow * 0.18 + pearling * 0.22 + activity * 0.12) * _drive()
+		if bubble_rate > 0.025:
 			_bubble_t -= sim_dt
 			if _bubble_t <= 0.0:
-				var interval: float = lerpf(2.8, 0.28, clampf(bubble_rate, 0.0, 1.0))
-				interval *= lerpf(1.15, 0.85, _tank_vitality)
+				var interval: float = lerpf(5.5, 0.45, clampf(bubble_rate, 0.0, 1.0))
+				interval *= lerpf(1.25, 0.82, _tank_vitality)
 				if _trance_bed_active():
-					interval *= 1.65
+					interval *= 1.55
 				_bubble_t = interval
-				play_bubble_sfx(clampf(bubble_rate * 0.35 + aeration * 0.2, 0.15, 0.65))
+				var pop_i: float = clampf(
+					bubble_rate * 0.28 + aeration * 0.14 + pearling * 0.1, 0.1, 0.55)
+				play_bubble_sfx(pop_i)
+				# Aeration / pearling sometimes throws a tiny cluster instead of one pop.
+				if bubble_rate > 0.35 and randf() < aeration * 0.22 + pearling * 0.18:
+					play_bubble_sfx(pop_i * randf_range(0.65, 0.92), randf_range(-0.4, 0.4))
+	_swim_activity = lerpf(_swim_activity, 0.0, clampf(sim_dt * 1.6, 0.0, 0.4))
 
 	var user_volume: float = _user_volume()
 	# Apply same dynamic volume_db to all three streams. Bus-level volumes in
@@ -2362,7 +2383,7 @@ func _process(_dt: float) -> void:
 	if _player_synth != null:
 		_player_synth.volume_db = target_db
 	if _player_air != null:
-		_player_air.volume_db = target_db + 1.0   # events sit slightly hotter
+		_player_air.volume_db = target_db - 0.5   # air sits under music, not on top
 
 	# Periodically refresh the bus-level reverb damping from water temperature.
 	if Engine.get_process_frames() % 60 == 0:
@@ -2429,10 +2450,10 @@ func _process(_dt: float) -> void:
 		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
 		plinks = _plink_lpf
 
-		var bubbles: float = _mix_bubble_bursts()
+		var bubbles: Vector2 = _mix_bubble_bursts()
 		var event_vol: float = _cached_vol
-		_f_air_l = (plinks + bubbles) * event_vol
-		_f_air_r = (plinks + bubbles) * event_vol
+		_f_air_l = (plinks + bubbles.x) * event_vol
+		_f_air_r = (plinks + bubbles.y) * event_vol
 
 		# Ping-pong delay on the air bus (synth bed already has bus reverb).
 		if trance_on and delay_mix > 0.0:
@@ -2451,17 +2472,21 @@ func _process(_dt: float) -> void:
 			_f_air_r += vinyl * 0.78 + _noise_sample() * _cached_vinyl * 0.004
 
 		# ---- Aquatic ambience bed ----
-		# Soft lowpassed noise reads as water hiss / fine bubble fizz; a slow
-		# low sine adds the filter-motor hum. Level rises with aeration so a
-		# bubbler tank audibly fizzes. Subtle so it sits under the music.
-		var aeration_amb: float = float(_env.get("aeration", 0.0))
-		var amb_level: float = 0.010 + aeration_amb * 0.026
-		_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(1900.0))
-		_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(2100.0))
-		_water_hum_phase = fposmod(_water_hum_phase + 58.0 * INV_SAMPLE_RATE, 1.0)
-		var hum: float = sin(_water_hum_phase * TAU) * 0.28 * aeration_amb
-		_f_air_l += (_water_lpf_l + hum) * amb_level
-		_f_air_r += (_water_lpf_r + hum * 0.92) * amb_level
+		# Breathing micro-fizz only when the tank is actually gassing — no constant
+		# noise wash. Level tracks smoothed aeration + pearling so still tanks stay
+		# nearly silent apart from discrete pops above.
+		var aer_smooth: float = float(_smooth.get("aeration", 0.0))
+		var o2_amb: float = clampf(float(_smooth.get("o2", 0.85)), 0.0, 1.2)
+		var pearl_amb: float = clampf((o2_amb - 0.87) * 3.0, 0.0, 1.0)
+		var fizz_drive: float = maxf(aer_smooth - 0.06, 0.0) * 0.85 + pearl_amb * 0.35
+		if fizz_drive > 0.012:
+			_water_fizz_lfo = fposmod(_water_fizz_lfo + 0.38 * INV_SAMPLE_RATE, 1.0)
+			var breathe: float = 0.35 + 0.65 * (0.5 + 0.5 * sin(_water_fizz_lfo * TAU))
+			var amb_level: float = fizz_drive * breathe * 0.0032
+			_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(920.0))
+			_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(1080.0))
+			_f_air_l += (_water_lpf_l * 0.72 + _water_lpf_r * 0.08) * amb_level
+			_f_air_r += (_water_lpf_r * 0.72 + _water_lpf_l * 0.08) * amb_level
 
 		# Per-fish presence pan: bias the whole air bus toward the watched fish.
 		if _presence_pan != 0.0:
@@ -2696,4 +2721,9 @@ func play_aquarium_event_extended(event_name: String, species: String = "",
 func note_swim_activity(speed_0_1: float) -> void:
 	# Map 0..1 to a "flow" boost so the shaker layer reacts immediately rather
 	# than waiting for the smoothed env to catch up.
-	_smooth["flow"] = clampf(maxf(float(_smooth.get("flow", 0.0)), speed_0_1), 0.0, 1.0)
+	var act: float = clampf(speed_0_1, 0.0, 1.0)
+	_smooth["flow"] = clampf(maxf(float(_smooth.get("flow", 0.0)), act), 0.0, 1.0)
+	# Occasional delicate pops when creatures dart — reads as stirred water.
+	if act > 0.42 and _environment_enabled() and randf() < act * 0.09:
+		play_bubble_sfx(clampf(act * 0.22, 0.08, 0.28))
+	_swim_activity = lerpf(_swim_activity, act, 0.35)

@@ -769,9 +769,32 @@ func _ensure_shared_pearling_assets() -> void:
 	_shared_pearling_mesh_medium = medium_mesh
 
 
+func _configure_pearling_emitter(particles: GPUParticles3D) -> void:
+	_ensure_shared_pearling_assets()
+	var pm: ParticleProcessMaterial = _shared_pearling_material.duplicate()
+	pm.scale_min = randf_range(0.10, 0.18)
+	pm.scale_max = randf_range(0.22, 0.36)
+	particles.process_material = pm
+	var bubble_mesh: SphereMesh = _shared_pearling_mesh.duplicate()
+	var bubble_mat: ShaderMaterial = bubble_mesh.material.duplicate()
+	bubble_mat.set_shader_parameter("bubble_color", Color(
+		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity))
+	bubble_mesh.material = bubble_mat
+	particles.draw_pass_1 = bubble_mesh
+	particles.draw_passes = 1
+
+
 func _setup_pearling() -> void:
 	# Pearling = O2 micro-bubbles clinging to leaves in bright light.
 	if _pearling_particles != null or not _pearling_eligible:
+		return
+	var sim_driver: Node = _find_sim()
+	var w: Node = sim_driver.get_parent() if sim_driver != null else null
+	if w != null and w.has_method("claim_pearling_emitter"):
+		_pearling_particles = w.claim_pearling_emitter(self)
+		if _pearling_particles == null:
+			return
+		_configure_pearling_emitter(_pearling_particles)
 		return
 	_ensure_shared_pearling_assets()
 	_pearling_particles = GPUParticles3D.new()
@@ -785,20 +808,7 @@ func _setup_pearling() -> void:
 	_pearling_particles.lifetime = randf_range(3.4, 5.0)
 	_pearling_particles.local_coords = false
 	_pearling_particles.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
-	# Per-plant variation: duplicate assets so opacity/scale differ subtly.
-	var pm: ParticleProcessMaterial = _shared_pearling_material.duplicate()
-	pm.scale_min = randf_range(0.10, 0.18)
-	pm.scale_max = randf_range(0.22, 0.36)
-	_pearling_particles.process_material = pm
-	var bubble_mesh: SphereMesh = _shared_pearling_mesh.duplicate()
-	var bubble_mat: ShaderMaterial = bubble_mesh.material.duplicate()
-	bubble_mat.set_shader_parameter("bubble_color", Color(
-		randf_range(0.88, 0.96), randf_range(0.93, 0.99), 1.0, _pearling_opacity))
-	bubble_mesh.material = bubble_mat
-	_pearling_particles.draw_pass_1 = bubble_mesh
-	# Pre-register a second pass slot so _tick_pearling can enable medium
-	# bubbles without tripping set_draw_pass_mesh out-of-bounds errors.
-	_pearling_particles.draw_passes = 1
+	_configure_pearling_emitter(_pearling_particles)
 	add_child(_pearling_particles)
 
 
@@ -2629,6 +2639,9 @@ func _tick_pearling(_dt: float) -> void:
 			_pearling_particles.emitting = false
 			if _pearling_particles.draw_passes > 1:
 				_pearling_particles.draw_passes = 1
+		if w != null and w.has_method("release_pearling_emitter"):
+			w.release_pearling_emitter(self)
+		_pearling_particles = null
 
 
 # ---- Seeding ----

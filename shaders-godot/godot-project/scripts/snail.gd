@@ -657,7 +657,10 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	const OFF_PLANE_MAX: float = 1.5
 	var best: Node3D = null
 	var best_d2: float = 5.0 * 5.0
-	for w in sim.waste:
+	var waste_near: Array = sim.waste
+	if sim.has_method("query_waste_in_radius"):
+		waste_near = sim.query_waste_in_radius(global_position, 5.0)
+	for w in waste_near:
 		if not is_instance_valid(w):
 			continue
 		var to_w_pos: Vector3 = (w as Node3D).global_position - global_position
@@ -671,7 +674,10 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	# If no waste is found, check for algae. Snails love algae!
 	if best == null and sim.get("algae") != null:
 		best_d2 = 5.0 * 5.0
-		for a in sim.algae:
+		var algae_near: Array = sim.algae
+		if sim.has_method("query_algae_in_radius"):
+			algae_near = sim.query_algae_in_radius(global_position, 5.0)
+		for a in algae_near:
 			if not is_instance_valid(a):
 				continue
 			var to_a_pos: Vector3 = (a as Node3D).global_position - global_position
@@ -692,7 +698,10 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		lush_plant_gate = clampf(0.45 + (float(lush_biomass) - 250.0) / 500.0, 0.45, 0.85)
 	if best == null and sim.get("plants") != null and randf() < lush_plant_gate:
 		best_d2 = 2.8 * 2.8
-		for p in sim.plants:
+		var plants_near: Array = sim.plants
+		if sim.has_method("query_plants_in_radius"):
+			plants_near = sim.query_plants_in_radius(global_position, 2.8)
+		for p in plants_near:
 			if not is_instance_valid(p):
 				continue
 			if not p.has_method("nibble") or p.biomass() < 8:
@@ -728,7 +737,10 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 			# node (algae / plant / floater) from the typed waste array.
 			var nv_consumed: float = float(best.get("nutrient_value") if best.get("nutrient_value") != null else 0.1)
 			sim.waste.erase(best)
-			(best as Node3D).queue_free()
+			if sim.has_method("recycle_waste"):
+				sim.recycle_waste(best as WasteParticle)
+			else:
+				(best as Node3D).queue_free()
 			hunger = clampf(hunger - FEED_WASTE, 0.0, 1.0)
 			# Detritivore → biofilm feedback. The snail's rasping breaks
 			# the waste into bacteria-accessible fragments — biofilm grows
@@ -1179,8 +1191,16 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 			tangent = Vector3.RIGHT
 		crawl_dir = tangent.normalized()
 	var target_basis: Basis = Basis.looking_at(crawl_dir, up)
-	var current: Basis = transform.basis.orthonormalized()
+	if not target_basis.is_finite():
+		return
+	var current: Basis = transform.basis
+	if not current.is_finite():
+		transform.basis = target_basis
+		return
+	current = current.orthonormalized()
 	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
+	if not transform.is_finite():
+		transform.basis = target_basis
 
 
 var _av_cached: Node = null
@@ -1575,7 +1595,10 @@ func _check_immediate_predator_retract() -> void:
 	if predator_count_v != null and int(predator_count_v) == 0:
 		return
 	var self_pos: Vector3 = global_position
-	for f in sim.fish:
+	var nearby: Array = sim.fish
+	if sim.has_method("query_fish_in_radius"):
+		nearby = sim.query_fish_in_radius(self_pos, _IMMEDIATE_RETRACT_RADIUS_SQ)
+	for f in nearby:
 		if not is_instance_valid(f):
 			continue
 		var is_pred_v: Variant = f.get("snail_predator")
@@ -1601,7 +1624,10 @@ func _check_fish_hover_freeze() -> void:
 		_fish_hover_freeze = false
 		return
 	var self_pos: Vector3 = global_position
-	for f in sim.fish:
+	var nearby: Array = sim.fish
+	if sim.has_method("query_fish_in_radius"):
+		nearby = sim.query_fish_in_radius(self_pos, _HOVER_FREEZE_RADIUS_SQ)
+	for f in nearby:
 		if not is_instance_valid(f):
 			continue
 		# Only hovering fish (not zooming past) trigger the freeze.
@@ -1635,7 +1661,10 @@ func _check_predator_threat(dt: float) -> void:
 	var radius_sq: float = CLAMP_RADIUS * CLAMP_RADIUS
 	var nearest_threat: Node3D = null
 	var nearest_d2: float = INF
-	for f in sim.fish:
+	var nearby: Array = sim.fish
+	if sim.has_method("query_fish_in_radius"):
+		nearby = sim.query_fish_in_radius(global_position, radius_sq)
+	for f in nearby:
 		if not is_instance_valid(f):
 			continue
 		if not f.snail_predator:

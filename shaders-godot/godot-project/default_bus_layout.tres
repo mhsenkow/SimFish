@@ -36,12 +36,12 @@ dry = 0.78
 wet = 0.22
 
 [sub_resource type="AudioEffectReverb" id="rv_air"]
-predelay_msec = 28.0
-room_size = 0.85
-damping = 0.28
-hipass = 0.1
-dry = 0.55
-wet = 0.45
+predelay_msec = 22.0
+room_size = 0.62
+damping = 0.42
+hipass = 0.22
+dry = 0.72
+wet = 0.28
 
 [sub_resource type="AudioEffectDelay" id="dly_air"]
 dry = 0.85

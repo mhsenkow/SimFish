@@ -85,6 +85,20 @@ var _tiny_life_scalar_ttl: float = 0.0
 var _life_bounds_timer: float = 0.0
 const LIFE_BOUNDS_INTERVAL: float = 0.22
 
+# Coarse environment field — light penetration + warmth sampled on a 1 m grid
+# and refreshed ~4 Hz so hundreds of plant ticks don't each query floaters.
+const ENV_FIELD_CELL: float = 1.0
+const ENV_FIELD_REBUILD_S: float = 0.25
+var _env_field_t: float = 0.0
+var _env_light: Dictionary = {}
+var _env_warmth: Dictionary = {}
+var _env_field_ready: bool = false
+
+# Shared pearling emitter pool (replaces per-plant GPUParticles3D nodes).
+var _pearling_pool: Array[GPUParticles3D] = []
+var _pearling_pool_root: Node3D = null
+const PEARLING_POOL_SIZE: int = 22
+
 # Tank dimensions read from TankConfig at _ready so the user can resize.
 # Treated as plain vars (was const) so settings can change them.
 var TANK_HALF_W: float = 8.0
@@ -591,6 +605,7 @@ func _process(dt: float) -> void:
 	_maintain_tubifex_patches(sdt)
 	_maintain_mycelium_patches(sdt)
 	_maintain_biofilm_patches(sdt)
+	_refresh_environment_field(sdt)
 	_life_bounds_timer = maxf(0.0, _life_bounds_timer - sdt)
 	if _life_bounds_timer <= 0.0:
 		_life_bounds_timer = LIFE_BOUNDS_INTERVAL
@@ -872,12 +887,8 @@ func _process(dt: float) -> void:
 			if mat != null:
 				mat.set_shader_parameter("beam_color", ray_color)
 				mat.set_shader_parameter("falloff_exponent", exponent)
-		# Soft fish occluders: pick the 8 nearest fish to the camera and
-		# push their world positions + radii into the god_ray shader so
-		# beams visibly attenuate where a fish silhouette passes through.
-		_update_god_ray_occluders()
-		# Soft contact shadows: drop the lowest 8 fish onto the substrate.
-		_update_substrate_blob_shadows()
+		# Soft fish occluders + substrate blob shadows share one fish[] scan.
+		_update_fish_lighting_contributors()
 
 	# Floater drift + surface-plant sway are cosmetic and slow; run them on the
 	# 10 Hz ambient cadence with accumulated dt so motion looks identical.
@@ -1271,28 +1282,9 @@ func enforce_entity_in_tank(node: Node3D, margin: float = 0.25,
 func _enforce_all_life_bounds() -> void:
 	if sim == null:
 		return
-	for f in sim.fish:
-		if is_instance_valid(f) and f.get("_dying") != true \
-				and f.has_method("_reclamp_territory_to_tank"):
-			f._reclamp_territory_to_tank()
-	for s in sim.shrimp:
-		if is_instance_valid(s) and s.get("_dying") != true:
-			enforce_entity_in_tank(s, 0.22, 0.14)
-	if sim.has_method("_clamp_entity_to_bounds"):
-		for e in sim.eggs:
-			if is_instance_valid(e):
-				sim._clamp_entity_to_bounds(e, 0.22, 0.06)
-		for w_part in sim.waste:
-			if is_instance_valid(w_part):
-				sim._clamp_entity_to_bounds(w_part, 0.16, 0.03)
-		sim.ensure_snails_root()
-		if sim.snails_root != null:
-			for sn in sim.snails_root.get_children():
-				if is_instance_valid(sn) and sn is Node3D:
-					if sn.has_method("_reclamp_to_footprint"):
-						sn.call("_reclamp_to_footprint")
-					else:
-						sim._clamp_entity_to_bounds(sn as Node3D, 0.28, 0.06, 0.10)
+	# Fauna bounds (fish, shrimp, snails, eggs, waste) are enforced on the
+	# same cadence by sim_driver._enforce_all_fauna_in_tank — skip here to
+	# avoid walking the same arrays twice every ~0.22 s.
 	for a in sim.algae:
 		if is_instance_valid(a) and a is Node3D:
 			enforce_entity_in_tank(a as Node3D, 0.22, 0.12)
@@ -4342,13 +4334,25 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 # silhouette radii into every active god_ray material. Cheap: a partial
 # sort over fish[] capped at the slot count, run once per ambient tick.
 const _GOD_RAY_OCCLUDER_SLOTS: int = 8
+const _BLOB_SHADOW_SLOTS: int = 8
 var _occluder_buf: Array = []
+var _blob_buf: Array = []
 
 
-func _update_god_ray_occluders() -> void:
-	if _god_ray_materials.is_empty() or sim == null:
-		return
-	var cam: Camera3D = null
+func _insert_bounded_fish(buf: Array, fish: Node3D, sort_key: float, max_n: int) -> void:
+	var inserted: bool = false
+	for i in buf.size():
+		if sort_key < float(buf[i][1]):
+			buf.insert(i, [fish, sort_key])
+			inserted = true
+			break
+	if not inserted and buf.size() < max_n:
+		buf.append([fish, sort_key])
+	if buf.size() > max_n:
+		buf.resize(max_n)
+
+
+func _find_tank_camera() -> Camera3D:
 	var sv: Node = get_parent()
 	while sv != null:
 		if sv is SubViewport:
@@ -4359,101 +4363,72 @@ func _update_god_ray_occluders() -> void:
 			if c is Node3D:
 				var cn: Camera3D = (c as Node3D).get_node_or_null("Camera3D") as Camera3D
 				if cn != null:
-					cam = cn
-					break
-	if cam == null:
-		return
-	var cam_pos: Vector3 = cam.global_position
-	# Track top N by ascending camera distance via a small bounded list.
-	_occluder_buf.clear()
-	for f in sim.fish:
-		if not is_instance_valid(f):
-			continue
-		if f.get("_dying") == true:
-			continue
-		var d2: float = (f.global_position - cam_pos).length_squared()
-		# Insertion sort into the bounded buffer.
-		var inserted: bool = false
-		for i in _occluder_buf.size():
-			if d2 < float(_occluder_buf[i][1]):
-				_occluder_buf.insert(i, [f, d2])
-				inserted = true
-				break
-		if not inserted and _occluder_buf.size() < _GOD_RAY_OCCLUDER_SLOTS:
-			_occluder_buf.append([f, d2])
-		if _occluder_buf.size() > _GOD_RAY_OCCLUDER_SLOTS:
-			_occluder_buf.resize(_GOD_RAY_OCCLUDER_SLOTS)
-	# Build the 8-slot uniform. Empty slots use w=0 so the shader skips them.
-	var packed: Array[Vector4] = []
-	for i in _GOD_RAY_OCCLUDER_SLOTS:
-		if i < _occluder_buf.size():
-			var entry: Array = _occluder_buf[i]
-			var fish_node: Node3D = entry[0]
-			# Larger fish (adults) cast a slightly larger shaft. Adult
-			# voxel scale is roughly 0.1..0.3 — scale up to a soft sphere
-			# radius of 0.3..0.7 so the shaft reads as a fish-sized hole.
-			var radius: float = 0.4
-			var advoxv: Variant = fish_node.get("adult_voxel_scale")
-			if advoxv != null:
-				radius = clampf(float(advoxv) * 2.6, 0.25, 0.85)
-			packed.append(Vector4(
-				fish_node.global_position.x,
-				fish_node.global_position.y,
-				fish_node.global_position.z,
-				radius))
-		else:
-			packed.append(Vector4.ZERO)
-	for mat in _god_ray_materials:
-		if mat != null:
-			mat.set_shader_parameter("occluders", packed)
+					return cn
+	return null
 
 
-# Pick the 8 fish closest to the substrate bed and publish them as soft
-# blob-shadow casters so the floor darkens beneath them. Cheap: a bounded
-# insertion over fish[], reusing the occluder pattern. Fish far above the
-# bed are skipped (their shadow would be too faint to matter).
-var _blob_buf: Array = []
-
-
-func _update_substrate_blob_shadows() -> void:
+func _update_fish_lighting_contributors() -> void:
 	if sim == null:
 		return
-	_blob_buf.clear()
+	var need_god_rays: bool = not _god_ray_materials.is_empty()
+	var need_blobs: bool = true
+	if not need_god_rays and not need_blobs:
+		return
+	var cam: Camera3D = _find_tank_camera()
+	var cam_pos: Vector3 = cam.global_position if cam != null else Vector3.ZERO
+	var have_cam: bool = cam != null
 	var bed_y: float = sim.substrate_top_y
+	_occluder_buf.clear()
+	_blob_buf.clear()
 	for f in sim.fish:
 		if not is_instance_valid(f):
 			continue
 		if f.get("_dying") == true:
 			continue
-		var h: float = f.global_position.y - bed_y
-		if h < 0.0 or h > 4.5:
-			continue
-		var inserted: bool = false
-		for i in _blob_buf.size():
-			if h < float(_blob_buf[i][1]):
-				_blob_buf.insert(i, [f, h])
-				inserted = true
-				break
-		if not inserted and _blob_buf.size() < 8:
-			_blob_buf.append([f, h])
-		if _blob_buf.size() > 8:
-			_blob_buf.resize(8)
-	var packed: Array[Vector4] = []
-	for i in 8:
-		if i < _blob_buf.size():
-			var fish_node: Node3D = _blob_buf[i][0]
-			var radius: float = 0.4
-			var advoxv: Variant = fish_node.get("adult_voxel_scale")
-			if advoxv != null:
-				radius = clampf(float(advoxv) * 3.4, 0.3, 1.1)
-			packed.append(Vector4(
-				fish_node.global_position.x,
-				fish_node.global_position.y,
-				fish_node.global_position.z,
-				radius))
-		else:
-			packed.append(Vector4.ZERO)
-	VoxelMat.update_substrate_blob_shadows(packed)
+		if have_cam and need_god_rays:
+			var d2: float = (f.global_position - cam_pos).length_squared()
+			_insert_bounded_fish(_occluder_buf, f, d2, _GOD_RAY_OCCLUDER_SLOTS)
+		if need_blobs:
+			var h: float = f.global_position.y - bed_y
+			if h >= 0.0 and h <= 4.5:
+				_insert_bounded_fish(_blob_buf, f, h, _BLOB_SHADOW_SLOTS)
+	if need_god_rays:
+		var packed: Array[Vector4] = []
+		for i in _GOD_RAY_OCCLUDER_SLOTS:
+			if i < _occluder_buf.size():
+				var entry: Array = _occluder_buf[i]
+				var fish_node: Node3D = entry[0]
+				var radius: float = 0.4
+				var advoxv: Variant = fish_node.get("adult_voxel_scale")
+				if advoxv != null:
+					radius = clampf(float(advoxv) * 2.6, 0.25, 0.85)
+				packed.append(Vector4(
+					fish_node.global_position.x,
+					fish_node.global_position.y,
+					fish_node.global_position.z,
+					radius))
+			else:
+				packed.append(Vector4.ZERO)
+		for mat in _god_ray_materials:
+			if mat != null:
+				mat.set_shader_parameter("occluders", packed)
+	if need_blobs:
+		var blob_packed: Array[Vector4] = []
+		for i in _BLOB_SHADOW_SLOTS:
+			if i < _blob_buf.size():
+				var fish_node: Node3D = _blob_buf[i][0]
+				var radius: float = 0.4
+				var advoxv: Variant = fish_node.get("adult_voxel_scale")
+				if advoxv != null:
+					radius = clampf(float(advoxv) * 3.4, 0.3, 1.1)
+				blob_packed.append(Vector4(
+					fish_node.global_position.x,
+					fish_node.global_position.y,
+					fish_node.global_position.z,
+					radius))
+			else:
+				blob_packed.append(Vector4.ZERO)
+		VoxelMat.update_substrate_blob_shadows(blob_packed)
 
 
 func _spawn_floaters() -> void:
@@ -4948,6 +4923,60 @@ func floater_coverage() -> float:
 
 
 func light_penetration_at(world_pos: Vector3) -> float:
+	if _env_field_ready:
+		var cell := _env_cell(world_pos)
+		if _env_light.has(cell):
+			return float(_env_light[cell])
+	return _light_penetration_uncached(world_pos)
+
+
+func effective_warmth_at(world_pos: Vector3) -> float:
+	if _env_field_ready:
+		var cell := _env_cell(world_pos)
+		if _env_warmth.has(cell):
+			return float(_env_warmth[cell])
+	return _warmth_uncached(world_pos)
+
+
+func _env_cell(world_pos: Vector3) -> Vector2i:
+	return Vector2i(
+		int(floor(world_pos.x / ENV_FIELD_CELL)),
+		int(floor(world_pos.z / ENV_FIELD_CELL)))
+
+
+func _refresh_environment_field(sdt: float) -> void:
+	_env_field_t += sdt
+	if _env_field_t < ENV_FIELD_REBUILD_S and _env_field_ready:
+		return
+	_env_field_t = 0.0
+	_env_field_ready = true
+	_env_light.clear()
+	_env_warmth.clear()
+	var dl: float = 1.0
+	if sim != null and sim.has_method("daylight"):
+		dl = float(sim.daylight())
+	var heater_on: bool = true
+	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
+		heater_on = not not _cfg_node.heater_enabled
+	var sample_y: float = WATER_HEIGHT * 0.42
+	var x0: int = int(floor(-TANK_HALF_W / ENV_FIELD_CELL))
+	var x1: int = int(ceil(TANK_HALF_W / ENV_FIELD_CELL))
+	var z0: int = int(floor(-TANK_HALF_D / ENV_FIELD_CELL))
+	var z1: int = int(ceil(TANK_HALF_D / ENV_FIELD_CELL))
+	for ix in range(x0, x1 + 1):
+		for iz in range(z0, z1 + 1):
+			var wx: float = (float(ix) + 0.5) * ENV_FIELD_CELL
+			var wz: float = (float(iz) + 0.5) * ENV_FIELD_CELL
+			if not _is_inside_tank(wx, wz, 0.25):
+				continue
+			var cell := Vector2i(ix, iz)
+			var pos := Vector3(wx, sample_y, wz)
+			_env_light[cell] = _light_penetration_uncached(pos)
+			_env_warmth[cell] = WorldWaterVisuals.effective_warmth_at(
+				pos, sim, _cfg_node, _heater_world_pos, dl, heater_on)
+
+
+func _light_penetration_uncached(world_pos: Vector3) -> float:
 	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
 	var nearby: Array = query_floaters_in_radius(
 		world_pos, WorldWaterVisuals.LOCAL_SHADE_RADIUS, true)
@@ -4956,7 +4985,7 @@ func light_penetration_at(world_pos: Vector3) -> float:
 		local_shade, floater_coverage(), bloom, tannins)
 
 
-func effective_warmth_at(world_pos: Vector3) -> float:
+func _warmth_uncached(world_pos: Vector3) -> float:
 	var dl: float = 1.0
 	if sim != null and sim.has_method("daylight"):
 		dl = float(sim.daylight())
@@ -4965,6 +4994,61 @@ func effective_warmth_at(world_pos: Vector3) -> float:
 		heater_on = not not _cfg_node.heater_enabled
 	return WorldWaterVisuals.effective_warmth_at(
 		world_pos, sim, _cfg_node, _heater_world_pos, dl, heater_on)
+
+
+func _ensure_pearling_pool() -> void:
+	if _pearling_pool_root == null:
+		_pearling_pool_root = Node3D.new()
+		_pearling_pool_root.name = "PearlingPool"
+		add_child(_pearling_pool_root)
+	while _pearling_pool.size() < PEARLING_POOL_SIZE:
+		var p := GPUParticles3D.new()
+		p.emitting = false
+		p.amount = 6
+		p.lifetime = 4.0
+		p.local_coords = false
+		p.visible = false
+		p.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
+		_pearling_pool_root.add_child(p)
+		_pearling_pool.append(p)
+
+
+func _pearling_owner_of(emitter: GPUParticles3D) -> Variant:
+	if emitter.has_meta(&"pearling_owner"):
+		return emitter.get_meta(&"pearling_owner")
+	return null
+
+
+func claim_pearling_emitter(plant: Node3D) -> GPUParticles3D:
+	if plant == null:
+		return null
+	_ensure_pearling_pool()
+	for e in _pearling_pool:
+		if _pearling_owner_of(e) == plant:
+			e.visible = true
+			return e
+	for e in _pearling_pool:
+		var pool_owner: Variant = _pearling_owner_of(e)
+		if pool_owner == null or not is_instance_valid(pool_owner):
+			e.set_meta(&"pearling_owner", plant)
+			e.visible = true
+			if e.get_parent() != plant:
+				e.reparent(plant)
+			return e
+	return null
+
+
+func release_pearling_emitter(plant: Node3D) -> void:
+	if plant == null:
+		return
+	for e in _pearling_pool:
+		if _pearling_owner_of(e) == plant:
+			e.emitting = false
+			e.visible = false
+			e.remove_meta(&"pearling_owner")
+			if _pearling_pool_root != null and e.get_parent() != _pearling_pool_root:
+				e.reparent(_pearling_pool_root)
+			break
 
 
 func surface_warmth_at(world_pos: Vector3) -> float:

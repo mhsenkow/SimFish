@@ -125,7 +125,10 @@ func _process(dt: float) -> void:
 	if _emerged_t > 0.4 and sim != null and randf() < sdt * 0.15:
 		var best: Node3D = null
 		var best_d2: float = 0.5 * 0.5
-		for w in sim.waste:
+		var waste_near: Array = sim.waste
+		if sim.has_method("query_waste_in_radius"):
+			waste_near = sim.query_waste_in_radius(global_position, 0.5)
+		for w in waste_near:
 			if w == null or not is_instance_valid(w):
 				continue
 			var d2: float = (w.global_position - global_position).length_squared()
@@ -134,7 +137,10 @@ func _process(dt: float) -> void:
 				best = w
 		if best != null:
 			sim.waste.erase(best)
-			best.queue_free()
+			if sim.has_method("recycle_waste"):
+				sim.recycle_waste(best)
+			else:
+				best.queue_free()
 
 
 func to_save_dict() -> Dictionary:

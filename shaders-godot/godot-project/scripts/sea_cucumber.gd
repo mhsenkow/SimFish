@@ -148,13 +148,19 @@ func _consume_local_waste() -> void:
 		return
 	var consumed: int = 0
 	var radius2: float = FEED_RADIUS * FEED_RADIUS
-	for w in sim.waste:
+	var waste_near: Array = sim.waste
+	if sim.has_method("query_waste_in_radius"):
+		waste_near = sim.query_waste_in_radius(global_position, FEED_RADIUS)
+	for w in waste_near:
 		if w == null or not is_instance_valid(w):
 			continue
 		var d2: float = (w.global_position - global_position).length_squared()
 		if d2 < radius2:
 			sim.waste.erase(w)
-			w.queue_free()
+			if sim.has_method("recycle_waste"):
+				sim.recycle_waste(w)
+			else:
+				w.queue_free()
 			consumed += 1
 			if consumed >= 3:
 				break

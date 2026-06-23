@@ -259,6 +259,9 @@ func spawn_snail_bubble(pos: Vector3) -> void:
 	p.draw_pass_1 = bm
 	_world.add_child(p)
 	p.emitting = true
+	var audio := get_tree().current_scene.get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("play_bubble_sfx"):
+		audio.play_bubble_sfx(randf_range(0.1, 0.24), clampf((pos.x / maxf(float(_world.TANK_HALF_W), 0.1)), -1.0, 1.0))
 	get_tree().create_timer(1.5).timeout.connect(p.queue_free)
 
 

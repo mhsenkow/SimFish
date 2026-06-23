@@ -2231,14 +2231,9 @@ func _spawn_fry_trail_smear() -> void:
 	parent.add_child(mi)
 	mi.global_position = global_position
 	if heading.length_squared() > 0.001:
-		var d: Vector3 = heading
-		# Avoid look_at singularity when heading is straight up/down.
-		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.05, 0, 0)).normalized()
-		# look_at_from_position is the tree-safe variant — it works even
-		# if the node is just barely in the tree this frame and skips
-		# any extra global-basis math.
-		mi.look_at_from_position(global_position, global_position + d, Vector3.UP)
+		var d: Vector3 = heading.normalized()
+		var up := _look_up_for_direction(d)
+		mi.look_at_from_position(global_position, global_position + d, up)
 	const TRAIL_LIFETIME: float = 0.35
 	var tw := create_tween().set_parallel(true)
 	tw.tween_property(mi, "scale", Vector3(0.4, 0.4, 0.2), TRAIL_LIFETIME) \
@@ -3223,7 +3218,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var bias: Dictionary = sim.recent_feed_spot_bias(position, 16.0)
 			memory_bias = bias.get("offset", Vector3.ZERO)
 			memory_pull = float(bias.get("strength", 0.0))
-		for w in waste:
+		var waste_near: Array = waste
+		if sim != null and sim.has_method("query_waste_in_radius"):
+			waste_near = sim.query_waste_in_radius(position, 12.0)
+		for w in waste_near:
 			if not is_instance_valid(w):
 				continue
 			# Fish prefer fresh-fallen waste in mid-water, not settled.
@@ -3512,7 +3510,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var best_alga: Node3D = null
 			var best_alga_rank: float = 6.0
 			var best_alga_d2: float = 6.0
-			for a in algae_array:
+			var algae_near: Array = algae_array
+			if sim != null and sim.has_method("query_algae_in_radius"):
+				algae_near = sim.query_algae_in_radius(position, 2.5)
+			for a in algae_near:
 				if not is_instance_valid(a):
 					continue
 				var d2: float = (a.global_position - position).length_squared()
@@ -4876,6 +4877,22 @@ func _animate_death(dt: float) -> void:
 # multiple times per frame at high time_scale without the integration
 # blowing up. Reads target_velocity (set by the brain at 10 Hz), writes
 # heading + position + look_at + bank.
+func _look_up_for_direction(d: Vector3) -> Vector3:
+	if absf(d.normalized().dot(Vector3.UP)) > 0.95:
+		return Vector3.FORWARD
+	return Vector3.UP
+
+
+func _face_direction(d: Vector3) -> void:
+	if not d.is_finite() or d.length_squared() < 0.0001:
+		return
+	var dir := d.normalized()
+	var up := _look_up_for_direction(dir)
+	look_at(position + dir, up)
+	if not transform.is_finite():
+		transform.basis = Basis.looking_at(dir, up)
+
+
 func _motion_substep(dt: float) -> void:
 	# Decompose the brain's target into a desired direction + desired speed.
 	# Sifting fish (cory mid-graze) almost stop while the timer is active.
@@ -5055,68 +5072,74 @@ func _motion_substep(dt: float) -> void:
 	# nearly stopped the brain may flip target_velocity direction frame-to-
 	# frame and look_at would snap the fish around (read as "spinning"). ----
 	#
-	# Belt-and-suspenders: also guard global_position here. A non-finite
-	# position produces a non-finite look_at target even with a valid heading,
-	# and look_at with a NaN target silently corrupts the Transform3D basis,
+	# Belt-and-suspenders: guard position + basis here. A non-finite position
+	# produces a non-finite look_at target even with a valid heading, and
+	# look_at with a NaN target silently corrupts the Transform3D basis,
 	# which then propagates to every child MultiMeshInstance3D and floods the
-	# console with "instance_set_transform: !v.is_finite()" errors.
-	if not global_position.is_finite():
-		push_warning("[Fish] non-finite global_position detected; resetting to home_y.")
-		var _safe_y: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) else 2.5
-		global_position = Vector3(0.0, _safe_y, 0.0)
+	# console with "instance_set_transform: !v.is_finite()" errors. Checking
+	# only global_position misses a corrupted basis that still has a finite
+	# origin — children keep spamming until the basis is rebuilt.
+	if not global_position.is_finite() or not transform.is_finite():
+		push_warning("[Fish] non-finite motion transform detected; recovering from last yaw.")
+		if not global_position.is_finite():
+			var _safe_y: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) else 2.5
+			global_position = Vector3(0.0, _safe_y, 0.0)
 		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+		var recover_d: Vector3 = heading
+		if recover_d.is_finite():
+			var up := _look_up_for_direction(recover_d)
+			transform.basis = Basis.looking_at(recover_d.normalized(), up)
 	if speed > 0.04 and heading.length_squared() > 0.0001:
-		var d: Vector3 = heading
-		# Avoid look_at singularity when heading is straight up/down.
-		# Nudge by 0.05 (not 0.0001) so the resulting d is meaningfully
-		# off-axis — a sub-millimeter nudge can still confuse look_at on
-		# certain platforms.
-		if absf(d.dot(Vector3.UP)) > 0.95:
-			d = (d + Vector3(0.05, 0, 0)).normalized()
-		if d.is_finite():
-			look_at(position + d, Vector3.UP)
+		_face_direction(heading)
+
+	var do_body_anim: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
+		or sim.is_creature_visible_to_camera(self)
 
 	# ---- Banking into yaw turns ----
 	# Compute the world-space yaw of the heading on the XZ plane. The change
 	# in yaw between frames is the yaw rate; bank angle is proportional to it.
 	var current_yaw: float = atan2(heading.x, -heading.z)
-	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
+	if do_body_anim:
+		var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
+		var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
+		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
+		_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
+		if _bank_pivot != null:
+			_bank_pivot.rotation.z = _bank
+			# Sifting nose-down tilt. While _sift_timer > 0 we apply a pitch
+			# rotation around X so the fish's head points down at the
+			# substrate - the classic cory grazing pose. Lerp in + out for
+			# smoothness; courtship-display males ALSO tilt slightly for the
+			# parade swim.
+			var pitch_target: float = 0.0
+			if _sift_timer > 0.0:
+				pitch_target = 0.55
+			elif hunger > 0.5 and velocity.y < -0.12 and current_mode == Mode.FORAGE:
+				pitch_target = 0.34   # head-down: diving to forage at the bottom
+			elif current_mode == Mode.FORAGE and velocity.y > 0.12:
+				pitch_target = -0.18   # head-up: rising to surface-feed
+			elif _courtship_flare and sex == 0:
+				pitch_target = -0.14   # male: nose up for the parade display
+			elif partner != null and sex == 1:
+				# Female receptivity tilt: slight nose-down + look toward the
+				# courting male. Real females signal acceptance with a head-
+				# down "approach me" pose during the dance.
+				pitch_target = 0.05
+			elif maturity == MATURITY_SENESCENT:
+				# Old fish lose buoyancy control - nose tips downward as they
+				# drift toward the substrate, a recognisable "dying fish" pose
+				# before queue_free. Stronger tilt than the stress slump below.
+				pitch_target = 0.22
+			elif stress > 0.6:
+				# Chronic stress: shoulders-down body language. Subtle compared
+				# to sifting / dying so the player reads it as mood, not action.
+				pitch_target = 0.08
+			_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, pitch_target,
+				clampf(dt * 4.0, 0.0, 1.0))
 	_last_yaw = current_yaw
-	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
-	var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
-	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
-	if _bank_pivot != null:
-		_bank_pivot.rotation.z = _bank
-		# Sifting nose-down tilt. While _sift_timer > 0 we apply a pitch
-		# rotation around X so the fish's head points down at the
-		# substrate - the classic cory grazing pose. Lerp in + out for
-		# smoothness; courtship-display males ALSO tilt slightly for the
-		# parade swim.
-		var pitch_target: float = 0.0
-		if _sift_timer > 0.0:
-			pitch_target = 0.55
-		elif hunger > 0.5 and velocity.y < -0.12 and current_mode == Mode.FORAGE:
-			pitch_target = 0.34   # head-down: diving to forage at the bottom
-		elif current_mode == Mode.FORAGE and velocity.y > 0.12:
-			pitch_target = -0.18   # head-up: rising to surface-feed
-		elif _courtship_flare and sex == 0:
-			pitch_target = -0.14   # male: nose up for the parade display
-		elif partner != null and sex == 1:
-			# Female receptivity tilt: slight nose-down + look toward the
-			# courting male. Real females signal acceptance with a head-
-			# down "approach me" pose during the dance.
-			pitch_target = 0.05
-		elif maturity == MATURITY_SENESCENT:
-			# Old fish lose buoyancy control - nose tips downward as they
-			# drift toward the substrate, a recognisable "dying fish" pose
-			# before queue_free. Stronger tilt than the stress slump below.
-			pitch_target = 0.22
-		elif stress > 0.6:
-			# Chronic stress: shoulders-down body language. Subtle compared
-			# to sifting / dying so the player reads it as mood, not action.
-			pitch_target = 0.08
-		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, pitch_target,
-			clampf(dt * 4.0, 0.0, 1.0))
+
+	if not do_body_anim:
+		return
 
 	# ---- Swim animation ----
 	# Per-locomotion amplitudes + phase relationships. Real fish use very

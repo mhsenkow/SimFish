@@ -286,7 +286,8 @@ func _process(_dt: float) -> void:
 		return
 	var still_open: bool = false
 	if _active_tool == "aquascape":
-		still_open = _main.get("_aquascape_mode")
+		var aq: Variant = _main.get("_aquascape")
+		still_open = aq != null and bool(aq.is_active)
 	else:
 		var creator: Node = _main.get("creature_creator_panel")
 		still_open = creator != null and is_instance_valid(creator) and (creator as CanvasItem).visible

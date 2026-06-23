@@ -24,11 +24,12 @@ const SHEET_COUNT_MAX: int = 6
 const MAX_AGE_S: float = 240.0
 const WAVE_FREQ: float = 0.9
 const WAVE_AMP: float = 0.025
-
+const WAVE_INTERVAL: float = 0.1
 
 var sim: Node = null
 var _age: float = 0.0
 var _phase: float = 0.0
+var _wave_accum: float = 0.0
 # Each sheet is a per-instance entry in a single MultiMesh batch — one
 # draw call for the whole patch. We mirror the original per-sheet sway by
 # rewriting each handle's transform with its phase-offset rotation each
@@ -89,7 +90,12 @@ func _process(dt: float) -> void:
 		if sdt <= 0.0:
 			return
 	_age += sdt
-	_phase += sdt * WAVE_FREQ
+	_wave_accum += sdt
+	if _wave_accum < WAVE_INTERVAL:
+		return
+	var adt: float = _wave_accum
+	_wave_accum = 0.0
+	_phase += adt * WAVE_FREQ
 	# Tiny lateral sway in current flow — each sheet phase-offset by its
 	# index so the patch reads as multiple things waving slightly out of
 	# sync, not a single flat surface rocking together.

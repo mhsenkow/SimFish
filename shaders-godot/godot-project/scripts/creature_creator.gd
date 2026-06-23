@@ -1178,8 +1178,12 @@ func _process(dt: float) -> void:
 			_request_preview_frame()
 
 
+func _preview_viewport_ok() -> bool:
+	return _preview_viewport != null and is_instance_valid(_preview_viewport)
+
+
 func _resume_preview_rendering() -> void:
-	if _preview_viewport == null:
+	if not _preview_viewport_ok():
 		return
 	if _preview_viewport.get_parent() != self:
 		add_child(_preview_viewport)
@@ -1192,7 +1196,7 @@ func _resume_preview_rendering() -> void:
 
 
 func _pause_preview_rendering() -> void:
-	if _preview_viewport == null:
+	if not _preview_viewport_ok():
 		return
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if _preview_viewport.get_parent() == self:
@@ -1200,7 +1204,7 @@ func _pause_preview_rendering() -> void:
 
 
 func _request_preview_frame() -> void:
-	if _preview_viewport == null:
+	if not _preview_viewport_ok():
 		return
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 

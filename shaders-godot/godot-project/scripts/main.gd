@@ -20,6 +20,10 @@ const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
 
 @onready var sub_viewport: SubViewport = $SubViewport
 @onready var display: TextureRect = $Display
+# Internal-res post chain: 3D SubViewport → palette quantize at render size →
+# Display upscales the post output (cheap nearest blit, no fullscreen shader).
+var _post_viewport: SubViewport = null
+var _post_display: TextureRect = null
 @onready var camera: Camera3D = $SubViewport/World/Camera3D
 @onready var world: Node3D = $SubViewport/World
 @onready var settings_panel: PanelContainer = $SettingsPanel
@@ -801,8 +805,9 @@ func _is_touch_active() -> bool:
 func _ready() -> void:
 	# Apply render-config values BEFORE the SubViewport assigns its texture
 	# so the resolution change takes effect.
+	_ensure_post_pipeline()
 	_apply_render_config()
-	display.texture = sub_viewport.get_texture()
+	_wire_post_textures()
 	# Restore camera state if we saved it before a scene reload. Otherwise
 	# fall back to defaults set at declaration.
 	_restore_camera_state()
@@ -858,6 +863,8 @@ func _ready() -> void:
 		menu_button.pressed.connect(_on_back_to_menu)
 	_add_immersive_toggle_button()
 	_aquascape.setup(self, camera, world, aquascape_palette)
+	_aquascape.mode_changed.connect(_sync_viewport_update_mode)
+	_sync_viewport_update_mode(_aquascape.is_active)
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
@@ -974,6 +981,77 @@ func save_camera_state() -> void:
 	cfg.save_to_disk()
 
 
+func _quantize_material() -> ShaderMaterial:
+	if _post_display != null and _post_display.material is ShaderMaterial:
+		return _post_display.material as ShaderMaterial
+	if display != null and display.material is ShaderMaterial:
+		return display.material as ShaderMaterial
+	return null
+
+
+func _ensure_post_pipeline() -> void:
+	if is_instance_valid(_post_viewport) and is_instance_valid(_post_display):
+		return
+	_post_viewport = null
+	_post_display = null
+	if not is_instance_valid(sub_viewport):
+		return
+	_post_viewport = SubViewport.new()
+	_post_viewport.name = "PostViewport"
+	_post_viewport.transparent_bg = true
+	_post_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	add_child(_post_viewport)
+	_post_display = TextureRect.new()
+	_post_display.name = "PostDisplay"
+	_post_display.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_post_display.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_post_display.stretch_mode = TextureRect.STRETCH_SCALE
+	_post_display.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	if display.material is ShaderMaterial:
+		_post_display.material = display.material
+		display.material = null
+	_post_viewport.add_child(_post_display)
+
+
+func _wire_post_textures() -> void:
+	if not is_instance_valid(sub_viewport):
+		return
+	if is_instance_valid(_post_display):
+		_post_display.texture = sub_viewport.get_texture()
+	if is_instance_valid(_post_viewport) and display != null:
+		display.texture = _post_viewport.get_texture()
+	elif display != null:
+		display.texture = sub_viewport.get_texture()
+
+
+func _viewport_needs_live_render(aquascape_active: bool) -> bool:
+	if aquascape_active:
+		return true
+	if creature_creator_panel != null and creature_creator_panel.visible:
+		return true
+	# Keep the tank visible while the guided setup runs (sim paused, player stocking).
+	if walkthrough_overlay != null and walkthrough_overlay.visible:
+		return true
+	return false
+
+
+func _sync_viewport_update_mode(active: bool) -> void:
+	if not is_instance_valid(sub_viewport):
+		return
+	var live: bool = _viewport_needs_live_render(active)
+	var mode := SubViewport.UPDATE_ALWAYS
+	if not live and _sim != null and float(_sim.time_scale) <= 0.0:
+		mode = SubViewport.UPDATE_DISABLED
+	sub_viewport.render_target_update_mode = mode
+	if is_instance_valid(_post_viewport):
+		_post_viewport.render_target_update_mode = mode
+
+
+func _exit_tree() -> void:
+	if _aquascape.mode_changed.is_connected(_sync_viewport_update_mode):
+		_aquascape.mode_changed.disconnect(_sync_viewport_update_mode)
+
+
 func _apply_render_config() -> void:
 	# Read TankConfig render settings and apply them to the SubViewport,
 	# the palette-quantize shader on the Display TextureRect, and the camera.
@@ -987,12 +1065,17 @@ func _apply_render_config() -> void:
 		render_w = oriented.x
 		render_h = oriented.y
 	# SubViewport size.
-	sub_viewport.size = Vector2i(render_w, render_h)
+	if is_instance_valid(sub_viewport):
+		sub_viewport.size = Vector2i(render_w, render_h)
+	if is_instance_valid(_post_viewport):
+		_post_viewport.size = Vector2i(render_w, render_h)
+		_wire_post_textures()
 	# MSAA: 0=disabled, 1=2x, 2=4x, 3=8x (matches Viewport.MSAA enum).
-	sub_viewport.msaa_3d = int(cfg.msaa) as Viewport.MSAA
-	# Palette quantize shader uniforms.
-	if display.material is ShaderMaterial:
-		var sm: ShaderMaterial = display.material
+	if is_instance_valid(sub_viewport):
+		sub_viewport.msaa_3d = int(cfg.msaa) as Viewport.MSAA
+	# Palette quantize shader uniforms (runs on the internal-res post pass).
+	var sm := _quantize_material()
+	if sm != null:
 		# Set dither strength + internal resolution.
 		sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
 		sm.set_shader_parameter("internal_resolution",
@@ -1014,6 +1097,7 @@ func _apply_render_config() -> void:
 		# tannin colors, a reef through bright alkaline blues, planted through
 		# the verdant default. Built at runtime so no extra PNGs are needed.
 		_apply_biotope_palette(sm, cfg)
+		_apply_adaptive_shader_cost()
 	# Integer upscale: lock the display rect to an integer multiple of the
 	# SubViewport size, centered, letterboxed with the parent control's
 	# background. Off → full-rect anchored display (default).
@@ -1137,8 +1221,8 @@ func apply_material_palette() -> void:
 		if wm is ShaderMaterial:
 			water_mat = wm
 	VoxelMat.apply_global_palette(cfg, water_mat)
-	if display != null and display.material is ShaderMaterial:
-		var sm: ShaderMaterial = display.material
+	var sm := _quantize_material()
+	if sm != null:
 		sm.set_shader_parameter("material_hue_shift", float(cfg.material_hue_shift))
 		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
 		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
@@ -1643,6 +1727,7 @@ func _set_time_scale(s: float) -> void:
 		return
 	_sim.time_scale = s
 	_saved_time_scale = s
+	_sync_viewport_update_mode(_aquascape.is_active)
 	_haptic(12)
 
 
@@ -2835,6 +2920,7 @@ func wt_pause_sim(on: bool) -> void:
 		_sim.time_scale = 0.0
 	else:
 		_sim.time_scale = _wt_saved_time_scale
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func wt_set_aquascape(on: bool) -> void:
@@ -2845,12 +2931,14 @@ func wt_set_aquascape(on: bool) -> void:
 func wt_open_creator(kind_str: String) -> void:
 	if creature_creator_panel != null and creature_creator_panel.has_method("open_to_kind"):
 		creature_creator_panel.open_to_kind(kind_str)
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func wt_close_creator() -> void:
 	if creature_creator_panel != null and creature_creator_panel.visible \
 			and creature_creator_panel.has_method("close"):
 		creature_creator_panel.close()
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func wt_counts() -> Dictionary:
@@ -3768,6 +3856,39 @@ const _ADAPTIVE_RES_TIERS: Array = [
 	{"w": 768, "h": 432},
 	{"w": 1024, "h": 576},
 ]
+# After resolution hits the floor, step shader cost down instead of thrashing.
+var _adaptive_shader_cost: int = 0
+
+
+func _apply_adaptive_shader_cost() -> void:
+	var sm := _quantize_material()
+	var cfg := get_node_or_null("/root/TankConfig")
+	if sm == null or cfg == null:
+		return
+	sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
+	sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
+	sm.set_shader_parameter("region_aware_dither",
+		1.0 if cfg.dither_region_aware else 0.0)
+	sm.set_shader_parameter("palette_bank_lock",
+		1.0 if cfg.palette_bank_lock else 0.0)
+	sm.set_shader_parameter("bloom_strength", float(cfg.get("pp_bloom_strength")))
+	sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
+	if _adaptive_shader_cost >= 1:
+		sm.set_shader_parameter("outline_strength", 0.0)
+		sm.set_shader_parameter("crt_strength", 0.0)
+	if _adaptive_shader_cost >= 2:
+		sm.set_shader_parameter("region_aware_dither", 0.0)
+		sm.set_shader_parameter("palette_bank_lock", 0.0)
+	if _adaptive_shader_cost >= 3:
+		sm.set_shader_parameter("bloom_strength", 0.0)
+		sm.set_shader_parameter("dither_strength", 0.4)
+	if _sim != null:
+		if _adaptive_shader_cost >= 3:
+			_sim.pearling_budget_scale = 0.0
+		elif _adaptive_shader_cost >= 2:
+			_sim.pearling_budget_scale = 0.45
+		else:
+			_sim.pearling_budget_scale = 1.0
 
 
 func _adaptive_quality_tick(dt: float) -> void:
@@ -3799,20 +3920,32 @@ func _adaptive_quality_tick(dt: float) -> void:
 	if cur_idx < 0:
 		return  # custom resolution; don't auto-adjust
 	# Step down if we're missing target by >10%.
-	if fps < target_fps * 0.90 and cur_idx > 0:
-		var nt: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx - 1]
-		cfg.set("render_width", int(nt["w"]))
-		cfg.set("render_height", int(nt["h"]))
-		_apply_render_config()
-		_frame_history.fill(0.0)  # invalidate history so next decision uses fresh frames
-		return
+	if fps < target_fps * 0.90:
+		if cur_idx > 0:
+			var nt: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx - 1]
+			cfg.set("render_width", int(nt["w"]))
+			cfg.set("render_height", int(nt["h"]))
+			_apply_render_config()
+			_frame_history.fill(0.0)
+			return
+		if _adaptive_shader_cost < 3:
+			_adaptive_shader_cost += 1
+			_apply_adaptive_shader_cost()
+			_frame_history.fill(0.0)
+			return
 	# Step up if we have >25% headroom and could increase quality.
-	if fps > target_fps * 1.25 and cur_idx < _ADAPTIVE_RES_TIERS.size() - 1:
-		var nt2: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx + 1]
-		cfg.set("render_width", int(nt2["w"]))
-		cfg.set("render_height", int(nt2["h"]))
-		_apply_render_config()
-		_frame_history.fill(0.0)
+	if fps > target_fps * 1.25:
+		if _adaptive_shader_cost > 0:
+			_adaptive_shader_cost -= 1
+			_apply_adaptive_shader_cost()
+			_frame_history.fill(0.0)
+			return
+		if cur_idx < _ADAPTIVE_RES_TIERS.size() - 1:
+			var nt2: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx + 1]
+			cfg.set("render_width", int(nt2["w"]))
+			cfg.set("render_height", int(nt2["h"]))
+			_apply_render_config()
+			_frame_history.fill(0.0)
 
 
 # Update the palette_quantize shader's `palette_tint` uniform based on
@@ -3835,7 +3968,8 @@ const _TOD_NIGHT: Vector3 = Vector3(0.38, 0.42, 0.52)
 
 
 func _update_palette_tod_tint() -> void:
-	if display == null or not (display.material is ShaderMaterial):
+	var mat := _quantize_material()
+	if mat == null:
 		return
 	var phase: float = 0.25  # default to midday if no sim yet
 	if _sim != null and _sim.get("day_phase") != null:
@@ -3890,7 +4024,6 @@ func _update_palette_tod_tint() -> void:
 		# silhouettes are still readable enough to find the rail buttons.
 		if not bool(cfg.light_master_enabled):
 			t = Vector3(0.04, 0.04, 0.07)
-	var mat: ShaderMaterial = display.material as ShaderMaterial
 	mat.set_shader_parameter("palette_tint", t)
 	# Drive the day/night palette blend off the same daylight curve the
 	# sim uses for photosynthesis. Smoothstep on top of the cosine bell so
@@ -4424,11 +4557,13 @@ func _ui_toggle_side(id: String) -> void:
 func _ui_toggle_modal(id: String) -> void:
 	_ui_panels.toggle_modal(id)
 	_sync_rail_toggles()
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func _on_modal_closed(id: String) -> void:
 	_ui_panels.notify_modal_closed(id)
 	_sync_rail_toggles()
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func _ui_open_side(id: String) -> void:
@@ -6601,8 +6736,11 @@ func _apply_immersive_mode() -> void:
 		controls_hint.visible = not _immersive_mode
 	if _mobile_hud != null and _mobile_hud.visible:
 		_mobile_hud.visible = not _immersive_mode
-	if aquascape_palette != null and _immersive_mode:
-		aquascape_palette.visible = false
+	if aquascape_palette != null:
+		if _immersive_mode:
+			aquascape_palette.visible = false
+		elif _aquascape.is_active:
+			aquascape_palette.visible = true
 	if portal_container != null and _immersive_mode:
 		portal_container.visible = false
 	if _immersive_mode:
@@ -6816,6 +6954,7 @@ func _on_focus_out() -> void:
 		_focus_saved_time_scale = ts
 		_sim.time_scale = 0.0
 		_focus_paused = true
+		_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func _on_focus_in() -> void:
@@ -6823,6 +6962,7 @@ func _on_focus_in() -> void:
 		return
 	_sim.time_scale = _focus_saved_time_scale
 	_focus_paused = false
+	_sync_viewport_update_mode(_aquascape.is_active)
 
 
 func _persist_last_quit_unix() -> void:
@@ -6937,12 +7077,12 @@ func _apply_fps_cap() -> void:
 # isn't ready yet (e.g. called before _apply_render_config in _ready).
 func _apply_battery_saver_visuals() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or display == null:
+	if cfg == null:
+		return
+	var sm := _quantize_material()
+	if sm == null:
 		return
 	var saver: bool = bool(cfg.get("battery_saver"))
-	if not (display.material is ShaderMaterial):
-		return
-	var sm: ShaderMaterial = display.material
 	if saver:
 		sm.set_shader_parameter("bloom_strength", 0.0)
 		sm.set_shader_parameter("region_aware_dither", 0.0)

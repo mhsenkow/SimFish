@@ -5,7 +5,9 @@
 #
 # Env:
 #   BALANCE_DAYS=5          sim-days per case (default 3)
-#   BALANCE_PRESET=reef     run a single preset slug
+#   BALANCE_MODE=presets    presets (default) | scenarios | all
+#   BALANCE_PRESET=reef     run a single preset slug (presets mode)
+#   BALANCE_SCENARIO=walstad run a single scenario id (scenarios mode)
 #   BALANCE_SEED=0xCAFE     RNG seed (default 0xBA1A4CE)
 #   BALANCE_VERBOSE=1       print per-sample lines
 
@@ -129,6 +131,44 @@ var _days: float = 3.0
 var _seed: int = 0xBA1A4CE
 var _tick_dt: float = DEFAULT_TICK_DT
 var _only_preset: String = ""
+var _only_scenario: String = ""
+var _mode: String = "presets"
+
+
+func _scenario_cases() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for sc in ScenarioPicker.SCENARIOS:
+		if bool(sc.get("is_wildcard", false)):
+			continue
+		var config: Dictionary = sc.get("config", {})
+		var preset: String = String(config.get("tank_preset", ""))
+		var stocking: Dictionary = TankConfig.TANK_PRESETS.get(preset, {}).get("stocking", {})
+		var fish_n: int = 0
+		for k in stocking.keys():
+			if String(k) != "shrimp":
+				fish_n += int(stocking[k])
+		out.append({
+			"scenario_id": String(sc.id),
+			"label": String(sc.name),
+			"scenario": sc,
+			"preset": preset,
+			"is_reef": String(config.get("substrate_type", "")) == "ocean_sand",
+			"fishless": fish_n == 0,
+		})
+	return out
+
+
+func _cases_for_mode() -> Array[Dictionary]:
+	match _mode:
+		"scenarios":
+			return _scenario_cases()
+		"all":
+			var merged: Array[Dictionary] = []
+			merged.append_array(CASES)
+			merged.append_array(_scenario_cases())
+			return merged
+		_:
+			return CASES
 
 
 func _ready() -> void:
@@ -144,20 +184,23 @@ func _ready() -> void:
 		return
 	var failed: Array[String] = []
 	var ran: int = 0
-	for case in CASES:
-		var preset: String = String(case.preset)
+	for case in _cases_for_mode():
+		var preset: String = String(case.get("preset", case.get("scenario_id", "")))
 		if _only_preset != "" and preset != _only_preset:
+			continue
+		if _only_scenario != "" and String(case.get("scenario_id", "")) != _only_scenario:
 			continue
 		ran += 1
 		print("[balance] --- %s (%s) %.1f sim-days seed=%d ---" % [
 			case.label, preset, _days, _seed])
 		var report: BalanceReport = await _run_case(cfg, saves, case)
+		var case_key: String = String(case.get("scenario_id", case.get("preset", preset)))
 		if report.failures.is_empty():
 			var end_day: float = 0.0
 			if not report.samples.is_empty():
 				end_day = report.samples[-1].sim_day
 			print("[balance] PASS %s | age %.1f->%.1f d n=%d O2 min/mean=%.2f/%.2f fauna %d->%d bio %d->%d floaters %.0f%% bleach %.2f" % [
-				preset,
+				case_key,
 				report.samples[0].sim_day if not report.samples.is_empty() else 0.0,
 				end_day,
 				report.samples.size(),
@@ -172,14 +215,15 @@ func _ready() -> void:
 			])
 		else:
 			for f in report.failures:
-				push_error("[balance] FAIL %s: %s" % [preset, f])
-			failed.append(preset)
+				push_error("[balance] FAIL %s: %s" % [case_key, f])
+			failed.append(case_key)
 	if ran == 0:
-		push_error("[balance] no cases matched BALANCE_PRESET=%s" % _only_preset)
+		push_error("[balance] no cases matched mode=%s preset=%s scenario=%s" % [
+			_mode, _only_preset, _only_scenario])
 		get_tree().quit(1)
 		return
 	if failed.is_empty():
-		print("[balance] OK — %d preset(s) stable for %.1f sim-days each" % [ran, _days])
+		print("[balance] OK — %d case(s) stable for %.1f sim-days each" % [ran, _days])
 		get_tree().quit(0)
 	else:
 		print("[balance] FAILED presets: %s" % ", ".join(failed))
@@ -194,6 +238,10 @@ func _read_env() -> void:
 	if dt_env != "" and dt_env.is_valid_float():
 		_tick_dt = maxf(0.1, float(dt_env))
 	_only_preset = OS.get_environment("BALANCE_PRESET")
+	_only_scenario = OS.get_environment("BALANCE_SCENARIO")
+	var mode_env: String = OS.get_environment("BALANCE_MODE")
+	if mode_env != "":
+		_mode = mode_env
 	var seed_env: String = OS.get_environment("BALANCE_SEED")
 	if seed_env != "":
 		_seed = seed_env.hash() if not seed_env.is_valid_int() else int(seed_env)
@@ -202,27 +250,32 @@ func _read_env() -> void:
 
 func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 	var report := BalanceReport.new()
-	report.preset = String(case.preset)
+	report.preset = String(case.get("scenario_id", case.get("preset", "")))
 	report.label = String(case.label)
 	report.duration_s = _days * _sim_day_s
 
 	if saves != null and saves.has_method("clear_active_state"):
 		saves.clear_active_state()
 	cfg.reset_to_defaults()
-	cfg.tank_preset = String(case.preset)
-	cfg.substrate_type = String(case.get("substrate", "aquasoil"))
-	cfg.cycle_start_mode = OS.get_environment("BALANCE_CYCLE")
-	if cfg.cycle_start_mode == "":
-		cfg.cycle_start_mode = "established"
-	cfg.start_matured = (cfg.cycle_start_mode == "established")
+	if case.has("scenario"):
+		ScenarioPicker.apply_scenario(case.scenario, cfg)
+	else:
+		cfg.tank_preset = String(case.preset)
+		cfg.substrate_type = String(case.get("substrate", "aquasoil"))
+		var cycle_override: String = OS.get_environment("BALANCE_CYCLE")
+		if cycle_override != "":
+			cfg.cycle_start_mode = cycle_override
+		else:
+			cfg.cycle_start_mode = "established"
+		cfg.start_matured = (cfg.cycle_start_mode == "established")
+		cfg.aeration_type = "disk"
+		cfg.aeration_strength = 0.6
+		if bool(case.get("is_reef", false)):
+			cfg.light_warmth = 0.52
 	cfg.auto_respawn_fauna = true
 	cfg.auto_feed_fauna = false
 	cfg.day_cycle_enabled = true
 	cfg.day_length_s = 360.0
-	cfg.aeration_type = "disk"
-	cfg.aeration_strength = 0.6
-	if bool(case.get("is_reef", false)):
-		cfg.light_warmth = 0.52
 
 	var world: Node3D = _world_script.new() as Node3D
 	world.name = "BalanceWorld_" + report.preset
@@ -231,7 +284,7 @@ func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 	if world.sim != null:
 		world.sim.set_physics_process(false)
 
-	var ready: bool = await _wait_world_ready(world, 360)
+	var ready: bool = await _wait_world_ready(world, 1200)
 	if not ready:
 		report.failures.append("world failed to finish stocking within frame budget")
 		world.queue_free()
@@ -260,17 +313,17 @@ func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 func _wait_world_ready(world: Node3D, max_frames: int) -> bool:
 	for _i in max_frames:
 		await get_tree().process_frame
+		if not is_instance_valid(world):
+			return false
+		if not world.is_node_ready():
+			continue
 		var sim: Node = world.get("sim")
 		if sim == null:
 			continue
 		var has_flora: bool = sim.plants.size() > 0
 		var has_fauna: bool = sim.fish.size() > 0 or sim.shrimp.size() > 0
-		var salt: bool = false
-		if world.get("_active_substrate_profile") != null:
-			salt = bool(world._active_substrate_profile.get("is_saltwater", false))
-		if (has_flora or has_fauna) and world.get_child_count() >= 4:
-			# Extra frames so async stocking (_spawn_initial_fish etc.) finishes.
-			for _j in 30:
+		if has_flora or has_fauna:
+			for _j in 10:
 				await get_tree().process_frame
 			return true
 	return false

@@ -28,6 +28,7 @@ var _preview: MeshInstance3D
 var _placed: Array[Node3D] = []
 var _undo_stack: Array = []
 var _saved_time_scale: float = 1.0
+var _paused_sim_for_aquascape: bool = false
 var _wood_drag: Node3D
 var _wood_drag_y_offset: float = 0.0
 var _wood_drag_last_hit: Vector3 = INVALID_HIT
@@ -49,9 +50,13 @@ func toggle() -> void:
 	is_active = not is_active
 	var sim: Node = _host.get("_sim") if _host != null else null
 	if is_active:
+		_paused_sim_for_aquascape = false
 		if sim != null:
-			_saved_time_scale = float(sim.time_scale)
-			sim.time_scale = 0.0
+			var cur: float = float(sim.time_scale)
+			if cur > 0.0:
+				_saved_time_scale = cur
+				sim.time_scale = 0.0
+				_paused_sim_for_aquascape = true
 		if _host != null and _host.has_method("clear_follow"):
 			_host.call("clear_follow")
 		_ensure_preview()
@@ -59,8 +64,9 @@ func toggle() -> void:
 			_palette.visible = true
 		_refresh_tool_buttons()
 	else:
-		if sim != null:
+		if sim != null and _paused_sim_for_aquascape:
 			sim.time_scale = _saved_time_scale
+		_paused_sim_for_aquascape = false
 		if _preview != null:
 			_preview.visible = false
 		if _palette != null:
@@ -68,7 +74,7 @@ func toggle() -> void:
 	var mobile: Node = _host.get("_mobile_hud") if _host != null else null
 	if mobile != null and mobile.has_method("set_aquascape_mode"):
 		mobile.set_aquascape_mode(is_active)
-	if _host.has_method("_sync_rail_toggles"):
+	if _host != null and _host.has_method("_sync_rail_toggles"):
 		_host.call("_sync_rail_toggles")
 	mode_changed.emit(is_active)
 

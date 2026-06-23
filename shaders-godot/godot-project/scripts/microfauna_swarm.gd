@@ -106,6 +106,9 @@ func spawn_at(pos: Vector3, morph: int = -1) -> void:
 		_alive_count += 1
 
 
+var _last_written_alive: int = -1
+
+
 func _process(dt: float) -> void:
 	if sim != null:
 		dt *= sim.time_scale
@@ -123,7 +126,9 @@ func _process(dt: float) -> void:
 	# old set_swarm_presence(fill) behaviour) — computed here, no per-node calls.
 	var fill: float = clampf(float(_alive_count) / maxf(1.0, float(_target)), 0.0, 1.0)
 	presence = lerpf(1.0, 1.85, fill)
-	_write_instances()
+	if steps > 0 or _alive_count != _last_written_alive:
+		_write_instances()
+		_last_written_alive = _alive_count
 
 
 func _step(dt: float) -> void:
@@ -240,9 +245,14 @@ func _write_instances() -> void:
 		var idx: int = counters[m]
 		if idx >= _mm[m].instance_count:
 			_mm[m].instance_count = _mm[m].instance_count * 2
+		if not p.pos.is_finite():
+			continue
 		var s: float = p.scale * presence
 		var b := Basis().scaled(Vector3(s, s, s)).rotated(Vector3.UP, sin(p.bob * 0.6) * 0.30)
-		_mm[m].set_instance_transform(idx, Transform3D(b, p.pos))
+		var xform := Transform3D(b, p.pos)
+		if not xform.is_finite():
+			continue
+		_mm[m].set_instance_transform(idx, xform)
 		_mm[m].set_instance_color(idx, p.color)
 		counters[m] = idx + 1
 	for m in MORPHS:

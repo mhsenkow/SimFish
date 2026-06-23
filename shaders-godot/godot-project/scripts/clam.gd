@@ -248,7 +248,10 @@ func _try_consume_waste(waste_list: Array, substrate: SubstrateGrid) -> void:
 	# Babies have a smaller effective reach.
 	if maturity == MATURITY_BABY:
 		best_d2 *= 0.45
-	for w in waste_list:
+	var candidates: Array = waste_list
+	if sim != null and sim.has_method("query_waste_in_radius"):
+		candidates = sim.query_waste_in_radius(here, filter_radius)
+	for w in candidates:
 		if w == null or not is_instance_valid(w):
 			continue
 		var d2: float = (w.global_position - here).length_squared()
@@ -259,7 +262,10 @@ func _try_consume_waste(waste_list: Array, substrate: SubstrateGrid) -> void:
 		return
 	if sim != null and sim.waste != null:
 		sim.waste.erase(best)
-	best.queue_free()
+	if sim != null and sim.has_method("recycle_waste"):
+		sim.recycle_waste(best)
+	else:
+		best.queue_free()
 	energy = clampf(energy + FEED_ENERGY_GAIN, 0.0, 1.0)
 	# Filtered organics return to the substrate as bound nutrients.
 	if substrate != null:

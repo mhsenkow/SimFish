@@ -687,7 +687,7 @@ func _is_shelter_plant(p: Plant) -> bool:
 func _pick_shelter_plant(plants: Array) -> Plant:
 	var best: Plant = null
 	var best_score: float = INF
-	for p in plants:
+	for p in _nearby_plants(plants, SHELTER_SCAN_RADIUS):
 		if not (p is Plant):
 			continue
 		var pl: Plant = p
@@ -702,6 +702,24 @@ func _pick_shelter_plant(plants: Array) -> Plant:
 			best_score = score
 			best = pl
 	return best
+
+
+func _nearby_plants(plants: Array, radius: float) -> Array:
+	if sim != null and sim.has_method("query_plants_in_radius"):
+		return sim.query_plants_in_radius(position, radius)
+	return plants
+
+
+func _nearby_algae(algae_array: Array, radius: float) -> Array:
+	if sim != null and sim.has_method("query_algae_in_radius"):
+		return sim.query_algae_in_radius(position, radius)
+	return algae_array
+
+
+func _nearby_fish(radius_sq: float) -> Array:
+	if sim != null and sim.has_method("query_fish_in_radius"):
+		return sim.query_fish_in_radius(position, radius_sq)
+	return sim.fish if sim != null else []
 
 
 # ---- Brain (10 Hz tick) ----
@@ -772,7 +790,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# shrimp run for anemone/sponge/hydra structure and hunker down in cover.
 	var predator_pressure: float = 0.0
 	if sim != null:
-		for f in sim.fish:
+		for f in _nearby_fish(3.4 * 3.4):
 			if not is_instance_valid(f):
 				continue
 			var species_v: Variant = f.get("species")
@@ -876,7 +894,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		if _clean_target == null:
 			var best: Node3D = null
 			var best_score: float = 0.45    # require min stress to bother
-			for f in sim.fish:
+			for f in _nearby_fish(CLEAN_RADIUS * CLEAN_RADIUS):
 				if not is_instance_valid(f) or f.maturity == Fish.MATURITY_FRY:
 					continue
 				var d2: float = f.position.distance_squared_to(position)
@@ -1019,7 +1037,10 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# Tier 5: claim nearby waste. The actual eat is resolved by SimDriver.
 	var best_w: WasteParticle = null
 	var best_w_d2: float = 25.0
-	for w in waste:
+	var waste_near: Array = waste
+	if sim != null and sim.has_method("query_waste_in_radius"):
+		waste_near = sim.query_waste_in_radius(position, 5.0)
+	for w in waste_near:
 		if not is_instance_valid(w):
 			continue
 		var d2: float = (w as Node3D).global_position.distance_squared_to(position)
@@ -1042,7 +1063,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	if hunger > 0.2:
 		var best_a: Node3D = null
 		var best_a_d2: float = 4.0
-		for a in algae_array:
+		for a in _nearby_algae(algae_array, 2.0):
 			if not is_instance_valid(a) or a.biomass() <= 0:
 				continue
 			var d2: float = a.global_position.distance_squared_to(position)
@@ -1098,7 +1119,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		if hunger > 0.65:
 			var best_coral: Plant = null
 			var best_coral_d2: float = 6.0
-			for p in plants:
+			for p in _nearby_plants(plants, 2.5):
 				if not is_instance_valid(p) or p.biomass() < 10:
 					continue
 				if p is Coral:
@@ -1125,7 +1146,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 					return events
 
 		# First: a quick grazing pass for plants right next to us on the floor.
-		for p in plants:
+		for p in _nearby_plants(plants, 1.2):
 			if not is_instance_valid(p) or p.biomass() < 15:
 				continue
 			var pp: Vector3 = p.global_position
@@ -1256,11 +1277,30 @@ func _motion_substep(dt: float) -> void:
 		var w: Node = sim.get_parent()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
+	# Same non-finite guard as fish.gd — look_at(NaN) corrupts the basis and
+	# every child VoxelBatch instance floods instance_set_transform errors.
+	if not global_position.is_finite() or not transform.is_finite():
+		push_warning("[Shrimp] non-finite motion transform detected; recovering from last yaw.")
+		if not global_position.is_finite():
+			var safe_y: float = substrate_top_y + 0.1
+			var gp_bad: Vector3 = global_position
+			var sx: float = gp_bad.x if is_finite(gp_bad.x) else 0.0
+			var sz: float = gp_bad.z if is_finite(gp_bad.z) else 0.0
+			global_position = Vector3(sx, safe_y, sz)
+		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+		var recover_d: Vector3 = heading
+		if absf(recover_d.dot(Vector3.UP)) > 0.95:
+			recover_d = (recover_d + Vector3(0.05, 0, 0)).normalized()
+		if recover_d.is_finite():
+			transform.basis = Basis.looking_at(recover_d, Vector3.UP)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
 		var d: Vector3 = heading
 		if absf(d.dot(Vector3.UP)) > 0.95:
 			d = (d + Vector3(0.05, 0, 0)).normalized()
-		look_at(position + d, Vector3.UP)
+		if d.is_finite():
+			look_at(position + d, Vector3.UP)
+			if not transform.is_finite():
+				transform.basis = Basis.looking_at(d, Vector3.UP)
 	var current_yaw: float = atan2(heading.x, -heading.z)
 	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 	_last_yaw = current_yaw
@@ -1290,6 +1330,11 @@ func _process(dt: float) -> void:
 	var sub_dt: float = dt / float(n_steps)
 	for _step_i in n_steps:
 		_motion_substep(sub_dt)
+
+	var do_body_anim: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
+		or sim.is_creature_visible_to_camera(self)
+	if not do_body_anim:
+		return
 
 	# Animation: tail flicks + antennae twitch + walking bob.
 	_swim_phase += dt * (3.0 + speed * 4.0)
@@ -1592,7 +1637,7 @@ func _plant_clearance_push(plants: Array) -> Vector3:
 	var r2: float = PLANT_SPACE * PLANT_SPACE
 	var push := Vector3.ZERO
 	var checked: int = 0
-	for p in plants:
+	for p in _nearby_plants(plants, PLANT_SPACE * 2.5):
 		if not is_instance_valid(p):
 			continue
 		var d: Vector3 = position - p.global_position

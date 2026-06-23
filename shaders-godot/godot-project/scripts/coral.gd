@@ -67,6 +67,11 @@ var _topology_seed: float = 0.0
 # from each entry so the pulse rides on top of grow-time appearance.
 var _polyp_tips: Array = []  # Array[{node, phase, base_scale, base_albedo}]
 
+# Body voxels batched into one MultiMesh draw call (anemone / hydra / clam
+# tentacles stay as individual MeshInstance3D nodes for per-tentacle motion).
+var _body_batch: VoxelBatch = null
+var _body_handles: Array[VoxelBatch.Handle] = []
+
 # Bleaching — when warmth runs too hot or O2 crashes, zooxanthellae are
 # expelled and the coral pales toward bone white. Recovers if conditions
 # return to safe within a few minutes. Cosmetic + growth penalty; doesn't
@@ -116,7 +121,33 @@ func _ready() -> void:
 	_base_growth_rate = growth_rate
 
 
-func _register_polyp_tip(node: MeshInstance3D, base_scale: float = 1.0) -> void:
+func _ensure_body_batch() -> VoxelBatch:
+	if _body_batch == null:
+		_body_batch = VoxelBatch.new(self, VoxelMat.make_voxel_mm(), 96)
+	return _body_batch
+
+
+func _add_body_voxel(pos: Vector3, size: Vector3, col: Color,
+		voxel_basis: Basis = Basis.IDENTITY) -> VoxelBatch.Handle:
+	var batch: VoxelBatch = _ensure_body_batch()
+	var xform := Transform3D(voxel_basis.scaled(size), pos)
+	var h: VoxelBatch.Handle = batch.add(xform, col)
+	_body_handles.append(h)
+	return h
+
+
+func _mesh_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(size)
+	mi.material_override = VoxelMat.make_foliage(col)
+	mi.position = pos
+	add_child(mi)
+	voxels.append(mi)
+	return mi
+
+
+func _register_polyp_tip(node: Variant, base_scale: float = 1.0,
+		base_xform: Transform3D = Transform3D.IDENTITY) -> void:
 	# Track a voxel as a respirating polyp tip. Phase staggered by index
 	# so a colony doesn't pulse in unison.
 	if node == null:
@@ -126,6 +157,8 @@ func _register_polyp_tip(node: MeshInstance3D, base_scale: float = 1.0) -> void:
 		"phase": float(_polyp_tips.size()) * 0.41 + randf() * 0.6,
 		"base_scale": base_scale,
 	}
+	if node is VoxelBatch.Handle:
+		entry["base_xform"] = base_xform
 	_polyp_tips.append(entry)
 
 
@@ -171,6 +204,8 @@ func _grow_one() -> bool:
 	if generation >= 2 and randf() < clampf(0.08 + float(generation) * 0.015, 0.08, 0.25):
 		_add_architecture_accent()
 	current_height += 1
+	if _body_batch != null:
+		_body_batch.flush()
 	return true
 
 
@@ -190,19 +225,16 @@ func _grow_dome() -> void:
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	# Newer voxels (high idx) read as the lighter polyp color, older are darker.
 	var c: Color = ramp[clampi(int(rel * (ramp.size() - 1)), 0, ramp.size() - 1)]
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(
+	var vsize := Vector3(
 		VOXEL_SIZE * 0.42,
 		VOXEL_SIZE * 0.32,
 		VOXEL_SIZE * 0.42,
-	))
-	mi.material_override = VoxelMat.make_foliage(c)
-	mi.position = Vector3(cos(theta) * r, y, sin(theta) * r)
-	add_child(mi)
-	voxels.append(mi)
+	)
+	var vpos := Vector3(cos(theta) * r, y, sin(theta) * r)
+	var h: VoxelBatch.Handle = _add_body_voxel(vpos, vsize, c)
 	# Top half of the dome reads as live polyp surface — pulse those.
 	if rel > 0.55:
-		_register_polyp_tip(mi)
+		_register_polyp_tip(h, 1.0, Transform3D(Basis().scaled(vsize), vpos))
 
 
 # ---- Marimo moss ball ----
@@ -230,17 +262,13 @@ func _grow_marimo() -> void:
 	# Tight band of greens — marimo are a single uniform mossy green
 	# without the brighter tip color. Pick from the middle of the ramp.
 	var col: Color = ramp[clampi(2 + (idx % 3), 0, ramp.size() - 1)]
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(
-		VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34))
-	mi.material_override = VoxelMat.make_foliage(col)
-	mi.position = Vector3(px, py, pz)
-	add_child(mi)
-	voxels.append(mi)
+	var vsize := Vector3(VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.34)
+	var vpos := Vector3(px, py, pz)
+	var h: VoxelBatch.Handle = _add_body_voxel(vpos, vsize, col)
 	# Every voxel reads as a polyp surface — pulse the whole sphere
 	# subtly so it visibly breathes.
 	if rng_chance_for_polyp_register(idx):
-		_register_polyp_tip(mi)
+		_register_polyp_tip(h, 1.0, Transform3D(Basis().scaled(vsize), vpos))
 
 
 # Sparse polyp-tip registration for marimo so the whole ball doesn't
@@ -268,16 +296,12 @@ func _grow_riccia() -> void:
 	# Vivid lime — riccia is one of the brightest greens in a planted
 	# tank. Pick from the top of the ramp.
 	var col: Color = ramp[clampi(3 + (idx % 3), 0, ramp.size() - 1)]
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(
-		VOXEL_SIZE * 0.30, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.30))
-	mi.material_override = VoxelMat.make_foliage(col)
-	mi.position = Vector3(cos(theta) * r, y, sin(theta) * r)
-	add_child(mi)
-	voxels.append(mi)
+	var vsize := Vector3(VOXEL_SIZE * 0.30, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.30)
+	var vpos := Vector3(cos(theta) * r, y, sin(theta) * r)
+	var h: VoxelBatch.Handle = _add_body_voxel(vpos, vsize, col)
 	# Every voxel is a live pearling site — riccia is famous for
 	# producing dramatic O2 bubble columns.
-	_register_polyp_tip(mi)
+	_register_polyp_tip(h, 1.0, Transform3D(Basis().scaled(vsize), vpos))
 	# Force pearling on every riccia carpet. Plant.gd defaults
 	# `_pearling_eligible` to (instance_id % 8 == 0); we override to
 	# true so riccia visibly bubbles even in small populations.
@@ -353,20 +377,11 @@ func _grow_brain() -> void:
 	
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	var c: Color = ramp[clampi(int(rel * (ramp.size() - 1)), 0, ramp.size() - 1)]
-	
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(
-		VOXEL_SIZE * 0.42,
-		VOXEL_SIZE * 0.32,
-		VOXEL_SIZE * 0.42
-	))
-	mi.material_override = VoxelMat.make_foliage(c)
-	mi.position = pos
-	add_child(mi)
-	voxels.append(mi)
+	var vsize := Vector3(VOXEL_SIZE * 0.42, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.42)
+	var h: VoxelBatch.Handle = _add_body_voxel(pos, vsize, c)
 	# Outer Gyroid ridges = live polyp surface — pulse the outer shell.
 	if rel > 0.55:
-		_register_polyp_tip(mi)
+		_register_polyp_tip(h, 1.0, Transform3D(Basis().scaled(vsize), pos))
 
 
 # ---- Staghorn Fern Coral ----
@@ -381,14 +396,11 @@ func _grow_staghorn_fern() -> void:
 			"length": 0,
 			"gen": 0
 		})
-		
-		var base_vox := MeshInstance3D.new()
-		base_vox.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.55))
 		var base_ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
-		base_vox.material_override = VoxelMat.make_foliage(base_ramp[0])
-		base_vox.position = Vector3.ZERO
-		add_child(base_vox)
-		voxels.append(base_vox)
+		_mesh_coral_voxel(
+			Vector3.ZERO,
+			Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.55),
+			(base_ramp[0] if base_ramp.size() > 0 else Color.WHITE))
 		return
 
 	# Pop the oldest active tip to grow it
@@ -403,22 +415,15 @@ func _grow_staghorn_fern() -> void:
 		
 	# Spawn voxel. Thickness tapers as generation increases
 	var thickness: float = clampf(0.5 - tip.gen * 0.12, 0.2, 0.5)
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * thickness, VOXEL_SIZE * 0.75, VOXEL_SIZE * thickness))
-	mi.material_override = VoxelMat.make_foliage(c)
-	mi.position = new_pos
-
-	add_child(mi)
-
-	# Align the voxel mesh with its growth direction
+	var vsize := Vector3(VOXEL_SIZE * thickness, VOXEL_SIZE * 0.75, VOXEL_SIZE * thickness)
+	var tip_basis := Basis.IDENTITY
 	if tip.dir != Vector3.UP:
-		mi.look_at(new_pos + tip.dir, Vector3.UP)
-		mi.rotate_x(PI * 0.5)
-
-	voxels.append(mi)
+		tip_basis = Basis.looking_at(tip.dir, Vector3.UP)
+		tip_basis = tip_basis.rotated(Vector3.RIGHT, PI * 0.5)
+	var h: VoxelBatch.Handle = _add_body_voxel(new_pos, vsize, c, tip_basis)
 	# Highest-gen tip voxels are the youngest fronds with active polyps.
 	if tip.gen >= 2:
-		_register_polyp_tip(mi)
+		_register_polyp_tip(h, 1.0, Transform3D(tip_basis.scaled(vsize), new_pos))
 	
 	# Increment tip length
 	tip.length += 1
@@ -467,29 +472,22 @@ func _grow_branching() -> void:
 	var stem_color: Color = ramp[clampi(2 + int(idx / 4.0), 0, ramp.size() - 1)]
 	# Main stem voxel. Slightly thicker at the base, taper toward the top.
 	var taper: float = clampf(1.0 - float(idx) / float(maxi(1, max_height)) * 0.45, 0.4, 1.0)
-	var stem := MeshInstance3D.new()
-	stem.mesh = VoxelMat.get_box(Vector3(
+	var stem_size := Vector3(
 		VOXEL_SIZE * 0.5 * taper,
 		VOXEL_SIZE * 0.85,
 		VOXEL_SIZE * 0.5 * taper,
-	))
-	stem.material_override = VoxelMat.make_foliage(stem_color)
-	stem.position = Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
-	add_child(stem)
-	voxels.append(stem)
+	)
+	var stem_pos := Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
+	_add_body_voxel(stem_pos, stem_size, stem_color)
 	# Side branch every BRANCH_INTERVAL voxels along the stem.
 	if idx >= 2 and idx % BRANCH_INTERVAL == 0:
 		_spawn_side_branch(idx, ramp)
 	# Glowing tip voxel on the topmost segment.
 	if idx == max_height - 1:
-		var tip := MeshInstance3D.new()
-		tip.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32))
-		tip.material_override = VoxelMat.make_foliage(tip_color)
-		tip.position = Vector3(0.0, idx * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4, 0.0)
-		add_child(tip)
-		voxels.append(tip)
-		_register_polyp_tip(tip)
+		var tip_size := Vector3(VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32)
+		var tip_pos := Vector3(0.0, idx * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4, 0.0)
+		var tip_h: VoxelBatch.Handle = _add_body_voxel(tip_pos, tip_size, tip_color)
+		_register_polyp_tip(tip_h, 1.0, Transform3D(Basis().scaled(tip_size), tip_pos))
 
 
 func _spawn_side_branch(idx: int, ramp: Array) -> void:
@@ -504,20 +502,16 @@ func _spawn_side_branch(idx: int, ramp: Array) -> void:
 		# Branch tip color = glowing polyp.
 		if j == BRANCH_LENGTH - 1:
 			c = tip_color
-		var bv := MeshInstance3D.new()
-		bv.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32))
-		bv.material_override = VoxelMat.make_foliage(c)
-		bv.position = Vector3(
+		var bv_size := Vector3(VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32)
+		var bv_pos := Vector3(
 			dx * VOXEL_SIZE * 0.55 * float(j + 1),
 			base_y + dy_step * VOXEL_SIZE * float(j + 1) * 0.55,
 			dz * VOXEL_SIZE * 0.55 * float(j + 1),
 		)
-		add_child(bv)
-		voxels.append(bv)
+		var bv_h: VoxelBatch.Handle = _add_body_voxel(bv_pos, bv_size, c)
 		# Outermost side-branch voxel is the live polyp tip.
 		if j == BRANCH_LENGTH - 1:
-			_register_polyp_tip(bv)
+			_register_polyp_tip(bv_h, 1.0, Transform3D(Basis().scaled(bv_size), bv_pos))
 
 
 # ---- Feathery / soft coral ----
@@ -530,35 +524,27 @@ func _grow_feathery() -> void:
 	var stalk_color: Color = ramp[clampi(2, 0, ramp.size() - 1)]
 	var feather_color: Color = ramp[clampi(int(3.0 + rel * 2.0), 0, ramp.size() - 1)]
 	# Stalk voxel.
-	var stalk := MeshInstance3D.new()
-	stalk.mesh = VoxelMat.get_box(Vector3(
-		VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.22))
-	stalk.material_override = VoxelMat.make_foliage(stalk_color)
-	stalk.position = Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
-	add_child(stalk)
-	voxels.append(stalk)
+	var stalk_size := Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.22)
+	var stalk_pos := Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
+	_add_body_voxel(stalk_pos, stalk_size, stalk_color)
 	# Two feathers, opposite each other, rotating around the stalk by
 	# golden angle so each node points a different direction.
 	var theta: float = float(idx) * GOLDEN_ANGLE
 	for side in [1.0, -1.0]:
 		var fx: float = cos(theta) * side
 		var fz: float = sin(theta) * side
-		var fv := MeshInstance3D.new()
-		fv.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.18))
-		fv.material_override = VoxelMat.make_foliage(feather_color)
-		fv.position = Vector3(
+		var fv_size := Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.18)
+		var fv_pos := Vector3(
 			fx * VOXEL_SIZE * 0.4,
 			idx * VOXEL_SIZE * 0.85,
 			fz * VOXEL_SIZE * 0.4,
 		)
-		add_child(fv)
-		# Rotate so the feather points outward along XZ.
-		fv.look_at(fv.position + Vector3(fx, 0.0, fz), Vector3.UP)
-		voxels.append(fv)
+		var outward := Vector3(fx, 0.0, fz).normalized()
+		var fv_basis := Basis.looking_at(outward, Vector3.UP)
+		var fv_h: VoxelBatch.Handle = _add_body_voxel(fv_pos, fv_size, feather_color, fv_basis)
 		# Topmost feathers are the actively-feeding polyps.
 		if rel > 0.55:
-			_register_polyp_tip(fv)
+			_register_polyp_tip(fv_h, 1.0, Transform3D(fv_basis.scaled(fv_size), fv_pos))
 
 
 # ---- Plate / table coral ----
@@ -572,13 +558,9 @@ func _grow_plate() -> void:
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	if idx < PLATE_STEM_HEIGHT:
 		# Stem voxel.
-		var stem := MeshInstance3D.new()
-		stem.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.45))
-		stem.material_override = VoxelMat.make_foliage(ramp[1])
-		stem.position = Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
-		add_child(stem)
-		voxels.append(stem)
+		var stem_size := Vector3(VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.45)
+		var stem_pos := Vector3(0.0, idx * VOXEL_SIZE * 0.85, 0.0)
+		_add_body_voxel(stem_pos, stem_size, ramp[1])
 		return
 	# Polyp on the disc. Phyllotaxis on a flat plane.
 	var disc_idx: int = idx - PLATE_STEM_HEIGHT
@@ -586,25 +568,15 @@ func _grow_plate() -> void:
 	var r: float = VOXEL_SIZE * 0.32 * sqrt(float(disc_idx) + 1.0)
 	var disc_y: float = PLATE_STEM_HEIGHT * VOXEL_SIZE * 0.85
 	var c: Color = ramp[clampi(3 + (disc_idx % 3), 0, ramp.size() - 1)]
-	var p := MeshInstance3D.new()
-	p.mesh = VoxelMat.get_box(Vector3(
-		VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.38))
-	p.material_override = VoxelMat.make_foliage(c)
-	p.position = Vector3(cos(theta) * r, disc_y, sin(theta) * r)
-	add_child(p)
-	voxels.append(p)
+	var p_size := Vector3(VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.38)
+	var p_pos := Vector3(cos(theta) * r, disc_y, sin(theta) * r)
+	var p_h: VoxelBatch.Handle = _add_body_voxel(p_pos, p_size, c)
 	# All disc polyps face up and respire — pulse them.
-	_register_polyp_tip(p)
+	_register_polyp_tip(p_h, 1.0, Transform3D(Basis().scaled(p_size), p_pos))
 
 
-func _make_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(size)
-	mi.material_override = VoxelMat.make_foliage(col)
-	mi.position = pos
-	add_child(mi)
-	voxels.append(mi)
-	return mi
+func _make_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> VoxelBatch.Handle:
+	return _add_body_voxel(pos, size, col)
 
 
 func _add_architecture_accent() -> void:
@@ -637,7 +609,7 @@ func _grow_anemone() -> void:
 	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	if current_height < 2:
-		_make_coral_voxel(
+		_mesh_coral_voxel(
 			Vector3(0.0, current_height * VOXEL_SIZE * 0.35, 0.0),
 			Vector3(VOXEL_SIZE * 0.65, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.65),
 			ramp[1])
@@ -647,7 +619,7 @@ func _grow_anemone() -> void:
 	var y: float = VOXEL_SIZE * (0.55 + rel * 1.35)
 	for i in tentacle_count:
 		var a: float = float(i) / float(tentacle_count) * TAU + rel * 0.35
-		var body: MeshInstance3D = _make_coral_voxel(
+		var body: MeshInstance3D = _mesh_coral_voxel(
 			Vector3(cos(a) * ring, y, sin(a) * ring),
 			Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.52, VOXEL_SIZE * 0.18),
 			ramp[clampi(2 + i % 3, 0, ramp.size() - 1)])
@@ -655,7 +627,7 @@ func _grow_anemone() -> void:
 		body.set_meta("anemone_outward", Vector3(cos(a), 0.0, sin(a)))
 		_anemone_tentacles.append(body)
 		if rel > 0.72:
-			var tip: MeshInstance3D = _make_coral_voxel(
+			var tip: MeshInstance3D = _mesh_coral_voxel(
 				body.position + Vector3(0.0, VOXEL_SIZE * 0.33, 0.0),
 				Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
 				tip_color)
@@ -667,7 +639,7 @@ func _grow_hydra_fresh() -> void:
 	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	if current_height < 2:
-		_make_coral_voxel(
+		_mesh_coral_voxel(
 			Vector3(0.0, current_height * VOXEL_SIZE * 0.32, 0.0),
 			Vector3(VOXEL_SIZE * 0.42, VOXEL_SIZE * 0.36, VOXEL_SIZE * 0.42),
 			ramp[1])
@@ -676,7 +648,7 @@ func _grow_hydra_fresh() -> void:
 	var y: float = VOXEL_SIZE * (0.35 + rel * 1.2)
 	for i in count:
 		var a: float = float(i) / float(count) * TAU + rel * 0.6
-		var tent: MeshInstance3D = _make_coral_voxel(
+		var tent: MeshInstance3D = _mesh_coral_voxel(
 			Vector3(cos(a) * VOXEL_SIZE * 0.22, y + VOXEL_SIZE * 0.18, sin(a) * VOXEL_SIZE * 0.22),
 			Vector3(VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.12),
 			ramp[clampi(3 + (i % 2), 0, ramp.size() - 1)])
@@ -717,18 +689,18 @@ func _grow_sponge(is_fresh: bool) -> void:
 func _grow_clam() -> void:
 	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
 	if current_height < 1:
-		_make_coral_voxel(
+		_mesh_coral_voxel(
 			Vector3(0.0, 0.0, 0.0),
 			Vector3(VOXEL_SIZE * 0.8, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.65),
 			Color8(82, 70, 88))
 		return
 	var shell_col: Color = (ramp_override if ramp_override.size() == 6 else PLANT_RAMP)[clampi(2 + int(rel * 2.0), 0, 5)]
 	var hinge_y: float = VOXEL_SIZE * 0.15
-	var upper: MeshInstance3D = _make_coral_voxel(
+	var upper: MeshInstance3D = _mesh_coral_voxel(
 		Vector3(0.0, hinge_y + VOXEL_SIZE * 0.16, -VOXEL_SIZE * 0.04),
 		Vector3(VOXEL_SIZE * 0.72, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.52),
 		shell_col)
-	var lower: MeshInstance3D = _make_coral_voxel(
+	var lower: MeshInstance3D = _mesh_coral_voxel(
 		Vector3(0.0, hinge_y - VOXEL_SIZE * 0.05, VOXEL_SIZE * 0.04),
 		Vector3(VOXEL_SIZE * 0.72, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.52),
 		shell_col.darkened(0.18))
@@ -750,15 +722,18 @@ func _process(dt: float) -> void:
 		return
 	var sdt: float = dt * float(ANIM_STEP)
 	var sim_n: Node = _find_sim()
+	if sim_n != null and sim_n.has_method("is_creature_visible_to_camera"):
+		if not sim_n.is_creature_visible_to_camera(self):
+			return
 	if sim_n != null:
 		sdt *= float(sim_n.time_scale)
 	if sdt <= 0.0:
 		return
 	_sessile_phase += sdt * (0.8 + sway_amplitude * 1.4)
-	_animate_sessile_motion()
+	_animate_sessile_motion(sim_n)
 
 
-func _animate_sessile_motion() -> void:
+func _animate_sessile_motion(sim_n: Node = null) -> void:
 	# Flow sample for asymmetric ribbon undulation (anemones in particular).
 	var flow_bias: float = _get_flow_bias()
 	# All three branches below read each list entry into a Variant first
@@ -826,16 +801,18 @@ func _animate_sessile_motion() -> void:
 	# Polyp tips pulse for every coral form. Cheap: a single sin per tip,
 	# scale assignment only. Pulse range is narrow (~0.78..1.08) so the
 	# pulse reads as breathing, not bouncing.
-	_animate_polyp_tips()
+	_animate_polyp_tips(sim_n)
 	# Re-paint bleach tint when it changes meaningfully.
 	if absf(_bleach_level - _last_bleach_applied) > 0.04:
 		_apply_bleach_tint()
 		_last_bleach_applied = _bleach_level
 
 
-func _animate_polyp_tips() -> void:
+func _animate_polyp_tips(sim_n: Node = null) -> void:
 	if _polyp_tips.is_empty():
 		return
+	if sim_n == null:
+		sim_n = _find_sim()
 	# Bleached polyps retract — pulse amplitude collapses as bleach climbs.
 	var amp: float = lerpf(0.15, 0.02, clampf(_bleach_level, 0.0, 1.0))
 	# Bioluminescence: coral tips emit a soft glow at night. The voxel
@@ -845,7 +822,6 @@ func _animate_polyp_tips() -> void:
 	# nothing at dawn / dusk.
 	var night_glow: float = 0.0
 	var day_zoox: float = 0.0
-	var sim_n: Node = _find_sim()
 	if sim_n != null and sim_n.has_method("daylight"):
 		var dl: float = float(sim_n.daylight())
 		# daylight() is 0 at night, 1 at noon. Strong glow when dl < 0.25.
@@ -866,6 +842,38 @@ func _animate_polyp_tips() -> void:
 	for i in _polyp_tips.size():
 		var entry: Dictionary = _polyp_tips[i]
 		var n_v: Variant = entry.get("node")
+		if n_v is VoxelBatch.Handle:
+			var h: VoxelBatch.Handle = n_v as VoxelBatch.Handle
+			if not h.alive:
+				entry["node"] = null
+				continue
+			live_count += 1
+			var phase_h: float = float(entry.get("phase", 0.0))
+			var s_h: float = 1.0 + sin(_sessile_phase * 1.6 + phase_h) * amp
+			var retract_h: float = sin(_sessile_phase * 0.42 + phase_h * 0.15)
+			if retract_h < -0.72:
+				s_h *= 0.52
+			var glow_swell_h: float = 1.0 + night_glow * 0.10 * (0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase_h))
+			var feed_swell_h: float = 1.0 + _feeding_extension * (0.18 + 0.07 * sin(_sessile_phase * 0.8 + phase_h * 0.5))
+			var base_scale_h: float = float(entry.get("base_scale", 1.0))
+			var scale_factor: float = base_scale_h * s_h * glow_swell_h * feed_swell_h
+			var base_xform: Transform3D = entry.get("base_xform", Transform3D.IDENTITY)
+			var bs: Vector3 = base_xform.basis.get_scale()
+			var rot: Quaternion = base_xform.basis.get_rotation_quaternion()
+			var pulse_basis := Basis(rot).scaled(bs * scale_factor)
+			h.set_transform(Transform3D(pulse_basis, base_xform.origin))
+			var stagger_h: bool = (i + Engine.get_process_frames()) % 3 == 0
+			if stagger_h and night_glow > 0.01:
+				var glow_pulse_h: float = 0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase_h)
+				var glow_h: float = night_glow * (0.6 + 0.4 * glow_pulse_h)
+				h.set_color(h.base_color.lightened(0.72 * glow_h))
+			elif stagger_h and day_zoox > 0.02:
+				var zoox_pulse_h: float = 0.55 + 0.45 * sin(_sessile_phase * 0.85 + phase_h * 0.7)
+				var tip_lift_h: float = day_zoox * zoox_pulse_h * 0.32
+				h.set_color(h.base_color.lerp(tip_color, tip_lift_h))
+			else:
+				h.set_color(h.base_color)
+			continue
 		if n_v == null or not (n_v is Node3D) or not is_instance_valid(n_v):
 			entry["node"] = null  # mark stale so we can drop later
 			continue
@@ -895,9 +903,11 @@ func _animate_polyp_tips() -> void:
 		var feed_swell: float = 1.0 + _feeding_extension * (0.18 + 0.07 * sin(_sessile_phase * 0.8 + phase * 0.5))
 		var base_scale: float = float(entry.get("base_scale", 1.0))
 		n.scale = Vector3.ONE * (base_scale * s * glow_swell * feed_swell)
+		# Albedo glow writes are staggered — scale updates every anim frame.
+		var stagger_glow: bool = (i + Engine.get_process_frames()) % 3 == 0
 		# Apply bioluminescent glow as an albedo lift. Pulse the glow with
 		# the same phase so the polyp visibly breathes light.
-		if night_glow > 0.01 and n is MeshInstance3D:
+		if stagger_glow and night_glow > 0.01 and n is MeshInstance3D:
 			var mi: MeshInstance3D = n as MeshInstance3D
 			var sm: ShaderMaterial = mi.material_override as ShaderMaterial
 			if sm != null:
@@ -921,7 +931,7 @@ func _animate_polyp_tips() -> void:
 					mi.set_meta("glow_mat", true)
 				var lit: Color = base_alb.lightened(0.72 * glow)
 				(mi.material_override as ShaderMaterial).set_shader_parameter("albedo", lit)
-		elif day_zoox > 0.02 and n is MeshInstance3D:
+		elif stagger_glow and day_zoox > 0.02 and n is MeshInstance3D:
 			var mi_day: MeshInstance3D = n as MeshInstance3D
 			var sm_day: ShaderMaterial = mi_day.material_override as ShaderMaterial
 			if sm_day != null:
@@ -965,15 +975,68 @@ func bleach_glow_dim() -> float:
 	return clampf(_bleach_level, 0.0, 1.0)
 
 
+func _live_body_voxel_count() -> int:
+	var n: int = 0
+	for h in _body_handles:
+		if h.alive:
+			n += 1
+	return n
+
+
+func _recalc_height() -> void:
+	var max_local_y: float = 0.0
+	for h in _body_handles:
+		if h.alive:
+			max_local_y = maxf(max_local_y, h.local_pos.y)
+	for v in voxels:
+		if is_instance_valid(v) and not v.is_queued_for_deletion():
+			max_local_y = maxf(max_local_y, to_local(v.global_position).y)
+	current_height = maxi(0, int(max_local_y / VOXEL_SIZE))
+
+
+func nibble(amount: int) -> int:
+	_grazing_pressure = clampf(_grazing_pressure + float(amount) * 0.08, 0.0, 1.0)
+	if _graze_leaf_biofilm(amount):
+		return amount
+	var removed: int = 0
+	for i in amount:
+		if not _body_handles.is_empty():
+			var h: VoxelBatch.Handle = _body_handles.pop_back()
+			if h != null and h.alive:
+				h.hide()
+			removed += 1
+		elif not voxels.is_empty():
+			var v: MeshInstance3D = voxels.pop_back()
+			if is_instance_valid(v):
+				v.queue_free()
+			removed += 1
+		else:
+			break
+		growth_progress = 0.0
+	_recalc_height()
+	if current_height <= 0 and _live_body_voxel_count() == 0 and voxels.is_empty():
+		_on_death()
+		queue_free()
+	return removed
+
+
 # Pale the coral voxels toward bone-white in proportion to _bleach_level.
 # Heaviest on the topmost (youngest) voxels — that's where zooxanthellae
 # turnover is fastest and bleaching shows first. Restored from cached
 # base_albedo when bleach drops back to safe.
 func _apply_bleach_tint() -> void:
-	if voxels.is_empty():
+	if _body_handles.is_empty() and voxels.is_empty():
 		return
 	var b: float = clampf(_bleach_level, 0.0, 1.0)
 	var pale := Color(0.96, 0.92, 0.86)
+	var n_body: int = _body_handles.size()
+	for i in n_body:
+		var h: VoxelBatch.Handle = _body_handles[i]
+		if not h.alive:
+			continue
+		var depth_w: float = clampf(float(i) / float(maxi(1, n_body - 1)), 0.0, 1.0)
+		var local_b: float = b * (0.45 + 0.55 * depth_w)
+		h.set_color(h.base_color.lerp(pale, local_b))
 	var n: int = voxels.size()
 	for i in n:
 		# Load via Variant first so a freed entry doesn't blow up the

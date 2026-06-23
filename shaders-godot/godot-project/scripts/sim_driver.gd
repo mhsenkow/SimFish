@@ -669,6 +669,8 @@ func do_water_change(fraction: float = 0.35) -> void:
 var plant_growth_budget: int = 0
 var _pearling_slots_used: int = 0
 const PEARLING_MAX_SLOTS: int = 22
+# Scaled by adaptive quality in main.gd (1.0 = full budget, 0 = off).
+var pearling_budget_scale: float = 1.0
 # All live snail nodes, rebuilt once per _tick from the "snails" group. Lets the
 # same-tick overlap pass reuse the list instead of re-walking snails_root and
 # string-comparing each child's script path.
@@ -1055,6 +1057,10 @@ const ECO_MAX_SHRIMP_SAMPLES: int = 14
 const ECO_MAX_SNAIL_SAMPLES: int = 12
 const OVERLAP_RESOLVE_INTERVAL: float = 0.45
 const BOUNDS_ENFORCE_INTERVAL: float = 0.22
+const NUTRIENT_STRIP_INTERVAL: float = 0.5
+var _nutrient_strip_t: float = 0.0
+var _waste_pool: Array[WasteParticle] = []
+const WASTE_POOL_CAP: int = 64
 
 
 func register_fish(f: Fish) -> void:
@@ -1370,12 +1376,13 @@ func try_consume_plant_growth() -> bool:
 # Returns 0..1 dampening so dense tanks don't turn into a bubble blizzard.
 # Plants tick in order; later plants get softer pearling once the cap fills.
 func try_claim_pearling_slot(pearl_factor: float) -> float:
-	if pearl_factor < 0.10:
+	if pearl_factor < 0.10 or pearling_budget_scale <= 0.0:
 		return 0.0
-	if _pearling_slots_used >= PEARLING_MAX_SLOTS:
+	var slot_cap: int = maxi(1, int(round(float(PEARLING_MAX_SLOTS) * pearling_budget_scale)))
+	if _pearling_slots_used >= slot_cap:
 		return 0.0
 	_pearling_slots_used += 1
-	var fill: float = float(_pearling_slots_used) / float(PEARLING_MAX_SLOTS)
+	var fill: float = float(_pearling_slots_used) / float(slot_cap)
 	return clampf(1.05 - fill * 0.75, 0.22, 1.0) * clampf(pearl_factor * 1.15, 0.0, 1.0)
 
 
@@ -1388,6 +1395,11 @@ func register_egg(e: FishEgg) -> void:
 
 
 func _physics_process(dt: float) -> void:
+	# Fish positions for snail predator scans — 10 Hz is enough for 0.3 s scan cadence.
+	_fish_grid_t += dt
+	if _fish_grid_t >= FISH_GRID_REBUILD_S:
+		_fish_grid_t = 0.0
+		_rebuild_fish_query_grid()
 	# Real-time runtime accumulator (unscaled — measures how long the user
 	# has had this tank open with focus). Used by the menu's "ran for X" line.
 	elapsed_runtime_s += dt
@@ -1463,6 +1475,13 @@ func _get_camera() -> Camera3D:
 	return _cam_cache
 
 
+func is_creature_visible_to_camera(node: Node3D) -> bool:
+	var cam := _get_camera()
+	if cam == null or node == null:
+		return true
+	return cam.is_position_in_frustum(node.global_position)
+
+
 # Cached AmbientAudio node accessor (sibling under the running scene). Replaces a
 # get_tree().current_scene + get_node_or_null tree walk on every food/death event.
 func _ambient_audio() -> Node:
@@ -1528,6 +1547,114 @@ func query_plants_in_radius(pos: Vector3, max_dist: float) -> Array:
 			var bucket: Array = _plants_grid.get(cell, [])
 			for p in bucket:
 				result.append(p)
+	return result
+
+
+const WASTE_GRID_CELL_SIZE: float = 1.5
+var _waste_grid: Dictionary = {}  # Vector2i → Array[WasteParticle]
+
+
+func _rebuild_waste_grid() -> void:
+	_waste_grid.clear()
+	for w in waste:
+		if not is_instance_valid(w):
+			continue
+		var wp: Vector3 = (w as Node3D).global_position
+		var cell := Vector2i(
+			int(floor(wp.x / WASTE_GRID_CELL_SIZE)),
+			int(floor(wp.z / WASTE_GRID_CELL_SIZE)))
+		if _waste_grid.has(cell):
+			_waste_grid[cell].append(w)
+		else:
+			_waste_grid[cell] = [w]
+
+
+func query_waste_in_radius(pos: Vector3, max_dist: float) -> Array:
+	var result: Array = []
+	if _waste_grid.is_empty() and not waste.is_empty():
+		_rebuild_waste_grid()
+	var cx: int = int(floor(pos.x / WASTE_GRID_CELL_SIZE))
+	var cz: int = int(floor(pos.z / WASTE_GRID_CELL_SIZE))
+	var reach: int = maxi(1, int(ceil(max_dist / WASTE_GRID_CELL_SIZE)))
+	for dx in range(-reach, reach + 1):
+		for dz in range(-reach, reach + 1):
+			var cell := Vector2i(cx + dx, cz + dz)
+			var bucket: Array = _waste_grid.get(cell, [])
+			for w in bucket:
+				result.append(w)
+	return result
+
+
+const ALGAE_GRID_CELL_SIZE: float = 1.5
+var _algae_grid: Dictionary = {}
+
+
+func _rebuild_algae_grid() -> void:
+	_algae_grid.clear()
+	for a in algae:
+		if not is_instance_valid(a):
+			continue
+		var ap: Vector3 = (a as Node3D).global_position
+		var cell := Vector2i(
+			int(floor(ap.x / ALGAE_GRID_CELL_SIZE)),
+			int(floor(ap.z / ALGAE_GRID_CELL_SIZE)))
+		if _algae_grid.has(cell):
+			_algae_grid[cell].append(a)
+		else:
+			_algae_grid[cell] = [a]
+
+
+func query_algae_in_radius(pos: Vector3, max_dist: float) -> Array:
+	var result: Array = []
+	if _algae_grid.is_empty() and not algae.is_empty():
+		_rebuild_algae_grid()
+	var cx: int = int(floor(pos.x / ALGAE_GRID_CELL_SIZE))
+	var cz: int = int(floor(pos.z / ALGAE_GRID_CELL_SIZE))
+	var reach: int = maxi(1, int(ceil(max_dist / ALGAE_GRID_CELL_SIZE)))
+	for dx in range(-reach, reach + 1):
+		for dz in range(-reach, reach + 1):
+			var cell := Vector2i(cx + dx, cz + dz)
+			var bucket: Array = _algae_grid.get(cell, [])
+			for a in bucket:
+				result.append(a)
+	return result
+
+
+# Persistent fish grid for render-rate queries (snail predator scans).
+var _fish_query_grid: Dictionary = {}
+var _fish_grid_t: float = 0.0
+const FISH_GRID_REBUILD_S: float = 0.1
+
+
+func _rebuild_fish_query_grid() -> void:
+	_fish_query_grid.clear()
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var fp: Vector3 = f.global_position
+		var cell := Vector2i(
+			int(floor(fp.x / SPATIAL_CELL_SIZE)),
+			int(floor(fp.z / SPATIAL_CELL_SIZE)))
+		if _fish_query_grid.has(cell):
+			_fish_query_grid[cell].append(f)
+		else:
+			_fish_query_grid[cell] = [f]
+
+
+func query_fish_in_radius(pos: Vector3, radius_sq: float) -> Array:
+	var result: Array = []
+	if _fish_query_grid.is_empty() and not fish.is_empty():
+		_rebuild_fish_query_grid()
+	var cx: int = int(floor(pos.x / SPATIAL_CELL_SIZE))
+	var cz: int = int(floor(pos.z / SPATIAL_CELL_SIZE))
+	var reach: int = maxi(1, int(ceil(sqrt(radius_sq) / SPATIAL_CELL_SIZE)))
+	for dx in range(-reach, reach + 1):
+		for dz in range(-reach, reach + 1):
+			var cell := Vector2i(cx + dx, cz + dz)
+			var bucket: Array = _fish_query_grid.get(cell, [])
+			for f in bucket:
+				if f.global_position.distance_squared_to(pos) < radius_sq:
+					result.append(f)
 	return result
 
 
@@ -1618,31 +1745,69 @@ func _clamp_fish_territory(f: Fish) -> void:
 
 func _resolve_entity_group_overlaps(group: Array, min_dist: float,
 		group_limit: int = 120, y_weight: float = 0.55) -> void:
+	var local_grid: Dictionary = {}
 	var n: int = mini(group.size(), group_limit)
+	for i in n:
+		var e: Node3D = group[i] as Node3D
+		if e == null or not is_instance_valid(e):
+			continue
+		var cell := Vector2i(
+			int(floor(e.position.x / SPATIAL_CELL_SIZE)),
+			int(floor(e.position.z / SPATIAL_CELL_SIZE)))
+		if local_grid.has(cell):
+			(local_grid[cell] as Array).append(i)
+		else:
+			local_grid[cell] = [i]
+	var reach: int = maxi(1, int(ceil(min_dist / SPATIAL_CELL_SIZE)))
 	for i in n:
 		var a: Node3D = group[i] as Node3D
 		if a == null or not is_instance_valid(a):
 			continue
-		for j in range(i + 1, n):
-			var b: Node3D = group[j] as Node3D
-			if b == null or not is_instance_valid(b):
-				continue
-			_push_apart_pair(a, b, min_dist, 0.5, y_weight)
+		var cx: int = int(floor(a.position.x / SPATIAL_CELL_SIZE))
+		var cz: int = int(floor(a.position.z / SPATIAL_CELL_SIZE))
+		for dx in range(-reach, reach + 1):
+			for dz in range(-reach, reach + 1):
+				var bucket: Array = local_grid.get(Vector2i(cx + dx, cz + dz), [])
+				for j in bucket:
+					if int(j) <= i:
+						continue
+					var b: Node3D = group[int(j)] as Node3D
+					if b == null or not is_instance_valid(b):
+						continue
+					_push_apart_pair(a, b, min_dist, 0.5, y_weight)
 
 
 func _resolve_cross_overlaps(primary: Array, other: Array, min_dist: float,
 		primary_limit: int = 140, other_limit: int = 140, y_weight: float = 0.38) -> void:
-	var n1: int = mini(primary.size(), primary_limit)
+	var other_grid: Dictionary = {}
 	var n2: int = mini(other.size(), other_limit)
+	for j in n2:
+		var ob: Node3D = other[j] as Node3D
+		if ob == null or not is_instance_valid(ob):
+			continue
+		var cell := Vector2i(
+			int(floor(ob.position.x / SPATIAL_CELL_SIZE)),
+			int(floor(ob.position.z / SPATIAL_CELL_SIZE)))
+		if other_grid.has(cell):
+			(other_grid[cell] as Array).append(j)
+		else:
+			other_grid[cell] = [j]
+	var n1: int = mini(primary.size(), primary_limit)
+	var reach: int = maxi(1, int(ceil(min_dist / SPATIAL_CELL_SIZE)))
 	for i in n1:
 		var a: Node3D = primary[i] as Node3D
 		if a == null or not is_instance_valid(a):
 			continue
-		for j in n2:
-			var b: Node3D = other[j] as Node3D
-			if b == null or not is_instance_valid(b):
-				continue
-			_push_apart_pair(a, b, min_dist, 0.34, y_weight)
+		var cx: int = int(floor(a.position.x / SPATIAL_CELL_SIZE))
+		var cz: int = int(floor(a.position.z / SPATIAL_CELL_SIZE))
+		for dx in range(-reach, reach + 1):
+			for dz in range(-reach, reach + 1):
+				var bucket: Array = other_grid.get(Vector2i(cx + dx, cz + dz), [])
+				for j in bucket:
+					var b: Node3D = other[int(j)] as Node3D
+					if b == null or not is_instance_valid(b):
+						continue
+					_push_apart_pair(a, b, min_dist, 0.34, y_weight)
 
 
 func _resolve_hardscape_overlaps(group: Array, min_dist: float,
@@ -1764,9 +1929,25 @@ func _prune_non_finite_positions(arr: Array) -> void:
 		if n == null or not is_instance_valid(n):
 			arr.remove_at(i)
 			continue
-		if not n.global_position.is_finite():
+		if not n.global_position.is_finite() or not n.transform.is_finite():
 			n.queue_free()
 			arr.remove_at(i)
+
+
+func _prune_non_finite_snails() -> void:
+	ensure_snails_root()
+	if snails_root == null or not is_instance_valid(snails_root):
+		return
+	for i in range(snails_root.get_child_count() - 1, -1, -1):
+		var child: Node = snails_root.get_child(i)
+		if not is_instance_valid(child):
+			continue
+		var n: Node3D = child as Node3D
+		if n == null:
+			child.queue_free()
+			continue
+		if not n.global_position.is_finite() or not n.transform.is_finite():
+			n.queue_free()
 
 
 func _tick(dt: float) -> void:
@@ -1793,6 +1974,7 @@ func _tick(dt: float) -> void:
 	_prune_invalid(eggs)
 	_prune_non_finite_positions(fish)
 	_prune_non_finite_positions(shrimp)
+	_prune_non_finite_snails()
 	_library_analysis_timer = maxf(0.0, _library_analysis_timer - dt)
 	if _library_analysis_timer <= 0.0:
 		_library_analysis_timer = LIBRARY_ANALYSIS_REFRESH_S
@@ -1924,8 +2106,19 @@ func _tick(dt: float) -> void:
 		int((28 + int(plants.size() / 12.0) + biomass_bonus) * cycle_bonus),
 		24, 110)
 	_pearling_slots_used = 0
+	var plant_biomass: int = 0
+	var photo_bm: float = 0.0
 	for p in plants:
+		if not is_instance_valid(p):
+			continue
 		p.tick(dt, substrate)
+		var bm: int = p.biomass()
+		plant_biomass += bm
+		var h_v: Variant = p.get("_health_smooth")
+		var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
+		photo_bm += float(bm) * hf
+	total_plant_biomass = plant_biomass
+	total_photosynthetic_biomass = photo_bm
 	# Plant fragments (stem cuttings rooting).
 	var frag_i: int = plant_fragments.size() - 1
 	while frag_i >= 0:
@@ -1939,11 +2132,13 @@ func _tick(dt: float) -> void:
 		frag_i -= 1
 
 	# Nutrient competition (#36): plants strip excess substrate nutrients.
-	# Root-draw halo (#13): heavy root-feeders also deplete a ring of cells
-	# around their base, so a big sword carves a visible low-nutrient halo and
-	# plant spacing starts to matter.
-	if substrate != null and total_plant_biomass > 40:
-		var strip: float = clampf(float(total_plant_biomass) / 600.0, 0.0, 0.006) * dt
+	# Throttled to 2 Hz — full-rate halo was ~10k substrate ops/sec in mature
+	# planted tanks with negligible visual difference at 10 Hz sim.
+	_nutrient_strip_t += dt
+	if substrate != null and plant_biomass > 40 and _nutrient_strip_t >= NUTRIENT_STRIP_INTERVAL:
+		_nutrient_strip_t = 0.0
+		var strip: float = clampf(float(plant_biomass) / 600.0, 0.0, 0.006) \
+			* NUTRIENT_STRIP_INTERVAL
 		for p in plants:
 			if not is_instance_valid(p) or strip <= 0.0:
 				continue
@@ -2006,6 +2201,9 @@ func _tick(dt: float) -> void:
 			if float(e["t"]) < FEED_MEMORY_TTL:
 				keep.append(e)
 		_feed_memory = keep
+
+	_rebuild_waste_grid()
+	_rebuild_algae_grid()
 
 	# Build spatial hash grid from all live (non-dying) fish. One O(N)
 	# insert pass replaces the old O(N²) nested neighbor loop.
@@ -2112,16 +2310,16 @@ func _tick(dt: float) -> void:
 		_enforce_all_fauna_in_tank()
 
 	# 5. Waste.
-	var dead_waste: Array[WasteParticle] = []
-	for w in waste:
+	var i: int = waste.size() - 1
+	while i >= 0:
+		var w: WasteParticle = waste[i]
 		w.last_deposit_amount = 0.0
 		if w.tick(dt, substrate):
-			dead_waste.append(w)
+			waste.remove_at(i)
+			recycle_waste(w)
 		elif w.last_deposit_amount > 0.0:
 			_record_trophic_deposited(w.last_deposit_amount)
-	for w in dead_waste:
-		waste.erase(w)
-		w.queue_free()
+		i -= 1
 
 	# 5b. Clams. Filter feeders that pull waste particles within radius.
 	# Runs after the waste-decay step so naturally-aging waste is gone
@@ -2249,19 +2447,7 @@ func _tick(dt: float) -> void:
 	var n_total: float = 0.0
 	if substrate != null:
 		n_total = substrate.total_above_baseline()
-	var plant_biomass: int = 0
-	var photo_bm: float = 0.0
-	for p in plants:
-		if is_instance_valid(p):
-			var bm: int = p.biomass()
-			plant_biomass += bm
-			# Health-weight for the O2 model (#29). Sick / melting plants barely
-			# photosynthesise.
-			var h_v: Variant = p.get("_health_smooth")
-			var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
-			photo_bm += float(bm) * hf
-	total_plant_biomass = plant_biomass
-	total_photosynthetic_biomass = photo_bm
+	# plant_biomass + photo_bm already accumulated during the plant tick loop.
 	_apply_ecosystem_engineering(dt)
 	# Refresh snail-predator count for snail.gd's rebound logic. Cheap
 	# (iterating fish is already done elsewhere; here we just count flags).
@@ -2553,18 +2739,20 @@ func _tick(dt: float) -> void:
 	# This is the visible "plants outcompete the bloom" payoff that closes
 	# the cycle — without it the bloom would just plateau.
 	var crash: bool = plant_biomass > 360 and n_total < 4.0
-	var dead_algae: Array = []
-	for a in algae:
+	var ai: int = algae.size() - 1
+	while ai >= 0:
+		var a: Algae = algae[ai]
 		if not is_instance_valid(a):
+			algae.remove_at(ai)
+			ai -= 1
 			continue
 		if a.tick(dt, bloom_favor):
-			dead_algae.append(a)
+			algae.remove_at(ai)
+			a.queue_free()
 		elif crash and randf() < dt * 0.12:
-			# Accelerated die-off during the crash window.
-			dead_algae.append(a)
-	for a in dead_algae:
-		algae.erase(a)
-		a.queue_free()
+			algae.remove_at(ai)
+			a.queue_free()
+		ai -= 1
 
 	# 7. Resolve events from fish + shrimp.
 	#
@@ -2629,7 +2817,7 @@ func _tick(dt: float) -> void:
 				var leftover: float = consumed_nv * 0.4
 				_record_trophic_consumed(consumed_nv, leftover if leftover > 0.04 else 0.0)
 				waste.erase(w)
-				w.queue_free()
+				recycle_waste(w)
 				if leftover > 0.04:
 					var new_kind: int = WasteParticle.KIND_FISH
 					if actor_kind == "shrimp":
@@ -2882,6 +3070,27 @@ func _build_ai_summary() -> Dictionary:
 	}
 
 
+func recycle_waste(w: WasteParticle) -> void:
+	if w == null:
+		return
+	w.prepare_for_pool()
+	if _waste_pool.size() < WASTE_POOL_CAP:
+		_waste_pool.append(w)
+	else:
+		w.queue_free()
+
+
+func _acquire_waste() -> WasteParticle:
+	while not _waste_pool.is_empty():
+		var w: WasteParticle = _waste_pool.pop_back()
+		if is_instance_valid(w):
+			w.visible = true
+			return w
+	var w_new := WasteParticle.new()
+	waste_root.add_child(w_new)
+	return w_new
+
+
 func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 		food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
 	if waste_root == null:
@@ -2901,11 +3110,10 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 			var old: WasteParticle = waste[i] as WasteParticle
 			if old != null and old.kind != WasteParticle.KIND_FOOD:
 				if is_instance_valid(old):
-					old.queue_free()
+					recycle_waste(old)
 				waste.remove_at(i)
 				break
-	var w := WasteParticle.new()
-	waste_root.add_child(w)
+	var w := _acquire_waste()
 	w.global_position = at
 	w.init(amount, substrate_top_y, kind, food_subtype)
 	register_waste(w)
@@ -4770,8 +4978,7 @@ func _spawn_fish_egg_from_dict(d: Dictionary) -> FishEgg:
 func _spawn_waste_from_dict(d: Dictionary) -> WasteParticle:
 	if waste_root == null:
 		return null
-	var w := WasteParticle.new()
-	waste_root.add_child(w)
+	var w := _acquire_waste()
 	w.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	w.apply_save_dict(d)
 	return w

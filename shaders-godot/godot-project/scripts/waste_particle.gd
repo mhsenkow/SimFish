@@ -36,6 +36,16 @@ var last_deposit_amount: float = 0.0
 # every particle (up to ~240 × the sim rate); the World ref is stable for the
 # particle's life, so resolve it once.
 var _world: Node = null
+var _mesh: MeshInstance3D = null
+
+
+func prepare_for_pool() -> void:
+	_life = 0.0
+	_settle_timer = 0.0
+	settled = false
+	last_deposit_amount = 0.0
+	visible = false
+	scale = Vector3.ONE
 
 
 # ---- Save / load ----
@@ -96,10 +106,11 @@ func init(value: float, top_y: float, particle_kind: int = KIND_FISH,
 		_:
 			voxel_size = 0.12
 			color = Color8(60, 45, 30)  # standard fish brown
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(voxel_size, voxel_size, voxel_size))
-	mi.material_override = VoxelMat.make(color)
-	add_child(mi)
+	if _mesh == null:
+		_mesh = MeshInstance3D.new()
+		add_child(_mesh)
+	_mesh.mesh = VoxelMat.get_box(Vector3(voxel_size, voxel_size, voxel_size))
+	_mesh.material_override = VoxelMat.make(color)
 
 
 # Called by SimDriver each tick. Returns true if the particle should be removed.
@@ -199,6 +210,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 		_settle_timer += dt
 		if _settle_timer > 4.0:
 			return true
+		return false
 	if w != null and w.has_method("clamp_xyz_in_tank"):
 		global_position = w.clamp_xyz_in_tank(global_position, 0.18, voxel_size * 0.5)
 	return false
