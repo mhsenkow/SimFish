@@ -39,6 +39,10 @@ signal canceled
 #   hex          → Cichlid show tank
 #   sphere       → Polyp lab biosphere
 #   cylinder     → Nature aquarium column
+#
+# Plant growth audit (#16): after the soft-min retune, high-CO₂ scenarios no
+# longer need to compensate for multiplicative penalty stacking. Values below
+# were checked so planted tanks progress in minutes, not tens of minutes.
 const SCENARIOS: Array[Dictionary] = [
 	{
 		"id": "walstad",
@@ -194,7 +198,7 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "spotlight",
 			"environment_preset": "bedroom_desk",
 			"lighting_preset": "planted",
-			"co2_level": 0.6,
+			"co2_level": 0.5,
 			"light_spectrum": 0.60,
 		},
 	},
@@ -264,7 +268,7 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_fixture": "bar",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "planted",
-			"co2_level": 0.85,
+			"co2_level": 0.7,
 			"light_spectrum": 0.75,
 		},
 	},

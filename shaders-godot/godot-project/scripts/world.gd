@@ -911,6 +911,7 @@ func _process(dt: float) -> void:
 	if _ambient_due:
 		_drift_floaters(adt)
 		_sway_surface_plants(adt)
+		_tick_foliage_gust(adt)
 
 	# Floating-plant growth: a light + nutrient + grazing driven step that
 	# spreads the surface mat when conditions favor it and thins it back when
@@ -919,6 +920,73 @@ func _process(dt: float) -> void:
 	if _duckweed_accum >= FLOATER_GROWTH_INTERVAL:
 		_duckweed_accum = 0.0
 		_floater_growth_step()
+
+
+func _tick_foliage_gust(adt: float) -> void:
+	_gust_timer += adt
+	if _gust_timer < _gust_next_s:
+		return
+	_gust_timer = 0.0
+	_gust_next_s = randf_range(28.0, 52.0)
+	if sim == null:
+		return
+	var dir := Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+	if dir.length_squared() < 1e-4:
+		return
+	dir = dir.normalized()
+	for p in sim.plants:
+		if is_instance_valid(p) and p.has_method("apply_gust_tilt"):
+			p.apply_gust_tilt(Vector2(dir.x, dir.z), randf_range(0.35, 0.75))
+
+
+func _lily_pad_shade_at(world_pos: Vector3) -> float:
+	var weight: float = 0.0
+	var r2: float = WorldWaterVisuals.LOCAL_SHADE_RADIUS * WorldWaterVisuals.LOCAL_SHADE_RADIUS
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		if not lp.has_method("effective_shade_radius"):
+			continue
+		var shade_r: float = float(lp.call("effective_shade_radius"))
+		if shade_r <= 0.01:
+			continue
+		var lp_pos: Vector3 = lp.global_position
+		var dx: float = lp_pos.x - world_pos.x
+		var dz: float = lp_pos.z - world_pos.z
+		var d2: float = dx * dx + dz * dz
+		if d2 > r2:
+			continue
+		var falloff: float = 1.0 - sqrt(d2) / WorldWaterVisuals.LOCAL_SHADE_RADIUS
+		weight += falloff * shade_r * 0.42
+	return clampf(weight / 2.5, 0.0, 0.55)
+
+
+func query_lily_pads_in_radius(pos: Vector3, radius: float) -> Array:
+	var out: Array = []
+	var r2: float = radius * radius
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		var lp_pos: Vector3 = lp.global_position
+		if lp.has_method("surface_rest_position"):
+			lp_pos = lp.surface_rest_position()
+		var dx: float = lp_pos.x - pos.x
+		var dz: float = lp_pos.z - pos.z
+		if dx * dx + dz * dz <= r2:
+			out.append(lp)
+	return out
+
+
+func _nudge_lily_pads_near(pos: Vector3, radius: float = 1.4) -> void:
+	var r2: float = radius * radius
+	for lp in _lily_pads:
+		if not is_instance_valid(lp):
+			continue
+		var lp_pos: Vector3 = lp.global_position
+		var dx: float = lp_pos.x - pos.x
+		var dz: float = lp_pos.z - pos.z
+		if dx * dx + dz * dz <= r2 and lp.has_method("nudge_ripple"):
+			lp.nudge_ripple(clampf(1.4 - sqrt(dx * dx + dz * dz) / radius, 0.35, 1.0))
 
 
 func _floater_glass_margin(fp: FloatingPlant) -> float:
@@ -1011,6 +1079,7 @@ func _drift_floaters(adt: float) -> void:
 			# Return jet pushes mats away from the intake corner.
 			drift_vec = -jet.normalized() * 0.028
 	drift_vec += Vector3(sin(_floater_t * 0.08), 0, cos(_floater_t * 0.06)) * 0.018
+	surface_drift_vec = drift_vec
 	for f in _floaters:
 		if not is_instance_valid(f):
 			_dead_floaters_scratch.append(f)
@@ -4505,6 +4574,9 @@ func _spawn_floaters() -> void:
 
 var _floaters: Array = []
 var _floater_t: float = 0.0
+var surface_drift_vec: Vector3 = Vector3.ZERO
+var _gust_timer: float = 0.0
+var _gust_next_s: float = 35.0
 var _duckweed_accum: float = 0.0
 var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
 var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
@@ -5073,6 +5145,7 @@ func _light_penetration_uncached(world_pos: Vector3) -> float:
 	var nearby: Array = query_floaters_in_radius(
 		world_pos, WorldWaterVisuals.LOCAL_SHADE_RADIUS, true)
 	var local_shade: float = WorldWaterVisuals.local_floater_shade_at(world_pos, nearby)
+	local_shade = maxf(local_shade, _lily_pad_shade_at(world_pos))
 	return WorldWaterVisuals.light_penetration(
 		local_shade, floater_coverage(), bloom, tannins)
 
@@ -5377,6 +5450,7 @@ func restore_floaters(arr: Variant) -> void:
 # and fades. Cheap; we cap concurrent ripples informally via short
 # lifespan rather than an explicit pool.
 func spawn_burst_ripple(pos: Vector3, intensity: float = 1.0) -> void:
+	_nudge_lily_pads_near(pos, 1.2 + intensity * 0.35)
 	# Intensity scales the final ring size + alpha so different event types
 	# can fire visually distinct ripples without each caller building its
 	# own MeshInstance3D. Predation strikes near surface → 1.4; fish

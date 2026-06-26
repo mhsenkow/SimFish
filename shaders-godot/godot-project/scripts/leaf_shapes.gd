@@ -727,6 +727,56 @@ static func build_seed_pod(color: Color) -> Array:
 	return nodes
 
 
+# Cattail / emergent stem — brown cigar spike above the meniscus.
+static func build_spike_bud(color: Color) -> Array:
+	var nodes: Array = []
+	for i in 3:
+		var seg := MeshInstance3D.new()
+		seg.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.38))
+		seg.material_override = VoxelMat.make_foliage(color.darkened(0.15 + float(i) * 0.05))
+		seg.position = Vector3(0, float(i) * VOXEL_SIZE * 0.42, 0)
+		nodes.append(seg)
+	return nodes
+
+
+static func build_spike_flower(stalk_color: Color, tip_color: Color) -> Array:
+	var nodes: Array = build_spike_bud(stalk_color.darkened(0.1))
+	var tip := MeshInstance3D.new()
+	tip.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.42, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.42))
+	tip.material_override = VoxelMat.make_foliage(tip_color)
+	tip.position = Vector3(0, VOXEL_SIZE * 1.35, 0)
+	nodes.append(tip)
+	return nodes
+
+
+# Crypt / rosette — low spathe hugging the crown.
+static func build_crypt_bud(color: Color) -> Array:
+	var nodes: Array = []
+	var wrap := MeshInstance3D.new()
+	wrap.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9))
+	wrap.material_override = VoxelMat.make_foliage(color.darkened(0.2))
+	wrap.position = Vector3(0, VOXEL_SIZE * 0.05, 0)
+	nodes.append(wrap)
+	return nodes
+
+
+static func build_crypt_flower(petal_color: Color, center_color: Color) -> Array:
+	var nodes: Array = []
+	var center := MeshInstance3D.new()
+	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.35))
+	center.material_override = VoxelMat.make_foliage(center_color)
+	center.position = Vector3(0, VOXEL_SIZE * 0.12, 0)
+	nodes.append(center)
+	for i in 4:
+		var angle: float = float(i) / 4.0 * TAU
+		var petal := MeshInstance3D.new()
+		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.32))
+		petal.material_override = VoxelMat.make_foliage(petal_color)
+		petal.position = Vector3(cos(angle) * VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.1, sin(angle) * VOXEL_SIZE * 0.38)
+		nodes.append(petal)
+	return nodes
+
+
 # ---- Color helpers ----
 
 # Compute leaf voxel color based on position along the leaf (t: 0=base, 1=tip),

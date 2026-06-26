@@ -1296,7 +1296,8 @@ func _process(dt: float) -> void:
 		pass
 	else:
 		_process_mouse_input(dt)
-	
+	_update_plant_hover_meter()
+
 	# Follow-cam: smoothly track the followed creature. Use the
 	# frame-rate-independent lerp formula `1 - exp(-k*dt)` instead of the
 	# naive `clampf(dt * k, ...)` so the follow feels equally smooth at 30,
@@ -1415,6 +1416,9 @@ func _process_mouse_input(dt: float) -> void:
 			else:
 				_drag_mode = "orbit"
 	elif not any_btn and _orbiting:
+		if _drag_button == MOUSE_BUTTON_LEFT and _drag_mode == "orbit" \
+				and _drag_total < DRAG_DEADZONE_PX and not _aquascape.is_active:
+			_try_pick_plant_at(_last_mouse)
 		_orbiting = false
 		_aquascape.end_drag()
 		_drag_mode = ""
@@ -5193,6 +5197,11 @@ func _collect_water_alert_notifications() -> void:
 # a RichTextLabel showing one event per line, newest first.
 var _story_popup: PanelContainer = null
 var _story_list: RichTextLabel = null
+var _plant_inspector: PanelContainer = null
+var _plant_inspector_body: Label = null
+var _plant_hover: Plant = null
+var _plant_hover_meter: Control = null
+var _plant_hover_bar: ProgressBar = null
 
 
 func _ensure_story_popup() -> void:
@@ -5271,6 +5280,141 @@ func _show_story_popup(_chip_color: Color) -> void:
 		(vp.x - _story_popup.size.x) * 0.5, 56.0)
 	_story_popup.visible = true
 	_chip_popup_key = "mood"
+
+
+func _try_pick_plant_at(screen_pos: Vector2) -> void:
+	if _sim == null or camera == null:
+		return
+	var picked: Plant = _ray_pick_plant(screen_pos)
+	if picked == null:
+		if _plant_inspector != null:
+			_plant_inspector.visible = false
+		return
+	_show_plant_inspector(picked)
+
+
+func _ray_pick_plant(screen_pos: Vector2) -> Plant:
+	var sv_pos: Vector2 = _window_mouse_to_viewport(screen_pos)
+	var ro: Vector3 = camera.project_ray_origin(sv_pos)
+	var rd: Vector3 = camera.project_ray_normal(sv_pos)
+	var best: Plant = null
+	var best_d2: float = 2.25
+	for p in _sim.plants:
+		if not is_instance_valid(p):
+			continue
+		var pt: Vector3 = p.global_position + Vector3(0, p.top_world_y() * 0.45, 0)
+		var t: float = clampf((pt - ro).dot(rd), 0.0, 120.0)
+		var closest: Vector3 = ro + rd * t
+		var d2: float = closest.distance_squared_to(pt)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = p
+	return best
+
+
+func _ensure_plant_inspector() -> void:
+	if _plant_inspector != null and is_instance_valid(_plant_inspector):
+		return
+	_plant_inspector = PanelContainer.new()
+	_plant_inspector.visible = false
+	_plant_inspector.mouse_filter = Control.MOUSE_FILTER_STOP
+	_plant_inspector.custom_minimum_size = Vector2(320, 120)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.09, 0.08, 0.94)
+	style.border_color = Color(0.35, 0.55, 0.42, 0.65)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	_plant_inspector.add_theme_stylebox_override("panel", style)
+	var vbox := VBoxContainer.new()
+	_plant_inspector.add_child(vbox)
+	_plant_inspector_body = Label.new()
+	_plant_inspector_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_plant_inspector_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	PanelTheme.apply_font(_plant_inspector_body, PanelTheme.FONT_SANS, PanelTheme.SIZE_BODY)
+	vbox.add_child(_plant_inspector_body)
+	add_child(_plant_inspector)
+
+
+func _show_plant_inspector(plant: Plant) -> void:
+	_ensure_plant_inspector()
+	if not plant.has_method("get_growth_inspector"):
+		return
+	var info: Dictionary = plant.get_growth_inspector()
+	var diag: Dictionary = info.get("diag", {})
+	var lines: PackedStringArray = []
+	lines.append(String(info.get("species", "Plant")))
+	lines.append("Health %d%% · growth to next voxel %d%%" % [
+		int(round(float(info.get("health", 0.0)) * 100.0)),
+		int(round(float(info.get("growth_pct", 0.0)))),
+	])
+	lines.append("Limiting: %s" % String(info.get("limiting_text", "balanced")))
+	if not diag.is_empty():
+		lines.append("%.1fs per voxel · light %.0f%% co₂ %.0f%%" % [
+			float(diag.get("seconds_per_voxel", 0.0)),
+			float(diag.get("f_light", 0.0)) * 100.0,
+			float(diag.get("f_co2", 0.0)) * 100.0,
+		])
+	_plant_inspector_body.text = "\n".join(lines)
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	_plant_inspector.position = Vector2((vp.x - _plant_inspector.size.x) * 0.5, vp.y - 150.0)
+	_plant_inspector.visible = true
+
+
+func _ensure_plant_hover_meter() -> void:
+	if _plant_hover_meter != null and is_instance_valid(_plant_hover_meter):
+		return
+	_plant_hover_meter = Control.new()
+	_plant_hover_meter.visible = false
+	_plant_hover_meter.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_plant_hover_meter.custom_minimum_size = Vector2(64, 10)
+	add_child(_plant_hover_meter)
+	_plant_hover_bar = ProgressBar.new()
+	_plant_hover_bar.show_percentage = false
+	_plant_hover_bar.custom_minimum_size = Vector2(64, 8)
+	_plant_hover_bar.max_value = 100.0
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.08, 0.12, 0.10, 0.55)
+	bg.set_corner_radius_all(3)
+	_plant_hover_bar.add_theme_stylebox_override("background", bg)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = Color(0.45, 0.92, 0.62, 0.92)
+	fill.set_corner_radius_all(3)
+	_plant_hover_bar.add_theme_stylebox_override("fill", fill)
+	_plant_hover_meter.add_child(_plant_hover_bar)
+
+
+func _update_plant_hover_meter() -> void:
+	if _sim == null or camera == null or _aquascape.is_active or _orbiting \
+			or _is_touch_active():
+		if _plant_hover_meter != null:
+			_plant_hover_meter.visible = false
+		_plant_hover = null
+		return
+	var picked: Plant = _ray_pick_plant(_last_mouse)
+	if picked == null:
+		if _plant_hover_meter != null:
+			_plant_hover_meter.visible = false
+		_plant_hover = null
+		return
+	_plant_hover = picked
+	_ensure_plant_hover_meter()
+	var pct: float = 0.0
+	if picked.has_method("get_growth_inspector"):
+		pct = float(picked.get_growth_inspector().get("growth_pct", 0.0))
+	_plant_hover_bar.value = pct
+	var anchor: Vector3 = picked.global_position + Vector3(0, picked.top_world_y() + 0.25, 0)
+	var screen: Vector2 = camera.unproject_position(anchor)
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if screen.x < -40.0 or screen.y < -40.0 or screen.x > vp.x + 40.0 or screen.y > vp.y + 40.0:
+		_plant_hover_meter.visible = false
+		return
+	_plant_hover_meter.position = screen + Vector2(-32.0, -18.0)
+	_plant_hover_meter.modulate.a = lerpf(_plant_hover_meter.modulate.a, 1.0, 0.18)
+	_plant_hover_meter.visible = true
 
 
 var _water_popup: PanelContainer = null

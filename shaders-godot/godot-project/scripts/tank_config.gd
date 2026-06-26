@@ -12,9 +12,9 @@ extends Node
 
 # ---- Rendering parameters ----
 # Internal SubViewport resolution. Smaller = more pixelated / chunkier.
-# Common choices: 256x144 (chunky), 384x216, 512x288 (default), 768x432.
-var render_width: int = 512
-var render_height: int = 288
+# Common choices: 256x144 (chunky), 512x288 (balanced), 768x432, 1024x576 (default).
+var render_width: int = 1024
+var render_height: int = 576
 # Palette quantize shader strength.
 var dither_strength: float = 0.85
 # When true, dither strength varies by region (heavy on low-saturation
@@ -76,6 +76,10 @@ var start_matured: bool = false
 # skips to a cycled, mature-looking tank (pairs with start_matured patina).
 var cycle_start_mode: String = "fresh"
 var plant_youth_scale: float = 0.52
+# Step 0 / #21: log median seconds-per-voxel every ~10s when true.
+var debug_growth_logging: bool = false
+# #26: tint plants by limiting factor (teaching overlay).
+var plant_limit_overlay: bool = false
 # Volumetric fog parameters.
 var fog_density: float = 0.02
 var fog_anisotropy: float = 0.3
@@ -133,7 +137,7 @@ var material_weight_water: float = 0.75
 # Camera.
 var camera_fov: float = 50.0
 # Anti-aliasing on the SubViewport. 0=off, 1=2x, 2=4x, 3=8x.
-var msaa: int = 0
+var msaa: int = 2
 # Camera state - preserved across scene reloads so changing settings doesn't
 # snap the view back to the default. Saved by main.gd.save_camera_state()
 # right before a panel triggers reload_current_scene.
@@ -419,7 +423,7 @@ var music_breathe_lfo: float = 0.35
 
 # ---- Music sync (tank reacts to Spotify / local audio) ----
 var music_sync_enabled: bool = false
-var music_sync_intensity: float = 0.75
+var music_sync_intensity: float = 1.0
 var music_sync_fish: bool = true
 var music_sync_lights: bool = true
 var music_sync_color: bool = true
@@ -2058,6 +2062,8 @@ func save_to_disk() -> void:
 	cfg.set_value("fauna", "auto_feed", auto_feed_fauna)
 	cfg.set_value("ecology", "cycle_start_mode", cycle_start_mode)
 	cfg.set_value("ecology", "plant_youth_scale", plant_youth_scale)
+	cfg.set_value("ecology", "debug_growth_logging", debug_growth_logging)
+	cfg.set_value("ecology", "plant_limit_overlay", plant_limit_overlay)
 	cfg.set_value("fauna", "schooling_mult", fauna_schooling_mult)
 	cfg.set_value("fauna", "separation_mult", fauna_separation_mult)
 	cfg.set_value("fauna", "wander_mult", fauna_wander_mult)
@@ -2289,6 +2295,8 @@ func load_from_disk() -> void:
 	auto_feed_fauna = cfg.get_value("fauna", "auto_feed", auto_feed_fauna)
 	cycle_start_mode = cfg.get_value("ecology", "cycle_start_mode", cycle_start_mode)
 	plant_youth_scale = cfg.get_value("ecology", "plant_youth_scale", plant_youth_scale)
+	debug_growth_logging = not not cfg.get_value("ecology", "debug_growth_logging", debug_growth_logging)
+	plant_limit_overlay = not not cfg.get_value("ecology", "plant_limit_overlay", plant_limit_overlay)
 	if cycle_start_mode == "established":
 		start_matured = true
 	fauna_schooling_mult = cfg.get_value("fauna", "schooling_mult", fauna_schooling_mult)
@@ -2538,8 +2546,8 @@ func reset_to_defaults() -> void:
 	aeration_strength = 0.6
 	aeration_x_frac = 0.0
 	# Render pipeline.
-	render_width = 512
-	render_height = 288
+	render_width = 1024
+	render_height = 576
 	dither_strength = 0.85
 	dither_region_aware = true
 	palette_bank_lock = true
@@ -2569,7 +2577,7 @@ func reset_to_defaults() -> void:
 	material_weight_hardscape = 1.0
 	material_weight_water = 0.75
 	camera_fov = 50.0
-	msaa = 0
+	msaa = 2
 	# Camera view.
 	camera_state_saved = false
 	camera_yaw = -0.55

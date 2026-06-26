@@ -207,13 +207,26 @@ var _t: float = 0.0
 var _world_pos: Vector3 = Vector3.ZERO
 # Transient bend (radians) from a fish brushing past; springs back in tick().
 var _brush_bend: Vector2 = Vector2.ZERO
+# Last-tick growth diagnostics — surfaced by tap-a-plant inspector (#21).
+var _growth_diag: Dictionary = {}
+var _gust_tilt: Vector2 = Vector2.ZERO
+var _mood_pulse_t: float = 0.0
+var _height_ghost_y: float = -1.0
+var _height_ghost_timer: float = 0.0
+var _height_ghost_marker: MeshInstance3D = null
+var _root_bubble_t: float = 0.0
+var _detritus_fleck_nodes: Array[MeshInstance3D] = []
+const GROWTH_FLOOR: float = 0.022
+const MIN_HEALTH_FOR_FLOOR: float = 0.4
 
 
 # Called by a passing fish to deflect the plant. world_dir is the fish's
 # horizontal travel direction; amount scales with its speed/size.
 func brush(world_dir: Vector3, amount: float) -> void:
-	var add := Vector2(world_dir.x, world_dir.z) * clampf(amount, 0.0, 0.4)
-	_brush_bend = (_brush_bend + add).limit_length(0.4)
+	var add := Vector2(world_dir.x, world_dir.z) * clampf(amount, 0.65, 0.72)
+	_brush_bend = (_brush_bend + add).limit_length(0.55)
+	if amount > 0.22 and _health_smooth > 0.55 and randf() < 0.35:
+		_release_brush_bubbles()
 # Surface for "emerged"/seeding check. Set by world.gd from WATER_HEIGHT
 # at spawn so plant.gd doesn't need to know world geometry constants.
 var water_surface_y: float = 6.5
@@ -260,6 +273,7 @@ var flower_stage: int = FlowerStage.NONE
 var _flower_timer: float = 0.0
 var _flower_open_frac: float = 0.0
 var _flower_node: Node3D = null
+var _flower_silhouette: String = "default"
 var _flower_petal_color: Color = Color.WHITE
 var _flower_center_color: Color = Color.YELLOW
 
@@ -396,6 +410,8 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_build_holdfast_anchor()
 	for i in initial_height:
 		_grow_one()
+	_warm_start_growth_vitals()
+	_apply_sway_personality()
 
 
 # Pull TankConfig.substrate_type once and translate it into the per-plant
@@ -570,6 +586,213 @@ func _ready() -> void:
 	_pearling_eligible = (get_instance_id() % 5) == 0
 	_pearling_opacity = randf_range(0.12, 0.28)
 	_pearling_strength = randf_range(0.45, 1.0)
+	_warm_start_growth_vitals()
+	_apply_sway_personality()
+
+
+func _warm_start_growth_vitals() -> void:
+	_starch = maxf(_starch, 0.4)
+	var sim_v: Node = _find_sim()
+	if sim_v == null:
+		return
+	var w: Node = sim_v.get_parent()
+	if w == null or not w.has_method("light_penetration_at"):
+		return
+	var dl: float = float(sim_v.daylight()) if sim_v.has_method("daylight") else 0.5
+	var lp: float = float(w.light_penetration_at(_world_pos if _world_pos != Vector3.ZERO else global_position))
+	_light_avg = maxf(_light_avg, lp * dl * 0.85)
+
+
+func _softmin2(a: float, b: float, k: float = 0.12) -> float:
+	var ea: float = exp(-clampf(a, 0.0, 1.0) / k)
+	var eb: float = exp(-clampf(b, 0.0, 1.0) / k)
+	return -k * log(ea + eb)
+
+
+func _softmin_chain(factors: Array, k: float = 0.10) -> float:
+	if factors.is_empty():
+		return 1.0
+	var acc: float = clampf(float(factors[0]), 0.0, 1.0)
+	for i in range(1, factors.size()):
+		acc = _softmin2(acc, clampf(float(factors[i]), 0.0, 1.0), k)
+	return acc
+
+
+func _shade_light_stack(light_pen: float) -> float:
+	var shade_light: float = light_pen * _shade_mult
+	if _floater_shade_melt_t > 8.0:
+		shade_light *= lerpf(1.0, 0.62, clampf((_floater_shade_melt_t - 8.0) / 12.0, 0.0, 1.0))
+	return clampf(shade_light, 0.22, 1.0)
+
+
+func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node) -> Dictionary:
+	var shade_light: float = _shade_light_stack(light_pen)
+	var f_light: float = clampf(_light_avg / 0.48, 0.18, 1.0) * shade_light
+	var f_nutrient: float = clampf(0.35 + 0.65 * growth_nutrient, 0.0, 1.0)
+	var f_co2: float = 1.0
+	if not is_epiphyte and co2_demand > 0.3 and sim_v != null \
+			and sim_v.has_method("dissolved_co2_level"):
+		var co2v: float = float(sim_v.dissolved_co2_level())
+		f_co2 = clampf(co2v / (co2v + co2_demand * 0.5), 0.2, 1.0)
+	var f_starch: float = lerpf(0.55, 1.0, clampf(_starch / 0.2, 0.0, 1.0))
+	var f_temp: float = 1.0
+	if sim_v != null:
+		var w_temp: Node = sim_v.get_parent()
+		if w_temp != null and w_temp.has_method("effective_warmth_at"):
+			var warmth: float = float(w_temp.effective_warmth_at(_world_pos))
+			f_temp = clampf(1.0 - absf(warmth - temp_opt) * 1.4, 0.35, 1.15)
+	var core: float = _softmin_chain([f_nutrient, f_light, f_co2, f_starch, f_temp])
+	var effective_rate: float = growth_rate * core
+	if sim_v != null and sim_v.has_method("sim_day"):
+		var mature: float = clampf(float(sim_v.sim_day()) / 30.0, 0.0, 1.0)
+		if growth_rate > 0.20 and not is_epiphyte and not is_carpet:
+			effective_rate *= lerpf(1.25, 0.80, mature)
+		elif is_epiphyte or is_carpet or growth_rate < 0.12:
+			effective_rate *= lerpf(0.80, 1.20, mature)
+	if health > MIN_HEALTH_FOR_FLOOR:
+		effective_rate = maxf(effective_rate, GROWTH_FLOOR)
+	var limiting: String = "balanced"
+	var mins: Dictionary = {
+		"light": f_light, "nutrient": f_nutrient, "co2": f_co2,
+		"starch": f_starch, "temperature": f_temp,
+	}
+	var worst: float = 2.0
+	for key in mins:
+		var v: float = float(mins[key])
+		if v < worst:
+			worst = v
+			limiting = key
+	var diag: Dictionary = {
+		"effective_rate": effective_rate,
+		"seconds_per_voxel": 1.0 / maxf(effective_rate, 1e-6),
+		"nutrient_mult": growth_nutrient,
+		"f_light": f_light,
+		"f_co2": f_co2,
+		"f_starch": f_starch,
+		"f_temp": f_temp,
+		"limiting_factor": limiting,
+		"shade_light": shade_light,
+		"growth_progress": growth_progress,
+		"health": health,
+	}
+	_growth_diag = diag
+	return diag
+
+
+func get_growth_inspector() -> Dictionary:
+	var label: String = common_name if common_name != "" else plant_name
+	var lim: String = String(_growth_diag.get("limiting_factor", "balanced"))
+	var lim_text: String = lim
+	match lim:
+		"light": lim_text = "light-limited"
+		"nutrient": lim_text = "needs richer substrate"
+		"co2": lim_text = "CO₂-starved"
+		"starch": lim_text = "building reserves"
+		"temperature": lim_text = "temperature-stressed"
+	return {
+		"species": label,
+		"health": health,
+		"growth_pct": growth_progress * 100.0,
+		"limiting_factor": lim,
+		"limiting_text": lim_text,
+		"diag": _growth_diag.duplicate(),
+	}
+
+
+func _apply_sway_personality() -> void:
+	var amp: float = sway_amplitude
+	var flutter: float = 0.03
+	var tip_mult: float = 2.15
+	match leaf_form:
+		"needle", "downy":
+			amp = maxf(amp, 0.14)
+			flutter = 0.05
+		"ribbon", "lance", "pinnate":
+			amp = maxf(amp, 0.22)
+			tip_mult = 2.45
+			if max_height >= 10:
+				tip_mult = 2.85
+		"paddle", "spade", "lobed":
+			amp = minf(amp, 0.12)
+			flutter = 0.018
+		"column":
+			amp = minf(amp, 0.10)
+	if is_carpet:
+		amp = maxf(amp, 0.10)
+		flutter = 0.065
+		if _foliage_mat != null:
+			_foliage_mat.set_shader_parameter("flutter_speed", 4.8)
+			_foliage_mat.set_shader_parameter("sway_speed", 2.2)
+	if _foliage_mat != null:
+		_foliage_mat.set_shader_parameter("sway_amplitude", amp)
+		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter)
+		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult)
+
+
+func _visual_youth_scale() -> float:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	var youth: float = 1.0
+	if cfg != null and String(cfg.get("cycle_start_mode")) == "fresh":
+		youth = clampf(float(cfg.get("plant_youth_scale")), 0.25, 1.0)
+	var maturity: float = clampf(float(current_height) / float(maxi(1, max_height)), 0.0, 1.0)
+	return lerpf(youth, 1.0, pow(maturity, 0.55))
+
+
+func _release_brush_bubbles() -> void:
+	if not _pearling_eligible:
+		return
+	if _pearling_particles == null:
+		_setup_pearling()
+	if _pearling_particles != null:
+		_pearling_particles.restart()
+		_pearling_particles.emitting = true
+
+
+func _spawn_growth_sparkle() -> void:
+	var spark := MeshInstance3D.new()
+	spark.mesh = VoxelMat.get_box(Vector3(0.06, 0.06, 0.06))
+	var col := Color8(180, 240, 150, 0.9)
+	spark.material_override = VoxelMat.make_foliage(col)
+	spark.position = Vector3(0, _get_stem_top() + VOXEL_SIZE * 0.2, 0)
+	add_child(spark)
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(spark, "position", spark.position + Vector3(0, 0.12, 0), 0.45)
+	var mat: ShaderMaterial = spark.material_override as ShaderMaterial
+	if mat != null:
+		var end := Color(col.r, col.g, col.b, 0.0)
+		tw.tween_method(func(c: Color): mat.set_shader_parameter("albedo", c), col, end, 0.45)
+	tw.chain().tween_callback(spark.queue_free)
+
+
+func _tick_plant_mood(dt: float) -> void:
+	if is_dying or _melt_active:
+		return
+	_mood_pulse_t += dt
+	if health > 0.82 and _mood_pulse_t > randf_range(18.0, 32.0):
+		_mood_pulse_t = 0.0
+		var tw := create_tween()
+		tw.tween_property(self, "scale", Vector3.ONE * 1.03, 0.8) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		tw.tween_property(self, "scale", Vector3.ONE, 1.2) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	elif health < 0.35:
+		rotation.x = lerpf(rotation.x, 0.08, dt * 0.6)
+
+
+func apply_gust_tilt(vec: Vector2, strength: float) -> void:
+	_gust_tilt = (_gust_tilt + vec * strength).limit_length(0.12)
+
+
+func _update_height_ghost_marker() -> void:
+	if _height_ghost_y < 0.0:
+		return
+	if _height_ghost_marker == null:
+		_height_ghost_marker = MeshInstance3D.new()
+		_height_ghost_marker.mesh = VoxelMat.get_box(Vector3(0.22, 0.04, 0.22))
+		var ghost_mat: ShaderMaterial = VoxelMat.make_foliage(Color(0.5, 0.8, 0.5, 0.22))
+		_height_ghost_marker.material_override = ghost_mat
+		add_child(_height_ghost_marker)
+	_height_ghost_marker.position = Vector3(0, _height_ghost_y - global_position.y, 0)
 
 
 func _build_initial_roots() -> void:
@@ -853,15 +1076,21 @@ func _spawn_meniscus_break() -> void:
 	var stem_top: float = _get_stem_top()
 	if stem_top >= surface_local_y + VOXEL_SIZE * 1.6:
 		return
-	var break_count: int = 1 + (1 if randf() < 0.55 else 0)
+	var break_count: int = 2 + (1 if randf() < 0.35 else 0)
 	var wet_col: Color = (ramp[4] if ramp.size() > 4 else ramp[-1] as Color).lightened(0.16)
 	for i in break_count:
 		var y: float = maxf(stem_top, surface_local_y - VOXEL_SIZE * 0.12) \
 			+ float(i + 1) * VOXEL_SIZE * 0.82
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.82, VOXEL_SIZE * 0.88, VOXEL_SIZE * 0.82))
+			VOXEL_SIZE * (0.88 if i < break_count - 1 else 0.96),
+			VOXEL_SIZE * (0.88 if i < break_count - 1 else 1.05),
+			VOXEL_SIZE * (0.88 if i < break_count - 1 else 0.96)))
 		mi.material_override = VoxelMat.make_foliage(wet_col)
+		if i == break_count - 1:
+			var rim: ShaderMaterial = (mi.material_override as ShaderMaterial).duplicate()
+			rim.set_shader_parameter("color_vibrancy", 1.42)
+			mi.material_override = rim
 		mi.position = Vector3(
 			randf_range(-VOXEL_SIZE * 0.06, VOXEL_SIZE * 0.06),
 			y,
@@ -1096,7 +1325,7 @@ func _ensure_foliage_batch() -> VoxelBatch:
 			_foliage_mat = ShaderMaterial.new()
 			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
 			VoxelMat.register_foliage_mm(_foliage_mat)
-			_foliage_mat.set_shader_parameter("tip_sway_mult", 2.15)
+		_apply_sway_personality()
 		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
 	return _foliage_batch
 
@@ -1266,7 +1495,7 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 	# Apply emersed-form size boost when the plant is still in its first
 	# minute. Linear fade so the transition reads as growth changing form.
 	var emersed_k: float = clampf(_emersed_remaining / EMERSED_DURATION_S, 0.0, 1.0)
-	var lsm: float = clampf(leaf_size_mult * (1.0 + emersed_k * 0.15), 0.5, 1.8)
+	var lsm: float = clampf(leaf_size_mult * _visual_youth_scale() * (1.0 + emersed_k * 0.15), 0.5, 1.8)
 	var mods: Dictionary = _leaf_mods()
 	# Stem internode — visible thin stem segment for whorled-leaf plants
 	# (Rotala, Limnophila). Without this they read as a stack of leaves
@@ -1806,13 +2035,21 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# inhabitants instead of ignoring them.
 	if _brush_bend.length_squared() > 1e-6:
 		_brush_bend = _brush_bend.lerp(Vector2.ZERO, clampf(dt * 3.5, 0.0, 1.0))
+	if _gust_tilt.length_squared() > 1e-6:
+		_gust_tilt = _gust_tilt.lerp(Vector2.ZERO, clampf(dt * 1.8, 0.0, 1.0))
 	# Circumnutation (#5): a very slow elliptical nod of the growing tip,
 	# strongest while the plant is still putting on height, negligible once it
 	# caps. Subtle (~0.6°) so it reads as "alive and reaching," not wobbling.
 	_circumnutation_phase += dt * 0.18
 	var nutation: float = 0.012 if current_height < max_height else 0.004
-	rotation.z = flow_bias * 0.04 + _brush_bend.x + sin(_circumnutation_phase) * nutation
-	rotation.x = _brush_bend.y + cos(_circumnutation_phase) * nutation * 0.7
+	rotation.z = flow_bias * 0.04 + _brush_bend.x + _gust_tilt.x + sin(_circumnutation_phase) * nutation
+	rotation.x = _brush_bend.y + _gust_tilt.y + cos(_circumnutation_phase) * nutation * 0.7
+	_height_ghost_timer += dt
+	if _height_ghost_timer > 180.0:
+		_height_ghost_timer = 0.0
+		_height_ghost_y = global_position.y + _get_stem_top()
+		_update_height_ghost_marker()
+	_tick_plant_mood(dt)
 
 	# ---- Health tracking ----
 	# Epiphytes don't tap the substrate grid — they cling to a host and
@@ -1821,12 +2058,15 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# substrate.consume_at() call further down so they don't drain the
 	# soil under wherever they happen to be hovering.
 	var nutrient_mult: float
+	var growth_nutrient: float
 	if is_epiphyte:
 		nutrient_mult = EPIPHYTE_NUTRIENT_MULT
+		growth_nutrient = EPIPHYTE_NUTRIENT_MULT
 	else:
 		var available: float = substrate.get_at(_world_pos)
-		nutrient_mult = clampf(
+		growth_nutrient = clampf(
 			(available - substrate.NUTRIENT_BASELINE) / 0.4, 0.0, 1.0)
+		nutrient_mult = growth_nutrient
 
 	# Shade competition. Refresh every ~4-6 sim seconds (cheap to scan
 	# sibling plants, but no need to do it per tick — taller neighbors
@@ -1839,6 +2079,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_shade_check_t = randf_range(4.0, 6.0)
 		_recompute_shade()
 	nutrient_mult *= _shade_mult
+	growth_nutrient *= _shade_mult
 
 	var sim_v: Node = _find_sim()
 	var light_pen: float = 1.0
@@ -1866,6 +2107,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# CO2 still polled live (the user can change it at runtime via slider).
 	if not is_epiphyte and _substrate_boost != 1.0:
 		nutrient_mult *= _substrate_boost
+		growth_nutrient *= _substrate_boost
 	if not is_epiphyte and co2_demand > 0.4:
 		var sim_d_n: Node = _find_sim()
 		if sim_d_n != null:
@@ -1885,17 +2127,23 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			and sim_v.water_chemistry != null:
 		var no3_wc: float = float(sim_v.water_chemistry.nitrate)
 		nutrient_mult += clampf(no3_wc / 1.5, 0.0, 1.0) * 0.45
+		growth_nutrient += clampf(no3_wc / 1.5, 0.0, 1.0) * 0.45
 	if not is_epiphyte:
 		nutrient_mult = clampf(nutrient_mult, 0.0, 1.5)
+		growth_nutrient = clampf(growth_nutrient, 0.0, 1.5)
 
 	# Allelopathy + root oxygenation (#37, #38)
 	if not is_epiphyte:
 		var allelo: float = substrate.get_allelochemical_at(_world_pos)
 		if allelo > 0.05:
-			nutrient_mult *= 1.0 - clampf(allelo * 0.45, 0.0, 0.35)
+			var allelo_pen: float = 1.0 - clampf(allelo * 0.45, 0.0, 0.35)
+			nutrient_mult *= allelo_pen
+			growth_nutrient *= allelo_pen
 		var root_o2: float = substrate.get_root_oxygen_at(_world_pos)
 		if root_o2 > 0.1:
-			nutrient_mult *= 1.0 + root_o2 * 0.12
+			var o2_boost: float = 1.0 + root_o2 * 0.12
+			nutrient_mult *= o2_boost
+			growth_nutrient *= o2_boost
 		if allelopathy_strength > 0.05:
 			substrate.add_allelochemical_at(_world_pos, allelopathy_strength * dt * 0.04)
 		if _root_count > 2:
@@ -1944,7 +2192,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		var vitals: Dictionary = sim_v.tank_vitals
 		if int(vitals.get("cycle_phase", 0)) == WaterChemistry.CyclePhase.AMMONIA_SPIKE:
 			target_health = minf(1.0, target_health + 0.08 * nutrient_mult)
-	health = lerpf(health, target_health, dt * 0.03) # slower health changes
+	health = lerpf(health, target_health, dt * (0.05 if target_health > health else 0.025))
 	_health_smooth = lerpf(_health_smooth, health, dt * 0.05)
 
 	# Environmental adaptation: well-fed plants slowly tune growth to local
@@ -2060,33 +2308,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_tick_canopy(dt, nutrient_mult, substrate)
 		return
 
-	var effective_rate: float = growth_rate * (0.4 + 0.8 * nutrient_mult)
-	# Etiolation (#2): low light → leggy slow growth.
-	if _light_avg < 0.38:
-		effective_rate *= lerpf(0.55, 1.0, _light_avg / 0.38)
-	if _starch < 0.1:
-		effective_rate *= 0.25
-	# CO2 growth ceiling (#53) + Liebig's law of the minimum (#54): a plant
-	# can't grow faster than its single scarcest resource allows. High-CO2-
-	# demand species are capped hard when injection is low, so a high-tech
-	# (dosed) tank visibly outgrows a low-tech one, and every plant is bounded
-	# by the worst of {light, CO2}.
-	if not is_epiphyte:
-		var lim_light: float = clampf(_light_avg / 0.45, 0.15, 1.0)
-		var lim_co2: float = 1.0
-		if co2_demand > 0.3 and sim_v != null and sim_v.has_method("dissolved_co2_level"):
-			var co2v: float = float(sim_v.dissolved_co2_level())
-			lim_co2 = clampf(co2v / (co2v + co2_demand * 0.5), 0.2, 1.0)
-		effective_rate *= minf(lim_light, lim_co2)
-	# Succession (#51): fast stems dominate a young tank, then slow rosettes and
-	# epiphytes take over as it matures — a visible multi-week community shift
-	# rather than a static planting.
-	if sim_v != null and sim_v.has_method("sim_day"):
-		var mature: float = clampf(float(sim_v.sim_day()) / 30.0, 0.0, 1.0)
-		if growth_rate > 0.20 and not is_epiphyte and not is_carpet:
-			effective_rate *= lerpf(1.25, 0.80, mature)
-		elif is_epiphyte or is_carpet or growth_rate < 0.12:
-			effective_rate *= lerpf(0.80, 1.20, mature)
+	var growth_diag: Dictionary = _compute_growth_rate(growth_nutrient, light_pen, sim_v)
+	var effective_rate: float = float(growth_diag.get("effective_rate", growth_rate * 0.5))
 	growth_progress += effective_rate * dt
 	if growth_progress >= 1.0:
 		growth_progress = 0.0
@@ -2094,6 +2317,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			return
 		if _try_consume_growth_budget() and _grow_one():
 			_starch = maxf(0.0, _starch - 0.05)
+			_spawn_growth_sparkle()
 			if not is_epiphyte:
 				substrate.consume_at(_world_pos, nutrient_demand)
 			_notify_growth_audio()
@@ -2331,12 +2555,13 @@ func _begin_flowering() -> void:
 	_flower_timer = 0.0
 	has_flower = true
 	_pick_flower_palette()
+	_flower_silhouette = _resolve_flower_silhouette()
 	# Build bud.
 	_flower_node = Node3D.new()
 	_flower_node.name = "Flower"
 	_flower_node.position = Vector3(0, _get_stem_top() + VOXEL_SIZE * 0.15, 0)
 	add_child(_flower_node)
-	var bud_voxels: Array = LeafShapes.build_bud(_flower_petal_color.darkened(0.3))
+	var bud_voxels: Array = _build_flower_bud_voxels()
 	for v in bud_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
@@ -2344,6 +2569,27 @@ func _begin_flowering() -> void:
 		var fl: String = common_name if common_name != "" else plant_name
 		if fl != "":
 			sim_gate.emit_eco_event("flora", "%s flowering — tank cycle paying off." % fl, 1)
+	var amb: Node = get_node_or_null("/root/AmbientAudio")
+	if amb != null and amb.has_method("play_aquarium_event"):
+		amb.play_aquarium_event("story", 0.55)
+
+
+func _resolve_flower_silhouette() -> String:
+	if species_id.contains("cattail") or (emergent_growth and leaf_form == "ribbon"):
+		return "spike"
+	if leaf_form in ["paddle", "spade", "downy"] or species_id.contains("crypt"):
+		return "crypt"
+	return "default"
+
+
+func _build_flower_bud_voxels() -> Array:
+	match _flower_silhouette:
+		"spike":
+			return LeafShapes.build_spike_bud(_flower_petal_color.darkened(0.35))
+		"crypt":
+			return LeafShapes.build_crypt_bud(_flower_petal_color.darkened(0.25))
+		_:
+			return LeafShapes.build_bud(_flower_petal_color.darkened(0.3))
 
 
 # Pick a petal + center color pair, biased by the current tank's light /
@@ -2451,9 +2697,11 @@ func _tick_flowering(dt: float) -> void:
 				_clear_bloom()
 				_build_flower_meshes_once()
 		FlowerStage.OPENING:
-			# Open over 4 seconds.
 			_flower_open_frac = clampf(_flower_timer / 4.0, 0.0, 1.0)
-			LeafShapes.update_flower(bloom_voxels, 7, _flower_open_frac)
+			if _flower_silhouette == "default":
+				LeafShapes.update_flower(bloom_voxels, 7, _flower_open_frac)
+			elif _flower_node != null and is_instance_valid(_flower_node):
+				_flower_node.scale = Vector3.ONE.lerp(Vector3(1.08, 1.12, 1.08), _flower_open_frac)
 			if _flower_timer > 4.0:
 				flower_stage = FlowerStage.MATURE
 				_flower_timer = 0.0
@@ -2490,8 +2738,17 @@ func _tick_flowering(dt: float) -> void:
 func _build_flower_meshes_once() -> void:
 	if _flower_node == null or not is_instance_valid(_flower_node):
 		return
-	var flower_voxels: Array = LeafShapes.build_flower(
-		_flower_petal_color, _flower_center_color, 7, 0.0)
+	var flower_voxels: Array
+	match _flower_silhouette:
+		"spike":
+			flower_voxels = LeafShapes.build_spike_flower(
+				_flower_petal_color.darkened(0.2), _flower_center_color)
+		"crypt":
+			flower_voxels = LeafShapes.build_crypt_flower(
+				_flower_petal_color, _flower_center_color)
+		_:
+			flower_voxels = LeafShapes.build_flower(
+				_flower_petal_color, _flower_center_color, 7, 0.0)
 	for v in flower_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
@@ -2591,6 +2848,8 @@ func _tick_pearling(_dt: float) -> void:
 		pearl_factor *= float(w.light_penetration_at(global_position))
 	var global_damp: float = 1.0
 	var should_pearl: bool = pearl_factor > 0.10
+	if should_pearl and pearl_factor > 0.25:
+		pearl_factor = minf(1.0, pearl_factor * 1.22)
 	if should_pearl and sim_driver.has_method("try_claim_pearling_slot"):
 		global_damp = float(sim_driver.try_claim_pearling_slot(pearl_factor))
 		should_pearl = global_damp > 0.02
@@ -2705,6 +2964,7 @@ func trim_for_aquascape(frac: float) -> Dictionary:
 		return {}
 	var snap: Dictionary = to_save_dict()
 	var remove_n: int = maxi(1, int(ceil(float(voxels.size()) * clampf(frac, 0.05, 0.75))))
+	_spawn_stem_fragment(maxi(2, remove_n))
 	for _i in remove_n:
 		if voxels.is_empty():
 			break
@@ -2974,8 +3234,19 @@ func _graze_leaf_biofilm(amount: int) -> bool:
 		if bio < 0.08:
 			continue
 		st.biofilm = maxf(0.0, bio - 0.35)
+		if float(st.get("gsa", 0.0)) > 0.05:
+			st.gsa = maxf(0.0, float(st.get("gsa", 0.0)) - 0.25)
 		grazed += 1
 	return grazed >= amount
+
+
+func graze_detritus_fleck() -> bool:
+	if _detritus_fleck_nodes.is_empty():
+		return false
+	var fleck: MeshInstance3D = _detritus_fleck_nodes.pop_back()
+	if is_instance_valid(fleck):
+		fleck.queue_free()
+	return true
 
 
 func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> void:
@@ -2983,15 +3254,82 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		var st: Dictionary = _leaf_states[i]
 		st.age_s = float(st.get("age_s", 0.0)) + dt
 		st.biofilm = clampf(float(st.get("biofilm", 0.0)) + dt * 0.012, 0.0, 1.0)
+		if leaf_form in ["paddle", "spade", "lobed"]:
+			st.gsa = clampf(float(st.get("gsa", 0.0)) + dt * 0.007, 0.0, 1.0)
 		if leaf_form in ["needle", "downy", "pinnate"] and sim_v != null:
 			var waste_arr: Variant = sim_v.get("waste")
 			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
 				substrate.add_at(_world_pos, 0.002)
+			_tick_detritus_flecks(dt, sim_v)
+	_tick_root_bubbles(dt, substrate)
 	_visual_tick_t -= dt
 	if _visual_tick_t <= 0.0:
 		_visual_tick_t = 0.25
 		_tick_nyctinasty(sim_v)
 		_tick_dynamic_blush(sim_v)
+		if _foliage_mat != null and leaf_form in ["paddle", "spade", "lobed"]:
+			var film_avg: float = 0.0
+			var gsa_avg: float = 0.0
+			for st in _leaf_states:
+				film_avg += float(st.get("biofilm", 0.0))
+				gsa_avg += float(st.get("gsa", 0.0))
+			if not _leaf_states.is_empty():
+				film_avg /= float(_leaf_states.size())
+				gsa_avg /= float(_leaf_states.size())
+				var film_mix: float = clampf(film_avg * 0.4 + gsa_avg * 0.55, 0.0, 0.65)
+				_foliage_mat.set_shader_parameter("palette_saturation",
+					lerpf(float(_foliage_mat.get_shader_parameter("palette_saturation")),
+						0.72, film_mix))
+				_foliage_mat.set_shader_parameter("palette_warmth",
+					float(_foliage_mat.get_shader_parameter("palette_warmth")) + gsa_avg * 0.18)
+
+
+func _tick_root_bubbles(dt: float, substrate: SubstrateGrid) -> void:
+	if is_epiphyte or _root_count < 3 or is_dying:
+		return
+	var root_o2: float = substrate.get_root_oxygen_at(_world_pos)
+	if root_o2 < 0.12 or _health_smooth < 0.45:
+		return
+	_root_bubble_t += dt
+	if _root_bubble_t < randf_range(2.5, 5.5):
+		return
+	_root_bubble_t = 0.0
+	var bubble := MeshInstance3D.new()
+	bubble.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
+	bubble.material_override = VoxelMat.make_bubble()
+	bubble.position = Vector3(
+		randf_range(-0.12, 0.12), -VOXEL_SIZE * 0.4, randf_range(-0.12, 0.12))
+	add_child(bubble)
+	var tw := create_tween()
+	tw.tween_property(bubble, "position", bubble.position + Vector3(0, 0.35, 0), 1.8) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(bubble, "scale", Vector3.ZERO, 1.8)
+	tw.chain().tween_callback(bubble.queue_free)
+
+
+func _tick_detritus_flecks(dt: float, sim_v: Node) -> void:
+	if _health_smooth < 0.25:
+		return
+	var waste_arr: Variant = sim_v.get("waste")
+	if not (waste_arr is Array) or (waste_arr as Array).is_empty():
+		return
+	if _detritus_fleck_nodes.size() >= 3:
+		return
+	if randf() > dt * 0.08:
+		return
+	var fleck := MeshInstance3D.new()
+	fleck.mesh = VoxelMat.get_box(Vector3(0.05, 0.04, 0.05))
+	fleck.material_override = VoxelMat.make_foliage(Color8(75, 60, 40))
+	var y_off: float = _get_stem_top() * randf_range(0.2, 0.75)
+	fleck.position = Vector3(randf_range(-0.15, 0.15), y_off, randf_range(-0.15, 0.15))
+	add_child(fleck)
+	_detritus_fleck_nodes.append(fleck)
+	var tw := create_tween()
+	tw.tween_interval(randf_range(8.0, 18.0))
+	tw.tween_callback(func():
+		if is_instance_valid(fleck):
+			fleck.queue_free()
+		_detritus_fleck_nodes.erase(fleck))
 
 
 func _tick_age_senescence(dt: float) -> void:
@@ -3051,11 +3389,44 @@ func _tick_nyctinasty(sim_v: Node) -> void:
 	rotation.x = _brush_bend.y + fold * 0.15
 
 
+func _apply_limiting_factor_tint() -> void:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("plant_limit_overlay")):
+		return
+	if _foliage_mat == null:
+		return
+	var lim: String = String(_growth_diag.get("limiting_factor", ""))
+	var tint: Color = Color.WHITE
+	match lim:
+		"light": tint = Color(0.82, 0.88, 1.12)
+		"co2": tint = Color(1.12, 0.82, 0.82)
+		"nutrient": tint = Color(1.08, 0.92, 0.78)
+		_: return
+	_foliage_mat.set_shader_parameter("palette_warmth", (tint.r - 1.0) * 0.35)
+
+
 func _tick_dynamic_blush(sim_v: Node) -> void:
-	if red_potential < 0.05 or _foliage_mat == null:
+	_apply_limiting_factor_tint()
+	if _foliage_mat == null:
+		return
+	var w: Node = sim_v.get_parent() if sim_v != null else null
+	var depth: float = 0.5
+	if w != null and w.get("WATER_HEIGHT") != null:
+		depth = clampf((_world_pos.y - float(w.SUBSTRATE_DEPTH)) / maxf(float(w.WATER_HEIGHT) - float(w.SUBSTRATE_DEPTH), 0.5), 0.0, 1.0)
+	var mature: float = 0.0
+	if sim_v != null:
+		mature = clampf(float(sim_v.tank_age_s) / 3600.0, 0.0, 1.0)
+	_foliage_mat.set_shader_parameter("palette_saturation", lerpf(1.0, 0.78, depth * 0.55))
+	_foliage_mat.set_shader_parameter("palette_warmth", mature * 0.12 - depth * 0.1)
+	if red_potential < 0.05:
 		return
 	var dl: float = sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5
 	var blush: float = clampf(red_potential * dl * _shade_mult, 0.0, 1.0)
+	if dl < 0.35:
+		blush *= 0.35
+	if _shade_mult < 0.8 and red_potential > 0.15:
+		var green_back: float = clampf((1.0 - _shade_mult) * red_potential, 0.0, 0.4)
+		_foliage_mat.set_shader_parameter("color_vibrancy", 1.0 - green_back * 0.22)
 	_foliage_mat.set_shader_parameter("sss_strength",
 		lerpf(0.35, 0.85, blush) * (1.1 - leaf_thickness * 0.4))
 
@@ -3181,9 +3552,29 @@ func _cast_seed() -> bool:
 		seed_pos.z = xz.y
 	# Seed bank (#14): bury seed; germination handled in _tick_seeding.
 	if sim_driver.substrate != null:
+		_spawn_visible_seed_drift(seed_pos)
 		sim_driver.substrate.add_seed_bank_at(seed_pos, 0.35)
 		return true
 	return false
+
+
+func _spawn_visible_seed_drift(seed_pos: Vector3) -> void:
+	var w: Node = _find_sim()
+	if w == null:
+		return
+	var world: Node = w.get_parent()
+	if world == null:
+		return
+	var seed := MeshInstance3D.new()
+	seed.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
+	seed.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
+	seed.global_position = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
+	world.add_child(seed)
+	var land: Vector3 = Vector3(seed_pos.x, float(world.get("SUBSTRATE_DEPTH")) + 0.08, seed_pos.z)
+	var tw := world.create_tween()
+	tw.tween_property(seed, "global_position", land, randf_range(2.5, 4.5)) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_callback(seed.queue_free)
 
 
 func _flower() -> void:
@@ -3191,7 +3582,10 @@ func _flower() -> void:
 	_begin_flowering()
 func get_seed_config() -> Dictionary:
 	_ensure_plant_named()
-	var my_key: String = SpeciesLibrary.make_species_key(get_plant_genome())
+	var my_key: String = ""
+	var lib := get_node_or_null("/root/SpeciesLibrary")
+	if lib != null and lib.has_method("make_species_key"):
+		my_key = String(lib.make_species_key(get_plant_genome()))
 	var base_g: Dictionary = PlantGenome.from_plant(self)
 	base_g["parent_lineage"] = plant_name
 	base_g["parent_keys"] = [my_key] if my_key != "" else []

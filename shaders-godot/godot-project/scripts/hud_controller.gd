@@ -47,7 +47,13 @@ static func flora_chip_subtitle(stats: Dictionary) -> String:
 	var bloom: float = float(stats.get("bloom_intensity", 0.0))
 	var floater_n: int = int(stats.get("floater_count", 0))
 	var floater: float = float(stats.get("floater_coverage", 0.0))
+	var vigor_h: float = float(stats.get("flora_avg_health", 0.0))
+	var vigor_g: float = float(stats.get("flora_avg_growth", 0.0))
 	var base: String = "biomass %d" % biomass
+	if vigor_h > 0.01:
+		base = "vigor %d%%" % int(round(vigor_h * 100.0))
+		if vigor_g > 0.01:
+			base += " · grow %.0f%%" % int(round(clampf(vigor_g / 0.35, 0.0, 1.0) * 100.0))
 	if floater_n > 0:
 		base += " · %d floaters" % floater_n
 	if bloom >= 0.35:

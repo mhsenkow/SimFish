@@ -76,6 +76,8 @@ var _co2_slider: HSlider
 var _co2_label: Label
 var _spectrum_slider: HSlider
 var _spectrum_label: Label
+var _plant_limit_overlay_check: CheckBox
+var _debug_growth_check: CheckBox
 var _aquascape_feedback: Label
 # Snapshot taken when the panel opens. Preset/substrate stay staged here until
 # Apply so autosave can't write a new preset header over an old fauna list.
@@ -364,6 +366,14 @@ func _build_ui() -> void:
 	var sp_desc := PanelTheme.make_description()
 	sp_desc.text = "0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds)."
 	vbox_env.add_child(sp_desc)
+	_plant_limit_overlay_check = CheckBox.new()
+	_plant_limit_overlay_check.text = "Plant limiting-factor tint (light / CO₂ / nutrient)"
+	_plant_limit_overlay_check.toggled.connect(func(v): TankConfig.plant_limit_overlay = v)
+	vbox_env.add_child(_plant_limit_overlay_check)
+	_debug_growth_check = CheckBox.new()
+	_debug_growth_check.text = "Log growth diagnostics (seconds per voxel, every ~10 s)"
+	_debug_growth_check.toggled.connect(func(v): TankConfig.debug_growth_logging = v)
+	vbox_env.add_child(_debug_growth_check)
 
 	# -- Room --
 	# The "scene" around the tank — desk, wall, lamp, plant. Default is
@@ -736,6 +746,10 @@ func _pull_from_config() -> void:
 		_spectrum_slider.set_block_signals(false)
 		if _spectrum_label != null:
 			_spectrum_label.text = "%.2f" % TankConfig.light_spectrum
+	if _plant_limit_overlay_check != null:
+		_plant_limit_overlay_check.button_pressed = TankConfig.plant_limit_overlay
+	if _debug_growth_check != null:
+		_debug_growth_check.button_pressed = TankConfig.debug_growth_logging
 	# AI Companion widgets
 	if _ai_enabled_check != null:
 		_ai_enabled_check.set_block_signals(true)

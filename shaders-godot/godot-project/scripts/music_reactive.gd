@@ -23,6 +23,10 @@ const _FAUNA_NEUTRAL: Dictionary = {
 	"beat_dart": false,
 	"wander_refresh": 1.0,
 	"home_drift": 1.0,
+	"wander_amp": 1.0,
+	"sweep": 0.0,
+	"vertical": 0.0,
+	"beat_phase": 0.0,
 	"scale": 1.0,
 }
 
@@ -45,6 +49,7 @@ var _intensity: float = 0.75
 var _beat_serial: int = 0
 var _beat_cooldown: float = 0.0
 var _bass_smooth: float = 0.0
+var _energy_smooth: float = 0.0
 var _bass_peak: float = 0.0
 var _bubble_accum: float = 0.0
 
@@ -139,34 +144,34 @@ func fauna_behavior_mods(instance_id: int) -> Dictionary:
 	if not is_active() or not TankConfig.music_sync_fish:
 		return _FAUNA_NEUTRAL
 	var i: float = _intensity
-	var bass: float = float(_drive.bass)
-	var mid: float = float(_drive.mid)
-	var high: float = float(_drive.high)
-	var energy: float = float(_drive.energy)
+	var bass: float = maxf(float(_drive.bass), 0.18)
+	var mid: float = maxf(float(_drive.mid), 0.14)
+	var high: float = maxf(float(_drive.high), 0.10)
+	var energy: float = maxf(float(_drive.energy), 0.22)
 	var beat: float = float(_drive.beat)
 	var dance: float = float(_drive.danceability)
 	var phase: float = sin(float(instance_id % 997) * 0.17 + _beat_serial * 0.4)
 	var groove: float = clampf(bass * 0.5 + mid * 0.35 + energy * 0.4 + dance * 0.3, 0.0, 1.0)
+	groove = maxf(groove, 0.38)
+	var beat_phase: float = float(_beat_serial) * 1.57 + float(instance_id % 997) * 0.17
+	# Any audible pulse — whole school surges so the tank visibly dances.
+	var beat_dart: bool = beat > 0.08
 	return {
-		# Top speed — bass + tempo push fish into a visible sprint.
-		"speed": 1.0 + groove * 1.15 * i + beat * 0.5 * i,
-		# Wander heading + faster direction changes.
-		"wander": 1.0 + mid * 1.25 * i + absf(phase) * 0.45 * i,
-		# Effective home territory — fish roam much farther before being tugged back.
-		"home_radius": 1.0 + energy * 2.0 * i + dance * 0.9 * i,
-		# Weaker home anchor = less clumping at patrol centroid.
-		"home_pull": maxf(0.1, 1.0 - groove * 0.78 * i),
-		# Looser boids cohesion so the school spreads across the tank.
-		"tightness": maxf(0.22, 1.0 - mid * 0.58 * i - beat * 0.22 * i),
-		"accel": 1.0 + bass * 1.05 * i + beat * 0.65 * i,
-		"turn": 1.0 + high * 0.6 * i + beat * 0.38 * i,
-		# Extra spontaneous darts on top of heritable dart_chance.
-		"dart_chance": groove * 0.22 * i + beat * 0.1 * i,
-		# Half the school surges on each downbeat — cross-tank sprints.
-		"beat_dart": beat > 0.32 and ((instance_id + _beat_serial) % 2) == 0,
-		# Faster wander refresh + home drift while the track plays.
-		"wander_refresh": 1.0 + groove * 2.8 * i,
-		"home_drift": 1.0 + groove * 3.0 * i,
+		"speed": 1.0 + groove * 2.35 * i + beat * 1.35 * i,
+		"wander": 1.0 + mid * 2.05 * i + absf(phase) * 0.95 * i,
+		"wander_amp": 1.0 + groove * 1.85 * i + beat * 0.55 * i,
+		"home_radius": 1.0 + energy * 4.8 * i + dance * 1.85 * i,
+		"home_pull": maxf(0.02, 1.0 - groove * 0.98 * i),
+		"tightness": maxf(0.08, 1.0 - mid * 0.88 * i - beat * 0.55 * i),
+		"accel": 1.0 + bass * 2.05 * i + beat * 1.35 * i,
+		"turn": 1.0 + high * 1.35 * i + beat * 0.85 * i,
+		"dart_chance": groove * 0.72 * i + beat * 0.42 * i,
+		"sweep": maxf(0.55, clampf(groove * 1.05 + beat * 0.95 + dance * 0.35, 0.0, 1.0)) * i,
+		"vertical": maxf(0.35, clampf(mid * 0.45 + high * 0.72 + beat * 0.65, 0.0, 1.0)) * i,
+		"beat_phase": beat_phase,
+		"beat_dart": beat_dart,
+		"wander_refresh": 1.0 + groove * 5.5 * i,
+		"home_drift": 1.0 + groove * 6.5 * i,
 		"scale": fauna_scale_pulse(instance_id),
 	}
 
@@ -180,7 +185,7 @@ func fauna_scale_pulse(instance_id: int) -> float:
 		return 1.0
 	var beat: float = float(_drive.beat)
 	var wobble: float = sin(_bass_peak * 8.0 + float(instance_id % 50) * 0.31) * 0.5 + 0.5
-	return 1.0 + beat * 0.14 * _intensity + wobble * float(_drive.bass) * 0.1 * _intensity
+	return 1.0 + beat * 0.22 * _intensity + wobble * float(_drive.bass) * 0.16 * _intensity
 
 
 func should_beat_dart(instance_id: int) -> bool:
@@ -313,25 +318,29 @@ func _analyze_audio(dt: float) -> void:
 		_bind_spectrum()
 	if _spectrum == null:
 		return
-	var bass_raw: float = _spectrum.get_magnitude_for_frequency_range(40.0, 160.0, 1).length()
-	var mid_raw: float = _spectrum.get_magnitude_for_frequency_range(220.0, 2200.0, 1).length()
-	var high_raw: float = _spectrum.get_magnitude_for_frequency_range(2200.0, 12000.0, 1).length()
+	var mode := AudioEffectSpectrumAnalyzerInstance.MAGNITUDE_MAX
+	var bass_raw: float = _spectrum.get_magnitude_for_frequency_range(40.0, 160.0, mode).length()
+	var mid_raw: float = _spectrum.get_magnitude_for_frequency_range(220.0, 2200.0, mode).length()
+	var high_raw: float = _spectrum.get_magnitude_for_frequency_range(2200.0, 12000.0, mode).length()
 	var bass: float = _norm_mag(bass_raw)
 	var mid: float = _norm_mag(mid_raw)
 	var high: float = _norm_mag(high_raw)
 	_bass_smooth = lerpf(_bass_smooth, bass, clampf(dt * 10.0, 0.0, 1.0))
+	var combined: float = bass * 0.52 + mid * 0.33 + high * 0.15
+	_energy_smooth = lerpf(_energy_smooth, combined, clampf(dt * 10.0, 0.0, 1.0))
 	_drive.bass = lerpf(float(_drive.bass), bass, clampf(dt * 12.0, 0.0, 1.0))
 	_drive.mid = lerpf(float(_drive.mid), mid, clampf(dt * 10.0, 0.0, 1.0))
 	_drive.high = lerpf(float(_drive.high), high, clampf(dt * 10.0, 0.0, 1.0))
-	_drive.energy = lerpf(float(_drive.energy), (bass * 0.5 + mid * 0.35 + high * 0.15), clampf(dt * 8.0, 0.0, 1.0))
+	_drive.energy = lerpf(float(_drive.energy), combined, clampf(dt * 8.0, 0.0, 1.0))
 	_beat_cooldown = maxf(0.0, _beat_cooldown - dt)
-	if bass > _bass_smooth * 1.28 + 0.06 and _beat_cooldown <= 0.0:
+	var beat_thresh: float = maxf(_energy_smooth * 1.08 + 0.02, _bass_smooth * 1.12 + 0.03)
+	if combined > beat_thresh and _beat_cooldown <= 0.0:
 		_drive.beat = 1.0
 		_bass_peak = bass
 		_beat_serial += 1
-		_beat_cooldown = maxf(0.09, 60.0 / maxf(float(_drive.tempo), 80.0) * 0.45)
+		_beat_cooldown = maxf(0.06, 60.0 / maxf(float(_drive.tempo), 80.0) * 0.32)
 	else:
-		_drive.beat = maxf(0.0, float(_drive.beat) - dt * 4.5)
+		_drive.beat = maxf(0.0, float(_drive.beat) - dt * 2.6)
 	_apply_visual_uniforms()
 
 

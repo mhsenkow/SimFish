@@ -698,6 +698,9 @@ var _auto_feed_timer: float = 0.0
 # the whole web reacts to — keeps the tank pulsing instead of flat-lining at
 # equilibrium.
 var _food_pulse_timer: float = 150.0
+var _growth_debug_timer: float = 0.0
+var _growth_debug_last: Dictionary = {}
+var _flora_digest_day: int = -1
 
 # ---- Long arc & time (H8) ----
 # Maturation milestones (#71), tank legacy (#75), stability curve (#76),
@@ -2125,6 +2128,7 @@ func _tick(dt: float) -> void:
 		photo_bm += float(bm) * hf
 	total_plant_biomass = plant_biomass
 	total_photosynthetic_biomass = photo_bm
+	_log_growth_debug(dt)
 	# Plant fragments (stem cuttings rooting).
 	var frag_i: int = plant_fragments.size() - 1
 	while frag_i >= 0:
@@ -4250,8 +4254,66 @@ func _compose_walstad_pulse(fish_n: int, shrimp_n: int, snail_n: int, plant_n: i
 		fish_n, shrimp_n, plant_n, biomass, bloom * 100.0]
 
 
+func _log_growth_debug(dt: float) -> void:
+	var cfg: Node = _cfg_cache if _cfg_cache != null else get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("debug_growth_logging")):
+		return
+	_growth_debug_timer += dt
+	if _growth_debug_timer < 10.0:
+		return
+	_growth_debug_timer = 0.0
+	var spv_samples: Array = []
+	for p in plants:
+		if not is_instance_valid(p) or not p.has_method("get_growth_inspector"):
+			continue
+		var diag: Dictionary = p.get_growth_inspector().get("diag", {})
+		if diag.is_empty():
+			continue
+		spv_samples.append(float(diag.get("seconds_per_voxel", 99.0)))
+	if spv_samples.is_empty():
+		return
+	spv_samples.sort()
+	var mid: float = spv_samples[spv_samples.size() / 2]
+	_growth_debug_last = {
+		"median_seconds_per_voxel": mid,
+		"min_seconds_per_voxel": spv_samples[0],
+		"max_seconds_per_voxel": spv_samples[spv_samples.size() - 1],
+		"sample_count": spv_samples.size(),
+	}
+	print("[growth] median %.1fs/voxel (min %.1f max %.1f, n=%d)" % [
+		mid, spv_samples[0], spv_samples[spv_samples.size() - 1], spv_samples.size()])
+
+
+func _maybe_flora_growth_digest() -> void:
+	var day_n: int = sim_day()
+	if day_n == _flora_digest_day or day_n < 2:
+		return
+	_flora_digest_day = day_n
+	var tallest: Plant = null
+	var tallest_h: int = 0
+	var carpet_cover: int = 0
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		if p.current_height > tallest_h:
+			tallest_h = p.current_height
+			tallest = p
+		if p.is_carpet:
+			carpet_cover += p.biomass()
+	var lines: PackedStringArray = []
+	if tallest != null and tallest_h > 6:
+		var nm: String = tallest.common_name if tallest.common_name != "" else tallest.plant_name
+		if nm != "":
+			lines.append("Day %d: the %s reached midwater." % [day_n, nm])
+	if carpet_cover > 80:
+		lines.append("Day %d: the carpet has covered a third of the floor." % day_n)
+	for line in lines:
+		log_story_event(line)
+
+
 func _emit_stats() -> void:
-	# Re-filter here: _emit_stats runs at 1Hz, independent of the 10Hz _tick
+	_maybe_flora_growth_digest()
+	# Re-filter here: _emit_stats runs at 1Hz
 	# filter. Between two _tick calls, the engine may actually delete a
 	# queue_freed Fish/Plant; the array still holds the stale ref. Iterating
 	# without is_instance_valid causes "previously freed" crashes after long
@@ -4289,6 +4351,21 @@ func _emit_stats() -> void:
 		if not is_instance_valid(p):
 			continue
 		total_biomass += p.biomass()
+	var flora_health_sum: float = 0.0
+	var flora_growth_sum: float = 0.0
+	var flora_n: int = 0
+	for p in plants:
+		if not is_instance_valid(p):
+			continue
+		flora_n += 1
+		var hf: Variant = p.get("_health_smooth")
+		flora_health_sum += clampf(float(hf) if hf != null else 1.0, 0.0, 1.0)
+		if p.has_method("get_growth_inspector"):
+			var insp: Dictionary = p.get_growth_inspector()
+			var diag: Dictionary = insp.get("diag", {})
+			flora_growth_sum += float(diag.get("effective_rate", 0.0))
+	var flora_avg_health: float = flora_health_sum / float(maxi(1, flora_n))
+	var flora_avg_growth: float = flora_growth_sum / float(maxi(1, flora_n))
 	var shrimp_adults: int = 0
 	var shrimp_fry: int = 0
 	var shrimp_total: int = 0
@@ -4338,6 +4415,9 @@ func _emit_stats() -> void:
 		"morph_distinct": morph_drifted,
 		"plants_alive": plants.size(),
 		"plant_total_biomass": total_biomass,
+		"flora_avg_health": flora_avg_health,
+		"flora_avg_growth": flora_avg_growth,
+		"growth_debug": _growth_debug_last.duplicate(),
 		"fish_carrying_capacity": fish_carrying_capacity(),
 		"fish_stocking_ratio": fish_stocking_ratio(),
 		"waste_particles": waste.size(),

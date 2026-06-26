@@ -1149,6 +1149,12 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		for p in _nearby_plants(plants, 1.2):
 			if not is_instance_valid(p) or p.biomass() < 15:
 				continue
+			if p.has_method("graze_detritus_fleck") and p.graze_detritus_fleck():
+				current_mode = Mode.NIBBLE
+				hunger = maxf(0.0, hunger - 0.14)
+				energy = minf(1.0, energy + 0.03)
+				_apply_target(target_velocity)
+				return events
 			var pp: Vector3 = p.global_position
 			if absf(pp.y - position.y) > 0.6: continue   # only floor-level plants
 			var d2: float = pp.distance_squared_to(position)

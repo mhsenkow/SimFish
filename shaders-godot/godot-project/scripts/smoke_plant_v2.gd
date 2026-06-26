@@ -6,15 +6,15 @@ const FORMS: Array[String] = [
 	"pinnate", "starburst", "four_leaf", "fingered", "downy", "round", "lobed",
 ]
 
-var _substrate: SubstrateGrid
-var _plants: Array = []
-var _elapsed: float = 0.0
 const DURATION: float = 60.0
+const TICK_DT: float = 0.1
 
 
 func _initialize() -> void:
-	_substrate = SubstrateGrid.new()
-	_substrate.init(4.0, 2.0, 1.0)
+	await process_frame
+	var substrate := SubstrateGrid.new()
+	substrate.init(4.0, 2.0, 1.0)
+	var plants: Array = []
 	for form in FORMS:
 		var p := Plant.new()
 		root.add_child(p)
@@ -25,26 +25,23 @@ func _initialize() -> void:
 			"max_height": 12,
 			"growth_rate": 0.22,
 		}))
-		_plants.append(p)
-	print("[smoke_plant_v2] spawned %d plants" % _plants.size())
+		plants.append(p)
+	print("[smoke_plant_v2] spawned %d plants" % plants.size())
 
-
-func _process(delta: float) -> bool:
-	_elapsed += delta
-	var dt: float = 0.1
-	for p in _plants:
-		if is_instance_valid(p):
-			p.tick(dt, _substrate)
-	if _elapsed >= DURATION:
-		var total_biomass: int = 0
-		for p in _plants:
+	var tick_count: int = int(DURATION / TICK_DT)
+	for _i in tick_count:
+		await process_frame
+		for p in plants:
 			if is_instance_valid(p):
-				total_biomass += p.biomass()
-		if total_biomass <= 0:
-			push_error("[smoke_plant_v2] FAIL: zero biomass after tick")
-			quit(1)
-			return false
-		print("[smoke_plant_v2] OK biomass=%d" % total_biomass)
-		quit(0)
-		return false
-	return true
+				p.tick(TICK_DT, substrate)
+
+	var total_biomass: int = 0
+	for p in plants:
+		if is_instance_valid(p):
+			total_biomass += p.biomass()
+	if total_biomass <= 0:
+		push_error("[smoke_plant_v2] FAIL: zero biomass after tick")
+		quit(1)
+		return
+	print("[smoke_plant_v2] OK biomass=%d" % total_biomass)
+	quit(0)

@@ -173,6 +173,7 @@ var _curved_attached: bool = false
 # tank-level curve — tank_lateral_boundary_info doesn't help here).
 # Cleared whenever the snail transitions to a different surface.
 var _attached_plant: Node3D = null
+var _attached_lily_pad: Node3D = null
 # Eating pulse — set whenever the snail consumes something (waste, algae,
 # biofilm, plant rasp). Drives a 1.2 s amplified body wave so the bite
 # reads visually instead of being silent. Decays per tick.
@@ -406,6 +407,8 @@ func _process(dt: float) -> void:
 			# Hardscape attach — climb onto rocks / driftwood when
 			# crawling close to one.
 			elif _try_attach_to_hardscape():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
+			elif _try_attach_to_lily_pad():
 				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
 			# Plant attach — climb up a stem to graze canopy algae.
 			elif _try_attach_to_plant():
@@ -875,6 +878,7 @@ func _try_climb_onto_glass() -> bool:
 	wall_normal = inward
 	_curved_attached = is_curved
 	_attached_plant = null  # leaving any plant trunk attachment
+	_attached_lily_pad = null
 	# Snap Y just above the substrate so the snail visibly sits on the
 	# glass right above the substrate-glass corner. The lateral X/Z
 	# stay where they are (we were already at the boundary).
@@ -932,6 +936,7 @@ func _try_descend_to_substrate() -> bool:
 	wall_normal = Vector3.UP
 	_curved_attached = false  # substrate is flat
 	_attached_plant = null
+	_attached_lily_pad = null
 	# Land just above the substrate, and nudge slightly AWAY from the
 	# old glass so the next tick doesn't immediately re-trigger climb.
 	global_position.y = substrate_y + WALL_TRANSITION_NUDGE
@@ -1049,6 +1054,7 @@ func _try_attach_to_hardscape() -> bool:
 	wall_normal = face_normal
 	_curved_attached = false  # hardscape voxels have flat box faces
 	_attached_plant = null
+	_attached_lily_pad = null
 	global_position = attach_pos
 	_wall_anchor_offset = wall_normal.dot(global_position)
 	# Pick a sensible initial heading on the new face. For top faces use
@@ -1061,6 +1067,50 @@ func _try_attach_to_hardscape() -> bool:
 		# Side face — head upward (positive bitangent ≡ UP for vertical
 		# face_normals), with a small lateral random component.
 		_direction = Vector2(randf_range(-0.30, 0.30), 1.0).normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
+const LILY_PAD_PROX: float = 0.48
+
+func _try_attach_to_lily_pad() -> bool:
+	var w := _world_node()
+	if w == null or not w.has_method("query_lily_pads_in_radius"):
+		return false
+	var water_y_v: Variant = w.get("WATER_HEIGHT")
+	var water_y: float = 6.5 if water_y_v == null else float(water_y_v)
+	if global_position.y < water_y - 0.65:
+		return false
+	var best: Node3D = null
+	var best_d2: float = LILY_PAD_PROX * LILY_PAD_PROX
+	for lp in w.query_lily_pads_in_radius(global_position, LILY_PAD_PROX):
+		if not is_instance_valid(lp):
+			continue
+		var pad_pos: Vector3 = lp.global_position
+		if lp.has_method("surface_rest_position"):
+			pad_pos = lp.surface_rest_position()
+		var dx: float = pad_pos.x - global_position.x
+		var dz: float = pad_pos.z - global_position.z
+		var d2: float = dx * dx + dz * dz
+		if d2 < best_d2:
+			best_d2 = d2
+			best = lp
+	if best == null or randf() > WALL_TRANSITION_CHANCE:
+		return false
+	_attached_lily_pad = best
+	_attached_plant = null
+	_curved_attached = false
+	wall_normal = Vector3.UP
+	var pad_top: Vector3 = best.global_position
+	if best.has_method("surface_rest_position"):
+		pad_top = best.surface_rest_position()
+	global_position = pad_top + Vector3(
+		randf_range(-0.12, 0.12), 0.06, randf_range(-0.12, 0.12))
+	_wall_anchor_offset = global_position.y
+	_direction = Vector2(randf_range(-0.6, 0.6), randf_range(-0.6, 0.6)).normalized()
 	_facing = _direction
 	_stuck_timer = 0.0
 	_last_progress_pos = global_position
@@ -1137,6 +1187,7 @@ func _try_attach_to_plant() -> bool:
 	wall_normal = radial
 	_curved_attached = false
 	_attached_plant = best
+	_attached_lily_pad = null
 	# Snap snail position to the trunk surface at the current Y.
 	var snail_offset: float = shell_size * 0.10 + 0.02
 	global_position = Vector3(
@@ -1239,6 +1290,21 @@ func _reclamp_to_footprint() -> void:
 	var margin: float = body_r + 0.04
 	if w == null:
 		return
+	if _attached_lily_pad != null:
+		if not is_instance_valid(_attached_lily_pad):
+			_attached_lily_pad = null
+		else:
+			var pad_top: Vector3 = _attached_lily_pad.global_position
+			if _attached_lily_pad.has_method("surface_rest_position"):
+				pad_top = _attached_lily_pad.surface_rest_position()
+			global_position.x = clampf(
+				global_position.x, pad_top.x - 0.28, pad_top.x + 0.28)
+			global_position.z = clampf(
+				global_position.z, pad_top.z - 0.28, pad_top.z + 0.28)
+			global_position.y = pad_top.y + 0.06
+			wall_normal = Vector3.UP
+			_wall_anchor_offset = global_position.y
+			return
 	# Plant-attached path: the trunk is a per-plant cylinder, so we
 	# project back onto its surface at the snail's current Y. Walk away
 	# from this branch if the plant has been freed (grazed down, died,

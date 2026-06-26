@@ -236,17 +236,22 @@ func is_surface_active() -> bool:
 
 
 func _update_view_lod() -> void:
+	if not is_inside_tree():
+		return
 	if not global_position.is_finite() or not transform.is_finite():
 		return
-	var cam: Camera3D = get_viewport().get_camera_3d()
+	if DisplayServer.get_name() == "headless":
+		return
+	var vp: Viewport = get_viewport()
+	if vp == null:
+		return
+	var cam: Camera3D = vp.get_camera_3d()
 	if cam == null or not cam.global_position.is_finite():
 		return
 	var hide_leaves: bool = global_position.distance_squared_to(cam.global_position) > VIEW_LOD_DIST_SQ
 	if hide_leaves == _view_lod_hidden:
 		return
 	_view_lod_hidden = hide_leaves
-	if DisplayServer.get_name() == "headless":
-		return
 	for c in get_children():
 		if c is MeshInstance3D and String(c.name).begins_with("leaf"):
 			(c as MeshInstance3D).visible = not hide_leaves

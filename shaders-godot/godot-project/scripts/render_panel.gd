@@ -67,13 +67,42 @@ var _mat_w_hardscape: HSlider
 var _mat_w_hardscape_label: Label
 var _mat_w_water: HSlider
 var _mat_w_water_label: Label
+var _fidelity_buttons: Array[Button] = []
+var _fidelity_summary: Label
+var _adaptive_block: VBoxContainer
 
+const FIDELITY_PRESETS: Array = [
+	{
+		"key": "chunky",
+		"label": "Chunky",
+		"w": 256, "h": 144, "msaa": 0,
+		"tip": "256×144 — smallest render target, best for weak GPUs",
+	},
+	{
+		"key": "balanced",
+		"label": "Balanced",
+		"w": 512, "h": 288, "msaa": 0,
+		"tip": "512×288 — classic walstad loom pixel scale",
+	},
+	{
+		"key": "sharp",
+		"label": "Sharp",
+		"w": 768, "h": 432, "msaa": 1,
+		"tip": "768×432 with 2× MSAA",
+	},
+	{
+		"key": "high",
+		"label": "High",
+		"w": 1024, "h": 576, "msaa": 2,
+		"tip": "1024×576 with 4× MSAA — default desktop fidelity",
+	},
+]
 const RESOLUTIONS: Array = [
-	{"label": "256x144 (chunky)", "w": 256, "h": 144},
-	{"label": "384x216", "w": 384, "h": 216},
-	{"label": "512x288 (default)", "w": 512, "h": 288},
-	{"label": "768x432", "w": 768, "h": 432},
-	{"label": "1024x576 (smooth)", "w": 1024, "h": 576},
+	{"label": "256×144", "w": 256, "h": 144},
+	{"label": "384×216", "w": 384, "h": 216},
+	{"label": "512×288", "w": 512, "h": 288},
+	{"label": "768×432", "w": 768, "h": 432},
+	{"label": "1024×576 (high default)", "w": 1024, "h": 576},
 ]
 const MSAA_LABELS: Array[String] = ["Off", "2x", "4x", "8x"]
 
@@ -122,6 +151,12 @@ func _build_ui() -> void:
 	add_child(outer)
 
 	outer.add_child(PanelTheme.make_title("Rendering"))
+	outer.add_child(PanelTheme.make_subtitle(
+		"Pick a fidelity tier, then tune the look. Apply reloads for resolution / MSAA."))
+	outer.add_child(PanelTheme.make_rule())
+
+	_build_quality_hero(outer)
+
 	outer.add_child(PanelTheme.make_rule())
 
 	var tabs := TabContainer.new()
@@ -130,7 +165,7 @@ func _build_ui() -> void:
 	outer.add_child(tabs)
 
 	var render_scroll := ScrollContainer.new()
-	render_scroll.name = "Rendering"
+	render_scroll.name = "Post-process"
 	render_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	render_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	render_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -189,72 +224,116 @@ func _build_ui() -> void:
 	hb.add_child(apply)
 
 
-func _build_rendering_tab(vbox: VBoxContainer) -> void:
-	_add_section(vbox, "Resolution")
+func _build_quality_hero(parent: VBoxContainer) -> void:
+	_add_section(parent, "Fidelity")
+	var hero_hint := PanelTheme.make_description()
+	hero_hint.text = "One tap sets render resolution + MSAA. Use Apply to rebuild the viewport."
+	parent.add_child(hero_hint)
+
+	var fidelity_row := HBoxContainer.new()
+	fidelity_row.add_theme_constant_override("separation", 6)
+	parent.add_child(fidelity_row)
+	_fidelity_buttons.clear()
+	for preset in FIDELITY_PRESETS:
+		var btn := PanelTheme.make_secondary_button(String(preset["label"]))
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.tooltip_text = String(preset["tip"])
+		var p: Dictionary = preset
+		btn.pressed.connect(func(): _apply_fidelity_preset(p))
+		PanelTheme.style_hud_toggle_button(btn, false)
+		fidelity_row.add_child(btn)
+		_fidelity_buttons.append(btn)
+
+	_fidelity_summary = PanelTheme.make_description()
+	parent.add_child(_fidelity_summary)
+
+	_adaptive_block = VBoxContainer.new()
+	_adaptive_block.add_theme_constant_override("separation", 6)
+	parent.add_child(_adaptive_block)
+
+	_adaptive_check = CheckBox.new()
+	_adaptive_check.text = "Auto-adjust fidelity to hit target FPS"
+	_adaptive_check.button_pressed = true
+	_adaptive_check.tooltip_text = "Steps resolution down when the GPU can't keep up, back up when there's headroom."
+	_adaptive_check.toggled.connect(func(v):
+		TankConfig.adaptive_quality = v
+		_sync_adaptive_controls())
+	_adaptive_block.add_child(_adaptive_check)
+
+	_frame_graph_label = Label.new()
+	_frame_graph_label.text = "—"
+	PanelTheme.as_mono(_frame_graph_label, PanelTheme.SIZE_CAPTION)
+	_adaptive_block.add_child(_frame_graph_label)
+
+	_frame_graph = Control.new()
+	_frame_graph.custom_minimum_size = Vector2(0, 48)
+	_frame_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_frame_graph.draw.connect(_draw_frame_graph)
+	_adaptive_block.add_child(_frame_graph)
+
+	_adaptive_target_label = Label.new()
+	_adaptive_target = PanelTheme.add_slider_row(
+		_adaptive_block, "Target FPS", 30.0, 120.0, 5.0, _adaptive_target_label)
+	_adaptive_target.value_changed.connect(func(v):
+		TankConfig.adaptive_quality_target_fps = int(v)
+		_adaptive_target_label.text = "%d" % int(v))
+
+	_add_section(parent, "Exact resolution")
 	_res_option = OptionButton.new()
 	_res_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_res_option.custom_minimum_size = Vector2(0, 30)
 	for r in RESOLUTIONS:
 		_res_option.add_item(String(r["label"]))
 	_res_option.item_selected.connect(func(idx): _on_resolution(idx))
-	vbox.add_child(_res_option)
+	parent.add_child(_res_option)
+	var res_hint := PanelTheme.make_description()
+	res_hint.text = "Fine-tune between tiers — overrides the fidelity buttons above."
+	parent.add_child(res_hint)
 
-	_add_section(vbox, "Palette quantize")
+	_msaa_option = PanelTheme.add_dropdown_row(parent, "MSAA")
+	for label in MSAA_LABELS:
+		_msaa_option.add_item(label)
+	_msaa_option.item_selected.connect(func(idx):
+		TankConfig.msaa = idx
+		_sync_fidelity_buttons()
+		_update_fidelity_summary())
+
+
+func _build_rendering_tab(vbox: VBoxContainer) -> void:
+	var palette_body := _make_fold_section(vbox, "Palette & quantize", true)
 	_palette_check = CheckBox.new()
 	_palette_check.text = "Enable palette quantization"
 	_palette_check.toggled.connect(func(v): TankConfig.palette_enabled = v)
-	vbox.add_child(_palette_check)
+	palette_body.add_child(_palette_check)
 	_dither_label = Label.new()
-	_dither = PanelTheme.add_slider_row(vbox, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
+	_dither = PanelTheme.add_slider_row(palette_body, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
 	_dither.value_changed.connect(func(v): _on_dither(v))
 	_region_aware_check = CheckBox.new()
 	_region_aware_check.text = "Region-aware dither (recommended)"
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
-	vbox.add_child(_region_aware_check)
-	_experimental_check = CheckBox.new()
-	_experimental_check.text = "Amplify fauna sheen (stronger SSS + iridescence)"
-	_experimental_check.toggled.connect(func(v): TankConfig.experimental_visuals = v)
-	vbox.add_child(_experimental_check)
-	var exp_desc := PanelTheme.make_description()
-	exp_desc.text = "Adds subsurface glow + view-angle shimmer to fish & shrimp. Click Apply to rebuild."
-	vbox.add_child(exp_desc)
-	_matured_check = CheckBox.new()
-	_matured_check.text = "New tanks start established (skip the cycle)"
-	_matured_check.toggled.connect(func(v):
-		TankConfig.start_matured = v
-		TankConfig.cycle_start_mode = "established" if v else "fresh")
-	vbox.add_child(_matured_check)
-	var mat_desc := PanelTheme.make_description()
-	mat_desc.text = "Applies when you create a NEW tank: cycled chemistry, biofilm patina, mixed ages. Off = fresh Walstad cycle with visible ammonia phase."
-	vbox.add_child(mat_desc)
-	var rad_desc := PanelTheme.make_description()
-	rad_desc.text = "Smart dither: more on muted colors, less on saturated. Disable for uniform stippling."
-	vbox.add_child(rad_desc)
+	palette_body.add_child(_region_aware_check)
 	_bank_lock_check = CheckBox.new()
 	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
 	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
-	vbox.add_child(_bank_lock_check)
+	palette_body.add_child(_bank_lock_check)
+	var rad_desc := PanelTheme.make_description()
+	rad_desc.text = "Smart dither: heavier on muted water/fog, lighter on saturated fauna."
+	palette_body.add_child(rad_desc)
 	var bl_desc := PanelTheme.make_description()
-	bl_desc.text = "Restricts each pixel to nearby palette colors. Off = smoother gradients across the whole palette."
-	vbox.add_child(bl_desc)
+	bl_desc.text = "Bank lock restricts each pixel to a local palette slice for a truer 8-bit look."
+	palette_body.add_child(bl_desc)
 
-	_add_section(vbox, "Pixel art polish")
+	var polish_body := _make_fold_section(vbox, "Pixel-art polish", false)
 	_outline_label = Label.new()
-	_outline = PanelTheme.add_slider_row(vbox, "Outline strength", 0.0, 1.0, 0.05, _outline_label)
+	_outline = PanelTheme.add_slider_row(polish_body, "Outline strength", 0.0, 1.0, 0.05, _outline_label)
 	_outline.value_changed.connect(func(v):
 		TankConfig.outline_strength = v
 		_outline_label.text = "%.2f" % v)
-	var ol_desc := PanelTheme.make_description()
-	ol_desc.text = "Dark line at color discontinuities — adds NES-style readability."
-	vbox.add_child(ol_desc)
 	_crt_label = Label.new()
-	_crt = PanelTheme.add_slider_row(vbox, "CRT scanlines", 0.0, 1.0, 0.05, _crt_label)
+	_crt = PanelTheme.add_slider_row(polish_body, "CRT scanlines", 0.0, 1.0, 0.05, _crt_label)
 	_crt.value_changed.connect(func(v):
 		TankConfig.crt_strength = v
 		_crt_label.text = "%.2f" % v)
-	var crt_desc := PanelTheme.make_description()
-	crt_desc.text = "Faint horizontal scanlines for a retro CRT feel. Off by default."
-	vbox.add_child(crt_desc)
 	_integer_upscale_check = CheckBox.new()
 	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
 	_integer_upscale_check.toggled.connect(func(v):
@@ -262,95 +341,190 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 		var main: Node = get_tree().current_scene
 		if main != null and main.has_method("_apply_display_layout"):
 			main.call("_apply_display_layout"))
-	vbox.add_child(_integer_upscale_check)
-	var iu_desc := PanelTheme.make_description()
-	iu_desc.text = "Snaps render to nearest integer scale (2×, 3×…). Auto-falls back to stretched if integer scale would shrink the tank below 70% of the window."
-	vbox.add_child(iu_desc)
+	polish_body.add_child(_integer_upscale_check)
 	_pixel_snap_check = CheckBox.new()
 	_pixel_snap_check.text = "Pixel-snap camera"
 	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
-	vbox.add_child(_pixel_snap_check)
-	var ps_desc := PanelTheme.make_description()
-	ps_desc.text = "Snaps camera to world-pixel units. Stops sub-pixel jitter on fish, may feel rigid."
-	vbox.add_child(ps_desc)
+	polish_body.add_child(_pixel_snap_check)
+
+	var effects_body := _make_fold_section(vbox, "Fauna & tank startup", false)
+	_experimental_check = CheckBox.new()
+	_experimental_check.text = "Amplify fauna sheen (SSS + iridescence)"
+	_experimental_check.toggled.connect(func(v): TankConfig.experimental_visuals = v)
+	effects_body.add_child(_experimental_check)
+	var exp_desc := PanelTheme.make_description()
+	exp_desc.text = "Rebuilds fauna materials — click Apply after toggling."
+	effects_body.add_child(exp_desc)
+	_matured_check = CheckBox.new()
+	_matured_check.text = "New tanks start established (skip the cycle)"
+	_matured_check.toggled.connect(func(v):
+		TankConfig.start_matured = v
+		TankConfig.cycle_start_mode = "established" if v else "fresh")
+	effects_body.add_child(_matured_check)
+	var mat_desc := PanelTheme.make_description()
+	mat_desc.text = "Applies to newly created tanks only — cycled chemistry, biofilm patina, mixed ages."
+	effects_body.add_child(mat_desc)
+
+	var dof_body := _make_fold_section(vbox, "Follow depth-of-field", false)
 	_follow_dof_check = CheckBox.new()
-	_follow_dof_check.text = "Follow depth-of-field"
+	_follow_dof_check.text = "Blur background while following a creature"
 	_follow_dof_check.toggled.connect(func(v):
 		TankConfig.follow_depth_of_field = v
 		_sync_follow_dof_controls())
-	vbox.add_child(_follow_dof_check)
-	var dof_desc := PanelTheme.make_description()
-	dof_desc.text = "When following a creature, blurs the rest of the tank into a dreamy haze. A stylised look — off by default."
-	vbox.add_child(dof_desc)
+	dof_body.add_child(_follow_dof_check)
 	_follow_dof_strength_label = Label.new()
-	_follow_dof_strength = PanelTheme.add_slider_row(vbox, "DOF strength", 0.0, 0.25, 0.005, _follow_dof_strength_label)
+	_follow_dof_strength = PanelTheme.add_slider_row(dof_body, "DOF strength", 0.0, 0.25, 0.005, _follow_dof_strength_label)
 	_follow_dof_strength.value_changed.connect(func(v):
 		TankConfig.follow_dof_blur_strength = v
 		_follow_dof_strength_label.text = "%.3f" % v)
 	_follow_dof_focus_label = Label.new()
-	_follow_dof_focus = PanelTheme.add_slider_row(vbox, "Focus margin", 0.2, 4.0, 0.1, _follow_dof_focus_label)
+	_follow_dof_focus = PanelTheme.add_slider_row(dof_body, "Focus margin", 0.2, 4.0, 0.1, _follow_dof_focus_label)
 	_follow_dof_focus.value_changed.connect(func(v):
 		TankConfig.follow_dof_focus_margin = v
 		_follow_dof_focus_label.text = "%.1f" % v)
 	_follow_dof_far_soft_label = Label.new()
-	_follow_dof_far_soft = PanelTheme.add_slider_row(vbox, "Far softness", 0.3, 8.0, 0.1, _follow_dof_far_soft_label)
+	_follow_dof_far_soft = PanelTheme.add_slider_row(dof_body, "Far softness", 0.3, 8.0, 0.1, _follow_dof_far_soft_label)
 	_follow_dof_far_soft.value_changed.connect(func(v):
 		TankConfig.follow_dof_far_softness = v
 		_follow_dof_far_soft_label.text = "%.1f" % v)
 	_follow_dof_near_soft_label = Label.new()
-	_follow_dof_near_soft = PanelTheme.add_slider_row(vbox, "Near softness", 0.3, 8.0, 0.1, _follow_dof_near_soft_label)
+	_follow_dof_near_soft = PanelTheme.add_slider_row(dof_body, "Near softness", 0.3, 8.0, 0.1, _follow_dof_near_soft_label)
 	_follow_dof_near_soft.value_changed.connect(func(v):
 		TankConfig.follow_dof_near_softness = v
 		_follow_dof_near_soft_label.text = "%.1f" % v)
 	_follow_dof_near_check = CheckBox.new()
 	_follow_dof_near_check.text = "Blur foreground (near DOF)"
 	_follow_dof_near_check.toggled.connect(func(v): TankConfig.follow_dof_near_enabled = v)
-	vbox.add_child(_follow_dof_near_check)
-	var dof_tune_desc := PanelTheme.make_description()
-	dof_tune_desc.text = "Strength = blur amount. Focus margin = how much stays sharp around the subject. Turn off near DOF if the whole frame smears."
-	vbox.add_child(dof_tune_desc)
+	dof_body.add_child(_follow_dof_near_check)
 
-	_add_section(vbox, "Volumetric fog")
+	var fog_body := _make_fold_section(vbox, "Volumetric fog", true)
 	_fog_density_label = Label.new()
-	_fog_density = PanelTheme.add_slider_row(vbox, "Density", 0.0, 0.08, 0.005, _fog_density_label)
+	_fog_density = PanelTheme.add_slider_row(fog_body, "Density", 0.0, 0.08, 0.005, _fog_density_label)
 	_fog_density.value_changed.connect(func(v): _on_fog_density(v))
 	_fog_anisotropy_label = Label.new()
-	_fog_anisotropy = PanelTheme.add_slider_row(vbox, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
+	_fog_anisotropy = PanelTheme.add_slider_row(fog_body, "Anisotropy", -0.9, 0.9, 0.05, _fog_anisotropy_label)
 	_fog_anisotropy.value_changed.connect(func(v): _on_fog_anisotropy(v))
 	_fog_ambient_label = Label.new()
-	_fog_ambient = PanelTheme.add_slider_row(vbox, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
+	_fog_ambient = PanelTheme.add_slider_row(fog_body, "Ambient inject", 0.0, 0.5, 0.02, _fog_ambient_label)
 	_fog_ambient.value_changed.connect(func(v): _on_fog_ambient(v))
 
-	_add_section(vbox, "Camera")
+	var camera_body := _make_fold_section(vbox, "Camera", true)
 	_fov_label = Label.new()
-	_fov = PanelTheme.add_slider_row(vbox, "Field of view", 30.0, 90.0, 1.0, _fov_label)
+	_fov = PanelTheme.add_slider_row(camera_body, "Field of view", 30.0, 90.0, 1.0, _fov_label)
 	_fov.value_changed.connect(func(v): _on_fov(v))
 
-	_add_section(vbox, "Quality")
-	_msaa_option = PanelTheme.add_dropdown_row(vbox, "MSAA")
-	for label in MSAA_LABELS:
-		_msaa_option.add_item(label)
-	_msaa_option.item_selected.connect(func(idx): TankConfig.msaa = idx)
 
-	_add_section(vbox, "Frame budget")
-	_frame_graph_label = Label.new()
-	_frame_graph_label.text = "—"
-	vbox.add_child(_frame_graph_label)
-	_frame_graph = Control.new()
-	_frame_graph.custom_minimum_size = Vector2(0, 48)
-	_frame_graph.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_frame_graph.draw.connect(_draw_frame_graph)
-	vbox.add_child(_frame_graph)
-	_adaptive_check = CheckBox.new()
-	_adaptive_check.text = "Adaptive quality (auto-step resolution)"
-	_adaptive_check.toggled.connect(func(v): TankConfig.adaptive_quality = v)
-	vbox.add_child(_adaptive_check)
-	_adaptive_target_label = Label.new()
-	_adaptive_target = PanelTheme.add_slider_row(
-		vbox, "Target FPS", 30.0, 120.0, 5.0, _adaptive_target_label)
-	_adaptive_target.value_changed.connect(func(v):
-		TankConfig.adaptive_quality_target_fps = int(v)
-		_adaptive_target_label.text = "%d" % int(v))
+func _make_fold_section(parent: VBoxContainer, title: String, start_open: bool) -> VBoxContainer:
+	parent.add_child(PanelTheme.make_spacer(4))
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 6)
+	parent.add_child(wrap)
+	var header := Button.new()
+	header.focus_mode = Control.FOCUS_NONE
+	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	header.text = ("%s  %s" % ["▼", title]) if start_open else ("%s  %s" % ["▶", title])
+	PanelTheme.as_sans(header, PanelTheme.SIZE_CAPTION, true)
+	header.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
+	var header_normal := StyleBoxFlat.new()
+	header_normal.bg_color = Color(0, 0, 0, 0)
+	header_normal.border_color = PanelTheme.BORDER
+	header_normal.border_width_bottom = 1
+	header_normal.content_margin_left = 8
+	header_normal.content_margin_right = 8
+	header_normal.content_margin_top = 6
+	header_normal.content_margin_bottom = 6
+	var header_hover := header_normal.duplicate()
+	header_hover.bg_color = Color(0.14, 0.18, 0.26, 0.55)
+	header.add_theme_stylebox_override("normal", header_normal)
+	header.add_theme_stylebox_override("hover", header_hover)
+	header.add_theme_stylebox_override("pressed", header_hover)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 6)
+	body.visible = start_open
+	wrap.add_child(header)
+	wrap.add_child(body)
+	header.pressed.connect(func():
+		body.visible = not body.visible
+		header.text = ("%s  %s" % ["▼", title]) if body.visible else ("%s  %s" % ["▶", title]))
+	return body
+
+
+func _apply_fidelity_preset(preset: Dictionary) -> void:
+	TankConfig.render_width = int(preset["w"])
+	TankConfig.render_height = int(preset["h"])
+	TankConfig.msaa = int(preset["msaa"])
+	_pull_resolution_option()
+	if _msaa_option != null:
+		_msaa_option.select(int(TankConfig.msaa))
+	_sync_fidelity_buttons()
+	_update_fidelity_summary()
+
+
+func _fidelity_preset_index() -> int:
+	for i in FIDELITY_PRESETS.size():
+		var p: Dictionary = FIDELITY_PRESETS[i]
+		if int(p["w"]) == TankConfig.render_width \
+				and int(p["h"]) == TankConfig.render_height \
+				and int(p["msaa"]) == int(TankConfig.msaa):
+			return i
+	return -1
+
+
+func _sync_fidelity_buttons() -> void:
+	var active_idx: int = _fidelity_preset_index()
+	for i in _fidelity_buttons.size():
+		PanelTheme.style_hud_toggle_button(_fidelity_buttons[i], i == active_idx)
+	_update_fidelity_summary()
+
+
+func _update_fidelity_summary() -> void:
+	if _fidelity_summary == null:
+		return
+	var msaa_label: String = MSAA_LABELS[clampi(int(TankConfig.msaa), 0, MSAA_LABELS.size() - 1)]
+	var tier_label: String = "Custom"
+	var idx: int = _fidelity_preset_index()
+	if idx >= 0:
+		tier_label = String(FIDELITY_PRESETS[idx]["label"])
+	var adaptive_note: String = ""
+	if TankConfig.adaptive_quality:
+		adaptive_note = " · auto-adjust on (%d fps target)" % TankConfig.adaptive_quality_target_fps
+	_fidelity_summary.text = "Active: %s — %d×%d · MSAA %s%s" % [
+		tier_label,
+		TankConfig.render_width,
+		TankConfig.render_height,
+		msaa_label,
+		adaptive_note,
+	]
+
+
+func _sync_adaptive_controls() -> void:
+	var on: bool = TankConfig.adaptive_quality
+	if _adaptive_check != null:
+		_adaptive_check.set_block_signals(true)
+		_adaptive_check.button_pressed = on
+		_adaptive_check.set_block_signals(false)
+	for ctrl in [_adaptive_target, _frame_graph]:
+		if ctrl != null:
+			ctrl.modulate.a = 1.0 if on else 0.45
+			if ctrl is Range:
+				(ctrl as Range).editable = on
+	if _adaptive_target_label != null:
+		_adaptive_target_label.modulate.a = 1.0 if on else 0.45
+	if _frame_graph_label != null:
+		_frame_graph_label.modulate.a = 1.0 if on else 0.45
+	_update_fidelity_summary()
+
+
+func _pull_resolution_option() -> void:
+	if _res_option == null:
+		return
+	_res_option.set_block_signals(true)
+	for i in RESOLUTIONS.size():
+		var r: Dictionary = RESOLUTIONS[i]
+		if int(r["w"]) == TankConfig.render_width and int(r["h"]) == TankConfig.render_height:
+			_res_option.select(i)
+			break
+	_res_option.set_block_signals(false)
 
 
 func _build_color_tab(vbox: VBoxContainer) -> void:
@@ -447,12 +621,7 @@ func _add_section(parent: Node, label: String) -> void:
 
 
 func _pull_from_config() -> void:
-	# Resolution match.
-	for i in RESOLUTIONS.size():
-		var r: Dictionary = RESOLUTIONS[i]
-		if int(r["w"]) == TankConfig.render_width and int(r["h"]) == TankConfig.render_height:
-			_res_option.select(i)
-			break
+	_pull_resolution_option()
 	_dither.value = TankConfig.dither_strength
 	_palette_check.button_pressed = TankConfig.palette_enabled
 	if _experimental_check != null:
@@ -523,8 +692,8 @@ func _pull_from_config() -> void:
 	_fog_ambient.value = TankConfig.fog_ambient_inject
 	_fov.value = TankConfig.camera_fov
 	_msaa_option.select(int(TankConfig.msaa))
-	if _adaptive_check != null:
-		_adaptive_check.button_pressed = TankConfig.adaptive_quality
+	_sync_fidelity_buttons()
+	_sync_adaptive_controls()
 	if _adaptive_target != null:
 		_adaptive_target.value = float(TankConfig.adaptive_quality_target_fps)
 	if _adaptive_target_label != null:
@@ -667,6 +836,8 @@ func _on_resolution(idx: int) -> void:
 	var r: Dictionary = RESOLUTIONS[idx]
 	TankConfig.render_width = int(r["w"])
 	TankConfig.render_height = int(r["h"])
+	_sync_fidelity_buttons()
+	_update_fidelity_summary()
 
 
 func _on_dither(v: float) -> void:

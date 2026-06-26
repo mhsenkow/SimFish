@@ -2394,36 +2394,75 @@ func _music_mods() -> Dictionary:
 	return {
 		"speed": 1.0, "wander": 1.0, "home_radius": 1.0, "home_pull": 1.0,
 		"tightness": 1.0, "accel": 1.0, "turn": 1.0, "dart_chance": 0.0,
-		"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0, "scale": 1.0,
+		"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0,
+		"wander_amp": 1.0, "sweep": 0.0, "vertical": 0.0, "beat_phase": 0.0,
+		"scale": 1.0,
 	}
+
+
+func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> Vector3:
+	var w := _world_node()
+	if w == null:
+		return position
+	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)
+	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
+	var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
+	var top_y: float = _water_surface_y() - 0.4
+	var lane: float = float(mods.get("beat_phase", 0.0)) + float(get_instance_id() % 997) * 0.11
+	var vert: float = clampf(float(mods.get("vertical", 0.0)), 0.0, 1.0)
+	var ty: float = lerpf(
+		bot_y + 0.35,
+		top_y - 0.25,
+		clampf(0.5 + sin(lane * 1.35) * 0.44, 0.08, 0.92))
+	ty = lerpf(home_y, ty, clampf(vertical_bias + vert * 0.65, 0.0, 1.0))
+	var target := Vector3(
+		sin(lane) * hw * 0.96,
+		ty,
+		cos(lane * 0.81 + 0.9) * hd * 0.96,
+	)
+	if w.has_method("clamp_xyz_in_tank"):
+		target = w.clamp_xyz_in_tank(target, 0.35, _body_tank_margin() * 0.45)
+	return target
+
+
+func _nudge_home_toward_music_target(target: Vector3, strength: float) -> void:
+	if strength <= 0.0:
+		return
+	home_x = lerpf(home_x, target.x, strength)
+	home_z = lerpf(home_z, target.z, strength)
+	home_y = lerpf(home_y, target.y, strength * 0.45)
 
 
 func _apply_music_beat_surge(mods: Dictionary, _effective_max: float) -> void:
 	if not bool(mods.get("beat_dart", false)):
 		return
-	burst_remaining = maxf(burst_remaining, randf_range(0.42, 0.72))
-	var w := _world_node()
-	if w == null:
-		return
-	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)
-	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
-	var target := Vector3(
-		randf_range(-hw * 0.88, hw * 0.88),
-		clampf(home_y, float(sim.substrate_top_y if sim != null else 0.0) + 0.5,
-			_water_surface_y() - 0.45),
-		randf_range(-hd * 0.88, hd * 0.88),
-	)
-	if w.has_method("clamp_xyz_in_tank"):
-		target = w.clamp_xyz_in_tank(target, 0.35, _body_tank_margin() * 0.45)
+	burst_remaining = maxf(burst_remaining, randf_range(0.75, 1.15))
+	var target: Vector3 = _music_cross_tank_target(mods, 0.72)
+	_nudge_home_toward_music_target(target, 0.58)
 	var dart_dir: Vector3 = target - position
-	dart_dir.y *= 0.35
 	if dart_dir.length_squared() < 0.08:
-		dart_dir = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+		dart_dir = Vector3(randf_range(-1.0, 1.0), randf_range(-0.35, 0.45), randf_range(-1.0, 1.0))
 	if dart_dir.length_squared() > 1e-6:
 		dart_dir = dart_dir.normalized()
-		heading_offset = dart_dir * (2.2 + wander_strength)
+		heading_offset = dart_dir * (3.6 + wander_strength * float(mods.get("wander", 1.0)))
 		_startle_heading = dart_dir
-		_startle_remaining = 0.28
+		_startle_remaining = 0.52
+
+
+func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_max: float) -> Vector3:
+	var sweep: float = float(mods.get("sweep", 0.0))
+	if sweep < 0.01:
+		return desired
+	var target: Vector3 = _music_cross_tank_target(mods, 0.55)
+	_nudge_home_toward_music_target(target, 0.08 * sweep)
+	var to_target: Vector3 = target - position
+	if to_target.length_squared() < 0.06:
+		return desired
+	var pull: float = effective_max * (0.62 + sweep * 2.35)
+	if burst_remaining > 0.05:
+		pull *= 1.35
+	desired += to_target.normalized() * pull
+	return desired
 
 
 func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste: Array,
@@ -2965,6 +3004,29 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				desired += to_roots.normalized() * effective_max * 0.55
 			else:
 				desired *= 0.12
+		elif w_fry != null and w_fry.has_method("query_lily_pads_in_radius"):
+			var lily_cover: Node3D = null
+			for lp in w_fry.query_lily_pads_in_radius(position, 4.0):
+				if not is_instance_valid(lp) or not lp.has_method("fry_shade_factor"):
+					continue
+				if float(lp.fry_shade_factor()) < 0.2:
+					continue
+				var lp_pos: Vector3 = lp.global_position
+				if lp.has_method("surface_rest_position"):
+					lp_pos = lp.surface_rest_position()
+				var ld2: float = Vector2(lp_pos.x - position.x, lp_pos.z - position.z).length_squared()
+				if ld2 < shelter_d2:
+					shelter_d2 = ld2
+					lily_cover = lp
+			if lily_cover != null:
+				var to_pad: Vector3 = lily_cover.global_position - position
+				if lily_cover.has_method("surface_rest_position"):
+					to_pad = lily_cover.surface_rest_position() - position
+				to_pad.y = -0.35
+				if to_pad.length() > 0.45:
+					desired += to_pad.normalized() * effective_max * 0.5
+				else:
+					desired *= 0.18
 		elif shelter != null:
 			var to_plant: Vector3 = shelter._world_pos - position
 			to_plant.y += 0.3  # aim for mid-plant, not substrate base
@@ -3621,7 +3683,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					target_velocity = _apply_target_from_desired(desired, effective_max)
 					return events
 
-	# Surface-feeder shade drift + stress relief (#38, #39).
+	# Surface-feeder shade drift + stress relief (#38, #39) and lily-pad rest (#45).
 	if surface_feeder and hunger < 0.5 and stress > 0.08:
 		var w_shade: Node = sim.get_parent() if sim != null else null
 		if w_shade != null and w_shade.has_method("query_floaters_in_radius"):
@@ -3633,6 +3695,33 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					desired += under.normalized() * effective_max * 0.25
 				else:
 					stress = maxf(0.0, stress - dt * 0.04)
+		if w_shade != null and w_shade.has_method("query_lily_pads_in_radius") \
+				and hunger < 0.42 and maturity != MATURITY_FRY:
+			var rest_pad: Node3D = null
+			var rest_d2: float = 9.0
+			for lp in w_shade.query_lily_pads_in_radius(position, 3.2):
+				if not is_instance_valid(lp) or not lp.has_method("effective_shade_radius"):
+					continue
+				if float(lp.effective_shade_radius()) < 0.12:
+					continue
+				var pad_pos: Vector3 = lp.global_position
+				if lp.has_method("surface_rest_position"):
+					pad_pos = lp.surface_rest_position()
+				var d2: float = Vector2(pad_pos.x - position.x, pad_pos.z - position.z).length_squared()
+				if d2 < rest_d2:
+					rest_d2 = d2
+					rest_pad = lp
+			if rest_pad != null:
+				var rest_pos: Vector3 = rest_pad.global_position
+				if rest_pad.has_method("surface_rest_position"):
+					rest_pos = rest_pad.surface_rest_position()
+				rest_pos.y = _water_surface_y() - 0.1
+				var to_rest: Vector3 = rest_pos - position
+				if to_rest.length() > 0.4:
+					desired += to_rest.normalized() * effective_max * 0.32
+				else:
+					desired *= 0.18
+					stress = maxf(0.0, stress - dt * 0.035)
 
 	# Tier 2: HUNGRY HERBIVORE. Plants need at least 15 voxels of biomass
 	# so fish have more food options before the shrimp graze them
@@ -3777,8 +3866,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		stress = clampf(stress + predator_near * dt * 0.6, 0.0, 1.0)
 		spooked = clampf(spooked + predator_near * 0.3, 0.0, 1.0)
 	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
-	desired += _boids(neighbors, tightness, fauna_sep) \
-		* schooling_strength * float(fauna_rt.get("schooling", 1.0))
+	var school_w: float = schooling_strength * float(fauna_rt.get("schooling", 1.0))
+	if float(music_mods.get("sweep", 0.0)) > 0.2:
+		school_w *= maxf(0.22, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.72)
+	desired += _boids(neighbors, tightness, fauna_sep) * school_w
 	# Soft territorial anchor — even inside home_radius, a gentle pull keeps
 	# each schooler loosely tethered to its patrol zone so boids cohesion
 	# can't collapse the whole population onto one centroid.
@@ -3788,6 +3879,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if soft_d > 0.05:
 			var anchor_w: float = 0.14 if swim_pattern == "school" else 0.10
 			anchor_w *= float(music_mods.get("home_pull", 1.0))
+			anchor_w *= maxf(0.02, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.96)
 			desired += soft_home.normalized() * effective_max * anchor_w \
 				* minf(soft_d / maxf(home_radius * float(music_mods.get("home_radius", 1.0)), 0.5), 1.0)
 
@@ -3927,6 +4019,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var pull_strength: float = clampf(
 			(dist_home / maxf(eff_home_r, 0.5)) - 1.0, 0.0, 2.0)
 		var pull_mult: float = 0.5 * float(music_mods.get("home_pull", 1.0))
+		pull_mult *= maxf(0.04, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.92)
 		if swim_pattern == "hover":
 			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
 		# Don't tug fish through glass when a saved home sits outside the footprint.
@@ -4292,10 +4385,18 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var music_dart: float = float(music_mods.get("dart_chance", 0.0))
 	if music_dart > 0.0 and burst_remaining <= 0.0 and energy > 0.3 \
 			and randf() < music_dart * dt:
-		burst_remaining = randf_range(0.35, 0.62)
-		var ang_m: float = randf() * TAU
-		var dart_m := Vector3(sin(ang_m), randf_range(-0.25, 0.35), cos(ang_m))
-		heading_offset = dart_m * (1.6 + wander_strength * float(music_mods.get("wander", 1.0)))
+		burst_remaining = randf_range(0.62, 1.05)
+		var dart_target: Vector3 = _music_cross_tank_target(music_mods, 0.65)
+		_nudge_home_toward_music_target(dart_target, 0.45)
+		var dart_m: Vector3 = dart_target - position
+		if dart_m.length_squared() < 0.08:
+			var ang_m: float = randf() * TAU
+			dart_m = Vector3(sin(ang_m), randf_range(-0.35, 0.45), cos(ang_m))
+		if dart_m.length_squared() > 1e-6:
+			dart_m = dart_m.normalized()
+			heading_offset = dart_m * (2.0 + wander_strength * float(music_mods.get("wander", 1.0)))
+			_startle_heading = dart_m
+			_startle_remaining = 0.32
 
 	# HOVER / INVESTIGATE TRIGGER. Any fish might occasionally stop mid-water to
 	# look around. This breaks up the constant swimming and adds lifelike personality.
@@ -4311,8 +4412,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# (that flip-flopping is what reads as mechanical). Pause rate is shaped by
 	# temperament — curious fish stop to look around more, jumpy fish less.
 	var pause_rate: float = dt * lerpf(0.06, 0.18, _trait("curiosity"))
-	if float(music_mods.get("speed", 1.0)) > 1.2:
-		pause_rate *= 0.12
+	if float(music_mods.get("sweep", 0.0)) > 0.08:
+		pause_rate = 0.0
 	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and goal_timer <= 0.0 \
 			and not _asleep and randf() < pause_rate and energy > 0.3:
 		# 15% of max speed → enough motion to slide off a wall, slow enough to
@@ -4391,13 +4492,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var y_wander: float = 0.15
 		if _tank_is_dome() or _water_column_height() > 6.0:
 			y_wander = 0.38
+		y_wander += float(music_mods.get("vertical", 0.0)) * 0.55
 		if swim_pattern == "shuffle":
 			y_wander *= 0.55
 		heading_offset = Vector3(
 			sin(phase) * randf_range(0.35, 0.62),
 			sin(phase * 1.37) * y_wander,
 			cos(phase * 0.93) * randf_range(0.35, 0.62),
-		) * float(music_mods.get("wander", 1.0))
+		) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
 
 	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
 	# periodically shift their home_x/home_z so they roam the tank over time
@@ -4418,6 +4520,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			drift_radius = 3.2 if swim_pattern == "school" else 4.0
 		drift_radius *= float(fauna_rt.get("wander", 1.0))
 		drift_radius *= float(music_mods.get("home_radius", 1.0))
+		drift_radius += float(music_mods.get("sweep", 0.0)) * 2.8
 		drift_interval /= maxf(float(music_mods.get("home_drift", 1.0)), 1.0)
 		_home_drift_timer = drift_interval
 		var w := _world_node()
@@ -4461,8 +4564,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _startle_remaining > 0.0:
 		desired += _startle_heading * effective_max * 0.8
 	else:
-		desired += heading_offset * 0.5 * wander_strength \
-			* float(fauna_rt.get("wander", 1.0)) * float(music_mods.get("wander", 1.0))
+		var wander_base: float = 0.5
+		if float(music_mods.get("sweep", 0.0)) > 0.08:
+			wander_base = lerpf(0.75, 1.25, float(music_mods.get("sweep", 0.0)))
+		desired += heading_offset * wander_base * wander_strength \
+			* float(fauna_rt.get("wander", 1.0)) * float(music_mods.get("wander", 1.0)) \
+			* float(music_mods.get("wander_amp", 1.0))
+
+	desired = _apply_music_groove_steering(music_mods, desired, effective_max)
 
 	# Diurnal / nocturnal / crepuscular activity. The generic "everyone slows
 	# at night" was wrong - real freshwater fish split by activity period.
@@ -4498,6 +4607,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				activity = 0.7 + 0.3 * dl
 			_:
 				activity = 0.3 + 0.7 * dl
+		if float(music_mods.get("sweep", 0.0)) > 0.08:
+			activity = 1.0
 		desired *= activity
 
 		# Sleep shelter-seeking. When daylight drops below 0.18 (deep
@@ -5055,10 +5166,14 @@ func _motion_substep(dt: float) -> void:
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
 	# Limit pitch for mid-water cruisers — real fish rarely climb/dive steeply.
+	# Music sync loosens this so groove-driven swoops read vertically.
 	if _sift_timer <= 0.0 and mouth_orientation != 1 and swim_pattern != "dart":
 		var flat: Vector3 = Vector3(heading.x, 0.0, heading.z)
 		if flat.length_squared() > 0.04:
 			var max_pitch: float = 0.40 if mouth_orientation == 0 else 0.52
+			var vert_lift: float = float(music_mm.get("vertical", 0.0))
+			if vert_lift > 0.12:
+				max_pitch = lerpf(max_pitch, 0.78, vert_lift)
 			if absf(heading.y) > max_pitch:
 				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
