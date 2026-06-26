@@ -640,11 +640,15 @@ func _creature_name(c: Node) -> String:
 func _card_name(c: Node) -> String:
 	var nm: String = _creature_name(c)
 	var pers: Variant = c.get("personality")
+	var label: String = nm
 	if pers is Dictionary and not (pers as Dictionary).is_empty():
 		var ep: String = CreatureNaming.epithet_for_personality(pers)
 		if ep != "":
-			return "%s %s" % [nm, ep]
-	return nm
+			label = "%s %s" % [nm, ep]
+	if _sim != null and _sim.has_method("is_guardian_creature") \
+			and _sim.is_guardian_creature(c):
+		return "◆ %s" % label
+	return label
 
 
 func _species_of(c: Node) -> String:
@@ -660,6 +664,13 @@ func _age_of(c: Node) -> float:
 
 
 func _sub_text(c: Node) -> String:
+	if c is Fish:
+		var bio_line: String = String(c.get_bio_summary()) if c.has_method("get_bio_summary") else ""
+		if bio_line != "":
+			var thought: String = c.get_inspect_thought() if c.has_method("get_inspect_thought") else ""
+			if thought != "":
+				return "%s · \"%s\"" % [bio_line, thought]
+			return bio_line
 	var gen := 0
 	if c.get("generation") != null:
 		gen = int(c.generation)

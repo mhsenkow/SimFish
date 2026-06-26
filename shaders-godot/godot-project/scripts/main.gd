@@ -826,6 +826,8 @@ func _ready() -> void:
 	if _sim != null and _sim.has_signal("favorites_changed"):
 		_sim.connect("favorites_changed", _refresh_favorite_halos)
 		_refresh_favorite_halos.call_deferred()
+	if _sim != null and _sim.has_signal("guardian_spoke"):
+		_sim.connect("guardian_spoke", _on_guardian_spoke)
 	_ui_panels.setup(self)
 	# Hook rail buttons through the panel manager (exclusivity + modal backdrop).
 	if settings_toggle != null:
@@ -2126,16 +2128,31 @@ func _refresh_favorite_halos() -> void:
 			continue
 		var c: Node3D = want[id]
 		var star := Label3D.new()
-		star.text = "★"
+		var is_g: bool = _sim.has_method("is_guardian_creature") \
+			and _sim.is_guardian_creature(c)
+		if is_g:
+			star.text = "◆"
+			star.modulate = Color(0.55, 0.88, 1.0)
+		else:
+			star.text = "★"
+			star.modulate = Color(1.0, 0.85, 0.3)
 		star.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		star.fixed_size = true
 		star.pixel_size = 0.0006
-		star.modulate = Color(1.0, 0.85, 0.3)
 		star.outline_modulate = Color(0, 0, 0, 0.75)
 		star.outline_size = 8
 		star.position = Vector3(0.0, 0.55, 0.0)
 		c.add_child(star)
 		_fav_halos[id] = star
+
+
+func _on_guardian_spoke(text: String, speaker: Fish, action: String) -> void:
+	if text.strip_edges() == "":
+		return
+	var nm: String = _creature_display_name(speaker) if speaker != null else "Tank voice"
+	var important: bool = action in ["enable_autofeed", "drop_feed", "lost", "intro", "successor"]
+	if has_method("_push_notification"):
+		_push_notification("guardian", "important" if important else "info", nm, text, important)
 
 
 # Human-readable "what is this creature doing right now", from its state machine.

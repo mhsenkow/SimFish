@@ -671,6 +671,8 @@ func apply_vessel_preset(slug: String) -> void:
 # Power users can switch either off in Settings → Advanced.
 var auto_respawn_fauna: bool = true
 var auto_feed_fauna: bool = false
+var guardian_companion_enabled: bool = true
+var guardian_may_enable_autofeed: bool = true
 # Live swim/grouping multipliers — read every fish tick; no reload required.
 var fauna_schooling_mult: float = 1.0
 var fauna_separation_mult: float = 1.0
