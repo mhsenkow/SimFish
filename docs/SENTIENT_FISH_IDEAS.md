@@ -105,28 +105,28 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
   ([fish.gd:4125](../shaders-godot/godot-project/scripts/fish.gd:4125)). The eye
   always rests on the most interesting thing — the core "it's paying attention"
   read. *M · M*
-- **8. Telegraph intent before acting.** A brief "aim" pose — orient + coil — a
+- [x] **8. Telegraph intent before acting.** A brief "aim" pose — orient + coil — a
   beat before a dart to food or a flee, like a cat's wiggle before a pounce. Hook
   the `burst_remaining` triggers
   ([~fish.gd:891](../shaders-godot/godot-project/scripts/fish.gd:891)). Lets the
   player *read* the decision a moment before the motion. *M · L*
-- **9. Double-take.** After passing something novel, occasionally stop and look
+- [x] **9. Double-take.** After passing something novel, occasionally stop and look
   back — "wait, what was that?" Extends the novelty pause
   ([fish.gd:4239](../shaders-godot/godot-project/scripts/fish.gd:4239)) with a
   backward glance. *S · M*
 
 ### Deliberation — the visible act of deciding (Lever 1 — the headline)
 
-- **10. Approach–avoidance conflict.** When two drives are close in strength
+- [x] **10. Approach–avoidance conflict.** When two drives are close in strength
   (curiosity vs caution at a novel object; hunger vs fear at food near a
   predator), the fish *oscillates* — edges in, retreats, edges in again — before
   committing. THE "you can see it thinking" behavior. Needs a soft-arbitration
   pass over the early-return tiers. *L · L*
-- **11. Commitment threshold + hysteresis.** A new drive must beat the current
+- [x] **11. Commitment threshold + hysteresis.** A new drive must beat the current
   one by a margin for a short dwell before the fish switches modes — so it
   doesn't flip-flop, it visibly *makes up its mind* and then sticks. Add a small
   deliberation state between tier evaluation and mode-set. *M · L*
-- **12. Indecision animation.** When arbitration is near-tied: micro-pauses,
+- [x] **12. Indecision animation.** When arbitration is near-tied: micro-pauses,
   head swivels between the two options (food… threat… food…), a fin twitch. Pure
   body-language read of an internal tie. Pairs with #10/#11. *M · M*
 - **13. Anticipation & prediction.** Lead drifting food (intercept where it
@@ -139,7 +139,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 
 ## Section B — Memory & Learning (a fish with a past)
 
-- **14. Make personality *learnable*, not just scarred.** Today the only trait
+- [x] **14. Make personality *learnable*, not just scarred.** Today the only trait
   change is a one-way `−0.03` boldness scar after trauma
   ([fish.gd:2685](../shaders-godot/godot-project/scripts/fish.gd:2685)).
   Generalize to slow two-way conditioning: repeated safe feedings at the glass
@@ -155,11 +155,11 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 - **17. Learned, persisted sleep nooks.** `_sleep_nook` is transient; persist it
   and strengthen the bond with each undisturbed night. A fish returns to *its*
   spot; disturbed there, it picks a new one. (Hook noted in the audit.) *M · M*
-- **18. Populate patrol anchors.** `patrol_anchors` is allocated but never filled
+- [x] **18. Populate patrol anchors.** `patrol_anchors` is allocated but never filled
   ([fish.gd:249](../shaders-godot/godot-project/scripts/fish.gd:249)). Bin the
   top 2–3 `feed_heatmap` hotspots into a loop so a fish has a visible daily
   *route* / tended territory. Instant "it has a routine." *M · M*
-- **19. Newcomer → resident arc.** A freshly added fish explores widely (high
+- [x] **19. Newcomer → resident arc.** A freshly added fish explores widely (high
   novelty), then settles into a learned home range over days via `visited_regions`
   + a confidence field. Nervous newcomer becomes settled local — a visible
   multi-session arc. *M · M*
@@ -170,11 +170,11 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 - **21. Learn the rhythm.** Learn the day/night feeding rhythm and your session
   cadence; a usually-morning-fed fish gets active as the lights come up. Couples
   to the day-length / seasons system (H8 #74). *M · M*
-- **22. Curiosity-modulated habituation.** High-curiosity fish habituate *slower*
+- [x] **22. Curiosity-modulated habituation.** High-curiosity fish habituate *slower*
   (stay interested), low-curiosity fish get bored fast. Today `habituated` decays
   at a flat rate ([fish.gd:2503](../shaders-godot/godot-project/scripts/fish.gd:2503)).
   Makes curiosity a felt trait. *S · M*
-- **23. Learned food preferences.** Fish remember which food *kind* satisfied
+- [x] **23. Learned food preferences.** Fish remember which food *kind* satisfied
   them and bias toward it — nudge the static per-species appeal multiplier
   ([fish.gd:614](../shaders-godot/godot-project/scripts/fish.gd:614)) with
   experience. "She loves the bloodworms." *S · M*
@@ -182,7 +182,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
   map as a prior (copy their heatmap), and leaders "teach." Extend gaze contagion
   ([fish.gd:4089](../shaders-godot/godot-project/scripts/fish.gd:4089)) from
   momentary copying into actual learning. *M · L*
-- **25. Emotionally-weighted forgetting.** Not everything should decay at the
+- [x] **25. Emotionally-weighted forgetting.** Not everything should decay at the
   same `0.985/5s`. Scares fade in minutes; near-death traumas and strong bonds
   persist far longer. Memory that feels like memory. *S · M*
 
@@ -195,7 +195,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
   *arousal* (calm↔excited) so you can tell "content & resting" from "content &
   playing," and "sulking" from "panic." The substrate for every readable state
   below. *M · L*
-- **27. Named states with full-body choreography.** Derive discrete moods
+- [x] **27. Named states with full-body choreography.** Derive discrete moods
   (content, excited, anxious, frustrated, playful, grieving, bored, cozy) from
   valence/arousal + context, each with a signature *motion quality*: frustrated =
   sharp repeated jabs at the obstacle; cozy = slow tight circles in a nook; bored
@@ -214,13 +214,13 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 - **31. Frustration → giving up.** Repeated failure at a goal (food behind glass,
   a missed hunt) builds frustration (sharper motion), then the fish *disengages*
   — visible persistence then resignation. A new affective loop. *M · M*
-- **32. Contentment / "flow."** Great conditions → a visibly relaxed state: slow
+- [x] **32. Contentment / "flow."** Great conditions → a visibly relaxed state: slow
   tail, soft turns, hanging in a favorite spot, fins easy. The serenity payoff
   (ties to H10 #96) — a healthy tank should *look* calm. *S · M*
 - **33. Boredom that drives action.** H9 #85 made barren tanks listless; go
   further — a bored fish *invents* activity (chases bubbles, nips a plant,
   shadows the cursor). Boredom as a driver, not just a damper. *M · M*
-- **34. Startle → vigilance → baseline.** Make the recovery *behaviorally*
+- [x] **34. Startle → vigilance → baseline.** Make the recovery *behaviorally*
   distinct: freeze → hyper-vigilant (extra head-checks, hugs cover) → gradual
   return. `spooked` already decays
   ([fish.gd:2723](../shaders-godot/godot-project/scripts/fish.gd:2723)); give the
@@ -228,7 +228,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 - **35. Daily mood weather.** Each "morning" a fish wakes with a mood seeded by
   overnight conditions (rest debt, water quality) that colors the whole day —
   "she's in a mood today." Reads as genuine off-days and good-days. *M · M*
-- **36. Anticipatory excitement.** Visible pre-reward buzz: when feed cues fire,
+- [x] **36. Anticipatory excitement.** Visible pre-reward buzz: when feed cues fire,
   well-fed-history fish get aroused — faster, fins up, gathering. The "dinner's
   coming!" energy. Couples to conditioning (#16). *S · M*
 - **37. Comfort in place.** A fish has a spot it feels safe (its nook/plant) and

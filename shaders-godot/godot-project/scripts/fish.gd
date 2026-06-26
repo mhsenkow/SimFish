@@ -211,6 +211,22 @@ const AI_DRIFT_CHECK_PERIOD: float = 2.0
 #   (valence+, arousal+) vs "sulking" (valence-, arousal-) vs panic (both high).
 var mood: float = 0.2
 var arousal: float = 0.3
+var vigilance: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _contentment: float = 0.0
+# Deliberation (#10–12): approach–avoidance oscillation + mode commitment.
+var _delib_active: bool = false
+var _delib_phase: float = 0.0
+var _delib_approach_pos: Vector3 = Vector3.ZERO
+var _delib_avoid_pos: Vector3 = Vector3.ZERO
+var _commit_mode: int = -1
+var _commit_dwell: float = 0.0
+var _aim_remaining: float = 0.0
+var _double_take_remaining: float = 0.0
+# Learning (#14, #18–19, #23).
+var food_preferences: Dictionary = {}
+var home_confidence: float = 0.0
+var _patrol_heatmap_refresh_t: float = 0.0
 # curiosity_drive: an appetite for novelty in [0,1]. Builds when nothing
 #   interesting happens; discharged by investigating. Bored fish go exploring.
 var curiosity_drive: float = 0.0
@@ -614,36 +630,43 @@ func _boldness() -> float:
 
 
 # Player food subtype preference. Lower = more appealing (reduces effective distance).
+# Learned preferences (#23) nudge the static species appeal over time.
 func _food_appeal_multiplier(w: WasteParticle) -> float:
 	if w.kind != WasteParticle.KIND_FOOD:
 		return 1.0
+	var base: float = 1.0
 	match w.food_subtype:
 		WasteParticle.FOOD_SUB_FLAKE:
 			if mouth_orientation == -1:
-				return 0.42
-			if mouth_orientation == 1:
-				return 2.4
-			return 0.95
+				base = 0.42
+			elif mouth_orientation == 1:
+				base = 2.4
+			else:
+				base = 0.95
 		WasteParticle.FOOD_SUB_PELLET:
 			if mouth_orientation == 1:
-				return 0.48
-			if mouth_orientation == -1:
-				return 1.9
-			return 0.9
+				base = 0.48
+			elif mouth_orientation == -1:
+				base = 1.9
+			else:
+				base = 0.9
 		WasteParticle.FOOD_SUB_WORM:
 			if herbivory > 0.55:
-				return 2.8
-			if herbivory < 0.25:
-				return 0.45
-			return 1.1
+				base = 2.8
+			elif herbivory < 0.25:
+				base = 0.45
+			else:
+				base = 1.1
 		WasteParticle.FOOD_SUB_WAFER:
 			if herbivory > 0.45 or algae_grazer:
-				return 0.38
-			if herbivory < 0.2:
-				return 2.0
-			return 1.0
+				base = 0.38
+			elif herbivory < 0.2:
+				base = 2.0
+			else:
+				base = 1.0
 		_:
-			return 1.0
+			base = 1.0
+	return base * FishMind.food_preference_mult(self, w.food_subtype)
 
 
 # Convenience accessor — returns the personality value or 0.5 default. Used
@@ -651,6 +674,21 @@ func _food_appeal_multiplier(w: WasteParticle) -> float:
 # fast in the hot loop (no dict null check at every callsite).
 func _trait(key: String) -> float:
 	return float(personality.get(key, 0.5)) if not personality.is_empty() else 0.5
+
+
+# Mode commitment (#11): survival/reproduction bypass; others dwell before switching.
+func _try_commit_return(_events: Dictionary, desired: Vector3, eff_max: float,
+		proposed: Mode, dt: float, bypass: bool = false) -> bool:
+	if bypass or proposed == Mode.FLEE or proposed == Mode.SPAWN \
+			or brooding_remaining > 0.0:
+		current_mode = proposed
+		target_velocity = _apply_target_from_desired(desired, eff_max)
+		return true
+	if FishMind.tick_commitment(self, dt, int(proposed)):
+		current_mode = proposed
+		target_velocity = _apply_target_from_desired(desired, eff_max)
+		return true
+	return false
 
 
 # Seasonal breeding readiness in roughly [0.7, 1.3] from the real-world month:
@@ -711,18 +749,28 @@ func _recall(kind: String) -> Variant:
 # steering reads them. Returns nothing; mutates state in place. Throttle-safe:
 # everything here is O(1) plus a small memory sweep.
 func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
-	# Decay working memory.
+	# Decay working memory with emotionally-weighted rates (#25).
 	if not memory.is_empty():
 		var keep: Array = []
 		for e in memory:
-			e["t"] = float(e.get("t", 0.0)) - dt
+			var kind: String = String(e.get("kind", ""))
+			var mult: float = FishMind.memory_decay_mult(kind)
+			e["t"] = float(e.get("t", 0.0)) - dt * mult
 			if float(e["t"]) > 0.0:
 				keep.append(e)
 		memory = keep
 
-	# Spooked decays slowly (lingering after-fear). A fresh startle tops it up.
+	FishMind.tick_personality_conditioning(self, dt)
+	FishMind.tick_home_confidence(self, dt)
+	_patrol_heatmap_refresh_t -= dt
+	if _patrol_heatmap_refresh_t <= 0.0:
+		_patrol_heatmap_refresh_t = 45.0
+		FishMind.refresh_patrol_from_heatmap(self)
+
+	# Spooked → vigilance → baseline (#34).
 	if _startle_remaining > 0.0:
 		spooked = maxf(spooked, clampf(0.55 + (1.0 - _trait("boldness")) * 0.45, 0.0, 1.0))
+		vigilance = clampf(vigilance + dt * 0.5, 0.0, 1.0)
 	spooked = maxf(0.0, spooked - dt * 0.12)
 
 	# Reaction-shot + fidget timers.
@@ -732,6 +780,8 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 	_goal_pick_cooldown = maxf(0.0, _goal_pick_cooldown - dt)
 	goal_timer = maxf(0.0, goal_timer - dt)
 	_relief_pulse = maxf(0.0, _relief_pulse - dt * 1.5)
+	_aim_remaining = maxf(0.0, _aim_remaining - dt)
+	_double_take_remaining = maxf(0.0, _double_take_remaining - dt)
 
 	# Curiosity builds when life is calm and uneventful; discharges when the
 	# fish is actively investigating (interest set) or recently startled.
@@ -809,7 +859,7 @@ func _trigger_mouth_gape() -> void:
 	_mouth_gape = 1.0
 
 
-func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
+func _record_meal_at(pos: Vector3, weight: float = 1.0, food_subtype: int = -1) -> void:
 	_trigger_mouth_gape()
 	if bio.is_empty():
 		bio["meals_eaten"] = 0
@@ -819,6 +869,8 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
 	remember("fed", pos, 14.0)
 	mood = clampf(mood + 0.12 * weight, -1.0, 1.0)
 	FishMind.nudge_arousal(self, 0.12 * weight)
+	if food_subtype >= 0:
+		FishMind.record_food_preference(self, food_subtype, weight)
 	# Trust building: being fed while the player is watching teaches the fish
 	# that the looming presence at the glass means food. This is the core of
 	# "the tank knows you" — hand-fed fish learn to greet you.
@@ -2504,9 +2556,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			for k in expired:
 				grudges.erase(k)
 		if not habituated.is_empty():
+			var hab_decay: float = FishMind.habituation_decay_rate(self) * decay_dt
 			for k in habituated.keys():
 				habituated[k] = clampf(
-					float(habituated[k]) + decay_dt * 0.0008, 0.0, 1.0)
+					float(habituated[k]) + hab_decay * 0.0008, 0.0, 1.0)
 		if feed_heatmap.size() > 0:
 			# One bulk decay step per throttle window instead of stochastic
 			# per-tick. Multiplicative so peaks fade proportionally.
@@ -3366,7 +3419,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if to_w.length() < 0.4:
 				events["eat_waste"] = best_w
 				var is_food: bool = best_w.kind == 3
-				_record_meal_at(position, 1.5 if is_food else 0.7)
+				_record_meal_at(position, 1.5 if is_food else 0.7,
+					best_w.food_subtype if is_food else -1)
 				hunger = maxf(0.0, hunger - (FOOD_HUNGER_DELTA if is_food else WASTE_HUNGER_DELTA))
 				energy = minf(1.0, energy + (FOOD_ENERGY_DELTA if is_food else WASTE_ENERGY_DELTA))
 				# All meals rewind the age clock a little.
@@ -3408,7 +3462,22 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 						frenzy_chance = 0.78
 					elif best_w.food_subtype == WasteParticle.FOOD_SUB_FLAKE and mouth_orientation == -1:
 						frenzy_chance = 0.62
-					if burst_remaining <= 0.0 and energy > 0.15 and randf() < frenzy_chance:
+					var approach_s: float = clampf(hunger * 1.0 + boldness * 0.25, 0.0, 1.0)
+					var avoid_s: float = clampf(stress * 0.85 + spooked * 0.55, 0.0, 1.0)
+					FishMind.update_conflict(self, approach_s, avoid_s,
+						best_w.global_position, position)
+					if _delib_active:
+						pull *= 0.38
+						desired += FishMind.deliberation_steer(self, dt, effective_max)
+						if not FishMind.tick_commitment(self, dt, Mode.FORAGE):
+							desired += to_w.normalized() * effective_max * pull * 0.5
+							target_velocity = _apply_target_from_desired(desired, effective_max * 0.55)
+							return events
+					if _aim_remaining <= 0.0 and burst_remaining <= 0.0:
+						FishMind.aim_before_burst(self)
+					if _aim_remaining > 0.0:
+						pull *= 0.22
+					elif burst_remaining <= 0.0 and energy > 0.15 and randf() < frenzy_chance:
 						burst_remaining = randf_range(0.4, 0.75) + (age_factor * 0.3)
 						_startle_heading = to_w.normalized()
 						_startle_remaining = 0.5
@@ -4024,6 +4093,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var pull_strength: float = clampf(
 			(dist_home / maxf(eff_home_r, 0.5)) - 1.0, 0.0, 2.0)
 		var pull_mult: float = 0.5 * float(music_mods.get("home_pull", 1.0))
+		pull_mult *= lerpf(0.75, 1.15, home_confidence)
 		pull_mult *= maxf(0.04, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.92)
 		if swim_pattern == "hover":
 			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
@@ -4074,8 +4144,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var draw: float = maxf(novelty, familiarity)
 			var pull: float = _cached_glance_strength * (effective_bold - 0.55) * 1.4 * draw
 			var to_glass: Vector3 = _cached_glance_point - position
+			if stress > 0.22 or spooked > 0.18:
+				var approach_s: float = effective_bold * draw * _cached_glance_strength
+				var avoid_s: float = clampf(stress * 0.75 + spooked * 0.5, 0.0, 1.0)
+				FishMind.update_conflict(self, approach_s, avoid_s,
+					_cached_glance_point, position)
+				if _delib_active:
+					pull *= 0.35
 			if to_glass.length_squared() > 0.04:
 				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.6)
+				if _delib_active:
+					desired += FishMind.deliberation_steer(self, dt, effective_max)
 				_interest_target = _cached_glance_point
 				_interest_remaining = 1.2
 			# A brand-new strong glance is startling/interesting → reaction shot
@@ -4273,11 +4352,16 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var curiosity: float = _trait("curiosity")
 				if curiosity > 0.35:
 					_novelty_pause_remaining = lerpf(0.4, 1.4, curiosity)
+					FishMind.maybe_double_take(self, curiosity)
 	# When pausing, dampen speed so the fish visibly slows + looks around.
 	# Other steering terms still apply at reduced strength so wall_avoid
 	# can still nudge it out of trouble.
 	if _novelty_pause_remaining > 0.0:
 		desired *= 0.25
+	if _double_take_remaining > 0.0:
+		desired *= 0.18
+		_gaze_yaw = clampf(_gaze_yaw - 0.55, -0.55, 0.55)
+		_gaze_remaining = maxf(_gaze_remaining, _double_take_remaining)
 
 	# FEED ANTICIPATION. When the wall-clock minute matches the player's
 	# historical feed times, hungry fish drift upward toward the surface
@@ -4296,6 +4380,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if to_you.length_squared() > 0.25:
 				desired += to_you.normalized() * effective_max * 0.3 * familiarity
 		mood = clampf(mood + dt * 0.05, -1.0, 1.0)
+		FishMind.nudge_arousal(self, dt * 0.35)
 
 	# STRESS CONTAGION + STARTLE PROPAGATION. Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
@@ -4736,6 +4821,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		current_mode = Mode.REST
 	else:
 		_sleep_have_nook = false
+
+	if _delib_active:
+		desired += FishMind.deliberation_steer(self, dt, effective_max)
+		var indec_spd: float = float(FishMind.indecision_modifiers(self).get("speed_mult", 1.0))
+		if indec_spd < 0.99:
+			effective_max *= indec_spd
 
 	target_velocity = _apply_target_from_desired(desired, effective_max)
 	# Position + facing now updated in _process at render rate.
@@ -5431,6 +5522,7 @@ func _motion_substep(dt: float) -> void:
 		# head reads as "looking at something" rather than dead-ahead. Smoothed
 		# and subtle; the saccade above is the quick flick layered on top.
 		var gaze_hold: float = clampf(_gaze_yaw, -0.3, 0.3) if _gaze_remaining > 0.0 else 0.0
+		gaze_hold += float(aff_anim.get("gaze_split", 0.0))
 		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, clampf(dt * 2.0, 0.0, 1.0))
 		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y,
 			head_target + (_saccade_target + _eye_look * 0.5) * rest_factor,
@@ -5466,6 +5558,7 @@ func _motion_substep(dt: float) -> void:
 	# bigger amplitude because their bodies don't propel — the pecs do.
 	var pec_freq: float = pec_freq_base
 	var pec_amp: float = pec_amp_base + pec_amp_extra - minf(speed * 0.12, 0.30)
+	pec_amp += float(aff_anim.get("fin_twitch", 0.0))
 	# FIN BODY LANGUAGE. Confidence and contentment flare the fins wider;
 	# fear and sickness clamp them tight against the body. Continuous so the
 	# fish's mood is legible at a glance even when it's holding still.
@@ -6682,6 +6775,7 @@ func to_save_dict() -> Dictionary:
 		"familiarity": familiarity,
 		"mood": mood,
 		"arousal": arousal,
+		"mind": FishMind.mind_to_dict(self),
 		"bonds": bonds.duplicate(),
 		# Individual-aliveness state (H9): lifelong size/lifespan variance, the
 		# wariness scar from past frights, and the bonded mate id so loyalty +
@@ -6775,6 +6869,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	familiarity = float(d.get("familiarity", 0.0))
 	mood = float(d.get("mood", 0.2))
 	arousal = float(d.get("arousal", 0.3))
+	var mind_d: Variant = d.get("mind", null)
+	if mind_d is Dictionary:
+		FishMind.apply_mind_dict(self, mind_d as Dictionary)
 	var saved_bonds: Variant = d.get("bonds", null)
 	if saved_bonds is Dictionary:
 		bonds = (saved_bonds as Dictionary).duplicate()
