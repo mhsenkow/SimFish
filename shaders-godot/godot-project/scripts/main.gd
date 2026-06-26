@@ -12,6 +12,7 @@
 
 extends Node
 
+const AppLinks = preload("res://scripts/app_links.gd")
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
 
@@ -4759,6 +4760,8 @@ func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
 			return [
 				{"label": "Settings", "tip": "Tank shape, stocking, AI (O)",
 					"action": func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS)},
+				{"label": "Info & links", "tip": "Website, bug reports, source code",
+					"action": func(): AppLinks.show_info_popup(self)},
 			]
 		"alerts":
 			return [

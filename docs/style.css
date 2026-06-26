@@ -87,6 +87,49 @@ pre code {
   color: var(--ink);
 }
 
+/* ---------- site nav ---------- */
+
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(10, 24, 32, 0.92);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+}
+
+.site-nav-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 12px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.site-mark {
+  font-family: "IBM Plex Serif", Georgia, serif;
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--accent-bright);
+}
+
+.site-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  font-size: 14px;
+}
+
+.site-links a {
+  color: var(--ink-dim);
+}
+
+.site-links a:hover {
+  color: var(--accent);
+}
+
 /* ---------- hero ---------- */
 
 .hero {
@@ -188,6 +231,28 @@ pre code {
   height: auto;
 }
 
+.hero-shot figcaption,
+.gallery-grid figcaption,
+.scenario-shot figcaption {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  background: var(--bg-mid);
+  border-top: 1px solid var(--border);
+}
+
+.section-lead {
+  color: var(--ink-dim);
+  max-width: 720px;
+  margin: -12px 0 28px;
+  font-size: 16px;
+}
+
+.section-lead strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
 /* ---------- features ---------- */
 
 section {
@@ -245,6 +310,56 @@ h2::before {
   color: var(--ink-dim);
   font-size: 15px;
   line-height: 1.55;
+}
+
+/* ---------- scenarios ---------- */
+
+.scenario-shot {
+  margin: 0 0 28px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.scenario-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.scenario-card {
+  background: var(--bg-mid);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 18px 20px;
+}
+
+.scenario-card h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--accent-bright);
+  font-weight: 500;
+}
+
+.scenario-meta {
+  margin: 0 0 10px;
+  font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.scenario-card p:last-child {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 /* ---------- gallery ---------- */
@@ -312,6 +427,11 @@ footer {
 /* ---------- responsive ---------- */
 
 @media (max-width: 900px) {
+  .site-nav-inner {
+    padding: 12px 20px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
   .hero {
     grid-template-columns: 1fr;
     padding: 48px 24px 40px;

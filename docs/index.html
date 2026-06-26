@@ -7,18 +7,32 @@
   <meta name="description" content="A generative pixel-art Walstad aquarium running as a 3D voxel scene through a palette-quantize + dither shader pipeline. Plants grow, fish school and breed, shrimp climb plants, snails crawl the glass." />
   <meta property="og:title" content="walstad loom — generative pixel-art Walstad aquarium" />
   <meta property="og:description" content="Self-balancing voxel ecosystem rendered as 48-color pixel art. Plants grow, fish breed, snails crawl, shrimp molt — every creature is an agent with a genome and a behavior tree." />
-  <meta property="og:image" content="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
+  <meta property="og:image" content="https://mhsenkow.github.io/SimFish/img/void-tank.png" />
   <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://mhsenkow.github.io/SimFish/" />
   <link rel="preload" href="fonts/IBMPlexSerif-Medium.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="fonts/IBMPlexSans-Regular.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="hero">
+  <header class="site-nav">
+    <div class="site-nav-inner">
+      <span class="site-mark">walstad loom</span>
+      <nav class="site-links">
+        <a href="#download">Download</a>
+        <a href="#scenarios">Scenarios</a>
+        <a href="#gallery">Gallery</a>
+        <a href="https://github.com/mhsenkow/SimFish/issues">Issues</a>
+        <a href="https://github.com/mhsenkow/SimFish">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <header class="hero" id="top">
     <div class="hero-inner">
       <h1>walstad loom</h1>
       <p class="tagline">A generative pixel-art aquarium. 3D voxel scene → palette-quantize + dither → chunky 48-color pixels. Plants grow voxel by voxel, fish school and breed, shrimp molt, snails crawl the glass. The whole thing self-balances over a few minutes of watching.</p>
-      <div class="downloads">
+      <div class="downloads" id="download">
         <a class="dl-btn dl-mac" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">macOS</span>
           <span class="hint">Universal · Apple Silicon + Intel</span>
@@ -36,10 +50,11 @@
           <span class="hint">ARM64 · APK</span>
         </a>
       </div>
-      <p class="releases-link"><a href="https://github.com/mhsenkow/SimFish/releases">All releases</a> · <a href="https://github.com/mhsenkow/SimFish">Source on GitHub</a></p>
+      <p class="releases-link"><a href="https://github.com/mhsenkow/SimFish/releases">All releases</a> · <a href="https://github.com/mhsenkow/SimFish">Source on GitHub</a> · <a href="https://github.com/mhsenkow/SimFish/issues">Report a bug</a></p>
     </div>
     <figure class="hero-shot">
-      <img src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" alt="Screenshot of walstad loom — pixel-art voxel fish over a planted substrate" loading="eager" />
+      <img src="img/void-tank.png" alt="A planted aquarium floating in the void — pixel-art voxel fish over sand and hardscape" loading="eager" />
+      <figcaption>Void environment — the classic isolated tank floating in dark space</figcaption>
     </figure>
   </header>
 
@@ -73,14 +88,76 @@
     </div>
   </section>
 
-  <section class="gallery">
-    <h2>More views</h2>
+  <section class="scenarios" id="scenarios">
+    <h2>Pick your tank</h2>
+    <p class="section-lead">Tap <strong>+ New tank</strong> in the game to open the scenario picker — eight curated themes that each combine a distinct tank shape, substrate, lighting, and stocking. Every scenario produces a visibly different silhouette of glass, not just a different fish mix.</p>
+    <figure class="scenario-shot">
+      <img src="img/tank-menu-scenarios.png" alt="Scenario picker showing Walstad Jungle, Iwagumi, Blackwater, and Coral Reef presets" loading="lazy" />
+      <figcaption>Eight scenarios — from Walstad jungle to reef cube, hex showtank, and polyp biosphere</figcaption>
+    </figure>
+    <div class="scenario-grid">
+      <article class="scenario-card">
+        <h3>Walstad Jungle</h3>
+        <p class="scenario-meta">box · 8×4×7</p>
+        <p>Dense planted community: cardinal tetras, harlequins, cory, mouthbrooding gourami pair, cleaner shrimp.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Iwagumi Stone Garden</h3>
+        <p class="scenario-meta">wide box · 11×3×5</p>
+        <p>Sand + bright sun + a single tetra school over almost-empty negative space.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Blackwater Biotope</h3>
+        <p class="scenario-meta">column · 6×3×9</p>
+        <p>Tall narrow tank, driftwood-stained warm water, killifish + cory + guppy.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Coral Reef Cube</h3>
+        <p class="scenario-meta">cube · 6.5²×7</p>
+        <p>Saltwater reef: corals, anemones, clams, mixed reef morphs. Coral tips pulse and glow at night.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Cichlid Hex Showtank</h3>
+        <p class="scenario-meta">hex · 7²×8</p>
+        <p>Hexagonal show tank — angelfish + gourami pairs defend wedges of floor.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Polyp Biosphere</h3>
+        <p class="scenario-meta">sphere · 5²×6</p>
+        <p>No fish — cherry shrimp colony, freshwater hydra polyps, filter-feeding clams.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Nature Aquarium Column</h3>
+        <p class="scenario-meta">cylinder · 5.5²×8</p>
+        <p>Tall planted column with every behavior on display at once.</p>
+      </article>
+      <article class="scenario-card">
+        <h3>Apex Predator Den</h3>
+        <p class="scenario-meta">box · 6×4×6</p>
+        <p>Cozy dim tank — betta + dwarf puffer contest opposite corners.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="gallery" id="gallery">
+    <h2>In the sim</h2>
+    <p class="section-lead">Tanks can float in the void, sit on a bedroom desk, or frame a sunny window. Lighting, fog, and post-process all quantize through the same 48-color palette.</p>
     <div class="gallery-grid">
       <figure>
-        <img src="https://github.com/user-attachments/assets/8b8a9c07-869c-4462-98bf-074c32911a56" alt="Mid-water school of tetras and a planted background" loading="lazy" />
+        <img src="img/planted-community.png" alt="Planted community tank with live stat chips and thriving ecosystem" loading="lazy" />
+        <figcaption>Planted community — live stat chips track fish, shrimp, water chemistry, and morph drift</figcaption>
       </figure>
       <figure>
-        <img src="https://github.com/user-attachments/assets/1838bd1a-bddf-4924-be2e-1de1b5e5b71a" alt="Foreground carpet with corydoras and shrimp on the substrate" loading="lazy" />
+        <img src="img/driftwood-biotope.png" alt="Driftwood biotope with tetras and shrimp over sand" loading="lazy" />
+        <figcaption>Blackwater driftwood — warm lamp, tannin-stained water, schooling tetras</figcaption>
+      </figure>
+      <figure>
+        <img src="img/reef-cube.png" alt="Saltwater reef cube with corals and mixed reef fish" loading="lazy" />
+        <figcaption>Reef cube — corals respire, bleach under stress, and glow after dark</figcaption>
+      </figure>
+      <figure>
+        <img src="img/void-tank.png" alt="Rectangular tank floating alone in dark space with checkered floor plane" loading="lazy" />
+        <figcaption>Void preset — classic isolated tank with no room props</figcaption>
       </figure>
     </div>
   </section>
@@ -115,7 +192,7 @@
   <footer>
     <p>
       Built with Godot 4. Source on <a href="https://github.com/mhsenkow/SimFish">GitHub</a>.
-      Issues and PRs welcome.
+      <a href="https://github.com/mhsenkow/SimFish/issues">Issues and PRs welcome</a>.
     </p>
   </footer>
 </body>

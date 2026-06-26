@@ -29,6 +29,7 @@ func _ready() -> void:
 	_select_all.toggled.connect(_on_select_all_toggled)
 	_delete_selected_btn.pressed.connect(_on_delete_selected_confirm)
 	_add_guided_button()
+	_add_info_button()
 	get_viewport().size_changed.connect(_apply_responsive_layout)
 	_apply_responsive_layout()
 	_refresh()
@@ -47,6 +48,19 @@ func _add_guided_button() -> void:
 	b.pressed.connect(_on_guided_pressed)
 	top_bar.add_child(b)
 	top_bar.move_child(b, _new_btn.get_index() + 1)
+
+
+func _add_info_button() -> void:
+	var top_bar: Node = _new_btn.get_parent()
+	if top_bar == null:
+		return
+	var b := Button.new()
+	b.text = "Info"
+	b.tooltip_text = "Project website and GitHub issues"
+	b.custom_minimum_size = Vector2(0, maxf(36.0, _new_btn.custom_minimum_size.y))
+	b.pressed.connect(func(): AppLinks.show_info_popup(self))
+	top_bar.add_child(b)
+	top_bar.move_child(b, top_bar.get_child_count() - 1)
 
 
 func _on_guided_pressed() -> void:
