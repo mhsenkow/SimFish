@@ -17,6 +17,7 @@ class_name Fish
 # Preloaded so parse works even before the editor has populated the
 # global class_name registry — see ai_director.gd for the same trick.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const FishMind = preload("res://scripts/fish_mind.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 
 const MATURITY_FRY := 0
@@ -203,11 +204,13 @@ const AI_DRIFT_CHECK_PERIOD: float = 2.0
 # instead of a per-tick rule evaluator. All scalars are cheap; the heavy
 # lifting is reusing the steering hooks already present in the cruise tier.
 #
-# mood: emotional valence in [-1,1]. <0 = unhappy/anxious, >0 = content/curious.
-#   Drifts every tick from satisfaction (low hunger, low stress, company,
-#   good water) toward a personality-anchored baseline. Reads out as color
-#   vividness, fin spread, swim cadence.
+# mood: valence (how good/bad) in [-1,1]. <0 = unhappy/anxious, >0 = content.
+#   Drifts every tick from satisfaction toward a personality-anchored baseline.
+# arousal: activation (calm↔excited) in [0,1]. Orthogonal to mood so you can
+#   read "content & resting" (valence+, arousal-) vs "content & playing"
+#   (valence+, arousal+) vs "sulking" (valence-, arousal-) vs panic (both high).
 var mood: float = 0.2
+var arousal: float = 0.3
 # curiosity_drive: an appetite for novelty in [0,1]. Builds when nothing
 #   interesting happens; discharged by investigating. Bored fish go exploring.
 var curiosity_drive: float = 0.0
@@ -754,6 +757,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 	var baseline: float = lerpf(-0.1, 0.4, (_trait("calm") + _trait("boldness")) * 0.5)
 	var mood_target: float = clampf(baseline + satisfaction, -1.0, 1.0)
 	mood = lerpf(mood, mood_target, clampf(dt * 0.4, 0.0, 1.0))
+	FishMind.tick_affect(self, dt)
 
 	# Chemistry relief/escalation. Compare this tick's chem stress to last.
 	var chem_now: float = 0.0
@@ -814,6 +818,7 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0) -> void:
 	# it happened so the fish can return to a proven spot when hungry again.
 	remember("fed", pos, 14.0)
 	mood = clampf(mood + 0.12 * weight, -1.0, 1.0)
+	FishMind.nudge_arousal(self, 0.12 * weight)
 	# Trust building: being fed while the player is watching teaches the fish
 	# that the looming presence at the glass means food. This is the core of
 	# "the tank knows you" — hand-fed fish learn to greet you.
@@ -5374,16 +5379,14 @@ func _motion_substep(dt: float) -> void:
 			# subcarangiform default — current schooler behavior.
 			pass
 
-	# Mood modulation. Stressed fish visibly beat their tails faster,
-	# calm-personality fish beat slower. The effect is subtle (±20%) but
-	# stacks across a school — a stressed school reads as restless even
-	# when stationary, a calm one as drowsy. Personality.calm is the
-	# trait scalar from the AIDirector pass; defaults to 0.5 when absent.
+	# Mood + arousal modulation (#26). Valence slows/fin-spread; arousal quickens
+	# the wag so "content & playing" reads faster than "content & resting."
+	var aff_anim: Dictionary = FishMind.animation_modifiers(self)
 	var mood_freq_mult: float = 1.0 + stress * 0.35
 	if not personality.is_empty():
 		mood_freq_mult -= float(personality.get("calm", 0.5)) * 0.20 - 0.10
-	# Lingering fear quickens the beat; contentment slows it to a lazy drift.
 	mood_freq_mult += spooked * 0.4 - clampf(mood, 0.0, 1.0) * 0.15
+	mood_freq_mult += float(aff_anim.get("wag_freq", 0.0))
 	wag_freq *= clampf(mood_freq_mult, 0.55, 1.7)
 
 	_swim_phase += dt * wag_freq * _wag_freq_jitter
@@ -5443,6 +5446,7 @@ func _motion_substep(dt: float) -> void:
 		# breathes slow and shallow.
 		var o2_now2: float = float(sim.dissolved_o2) if sim != null and sim.get("dissolved_o2") != null else 1.0
 		var breath_load: float = clampf(0.4 + speed * 0.5 + (0.7 - o2_now2) * 1.2 + stress * 0.4, 0.4, 2.2)
+		breath_load *= 1.0 - float(aff_anim.get("breath_calm", 0.0))
 		_breath_load = lerpf(_breath_load, breath_load, clampf(dt * 3.0, 0.0, 1.0))
 		var breath_amp: float = (0.035 + clampf(_breath_load - 1.0, 0.0, 1.2) * 0.05) * maxf(rest_factor, 0.25)
 		var breath: float = 1.0 + sin(_swim_phase * 0.9 * _breath_load) * breath_amp
@@ -5465,11 +5469,13 @@ func _motion_substep(dt: float) -> void:
 	# FIN BODY LANGUAGE. Confidence and contentment flare the fins wider;
 	# fear and sickness clamp them tight against the body. Continuous so the
 	# fish's mood is legible at a glance even when it's holding still.
-	var fin_mood: float = clampf(mood, -1.0, 1.0) * 0.18 - spooked * 0.4 - clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.3
+	var fin_mood: float = clampf(mood, -1.0, 1.0) * 0.18 - spooked * 0.4 \
+		- clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.3 + float(aff_anim.get("fin_amp", 0.0))
 	pec_amp = maxf(pec_amp + fin_mood, 0.06)
 	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
 	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
-	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18, -0.1, 0.28)
+	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18 \
+		+ float(aff_anim.get("pec_spread", 0.0)), -0.1, 0.35)
 	if _pec_right_pivot != null:
 		_pec_right_pivot.rotation.z = sin(_swim_phase * pec_freq / wag_freq) * pec_amp + pec_spread
 	if _pec_left_pivot != null:
@@ -5523,10 +5529,13 @@ func _motion_substep(dt: float) -> void:
 	# more vivid (positive emotional readout — the game previously only showed
 	# negative states). A sudden water-quality improvement adds a brief relief
 	# brightening. These ride the same albedo channel as courtship flare.
-	flare += clampf(mood, 0.0, 1.0) * 0.16 + _relief_pulse * 0.18
+	var aff_color: Dictionary = FishMind.animation_modifiers(self)
+	flare += clampf(mood, 0.0, 1.0) * 0.16 + _relief_pulse * 0.18 \
+		+ float(aff_color.get("color_flare", 0.0))
 	var pallor: float = clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.5
 	# Fear + sadness drain color: a frightened or miserable fish goes pale.
-	pallor = clampf(pallor + spooked * 0.35 + clampf(-mood, 0.0, 1.0) * 0.25, 0.0, 0.85)
+	pallor = clampf(pallor + spooked * 0.35 + clampf(-mood, 0.0, 1.0) * 0.25 \
+		+ float(aff_color.get("color_pallor", 0.0)), 0.0, 0.85)
 	if flare > 0.001 or pallor > 0.001:
 		if not _courtship_color_active:
 			_courtship_color_active = true
@@ -6672,6 +6681,7 @@ func to_save_dict() -> Dictionary:
 		# emotional baseline (mood) across sessions.
 		"familiarity": familiarity,
 		"mood": mood,
+		"arousal": arousal,
 		"bonds": bonds.duplicate(),
 		# Individual-aliveness state (H9): lifelong size/lifespan variance, the
 		# wariness scar from past frights, and the bonded mate id so loyalty +
@@ -6764,6 +6774,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	rank_within_species = float(d.get("rank_within_species", 0.5))
 	familiarity = float(d.get("familiarity", 0.0))
 	mood = float(d.get("mood", 0.2))
+	arousal = float(d.get("arousal", 0.3))
 	var saved_bonds: Variant = d.get("bonds", null)
 	if saved_bonds is Dictionary:
 		bonds = (saved_bonds as Dictionary).duplicate()
