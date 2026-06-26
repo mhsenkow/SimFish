@@ -14,6 +14,8 @@
 extends Node
 class_name SimDriver
 
+const GuardianFish = preload("res://scripts/guardian_fish.gd")
+
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
 
@@ -25,6 +27,7 @@ signal creature_added(creature: Node)
 signal creature_removed(creature: Node)
 # Fired when the player's favorite set changes (star toggled, or restored on load).
 signal favorites_changed()
+signal guardian_spoke(text: String, speaker: Fish, action: String)
 
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
@@ -140,6 +143,11 @@ const SCHOOL_PULSE_PERIOD: float = 28.0
 const MOURNING_DURATION_S: int = 60
 const MOURNING_RADIUS: float = 6.0
 var _mourning_events: Array = []
+
+# ---- Guardian companion ----
+var _guardian_arc: Dictionary = {}
+var _guardian_id: String = ""
+var _ai_bio_connected: bool = false
 
 
 func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
@@ -599,6 +607,138 @@ func _tick_care_nudge(dt: float) -> void:
 	_last_nudge = key
 	# Severity 1 = gentle. Don't spam the permanent story log with nudges.
 	emit_eco_event("care", msg, 1, false)
+
+
+func _guardian_companion_enabled() -> bool:
+	var cfg := _cfg()
+	return cfg != null and bool(cfg.get("guardian_companion_enabled"))
+
+
+func _connect_ai_bio() -> void:
+	if _ai_bio_connected:
+		return
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_signal("fish_bio_ready"):
+		ai.fish_bio_ready.connect(_on_fish_bio_ready)
+		_ai_bio_connected = true
+
+
+func _on_fish_bio_ready(fish_id: String, bio: String) -> void:
+	for f in fish:
+		if is_instance_valid(f) and String(f.id) == fish_id:
+			f.character_bio = bio
+			return
+
+
+func is_guardian_creature(c: Node) -> bool:
+	return c is Fish and bool(c.is_guardian)
+
+
+func _find_guardian_fish() -> Fish:
+	for f in fish:
+		if is_instance_valid(f) and f.is_guardian:
+			return f
+	return null
+
+
+func _tick_guardian(dt: float) -> void:
+	if not _guardian_companion_enabled():
+		return
+	_connect_ai_bio()
+	var g: Fish = _find_guardian_fish()
+	if g == null:
+		_ensure_guardian()
+		g = _find_guardian_fish()
+	if g == null:
+		return
+	var result: Dictionary = GuardianFish.evaluate_tick(g, self, _guardian_arc, dt)
+	if result.is_empty():
+		return
+	var action: String = String(result.get("action", ""))
+	emit_signal("guardian_spoke", String(result.get("text", "")), g, action)
+	_handle_guardian_action(action)
+
+
+func _ensure_guardian() -> void:
+	if not _guardian_companion_enabled() or fish.is_empty():
+		return
+	if _guardian_id != "":
+		for f in fish:
+			if is_instance_valid(f) and String(f.id) == _guardian_id:
+				for g in fish:
+					if is_instance_valid(g):
+						g.is_guardian = false
+				f.is_guardian = true
+				return
+	var pick: Fish = null
+	if primary_favorite_id != "":
+		for f in fish:
+			if is_instance_valid(f) and String(f.id) == primary_favorite_id:
+				pick = f
+				break
+	if pick == null:
+		var best_b: float = -1.0
+		for f in fish:
+			if not is_instance_valid(f) or f.fish_name == "":
+				continue
+			var b: float = float(f.personality.get("boldness", 0.5)) \
+				if not f.personality.is_empty() else 0.5
+			if b > best_b:
+				best_b = b
+				pick = f
+	if pick == null:
+		for f in fish:
+			if is_instance_valid(f) and f.fish_name != "":
+				pick = f
+				break
+	if pick == null:
+		pick = fish[0] as Fish
+	if pick == null or not is_instance_valid(pick):
+		return
+	for f in fish:
+		if is_instance_valid(f):
+			f.is_guardian = false
+	pick.is_guardian = true
+	ensure_id(pick)
+	if _guardian_id != "" and _guardian_id != String(pick.id):
+		emit_signal("guardian_spoke",
+			GuardianFish.arc_chapter_line(pick, self, int(_guardian_arc.get("chapter", 0)), "successor"),
+			pick, "successor")
+	elif _guardian_id == "":
+		emit_signal("guardian_spoke",
+			GuardianFish.arc_chapter_line(pick, self, 0, "arrival"),
+			pick, "intro")
+	_guardian_id = String(pick.id)
+	if pick.character_bio == "":
+		pick.character_bio = GuardianFish.offline_guardian_bio(pick)
+	if pick.has_method("_refresh_character_bio"):
+		pick._refresh_character_bio()
+
+
+func _handle_guardian_action(action: String) -> void:
+	match action:
+		"drop_feed":
+			_guardian_drop_feed()
+		"enable_autofeed":
+			var cfg := _cfg()
+			if cfg != null:
+				cfg.auto_feed_fauna = true
+
+
+func _guardian_drop_feed() -> void:
+	var w := get_parent()
+	var spawn_x: float = 0.0
+	var spawn_z: float = 0.0
+	if w != null and w.has_method("sample_xz_in_tank"):
+		var xz: Vector2 = w.sample_xz_in_tank(0.5)
+		spawn_x = xz.x
+		spawn_z = xz.y
+	var fy: float = 5.95
+	if w != null:
+		var water_h = w.get("WATER_HEIGHT")
+		if water_h != null:
+			fy = float(water_h) - 0.55
+	_spawn_waste(Vector3(spawn_x, fy, spawn_z), 0.5, WasteParticle.KIND_FOOD)
 
 
 # Maturation milestones (#71) + anniversary reflection (#80).
@@ -1073,6 +1213,11 @@ func register_fish(f: Fish) -> void:
 		f._reclamp_territory_to_tank()
 	_record_organism_discovery(f.get_saved_genome())
 	_register_resident(f)
+	ensure_id(f)
+	if f.has_method("_refresh_character_bio"):
+		f._refresh_character_bio()
+	if _guardian_companion_enabled():
+		call_deferred("_ensure_guardian")
 
 
 func register_shrimp(s: Shrimp) -> void:
@@ -1483,6 +1628,26 @@ func is_creature_visible_to_camera(node: Node3D) -> bool:
 	if cam == null or node == null:
 		return true
 	return cam.is_position_in_frustum(node.global_position)
+
+
+func _entity_near_tank_wall(pos: Vector3, band: float = 0.65) -> bool:
+	var w: Node = get_parent()
+	if w != null and w.has_method("tank_lateral_boundary_info"):
+		var lat: Dictionary = w.tank_lateral_boundary_info(pos, 0.28)
+		if float(lat.get("clearance", 99.0)) < band:
+			return true
+		if w.has_method("tank_vertical_boundary_info"):
+			var vert: Dictionary = w.tank_vertical_boundary_info(
+				pos, 0.28, 0.55, 0.48)
+			if bool(vert.get("active", false)) \
+					and float(vert.get("clearance", 99.0)) < band:
+				return true
+		return false
+	var bounds_min: Vector3 = world_bounds.position
+	var bounds_max: Vector3 = world_bounds.position + world_bounds.size
+	return pos.x < bounds_min.x + band or pos.x > bounds_max.x - band \
+		or pos.y < bounds_min.y + band or pos.y > bounds_max.y - band \
+		or pos.z < bounds_min.z + band or pos.z > bounds_max.z - band
 
 
 # Cached AmbientAudio node accessor (sibling under the running scene). Replaces a
@@ -1963,6 +2128,7 @@ func _tick(dt: float) -> void:
 	tank_age_s += dt
 	_tick_carrying_capacity(dt)
 	_tick_long_arc(dt)
+	_tick_guardian(dt)
 	_tick_care_nudge(dt)
 	_trophic_hour_timer += dt
 	if _trophic_hour_timer >= 3600.0:
@@ -2235,9 +2401,6 @@ func _tick(dt: float) -> void:
 	_off_frustum_phase = 1 - _off_frustum_phase
 	var cam: Camera3D = _get_camera()
 	var have_cam: bool = cam != null
-	var bounds_min: Vector3 = world_bounds.position
-	var bounds_max: Vector3 = world_bounds.position + world_bounds.size
-	const WALL_MARGIN: float = 0.6
 
 	for f in fish:
 		if not is_instance_valid(f):
@@ -2253,14 +2416,8 @@ func _tick(dt: float) -> void:
 		# never skip fish near a tank wall — keeping the brain at 10 Hz
 		# there avoids wall-stuck artifacts when reflection commands lag.
 		if have_cam and not cam.is_position_in_frustum(f.position):
-			var near_wall: bool = \
-				f.position.x < bounds_min.x + WALL_MARGIN \
-				or f.position.x > bounds_max.x - WALL_MARGIN \
-				or f.position.y < bounds_min.y + WALL_MARGIN \
-				or f.position.y > bounds_max.y - WALL_MARGIN \
-				or f.position.z < bounds_min.z + WALL_MARGIN \
-				or f.position.z > bounds_max.z - WALL_MARGIN
-			if not near_wall and (f.get_instance_id() & 1) != _off_frustum_phase:
+			if not _entity_near_tank_wall(f.position) \
+					and (f.get_instance_id() & 1) != _off_frustum_phase:
 				continue
 		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
 		var neighbors: Array = _spatial_query(f.position, 9.0, f)
@@ -2286,14 +2443,8 @@ func _tick(dt: float) -> void:
 		# embedded against a corner with their brain stuck on the wrong
 		# pheromone gradient.
 		if have_cam and not cam.is_position_in_frustum(s.position):
-			var s_near_wall: bool = \
-				s.position.x < bounds_min.x + WALL_MARGIN \
-				or s.position.x > bounds_max.x - WALL_MARGIN \
-				or s.position.y < bounds_min.y + WALL_MARGIN \
-				or s.position.y > bounds_max.y - WALL_MARGIN \
-				or s.position.z < bounds_min.z + WALL_MARGIN \
-				or s.position.z > bounds_max.z - WALL_MARGIN
-			if not s_near_wall and (s.get_instance_id() & 1) != _off_frustum_phase:
+			if not _entity_near_tank_wall(s.position) \
+					and (s.get_instance_id() & 1) != _off_frustum_phase:
 				continue
 		# Spatial query: radius² = 4.0 (2.0 unit radius for shrimp)
 		var sn: Array = _spatial_query(s.position, 4.0, s)
@@ -2946,6 +3097,14 @@ func _tick(dt: float) -> void:
 						if w_node != null and w_node.has_method("spawn_burst_ripple"):
 							w_node.spawn_burst_ripple(actor.position)
 				if actor.has_method("start_dying"):
+					if actor is Fish and actor.is_guardian:
+						emit_signal("guardian_spoke",
+							GuardianFish.arc_chapter_line(actor, self,
+								int(_guardian_arc.get("chapter", 0)), "lost"),
+							actor, "lost")
+						_guardian_id = ""
+						actor.is_guardian = false
+						call_deferred("_ensure_guardian")
 					actor.start_dying()
 				else:
 					# Fallback for entities without a death animation (snails,
@@ -4273,7 +4432,7 @@ func _log_growth_debug(dt: float) -> void:
 	if spv_samples.is_empty():
 		return
 	spv_samples.sort()
-	var mid: float = spv_samples[spv_samples.size() / 2]
+	var mid: float = spv_samples[spv_samples.size() >> 1]
 	_growth_debug_last = {
 		"median_seconds_per_voxel": mid,
 		"min_seconds_per_voxel": spv_samples[0],
@@ -4285,7 +4444,7 @@ func _log_growth_debug(dt: float) -> void:
 
 
 func _maybe_flora_growth_digest() -> void:
-	var day_n: int = sim_day()
+	var day_n: int = int(sim_day())
 	if day_n == _flora_digest_day or day_n < 2:
 		return
 	_flora_digest_day = day_n
@@ -4600,6 +4759,8 @@ func save_state() -> Dictionary:
 			"filter_media_age_s": _filter_media_age_s,
 			"filter_clog": _filter_clog,
 			"stability": stability,
+			"guardian_arc": _guardian_arc.duplicate(true),
+			"guardian_id": _guardian_id,
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],
@@ -4747,6 +4908,10 @@ func load_state(d: Dictionary) -> void:
 	_filter_media_age_s = float(sim_d.get("filter_media_age_s", 0.0))
 	_filter_clog = float(sim_d.get("filter_clog", 0.0))
 	stability = float(sim_d.get("stability", 1.0))
+	var saved_guardian_arc: Variant = sim_d.get("guardian_arc", null)
+	if saved_guardian_arc is Dictionary:
+		_guardian_arc = (saved_guardian_arc as Dictionary).duplicate(true)
+	_guardian_id = String(sim_d.get("guardian_id", ""))
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
 	if not has_tank_age and save_ver < SAVE_STATE_VERSION and water_chemistry != null:
@@ -4856,6 +5021,8 @@ func load_state(d: Dictionary) -> void:
 	primary_favorite_id = String(d.get("primary_favorite", ""))
 	track_all_living()
 	favorites_changed.emit()
+	if _guardian_companion_enabled():
+		call_deferred("_ensure_guardian")
 
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.

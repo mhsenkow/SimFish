@@ -70,7 +70,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 
 ### Perception — give them a real sensorium (Lever 2)
 
-- **1. True vision cone.** Add a forward FOV; targets outside it aren't seen
+- [x] **1. True vision cone.** Add a forward FOV; targets outside it aren't seen
   until the fish sweeps its gaze. Gate the radius queries in
   [tick()](../shaders-godot/godot-project/scripts/fish.gd:2468) by a
   `heading · to_target` cone test (reuse the boids-cone math at
@@ -242,7 +242,7 @@ reflections on a fish's arc — is the cheapest, highest-immersion path to
 *This is where the AIDirector LLM earns its keep (Lever 3). All LLM items must
 degrade gracefully offline — the bridge is already fail-soft.*
 
-- **38. LLM one-line bio per named fish.** A one-time *batched* call: given
+- [x] **38. LLM one-line bio per named fish.** A one-time *batched* call: given
   personality + species + lineage, write a 1-sentence character bio, shown on
   hover/inspect. The AIDirector already batches names this exact way
   ([ai_director.gd:289](../shaders-godot/godot-project/scripts/ai_director.gd:289))

@@ -18,6 +18,7 @@ class_name Fish
 # global class_name registry — see ai_director.gd for the same trick.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
+const GuardianFish = preload("res://scripts/guardian_fish.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 
 const MATURITY_FRY := 0
@@ -216,10 +217,15 @@ var vigilance: float = 0.0
 var _contentment: float = 0.0
 # Deliberation (#10–12): approach–avoidance oscillation + mode commitment.
 var _delib_active: bool = false
+@warning_ignore("unused_private_class_variable")
 var _delib_phase: float = 0.0
+@warning_ignore("unused_private_class_variable")
 var _delib_approach_pos: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
 var _delib_avoid_pos: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
 var _commit_mode: int = -1
+@warning_ignore("unused_private_class_variable")
 var _commit_dwell: float = 0.0
 var _aim_remaining: float = 0.0
 var _double_take_remaining: float = 0.0
@@ -227,6 +233,8 @@ var _double_take_remaining: float = 0.0
 var food_preferences: Dictionary = {}
 var home_confidence: float = 0.0
 var _patrol_heatmap_refresh_t: float = 0.0
+var character_bio: String = ""
+var is_guardian: bool = false
 # curiosity_drive: an appetite for novelty in [0,1]. Builds when nothing
 #   interesting happens; discharged by investigating. Bored fish go exploring.
 var curiosity_drive: float = 0.0
@@ -676,6 +684,40 @@ func _trait(key: String) -> float:
 	return float(personality.get(key, 0.5)) if not personality.is_empty() else 0.5
 
 
+func _sees_world_pos(target_pos: Vector3, max_dist: float) -> bool:
+	return FishMind.perceives_pos(self, target_pos, max_dist)
+
+
+func _refresh_character_bio() -> void:
+	if fish_name == "":
+		return
+	if sim != null and sim.has_method("ensure_id"):
+		sim.ensure_id(self)
+	if id == "":
+		return
+	if character_bio != "" and not is_guardian:
+		return
+	var ai: Node = _ai_director_cached
+	if ai == null and is_inside_tree():
+		ai = get_node_or_null("/root/AIDirector")
+		_ai_director_cached = ai
+	if ai != null and ai.has_method("queue_fish_bio"):
+		character_bio = String(ai.queue_fish_bio(self))
+	elif character_bio == "":
+		character_bio = FishMind.offline_character_bio(self)
+	if is_guardian and character_bio == "":
+		character_bio = GuardianFish.offline_guardian_bio(self)
+
+
+func get_inspect_thought() -> String:
+	if is_guardian and sim != null:
+		return GuardianFish.guardian_thought(self, sim)
+	var st: String = FishMind.emotional_state(self)
+	if st != "calm" and st != "content":
+		return st
+	return ""
+
+
 # Mode commitment (#11): survival/reproduction bypass; others dwell before switching.
 func _try_commit_return(_events: Dictionary, desired: Vector3, eff_max: float,
 		proposed: Mode, dt: float, bypass: bool = false) -> bool:
@@ -936,6 +978,10 @@ func get_bio_summary() -> String:
 	var kids: int = int(bio.get("offspring", 0))
 	var age_min: int = int(age / 60.0)
 	var parts: PackedStringArray = PackedStringArray([title])
+	if character_bio != "":
+		parts.append(character_bio)
+	elif is_guardian:
+		parts.append(GuardianFish.offline_guardian_bio(self))
 	if meals > 0:
 		parts.append("%d %s" % [meals, "meal" if meals == 1 else "meals"])
 	if kids > 0:
@@ -1302,6 +1348,7 @@ func init_genome(genome: Dictionary) -> void:
 	_saved_genome["parent_lineage"] = parent_lineage
 	_saved_genome["generation"] = generation
 	_saved_genome["subspecies_id"] = subspecies_id
+	call_deferred("_refresh_character_bio")
 
 	fin_length_factor = genome.get("fin_length_factor", fin_length_factor)
 	body_elongation = genome.get("body_elongation", body_elongation)
@@ -2243,11 +2290,14 @@ const _LOD_BIG_RANGE: float = 0.0         # 0 = never LOD out (default)
 func _apply_lod_ranges() -> void:
 	if _voxel_builder == null:
 		return
+	# Structural body batches stay visible at normal camera distances — only
+	# tiny attached parts fade. Applying SMALL_RANGE to every batch made fish
+	# in far tank corners (often 30+ units from the camera) pop out entirely.
 	for batch: VoxelBatch in _voxel_builder.get_batches():
 		if batch.mmi != null:
 			batch.mmi.visibility_range_begin = 0.0
-			batch.mmi.visibility_range_end = _LOD_SMALL_RANGE
-			batch.mmi.visibility_range_end_margin = 3.0
+			batch.mmi.visibility_range_end = _LOD_BIG_RANGE
+			batch.mmi.visibility_range_end_margin = 0.0
 	var stack: Array = [self]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
@@ -3386,6 +3436,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		for w in waste_near:
 			if not is_instance_valid(w):
 				continue
+			var wpos: Vector3 = (w as Node3D).global_position
+			var max_dist: float = 12.0 if w.kind == 3 else 4.0
+			if not _sees_world_pos(wpos, max_dist):
+				continue
 			# Fish prefer fresh-fallen waste in mid-water, not settled.
 			if w.settled and randf() > 0.4:
 				continue
@@ -3511,6 +3565,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# Need a stronger size advantage now (1.8x). At spawn the betta
 			# is only 1.56x a glassdart - it has to grow before it can hunt.
 			if my_size > of.effective_size() * kill_advantage:
+				if not _sees_world_pos(of.position, 4.5):
+					continue
 				var d2: float = of.position.distance_squared_to(position)
 				if d2 < best_prey_d2:
 					best_prey_d2 = d2
@@ -3527,6 +3583,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if s.get("_dying") == true:
 					continue
 				if my_size > s.adult_voxel_scale * (3.0 - jaw_claw_size * 0.45):
+					if not _sees_world_pos(s.position, 4.5):
+						continue
 					var d2: float = s.position.distance_squared_to(position)
 					if d2 < best_prey_d2:
 						best_prey_d2 = d2
@@ -3583,7 +3641,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		for s in baby_shrimp:
 			if not is_instance_valid(s):
 				continue
-			var d2: float = (s as Node3D).global_position.distance_squared_to(position)
+			var spos: Vector3 = (s as Node3D).global_position
+			if not _sees_world_pos(spos, 1.2):
+				continue
+			var d2: float = spos.distance_squared_to(position)
 			if d2 < best_d2:
 				best_d2 = d2
 				prey = s
@@ -3693,6 +3754,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				algae_near = sim.query_algae_in_radius(position, 2.5)
 			for a in algae_near:
 				if not is_instance_valid(a):
+					continue
+				if not _sees_world_pos(a.global_position, 2.5):
 					continue
 				var d2: float = (a.global_position - position).length_squared()
 				# Grazer-specific control (#59): algae-grazers (otos) prefer the
@@ -4821,6 +4884,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		current_mode = Mode.REST
 	else:
 		_sleep_have_nook = false
+
+	if is_guardian and sim != null:
+		desired += GuardianFish.guardian_steer(self, sim, dt)
 
 	if _delib_active:
 		desired += FishMind.deliberation_steer(self, dt, effective_max)
@@ -6776,6 +6842,8 @@ func to_save_dict() -> Dictionary:
 		"mood": mood,
 		"arousal": arousal,
 		"mind": FishMind.mind_to_dict(self),
+		"character_bio": character_bio,
+		"is_guardian": is_guardian,
 		"bonds": bonds.duplicate(),
 		# Individual-aliveness state (H9): lifelong size/lifespan variance, the
 		# wariness scar from past frights, and the bonded mate id so loyalty +
@@ -6872,6 +6940,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	var mind_d: Variant = d.get("mind", null)
 	if mind_d is Dictionary:
 		FishMind.apply_mind_dict(self, mind_d as Dictionary)
+	character_bio = String(d.get("character_bio", character_bio))
+	is_guardian = bool(d.get("is_guardian", is_guardian))
+	_refresh_character_bio()
 	var saved_bonds: Variant = d.get("bonds", null)
 	if saved_bonds is Dictionary:
 		bonds = (saved_bonds as Dictionary).duplicate()

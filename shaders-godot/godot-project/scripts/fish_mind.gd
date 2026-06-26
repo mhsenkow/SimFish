@@ -1,13 +1,32 @@
 extends RefCounted
 
 # Sentient-fish cognition layer (SENTIENT_FISH_IDEAS.md).
-# fish.gd owns state; this module holds affect, deliberation, learning helpers.
+# fish.gd owns state; this module holds perception, affect, deliberation, learning.
 
+const CreatureNaming = preload("res://scripts/creature_naming.gd")
+
+const VIEW_DOT_THRESHOLD: float = -0.4   # ~115° forward cone (matches boids)
 const DELIB_MARGIN: float = 0.12
 const COMMIT_DWELL: float = 0.35
 const COMMIT_HYSTERESIS: float = 0.08
 
 const FOOD_SUB_KEYS: Array = ["flake", "pellet", "worm", "wafer"]
+
+
+# ---- Perception (#1) ----
+
+static func in_vision_cone(f: Fish, target_pos: Vector3) -> bool:
+	var to_t: Vector3 = target_pos - f.position
+	if to_t.length_squared() < 1e-4:
+		return true
+	return f.heading.dot(to_t.normalized()) >= VIEW_DOT_THRESHOLD
+
+
+static func perceives_pos(f: Fish, target_pos: Vector3, max_dist: float) -> bool:
+	var to_t: Vector3 = target_pos - f.position
+	if to_t.length_squared() > max_dist * max_dist:
+		return false
+	return in_vision_cone(f, target_pos)
 
 
 # ---- Affect (#26, #27, #32) ----
@@ -260,3 +279,13 @@ static func apply_mind_dict(f: Fish, d: Dictionary) -> void:
 		f.food_preferences = (fp as Dictionary).duplicate()
 	f.home_confidence = float(d.get("home_confidence", f.home_confidence))
 	f.vigilance = float(d.get("vigilance", f.vigilance))
+
+
+static func offline_character_bio(f: Fish) -> String:
+	var sp: String = f.species.capitalize() if f.species != "" else "fish"
+	var ep: String = CreatureNaming.epithet_for_personality(f.personality)
+	if ep != "":
+		return "A %s %s — %s by nature." % [sp, ep, f.swim_pattern]
+	if f.generation > 0:
+		return "Generation %d %s, still finding its place." % [f.generation, sp]
+	return "A %s learning the rhythms of this tank." % sp

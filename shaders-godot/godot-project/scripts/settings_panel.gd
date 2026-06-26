@@ -455,6 +455,11 @@ func _build_ui() -> void:
 	_auto_feed_check.text = "Auto-feed (screensaver mode — simulates ⌘+click feeding)"
 	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
 	vbox_adv.add_child(_auto_feed_check)
+	var _guardian_autofeed_check := CheckBox.new()
+	_guardian_autofeed_check.text = "Guardian may turn on auto-feed when starving"
+	_guardian_autofeed_check.button_pressed = TankConfig.guardian_may_enable_autofeed
+	_guardian_autofeed_check.toggled.connect(func(v): TankConfig.guardian_may_enable_autofeed = v)
+	vbox_adv.add_child(_guardian_autofeed_check)
 
 	_add_section(vbox_adv, "Sound")
 	var sound_hint := PanelTheme.make_description()

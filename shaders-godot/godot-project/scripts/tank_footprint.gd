@@ -165,6 +165,11 @@ func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
 			var hd: float = half_d - margin
 			var clear_x: float = hw - absf(x)
 			var clear_z: float = hd - absf(z)
+			var to_center := Vector3(-x, 0.0, -z)
+			# Diagonal escape at box corners — single-axis inward used to let fish
+			# slide into the glass seam and read as vanishing behind the rim.
+			if clear_x < 0.55 and clear_z < 0.55 and to_center.length_squared() > 1e-6:
+				return to_center.normalized()
 			if clear_x <= clear_z:
 				inward = Vector3(-1.0 if x >= 0.0 else 1.0, 0.0, 0.0)
 			else:
@@ -172,7 +177,6 @@ func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
 			# Slight corner bias only — heavy center blend made rim fish steer inward
 			# and read as bouncing off the glass toward the middle.
 			if shape == "hex" or shape == "triangle":
-				var to_center := Vector3(-x, 0.0, -z)
 				if to_center.length_squared() > 1e-6:
 					inward = (inward + to_center.normalized() * 0.12).normalized()
 	if inward.length_squared() < 1e-6:

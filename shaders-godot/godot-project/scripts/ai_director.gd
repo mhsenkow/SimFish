@@ -5,6 +5,7 @@ extends Node
 # imported project (or a headless --check-only run) may fail before the
 # scan completes. preload() resolves immediately at parse time.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const FishMind = preload("res://scripts/fish_mind.gd")
 
 # AIDirector — optional local-Ollama bridge that adds names, bios, mood
 # nudges, and ambient narration WITHOUT any cloud calls.
@@ -25,6 +26,7 @@ const CreatureNaming = preload("res://scripts/creature_naming.gd")
 signal connection_tested(success: bool, message: String)
 signal chronicle_line(text: String, tags: PackedStringArray)
 signal name_pool_refilled(count: int)
+signal fish_bio_ready(fish_id: String, bio: String)
 signal config_changed()
 # Fired by design_tank() when Ollama returns a tank-config dict (or empty
 # dict on failure). The scenario picker subscribes one-shot to get the
@@ -61,6 +63,12 @@ const NAME_POOL_TARGET: int = 24
 const NAME_POOL_REFILL_BELOW: int = 6
 var _name_fetch_in_flight: bool = false
 
+# ---- Fish bio batch (#38) ----
+var _bio_pending: Array = []
+var _bio_results: Dictionary = {}
+var _bio_in_flight: bool = false
+const BIO_BATCH_MAX: int = 8
+
 
 # ---- Intent field -------------------------------------------------------
 # A 4x4x4 grid (64 cells) of soft "mood attractors". Each cell holds:
@@ -86,6 +94,7 @@ var _http_test: HTTPRequest
 var _http_names: HTTPRequest
 var _http_intent: HTTPRequest
 var _http_chronicle: HTTPRequest
+var _http_bios: HTTPRequest
 var _http_design: HTTPRequest
 var _design_in_flight: bool = false
 
@@ -120,6 +129,8 @@ func _ensure_http() -> void:
 		_http_intent = _make_http("HttpIntent", _on_intent_response)
 	if _http_chronicle == null:
 		_http_chronicle = _make_http("HttpChronicle", _on_chronicle_response)
+	if _http_bios == null:
+		_http_bios = _make_http("HttpBios", _on_bios_response)
 	if _http_design == null:
 		_http_design = _make_http("HttpDesign", _on_design_response)
 
@@ -360,6 +371,109 @@ func _on_names_response(result: int, code: int, _h: PackedStringArray, body: Pac
 	conn_state = ConnState.OK
 	last_ok_unix = int(Time.get_unix_time_from_system())
 	emit_signal("name_pool_refilled", added)
+
+
+# One-line character bio per named fish (#38). Returns offline/epithet text
+# immediately; queues an LLM batch when online. Later bios arrive via
+# fish_bio_ready.
+func queue_fish_bio(fish: Node) -> String:
+	if fish == null or not is_instance_valid(fish):
+		return ""
+	var fid: String = String(fish.get("id") if fish.get("id") != null else "")
+	if fid != "" and _bio_results.has(fid):
+		if fish.get("character_bio") != null:
+			fish.character_bio = String(_bio_results[fid])
+		return String(_bio_results[fid])
+	var existing: String = String(fish.get("character_bio") if fish.get("character_bio") != null else "")
+	if existing != "":
+		return existing
+	var offline: String = FishMind.offline_character_bio(fish)
+	if fish.get("character_bio") != null:
+		fish.character_bio = offline
+	var fname: String = String(fish.get("fish_name") if fish.get("fish_name") != null else "")
+	if not enabled or conn_state != ConnState.OK or fid == "" or fname == "":
+		return offline
+	for e in _bio_pending:
+		if String(e.get("id", "")) == fid:
+			return offline
+	var pers: Dictionary = {}
+	var pers_v: Variant = fish.get("personality")
+	if pers_v is Dictionary:
+		pers = (pers_v as Dictionary).duplicate()
+	_bio_pending.append({
+		"id": fid,
+		"name": fname,
+		"species": String(fish.get("species") if fish.get("species") != null else ""),
+		"personality": pers,
+		"generation": int(fish.get("generation") if fish.get("generation") != null else 0),
+		"lineage": String(fish.get("parent_lineage") if fish.get("parent_lineage") != null else ""),
+	})
+	if not _bio_in_flight:
+		_request_bio_batch()
+	return offline
+
+
+func _request_bio_batch() -> void:
+	if not enabled or endpoint == "" or _bio_pending.is_empty():
+		return
+	_ensure_http()
+	_bio_in_flight = true
+	var batch: Array = _bio_pending.slice(0, mini(BIO_BATCH_MAX, _bio_pending.size()))
+	var prompt: String = "You are an aquarium chronicler. For each fish below, write ONE warm character sentence (max 18 words) capturing personality from traits. Output JSON: {\"bios\":[{\"id\":\"...\",\"line\":\"...\"}]}. Fish: %s" % JSON.stringify(batch)
+	var payload: Dictionary = {
+		"model": model,
+		"prompt": prompt,
+		"stream": false,
+		"format": "json",
+		"options": {"temperature": 0.9}
+	}
+	var url: String = endpoint + "/api/generate"
+	var err: int = _http_bios.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		_bio_in_flight = false
+
+
+func _on_bios_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	_bio_in_flight = false
+	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+		conn_state = ConnState.OFFLINE
+		return
+	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+	if not (outer is Dictionary):
+		return
+	var inner_text: String = String(outer.get("response", ""))
+	var inner: Variant = JSON.parse_string(inner_text)
+	if not (inner is Dictionary):
+		return
+	var bios: Variant = inner.get("bios", [])
+	if bios is Array:
+		for b_v in bios:
+			if not (b_v is Dictionary):
+				continue
+			var fid: String = String(b_v.get("id", ""))
+			var line: String = String(b_v.get("line", "")).strip_edges()
+			if fid == "" or line == "":
+				continue
+			_bio_results[fid] = line
+			emit_signal("fish_bio_ready", fid, line)
+	# Drop processed entries from the pending queue.
+	var served: Dictionary = {}
+	if bios is Array:
+		for b_v2 in bios:
+			if b_v2 is Dictionary:
+				served[String(b_v2.get("id", ""))] = true
+	var keep: Array = []
+	for e in _bio_pending:
+		if not served.has(String(e.get("id", ""))):
+			keep.append(e)
+	_bio_pending = keep
+	if not _bio_pending.is_empty():
+		_request_bio_batch()
+	conn_state = ConnState.OK
+	last_ok_unix = int(Time.get_unix_time_from_system())
 
 
 # ---- Intent field ------------------------------------------------------
