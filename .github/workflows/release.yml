@@ -178,6 +178,7 @@ jobs:
         run: |
           mkdir -p artifacts build/WalstadLoom.app/Contents/MacOS
           cp shaders-godot/godot-project/steam_appid.txt build/WalstadLoom.app/Contents/MacOS/
+          bash scripts/bundle_macos_llama_dylibs.sh build/WalstadLoom.app
           cd build
           zip -r ../artifacts/walstad-loom-mac.zip WalstadLoom.app
 

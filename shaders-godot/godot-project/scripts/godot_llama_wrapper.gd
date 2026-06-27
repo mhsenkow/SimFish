@@ -1,8 +1,9 @@
-class_name GodotLlama
 extends RefCounted
 
 # Wrapper around the GDExtension — typed loosely so the script still parses
 # when the extension failed to load (missing dylibs on macOS dev builds).
+# Intentionally no class_name: install_godot_llama.sh copies this to
+# addons/godot_llama/godot_llama.gd and a duplicate global would break load.
 
 var model: Variant = null
 var context: Variant = null

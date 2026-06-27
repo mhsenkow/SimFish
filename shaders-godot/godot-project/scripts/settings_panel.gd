@@ -967,6 +967,8 @@ func _on_guardian_download_pressed() -> void:
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_method("ensure_boot"):
 		glm.call("ensure_boot")
+	if glm != null and glm.has_method("_begin_load_if_needed"):
+		glm.call("_begin_load_if_needed")
 	_sync_guardian_download_button()
 
 
@@ -987,6 +989,8 @@ func _on_guardian_voice_toggled(on: bool) -> void:
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and on and glm.has_method("ensure_boot"):
 		glm.call("ensure_boot")
+	if glm != null and on and glm.has_method("_begin_load_if_needed"):
+		glm.call("_begin_load_if_needed")
 	_sync_guardian_download_button()
 
 

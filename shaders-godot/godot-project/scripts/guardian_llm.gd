@@ -35,15 +35,69 @@ func _ready() -> void:
 		state = State.TEMPLATE_ONLY
 		last_error = ""
 		return
-	call_deferred("ensure_boot")
+	# Never load the GGUF at startup — a 250MB in-process model can hard-crash
+	# Godot before the menu appears. Consent UI + lazy load on first use only.
+	call_deferred("_init_idle_state")
 
 
-func _platform_supported() -> bool:
-	return not OS.has_feature("web") and not OS.has_feature("android")
+func _init_idle_state() -> void:
+	if not _platform_supported() or not _extension_available():
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		if not cfg.guardian_companion_enabled or not cfg.guardian_voice_enabled:
+			state = State.TEMPLATE_ONLY
+			return
+	var bundled: String = _bundled_model_path()
+	if bundled != "" and cfg != null and not cfg.guardian_mind_info_seen:
+		state = State.WAITING_CONSENT
+		emit_signal("consent_required", false)
+		return
+	var consent: String = cfg.guardian_mind_consent if cfg != null else "pending"
+	match consent:
+		"declined":
+			_set_template_only()
+		"pending":
+			if _model_file_exists():
+				state = State.WAITING_CONSENT
+				emit_signal("consent_required", true)
+			else:
+				state = State.UNAVAILABLE
+		_:
+			state = State.UNAVAILABLE
 
 
-func _extension_available() -> bool:
-	return ClassDB.class_exists("LlamaModel")
+func _model_file_exists() -> bool:
+	return _bundled_model_path() != "" or FileAccess.file_exists(_model_path())
+
+
+func _resolve_model_path() -> String:
+	var bundled: String = _bundled_model_path()
+	if bundled != "":
+		return bundled
+	var user_path: String = _model_path()
+	if FileAccess.file_exists(user_path):
+		return user_path
+	return ""
+
+
+func _begin_load_if_needed() -> void:
+	if state in [State.LOADING, State.READY, State.BUSY]:
+		return
+	if not _platform_supported() or not _extension_available():
+		state = State.TEMPLATE_ONLY
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		if not cfg.guardian_companion_enabled or not cfg.guardian_voice_enabled:
+			state = State.TEMPLATE_ONLY
+			return
+		if str(cfg.guardian_mind_consent) != "accepted":
+			return
+	var path: String = _resolve_model_path()
+	if path == "":
+		return
+	_load_model(path)
 
 
 func ensure_boot() -> void:
@@ -64,11 +118,18 @@ func ensure_boot() -> void:
 			state = State.WAITING_CONSENT
 			emit_signal("consent_required", false)
 			return
-		_load_model(bundled)
+		state = State.UNAVAILABLE
 		return
-	var user_path: String = _model_path()
-	if FileAccess.file_exists(user_path):
-		_load_model(user_path)
+	if FileAccess.file_exists(_model_path()):
+		var consent: String = cfg.guardian_mind_consent if cfg != null else "pending"
+		match consent:
+			"accepted":
+				state = State.UNAVAILABLE
+			"declined":
+				_set_template_only()
+			_:
+				state = State.WAITING_CONSENT
+				emit_signal("consent_required", true)
 		return
 	var consent: String = cfg.guardian_mind_consent if cfg != null else "pending"
 	match consent:
@@ -79,6 +140,14 @@ func ensure_boot() -> void:
 		_:
 			state = State.WAITING_CONSENT
 			emit_signal("consent_required", true)
+
+
+func _platform_supported() -> bool:
+	return not OS.has_feature("web") and not OS.has_feature("android")
+
+
+func _extension_available() -> bool:
+	return ClassDB.class_exists("LlamaModel")
 
 
 func on_consent_result(accepted: bool) -> void:
@@ -139,6 +208,8 @@ func status_summary() -> String:
 
 func queue_generate(cache_key: String, prompt: String, fallback: String) -> void:
 	if not is_ready():
+		if state in [State.UNAVAILABLE, State.ERROR]:
+			_begin_load_if_needed()
 		if state in [State.UNAVAILABLE, State.ERROR, State.TEMPLATE_ONLY, State.WAITING_CONSENT]:
 			if not _boot_pending:
 				_boot_pending = true
@@ -239,7 +310,13 @@ func _load_model(path: String) -> void:
 		last_error = "Guardian engine missing from this build"
 		emit_signal("status_changed", status_summary())
 		return
-	_llama = wrapper.new()
+	var inst: RefCounted = wrapper.new() as RefCounted
+	if inst == null:
+		state = State.TEMPLATE_ONLY
+		last_error = ""
+		emit_signal("status_changed", status_summary())
+		return
+	_llama = inst
 	if not _llama.is_available():
 		state = State.TEMPLATE_ONLY
 		last_error = ""
