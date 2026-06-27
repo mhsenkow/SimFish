@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/shaders-godot/godot-project/assets/guardian"
 MODEL="SmolLM2-360M-Instruct-Q4_K_M.gguf"
-URL="https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/${MODEL}"
+URL="https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/${MODEL}"
 
 mkdir -p "$DEST"
 if [[ -f "$DEST/$MODEL" && "${GUARDIAN_MODEL_FORCE:-0}" != "1" ]]; then

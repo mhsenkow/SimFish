@@ -9,7 +9,7 @@ signal ready_changed(is_ready: bool)
 signal consent_required(needs_download: bool)
 
 const MODEL_URL: String = (
-	"https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/"
+	"https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/"
 	+ "SmolLM2-360M-Instruct-Q4_K_M.gguf")
 const MODEL_FILENAME: String = "SmolLM2-360M-Instruct-Q4_K_M.gguf"
 const MODEL_BYTES_APPROX: int = 250_000_000
