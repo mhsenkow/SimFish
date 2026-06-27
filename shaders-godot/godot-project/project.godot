@@ -23,6 +23,8 @@ TankConfig="*res://scripts/tank_config.gd"
 SpeciesLibrary="*res://scripts/species_library.gd"
 SteamService="*res://scripts/steam_service.gd"
 AIDirector="*res://scripts/ai_director.gd"
+GuardianLlm="*res://scripts/guardian_llm.gd"
+MusicContext="*res://scripts/music_context.gd"
 
 [display]
 

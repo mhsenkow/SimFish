@@ -1,4 +1,4 @@
-# Shared visual language for the side-bar panels (Settings / Render / Fish
+# Shared visual language for the side-bar panels (Settings / Render / Sound
 # Store). All three are PanelContainer subclasses built procedurally; this
 # helper centralises the styling so a tweak here cascades across the app
 # without each panel rolling its own colors and margins.
@@ -32,12 +32,15 @@ const RAIL_ACTIVE_BG: Color = Color(0.28, 0.42, 0.58, 0.85)
 
 const HUD_TOP: float = 52.0
 const HUD_BOTTOM: float = 34.0
+const FOOTER_HEIGHT: float = 48.0
 const EDGE_MARGIN: float = 12.0
 const RAIL_WIDTH: float = 56.0
 const RAIL_BOTTOM_HEIGHT: float = 60.0
 const RAIL_BUTTON: float = 48.0
 const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0
+const TOAST_STACK_W: float = 280.0
+const TOAST_STACK_H: float = 240.0
 
 
 # ---- Type system -------------------------------------------------------------
@@ -132,6 +135,82 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 
 
 # ---- Typography --------------------------------------------------------------
+
+# Full-height side dock — all rail-triggered panels share the same slot
+# (right edge, below TopHUD, above FooterBar, inset for the rail).
+static func apply_side_dock(panel: Control, edge: String = "right") -> void:
+	if edge == "left":
+		panel.anchor_left = 0.0
+		panel.anchor_top = 0.0
+		panel.anchor_right = 0.0
+		panel.anchor_bottom = 1.0
+	else:
+		panel.anchor_left = 1.0
+		panel.anchor_top = 0.0
+		panel.anchor_right = 1.0
+		panel.anchor_bottom = 1.0
+
+
+static func layout_side_panel(panel: Control, rail_inset: float, top: float,
+		bottom: float, width: float, edge: String = "right") -> void:
+	apply_side_dock(panel, edge)
+	panel.offset_top = top
+	panel.offset_bottom = -bottom
+	if edge == "left":
+		panel.offset_left = EDGE_MARGIN
+		panel.offset_right = EDGE_MARGIN + width
+	else:
+		panel.offset_left = -(rail_inset + width)
+		panel.offset_right = -rail_inset
+
+
+# Transient notification cards — bottom-left stack, clear of side panels + rail.
+static func layout_toast_stack(layer: Control, bottom_inset: float) -> void:
+	layer.anchor_left = 0.0
+	layer.anchor_top = 1.0
+	layer.anchor_right = 0.0
+	layer.anchor_bottom = 1.0
+	layer.offset_left = EDGE_MARGIN
+	layer.offset_right = EDGE_MARGIN + TOAST_STACK_W
+	layer.offset_top = -(bottom_inset + TOAST_STACK_H)
+	layer.offset_bottom = -bottom_inset
+
+
+# Title row with an optional trailing Close — used by full-screen modals whose
+# header also carries tabs or filters (Life Library, Notifications, etc.).
+static func make_panel_header(title_text: String, on_close: Callable = Callable()) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var title := make_title(title_text)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(title)
+	if on_close.is_valid():
+		row.add_child(make_close_button(on_close))
+	return row
+
+
+# Standard dismiss control — always the same label + styling app-wide.
+static func make_close_button(on_close: Callable = Callable()) -> Button:
+	var b := make_secondary_button("Close")
+	if on_close.is_valid():
+		b.pressed.connect(on_close)
+	return b
+
+
+# Pinned footer row for side panels: optional leading actions, Close on the right.
+static func make_panel_footer(on_close: Callable, primary: Button = null) -> VBoxContainer:
+	var block := VBoxContainer.new()
+	block.add_theme_constant_override("separation", 8)
+	block.add_child(make_rule())
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("separation", 8)
+	block.add_child(hb)
+	if primary != null:
+		hb.add_child(primary)
+	hb.add_child(make_close_button(on_close))
+	return block
+
 
 # Big panel title. Pair with add_rule() right after for a clean separator
 # between the title and the body content.
@@ -292,6 +371,46 @@ static func make_secondary_button(text: String) -> Button:
 	return b
 
 
+# Tertiary / example actions — dim outlined chips (demo tracks, optional links).
+static func make_chip_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(108, _button_min_height() - 2)
+	apply_font(b, FONT_SANS, SIZE_SMALL)
+	b.add_theme_color_override("font_color", DIM_FG)
+	b.add_theme_color_override("font_hover_color", LABEL_FG)
+	b.add_theme_color_override("font_pressed_color", SECTION_FG)
+	var normal := _outlined_stylebox()
+	normal.bg_color = Color(0.09, 0.11, 0.16, 0.72)
+	normal.border_color = Color(BORDER.r, BORDER.g, BORDER.b, 0.38)
+	normal.content_margin_left = 10
+	normal.content_margin_right = 10
+	normal.content_margin_top = 5
+	normal.content_margin_bottom = 5
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.16, 0.20, 0.28, 0.82)))
+	b.add_theme_stylebox_override("pressed", _filled_stylebox(Color(0.20, 0.26, 0.34, 0.9)))
+	b.add_theme_stylebox_override("focus", normal)
+	return b
+
+
+# Flat text-only control (disclosure toggles, low-priority links).
+static func make_ghost_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(0, _button_min_height() - 6)
+	apply_font(b, FONT_SANS, SIZE_SMALL)
+	b.add_theme_color_override("font_color", DIM_FG)
+	b.add_theme_color_override("font_hover_color", LABEL_FG)
+	b.add_theme_color_override("font_pressed_color", SECTION_FG)
+	var empty := StyleBoxEmpty.new()
+	b.add_theme_stylebox_override("normal", empty)
+	b.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.14, 0.17, 0.24, 0.55)))
+	b.add_theme_stylebox_override("pressed", _filled_stylebox(Color(0.18, 0.22, 0.30, 0.65)))
+	b.add_theme_stylebox_override("focus", empty)
+	return b
+
+
 static func _filled_stylebox(bg: Color) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = bg
@@ -348,6 +467,19 @@ static func make_hud_cluster_style() -> StyleBoxFlat:
 	s.shadow_color = Color(0, 0, 0, 0.25)
 	s.shadow_size = 4
 	s.shadow_offset = Vector2(0, 2)
+	return s
+
+
+# Bottom footer dock — rounded top edge only so it reads as attached to the
+# viewport bottom; flat bottom sits flush with the screen edge.
+static func make_footer_bar_style() -> StyleBoxFlat:
+	var s := make_hud_cluster_style()
+	s.corner_radius_bottom_left = 0
+	s.corner_radius_bottom_right = 0
+	s.content_margin_left = 10.0
+	s.content_margin_right = 10.0
+	s.content_margin_top = 5.0
+	s.content_margin_bottom = 5.0
 	return s
 
 

@@ -298,9 +298,60 @@ func is_inside_3d(x: float, y: float, z: float, margin: float = 0.0) -> bool:
 			return is_inside(x, z, margin, y)
 
 
-func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
-	if is_inside_3d(p.x, p.y, p.z, margin):
+func _slide_inside_xz(x: float, z: float, margin: float, world_y: float) -> Vector2:
+	if not is_finite(x) or not is_finite(z):
+		return Vector2.ZERO
+	# Walk along the local inward normal until inside — slides onto the nearest
+	# wall instead of pulling toward tank center (which reads as a teleport).
+	var p := Vector2(x, z)
+	var n3: Vector3 = _lateral_inward(x, z, margin)
+	var dir := Vector2(n3.x, n3.z)
+	if dir.length_squared() < 1e-8:
+		dir = -p
+	if dir.length_squared() < 1e-8:
+		dir = Vector2(1.0, 0.0)
+	dir = dir.normalized()
+	var max_scan: float = maxf(half_w, half_d) * 2.8
+	var step: float = maxf(0.05, max_scan / 64.0)
+	var dist: float = step
+	while dist <= max_scan:
+		var q: Vector2 = p + dir * dist
+		if is_inside(q.x, q.y, margin, world_y):
+			var lo: float = dist - step
+			var hi: float = dist
+			for _i in 10:
+				var mid: float = (lo + hi) * 0.5
+				var probe: Vector2 = p + dir * mid
+				if is_inside(probe.x, probe.y, margin, world_y):
+					hi = mid
+				else:
+					lo = mid
+			var on: Vector2 = p + dir * hi
+			var inset: float = maxf(0.03, margin * 0.2 + 0.05)
+			var inset_pt: Vector2 = on - dir * inset
+			if is_inside(inset_pt.x, inset_pt.y, margin, world_y):
+				return inset_pt
+			return on
+		dist += step
+	var hw: float = half_w - margin
+	var hd: float = half_d - margin
+	if hw > 0.0 and hd > 0.0:
+		return Vector2(clampf(x, -hw, hw), clampf(z, -hd, hd))
+	return p
+
+
+func _finish_clamp_3d(p: Vector3, margin: float) -> Vector3:
+	if p.is_finite():
 		return p
+	var y_mid: float = lerpf(substrate_y + margin, water_y - margin, 0.5)
+	return Vector3(0.0, y_mid, 0.0)
+
+
+func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
+	if not p.is_finite():
+		p = Vector3.ZERO
+	if is_inside_3d(p.x, p.y, p.z, margin):
+		return _finish_clamp_3d(p, margin)
 	match shape:
 		"sphere":
 			var R: float = _bowl_radius(margin) * 0.985
@@ -315,7 +366,7 @@ func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
 				p.x = xz.x
 				p.z = xz.y
 				p.y = clampf(p.y, water_y + margin, _emergent_max_y(margin))
-				return p
+				return _finish_clamp_3d(p, margin)
 			var max_xz: float = sqrt(maxf(0.0, R * R - dy * dy))
 			if xz_len > max_xz and xz_len > 1e-6:
 				xz = xz * (max_xz / xz_len)
@@ -323,14 +374,10 @@ func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
 			p.z = xz.y
 			p.y = clampf(p.y, substrate_y + margin, water_y + margin)
 			if not is_inside_3d(p.x, p.y, p.z, margin):
-				var t: float = 0.0
-				for _i in 12:
-					t = (float(_i) + 1.0) / 12.0
-					var q: Vector3 = p.lerp(
-						Vector3(0.0, substrate_y + R * 0.35, 0.0), t)
-					if is_inside_3d(q.x, q.y, q.z, margin):
-						return q
-			return p
+				var xz_fix: Vector2 = _slide_inside_xz(p.x, p.z, margin, p.y)
+				p.x = xz_fix.x
+				p.z = xz_fix.y
+			return _finish_clamp_3d(p, margin)
 		_:
 			var xz2: Vector2 = clamp_inside(p.x, p.z, margin, p.y)
 			p = Vector3(
@@ -339,17 +386,17 @@ func clamp_inside_3d(p: Vector3, margin: float = 0.0) -> Vector3:
 				xz2.y,
 			)
 			if is_inside_3d(p.x, p.y, p.z, margin):
-				return p
-			for _i in 12:
-				var t: float = float(_i + 1) / 12.0
-				var q: Vector3 = p.lerp(
-					Vector3(0.0, substrate_y + (water_y - substrate_y) * 0.35, 0.0), t)
-				if is_inside_3d(q.x, q.y, q.z, margin):
-					return q
-			return p
+				return _finish_clamp_3d(p, margin)
+			var xz3: Vector2 = _slide_inside_xz(p.x, p.z, margin, p.y)
+			p.x = xz3.x
+			p.z = xz3.y
+			p.y = clampf(p.y, substrate_y + margin, water_y - margin)
+			return _finish_clamp_3d(p, margin)
 
 
 func is_inside(x: float, z: float, margin: float = 0.0, world_y: float = NAN) -> bool:
+	if not is_finite(x) or not is_finite(z):
+		return false
 	var hw: float = half_w - margin
 	var hd: float = half_d - margin
 	if hw <= 0.0 or hd <= 0.0:
@@ -388,17 +435,7 @@ func clamp_inside(x: float, z: float, margin: float = 0.0, world_y: float = NAN)
 		if xz_len <= rad:
 			return p
 		return p * (rad / xz_len)
-	# Pull toward center along a ray — works for all convex footprints.
-	var lo: float = 0.0
-	var hi: float = 1.0
-	for _i in 14:
-		var t: float = (lo + hi) * 0.5
-		var q: Vector2 = p.lerp(Vector2.ZERO, t)
-		if is_inside(q.x, q.y, margin, world_y):
-			lo = t
-		else:
-			hi = t
-	return p.lerp(Vector2.ZERO, lo)
+	return _slide_inside_xz(x, z, margin, world_y)
 
 
 func bounding_half_extents(margin: float = 0.0) -> Vector2:

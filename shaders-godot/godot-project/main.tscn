@@ -201,24 +201,24 @@ offset_bottom = -34.0
 script = ExtResource("7_settings")
 
 [node name="RenderPanel" type="PanelContainer" parent="."]
-anchor_left = 0.0
+anchor_left = 1.0
 anchor_top = 0.0
-anchor_right = 0.0
+anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 12.0
+offset_left = -500.0
 offset_top = 52.0
-offset_right = 472.0
+offset_right = -72.0
 offset_bottom = -34.0
 script = ExtResource("8_render")
 
 [node name="SoundPanel" type="PanelContainer" parent="."]
-anchor_left = 0.5
+anchor_left = 1.0
 anchor_top = 0.0
-anchor_right = 0.5
+anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -260.0
+offset_left = -500.0
 offset_top = 52.0
-offset_right = 260.0
+offset_right = -72.0
 offset_bottom = -34.0
 script = ExtResource("8_sound")
 
@@ -453,18 +453,43 @@ anchor_bottom = 1.0
 mouse_filter = 2
 script = ExtResource("14_walkthrough")
 
-[node name="ControlsHint" type="Label" parent="."]
+[node name="FooterBar" type="PanelContainer" parent="."]
 anchor_left = 0.0
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 16.0
-offset_top = -22.0
-offset_right = -16.0
-offset_bottom = -6.0
+offset_left = 12.0
+offset_top = -48.0
+offset_right = -12.0
+offset_bottom = 0.0
+mouse_filter = 0
+
+[node name="Margin" type="MarginContainer" parent="FooterBar"]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 4
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 4
+
+[node name="HBox" type="HBoxContainer" parent="FooterBar/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="SpeedDock" type="HBoxContainer" parent="FooterBar/Margin/HBox"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Spacer" type="Control" parent="FooterBar/Margin/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ControlsHint" type="Label" parent="FooterBar/Margin/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 2.0
 mouse_filter = 2
-label_settings = SubResource("HUDHintSettings")
-horizontal_alignment = 1
+horizontal_alignment = 2
+clip_text = true
 text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE pan · P pause · 1/2/3 speed · click creature · ⌃click feed · C PiP · H focus · ESC clear · F12 photo · T timelapse · O settings · B aquascape"
 
 [node name="MobileHUD" type="Control" parent="."]
@@ -473,3 +498,4 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 script = ExtResource("11_mobile_hud")
+footer_speed_slot = NodePath("../FooterBar/Margin/HBox/SpeedDock")

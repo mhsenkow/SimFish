@@ -15,6 +15,8 @@ extends Node
 class_name SimDriver
 
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
+const GuardianMind = preload("res://scripts/guardian_mind.gd")
+const GuardianJournal = preload("res://scripts/guardian_journal.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -147,7 +149,12 @@ var _mourning_events: Array = []
 # ---- Guardian companion ----
 var _guardian_arc: Dictionary = {}
 var _guardian_id: String = ""
+var _guardian_journal: Array = []
+var _guardian_predecessor_journal: Array = []
+var _guardian_predecessor_name: String = ""
+var _guardian_predecessor_bio: String = ""
 var _ai_bio_connected: bool = false
+var _ai_guardian_connected: bool = false
 
 
 func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
@@ -170,6 +177,9 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 		var audio := _ambient_audio()
 		if audio != null and audio.has_method("play_feeding_event"):
 			audio.play_feeding_event()
+	if _guardian_companion_enabled():
+		_ensure_guardian_arc()
+		GuardianMind.record_player_action(_guardian_arc, "fed")
 	var w_feed: Node = get_parent()
 	if w_feed != null and w_feed.has_method("scatter_floaters_at") \
 			and world_pos.y > w_feed.WATER_HEIGHT - 0.5:
@@ -234,6 +244,12 @@ func update_player_glance(camera_pos: Vector3) -> void:
 	_player_glance_last_pos = camera_pos
 	var hold_bonus: float = clampf(_player_glance_hold_s / 3.0, 0.0, 0.4)
 	_player_glance_strength = clampf(raw * (0.6 + hold_bonus), 0.0, 1.0)
+	if _player_glance_strength > 0.55 and _guardian_companion_enabled():
+		var now: int = int(Time.get_unix_time_from_system())
+		var last_watch: int = int(_guardian_arc.get("_last_watch_unix", 0))
+		if now - last_watch > 120:
+			_guardian_arc["_last_watch_unix"] = now
+			GuardianMind.record_player_action(_guardian_arc, "watched")
 
 
 func get_player_glance() -> Dictionary:
@@ -645,23 +661,144 @@ func _tick_guardian(dt: float) -> void:
 	if not _guardian_companion_enabled():
 		return
 	_connect_ai_bio()
+	_connect_guardian_ai()
+	_ensure_guardian_arc()
 	var g: Fish = _find_guardian_fish()
 	if g == null:
 		_ensure_guardian()
 		g = _find_guardian_fish()
 	if g == null:
 		return
+	GuardianMind.update_player_read(_guardian_arc, _feed_time_history)
 	var result: Dictionary = GuardianFish.evaluate_tick(g, self, _guardian_arc, dt)
 	if result.is_empty():
 		return
 	var action: String = String(result.get("action", ""))
-	emit_signal("guardian_spoke", String(result.get("text", "")), g, action)
+	_speak_guardian(g, String(result.get("situation", "")), action)
 	_handle_guardian_action(action)
+
+
+func _ensure_guardian_arc() -> void:
+	if _guardian_arc.is_empty():
+		_guardian_arc = GuardianMind.default_arc()
+	else:
+		GuardianMind.ensure_mind(_guardian_arc)
+
+
+func _connect_guardian_ai() -> void:
+	if _ai_guardian_connected:
+		return
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_signal("guardian_line_ready"):
+		ai.guardian_line_ready.connect(_on_guardian_line_ready)
+		_ai_guardian_connected = true
+
+
+func _on_guardian_line_ready(cache_key: String, line: String, _source: String) -> void:
+	if cache_key == "" or line.strip_edges() == "":
+		return
+	GuardianJournal.upgrade_entry_text(_guardian_journal, cache_key, line)
+	GuardianMind.remember_line(_guardian_arc, line)
+
+
+func _speak_guardian(g: Fish, situation: String, action: String = "", extra: Dictionary = {}) -> void:
+	if g == null or not is_instance_valid(g) or situation == "":
+		return
+	_ensure_guardian_arc()
+	var chapter: int = int(_guardian_arc.get("chapter", 0))
+	var template: String = GuardianFish.arc_chapter_line(g, self, _guardian_arc, chapter, situation)
+	var day_label: String = sim_day_label()
+	var cache_key: String = GuardianMind.cache_key(_guardian_id, situation, day_label)
+	var ctx: Dictionary = GuardianMind.build_ai_context(g, self, _guardian_arc, situation)
+	ctx["interpreted"] = GuardianMind.interpreted_situation(g, self, _guardian_arc, situation)
+	if extra.has("gap_human"):
+		ctx["away_gap"] = String(extra.get("gap_human", ""))
+	var line: String = template
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("queue_guardian_line"):
+		line = String(ai.queue_guardian_line(ctx, template, cache_key))
+	GuardianMind.remember_line(_guardian_arc, line)
+	_journal_append(line, situation, cache_key, "template")
+	emit_signal("guardian_spoke", line, g, action)
+
+
+func _journal_append(text: String, situation: String, cache_key: String, source: String) -> void:
+	if text.strip_edges() == "":
+		return
+	var tags: PackedStringArray = PackedStringArray([situation])
+	GuardianJournal.append_entry(_guardian_journal, text,
+			int(_guardian_arc.get("chapter", 0)), tags, {
+				"t": elapsed_runtime_s,
+				"tank_age_s": tank_age_s,
+				"sim_day": sim_day_label(),
+				"source": source,
+				"cache_key": cache_key,
+			})
+
+
+func _maybe_guardian_journal_from_story(text: String) -> void:
+	if not _guardian_companion_enabled() or _guardian_id == "":
+		return
+	var low: String = text.to_lower()
+	if low.contains("dissolved o") or low.contains("filter rinsed"):
+		return
+	_journal_append("I noticed: %s" % text, "event", "", "event")
+
+
+func on_player_focus_in() -> void:
+	if not _guardian_companion_enabled():
+		return
+	_ensure_guardian_arc()
+	var g: Fish = _find_guardian_fish()
+	if g == null:
+		return
+	var cfg := _cfg()
+	var last: int = int(cfg.last_quit_unix) if cfg != null else 0
+	var now: int = int(Time.get_unix_time_from_system())
+	var gap_s: int = now - last if last > 0 else 0
+	GuardianMind.record_visit(_guardian_arc, now, gap_s)
+	GuardianMind.update_player_read(_guardian_arc, _feed_time_history)
+	_maybe_guardian_daily_entry(g)
+	if gap_s >= 120 and float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+		var action: String = "intro" if _guardian_id != "" and gap_s >= 900 else ""
+		_speak_guardian(g, "arrival", action)
+
+
+func on_player_focus_out() -> void:
+	if not _guardian_companion_enabled():
+		return
+	_ensure_guardian_arc()
+	GuardianMind.record_departure(_guardian_arc, int(Time.get_unix_time_from_system()))
+	var g: Fish = _find_guardian_fish()
+	if g == null:
+		return
+	if float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+		_speak_guardian(g, "departure", "")
+
+
+func _maybe_guardian_daily_entry(g: Fish) -> void:
+	var day: int = int(sim_day())
+	if int(_guardian_arc.get("last_daily_entry_day", -1)) == day:
+		return
+	_guardian_arc["last_daily_entry_day"] = day
+	if float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+		_speak_guardian(g, "daily", "")
+
+
+func get_guardian_journal() -> Array:
+	return _guardian_journal
+
+
+func export_guardian_journal_plain() -> String:
+	var g: Fish = _find_guardian_fish()
+	var nm: String = g.fish_name if g != null and g.fish_name != "" else "Guardian"
+	return GuardianJournal.export_plain(_guardian_journal, nm)
 
 
 func _ensure_guardian() -> void:
 	if not _guardian_companion_enabled() or fish.is_empty():
 		return
+	_ensure_guardian_arc()
 	if _guardian_id != "":
 		for f in fish:
 			if is_instance_valid(f) and String(f.id) == _guardian_id:
@@ -701,13 +838,18 @@ func _ensure_guardian() -> void:
 	pick.is_guardian = true
 	ensure_id(pick)
 	if _guardian_id != "" and _guardian_id != String(pick.id):
-		emit_signal("guardian_spoke",
-			GuardianFish.arc_chapter_line(pick, self, int(_guardian_arc.get("chapter", 0)), "successor"),
-			pick, "successor")
+		# Torch-pass (#47): successor inherits journal + memory of predecessor.
+		var mind: Dictionary = GuardianMind.ensure_mind(_guardian_arc)
+		mind["predecessor_name"] = _guardian_predecessor_name
+		mind["predecessor_note"] = _guardian_predecessor_bio
+		GuardianJournal.merge_predecessor(_guardian_journal,
+				_guardian_predecessor_journal,
+				_guardian_predecessor_name,
+				_guardian_predecessor_bio)
+		GuardianMind.apply_personality_drift(_guardian_arc, "successor")
+		_speak_guardian(pick, "successor", "successor")
 	elif _guardian_id == "":
-		emit_signal("guardian_spoke",
-			GuardianFish.arc_chapter_line(pick, self, 0, "arrival"),
-			pick, "intro")
+		_speak_guardian(pick, "arrival", "intro")
 	_guardian_id = String(pick.id)
 	if pick.character_bio == "":
 		pick.character_bio = GuardianFish.offline_guardian_bio(pick)
@@ -765,6 +907,9 @@ func _check_maturation_milestones() -> void:
 			and stability > 0.7 and total_plant_biomass > 120:
 		_milestone_flags["closing_loop"] = true
 		log_story_event("The loop has closed — waste becomes food, death becomes soil, light becomes growth. The tank keeps itself alive now.")
+		var g_loop: Fish = _find_guardian_fish()
+		if g_loop != null and _guardian_companion_enabled():
+			_speak_guardian(g_loop, "closing_loop", "")
 	# Anniversary reflection every 30 days past 90.
 	if day >= 120 and day % 30 == 0:
 		var key: String = "anniv_%d" % day
@@ -1909,12 +2054,12 @@ func _clamp_fish_territory(f: Fish) -> void:
 		f._reclamp_territory_to_tank()
 	else:
 		_clamp_entity_to_bounds(f, 0.28, 0.06)
-	# Overlap separation can nudge fish past curved glass — clamp only, no
-	# center teleport (enforce_entity_in_tank fallback used to snap to 0,0).
+	# Overlap separation can nudge fish past curved glass — slide onto the wall,
+	# never snap toward tank center.
 	var w: Node = f.sim.get_parent() if f.sim != null else null
-	if w != null and w.has_method("clamp_xyz_in_tank"):
+	if w != null and w.has_method("enforce_entity_in_tank"):
 		var body_m: float = f._body_tank_margin() if f.has_method("_body_tank_margin") else 0.42
-		f.global_position = w.clamp_xyz_in_tank(f.global_position, 0.28, body_m * 0.55)
+		w.enforce_entity_in_tank(f, 0.28, body_m * 0.55)
 
 
 func _resolve_entity_group_overlaps(group: Array, min_dist: float,
@@ -3098,10 +3243,13 @@ func _tick(dt: float) -> void:
 							w_node.spawn_burst_ripple(actor.position)
 				if actor.has_method("start_dying"):
 					if actor is Fish and actor.is_guardian:
-						emit_signal("guardian_spoke",
-							GuardianFish.arc_chapter_line(actor, self,
-								int(_guardian_arc.get("chapter", 0)), "lost"),
-							actor, "lost")
+						_guardian_predecessor_name = actor.fish_name if actor.fish_name != "" else "the Guardian"
+						_guardian_predecessor_bio = String(actor.character_bio)
+						_guardian_predecessor_journal = _guardian_journal.duplicate(true)
+						_speak_guardian(actor, "finale", "lost")
+						_journal_append("%s is gone — the tank feels quieter." % _guardian_predecessor_name,
+								"lost", "", "event")
+						GuardianMind.apply_personality_drift(_guardian_arc, "predecessor_lost")
 						_guardian_id = ""
 						actor.is_guardian = false
 						call_deferred("_ensure_guardian")
@@ -3525,6 +3673,9 @@ func _hatch(e: FishEgg) -> void:
 	fry.energy = 1.0
 	register_fish(fry)
 	fry._reclamp_territory_to_tank()
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("on_life_event"):
+		mc.on_life_event(fry.get_instance_id())
 	_play_ambient_event("birth", -1.0, _node_species(e))
 	if not _logged_first_hatch:
 		_logged_first_hatch = true
@@ -4694,6 +4845,7 @@ func log_story_event(text: String, skip_notification: bool = false) -> void:
 	story_events.append(entry)
 	if story_events.size() > MAX_STORY_EVENTS:
 		story_events.pop_front()
+	_maybe_guardian_journal_from_story(text)
 	# Trigger an ambient plink so the player hears a story beat even if
 	# the dialog is closed.
 	var amb: Node = _ambient_audio()
@@ -4710,7 +4862,7 @@ func log_story_event(text: String, skip_notification: bool = false) -> void:
 # plants for breeding), then creatures, then transient particles, then
 # resolving cross-references in a final pass.
 
-const SAVE_STATE_VERSION: int = 5
+const SAVE_STATE_VERSION: int = 6
 
 
 func save_state() -> Dictionary:
@@ -4761,6 +4913,10 @@ func save_state() -> Dictionary:
 			"stability": stability,
 			"guardian_arc": _guardian_arc.duplicate(true),
 			"guardian_id": _guardian_id,
+			"guardian_journal": _guardian_journal.duplicate(true),
+			"guardian_predecessor_journal": _guardian_predecessor_journal.duplicate(true),
+			"guardian_predecessor_name": _guardian_predecessor_name,
+			"guardian_predecessor_bio": _guardian_predecessor_bio,
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],
@@ -4912,6 +5068,15 @@ func load_state(d: Dictionary) -> void:
 	if saved_guardian_arc is Dictionary:
 		_guardian_arc = (saved_guardian_arc as Dictionary).duplicate(true)
 	_guardian_id = String(sim_d.get("guardian_id", ""))
+	var saved_gjournal: Variant = sim_d.get("guardian_journal", null)
+	if saved_gjournal is Array:
+		_guardian_journal = (saved_gjournal as Array).duplicate(true)
+	var saved_pjournal: Variant = sim_d.get("guardian_predecessor_journal", null)
+	if saved_pjournal is Array:
+		_guardian_predecessor_journal = (saved_pjournal as Array).duplicate(true)
+	_guardian_predecessor_name = String(sim_d.get("guardian_predecessor_name", ""))
+	_guardian_predecessor_bio = String(sim_d.get("guardian_predecessor_bio", ""))
+	_ensure_guardian_arc()
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
 	if not has_tank_age and save_ver < SAVE_STATE_VERSION and water_chemistry != null:
@@ -5026,7 +5191,9 @@ func load_state(d: Dictionary) -> void:
 
 	# 11. Finally, restore time_scale. We do this LAST because some entity
 	# init paths read time_scale and we want them to see a stable state.
-	time_scale = float(sim_d.get("time_scale", 1.0))
+	time_scale = SaveHelpers._num(sim_d.get("time_scale", 1.0), 1.0)
+	if not is_finite(time_scale) or time_scale < 0.0:
+		time_scale = 1.0
 
 	# "Previously on the tank" recap. When the gap since the last save is
 	# meaningful (≥ 15 min real time) and the AI is enabled+narrating, ask
@@ -5045,6 +5212,16 @@ func load_state(d: Dictionary) -> void:
 # the result flows into the existing story_events log.
 func _emit_away_recap(gap_s: int) -> void:
 	var human_gap: String = _format_gap_human(gap_s)
+	var g: Fish = _find_guardian_fish()
+	if g != null and _guardian_companion_enabled():
+		GuardianMind.record_player_action(_guardian_arc, "away_recap",
+				"you were away for %s" % human_gap)
+		var summary: String = _away_recap_summary(gap_s)
+		_journal_append("While you were away for %s: %s" % [human_gap, summary],
+				"away_recap", "", "event")
+		if float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+			_speak_guardian(g, "away_recap", "", {"gap_human": human_gap, "gap_s": gap_s})
+		return
 	# Snapshot stats the LLM can talk about: counts of living creatures,
 	# how many bio'd fish (proxy for "named individuals"), tank cycle phase.
 	var ai_d: Node = get_node_or_null("/root/AIDirector")
@@ -5060,7 +5237,6 @@ func _emit_away_recap(gap_s: int) -> void:
 			tail = "Everyone's still here, holding steady."
 		log_story_event("You were away for %s. %s" % [human_gap, tail])
 		return
-	# AIDirector composes the line via its chronicle path (note_event).
 	var named: int = 0
 	for f in fish:
 		if is_instance_valid(f) and f.get("fish_name") != null \
@@ -5074,6 +5250,15 @@ func _emit_away_recap(gap_s: int) -> void:
 	# for the next 18 s batch window — the recap reads as stale otherwise.
 	if ai_d.has_method("_flush_chronicle"):
 		ai_d._flush_chronicle()
+
+
+func _away_recap_summary(_gap_s: int) -> String:
+	var tail: String = "the tank kept itself going"
+	if int(tank_legacy.get("crashes", 0)) > 0 and stability > 0.5:
+		tail = "it weathered a rough patch and steadied itself"
+	elif fish.size() > 0:
+		tail = "everyone held steady — %d fish, %d shrimp still here" % [fish.size(), shrimp.size()]
+	return tail
 
 
 static func _format_gap_human(s: int) -> String:

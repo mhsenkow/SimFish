@@ -213,8 +213,7 @@ func _build_ui() -> void:
 	hb.alignment = BoxContainer.ALIGNMENT_END
 	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
-	var close := PanelTheme.make_secondary_button("Close")
-	close.pressed.connect(func(): visible = false)
+	var close := PanelTheme.make_close_button(func(): visible = false)
 	hb.add_child(close)
 	var save_btn := PanelTheme.make_secondary_button("Save (no reload)")
 	save_btn.pressed.connect(_on_save_only)
@@ -253,7 +252,7 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 
 	_adaptive_check = CheckBox.new()
 	_adaptive_check.text = "Auto-adjust fidelity to hit target FPS"
-	_adaptive_check.button_pressed = true
+	_adaptive_check.button_pressed = false
 	_adaptive_check.tooltip_text = "Steps resolution down when the GPU can't keep up, back up when there's headroom."
 	_adaptive_check.toggled.connect(func(v):
 		TankConfig.adaptive_quality = v
@@ -416,9 +415,9 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 
 func _make_fold_section(parent: VBoxContainer, title: String, start_open: bool) -> VBoxContainer:
 	parent.add_child(PanelTheme.make_spacer(4))
-	var wrap := VBoxContainer.new()
-	wrap.add_theme_constant_override("separation", 6)
-	parent.add_child(wrap)
+	var section_root := VBoxContainer.new()
+	section_root.add_theme_constant_override("separation", 6)
+	parent.add_child(section_root)
 	var header := Button.new()
 	header.focus_mode = Control.FOCUS_NONE
 	header.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -441,8 +440,8 @@ func _make_fold_section(parent: VBoxContainer, title: String, start_open: bool) 
 	var body := VBoxContainer.new()
 	body.add_theme_constant_override("separation", 6)
 	body.visible = start_open
-	wrap.add_child(header)
-	wrap.add_child(body)
+	section_root.add_child(header)
+	section_root.add_child(body)
 	header.pressed.connect(func():
 		body.visible = not body.visible
 		header.text = ("%s  %s" % ["▼", title]) if body.visible else ("%s  %s" % ["▶", title]))
@@ -690,7 +689,9 @@ func _pull_from_config() -> void:
 	_fog_density.value = TankConfig.fog_density
 	_fog_anisotropy.value = TankConfig.fog_anisotropy
 	_fog_ambient.value = TankConfig.fog_ambient_inject
+	_fov.set_block_signals(true)
 	_fov.value = TankConfig.camera_fov
+	_fov.set_block_signals(false)
 	_msaa_option.select(int(TankConfig.msaa))
 	_sync_fidelity_buttons()
 	_sync_adaptive_controls()

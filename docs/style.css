@@ -156,8 +156,28 @@ pre code {
 .tagline {
   font-size: 18px;
   color: var(--ink-dim);
-  margin: 0 0 32px;
+  margin: 0 0 16px;
   max-width: 540px;
+}
+
+.version-pill {
+  font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--ink-dim);
+  margin: 0 0 32px;
+  padding: 8px 12px;
+  display: inline-block;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.version-pill strong {
+  color: var(--accent-warm);
+}
+
+.whats-new h2 {
+  color: var(--accent-warm);
 }
 
 .downloads {

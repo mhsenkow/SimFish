@@ -364,8 +364,7 @@ func _build_ui() -> void:
 	_tab_species.pressed.connect(func(): _set_scope(Scope.SPECIES))
 	header.add_child(_tab_species)
 
-	var close_btn := PanelTheme.make_secondary_button("CLOSE")
-	close_btn.pressed.connect(close)
+	var close_btn := PanelTheme.make_close_button(close)
 	header.add_child(close_btn)
 
 	outer.add_child(PanelTheme.make_rule())

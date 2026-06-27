@@ -188,8 +188,7 @@ func _build_ui() -> void:
 
 	# --- Close ---
 	outer.add_child(PanelTheme.make_rule())
-	var close := PanelTheme.make_secondary_button("Close")
-	close.pressed.connect(func(): visible = false)
+	var close := PanelTheme.make_close_button(func(): visible = false)
 	outer.add_child(close)
 
 

@@ -105,6 +105,11 @@ func _process(dt: float) -> void:
 	# represent. Without the home pull the carpet would visibly drift
 	# off-center over a few minutes.
 	position += _drift * dt
+	var wave_push: float = maxf(0.0, sin(_phase)) * 0.032
+	if _drift.length_squared() > 1e-6:
+		position += _drift.normalized() * wave_push * dt * 42.0
+	else:
+		position.x += wave_push * dt * 28.0
 	var w: Node = FaunaBoundary.world_from_sim(sim)
 	if w != null:
 		var margin: float = 0.20

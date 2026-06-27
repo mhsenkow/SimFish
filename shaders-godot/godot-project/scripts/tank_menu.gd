@@ -11,6 +11,9 @@
 extends Control
 
 const MAIN_SCENE := "res://main.tscn"
+const GuardianMindOnboarding = preload("res://scripts/guardian_mind_onboarding.gd")
+
+var _guardian_consent_layer: Control = null
 
 @onready var _grid: GridContainer = $Scroll/Grid
 @onready var _empty_label: Label = $EmptyLabel
@@ -33,6 +36,9 @@ func _ready() -> void:
 	get_viewport().size_changed.connect(_apply_responsive_layout)
 	_apply_responsive_layout()
 	_refresh()
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm != null and glm.has_signal("consent_required"):
+		glm.consent_required.connect(_on_guardian_consent_required)
 
 
 # Add a "Guided setup" button next to "+ New tank" that creates an empty tank
@@ -552,3 +558,28 @@ func _on_delete_confirm(slots: Array, names: Array) -> void:
 		dialog.queue_free())
 	dialog.canceled.connect(func(): dialog.queue_free())
 	dialog.popup_centered()
+
+
+func _on_guardian_consent_required(needs_download: bool) -> void:
+	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
+		return
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm == null:
+		return
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(backdrop)
+	_guardian_consent_layer = backdrop
+	var mode: int = GuardianMindOnboarding.Mode.DOWNLOAD if needs_download \
+			else GuardianMindOnboarding.Mode.BUNDLED_INFO
+	var modal: PanelContainer = GuardianMindOnboarding.open_in(self, mode)
+	modal.closed.connect(func(accepted: bool) -> void:
+		if is_instance_valid(backdrop):
+			backdrop.queue_free()
+		_guardian_consent_layer = null
+		if needs_download:
+			glm.on_consent_result(accepted)
+		else:
+			glm.on_bundled_info_dismissed())

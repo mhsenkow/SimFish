@@ -42,7 +42,7 @@ var integer_upscale: bool = false
 # rate falls below the target, then back up when there's headroom.
 # Lets a single TankConfig render the tank correctly across desktop +
 # mobile without manual tuning.
-var adaptive_quality: bool = true
+var adaptive_quality: bool = false
 var adaptive_quality_target_fps: int = 55
 # Snap the orbit camera to the world-space size of a single render pixel
 # so swimming creatures don't sub-pixel-jitter against the static
@@ -220,6 +220,17 @@ var ai_chronicle: bool = false
 # True once the user has dismissed the onboarding modal at least once. The
 # settings panel uses this to stop nagging.
 var ai_onboarding_seen: bool = false
+# Embedded Guardian voice (#1–4): optional local /api/generate shim on a
+# second port (llama.cpp server). Checked before Ollama for Guardian lines.
+var ai_embedded_enabled: bool = false
+var ai_embedded_endpoint: String = "http://127.0.0.1:8080"
+var ai_embedded_model: String = "Qwen2.5-0.5B-Instruct-Q4_K_M"
+var guardian_voice_enabled: bool = true
+var guardian_voice_explainer_seen: bool = false
+# Device-level Guardian mind consent (mobile section): pending | accepted | declined
+var guardian_mind_consent: String = "pending"
+# One-time dismiss for bundled Steam builds (model already in the install).
+var guardian_mind_info_seen: bool = false
 
 # ---- Tank shape + dimensions ----
 # Glass + substrate geometry. Each shape clips substrate fill + spawn
@@ -353,6 +364,11 @@ var music_events_enabled: bool = true
 var music_environment_enabled: bool = true
 var music_event_volume: float = 0.58
 var music_reactivity: float = 0.65
+# 0 = subtle groove, 1 = full choreographed show.
+var music_showiness: float = 0.5
+# auto | ballet | frenzy | sway | stately | bounce | sync
+var music_dance_style: String = "auto"
+var music_sync_latency_ms: float = 80.0
 # auto | calm | bright | deep
 var music_mood: String = "auto"
 # ambient | trance | hybrid — continuous bed character
@@ -1992,6 +2008,8 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "environment_enabled", music_environment_enabled)
 	cfg.set_value("music", "event_volume", music_event_volume)
 	cfg.set_value("music", "reactivity", music_reactivity)
+	cfg.set_value("music", "showiness", music_showiness)
+	cfg.set_value("music", "dance_style", music_dance_style)
 	cfg.set_value("music", "mood", music_mood)
 	cfg.set_value("music", "style", music_style)
 	cfg.set_value("music", "energy", music_energy)
@@ -2045,6 +2063,7 @@ func save_to_disk() -> void:
 	cfg.set_value("music", "breathe_lfo", music_breathe_lfo)
 	cfg.set_value("music_sync", "enabled", music_sync_enabled)
 	cfg.set_value("music_sync", "intensity", music_sync_intensity)
+	cfg.set_value("music_sync", "latency_ms", music_sync_latency_ms)
 	cfg.set_value("music_sync", "fish", music_sync_fish)
 	cfg.set_value("music_sync", "lights", music_sync_lights)
 	cfg.set_value("music_sync", "color", music_sync_color)
@@ -2127,6 +2146,8 @@ func save_to_disk() -> void:
 	cfg.set_value("mobile", "device_tier", device_tier)
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
+	cfg.set_value("mobile", "guardian_mind_consent", guardian_mind_consent)
+	cfg.set_value("mobile", "guardian_mind_info_seen", guardian_mind_info_seen)
 	cfg.set_value("mobile", "new_tank_fit", new_tank_fit)
 	cfg.set_value("plants", "co2_level", co2_level)
 	cfg.set_value("plants", "light_spectrum", light_spectrum)
@@ -2136,6 +2157,11 @@ func save_to_disk() -> void:
 	cfg.set_value("ai", "naming_theme", ai_naming_theme)
 	cfg.set_value("ai", "chronicle", ai_chronicle)
 	cfg.set_value("ai", "onboarding_seen", ai_onboarding_seen)
+	cfg.set_value("ai", "embedded_enabled", ai_embedded_enabled)
+	cfg.set_value("ai", "embedded_endpoint", ai_embedded_endpoint)
+	cfg.set_value("ai", "embedded_model", ai_embedded_model)
+	cfg.set_value("ai", "guardian_voice_enabled", guardian_voice_enabled)
+	cfg.set_value("ai", "guardian_voice_explainer_seen", guardian_voice_explainer_seen)
 	cfg.save(_current_save_path())
 
 
@@ -2225,6 +2251,8 @@ func load_from_disk() -> void:
 	music_environment_enabled = cfg.get_value("music", "environment_enabled", music_environment_enabled)
 	music_event_volume = cfg.get_value("music", "event_volume", music_event_volume)
 	music_reactivity = cfg.get_value("music", "reactivity", music_reactivity)
+	music_showiness = cfg.get_value("music", "showiness", music_showiness)
+	music_dance_style = String(cfg.get_value("music", "dance_style", music_dance_style))
 	music_mood = cfg.get_value("music", "mood", music_mood)
 	music_style = cfg.get_value("music", "style", music_style)
 	music_energy = cfg.get_value("music", "energy", music_energy)
@@ -2278,6 +2306,7 @@ func load_from_disk() -> void:
 	music_breathe_lfo = cfg.get_value("music", "breathe_lfo", music_breathe_lfo)
 	music_sync_enabled = cfg.get_value("music_sync", "enabled", music_sync_enabled)
 	music_sync_intensity = cfg.get_value("music_sync", "intensity", music_sync_intensity)
+	music_sync_latency_ms = float(cfg.get_value("music_sync", "latency_ms", music_sync_latency_ms))
 	music_sync_fish = cfg.get_value("music_sync", "fish", music_sync_fish)
 	music_sync_lights = cfg.get_value("music_sync", "lights", music_sync_lights)
 	music_sync_color = cfg.get_value("music_sync", "color", music_sync_color)
@@ -2362,6 +2391,8 @@ func load_from_disk() -> void:
 	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
+	guardian_mind_consent = String(cfg.get_value("mobile", "guardian_mind_consent", guardian_mind_consent))
+	guardian_mind_info_seen = cfg.get_value("mobile", "guardian_mind_info_seen", guardian_mind_info_seen)
 	new_tank_fit = cfg.get_value("mobile", "new_tank_fit", new_tank_fit)
 	co2_level = cfg.get_value("plants", "co2_level", co2_level)
 	light_spectrum = cfg.get_value("plants", "light_spectrum", light_spectrum)
@@ -2371,6 +2402,12 @@ func load_from_disk() -> void:
 	ai_naming_theme = cfg.get_value("ai", "naming_theme", ai_naming_theme)
 	ai_chronicle = cfg.get_value("ai", "chronicle", ai_chronicle)
 	ai_onboarding_seen = cfg.get_value("ai", "onboarding_seen", ai_onboarding_seen)
+	ai_embedded_enabled = cfg.get_value("ai", "embedded_enabled", ai_embedded_enabled)
+	ai_embedded_endpoint = cfg.get_value("ai", "embedded_endpoint", ai_embedded_endpoint)
+	ai_embedded_model = cfg.get_value("ai", "embedded_model", ai_embedded_model)
+	guardian_voice_enabled = cfg.get_value("ai", "guardian_voice_enabled", guardian_voice_enabled)
+	guardian_voice_explainer_seen = cfg.get_value("ai", "guardian_voice_explainer_seen",
+			guardian_voice_explainer_seen)
 	_pair_environment_lighting_if_legacy()
 	# Push the freshly-loaded AI settings into the live director (autoload
 	# instantiated before us). Safe no-op if AIDirector autoload is missing.
@@ -2382,6 +2419,10 @@ func load_from_disk() -> void:
 			"ai_model": ai_model,
 			"ai_naming_theme": ai_naming_theme,
 			"ai_chronicle": ai_chronicle,
+			"ai_embedded_enabled": ai_embedded_enabled,
+			"ai_embedded_endpoint": ai_embedded_endpoint,
+			"ai_embedded_model": ai_embedded_model,
+			"guardian_voice_enabled": guardian_voice_enabled,
 		})
 
 
@@ -2409,7 +2450,8 @@ func switch_to_slot(slot: int) -> void:
 # file. Used by switch_to_slot so a new slot doesn't inherit from the slot
 # the player just left.
 #
-# Device-level fields (fps_cap, device_tier, tutorial_seen, last_quit_unix)
+# Device-level fields (fps_cap, device_tier, tutorial_seen, last_quit_unix,
+# guardian_mind_consent, guardian_mind_info_seen)
 # are intentionally NOT reset — those reflect the device the user is on, not
 # the tank they happen to be in.
 func reset_to_defaults() -> void:
@@ -2470,6 +2512,8 @@ func reset_to_defaults() -> void:
 	music_environment_enabled = true
 	music_event_volume = 0.58
 	music_reactivity = 0.65
+	music_showiness = 0.5
+	music_dance_style = "auto"
 	music_mood = "auto"
 	music_style = "hybrid"
 	music_energy = 0.55
@@ -2563,7 +2607,7 @@ func reset_to_defaults() -> void:
 	follow_dof_near_softness = 1.6
 	follow_dof_focus_margin = 1.2
 	follow_dof_near_enabled = true
-	adaptive_quality = true
+	adaptive_quality = false
 	adaptive_quality_target_fps = 55
 	palette_enabled = true
 	fog_density = 0.02

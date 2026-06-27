@@ -32,6 +32,7 @@ signal config_changed()
 # dict on failure). The scenario picker subscribes one-shot to get the
 # generated config and apply it to TankConfig.
 signal tank_designed(config: Dictionary)
+signal guardian_line_ready(cache_key: String, line: String, source: String)
 
 
 # ---- Public state (read freely) -----------------------------------------
@@ -55,6 +56,15 @@ var model: String = "qwen2.5:3b"
 var naming_theme: String = ""        # free-text e.g. "Greek gods", "trees"
 var chronicle_enabled: bool = false
 var intent_refresh_period_s: float = 60.0
+# Embedded tier (#1–4): optional local /api/generate shim (llama.cpp server or
+# Ollama on a second port). Checked before the pro Ollama endpoint for
+# Guardian voice lines.
+var embedded_enabled: bool = false
+var embedded_endpoint: String = "http://127.0.0.1:8080"
+var embedded_model: String = "Qwen2.5-0.5B-Instruct-Q4_K_M"
+var guardian_voice_enabled: bool = true
+var embedded_conn_state: int = ConnState.UNKNOWN
+var active_llm_tier: String = "template"
 
 
 # ---- Name pool ----------------------------------------------------------
@@ -96,7 +106,14 @@ var _http_intent: HTTPRequest
 var _http_chronicle: HTTPRequest
 var _http_bios: HTTPRequest
 var _http_design: HTTPRequest
+var _http_embedded_test: HTTPRequest
+var _http_guardian: HTTPRequest
 var _design_in_flight: bool = false
+var _guardian_pending: Array = []
+var _guardian_in_flight: bool = false
+var _guardian_line_cache: Dictionary = {}
+const GUARDIAN_MAX_WORDS: int = 22
+const GUARDIAN_LINE_CACHE_MAX: int = 64
 
 
 # ---- Lifecycle ---------------------------------------------------------
@@ -133,6 +150,11 @@ func _ensure_http() -> void:
 		_http_bios = _make_http("HttpBios", _on_bios_response)
 	if _http_design == null:
 		_http_design = _make_http("HttpDesign", _on_design_response)
+	if _http_embedded_test == null:
+		_http_embedded_test = _make_http("HttpEmbeddedTest", _on_embedded_test_response)
+	if _http_guardian == null:
+		_http_guardian = _make_http("HttpGuardian", _on_guardian_response)
+		_http_guardian.timeout = 6.0
 
 
 func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
@@ -179,6 +201,12 @@ func apply_config(cfg: Dictionary) -> void:
 	model = String(cfg.get("ai_model", model)).strip_edges()
 	naming_theme = String(cfg.get("ai_naming_theme", naming_theme)).strip_edges()
 	chronicle_enabled = bool(cfg.get("ai_chronicle", chronicle_enabled))
+	embedded_enabled = bool(cfg.get("ai_embedded_enabled", embedded_enabled))
+	embedded_endpoint = String(cfg.get("ai_embedded_endpoint", embedded_endpoint)).strip_edges()
+	if embedded_endpoint.ends_with("/"):
+		embedded_endpoint = embedded_endpoint.substr(0, embedded_endpoint.length() - 1)
+	embedded_model = String(cfg.get("ai_embedded_model", embedded_model)).strip_edges()
+	guardian_voice_enabled = bool(cfg.get("guardian_voice_enabled", guardian_voice_enabled))
 	if enabled and not was_enabled:
 		test_connection()
 	elif not enabled:
@@ -186,6 +214,11 @@ func apply_config(cfg: Dictionary) -> void:
 		_ai_name_pool.clear()
 		_intent_cells.clear()
 		_intent_cells.resize(INTENT_GRID * INTENT_GRID * INTENT_GRID)
+	if embedded_enabled:
+		test_embedded_connection()
+	elif not embedded_enabled:
+		embedded_conn_state = ConnState.UNKNOWN
+		_update_active_llm_tier()
 	# Sync per-frame processing to the current enabled state so the engine
 	# stops calling _process / _physics_process when AI is off.
 	set_process(enabled)
@@ -241,6 +274,7 @@ func _on_test_response(result: int, code: int, _headers: PackedStringArray, body
 	conn_state = ConnState.OK
 	last_error = ""
 	last_ok_unix = int(Time.get_unix_time_from_system())
+	_update_active_llm_tier()
 	emit_signal("connection_tested", true, "Connected to Ollama. Model `%s` ready." % model)
 
 
@@ -819,10 +853,226 @@ func _sanitize_design(d: Dictionary) -> Dictionary:
 
 
 func status_summary() -> String:
+	var bits: Array[String] = []
 	match conn_state:
-		ConnState.UNKNOWN:  return "Not tested"
-		ConnState.OK:       return "Connected · %s · %d names queued" % [model, _ai_name_pool.size()]
-		ConnState.CHECKING: return "Checking..."
-		ConnState.OFFLINE:  return "Ollama offline · using built-in names"
-		ConnState.ERROR:    return "Error: %s" % last_error
-		_:                  return ""
+		ConnState.UNKNOWN:  bits.append("Ollama: not tested")
+		ConnState.OK:       bits.append("Ollama · %s · %d names" % [model, _ai_name_pool.size()])
+		ConnState.CHECKING: bits.append("Ollama: checking…")
+		ConnState.OFFLINE:  bits.append("Ollama offline")
+		ConnState.ERROR:    bits.append("Ollama error: %s" % last_error)
+	if embedded_enabled:
+		match embedded_conn_state:
+			ConnState.OK:       bits.append("HTTP embedded · %s" % embedded_model)
+			ConnState.CHECKING: bits.append("HTTP embedded: checking…")
+			ConnState.OFFLINE:  bits.append("HTTP embedded offline")
+			ConnState.ERROR:    bits.append("HTTP embedded error")
+	var glm: Node = get_node_or_null("/root/GuardianLlm")
+	if glm != null and glm.has_method("status_summary"):
+		bits.append(String(glm.call("status_summary")))
+	bits.append("Guardian voice: %s" % active_llm_tier)
+	return " · ".join(bits)
+
+
+# ---- Embedded tier (#1–5, #7–8) ----------------------------------------
+func test_embedded_connection() -> void:
+	_ensure_http()
+	if not embedded_enabled or embedded_endpoint == "":
+		embedded_conn_state = ConnState.UNKNOWN
+		_update_active_llm_tier()
+		return
+	embedded_conn_state = ConnState.CHECKING
+	var payload: Dictionary = {
+		"model": embedded_model,
+		"prompt": "Reply with the single word: ok",
+		"stream": false,
+		"options": {"temperature": 0.0, "num_predict": 4},
+	}
+	var err: int = _http_embedded_test.request(
+			embedded_endpoint + "/api/generate",
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		embedded_conn_state = ConnState.OFFLINE
+		_update_active_llm_tier()
+
+
+func _on_embedded_test_response(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		embedded_conn_state = ConnState.OK
+	else:
+		embedded_conn_state = ConnState.OFFLINE
+	_update_active_llm_tier()
+	emit_signal("config_changed")
+
+
+func _update_active_llm_tier() -> void:
+	var glm: Node = get_node_or_null("/root/GuardianLlm")
+	if guardian_voice_enabled and glm != null and glm.has_method("is_ready") \
+			and bool(glm.call("is_ready")):
+		active_llm_tier = "inprocess"
+	elif guardian_voice_enabled and embedded_enabled \
+			and embedded_conn_state == ConnState.OK:
+		active_llm_tier = "embedded"
+	elif enabled and conn_state == ConnState.OK:
+		active_llm_tier = "ollama"
+	else:
+		active_llm_tier = "template"
+
+
+func guardian_llm_available() -> bool:
+	_update_active_llm_tier()
+	return active_llm_tier != "template"
+
+
+func _resolve_guardian_llm() -> Dictionary:
+	if guardian_voice_enabled and embedded_enabled \
+			and embedded_conn_state == ConnState.OK:
+		return {
+			"endpoint": embedded_endpoint,
+			"model": embedded_model,
+			"tier": "embedded",
+		}
+	if enabled and conn_state == ConnState.OK:
+		return {"endpoint": endpoint, "model": model, "tier": "ollama"}
+	return {}
+
+
+# ---- Guardian voice (#20–27) -------------------------------------------
+# Returns the fallback line immediately; queues an async upgrade when a
+# local model is reachable. Cached by cache_key (guardian + day + situation)
+# so reloads don't reshuffle the voice (#8).
+func queue_guardian_line(context: Dictionary, fallback: String, cache_key: String) -> String:
+	var fb: String = fallback.strip_edges()
+	if cache_key != "" and _guardian_line_cache.has(cache_key):
+		var cached: String = String(_guardian_line_cache[cache_key])
+		if cached != "":
+			return cached
+	if fb == "":
+		return fb
+	var glm: Node = get_node_or_null("/root/GuardianLlm")
+	if guardian_voice_enabled and glm != null and glm.has_method("queue_generate"):
+		var prompt: String = _build_guardian_prompt(context)
+		glm.call("queue_generate", cache_key, prompt, fb)
+		_update_active_llm_tier()
+		return fb
+	var llm: Dictionary = _resolve_guardian_llm()
+	if llm.is_empty():
+		return fb
+	for e in _guardian_pending:
+		if String(e.get("cache_key", "")) == cache_key:
+			return fb
+	_guardian_pending.append({
+		"context": context.duplicate(true),
+		"fallback": fb,
+		"cache_key": cache_key,
+		"endpoint": String(llm.get("endpoint", "")),
+		"model": String(llm.get("model", "")),
+		"tier": String(llm.get("tier", "ollama")),
+	})
+	if not _guardian_in_flight:
+		_request_guardian_line()
+	return fb
+
+
+func _request_guardian_line() -> void:
+	if _guardian_pending.is_empty():
+		return
+	_ensure_http()
+	var job: Dictionary = _guardian_pending[0]
+	_guardian_in_flight = true
+	var ctx: Dictionary = job.get("context", {})
+	var prompt: String = _build_guardian_prompt(ctx)
+	var rng_seed: int = _guardian_seed(str(job.get("cache_key", "")))
+	var payload: Dictionary = {
+		"model": str(job.get("model", model)),
+		"prompt": prompt,
+		"stream": false,
+		"options": {
+			"temperature": 0.35,
+			"seed": rng_seed,
+			"num_predict": 64,
+		},
+	}
+	var url: String = String(job.get("endpoint", endpoint)) + "/api/generate"
+	var err: int = _http_guardian.request(url,
+			PackedStringArray(["Content-Type: application/json"]),
+			HTTPClient.METHOD_POST,
+			JSON.stringify(payload))
+	if err != OK:
+		_guardian_in_flight = false
+		_guardian_pending.pop_front()
+		if not _guardian_pending.is_empty():
+			_request_guardian_line()
+
+
+func _build_guardian_prompt(ctx: Dictionary) -> String:
+	var sys: String = (
+		"You are the Guardian — one mildly-sentient aquarium fish writing in a warm "
+		+ "naturalist diary voice. Speak in first person. Address the keeper using "
+		+ "their moniker. One or two short sentences only — never bullet lists, never "
+		+ "JSON, never break character. No profanity.")
+	var recent: Variant = ctx.get("recent_lines", PackedStringArray())
+	var recent_txt: String = ""
+	if recent is PackedStringArray and (recent as PackedStringArray).size() > 0:
+		recent_txt = " Avoid repeating: " + ", ".join(recent as PackedStringArray) + "."
+	return "%s Context: %s.%s Write the Guardian's line now." % [
+		sys, JSON.stringify(ctx), recent_txt,
+	]
+
+
+func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+	_guardian_in_flight = false
+	var job: Dictionary = {}
+	if not _guardian_pending.is_empty():
+		job = _guardian_pending.pop_front()
+	var fb: String = String(job.get("fallback", ""))
+	var cache_key: String = String(job.get("cache_key", ""))
+	var tier: String = String(job.get("tier", "ollama"))
+	var line: String = fb
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
+		if outer is Dictionary:
+			line = _sanitize_guardian_output(String(outer.get("response", "")))
+	if line == "" or line.length() < 3:
+		line = fb
+	if line != fb and cache_key != "":
+		_cache_guardian_line(cache_key, line)
+		emit_signal("guardian_line_ready", cache_key, line, tier)
+	if not _guardian_pending.is_empty():
+		_request_guardian_line()
+
+
+func _cache_guardian_line(cache_key: String, line: String) -> void:
+	if cache_key == "" or line.strip_edges() == "":
+		return
+	_guardian_line_cache[cache_key] = line.strip_edges()
+	while _guardian_line_cache.size() > GUARDIAN_LINE_CACHE_MAX:
+		var oldest: String = String(_guardian_line_cache.keys()[0])
+		_guardian_line_cache.erase(oldest)
+
+
+func _sanitize_guardian_output(text: String) -> String:
+	var s: String = text.strip_edges()
+	if s.begins_with("\"") and s.ends_with("\""):
+		s = s.substr(1, s.length() - 2).strip_edges()
+	# Drop anything after a newline — small models love to ramble.
+	if "\n" in s:
+		s = s.split("\n", false)[0].strip_edges()
+	var words: PackedStringArray = s.split(" ", false)
+	if words.size() > GUARDIAN_MAX_WORDS:
+		words = words.slice(0, GUARDIAN_MAX_WORDS)
+		s = " ".join(words)
+	# Basic profanity guard — fall back to caller if hit.
+	var low: String = s.to_lower()
+	for bad in ["fuck", "shit", "damn"]:
+		if bad in low:
+			return ""
+	return s
+
+
+func _guardian_seed(cache_key: String) -> int:
+	var h: int = 0
+	for i in cache_key.length():
+		h = (h * 31 + cache_key.unicode_at(i)) & 0x7fffffff
+	return h if h > 0 else 1

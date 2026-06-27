@@ -115,10 +115,9 @@ func _build_ui() -> void:
 	hb.alignment = BoxContainer.ALIGNMENT_END
 	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
-	var close := PanelTheme.make_secondary_button("CLOSE")
-	close.pressed.connect(func(): visible = false)
+	var close := PanelTheme.make_close_button(func(): visible = false)
 	hb.add_child(close)
-	var reroll := PanelTheme.make_primary_button("REROLL")
+	var reroll := PanelTheme.make_primary_button("Reroll")
 	reroll.pressed.connect(_regenerate)
 	hb.add_child(reroll)
 

@@ -97,7 +97,11 @@ func _process(dt: float) -> void:
 	var emerged_target: float = clampf((0.30 - dl) / 0.30, 0.0, 1.0)
 	_emerged_t = lerpf(_emerged_t, emerged_target, sdt * 0.35)
 	var target_depth: float = lerpf(-HIDE_DEPTH, SHOW_DEPTH, _emerged_t)
-	position.y = lerpf(position.y, substrate_top_y + target_depth, sdt * 0.6)
+	var burrow_wave: float = maxf(0.0, sin(_phase - 0.6))
+	position.y = lerpf(position.y, substrate_top_y + target_depth + burrow_wave * 0.035, sdt * 0.6)
+	if _emerged_t > 0.35:
+		position.x += burrow_wave * 0.014 * _emerged_t
+		position.z += maxf(0.0, sin(_phase - 1.1)) * 0.01 * _emerged_t
 
 	# Wriggle the body — each segment offsets laterally based on its
 	# index, producing the classic worm wave.

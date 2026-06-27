@@ -191,6 +191,9 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 						intake_pull = Vector2(dx, dz) * pull_k
 			position.x += (swirl.x + wander.x + intake_pull.x) * dt
 			position.z += (swirl.y + wander.y + intake_pull.y) * dt
+			if w != null and w.has_method("sample_flow"):
+				var flow_v: Vector3 = w.sample_flow(global_position)
+				position += flow_v * dt * 0.48
 
 		if position.y <= floor_y + voxel_size * 0.5:
 			position.y = floor_y + voxel_size * 0.5

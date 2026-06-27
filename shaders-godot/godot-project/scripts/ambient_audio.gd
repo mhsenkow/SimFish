@@ -252,6 +252,7 @@ var _cached_scale: Array[float] = SCALE_MAJOR
 var _pad_increments: Array[float] = [0.0, 0.0, 0.0]
 var _cached_bpm: float = 110.0
 var _cached_beat_scale: float = 110.0 / 60.0 * INV_SAMPLE_RATE
+var _cached_beat_time: float = 0.0
 var _cached_vol: float = 0.35
 var _cached_kick_mix: float = 0.65
 var _cached_bass_mix: float = 0.75
@@ -530,17 +531,17 @@ func _environment_enabled() -> bool:
 
 func _reactivity() -> float:
 	var cfg := _cfg()
-	return clampf(float(cfg.music_reactivity), 0.0, 1.0) if cfg != null else 0.65
+	return clampf(cfg.music_reactivity, 0.0, 1.0) if cfg != null else 0.65
 
 
 func _event_gain() -> float:
 	var cfg := _cfg()
-	return clampf(float(cfg.music_event_volume), 0.0, 1.0) if cfg != null else 0.75
+	return clampf(cfg.music_event_volume, 0.0, 1.0) if cfg != null else 0.75
 
 
 func _user_volume() -> float:
 	var cfg := _cfg()
-	var base: float = clampf(float(cfg.music_volume), 0.0, 1.0) if cfg != null else 0.7
+	var base: float = clampf(cfg.music_volume, 0.0, 1.0) if cfg != null else 0.7
 	var mr := get_tree().get_first_node_in_group("music_reactive")
 	if mr != null and mr.has_method("is_external_playing") and mr.is_external_playing():
 		base *= 0.12
@@ -549,22 +550,22 @@ func _user_volume() -> float:
 
 func _complexity() -> float:
 	var cfg := _cfg()
-	return clampf(float(cfg.music_complexity), 0.0, 1.0) if cfg != null else 0.5
+	return clampf(cfg.music_complexity, 0.0, 1.0) if cfg != null else 0.5
 
 
 func _energy() -> float:
 	var cfg := _cfg()
-	return clampf(float(cfg.music_energy), 0.0, 1.0) if cfg != null else 0.55
+	return clampf(cfg.music_energy, 0.0, 1.0) if cfg != null else 0.55
 
 
 func _style() -> String:
 	var cfg := _cfg()
-	return String(cfg.music_style) if cfg != null else "hybrid"
+	return cfg.music_style if cfg != null else "hybrid"
 
 
 func _scale_cfg() -> String:
 	var cfg := _cfg()
-	return String(cfg.music_scale) if cfg != null and "music_scale" in cfg else "auto"
+	return cfg.music_scale if cfg != null else "auto"
 
 
 @warning_ignore("shadowed_variable_base_class")
@@ -584,7 +585,7 @@ func _scale_by_name(name: String) -> Array[float]:
 
 func _persona_key() -> String:
 	var cfg := _cfg()
-	return String(cfg.music_persona) if cfg != null and "music_persona" in cfg else "none"
+	return cfg.music_persona if cfg != null else "none"
 
 
 func _active_persona() -> Dictionary:
@@ -650,10 +651,15 @@ func _cfg_float(key: String, default: float) -> float:
 	var cfg := _cfg()
 	if cfg == null:
 		return default
-	var v = cfg.get(key)
+	var v: Variant = cfg.get(key)
 	if v == null:
 		return default
-	return clampf(float(v), 0.0, 2.0)
+	if v is float:
+		return clampf(v, 0.0, 2.0)
+	if v is int:
+		var n: float = v
+		return clampf(n, 0.0, 2.0)
+	return default
 
 
 func _influence(key: String) -> float:
@@ -791,7 +797,7 @@ func _active_arp_pattern() -> Array:
 
 func _phrase_form_key() -> String:
 	var cfg := _cfg()
-	return String(cfg.music_phrase_form) if cfg != null and "music_phrase_form" in cfg else "auto"
+	return cfg.music_phrase_form if cfg != null else "auto"
 
 
 func _drop_intensity() -> float:
@@ -1253,7 +1259,7 @@ func _react_dub(event_name: String) -> void:
 
 func _mood_key() -> String:
 	var cfg := _cfg()
-	return String(cfg.music_mood) if cfg != null else "auto"
+	return cfg.music_mood if cfg != null else "auto"
 
 
 func _get_current_scale() -> Array[float]:
@@ -2051,6 +2057,7 @@ var _f_air_r: float = 0.0
 
 func _render_trance_streams() -> void:
 	var beat_time: float = float(_sample_clock) * _cached_beat_scale
+	_cached_beat_time = beat_time
 	var quarter: int = int(beat_time)
 	var sixteenth_f: float = beat_time * 4.0
 	var sixteenth: int = int(sixteenth_f)
@@ -2539,6 +2546,11 @@ func _process(_dt: float) -> void:
 
 
 func get_live_status() -> Dictionary:
+	var beat_phase: float = fposmod(_cached_beat_time, 1.0)
+	var bar_phase: float = fposmod(_cached_beat_time / 4.0, 1.0)
+	var scale_mode: String = "major"
+	if TankConfig.music_mood in ["calm", "deep"]:
+		scale_mode = "minor"
 	return {
 		"bpm": _cached_bpm,
 		"vitality": _tank_vitality,
@@ -2557,6 +2569,12 @@ func get_live_status() -> Dictionary:
 		"phrase_state_name": _phrase_state_name(),
 		"phrase_state_bars_left": _phrase_state_bars_left,
 		"phrase_state_progress": _phrase_state_bar_pos,
+		"beat_phase": beat_phase,
+		"bar_phase": bar_phase,
+		"bar_count": maxi(0, _last_bar),
+		"swing": _cached_swing,
+		"humanize": _cached_humanize,
+		"scale_mode": scale_mode,
 	}
 
 

@@ -1,7 +1,7 @@
 "appbuild"
 {
 	"appid" "@STEAM_APP_ID@"
-	"desc" "walstad loom v0.2.18 desktop build"
+	"desc" "walstad loom v0.2.19 desktop build"
 	"buildoutput" "output/"
 	"contentroot" "content/"
 	"setlive" "@STEAM_SETLIVE@"

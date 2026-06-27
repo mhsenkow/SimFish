@@ -10,6 +10,7 @@ extends Node3D
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
+const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -93,6 +94,10 @@ var _env_field_t: float = 0.0
 var _env_light: Dictionary = {}
 var _env_warmth: Dictionary = {}
 var _env_field_ready: bool = false
+# Coarse tank velocity grid — aeration seed + creature wakes (#37).
+var _flow_field: TankFlowField = null
+var _flow_tick_accum: float = 0.0
+const FLOW_TICK_INTERVAL: float = 0.10
 
 # Shared pearling emitter pool (replaces per-plant GPUParticles3D nodes).
 var _pearling_pool: Array[GPUParticles3D] = []
@@ -347,6 +352,7 @@ func _ready() -> void:
 		pass
 
 	_spawn_aeration_system()
+	_init_flow_field()
 	_spawn_mulm_layer()
 	_spawn_water_ambience()
 	_visuals = AquariumVisuals.new()
@@ -505,6 +511,12 @@ func _process(dt: float) -> void:
 		var _amb_ts: float = float(sim.time_scale) if sim != null else 1.0
 		adt = _ambient_accum * _amb_ts
 		_ambient_accum = 0.0
+
+	_flow_tick_accum += sdt
+	if _flow_tick_accum >= FLOW_TICK_INTERVAL:
+		if _flow_field != null:
+			_flow_field.tick(_flow_tick_accum)
+		_flow_tick_accum = 0.0
 
 	if _ambient_due and sim != null:
 		_refresh_atmosphere_caches(adt)
@@ -705,10 +717,15 @@ func _process(dt: float) -> void:
 			fixture_energy = float(cfg2.tank_fixture_intensity)
 			fixture_color = cfg2.tank_fixture_color
 			sunset_drama = float(cfg2.sunset_drama)
-		var mr := get_tree().get_first_node_in_group("music_reactive")
-		if mr != null and mr.has_method("light_fixture_mul"):
-			fixture_energy *= float(mr.light_fixture_mul())
-			var warm_mix: float = float(mr.light_beam_warmth_mix())
+		var mv := _music_visual_node()
+		if mv != null and mv.has_method("light_fixture_mul"):
+			fixture_energy *= float(mv.light_fixture_mul())
+			var warm_mix: float = 0.0
+			if mv.has_method("light_beam_warmth_mix"):
+				warm_mix = float(mv.light_beam_warmth_mix())
+			elif mv.has_method("visual_mix"):
+				var mix: Dictionary = mv.visual_mix()
+				warm_mix = float(mix.get("light_warmth", 0.0))
 			if warm_mix > 0.001:
 				fixture_color = fixture_color.lerp(Color(1.0, 0.72, 0.48), warm_mix)
 		# Sunset drama amplifies dusk warmth + how deep night dips. 0 flattens
@@ -734,8 +751,8 @@ func _process(dt: float) -> void:
 			beam_color = day_beam.lerp(sunset_beam, minf(sunset_hour, 1.0))
 		if deep_night > 0.35:
 			beam_color = beam_color.lerp(night_beam, smoothstep(0.35, 1.0, deep_night))
-		if mr != null and mr.has_method("light_beam_warmth_mix"):
-			var beam_warm: float = float(mr.light_beam_warmth_mix())
+		if mv != null and mv.has_method("light_beam_warmth_mix"):
+			var beam_warm: float = float(mv.light_beam_warmth_mix())
 			if beam_warm > 0.001:
 				beam_color = beam_color.lerp(Color(1.0, 0.55, 0.38), beam_warm * 0.45)
 		# Room fill fades at night; sunset keeps a warm wash in the room.
@@ -834,8 +851,8 @@ func _process(dt: float) -> void:
 				var trans: float = float(_cached_water_column.get("transmittance", 1.0))
 				var bact: float = float(_cached_water_column.get("bacterial_bloom", 0.0))
 				intensity = WorldAtmosphere.modulate_caustic_intensity(intensity, trans, bact)
-			if mr != null and mr.has_method("caustic_mul"):
-				intensity *= float(mr.caustic_mul())
+			if mv != null and mv.has_method("caustic_mul"):
+				intensity *= float(mv.caustic_mul())
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
 				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
 				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
@@ -1197,11 +1214,21 @@ func _drift_floaters(adt: float) -> void:
 # Lily-pad + math-plant (nautilus / cattail / moss) sway. Their tick() advances
 # an internal sin phase, so running at 10 Hz with accumulated dt keeps the sway
 # rate identical — slow sway reads as perfectly smooth at 10 Hz.
+func _music_visual_node() -> Node:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.is_active():
+		return mc
+	var mr := get_tree().get_first_node_in_group("music_reactive")
+	if mr != null and mr.has_method("is_active") and mr.is_active():
+		return mr
+	return null
+
+
 func _sway_surface_plants(adt: float) -> void:
 	var sway_dt: float = adt
-	var mr := get_tree().get_first_node_in_group("music_reactive")
-	if mr != null and mr.has_method("plant_sway_mult"):
-		sway_dt *= float(mr.plant_sway_mult())
+	var mv := _music_visual_node()
+	if mv != null and mv.has_method("plant_sway_mult"):
+		sway_dt *= float(mv.plant_sway_mult())
 	for mp in _math_plants:
 		if not is_instance_valid(mp):
 			continue
@@ -1368,8 +1395,11 @@ func clamp_plant_site(x: float, z: float, radius: float, margin: float = 0.25,
 
 func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25,
 		body_radius: float = 0.0) -> Vector3:
+	if not p.is_finite():
+		p = Vector3.ZERO
 	var total_margin: float = margin + maxf(0.0, body_radius)
 	var c: Vector3 = _footprint().clamp_inside_3d(p, total_margin)
+	c = SaveHelpers.sanitize_vec3(c, p)
 	if p.y <= WATER_HEIGHT + 0.12:
 		c.y = minf(c.y, WATER_HEIGHT - total_margin)
 	if body_radius > 0.0 and not _footprint().fits_point_with_radius(
@@ -1378,7 +1408,7 @@ func clamp_xyz_in_tank(p: Vector3, margin: float = 0.25,
 		c.x = xz.x
 		c.z = xz.y
 		c = _footprint().clamp_inside_3d(c, total_margin)
-	return c
+	return SaveHelpers.sanitize_vec3(c, p)
 
 
 func enforce_entity_in_tank(node: Node3D, margin: float = 0.25,
@@ -5696,6 +5726,7 @@ func _spawn_aeration_system() -> void:
 		sim.set("aeration_air_rate", air_rate)
 		sim.set("aeration_flow_rate", flow_rate)
 		sim.set("aeration_fixture", fixture)
+	_init_flow_field()
 
 
 func _configure_substrate_flow(origin: Vector3, jet: Vector3, flow_rate: float) -> void:
@@ -6935,6 +6966,80 @@ func _clear_driftwood_biofilm(vx: MeshInstance3D) -> void:
 # when a shuffle-pattern fish (cory, mudsifter) starts a sift, layered
 # on top of the persistent mulm voxel that already drops there. Sells
 # the "kicked up the substrate" moment that the static voxel alone can't.
+func _init_flow_field() -> void:
+	if _flow_field == null:
+		_flow_field = TankFlowFieldScript.new()
+	var jet: Vector3 = Vector3.ZERO
+	var flow_rate: float = 0.28
+	if sim != null:
+		jet = sim.filter_intake_pos
+		var fr: Variant = sim.get("aeration_flow_rate")
+		if fr != null:
+			flow_rate = float(fr)
+	var floor_y: float = WATER_HEIGHT - SUBSTRATE_DEPTH
+	var jet_dir: Vector3 = Vector3(-1.0, 0.0, 0.35)
+	if jet.length_squared() > 1e-4:
+		jet_dir = Vector3(-jet.x, 0.12, -jet.z).normalized()
+	else:
+		jet = Vector3(0.0, WATER_HEIGHT - 0.45, TANK_HALF_D * 0.35)
+	_flow_field.configure(
+		TANK_HALF_W, TANK_HALF_D, floor_y, WATER_HEIGHT, jet, jet_dir, flow_rate)
+
+
+func sample_flow(pos: Vector3) -> Vector3:
+	if _flow_field == null:
+		return Vector3.ZERO
+	return _flow_field.sample(pos)
+
+
+func deposit_wake(pos: Vector3, vel: Vector3, body_size: float) -> void:
+	if _flow_field == null or vel.length_squared() < 1e-6:
+		return
+	_flow_field.deposit(pos, vel, body_size * 0.075)
+
+
+func flow_strength_at(pos: Vector3) -> float:
+	if _flow_field == null:
+		return 0.0
+	return _flow_field.strength_at(pos)
+
+
+func draft_in_wake(pos: Vector3, heading: Vector3) -> float:
+	if _flow_field == null:
+		return 0.0
+	return _flow_field.draft_bonus(pos, heading)
+
+
+func wake_push_at(pos: Vector3) -> Vector3:
+	if _flow_field == null:
+		return Vector3.ZERO
+	return _flow_field.wake_push_at(pos)
+
+
+func brush_plants_near(pos: Vector3, dir: Vector3, speed: float, radius: float = 0.72) -> void:
+	if sim == null or not sim.has_method("query_plants_in_radius"):
+		return
+	if dir.length_squared() < 1e-6 or speed < 0.08:
+		return
+	dir = dir.normalized()
+	for bp in sim.query_plants_in_radius(pos, radius):
+		if is_instance_valid(bp) and bp.has_method("brush"):
+			var bd: float = bp._world_pos.distance_to(pos)
+			bp.brush(dir, (1.0 - bd / radius) * speed * 0.12)
+
+
+func spawn_creature_substrate_dust(pos: Vector3, intensity: float = 1.0) -> void:
+	spawn_substrate_dust(pos)
+	if intensity > 1.25 and randf() < 0.45:
+		spawn_substrate_dust(pos + Vector3(randf_range(-0.12, 0.12), 0.0, randf_range(-0.12, 0.12)))
+
+
+func spawn_surface_wake(pos: Vector3, speed: float) -> void:
+	if speed < 0.45:
+		return
+	spawn_burst_ripple(pos, clampf(speed * 0.35, 0.35, 1.1))
+
+
 func spawn_substrate_dust(pos: Vector3) -> void:
 	var container := get_node_or_null("Mulm")
 	if container == null:
@@ -7521,6 +7626,9 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 				f.set("heading", biased)
 	f.init_genome(genome)
 	sim.register_fish(f)
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("on_life_event"):
+		mc.on_life_event(f.get_instance_id())
 
 
 func _spawn_shrimp_at(genome: Dictionary, pos: Vector3) -> void:

@@ -31,6 +31,53 @@ var _sync_client_secret_edit: LineEdit
 var _sync_results: ItemList
 var _sync_bars: Array[ColorRect] = []
 var _sync_channel_checks: Dictionary = {}
+var _spotify_block: VBoxContainer
+var _spotify_toggle_btn: Button
+var _tabs: TabContainer
+var _tank_score_body: VBoxContainer
+var _tank_score_paused: VBoxContainer
+var _calibrate_latency_label: Label
+var _bar_legend: Label
+
+# Bundled demo tracks — secondary ghost buttons under the primary upload CTA.
+const DEMO_TRACKS: Array = [
+	{
+		"path": "res://assets/audio/demos/demo_dirt.mp3",
+		"label": "Dirt",
+		"desc": "Mid-tempo pocket — calmer sway.",
+		"values": {"music_dance_style": "sway", "music_showiness": 0.48},
+	},
+	{
+		"path": "res://assets/audio/demos/demo_synthetic_love.wav",
+		"label": "Synthetic Love",
+		"desc": "Warm synth groove.",
+		"values": {"music_dance_style": "sway", "music_showiness": 0.52},
+	},
+	{
+		"path": "res://assets/audio/demos/demo_patterns.wav",
+		"label": "Patterns",
+		"desc": "Acoustic build — layered phrase arc.",
+		"values": {"music_dance_style": "stately", "music_showiness": 0.55},
+	},
+	{
+		"path": "res://assets/audio/demos/demo_kissed_backend.wav",
+		"label": "I Kissed the Backend",
+		"desc": "Playful bounce — steady four-on-the-floor.",
+		"values": {"music_dance_style": "bounce", "music_showiness": 0.58},
+	},
+	{
+		"path": "res://assets/audio/demos/demo_tech.mp3",
+		"label": "In da Tech",
+		"desc": "Tech-house drive — steady groove.",
+		"values": {"music_dance_style": "bounce", "music_showiness": 0.55},
+	},
+	{
+		"path": "res://assets/audio/demos/demo_byte.wav",
+		"label": "Byte",
+		"desc": "Electronic pulse — sync-friendly.",
+		"values": {"music_dance_style": "sync", "music_showiness": 0.6},
+	},
+]
 
 # Slider definitions — each `key` lines up with a TankConfig var.
 # `pct` shows the value as percent; otherwise raw 2-decimal float.
@@ -41,6 +88,7 @@ const SLIDERS: Dictionary = {
 		{"key": "music_energy", "label": "Energy (BPM & drive)", "min": 0.0, "max": 1.0, "step": 0.05, "pct": true},
 		{"key": "music_complexity", "label": "Bed density", "min": 0.0, "max": 1.0, "step": 0.05, "pct": true},
 		{"key": "music_reactivity", "label": "Ecosystem reactivity", "min": 0.0, "max": 1.0, "step": 0.05, "pct": true},
+		{"key": "music_showiness", "label": "Dance showiness", "min": 0.0, "max": 1.0, "step": 0.05, "pct": true},
 	],
 	# The festival/EDC moments — build/drop architecture & lead voice
 	"drops": [
@@ -273,6 +321,38 @@ const PRESETS: Array = [
 	},
 ]
 
+# Choreography presets — lock dance language independent of vibe.
+const DANCE_PRESETS: Array = [
+	{
+		"key": "demo_dance",
+		"label": "✨ Demo dance",
+		"desc": "Festival trance + full showiness — the wow preset.",
+		"values": {
+			"music_persona": "abgt",
+			"music_style": "trance",
+			"music_phrase_form": "trance",
+			"music_showiness": 1.0,
+			"music_energy": 0.82,
+			"music_drop_intensity": 1.0,
+			"music_build_drama": 0.95,
+			"music_dance_style": "sync",
+			"music_reactivity": 0.85,
+		},
+	},
+	{"key": "auto", "label": "🎯 Auto", "desc": "Genre from the track.", "values": {"music_dance_style": "auto"}},
+	{"key": "ballet", "label": "🩰 Ballet", "desc": "Slow wide arcs.", "values": {"music_dance_style": "ballet"}},
+	{"key": "frenzy", "label": "⚡ Frenzy", "desc": "DnB scatter energy.", "values": {"music_dance_style": "frenzy"}},
+	{"key": "sway", "label": "🌙 Sway", "desc": "Lo-fi lazy groove.", "values": {"music_dance_style": "sway"}},
+	{"key": "stately", "label": "🎻 Stately", "desc": "Orchestral formations.", "values": {"music_dance_style": "stately"}},
+]
+
+const CONDUCT_MOVES: Array = [
+	{"move": "wave", "formation": "line", "label": "〜 Wave"},
+	{"move": "vortex", "formation": "circle", "label": "◎ Vortex"},
+	{"move": "starburst", "formation": "scatter", "label": "✦ Burst"},
+	{"move": "carousel", "formation": "v", "label": "↻ Carousel"},
+]
+
 
 func _ready() -> void:
 	_build_ui()
@@ -312,6 +392,8 @@ func _process(dt: float) -> void:
 		_refresh_live_readout()
 		_refresh_recording_label()
 		_refresh_sync_visualizer()
+		_update_panel_mode()
+		_refresh_calibrate_label()
 
 
 func toggle() -> void:
@@ -323,6 +405,9 @@ func toggle() -> void:
 		set_process(true)
 		_pull_from_config()
 		_refresh_live_readout()
+		_update_panel_mode()
+		if _tabs != null and _external_sync_live():
+			_tabs.current_tab = 0
 
 
 func _close() -> void:
@@ -331,7 +416,7 @@ func _close() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(460, 0)
+	custom_minimum_size = Vector2(500, 0)
 	PanelTheme.apply_panel_chrome(self)
 
 	var outer := VBoxContainer.new()
@@ -339,51 +424,101 @@ func _build_ui() -> void:
 	add_child(outer)
 
 	outer.add_child(PanelTheme.make_title("Sound Studio"))
+	var subtitle := PanelTheme.make_description()
+	subtitle.text = "Now Playing for your track · Tank score for procedural ambient · Choreography for the dance."
+	outer.add_child(subtitle)
 	outer.add_child(PanelTheme.make_rule())
 
+	_tabs = TabContainer.new()
+	_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	outer.add_child(_tabs)
+
+	var now_playing := _new_tab_scroll(_tabs, "Now Playing")
+	_build_now_playing_tab(now_playing)
+
+	var tank_score := _new_tab_scroll(_tabs, "Tank score")
+	_build_tank_score_tab(tank_score)
+
+	var choreography := _new_tab_scroll(_tabs, "Choreography")
+	_build_choreography_tab(choreography)
+
+	outer.add_child(PanelTheme.make_rule())
+	var hb := HBoxContainer.new()
+	hb.alignment = BoxContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("separation", 8)
+	outer.add_child(hb)
+	var close := PanelTheme.make_close_button(_close)
+	hb.add_child(close)
+	var save := PanelTheme.make_primary_button("Save")
+	save.pressed.connect(_on_save)
+	hb.add_child(save)
+
+
+func _new_tab_scroll(tabs: TabContainer, title: String) -> VBoxContainer:
 	var scroll := ScrollContainer.new()
+	scroll.name = title
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer.add_child(scroll)
-
+	tabs.add_child(scroll)
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
+	vbox.add_theme_constant_override("separation", 10)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(vbox)
+	return vbox
 
+
+func _build_now_playing_tab(vbox: VBoxContainer) -> void:
 	_build_music_sync_section(vbox)
 
-	# --- Live tank → music readout (phrase state badge + telemetry) ---
-	_add_section(vbox, "Live tank → music")
-	_state_badge = Label.new()
-	PanelTheme.as_mono(_state_badge, PanelTheme.SIZE_ITEM)
-	_state_badge.text = "verse"
-	vbox.add_child(_state_badge)
-	_live_label = PanelTheme.make_description()
-	_live_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(_live_label)
 
-	# --- Snap-the-vibe presets ---
-	_add_section(vbox, "Vibe presets")
+func _build_tank_score_tab(vbox: VBoxContainer) -> void:
+	_tank_score_paused = VBoxContainer.new()
+	_tank_score_paused.add_theme_constant_override("separation", 8)
+	_tank_score_paused.visible = false
+	vbox.add_child(_tank_score_paused)
+	var paused_desc := PanelTheme.make_description()
+	paused_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	paused_desc.text = (
+		"A track is playing — the procedural tank score is muted so it doesn't fight your file. "
+		+ "Open the Tank score tab after you stop, or tap below to tune the bed anyway."
+	)
+	_tank_score_paused.add_child(paused_desc)
+	var show_score_btn := PanelTheme.make_secondary_button("Show tank score anyway")
+	show_score_btn.pressed.connect(func():
+		if _tank_score_body != null:
+			_tank_score_body.visible = true
+		if _tank_score_paused != null:
+			_tank_score_paused.visible = false)
+	_tank_score_paused.add_child(show_score_btn)
+
+	_tank_score_body = VBoxContainer.new()
+	_tank_score_body.add_theme_constant_override("separation", 10)
+	vbox.add_child(_tank_score_body)
+
+	_add_section(_tank_score_body, "Vibe presets")
 	var preset_desc := PanelTheme.make_description()
 	preset_desc.text = "Pick a vibe — snaps the whole studio. Sliders below tune from there."
-	vbox.add_child(preset_desc)
-	var preset_row := HBoxContainer.new()
-	preset_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(preset_row)
+	_tank_score_body.add_child(preset_desc)
+	var preset_flow := FlowContainer.new()
+	preset_flow.add_theme_constant_override("h_separation", 6)
+	preset_flow.add_theme_constant_override("v_separation", 6)
+	_tank_score_body.add_child(preset_flow)
 	for preset in PRESETS:
 		var btn := PanelTheme.make_secondary_button(String(preset["label"]))
 		btn.tooltip_text = String(preset["desc"])
 		var p: Dictionary = preset
 		btn.pressed.connect(func(): _apply_preset(p))
-		preset_row.add_child(btn)
+		preset_flow.add_child(btn)
 
-	# --- Master & character ---
-	_add_section(vbox, "Master & character")
-	_add_check(vbox, "music_enabled", "Enable sound")
-	_add_slider_group(vbox, SLIDERS["master"])
-	_mood_option = PanelTheme.add_dropdown_row(vbox, "Mood")
+	_add_section(_tank_score_body, "Master & character")
+	_add_check(_tank_score_body, "music_enabled", "Enable procedural sound")
+	for def in SLIDERS["master"]:
+		if String(def["key"]) == "music_showiness":
+			continue
+		_add_slider_group(_tank_score_body, [def])
+	_mood_option = PanelTheme.add_dropdown_row(_tank_score_body, "Mood")
 	for entry in [
 		{"key": "auto", "label": "Auto (follow tank)"},
 		{"key": "calm", "label": "Calm (minor)"},
@@ -395,7 +530,7 @@ func _build_ui() -> void:
 	_mood_option.item_selected.connect(func(idx):
 		TankConfig.music_mood = _mood_option.get_item_metadata(idx))
 
-	_style_option = PanelTheme.add_dropdown_row(vbox, "Style")
+	_style_option = PanelTheme.add_dropdown_row(_tank_score_body, "Style")
 	for entry in [
 		{"key": "ambient", "label": "Ambient (soft accents)"},
 		{"key": "hybrid", "label": "Hybrid (bed + events)"},
@@ -406,9 +541,7 @@ func _build_ui() -> void:
 	_style_option.item_selected.connect(func(idx):
 		TankConfig.music_style = _style_option.get_item_metadata(idx))
 
-	# Persona — a named bundle that biases scale + rhythm feel + voices + how
-	# events reshape the music. "None" leaves the engine fully tank-driven.
-	_persona_option = PanelTheme.add_dropdown_row(vbox, "Persona")
+	_persona_option = PanelTheme.add_dropdown_row(_tank_score_body, "Persona")
 	for entry in [
 		{"key": "none", "label": "None (pure tank-driven)"},
 		{"key": "monk", "label": "Thelonious Monk (jazz-blues)"},
@@ -421,9 +554,7 @@ func _build_ui() -> void:
 	_persona_option.item_selected.connect(func(idx):
 		TankConfig.music_persona = _persona_option.get_item_metadata(idx))
 
-	# Harmonic scale. "Auto" follows the tank (major/minor by daylight, O2,
-	# bloom...); the rest force a fixed scale, incl. the blues / modal flavors.
-	_scale_option = PanelTheme.add_dropdown_row(vbox, "Scale")
+	_scale_option = PanelTheme.add_dropdown_row(_tank_score_body, "Scale")
 	for entry in [
 		{"key": "auto", "label": "Auto (tank-driven)"},
 		{"key": "major", "label": "Major"},
@@ -441,7 +572,7 @@ func _build_ui() -> void:
 	_scale_option.item_selected.connect(func(idx):
 		TankConfig.music_scale = _scale_option.get_item_metadata(idx))
 
-	_form_option = PanelTheme.add_dropdown_row(vbox, "Phrase form")
+	_form_option = PanelTheme.add_dropdown_row(_tank_score_body, "Phrase form")
 	for entry in [
 		{"key": "auto", "label": "Auto (vitality-driven)"},
 		{"key": "trance", "label": "Trance (strict 16/4/16/8)"},
@@ -453,65 +584,55 @@ func _build_ui() -> void:
 	_form_option.item_selected.connect(func(idx):
 		TankConfig.music_phrase_form = _form_option.get_item_metadata(idx))
 
-	# --- Drop & build (the festival moments) ---
-	_add_section(vbox, "Drop & build")
+	_add_section(_tank_score_body, "Drop & build")
 	var drop_desc := PanelTheme.make_description()
 	drop_desc.text = "Breeding triggers a build into a drop. Deaths trigger a breakdown."
-	vbox.add_child(drop_desc)
-	_add_slider_group(vbox, SLIDERS["drops"])
+	_tank_score_body.add_child(drop_desc)
+	_add_slider_group(_tank_score_body, SLIDERS["drops"])
 
-	# --- Groove (feel & humanity) ---
-	_add_section(vbox, "Groove")
-	_add_slider_group(vbox, SLIDERS["groove"])
+	_add_section(_tank_score_body, "Groove")
+	_add_slider_group(_tank_score_body, SLIDERS["groove"])
 
-	# --- Lo-fi (character & texture) ---
-	_add_section(vbox, "Lo-fi character")
+	_add_section(_tank_score_body, "Lo-fi character")
 	var lofi_desc := PanelTheme.make_description()
 	lofi_desc.text = "Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO."
-	vbox.add_child(lofi_desc)
-	_add_slider_group(vbox, SLIDERS["lofi"])
+	_tank_score_body.add_child(lofi_desc)
+	_add_slider_group(_tank_score_body, SLIDERS["lofi"])
 
-	# --- Extra voices ---
-	_add_section(vbox, "Extra voices")
+	_add_section(_tank_score_body, "Extra voices")
 	var voices_desc := PanelTheme.make_description()
 	voices_desc.text = "Sub-bass adds depth; PWM bass plays \"&\"s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement."
-	vbox.add_child(voices_desc)
-	_add_slider_group(vbox, SLIDERS["voices"])
+	_tank_score_body.add_child(voices_desc)
+	_add_slider_group(_tank_score_body, SLIDERS["voices"])
 
-	# --- Tank-state coupling (FX driven by the live tank) ---
-	_add_section(vbox, "Tank state → sound")
+	_add_section(_tank_score_body, "Tank state → sound")
 	var tank_state_desc := PanelTheme.make_description()
 	tank_state_desc.text = "Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day."
-	vbox.add_child(tank_state_desc)
-	_add_slider_group(vbox, SLIDERS["tank_state"])
+	_tank_score_body.add_child(tank_state_desc)
+	_add_slider_group(_tank_score_body, SLIDERS["tank_state"])
 
-	# --- Layers + mix ---
-	_add_section(vbox, "Layers")
-	_add_check(vbox, "music_ambient_enabled", "Ambient accents")
-	_add_check(vbox, "music_events_enabled", "Creature & plant events")
-	_add_check(vbox, "music_environment_enabled", "Environment (bubbles, flow)")
-	_add_slider_group(vbox, SLIDERS["mix"])
+	_add_section(_tank_score_body, "Layers")
+	_add_check(_tank_score_body, "music_ambient_enabled", "Ambient accents")
+	_add_check(_tank_score_body, "music_events_enabled", "Creature & plant events")
+	_add_check(_tank_score_body, "music_environment_enabled", "Environment (bubbles, flow)")
+	_add_slider_group(_tank_score_body, SLIDERS["mix"])
 
-	# --- Tank coupling ---
-	_add_section(vbox, "Tank coupling")
-	_add_slider_group(vbox, SLIDERS["coupling"])
+	_add_section(_tank_score_body, "Tank coupling")
+	_add_slider_group(_tank_score_body, SLIDERS["coupling"])
 
-	# --- Metric influence ---
-	_add_section(vbox, "Metric influence")
-	var desc := PanelTheme.make_description()
-	desc.text = "How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring."
-	vbox.add_child(desc)
-	_add_slider_group(vbox, SLIDERS["influence"])
+	_add_section(_tank_score_body, "Metric influence")
+	var infl_desc := PanelTheme.make_description()
+	infl_desc.text = "How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring."
+	_tank_score_body.add_child(infl_desc)
+	_add_slider_group(_tank_score_body, SLIDERS["influence"])
 
-	# --- Recording (export to WAV) ---
-	outer.add_child(PanelTheme.make_rule())
-	_add_section(outer, "Record this jam")
+	_add_section(_tank_score_body, "Record this jam")
 	var rec_desc := PanelTheme.make_description()
-	rec_desc.text = "Capture the current performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes."
-	outer.add_child(rec_desc)
+	rec_desc.text = "Capture the procedural performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes."
+	_tank_score_body.add_child(rec_desc)
 	var rec_row := HBoxContainer.new()
 	rec_row.add_theme_constant_override("separation", 8)
-	outer.add_child(rec_row)
+	_tank_score_body.add_child(rec_row)
 	_record_button = PanelTheme.make_primary_button("⏺ Record")
 	_record_button.tooltip_text = "Start / stop recording the master output."
 	_record_button.pressed.connect(_on_toggle_recording)
@@ -520,59 +641,89 @@ func _build_ui() -> void:
 	_record_label.text = "—"
 	rec_row.add_child(_record_label)
 
-	# --- Footer actions ---
-	outer.add_child(PanelTheme.make_rule())
 	var action_row := HBoxContainer.new()
 	action_row.add_theme_constant_override("separation", 8)
-	outer.add_child(action_row)
-
+	_tank_score_body.add_child(action_row)
 	var random_btn := PanelTheme.make_primary_button("🎲 Randomize")
 	random_btn.tooltip_text = "Randomize sliders, style, and seed — still follows the live tank."
 	random_btn.pressed.connect(_on_randomize)
 	action_row.add_child(random_btn)
-
 	var wild_btn := PanelTheme.make_secondary_button("🎲 Wild")
 	wild_btn.tooltip_text = "Randomize everything including mood and style."
 	wild_btn.pressed.connect(func(): _on_randomize(true))
 	action_row.add_child(wild_btn)
-
 	var nudge_btn := PanelTheme.make_secondary_button("↻ Nudge phrase")
 	nudge_btn.tooltip_text = "Force a harmonic / arp shift from current tank state."
 	nudge_btn.pressed.connect(_on_nudge_phrase)
 	action_row.add_child(nudge_btn)
 
-	outer.add_child(PanelTheme.make_rule())
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
-	outer.add_child(hb)
-	var close := PanelTheme.make_secondary_button("Close")
-	close.pressed.connect(_close)
-	hb.add_child(close)
-	var save := PanelTheme.make_primary_button("Save")
-	save.pressed.connect(_on_save)
-	hb.add_child(save)
+
+func _build_choreography_tab(vbox: VBoxContainer) -> void:
+	_add_section(vbox, "Live readout")
+	_state_badge = Label.new()
+	PanelTheme.as_mono(_state_badge, PanelTheme.SIZE_ITEM)
+	_state_badge.text = "verse"
+	vbox.add_child(_state_badge)
+	_live_label = PanelTheme.make_description()
+	_live_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_live_label)
+
+	_add_section(vbox, "Dance style")
+	var dance_desc := PanelTheme.make_description()
+	dance_desc.text = "How the school moves — auto follows the track genre, or lock a style."
+	vbox.add_child(dance_desc)
+	var dance_flow := FlowContainer.new()
+	dance_flow.add_theme_constant_override("h_separation", 6)
+	dance_flow.add_theme_constant_override("v_separation", 6)
+	vbox.add_child(dance_flow)
+	for dp in DANCE_PRESETS:
+		var dbtn := PanelTheme.make_secondary_button(String(dp["label"]))
+		dbtn.tooltip_text = String(dp["desc"])
+		var d: Dictionary = dp
+		dbtn.pressed.connect(func(): _apply_preset(d))
+		dance_flow.add_child(dbtn)
+
+	_add_section(vbox, "Conduct on the beat")
+	var conduct_flow := FlowContainer.new()
+	conduct_flow.add_theme_constant_override("h_separation", 6)
+	conduct_flow.add_theme_constant_override("v_separation", 6)
+	vbox.add_child(conduct_flow)
+	for cm in CONDUCT_MOVES:
+		var cbtn := PanelTheme.make_secondary_button(String(cm["label"]))
+		var c: Dictionary = cm
+		cbtn.pressed.connect(func(): _conduct_move(c))
+		conduct_flow.add_child(cbtn)
+
+	var capture_btn := PanelTheme.make_secondary_button("📸 Capture dance")
+	capture_btn.tooltip_text = "Save a 2s PNG burst + hero frame while the tank dances."
+	capture_btn.pressed.connect(_on_capture_dance)
+	vbox.add_child(capture_btn)
 
 
 func _build_music_sync_section(vbox: VBoxContainer) -> void:
-	_add_section(vbox, "Tank ↔ Music Sync")
+	_add_section(vbox, "Your track")
 	var intro := PanelTheme.make_description()
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	intro.text = (
-		"Flip the switch and the tank dances to the beat — fish sprint across the full tank, "
-		+ "schools loosen and spread, beat surges send half the school darting end-to-end. "
-		+ "Colors shift with valence, lights pump on bass. Search Spotify or load a local track."
+		"Pick a file or demo — the tank reads the beat and the school dances to it. "
+		+ "Upload stays in the background; this tab is transport and performance tuning."
 	)
 	vbox.add_child(intro)
 
+	var sync_top := HBoxContainer.new()
+	sync_top.add_theme_constant_override("separation", 12)
+	vbox.add_child(sync_top)
 	_sync_enable_check = CheckBox.new()
 	_sync_enable_check.text = "Sync tank to music"
+	_sync_enable_check.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_sync_enable_check.toggled.connect(_on_sync_enabled_toggled)
-	vbox.add_child(_sync_enable_check)
-
+	sync_top.add_child(_sync_enable_check)
+	var intensity_box := VBoxContainer.new()
+	intensity_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sync_top.add_child(intensity_box)
 	_sync_intensity_label = Label.new()
 	_sync_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Sync intensity", 0.0, 1.0, 0.05, _sync_intensity_label)
+		intensity_box, "Sync intensity", 0.0, 1.0, 0.05, _sync_intensity_label)
 	_sync_intensity_slider.value_changed.connect(func(v: float):
 		TankConfig.music_sync_intensity = v
 		_sync_intensity_label.text = "%.0f%%" % (v * 100.0)
@@ -580,8 +731,105 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 		if mr != null:
 			mr.set_intensity(v))
 
-	var channel_row := HBoxContainer.new()
-	channel_row.add_theme_constant_override("separation", 10)
+	var perf_box := VBoxContainer.new()
+	vbox.add_child(perf_box)
+	var showiness_label := Label.new()
+	var showiness_slider: HSlider = PanelTheme.add_slider_row(
+		perf_box, "Dance showiness", 0.0, 1.0, 0.05, showiness_label)
+	showiness_slider.value_changed.connect(func(v: float):
+		TankConfig.music_showiness = v
+		showiness_label.text = "%d%%" % int(v * 100.0))
+	_slider_rows["music_showiness"] = {"slider": showiness_slider, "label": showiness_label, "pct": true}
+
+	var load_btn := PanelTheme.make_primary_button("Choose audio file…")
+	load_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	load_btn.tooltip_text = "Pick MP3, OGG, or WAV from your computer."
+	load_btn.pressed.connect(_on_sync_local_file)
+	vbox.add_child(load_btn)
+
+	var demo_label := PanelTheme.make_description()
+	demo_label.text = "Example demos — tap to play a bundled track:"
+	vbox.add_child(demo_label)
+	var demo_grid := GridContainer.new()
+	demo_grid.columns = 2
+	demo_grid.add_theme_constant_override("h_separation", 8)
+	demo_grid.add_theme_constant_override("v_separation", 8)
+	vbox.add_child(demo_grid)
+	for demo in DEMO_TRACKS:
+		var dbtn := PanelTheme.make_chip_button("▶ %s" % String(demo["label"]))
+		dbtn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dbtn.tooltip_text = String(demo["desc"])
+		var d: Dictionary = demo
+		dbtn.pressed.connect(func(): _on_play_demo_track(d))
+		demo_grid.add_child(dbtn)
+
+	var transport_row := HBoxContainer.new()
+	transport_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(transport_row)
+	var pause_btn := PanelTheme.make_secondary_button("Pause")
+	pause_btn.pressed.connect(func():
+		var mr := _music_reactive()
+		if mr != null:
+			mr.toggle_pause())
+	transport_row.add_child(pause_btn)
+	var stop_btn := PanelTheme.make_secondary_button("Stop")
+	stop_btn.pressed.connect(func():
+		var mr := _music_reactive()
+		if mr != null:
+			mr.stop())
+	transport_row.add_child(stop_btn)
+
+	var bar_row := HBoxContainer.new()
+	bar_row.add_theme_constant_override("separation", 4)
+	bar_row.custom_minimum_size.y = 36.0
+	vbox.add_child(bar_row)
+	for i in 4:
+		var bar := ColorRect.new()
+		bar.custom_minimum_size = Vector2(0, 28)
+		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		bar.color = Color(0.2, 0.25, 0.35, 0.85)
+		bar_row.add_child(bar)
+		_sync_bars.append(bar)
+
+	_bar_legend = PanelTheme.make_description()
+	_bar_legend.text = "Bass · Mid · Treble · Beat"
+	vbox.add_child(_bar_legend)
+
+	var calibrate_desc := PanelTheme.make_description()
+	calibrate_desc.text = "Calibrate this track (session only — not saved):"
+	vbox.add_child(calibrate_desc)
+	var calibrate_row := HBoxContainer.new()
+	calibrate_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(calibrate_row)
+	var reset_meters_btn := PanelTheme.make_secondary_button("Reset meters")
+	reset_meters_btn.tooltip_text = "Re-learn auto-gain for bass/mid/treble on this track."
+	reset_meters_btn.pressed.connect(_on_calibrate_reset_meters)
+	calibrate_row.add_child(reset_meters_btn)
+	var lat_down := PanelTheme.make_secondary_button("−20 ms")
+	lat_down.pressed.connect(func(): _on_calibrate_latency(-20.0))
+	calibrate_row.add_child(lat_down)
+	var lat_up := PanelTheme.make_secondary_button("+20 ms")
+	lat_up.pressed.connect(func(): _on_calibrate_latency(20.0))
+	calibrate_row.add_child(lat_up)
+	var lat_reset := PanelTheme.make_ghost_button("Reset timing")
+	lat_reset.pressed.connect(_on_calibrate_reset_timing)
+	calibrate_row.add_child(lat_reset)
+	_calibrate_latency_label = PanelTheme.make_description()
+	vbox.add_child(_calibrate_latency_label)
+
+	_sync_now_playing = Label.new()
+	PanelTheme.as_serif(_sync_now_playing, PanelTheme.SIZE_ITEM)
+	_sync_now_playing.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sync_now_playing.text = "—"
+	vbox.add_child(_sync_now_playing)
+
+	_sync_status_label = PanelTheme.make_description()
+	_sync_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_sync_status_label)
+
+	var channel_row := FlowContainer.new()
+	channel_row.add_theme_constant_override("h_separation", 10)
+	channel_row.add_theme_constant_override("v_separation", 4)
 	vbox.add_child(channel_row)
 	for entry in [
 		{"key": "music_sync_fish", "label": "Fish"},
@@ -597,31 +845,27 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 		_sync_channel_checks[k] = cb
 		channel_row.add_child(cb)
 
-	var bar_row := HBoxContainer.new()
-	bar_row.add_theme_constant_override("separation", 4)
-	bar_row.custom_minimum_size.y = 36.0
-	vbox.add_child(bar_row)
-	for i in 4:
-		var bar := ColorRect.new()
-		bar.custom_minimum_size = Vector2(0, 28)
-		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		bar.color = Color(0.2, 0.25, 0.35, 0.85)
-		bar_row.add_child(bar)
-		_sync_bars.append(bar)
+	_spotify_toggle_btn = PanelTheme.make_ghost_button("▸ Spotify previews (experimental, often flaky)")
+	_spotify_toggle_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_spotify_toggle_btn.pressed.connect(_toggle_spotify_section)
+	vbox.add_child(_spotify_toggle_btn)
 
-	_sync_now_playing = Label.new()
-	PanelTheme.as_serif(_sync_now_playing, PanelTheme.SIZE_ITEM)
-	_sync_now_playing.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_sync_now_playing.text = "—"
-	vbox.add_child(_sync_now_playing)
+	_spotify_block = VBoxContainer.new()
+	_spotify_block.add_theme_constant_override("separation", 6)
+	_spotify_block.visible = false
+	vbox.add_child(_spotify_block)
 
-	_sync_status_label = PanelTheme.make_description()
-	_sync_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(_sync_status_label)
+	var spotify_note := PanelTheme.make_description()
+	spotify_note.text = (
+		"Spotify only exposes 30-second preview clips and needs developer API keys. "
+		+ "Local files work much better for full-track dancing."
+	)
+	spotify_note.add_theme_color_override("font_color", PanelTheme.DIM_FG.darkened(0.08))
+	_spotify_block.add_child(spotify_note)
 
 	var cred_row := HBoxContainer.new()
 	cred_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(cred_row)
+	_spotify_block.add_child(cred_row)
 	_sync_client_id_edit = LineEdit.new()
 	_sync_client_id_edit.placeholder_text = "Spotify Client ID"
 	_sync_client_id_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -636,49 +880,95 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 
 	var search_row := HBoxContainer.new()
 	search_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(search_row)
+	_spotify_block.add_child(search_row)
 	_sync_search_edit = LineEdit.new()
 	_sync_search_edit.placeholder_text = "Search Spotify…"
 	_sync_search_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_sync_search_edit.text_submitted.connect(_on_sync_search)
 	search_row.add_child(_sync_search_edit)
-	var search_btn := PanelTheme.make_secondary_button("Search")
+	var search_btn := PanelTheme.make_ghost_button("Search")
 	search_btn.pressed.connect(_on_sync_search)
 	search_row.add_child(search_btn)
 
 	_sync_results = ItemList.new()
-	_sync_results.custom_minimum_size.y = 96.0
+	_sync_results.custom_minimum_size.y = 72.0
 	_sync_results.item_activated.connect(_on_sync_result_picked)
-	vbox.add_child(_sync_results)
+	_spotify_block.add_child(_sync_results)
 
 	_sync_url_edit = LineEdit.new()
 	_sync_url_edit.placeholder_text = "Or paste open.spotify.com/track/…"
 	_sync_url_edit.text_submitted.connect(_on_sync_url_play)
-	vbox.add_child(_sync_url_edit)
+	_spotify_block.add_child(_sync_url_edit)
 
-	var play_row := HBoxContainer.new()
-	play_row.add_theme_constant_override("separation", 6)
-	vbox.add_child(play_row)
-	var local_btn := PanelTheme.make_secondary_button("Load local file")
-	local_btn.pressed.connect(_on_sync_local_file)
-	play_row.add_child(local_btn)
-	var url_btn := PanelTheme.make_secondary_button("Play link")
+	var spotify_play_row := HBoxContainer.new()
+	spotify_play_row.add_theme_constant_override("separation", 6)
+	_spotify_block.add_child(spotify_play_row)
+	var url_btn := PanelTheme.make_ghost_button("Play link")
 	url_btn.pressed.connect(_on_sync_url_play)
-	play_row.add_child(url_btn)
-	var pause_btn := PanelTheme.make_secondary_button("Pause")
-	pause_btn.pressed.connect(func():
-		var mr := _music_reactive()
-		if mr != null:
-			mr.toggle_pause())
-	play_row.add_child(pause_btn)
-	var stop_btn := PanelTheme.make_secondary_button("Stop")
-	stop_btn.pressed.connect(func():
-		var mr := _music_reactive()
-		if mr != null:
-			mr.stop())
-	play_row.add_child(stop_btn)
+	spotify_play_row.add_child(url_btn)
 
-	vbox.add_child(PanelTheme.make_rule())
+
+func _external_sync_live() -> bool:
+	var mr := _music_reactive()
+	return mr != null and mr.has_method("is_external_playing") and mr.is_external_playing()
+
+
+func _update_panel_mode() -> void:
+	if _tank_score_body == null or _tank_score_paused == null:
+		return
+	var hide_score := TankConfig.music_sync_enabled and _external_sync_live()
+	if hide_score:
+		_tank_score_paused.visible = true
+		_tank_score_body.visible = false
+	else:
+		_tank_score_paused.visible = false
+		_tank_score_body.visible = true
+
+
+func _refresh_calibrate_label() -> void:
+	if _calibrate_latency_label == null:
+		return
+	var mr := _music_reactive()
+	var base: float = float(TankConfig.music_sync_latency_ms)
+	var offset: float = 0.0
+	var total: float = base
+	if mr != null and mr.has_method("session_latency_ms"):
+		total = float(mr.session_latency_ms())
+		if mr.has_method("session_latency_offset_ms"):
+			offset = float(mr.session_latency_offset_ms())
+	if absf(offset) < 0.5:
+		_calibrate_latency_label.text = "Beat timing: %.0f ms (saved default)" % base
+	else:
+		_calibrate_latency_label.text = "Beat timing: %.0f ms (%+.0f ms this session)" % [total, offset]
+
+
+func _on_calibrate_reset_meters() -> void:
+	var mr := _music_reactive()
+	if mr != null and mr.has_method("reset_meter_calibration"):
+		mr.reset_meter_calibration()
+	_on_sync_status("Meters recalibrated for this track.", false)
+
+
+func _on_calibrate_latency(delta_ms: float) -> void:
+	var mr := _music_reactive()
+	if mr != null and mr.has_method("nudge_session_latency"):
+		mr.nudge_session_latency(delta_ms)
+	_refresh_calibrate_label()
+
+
+func _on_calibrate_reset_timing() -> void:
+	var mr := _music_reactive()
+	if mr != null and mr.has_method("reset_session_latency"):
+		mr.reset_session_latency()
+	_refresh_calibrate_label()
+	_on_sync_status("Beat timing offset reset for this session.", false)
+
+
+func _focus_now_playing_tab() -> void:
+	if _tabs != null:
+		_tabs.current_tab = 0
+	_update_panel_mode()
+	_refresh_calibrate_label()
 
 
 func _on_sync_enabled_toggled(on: bool) -> void:
@@ -706,6 +996,39 @@ func _on_sync_local_file() -> void:
 	var mr := _music_reactive()
 	if mr != null:
 		mr.pick_local_file()
+
+
+func _on_play_demo_track(demo: Dictionary) -> void:
+	var values: Dictionary = demo.get("values", {})
+	for key in values.keys():
+		TankConfig.set(String(key), values[key])
+		if _slider_rows.has(key):
+			var row: Dictionary = _slider_rows[key]
+			(row["slider"] as HSlider).value = float(values[key])
+			_update_slider_label(String(key))
+	if not TankConfig.music_sync_enabled:
+		TankConfig.music_sync_enabled = true
+		if _sync_enable_check != null:
+			_sync_enable_check.button_pressed = true
+	var mr := _music_reactive()
+	if mr != null:
+		mr.set_enabled(true)
+		mr.play_res_path(
+			String(demo["path"]),
+			String(demo["label"]),
+			"Bundled demo")
+	_focus_now_playing_tab()
+
+
+func _toggle_spotify_section() -> void:
+	if _spotify_block == null or _spotify_toggle_btn == null:
+		return
+	_spotify_block.visible = not _spotify_block.visible
+	_spotify_toggle_btn.text = (
+		"▾ Spotify previews (experimental, often flaky)"
+		if _spotify_block.visible
+		else "▸ Spotify previews (experimental, often flaky)"
+	)
 
 
 func _on_sync_result_picked(index: int) -> void:
@@ -737,6 +1060,11 @@ func _on_sync_track_changed(meta: Dictionary) -> void:
 	if _sync_now_playing == null:
 		return
 	_sync_now_playing.text = "%s\n%s" % [meta.get("name", "—"), meta.get("artists", "")]
+	if _sync_enable_check != null and TankConfig.music_sync_enabled:
+		_sync_enable_check.set_block_signals(true)
+		_sync_enable_check.button_pressed = true
+		_sync_enable_check.set_block_signals(false)
+	_focus_now_playing_tab()
 
 
 func _save_spotify_creds() -> void:
@@ -750,12 +1078,12 @@ func _refresh_sync_visualizer() -> void:
 	var mr := _music_reactive()
 	if mr == null or _sync_bars.is_empty():
 		return
-	var drive: Dictionary = mr.get_drive()
+	var levels: Dictionary = mr.get_meter_levels() if mr.has_method("get_meter_levels") else mr.get_drive()
 	var vals: Array = [
-		float(drive.get("bass", 0.0)),
-		float(drive.get("mid", 0.0)),
-		float(drive.get("high", 0.0)),
-		float(drive.get("beat", 0.0)),
+		float(levels.get("bass", 0.0)),
+		float(levels.get("mid", 0.0)),
+		float(levels.get("high", 0.0)),
+		float(levels.get("beat", 0.0)),
 	]
 	var colors: Array = [
 		Color(0.95, 0.35, 0.45),
@@ -764,7 +1092,11 @@ func _refresh_sync_visualizer() -> void:
 		Color(1.0, 0.82, 0.35),
 	]
 	for i in mini(_sync_bars.size(), vals.size()):
-		var h: float = clampf(float(vals[i]), 0.04, 1.0)
+		var raw: float = clampf(float(vals[i]), 0.0, 1.0)
+		# Beat is a transient pulse; bands are sustained — use sqrt so quiet bands still read.
+		var h: float = sqrt(raw) if i < 3 else raw
+		if raw > 0.015:
+			h = maxf(h, 0.12)
 		_sync_bars[i].custom_minimum_size.y = 8.0 + h * 28.0
 		_sync_bars[i].color = (colors[i] as Color).lerp(Color(0.15, 0.18, 0.25), 1.0 - h)
 
@@ -827,6 +1159,10 @@ func _pull_from_config() -> void:
 	if _sync_intensity_slider != null:
 		_sync_intensity_slider.value = float(TankConfig.music_sync_intensity)
 		_sync_intensity_label.text = "%.0f%%" % (float(TankConfig.music_sync_intensity) * 100.0)
+	if _slider_rows.has("music_showiness"):
+		var show_row: Dictionary = _slider_rows["music_showiness"]
+		(show_row["slider"] as HSlider).value = float(TankConfig.music_showiness)
+		_update_slider_label("music_showiness")
 	for key in _sync_channel_checks.keys():
 		(_sync_channel_checks[key] as CheckBox).button_pressed = not not TankConfig.get(key)
 	if _sync_client_id_edit != null:
@@ -836,6 +1172,7 @@ func _pull_from_config() -> void:
 	var mr := _music_reactive()
 	if mr != null:
 		mr.apply_config()
+	_refresh_calibrate_label()
 
 
 func _sync_option(opt: OptionButton, value: String) -> void:
@@ -883,11 +1220,29 @@ func _state_badge_color(state_name: String) -> Color:
 func _refresh_live_readout() -> void:
 	var amb := _ambient()
 	var status: Dictionary = amb.get_live_status() if amb != null and amb.has_method("get_live_status") else {}
-	var bpm: float = float(status.get("bpm", 0.0))
-	var vit: float = float(status.get("vitality", 0.0))
+	var mc := get_node_or_null("/root/MusicContext")
+	var ctx: Dictionary = mc.get_context() if mc != null and mc.has_method("get_context") else {}
+	var bpm: float = float(status.get("bpm", ctx.get("tempo", 0.0)))
+	var vit: float = float(status.get("vitality", ctx.get("energy", 0.0)))
 	var zone: String = "day" if int(status.get("day_zone", 1)) == 1 else "night"
-	var state_name: String = String(status.get("phrase_state_name", "verse"))
-	var bars_left: int = int(status.get("phrase_state_bars_left", 0))
+	var state_name: String = String(ctx.get("phrase_state", status.get("phrase_state_name", "verse")))
+	var bars_left: int = int(status.get("phrase_state_bars_left", ctx.get("phrase_bars_left", 0)))
+	var dance_line: String = ""
+	if not ctx.is_empty():
+		dance_line = (
+			"\ndance %s · %s/%s · bar %.0f%% · beat %.0f%% · %s %s · key %d · timbre %.0f%%"
+			% [
+				String(ctx.get("source", "—")),
+				String(ctx.get("move", "sweep")),
+				String(ctx.get("formation", "scatter")),
+				float(ctx.get("bar_phase", 0.0)) * 100.0,
+				float(ctx.get("beat_phase", 0.0)) * 100.0,
+				String(ctx.get("genre", "—")),
+				String(ctx.get("mode", "—")),
+				int(ctx.get("key", 0)),
+				float(ctx.get("timbre_sharp", 0.5)) * 100.0,
+			]
+		)
 	if _state_badge != null:
 		_state_badge.text = "%s   ·   %d bars left   ·   %.0f BPM" % [
 			_state_badge_style(state_name),
@@ -907,12 +1262,13 @@ func _refresh_live_readout() -> void:
 				float(status.get("o2", 0.85)),
 				float(status.get("daylight", 1.0)) * 100.0,
 			]
-			+ "chord %d  arp bank %d  phrase #%d  seed %d"
+			+ "chord %d  arp bank %d  phrase #%d  seed %d%s"
 			% [
 				int(status.get("chord_root", 0)),
 				int(status.get("arp_idx", 0)),
 				int(status.get("phrase", 0)),
 				int(TankConfig.music_seed),
+				dance_line,
 			]
 		)
 
@@ -928,6 +1284,18 @@ func _silence_audio() -> void:
 	var amb := _ambient()
 	if amb != null and amb.has_method("silence_immediately"):
 		amb.silence_immediately()
+
+
+func _conduct_move(cmd: Dictionary) -> void:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("conduct"):
+		mc.conduct(String(cmd.get("move", "wave")), String(cmd.get("formation", "")))
+
+
+func _on_capture_dance() -> void:
+	var main := get_tree().current_scene
+	if main != null and main.has_method("capture_dance_moment"):
+		main.capture_dance_moment()
 
 
 func _apply_preset(preset: Dictionary) -> void:

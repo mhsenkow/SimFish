@@ -2,9 +2,10 @@ extends RefCounted
 
 # One special fish per tank — the "tank voice" with a storyline, stronger
 # presence, feed nudges, and optional auto-feed when the colony is starving.
-# Procedural first; AIDirector can polish lines when Ollama is available.
+# Procedural first; AIDirector upgrades lines when a local model is available.
 
 const FishMind = preload("res://scripts/fish_mind.gd")
+const GuardianMind = preload("res://scripts/guardian_mind.gd")
 
 const SPEAK_COOLDOWN_S: float = 55.0
 const AUTOFeed_ARM_NUDGES: int = 3
@@ -51,27 +52,48 @@ static func guardian_steer(f: Fish, sim: Node, _dt: float) -> Vector3:
 	return out
 
 
-static func arc_chapter_line(f: Fish, _sim: Node, chapter: int, situation: String) -> String:
+static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int, situation: String) -> String:
+	var mind: Dictionary = GuardianMind.ensure_mind(arc)
 	var nm: String = f.fish_name if f.fish_name != "" else "Someone"
+	var moniker: String = str(mind.get("player_moniker", "the big shape"))
+	var drift: String = str(mind.get("personality_drift", "curious"))
 	match situation:
 		"arrival":
-			return "%s settles in — the tank has a voice now." % nm
+			return "%s — you're back. I've been watching the light move." % moniker.capitalize()
+		"departure":
+			return "Go carefully, %s. I'll keep watch." % moniker
 		"feed_nudge":
 			match chapter:
-				0: return "...hey. food?"
-				1: return "...still hungry up here."
-				2: return "...please? we're waiting."
+				0: return "...hey, %s. food?" % moniker
+				1: return "...still hungry up here, %s." % moniker
+				2: return "...please? we're waiting on you."
 				_: return "...the others are hungry too."
 		"autofeed_on":
-			return "Fine — I'll keep everyone fed until you're back."
+			return "Fine — I'll keep everyone fed until %s returns." % moniker
 		"water_stress":
+			var wr: String = str(mind.get("world_read", ""))
+			if wr != "":
+				return "...%s." % wr
 			return "...something's wrong with the water."
 		"morning":
-			return "...morning. lights mean breakfast, right?"
+			return "...morning, %s. lights mean breakfast, right?" % moniker
+		"away_recap":
+			return "%s — a lot happened while you were gone." % moniker.capitalize()
+		"daily":
+			return "First light with you here today, %s." % moniker
 		"successor":
+			var pred: String = str(mind.get("predecessor_name", "the last voice"))
+			if pred != "":
+				return "%s picks up where %s left off." % [nm, pred]
 			return "%s picks up where the last voice left off." % nm
 		"lost":
-			return "The tank feels quieter."
+			return "The tank feels quieter without %s." % nm
+		"finale":
+			return "%s... thank you for staying." % nm
+		"closing_loop":
+			if drift == "wry":
+				return "Nothing added, nothing removed — the tank keeps its own counsel now."
+			return "Waste becomes food, death becomes soil, light becomes growth. We keep going."
 		_:
 			return "..."
 
@@ -93,6 +115,8 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 	var out: Dictionary = {}
 	if not f.is_guardian or sim == null:
 		return out
+	GuardianMind.ensure_mind(arc)
+	GuardianMind.update_wants(f, sim, arc)
 	var speak_cd: float = float(arc.get("speak_cd", 0.0))
 	speak_cd = maxf(0.0, speak_cd - dt)
 	arc["speak_cd"] = speak_cd
@@ -110,6 +134,7 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 		var no2: float = float(sim.water_chemistry.nitrite)
 		if nh3 > 0.45 or no2 > 0.5:
 			situation = "water_stress"
+			GuardianMind.update_world_read(sim, arc)
 	elif avg_h > STARVE_THRESHOLD:
 		situation = "feed_nudge"
 		action = "drop_feed"
@@ -140,7 +165,7 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 	if situation == "":
 		return out
 
-	var line: String = arc_chapter_line(f, sim, chapter, situation)
+	var line: String = arc_chapter_line(f, sim, arc, chapter, situation)
 	out = {"text": line, "action": action, "situation": situation}
 	arc["speak_cd"] = SPEAK_COOLDOWN_S
 	return out

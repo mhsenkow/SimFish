@@ -41,6 +41,8 @@ class Plankton:
 	var morph: int = 0
 	var color: Color = Color.WHITE
 	var alive: bool = false
+	var hop_t: float = 0.0
+	var hop_cd: float = 0.0
 
 
 var sim: Node = null
@@ -152,10 +154,43 @@ func _step(dt: float) -> void:
 		if p.age >= p.life:
 			_kill(p)
 			continue
-		p.pos += p.drift * dt
+		p.hop_cd = maxf(0.0, p.hop_cd - dt)
+		var flow_vel: Vector3 = Vector3.ZERO
+		if w != null and w.has_method("sample_flow"):
+			flow_vel = w.sample_flow(p.pos)
+		var wake_push: Vector3 = Vector3.ZERO
+		if w != null and w.has_method("wake_push_at"):
+			wake_push = w.wake_push_at(p.pos)
+			if wake_push.length_squared() > 0.002 and p.morph == 0 and p.hop_cd <= 0.0:
+				p.hop_t = 0.14
+				p.hop_cd = randf_range(0.8, 2.0)
+				p.drift = wake_push.normalized() * 0.38 + Vector3(0.0, 0.12, 0.0)
+		if p.hop_t > 0.0:
+			p.hop_t = maxf(0.0, p.hop_t - dt)
+			p.pos += p.drift * dt * 2.6
+		elif p.morph == 0 and p.hop_cd <= 0.0 and randf() < dt * 0.07:
+			p.hop_t = 0.11
+			p.hop_cd = randf_range(1.4, 3.8)
+			p.drift = Vector3(randf_range(-1, 1), randf_range(0.15, 0.55), randf_range(-1, 1)) \
+				.normalized() * 0.40
+		elif p.drift.length_squared() > 1e-6 and p.morph != 1:
+			p.drift *= exp(-14.0 * dt)
+			if p.drift.length_squared() < 0.0004:
+				p.drift = Vector3.ZERO
+		if p.drift.length_squared() > 1e-6 and p.hop_t <= 0.0:
+			p.pos += p.drift * dt
+		p.pos += flow_vel * dt * 0.32
+		p.pos += wake_push * dt * 0.85
 		p.pos.y += photo_bias * dt
 		p.bob += dt * BOB_SPEED
-		p.pos.y += sin(p.bob) * BOB_AMP * dt * 6.0
+		if p.morph == 1:
+			var hop_phase: float = sin(p.bob * 1.25)
+			if hop_phase > 0.55:
+				p.pos.y += 0.042 * dt
+			else:
+				p.pos.y -= 0.026 * dt
+		else:
+			p.pos.y += sin(p.bob) * BOB_AMP * dt * 6.0
 		if w != null:
 			var margin: float = 0.22
 			var steer: Vector3 = FaunaBoundary.lateral_push(w, p.pos, margin, 0.55, p.drift)

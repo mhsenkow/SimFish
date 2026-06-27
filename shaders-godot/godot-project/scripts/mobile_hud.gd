@@ -1,18 +1,21 @@
-# Mobile HUD overlay.
+# Speed dock + mobile action HUD.
 #
-# Shows on-screen buttons for actions that have no touch equivalent (speed
-# control, photo, undo). Only visible when OS.has_feature("mobile") is true.
-# The Main script wires up signals in _setup_mobile_ui().
+# The bottom-left speed row (pause + 1× / 4× / 16×) lives inside FooterBar
+# on every platform so sim speed is always one tap away — including focus
+# mode where the shortcut legend is hidden but speed controls stay.
 #
-# Layout: bottom-left speed row, bottom-right action cluster. Buttons size
-# scales with DisplayServer.screen_get_dpi() so tablets get larger targets.
-# Anchored inside DisplayServer.get_display_safe_area() so notches and the
-# Android 3-button nav bar don't clip the controls.
+# The bottom-right action cluster (camera, residents, photo, undo) is
+# mobile-only. Desktop keeps keyboard shortcuts for those actions.
 #
-# Idle dim: HUD fades to 30% modulate after IDLE_DIM_SECONDS of no input;
-# the main script calls notify_input() on every touch to keep it lit.
+# Layout: speed row in FooterBar; bottom-right action cluster (mobile).
+# Buttons size scales with DisplayServer.screen_get_dpi() on touch devices.
+#
+# Idle dim (mobile only): HUD fades to 30% modulate after IDLE_DIM_SECONDS
+# of no input; main.gd calls notify_input() on every touch to keep it lit.
 
 extends Control
+
+@export var footer_speed_slot: NodePath
 
 signal pause_pressed
 signal speed_pressed(scale: float)
@@ -27,71 +30,94 @@ var _photo_btn: Button
 var _undo_btn: Button
 var _camera_views_btn: Button
 var _residents_btn: Button
-var _current_speed: float = 1.0
-var _is_paused: bool = false
+var _is_mobile: bool = false
+var _immersive_mode: bool = false
 
-# Per-side container refs so we can re-layout on viewport resize / orientation
-# change. (Built once in _ready; offsets re-applied each layout pass.)
 var _speed_container: HBoxContainer = null
 var _action_container: HBoxContainer = null
 
-# Idle dim state.
 var _idle_seconds: float = 0.0
 const IDLE_DIM_SECONDS: float = 5.0
 const DIM_MODULATE: Color = Color(1, 1, 1, 0.35)
 const LIT_MODULATE: Color = Color(1, 1, 1, 1)
 
+const SPEED_STEPS: Array = [
+	{"label": "1×", "scale": 1.0},
+	{"label": "4×", "scale": 4.0},
+	{"label": "16×", "scale": 16.0},
+]
+
 
 func _ready() -> void:
-	# Only show on mobile.
-	if not (OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")):
-		visible = false
-		set_process(false)
-		return
-
+	_is_mobile = OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_build_speed_row()
-	_build_action_row()
+	if _is_mobile:
+		_build_action_row()
+		set_process(true)
 	_apply_layout()
-	# Re-apply on viewport resize so rotating the device or showing/hiding
-	# the system nav bar doesn't leave controls under the gesture pill.
 	get_viewport().size_changed.connect(_apply_layout)
 
 
 func _process(dt: float) -> void:
-	# Idle dim: tick when no touch is active. Main script calls
-	# notify_input() on every touch to reset the timer.
+	if not _is_mobile:
+		return
 	_idle_seconds += dt
 	if _idle_seconds > IDLE_DIM_SECONDS:
 		if modulate != DIM_MODULATE:
 			modulate = DIM_MODULATE
 
 
-# Called by the main script on every touch / pointer event so the HUD stays
-# lit while the user is interacting.
 func notify_input() -> void:
 	_idle_seconds = 0.0
 	if modulate != LIT_MODULATE:
 		modulate = LIT_MODULATE
 
 
-# Sizing - DPI-aware so tablets get bigger buttons. Phones (~320dpi) get the
-# baseline 56x48; tablets (~160-220dpi physical pixels per dp) get scaled up.
+# Focus mode hides the mobile action cluster; speed dock stays in FooterBar.
+func set_immersive_mode(on: bool) -> void:
+	_immersive_mode = on
+	if _action_container != null:
+		_action_container.visible = not on
+	visible = true
+
+
+# Keep button highlights in sync when speed changes via keyboard or code.
+func sync_time_scale(ts: float) -> void:
+	if _pause_btn == null:
+		return
+	if ts <= 0.0:
+		_pause_btn.text = UiIcons.mobile_hud_label("play")
+		for s in _speed_btns.keys():
+			PanelTheme.style_hud_toggle_button(_speed_btns[s], false)
+			_speed_btns[s].modulate = Color(0.65, 0.65, 0.65)
+		return
+	_pause_btn.text = UiIcons.mobile_hud_label("pause")
+	var best_key: float = 1.0
+	var best_diff: float = INF
+	for s in _speed_btns.keys():
+		var diff: float = absf(float(s) - ts)
+		if diff < best_diff:
+			best_diff = diff
+			best_key = float(s)
+	for s in _speed_btns.keys():
+		_speed_btns[s].modulate = Color.WHITE
+	_highlight_speed(best_key)
+
+
 func _btn_size() -> Vector2:
+	if not _is_mobile:
+		return Vector2(44, 34)
 	var dpi: float = float(DisplayServer.screen_get_dpi())
-	# dp_to_px = dpi / 160. Clamp to [1.0, 2.0] so very high-dpi phones don't
-	# get monster buttons. Tablets typically report ~200-280; we want ~1.4x
-	# there. Phones ~300-450 → 1.0x (already at baseline).
 	var sc: float = 1.0
 	if dpi > 0.0:
-		# Larger physical screens (tablets) tend to *under*-report dpi relative
-		# to the dp standard, so we invert: low dpi number == big screen.
-		# Map dpi 320+ → 1.0x, dpi ≤ 160 → 1.6x.
 		sc = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.6), 1.0, 1.6)
 	return Vector2(56.0 * sc, 48.0 * sc)
 
 
 func _font_size() -> int:
+	if not _is_mobile:
+		return 14
 	var dpi: float = float(DisplayServer.screen_get_dpi())
 	var sc: float = 1.0
 	if dpi > 0.0:
@@ -99,18 +125,12 @@ func _font_size() -> int:
 	return int(round(18.0 * sc))
 
 
-# Safe area in window/viewport coordinates. Falls back to a generous default
-# inset on platforms that don't report a safe area.
 func _safe_area() -> Rect2:
 	var area: Rect2i = DisplayServer.get_display_safe_area()
 	var win: Vector2 = get_viewport().get_visible_rect().size
-	# DisplayServer reports in physical pixels in some configs; if it's
-	# clearly bogus (zero size, or huge), fall back.
 	if area.size.x <= 0 or area.size.y <= 0:
-		# Default Android nav-bar height ~48dp + status bar ~24dp. Be generous.
-		return Rect2(0, 24, win.x, win.y - 72)
-	# Scale physical -> logical if needed. We assume DisplayServer returns
-	# physical px and viewport is in logical px (Godot's mobile default).
+		var bottom_pad: float = 72.0 if _is_mobile else 16.0
+		return Rect2(0, 24, win.x, win.y - bottom_pad)
 	var scale_x: float = win.x / float(DisplayServer.screen_get_size().x)
 	var scale_y: float = win.y / float(DisplayServer.screen_get_size().y)
 	if scale_x > 0.0 and scale_y > 0.0:
@@ -124,39 +144,27 @@ func _safe_area() -> Rect2:
 
 
 func _build_speed_row() -> void:
-	# Bottom-left: ⏸ 1× 4× 16×
-	# Container type is swapped between H/V in _apply_layout based on
-	# orientation — landscape gets HBox along the bottom, portrait gets
-	# VBox up the left edge so the tank can use the full vertical real
-	# estate. Buttons are re-parented when the container is rebuilt.
+	var slot: Node = get_node_or_null(footer_speed_slot) if footer_speed_slot != NodePath("") else null
 	_speed_container = HBoxContainer.new()
 	_speed_container.add_theme_constant_override("separation", 6)
 	_speed_container.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(_speed_container)
+	if slot != null:
+		slot.add_child(_speed_container)
+	else:
+		add_child(_speed_container)
 
 	_pause_btn = _make_btn(UiIcons.mobile_hud_label("pause"), Color8(220, 180, 80))
-	_pause_btn.tooltip_text = "Pause / resume the simulation"
+	_pause_btn.tooltip_text = "Pause / resume the simulation (P)"
 	_pause_btn.pressed.connect(func():
-		_is_paused = not _is_paused
-		_pause_btn.text = UiIcons.mobile_hud_label("play") if _is_paused \
-				else UiIcons.mobile_hud_label("pause")
 		_buzz(18)
 		pause_pressed.emit())
 	_speed_container.add_child(_pause_btn)
 
-	for entry in [
-		{"label": "1×", "scale": 1.0},
-		{"label": "4×", "scale": 4.0},
-		{"label": "16×", "scale": 16.0},
-	]:
+	for entry in SPEED_STEPS:
 		var btn := _make_btn(String(entry["label"]), Color8(180, 200, 220))
 		var s: float = float(entry["scale"])
 		btn.tooltip_text = "Run sim at %s speed" % String(entry["label"])
 		btn.pressed.connect(func():
-			_current_speed = s
-			_is_paused = false
-			_pause_btn.text = UiIcons.mobile_hud_label("pause")
-			_highlight_speed(s)
 			_buzz(12)
 			speed_pressed.emit(s))
 		_speed_container.add_child(btn)
@@ -165,15 +173,11 @@ func _build_speed_row() -> void:
 
 
 func _build_action_row() -> void:
-	# Bottom-right: 📷 ↩
 	_action_container = HBoxContainer.new()
 	_action_container.add_theme_constant_override("separation", 6)
 	_action_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_action_container)
 
-	# Camera views — opens the preset / saved-view / FOV panel. Placed
-	# before photo so it sits leftmost in the action cluster (closer to
-	# the thumb-zone center on portrait phones).
 	_camera_views_btn = _make_btn("CAM", Color8(180, 210, 240))
 	_camera_views_btn.tooltip_text = "Open Camera Views — presets, saved views, FOV, auto-orbit"
 	_camera_views_btn.pressed.connect(func():
@@ -181,7 +185,6 @@ func _build_action_row() -> void:
 		camera_views_pressed.emit())
 	_action_container.add_child(_camera_views_btn)
 
-	# Residents — opens the live roster (follow / favorite / cycle creatures).
 	_residents_btn = _make_btn("👥", Color8(200, 200, 240))
 	_residents_btn.tooltip_text = "Residents — follow & favorite your creatures"
 	_residents_btn.pressed.connect(func():
@@ -201,125 +204,56 @@ func _build_action_row() -> void:
 	_undo_btn.pressed.connect(func():
 		_buzz(15)
 		undo_pressed.emit())
-	_undo_btn.visible = false  # Only shown in aquascape mode.
+	_undo_btn.visible = false
 	_action_container.add_child(_undo_btn)
 
 
-# Re-anchor both containers inside the safe area. Called on _ready and again
-# on viewport size_changed (rotation, nav-bar show/hide).
-# Portrait phones get a vertical speed stack up the left edge so the tank can
-# fill the wider vertical viewport without HUD eating the bottom strip.
-# Landscape keeps the classic bottom-row layout.
 func _apply_layout() -> void:
+	if _action_container == null:
+		return
 	var safe: Rect2 = _safe_area()
 	var btn_size: Vector2 = _btn_size()
 	var win: Vector2 = get_viewport().get_visible_rect().size
-	var is_portrait: bool = win.y > win.x
-	# Bottom edge of buttons - 12px above the safe-area bottom, which leaves
-	# clearance for the gesture pill on phones that hide the safe-area bottom
-	# inset under their nav bar. Extra clearance on phones with under-display
-	# nav (gesture pill area is rendered inside the safe rect on Android 12+).
+	var is_portrait: bool = _is_mobile and win.y > win.x
 	var bottom_extra: float = PanelTheme.RAIL_BOTTOM_HEIGHT if is_portrait else 0.0
-	var bottom_y: float = safe.position.y + safe.size.y - 12.0 - bottom_extra
-	# Match container axis to orientation (HBox in landscape, VBox in portrait).
-	_ensure_container_axis(_speed_container, is_portrait)
-	if _speed_container != null:
-		var speed_count: int = _speed_container.get_child_count()
-		_speed_container.anchor_left = 0.0
-		_speed_container.anchor_top = 0.0
-		_speed_container.anchor_right = 0.0
-		_speed_container.anchor_bottom = 0.0
-		if is_portrait:
-			# Vertical stack up the left edge, anchored near the bottom so
-			# the thumb naturally reaches it. Width = one button; height =
-			# stack of N buttons plus separators.
-			var stack_h: float = btn_size.y * float(speed_count) + 6.0 * float(speed_count - 1)
-			_speed_container.offset_left = safe.position.x + 12.0
-			_speed_container.offset_right = _speed_container.offset_left + btn_size.x
-			_speed_container.offset_bottom = bottom_y
-			_speed_container.offset_top = bottom_y - stack_h
-		else:
-			# Classic bottom-row in landscape.
-			_speed_container.offset_left = safe.position.x + 16.0
-			_speed_container.offset_top = bottom_y - btn_size.y
-			_speed_container.offset_right = _speed_container.offset_left + 320.0
-			_speed_container.offset_bottom = bottom_y
-	# Action row: always horizontal, anchored to bottom-right of safe area.
-	# In portrait we lift it slightly so it doesn't crowd the gesture pill.
-	if _action_container != null:
-		var right_x: float = safe.position.x + safe.size.x - 16.0
-		_action_container.anchor_left = 0.0
-		_action_container.anchor_top = 0.0
-		_action_container.anchor_right = 0.0
-		_action_container.anchor_bottom = 0.0
-		# Width must grow with the action-button count (CAM + photo + undo).
-		# btn_size.x scales with DPI so we compute total from the live size.
-		var action_w: float = btn_size.x * 3.0 + 6.0 * 2.0 + 8.0
-		_action_container.offset_left = right_x - action_w
-		_action_container.offset_top = bottom_y - btn_size.y
-		_action_container.offset_right = right_x
-		_action_container.offset_bottom = bottom_y
-
-
-# Swap the speed container's BoxContainer subtype between HBox (landscape) and
-# VBox (portrait) without losing buttons or their signal connections. Cheap
-# enough to run on every rotation. Children are re-parented in place; their
-# `pressed` signals stay attached to the underlying Button objects.
-func _ensure_container_axis(box: BoxContainer, portrait: bool) -> void:
-	if box == null:
-		return
-	var want_vbox: bool = portrait
-	var is_vbox: bool = box is VBoxContainer
-	if want_vbox == is_vbox:
-		return
-	# Snapshot children, replace container, re-parent.
-	var children: Array = []
-	for c in box.get_children():
-		children.append(c)
-	for c in children:
-		box.remove_child(c)
-	var parent: Node = box.get_parent()
-	var idx: int = box.get_index()
-	box.queue_free()
-	var new_box: BoxContainer = (VBoxContainer.new() as BoxContainer) if want_vbox else (HBoxContainer.new() as BoxContainer)
-	new_box.add_theme_constant_override("separation", 6)
-	new_box.mouse_filter = Control.MOUSE_FILTER_STOP
-	parent.add_child(new_box)
-	parent.move_child(new_box, idx)
-	for c in children:
-		new_box.add_child(c)
-	_speed_container = new_box
+	# Sit above the FooterBar dock (speed controls live inside it).
+	var footer_clearance: float = 52.0
+	var bottom_y: float = safe.position.y + safe.size.y - footer_clearance - 12.0 - bottom_extra
+	var right_x: float = safe.position.x + safe.size.x - 16.0
+	_action_container.anchor_left = 0.0
+	_action_container.anchor_top = 0.0
+	_action_container.anchor_right = 0.0
+	_action_container.anchor_bottom = 0.0
+	var action_w: float = btn_size.x * 3.0 + 6.0 * 2.0 + 8.0
+	_action_container.offset_left = right_x - action_w
+	_action_container.offset_top = bottom_y - btn_size.y
+	_action_container.offset_right = right_x
+	_action_container.offset_bottom = bottom_y
 
 
 func _make_btn(label: String, color: Color) -> Button:
 	var btn := Button.new()
 	btn.text = label
+	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = _btn_size()
 	btn.add_theme_font_size_override("font_size", _font_size())
 	btn.add_theme_color_override("font_color", color)
 	btn.mouse_filter = Control.MOUSE_FILTER_STOP
+	PanelTheme.style_hud_toggle_button(btn, false)
 	return btn
 
 
 func _highlight_speed(active: float) -> void:
 	for s in _speed_btns.keys():
 		var btn: Button = _speed_btns[s]
-		if is_equal_approx(float(s), active):
-			btn.modulate = Color(1.3, 1.3, 0.8)
-		else:
-			btn.modulate = Color(0.7, 0.7, 0.7)
+		PanelTheme.style_hud_toggle_button(btn, is_equal_approx(float(s), active))
 
 
-# Called by the main script when aquascape mode toggles.
 func set_aquascape_mode(on: bool) -> void:
 	if _undo_btn != null:
 		_undo_btn.visible = on
 
 
-# Tiny haptic pulse on button press. Input.vibrate_handheld is a no-op on
-# desktop, so this is safe to call unconditionally — but we guard on the
-# mobile feature flag anyway to avoid the JNI roundtrip when the device
-# doesn't have a vibrator at all (tablets without haptic actuators).
 func _buzz(duration_ms: int) -> void:
-	if OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios"):
+	if _is_mobile:
 		Input.vibrate_handheld(duration_ms)

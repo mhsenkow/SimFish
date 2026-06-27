@@ -1110,6 +1110,10 @@ var _pec_left_pivot: Node3D = null
 var _pec_right_pivot: Node3D = null
 var _anal_pivot: Node3D = null
 var _swim_phase: float = 0.0
+var _music_kick_pulse: float = 0.0
+var _music_snare_flick: float = 0.0
+var _music_trail_ghost: float = 0.0
+var _music_eye_flash: float = 0.0
 # Per-fish wag-frequency jitter — ±12% multiplier on every species' wag_freq
 # so a tight school doesn't all tail-flick in lockstep. Combined with the
 # already-random _swim_phase initial offset, this keeps phase relationships
@@ -1123,6 +1127,7 @@ var _school_phase_offset: float = 0.0
 # rather than dragging behind in body-local space.
 var _fry_trail_timer: float = 0.0
 var _last_yaw: float = 0.0
+var _motion_transform_warned: bool = false
 var _bank: float = 0.0
 # Eye-saccade state. Drives a brief micro-yaw on _head_pivot when the
 # fish is at rest. Tick-counted timer + a decaying target angle so the
@@ -1150,6 +1155,13 @@ var heading: Vector3 = Vector3.FORWARD  # unit vector, faces -Z initially
 var speed: float = 0.0
 var max_turn_rate: float = 2.6   # radians/sec - how fast the fish can yaw
 var linear_accel: float = 2.5    # units/sec^2 - how fast speed changes
+var _hydro_profile: Dictionary = {}
+var _hover_depth: float = 0.0
+var _buoy_bob_t: float = 0.0
+var _brake_pose: float = 0.0
+var _station_keep: float = 0.0
+var _surface_wake_t: float = 0.0
+var _motion_target_spd: float = 0.0
 
 # Death animation state. When a die event fires (old age / starvation), we
 # don't queue_free immediately — we set _dying so the fish drifts sideways,
@@ -1477,6 +1489,7 @@ func init_genome(genome: Dictionary) -> void:
 			_:
 				# fusiform + sagittiform (gar/pike) are body-caudal swimmers.
 				locomotion_type = "subcarangiform"
+	_refresh_hydro_profile()
 	# Food preferences (species-level, not heritable).
 	snail_predator = not not genome.get("snail_predator", snail_predator)
 	shrimp_predator = not not genome.get("shrimp_predator", shrimp_predator)
@@ -2495,16 +2508,66 @@ func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 # ---- Tick (called by SimDriver) ----
 
 func _music_mods() -> Dictionary:
-	var mr := get_tree().get_first_node_in_group("music_reactive")
-	if mr != null and mr.has_method("fauna_behavior_mods"):
-		return mr.fauna_behavior_mods(get_instance_id())
-	return {
-		"speed": 1.0, "wander": 1.0, "home_radius": 1.0, "home_pull": 1.0,
-		"tightness": 1.0, "accel": 1.0, "turn": 1.0, "dart_chance": 0.0,
-		"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0,
-		"wander_amp": 1.0, "sweep": 0.0, "vertical": 0.0, "beat_phase": 0.0,
-		"scale": 1.0,
+	var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
+	var top_y: float = _water_surface_y() - 0.4
+	var traits: Dictionary = {
+		"swim_pattern": swim_pattern,
+		"species": species,
+		"lead_score": lead_score,
+		"boldness": _trait("boldness"),
+		"calm": _trait("calm"),
+		"gluttony": _trait("gluttony"),
+		"base_color": base_color,
+		"accent_color": accent_color,
+		"growth_factor": growth_factor,
+		"preferred_y": preferred_y,
+		"y_min": bot_y,
+		"y_max": top_y,
+		"mouth_orientation": mouth_orientation,
+		"finnage": finnage,
+		"eye_spot": eye_spot,
+		"color_vibrancy": (_color_vibrancy(base_color) + _color_vibrancy(accent_color)) * 0.5,
 	}
+	var mods: Dictionary
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("fauna_behavior_mods"):
+		mods = mc.fauna_behavior_mods(get_instance_id(), traits)
+	else:
+		var mr := get_tree().get_first_node_in_group("music_reactive")
+		if mr != null and mr.has_method("fauna_behavior_mods"):
+			mods = mr.fauna_behavior_mods(get_instance_id())
+		else:
+			mods = {
+				"speed": 1.0, "wander": 1.0, "home_radius": 1.0, "home_pull": 1.0,
+				"tightness": 1.0, "accel": 1.0, "turn": 1.0, "dart_chance": 0.0,
+				"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0,
+				"wander_amp": 1.0, "sweep": 0.0, "vertical": 0.0, "beat_phase": 0.0,
+				"scale": 1.0,
+			}
+	return _damp_music_mods_for_time_scale(mods)
+
+
+func _damp_music_mods_for_time_scale(mods: Dictionary) -> Dictionary:
+	# Generative music runs on wall-clock time; sim motion scales with time_scale.
+	# Without damping, 4×/16× sim looks like frantic dance on slow music.
+	if sim == null:
+		return mods
+	var ts: float = float(sim.time_scale)
+	if ts <= 1.05:
+		return mods
+	var damp: float = 1.0 / ts
+	var out: Dictionary = mods.duplicate()
+	for key in ["sweep", "vertical", "dance_blend", "dance_bank", "dance_freeze", "bow"]:
+		if out.has(key):
+			out[key] = float(out.get(key, 0.0)) * damp
+	if out.has("accel"):
+		out["accel"] = float(out.get("accel", 1.0)) * lerpf(1.0, damp, 0.45)
+	if out.has("turn"):
+		out["turn"] = float(out.get("turn", 1.0)) * lerpf(1.0, damp, 0.45)
+	if out.has("scale"):
+		var sc: float = float(out.get("scale", 1.0))
+		out["scale"] = lerpf(1.0, sc, damp)
+	return out
 
 
 func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> Vector3:
@@ -2515,6 +2578,18 @@ func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> 
 	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
 	var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
 	var top_y: float = _water_surface_y() - 0.4
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and float(mods.get("dance_blend", 0.0)) > 0.08 and mc.has_method("compute_dance_target"):
+		var cam_yaw: float = 0.0
+		if w.has_method("_find_tank_camera"):
+			var cam: Camera3D = w._find_tank_camera()
+			if cam != null:
+				var fwd: Vector3 = -cam.global_transform.basis.z
+				cam_yaw = atan2(fwd.x, fwd.z)
+		var dance_pos: Vector3 = mc.compute_dance_target(
+			get_instance_id(), mods, hw, hd, bot_y, top_y, home_y, cam_yaw)
+		dance_pos = _slide_anchor_in_tank(dance_pos, 0.35, _body_tank_margin() * 0.45)
+		return dance_pos
 	var lane: float = float(mods.get("beat_phase", 0.0)) + float(get_instance_id() % 997) * 0.11
 	var vert: float = clampf(float(mods.get("vertical", 0.0)), 0.0, 1.0)
 	var ty: float = lerpf(
@@ -2522,14 +2597,13 @@ func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> 
 		top_y - 0.25,
 		clampf(0.5 + sin(lane * 1.35) * 0.44, 0.08, 0.92))
 	ty = lerpf(home_y, ty, clampf(vertical_bias + vert * 0.65, 0.0, 1.0))
-	var target := Vector3(
+	var fallback := Vector3(
 		sin(lane) * hw * 0.96,
 		ty,
 		cos(lane * 0.81 + 0.9) * hd * 0.96,
 	)
-	if w.has_method("clamp_xyz_in_tank"):
-		target = w.clamp_xyz_in_tank(target, 0.35, _body_tank_margin() * 0.45)
-	return target
+	fallback = _slide_anchor_in_tank(fallback, 0.35, _body_tank_margin() * 0.45)
+	return fallback
 
 
 func _nudge_home_toward_music_target(target: Vector3, strength: float) -> void:
@@ -2541,19 +2615,24 @@ func _nudge_home_toward_music_target(target: Vector3, strength: float) -> void:
 
 
 func _apply_music_beat_surge(mods: Dictionary, _effective_max: float) -> void:
-	if not bool(mods.get("beat_dart", false)):
+	var anticipation: float = float(mods.get("anticipation", 0.0))
+	if not bool(mods.get("beat_dart", false)) and anticipation < 0.35:
 		return
-	burst_remaining = maxf(burst_remaining, randf_range(0.75, 1.15))
+	var surge: float = anticipation
+	if bool(mods.get("beat_dart", false)):
+		surge = maxf(surge, 0.85)
+	burst_remaining = maxf(burst_remaining, lerpf(0.32, 0.68, surge))
 	var target: Vector3 = _music_cross_tank_target(mods, 0.72)
-	_nudge_home_toward_music_target(target, 0.58)
+	var nudge: float = lerpf(0.14, 0.32, surge)
+	_nudge_home_toward_music_target(target, nudge)
 	var dart_dir: Vector3 = target - position
 	if dart_dir.length_squared() < 0.08:
 		dart_dir = Vector3(randf_range(-1.0, 1.0), randf_range(-0.35, 0.45), randf_range(-1.0, 1.0))
 	if dart_dir.length_squared() > 1e-6:
 		dart_dir = dart_dir.normalized()
-		heading_offset = dart_dir * (3.6 + wander_strength * float(mods.get("wander", 1.0)))
+		heading_offset = dart_dir * (2.0 + wander_strength * float(mods.get("wander", 1.0)) * 0.65)
 		_startle_heading = dart_dir
-		_startle_remaining = 0.52
+		_startle_remaining = 0.28
 
 
 func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_max: float) -> Vector3:
@@ -2561,13 +2640,15 @@ func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_
 	if sweep < 0.01:
 		return desired
 	var target: Vector3 = _music_cross_tank_target(mods, 0.55)
-	_nudge_home_toward_music_target(target, 0.08 * sweep)
+	var blend: float = float(mods.get("dance_blend", 1.0))
+	_nudge_home_toward_music_target(target, 0.09 * sweep * blend)
 	var to_target: Vector3 = target - position
 	if to_target.length_squared() < 0.06:
 		return desired
-	var pull: float = effective_max * (0.62 + sweep * 2.35)
+	var eased: float = MusicChoreography.ease_in_out_cubic(sweep)
+	var pull: float = effective_max * (0.52 + eased * 1.42)
 	if burst_remaining > 0.05:
-		pull *= 1.35
+		pull *= 1.12
 	desired += to_target.normalized() * pull
 	return desired
 
@@ -4615,18 +4696,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_fidget_remaining = 0.5
 		_fidget_cooldown = randf_range(5.0, 12.0)
 
-	# PLANT BRUSH: a fish swimming with some pace through foliage deflects it.
-	# Throttled to a probabilistic check so dense tanks stay cheap.
-	if speed > 0.55 and sim != null and sim.has_method("query_plants_in_radius") \
-			and randf() < dt * 0.6:
-		var brush_dir: Vector3 = velocity
-		if brush_dir.length_squared() > 1e-4:
-			brush_dir = brush_dir.normalized()
-			for bp in sim.query_plants_in_radius(position, 0.7):
-				if is_instance_valid(bp) and bp.has_method("brush"):
-					var bd: float = bp._world_pos.distance_to(position)
-					bp.brush(brush_dir, (1.0 - bd / 0.7) * speed * 0.12)
-					break
+	# PLANT BRUSH: passing bodies deflect foliage (#43).
+	if speed > 0.55 and randf() < dt * 0.6:
+		var wf: Node = _world_node()
+		if wf != null and wf.has_method("brush_plants_near"):
+			var brush_dir: Vector3 = velocity
+			if brush_dir.length_squared() > 1e-4:
+				wf.brush_plants_near(position, brush_dir.normalized(), speed)
 
 	# Wander refresh: periodically rotate heading_offset to a new random
 	# direction. Interval is shorter for solo fish (every 4-8s) so they
@@ -4924,8 +5000,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				growth_factor - 0.0004 * dt * (1.18 - size_potential * 0.35), 0.6 * gv)
 
 	# Update body scale across maturity AND growth_factor.
+	if not is_finite(growth_factor) or growth_factor <= 0.0:
+		growth_factor = 1.0
+	if not scale.is_finite():
+		scale = Vector3.ONE * _maturity_scale() * growth_factor
 	var scale_target: float = _maturity_scale() * growth_factor
-	scale_target *= float(_music_mods().get("scale", 1.0))
+	scale_target *= SaveHelpers._num(_music_mods().get("scale", 1.0), 1.0)
+	if not is_finite(scale_target) or scale_target <= 0.0:
+		scale_target = _maturity_scale()
 	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
 
 	return events
@@ -5019,6 +5101,8 @@ func _process(dt: float) -> void:
 	# keeps Euler integration stable while preserving the nominal sim
 	# rate. One sub-step at 1× time_scale (the common case) so there's
 	# no cost when it doesn't matter.
+	if not is_finite(speed):
+		speed = 0.0
 	var n_steps: int = clampi(int(ceil(dt / maxf(0.05 / clampf(speed / maxf(max_speed, 0.15), 0.55, 1.6), 0.028))), 1, 20)
 	var sub_dt: float = dt / float(n_steps)
 	for _step in n_steps:
@@ -5226,17 +5310,73 @@ func _look_up_for_direction(d: Vector3) -> Vector3:
 	return Vector3.UP
 
 
-func _face_direction(d: Vector3) -> void:
-	if not d.is_finite() or d.length_squared() < 0.0001:
+func _reset_facing_from_direction(d: Vector3) -> void:
+	if not d.is_finite() or d.length_squared() < 1e-6:
 		return
 	var dir := d.normalized()
 	var up := _look_up_for_direction(dir)
-	look_at(position + dir, up)
+	var new_basis := Basis.looking_at(dir, up)
+	if not new_basis.is_finite():
+		return
+	global_transform = Transform3D(new_basis, global_position)
+
+
+func _safe_normalize(v: Vector3, fallback: Vector3 = Vector3(0.0, 0.0, -1.0)) -> Vector3:
+	if not v.is_finite():
+		return _safe_normalize(fallback, Vector3(0.0, 0.0, -1.0))
+	if v.length_squared() < 1e-8:
+		if fallback.is_finite() and fallback.length_squared() > 1e-8:
+			return fallback.normalized()
+		return Vector3(0.0, 0.0, -1.0)
+	return v.normalized()
+
+
+func _repair_motion_state() -> void:
+	if not global_position.is_finite():
+		var _safe_y: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) and not is_inf(home_y) else 2.5
+		var _safe_x: float = home_x if is_finite(home_x) and not is_inf(home_x) else 0.0
+		var _safe_z: float = home_z if is_finite(home_z) and not is_inf(home_z) else 0.0
+		if is_inf(_safe_x) or is_inf(_safe_z) or not is_finite(_safe_x):
+			var iid: int = get_instance_id()
+			_safe_x = float(iid % 997) / 997.0 * 4.0 - 2.0
+			_safe_z = float(iid % 503) / 503.0 * 4.0 - 2.0
+		global_position = Vector3(_safe_x, _safe_y, _safe_z)
+	if not is_finite(growth_factor) or growth_factor <= 0.0:
+		growth_factor = 1.0
+	if not scale.is_finite() or scale.x <= 0.0:
+		scale = Vector3.ONE * _maturity_scale() * clampf(growth_factor, 0.6, 2.0)
+	if not is_finite(_last_yaw):
+		_last_yaw = atan2(heading.x, -heading.z) if heading.is_finite() else 0.0
+	if not heading.is_finite() or heading.length_squared() < 1e-8:
+		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	if not velocity.is_finite():
+		velocity = Vector3.ZERO
+	if not is_finite(speed):
+		speed = 0.0
 	if not transform.is_finite():
-		transform.basis = Basis.looking_at(dir, up)
+		_reset_facing_from_direction(heading)
+
+
+func _face_direction(d: Vector3) -> void:
+	_reset_facing_from_direction(d)
 
 
 func _motion_substep(dt: float) -> void:
+	if not is_finite(speed):
+		speed = 0.0
+	if not is_finite(_last_yaw):
+		_last_yaw = atan2(heading.x, -heading.z) if heading.is_finite() else 0.0
+	if not is_finite(growth_factor) or growth_factor <= 0.0:
+		growth_factor = 1.0
+	if not scale.is_finite() or scale.x <= 0.0:
+		scale = Vector3.ONE * _maturity_scale() * growth_factor
+	if not heading.is_finite() or heading.length_squared() < 0.0001:
+		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	if not global_position.is_finite():
+		var _sy: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) else 2.5
+		global_position = Vector3(
+			home_x if is_finite(home_x) else 0.0, _sy,
+			home_z if is_finite(home_z) else 0.0)
 	var music_mm: Dictionary = _music_mods()
 	var eff_accel: float = linear_accel * float(music_mm.get("accel", 1.0))
 	var eff_turn: float = max_turn_rate * float(music_mm.get("turn", 1.0))
@@ -5262,6 +5402,10 @@ func _motion_substep(dt: float) -> void:
 	# noticeably MORE active when the lights go down. Subtle by design —
 	# the tank should never feel frozen, even at deep midnight.
 	target_spd *= _day_activity_mult()
+	if float(music_mm.get("dance_freeze", 0.0)) > 0.55:
+		target_spd *= 0.08
+	elif float(music_mm.get("bow", 0.0)) > 0.12:
+		target_spd *= lerpf(1.0, 0.42, float(music_mm.get("bow", 0.0)))
 	# Rest debt (#84): a sleep-deprived fish moves sluggishly through the day.
 	if _rest_debt > 0.05:
 		target_spd *= 1.0 - clampf(_rest_debt, 0.0, 1.0) * 0.25
@@ -5270,8 +5414,20 @@ func _motion_substep(dt: float) -> void:
 	if sim != null:
 		var enrich: float = clampf(float(sim.total_plant_biomass) / 300.0, 0.0, 1.0)
 		target_spd *= lerpf(0.85, 1.0, enrich)
+	_motion_target_spd = target_spd
+	if not is_finite(target_spd):
+		target_spd = 0.0
+		_motion_target_spd = 0.0
 
 	var body_m: float = _body_tank_margin()
+	if _hydro_profile.is_empty():
+		_refresh_hydro_profile()
+	var full_hydro: bool = Hydrodynamics.use_full_physics(sim, self)
+	var flow_vel: Vector3 = Vector3.ZERO
+	var w_h: Node = _world_node()
+	if w_h != null and w_h.has_method("sample_flow"):
+		flow_vel = w_h.sample_flow(global_position)
+		target_spd *= Hydrodynamics.upstream_effort(flow_vel, heading)
 	var margin: float = 0.22
 	var body_r: float = body_m * 0.55
 
@@ -5299,6 +5455,10 @@ func _motion_substep(dt: float) -> void:
 		target_spd = maxf(target_spd, max_speed * 0.55)
 		heading = target_dir
 
+	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
+	if full_hydro:
+		eff_turn *= Hydrodynamics.added_mass_turn_scale(speed, max_speed, _hydro_profile)
+
 	# ---- Rotate heading toward target_dir, bounded by max_turn_rate ----
 	var bnd: Dictionary = _lateral_boundary_context(global_position, body_m, target_dir)
 	var clearance: float = float(bnd.get("clearance", 99.0))
@@ -5320,7 +5480,7 @@ func _motion_substep(dt: float) -> void:
 		if horizontal_axis.length_squared() > 1e-6:
 			axis = horizontal_axis.normalized()
 		var turn: float = minf(max_step, angle)
-		heading = heading.rotated(axis, turn).normalized()
+		heading = _safe_normalize(heading.rotated(axis, turn), heading)
 		# Defensive NaN guard: if axis was degenerate in a way the checks
 		# above missed, the rotation can leak NaN into heading. Restore from
 		# _last_yaw so the fish doesn't enter a spin-forever orientation
@@ -5339,10 +5499,38 @@ func _motion_substep(dt: float) -> void:
 			if absf(heading.y) > max_pitch:
 				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
-	# ---- Accelerate speed toward target_spd, bounded by linear_accel ----
-	speed = move_toward(speed, target_spd, eff_accel * dt)
+	# ---- Hydrodynamic speed: stroke thrust + quadratic drag + coast (#1–11) ----
+	var drag_k: float = Hydrodynamics.drag_coeff(body_m, _hydro_profile)
+	var stroke_push: float = 0.0
+	var pec_push: float = 0.0
+	if full_hydro:
+		stroke_push = Hydrodynamics.stroke_thrust(
+			_swim_phase, _hydro_profile, speed, target_spd, max_speed)
+		pec_push = Hydrodynamics.pec_thrust(_swim_phase, _hydro_profile, speed, target_spd)
+		if w_h != null and w_h.has_method("draft_in_wake"):
+			var draft: float = w_h.draft_in_wake(global_position, heading)
+			stroke_push *= 1.0 - draft * 0.38
+	var coasting: bool = burst_remaining <= 0.0 and target_spd < speed * 0.82
+	if full_hydro:
+		speed = Hydrodynamics.integrate_speed(
+			speed, target_spd, stroke_push + pec_push, drag_k, eff_accel, dt, coasting)
+	else:
+		speed = move_toward(speed, target_spd, eff_accel * dt * 0.7)
+	_brake_pose = Hydrodynamics.brake_pose_amount(speed, target_spd)
+	_station_keep = Hydrodynamics.station_keep_pec(
+		_swim_phase, flow_vel.length(), target_spd)
+	if full_hydro:
+		var buoy: Dictionary = Hydrodynamics.buoyancy_step(
+			global_position.y, _hover_depth, speed, target_spd, dt, _buoy_bob_t, _hydro_profile)
+		var y_delta: float = float(buoy.get("y_delta", 0.0))
+		if is_finite(y_delta):
+			global_position.y += y_delta
+		_buoy_bob_t = float(buoy.get("bob_t", _buoy_bob_t))
 	if wall_t > 0.35:
 		speed = minf(speed, target_spd * lerpf(1.0, 0.68, wall_t))
+
+	if flow_vel.is_finite() and flow_vel.length_squared() > 1e-6 and full_hydro:
+		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(body_m)
 
 	# ---- Move only as far as the tank allows (never swim into glass) ----
 	var gp: Vector3 = global_position
@@ -5356,9 +5544,13 @@ func _motion_substep(dt: float) -> void:
 		heading = move_dir
 		speed = maxf(speed, max_speed * 0.45)
 	if move_dir.length_squared() > 1e-6:
-		move_dir = move_dir.normalized()
+		move_dir = _safe_normalize(move_dir, heading)
 		var want_len: float = speed * dt
+		if not is_finite(want_len) or want_len <= 0.0:
+			want_len = 0.0
 		var allowed: float = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
+		if not is_finite(allowed) or allowed < 0.0:
+			allowed = 0.0
 		if allowed < want_len * 0.92:
 			var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
 			inward.y = 0.0
@@ -5369,18 +5561,38 @@ func _motion_substep(dt: float) -> void:
 				if bool(vb.get("active", false)) and float(vb.get("clearance", 99.0)) < 0.35:
 					inward = vb.get("inward", Vector3.ZERO)
 			if inward.length_squared() > 1e-6:
-				inward = inward.normalized()
+				inward = _safe_normalize(inward, Vector3.UP)
 			if inward.length_squared() > 1e-6:
 				var outward: Vector3 = -inward
 				var out_comp: float = move_dir.dot(outward)
 				if out_comp > 0.05:
 					var bounced: Vector3 = _reflect_heading_at_wall(move_dir, inward)
-					move_dir = heading.lerp(bounced, 0.62).normalized()
+					move_dir = _safe_normalize(heading.lerp(bounced, 0.62), bounced)
 					allowed = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
+					if not is_finite(allowed) or allowed < 0.0:
+						allowed = 0.0
 		global_position = gp + move_dir * allowed
-		speed = allowed / maxf(dt, 1e-5)
+		if not global_position.is_finite():
+			var w_fix := _world_node()
+			if w_fix != null and w_fix.has_method("clamp_xyz_in_tank"):
+				global_position = w_fix.clamp_xyz_in_tank(gp, margin, body_r)
+			else:
+				global_position = gp
+		speed = allowed / maxf(dt, 1e-5) if allowed > 0.0 else 0.0
+		if not is_finite(speed):
+			speed = 0.0
 		heading = move_dir
 	velocity = move_dir * speed if move_dir.length_squared() > 1e-6 else Vector3.ZERO
+	if full_hydro and speed > 0.1 and w_h != null:
+		if w_h.has_method("deposit_wake"):
+			w_h.deposit_wake(global_position, move_dir * speed, body_m)
+		if w_h.has_method("spawn_surface_wake"):
+			var surf_h: float = float(w_h.get("WATER_HEIGHT")) if w_h.get("WATER_HEIGHT") != null else 6.5
+			if global_position.y > surf_h - 0.38:
+				_surface_wake_t -= dt
+				if _surface_wake_t <= 0.0:
+					w_h.spawn_surface_wake(global_position, speed)
+					_surface_wake_t = 0.24
 	if velocity.y > 0.12:
 		_belly_flash = 1.0
 
@@ -5397,21 +5609,17 @@ func _motion_substep(dt: float) -> void:
 	# console with "instance_set_transform: !v.is_finite()" errors. Checking
 	# only global_position misses a corrupted basis that still has a finite
 	# origin — children keep spamming until the basis is rebuilt.
-	if not global_position.is_finite() or not transform.is_finite():
-		push_warning("[Fish] non-finite motion transform detected; recovering from last yaw.")
-		if not global_position.is_finite():
-			var _safe_y: float = clampf(home_y, 0.5, 8.0) if is_finite(home_y) else 2.5
-			global_position = Vector3(0.0, _safe_y, 0.0)
-		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
-		var recover_d: Vector3 = heading
-		if recover_d.is_finite():
-			var up := _look_up_for_direction(recover_d)
-			transform.basis = Basis.looking_at(recover_d.normalized(), up)
+	if not global_position.is_finite() or not transform.is_finite() or not scale.is_finite():
+		if not _motion_transform_warned:
+			_motion_transform_warned = true
+			push_warning("[Fish] non-finite motion transform detected; recovering from last yaw.")
+		_repair_motion_state()
 	if speed > 0.04 and heading.length_squared() > 0.0001:
 		_face_direction(heading)
 
 	var do_body_anim: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
 		or sim.is_creature_visible_to_camera(self)
+	var mm: Dictionary = _music_mods() if do_body_anim else {}
 
 	# ---- Banking into yaw turns ----
 	# Compute the world-space yaw of the heading on the XZ plane. The change
@@ -5421,6 +5629,13 @@ func _motion_substep(dt: float) -> void:
 		var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 		var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
+		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate)
+		var dance_bank: float = float(mm.get("dance_bank", 0.0))
+		if dance_bank > 0.02:
+			var accent: float = maxf(float(mm.get("kick_thump", 0.0)), float(mm.get("snare_flick", 0.0)))
+			bank_target = clampf(
+				bank_target + dance_bank * signf(yaw_rate + 0.001) * (1.0 + accent * 0.35),
+				-0.95, 0.95)
 		_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 		if _bank_pivot != null:
 			_bank_pivot.rotation.z = _bank
@@ -5536,6 +5751,15 @@ func _motion_substep(dt: float) -> void:
 			# subcarangiform default — current schooler behavior.
 			pass
 
+	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
+		speed, _motion_target_spd, max_speed)
+	if hydro_effort > 0.04:
+		tail_amp += hydro_effort * 0.52
+		wag_amp_extra += hydro_effort * 0.32
+	elif speed < 0.14 and _motion_target_spd < 0.18:
+		tail_amp *= 0.84
+		body_amp *= 0.78
+
 	# Mood + arousal modulation (#26). Valence slows/fin-spread; arousal quickens
 	# the wag so "content & playing" reads faster than "content & resting."
 	var aff_anim: Dictionary = FishMind.animation_modifiers(self)
@@ -5546,7 +5770,39 @@ func _motion_substep(dt: float) -> void:
 	mood_freq_mult += float(aff_anim.get("wag_freq", 0.0))
 	wag_freq *= clampf(mood_freq_mult, 0.55, 1.7)
 
-	_swim_phase += dt * wag_freq * _wag_freq_jitter
+	var dance_blend: float = float(mm.get("dance_blend", 0.0))
+	var dance_freeze: float = float(mm.get("dance_freeze", 0.0))
+	var bow: float = float(mm.get("bow", 0.0))
+	if dance_blend > 0.04:
+		var wft: float = float(mm.get("wag_freq_target", 0.0))
+		if wft > 0.01:
+			wag_freq = lerpf(wag_freq, wft, clampf(dt * 5.5, 0.0, 1.0) * dance_blend)
+		wag_amp_extra += float(mm.get("tail_amp_extra", 0.0)) * dance_blend
+		pec_amp_extra += float(mm.get("pec_flutter", 0.0)) * dance_blend
+		pec_amp_extra += float(mm.get("fin_flare", 0.0)) * dance_blend
+		if float(mm.get("downbeat_pulse", 0.0)) > 0.5:
+			wag_amp_extra += 0.14 * dance_blend
+		_music_kick_pulse = maxf(_music_kick_pulse - dt * 9.0, float(mm.get("kick_thump", 0.0)) * dance_blend)
+		_music_snare_flick = maxf(_music_snare_flick - dt * 11.0, float(mm.get("snare_flick", 0.0)) * dance_blend)
+		_music_snare_flick = maxf(_music_snare_flick, float(mm.get("wave_tail", 0.0)) * dance_blend * 0.55)
+		if eye_spot or _color_vibrancy(base_color) > 0.62:
+			_music_eye_flash = maxf(_music_eye_flash - dt * 8.0,
+				float(mm.get("eye_flash", 0.0)) * dance_blend)
+		_music_trail_ghost = maxf(_music_trail_ghost - dt * 5.5,
+			float(mm.get("motion_trail", 0.0)) * dance_blend)
+		var glide: float = float(mm.get("glide_hold", 0.0))
+		var phase_rate: float = 0.18 if glide > 0.45 else 1.0
+		if dance_freeze > 0.55:
+			phase_rate = 0.0
+		elif bow > 0.12:
+			phase_rate = lerpf(phase_rate, 0.35, bow)
+		_swim_phase += dt * wag_freq * _wag_freq_jitter * phase_rate
+	else:
+		_music_kick_pulse = maxf(_music_kick_pulse - dt * 9.0, 0.0)
+		_music_snare_flick = maxf(_music_snare_flick - dt * 11.0, 0.0)
+		_music_eye_flash = maxf(_music_eye_flash - dt * 8.0, 0.0)
+		_music_trail_ghost = maxf(_music_trail_ghost - dt * 5.5, 0.0)
+		_swim_phase += dt * wag_freq * _wag_freq_jitter
 	if (swim_pattern == "school" or swim_pattern == "shoal") \
 			and schooling_strength >= 0.45 and sim != null \
 			and sim.has_method("school_pulse_phase"):
@@ -5555,13 +5811,24 @@ func _motion_substep(dt: float) -> void:
 		_swim_phase += delta * clampf(dt * 5.5, 0.0, 1.0)
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
-			+ minf(speed * 0.18, 0.25))
+			+ minf(speed * 0.18, 0.25)) + _music_snare_flick * 0.42
+		if _brake_pose > 0.12:
+			_tail_pivot.rotation.y += _brake_pose * 0.38
+		if _music_trail_ghost > 0.02:
+			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.12
+			_tail_pivot.scale.z = lerpf(1.0, 1.06, _music_trail_ghost)
+		elif absf(_tail_pivot.scale.z - 1.0) > 0.01:
+			_tail_pivot.scale.z = lerpf(_tail_pivot.scale.z, 1.0, clampf(dt * 6.0, 0.0, 1.0))
 	if _body_mid_pivot != null:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4)
+		if _music_kick_pulse > 0.02:
+			var kick_scale: float = 1.0 + _music_kick_pulse * 0.11
+			_body_mid_pivot.scale = Vector3(kick_scale, kick_scale * 0.92, 1.0)
 	if _head_pivot != null:
 		# Smooth head rotation in to avoid pop when locomotion changes.
 		var head_target: float = sin(_swim_phase + head_phase) * head_amp
+		head_target += Hydrodynamics.tail_recoil_yaw(_swim_phase, hydro_effort)
 		# Eye saccades: at rest, the head occasionally micro-turns. Fish
 		# don't have movable eyeballs (most species) so they redirect
 		# gaze by twitching the whole head a few degrees. Combined with
@@ -5612,7 +5879,8 @@ func _motion_substep(dt: float) -> void:
 		# voxel resolution (no separate eyelid geometry needed).
 		var blink_sq: float = 1.0 - (0.18 if _blink_remaining > 0.0 else 0.0)
 		var gape_z: float = 1.0 + _mouth_gape * 0.28
-		_head_pivot.scale = Vector3(breath, blink_sq, gape_z)
+		var eye_pulse: float = 1.0 + _music_eye_flash * 0.14
+		_head_pivot.scale = Vector3(breath * eye_pulse, blink_sq, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08
@@ -5624,6 +5892,9 @@ func _motion_substep(dt: float) -> void:
 	# bigger amplitude because their bodies don't propel — the pecs do.
 	var pec_freq: float = pec_freq_base
 	var pec_amp: float = pec_amp_base + pec_amp_extra - minf(speed * 0.12, 0.30)
+	pec_amp += _station_keep
+	if _brake_pose > 0.12:
+		pec_amp += _brake_pose * 0.55
 	pec_amp += float(aff_anim.get("fin_twitch", 0.0))
 	# FIN BODY LANGUAGE. Confidence and contentment flare the fins wider;
 	# fear and sickness clamp them tight against the body. Continuous so the
@@ -5631,6 +5902,8 @@ func _motion_substep(dt: float) -> void:
 	var fin_mood: float = clampf(mood, -1.0, 1.0) * 0.18 - spooked * 0.4 \
 		- clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.3 + float(aff_anim.get("fin_amp", 0.0))
 	pec_amp = maxf(pec_amp + fin_mood, 0.06)
+	if bow > 0.08:
+		pec_amp += bow * 0.22 * dance_blend
 	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
 	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
 	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18 \
@@ -6806,7 +7079,7 @@ func to_save_dict() -> Dictionary:
 		"maturity": int(maturity),
 		"velocity": SaveHelpers.vec3_to_array(velocity),
 		"heading": SaveHelpers.vec3_to_array(heading),
-		"speed": speed,
+		"speed": SaveHelpers._num(speed, 0.0),
 		"current_mode": int(current_mode),
 		"breed_cooldown": breed_cooldown,
 		"acclimation_remaining": _acclimation_remaining,
@@ -6821,7 +7094,11 @@ func to_save_dict() -> Dictionary:
 		"burst_remaining": burst_remaining,
 		"gestation_progress": _gestation_progress,
 		"gestation_genome": _genome_to_json(_gestation_genome),
-		"home": [home_x, home_y, home_z],
+		"home": [
+			SaveHelpers._num(home_x if is_finite(home_x) and not is_inf(home_x) else global_position.x, 0.0),
+			SaveHelpers._num(home_y if is_finite(home_y) and not is_inf(home_y) else global_position.y, 2.5),
+			SaveHelpers._num(home_z if is_finite(home_z) and not is_inf(home_z) else global_position.z, 0.0),
+		],
 		# Persistent identity + memory (added with the AIDirector pass).
 		# Names persist so a "Mira" in your tank stays Mira next session.
 		# Bio + feed_heatmap give the player a sense of continuity with
@@ -6879,8 +7156,17 @@ func apply_save_dict(d: Dictionary) -> void:
 	stress = float(d.get("stress", 0.0))
 	maturity = int(d.get("maturity", MATURITY_FRY))
 	velocity = SaveHelpers.array_to_vec3(d.get("velocity", []), Vector3.ZERO)
+	if not velocity.is_finite():
+		velocity = Vector3.ZERO
 	heading = SaveHelpers.array_to_vec3(d.get("heading", []), Vector3.FORWARD)
-	speed = float(d.get("speed", 0.0))
+	if not heading.is_finite() or heading.length_squared() < 0.0001:
+		heading = Vector3(0.0, 0.0, -1.0)
+	_last_yaw = atan2(heading.x, -heading.z)
+	if not is_finite(_last_yaw):
+		_last_yaw = 0.0
+	speed = SaveHelpers._num(d.get("speed", 0.0), 0.0)
+	if not is_finite(speed):
+		speed = 0.0
 	current_mode = int(d.get("current_mode", Mode.CRUISE)) as Mode
 	breed_cooldown = float(d.get("breed_cooldown", 0.0))
 	# Default: fully acclimated on load (assume reloaded fish are
@@ -6888,7 +7174,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	_acclimation_remaining = float(d.get("acclimation_remaining", 0.0))
 	nibble_cooldown = float(d.get("nibble_cooldown", 0.0))
 	breed_count = int(d.get("breed_count", 0))
-	growth_factor = float(d.get("growth_factor", 1.0))
+	growth_factor = SaveHelpers._num(d.get("growth_factor", 1.0), 1.0)
+	if not is_finite(growth_factor) or growth_factor <= 0.0:
+		growth_factor = 1.0
 	_life_jitter = float(d.get("life_jitter", _life_jitter))
 	_growth_variance = float(d.get("growth_variance", _growth_variance))
 	_scarred = not not d.get("scarred", false)
@@ -6902,10 +7190,17 @@ func apply_save_dict(d: Dictionary) -> void:
 	_gestation_genome = _genome_from_json(d.get("gestation_genome", {}))
 	var home: Array = d.get("home", [])
 	if home.size() >= 3:
-		home_x = float(home[0])
-		home_y = float(home[1])
-		home_z = float(home[2])
+		home_x = SaveHelpers._num(home[0], home_x)
+		home_y = SaveHelpers._num(home[1], home_y)
+		home_z = SaveHelpers._num(home[2], home_z)
 	_reclamp_territory_to_tank()
+	# Repair saves written while a load bug stacked everyone at the origin.
+	if global_position.length_squared() < 0.25 \
+			and is_finite(home_x) and is_finite(home_y) and is_finite(home_z):
+		global_position = Vector3(home_x, home_y, home_z)
+	if not scale.is_finite() or scale.x <= 0.0:
+		scale = Vector3.ONE * _maturity_scale() * growth_factor
+	_reset_facing_from_direction(heading)
 	# Transient refs are NOT restored — they're cheap to re-pick next tick
 	# and trying to resolve them across saves is fragile (the plant might
 	# have just been nibbled to death). Clear them so the AI starts fresh.
@@ -6940,7 +7235,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	var mind_d: Variant = d.get("mind", null)
 	if mind_d is Dictionary:
 		FishMind.apply_mind_dict(self, mind_d as Dictionary)
-	character_bio = String(d.get("character_bio", character_bio))
+	character_bio = str(d.get("character_bio", character_bio))
 	is_guardian = bool(d.get("is_guardian", is_guardian))
 	_refresh_character_bio()
 	var saved_bonds: Variant = d.get("bonds", null)
@@ -6978,6 +7273,16 @@ func apply_save_dict(d: Dictionary) -> void:
 # Pull body + territory anchors inside the tank footprint. Saved games from
 # box tanks (or pre-curved-wall builds) can carry home coords outside a
 # cylinder — clamping position alone leaves fish swimming into the void.
+func _refresh_hydro_profile() -> void:
+	var body_m: float = _body_tank_margin()
+	var key: String = locomotion_type
+	if maturity == MATURITY_FRY:
+		key = "fry"
+	_hydro_profile = Hydrodynamics.profile_for_locomotion(key, body_m)
+	if _hover_depth <= 0.01:
+		_hover_depth = home_y
+
+
 func _body_tank_margin() -> float:
 	var base: float = clampf(adult_voxel_scale * _maturity_scale() * 2.4 + 0.32, 0.38, 0.65)
 	match swim_pattern:
@@ -7053,20 +7358,46 @@ func _heading_away_from_meniscus(hz_hint: Vector3) -> Vector3:
 		hz / horiz_len * horiz_scale)
 
 
+func _slide_anchor_in_tank(p: Vector3, margin: float, body_m: float) -> Vector3:
+	var w := _world_node()
+	if w == null or not w.has_method("clamp_xyz_in_tank"):
+		return p
+	var total_m: float = margin + body_m
+	p = w.clamp_xyz_in_tank(p, margin, body_m)
+	if w.has_method("is_inside_tank_volume") and w.has_method("tank_lateral_boundary_info") \
+			and w.has_method("boundary_point_on_wall"):
+		if not w.is_inside_tank_volume(p.x, p.y, p.z, total_m * 0.45):
+			var info: Dictionary = w.tank_lateral_boundary_info(p, total_m * 0.55)
+			var inward: Vector3 = info.get("inward", Vector3.ZERO)
+			inward.y = 0.0
+			if inward.length_squared() > 1e-6:
+				return w.boundary_point_on_wall(p.y, inward.normalized(), total_m * 0.42)
+	return p
+
+
 func _reclamp_territory_to_tank() -> void:
 	if sim == null:
 		return
+	if not is_finite(home_x) or is_inf(home_x) \
+			or not is_finite(home_y) or is_inf(home_y) \
+			or not is_finite(home_z) or is_inf(home_z):
+		if global_position.is_finite():
+			home_x = global_position.x
+			home_y = global_position.y
+			home_z = global_position.z
+		else:
+			return
 	var w: Node = sim.get_parent()
 	if w == null or not w.has_method("clamp_xyz_in_tank"):
 		return
 	var m: float = _body_tank_margin()
 	# Territory anchors only — body position is integrated in _motion_substep.
-	var hp: Vector3 = w.clamp_xyz_in_tank(Vector3(home_x, home_y, home_z), 0.35, m * 0.5)
+	var hp: Vector3 = _slide_anchor_in_tank(Vector3(home_x, home_y, home_z), 0.35, m * 0.5)
 	home_x = hp.x
 	home_y = hp.y
 	home_z = hp.z
 	if brooding_remaining > 0.0:
-		brooding_at = w.clamp_xyz_in_tank(brooding_at, 0.30)
+		brooding_at = _slide_anchor_in_tank(brooding_at, 0.30, m * 0.35)
 
 
 func _apply_target_from_desired(desired: Vector3, max_spd: float) -> Vector3:
@@ -7114,20 +7445,29 @@ func _max_inside_travel(from: Vector3, dir: Vector3, max_len: float,
 	var w := _world_node()
 	if w == null or not w.has_method("clamp_xyz_in_tank") or max_len <= 0.0:
 		return 0.0
+	if not from.is_finite() or not dir.is_finite() or not is_finite(max_len):
+		return 0.0
 	if dir.length_squared() < 1e-8:
 		return 0.0
-	dir = dir.normalized()
+	dir = _safe_normalize(dir)
 	var lo: float = 0.0
 	var hi: float = max_len
 	for _i in 14:
 		var mid: float = (lo + hi) * 0.5
+		if not is_finite(mid):
+			return 0.0
 		var probe: Vector3 = from + dir * mid
+		if not probe.is_finite():
+			return lo
 		var clamped: Vector3 = w.clamp_xyz_in_tank(probe, margin, body_r)
+		if not clamped.is_finite():
+			hi = mid
+			continue
 		if probe.distance_squared_to(clamped) < 1e-10:
 			lo = mid
 		else:
 			hi = mid
-	return lo
+	return lo if is_finite(lo) else 0.0
 
 
 func _constrain_velocity_to_tank(vel: Vector3) -> Vector3:

@@ -35,6 +35,7 @@ var _phase: float = 0.0
 var _segments: Array[MeshInstance3D] = []
 var _tentacles: Array[MeshInstance3D] = []
 var _tubercles: Array[MeshInstance3D] = []
+var _creep_phase: float = 0.0
 
 
 func _ready() -> void:
@@ -117,9 +118,25 @@ func _process(dt: float) -> void:
 		return
 	_phase += sdt * TENTACLE_PULSE_FREQ
 
-	# Glacial crawl across substrate.
-	position.x += _drift.x * sdt
-	position.z += _drift.z * sdt
+	_phase += sdt * TENTACLE_PULSE_FREQ
+	_creep_phase += sdt * 0.85
+	var stretch: float = sin(_creep_phase)
+	for i in _segments.size():
+		var seg: MeshInstance3D = _segments[i]
+		if seg == null or not is_instance_valid(seg):
+			continue
+		var base_z: float = float(i) * VOXEL_SIZE * 0.72
+		seg.position.z = base_z + stretch * 0.018 * float(i + 1)
+
+	# Glacial crawl — stretch-compress couples to drift (#30).
+	var creep_push: float = 0.85 + maxf(0.0, sin(_creep_phase)) * 0.35
+	position.x += _drift.x * sdt * creep_push
+	position.z += _drift.z * sdt * creep_push
+	var w: Node = sim.get_parent() if sim != null else null
+	if w != null and w.has_method("spawn_creature_substrate_dust") and randf() < sdt * 0.18:
+		w.spawn_creature_substrate_dust(global_position, 0.85)
+	if w != null and w.has_method("brush_plants_near") and randf() < sdt * 0.12:
+		w.brush_plants_near(global_position, Vector3(_drift.x, 0.0, _drift.z), CRAWL_SPEED, 0.5)
 	_jitter_t -= sdt
 	if _jitter_t <= 0.0:
 		_jitter_t = randf_range(REJITTER_INTERVAL_MIN, REJITTER_INTERVAL_MAX)

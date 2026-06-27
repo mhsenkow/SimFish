@@ -198,6 +198,7 @@ const RETREAT_DURATION: float = 8.0
 const RETREAT_SPEED_MULT: float = 1.45
 var _retreat_remaining: float = 0.0
 var _retreat_target: Vector3 = Vector3.INF
+var _righting_remaining: float = 0.0
 
 # Predator + food scans throttled to ~3 Hz. A real snail's chemosense is
 # slow (it's tasting the water column, not seeing); the visible result
@@ -549,6 +550,23 @@ func _process(dt: float) -> void:
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails
 	# move noticeably only on the forward stroke of the pulse.
+	if absf(wall_normal.dot(Vector3.UP)) > 0.92:
+		var shell_tilt: float = 1.0 - clampf(transform.basis.y.dot(Vector3.UP), -1.0, 1.0)
+		if shell_tilt > 0.26:
+			_righting_remaining = maxf(_righting_remaining, 1.9)
+	if _righting_remaining > 0.0:
+		_righting_remaining = maxf(0.0, _righting_remaining - dt)
+		_pulse_phase += dt * 0.45
+		_apply_squash(1.0 + sin(_pulse_phase) * 0.04)
+		var rot_basis: Basis = transform.basis.orthonormalized()
+		var flat_fwd: Vector3 = Vector3(rot_basis.z.x, 0.0, rot_basis.z.z)
+		if flat_fwd.length_squared() < 1e-6:
+			flat_fwd = Vector3.FORWARD
+		_slerp_rotation_toward(
+			Basis.looking_at(flat_fwd.normalized(), Vector3.UP),
+			clampf(dt * 1.35, 0.0, 1.0))
+		_apply_wall_orientation(flat_fwd.normalized(), dt)
+		return
 	if _paused:
 		# Still pulse a little when paused (breathing).
 		_pulse_phase += dt * 0.6
@@ -562,17 +580,23 @@ func _process(dt: float) -> void:
 	var pulse_rate: float = 2.2 if _pursuing_waste else 1.35
 	_pulse_phase += dt * pulse_rate
 	var pulse_factor: float = 0.5 + 0.5 * sin(_pulse_phase)  # 0..1
+	var forward_stroke: float = maxf(0.0, sin(_pulse_phase))
 	var speed_mult: float = 1.25 if _pursuing_waste else 1.0
 	if _retreat_remaining > 0.0:
 		speed_mult *= RETREAT_SPEED_MULT
-	# Keep crawl speed mostly steady; pulse drives the foot wave, not stop-go.
+	# Peristaltic foot wave drives glide on the forward stroke only (#22).
 	var target_speed: float = SPEED * crawl_speed * speed_mult
 	_crawl_speed_smoothed = move_toward(
 		_crawl_speed_smoothed, target_speed, 0.45 * dt)
-	var gait_speed: float = _crawl_speed_smoothed * (0.94 + 0.06 * pulse_factor)
+	var gait_speed: float = _crawl_speed_smoothed * (0.28 + 0.72 * forward_stroke)
 	var crawl_dir: Vector3 = tangent * _facing.x + bitangent * _facing.y
 	if crawl_dir.length_squared() > 1e-6:
 		crawl_dir = crawl_dir.normalized()
+		var uphill: float = maxf(0.0, crawl_dir.dot(Vector3.UP))
+		if uphill > 0.12:
+			gait_speed *= lerpf(1.0, 0.58, clampf(uphill * 1.4, 0.0, 1.0))
+			if randf() < dt * uphill * 0.08:
+				gait_speed *= 0.35
 		var pre_move: Vector3 = position
 		position += crawl_dir * gait_speed * dt
 		_apply_wall_orientation(crawl_dir, dt)
@@ -630,6 +654,11 @@ func _process(dt: float) -> void:
 					av.record_compaction(global_position.x, global_position.z)
 				if randf() < dt * 0.012:
 					av.spawn_snail_bubble(global_position + wall_normal * 0.05)
+		if wn != null and gait_speed > 0.025:
+			if wn.has_method("spawn_creature_substrate_dust") and randf() < dt * 0.07:
+				wn.spawn_creature_substrate_dust(global_position, 0.75)
+			if wn.has_method("brush_plants_near") and randf() < dt * 0.14:
+				wn.brush_plants_near(global_position, crawl_dir, gait_speed, 0.42)
 	# Local spacing so wall snails don't visually stack into one clump. Runs on
 	# the same 0.3 s scan cadence as the predator/food scans — it iterates all
 	# sibling snails, so per-frame was wasteful; snails crawl slowly enough that
@@ -1230,6 +1259,21 @@ func _shell_up() -> Vector3:
 	return wall_normal.normalized()
 
 
+func _slerp_rotation_toward(target_basis: Basis, blend: float) -> void:
+	# Foot-pulse squash uses non-uniform scale; never slerp transform.basis
+	# directly or Godot warns that the basis must be normalized to cast to
+	# a quaternion. Drive rotation separately so _apply_squash keeps working.
+	if not target_basis.is_finite():
+		return
+	blend = clampf(blend, 0.0, 1.0)
+	var target_q: Quaternion = target_basis.get_rotation_quaternion()
+	var current_q: Quaternion = transform.basis.get_rotation_quaternion()
+	if not current_q.is_finite():
+		quaternion = target_q
+		return
+	quaternion = current_q.slerp(target_q, blend)
+
+
 func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 	var crawl_dir: Vector3 = crawl_hint
 	if crawl_dir.length_squared() < 1e-6:
@@ -1244,14 +1288,11 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 	var target_basis: Basis = Basis.looking_at(crawl_dir, up)
 	if not target_basis.is_finite():
 		return
-	var current: Basis = transform.basis
-	if not current.is_finite():
-		transform.basis = target_basis
-		return
-	current = current.orthonormalized()
-	transform.basis = current.slerp(target_basis, clampf(dt * ORIENT_RATE, 0.0, 1.0))
-	if not transform.is_finite():
-		transform.basis = target_basis
+	var blend: float = clampf(dt * ORIENT_RATE, 0.0, 1.0)
+	if blend >= 0.999:
+		quaternion = target_basis.get_rotation_quaternion()
+	else:
+		_slerp_rotation_toward(target_basis, blend)
 
 
 var _av_cached: Node = null

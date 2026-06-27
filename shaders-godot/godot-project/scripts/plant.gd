@@ -3565,16 +3565,16 @@ func _spawn_visible_seed_drift(seed_pos: Vector3) -> void:
 	var world: Node = w.get_parent()
 	if world == null:
 		return
-	var seed := MeshInstance3D.new()
-	seed.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
-	seed.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
-	seed.global_position = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
-	world.add_child(seed)
+	var drift_vis := MeshInstance3D.new()
+	drift_vis.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
+	drift_vis.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
+	world.add_child(drift_vis)
+	drift_vis.global_position = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
 	var land: Vector3 = Vector3(seed_pos.x, float(world.get("SUBSTRATE_DEPTH")) + 0.08, seed_pos.z)
 	var tw := world.create_tween()
-	tw.tween_property(seed, "global_position", land, randf_range(2.5, 4.5)) \
+	tw.tween_property(drift_vis, "global_position", land, randf_range(2.5, 4.5)) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	tw.tween_callback(seed.queue_free)
+	tw.tween_callback(drift_vis.queue_free)
 
 
 func _flower() -> void:

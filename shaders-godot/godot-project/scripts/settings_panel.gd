@@ -67,6 +67,10 @@ var _h_label: Label
 # AI companion widgets
 var _ai_enabled_check: CheckBox
 var _ai_chronicle_check: CheckBox
+var _ai_embedded_check: CheckBox
+var _ai_embedded_endpoint_edit: LineEdit
+var _ai_embedded_model_edit: LineEdit
+var _guardian_voice_check: CheckBox
 var _ai_endpoint_edit: LineEdit
 var _ai_model_edit: LineEdit
 var _ai_theme_edit: LineEdit
@@ -570,6 +574,50 @@ func _build_ui() -> void:
 	_ai_chronicle_check.text = "Write tank chronicle (ambient sentences)"
 	_ai_chronicle_check.toggled.connect(_on_ai_chronicle_toggled)
 	vbox_ai.add_child(_ai_chronicle_check)
+	_add_section(vbox_ai, "Guardian voice (built-in)")
+	var guardian_desc := PanelTheme.make_description()
+	guardian_desc.text = "The Guardian's mind runs inside the game on your device — private and offline. Steam installs include it; slim builds ask once before a ~250MB download."
+	vbox_ai.add_child(guardian_desc)
+	_guardian_voice_check = CheckBox.new()
+	_guardian_voice_check.text = "Generative Guardian lines (built-in model)"
+	_guardian_voice_check.toggled.connect(_on_guardian_voice_toggled)
+	vbox_ai.add_child(_guardian_voice_check)
+	var guardian_dl_btn := PanelTheme.make_secondary_button("Download Guardian mind")
+	guardian_dl_btn.name = "GuardianDownloadBtn"
+	guardian_dl_btn.pressed.connect(_on_guardian_download_pressed)
+	vbox_ai.add_child(guardian_dl_btn)
+	_add_section(vbox_ai, "Advanced: HTTP fallback (optional)")
+	var embedded_desc := PanelTheme.make_description()
+	embedded_desc.text = "Only if you run a separate /api/generate server. Normal play uses the built-in model above."
+	vbox_ai.add_child(embedded_desc)
+	_ai_embedded_check = CheckBox.new()
+	_ai_embedded_check.text = "Enable HTTP embedded fallback"
+	_ai_embedded_check.toggled.connect(_on_ai_embedded_toggled)
+	vbox_ai.add_child(_ai_embedded_check)
+	var embedded_row := HBoxContainer.new()
+	embedded_row.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(embedded_row)
+	var emb_lbl := Label.new()
+	emb_lbl.text = "Embedded endpoint:"
+	emb_lbl.add_theme_font_size_override("font_size", 11)
+	embedded_row.add_child(emb_lbl)
+	_ai_embedded_endpoint_edit = LineEdit.new()
+	_ai_embedded_endpoint_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_embedded_endpoint_edit.placeholder_text = "http://127.0.0.1:8080"
+	_ai_embedded_endpoint_edit.text_changed.connect(_on_ai_embedded_endpoint_changed)
+	embedded_row.add_child(_ai_embedded_endpoint_edit)
+	var embedded_row2 := HBoxContainer.new()
+	embedded_row2.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(embedded_row2)
+	var emb_md := Label.new()
+	emb_md.text = "Embedded model:"
+	emb_md.add_theme_font_size_override("font_size", 11)
+	embedded_row2.add_child(emb_md)
+	_ai_embedded_model_edit = LineEdit.new()
+	_ai_embedded_model_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ai_embedded_model_edit.placeholder_text = "Qwen2.5-0.5B-Instruct-Q4_K_M"
+	_ai_embedded_model_edit.text_changed.connect(_on_ai_embedded_model_changed)
+	embedded_row2.add_child(_ai_embedded_model_edit)
 	var ai_btn_row := HBoxContainer.new()
 	ai_btn_row.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(ai_btn_row)
@@ -595,8 +643,7 @@ func _build_ui() -> void:
 	hb.alignment = BoxContainer.ALIGNMENT_END
 	hb.add_theme_constant_override("separation", 8)
 	outer.add_child(hb)
-	var close := PanelTheme.make_secondary_button("Close")
-	close.pressed.connect(func():
+	var close := PanelTheme.make_close_button(func():
 		_revert_staged_stocking()
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE)
@@ -764,6 +811,19 @@ func _pull_from_config() -> void:
 		_ai_chronicle_check.set_block_signals(true)
 		_ai_chronicle_check.button_pressed = TankConfig.ai_chronicle
 		_ai_chronicle_check.set_block_signals(false)
+	if _ai_embedded_check != null:
+		_ai_embedded_check.set_block_signals(true)
+		_ai_embedded_check.button_pressed = TankConfig.ai_embedded_enabled
+		_ai_embedded_check.set_block_signals(false)
+	if _guardian_voice_check != null:
+		_guardian_voice_check.set_block_signals(true)
+		_guardian_voice_check.button_pressed = TankConfig.guardian_voice_enabled
+		_guardian_voice_check.set_block_signals(false)
+	if _ai_embedded_endpoint_edit != null:
+		_ai_embedded_endpoint_edit.text = TankConfig.ai_embedded_endpoint
+	if _ai_embedded_model_edit != null:
+		_ai_embedded_model_edit.text = TankConfig.ai_embedded_model
+	_sync_guardian_download_button()
 	if _ai_endpoint_edit != null:
 		_ai_endpoint_edit.text = TankConfig.ai_endpoint
 	if _ai_model_edit != null:
@@ -804,6 +864,10 @@ func _push_ai_to_director() -> void:
 		"ai_model": TankConfig.ai_model,
 		"ai_naming_theme": TankConfig.ai_naming_theme,
 		"ai_chronicle": TankConfig.ai_chronicle,
+		"ai_embedded_enabled": TankConfig.ai_embedded_enabled,
+		"ai_embedded_endpoint": TankConfig.ai_embedded_endpoint,
+		"ai_embedded_model": TankConfig.ai_embedded_model,
+		"guardian_voice_enabled": TankConfig.guardian_voice_enabled,
 	})
 
 
@@ -885,6 +949,54 @@ func _on_ai_enabled_toggled(on: bool) -> void:
 
 func _on_ai_chronicle_toggled(on: bool) -> void:
 	TankConfig.ai_chronicle = on
+	_push_ai_to_director()
+
+
+func _on_ai_embedded_toggled(on: bool) -> void:
+	TankConfig.ai_embedded_enabled = on
+	_push_ai_to_director()
+
+
+func _on_guardian_download_pressed() -> void:
+	TankConfig.guardian_mind_consent = "accepted"
+	TankConfig.guardian_voice_enabled = true
+	if _guardian_voice_check != null:
+		_guardian_voice_check.set_pressed_no_signal(true)
+	TankConfig.save_to_disk()
+	_push_ai_to_director()
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm != null and glm.has_method("ensure_boot"):
+		glm.call("ensure_boot")
+	_sync_guardian_download_button()
+
+
+func _sync_guardian_download_button() -> void:
+	var btn := find_child("GuardianDownloadBtn", true, false) as Button
+	if btn == null:
+		return
+	var glm := get_node_or_null("/root/GuardianLlm")
+	var llm_ready: bool = glm != null and glm.has_method("is_ready") and bool(glm.call("is_ready"))
+	var declined: bool = str(TankConfig.guardian_mind_consent) == "declined"
+	btn.visible = declined or (not llm_ready and str(TankConfig.guardian_mind_consent) != "accepted")
+
+
+func _on_guardian_voice_toggled(on: bool) -> void:
+	TankConfig.guardian_voice_enabled = on
+	TankConfig.save_to_disk()
+	_push_ai_to_director()
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm != null and on and glm.has_method("ensure_boot"):
+		glm.call("ensure_boot")
+	_sync_guardian_download_button()
+
+
+func _on_ai_embedded_endpoint_changed(text: String) -> void:
+	TankConfig.ai_embedded_endpoint = text.strip_edges()
+	_push_ai_to_director()
+
+
+func _on_ai_embedded_model_changed(text: String) -> void:
+	TankConfig.ai_embedded_model = text.strip_edges()
 	_push_ai_to_director()
 
 

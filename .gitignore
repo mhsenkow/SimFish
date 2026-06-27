@@ -39,6 +39,8 @@ shaders-godot/godot-project/capture_pass_*.png
 shaders-godot/godot-project/capture_pass_*.png.import
 
 shaders-godot/godot-project/addons/godotsteam/
+shaders-godot/godot-project/addons/godot_llama/
+shaders-godot/godot-project/assets/guardian/*.gguf
 steam/content/
 steam/output/
 steam/app_build.vdf

@@ -12,8 +12,9 @@
 
 extends Node
 
-const AppLinks = preload("res://scripts/app_links.gd")
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const GuardianJournal = preload("res://scripts/guardian_journal.gd")
+const GuardianMindOnboarding = preload("res://scripts/guardian_mind_onboarding.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
 
 const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
@@ -53,7 +54,9 @@ var _post_display: TextureRect = null
 @onready var notifications_toggle: Button = %NotificationsToggle
 @onready var menu_button: Button = %MenuButton
 @onready var portal_toggle: Button = %PortalToggle
-@onready var controls_hint: Label = $ControlsHint
+@onready var controls_hint: Label = $FooterBar/Margin/HBox/ControlsHint
+@onready var footer_bar: PanelContainer = $FooterBar
+@onready var footer_hint_spacer: Control = $FooterBar/Margin/HBox/Spacer
 
 # Focus / immersive mode — hides chrome for an unobstructed tank view.
 var _immersive_mode: bool = false
@@ -569,9 +572,8 @@ func _install_residents_rail_button() -> void:
 
 
 # Lazy-build the Residents panel and toggle its visibility. Docks full-height on
-# the LEFT so the right-side follow portal (the live view of whoever you select)
-# stays visible beside it — "browse left, watch right". Opening it closes the
-# manager side panels (Render docks left too) so they don't collide.
+# the LEFT so the right-side follow portal stays visible — "browse left, watch
+# right". Opening it closes manager side panels so they don't collide.
 func _toggle_residents_panel() -> void:
 	if _residents_panel == null:
 		var script := load("res://scripts/residents_panel.gd")
@@ -579,15 +581,8 @@ func _toggle_residents_panel() -> void:
 		_residents_panel.name = "ResidentsPanel"
 		_residents_panel.set("main_ref", self)
 		add_child(_residents_panel)
-		_residents_panel.anchor_left = 0.0
-		_residents_panel.anchor_top = 0.0
-		_residents_panel.anchor_right = 0.0
-		_residents_panel.anchor_bottom = 1.0
-		_residents_panel.offset_left = 12.0
-		_residents_panel.offset_top = 64.0
-		_residents_panel.offset_right = 372.0
-		_residents_panel.offset_bottom = -64.0
 		_residents_panel.z_index = 130
+	_apply_panel_layout()
 	_residents_panel.visible = not _residents_panel.visible
 	if _residents_panel.visible:
 		if _ui_panels != null:
@@ -598,7 +593,7 @@ func _toggle_residents_panel() -> void:
 
 const SENSITIVITY: float = 0.006
 const ZOOM_FACTOR: float = 1.12
-const MIN_RADIUS: float = 3.0
+const MIN_RADIUS: float = 8.0
 const MAX_RADIUS: float = 40.0
 const MIN_PITCH: float = -1.45
 const MAX_PITCH: float = 1.45
@@ -828,6 +823,12 @@ func _ready() -> void:
 		_refresh_favorite_halos.call_deferred()
 	if _sim != null and _sim.has_signal("guardian_spoke"):
 		_sim.connect("guardian_spoke", _on_guardian_spoke)
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm != null and glm.has_signal("status_changed"):
+		glm.status_changed.connect(_on_guardian_llm_status)
+	if glm != null and glm.has_signal("consent_required"):
+		if not glm.consent_required.is_connected(_on_guardian_consent_required):
+			glm.consent_required.connect(_on_guardian_consent_required)
 	_ui_panels.setup(self)
 	# Hook rail buttons through the panel manager (exclusivity + modal backdrop).
 	if settings_toggle != null:
@@ -879,12 +880,19 @@ func _ready() -> void:
 
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
 	_setup_hud_styling()
+	_setup_footer_bar()
+	_setup_speed_hud()
 	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
 	_build_hud_chips()
 	_setup_rail_groups()
 	_on_viewport_resized()
 	get_viewport().size_changed.connect(_on_viewport_resized)
+
+	# Re-layout the display once the window has its final size. On first
+	# launch the initial pass can run before the window is fully sized,
+	# which leaves integer-upscale letterboxing clipped to a corner.
+	call_deferred("_apply_display_layout")
 
 	# ---- Mobile setup ----
 	if _is_mobile():
@@ -897,8 +905,7 @@ func _ready() -> void:
 		# load on devices like the Pixel that throttle aggressively.
 		Engine.physics_ticks_per_second = 30
 	call_deferred("_maybe_show_tutorial")
-	if controls_hint != null:
-		controls_hint.visible = false
+	call_deferred("_sync_speed_hud")
 	# Always apply the fps cap (works on desktop too, so the user can choose
 	# a 60-fps lock to reduce GPU heat). Mobile gets a 60-fps default on first
 	# launch if no cap has been set.
@@ -942,6 +949,11 @@ func _restore_camera_state() -> void:
 	yaw = float(cfg.camera_yaw)
 	pitch = float(cfg.camera_pitch)
 	radius = float(cfg.camera_radius)
+	# Saved views from extreme scroll-zoom can pin the camera inside the glass.
+	var d: Dictionary = _default_camera_for_tank()
+	var sane_min: float = maxf(MIN_RADIUS, float(d["radius"]) * 0.55)
+	if radius < sane_min:
+		radius = float(d["radius"])
 	target = Vector3(
 		float(cfg.camera_target_x),
 		float(cfg.camera_target_y),
@@ -1045,9 +1057,11 @@ func _sync_viewport_update_mode(active: bool) -> void:
 	var mode := SubViewport.UPDATE_ALWAYS
 	if not live and _sim != null and float(_sim.time_scale) <= 0.0:
 		mode = SubViewport.UPDATE_DISABLED
-	sub_viewport.render_target_update_mode = mode
+	if sub_viewport.render_target_update_mode != mode:
+		sub_viewport.render_target_update_mode = mode
 	if is_instance_valid(_post_viewport):
 		_post_viewport.render_target_update_mode = mode
+	_sync_speed_hud()
 
 
 func _exit_tree() -> void:
@@ -1111,6 +1125,8 @@ func _apply_render_config() -> void:
 	# True bypass would require a separate shader; flagged as TODO.
 	# Camera FOV.
 	if camera != null:
+		camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+		_current_projection_id = "perspective"
 		camera.fov = float(cfg.camera_fov)
 	# Fog: read from environment if available.
 	var we := world.get_node_or_null("WorldEnvironment")
@@ -1244,6 +1260,8 @@ func _process(dt: float) -> void:
 			top_hud.modulate = HUD_DIM_MODULATE
 		if right_rail != null and right_rail.modulate != HUD_DIM_MODULATE:
 			right_rail.modulate = HUD_DIM_MODULATE
+		if footer_bar != null and footer_bar.modulate != HUD_DIM_MODULATE:
+			footer_bar.modulate = HUD_DIM_MODULATE
 
 	# Time-of-day palette tint. Drives the palette_quantize shader's
 	# multiplicative tint so the same 48-color palette breathes between
@@ -1368,7 +1386,7 @@ func _process(dt: float) -> void:
 			if moved:
 				_apply_camera()
 
-	# Timelapse + live state chip (needs dt from _process).
+	# Timelapse + dance capture (needs dt from _process).
 	if _timelapse_active:
 		_timelapse_accum += dt
 		if _timelapse_accum >= TIMELAPSE_INTERVAL:
@@ -1376,6 +1394,16 @@ func _process(dt: float) -> void:
 			var frame_path: String = "%s/frame_%05d.png" % [_timelapse_dir, _timelapse_index]
 			_timelapse_index += 1
 			_request_viewport_image(_save_timelapse_frame.bind(frame_path))
+	if _dance_capture_active:
+		_dance_capture_accum += dt
+		if _dance_capture_accum >= DANCE_CAPTURE_INTERVAL:
+			_dance_capture_accum = 0.0
+			if _dance_capture_index < DANCE_CAPTURE_FRAMES:
+				var dance_path: String = "%s/frame_%05d.png" % [_dance_capture_dir, _dance_capture_index]
+				_dance_capture_index += 1
+				_request_viewport_image(_save_dance_frame.bind(dance_path))
+			else:
+				_finish_dance_capture()
 	_refresh_state_chip()
 	if _light_panel != null and _light_panel.visible:
 		_refresh_light_panel_live()
@@ -1512,6 +1540,7 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_T, _toggle_timelapse)
 		_handle_shortcut(KEY_B, _toggle_aquascape)
 		_handle_shortcut(KEY_H, _toggle_immersive_mode)
+		_handle_shortcut(KEY_F, _reset_camera_to_default)
 		_handle_shortcut(KEY_BACKSPACE, _aquascape_undo)
 		_handle_shortcut(KEY_DELETE, _aquascape_undo)
 
@@ -1690,6 +1719,9 @@ func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 		if panel != null and panel.visible \
 				and panel.get_global_rect().has_point(mouse_pos):
 			return true
+	if footer_bar != null and footer_bar.visible \
+			and footer_bar.get_global_rect().has_point(mouse_pos):
+		return true
 	if right_rail != null and right_rail.visible \
 			and right_rail.get_global_rect().has_point(mouse_pos):
 		return true
@@ -1716,6 +1748,8 @@ func _toggle_pause() -> void:
 		_sim.time_scale = 0.0
 	else:
 		_sim.time_scale = _saved_time_scale
+	_sync_viewport_update_mode(_aquascape.is_active)
+	_sync_speed_hud()
 	_haptic(12)
 
 
@@ -1735,6 +1769,7 @@ func _set_time_scale(s: float) -> void:
 	_sim.time_scale = s
 	_saved_time_scale = s
 	_sync_viewport_update_mode(_aquascape.is_active)
+	_sync_speed_hud()
 	_haptic(12)
 
 
@@ -1797,6 +1832,8 @@ func _set_hud_visible_for_photo(visible: bool) -> void:
 		top_hud.visible = visible
 	if right_rail != null:
 		right_rail.visible = visible
+	if footer_bar != null:
+		footer_bar.visible = visible
 
 
 func _finish_photo_with_hud_restore(img: Image) -> void:
@@ -1867,6 +1904,52 @@ func _toggle_timelapse() -> void:
 		_timelapse_accum = 0.0
 		_timelapse_active = true
 		print_verbose("[walstad_loom] timelapse started: ", _timelapse_dir)
+
+
+# ---- Dance moment capture (Sound Studio) ----
+var _dance_capture_active: bool = false
+var _dance_capture_dir: String = ""
+var _dance_capture_index: int = 0
+var _dance_capture_accum: float = 0.0
+const DANCE_CAPTURE_INTERVAL: float = 0.1
+const DANCE_CAPTURE_FRAMES: int = 20
+
+
+func capture_dance_moment() -> void:
+	if _dance_capture_active:
+		return
+	var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
+	_dance_capture_dir = OS.get_user_data_dir() + "/captures/dance_" + ts
+	DirAccess.make_dir_recursive_absolute(_dance_capture_dir)
+	_dance_capture_index = 0
+	_dance_capture_accum = 0.0
+	_dance_capture_active = true
+	var world_node := get_node_or_null("SubViewport/World")
+	if world_node != null and world_node.has_method("begin_screenshot_boost"):
+		world_node.begin_screenshot_boost(3.0)
+	_set_hud_visible_for_photo(false)
+	_request_viewport_image(_save_dance_hero)
+
+
+func _save_dance_hero(img: Image) -> void:
+	if img == null:
+		return
+	var path: String = _dance_capture_dir + "/hero.png"
+	img.save_png(path)
+	print_verbose("[walstad_loom] dance hero saved: ", path)
+
+
+func _save_dance_frame(img: Image, frame_path: String) -> void:
+	if img != null:
+		img.save_png(frame_path)
+
+
+func _finish_dance_capture() -> void:
+	_dance_capture_active = false
+	_set_hud_visible_for_photo(true)
+	print_verbose("[walstad_loom] dance capture done: ", _dance_capture_dir)
+	_haptic(25)
+	_show_photo_toast(_dance_capture_dir + "/hero.png")
 
 
 # ---- Follow-cam ----
@@ -2155,6 +2238,42 @@ func _on_guardian_spoke(text: String, speaker: Fish, action: String) -> void:
 		_push_notification("guardian", "important" if important else "info", nm, text, important)
 
 
+func _on_guardian_llm_status(message: String) -> void:
+	if message.strip_edges() == "":
+		return
+	var low: String = message.to_lower()
+	if low.contains("download"):
+		_push_notification("guardian_llm", NOTIF_SEVERITY_INFO, "Guardian mind", message, false)
+	elif low.contains("error"):
+		_push_notification("guardian_llm", NOTIF_SEVERITY_IMPORTANT, "Guardian mind", message, false)
+
+
+func _on_guardian_consent_required(needs_download: bool) -> void:
+	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
+		return
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm == null:
+		return
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	backdrop.set_size(vp_size)
+	add_child(backdrop)
+	_guardian_consent_layer = backdrop
+	var mode: int = GuardianMindOnboarding.Mode.DOWNLOAD if needs_download \
+			else GuardianMindOnboarding.Mode.BUNDLED_INFO
+	var modal: PanelContainer = GuardianMindOnboarding.open_in(backdrop, mode)
+	modal.closed.connect(func(accepted: bool) -> void:
+		if is_instance_valid(backdrop):
+			backdrop.queue_free()
+		_guardian_consent_layer = null
+		if needs_download:
+			glm.on_consent_result(accepted)
+		else:
+			glm.on_bundled_info_dismissed())
+
+
 # Human-readable "what is this creature doing right now", from its state machine.
 func creature_activity_label(node: Node) -> String:
 	if node == null or not is_instance_valid(node):
@@ -2439,6 +2558,23 @@ func _window_mouse_to_viewport(mouse: Vector2) -> Vector2:
 	var win_size: Vector2 = get_window().size
 	var sv_size: Vector2 = Vector2(sub_viewport.size)
 	return mouse * (sv_size / win_size)
+
+
+func _subviewport_to_root_ui(sv_pos: Vector2) -> Vector2:
+	# Inverse of _window_mouse_to_viewport — maps SubViewport pixels to root UI space.
+	if display != null and sub_viewport != null and display.size.x > 1.0:
+		var local: Vector2 = Vector2(
+			clampf(sv_pos.x / float(sub_viewport.size.x), 0.0, 1.0) * display.size.x,
+			clampf(sv_pos.y / float(sub_viewport.size.y), 0.0, 1.0) * display.size.y,
+		)
+		return display.get_global_rect().position + local
+	if sub_viewport == null:
+		return sv_pos
+	var win_size: Vector2 = get_window().size
+	var sv_size: Vector2 = Vector2(sub_viewport.size)
+	if sv_size.x <= 0.0 or sv_size.y <= 0.0:
+		return sv_pos
+	return sv_pos * (win_size / sv_size)
 
 
 func _gather_creatures() -> Array:
@@ -2943,6 +3079,7 @@ func wt_pause_sim(on: bool) -> void:
 	else:
 		_sim.time_scale = _wt_saved_time_scale
 	_sync_viewport_update_mode(_aquascape.is_active)
+	_sync_speed_hud()
 
 
 func wt_set_aquascape(on: bool) -> void:
@@ -3017,6 +3154,10 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
 		if mb.pressed:
+			if mb.button_index == MOUSE_BUTTON_WHEEL_UP \
+					or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+				if _click_hits_interactive_hud(mb.position):
+					return
 			if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 				if _mouse_over_porthole():
 					_adjust_portal_zoom(1.1)
@@ -3294,6 +3435,33 @@ func _touch_pick_creature(screen_pos: Vector2) -> bool:
 
 # ---- Mobile UI setup ----
 
+func _setup_footer_bar() -> void:
+	if footer_bar == null:
+		return
+	footer_bar.add_theme_stylebox_override("panel", PanelTheme.make_footer_bar_style())
+	if controls_hint != null:
+		controls_hint.label_settings = null
+		PanelTheme.apply_font(controls_hint, PanelTheme.FONT_MONO, PanelTheme.SIZE_SMALL)
+		controls_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+
+
+func _setup_speed_hud() -> void:
+	_mobile_hud = get_node_or_null("MobileHUD")
+	if _mobile_hud == null:
+		return
+	if _mobile_hud.has_signal("pause_pressed"):
+		if not _mobile_hud.pause_pressed.is_connected(_toggle_pause):
+			_mobile_hud.pause_pressed.connect(_toggle_pause)
+	if _mobile_hud.has_signal("speed_pressed"):
+		if not _mobile_hud.speed_pressed.is_connected(_set_time_scale):
+			_mobile_hud.speed_pressed.connect(_set_time_scale)
+
+
+func _sync_speed_hud() -> void:
+	if _mobile_hud != null and _sim != null and _mobile_hud.has_method("sync_time_scale"):
+		_mobile_hud.sync_time_scale(float(_sim.time_scale))
+
+
 func _setup_mobile_ui() -> void:
 	# Enlarge all header toggle buttons so they're finger-friendly (≥48×48dp).
 	var toggle_buttons: Array[Button] = []
@@ -3314,17 +3482,16 @@ func _setup_mobile_ui() -> void:
 	_apply_rail_dock_layout()
 	
 	# Update the controls hint to show touch gestures instead of keyboard.
-	var hint: Label = get_node_or_null("ControlsHint")
-	if hint != null:
-		hint.text = "drag orbit · pinch zoom · 2-finger pan + twist · tap creature · double-tap reset · long-press auto-orbit · edge-swipe settings"
+	if controls_hint != null:
+		controls_hint.text = "drag orbit · pinch zoom · 2-finger pan + twist · tap creature · double-tap reset · long-press auto-orbit · edge-swipe settings"
 	
-	# Wire up the MobileHUD node if it exists in the scene tree.
+	# Wire up mobile-only MobileHUD actions (speed dock wired in _setup_speed_hud).
 	_mobile_hud = get_node_or_null("MobileHUD")
-	if _mobile_hud != null and _mobile_hud.has_signal("pause_pressed"):
-		_mobile_hud.connect("pause_pressed", _toggle_pause)
-		_mobile_hud.connect("speed_pressed", _set_time_scale)
-		_mobile_hud.connect("photo_pressed", _take_photo)
-		_mobile_hud.connect("undo_pressed", _aquascape_undo)
+	if _mobile_hud != null:
+		if _mobile_hud.has_signal("photo_pressed"):
+			_mobile_hud.connect("photo_pressed", _take_photo)
+		if _mobile_hud.has_signal("undo_pressed"):
+			_mobile_hud.connect("undo_pressed", _aquascape_undo)
 		if _mobile_hud.has_signal("camera_views_pressed"):
 			_mobile_hud.connect("camera_views_pressed", _toggle_camera_views_panel)
 		if _mobile_hud.has_signal("residents_pressed"):
@@ -3339,6 +3506,15 @@ func _setup_mobile_ui() -> void:
 func _apply_camera() -> void:
 	if camera == null:
 		return
+	var hero_yaw: float = yaw
+	var hero_pitch: float = pitch
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("hero_camera_bias"):
+		var hb: Dictionary = mc.hero_camera_bias()
+		var hb_blend: float = float(hb.get("blend", 0.0))
+		if hb_blend > 0.01:
+			hero_yaw += float(hb.get("yaw", 0.0)) * hb_blend
+			hero_pitch = clampf(hero_pitch + float(hb.get("pitch", 0.0)) * hb_blend, MIN_PITCH, MAX_PITCH)
 	# Clamp target to a generous bounding box every time we apply. This is
 	# the single convergence point for pan / WASD / follow-cam — clamping
 	# here means a stray big delta from any of those paths can't push the
@@ -3346,9 +3522,9 @@ func _apply_camera() -> void:
 	target.x = clampf(target.x, -20.0, 20.0)
 	target.y = clampf(target.y, -2.0, 12.0)
 	target.z = clampf(target.z, -20.0, 20.0)
-	var x := cos(pitch) * sin(yaw)
-	var y := sin(pitch)
-	var z := cos(pitch) * cos(yaw)
+	var x := cos(hero_pitch) * sin(hero_yaw)
+	var y := sin(hero_pitch)
+	var z := cos(hero_pitch) * cos(hero_yaw)
 	var pos: Vector3 = target + Vector3(x, y, z) * radius
 	# Pixel-snap camera: round the eye position to multiples of the
 	# world-space size of a single render pixel. Eliminates the sub-pixel
@@ -4107,11 +4283,11 @@ func _apply_display_layout() -> void:
 		display.offset_right = 0.0
 		display.offset_bottom = 0.0
 		return
-	# Integer letterbox. Read the window size, divide by render size, floor,
-	# then center.
-	var win: Vector2 = Vector2(get_window().size)
+	# Integer letterbox. Use the drawable viewport size (not raw window size)
+	# so HiDPI / chrome insets match what the player actually sees.
+	var win: Vector2 = get_viewport().get_visible_rect().size
 	var sv: Vector2 = Vector2(sub_viewport.size)
-	if sv.x <= 0.0 or sv.y <= 0.0:
+	if sv.x <= 0.0 or sv.y <= 0.0 or win.x <= 1.0 or win.y <= 1.0:
 		return
 	var scale_x: float = floorf(win.x / sv.x)
 	var scale_y: float = floorf(win.y / sv.y)
@@ -4123,9 +4299,13 @@ func _apply_display_layout() -> void:
 	# stretched full-rect layout in that case so the player isn't staring
 	# at a tiny tank inside a huge black border. This typically fires when
 	# the render resolution is high relative to a small window.
+	# Also fall back when the letterboxed rect would exceed the window —
+	# otherwise the display is clipped and the player sees a zoomed-in
+	# corner of the render (common when render res > window width).
 	var coverage_x: float = out_size.x / win.x
 	var coverage_y: float = out_size.y / win.y
-	if coverage_x < 0.70 or coverage_y < 0.70:
+	if coverage_x < 0.70 or coverage_y < 0.70 \
+			or out_size.x > win.x + 0.5 or out_size.y > win.y + 0.5:
 		display.anchor_left = 0.0
 		display.anchor_top = 0.0
 		display.anchor_right = 1.0
@@ -4154,8 +4334,8 @@ func _rail_edge_inset() -> float:
 
 func _hud_bottom_inset() -> float:
 	if _rail_dock == "bottom":
-		return PanelTheme.HUD_BOTTOM + PanelTheme.RAIL_BOTTOM_HEIGHT
-	return PanelTheme.HUD_BOTTOM
+		return PanelTheme.FOOTER_HEIGHT + PanelTheme.RAIL_BOTTOM_HEIGHT
+	return PanelTheme.FOOTER_HEIGHT
 
 
 func _want_bottom_rail(_vp: Vector2) -> bool:
@@ -4367,24 +4547,25 @@ func _apply_panel_layout() -> void:
 	var rail: float = _rail_edge_inset()
 	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
 
-	if settings_panel != null:
-		settings_panel.offset_top = top
-		settings_panel.offset_bottom = -bottom
-		settings_panel.offset_right = -rail
-		settings_panel.offset_left = -(rail + panel_w)
+	for panel in [settings_panel, render_panel, sound_panel]:
+		if panel != null:
+			PanelTheme.layout_side_panel(panel, rail, top, bottom, panel_w, "right")
 
-	if render_panel != null:
-		render_panel.offset_top = top
-		render_panel.offset_bottom = -bottom
-		render_panel.offset_left = edge
-		render_panel.offset_right = edge + panel_w
+	if _notifications_panel != null:
+		PanelTheme.layout_side_panel(_notifications_panel, rail, top, bottom, panel_w, "right")
 
-	var sound_w: float = clampf(vp.x * 0.38, 400.0, 560.0)
-	if sound_panel != null:
-		sound_panel.offset_top = top
-		sound_panel.offset_bottom = -bottom
-		sound_panel.offset_left = -sound_w * 0.5
-		sound_panel.offset_right = sound_w * 0.5
+	if _light_panel != null:
+		PanelTheme.layout_side_panel(_light_panel, rail, top, bottom, panel_w, "right")
+		var scroll: Control = _light_panel.get_meta("scroll_container", null) as Control
+		if scroll != null:
+			var body_h: float = vp.y - top - bottom - 100.0
+			scroll.custom_minimum_size = Vector2(0, clampf(body_h, 280.0, 640.0))
+
+	if _notifications_toast_layer != null:
+		PanelTheme.layout_toast_stack(_notifications_toast_layer, bottom)
+
+	if _residents_panel != null:
+		PanelTheme.layout_side_panel(_residents_panel, edge, top, bottom, panel_w, "left")
 
 	if library_panel != null:
 		library_panel.offset_left = edge
@@ -4616,7 +4797,7 @@ func _open_light_panel_exclusive() -> void:
 	_pull_light_panel_values()
 	_light_panel.visible = true
 	_light_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	call_deferred("_position_light_panel")
+	_apply_panel_layout()
 	_sync_light_btn()
 
 
@@ -4624,6 +4805,8 @@ func _close_light_panel() -> void:
 	if _light_panel != null and _light_panel.visible:
 		_light_panel.visible = false
 		_light_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if _ui_panels != null:
+		_ui_panels.notify_side_closed(UiPanelManager.SIDE_LIGHT)
 	_sync_light_btn()
 
 
@@ -4640,6 +4823,8 @@ func _close_notifications_panel() -> void:
 	if _notifications_panel != null:
 		_notifications_panel.visible = false
 		_notifications_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if _ui_panels != null:
+		_ui_panels.notify_side_closed(UiPanelManager.SIDE_NOTIFICATIONS)
 
 
 func _toggle_notifications_panel() -> void:
@@ -4806,42 +4991,15 @@ func _ensure_notifications_ui() -> void:
 	_notifications_toast_layer = Control.new()
 	_notifications_toast_layer.name = "NotificationToasts"
 	_notifications_toast_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_notifications_toast_layer.anchor_left = 1.0
-	_notifications_toast_layer.anchor_top = 0.0
-	_notifications_toast_layer.anchor_right = 1.0
-	_notifications_toast_layer.anchor_bottom = 0.0
-	_notifications_toast_layer.offset_left = -360.0
-	_notifications_toast_layer.offset_top = 56.0
-	_notifications_toast_layer.offset_right = -74.0
-	_notifications_toast_layer.offset_bottom = 300.0
+	_notifications_toast_layer.z_index = 95
 	add_child(_notifications_toast_layer)
 
 	_notifications_panel = PanelContainer.new()
 	_notifications_panel.visible = false
 	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_notifications_panel.custom_minimum_size = Vector2(560, 360)
-	_notifications_panel.anchor_left = 1.0
-	_notifications_panel.anchor_top = 0.0
-	_notifications_panel.anchor_right = 1.0
-	_notifications_panel.anchor_bottom = 1.0
-	_notifications_panel.offset_left = -640.0
-	_notifications_panel.offset_top = 56.0
-	_notifications_panel.offset_right = -74.0
-	_notifications_panel.offset_bottom = -40.0
-
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.95)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 12
-	style.content_margin_right = 12
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	style.shadow_color = Color(0, 0, 0, 0.45)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0, 6)
-	_notifications_panel.add_theme_stylebox_override("panel", style)
+	_notifications_panel.custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 360)
+	_notifications_panel.z_index = 110
+	PanelTheme.apply_panel_chrome(_notifications_panel)
 	add_child(_notifications_panel)
 
 	var root := VBoxContainer.new()
@@ -4850,11 +5008,8 @@ func _ensure_notifications_ui() -> void:
 	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_notifications_panel.add_child(root)
 
-	var title := Label.new()
-	title.text = "Notifications"
-	title.add_theme_font_size_override("font_size", 14)
-	title.add_theme_color_override("font_color", Color(0.96, 0.97, 0.99))
-	root.add_child(title)
+	root.add_child(PanelTheme.make_title("Notifications"))
+	root.add_child(PanelTheme.make_rule())
 
 	var controls := HBoxContainer.new()
 	controls.add_theme_constant_override("separation", 6)
@@ -4885,8 +5040,7 @@ func _ensure_notifications_ui() -> void:
 	_notifications_sort.item_selected.connect(_on_notifications_sort_selected)
 	controls.add_child(_notifications_sort)
 
-	var clear_btn := Button.new()
-	clear_btn.text = "Clear"
+	var clear_btn := PanelTheme.make_secondary_button("Clear all")
 	clear_btn.pressed.connect(_clear_notifications)
 	controls.add_child(clear_btn)
 
@@ -4904,6 +5058,12 @@ func _ensure_notifications_ui() -> void:
 	_notifications_empty_label.text = "No notifications yet."
 	_notifications_empty_label.add_theme_color_override("font_color", Color(0.70, 0.76, 0.86, 0.9))
 	_notifications_list.add_child(_notifications_empty_label)
+
+	root.add_child(PanelTheme.make_panel_footer(func() -> void:
+		_close_notifications_panel()
+		_sync_rail_toggles()))
+
+	_apply_panel_layout()
 
 
 func _on_notifications_kind_filter_selected(idx: int) -> void:
@@ -5091,9 +5251,13 @@ func _spawn_notification_toast(notif: Dictionary) -> void:
 	_notification_toast_active += 1
 	var card := PanelContainer.new()
 	card.modulate.a = 0.0
-	card.position = Vector2(28, float(_notification_toast_active - 1) * 74.0)
+	var stack_idx: int = _notification_toast_active - 1
+	var layer_h: float = _notifications_toast_layer.size.y
+	if layer_h < 1.0:
+		layer_h = PanelTheme.TOAST_STACK_H
+	card.position = Vector2(0.0, layer_h - float(stack_idx + 1) * 74.0)
 	card.scale = Vector2(0.96, 0.96)
-	card.custom_minimum_size = Vector2(250, 64)
+	card.custom_minimum_size = Vector2(PanelTheme.TOAST_STACK_W - 8.0, 64)
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.09, 0.12, 0.19, 0.96)
 	style.border_color = Color(0.35, 0.45, 0.6, 0.75)
@@ -5217,6 +5381,9 @@ func _collect_water_alert_notifications() -> void:
 # a RichTextLabel showing one event per line, newest first.
 var _story_popup: PanelContainer = null
 var _story_list: RichTextLabel = null
+var _story_title: Label = null
+var _story_tab: String = "tank"
+var _guardian_consent_layer: Control = null
 var _plant_inspector: PanelContainer = null
 var _plant_inspector_body: Label = null
 var _plant_hover: Plant = null
@@ -5260,6 +5427,24 @@ func _ensure_story_popup() -> void:
 	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
 	vbox.add_child(title)
+	_story_title = title
+
+	var tab_row := HBoxContainer.new()
+	tab_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(tab_row)
+	var tank_tab := PanelTheme.make_secondary_button("Tank events")
+	tank_tab.pressed.connect(func() -> void:
+		_story_tab = "tank"
+		_refresh_story_popup_body())
+	tab_row.add_child(tank_tab)
+	var diary_tab := PanelTheme.make_secondary_button("Guardian diary")
+	diary_tab.pressed.connect(func() -> void:
+		_story_tab = "guardian"
+		_refresh_story_popup_body())
+	tab_row.add_child(diary_tab)
+	var export_btn := PanelTheme.make_secondary_button("Copy diary")
+	export_btn.pressed.connect(_export_guardian_journal)
+	tab_row.add_child(export_btn)
 
 	_story_list = RichTextLabel.new()
 	_story_list.bbcode_enabled = true
@@ -5281,25 +5466,46 @@ func _show_story_popup(_chip_color: Color) -> void:
 	_ensure_story_popup()
 	if _sim == null:
 		return
-	var events: Array = _sim.story_events
-	if events.is_empty():
-		_story_list.text = "[color=#9aa8c8]No story yet. Wait for things to happen.[/color]"
-	else:
-		var lines: Array[String] = []
-		# Newest events first so the most recent reads at the top.
-		for i in range(events.size() - 1, -1, -1):
-			var e: Dictionary = events[i]
-			var t: float = float(e.get("t", 0.0))
-			lines.append("[color=#9aa8c8]%s[/color]  %s" % [
-				_format_story_t(t, e), String(e.get("text", "")),
-			])
-		_story_list.text = "\n".join(lines)
+	_refresh_story_popup_body()
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	_story_popup.size = _story_popup.custom_minimum_size
 	_story_popup.position = Vector2(
 		(vp.x - _story_popup.size.x) * 0.5, 56.0)
 	_story_popup.visible = true
 	_chip_popup_key = "mood"
+
+
+func _refresh_story_popup_body() -> void:
+	if _sim == null or _story_list == null:
+		return
+	if _story_tab == "guardian":
+		if _story_title != null:
+			_story_title.text = "Guardian diary"
+		var journal: Array = _sim.get_guardian_journal() if _sim.has_method("get_guardian_journal") else []
+		_story_list.text = GuardianJournal.format_bbcode(journal)
+	else:
+		if _story_title != null:
+			_story_title.text = "Tank story"
+		var events: Array = _sim.story_events
+		if events.is_empty():
+			_story_list.text = "[color=#9aa8c8]No story yet. Wait for things to happen.[/color]"
+		else:
+			var lines: Array[String] = []
+			for i in range(events.size() - 1, -1, -1):
+				var e: Dictionary = events[i]
+				var t: float = float(e.get("t", 0.0))
+				lines.append("[color=#9aa8c8]%s[/color]  %s" % [
+					_format_story_t(t, e), String(e.get("text", "")),
+				])
+			_story_list.text = "\n".join(lines)
+
+
+func _export_guardian_journal() -> void:
+	if _sim == null or not _sim.has_method("export_guardian_journal_plain"):
+		return
+	DisplayServer.clipboard_set(_sim.export_guardian_journal_plain())
+	if has_method("_push_notification"):
+		_push_notification("guardian", "info", "Diary copied", "Guardian journal copied to clipboard.", false)
 
 
 func _try_pick_plant_at(screen_pos: Vector2) -> void:
@@ -5379,8 +5585,14 @@ func _show_plant_inspector(plant: Plant) -> void:
 			float(diag.get("f_co2", 0.0)) * 100.0,
 		])
 	_plant_inspector_body.text = "\n".join(lines)
+	var anchor: Vector3 = plant.global_position + Vector3(0, plant.top_world_y() + 0.35, 0)
+	var screen: Vector2 = _subviewport_to_root_ui(camera.unproject_position(anchor))
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	_plant_inspector.position = Vector2((vp.x - _plant_inspector.size.x) * 0.5, vp.y - 150.0)
+	var panel_sz: Vector2 = _plant_inspector.custom_minimum_size
+	_plant_inspector.position = Vector2(
+		clampf(screen.x - panel_sz.x * 0.5, 8.0, vp.x - panel_sz.x - 8.0),
+		clampf(screen.y - panel_sz.y - 14.0, 8.0, vp.y - panel_sz.y - 8.0),
+	)
 	_plant_inspector.visible = true
 
 
@@ -5427,7 +5639,7 @@ func _update_plant_hover_meter() -> void:
 		pct = float(picked.get_growth_inspector().get("growth_pct", 0.0))
 	_plant_hover_bar.value = pct
 	var anchor: Vector3 = picked.global_position + Vector3(0, picked.top_world_y() + 0.25, 0)
-	var screen: Vector2 = camera.unproject_position(anchor)
+	var screen: Vector2 = _subviewport_to_root_ui(camera.unproject_position(anchor))
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	if screen.x < -40.0 or screen.y < -40.0 or screen.x > vp.x + 40.0 or screen.y > vp.y + 40.0:
 		_plant_hover_meter.visible = false
@@ -5741,6 +5953,8 @@ func _notify_hud_input() -> void:
 		top_hud.modulate = HUD_LIT_MODULATE
 	if right_rail != null and right_rail.modulate != HUD_LIT_MODULATE:
 		right_rail.modulate = HUD_LIT_MODULATE
+	if footer_bar != null and footer_bar.modulate != HUD_LIT_MODULATE:
+		footer_bar.modulate = HUD_LIT_MODULATE
 
 
 # Format "{total} / {adults}{a_suf} {kids}{k_suf}" with the breakdown hidden
@@ -5802,33 +6016,16 @@ func _ensure_light_panel() -> void:
 	_light_panel.name = "LightPanel"
 	_light_panel.visible = false
 	_light_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_light_panel.custom_minimum_size = Vector2(380, 0)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.95)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 12
-	style.content_margin_bottom = 12
-	style.shadow_color = Color(0, 0, 0, 0.45)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0, 6)
-	_light_panel.add_theme_stylebox_override("panel", style)
+	_light_panel.custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
+	PanelTheme.apply_panel_chrome(_light_panel)
 	add_child(_light_panel)
 
-	# Panel grew quite tall (preset row + 4 sections) so wrap the body in a
-	# ScrollContainer; the panel itself is height-capped in _position_light_panel.
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
 	_light_panel.add_child(outer)
 
-	var title := Label.new()
-	title.text = "Light"
-	title.add_theme_font_size_override("font_size", 14)
-	title.add_theme_color_override("font_color", Color(0.96, 0.97, 0.99))
-	outer.add_child(title)
+	outer.add_child(PanelTheme.make_title("Light"))
+	outer.add_child(PanelTheme.make_rule())
 
 	# Preset row: dropdown at the top so users can grab a curated look in
 	# one click. Selecting a non-custom preset applies its values; touching
@@ -6121,6 +6318,10 @@ func _ensure_light_panel() -> void:
 	var hint := PanelTheme.make_description()
 	hint.text = "Master off renders the tank near-black. For fixture type, direction, and beams open Settings."
 	vbox.add_child(hint)
+
+	outer.add_child(PanelTheme.make_panel_footer(func() -> void:
+		_close_light_panel()
+		_sync_rail_toggles()))
 
 
 # 2D pad widget for the sun direction. The X axis maps to cfg.light_yaw
@@ -6459,41 +6660,7 @@ func _refresh_light_panel_live() -> void:
 
 
 func _position_light_panel() -> void:
-	if _light_panel == null:
-		return
-	# Float the panel just left of the rail. Rather than fight the layout
-	# after the fact, size the ScrollContainer to ~75% of the viewport
-	# height *before* reset_size() so the panel grows to a known target
-	# height and the scroll body always has a real clip rect.
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var scroll: Control = _light_panel.get_meta("scroll_container", null) as Control
-	if scroll != null:
-		var target_h: float = clampf(vp.y * 0.75, 360.0, 760.0)
-		scroll.custom_minimum_size = Vector2(0, target_h)
-	_light_panel.size = Vector2.ZERO  # let it shrink to content
-	_light_panel.reset_size()
-	var sz: Vector2 = _light_panel.size
-	if sz.x < _light_panel.custom_minimum_size.x:
-		sz.x = _light_panel.custom_minimum_size.x
-	var btn_rect: Rect2 = Rect2()
-	if _light_btn != null:
-		btn_rect = _light_btn.get_global_rect()
-	var x: float
-	var y: float
-	if _rail_dock == "bottom":
-		# Bottom-docked rail: float above the button.
-		x = clampf(btn_rect.position.x + btn_rect.size.x * 0.5 - sz.x * 0.5,
-			8.0, vp.x - sz.x - 8.0)
-		y = btn_rect.position.y - sz.y - 8.0
-		if y < 8.0:
-			y = 8.0
-	else:
-		# Right-docked rail: float to the left of the button.
-		x = btn_rect.position.x - sz.x - 8.0
-		if x < 8.0:
-			x = 8.0
-		y = clampf(btn_rect.position.y, 8.0, vp.y - sz.y - 8.0)
-	_light_panel.position = Vector2(x, y)
+	_apply_panel_layout()
 
 
 func _sync_light_btn() -> void:
@@ -6898,8 +7065,14 @@ func _apply_immersive_mode() -> void:
 		right_rail.visible = not _immersive_mode
 	if controls_hint != null:
 		controls_hint.visible = not _immersive_mode
-	if _mobile_hud != null and _mobile_hud.visible:
-		_mobile_hud.visible = not _immersive_mode
+	if footer_hint_spacer != null:
+		footer_hint_spacer.visible = not _immersive_mode
+	if footer_bar != null:
+		footer_bar.visible = true
+	if _mobile_hud != null:
+		if _mobile_hud.has_method("set_immersive_mode"):
+			_mobile_hud.set_immersive_mode(_immersive_mode)
+		_mobile_hud.visible = true
 	if aquascape_palette != null:
 		if _immersive_mode:
 			aquascape_palette.visible = false
@@ -6940,8 +7113,9 @@ func _ensure_immersive_exit_button() -> void:
 	_immersive_exit_btn.anchor_bottom = 0.0
 	_immersive_exit_btn.offset_left = 12.0
 	_immersive_exit_btn.offset_top = 12.0
+	_immersive_exit_btn.focus_mode = Control.FOCUS_NONE
+	PanelTheme.style_hud_toggle_button(_immersive_exit_btn, false)
 	_immersive_exit_btn.custom_minimum_size = Vector2(108, 36)
-	_immersive_exit_btn.modulate = Color(1, 1, 1, 0.82)
 	_immersive_exit_btn.visible = false
 	_immersive_exit_btn.pressed.connect(_toggle_immersive_mode)
 	add_child(_immersive_exit_btn)
@@ -6985,6 +7159,7 @@ var _save_pending_time_scale: float = 1.0
 
 func _try_load_saved_state() -> void:
 	SaveManager.try_load(self, _sim, world, _aquascape, &"_save_restored")
+	_sync_speed_hud()
 
 
 # Snapshot the world to disk. Called by:
@@ -7111,6 +7286,8 @@ func _on_focus_out() -> void:
 		save_active_tank(true)
 	if _sim == null:
 		return
+	if _sim.has_method("on_player_focus_out"):
+		_sim.on_player_focus_out()
 	# Only freeze if the sim is currently running; if it was already paused
 	# don't store 0 as the "saved" value — we'd unpause on resume.
 	var ts: float = float(_sim.time_scale)
@@ -7119,14 +7296,19 @@ func _on_focus_out() -> void:
 		_sim.time_scale = 0.0
 		_focus_paused = true
 		_sync_viewport_update_mode(_aquascape.is_active)
+		_sync_speed_hud()
 
 
 func _on_focus_in() -> void:
 	if _sim == null or not _focus_paused:
-		return
-	_sim.time_scale = _focus_saved_time_scale
-	_focus_paused = false
-	_sync_viewport_update_mode(_aquascape.is_active)
+		pass
+	else:
+		_sim.time_scale = _focus_saved_time_scale
+		_focus_paused = false
+		_sync_viewport_update_mode(_aquascape.is_active)
+		_sync_speed_hud()
+	if _sim != null and _sim.has_method("on_player_focus_in"):
+		_sim.on_player_focus_in()
 
 
 func _persist_last_quit_unix() -> void:
@@ -7138,26 +7320,16 @@ func _persist_last_quit_unix() -> void:
 
 
 # ---- Device tier pick (first mobile launch) ----
-# Cheap heuristic for picking an initial render scale: use the screen's
-# short-side pixel count. Phones report ~720-1200 short side; tablets are
-# 1200+. We only set device_tier once (when "") so the user's later choice
-# is preserved across launches. Render res is bumped on tablets only —
-# phones keep the current default that's already working well.
+# Cheap heuristic for classifying device tier on first mobile launch.
+# Records screen class only — does not override render resolution or adaptive quality.
 func _pick_device_tier_if_unset() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
 	if String(cfg.device_tier) != "":
-		return  # already picked
+		return
 	var sz: Vector2i = DisplayServer.screen_get_size()
 	var short_side: int = min(sz.x, sz.y) if sz.x > 0 and sz.y > 0 else 0
-	# RAM-aware downshift: a phone with a 1440p screen and 3GB of RAM is a
-	# budget device that will choke if we render at the "high" tier just
-	# because the screen is big. Read the OS memory hint where available
-	# and force a low tier when total RAM is under ~3.5GB. Godot exposes
-	# get_memory_info() with a "free"/"available"/"total" map on most
-	# desktops, but on Android we fall back to a best-effort static usage
-	# check and assume conservative tier when info isn't available.
 	var ram_gb: float = 0.0
 	if OS.has_method("get_memory_info"):
 		var info: Dictionary = OS.get_memory_info()
@@ -7165,43 +7337,12 @@ func _pick_device_tier_if_unset() -> void:
 		if total > 0:
 			ram_gb = float(total) / (1024.0 * 1024.0 * 1024.0)
 	var low_ram: bool = ram_gb > 0.0 and ram_gb < 3.5
-	if low_ram:
-		# Force the low tier regardless of screen size. Tablet-size screen
-		# with low RAM (common on budget Android tablets) still wants the
-		# small render target.
+	if low_ram or short_side < 900:
 		cfg.device_tier = "low"
-		cfg.render_width = 256
-		cfg.render_height = 144
 	elif short_side >= 1500:
 		cfg.device_tier = "high"
-		# Bump render res so the tank fills the bigger tablet panel with
-		# more detail. Stays well within typical mobile GPU budgets.
-		cfg.render_width = 768
-		cfg.render_height = 432
-	elif short_side >= 900:
-		cfg.device_tier = "mid"
-		# Phones with 1080p-ish short sides (Pixel 10 is 1080) — the
-		# palette-quantize shader runs at OUTPUT resolution, so any extra
-		# source pixels above 384×216 just pay for themselves twice (once
-		# to render, again to quantize+dither at output res). 384×216
-		# upscales to 1080 at 5x integer, which the palette shader handles
-		# cleanly. Was 512×288 — measurably hot on the Pixel 10.
-		cfg.render_width = 384
-		cfg.render_height = 216
 	else:
-		cfg.device_tier = "low"
-		# Tiny / old phones: drop one notch so we stay smooth.
-		cfg.render_width = 384
-		cfg.render_height = 216
-	# On mobile, enable adaptive quality on first launch with a 28fps floor.
-	# Pixel-class phones thermal-throttle the GPU during long sessions; the
-	# adaptive_quality tick will step the SubViewport down a tier when
-	# sustained fps drops below the floor, giving the chip room to cool.
-	# Steps back up when there's headroom, so the user gets the best res
-	# their thermal envelope can hold instead of a fixed-and-hot ceiling.
-	if not cfg.adaptive_quality:
-		cfg.adaptive_quality = true
-		cfg.adaptive_quality_target_fps = 28
+		cfg.device_tier = "mid"
 	cfg.save_to_disk()
 	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px, %.1f GB RAM)" \
 		% [cfg.device_tier, short_side, ram_gb])
@@ -7337,11 +7478,13 @@ func _spawn_welcome_label(text: String) -> void:
 	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lab.anchor_left = 0.0
-	lab.anchor_right = 1.0
-	lab.anchor_top = 0.0
-	lab.anchor_bottom = 0.0
-	lab.offset_top = 64.0
-	lab.offset_bottom = 96.0
+	lab.anchor_right = 0.0
+	lab.anchor_top = 1.0
+	lab.anchor_bottom = 1.0
+	lab.offset_left = PanelTheme.EDGE_MARGIN
+	lab.offset_right = PanelTheme.EDGE_MARGIN + PanelTheme.TOAST_STACK_W
+	lab.offset_top = -(_hud_bottom_inset() + PanelTheme.TOAST_STACK_H + 8.0)
+	lab.offset_bottom = -(_hud_bottom_inset() + PanelTheme.TOAST_STACK_H - 24.0)
 	add_child(lab)
 	_welcome_label = lab
 	# Fade out after 4 seconds. Use a tween so the message gently disappears

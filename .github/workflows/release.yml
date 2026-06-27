@@ -55,6 +55,15 @@ jobs:
         shell: bash
         run: bash steam/install_godotsteam.sh
 
+      - name: Install godot_llama (Guardian in-process LLM)
+        shell: bash
+        run: bash scripts/install_godot_llama.sh
+
+      - name: Bundle Guardian model (Steam — no runtime download)
+        if: matrix.name != 'Android'
+        shell: bash
+        run: bash scripts/fetch_guardian_model.sh
+
       - name: Install Godot + export templates (Linux)
         if: runner.os == 'Linux'
         run: |

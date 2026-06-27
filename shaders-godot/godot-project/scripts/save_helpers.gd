@@ -8,6 +8,21 @@
 class_name SaveHelpers
 
 
+# ---- Scalar coercion (avoid float()/String() constructors — shadowed in GDScript 4.6) ----
+
+static func _num(v: Variant, fallback: float = 0.0) -> float:
+	if v is float:
+		return v if is_finite(v) else fallback
+	if v is int:
+		var n: float = v
+		return n
+	return fallback
+
+
+static func sanitize_vec3(v: Vector3, fallback: Vector3 = Vector3.ZERO) -> Vector3:
+	return v if v.is_finite() else fallback
+
+
 # ---- Color ----
 
 static func color_to_array(c: Color) -> Array:
@@ -16,8 +31,8 @@ static func color_to_array(c: Color) -> Array:
 
 static func array_to_color(a, fallback: Color = Color.WHITE) -> Color:
 	if a is Array and a.size() >= 3:
-		var alpha: float = float(a[3]) if a.size() >= 4 else 1.0
-		return Color(float(a[0]), float(a[1]), float(a[2]), alpha)
+		var alpha: float = _num(a[3], 1.0) if a.size() >= 4 else 1.0
+		return Color(_num(a[0]), _num(a[1]), _num(a[2]), alpha)
 	return fallback
 
 
@@ -42,12 +57,15 @@ static func array_to_colors(a) -> Array:
 # ---- Vector3 ----
 
 static func vec3_to_array(v: Vector3) -> Array:
+	v = sanitize_vec3(v)
 	return [v.x, v.y, v.z]
 
 
 static func array_to_vec3(a, fallback: Vector3 = Vector3.ZERO) -> Vector3:
 	if a is Array and a.size() >= 3:
-		return Vector3(float(a[0]), float(a[1]), float(a[2]))
+		var v := Vector3(_num(a[0]), _num(a[1]), _num(a[2]))
+		if v.is_finite():
+			return v
 	return fallback
 
 
@@ -59,5 +77,5 @@ static func vec2_to_array(v: Vector2) -> Array:
 
 static func array_to_vec2(a, fallback: Vector2 = Vector2.ZERO) -> Vector2:
 	if a is Array and a.size() >= 2:
-		return Vector2(float(a[0]), float(a[1]))
+		return Vector2(_num(a[0]), _num(a[1]))
 	return fallback

@@ -53,6 +53,9 @@ var maturity: int = MATURITY_FRY
 var velocity: Vector3 = Vector3.ZERO
 var heading: Vector3 = Vector3.FORWARD
 var speed: float = 0.0
+var _escape_remaining: float = 0.0
+var _pleopod_phase: float = 0.0
+var _hydro_profile: Dictionary = {}
 var current_mode: Mode = Mode.WANDER
 var breed_cooldown: float = 0.0
 
@@ -1269,6 +1272,8 @@ func _look_up_for_direction(d: Vector3) -> Vector3:
 
 
 func _motion_substep(dt: float) -> void:
+	if _hydro_profile.is_empty():
+		_hydro_profile = Hydrodynamics.profile_for_locomotion("shrimp", 0.14)
 	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
 	if climb_target == null:
 		_target_velocity.y -= 1.2 * dt
@@ -1278,6 +1283,8 @@ func _motion_substep(dt: float) -> void:
 		target_spd = _target_velocity.length()
 		target_dir = _target_velocity.normalized()
 	target_spd *= _day_activity_mult()
+	if target_spd > speed + 0.42 and target_spd > 0.5:
+		_escape_remaining = maxf(_escape_remaining, 0.38)
 	var constrained: Vector3 = _constrain_velocity_to_tank(target_dir * target_spd)
 	if constrained.length_squared() > 1e-6:
 		target_dir = constrained.normalized()
@@ -1292,13 +1299,43 @@ func _motion_substep(dt: float) -> void:
 		heading = heading.rotated(axis, turn).normalized()
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
-	speed = move_toward(speed, target_spd, 3.0 * dt)
+	var w: Node = sim.get_parent() if sim != null else null
+	var flow_vel: Vector3 = Vector3.ZERO
+	if w != null and w.has_method("sample_flow"):
+		flow_vel = w.sample_flow(global_position)
+		target_spd *= Hydrodynamics.upstream_effort(flow_vel, heading)
+	if _escape_remaining > 0.0:
+		_escape_remaining = maxf(0.0, _escape_remaining - dt)
+		heading = (-target_dir if target_dir.length_squared() > 1e-6 else -heading).normalized()
+		speed += 2.8 * dt
+		target_spd = maxf(target_spd, max_speed * 1.15)
+	else:
+		var stroke: float = Hydrodynamics.stroke_thrust(
+			_swim_phase, _hydro_profile, speed, target_spd, max_speed)
+		if climb_target != null or global_position.y > substrate_top_y + 0.35:
+			stroke += maxf(0.0, sin(_swim_phase * 2.35)) * 0.18
+		var drag_k: float = Hydrodynamics.drag_coeff(0.14, _hydro_profile)
+		speed = Hydrodynamics.integrate_speed(
+			speed, target_spd, stroke, drag_k, 3.0, dt, true)
+	if flow_vel.length_squared() > 1e-6:
+		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(0.14)
+	# Substrate grip — planted feet when walking, not tail-flipping (#21).
+	if climb_target == null and _escape_remaining <= 0.0 \
+			and global_position.y <= substrate_top_y + 0.22:
+		global_position.y = substrate_top_y + 0.08
+		if target_spd < 0.4:
+			speed = minf(speed, target_spd + 0.05)
 	velocity = heading * speed
 	position += velocity * dt
-	if sim != null:
-		var w: Node = sim.get_parent()
-		if w != null and w.has_method("clamp_xyz_in_tank"):
-			global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
+	if speed > 0.55 and w != null:
+		if w.has_method("deposit_wake"):
+			w.deposit_wake(global_position, heading * speed, 0.14)
+		if w.has_method("brush_plants_near") and randf() < dt * 0.5:
+			w.brush_plants_near(global_position, heading, speed, 0.55)
+		if w.has_method("spawn_creature_substrate_dust") and speed > 0.65 and randf() < dt * 0.35:
+			w.spawn_creature_substrate_dust(global_position, 1.1)
 	# Same non-finite guard as fish.gd — look_at(NaN) corrupts the basis and
 	# every child VoxelBatch instance floods instance_set_transform errors.
 	if not global_position.is_finite() or not transform.is_finite():
@@ -1356,13 +1393,16 @@ func _process(dt: float) -> void:
 	if not do_body_anim:
 		return
 
-	# Animation: tail flicks + antennae twitch + walking bob.
+	# Animation: tail flicks + pleopod paddle + antennae twitch + walking bob.
 	_swim_phase += dt * (3.0 + speed * 4.0)
+	_pleopod_phase += dt * (4.5 + speed * 5.0)
 	# Tail-flick amplitude scales sharply with speed. A calm shrimp barely
 	# twitches its tail; a spooked or fleeing shrimp executes the classic
 	# big rapid "tail flip" escape - real shrimp use this to shoot
 	# backwards away from predators.
 	var tail_amp: float = 0.12 + minf(speed * 0.45, 0.45)
+	if _escape_remaining > 0.0:
+		tail_amp = 0.65 + _escape_remaining * 0.4
 	if _tail_pivot != null:
 		_tail_pivot.rotation.x = sin(_swim_phase) * tail_amp
 	if _antenna_pivot != null:

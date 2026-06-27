@@ -272,8 +272,7 @@ func _build_ui() -> void:
 		var add_btn := PanelTheme.make_primary_button("Add %d" % n)
 		add_btn.pressed.connect(_add_to_tank.bind(n))
 		footer.add_child(add_btn)
-	var close_btn := PanelTheme.make_secondary_button("Close")
-	close_btn.pressed.connect(close)
+	var close_btn := PanelTheme.make_close_button(close)
 	footer.add_child(close_btn)
 
 

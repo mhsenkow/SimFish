@@ -48,10 +48,21 @@ var _enabled: bool = false
 var _intensity: float = 0.75
 var _beat_serial: int = 0
 var _beat_cooldown: float = 0.0
+var _phase_beats: float = 0.0
+var _last_serial_snap: int = -1
+var _clock_confidence: float = 0.45
+var _prev_energy_peak: float = 0.0
+var _drop_detect_until: float = 0.0
+const _LATENCY_SEC: float = 0.08
 var _bass_smooth: float = 0.0
 var _energy_smooth: float = 0.0
 var _bass_peak: float = 0.0
+# Rolling peaks per band — auto-gain so bass/mid/high meters read on quiet MP3s.
+var _band_peak: Dictionary = {"bass": 0.004, "mid": 0.004, "high": 0.004}
+var _session_latency_offset_ms: float = 0.0
 var _bubble_accum: float = 0.0
+var _analyzer: MusicAnalyzer = MusicAnalyzer.new()
+var _analysis: Dictionary = {}
 
 var _drive: Dictionary = {
 	"bass": 0.0,
@@ -117,7 +128,68 @@ func is_external_playing() -> bool:
 
 
 func get_drive() -> Dictionary:
-	return _drive.duplicate()
+	var d: Dictionary = _drive.duplicate()
+	d["beat_phase"] = _beat_phase()
+	return d
+
+
+func get_meter_levels() -> Dictionary:
+	return {
+		"bass": float(_drive.bass),
+		"mid": float(_drive.mid),
+		"high": float(_drive.high),
+		"beat": float(_drive.beat),
+		"energy": float(_drive.energy),
+	}
+
+
+func session_latency_ms() -> float:
+	return clampf(float(TankConfig.music_sync_latency_ms) + _session_latency_offset_ms, 0.0, 200.0)
+
+
+func session_latency_offset_ms() -> float:
+	return _session_latency_offset_ms
+
+
+func nudge_session_latency(delta_ms: float) -> void:
+	_session_latency_offset_ms = clampf(_session_latency_offset_ms + delta_ms, -80.0, 80.0)
+
+
+func reset_meter_calibration() -> void:
+	_band_peak = {"bass": 0.004, "mid": 0.004, "high": 0.004}
+
+
+func reset_session_calibration() -> void:
+	_session_latency_offset_ms = 0.0
+	reset_meter_calibration()
+
+
+func reset_session_latency() -> void:
+	_session_latency_offset_ms = 0.0
+
+
+func get_music_clock() -> Dictionary:
+	if not _analysis.is_empty():
+		return _analysis.duplicate()
+	var beat_phase: float = _beat_phase()
+	var bar_phase: float = fposmod(_phase_beats / 4.0, 1.0)
+	var bar_count: int = maxi(0, int(_phase_beats / 4.0))
+	var phrase: Dictionary = _phrase_from_bar(bar_count)
+	return {
+		"beat_phase": beat_phase,
+		"bar_phase": bar_phase,
+		"bar_count": bar_count,
+		"downbeat": beat_phase < 0.06,
+		"phrase_state": phrase.get("phrase_state", "verse"),
+		"phrase_progress": phrase.get("phrase_progress", bar_phase),
+		"confidence": _clock_confidence,
+		"drop_detected": _drop_detect_until > 0.0,
+		"onsets": [],
+	}
+
+
+func get_analysis() -> Dictionary:
+	return _analysis.duplicate()
 
 
 func get_status() -> Dictionary:
@@ -141,6 +213,13 @@ func set_intensity(v: float) -> void:
 
 
 func fauna_behavior_mods(instance_id: int) -> Dictionary:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("fauna_behavior_mods"):
+		return mc.fauna_behavior_mods(instance_id)
+	return _legacy_fauna_behavior_mods(instance_id)
+
+
+func _legacy_fauna_behavior_mods(instance_id: int) -> Dictionary:
 	if not is_active() or not TankConfig.music_sync_fish:
 		return _FAUNA_NEUTRAL
 	var i: float = _intensity
@@ -193,12 +272,18 @@ func should_beat_dart(instance_id: int) -> bool:
 
 
 func plant_sway_mult() -> float:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.is_active() and mc.has_method("plant_sway_mult"):
+		return float(mc.plant_sway_mult())
 	if not is_active() or not TankConfig.music_sync_plants:
 		return 1.0
 	return 1.0 + (float(_drive.mid) * 0.65 + float(_drive.beat) * 0.45) * _intensity
 
 
 func light_fixture_mul() -> float:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.is_active() and mc.has_method("light_fixture_mul"):
+		return float(mc.light_fixture_mul())
 	if not is_active() or not TankConfig.music_sync_lights:
 		return 1.0
 	return 1.0 + float(_drive.bass) * 0.55 * _intensity + float(_drive.beat) * 0.35 * _intensity
@@ -211,6 +296,9 @@ func light_beam_warmth_mix() -> float:
 
 
 func caustic_mul() -> float:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.is_active() and mc.has_method("caustic_mul"):
+		return float(mc.caustic_mul())
 	if not is_active() or not TankConfig.music_sync_lights:
 		return 1.0
 	return 1.0 + float(_drive.high) * 0.5 * _intensity + float(_drive.beat) * 0.2 * _intensity
@@ -219,20 +307,20 @@ func caustic_mul() -> float:
 func aquatic_shimmer() -> float:
 	if not is_active():
 		return 0.0
-	var base: float = float(_drive.high) * 0.7 + float(_drive.beat) * 0.5
-	return clampf(base * _intensity, 0.0, 1.0)
+	var base: float = float(_drive.energy) * 0.35
+	return clampf(base * _intensity * 0.25, 0.0, 0.22)
 
 
 func palette_overlay() -> Dictionary:
 	if not is_active() or not TankConfig.music_sync_color:
 		return {"hue": 0.0, "sat": 1.0, "warmth": 0.0, "val": 1.0}
 	var valence: float = float(_drive.valence)
-	var beat: float = float(_drive.beat)
+	var env: float = float(_drive.energy) * _intensity * 0.4
 	return {
-		"hue": (valence - 0.5) * 0.22 * _intensity + (float(_drive.mid) - 0.5) * 0.08,
-		"sat": lerpf(1.0, 1.22 + beat * 0.18, _intensity),
-		"warmth": (valence - 0.35) * 0.55 * _intensity,
-		"val": lerpf(1.0, 1.08 + beat * 0.12, _intensity * 0.7),
+		"hue": (valence - 0.5) * 0.08 * _intensity,
+		"sat": lerpf(1.0, 1.04, env),
+		"warmth": (valence - 0.35) * 0.22 * _intensity,
+		"val": lerpf(1.0, 1.03, env * 0.5),
 	}
 
 
@@ -246,6 +334,25 @@ func pick_local_file() -> void:
 	_file_dialog.popup_centered_ratio(0.62)
 
 
+func play_res_path(res_path: String, display_name: String = "", artists: String = "Demo track") -> void:
+	if not ResourceLoader.exists(res_path):
+		emit_signal("status_message", "Demo file missing: %s" % res_path.get_file(), true)
+		return
+	var stream: AudioStream = load(res_path) as AudioStream
+	if stream == null:
+		emit_signal("status_message", "Could not load: %s" % res_path.get_file(), true)
+		return
+	var title: String = display_name if not display_name.is_empty() else res_path.get_file().get_basename()
+	_start_external_stream(stream, {
+		"name": title,
+		"artists": artists,
+		"id": "",
+		"preview_url": res_path,
+		"local": true,
+		"demo": true,
+	})
+
+
 func stop() -> void:
 	if _player != null:
 		_player.stop()
@@ -253,6 +360,8 @@ func stop() -> void:
 	_audio_features = {}
 	_decay_drive(1.0)
 	_drive.active = false
+	_analyzer.reset()
+	_analysis = {}
 	_emit_sync_state()
 
 
@@ -318,13 +427,13 @@ func _analyze_audio(dt: float) -> void:
 		_bind_spectrum()
 	if _spectrum == null:
 		return
-	var mode := AudioEffectSpectrumAnalyzerInstance.MAGNITUDE_MAX
+	var mode := AudioEffectSpectrumAnalyzerInstance.MAGNITUDE_AVERAGE
 	var bass_raw: float = _spectrum.get_magnitude_for_frequency_range(40.0, 160.0, mode).length()
 	var mid_raw: float = _spectrum.get_magnitude_for_frequency_range(220.0, 2200.0, mode).length()
 	var high_raw: float = _spectrum.get_magnitude_for_frequency_range(2200.0, 12000.0, mode).length()
-	var bass: float = _norm_mag(bass_raw)
-	var mid: float = _norm_mag(mid_raw)
-	var high: float = _norm_mag(high_raw)
+	var bass: float = _norm_band(bass_raw, "bass", dt)
+	var mid: float = _norm_band(mid_raw, "mid", dt)
+	var high: float = _norm_band(high_raw, "high", dt)
 	_bass_smooth = lerpf(_bass_smooth, bass, clampf(dt * 10.0, 0.0, 1.0))
 	var combined: float = bass * 0.52 + mid * 0.33 + high * 0.15
 	_energy_smooth = lerpf(_energy_smooth, combined, clampf(dt * 10.0, 0.0, 1.0))
@@ -332,15 +441,31 @@ func _analyze_audio(dt: float) -> void:
 	_drive.mid = lerpf(float(_drive.mid), mid, clampf(dt * 10.0, 0.0, 1.0))
 	_drive.high = lerpf(float(_drive.high), high, clampf(dt * 10.0, 0.0, 1.0))
 	_drive.energy = lerpf(float(_drive.energy), combined, clampf(dt * 8.0, 0.0, 1.0))
+	_analysis = _analyzer.analyze(_spectrum, dt, bass, mid, high, combined, float(_drive.tempo))
+	if float(_analysis.get("tempo", 0.0)) > 1.0:
+		_drive.tempo = lerpf(float(_drive.tempo), float(_analysis.tempo), 0.12)
+		_clock_confidence = float(_analysis.get("confidence", _clock_confidence))
+	var kick_on: float = 0.0
+	var onsets: Array = _analysis.get("onsets", [])
+	if onsets.size() > 0 and onsets[0] is Dictionary:
+		kick_on = float(onsets[0].get("strength", 0.0))
+	if kick_on > 0.82:
+		_drive.beat = 1.0
+		_bass_peak = bass
+		_beat_serial += 1
 	_beat_cooldown = maxf(0.0, _beat_cooldown - dt)
 	var beat_thresh: float = maxf(_energy_smooth * 1.08 + 0.02, _bass_smooth * 1.12 + 0.03)
-	if combined > beat_thresh and _beat_cooldown <= 0.0:
+	if combined > beat_thresh and _beat_cooldown <= 0.0 and kick_on < 0.5:
 		_drive.beat = 1.0
 		_bass_peak = bass
 		_beat_serial += 1
 		_beat_cooldown = maxf(0.06, 60.0 / maxf(float(_drive.tempo), 80.0) * 0.32)
 	else:
 		_drive.beat = maxf(0.0, float(_drive.beat) - dt * 2.6)
+	_detect_drop(combined, dt)
+	if not _analysis.is_empty():
+		_phase_beats = float(_analysis.get("bar_count", 0)) * 4.0 + float(_analysis.get("beat_phase", 0.0))
+	_update_music_clock(dt)
 	_apply_visual_uniforms()
 
 
@@ -352,6 +477,9 @@ func _decay_drive(dt: float) -> void:
 
 
 func _apply_visual_uniforms(reset: bool = false) -> void:
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.is_active():
+		return
 	if reset or not is_active():
 		var cfg: Node = get_node_or_null("/root/TankConfig")
 		if cfg != null:
@@ -397,7 +525,39 @@ func _on_local_file_selected(path: String) -> void:
 	_play_local_path(path)
 
 
+func _resolve_path_case(path: String) -> String:
+	if path.is_empty() or not path.is_absolute_path():
+		return path
+	var segments: PackedStringArray = path.split("/", false)
+	if segments.is_empty():
+		return path
+	var built: String = "/" if path.begins_with("/") else ""
+	for seg in segments:
+		var parent: String = built if built != "" else "."
+		var dir := DirAccess.open(parent)
+		if dir == null:
+			built = seg if built == "" else built.path_join(seg)
+			continue
+		var canonical: String = seg
+		dir.list_dir_begin()
+		var entry: String = dir.get_next()
+		while entry != "":
+			if entry.to_lower() == seg.to_lower():
+				canonical = entry
+				break
+			entry = dir.get_next()
+		dir.list_dir_end()
+		if built == "":
+			built = canonical
+		elif built == "/":
+			built = "/%s" % canonical
+		else:
+			built = built.path_join(canonical)
+	return built
+
+
 func _play_local_path(path: String) -> void:
+	path = _resolve_path_case(path)
 	var ext: String = path.get_extension().to_lower()
 	var stream: AudioStream = null
 	match ext:
@@ -410,13 +570,20 @@ func _play_local_path(path: String) -> void:
 	if stream == null:
 		emit_signal("status_message", "Could not load audio: %s" % path.get_file(), true)
 		return
-	_track_meta = {
+	_start_external_stream(stream, {
 		"name": path.get_file().get_basename(),
 		"artists": "Local file",
 		"id": "",
 		"preview_url": path,
 		"local": true,
-	}
+	})
+
+
+func _start_external_stream(stream: AudioStream, meta: Dictionary) -> void:
+	if not _enabled:
+		set_enabled(true)
+		TankConfig.music_sync_enabled = true
+	_track_meta = meta.duplicate()
 	_audio_features = {
 		"tempo": 120.0,
 		"energy": 0.6,
@@ -424,6 +591,11 @@ func _play_local_path(path: String) -> void:
 		"danceability": 0.5,
 	}
 	_apply_features_to_drive()
+	_phase_beats = 0.0
+	_last_serial_snap = -1
+	reset_session_calibration()
+	_analyzer.reset()
+	_analysis = {}
 	_player.stream = stream
 	_player.play()
 	emit_signal("track_changed", _track_meta.duplicate())
@@ -621,6 +793,8 @@ func _on_preview_downloaded(result: int, code: int, _headers: PackedStringArray,
 		return
 	var stream := AudioStreamMP3.new()
 	stream.data = body
+	_phase_beats = 0.0
+	_last_serial_snap = -1
 	_player.stream = stream
 	_player.play()
 	emit_signal("track_changed", _track_meta.duplicate())
@@ -647,6 +821,51 @@ func _parse_spotify_id(raw: String) -> String:
 
 func _norm_mag(v: float) -> float:
 	return clampf(log(maxf(v, 1e-7)) * 0.22 + 0.55, 0.0, 1.0)
+
+
+func _norm_band(v: float, band: String, dt: float) -> float:
+	var peak: float = float(_band_peak.get(band, 0.004))
+	peak = maxf(v, peak * exp(-dt * 1.6))
+	_band_peak[band] = peak
+	var rel: float = v / maxf(peak, 1e-6)
+	return clampf(sqrt(rel) * 0.92 + rel * 0.08, 0.0, 1.0)
+
+
+func _beat_phase() -> float:
+	var lat: float = session_latency_ms() / 1000.0
+	return fposmod(_phase_beats + lat * float(_drive.tempo) / 60.0, 1.0)
+
+
+func _update_music_clock(dt: float) -> void:
+	var tempo: float = maxf(float(_drive.tempo), 72.0)
+	_phase_beats += dt * tempo / 60.0
+	if float(_drive.beat) > 0.75 and _beat_serial != _last_serial_snap:
+		_last_serial_snap = _beat_serial
+		_phase_beats = floorf(_phase_beats + 0.5)
+		_clock_confidence = minf(1.0, _clock_confidence + 0.1)
+	_drop_detect_until = maxf(0.0, _drop_detect_until - dt)
+
+
+func _detect_drop(combined: float, _dt: float) -> void:
+	if combined > _prev_energy_peak * 1.26 + 0.14 and _energy_smooth > 0.38:
+		_drop_detect_until = 0.45
+		var mc := get_node_or_null("/root/MusicContext")
+		if mc != null and mc.has_method("notify_drop_pulse"):
+			mc.notify_drop_pulse()
+	_prev_energy_peak = lerpf(_prev_energy_peak, combined, 0.12)
+
+
+func _phrase_from_bar(bar_count: int) -> Dictionary:
+	var cycle: int = bar_count % 32
+	if cycle < 12:
+		return {"phrase_state": "verse", "phrase_progress": float(cycle % 4) / 4.0}
+	if cycle < 16:
+		return {"phrase_state": "build", "phrase_progress": float(cycle - 12) / 4.0}
+	if cycle < 24:
+		return {"phrase_state": "drop", "phrase_progress": float(cycle - 16) / 8.0}
+	if cycle < 28:
+		return {"phrase_state": "breakdown", "phrase_progress": float(cycle - 24) / 4.0}
+	return {"phrase_state": "chorus", "phrase_progress": float(cycle - 28) / 4.0}
 
 
 func _emit_sync_state() -> void:

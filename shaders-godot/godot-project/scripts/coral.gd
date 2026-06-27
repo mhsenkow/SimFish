@@ -760,8 +760,10 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 			# (0.06..0.32) gives a clear visual gap between hungry and
 			# satiated colonies.
 			var ext_amp: float = lerpf(0.06, 0.32, _feeding_extension)
-			var wave_x: float = sin(_sessile_phase * 1.8 + tp) * ext_amp
-			var wave_z: float = cos(_sessile_phase * 1.4 + tp * 0.85) * (ext_amp * 0.82)
+			ext_amp *= 0.65 + absf(flow_bias) * 0.55
+			var wave_travel: float = _sessile_phase * 1.8 - tp * 0.72
+			var wave_x: float = sin(wave_travel) * ext_amp
+			var wave_z: float = cos(wave_travel * 0.86 + tp * 0.35) * (ext_amp * 0.82)
 			# Bias the wave downstream with flow — gentle in still water,
 			# obvious near the aerator.
 			t.rotation.x = wave_x + flow_bias * 0.18
@@ -1074,7 +1076,13 @@ func _apply_bleach_tint() -> void:
 # tentacle motion can bend downstream consistently. Cheap — just reads
 # the cached Plant rotation.z.
 func _get_flow_bias() -> float:
-	return rotation.z / 0.04 if absf(rotation.z) > 0.0001 else 0.0
+	var base: float = rotation.z / 0.04 if absf(rotation.z) > 0.0001 else 0.0
+	var sim_n: Node = _find_sim()
+	if sim_n != null:
+		var w: Node = sim_n.get_parent()
+		if w != null and w.has_method("flow_strength_at"):
+			return clampf(base + w.flow_strength_at(global_position) * 2.4, -1.4, 1.4)
+	return base
 
 
 # ---- Bleaching tick ----
@@ -1146,6 +1154,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		* clampf(_health_smooth, 0.0, 1.0) \
 		* (1.0 - _bleach_level) \
 		* dawn_dusk_factor
+	if o2 < 0.35:
+		target_feeding = minf(target_feeding, 0.12)
 	# Night heterotrophic feeding (#45): after dark, corals extend feeding
 	# tentacles to capture plankton, drawing down reef nutrients — a real
 	# nutrient sink for the reef and a reason the polyps are out at night.

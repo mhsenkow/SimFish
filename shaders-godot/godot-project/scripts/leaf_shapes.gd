@@ -752,11 +752,11 @@ static func build_spike_flower(stalk_color: Color, tip_color: Color) -> Array:
 # Crypt / rosette — low spathe hugging the crown.
 static func build_crypt_bud(color: Color) -> Array:
 	var nodes: Array = []
-	var wrap := MeshInstance3D.new()
-	wrap.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9))
-	wrap.material_override = VoxelMat.make_foliage(color.darkened(0.2))
-	wrap.position = Vector3(0, VOXEL_SIZE * 0.05, 0)
-	nodes.append(wrap)
+	var spathe := MeshInstance3D.new()
+	spathe.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9))
+	spathe.material_override = VoxelMat.make_foliage(color.darkened(0.2))
+	spathe.position = Vector3(0, VOXEL_SIZE * 0.05, 0)
+	nodes.append(spathe)
 	return nodes
 
 
