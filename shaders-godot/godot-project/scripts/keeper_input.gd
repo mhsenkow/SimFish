@@ -11,6 +11,7 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 
 static var gaze_fish_id: String = ""
 static var gaze_seconds: float = 0.0
@@ -67,6 +68,10 @@ static func score_tone(text: String) -> Dictionary:
 	if lower.contains("shh") or lower.contains("quiet") or lower.contains("calm"):
 		arousal -= 0.18
 		valence += 0.28
+	if lower.contains("safe") or lower.contains("okay") or lower.contains("ok ") \
+			or lower.begins_with("ok") or lower.contains("trust"):
+		valence += 0.32
+		arousal -= 0.12
 	if lower.contains("good") or lower.contains("love") or lower.contains("hello") \
 			or lower.contains("hi ") or lower.begins_with("hi"):
 		valence += 0.35
@@ -77,7 +82,10 @@ static func score_tone(text: String) -> Dictionary:
 	arousal += clampf(float(t.length()) / 80.0, 0.0, 0.25)
 	var felt: String = "neutral"
 	if valence > 0.25:
-		felt = "greeting" if lower.contains("hello") or lower.begins_with("hi") else "comfort"
+		if lower.contains("safe") or lower.contains("trust") or lower.contains("calm"):
+			felt = "comfort"
+		else:
+			felt = "greeting" if lower.contains("hello") or lower.begins_with("hi") else "comfort"
 	elif valence < -0.2:
 		felt = "scold"
 	elif "?" in t:
@@ -122,6 +130,11 @@ static func submit_to_fish(f: Fish, text: String, sim: Node) -> Dictionary:
 	f.familiarity = clampf(f.familiarity + 0.04, 0.0, 1.0)
 	f.arousal = clampf(f.arousal + float(interp.get("keeper_arousal", 0.0)) * 0.18, 0.0, 1.0)
 	f.mood = clampf(f.mood + float(interp.get("keeper_valence", 0.0)) * 0.08, -1.0, 1.0)
+	var comfort_fx: Dictionary = KeeperCare.apply_comfort_effects(f, interp, sim)
+	var tier: int = KeeperCare.tier_from_sim(sim)
+	var too_wary: bool = KeeperCare.compute_too_wary(f)
+	var open: float = KeeperCare.conversation_openness(sim, f)
+	var tank_blocks: bool = tier <= KeeperCare.Tier.STRESSED and open < 0.45
 	var result: Dictionary = {
 		"ok": true,
 		"text": str(interp.get("keeper_text", text.strip_edges().substr(0, 120))),
@@ -130,7 +143,15 @@ static func submit_to_fish(f: Fish, text: String, sim: Node) -> Dictionary:
 		"comprehension": float(interp.get("keeper_comprehension", 0.0)),
 		"salience": sal,
 		"attending": f.attention_focus == "keeper_message",
-		"too_wary": f.spooked > 0.35 or f.stress > 0.55 or f.attention_focus == "threat",
+		"too_wary": too_wary,
+		"tank_tier": tier,
+		"tank_blocks_words": tank_blocks,
+		"conversation_open": open,
+		"bond_stage": KeeperCare.bond_stage(f, sim),
+		"comfort_applied": bool(comfort_fx.get("applied", false)),
+		"attention_shift": bool(comfort_fx.get("attention_shift", false)),
+		"care_hint": KeeperCare.primary_action_hint(sim),
+		"is_guardian_advisor": f.is_guardian and tier <= KeeperCare.Tier.STRESSED,
 	}
 	return result
 
@@ -155,24 +176,8 @@ static func _interpret_keeper(f: Fish, text: String) -> Dictionary:
 	return base
 
 
-static func ui_ack_line(result: Dictionary, fish_name: String) -> String:
-	if not bool(result.get("ok", false)):
-		match str(result.get("reason", "")):
-			"ears_off":
-				return "keeper ears off — enable in Settings → AI"
-			_:
-				return ""
-	var nm: String = fish_name if fish_name != "" else "they"
-	var felt: String = str(result.get("felt", "neutral"))
-	var line: String = "you → \"%s\" · %s felt it as %s" % [
-		str(result.get("text", "")), nm, felt]
-	if bool(result.get("too_wary", false)):
-		line += " · too wary to turn toward you now"
-	elif bool(result.get("attending", false)):
-		line += " · attending"
-	else:
-		line += " · heard, mind elsewhere"
-	return line
+static func ui_ack_line(result: Dictionary, _fish_name: String, sim: Node = null, f: Fish = null) -> String:
+	return KeeperCare.ui_feedback(result, f, sim)
 
 
 static func on_creature_named(f: Fish, name: String) -> void:

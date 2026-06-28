@@ -25,6 +25,7 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
 const TankMind = preload("res://scripts/tank_mind.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -5637,6 +5638,25 @@ func _emit_stats() -> void:
 		"filter_clog": _filter_clog,
 		"day_phase": day_phase,
 	}
+	var _care_stats: Dictionary = {
+		"dissolved_o2": s["dissolved_o2"],
+		"fish_stocking_ratio": s["fish_stocking_ratio"],
+		"ammonia": s["ammonia"],
+		"nitrite": s["nitrite"],
+		"waste_particles": s["waste_particles"],
+		"algae_clusters": s["algae_clusters"],
+		"plant_total_biomass": s["plant_total_biomass"],
+		"bloom_intensity": s["bloom_intensity"],
+		"is_saltwater": s["is_saltwater"],
+	}
+	if s.has("reef_bleach_level"):
+		_care_stats["reef_bleach_level"] = s["reef_bleach_level"]
+	if s.has("alkalinity_proxy"):
+		_care_stats["alkalinity_proxy"] = s["alkalinity_proxy"]
+	if s.has("effective_warmth"):
+		_care_stats["effective_warmth"] = s["effective_warmth"]
+	s["tank_care_mood"] = KeeperCare.mood_score(_care_stats)
+	s["tank_care_tier"] = KeeperCare.tier_label(KeeperCare.tier_from_stats(_care_stats))
 	# Capture this snapshot into the ring buffer so chip-tap sparklines have
 	# a 2-minute history to draw. _emit_stats fires at 1 Hz so HISTORY_LEN
 	# entries = HISTORY_LEN seconds of history. Cheap (one append + maybe a

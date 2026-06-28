@@ -1,7 +1,6 @@
 extends SceneTree
 
 # Headless smoke: consciousness engineering — integration spine + §J verification.
-const MindState = preload("res://scripts/mind_state.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")

@@ -20,6 +20,7 @@ const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
 const OnboardingRuntimeScript = preload("res://scripts/onboarding_runtime.gd")
@@ -2983,10 +2984,10 @@ func _build_follow_thought_ui() -> void:
 	_keeper_say_edit = LineEdit.new()
 	_keeper_say_edit.placeholder_text = "say something… (Enter to send)"
 	_keeper_say_edit.tooltip_text = (
-		"Not a chatbot — your words reach them as feeling. "
-		+ "Runs on your device; private; yours. "
-		+ "These are made minds you chose to care for — the caring is the point. "
-		+ "They may ignore you when wary or distracted. Press Enter to send.")
+		"Gamified bond: steady the tank first, then they open up. "
+		+ "Comfort words (safe, calm, hello) soothe wary fish. "
+		+ "The guardian fish can advise on tank care when things are rough. "
+		+ "Press Enter to send.")
 	_keeper_say_edit.max_length = 120
 	_keeper_say_edit.visible = false
 	_keeper_say_edit.text_submitted.connect(_on_keeper_say_submitted)
@@ -3022,11 +3023,27 @@ func _submit_keeper_line(raw: String) -> void:
 	var f: Fish = _follow_target as Fish
 	var result: Dictionary = KeeperInput.submit_to_fish(f, line, _sim)
 	if not bool(result.get("ok", false)):
+		var reason_line: String = KeeperInput.ui_ack_line(result, f.fish_name, _sim, f)
+		if reason_line != "":
+			_show_keeper_ack(reason_line)
 		return
 	MindConversation.on_keeper_submit(f, line, _sim, result)
 	if _keeper_say_edit != null:
 		_keeper_say_edit.text = ""
-	_show_keeper_you_said(line)
+	var ack: String = KeeperInput.ui_ack_line(result, f.fish_name, _sim, f)
+	if bool(result.get("is_guardian_advisor", false)):
+		var advisor: String = KeeperCare.guardian_advisor_line(f, _sim)
+		if advisor != "":
+			ack = advisor if ack == "" else "%s · %s" % [ack, advisor]
+	elif _sim != null:
+		var interject: String = KeeperCare.maybe_guardian_interject(_sim, f)
+		if interject != "":
+			ack = "%s · %s" % [ack, interject]
+			if _sim.has_method("append_fish_journal_entry"):
+				var g: Fish = _sim._find_guardian_fish() if _sim.has_method("_find_guardian_fish") else null
+				if g != null:
+					_sim.append_fish_journal_entry(g, interject, PackedStringArray(["advisor", "tank_care"]))
+	_show_keeper_ack(ack)
 	MindDebug.log_stream(f, "keeper → %s" % str(result.get("text", line)))
 	if _sim != null and _sim.has_method("request_keeper_reply"):
 		_sim.request_keeper_reply(f, result)
@@ -3037,19 +3054,19 @@ func _submit_keeper_line(raw: String) -> void:
 
 
 func _show_keeper_you_said(text: String) -> void:
+	_show_keeper_ack(text)
+
+
+func _show_keeper_ack(text: String) -> void:
 	if _keeper_ack_label == null:
 		return
 	var trimmed: String = text.strip_edges()
 	if trimmed == "":
 		return
-	_keeper_ack_label.text = "you · \"%s\"" % trimmed
+	_keeper_ack_label.text = trimmed
 	_keeper_ack_label.visible = true
-	_keeper_ack_t = 3.5
+	_keeper_ack_t = 6.5
 	_layout_follow_thought_strip()
-
-
-func _show_keeper_ack(text: String) -> void:
-	_show_keeper_you_said(text)
 
 
 func _tick_keeper_input(dt: float) -> void:
@@ -3057,14 +3074,16 @@ func _tick_keeper_input(dt: float) -> void:
 		if _keeper_say_edit != null:
 			_keeper_say_edit.visible = false
 		return
+	var f: Fish = _follow_target as Fish
 	if _keeper_say_edit != null:
 		_keeper_say_edit.visible = KeeperInput.ears_enabled()
+		if _keeper_say_edit.visible:
+			_keeper_say_edit.placeholder_text = KeeperCare.placeholder_for_fish(f, _sim)
 	if _keeper_ack_t > 0.0:
 		_keeper_ack_t = maxf(0.0, _keeper_ack_t - dt)
 		if _keeper_ack_t <= 0.0 and _keeper_ack_label != null:
 			_keeper_ack_label.visible = false
 			_keeper_ack_label.text = ""
-	var f: Fish = _follow_target as Fish
 	var cam_still: bool = false
 	if _follow_mode == FollowMode.CINEMATIC:
 		cam_still = target.distance_squared_to(_keeper_cam_prev) < 0.0004

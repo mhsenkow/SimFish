@@ -1,7 +1,5 @@
 extends SceneTree
 
-const AquascapeCraft = preload("res://scripts/aquascape_craft.gd")
-
 const ObjectMeshes := preload("res://scripts/aquascape_object_meshes.gd")
 
 # Compile + exercise aquascape build grid, object library, blueprints, save round-trip.

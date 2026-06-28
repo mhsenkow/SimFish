@@ -32,7 +32,7 @@
     <div class="hero-inner">
       <h1>walstad loom</h1>
       <p class="tagline">A generative pixel-art aquarium. 3D voxel scene → palette-quantize + dither → chunky 48-color pixels. Plants grow voxel by voxel, fish school and breed, shrimp molt, snails crawl the glass. The whole thing self-balances over a few minutes of watching.</p>
-      <p class="version-pill">Latest release · <strong>v0.2.21</strong> — <a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.21">download</a></p>
+      <p class="version-pill">Latest release · <strong>v0.2.22</strong> — <a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.22">download</a></p>
       <div class="downloads" id="download">
         <a class="dl-btn dl-mac" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">macOS</span>
@@ -60,23 +60,23 @@
   </header>
 
   <section class="whats-new" id="new">
-    <h2>What's new in v0.2.21</h2>
+    <h2>What's new in v0.2.22</h2>
     <div class="grid">
       <article class="feature">
-        <h3>Stability hotfixes</h3>
-        <p>Tanks open reliably again — no silent crash when the Guardian speaks on first load. Snail predator scans no longer touch freed fish. Non-finite transforms self-recover instead of flooding the console.</p>
+        <h3>Keeper care loop</h3>
+        <p>Steady the tank first — fish open up to conversation as care improves from crisis → stressed → steady → thriving. Type comfort words (<em>safe</em>, <em>calm</em>, <em>trust</em>) to soothe spooked fish. Overstressed tanks block verbal replies until water quality and stocking settle.</p>
       </article>
       <article class="feature">
-        <h3>Aquascaping craft</h3>
-        <p>Build hardscape voxel-by-voxel: place stone, wood, and substrate blocks, flood-fill regions, and get composition coaching as your scape takes shape. Grazing surfaces accrue biofilm for snails and shrimp.</p>
+        <h3>Guardian advisor</h3>
+        <p>When the tank is stressed, the Guardian fish switches to advisor mode and offers care hints instead of idle chatter. Bond and tier feedback shows in the keeper input bar as you interact.</p>
       </article>
       <article class="feature">
-        <h3>Pond view &amp; top-down dance</h3>
-        <p>Switch to an overhead pond camera for a different read on the tank. Music choreography drives planar formations — spirals, mandalas, kicklines — when a track is playing.</p>
+        <h3>Stability &amp; polish</h3>
+        <p>Editor warnings cleaned up, smoke tests cover keeper care tiers, and sim stats now emit <code>tank_care_mood</code> / <code>tank_care_tier</code> for overlays and debugging.</p>
       </article>
       <article class="feature">
-        <h3>Deeper minds</h3>
-        <p>Guardian and fish inner-life layers: episodic memory, deliberation, journal entries, and template or local-LLM voice. macOS uses template Guardian lines until on-device inference is stable.</p>
+        <h3>Still in v0.2.21</h3>
+        <p>Aquascaping craft, pond view, top-down dance formations, and deeper fish minds — plus tank-load crash fixes, snail predator safety, and non-finite transform recovery.</p>
       </article>
     </div>
   </section>

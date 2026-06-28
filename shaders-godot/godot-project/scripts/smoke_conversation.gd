@@ -9,6 +9,7 @@ const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 const MindContext = preload("res://scripts/mind_context.gd")
 
 
@@ -30,6 +31,7 @@ func _run_all() -> bool:
 	_test_eval_harness()
 	_test_determinism()
 	_test_slim_context()
+	_test_keeper_care()
 	return true
 
 
@@ -153,3 +155,37 @@ func _test_slim_context() -> void:
 	var slim: Dictionary = MindContext.build_for_keeper_turn(f, null, "keeper_reply")
 	assert(slim.has("keeper_text"), "slim has keeper text")
 	assert(not slim.has("tank_society"), "slim omits society")
+
+
+func _test_keeper_care() -> void:
+	var f: Fish = _make_fish()
+	f.spooked = 0.5
+	f.stress = 0.6
+	f.attention_focus = "threat"
+	var stats: Dictionary = {
+		"dissolved_o2": 0.38,
+		"fish_stocking_ratio": 1.2,
+		"ammonia": 0.0,
+		"nitrite": 0.0,
+		"waste_particles": 40,
+		"algae_clusters": 25,
+		"plant_total_biomass": 200.0,
+		"bloom_intensity": 0.0,
+		"is_saltwater": false,
+	}
+	assert(KeeperCare.tier_from_stats(stats) == KeeperCare.Tier.STRESSED,
+			"overstock + low o2 reads stressed")
+	var interp: Dictionary = CognitiveSchema.interpret_keeper_heuristic("you're safe", f)
+	assert(str(interp.get("keeper_intent", "")) == "comfort", "safe -> comfort intent")
+	var fx: Dictionary = KeeperCare.apply_comfort_effects(f, interp, null)
+	assert(bool(fx.get("applied", false)), "comfort soothes")
+	assert(f.spooked < 0.5, "spook reduced")
+	var result: Dictionary = {
+		"ok": true,
+		"too_wary": false,
+		"tank_blocks_words": true,
+	}
+	assert(not MindConversation.should_reply_words(f, result), "tank blocks words when stressed")
+	result["tank_blocks_words"] = false
+	assert(MindConversation.should_reply_words(f, result), "words ok when tank open")
+	assert(KeeperCare.tier_label(KeeperCare.Tier.THRIVING) == "thriving", "tier label")

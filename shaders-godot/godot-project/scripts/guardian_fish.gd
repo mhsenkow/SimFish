@@ -6,6 +6,7 @@ extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
 const GuardianMind = preload("res://scripts/guardian_mind.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 
 const SPEAK_COOLDOWN_S: float = 55.0
 const AUTOFeed_ARM_NUDGES: int = 3
@@ -83,6 +84,13 @@ static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int,
 			if wr != "":
 				return "...%s." % wr
 			return "...something's wrong with the water."
+		"tank_care":
+			var hint: String = KeeperCare.primary_action_hint(_sim)
+			if hint == "":
+				hint = "ease feeding or trim the plants"
+			if naive:
+				return "...%s, the water's heavy. %s" % [moniker, hint]
+			return "%s — steady the tank first? %s" % [moniker.capitalize(), hint]
 		"morning":
 			return "...morning, %s. lights mean breakfast, right?" % moniker
 		"away_recap":
@@ -195,6 +203,8 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 		if nh3 > 0.45 or no2 > 0.5:
 			situation = "water_stress"
 			GuardianMind.update_world_read(sim, arc)
+	elif KeeperCare.tank_needs_care_nudge(sim) and randf() < dt * 0.06:
+		situation = "tank_care"
 	elif avg_h > STARVE_THRESHOLD:
 		situation = "feed_nudge"
 		action = "drop_feed"

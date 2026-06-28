@@ -9,7 +9,6 @@ const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const MindDaring = preload("res://scripts/mind_daring.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")
-const MindState = preload("res://scripts/mind_state.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const MindContext = preload("res://scripts/mind_context.gd")
 

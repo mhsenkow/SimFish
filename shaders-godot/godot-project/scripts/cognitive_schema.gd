@@ -166,6 +166,9 @@ static func interpret_keeper_heuristic(text: String, f: Fish) -> Dictionary:
 	var lower: String = text.strip_edges().to_lower()
 	if lower.contains("feed") or lower.contains("food") or lower.contains("dinner"):
 		intent = "food"
+	elif lower.contains("safe") or lower.contains("calm") or lower.contains("trust") \
+			or lower.contains("okay") or lower.begins_with("ok"):
+		intent = "comfort"
 	elif MindLexicon.comprehend(f, text):
 		intent = "presence"
 	var tokens: PackedStringArray = lower.split(" ", false)
@@ -174,8 +177,10 @@ static func interpret_keeper_heuristic(text: String, f: Fish) -> Dictionary:
 		if MindLexicon.comprehend(f, tok):
 			unknown = false
 			break
-	if unknown and tokens.size() > 0:
+	if unknown and tokens.size() > 0 and intent not in ["comfort", "food"]:
 		intent = "unknown_sound"
+	if intent == "comfort" or str(tone.get("felt", "")) == "comfort":
+		intent = "comfort"
 	return {
 		"keeper_intent": intent,
 		"keeper_felt": str(tone.get("felt", "neutral")),

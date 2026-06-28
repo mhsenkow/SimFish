@@ -6,6 +6,7 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const KeeperCare = preload("res://scripts/keeper_care.gd")
 
 const SESSION_TTL_S: float = 20.0
 const SESSION_EXTEND_S: float = 8.0
@@ -255,6 +256,8 @@ static func should_reply_words(_f: Fish, result: Dictionary) -> bool:
 	if not bool(result.get("ok", false)):
 		return false
 	if bool(result.get("too_wary", false)):
+		return false
+	if bool(result.get("tank_blocks_words", false)):
 		return false
 	var cfg := _tank_config()
 	if cfg != null and bool(cfg.get("sentience_voice_off")):
