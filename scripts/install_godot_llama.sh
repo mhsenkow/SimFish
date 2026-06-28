@@ -15,11 +15,6 @@ ZIP="godot-llama-plugin-all-platforms-${VERSION}.zip"
 URL="https://github.com/mgrigajtis/godot_llama/releases/download/${VERSION}/${ZIP}"
 STAMP="$BIN/.llama_dylibs_commit"
 
-# third_party/llama.cpp commit for each godot_llama release tag.
-declare -A LLAMA_SUBMODULE_COMMIT=(
-	[1.0.0]="2b089c77580d347767f440205103e4da8ec33d89"
-)
-
 LLAMA_DYLIBS=(
 	libllama.0.dylib
 	libggml.0.dylib
@@ -31,12 +26,13 @@ LLAMA_DYLIBS=(
 )
 
 expected_llama_commit() {
-	local c="${LLAMA_SUBMODULE_COMMIT[$VERSION]:-}"
-	if [[ -z "$c" ]]; then
-		echo "ERROR: unknown GODOT_LLAMA_VERSION=${VERSION} — add its submodule commit to install_godot_llama.sh" >&2
-		exit 1
-	fi
-	echo "$c"
+	case "$VERSION" in
+		1.0.0) echo "2b089c77580d347767f440205103e4da8ec33d89" ;;
+		*)
+			echo "ERROR: unknown GODOT_LLAMA_VERSION=${VERSION} — add its submodule commit to install_godot_llama.sh" >&2
+			exit 1
+			;;
+	esac
 }
 
 already_ok() {
