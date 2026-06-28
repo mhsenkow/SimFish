@@ -443,16 +443,9 @@ func _build_ui() -> void:
 	var choreography := _new_tab_scroll(_tabs, "Choreography")
 	_build_choreography_tab(choreography)
 
-	outer.add_child(PanelTheme.make_rule())
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
-	outer.add_child(hb)
-	var close := PanelTheme.make_close_button(_close)
-	hb.add_child(close)
 	var save := PanelTheme.make_primary_button("Save")
 	save.pressed.connect(_on_save)
-	hb.add_child(save)
+	outer.add_child(PanelTheme.make_panel_footer(_close, save))
 
 
 func _new_tab_scroll(tabs: TabContainer, title: String) -> VBoxContainer:

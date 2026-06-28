@@ -63,7 +63,7 @@ static func bacterial_bloom_from_chemistry(water_chemistry) -> float:
 	return clampf(((nh3 + no2 * 0.5) - 0.4) / 0.8, 0.0, 1.0)
 
 
-# Water tint + transmittance bundle — ties the water shader to the same murk
+# Water tint + transmittance bundle - ties the water shader to the same murk
 # model plants use via WorldWaterVisuals.light_penetration().
 static func water_column_bundle(tannins: float, bloom: float, floater_coverage: float,
 		water_chemistry, shallow_rgb: Color, deep_rgb: Color,
@@ -143,7 +143,21 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	mat.set_shader_parameter("shallow_color", column["shallow_color"])
 	mat.set_shader_parameter("deep_color", column["deep_color"])
 	mat.set_shader_parameter("depth_fog", column["depth_fog"])
+	var trans: float = float(column.get("transmittance", 1.0))
+	mat.set_shader_parameter("depth_absorption",
+		clampf(0.34 + (1.0 - trans) * 0.36, 0.0, 1.0))
+	# macOS-safe atmospheric depth (#20) - volumetric fog stays off on Metal.
+	mat.set_shader_parameter("aerial_haze",
+		clampf(0.40 + (1.0 - trans) * 0.38, 0.0, 0.82))
 	var dn: Dictionary = water_day_night_uniforms(day_night)
+	mat.set_shader_parameter("surface_reflection",
+		clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.48))
+	mat.set_shader_parameter("underside_mirror", 0.34)
+	var room_warm: float = float(dn["sunset_warmth"])
+	mat.set_shader_parameter("room_sky_color", Vector3(
+		lerp(0.52, 0.72, room_warm),
+		lerp(0.58, 0.62, room_warm),
+		lerp(0.68, 0.55, room_warm)))
 	mat.set_shader_parameter("sunset_warmth", dn["sunset_warmth"])
 	mat.set_shader_parameter("moonlight", dn["moonlight"])
 	mat.set_shader_parameter("day_phase_offset", dn["day_phase_offset"])
@@ -213,7 +227,7 @@ static func pick_glass_mineral_position(fp: TankFootprint, water_y: float,
 			return Vector3(x, y, z)
 
 
-# Substrate ripple direction/strength from aeration anchor → jet (surface pop / spout).
+# Substrate ripple direction/strength from aeration anchor to jet (surface pop / spout).
 static func substrate_flow_from_jet(origin: Vector3, jet: Vector3,
 		flow_rate: float) -> Dictionary:
 	var dx: float = jet.x - origin.x

@@ -1,5 +1,7 @@
 extends RefCounted
 
+const FishMind = preload("res://scripts/fish_mind.gd")
+
 # Persistent inner-state for the Guardian companion (#10–19). Stored inside
 # `_guardian_arc["mind"]` and serialized with the tank save (v6+).
 
@@ -9,6 +11,14 @@ const MAX_MEMORIES: int = 24
 const MAX_FEELINGS: int = 12
 const MAX_RECENT_LINES: int = 8
 const MAX_RITUALS: int = 6
+
+const CHAPTER_TITLES: Array[String] = [
+	"First watch",
+	"Learning hunger",
+	"Shared rhythm",
+	"Steady keeper",
+	"Elder voice",
+]
 
 
 static func ensure_mind(arc: Dictionary) -> Dictionary:
@@ -38,9 +48,75 @@ static func _default_mind() -> Dictionary:
 		"personality_drift": "curious",
 		"predecessor_name": "",
 		"predecessor_note": "",
+		"predecessor_moniker": "",
+		"predecessor_memories": PackedStringArray(),
+		"shared_milestones": PackedStringArray(),
+		"tank_started_day": -1,
+		"generations_witnessed": 0,
 		"world_read": "",
 		"player_read": "",
+		"quiet_moments": PackedStringArray(),
+		"legend_note": "",
 	}
+
+
+static func chapter_title(chapter: int) -> String:
+	var idx: int = clampi(chapter, 0, CHAPTER_TITLES.size() - 1)
+	return CHAPTER_TITLES[idx]
+
+
+static func voice_maturity(arc: Dictionary, tank_age_s: float) -> float:
+	var mind: Dictionary = ensure_mind(arc)
+	var visits: int = int(mind.get("visit_count", 0))
+	var age_m: float = clampf(tank_age_s / (86400.0 * 14.0), 0.0, 1.0)
+	var visit_m: float = clampf(float(visits) / 28.0, 0.0, 1.0)
+	return clampf(age_m * 0.55 + visit_m * 0.45, 0.0, 1.0)
+
+
+static func maybe_advance_chapter(arc: Dictionary, tank_age_s: float) -> void:
+	var ch: int = int(arc.get("chapter", 0))
+	var mind: Dictionary = ensure_mind(arc)
+	var visits: int = int(mind.get("visit_count", 0))
+	if visits >= 8:
+		ch = maxi(ch, 1)
+	if visits >= 20:
+		ch = maxi(ch, 2)
+	if tank_age_s >= 86400.0 * 5.0:
+		ch = maxi(ch, 3)
+	if tank_age_s >= 86400.0 * 21.0:
+		ch = maxi(ch, 4)
+	arc["chapter"] = mini(ch, CHAPTER_TITLES.size() - 1)
+
+
+static func record_quiet_moment(arc: Dictionary, line: String) -> void:
+	var text: String = line.strip_edges()
+	if text == "":
+		return
+	var mind: Dictionary = ensure_mind(arc)
+	var qm: PackedStringArray = mind.get("quiet_moments", PackedStringArray())
+	qm.append(text)
+	while qm.size() > 6:
+		qm.remove_at(0)
+	mind["quiet_moments"] = qm
+
+
+static func compose_quiet_inner_line(sim: Node, _arc: Dictionary, gap_s: int) -> String:
+	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	if gap_s >= 3600 and dl < 0.25:
+		return "while you slept I watched the light move on the glass"
+	if gap_s >= 7200:
+		return "the tank kept its own time while you were away"
+	if dl < 0.18:
+		return "night here is quiet — just the filter and the slow drift of light"
+	return "I had a little while alone with the water"
+
+
+static func note_legend(arc: Dictionary, name: String, tank_age_s: float, generations: int) -> String:
+	var days: int = int(round(tank_age_s / 86400.0))
+	var note: String = "%s watched %d days, %d generations." % [name, days, generations]
+	var mind: Dictionary = ensure_mind(arc)
+	mind["legend_note"] = note
+	return note
 
 
 static func record_visit(arc: Dictionary, unix: int, gap_s: int) -> void:
@@ -132,6 +208,7 @@ static func update_world_read(sim: Node, arc: Dictionary) -> void:
 static func update_player_read(arc: Dictionary, feed_history: Array) -> void:
 	var mind: Dictionary = ensure_mind(arc)
 	var visits: int = int(mind.get("visit_count", 0))
+	var longest_gap: int = int(mind.get("longest_gap_s", 0))
 	if visits >= 30:
 		mind["player_read"] = "you keep coming back — I know your rhythm"
 	elif visits >= 10:
@@ -141,11 +218,44 @@ static func update_player_read(arc: Dictionary, feed_history: Array) -> void:
 	else:
 		mind["player_read"] = "sometimes you stay, sometimes you vanish"
 	if feed_history.size() >= 3:
-		mind["player_read"] += "; you usually feed around the same time"
-	if mind.get("longest_gap_s", 0) >= 86400 * 3:
+		var sum_m: float = 0.0
+		for m_v in feed_history:
+			sum_m += float(m_v)
+		var avg_m: int = int(round(sum_m / float(feed_history.size())))
+		var hr: int = int(round(float(avg_m) / 60.0))
+		mind["usual_feed_hour"] = hr
+		if hr < 6:
+			mind["player_read"] += "; you often feed before dawn"
+		elif hr < 11:
+			mind["player_read"] += "; you usually come in the morning"
+		elif hr < 15:
+			mind["player_read"] += "; midday is often when you feed"
+		elif hr < 19:
+			mind["player_read"] += "; you tend to come in the afternoon"
+		else:
+			mind["player_read"] += "; evening feeds are your habit"
+	var care: float = 0.45
+	if visits >= 20:
+		care += 0.2
+	if feed_history.size() >= 5:
+		care += 0.15
+	if longest_gap < 86400:
+		care += 0.1
+	elif longest_gap >= 86400 * 3:
+		care -= 0.15
+	mind["care_trust"] = snappedf(clampf(care, 0.0, 1.0), 0.01)
+	if care >= 0.75:
+		mind["player_read"] += "; the tank trusts your care"
+	elif care <= 0.35 and longest_gap >= 86400 * 2:
+		mind["player_read"] += "; we've been holding on alone awhile"
+	if longest_gap >= 86400 * 3:
 		mind["player_moniker"] = "the long-absent shape"
-	elif visits >= 20:
+	elif visits >= 40 and longest_gap < 86400:
 		mind["player_moniker"] = "my keeper"
+	elif visits >= 15:
+		mind["player_moniker"] = "the familiar shape"
+	elif visits <= 2:
+		mind["player_moniker"] = "the big shape"
 
 
 static func apply_personality_drift(arc: Dictionary, event: String) -> void:
@@ -162,6 +272,45 @@ static func apply_personality_drift(arc: Dictionary, event: String) -> void:
 			mind["personality_drift"] = "mourning"
 
 
+static func record_milestone(arc: Dictionary, label: String) -> void:
+	if label.strip_edges() == "":
+		return
+	var mind: Dictionary = ensure_mind(arc)
+	var ms: PackedStringArray = mind.get("shared_milestones", PackedStringArray())
+	if ms.has(label):
+		return
+	ms.append(label.strip_edges())
+	while ms.size() > 12:
+		ms.remove_at(0)
+	mind["shared_milestones"] = ms
+
+
+static func note_tank_started(arc: Dictionary, sim_day: int) -> void:
+	var mind: Dictionary = ensure_mind(arc)
+	if int(mind.get("tank_started_day", -1)) < 0 and sim_day >= 0:
+		mind["tank_started_day"] = sim_day
+		record_milestone(arc, "since you started this tank")
+
+
+static func note_generation(arc: Dictionary, generation: int) -> void:
+	var mind: Dictionary = ensure_mind(arc)
+	var prev: int = int(mind.get("generations_witnessed", 0))
+	if generation > prev:
+		mind["generations_witnessed"] = generation
+		if generation >= 2:
+			record_milestone(arc, "%d generations have passed" % generation)
+
+
+static func inherit_predecessor_bond(arc: Dictionary, pred_name: String,
+		pred_moniker: String, pred_memories: PackedStringArray) -> void:
+	var mind: Dictionary = ensure_mind(arc)
+	mind["predecessor_name"] = pred_name
+	mind["predecessor_moniker"] = pred_moniker
+	mind["predecessor_memories"] = pred_memories
+	if pred_name != "":
+		record_milestone(arc, "inheriting %s's watch" % pred_name)
+
+
 static func remember_line(arc: Dictionary, line: String) -> void:
 	var mind: Dictionary = ensure_mind(arc)
 	var recent: PackedStringArray = mind.get("recent_lines", PackedStringArray())
@@ -173,16 +322,34 @@ static func remember_line(arc: Dictionary, line: String) -> void:
 
 static func build_ai_context(f: Node, sim: Node, arc: Dictionary, situation: String) -> Dictionary:
 	var mind: Dictionary = ensure_mind(arc)
-	update_wants(f, sim, arc)
+	if f != null:
+		update_wants(f, sim, arc)
 	update_world_read(sim, arc)
 	var chapter: int = int(arc.get("chapter", 0))
-	var bio: String = str(f.get("character_bio") if f.get("character_bio") != null else "")
+	var bio: String = ""
+	if f != null:
+		bio = str(f.get("character_bio") if f.get("character_bio") != null else "")
+	var allowed: PackedStringArray = PackedStringArray()
+	if sim != null and sim.get("fish") != null:
+		for ff in sim.fish:
+			if is_instance_valid(ff):
+				var n: String = String(ff.fish_name if ff.fish_name != "" else ff.species)
+				if n != "" and not allowed.has(n):
+					allowed.append(n)
+	var feel: String = str(mind.get("mood", "watchful"))
+	var stress: float = 0.0
+	if f != null:
+		if f.get("mood") != null and f.get("arousal") != null:
+			feel = FishMind.emotional_state(f)
+		if f.get("stress") != null:
+			stress = float(f.stress)
 	return {
-		"fish_name": str(f.get("fish_name") if f.get("fish_name") != null else "Guardian"),
-		"species": str(f.get("species") if f.get("species") != null else ""),
+		"fish_name": str(f.get("fish_name") if f != null and f.get("fish_name") != null else "Guardian"),
+		"species": str(f.get("species") if f != null and f.get("species") != null else ""),
 		"situation": situation,
 		"chapter": chapter,
 		"mood": str(mind.get("mood", "watchful")),
+		"feel": feel,
 		"wants": (mind.get("wants", PackedStringArray()) as PackedStringArray),
 		"beliefs": (mind.get("beliefs", PackedStringArray()) as PackedStringArray),
 		"memories_of_you": (mind.get("memories_of_you", PackedStringArray()) as PackedStringArray),
@@ -190,10 +357,27 @@ static func build_ai_context(f: Node, sim: Node, arc: Dictionary, situation: Str
 		"player_moniker": str(mind.get("player_moniker", "the big shape")),
 		"world_read": str(mind.get("world_read", "")),
 		"player_read": str(mind.get("player_read", "")),
+		"care_trust": float(mind.get("care_trust", 0.5)),
+		"usual_feed_hour": int(mind.get("usual_feed_hour", -1)),
 		"personality_drift": str(mind.get("personality_drift", "curious")),
 		"bio": bio,
 		"predecessor_note": str(mind.get("predecessor_note", "")),
+		"predecessor_name": str(mind.get("predecessor_name", "")),
+		"predecessor_moniker": str(mind.get("predecessor_moniker", "")),
+		"predecessor_memories": mind.get("predecessor_memories", PackedStringArray()),
+		"shared_milestones": mind.get("shared_milestones", PackedStringArray()),
+		"voice_maturity": voice_maturity(arc, float(sim.tank_age_s if sim != null and sim.get("tank_age_s") != null else 0.0)),
+		"chapter_title": chapter_title(chapter),
+		"quiet_moments": mind.get("quiet_moments", PackedStringArray()),
+		"legend_note": str(mind.get("legend_note", "")),
+		"tank_started_day": int(mind.get("tank_started_day", -1)),
+		"generations_witnessed": int(mind.get("generations_witnessed", 0)),
 		"day_phase": str(sim.day_phase if sim != null and sim.get("day_phase") != null else ""),
+		"allowed_fish_names": allowed,
+		"stress": snappedf(stress, 0.01),
+		"observed_fish": str(arc.get("_observe_name", "")) if situation == "observe" else "",
+		"observed_feel": str(arc.get("_observe_feel", "")) if situation == "observe" else "",
+		"tank_society": FishMind.society_snapshot(sim) if sim != null else {},
 	}
 
 
@@ -219,6 +403,14 @@ static func interpreted_situation(_f: Node, _sim: Node, arc: Dictionary, situati
 			return "a new voice inherits the journal from %s" % str(mind.get("predecessor_name", "the last Guardian"))
 		"lost":
 			return "the Guardian has died; the tank is quieter"
+		"newcomer":
+			return "someone new joined the tank"
+		"loss":
+			return "someone left the tank"
+		"observe":
+			var on: String = str(arc.get("_observe_name", "someone"))
+			var of: String = str(arc.get("_observe_feel", "calm"))
+			return "noticing how %s seems %s" % [on, of]
 		"daily":
 			return "first visit of the day from %s" % moniker
 		"closing_loop":

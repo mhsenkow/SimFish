@@ -18,7 +18,7 @@ uniform float flutter_amplitude = 0.03;
 // at night (no sun → no backlight); the previous always-on version was
 // brightening every leaf edge at midnight and turning the tank into a
 // neon forest.
-uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
+uniform float sss_strength : hint_range(0.0, 1.0) = 0.34;
 uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
 uniform float sss_daylight : hint_range(0.0, 1.0) = 1.0;
 uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;

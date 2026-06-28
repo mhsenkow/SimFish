@@ -17,7 +17,7 @@ var _ctx: Dictionary = {
 	"phrase_state": "verse", "phrase_progress": 0.0, "phrase_bars_left": 0,
 	"section": "verse", "key": 0, "mode": "major", "genre": "pop", "mood": "neutral",
 	"energy": 0.0, "energy_env": 0.0, "bass": 0.0, "mid": 0.0, "high": 0.0,
-	"beat": 0.0, "valence": 0.5, "danceability": 0.5,
+	"beat": 0.0, "valence": 0.5, "arousal": 0.5, "danceability": 0.5,
 	"swing": 0.0, "humanize": 0.0, "confidence": 0.0, "onsets": [],
 	"move": "sweep", "formation": "scatter", "drop_flash": 0.0,
 	"centroid": 0.5, "brightness": 0.5, "timbre_sharp": 0.5,
@@ -34,11 +34,17 @@ var _drop_pulse: bool = false
 var _conduct_until: float = 0.0
 var _conduct_move: String = ""
 var _palette_smooth: Dictionary = {"hue": 0.0, "sat": 1.0, "warmth": 0.0, "val": 1.0}
+var _tank_mood_overlay: Dictionary = {}
 var _shimmer_smooth: float = 0.0
 var _conduct_formation: String = ""
+var _prev_formation: String = "scatter"
+var _formation_morph: float = 1.0
+var _overhead_view: bool = false
 var _life_emphasis: Dictionary = {}
 var _bow_blend: float = 0.0
 var _track_was_active: bool = false
+var _spark_calm: float = 0.0
+var _spark_liturgy: String = ""
 
 
 func _ready() -> void:
@@ -55,6 +61,67 @@ func get_context() -> Dictionary:
 	return _ctx.duplicate()
 
 
+# A compact "what the game understands about the song right now" snapshot.
+# Pure read of already-computed signals — safe to call cheaply, e.g. when
+# building a fish/Guardian thought, or to drive an ambient mood nudge.
+func now_playing() -> Dictionary:
+	return {
+		"active": bool(_ctx.active),
+		"source": String(_ctx.source),
+		"mood": String(_ctx.mood),
+		"valence": float(_ctx.valence),
+		"arousal": float(_ctx.get("arousal", 0.5)),
+		"energy": float(_ctx.energy_env),
+		"tempo": float(_ctx.tempo),
+		"mode": String(_ctx.mode),
+		"genre": String(_ctx.genre),
+		"section": String(_ctx.section),
+		"descriptor": describe_now_playing(),
+	}
+
+
+# One short, grounded phrase — what a fish or the Guardian could "say" about the
+# music. Empty when nothing is playing (the honest default).
+func describe_now_playing() -> String:
+	if not bool(_ctx.active):
+		return ""
+	var tempo: float = float(_ctx.tempo)
+	var feel: String = "slow" if tempo < 80.0 else (
+		"steady" if tempo < 110.0 else ("upbeat" if tempo < 140.0 else "driving"))
+	return "a %s, %s %s-key song" % [feel, String(_ctx.mood), String(_ctx.mode)]
+
+
+# Map the raw features into valence (sad↔happy), arousal (calm↔energetic), and a
+# mood label. Smoothed so the read is stable, not jittery frame-to-frame.
+func _derive_understanding() -> void:
+	var mode_term: float = 0.18 if String(_ctx.mode) == "major" else -0.18
+	var bright: float = float(_ctx.brightness)
+	var tempo_norm: float = clampf((float(_ctx.tempo) - 60.0) / 120.0, 0.0, 1.0)
+	var energy: float = float(_ctx.energy_env)
+	var onset_density: float = 0.0
+	for o in _ctx.onsets:
+		if o is Dictionary:
+			onset_density += float(o.get("strength", 0.0))
+	onset_density = clampf(onset_density / 3.0, 0.0, 1.0)
+	var valence_target: float = clampf(
+		0.5 + mode_term + (bright - 0.5) * 0.30 + (tempo_norm - 0.45) * 0.12, 0.0, 1.0)
+	var arousal_target: float = clampf(
+		energy * 0.5 + tempo_norm * 0.3 + onset_density * 0.2, 0.0, 1.0)
+	_ctx.valence = lerpf(float(_ctx.valence), valence_target, 0.1)
+	_ctx.arousal = lerpf(float(_ctx.get("arousal", 0.5)), arousal_target, 0.1)
+	_ctx.mood = _mood_label(float(_ctx.valence), float(_ctx.arousal))
+
+
+func _mood_label(v: float, a: float) -> String:
+	if v > 0.58:
+		if a > 0.66:
+			return "triumphant"
+		return "joyful" if a > 0.4 else "tender"
+	if v < 0.42:
+		return "tense" if a > 0.55 else "melancholy"
+	return "bright" if a > 0.5 else "calm"
+
+
 func get_clock() -> Dictionary:
 	return {
 		"beat_phase": float(_ctx.beat_phase),
@@ -67,6 +134,16 @@ func get_clock() -> Dictionary:
 
 func is_active() -> bool:
 	return bool(_ctx.active)
+
+
+func set_spark_overlay(calm: float, liturgy: String = "") -> void:
+	_spark_calm = clampf(calm, 0.0, 1.0)
+	if liturgy != "":
+		_spark_liturgy = liturgy
+
+
+func spark_liturgy() -> String:
+	return _spark_liturgy
 
 
 func source_name() -> String:
@@ -220,6 +297,8 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	var loco: Dictionary = MusicChoreography.universal_locomotion_mods(loco_ctx, role, i * _dance_blend * show)
 	var loco_scale: float = float(loco.get("scale_pulse", 0.0))
 	var motion_trail: float = clampf(sweep * float(_ctx.energy) * 0.55, 0.0, 0.42) if sweep > 0.62 else 0.0
+	if _overhead_view:
+		motion_trail = maxf(motion_trail, clampf(sweep * float(_ctx.energy) * 0.82, 0.0, 0.75))
 
 	return {
 		"speed": (1.0 + groove * 1.25 * i + anticipation * 0.65 * i + speed_bonus * i) / tempo_factor * float(species_mods.get("speed", 1.0)),
@@ -265,6 +344,10 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 		"dance_freeze": dance_freeze,
 		"bow": _bow_blend,
 		"motion_trail": motion_trail,
+		"bass_radius": TopdownMotion.bass_formation_radius(bass),
+		"treble_shimmer": TopdownMotion.treble_edge_shimmer(high),
+		"swing_sway": clampf(float(_ctx.swing) * groove, 0.0, 1.0),
+		"overhead_view": _overhead_view,
 	}
 
 
@@ -277,17 +360,35 @@ func compute_dance_target(
 	y_max: float,
 	home_y: float,
 	camera_yaw: float = 0.0,
+	fish_count: int = 24,
 ) -> Vector3:
 	var role: Dictionary = mods.get("music_role", {})
 	var mouth: int = int(role.get("mouth", 0))
+	var move: String = String(mods.get("move", "sweep"))
+	var formation: String = String(mods.get("formation", _current_formation))
+	if _formation_morph < 0.995 and _prev_formation != formation:
+		var slots: int = TopdownMotion.formation_slot_count(fish_count)
+		var slot: int = instance_id % slots
+		var y_stage: float = MusicChoreography.depth_stage_y(
+			String(_ctx.phrase_state), float(_ctx.phrase_progress),
+			y_min, y_max, home_y, float(mods.get("vertical", 0.0)), mouth)
+		var br: float = float(mods.get("bass_radius", 1.0))
+		var hw: float = tank_half_w * 0.96 * br
+		var hd: float = tank_half_d * 0.96 * br
+		var morphed: Vector3 = MusicChoreography.formation_offset(
+			_prev_formation, slot, slots, hw, hd, y_stage, false, fish_count).lerp(
+			MusicChoreography.formation_offset(
+				formation, slot, slots, hw, hd, y_stage, false, fish_count),
+			clampf(_formation_morph, 0.0, 1.0))
+		return MusicChoreography.rotate_xz(morphed, camera_yaw)
 	return MusicChoreography.dance_target(
-		String(mods.get("move", "sweep")),
+		move,
 		instance_id,
 		float(mods.get("beat_phase", 0.0)) / TAU,
 		float(_ctx.bar_phase),
 		String(_ctx.phrase_state),
 		float(_ctx.phrase_progress),
-		String(mods.get("formation", _current_formation)),
+		formation,
 		bool(mods.get("choir_active", true)),
 		bool(mods.get("soloist", false)),
 		tank_half_w,
@@ -305,6 +406,10 @@ func compute_dance_target(
 		float(mods.get("ensemble_dim", 1.0)),
 		mouth,
 		int(_ctx.bar_count),
+		fish_count,
+		_overhead_view,
+		float(mods.get("bass_radius", 1.0)),
+		float(mods.get("treble_shimmer", 0.0)),
 	)
 
 
@@ -519,7 +624,6 @@ func _populate_external(mr: Node, dt: float) -> void:
 	_ctx.high = float(drive.get("high", 0.0))
 	_ctx.energy = float(drive.get("energy", 0.0))
 	_ctx.beat = float(drive.get("beat", 0.0))
-	_ctx.valence = float(drive.get("valence", 0.5))
 	_ctx.danceability = float(drive.get("danceability", 0.5))
 	_ctx.energy_env = lerpf(float(_ctx.energy_env), _ctx.energy, clampf(dt * 4.0, 0.0, 1.0))
 	_ctx.confidence = float(clock.get("confidence", 0.65))
@@ -532,9 +636,11 @@ func _populate_external(mr: Node, dt: float) -> void:
 	_ctx.brightness = float(clock.get("brightness", 0.5))
 	_ctx.timbre_sharp = clampf(_ctx.centroid * 0.62 + float(clock.get("rolloff", 0.5)) * 0.38, 0.0, 1.0)
 	_ctx.section = String(clock.get("section", _ctx.phrase_state))
+	# Fuse the raw features into a slow, stable semantic read (valence / arousal /
+	# mood) the rest of the game can "understand" — cheap arithmetic, smoothed.
+	_derive_understanding()
 	_ctx.genre = MusicChoreography.classify_genre(
 		_ctx.tempo, _ctx.energy, _ctx.danceability, _ctx.valence)
-	_ctx.mood = "bright" if _ctx.valence > 0.55 else "moody"
 
 	if _ctx.confidence < 0.28:
 		_ctx.phrase_state = "verse"
@@ -577,8 +683,20 @@ func _update_drop_flash(dt: float) -> void:
 		_drop_pulse = false
 	elif String(_ctx.phrase_state) == "drop" and bool(_ctx.downbeat):
 		_drop_flash = maxf(_drop_flash, 0.22)
+	if bool(_ctx.downbeat) and _overhead_view and bool(_ctx.active):
+		_pulse_overhead_beat()
 	_drop_flash = lerpf(_drop_flash, 0.0, clampf(dt * 2.0, 0.0, 1.0))
 	_ctx.drop_flash = _drop_flash
+
+
+func _pulse_overhead_beat() -> void:
+	var sim: Node = get_tree().root.get_node_or_null("Main/SubViewport/World/SimDriver")
+	if sim != null and sim.has_method("pulse_sync_turn"):
+		sim.pulse_sync_turn(Vector3(1, 0, 0), Vector3.ZERO)
+	var world: Node = get_tree().root.get_node_or_null("Main/SubViewport/World")
+	if world != null and world.has_method("spawn_glass_tap_ripples"):
+		var wh: float = float(world.get("WATER_HEIGHT")) if world.get("WATER_HEIGHT") != null else 6.5
+		world.spawn_glass_tap_ripples(Vector3(0.0, wh, 0.0))
 
 
 func notify_drop_pulse() -> void:
@@ -588,6 +706,10 @@ func notify_drop_pulse() -> void:
 func _update_phrase_choreography() -> void:
 	if not bool(_ctx.active):
 		return
+	_overhead_view = TopdownMotion.pond_active
+	var main_node: Node = get_tree().root.get_node_or_null("Main")
+	if not _overhead_view and main_node != null:
+		_overhead_view = TopdownMotion.is_overhead(main_node)
 	if _conduct_until > 0.0 and not _conduct_move.is_empty():
 		_current_move = _conduct_move
 		if not _conduct_formation.is_empty():
@@ -597,15 +719,31 @@ func _update_phrase_choreography() -> void:
 		return
 	var phrase: String = String(_ctx.phrase_state)
 	if phrase != _last_phrase_state:
+		_prev_formation = _current_formation
+		_formation_morph = 0.0
 		_last_phrase_state = phrase
 		_phrase_epoch += 1
 		if float(_ctx.confidence) < 0.42:
 			_current_move = "breathe"
 			_current_formation = "scatter"
 		else:
-			_current_move = MusicChoreography.pick_move(phrase, float(_ctx.energy), String(_ctx.genre), _phrase_epoch)
+			var geo: Dictionary = TopdownMotion.key_geometry_bias(int(_ctx.key), String(_ctx.mode))
+			_current_move = MusicChoreography.pick_move(
+				phrase, float(_ctx.energy), String(_ctx.genre), _phrase_epoch, _overhead_view)
 			_current_formation = MusicChoreography.pick_formation(
-				phrase, String(_ctx.genre), _current_move, _phrase_epoch)
+				phrase, String(_ctx.genre), _current_move, _phrase_epoch,
+				_overhead_view, float(_ctx.valence))
+			if float(geo.get("tightness", 1.0)) > 1.05 and _current_formation == "scatter":
+				_current_formation = "circle"
+			if phrase == "drop":
+				_current_move = "radial_bloom" if _overhead_view else "starburst"
+				_current_formation = "scatter"
+			elif phrase == "build" and _overhead_view:
+				_current_move = "spiral"
+				_current_formation = "ring"
+	else:
+		_formation_morph = TopdownMotion.formation_morph_blend(
+			int(_ctx.phrase_bars_left), float(_ctx.bar_phase), float(_ctx.phrase_progress))
 	_ctx.move = _current_move
 	_ctx.formation = _current_formation
 
@@ -619,13 +757,24 @@ func _update_dance_blend(dt: float) -> void:
 		else:
 			target = maxf(baseline, 0.22)
 	var rate: float = 1.6 if target > _dance_blend else 1.2
+	var sim_hush: Node = get_tree().root.get_node_or_null("Main/SubViewport/World/SimDriver") if get_tree() else null
+	if sim_hush != null and sim_hush.has_method("daylight") and float(sim_hush.daylight()) < 0.28:
+		target *= 0.48
 	_dance_blend = lerpf(_dance_blend, target, clampf(dt * rate, 0.0, 1.0))
 	if baseline > 0.0:
 		_dance_blend = maxf(_dance_blend, baseline * 0.85)
 
 
+func set_tank_mood_overlay(overlay: Dictionary) -> void:
+	_tank_mood_overlay = overlay if overlay is Dictionary else {}
+
+
 func _apply_visual_uniforms(dt: float = 0.016) -> void:
 	if not bool(_ctx.active):
+		if _tank_mood_overlay.is_empty():
+			return
+		var pal_night: Dictionary = _tank_mood_overlay.duplicate()
+		VoxelMat.apply_music_sync_overlay(pal_night, 0.08)
 		return
 	var mix: Dictionary = visual_mix()
 	if mix.is_empty():
@@ -637,18 +786,26 @@ func _apply_visual_uniforms(dt: float = 0.016) -> void:
 	if not bool(TankConfig.music_sync_color):
 		_palette_smooth = {"hue": 0.0, "sat": 1.0, "warmth": 0.0, "val": 1.0}
 		_shimmer_smooth = lerpf(_shimmer_smooth, 0.0, smooth_rate)
-		if intensity < 0.04 and _shimmer_smooth < 0.01:
+		if intensity < 0.04 and _shimmer_smooth < 0.01 and _tank_mood_overlay.is_empty():
 			return
-		VoxelMat.apply_music_sync_overlay(_palette_smooth, _shimmer_smooth)
+		var pal_off: Dictionary = _palette_smooth.duplicate()
+		if not _tank_mood_overlay.is_empty():
+			for key in ["hue", "sat", "warmth", "val"]:
+				pal_off[key] = float(pal_off.get(key, 0.0)) + float(_tank_mood_overlay.get(key, 0.0))
+		VoxelMat.apply_music_sync_overlay(pal_off, _shimmer_smooth)
 		return
 	var target_pal: Dictionary = mix.get("palette", {})
 	for key in ["hue", "sat", "warmth", "val"]:
 		var tv: float = float(target_pal.get(key, _palette_smooth.get(key, 0.0)))
 		var cv: float = float(_palette_smooth.get(key, tv))
 		_palette_smooth[key] = lerpf(cv, tv, smooth_rate)
-	if intensity < 0.04 and _shimmer_smooth < 0.01:
+	if intensity < 0.04 and _shimmer_smooth < 0.01 and _tank_mood_overlay.is_empty():
 		return
-	VoxelMat.apply_music_sync_overlay(_palette_smooth, _shimmer_smooth)
+	var pal: Dictionary = _palette_smooth.duplicate()
+	if not _tank_mood_overlay.is_empty():
+		for key in ["hue", "sat", "warmth", "val"]:
+			pal[key] = float(pal.get(key, 0.0)) + float(_tank_mood_overlay.get(key, 0.0))
+	VoxelMat.apply_music_sync_overlay(pal, _shimmer_smooth)
 
 
 func _maybe_drop_bubbles(_dt: float) -> void:
@@ -717,7 +874,15 @@ func _tank_health_mult() -> float:
 	var stability: float = float(sim.stability) if "stability" in sim else 0.7
 	var bloom: float = float(sim.bloom_intensity) if "bloom_intensity" in sim else 0.0
 	var health: float = clampf(o2 * 0.45 + stability * 0.4 + (1.0 - bloom) * 0.15, 0.0, 1.0)
-	return lerpf(0.55, 1.08, health)
+	var mult: float = lerpf(0.55, 1.08, health)
+	match _spark_liturgy:
+		"vespers":
+			mult *= lerpf(1.0, 0.42, _spark_calm)
+		"elegy":
+			mult *= 0.62
+		"hymn":
+			mult *= 1.12
+	return mult
 
 
 func _music_reactive() -> Node:

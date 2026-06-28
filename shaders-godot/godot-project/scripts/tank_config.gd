@@ -68,13 +68,24 @@ var palette_enabled: bool = true
 # fauna). Off by default; baked into fauna materials at creation, so the render
 # panel applies it via a scene rebuild.
 var experimental_visuals: bool = false
+# True 8-bit purity — bank-lock + heavy dither + grain (#10).
+var pixel_purity: bool = false
+# Color-vision palette variant: none | protan | deutan | tritan (#96).
+var colorblind_palette: String = "none"
+# One-time curated beauty defaults (#99).
+var beauty_defaults_applied: bool = false
+var film_grain_strength: float = 0.04
+var selective_glow_strength: float = 0.55
+var crt_mode: float = 0.0
+# F12 applies a richer post grade briefly (#78).
+var photo_mode_enhanced: bool = true
 # Instant-mature cold start: when set, a newly created (non-empty, non-loaded)
 # tank spawns already "established" — biofilm patina, a couple of generations of
 # lineage depth on the founders, and a spread of ages. Off = watch it grow in.
 var start_matured: bool = false
 # Ecology cold-start: "fresh" runs a visible nitrogen cycle; "established"
 # skips to a cycled, mature-looking tank (pairs with start_matured patina).
-var cycle_start_mode: String = "fresh"
+var cycle_start_mode: String = "established"
 var plant_youth_scale: float = 0.52
 # Step 0 / #21: log median seconds-per-voxel every ~10s when true.
 var debug_growth_logging: bool = false
@@ -177,6 +188,13 @@ var tutorial_seen: bool = false
 # entry so main.gd launches the step-by-step walkthrough when the tank opens.
 # Consumed (cleared) once the walkthrough begins.
 var walkthrough_pending: bool = false
+# Opens aquascape mode once when main.tscn loads (AQUASCAPING_CRAFT #100).
+var aquascape_pending: bool = false
+# Persisted walkthrough progress (ONBOARDING_LEGIBILITY #4).
+var walkthrough_step: int = 0
+var walkthrough_completed: bool = false
+# Preset to restore if the player skips mid guided tour (#5).
+var walkthrough_scenario_preset: String = ""
 # Unix seconds at last clean quit. Used to show "you were away for X" on
 # resume. 0 = never quit cleanly (first launch).
 var last_quit_unix: int = 0
@@ -226,11 +244,27 @@ var ai_embedded_enabled: bool = false
 var ai_embedded_endpoint: String = "http://127.0.0.1:8080"
 var ai_embedded_model: String = "Qwen2.5-0.5B-Instruct-Q4_K_M"
 var guardian_voice_enabled: bool = true
+var fish_thought_voice_enabled: bool = true
+var guardian_custom_gguf_path: String = ""
 var guardian_voice_explainer_seen: bool = false
+# Master off-switch (#93): procedural sentience stays; all generation stops instantly.
+var sentience_voice_off: bool = false
+# BCP-47 prefix or empty = follow OS locale (#59).
+var voice_language: String = ""
+# Last mind-system version the player was notified about (#99).
+var mind_system_version_seen: int = 0
 # Device-level Guardian mind consent (mobile section): pending | accepted | declined
 var guardian_mind_consent: String = "pending"
 # One-time dismiss for bundled Steam builds (model already in the install).
 var guardian_mind_info_seen: bool = false
+# Consciousness engineering ablation toggles (CONSCIOUSNESS_ENGINEERING_IDEAS §J #99).
+var consciousness_workspace_enabled: bool = true
+var consciousness_writeback_enabled: bool = true
+var consciousness_stream_enabled: bool = true
+# DARING §J #94 — keeper input consent toggles (local, opt-in where sensitive).
+var keeper_ears_enabled: bool = true
+var keeper_gaze_enabled: bool = true
+var keeper_mic_enabled: bool = false
 
 # ---- Tank shape + dimensions ----
 # Glass + substrate geometry. Each shape clips substrate fill + spawn
@@ -820,6 +854,9 @@ const SPECIES_LIBRARY: Dictionary = {
 			"fecundity": 0.0,
 			"clutch_size": 0,
 			"preferred_y": 3.8,
+			"body_elongation": 0.92,
+			"body_depth_factor": 1.22,
+			"body_shape": "compressed",         # deep anabantid torso + billowing fins
 			"fin_length_factor": 1.45,
 			"dorsal_height_factor": 1.35,
 			"tail_fork_depth": 0.7,
@@ -875,6 +912,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"eye_size_factor": 1.35,
 			"back_arch": 1.1,
 			"tail_shape": 3,                    # square paddle
+			"body_shape": "fusiform",
 			# Subtle adipose fin sits between the dorsal and tail. Real
 			# killifish have one - it reads as "this is not a tetra-tetra
 			# but it shares the lineage." Helps differentiate from danios.
@@ -906,6 +944,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 3.6,
 			"body_elongation": 0.95,
 			"body_depth_factor": 1.0,
+			"body_shape": "fusiform",
 			"fin_length_factor": 1.55,           # extra long signature tail
 			"tail_fork_depth": 0.3,
 			"pattern_type": 2,
@@ -986,7 +1025,10 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 4.6,
 			"body_elongation": 1.30,
 			"body_depth_factor": 0.75,
+			"body_shape": "fusiform",
+			"dorsal_height_factor": 0.85,         # low sleek dorsal — danio not killifish
 			"pattern_type": 1,
+			"metallic_scales": true,
 			"swim_pattern": "school",
 			"tail_shape": 0,                    # forked
 			"eye_size_factor": 1.0,
@@ -1013,6 +1055,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 2.0,
 			"body_elongation": 1.10,
 			"body_depth_factor": 1.10,
+			"body_width_factor": 1.12,
+			"body_shape": "depressed",            # flat armored belly reads at a glance
 			"head_proportion": 1.20,
 			"pattern_type": 2,
 			"color_dot_count": 3,
@@ -1136,10 +1180,13 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 1.4,                  # bottom + glass crawler
 			"body_elongation": 1.10,
 			"body_depth_factor": 0.85,
+			"body_shape": "fusiform",
+			"ventral_profile": 0.65,             # flat glass-clinger belly
 			"fin_length_factor": 0.85,
 			"dorsal_height_factor": 0.7,
 			"tail_fork_depth": 0.35,
 			"pattern_type": 1,                   # horizontal stripe
+			"metallic_scales": true,
 			"swim_pattern": "shuffle",           # glass-cling crawl
 			"tail_shape": 0,
 			"eye_size_factor": 1.05,
@@ -1170,6 +1217,9 @@ const SPECIES_LIBRARY: Dictionary = {
 			"preferred_y": 1.0,                  # hugs the bottom + wood
 			"body_elongation": 1.25,
 			"body_depth_factor": 1.10,
+			"body_width_factor": 1.35,
+			"body_shape": "depressed",            # wide flat pleco on wood
+			"dorsal_length_factor": 1.55,       # long-based dorsal spine
 			"head_proportion": 1.30,
 			"fin_length_factor": 1.10,
 			"dorsal_height_factor": 1.45,
@@ -1409,6 +1459,30 @@ const SPECIES_LIBRARY: Dictionary = {
 }
 
 
+# Heritable traits that define a species' instant-read silhouette (#47 / #83).
+# Used by smoke_silhouettes.gd to verify every library entry has a unique
+# fingerprint and by morph_label() drift detection in fish.gd.
+const SILHOUETTE_IDENTITY_KEYS: Array[String] = [
+	"body_shape", "tail_shape", "pattern_type", "adipose_fin", "has_barbels",
+	"armor_plates", "ventral_sucker", "second_dorsal", "ventral_feelers",
+	"body_elongation", "body_depth_factor", "body_width_factor",
+	"snout_length_factor", "dorsal_length_factor", "dorsal_height_factor",
+	"finnage", "anal_fin_length_factor", "mixed_morphs", "mouth_orientation",
+	"swim_pattern", "metallic_scales", "nuchal_hump", "wood_grazer",
+	"snout_pointed", "dimorphic",
+]
+
+
+static func species_silhouette_fingerprint(species_key: String) -> String:
+	var entry: Dictionary = SPECIES_LIBRARY.get(species_key, {})
+	var g: Dictionary = entry.get("genome", {})
+	var parts: PackedStringArray = []
+	for k: String in SILHOUETTE_IDENTITY_KEYS:
+		if g.has(k):
+			parts.append("%s=%s" % [k, str(g[k])])
+	return "|".join(parts)
+
+
 func species_label(key: String) -> String:
 	var entry: Dictionary = SPECIES_LIBRARY.get(key, {})
 	return entry.get("label", key)
@@ -1582,6 +1656,14 @@ const TANK_PRESETS: Dictionary = {
 			"glassdart": 22, "danio": 8, "shrimp": 18,
 		},
 		"phenotype_spread": 0.5,
+		"plant_palette": {
+			"valli": 0.35, "crypt": 0.65, "red_stem": 1.35,
+			"carpet": 0.55, "moss": 0.35, "java_fern": 0.45,
+		},
+		"plant_layout": {
+			"mode": "dutch_rows",
+			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 1, "riccia": 1},
+		},
 		"description": "Pure schoolers (tetras + danios) + dense shrimp colony. No apex.",
 	},
 	"apex_tank": {
@@ -1601,6 +1683,10 @@ const TANK_PRESETS: Dictionary = {
 		"plant_palette": {
 			"valli": 0.3, "crypt": 0.6, "red_stem": 0.2,
 			"carpet": 0.8, "moss": 1.2, "java_fern": 1.1,
+		},
+		"plant_layout": {
+			"mode": "corner_refuge",
+			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 1, "riccia": 0},
 		},
 		"hardscape_style": "predator_corners",
 		"terrain_relief": [
@@ -1660,6 +1746,10 @@ const TANK_PRESETS: Dictionary = {
 			"valli": 0.85, "crypt": 1.0, "red_stem": 1.1,
 			"carpet": 0.9, "moss": 1.3, "java_fern": 1.3,
 		},
+		"plant_layout": {
+			"mode": "ridge_strip",
+			"extras": {"spirals": 4, "branch_ferns": 6, "hydra": 2, "marimo": 2, "riccia": 3},
+		},
 		"hardscape_style": "twin_logs",
 		"terrain_relief": [
 			# Central planted ridge runs front-to-back, with a small
@@ -1707,8 +1797,18 @@ const TANK_PRESETS: Dictionary = {
 		# the only thing carrying the shrimp colony through the pre-dawn O2
 		# trough, so the moss-and-grass island is denser than purely cosmetic.
 		"plant_palette": {
-			"carpet": 0.75, "moss": 0.70, "java_fern": 0.40,
+			"carpet": 0.0, "moss": 0.0, "java_fern": 0.0,
 			"valli": 0.0, "crypt": 0.0, "red_stem": 0.0,
+		},
+		"plant_layout": {
+			"mode": "central_island",
+			"island_radius": 1.35,
+			"island_carpet": 5,
+			"island_moss": 2,
+			"hydra_min_center_dist": 1.55,
+			"hydra_edge_bias": 0.62,
+			"clam_min_center_dist": 1.35,
+			"extras": {"spirals": 0, "branch_ferns": 0, "hydra": 7, "marimo": 0, "riccia": 0},
 		},
 		"hardscape_style": "polyp_jar",
 		"terrain_relief": [
@@ -1730,6 +1830,10 @@ const TANK_PRESETS: Dictionary = {
 		"plant_palette": {
 			"valli": 0.0, "crypt": 0.0, "red_stem": 0.0,
 			"carpet": 0.85, "moss": 0.0, "java_fern": 0.0,
+		},
+		"plant_layout": {
+			"mode": "carpet_only",
+			"extras": {"spirals": 0, "branch_ferns": 0, "hydra": 0, "marimo": 0, "riccia": 0},
 		},
 		"hardscape_style": "iwagumi",
 		"terrain_relief": [
@@ -1756,6 +1860,10 @@ const TANK_PRESETS: Dictionary = {
 			"valli": 0.45, "crypt": 0.8, "red_stem": 0.5,
 			"carpet": 0.4, "moss": 0.6, "java_fern": 1.4,
 		},
+		"plant_layout": {
+			"mode": "plateau_flank",
+			"extras": {"spirals": 1, "branch_ferns": 2, "hydra": 0, "marimo": 1, "riccia": 1},
+		},
 		"hardscape_style": "boulder_field",
 		"terrain_relief": [
 			# Two raised plateaus (the dominant pair's territories) with
@@ -1780,6 +1888,10 @@ const TANK_PRESETS: Dictionary = {
 			"valli": 0.8, "crypt": 0.4, "red_stem": 0.2,
 			"carpet": 0.25, "moss": 1.6, "java_fern": 1.2,
 		},
+		"plant_layout": {
+			"mode": "wood_moss",
+			"extras": {"spirals": 1, "branch_ferns": 2, "hydra": 0, "marimo": 1, "riccia": 0},
+		},
 		"hardscape_style": "blackwater_heavy_wood",
 		"terrain_relief": [
 			# Asymmetric: one side mounded (where the wood pile sits),
@@ -1788,6 +1900,21 @@ const TANK_PRESETS: Dictionary = {
 			{"x":  0.45, "z":  0.40, "radius": 3, "mode": "dig"},
 		],
 		"description": "Amazonian biotope: surface-darting killifish, bottom-sifting cory, livebearer guppies. A tangle of driftwood dominates one side, with a leaf-litter hollow on the other. Moss + java fern carpet the wood.",
+	},
+	"shrimp_sanctuary": {
+		"label": "Shrimp sanctuary (nano planted)",
+		"stocking": {"shrimp": 22},
+		"phenotype_spread": 1.0,
+		"plant_palette": {
+			"valli": 0.0, "crypt": 0.55, "red_stem": 0.0,
+			"carpet": 1.15, "moss": 1.25, "java_fern": 0.65,
+		},
+		"plant_layout": {
+			"mode": "nano_planted",
+			"extras": {"spirals": 0, "branch_ferns": 0, "hydra": 0, "marimo": 1, "riccia": 2},
+		},
+		"hardscape_style": "polyp_jar",
+		"description": "Nano shrimp tank: dense Monte Carlo-style carpet, bucephalandra-like crypts on stones, Christmas moss on a tiny driftwood branch. No predator fish.",
 	},
 }
 
@@ -2116,6 +2243,13 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
 	cfg.set_value("render", "experimental_visuals", experimental_visuals)
+	cfg.set_value("render", "pixel_purity", pixel_purity)
+	cfg.set_value("render", "colorblind_palette", colorblind_palette)
+	cfg.set_value("render", "beauty_defaults_applied", beauty_defaults_applied)
+	cfg.set_value("render", "film_grain_strength", film_grain_strength)
+	cfg.set_value("render", "selective_glow_strength", selective_glow_strength)
+	cfg.set_value("render", "crt_mode", crt_mode)
+	cfg.set_value("render", "photo_mode_enhanced", photo_mode_enhanced)
 	cfg.set_value("render", "start_matured", start_matured)
 	cfg.set_value("render", "fog_density", fog_density)
 	cfg.set_value("render", "fog_anisotropy", fog_anisotropy)
@@ -2145,6 +2279,9 @@ func save_to_disk() -> void:
 	cfg.set_value("camera", "view_slot_c", camera_view_slot_c)
 	cfg.set_value("mobile", "device_tier", device_tier)
 	cfg.set_value("mobile", "tutorial_seen", tutorial_seen)
+	cfg.set_value("onboarding", "walkthrough_step", walkthrough_step)
+	cfg.set_value("onboarding", "walkthrough_completed", walkthrough_completed)
+	cfg.set_value("onboarding", "walkthrough_scenario_preset", walkthrough_scenario_preset)
 	cfg.set_value("mobile", "last_quit_unix", last_quit_unix)
 	cfg.set_value("mobile", "guardian_mind_consent", guardian_mind_consent)
 	cfg.set_value("mobile", "guardian_mind_info_seen", guardian_mind_info_seen)
@@ -2161,7 +2298,18 @@ func save_to_disk() -> void:
 	cfg.set_value("ai", "embedded_endpoint", ai_embedded_endpoint)
 	cfg.set_value("ai", "embedded_model", ai_embedded_model)
 	cfg.set_value("ai", "guardian_voice_enabled", guardian_voice_enabled)
+	cfg.set_value("ai", "fish_thought_voice_enabled", fish_thought_voice_enabled)
+	cfg.set_value("ai", "guardian_custom_gguf_path", guardian_custom_gguf_path)
 	cfg.set_value("ai", "guardian_voice_explainer_seen", guardian_voice_explainer_seen)
+	cfg.set_value("ai", "sentience_voice_off", sentience_voice_off)
+	cfg.set_value("ai", "consciousness_workspace_enabled", consciousness_workspace_enabled)
+	cfg.set_value("ai", "consciousness_writeback_enabled", consciousness_writeback_enabled)
+	cfg.set_value("ai", "consciousness_stream_enabled", consciousness_stream_enabled)
+	cfg.set_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
+	cfg.set_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
+	cfg.set_value("ai", "keeper_mic_enabled", keeper_mic_enabled)
+	cfg.set_value("ai", "voice_language", voice_language)
+	cfg.set_value("ai", "mind_system_version_seen", mind_system_version_seen)
 	cfg.save(_current_save_path())
 
 
@@ -2350,6 +2498,13 @@ func load_from_disk() -> void:
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
 	experimental_visuals = cfg.get_value("render", "experimental_visuals", experimental_visuals)
+	pixel_purity = cfg.get_value("render", "pixel_purity", pixel_purity)
+	colorblind_palette = String(cfg.get_value("render", "colorblind_palette", colorblind_palette))
+	beauty_defaults_applied = cfg.get_value("render", "beauty_defaults_applied", beauty_defaults_applied)
+	film_grain_strength = float(cfg.get_value("render", "film_grain_strength", film_grain_strength))
+	selective_glow_strength = float(cfg.get_value("render", "selective_glow_strength", selective_glow_strength))
+	crt_mode = float(cfg.get_value("render", "crt_mode", crt_mode))
+	photo_mode_enhanced = cfg.get_value("render", "photo_mode_enhanced", photo_mode_enhanced)
 	start_matured = cfg.get_value("render", "start_matured", start_matured)
 	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
 	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
@@ -2390,6 +2545,9 @@ func load_from_disk() -> void:
 	camera_view_slot_c = cfg.get_value("camera", "view_slot_c", camera_view_slot_c)
 	device_tier = cfg.get_value("mobile", "device_tier", device_tier)
 	tutorial_seen = cfg.get_value("mobile", "tutorial_seen", tutorial_seen)
+	walkthrough_step = int(cfg.get_value("onboarding", "walkthrough_step", walkthrough_step))
+	walkthrough_completed = cfg.get_value("onboarding", "walkthrough_completed", walkthrough_completed)
+	walkthrough_scenario_preset = String(cfg.get_value("onboarding", "walkthrough_scenario_preset", walkthrough_scenario_preset))
 	last_quit_unix = cfg.get_value("mobile", "last_quit_unix", last_quit_unix)
 	guardian_mind_consent = String(cfg.get_value("mobile", "guardian_mind_consent", guardian_mind_consent))
 	guardian_mind_info_seen = cfg.get_value("mobile", "guardian_mind_info_seen", guardian_mind_info_seen)
@@ -2406,8 +2564,24 @@ func load_from_disk() -> void:
 	ai_embedded_endpoint = cfg.get_value("ai", "embedded_endpoint", ai_embedded_endpoint)
 	ai_embedded_model = cfg.get_value("ai", "embedded_model", ai_embedded_model)
 	guardian_voice_enabled = cfg.get_value("ai", "guardian_voice_enabled", guardian_voice_enabled)
+	fish_thought_voice_enabled = cfg.get_value("ai", "fish_thought_voice_enabled", fish_thought_voice_enabled)
+	guardian_custom_gguf_path = String(cfg.get_value("ai", "guardian_custom_gguf_path", guardian_custom_gguf_path))
 	guardian_voice_explainer_seen = cfg.get_value("ai", "guardian_voice_explainer_seen",
 			guardian_voice_explainer_seen)
+	sentience_voice_off = cfg.get_value("ai", "sentience_voice_off", sentience_voice_off)
+	consciousness_workspace_enabled = cfg.get_value("ai", "consciousness_workspace_enabled",
+			consciousness_workspace_enabled)
+	consciousness_writeback_enabled = cfg.get_value("ai", "consciousness_writeback_enabled",
+			consciousness_writeback_enabled)
+	consciousness_stream_enabled = cfg.get_value("ai", "consciousness_stream_enabled",
+			consciousness_stream_enabled)
+	keeper_ears_enabled = cfg.get_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
+	keeper_gaze_enabled = cfg.get_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
+	keeper_mic_enabled = cfg.get_value("ai", "keeper_mic_enabled", keeper_mic_enabled)
+	voice_language = String(cfg.get_value("ai", "voice_language", voice_language))
+	mind_system_version_seen = int(cfg.get_value("ai", "mind_system_version_seen",
+			mind_system_version_seen))
+	_apply_battery_voice_defaults()
 	_pair_environment_lighting_if_legacy()
 	# Push the freshly-loaded AI settings into the live director (autoload
 	# instantiated before us). Safe no-op if AIDirector autoload is missing.
@@ -2423,11 +2597,34 @@ func load_from_disk() -> void:
 			"ai_embedded_endpoint": ai_embedded_endpoint,
 			"ai_embedded_model": ai_embedded_model,
 			"guardian_voice_enabled": guardian_voice_enabled,
+			"fish_thought_voice_enabled": fish_thought_voice_enabled,
+			"sentience_voice_off": sentience_voice_off,
+			"voice_language": voice_language,
 		})
+
+
+func _apply_battery_voice_defaults() -> void:
+	# On battery saver, skip loading the heavy in-process tier (#94).
+	# Template voice remains; player opts up when plugged in.
+	if not battery_saver:
+		return
+	if sentience_voice_off:
+		return
+	# Do not force-disable saved preference — GuardianLlm checks battery at load time.
+
+
+func effective_guardian_voice_enabled() -> bool:
+	return guardian_voice_enabled and not sentience_voice_off
+
+
+func effective_fish_thought_voice_enabled() -> bool:
+	return fish_thought_voice_enabled and not sentience_voice_off
 
 
 func _ready() -> void:
 	load_from_disk()
+	var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
+	Aesthetics.apply_first_launch_defaults(self)
 
 
 # Switch the live config to a different tank slot. Called by the menu when
@@ -2570,7 +2767,7 @@ func reset_to_defaults() -> void:
 	# self-sustain when left unattended.
 	auto_respawn_fauna = true
 	auto_feed_fauna = false
-	cycle_start_mode = "fresh"
+	cycle_start_mode = "established"
 	plant_youth_scale = 0.52
 	fauna_schooling_mult = 1.0
 	fauna_separation_mult = 1.0

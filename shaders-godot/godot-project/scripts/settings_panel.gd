@@ -12,6 +12,8 @@ extends PanelContainer
 # Preloaded for the same reason ai_director.gd / fish.gd do — the global
 # class_name registry isn't reliable before the editor scan completes.
 const OllamaOnboarding = preload("res://scripts/ollama_onboarding.gd")
+const MindNarrator = preload("res://scripts/mind_narrator.gd")
+const KeeperInput = preload("res://scripts/keeper_input.gd")
 
 signal apply_requested
 
@@ -71,6 +73,14 @@ var _ai_embedded_check: CheckBox
 var _ai_embedded_endpoint_edit: LineEdit
 var _ai_embedded_model_edit: LineEdit
 var _guardian_voice_check: CheckBox
+var _fish_thought_voice_check: CheckBox
+var _keeper_ears_check: CheckBox
+var _keeper_gaze_check: CheckBox
+var _keeper_mic_check: CheckBox
+var _sentience_voice_off_check: CheckBox
+var _voice_language_option: OptionButton
+var _guardian_dl_progress_label: Label
+var _voice_detail_box: VBoxContainer
 var _ai_endpoint_edit: LineEdit
 var _ai_model_edit: LineEdit
 var _ai_theme_edit: LineEdit
@@ -515,10 +525,82 @@ func _build_ui() -> void:
 		_apply_fps_cap_live())
 
 	# -- AI tab --
+	# Voice first (on-device, private) — separate from optional Ollama names/chronicle.
+	_add_section(vbox_ai, "Voice & thoughts (on-device)")
+	var voice_desc := PanelTheme.make_description()
+	voice_desc.text = (
+		"Fish minds always run in the simulation — moods, memory, behavior. "
+		+ "This section controls optional text: Guardian diary lines and fish thoughts when you follow them. "
+		+ "Nothing leaves your machine.")
+	vbox_ai.add_child(voice_desc)
+	_sentience_voice_off_check = CheckBox.new()
+	_sentience_voice_off_check.text = "Quiet mode — hide all voice text"
+	_sentience_voice_off_check.toggled.connect(_on_sentience_voice_off_toggled)
+	vbox_ai.add_child(_sentience_voice_off_check)
+	_voice_detail_box = VBoxContainer.new()
+	_voice_detail_box.add_theme_constant_override("separation", 6)
+	vbox_ai.add_child(_voice_detail_box)
+	_guardian_voice_check = CheckBox.new()
+	_guardian_voice_check.text = "Guardian diary lines (built-in model when available)"
+	_guardian_voice_check.toggled.connect(_on_guardian_voice_toggled)
+	_voice_detail_box.add_child(_guardian_voice_check)
+	_fish_thought_voice_check = CheckBox.new()
+	_fish_thought_voice_check.text = "Fish thoughts when following or inspecting"
+	_fish_thought_voice_check.toggled.connect(_on_fish_thought_voice_toggled)
+	_voice_detail_box.add_child(_fish_thought_voice_check)
+	_add_section(vbox_ai, "Keeper ears (local)")
+	var keeper_desc := PanelTheme.make_description()
+	keeper_desc.text = (
+		"Your words reach the followed fish as feeling, never commands. "
+		+ "Gaze and cursor are optional social signals. Mic uses volume only — no speech-to-text.")
+	vbox_ai.add_child(keeper_desc)
+	_keeper_ears_check = CheckBox.new()
+	_keeper_ears_check.text = "Text channel to followed fish"
+	_keeper_ears_check.toggled.connect(_on_keeper_ears_toggled)
+	vbox_ai.add_child(_keeper_ears_check)
+	_keeper_gaze_check = CheckBox.new()
+	_keeper_gaze_check.text = "Sustained gaze as social signal"
+	_keeper_gaze_check.toggled.connect(_on_keeper_gaze_toggled)
+	vbox_ai.add_child(_keeper_gaze_check)
+	_keeper_mic_check = CheckBox.new()
+	_keeper_mic_check.text = "Microphone room presence (opt-in)"
+	_keeper_mic_check.toggled.connect(_on_keeper_mic_toggled)
+	vbox_ai.add_child(_keeper_mic_check)
+	var lang_row := HBoxContainer.new()
+	lang_row.add_theme_constant_override("separation", 6)
+	_voice_detail_box.add_child(lang_row)
+	var lang_lbl := Label.new()
+	lang_lbl.text = "Voice language:"
+	lang_lbl.add_theme_font_size_override("font_size", 11)
+	lang_row.add_child(lang_lbl)
+	_voice_language_option = OptionButton.new()
+	_voice_language_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_voice_language_option.add_item("System default", 0)
+	_voice_language_option.set_item_metadata(0, "")
+	for code in ["en", "es", "fr", "de", "pt", "ja", "ko", "zh"]:
+		var label: String = str(MindNarrator.LOCALE_LABELS.get(code, code))
+		var idx: int = _voice_language_option.item_count
+		_voice_language_option.add_item(label, idx)
+		_voice_language_option.set_item_metadata(idx, code)
+	_voice_language_option.item_selected.connect(_on_voice_language_selected)
+	lang_row.add_child(_voice_language_option)
+	var guardian_dl_desc := PanelTheme.make_description()
+	guardian_dl_desc.text = "Steam builds include the model. Slim builds download once (~250MB, resumable)."
+	_voice_detail_box.add_child(guardian_dl_desc)
+	_guardian_dl_progress_label = Label.new()
+	_guardian_dl_progress_label.add_theme_font_size_override("font_size", 11)
+	_guardian_dl_progress_label.add_theme_color_override("font_color", Color8(180, 195, 220))
+	_guardian_dl_progress_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_voice_detail_box.add_child(_guardian_dl_progress_label)
+	var guardian_dl_btn := PanelTheme.make_secondary_button("Download Guardian mind")
+	guardian_dl_btn.name = "GuardianDownloadBtn"
+	guardian_dl_btn.pressed.connect(_on_guardian_download_pressed)
+	_voice_detail_box.add_child(guardian_dl_btn)
+
+	_add_section(vbox_ai, "AI Companion (optional Ollama)")
 	# Local Ollama bridge. Off ships with the same offline name pool the AI
 	# uses as fallback, so toggling this is purely additive — nothing breaks
 	# when it's unreachable, players just keep the built-in experience.
-	_add_section(vbox_ai, "AI Companion")
 	_ai_enabled_check = CheckBox.new()
 	_ai_enabled_check.text = "Enable AI (local Ollama)"
 	_ai_enabled_check.toggled.connect(_on_ai_enabled_toggled)
@@ -574,18 +656,6 @@ func _build_ui() -> void:
 	_ai_chronicle_check.text = "Write tank chronicle (ambient sentences)"
 	_ai_chronicle_check.toggled.connect(_on_ai_chronicle_toggled)
 	vbox_ai.add_child(_ai_chronicle_check)
-	_add_section(vbox_ai, "Guardian voice (built-in)")
-	var guardian_desc := PanelTheme.make_description()
-	guardian_desc.text = "The Guardian's mind runs inside the game on your device — private and offline. Steam installs include it; slim builds ask once before a ~250MB download."
-	vbox_ai.add_child(guardian_desc)
-	_guardian_voice_check = CheckBox.new()
-	_guardian_voice_check.text = "Generative Guardian lines (built-in model)"
-	_guardian_voice_check.toggled.connect(_on_guardian_voice_toggled)
-	vbox_ai.add_child(_guardian_voice_check)
-	var guardian_dl_btn := PanelTheme.make_secondary_button("Download Guardian mind")
-	guardian_dl_btn.name = "GuardianDownloadBtn"
-	guardian_dl_btn.pressed.connect(_on_guardian_download_pressed)
-	vbox_ai.add_child(guardian_dl_btn)
 	_add_section(vbox_ai, "Advanced: HTTP fallback (optional)")
 	var embedded_desc := PanelTheme.make_description()
 	embedded_desc.text = "Only if you run a separate /api/generate server. Normal play uses the built-in model above."
@@ -638,19 +708,12 @@ func _build_ui() -> void:
 	# the bottom of the panel below the scroll area. Without this, when the
 	# section list grew past the screen height the Apply button scrolled off
 	# the bottom and became unreachable.
-	outer.add_child(PanelTheme.make_rule())
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
-	outer.add_child(hb)
-	var close := PanelTheme.make_close_button(func():
-		_revert_staged_stocking()
-		visible = false
-		mouse_filter = Control.MOUSE_FILTER_IGNORE)
-	hb.add_child(close)
 	var apply := PanelTheme.make_primary_button("Apply (reload tank)")
 	apply.pressed.connect(_on_apply)
-	hb.add_child(apply)
+	outer.add_child(PanelTheme.make_panel_footer(func():
+		_revert_staged_stocking()
+		visible = false
+		mouse_filter = Control.MOUSE_FILTER_IGNORE, apply))
 
 
 func _new_settings_tab(tabs: TabContainer, title: String) -> VBoxContainer:
@@ -819,6 +882,35 @@ func _pull_from_config() -> void:
 		_guardian_voice_check.set_block_signals(true)
 		_guardian_voice_check.button_pressed = TankConfig.guardian_voice_enabled
 		_guardian_voice_check.set_block_signals(false)
+	if _sentience_voice_off_check != null:
+		_sentience_voice_off_check.set_block_signals(true)
+		_sentience_voice_off_check.button_pressed = TankConfig.sentience_voice_off
+		_sentience_voice_off_check.set_block_signals(false)
+	_sync_voice_detail_enabled()
+	if _voice_language_option != null:
+		_voice_language_option.set_block_signals(true)
+		var want: String = String(TankConfig.voice_language)
+		for i in _voice_language_option.item_count:
+			if String(_voice_language_option.get_item_metadata(i)) == want:
+				_voice_language_option.select(i)
+				break
+		_voice_language_option.set_block_signals(false)
+	if _fish_thought_voice_check != null:
+		_fish_thought_voice_check.set_block_signals(true)
+		_fish_thought_voice_check.button_pressed = TankConfig.fish_thought_voice_enabled
+		_fish_thought_voice_check.set_block_signals(false)
+	if _keeper_ears_check != null:
+		_keeper_ears_check.set_block_signals(true)
+		_keeper_ears_check.button_pressed = TankConfig.keeper_ears_enabled
+		_keeper_ears_check.set_block_signals(false)
+	if _keeper_gaze_check != null:
+		_keeper_gaze_check.set_block_signals(true)
+		_keeper_gaze_check.button_pressed = TankConfig.keeper_gaze_enabled
+		_keeper_gaze_check.set_block_signals(false)
+	if _keeper_mic_check != null:
+		_keeper_mic_check.set_block_signals(true)
+		_keeper_mic_check.button_pressed = TankConfig.keeper_mic_enabled
+		_keeper_mic_check.set_block_signals(false)
 	if _ai_embedded_endpoint_edit != null:
 		_ai_embedded_endpoint_edit.text = TankConfig.ai_embedded_endpoint
 	if _ai_embedded_model_edit != null:
@@ -839,8 +931,24 @@ func _refresh_ai_status() -> void:
 	var ai := get_node_or_null("/root/AIDirector")
 	if ai == null:
 		_ai_status_label.text = "AI Director unavailable."
+	else:
+		_ai_status_label.text = String(ai.status_summary())
+	_sync_guardian_download_button()
+	_sync_guardian_download_progress()
+
+
+func _sync_guardian_download_progress() -> void:
+	if _guardian_dl_progress_label == null:
 		return
-	_ai_status_label.text = String(ai.status_summary())
+	var glm := get_node_or_null("/root/GuardianLlm")
+	if glm == null:
+		_guardian_dl_progress_label.text = ""
+		return
+	var st: String = String(glm.call("status_summary")) if glm.has_method("status_summary") else ""
+	if st.to_lower().contains("download"):
+		_guardian_dl_progress_label.text = st
+	else:
+		_guardian_dl_progress_label.text = ""
 
 
 func _process(_dt: float) -> void:
@@ -868,6 +976,9 @@ func _push_ai_to_director() -> void:
 		"ai_embedded_endpoint": TankConfig.ai_embedded_endpoint,
 		"ai_embedded_model": TankConfig.ai_embedded_model,
 		"guardian_voice_enabled": TankConfig.guardian_voice_enabled,
+		"fish_thought_voice_enabled": TankConfig.fish_thought_voice_enabled,
+		"sentience_voice_off": TankConfig.sentience_voice_off,
+		"voice_language": TankConfig.voice_language,
 	})
 
 
@@ -983,6 +1094,11 @@ func _sync_guardian_download_button() -> void:
 
 
 func _on_guardian_voice_toggled(on: bool) -> void:
+	if on and TankConfig.sentience_voice_off:
+		TankConfig.sentience_voice_off = false
+		if _sentience_voice_off_check != null:
+			_sentience_voice_off_check.set_pressed_no_signal(false)
+		_sync_voice_detail_enabled()
 	TankConfig.guardian_voice_enabled = on
 	TankConfig.save_to_disk()
 	_push_ai_to_director()
@@ -992,6 +1108,61 @@ func _on_guardian_voice_toggled(on: bool) -> void:
 	if glm != null and on and glm.has_method("_begin_load_if_needed"):
 		glm.call("_begin_load_if_needed")
 	_sync_guardian_download_button()
+
+
+func _on_fish_thought_voice_toggled(on: bool) -> void:
+	if on and TankConfig.sentience_voice_off:
+		TankConfig.sentience_voice_off = false
+		if _sentience_voice_off_check != null:
+			_sentience_voice_off_check.set_pressed_no_signal(false)
+		_sync_voice_detail_enabled()
+	TankConfig.fish_thought_voice_enabled = on
+	TankConfig.save_to_disk()
+	_push_ai_to_director()
+
+
+func _on_keeper_ears_toggled(on: bool) -> void:
+	TankConfig.keeper_ears_enabled = on
+	TankConfig.save_to_disk()
+
+
+func _on_keeper_gaze_toggled(on: bool) -> void:
+	TankConfig.keeper_gaze_enabled = on
+	TankConfig.save_to_disk()
+
+
+func _on_keeper_mic_toggled(on: bool) -> void:
+	TankConfig.keeper_mic_enabled = on
+	if not on:
+		KeeperInput.set_mic_rms(0.0)
+	TankConfig.save_to_disk()
+
+
+func _on_sentience_voice_off_toggled(on: bool) -> void:
+	TankConfig.sentience_voice_off = on
+	TankConfig.save_to_disk()
+	_sync_voice_detail_enabled()
+	_push_ai_to_director()
+
+
+func _sync_voice_detail_enabled() -> void:
+	var quiet: bool = TankConfig.sentience_voice_off
+	if _voice_detail_box != null:
+		_voice_detail_box.visible = not quiet
+	if _guardian_voice_check != null:
+		_guardian_voice_check.disabled = quiet
+	if _fish_thought_voice_check != null:
+		_fish_thought_voice_check.disabled = quiet
+	if _voice_language_option != null:
+		_voice_language_option.disabled = quiet
+
+
+func _on_voice_language_selected(idx: int) -> void:
+	if _voice_language_option == null:
+		return
+	TankConfig.voice_language = String(_voice_language_option.get_item_metadata(idx))
+	TankConfig.save_to_disk()
+	_push_ai_to_director()
 
 
 func _on_ai_embedded_endpoint_changed(text: String) -> void:

@@ -309,6 +309,24 @@ func tick_channels(dt: float) -> void:
 	_next_dirty_channels = swap
 
 
+func tick_night_memory(dt: float, sim) -> void:
+	var dl: float = 1.0
+	if sim != null and sim.has_method("daylight"):
+		dl = float(sim.daylight())
+	if dl > 0.32:
+		return
+	if sim == null or sim.get("waste") is not Array:
+		return
+	for w in sim.waste:
+		if not is_instance_valid(w):
+			continue
+		var p: Vector3 = w.global_position
+		var cx: int = clampi(int((p.x - origin.x) / cell_size), 0, cells_x - 1)
+		var cz: int = clampi(int((p.z - origin.z) / cell_size), 0, cells_z - 1)
+		nutrients[cx][cz] = clampf(nutrients[cx][cz] + dt * 0.004, 0.0, 2.5)
+		_mark_channel_dirty(Vector2i(cx, cz))
+
+
 func tick(_dt: float) -> void:
 	# Soil aging runs every tick (before the dirty-set early-out) so a settled
 	# tank still ages its substrate.

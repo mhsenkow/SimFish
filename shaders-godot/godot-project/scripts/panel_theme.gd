@@ -26,6 +26,45 @@ const PRIMARY_FG: Color = Color(0.98, 0.99, 1.0)
 const HUD_BG: Color = Color(0.06, 0.07, 0.12, 0.78)
 const HUD_BORDER: Color = Color(0.35, 0.45, 0.6, 0.5)
 const RAIL_ACTIVE_BG: Color = Color(0.28, 0.42, 0.58, 0.85)
+const SHELF_BG: Color = Color(0.05, 0.04, 0.07, 1.0)
+const SHELF_CARD_BG: Color = Color(0.07, 0.08, 0.13, 0.95)
+const MODAL_SCRIM: Color = Color(0.0, 0.0, 0.0, 0.55)
+
+# Biotope-synced overrides (#91) — fall back to const tokens when unset.
+static var _cohesion_bg: Color = BG
+static var _cohesion_border: Color = BORDER
+static var _cohesion_section: Color = SECTION_FG
+static var _cohesion_primary: Color = PRIMARY_BG
+static var _cohesion_glass_tint: Color = Color(0.07, 0.08, 0.11, 0.55)
+static var _cohesion_active: bool = false
+
+
+static func sync_biotope_cohesion(hexes: Array) -> void:
+	var tok: Dictionary = AestheticsRuntime.ui_palette_tokens(hexes)
+	if tok.is_empty():
+		_cohesion_active = false
+		return
+	_cohesion_bg = tok.bg
+	_cohesion_border = tok.border
+	_cohesion_section = tok.section
+	_cohesion_primary = tok.primary_bg
+	_cohesion_glass_tint = tok.glass_tint
+	_cohesion_active = true
+
+
+static func glass_panel_tint() -> Color:
+	return _cohesion_glass_tint if _cohesion_active else Color(0.07, 0.08, 0.11, 0.55)
+
+
+# ---- Overlay z-index (document stacking order) -------------------------------
+
+const Z_WALKTHROUGH: int = 280
+const Z_HELP: int = 290
+const Z_ONBOARDING: int = 300
+const Z_MENU_MODAL: int = 400
+const Z_GUARDIAN: int = 450
+const Z_COACHMARK: int = 490
+const Z_TUTORIAL: int = 500
 
 
 # ---- HUD layout constants ----------------------------------------------------
@@ -41,6 +80,14 @@ const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0
 const TOAST_STACK_W: float = 280.0
 const TOAST_STACK_H: float = 240.0
+const SHELF_TOP_BAR_H: float = 64.0
+const SHELF_CARD_MIN_W: float = 260.0
+const SHELF_CARD_MAX_W: float = 320.0
+const MODAL_MIN_W: float = 320.0
+const MODAL_MIN_H: float = 360.0
+const MOBILE_NARROW_W: float = 480.0
+const AQUASCAPE_WORKBENCH_W: float = 188.0
+const AQUASCAPE_VIEW_BAR_H: float = 36.0
 
 
 # ---- Type system -------------------------------------------------------------
@@ -112,8 +159,8 @@ static func as_mono(node: Control, size: int = SIZE_SMALL, medium: bool = false)
 # Call once from each panel's _build_ui() before adding any children.
 static func apply_panel_chrome(panel: PanelContainer) -> void:
 	var style := StyleBoxFlat.new()
-	style.bg_color = BG
-	style.border_color = BORDER
+	style.bg_color = _cohesion_bg if _cohesion_active else BG
+	style.border_color = _cohesion_border if _cohesion_active else BORDER
 	style.border_width_left = 1
 	style.border_width_top = 1
 	style.border_width_right = 1
@@ -132,6 +179,115 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 	style.shadow_size = 8
 	style.shadow_offset = Vector2(0, 4)
 	panel.add_theme_stylebox_override("panel", style)
+
+
+# Lighter card chrome for the tank shelf grid — same family as side panels but
+# subtler border and tighter padding.
+static func apply_shelf_card_chrome(panel: PanelContainer) -> void:
+	var style := StyleBoxFlat.new()
+	style.bg_color = SHELF_CARD_BG
+	style.border_color = Color(BORDER.r, BORDER.g, BORDER.b, 0.42)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 10
+	style.corner_radius_top_right = 10
+	style.corner_radius_bottom_left = 10
+	style.corner_radius_bottom_right = 10
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	style.shadow_color = Color(0, 0, 0, 0.28)
+	style.shadow_size = 6
+	style.shadow_offset = Vector2(0, 3)
+	panel.add_theme_stylebox_override("panel", style)
+
+
+static func make_shelf_card_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = SHELF_CARD_BG
+	style.border_color = Color(BORDER.r, BORDER.g, BORDER.b, 0.42)
+	style.border_width_left = 1
+	style.border_width_top = 1
+	style.border_width_right = 1
+	style.border_width_bottom = 1
+	style.corner_radius_top_left = 10
+	style.corner_radius_top_right = 10
+	style.corner_radius_bottom_left = 10
+	style.corner_radius_bottom_right = 10
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	return style
+
+
+# Full-screen shelf backdrop.
+static func make_page_background(parent: Control) -> ColorRect:
+	var bg := ColorRect.new()
+	bg.name = "Background"
+	bg.color = SHELF_BG
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(bg)
+	parent.move_child(bg, 0)
+	return bg
+
+
+# Modal overlay: dim scrim + centered host. Returns { overlay, center, panel_slot }.
+static func make_modal_root(parent: Control, z_index: int = Z_MENU_MODAL,
+		on_dismiss: Callable = Callable()) -> Dictionary:
+	var overlay := Control.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = z_index
+	parent.add_child(overlay)
+
+	var scrim := ColorRect.new()
+	scrim.color = MODAL_SCRIM
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	if on_dismiss.is_valid():
+		scrim.gui_input.connect(func(ev: InputEvent) -> void:
+			if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+				on_dismiss.call())
+	overlay.add_child(scrim)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(center)
+
+	return {"overlay": overlay, "center": center, "scrim": scrim}
+
+
+# Viewport-relative modal panel sizing (replaces fixed 720×580 offsets).
+static func layout_modal_panel(panel: PanelContainer, vp: Vector2,
+		min_w: float = MODAL_MIN_W, min_h: float = MODAL_MIN_H,
+		max_w_frac: float = 0.92, max_h_frac: float = 0.88) -> void:
+	var w: float = clampf(vp.x * max_w_frac, min_w, vp.x - EDGE_MARGIN * 2.0)
+	var h: float = clampf(vp.y * max_h_frac, min_h, vp.y - EDGE_MARGIN * 2.0)
+	panel.custom_minimum_size = Vector2(w, h)
+
+
+# Standard top-bar row for menu pages.
+static func make_top_bar_row() -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	return row
+
+
+# Visually groups related toolbar buttons (Create / Manage / Help).
+static func make_action_cluster(buttons: Array[Button], separation: int = 8) -> HBoxContainer:
+	var cluster := HBoxContainer.new()
+	cluster.add_theme_constant_override("separation", separation)
+	for btn in buttons:
+		if btn != null:
+			cluster.add_child(btn)
+	return cluster
 
 
 # ---- Typography --------------------------------------------------------------
@@ -189,6 +345,22 @@ static func make_panel_header(title_text: String, on_close: Callable = Callable(
 	return row
 
 
+# Compact title row for HUD chip popovers — small × instead of a full Close pill.
+static func make_chip_popup_header(title_text: String, on_close: Callable = Callable()) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var title := make_title(title_text)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(title)
+	if on_close.is_valid():
+		var xbtn := make_secondary_button("×")
+		xbtn.custom_minimum_size = Vector2(22, 22)
+		xbtn.tooltip_text = "Close"
+		xbtn.pressed.connect(on_close)
+		row.add_child(xbtn)
+	return row
+
+
 # Standard dismiss control — always the same label + styling app-wide.
 static func make_close_button(on_close: Callable = Callable()) -> Button:
 	var b := make_secondary_button("Close")
@@ -198,7 +370,8 @@ static func make_close_button(on_close: Callable = Callable()) -> Button:
 
 
 # Pinned footer row for side panels: optional leading actions, Close on the right.
-static func make_panel_footer(on_close: Callable, primary: Button = null) -> VBoxContainer:
+static func make_panel_footer(on_close: Callable, primary: Button = null,
+		middle: Array[Button] = []) -> VBoxContainer:
 	var block := VBoxContainer.new()
 	block.add_theme_constant_override("separation", 8)
 	block.add_child(make_rule())
@@ -206,6 +379,9 @@ static func make_panel_footer(on_close: Callable, primary: Button = null) -> VBo
 	hb.alignment = BoxContainer.ALIGNMENT_END
 	hb.add_theme_constant_override("separation", 8)
 	block.add_child(hb)
+	for btn in middle:
+		if btn != null:
+			hb.add_child(btn)
 	if primary != null:
 		hb.add_child(primary)
 	hb.add_child(make_close_button(on_close))
@@ -394,6 +570,43 @@ static func make_chip_button(text: String) -> Button:
 	return b
 
 
+# Square glyph button for inline row actions (rename / duplicate / delete on a
+# card). Distinct from make_chip_button, which is a *wide* labelled pill — an
+# icon button is sized to its glyph so three of them don't crowd out a title.
+static func make_icon_button(glyph: String) -> Button:
+	var b := Button.new()
+	b.text = glyph
+	b.focus_mode = Control.FOCUS_NONE
+	var side: int = 40 if _button_min_height() >= 48 else 32
+	b.custom_minimum_size = Vector2(side, side)
+	apply_font(b, FONT_SANS, SIZE_ITEM)
+	b.add_theme_color_override("font_color", DIM_FG)
+	b.add_theme_color_override("font_hover_color", LABEL_FG)
+	b.add_theme_color_override("font_pressed_color", SECTION_FG)
+	var normal := _icon_button_stylebox(Color(0.09, 0.11, 0.16, 0.0))
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover",
+		_icon_button_stylebox(Color(0.16, 0.20, 0.28, 0.82)))
+	b.add_theme_stylebox_override("pressed",
+		_icon_button_stylebox(Color(0.20, 0.26, 0.34, 0.9)))
+	b.add_theme_stylebox_override("focus", normal)
+	return b
+
+
+static func _icon_button_stylebox(bg: Color) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = bg
+	s.corner_radius_top_left = 6
+	s.corner_radius_top_right = 6
+	s.corner_radius_bottom_left = 6
+	s.corner_radius_bottom_right = 6
+	s.content_margin_left = 4
+	s.content_margin_right = 4
+	s.content_margin_top = 4
+	s.content_margin_bottom = 4
+	return s
+
+
 # Flat text-only control (disclosure toggles, low-priority links).
 static func make_ghost_button(text: String) -> Button:
 	var b := Button.new()
@@ -530,6 +743,52 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 		btn.modulate = Color(1.0, 1.0, 1.0, 1.0)
 	else:
 		btn.modulate = Color(0.92, 0.94, 0.98, 0.92)
+
+
+# Compact tool chip for aquascape / inline toolbars.
+static func style_compact_tool_button(btn: Button, active: bool = false) -> void:
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 28)
+	apply_font(btn, FONT_SANS, SIZE_CAPTION)
+	var fg: Color = PRIMARY_FG if active else LABEL_FG
+	btn.add_theme_color_override("font_color", fg)
+	btn.add_theme_color_override("font_hover_color", PRIMARY_FG)
+	btn.add_theme_color_override("font_pressed_color", PRIMARY_FG)
+	var normal := _filled_stylebox(Color(0.10, 0.12, 0.18, 0.55) if active else Color(0.08, 0.10, 0.15, 0.45))
+	normal.content_margin_left = 8
+	normal.content_margin_right = 8
+	normal.content_margin_top = 3
+	normal.content_margin_bottom = 3
+	normal.border_color = Color(SECTION_FG.r, SECTION_FG.g, SECTION_FG.b, 0.55 if active else 0.22)
+	normal.border_width_left = 1
+	normal.border_width_top = 1
+	normal.border_width_right = 1
+	normal.border_width_bottom = 1
+	btn.add_theme_stylebox_override("normal", normal)
+	btn.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.16, 0.20, 0.28, 0.78)))
+	btn.add_theme_stylebox_override("pressed", _filled_stylebox(Color(0.20, 0.26, 0.34, 0.9)))
+	btn.add_theme_stylebox_override("focus", normal)
+
+
+# Top aquascape toolbar — lighter than a full side panel, same HUD family.
+static func apply_aquascape_toolbar_chrome(panel: PanelContainer) -> void:
+	var style := make_hud_cluster_style()
+	style.bg_color = Color(HUD_BG.r, HUD_BG.g, HUD_BG.b, 0.92)
+	style.content_margin_left = 0.0
+	style.content_margin_right = 0.0
+	style.content_margin_top = 0.0
+	style.content_margin_bottom = 0.0
+	panel.add_theme_stylebox_override("panel", style)
+
+
+# Thin vertical rule between stat-chip groups in the top bar.
+static func make_hud_chip_divider() -> Control:
+	var sep := VSeparator.new()
+	var rule := StyleBoxFlat.new()
+	rule.bg_color = Color(RULE_FG.r, RULE_FG.g, RULE_FG.b, 0.65)
+	sep.add_theme_stylebox_override("separator", rule)
+	sep.custom_minimum_size = Vector2(2, 22)
+	return sep
 
 
 static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:

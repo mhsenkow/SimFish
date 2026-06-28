@@ -160,6 +160,30 @@ func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
 				inward = Vector3(-xz.x, 0.0, -xz.y) / xz.length()
 			else:
 				inward = Vector3(1.0, 0.0, 0.0)
+		"hex":
+			var hw: float = half_w - margin
+			var hd: float = half_d - margin
+			var ax: float = absf(x)
+			var az: float = absf(z)
+			var sx: float = 1.0 if x >= 0.0 else -1.0
+			var sz: float = 1.0 if z >= 0.0 else -1.0
+			var slack_diag: float = 1.0 - ax / hw - az / (2.0 * hd)
+			var slack_z: float = 1.0 - az / hd
+			var slack_x: float = 1.0 - ax / hw
+			if slack_z <= slack_diag and slack_z <= slack_x:
+				inward = Vector3(0.0, 0.0, -sz)
+			elif slack_x <= slack_diag:
+				inward = Vector3(-sx, 0.0, 0.0)
+			else:
+				inward = Vector3(-sx / hw, 0.0, -sz / (2.0 * hd))
+				if inward.length_squared() > 1e-6:
+					inward = inward.normalized()
+		"triangle":
+			var to_center := Vector3(-x, 0.0, -z)
+			if to_center.length_squared() > 1e-6:
+				inward = to_center.normalized()
+			else:
+				inward = Vector3(0.0, 0.0, -1.0)
 		_:
 			var hw: float = half_w - margin
 			var hd: float = half_d - margin
@@ -174,11 +198,6 @@ func _lateral_inward(x: float, z: float, margin: float) -> Vector3:
 				inward = Vector3(-1.0 if x >= 0.0 else 1.0, 0.0, 0.0)
 			else:
 				inward = Vector3(0.0, 0.0, -1.0 if z >= 0.0 else 1.0)
-			# Slight corner bias only — heavy center blend made rim fish steer inward
-			# and read as bouncing off the glass toward the middle.
-			if shape == "hex" or shape == "triangle":
-				if to_center.length_squared() > 1e-6:
-					inward = (inward + to_center.normalized() * 0.12).normalized()
 	if inward.length_squared() < 1e-6:
 		inward = Vector3(1.0, 0.0, 0.0)
 	return inward
@@ -405,7 +424,7 @@ func is_inside(x: float, z: float, margin: float = 0.0, world_y: float = NAN) ->
 		"hex":
 			var q: float = absf(x) / hw
 			var r: float = absf(z) / hd
-			return q + r * 0.5 < 1.0 and r < 1.0
+			return q + r * 0.5 <= 1.0 and r <= 1.0
 		"triangle":
 			if z > hd or z < -hd:
 				return false
@@ -466,8 +485,13 @@ func _sample_xz_at_height(r: RandomNumberGenerator, margin: float, world_y: floa
 	if shape == "hex":
 		var hd: float = half_d - margin
 		var hw: float = half_w - margin
-		var z: float = r.randf_range(-hd, hd)
-		return Vector2(r.randf_range(-hw, hw), z)
+		for _attempt in 48:
+			var z: float = r.randf_range(-hd, hd)
+			var max_x: float = hw * (1.0 - absf(z) / (2.0 * hd))
+			var xz := Vector2(r.randf_range(-max_x, max_x), z)
+			if is_inside(xz.x, xz.y, margin):
+				return xz
+		return clamp_inside(0.0, 0.0, margin)
 	var hw_box: float = half_w - margin
 	var hd_box: float = half_d - margin
 	return Vector2(r.randf_range(-hw_box, hw_box), r.randf_range(-hd_box, hd_box))
@@ -485,7 +509,9 @@ func _sample_xz(r: RandomNumberGenerator, margin: float, z_min: float, z_max: fl
 	if shape == "hex":
 		z = r.randf_range(maxf(-(half_d - margin), z_min), minf(half_d - margin, z_max))
 		var hw: float = half_w - margin
-		return Vector2(r.randf_range(-hw, hw), z)
+		var hd: float = half_d - margin
+		var max_x: float = hw * (1.0 - absf(z) / (2.0 * hd))
+		return Vector2(r.randf_range(-max_x, max_x), z)
 	return Vector2(r.randf_range(-(half_w - margin), half_w - margin), z)
 
 
@@ -604,9 +630,14 @@ func footprint_corners(segments: int = 24) -> Array[Vector3]:
 	var pts: Array[Vector3] = []
 	match shape:
 		"hex":
-			for i in 6:
-				var a: float = (float(i) / 6.0) * TAU
-				pts.append(Vector3(cos(a) * half_w, 0.0, sin(a) * half_d))
+			# Flat-top hex matching is_inside() — NOT a cos/sin ellipse (that
+			# extended glass past the substrate footprint and left rim gaps).
+			pts.append(Vector3(half_w, 0.0, 0.0))
+			pts.append(Vector3(half_w * 0.5, 0.0, half_d))
+			pts.append(Vector3(-half_w * 0.5, 0.0, half_d))
+			pts.append(Vector3(-half_w, 0.0, 0.0))
+			pts.append(Vector3(-half_w * 0.5, 0.0, -half_d))
+			pts.append(Vector3(half_w * 0.5, 0.0, -half_d))
 		"triangle":
 			pts.append(Vector3(0.0, 0.0, half_d))
 			pts.append(Vector3(-half_w, 0.0, -half_d))

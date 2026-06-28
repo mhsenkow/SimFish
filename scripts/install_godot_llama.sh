@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install godot_llama GDExtension (in-process llama.cpp) into the Godot project.
-# On macOS also fetches llama.cpp runtime dylibs (the plugin zip ships the
-# framework but not libllama/libggml, which must sit beside it in bin/).
+# On macOS the release zip ships the framework only — llama.cpp dylibs must be
+# built from godot_llama's pinned submodule (prebuilt llama.cpp releases mismatch
+# the plugin ABI and hard-crash at llama_context init).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,9 +11,14 @@ ADDON="$PROJECT/addons/godot_llama"
 BIN="$ADDON/bin"
 WRAPPER="$PROJECT/scripts/godot_llama_wrapper.gd"
 VERSION="${GODOT_LLAMA_VERSION:-1.0.0}"
-LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b9821}"
 ZIP="godot-llama-plugin-all-platforms-${VERSION}.zip"
 URL="https://github.com/mgrigajtis/godot_llama/releases/download/${VERSION}/${ZIP}"
+STAMP="$BIN/.llama_dylibs_commit"
+
+# third_party/llama.cpp commit for each godot_llama release tag.
+declare -A LLAMA_SUBMODULE_COMMIT=(
+	[1.0.0]="2b089c77580d347767f440205103e4da8ec33d89"
+)
 
 LLAMA_DYLIBS=(
 	libllama.0.dylib
@@ -21,15 +27,24 @@ LLAMA_DYLIBS=(
 	libggml-cpu.0.dylib
 	libggml-blas.0.dylib
 	libggml-metal.0.dylib
-	libggml-rpc.0.dylib
 	libmtmd.0.dylib
 )
+
+expected_llama_commit() {
+	local c="${LLAMA_SUBMODULE_COMMIT[$VERSION]:-}"
+	if [[ -z "$c" ]]; then
+		echo "ERROR: unknown GODOT_LLAMA_VERSION=${VERSION} — add its submodule commit to install_godot_llama.sh" >&2
+		exit 1
+	fi
+	echo "$c"
+}
 
 already_ok() {
 	[[ -f "$ADDON/godot_llama.gdextension" ]] || return 1
 	[[ "${GODOT_LLAMA_FORCE:-0}" == "1" ]] && return 1
 	if [[ "$(uname -s)" == "Darwin" ]]; then
-		[[ -f "$BIN/libllama.0.dylib" && -f "$BIN/libggml-blas.0.dylib" ]]
+		[[ -f "$BIN/libllama.0.dylib" && -f "$STAMP" ]] || return 1
+		[[ "$(cat "$STAMP")" == "$(expected_llama_commit)" ]]
 	else
 		return 0
 	fi
@@ -53,6 +68,37 @@ fix_macos_dylib_rpaths() {
 	done
 }
 
+build_macos_llama_dylibs() {
+	local want
+	want="$(expected_llama_commit)"
+	if ! command -v cmake >/dev/null 2>&1; then
+		echo "ERROR: cmake required on macOS (brew install cmake)" >&2
+		exit 1
+	fi
+	echo "Building llama.cpp dylibs matched to godot_llama ${VERSION} (${want:0:7})..."
+	git clone --depth 1 --branch "${VERSION}" --recurse-submodules \
+		"https://github.com/mgrigajtis/godot_llama.git" "$tmpdir/godot_llama"
+	local got
+	got="$(git -C "$tmpdir/godot_llama/third_party/llama.cpp" rev-parse HEAD)"
+	if [[ "$got" != "$want" ]]; then
+		echo "WARNING: submodule commit ${got:0:7} != expected ${want:0:7}; update LLAMA_SUBMODULE_COMMIT" >&2
+	fi
+	cmake -S "$tmpdir/godot_llama/third_party/llama.cpp" \
+		-B "$tmpdir/godot_llama/third_party/llama.cpp/build_shared" \
+		-DGGML_SHARED=ON -DBUILD_SHARED_LIBS=ON -DGGML_METAL=ON -DGGML_BLAS=ON
+	cmake --build "$tmpdir/godot_llama/third_party/llama.cpp/build_shared" \
+		--config Release -j"$(sysctl -n hw.ncpu)"
+	mkdir -p "$BIN"
+	rm -f "$BIN"/libllama*.dylib "$BIN"/libggml*.dylib "$BIN"/libmtmd*.dylib
+	local src="$tmpdir/godot_llama/third_party/llama.cpp/build_shared/bin"
+	for f in "${LLAMA_DYLIBS[@]}"; do
+		cp -f "$src/$f" "$BIN/$f"
+	done
+	echo "$got" > "$STAMP"
+	fix_macos_dylib_rpaths
+	echo "Installed matching llama.cpp dylibs into $BIN"
+}
+
 if already_ok; then
 	echo "godot_llama already installed at $ADDON (set GODOT_LLAMA_FORCE=1 to reinstall)"
 	exit 0
@@ -70,25 +116,9 @@ rm -rf "$ADDON/demo"
 cp -f "$WRAPPER" "$ADDON/godot_llama.gd"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-	arch="arm64"
-	if [[ "$(uname -m)" == "x86_64" ]]; then
-		arch="x64"
-	fi
-	llama_tar="llama-${LLAMA_CPP_TAG}-bin-macos-${arch}.tar.gz"
-	llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_TAG}/${llama_tar}"
-	echo "Fetching llama.cpp macOS dylibs (${LLAMA_CPP_TAG}, ${arch})..."
-	curl -fsSL -o "$tmpdir/$llama_tar" "$llama_url"
-	tar -xzf "$tmpdir/$llama_tar" -C "$tmpdir"
-	llama_dir="$(find "$tmpdir" -maxdepth 1 -type d -name 'llama-*' | head -1)"
-	if [[ -z "$llama_dir" ]]; then
-		echo "ERROR: could not find llama extract dir in $llama_tar" >&2
-		exit 1
-	fi
-	mkdir -p "$BIN"
-	cp -f "$llama_dir"/lib*.0.dylib "$BIN/"
-	fix_macos_dylib_rpaths
-	echo "Installed llama.cpp dylibs into $BIN"
+	build_macos_llama_dylibs
 fi
 
 echo "Installed godot_llama to $ADDON"
 echo "Guardian voice uses the bundled or downloaded GGUF model (see scripts/fetch_guardian_model.sh)."
+echo "Verify macOS inference: ./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://scripts/smoke_llama_macos.gd"

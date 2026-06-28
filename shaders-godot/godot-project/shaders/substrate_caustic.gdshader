@@ -43,7 +43,11 @@ uniform vec4 contact_ao_points[8];
 // w = radius. World.gd refreshes these each ambient tick. The substrate
 // darkens beneath a fish, grounding it in the water column (all lights run
 // shadowless, so this fake contact shadow is the only depth cue on the floor).
-uniform vec4 blob_shadow_points[8];
+uniform vec4 blob_shadow_points[32];
+uniform float blob_shadow_gain : hint_range(0.0, 1.5) = 1.0;
+uniform float blob_shadow_flash : hint_range(0.0, 1.0) = 0.0;
+uniform float shadow_calm : hint_range(0.0, 1.0) = 0.0;
+uniform float caustic_beat_pulse : hint_range(0.0, 1.0) = 0.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -87,7 +91,7 @@ float worley_caustic(vec2 uv, float t) {
 // a fainter, broader smudge than one hovering just over the sand.
 float compute_blob_shadow(vec3 world_pos) {
 	float shade = 1.0;
-	for (int i = 0; i < 8; i++) {
+	for (int i = 0; i < 32; i++) {
 		vec4 p = blob_shadow_points[i];
 		if (p.w < 0.001) {
 			continue;
@@ -98,7 +102,9 @@ float compute_blob_shadow(vec3 world_pos) {
 		float radius = p.w * (1.0 + height * 0.35);
 		float n_d = length(d) / max(radius, 0.001);
 		float disc = 1.0 - smoothstep(0.4, 1.0, n_d);
-		float strength = 0.42 * clamp(1.0 - height * 0.12, 0.25, 1.0);
+		float strength = 0.42 * blob_shadow_gain * clamp(1.0 - height * 0.12, 0.25, 1.0);
+		strength *= mix(1.0, 0.35, shadow_calm);
+		strength *= 1.0 + blob_shadow_flash * 0.55;
 		shade *= mix(1.0, 1.0 - strength, disc);
 	}
 	return shade;
@@ -261,7 +267,8 @@ void fragment() {
 		1.0 + wave_coupling * 0.65, lift_n);
 	// Posterize caustic brightness into discrete bands so substrate
 	// light reads as chunky pixel-art steps (matches water.gdshader).
-	float caust_raw = caustics * caustic_intensity * up_fade * light_fade * wave_mod;
+	float caust_raw = caustics * caustic_intensity * up_fade * light_fade * wave_mod
+		* (1.0 + caustic_beat_pulse * 0.48);
 	float band_count = 4.0;
 	float caust_quant = floor(caust_raw * band_count + 0.5) / band_count;
 	float final_intensity = mix(caust_raw, caust_quant, 0.72);

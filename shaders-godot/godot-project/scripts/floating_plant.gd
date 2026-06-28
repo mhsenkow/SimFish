@@ -65,7 +65,8 @@ var _visual_dirty: bool = true
 var _light_response_t: float = 0.0
 var _roots_lod_hidden: bool = false
 var _view_lod_hidden: bool = false
-const VIEW_LOD_DIST_SQ: float = 14.0 * 14.0
+const VIEW_LOD_DIST_SQ: float = 28.0 * 28.0
+const VIEW_LOD_MIN_DENSITY: float = 0.45
 
 
 func init_genome(g: Dictionary) -> void:
@@ -98,6 +99,7 @@ func init_genome(g: Dictionary) -> void:
 	if id == "":
 		id = "%d_%d" % [Time.get_ticks_msec(), randi()]
 	_build()
+	apply_render_flags()
 
 
 func get_genome() -> Dictionary:
@@ -135,8 +137,9 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 			position.x += randf_range(-0.35, 0.35)
 			position.z += randf_range(-0.35, 0.35)
 			if world != null and world.has_method("clamp_xz_in_tank"):
-				var surface_y: float = float(world.get("WATER_HEIGHT")) - 0.05 \
-					if world.get("WATER_HEIGHT") != null else position.y
+				var surface_y: float = float(world.call("floater_surface_y")) \
+					if world.has_method("floater_surface_y") \
+					else float(world.get("WATER_HEIGHT")) + 0.045
 				var xz: Vector2 = world.clamp_xz_in_tank(
 					position.x, position.z, 0.35, surface_y)
 				position.x = xz.x
@@ -248,7 +251,8 @@ func _update_view_lod() -> void:
 	var cam: Camera3D = vp.get_camera_3d()
 	if cam == null or not cam.global_position.is_finite():
 		return
-	var hide_leaves: bool = global_position.distance_squared_to(cam.global_position) > VIEW_LOD_DIST_SQ
+	var hide_leaves: bool = global_position.distance_squared_to(cam.global_position) > VIEW_LOD_DIST_SQ \
+		and _neighbor_density >= VIEW_LOD_MIN_DENSITY
 	if hide_leaves == _view_lod_hidden:
 		return
 	_view_lod_hidden = hide_leaves
@@ -266,15 +270,17 @@ func _update_mat_lod() -> void:
 		return
 	if DisplayServer.get_name() == "headless":
 		return
-	var compact: bool = _neighbor_density > 0.18
+	var compact: bool = _neighbor_density > 0.55
 	var leaf_i: int = 0
+	var max_compact_leaves: int = 2 if morph in ["duckweed", "azolla"] else 3
 	for c in get_children():
 		if not (c is MeshInstance3D):
 			continue
 		var mi: MeshInstance3D = c
 		var nm: String = String(mi.name)
 		if nm.begins_with("leaf"):
-			var leaf_visible: bool = not _view_lod_hidden and (not compact or leaf_i == 0)
+			var leaf_visible: bool = not _view_lod_hidden \
+				and (not compact or leaf_i < max_compact_leaves)
 			mi.visible = leaf_visible
 			leaf_i += 1
 		elif nm == "meniscus":
@@ -308,6 +314,10 @@ func _configure_mesh_instance(mi: MeshInstance3D) -> void:
 	# Tiny surface voxels should not cast tank-scale shadow maps onto the substrate.
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	# Draw above the translucent water volume so leaves don't z-fight inside it.
+	mi.sorting_offset = 2.0
+	if mi.material_override is ShaderMaterial:
+		(mi.material_override as ShaderMaterial).render_priority = 1
 
 
 func _update_root_lod() -> void:

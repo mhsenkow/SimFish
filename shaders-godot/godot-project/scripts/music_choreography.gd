@@ -5,9 +5,10 @@ extends RefCounted
 const MOVES: Array = [
 	"sweep", "spiral", "vortex", "wave", "starburst", "breathe", "sway", "carousel",
 	"curtain", "cascade", "fountain", "kickline",
+	"mandala", "radial_bloom", "planar_ring", "pinwheel",
 ]
 
-const FORMATIONS: Array = ["scatter", "line", "v", "circle", "mirror", "heart", "star", "ring"]
+const FORMATIONS: Array = ["scatter", "line", "v", "circle", "mirror", "heart", "star", "ring", "crescent"]
 
 const GENRE_PROFILES: Dictionary = {
 	"ambient": {"tempo_scale": 0.72, "sweep": 0.42, "vertical": 0.28, "easing": "soft", "default_move": "breathe", "formation": "circle", "cast": "bass"},
@@ -91,7 +92,10 @@ static func pick_move(
 	energy: float,
 	genre: String,
 	_seed: int,
+	overhead: bool = false,
 ) -> String:
+	if overhead:
+		return TopdownMotion.pick_move_overhead(phrase_state, energy, genre, _seed)
 	var profile: Dictionary = profile_for_genre(genre)
 	match phrase_state:
 		"build":
@@ -114,7 +118,16 @@ static func pick_move(
 	return String(choices[_seed % choices.size()])
 
 
-static func pick_formation(phrase_state: String, genre: String, move: String, rng_seed: int = 0) -> String:
+static func pick_formation(
+	phrase_state: String,
+	genre: String,
+	move: String,
+	rng_seed: int = 0,
+	overhead: bool = false,
+	valence: float = 0.5,
+) -> String:
+	if overhead:
+		return TopdownMotion.pick_formation_overhead(phrase_state, genre, move, rng_seed, valence)
 	if move == "kickline":
 		return "line"
 	if move == "fountain" and phrase_state == "build":
@@ -209,7 +222,13 @@ static func formation_offset(
 	hd: float,
 	y_band: float,
 	mirror: bool = false,
+	fish_count: int = 24,
 ) -> Vector3:
+	var slots: int = TopdownMotion.formation_slot_count(fish_count)
+	total_slots = maxi(total_slots, slots)
+	var pop_scale: float = clampf(float(fish_count) / 24.0, 0.85, 1.65)
+	hw *= pop_scale
+	hd *= pop_scale
 	var n: float = maxf(float(total_slots), 1.0)
 	var t: float = float(slot) / maxf(n - 1.0, 1.0)
 	var off := Vector3.ZERO
@@ -238,7 +257,15 @@ static func formation_offset(
 			off = Vector3(cos(ang_s) * hw * star_r * 0.52, y_band, sin(ang_s) * hd * star_r * 0.52)
 		"ring":
 			var ang_r: float = float(slot) / n * TAU
-			off = Vector3(cos(ang_r) * hw * 0.72, y_band, sin(ang_r) * hd * 0.72)
+			var size_r: float = TopdownMotion.formation_size_radius_mult(slot, total_slots)
+			off = Vector3(cos(ang_r) * hw * 0.72 * size_r, y_band, sin(ang_r) * hd * 0.72 * size_r)
+		"donut":
+			var ang_d: float = float(slot) / n * TAU
+			var band: float = 0.74 + float(slot % 5) * 0.028
+			off = Vector3(cos(ang_d) * hw * band, y_band, sin(ang_d) * hd * band)
+		"crescent":
+			var ang_c: float = float(slot) / n * PI * 1.35 - PI * 0.675
+			off = Vector3(cos(ang_c) * hw * 0.68, y_band, sin(ang_c) * hd * 0.55)
 		_:
 			var ang2: float = float(slot % 360) * (TAU / 360.0)
 			off = Vector3(cos(ang2) * hw * 0.5, y_band, sin(ang2) * hd * 0.5)
@@ -393,6 +420,7 @@ static func assign_music_role(traits: Dictionary, instance_id: int) -> Dictionar
 		"mouth": mouth_orientation,
 		"expressive": float(section.get("expressive", 0.5)) * lerpf(0.7, 1.25, finnage * 0.35),
 		"improv": boldness,
+		"hue": base_color.h,
 	}
 
 
@@ -515,7 +543,14 @@ static func dance_target(
 	ensemble_dim: float = 1.0,
 	mouth_orientation: int = 0,
 	bar_count: int = 0,
+	fish_count: int = 24,
+	overhead: bool = false,
+	formation_radius_mult: float = 1.0,
+	_treble_shimmer: float = 0.0,
 ) -> Vector3:
+	move = TopdownMotion.effective_move(move, overhead)
+	if overhead and choir_on and not soloist:
+		move = TopdownMotion.antiphonal_move(move, int(role.get("choir", 0)) % 2)
 	beat_phase = fposmod(beat_phase - leader_lag, 1.0)
 	sweep_strength *= ensemble_dim
 	var finish := func(v: Vector3) -> Vector3:
@@ -525,28 +560,49 @@ static func dance_target(
 
 	var lane: float = beat_phase * TAU + float(instance_id % 997) * 0.17
 	var eased_bar: float = ease_in_out_cubic(bar_phase)
-	var hw: float = tank_half_w * 0.96
-	var hd: float = tank_half_d * 0.96
-	var slot: int = instance_id % 24
+	var hw: float = tank_half_w * 0.96 * maxf(formation_radius_mult, 0.55)
+	var hd: float = tank_half_d * 0.96 * maxf(formation_radius_mult, 0.55)
+	var slots: int = TopdownMotion.formation_slot_count(fish_count)
+	var slot: int = instance_id % slots
 	var y_stage: float = depth_stage_y(
 		phrase_state, phrase_progress, y_min, y_max, home_y, vertical_strength, mouth_orientation)
 	var form_base: Vector3 = formation_offset(
-		formation, slot, 24, hw, hd, y_stage, formation == "mirror" or phrase_state == "chorus")
+		formation, slot, slots, hw, hd, y_stage, formation == "mirror" or phrase_state == "chorus", fish_count)
+	if overhead and formation != "scatter":
+		var col: String = String(role.get("column", "mid"))
+		var eq: float = TopdownMotion.visual_eq_radius_mult(col)
+		form_base.x *= eq
+		form_base.z *= eq
+		if formation in ["circle", "star", "ring", "heart"]:
+			form_base = TopdownMotion.symmetry_snap_xz(form_base)
+		if formation in ["circle", "ring"] and role.has("hue"):
+			var ang: float = TopdownMotion.color_wheel_angle(float(role.get("hue", 0.0)), slot, slots)
+			var rad: float = Vector2(form_base.x, form_base.z).length()
+			form_base.x = cos(ang) * rad
+			form_base.z = sin(ang) * rad
 
 	if soloist:
 		var solo_ang: float = bar_phase * TAU * 0.5
-		var solo_y: float = y_stage + sin(bar_phase * TAU * 0.35) * 0.22
-		return finish.call(Vector3(sin(solo_ang) * hw * 0.88, solo_y + 0.35, cos(solo_ang) * hd * 0.55))
+		var solo_r: float = 0.28 if overhead else 0.35
+		var solo_y: float = y_stage if overhead else y_stage + sin(bar_phase * TAU * 0.35) * 0.22
+		return finish.call(Vector3(sin(solo_ang) * hw * solo_r, solo_y + (0.05 if overhead else 0.35), cos(solo_ang) * hd * solo_r))
 
 	match move:
 		"spiral":
-			var r: float = lerpf(0.35, 0.92, phrase_progress + drop_tension * 0.35)
-			var spiral := Vector3(sin(lane * 1.6) * hw * r, y_stage, cos(lane * 1.6) * hd * r)
+			var r: float = lerpf(0.18 if overhead else 0.35, 0.95 if overhead else 0.92,
+				phrase_progress + drop_tension * (0.55 if overhead else 0.35))
+			if phrase_state == "build":
+				r = lerpf(r, 0.22, phrase_progress * 0.65)
+			var spiral := Vector3(sin(lane * 1.6) * hw * r, y_stage if overhead else y_stage, cos(lane * 1.6) * hd * r)
 			return finish.call(spiral.lerp(form_base, 0.35))
 		"vortex":
 			var column: String = String(role.get("column", "mid"))
 			var spin_speed: float = 2.2
 			var torus: float = lerpf(0.45, 0.78, sweep_strength)
+			if overhead:
+				torus = lerpf(0.55, 0.92, sweep_strength)
+			if overhead and choir_on:
+				spin_speed *= TopdownMotion.counter_rotate_sign(int(role.get("choir", 0)) % 2)
 			match column:
 				"bass":
 					spin_speed = 1.05
@@ -555,7 +611,8 @@ static func dance_target(
 					spin_speed = 3.15
 					torus = 0.58
 			var spin: float = lane * spin_speed + eased_bar * TAU
-			return finish.call(Vector3(sin(spin) * hw * torus, y_stage, cos(spin) * hd * torus))
+			var eye: float = 0.12 if overhead else 0.0
+			return finish.call(Vector3(sin(spin) * hw * torus * (1.0 - eye), y_stage, cos(spin) * hd * torus * (1.0 - eye)))
 		"wave":
 			var axis: float = float(instance_id % 17) / 17.0
 			var ripple: float = sin(lane - axis * TAU * 2.0) * 0.5 + 0.5
@@ -575,6 +632,9 @@ static func dance_target(
 		"breathe":
 			var breath: float = sin(bar_phase * TAU) * 0.5 + 0.5
 			var expand: float = lerpf(0.42, 0.88, breath)
+			if overhead:
+				return finish.call(Vector3(
+					form_base.x * expand, y_stage, form_base.z * expand))
 			return finish.call(form_base + Vector3(sin(lane * 0.7) * hw * expand * 0.35, 0.0, cos(lane * 0.65) * hd * expand * 0.35))
 		"curtain":
 			var rise: float = ease_in_out_cubic(phrase_progress + drop_tension * 0.25)
@@ -623,14 +683,38 @@ static func dance_target(
 			var bob: float = sin((beat_phase - seq) * TAU) * 0.5 + 0.5
 			var line_x: float = lerpf(-hw * 0.78, hw * 0.78, seq)
 			return finish.call(Vector3(line_x, y_stage + bob * 0.38 * sweep_strength, form_base.z * 0.35))
+		"mandala":
+			var petals: int = clampi(int(lerpf(4.0, 10.0, sweep_strength + drop_tension * 0.35)), 4, 10)
+			var petal_i: int = slot % petals
+			var petal_ang: float = float(petal_i) / float(petals) * TAU + bar_phase * TAU * 0.35
+			var petal_r: float = lerpf(0.28, 0.82, sin(lane * 0.5) * 0.5 + 0.5)
+			return finish.call(Vector3(cos(petal_ang) * hw * petal_r, y_stage, sin(petal_ang) * hd * petal_r))
+		"radial_bloom":
+			var bloom: float = ease_out_back(clampf(drop_flash + drop_tension + phrase_progress * 0.5, 0.0, 1.0))
+			var ang_b: float = float(instance_id % 360) * (TAU / 360.0)
+			var rad_b: float = lerpf(0.12, 1.0, bloom) * sweep_strength
+			return finish.call(Vector3(cos(ang_b) * hw * rad_b, y_stage, sin(ang_b) * hd * rad_b))
+		"planar_ring":
+			var ring_t: float = ease_in_out_cubic(phrase_progress)
+			var ring_r: float = lerpf(0.25, 0.88, ring_t)
+			var ang_p: float = float(slot) / float(slots) * TAU
+			return finish.call(Vector3(cos(ang_p) * hw * ring_r, y_stage, sin(ang_p) * hd * ring_r))
+		"pinwheel":
+			var pin_ang: float = float(slot) / float(slots) * TAU + bar_phase * TAU * 1.4
+			var pin_r: float = lerpf(0.35, 0.78, sweep_strength)
+			return finish.call(Vector3(cos(pin_ang) * hw * pin_r, y_stage, sin(pin_ang) * hd * pin_r))
 		_:
 			if formation == "v" and phrase_state in ["chorus", "build"]:
 				var fly: float = ease_in_out_cubic(phrase_progress)
 				return finish.call(Vector3(
 					lerpf(-hw * 0.9, hw * 0.9, fly),
-					y_stage,
+					y_stage if overhead else y_stage,
 					lerpf(hd * 0.55, -hd * 0.35, fly) + sin(lane) * hd * 0.12,
 				))
+			if overhead and move == "sweep":
+				var band_z: float = lerpf(-hd * 0.75, hd * 0.75, eased_bar)
+				var band_x: float = sin(lane * 0.45 + bar_phase * TAU) * hw * 0.15
+				return finish.call(Vector3(band_x, y_stage, band_z))
 			var ty: float = lerpf(y_min + 0.35, y_max - 0.25, clampf(0.5 + sin(lane * 1.35) * 0.44, 0.08, 0.92))
 			ty = lerpf(y_stage, ty, clampf(0.35 + sweep_strength * 0.65, 0.0, 1.0))
 			return finish.call(Vector3(sin(lane) * hw, ty, cos(lane * 0.81 + 0.9) * hd).lerp(form_base, 0.28))

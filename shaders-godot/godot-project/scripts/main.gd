@@ -13,11 +13,20 @@
 extends Node
 
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const MakeItThere = preload("res://scripts/make_it_there.gd")
 const GuardianJournal = preload("res://scripts/guardian_journal.gd")
 const GuardianMindOnboarding = preload("res://scripts/guardian_mind_onboarding.gd")
+const MindNarrator = preload("res://scripts/mind_narrator.gd")
+const MindDebug = preload("res://scripts/mind_debug.gd")
+const MindScheduler = preload("res://scripts/mind_scheduler.gd")
+const KeeperInput = preload("res://scripts/keeper_input.gd")
+const MindConversation = preload("res://scripts/mind_conversation.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
+const OnboardingRuntimeScript = preload("res://scripts/onboarding_runtime.gd")
 
 const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
+const VOICE_BODY_FIRST_DELAY_S: float = 0.75
+const VOICE_TEMPLATE_DELAY_S: float = 0.35
 
 
 @onready var sub_viewport: SubViewport = $SubViewport
@@ -151,6 +160,9 @@ var _mobile_render_orientation: int = -1
 var _hud_idle_seconds: float = 0.0
 const HUD_IDLE_DIM_SECONDS: float = 6.0
 const HUD_DIM_MODULATE: Color = Color(1, 1, 1, 0.45)
+const SCREENSAVER_DIM_MODULATE: Color = Color(1, 1, 1, 0.08)
+const NIGHT_WATCHSCREENSAVER_S: float = 120.0
+var _moonlight_suggested: bool = false
 const HUD_LIT_MODULATE: Color = Color(1, 1, 1, 1)
 
 @onready var portal_container: Control = $PortalContainer
@@ -203,6 +215,28 @@ var _rename_edit: LineEdit = null
 var _rename_target: Node = null
 # In-tank favorite halos: instance_id -> Label3D star parented to the creature.
 var _fav_halos: Dictionary = {}
+# In-tank thought marker on the followed fish (symbol only — text is screen UI).
+var _follow_thought_symbol: Label3D = null
+var _follow_thought_strip: PanelContainer = null
+var _follow_thought_strip_name: Label = null
+var _follow_thought_strip_body: Label = null
+var _follow_thought_tw_full: String = ""
+var _follow_thought_tw_idx: int = 0
+var _follow_thought_tw_gen: int = 0
+var _keeper_say_edit: LineEdit = null
+var _keeper_ack_label: Label = null
+var _keeper_ack_t: float = 0.0
+var _keeper_cam_prev: Vector3 = Vector3.ZERO
+var _keeper_cursor_prev: Vector2 = Vector2.ZERO
+const FOLLOW_THOUGHT_CHAR_S: float = 0.034
+const FOLLOW_INNER_THOUGHT_INTERVAL_S: float = 48.0
+var _follow_inner_thought_cd: float = 0.0
+var _follow_inner_thought_last_line: String = ""
+var _workspace_inspector: Label = null
+var _workspace_inspector_accum: float = 0.0
+# In-place body label for streaming away-recap toasts (avoids notification spam).
+var _guardian_recap_toast_body: Label = null
+var _last_guardian_line_shown: String = ""
 # Selection reticle ring on the currently-followed creature (distinct from the
 # favorite halos). Lives under `world`, repositioned each frame.
 var _follow_reticle: MeshInstance3D = null
@@ -289,6 +323,68 @@ func _reset_camera_to_default() -> void:
 	_apply_camera()
 
 
+func _zoom_camera_by_factor(factor: float) -> void:
+	if camera == null:
+		return
+	if _current_projection_id == "perspective":
+		radius = clampf(radius * factor, MIN_RADIUS, MAX_RADIUS)
+	else:
+		camera.size = clampf(camera.size * factor, 2.0, 80.0)
+	_apply_camera()
+
+
+func _save_aquascape_camera() -> void:
+	_aquascape_saved_camera = {
+		"target": target,
+		"radius": radius,
+		"yaw": yaw,
+		"pitch": pitch,
+		"projection": _current_projection_id,
+		"fov": float(camera.fov) if camera != null else 55.0,
+		"ortho_size": float(camera.size) if camera != null else 18.0,
+	}
+
+
+func _restore_aquascape_camera() -> void:
+	if _aquascape_saved_camera.is_empty():
+		_reset_camera_to_default()
+		apply_camera_projection("perspective")
+		return
+	var saved := _aquascape_saved_camera
+	target = saved["target"]
+	radius = clampf(float(saved["radius"]), MIN_RADIUS, MAX_RADIUS)
+	yaw = float(saved["yaw"])
+	pitch = clampf(float(saved["pitch"]), MIN_PITCH, MAX_PITCH)
+	_release_cinematic_follow()
+	_auto_orbit = false
+	var proj: String = String(saved.get("projection", "perspective"))
+	_current_projection_id = proj
+	if camera != null:
+		match proj:
+			"perspective":
+				camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+				camera.fov = float(saved.get("fov", 55.0))
+			"top_down_ortho", "orthographic", "isometric", "dimetric":
+				camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+				camera.size = float(saved.get("ortho_size", 18.0))
+			_:
+				apply_camera_projection(proj)
+				_aquascape_saved_camera.clear()
+				return
+	_apply_camera()
+	_aquascape_saved_camera.clear()
+
+
+func _aquascape_scroll_build_plane(wheel_up: bool) -> bool:
+	if not _aquascape.is_active or not Input.is_key_pressed(KEY_SHIFT):
+		return false
+	if _aquascape.tool not in _AQUASCAPE_BUILD_PLANE_TOOLS:
+		return false
+	var delta := TerrainVoxelGrid.CELL_SIZE if wheel_up else -TerrainVoxelGrid.CELL_SIZE
+	_aquascape.adjust_build_plane(delta)
+	return true
+
+
 # ---- Camera Views panel API ----
 # Called by the Camera Views panel's preset buttons. Each preset frames the
 # tank from a distinctive angle. Cylinder tanks scale the radius up to keep
@@ -315,15 +411,13 @@ func apply_camera_preset(preset_id: String) -> void:
 			pitch = 0.0
 			radius = base_r
 		"top":
-			# Bird's-eye down. Particularly useful for cylinder tanks.
-			# In this codebase y = sin(pitch), so POSITIVE pitch puts the
-			# camera ABOVE the target — i.e. looking down. (DEFAULT_PITCH
-			# is +0.48 for the same reason.) Just shy of MAX_PITCH (1.45)
-			# so the up vector stays sane and look_at doesn't flip.
-			target = Vector3(0.0, tank_h * 0.5, 0.0)
+			# Bird's-eye down. Framing follows the tank footprint so round
+			# bowls fill the frame instead of swimming in a box-shaped crop.
+			var top_frame: Dictionary = _topdown_framing()
+			target = top_frame["target"]
 			yaw = 0.0
 			pitch = 1.40
-			radius = maxf(tank_hw, tank_hd) * 3.4
+			radius = float(top_frame["radius"])
 		"three_quarter":
 			# Classic perspective from front-right, slight tilt down.
 			target = Vector3(0.0, tank_h * 0.4, 0.0)
@@ -399,6 +493,149 @@ func set_camera_fov(v: float) -> void:
 func set_camera_ortho_size(v: float) -> void:
 	if camera != null:
 		camera.size = clampf(v, 2.0, 80.0)
+		if TopdownMotion.is_overhead(self) and _sim != null:
+			var cen: Vector2 = _school_centroid_xz()
+			target.x = cen.x
+			target.z = cen.y
+		_apply_camera()
+
+
+func apply_pond_mode(enable: bool = true) -> void:
+	TopdownMotion.pond_active = enable
+	TopdownMotion.overhead_yaw_spin = enable
+	TopdownMotion.pond_bowl_vignette = enable
+	if enable:
+		apply_camera_preset("top")
+		apply_camera_projection("top_down_ortho")
+		call_deferred("_establish_pond_framing")
+		if TopdownMotion.should_show_pond_hint():
+			call_deferred("_show_pond_view_hint")
+	else:
+		TopdownMotion.overhead_yaw_spin = false
+		TopdownMotion.pond_bowl_vignette = false
+	_apply_pond_visuals(enable)
+	_haptic(18)
+
+
+func is_pond_mode() -> bool:
+	return TopdownMotion.pond_active
+
+
+func take_pond_photo() -> void:
+	if not TopdownMotion.is_overhead(self):
+		apply_pond_mode(true)
+	_take_photo()
+
+
+func _pond_surface_tap(mouse_pos: Vector2) -> bool:
+	if _sim == null or not is_pond_mode():
+		return false
+	if display == null or not display.get_global_rect().has_point(mouse_pos):
+		return false
+	if _click_hits_interactive_hud(mouse_pos):
+		return false
+	var hit: Vector3 = _project_to_surface(mouse_pos)
+	if hit == INVALID_HIT:
+		return false
+	if world != null and world.has_method("spawn_glass_tap_ripples"):
+		world.spawn_glass_tap_ripples(hit)
+	elif world != null and world.has_method("spawn_burst_ripple"):
+		world.spawn_burst_ripple(hit, 1.5)
+	if _sim.has_method("pulse_startle_bolt"):
+		_sim.pulse_startle_bolt(hit)
+	_haptic(10)
+	for f in _sim.fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var dx: float = f.position.x - hit.x
+		var dz: float = f.position.z - hit.z
+		var d2: float = dx * dx + dz * dz
+		if d2 > 12.0:
+			continue
+		var prox: float = 1.0 - clampf(sqrt(d2) / 3.5, 0.0, 1.0)
+		var radial: Vector3 = TopdownMotion.startle_radial_dir(f.position, hit, f.heading)
+		f._startle_heading = radial
+		f._startle_remaining = maxf(float(f._startle_remaining), lerpf(0.12, 0.35, prox))
+		f.curiosity_drive = clampf(float(f.curiosity_drive) + prox * 0.08, 0.0, 1.0)
+	return true
+
+
+var _pond_conduct_pts: Array = []
+const _POND_CONDUCT_MIN_STEP: float = 0.35
+
+
+func _pond_conduct_add(hit: Vector3) -> void:
+	if hit == INVALID_HIT:
+		return
+	if _pond_conduct_pts.is_empty():
+		_pond_conduct_pts.append(hit)
+		return
+	var last: Vector3 = _pond_conduct_pts[_pond_conduct_pts.size() - 1]
+	if last.distance_to(hit) >= _POND_CONDUCT_MIN_STEP:
+		_pond_conduct_pts.append(hit)
+
+
+func _finish_pond_conduct() -> void:
+	if _pond_conduct_pts.size() < 3:
+		_pond_conduct_pts.clear()
+		return
+	var cfg: Dictionary = TopdownMotion.conduct_from_stroke(_pond_conduct_pts)
+	var mc := get_node_or_null("/root/MusicContext")
+	if mc != null and mc.has_method("conduct"):
+		mc.conduct(String(cfg.get("move", "sweep")), String(cfg.get("formation", "circle")))
+	if _sim != null and _sim.has_method("set_conduct_anchor"):
+		_sim.set_conduct_anchor(cfg.get("center", Vector3.ZERO), float(cfg.get("radius", 1.0)))
+	_pond_conduct_pts.clear()
+	_haptic(14)
+
+
+func _school_centroid_xz() -> Vector2:
+	if _sim == null:
+		return Vector2(target.x, target.z)
+	var c := Vector3.ZERO
+	var n: int = 0
+	for f in _sim.fish:
+		if is_instance_valid(f) and f.get("_dying") != true:
+			c += f.global_position
+			n += 1
+	if n <= 0:
+		return Vector2(target.x, target.z)
+	c /= float(n)
+	return Vector2(c.x, c.z)
+
+
+func _establish_pond_framing() -> void:
+	if _sim == null or _sim.fish.is_empty():
+		return
+	var cen: Vector2 = _school_centroid_xz()
+	target.x = lerpf(target.x, cen.x, 0.72)
+	target.z = lerpf(target.z, cen.y, 0.72)
+	_apply_camera()
+
+
+func _show_pond_view_hint() -> void:
+	TopdownMotion.mark_pond_hint_shown()
+	if _onboarding != null and _onboarding.has_method("show_topdown_hint"):
+		_onboarding.show_topdown_hint()
+	else:
+		_show_photo_toast("Play music for mandala dances · Alt+drag to conduct · F12 postcard · T timelapse")
+
+
+func _apply_pond_visuals(on: bool) -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	if on:
+		cfg.pp_vignette_strength = maxf(float(cfg.pp_vignette_strength), 0.32)
+		if world != null:
+			var light: DirectionalLight3D = world.get_node_or_null("DirectionalLight3D") as DirectionalLight3D
+			if light != null:
+				light.rotation_degrees = Vector3(-88.0, 0.0, 0.0)
+				light.light_energy = maxf(light.light_energy, 1.15)
+			if world.has_method("_tick_topdown_surface"):
+				world.call("_tick_topdown_surface", 0.0)
+	else:
+		cfg.pp_vignette_strength = maxf(float(cfg.pp_vignette_strength) * 0.85, 0.20)
 
 
 # Switch the camera projection. Each mode optionally snaps yaw/pitch to a
@@ -453,8 +690,11 @@ func apply_camera_projection(proj_id: String) -> void:
 			_haptic(15)
 		"top_down_ortho":
 			camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-			camera.size = _ortho_size_from_tank() * 1.2
+			var top_ortho: Dictionary = _topdown_framing()
+			target = top_ortho["target"]
+			camera.size = float(top_ortho["ortho_size"])
 			pitch = _TOPDOWN_PITCH
+			yaw = 0.0
 			_auto_orbit = false
 			_release_cinematic_follow()
 			_apply_camera()
@@ -475,6 +715,76 @@ func _ortho_size_from_tank() -> float:
 	var tank_h: float = float(cfg.get("tank_height") if cfg.get("tank_height") != null else 7.0)
 	var tank_hw: float = float(cfg.get("tank_half_w") if cfg.get("tank_half_w") != null else 8.0)
 	return clampf(maxf(tank_h * 1.4, tank_hw * 2.6), 6.0, 60.0)
+
+
+# TOPDOWN_MOTION #10 — plan-view framing per tank_shape (ortho size + target).
+const _TOPDOWN_GLASS_MARGIN: float = 0.35
+
+
+func _tank_footprint_from_config(cfg: Node) -> TankFootprint:
+	var fp := TankFootprint.from_config(cfg)
+	if cfg == null:
+		return fp
+	var tank_h: float = float(cfg.get("tank_height") if cfg.get("tank_height") != null else 7.0)
+	fp.tank_height = tank_h
+	fp.substrate_y = tank_h * float(cfg.get("substrate_depth_fraction") if cfg.get("substrate_depth_fraction") != null else 0.23)
+	fp.water_y = tank_h * float(cfg.get("water_surface_fraction") if cfg.get("water_surface_fraction") != null else 0.93)
+	if world != null and world.get("WATER_HEIGHT") != null:
+		fp.water_y = float(world.get("WATER_HEIGHT"))
+		if world.get("SUBSTRATE_DEPTH") != null:
+			fp.substrate_y = float(world.get("SUBSTRATE_DEPTH"))
+	return fp
+
+
+func _topdown_plan_half_extents(fp: TankFootprint) -> Vector2:
+	match fp.shape:
+		"cylinder", "sphere":
+			var rad: float = fp.radius_at_height(fp.water_y, _TOPDOWN_GLASS_MARGIN)
+			if rad <= 0.0:
+				rad = fp.effective_radius(_TOPDOWN_GLASS_MARGIN)
+			return Vector2(rad, rad)
+		_:
+			return fp.bounding_half_extents(_TOPDOWN_GLASS_MARGIN)
+
+
+func _topdown_ortho_size_for_extents(half_ext: Vector2, shape: String) -> float:
+	var vp: Vector2 = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1536.0, 864.0)
+	var aspect: float = maxf(1.0, vp.x / maxf(1.0, vp.y))
+	var pad: float = 1.08
+	match shape:
+		"cylinder", "sphere":
+			pad = 1.06
+		"hex":
+			pad = 1.10
+		"triangle":
+			pad = 1.12
+	var need: float = maxf(half_ext.y, half_ext.x / aspect) * pad
+	return clampf(need, 6.0, 60.0)
+
+
+func _topdown_perspective_radius(half_ext: Vector2, shape: String) -> float:
+	var r_plan: float = maxf(half_ext.x, half_ext.y)
+	match shape:
+		"cylinder", "sphere":
+			return clampf(r_plan * 3.05, MIN_RADIUS, MAX_RADIUS)
+		"hex":
+			return clampf(r_plan * 3.22, MIN_RADIUS, MAX_RADIUS)
+		"triangle":
+			return clampf(r_plan * 3.32, MIN_RADIUS, MAX_RADIUS)
+		_:
+			return clampf(r_plan * 3.4, MIN_RADIUS, MAX_RADIUS)
+
+
+func _topdown_framing() -> Dictionary:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var fp := _tank_footprint_from_config(cfg)
+	var half_ext: Vector2 = _topdown_plan_half_extents(fp)
+	var target_y: float = fp.water_y if cfg != null else 6.5
+	return {
+		"target": Vector3(0.0, target_y, 0.0),
+		"ortho_size": _topdown_ortho_size_for_extents(half_ext, fp.shape),
+		"radius": _topdown_perspective_radius(half_ext, fp.shape),
+	}
 
 
 func follow_random_fish() -> void:
@@ -533,18 +843,7 @@ func _toggle_camera_views_panel() -> void:
 		_camera_views_panel.name = "CameraViewsPanel"
 		_camera_views_panel.set("main_ref", self)
 		add_child(_camera_views_panel)
-		# Position: anchored top-right, indented from the right rail.
-		# Stays inside the viewport on rotation thanks to size_changed
-		# reflow handled by Control anchors.
-		_camera_views_panel.anchor_left = 1.0
-		_camera_views_panel.anchor_top = 0.0
-		_camera_views_panel.anchor_right = 1.0
-		_camera_views_panel.anchor_bottom = 0.0
-		_camera_views_panel.offset_left = -340.0
-		_camera_views_panel.offset_top = 64.0
-		_camera_views_panel.offset_right = -16.0
-		_camera_views_panel.offset_bottom = 580.0
-		_camera_views_panel.z_index = 130
+		_apply_panel_layout()
 	_camera_views_panel.visible = not _camera_views_panel.visible
 	if _camera_views_panel.visible and _camera_views_panel.has_method("sync_from_main"):
 		_camera_views_panel.sync_from_main()
@@ -633,6 +932,11 @@ var _suppress_drag_until_release: bool = false
 
 # Aquascape sculpting (terrain, hardscape, trim, unified undo).
 var _aquascape := AquascapeController.new()
+var _aquascape_view_bar: PanelContainer = null
+var _aquascape_saved_camera: Dictionary = {}
+const _AQUASCAPE_BUILD_PLANE_TOOLS: Array[String] = [
+	"block", "eraser", "object", "eyedropper", "line", "box", "paste",
+]
 const INVALID_HIT: Vector3 = Vector3(INF, INF, INF)
 # Saved sim speed while the guided walkthrough holds the sim paused.
 var _wt_saved_time_scale: float = 1.0
@@ -780,6 +1084,7 @@ var _notif_badge: Label = null
 var _cheat_sheet: Control = null
 var _coachmark_overlay: Control = null
 var _coachmark_step: int = 0
+var _onboarding: Node = null
 
 # Tap-to-feed: 9/0 cycles type; plain click/tap on water drops food.
 var _feed_subtype: int = WasteParticle.FOOD_SUB_PELLET
@@ -823,6 +1128,16 @@ func _ready() -> void:
 		_refresh_favorite_halos.call_deferred()
 	if _sim != null and _sim.has_signal("guardian_spoke"):
 		_sim.connect("guardian_spoke", _on_guardian_spoke)
+	if _sim != null and _sim.has_signal("guardian_recap_streaming"):
+		_sim.connect("guardian_recap_streaming", _on_guardian_recap_streaming)
+	if _sim != null and _sim.has_signal("fish_thought_spoke"):
+		_sim.connect("fish_thought_spoke", _on_fish_thought_spoke)
+	var ai_dir := get_node_or_null("/root/AIDirector")
+	if ai_dir != null and ai_dir.has_signal("fish_thought_streaming"):
+		if not ai_dir.fish_thought_streaming.is_connected(_on_fish_thought_streaming):
+			ai_dir.fish_thought_streaming.connect(_on_fish_thought_streaming)
+	if _sim != null and _sim.has_signal("fish_voiced_wake"):
+		_sim.connect("fish_voiced_wake", _on_fish_voiced_wake)
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_signal("status_changed"):
 		glm.status_changed.connect(_on_guardian_llm_status)
@@ -855,9 +1170,12 @@ func _ready() -> void:
 	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
-		# Launch the guided walkthrough if the tank menu flagged this tank for
-		# it. Deferred so world/sim are fully ready first.
 		call_deferred("_maybe_start_walkthrough")
+		call_deferred("_maybe_open_aquascape_on_load")
+	_onboarding = OnboardingRuntimeScript.new()
+	_onboarding.setup(self)
+	add_child(_onboarding)
+	_onboarding.ensure_ui(self)
 	var species_lib := get_node_or_null("/root/SpeciesLibrary")
 	if species_lib != null and species_lib.has_signal("species_discovered"):
 		species_lib.species_discovered.connect(_on_species_discovered)
@@ -868,7 +1186,11 @@ func _ready() -> void:
 	_add_immersive_toggle_button()
 	_aquascape.setup(self, camera, world, aquascape_palette)
 	_aquascape.mode_changed.connect(_sync_viewport_update_mode)
+	call_deferred("_refresh_aquascape_build_appearance")
+	_ensure_aquascape_view_bar()
+	_sync_aquascape_view_bar()
 	_sync_viewport_update_mode(_aquascape.is_active)
+	call_deferred("_fade_in_from_black")
 	
 	if portal_toggle != null:
 		portal_toggle.pressed.connect(_toggle_portal)
@@ -918,8 +1240,12 @@ func _ready() -> void:
 	# we start spawning entities into it.
 	if _sim != null:
 		call_deferred("_try_load_saved_state")
+	call_deferred("_maybe_show_sentience_intro")
 		
 	_build_portal_info_ui()
+	_build_follow_thought_ui()
+	if _rail_vbox != null and _onboarding != null:
+		_onboarding.install_help_rail_button(_rail_vbox)
 
 
 func _toggle_portal() -> void:
@@ -1062,6 +1388,7 @@ func _sync_viewport_update_mode(active: bool) -> void:
 	if is_instance_valid(_post_viewport):
 		_post_viewport.render_target_update_mode = mode
 	_sync_speed_hud()
+	_apply_hud_layout()
 
 
 func _exit_tree() -> void:
@@ -1093,8 +1420,12 @@ func _apply_render_config() -> void:
 	# Palette quantize shader uniforms (runs on the internal-res post pass).
 	var sm := _quantize_material()
 	if sm != null:
-		# Set dither strength + internal resolution.
-		sm.set_shader_parameter("dither_strength", float(cfg.dither_strength))
+		var dither_v: float = float(cfg.dither_strength)
+		if render_w <= 256:
+			dither_v = maxf(dither_v, 0.90)
+		if bool(cfg.get("pixel_purity")):
+			dither_v = maxf(dither_v, 0.94)
+		sm.set_shader_parameter("dither_strength", dither_v)
 		sm.set_shader_parameter("internal_resolution",
 			Vector2(float(render_w), float(render_h)))
 		sm.set_shader_parameter("region_aware_dither",
@@ -1115,6 +1446,7 @@ func _apply_render_config() -> void:
 		# the verdant default. Built at runtime so no extra PNGs are needed.
 		_apply_biotope_palette(sm, cfg)
 		_apply_adaptive_shader_cost()
+	_sync_biotope_ui_cohesion(cfg)
 	# Integer upscale: lock the display rect to an integer multiple of the
 	# SubViewport size, centered, letterboxed with the parent control's
 	# background. Off → full-rect anchored display (default).
@@ -1167,30 +1499,61 @@ const BIOTOPE_PALETTES: Dictionary = {
 		"c44848","d97e2c","e6c92a","2c6db3","3a4ca0","7c2cb0","c44a8e","202020",
 		"3a3a3a","5a5a5a","7a7a7a","9a9a9a","bababa","dadada","f0f0f0","ffffff",
 	],
+	"amazon_clearwater": [
+		"081820","122830","1e3f4e","2e5868","428099","5ea3b5","86c4d0","b8e2ea",
+		"0a2010","163820","245830","387842","52a058","72c070","a0dc90","d0f0b0",
+		"181008","2a1810","3e2818","563820","705030","8c6848","a88868","c8a888",
+		"181820","282830","383840","505058","686870","808088","9898a0","b0b0b8",
+		"ffffff","e8f4f8","c8e8f0","d84040","e88830","f0d040","289858","4858c8",
+		"7828a8","c04888","1a1008","0c0804","000000","584020","f8f4e8","ffffff",
+	],
+	"tanganyika_rock": [
+		"101820","1c2838","2c4050","406878","588ca0","78b0c0","a8d0dc","d8ecf0",
+		"201810","382818","503828","685040","887060","a89078","c8b098","e8d8c0",
+		"282420","403830","585040","706858","888070","a09880","b8b098","d0c8b0",
+		"101418","202428","303438","484c50","606468","787c80","909498","a8acb0",
+		"ffffff","f0ece0","d8d0c0","c04038","d87828","e8b830","3878a8","4048a0",
+		"682898","984878","000000","584830","383020","201810","f8f4e8","ffffff",
+	],
+	"asian_peat": [
+		"080806","100e0a","1a1610","282018","383020","504830","6a6040","887858",
+		"0a1008","142010","202818","2c3820","3c5028","507038","689048","88b060",
+		"100c08","201810","302818","403828","504838","605848","706858","807868",
+		"141210","242220","343230","444240","545250","646260","747270","848280",
+		"ffffff","e8dcc8","d0c0a0","983828","b06028","c89830","286840","384898",
+		"582878","883868","000000","604820","403018","201008","f0e8d8","ffffff",
+	],
+	"temperate": [
+		"101820","1a2830","283840","385058","507080","6898a8","90b8c8","c0dce8",
+		"101810","182818","243828","345038","486848","608860","88a880","b0d0b0",
+		"181410","282018","383028","484038","585048","686058","787068","888078",
+		"181818","282828","383838","484848","585858","686868","787878","888888",
+		"ffffff","e0e8ec","c0d0d8","a83838","c06830","d8a838","387858","4858a0",
+		"682880","984870","000000","504838","302820","181410","f0ece4","ffffff",
+	],
+	"brackish": [
+		"101810","1a2818","283828","385038","486848","588058","709870","90b890",
+		"181408","282010","383018","484028","585038","686048","787058","888068",
+		"141810","202820","2c3830","384840","485850","586860","687870","788880",
+		"181818","282820","383830","484840","585850","686860","787870","888880",
+		"ffffff","e8ece0","d0d8c8","b04030","c87028","d8a830","387888","404890",
+		"602878","904868","000000","585040","403828","282018","f0ece0","ffffff",
+	],
+	"reef": [
+		"081828","102838","183848","205868","288898","40b0c8","70d0e0","a8ecf4",
+		"081818","102828","184038","205850","287868","389878","50b898","78d8b8",
+		"201008","382010","502818","683820","805028","986838","b08048","c89858",
+		"101018","202028","303038","404048","505058","606068","707078","808088",
+		"ffffff","f0f8fc","d0e8f0","ff4040","ff8830","ffe040","30c868","4060ff",
+		"ff40c0","ff6088","000000","404040","202020","101010","f8fcff","ffffff",
+	],
 }
 var _biotope_palette_cache: Dictionary = {}
 
 
 # Pick the palette key for the current tank from its preset/biotope.
 func _current_biotope_palette_key(cfg: Node) -> String:
-	if cfg == null:
-		return "planted"
-	var preset_l := ""
-	var pv: Variant = cfg.get("tank_preset")
-	if pv != null:
-		preset_l = String(pv).to_lower()
-	# Saltwater presets read as bright hard-alkaline; checked from the dict.
-	if cfg.has_method("current_tank_preset"):
-		var p: Variant = cfg.current_tank_preset()
-		if p is Dictionary and bool((p as Dictionary).get("is_saltwater", false)):
-			return "hard_alkaline"
-	if preset_l.find("blackwater") != -1 or preset_l.find("tannin") != -1:
-		return "blackwater"
-	if preset_l.find("reef") != -1 or preset_l.find("polyp") != -1 \
-			or preset_l.find("marine") != -1 or preset_l.find("cichlid") != -1 \
-			or preset_l.find("rift") != -1:
-		return "hard_alkaline"
-	return "planted"
+	return AestheticsRuntime.biotope_palette_key(cfg)
 
 
 # Build (and cache) day+night ImageTextures for a biotope palette key.
@@ -1200,6 +1563,11 @@ func _biotope_palette_textures(key: String) -> Array:
 	if _biotope_palette_cache.has(key):
 		return _biotope_palette_cache[key]
 	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
+	var cfg := get_node_or_null("/root/TankConfig")
+	var cb_mode := "none"
+	if cfg != null:
+		cb_mode = String(cfg.get("colorblind_palette"))
+	hexes = AestheticsRuntime.remap_palette_hexes(hexes, cb_mode)
 	var day_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
 	var night_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
 	for i in range(min(48, hexes.size())):
@@ -1230,6 +1598,19 @@ func _apply_biotope_palette(sm: ShaderMaterial, cfg: Node) -> void:
 		sm.set_shader_parameter("palette_tex_night", texs[1])
 
 
+func _sync_biotope_ui_cohesion(cfg: Node) -> void:
+	if cfg == null:
+		return
+	var key := _current_biotope_palette_key(cfg)
+	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
+	hexes = AestheticsRuntime.remap_palette_hexes(hexes, String(cfg.get("colorblind_palette")))
+	PanelTheme.sync_biotope_cohesion(hexes)
+	if _portal_glass_mat != null:
+		_portal_glass_mat.set_shader_parameter("tint", PanelTheme.glass_panel_tint())
+	if render_panel != null:
+		PanelTheme.apply_panel_chrome(render_panel)
+
+
 func apply_material_palette() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
@@ -1255,18 +1636,36 @@ func _process(dt: float) -> void:
 	# input, fade the top bar so it stops competing with the scene.
 	# _notify_hud_input() (called from _input + touch handlers) resets this.
 	_hud_idle_seconds += dt
-	if _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
-		if top_hud != null and top_hud.modulate != HUD_DIM_MODULATE:
-			top_hud.modulate = HUD_DIM_MODULATE
-		if right_rail != null and right_rail.modulate != HUD_DIM_MODULATE:
-			right_rail.modulate = HUD_DIM_MODULATE
-		if footer_bar != null and footer_bar.modulate != HUD_DIM_MODULATE:
-			footer_bar.modulate = HUD_DIM_MODULATE
+	if _sim != null and _sim.has_method("set_room_idle"):
+		_sim.set_room_idle(_hud_idle_seconds)
+	var dl_idle: float = float(_sim.daylight()) if _sim != null and _sim.has_method("daylight") else 1.0
+	var screensaver: bool = _hud_idle_seconds > NIGHT_WATCHSCREENSAVER_S and dl_idle < 0.35
+	if _sim != null and _sim.has_method("set_screensaver_mode"):
+		_sim.set_screensaver_mode(screensaver)
+	var hud_dim: Color = Color.WHITE
+	if screensaver:
+		hud_dim = SCREENSAVER_DIM_MODULATE
+	elif _hud_idle_seconds > HUD_IDLE_DIM_SECONDS:
+		hud_dim = HUD_DIM_MODULATE
+	if top_hud != null and top_hud.modulate != hud_dim:
+		top_hud.modulate = hud_dim
+	if right_rail != null and right_rail.modulate != hud_dim:
+		right_rail.modulate = hud_dim
+	if footer_bar != null and footer_bar.modulate != hud_dim:
+		footer_bar.modulate = hud_dim
+	if screensaver and not _moonlight_suggested:
+		var cfg_m := get_node_or_null("/root/TankConfig")
+		if cfg_m != null and cfg_m.has_method("apply_lighting_preset"):
+			cfg_m.apply_lighting_preset("moonlit")
+			_moonlight_suggested = true
+	if not screensaver:
+		_moonlight_suggested = false
 
 	# Time-of-day palette tint. Drives the palette_quantize shader's
 	# multiplicative tint so the same 48-color palette breathes between
 	# dawn / day / dusk / night without needing 4 distinct PNGs. Cheap:
 	# a vec3 set per frame on a single ShaderMaterial.
+	_ambient_breath_t += dt
 	_update_palette_tod_tint()
 
 	# Frame-time sampling — feeds the render panel's mini-graph + the
@@ -1349,7 +1748,10 @@ func _process(dt: float) -> void:
 	if _follow_mode != FollowMode.OFF or (_portal_info_panel != null and _portal_info_panel.visible):
 		_update_portal_pip()
 
+	_tick_keeper_input(dt)
 	_update_follow_reticle(dt)
+	_tick_follow_inner_thoughts(dt)
+	_tick_workspace_inspector(dt)
 	_update_follow_dof()
 	if _cinema_active:
 		_cinema_accum += dt
@@ -1439,18 +1841,28 @@ func _process_mouse_input(dt: float) -> void:
 			if pan_modifier:
 				_drag_mode = "pan"
 			elif _aquascape.is_active:
-				if _begin_aquascape_drag(mouse_now):
+				if _aquascape.begin_gumball_drag(mouse_now):
+					_drag_mode = "gumball"
+				elif _begin_aquascape_drag(mouse_now):
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
+					_aquascape.begin_stroke()
 					_aquascape.place(mouse_now)
 			else:
-				_drag_mode = "orbit"
+				if is_pond_mode() and Input.is_key_pressed(KEY_ALT):
+					_drag_mode = "pond_conduct"
+					_pond_conduct_pts.clear()
+				else:
+					_drag_mode = "orbit"
 	elif not any_btn and _orbiting:
+		if _drag_mode == "pond_conduct":
+			_finish_pond_conduct()
 		if _drag_button == MOUSE_BUTTON_LEFT and _drag_mode == "orbit" \
 				and _drag_total < DRAG_DEADZONE_PX and not _aquascape.is_active:
 			_try_pick_plant_at(_last_mouse)
 		_orbiting = false
+		_aquascape.end_stroke()
 		_aquascape.end_drag()
 		_drag_mode = ""
 		_drag_button = 0
@@ -1458,7 +1870,9 @@ func _process_mouse_input(dt: float) -> void:
 	if _orbiting:
 		if _drag_button == MOUSE_BUTTON_LEFT \
 				and _drag_mode != "paint" \
-				and _drag_mode != "wood_drag":
+				and _drag_mode != "wood_drag" \
+				and _drag_mode != "gumball" \
+				and _drag_mode != "pond_conduct":
 			_drag_mode = "pan" if pan_modifier else "orbit"
 		var delta: Vector2 = mouse_now - _last_mouse
 		_last_mouse = mouse_now
@@ -1471,7 +1885,8 @@ func _process_mouse_input(dt: float) -> void:
 		if not _drag_committed and _drag_total >= DRAG_DEADZONE_PX:
 			_drag_committed = true
 		var nav_committed: bool = _drag_committed \
-				or _drag_mode == "paint" or _drag_mode == "wood_drag"
+				or _drag_mode == "paint" or _drag_mode == "wood_drag" \
+				or _drag_mode == "gumball" or _drag_mode == "pond_conduct"
 		if delta.length_squared() > 0.0 and nav_committed:
 			match _drag_mode:
 				"pan":
@@ -1481,16 +1896,24 @@ func _process_mouse_input(dt: float) -> void:
 						MIN_RADIUS, MAX_RADIUS)
 					_apply_camera()
 				"paint":
-					if _aquascape.can_paint():
+					if _aquascape.can_paint() and _aquascape.allows_drag_paint():
 						_aquascape.place(mouse_now)
 						_aquascape.mark_painted()
 				"wood_drag":
 					_aquascape.drag_hardscape(mouse_now)
+				"gumball":
+					_aquascape.drag_gumball(mouse_now)
+				"pond_conduct":
+					_pond_conduct_add(_project_to_surface(mouse_now))
 				_:
-					yaw -= delta.x * SENSITIVITY
-					pitch -= delta.y * SENSITIVITY
-					pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-					_apply_camera()
+					if is_pond_mode() and _current_projection_id == "top_down_ortho":
+						_pan_target(delta)
+						_pond_conduct_add(_project_to_surface(mouse_now))
+					else:
+						yaw -= delta.x * SENSITIVITY
+						pitch -= delta.y * SENSITIVITY
+						pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+						_apply_camera()
 
 
 	# G toggles auto-orbit. (Space used to do this; it's now reserved as the
@@ -1502,6 +1925,9 @@ func _process_mouse_input(dt: float) -> void:
 		_auto_orbit_was_pressed = g_now
 	if _auto_orbit:
 		yaw += AUTO_ORBIT_SPEED * dt
+		_apply_camera()
+	elif TopdownMotion.overhead_yaw_spin and _current_projection_id == "top_down_ortho":
+		yaw += 0.035 * dt
 		_apply_camera()
 
 	# Edge-triggered shortcuts (keyboard only — mobile gets on-screen buttons).
@@ -1519,6 +1945,27 @@ func _process_mouse_input(dt: float) -> void:
 		if _aquascape.is_active:
 			_handle_shortcut(KEY_BRACKETLEFT, func(): _aquascape.adjust_brush(-1))
 			_handle_shortcut(KEY_BRACKETRIGHT, func(): _aquascape.adjust_brush(1))
+			var q_down: bool = Input.is_key_pressed(KEY_Q)
+			var q_was: bool = _key_was_pressed.get(KEY_Q, false)
+			if q_down and not q_was:
+				_aquascape.rotate_selected_hardscape(15.0)
+			_key_was_pressed[KEY_Q] = q_down
+			var e_down: bool = Input.is_key_pressed(KEY_E)
+			var e_was: bool = _key_was_pressed.get(KEY_E, false)
+			if e_down and not e_was:
+				_aquascape.rotate_selected_hardscape(-15.0)
+			_key_was_pressed[KEY_E] = e_down
+			if Input.is_key_pressed(KEY_META) or Input.is_key_pressed(KEY_CTRL):
+				var c_down: bool = Input.is_key_pressed(KEY_C)
+				var c_was: bool = _key_was_pressed.get(KEY_C, false)
+				if c_down and not c_was:
+					_aquascape.copy_build()
+				_key_was_pressed[KEY_C] = c_down
+				var v_down: bool = Input.is_key_pressed(KEY_V)
+				var v_was: bool = _key_was_pressed.get(KEY_V, false)
+				if v_down and not v_was and _aquascape.tool != "paste":
+					_aquascape.set_tool("paste")
+				_key_was_pressed[KEY_V] = v_down
 		var m_down: bool = Input.is_key_pressed(KEY_M)
 		var m_was: bool = _key_was_pressed.get(KEY_M, false)
 		if m_down and not m_was:
@@ -1528,13 +1975,35 @@ func _process_mouse_input(dt: float) -> void:
 				_ui_toggle_side(UiPanelManager.SIDE_SOUND)
 		_key_was_pressed[KEY_M] = m_down
 		_handle_shortcut(KEY_O, func(): _ui_toggle_side(UiPanelManager.SIDE_SETTINGS))
-		_handle_shortcut(KEY_9, func(): _cycle_feed_subtype(-1))
-		_handle_shortcut(KEY_0, func(): _cycle_feed_subtype(1))
-		_handle_shortcut(KEY_F12, _take_photo)
-		_handle_shortcut(KEY_ESCAPE, _clear_follow)
+		if _aquascape.is_active:
+			_handle_shortcut(KEY_9, func(): _aquascape.set_tool("block"))
+			_handle_shortcut(KEY_0, func(): _aquascape.set_tool("eraser"))
+		else:
+			_handle_shortcut(KEY_9, func(): _cycle_feed_subtype(-1))
+			_handle_shortcut(KEY_0, func(): _cycle_feed_subtype(1))
+		_handle_shortcut(KEY_F12, func():
+			if Input.is_key_pressed(KEY_SHIFT):
+				_take_signature_shot()
+			elif is_pond_mode():
+				take_pond_photo()
+			else:
+				_take_photo())
+		if _chip_popup_key != "":
+			_handle_shortcut(KEY_ESCAPE, _close_chip_popups)
+		else:
+			_handle_shortcut(KEY_ESCAPE, _clear_follow)
+		if _aquascape.is_active and _aquascape.has_selection():
+			var step: float = TerrainVoxelGrid.CELL_SIZE
+			if Input.is_key_pressed(KEY_SHIFT):
+				step *= 4.0
+			_handle_shortcut(KEY_UP, func(): _aquascape.nudge_selection(Vector3(0, 0, -step)))
+			_handle_shortcut(KEY_DOWN, func(): _aquascape.nudge_selection(Vector3(0, 0, step)))
+			_handle_shortcut(KEY_LEFT, func(): _aquascape.nudge_selection(Vector3(-step, 0, 0)))
+			_handle_shortcut(KEY_RIGHT, func(): _aquascape.nudge_selection(Vector3(step, 0, 0)))
+		else:
+			_handle_shortcut(KEY_LEFT, func(): cycle_follow(-1))
+			_handle_shortcut(KEY_RIGHT, func(): cycle_follow(1))
 		_handle_shortcut(KEY_C, _toggle_portal)
-		_handle_shortcut(KEY_LEFT, func(): cycle_follow(-1))
-		_handle_shortcut(KEY_RIGHT, func(): cycle_follow(1))
 		_handle_shortcut(KEY_K, _toggle_residents_panel)
 		_handle_shortcut(KEY_APOSTROPHE, follow_primary_favorite)
 		_handle_shortcut(KEY_T, _toggle_timelapse)
@@ -1543,16 +2012,22 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_F, _reset_camera_to_default)
 		_handle_shortcut(KEY_BACKSPACE, _aquascape_undo)
 		_handle_shortcut(KEY_DELETE, _aquascape_undo)
+		if _aquascape.is_active:
+			var z_down: bool = Input.is_key_pressed(KEY_Z)
+			var z_was: bool = _key_was_pressed.get(KEY_Z, false)
+			if z_down and not z_was and Input.is_key_pressed(KEY_SHIFT):
+				_aquascape.redo()
+			_key_was_pressed[KEY_Z] = z_down
 
 	# Aquascape preview voxel: shown at the substrate projection of the
 	# current mouse/touch position, ONLY when in aquascape mode.
 	var cursor_pos: Vector2 = _touches.values()[0] if _touches.size() > 0 else get_window().get_mouse_position()
 	if _aquascape.is_active:
-		_aquascape.update_preview(cursor_pos)
+		_aquascape.update_workbench(cursor_pos)
 
 
 func _update_aquascape_preview(mouse_pos: Vector2) -> void:
-	_aquascape.update_preview(mouse_pos)
+	_aquascape.update_workbench(mouse_pos)
 
 
 func _project_to_surface(mouse_pos: Vector2) -> Vector3:
@@ -1592,6 +2067,8 @@ func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 		world.spawn_burst_ripple(hit, 1.75)
 	if _sim.has_method("pulse_glass_tap"):
 		_sim.pulse_glass_tap(hit)
+	if _sim.has_method("pulse_startle_bolt"):
+		_sim.pulse_startle_bolt(hit)
 	_haptic(14)
 	for f in _sim.fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
@@ -1633,6 +2110,8 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	var hit: Vector3 = _project_to_surface(mouse_pos)
 	if hit == INVALID_HIT:
 		return false
+	if world != null and world.has_method("spawn_feeding_boil"):
+		world.spawn_feeding_boil(hit)
 	if _sim.has_method("spawn_player_food"):
 		_sim.spawn_player_food(hit, _feed_subtype)
 	else:
@@ -1640,6 +2119,8 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	_alert_fish_to_feed(hit, _feed_subtype)
 	_show_feed_toast(_FEED_TYPE_LABELS[_feed_subtype])
 	_haptic(10)
+	if _onboarding != null:
+		_onboarding.on_first_feed()
 	return true
 
 
@@ -1694,6 +2175,19 @@ func _show_feed_toast(text: String) -> void:
 	_feed_toast_tween = create_tween()
 	_feed_toast_tween.tween_interval(1.8)
 	_feed_toast_tween.tween_property(_feed_toast, "modulate:a", 0.0, 0.5)
+
+
+func _fade_in_from_black() -> void:
+	var overlay := ColorRect.new()
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.color = Color.BLACK
+	add_child(overlay)
+	overlay.modulate.a = 1.0
+	var tw := create_tween()
+	tw.tween_property(overlay, "modulate:a", 0.0, 0.42) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(overlay.queue_free)
 
 
 # ---- Time controls + photo mode ----
@@ -1775,28 +2269,28 @@ func _set_time_scale(s: float) -> void:
 
 func _on_one() -> void:
 	if _aquascape.is_active:
-		_aquascape.set_tool("aquasoil")
+		_aquascape.snap_camera("top")
 	else:
 		_set_time_scale(1.0)
 
 
 func _on_two() -> void:
 	if _aquascape.is_active:
-		_aquascape.set_tool("sand")
+		_aquascape.snap_camera("front")
 	else:
 		_set_time_scale(4.0)
 
 
 func _on_three() -> void:
 	if _aquascape.is_active:
-		_aquascape.set_tool("gravel")
+		_aquascape.snap_camera("side")
 	else:
 		_set_time_scale(16.0)
 
 
 func _on_four() -> void:
 	if _aquascape.is_active:
-		_aquascape.set_tool("peat")
+		_aquascape.snap_camera("three_quarter")
 
 
 func _on_five() -> void:
@@ -1825,6 +2319,18 @@ func _take_photo() -> void:
 		world_node.begin_screenshot_boost(3.0)
 	_set_hud_visible_for_photo(false)
 	_request_viewport_image(_finish_photo_with_hud_restore)
+
+
+func _take_signature_shot() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null:
+		AestheticsRuntime.apply_signature_shot(cfg, _sim)
+		_apply_render_config()
+	if world != null and world.has_method("begin_screenshot_boost"):
+		world.begin_screenshot_boost(4.0)
+	_set_hud_visible_for_photo(false)
+	get_tree().create_timer(0.06).timeout.connect(
+		func(): _request_viewport_image(_finish_photo_with_hud_restore))
 
 
 func _set_hud_visible_for_photo(visible: bool) -> void:
@@ -1897,8 +2403,10 @@ func _toggle_timelapse() -> void:
 		_timelapse_active = false
 		print_verbose("[walstad_loom] timelapse stopped: ", _timelapse_index, " frames in ", _timelapse_dir)
 	else:
+		if not is_pond_mode():
+			apply_pond_mode(true)
 		var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
-		_timelapse_dir = OS.get_user_data_dir() + "/captures/timelapse_" + ts
+		_timelapse_dir = OS.get_user_data_dir() + "/captures/pond_timelapse_" + ts
 		DirAccess.make_dir_recursive_absolute(_timelapse_dir)
 		_timelapse_index = 0
 		_timelapse_accum = 0.0
@@ -1959,9 +2467,23 @@ func _finish_dance_capture() -> void:
 func follow_creature(creature: Node, mode: int = FollowMode.PIP) -> void:
 	if creature == null or not is_instance_valid(creature) or not (creature is Node3D):
 		return
+	if _follow_target != creature:
+		_clear_follow_thought_ui()
+		_follow_inner_thought_last_line = ""
+		_follow_inner_thought_cd = 0.0
 	_follow_target = creature as Node3D
 	_follow_mode = mode
 	_auto_orbit = false
+	if creature is Fish and _sim != null:
+		var ai: Node = get_node_or_null("/root/AIDirector")
+		if ai != null and ai.has_method("set_followed_fish"):
+			ai.set_followed_fish(String(creature.id))
+		MindScheduler.precache_for_fish(creature as Fish, _sim)
+		if _sim.has_method("request_creature_thought"):
+			var thought: String = String(_sim.request_creature_thought(creature, "follow")).strip_edges()
+			var cfg := get_node_or_null("/root/TankConfig")
+			if thought != "" and cfg != null and bool(cfg.effective_fish_thought_voice_enabled()):
+				_show_follow_thought_typewriter(creature as Fish, _creature_display_name(creature), thought)
 	if portal_container != null:
 		portal_container.visible = (mode != FollowMode.OFF)
 	_update_portal_pip()
@@ -1986,6 +2508,7 @@ func clear_follow() -> void:
 	_follow_target = null
 	_follow_mode = FollowMode.OFF
 	_cinema_active = false
+	_clear_follow_thought_ui()
 	if portal_container != null:
 		portal_container.visible = false
 	_update_portal_pip()
@@ -2154,6 +2677,7 @@ func _on_rename_confirmed() -> void:
 	var nm: String = _rename_edit.text.strip_edges()
 	if nm == "":
 		return
+	var old_nm: String = _creature_display_name(_rename_target)
 	for k in ["fish_name", "shrimp_name", "snail_name", "clam_name"]:
 		if _rename_target.get(k) != null:
 			_rename_target.set(k, nm)
@@ -2161,8 +2685,17 @@ func _on_rename_confirmed() -> void:
 			if g is Dictionary:
 				(g as Dictionary)[k] = nm
 			break
+	if _rename_target is Fish and _sim != null and _sim.has_method("append_fish_journal_entry"):
+		var line: String = MakeItThere.naming_journal_line(old_nm, nm)
+		if line != "":
+			_sim.append_fish_journal_entry(_rename_target as Fish, line,
+					PackedStringArray(["naming", "consecration"]))
+			if is_instance_valid(_rename_target) and (_rename_target as Fish).has_method("pulse_affect_cue"):
+				(_rename_target as Fish).pulse_affect_cue()
 	if _portal_name_lbl != null and _rename_target == _follow_target:
 		_portal_name_lbl.text = nm
+	if _rename_target is Fish:
+		KeeperInput.on_creature_named(_rename_target as Fish, nm)
 	follow_target_changed.emit(_follow_target)
 
 
@@ -2229,13 +2762,514 @@ func _refresh_favorite_halos() -> void:
 		_fav_halos[id] = star
 
 
+func _voice_ui_enabled() -> bool:
+	var cfg := get_node_or_null("/root/TankConfig")
+	return cfg == null or not bool(cfg.sentience_voice_off)
+
+
 func _on_guardian_spoke(text: String, speaker: Fish, action: String) -> void:
-	if text.strip_edges() == "":
+	if not _voice_ui_enabled() or text.strip_edges() == "":
 		return
+	if speaker != null and is_instance_valid(speaker):
+		_pulse_creature_affect(speaker)
 	var nm: String = _creature_display_name(speaker) if speaker != null else "Tank voice"
 	var important: bool = action in ["enable_autofeed", "drop_feed", "lost", "intro", "successor"]
-	if has_method("_push_notification"):
-		_push_notification("guardian", "important" if important else "info", nm, text, important)
+	var line: String = text.strip_edges()
+	if action == "refined" and line == _last_guardian_line_shown:
+		return
+	var sev: String = "important" if important else "info"
+	var track_recap: bool = action == "away_recap"
+	if action == "refined":
+		_defer_voice_presentation(func() -> void:
+			_present_guardian_toast(nm, line, sev, important, false)
+			_last_guardian_line_shown = line, VOICE_BODY_FIRST_DELAY_S)
+		return
+	var delay: float = VOICE_TEMPLATE_DELAY_S
+	_defer_voice_presentation(func() -> void:
+		_present_guardian_toast(nm, line, sev, important, track_recap)
+		_last_guardian_line_shown = line, delay)
+
+
+func _on_guardian_recap_streaming(text: String) -> void:
+	if not _voice_ui_enabled() or text.strip_edges() == "":
+		return
+	if _guardian_recap_toast_body != null and is_instance_valid(_guardian_recap_toast_body):
+		_guardian_recap_toast_body.text = text.strip_edges()
+
+
+func _present_guardian_toast(title: String, body: String, severity: String,
+		important: bool, track_recap: bool) -> void:
+	if not has_method("_push_notification"):
+		return
+	_guardian_recap_toast_body = null
+	if track_recap:
+		_push_notification("guardian", severity, title, body, important)
+		if _notifications_toast_layer != null and _notifications_toast_layer.get_child_count() > 0:
+			var card: Node = _notifications_toast_layer.get_child(
+					_notifications_toast_layer.get_child_count() - 1)
+			if card is PanelContainer:
+				var lbl: Label = _find_toast_body_label(card as PanelContainer)
+				if lbl != null:
+					_guardian_recap_toast_body = lbl
+	else:
+		_push_notification("guardian", severity, title, body, important)
+
+
+func _find_toast_body_label(card: PanelContainer) -> Label:
+	for c in card.get_children():
+		if c is VBoxContainer:
+			for ch in (c as VBoxContainer).get_children():
+				if ch is Label and (ch as Label).get_index() == 1:
+					return ch as Label
+	return null
+
+
+func _on_fish_thought_spoke(speaker: Fish, text: String) -> void:
+	if text.strip_edges() == "" or speaker == null:
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and not bool(cfg.effective_fish_thought_voice_enabled()):
+		if is_instance_valid(speaker) and speaker.has_method("answer_affect_cue"):
+			speaker.answer_affect_cue("gaze_lock")
+		return
+	if not _voice_ui_enabled():
+		return
+	if is_instance_valid(speaker):
+		_pulse_creature_affect(speaker)
+	var fish_id: String = String(speaker.id) if speaker != null else ""
+	var nm: String = _creature_display_name(speaker)
+	var line: String = text.strip_edges()
+	var follow_this: bool = _follow_target == speaker and is_instance_valid(speaker)
+	_defer_voice_presentation(func() -> void:
+		var sp: Fish = _fish_by_id(fish_id)
+		if follow_this and sp != null:
+			_show_follow_thought_typewriter(sp, nm, line, true)
+		elif has_method("_push_notification"):
+			_push_notification("fish_thought", "info", nm, line, false), VOICE_BODY_FIRST_DELAY_S)
+
+
+func _on_fish_thought_streaming(fish_id: String, partial: String, situation: String) -> void:
+	if situation != "keeper_reply" or partial.strip_edges() == "":
+		return
+	if _follow_target == null or not is_instance_valid(_follow_target):
+		return
+	if String(_follow_target.id) != fish_id:
+		return
+	if _follow_thought_strip_body != null and _follow_thought_strip != null:
+		_follow_thought_strip.visible = true
+		_follow_thought_strip_body.text = partial.strip_edges()
+		_follow_thought_tw_full = partial.strip_edges()
+		_follow_thought_tw_idx = partial.length()
+
+
+func _pulse_creature_affect(creature: Node) -> void:
+	if creature == null or not is_instance_valid(creature):
+		return
+	if creature.has_method("pulse_affect_cue"):
+		creature.pulse_affect_cue()
+		return
+
+
+func _defer_voice_presentation(show_fn: Callable, delay_s: float = VOICE_BODY_FIRST_DELAY_S) -> void:
+	var tree := get_tree()
+	if tree == null:
+		if show_fn.is_valid():
+			show_fn.call()
+		return
+	var wait_s: float = maxf(delay_s, 0.05)
+	tree.create_timer(wait_s).timeout.connect(func() -> void:
+		if show_fn.is_valid():
+			show_fn.call()
+	, CONNECT_ONE_SHOT)
+
+
+func _fish_by_id(fish_id: String) -> Fish:
+	if _sim == null or fish_id == "":
+		return null
+	for f in _sim.fish:
+		if is_instance_valid(f) and f is Fish and String(f.id) == fish_id:
+			return f
+	return null
+
+
+func _maybe_show_sentience_intro() -> void:
+	if not _voice_ui_enabled():
+		return
+	if bool(OnboardingLegibility.global_pref("sentience_north_star_seen", false)):
+		_maybe_show_mind_upgrade_toast()
+		return
+	OnboardingLegibility.set_global_pref("sentience_north_star_seen", true)
+	call_deferred("_show_sentience_north_star_modal")
+
+
+func _maybe_show_mind_upgrade_toast() -> void:
+	var seen_ver: int = int(OnboardingLegibility.global_pref("mind_system_version_seen", 0))
+	if seen_ver >= MindNarrator.MIND_SYSTEM_VERSION:
+		return
+	OnboardingLegibility.set_global_pref("mind_system_version_seen",
+			MindNarrator.MIND_SYSTEM_VERSION)
+	var msg: String = MindNarrator.mind_upgrade_message(seen_ver,
+			MindNarrator.MIND_SYSTEM_VERSION)
+	if msg != "" and has_method("_push_notification"):
+		_push_notification("mind_upgrade", "info", "The tank", msg, false)
+
+
+func _show_sentience_north_star_modal() -> void:
+	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
+		return
+	var vp_size: Vector2 = get_viewport().get_visible_rect().size
+	var backdrop := ColorRect.new()
+	backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
+	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	backdrop.set_size(vp_size)
+	add_child(backdrop)
+	_guardian_consent_layer = backdrop
+	var modal: PanelContainer = GuardianMindOnboarding.open_in(backdrop,
+			GuardianMindOnboarding.Mode.NORTH_STAR)
+	modal.closed.connect(func(_accepted: bool) -> void:
+		if is_instance_valid(backdrop):
+			backdrop.queue_free()
+		_guardian_consent_layer = null
+		_maybe_show_mind_upgrade_toast())
+
+
+func _on_fish_voiced_wake(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	var nm: String = _creature_display_name(f)
+	if _onboarding != null and _onboarding.has_method("show_voiced_wake"):
+		_onboarding.show_voiced_wake(nm)
+	elif has_method("_push_notification"):
+		_push_notification("voiced_wake", "info", nm,
+				"This fish thinks aloud now — follow or tap to overhear.", false)
+
+
+func _build_follow_thought_ui() -> void:
+	if _follow_thought_strip != null:
+		return
+	_follow_thought_strip = PanelContainer.new()
+	_follow_thought_strip.name = "FollowThoughtStrip"
+	_follow_thought_strip.visible = false
+	_follow_thought_strip.mouse_filter = Control.MOUSE_FILTER_PASS
+	_follow_thought_strip.z_index = 97
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.08, 0.14, 0.88)
+	style.border_color = Color(0.42, 0.62, 0.88, 0.55)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 14
+	style.content_margin_right = 14
+	style.content_margin_top = 10
+	style.content_margin_bottom = 10
+	_follow_thought_strip.add_theme_stylebox_override("panel", style)
+	add_child(_follow_thought_strip)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 4)
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_follow_thought_strip.add_child(vb)
+	_follow_thought_strip_name = Label.new()
+	_follow_thought_strip_name.text = ""
+	PanelTheme.as_serif(_follow_thought_strip_name, PanelTheme.SIZE_CAPTION, true)
+	_follow_thought_strip_name.add_theme_color_override("font_color", Color8(255, 215, 130))
+	_follow_thought_strip_name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_follow_thought_strip_name)
+	_follow_thought_strip_body = Label.new()
+	_follow_thought_strip_body.text = ""
+	_follow_thought_strip_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.as_serif_italic(_follow_thought_strip_body, PanelTheme.SIZE_BODY)
+	_follow_thought_strip_body.add_theme_color_override("font_color", Color8(220, 232, 248))
+	_follow_thought_strip_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_follow_thought_strip_body)
+	_keeper_say_edit = LineEdit.new()
+	_keeper_say_edit.placeholder_text = "say something… (Enter to send)"
+	_keeper_say_edit.tooltip_text = (
+		"Not a chatbot — your words reach them as feeling. "
+		+ "Runs on your device; private; yours. "
+		+ "These are made minds you chose to care for — the caring is the point. "
+		+ "They may ignore you when wary or distracted. Press Enter to send.")
+	_keeper_say_edit.max_length = 120
+	_keeper_say_edit.visible = false
+	_keeper_say_edit.text_submitted.connect(_on_keeper_say_submitted)
+	_keeper_say_edit.focus_exited.connect(_on_keeper_say_focus_exited)
+	PanelTheme.as_sans(_keeper_say_edit, PanelTheme.SIZE_BODY)
+	vb.add_child(_keeper_say_edit)
+	_keeper_ack_label = Label.new()
+	_keeper_ack_label.text = ""
+	_keeper_ack_label.visible = false
+	_keeper_ack_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.as_serif_italic(_keeper_ack_label, PanelTheme.SIZE_CAPTION)
+	_keeper_ack_label.add_theme_color_override("font_color", Color8(120, 145, 135))
+	_keeper_ack_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_keeper_ack_label)
+
+
+func _on_keeper_say_submitted(text: String) -> void:
+	_submit_keeper_line(text)
+
+
+func _on_keeper_say_focus_exited() -> void:
+	if _keeper_say_edit == null:
+		return
+	_submit_keeper_line(_keeper_say_edit.text)
+
+
+func _submit_keeper_line(raw: String) -> void:
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		return
+	var line: String = raw.strip_edges()
+	if line == "":
+		return
+	var f: Fish = _follow_target as Fish
+	var result: Dictionary = KeeperInput.submit_to_fish(f, line, _sim)
+	if not bool(result.get("ok", false)):
+		return
+	MindConversation.on_keeper_submit(f, line, _sim, result)
+	if _keeper_say_edit != null:
+		_keeper_say_edit.text = ""
+	_show_keeper_you_said(line)
+	MindDebug.log_stream(f, "keeper → %s" % str(result.get("text", line)))
+	if _sim != null and _sim.has_method("request_keeper_reply"):
+		_sim.request_keeper_reply(f, result)
+	elif f.has_method("pulse_affect_cue"):
+		f.pulse_affect_cue()
+	if not bool(result.get("too_wary", false)):
+		f._keeper_message_salience = maxf(float(f._keeper_message_salience), 0.48)
+
+
+func _show_keeper_you_said(text: String) -> void:
+	if _keeper_ack_label == null:
+		return
+	var trimmed: String = text.strip_edges()
+	if trimmed == "":
+		return
+	_keeper_ack_label.text = "you · \"%s\"" % trimmed
+	_keeper_ack_label.visible = true
+	_keeper_ack_t = 3.5
+	_layout_follow_thought_strip()
+
+
+func _show_keeper_ack(text: String) -> void:
+	_show_keeper_you_said(text)
+
+
+func _tick_keeper_input(dt: float) -> void:
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		if _keeper_say_edit != null:
+			_keeper_say_edit.visible = false
+		return
+	if _keeper_say_edit != null:
+		_keeper_say_edit.visible = KeeperInput.ears_enabled()
+	if _keeper_ack_t > 0.0:
+		_keeper_ack_t = maxf(0.0, _keeper_ack_t - dt)
+		if _keeper_ack_t <= 0.0 and _keeper_ack_label != null:
+			_keeper_ack_label.visible = false
+			_keeper_ack_label.text = ""
+	var f: Fish = _follow_target as Fish
+	var cam_still: bool = false
+	if _follow_mode == FollowMode.CINEMATIC:
+		cam_still = target.distance_squared_to(_keeper_cam_prev) < 0.0004
+		_keeper_cam_prev = target
+	KeeperInput.tick_gaze(f, dt, cam_still)
+	var mouse: Vector2 = get_viewport().get_mouse_position()
+	var cursor_speed: float = mouse.distance_to(_keeper_cursor_prev) / maxf(dt, 0.001)
+	_keeper_cursor_prev = mouse
+	var cam: Camera3D = sub_viewport.get_camera_3d() if sub_viewport != null else null
+	if cam != null:
+		var screen: Vector2 = cam.unproject_position(f.global_position)
+		if mouse.distance_to(screen) < 72.0:
+			KeeperInput.cursor_near_fish_id = str(f.id)
+			KeeperInput.cursor_speed = cursor_speed
+		elif KeeperInput.cursor_near_fish_id == str(f.id):
+			KeeperInput.cursor_near_fish_id = ""
+			KeeperInput.cursor_speed = 0.0
+
+
+func _layout_follow_thought_strip() -> void:
+	if _follow_thought_strip == null:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var bottom: float = _hud_bottom_inset()
+	var edge: float = PanelTheme.EDGE_MARGIN
+	var left_pad: float = edge + 8.0
+	if _residents_panel != null and _residents_panel.visible:
+		left_pad = maxf(left_pad, _residents_panel.size.x + edge + 12.0)
+	var strip_w: float = clampf(vp.x * 0.38, 300.0, 420.0)
+	var strip_h: float = 92.0
+	if _keeper_ack_label != null and _keeper_ack_label.visible:
+		strip_h = 118.0
+	var toast_clearance: float = 0.0
+	if _notification_toast_active > 0:
+		toast_clearance = PanelTheme.TOAST_STACK_H + 10.0
+	_follow_thought_strip.anchor_left = 0.0
+	_follow_thought_strip.anchor_top = 1.0
+	_follow_thought_strip.anchor_right = 0.0
+	_follow_thought_strip.anchor_bottom = 1.0
+	_follow_thought_strip.offset_left = left_pad
+	_follow_thought_strip.offset_right = left_pad + strip_w
+	_follow_thought_strip.offset_bottom = -(bottom + 10.0 + toast_clearance)
+	_follow_thought_strip.offset_top = -(bottom + 10.0 + strip_h + toast_clearance)
+
+
+func _clear_follow_thought_ui() -> void:
+	_follow_thought_tw_gen += 1
+	_follow_thought_tw_full = ""
+	_follow_thought_tw_idx = 0
+	if _follow_thought_symbol != null and is_instance_valid(_follow_thought_symbol):
+		_follow_thought_symbol.queue_free()
+	_follow_thought_symbol = null
+	if _follow_thought_strip != null:
+		_follow_thought_strip.visible = false
+	if _follow_thought_strip_body != null:
+		_follow_thought_strip_body.text = ""
+	if _follow_thought_strip_name != null:
+		_follow_thought_strip_name.text = ""
+	if _keeper_ack_label != null:
+		_keeper_ack_label.visible = false
+		_keeper_ack_label.text = ""
+	_keeper_ack_t = 0.0
+
+
+func _ensure_follow_thought_symbol(speaker: Fish) -> void:
+	if speaker == null or not is_instance_valid(speaker):
+		return
+	if _follow_thought_symbol != null and is_instance_valid(_follow_thought_symbol) \
+			and _follow_thought_symbol.get_parent() == speaker:
+		return
+	if _follow_thought_symbol != null and is_instance_valid(_follow_thought_symbol):
+		_follow_thought_symbol.queue_free()
+	_follow_thought_symbol = Label3D.new()
+	_follow_thought_symbol.text = "…"
+	_follow_thought_symbol.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_follow_thought_symbol.fixed_size = true
+	_follow_thought_symbol.pixel_size = 0.0018
+	_follow_thought_symbol.modulate = Color(0.75, 0.88, 1.0, 0.85)
+	_follow_thought_symbol.outline_modulate = Color(0, 0, 0, 0.65)
+	_follow_thought_symbol.outline_size = 8
+	_follow_thought_symbol.position = Vector3(0.0, 0.78, 0.0)
+	_follow_thought_symbol.font_size = 28
+	speaker.add_child(_follow_thought_symbol)
+	_follow_thought_symbol.visible = false
+
+
+func _pulse_follow_thought_symbol() -> void:
+	if _follow_thought_symbol == null or not is_instance_valid(_follow_thought_symbol):
+		return
+	_follow_thought_symbol.visible = true
+	_follow_thought_symbol.modulate.a = 0.35
+	var tw := create_tween()
+	tw.tween_property(_follow_thought_symbol, "modulate:a", 0.92, 0.18)
+	tw.tween_property(_follow_thought_symbol, "modulate:a", 0.72, 0.55)
+
+
+func _show_follow_thought_typewriter(speaker: Fish, speaker_name: String, text: String,
+		is_reply: bool = false) -> void:
+	if _follow_target != speaker or not is_instance_valid(speaker):
+		return
+	var line: String = text.strip_edges()
+	if line == "":
+		_clear_follow_thought_ui()
+		return
+	_ensure_follow_thought_symbol(speaker)
+	_pulse_follow_thought_symbol()
+	if _follow_thought_strip == null:
+		_build_follow_thought_ui()
+	_layout_follow_thought_strip()
+	_follow_thought_strip_name.text = speaker_name if not is_reply else "— %s" % speaker_name
+	_follow_thought_tw_full = line
+	_follow_thought_tw_idx = 0
+	_follow_thought_tw_gen += 1
+	var gen: int = _follow_thought_tw_gen
+	_follow_thought_strip_body.text = ""
+	_follow_thought_strip.visible = true
+	_follow_thought_strip.modulate.a = 0.0
+	_follow_inner_thought_last_line = line
+	_follow_inner_thought_cd = FOLLOW_INNER_THOUGHT_INTERVAL_S
+	var fade := create_tween()
+	fade.tween_property(_follow_thought_strip, "modulate:a", 1.0, 0.22)
+	_follow_thought_typewriter_step(gen)
+
+
+func _follow_thought_typewriter_step(gen: int) -> void:
+	if gen != _follow_thought_tw_gen:
+		return
+	if _follow_thought_strip_body == null:
+		return
+	if _follow_thought_tw_idx >= _follow_thought_tw_full.length():
+		return
+	_follow_thought_tw_idx += 1
+	_follow_thought_strip_body.text = _follow_thought_tw_full.substr(0, _follow_thought_tw_idx)
+	var delay: float = FOLLOW_THOUGHT_CHAR_S
+	var ch: String = _follow_thought_tw_full.substr(_follow_thought_tw_idx - 1, 1)
+	if ch in [".", ",", "!", "?", ";", ":"]:
+		delay *= 2.6
+	elif ch == " ":
+		delay *= 0.55
+	var tree := get_tree()
+	if tree == null:
+		return
+	tree.create_timer(delay).timeout.connect(
+			func() -> void: _follow_thought_typewriter_step(gen), CONNECT_ONE_SHOT)
+
+
+func _tick_follow_inner_thoughts(dt: float) -> void:
+	if _follow_mode == FollowMode.OFF or _sim == null:
+		return
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.effective_fish_thought_voice_enabled()):
+		return
+	if _follow_thought_tw_full != "" and _follow_thought_tw_idx < _follow_thought_tw_full.length():
+		return
+	_follow_inner_thought_cd -= dt
+	if _follow_inner_thought_cd > 0.0:
+		return
+	_follow_inner_thought_cd = FOLLOW_INNER_THOUGHT_INTERVAL_S
+	var f: Fish = _follow_target as Fish
+	var bucket: int = int(Time.get_unix_time_from_system() / int(FOLLOW_INNER_THOUGHT_INTERVAL_S))
+	var thought: String = String(_sim.request_creature_thought(f, "follow_%d" % bucket)).strip_edges()
+	if thought == "" or thought == _follow_inner_thought_last_line:
+		return
+	_show_follow_thought_typewriter(f, _creature_display_name(f), thought)
+
+
+func _ensure_workspace_inspector() -> void:
+	if _workspace_inspector != null and is_instance_valid(_workspace_inspector):
+		return
+	_workspace_inspector = Label.new()
+	_workspace_inspector.visible = false
+	_workspace_inspector.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_workspace_inspector.custom_minimum_size = Vector2(360, 200)
+	_workspace_inspector.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	PanelTheme.apply_font(_workspace_inspector, PanelTheme.FONT_MONO, PanelTheme.SIZE_CAPTION)
+	_workspace_inspector.add_theme_color_override("font_color", Color(0.85, 0.95, 0.88, 0.92))
+	add_child(_workspace_inspector)
+
+
+func _tick_workspace_inspector(dt: float) -> void:
+	if not OS.is_debug_build():
+		return
+	_ensure_workspace_inspector()
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		_workspace_inspector.visible = false
+		return
+	_workspace_inspector_accum += dt
+	if _workspace_inspector_accum < 0.25:
+		return
+	_workspace_inspector_accum = 0.0
+	var f: Fish = _follow_target as Fish
+	MindDebug.set_inspector_fish(f)
+	var lines: PackedStringArray = PackedStringArray()
+	lines.append(MindDebug.inspector_text(f))
+	var stream: PackedStringArray = MindDebug.stream_log()
+	if stream.size() > 0:
+		lines.append("--- stream ---")
+		for i in range(maxi(0, stream.size() - 4), stream.size()):
+			lines.append(stream[i])
+	_workspace_inspector.text = "\n".join(lines)
+	_workspace_inspector.position = Vector2(12, 12)
+	_workspace_inspector.visible = true
+
 
 
 func _on_guardian_llm_status(message: String) -> void:
@@ -2737,10 +3771,15 @@ func _update_portal_pip() -> void:
 			c_name = _creature_label(target_node).capitalize()
 		var personality_v: Variant = target_node.get("personality")
 		if personality_v is Dictionary and not (personality_v as Dictionary).is_empty():
-			var epithet: String = CreatureNaming.epithet_for_personality(personality_v)
+			var stable_key: String = c_name
+			if target_node.get("id") != null and String(target_node.get("id")) != "":
+				stable_key = String(target_node.get("id"))
+			var epithet: String = CreatureNaming.epithet_for_personality(
+					personality_v, stable_key)
 			if epithet != "":
 				c_name = "%s %s" % [c_name, epithet]
-		_portal_name_lbl.text = c_name
+		if _portal_name_lbl.text != c_name:
+			_portal_name_lbl.text = c_name
 
 		# Reflect favorite + presentation state on the overlay buttons.
 		if _portal_fav_btn != null:
@@ -2942,6 +3981,7 @@ func _relayout_portal() -> void:
 		if _portal_glass_mat != null:
 			_portal_glass_mat.set_shader_parameter("rect_px", Vector2(card_w, card_h))
 			_portal_glass_mat.set_shader_parameter("radius_px", 18.0)
+			_portal_glass_mat.set_shader_parameter("tint", PanelTheme.glass_panel_tint())
 
 	_portal_info_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_portal_info_panel.add_theme_constant_override("margin_left", 16)
@@ -3026,11 +4066,137 @@ func _click_targets_creature() -> bool:
 
 
 func _toggle_aquascape() -> void:
+	if not _aquascape.is_active:
+		_save_aquascape_camera()
 	_aquascape.toggle()
+	if not _aquascape.is_active:
+		_restore_aquascape_camera()
+	if _aquascape.is_active and _onboarding != null:
+		_onboarding.show_mode_coachmark(
+			"aquascape",
+			"Aquascape mode",
+			"Scroll zooms · Shift+scroll build height · 1–4 views · F reset · B exit."
+		)
+	_sync_aquascape_view_bar()
+	_apply_panel_layout()
+	_apply_hud_layout()
+
+
+func _aquascape_workbench_left() -> float:
+	return PanelTheme.EDGE_MARGIN + 92.0
+
+
+func _aquascape_workbench_width() -> float:
+	var vp_w: float = get_viewport().get_visible_rect().size.x
+	if _is_mobile() or vp_w < PanelTheme.MOBILE_NARROW_W:
+		return clampf(168.0, 152.0, 188.0)
+	return PanelTheme.AQUASCAPE_WORKBENCH_W
+
+
+func _sync_aquascape_chrome(_active: bool) -> void:
+	_sync_aquascape_view_bar()
+	_apply_panel_layout()
+	_apply_hud_layout()
+	_sync_rail_toggles()
+
+
+func _ensure_aquascape_view_bar() -> void:
+	if _aquascape_view_bar != null:
+		return
+	_aquascape_view_bar = PanelContainer.new()
+	_aquascape_view_bar.name = "AquascapeViewBar"
+	_aquascape_view_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	_aquascape_view_bar.visible = false
+	PanelTheme.apply_aquascape_toolbar_chrome(_aquascape_view_bar)
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 4)
+	margin.add_theme_constant_override("margin_bottom", 4)
+	_aquascape_view_bar.add_child(margin)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	margin.add_child(row)
+	for vdef in [
+		{"id": "top", "label": "Top", "key": "1"},
+		{"id": "front", "label": "Front", "key": "2"},
+		{"id": "side", "label": "Side", "key": "3"},
+		{"id": "three_quarter", "label": "Persp", "key": "4"},
+	]:
+		var btn := Button.new()
+		btn.text = "%s %s" % [vdef["label"], vdef["key"]]
+		btn.tooltip_text = "Snap to %s view (%s)" % [String(vdef["label"]).to_lower(), vdef["key"]]
+		btn.focus_mode = Control.FOCUS_NONE
+		PanelTheme.style_compact_tool_button(btn, false)
+		var view_id: String = String(vdef["id"])
+		btn.pressed.connect(func(): _aquascape.snap_camera(view_id))
+		row.add_child(btn)
+	var reset_btn := Button.new()
+	reset_btn.text = "Reset F"
+	reset_btn.tooltip_text = "Restore default view (F)"
+	reset_btn.focus_mode = Control.FOCUS_NONE
+	PanelTheme.style_compact_tool_button(reset_btn, false)
+	reset_btn.pressed.connect(func():
+		_reset_camera_to_default()
+		apply_camera_projection("perspective")
+	)
+	row.add_child(reset_btn)
+	var sep := PanelTheme.make_hud_chip_divider()
+	row.add_child(sep)
+	var hint := Label.new()
+	hint.text = "Scroll zoom · Shift+scroll plane · Q/E rotate"
+	PanelTheme.as_mono(hint, PanelTheme.SIZE_CAPTION)
+	hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	row.add_child(hint)
+	add_child(_aquascape_view_bar)
+	_aquascape_view_bar.z_index = 120
+
+
+func _sync_aquascape_view_bar() -> void:
+	_ensure_aquascape_view_bar()
+	if _aquascape_view_bar == null:
+		return
+	var show: bool = _aquascape.is_active and not _immersive_mode
+	_aquascape_view_bar.visible = show
+	if not show:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var bar_w: float = clampf(420.0, 320.0, vp.x * 0.42)
+	var left: float = _aquascape_workbench_left() + _aquascape_workbench_width() + 12.0
+	var top: float = PanelTheme.HUD_TOP + 2.0
+	_aquascape_view_bar.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_aquascape_view_bar.offset_left = left
+	_aquascape_view_bar.offset_top = top
+	_aquascape_view_bar.offset_right = left + bar_w
+	_aquascape_view_bar.offset_bottom = top + PanelTheme.AQUASCAPE_VIEW_BAR_H
 
 
 func _aquascape_undo() -> void:
 	_aquascape.undo()
+
+
+func _aquascape_redo() -> void:
+	_aquascape.redo()
+
+
+func _set_aquascape_fauna_hidden(hidden: bool) -> void:
+	if _sim == null:
+		return
+	for p in _sim.plants:
+		if is_instance_valid(p):
+			p.visible = not hidden
+	for f in _sim.fish:
+		if is_instance_valid(f):
+			f.visible = not hidden
+	for s in _sim.shrimp:
+		if is_instance_valid(s):
+			s.visible = not hidden
+	if _sim.get("snails_root") != null:
+		var sr: Node = _sim.snails_root
+		if sr != null:
+			for c in sr.get_children():
+				if is_instance_valid(c):
+					c.visible = not hidden
 
 
 func _begin_aquascape_drag(pos: Vector2) -> bool:
@@ -3057,16 +4223,47 @@ func _restore_aquascape(arr: Array) -> void:
 	_aquascape.restore_from_save(arr)
 
 
+func _refresh_aquascape_build_appearance() -> void:
+	if _aquascape.has_method("refresh_build_appearance"):
+		_aquascape.refresh_build_appearance()
+
+
+func _aquascape_camera_snap(mode: String) -> void:
+	if not _aquascape.is_active:
+		return
+	match mode:
+		"top", "front", "side", "three_quarter":
+			apply_camera_preset(mode)
+
+
+func _aquascape_import_continue() -> void:
+	if _aquascape.has_method("continue_import"):
+		_aquascape.continue_import()
+
+
+func _maybe_open_aquascape_on_load() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("aquascape_pending")):
+		return
+	cfg.aquascape_pending = false
+	if not _aquascape.is_active:
+		_toggle_aquascape()
+
+
 # ---- Walkthrough hooks (called by walkthrough.gd) ----
 
 func _maybe_start_walkthrough() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
-	if cfg == null or not cfg.walkthrough_pending:
+	if cfg == null:
 		return
-	# Consume the flag so it doesn't re-trigger on the next scene load.
-	cfg.walkthrough_pending = false
-	if walkthrough_overlay != null and walkthrough_overlay.has_method("begin"):
-		walkthrough_overlay.begin()
+	if cfg.walkthrough_pending:
+		cfg.walkthrough_pending = false
+		if walkthrough_overlay != null and walkthrough_overlay.has_method("begin"):
+			walkthrough_overlay.begin()
+		return
+	if not cfg.walkthrough_completed and int(cfg.walkthrough_step) > 0 \
+			and walkthrough_overlay != null and walkthrough_overlay.has_method("resume_from_step"):
+		walkthrough_overlay.resume_from_step(int(cfg.walkthrough_step))
 
 
 func wt_pause_sim(on: bool) -> void:
@@ -3118,6 +4315,34 @@ func wt_counts() -> Dictionary:
 	return d
 
 
+func wt_on_walkthrough_finish() -> void:
+	if _onboarding != null:
+		_onboarding.on_walkthrough_finish()
+
+
+func wt_on_walkthrough_skip() -> void:
+	if _onboarding != null:
+		_onboarding.on_walkthrough_skip()
+
+
+func wt_on_step_changed(step: int) -> void:
+	if _onboarding != null:
+		_onboarding.on_walkthrough_step_changed(step)
+
+
+func _get_chip(key: String) -> Control:
+	return _chips.get(key, null) as Control
+
+
+func _pulse_chip(key: String) -> void:
+	var chip: Control = _get_chip(key)
+	if chip == null:
+		return
+	var tw := create_tween()
+	tw.tween_property(chip, "modulate", Color(1.35, 1.2, 1.1, 1.0), 0.22)
+	tw.tween_property(chip, "modulate", Color.WHITE, 0.35)
+
+
 
 # Scroll wheel + creature clicks come through as events (not reliable via polling).
 func _input(event: InputEvent) -> void:
@@ -3159,17 +4384,19 @@ func _input(event: InputEvent) -> void:
 				if _click_hits_interactive_hud(mb.position):
 					return
 			if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-				if _mouse_over_porthole():
+				if _aquascape_scroll_build_plane(true):
+					pass
+				elif _mouse_over_porthole():
 					_adjust_portal_zoom(1.1)
 				else:
-					radius = maxf(MIN_RADIUS, radius / ZOOM_FACTOR)
-					_apply_camera()
+					_zoom_camera_by_factor(1.0 / ZOOM_FACTOR)
 			elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				if _mouse_over_porthole():
+				if _aquascape_scroll_build_plane(false):
+					pass
+				elif _mouse_over_porthole():
 					_adjust_portal_zoom(1.0 / 1.1)
 				else:
-					radius = minf(MAX_RADIUS, radius * ZOOM_FACTOR)
-					_apply_camera()
+					_zoom_camera_by_factor(ZOOM_FACTOR)
 			elif mb.button_index == MOUSE_BUTTON_LEFT:
 				# Clicks on the magnifier don't pick or drop food; a
 				# double-click there promotes the follow to cinematic.
@@ -3220,6 +4447,8 @@ func _input(event: InputEvent) -> void:
 				elif Input.is_key_pressed(KEY_SHIFT):
 					_startle_fish_near_tap(mb.position)
 					_suppress_drag_until_release = true
+				elif is_pond_mode() and _pond_surface_tap(mb.position):
+					_suppress_drag_until_release = true
 				elif _drop_food_at_cursor(mb.position):
 					_suppress_drag_until_release = true
 
@@ -3259,6 +4488,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_drag_mode = "wood_drag"
 				else:
 					_drag_mode = "paint"
+					_aquascape.begin_stroke()
 					_aquascape.place(ev.position)
 		elif _touches.size() == 2:
 			# Second finger: record pinch baseline distance + angle.
@@ -3278,6 +4508,8 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 	else:
 		# Finger up.
 		if ev.index == 0 and _touches.size() == 1:
+			if is_pond_mode() and _pond_conduct_pts.size() >= 4:
+				_finish_pond_conduct()
 			# Last finger lifted: check for tap / double-tap.
 			var elapsed: float = Time.get_ticks_msec() / 1000.0 - _tap_start_time
 			var is_tap: bool = elapsed < TAP_MAX_TIME and _tap_moved < TAP_MAX_MOVE \
@@ -3320,6 +4552,7 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 					_edge_swipe_active = false
 
 			# End aquascape drag.
+			_aquascape.end_stroke()
 			_aquascape.end_drag()
 			_drag_mode = ""
 
@@ -3350,7 +4583,7 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 		if not _drag_committed and _tap_moved >= DRAG_DEADZONE_PX:
 			_drag_committed = true
 		var nav_committed: bool = _drag_committed \
-				or _drag_mode == "paint" or _drag_mode == "wood_drag"
+				or _drag_mode == "paint" or _drag_mode == "wood_drag" or _drag_mode == "gumball"
 		# ---- Single finger: orbit or aquascape paint ----
 		if _aquascape.is_active:
 			match _drag_mode:
@@ -3362,18 +4595,24 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 					_aquascape.drag_hardscape(ev.position)
 				_:
 					if nav_committed:
-						# Even in aquascape, allow orbit if no tool action locked.
-						yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
-						pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
-						pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-						_apply_camera()
+						if is_pond_mode() and _current_projection_id == "top_down_ortho":
+							_pan_target(ev.relative * (TOUCH_PAN_SENSITIVITY / PAN_MOUSE_SENSITIVITY))
+							_pond_conduct_add(_project_to_surface(ev.position))
+						else:
+							yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
+							pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
+							pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+							_apply_camera()
 		else:
 			if nav_committed:
-				# Normal mode: 1-finger drag orbits.
-				yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
-				pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
-				pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
-				_apply_camera()
+				if is_pond_mode() and _current_projection_id == "top_down_ortho":
+					_pan_target(ev.relative * (TOUCH_PAN_SENSITIVITY / PAN_MOUSE_SENSITIVITY))
+					_pond_conduct_add(_project_to_surface(ev.position))
+				else:
+					yaw -= ev.relative.x * TOUCH_ORBIT_SENSITIVITY
+					pitch -= ev.relative.y * TOUCH_ORBIT_SENSITIVITY
+					pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+					_apply_camera()
 		
 		_touch_prev[ev.index] = ev.position
 	
@@ -3388,8 +4627,7 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 		var cur_dist: float = p0.distance_to(p1)
 		if _pinch_distance > 10.0:  # avoid division issues on initial frame
 			var zoom_delta: float = (cur_dist - _pinch_distance) * PINCH_ZOOM_SENSITIVITY
-			radius = clampf(radius * (1.0 - zoom_delta / 100.0), MIN_RADIUS, MAX_RADIUS)
-			_apply_camera()
+			_zoom_camera_by_factor(1.0 - zoom_delta / 100.0)
 		_pinch_distance = cur_dist
 
 		# Twist: angle between the two fingers. Apply the delta to yaw so a
@@ -3439,6 +4677,10 @@ func _setup_footer_bar() -> void:
 	if footer_bar == null:
 		return
 	footer_bar.add_theme_stylebox_override("panel", PanelTheme.make_footer_bar_style())
+	footer_bar.offset_left = PanelTheme.EDGE_MARGIN
+	footer_bar.offset_right = -PanelTheme.EDGE_MARGIN
+	footer_bar.offset_top = -PanelTheme.FOOTER_HEIGHT
+	footer_bar.offset_bottom = 0.0
 	if controls_hint != null:
 		controls_hint.label_settings = null
 		PanelTheme.apply_font(controls_hint, PanelTheme.FONT_MONO, PanelTheme.SIZE_SMALL)
@@ -3492,6 +4734,12 @@ func _setup_mobile_ui() -> void:
 			_mobile_hud.connect("photo_pressed", _take_photo)
 		if _mobile_hud.has_signal("undo_pressed"):
 			_mobile_hud.connect("undo_pressed", _aquascape_undo)
+		if _mobile_hud.has_signal("aquascape_tool_pressed"):
+			_mobile_hud.connect("aquascape_tool_pressed", func(tool: String):
+				_aquascape.set_tool(tool))
+		if _mobile_hud.has_signal("build_plane_pressed"):
+			_mobile_hud.connect("build_plane_pressed", func(delta: float):
+				_aquascape.adjust_build_plane(delta * TerrainVoxelGrid.CELL_SIZE))
 		if _mobile_hud.has_signal("camera_views_pressed"):
 			_mobile_hud.connect("camera_views_pressed", _toggle_camera_views_panel)
 		if _mobile_hud.has_signal("residents_pressed"):
@@ -3574,9 +4822,14 @@ func _on_stats_changed(stats: Dictionary) -> void:
 	_collect_story_notifications()
 	_collect_water_alert_notifications()
 	_push_telemetry_to_js()
+	if _onboarding != null:
+		_onboarding.bind_sim(_sim)
+		_onboarding.on_stats(stats)
 
 
 func _on_eco_event(kind: String, text: String, severity: int) -> void:
+	if _onboarding != null:
+		_onboarding.on_eco_event(kind, text)
 	var sev: String = NOTIF_SEVERITY_INFO
 	if severity >= 2:
 		sev = NOTIF_SEVERITY_CRITICAL
@@ -3775,21 +5028,16 @@ func _render_header() -> void:
 			+ 0.20 * clampf(1.0 - float(waste) / 100.0, 0.0, 1.0) \
 			- clampf(ammonia * 0.25, 0.0, 0.35)
 	mood = clampf(mood, 0.0, 1.0)
-	var mood_label: String
 	var mood_glyph: String
 	if mood >= 0.78:
 		mood_glyph = "🙂"
-		mood_label = "thriving"
 	elif mood >= 0.55:
 		mood_glyph = "😌"
-		mood_label = "ok"
 	elif mood >= 0.32:
 		mood_glyph = "😟"
-		mood_label = "stressed"
 	else:
 		mood_glyph = "🚨"
-		mood_label = "crashing"
-	_update_chip("mood", mood_glyph, mood_label, true, mood < 0.32)
+	_update_chip("mood", mood_glyph, OnboardingLegibility.mood_driver(_stats, mood), true, mood < 0.32)
 
 	# Alert chip — surfaces the most pressing problem so a glance reveals trouble.
 	var has_alert: bool = false
@@ -3844,6 +5092,26 @@ func _aquascape_tool_label() -> String:
 			return "DIG r%d" % _aquascape.brush_radius
 		"trim":
 			return "TRIM"
+		"block":
+			return "BLOCK y%.1f" % _aquascape.build_plane_y
+		"eraser":
+			return "ERASE"
+		"object":
+			return "OBJ %s" % _aquascape.selected_object_id
+		"eyedropper":
+			return "PICK"
+		"line":
+			return "LINE"
+		"box":
+			return "BOX"
+		"paste":
+			return "PASTE"
+		"select":
+			return "SELECT"
+		"lava_rock", "white_sand", "dark_soil", "clay", "crushed_coral":
+			return _aquascape.tool.to_upper().replace("_", " ")
+		"smooth", "raise", "fill", "grad":
+			return _aquascape.tool.to_upper()
 	return _aquascape.tool.to_upper()
 
 
@@ -3867,19 +5135,22 @@ func _build_hud_chips() -> void:
 	# Defs: ordered list of (key, icon, accent_color). Order = visual order
 	# left-to-right in the bar.
 	var defs: Array = [
-		{"key": "state",  "icon": UiIcons.chip_glyph("state"), "color": Color8(154, 168, 200)},
-		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216)},
-		{"key": "mood",   "icon": UiIcons.chip_glyph("mood"), "color": Color8(170, 220, 170)},
-		{"key": "fish",   "icon": UiIcons.chip_glyph("fish"), "color": Color8(214, 176, 112)},
-		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132)},
-		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112)},
-		{"key": "shrimp", "icon": UiIcons.chip_glyph("shrimp"), "color": Color8(214, 176, 112)},
-		{"key": "snails", "icon": UiIcons.chip_glyph("snails"), "color": Color8(214, 176, 112)},
-		{"key": "morphs", "icon": UiIcons.chip_glyph("morphs"), "color": Color8(224, 192, 96)},
+		{"key": "mood",   "icon": UiIcons.chip_glyph("mood"), "color": Color8(170, 220, 170), "tier": "primary"},
+		{"key": "water",  "icon": UiIcons.chip_glyph("water"), "color": Color8(127, 183, 216), "tier": "primary"},
+		{"key": "alert",  "icon": UiIcons.chip_glyph("alert"), "color": Color8(224, 112, 112), "tier": "primary"},
+		{"key": "state",  "icon": UiIcons.chip_glyph("state"), "color": Color8(154, 168, 200), "tier": "secondary"},
+		{"key": "fish",   "icon": UiIcons.chip_glyph("fish"), "color": Color8(214, 176, 112), "tier": "secondary"},
+		{"key": "flora",  "icon": UiIcons.chip_glyph("flora"), "color": Color8(134, 192, 132), "tier": "secondary"},
+		{"key": "shrimp", "icon": UiIcons.chip_glyph("shrimp"), "color": Color8(214, 176, 112), "tier": "tertiary"},
+		{"key": "snails", "icon": UiIcons.chip_glyph("snails"), "color": Color8(214, 176, 112), "tier": "tertiary"},
+		{"key": "morphs", "icon": UiIcons.chip_glyph("morphs"), "color": Color8(224, 192, 96), "tier": "tertiary"},
 	]
 	for d in defs:
 		var key: String = String(d["key"])
-		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color, key)
+		var tier: String = String(d.get("tier", "secondary"))
+		if key == "state" or (tier == "secondary" and key == "fish"):
+			bar.add_child(PanelTheme.make_hud_chip_divider())
+		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color, key, tier)
 		bar.add_child(chip)
 		_chips[key] = chip
 		# Tapping a chip opens a sparkline popup showing the last ~2 minutes
@@ -3914,14 +5185,14 @@ func _pulse_stat_chips_once() -> void:
 
 # Construct a single chip widget. Caches the value + sublabel Labels via meta
 # so _update_chip can find them without walking the subtree on every tick.
-func _make_chip(icon: String, accent: Color, key: String = "") -> Control:
+func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "secondary") -> Control:
 	var pc := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	# Chips sit inside the StatsBar's tinted panel — no fill, just a 2-px
 	# accent strip on the left so the eye can find each category.
 	style.bg_color = Color(0, 0, 0, 0)
 	style.border_color = accent
-	style.border_width_left = 2
+	style.border_width_left = 3 if tier == "primary" else 2
 	style.corner_radius_top_left = 4
 	style.corner_radius_top_right = 4
 	style.corner_radius_bottom_left = 4
@@ -3938,23 +5209,26 @@ func _make_chip(icon: String, accent: Color, key: String = "") -> Control:
 
 	var icon_lbl := Label.new()
 	icon_lbl.text = icon
-	icon_lbl.add_theme_font_size_override("font_size", 15)
+	icon_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_ITEM)
 	icon_lbl.add_theme_color_override("font_color", accent)
 	hb.add_child(icon_lbl)
 
+	# Value → Mono so digits line up; size carries the tier hierarchy.
 	var value_lbl := Label.new()
-	value_lbl.add_theme_font_size_override("font_size", 14)
-	value_lbl.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
+	value_lbl.add_theme_color_override("font_color", PanelTheme.VALUE_FG)
+	PanelTheme.as_mono(value_lbl, PanelTheme.SIZE_BODY if tier == "primary" else PanelTheme.SIZE_SMALL)
 	hb.add_child(value_lbl)
 
+	# Sublabel floored at SIZE_CAPTION (11) — the project's legibility minimum.
 	var sublabel_lbl := Label.new()
-	sublabel_lbl.add_theme_font_size_override("font_size", 10)
-	sublabel_lbl.add_theme_color_override("font_color", Color(0.72, 0.78, 0.85, 0.8))
+	sublabel_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
+	sublabel_lbl.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	hb.add_child(sublabel_lbl)
 
 	pc.set_meta("value_label", value_lbl)
 	pc.set_meta("sublabel_label", sublabel_lbl)
 	pc.set_meta("accent", accent)
+	pc.set_meta("tier", tier)
 	if not key.is_empty():
 		pc.tooltip_text = _chip_tooltip(key)
 	return pc
@@ -3976,8 +5250,23 @@ func _update_chip(key: String, value: String, sublabel: String,
 	if v != null:
 		v.text = value
 	if s != null:
-		s.text = sublabel
+		s.text = _truncate_chip_sublabel(sublabel, key)
 	chip.modulate = Color(1.0, 0.7, 0.7) if warn else Color(1.0, 1.0, 1.0)
+
+
+func _truncate_chip_sublabel(text: String, key: String) -> String:
+	if text.is_empty():
+		return text
+	var max_len: int = 28
+	if _hud_layout == "wide":
+		max_len = 22 if key in ["flora", "fish", "mood"] else 32
+	elif _hud_layout == "medium":
+		max_len = 18
+	else:
+		max_len = 14
+	if text.length() <= max_len:
+		return text
+	return text.substr(0, max(0, max_len - 1)) + "…"
 
 
 # Responsive layout. Three breakpoints driven by viewport width + touch:
@@ -4008,6 +5297,7 @@ const _FRAME_HISTORY_LEN: int = 120
 var _frame_history: PackedFloat32Array = PackedFloat32Array()
 var _frame_history_head: int = 0
 var _adaptive_t: float = 0.0
+var _ambient_breath_t: float = 0.0
 const _ADAPTIVE_TICK_S: float = 1.2
 
 
@@ -4222,7 +5512,14 @@ func _update_palette_tod_tint() -> void:
 		# silhouettes are still readable enough to find the rail buttons.
 		if not bool(cfg.light_master_enabled):
 			t = Vector3(0.04, 0.04, 0.07)
-	mat.set_shader_parameter("palette_tint", t)
+		var calm: float = 0.75
+		if _sim != null and _sim.get("calm") != null:
+			calm = clampf(float(_sim.calm), 0.0, 1.0)
+		var breath: float = 1.0 + AestheticsRuntime.ambient_breath(_ambient_breath_t, calm)
+		mat.set_shader_parameter("palette_tint", t * breath)
+	else:
+		var breath_e: float = 1.0 + AestheticsRuntime.ambient_breath(_ambient_breath_t, 0.75)
+		mat.set_shader_parameter("palette_tint", t * breath_e)
 	# Drive the day/night palette blend off the same daylight curve the
 	# sim uses for photosynthesis. Smoothstep on top of the cosine bell so
 	# the transition has a defined "dusk" knee instead of feeling washy.
@@ -4238,7 +5535,13 @@ func _update_palette_tod_tint() -> void:
 		var tank_on: bool = cfg == null or cfg.tank_lights_on
 		if tank_on and deep_night > 0.35:
 			night_blend *= lerpf(1.0, 0.38, smoothstep(0.35, 1.0, deep_night))
-			mat.set_shader_parameter("bloom_strength", 0.85 + deep_night * 0.14)
+			var bloom_boost: float = 0.85 + deep_night * 0.14
+			if _sim != null and _sim.has_method("spark_dawn_active") and _sim.spark_dawn_active():
+				bloom_boost = 1.05 + deep_night * 0.25
+			var a11y: float = _sim.night_a11y_pulse() if _sim != null and _sim.has_method("night_a11y_pulse") else 0.0
+			if a11y > 0.0:
+				bloom_boost *= 1.0 + a11y * 0.08
+			mat.set_shader_parameter("bloom_strength", bloom_boost)
 			mat.set_shader_parameter("bloom_threshold", 0.68 - deep_night * 0.14)
 		else:
 			mat.set_shader_parameter("bloom_strength", 0.85)
@@ -4247,7 +5550,12 @@ func _update_palette_tod_tint() -> void:
 	# Push user-controlled post-process uniforms every tick. Cheap (constant
 	# count of small uniforms) and lets the sliders react live.
 	if cfg != null:
-		mat.set_shader_parameter("vignette_strength", float(cfg.pp_vignette_strength))
+		var vig: float = float(cfg.pp_vignette_strength)
+		if dl < 0.28:
+			vig = maxf(vig, 0.32 + (1.0 - dl) * 0.22)
+		if _sim != null and _sim.has_method("spark_dawn_active") and _sim.spark_dawn_active():
+			vig *= 0.82
+		mat.set_shader_parameter("vignette_strength", vig)
 		mat.set_shader_parameter("vignette_falloff", float(cfg.pp_vignette_falloff))
 		# Bloom + outline + dither + CRT only override the defaults when the
 		# user has actually moved them off the legacy values (we still set
@@ -4265,6 +5573,23 @@ func _update_palette_tod_tint() -> void:
 		# line — so we override it with the user's pick if they touched it.
 		mat.set_shader_parameter("bloom_strength", float(cfg.pp_bloom_strength))
 		mat.set_shader_parameter("bloom_threshold", float(cfg.pp_bloom_threshold))
+		mat.set_shader_parameter("film_grain_strength", float(cfg.film_grain_strength))
+		mat.set_shader_parameter("selective_glow", float(cfg.selective_glow_strength))
+		mat.set_shader_parameter("crt_mode", float(cfg.crt_mode))
+		mat.set_shader_parameter("outline_subject_bias", 0.65)
+		mat.set_shader_parameter("dither_substrate_coarse", 0.35)
+		var trans: float = 1.0
+		if world != null:
+			var wc: Variant = world.get("_cached_water_column")
+			if wc is Dictionary and not (wc as Dictionary).is_empty():
+				trans = float((wc as Dictionary).get("transmittance", 1.0))
+		mat.set_shader_parameter("health_grade",
+			AestheticsRuntime.health_grade_from_transmittance(trans))
+		if bool(cfg.pixel_purity):
+			mat.set_shader_parameter("dither_strength", maxf(float(cfg.dither_strength), 0.94))
+			mat.set_shader_parameter("palette_bank_lock", 1.0)
+			mat.set_shader_parameter("film_grain_strength",
+				maxf(float(cfg.film_grain_strength), 0.08))
 
 
 func _apply_display_layout() -> void:
@@ -4391,6 +5716,8 @@ func _setup_hud_styling() -> void:
 		UiIcons.apply_rail_button(menu_button, "menu", _is_mobile())
 
 	_rail_vbox = right_cluster.get_node_or_null("VBox") as VBoxContainer
+	if _rail_vbox != null:
+		_rail_vbox.add_theme_constant_override("separation", 8)
 	if _rail_hbox == null and right_cluster != null:
 		_rail_hbox = HBoxContainer.new()
 		_rail_hbox.name = "RailHBox"
@@ -4567,11 +5894,29 @@ func _apply_panel_layout() -> void:
 	if _residents_panel != null:
 		PanelTheme.layout_side_panel(_residents_panel, edge, top, bottom, panel_w, "left")
 
+	_layout_follow_thought_strip()
+
 	if library_panel != null:
-		library_panel.offset_left = edge
-		library_panel.offset_top = top
+		PanelTheme.layout_side_panel(library_panel, edge, top, bottom, panel_w, "left")
 		library_panel.offset_right = -rail
-		library_panel.offset_bottom = -bottom
+
+	if aquascape_palette != null:
+		var work_w: float = _aquascape_workbench_width()
+		var work_left: float = _aquascape_workbench_left()
+		aquascape_palette.anchor_left = 0.0
+		aquascape_palette.anchor_top = 0.0
+		aquascape_palette.anchor_right = 0.0
+		aquascape_palette.anchor_bottom = 1.0
+		aquascape_palette.offset_left = work_left
+		aquascape_palette.offset_top = top
+		aquascape_palette.offset_right = work_left + work_w
+		aquascape_palette.offset_bottom = -bottom
+	_sync_aquascape_view_bar()
+
+	if _camera_views_panel != null:
+		var cam_w: float = clampf(panel_w * 0.72, 280.0, 380.0)
+		PanelTheme.layout_side_panel(_camera_views_panel, rail, top, bottom, cam_w, "right")
+		_camera_views_panel.z_index = 130
 
 	var modal_w: float = clampf(vp.x * 0.55, 560.0, 820.0)
 	var modal_h: float = clampf(vp.y * 0.62, 420.0, 620.0)
@@ -4609,18 +5954,30 @@ func _apply_hud_layout() -> void:
 	var layout_changed: bool = layout != _hud_layout
 	if layout_changed:
 		_hud_layout = layout
-		for chip in _chips.values():
-			var s: Label = (chip as Control).get_meta("sublabel_label", null) as Label
-			if s != null:
-				s.visible = layout == "wide"
-		var compact_only_chips := ["shrimp", "snails", "morphs"]
-		for k in compact_only_chips:
-			var chip: Control = _chips.get(k, null) as Control
-			if chip != null and layout == "compact":
-				chip.visible = false
+
+	for chip in _chips.values():
+		var s: Label = (chip as Control).get_meta("sublabel_label", null) as Label
+		if s != null:
+			s.visible = layout == "wide" and not _aquascape.is_active
+
+	var aqua_build: bool = _aquascape.is_active
+	var compact_only_chips := ["shrimp", "snails", "morphs"]
+	var aqua_hidden := ["fish", "flora", "shrimp", "snails", "morphs"]
+	for k in _chips.keys():
+		var chip: Control = _chips.get(k, null) as Control
+		if chip == null:
+			continue
+		if aqua_build and k in aqua_hidden:
+			chip.visible = false
+		elif layout == "compact" and k in compact_only_chips:
+			chip.visible = false
+		elif k != "alert":
+			chip.visible = true
 
 	var rail_edge: float = _rail_edge_inset()
 	var left_inset: float = 128.0 if layout != "compact" else 112.0
+	if aqua_build:
+		left_inset = _aquascape_workbench_left() + _aquascape_workbench_width() + 8.0
 	if stats_bar != null:
 		stats_bar.offset_left = left_inset
 		stats_bar.offset_right = -rail_edge
@@ -4718,20 +6075,25 @@ func _on_chip_gui_input(ev: InputEvent, key: String, color: Color) -> void:
 	# "how is the tank doing" feel routes naturally to "what happened in
 	# this tank's life so far."
 	if key == "mood":
+		_sync_chip_popup_tooltips(true)
 		_show_story_popup(color)
 		return
 	if key == "water":
+		_sync_chip_popup_tooltips(true)
 		_show_water_chemistry_popup(color)
 		return
 	if key == "alert":
+		_sync_chip_popup_tooltips(true)
 		_show_alert_guidance_popup(color)
 		return
 	if key == "state":
+		_sync_chip_popup_tooltips(true)
 		_show_history_popup("cycle_phase", key, color)
 		return
 	var hist_key: String = _CHIP_TO_HISTORY.get(key, "")
 	if hist_key == "":
 		return  # morphs chip has no sparkline history
+	_sync_chip_popup_tooltips(true)
 	_show_history_popup(hist_key, key, color)
 
 
@@ -4750,6 +6112,62 @@ func _close_chip_popups() -> void:
 	if _alert_popup != null and _alert_popup.visible:
 		_alert_popup.visible = false
 	_chip_popup_key = ""
+	_sync_chip_popup_tooltips(false)
+
+
+func _sync_chip_popup_tooltips(suppress: bool) -> void:
+	for key in _chips.keys():
+		var chip: Control = _chips.get(key) as Control
+		if chip == null:
+			continue
+		chip.tooltip_text = "" if suppress else _chip_tooltip(key)
+
+
+func _chip_popup_stylebox(accent: Color = PanelTheme.HUD_BORDER) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.07, 0.12, 0.96)
+	style.border_color = Color(accent.r, accent.g, accent.b, 0.68)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	style.content_margin_left = 12
+	style.content_margin_right = 12
+	style.content_margin_top = 8
+	style.content_margin_bottom = 10
+	style.shadow_color = Color(0, 0, 0, 0.42)
+	style.shadow_size = 8
+	style.shadow_offset = Vector2(0, 4)
+	return style
+
+
+func _position_chip_popup(panel: Control, chip_key: String) -> void:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var sz: Vector2 = panel.size
+	if sz.x < 1.0:
+		sz = panel.custom_minimum_size
+	var x: float = (vp.x - sz.x) * 0.5
+	var y: float = PanelTheme.HUD_TOP + 6.0
+	var chip: Control = _get_chip(chip_key)
+	if chip != null:
+		var chip_rect: Rect2 = chip.get_global_rect()
+		x = clampf(chip_rect.position.x + chip_rect.size.x * 0.5 - sz.x * 0.5, 8.0, vp.x - sz.x - 8.0)
+		y = clampf(chip_rect.end.y + 6.0, PanelTheme.HUD_TOP, vp.y - sz.y - 8.0)
+	panel.position = Vector2(x, y)
+
+
+func _history_popup_dimensions(hist_key: String) -> Vector2:
+	match hist_key:
+		"dissolved_o2", "cycle_phase":
+			return Vector2(288, 90)
+		"algae_clusters":
+			return Vector2(272, 86)
+		_:
+			return Vector2(248, 78)
+
+
+func _chip_popup_size_for_lines(line_count: int, min_w: float = 236.0) -> Vector2:
+	var body_h: float = float(maxi(line_count, 1)) * 17.0
+	var h: float = clampf(44.0 + body_h, 72.0, 200.0)
+	return Vector2(min_w, h)
 
 
 func _ui_toggle_side(id: String) -> void:
@@ -5286,6 +6704,8 @@ func _spawn_notification_toast(notif: Dictionary) -> void:
 	body.add_theme_font_size_override("font_size", 10)
 	vb.add_child(body)
 	_notifications_toast_layer.add_child(card)
+	if _follow_thought_strip != null and _follow_thought_strip.visible:
+		_layout_follow_thought_strip()
 
 	var tw := create_tween()
 	tw.tween_property(card, "modulate:a", 1.0, 0.20)
@@ -5297,6 +6717,8 @@ func _spawn_notification_toast(notif: Dictionary) -> void:
 		if is_instance_valid(card):
 			card.queue_free()
 		_notification_toast_active = maxi(0, _notification_toast_active - 1)
+		if _follow_thought_strip != null and _follow_thought_strip.visible:
+			_layout_follow_thought_strip()
 		_pump_notification_toast_queue()
 	)
 
@@ -5383,6 +6805,10 @@ var _story_popup: PanelContainer = null
 var _story_list: RichTextLabel = null
 var _story_title: Label = null
 var _story_tab: String = "tank"
+var _story_tab_tank_btn: Button = null
+var _story_tab_guardian_btn: Button = null
+var _story_copy_btn: Button = null
+var _story_follow_row: HBoxContainer = null
 var _guardian_consent_layer: Control = null
 var _plant_inspector: PanelContainer = null
 var _plant_inspector_body: Label = null
@@ -5397,54 +6823,47 @@ func _ensure_story_popup() -> void:
 	_story_popup = PanelContainer.new()
 	_story_popup.visible = false
 	_story_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_story_popup.custom_minimum_size = Vector2(420, 240)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
-	style.border_width_left = 1
-	style.border_width_top = 1
-	style.border_width_right = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 10
-	style.corner_radius_top_right = 10
-	style.corner_radius_bottom_left = 10
-	style.corner_radius_bottom_right = 10
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	style.shadow_color = Color(0, 0, 0, 0.45)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0, 6)
-	_story_popup.add_theme_stylebox_override("panel", style)
+	_story_popup.z_index = 220
+	_story_popup.custom_minimum_size = Vector2(400, 248)
+	_story_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox())
 
 	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
+	vbox.add_theme_constant_override("separation", 8)
 	_story_popup.add_child(vbox)
 
-	var title := Label.new()
-	title.text = "Tank story"
-	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
-	title.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
-	vbox.add_child(title)
-	_story_title = title
+	var header := PanelTheme.make_chip_popup_header("Tank story", _close_chip_popups)
+	vbox.add_child(header)
+	_story_title = header.get_child(0) as Label
 
 	var tab_row := HBoxContainer.new()
-	tab_row.add_theme_constant_override("separation", 6)
+	tab_row.add_theme_constant_override("separation", 4)
 	vbox.add_child(tab_row)
-	var tank_tab := PanelTheme.make_secondary_button("Tank events")
-	tank_tab.pressed.connect(func() -> void:
+	_story_tab_tank_btn = Button.new()
+	_story_tab_tank_btn.text = "Story"
+	_story_tab_tank_btn.pressed.connect(func() -> void:
 		_story_tab = "tank"
 		_refresh_story_popup_body())
-	tab_row.add_child(tank_tab)
-	var diary_tab := PanelTheme.make_secondary_button("Guardian diary")
-	diary_tab.pressed.connect(func() -> void:
+	tab_row.add_child(_story_tab_tank_btn)
+	_story_tab_guardian_btn = Button.new()
+	_story_tab_guardian_btn.text = "Guardian"
+	_story_tab_guardian_btn.pressed.connect(func() -> void:
 		_story_tab = "guardian"
 		_refresh_story_popup_body())
-	tab_row.add_child(diary_tab)
-	var export_btn := PanelTheme.make_secondary_button("Copy diary")
-	export_btn.pressed.connect(_export_guardian_journal)
-	tab_row.add_child(export_btn)
+	tab_row.add_child(_story_tab_guardian_btn)
+	var tab_spacer := Control.new()
+	tab_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tab_row.add_child(tab_spacer)
+	_story_copy_btn = PanelTheme.make_icon_button("⧉")
+	_story_copy_btn.tooltip_text = "Copy diary"
+	_story_copy_btn.custom_minimum_size = Vector2(28, 28)
+	_story_copy_btn.pressed.connect(_export_guardian_journal)
+	tab_row.add_child(_story_copy_btn)
+
+	_story_follow_row = HBoxContainer.new()
+	vbox.add_child(_story_follow_row)
+	var follow_btn := PanelTheme.make_ghost_button("Find guardian in tank →")
+	follow_btn.pressed.connect(_follow_guardian_from_story)
+	_story_follow_row.add_child(follow_btn)
 
 	_story_list = RichTextLabel.new()
 	_story_list.bbcode_enabled = true
@@ -5453,7 +6872,7 @@ func _ensure_story_popup() -> void:
 	_story_list.scroll_following = false
 	_story_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_story_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_story_list.custom_minimum_size = Vector2(390, 180)
+	_story_list.custom_minimum_size = Vector2(376, 168)
 	_story_list.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
 	# The tank's narrative voice → Serif.
 	PanelTheme.apply_font(_story_list, PanelTheme.FONT_SERIF, PanelTheme.SIZE_BODY)
@@ -5466,11 +6885,10 @@ func _show_story_popup(_chip_color: Color) -> void:
 	_ensure_story_popup()
 	if _sim == null:
 		return
+	_story_tab = "tank"
 	_refresh_story_popup_body()
-	var vp: Vector2 = get_viewport().get_visible_rect().size
 	_story_popup.size = _story_popup.custom_minimum_size
-	_story_popup.position = Vector2(
-		(vp.x - _story_popup.size.x) * 0.5, 56.0)
+	_position_chip_popup(_story_popup, "mood")
 	_story_popup.visible = true
 	_chip_popup_key = "mood"
 
@@ -5498,6 +6916,29 @@ func _refresh_story_popup_body() -> void:
 					_format_story_t(t, e), String(e.get("text", "")),
 				])
 			_story_list.text = "\n".join(lines)
+	_sync_story_tab_chrome()
+
+
+func _sync_story_tab_chrome() -> void:
+	if _story_tab_tank_btn != null:
+		PanelTheme.style_compact_tool_button(_story_tab_tank_btn, _story_tab == "tank")
+	if _story_tab_guardian_btn != null:
+		PanelTheme.style_compact_tool_button(_story_tab_guardian_btn, _story_tab == "guardian")
+	if _story_copy_btn != null:
+		_story_copy_btn.visible = _story_tab == "guardian"
+	if _story_follow_row != null:
+		_story_follow_row.visible = _story_tab == "guardian"
+
+
+func _follow_guardian_from_story() -> void:
+	if _sim == null or not _sim.has_method("_find_guardian_fish"):
+		return
+	var g: Fish = _sim._find_guardian_fish()
+	if g == null:
+		_push_notification("guardian", "info", "No guardian", "The guardian hasn't arrived yet.", false)
+		return
+	_assign_creature_target(g)
+	_close_chip_popups()
 
 
 func _export_guardian_journal() -> void:
@@ -5661,36 +7102,26 @@ func _ensure_water_popup() -> void:
 	_water_popup = PanelContainer.new()
 	_water_popup.visible = false
 	_water_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_water_popup.custom_minimum_size = Vector2(260, 160)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	_water_popup.add_theme_stylebox_override("panel", style)
+	_water_popup.z_index = 220
+	_water_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox(Color8(127, 183, 216)))
 	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
 	_water_popup.add_child(vb)
-	var title := Label.new()
-	title.text = "Water chemistry"
-	title.add_theme_font_size_override("font_size", 13)
-	vb.add_child(title)
+	vb.add_child(PanelTheme.make_chip_popup_header("Water chemistry", _close_chip_popups))
 	_water_detail = Label.new()
 	_water_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.apply_font(_water_detail, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
 	vb.add_child(_water_detail)
 	add_child(_water_popup)
 
 
 func _show_water_chemistry_popup(_chip_color: Color) -> void:
 	_ensure_water_popup()
-	var lines: PackedStringArray = HudController.water_detail_lines(_stats)
+	var lines: PackedStringArray = OnboardingLegibility.water_detail_lines(_stats)
 	_water_detail.text = "\n".join(lines)
-	var vp: Vector2 = get_viewport().get_visible_rect().size
+	_water_popup.custom_minimum_size = _chip_popup_size_for_lines(lines.size(), 248.0)
 	_water_popup.size = _water_popup.custom_minimum_size
-	_water_popup.position = Vector2((vp.x - _water_popup.size.x) * 0.5, 56.0)
+	_position_chip_popup(_water_popup, "water")
 	_water_popup.visible = true
 	_chip_popup_key = "water"
 
@@ -5701,25 +7132,15 @@ func _ensure_alert_popup() -> void:
 	_alert_popup = PanelContainer.new()
 	_alert_popup.visible = false
 	_alert_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_alert_popup.custom_minimum_size = Vector2(300, 120)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.10, 0.06, 0.08, 0.96)
-	style.border_color = Color(0.72, 0.38, 0.38, 0.75)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	_alert_popup.add_theme_stylebox_override("panel", style)
+	_alert_popup.z_index = 220
+	_alert_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox(Color8(224, 112, 112)))
 	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
 	_alert_popup.add_child(vb)
-	var title := Label.new()
-	title.text = "Tank alert"
-	title.add_theme_font_size_override("font_size", 13)
-	vb.add_child(title)
+	vb.add_child(PanelTheme.make_chip_popup_header("Tank alert", _close_chip_popups))
 	_alert_detail = Label.new()
 	_alert_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.apply_font(_alert_detail, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
 	vb.add_child(_alert_detail)
 	add_child(_alert_popup)
 
@@ -5749,19 +7170,19 @@ func _show_alert_guidance_popup(_chip_color: Color) -> void:
 		_show_water_chemistry_popup(_chip_color)
 		return
 	_ensure_alert_popup()
-	var lines: PackedStringArray = HudController.alert_guidance_lines(_stats, kind)
+	var lines: PackedStringArray = OnboardingLegibility.alert_guidance(kind, _stats)
 	_alert_detail.text = "\n".join(lines)
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	_alert_popup.size = _alert_popup.custom_minimum_size
-	_alert_popup.position = Vector2((vp.x - _alert_popup.size.x) * 0.5, 56.0)
-	_alert_popup.visible = true
-	_chip_popup_key = "alert"
 	if kind in ["bleach", "ammonia", "nitrite", "low_o2"]:
 		lines.append("")
 		lines.append("— Chemistry —")
-		for wl in HudController.water_detail_lines(_stats):
+		for wl in OnboardingLegibility.water_detail_lines(_stats):
 			lines.append(wl)
 		_alert_detail.text = "\n".join(lines)
+	_alert_popup.custom_minimum_size = _chip_popup_size_for_lines(lines.size(), 260.0)
+	_alert_popup.size = _alert_popup.custom_minimum_size
+	_position_chip_popup(_alert_popup, "alert")
+	_alert_popup.visible = true
+	_chip_popup_key = "alert"
 
 
 # Render an elapsed sim-time into a short "Xm" / "Xh Ym" string for the
@@ -5794,36 +7215,16 @@ func _ensure_history_popup() -> void:
 	_history_popup = PanelContainer.new()
 	_history_popup.visible = false
 	_history_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_history_popup.custom_minimum_size = Vector2(320, 110)
-	# Match the cluster chrome — same look as the top HUD pills.
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.94)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.6)
-	style.border_width_left = 1
-	style.border_width_top = 1
-	style.border_width_right = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 10
-	style.corner_radius_top_right = 10
-	style.corner_radius_bottom_left = 10
-	style.corner_radius_bottom_right = 10
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
-	style.shadow_color = Color(0, 0, 0, 0.45)
-	style.shadow_size = 10
-	style.shadow_offset = Vector2(0, 6)
-	_history_popup.add_theme_stylebox_override("panel", style)
+	_history_popup.z_index = 220
+	_history_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox())
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 6)
 	_history_popup.add_child(vbox)
 
-	_history_title = Label.new()
-	_history_title.add_theme_font_size_override("font_size", 13)
-	_history_title.add_theme_color_override("font_color", Color(0.95, 0.96, 0.98))
-	vbox.add_child(_history_title)
+	var header := PanelTheme.make_chip_popup_header("Population", _close_chip_popups)
+	vbox.add_child(header)
+	_history_title = header.get_child(0) as Label
 
 	_history_stats = Label.new()
 	_history_stats.add_theme_font_size_override("font_size", 10)
@@ -5831,7 +7232,6 @@ func _ensure_history_popup() -> void:
 	vbox.add_child(_history_stats)
 
 	_history_sparkline = _make_sparkline()
-	_history_sparkline.custom_minimum_size = Vector2(290, 56)
 	vbox.add_child(_history_sparkline)
 
 	add_child(_history_popup)
@@ -5914,16 +7314,19 @@ func _show_history_popup(hist_key: String, chip_key: String, color: Color) -> vo
 	_history_stats.text = "now %s   min %s   max %s" % [
 		_fmt_history(cur), _fmt_history(lo), _fmt_history(hi),
 	]
+	var band: Vector2 = OnboardingLegibility.history_healthy_band(hist_key)
+	if band.y > 0.0:
+		_history_stats.text += "   healthy %.0f–%.0f%%" % [band.x * 100.0, band.y * 100.0]
 	_history_sparkline.set_meta("samples", hist.duplicate())
 	_history_sparkline.set_meta("color", color)
 	_history_sparkline.queue_redraw()
-	# Position centered under the stats bar.
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	_history_popup.size = _history_popup.custom_minimum_size
-	_history_popup.position = Vector2(
-		(vp.x - _history_popup.size.x) * 0.5,
-		56.0,
-	)
+	var dims: Vector2 = _history_popup_dimensions(hist_key)
+	_history_popup.custom_minimum_size = dims
+	_history_popup.size = dims
+	_history_sparkline.custom_minimum_size = Vector2(
+		maxf(180.0, dims.x - 28.0), maxf(32.0, dims.y - 42.0))
+	_history_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox(color))
+	_position_chip_popup(_history_popup, chip_key)
 	_history_popup.visible = true
 	_chip_popup_key = chip_key
 
@@ -7078,6 +8481,7 @@ func _apply_immersive_mode() -> void:
 			aquascape_palette.visible = false
 		elif _aquascape.is_active:
 			aquascape_palette.visible = true
+	_sync_aquascape_view_bar()
 	if portal_container != null and _immersive_mode:
 		portal_container.visible = false
 	if _immersive_mode:
@@ -7159,6 +8563,8 @@ var _save_pending_time_scale: float = 1.0
 
 func _try_load_saved_state() -> void:
 	SaveManager.try_load(self, _sim, world, _aquascape, &"_save_restored")
+	if _sim != null and _sim.has_method("reset_make_it_there_session"):
+		_sim.reset_make_it_there_session()
 	_sync_speed_hud()
 
 
@@ -7526,6 +8932,9 @@ func _haptic(duration_ms: int = 15) -> void:
 
 
 func _toggle_cheat_sheet() -> void:
+	if _onboarding != null:
+		_onboarding.toggle_help()
+		return
 	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
 		_cheat_sheet.queue_free()
 		_cheat_sheet = null
@@ -7559,15 +8968,7 @@ func _toggle_cheat_sheet() -> void:
 	panel.add_child(vb)
 	vb.add_child(PanelTheme.make_title("Controls"))
 	vb.add_child(PanelTheme.make_rule())
-	var lines: PackedStringArray = PackedStringArray([
-		"O — Settings", "R — Rendering", "M — Sound Studio", "Shift+M — Motion debug",
-		"C — Follow portal", "B — Aquascape", "H — Focus mode", "P — Pause",
-		"1–8 — Sim speed", "T — Timelapse", "F12 — Photo", "? / Shift+/ — This help",
-		"Click water — feed fish", "9 / 0 — cycle food type",
-		"Shift+click water — tap glass (ripples + fish react)",
-		"Click stat chips — history / water / mood details",
-		"Right rail — Create · World · Look · System · Alerts",
-	])
+	var lines: PackedStringArray = OnboardingLegibility.cheat_sheet_lines(_is_mobile())
 	for line in lines:
 		var lab := Label.new()
 		lab.text = line
@@ -7580,6 +8981,8 @@ func _toggle_cheat_sheet() -> void:
 
 
 func _maybe_show_coachmarks() -> void:
+	if bool(OnboardingLegibility.global_pref("tour_complete", false)):
+		return
 	if bool(_global_pref("coachmarks_seen", false)):
 		return
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
@@ -7841,10 +9244,10 @@ func _show_radial_menu(center: Vector2) -> void:
 	overlay.add_child(bg)
 	# 4 tool buttons around the touch point. Lay out at 0/90/180/270 degrees.
 	var defs := [
-		{"key": "aquasoil", "label": "soil",   "angle": -PI / 2, "color": Color8(120, 85, 56)},
-		{"key": "sand",     "label": "sand",   "angle": 0.0,     "color": Color8(225, 215, 185)},
-		{"key": "gravel",   "label": "gravel", "angle": PI / 2,  "color": Color8(125, 125, 135)},
-		{"key": "dig",      "label": "dig",    "angle": PI,      "color": Color8(220, 90, 90)},
+		{"key": "block", "label": "block",   "angle": -PI / 2, "color": Color8(180, 200, 255)},
+		{"key": "eraser",  "label": "erase",   "angle": 0.0,     "color": Color8(220, 90, 90)},
+		{"key": "line",    "label": "line",    "angle": PI / 2,  "color": Color8(140, 255, 180)},
+		{"key": "object",  "label": "object",  "angle": PI,      "color": Color8(255, 220, 140)},
 	]
 	var ring_radius: float = 90.0
 	var btn_size: Vector2 = Vector2(72, 56)

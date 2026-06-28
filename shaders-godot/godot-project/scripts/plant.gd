@@ -1956,12 +1956,15 @@ func _clamp_root_to_footprint() -> void:
 		return
 	var reach: float = _plant_lateral_reach()
 	var g: Vector3 = global_position
-	if w.has_method("fits_plant_at") and w.fits_plant_at(g.x, g.z, reach, 0.2):
+	var floor_y: float = g.y
+	if w.has_method("column_surface_y"):
+		floor_y = float(w.call("column_surface_y", g.x, g.z))
+	if w.has_method("fits_plant_at") and w.fits_plant_at(g.x, g.z, reach, 0.2, floor_y):
 		return
 	var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, 0.2 + reach)
 	if w.has_method("clamp_plant_site"):
-		xz = w.clamp_plant_site(g.x, g.z, reach, 0.2)
-	global_position = Vector3(xz.x, g.y, xz.y)
+		xz = w.clamp_plant_site(g.x, g.z, reach, 0.2, floor_y)
+	global_position = Vector3(xz.x, floor_y, xz.y)
 
 
 func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
@@ -2042,6 +2045,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# caps. Subtle (~0.6°) so it reads as "alive and reaching," not wobbling.
 	_circumnutation_phase += dt * 0.18
 	var nutation: float = 0.012 if current_height < max_height else 0.004
+	if has_flower and flower_stage >= FlowerStage.OPENING:
+		nutation *= 0.35
 	rotation.z = flow_bias * 0.04 + _brush_bend.x + _gust_tilt.x + sin(_circumnutation_phase) * nutation
 	rotation.x = _brush_bend.y + _gust_tilt.y + cos(_circumnutation_phase) * nutation * 0.7
 	_height_ghost_timer += dt
@@ -2959,16 +2964,45 @@ func _decay_one_voxel() -> void:
 
 
 # Aquascape trim tool — remove top fraction of stem, return snapshot for undo.
-func trim_for_aquascape(frac: float) -> Dictionary:
+func trim_for_aquascape(frac: float, mode: String = "all") -> Dictionary:
 	if is_dying or voxels.is_empty():
 		return {}
 	var snap: Dictionary = to_save_dict()
-	var remove_n: int = maxi(1, int(ceil(float(voxels.size()) * clampf(frac, 0.05, 0.75))))
-	_spawn_stem_fragment(maxi(2, remove_n))
-	for _i in remove_n:
-		if voxels.is_empty():
-			break
-		_decay_one_voxel()
+	var amount: float = clampf(frac, 0.05, 0.75)
+	match mode:
+		"top":
+			var remove_n: int = maxi(1, int(ceil(float(voxels.size()) * amount * 0.55)))
+			_spawn_stem_fragment(maxi(2, remove_n))
+			for _i in remove_n:
+				if voxels.is_empty():
+					break
+				_decay_one_voxel()
+		"sides":
+			var remove_s: int = maxi(1, int(ceil(float(voxels.size()) * amount * 0.35)))
+			for _i in remove_s:
+				if voxels.is_empty():
+					break
+				var v: MeshInstance3D = voxels.pop_front()
+				if is_instance_valid(v):
+					_spawn_decay_waste(v.global_position)
+					v.queue_free()
+				_recalc_height()
+		"mow":
+			if is_carpet:
+				var cut: int = maxi(1, int(float(current_height) * amount))
+				current_height = maxi(1, current_height - cut)
+			var remove_m: int = maxi(1, int(ceil(float(voxels.size()) * amount * 0.4)))
+			for _i in remove_m:
+				if voxels.is_empty():
+					break
+				_decay_one_voxel()
+		_:
+			var remove_n: int = maxi(1, int(ceil(float(voxels.size()) * amount)))
+			_spawn_stem_fragment(maxi(2, remove_n))
+			for _i in remove_n:
+				if voxels.is_empty():
+					break
+				_decay_one_voxel()
 	return snap
 
 

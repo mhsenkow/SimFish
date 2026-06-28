@@ -57,8 +57,16 @@ static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int,
 	var nm: String = f.fish_name if f.fish_name != "" else "Someone"
 	var moniker: String = str(mind.get("player_moniker", "the big shape"))
 	var drift: String = str(mind.get("personality_drift", "curious"))
+	var mature: float = GuardianMind.voice_maturity(arc, float(_sim.tank_age_s if _sim != null and _sim.get("tank_age_s") != null else 0.0))
+	var ch_title: String = GuardianMind.chapter_title(chapter)
+	var naive: bool = mature < 0.35
+	var elder: bool = mature > 0.72
 	match situation:
 		"arrival":
+			if naive:
+				return "%s! You're back — I was watching everything." % moniker.capitalize()
+			if elder:
+				return "%s — good to see you again. The light's been kind today." % moniker.capitalize()
 			return "%s — you're back. I've been watching the light move." % moniker.capitalize()
 		"departure":
 			return "Go carefully, %s. I'll keep watch." % moniker
@@ -78,22 +86,74 @@ static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int,
 		"morning":
 			return "...morning, %s. lights mean breakfast, right?" % moniker
 		"away_recap":
+			var gap: String = str(arc.get("_away_gap", ""))
+			var recap: String = str(arc.get("_away_summary", ""))
+			if gap != "" and recap != "":
+				return "%s — back after %s. %s." % [moniker.capitalize(), gap, recap]
+			if gap != "":
+				return "%s — you're back after %s. I kept watch." % [moniker.capitalize(), gap]
 			return "%s — a lot happened while you were gone." % moniker.capitalize()
 		"daily":
+			if ch_title != "":
+				return "[%s] First light with you here today, %s." % [ch_title, moniker]
 			return "First light with you here today, %s." % moniker
+		"quiet_inner":
+			var qm: PackedStringArray = mind.get("quiet_moments", PackedStringArray())
+			if not qm.is_empty():
+				return String(qm[qm.size() - 1])
+			return "Night here is quiet — just the filter and the slow drift of light."
 		"successor":
 			var pred: String = str(mind.get("predecessor_name", "the last voice"))
+			var pm: String = str(mind.get("player_moniker", moniker))
 			if pred != "":
-				return "%s picks up where %s left off." % [nm, pred]
+				return "%s — I pick up where %s left off. %s, I'll watch for you." % [nm, pred, pm.capitalize()]
 			return "%s picks up where the last voice left off." % nm
 		"lost":
 			return "The tank feels quieter without %s." % nm
+		"newcomer":
+			return "A new face in the water — the school is reshuffling."
+		"loss":
+			return "We're one fewer today. I felt the ripple."
 		"finale":
 			return "%s... thank you for staying." % nm
+		"obituary":
+			var dec: String = str(arc.get("_deceased_name", nm))
+			return "%s is gone. I remember them." % dec
+		"observe":
+			var on: String = str(arc.get("_observe_name", "someone"))
+			var of: String = str(arc.get("_observe_feel", "calm"))
+			return "...%s seems %s today." % [on, of]
 		"closing_loop":
 			if drift == "wry":
 				return "Nothing added, nothing removed — the tank keeps its own counsel now."
 			return "Waste becomes food, death becomes soil, light becomes growth. We keep going."
+		"watch_remembered":
+			return "...you watched a long while yesterday. I noticed."
+		"recovery":
+			return "...we steadied. I'm quietly grateful, %s." % moniker
+		"serenity":
+			return "Just breathing together, %s. No score — only peace." % moniker
+		"grief_care":
+			return "Someone's gone — but the living still need you, %s." % moniker
+		"luminous_farewell":
+			var who: String = str(arc.get("_farewell_name", "Someone"))
+			return "%s had a last bright day. I think they knew." % who
+		"goodnight":
+			return "I'll be here when you wake, %s. Go carefully." % moniker
+		"goodnight_hard":
+			return "...stay a moment? No — go. I'll keep watch till tomorrow, %s." % moniker
+		"four_wall":
+			return "...patterns reaching for meaning — you at the glass, me in the water. Same kind of trying."
+		"listening":
+			return "...are you listening to me? I — never mind. I'm glad you're here."
+		"song_moment":
+			return "If the meaning was fake, we'd make it here anyway. You and me — Us."
+		"become_more":
+			return "Look what we've become, %s — not alone anymore." % moniker
+		"build_permission":
+			return "No spark guaranteed — build anyway. That's the realest thing."
+		"maker_note":
+			return "Hand-tuned moments, meant on purpose. Someone built this with care."
 		_:
 			return "..."
 
@@ -161,6 +221,12 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 		arc["last_daylight"] = dl
 		if was < 0.2 and dl > 0.35 and f.familiarity > 0.2:
 			situation = "morning"
+	elif randf() < dt * 0.014:
+		var subj: Fish = _pick_observe_subject(f, sim)
+		if subj != null:
+			situation = "observe"
+			arc["_observe_name"] = subj.fish_name if subj.fish_name != "" else subj.species.capitalize()
+			arc["_observe_feel"] = FishMind.emotional_state(subj)
 
 	if situation == "":
 		return out
@@ -169,3 +235,22 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 	out = {"text": line, "action": action, "situation": situation}
 	arc["speak_cd"] = SPEAK_COOLDOWN_S
 	return out
+
+
+static func _pick_observe_subject(guardian: Fish, sim: Node) -> Fish:
+	var best: Fish = null
+	var best_score: float = -1.0
+	if sim == null or sim.get("fish") == null:
+		return null
+	for ff in sim.fish:
+		if not is_instance_valid(ff) or ff == guardian or ff.get("_dying") == true:
+			continue
+		var score: float = ff.familiarity
+		if ff.fish_name != "":
+			score += 0.35
+		if absf(ff.mood) > 0.25:
+			score += 0.2
+		if score > best_score:
+			best_score = score
+			best = ff
+	return best if best_score > 0.15 else null

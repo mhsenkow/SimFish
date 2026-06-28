@@ -84,7 +84,9 @@ static func generate_name(organism_kind: String, already_used: Dictionary = {}) 
 #   boldness, curiosity, sociability, gluttony, calm
 # Returns "" when no trait stands out (max < 0.7). This is intentional —
 # epithets should feel earned, not stamped on every creature.
-static func epithet_for_personality(personality: Dictionary) -> String:
+# `stable_key` (creature id or name) pins the pool pick so UI refresh
+# doesn't re-roll "the Insatiable" vs "the Hungry" every frame.
+static func epithet_for_personality(personality: Dictionary, stable_key: String = "") -> String:
 	if personality.is_empty():
 		return ""
 	var b: float = float(personality.get("boldness", 0.5))
@@ -112,14 +114,38 @@ static func epithet_for_personality(personality: Dictionary) -> String:
 	# Low boldness reads as shy — also worth flagging.
 	if b < 0.25 and best_trait == "":
 		best_trait = "shy"
+	var pool: Array = []
 	match best_trait:
-		"bold":    return EPITHETS_BOLD[randi() % EPITHETS_BOLD.size()]
-		"curious": return EPITHETS_CURIOUS[randi() % EPITHETS_CURIOUS.size()]
-		"social":  return EPITHETS_SOCIAL[randi() % EPITHETS_SOCIAL.size()]
-		"glutton": return EPITHETS_GLUTTONOUS[randi() % EPITHETS_GLUTTONOUS.size()]
-		"calm":    return EPITHETS_CALM[randi() % EPITHETS_CALM.size()]
-		"shy":     return EPITHETS_SHY[randi() % EPITHETS_SHY.size()]
+		"bold":    pool = EPITHETS_BOLD
+		"curious": pool = EPITHETS_CURIOUS
+		"social":  pool = EPITHETS_SOCIAL
+		"glutton": pool = EPITHETS_GLUTTONOUS
+		"calm":    pool = EPITHETS_CALM
+		"shy":     pool = EPITHETS_SHY
 		_:         return ""
+	var epithet_key: String = stable_key + ":" + best_trait if stable_key != "" \
+			else _personality_epithet_seed(personality, best_trait)
+	return pool[_stable_pool_index(epithet_key, pool.size())]
+
+
+static func _personality_epithet_seed(personality: Dictionary, trait_key: String) -> String:
+	return "%s|%.3f|%.3f|%.3f|%.3f|%.3f" % [
+		trait_key,
+		float(personality.get("boldness", 0.5)),
+		float(personality.get("curiosity", 0.5)),
+		float(personality.get("sociability", 0.5)),
+		float(personality.get("gluttony", 0.5)),
+		float(personality.get("calm", 0.5)),
+	]
+
+
+static func _stable_pool_index(hash_key: String, pool_size: int) -> int:
+	if pool_size <= 0:
+		return 0
+	var h: int = 0
+	for i in hash_key.length():
+		h = ((h << 5) - h + hash_key.unicode_at(i)) & 0x7fffffff
+	return h % pool_size
 
 
 # Roll a fresh personality dict. Each trait is gaussian-ish around 0.5

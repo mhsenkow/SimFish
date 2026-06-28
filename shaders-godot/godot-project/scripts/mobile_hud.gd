@@ -23,6 +23,8 @@ signal photo_pressed
 signal undo_pressed
 signal camera_views_pressed
 signal residents_pressed
+signal aquascape_tool_pressed(tool: String)
+signal build_plane_pressed(delta: float)
 
 var _pause_btn: Button
 var _speed_btns: Dictionary = {}
@@ -30,6 +32,7 @@ var _photo_btn: Button
 var _undo_btn: Button
 var _camera_views_btn: Button
 var _residents_btn: Button
+var _build_row: HBoxContainer = null
 var _is_mobile: bool = false
 var _immersive_mode: bool = false
 
@@ -79,6 +82,8 @@ func set_immersive_mode(on: bool) -> void:
 	_immersive_mode = on
 	if _action_container != null:
 		_action_container.visible = not on
+	if _build_row != null:
+		_build_row.visible = not on
 	visible = true
 
 
@@ -206,6 +211,39 @@ func _build_action_row() -> void:
 		undo_pressed.emit())
 	_undo_btn.visible = false
 	_action_container.add_child(_undo_btn)
+	_build_build_tool_row()
+
+
+func _build_build_tool_row() -> void:
+	_build_row = HBoxContainer.new()
+	_build_row.add_theme_constant_override("separation", 4)
+	_build_row.mouse_filter = Control.MOUSE_FILTER_STOP
+	_build_row.visible = false
+	add_child(_build_row)
+	var tools: Array[Dictionary] = [
+		{"tool": "block", "label": "▣"},
+		{"tool": "eraser", "label": "✕"},
+		{"tool": "line", "label": "／"},
+		{"tool": "object", "label": "🏰"},
+		{"tool": "paste", "label": "⎘"},
+	]
+	for t in tools:
+		var btn := _make_btn(String(t["label"]), Color8(200, 220, 255))
+		var tool_key: String = String(t["tool"])
+		btn.pressed.connect(func():
+			_buzz(10)
+			aquascape_tool_pressed.emit(tool_key))
+		_build_row.add_child(btn)
+	var up := _make_btn("▲", Color8(180, 200, 220))
+	up.pressed.connect(func():
+		_buzz(8)
+		build_plane_pressed.emit(1.0))
+	_build_row.add_child(up)
+	var down := _make_btn("▼", Color8(180, 200, 220))
+	down.pressed.connect(func():
+		_buzz(8)
+		build_plane_pressed.emit(-1.0))
+	_build_row.add_child(down)
 
 
 func _apply_layout() -> void:
@@ -229,6 +267,16 @@ func _apply_layout() -> void:
 	_action_container.offset_top = bottom_y - btn_size.y
 	_action_container.offset_right = right_x
 	_action_container.offset_bottom = bottom_y
+	if _build_row != null:
+		var build_w: float = btn_size.x * 7.0 + 4.0 * 6.0 + 8.0
+		_build_row.anchor_left = 0.0
+		_build_row.anchor_top = 0.0
+		_build_row.anchor_right = 0.0
+		_build_row.anchor_bottom = 0.0
+		_build_row.offset_left = safe.position.x + 12.0
+		_build_row.offset_top = bottom_y - btn_size.y * 2.0 - 8.0
+		_build_row.offset_right = safe.position.x + 12.0 + build_w
+		_build_row.offset_bottom = bottom_y - btn_size.y - 8.0
 
 
 func _make_btn(label: String, color: Color) -> Button:
@@ -252,6 +300,8 @@ func _highlight_speed(active: float) -> void:
 func set_aquascape_mode(on: bool) -> void:
 	if _undo_btn != null:
 		_undo_btn.visible = on
+	if _build_row != null:
+		_build_row.visible = on and not _immersive_mode
 
 
 func _buzz(duration_ms: int) -> void:

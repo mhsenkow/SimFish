@@ -28,6 +28,9 @@ uniform float depth_dissipation : hint_range(0.0, 1.0) = 0.7;
 // fish per visual tick so this is cheap to evaluate per fragment.
 uniform vec4 occluders[8];
 uniform float occluder_strength : hint_range(0.0, 1.0) = 0.65;
+// Posterize beam alpha into palette-friendly bands (#15).
+uniform float beam_posterize : hint_range(0.0, 1.0) = 0.55;
+uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 local_pos;
 varying vec3 world_vertex;
@@ -94,6 +97,11 @@ void fragment() {
 	}
 	alpha *= 1.0 - fish_block * occluder_strength;
 
-	ALBEDO = beam_color.rgb;
+	float bands = floor(alpha * 5.0 + 0.5) / 5.0;
+	alpha = mix(alpha, bands, beam_posterize);
+
+	vec3 beam_rgb = mix(beam_color.rgb,
+		beam_color.rgb * vec3(1.12, 0.92, 0.78), sunset_warmth * 0.65);
+	ALBEDO = beam_rgb;
 	ALPHA = alpha;
 }

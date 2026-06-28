@@ -45,14 +45,40 @@ signal canceled
 # were checked so planted tanks progress in minutes, not tens of minutes.
 const SCENARIOS: Array[Dictionary] = [
 	{
-		"id": "walstad",
-		"name": "Walstad Jungle",
-		"tagline": "Dense planted community, mouthbrooding gourami, cleaner shrimp",
-		"body": "Standard rectangular box, aquasoil + hang-on-back filter. Cardinal tetras school the back wall, harlequin rasbora shoal mid-water, corydoras shuffle the bottom, and a dwarf gourami pair guard their territory + carry fry visibly in their throats. Cherry-shrimp cleanup crew includes amano-style cleaners that station near stressed fish.",
-		"accent_color": Color8(120, 195, 110),
+		"id": "beginner_sandbox",
+		"name": "Beginner Sandbox",
+		"tagline": "Easiest start · established cycle · gentle stocking",
+		"body": "Nothing here will crash on you — aquasoil, filter aeration, a small hardy community, and an already-cycled tank. The safest place to learn feed, chips, and watch the loop.",
+		"accent_color": Color8(130, 210, 160),
+		"silhouette": "🌱🐟",
 		"config": {
 			"tank_preset": "classic_community",
-			"cycle_start_mode": "fresh",
+			"cycle_start_mode": "established",
+			"substrate_type": "aquasoil",
+			"aeration_type": "filter",
+			"tank_shape": "box",
+			"tank_half_w": 7.0,
+			"tank_half_d": 4.0,
+			"tank_height": 6.0,
+			"water_surface_fraction": 0.93,
+			"substrate_depth_fraction": 0.20,
+			"light_fixture": "bar",
+			"environment_preset": "bedroom_desk",
+			"lighting_preset": "cozy_shop",
+			"co2_level": 0.2,
+			"light_spectrum": 0.50,
+		},
+	},
+	{
+		"id": "walstad",
+		"name": "Walstad Jungle",
+		"tagline": "Dense planted community · mouthbrooding gourami · cleaner shrimp",
+		"body": "Standard rectangular box, aquasoil + hang-on-back filter. Cardinal tetras school the back wall, harlequin rasbora shoal mid-water, corydoras shuffle the bottom, and a dwarf gourami pair guard their territory + carry fry visibly in their throats. Cherry-shrimp cleanup crew includes amano-style cleaners that station near stressed fish.",
+		"accent_color": Color8(120, 195, 110),
+		"silhouette": "🌿🐠",
+		"config": {
+			"tank_preset": "classic_community",
+			"cycle_start_mode": "established",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
@@ -233,7 +259,7 @@ const SCENARIOS: Array[Dictionary] = [
 		"body": "Nano shrimp-focused tank — small footprint (5×4×5), dense Monte Carlo carpet + bucephalandra on small stones, Christmas moss on a tiny driftwood branch. No predator fish, just a heavy cherry shrimp colony with amano cleaners + a few snails. Eco-complete fertile substrate, gentle disk aeration, planted-spectrum LED for the carpet.",
 		"accent_color": Color8(220, 90, 110),
 		"config": {
-			"tank_preset": "polyp_lab",
+			"tank_preset": "shrimp_sanctuary",
 			"substrate_type": "eco_complete",
 			"aeration_type": "disk",
 			"tank_shape": "box",
@@ -392,44 +418,39 @@ static func random_wildcard_config() -> Dictionary:
 		"lighting_preset": _WILD_LIGHTING[randi() % _WILD_LIGHTING.size()],
 		"co2_level": co2,
 		"light_spectrum": spectrum,
+		"cycle_start_mode": "established",
 	}
 
 
 # Build the modal procedurally so we don't have to ship a .tscn for it.
-# Layout: dim backdrop covers the whole viewport, a centered PanelContainer
-# holds the title + scenario grid + cancel button.
 func _ready() -> void:
-	# Cover the full viewport so the backdrop catches clicks behind cards.
+	z_index = PanelTheme.Z_MENU_MODAL
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 	mouse_filter = Control.MOUSE_FILTER_STOP
 
-	# Backdrop dim layer.
 	var backdrop := ColorRect.new()
-	backdrop.color = Color(0, 0, 0, 0.65)
-	backdrop.anchor_right = 1.0
-	backdrop.anchor_bottom = 1.0
+	backdrop.color = PanelTheme.MODAL_SCRIM
+	backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
 	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
 	backdrop.gui_input.connect(func(ev: InputEvent):
-		# Click outside the panel cancels the modal.
 		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed:
 			_cancel())
 	add_child(backdrop)
 
-	# Centered panel.
 	var center := CenterContainer.new()
-	center.anchor_right = 1.0
-	center.anchor_bottom = 1.0
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(center)
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(720, 580)
+	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 520.0, 420.0)
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	# Stop click propagation so clicking inside the panel doesn't fall
-	# through to the backdrop's cancel handler.
 	panel.gui_input.connect(func(_e): pass)
 	center.add_child(panel)
+	get_viewport().size_changed.connect(func():
+		PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 520.0, 420.0))
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 12)
@@ -437,19 +458,11 @@ func _ready() -> void:
 	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	panel.add_child(vb)
 
-	# Title + tagline.
-	var title := Label.new()
-	title.text = "Pick a tank scenario"
-	PanelTheme.as_serif(title, PanelTheme.SIZE_TITLE, true)
-	vb.add_child(title)
+	vb.add_child(PanelTheme.make_title("Pick a tank scenario"))
+	vb.add_child(PanelTheme.make_subtitle(
+		"Themed combinations of substrate, plants/coral, fish, and lighting."))
+	vb.add_child(PanelTheme.make_rule())
 
-	var sub := Label.new()
-	sub.text = "Themed combinations of substrate, plants/coral, fish, and lighting."
-	sub.add_theme_color_override("font_color", Color(0.7, 0.78, 0.92, 1.0))
-	sub.add_theme_font_size_override("font_size", 13)
-	vb.add_child(sub)
-
-	# Scrollable grid of scenario cards.
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -457,36 +470,68 @@ func _ready() -> void:
 	vb.add_child(scroll)
 
 	var grid := GridContainer.new()
-	grid.columns = 2
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	grid.columns = 1 if vp.x < PanelTheme.MOBILE_NARROW_W or vp.y > vp.x else 2
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(grid)
 
-	for sc in SCENARIOS:
+	for sc in _ordered_scenarios():
 		grid.add_child(_build_card(sc))
 
-	# Footer with Cancel.
-	var footer := HBoxContainer.new()
-	footer.alignment = BoxContainer.ALIGNMENT_END
-	footer.add_theme_constant_override("separation", 8)
-	vb.add_child(footer)
-	var cancel := Button.new()
-	cancel.text = "Cancel"
-	cancel.custom_minimum_size = Vector2(120, 40)
-	cancel.pressed.connect(_cancel)
-	footer.add_child(cancel)
+	var extras: Array = _extra_scenarios()
+	if not extras.is_empty():
+		var expand_row := HBoxContainer.new()
+		expand_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		var expand_btn := PanelTheme.make_ghost_button("More scenarios ▾")
+		expand_btn.pressed.connect(func():
+			for extra in extras:
+				grid.add_child(_build_card(extra))
+			expand_row.visible = false)
+		expand_row.add_child(expand_btn)
+		vb.add_child(expand_row)
+
+	vb.add_child(PanelTheme.make_panel_footer(_cancel))
+
+
+const Ol = preload("res://scripts/onboarding_legibility.gd")
+
+
+func _ordered_scenarios() -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	for pick_id in Ol.CURATED_PICKS:
+		for sc in SCENARIOS:
+			if String(sc.get("id", "")) == pick_id:
+				out.append(sc)
+				seen[pick_id] = true
+				break
+	return out
+
+
+func _extra_scenarios() -> Array:
+	var curated: Dictionary = {}
+	for pick_id in Ol.CURATED_PICKS:
+		curated[pick_id] = true
+	var out: Array = []
+	for sc in SCENARIOS:
+		var sid: String = String(sc.get("id", ""))
+		if not curated.has(sid):
+			out.append(sc)
+	return out
 
 
 # Build a single scenario card with title bar (accent color), tagline,
 # description body, and an "Open this tank" button.
 func _build_card(sc: Dictionary) -> Control:
 	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(330, 230)
+	card.custom_minimum_size = Vector2(280, 0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	PanelTheme.apply_shelf_card_chrome(card)
 
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 6)
+	vb.add_theme_constant_override("separation", 8)
 	card.add_child(vb)
 
 	# Accent-color title band so each scenario has a glance-recognisable
@@ -498,31 +543,68 @@ func _build_card(sc: Dictionary) -> Control:
 	band_sb.content_margin_right = 10
 	band_sb.content_margin_top = 6
 	band_sb.content_margin_bottom = 6
-	band_sb.corner_radius_top_left = 4
-	band_sb.corner_radius_top_right = 4
+	band_sb.corner_radius_top_left = 6
+	band_sb.corner_radius_top_right = 6
 	band.add_theme_stylebox_override("panel", band_sb)
 	var title := Label.new()
-	title.text = String(sc.get("name", "Scenario"))
+	var sid: String = String(sc.get("id", ""))
+	var plain: String = Ol.SCENARIO_PLAIN_NAMES.get(sid, String(sc.get("name", "Scenario")))
+	title.text = plain
 	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color(0.06, 0.07, 0.10, 1.0))
 	band.add_child(title)
 	vb.add_child(band)
 
-	# Tagline (one line) + body (description).
-	var tag := Label.new()
+	var meta: Dictionary = Ol.SCENARIO_META.get(sid, {})
+	if bool(meta.get("recommended", false)):
+		var ribbon := Label.new()
+		ribbon.text = "★ Best for beginners"
+		ribbon.add_theme_color_override("font_color", Color8(255, 230, 120))
+		ribbon.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
+		vb.add_child(ribbon)
+	if meta.has("tier"):
+		var tier := Label.new()
+		var tier_i: int = int(meta.get("tier", 1))
+		tier.text = "%s — %s" % [Ol.tier_label(tier_i), String(meta.get("tier_why", ""))]
+		tier.add_theme_color_override("font_color", Ol.tier_color(tier_i))
+		tier.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
+		tier.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(tier)
+	if bool(meta.get("maint_warning", false)):
+		var warn := Label.new()
+		warn.text = "Higher-maintenance — best once you've kept a tank"
+		warn.add_theme_color_override("font_color", Color8(230, 160, 110))
+		warn.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
+		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(warn)
+	var sil: String = String(sc.get("silhouette", ""))
+	if sil != "":
+		var sil_lbl := Label.new()
+		sil_lbl.text = sil
+		sil_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_TITLE)
+		sil_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		vb.add_child(sil_lbl)
+
+	# Tagline (one-line summary) + body (description) + what's-in-the-tank,
+	# stepping down in size and emphasis so the card reads top-to-bottom.
+	var tag := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_BODY) as Label
 	tag.text = String(sc.get("tagline", ""))
-	tag.add_theme_color_override("font_color", Color(0.86, 0.90, 0.95, 1.0))
-	tag.add_theme_font_size_override("font_size", 13)
+	tag.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	tag.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(tag)
 
-	var body := Label.new()
+	var body := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_SMALL) as Label
 	body.text = String(sc.get("body", ""))
-	body.add_theme_color_override("font_color", Color(0.70, 0.76, 0.85, 1.0))
-	body.add_theme_font_size_override("font_size", 12)
+	body.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_child(body)
+
+	var whats := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
+	whats.text = Ol.scenario_whats_in_tank(sc.get("config", {}))
+	whats.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	whats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(whats)
 
 	# Equilibrium preview (#69): show roughly where the tank will settle so the
 	# defaults visibly express their designed balanced end-state.
@@ -531,15 +613,16 @@ func _build_card(sc: Dictionary) -> Control:
 		var eq := Label.new()
 		eq.text = "⚖ " + eq_text
 		eq.add_theme_color_override("font_color", Color(0.62, 0.82, 0.70, 1.0))
-		eq.add_theme_font_size_override("font_size", 11)
+		eq.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 		eq.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		eq.tooltip_text = Ol.equilibrium_tooltip()
 		vb.add_child(eq)
 
-	# Pick button.
-	var pick := Button.new()
-	pick.text = "Open this tank"
-	pick.custom_minimum_size = Vector2(0, 40)
-	pick.add_theme_font_size_override("font_size", 14)
+	# Pick button — separated from the body with a hairline so it reads as the
+	# card's commit action rather than another text line.
+	vb.add_child(PanelTheme.make_rule())
+	var pick := PanelTheme.make_primary_button("Open this tank")
+	pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pick.pressed.connect(func(): _pick(sc))
 	vb.add_child(pick)
 
@@ -593,14 +676,8 @@ func _pick_wildcard(sc: Dictionary) -> void:
 	var ai_ready: bool = ai != null and bool(ai.enabled) \
 		and int(ai.conn_state) == int(ai.ConnState.OK)
 	if not ai_ready:
-		# Pure random path. Replace the config with a freshly-rolled one,
-		# then emit as if the user had clicked a normal scenario card.
-		var rolled: Dictionary = sc.duplicate(true)
-		rolled["config"] = random_wildcard_config()
-		rolled["name"] = "✨ Surprise tank"
-		rolled["body"] = "Randomly generated. " + String(rolled["body"])
-		scenario_chosen.emit(rolled)
-		queue_free()
+		var rolled_cfg: Dictionary = random_wildcard_config()
+		_show_wildcard_preview(sc, rolled_cfg)
 		return
 	# AI path — pop a tiny input dialog over the picker. The user types
 	# a description, we ask Ollama to translate it into a config dict,
@@ -612,69 +689,53 @@ func _pick_wildcard(sc: Dictionary) -> void:
 # call AIDirector to translate the prompt into a config dict; on cancel
 # we drop back to the picker.
 func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
-	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.55)
-	dim.anchor_right = 1.0
-	dim.anchor_bottom = 1.0
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(dim)
-
-	var center := CenterContainer.new()
-	center.anchor_right = 1.0
-	center.anchor_bottom = 1.0
-	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(center)
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL)
+	var overlay: Control = root["overlay"]
+	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(540, 0)
+	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 480.0, 260.0, 0.9, 0.6)
 	center.add_child(panel)
 
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 10)
+	vb.add_theme_constant_override("separation", 12)
 	panel.add_child(vb)
-	var title := Label.new()
-	title.text = "✨ Describe your dream tank"
-	PanelTheme.as_serif(title, PanelTheme.SIZE_SECTION, true)
-	vb.add_child(title)
-	var subtitle := Label.new()
-	subtitle.text = "Ollama (%s) will design a tank around your description." % String(ai.model)
-	subtitle.add_theme_font_size_override("font_size", 11)
+	vb.add_child(PanelTheme.make_title("✨ Describe your dream tank"))
+	var subtitle := PanelTheme.make_subtitle(
+		"Ollama (%s) will design a tank around your description." % String(ai.model))
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(subtitle)
-	var hint := Label.new()
+	vb.add_child(PanelTheme.make_rule())
+	var hint := PanelTheme.make_description()
 	hint.text = "Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'."
-	hint.add_theme_font_size_override("font_size", 10)
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(hint)
 
 	var input := LineEdit.new()
 	input.placeholder_text = "your tank vibe…"
-	input.custom_minimum_size = Vector2(0, 32)
+	input.custom_minimum_size = Vector2(0, 36)
 	vb.add_child(input)
 	var status := Label.new()
-	status.add_theme_font_size_override("font_size", 11)
-	status.add_theme_color_override("font_color", Color8(180, 195, 220))
+	status.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
+	status.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(status)
 
+	vb.add_child(PanelTheme.make_spacer(2))
 	var btns := HBoxContainer.new()
 	btns.alignment = BoxContainer.ALIGNMENT_END
 	btns.add_theme_constant_override("separation", 8)
 	vb.add_child(btns)
-	var cancel_btn := Button.new()
-	cancel_btn.text = "Cancel"
+	var cancel_btn := PanelTheme.make_secondary_button("Cancel")
 	btns.add_child(cancel_btn)
-	var roll_btn := Button.new()
-	roll_btn.text = "Skip AI — roll random"
+	var roll_btn := PanelTheme.make_secondary_button("Skip AI — roll random")
 	btns.add_child(roll_btn)
-	var go_btn := Button.new()
-	go_btn.text = "Design tank"
+	var go_btn := PanelTheme.make_primary_button("Design tank")
 	btns.add_child(go_btn)
 
 	# Cancel just removes the prompt overlay; user can pick another card.
 	cancel_btn.pressed.connect(func():
-		dim.queue_free()
-		center.queue_free())
+		overlay.queue_free())
 	# Skip AI → random path (same as the no-AI branch in _pick_wildcard).
 	roll_btn.pressed.connect(func():
 		var rolled: Dictionary = sc.duplicate(true)
@@ -688,7 +749,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 		if prompt == "":
 			status.text = "Type a few words first, or hit 'Skip AI'."
 			return
-		status.add_theme_color_override("font_color", Color8(180, 195, 220))
+		status.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 		status.text = "Asking %s to design your tank…" % String(ai.model)
 		go_btn.disabled = true
 		_request_ai_design(sc, ai, prompt, status, go_btn))
@@ -738,6 +799,47 @@ func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_
 	queue_free()
 
 
+func _show_wildcard_preview(sc: Dictionary, rolled_cfg: Dictionary) -> void:
+	var cfg_holder: Array = [rolled_cfg.duplicate(true)]
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL)
+	var center: CenterContainer = root["center"]
+
+	var panel := PanelContainer.new()
+	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 420.0, 240.0, 0.86, 0.5)
+	center.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	vb.add_child(PanelTheme.make_title("Surprise roll"))
+	vb.add_child(PanelTheme.make_rule())
+	var summary := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_BODY) as Label
+	summary.text = Ol.wildcard_summary(cfg_holder[0])
+	summary.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	summary.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(summary)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	vb.add_child(row)
+	var reroll := PanelTheme.make_secondary_button("Re-roll")
+	row.add_child(reroll)
+	var accept := PanelTheme.make_primary_button("Open this tank")
+	row.add_child(accept)
+	reroll.pressed.connect(func():
+		cfg_holder[0] = random_wildcard_config()
+		summary.text = Ol.wildcard_summary(cfg_holder[0]))
+	accept.pressed.connect(func():
+		var rolled: Dictionary = sc.duplicate(true)
+		rolled["config"] = cfg_holder[0].duplicate(true)
+		rolled["name"] = "✨ Surprise tank"
+		rolled["body"] = "Randomly generated. " + String(rolled["body"])
+		scenario_chosen.emit(rolled)
+		queue_free())
+
+
 func _cancel() -> void:
 	canceled.emit()
 	queue_free()
@@ -763,3 +865,6 @@ static func apply_scenario(scenario: Dictionary, cfg: Node) -> void:
 		cfg.apply_lighting_preset(lighting_slug)
 	if config.has("cycle_start_mode"):
 		cfg.start_matured = (String(cfg.cycle_start_mode) == "established")
+	else:
+		cfg.cycle_start_mode = "established"
+		cfg.start_matured = true

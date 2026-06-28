@@ -17,6 +17,14 @@ class_name SimDriver
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
 const GuardianMind = preload("res://scripts/guardian_mind.gd")
 const GuardianJournal = preload("res://scripts/guardian_journal.gd")
+const FishJournal = preload("res://scripts/fish_journal.gd")
+const FishMind = preload("res://scripts/fish_mind.gd")
+const MindConversation = preload("res://scripts/mind_conversation.gd")
+const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
+const MindLexicon = preload("res://scripts/mind_lexicon.gd")
+const MakeItThere = preload("res://scripts/make_it_there.gd")
+const NightWatch = preload("res://scripts/night_watch.gd")
+const TankMind = preload("res://scripts/tank_mind.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -30,6 +38,9 @@ signal creature_removed(creature: Node)
 # Fired when the player's favorite set changes (star toggled, or restored on load).
 signal favorites_changed()
 signal guardian_spoke(text: String, speaker: Fish, action: String)
+signal guardian_recap_streaming(text: String)
+signal fish_thought_spoke(speaker: Fish, text: String)
+signal fish_voiced_wake(f: Fish)
 
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
@@ -153,8 +164,329 @@ var _guardian_journal: Array = []
 var _guardian_predecessor_journal: Array = []
 var _guardian_predecessor_name: String = ""
 var _guardian_predecessor_bio: String = ""
+var _guardian_predecessor_moniker: String = ""
+var _guardian_predecessor_memories: PackedStringArray = PackedStringArray()
+var _guardian_predecessor_legend: String = ""
 var _ai_bio_connected: bool = false
 var _ai_guardian_connected: bool = false
+var _fish_journals: Dictionary = {}
+var _fish_legacies: Array = []
+var _cast_fish_count: int = 0
+var _ai_thought_connected: bool = false
+var _make_it_there_session: Dictionary = MakeItThere.fresh_session()
+var _away_dream_count: int = 0
+var _last_feed_unix: int = 0
+var _spark_calm: float = 0.0
+var _spark_vespers: bool = false
+var _spark_night_cathedral: bool = false
+var _room_idle_s: float = 0.0
+var _night_runtime: Dictionary = {
+	"night_disturbed": false,
+	"night_disturb_cd": 0.0,
+	"slow_fauna_night": 0.0,
+	"night_stillness": 0.0,
+	"biofilter_calm": 0.0,
+	"season_night_bias": 0.0,
+	"watcher_sweep_t": 0.0,
+	"confession_cd": 3600.0,
+	"night_a11y_pulse": 0.0,
+	"return_grace_s": 0.0,
+	"dawn_spark_t": 0.0,
+	"screensaver_mode": false,
+}
+var _tank_mind: Dictionary = {}
+
+
+func night_runtime() -> Dictionary:
+	return _night_runtime
+
+
+func night_rt_f(key: String, fallback: float = 0.0) -> float:
+	return float(_night_runtime.get(key, fallback))
+
+
+func set_night_rt_f(key: String, value: float) -> void:
+	_night_runtime[key] = value
+
+
+func night_rt_b(key: String, fallback: bool = false) -> bool:
+	return bool(_night_runtime.get(key, fallback))
+
+
+func set_night_rt_b(key: String, value: bool) -> void:
+	_night_runtime[key] = value
+
+
+func tick_night_disturb_decay(dt: float) -> void:
+	var cd: float = maxf(0.0, night_rt_f("night_disturb_cd") - dt)
+	set_night_rt_f("night_disturb_cd", cd)
+	if cd <= 0.0:
+		set_night_rt_b("night_disturbed", false)
+
+
+func note_night_disturbance() -> void:
+	set_night_rt_b("night_disturbed", true)
+	set_night_rt_f("night_disturb_cd", 8.0)
+
+
+func night_is_disturbed() -> bool:
+	return night_rt_b("night_disturbed")
+
+
+func decay_return_grace(dt: float) -> void:
+	if night_rt_f("return_grace_s") <= 0.0:
+		return
+	set_night_rt_f("return_grace_s", maxf(0.0, night_rt_f("return_grace_s") - dt))
+	_player_glance_strength = minf(_player_glance_strength, 0.35)
+
+
+func tick_dawn_spark_decay(dt: float) -> bool:
+	if night_rt_f("dawn_spark_t") <= 0.0:
+		return false
+	set_night_rt_f("dawn_spark_t", maxf(0.0, night_rt_f("dawn_spark_t") - dt))
+	return true
+
+
+func trigger_dawn_spark(duration: float = 12.0) -> void:
+	set_night_rt_f("dawn_spark_t", duration)
+
+
+func tick_confession_cooldown(dt: float) -> void:
+	set_night_rt_f("confession_cd", maxf(0.0, night_rt_f("confession_cd", 3600.0) - dt))
+
+
+func night_a11y_pulse() -> float:
+	return night_rt_f("night_a11y_pulse")
+
+
+func make_it_there_session() -> Dictionary:
+	return _make_it_there_session
+
+
+func reset_make_it_there_session() -> void:
+	_make_it_there_session = MakeItThere.fresh_session()
+
+
+func note_away_dream() -> void:
+	_away_dream_count += 1
+
+
+func set_room_idle(seconds: float) -> void:
+	_room_idle_s = maxf(0.0, seconds)
+
+
+func set_screensaver_mode(on: bool) -> void:
+	set_night_rt_b("screensaver_mode", on)
+
+
+func screensaver_active() -> bool:
+	return night_rt_b("screensaver_mode")
+
+
+func spark_dawn_active() -> bool:
+	return night_rt_f("dawn_spark_t") > 0.0
+
+
+func advance_tank_age_coarse(seconds: float) -> void:
+	tank_age_s += maxf(0.0, seconds)
+
+
+func _maybe_guardian_dream_journal(note: String) -> void:
+	if note.strip_edges() == "" or randf() > 0.14:
+		return
+	var g: Fish = _find_guardian_fish()
+	if g == null:
+		return
+	_journal_append("(dream — not real): %s" % note.strip_edges(), "dream", "", "event")
+
+
+func tank_mind_snapshot() -> Dictionary:
+	_tank_mind = TankMind.ensure(self)
+	var snap: Dictionary = TankMind.snapshot(self)
+	if str(_tank_mind.get("focus", "")) != "":
+		snap["focus"] = str(_tank_mind.get("focus"))
+	snap["night_stillness"] = snappedf(night_rt_f("night_stillness"), 0.01)
+	snap["slow_fauna"] = snappedf(night_rt_f("slow_fauna_night"), 0.01)
+	snap["a11y_pulse"] = snappedf(night_rt_f("night_a11y_pulse"), 0.01)
+	snap["return_grace_s"] = snappedf(night_rt_f("return_grace_s"), 0.01)
+	snap["night_disturbed"] = night_rt_b("night_disturbed")
+	return snap
+
+
+func _export_night_runtime() -> Dictionary:
+	return _night_runtime.duplicate(true)
+
+
+func _import_night_runtime(d: Variant) -> void:
+	if d is not Dictionary:
+		return
+	for k in (d as Dictionary).keys():
+		_night_runtime[k] = (d as Dictionary)[k]
+
+
+func _ensure_thought_connection() -> void:
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai == null or _ai_thought_connected:
+		return
+	if ai.has_signal("fish_thought_ready"):
+		ai.connect("fish_thought_ready", _on_fish_thought_ready)
+		_ai_thought_connected = true
+
+
+func _on_fish_thought_ready(fish_id: String, line: String, _source: String) -> void:
+	for f in fish:
+		if is_instance_valid(f) and String(f.id) == fish_id:
+			f.set_current_thought(line)
+			emit_signal("fish_thought_spoke", f, line)
+			return
+
+
+func request_creature_thought(creature: Node, situation: String = "inspect") -> String:
+	if not (creature is Fish):
+		return ""
+	var ff: Fish = creature
+	_ensure_thought_connection()
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("queue_fish_thought"):
+		return String(ai.queue_fish_thought(ff, self, situation))
+	return ff.get_inspect_thought()
+
+
+func request_keeper_reply(f: Fish, result: Dictionary) -> String:
+	if f == null or not is_instance_valid(f):
+		return ""
+	var away_first: String = MindConversation.consume_away_message(f)
+	if away_first != "" and bool(result.get("ok", true)):
+		MindConversation.note_reply(f, away_first, self)
+		emit_signal("fish_thought_spoke", f, away_first)
+		return away_first
+	if bool(result.get("too_wary", false)):
+		var kind: String = MindConversation.nonverbal_answer_kind(f, result)
+		if kind != "" and f.has_method("answer_affect_cue"):
+			f.answer_affect_cue(kind)
+		return ""
+	if not MindConversation.should_reply_words(f, result):
+		var nv: String = MindConversation.nonverbal_answer_kind(f, result)
+		if nv != "" and f.has_method("answer_affect_cue"):
+			f.answer_affect_cue(nv)
+		return ""
+	var line: String = String(request_creature_thought(f, "keeper_reply")).strip_edges()
+	if line == "" or line == "…":
+		return ""
+	MindConversation.note_reply(f, line, self)
+	emit_signal("fish_thought_spoke", f, line)
+	return line
+
+
+func speak_creature_thought(f: Fish, situation: String) -> String:
+	var line: String = String(request_creature_thought(f, situation)).strip_edges()
+	if line == "" or line == "…":
+		return ""
+	if situation.begins_with("keeper_"):
+		MindConversation.note_reply(f, line, self)
+	emit_signal("fish_thought_spoke", f, line)
+	return line
+
+
+func _deliver_fish_return_conversation(gap_s: int) -> void:
+	for fish_i in fish:
+		if not is_instance_valid(fish_i) or fish_i.familiarity < 0.35:
+			continue
+		MindKeeperModel.note_absence(fish_i, gap_s)
+		if gap_s < 1800:
+			continue
+		var msg: String = ""
+		if gap_s >= 86400 * 3:
+			msg = "long water-turn… you're back"
+		elif gap_s >= 86400:
+			msg = "thought you'd gone for good"
+		else:
+			msg = "had something to tell you"
+		if msg != "":
+			MindConversation.set_away_message(fish_i, msg)
+		if fish_i.is_guardian and gap_s >= 3600:
+			append_fish_journal_entry(fish_i, "While you were gone, I kept watch.",
+					PackedStringArray(["away", "conversation"]))
+
+
+func note_keeper_care_for_fish(f: Fish, kind: String) -> void:
+	if f != null and is_instance_valid(f):
+		MindKeeperModel.note_care_event(f, kind)
+
+
+func append_fish_journal_entry(f: Fish, text: String,
+		tags: PackedStringArray = PackedStringArray()) -> void:
+	if f == null or String(f.id) == "" or text.strip_edges() == "":
+		return
+	FishJournal.append_entry(f.fish_journal, text, tags,
+			{"sim_day": sim_day_label(), "t": elapsed_runtime_s})
+	_fish_journals[String(f.id)] = f.fish_journal.duplicate(true)
+
+
+func notify_fish_voiced_wake(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	append_fish_journal_entry(f,
+			"Something in me woke — I notice the keeper differently now.",
+			PackedStringArray(["voiced_wake", "milestone"]))
+	emit_signal("fish_voiced_wake", f)
+
+
+func tank_society_snapshot() -> Dictionary:
+	return FishMind.society_snapshot(self)
+
+
+func restore_fish_journal(f: Fish) -> void:
+	if f == null or String(f.id) == "":
+		return
+	if _fish_journals.has(String(f.id)):
+		f.fish_journal = (_fish_journals[String(f.id)] as Array).duplicate(true)
+
+
+func _export_voice_caches() -> Dictionary:
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("export_voice_caches"):
+		return ai.export_voice_caches()
+	return {}
+
+
+func _import_voice_caches(d: Variant) -> void:
+	if not (d is Dictionary):
+		return
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai != null and ai.has_method("import_voice_caches"):
+		ai.import_voice_caches(d)
+
+
+func _tick_crisis_voice() -> void:
+	var ai: Node = get_node_or_null("/root/AIDirector")
+	if ai == null or not ai.has_method("set_crisis_active"):
+		return
+	var crisis: bool = dissolved_o2 < 0.35
+	if water_chemistry != null:
+		crisis = crisis or float(water_chemistry.toxic_ammonia) > 0.12 \
+				or float(water_chemistry.ammonia) > 0.55
+	ai.set_crisis_active(crisis)
+
+
+func _tick_cast_change_guardian() -> void:
+	var n: int = fish.size()
+	if _cast_fish_count <= 0:
+		_cast_fish_count = n
+		return
+	if n == _cast_fish_count:
+		return
+	var delta: int = n - _cast_fish_count
+	_cast_fish_count = n
+	if not _guardian_companion_enabled() or _guardian_id == "":
+		return
+	var g: Fish = _find_guardian_fish()
+	if g == null:
+		return
+	if delta > 0:
+		_speak_guardian(g, "newcomer", "")
+	elif delta < 0:
+		_speak_guardian(g, "loss", "")
 
 
 func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
@@ -171,12 +503,20 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 		_feed_time_history.append(mod)
 		while _feed_time_history.size() > FEED_TIME_HISTORY_CAP:
 			_feed_time_history.pop_front()
+		_last_feed_unix = int(Time.get_unix_time_from_system())
+		_make_it_there_session["feed_wait"] = 0.0
+		_make_it_there_session.erase("feed_disappointed")
 	# Music hook: food drop triggers a build → drop arc on the trance bed.
 	# Only fire once per minute so a flurry of pellets doesn't keep restarting it.
 	if new_minute:
 		var audio := _ambient_audio()
 		if audio != null and audio.has_method("play_feeding_event"):
 			audio.play_feeding_event()
+		if randf() < 0.12:
+			MakeItThere.record_parenting(_guardian_arc, "gentle")
+		for ff in fish:
+			if is_instance_valid(ff):
+				note_keeper_care_for_fish(ff, "feed")
 	if _guardian_companion_enabled():
 		_ensure_guardian_arc()
 		GuardianMind.record_player_action(_guardian_arc, "fed")
@@ -309,6 +649,8 @@ func pulse_glass_tap(world_pos: Vector3) -> void:
 	_player_glance_point = world_pos
 	_player_glance_strength = 1.0
 	_player_glance_hold_s = 3.0
+	if daylight() < 0.28:
+		NightWatch.note_night_disturbance(self)
 
 
 # Sample the tank-wide schooling pulse phase. Returns -1..1, sin-shaped.
@@ -321,6 +663,297 @@ func school_pulse() -> float:
 # Raw phase (radians) for tail-wag lock among conspecific schoolers.
 func school_pulse_phase() -> float:
 	return _school_pulse_phase
+
+
+# TOPDOWN §E — propagating synchronized turn wave (beat/downbeat triggered).
+var _sync_turn_remaining: float = 0.0
+var _sync_turn_dir: Vector3 = Vector3(1.0, 0.0, 0.0)
+var _sync_turn_origin: Vector3 = Vector3.ZERO
+var _sync_turn_flip: int = 0
+var _sync_polarization: float = 0.0
+var _startle_bolt_remaining: float = 0.0
+var _startle_bolt_origin: Vector3 = Vector3.ZERO
+var _sync_settle: float = 0.0
+var _group_reversal_timer: float = 12.0
+var _edge_turn_cooldown: float = 0.0
+var _flip_cascade_left: int = 0
+var _was_sync_turn: bool = false
+var _density_wave_radius: float = 0.0
+var _density_wave_origin: Vector3 = Vector3.ZERO
+var _density_wave_strength: float = 0.0
+var _flock_orbit_phase: float = 0.0
+var _conduct_center: Vector3 = Vector3.ZERO
+var _conduct_radius: float = 0.0
+var _conduct_until: float = 0.0
+var _predator_wave_cd: float = 0.0
+var _startle_bolt_was: bool = false
+
+
+func pulse_startle_bolt(origin: Vector3) -> void:
+	_startle_bolt_origin = origin
+	_startle_bolt_remaining = 0.62
+	_sync_settle = 0.0
+
+
+func startle_bolt_active() -> bool:
+	return _startle_bolt_remaining > 0.0
+
+
+func startle_bolt_origin() -> Vector3:
+	return _startle_bolt_origin
+
+
+func topdown_wake_count() -> int:
+	var n: int = 0
+	var surface_y: float = 6.0
+	if world != null and world.get("WATER_HEIGHT") != null:
+		surface_y = float(world.WATER_HEIGHT)
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		if float(f.get("speed") if f.get("speed") != null else 0.0) < 0.25:
+			continue
+		if absf(f.position.y - surface_y) < 1.1:
+			n += 1
+	return n
+
+
+func topdown_caustic_beat() -> float:
+	var down: bool = false
+	var bass: float = 0.0
+	var energy: float = 0.0
+	if has_node("/root/MusicContext"):
+		var mc: Node = get_node("/root/MusicContext")
+		if mc.get("_ctx") is Dictionary:
+			var ctx: Dictionary = mc._ctx
+			down = bool(ctx.get("downbeat", false))
+			bass = float(ctx.get("bass", 0.0))
+			energy = float(ctx.get("energy", 0.0))
+	return TopdownMotion.caustic_beat_pulse(down, bass, energy)
+
+
+func pulse_sync_turn(dir: Vector3 = Vector3.ZERO, origin: Vector3 = Vector3.ZERO) -> void:
+	if dir.length_squared() < 1e-4:
+		_sync_turn_flip += 1
+		dir = Vector3(1.0 if _sync_turn_flip % 2 == 0 else -1.0, 0.0, 0.0)
+	_sync_turn_dir = dir.normalized()
+	_sync_turn_origin = origin
+	_sync_turn_remaining = 0.52
+	_sync_polarization = 0.0
+
+
+func sync_turn_heading_for(fish_pos: Vector3, instance_id: int) -> Vector3:
+	if _sync_turn_remaining <= 0.0:
+		return Vector3.ZERO
+	var dist: float = Vector2(fish_pos.x - _sync_turn_origin.x, fish_pos.z - _sync_turn_origin.z).length()
+	var delay: float = dist * 0.085 + float(instance_id % 17) * 0.004
+	var phase: float = clampf(1.0 - delay / maxf(_sync_turn_remaining + 0.08, 0.12), 0.0, 1.0)
+	if phase <= 0.02:
+		return Vector3.ZERO
+	var perp := Vector3(-_sync_turn_dir.z, 0.0, _sync_turn_dir.x)
+	return perp * phase * 0.95
+
+
+func sync_turn_active() -> bool:
+	return _sync_turn_remaining > 0.0
+
+
+func sync_polarization() -> float:
+	return _sync_polarization
+
+
+func _tick_topdown_flock_events(dt: float) -> void:
+	var active: bool = TopdownMotion.pond_active
+	if world != null and world.has_method("_topdown_surface_active"):
+		active = active or world._topdown_surface_active()
+	if not active:
+		return
+	_group_reversal_timer -= dt
+	_edge_turn_cooldown -= dt
+	if _flip_cascade_left > 0 and _sync_turn_remaining <= 0.0 and _startle_bolt_remaining <= 0.0:
+		_flip_cascade_left -= 1
+		pulse_sync_turn()
+		return
+	if _group_reversal_timer <= 0.0 and fish.size() >= 4 and _sync_turn_remaining <= 0.0:
+		if sin(_school_pulse_phase) > 0.94:
+			_group_reversal_timer = randf_range(16.0, 26.0)
+			pulse_sync_turn(Vector3.ZERO, _school_centroid_xz())
+	if _edge_turn_cooldown > 0.0:
+		return
+	var hw: float = 8.0
+	var hd: float = 4.0
+	if world != null:
+		if world.get("TANK_HALF_W") != null:
+			hw = float(world.TANK_HALF_W)
+		if world.get("TANK_HALF_D") != null:
+			hd = float(world.TANK_HALF_D)
+	var edge_n: int = 0
+	var edge_origin := Vector3.ZERO
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var p: Vector3 = f.position
+		if absf(p.x) > hw * 0.78 or absf(p.z) > hd * 0.78:
+			edge_n += 1
+			edge_origin += p
+	if edge_n >= 3:
+		edge_origin /= float(edge_n)
+		var away := Vector3(-signf(edge_origin.x), 0.0, -signf(edge_origin.z))
+		if away.length_squared() < 0.01:
+			away = Vector3(1.0, 0.0, 0.0)
+		pulse_sync_turn(away, edge_origin)
+		pulse_density_wave(edge_origin, 0.55)
+		_edge_turn_cooldown = 2.8
+	# Predator-driven bend: large fish near small schooling conspecifics.
+	if _predator_wave_cd <= 0.0 and fish.size() >= 3:
+		for pf in fish:
+			if not is_instance_valid(pf) or pf.get("_dying") == true:
+				continue
+			if float(pf.get("growth_factor") if pf.get("growth_factor") != null else 1.0) < 1.22:
+				continue
+			var prey_n: int = 0
+			var flee := Vector3.ZERO
+			for f in fish:
+				if f == pf or not is_instance_valid(f) or f.get("_dying") == true:
+					continue
+				if String(f.get("swim_pattern") if f.get("swim_pattern") != null else "") not in ["school", "shoal"]:
+					continue
+				var d2: float = pf.position.distance_squared_to(f.position)
+				if d2 < 9.0 and d2 > 0.12:
+					prey_n += 1
+					flee += (f.position - pf.position).normalized()
+			if prey_n >= 2 and flee.length_squared() > 0.01:
+				pulse_predator_wave(pf.position, flee.normalized())
+				return
+
+
+func _school_centroid_xz() -> Vector3:
+	if fish.is_empty():
+		return Vector3.ZERO
+	var sum := Vector3.ZERO
+	var n: int = 0
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		sum += f.position
+		n += 1
+	if n <= 0:
+		return Vector3.ZERO
+	sum /= float(n)
+	sum.y = 0.0
+	return sum
+
+
+func pulse_density_wave(origin: Vector3, strength: float = 1.0) -> void:
+	_density_wave_origin = origin
+	_density_wave_radius = 0.0
+	_density_wave_strength = clampf(strength, 0.0, 1.5)
+
+
+func density_wave_push_at(pos: Vector3) -> Vector3:
+	if _density_wave_strength <= 0.01:
+		return Vector3.ZERO
+	var away: Vector3 = pos - _density_wave_origin
+	away.y = 0.0
+	var dist: float = away.length()
+	var push_amt: float = TopdownMotion.density_wave_sep_push(
+		dist, _density_wave_radius, _density_wave_strength)
+	if push_amt <= 0.01 or away.length_squared() < 1e-4:
+		return Vector3.ZERO
+	return away.normalized() * push_amt
+
+
+func flock_split_pull(instance_id: int, pos: Vector3) -> Vector3:
+	var centers: Array = TopdownMotion.flock_split_centers(_flock_orbit_phase, 8.0)
+	var half: int = instance_id % 2
+	var target: Vector3 = centers[half]
+	var d: Vector3 = target - pos
+	d.y = 0.0
+	if d.length_squared() < 0.08:
+		return Vector3.ZERO
+	return d.normalized() * sin(_flock_orbit_phase) * 0.35
+
+
+func set_conduct_anchor(center: Vector3, radius: float, duration: float = 8.0) -> void:
+	_conduct_center = center
+	_conduct_radius = maxf(radius, 0.5)
+	_conduct_until = duration
+
+
+func conduct_anchor_pull(pos: Vector3) -> Vector3:
+	if _conduct_until <= 0.0:
+		return Vector3.ZERO
+	var d: Vector3 = _conduct_center - pos
+	d.y = 0.0
+	if d.length_squared() < 0.06:
+		return Vector3.ZERO
+	return d.normalized() * clampf(_conduct_radius * 0.22, 0.12, 0.85)
+
+
+func pulse_predator_wave(origin: Vector3, away: Vector3) -> void:
+	if _predator_wave_cd > 0.0:
+		return
+	_predator_wave_cd = 1.4
+	if away.length_squared() < 1e-4:
+		away = Vector3(1.0, 0.0, 0.0)
+	pulse_sync_turn(away, origin)
+	pulse_density_wave(origin, 0.9)
+
+
+func register_sync_alignment(strength: float) -> void:
+	_sync_polarization = lerpf(_sync_polarization, clampf(strength, 0.0, 1.0), 0.18)
+
+
+func topdown_motion_energy() -> float:
+	var sum: float = 0.0
+	var n: int = 0
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var spd: float = float(f.get("speed") if f.get("speed") != null else 0.0)
+		var burst: float = float(f.get("burst_remaining") if f.get("burst_remaining") != null else 0.0)
+		sum += spd + burst * 0.35
+		n += 1
+	if n <= 0:
+		return 0.0
+	return clampf(sum / float(n) / 2.4, 0.0, 1.0)
+
+
+func topdown_tank_stress() -> float:
+	var sum: float = 0.0
+	var n: int = 0
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		sum += float(f.get("stress") if f.get("stress") != null else 0.0)
+		n += 1
+	var fish_stress: float = sum / maxf(float(n), 1.0)
+	var chem_stress: float = 0.0
+	if water_chemistry != null:
+		chem_stress = clampf(float(water_chemistry.ammonia) * 0.9
+				+ float(water_chemistry.nitrite) * 0.7, 0.0, 1.0)
+	return clampf(fish_stress * 0.65 + chem_stress * 0.35, 0.0, 1.0)
+
+
+func topdown_cycle_ok() -> bool:
+	if water_chemistry == null:
+		return true
+	return float(water_chemistry.ammonia) < 0.35 \
+			and float(water_chemistry.nitrite) < 0.4 \
+			and float(water_chemistry.bacteria_colony) > 0.12
+
+
+func topdown_shadow_flash() -> float:
+	var flash: float = 0.0
+	if sync_turn_active():
+		flash = TopdownMotion.shadow_flash_strength(0.85, _sync_polarization)
+	for f in fish:
+		if not is_instance_valid(f):
+			continue
+		var sf_v: Variant = f.get("_silver_flash")
+		if sf_v != null:
+			flash = maxf(flash, TopdownMotion.shadow_flash_strength(float(sf_v), _sync_polarization))
+	return flash
 
 
 # Append a mourning event (called when a named fish dies). Pruned in _tick.
@@ -387,6 +1020,10 @@ func _epitaph_for_fish(actor: Node) -> String:
 	var species_id: String = String(actor.species) if actor.get("species") != null else "fish"
 	var parts: PackedStringArray = PackedStringArray()
 	parts.append("%s, a %s, has passed" % [fname, species_id])
+	if actor is Fish:
+		var story: String = FishJournal.life_story_from_salient(actor)
+		if story != "" and story.length() > 12:
+			return story
 	var bio_v: Variant = actor.get("bio")
 	if bio_v is Dictionary:
 		var bio_d: Dictionary = bio_v
@@ -575,6 +1212,10 @@ func _tick_long_arc(dt: float) -> void:
 		if stability < 0.30 and not _crash_latch:
 			_crash_latch = true
 			tank_legacy["crashes"] = int(tank_legacy.get("crashes", 0)) + 1
+			for ff in fish:
+				if is_instance_valid(ff) and ff.bio is Dictionary:
+					ff.bio["near_deaths"] = int(ff.bio.get("near_deaths", 0)) + 1
+					MakeItThere.hardship_bio_boost(ff)
 		elif stability > 0.55:
 			_crash_latch = false
 	# Slow cadence: legacy peaks + day milestones + anniversary.
@@ -647,12 +1288,16 @@ func _on_fish_bio_ready(fish_id: String, bio: String) -> void:
 
 
 func is_guardian_creature(c: Node) -> bool:
-	return c is Fish and bool(c.is_guardian)
+	return is_instance_valid(c) and c is Fish and bool(c.is_guardian)
 
 
 func _find_guardian_fish() -> Fish:
 	for f in fish:
-		if is_instance_valid(f) and f.is_guardian:
+		if not is_instance_valid(f) or not (f is Fish):
+			continue
+		if f.is_queued_for_deletion() or f.get("_dying") == true:
+			continue
+		if f.is_guardian:
 			return f
 	return null
 
@@ -672,6 +1317,10 @@ func _tick_guardian(dt: float) -> void:
 	GuardianMind.update_player_read(_guardian_arc, _feed_time_history)
 	var result: Dictionary = GuardianFish.evaluate_tick(g, self, _guardian_arc, dt)
 	if result.is_empty():
+		if daylight() < 0.16 and randf() < dt * 0.004:
+			var quiet: String = GuardianMind.compose_quiet_inner_line(self, _guardian_arc, 0)
+			GuardianMind.record_quiet_moment(_guardian_arc, quiet)
+			_journal_append(quiet, "quiet_inner", "", "event")
 		return
 	var action: String = String(result.get("action", ""))
 	_speak_guardian(g, String(result.get("situation", "")), action)
@@ -689,9 +1338,26 @@ func _connect_guardian_ai() -> void:
 	if _ai_guardian_connected:
 		return
 	var ai: Node = get_node_or_null("/root/AIDirector")
-	if ai != null and ai.has_signal("guardian_line_ready"):
+	if ai == null:
+		return
+	if ai.has_signal("guardian_line_ready"):
 		ai.guardian_line_ready.connect(_on_guardian_line_ready)
-		_ai_guardian_connected = true
+	if ai.has_signal("guardian_line_streaming"):
+		ai.guardian_line_streaming.connect(_on_guardian_line_streaming)
+	_ai_guardian_connected = true
+
+
+func _voice_presentation_enabled() -> bool:
+	var cfg := _cfg()
+	return cfg != null and not bool(cfg.sentience_voice_off)
+
+
+func _on_guardian_line_streaming(cache_key: String, partial: String) -> void:
+	if partial.strip_edges() == "":
+		return
+	GuardianJournal.upgrade_entry_text(_guardian_journal, cache_key, partial)
+	if _voice_presentation_enabled():
+		emit_signal("guardian_recap_streaming", partial.strip_edges())
 
 
 func _on_guardian_line_ready(cache_key: String, line: String, _source: String) -> void:
@@ -699,34 +1365,51 @@ func _on_guardian_line_ready(cache_key: String, line: String, _source: String) -
 		return
 	GuardianJournal.upgrade_entry_text(_guardian_journal, cache_key, line)
 	GuardianMind.remember_line(_guardian_arc, line)
+	if not _voice_presentation_enabled():
+		return
+	var g: Fish = _find_guardian_fish()
+	if g != null and is_instance_valid(g):
+		emit_signal("guardian_spoke", line.strip_edges(), g, "refined")
 
 
 func _speak_guardian(g: Fish, situation: String, action: String = "", extra: Dictionary = {}) -> void:
 	if g == null or not is_instance_valid(g) or situation == "":
 		return
 	_ensure_guardian_arc()
+	if extra.has("gap_human"):
+		_guardian_arc["_away_gap"] = String(extra.get("gap_human", ""))
+	if extra.has("away_summary"):
+		_guardian_arc["_away_summary"] = String(extra.get("away_summary", ""))
 	var chapter: int = int(_guardian_arc.get("chapter", 0))
 	var template: String = GuardianFish.arc_chapter_line(g, self, _guardian_arc, chapter, situation)
+	_guardian_arc.erase("_away_gap")
+	_guardian_arc.erase("_away_summary")
 	var day_label: String = sim_day_label()
 	var cache_key: String = GuardianMind.cache_key(_guardian_id, situation, day_label)
 	var ctx: Dictionary = GuardianMind.build_ai_context(g, self, _guardian_arc, situation)
+	ctx["situation"] = situation
 	ctx["interpreted"] = GuardianMind.interpreted_situation(g, self, _guardian_arc, situation)
-	if extra.has("gap_human"):
-		ctx["away_gap"] = String(extra.get("gap_human", ""))
+	for k in extra:
+		ctx[k] = extra[k]
 	var line: String = template
 	var ai: Node = get_node_or_null("/root/AIDirector")
 	if ai != null and ai.has_method("queue_guardian_line"):
 		line = String(ai.queue_guardian_line(ctx, template, cache_key))
 	GuardianMind.remember_line(_guardian_arc, line)
 	_journal_append(line, situation, cache_key, "template")
-	emit_signal("guardian_spoke", line, g, action)
+	if _voice_presentation_enabled():
+		var display_action: String = action if action != "" else situation
+		emit_signal("guardian_spoke", line, g, display_action)
 
 
 func _journal_append(text: String, situation: String, cache_key: String, source: String) -> void:
 	if text.strip_edges() == "":
 		return
+	var woven: String = GuardianJournal.weave_callback(_guardian_journal, text, situation)
 	var tags: PackedStringArray = PackedStringArray([situation])
-	GuardianJournal.append_entry(_guardian_journal, text,
+	if situation == "quiet_inner":
+		tags.append("quiet")
+	GuardianJournal.append_entry(_guardian_journal, woven,
 			int(_guardian_arc.get("chapter", 0)), tags, {
 				"t": elapsed_runtime_s,
 				"tank_age_s": tank_age_s,
@@ -758,22 +1441,104 @@ func on_player_focus_in() -> void:
 	var gap_s: int = now - last if last > 0 else 0
 	GuardianMind.record_visit(_guardian_arc, now, gap_s)
 	GuardianMind.update_player_read(_guardian_arc, _feed_time_history)
+	GuardianMind.note_tank_started(_guardian_arc, int(sim_day()))
+	GuardianMind.maybe_advance_chapter(_guardian_arc, tank_age_s)
+	var mind: Dictionary = GuardianMind.ensure_mind(_guardian_arc)
+	var visits: int = int(mind.get("visit_count", 0))
+	if visits == 1:
+		GuardianMind.record_milestone(_guardian_arc, "the day you first watched the glass")
+	elif visits == 10:
+		GuardianMind.record_milestone(_guardian_arc, "a familiar rhythm between us")
+	if MakeItThere.us_milestone_ready(_guardian_arc):
+		MakeItThere.record_us_milestone(_guardian_arc)
 	_maybe_guardian_daily_entry(g)
+	MakeItThere.apply_guardian_hello(g, _guardian_arc, _make_it_there_session, visits)
+	MakeItThere.try_one_shot_on_focus(self, _guardian_arc, visits,
+			float(mind.get("care_trust", 0.0)))
+	# Body-before-voice arrival hitch (#2): turn toward glass before any line.
+	g._reaction_remaining = maxf(g._reaction_remaining, 0.42)
+	g._interest_target = _player_glance_point
+	g._interest_remaining = 0.55
 	if gap_s >= 120 and float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
 		var action: String = "intro" if _guardian_id != "" and gap_s >= 900 else ""
-		_speak_guardian(g, "arrival", action)
+		var speak_fn := func() -> void:
+			if is_instance_valid(g):
+				_speak_guardian(g, "arrival", action)
+		get_tree().create_timer(0.38).timeout.connect(speak_fn, CONNECT_ONE_SHOT)
+	if gap_s >= 1800 and g != null:
+		var quiet: String = GuardianMind.compose_quiet_inner_line(self, _guardian_arc, gap_s)
+		GuardianMind.record_quiet_moment(_guardian_arc, quiet)
+		_journal_append(quiet, "quiet_inner", "", "event")
+	_deliver_fish_return_conversation(gap_s)
+
+
+func _tick_make_it_there(dt: float) -> void:
+	var anticipated: bool = feed_anticipation_active()
+	var fed_recently: bool = false
+	if _last_feed_unix > 0:
+		fed_recently = int(Time.get_unix_time_from_system()) - _last_feed_unix < 120
+	if MakeItThere.tick_feed_disappointment(self, anticipated, fed_recently,
+			_make_it_there_session, dt):
+		_make_it_there_session["feed_disappointed"] = true
+		var g: Fish = _find_guardian_fish()
+		if g != null and is_instance_valid(g):
+			g.mood = clampf(g.mood - 0.12, -1.0, 1.0)
+			g._interest_target = _player_glance_point
+			g._interest_remaining = 0.35
+	_ensure_guardian_arc()
+	MakeItThere.tick_sim(self, _guardian_arc, _make_it_there_session, dt)
+	MakeItThere.try_grief_care(self, _guardian_arc)
+
+
+func _tick_night_watch(dt: float) -> void:
+	tick_night_disturb_decay(dt)
+	decay_return_grace(dt)
+	tick_dawn_spark_decay(dt)
+	tick_confession_cooldown(dt)
+	NightWatch.tick_sim(self, dt, _room_idle_s)
+	_tank_mind = TankMind.ensure(self)
+
+
+func note_luminous_farewell(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	var g: Fish = _find_guardian_fish()
+	if g != null and float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+		_guardian_arc["_farewell_name"] = f.fish_name if f.fish_name != "" else f.species
+		_speak_guardian(g, "luminous_farewell", f.fish_name)
+		_guardian_arc.erase("_farewell_name")
+	if f.fish_name != "" and randf() < 0.6:
+		append_fish_journal_entry(f, "A last bright day — gentle and unhurried.",
+				PackedStringArray(["farewell"]))
+	if _voice_presentation_enabled() and f.familiarity >= 0.35:
+		speak_creature_thought(f, "keeper_goodbye")
+
+
+func spark_calm() -> float:
+	return _spark_calm
+
+
+func spark_vespers() -> bool:
+	return _spark_vespers
+
+
+func spark_night_cathedral() -> bool:
+	return _spark_night_cathedral
 
 
 func on_player_focus_out() -> void:
 	if not _guardian_companion_enabled():
 		return
 	_ensure_guardian_arc()
+	_away_dream_count = 0
 	GuardianMind.record_departure(_guardian_arc, int(Time.get_unix_time_from_system()))
 	var g: Fish = _find_guardian_fish()
 	if g == null:
 		return
+	var mind: Dictionary = GuardianMind.ensure_mind(_guardian_arc)
+	var sit: String = MakeItThere.departure_line(_guardian_arc, float(mind.get("care_trust", 0.0)))
 	if float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
-		_speak_guardian(g, "departure", "")
+		_speak_guardian(g, sit, "")
 
 
 func _maybe_guardian_daily_entry(g: Fish) -> void:
@@ -829,7 +1594,10 @@ func _ensure_guardian() -> void:
 				pick = f
 				break
 	if pick == null:
-		pick = fish[0] as Fish
+		for f in fish:
+			if is_instance_valid(f):
+				pick = f
+				break
 	if pick == null or not is_instance_valid(pick):
 		return
 	for f in fish:
@@ -842,14 +1610,30 @@ func _ensure_guardian() -> void:
 		var mind: Dictionary = GuardianMind.ensure_mind(_guardian_arc)
 		mind["predecessor_name"] = _guardian_predecessor_name
 		mind["predecessor_note"] = _guardian_predecessor_bio
+		GuardianMind.inherit_predecessor_bond(_guardian_arc, _guardian_predecessor_name,
+				_guardian_predecessor_moniker, _guardian_predecessor_memories)
 		GuardianJournal.merge_predecessor(_guardian_journal,
 				_guardian_predecessor_journal,
 				_guardian_predecessor_name,
-				_guardian_predecessor_bio)
+				_guardian_predecessor_bio,
+				_guardian_predecessor_moniker,
+				_guardian_predecessor_memories,
+				_guardian_predecessor_legend)
 		GuardianMind.apply_personality_drift(_guardian_arc, "successor")
+		if _guardian_predecessor_name != "":
+			var ring: Array = MindConversation.ensure_ring(pick)
+			ring.append({
+				"role": "keeper",
+				"text": "they told me about %s" % _guardian_predecessor_name,
+				"t": Time.get_ticks_msec(),
+			})
+			pick._dialogue_ring = ring
 		_speak_guardian(pick, "successor", "successor")
 	elif _guardian_id == "":
 		_speak_guardian(pick, "arrival", "intro")
+		MakeItThere.apply_burn_bright_blessing(pick, self)
+		MakeItThere.try_song_moment(self, _guardian_arc, "first_guardian")
+		MakeItThere.record_parenting(_guardian_arc, "patient")
 	_guardian_id = String(pick.id)
 	if pick.character_bio == "":
 		pick.character_bio = GuardianFish.offline_guardian_bio(pick)
@@ -951,6 +1735,9 @@ func do_water_change(fraction: float = 0.35) -> void:
 	if water_chemistry != null and water_chemistry.has_method("apply_water_change"):
 		water_chemistry.apply_water_change(fraction)
 	log_story_event("Water change — nitrate diluted, minerals refreshed.")
+	for ff in fish:
+		if is_instance_valid(ff):
+			note_keeper_care_for_fish(ff, "water_change")
 var plant_growth_budget: int = 0
 var _pearling_slots_used: int = 0
 const PEARLING_MAX_SLOTS: int = 22
@@ -1361,6 +2148,9 @@ func register_fish(f: Fish) -> void:
 	ensure_id(f)
 	if f.has_method("_refresh_character_bio"):
 		f._refresh_character_bio()
+	if MakeItThere.runt_underdog_note(f) and f.fish_name != "":
+		append_fish_journal_entry(f, "Small — but still here. Root for this one.",
+				PackedStringArray(["underdog"]))
 	if _guardian_companion_enabled():
 		call_deferred("_ensure_guardian")
 
@@ -1966,6 +2756,8 @@ func query_fish_in_radius(pos: Vector3, radius_sq: float) -> Array:
 			var cell := Vector2i(cx + dx, cz + dz)
 			var bucket: Array = _fish_query_grid.get(cell, [])
 			for f in bucket:
+				if not is_instance_valid(f) or f.get("_dying") == true:
+					continue
 				if f.global_position.distance_squared_to(pos) < radius_sq:
 					result.append(f)
 	return result
@@ -1997,6 +2789,8 @@ func _spatial_query(pos: Vector3, radius_sq: float, exclude: Node3D = null) -> A
 			var cell := Vector2i(cx + dx, cz + dz)
 			var bucket: Array = _spatial_grid.get(cell, [])
 			for e in bucket:
+				if not is_instance_valid(e) or e.get("_dying") == true:
+					continue
 				if e == exclude:
 					continue
 				if e.position.distance_squared_to(pos) < radius_sq:
@@ -2236,16 +3030,25 @@ func _enforce_all_fauna_in_tank() -> void:
 # In-place removal of invalidated refs. Iterates backward and uses
 # remove_at() so we never allocate a new Array — eliminates the GC
 # pressure of the old Array.filter() approach.
+# Also drops nodes already queue_free'd: they stay is_instance_valid until
+# frame end but must not be written to (coral.gd, night_watch, etc.).
 static func _prune_invalid(arr: Array) -> void:
 	for i in range(arr.size() - 1, -1, -1):
-		if not is_instance_valid(arr[i]):
+		var item: Variant = arr[i]
+		if not is_instance_valid(item):
+			arr.remove_at(i)
+			continue
+		if item is Node and (item as Node).is_queued_for_deletion():
 			arr.remove_at(i)
 
 
 func _prune_non_finite_positions(arr: Array) -> void:
 	for i in range(arr.size() - 1, -1, -1):
+		if not is_instance_valid(arr[i]):
+			arr.remove_at(i)
+			continue
 		var n: Node3D = arr[i] as Node3D
-		if n == null or not is_instance_valid(n):
+		if n == null:
 			arr.remove_at(i)
 			continue
 		if not n.global_position.is_finite() or not n.transform.is_finite():
@@ -2271,10 +3074,21 @@ func _prune_non_finite_snails() -> void:
 
 func _tick(dt: float) -> void:
 	tank_age_s += dt
+	# Prune queue_freed fauna before any tick logic that iterates fish/shrimp
+	# (guardian pick, cast-change counts, spatial rebuild). Stale refs survive
+	# until the engine deletes the node at frame end; casting them throws.
+	_prune_invalid(fish)
+	_prune_invalid(shrimp)
+	_prune_invalid(eggs)
+	_prune_invalid(waste)
 	_tick_carrying_capacity(dt)
 	_tick_long_arc(dt)
 	_tick_guardian(dt)
+	_tick_make_it_there(dt)
+	_tick_night_watch(dt)
+	_tick_cast_change_guardian()
 	_tick_care_nudge(dt)
+	_tick_crisis_voice()
 	_trophic_hour_timer += dt
 	if _trophic_hour_timer >= 3600.0:
 		_trophic_hour_timer = 0.0
@@ -2286,12 +3100,31 @@ func _tick(dt: float) -> void:
 	_school_pulse_phase += dt * TAU / SCHOOL_PULSE_PERIOD
 	if _school_pulse_phase > TAU * 1000.0:
 		_school_pulse_phase = fmod(_school_pulse_phase, TAU)
+	if _sync_turn_remaining > 0.0:
+		_sync_turn_remaining = maxf(0.0, _sync_turn_remaining - dt)
+		_sync_settle = TopdownMotion.sync_settle_tightness(_sync_turn_remaining, 0.52)
+		_was_sync_turn = true
+		if _sync_turn_remaining <= 0.0:
+			if _sync_polarization > 0.62 and _flip_cascade_left < 1:
+				_flip_cascade_left = 1
+			_sync_polarization = lerpf(_sync_polarization, 0.0, 0.35)
+	elif _was_sync_turn:
+		_was_sync_turn = false
+	_tick_topdown_flock_events(dt)
+	if _startle_bolt_remaining > 0.0:
+		_startle_bolt_remaining = maxf(0.0, _startle_bolt_remaining - dt)
+		_startle_bolt_was = true
+	elif _startle_bolt_was:
+		_startle_bolt_was = false
+		pulse_density_wave(_startle_bolt_origin, 1.0)
+	if _density_wave_strength > 0.01:
+		_density_wave_radius += dt * 4.2
+		_density_wave_strength = maxf(0.0, _density_wave_strength - dt * 0.38)
+	_flock_orbit_phase += dt * 0.065
+	_conduct_until = maxf(0.0, _conduct_until - dt)
+	_predator_wave_cd = maxf(0.0, _predator_wave_cd - dt)
 	# 1. Prune invalid refs (queue_freed nodes) — in-place, no allocation.
-	_prune_invalid(fish)
-	_prune_invalid(shrimp)
 	_prune_invalid(plants)
-	_prune_invalid(waste)
-	_prune_invalid(eggs)
 	_prune_non_finite_positions(fish)
 	_prune_non_finite_positions(shrimp)
 	_prune_non_finite_snails()
@@ -3235,6 +4068,30 @@ func _tick(dt: float) -> void:
 					var epitaph: String = _epitaph_for_fish(actor)
 					if epitaph != "":
 						log_story_event(epitaph)
+					if actor is Fish:
+						var ff: Fish = actor
+						var g_ob: Fish = _find_guardian_fish()
+						if g_ob != null and is_instance_valid(g_ob) and not ff.is_guardian \
+								and float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
+							_guardian_arc["_deceased_name"] = ff.fish_name
+							var ob_ctx: Dictionary = MakeItThere.build_obituary_context(ff, self)
+							_speak_guardian(g_ob, "obituary", "", ob_ctx)
+							_guardian_arc.erase("_deceased_name")
+						MakeItThere.note_loss(self, _guardian_arc)
+						MakeItThere.try_coincidence_death(self, day_phase)
+						if not _logged_first_death:
+							MakeItThere.try_song_moment(self, _guardian_arc, "first_death")
+						if ff.fish_journal.size() > 0 or ff.salient_memories.size() > 0:
+							_fish_legacies.append({
+								"id": String(ff.id),
+								"name": ff.fish_name,
+								"species": String(ff.species),
+								"journal": ff.fish_journal.duplicate(true),
+								"story": FishJournal.life_story_from_salient(ff),
+								"sim_day": sim_day_label(),
+							})
+							while _fish_legacies.size() > 24:
+								_fish_legacies.pop_front()
 						# Visible marker at the death point — re-uses the
 						# existing burst ripple shader for a clean
 						# "something happened here" pulse.
@@ -3246,6 +4103,15 @@ func _tick(dt: float) -> void:
 						_guardian_predecessor_name = actor.fish_name if actor.fish_name != "" else "the Guardian"
 						_guardian_predecessor_bio = String(actor.character_bio)
 						_guardian_predecessor_journal = _guardian_journal.duplicate(true)
+						var pred_mind: Dictionary = GuardianMind.ensure_mind(_guardian_arc)
+						_guardian_predecessor_moniker = String(pred_mind.get("player_moniker", ""))
+						_guardian_predecessor_memories = pred_mind.get("memories_of_you",
+								PackedStringArray()) as PackedStringArray
+						_guardian_predecessor_legend = GuardianMind.note_legend(
+								_guardian_arc,
+								_guardian_predecessor_name,
+								tank_age_s,
+								int(pred_mind.get("generations_witnessed", 0)))
 						_speak_guardian(actor, "finale", "lost")
 						_journal_append("%s is gone — the tank feels quieter." % _guardian_predecessor_name,
 								"lost", "", "event")
@@ -3516,6 +4382,7 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 		fry.hunger = 0.25
 		fry.energy = 0.95
 		register_fish(fry)
+		MindLexicon.inherit_from_parent(fry, mother)
 		fry._reclamp_territory_to_tank()
 	# Mother's belly is empty: extra exhaustion + small recovery cooldown.
 	mother.energy = maxf(0.0, mother.energy - 0.20)
@@ -3548,6 +4415,7 @@ func _release_brooded_fry(mother: Fish, brood_genome: Dictionary, count: int) ->
 		fry.hunger = 0.20
 		fry.energy = 0.95
 		register_fish(fry)
+		MindLexicon.inherit_from_parent(fry, mother)
 		fry._reclamp_territory_to_tank()
 	# Mother bottoms out — caring for a brood is expensive.
 	mother.energy = maxf(0.0, mother.energy - 0.25)
@@ -4733,6 +5601,8 @@ func _emit_stats() -> void:
 		"waste_particles": waste.size(),
 		"substrate_nutrients_total": substrate.total_above_baseline() if substrate else 0.0,
 		"dissolved_o2": dissolved_o2,
+		"daylight": daylight(),
+		"night_breath_inhale": daylight() < 0.28,
 		"ammonia": water_chemistry.ammonia,
 		"nitrite": water_chemistry.nitrite,
 		"nitrate": water_chemistry.nitrate,
@@ -4765,6 +5635,7 @@ func _emit_stats() -> void:
 		"toxic_nh3": water_chemistry.toxic_ammonia,
 		"stability": stability,
 		"filter_clog": _filter_clog,
+		"day_phase": day_phase,
 	}
 	# Capture this snapshot into the ring buffer so chip-tap sparklines have
 	# a 2-minute history to draw. _emit_stats fires at 1 Hz so HISTORY_LEN
@@ -4917,6 +5788,14 @@ func save_state() -> Dictionary:
 			"guardian_predecessor_journal": _guardian_predecessor_journal.duplicate(true),
 			"guardian_predecessor_name": _guardian_predecessor_name,
 			"guardian_predecessor_bio": _guardian_predecessor_bio,
+			"guardian_predecessor_moniker": _guardian_predecessor_moniker,
+			"guardian_predecessor_memories": _guardian_predecessor_memories,
+			"fish_journals": _fish_journals.duplicate(true),
+			"fish_legacies": _fish_legacies.duplicate(true),
+			"voice_caches": _export_voice_caches(),
+			"tank_mind": TankMind.to_dict(self),
+			"night_runtime": _export_night_runtime(),
+			"away_dream_count": _away_dream_count,
 		},
 		"substrate": substrate.to_save_dict() if substrate != null else {},
 		"plants": [],
@@ -5076,6 +5955,23 @@ func load_state(d: Dictionary) -> void:
 		_guardian_predecessor_journal = (saved_pjournal as Array).duplicate(true)
 	_guardian_predecessor_name = String(sim_d.get("guardian_predecessor_name", ""))
 	_guardian_predecessor_bio = String(sim_d.get("guardian_predecessor_bio", ""))
+	_guardian_predecessor_moniker = String(sim_d.get("guardian_predecessor_moniker", ""))
+	var saved_pmem: Variant = sim_d.get("guardian_predecessor_memories", null)
+	if saved_pmem is PackedStringArray:
+		_guardian_predecessor_memories = saved_pmem as PackedStringArray
+	elif saved_pmem is Array:
+		_guardian_predecessor_memories = PackedStringArray(saved_pmem)
+	var saved_fj: Variant = sim_d.get("fish_journals", null)
+	if saved_fj is Dictionary:
+		_fish_journals = (saved_fj as Dictionary).duplicate(true)
+	var saved_fl: Variant = sim_d.get("fish_legacies", null)
+	if saved_fl is Array:
+		_fish_legacies = (saved_fl as Array).duplicate(true)
+	_import_voice_caches(sim_d.get("voice_caches", {}))
+	TankMind.from_dict(self, sim_d.get("tank_mind", null))
+	_tank_mind = TankMind.ensure(self)
+	_import_night_runtime(sim_d.get("night_runtime", null))
+	_away_dream_count = int(sim_d.get("away_dream_count", 0))
 	_ensure_guardian_arc()
 	if water_chemistry != null:
 		water_chemistry.apply_save_dict(d.get("water_chemistry", {}), save_ver)
@@ -5204,6 +6100,8 @@ func load_state(d: Dictionary) -> void:
 	if saved_unix > 0:
 		var gap_s: int = int(Time.get_unix_time_from_system()) - saved_unix
 		if gap_s >= 900:  # 15 min
+			NightWatch.simulate_away_gap(self, gap_s)
+			set_night_rt_f("return_grace_s", clampf(float(gap_s) / 120.0, 25.0, 90.0))
 			_emit_away_recap(gap_s)
 
 
@@ -5213,14 +6111,31 @@ func load_state(d: Dictionary) -> void:
 func _emit_away_recap(gap_s: int) -> void:
 	var human_gap: String = _format_gap_human(gap_s)
 	var g: Fish = _find_guardian_fish()
+	var summary: String = _away_recap_summary(gap_s)
+	var extras: Dictionary = MakeItThere.away_recap_extras(
+			gap_s, stability, int(tank_legacy.get("crashes", 0)), _away_dream_count, _guardian_arc)
+	extras.merge(NightWatch.away_summary_extra(self, gap_s))
+	extras["away_summary"] = summary
 	if g != null and _guardian_companion_enabled():
 		GuardianMind.record_player_action(_guardian_arc, "away_recap",
 				"you were away for %s" % human_gap)
-		var summary: String = _away_recap_summary(gap_s)
 		_journal_append("While you were away for %s: %s" % [human_gap, summary],
 				"away_recap", "", "event")
 		if float(_guardian_arc.get("speak_cd", 0.0)) <= 0.0:
-			_speak_guardian(g, "away_recap", "", {"gap_human": human_gap, "gap_s": gap_s})
+			_guardian_arc["_away_gap"] = human_gap
+			_guardian_arc["_away_summary"] = summary
+			var ctx_extra: Dictionary = extras.duplicate(true)
+			ctx_extra["gap_human"] = human_gap
+			ctx_extra["gap_s"] = gap_s
+			ctx_extra["fish_count"] = fish.size()
+			ctx_extra["shrimp_count"] = shrimp.size()
+			_speak_guardian(g, "away_recap", "", ctx_extra)
+		var host: Node = get_tree().current_scene
+		if host != null:
+			var ob: Variant = host.get("_onboarding")
+			if ob != null and ob.has_method("show_away_recap_card"):
+				ob.call("show_away_recap_card", human_gap, summary)
+		_away_dream_count = 0
 		return
 	# Snapshot stats the LLM can talk about: counts of living creatures,
 	# how many bio'd fish (proxy for "named individuals"), tank cycle phase.
@@ -5252,12 +6167,25 @@ func _emit_away_recap(gap_s: int) -> void:
 		ai_d._flush_chronicle()
 
 
-func _away_recap_summary(_gap_s: int) -> String:
+func _away_recap_summary(gap_s: int) -> String:
+	var tier: String = MakeItThere.away_recap_tier(gap_s)
 	var tail: String = "the tank kept itself going"
 	if int(tank_legacy.get("crashes", 0)) > 0 and stability > 0.5:
 		tail = "it weathered a rough patch and steadied itself"
 	elif fish.size() > 0:
 		tail = "everyone held steady — %d fish, %d shrimp still here" % [fish.size(), shrimp.size()]
+	if _away_dream_count > 0:
+		tail += " — %d dream%s in the dark" % [_away_dream_count, "s" if _away_dream_count != 1 else ""]
+	if daylight() < 0.32 or (day_phase > 0.65 and day_phase < 0.88):
+		tail = "you returned in the dark — " + tail
+	var tm: Dictionary = TankMind.ensure(self)
+	var stream: String = str(tm.get("stream", ""))
+	if stream != "":
+		tail += " — %s" % stream
+	elif str(tm.get("self_summary", "")) != "":
+		tail += " — %s" % str(tm.get("self_summary", ""))
+	if tier == "chapter":
+		return "a quiet chapter: %s" % tail
 	return tail
 
 
@@ -5357,6 +6285,7 @@ func _spawn_fish_from_dict(d: Dictionary) -> Fish:
 	f.global_position = SaveHelpers.array_to_vec3(d.get("pos", []), Vector3.ZERO)
 	f.sim = self
 	f.apply_save_dict(d)
+	restore_fish_journal(f)
 	return f
 
 

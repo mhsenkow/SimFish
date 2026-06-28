@@ -21,6 +21,7 @@ class_name Shrimp
 # See fish.gd for why we preload instead of relying on class_name.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
+const SpeciesLibScript = preload("res://scripts/species_library.gd")
 
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
@@ -1173,6 +1174,11 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 
 		# Then: pick a tall plant to climb if we have no current target.
 		if climb_target == null:
+			var w_sh: Node = sim.get_parent() if sim != null else null
+			if w_sh != null and w_sh.has_method("query_build_shelter_near") and hunger > 0.2:
+				var ledge: Vector3 = w_sh.query_build_shelter_near(position, 2.6)
+				if ledge != Vector3.ZERO and absf(ledge.y - position.y) < 1.2:
+					target_velocity += (ledge - position).normalized() * max_speed * 0.65
 			var best_p: Plant = null
 			var best_p_d2: float = 12.0
 			for p in plants:
@@ -1224,10 +1230,14 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		wander_dir.y = 0.0
 		target_velocity += wander_dir.normalized() * max_speed * 0.4
 
-	# Night-time dampening - shrimp also slow at night.
+	# Night-time dampening - shrimp slow by day; inherit the night when fish sleep (#33).
 	if sim != null:
 		var dl: float = float(sim.daylight())
 		var night_factor: float = 0.35 + 0.65 * dl
+		if dl < 0.28 and sim.has_method("tank_mind_snapshot"):
+			var asleep: float = float(sim.tank_mind_snapshot().get("asleep_fraction", 0.0))
+			if asleep > 0.55:
+				night_factor = 0.52 + 0.48 * dl
 		target_velocity *= night_factor
 
 	var mr := get_tree().get_first_node_in_group("music_reactive")
@@ -1825,7 +1835,7 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"pattern_density": new_pat_density,
 		"generation": maxi(generation, other.generation) + 1,
 		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
-		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
+		"parent_keys": SpeciesLibScript.new().parent_keys_for_breeding([
 			get_saved_genome(), other.get_saved_genome(),
 		]),
 	}

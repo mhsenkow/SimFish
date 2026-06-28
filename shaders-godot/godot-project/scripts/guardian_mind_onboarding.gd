@@ -7,10 +7,10 @@ extends PanelContainer
 signal closed(accepted: bool)
 
 const PRIVACY_NOTE: String = (
-	"Runs 100% on your device. Nothing you say in the tank is sent anywhere. "
+	"Runs on your device only — private and offline. Nothing leaves your machine. "
 	+ "Turn off anytime in Settings → AI.")
 
-enum Mode { DOWNLOAD, BUNDLED_INFO }
+enum Mode { DOWNLOAD, BUNDLED_INFO, NORTH_STAR }
 
 var _mode: int = Mode.DOWNLOAD
 var _accept_btn: Button
@@ -46,6 +46,7 @@ func _build_ui() -> void:
 	add_child(v)
 
 	var title := Label.new()
+	title.name = "TitleLabel"
 	title.text = "Give your Guardian a voice?"
 	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color8(255, 215, 110))
@@ -90,19 +91,36 @@ func setup(mode: int) -> void:
 func _apply_mode(mode: int) -> void:
 	var body: Label = find_child("BodyLabel", true, false) as Label
 	var row: HBoxContainer = find_child("ButtonRow", true, false) as HBoxContainer
+	var title: Label = find_child("TitleLabel", true, false) as Label
 	if body == null or row == null:
 		return
 	match mode:
-		Mode.BUNDLED_INFO:
+		Mode.NORTH_STAR:
+			if title != null:
+				title.text = "Small minds, private voice"
 			body.text = (
-				"Your Guardian can speak in its own words — a small AI bundled with the game, "
-				+ "private and offline. Template lines still work if you skip this.")
+				"This tank simulates real inner lives — moods, wants, memory — in every fish. "
+				+ "Optionally, your device turns that into quiet diary text. Nothing is sent anywhere; "
+				+ "the model only voices what the simulation already knows. We never claim consciousness — "
+				+ "only patterns your machine imagines, privately, for you. "
+				+ "You're not a perfect creator — just someone making a soul anyway.")
+			_accept_btn.text = "Got it"
+			_decline_btn.visible = false
+		Mode.BUNDLED_INFO:
+			if title != null:
+				title.text = "A fish here can develop a voice"
+			body.text = (
+				"One fish in your tank can speak in its own words — a small model bundled with "
+				+ "the game, private and offline. Template thoughts still work if you skip this.")
 			_accept_btn.text = "Got it"
 			_decline_btn.visible = false
 		_:
+			if title != null:
+				title.text = "A fish here can develop a voice"
 			body.text = (
-				"Your Guardian can speak in its own words — a small AI that runs inside the game. "
-				+ "This one-time download is about 250MB to your save folder, then works offline.")
+				"One fish here can develop a voice — it runs on your device, private. "
+				+ "This one-time download is about 250MB to your save folder, then works offline. "
+				+ "Want that?")
 			_accept_btn.text = "Yes — download & enable"
 			_decline_btn.visible = true
 			_decline_btn.text = "Not now — template voice only"

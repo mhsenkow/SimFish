@@ -235,7 +235,6 @@ offset_top = 6.0
 offset_right = 8.0
 offset_bottom = 6.0
 mouse_filter = 1
-theme_override_styles/panel = SubResource("SBF_cluster")
 
 [node name="HBox" type="HBoxContainer" parent="TopHUD/LeftCluster"]
 theme_override_constants/separation = 4
@@ -258,10 +257,9 @@ anchor_right = 1.0
 offset_left = 128.0
 offset_top = 6.0
 offset_right = -72.0
-offset_bottom = 46.0
+offset_bottom = 50.0
 grow_horizontal = 2
 mouse_filter = 1
-theme_override_styles/panel = SubResource("SBF_cluster")
 
 [node name="HBox" type="HBoxContainer" parent="TopHUD/StatsBar"]
 theme_override_constants/separation = 8
@@ -289,11 +287,10 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 1
-theme_override_styles/panel = SubResource("SBF_cluster")
 
 [node name="VBox" type="VBoxContainer" parent="RightRail/RightCluster"]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 8
 alignment = 1
 
 [node name="PortalToggle" type="Button" parent="RightRail/RightCluster/VBox"]
@@ -401,15 +398,15 @@ theme_override_styles/focus = SubResource("SBE_button_flat")
 
 [node name="AquascapeToolPalette" type="PanelContainer" parent="."]
 visible = false
-anchor_left = 0.5
+anchor_left = 0.0
 anchor_top = 0.0
-anchor_right = 0.5
-anchor_bottom = 0.0
-offset_left = -180.0
+anchor_right = 0.0
+anchor_bottom = 1.0
+offset_left = 104.0
 offset_top = 52.0
-offset_right = 180.0
-offset_bottom = 96.0
-mouse_filter = 2
+offset_right = 292.0
+offset_bottom = -48.0
+mouse_filter = 0
 
 [node name="FishStorePanel" type="PanelContainer" parent="."]
 anchor_left = 0.5
@@ -466,10 +463,10 @@ mouse_filter = 0
 
 [node name="Margin" type="MarginContainer" parent="FooterBar"]
 layout_mode = 2
-theme_override_constants/margin_left = 8
-theme_override_constants/margin_top = 4
-theme_override_constants/margin_right = 8
-theme_override_constants/margin_bottom = 4
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_top = 5
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_bottom = 5
 
 [node name="HBox" type="HBoxContainer" parent="FooterBar/Margin"]
 layout_mode = 2

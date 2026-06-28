@@ -7,6 +7,7 @@
 extends Node3D
 
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const SpeciesLibScript = preload("res://scripts/species_library.gd")
 
 @export var wall_normal: Vector3 = Vector3.RIGHT
 @export var wall_min: Vector3 = Vector3(-7.6, 2.0, -3.6)
@@ -136,6 +137,7 @@ var _pulse_phase: float = 0.0
 # disturbed or while reorienting.
 var _eye_stalks: Node3D = null
 var _operculum_pivot: Node3D = null
+var _transform_warned: bool = false
 var _operculum_ext: float = 0.0
 var _eye_phase: float = 0.0
 var _eye_retract_timer: float = 0.0
@@ -342,6 +344,7 @@ func _process(dt: float) -> void:
 		if dt <= 0.0:
 			return
 	dt = minf(dt, MAX_STEP_DT)
+	_sanitize_wall_normal()
 	age += dt
 	# Death by old age. queue_free with a small chance of leaving a shell
 	# voxel behind (not done here - just remove). Lifespan is genome-driven
@@ -361,6 +364,12 @@ func _process(dt: float) -> void:
 	# recovers. Babies are buffered by yolk reserves so they don't instantly
 	# starve before they can forage.
 	hunger = clampf(hunger + HUNGER_RATE * appetite * dt, 0.0, 1.0)
+	var w_sn := _world_node()
+	if w_sn != null and w_sn.has_method("build_graze_surface_boost"):
+		var graze_boost: float = float(w_sn.build_graze_surface_boost())
+		if graze_boost > 0.02 and w_sn.has_method("_is_hardscape_occupied") \
+				and w_sn._is_hardscape_occupied(global_position.x, global_position.z, 0.35):
+			hunger = clampf(hunger - graze_boost * dt * 0.4, 0.0, 1.0)
 	if hunger >= STARVE_HUNGER:
 		energy = clampf(energy - STARVE_DRAIN * dt, 0.0, 1.0)
 	elif hunger < 0.5:
@@ -375,7 +384,10 @@ func _process(dt: float) -> void:
 	# pass the accumulated dt so the clamp-release grace counter ticks
 	# down at the same wall-clock rate as before.
 	_scan_accum += dt
-	var scan_due: bool = _scan_accum >= SCAN_INTERVAL
+	var scan_interval: float = SCAN_INTERVAL
+	if sim != null and sim.has_method("daylight") and float(sim.daylight()) < 0.28:
+		scan_interval *= 0.72
+	var scan_due: bool = _scan_accum >= scan_interval
 	var scan_dt: float = _scan_accum
 	if scan_due:
 		_scan_accum = 0.0
@@ -435,6 +447,7 @@ func _process(dt: float) -> void:
 	# of the tick.
 	if _clamped:
 		_apply_squash(0.35)  # body flattened into shell
+		_ensure_finite_transform()
 		return
 
 	# Fish-hover freeze: even harmless tankmates make the snail go still
@@ -442,6 +455,7 @@ func _process(dt: float) -> void:
 	# the fish drifts away — eye stalks already retracted in the check.
 	if _fish_hover_freeze:
 		_apply_squash(0.55)  # body slightly tucked
+		_ensure_finite_transform()
 		return
 
 	# Decay the eating-pulse amplifier. Set in _check_waste_nearby on a
@@ -504,12 +518,12 @@ func _process(dt: float) -> void:
 	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
 		tangent = Vector3.RIGHT
 	else:
-		tangent = wall_normal.cross(Vector3.UP).normalized()
+		tangent = _safe_unit(wall_normal.cross(Vector3.UP), Vector3.RIGHT)
 	# bitangent completes a right-handed frame inside the wall plane. For
 	# vertical walls this resolves to ±UP (preserving the old "+y = climb up
 	# the glass" semantic); for floor/ceiling walls it resolves to ±FORWARD,
 	# so the snail moves along the plane instead of out of it.
-	var bitangent: Vector3 = tangent.cross(wall_normal).normalized()
+	var bitangent: Vector3 = _safe_unit(tangent.cross(wall_normal), Vector3.UP)
 
 	# Detritus seeking: if there's a waste particle near our wall, steer
 	# toward it (within tangent-plane). Snails are the cleanup crew - they
@@ -566,6 +580,7 @@ func _process(dt: float) -> void:
 			Basis.looking_at(flat_fwd.normalized(), Vector3.UP),
 			clampf(dt * 1.35, 0.0, 1.0))
 		_apply_wall_orientation(flat_fwd.normalized(), dt)
+		_ensure_finite_transform()
 		return
 	if _paused:
 		# Still pulse a little when paused (breathing).
@@ -665,6 +680,54 @@ func _process(dt: float) -> void:
 	# 0.3 s spacing updates are visually identical.
 	if scan_due:
 		_apply_local_spacing(tangent, bitangent)
+	_ensure_finite_transform()
+
+
+func _safe_unit(v: Vector3, fallback: Vector3) -> Vector3:
+	if not v.is_finite() or v.length_squared() < 1e-8:
+		if fallback.is_finite() and fallback.length_squared() > 1e-8:
+			return fallback.normalized()
+		return Vector3.UP
+	return v.normalized()
+
+
+func _sanitize_wall_normal() -> void:
+	if wall_normal.is_finite() and wall_normal.length_squared() > 1e-8:
+		wall_normal = wall_normal.normalized()
+	else:
+		wall_normal = Vector3.UP
+
+
+func _ensure_finite_transform() -> void:
+	var dirty: bool = false
+	_sanitize_wall_normal()
+	if not position.is_finite() or not global_position.is_finite():
+		if global_position.is_finite():
+			position = global_position
+		else:
+			position = Vector3.ZERO
+		dirty = true
+	if not scale.is_finite() or scale.x < 0.01 or scale.y < 0.01 or scale.z < 0.01:
+		scale = Vector3.ONE * (0.5 if is_baby else 1.0)
+		dirty = true
+	if not quaternion.is_finite() or not transform.is_finite():
+		var up: Vector3 = _shell_up()
+		var fwd: Vector3 = _safe_unit(-transform.basis.z, Vector3.FORWARD)
+		quaternion = Basis.looking_at(fwd, up).get_rotation_quaternion()
+		dirty = true
+	if not _spacing_push.is_finite():
+		_spacing_push = Vector3.ZERO
+		dirty = true
+	if _eye_stalks != null and is_instance_valid(_eye_stalks):
+		if not _eye_stalks.scale.is_finite() or _eye_stalks.scale.y < 0.01:
+			_eye_stalks.scale = Vector3.ONE
+			dirty = true
+		if not _eye_stalks.rotation.is_finite():
+			_eye_stalks.rotation = Vector3.ZERO
+			dirty = true
+	if dirty and not _transform_warned:
+		_transform_warned = true
+		push_warning("[Snail] non-finite transform recovered")
 
 
 func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> void:
@@ -1017,6 +1080,23 @@ func _try_attach_to_hardscape() -> bool:
 	var root: Node3D = root_v as Node3D
 	if not is_instance_valid(root):
 		return false
+	var wn := _world_node()
+	if wn != null and wn.has_method("query_build_shelter_near"):
+		var bp: Vector3 = wn.query_build_shelter_near(global_position, HARDSCAPE_PROX + 0.6)
+		if bp != Vector3.ZERO and randf() <= WALL_TRANSITION_CHANCE:
+			_attached_lily_pad = null
+			_attached_plant = null
+			_curved_attached = false
+			wall_normal = Vector3.UP
+			global_position = bp + Vector3(0, 0.06, 0)
+			_wall_anchor_offset = global_position.y
+			var ang: float = randf() * TAU
+			_direction = Vector2(cos(ang), sin(ang))
+			_facing = _direction
+			_stuck_timer = 0.0
+			_last_progress_pos = global_position
+			_sync_initial_orientation()
+			return true
 	# Walk hardscape voxels, find the closest one whose surface is within
 	# HARDSCAPE_PROX of us. Capped iteration so a large hardscape doesn't
 	# burn the tick.
@@ -1256,7 +1336,7 @@ func _shell_up() -> Vector3:
 	# the foot pointing INTO the tank. Reads as "snail facing wrong way."
 	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
 		return Vector3.UP
-	return wall_normal.normalized()
+	return _safe_unit(wall_normal, Vector3.UP)
 
 
 func _slerp_rotation_toward(target_basis: Basis, blend: float) -> void:
@@ -1384,14 +1464,11 @@ func _reclamp_to_footprint() -> void:
 				wall_normal = rad
 				_wall_anchor_offset = wall_normal.dot(global_position)
 				return
-	# Curved-wall path: the wall normal isn't fixed — it points radially
-	# inward at every position on the curve. Snap the snail to the
-	# nearest point on the tank's curved surface and recompute
-	# wall_normal from the local inward direction. tank_lateral_boundary
-	# _info gives us both: `clearance` is the distance from the snail to
-	# the wall surface, and `inward` is the radial inward unit vector
-	# at the snail's location.
-	if _curved_attached and w.has_method("tank_lateral_boundary_info"):
+	# Curved-wall path: cylinder, sphere, and polygon tanks (hex / triangle)
+	# where the inward normal varies along each face.
+	var tank_shape: String = String(w.get("TANK_SHAPE")) if w.get("TANK_SHAPE") != null else "box"
+	var polygon_wall: bool = tank_shape == "hex" or tank_shape == "triangle"
+	if (_curved_attached or polygon_wall) and w.has_method("tank_lateral_boundary_info"):
 		var info: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
 		var inward: Vector3 = info.get("inward", Vector3.ZERO)
 		var clearance: float = float(info.get("clearance", 0.0))
@@ -1510,7 +1587,9 @@ func _apply_squash(squash_y: float) -> void:
 	var shimmy_x: float = 1.0 + sin(_pulse_phase * 0.65 + 0.7) * 0.04 * eat_amp
 	# Y squash: the original foot pulse, amplified by eating.
 	var y_axis: float = 1.0 + (squash_y - 1.0) * eat_amp
-	scale = Vector3(base * shimmy_x, base * y_axis, base * creep_z)
+	var s: Vector3 = Vector3(base * shimmy_x, base * y_axis, base * creep_z)
+	if s.is_finite() and s.x > 0.01 and s.y > 0.01 and s.z > 0.01:
+		scale = s
 
 
 func _count_snails() -> int:
@@ -1588,7 +1667,7 @@ func _lay_egg_sac() -> void:
 	sac.set("inherited_shell_pattern_density",
 		clampf(shell_pattern_density + randf_range(-0.1, 0.1) + new_toxin * 0.12, 0.0, 1.0))
 	sac.set("inherited_parent_lineage", snail_name)
-	sac.set("inherited_parent_keys", SpeciesLibrary.parent_keys_for_breeding([get_saved_genome()]))
+	sac.set("inherited_parent_keys", SpeciesLibScript.new().parent_keys_for_breeding([get_saved_genome()]))
 
 
 func _mutate_shell_shape(base_shape: String) -> String:
@@ -1668,7 +1747,9 @@ func _tick_eye_stalks(dt: float) -> void:
 	_eye_stalks.rotation.x = sway_x
 	# Scale the stalks along Y so they visually pull into the body
 	# during retraction. Width stays steady so they don't look thinner.
-	_eye_stalks.scale = Vector3(1.0, lerpf(0.1, 1.0, ext), 1.0)
+	var stalk_scale_y: float = lerpf(0.1, 1.0, ext)
+	if is_finite(stalk_scale_y):
+		_eye_stalks.scale = Vector3(1.0, stalk_scale_y, 1.0)
 
 
 func _tick_operculum(dt: float) -> void:

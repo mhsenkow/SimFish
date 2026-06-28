@@ -1,17 +1,8 @@
 # Guided setup walkthrough.
 #
 # A step-by-step coach that leads the player through stocking an EMPTY tank:
-# hardscape -> plants -> snails -> shrimp -> fish. Each "tool" step opens the
-# relevant builder (aquascape mode or the Creature Creator on the right tab);
-# the player adds what they like, then returns to the guide and advances.
-#
-# The sim is paused for the whole walkthrough and resumes on Finish, so the
-# tank comes alive all at once when the player is done.
-#
-# The overlay root is a transparent full-rect Control that passes input
-# through to the tank/tools. Only the centered instruction card and the small
-# "Back to guide" button capture input, and only one of them is visible at a
-# time, so the builder tools are fully usable while a step is in progress.
+# hardscape -> plants -> snails -> shrimp -> fish -> watch & feed.
+# ONBOARDING_LEGIBILITY #1, #4, #5, #6, #10.
 
 extends Control
 
@@ -20,6 +11,7 @@ var _step: int = 0
 var _steps: Array = []
 var _awaiting_tool: bool = false
 var _active_tool: String = ""
+var _effect_lbl: Label = null
 
 # UI refs.
 var _card: PanelContainer = null
@@ -42,7 +34,7 @@ func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	set_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	z_index = 280
+	z_index = PanelTheme.Z_WALKTHROUGH
 	set_process(false)
 	_build_steps()
 	_build_ui()
@@ -53,12 +45,12 @@ func _build_steps() -> void:
 		{
 			"id": "intro", "tool": "",
 			"title": "Build a tank from scratch",
-			"body": "Welcome! Let's set up a living aquarium step by step - hardscape first, then plants, then your animals. The simulation is paused while you build, and starts when you finish.",
+			"body": "Welcome! Let's set up a living aquarium step by step — hardscape first, then plants, then your animals. The simulation is paused while you build, and starts when you finish.",
 		},
 		{
-			"id": "hardscape", "tool": "aquascape",
+			"id": "hardscape", "tool": "aquascape", "count": "hardscape",
 			"title": "1 · Hardscape",
-			"body": "Rocks and driftwood give fish cover and structure. Open the aquascape tools to place dirt, stone, and wood - drag a piece to reposition it, or use Dig to carve. Come back when you're happy (it's optional).",
+			"body": "Rocks and driftwood give fish cover and structure. Open the aquascape tools to place dirt, stone, and wood — drag a piece to reposition it, or use Dig to carve. Come back when you're happy (it's optional).",
 		},
 		{
 			"id": "plant", "tool": "plant", "count": "plant",
@@ -68,7 +60,7 @@ func _build_steps() -> void:
 		{
 			"id": "snail", "tool": "snail", "count": "snail",
 			"title": "3 · Snails",
-			"body": "Snails are your cleanup crew - they graze algae and detritus along the glass and substrate. Design one and add a few.",
+			"body": "Snails are your cleanup crew — they graze algae and detritus along the glass and substrate. Design one and add a few.",
 		},
 		{
 			"id": "shrimp", "tool": "shrimp", "count": "shrimp",
@@ -81,23 +73,30 @@ func _build_steps() -> void:
 			"body": "The stars of the tank. Design your fish and stock a school, or a bold centerpiece. Mix species if you like.",
 		},
 		{
+			"id": "watch", "tool": "", "live": true,
+			"title": "6 · Now watch",
+			"body": "Press Next to unpause briefly. See the school tighten? That's shoaling — safety in numbers. Watch how they settle into the structure you built.",
+		},
+		{
+			"id": "feed", "tool": "", "live": true,
+			"title": "7 · First feeding",
+			"body": "Tap the water surface to drop food — watch them converge. That's your first care loop: you feed, they respond.",
+		},
+		{
 			"id": "done", "tool": "",
 			"title": "Your tank is alive!",
-			"body": "Everything's stocked. Press Finish to start the simulation - your plants will grow, your animals will feed, breed, and settle into their new home.",
+			"body": "Everything's stocked. Press Finish to run the simulation — plants grow, animals breed, and the tank finds its balance.",
 		},
 	]
 
 
 func _build_ui() -> void:
-	# Centered instruction card.
 	_card = PanelContainer.new()
 	_card.set_anchors_preset(Control.PRESET_CENTER)
 	_card.custom_minimum_size = Vector2(560, 0)
 	_card.mouse_filter = Control.MOUSE_FILTER_STOP
 	PanelTheme.apply_panel_chrome(_card)
 	add_child(_card)
-	# Keep it horizontally centered, anchored toward the lower third so it
-	# doesn't fight the top HUD.
 	_card.anchor_left = 0.5
 	_card.anchor_right = 0.5
 	_card.anchor_top = 0.5
@@ -128,6 +127,11 @@ func _build_ui() -> void:
 	_body_lbl.custom_minimum_size = Vector2(520, 0)
 	v.add_child(_body_lbl)
 
+	_effect_lbl = Label.new()
+	_effect_lbl.add_theme_font_size_override("font_size", 12)
+	_effect_lbl.add_theme_color_override("font_color", Color8(255, 220, 140))
+	v.add_child(_effect_lbl)
+
 	_count_lbl = Label.new()
 	_count_lbl.add_theme_font_size_override("font_size", 13)
 	_count_lbl.add_theme_color_override("font_color", Color8(140, 235, 160))
@@ -142,8 +146,8 @@ func _build_ui() -> void:
 	_back_btn.pressed.connect(_on_back)
 	row.add_child(_back_btn)
 	var skip := PanelTheme.make_secondary_button("Skip")
-	skip.tooltip_text = "Skip the walkthrough and start the tank"
-	skip.pressed.connect(_finish)
+	skip.tooltip_text = "Skip the walkthrough — lands you in a living preset tank"
+	skip.pressed.connect(_skip)
 	row.add_child(skip)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -155,7 +159,6 @@ func _build_ui() -> void:
 	_next_btn.pressed.connect(_on_next)
 	row.add_child(_next_btn)
 
-	# "Back to guide" button shown while a builder tool is open.
 	_resume_btn = PanelTheme.make_primary_button("◂ Back to guide")
 	_resume_btn.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	_resume_btn.anchor_left = 0.5
@@ -174,12 +177,20 @@ func _build_ui() -> void:
 
 func begin() -> void:
 	_step = 0
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and int(cfg.walkthrough_step) > 0 and not cfg.walkthrough_completed:
+		_step = clampi(int(cfg.walkthrough_step), 0, _steps.size() - 1)
 	visible = true
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_process(true)
 	if _main != null and _main.has_method("wt_pause_sim"):
 		_main.wt_pause_sim(true)
 	_show_step()
+
+
+func resume_from_step(step_index: int) -> void:
+	_step = clampi(step_index, 0, _steps.size() - 1)
+	begin()
 
 
 func _show_step() -> void:
@@ -202,18 +213,48 @@ func _show_step() -> void:
 		"fish": _action_btn.text = "Open fish designer"
 	_next_btn.text = "Finish ✓" if _step == _steps.size() - 1 else "Next ▸"
 	_update_count()
+	_update_effect_readout()
+	_apply_live_pause(s)
+	_notify_step_changed()
+
+
+func _apply_live_pause(s: Dictionary) -> void:
+	if _main == null or not _main.has_method("wt_pause_sim"):
+		return
+	if bool(s.get("live", false)):
+		_main.wt_pause_sim(false)
+	else:
+		_main.wt_pause_sim(true)
+
+
+func _update_effect_readout() -> void:
+	var s: Dictionary = _steps[_step]
+	var ckey: String = String(s.get("count", ""))
+	if ckey == "":
+		_effect_lbl.text = ""
+		return
+	var Ol := preload("res://scripts/onboarding_legibility.gd")
+	_effect_lbl.text = Ol.WALKTHROUGH_EFFECTS.get(ckey, "")
 
 
 func _update_count() -> void:
 	var s: Dictionary = _steps[_step]
 	var ckey: String = String(s.get("count", ""))
-	if ckey == "" or _main == null or not _main.has_method("wt_counts"):
-		_count_lbl.text = ""
+	if ckey == "" or ckey == "hardscape" or _main == null or not _main.has_method("wt_counts"):
+		if ckey != "hardscape":
+			_count_lbl.text = ""
+		else:
+			_count_lbl.text = "Optional — structure helps fish feel safe"
 		return
 	var counts: Dictionary = _main.wt_counts()
 	var n: int = int(counts.get(ckey, 0))
 	var noun: String = ckey if n == 1 else (ckey + "s" if ckey != "fish" else "fish")
 	_count_lbl.text = "In tank: %d %s" % [n, noun]
+
+
+func _notify_step_changed() -> void:
+	if _main != null and _main.has_method("wt_on_step_changed"):
+		_main.wt_on_step_changed(_step)
 
 
 func _on_action() -> void:
@@ -268,17 +309,22 @@ func _on_back() -> void:
 	_show_step()
 
 
+func _skip() -> void:
+	if _main != null and _main.has_method("wt_on_walkthrough_skip"):
+		_main.wt_on_walkthrough_skip()
+	_finish()
+
+
 func _finish() -> void:
 	_close_active_tool()
 	if _main != null and _main.has_method("wt_pause_sim"):
 		_main.wt_pause_sim(false)
+	if _main != null and _main.has_method("wt_on_walkthrough_finish"):
+		_main.wt_on_walkthrough_finish()
 	set_process(false)
 	visible = false
 
 
-# While a builder tool is open we hide the card and watch for the tool being
-# dismissed by other means (Close button, B key); when it closes, bring the
-# guide card back automatically.
 func _process(_dt: float) -> void:
 	if not _awaiting_tool:
 		return

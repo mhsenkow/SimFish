@@ -21,6 +21,7 @@ const RAIL: Dictionary = {
 	"appearance": {"emoji": "▦", "text": "Lk", "tip": "Look & feel — lighting, rendering, sound"},
 	"system": {"emoji": "⚙", "text": "Sy", "tip": "System — tank settings and stocking"},
 	"alerts": {"emoji": "🔔", "text": "Al", "tip": "Alerts — notifications and discoveries"},
+	"help": {"emoji": "❓", "text": "?", "tip": "Help — controls, glossary, tank tells"},
 }
 
 const CHIPS: Dictionary = {
@@ -47,6 +48,13 @@ const FAUNA: Dictionary = {
 	"shrimp": {"emoji": "🦐", "text": "shrimp"},
 	"snail": {"emoji": "🐌", "text": "snail"},
 	"plant": {"emoji": "🌿", "text": "plant"},
+}
+
+const MENU: Dictionary = {
+	"duplicate": {"emoji": "⧉", "text": "Dup", "tip": "Duplicate tank"},
+	"delete": {"emoji": "🗑", "text": "Del", "tip": "Delete tank"},
+	"edit": {"emoji": "✎", "text": "Ed", "tip": "Rename tank"},
+	"more": {"emoji": "⋯", "text": "...", "tip": "More actions"},
 }
 
 
@@ -88,3 +96,12 @@ static func mobile_hud_label(key: String) -> String:
 
 static func fauna_label(kind: String) -> String:
 	return _pick(FAUNA.get(kind, {}), true)
+
+
+static func menu_label(id: String) -> String:
+	return _pick(MENU.get(id, {}))
+
+
+static func menu_tooltip(id: String) -> String:
+	var e: Dictionary = MENU.get(id, {})
+	return String(e.get("tip", id))

@@ -39,6 +39,8 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 sss_color : source_color = vec3(1.0, 0.85, 0.62);
 uniform float irid_strength : hint_range(0.0, 1.0) = 0.0;
+// Silver/gold/pearl scale flash — distinct from irid thin-film (#35).
+uniform float metallic_strength : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -120,15 +122,24 @@ void fragment() {
 		float rim = pow(1.0 - clamp(dot(n, normalize(VIEW)), 0.0, 1.0), 3.0);
 		col = mix(col, col * 0.75 + sss_color * 0.5, rim * sss_strength);
 	}
-	// Iridescent / structural colour — subtle view-angle hue shimmer (thin-film,
-	// ported from the glass biofilm). Jewel-like sheen on scales. No-op at 0.
+	// Iridescent / structural colour — palette-quantized hue steps (#32).
 	if (irid_strength > 0.001) {
 		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
-		float band = fres * 6.28318;
+		float step_f = floor(fres * 4.0) / 4.0;
+		float band = step_f * 6.28318;
 		vec3 sheen = vec3(0.5 + 0.5 * sin(band),
 			0.5 + 0.5 * sin(band + 2.094),
 			0.5 + 0.5 * sin(band + 4.188));
-		col = mix(col, col * (0.65 + 0.7 * sheen), irid_strength * fres);
+		col = mix(col, col * (0.65 + 0.7 * sheen), irid_strength * step_f);
+	}
+	// Metallic / pearlescent scales — tight specular, palette-friendly (#35).
+	if (metallic_strength > 0.001) {
+		float fres_m = pow(1.0 - abs(dot(n, normalize(VIEW))), 3.0);
+		vec3 vdir = normalize(VIEW);
+		float spec = pow(max(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))), 0.0), 14.0);
+		float band_m = floor(fres_m * 3.0) / 3.0;
+		col += vec3(spec * 0.42) * metallic_strength;
+		col = mix(col, col * vec3(1.12, 1.10, 1.06), band_m * metallic_strength * 0.35);
 	}
 
 	ALBEDO = col;

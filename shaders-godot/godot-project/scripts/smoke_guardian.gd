@@ -10,6 +10,14 @@ func _init() -> void:
 	assert(arc.has("mind"))
 	GuardianMind.record_visit(arc, 1000, 3600)
 	GuardianMind.record_player_action(arc, "fed", "pellets")
+	GuardianMind.maybe_advance_chapter(arc, 86400.0 * 6.0)
+	assert(int(arc.get("chapter", 0)) >= 2)
+	var woven: String = GuardianJournal.weave_callback(
+			[{"text": "...Lazuli seems calm today.", "tags": PackedStringArray(["observe"])}],
+			"Still watching.", "daily")
+	assert(woven.contains("Lazuli") or woven.contains("Still watching"))
+	var quiet: String = GuardianMind.compose_quiet_inner_line(null, arc, 7200)
+	assert(quiet != "")
 	var journal: Array = []
 	GuardianJournal.append_entry(journal, "Test entry.", 0,
 			PackedStringArray(["test"]), {"sim_day": "Day 1", "source": "template"})

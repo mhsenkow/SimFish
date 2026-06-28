@@ -105,6 +105,13 @@ func begin_screenshot_boost(duration: float = 3.0) -> void:
 		wm.set_shader_parameter("wave2_amplitude", 0.022)
 		wm.set_shader_parameter("caustic_intensity", 0.85)
 		wm.set_shader_parameter("depth_fog", 0.55)
+		wm.set_shader_parameter("surface_reflection", 0.38)
+		wm.set_shader_parameter("underside_mirror", 0.42)
+	var cfg := _world.get_node_or_null("/root/TankConfig")
+	if cfg != null and bool(cfg.get("photo_mode_enhanced")):
+		AestheticsRuntime.apply_photo_mode_grade(cfg, true)
+		get_tree().create_timer(duration).timeout.connect(
+			func(): AestheticsRuntime.apply_photo_mode_grade(cfg, false))
 
 
 func screenshot_boost_active() -> bool:

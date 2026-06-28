@@ -15,6 +15,11 @@ enum CellMaterial {
 	SAND = 3,
 	ECO_SOIL = 4,
 	PEAT = 5,
+	LAVA_ROCK = 6,
+	WHITE_SAND = 7,
+	DARK_SOIL = 8,
+	CLAY = 9,
+	CRUSHED_CORAL = 10,
 }
 
 const CELL_SIZE: float = 0.4
@@ -26,6 +31,11 @@ const PROFILE_BY_MATERIAL: Dictionary = {
 	CellMaterial.SAND: "sand",
 	CellMaterial.ECO_SOIL: "eco_complete",
 	CellMaterial.PEAT: "eco_complete",
+	CellMaterial.LAVA_ROCK: "inert_gravel",
+	CellMaterial.WHITE_SAND: "sand",
+	CellMaterial.DARK_SOIL: "eco_complete",
+	CellMaterial.CLAY: "eco_complete",
+	CellMaterial.CRUSHED_CORAL: "sand",
 }
 
 const BASELINE_BY_MATERIAL: Dictionary = {
@@ -34,6 +44,11 @@ const BASELINE_BY_MATERIAL: Dictionary = {
 	CellMaterial.SAND: 0.10,
 	CellMaterial.ECO_SOIL: 0.50,
 	CellMaterial.PEAT: 0.58,
+	CellMaterial.LAVA_ROCK: 0.04,
+	CellMaterial.WHITE_SAND: 0.08,
+	CellMaterial.DARK_SOIL: 0.42,
+	CellMaterial.CLAY: 0.22,
+	CellMaterial.CRUSHED_CORAL: 0.12,
 }
 
 const LEAK_BY_MATERIAL: Dictionary = {
@@ -42,6 +57,11 @@ const LEAK_BY_MATERIAL: Dictionary = {
 	CellMaterial.SAND: 0.00003,
 	CellMaterial.ECO_SOIL: 0.00030,
 	CellMaterial.PEAT: 0.00022,
+	CellMaterial.LAVA_ROCK: 0.0,
+	CellMaterial.WHITE_SAND: 0.00002,
+	CellMaterial.DARK_SOIL: 0.00028,
+	CellMaterial.CLAY: 0.00008,
+	CellMaterial.CRUSHED_CORAL: 0.00005,
 }
 
 # High-contrast display tints chosen to survive palette quantization.
@@ -62,6 +82,21 @@ const DISPLAY_RAMP: Dictionary = {
 	CellMaterial.PEAT: [
 		Color8(62, 48, 36), Color8(38, 28, 20), Color8(22, 16, 12),
 	],
+	CellMaterial.LAVA_ROCK: [
+		Color8(55, 50, 52), Color8(38, 34, 36), Color8(22, 20, 22),
+	],
+	CellMaterial.WHITE_SAND: [
+		Color8(255, 252, 245), Color8(245, 238, 225), Color8(230, 222, 210),
+	],
+	CellMaterial.DARK_SOIL: [
+		Color8(48, 38, 30), Color8(32, 24, 18), Color8(18, 14, 10),
+	],
+	CellMaterial.CLAY: [
+		Color8(150, 95, 70), Color8(120, 72, 52), Color8(88, 52, 38),
+	],
+	CellMaterial.CRUSHED_CORAL: [
+		Color8(245, 210, 195), Color8(220, 175, 160), Color8(190, 140, 128),
+	],
 }
 
 var half_w: float = 8.0
@@ -74,6 +109,7 @@ var rows: int = 0
 var base_rows: int = 0
 var materials: PackedByteArray = PackedByteArray()
 var nutrients: PackedFloat32Array = PackedFloat32Array()
+var _sculpt_touched_columns: Dictionary = {}
 
 
 static func material_from_substrate_type(substrate_key: String) -> int:
@@ -98,12 +134,50 @@ static func material_from_tool(tool: String) -> int:
 			return CellMaterial.GRAVEL
 		"peat", "carbon":
 			return CellMaterial.PEAT
+		"lava_rock", "lava":
+			return CellMaterial.LAVA_ROCK
+		"white_sand":
+			return CellMaterial.WHITE_SAND
+		"dark_soil":
+			return CellMaterial.DARK_SOIL
+		"clay":
+			return CellMaterial.CLAY
+		"crushed_coral", "coral_sand":
+			return CellMaterial.CRUSHED_CORAL
 		_:
 			return CellMaterial.AQUASOIL
 
 
 static func tool_is_terrain(tool: String) -> bool:
-	return tool in ["dirt", "aquasoil", "sand", "gravel", "peat", "carbon"]
+	return tool in [
+		"dirt", "aquasoil", "sand", "gravel", "peat", "carbon",
+		"lava_rock", "lava", "white_sand", "dark_soil", "clay",
+		"crushed_coral", "coral_sand",
+	]
+
+
+static func tool_from_material(mat: int) -> String:
+	match mat:
+		CellMaterial.GRAVEL:
+			return "gravel"
+		CellMaterial.SAND:
+			return "sand"
+		CellMaterial.PEAT:
+			return "peat"
+		CellMaterial.LAVA_ROCK:
+			return "lava_rock"
+		CellMaterial.WHITE_SAND:
+			return "white_sand"
+		CellMaterial.DARK_SOIL:
+			return "dark_soil"
+		CellMaterial.CLAY:
+			return "clay"
+		CellMaterial.CRUSHED_CORAL:
+			return "crushed_coral"
+		CellMaterial.ECO_SOIL:
+			return "aquasoil"
+		_:
+			return "aquasoil"
 
 
 static func is_fallable(mat: int) -> bool:
@@ -178,6 +252,7 @@ func configure(half_width: float, half_depth: float, substrate_top_y: float,
 	half_d = half_depth
 	y_origin = floor_y
 	y_max = substrate_top_y
+	_sculpt_touched_columns.clear()
 	cols = maxi(1, int((build_half_w * 2.0) / CELL_SIZE))
 	depths = maxi(1, int((build_half_d * 2.0) / CELL_SIZE))
 	base_rows = maxi(1, int(ceil((y_max - y_origin) / CELL_SIZE)))
@@ -236,6 +311,21 @@ func surface_y_at(x: float, z: float) -> float:
 	return cell_center(top.x, top.y, top.z).y + CELL_SIZE * 0.5
 
 
+func surface_material_at(x: float, z: float) -> int:
+	var top: Vector3i = column_top_cell(x, z)
+	if top.x < 0:
+		return CellMaterial.AQUASOIL
+	return get_material(top.x, top.y, top.z)
+
+
+func would_replace_bed_cap(x: float, z: float) -> bool:
+	var top: Vector3i = column_top_cell(x, z)
+	if top.x < 0:
+		return false
+	var key: String = "%d,%d" % [top.x, top.z]
+	return not _sculpt_touched_columns.has(key)
+
+
 func place_at_column(x: float, z: float, mat: int, voxel_ok: Callable) -> Dictionary:
 	var top: Vector3i = column_top_cell(x, z)
 	var cx: int
@@ -249,12 +339,14 @@ func place_at_column(x: float, z: float, mat: int, voxel_ok: Callable) -> Dictio
 		cx = top.x
 		cz = top.z
 		cy = top.y + 1
-		# Stack upward when there's room and the cell passes the sculpt bounds.
 		if cy < rows:
 			var stack_center: Vector3 = cell_center(cx, cy, cz)
 			if not voxel_ok.call(stack_center.x, stack_center.y, stack_center.z, CELL_SIZE * 0.12):
 				cy = top.y
 		else:
+			cy = top.y
+		var col_key: String = "%d,%d" % [cx, cz]
+		if cy == top.y + 1 and not _sculpt_touched_columns.has(col_key):
 			cy = top.y
 	if cy >= rows:
 		return {}
@@ -264,12 +356,25 @@ func place_at_column(x: float, z: float, mat: int, voxel_ok: Callable) -> Dictio
 	var nut: float = float(BASELINE_BY_MATERIAL.get(mat, 0.30))
 	if mat == CellMaterial.PEAT:
 		nut += 0.12
+	# Blend nutrients at material boundaries (sand path through soil).
+	for off in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
+		var nx: int = cx + off.x
+		var ny: int = cy + off.y
+		var nz: int = cz + off.z
+		if not _in_bounds(nx, ny, nz):
+			continue
+		var nm: int = get_material(nx, ny, nz)
+		if nm != CellMaterial.EMPTY and nm != mat:
+			var nb: float = float(BASELINE_BY_MATERIAL.get(nm, 0.20))
+			nut = lerpf(nut, (nut + nb) * 0.5, 0.45)
+			break
 	var undo: Dictionary = {
 		"cx": cx, "cy": cy, "cz": cz,
 		"mat": get_material(cx, cy, cz),
 		"nut": get_nutrient(cx, cy, cz),
 	}
 	_set_cell(cx, cy, cz, mat, nut)
+	_sculpt_touched_columns["%d,%d" % [cx, cz]] = true
 	return undo
 
 
@@ -436,7 +541,33 @@ func material_color(mat: int, cy: int, cx: int, cz: int) -> Color:
 	var color: Color = c0.lerp(c1, idx) if idx < 0.5 else c1.lerp(c2, (idx - 0.5) * 2.0)
 	var cell_hash: int = absi(cx * 73856093 ^ cz * 19349663 ^ cy * 83492791)
 	var jitter: float = float(cell_hash % 13) / 13.0 * 0.06 - 0.03
-	return color.lightened(jitter)
+	color = color.lightened(jitter)
+	return _blend_neighbor_material_color(cx, cy, cz, mat, color)
+
+
+func _surface_tint(mat: int) -> Color:
+	var ramp: Array = DISPLAY_RAMP.get(mat, DISPLAY_RAMP[CellMaterial.AQUASOIL])
+	return ramp[0] if not ramp.is_empty() else Color.GRAY
+
+
+func _blend_neighbor_material_color(cx: int, cy: int, cz: int, mat: int, base: Color) -> Color:
+	var blend: Color = Color.BLACK
+	var n: int = 0
+	for off in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1)]:
+		var nx: int = cx + off.x
+		var ny: int = cy + off.y
+		var nz: int = cz + off.z
+		if not _in_bounds(nx, ny, nz):
+			continue
+		var nm: int = get_material(nx, ny, nz)
+		if nm == CellMaterial.EMPTY or nm == mat:
+			continue
+		blend += _surface_tint(nm)
+		n += 1
+	if n <= 0:
+		return base
+	blend /= float(n)
+	return base.lerp(blend, 0.32)
 
 
 func material_shader_id(mat: int) -> int:
@@ -462,7 +593,9 @@ func build_render_buckets(y_max_limit: float, _caustic_rows_from_top: int,
 				var is_caustic: bool = false
 				if mat != CellMaterial.SAND and mat != CellMaterial.GRAVEL:
 					if top_cell.x >= 0 and cy == top_cell.y:
-						is_caustic = center.y <= y_max_limit + CELL_SIZE * 0.5 \
+						# Only the exposed cap gets caustics — not cells covered by sculpt above.
+						var open_to_water: bool = get_material(cx, cy + 1, cz) == CellMaterial.EMPTY
+						is_caustic = open_to_water and center.y <= y_max_limit + CELL_SIZE * 0.5 \
 							and cy < base_rows
 				var color: Color = material_color(mat, cy, cx, cz)
 				var mat_id: int = material_shader_id(mat)

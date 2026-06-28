@@ -60,7 +60,7 @@ func init_at(world_pos: Vector3, base_y: float) -> void:
 	_base_y = global_position.y
 	stem_y = base_y
 	_phase = randf() * TAU
-	_spin_rate = randf_range(-0.05, 0.05)
+	_spin_rate = randf_range(-0.025, 0.025)
 	_pad_motion = Node3D.new()
 	_pad_motion.name = "PadMotion"
 	add_child(_pad_motion)
@@ -128,7 +128,7 @@ func tick(dt: float) -> void:
 	_age_s += dt
 
 	# Surface bob (#1).
-	var bob: float = sin(_t * 0.6 + _phase) * 0.02
+	var bob: float = sin(_t * 0.45 + _phase) * 0.014
 	position.y = _base_y + bob
 
 	# Slow yaw drift (#2).
@@ -137,20 +137,20 @@ func tick(dt: float) -> void:
 	# Tilt with surface current (#3).
 	var drift: Vector3 = _surface_drift_vec()
 	if drift.length_squared() > 1e-6:
-		var target_tilt := Vector2(drift.x, drift.z) * 0.35
-		_tilt = _tilt.lerp(target_tilt, clampf(dt * 0.8, 0.0, 1.0))
+		var target_tilt := Vector2(drift.x, drift.z) * 0.18
+		_tilt = _tilt.lerp(target_tilt, clampf(dt * 0.55, 0.0, 1.0))
 	else:
-		_tilt = _tilt.lerp(Vector2.ZERO, clampf(dt * 0.5, 0.0, 1.0))
+		_tilt = _tilt.lerp(Vector2.ZERO, clampf(dt * 0.4, 0.0, 1.0))
 	# Ripple rock from fish (#4) — springs back.
 	if _ripple_rock > 1e-5:
-		_ripple_rock = lerpf(_ripple_rock, 0.0, clampf(dt * 4.5, 0.0, 1.0))
-	var rock: float = sin(_t * 2.4 + _phase) * _ripple_rock
-	_pad_motion.rotation.x = _tilt.y * 0.18 + rock
-	_pad_motion.rotation.z = -_tilt.x * 0.18 + rock * 0.6
+		_ripple_rock = lerpf(_ripple_rock, 0.0, clampf(dt * 3.2, 0.0, 1.0))
+	var rock: float = sin(_t * 1.35 + _phase) * _ripple_rock
+	_pad_motion.rotation.x = _tilt.y * 0.12 + rock
+	_pad_motion.rotation.z = -_tilt.x * 0.12 + rock * 0.55
 
 	# Flexible stem — pad drifts laterally off anchor (#6).
-	var spring_target: Vector3 = Vector3(_tilt.x * 0.08, 0.0, _tilt.y * 0.08)
-	_pad_offset = _pad_offset.lerp(spring_target, clampf(dt * 2.2, 0.0, 1.0))
+	var spring_target: Vector3 = Vector3(_tilt.x * 0.05, 0.0, _tilt.y * 0.05)
+	_pad_offset = _pad_offset.lerp(spring_target, clampf(dt * 1.6, 0.0, 1.0))
 	_pad_motion.position = _pad_offset
 
 	# Edge undulation (#5) + aging color (#9).
@@ -162,7 +162,7 @@ func tick(dt: float) -> void:
 		var edge: bool = bool(meta.get("is_edge", false))
 		var wiggle: float = 0.0
 		if edge:
-			wiggle = sin(_t * 1.1 + float(meta.get("phase", 0.0))) * 0.012
+			wiggle = sin(_t * 0.72 + float(meta.get("phase", 0.0))) * 0.006
 		node.position.y = float(meta.get("base_y", 0.0)) + wiggle
 		if _age_s > 90.0:
 			var age_frac: float = clampf((_age_s - 90.0) / 240.0, 0.0, 1.0)
@@ -297,12 +297,18 @@ func _tick_flower(dt: float) -> void:
 				_flower_stage = FlowerStage.FULL
 				_flower_timer = 0.0
 		FlowerStage.FULL:
-			# Petal flutter (#10).
-			var flutter: float = sin(_t * 2.8 + _phase) * 0.04
-			for i in mini(6, _flower_nodes.size()):
+			# Petal flutter (#10) — oscillate around the open pose, never accumulate.
+			var flutter: float = sin(_t * 1.15 + _phase) * 0.011
+			var n_petals: int = mini(6, _flower_nodes.size())
+			for i in n_petals:
 				var fn: Node3D = _flower_nodes[i]
-				if is_instance_valid(fn):
-					fn.rotation.z += flutter * dt * 3.0
+				if not is_instance_valid(fn):
+					continue
+				var base_z: float = float(fn.get_meta("base_rot_z", 0.0))
+				var base_x: float = float(fn.get_meta("base_rot_x", 0.0))
+				var wobble: float = flutter * (0.75 + sin(_phase + float(i) * 0.85) * 0.25)
+				fn.rotation.z = base_z + wobble
+				fn.rotation.x = base_x + wobble * 0.4
 			if _flower_timer > 30.0:
 				_flower_stage = FlowerStage.FADING
 				_flower_timer = 0.0
@@ -329,12 +335,12 @@ func _build_flower_meshes() -> void:
 		var petal_size: float = VOXEL_SIZE * (0.7 - float(i % 2) * 0.15)
 		f.mesh = VoxelMat.get_box(Vector3(petal_size, VOXEL_SIZE * 0.2, petal_size * 0.8))
 		var petal_color: Color = palette[0] if i % 2 == 0 else palette[1]
-		f.material_override = _make_mat(petal_color, 0.06)
+		f.material_override = _make_flower_mat(petal_color)
 		_flower_holder.add_child(f)
 		_flower_nodes.append(f)
 	var center := MeshInstance3D.new()
 	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.4))
-	center.material_override = _make_mat(palette[2], 0.08)
+	center.material_override = _make_flower_mat(palette[2])
 	center.position = Vector3(0, VOXEL_SIZE * 0.4, 0)
 	_flower_holder.add_child(center)
 	_flower_nodes.append(center)
@@ -357,6 +363,8 @@ func _update_flower(open_frac: float) -> void:
 			)
 			f.rotation.z = cos(angle) * open_frac * 0.3
 			f.rotation.x = sin(angle) * open_frac * 0.3
+			f.set_meta("base_rot_z", f.rotation.z)
+			f.set_meta("base_rot_x", f.rotation.x)
 
 
 func _clear_flower() -> void:
@@ -418,6 +426,10 @@ func _is_inside_tank_xz(x: float, z: float, margin: float) -> bool:
 			return n._is_inside_tank(x, z, margin)
 		n = n.get_parent()
 	return true
+
+
+func _make_flower_mat(c: Color) -> Material:
+	return VoxelMat.make_flower_foliage(c)
 
 
 func _make_mat(c: Color, sway: float = 0.08) -> Material:

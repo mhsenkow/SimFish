@@ -6,6 +6,12 @@ extends Node
 # scan completes. preload() resolves immediately at parse time.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
+const MindNarrator = preload("res://scripts/mind_narrator.gd")
+const MindContext = preload("res://scripts/mind_context.gd")
+const MindScheduler = preload("res://scripts/mind_scheduler.gd")
+const MindConversation = preload("res://scripts/mind_conversation.gd")
+const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
+const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 
 # AIDirector — optional local-Ollama bridge that adds names, bios, mood
 # nudges, and ambient narration WITHOUT any cloud calls.
@@ -33,6 +39,9 @@ signal config_changed()
 # generated config and apply it to TankConfig.
 signal tank_designed(config: Dictionary)
 signal guardian_line_ready(cache_key: String, line: String, source: String)
+signal guardian_line_streaming(cache_key: String, partial: String)
+signal fish_thought_ready(fish_id: String, line: String, source: String)
+signal fish_thought_streaming(fish_id: String, partial: String, situation: String)
 
 
 # ---- Public state (read freely) -----------------------------------------
@@ -63,6 +72,9 @@ var embedded_enabled: bool = false
 var embedded_endpoint: String = "http://127.0.0.1:8080"
 var embedded_model: String = "Qwen2.5-0.5B-Instruct-Q4_K_M"
 var guardian_voice_enabled: bool = true
+var fish_thought_voice_enabled: bool = true
+var sentience_voice_off: bool = false
+var voice_language: String = ""
 var embedded_conn_state: int = ConnState.UNKNOWN
 var active_llm_tier: String = "template"
 
@@ -114,6 +126,14 @@ var _guardian_in_flight: bool = false
 var _guardian_line_cache: Dictionary = {}
 const GUARDIAN_MAX_WORDS: int = 22
 const GUARDIAN_LINE_CACHE_MAX: int = 64
+const INTENT_DRIFT_MAX: float = 0.15   # model may flavor, never steer (#3)
+const TIER_TIMEOUT_S: float = 6.0
+
+var _thought_cache: Dictionary = {}
+var _thought_pending: Array = []
+var _thought_in_flight: bool = false
+var _followed_fish_id: String = ""
+var _crisis_active: bool = false
 
 
 # ---- Lifecycle ---------------------------------------------------------
@@ -167,6 +187,7 @@ func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
 
 
 func _process(dt: float) -> void:
+	MindNarrator.tick_global_cooldown(dt)
 	if not enabled:
 		return
 	# Drive the throttle. SimDriver polls intent_refresh_due() and calls
@@ -207,7 +228,12 @@ func apply_config(cfg: Dictionary) -> void:
 		embedded_endpoint = embedded_endpoint.substr(0, embedded_endpoint.length() - 1)
 	embedded_model = String(cfg.get("ai_embedded_model", embedded_model)).strip_edges()
 	guardian_voice_enabled = bool(cfg.get("guardian_voice_enabled", guardian_voice_enabled))
-	if enabled and not was_enabled:
+	fish_thought_voice_enabled = bool(cfg.get("fish_thought_voice_enabled", fish_thought_voice_enabled))
+	sentience_voice_off = bool(cfg.get("sentience_voice_off", sentience_voice_off))
+	voice_language = String(cfg.get("voice_language", voice_language))
+	if sentience_voice_off:
+		_disable_all_voice_immediately()
+	elif enabled and not was_enabled:
 		test_connection()
 	elif not enabled:
 		conn_state = ConnState.UNKNOWN
@@ -224,6 +250,45 @@ func apply_config(cfg: Dictionary) -> void:
 	set_process(enabled)
 	set_physics_process(enabled)
 	emit_signal("config_changed")
+
+
+func notify_guardian_line_streaming(cache_key: String, partial: String) -> void:
+	guardian_line_streaming.emit(cache_key, partial)
+
+
+func notify_thought_streaming(cache_key: String, partial: String) -> void:
+	if not cache_key.begins_with("thought|"):
+		return
+	var body: String = cache_key.substr(8)
+	var parts: PackedStringArray = body.split("|")
+	if parts.size() < 2:
+		return
+	var fid: String = parts[0]
+	var situation: String = parts[1] if parts.size() > 1 else ""
+	emit_signal("fish_thought_streaming", fid, partial, situation)
+
+
+func _effective_guardian_voice() -> bool:
+	return guardian_voice_enabled and not sentience_voice_off
+
+
+func _effective_fish_thought_voice() -> bool:
+	return fish_thought_voice_enabled and not sentience_voice_off
+
+
+func _disable_all_voice_immediately() -> void:
+	_guardian_pending.clear()
+	_thought_pending.clear()
+	_guardian_in_flight = false
+	_thought_in_flight = false
+	active_llm_tier = "template"
+	var glm: Node = get_node_or_null("/root/GuardianLlm")
+	if glm != null and glm.has_method("suspend_voice"):
+		glm.call("suspend_voice", true)
+
+
+func _voice_lang_code() -> String:
+	return MindNarrator.resolve_voice_language(voice_language)
 
 
 # Probe /api/tags to verify the endpoint responds AND the configured
@@ -447,6 +512,154 @@ func queue_fish_bio(fish: Node) -> String:
 	return offline
 
 
+func set_followed_fish(fish_id: String) -> void:
+	_followed_fish_id = fish_id
+
+
+func set_crisis_active(active: bool) -> void:
+	_crisis_active = active
+
+
+func fish_deserves_model_voice(f: Fish, sim: Node = null) -> bool:
+	if f == null:
+		return false
+	if f.is_guardian:
+		return true
+	if not f.is_voiced_individual():
+		return false
+	if String(f.id) == _followed_fish_id:
+		return true
+	if sim != null and sim.has_method("is_creature_favorited"):
+		if sim.is_creature_favorited(f):
+			return true
+	return f.fish_name != "" and f.familiarity >= FishMind.VOICED_FAMILIARITY
+
+
+func queue_fish_thought(f: Fish, sim: Node, situation: String = "inspect") -> String:
+	if f == null or not is_instance_valid(f):
+		return ""
+	var is_reply: bool = situation.begins_with("keeper_")
+	if not _effective_fish_thought_voice() and not is_reply:
+		return f.get_inspect_thought() if f.has_method("get_inspect_thought") else ""
+	if not fish_deserves_model_voice(f, sim) and not is_reply:
+		return f.get_inspect_thought() if f.has_method("get_inspect_thought") else ""
+	if _crisis_active:
+		return f.get_inspect_thought() if f.has_method("get_inspect_thought") else ""
+	if not is_reply and not MindNarrator.global_voice_ready():
+		return f.get_inspect_thought() if f.has_method("get_inspect_thought") else ""
+	var fid: String = String(f.id)
+	var keeper_text: String = str(f._keeper_pending.get("keeper_text", "")) if is_reply else ""
+	var cache_key: String = MindConversation.reply_cache_key(f, keeper_text) if is_reply \
+			else _thought_cache_key(f, situation)
+	if not is_reply and _thought_cache.has(cache_key):
+		return String(_thought_cache[cache_key])
+	var ctx: Dictionary = MindContext.build_for_fish(f, sim, situation)
+	if is_reply:
+		ctx = MindContext.build_for_keeper_turn(f, sim, situation)
+		ctx = MindConversation.enrich_context(ctx, f, sim)
+		if sim != null and sim.get("_guardian_arc") is Dictionary:
+			var ms: Variant = (sim._guardian_arc as Dictionary).get("shared_milestones", null)
+			if ms is PackedStringArray and (ms as PackedStringArray).size() > 0:
+				ctx["shared_milestones"] = ms
+	ctx["voice_style"] = MindNarrator.voice_style_label(fid, f.personality, f.species)
+	ctx["primary_process"] = FishMindScience.primary_process(f)
+	ctx["fish_id"] = fid
+	var fb: String = MindNarrator.template_fish_reply(ctx) if is_reply \
+			else MindNarrator.template_fish_thought(ctx)
+	if situation == "keeper_initiate" and fb == "I hear you":
+		fb = "…wanted to say something"
+	if situation == "keeper_goodbye" and fb == "I hear you":
+		fb = "…drifting now"
+	if fb == "":
+		fb = f.get_inspect_thought()
+	if is_reply:
+		# Template tier always returns immediately; model upgrades async.
+		if not MindConversation.should_reply_model(f, {"ok": true}):
+			return fb
+	elif not MindNarrator.should_attempt_generation(ctx):
+		return fb
+	if not _effective_guardian_voice() and not enabled:
+		return fb
+	for e in _thought_pending:
+		if String(e.get("cache_key", "")) == cache_key:
+			return fb
+	_thought_pending.append({
+		"fish_id": fid,
+		"context": ctx,
+		"fallback": fb,
+		"cache_key": cache_key,
+		"situation": situation,
+	})
+	_pump_fish_thought()
+	return fb
+
+
+func _pump_fish_thought() -> void:
+	if _thought_pending.is_empty() or _thought_in_flight:
+		return
+	if MindScheduler.should_throttle_external():
+		var drop: Dictionary = _thought_pending[0]
+		var drop_key: String = String(drop.get("cache_key", ""))
+		var drop_fb: String = String(drop.get("fallback", ""))
+		if drop_key != "":
+			_thought_cache[drop_key] = drop_fb
+		_thought_pending.pop_front()
+		MindScheduler.note_external_throttled()
+		if not _thought_pending.is_empty():
+			_pump_fish_thought()
+		return
+	var job: Dictionary = _thought_pending[0]
+	var ctx: Dictionary = job.get("context", {})
+	var fb: String = String(job.get("fallback", ""))
+	var cache_key: String = String(job.get("cache_key", ""))
+	var full_key: String = "thought|" + cache_key
+	var glm: Node = get_node_or_null("/root/GuardianLlm")
+	if _effective_guardian_voice() and glm != null and glm.has_method("queue_generate") \
+			and glm.has_method("is_ready") and bool(glm.call("is_ready")):
+		var sit: String = str(ctx.get("situation", ""))
+		var prompt: String = MindNarrator.build_fish_reply_prompt(ctx, _voice_lang_code()) \
+				if sit.begins_with("keeper_") \
+				else MindNarrator.build_fish_thought_prompt(ctx, _voice_lang_code())
+		var n_pred: int = MindNarrator.num_predict_for_situation(sit)
+		glm.call("queue_generate", full_key, prompt, fb, ctx, n_pred)
+		_thought_pending.pop_front()
+		return
+	var llm: Dictionary = _resolve_guardian_llm()
+	if llm.is_empty():
+		_thought_pending.pop_front()
+		if not _thought_pending.is_empty():
+			_pump_fish_thought()
+		return
+	_guardian_pending.append({
+		"context": ctx,
+		"fallback": fb,
+		"cache_key": full_key,
+		"endpoint": String(llm.get("endpoint", "")),
+		"model": String(llm.get("model", "")),
+		"tier": String(llm.get("tier", "ollama")),
+		"fish_id": String(job.get("fish_id", "")),
+		"is_thought": true,
+	})
+	_thought_pending.pop_front()
+	if not _guardian_in_flight:
+		_request_guardian_line()
+
+
+func _cache_thought(cache_key: String, line: String, fish_id: String) -> void:
+	var key: String = cache_key
+	if key.begins_with("thought|"):
+		key = key.substr(8)
+	if "|keeper_reply|" in key:
+		# Replies are per-message — do not reuse across turns.
+		pass
+	else:
+		_thought_cache[key] = line
+	MindNarrator.mark_voice_spoke()
+	emit_signal("fish_thought_ready", fish_id, line, "model")
+	while _thought_cache.size() > 48:
+		_thought_cache.erase(String(_thought_cache.keys()[0]))
+
+
 func _request_bio_batch() -> void:
 	if not enabled or endpoint == "" or _bio_pending.is_empty():
 		return
@@ -459,7 +672,7 @@ func _request_bio_batch() -> void:
 		"prompt": prompt,
 		"stream": false,
 		"format": "json",
-		"options": {"temperature": 0.9}
+		"options": {"temperature": 0.9, "seed": _guardian_seed("bio|%s" % JSON.stringify(batch))}
 	}
 	var url: String = endpoint + "/api/generate"
 	var err: int = _http_bios.request(url,
@@ -524,7 +737,14 @@ func get_intent_drift(rel_pos: Vector3) -> Dictionary:
 	var cell: Variant = _intent_cells[idx]
 	if not (cell is Dictionary):
 		return {"drift": Vector3.ZERO, "mood": "", "intensity": 0.0}
-	return cell
+	var drift: Vector3 = cell.get("drift", Vector3.ZERO)
+	if drift is Vector3 and drift.length() > INTENT_DRIFT_MAX:
+		drift = drift.normalized() * INTENT_DRIFT_MAX
+	return {
+		"drift": drift,
+		"mood": String(cell.get("mood", "")),
+		"intensity": float(cell.get("intensity", 0.0)),
+	}
 
 
 # Called by SimDriver each refresh window. The summary dict is small:
@@ -735,7 +955,8 @@ func _on_chronicle_response(result: int, code: int, _h: PackedStringArray, body:
 	if not (inner is Dictionary):
 		return
 	var line: String = String(inner.get("line", "")).strip_edges()
-	if line != "":
+	if line != "" and not MindNarrator.chronicle_repeat(line):
+		MindNarrator.remember_chronicle(line)
 		emit_signal("chronicle_line", line, PackedStringArray(["chronicle"]))
 
 
@@ -868,8 +1089,12 @@ func status_summary() -> String:
 			ConnState.ERROR:    bits.append("HTTP embedded error")
 	var glm: Node = get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_method("status_summary"):
-		bits.append(String(glm.call("status_summary")))
-	bits.append("Guardian voice: %s" % active_llm_tier)
+		var built_in: String = String(glm.call("status_summary")).strip_edges()
+		if built_in != "":
+			bits.append("Built-in mind: %s" % built_in)
+	bits.append("Speaking via: %s" % MindNarrator.tier_display_name(active_llm_tier))
+	if MindNarrator.gen_attempts > 0:
+		bits.append(MindNarrator.health_summary(active_llm_tier))
 	return " · ".join(bits)
 
 
@@ -908,10 +1133,10 @@ func _on_embedded_test_response(result: int, code: int, _headers: PackedStringAr
 
 func _update_active_llm_tier() -> void:
 	var glm: Node = get_node_or_null("/root/GuardianLlm")
-	if guardian_voice_enabled and glm != null and glm.has_method("is_ready") \
+	if _effective_guardian_voice() and glm != null and glm.has_method("is_ready") \
 			and bool(glm.call("is_ready")):
 		active_llm_tier = "inprocess"
-	elif guardian_voice_enabled and embedded_enabled \
+	elif _effective_guardian_voice() and embedded_enabled \
 			and embedded_conn_state == ConnState.OK:
 		active_llm_tier = "embedded"
 	elif enabled and conn_state == ConnState.OK:
@@ -926,7 +1151,7 @@ func guardian_llm_available() -> bool:
 
 
 func _resolve_guardian_llm() -> Dictionary:
-	if guardian_voice_enabled and embedded_enabled \
+	if _effective_guardian_voice() and embedded_enabled \
 			and embedded_conn_state == ConnState.OK:
 		return {
 			"endpoint": embedded_endpoint,
@@ -950,10 +1175,14 @@ func queue_guardian_line(context: Dictionary, fallback: String, cache_key: Strin
 			return cached
 	if fb == "":
 		return fb
+	if not MindNarrator.should_attempt_generation(context):
+		return fb
 	var glm: Node = get_node_or_null("/root/GuardianLlm")
-	if guardian_voice_enabled and glm != null and glm.has_method("queue_generate"):
-		var prompt: String = _build_guardian_prompt(context)
-		glm.call("queue_generate", cache_key, prompt, fb)
+	if _effective_guardian_voice() and glm != null and glm.has_method("queue_generate"):
+		var prompt: String = MindNarrator.build_guardian_prompt(context, _voice_lang_code())
+		var ctx_for_job: Dictionary = context.duplicate(true)
+		ctx_for_job["situation"] = str(context.get("situation", ""))
+		glm.call("queue_generate", cache_key, prompt, fb, ctx_for_job)
 		_update_active_llm_tier()
 		return fb
 	var llm: Dictionary = _resolve_guardian_llm()
@@ -982,16 +1211,20 @@ func _request_guardian_line() -> void:
 	var job: Dictionary = _guardian_pending[0]
 	_guardian_in_flight = true
 	var ctx: Dictionary = job.get("context", {})
-	var prompt: String = _build_guardian_prompt(ctx)
+	var situation: String = str(ctx.get("situation", ""))
+	var prompt: String = MindNarrator.build_guardian_prompt(ctx, _voice_lang_code())
 	var rng_seed: int = _guardian_seed(str(job.get("cache_key", "")))
+	var tier: String = String(job.get("tier", "ollama"))
+	var stream_recap: bool = situation == "away_recap"
+	_http_guardian.timeout = 5.0 if tier == "embedded" else TIER_TIMEOUT_S
 	var payload: Dictionary = {
 		"model": str(job.get("model", model)),
 		"prompt": prompt,
-		"stream": false,
+		"stream": stream_recap,
 		"options": {
 			"temperature": 0.35,
 			"seed": rng_seed,
-			"num_predict": 64,
+			"num_predict": MindNarrator.num_predict_for_situation(situation),
 		},
 	}
 	var url: String = String(job.get("endpoint", endpoint)) + "/api/generate"
@@ -1006,21 +1239,6 @@ func _request_guardian_line() -> void:
 			_request_guardian_line()
 
 
-func _build_guardian_prompt(ctx: Dictionary) -> String:
-	var sys: String = (
-		"You are the Guardian — one mildly-sentient aquarium fish writing in a warm "
-		+ "naturalist diary voice. Speak in first person. Address the keeper using "
-		+ "their moniker. One or two short sentences only — never bullet lists, never "
-		+ "JSON, never break character. No profanity.")
-	var recent: Variant = ctx.get("recent_lines", PackedStringArray())
-	var recent_txt: String = ""
-	if recent is PackedStringArray and (recent as PackedStringArray).size() > 0:
-		recent_txt = " Avoid repeating: " + ", ".join(recent as PackedStringArray) + "."
-	return "%s Context: %s.%s Write the Guardian's line now." % [
-		sys, JSON.stringify(ctx), recent_txt,
-	]
-
-
 func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
 	_guardian_in_flight = false
 	var job: Dictionary = {}
@@ -1029,18 +1247,45 @@ func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: 
 	var fb: String = String(job.get("fallback", ""))
 	var cache_key: String = String(job.get("cache_key", ""))
 	var tier: String = String(job.get("tier", "ollama"))
+	var ctx: Dictionary = job.get("context", {})
 	var line: String = fb
-	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+	var ok: bool = result == HTTPRequest.RESULT_SUCCESS and code == 200
+	if ok:
 		var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
 		if outer is Dictionary:
-			line = _sanitize_guardian_output(String(outer.get("response", "")))
+			var raw: String = String(outer.get("response", ""))
+			var max_w: int = GUARDIAN_MAX_WORDS
+			if bool(job.get("is_thought", false)):
+				max_w = MindNarrator.FISH_THOUGHT_MAX_WORDS
+			var fin: Dictionary = MindNarrator.finalize_line(ctx, raw, fb, max_w)
+			line = String(fin.get("line", fb))
+	elif tier == "embedded" and enabled and conn_state == ConnState.OK \
+			and not bool(job.get("is_thought", false)):
+		_guardian_pending.push_front({
+			"context": ctx.duplicate(true),
+			"fallback": fb,
+			"cache_key": cache_key,
+			"endpoint": endpoint,
+			"model": model,
+			"tier": "ollama",
+		})
+		if not _guardian_pending.is_empty():
+			_request_guardian_line()
+		return
 	if line == "" or line.length() < 3:
 		line = fb
-	if line != fb and cache_key != "":
+	if bool(job.get("is_thought", false)):
+		if line != fb and cache_key != "":
+			_cache_thought(cache_key, line, String(job.get("fish_id", "")))
+	elif line != fb and cache_key != "":
 		_cache_guardian_line(cache_key, line)
 		emit_signal("guardian_line_ready", cache_key, line, tier)
 	if not _guardian_pending.is_empty():
 		_request_guardian_line()
+
+
+func _build_guardian_prompt(ctx: Dictionary) -> String:
+	return MindNarrator.build_guardian_prompt(ctx, _voice_lang_code())
 
 
 func _cache_guardian_line(cache_key: String, line: String) -> void:
@@ -1053,22 +1298,7 @@ func _cache_guardian_line(cache_key: String, line: String) -> void:
 
 
 func _sanitize_guardian_output(text: String) -> String:
-	var s: String = text.strip_edges()
-	if s.begins_with("\"") and s.ends_with("\""):
-		s = s.substr(1, s.length() - 2).strip_edges()
-	# Drop anything after a newline — small models love to ramble.
-	if "\n" in s:
-		s = s.split("\n", false)[0].strip_edges()
-	var words: PackedStringArray = s.split(" ", false)
-	if words.size() > GUARDIAN_MAX_WORDS:
-		words = words.slice(0, GUARDIAN_MAX_WORDS)
-		s = " ".join(words)
-	# Basic profanity guard — fall back to caller if hit.
-	var low: String = s.to_lower()
-	for bad in ["fuck", "shit", "damn"]:
-		if bad in low:
-			return ""
-	return s
+	return MindNarrator.sanitize_prose(text, GUARDIAN_MAX_WORDS)
 
 
 func _guardian_seed(cache_key: String) -> int:
@@ -1076,3 +1306,30 @@ func _guardian_seed(cache_key: String) -> int:
 	for i in cache_key.length():
 		h = (h * 31 + cache_key.unicode_at(i)) & 0x7fffffff
 	return h if h > 0 else 1
+
+
+func _thought_cache_key(f: Fish, situation: String) -> String:
+	var fid: String = String(f.id)
+	var feel: String = FishMind.emotional_state(f)
+	var vseed: int = MindNarrator.voice_style_seed(fid, f.personality)
+	return "%s|%s|%s|v%d" % [fid, situation, feel, vseed]
+
+
+func export_voice_caches() -> Dictionary:
+	return {
+		"guardian": _guardian_line_cache.duplicate(true),
+		"thought": _thought_cache.duplicate(true),
+		"bio": _bio_results.duplicate(true),
+	}
+
+
+func import_voice_caches(d: Dictionary) -> void:
+	var g: Variant = d.get("guardian", null)
+	if g is Dictionary:
+		_guardian_line_cache = (g as Dictionary).duplicate(true)
+	var t: Variant = d.get("thought", null)
+	if t is Dictionary:
+		_thought_cache = (t as Dictionary).duplicate(true)
+	var b: Variant = d.get("bio", null)
+	if b is Dictionary:
+		_bio_results = (b as Dictionary).duplicate(true)

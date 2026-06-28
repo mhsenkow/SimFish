@@ -21,7 +21,7 @@ void fragment() {
 	vec3 core = o2_col * (0.55 + ndv * 0.25);
 	vec3 edge = o2_col * 1.35 + vec3(0.12, 0.18, 0.22) * highlight;
 	vec3 col = mix(core, edge, rim);
-	col += vec3(1.0) * spec * 0.28 * highlight;
+	col += vec3(1.0) * spec * 0.38 * highlight;
 	col *= 1.0 - shadow_strength * (1.0 - ndv) * 0.25 * step(n.y, -0.55);
 
 	float alpha = bubble_color.a * (0.28 + rim * 0.62 + spec * 0.12);

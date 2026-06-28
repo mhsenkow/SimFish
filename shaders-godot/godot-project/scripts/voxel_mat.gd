@@ -58,6 +58,10 @@ static func _cache_admit(cache: Dictionary, queue: Array, key, value) -> void:
 	queue.append(key)
 
 const FAUNA_SATURATION: float = 1.30
+const FAUNA_SSS_DEFAULT: float = 0.22
+const FAUNA_IRID_DEFAULT: float = 0.18
+const FAUNA_SSS_EXPERIMENTAL: float = 0.34
+const FAUNA_IRID_EXPERIMENTAL: float = 0.45
 # Originally 1.12. Bumping past ~1.15 makes the palette-quantize dither
 # pattern read as a visible grid on bright fish — neighbouring palette
 # entries land too far apart in value. 1.14 keeps fauna slightly above
@@ -74,13 +78,24 @@ const FOLIAGE_VALUE: float = 1.08             # subtler than fauna so plants
                                               # don't outshine creatures
 
 
-static func boost_life_color(color: Color) -> Color:
+static func boost_life_color(color: Color, sat_mult: float = FAUNA_SATURATION) -> Color:
 	if color.a < 0.04:
 		return color
 	var h: float = color.h
-	var s: float = clampf(color.s * FAUNA_SATURATION, 0.0, 1.0)
+	var s: float = clampf(color.s * sat_mult, 0.0, 1.0)
 	var v: float = clampf(color.v * FAUNA_VALUE + FAUNA_LIGHTEN, 0.0, 1.0)
 	return Color.from_hsv(h, s, v, color.a)
+
+
+static func _biotope_fauna_sat_mult() -> float:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		var tc: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+		if tc != null:
+			var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
+			var key: String = Aesthetics.biotope_palette_key(tc)
+			return Aesthetics.fauna_saturation_mult(key)
+	return FAUNA_SATURATION
 
 
 # Plant-specific color boost. Pushes greens to "vibrant aquarium green"
@@ -166,22 +181,27 @@ static func _experimental_on() -> bool:
 
 
 static func make_fauna(color: Color) -> ShaderMaterial:
-	var boosted: Color = boost_life_color(color)
+	var boosted: Color = boost_life_color(color, _biotope_fauna_sat_mult())
 	var cache_key: Color = _snap(boosted)
 	if _fauna_mat_cache.has(cache_key):
 		return _fauna_mat_cache[cache_key]
 	var m: ShaderMaterial = make(boosted).duplicate()
-	# 1.24 — was 1.32 which over-saturated bright fish into the palette
-	# quantize's dither-grid territory. 1.24 still rides above foliage
-	# (1.22 below) without tripping moiré on fish bodies.
 	m.set_shader_parameter("color_vibrancy", 1.24)
-	# Subtle living-tissue rim + scale sheen by default; experimental toggle
-	# pushes toward jewel-like intensity.
 	var exp_on: bool = _experimental_on()
-	m.set_shader_parameter("sss_strength", 0.34 if exp_on else 0.15)
-	m.set_shader_parameter("irid_strength", 0.45 if exp_on else 0.08)
+	m.set_shader_parameter("sss_strength",
+		FAUNA_SSS_EXPERIMENTAL if exp_on else FAUNA_SSS_DEFAULT)
+	m.set_shader_parameter("irid_strength",
+		FAUNA_IRID_EXPERIMENTAL if exp_on else FAUNA_IRID_DEFAULT)
 	m.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
 	_cache_admit(_fauna_mat_cache, _fauna_key_queue, cache_key, m)
+	return m
+
+
+static func make_metallic_fauna(color: Color, strength: float = 0.55) -> ShaderMaterial:
+	var m: ShaderMaterial = make_fauna(color)
+	m.set_shader_parameter("metallic_strength", clampf(strength, 0.0, 1.0))
+	var irid: float = float(m.get_shader_parameter("irid_strength"))
+	m.set_shader_parameter("irid_strength", maxf(irid, 0.22))
 	return m
 
 
@@ -255,6 +275,17 @@ static func make_foliage(color: Color) -> ShaderMaterial:
 	# shader vibrancy a notch reduces palette banding on dense leaves.
 	m.set_shader_parameter("color_vibrancy", 1.22)
 	_cache_admit(_foliage_mat_cache, _foliage_key_queue, cache_key, m)
+	return m
+
+
+# Surface blooms — much calmer than canopy leaves; per-petal GPU flutter
+# at leaf defaults reads as chaotic jitter on small flower voxels.
+static func make_flower_foliage(color: Color) -> ShaderMaterial:
+	var m: ShaderMaterial = make_foliage(color).duplicate() as ShaderMaterial
+	m.set_shader_parameter("sway_amplitude", 0.014)
+	m.set_shader_parameter("sway_speed", 0.75)
+	m.set_shader_parameter("flutter_amplitude", 0.005)
+	m.set_shader_parameter("flutter_speed", 1.2)
 	return m
 
 
@@ -515,7 +546,7 @@ static func update_substrate_contact_ao(points: Array) -> void:
 # top-face caustic material reads these. Pass an empty array to clear.
 static func update_substrate_blob_shadows(points: Array) -> void:
 	var packed: Array[Vector4] = []
-	for i in 8:
+	for i in 32:
 		if i < points.size() and points[i] is Vector4:
 			packed.append(points[i] as Vector4)
 		else:
@@ -523,6 +554,19 @@ static func update_substrate_blob_shadows(points: Array) -> void:
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("blob_shadow_points", packed)
+
+
+static func update_substrate_shadow_choreo(
+		gain: float,
+		flash: float,
+		calm: float,
+		beat_pulse: float = 0.0) -> void:
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("blob_shadow_gain", clampf(gain, 0.0, 1.5))
+			mat.set_shader_parameter("blob_shadow_flash", clampf(flash, 0.0, 1.0))
+			mat.set_shader_parameter("shadow_calm", clampf(calm, 0.0, 1.0))
+			mat.set_shader_parameter("caustic_beat_pulse", clampf(beat_pulse, 0.0, 1.0))
 
 
 # Update SSS rim strength on every foliage material (both node-based and

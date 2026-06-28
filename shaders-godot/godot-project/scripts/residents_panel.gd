@@ -16,6 +16,8 @@ class_name ResidentsPanel
 
 const EDGE_FADE_SHADER := preload("res://shaders/list_edge_fade.gdshader")
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
+const FishJournal = preload("res://scripts/fish_journal.gd")
+const MindConversation = preload("res://scripts/mind_conversation.gd")
 
 # List type filter.
 enum Filter { ALL, FISH, SHRIMP, SNAIL, CLAM, FAV }
@@ -42,6 +44,7 @@ var _query: String = ""
 # instance_id -> card Control. Cards carry their creature + sub-widgets in meta.
 var _card_by_id: Dictionary = {}
 var _highlight_card: Control = null
+var _journal_layer: Control = null
 var _rebuild_queued: bool = false
 var _stat_accum: float = 0.0
 
@@ -202,10 +205,7 @@ func _build_ui() -> void:
 	list_wrap.add_child(_make_edge_fade(true))
 	list_wrap.add_child(_make_edge_fade(false))
 
-	# --- Close ---
-	outer.add_child(PanelTheme.make_rule())
-	var close := PanelTheme.make_close_button(func(): _hide_panel())
-	outer.add_child(close)
+	outer.add_child(PanelTheme.make_panel_footer(func(): _hide_panel()))
 
 
 func _make_edge_fade(top: bool) -> ColorRect:
@@ -512,6 +512,16 @@ func _make_card(c: Node) -> Control:
 	pip.color = _condition_color(c)
 	row.add_child(pip)
 
+	if c is Fish and c.fish_journal.size() > 0:
+		var journal_btn := Button.new()
+		journal_btn.flat = true
+		journal_btn.focus_mode = Control.FOCUS_NONE
+		journal_btn.custom_minimum_size = Vector2(30, 34)
+		journal_btn.text = "📖"
+		journal_btn.tooltip_text = "Life journal"
+		journal_btn.pressed.connect(func(): _show_fish_journal(cref))
+		row.add_child(journal_btn)
+
 	# Favorite star (its own STOP filter so it captures clicks over the row).
 	var star := Button.new()
 	star.flat = true
@@ -641,7 +651,10 @@ func _card_name(c: Node) -> String:
 	var pers: Variant = c.get("personality")
 	var label: String = nm
 	if pers is Dictionary and not (pers as Dictionary).is_empty():
-		var ep: String = CreatureNaming.epithet_for_personality(pers)
+		var stable_key: String = nm
+		if c.get("id") != null and String(c.get("id")) != "":
+			stable_key = String(c.get("id"))
+		var ep: String = CreatureNaming.epithet_for_personality(pers, stable_key)
 		if ep != "":
 			label = "%s %s" % [nm, ep]
 	if _sim != null and _sim.has_method("is_guardian_creature") \
@@ -663,13 +676,19 @@ func _age_of(c: Node) -> float:
 
 
 func _sub_text(c: Node) -> String:
+	var affect: String = OnboardingLegibility.affect_label(c)
 	if c is Fish:
 		var bio_line: String = String(c.get_bio_summary()) if c.has_method("get_bio_summary") else ""
 		if bio_line != "":
-			var thought: String = c.get_inspect_thought() if c.has_method("get_inspect_thought") else ""
-			if thought != "":
-				return "%s · \"%s\"" % [bio_line, thought]
-			return bio_line
+			var base: String = bio_line
+			if affect != "":
+				base = "%s · %s" % [affect, bio_line]
+			var arc: String = MindConversation.bond_arc_label(c)
+			if arc != "":
+				base = "%s · %s" % [base, arc]
+			if c.fish_journal.size() > 0:
+				base = "%s · %d journal" % [base, c.fish_journal.size()]
+			return base
 	var gen := 0
 	if c.get("generation") != null:
 		gen = int(c.generation)
@@ -680,7 +699,10 @@ func _sub_text(c: Node) -> String:
 	if main_ref != null and main_ref.has_method("creature_activity_label"):
 		act = String(main_ref.creature_activity_label(c))
 	if act != "":
-		return "%s · Gen %d · %s" % [act, gen, age_str]
+		var lead: String = act
+		if affect != "":
+			lead = "%s · %s" % [affect, act]
+		return "%s · Gen %d · %s" % [lead, gen, age_str]
 	var sp := _species_of(c).capitalize()
 	if sp == "":
 		return "Gen %d · %s" % [gen, age_str]
@@ -747,6 +769,61 @@ func _condition_color(c: Node) -> Color:
 
 func _make_section_divider(text: String) -> Control:
 	return PanelTheme.make_section(text)
+
+
+func _show_fish_journal(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	_dismiss_fish_journal()
+	var layer := ColorRect.new()
+	layer.color = Color(0.0, 0.0, 0.0, 0.45)
+	layer.mouse_filter = Control.MOUSE_FILTER_STOP
+	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	if main_ref != null:
+		main_ref.add_child(layer)
+	else:
+		add_child(layer)
+	_journal_layer = layer
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(340, 280)
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	PanelTheme.apply_panel_chrome(panel)
+	layer.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 8)
+	panel.add_child(vb)
+	var nm: String = _creature_name(f)
+	vb.add_child(PanelTheme.make_title("Journal — %s" % nm))
+	var body := RichTextLabel.new()
+	body.bbcode_enabled = true
+	body.fit_content = true
+	body.scroll_active = true
+	body.custom_minimum_size = Vector2(300, 180)
+	body.text = FishJournal.format_bbcode(f.fish_journal, nm)
+	vb.add_child(body)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	vb.add_child(row)
+	var export_btn := PanelTheme.make_secondary_button("Export")
+	export_btn.pressed.connect(func():
+		var path: String = "user://journal_%s.txt" % String(f.id)
+		var f_out := FileAccess.open(path, FileAccess.WRITE)
+		if f_out != null:
+			f_out.store_string(FishJournal.export_plain(f.fish_journal, nm))
+			f_out.close())
+	row.add_child(export_btn)
+	var close_btn := PanelTheme.make_secondary_button("Close")
+	close_btn.pressed.connect(_dismiss_fish_journal)
+	row.add_child(close_btn)
+	layer.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+			_dismiss_fish_journal())
+
+
+func _dismiss_fish_journal() -> void:
+	if _journal_layer != null and is_instance_valid(_journal_layer):
+		_journal_layer.queue_free()
+	_journal_layer = null
 
 
 func _make_empty_state() -> Control:

@@ -129,6 +129,9 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 		bacteria_colony + dt * (0.0018 + biofilm * 0.004 + age_growth * 0.0006
 			+ mulm_boost * 0.003),
 		0.04, 1.0)
+	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	if dl < 0.28:
+		bacteria_colony = clampf(bacteria_colony + dt * 0.00032, 0.04, 1.0)
 	# Bacteria die-back (#2): a starved biofilter slowly shrinks. When there's
 	# essentially nothing to nitrify, the colony loses ground so a long-idle
 	# tank gives a believable mini-cycle when it's re-stocked.

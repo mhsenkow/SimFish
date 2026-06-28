@@ -15,6 +15,11 @@ var _dither_label: Label
 var _palette_check: CheckBox
 var _region_aware_check: CheckBox
 var _experimental_check: CheckBox
+var _pixel_purity_check: CheckBox
+var _colorblind_option: OptionButton
+var _palette_inspector: PaletteInspector
+var _photo_mode_check: CheckBox
+var _signature_shot_btn: Button
 var _matured_check: CheckBox
 var _bank_lock_check: CheckBox
 var _outline: HSlider
@@ -76,7 +81,7 @@ const FIDELITY_PRESETS: Array = [
 		"key": "chunky",
 		"label": "Chunky",
 		"w": 256, "h": 144, "msaa": 0,
-		"tip": "256×144 — smallest render target, best for weak GPUs",
+		"tip": "256×144 — deliberate chunky pixel-art (extra dither)",
 	},
 	{
 		"key": "balanced",
@@ -136,8 +141,16 @@ func toggle() -> void:
 	if visible:
 		mouse_filter = Control.MOUSE_FILTER_STOP
 		_pull_from_config()
+		_refresh_palette_inspector()
 	else:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+
+func _refresh_palette_inspector() -> void:
+	if _palette_inspector == null:
+		return
+	var main: Node = get_tree().current_scene
+	_palette_inspector.refresh_from_main(main)
 
 
 func _build_ui() -> void:
@@ -203,24 +216,16 @@ func _build_ui() -> void:
 	#            sessions while keeping your tank state intact.
 	#   Apply  — save + reload the scene (required for resolution / MSAA
 	#            changes; optional for everything else).
-	outer.add_child(PanelTheme.make_rule())
 	_save_status = Label.new()
 	_save_status.add_theme_font_size_override("font_size", 10)
 	_save_status.add_theme_color_override("font_color", Color8(150, 230, 150))
 	_save_status.text = ""
 	outer.add_child(_save_status)
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
-	outer.add_child(hb)
-	var close := PanelTheme.make_close_button(func(): visible = false)
-	hb.add_child(close)
 	var save_btn := PanelTheme.make_secondary_button("Save (no reload)")
 	save_btn.pressed.connect(_on_save_only)
-	hb.add_child(save_btn)
 	var apply := PanelTheme.make_primary_button("Apply (reload)")
 	apply.pressed.connect(_on_apply)
-	hb.add_child(apply)
+	outer.add_child(PanelTheme.make_panel_footer(func(): visible = false, apply, [save_btn]))
 
 
 func _build_quality_hero(parent: VBoxContainer) -> void:
@@ -321,6 +326,24 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	var bl_desc := PanelTheme.make_description()
 	bl_desc.text = "Bank lock restricts each pixel to a local palette slice for a truer 8-bit look."
 	palette_body.add_child(bl_desc)
+	_palette_inspector = PaletteInspector.new()
+	palette_body.add_child(_palette_inspector)
+
+	var capture_body := _make_fold_section(vbox, "Capture & photo", false)
+	_photo_mode_check = CheckBox.new()
+	_photo_mode_check.text = "Photo mode grade on screenshots"
+	_photo_mode_check.tooltip_text = "Boosts bloom, vignette, and glow while saving a capture."
+	_photo_mode_check.toggled.connect(func(v): TankConfig.photo_mode_enhanced = v)
+	capture_body.add_child(_photo_mode_check)
+	var photo_desc := PanelTheme.make_description()
+	photo_desc.text = "F12 saves a clean capture; Shift+F12 runs the signature poster preset."
+	capture_body.add_child(photo_desc)
+	_signature_shot_btn = PanelTheme.make_secondary_button("Signature shot (Shift+F12)")
+	_signature_shot_btn.pressed.connect(func():
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_take_signature_shot"):
+			main.call("_take_signature_shot"))
+	capture_body.add_child(_signature_shot_btn)
 
 	var polish_body := _make_fold_section(vbox, "Pixel-art polish", false)
 	_outline_label = Label.new()
@@ -345,6 +368,29 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_pixel_snap_check.text = "Pixel-snap camera"
 	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
 	polish_body.add_child(_pixel_snap_check)
+	_pixel_purity_check = CheckBox.new()
+	_pixel_purity_check.text = "True 8-bit purity (bank-lock + heavy dither)"
+	_pixel_purity_check.toggled.connect(func(v):
+		TankConfig.pixel_purity = v
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_apply_render_config"):
+			main.call("_apply_render_config"))
+	polish_body.add_child(_pixel_purity_check)
+	_colorblind_option = OptionButton.new()
+	_colorblind_option.add_item("Standard palette", 0)
+	_colorblind_option.add_item("Protanopia-friendly", 1)
+	_colorblind_option.add_item("Deuteranopia-friendly", 2)
+	_colorblind_option.add_item("Tritanopia-friendly", 3)
+	_colorblind_option.item_selected.connect(func(idx: int):
+		match idx:
+			1: TankConfig.colorblind_palette = "protan"
+			2: TankConfig.colorblind_palette = "deutan"
+			3: TankConfig.colorblind_palette = "tritan"
+			_: TankConfig.colorblind_palette = "none"
+		var main: Node = get_tree().current_scene
+		if main != null and main.has_method("_apply_render_config"):
+			main.call("_apply_render_config"))
+	polish_body.add_child(_colorblind_option)
 
 	var effects_body := _make_fold_section(vbox, "Fauna & tank startup", false)
 	_experimental_check = CheckBox.new()
@@ -657,6 +703,21 @@ func _pull_from_config() -> void:
 		_pixel_snap_check.set_block_signals(true)
 		_pixel_snap_check.button_pressed = TankConfig.pixel_snap_camera
 		_pixel_snap_check.set_block_signals(false)
+	if _pixel_purity_check != null:
+		_pixel_purity_check.set_block_signals(true)
+		_pixel_purity_check.button_pressed = TankConfig.pixel_purity
+		_pixel_purity_check.set_block_signals(false)
+	if _colorblind_option != null:
+		_colorblind_option.select(
+			1 if TankConfig.colorblind_palette == "protan"
+			else 2 if TankConfig.colorblind_palette == "deutan"
+			else 3 if TankConfig.colorblind_palette == "tritan"
+			else 0)
+	if _photo_mode_check != null:
+		_photo_mode_check.set_block_signals(true)
+		_photo_mode_check.button_pressed = TankConfig.photo_mode_enhanced
+		_photo_mode_check.set_block_signals(false)
+	_refresh_palette_inspector()
 	if _follow_dof_check != null:
 		_follow_dof_check.set_block_signals(true)
 		_follow_dof_check.button_pressed = TankConfig.follow_depth_of_field

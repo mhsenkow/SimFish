@@ -2389,6 +2389,9 @@ func _process(_dt: float) -> void:
 		var max_db: float = lerpf(-32.0, -10.0, user_volume)
 		var min_db: float = lerpf(-42.0, -17.0, user_volume)
 		target_db = lerpf(min_db, max_db, dl)
+		if TopdownMotion.pond_active:
+			target_db += 2.0
+			target_db = lerpf(target_db, max_db, 0.18)
 	if _player_drums != null:
 		_player_drums.volume_db = target_db
 	if _player_synth != null:

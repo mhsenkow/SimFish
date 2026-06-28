@@ -80,7 +80,8 @@ void fragment() {
     // an irregular, branching, drifting web with no visible sine tiling.
     float c1 = worley_caustic(uv * 0.85, t * 0.6);
     float c2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
-    float web = c1 * 0.65 + c1 * c2 * 0.9;
+    float c3 = worley_caustic(uv * 2.85 + vec2(21.0, 11.0), t * 0.32 + 4.0);
+    float web = c1 * 0.55 + c1 * c2 * 0.75 + c2 * c3 * 0.42;
     // Keep transitions gentle for the palette quantizer/dither.
     float caustics = smoothstep(0.15, 0.85, web) * 0.46;
 

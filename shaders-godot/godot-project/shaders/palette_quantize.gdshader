@@ -64,6 +64,18 @@ uniform float material_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float material_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float material_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float material_value : hint_range(0.7, 1.3) = 1.0;
+// Tank health read — 1 = crisp/thriving, 0 = stressed/murky (#66).
+uniform float health_grade : hint_range(0.0, 1.0) = 1.0;
+// Palette-locked paper grain (#77).
+uniform float film_grain_strength : hint_range(0.0, 1.0) = 0.0;
+// Extra emissive bloom shoulder on hot pixels (#73).
+uniform float selective_glow : hint_range(0.0, 1.0) = 0.0;
+// Suppress outlines on low-sat water/substrate (#72).
+uniform float outline_subject_bias : hint_range(0.0, 1.0) = 0.65;
+// Coarser cluster-dot dither on earth-tone substrate (#8).
+uniform float dither_substrate_coarse : hint_range(0.0, 1.0) = 0.35;
+// 0 = cosine scanline, 1 = aperture grille, 2 = shadow mask (#74).
+uniform float crt_mode : hint_range(0.0, 2.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -156,6 +168,10 @@ void fragment() {
 	// Time-of-day tint. Multiplicative so values that were already darkened
 	// by night lighting in 3D don't double-darken; the tint just shifts hue.
 	src *= palette_tint;
+	// Health-driven mood grade — thriving tanks stay vivid; stressed ones cool + dull.
+	float stress = 1.0 - health_grade;
+	src = mix(src, src * vec3(0.92, 0.96, 1.04), stress * 0.42);
+	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.28);
 	float luma = luma_of(src);
 	src = mix(vec3(luma), src, 1.08);
 	src *= 1.04;
@@ -180,6 +196,20 @@ void fragment() {
 	float low_sat_factor = 1.0 - smoothstep(0.18, 0.55, sat);
 	region_d *= mix(1.0, bright_suppress, low_sat_factor);
 	float eff_dither = mix(dither_strength, region_d, region_aware_dither);
+	// Flat-area clustering (#6): when neighbours share luma, keep terraces flat.
+	vec2 step_uv_cluster = 1.0 / internal_resolution;
+	float lc_pre = luma;
+	float ln_c = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv_cluster.y)).rgb * palette_tint);
+	float ls_c = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv_cluster.y)).rgb * palette_tint);
+	float le_c = luma_of(texture(TEXTURE, UV + vec2( step_uv_cluster.x, 0.0)).rgb * palette_tint);
+	float lw_c = luma_of(texture(TEXTURE, UV + vec2(-step_uv_cluster.x, 0.0)).rgb * palette_tint);
+	float lvar = abs(lc_pre - ln_c) + abs(lc_pre - ls_c) + abs(lc_pre - le_c) + abs(lc_pre - lw_c);
+	float flat_factor = 1.0 - smoothstep(0.02, 0.14, lvar);
+	eff_dither *= mix(1.0, 0.38, flat_factor * low_sat_factor);
+	// Substrate gets a coarser stipple than water (#8).
+	int bank_hint = classify_bank(src);
+	bool is_substrate = (bank_hint == 1 && sat < 0.55 && luma < 0.62);
+	float coarse = is_substrate ? dither_substrate_coarse : 0.0;
 
 	// ---- Palette-bank candidate selection ----
 	int bank = classify_bank(src);
@@ -228,11 +258,13 @@ void fragment() {
 	float t = clamp(dot(src - a, ab) / denom, 0.0, 1.0);
 
 	vec2 px = UV * internal_resolution;
+	float dpat_coarse = mix(bayer_at(px * 0.5), ign(px * 1.7), 0.55);
 	// Blend the dither kernel toward blue-noise on low-saturation pixels (the
 	// smooth water/fog/substrate gradients) where Bayer's grid is most visible;
 	// keep Bayer on saturated fauna/plants so their silhouettes stay crisp.
 	float bn_region = low_sat_factor * blue_noise_amount;
 	float dpat = mix(bayer_at(px), ign(px), bn_region);
+	dpat = mix(dpat, dpat_coarse, coarse);
 	float threshold = 0.5 + dpat * eff_dither;
 	int chosen = (t > threshold) ? bi : ai;
 	vec3 result = palette_color(chosen);
@@ -269,6 +301,13 @@ void fragment() {
 	if (hdr_lift > 0.001) {
 		vec3 hot_white = vec3(1.0, 0.97, 0.90);
 		result = mix(result, hot_white, hdr_lift);
+	}
+	// Selective glow on emissives — pearling, biolum, fixtures (#73).
+	if (selective_glow > 0.001 && src_luma > bloom_threshold) {
+		float glow = smoothstep(bloom_threshold, 1.05, src_luma) * selective_glow;
+		vec3 glow_c = palette_color_day(chosen);
+		result = mix(result, glow_c, glow * 0.55);
+		result = mix(result, vec3(1.0, 0.98, 0.92), glow * 0.22);
 	}
 
 	// ---- Edge outline with depth-aware thickness ----
@@ -309,8 +348,10 @@ void fragment() {
 		// Thick band: both fire (close, high-contrast). Thin band: only
 		// near fires. mix() blends darkening factor between the two so
 		// the transition is graded rather than stepwise.
-		float k_thin = outline_strength * edge_near * (1.0 - edge_far * 0.6);
-		float k_thick = outline_strength * edge_near * edge_far;
+		// Selective outline — fauna/hardscape bold, water/substrate whisper (#72).
+		float subject_w = mix(1.0, smoothstep(0.12, 0.50, sat), outline_subject_bias);
+		float k_thin = outline_strength * edge_near * (1.0 - edge_far * 0.6) * subject_w;
+		float k_thick = outline_strength * edge_near * edge_far * subject_w;
 		float darken = mix(1.0, 0.35, k_thin) * mix(1.0, 0.22, k_thick);
 		result *= darken;
 	}
@@ -329,16 +370,40 @@ void fragment() {
 
 	// ---- CRT scanline + vignette overlay ----
 	if (crt_strength > 0.001) {
-		// Scanline: dim every other row of the OUTPUT (screen-space pixel),
-		// not the internal resolution — gives the classic CRT comb pattern
-		// regardless of dither block layout.
 		float sl = 0.5 + 0.5 * cos(FRAGCOORD.y * 3.1415926 * 0.5);
-		float scan = mix(1.0, 0.82 + sl * 0.18, crt_strength);
+		float scan = 1.0;
+		if (crt_mode < 0.5) {
+			// Classic horizontal scanlines.
+			scan = mix(1.0, 0.82 + sl * 0.18, crt_strength);
+		} else if (crt_mode < 1.5) {
+			// Aperture grille — RGB column triads.
+			float col = mod(FRAGCOORD.x, 3.0);
+			vec3 grille = vec3(
+				col < 1.0 ? 0.92 : 1.0,
+				col >= 1.0 && col < 2.0 ? 0.92 : 1.0,
+				col >= 2.0 ? 0.92 : 1.0);
+			result *= mix(vec3(1.0), grille, crt_strength * 0.55);
+			scan = mix(1.0, 0.88 + sl * 0.10, crt_strength * 0.45);
+		} else {
+			// Shadow mask — offset dot triad.
+			float mx = mod(FRAGCOORD.x + FRAGCOORD.y * 0.5, 3.0);
+			float mask = 0.90 + 0.10 * step(0.5, abs(sin(mx * 2.094)));
+			scan = mix(1.0, mask, crt_strength);
+		}
 		result *= scan;
-		// Vignette: gentle darken at the corners. UV is 0..1.
+		// Gentle barrel curvature (opt-in retro flavor).
 		vec2 vc = UV - 0.5;
-		float vig = 1.0 - dot(vc, vc) * 0.8;
-		result *= mix(1.0, clamp(vig, 0.55, 1.0), crt_strength);
+		float r2 = dot(vc, vc);
+		vec2 barrel = vc * (1.0 + r2 * 0.08 * crt_strength);
+		result *= mix(1.0, 1.0 - smoothstep(0.15, 0.55, r2) * 0.12, crt_strength);
+		float vig = 1.0 - r2 * 0.8;
+		result *= mix(1.0, clamp(vig, 0.55, 1.0), crt_strength * 0.65);
+	}
+
+	// Palette-locked film grain (#77).
+	if (film_grain_strength > 0.001) {
+		float grain = ign(px * 1.3 + vec2(17.0, 31.0)) * film_grain_strength * 0.08;
+		result = clamp(result + vec3(grain), 0.0, 1.0);
 	}
 
 	COLOR = vec4(result, 1.0);

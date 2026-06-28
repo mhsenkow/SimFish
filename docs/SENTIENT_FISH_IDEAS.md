@@ -253,9 +253,10 @@ degrade gracefully offline — the bridge is already fail-soft.*
   her wariness fading." Pipe through the existing `chronicle_line` signal
   ([ai_director.gd:26](../shaders-godot/godot-project/scripts/ai_director.gd:26)).
   Narrated learning makes the invisible legible. *M · L*
-- **40. Signature quirks.** Roll 1–2 idiosyncrasies per fish at birth (sleeps in
+- [x] **40. Signature quirks.** Roll 1–2 idiosyncrasies per fish at birth (sleeps in
   the left corner, hates the filter outflow, barrel-rolls after eating, shadows
   one tankmate); persist them. Quirks are what make a fish *memorable*. *M · L*
+  — `FishMind.seed_quirks()` + persisted `quirks` array.
 - **41. Make the 5 traits matter more visibly.** Audit that traits produce
   *distinct individuals*: a glutton genuinely shoves to the front at feeding
   (note: `gluttony` is barely wired today), a shy one truly lurks at the back,

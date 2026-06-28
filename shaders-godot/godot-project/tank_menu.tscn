@@ -1,75 +1,77 @@
-[gd_scene load_steps=3 format=3 uid="uid://tank_menu_vivarium"]
+[gd_scene load_steps=2 format=3 uid="uid://tank_menu_vivarium"]
 
 [ext_resource type="Script" path="res://scripts/tank_menu.gd" id="1_menu"]
-[ext_resource type="FontFile" uid="uid://fwuvi5fyqusu" path="res://assets/fonts/IBMPlexSerif-Medium.woff2" id="2_serif"]
 
 [node name="TankMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 script = ExtResource("1_menu")
 
 [node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
 color = Color(0.05, 0.04, 0.07, 1)
+
+[node name="TopBarShell" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 12.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = 76.0
+grow_horizontal = 2
+theme_override_constants/separation = 8
+
+[node name="TitleRow" type="HBoxContainer" parent="TopBarShell"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="TopBarShell/TitleRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Your tanks"
+
+[node name="ActionRow" type="HBoxContainer" parent="TopBarShell"]
+layout_mode = 2
+theme_override_constants/separation = 12
+alignment = 2
+
+[node name="EmptyHero" type="CenterContainer" parent="."]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 mouse_filter = 2
 
-[node name="TopBar" type="HBoxContainer" parent="."]
-anchor_right = 1.0
-offset_left = 16.0
-offset_top = 16.0
-offset_right = -16.0
-offset_bottom = 72.0
-
-[node name="Title" type="Label" parent="TopBar"]
-text = "Your tanks"
-size_flags_horizontal = 3
-theme_override_fonts/font = ExtResource("2_serif")
-theme_override_font_sizes/font_size = 28
-theme_override_colors/font_color = Color(1, 0.94, 0.78, 1)
-
-[node name="SelectAllCheck" type="CheckBox" parent="TopBar"]
-text = "Select all"
-custom_minimum_size = Vector2(120, 40)
-theme_override_font_sizes/font_size = 14
-
-[node name="DeleteSelectedBtn" type="Button" parent="TopBar"]
-text = "Delete selected"
-disabled = true
-custom_minimum_size = Vector2(140, 44)
-theme_override_font_sizes/font_size = 14
-
-[node name="NewButton" type="Button" parent="TopBar"]
-text = "+ New tank"
-custom_minimum_size = Vector2(140, 56)
-theme_override_font_sizes/font_size = 16
-
-[node name="EmptyLabel" type="Label" parent="."]
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -160.0
-offset_top = -20.0
-offset_right = 160.0
-offset_bottom = 20.0
-text = "No tanks yet. Tap + New tank to start one."
-horizontal_alignment = 1
-theme_override_colors/font_color = Color(0.75, 0.82, 0.95, 1)
-theme_override_font_sizes/font_size = 14
-visible = false
-
 [node name="Scroll" type="ScrollContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 16.0
+offset_left = 12.0
 offset_top = 88.0
-offset_right = -16.0
-offset_bottom = -16.0
+offset_right = -12.0
+offset_bottom = -12.0
+grow_horizontal = 2
+grow_vertical = 2
 horizontal_scroll_mode = 0
 
 [node name="Grid" type="GridContainer" parent="Scroll"]
-columns = 3
+layout_mode = 2
+size_flags_horizontal = 3
 theme_override_constants/h_separation = 16
 theme_override_constants/v_separation = 16
-size_flags_horizontal = 3
+columns = 3

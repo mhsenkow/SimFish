@@ -18,8 +18,20 @@ class_name Fish
 # global class_name registry — see ai_director.gd for the same trick.
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
+const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const FishJournal = preload("res://scripts/fish_journal.gd")
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
+const MakeItThere = preload("res://scripts/make_it_there.gd")
+const MindCycle = preload("res://scripts/mind_cycle.gd")
+const MindDebug = preload("res://scripts/mind_debug.gd")
+const MindDaring = preload("res://scripts/mind_daring.gd")
+const MindConversation = preload("res://scripts/mind_conversation.gd")
+const MindLexicon = preload("res://scripts/mind_lexicon.gd")
+const NightWatch = preload("res://scripts/night_watch.gd")
+const MindWorldModel = preload("res://scripts/mind_world_model.gd")
+const KeeperInput = preload("res://scripts/keeper_input.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
+const SpeciesLibScript = preload("res://scripts/species_library.gd")
 
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
@@ -215,7 +227,7 @@ var arousal: float = 0.3
 var vigilance: float = 0.0
 @warning_ignore("unused_private_class_variable")
 var _contentment: float = 0.0
-# Deliberation (#10–12): approach–avoidance oscillation + mode commitment.
+# Deliberation (#10–12): drift-diffusion evidence accumulation + mode commitment.
 var _delib_active: bool = false
 @warning_ignore("unused_private_class_variable")
 var _delib_phase: float = 0.0
@@ -223,6 +235,17 @@ var _delib_phase: float = 0.0
 var _delib_approach_pos: Vector3 = Vector3.ZERO
 @warning_ignore("unused_private_class_variable")
 var _delib_avoid_pos: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _delib_ev_approach: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _delib_ev_avoid: float = 0.0
+var _delib_approach_s: float = 0.0
+var _delib_avoid_s: float = 0.0
+# FishMind-owned deliberation state (read/written from fish_mind.gd only).
+@warning_ignore("unused_private_class_variable")
+var _delib_decided: bool = false
+@warning_ignore("unused_private_class_variable")
+var _delib_choice: int = 0
 @warning_ignore("unused_private_class_variable")
 var _commit_mode: int = -1
 @warning_ignore("unused_private_class_variable")
@@ -245,6 +268,34 @@ var spooked: float = 0.0
 #   near the camera; bold fish learn fast, shy fish stay wary. Makes the tank
 #   feel like it knows you. Persisted across saves.
 var familiarity: float = 0.0
+# Prediction / surprise (Vol II #2).
+var surprise: float = 0.0
+var mood_disposition: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _predicted_feed_last: bool = false
+# Episodic salience (Vol I #41).
+var salient_memories: Array = []
+var quirks: Array = []
+var attention_focus: String = ""
+var current_intention: String = ""
+var _current_thought: String = ""
+var _thought_cd: float = 0.0
+var fish_journal: Array = []
+var inferred_states: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _hypotheses: Dictionary = {}
+var semantic_memory: Array = []
+var dopamine: float = 0.45
+var serotonin: float = 0.5
+var cortisol: float = 0.2
+var noradrenaline: float = 0.25
+@warning_ignore("unused_private_class_variable")
+var _mate_grief: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _learning_rate_mult: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _prospective: Dictionary = {}
+var _voiced_wake: bool = false
 # A committed short-term goal so the fish doesn't re-decide every frame. The
 # goal_kind string is diagnostic; goal_point is where it wants to go; goal_timer
 # is how long it stays committed before it can pick something new.
@@ -257,6 +308,50 @@ var _goal_pick_cooldown: float = 0.0
 # selection ("I found food over there a moment ago").
 var memory: Array = []
 const MEMORY_MAX: int = 6
+# Global workspace + consciousness engineering (CONSCIOUSNESS_ENGINEERING_IDEAS).
+# Written/read by mind_cycle, episodic_memory, global_workspace, etc.
+var _mind_workspace: Array = []
+var _mind_self_model: Dictionary = {}
+var _behavior_ws_bias: Vector3 = Vector3.ZERO
+var _workspace_ignited: bool = false
+var _last_ws_encode_label: String = ""
+var _thought_stream: String = ""
+var _thought_stream_age: float = 0.0
+var _last_stream_logged: String = ""
+var _thought_tick_cd: float = 0.0
+var _writeback_cd: float = 0.0
+var _episodic_store: Array = []
+var _episodic_retrieval_hint: Dictionary = {}
+var _self_summary: String = ""
+var _mind_writeback_log: Array = []
+var _mind_snapshot_prev: Dictionary = {}
+var _mind_timeline: Array = []
+var _td_eligibility_peak: float = 0.0
+var _last_boldness: float = -1.0
+# SENTIENCE_THE_DARING_MIND — keeper ears, lexicon, world model, self-stance.
+var _keeper_pending: Dictionary = {}
+var _keeper_message_salience: float = 0.0
+var _learned_words: Dictionary = {}
+var _word_milestones: Dictionary = {}
+var _world_model: Dictionary = {}
+var _prediction_error: float = 0.0
+var _life_stance: String = ""
+var _stance_drift_t: float = 0.0
+var _active_plan: Dictionary = {}
+var _bid_salience_mods: Dictionary = {}
+var _last_cog_op: Dictionary = {}
+var _last_cog_validation: String = ""
+var _mend_trust: float = 0.0
+var _mend_pending: bool = false
+var _peak_stress_recent: float = 0.0
+var _longing_residue: float = 0.0
+var _curiosity_about_keeper: float = 0.0
+var _convo: Dictionary = {}
+var _dialogue_ring: Array = []
+var _keeper_model: Dictionary = {}
+var _aesthetic_hue: float = 0.0
+var _aesthetic_linger: float = 0.0
+var foraging_commitment: float = 0.0
 # Reaction shot: brief freeze-and-orient when something surprising appears.
 var _reaction_remaining: float = 0.0
 var _reaction_point: Vector3 = Vector3.ZERO
@@ -284,6 +379,8 @@ var _relief_pulse: float = 0.0
 # nocturnal). Distinct from the cosmetic tilt — lowers sensing + speed and
 # parks the fish at a chosen nook until disturbed.
 var _asleep: bool = false
+var _dreaming: bool = false
+var _dream_note_logged: bool = false
 var _sleep_nook: Vector3 = Vector3.ZERO
 var _sleep_have_nook: bool = false
 # Eye highlight target (local yaw the eye-dot looks toward) and blink timer.
@@ -613,6 +710,131 @@ var _being_cleaned: float = 0.0              # seconds remaining at station
 # this drives the visual posture once the fish has settled near cover.
 var _sleep_tilt: float = 0.0                 # smoothed roll for posture
 var _sleep_twitch_t: float = 0.0             # countdown to next twitch
+var _sleep_depth: float = 0.0                # 0..1 sleep depth (NIGHT_WATCH #11)
+var _sleep_stage: int = 0                    # NightWatch.SleepStage
+var _dream_wisp: String = ""                 # witnessable dream fragment (#22)
+var _replay_glow: float = 0.0                # visible sleep replay (#42)
+var _night_watcher: bool = false             # night vigil (#34)
+var _morning_insight_applied: bool = false
+
+
+func morning_insight_done() -> bool:
+	return _morning_insight_applied
+
+
+func mark_morning_insight() -> void:
+	_morning_insight_applied = true
+
+
+func reset_morning_insight() -> void:
+	_morning_insight_applied = false
+
+
+func try_mark_workspace_encode(label: String) -> bool:
+	if label.strip_edges() == "" or label == _last_ws_encode_label:
+		return false
+	_last_ws_encode_label = label
+	return true
+
+
+func workspace_thought_for(label: String) -> String:
+	var pool: PackedStringArray = _thought_pool_for(label)
+	if pool.is_empty():
+		return "mind on %s" % label.replace("_", " ")
+	var bucket: int = int(Time.get_ticks_msec() / 14000.0)
+	var idx: int = (hash(str(id) + "|" + label + "|" + str(bucket)) & 0x7fffffff) % pool.size()
+	return pool[idx]
+
+
+func _thought_pool_for(label: String) -> PackedStringArray:
+	match label:
+		"threat":
+			return PackedStringArray([
+				"the water feels wrong",
+				"something shifted in the dark",
+				"edges feel sharper tonight",
+				"I keep listening for trouble",
+				"not quite safe yet",
+				"a prickle along the fins",
+			])
+		"vibration":
+			return PackedStringArray([
+				"a hum through the glass",
+				"the tank ticks in the dark",
+				"glass carries a distant tremor",
+				"heater pulse under everything",
+			])
+		"night_quiet":
+			return PackedStringArray([
+				"dark and still",
+				"the school breathes together",
+				"nothing needs deciding",
+				"quiet holds the water",
+			])
+		"rest":
+			return PackedStringArray([
+				"sinking into quiet sleep",
+				"drifting without aim",
+				"the nook holds me",
+				"breath slows in the dark",
+			])
+		"dream":
+			if _dream_wisp != "":
+				return PackedStringArray([_dream_wisp.substr(0, mini(_dream_wisp.length(), 48))])
+			return PackedStringArray([
+				"something half-seen in sleep",
+				"a scene replaying underwater",
+				"chasing a shimmer that isn't there",
+			])
+		"food":
+			return PackedStringArray([
+				"thinking about food",
+				"belly remembers the last meal",
+				"that flake smell again",
+			])
+		"player":
+			return PackedStringArray([
+				"someone at the glass",
+				"a familiar shape above",
+				"the keeper's shadow returns",
+			])
+		"memory":
+			return PackedStringArray([
+				"an old moment surfacing",
+				"this place remembers something",
+				"a trace of yesterday",
+			])
+		"interoception":
+			return PackedStringArray([
+				"breath feels thin",
+				"body running hot",
+				"something inside won't settle",
+			])
+		"keeper_message":
+			return PackedStringArray([
+				"words ripple from above",
+				"trying to hold what was said",
+			])
+		"novelty":
+			return PackedStringArray([
+				"what was that shape",
+				"a new corner worth checking",
+			])
+		"collective_arousal":
+			return PackedStringArray([
+				"the school is restless",
+				"many pulses, one water",
+			])
+		_:
+			return PackedStringArray(["mind on %s" % label.replace("_", " ")])
+
+
+func sync_sleep_stage_from_depth() -> void:
+	if _sleep_depth > 0.15:
+		_sleep_stage = NightWatch.SleepStage.NREM
+	else:
+		_sleep_stage = NightWatch.SleepStage.AWAKE
+
 
 # ---- Pre-stress gill flush ----
 # A rare gill cough animation that fires when stress is climbing but
@@ -685,7 +907,11 @@ func _trait(key: String) -> float:
 
 
 func _sees_world_pos(target_pos: Vector3, max_dist: float) -> bool:
-	return FishMind.perceives_pos(self, target_pos, max_dist)
+	if has_meta("_scent_forage") and get_meta("_scent_forage") == true:
+		remove_meta("_scent_forage")
+		var to_t: Vector3 = target_pos - position
+		return to_t.length_squared() <= (max_dist * 1.35) * (max_dist * 1.35)
+	return FishMind.perceives_pos(self, target_pos, max_dist, sim)
 
 
 func _refresh_character_bio() -> void:
@@ -709,13 +935,83 @@ func _refresh_character_bio() -> void:
 		character_bio = GuardianFish.offline_guardian_bio(self)
 
 
+func set_current_thought(line: String) -> void:
+	_current_thought = line.strip_edges()
+	_thought_cd = 12.0
+
+
+func _mate_is_alive() -> bool:
+	if _mate_id == "" or sim == null or sim.get("fish") == null:
+		return false
+	for ff in sim.fish:
+		if is_instance_valid(ff) and String(ff.id) == _mate_id:
+			return true
+	return false
+
+
+func is_voiced_individual() -> bool:
+	return is_guardian or familiarity >= FishMind.VOICED_FAMILIARITY or fish_name != ""
+
+
+## Brief body cue when voice text is delayed (Node3D has no modulate — scale the bank pivot).
+func pulse_affect_cue() -> void:
+	answer_affect_cue("pulse")
+
+
+## Non-verbal keeper answer vocabulary (CONVERSATION §A #7).
+func answer_affect_cue(kind: String = "pulse") -> void:
+	if _bank_pivot == null or not is_instance_valid(_bank_pivot):
+		return
+	var base: Vector3 = _bank_pivot.scale
+	var tween := create_tween()
+	match kind:
+		"turn_away":
+			_gaze_remaining = 0.0
+			_reaction_remaining = 0.65
+			_reaction_point = global_position + Vector3(0, 0, 2.5)
+			tween.tween_property(_bank_pivot, "scale", base * 0.94, 0.18)
+			tween.tween_property(_bank_pivot, "scale", base, 0.42)
+		"approach":
+			tween.tween_property(_bank_pivot, "scale", base * 1.1, 0.14)
+			tween.tween_property(_bank_pivot, "scale", base, 0.36)
+		"flare":
+			tween.tween_property(_bank_pivot, "scale", base * 1.14, 0.1)
+			tween.tween_property(_bank_pivot, "scale", base * 0.98, 0.22)
+			tween.tween_property(_bank_pivot, "scale", base, 0.28)
+		"gaze_lock":
+			_gaze_remaining = 1.4
+			tween.tween_property(_bank_pivot, "scale", base * 1.04, 0.12)
+			tween.tween_property(_bank_pivot, "scale", base, 0.38)
+		_:
+			tween.tween_property(_bank_pivot, "scale", base * 1.06, 0.12)
+			tween.tween_property(_bank_pivot, "scale", base, 0.38)
+
+
 func get_inspect_thought() -> String:
+	if _current_thought.strip_edges() != "":
+		return _current_thought
 	if is_guardian and sim != null:
 		return GuardianFish.guardian_thought(self, sim)
-	var st: String = FishMind.emotional_state(self)
-	if st != "calm" and st != "content":
-		return st
-	return ""
+	var summary: Dictionary = FishMind.inspect_mind_summary(self)
+	var parts: PackedStringArray = PackedStringArray()
+	var feel: String = String(summary.get("feel", ""))
+	if feel != "" and feel != "calm":
+		parts.append(feel)
+	var intent: String = String(summary.get("intention", ""))
+	if intent != "" and intent != "cruising":
+		parts.append(intent.replace("_", " "))
+	var mem: Variant = summary.get("memories", null)
+	if mem is PackedStringArray and (mem as PackedStringArray).size() > 0:
+		parts.append(String((mem as PackedStringArray)[0]))
+	var wonder: String = FishMindScience.hypothesis_line(self)
+	if wonder != "":
+		parts.append(wonder)
+	if parts.is_empty():
+		var want: Variant = summary.get("wants", null)
+		if want is PackedStringArray and (want as PackedStringArray).size() > 0:
+			return String((want as PackedStringArray)[0])
+		return ""
+	return " · ".join(parts)
 
 
 # Mode commitment (#11): survival/reproduction bypass; others dwell before switching.
@@ -771,10 +1067,63 @@ func _logistic_breed_suppress() -> float:
 
 # Push a salient event into working memory. Cheap ring buffer; oldest entry is
 # dropped when full. Used to bias goal selection and to seed mood changes.
+func _confirm_region_hypothesis(outcome: String) -> void:
+	var idx: int = _novelty_cell_index()
+	if idx < 0:
+		return
+	FishMindScience.tick_hypothesis(self, idx, outcome)
+
+
+func _novelty_cell_index() -> int:
+	var w_nov: Node = _world_node()
+	if w_nov == null:
+		return -1
+	var hw_n: float = float(w_nov.get("TANK_HALF_W") if w_nov.get("TANK_HALF_W") != null else 8.0)
+	var hd_n: float = float(w_nov.get("TANK_HALF_D") if w_nov.get("TANK_HALF_D") != null else 4.0)
+	var hh_n: float = float(w_nov.get("TANK_HEIGHT") if w_nov.get("TANK_HEIGHT") != null else 7.0)
+	var rxn: float = clampf((position.x + hw_n) / (hw_n * 2.0), 0.0, 0.999)
+	var ryn: float = clampf(position.y / hh_n, 0.0, 0.999)
+	var rzn: float = clampf((position.z + hd_n) / (hd_n * 2.0), 0.0, 0.999)
+	return int(rxn * NOVELTY_GRID) + int(ryn * NOVELTY_GRID) * NOVELTY_GRID \
+			+ int(rzn * NOVELTY_GRID) * NOVELTY_GRID * NOVELTY_GRID
+
+
 func remember(kind: String, pos: Vector3, ttl: float = 12.0) -> void:
 	memory.append({"kind": kind, "pos": pos, "t": ttl})
 	if memory.size() > MEMORY_MAX:
 		memory.pop_front()
+	match kind:
+		"fed":
+			_confirm_region_hypothesis("food")
+			if familiarity > 0.25:
+				FishMind.record_salient(self, "fed", "hand-fed near the glass", 0.45 + familiarity * 0.2, pos)
+				_log_journal_event("fed near the glass", PackedStringArray(["fed"]))
+		"startled":
+			_confirm_region_hypothesis("threat")
+			FishMind.record_salient(self, "startled", "a sudden fright", 0.55 + spooked * 0.2, pos)
+			_log_journal_event("startled by something sudden", PackedStringArray(["startle"]))
+		"saw_player":
+			if familiarity > 0.4:
+				FishMind.record_salient(self, "player", "the keeper at the glass", 0.35, pos)
+				_log_journal_event("noticed the keeper at the glass", PackedStringArray(["player"]))
+		"bred":
+			FishMind.record_salient(self, "bred", "spawned with a mate", 0.65, pos)
+			_log_journal_event("spawned with a mate", PackedStringArray(["bond", "bred"]))
+
+
+func _log_journal_event(text: String, tags: PackedStringArray = PackedStringArray()) -> void:
+	if sim == null or not sim.has_method("append_fish_journal_entry"):
+		return
+	sim.append_fish_journal_entry(self, text, tags)
+
+
+static func _blend_offspring_personality(a: Fish, b: Fish) -> Dictionary:
+	var mid: Dictionary = {}
+	for k in ["boldness", "curiosity", "sociability", "calm"]:
+		var av: float = float(a.personality.get(k, 0.5)) if not a.personality.is_empty() else 0.5
+		var bv: float = float(b.personality.get(k, 0.5)) if not b.personality.is_empty() else 0.5
+		mid[k] = (av + bv) * 0.5
+	return FishMindScience.inherit_disposition(mid)
 
 
 # Most recent remembered event of a given kind that hasn't expired, or null.
@@ -786,11 +1135,39 @@ func _recall(kind: String) -> Variant:
 	return null
 
 
+func _mind_subsystem_fields_alive() -> bool:
+	# Cross-module consciousness + daring-mind slots (mind_cycle, keeper_input, …).
+	return _mind_workspace.size() >= 0 and _mind_self_model.size() >= 0 \
+		and (not _workspace_ignited or _workspace_ignited) \
+		and _thought_tick_cd >= 0.0 and _writeback_cd >= 0.0 \
+		and _episodic_store.size() >= 0 and _episodic_retrieval_hint.size() >= 0 \
+		and _self_summary.length() >= 0 and _mind_writeback_log.size() >= 0 \
+		and _mind_snapshot_prev.size() >= 0 and _mind_timeline.size() >= 0 \
+		and _td_eligibility_peak >= 0.0 and _last_boldness >= -1.0 \
+		and _keeper_pending.size() >= 0 and _keeper_message_salience >= 0.0 \
+		and _learned_words.size() >= 0 and _word_milestones.size() >= 0 \
+		and _world_model.size() >= 0 and _prediction_error >= 0.0 \
+		and _life_stance.length() >= 0 and _stance_drift_t >= 0.0 \
+		and _active_plan.size() >= 0 and _bid_salience_mods.size() >= 0 \
+		and _last_cog_op.size() >= 0 and _last_cog_validation.length() >= 0 \
+		and _last_ws_encode_label.length() >= 0 and _last_stream_logged.length() >= 0 \
+		and _mend_trust >= 0.0 and (not _mend_pending or _mend_pending) \
+		and _peak_stress_recent >= 0.0 and _longing_residue >= 0.0 \
+		and _curiosity_about_keeper >= 0.0 and _convo.size() >= 0 and _dialogue_ring.size() >= 0 \
+		and _keeper_model.size() >= 0 \
+		and _aesthetic_hue >= 0.0 and _aesthetic_linger >= 0.0 and foraging_commitment >= 0.0
+
+
 # Maintain the unified inner-life state. Called once per brain tick BEFORE the
 # behavior tiers so mood/curiosity/spooked/familiarity are fresh when the
 # steering reads them. Returns nothing; mutates state in place. Throttle-safe:
 # everything here is O(1) plus a small memory sweep.
-func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
+func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = []) -> void:
+	assert(_mind_subsystem_fields_alive())
+	var _ms = MindState.for_fish(self, is_guardian or fish_name != "" or familiarity > 0.4)
+	var _prev_snap: Dictionary = MindCycle.snapshot_prev(self)
+	_ms.sync_from_fish(self)
+	var _tick_snap: Dictionary = _ms.snapshot()
 	# Decay working memory with emotionally-weighted rates (#25).
 	if not memory.is_empty():
 		var keep: Array = []
@@ -804,6 +1181,24 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 
 	FishMind.tick_personality_conditioning(self, dt)
 	FishMind.tick_home_confidence(self, dt)
+	FishMind.tick_prediction_surprise(self, sim, dt)
+	MindCycle.run_attention_phase(self, sim, _ms)
+	MindDaring.tick(self, sim, dt, neighbors)
+	MindConversation.tick(self, dt, sim)
+	MindLexicon.try_pair_on_feed(self, sim)
+	if _keeper_message_salience > 0.28:
+		var keeper_text: String = str(_keeper_pending.get("keeper_text", ""))
+		if keeper_text != "":
+			MindLexicon.respond_to_known_word(self, keeper_text)
+	if _workspace_ignited and attention_focus == "keeper_message":
+		MindDebug.log_stream(self, FishMind.stream_tense_tag(self) + ": attended")
+	MindDaring.self_authored_goal(self)
+	FishMind.update_intention(self)
+	_thought_cd = maxf(0.0, _thought_cd - dt)
+	if _thought_cd <= 0.0 and _current_thought != "":
+		_current_thought = ""
+	if quirks.is_empty() and id != "":
+		FishMind.seed_quirks(self)
 	_patrol_heatmap_refresh_t -= dt
 	if _patrol_heatmap_refresh_t <= 0.0:
 		_patrol_heatmap_refresh_t = 45.0
@@ -846,10 +1241,38 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 		satisfaction -= 0.25
 	if sim != null and sim.get("dissolved_o2") != null:
 		satisfaction += (float(sim.dissolved_o2) - 0.6) * 0.4
-	var baseline: float = lerpf(-0.1, 0.4, (_trait("calm") + _trait("boldness")) * 0.5)
+	var baseline: float = FishMind.mood_baseline(self)
 	var mood_target: float = clampf(baseline + satisfaction, -1.0, 1.0)
+	FishMind.tick_mood_disposition(self, dt, satisfaction)
 	mood = lerpf(mood, mood_target, clampf(dt * 0.4, 0.0, 1.0))
 	FishMind.tick_affect(self, dt)
+	_tick_music_affect(dt)
+	if sim != null and sim.has_method("sim_day"):
+		MakeItThere.apply_mood_weather(self, int(sim.sim_day()), dt)
+	var enrich: float = FishMindScience.tank_enrichment(sim)
+	var dl_guard: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	# Dark-room guard (#36): at night, resting is correct; barren tanks still drift.
+	if dl_guard < 0.28:
+		if enrich < 0.32 and calm_now:
+			curiosity_drive = clampf(curiosity_drive + dt * 0.012, 0.0, 0.45)
+	elif calm_now and _interest_remaining <= 0.0 and enrich < 0.35 and curiosity_drive < 0.12:
+		curiosity_drive = clampf(curiosity_drive + dt * 0.025, 0.0, 1.0)
+	FishMindScience.tick_boredom_flow(self, enrich, dt)
+	FishMindScience.tick_mate_grief(self, dt, _mate_is_alive())
+	FishMindScience.tick_sleep_replay(self)
+	FishMindScience.tick_prospective(self, dt)
+	FishMindScience.tick_neuromodulators(self, dt, satisfaction, surprise)
+	if not neighbors.is_empty():
+		FishMindScience.tick_theory_of_mind(self, neighbors)
+		for n in neighbors:
+			if n is Fish and MindConversation.session_active(n as Fish):
+				MindConversation.overhear_nearby(self, n as Fish, dt)
+	if familiarity >= FishMind.VOICED_FAMILIARITY and not _voiced_wake:
+		_voiced_wake = true
+		if sim != null and sim.has_method("notify_fish_voiced_wake"):
+			sim.notify_fish_voiced_wake(self)
+	if stress < 0.35 and spooked < 0.2:
+		FishMindScience.reconsolidate_memory(self, "startled", true)
 
 	# Chemistry relief/escalation. Compare this tick's chem stress to last.
 	var chem_now: float = 0.0
@@ -862,20 +1285,16 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 		_relief_pulse = 1.0   # water just got noticeably better → visible easing
 	_prev_chem_stress = chem_now
 
-	# Sleep state. Diurnal species sleep in deep night; nocturnal (shuffle)
-	# invert. A scare wakes them. Sets _asleep which the tiers + animation read.
+	# Sleep architecture — NIGHT_WATCH §B (replaces binary on/off).
 	if sim != null:
-		var dl_s: float = float(sim.daylight())
-		var wants_sleep: bool
-		if swim_pattern == "shuffle":
-			wants_sleep = dl_s > 0.82   # nocturnal: rest in bright day
-		else:
-			wants_sleep = dl_s < 0.14   # diurnal: rest in deep night
-		# Hunger / breeding / panic override sleep.
-		if hunger > 0.6 or _startle_remaining > 0.0 or partner != null \
-				or brooding_remaining > 0.0:
-			wants_sleep = false
-		_asleep = wants_sleep and maturity != MATURITY_FRY
+		NightWatch.tick_sleep(self, sim, dt)
+		if not _asleep and not _dreaming:
+			_dream_note_logged = false
+		if sim.has_method("daylight") and float(sim.daylight()) < 0.2:
+			reset_morning_insight()
+		if _night_watcher and sim.has_method("daylight") \
+				and float(sim.daylight()) < 0.35:
+			_interest_remaining = maxf(_interest_remaining, 0.15)
 
 	# Eye blink cadence — slower when calm, suppressed when active.
 	_blink_t -= dt
@@ -891,6 +1310,18 @@ func _update_inner_life(dt: float, conspecifics_nearby: int) -> void:
 		+ clampf(age / max_age_s, 0.0, 1.0) * 0.2
 	lead_target += sin(age * 0.13 + float(get_instance_id() % 100)) * 0.12
 	lead_score = lerpf(lead_score, clampf(lead_target, 0.0, 1.0), clampf(dt * 0.2, 0.0, 1.0))
+
+	FishMind.tick_salient_decay(self, dt)
+	FishMind.tick_bond_arcs(self, dt)
+	MindCycle.run_encode_phase(self, _ms)
+	_ms.apply_to_fish(self)
+	MindCycle.tick_post_cycle(self, sim, dt)
+	MindCycle.store_snapshot(self, _tick_snap, _ms)
+	if _thought_stream != "":
+		_thought_stream_age += dt
+		if _thought_stream != _last_stream_logged:
+			_last_stream_logged = _thought_stream
+			MindDebug.log_stream(self, _thought_stream)
 
 
 # Record a meal at the current position into both the bio counter and the
@@ -913,6 +1344,9 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0, food_subtype: int = -1) 
 	FishMind.nudge_arousal(self, 0.12 * weight)
 	if food_subtype >= 0:
 		FishMind.record_food_preference(self, food_subtype, weight)
+	var cell: int = FishMind.heatmap_cell_at(self, pos)
+	if cell >= 0:
+		FishMind.td_update_heatmap(self, cell, weight * 0.35)
 	# Trust building: being fed while the player is watching teaches the fish
 	# that the looming presence at the glass means food. This is the core of
 	# "the tank knows you" — hand-fed fish learn to greet you.
@@ -968,7 +1402,8 @@ func _feed_memory_at(pos: Vector3) -> float:
 func get_bio_summary() -> String:
 	if fish_name == "":
 		return ""
-	var epithet: String = CreatureNaming.epithet_for_personality(personality)
+	var epithet: String = CreatureNaming.epithet_for_personality(
+			personality, id if id != "" else fish_name)
 	var title: String
 	if epithet != "":
 		title = "%s %s" % [fish_name, epithet]
@@ -988,6 +1423,9 @@ func get_bio_summary() -> String:
 		parts.append("%d %s" % [kids, "child" if kids == 1 else "children"])
 	if age_min > 0:
 		parts.append("%dm old" % age_min)
+	var dom: String = FishMind.dominance_hint(self)
+	if dom != "":
+		parts.append(dom)
 	return " · ".join(parts)
 
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
@@ -1060,7 +1498,8 @@ var head_proportion: float = 1.0     # head size relative to body (0.7-1.3)
 var dorsal_height_factor: float = 1.0  # dorsal fin height multiplier (0.6-1.6)
 var tail_fork_depth: float = 1.0     # how spread the top/bottom prongs are (0.5-1.5)
 var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars,
-									 # 4=two-tone band (tetra), 5=rear-flank wedge (rasbora)
+									 # 4=two-tone band, 5=rear wedge, 6=reticulation, 7=blotch,
+									 # 8=head-band, 9=ocellated, 10=lateral line
 var color_dot_count: int = 0         # extra accent dots (0-4)
 # Continuous pattern modulators (heritable). The discrete pattern_type picks the
 # macro layout; these floats reshape it so each lineage reads as a unique face:
@@ -1078,6 +1517,7 @@ var pattern_coverage: float = 1.0
 var pattern_contrast: float = 0.5
 var pattern_type_b: int = -1         # -1 = no secondary motif
 var pattern_blend: float = 0.0       # 0..1 strength of the secondary motif
+var metallic_scales: bool = false    # hatchetfish / silver flash — metallic shader finish
 # Ornamentation flags / factors (heritable; render-only beyond the breather).
 var bar_edged: bool = false          # crisp dark-edged vertical bars (clownfish/angelfish)
 var eye_spot: bool = false           # caudal ocellus near the tail base
@@ -1161,6 +1601,12 @@ var _buoy_bob_t: float = 0.0
 var _brake_pose: float = 0.0
 var _station_keep: float = 0.0
 var _surface_wake_t: float = 0.0
+var _biolum_wake_t: float = 0.0
+var _silver_flash: float = 0.0
+var _turn_anticipation: float = 0.0
+var _speed_personality: float = 1.0
+var _home_loop_angle: float = 0.0
+var _last_yaw_rate: float = 0.0
 var _motion_target_spd: float = 0.0
 
 # Death animation state. When a die event fires (old age / starvation), we
@@ -1217,6 +1663,8 @@ func _ready() -> void:
 	_swim_phase = randf() * TAU
 	_wag_freq_jitter = randf_range(0.88, 1.12)
 	_school_phase_offset = randf_range(-0.1, 0.1)
+	_speed_personality = randf_range(0.82, 1.18)
+	_home_loop_angle = randf() * TAU
 	# Start each fish facing a random horizontal direction so newborn fry
 	# don't all stare the same way.
 	var theta: float = randf() * TAU
@@ -1377,6 +1825,7 @@ func init_genome(genome: Dictionary) -> void:
 	pattern_contrast = clampf(float(genome.get("pattern_contrast", pattern_contrast)), 0.0, 1.0)
 	pattern_type_b = int(genome.get("pattern_type_b", pattern_type_b))
 	pattern_blend = clampf(float(genome.get("pattern_blend", pattern_blend)), 0.0, 1.0)
+	metallic_scales = not not genome.get("metallic_scales", metallic_scales)
 	# Ornamentation phenotypes.
 	bar_edged = not not genome.get("bar_edged", bar_edged)
 	eye_spot = not not genome.get("eye_spot", eye_spot)
@@ -1530,6 +1979,7 @@ func init_genome(genome: Dictionary) -> void:
 		home_y = preferred_y + randf_range(-0.6, 0.6)
 	if sim != null:
 		_reclamp_territory_to_tank()
+		_try_claim_build_cave_territory()
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -1747,8 +2197,8 @@ func _build_body() -> void:
 	#   +Y = up
 	var v: float = adult_voxel_scale
 	var mat_body := _make_mat(base_color)
-	var mat_top := _make_mat(base_color.lightened(0.15))
-	var mat_belly := _make_mat(base_color.darkened(0.35))
+	var mat_top := _make_mat(base_color.lightened(0.30))
+	var mat_belly := _make_mat(base_color.darkened(0.50))
 	var mat_accent := _make_mat(accent_color)
 	var mat_eye := VoxelMat.make(Color8(11, 26, 34))
 	var mat_fin := _make_mat(base_color.darkened(0.15))
@@ -1758,7 +2208,7 @@ func _build_body() -> void:
 	var effective_tail: Color = tail_color if _tail_color_set \
 		else base_color.darkened(0.15)
 	var mat_tail := VoxelMat.make_translucent(
-		Color(effective_tail.r, effective_tail.g, effective_tail.b, 0.52))
+		Color(effective_tail.r, effective_tail.g, effective_tail.b, 0.68))
 	# Marking material: the secondary ornament color zone (tetra blue band,
 	# rasbora rear wedge, gourami flank, eye-spot ring). Falls back to accent
 	# when the genome supplies no explicit marking_color.
@@ -1996,6 +2446,18 @@ func _build_body() -> void:
 					Vector3(v * 0.08, v * 0.3, v * 0.7), mat_ribbon)
 		_:
 			pass  # fusiform - no extra voxels
+	# Silhouette readability (#83): dorsal/ventral value anchors so zoomed-out
+	# side views still read body mass by value alone at 384×216.
+	var mat_sil_edge := _make_mat(base_color.darkened(0.58))
+	for i in seg_widths.size():
+		var bw_s: float = seg_widths[i]
+		var bz_s: float = i * v
+		_add_voxel_to(_body_mid_pivot,
+			Vector3(0, v * bw_s * 0.58 * back_arch, bz_s),
+			Vector3(v * bw_s * 0.40, v * 0.11, v * 0.50), mat_sil_edge)
+		_add_voxel_to(_body_mid_pivot,
+			Vector3(0, -v * bw_s * 0.58 * ventral_profile, bz_s),
+			Vector3(v * bw_s * 0.36, v * 0.11, v * 0.50), mat_sil_edge)
 	# Ventral sucker / oral disc: a wide flat pale disc under the front belly.
 	# Plecos, gobies, hillstream loaches and remoras anchor to surfaces with it.
 	if ventral_sucker:
@@ -2303,6 +2765,7 @@ const _LOD_BIG_RANGE: float = 0.0         # 0 = never LOD out (default)
 func _apply_lod_ranges() -> void:
 	if _voxel_builder == null:
 		return
+	var lod_mult: float = TopdownMotion.overhead_lod_range_mult() if TopdownMotion.pond_active else 1.0
 	# Structural body batches stay visible at normal camera distances — only
 	# tiny attached parts fade. Applying SMALL_RANGE to every batch made fish
 	# in far tank corners (often 30+ units from the camera) pop out entirely.
@@ -2318,13 +2781,15 @@ func _apply_lod_ranges() -> void:
 			if c is MeshInstance3D:
 				var mi: MeshInstance3D = c
 				mi.visibility_range_begin = 0.0
-				mi.visibility_range_end = _LOD_TINY_RANGE
+				mi.visibility_range_end = _LOD_TINY_RANGE * lod_mult
 				mi.visibility_range_end_margin = 3.0
 			if c.get_child_count() > 0:
 				stack.push_back(c)
 
 
 func _make_mat(color: Color) -> ShaderMaterial:
+	if metallic_scales:
+		return VoxelMat.make_metallic_fauna(color, 0.58)
 	return VoxelMat.make_fauna(color)
 
 
@@ -2497,6 +2962,21 @@ func _apply_bioluminescence_uniform(strength: float) -> void:
 			accent_color.r, accent_color.g, accent_color.b))
 
 
+func _apply_overhead_readability_uniform(strength: float) -> void:
+	for c in get_children():
+		if not (c is MeshInstance3D):
+			continue
+		var mi: MeshInstance3D = c
+		var sm: ShaderMaterial = mi.material_override as ShaderMaterial
+		if sm == null or sm.get_shader_parameter("color_vibrancy") == null:
+			continue
+		if not mi.has_meta("readability_owned"):
+			mi.material_override = sm.duplicate() as ShaderMaterial
+			mi.set_meta("readability_owned", true)
+			sm = mi.material_override as ShaderMaterial
+		sm.set_shader_parameter("color_vibrancy", 1.0 + strength * 0.32)
+
+
 func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(size)
@@ -2547,6 +3027,31 @@ func _music_mods() -> Dictionary:
 	return _damp_music_mods_for_time_scale(mods)
 
 
+func _tick_music_affect(dt: float) -> void:
+	# The fish FEEL the song: a gentle ambient pull of mood toward the music's
+	# valence and a small arousal lift on energetic music. Off by default, so this
+	# is a single bool check unless the keeper has music sync on — no per-frame
+	# cost otherwise (the "doesn't bog down" contract).
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("music_sync_enabled")) or not bool(cfg.get("music_sync_fish")):
+		return
+	var music: Node = get_node_or_null("/root/MusicContext")
+	if music == null or not music.has_method("is_active") or not bool(music.call("is_active")):
+		return
+	var intensity: float = clampf(float(cfg.get("music_sync_intensity")), 0.0, 1.0)
+	if intensity <= 0.001:
+		return
+	var np: Dictionary = music.call("now_playing") if music.has_method("now_playing") else {}
+	var k: float = clampf(dt * 0.2 * intensity, 0.0, 1.0)
+	# Music colours the mood ~20% at equilibrium (wellbeing still dominates).
+	var music_mood: float = clampf((float(np.get("valence", 0.5)) - 0.5) * 2.0, -1.0, 1.0)
+	mood = lerpf(mood, music_mood, k * 0.5)
+	# Energetic music can lift arousal, never damp it below the felt baseline.
+	var music_arousal: float = float(np.get("arousal", 0.5))
+	if music_arousal > arousal:
+		arousal = lerpf(arousal, music_arousal, k * 0.6)
+
+
 func _damp_music_mods_for_time_scale(mods: Dictionary) -> Dictionary:
 	# Generative music runs on wall-clock time; sim motion scales with time_scale.
 	# Without damping, 4×/16× sim looks like frantic dance on slow music.
@@ -2587,7 +3092,8 @@ func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> 
 				var fwd: Vector3 = -cam.global_transform.basis.z
 				cam_yaw = atan2(fwd.x, fwd.z)
 		var dance_pos: Vector3 = mc.compute_dance_target(
-			get_instance_id(), mods, hw, hd, bot_y, top_y, home_y, cam_yaw)
+			get_instance_id(), mods, hw, hd, bot_y, top_y, home_y, cam_yaw,
+			sim.fish.size() if sim != null else 24)
 		dance_pos = _slide_anchor_in_tank(dance_pos, 0.35, _body_tank_margin() * 0.45)
 		return dance_pos
 	var lane: float = float(mods.get("beat_phase", 0.0)) + float(get_instance_id() % 997) * 0.11
@@ -2650,6 +3156,10 @@ func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_
 	if burst_remaining > 0.05:
 		pull *= 1.12
 	desired += to_target.normalized() * pull
+	if bool(mods.get("overhead_view", false)):
+		var phase: float = float(mods.get("beat_phase", 0.0)) / TAU
+		desired += TopdownMotion.swing_path_offset(
+			sweep, float(mods.get("swing_sway", 0.0)), phase, true) * effective_max
 	return desired
 
 
@@ -2754,6 +3264,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_acclimation_remaining / ACCLIMATION_DURATION, 0.0, 1.0)
 		var accl_mult: float = lerpf(1.0, 0.30, accl_frac)
 		stress = clampf(stress + total_chem * accl_mult * dt * 0.045, 0.0, 1.0)
+		var w_pocket: Node = sim.get_parent() if sim != null else null
+		if w_pocket != null and w_pocket.has_method("query_stagnant_build_pocket"):
+			if w_pocket.query_stagnant_build_pocket(position):
+				stress = clampf(stress + dt * 0.06, 0.0, 1.0)
+		if w_pocket != null and w_pocket.has_method("build_shade_factor"):
+			var shade: float = float(w_pocket.build_shade_factor(position.x, position.z, position.y))
+			if shade > 0.25 and swim_pattern in ["hover", "cruise"]:
+				stress = clampf(stress - dt * shade * 0.05, 0.0, 1.0)
 		# Severe + sustained chemistry kills. Real ammonia poisoning is
 		# slow; we expose it as the "stress crosses 0.95 with bad chem"
 		# branch so the existing die path picks it up naturally.
@@ -2883,7 +3401,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Inner life: mood, curiosity, lingering fear, sleep, relief, blink, memory.
 	# Runs before the behavior tiers so steering reads a fresh emotional state.
-	_update_inner_life(dt, conspecifics_nearby)
+	_update_inner_life(dt, conspecifics_nearby, neighbors)
 
 	_update_maturity()
 
@@ -2940,6 +3458,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if sim != null and sim.has_method("query_plants_in_radius") else plants
 	desired += _local_clearance_push(neighbors, clearance_plants) * 1.25
 	desired += _hardscape_clearance_push() * 1.6
+	if _behavior_ws_bias.length_squared() > 0.0001:
+		desired += _behavior_ws_bias * effective_max
 
 	# Tier 0.2: SURFACE GULPING (hypoxia response). Only surface-adapted fish
 	# panic-gulp at the meniscus; mid-column species rely on the softer home_y
@@ -3029,6 +3549,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		# Validate ongoing chase.
 		if _territory_chase_target != null:
 			if not is_instance_valid(_territory_chase_target) \
+					or _territory_chase_target.is_queued_for_deletion() \
+					or _territory_chase_target.get("_dying") == true \
 					or _territory_chase_target.maturity == MATURITY_FRY \
 					or _territory_chase_target.position.distance_squared_to(position) \
 						> (home_radius * 2.5) * (home_radius * 2.5):
@@ -3138,6 +3660,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# hover near it. Real plecos basically don't leave the wood.
 	if wood_grazer and maturity != MATURITY_FRY and sim != null:
 		var wood_pos: Vector3 = sim.nearest_driftwood_pos(position)
+		var w_wood: Node = sim.get_parent() if sim != null else null
+		if wood_pos == Vector3.ZERO and w_wood != null and w_wood.has_method("query_build_shelter_near"):
+			wood_pos = w_wood.query_build_shelter_near(position, 4.0)
 		if wood_pos != Vector3.ZERO:
 			var to_wood: Vector3 = wood_pos - position
 			var d_wood: float = to_wood.length()
@@ -3153,6 +3678,18 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# proportional to existing biofilm on this driftwood.
 				if hunger > 0.2:
 					hunger = maxf(0.0, hunger - dt * 0.012)
+
+	# Built ledges / outcrops — hoverers perch and ambush predators wait.
+	if swim_pattern in ["hover", "cruise", "sit"] and maturity == MATURITY_ADULT and sim != null:
+		var w_perch: Node = sim.get_parent()
+		if w_perch != null and w_perch.has_method("query_build_shelter_near"):
+			var ledge: Vector3 = w_perch.query_build_shelter_near(position, 3.0)
+			if ledge != Vector3.ZERO:
+				var to_ledge: Vector3 = ledge - position
+				if to_ledge.length() > 0.4:
+					desired += to_ledge.normalized() * effective_max * 0.38
+				elif hunger < 0.45:
+					desired *= 0.22
 
 	# Tier 0.35: FRY PLANT SHELTER. Fresh fry seek the densest nearby plant
 	# patch and hold position inside it until they hit juvenile stage. Real
@@ -3226,6 +3763,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			else:
 				# Inside the plant — dampen velocity to hold position.
 				desired *= 0.15
+		elif w_fry != null and w_fry.has_method("query_build_shelter_near"):
+			var fry_cave: Vector3 = w_fry.query_build_shelter_near(position, 3.5)
+			if fry_cave != Vector3.ZERO:
+				var to_cave: Vector3 = fry_cave - position
+				if to_cave.length() > 0.45:
+					desired += to_cave.normalized() * effective_max * 0.52
+				else:
+					desired *= 0.14
 
 	# Tier 0.4: FRY FLEE FROM ADULT CONSPECIFICS. Real fry instinctively dart
 	# away from larger same-species fish that might cannibalize them. We
@@ -3309,10 +3854,20 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			to_cover.y = lerpf(preferred_y, nearest_cover._world_pos.y + 0.4, 0.55)
 			desired += to_cover.normalized() * effective_max * 0.7
 			current_mode = Mode.FLEE
+		else:
+			var w_stress: Node = sim.get_parent() if sim != null else null
+			if w_stress != null and w_stress.has_method("query_build_shelter_near"):
+				var cave_pt: Vector3 = w_stress.query_build_shelter_near(position, 3.5)
+				if cave_pt != Vector3.ZERO:
+					var to_cave: Vector3 = cave_pt - position
+					to_cave.y = lerpf(preferred_y, cave_pt.y + 0.2, 0.5)
+					desired += to_cave.normalized() * effective_max * 0.65
+					current_mode = Mode.FLEE
 
 	# Tier 1: COURTSHIP. Already paired? Continue the dance toward spawn.
 	if partner != null:
-		if not is_instance_valid(partner) or partner.maturity != MATURITY_ADULT:
+		if not is_instance_valid(partner) or partner.is_queued_for_deletion() \
+				or partner.get("_dying") == true or partner.maturity != MATURITY_ADULT:
 			partner = null
 			court_timer = 0.0
 			_courtship_flare = false
@@ -3331,7 +3886,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var reject_chance: float = clampf(0.06 - suitor_appeal * 0.05 + stress * 0.08, 0.0, 0.12)
 				if randf() < reject_chance * dt:
 					# She's not interested. Both reset; she flees a beat.
-					if is_instance_valid(partner):
+					if is_instance_valid(partner) and not partner.is_queued_for_deletion() \
+							and partner.get("_dying") != true:
 						partner.partner = null
 						partner.court_timer = 0.0
 						partner._courtship_flare = false
@@ -3602,6 +4158,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					FishMind.update_conflict(self, approach_s, avoid_s,
 						best_w.global_position, position)
 					if _delib_active:
+						FishMind.tick_ddm(self, dt, approach_s, avoid_s)
 						pull *= 0.38
 						desired += FishMind.deliberation_steer(self, dt, effective_max)
 						if not FishMind.tick_commitment(self, dt, Mode.FORAGE):
@@ -4050,7 +4607,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		effective_max *= float(fauna_rt.get("speed", 1.0))
 	# When stressed (too few neighbors), tighten the school dramatically.
 	var tightness: float = 1.0 + stress * 1.5
+	if stress < 0.22:
+		tightness *= lerpf(0.68, 1.0, stress / 0.22)
 	tightness *= float(music_mods.get("tightness", 1.0))
+	if sim != null and sim.get("_sync_settle") != null:
+		tightness *= 1.0 + float(sim._sync_settle) * 0.4
 	# Tank-wide school pulse. Synchronised across every fish that samples
 	# sim.school_pulse(), so the entire group visibly breathes in and out.
 	if bool(fauna_rt.get("pulse_on", true)) and sim != null and sim.has_method("school_pulse"):
@@ -4083,11 +4644,41 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		tightness *= 1.0 + predator_near * 1.6
 		stress = clampf(stress + predator_near * dt * 0.6, 0.0, 1.0)
 		spooked = clampf(spooked + predator_near * 0.3, 0.0, 1.0)
+		if predator_near > 0.62 and sim != null and sim.has_method("pulse_predator_wave"):
+			for n in neighbors:
+				if not (n is Fish) or n == self:
+					continue
+				var pf: Fish = n
+				if pf.growth_factor * pf.adult_voxel_scale > adult_voxel_scale * 1.25:
+					var away: Vector3 = position - pf.position
+					away.y = 0.0
+					if away.length_squared() > 0.08:
+						sim.pulse_predator_wave(pf.position, away.normalized())
+					break
 	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
 	var school_w: float = schooling_strength * float(fauna_rt.get("schooling", 1.0))
 	if float(music_mods.get("sweep", 0.0)) > 0.2:
 		school_w *= maxf(0.22, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.72)
 	desired += _boids(neighbors, tightness, fauna_sep) * school_w
+	if school_w > 0.35 and burst_remaining <= 0.0 and _startle_remaining <= 0.0 \
+			and float(music_mods.get("sweep", 0.0)) < 0.25:
+		_home_loop_angle += dt * TopdownMotion.calm_mill_rate(stress, float(_music_mods().get("sweep", 0.0)) > 0.35)
+		var mill_r: float = maxf(home_radius * 0.55, 1.1)
+		var mill_target := Vector3(
+			home_x + cos(_home_loop_angle) * mill_r,
+			0.0,
+			home_z + sin(_home_loop_angle) * mill_r,
+		)
+		var to_mill: Vector3 = mill_target - position
+		to_mill.y = 0.0
+		if to_mill.length_squared() > 0.08:
+			desired += to_mill.normalized() * effective_max * 0.28
+	if sim != null and sim.has_method("sync_turn_heading_for") and sim.sync_turn_active():
+		var sync_h: Vector3 = sim.sync_turn_heading_for(position, get_instance_id())
+		if sync_h.length_squared() > 1e-4:
+			desired += sync_h * effective_max * TopdownMotion.species_sync_tightness(swim_pattern, species)
+			if sim.has_method("register_sync_alignment"):
+				sim.register_sync_alignment(absf(heading.dot(sync_h.normalized())))
 	# Soft territorial anchor — even inside home_radius, a gentle pull keeps
 	# each schooler loosely tethered to its patrol zone so boids cohesion
 	# can't collapse the whole population onto one centroid.
@@ -4294,6 +4885,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				FishMind.update_conflict(self, approach_s, avoid_s,
 					_cached_glance_point, position)
 				if _delib_active:
+					FishMind.tick_ddm(self, dt, approach_s, avoid_s)
 					pull *= 0.35
 			if to_glass.length_squared() > 0.04:
 				desired += to_glass.normalized() * effective_max * clampf(pull, 0.0, 0.6)
@@ -4312,6 +4904,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				+ _trait("curiosity") * 0.01), 0.0, 1.0)
 			if _recall("saw_player") == null:
 				remember("saw_player", _cached_glance_point, 8.0)
+			if sim != null and sim.has_method("make_it_there_session"):
+				var mit: Dictionary = sim.make_it_there_session()
+				if MakeItThere.try_player_double_take(self, _cached_glance_strength, mit):
+					pass
+				elif MakeItThere.try_look_back_at_player(self, _cached_glance_strength, mit, dt):
+					MakeItThere.apply_look_back_gaze(self, _cached_glance_point, mit)
 	_interest_remaining = maxf(0.0, _interest_remaining - dt)
 
 	# GAZE CONTAGION. When a neighbor of the same species is actively
@@ -4404,6 +5002,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if grudge_push.length_squared() > 0.04:
 			desired += grudge_push.normalized() * effective_max * 0.30
 
+	var avoid_mem: Vector3 = FishMind.salient_avoid_steer(self, position)
+	if avoid_mem.length_squared() > 0.01:
+		desired += avoid_mem * effective_max * 0.28
+
+	var bond_pull: Vector3 = FishMind.bond_seek_steer(self, scan_fish, scan_d2, scan_n)
+	if bond_pull.length_squared() > 0.01 and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
+		desired += bond_pull * effective_max * 0.24
+
 	# LEAN INTO CURRENT. Fish near the aeration / filter intake brace
 	# slightly into the flow — the real-aquarium behavior of fish holding
 	# position against the filter outflow. Cheap: just adds a small
@@ -4480,18 +5086,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
 		var w_nov: Node = _world_node()
 		if w_nov != null:
-			var hw_n: float = float(w_nov.get("TANK_HALF_W") if w_nov.get("TANK_HALF_W") != null else 8.0)
-			var hd_n: float = float(w_nov.get("TANK_HALF_D") if w_nov.get("TANK_HALF_D") != null else 4.0)
-			var hh_n: float = float(w_nov.get("TANK_HEIGHT") if w_nov.get("TANK_HEIGHT") != null else 7.0)
-			var rxn: float = clampf((position.x + hw_n) / (hw_n * 2.0), 0.0, 0.999)
-			var ryn: float = clampf(position.y / hh_n, 0.0, 0.999)
-			var rzn: float = clampf((position.z + hd_n) / (hd_n * 2.0), 0.0, 0.999)
-			var ixn: int = int(rxn * NOVELTY_GRID)
-			var iyn: int = int(ryn * NOVELTY_GRID)
-			var izn: int = int(rzn * NOVELTY_GRID)
-			var idxn: int = ixn + iyn * NOVELTY_GRID + izn * NOVELTY_GRID * NOVELTY_GRID
-			if visited_regions[idxn] == 0:
+			var idxn: int = _novelty_cell_index()
+			if idxn >= 0 and visited_regions[idxn] == 0:
 				visited_regions[idxn] = 1
+				FishMindScience.tick_hypothesis(self, idxn, "unknown")
 				# Pause-and-look. Curious fish hold longer.
 				var curiosity: float = _trait("curiosity")
 				if curiosity > 0.35:
@@ -4513,20 +5111,42 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# the time history once and caches the boolean; we just read it here.
 	if hunger > 0.4 and sim != null and sim.has_method("feed_anticipation_active") \
 			and sim.feed_anticipation_active():
-		var headroom: float = _meniscus_headroom()
-		if headroom > 0.12:
-			var anticipation_bias: float = clampf(headroom * 0.25, -0.5, 1.2)
-			desired.y += anticipation_bias * effective_max * 0.35
-		# Begging at the glass: familiar fish that associate the player with
-		# food crowd toward the last place they saw you and pace expectantly.
-		if familiarity > 0.25 and _cached_glance_point.length_squared() > 0.01:
-			var to_you: Vector3 = _cached_glance_point - position
-			if to_you.length_squared() > 0.25:
-				desired += to_you.normalized() * effective_max * 0.3 * familiarity
-		mood = clampf(mood + dt * 0.05, -1.0, 1.0)
-		FishMind.nudge_arousal(self, dt * 0.35)
+		var disappointed: bool = false
+		if sim.has_method("make_it_there_session"):
+			disappointed = bool(sim.make_it_there_session().get("feed_disappointed", false))
+		if disappointed:
+			mood = clampf(mood - dt * 0.04, -1.0, 1.0)
+			if familiarity > 0.2 and _cached_glance_point.length_squared() > 0.01:
+				var away: Vector3 = position - _cached_glance_point
+				away.y *= 0.2
+				if away.length_squared() > 0.2:
+					desired += away.normalized() * effective_max * 0.28
+		else:
+			var headroom: float = _meniscus_headroom()
+			if headroom > 0.12:
+				var anticipation_bias: float = clampf(headroom * 0.25, -0.5, 1.2)
+				desired.y += anticipation_bias * effective_max * 0.35
+			# Begging at the glass: familiar fish that associate the player with
+			# food crowd toward the last place they saw you and pace expectantly.
+			if familiarity > 0.25 and _cached_glance_point.length_squared() > 0.01:
+				var to_you: Vector3 = _cached_glance_point - position
+				if to_you.length_squared() > 0.25:
+					desired += to_you.normalized() * effective_max * 0.3 * familiarity
+			mood = clampf(mood + dt * 0.05, -1.0, 1.0)
+			FishMind.nudge_arousal(self, dt * 0.35)
 
-	# STRESS CONTAGION + STARTLE PROPAGATION. Every fish — not just
+	# STRESS CONTAGION + STARTLE PROPAGATION.
+	if sim != null and sim.has_method("startle_bolt_active") and sim.startle_bolt_active():
+		var bolt_o: Vector3 = sim.startle_bolt_origin() if sim.has_method("startle_bolt_origin") else Vector3.ZERO
+		var d_bolt: float = Vector2(position.x - bolt_o.x, position.z - bolt_o.z).length()
+		if d_bolt < 9.0 and _startle_remaining <= 0.0:
+			var prox_b: float = 1.0 - clampf(d_bolt / 9.0, 0.0, 1.0)
+			var radial: Vector3 = TopdownMotion.startle_radial_dir(
+				position, bolt_o, _startle_heading if _startle_heading.length_squared() > 0.01 else heading)
+			_startle_heading = radial
+			_startle_remaining = maxf(_startle_remaining, lerpf(0.22, 0.58, prox_b))
+			burst_remaining = maxf(burst_remaining, lerpf(0.2, 0.55, prox_b))
+	# Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
 	# neighborhood range. The signal weakens with distance so a panic
 	# ring radiates outward through the population rather than firing
@@ -4578,8 +5198,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				_startle_heading = Vector3(sh.x, 0.0, sh.z).normalized()
 			# Burst scales with proximity so the panic ring weakens as it
 			# spreads — closer fish snap, distant fish twitch.
-			_startle_remaining = lerpf(0.18, 0.45, prox)
-			burst_remaining = lerpf(0.15, 0.40, prox)
+			var st_scale: float = NightWatch.startle_scale(self)
+			_startle_remaining = lerpf(0.18, 0.45, prox) * st_scale
+			burst_remaining = lerpf(0.15, 0.40, prox) * st_scale
 
 	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
 	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
@@ -4724,11 +5345,23 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		y_wander += float(music_mods.get("vertical", 0.0)) * 0.55
 		if swim_pattern == "shuffle":
 			y_wander *= 0.55
-		heading_offset = Vector3(
-			sin(phase) * randf_range(0.35, 0.62),
-			sin(phase * 1.37) * y_wander,
-			cos(phase * 0.93) * randf_range(0.35, 0.62),
-		) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
+		var overhead_wander: bool = TopdownMotion.pond_active \
+			or bool(music_mods.get("overhead_view", false))
+		if overhead_wander:
+			var sig: Dictionary = TopdownMotion.plan_path_signature(locomotion_type, swim_pattern)
+			var amp: float = float(sig.get("wander_amp", 1.0))
+			var freq: float = float(sig.get("wander_freq", 1.55))
+			heading_offset = Vector3(
+				sin(phase * freq * TAU) * amp * 0.44,
+				sin(phase * 1.37) * y_wander * 0.35,
+				cos(phase * freq * TAU * 0.73) * amp * 0.4,
+			) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
+		else:
+			heading_offset = Vector3(
+				sin(phase) * sin(phase * 0.5) * randf_range(0.35, 0.62),
+				sin(phase * 1.37) * y_wander,
+				cos(phase * 0.93) * sin(phase * 0.5 + 1.2) * randf_range(0.35, 0.62),
+			) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
 
 	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
 	# periodically shift their home_x/home_z so they roam the tank over time
@@ -4752,6 +5385,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		drift_radius += float(music_mods.get("sweep", 0.0)) * 2.8
 		drift_interval /= maxf(float(music_mods.get("home_drift", 1.0)), 1.0)
 		_home_drift_timer = drift_interval
+		_home_loop_angle += randf_range(-0.8, 0.8)
 		var w := _world_node()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			var new_x: float = home_x + randf_range(-drift_radius, drift_radius)
@@ -4953,10 +5587,22 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					sd2n = d2n
 					_sleep_nook = p._world_pos + Vector3(0.0, 0.35, 0.0)
 		var to_nook: Vector3 = _sleep_nook - position
+		var stage_drift: float = 0.3
+		var stage_settle: float = 0.12
+		match _sleep_stage:
+			NightWatch.SleepStage.MICRO:
+				stage_drift = 0.38
+				stage_settle = 0.18
+			NightWatch.SleepStage.REM:
+				stage_drift = 0.34
+				stage_settle = 0.16
+			NightWatch.SleepStage.NREM:
+				stage_drift = 0.22
+				stage_settle = 0.08
 		if to_nook.length() > 0.5 and to_nook.length_squared() > 1e-4:
-			desired = to_nook.normalized() * effective_max * 0.3
+			desired = to_nook.normalized() * effective_max * stage_drift
 		else:
-			desired *= 0.12
+			desired *= stage_settle
 		current_mode = Mode.REST
 	else:
 		_sleep_have_nook = false
@@ -4964,7 +5610,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if is_guardian and sim != null:
 		desired += GuardianFish.guardian_steer(self, sim, dt)
 
+	var wm_bias: Vector3 = MindWorldModel.curiosity_target_bias(self)
+	if wm_bias.length_squared() > 0.0001:
+		desired += wm_bias
+	var imagined: float = MindWorldModel.imagined_threat(self, desired)
+	if imagined > 0.35:
+		effective_max *= lerpf(1.0, 0.62, imagined)
+
 	if _delib_active:
+		FishMind.tick_ddm(self, dt, _delib_approach_s, _delib_avoid_s, sim)
 		desired += FishMind.deliberation_steer(self, dt, effective_max)
 		var indec_spd: float = float(FishMind.indecision_modifiers(self).get("speed_mult", 1.0))
 		if indec_spd < 0.99:
@@ -5065,15 +5719,48 @@ func _process(dt: float) -> void:
 			if tc != null:
 				strength *= clampf(float(tc.biolum_multiplier), 0.0, 3.0)
 			_apply_bioluminescence_uniform(strength)
+	# Witnessable dream wisp (#22) — faint night glow over sleeping dreamers.
+	if _asleep and _dreaming and _dream_wisp != "" and sim != null and sim.has_method("daylight"):
+		var dl_w: float = float(sim.daylight())
+		if dl_w < 0.38:
+			var wisp: float = 0.14 + 0.11 * absf(sin(_swim_phase * 1.85 + float(get_instance_id() % 23) * 0.07))
+			if stress > 0.5:
+				wisp *= 1.35
+			_apply_bioluminescence_uniform(wisp)
+	if float(_replay_glow) > 0.01:
+		_replay_glow = maxf(0.0, _replay_glow - dt * 0.25)
+		_apply_bioluminescence_uniform(_replay_glow * 0.55)
 
 	_update_pheromone_trail()
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
 		_apply_belly_flash_uniform(_belly_flash)
+	if _silver_flash > 0.0:
+		_silver_flash = maxf(0.0, _silver_flash - dt * 3.5)
+		_apply_belly_flash_uniform(_belly_flash + _silver_flash * 0.85)
+	elif sim != null and sim.has_method("sync_turn_active") and sim.sync_turn_active():
+		var pol: float = sim.sync_polarization() if sim.has_method("sync_polarization") else 0.5
+		_silver_flash = maxf(_silver_flash, pol * 0.55)
+	var mm_treble: Dictionary = _music_mods()
+	if bool(mm_treble.get("overhead_view", false)):
+		var ts: float = float(mm_treble.get("treble_shimmer", 0.0))
+		if ts > 0.18:
+			_silver_flash = maxf(_silver_flash, ts * 0.24)
+			_apply_belly_flash_uniform(_belly_flash + _silver_flash * 0.85)
+	if TopdownMotion.pond_active and sim != null:
+		var y_min: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
+		var y_max: float = _water_surface_y() - 0.4
+		var band: float = TopdownMotion.species_depth_band_tint(home_y, y_min, y_max) - 1.0
+		_apply_overhead_readability_uniform(band)
 	if _mouth_gape > 0.0:
 		_mouth_gape = maxf(0.0, _mouth_gape - dt * 5.5)
 	_apply_stress_flush()
 	_tick_substrate_compaction(dt)
+	if sim != null and sim.has_method("spark_calm"):
+		var calm: float = sim.spark_calm()
+		if calm > 0.2 and _startle_remaining <= 0.0 and burst_remaining <= 0.0:
+			velocity *= lerpf(1.0, 0.72, calm)
+	MakeItThere.tick_fish_body(self, sim, dt)
 
 	# Apply pregnancy bulge if gestating
 	if _body_mid_pivot != null:
@@ -5456,6 +6143,11 @@ func _motion_substep(dt: float) -> void:
 		heading = target_dir
 
 	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
+	eff_turn *= TopdownMotion.turn_rate_at_speed(speed, max_speed)
+	if TopdownMotion.pond_active or bool(music_mm.get("overhead_view", false)):
+		var psig: Dictionary = TopdownMotion.plan_path_signature(locomotion_type, swim_pattern)
+		eff_turn *= float(psig.get("turn_mult", 1.0))
+	eff_turn *= clampf(1.0 - speed / maxf(max_speed, 0.15) * 0.42, 0.48, 1.0)
 	if full_hydro:
 		eff_turn *= Hydrodynamics.added_mass_turn_scale(speed, max_speed, _hydro_profile)
 
@@ -5466,6 +6158,10 @@ func _motion_substep(dt: float) -> void:
 	var wall_t: float = 1.0 - clampf(clearance / repel_dist, 0.0, 1.0)
 	var angle: float = heading.angle_to(target_dir)
 	if angle > 0.0005:
+		var ant: float = TopdownMotion.turn_anticipation_delta(angle, speed)
+		if absf(ant) > 0.001:
+			heading = _safe_normalize(heading.rotated(Vector3.UP, ant * dt * 3.0), heading)
+			angle = heading.angle_to(target_dir)
 		var axis: Vector3 = heading.cross(target_dir)
 		if axis.length_squared() < 1e-6:
 			axis = Vector3.UP
@@ -5516,6 +6212,7 @@ func _motion_substep(dt: float) -> void:
 			speed, target_spd, stroke_push + pec_push, drag_k, eff_accel, dt, coasting)
 	else:
 		speed = move_toward(speed, target_spd, eff_accel * dt * 0.7)
+	speed *= TopdownMotion.burst_glide_speed_mult(_swim_phase, swim_pattern)
 	_brake_pose = Hydrodynamics.brake_pose_amount(speed, target_spd)
 	_station_keep = Hydrodynamics.station_keep_pec(
 		_swim_phase, flow_vel.length(), target_spd)
@@ -5590,9 +6287,27 @@ func _motion_substep(dt: float) -> void:
 			var surf_h: float = float(w_h.get("WATER_HEIGHT")) if w_h.get("WATER_HEIGHT") != null else 6.5
 			if global_position.y > surf_h - 0.38:
 				_surface_wake_t -= dt
+				var trail: float = _music_trail_ghost
+				if trail > 0.12:
+					_surface_wake_t -= dt * 1.8
 				if _surface_wake_t <= 0.0:
-					w_h.spawn_surface_wake(global_position, speed)
-					_surface_wake_t = 0.24
+					var wake_i: float = TopdownMotion.wake_intensity(speed, _last_yaw_rate, absf(_last_yaw_rate) > 0.8)
+					if trail > 0.12:
+						wake_i = maxf(wake_i, 0.45 + trail * 0.95)
+					if w_h.has_method("spawn_surface_wake_ex"):
+						w_h.spawn_surface_wake_ex(global_position, speed, _last_yaw_rate, heading)
+					else:
+						w_h.spawn_surface_wake(global_position, speed * wake_i)
+					if trail > 0.12 and w_h.has_method("spawn_burst_ripple"):
+						w_h.spawn_burst_ripple(global_position, 0.42 + trail * 0.75)
+					_surface_wake_t = TopdownMotion.dance_trail_wake_interval(trail) \
+						if trail > 0.12 else lerpf(0.38, 0.14, clampf(speed / maxf(max_speed, 0.1), 0.0, 1.0))
+				if is_bioluminescent and sim != null:
+					_biolum_wake_t -= dt
+					var bg: float = TopdownMotion.biolum_wake_gain(float(sim.daylight()), true)
+					if bg > 0.15 and _biolum_wake_t <= 0.0 and w_h.has_method("spawn_burst_ripple"):
+						w_h.spawn_burst_ripple(global_position, 0.32 + bg * 0.55)
+						_biolum_wake_t = lerpf(0.55, 0.22, bg)
 	if velocity.y > 0.12:
 		_belly_flash = 1.0
 
@@ -5628,8 +6343,10 @@ func _motion_substep(dt: float) -> void:
 	if do_body_anim:
 		var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 		var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
+		_last_yaw_rate = yaw_rate
+		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
-		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate)
+		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate) * (1.15 if absf(yaw_rate) > 0.5 else 1.0)
 		var dance_bank: float = float(mm.get("dance_bank", 0.0))
 		if dance_bank > 0.02:
 			var accent: float = maxf(float(mm.get("kick_thump", 0.0)), float(mm.get("snare_flick", 0.0)))
@@ -5956,7 +6673,7 @@ func _motion_substep(dt: float) -> void:
 	# same per-voxel albedo, so they share one writer to avoid fighting over it.
 	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
-		flare = 0.45 if _courtship_sync else _courtship_intensity * 0.30
+		flare = 0.58 if _courtship_sync else _courtship_intensity * 0.42
 	# CONTENTMENT SHIMMER + MOOD COLOR. A safe, fed, social fish glows a touch
 	# more vivid (positive emotional readout — the game previously only showed
 	# negative states). A sudden water-quality improvement adds a brief relief
@@ -6110,6 +6827,10 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		coh /= float(count_conspecific)
 		var school_avg_speed: float = school_speed_sum / float(count_conspecific)
 		var ali_strength: float = 1.15
+		if sim != null and sim.has_method("sync_polarization"):
+			var pol: float = float(sim.sync_polarization())
+			ali_strength *= TopdownMotion.polarization_align_boost(pol)
+			tightness *= 1.0 + TopdownMotion.polarization_tightness(pol) * 0.35
 		# Dense local groups soften cohesion so the school reads as a loose
 		# cloud instead of a single tight ball.
 		var density_factor: float = 1.0
@@ -6136,13 +6857,27 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		to_center.y *= 0.52
 		if to_center.length() > 0.001:
 			steer += to_center.normalized() * coh_strength
-		# Leader following: a follower biases toward the leader's predicted
+	# Leader following: a follower biases toward the leader's predicted
 		# position. The more clearly someone out-leads us, the stronger the pull.
 		if have_leader:
 			var to_leader: Vector3 = leader_pos - position
 			to_leader.y *= 0.5
 			if to_leader.length() > 0.6 and to_leader.length_squared() > 1e-4:
-				steer += to_leader.normalized() * (best_lead - lead_score) * 0.9
+				var fan: float = (best_lead - lead_score) * 0.9
+				if to_leader.length() > 1.2:
+					fan *= 1.18
+				steer += to_leader.normalized() * fan
+		# Edge shimmer — perimeter fish jockey inward.
+		var to_c: Vector3 = coh - position
+		to_c.y = 0.0
+		var edge_dist: float = to_c.length()
+		if edge_dist > 2.2 and count_conspecific >= 4:
+			steer += to_c.normalized() * 0.42
+		elif edge_dist > 0.05 and edge_dist < 1.35:
+			steer -= to_c.normalized() * 0.28
+		# Vacuole / torus — hollow center under high tightness + stress.
+		if tightness > 1.65 and edge_dist < slot_r * 0.55:
+			steer -= to_c.normalized() * 0.35
 		# Speed matching: nudge in heading direction proportional to school
 		# speed delta. If the school is faster than us, accelerate.
 		var speed_delta: float = school_avg_speed - speed
@@ -6151,6 +6886,14 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 	# Friendship cohesion (applies even outside a formal school count).
 	if friend_w > 0.01:
 		steer += (friend_pull / friend_w).normalized() * clampf(friend_w, 0.0, 1.0) * 0.5
+
+	if sim != null and TopdownMotion.pond_active:
+		if sim.has_method("density_wave_push_at"):
+			steer += sim.density_wave_push_at(position) * 1.35
+		if sim.has_method("flock_split_pull") and count_conspecific >= 3:
+			steer += sim.flock_split_pull(get_instance_id(), position) * 0.38
+		if sim.has_method("conduct_anchor_pull"):
+			steer += sim.conduct_anchor_pull(position) * 0.48
 
 	return steer
 
@@ -6326,6 +7069,10 @@ func _local_clearance_push(neighbors: Array, plants: Array) -> Vector3:
 		var d2: float = d.length_squared()
 		if d2 < 1e-6 or d2 >= fish_r2:
 			continue
+		var rel_sp: float = clampf((nf.speed + speed) * 0.5 / maxf(max_speed, 0.2), 0.0, 1.0)
+		var weave_y: float = TopdownMotion.collision_weave_y(position.y - nf.position.y, rel_sp)
+		if absf(weave_y) > 0.01:
+			push.y += weave_y
 		push += d.normalized() * (FISH_PERSONAL_SPACE - sqrt(d2)) * 1.9
 	for p in plants:
 		if not is_instance_valid(p):
@@ -6718,6 +7465,14 @@ func _paint_lateral_pattern(ptype: int, body: Node3D, v: float, seg_count: int,
 						Vector3(v * 0.16 * sizem, v * 0.36 * sizem, v * 0.36 * sizem), mat_a)
 					_add_voxel_to(body, Vector3(xs * v * 0.52, v * 0.05, i * v),
 						Vector3(v * 0.14 * sizem, v * 0.18 * sizem, v * 0.18 * sizem), mat_m)
+		10:
+			# Lateral line — a pale dotted seam (palettized neuromast read).
+			var step: int = clampi(2 - int(round(dens)), 1, 2)
+			for i in range(0, seg, step):
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.54, v * 0.02, i * v),
+						Vector3(v * 0.08 * sizem, v * 0.08 * sizem, v * 0.22 * sizem),
+						_make_mat(base_color.lightened(0.28 + pattern_intensity * 0.12)))
 		_:
 			pass
 
@@ -6992,9 +7747,10 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"labyrinth_breather": (labyrinth_breather if randf() < 0.99
 			else partner.labyrinth_breather),
 		"organism_type": "fish",
-		"parent_keys": SpeciesLibrary.parent_keys_for_breeding([
+		"parent_keys": SpeciesLibScript.new().parent_keys_for_breeding([
 			get_saved_genome(), partner.get_saved_genome(),
 		]),
+		"personality": _blend_offspring_personality(self, partner),
 	}
 	g["subspecies_id"] = _derive_subspecies_id(partner, g)
 	if sim != null:
@@ -7137,6 +7893,15 @@ func to_save_dict() -> Dictionary:
 		"_dying": _dying,
 		"_dying_timer": _dying_timer,
 		"_dying_wall_start_unix": _dying_wall_start_unix,
+		"sleep_depth": _sleep_depth,
+		"sleep_stage": _sleep_stage,
+		"sleep_nook": SaveHelpers.vec3_to_array(_sleep_nook),
+		"sleep_have_nook": _sleep_have_nook,
+		"rest_debt": _rest_debt,
+		"dream_note_logged": _dream_note_logged,
+		"night_watcher": _night_watcher,
+		"morning_insight_applied": _morning_insight_applied,
+		"replay_glow": _replay_glow,
 	}
 
 
@@ -7181,6 +7946,15 @@ func apply_save_dict(d: Dictionary) -> void:
 	_growth_variance = float(d.get("growth_variance", _growth_variance))
 	_scarred = not not d.get("scarred", false)
 	_mate_id = String(d.get("mate_id", ""))
+	_sleep_depth = float(d.get("sleep_depth", 0.0))
+	_sleep_stage = int(d.get("sleep_stage", 0))
+	_rest_debt = float(d.get("rest_debt", 0.0))
+	_sleep_have_nook = bool(d.get("sleep_have_nook", false))
+	_sleep_nook = SaveHelpers.array_to_vec3(d.get("sleep_nook", []), Vector3.ZERO)
+	_dream_note_logged = bool(d.get("dream_note_logged", false))
+	_night_watcher = bool(d.get("night_watcher", false))
+	_morning_insight_applied = bool(d.get("morning_insight_applied", false))
+	_replay_glow = float(d.get("replay_glow", 0.0))
 	heading_offset = SaveHelpers.array_to_vec3(d.get("heading_offset", []), Vector3.ZERO)
 	court_timer = float(d.get("court_timer", 0.0))
 	brooding_at = SaveHelpers.array_to_vec3(d.get("brooding_at", []), Vector3.ZERO)
@@ -7398,6 +8172,21 @@ func _reclamp_territory_to_tank() -> void:
 	home_z = hp.z
 	if brooding_remaining > 0.0:
 		brooding_at = _slide_anchor_in_tank(brooding_at, 0.30, m * 0.35)
+
+
+func _try_claim_build_cave_territory() -> void:
+	if not is_territorial or maturity == MATURITY_FRY:
+		return
+	var w: Node = _world_node()
+	if w == null or not w.has_method("query_build_territory_near"):
+		return
+	var cave: Vector3 = w.query_build_territory_near(global_position, 5.5)
+	if cave == Vector3.ZERO:
+		return
+	home_x = cave.x
+	home_y = cave.y
+	home_z = cave.z
+	home_radius = maxf(home_radius, 2.6)
 
 
 func _apply_target_from_desired(desired: Vector3, max_spd: float) -> Vector3:

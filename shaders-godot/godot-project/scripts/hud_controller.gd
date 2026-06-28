@@ -20,17 +20,13 @@ static func water_chip_subtitle(stats: Dictionary) -> String:
 	var o2_pct: int = int(round(o2 * 100.0))
 	var mode: String = String(stats.get("hud_mode", "established"))
 	if mode == "reef" or not not stats.get("is_saltwater", false):
-		var alk: float = float(stats.get("alkalinity_proxy", 8.0))
-		return "O₂ %d%% · alk %.1f" % [o2_pct, alk]
+		return "O₂ %d%%" % o2_pct
 	var cycle: String = String(stats.get("cycle_label", ""))
-	var day: String = String(stats.get("sim_day_label", ""))
 	if mode == "cycle":
-		if day.is_empty():
-			return "O₂ %d%%" % o2_pct
-		return "%s · O₂ %d%%" % [day, o2_pct]
+		return "O₂ %d%%" % o2_pct
 	if cycle.is_empty():
 		return "O₂ %d%%" % o2_pct
-	return "O₂ %d%% · %s" % [o2_pct, cycle]
+	return cycle
 
 
 static func water_chip_warn(stats: Dictionary) -> bool:
@@ -46,21 +42,17 @@ static func flora_chip_subtitle(stats: Dictionary) -> String:
 	var biomass: int = int(stats.get("plant_total_biomass", 0))
 	var bloom: float = float(stats.get("bloom_intensity", 0.0))
 	var floater_n: int = int(stats.get("floater_count", 0))
-	var floater: float = float(stats.get("floater_coverage", 0.0))
 	var vigor_h: float = float(stats.get("flora_avg_health", 0.0))
-	var vigor_g: float = float(stats.get("flora_avg_growth", 0.0))
-	var base: String = "biomass %d" % biomass
-	if vigor_h > 0.01:
-		base = "vigor %d%%" % int(round(vigor_h * 100.0))
-		if vigor_g > 0.01:
-			base += " · grow %.0f%%" % int(round(clampf(vigor_g / 0.35, 0.0, 1.0) * 100.0))
-	if floater_n > 0:
-		base += " · %d floaters" % floater_n
 	if bloom >= 0.35:
-		base += " · bloom"
-	elif floater > 0.15:
-		base += " · surface %d%%" % int(round(floater * 100.0))
-	return base
+		return "bloom"
+	if vigor_h > 0.01:
+		var base: String = "vigor %d%%" % int(round(vigor_h * 100.0))
+		if floater_n > 0:
+			base += " · %df" % floater_n
+		return base
+	if floater_n > 0:
+		return "%d floaters" % floater_n
+	return "biomass %d" % biomass
 
 
 static func alert_guidance_lines(stats: Dictionary, kind: String) -> PackedStringArray:
@@ -116,6 +108,8 @@ static func water_detail_lines(stats: Dictionary) -> PackedStringArray:
 	lines.append("pH: %.1f · CO₂: %d%%" % [
 		float(stats.get("ph", 7.2)),
 		int(round(float(stats.get("dissolved_co2", 0.4)) * 100.0))])
+	if bool(stats.get("night_breath_inhale", false)):
+		lines.append("Night breath — tank inhaling (plants respire)")
 	lines.append("KH: %.1f · GH: %.1f · Fe: %d%%" % [
 		float(stats.get("kh", 4.0)), float(stats.get("gh", 6.0)),
 		int(round(float(stats.get("iron", 0.7)) * 100.0))])
