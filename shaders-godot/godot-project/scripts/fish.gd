@@ -1208,11 +1208,13 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMind.tick_home_confidence(self, dt)
 	FishMind.tick_prediction_surprise(self, sim, dt)
 	# 1D — emit our own signal + listen to neighbours BEFORE attention, so a heard
-	# alarm/food/mate call can enter this cycle's workspace as a bid.
-	FishSignals.tick(self, dt)
-	FishSignals.scan(self, neighbors)
+	# alarm/food/mate call can enter this cycle's workspace as a bid. (#14 ablatable)
+	if MindAblation.enabled(MindAblation.SIGNALS):
+		FishSignals.tick(self, dt)
+		FishSignals.scan(self, neighbors)
 	# META #10 — affect drifts toward the school's mood (excitement/calm spread).
-	MindContagion.tick(self, neighbors, dt)
+	if MindAblation.enabled(MindAblation.CONTAGION):
+		MindContagion.tick(self, neighbors, dt)
 	MindCycle.run_attention_phase(self, sim, _ms, dt)
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
@@ -1295,7 +1297,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMindScience.tick_sleep_replay(self)
 	FishMindScience.tick_prospective(self, dt)
 	FishMindScience.tick_neuromodulators(self, dt, satisfaction, surprise)
-	if not neighbors.is_empty():
+	if not neighbors.is_empty() and MindAblation.enabled(MindAblation.THEORY_OF_MIND):
 		FishMindScience.tick_theory_of_mind(self, neighbors)
 		for n in neighbors:
 			if n is Fish and MindConversation.session_active(n as Fish):

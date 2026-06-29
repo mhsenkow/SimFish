@@ -56,6 +56,15 @@ static func run_attention_phase(f: Fish, sim: Node, ms, dt: float = 0.016) -> vo
 		bids = FishRelevance.realize(f, sim, bids, dt)
 	var result: Dictionary = GlobalWorkspace.run_competition(bids)
 	GlobalWorkspace.broadcast(f, result, ms)
+	# META #18 — emit a structured cognition-trace event (no-op when disabled).
+	if MindTrace.is_enabled():
+		MindTrace.record(f.id, {
+			"focus": ms.attention_focus,
+			"ignited": ms.workspace_ignited,
+			"winners": ms.workspace.size(),
+			"surprise": f.surprise,
+			"pred_err": f._prediction_error,
+		})
 	ms.self_model = MindSelfModel.build(f, ms.workspace)
 	ms.meta_states = MindSelfModel.tick_higher_order(f, ms.self_model, dt)
 	if FishBinding.layer_enabled():

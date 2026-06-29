@@ -61,7 +61,8 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 	# from exploring, so the fish acts to reduce uncertainty (Friston's free-energy
 	# principle). Conservative rollout: named/familiar/guardian fish first. Gated off
 	# when stressed — allostasis / dark-room guard: a scared fish doesn't go sightseeing.
-	if (f.is_guardian or f.fish_name != "" or f.familiarity > 0.4) and f.stress < 0.6:
+	if (f.is_guardian or f.fish_name != "" or f.familiarity > 0.4) and f.stress < 0.6 \
+			and MindAblation.enabled(MindAblation.WORLD_MODEL):
 		var efe: float = MindWorldModel.expected_free_energy_explore(f)
 		if efe > 0.45:
 			bids.append(_bid("free_energy", efe * 0.7, ["free_energy", "explore", "novelty"]))
