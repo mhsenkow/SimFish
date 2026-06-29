@@ -19,6 +19,41 @@ const IGNITION_THRESHOLD: float = 0.42
 const COALITION_BONUS: float = 0.12
 
 
+# META #12 — bid-generator registry (plugin attention). A new drive
+# (territoriality, play, grief, a mod) registers a Callable(f, sim) -> Array[bid]
+# instead of editing this kernel. Registered generators run on top of the built-in
+# bids (additive — existing behaviour is unchanged), then go through the same
+# precision/coalition pipeline. A bad generator can't crash the cycle.
+static var _bid_generators: Array = []
+
+
+static func register_bid_generator(cb: Callable) -> void:
+	if cb.is_valid() and not _bid_generators.has(cb):
+		_bid_generators.append(cb)
+
+
+static func unregister_bid_generator(cb: Callable) -> void:
+	_bid_generators.erase(cb)
+
+
+static func clear_bid_generators() -> void:
+	_bid_generators.clear()
+
+
+# Run every registered generator and append its (validated) bids.
+static func _append_registered(f: Fish, sim: Node, bids: Array) -> void:
+	for cb in _bid_generators:
+		if not (cb is Callable) or not (cb as Callable).is_valid():
+			continue
+		var extra: Variant = (cb as Callable).call(f, sim)
+		if not (extra is Array):
+			continue
+		for b in (extra as Array):
+			if b is Dictionary and (b as Dictionary).has("label") \
+					and float((b as Dictionary).get("salience", 0.0)) > 0.0:
+				bids.append(b)
+
+
 static func collect_bids(f: Fish, _sim: Node) -> Array:
 	var bids: Array = []
 	var dl: float = 1.0
@@ -34,6 +69,7 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 			bids.append(_bid("memory", 0.4, ["memory", "dream"]))
 		if f._cached_glance_strength > 0.35:
 			bids.append(_bid("player", f._cached_glance_strength * 0.5, ["player", "social"]))
+		_append_registered(f, _sim, bids)
 		_apply_precision_and_mods(f, bids, _sim)
 		return bids
 	if f.spooked > 0.38 or f._startle_remaining > 0.0:
@@ -114,6 +150,7 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		bids.append(FishProtoself.baseline_bid(f))
 		for ob in FishProtoself.organ_bids(f):
 			bids.append(ob)
+	_append_registered(f, _sim, bids)
 	_apply_precision_and_mods(f, bids, _sim)
 	return bids
 
