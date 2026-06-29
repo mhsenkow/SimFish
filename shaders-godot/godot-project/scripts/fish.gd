@@ -1211,6 +1211,8 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	# alarm/food/mate call can enter this cycle's workspace as a bid.
 	FishSignals.tick(self, dt)
 	FishSignals.scan(self, neighbors)
+	# META #10 — affect drifts toward the school's mood (excitement/calm spread).
+	MindContagion.tick(self, neighbors, dt)
 	MindCycle.run_attention_phase(self, sim, _ms, dt)
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
