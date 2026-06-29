@@ -383,6 +383,21 @@ Tracked here per OPUS_HANDOFF 0E so the carve has an honest backlog. Baseline
   `fish.gd` still read/write `_mind_*`, `_felt_self`, `_world_model`, `_keeper_pending`
   scalar fields directly. **Target:** route 100% through `MindState`; #14/#15 phase 1
   fixes the `mind_cycle` path first.
+  - **0E audit (2026-06-28).** The cycle is a *dual-write* today, by design:
+    `GlobalWorkspace.broadcast(f, result, ms)` ([global_workspace.gd:162]) writes
+    BOTH `ms.workspace/.workspace_ignited` AND `f._mind_workspace/.attention_focus/
+    ._workspace_ignited`, and `_apply_behavior_bias(f, ...)` reads `f.attention_focus`
+    back **within the same call**. The felt-self ticks (`FishFeltNow/Binding/…`) and
+    the rest of `fish.tick()` likewise read `f.*` directly all frame. So MindState is
+    a *parallel view*, not yet the source of truth. Making it the **sole** channel is
+    therefore not a local edit to `broadcast` — it requires rerouting every `f.*`
+    *reader* across `tick()` to read `ms` (or commit `ms→f` before the readers run).
+    That's a behavior-sensitive XL step; do it deliberately, not opportunistically.
+  - **Guard rail landed:** [`smoke_mind_state_roundtrip.gd`] pins the contract —
+    `sync_from_fish` copies all tracked fields; `apply_to_fish` writes the writable
+    subset back byte-stably and does **not** clobber sync-only fields (hunger,
+    neuromodulators); dict fields are deep-copied. This is the golden test that lets
+    the eventual single-channel flip proceed without silently corrupting the mind.
 - **Cross-god `has_method()` probes.** `main.gd` guards ~all `SimDriver`/`World`
   calls; `fish.gd` probes `world`/`sim`. **Target:** typed `Creature`/`Mind`/
   `HabitatQuery` interfaces (#13).

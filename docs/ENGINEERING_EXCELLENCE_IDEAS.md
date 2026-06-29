@@ -120,7 +120,13 @@ safety, and per-call string-hash cost at once.*
 - [x] **15. `MindState` as the ONLY mind↔fish channel.** It exists — make it the sole
   interface so cognitive modules never touch fish internals by string (and the mind
   could drive a shrimp or the TankMind unchanged). *L · L* — **Started:** `MindChannel.for_cycle`
-  / `commit`; smoke `smoke_mind_channel.gd`.
+  / `commit`; smoke `smoke_mind_channel.gd`. **0E (2026-06-28):** landed
+  `smoke_mind_state_roundtrip.gd` (golden contract: sync copies all tracked fields,
+  apply writes the writable subset byte-stably + doesn't clobber sync-only fields,
+  dicts deep-copied) as the guard rail for the eventual single-channel flip. Audited
+  the blocker: `broadcast` + the felt-self ticks dual-write `f.*` AND `ms.*`, and the
+  rest of `tick()` reads `f.*` all frame — so the full flip needs all readers rerouted
+  (behavior-sensitive XL). See ARCHITECTURE.md §8 mind-debt ledger.
 - [ ] **16. Typed signals.** Audit the signal bus; give every signal an explicit typed
   payload so connections are compiler-checked. *M · M*
 - [ ] **17. Enums over hot string constants.** Situations (`"keeper_reply"`), moods
