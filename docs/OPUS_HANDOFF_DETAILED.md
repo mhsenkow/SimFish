@@ -45,7 +45,7 @@ with acceptance criteria and smoke specs. Keep it in sync as sessions land.*
 | 3 | 0C — fish locomotion extract | ✅ shipped 2026-06-28 (`fish_locomotion.gd` first slice: wall/clearance steering + `smoke_fish_locomotion.gd`; ENGINEERING #1 partial; commit e1c4923) |
 | 4 | 0E — MindState phase 1 | 🟡 step 1 landed 2026-06-28: `broadcast` is MindState-authoritative for the workspace triplet via `commit_workspace_to()` (read-back removed; **latent attention_focus revert bug fixed**); `smoke_workspace_channel.gd` + 9 cognition smokes green. **Remaining:** reader-side migration (felt-self + `tick()` read `f.*`; `tick_attention` path still reverts). See ARCHITECTURE.md §8 |
 | 5 | 3A — SimRng sweep | ⬜ next |
-| 6 | 1C — multi-goal blending (META #9) | ⬜ |
+| 6 | 1C — multi-goal blending (META #9) | ✅ shipped 2026-06-28 (`GlobalWorkspace.blend_behavior_bias` + `smoke_motor_blend.gd`; co-ignition → one skirt vector; META #9 [x]) |
 | 7 | 5A — mock LLM for CI (META #77) | ⬜ |
 | 8 | 2C — time-slice brain (META #24) | ⬜ |
 | 9 | 2A — material pool (META #22) | ⬜ |

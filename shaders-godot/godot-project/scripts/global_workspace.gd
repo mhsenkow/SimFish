@@ -178,10 +178,21 @@ static func broadcast(f: Fish, result: Dictionary, ms) -> void:
 	var primary: Dictionary = contents[0]
 	ms.attention_focus = str(primary.get("label", ""))
 	ms.commit_workspace_to(f)
-	_apply_behavior_bias(f, ms.attention_focus, float(primary.get("salience", 0.0)))
+	# META #9 — co-ignition (>1 winner) blends a single skirt vector from all
+	# goals; a lone winner keeps the original single-goal bias.
+	if contents.size() >= 2:
+		blend_behavior_bias(f, contents)
+	else:
+		_apply_behavior_bias(f, ms.attention_focus, float(primary.get("salience", 0.0)))
 
 
 static func _apply_behavior_bias(f: Fish, focus: String, salience: float) -> void:
+	f._behavior_ws_bias = _bias_for(f, focus, salience)
+
+
+# META #9 — the per-goal steering bias for one focus. Pure: returns the vector and
+# writes nothing, so blend_behavior_bias() can sum it across co-ignited contents.
+static func _bias_for(f: Fish, focus: String, salience: float) -> Vector3:
 	var bias: Vector3 = Vector3.ZERO
 	var mag: float = clampf(salience, 0.0, 1.0) * 0.35
 	match focus:
@@ -214,7 +225,28 @@ static func _apply_behavior_bias(f: Fish, focus: String, salience: float) -> voi
 					bias = ((pos as Vector3) - f.position).normalized() * mag * 0.7
 		_:
 			bias = f.heading * mag * 0.3
-	f._behavior_ws_bias = bias
+	return bias
+
+
+# META #9 — multi-goal motor blending. When the Global Workspace holds more than
+# one winner (e.g. food AND threat both ignited), synthesize ONE motor vector from
+# all of them — salience-weighted, primary leading — so the fish skirts toward food
+# while leaning off the threat instead of the DDM flip-flopping between them frame
+# to frame. A single winner reduces exactly to _bias_for (behavior preserved).
+static func blend_behavior_bias(f: Fish, contents: Array) -> void:
+	var blended: Vector3 = Vector3.ZERO
+	var total_w: float = 0.0
+	for i in contents.size():
+		var c: Dictionary = contents[i]
+		var sal: float = float(c.get("salience", 0.0))
+		# Primary keeps full weight; secondaries fold in at 0.6 so the focus still
+		# leads but a co-active threat/opportunity still bends the path.
+		var w: float = maxf(sal, 0.001) * (1.0 if i == 0 else 0.6)
+		blended += _bias_for(f, str(c.get("label", "")), sal) * w
+		total_w += w
+	if total_w > 0.0001:
+		blended /= total_w
+	f._behavior_ws_bias = blended
 
 
 static func encode_from_workspace(f: Fish, ms) -> void:
