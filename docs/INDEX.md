@@ -44,6 +44,7 @@ idea at a time.
 | [SENTIENCE_DEEP_SCIENCE_IDEAS.md](SENTIENCE_DEEP_SCIENCE_IDEAS.md) | Science-facing mind features |
 | [SENTIENCE_THE_LEARNING_MIND_IDEAS.md](SENTIENCE_THE_LEARNING_MIND_IDEAS.md) | IC8 pass: on-device learning, instruments, federation |
 | [SENTIENCE_EVAL_HARNESS.md](SENTIENCE_EVAL_HARNESS.md) | **Falsifiable sentience eval** — theory-grounded behavioural + integration invariants; the gate the hard mind epics build against |
+| [ACTIVE_INFERENCE_CORE.md](ACTIVE_INFERENCE_CORE.md) | **META #1 capstone design** — collapse the hand-tuned drives into one expected-free-energy objective; phased, flag-gated, eval-verified plan + Phase-0 scaffold |
 | [CONSCIOUSNESS_ENGINEERING_IDEAS.md](CONSCIOUSNESS_ENGINEERING_IDEAS.md) | GWT / workspace engineering |
 | [GUARDIAN_COMPANION_IDEAS.md](GUARDIAN_COMPANION_IDEAS.md) | Guardian fish companion |
 | [MAKE_IT_THERE_IDEAS.md](MAKE_IT_THERE_IDEAS.md) | Presence / “make it there” voice |
