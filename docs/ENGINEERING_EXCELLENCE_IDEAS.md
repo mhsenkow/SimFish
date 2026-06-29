@@ -57,10 +57,18 @@ silently. Sections E, G.
 *Lever 1. The headline. Strangler-fig, never big-bang — extract behind existing call
 sites with smoke tests pinning behavior at each step.*
 
-- [ ] **1. Carve `fish.gd` (8,448) by concern.** Extract locomotion/hydrodynamics,
+- [~] **1. Carve `fish.gd` (8,448) by concern.** Extract locomotion/hydrodynamics,
   anatomy/rendering, the behavior-tier state machine, and the mind-glue into separate
   scripts a thin `Fish` composes. The mind already lives in `mind_*`; this is
-  everything else. *XL · L*
+  everything else. *XL · L* — **Started 2026-06-28 (0C):** `FishLocomotion`
+  ([`fish_locomotion.gd`](../shaders-godot/godot-project/scripts/fish_locomotion.gd))
+  — first slice: boundary + collision-avoidance steering (`wall_avoid`,
+  `local_clearance_push`, `hardscape_clearance_push`) as static funcs taking the
+  Fish; fish.gd keeps thin one-line delegates (call sites unchanged, bodies moved
+  verbatim). Smoke `smoke_fish_locomotion.gd` (compile + delegate-identity + 50-step
+  no-NaN de-crowd) green; `felt_self`/`cognition_kernel`/`mind_channel` green.
+  Remaining slices: `_motion_substep` (integration), `_boids` (schooling), velocity
+  constraints, then anatomy/render and the behavior-tier table (#7).
 - [~] **2. Carve `main.gd` (9,428).** It's input + camera + follow + keeper-chat + HUD
   glue at once. Extract `CameraController`, `FollowController`, `KeeperChatUI`,
   `HudController`. *XL · L* — **Started 2026-06-28 (0B):** `CameraController`
