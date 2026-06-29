@@ -373,7 +373,7 @@ static func build_fish_thought_prompt(ctx: Dictionary, lang_code: String = "en")
 	]
 	var ws: String = str(ctx.get("attention_workspace", ""))
 	if ws != "":
-		sys += " The fish is consciously attending to: %s." % ws
+		sys += " The fish's workspace focus is: %s." % ws
 	return "%s Context: %s. Write the thought now." % [sys, JSON.stringify(ctx)]
 
 

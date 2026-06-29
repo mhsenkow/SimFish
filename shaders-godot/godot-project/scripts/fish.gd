@@ -1180,6 +1180,8 @@ func _mind_subsystem_fields_alive() -> bool:
 		and _keeper_pending.size() >= 0 and _keeper_message_salience >= 0.0 \
 		and _learned_words.size() >= 0 and _word_milestones.size() >= 0 \
 		and _world_model.size() >= 0 and _prediction_error >= 0.0 \
+		and _signal_state.size() >= 0 and _tom_pred.size() >= 0 and _tom_alert.size() >= 0 \
+		and _semantic_schemas.size() >= 0 \
 		and _life_stance.length() >= 0 and _stance_drift_t >= 0.0 \
 		and _active_plan.size() >= 0 and _bid_salience_mods.size() >= 0 \
 		and _last_cog_op.size() >= 0 and _last_cog_validation.length() >= 0 \

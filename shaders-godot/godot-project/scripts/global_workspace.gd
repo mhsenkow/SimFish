@@ -13,6 +13,7 @@ const FishBinding = preload("res://scripts/fish_binding.gd")
 const FishFeltNow = preload("res://scripts/fish_felt_now.gd")
 const FishQualia = preload("res://scripts/fish_qualia.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 
 const CAPACITY: int = 3
 const IGNITION_THRESHOLD: float = 0.42
@@ -59,10 +60,14 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 	var dl: float = 1.0
 	if _sim != null and _sim.has_method("daylight"):
 		dl = float(_sim.daylight())
+	var use_efe: bool = MindActiveInference.enabled_for(f, _sim)
 	# Sleeping fish: rest/dream dominate; don't stack threat loops in the dark.
 	if f._asleep:
 		var depth: float = float(f.get("_sleep_depth") if f.get("_sleep_depth") != null else 0.0)
-		bids.append(_bid("rest", 0.58 + depth * 0.32, ["rest", "night"]))
+		var rest_s: float = 0.58 + depth * 0.32
+		if use_efe:
+			rest_s = MindActiveInference.efe_salience(f, "rest")
+		bids.append(_bid("rest", rest_s, ["rest", "night"]))
 		if f._dreaming:
 			bids.append(_bid("dream", 0.48 + depth * 0.22, ["dream", "night", "memory"]))
 		if f.get("_dream_wisp") != null and str(f._dream_wisp) != "":
@@ -74,38 +79,54 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		return bids
 	if f.spooked > 0.38 or f._startle_remaining > 0.0:
 		if f._startle_remaining > 0.0 or f.spooked > 0.42 or f.stress > 0.38:
-			bids.append(_bid("threat", f.spooked + 0.45, ["threat", "safety"]))
+			var thr_s: float = f.spooked + 0.45
+			if use_efe:
+				thr_s = MindActiveInference.efe_salience(f, "threat")
+			bids.append(_bid("threat", thr_s, ["threat", "safety"], use_efe))
 	if f.hunger > 0.45:
-		bids.append(_bid("food", f.hunger + 0.1, ["food", "forage"]))
+		var food_s: float = f.hunger + 0.1
+		if use_efe:
+			food_s = MindActiveInference.efe_salience(f, "food")
+		bids.append(_bid("food", food_s, ["food", "forage"], use_efe))
 	if f._cached_glance_strength > 0.22:
 		bids.append(_bid("player", f._cached_glance_strength + f.familiarity * 0.15,
 				["player", "social"]))
 	if f.partner != null and is_instance_valid(f.partner):
-		bids.append(_bid("mate", 0.52, ["mate", "social"]))
-	if f.curiosity_drive > 0.4:
-		bids.append(_bid("novelty", f.curiosity_drive * 0.75, ["novelty", "explore"]))
+		var mate_s: float = 0.52
+		if use_efe:
+			mate_s = MindActiveInference.efe_salience(f, "mate")
+		bids.append(_bid("mate", mate_s, ["mate", "social"], use_efe))
+	if use_efe:
+		var ep_s: float = MindActiveInference.epistemic_bid_salience(f)
+		if ep_s > 0.05:
+			bids.append(_bid("free_energy", ep_s,
+					["free_energy", "explore", "novelty", "prediction"], true))
+	else:
+		if f.curiosity_drive > 0.4:
+			bids.append(_bid("novelty", f.curiosity_drive * 0.75, ["novelty", "explore"]))
+		if f.surprise > 0.35:
+			bids.append(_bid("surprise", f.surprise * 0.9, ["surprise"]))
+		# META #2 — prediction error as salience (orient toward the unexpected).
+		var pred_err: float = 0.0
+		if f.get("_prediction_error") != null:
+			pred_err = float(f._prediction_error)
+		elif f.get("_world_model") is Dictionary:
+			pred_err = float((f._world_model as Dictionary).get("error", 0.0))
+		if pred_err > 0.28:
+			bids.append(_bid("uncertainty", pred_err * 0.82, ["novelty", "explore", "prediction"]))
+		# 1A — active inference drive (legacy separate bid).
+		if (f.is_guardian or f.fish_name != "" or f.familiarity > 0.4) and f.stress < 0.6 \
+				and MindAblation.enabled(MindAblation.WORLD_MODEL):
+			var efe: float = MindWorldModel.expected_free_energy_explore(f)
+			if efe > 0.45:
+				bids.append(_bid("free_energy", efe * 0.7, ["free_energy", "explore", "novelty"]))
 	if f.surprise > 0.35:
 		bids.append(_bid("surprise", f.surprise * 0.9, ["surprise"]))
-	# META #2 — prediction error as salience (orient toward the unexpected).
-	var pred_err: float = 0.0
-	if f.get("_prediction_error") != null:
-		pred_err = float(f._prediction_error)
-	elif f.get("_world_model") is Dictionary:
-		pred_err = float((f._world_model as Dictionary).get("error", 0.0))
-	if pred_err > 0.28:
-		bids.append(_bid("uncertainty", pred_err * 0.82, ["novelty", "explore", "prediction"]))
-	# 1A / META #1 — active inference: expected free energy as a DRIVE (not just a
-	# reaction to surprise). High EFE = the generative model expects information gain
-	# from exploring, so the fish acts to reduce uncertainty (Friston's free-energy
-	# principle). Conservative rollout: named/familiar/guardian fish first. Gated off
-	# when stressed — allostasis / dark-room guard: a scared fish doesn't go sightseeing.
-	if (f.is_guardian or f.fish_name != "" or f.familiarity > 0.4) and f.stress < 0.6 \
-			and MindAblation.enabled(MindAblation.WORLD_MODEL):
-		var efe: float = MindWorldModel.expected_free_energy_explore(f)
-		if efe > 0.45:
-			bids.append(_bid("free_energy", efe * 0.7, ["free_energy", "explore", "novelty"]))
 	if f.stress > 0.55:
-		bids.append(_bid("interoception", f.stress * 0.6, ["stress", "interoception"]))
+		var int_s: float = f.stress * 0.6
+		if use_efe:
+			int_s = MindActiveInference.efe_salience(f, "interoception")
+		bids.append(_bid("interoception", int_s, ["stress", "interoception"], use_efe))
 	# Retrieved episodic boost
 	if f.get("_episodic_retrieval_hint") is Dictionary:
 		var hint: Dictionary = f._episodic_retrieval_hint
@@ -145,7 +166,10 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		if vib > 0.22 and (f.spooked > 0.28 or f._startle_remaining > 0.0):
 			bids.append(_bid("vibration", vib + 0.2, ["sound", "lateral"]))
 		elif f.stress < 0.4 and f.vigilance < 0.45:
-			bids.append(_bid("night_quiet", 0.38, ["night", "rest"]))
+			var nq_s: float = 0.38
+			if use_efe:
+				nq_s = MindActiveInference.efe_salience(f, "night_quiet")
+			bids.append(_bid("night_quiet", nq_s, ["night", "rest"], use_efe))
 	if FishBinding.layer_enabled():
 		bids.append(FishProtoself.baseline_bid(f))
 		for ob in FishProtoself.organ_bids(f):
@@ -186,8 +210,10 @@ static func _apply_precision_and_mods(f: Fish, bids: Array, sim: Node = null) ->
 		b["salience"] = maxf(0.0, sal)
 
 
-static func _bid(label: String, salience: float, coalition: Array) -> Dictionary:
-	return {"label": label, "salience": salience, "coalition": coalition}
+static func _bid(label: String, salience: float, coalition: Array,
+		efe_sourced: bool = false) -> Dictionary:
+	return {"label": label, "salience": salience, "coalition": coalition,
+			"efe_sourced": efe_sourced}
 
 
 static func run_competition(bids: Array) -> Dictionary:

@@ -35,6 +35,7 @@ const TD_GAMMA: float = 0.88
 const MIND_SCHEMA_VERSION: int = 3
 const SimRngScript = preload("res://scripts/sim_rng.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
+const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 
 
 # ---- Perception (#1) ----
@@ -155,7 +156,11 @@ static func ddm_threshold(f: Fish) -> float:
 	var conf: float = 1.0
 	if f._mind_self_model is Dictionary and not f._mind_self_model.is_empty():
 		conf = float(f._mind_self_model.get("confidence", 1.0))
-	return lerpf(thr, thr * 1.38, clampf(1.0 - conf, 0.0, 0.9))
+	thr = lerpf(thr, thr * 1.38, clampf(1.0 - conf, 0.0, 0.9))
+	# META #1 Phase 2 — flat EFE landscape → deliberate longer (M1).
+	if MindActiveInference.enabled_for(f, null):
+		thr *= lerpf(1.0, 1.32, MindActiveInference.efe_flatness(f))
+	return thr
 
 
 static func update_conflict(f: Fish, approach: float, avoid: float,
@@ -185,8 +190,12 @@ static func tick_ddm(f: Fish, dt: float, approach: float, avoid: float, sim: Nod
 	var cog: RandomNumberGenerator = MindRng.for_fish(f)
 	var noise_a: float = (cog.randf() - 0.5) * DDM_NOISE
 	var noise_b: float = (cog.randf() - 0.5) * DDM_NOISE
-	f._delib_ev_approach += (approach * DDM_DRIFT + noise_a) * dt
-	f._delib_ev_avoid += (avoid * DDM_DRIFT + noise_b) * dt
+	var drift: float = DDM_DRIFT
+	# META #1 Phase 2 — drift scales with the EFE gap between options (D1).
+	if MindActiveInference.enabled_for(f, sim):
+		drift *= lerpf(0.62, 1.42, MindActiveInference.conflict_efe_gap(f, approach, avoid))
+	f._delib_ev_approach += (approach * drift + noise_a) * dt
+	f._delib_ev_avoid += (avoid * drift + noise_b) * dt
 	f._delib_phase += dt
 	if f._delib_phase > 1.5 and not f._delib_decided:
 		var rich: bool = f.is_guardian or f.fish_name != "" or f.familiarity > 0.35

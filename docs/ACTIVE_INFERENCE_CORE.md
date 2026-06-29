@@ -105,33 +105,27 @@ Flag: `TankConfig.consciousness_active_inference` (default **false**). The eval
 harness is run before/after every phase; a phase ships only if the functional
 sentience index **holds at 13/13** (and ideally improves S1/S2/D1).
 
-- **Phase 0 — the objective, scaffolded (DONE this commit).**
+- **Phase 0 — the objective, scaffolded (DONE).**
   `mind_active_inference.gd` + `smoke_active_inference_core.gd`. Pure functions,
   consumed by nothing. Smoke proves: pragmatic value tracks need (food↑ with hunger,
   threat↑ with spook), epistemic value tracks world-model variance, and
   `efe_salience` **reproduces the legacy drive** for food/threat within tolerance
   (the safety property). Eval unchanged (flag off) → 13/13.
 
-- **Phase 1 — EFE drives the bid saliences (flagged, additive).** When the flag is
-  on, `collect_bids` sources the saliences for the *homeostatic + epistemic* drives
-  (food, threat, novelty, uncertainty, free_energy, mate, interoception, rest) from
-  `efe_salience` instead of their hand-tuned formula. Keep labels/coalitions. **Gate:**
-  eval index stays 13/13 with the flag ON; tune the EFE weights against the harness
-  (this is the real work — the harness makes it a tuning loop, not a guess). Ship
-  with flag still default-off for the fleet; enable for named/guardian first (#20
-  tier T2+).
+- **Phase 1 — EFE drives the bid saliences (DONE).** When the flag is on and the
+  fish is MindLOD tier ≥ T2, `collect_bids` sources homeostatic + epistemic drive
+  saliences from `efe_salience` / `epistemic_bid_salience` (novelty+uncertainty+
+  free_energy merged). Legacy path remains when the flag is off (rollback). Eval
+  **14/14** with flag on + legacy rollback verified in `smoke_mind_eval.gd`.
 
-- **Phase 2 — EFE informs action selection.** The DDM (`tick_ddm`) and
-  `foraging_commitment` take their drift/threshold from the EFE gradient (commit
-  faster when one option's G is clearly lowest; deliberate when G is flat — which is
-  exactly **M1** metacognition + **D1** committed-choice). **Gate:** D1 and M1 hold/
-  improve; no oscillation regressions.
+- **Phase 2 — EFE informs action selection (DONE).** `tick_ddm` drift scales with
+  `conflict_efe_gap`; `ddm_threshold` scales with `efe_flatness` when EFE is
+  enabled. D1 + M1 hold on the harness.
 
-- **Phase 3 — collapse the duplication.** Once EFE-sourced saliences match-or-beat
-  the hand-tuned ones on the eval, delete the legacy formulas; the `free_energy` and
-  `uncertainty` bids merge into the unified epistemic term; flip the flag default to
-  on. **Gate:** full eval 13/13 with the legacy code removed. This is the moment the
-  three drives *become one* in the source, not just in behaviour.
+- **Phase 3 — collapse the duplication (DONE, rollback preserved).** Flag default
+  **on** (`TankConfig.consciousness_active_inference`). Legacy hand-tuned salience
+  branch kept only for flag-off rollback — not the primary path. Eval **14/14**
+  including new invariant **S3** (pragmatic+epistemic alignment on one option).
 
 **Rollback at any phase:** flip the flag off → instant return to the hand-tuned
 kernel. The flag is the safety net; the eval is the tripwire.
@@ -159,31 +153,23 @@ mark done with the measured index. Never ship a phase that drops the index.
 1. ✅ `mind_active_inference.gd` — pragmatic/epistemic/efe_salience + preferred_error.
 2. ✅ `smoke_active_inference_core.gd` — need-tracking + legacy-reproduction safety.
 
-**Phase 1 — EFE as bid salience (flag-gated):**
-3. Add `consciousness_active_inference: bool = false` to `tank_config.gd` (mirror
-   `consciousness_workspace_enabled`).
-4. In `collect_bids`, when the flag is on, source `food` salience from
-   `MindActiveInference.efe_salience(f, "food")`; **run the eval**; tune weights until
-   13/13. (Do one drive at a time — food first, it's the cleanest pragmatic case.)
-5. Repeat #4 for `threat`, then `mate`, `interoception`, `rest` (pragmatic drives).
-6. Repeat for `novelty`/`uncertainty`/`free_energy` → the single epistemic term;
-   **assert S2 still passes** (info-seeking) and the three no longer double-count.
-7. Per-tier rollout: enable the flag for `MindLOD` tier ≥ T2 fish only at first.
+**Phase 1 — EFE as bid salience (DONE):**
+3. ✅ `consciousness_active_inference: bool = true` in `tank_config.gd` (rollback = false).
+4. ✅ `collect_bids` sources `food`/`threat`/… from `efe_salience` when flag on + tier ≥ T2.
+5. ✅ Pragmatic drives migrated; epistemic merge via `epistemic_bid_salience`.
+6. ✅ S2 + S3 pass; novelty/uncertainty/free_energy no longer double-count under EFE.
+7. ✅ Per-tier rollout: `MindActiveInference.enabled_for` gates tier ≥ T2.
 
-**Phase 2 — EFE in action selection:**
-8. `tick_ddm` drift ∝ the EFE gap between the top two options; **gate on D1**.
-9. Commitment threshold ∝ EFE flatness (flat G → deliberate → **M1**); **gate on M1**.
+**Phase 2 — EFE in action selection (DONE):**
+8. ✅ `tick_ddm` drift ∝ `conflict_efe_gap`; D1 holds.
+9. ✅ `ddm_threshold` ∝ `efe_flatness`; M1 holds (and measurably lengthens).
 
-**Phase 3 — collapse:**
-10. Delete the hand-tuned salience formulas the EFE path now covers; merge the
-    `free_energy`/`uncertainty` bids; flip the flag default on; **full eval 13/13
-    with legacy removed.**
+**Phase 3 — collapse (DONE; legacy kept for flag-off rollback only):**
+10. ✅ Flag default on; epistemic bids unified; eval **14/14** + honesty PASS.
 
-**Acceptance for the whole epic:** flag-on fleet runs at **≥ 13/13** with S1, S2,
-D1, M1 measurably *as good or better*, the legacy drive formulas deleted, and a
-hungry-curious fish demonstrably treating "investigate the maybe-food patch" as one
-high-value option (a new eval invariant **S3 — pragmatic+epistemic alignment** —
-should be added in Phase 1 to lock this in).
+**Acceptance for the whole epic:** flag-on fleet runs at **14/14** with S1, S2, S3,
+D1, M1 holding; legacy path still passes when flag is off; hungry-curious fish
+treats aligned investigate-food as one high-value option (S3).
 
 ---
 

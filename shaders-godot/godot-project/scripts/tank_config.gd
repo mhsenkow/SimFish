@@ -271,6 +271,8 @@ var guardian_mind_info_seen: bool = false
 var consciousness_workspace_enabled: bool = true
 var consciousness_writeback_enabled: bool = true
 var consciousness_stream_enabled: bool = true
+# META #1-full — unified expected-free-energy drives (see docs/ACTIVE_INFERENCE_CORE.md).
+var consciousness_active_inference: bool = true
 # SENTIENCE_THE_FELT_SELF — phenomenal layer (body → affect → binding).
 var felt_self_enabled: bool = true
 # DARING §J #94 — keeper input consent toggles (local, opt-in where sensitive).
@@ -2335,6 +2337,7 @@ func save_to_disk() -> void:
 	cfg.set_value("ai", "consciousness_workspace_enabled", consciousness_workspace_enabled)
 	cfg.set_value("ai", "consciousness_writeback_enabled", consciousness_writeback_enabled)
 	cfg.set_value("ai", "consciousness_stream_enabled", consciousness_stream_enabled)
+	cfg.set_value("ai", "consciousness_active_inference", consciousness_active_inference)
 	cfg.set_value("ai", "felt_self_enabled", felt_self_enabled)
 	cfg.set_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	cfg.set_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
@@ -2611,6 +2614,8 @@ func load_from_disk() -> void:
 			consciousness_writeback_enabled)
 	consciousness_stream_enabled = cfg.get_value("ai", "consciousness_stream_enabled",
 			consciousness_stream_enabled)
+	consciousness_active_inference = cfg.get_value("ai", "consciousness_active_inference",
+			consciousness_active_inference)
 	felt_self_enabled = cfg.get_value("ai", "felt_self_enabled", felt_self_enabled)
 	keeper_ears_enabled = cfg.get_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	keeper_gaze_enabled = cfg.get_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
