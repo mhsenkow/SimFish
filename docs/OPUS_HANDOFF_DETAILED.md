@@ -41,9 +41,9 @@ with acceptance criteria and smoke specs. Keep it in sync as sessions land.*
 | Session | Task | Status |
 |---|---|---|
 | 1 | 0A — ARCHITECTURE.md | ✅ shipped 2026-06-28 ([ARCHITECTURE.md](ARCHITECTURE.md); ENGINEERING #91/#8) |
-| 2 | 0B — CameraController extract | ✅ shipped 2026-06-28 (`camera_controller.gd` + `smoke_camera_controller.gd`; ENGINEERING #2 partial) |
-| 3 | 0C — fish locomotion extract | ⬜ next |
-| 4 | 0E — MindState phase 1 | ⬜ |
+| 2 | 0B — CameraController extract | ✅ shipped 2026-06-28 (`camera_controller.gd` + `smoke_camera_controller.gd`; ENGINEERING #2 partial; commit 3032364 + main.gd delegation in 0fbe6fd) |
+| 3 | 0C — fish locomotion extract | ✅ shipped 2026-06-28 (`fish_locomotion.gd` first slice: wall/clearance steering + `smoke_fish_locomotion.gd`; ENGINEERING #1 partial; commit e1c4923) |
+| 4 | 0E — MindState phase 1 | ⬜ next |
 | 5 | 3A — SimRng sweep | ⬜ |
 | 6 | 1C — multi-goal blending (META #9) | ⬜ |
 | 7 | 5A — mock LLM for CI (META #77) | ⬜ |
