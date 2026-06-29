@@ -56,6 +56,15 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		pred_err = float((f._world_model as Dictionary).get("error", 0.0))
 	if pred_err > 0.28:
 		bids.append(_bid("uncertainty", pred_err * 0.82, ["novelty", "explore", "prediction"]))
+	# 1A / META #1 — active inference: expected free energy as a DRIVE (not just a
+	# reaction to surprise). High EFE = the generative model expects information gain
+	# from exploring, so the fish acts to reduce uncertainty (Friston's free-energy
+	# principle). Conservative rollout: named/familiar/guardian fish first. Gated off
+	# when stressed — allostasis / dark-room guard: a scared fish doesn't go sightseeing.
+	if (f.is_guardian or f.fish_name != "" or f.familiarity > 0.4) and f.stress < 0.6:
+		var efe: float = MindWorldModel.expected_free_energy_explore(f)
+		if efe > 0.45:
+			bids.append(_bid("free_energy", efe * 0.7, ["free_energy", "explore", "novelty"]))
 	if f.stress > 0.55:
 		bids.append(_bid("interoception", f.stress * 0.6, ["stress", "interoception"]))
 	# Retrieved episodic boost
@@ -223,6 +232,11 @@ static func _bias_for(f: Fish, focus: String, salience: float) -> Vector3:
 				var pos: Variant = (f._episodic_retrieval_hint as Dictionary).get("pos", null)
 				if pos is Vector3 and (pos as Vector3).is_finite():
 					bias = ((pos as Vector3) - f.position).normalized() * mag * 0.7
+		"free_energy":
+			# 1A — steer toward the high-uncertainty cell the world model wants to
+			# resolve (epistemic foraging); fall back to a gentle forward probe.
+			var t: Vector3 = MindWorldModel.curiosity_target_bias(f)
+			bias = t * (0.6 + mag) if t.length_squared() > 1e-6 else f.heading * mag * 0.5
 		_:
 			bias = f.heading * mag * 0.3
 	return bias
