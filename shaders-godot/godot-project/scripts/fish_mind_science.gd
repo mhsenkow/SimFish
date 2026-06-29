@@ -78,6 +78,7 @@ static func tick_hypothesis(f: Fish, region_idx: int, outcome: String) -> void:
 
 static func tick_theory_of_mind(f: Fish, neighbors: Array) -> void:
 	f.inferred_states.clear()
+	var best_alert: Dictionary = {}
 	for n in neighbors:
 		if not (n is Fish) or n == f:
 			continue
@@ -95,6 +96,27 @@ static func tick_theory_of_mind(f: Fish, neighbors: Array) -> void:
 		elif other.lead_score > 0.55:
 			label = "dominant"
 		f.inferred_states[oid] = label
+		# META #4 — predictive ToM: learn whether THIS neighbour tends to charge
+		# (close distance while heading straight at us) when it's a threat/dominant,
+		# so we can act on the *prediction*, not just the present label.
+		var to_me: Vector3 = f.position - other.position
+		var d: float = to_me.length()
+		var rec: Dictionary = f._tom_pred.get(oid, {"charge": 0.0, "prev_d": d})
+		var facing: float = 0.0
+		if other.heading.length_squared() > 1e-6 and d > 1e-3:
+			facing = other.heading.normalized().dot(to_me / d)   # 1 = aimed at us
+		var closing: float = float(rec.get("prev_d", d)) - d      # >0 = getting nearer
+		var aggressive: bool = (label == "threat" or label == "dominant") \
+				and facing > 0.4 and closing > 0.0
+		rec["charge"] = lerpf(float(rec.get("charge", 0.0)), 1.0 if aggressive else 0.0, 0.08)
+		rec["prev_d"] = d
+		f._tom_pred[oid] = rec
+		# Anticipatory alarm: a fish we've learned charges, now near and aimed at us.
+		if float(rec["charge"]) > 0.4 and d < 4.0 and facing > 0.3:
+			var level: float = float(rec["charge"]) * (1.0 - d / 4.0)
+			if level > float(best_alert.get("level", 0.0)):
+				best_alert = {"oid": oid, "level": level}
+	f._tom_alert = best_alert
 	# Keeper theory-of-mind (#35).
 	var kp: Variant = f.get("_keeper_pending")
 	if kp is Dictionary and not (kp as Dictionary).is_empty():
@@ -107,6 +129,25 @@ static func tick_theory_of_mind(f: Fish, neighbors: Array) -> void:
 			f.inferred_states["keeper"] = "curious"
 		else:
 			f.inferred_states["keeper"] = "present"
+
+
+# META #4 — learned probability that a given neighbour charges this fish.
+static func predicted_charge(f: Fish, oid: String) -> float:
+	var rec: Variant = f._tom_pred.get(oid, null)
+	return float((rec as Dictionary).get("charge", 0.0)) if rec is Dictionary else 0.0
+
+
+# META #4 — the anticipatory-threat bid: attend to / flee a predicted charger
+# before contact. Empty when no learned aggressor is bearing down.
+static func collect_predict_bid(f: Fish) -> Dictionary:
+	var alert: Variant = f.get("_tom_alert")
+	if not (alert is Dictionary) or (alert as Dictionary).is_empty():
+		return {}
+	var level: float = float((alert as Dictionary).get("level", 0.0))
+	if level <= 0.05:
+		return {}
+	return {"label": "threat", "salience": level * 0.7,
+			"coalition": ["threat", "safety", "social", "predict"]}
 
 
 static func tick_mate_grief(f: Fish, dt: float, mate_alive: bool) -> void:

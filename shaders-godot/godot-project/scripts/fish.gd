@@ -343,6 +343,10 @@ var _prediction_error: float = 0.0
 # 1D — inter-fish signalling state (emitted/heard signal + learned reliability).
 # Transient (≈3s decay) so it isn't persisted; managed entirely by FishSignals.
 var _signal_state: Dictionary = {}
+# META #4 — predictive theory-of-mind: per-neighbour learned "charge" tendency
+# (oid → {charge, prev_d}) + the current strongest predicted aggressor.
+var _tom_pred: Dictionary = {}
+var _tom_alert: Dictionary = {}
 var _life_stance: String = ""
 var _stance_drift_t: float = 0.0
 var _active_plan: Dictionary = {}
