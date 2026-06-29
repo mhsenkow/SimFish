@@ -347,6 +347,10 @@ var _signal_state: Dictionary = {}
 # (oid → {charge, prev_d}) + the current strongest predicted aggressor.
 var _tom_pred: Dictionary = {}
 var _tom_alert: Dictionary = {}
+# META #8 — semantic schemas distilled from episodic memory during sleep:
+# generalized spatial rules [{kind, center, valence, strength}] the fish wakes
+# with and acts on. Rebuilt each sleep from the (persisted) episodic store.
+var _semantic_schemas: Array = []
 var _life_stance: String = ""
 var _stance_drift_t: float = 0.0
 var _active_plan: Dictionary = {}

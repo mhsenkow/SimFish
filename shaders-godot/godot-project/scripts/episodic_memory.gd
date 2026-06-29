@@ -149,6 +149,83 @@ static func consolidate_sleep(f: Fish) -> void:
 				f.semantic_memory.append(fact)
 			while f.semantic_memory.size() > 16:
 				f.semantic_memory.pop_front()
+	# META #8 — distil reusable SPATIAL schemas the fish wakes up acting on:
+	# cluster same-kind positioned episodes into "this region is dangerous/good".
+	_consolidate_schemas(f, by_kind)
+
+
+const SCHEMA_RADIUS: float = 4.0
+const SCHEMA_MAX: int = 8
+
+
+# Map an episode kind to a hedonic valence: danger negative, reward positive.
+static func _kind_valence(kind: String) -> float:
+	match kind:
+		"startled", "bullied", "scared", "threat", "predator", "attacked":
+			return -1.0
+		"fed", "food", "ate", "bred", "spawned":
+			return 1.0
+		"saw_player", "keeper_word", "player":
+			return 0.4
+		_:
+			return 0.0
+
+
+# Build generalized spatial rules from clustered episodes. Each schema is the
+# weighted-mean location of strong same-kind episodes + its valence/strength.
+static func _consolidate_schemas(f: Fish, by_kind: Dictionary) -> void:
+	var schemas: Array = []
+	for k in by_kind.keys():
+		var val: float = _kind_valence(str(k))
+		if absf(val) < 0.01:
+			continue
+		var sum_pos: Vector3 = Vector3.ZERO
+		var sum_w: float = 0.0
+		var n: int = 0
+		for e in (by_kind[k] as Array):
+			var p: Variant = e.get("pos", null)
+			var w: float = float(e.get("weight", 0.0))
+			if not (p is Vector3) or w < 0.2:
+				continue
+			sum_pos += (p as Vector3) * w
+			sum_w += w
+			n += 1
+		if n < 2 or sum_w < 0.4:
+			continue
+		schemas.append({
+			"kind": str(k), "center": sum_pos / sum_w,
+			"valence": val, "strength": clampf(sum_w, 0.0, 3.0),
+		})
+	schemas.sort_custom(func(a, b):
+		return absf(float(a["valence"]) * float(a["strength"])) \
+				> absf(float(b["valence"]) * float(b["strength"])))
+	f._semantic_schemas = schemas.slice(0, mini(SCHEMA_MAX, schemas.size()))
+
+
+# How good/bad the learned schemas say a location is (sum of nearby schema
+# valence×strength, proximity-weighted). Negative = learned-dangerous region.
+static func schema_valence_at(f: Fish, pos: Vector3) -> float:
+	var total: float = 0.0
+	for s in (f._semantic_schemas as Array):
+		var c: Variant = s.get("center", null)
+		if not (c is Vector3):
+			continue
+		var d: float = pos.distance_to(c as Vector3)
+		if d < SCHEMA_RADIUS:
+			total += float(s.get("valence", 0.0)) * float(s.get("strength", 0.0)) * (1.0 - d / SCHEMA_RADIUS)
+	return total
+
+
+# A caution bid when the fish sits in a region its schemas have learned is bad —
+# acting on a generalized rule, not a single fresh memory.
+static func collect_schema_bid(f: Fish) -> Dictionary:
+	if (f._semantic_schemas as Array).is_empty():
+		return {}
+	var v: float = schema_valence_at(f, f.position)
+	if v < -0.4:
+		return {"label": "threat", "salience": clampf(-v * 0.4, 0.0, 0.8),
+				"coalition": ["threat", "safety", "memory", "schema"]}
+	return {}
 
 
 static func _prune_weakest(store: Array) -> void:

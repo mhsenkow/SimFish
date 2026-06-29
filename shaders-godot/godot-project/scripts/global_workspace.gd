@@ -4,6 +4,7 @@ extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
@@ -84,6 +85,10 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		var pb: Dictionary = FishMindScience.collect_predict_bid(f)
 		if not pb.is_empty():
 			bids.append(pb)
+	# META #8 — caution from a sleep-distilled semantic schema (learned bad region).
+	var schb: Dictionary = EpisodicMemory.collect_schema_bid(f)
+	if not schb.is_empty() and float(schb.get("salience", 0.0)) > 0.05:
+		bids.append(schb)
 	# DARING §A — keeper as percept
 	var kb: Dictionary = KeeperInput.collect_keeper_bid(f)
 	if not kb.is_empty():
