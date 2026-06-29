@@ -1756,65 +1756,73 @@ func _hardscape_clearance_push() -> Vector3:
 	return push
 
 
+# META #31 — seeded per-entity genetics stream (deterministic offspring under a
+# fixed master seed; mirrors fish.gd's _genetics_rng). Order-independent of other
+# entities because the stream is keyed on this shrimp's id.
+func _genetics_rng() -> RandomNumberGenerator:
+	return MindRng.stream(sim, MindRng.entity_id(self), SimRng.STREAM_GENETICS)
+
+
 func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	# Strong color + size drift so cherry-red colonies slowly diverge into
 	# amber, olive, blue, etc. over many generations.
+	var _g: RandomNumberGenerator = _genetics_rng()
 	var mix := 0.5
 	var color_muta := 0.2
 	var size_muta := 0.08
 	var new_size: float = (adult_voxel_scale + other.adult_voxel_scale) * 0.5 \
-		+ randf_range(-size_muta, size_muta) * adult_voxel_scale
+		+ _g.randf_range(-size_muta, size_muta) * adult_voxel_scale
 	new_size = clampf(new_size, adult_voxel_scale * 0.65, adult_voxel_scale * 1.5)
 	var new_spines: float = clampf(
-		(defense_spines + other.defense_spines) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(defense_spines + other.defense_spines) * 0.5 + _g.randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_toxin: float = clampf(
-		(toxin_level + other.toxin_level) * 0.5 + randf_range(-0.10, 0.10), 0.0, 1.0)
+		(toxin_level + other.toxin_level) * 0.5 + _g.randf_range(-0.10, 0.10), 0.0, 1.0)
 	var new_claw_size: float = clampf(
-		(claw_size + other.claw_size) * 0.5 + randf_range(-0.14, 0.18), 0.0, 1.2)
+		(claw_size + other.claw_size) * 0.5 + _g.randf_range(-0.14, 0.18), 0.0, 1.2)
 	var new_length: float = clampf(
-		(body_length_factor + other.body_length_factor) * 0.5 + randf_range(-0.16, 0.16),
+		(body_length_factor + other.body_length_factor) * 0.5 + _g.randf_range(-0.16, 0.16),
 		0.75, 1.7)
 	# Expanded architecture inheritance (continuous avg + jitter, clamped).
 	var new_rostrum: float = clampf(
-		(rostrum_length + other.rostrum_length) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.5)
+		(rostrum_length + other.rostrum_length) * 0.5 + _g.randf_range(-0.12, 0.12), 0.0, 1.5)
 	var new_eye_stalk: float = clampf(
-		(eye_stalk_length + other.eye_stalk_length) * 0.5 + randf_range(-0.10, 0.10), 0.0, 1.0)
+		(eye_stalk_length + other.eye_stalk_length) * 0.5 + _g.randf_range(-0.10, 0.10), 0.0, 1.0)
 	var new_abdomen_curl: float = clampf(
-		(abdomen_curl + other.abdomen_curl) * 0.5 + randf_range(-0.10, 0.10), 0.0, 1.0)
+		(abdomen_curl + other.abdomen_curl) * 0.5 + _g.randf_range(-0.10, 0.10), 0.0, 1.0)
 	var new_antenna: float = clampf(
-		(antenna_length_factor + other.antenna_length_factor) * 0.5 + randf_range(-0.12, 0.12), 0.5, 2.5)
+		(antenna_length_factor + other.antenna_length_factor) * 0.5 + _g.randf_range(-0.12, 0.12), 0.5, 2.5)
 	var new_leg: float = clampf(
-		(leg_length_factor + other.leg_length_factor) * 0.5 + randf_range(-0.10, 0.12), 0.5, 2.0)
+		(leg_length_factor + other.leg_length_factor) * 0.5 + _g.randf_range(-0.10, 0.12), 0.5, 2.0)
 	var new_claw_asym: float = clampf(
-		(claw_asymmetry + other.claw_asymmetry) * 0.5 + randf_range(-0.10, 0.12), 0.0, 1.0)
-	var new_filter_fans: bool = (filter_fans if randf() < 0.95
-		else (other.filter_fans if randf() < 0.5 else not filter_fans))
+		(claw_asymmetry + other.claw_asymmetry) * 0.5 + _g.randf_range(-0.10, 0.12), 0.0, 1.0)
+	var new_filter_fans: bool = (filter_fans if _g.randf() < 0.95
+		else (other.filter_fans if _g.randf() < 0.5 else not filter_fans))
 	# body_shape stays in the lineage; rare mutation to a sibling plan lets a
 	# colony slowly diverge into crabs / crayfish / mantis morphs over time.
-	var new_body_shape: String = body_shape if randf() < 0.9 else other.body_shape
-	if randf() < 0.04:
+	var new_body_shape: String = body_shape if _g.randf() < 0.9 else other.body_shape
+	if _g.randf() < 0.04:
 		var plans: Array[String] = ["caridean", "crab", "lobster", "mantis"]
-		new_body_shape = plans[randi() % plans.size()]
-	var new_pattern: int = pattern_type if randf() < 0.85 else other.pattern_type
-	if randf() < 0.06:
-		new_pattern = randi() % 4
+		new_body_shape = plans[_g.randi() % plans.size()]
+	var new_pattern: int = pattern_type if _g.randf() < 0.85 else other.pattern_type
+	if _g.randf() < 0.06:
+		new_pattern = _g.randi() % 4
 	var new_pat_scale: float = clampf(
-		(pattern_scale + other.pattern_scale) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_scale + other.pattern_scale) * 0.5 + _g.randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_pat_intensity: float = clampf(
-		(pattern_intensity + other.pattern_intensity) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_intensity + other.pattern_intensity) * 0.5 + _g.randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_pat_density: float = clampf(
-		(pattern_density + other.pattern_density) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_density + other.pattern_density) * 0.5 + _g.randf_range(-0.12, 0.12), 0.0, 1.0)
 	var g: Dictionary = {
 		"organism_type": "shrimp",
 		"species": species,
 		"base_color": base_color.lerp(other.base_color, mix).lerp(
-			Color(randf(), randf(), randf()), color_muta),
+			Color(_g.randf(), _g.randf(), _g.randf()), color_muta),
 		"accent_color": accent_color.lerp(other.accent_color, mix).lerp(
-			Color(randf(), randf(), randf()), color_muta * 0.5),
+			Color(_g.randf(), _g.randf(), _g.randf()), color_muta * 0.5),
 		"adult_voxel_scale": new_size,
-		"max_age_s": (max_age_s + other.max_age_s) * 0.5 + randf_range(-30.0, 30.0),
-		"max_speed": (max_speed + other.max_speed) * 0.5 + randf_range(-0.08, 0.08),
-		"sex": randi() % 2,
+		"max_age_s": (max_age_s + other.max_age_s) * 0.5 + _g.randf_range(-30.0, 30.0),
+		"max_speed": (max_speed + other.max_speed) * 0.5 + _g.randf_range(-0.08, 0.08),
+		"sex": _g.randi() % 2,
 		"substrate_top_y": substrate_top_y,
 		"is_cleaner": is_cleaner or other.is_cleaner,
 		"defense_spines": new_spines,
@@ -1842,17 +1850,17 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 	if sim != null:
 		EvolutionPressure.apply_shrimp_offspring(
 			g, EvolutionPressure.sample_from_sim(sim, position))
-	_apply_shrimp_saltation(g)
+	_apply_shrimp_saltation(g, _g)
 	return g
 
 
 # Rare shrimp "sport" morphs — the prized colony surprises (deep blue, golden,
 # snowball, carbon black, jumbo, neon). ~0.4% of fry. Tagged for discovery.
-static func _apply_shrimp_saltation(g: Dictionary) -> void:
-	if randf() > 0.004:
+static func _apply_shrimp_saltation(g: Dictionary, rng: RandomNumberGenerator) -> void:
+	if rng.randf() > 0.004:
 		return
 	var kinds: Array[String] = ["blue", "golden", "snowball", "carbon", "jumbo", "neon"]
-	var kind: String = kinds[randi() % kinds.size()]
+	var kind: String = kinds[rng.randi() % kinds.size()]
 	match kind:
 		"blue":
 			g["base_color"] = Color(0.12, 0.22, 0.62)

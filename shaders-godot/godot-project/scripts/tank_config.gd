@@ -768,6 +768,19 @@ var custom_shrimp_count: int = 12
 # adult_voxel_scale, max_age_s, max_speed, schooling_strength, etc.) plus
 # the body phenotypes (fin_length_factor, body_elongation, body_depth_factor,
 # head_proportion, dorsal_height_factor, tail_fork_depth, pattern_type).
+#
+# The "life library" has THREE distinct sources — keep them straight:
+#   1. SPECIES_LIBRARY (here)      — the 18 PLAYABLE fish spawn templates.
+#   2. real_species_library.gd     — ~52 real PLANT archetypes (discovery refs).
+#   3. real_species_fauna.gd       — ~28 real fish/shrimp/snail archetypes (refs).
+# (2) and (3) are read-only reference catalogs: SpeciesLibrary.record_discovery()
+# matches an emergent genome against them to label it "looks like X". Shrimp &
+# snails have NO playable template here — they spawn from generated genomes in
+# world.gd and are matched to (3) for naming. See species_library.gd for the
+# discovery/lineage tracker.
+#
+# NOTE: "freshwater_gar" and "goby" below are defined but not referenced by any
+# TANK_PRESETS stocking dict — they are manual-spawn-only (intentional spares).
 const SPECIES_LIBRARY: Dictionary = {
 	"glassdart": {
 		"label": "Cardinal tetra",

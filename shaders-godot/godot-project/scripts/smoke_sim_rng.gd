@@ -48,4 +48,29 @@ func _run_all() -> bool:
 	var ent: String = SimRng.entity_stream_name(SimRng.STREAM_COGNITION, "fish-1")
 	if ent != "cognition:fish-1":
 		return _fail("entity stream naming")
+	# META #31 — shrimp offspring genetics are now seeded: same parent id + seed
+	# must produce a byte-identical fry genome across runs (replay determinism).
+	if not _shrimp_offspring_deterministic():
+		return _fail("shrimp produce_offspring_genome must be deterministic under SimRng")
 	return true
+
+
+# Two offspring rolls from the same parent (sim=null → MindRng fallback stream
+# keyed on the parent id) must be byte-identical.
+func _shrimp_offspring_deterministic() -> bool:
+	var a := Shrimp.new()
+	a.id = "rng-shrimp-a"
+	a.shrimp_name = "A"
+	a.adult_voxel_scale = 0.5
+	a.defense_spines = 0.3
+	a.toxin_level = 0.2
+	a.claw_size = 0.4
+	var b := Shrimp.new()
+	b.id = "rng-shrimp-b"
+	b.shrimp_name = "B"
+	b.adult_voxel_scale = 0.55
+	var g1: Dictionary = a.produce_offspring_genome(b)
+	var g2: Dictionary = a.produce_offspring_genome(b)
+	a.free()
+	b.free()
+	return var_to_str(g1) == var_to_str(g2)
