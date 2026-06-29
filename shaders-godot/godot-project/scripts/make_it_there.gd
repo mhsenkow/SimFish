@@ -6,6 +6,9 @@ extends RefCounted
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishJournal = preload("res://scripts/fish_journal.gd")
 const GuardianMind = preload("res://scripts/guardian_mind.gd")
+const FishContinuity = preload("res://scripts/fish_continuity.gd")
+const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
 
 const LOOK_BACK_GLANCE_MIN: float = 0.62
 const LOOK_BACK_GAZE_S: float = 1.85
@@ -422,8 +425,9 @@ static func _try_unrepeatable_moment(sim: Node, _arc: Dictionary, sp: Dictionary
 	if not ur.has(key):
 		ur.append(key)
 	sp["unrepeatable"] = ur
-	sim.set("_sync_turn_remaining", 2.2)
-	sim.set("_sync_polarization", 0.92)
+	if sim is SimDriver:
+		(sim as SimDriver).topdown.sync_turn_remaining = 2.2
+		(sim as SimDriver).topdown.sync_polarization = 0.92
 	if sim.has_method("log_story_event"):
 		sim.log_story_event("The school turned like weather — once, never quite the same.", true)
 
@@ -661,6 +665,12 @@ static func build_obituary_context(f: Fish, sim: Node) -> Dictionary:
 		ctx["fights_won"] = int(f.bio.get("fights_won", 0))
 	if sim != null and sim.has_method("is_creature_favorited"):
 		ctx["favorited"] = sim.is_creature_favorited(f)
+	if FeltSelfLayer.layer_enabled():
+		ctx["felt_texture"] = FishCoreAffect.texture(f)
+		ctx["identity_thread"] = FishContinuity.thread_strength(f)
+		var spine: String = str(FishContinuity.ensure(f).get("spine", ""))
+		if spine != "":
+			ctx["life_thread"] = spine
 	return ctx
 
 

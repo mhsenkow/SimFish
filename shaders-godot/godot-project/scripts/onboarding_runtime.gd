@@ -43,6 +43,9 @@ func on_stats(stats: Dictionary) -> void:
 
 
 func on_eco_event(kind: String, _text: String) -> void:
+	if kind == "reef":
+		# Reef toasts already cover warmth/O₂ stress — don't stack the O₂ nudge.
+		_nudge_cooldown = maxf(_nudge_cooldown, 180.0)
 	if kind == "death" and not bool(OnboardingLegibility.global_pref("first_death_seen", false)):
 		OnboardingLegibility.set_global_pref("first_death_seen", true)
 		if _sim != null and _sim.has_method("log_story_event"):
@@ -321,6 +324,12 @@ func _pick_nudge(stats: Dictionary) -> Dictionary:
 	if float(stats.get("nitrate", 0.0)) > 35.0:
 		return {"id": "water_change", "text": "Water's getting heavy with nitrate — a small water change would freshen it.", "action": _act_water_change}
 	if float(stats.get("dissolved_o2", 1.0)) < 0.55:
+		var snooze_until: float = float(OnboardingLegibility.global_pref("nudge_o2_snooze_until", 0.0))
+		if Time.get_unix_time_from_system() < snooze_until:
+			return {}
+		# Reef bleaching toast already names O₂/warmth — skip duplicate nudge.
+		if float(stats.get("reef_bleach_level", 0.0)) > 0.2:
+			return {}
 		return {"id": "o2", "text": "Oxygen's dipping — aeration or fewer floaters might help.", "action": Callable()}
 	if int(stats.get("algae_clusters", 0)) > 15 and not bool(OnboardingLegibility.global_pref("tip_algae_young", false)):
 		OnboardingLegibility.set_global_pref("tip_algae_young", true)
@@ -360,6 +369,9 @@ func _show_nudge(id: String, text: String, action: Callable) -> void:
 	var dismiss := PanelTheme.make_secondary_button("Not now")
 	dismiss.pressed.connect(func():
 		_ignored_nudges += 1
+		if _active_nudge_id == "o2":
+			OnboardingLegibility.set_global_pref(
+				"nudge_o2_snooze_until", float(Time.get_unix_time_from_system()) + 600.0)
 		_dismiss_nudge()
 		_nudge_cooldown = 90.0 + float(_ignored_nudges) * 60.0)
 	hb.add_child(dismiss)

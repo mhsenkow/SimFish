@@ -13,6 +13,8 @@ const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindSelfModel = preload("res://scripts/mind_self_model.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const FishVolition = preload("res://scripts/fish_volition.gd")
 
 const STANCES: Array[String] = ["trusting", "wary", "playful", "steadfast", "curious"]
 const PLAN_VERBS: Array[String] = ["go_to_nook", "wait_for_feed", "shadow_mate", "watch", "rest"]
@@ -144,7 +146,7 @@ static func _tick_curiosity_keeper(f: Fish, _sim: Node, dt: float) -> void:
 	if KeeperInput.gaze_fish_id == str(f.id) and KeeperInput.gaze_seconds > 4.0:
 		ck = clampf(ck + dt * 0.05, 0.0, 1.0)
 		f._curiosity_about_keeper = ck
-		if ck > 0.65 and randf() < dt * 0.08:
+		if ck > 0.65 and MindRng.for_fish(f).randf() < dt * 0.08:
 			f.curiosity_drive = clampf(f.curiosity_drive + 0.12, 0.0, 1.0)
 
 
@@ -181,19 +183,19 @@ static func _tick_empathy(f: Fish, neighbors: Array, dt: float) -> void:
 
 static func _tick_aesthetic(f: Fish, _sim: Node, dt: float) -> void:
 	if f.get("_aesthetic_hue") == null:
-		f._aesthetic_hue = randf()
+		f._aesthetic_hue = MindRng.for_fish(f).randf()
 	var linger: float = float(f.get("_aesthetic_linger") if f.get("_aesthetic_linger") != null else 0.0)
 	if f.speed < 0.25 and f.stress < 0.4:
 		linger += dt
 	else:
 		linger = maxf(0.0, linger - dt * 0.5)
 	f._aesthetic_linger = linger
-	if linger > 8.0 and randf() < dt * 0.02:
+	if linger > 8.0 and MindRng.for_fish(f).randf() < dt * 0.02:
 		f.mood = clampf(f.mood + 0.02, -1.0, 1.0)
 
 
 static func _dream_rollout(f: Fish, _sim: Node) -> void:
-	if randf() > 0.04:
+	if MindRng.for_fish(f).randf() > 0.04:
 		return
 	EpisodicMemory.consolidate_sleep(f)
 	var note: String = "dreaming of %s" % str(f.attention_focus if f.attention_focus != "" else "the day")
@@ -243,8 +245,13 @@ static func self_authored_goal(f: Fish) -> void:
 		return
 	if f.get("_contentment") != null and float(f._contentment) < 0.55:
 		return
-	if randf() > 0.002:
+	if MindRng.for_fish(f).randf() > 0.002:
 		return
 	var goals: Array[String] = ["circle the plants", "follow a friend", "defend this corner", "patrol the open"]
-	f.current_intention = goals[randi() % goals.size()]
+	f.current_intention = goals[MindRng.for_fish(f).randi() % goals.size()]
 	FishMind.record_salient(f, "goal", "I want to %s" % f.current_intention, 0.4, f.position)
+	if FeltSelfLayer.layer_enabled():
+		var v: Dictionary = FishVolition.ensure(f)
+		v["last_initiated"] = f.current_intention
+		v["authorship"] = clampf(float(v.get("authorship", 0.0)) + 0.06, 0.0, 1.0)
+		(f._felt_self as Dictionary)["volition"] = v

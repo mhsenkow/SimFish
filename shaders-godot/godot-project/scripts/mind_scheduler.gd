@@ -2,7 +2,6 @@ extends RefCounted
 
 # CONSCIOUSNESS_ENGINEERING §C + §I — continuous thought scheduler (System 2 queue).
 
-const MindContext = preload("res://scripts/mind_context.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const MindWriteback = preload("res://scripts/mind_writeback.gd")
@@ -196,7 +195,7 @@ static func _pump() -> void:
 		ctx["fish_id"] = str(f.id)
 		_pending_async[cache_key] = {"fish": f, "ctx": ctx, "t0": Time.get_ticks_msec()}
 		glm.call("queue_generate", "cog|" + cache_key, prompt, fb.get("line", ""), ctx,
-				MindNarrator.FISH_THOUGHT_MAX_WORDS + 4)
+				MindNarrator.NUM_PREDICT_FISH_THOUGHT)
 		_apply_cached(f, fb, ctx)
 		return
 	_op_cache[cache_key] = fb

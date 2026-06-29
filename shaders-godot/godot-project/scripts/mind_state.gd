@@ -1,10 +1,10 @@
-extends RefCounted
 class_name MindState
+extends RefCounted
 
 # CONSCIOUSNESS_ENGINEERING §A — unified MindState: the fish's mind as one object.
 # fish.gd still owns scalar fields for save compat; MindState syncs each tick.
 
-const SCHEMA_VERSION: int = 2
+const SCHEMA_VERSION: int = 3
 
 var schema_version: int = SCHEMA_VERSION
 var full_fidelity: bool = true
@@ -50,6 +50,20 @@ var eligibility_peak: float = 0.0
 # Write-back audit (#H)
 var writeback_log: Array = []
 
+# Extended channel fields (§14 — mind modules read via MindState, not f.get)
+var prediction_error: float = 0.0
+var life_stance: String = ""
+var self_summary: String = ""
+var active_plan: Dictionary = {}
+var world_model: Dictionary = {}
+var keeper_pending: Dictionary = {}
+var episodic_retrieval_hint: Dictionary = {}
+var bid_salience_mods: Dictionary = {}
+var writeback_cd: float = 0.0
+var felt_self: Dictionary = {}
+var sleep_depth: float = 0.0
+var dream_wisp: String = ""
+
 
 static func for_fish(f: Fish, rich: bool):
 	var ms = load("res://scripts/mind_state.gd").new()
@@ -79,15 +93,34 @@ func sync_from_fish(f: Fish) -> void:
 	current_intention = f.current_intention
 	current_thought = f._current_thought
 	goal_kind = f.goal_kind
-	if f.get("_mind_workspace") is Array:
+	workspace_ignited = f._workspace_ignited
+	if f._mind_workspace is Array:
 		workspace = (f._mind_workspace as Array).duplicate(true)
-	if f.get("_mind_self_model") is Dictionary:
+	if f._mind_self_model is Dictionary:
 		self_model = (f._mind_self_model as Dictionary).duplicate(true)
-	thought_stream = str(f.get("_thought_stream") if f.get("_thought_stream") != null else "")
-	thought_age_s = float(f.get("_thought_stream_age") if f.get("_thought_stream_age") != null else 0.0)
-	eligibility_peak = float(f.get("_td_eligibility_peak") if f.get("_td_eligibility_peak") != null else 0.0)
-	if f.get("_mind_writeback_log") is Array:
+	thought_stream = f._thought_stream
+	thought_age_s = float(f._thought_stream_age if f._thought_stream_age != null else 0.0)
+	eligibility_peak = float(f._td_eligibility_peak if f._td_eligibility_peak != null else 0.0)
+	if f._mind_writeback_log is Array:
 		writeback_log = (f._mind_writeback_log as Array).duplicate(true)
+	prediction_error = float(f._prediction_error if f._prediction_error != null else 0.0)
+	life_stance = str(f._life_stance if f._life_stance != null else "")
+	self_summary = str(f._self_summary if f._self_summary != null else "")
+	if f._active_plan is Dictionary:
+		active_plan = (f._active_plan as Dictionary).duplicate(true)
+	if f._world_model is Dictionary:
+		world_model = (f._world_model as Dictionary).duplicate(true)
+	if f._keeper_pending is Dictionary:
+		keeper_pending = (f._keeper_pending as Dictionary).duplicate(true)
+	if f._episodic_retrieval_hint is Dictionary:
+		episodic_retrieval_hint = (f._episodic_retrieval_hint as Dictionary).duplicate(true)
+	if f._bid_salience_mods is Dictionary:
+		bid_salience_mods = (f._bid_salience_mods as Dictionary).duplicate(true)
+	writeback_cd = float(f._writeback_cd if f._writeback_cd != null else 0.0)
+	if f._felt_self is Dictionary:
+		felt_self = (f._felt_self as Dictionary).duplicate(true)
+	sleep_depth = float(f._sleep_depth if f._sleep_depth != null else 0.0)
+	dream_wisp = str(f._dream_wisp if f._dream_wisp != null else "")
 
 
 func apply_to_fish(f: Fish) -> void:
@@ -110,6 +143,18 @@ func apply_to_fish(f: Fish) -> void:
 	f._td_eligibility_peak = eligibility_peak
 	f._mind_writeback_log = writeback_log.duplicate(true)
 	f._workspace_ignited = workspace_ignited
+	f._prediction_error = prediction_error
+	f._life_stance = life_stance
+	f._self_summary = self_summary
+	f._active_plan = active_plan.duplicate(true)
+	f._world_model = world_model.duplicate(true)
+	f._keeper_pending = keeper_pending.duplicate(true)
+	f._episodic_retrieval_hint = episodic_retrieval_hint.duplicate(true)
+	f._bid_salience_mods = bid_salience_mods.duplicate(true)
+	f._writeback_cd = writeback_cd
+	f._felt_self = felt_self.duplicate(true)
+	f._sleep_depth = sleep_depth
+	f._dream_wisp = dream_wisp
 
 
 func snapshot() -> Dictionary:
@@ -159,6 +204,13 @@ func to_dict() -> Dictionary:
 		"thought_stream": thought_stream,
 		"thought_age_s": thought_age_s,
 		"writeback_log": writeback_log.duplicate(true),
+		"prediction_error": prediction_error,
+		"life_stance": life_stance,
+		"self_summary": self_summary,
+		"active_plan": active_plan.duplicate(true),
+		"world_model": world_model.duplicate(true),
+		"keeper_pending": keeper_pending.duplicate(true),
+		"felt_self": felt_self.duplicate(true),
 	}
 
 
@@ -197,3 +249,18 @@ func from_dict(d: Dictionary) -> void:
 	var wl: Variant = d.get("writeback_log", null)
 	if wl is Array:
 		writeback_log = (wl as Array).duplicate(true)
+	prediction_error = float(d.get("prediction_error", prediction_error))
+	life_stance = str(d.get("life_stance", life_stance))
+	self_summary = str(d.get("self_summary", self_summary))
+	var ap: Variant = d.get("active_plan", null)
+	if ap is Dictionary:
+		active_plan = (ap as Dictionary).duplicate(true)
+	var wm: Variant = d.get("world_model", null)
+	if wm is Dictionary:
+		world_model = (wm as Dictionary).duplicate(true)
+	var kp: Variant = d.get("keeper_pending", null)
+	if kp is Dictionary:
+		keeper_pending = (kp as Dictionary).duplicate(true)
+	var fs: Variant = d.get("felt_self", null)
+	if fs is Dictionary:
+		felt_self = (fs as Dictionary).duplicate(true)

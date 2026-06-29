@@ -1,3 +1,4 @@
+class_name MindContext
 extends RefCounted
 
 # Canonical grounded snapshot for voice generation (SENTIENCE_EMBEDDED #21).
@@ -9,11 +10,17 @@ const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
+const FishQualia = preload("res://scripts/fish_qualia.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
 
 
-static func build_for_fish(f: Fish, sim: Node = null, situation: String = "") -> Dictionary:
+static func build_for_fish(f: Fish, sim: Node = null, situation: String = "", ms: MindState = null) -> Dictionary:
 	if f == null:
 		return {"situation": situation}
+	var state: MindState = ms if ms != null else MindChannel.for_cycle(
+		f, f.is_guardian or f.fish_name != "" or f.familiarity > 0.4)
 	var bond_names: PackedStringArray = PackedStringArray()
 	var grudge_names: PackedStringArray = PackedStringArray()
 	if sim != null and sim.get("fish") != null:
@@ -37,9 +44,7 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "") ->
 		"calm", "content", "anxious", "excited", "playful", "bored", "sulking", "cozy",
 	])
 	var feel: String = FishMind.emotional_state(f)
-	var ws_label: String = f.attention_focus
-	if f.get("_mind_workspace") is Array and (f._mind_workspace as Array).size() > 0:
-		ws_label = str((f._mind_workspace[0] as Dictionary).get("label", ws_label))
+	var ws_label: String = MindChannel.workspace_label(state)
 	var retrieved: PackedStringArray = EpisodicMemory.retrieve_for_situation(f, situation, 3)
 	if retrieved.is_empty():
 		retrieved = FishMind.salient_relevant_for_situation(f, situation, 3)
@@ -63,9 +68,9 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "") ->
 		"allowed_moods": moods,
 		"salient_memories": retrieved,
 		"attention_workspace": ws_label,
-		"workspace_ignited": bool(f.get("_workspace_ignited")),
-		"self_model": f._mind_self_model.duplicate(true) if f.get("_mind_self_model") is Dictionary else {},
-		"thought_stream": str(f.get("_thought_stream") if f.get("_thought_stream") != null else ""),
+		"workspace_ignited": state.workspace_ignited,
+		"self_model": state.self_model.duplicate(true),
+		"thought_stream": state.thought_stream,
 		"voice_seed": MindNarrator.voice_style_seed(str(f.id), f.personality),
 		"meals_eaten": int(f.bio.get("meals_eaten", 0)) if f.bio is Dictionary else 0,
 		"age_days": snappedf(f.age / maxf(f.max_age_s, 1.0) * 365.0, 0.1),
@@ -101,16 +106,15 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "") ->
 	var lex: Dictionary = MindLexicon.ensure_dict(f)
 	if not lex.is_empty():
 		ctx["learned_words"] = lex.duplicate(true)
-	if f.get("_keeper_pending") is Dictionary and not (f._keeper_pending as Dictionary).is_empty():
-		ctx.merge((f._keeper_pending as Dictionary).duplicate(true))
-	ctx["life_stance"] = str(f.get("_life_stance") if f.get("_life_stance") != null else "")
-	ctx["prediction_error"] = snappedf(float(f.get("_prediction_error") if f.get("_prediction_error") != null else 0.0), 0.01)
+	if not state.keeper_pending.is_empty():
+		ctx.merge(state.keeper_pending.duplicate(true))
+	ctx["life_stance"] = state.life_stance
+	ctx["prediction_error"] = snappedf(state.prediction_error, 0.01)
 	ctx["thought_tense"] = FishMind.stream_tense_tag(f)
 	ctx["autobiography"] = FishMind.autobiography_dict(f)
-	if f.get("_world_model") is Dictionary:
-		var wm: Dictionary = f._world_model as Dictionary
-		ctx["world_model_error"] = snappedf(float(wm.get("error", 0.0)), 0.01)
-		ctx["world_model_variance"] = snappedf(float(wm.get("variance", 0.35)), 0.01)
+	if not state.world_model.is_empty():
+		ctx["world_model_error"] = snappedf(float(state.world_model.get("error", 0.0)), 0.01)
+		ctx["world_model_variance"] = snappedf(float(state.world_model.get("variance", 0.35)), 0.01)
 	# What the tank is hearing right now — a short grounded phrase the fish or
 	# Guardian may reference. Empty (omitted) when no song is playing.
 	var music_node: Node = _autoload("MusicContext")
@@ -118,6 +122,15 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "") ->
 		var song_desc: String = str(music_node.describe_now_playing())
 		if song_desc != "":
 			ctx["now_playing"] = song_desc
+	if FeltSelfLayer.layer_enabled():
+		ctx["felt_texture"] = FishCoreAffect.texture(f)
+		ctx["core_valence"] = snappedf(FishCoreAffect.valence(f), 0.01)
+		var ql: String = FishQualia.report_line(f)
+		if ql != "":
+			ctx["qualia_report"] = ql
+		var glimpse: String = FishBinding.first_person_glimpse(f)
+		if glimpse != "":
+			ctx["felt_glimpse"] = glimpse
 	return ctx
 
 
@@ -154,7 +167,7 @@ static func build_for_keeper_turn(f: Fish, sim: Node = null, situation: String =
 		"stress": full.get("stress", 0.0),
 		"hunger": full.get("hunger", 0.0),
 		"familiarity": full.get("familiarity", 0.0),
-		"keeper_text": full.get("keeper_text", ""),
+		"keeper_text": MindNarrator.prompt_safe_keeper_text(str(full.get("keeper_text", ""))),
 		"keeper_intent": full.get("keeper_intent", ""),
 		"keeper_comprehension": full.get("keeper_comprehension", 0.5),
 		"attention_workspace": full.get("attention_workspace", ""),

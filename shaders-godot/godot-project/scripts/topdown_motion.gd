@@ -1,4 +1,5 @@
 # Top-down / pond-mode motion, dance, surface, and flock helpers.
+# Pure static API — no hidden side effects (ENGINEERING_EXCELLENCE §32).
 # Implements TOPDOWN_MOTION_IDEAS.md items wired from main, fish, world,
 # music_choreography, and music_context.
 class_name TopdownMotion
@@ -6,6 +7,20 @@ extends RefCounted
 
 const PREFS_SECTION := "topdown"
 const PREFS_POND_HINT := "pond_view_hint_shown"
+
+enum Phrase {
+	VERSE,
+	BUILD,
+	DROP,
+	BREAKDOWN,
+	CHORUS,
+}
+
+enum EqColumn {
+	BASS,
+	MID,
+	TREBLE,
+}
 
 # --- Pond mode state (main.gd toggles) ---
 static var pond_active: bool = false
@@ -29,18 +44,94 @@ const MOVE_LEGIBILITY: Dictionary = {
 	"curtain": 0.18, "cascade": 0.22, "fountain": 0.25,
 }
 
+const _PHRASE_POOLS: Dictionary = {
+	"build": ["spiral", "mandala", "carousel", "planar_ring"],
+	"drop": ["starburst", "radial_bloom", "vortex", "pinwheel"],
+	"breakdown": ["breathe", "sway"],
+	"chorus": ["mandala", "spiral", "carousel", "wave", "sweep"],
+	"verse": ["sweep", "wave", "carousel", "spiral"],
+}
+
+
+class KeyGeometry:
+	var radius: float = 1.0
+	var rotation: float = 1.0
+	var tightness: float = 1.0
+
+
+class PathSignature:
+	var wander_amp: float = 1.0
+	var wander_freq: float = 1.55
+	var turn_mult: float = 1.0
+	var straight_bias: float = 0.52
+
+
+class ColorSpill:
+	var rgb: Vector3 = Vector3.ZERO
+	var gain: float = 0.0
+
+
+class ConductResult:
+	var move: String = "sweep"
+	var formation: String = "circle"
+	var center: Vector3 = Vector3.ZERO
+	var radius: float = 1.0
+
+
+static func phrase_from_string(state: String) -> Phrase:
+	match state:
+		"build":
+			return Phrase.BUILD
+		"drop":
+			return Phrase.DROP
+		"breakdown":
+			return Phrase.BREAKDOWN
+		"chorus":
+			return Phrase.CHORUS
+		_:
+			return Phrase.VERSE
+
+
+static func phrase_to_string(phrase: Phrase) -> String:
+	match phrase:
+		Phrase.BUILD:
+			return "build"
+		Phrase.DROP:
+			return "drop"
+		Phrase.BREAKDOWN:
+			return "breakdown"
+		Phrase.CHORUS:
+			return "chorus"
+		_:
+			return "verse"
+
+
+static func eq_column_from_string(column: String) -> EqColumn:
+	match column:
+		"bass":
+			return EqColumn.BASS
+		"treble":
+			return EqColumn.TREBLE
+		_:
+			return EqColumn.MID
+
+
+static func is_overhead_from(projection_id: String, pitch: float) -> bool:
+	if projection_id == "top_down_ortho":
+		return true
+	return pitch > 1.05
+
+
 static func is_overhead(main_node: Node) -> bool:
-	if main_node == null:
-		return pond_active
 	if pond_active:
 		return true
+	if main_node == null:
+		return false
+	var projection_id: String = ""
 	if main_node.has_method("get_camera_projection_id"):
-		var pid: String = String(main_node.get_camera_projection_id())
-		if pid == "top_down_ortho":
-			return true
-	if main_node.get("pitch") != null:
-		return float(main_node.pitch) > 1.05
-	return false
+		projection_id = String(main_node.get_camera_projection_id())
+	var pitch: float = float(main_node.get("pitch")) if main_node.get("pitch") != null else 0.0
+	return is_overhead_from(projection_id, pitch)
 
 
 static func move_legibility(move: String) -> float:
@@ -67,25 +158,13 @@ static func pick_move_overhead(
 	_genre: String,
 	rng_seed: int,
 ) -> String:
-	var pool: Array[String] = []
-	match phrase_state:
-		"build":
-			pool = ["spiral", "mandala", "carousel", "planar_ring"]
-		"drop":
-			pool = ["starburst", "radial_bloom", "vortex", "pinwheel"]
-		"breakdown":
-			pool = ["breathe", "sway"]
-		"chorus":
-			pool = ["mandala", "spiral", "carousel", "wave", "sweep"]
-		_:
-			pool = ["sweep", "wave", "carousel", "spiral"]
+	var pool: Array = _PHRASE_POOLS.get(phrase_state, _PHRASE_POOLS["verse"])
 	if pool.is_empty():
 		return "sweep"
-	# Prefer top-down-legible moves (#60) while keeping phrase variety.
-	var best: String = pool[0]
+	var best: String = String(pool[0])
 	var best_score: float = -1.0
 	for i in pool.size():
-		var m: String = pool[i]
+		var m: String = String(pool[i])
 		var leg: float = move_legibility(m)
 		var tie: float = float((rng_seed + i * 17) % 997) / 997.0
 		var score: float = leg * 0.82 + tie * 0.18
@@ -116,16 +195,15 @@ static func pick_formation_overhead(
 static func formation_morph_blend(
 	phrase_bars_left: int,
 	bar_phase: float,
-	_phrase_progress: float,
+	phrase_progress: float,
 ) -> float:
 	if phrase_bars_left <= 0:
 		return 1.0
-	var bars: float = maxf(float(phrase_bars_left), 1.0)
-	var t: float = 1.0 - float(phrase_bars_left) / bars + bar_phase / bars
-	var u: float = clampf(t, 0.0, 1.0)
-	if u < 0.5:
-		return 4.0 * u * u * u
-	return 1.0 - pow(-2.0 * u + 2.0, 3.0) / 2.0
+	var u: float = clampf(phrase_progress, 0.0, 1.0)
+	# Finish on the downbeat of the last bar (#75).
+	if phrase_bars_left == 1:
+		u = maxf(u, clampf(bar_phase, 0.0, 1.0))
+	return _ease_in_out_cubic(u)
 
 
 static func formation_slot_count(fish_count: int) -> int:
@@ -133,31 +211,30 @@ static func formation_slot_count(fish_count: int) -> int:
 
 
 static func lerp_formation_offset(
-	_from_f: String,
-	_to_f: String,
-	_slot: int,
-	_total: int,
-	_hw: float,
-	_hd: float,
-	_y_band: float,
-	_blend: float,
+	from_f: String,
+	to_f: String,
+	slot: int,
+	total: int,
+	hw: float,
+	hd: float,
+	y_band: float,
+	blend: float,
 	fish_count: int = 24,
 ) -> Vector3:
 	var a: Vector3 = MusicChoreography.formation_offset(
-		_from_f, _slot, _total, _hw, _hd, _y_band, false, fish_count)
+		from_f, slot, total, hw, hd, y_band, false, fish_count)
 	var b: Vector3 = MusicChoreography.formation_offset(
-		_to_f, _slot, _total, _hw, _hd, _y_band, false, fish_count)
-	return a.lerp(b, clampf(_blend, 0.0, 1.0))
+		to_f, slot, total, hw, hd, y_band, false, fish_count)
+	return a.lerp(b, clampf(blend, 0.0, 1.0))
 
 
-static func key_geometry_bias(key: int, mode: String) -> Dictionary:
+static func key_geometry_bias(key: int, mode: String) -> KeyGeometry:
+	var out := KeyGeometry.new()
 	var major: bool = mode != "minor"
-	var rot_sign: float = 1.0 if (key % 2) == 0 else -1.0
-	return {
-		"radius": 1.12 if major else 0.82,
-		"rotation": rot_sign,
-		"tightness": 0.88 if major else 1.18,
-	}
+	out.radius = 1.12 if major else 0.82
+	out.rotation = 1.0 if (key % 2) == 0 else -1.0
+	out.tightness = 0.88 if major else 1.18
+	return out
 
 
 static func tempo_mill_speed(tempo: float) -> float:
@@ -241,7 +318,8 @@ static func home_loop_wander(angle: float, dt: float, calm: bool) -> float:
 	return angle + dt * (0.32 if calm else 0.22)
 
 
-static func home_drift_loop_offset(home_x: float, home_z: float, angle: float, radius: float) -> Vector3:
+static func home_drift_loop_offset(
+		home_x: float, home_z: float, angle: float, radius: float) -> Vector3:
 	return Vector3(home_x + cos(angle) * radius, 0.0, home_z + sin(angle) * radius)
 
 
@@ -316,10 +394,14 @@ static func polarization_tightness(alignment: float) -> float:
 
 
 static func visual_eq_radius_mult(column: String) -> float:
+	return visual_eq_radius_mult_enum(eq_column_from_string(column))
+
+
+static func visual_eq_radius_mult_enum(column: EqColumn) -> float:
 	match column:
-		"bass":
+		EqColumn.BASS:
 			return 0.52
-		"treble":
+		EqColumn.TREBLE:
 			return 1.14
 		_:
 			return 0.84
@@ -350,30 +432,46 @@ static func polarization_align_boost(polarization: float) -> float:
 	return 1.0 + clampf(polarization, 0.0, 1.0) * 0.72
 
 
-static func aggregate_color_spill(colors: Array) -> Dictionary:
+static func aggregate_color_spill(colors: Array) -> ColorSpill:
+	var out := ColorSpill.new()
 	if colors.is_empty():
-		return {"rgb": Vector3.ZERO, "gain": 0.0}
+		return out
 	var sum := Vector3.ZERO
 	for c in colors:
 		if c is Color:
 			var col: Color = c
 			sum += Vector3(col.r, col.g, col.b)
 	sum /= float(colors.size())
-	var gain: float = clampf(float(colors.size()) * 0.035, 0.0, 0.38)
-	return {"rgb": sum, "gain": gain}
+	out.rgb = sum
+	out.gain = clampf(float(colors.size()) * 0.035, 0.0, 0.38)
+	return out
 
 
-static func plan_path_signature(locomotion_type: String, swim_pattern: String) -> Dictionary:
+static func plan_path_signature(locomotion_type: String, swim_pattern: String) -> PathSignature:
+	var out := PathSignature.new()
 	match locomotion_type:
 		"anguilliform", "ribbon":
-			return {"wander_amp": 1.85, "wander_freq": 3.4, "turn_mult": 1.32, "straight_bias": 0.22}
+			out.wander_amp = 1.85
+			out.wander_freq = 3.4
+			out.turn_mult = 1.32
+			out.straight_bias = 0.22
 		"thunniform", "sagittiform":
-			return {"wander_amp": 0.32, "wander_freq": 0.42, "turn_mult": 0.58, "straight_bias": 0.94}
+			out.wander_amp = 0.32
+			out.wander_freq = 0.42
+			out.turn_mult = 0.58
+			out.straight_bias = 0.94
 		"ostraciiform", "ballistiform":
-			return {"wander_amp": 0.48, "wander_freq": 0.95, "turn_mult": 0.52, "straight_bias": 0.78}
+			out.wander_amp = 0.48
+			out.wander_freq = 0.95
+			out.turn_mult = 0.52
+			out.straight_bias = 0.78
 		_:
 			var sp: float = 0.68 if swim_pattern in ["school", "shoal"] else 1.0
-			return {"wander_amp": sp, "wander_freq": 1.55, "turn_mult": 1.0, "straight_bias": 0.52}
+			out.wander_amp = sp
+			out.wander_freq = 1.55
+			out.turn_mult = 1.0
+			out.straight_bias = 0.52
+	return out
 
 
 static func density_wave_sep_push(dist: float, radius: float, strength: float) -> float:
@@ -396,9 +494,10 @@ static func species_depth_band_tint(preferred_y: float, y_min: float, y_max: flo
 	return lerpf(0.86, 1.14, t)
 
 
-static func conduct_from_stroke(points: Array) -> Dictionary:
+static func conduct_from_stroke(points: Array) -> ConductResult:
+	var out := ConductResult.new()
 	if points.is_empty():
-		return {"move": "sweep", "formation": "circle", "center": Vector3.ZERO, "radius": 1.0}
+		return out
 	var center := Vector3.ZERO
 	var minx: float = INF
 	var maxx: float = -INF
@@ -417,16 +516,20 @@ static func conduct_from_stroke(points: Array) -> Dictionary:
 	var closed: bool = points.size() >= 4 \
 		and (points[0] as Vector3).distance_to(points[-1] as Vector3) < 2.2
 	var aspect: float = (maxx - minx) / maxf(maxz - minz, 0.12)
+	out.center = center
 	if closed and span > 3.5:
-		return {
-			"move": "mandala" if span > 7.0 else "carousel",
-			"formation": "donut" if span > 5.5 else "ring",
-			"center": center,
-			"radius": span * 0.14,
-		}
-	if aspect > 2.2 or aspect < 0.45:
-		return {"move": "sweep", "formation": "line", "center": center, "radius": span * 0.18}
-	return {"move": "spiral", "formation": "star", "center": center, "radius": span * 0.16}
+		out.move = "mandala" if span > 7.0 else "carousel"
+		out.formation = "donut" if span > 5.5 else "ring"
+		out.radius = span * 0.14
+	elif aspect > 2.2 or aspect < 0.45:
+		out.move = "sweep"
+		out.formation = "line"
+		out.radius = span * 0.18
+	else:
+		out.move = "spiral"
+		out.formation = "star"
+		out.radius = span * 0.16
+	return out
 
 
 static func overhead_lod_range_mult() -> float:
@@ -457,3 +560,10 @@ static func biolum_wake_gain(daylight: float, biolum: bool) -> float:
 	if not biolum or daylight > 0.35:
 		return 0.0
 	return lerpf(0.55, 1.0, 1.0 - daylight / 0.35)
+
+
+static func _ease_in_out_cubic(u: float) -> float:
+	u = clampf(u, 0.0, 1.0)
+	if u < 0.5:
+		return 4.0 * u * u * u
+	return 1.0 - pow(-2.0 * u + 2.0, 3.0) / 2.0

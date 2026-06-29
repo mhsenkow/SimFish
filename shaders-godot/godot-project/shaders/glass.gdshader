@@ -84,7 +84,7 @@ void fragment() {
 	//     visible per-pixel variation, not a flat band
 	float wl_signed = world_pos.y - water_surface_y;
 	float wl = abs(wl_signed);
-	float undulate = 0.5 + 0.5 * sin(world_pos.x * 4.2 + world_pos.z * 3.6);
+	float undulate = 0.5 + 0.5 * sin(world_pos.x * 4.2 + world_pos.z * 3.6 + TIME * 0.3);
 	float ring_w = mix(0.05, 0.10, undulate);
 	float ring_above = smoothstep(ring_w * 1.6, 0.0, abs(wl_signed - 0.025))
 		* step(abs(n.y), 0.35) * step(0.0, wl_signed);

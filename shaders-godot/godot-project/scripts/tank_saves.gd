@@ -19,6 +19,8 @@ const TANKS_DIR := "user://tanks"
 const INDEX_PATH := "user://tanks/index.cfg"
 const LEGACY_CONFIG_PATH := "user://tank_config.cfg"
 const STATE_VERSION := 1
+const MAX_JSON_BYTES: int = 52_428_800  # 50 MiB
+const BACKUP_COUNT: int = 3
 
 # The slot the menu chose; main.tscn reads this on _ready to know which
 # state.json to load. Defaults to 1 so a fresh install always has something.
@@ -346,9 +348,22 @@ func write_text_atomic(path: String, text: String) -> Error:
 	# Best-effort backup of the previous file before clobbering it. Used by
 	# the corruption-recovery flow.
 	if FileAccess.file_exists(path):
-		DirAccess.copy_absolute(path, path + ".bak")
+		_rotate_backups(path)
 	var err: Error = DirAccess.rename_absolute(tmp, path)
 	return err
+
+
+func _rotate_backups(path: String) -> void:
+	var base: String = path + ".bak"
+	for i in range(BACKUP_COUNT - 1, 0, -1):
+		var from: String = base if i == 1 else "%s.%d" % [base, i - 1]
+		var to: String = "%s.%d" % [base, i]
+		if FileAccess.file_exists(from):
+			if FileAccess.file_exists(to):
+				DirAccess.remove_absolute(to)
+			DirAccess.rename_absolute(from, to)
+	if FileAccess.file_exists(path):
+		DirAccess.copy_absolute(path, base)
 
 
 # Read JSON dict from disk. Returns empty dict on parse error.
@@ -357,6 +372,11 @@ func read_json(path: String) -> Dictionary:
 		return {}
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
+		return {}
+	var size: int = f.get_length()
+	if size > MAX_JSON_BYTES:
+		push_warning("[TankSaves] refusing oversized JSON (%d bytes): %s" % [size, path])
+		f.close()
 		return {}
 	var text: String = f.get_as_text()
 	f.close()

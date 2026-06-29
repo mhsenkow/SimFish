@@ -14,6 +14,9 @@ var _dither: HSlider
 var _dither_label: Label
 var _palette_check: CheckBox
 var _region_aware_check: CheckBox
+var _dither_world_check: CheckBox
+var _blue_noise: HSlider
+var _blue_noise_label: Label
 var _experimental_check: CheckBox
 var _pixel_purity_check: CheckBox
 var _colorblind_option: OptionButton
@@ -77,6 +80,13 @@ var _fidelity_summary: Label
 var _adaptive_block: VBoxContainer
 
 const FIDELITY_PRESETS: Array = [
+	{
+		"key": "potato",
+		"label": "Potato",
+		"w": 256, "h": 144, "msaa": 0,
+		"shader_tier": 2,
+		"tip": "256×144 — integrated GPU / low-end (reduced shader cost)",
+	},
 	{
 		"key": "chunky",
 		"label": "Chunky",
@@ -268,6 +278,9 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	_frame_graph_label.text = "—"
 	PanelTheme.as_mono(_frame_graph_label, PanelTheme.SIZE_CAPTION)
 	_adaptive_block.add_child(_frame_graph_label)
+	var spark_hint := PanelTheme.make_description()
+	spark_hint.text = "Green line = target frame budget; spikes above = hitch frames."
+	_adaptive_block.add_child(spark_hint)
 
 	_frame_graph = Control.new()
 	_frame_graph.custom_minimum_size = Vector2(0, 48)
@@ -316,6 +329,18 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_region_aware_check.text = "Region-aware dither (recommended)"
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
 	palette_body.add_child(_region_aware_check)
+	_dither_world_check = CheckBox.new()
+	_dither_world_check.text = "World-space dither lock (less shimmer on pan)"
+	_dither_world_check.toggled.connect(func(v):
+		TankConfig.dither_world_lock = v
+		_push_live_quantize())
+	palette_body.add_child(_dither_world_check)
+	_blue_noise_label = Label.new()
+	_blue_noise = PanelTheme.add_slider_row(palette_body, "Blue-noise blend", 0.0, 1.0, 0.05, _blue_noise_label)
+	_blue_noise.value_changed.connect(func(v):
+		TankConfig.blue_noise_amount = v
+		_blue_noise_label.text = "%.2f" % v
+		_push_live_quantize())
 	_bank_lock_check = CheckBox.new()
 	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
 	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
@@ -498,6 +523,19 @@ func _apply_fidelity_preset(preset: Dictionary) -> void:
 	TankConfig.render_width = int(preset["w"])
 	TankConfig.render_height = int(preset["h"])
 	TankConfig.msaa = int(preset["msaa"])
+	TankConfig.shader_perf_tier = int(preset.get("shader_tier", 0))
+	var key: String = String(preset.get("key", ""))
+	if key == "potato":
+		TankConfig.dither_strength = maxf(TankConfig.dither_strength, 0.88)
+		TankConfig.integer_upscale = true
+		TankConfig.outline_strength = 0.0
+		TankConfig.crt_strength = 0.0
+	elif key == "chunky":
+		TankConfig.dither_strength = maxf(TankConfig.dither_strength, 0.92)
+		TankConfig.integer_upscale = true
+		TankConfig.shader_perf_tier = maxi(TankConfig.shader_perf_tier, 1)
+	elif key in ["sharp", "high"]:
+		TankConfig.shader_perf_tier = 0
 	_pull_resolution_option()
 	if _msaa_option != null:
 		_msaa_option.select(int(TankConfig.msaa))
@@ -510,7 +548,8 @@ func _fidelity_preset_index() -> int:
 		var p: Dictionary = FIDELITY_PRESETS[i]
 		if int(p["w"]) == TankConfig.render_width \
 				and int(p["h"]) == TankConfig.render_height \
-				and int(p["msaa"]) == int(TankConfig.msaa):
+				and int(p["msaa"]) == int(TankConfig.msaa) \
+				and int(p.get("shader_tier", 0)) == int(TankConfig.shader_perf_tier):
 			return i
 	return -1
 
@@ -679,6 +718,16 @@ func _pull_from_config() -> void:
 		_region_aware_check.set_block_signals(true)
 		_region_aware_check.button_pressed = TankConfig.dither_region_aware
 		_region_aware_check.set_block_signals(false)
+	if _dither_world_check != null:
+		_dither_world_check.set_block_signals(true)
+		_dither_world_check.button_pressed = TankConfig.dither_world_lock
+		_dither_world_check.set_block_signals(false)
+	if _blue_noise != null:
+		_blue_noise.set_block_signals(true)
+		_blue_noise.value = TankConfig.blue_noise_amount
+		_blue_noise.set_block_signals(false)
+		if _blue_noise_label != null:
+			_blue_noise_label.text = "%.2f" % TankConfig.blue_noise_amount
 	if _bank_lock_check != null:
 		_bank_lock_check.set_block_signals(true)
 		_bank_lock_check.button_pressed = TankConfig.palette_bank_lock
@@ -905,12 +954,29 @@ func _on_resolution(idx: int) -> void:
 func _on_dither(v: float) -> void:
 	TankConfig.dither_strength = v
 	_dither_label.text = "%.2f" % v
-	# Live update: push into the active display shader so the user sees it.
+	_push_live_quantize_param("dither_strength", v)
+
+
+func _push_live_quantize() -> void:
+	var main := get_tree().current_scene
+	if main == null:
+		return
+	var display := main.get_node_or_null("Display")
+	if display == null or not (display.material is ShaderMaterial):
+		return
+	var sm := display.material as ShaderMaterial
+	sm.set_shader_parameter("dither_world_lock", 1.0 if TankConfig.dither_world_lock else 0.0)
+	sm.set_shader_parameter("blue_noise_amount", float(TankConfig.blue_noise_amount))
+	sm.set_shader_parameter("dither_world_origin",
+			Vector2(float(TankConfig.camera_target_x), float(TankConfig.camera_target_z)))
+
+
+func _push_live_quantize_param(param_name: String, value: Variant) -> void:
 	var main := get_tree().current_scene
 	if main != null:
 		var display := main.get_node_or_null("Display")
 		if display != null and display.material is ShaderMaterial:
-			(display.material as ShaderMaterial).set_shader_parameter("dither_strength", v)
+			(display.material as ShaderMaterial).set_shader_parameter(param_name, value)
 
 
 func _on_fog_density(v: float) -> void:

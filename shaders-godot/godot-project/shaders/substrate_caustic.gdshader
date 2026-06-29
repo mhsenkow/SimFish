@@ -46,6 +46,7 @@ uniform vec4 contact_ao_points[8];
 uniform vec4 blob_shadow_points[32];
 uniform float blob_shadow_gain : hint_range(0.0, 1.5) = 1.0;
 uniform float blob_shadow_flash : hint_range(0.0, 1.0) = 0.0;
+uniform int blob_shadow_max : hint_range(8, 32) = 32;
 uniform float shadow_calm : hint_range(0.0, 1.0) = 0.0;
 uniform float caustic_beat_pulse : hint_range(0.0, 1.0) = 0.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
@@ -92,6 +93,9 @@ float worley_caustic(vec2 uv, float t) {
 float compute_blob_shadow(vec3 world_pos) {
 	float shade = 1.0;
 	for (int i = 0; i < 32; i++) {
+		if (i >= blob_shadow_max) {
+			continue;
+		}
 		vec4 p = blob_shadow_points[i];
 		if (p.w < 0.001) {
 			continue;

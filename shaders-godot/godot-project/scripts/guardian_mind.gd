@@ -1,6 +1,7 @@
 extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
+const GuardianGenerative = preload("res://scripts/guardian_generative.gd")
 
 # Persistent inner-state for the Guardian companion (#10–19). Stored inside
 # `_guardian_arc["mind"]` and serialized with the tank save (v6+).
@@ -28,6 +29,7 @@ static func ensure_mind(arc: Dictionary) -> Dictionary:
 	for k in _default_mind().keys():
 		if not mind.has(k):
 			mind[k] = _default_mind()[k]
+	GuardianGenerative.ensure(arc)
 	return mind
 
 
@@ -147,9 +149,11 @@ static func record_player_action(arc: Dictionary, action: String, detail: String
 			mind["mood"] = "content"
 			_push_memory(mind, "you fed us%s" % (" (%s)" % detail if detail != "" else ""))
 			_track_ritual(mind, "feeding")
+			GuardianGenerative.note_feed(arc)
 		"watched":
 			mind["mood"] = "warm"
 			_push_feeling(mind, "you watched the glass")
+			GuardianGenerative.note_keeper_present(arc)
 		"startled":
 			mind["mood"] = "alert"
 			_push_feeling(mind, "a sudden motion at the glass")
@@ -343,7 +347,7 @@ static func build_ai_context(f: Node, sim: Node, arc: Dictionary, situation: Str
 			feel = FishMind.emotional_state(f)
 		if f.get("stress") != null:
 			stress = float(f.stress)
-	return {
+	var ctx: Dictionary = {
 		"fish_name": str(f.get("fish_name") if f != null and f.get("fish_name") != null else "Guardian"),
 		"species": str(f.get("species") if f != null and f.get("species") != null else ""),
 		"situation": situation,
@@ -379,6 +383,8 @@ static func build_ai_context(f: Node, sim: Node, arc: Dictionary, situation: Str
 		"observed_feel": str(arc.get("_observe_feel", "")) if situation == "observe" else "",
 		"tank_society": FishMind.society_snapshot(sim) if sim != null else {},
 	}
+	ctx.merge(GuardianGenerative.context_fields(arc))
+	return ctx
 
 
 static func interpreted_situation(_f: Node, _sim: Node, arc: Dictionary, situation: String) -> String:

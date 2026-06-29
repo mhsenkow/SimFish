@@ -26,6 +26,8 @@ const MakeItThere = preload("res://scripts/make_it_there.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
 const TankMind = preload("res://scripts/tank_mind.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
+const FishContinuity = preload("res://scripts/fish_continuity.gd")
+const SimRngScript = preload("res://scripts/sim_rng.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -56,6 +58,7 @@ var day_phase: float = 0.25  # start at midday
 const DAY_LENGTH_S: float = 360.0  # 6-minute full cycle
 # Deterministic seed shown in HUD. World reads this on init.
 var tank_seed: int = 0xCAFEF155
+var rng: SimRngScript = SimRngScript.new()
 
 var fish: Array[Fish] = []
 var shrimp: Array[Shrimp] = []
@@ -130,6 +133,13 @@ const FEED_TIME_HISTORY_CAP: int = 30
 const FEED_ANTICIPATION_WINDOW_MIN: int = 5
 const FEED_ANTICIPATION_THRESHOLD: int = 3
 var _feed_time_history: Array = []  # ints, minute-of-day (0..1439)
+# META #30 — tank-global; recomputed once per wall-clock minute, not per fish.
+var _feed_anticipation_cache_minute: int = -1
+var _feed_anticipation_cached: bool = false
+
+# Eco-event dedup — same kind+text won't re-fire for this many sim-seconds.
+const ECO_EVENT_REPEAT_S: float = 300.0
+var _eco_event_repeat_until: Dictionary = {}
 
 # ---- Player glance ("look at the glass") ----
 # main.gd pushes the camera's world position once per frame; we compute a
@@ -292,8 +302,13 @@ func advance_tank_age_coarse(seconds: float) -> void:
 	tank_age_s += maxf(0.0, seconds)
 
 
+func _sync_rng() -> void:
+	if rng.master_seed() != tank_seed:
+		rng.reset(tank_seed)
+
+
 func _maybe_guardian_dream_journal(note: String) -> void:
-	if note.strip_edges() == "" or randf() > 0.14:
+	if note.strip_edges() == "" or rng.randf(SimRngScript.STREAM_EVENTS) > 0.14:
 		return
 	var g: Fish = _find_guardian_fish()
 	if g == null:
@@ -504,6 +519,7 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 		_feed_time_history.append(mod)
 		while _feed_time_history.size() > FEED_TIME_HISTORY_CAP:
 			_feed_time_history.pop_front()
+		_feed_anticipation_cache_minute = -1
 		_last_feed_unix = int(Time.get_unix_time_from_system())
 		_make_it_there_session["feed_wait"] = 0.0
 		_make_it_there_session.erase("feed_disappointed")
@@ -513,7 +529,7 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 		var audio := _ambient_audio()
 		if audio != null and audio.has_method("play_feeding_event"):
 			audio.play_feeding_event()
-		if randf() < 0.12:
+		if rng.randf(SimRngScript.STREAM_EVENTS) < 0.12:
 			MakeItThere.record_parenting(_guardian_arc, "gentle")
 		for ff in fish:
 			if is_instance_valid(ff):
@@ -529,16 +545,23 @@ func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD
 
 # True when the current wall-clock minute is close to a minute the player
 # has historically fed at (≥ FEED_ANTICIPATION_THRESHOLD matches within
-# ±FEED_ANTICIPATION_WINDOW_MIN minutes). Cheap to call per fish — O(30).
+# ±FEED_ANTICIPATION_WINDOW_MIN minutes). Cached per minute — O(30) once,
+# not once per fish per tick (META #30).
 func feed_anticipation_active() -> bool:
-	if _feed_time_history.size() < FEED_ANTICIPATION_THRESHOLD:
-		return false
 	var t: Dictionary = Time.get_time_dict_from_system()
 	var now_mod: int = int(t.get("hour", 0)) * 60 + int(t.get("minute", 0))
+	if now_mod != _feed_anticipation_cache_minute:
+		_feed_anticipation_cache_minute = now_mod
+		_feed_anticipation_cached = _compute_feed_anticipation(now_mod)
+	return _feed_anticipation_cached
+
+
+func _compute_feed_anticipation(now_mod: int) -> bool:
+	if _feed_time_history.size() < FEED_ANTICIPATION_THRESHOLD:
+		return false
 	var matches: int = 0
 	for m_v in _feed_time_history:
 		var m: int = int(m_v)
-		# Wrap-around distance on a 24h clock.
 		var d: int = absi(m - now_mod)
 		if d > 720:
 			d = 1440 - d
@@ -667,294 +690,95 @@ func school_pulse_phase() -> float:
 
 
 # TOPDOWN §E — propagating synchronized turn wave (beat/downbeat triggered).
-var _sync_turn_remaining: float = 0.0
-var _sync_turn_dir: Vector3 = Vector3(1.0, 0.0, 0.0)
-var _sync_turn_origin: Vector3 = Vector3.ZERO
-var _sync_turn_flip: int = 0
-var _sync_polarization: float = 0.0
-var _startle_bolt_remaining: float = 0.0
-var _startle_bolt_origin: Vector3 = Vector3.ZERO
-var _sync_settle: float = 0.0
-var _group_reversal_timer: float = 12.0
-var _edge_turn_cooldown: float = 0.0
-var _flip_cascade_left: int = 0
-var _was_sync_turn: bool = false
-var _density_wave_radius: float = 0.0
-var _density_wave_origin: Vector3 = Vector3.ZERO
-var _density_wave_strength: float = 0.0
-var _flock_orbit_phase: float = 0.0
-var _conduct_center: Vector3 = Vector3.ZERO
-var _conduct_radius: float = 0.0
-var _conduct_until: float = 0.0
-var _predator_wave_cd: float = 0.0
-var _startle_bolt_was: bool = false
+var topdown: SimTopdown = SimTopdown.new()
 
 
 func pulse_startle_bolt(origin: Vector3) -> void:
-	_startle_bolt_origin = origin
-	_startle_bolt_remaining = 0.62
-	_sync_settle = 0.0
+	topdown.pulse_startle_bolt(origin)
 
 
 func startle_bolt_active() -> bool:
-	return _startle_bolt_remaining > 0.0
+	return topdown.startle_bolt_active()
 
 
 func startle_bolt_origin() -> Vector3:
-	return _startle_bolt_origin
+	return topdown.startle_bolt_origin
 
 
 func topdown_wake_count() -> int:
-	var n: int = 0
-	var surface_y: float = 6.0
-	if world != null and world.get("WATER_HEIGHT") != null:
-		surface_y = float(world.WATER_HEIGHT)
-	for f in fish:
-		if not is_instance_valid(f) or f.get("_dying") == true:
-			continue
-		if float(f.get("speed") if f.get("speed") != null else 0.0) < 0.25:
-			continue
-		if absf(f.position.y - surface_y) < 1.1:
-			n += 1
-	return n
+	return SimTopdown.wake_count(self)
 
 
 func topdown_caustic_beat() -> float:
-	var down: bool = false
-	var bass: float = 0.0
-	var energy: float = 0.0
-	if has_node("/root/MusicContext"):
-		var mc: Node = get_node("/root/MusicContext")
-		if mc.get("_ctx") is Dictionary:
-			var ctx: Dictionary = mc._ctx
-			down = bool(ctx.get("downbeat", false))
-			bass = float(ctx.get("bass", 0.0))
-			energy = float(ctx.get("energy", 0.0))
-	return TopdownMotion.caustic_beat_pulse(down, bass, energy)
+	return SimTopdown.caustic_beat_pulse()
 
 
 func pulse_sync_turn(dir: Vector3 = Vector3.ZERO, origin: Vector3 = Vector3.ZERO) -> void:
-	if dir.length_squared() < 1e-4:
-		_sync_turn_flip += 1
-		dir = Vector3(1.0 if _sync_turn_flip % 2 == 0 else -1.0, 0.0, 0.0)
-	_sync_turn_dir = dir.normalized()
-	_sync_turn_origin = origin
-	_sync_turn_remaining = 0.52
-	_sync_polarization = 0.0
+	topdown.pulse_sync_turn(dir, origin)
 
 
 func sync_turn_heading_for(fish_pos: Vector3, instance_id: int) -> Vector3:
-	if _sync_turn_remaining <= 0.0:
-		return Vector3.ZERO
-	var dist: float = Vector2(fish_pos.x - _sync_turn_origin.x, fish_pos.z - _sync_turn_origin.z).length()
-	var delay: float = dist * 0.085 + float(instance_id % 17) * 0.004
-	var phase: float = clampf(1.0 - delay / maxf(_sync_turn_remaining + 0.08, 0.12), 0.0, 1.0)
-	if phase <= 0.02:
-		return Vector3.ZERO
-	var perp := Vector3(-_sync_turn_dir.z, 0.0, _sync_turn_dir.x)
-	return perp * phase * 0.95
+	return topdown.sync_turn_heading_for(fish_pos, instance_id)
 
 
 func sync_turn_active() -> bool:
-	return _sync_turn_remaining > 0.0
+	return topdown.sync_turn_active()
 
 
 func sync_polarization() -> float:
-	return _sync_polarization
-
-
-func _tick_topdown_flock_events(dt: float) -> void:
-	var active: bool = TopdownMotion.pond_active
-	if world != null and world.has_method("_topdown_surface_active"):
-		active = active or world._topdown_surface_active()
-	if not active:
-		return
-	_group_reversal_timer -= dt
-	_edge_turn_cooldown -= dt
-	if _flip_cascade_left > 0 and _sync_turn_remaining <= 0.0 and _startle_bolt_remaining <= 0.0:
-		_flip_cascade_left -= 1
-		pulse_sync_turn()
-		return
-	if _group_reversal_timer <= 0.0 and fish.size() >= 4 and _sync_turn_remaining <= 0.0:
-		if sin(_school_pulse_phase) > 0.94:
-			_group_reversal_timer = randf_range(16.0, 26.0)
-			pulse_sync_turn(Vector3.ZERO, _school_centroid_xz())
-	if _edge_turn_cooldown > 0.0:
-		return
-	var hw: float = 8.0
-	var hd: float = 4.0
-	if world != null:
-		if world.get("TANK_HALF_W") != null:
-			hw = float(world.TANK_HALF_W)
-		if world.get("TANK_HALF_D") != null:
-			hd = float(world.TANK_HALF_D)
-	var edge_n: int = 0
-	var edge_origin := Vector3.ZERO
-	for f in fish:
-		if not is_instance_valid(f) or f.get("_dying") == true:
-			continue
-		var p: Vector3 = f.position
-		if absf(p.x) > hw * 0.78 or absf(p.z) > hd * 0.78:
-			edge_n += 1
-			edge_origin += p
-	if edge_n >= 3:
-		edge_origin /= float(edge_n)
-		var away := Vector3(-signf(edge_origin.x), 0.0, -signf(edge_origin.z))
-		if away.length_squared() < 0.01:
-			away = Vector3(1.0, 0.0, 0.0)
-		pulse_sync_turn(away, edge_origin)
-		pulse_density_wave(edge_origin, 0.55)
-		_edge_turn_cooldown = 2.8
-	# Predator-driven bend: large fish near small schooling conspecifics.
-	if _predator_wave_cd <= 0.0 and fish.size() >= 3:
-		for pf in fish:
-			if not is_instance_valid(pf) or pf.get("_dying") == true:
-				continue
-			if float(pf.get("growth_factor") if pf.get("growth_factor") != null else 1.0) < 1.22:
-				continue
-			var prey_n: int = 0
-			var flee := Vector3.ZERO
-			for f in fish:
-				if f == pf or not is_instance_valid(f) or f.get("_dying") == true:
-					continue
-				if String(f.get("swim_pattern") if f.get("swim_pattern") != null else "") not in ["school", "shoal"]:
-					continue
-				var d2: float = pf.position.distance_squared_to(f.position)
-				if d2 < 9.0 and d2 > 0.12:
-					prey_n += 1
-					flee += (f.position - pf.position).normalized()
-			if prey_n >= 2 and flee.length_squared() > 0.01:
-				pulse_predator_wave(pf.position, flee.normalized())
-				return
-
-
-func _school_centroid_xz() -> Vector3:
-	if fish.is_empty():
-		return Vector3.ZERO
-	var sum := Vector3.ZERO
-	var n: int = 0
-	for f in fish:
-		if not is_instance_valid(f) or f.get("_dying") == true:
-			continue
-		sum += f.position
-		n += 1
-	if n <= 0:
-		return Vector3.ZERO
-	sum /= float(n)
-	sum.y = 0.0
-	return sum
+	return topdown.sync_polarization
 
 
 func pulse_density_wave(origin: Vector3, strength: float = 1.0) -> void:
-	_density_wave_origin = origin
-	_density_wave_radius = 0.0
-	_density_wave_strength = clampf(strength, 0.0, 1.5)
+	topdown.pulse_density_wave(origin, strength)
 
 
 func density_wave_push_at(pos: Vector3) -> Vector3:
-	if _density_wave_strength <= 0.01:
-		return Vector3.ZERO
-	var away: Vector3 = pos - _density_wave_origin
-	away.y = 0.0
-	var dist: float = away.length()
-	var push_amt: float = TopdownMotion.density_wave_sep_push(
-		dist, _density_wave_radius, _density_wave_strength)
-	if push_amt <= 0.01 or away.length_squared() < 1e-4:
-		return Vector3.ZERO
-	return away.normalized() * push_amt
+	return topdown.density_wave_push_at(pos)
 
 
 func flock_split_pull(instance_id: int, pos: Vector3) -> Vector3:
-	var centers: Array = TopdownMotion.flock_split_centers(_flock_orbit_phase, 8.0)
-	var half: int = instance_id % 2
-	var target: Vector3 = centers[half]
-	var d: Vector3 = target - pos
-	d.y = 0.0
-	if d.length_squared() < 0.08:
-		return Vector3.ZERO
-	return d.normalized() * sin(_flock_orbit_phase) * 0.35
+	return topdown.flock_split_pull(instance_id, pos)
 
 
 func set_conduct_anchor(center: Vector3, radius: float, duration: float = 8.0) -> void:
-	_conduct_center = center
-	_conduct_radius = maxf(radius, 0.5)
-	_conduct_until = duration
+	topdown.set_conduct_anchor(center, radius, duration)
 
 
 func conduct_anchor_pull(pos: Vector3) -> Vector3:
-	if _conduct_until <= 0.0:
-		return Vector3.ZERO
-	var d: Vector3 = _conduct_center - pos
-	d.y = 0.0
-	if d.length_squared() < 0.06:
-		return Vector3.ZERO
-	return d.normalized() * clampf(_conduct_radius * 0.22, 0.12, 0.85)
+	return topdown.conduct_anchor_pull(pos)
 
 
 func pulse_predator_wave(origin: Vector3, away: Vector3) -> void:
-	if _predator_wave_cd > 0.0:
-		return
-	_predator_wave_cd = 1.4
-	if away.length_squared() < 1e-4:
-		away = Vector3(1.0, 0.0, 0.0)
-	pulse_sync_turn(away, origin)
-	pulse_density_wave(origin, 0.9)
+	topdown.pulse_predator_wave(origin, away)
 
 
 func register_sync_alignment(strength: float) -> void:
-	_sync_polarization = lerpf(_sync_polarization, clampf(strength, 0.0, 1.0), 0.18)
+	topdown.register_sync_alignment(strength)
 
 
 func topdown_motion_energy() -> float:
-	var sum: float = 0.0
-	var n: int = 0
-	for f in fish:
-		if not is_instance_valid(f) or f.get("_dying") == true:
-			continue
-		var spd: float = float(f.get("speed") if f.get("speed") != null else 0.0)
-		var burst: float = float(f.get("burst_remaining") if f.get("burst_remaining") != null else 0.0)
-		sum += spd + burst * 0.35
-		n += 1
-	if n <= 0:
-		return 0.0
-	return clampf(sum / float(n) / 2.4, 0.0, 1.0)
+	return SimTopdown.motion_energy(self)
 
 
 func topdown_tank_stress() -> float:
-	var sum: float = 0.0
-	var n: int = 0
-	for f in fish:
-		if not is_instance_valid(f) or f.get("_dying") == true:
-			continue
-		sum += float(f.get("stress") if f.get("stress") != null else 0.0)
-		n += 1
-	var fish_stress: float = sum / maxf(float(n), 1.0)
-	var chem_stress: float = 0.0
-	if water_chemistry != null:
-		chem_stress = clampf(float(water_chemistry.ammonia) * 0.9
-				+ float(water_chemistry.nitrite) * 0.7, 0.0, 1.0)
-	return clampf(fish_stress * 0.65 + chem_stress * 0.35, 0.0, 1.0)
+	return SimTopdown.tank_stress(self)
 
 
 func topdown_cycle_ok() -> bool:
-	if water_chemistry == null:
-		return true
-	return float(water_chemistry.ammonia) < 0.35 \
-			and float(water_chemistry.nitrite) < 0.4 \
-			and float(water_chemistry.bacteria_colony) > 0.12
+	return SimTopdown.cycle_ok(self)
 
 
 func topdown_shadow_flash() -> float:
-	var flash: float = 0.0
-	if sync_turn_active():
-		flash = TopdownMotion.shadow_flash_strength(0.85, _sync_polarization)
-	for f in fish:
-		if not is_instance_valid(f):
-			continue
-		var sf_v: Variant = f.get("_silver_flash")
-		if sf_v != null:
-			flash = maxf(flash, TopdownMotion.shadow_flash_strength(float(sf_v), _sync_polarization))
-	return flash
+	return topdown.shadow_flash(self)
+
+
+func sync_settle() -> float:
+	return topdown.sync_settle
+
+
+func _school_centroid_xz() -> Vector3:
+	return SimTopdown._school_centroid(self)
 
 
 # Append a mourning event (called when a named fish dies). Pruned in _tick.
@@ -1318,7 +1142,7 @@ func _tick_guardian(dt: float) -> void:
 	GuardianMind.update_player_read(_guardian_arc, _feed_time_history)
 	var result: Dictionary = GuardianFish.evaluate_tick(g, self, _guardian_arc, dt)
 	if result.is_empty():
-		if daylight() < 0.16 and randf() < dt * 0.004:
+		if daylight() < 0.16 and rng.randf(SimRngScript.STREAM_EVENTS) < dt * 0.004:
 			var quiet: String = GuardianMind.compose_quiet_inner_line(self, _guardian_arc, 0)
 			GuardianMind.record_quiet_moment(_guardian_arc, quiet)
 			_journal_append(quiet, "quiet_inner", "", "event")
@@ -1884,7 +1708,7 @@ func hud_ecology_mode() -> String:
 
 
 func _is_saltwater_tank() -> bool:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not cfg.has_method("current_substrate_profile"):
 		return false
 	return not not cfg.current_substrate_profile().get("is_saltwater", false)
@@ -1892,6 +1716,10 @@ func _is_saltwater_tank() -> bool:
 
 func emit_eco_event(kind: String, text: String, severity: int = 1,
 		log_story: bool = true) -> void:
+	var key: String = "%s|%s" % [kind, text]
+	if _eco_event_repeat_until.has(key) and tank_age_s < float(_eco_event_repeat_until[key]):
+		return
+	_eco_event_repeat_until[key] = tank_age_s + ECO_EVENT_REPEAT_S
 	eco_event.emit(kind, text, severity)
 	if log_story:
 		log_story_event(text, true)
@@ -1914,6 +1742,7 @@ func apply_cycle_start_from_config() -> void:
 		water_chemistry.apply_fresh_start()
 		tank_age_s = 0.0
 		dissolved_o2 = 0.85
+	sync_aeration_from_config(false)
 
 
 func _record_trophic_produced(amount: float) -> void:
@@ -2092,11 +1921,15 @@ var dissolved_o2: float = 0.85
 var water_chemistry: WaterChemistry = WaterChemistry.new()
 var _terrain_sync_timer: float = 0.0
 const TERRAIN_SYNC_INTERVAL_S: float = 6.0
-# Rates set by world.gd._spawn_aeration_system() based on the current
-# TankConfig. air_rate ~ 0..1 from profile, flow_rate ~ 0..1 surface agitation.
+# Rates derived from TankConfig via sync_aeration_from_config() — config is the
+# source of truth; saved aeration_* fields are legacy hints only.
 var aeration_air_rate: float = 0.6
 var aeration_flow_rate: float = 0.15
 var aeration_fixture: String = "disk"
+var _aeration_cfg_key: String = ""
+var _aeration_watch_t: float = 0.0
+# Headless smokes may set this to exercise stock pressure without spawning fish.
+var o2_test_fish_count: int = -1
 # Tuning constants - in normalized-units per second. Sized so a typical
 # community tank with the disk fixture sits around 0.85-0.95 O2 in steady
 # state, drops noticeably to 0.4-0.6 if you switch to "none" with a full bio
@@ -2126,7 +1959,171 @@ const O2_NIGHT_SURFACE_BONUS: float = 0.014
 const O2_FISH_NIGHT_RESP_SCALE: float = 0.65
 const O2_SHRIMP_NIGHT_RESP_SCALE: float = 0.78
 const O2_RESPIRE_PLANT: float = 0.0011
-const O2_AERATION_FLOOR_BASE: float = 0.24  # air stone prevents total anoxia
+const O2_AERATION_FLOOR_BASE: float = 0.32  # active aeration should clear stress band
+const O2_STRESS_THRESHOLD: float = 0.42     # fish.gd / HUD low-O₂ band
+
+
+static func compute_aeration_rates(cfg: Node) -> Dictionary:
+	if cfg == null:
+		return {"air_rate": 0.0, "flow_rate": 0.0, "fixture": "none"}
+	var profile: Dictionary = cfg.current_aeration_profile() \
+		if cfg.has_method("current_aeration_profile") else {}
+	var strength: float = float(cfg.get("aeration_strength") if cfg.get("aeration_strength") != null else 0.6)
+	var fixture: String = String(cfg.get("aeration_type") if cfg.get("aeration_type") != null else "disk")
+	return {
+		"air_rate": float(profile.get("air_rate", 0.0)) * strength,
+		"flow_rate": float(profile.get("flow_rate", 0.0)) * strength,
+		"fixture": fixture,
+	}
+
+
+static func _aeration_config_key(cfg: Node) -> String:
+	if cfg == null:
+		return ""
+	return "%s|%.4f" % [
+		String(cfg.get("aeration_type") if cfg.get("aeration_type") != null else "disk"),
+		float(cfg.get("aeration_strength") if cfg.get("aeration_strength") != null else 0.6),
+	]
+
+
+func sync_aeration_from_config(heal_o2: bool = true) -> void:
+	var cfg := _cfg()
+	var rates: Dictionary = compute_aeration_rates(cfg)
+	aeration_air_rate = float(rates["air_rate"])
+	aeration_flow_rate = float(rates["flow_rate"])
+	aeration_fixture = String(rates["fixture"])
+	_aeration_cfg_key = _aeration_config_key(cfg)
+	if heal_o2:
+		var o2_floor: float = _o2_equipment_floor()
+		if o2_floor > 0.08 and dissolved_o2 < o2_floor:
+			dissolved_o2 = maxf(dissolved_o2, o2_floor * 0.94)
+
+
+func _watch_aeration_config(dt: float) -> void:
+	_aeration_watch_t += dt
+	if _aeration_watch_t < 1.0:
+		return
+	_aeration_watch_t = 0.0
+	var key: String = _aeration_config_key(_cfg())
+	if key != "" and key != _aeration_cfg_key:
+		sync_aeration_from_config(false)
+
+
+func _o2_stock_pressure() -> float:
+	var cap: int = maxi(1, fish_carrying_capacity_smoothed())
+	return float(_fish_count_for_o2()) / float(cap)
+
+
+func _fish_count_for_o2() -> int:
+	if o2_test_fish_count >= 0:
+		return o2_test_fish_count
+	return fish.size()
+
+
+func _floater_o2_exchange_mult() -> Dictionary:
+	var w_o2: Node = get_parent()
+	if w_o2 == null or not w_o2.has_method("floater_coverage"):
+		return {"drift": 1.0, "inject": 1.0}
+	var fc: float = clampf(float(w_o2.floater_coverage()), 0.0, 1.0)
+	# Dense duckweed/lily mats block surface gas exchange; bubbles still help.
+	var drift_mult: float = 1.0
+	if fc > 0.75:
+		drift_mult = 1.0 - clampf((fc - 0.75) / 0.25, 0.0, 1.0) * 0.55
+	elif fc > 0.45:
+		drift_mult = 1.0 - clampf((fc - 0.45) / 0.30, 0.0, 1.0) * 0.18
+	var inject_mult: float = 1.0
+	if fc > 0.55:
+		inject_mult = 1.0 - clampf((fc - 0.55) / 0.45, 0.0, 1.0) * 0.22
+	return {"drift": drift_mult, "inject": inject_mult}
+
+
+func _o2_equipment_floor() -> float:
+	var o2_floor: float = 0.0
+	if aeration_air_rate > 0.02 or aeration_flow_rate > 0.08:
+		o2_floor = O2_AERATION_FLOOR_BASE \
+			+ aeration_air_rate * 0.28 + aeration_flow_rate * 0.10
+	if total_plant_biomass > 80:
+		var plant_div: float = 600.0 if not _is_saltwater_tank() else 720.0
+		o2_floor = maxf(o2_floor,
+			0.10 + clampf(float(total_plant_biomass) / plant_div, 0.0, 0.14))
+	return o2_floor
+
+
+func _o2_effective_floor() -> float:
+	var min_o2: float = _o2_equipment_floor()
+	if min_o2 <= 0.001:
+		return 0.0
+	# Overstocked tanks outrun aeration — don't hold a fake healthy minimum.
+	var pressure: float = _o2_stock_pressure()
+	if pressure <= 1.08:
+		return min_o2
+	var over: float = clampf((pressure - 1.08) / 1.35, 0.0, 1.0)
+	return lerpf(min_o2, min_o2 * 0.12, over)
+
+
+func _tick_dissolved_o2(dt: float) -> void:
+	# Tank-wide dissolved-O2 update — Walstad column model.
+	#   + fixture injection, plant/floater photosynthesis, passive surface drift
+	#   − fish/shrimp/snail/plant respiration, bloom overnight BOD
+	var exchange: Dictionary = _floater_o2_exchange_mult()
+	var inject: float = (aeration_air_rate * O2_INJECT_PER_RATE \
+		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE) * equipment_efficiency()
+	inject *= float(exchange.get("inject", 1.0))
+	var cfg_air: Node = _cfg()
+	if cfg_air != null and bool(cfg_air.get("smart_air_enabled")) and dissolved_o2 < 0.5:
+		inject += (0.5 - dissolved_o2) * 0.45
+	var floater_n: int = 0
+	var w_o2: Node = get_parent()
+	if w_o2 != null and w_o2.has_method("floater_count"):
+		floater_n = w_o2.floater_count()
+	var dl: float = daylight()
+	var night: float = 1.0 - dl
+	var photo_biomass: float = total_photosynthetic_biomass
+	if photo_biomass <= 0.0:
+		photo_biomass = float(total_plant_biomass)
+	var photo: float = dl * (
+		photo_biomass * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
+		+ float(plants.size()) * O2_PHOTO_PER_PLANT * O2_PHOTO_PLANTS_MULT
+		+ float(floater_n) * O2_PHOTO_FLOATER)
+	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
+	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
+	var plant_night_resp: float = float(total_plant_biomass) * O2_RESPIRE_PLANT \
+		* night * 0.52
+	var respire: float = float(_fish_count_for_o2()) * O2_RESPIRE_FISH * fish_resp_scale \
+		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
+		+ float(snail_count) * O2_RESPIRE_SNAIL \
+		+ plant_night_resp
+	var predawn: float = 0.0
+	if day_phase > 0.6 and day_phase < 1.0:
+		predawn = clampf((day_phase - 0.6) / 0.4, 0.0, 1.0)
+	respire += photo_biomass * O2_RESPIRE_PLANT * predawn * 0.32
+	respire += clampf(bloom_intensity, 0.0, 1.0) * 0.004 * night
+	var warmth_o2: float = 0.55
+	if w_o2 != null and w_o2.has_method("effective_warmth_at"):
+		warmth_o2 = float(w_o2.effective_warmth_at(Vector3.ZERO))
+	var warm_penalty: float = clampf((warmth_o2 - 0.55) / 0.45, 0.0, 1.0) * 0.12
+	var drift_target: float = (O2_TARGET_NATURAL - warm_penalty) + night * 0.10
+	var drift_rate: float = (O2_PASSIVE_SURFACE_GAS + night * O2_NIGHT_SURFACE_BONUS) \
+		* float(exchange.get("drift", 1.0))
+	if aeration_fixture == "filter":
+		drift_rate += night * 0.022
+	if total_plant_biomass > 120:
+		var planted: float = clampf(float(total_plant_biomass) / 420.0, 0.0, 1.0)
+		drift_target += planted * 0.08
+		drift_rate += night * planted * 0.010
+	var surf_scum: int = 0
+	for a_scum in algae:
+		if is_instance_valid(a_scum) and a_scum.has_method("algae_kind") \
+				and a_scum.algae_kind() == Algae.AlgaeKind.SURFACE:
+			surf_scum += 1
+	if surf_scum > 0:
+		drift_rate *= 1.0 - clampf(float(surf_scum) / 9.0, 0.0, 0.30)
+	var drift: float = drift_rate * (drift_target - dissolved_o2)
+	var o2_floor: float = _o2_effective_floor()
+	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
+		o2_floor, 1.2)
+
+
 const ECO_ENGINEERING_INTERVAL: float = 1.2
 const ECO_MAX_FISH_SAMPLES: int = 10
 const ECO_MAX_SHRIMP_SAMPLES: int = 14
@@ -2271,6 +2268,11 @@ func ensure_id(c: Node) -> String:
 		return ""
 	if String(c.id) == "":
 		c.id = mint_id()
+	if c is Fish:
+		_sync_rng()
+		var stream_name: String = SimRngScript.entity_stream_name(
+				SimRngScript.STREAM_BEHAVIOR, String(c.id))
+		c.apply_spawn_variation(rng.stream(stream_name))
 	return String(c.id)
 
 
@@ -2535,7 +2537,12 @@ func daylight() -> float:
 # "/root/TankConfig" path lookups this replaces were pure overhead.
 func _cfg() -> Node:
 	if _cfg_cache == null or not is_instance_valid(_cfg_cache):
-		_cfg_cache = get_node_or_null("/root/TankConfig")
+		if is_inside_tree():
+			_cfg_cache = get_node_or_null("/root/TankConfig")
+		else:
+			var ml: MainLoop = Engine.get_main_loop()
+			if ml is SceneTree and (ml as SceneTree).root != null:
+				_cfg_cache = (ml as SceneTree).root.get_node_or_null("TankConfig")
 	return _cfg_cache
 
 
@@ -3074,6 +3081,7 @@ func _prune_non_finite_snails() -> void:
 
 
 func _tick(dt: float) -> void:
+	_sync_rng()
 	tank_age_s += dt
 	# Prune queue_freed fauna before any tick logic that iterates fish/shrimp
 	# (guardian pick, cast-change counts, spatial rebuild). Stale refs survive
@@ -3101,29 +3109,7 @@ func _tick(dt: float) -> void:
 	_school_pulse_phase += dt * TAU / SCHOOL_PULSE_PERIOD
 	if _school_pulse_phase > TAU * 1000.0:
 		_school_pulse_phase = fmod(_school_pulse_phase, TAU)
-	if _sync_turn_remaining > 0.0:
-		_sync_turn_remaining = maxf(0.0, _sync_turn_remaining - dt)
-		_sync_settle = TopdownMotion.sync_settle_tightness(_sync_turn_remaining, 0.52)
-		_was_sync_turn = true
-		if _sync_turn_remaining <= 0.0:
-			if _sync_polarization > 0.62 and _flip_cascade_left < 1:
-				_flip_cascade_left = 1
-			_sync_polarization = lerpf(_sync_polarization, 0.0, 0.35)
-	elif _was_sync_turn:
-		_was_sync_turn = false
-	_tick_topdown_flock_events(dt)
-	if _startle_bolt_remaining > 0.0:
-		_startle_bolt_remaining = maxf(0.0, _startle_bolt_remaining - dt)
-		_startle_bolt_was = true
-	elif _startle_bolt_was:
-		_startle_bolt_was = false
-		pulse_density_wave(_startle_bolt_origin, 1.0)
-	if _density_wave_strength > 0.01:
-		_density_wave_radius += dt * 4.2
-		_density_wave_strength = maxf(0.0, _density_wave_strength - dt * 0.38)
-	_flock_orbit_phase += dt * 0.065
-	_conduct_until = maxf(0.0, _conduct_until - dt)
-	_predator_wave_cd = maxf(0.0, _predator_wave_cd - dt)
+	topdown.tick(self, dt, _school_pulse_phase)
 	# 1. Prune invalid refs (queue_freed nodes) — in-place, no allocation.
 	_prune_invalid(plants)
 	_prune_non_finite_positions(fish)
@@ -3134,107 +3120,8 @@ func _tick(dt: float) -> void:
 		_library_analysis_timer = LIBRARY_ANALYSIS_REFRESH_S
 		_refresh_library_analysis_cache()
 
-	# 1b. Tank-wide dissolved-O2 update.
-	#
-	#   Inputs:
-	#     fixture injection    +(air_rate * INJECT) + flow_rate * FLOW_BONUS
-	#     plant photosynthesis +(daylight * plants * PHOTO)
-	#     passive surface drift to a natural target (so a fully unaerated
-	#       tank doesn't go to zero - it settles around O2_TARGET_NATURAL)
-	#   Outputs:
-	#     fish respiration     -(n_fish * RESPIRE_FISH)
-	#     shrimp respiration   -(n_shrimp * RESPIRE_SHRIMP)
-	#     snail respiration    -(n_snails * RESPIRE_SNAIL)
-	#
-	# Clamped 0..1.2 so plant blooms during the day can briefly push the tank
-	# slightly supersaturated, which fish "notice" only when they need it.
-	var inject: float = (aeration_air_rate * O2_INJECT_PER_RATE \
-		+ aeration_flow_rate * O2_FLOW_BONUS_PER_RATE) * equipment_efficiency()
-	# Smart-air solenoid (#30): an optional O2 controller kicks the air pump on
-	# when dissolved O2 dips, for players who want a self-stabilizing tank. Off
-	# by default so the dawn-trough tension stays intact.
-	var cfg_air: Node = _cfg()
-	if cfg_air != null and bool(cfg_air.get("smart_air_enabled")) and dissolved_o2 < 0.5:
-		inject += (0.5 - dissolved_o2) * 0.45
-	# Surface floating plants photosynthesise too (read live count from World).
-	var floater_n: int = 0
-	var w_o2: Node = get_parent()
-	if w_o2 != null and w_o2.has_method("floater_count"):
-		floater_n = w_o2.floater_count()
-	var dl: float = daylight()
-	var night: float = 1.0 - dl
-	# Sick-plant O2 dropout (#29): only healthy biomass photosynthesises, so a
-	# melting / etiolating planting stops carrying the tank's oxygen.
-	var photo_biomass: float = total_photosynthetic_biomass
-	if photo_biomass <= 0.0:
-		photo_biomass = float(total_plant_biomass)
-	var photo: float = dl * (
-		photo_biomass * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
-		+ float(plants.size()) * O2_PHOTO_PER_PLANT * O2_PHOTO_PLANTS_MULT
-		+ float(floater_n) * O2_PHOTO_FLOATER)
-	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
-	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
-	# ~half of plant nighttime demand is buffered in the soil (Walstad closed
-	# loop) and does not draw down the water-column O₂ budget.
-	var plant_night_resp: float = float(total_plant_biomass) * O2_RESPIRE_PLANT \
-		* night * 0.52
-	var respire: float = float(fish.size()) * O2_RESPIRE_FISH * fish_resp_scale \
-		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
-		+ float(snail_count) * O2_RESPIRE_SNAIL \
-		+ plant_night_resp
-	# Pre-dawn O2 trough (#21): plant + bacterial respiration has been drawing
-	# down O2 all night; the minimum lands just before dawn. day_phase ~0.6→1.0
-	# is the deep-dark→dawn window.
-	var predawn: float = 0.0
-	if day_phase > 0.6 and day_phase < 1.0:
-		predawn = clampf((day_phase - 0.6) / 0.4, 0.0, 1.0)
-	respire += photo_biomass * O2_RESPIRE_PLANT * predawn * 0.32
-	# Bloom-crash overnight sag (#26): an algae bloom oxygenates by day but its
-	# decomposition spikes biological oxygen demand at night — the classic
-	# "green water killed my fish overnight."
-	respire += clampf(bloom_intensity, 0.0, 1.0) * 0.004 * night
-	# Warm water holds less O2 (#27): reef / warm tanks run a tighter margin.
-	var warmth_o2: float = 0.55
-	if w_o2 != null and w_o2.has_method("effective_warmth_at"):
-		warmth_o2 = float(w_o2.effective_warmth_at(Vector3.ZERO))
-	var warm_penalty: float = clampf((warmth_o2 - 0.55) / 0.45, 0.0, 1.0) * 0.12
-	# Drift toward the natural target if there's no equipment.
-	var drift_target: float = (O2_TARGET_NATURAL - warm_penalty) + night * 0.10
-	var drift_rate: float = O2_PASSIVE_SURFACE_GAS + night * O2_NIGHT_SURFACE_BONUS
-	# Filtered tanks agitate the surface, topping up O2 overnight (#25): the
-	# dawn dip is gentler than an unfiltered or air-only tank.
-	if aeration_fixture == "filter":
-		drift_rate += night * 0.022
-	# Planted freshwater tanks exchange gas at the surface even when lights
-	# are off — emergent growth + filter return keep the dawn dip survivable.
-	if not _is_saltwater_tank() and total_plant_biomass > 120:
-		var planted: float = clampf(float(total_plant_biomass) / 420.0, 0.0, 1.0)
-		drift_target += planted * 0.08
-		drift_rate += night * planted * 0.010
-	# Coverage O₂ choke (#17): dense mats reduce surface gas exchange.
-	if w_o2 != null and w_o2.has_method("floater_coverage"):
-		var fc: float = float(w_o2.floater_coverage())
-		if fc > 0.75:
-			drift_rate *= 1.0 - clampf((fc - 0.75) / 0.25, 0.0, 1.0) * 0.55
-	# Surface-film gas choke (#10): an oily surface-scum algae layer physically
-	# slows O2 exchange at the air-water interface — neglect literally
-	# suffocates the column.
-	var surf_scum: int = 0
-	for a_scum in algae:
-		if is_instance_valid(a_scum) and a_scum.has_method("algae_kind") \
-				and a_scum.algae_kind() == Algae.AlgaeKind.SURFACE:
-			surf_scum += 1
-	if surf_scum > 0:
-		drift_rate *= 1.0 - clampf(float(surf_scum) / 9.0, 0.0, 0.30)
-	var drift: float = drift_rate * (drift_target - dissolved_o2)
-	var o2_floor: float = 0.0
-	if inject > 0.02 or aeration_flow_rate > 0.08:
-		o2_floor = O2_AERATION_FLOOR_BASE + aeration_air_rate * 0.12 + aeration_flow_rate * 0.08
-	# Planted tanks bleed a little O₂ at the surface even when the pump is off.
-	if not _is_saltwater_tank() and total_plant_biomass > 80:
-		o2_floor = maxf(o2_floor, 0.12 + clampf(float(total_plant_biomass) / 600.0, 0.0, 0.12))
-	dissolved_o2 = clampf(dissolved_o2 + (inject + photo + drift - respire) * dt,
-		o2_floor, 1.2)
+	_watch_aeration_config(dt)
+	_tick_dissolved_o2(dt)
 
 	# 2. Substrate field + periodic 3D terrain nutrient sync.
 	if substrate != null:
@@ -3552,7 +3439,7 @@ func _tick(dt: float) -> void:
 	# food on a struggling tank) and in saltwater (handled by reef feeding).
 	_food_pulse_timer -= dt
 	if _food_pulse_timer <= 0.0:
-		_food_pulse_timer = randf_range(180.0, 420.0)
+		_food_pulse_timer = rng.randf_range(180.0, 420.0, SimRngScript.STREAM_SPAWN)
 		if (water_chemistry == null or water_chemistry.ammonia < 0.4) \
 				and not _is_saltwater_tank():
 			var wpz: Node = get_parent()
@@ -3561,7 +3448,7 @@ func _tick(dt: float) -> void:
 				var wh: Variant = wpz.get("WATER_HEIGHT")
 				if wh != null:
 					fy2 = float(wh) - 0.3
-			var n_pellets: int = randi_range(3, 6)
+			var n_pellets: int = rng.randi_range(3, 6, SimRngScript.STREAM_SPAWN)
 			for _pi in n_pellets:
 				var px: float = 0.0
 				var pz: float = 0.0
@@ -3714,7 +3601,8 @@ func _tick(dt: float) -> void:
 	if w_shade != null and w_shade.has_method("floater_coverage"):
 		spawn_chance *= (1.0 - float(w_shade.floater_coverage()) * 0.7)
 	spawn_chance *= (1.0 - algae_crowding * 0.88)
-	if (below_floor or randf() < spawn_chance) and algae_root != null:
+	var sp_rng: RandomNumberGenerator = rng.stream(SimRngScript.STREAM_SPAWN)
+	if (below_floor or sp_rng.randf() < spawn_chance) and algae_root != null:
 		var a := Algae.new()
 		algae_root.add_child(a)
 		# Pick which niche this clump occupies, biased by tank state:
@@ -3728,7 +3616,7 @@ func _tick(dt: float) -> void:
 		if w != null and w.has_method("floater_coverage"):
 			floater_cov = float(w.floater_coverage())
 		var kind: int = Algae.AlgaeKind.CLUSTER
-		var pick_kind: float = randf()
+		var pick_kind: float = sp_rng.randf()
 		# Young-tank diatom phase (#52): a brand-new tank reliably runs a brown
 		# diatom film for the first few days that fades as plants + bacteria
 		# establish — the universal new-tank experience.
@@ -3760,7 +3648,7 @@ func _tick(dt: float) -> void:
 			var xz: Vector2 = w.sample_xz_in_tank(0.5)
 			spawn_x = xz.x
 			spawn_z = xz.y
-		var apos := Vector3(spawn_x, substrate_top_y + randf_range(0.3, 1.2), spawn_z)
+		var apos := Vector3(spawn_x, substrate_top_y + sp_rng.randf_range(0.3, 1.2), spawn_z)
 		match kind:
 			Algae.AlgaeKind.SURFACE:
 				# Pin to the local water-column surface so cylindrical /
@@ -3787,11 +3675,11 @@ func _tick(dt: float) -> void:
 							if dv != null and is_instance_valid(dv):
 								anchors.append(dv)
 					if not anchors.is_empty():
-						var host: MeshInstance3D = anchors[randi() % anchors.size()]
+						var host: MeshInstance3D = anchors[sp_rng.randi() % anchors.size()]
 						apos = host.global_position + Vector3(
-							randf_range(-0.18, 0.18),
-							randf_range(0.18, 0.45),
-							randf_range(-0.18, 0.18))
+							sp_rng.randf_range(-0.18, 0.18),
+							sp_rng.randf_range(0.18, 0.45),
+							sp_rng.randf_range(-0.18, 0.18))
 				if w != null and w.has_method("column_surface_y"):
 					apos.y = clampf(apos.y, substrate_top_y + 0.1,
 						w.column_surface_y(apos.x, apos.z) - 0.1)
@@ -3808,36 +3696,36 @@ func _tick(dt: float) -> void:
 						half_w = float(hwv)
 					if hdv != null:
 						half_d = float(hdv)
-				var side: int = randi() % 4
+				var side: int = sp_rng.randi() % 4
 				var y_lo: float = 0.5 if kind == Algae.AlgaeKind.GSA else 0.35
 				var y_hi: float = 4.2 if kind == Algae.AlgaeKind.GSA else 5.6
 				if side == 0:
 					apos = Vector3(half_w - 0.08,
-						substrate_top_y + randf_range(y_lo, y_hi),
-						randf_range(-half_d * 0.7, half_d * 0.7))
+						substrate_top_y + sp_rng.randf_range(y_lo, y_hi),
+						sp_rng.randf_range(-half_d * 0.7, half_d * 0.7))
 				elif side == 1:
 					apos = Vector3(-(half_w - 0.08),
-						substrate_top_y + randf_range(y_lo, y_hi),
-						randf_range(-half_d * 0.7, half_d * 0.7))
+						substrate_top_y + sp_rng.randf_range(y_lo, y_hi),
+						sp_rng.randf_range(-half_d * 0.7, half_d * 0.7))
 				elif side == 2:
-					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
-						substrate_top_y + randf_range(y_lo, y_hi),
+					apos = Vector3(sp_rng.randf_range(-half_w * 0.7, half_w * 0.7),
+						substrate_top_y + sp_rng.randf_range(y_lo, y_hi),
 						half_d - 0.08)
 				else:
-					apos = Vector3(randf_range(-half_w * 0.7, half_w * 0.7),
-						substrate_top_y + randf_range(y_lo, y_hi),
+					apos = Vector3(sp_rng.randf_range(-half_w * 0.7, half_w * 0.7),
+						substrate_top_y + sp_rng.randf_range(y_lo, y_hi),
 						-(half_d - 0.08))
 			Algae.AlgaeKind.BBA:
 				if filter_intake_pos != Vector3.ZERO:
 					apos = filter_intake_pos + Vector3(
-						randf_range(-0.14, 0.14),
-						randf_range(0.04, 0.38),
-						randf_range(-0.14, 0.14))
+						sp_rng.randf_range(-0.14, 0.14),
+						sp_rng.randf_range(0.04, 0.38),
+						sp_rng.randf_range(-0.14, 0.14))
 				else:
-					apos.y = substrate_top_y + randf_range(0.2, 0.8)
+					apos.y = substrate_top_y + sp_rng.randf_range(0.2, 0.8)
 			_:
 				if w != null and w.has_method("column_surface_y"):
-					apos.y = w.column_surface_y(spawn_x, spawn_z) + randf_range(0.3, 1.2)
+					apos.y = w.column_surface_y(spawn_x, spawn_z) + sp_rng.randf_range(0.3, 1.2)
 		if w != null and w.has_method("clamp_xyz_in_tank"):
 			apos = w.clamp_xyz_in_tank(apos, 0.35)
 		a.global_position = apos
@@ -3849,7 +3737,7 @@ func _tick(dt: float) -> void:
 		# Surface scum has the pale yellow-green of dust biofilm; GSA
 		# reads as dark green dots; hair is brighter; cluster stays the
 		# normal palette pick.
-		var col: Color = palette[randi() % palette.size()]
+		var col: Color = palette[sp_rng.randi() % palette.size()]
 		match kind:
 			Algae.AlgaeKind.SURFACE:
 				col = Color8(180, 200, 110)
@@ -4065,6 +3953,8 @@ func _tick(dt: float) -> void:
 							and float(actor.max_age_s) > 0.0 \
 							and float(actor.age) / float(actor.max_age_s) > 0.9:
 						mourn_w += 0.4
+					if actor is Fish:
+						mourn_w *= FishContinuity.on_death_weight(actor as Fish)
 					_record_mourning(species_id, actor.position, mourn_w)
 					var epitaph: String = _epitaph_for_fish(actor)
 					if epitaph != "":
@@ -4306,27 +4196,29 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 
 # Player tap-to-feed: spawns a small cluster at the water surface.
 func spawn_player_food(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
+	_sync_rng()
+	var ev: String = SimRngScript.STREAM_EVENTS
 	var count: int = 4
 	var spread: float = 0.18
 	var value: float = 0.45
 	match food_subtype:
 		WasteParticle.FOOD_SUB_FLAKE:
-			count = randi_range(7, 10)
+			count = rng.randi_range(7, 10, ev)
 			spread = 0.28
 			value = 0.32
 		WasteParticle.FOOD_SUB_WORM:
-			count = randi_range(3, 5)
+			count = rng.randi_range(3, 5, ev)
 			spread = 0.22
 			value = 0.62
 		WasteParticle.FOOD_SUB_WAFER:
-			count = randi_range(2, 3)
+			count = rng.randi_range(2, 3, ev)
 			spread = 0.14
 			value = 0.55
 		_:
-			count = randi_range(4, 6)
+			count = rng.randi_range(4, 6, ev)
 	for i in count:
-		var jx: float = randf_range(-spread, spread)
-		var jz: float = randf_range(-spread, spread)
+		var jx: float = rng.randf_range(-spread, spread, ev)
+		var jz: float = rng.randf_range(-spread, spread, ev)
 		var pos: Vector3 = Vector3(world_pos.x + jx, world_pos.y - 0.02, world_pos.z + jz)
 		_spawn_waste(pos, value, WasteParticle.KIND_FOOD, food_subtype)
 	record_feed_drop(world_pos, food_subtype)
@@ -5934,10 +5826,13 @@ func load_state(d: Dictionary) -> void:
 	var sim_d: Dictionary = d.get("sim", {})
 	day_phase = float(sim_d.get("day_phase", day_phase))
 	tank_seed = int(sim_d.get("tank_seed", tank_seed))
+	rng.reset(tank_seed)
 	dissolved_o2 = float(sim_d.get("dissolved_o2", dissolved_o2))
+	# Legacy save fields — TankConfig is authoritative; resync after restore.
 	aeration_air_rate = float(sim_d.get("aeration_air_rate", aeration_air_rate))
 	aeration_flow_rate = float(sim_d.get("aeration_flow_rate", aeration_flow_rate))
 	aeration_fixture = String(sim_d.get("aeration_fixture", aeration_fixture))
+	sync_aeration_from_config(true)
 	elapsed_runtime_s = float(sim_d.get("elapsed_runtime_s", 0.0))
 	var has_tank_age: bool = sim_d.has("tank_age_s")
 	if has_tank_age:

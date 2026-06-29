@@ -49,6 +49,9 @@ uniform vec2 internal_resolution = vec2(384.0, 216.0);
 // 0 = single global dither strength (legacy). 1 = saturation-driven region
 // switching: heavy dither on low-sat (water/fog), light on saturated (fauna).
 uniform float region_aware_dither : hint_range(0.0, 1.0) = 1.0;
+// 1 = anchor dither pattern to world XZ (stops crawl on camera pans). #26
+uniform float dither_world_lock : hint_range(0.0, 1.0) = 0.0;
+uniform vec2 dither_world_origin = vec2(0.0, 0.0);
 // 0 = full 48-color palette searched. 1 = restrict each fragment's candidate
 // set to the 16-color hue bank closest to the source color.
 uniform float palette_bank_lock : hint_range(0.0, 1.0) = 1.0;
@@ -102,6 +105,8 @@ float ign(vec2 p) {
 
 // 0 = pure Bayer (legacy). 1 = full blue-noise on low-saturation regions.
 uniform float blue_noise_amount : hint_range(0.0, 1.0) = 0.6;
+// 0=full palette search, 1=32-cap, 2=24-cap (#19–20).
+uniform float shader_perf_tier : hint_range(0.0, 2.0) = 0.0;
 
 vec3 palette_color(int idx) {
 	float u = (float(idx) + 0.5) / float(palette_size);
@@ -224,8 +229,14 @@ void fragment() {
 	float best = 1e9;
 	float best2 = 1e9;
 	bool locked = palette_bank_lock > 0.5;
+	int search_cap = palette_size;
+	if (shader_perf_tier >= 1.5) {
+		search_cap = min(palette_size, 24);
+	} else if (shader_perf_tier >= 0.5) {
+		search_cap = min(palette_size, 32);
+	}
 	for (int i = 0; i < 64; i++) {
-		if (i >= palette_size) break;
+		if (i >= search_cap) break;
 		if (locked && (i < bank_start || i >= bank_end)) continue;
 		vec3 p = palette_color(i);
 		float d = dot(src - p, src - p);
@@ -257,7 +268,9 @@ void fragment() {
 	float denom = max(dot(ab, ab), 1e-6);
 	float t = clamp(dot(src - a, ab) / denom, 0.0, 1.0);
 
-	vec2 px = UV * internal_resolution;
+	vec2 screen_px = UV * internal_resolution;
+	vec2 world_px = dither_world_origin + (UV - 0.5) * internal_resolution;
+	vec2 px = mix(screen_px, world_px, dither_world_lock);
 	float dpat_coarse = mix(bayer_at(px * 0.5), ign(px * 1.7), 0.55);
 	// Blend the dither kernel toward blue-noise on low-saturation pixels (the
 	// smooth water/fog/substrate gradients) where Bayer's grid is most visible;

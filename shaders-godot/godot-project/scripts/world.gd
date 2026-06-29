@@ -20,6 +20,7 @@ var _water_material_ref: ShaderMaterial = null
 var _visuals: AquariumVisuals = null
 var _glass_material_ref: ShaderMaterial = null
 var _caustics_mat: ShaderMaterial = null
+var _loading_from_save: bool = false
 var _mulm_voxels: Array = []
 var _film_voxels: Array = []
 var _film_root: Node3D = null
@@ -311,7 +312,7 @@ func _ready() -> void:
 		lib_for_reset.clear_tank()
 
 	var saves := get_node_or_null("/root/TankSaves")
-	var loading_from_save: bool = false
+	_loading_from_save = false
 	if saves != null:
 		if saves.has_state_for_active_slot() and not saves.is_active_save_compatible():
 			var cfg_for_log := get_node_or_null("/root/TankConfig")
@@ -320,7 +321,7 @@ func _ready() -> void:
 				saves.peek_saved_substrate_type(), cur_sub,
 			])
 			saves.clear_active_state()
-		loading_from_save = saves.has_state_for_active_slot()
+		_loading_from_save = saves.has_state_for_active_slot()
 
 	# Saltwater branch: ocean_sand substrate replaces freshwater plants
 	# with a reef of corals. Floaters / lily pads / math plants don't
@@ -331,7 +332,7 @@ func _ready() -> void:
 		# Guided/empty tank: spawn nothing. The player builds it up via the
 		# walkthrough using the creature creator + aquascape tools.
 		pass
-	elif not loading_from_save:
+	elif not _loading_from_save:
 		if _active_substrate_profile.get("is_saltwater", false):
 			await _spawn_initial_corals()
 			await get_tree().process_frame
@@ -396,9 +397,9 @@ func _ready() -> void:
 	_seed_nutrient_hotspots()
 	# Instant-mature cold start: make a freshly-stocked tank read as established
 	# (patina + lineage depth + mixed ages) instead of brand-new. Fresh spawn only.
-	if not start_empty and not loading_from_save and TankConfig.start_matured:
+	if not start_empty and not _loading_from_save and TankConfig.start_matured:
 		_apply_mature_cold_start()
-	if not start_empty and not loading_from_save and sim != null \
+	if not start_empty and not _loading_from_save and sim != null \
 			and sim.has_method("apply_cycle_start_from_config"):
 		sim.apply_cycle_start_from_config()
 
@@ -458,7 +459,7 @@ var _room_time_passed: float = 0.0
 const LIGHT_CYCLE_INTERVAL: float = 0.1
 var _light_cycle_accum: float = 0.0
 var _last_caustic_intensity: float = -1.0
-var _last_caustic_color: Color = Color(-1.0, -1.0, -1.0, -1.0)
+var _last_caustic_color: Color = Color(0.55, 0.75, 0.95)
 var _cached_lighting: Dictionary = {}
 var _cached_water_column: Dictionary = {}
 
@@ -698,8 +699,6 @@ func _process(dt: float) -> void:
 			var bloom: float = float(column.get("bloom_haze", 0.0))
 			_visuals.sync_foliage_uniforms(
 				clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light)
-			VoxelMat.update_fixture_glow(
-				fixture_glow_amb, _last_caustic_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
@@ -824,7 +823,10 @@ func _process(dt: float) -> void:
 				_directional_light.rotation = Vector3(
 					deg_to_rad(pitch_deg), deg_to_rad(yaw_deg), 0.0)
 		_update_accent_lights(cfg2, deep_night, master_on)
-		var fixture_glow: float = deep_night * (1.0 if tank_lights_on else 0.0)
+		var fixture_active: bool = tank_lights_on and master_on
+		var fixture_glow: float = deep_night * (1.0 if fixture_active else 0.0)
+		fixture_glow *= clampf(fixture_energy * 1.85, 0.0, 1.0)
+		_sync_fixture_housing_glow(fixture_active, fixture_energy, fixture_color, dl, deep_night)
 		if _world_environment != null and _world_environment.environment != null:
 			var env: Environment = _world_environment.environment
 			if master_on:
@@ -877,6 +879,8 @@ func _process(dt: float) -> void:
 				if show_caustics:
 					_caustics_mat.set_shader_parameter("caustic_intensity", intensity)
 					_caustics_mat.set_shader_parameter("light_color", beam_color)
+					_caustics_mat.set_shader_parameter("day_phase_offset",
+							float(sim.day_phase) if sim != null else 0.0)
 				else:
 					_caustics_mat.set_shader_parameter("caustic_intensity", 0.0)
 				VoxelMat.update_caustic_uniforms(intensity if show_caustics else 0.0, beam_color)
@@ -922,6 +926,8 @@ func _process(dt: float) -> void:
 		var ray_alpha: float = base_alpha * ray_mix * (ray_energy_mix / 0.5)
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
+		if fixture_active and (dl > 0.08 or deep_night > 0.25):
+			ray_alpha = maxf(ray_alpha, 0.05 + fixture_energy * 0.12)
 		var trans_ray: float = float(_cached_water_column.get("transmittance", 1.0))
 		ray_alpha = WorldAtmosphere.modulate_god_ray_alpha(ray_alpha, trans_ray)
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
@@ -1270,7 +1276,7 @@ func _music_visual_node() -> Node:
 
 
 func _sway_surface_plants(adt: float) -> void:
-	var sway_dt: float = adt
+	var sway_dt: float = adt * AccessibilityRuntime.motion_scale()
 	var mv := _music_visual_node()
 	if mv != null and mv.has_method("plant_sway_mult"):
 		sway_dt *= float(mv.plant_sway_mult())
@@ -4818,6 +4824,7 @@ func _spawn_initial_fish() -> void:
 
 var _light_fixture_root: Node3D = null
 var _light_fixture_spots: Array[SpotLight3D] = []
+var _fixture_emit_mats: Array[ShaderMaterial] = []
 var _sphere_fill_light: OmniLight3D = null
 var _god_ray_materials: Array[ShaderMaterial] = []
 
@@ -4837,6 +4844,7 @@ func _build_light_fixture() -> void:
 		size_frac = float(cfg.light_size)
 
 	_god_ray_materials.clear()
+	_fixture_emit_mats.clear()
 
 	_light_fixture_root = Node3D.new()
 	_light_fixture_root.name = "LightFixture"
@@ -4845,7 +4853,7 @@ func _build_light_fixture() -> void:
 
 	var dark := VoxelMat.make(Color8(28, 28, 32))
 	var panel := VoxelMat.make(Color8(245, 240, 220))   # warm panel face
-	var panel_emit := VoxelMat.make_emissive(Color(1.22, 1.16, 0.98))
+	var panel_emit := _register_fixture_emit(VoxelMat.make_emissive(Color(1.22, 1.16, 0.98)))
 
 	if fixture_type == "spotlight":
 		var radius: float = size_frac * TANK_HALF_W * 0.5
@@ -4897,7 +4905,7 @@ func _build_light_fixture() -> void:
 		# Fixture bloom — overbright pixel where beam meets housing.
 		_add_cube(_light_fixture_root, Vector3(0, -0.17, 0),
 			Vector3(bar_length * 0.12, 0.03, bar_width * 0.2),
-			VoxelMat.make_emissive(Color(1.28, 1.24, 1.05)))
+			_register_fixture_emit(VoxelMat.make_emissive(Color(1.28, 1.24, 1.05))))
 		# Suspension cords at both ends.
 		_add_cube(_light_fixture_root, Vector3(bar_length * 0.35, 0.4, 0),
 			Vector3(0.05, 0.6, 0.05), dark)
@@ -4926,6 +4934,35 @@ func _build_light_fixture() -> void:
 
 	if TANK_SHAPE == "sphere":
 		_apply_sphere_aquarium_lighting()
+
+
+func _register_fixture_emit(mat: ShaderMaterial) -> ShaderMaterial:
+	if mat != null:
+		_fixture_emit_mats.append(mat)
+	return mat
+
+
+func _sync_fixture_housing_glow(active: bool, energy: float, col: Color,
+		dl: float, deep_night: float) -> void:
+	if _fixture_emit_mats.is_empty():
+		return
+	var day_read: float = clampf(0.22 + dl * energy * 1.05, 0.0, 1.35)
+	var night_read: float = clampf(energy * 1.55, 0.0, 1.45) if active else 0.06
+	var brightness: float = lerpf(day_read, night_read, deep_night)
+	if not active:
+		brightness = lerpf(day_read * 0.35, 0.05, deep_night)
+	var base := Color(1.22, 1.16, 0.98)
+	var bloom := Color(1.28, 1.24, 1.05)
+	for i in _fixture_emit_mats.size():
+		var mat: ShaderMaterial = _fixture_emit_mats[i]
+		if not is_instance_valid(mat):
+			continue
+		var src: Color = base if i == 0 else bloom
+		var tinted: Color = src.lerp(col, 0.28)
+		mat.set_shader_parameter("albedo", Color(
+			tinted.r * brightness,
+			tinted.g * brightness,
+			tinted.b * brightness))
 
 
 # Moonlight + 2 accent point lights. All optional; created lazily the first
@@ -5210,9 +5247,9 @@ func _tick_topdown_surface(_sdt: float) -> void:
 		var bc: Variant = f.get("base_color")
 		if bc is Color:
 			spill_colors.append(bc)
-	var spill: Dictionary = TopdownMotion.aggregate_color_spill(spill_colors)
-	_water_material_ref.set_shader_parameter("pond_color_spill", spill.get("rgb", Vector3.ZERO))
-	_water_material_ref.set_shader_parameter("pond_color_spill_gain", spill.get("gain", 0.0))
+	var spill: TopdownMotion.ColorSpill = TopdownMotion.aggregate_color_spill(spill_colors)
+	_water_material_ref.set_shader_parameter("pond_color_spill", spill.rgb)
+	_water_material_ref.set_shader_parameter("pond_color_spill_gain", spill.gain)
 	var dimples: Array[Vector4] = []
 	dimples.resize(12)
 	for i in 12:
@@ -6444,11 +6481,10 @@ func _spawn_aeration_system() -> void:
 	# Anchor lateral position to tank width, keeping a margin from glass.
 	var anchor_x: float = clampf(x_frac, -1.0, 1.0) * (TANK_HALF_W - 1.2)
 
-	# Air injection rate fed into the sim: base profile rate * user strength.
+	# Visual flow strength for bubble emitters; sim rates come from sync below.
 	var profile: Dictionary = {"air_rate": 0.0, "flow_rate": 0.0}
 	if cfg != null:
 		profile = cfg.current_aeration_profile()
-	var air_rate: float = float(profile.get("air_rate", 0.0)) * strength
 	var flow_rate: float = float(profile.get("flow_rate", 0.0)) * strength
 
 	match fixture:
@@ -6463,11 +6499,14 @@ func _spawn_aeration_system() -> void:
 		_:
 			_build_disk_aerator(container, anchor_x, flow_rate)
 
-	# Push the computed rates onto the SimDriver so it can run the O2 model.
-	if sim != null:
-		sim.set("aeration_air_rate", air_rate)
-		sim.set("aeration_flow_rate", flow_rate)
-		sim.set("aeration_fixture", fixture)
+	# Push computed rates onto SimDriver (TankConfig is source of truth).
+	if sim != null and sim.has_method("sync_aeration_from_config"):
+		sim.sync_aeration_from_config(not _loading_from_save)
+	elif sim != null:
+		var rates: Dictionary = SimDriver.compute_aeration_rates(cfg)
+		sim.set("aeration_air_rate", float(rates.get("air_rate", 0.0)))
+		sim.set("aeration_flow_rate", float(rates.get("flow_rate", 0.0)))
+		sim.set("aeration_fixture", String(rates.get("fixture", "disk")))
 	_init_flow_field()
 
 

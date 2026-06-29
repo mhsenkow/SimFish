@@ -9,6 +9,8 @@ extends Node
 const SAMPLE_RATE: int = 22050
 const DELAY_LEN: int = 4096
 const MAX_SAMPLES_PER_FRAME: int = 512
+const MAX_SAMPLES_CATCHUP: int = 4096
+const AUDIO_FILL_BUDGET_US: int = 8000
 const BUBBLE_MAX: int = 8
 const ENV_REFRESH_INTERVAL: float = 0.1
 const INV_SAMPLE_RATE: float = 1.0 / 22050.0
@@ -444,6 +446,7 @@ var _state_riser_gain: float = 0.0
 
 
 func _ready() -> void:
+	process_priority = -128
 	# Three streams, three buses. Drums = dry comp, Synth = subtle reverb,
 	# Air = deep reverb + ping-pong delay. Falls back gracefully when buses
 	# are missing (single Music bus on master).
@@ -481,7 +484,7 @@ func _ready() -> void:
 func _make_stream(bus_name: String, vol_db: float) -> AudioStreamPlayer:
 	var gen := AudioStreamGenerator.new()
 	gen.mix_rate = SAMPLE_RATE
-	gen.buffer_length = 0.1
+	gen.buffer_length = 0.15
 	var p := AudioStreamPlayer.new()
 	p.stream = gen
 	p.volume_db = vol_db
@@ -2318,6 +2321,149 @@ func _render_trance_streams() -> void:
 	_f_air_r = 0.0
 
 
+func _playback_headroom() -> int:
+	if _playback_drums == null or _playback_synth == null or _playback_air == null:
+		return 0
+	return mini(
+		_playback_drums.get_frames_available(),
+		mini(_playback_synth.get_frames_available(), _playback_air.get_frames_available()))
+
+
+func _fill_playback_buffers(batch: int) -> void:
+	if batch <= 0:
+		return
+	var trance_on: bool = _trance_bed_active()
+	var delay_amt: float = _cfg_float("music_delay_amount", 0.35)
+	var delay_fb: float = lerpf(0.14, 0.28, _cached_energy) if trance_on else 0.0
+	var delay_mix: float = lerpf(0.06, 0.16, _cached_energy) * delay_amt if trance_on else 0.0
+	var pending_n: int = _pending.size()
+	var vinyl_active: bool = _cached_vinyl > 0.001
+	var wow_active: bool = _cached_tape_wow > 0.001
+	var bitcrush_active: bool = _cached_bitcrush > 0.001
+
+	for _f in batch:
+		# ---- Drums + Synth bed (multi-stream renderer writes _f_*) ----
+		if trance_on:
+			_render_trance_streams()
+		else:
+			_f_drums_l = 0.0
+			_f_drums_r = 0.0
+			_f_synth_l = 0.0
+			_f_synth_r = 0.0
+			_f_air_l = 0.0
+			_f_air_r = 0.0
+
+		# ---- Pending event notes (plinks) ----
+		var plinks: float = 0.0
+		for j in range(pending_n - 1, -1, -1):
+			var note = _pending[j]
+			var dur: float = note[1]
+			if dur <= INV_SAMPLE_RATE:
+				_pending.remove_at(j)
+				pending_n -= 1
+				continue
+
+			var decay_speed: float = note[7]
+			var attack_time: float = note[8]
+			var initial_dur: float = note[9]
+
+			var env: float = 1.0
+			var elapsed: float = initial_dur - dur
+			if attack_time > 0.0 and elapsed < attack_time:
+				var atk_denom: float = maxf(attack_time, INV_SAMPLE_RATE * 4.0)
+				env = smoothstep(0.0, 1.0, elapsed / atk_denom)
+			else:
+				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
+				env = rel * rel * (3.0 - 2.0 * rel)
+
+			plinks += _render_pending_note(note, env)
+
+			note[1] = dur - INV_SAMPLE_RATE
+			_pending[j] = note
+
+		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
+		plinks = _plink_lpf
+
+		var bubbles: Vector2 = _mix_bubble_bursts()
+		var event_vol: float = _cached_vol
+		_f_air_l = (plinks + bubbles.x) * event_vol
+		_f_air_r = (plinks + bubbles.y) * event_vol
+
+		# Ping-pong delay on the air bus (synth bed already has bus reverb).
+		if trance_on and delay_mix > 0.0:
+			var delayed_l: float = _delay_buf[_delay_pos]
+			var delayed_r: float = _delay_buf_r[_delay_pos]
+			_delay_buf[_delay_pos] = _f_air_r + delayed_r * delay_fb
+			_delay_buf_r[_delay_pos] = _f_air_l + delayed_l * delay_fb
+			_delay_pos = (_delay_pos + 1) % DELAY_LEN
+			_f_air_l = _f_air_l * (1.0 - delay_mix) + delayed_l * delay_mix
+			_f_air_r = _f_air_r * (1.0 - delay_mix) + delayed_r * delay_mix
+
+		# Vinyl crackle goes onto the Air bus (envelope/dust character).
+		if vinyl_active:
+			var vinyl: float = _vinyl_sample()
+			_f_air_l += vinyl
+			_f_air_r += vinyl * 0.78 + _noise_sample() * _cached_vinyl * 0.004
+
+		# ---- Aquatic ambience bed ----
+		var aer_smooth: float = float(_smooth.get("aeration", 0.0))
+		var o2_amb: float = clampf(float(_smooth.get("o2", 0.85)), 0.0, 1.2)
+		var pearl_amb: float = clampf((o2_amb - 0.87) * 3.0, 0.0, 1.0)
+		var fizz_drive: float = maxf(aer_smooth - 0.06, 0.0) * 0.85 + pearl_amb * 0.35
+		if fizz_drive > 0.012:
+			_water_fizz_lfo = fposmod(_water_fizz_lfo + 0.38 * INV_SAMPLE_RATE, 1.0)
+			var breathe: float = 0.35 + 0.65 * (0.5 + 0.5 * sin(_water_fizz_lfo * TAU))
+			var amb_level: float = fizz_drive * breathe * 0.0032
+			_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(920.0))
+			_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(1080.0))
+			_f_air_l += (_water_lpf_l * 0.72 + _water_lpf_r * 0.08) * amb_level
+			_f_air_r += (_water_lpf_r * 0.72 + _water_lpf_l * 0.08) * amb_level
+
+		# Per-fish presence pan: bias the whole air bus toward the watched fish.
+		if _presence_pan != 0.0:
+			var pan_l: float = 1.0 - maxf(_presence_pan, 0.0) * 0.5
+			var pan_r: float = 1.0 + minf(_presence_pan, 0.0) * 0.5
+			_f_air_l *= pan_l
+			_f_air_r *= pan_r
+
+		# Tape wow — applied to the synth bus only so drums stay rhythmically tight.
+		if wow_active:
+			var w: Vector2 = _apply_tape_wow(_f_synth_l, _f_synth_r)
+			_f_synth_l = w.x
+			_f_synth_r = w.y
+
+		# Bitcrush from algae/sick tank — sample-and-hold reduces resolution.
+		if bitcrush_active:
+			_bc_phase += _cached_bitcrush * 0.18
+			if _bc_phase >= 1.0:
+				_bc_phase = 0.0
+				_bc_hold_l = _f_synth_l
+				_bc_hold_r = _f_synth_r
+			else:
+				_f_synth_l = lerpf(_f_synth_l, _bc_hold_l, _cached_bitcrush)
+				_f_synth_r = lerpf(_f_synth_r, _bc_hold_r, _cached_bitcrush)
+
+		# Per-stream DC block + soft clip.
+		var drums_l: float = _soft_clip(_f_drums_l)
+		var drums_r: float = _soft_clip(_f_drums_r)
+		var synth_l: float = _soft_clip(_dc_block(_f_synth_l))
+		var synth_r: float = _soft_clip(_dc_block_r(_f_synth_r))
+		var air_l: float = _soft_clip(_f_air_l)
+		var air_r: float = _soft_clip(_f_air_r)
+
+		_playback_drums.push_frame(Vector2(drums_l, drums_r))
+		_playback_synth.push_frame(Vector2(synth_l, synth_r))
+		_playback_air.push_frame(Vector2(air_l, air_r))
+
+		# Recording — write the summed pre-bus mix to the recording buffer.
+		if _recording and _recording_buffer.size() < _recording_max_samples:
+			_recording_buffer.push_back(Vector2(
+				clampf(drums_l + synth_l + air_l, -1.0, 1.0),
+				clampf(drums_r + synth_r + air_r, -1.0, 1.0)))
+
+		_sample_clock += 1
+
+
 func _process(_dt: float) -> void:
 	if _playback == null:
 		return
@@ -2403,149 +2549,21 @@ func _process(_dt: float) -> void:
 	if Engine.get_process_frames() % 60 == 0:
 		_apply_temperature_to_reverb()
 
-	# Sync the three streams to whichever has the smallest available headroom.
-	# (They tick in lockstep so this is normally identical for all three.)
-	var fa_drums: int = _playback_drums.get_frames_available()
-	var fa_synth: int = _playback_synth.get_frames_available()
-	var fa_air: int = _playback_air.get_frames_available()
-	var frames_available: int = mini(MAX_SAMPLES_PER_FRAME, mini(fa_drums, mini(fa_synth, fa_air)))
-	if frames_available <= 0:
-		return
-
-	var trance_on: bool = _trance_bed_active()
-	var delay_amt: float = _cfg_float("music_delay_amount", 0.35)
-	var delay_fb: float = lerpf(0.14, 0.28, _cached_energy) if trance_on else 0.0
-	var delay_mix: float = lerpf(0.06, 0.16, _cached_energy) * delay_amt if trance_on else 0.0
-	var pending_n: int = _pending.size()
-	var vinyl_active: bool = _cached_vinyl > 0.001
-	var wow_active: bool = _cached_tape_wow > 0.001
-	var bitcrush_active: bool = _cached_bitcrush > 0.001
-
-	for _f in frames_available:
-		# ---- Drums + Synth bed (multi-stream renderer writes _f_*) ----
-		if trance_on:
-			_render_trance_streams()
-		else:
-			_f_drums_l = 0.0
-			_f_drums_r = 0.0
-			_f_synth_l = 0.0
-			_f_synth_r = 0.0
-			_f_air_l = 0.0
-			_f_air_r = 0.0
-
-		# ---- Pending event notes (plinks) ----
-		var plinks: float = 0.0
-		for j in range(pending_n - 1, -1, -1):
-			var note = _pending[j]
-			var dur: float = note[1]
-			if dur <= INV_SAMPLE_RATE:
-				_pending.remove_at(j)
-				pending_n -= 1
-				continue
-
-			var decay_speed: float = note[7]
-			var attack_time: float = note[8]
-			var initial_dur: float = note[9]
-
-			var env: float = 1.0
-			var elapsed: float = initial_dur - dur
-			if attack_time > 0.0 and elapsed < attack_time:
-				var atk_denom: float = maxf(attack_time, INV_SAMPLE_RATE * 4.0)
-				env = smoothstep(0.0, 1.0, elapsed / atk_denom)
-			else:
-				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
-				env = rel * rel * (3.0 - 2.0 * rel)
-
-			plinks += _render_pending_note(note, env)
-
-			note[1] = dur - INV_SAMPLE_RATE
-			_pending[j] = note
-
-		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
-		plinks = _plink_lpf
-
-		var bubbles: Vector2 = _mix_bubble_bursts()
-		var event_vol: float = _cached_vol
-		_f_air_l = (plinks + bubbles.x) * event_vol
-		_f_air_r = (plinks + bubbles.y) * event_vol
-
-		# Ping-pong delay on the air bus (synth bed already has bus reverb).
-		if trance_on and delay_mix > 0.0:
-			var delayed_l: float = _delay_buf[_delay_pos]
-			var delayed_r: float = _delay_buf_r[_delay_pos]
-			_delay_buf[_delay_pos] = _f_air_r + delayed_r * delay_fb
-			_delay_buf_r[_delay_pos] = _f_air_l + delayed_l * delay_fb
-			_delay_pos = (_delay_pos + 1) % DELAY_LEN
-			_f_air_l = _f_air_l * (1.0 - delay_mix) + delayed_l * delay_mix
-			_f_air_r = _f_air_r * (1.0 - delay_mix) + delayed_r * delay_mix
-
-		# Vinyl crackle goes onto the Air bus (envelope/dust character).
-		if vinyl_active:
-			var vinyl: float = _vinyl_sample()
-			_f_air_l += vinyl
-			_f_air_r += vinyl * 0.78 + _noise_sample() * _cached_vinyl * 0.004
-
-		# ---- Aquatic ambience bed ----
-		# Breathing micro-fizz only when the tank is actually gassing — no constant
-		# noise wash. Level tracks smoothed aeration + pearling so still tanks stay
-		# nearly silent apart from discrete pops above.
-		var aer_smooth: float = float(_smooth.get("aeration", 0.0))
-		var o2_amb: float = clampf(float(_smooth.get("o2", 0.85)), 0.0, 1.2)
-		var pearl_amb: float = clampf((o2_amb - 0.87) * 3.0, 0.0, 1.0)
-		var fizz_drive: float = maxf(aer_smooth - 0.06, 0.0) * 0.85 + pearl_amb * 0.35
-		if fizz_drive > 0.012:
-			_water_fizz_lfo = fposmod(_water_fizz_lfo + 0.38 * INV_SAMPLE_RATE, 1.0)
-			var breathe: float = 0.35 + 0.65 * (0.5 + 0.5 * sin(_water_fizz_lfo * TAU))
-			var amb_level: float = fizz_drive * breathe * 0.0032
-			_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(920.0))
-			_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(1080.0))
-			_f_air_l += (_water_lpf_l * 0.72 + _water_lpf_r * 0.08) * amb_level
-			_f_air_r += (_water_lpf_r * 0.72 + _water_lpf_l * 0.08) * amb_level
-
-		# Per-fish presence pan: bias the whole air bus toward the watched fish.
-		if _presence_pan != 0.0:
-			var pan_l: float = 1.0 - maxf(_presence_pan, 0.0) * 0.5
-			var pan_r: float = 1.0 + minf(_presence_pan, 0.0) * 0.5
-			_f_air_l *= pan_l
-			_f_air_r *= pan_r
-
-		# Tape wow — applied to the synth bus only so drums stay rhythmically tight.
-		if wow_active:
-			var w: Vector2 = _apply_tape_wow(_f_synth_l, _f_synth_r)
-			_f_synth_l = w.x
-			_f_synth_r = w.y
-
-		# Bitcrush from algae/sick tank — sample-and-hold reduces resolution.
-		# Applied to synth + air only; drums stay clean.
-		if bitcrush_active:
-			_bc_phase += _cached_bitcrush * 0.18
-			if _bc_phase >= 1.0:
-				_bc_phase = 0.0
-				_bc_hold_l = _f_synth_l
-				_bc_hold_r = _f_synth_r
-			else:
-				_f_synth_l = lerpf(_f_synth_l, _bc_hold_l, _cached_bitcrush)
-				_f_synth_r = lerpf(_f_synth_r, _bc_hold_r, _cached_bitcrush)
-
-		# Per-stream DC block + soft clip.
-		var drums_l: float = _soft_clip(_f_drums_l)
-		var drums_r: float = _soft_clip(_f_drums_r)
-		var synth_l: float = _soft_clip(_dc_block(_f_synth_l))
-		var synth_r: float = _soft_clip(_dc_block_r(_f_synth_r))
-		var air_l: float = _soft_clip(_f_air_l)
-		var air_r: float = _soft_clip(_f_air_r)
-
-		_playback_drums.push_frame(Vector2(drums_l, drums_r))
-		_playback_synth.push_frame(Vector2(synth_l, synth_r))
-		_playback_air.push_frame(Vector2(air_l, air_r))
-
-		# Recording — write the summed pre-bus mix to the recording buffer.
-		if _recording and _recording_buffer.size() < _recording_max_samples:
-			_recording_buffer.push_back(Vector2(
-				clampf(drums_l + synth_l + air_l, -1.0, 1.0),
-				clampf(drums_r + synth_r + air_r, -1.0, 1.0)))
-
-		_sample_clock += 1
+	# Procedural synth — tempo is sample-clock driven, so we must keep the
+	# generator fed even when the 3D pass drops FPS (High fidelity + dense tanks).
+	var fill_start_us: int = Time.get_ticks_usec()
+	while true:
+		var headroom: int = _playback_headroom()
+		if headroom <= 0:
+			break
+		var batch: int = mini(headroom, MAX_SAMPLES_CATCHUP)
+		if headroom <= MAX_SAMPLES_PER_FRAME:
+			batch = headroom
+		_fill_playback_buffers(batch)
+		if Time.get_ticks_usec() - fill_start_us >= AUDIO_FILL_BUDGET_US:
+			break
+		if _playback_headroom() <= MAX_SAMPLES_PER_FRAME:
+			break
 
 
 func get_live_status() -> Dictionary:

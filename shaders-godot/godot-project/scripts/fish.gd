@@ -23,6 +23,7 @@ const FishJournal = preload("res://scripts/fish_journal.gd")
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")
+const SimRngScript = preload("res://scripts/sim_rng.gd")
 const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindDaring = preload("res://scripts/mind_daring.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
@@ -30,6 +31,10 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const FishQualia = preload("res://scripts/fish_qualia.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
+const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
 
@@ -341,6 +346,7 @@ var _active_plan: Dictionary = {}
 var _bid_salience_mods: Dictionary = {}
 var _last_cog_op: Dictionary = {}
 var _last_cog_validation: String = ""
+var _felt_self: Dictionary = {}
 var _mend_trust: float = 0.0
 var _mend_pending: bool = false
 var _peak_stress_recent: float = 0.0
@@ -404,13 +410,13 @@ var _chem_o2_penalty: float = 0.0
 # offset so siblings born in the same clutch don't all mature and die on the
 # exact same tick — smooths the demographic into a believable age pyramid
 # instead of synchronized cohort die-offs.
-var _life_jitter: float = randf_range(-0.12, 0.15)
+var _life_jitter: float = 0.0
 # Rest debt (#84): night disturbances accumulate fatigue; a constantly-startled
 # fish is sluggish the next day until it catches up on sleep.
 var _rest_debt: float = 0.0
 # Per-individual growth variance (#89): produces a natural size hierarchy and
 # the occasional struggling runt within a single clutch.
-var _growth_variance: float = randf_range(0.86, 1.14)
+var _growth_variance: float = 1.0
 # Personality drift (#82): surviving a real fright leaves a lasting mark — the
 # fish grows a little warier over its life.
 var _scarred: bool = false
@@ -738,6 +744,14 @@ func try_mark_workspace_encode(label: String) -> bool:
 
 
 func workspace_thought_for(label: String) -> String:
+	if FeltSelfLayer.layer_enabled():
+		if label in ["interoception", "gut", "gills", "fins", "fatigue", "body_hum"]:
+			var ql: String = FishQualia.report_line(self)
+			if ql != "":
+				return ql
+		var bound: String = str(FishBinding.ensure(self).get("moment_line", ""))
+		if bound != "" and bound != _last_ws_encode_label:
+			return bound
 	var pool: PackedStringArray = _thought_pool_for(label)
 	if pool.is_empty():
 		return "mind on %s" % label.replace("_", " ")
@@ -827,6 +841,14 @@ func _thought_pool_for(label: String) -> PackedStringArray:
 			])
 		_:
 			return PackedStringArray(["mind on %s" % label.replace("_", " ")])
+
+
+func _apply_panic_burst(amount: float) -> void:
+	if amount <= 0.0:
+		return
+	burst_remaining = maxf(burst_remaining, amount)
+	if FeltSelfLayer.layer_enabled() and (stress > 0.45 or spooked > 0.35):
+		FishVolition.try_veto(self)
 
 
 func sync_sleep_stage_from_depth() -> void:
@@ -1123,7 +1145,7 @@ static func _blend_offspring_personality(a: Fish, b: Fish) -> Dictionary:
 		var av: float = float(a.personality.get(k, 0.5)) if not a.personality.is_empty() else 0.5
 		var bv: float = float(b.personality.get(k, 0.5)) if not b.personality.is_empty() else 0.5
 		mid[k] = (av + bv) * 0.5
-	return FishMindScience.inherit_disposition(mid)
+	return FishMindScience.inherit_disposition(a, mid)
 
 
 # Most recent remembered event of a given kind that hasn't expired, or null.
@@ -1151,6 +1173,7 @@ func _mind_subsystem_fields_alive() -> bool:
 		and _active_plan.size() >= 0 and _bid_salience_mods.size() >= 0 \
 		and _last_cog_op.size() >= 0 and _last_cog_validation.length() >= 0 \
 		and _last_ws_encode_label.length() >= 0 and _last_stream_logged.length() >= 0 \
+		and _felt_self.size() >= 0 \
 		and _mend_trust >= 0.0 and (not _mend_pending or _mend_pending) \
 		and _peak_stress_recent >= 0.0 and _longing_residue >= 0.0 \
 		and _curiosity_about_keeper >= 0.0 and _convo.size() >= 0 and _dialogue_ring.size() >= 0 \
@@ -1164,9 +1187,8 @@ func _mind_subsystem_fields_alive() -> bool:
 # everything here is O(1) plus a small memory sweep.
 func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = []) -> void:
 	assert(_mind_subsystem_fields_alive())
-	var _ms = MindState.for_fish(self, is_guardian or fish_name != "" or familiarity > 0.4)
+	var _ms = MindChannel.for_cycle(self, is_guardian or fish_name != "" or familiarity > 0.4)
 	var _prev_snap: Dictionary = MindCycle.snapshot_prev(self)
-	_ms.sync_from_fish(self)
 	var _tick_snap: Dictionary = _ms.snapshot()
 	# Decay working memory with emotionally-weighted rates (#25).
 	if not memory.is_empty():
@@ -1182,7 +1204,9 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMind.tick_personality_conditioning(self, dt)
 	FishMind.tick_home_confidence(self, dt)
 	FishMind.tick_prediction_surprise(self, sim, dt)
-	MindCycle.run_attention_phase(self, sim, _ms)
+	MindCycle.run_attention_phase(self, sim, _ms, dt)
+	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
+		FishVolition.willed_attention(self, "novelty")
 	MindDaring.tick(self, sim, dt, neighbors)
 	MindConversation.tick(self, dt, sim)
 	MindLexicon.try_pair_on_feed(self, sim)
@@ -1300,7 +1324,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	_blink_t -= dt
 	_blink_remaining = maxf(0.0, _blink_remaining - dt)
 	if _blink_t <= 0.0 and speed < 0.8:
-		_blink_t = randf_range(2.0, 6.0)
+		_blink_t = _behavior_rng().randf_range(2.0, 6.0)
 		_blink_remaining = 0.12
 
 	# Leadership: a confident, high-ranking, mature fish drifts toward leading
@@ -1313,9 +1337,8 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 
 	FishMind.tick_salient_decay(self, dt)
 	FishMind.tick_bond_arcs(self, dt)
-	MindCycle.run_encode_phase(self, _ms)
-	_ms.apply_to_fish(self)
-	MindCycle.tick_post_cycle(self, sim, dt)
+	CognitionKernel.run_bind_encode_learn(self, _ms, sim, dt)
+	MindChannel.commit(self, _ms)
 	MindCycle.store_snapshot(self, _tick_snap, _ms)
 	if _thought_stream != "":
 		_thought_stream_age += dt
@@ -1586,7 +1609,7 @@ var _wander_refresh_timer: float = 0.0
 # loaches explore the entire bottom over hours; bettas patrol different
 # corners. Timer counts down, refreshes to a random interval.
 var _home_drift_timer: float = 0.0
-var _home_y_drift_timer: float = randf_range(8.0, 24.0)
+var _home_y_drift_timer: float = 12.0
 
 # Heading + speed motion model (separates direction from magnitude). Real
 # fish accelerate forward via tail thrust and steer via slow heading changes,
@@ -1630,6 +1653,7 @@ const DEATH_DURATION: float = 3.5
 # _build_body() and reused by aging tint, maturity color, courtship color
 # boost, and restoration.
 var _cached_meshes: Array = []
+var _spawn_variation_applied: bool = false
 var _voxel_builder: FaunaVoxelBuilder = null
 
 # ---- Refs ----
@@ -1654,22 +1678,39 @@ func get_saved_genome() -> Dictionary:
 	return _saved_genome.duplicate(true)
 
 
-func _ready() -> void:
+func _behavior_rng() -> RandomNumberGenerator:
+	return MindRng.for_fish(self, SimRngScript.STREAM_BEHAVIOR)
+
+
+func _genetics_rng() -> RandomNumberGenerator:
+	return MindRng.for_fish(self, SimRngScript.STREAM_GENETICS)
+
+
+func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
+	var r: RandomNumberGenerator = rng if rng != null else _behavior_rng()
 	heading_offset = Vector3(
-		randf_range(-0.5, 0.5),
-		randf_range(-0.2, 0.2),
-		randf_range(-0.5, 0.5),
+		r.randf_range(-0.5, 0.5),
+		r.randf_range(-0.2, 0.2),
+		r.randf_range(-0.5, 0.5),
 	)
-	_swim_phase = randf() * TAU
-	_wag_freq_jitter = randf_range(0.88, 1.12)
-	_school_phase_offset = randf_range(-0.1, 0.1)
-	_speed_personality = randf_range(0.82, 1.18)
-	_home_loop_angle = randf() * TAU
-	# Start each fish facing a random horizontal direction so newborn fry
-	# don't all stare the same way.
-	var theta: float = randf() * TAU
+	_swim_phase = r.randf() * TAU
+	_wag_freq_jitter = r.randf_range(0.88, 1.12)
+	_school_phase_offset = r.randf_range(-0.1, 0.1)
+	_speed_personality = r.randf_range(0.82, 1.18)
+	_home_loop_angle = r.randf() * TAU
+	var theta: float = r.randf() * TAU
 	heading = Vector3(sin(theta), 0.0, -cos(theta))
 	_last_yaw = atan2(heading.x, -heading.z)
+	_decay_throttle_t = r.randf() * DECAY_THROTTLE_PERIOD
+	_life_jitter = r.randf_range(-0.12, 0.15)
+	_growth_variance = r.randf_range(0.86, 1.14)
+	_home_y_drift_timer = r.randf_range(8.0, 24.0)
+	_spawn_variation_applied = true
+
+
+func _ready() -> void:
+	if id != "":
+		apply_spawn_variation()
 	speed = 0.0
 
 	_food_glow = OmniLight3D.new()
@@ -1686,8 +1727,8 @@ func _ready() -> void:
 	if is_inside_tree():
 		_ai_director_cached = get_node_or_null("/root/AIDirector")
 	# Decay throttle: stagger so all fish don't decay on the same tick.
-	# Each fish picks a random offset so the load smears across time.
-	_decay_throttle_t = randf() * DECAY_THROTTLE_PERIOD
+	if not _spawn_variation_applied:
+		_decay_throttle_t = 0.0
 
 
 # ---- Setup ----
@@ -1756,7 +1797,7 @@ func init_genome(genome: Dictionary) -> void:
 	fecundity = genome.get("fecundity", fecundity)
 	clutch_size = genome.get("clutch_size", clutch_size)
 	preferred_y = genome.get("preferred_y", preferred_y)
-	sex = genome.get("sex", randi() % 2)
+	sex = genome.get("sex", _behavior_rng().randi() % 2)
 	generation = genome.get("generation", 0)
 	
 	fish_name = genome.get("fish_name", "")
@@ -1950,7 +1991,7 @@ func init_genome(genome: Dictionary) -> void:
 	# a few glowing individuals.
 	if genome.has("is_bioluminescent"):
 		is_bioluminescent = not not genome["is_bioluminescent"]
-	elif generation == 0 and randf() < 0.03:
+	elif generation == 0 and _behavior_rng().randf() < 0.03:
 		is_bioluminescent = true
 		_saved_genome["is_bioluminescent"] = true
 	# Swim pattern + territory (heritable).
@@ -1973,10 +2014,10 @@ func init_genome(genome: Dictionary) -> void:
 	# converging on the tank centroid AT preferred_y.
 	if is_inf(home_x):
 		var spread_xz: float = _tank_home_spread_xz()
-		home_x = global_position.x + randf_range(-spread_xz, spread_xz)
-		home_z = global_position.z + randf_range(-spread_xz, spread_xz)
+		home_x = global_position.x + _behavior_rng().randf_range(-spread_xz, spread_xz)
+		home_z = global_position.z + _behavior_rng().randf_range(-spread_xz, spread_xz)
 	if is_inf(home_y):
-		home_y = preferred_y + randf_range(-0.6, 0.6)
+		home_y = preferred_y + _behavior_rng().randf_range(-0.6, 0.6)
 	if sim != null:
 		_reclamp_territory_to_tank()
 		_try_claim_build_cave_territory()
@@ -2084,6 +2125,7 @@ func _maturity_scale() -> float:
 # of reef fish even though they share one library entry. Mutates `genome`
 # in place; init_genome reads the post-mutation values below.
 func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
+	var g: RandomNumberGenerator = _genetics_rng()
 	# Curated tropical color palette - inspired by clownfish, tangs,
 	# chromis, anthias, royal grammas. Each entry is (base, accent).
 	# Accent is the contrasting bar / lateral stripe color.
@@ -2098,7 +2140,7 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 		[Color8(220, 60, 50), Color8(255, 245, 180)],   # squirrelfish red + cream
 		[Color8(40, 80, 60), Color8(255, 200, 90)],     # moorish idol dark + yellow
 	]
-	var palette_idx: int = randi() % palettes.size()
+	var palette_idx: int = g.randi() % palettes.size()
 	var p: Array = palettes[palette_idx]
 	genome["base_color"] = p[0]
 	genome["accent_color"] = p[1]
@@ -2107,13 +2149,13 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	genome["marking_color"] = p[1]
 	# Tail color: 50/50 chance to be a third contrasting hue or match
 	# accent. Real reef fish often have a bright tail flash.
-	if randf() < 0.5:
+	if g.randf() < 0.5:
 		genome["tail_color"] = p[1]
 	else:
-		genome["tail_color"] = Color(randf(), randf() * 0.6 + 0.3, randf())
+		genome["tail_color"] = Color(g.randf(), g.randf() * 0.6 + 0.3, g.randf())
 	# Body shape: most reef fish are compressed (laterally flat) like
 	# tangs / angelfish. Smaller chance of fusiform (anthias / chromis).
-	genome["body_shape"] = "compressed" if randf() < 0.65 else "fusiform"
+	genome["body_shape"] = "compressed" if g.randf() < 0.65 else "fusiform"
 	# Pattern: random pick. Vertical bars (clownfish, damselfish),
 	# horizontal stripes, spots, or solid. The clownfish palette (index 0)
 	# is forced to crisp edged white vertical bars - the unmistakable
@@ -2122,38 +2164,38 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 		genome["pattern_type"] = 3
 		genome["bar_edged"] = true
 	else:
-		genome["pattern_type"] = randi() % 4
-		genome["bar_edged"] = randf() < 0.25
+		genome["pattern_type"] = g.randi() % 4
+		genome["bar_edged"] = g.randf() < 0.25
 	# Tail shape: square paddle (tang / chromis), fan (anthias), or
 	# forked (chromis); avoid lyre (cichlid).
-	genome["tail_shape"] = [0, 1, 3][randi() % 3]
+	genome["tail_shape"] = [0, 1, 3][g.randi() % 3]
 	# Skeletal variation. Body depth + elongation jitter heavy so some
 	# reef morphs read as nearly-disc tang while others read as torpedo.
-	genome["body_elongation"] = randf_range(0.78, 1.20)
-	genome["body_depth_factor"] = randf_range(0.95, 1.65)
-	genome["fin_length_factor"] = randf_range(0.7, 1.4)
-	genome["dorsal_height_factor"] = randf_range(0.7, 1.4)
-	genome["size_potential"] = randf_range(0.8, 2.2)
-	genome["jaw_claw_size"] = randf_range(0.0, 0.9)
+	genome["body_elongation"] = g.randf_range(0.78, 1.20)
+	genome["body_depth_factor"] = g.randf_range(0.95, 1.65)
+	genome["fin_length_factor"] = g.randf_range(0.7, 1.4)
+	genome["dorsal_height_factor"] = g.randf_range(0.7, 1.4)
+	genome["size_potential"] = g.randf_range(0.8, 2.2)
+	genome["jaw_claw_size"] = g.randf_range(0.0, 0.9)
 	# Anal fin matches dorsal-ish for the symmetric tang look.
-	genome["anal_fin_length_factor"] = randf_range(0.5, 1.5)
+	genome["anal_fin_length_factor"] = g.randf_range(0.5, 1.5)
 	# Random dot count (some morphs have peppered flanks).
-	genome["color_dot_count"] = randi_range(0, 4)
+	genome["color_dot_count"] = g.randi_range(0, 4)
 	# Marine perciforms almost all carry a spiny + soft two-dorsal arrangement;
 	# give most reef morphs a second dorsal plus some lateral-width variety.
-	genome["second_dorsal"] = randf() < 0.7
-	genome["body_width_factor"] = randf_range(0.7, 1.15)
+	genome["second_dorsal"] = g.randf() < 0.7
+	genome["body_width_factor"] = g.randf_range(0.7, 1.15)
 	# A fifth of reef morphs roll the richer marine patterns: reticulated
 	# boxfish net, masked butterflyfish band, ocellated spot rows.
-	if randf() < 0.20:
-		genome["pattern_type"] = [6, 8, 9][randi() % 3]
+	if g.randf() < 0.20:
+		genome["pattern_type"] = [6, 8, 9][g.randi() % 3]
 	# Rare bold body plans seen on the reef: a flattened ray/flounder or a
 	# rounded boxfish.
-	var shape_roll: float = randf()
+	var shape_roll: float = g.randf()
 	if shape_roll < 0.06:
 		genome["body_shape"] = "depressed"
-		genome["body_width_factor"] = randf_range(1.2, 1.6)
-		genome["body_depth_factor"] = randf_range(0.6, 0.85)
+		genome["body_width_factor"] = g.randf_range(1.2, 1.6)
+		genome["body_depth_factor"] = g.randf_range(0.6, 0.85)
 	elif shape_roll < 0.10:
 		genome["body_shape"] = "globiform"
 	# Preferred Y as a FRACTION of the actual water column (0=substrate,
@@ -2162,7 +2204,7 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	# reef school spans the full column whether the tank is 5 units or
 	# 15 units tall. Range 0.10..0.90 keeps every fish well inside the
 	# water and gives the school maximum vertical diversity.
-	genome["preferred_y_frac"] = randf_range(0.10, 0.90)
+	genome["preferred_y_frac"] = g.randf_range(0.10, 0.90)
 	# Reef fish are less territorially layered than freshwater
 	# schoolers - they cruise more of the column. Give each one a
 	# bigger vertical wander radius (25% of column, scaled in world).
@@ -2173,10 +2215,10 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	# carnivores: low herbivory, swim past corals without biting. This
 	# gives the reef a believable mix where most fish ignore corals and
 	# only a few specialists eat them - matching real reef behaviour.
-	if randf() < 0.30:
-		genome["herbivory"] = randf_range(0.65, 0.90)
+	if g.randf() < 0.30:
+		genome["herbivory"] = g.randf_range(0.65, 0.90)
 	else:
-		genome["herbivory"] = randf_range(0.05, 0.25)
+		genome["herbivory"] = g.randf_range(0.05, 0.25)
 
 
 func _build_body() -> void:
@@ -2934,7 +2976,7 @@ func _tick_substrate_compaction(dt: float) -> void:
 	var av = w.get_node_or_null("AquariumVisuals")
 	if av == null or not av.has_method("record_compaction"):
 		return
-	if randf() < dt * (0.10 + speed * 0.06):
+	if _behavior_rng().randf() < dt * (0.10 + speed * 0.06):
 		av.record_compaction(position.x, position.z, 0.006 + speed * 0.004)
 
 
@@ -3133,7 +3175,7 @@ func _apply_music_beat_surge(mods: Dictionary, _effective_max: float) -> void:
 	_nudge_home_toward_music_target(target, nudge)
 	var dart_dir: Vector3 = target - position
 	if dart_dir.length_squared() < 0.08:
-		dart_dir = Vector3(randf_range(-1.0, 1.0), randf_range(-0.35, 0.45), randf_range(-1.0, 1.0))
+		dart_dir = Vector3(_behavior_rng().randf_range(-1.0, 1.0), _behavior_rng().randf_range(-0.35, 0.45), _behavior_rng().randf_range(-1.0, 1.0))
 	if dart_dir.length_squared() > 1e-6:
 		dart_dir = dart_dir.normalized()
 		heading_offset = dart_dir * (2.0 + wander_strength * float(mods.get("wander", 1.0)) * 0.65)
@@ -3275,7 +3317,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		# Severe + sustained chemistry kills. Real ammonia poisoning is
 		# slow; we expose it as the "stress crosses 0.95 with bad chem"
 		# branch so the existing die path picks it up naturally.
-		if total_chem > 0.7 and stress > 0.95 and randf() < dt * 0.05:
+		if total_chem > 0.7 and stress > 0.95 and _behavior_rng().randf() < dt * 0.05:
 			events["die"] = true
 			return events
 
@@ -3311,9 +3353,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		_sift_cooldown = maxf(0.0, _sift_cooldown - dt)
 		_sift_timer = maxf(0.0, _sift_timer - dt)
 		if _sift_timer <= 0.0 and _sift_cooldown <= 0.0 \
-				and burst_remaining <= 0.0 and randf() < dt * 0.4:
-			_sift_timer = randf_range(1.5, 3.0)
-			_sift_cooldown = randf_range(6.0, 12.0)
+				and burst_remaining <= 0.0 and _behavior_rng().randf() < dt * 0.4:
+			_sift_timer = _behavior_rng().randf_range(1.5, 3.0)
+			_sift_cooldown = _behavior_rng().randf_range(6.0, 12.0)
 			# Substrate dig: a persistent mulm voxel for the carpet, plus a
 			# brief dust burst that rises + fades over ~1.4s. The dust is
 			# the visible "kicked up the substrate" moment that just adding
@@ -3338,8 +3380,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if _aerial_timer <= 0.0:
 			# Idle - count down to next trip OR start a trip.
 			_aerial_timer -= dt
-			var next_trip: float = randf_range(15.0, 28.0) if labyrinth_breather \
-				else randf_range(25.0, 40.0)
+			var next_trip: float = _behavior_rng().randf_range(15.0, 28.0) if labyrinth_breather \
+				else _behavior_rng().randf_range(25.0, 40.0)
 			if _aerial_timer < -next_trip:
 				# Begin the gulp trip - target Y just below water surface.
 				_aerial_return_y = home_y
@@ -3351,7 +3393,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 						var near_fp: FloatingPlant = _find_nearest_floater(w_lab, 4.0)
 						if near_fp != null:
 							home_y = near_fp.position.y - 0.35
-				_aerial_timer = randf_range(2.0, 3.5)   # trip duration
+				_aerial_timer = _behavior_rng().randf_range(2.0, 3.5)   # trip duration
 		else:
 			_aerial_timer -= dt
 			if _aerial_timer <= 0.0:
@@ -3531,7 +3573,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# PARENTAL CARE: with no intruder to chase, the parent hovers over
 			# the clutch and fans it — a gentle pectoral-driven shimmy that
 			# oxygenates the eggs. Reads as attentive, devoted tending.
-			if _fidget_remaining <= 0.0 and randf() < dt * 0.5:
+			if _fidget_remaining <= 0.0 and _behavior_rng().randf() < dt * 0.5:
 				_fidget_kind = 1   # shimmy = fanning motion
 				_fidget_remaining = 0.7
 			mood = clampf(mood + dt * 0.08, -1.0, 1.0)   # proud, settled parent
@@ -3884,7 +3926,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var suitor_appeal: float = partner.rank_within_species * 0.5 \
 					+ clampf(partner.growth_factor - 0.8, 0.0, 0.6) + mood * 0.2
 				var reject_chance: float = clampf(0.06 - suitor_appeal * 0.05 + stress * 0.08, 0.0, 0.12)
-				if randf() < reject_chance * dt:
+				if _behavior_rng().randf() < reject_chance * dt:
 					# She's not interested. Both reset; she flees a beat.
 					if is_instance_valid(partner) and not partner.is_queued_for_deletion() \
 							and partner.get("_dying") != true:
@@ -4078,7 +4120,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if not _sees_world_pos(wpos, max_dist):
 				continue
 			# Fish prefer fresh-fallen waste in mid-water, not settled.
-			if w.settled and randf() > 0.4:
+			if w.settled and _behavior_rng().randf() > 0.4:
 				continue
 			var d2: float = (w as Node3D).global_position.distance_squared_to(position)
 			var max_dist_sq: float = 144.0 if w.kind == 3 else 16.0 # 3=FOOD, 16.0=4.0^2 for regular waste
@@ -4169,8 +4211,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 						FishMind.aim_before_burst(self)
 					if _aim_remaining > 0.0:
 						pull *= 0.22
-					elif burst_remaining <= 0.0 and energy > 0.15 and randf() < frenzy_chance:
-						burst_remaining = randf_range(0.4, 0.75) + (age_factor * 0.3)
+					elif burst_remaining <= 0.0 and energy > 0.15 and _behavior_rng().randf() < frenzy_chance:
+						burst_remaining = _behavior_rng().randf_range(0.4, 0.75) + (age_factor * 0.3)
 						_startle_heading = to_w.normalized()
 						_startle_remaining = 0.5
 				desired += to_w.normalized() * effective_max * pull
@@ -4183,7 +4225,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Otherwise the betta at spawn is already 1.56x a glassdart's base size
 	# and starts wiping the school day-one.
 	var is_predator_class: bool = growth_factor >= 1.3 or species == "betta"
-	if is_predator_class and maturity == MATURITY_ADULT and hunger > 0.45 and randf() < 0.10:
+	if is_predator_class and maturity == MATURITY_ADULT and hunger > 0.45 and _behavior_rng().randf() < 0.10:
 		var my_size: float = effective_size()
 		var kill_advantage: float = clampf(1.95 - jaw_claw_size * 0.35, 1.45, 2.05)
 		var kill_reach: float = 0.45 + jaw_claw_size * 0.16
@@ -4241,7 +4283,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					escape += clampf(float(sim.total_plant_biomass) / 900.0, 0.0, 0.35)
 					var prey_n: int = sim.fish.size() + sim.shrimp.size()
 					escape += clampf((8.0 - float(prey_n)) / 8.0, 0.0, 0.40)
-				if randf() < escape:
+				if _behavior_rng().randf() < escape:
 					if best_prey is Fish:
 						(best_prey as Fish).stress = clampf(
 							(best_prey as Fish).stress + 0.10, 0.0, 1.0)
@@ -4273,7 +4315,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# shrimp_predator lineages are much more likely to pursue shrimp fry.
 	var predation_chance: float = 0.10 if (species == "betta" or shrimp_predator) else 0.02
 	if maturity == MATURITY_ADULT and hunger > 0.65 and not baby_shrimp.is_empty() \
-			and randf() < predation_chance:
+			and _behavior_rng().randf() < predation_chance:
 		var prey: Shrimp = null
 		var best_d2: float = 1.2 * 1.2
 		for s in baby_shrimp:
@@ -4303,7 +4345,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var repel: float = clampf(
 				prey_spines * 0.45 + prey_toxin * 0.55 + prey_shelter * 0.65,
 				0.0, 0.94)
-			if randf() < repel * 0.55:
+			if _behavior_rng().randf() < repel * 0.55:
 				stress = minf(1.0, stress + repel * 0.08)
 				target_velocity = _apply_target_from_desired(desired, effective_max)
 				return events
@@ -4350,7 +4392,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if tx != null:
 					toxin = clampf(float(tx), 0.0, 1.0)
 				var danger: float = shell_spines * 0.55 + toxin * 0.6
-				if randf() < danger * 0.42:
+				if _behavior_rng().randf() < danger * 0.42:
 					continue
 				var d2: float = (s.global_position - position).length_squared()
 				if d2 < best_snail_d2:
@@ -4514,7 +4556,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var herb_hunger_gate: float = 0.55 - lush_bonus * 0.25
 	var herb_random_gate: float = 0.5 + lush_bonus * 0.5
 	if herbivory > 0.0 and hunger > herb_hunger_gate and maturity != MATURITY_FRY \
-			and randf() < herb_random_gate:
+			and _behavior_rng().randf() < herb_random_gate:
 		if target_plant == null or not is_instance_valid(target_plant) \
 				or target_plant.biomass() < 15:
 			target_plant = _find_nearest_tall_plant(plants, 5.0, 15)
@@ -4559,7 +4601,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			and breed_cooldown <= 0.0 and partner == null \
 			and hunger < 0.5 and energy > 0.65 / season_breed \
 			and stress < 0.4 * season_breed \
-			and randf() >= _logistic_breed_suppress():
+			and _behavior_rng().randf() >= _logistic_breed_suppress():
 		# Mate loyalty (#83): prefer re-bonding with the previous partner if it's
 		# nearby and available, before rolling a fresh mate.
 		var candidate: Fish = _find_preferred_mate(neighbors)
@@ -4582,7 +4624,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			and energy > 0.45 and burst_remaining <= 0.0:
 		# Roll the dice each tick for a brief play burst — every ~20 sim
 		# seconds on average per fry (dt * 0.05).
-		if randf() < dt * 0.05:
+		if _behavior_rng().randf() < dt * 0.05:
 			var playmate: Fish = null
 			var pd2: float = 4.0  # within 2 units
 			for n in neighbors:
@@ -4610,8 +4652,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if stress < 0.22:
 		tightness *= lerpf(0.68, 1.0, stress / 0.22)
 	tightness *= float(music_mods.get("tightness", 1.0))
-	if sim != null and sim.get("_sync_settle") != null:
-		tightness *= 1.0 + float(sim._sync_settle) * 0.4
+	if sim != null and sim.has_method("sync_settle"):
+		tightness *= 1.0 + sim.sync_settle() * 0.4
 	# Tank-wide school pulse. Synchronised across every fish that samples
 	# sim.school_pulse(), so the entire group visibly breathes in and out.
 	if bool(fauna_rt.get("pulse_on", true)) and sim != null and sim.has_method("school_pulse"):
@@ -4978,7 +5020,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var local_z: float = to_n.dot(fwd)
 			if absf(local_z) > 0.001:
 				_gaze_yaw = clampf(atan2(local_x, local_z) * 0.35, -0.35, 0.35)
-				_gaze_remaining = randf_range(1.2, 2.4)
+				_gaze_remaining = _behavior_rng().randf_range(1.2, 2.4)
 
 	# GRUDGES. A specific neighbor with an active grudge reads as "the
 	# bully" — we add a small repulsion vector away from them. Reads on
@@ -5145,7 +5187,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				position, bolt_o, _startle_heading if _startle_heading.length_squared() > 0.01 else heading)
 			_startle_heading = radial
 			_startle_remaining = maxf(_startle_remaining, lerpf(0.22, 0.58, prox_b))
-			burst_remaining = maxf(burst_remaining, lerpf(0.2, 0.55, prox_b))
+			_apply_panic_burst(lerpf(0.2, 0.55, prox_b))
 	# Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
 	# neighborhood range. The signal weakens with distance so a panic
@@ -5200,7 +5242,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# spreads — closer fish snap, distant fish twitch.
 			var st_scale: float = NightWatch.startle_scale(self)
 			_startle_remaining = lerpf(0.18, 0.45, prox) * st_scale
-			burst_remaining = lerpf(0.15, 0.40, prox) * st_scale
+			_apply_panic_burst(lerpf(0.15, 0.40, prox) * st_scale)
 
 	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
 	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
@@ -5211,12 +5253,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# an extra `* 10.0` that canceled the dt scaling, so every fish darted at
 	# 10× the heritable rate — schools twitched constantly.
 	if dart_chance > 0.0 and burst_remaining <= 0.0 \
-			and randf() < dart_chance * dt and energy > 0.25:
-		burst_remaining = randf_range(0.25, 0.45)
+			and _behavior_rng().randf() < dart_chance * dt and energy > 0.25:
+		burst_remaining = _behavior_rng().randf_range(0.25, 0.45)
 		# Snap heading_offset to a new random direction so the dart goes
 		# somewhere new (not just "faster in current direction").
-		var ang: float = randf() * TAU
-		var dart_dir := Vector3(sin(ang), randf_range(-0.15, 0.15), cos(ang))
+		var ang: float = _behavior_rng().randf() * TAU
+		var dart_dir := Vector3(sin(ang), _behavior_rng().randf_range(-0.15, 0.15), cos(ang))
 		heading_offset = dart_dir * (1.0 + wander_strength)
 		# Record startle heading so school-mates can copy it (mostly horizontal).
 		_startle_heading = Vector3(dart_dir.x, dart_dir.y * 0.2, dart_dir.z).normalized()
@@ -5239,14 +5281,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Music-sync darts — any species can get an extra groove-driven burst.
 	var music_dart: float = float(music_mods.get("dart_chance", 0.0))
 	if music_dart > 0.0 and burst_remaining <= 0.0 and energy > 0.3 \
-			and randf() < music_dart * dt:
-		burst_remaining = randf_range(0.62, 1.05)
+			and _behavior_rng().randf() < music_dart * dt:
+		burst_remaining = _behavior_rng().randf_range(0.62, 1.05)
 		var dart_target: Vector3 = _music_cross_tank_target(music_mods, 0.65)
 		_nudge_home_toward_music_target(dart_target, 0.45)
 		var dart_m: Vector3 = dart_target - position
 		if dart_m.length_squared() < 0.08:
-			var ang_m: float = randf() * TAU
-			dart_m = Vector3(sin(ang_m), randf_range(-0.35, 0.45), cos(ang_m))
+			var ang_m: float = _behavior_rng().randf() * TAU
+			dart_m = Vector3(sin(ang_m), _behavior_rng().randf_range(-0.35, 0.45), cos(ang_m))
 		if dart_m.length_squared() > 1e-6:
 			dart_m = dart_m.normalized()
 			heading_offset = dart_m * (2.0 + wander_strength * float(music_mods.get("wander", 1.0)))
@@ -5270,7 +5312,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if float(music_mods.get("sweep", 0.0)) > 0.08:
 		pause_rate = 0.0
 	if burst_remaining <= 0.0 and _startle_remaining <= 0.0 and goal_timer <= 0.0 \
-			and not _asleep and randf() < pause_rate and energy > 0.3:
+			and not _asleep and _behavior_rng().randf() < pause_rate and energy > 0.3:
 		# 15% of max speed → enough motion to slide off a wall, slow enough to
 		# read as "pausing to look around."
 		target_velocity = _apply_target_from_desired(desired, effective_max * 0.15)
@@ -5284,10 +5326,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# PLAYFUL DART (ZOOMIES). Even non-dart species occasionally get a burst of
 	# energy if they are well-fed and healthy. Happy fish play more.
 	var zoom_rate: float = dt * (0.05 + clampf(mood, 0.0, 1.0) * 0.06)
-	if burst_remaining <= 0.0 and energy > 0.7 and hunger < 0.2 and randf() < zoom_rate:
-		burst_remaining = randf_range(0.3, 0.6)
-		var ang: float = randf() * TAU
-		heading_offset = Vector3(sin(ang), randf_range(-0.4, 0.6), cos(ang)) * 1.5
+	if burst_remaining <= 0.0 and energy > 0.7 and hunger < 0.2 and _behavior_rng().randf() < zoom_rate:
+		burst_remaining = _behavior_rng().randf_range(0.3, 0.6)
+		var ang: float = _behavior_rng().randf() * TAU
+		heading_offset = Vector3(sin(ang), _behavior_rng().randf_range(-0.4, 0.6), cos(ang)) * 1.5
 
 	# IDLE FIDGETS. Small spontaneous gestures (a shimmy, a yawn-gape, a
 	# substrate flash) that break the metronome of constant swimming. Only when
@@ -5295,8 +5337,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# layer reads; the actual motion is applied in _motion_substep.
 	if _fidget_cooldown <= 0.0 and _fidget_remaining <= 0.0 and speed < 0.7 \
 			and burst_remaining <= 0.0 and _startle_remaining <= 0.0 \
-			and not _asleep and randf() < dt * 0.08:
-		var r: float = randf()
+			and not _asleep and _behavior_rng().randf() < dt * 0.08:
+		var r: float = _behavior_rng().randf()
 		if r < 0.45:
 			_fidget_kind = 1   # shimmy
 			_fidget_remaining = 0.6
@@ -5315,10 +5357,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		else:
 			_fidget_kind = 1
 			_fidget_remaining = 0.5
-		_fidget_cooldown = randf_range(5.0, 12.0)
+		_fidget_cooldown = _behavior_rng().randf_range(5.0, 12.0)
 
 	# PLANT BRUSH: passing bodies deflect foliage (#43).
-	if speed > 0.55 and randf() < dt * 0.6:
+	if speed > 0.55 and _behavior_rng().randf() < dt * 0.6:
 		var wf: Node = _world_node()
 		if wf != null and wf.has_method("brush_plants_near"):
 			var brush_dir: Vector3 = velocity
@@ -5331,11 +5373,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# the school boids already provide direction variety.
 	_wander_refresh_timer -= dt
 	if _wander_refresh_timer <= 0.0:
-		var interval: float = 8.0 + randf() * 6.0  # schooler default
+		var interval: float = 8.0 + _behavior_rng().randf() * 6.0  # schooler default
 		if schooling_strength < 0.4:
-			interval = 4.0 + randf() * 4.0  # solo fish: much more frequent
+			interval = 4.0 + _behavior_rng().randf() * 4.0  # solo fish: much more frequent
 		elif swim_pattern == "shuffle":
-			interval = 5.0 + randf() * 6.0  # loaches: frequent zig-zags
+			interval = 5.0 + _behavior_rng().randf() * 6.0  # loaches: frequent zig-zags
 		interval /= maxf(float(music_mods.get("wander_refresh", 1.0)), 1.0)
 		_wander_refresh_timer = interval
 		var phase: float = _swim_phase + float(get_instance_id() % 97) * 0.09
@@ -5348,9 +5390,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var overhead_wander: bool = TopdownMotion.pond_active \
 			or bool(music_mods.get("overhead_view", false))
 		if overhead_wander:
-			var sig: Dictionary = TopdownMotion.plan_path_signature(locomotion_type, swim_pattern)
-			var amp: float = float(sig.get("wander_amp", 1.0))
-			var freq: float = float(sig.get("wander_freq", 1.55))
+			var sig: TopdownMotion.PathSignature = TopdownMotion.plan_path_signature(
+				locomotion_type, swim_pattern)
+			var amp: float = sig.wander_amp
+			var freq: float = sig.wander_freq
 			heading_offset = Vector3(
 				sin(phase * freq * TAU) * amp * 0.44,
 				sin(phase * 1.37) * y_wander * 0.35,
@@ -5358,9 +5401,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
 		else:
 			heading_offset = Vector3(
-				sin(phase) * sin(phase * 0.5) * randf_range(0.35, 0.62),
+				sin(phase) * sin(phase * 0.5) * _behavior_rng().randf_range(0.35, 0.62),
 				sin(phase * 1.37) * y_wander,
-				cos(phase * 0.93) * sin(phase * 0.5 + 1.2) * randf_range(0.35, 0.62),
+				cos(phase * 0.93) * sin(phase * 0.5 + 1.2) * _behavior_rng().randf_range(0.35, 0.62),
 			) * float(music_mods.get("wander", 1.0)) * float(music_mods.get("wander_amp", 1.0))
 
 	# Home-point drift: bottom-dwellers (shuffle) and solo/low-schooling fish
@@ -5369,27 +5412,27 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# entire substrate; bettas patrol different territories.
 	_home_drift_timer -= dt
 	if _home_drift_timer <= 0.0:
-		var drift_interval: float = 30.0 + randf() * 30.0  # default: 30-60s
+		var drift_interval: float = 30.0 + _behavior_rng().randf() * 30.0  # default: 30-60s
 		var drift_radius: float = 1.5
 		if swim_pattern == "shuffle":
-			drift_interval = 15.0 + randf() * 15.0  # loaches: faster roaming
+			drift_interval = 15.0 + _behavior_rng().randf() * 15.0  # loaches: faster roaming
 			drift_radius = 3.0  # cover more ground
 		elif schooling_strength < 0.4:
-			drift_interval = 20.0 + randf() * 15.0  # solo fish: moderate drift
+			drift_interval = 20.0 + _behavior_rng().randf() * 15.0  # solo fish: moderate drift
 			drift_radius = 2.5
 		elif swim_pattern == "school" or swim_pattern == "shoal":
-			drift_interval = 20.0 + randf() * 16.0
+			drift_interval = 20.0 + _behavior_rng().randf() * 16.0
 			drift_radius = 3.2 if swim_pattern == "school" else 4.0
 		drift_radius *= float(fauna_rt.get("wander", 1.0))
 		drift_radius *= float(music_mods.get("home_radius", 1.0))
 		drift_radius += float(music_mods.get("sweep", 0.0)) * 2.8
 		drift_interval /= maxf(float(music_mods.get("home_drift", 1.0)), 1.0)
 		_home_drift_timer = drift_interval
-		_home_loop_angle += randf_range(-0.8, 0.8)
+		_home_loop_angle += _behavior_rng().randf_range(-0.8, 0.8)
 		var w := _world_node()
 		if w != null and w.has_method("clamp_xyz_in_tank"):
-			var new_x: float = home_x + randf_range(-drift_radius, drift_radius)
-			var new_z: float = home_z + randf_range(-drift_radius, drift_radius)
+			var new_x: float = home_x + _behavior_rng().randf_range(-drift_radius, drift_radius)
+			var new_z: float = home_z + _behavior_rng().randf_range(-drift_radius, drift_radius)
 			var p: Vector3 = w.clamp_xyz_in_tank(
 				Vector3(new_x, home_y, new_z), 0.4, _body_tank_margin() * 0.5)
 			home_x = p.x
@@ -5400,14 +5443,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _tank_is_dome() or _water_column_height() > 6.5:
 		_home_y_drift_timer -= dt
 		if _home_y_drift_timer <= 0.0:
-			_home_y_drift_timer = 18.0 + randf() * 32.0
+			_home_y_drift_timer = 18.0 + _behavior_rng().randf() * 32.0
 			var target_home_y: float
 			var w_drift := _world_node()
 			if w_drift != null and w_drift.has_method("preferred_y_at"):
 				var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.45
 				var col_h: float = maxf(_water_surface_y() - bot_y, 0.5)
 				var pref_frac: float = clampf((preferred_y - bot_y) / col_h, 0.12, 0.88)
-				pref_frac = clampf(pref_frac + randf_range(-0.14, 0.14), 0.08, 0.92)
+				pref_frac = clampf(pref_frac + _behavior_rng().randf_range(-0.14, 0.14), 0.08, 0.92)
 				var floor_y: float = bot_y
 				if w_drift.has_method("column_surface_y"):
 					floor_y = w_drift.column_surface_y(home_x, home_z)
@@ -5418,7 +5461,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var col_h: float = maxf(top_y - bot_y, 0.5)
 				var pref_frac: float = clampf((preferred_y - bot_y) / col_h, 0.12, 0.88)
 				target_home_y = bot_y + col_h * clampf(
-					pref_frac + randf_range(-0.14, 0.14), 0.08, 0.92)
+					pref_frac + _behavior_rng().randf_range(-0.14, 0.14), 0.08, 0.92)
 			home_y = lerpf(home_y, target_home_y, lerpf(0.18, 0.38, wander_strength))
 
 	# Mild wander via personal heading offset, scaled by wander_strength so
@@ -5515,10 +5558,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	elif _goal_pick_cooldown <= 0.0 and burst_remaining <= 0.0 \
 			and _startle_remaining <= 0.0 and not _asleep \
 			and current_mode == Mode.CRUISE:
-		_goal_pick_cooldown = randf_range(3.0, 7.0)
+		_goal_pick_cooldown = _behavior_rng().randf_range(3.0, 7.0)
 		# Curiosity discharge: if bored, go inspect a remembered spot or a
 		# random unexplored point. Otherwise occasionally pick a wander goal.
-		if curiosity_drive > 0.6 or randf() < 0.25:
+		if curiosity_drive > 0.6 or _behavior_rng().randf() < 0.25:
 			var picked: bool = false
 			var fed: Variant = _recall("fed")
 			if fed != null and hunger > 0.45:
@@ -5528,17 +5571,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if not picked:
 				var w_g: Node = _world_node()
 				if w_g != null and w_g.has_method("clamp_xyz_in_tank"):
-					var ang_g: float = randf() * TAU
+					var ang_g: float = _behavior_rng().randf() * TAU
 					var reach: float = lerpf(2.0, 5.5, _trait("curiosity"))
 					var cand: Vector3 = position + Vector3(
 						cos(ang_g) * reach,
-						randf_range(-1.0, 1.2),
+						_behavior_rng().randf_range(-1.0, 1.2),
 						sin(ang_g) * reach)
 					goal_point = w_g.clamp_xyz_in_tank(cand, 0.5, _body_tank_margin())
 					goal_kind = "explore"
 					picked = true
 			if picked:
-				goal_timer = randf_range(2.5, 5.0)
+				goal_timer = _behavior_rng().randf_range(2.5, 5.0)
 				curiosity_drive = maxf(0.0, curiosity_drive - 0.5)
 				_interest_target = goal_point
 				_interest_remaining = 1.4   # let neighbors catch the curiosity
@@ -5547,17 +5590,17 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# pure random drift. Built lazily from the current home once the fish has
 	# settled. Gentle pull so it reads as "doing its rounds", not rail-riding.
 	if patrol_anchors.is_empty() and is_finite(home_x) and is_finite(home_y) \
-			and randf() < dt * 0.05 and maturity == MATURITY_ADULT:
+			and _behavior_rng().randf() < dt * 0.05 and maturity == MATURITY_ADULT:
 		patrol_anchors.append(Vector3(home_x, home_y, home_z))
 		var w_p: Node = _world_node()
 		if w_p != null and w_p.has_method("clamp_xyz_in_tank"):
-			var off: Vector3 = Vector3(randf_range(-3.0, 3.0), randf_range(-0.8, 0.8), randf_range(-3.0, 3.0))
+			var off: Vector3 = Vector3(_behavior_rng().randf_range(-3.0, 3.0), _behavior_rng().randf_range(-0.8, 0.8), _behavior_rng().randf_range(-3.0, 3.0))
 			patrol_anchors.append(w_p.clamp_xyz_in_tank(
 				Vector3(home_x, home_y, home_z) + off, 0.5, _body_tank_margin()))
 	if patrol_anchors.size() >= 2 and goal_timer <= 0.0 and not _asleep:
 		_patrol_retarget_t -= dt
 		if _patrol_retarget_t <= 0.0:
-			_patrol_retarget_t = randf_range(8.0, 16.0)
+			_patrol_retarget_t = _behavior_rng().randf_range(8.0, 16.0)
 			_patrol_idx = (_patrol_idx + 1) % patrol_anchors.size()
 		var anchor: Vector3 = patrol_anchors[_patrol_idx]
 		var to_anchor: Vector3 = anchor - position
@@ -5831,11 +5874,11 @@ func _apply_posture_overlays(dt: float) -> void:
 			# on the next tick. Real sleeping fish twitch every few minutes.
 			_sleep_twitch_t -= dt
 			if _sleep_twitch_t <= 0.0:
-				_sleep_twitch_t = randf_range(8.0, 25.0)
+				_sleep_twitch_t = _behavior_rng().randf_range(8.0, 25.0)
 				if energy > 0.2 and burst_remaining <= 0.0:
 					burst_remaining = 0.18
 					heading_offset += Vector3(
-						randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4))
+						_behavior_rng().randf_range(-0.4, 0.4), 0.0, _behavior_rng().randf_range(-0.4, 0.4))
 		else:
 			_sleep_tilt = lerpf(_sleep_tilt, 0.0, dt * 2.0)
 
@@ -5862,7 +5905,7 @@ func _tick_gill_flush(dt: float) -> void:
 	_gill_flush_check -= dt
 	if _gill_flush_check > 0.0:
 		return
-	_gill_flush_check = randf_range(2.5, 5.5)
+	_gill_flush_check = _behavior_rng().randf_range(2.5, 5.5)
 	if sim == null or maturity == MATURITY_FRY:
 		return
 	# CONTENT BRANCH: when stress is very low and the fish is essentially
@@ -5870,7 +5913,7 @@ func _tick_gill_flush(dt: float) -> void:
 	# breathing visibly while at rest — the most universal "alive" tell.
 	# Rate is gated so it doesn't fire during active swimming.
 	if stress < 0.10 and speed < 0.5 and energy > 0.4:
-		if randf() < 0.35:
+		if _behavior_rng().randf() < 0.35:
 			_gill_flush_t = 0.5
 		return
 	# Pre-stress window — once stress crosses the hide threshold the
@@ -5884,7 +5927,7 @@ func _tick_gill_flush(dt: float) -> void:
 	if o2 > 0.52 and waste_load < 0.4:
 		return
 	# Rare — about one cough per ~30s under bad water.
-	if randf() < 0.5:
+	if _behavior_rng().randf() < 0.5:
 		_gill_flush_t = 0.5
 
 
@@ -6145,8 +6188,9 @@ func _motion_substep(dt: float) -> void:
 	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
 	eff_turn *= TopdownMotion.turn_rate_at_speed(speed, max_speed)
 	if TopdownMotion.pond_active or bool(music_mm.get("overhead_view", false)):
-		var psig: Dictionary = TopdownMotion.plan_path_signature(locomotion_type, swim_pattern)
-		eff_turn *= float(psig.get("turn_mult", 1.0))
+		var psig: TopdownMotion.PathSignature = TopdownMotion.plan_path_signature(
+			locomotion_type, swim_pattern)
+		eff_turn *= psig.turn_mult
 	eff_turn *= clampf(1.0 - speed / maxf(max_speed, 0.15) * 0.42, 0.48, 1.0)
 	if full_hydro:
 		eff_turn *= Hydrodynamics.added_mass_turn_scale(speed, max_speed, _hydro_profile)
@@ -6556,14 +6600,14 @@ func _motion_substep(dt: float) -> void:
 		var rest_factor: float = 1.0 - clampf(speed * 2.5, 0.0, 1.0)
 		_saccade_t -= dt
 		if rest_factor > 0.5 and _saccade_t <= 0.0:
-			_saccade_t = randf_range(2.5, 5.5)
+			_saccade_t = _behavior_rng().randf_range(2.5, 5.5)
 			# Gaze target — when a fast neighbor just passed, prefer turning
 			# toward them. Otherwise random micro-twitch as before. The
 			# gaze yaw is set in tick() and decays via _gaze_remaining.
 			if _gaze_remaining > 0.0 and absf(_gaze_yaw) > 0.02:
 				_saccade_target = _gaze_yaw
 			else:
-				_saccade_target = randf_range(-0.22, 0.22)
+				_saccade_target = _behavior_rng().randf_range(-0.22, 0.22)
 		# Decay the saccade target back toward 0 so the twitch is a brief
 		# pulse, not a sustained head-cock.
 		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
@@ -6982,7 +7026,7 @@ func _fauna_runtime() -> Dictionary:
 		"separation": float(cfg.fauna_separation_mult),
 		"wander": float(cfg.fauna_wander_mult),
 		"speed": float(cfg.fauna_speed_mult),
-		"pulse_on": bool(cfg.fauna_school_pulse_enabled),
+		"pulse_on": bool(cfg.fauna_school_pulse_enabled) and not bool(cfg.reduced_motion),
 		"pulse_amp": float(cfg.fauna_school_pulse_amplitude),
 		"mourning": bool(cfg.fauna_mourning_enabled),
 		"glance": bool(cfg.fauna_player_glance_enabled),
@@ -7105,7 +7149,7 @@ func _hardscape_clearance_push() -> Vector3:
 		if d2 >= clear_r2:
 			continue
 		if d2 < 1e-6:
-			d = Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
+			d = Vector3(_behavior_rng().randf_range(-1, 1), 0.0, _behavior_rng().randf_range(-1, 1))
 			if d.length_squared() < 1e-6:
 				d = Vector3(1.0, 0.0, 0.0)
 			d2 = maxf(d.length_squared(), 1e-6)
@@ -7136,7 +7180,7 @@ func _find_breeding_partner(neighbors: Array) -> Fish:
 			continue
 		# Assortative mating: lineages prefer their own subspecies.
 		if subspecies_id != "" and f.subspecies_id != "" and subspecies_id != f.subspecies_id:
-			if randf() > 0.06:
+			if _behavior_rng().randf() > 0.06:
 				continue
 		if f.hunger > 0.5 or f.energy < 0.55 or f.stress > 0.4:
 			continue
@@ -7271,9 +7315,9 @@ func _derive_subspecies_id(mate: Fish, child_genome: Dictionary) -> String:
 	var base: String = species
 	var a: String = subspecies_id if subspecies_id != "" else species
 	var b: String = mate.subspecies_id if mate.subspecies_id != "" else species
-	if a == b and randf() < 0.92:
+	if a == b and _behavior_rng().randf() < 0.92:
 		base = a
-	elif randf() < 0.55:
+	elif _behavior_rng().randf() < 0.55:
 		base = a
 	else:
 		base = b
@@ -7317,7 +7361,7 @@ func _find_nearest_floater(world: Node, max_dist: float) -> FloatingPlant:
 		var floater: FloatingPlant = fp
 		if floater.turion_buried or floater.biomass() < 0.15:
 			continue
-		if floater.graze_palatability() < 0.2 and randf() > 0.2:
+		if floater.graze_palatability() < 0.2 and _behavior_rng().randf() > 0.2:
 			continue
 		var top_pos: Vector3 = floater.global_position
 		top_pos.y = _water_surface_y() - 0.06
@@ -7339,7 +7383,7 @@ func _find_nearest_tall_plant(plants: Array, max_dist: float, min_biomass: int) 
 		if not is_instance_valid(p) or p.biomass() < min_biomass:
 			continue
 		if p.has_method("graze_palatability"):
-			if float(p.graze_palatability()) < 0.22 and randf() > 0.15:
+			if float(p.graze_palatability()) < 0.22 and _behavior_rng().randf() > 0.15:
 				continue
 		var top_pos: Vector3 = (p as Plant).global_position
 		top_pos.y = _plant_graze_y(p as Plant)
@@ -7485,91 +7529,91 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 	var mix := 0.5
 	var color_muta := 0.18   # noticeable hue jiggle per generation
 	var size_muta := 0.06    # size drift; capped within reasonable bounds
-	var lerp_random_base := Color(randf(), randf(), randf())
-	var lerp_random_accent := Color(randf(), randf(), randf())
+	var lerp_random_base := Color(_behavior_rng().randf(), _behavior_rng().randf(), _behavior_rng().randf())
+	var lerp_random_accent := Color(_behavior_rng().randf(), _behavior_rng().randf(), _behavior_rng().randf())
 	var new_size: float = (adult_voxel_scale + partner.adult_voxel_scale) * 0.5 \
-		+ randf_range(-size_muta, size_muta) * adult_voxel_scale
+		+ _behavior_rng().randf_range(-size_muta, size_muta) * adult_voxel_scale
 	# Hold size in a reasonable band so mutation can't shrink/grow the species
 	# unboundedly across generations.
 	new_size = clampf(new_size, adult_voxel_scale * 0.6, adult_voxel_scale * 1.5)
 	# Phenotype inheritance: average parents + small mutation, clamped.
 	var new_fin: float = clampf(
-		(fin_length_factor + partner.fin_length_factor) * 0.5 + randf_range(-0.12, 0.12),
+		(fin_length_factor + partner.fin_length_factor) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12),
 		0.6, 1.6)
 	var new_elong: float = clampf(
-		(body_elongation + partner.body_elongation) * 0.5 + randf_range(-0.10, 0.10),
+		(body_elongation + partner.body_elongation) * 0.5 + _behavior_rng().randf_range(-0.10, 0.10),
 		0.65, 1.55)
 	var new_depth: float = clampf(
-		(body_depth_factor + partner.body_depth_factor) * 0.5 + randf_range(-0.10, 0.10),
+		(body_depth_factor + partner.body_depth_factor) * 0.5 + _behavior_rng().randf_range(-0.10, 0.10),
 		0.7, 1.4)
 	var new_head: float = clampf(
-		(head_proportion + partner.head_proportion) * 0.5 + randf_range(-0.08, 0.08),
+		(head_proportion + partner.head_proportion) * 0.5 + _behavior_rng().randf_range(-0.08, 0.08),
 		0.7, 1.3)
 	var new_dorsal: float = clampf(
-		(dorsal_height_factor + partner.dorsal_height_factor) * 0.5 + randf_range(-0.12, 0.12),
+		(dorsal_height_factor + partner.dorsal_height_factor) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12),
 		0.6, 1.6)
 	var new_fork: float = clampf(
-		(tail_fork_depth + partner.tail_fork_depth) * 0.5 + randf_range(-0.10, 0.10),
+		(tail_fork_depth + partner.tail_fork_depth) * 0.5 + _behavior_rng().randf_range(-0.10, 0.10),
 		0.5, 1.5)
 	var new_size_potential: float = clampf(
-		(size_potential + partner.size_potential) * 0.5 + randf_range(-0.12, 0.15),
+		(size_potential + partner.size_potential) * 0.5 + _behavior_rng().randf_range(-0.12, 0.15),
 		0.6, 2.4)
 	var new_jaw_claw: float = clampf(
-		(jaw_claw_size + partner.jaw_claw_size) * 0.5 + randf_range(-0.12, 0.18),
+		(jaw_claw_size + partner.jaw_claw_size) * 0.5 + _behavior_rng().randf_range(-0.12, 0.18),
 		0.0, 1.2)
 	# Expanded morphology inheritance: continuous traits average + jitter,
 	# clamped to the same bounds init_genome enforces.
 	var new_body_width: float = clampf(
-		(body_width_factor + partner.body_width_factor) * 0.5 + randf_range(-0.10, 0.10),
+		(body_width_factor + partner.body_width_factor) * 0.5 + _behavior_rng().randf_range(-0.10, 0.10),
 		0.5, 1.8)
 	var new_snout_len: float = clampf(
-		(snout_length_factor + partner.snout_length_factor) * 0.5 + randf_range(-0.10, 0.12),
+		(snout_length_factor + partner.snout_length_factor) * 0.5 + _behavior_rng().randf_range(-0.10, 0.12),
 		0.5, 2.5)
 	var new_dorsal_len: float = clampf(
-		(dorsal_length_factor + partner.dorsal_length_factor) * 0.5 + randf_range(-0.10, 0.12),
+		(dorsal_length_factor + partner.dorsal_length_factor) * 0.5 + _behavior_rng().randf_range(-0.10, 0.12),
 		0.5, 2.2)
 	var new_nuchal: float = clampf(
-		(nuchal_hump + partner.nuchal_hump) * 0.5 + randf_range(-0.08, 0.10),
+		(nuchal_hump + partner.nuchal_hump) * 0.5 + _behavior_rng().randf_range(-0.08, 0.10),
 		0.0, 1.0)
 	# Discrete fin / sucker traits stay in the lineage with rare flips.
-	var new_second_dorsal: bool = (second_dorsal if randf() < 0.96
-		else (partner.second_dorsal if randf() < 0.5 else not second_dorsal))
-	var new_ventral_sucker: bool = (ventral_sucker if randf() < 0.97
-		else (partner.ventral_sucker if randf() < 0.5 else not ventral_sucker))
+	var new_second_dorsal: bool = (second_dorsal if _behavior_rng().randf() < 0.96
+		else (partner.second_dorsal if _behavior_rng().randf() < 0.5 else not second_dorsal))
+	var new_ventral_sucker: bool = (ventral_sucker if _behavior_rng().randf() < 0.97
+		else (partner.ventral_sucker if _behavior_rng().randf() < 0.5 else not ventral_sucker))
 	# Barbel count drifts ±1 occasionally; clamped 0..8.
 	var new_barbel_count: int = clampi(
 		int(round((barbel_count + partner.barbel_count) * 0.5))
-		+ ((randi() % 3 - 1) if randf() < 0.12 else 0), 0, 8)
+		+ ((_behavior_rng().randi() % 3 - 1) if _behavior_rng().randf() < 0.12 else 0), 0, 8)
 	# Pattern: usually inherits from one parent, small chance to mutate to
 	# any pattern (0-9, now incl. reticulated / marbled / mask / ocellated).
-	var new_pattern: int = pattern_type if randf() < 0.5 else partner.pattern_type
-	if randf() < 0.06:
-		new_pattern = randi() % 10
+	var new_pattern: int = pattern_type if _behavior_rng().randf() < 0.5 else partner.pattern_type
+	if _behavior_rng().randf() < 0.06:
+		new_pattern = _behavior_rng().randi() % 10
 	# Dots: average then small jitter, clamped 0-4.
 	var new_dots: int = clampi(
-		int((color_dot_count + partner.color_dot_count) * 0.5 + randf_range(-1.0, 1.0)),
+		int((color_dot_count + partner.color_dot_count) * 0.5 + _behavior_rng().randf_range(-1.0, 1.0)),
 		0, 4)
 	# Continuous pattern modulators: average parents + jitter, clamped. These let
 	# a lineage's markings drift wider/finer/bolder over generations so siblings
 	# diverge into visibly distinct faces.
 	var new_pat_scale: float = clampf(
-		(pattern_scale + partner.pattern_scale) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_scale + partner.pattern_scale) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_pat_intensity: float = clampf(
-		(pattern_intensity + partner.pattern_intensity) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_intensity + partner.pattern_intensity) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_pat_density: float = clampf(
-		(pattern_density + partner.pattern_density) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_density + partner.pattern_density) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12), 0.0, 1.0)
 	var new_pat_coverage: float = clampf(
-		(pattern_coverage + partner.pattern_coverage) * 0.5 + randf_range(-0.10, 0.10), 0.2, 1.0)
+		(pattern_coverage + partner.pattern_coverage) * 0.5 + _behavior_rng().randf_range(-0.10, 0.10), 0.2, 1.0)
 	var new_pat_contrast: float = clampf(
-		(pattern_contrast + partner.pattern_contrast) * 0.5 + randf_range(-0.12, 0.12), 0.0, 1.0)
+		(pattern_contrast + partner.pattern_contrast) * 0.5 + _behavior_rng().randf_range(-0.12, 0.12), 0.0, 1.0)
 	# Secondary motif: usually inherited from a parent; a rare new overlay can
 	# emerge, seeding two-pattern phenotypes that compound over later generations.
-	var new_pat_type_b: int = pattern_type_b if randf() < 0.6 else partner.pattern_type_b
+	var new_pat_type_b: int = pattern_type_b if _behavior_rng().randf() < 0.6 else partner.pattern_type_b
 	var new_pat_blend: float = clampf(
-		(pattern_blend + partner.pattern_blend) * 0.5 + randf_range(-0.08, 0.08), 0.0, 1.0)
-	if new_pat_type_b < 0 and randf() < 0.04:
-		new_pat_type_b = randi() % 10
-		new_pat_blend = randf_range(0.2, 0.5)
+		(pattern_blend + partner.pattern_blend) * 0.5 + _behavior_rng().randf_range(-0.08, 0.08), 0.0, 1.0)
+	if new_pat_type_b < 0 and _behavior_rng().randf() < 0.04:
+		new_pat_type_b = _behavior_rng().randi() % 10
+		new_pat_blend = _behavior_rng().randf_range(0.2, 0.5)
 	# Previously species-locked silhouette/lifestyle genes can now drift at
 	# low rates, letting lineages branch into visibly new forms over long runs.
 	var prey_pressure: float = 0.0
@@ -7582,49 +7626,49 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 			snail_n = float((sn_root as Node).get_child_count())
 		prey_pressure = clampf((shrimp_n * 0.7 + snail_n * 0.9) / (fish_n * 3.2), 0.0, 1.0)
 	var predator_mut_boost: float = prey_pressure * 0.08
-	var new_snail_predator: bool = (snail_predator if randf() < (0.985 - predator_mut_boost)
-		else (partner.snail_predator if randf() < 0.5 else not snail_predator))
-	var new_shrimp_predator: bool = (shrimp_predator if randf() < (0.985 - predator_mut_boost)
-		else (partner.shrimp_predator if randf() < 0.5 else not shrimp_predator))
-	var new_algae_grazer: bool = (algae_grazer if randf() < 0.985
-		else (partner.algae_grazer if randf() < 0.5 else not algae_grazer))
-	var new_livebearer: bool = (is_livebearer if randf() < 0.995
+	var new_snail_predator: bool = (snail_predator if _behavior_rng().randf() < (0.985 - predator_mut_boost)
+		else (partner.snail_predator if _behavior_rng().randf() < 0.5 else not snail_predator))
+	var new_shrimp_predator: bool = (shrimp_predator if _behavior_rng().randf() < (0.985 - predator_mut_boost)
+		else (partner.shrimp_predator if _behavior_rng().randf() < 0.5 else not shrimp_predator))
+	var new_algae_grazer: bool = (algae_grazer if _behavior_rng().randf() < 0.985
+		else (partner.algae_grazer if _behavior_rng().randf() < 0.5 else not algae_grazer))
+	var new_livebearer: bool = (is_livebearer if _behavior_rng().randf() < 0.995
 		else partner.is_livebearer)
-	var new_guards_clutch: bool = (guards_clutch if randf() < 0.97
-		else (partner.guards_clutch if randf() < 0.5 else not guards_clutch))
-	var new_adipose_fin: bool = (adipose_fin if randf() < 0.985
-		else (partner.adipose_fin if randf() < 0.5 else not adipose_fin))
-	var new_snout_pointed: bool = (snout_pointed if randf() < 0.985
-		else (partner.snout_pointed if randf() < 0.5 else not snout_pointed))
-	var new_body_shape: String = body_shape if randf() < 0.86 else partner.body_shape
-	if randf() < 0.04:
+	var new_guards_clutch: bool = (guards_clutch if _behavior_rng().randf() < 0.97
+		else (partner.guards_clutch if _behavior_rng().randf() < 0.5 else not guards_clutch))
+	var new_adipose_fin: bool = (adipose_fin if _behavior_rng().randf() < 0.985
+		else (partner.adipose_fin if _behavior_rng().randf() < 0.5 else not adipose_fin))
+	var new_snout_pointed: bool = (snout_pointed if _behavior_rng().randf() < 0.985
+		else (partner.snout_pointed if _behavior_rng().randf() < 0.5 else not snout_pointed))
+	var new_body_shape: String = body_shape if _behavior_rng().randf() < 0.86 else partner.body_shape
+	if _behavior_rng().randf() < 0.04:
 		var shapes: Array[String] = ["fusiform", "compressed", "globiform",
 			"anguilliform", "depressed", "sagittiform", "ribbon"]
-		new_body_shape = shapes[randi() % shapes.size()]
-	var new_mouth_orientation: int = (mouth_orientation if randf() < 0.93
-		else partner.mouth_orientation if randf() < 0.5
-		else clampi(mouth_orientation + (1 if randf() < 0.5 else -1), -1, 1))
+		new_body_shape = shapes[_behavior_rng().randi() % shapes.size()]
+	var new_mouth_orientation: int = (mouth_orientation if _behavior_rng().randf() < 0.93
+		else partner.mouth_orientation if _behavior_rng().randf() < 0.5
+		else clampi(mouth_orientation + (1 if _behavior_rng().randf() < 0.5 else -1), -1, 1))
 	# Predator-branch morphology pressure. As prey pressure rises, predator
 	# lineages get stronger selection toward specialized mouth/body forms.
 	if new_snail_predator:
 		new_mouth_orientation = clampi(
 			maxi(new_mouth_orientation, 0)
-			+ (1 if randf() < 0.45 + prey_pressure * 0.30 else 0),
+			+ (1 if _behavior_rng().randf() < 0.45 + prey_pressure * 0.30 else 0),
 			-1, 1)
-		new_snout_pointed = new_snout_pointed or randf() < 0.58 + prey_pressure * 0.18
-		new_head = clampf(new_head + randf_range(0.02, 0.07), 0.7, 1.5)
-		if randf() < 0.50 + prey_pressure * 0.22:
+		new_snout_pointed = new_snout_pointed or _behavior_rng().randf() < 0.58 + prey_pressure * 0.18
+		new_head = clampf(new_head + _behavior_rng().randf_range(0.02, 0.07), 0.7, 1.5)
+		if _behavior_rng().randf() < 0.50 + prey_pressure * 0.22:
 			new_body_shape = "anguilliform"
 	if new_shrimp_predator:
 		if not new_snail_predator:
 			new_mouth_orientation = clampi(
 				mini(new_mouth_orientation, 0)
-				- (1 if randf() < 0.32 + prey_pressure * 0.28 else 0),
+				- (1 if _behavior_rng().randf() < 0.32 + prey_pressure * 0.28 else 0),
 				-1, 1)
-		new_elong = clampf(new_elong + randf_range(0.01, 0.06), 0.85, 1.25)
-		if randf() < 0.42 + prey_pressure * 0.20:
+		new_elong = clampf(new_elong + _behavior_rng().randf_range(0.01, 0.06), 0.85, 1.25)
+		if _behavior_rng().randf() < 0.42 + prey_pressure * 0.20:
 			new_body_shape = "fusiform"
-	if new_snail_predator and new_shrimp_predator and randf() < 0.42 + prey_pressure * 0.25:
+	if new_snail_predator and new_shrimp_predator and _behavior_rng().randf() < 0.42 + prey_pressure * 0.25:
 		new_body_shape = "globiform"
 		new_snout_pointed = true
 	var g: Dictionary = {
@@ -7636,24 +7680,24 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		# Tail color inherits like the others if either parent had one set.
 		"tail_color": (tail_color if _tail_color_set else accent_color).lerp(
 			partner.tail_color if partner._tail_color_set else partner.accent_color,
-			mix).lerp(Color(randf(), randf(), randf()), color_muta * 0.5),
+			mix).lerp(Color(_behavior_rng().randf(), _behavior_rng().randf(), _behavior_rng().randf()), color_muta * 0.5),
 		# Marking color inherits the same way - keeps tetra bands / rasbora
 		# wedges / gourami flanks coherent down a lineage.
 		"marking_color": (marking_color if _marking_color_set else accent_color).lerp(
 			partner.marking_color if partner._marking_color_set else partner.accent_color,
-			mix).lerp(Color(randf(), randf(), randf()), color_muta * 0.5),
+			mix).lerp(Color(_behavior_rng().randf(), _behavior_rng().randf(), _behavior_rng().randf()), color_muta * 0.5),
 		"adult_voxel_scale": new_size,
 		"size_potential": new_size_potential,
-		"max_growth": clampf((max_growth + partner.max_growth) * 0.5 * randf_range(0.94, 1.06), 1.05, 2.8),
-		"max_age_s": (max_age_s + partner.max_age_s) * 0.5 + randf_range(-25.0, 25.0),
-		"max_speed": (max_speed + partner.max_speed) * 0.5 + randf_range(-0.15, 0.15),
+		"max_growth": clampf((max_growth + partner.max_growth) * 0.5 * _behavior_rng().randf_range(0.94, 1.06), 1.05, 2.8),
+		"max_age_s": (max_age_s + partner.max_age_s) * 0.5 + _behavior_rng().randf_range(-25.0, 25.0),
+		"max_speed": (max_speed + partner.max_speed) * 0.5 + _behavior_rng().randf_range(-0.15, 0.15),
 		"schooling_strength": (schooling_strength + partner.schooling_strength) * 0.5,
 		"separation_radius": separation_radius,
 		"herbivory": herbivory,
 		"fecundity": fecundity,
 		"clutch_size": clutch_size,
-		"preferred_y": preferred_y + randf_range(-0.4, 0.4),
-		"sex": randi() % 2,
+		"preferred_y": preferred_y + _behavior_rng().randf_range(-0.4, 0.4),
+		"sex": _behavior_rng().randi() % 2,
 		"generation": maxi(generation, partner.generation) + 1,
 		"parent_lineage": "%s & %s" % [fish_name, partner.fish_name],
 		"fin_length_factor": new_fin,
@@ -7675,54 +7719,54 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		# lineage; ~5% chance a fry tries a different niche. home_x/z drift
 		# from the midpoint of the parents so siblings spread radially,
 		# colonising different parts of the tank over generations.
-		"swim_pattern": (swim_pattern if randf() < 0.95 else partner.swim_pattern),
-		"home_x": clampf((home_x + partner.home_x) * 0.5 + randf_range(-2.0, 2.0),
+		"swim_pattern": (swim_pattern if _behavior_rng().randf() < 0.95 else partner.swim_pattern),
+		"home_x": clampf((home_x + partner.home_x) * 0.5 + _behavior_rng().randf_range(-2.0, 2.0),
 			-10.0, 10.0),
-		"home_y": clampf((home_y + partner.home_y) * 0.5 + randf_range(-0.4, 0.4),
+		"home_y": clampf((home_y + partner.home_y) * 0.5 + _behavior_rng().randf_range(-0.4, 0.4),
 			0.5, 7.5),
 		"home_y_radius": clampf((home_y_radius + partner.home_y_radius) * 0.5
-			+ randf_range(-0.12, 0.12), 0.3, 2.5),
-		"home_z": clampf((home_z + partner.home_z) * 0.5 + randf_range(-2.0, 2.0),
+			+ _behavior_rng().randf_range(-0.12, 0.12), 0.3, 2.5),
+		"home_z": clampf((home_z + partner.home_z) * 0.5 + _behavior_rng().randf_range(-2.0, 2.0),
 			-8.0, 8.0),
 		"home_radius": clampf((home_radius + partner.home_radius) * 0.5
-			+ randf_range(-0.4, 0.4), 0.6, 7.0),
+			+ _behavior_rng().randf_range(-0.4, 0.4), 0.6, 7.0),
 		"wander_strength": clampf((wander_strength + partner.wander_strength) * 0.5
-			+ randf_range(-0.15, 0.15), 0.2, 2.0),
+			+ _behavior_rng().randf_range(-0.15, 0.15), 0.2, 2.0),
 		"dart_chance": clampf((dart_chance + partner.dart_chance) * 0.5
-			+ randf_range(-0.005, 0.005), 0.0, 0.08),
+			+ _behavior_rng().randf_range(-0.005, 0.005), 0.0, 0.08),
 		"dart_speed_mult": clampf((dart_speed_mult + partner.dart_speed_mult) * 0.5
-			+ randf_range(-0.10, 0.10), 1.0, 2.5),
+			+ _behavior_rng().randf_range(-0.10, 0.10), 1.0, 2.5),
 		# Skeleton phenotype inheritance. Most params drift continuously;
 		# the booleans (barbels, armor) flip at ~3% mutation rate so lineages
 		# can occasionally lose / gain those features (driven speciation).
-		"has_barbels": (has_barbels if randf() < 0.97
-			else (partner.has_barbels if randf() < 0.5 else not has_barbels)),
-		"armor_plates": (armor_plates if randf() < 0.97
-			else (partner.armor_plates if randf() < 0.5 else not armor_plates)),
+		"has_barbels": (has_barbels if _behavior_rng().randf() < 0.97
+			else (partner.has_barbels if _behavior_rng().randf() < 0.5 else not has_barbels)),
+		"armor_plates": (armor_plates if _behavior_rng().randf() < 0.97
+			else (partner.armor_plates if _behavior_rng().randf() < 0.5 else not armor_plates)),
 		"mouth_orientation": new_mouth_orientation,
-		"tail_shape": (tail_shape if randf() < 0.94
-			else partner.tail_shape if randf() < 0.5
-			else randi() % 6),
+		"tail_shape": (tail_shape if _behavior_rng().randf() < 0.94
+			else partner.tail_shape if _behavior_rng().randf() < 0.5
+			else _behavior_rng().randi() % 6),
 		"eye_size_factor": clampf((eye_size_factor + partner.eye_size_factor) * 0.5
-			+ randf_range(-0.10, 0.10), 0.55, 1.7),
+			+ _behavior_rng().randf_range(-0.10, 0.10), 0.55, 1.7),
 		"ventral_profile": clampf((ventral_profile + partner.ventral_profile) * 0.5
-			+ randf_range(-0.08, 0.08), 0.55, 1.7),
+			+ _behavior_rng().randf_range(-0.08, 0.08), 0.55, 1.7),
 		"back_arch": clampf((back_arch + partner.back_arch) * 0.5
-			+ randf_range(-0.08, 0.08), 0.65, 1.6),
+			+ _behavior_rng().randf_range(-0.08, 0.08), 0.65, 1.6),
 		# Lifestyle traits can mutate slowly to support niche shifts.
 		"snail_predator": new_snail_predator,
 		"shrimp_predator": new_shrimp_predator,
 		"algae_grazer": new_algae_grazer,
 		"is_livebearer": new_livebearer,
 		"guards_clutch": new_guards_clutch,
-		"dimorphism": clampf((dimorphism + partner.dimorphism) * 0.5 + randf_range(-0.05, 0.05), 0.0, 1.0),
-		"sterile": sterile or partner.sterile or (randf() < 0.01),
-		"viable": not (sterile or partner.sterile or (species != partner.species) or (randf() < 0.03)),
+		"dimorphism": clampf((dimorphism + partner.dimorphism) * 0.5 + _behavior_rng().randf_range(-0.05, 0.05), 0.0, 1.0),
+		"sterile": sterile or partner.sterile or (_behavior_rng().randf() < 0.01),
+		"viable": not (sterile or partner.sterile or (species != partner.species) or (_behavior_rng().randf() < 0.03)),
 		# Silhouette traits. Most drift continuously; select booleans + shape
 		# now mutate rarely to create emergent long-run morphology splits.
 		"anal_fin_length_factor": clampf(
 			(anal_fin_length_factor + partner.anal_fin_length_factor) * 0.5
-			+ randf_range(-0.10, 0.10), 0.3, 2.0),
+			+ _behavior_rng().randf_range(-0.10, 0.10), 0.3, 2.0),
 		"adipose_fin": new_adipose_fin,
 		"snout_pointed": new_snout_pointed,
 		"body_shape": new_body_shape,
@@ -7736,15 +7780,15 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"jaw_claw_size": new_jaw_claw,
 		# Ornamentation traits stay in the lineage with rare flips so a
 		# bar-edged or eye-spotted founder line keeps its look but can drift.
-		"bar_edged": (bar_edged if randf() < 0.97
-			else (partner.bar_edged if randf() < 0.5 else not bar_edged)),
-		"eye_spot": (eye_spot if randf() < 0.97
-			else (partner.eye_spot if randf() < 0.5 else not eye_spot)),
-		"ventral_feelers": (ventral_feelers if randf() < 0.98
-			else (partner.ventral_feelers if randf() < 0.5 else not ventral_feelers)),
+		"bar_edged": (bar_edged if _behavior_rng().randf() < 0.97
+			else (partner.bar_edged if _behavior_rng().randf() < 0.5 else not bar_edged)),
+		"eye_spot": (eye_spot if _behavior_rng().randf() < 0.97
+			else (partner.eye_spot if _behavior_rng().randf() < 0.5 else not eye_spot)),
+		"ventral_feelers": (ventral_feelers if _behavior_rng().randf() < 0.98
+			else (partner.ventral_feelers if _behavior_rng().randf() < 0.5 else not ventral_feelers)),
 		"finnage": clampf((finnage + partner.finnage) * 0.5
-			+ randf_range(-0.08, 0.08), 1.0, 2.2),
-		"labyrinth_breather": (labyrinth_breather if randf() < 0.99
+			+ _behavior_rng().randf_range(-0.08, 0.08), 1.0, 2.2),
+		"labyrinth_breather": (labyrinth_breather if _behavior_rng().randf() < 0.99
 			else partner.labyrinth_breather),
 		"organism_type": "fish",
 		"parent_keys": SpeciesLibScript.new().parent_keys_for_breeding([
@@ -7764,12 +7808,12 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 # get a dramatic jump (albino, melanistic, xanthic, veil-fin, balloon body, or a
 # bold disruptive overlay) that gradual drift would never produce. Tagged in the
 # genome so discovery + future specimen cards can call them out.
-static func _apply_saltation(g: Dictionary) -> void:
-	if randf() > 0.004:
+func _apply_saltation(g: Dictionary) -> void:
+	if _behavior_rng().randf() > 0.004:
 		return
 	var kinds: Array[String] = ["albino", "melanistic", "xanthic", "veil",
 		"balloon", "disruptive"]
-	var kind: String = kinds[randi() % kinds.size()]
+	var kind: String = kinds[_behavior_rng().randi() % kinds.size()]
 	match kind:
 		"albino":
 			var b: Color = g.get("base_color", Color(1, 1, 1))
@@ -7793,8 +7837,8 @@ static func _apply_saltation(g: Dictionary) -> void:
 			g["body_depth_factor"] = clampf(float(g.get("body_depth_factor", 1.0)) * 1.5, 0.7, 1.4)
 			g["body_elongation"] = clampf(float(g.get("body_elongation", 1.0)) * 0.7, 0.65, 1.55)
 		"disruptive":
-			g["pattern_type_b"] = randi() % 10
-			g["pattern_blend"] = randf_range(0.55, 0.9)
+			g["pattern_type_b"] = _behavior_rng().randi() % 10
+			g["pattern_blend"] = _behavior_rng().randf_range(0.55, 0.9)
 			g["pattern_contrast"] = clampf(float(g.get("pattern_contrast", 0.5)) + 0.4, 0.0, 1.0)
 			g["pattern_density"] = clampf(float(g.get("pattern_density", 0.5)) + 0.3, 0.0, 1.0)
 	g["saltation"] = kind

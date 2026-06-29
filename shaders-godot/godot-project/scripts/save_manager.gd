@@ -20,6 +20,7 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 		if host.has_method("_show_corrupt_save_prompt"):
 			host.call("_show_corrupt_save_prompt", path)
 		return
+	d = SaveRepair.sanitize(d)
 	if sim != null and sim.has_method("load_state"):
 		sim.load_state(d)
 	if d.has("terrain") and world != null and world.has_method("terrain_apply_save_dict") \

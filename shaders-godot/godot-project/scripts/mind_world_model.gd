@@ -95,7 +95,9 @@ static func curiosity_target_bias(f: Fish) -> Vector3:
 	var cell: String = FishMindScience.novelty_cell_key(f)
 	if f._hypotheses.has(cell):
 		return Vector3.ZERO
-	return Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4)) * float(m.get("error", 0.0))
+	var cog: RandomNumberGenerator = MindRng.for_fish(f)
+	return Vector3(cog.randf_range(-0.4, 0.4), 0.0, cog.randf_range(-0.4, 0.4)) \
+			* float(m.get("error", 0.0))
 
 
 static func precision_scale(f: Fish, label: String) -> float:

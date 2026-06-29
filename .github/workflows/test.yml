@@ -1,0 +1,79 @@
+# PR/push smoke gate — ENGINEERING_EXCELLENCE #41.
+# Runs headless compile+run checks without release export or bundled LLM.
+
+name: Smoke tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  GODOT_VERSION: 4.6.3-stable
+  GODOT_TEMPLATES_DIR: 4.6.3.stable
+  PROJECT_PATH: shaders-godot/godot-project
+
+jobs:
+  smoke:
+    name: Headless smokes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Godot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1 libx11-6 libxcursor1 libxinerama1 libxrandr2 \
+            libxi6 libglu1-mesa libasound2t64
+          mkdir -p "$HOME/godot"
+          cd "$HOME/godot"
+          curl -fsSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q godot.zip
+          echo "GODOT_BIN=$HOME/godot/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
+
+      - name: Import project assets
+        run: |
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --import
+
+      - name: Run smoke suite
+        run: bash scripts/run_smokes.sh
+
+  reference:
+    name: Reference crates & schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate data-schemas examples
+        run: |
+          pip install jsonschema
+          python3 data-schemas/validate.py
+      - name: sim-rust compile check
+        run: |
+          cd sim-rust
+          cargo test --no-run
+          cargo run --release --example cycle >/dev/null
+
+  lint:
+    name: GDScript lint (new modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gdtoolkit
+        run: pip install gdtoolkit==4.3.4
+      - name: Lint engineering modules
+        working-directory: shaders-godot/godot-project
+        run: |
+          gdlint --config gdlintrc scripts/sim_topdown.gd \
+            scripts/mind_channel.gd \
+            scripts/mind_state.gd \
+            scripts/smoke_runner.gd \
+            scripts/smoke_topdown_motion.gd \
+            scripts/smoke_mind_channel.gd

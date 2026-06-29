@@ -6,12 +6,38 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/supply_chain/manifest.env
+source "$ROOT/scripts/supply_chain/manifest.env"
+# shellcheck source=scripts/supply_chain/verify_sha256.sh
+source "$ROOT/scripts/supply_chain/verify_sha256.sh"
+
+require_cmd() {
+	for c in "$@"; do
+		if ! command -v "$c" >/dev/null 2>&1; then
+			echo "ERROR: required command not found: $c" >&2
+			exit 1
+		fi
+	done
+}
+require_cmd curl unzip git
+if [[ "$(uname -s)" == "Darwin" ]]; then
+	require_cmd cmake
+fi
+if command -v shasum >/dev/null 2>&1; then
+	: # macOS
+elif command -v sha256sum >/dev/null 2>&1; then
+	: # Linux
+else
+	echo "ERROR: need shasum or sha256sum for checksum verify" >&2
+	exit 1
+fi
+
 PROJECT="$ROOT/shaders-godot/godot-project"
 ADDON="$PROJECT/addons/godot_llama"
 BIN="$ADDON/bin"
 WRAPPER="$PROJECT/scripts/godot_llama_wrapper.gd"
 VERSION="${GODOT_LLAMA_VERSION:-1.0.0}"
-ZIP="godot-llama-plugin-all-platforms-${VERSION}.zip"
+ZIP="${GODOT_LLAMA_ZIP:-godot-llama-plugin-all-platforms-${VERSION}.zip}"
 URL="https://github.com/mgrigajtis/godot_llama/releases/download/${VERSION}/${ZIP}"
 STAMP="$BIN/.llama_dylibs_commit"
 
@@ -105,6 +131,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Downloading godot_llama ${VERSION}..."
 curl -fsSL -o "$tmpdir/$ZIP" "$URL"
+verify_sha256 "$tmpdir/$ZIP" "$GODOT_LLAMA_ZIP_SHA256" "godot_llama plugin zip" 1
 mkdir -p "$PROJECT/addons"
 unzip -q -o "$tmpdir/$ZIP" -d "$PROJECT"
 

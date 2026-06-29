@@ -1,0 +1,24 @@
+# SYSTEMIC #66 — normalize text line endings; mark binaries.
+* text=auto eol=lf
+*.sh text eol=lf
+*.gd text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.vdf text eol=lf
+*.tscn text eol=lf
+*.tres text eol=lf
+*.gdshader text eol=lf
+*.gdshaderinc text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gguf binary
+*.zip binary
+*.tpz binary
+*.dylib binary
+*.so binary
+*.dll binary
+*.framework/** binary

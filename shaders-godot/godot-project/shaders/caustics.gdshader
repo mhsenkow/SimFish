@@ -14,6 +14,7 @@ uniform float wave_amplitude : hint_range(0.0, 0.30) = 0.028;
 uniform float wave_speed = 0.85;
 uniform float wave_scale = 0.42;
 uniform float wave_coupling : hint_range(0.0, 1.0) = 0.65;
+uniform float day_phase_offset = 0.0;
 
 // ---- Organic caustics ----
 // Real caustics are sharp, branching light filaments that drift and morph, not
@@ -54,7 +55,7 @@ void fragment() {
 
     // Project caustics onto XZ plane
     vec2 uv = world_pos.xz * caustic_scale;
-    float t = TIME * caustic_speed;
+    float t = TIME * caustic_speed + day_phase_offset * 6.28318;
 
     // Surface-wave displacement of the caustic UVs. The position the
     // photon converges to on the substrate is offset laterally by the
@@ -63,7 +64,7 @@ void fragment() {
     // pattern visibly slides + warps with the surface motion instead
     // of holding its shape and only flickering brighter/dimmer.
     vec2 surf_uv = world_pos.xz * wave_scale;
-    float ts = TIME * wave_speed;
+    float ts = TIME * wave_speed + day_phase_offset * 4.0;
     vec2 surf_grad = vec2(
         cos(surf_uv.x + ts) * cos(surf_uv.y * 0.91 - ts * 0.74)
         + cos(surf_uv.x * 1.55 - ts * 1.05) * sin(surf_uv.y * 1.35 + ts * 0.88) * 1.55,

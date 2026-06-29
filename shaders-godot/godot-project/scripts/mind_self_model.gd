@@ -3,13 +3,16 @@ extends RefCounted
 # CONSCIOUSNESS_ENGINEERING §G — self-model & higher-order representation.
 
 const FishMind = preload("res://scripts/fish_mind.gd")
+const FishProtoself = preload("res://scripts/fish_protoself.gd")
+const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
 
 
 static func build(f: Fish, workspace: Array) -> Dictionary:
 	var attending: String = ""
 	if not workspace.is_empty():
 		attending = str((workspace[0] as Dictionary).get("label", ""))
-	return {
+	var out: Dictionary = {
 		"feel": FishMind.emotional_state(f),
 		"attending_to": attending,
 		"intention": f.current_intention,
@@ -18,6 +21,18 @@ static func build(f: Fish, workspace: Array) -> Dictionary:
 		"agency": "self" if f.speed > 0.05 else "drifting",
 		"self_summary": str(f.get("_self_summary") if f.get("_self_summary") != null else ""),
 	}
+	if FishBinding.layer_enabled():
+		var pb: Dictionary = FishProtoself.ensure(f)
+		out["body"] = {
+			"gills": snappedf(float(pb.get("gill_rhythm", 0.0)), 0.01),
+			"gut": snappedf(float(pb.get("gut_fullness", 0.0)), 0.01),
+			"fins": snappedf(float(pb.get("fin_tension", 0.0)), 0.01),
+			"comfort": snappedf(float(pb.get("comfort", 0.0)), 0.01),
+		}
+		out["core_valence"] = snappedf(FishCoreAffect.valence(f), 0.01)
+		out["felt_texture"] = FishCoreAffect.texture(f)
+		out["binding"] = snappedf(FishBinding.integration_score(f), 0.01)
+	return out
 
 
 static func tick_higher_order(f: Fish, self_model: Dictionary, _dt: float) -> PackedStringArray:
@@ -25,7 +40,7 @@ static func tick_higher_order(f: Fish, self_model: Dictionary, _dt: float) -> Pa
 	if f.stress > 0.65 and float(self_model.get("confidence", 1.0)) < 0.4:
 		meta.append("I keep failing here")
 	if f._asleep and f._dreaming and float(self_model.get("confidence", 0.0)) > 0.42:
-		if randf() < 0.003:
+		if MindRng.for_fish(f).randf() < 0.003:
 			meta.append("this might be sleep")
 	if f.spooked > 0.5 and f.vigilance > 0.6:
 		meta.append("I've been scared a long time")

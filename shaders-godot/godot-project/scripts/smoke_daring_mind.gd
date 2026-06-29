@@ -10,7 +10,6 @@ const MindDaring = preload("res://scripts/mind_daring.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 
 
 func _initialize() -> void:

@@ -27,11 +27,13 @@ const DDM_THRESHOLD_BASE: float = 1.05
 
 const FOOD_SUB_KEYS: Array = ["flake", "pellet", "worm", "wafer"]
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
 const SALIENT_MAX: int = 12
 const VOICED_FAMILIARITY: float = 0.62
 const TD_ALPHA: float = 0.12
 const TD_GAMMA: float = 0.88
 const MIND_SCHEMA_VERSION: int = 3
+const SimRngScript = preload("res://scripts/sim_rng.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 
 
@@ -147,8 +149,13 @@ static func personality_commit_speed(f: Fish) -> float:
 
 static func ddm_threshold(f: Fish) -> float:
 	# Scared fish decide faster (lower threshold) — Vol II #32.
+	# Low self-model confidence → higher threshold (hesitate) — META #6.
 	var fear: float = clampf(f.spooked * 0.55 + f.stress * 0.45 + f.vigilance * 0.35, 0.0, 1.0)
-	return lerpf(DDM_THRESHOLD_BASE, DDM_THRESHOLD_BASE * 0.55, fear)
+	var thr: float = lerpf(DDM_THRESHOLD_BASE, DDM_THRESHOLD_BASE * 0.55, fear)
+	var conf: float = 1.0
+	if f._mind_self_model is Dictionary and not f._mind_self_model.is_empty():
+		conf = float(f._mind_self_model.get("confidence", 1.0))
+	return lerpf(thr, thr * 1.38, clampf(1.0 - conf, 0.0, 0.9))
 
 
 static func update_conflict(f: Fish, approach: float, avoid: float,
@@ -175,8 +182,9 @@ static func tick_ddm(f: Fish, dt: float, approach: float, avoid: float, sim: Nod
 	if not f._delib_active or f._delib_decided:
 		return
 	var thr: float = ddm_threshold(f)
-	var noise_a: float = (randf() - 0.5) * DDM_NOISE
-	var noise_b: float = (randf() - 0.5) * DDM_NOISE
+	var cog: RandomNumberGenerator = MindRng.for_fish(f)
+	var noise_a: float = (cog.randf() - 0.5) * DDM_NOISE
+	var noise_b: float = (cog.randf() - 0.5) * DDM_NOISE
 	f._delib_ev_approach += (approach * DDM_DRIFT + noise_a) * dt
 	f._delib_ev_avoid += (avoid * DDM_DRIFT + noise_b) * dt
 	f._delib_phase += dt
@@ -295,8 +303,9 @@ static func aim_before_burst(f: Fish) -> void:
 static func maybe_double_take(f: Fish, curiosity: float) -> void:
 	if f._double_take_remaining > 0.0:
 		return
-	if curiosity > 0.45 and randf() < 0.22:
-		f._double_take_remaining = randf_range(0.35, 0.7)
+	if curiosity > 0.45 and MindRng.for_fish(f).randf() < 0.22:
+		var cog: RandomNumberGenerator = MindRng.for_fish(f)
+		f._double_take_remaining = cog.randf_range(0.35, 0.7)
 
 
 # ---- Memory & learning (#14, #18, #22–25) ----
@@ -791,6 +800,7 @@ static func mind_to_dict(f: Fish) -> Dictionary:
 		"foraging_commitment": f.foraging_commitment,
 		"autobiography": autobiography_dict(f),
 		"conversation": _mind_conversation().call("to_dict", f),
+		"felt_self": FishBinding.to_dict(f),
 	})
 	d["schema_version"] = MIND_SCHEMA_VERSION
 	return d
@@ -846,6 +856,7 @@ static func apply_mind_dict(f: Fish, d: Dictionary) -> void:
 	f._curiosity_about_keeper = float(d.get("curiosity_about_keeper", f._curiosity_about_keeper))
 	f.foraging_commitment = float(d.get("foraging_commitment", f.foraging_commitment))
 	_mind_conversation().call("from_dict", f, d.get("conversation", null))
+	FishBinding.from_dict(f, d.get("felt_self", null))
 
 
 static func offline_character_bio(f: Fish) -> String:

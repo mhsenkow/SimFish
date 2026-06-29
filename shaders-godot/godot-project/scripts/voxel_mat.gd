@@ -236,6 +236,19 @@ static func _get_sub_caustic_shader() -> Shader:
 	return _sub_caustic_shader
 
 static var _sub_caustic_mat_cache: Dictionary = {}
+static var _shader_perf_tier: int = 0
+
+
+static func shader_perf_tier() -> int:
+	return _shader_perf_tier
+
+
+static func set_shader_perf_tier(tier: int) -> void:
+	_shader_perf_tier = clampi(tier, 0, 2)
+	var blob_max: int = 16 if _shader_perf_tier >= 2 else 32
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("blob_shadow_max", blob_max)
 
 static func make_substrate_caustic(color: Color, material_id: int = 0) -> ShaderMaterial:
 	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
@@ -245,6 +258,7 @@ static func make_substrate_caustic(color: Color, material_id: int = 0) -> Shader
 	m.shader = _get_sub_caustic_shader()
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("material_id", material_id)
+	m.set_shader_parameter("blob_shadow_max", 16 if _shader_perf_tier >= 2 else 32)
 	_sub_caustic_mat_cache[cache_key] = m
 	return m
 
@@ -290,9 +304,11 @@ static func make_flower_foliage(color: Color) -> ShaderMaterial:
 
 
 static func update_caustic_uniforms(intensity: float, color: Color) -> void:
+	var scale: float = 1.0 if _shader_perf_tier < 2 else 0.55
+	var eff: float = intensity * scale
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
-			mat.set_shader_parameter("caustic_intensity", intensity)
+			mat.set_shader_parameter("caustic_intensity", eff)
 			mat.set_shader_parameter("light_color", color)
 
 
@@ -341,7 +357,11 @@ static func make_bubble(color: Color = Color(0.78, 0.92, 0.96, 0.42),
 # Overbright albedo for fixture LEDs / emissive voxels — punches through
 # the palette-quantize night burnthrough path without a separate shader.
 static func make_emissive(color: Color) -> ShaderMaterial:
-	var m: ShaderMaterial = make(color).duplicate() as ShaderMaterial
+	var m := ShaderMaterial.new()
+	m.shader = _get_shader()
+	m.set_shader_parameter("albedo", color)
+	# Keep fixture panels hot through palette tint + night quantize.
+	m.set_shader_parameter("palette_value", 1.18)
 	return m
 
 

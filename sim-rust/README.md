@@ -1,6 +1,8 @@
 # vivarium-sim
 
-> **Status: reference prototype — not wired into the game.** The shipping game
+> **Status: reference prototype — not wired into the game.** See
+> [docs/adr/001-sim-rust-reference.md](../docs/adr/001-sim-rust-reference.md).
+> The shipping game
 > (`shaders-godot/godot-project/`) runs its chemistry in GDScript
 > (`water_chemistry.gd`, `substrate_grid.gd`). This Rust crate is a standalone,
 > higher-fidelity model of the same nitrogen cycle, kept as a correctness
@@ -30,7 +32,12 @@ Prints a 42-day fishless-cycle table to your terminal:
    ...
 ```
 
-Architecturally what you're watching:
+Architecturally what you're watching (cycle demo):
+
+## Orphan binaries
+
+`src/bin/vivarium_serve.rs` is an unused HTTP telemetry sketch — **not built or shipped**.
+Do not run it expecting game integration; archive candidate (SYSTEMIC #46).
 
 - Day 0: tank dosed with 2 mg/L ammonia; bacteria start growing.
 - Days 1-7: nitrosomonas saturate the substrate surface (Nso climbs to 143), nitrobacter follows behind (Nbc lags).

@@ -26,6 +26,7 @@ var/
 .env
 .venv
 venv/
+steam/store/.venv/
 ENV/
 
 # Godot - editor cache + headless capture outputs (regenerated on demand).

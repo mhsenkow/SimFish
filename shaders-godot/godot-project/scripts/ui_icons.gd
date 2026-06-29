@@ -57,6 +57,43 @@ const MENU: Dictionary = {
 	"more": {"emoji": "⋯", "text": "...", "tip": "More actions"},
 }
 
+# Player food picker (footer dock). Buttons always show a readable name; emoji
+# is a prefix on desktop only (never icon-only — too tiny in the footer bar).
+const FEED: Dictionary = {
+	"dock": {
+		"emoji": "",
+		"text": "Feed",
+		"name": "Feed",
+		"tip": "Pick a food, then click or tap the water to drop it",
+	},
+	"flake": {
+		"emoji": "✨",
+		"text": "Fl",
+		"name": "Flakes",
+		"tip": "Flakes — float on the surface. Top & mid feeders rush up.",
+	},
+	"pellet": {
+		"emoji": "●",
+		"text": "Pt",
+		"name": "Pellets",
+		"tip": "Pellets — sink to the bottom. Mid & bottom feeders.",
+	},
+	"worm": {
+		"emoji": "〰",
+		"text": "Wm",
+		"name": "Worm",
+		"tip": "Bloodworm — wriggles mid-water. Carnivores go wild.",
+	},
+	"wafer": {
+		"emoji": "▢",
+		"text": "Wf",
+		"name": "Wafer",
+		"tip": "Algae wafer — slow sink. Herbivores & grazers.",
+	},
+}
+
+const FEED_SUBTYPE_KEYS: Array[String] = ["flake", "pellet", "worm", "wafer"]
+
 
 static func use_color_emoji() -> bool:
 	return not (OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile"))
@@ -105,3 +142,42 @@ static func menu_label(id: String) -> String:
 static func menu_tooltip(id: String) -> String:
 	var e: Dictionary = MENU.get(id, {})
 	return String(e.get("tip", id))
+
+
+static func feed_subtype_key(subtype: int) -> String:
+	return FEED_SUBTYPE_KEYS[clampi(subtype, 0, FEED_SUBTYPE_KEYS.size() - 1)]
+
+
+static func feed_label(id: String, force_short: bool = false) -> String:
+	var e: Dictionary = FEED.get(id, {})
+	if force_short:
+		return String(e.get("text", e.get("name", id)))
+	return String(e.get("name", e.get("text", id)))
+
+
+static func feed_button_label(id: String, force_short: bool = false) -> String:
+	var e: Dictionary = FEED.get(id, {})
+	var name: String = String(e.get("name", e.get("text", id)))
+	if force_short:
+		return String(e.get("text", name))
+	if use_color_emoji():
+		var em: String = String(e.get("emoji", ""))
+		if em.strip_edges() != "":
+			return "%s %s" % [em, name]
+	return name
+
+
+static func feed_tooltip(id: String) -> String:
+	var e: Dictionary = FEED.get(id, {})
+	return String(e.get("tip", id))
+
+
+static func apply_feed_button(btn: Button, id: String, active: bool = false,
+		force_short: bool = false) -> void:
+	if btn == null:
+		return
+	btn.text = feed_button_label(id, force_short)
+	btn.tooltip_text = feed_tooltip(id)
+	PanelTheme.style_hud_toggle_button(btn, active)
+	PanelTheme.apply_font(btn, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+	btn.add_theme_constant_override("outline_size", 0)

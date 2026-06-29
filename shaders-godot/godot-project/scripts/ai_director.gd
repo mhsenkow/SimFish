@@ -7,7 +7,6 @@ extends Node
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
@@ -128,6 +127,8 @@ const GUARDIAN_MAX_WORDS: int = 22
 const GUARDIAN_LINE_CACHE_MAX: int = 64
 const INTENT_DRIFT_MAX: float = 0.15   # model may flavor, never steer (#3)
 const TIER_TIMEOUT_S: float = 6.0
+const HTTP_TIMEOUT_TEST_S: float = 8.0
+const HTTP_TIMEOUT_GUARDIAN_EMBEDDED_S: float = 5.0
 
 var _thought_cache: Dictionary = {}
 var _thought_pending: Array = []
@@ -174,13 +175,13 @@ func _ensure_http() -> void:
 		_http_embedded_test = _make_http("HttpEmbeddedTest", _on_embedded_test_response)
 	if _http_guardian == null:
 		_http_guardian = _make_http("HttpGuardian", _on_guardian_response)
-		_http_guardian.timeout = 6.0
+		_http_guardian.timeout = HTTP_TIMEOUT_TEST_S
 
 
 func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
 	var h := HTTPRequest.new()
 	h.name = node_name
-	h.timeout = 8.0
+	h.timeout = HTTP_TIMEOUT_TEST_S
 	h.request_completed.connect(callback)
 	add_child(h)
 	return h
@@ -231,6 +232,8 @@ func apply_config(cfg: Dictionary) -> void:
 	fish_thought_voice_enabled = bool(cfg.get("fish_thought_voice_enabled", fish_thought_voice_enabled))
 	sentience_voice_off = bool(cfg.get("sentience_voice_off", sentience_voice_off))
 	voice_language = String(cfg.get("voice_language", voice_language))
+	_warn_plaintext_remote_endpoint(endpoint, "Ollama endpoint")
+	_warn_plaintext_remote_endpoint(embedded_endpoint, "Embedded LLM endpoint")
 	if sentience_voice_off:
 		_disable_all_voice_immediately()
 	elif enabled and not was_enabled:
@@ -266,6 +269,18 @@ func notify_thought_streaming(cache_key: String, partial: String) -> void:
 	var fid: String = parts[0]
 	var situation: String = parts[1] if parts.size() > 1 else ""
 	emit_signal("fish_thought_streaming", fid, partial, situation)
+
+
+func _warn_plaintext_remote_endpoint(url: String, label: String) -> void:
+	if url == "" or not url.begins_with("http://"):
+		return
+	var rest: String = url.substr(7)
+	var host: String = rest.split("/")[0].split(":")[0].to_lower()
+	if host in ["localhost", "127.0.0.1", "::1", "[::1]"]:
+		return
+	push_warning("[AIDirector] %s uses plaintext HTTP (%s) — prompts travel unencrypted." % [
+		label, url,
+	])
 
 
 func _effective_guardian_voice() -> bool:
@@ -1216,7 +1231,7 @@ func _request_guardian_line() -> void:
 	var rng_seed: int = _guardian_seed(str(job.get("cache_key", "")))
 	var tier: String = String(job.get("tier", "ollama"))
 	var stream_recap: bool = situation == "away_recap"
-	_http_guardian.timeout = 5.0 if tier == "embedded" else TIER_TIMEOUT_S
+	_http_guardian.timeout = HTTP_TIMEOUT_GUARDIAN_EMBEDDED_S if tier == "embedded" else TIER_TIMEOUT_S
 	var payload: Dictionary = {
 		"model": str(job.get("model", model)),
 		"prompt": prompt,

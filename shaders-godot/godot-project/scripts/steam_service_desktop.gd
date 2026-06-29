@@ -5,6 +5,22 @@ const APP_ID := 4796460
 
 var is_steam_running := false
 
+# Expected when launching outside the Steam client (editor F5, Finder, dev builds).
+const _BENIGN_INIT_FRAGMENTS = [
+	"Could not determine Steam client install directory",
+	"ConnectToGlobalUser failed",
+	"SteamAPI_Init(): SteamAPI_IsSteamRunning() returned false",
+	"SteamAPI_Init(): Failed to initialize",
+]
+
+
+func _benign_steam_unavailable(verbal: String) -> bool:
+	var v: String = verbal.to_lower()
+	for frag in _BENIGN_INIT_FRAGMENTS:
+		if v.findn(frag.to_lower()) != -1:
+			return true
+	return false
+
 
 func _ready() -> void:
 	# steamInitEx(app_id, embed_callbacks) — order matters; bool first was wrong.
@@ -18,9 +34,7 @@ func _ready() -> void:
 		print("[walstad_loom] Steam initialized (AppID %d, user %s)" % [APP_ID, user_label])
 	else:
 		var verbal: String = str(init.get("verbal", init))
-		# Running outside the Steam client is common during local/dev launches.
-		# Treat this as informational so the debugger isn't spammed with warnings.
-		if verbal.findn("Could not determine Steam client install directory") != -1:
+		if _benign_steam_unavailable(verbal):
 			print_verbose("[walstad_loom] Steam unavailable in this session: %s" % verbal)
 		else:
 			push_warning("[walstad_loom] Steam init failed: %s" % verbal)

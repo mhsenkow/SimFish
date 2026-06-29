@@ -12,6 +12,15 @@ const FishMind = preload("res://scripts/fish_mind.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const TankMind = preload("res://scripts/tank_mind.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
+const FishProtoself = preload("res://scripts/fish_protoself.gd")
+const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
+const FishFeltNow = preload("res://scripts/fish_felt_now.gd")
+const FishContinuity = preload("res://scripts/fish_continuity.gd")
+const FishQualia = preload("res://scripts/fish_qualia.gd")
+const FishVolition = preload("res://scripts/fish_volition.gd")
+const FishConcepts = preload("res://scripts/fish_concepts.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
 
 
 static var _stream_log: PackedStringArray = PackedStringArray()
@@ -131,6 +140,26 @@ static func inspector_text(f: Fish) -> String:
 				lines.append("night watch: on patrol")
 			if float(ts.get("night_stillness", 0.0)) > 0.4:
 				lines.append("tank stillness: %.2f" % float(ts.get("night_stillness", 0.0)))
+	if FeltSelfLayer.layer_enabled():
+		lines.append("=== Felt Self ===")
+		for ln in FishProtoself.inspector_lines(f):
+			lines.append("  body: %s" % ln)
+		lines.append("  affect: %s (valence %.2f)" % [
+			FishCoreAffect.texture(f), FishCoreAffect.valence(f)])
+		for ln in FishFeltNow.inspector_lines(f):
+			lines.append("  now: %s" % ln)
+		var bd: Dictionary = FishBinding.ensure(f)
+		lines.append("  binding: phi %.2f · %s" % [
+			float(bd.get("phi_proxy", 0.0)), str(bd.get("moment_line", ""))])
+		for ln in FishContinuity.inspector_lines(f):
+			lines.append("  continuity: %s" % ln)
+		var ql: String = FishQualia.report_line(f)
+		if ql != "":
+			lines.append("  qualia: %s" % ql)
+		for ln in FishVolition.inspector_lines(f):
+			lines.append("  volition: %s" % ln)
+		for ln in FishConcepts.inspector_lines(f):
+			lines.append("  concept: %s" % ln)
 	return "\n".join(lines)
 
 
@@ -228,6 +257,7 @@ static func scorecard(_sim: Node = null) -> Dictionary:
 		"structured_cognition": true,
 		"writeback": writeback_enabled(),
 		"global_broadcast": workspace_enabled(),
+		"felt_self_layer": FeltSelfLayer.layer_enabled(),
 		"thought_cycles": int(stats.get("cycles", 0)),
 		"queue_depth": int(stats.get("queue_depth", 0)),
 		"cache_hits": int(stats.get("cache_hits", 0)),
@@ -244,6 +274,8 @@ static func _functional_marks() -> PackedStringArray:
 	m.append("episodic_retrieval")
 	if writeback_enabled():
 		m.append("bounded_writeback")
+	if FeltSelfLayer.layer_enabled():
+		m.append("felt_self_binding")
 	m.append("self_model")
 	return m
 

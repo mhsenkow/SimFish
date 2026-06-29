@@ -1,0 +1,57 @@
+---
+description: Doc-driven implementation workflow for the iAquarium idea backlogs
+alwaysApply: true
+---
+
+# Working the idea-doc backlogs
+
+This repo is driven by **director docs**: code-grounded idea backlogs that specify
+what to build. Your job is to implement them faithfully — not to redesign them.
+
+## The docs (the spec)
+- `docs/PLANT_IMPROVEMENT_IDEAS.md`
+- `docs/SENTIENT_FISH_IDEAS.md`
+- `docs/PLAYER_BOND_IDEAS.md`
+- `docs/META_ENGINEERING_IDEAS.md` — staff/principal swings (cognition framework, determinism, 10× perf, moonshots)
+- `docs/ENGINEERING_EXCELLENCE_IDEAS.md` — god-object carve, typed contracts, CI
+- `docs/SYSTEMIC_IMPROVEMENTS_IDEAS.md` — supply chain, accessibility, sim-rust fate
+- `docs/GOALS.md` — the larger shipped/backlog tracker (sections A–H, 250+ shipped items).
+
+Repo layout + naming live in `AGENTS.md`. Read it once.
+
+## How to pick work
+- Do **foundations / substrate items first** — each doc calls them out (an
+  "If ... only does five" shortlist + a sequencing note). Build those before the
+  items that depend on them.
+- **One idea at a time.** Don't batch a whole section in a single pass.
+
+## Honor the grounding (this is why the docs are precise)
+- Each idea cites `file:line` pointers and a diagnosis of what already exists.
+  **Read the pointer first.** Line numbers may have drifted — match by symbol name.
+- **Do NOT rebuild systems the docs mark as already shipped.** The project is
+  mature; extend and tune, don't reinvent.
+- Match the house style: GOALS.md formatting in docs; in code, match the
+  surrounding file's naming, comment density, and idioms.
+
+## Verify every change (headless — Cursor usually has no `godot` on PATH)
+Use the wrapper (it finds `/Applications/Godot.app` automatically):
+```bash
+./scripts/godot.sh --headless --path shaders-godot/godot-project \
+  --script res://scripts/smoke_tank_shapes.gd
+```
+This runs a throwaway `SceneTree` smoke test that builds every tank shape — a real
+compile+run check (more reliable than `--check-only`, which skips autoloads). If an
+idea touches a specific subsystem, write a similar throwaway `extends SceneTree`
+script under `scripts/` to exercise it. **Don't claim a change works until it runs
+clean.**
+
+## Track + commit
+- When an idea ships and verifies, mark it done in its doc (`- [ ]` → `- [x]`),
+  mirroring GOALS.md.
+- One focused commit per idea; reference the doc + item number in the message.
+
+## Big items
+- For `L`-effort / architectural ideas (the decision-arbitration layer, the webcam
+  vision stack, the local-LLM tier), write a short plan and confirm it before making
+  large changes. Keep the base app under 500MB — the vision stack bundles (~40MB);
+  any LLM larger than ~0.5B ships as an opt-in download, not baked in.

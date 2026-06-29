@@ -88,7 +88,7 @@ void fragment() {
     // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.
     // Day-tracked so the rim disappears at night (matches foliage_mm).
     float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
-    float rim_amt = sss_strength * (0.25 + 0.75 * max(sss_daylight, tank_fixture_glow * 0.85));
+    float rim_amt = sss_strength * (0.08 + 0.72 * max(sss_daylight, tank_fixture_glow * 0.85));
     col = mix(col, col * 0.7 + sss_color * 0.55, rim * rim_amt);
     if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
         float span = max(fixture_water_top - fixture_water_floor, 0.5);

@@ -31,9 +31,9 @@ func _initialize() -> void:
 		failed.append("startle_radial_dir should point away from origin")
 	if TopdownMotion.caustic_beat_pulse(true, 0.8, 0.6) < 0.4:
 		failed.append("caustic_beat_pulse downbeat too weak")
-	if TopdownMotion.conduct_from_stroke([Vector3(0, 0, 0), Vector3(3, 0, 0), Vector3(3, 0, 3)]).get("move", "") == "":
+	if TopdownMotion.conduct_from_stroke([Vector3(0, 0, 0), Vector3(3, 0, 0), Vector3(3, 0, 3)]).move == "":
 		failed.append("conduct_from_stroke should infer move")
-	if TopdownMotion.plan_path_signature("anguilliform", "meander").get("wander_amp", 0.0) < 1.2:
+	if TopdownMotion.plan_path_signature("anguilliform", "meander").wander_amp < 1.2:
 		failed.append("anguilliform should weave more in plan view")
 	if TopdownMotion.density_wave_sep_push(1.0, 1.0, 0.8) <= 0.0:
 		failed.append("density_wave_sep_push at front should push")
@@ -41,9 +41,15 @@ func _initialize() -> void:
 		failed.append("symmetry_snap_xz should preserve radius")
 	if TopdownMotion.visual_eq_radius_mult("treble") <= TopdownMotion.visual_eq_radius_mult("bass"):
 		failed.append("visual_eq treble should expand vs bass")
-	var spill: Dictionary = TopdownMotion.aggregate_color_spill([Color.RED, Color.BLUE])
-	if float(spill.get("gain", 0.0)) < 0.01:
+	var spill: TopdownMotion.ColorSpill = TopdownMotion.aggregate_color_spill([Color.RED, Color.BLUE])
+	if spill.gain < 0.01:
 		failed.append("aggregate_color_spill should return gain")
+	var morph0: float = TopdownMotion.formation_morph_blend(8, 0.0, 0.0)
+	if morph0 > 0.08:
+		failed.append("formation_morph_blend should start near zero at phrase open")
+	var morph1: float = TopdownMotion.formation_morph_blend(0, 0.0, 1.0)
+	if morph1 < 0.999:
+		failed.append("formation_morph_blend should reach 1 at phrase close")
 
 	var side_move: String = MusicChoreography.pick_move("drop", 0.8, "trance", 3, false)
 	if side_move != "fountain":

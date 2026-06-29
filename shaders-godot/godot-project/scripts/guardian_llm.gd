@@ -17,9 +17,13 @@ const MODEL_URL: String = (
 	"https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF/resolve/main/"
 	+ "SmolLM2-360M-Instruct-Q4_K_M.gguf")
 const MODEL_FILENAME: String = "SmolLM2-360M-Instruct-Q4_K_M.gguf"
+# Pinned hash — scripts/supply_chain/manifest.env (SYSTEMIC #1/#3).
+const MODEL_SHA256: String = (
+	"2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2")
 const MODEL_BYTES_APPROX: int = 250_000_000
 const MODEL_MIN_BYTES: int = 200_000_000
 const MODEL_MAX_BYTES: int = 290_000_000
+const QUEUE_MAX: int = 24
 # Platform matrix (#14): desktop/Steam bundles SmolLM2-360M; Web/Android = template-only.
 # See AGENTS.md § Guardian voice tiers.
 
@@ -110,8 +114,12 @@ func _resolve_model_path() -> String:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg != null:
 		var custom: String = String(cfg.guardian_custom_gguf_path).strip_edges()
-		if custom != "" and FileAccess.file_exists(custom):
-			return custom
+		if custom != "":
+			if _is_acceptable_model_path(custom):
+				return custom
+			push_warning("[GuardianLlm] invalid custom GGUF — clearing setting")
+			cfg.guardian_custom_gguf_path = ""
+			cfg.save_to_disk()
 	var bundled: String = _bundled_model_path()
 	if bundled != "":
 		return bundled
@@ -119,6 +127,14 @@ func _resolve_model_path() -> String:
 	if FileAccess.file_exists(user_path):
 		return user_path
 	return ""
+
+
+func _is_acceptable_model_path(path: String) -> bool:
+	if path == "" or not FileAccess.file_exists(path):
+		return false
+	if not path.to_lower().ends_with(".gguf"):
+		return false
+	return _verify_model_file(path)
 
 
 func schedule_load_if_accepted(delay_sec: float = 3.0) -> void:
@@ -245,6 +261,42 @@ func _verify_model_file(path: String) -> bool:
 	return size >= MODEL_MIN_BYTES and size <= MODEL_MAX_BYTES * 2
 
 
+func _verify_model_sha256(path: String) -> bool:
+	if MODEL_SHA256 == "":
+		return true
+	var got: String = _sha256_file(path)
+	if got == MODEL_SHA256:
+		return true
+	push_warning("[GuardianLlm] model SHA256 mismatch (got %s…)" % got.substr(0, 12))
+	return false
+
+
+func _sha256_file(path: String) -> String:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return ""
+	while f.get_position() < f.get_length():
+		ctx.update(f.get_buffer(65536))
+	f.close()
+	return ctx.finish().hex_encode()
+
+
+func _reject_model_path(path: String, reason: String) -> void:
+	push_warning("[GuardianLlm] %s — %s" % [reason, path])
+	var abs_path: String = ProjectSettings.globalize_path(path) if path.begins_with("user://") else path
+	if abs_path != "" and FileAccess.file_exists(abs_path):
+		DirAccess.remove_absolute(abs_path)
+	var partial: String = _partial_path()
+	if FileAccess.file_exists(partial):
+		DirAccess.remove_absolute(partial)
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and String(cfg.guardian_custom_gguf_path).strip_edges() == path:
+		cfg.guardian_custom_gguf_path = ""
+		cfg.save_to_disk()
+
+
 func _extension_available() -> bool:
 	return ClassDB.class_exists("LlamaModel")
 
@@ -326,7 +378,7 @@ func queue_generate(cache_key: String, prompt: String, fallback: String,
 	var n_pred: int = num_predict if num_predict > 0 \
 			else MindNarrator.num_predict_for_situation(situation)
 	if cache_key.begins_with("cog|"):
-		n_pred = mini(n_pred, MindNarrator.FISH_THOUGHT_MAX_WORDS + 6)
+		n_pred = mini(n_pred, MindNarrator.NUM_PREDICT_FISH_THOUGHT)
 	_queue.append({
 		"key": cache_key,
 		"prompt": prompt,
@@ -335,6 +387,8 @@ func queue_generate(cache_key: String, prompt: String, fallback: String,
 		"stream": stream,
 		"num_predict": n_pred,
 	})
+	while _queue.size() > QUEUE_MAX:
+		_queue.pop_front()
 	if state == State.READY:
 		_pump_queue()
 
@@ -458,6 +512,14 @@ func _on_download_completed(result: int, code: int, _h: PackedStringArray, _body
 		emit_signal("status_changed", _download_fail_reason)
 		emit_signal("download_progress_changed", 0.0, _download_fail_reason)
 		return
+	if not _verify_model_sha256(partial):
+		_download_fail_reason = "Download checksum failed — retry in Settings."
+		_reject_model_path(partial, "checksum mismatch")
+		state = State.TEMPLATE_ONLY
+		last_error = ""
+		emit_signal("status_changed", _download_fail_reason)
+		emit_signal("download_progress_changed", 0.0, _download_fail_reason)
+		return
 	if FileAccess.file_exists(_model_path()):
 		DirAccess.remove_absolute(_model_path())
 	var rename_err: Error = DirAccess.rename_absolute(partial, _model_path())
@@ -476,6 +538,18 @@ func _load_model(path: String) -> void:
 		state = State.TEMPLATE_ONLY
 		var why: String = "Template voice (battery saver — enable model when plugged in)"
 		emit_signal("status_changed", why)
+		_sync_ai_tier()
+		return
+	if not _verify_model_file(path):
+		_reject_model_path(path, "model file size out of range")
+		state = State.TEMPLATE_ONLY
+		emit_signal("status_changed", "Template voice (model unavailable — re-download in Settings)")
+		_sync_ai_tier()
+		return
+	if not _verify_model_sha256(path):
+		_reject_model_path(path, "model checksum mismatch")
+		state = State.TEMPLATE_ONLY
+		emit_signal("status_changed", "Template voice (model corrupted — re-download in Settings)")
 		_sync_ai_tier()
 		return
 	state = State.LOADING
@@ -662,10 +736,12 @@ static func _sanitize_output(text: String) -> String:
 	s = s.strip_edges()
 	if s.length() > 220:
 		s = s.substr(0, 220).strip_edges()
-	var low: String = s.to_lower()
-	for bad in ["fuck", "shit"]:
-		if bad in low:
-			return ""
+	var spam := RegEx.new()
+	if spam.compile("(.)\\1{10,}") == OK and spam.search(s) != null:
+		return ""
+	var prof := RegEx.new()
+	if prof.compile("(?i)\\b(fuck|shit)\\b") == OK and prof.search(s) != null:
+		return ""
 	return s
 
 

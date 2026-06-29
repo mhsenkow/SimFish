@@ -487,7 +487,7 @@ size_flags_stretch_ratio = 2.0
 mouse_filter = 2
 horizontal_alignment = 2
 clip_text = true
-text = "drag orbit · scroll zoom · WASD/QE pan · F reset · SPACE pan · P pause · 1/2/3 speed · click creature · ⌃click feed · C PiP · H focus · ESC clear · F12 photo · T timelapse · O settings · B aquascape"
+text = "drag orbit · scroll zoom · pick food in footer · click water to feed · F reset camera · drag to orbit · click creature to follow · Shift+click startle glass"
 
 [node name="MobileHUD" type="Control" parent="."]
 anchors_preset = 15

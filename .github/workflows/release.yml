@@ -63,6 +63,13 @@ jobs:
           fi
           bash scripts/install_godot_llama.sh
 
+      - name: Cache Guardian model
+        if: matrix.name != 'Android'
+        uses: actions/cache@v4
+        with:
+          path: shaders-godot/godot-project/assets/guardian/SmolLM2-360M-Instruct-Q4_K_M.gguf
+          key: guardian-model-${{ hashFiles('scripts/supply_chain/manifest.env') }}
+
       - name: Bundle Guardian model (Steam — no runtime download)
         if: matrix.name != 'Android'
         shell: bash

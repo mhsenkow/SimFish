@@ -163,8 +163,14 @@ void fragment() {
 	float cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
 	float cw3 = worley_caustic(cuv * 2.6 + vec2(15.0, 8.0), t * 0.28 + 3.0);
 	float caustics = smoothstep(0.12, 0.85, cw1 * 0.5 + cw1 * cw2 * 0.75 + cw2 * cw3 * 0.35) * caustic_intensity;
-	caustics *= 1.0 - depth_norm * 0.35;
-	col += light_color * caustics * 0.24;
+	caustics *= 1.0 - depth_used * 0.35;
+	// Dampen caustic shimmer at the surface — thin stems flicker less (#28).
+	float surf_dist = abs(world_pos.y - water_surface_y);
+	caustics *= smoothstep(0.0, 0.22, surf_dist);
+	vec3 caustic_absorb = mix(vec3(1.0),
+		vec3(1.0 - depth_used * 0.55, 1.0 - depth_used * 0.22, 1.0),
+		depth_absorption);
+	col += light_color * caustics * 0.24 * caustic_absorb;
 
 	vec3 n = normalize(NORMAL);
 	float surface = smoothstep(0.55, 0.92, n.y);

@@ -6,6 +6,11 @@ const FishMind = preload("res://scripts/fish_mind.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
+const FishProtoself = preload("res://scripts/fish_protoself.gd")
+const FishBinding = preload("res://scripts/fish_binding.gd")
+const FishFeltNow = preload("res://scripts/fish_felt_now.gd")
+const FishQualia = preload("res://scripts/fish_qualia.gd")
+const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
 
 const CAPACITY: int = 3
 const IGNITION_THRESHOLD: float = 0.42
@@ -43,6 +48,14 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		bids.append(_bid("novelty", f.curiosity_drive * 0.75, ["novelty", "explore"]))
 	if f.surprise > 0.35:
 		bids.append(_bid("surprise", f.surprise * 0.9, ["surprise"]))
+	# META #2 — prediction error as salience (orient toward the unexpected).
+	var pred_err: float = 0.0
+	if f.get("_prediction_error") != null:
+		pred_err = float(f._prediction_error)
+	elif f.get("_world_model") is Dictionary:
+		pred_err = float((f._world_model as Dictionary).get("error", 0.0))
+	if pred_err > 0.28:
+		bids.append(_bid("uncertainty", pred_err * 0.82, ["novelty", "explore", "prediction"]))
 	if f.stress > 0.55:
 		bids.append(_bid("interoception", f.stress * 0.6, ["stress", "interoception"]))
 	# Retrieved episodic boost
@@ -72,6 +85,10 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 			bids.append(_bid("vibration", vib + 0.2, ["sound", "lateral"]))
 		elif f.stress < 0.4 and f.vigilance < 0.45:
 			bids.append(_bid("night_quiet", 0.38, ["night", "rest"]))
+	if FishBinding.layer_enabled():
+		bids.append(FishProtoself.baseline_bid(f))
+		for ob in FishProtoself.organ_bids(f):
+			bids.append(ob)
 	_apply_precision_and_mods(f, bids, _sim)
 	return bids
 
@@ -98,6 +115,12 @@ static func _apply_precision_and_mods(f: Fish, bids: Array, sim: Node = null) ->
 			sal += clampf(float(mods[label]), -0.2, 0.25)
 		if label == "food" and keeper_text != "":
 			sal += MindLexicon.food_bid_boost(f, keeper_text)
+		if FishBinding.layer_enabled():
+			var phi: float = FishBinding.integration_score(f)
+			if phi < 0.38 and label in ["food", "novelty", "mate", "uncertainty"]:
+				sal *= lerpf(0.5, 1.0, phi / 0.38)
+			if bool(FishBinding.ensure(f).get("fragmented", false)) and label == "threat":
+				sal *= 1.22
 		b["salience"] = maxf(0.0, sal)
 
 
@@ -195,5 +218,11 @@ static func encode_from_workspace(f: Fish, ms) -> void:
 	var label: String = str(primary.get("label", "moment"))
 	if not f.try_mark_workspace_encode(label):
 		return
-	var text: String = f.workspace_thought_for(label)
+	var text: String = ""
+	if FeltSelfLayer.layer_enabled():
+		text = FishFeltNow.encode_moment_text(f)
+		if text == "":
+			text = FishQualia.report_line(f)
+	if text == "":
+		text = f.workspace_thought_for(label)
 	FishMind.record_salient(f, label, text, float(primary.get("salience", 0.5)), f.position)

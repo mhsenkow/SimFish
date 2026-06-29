@@ -4,7 +4,6 @@ extends SceneTree
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")

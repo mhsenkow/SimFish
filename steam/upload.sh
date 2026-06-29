@@ -20,7 +20,11 @@ for var in STEAM_APP_ID STEAM_DEPOT_WINDOWS STEAM_DEPOT_LINUX STEAM_DEPOT_MACOS;
 	fi
 done
 
-STEAM_USERNAME="${STEAM_USERNAME:-mhsenkow}"
+STEAM_USERNAME="${STEAM_USERNAME:-}"
+if [[ -z "$STEAM_USERNAME" ]]; then
+	echo "Set STEAM_USERNAME in the environment (your Steamworks partner account)." >&2
+	exit 1
+fi
 # Empty setlive = draft upload (set live manually in Steamworks → Builds).
 # To publish in one step: STEAM_SETLIVE=default ./steam/upload.sh
 STEAM_SETLIVE="${STEAM_SETLIVE:-}"

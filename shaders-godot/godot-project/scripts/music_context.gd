@@ -727,13 +727,14 @@ func _update_phrase_choreography() -> void:
 			_current_move = "breathe"
 			_current_formation = "scatter"
 		else:
-			var geo: Dictionary = TopdownMotion.key_geometry_bias(int(_ctx.key), String(_ctx.mode))
+			var geo: TopdownMotion.KeyGeometry = TopdownMotion.key_geometry_bias(
+				int(_ctx.key), String(_ctx.mode))
 			_current_move = MusicChoreography.pick_move(
 				phrase, float(_ctx.energy), String(_ctx.genre), _phrase_epoch, _overhead_view)
 			_current_formation = MusicChoreography.pick_formation(
 				phrase, String(_ctx.genre), _current_move, _phrase_epoch,
 				_overhead_view, float(_ctx.valence))
-			if float(geo.get("tightness", 1.0)) > 1.05 and _current_formation == "scatter":
+			if geo.tightness > 1.05 and _current_formation == "scatter":
 				_current_formation = "circle"
 			if phrase == "drop":
 				_current_move = "radial_bloom" if _overhead_view else "starburst"

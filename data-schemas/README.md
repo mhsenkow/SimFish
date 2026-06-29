@@ -1,6 +1,8 @@
 # walstad loom data schemas
 
-> **Status: data-design reference — not yet consumed by the game.** The shipping
+> **Status: data-design reference — not yet consumed by the game.** See
+> [docs/adr/002-data-schemas-reference.md](../docs/adr/002-data-schemas-reference.md).
+> The shipping
 > Godot game defines species/substrate data in GDScript (`tank_config.gd`'s
 > `SPECIES_LIBRARY`, `species_library.gd`). These schemas + examples document the
 > intended data contract for a future JSON-driven / moddable content path; the

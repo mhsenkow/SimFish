@@ -125,7 +125,7 @@ void fragment() {
 	// Iridescent / structural colour — palette-quantized hue steps (#32).
 	if (irid_strength > 0.001) {
 		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
-		float step_f = floor(fres * 4.0) / 4.0;
+		float step_f = floor(fres * 6.0) / 6.0;
 		float band = step_f * 6.28318;
 		vec3 sheen = vec3(0.5 + 0.5 * sin(band),
 			0.5 + 0.5 * sin(band + 2.094),

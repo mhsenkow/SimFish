@@ -46,6 +46,9 @@ var _auto_respawn_check: CheckBox
 var _auto_feed_check: CheckBox
 # Performance / mobile battery controls (Advanced tab).
 var _battery_saver_check: CheckBox
+var _reduced_motion_check: CheckBox
+var _ui_font_scale_slider: HSlider
+var _ui_font_scale_label: Label
 var _fps_cap_option: OptionButton
 var _fauna_schooling_slider: HSlider
 var _fauna_schooling_label: Label
@@ -459,6 +462,25 @@ func _build_ui() -> void:
 	vbox_fauna.add_child(_fauna_glance_check)
 
 	# -- Advanced tab --
+	_add_section(vbox_adv, "Accessibility")
+	_reduced_motion_check = CheckBox.new()
+	_reduced_motion_check.text = "Reduced motion (less sway, pulse, auto-orbit)"
+	_reduced_motion_check.tooltip_text = "Turns off school pulse, plant sway, and cinematic auto-orbit."
+	_reduced_motion_check.toggled.connect(func(v):
+		TankConfig.reduced_motion = v
+		TankConfig.save_to_disk())
+	vbox_adv.add_child(_reduced_motion_check)
+	var font_desc := PanelTheme.make_description()
+	font_desc.text = "Reopen panels after changing font size."
+	vbox_adv.add_child(font_desc)
+	_ui_font_scale_label = Label.new()
+	_ui_font_scale_slider = PanelTheme.add_slider_row(
+		vbox_adv, "UI font scale", 0.8, 1.5, 0.05, _ui_font_scale_label)
+	_ui_font_scale_slider.value_changed.connect(func(v: float):
+		TankConfig.ui_font_scale = v
+		_ui_font_scale_label.text = "%.0f%%" % (v * 100.0)
+		TankConfig.save_to_disk())
+
 	_add_section(vbox_adv, "Automation")
 	_auto_respawn_check = CheckBox.new()
 	_auto_respawn_check.text = "Auto-respawn extinct creatures (10 per species)"
@@ -805,6 +827,14 @@ func _pull_from_config() -> void:
 	_auto_feed_check.button_pressed = TankConfig.auto_feed_fauna
 	if _battery_saver_check != null:
 		_battery_saver_check.button_pressed = bool(TankConfig.battery_saver)
+	if _reduced_motion_check != null:
+		_reduced_motion_check.button_pressed = bool(TankConfig.reduced_motion)
+	if _ui_font_scale_slider != null:
+		_ui_font_scale_slider.set_block_signals(true)
+		_ui_font_scale_slider.value = float(TankConfig.ui_font_scale)
+		_ui_font_scale_slider.set_block_signals(false)
+		if _ui_font_scale_label != null:
+			_ui_font_scale_label.text = "%.0f%%" % (float(TankConfig.ui_font_scale) * 100.0)
 	if _fps_cap_option != null:
 		_select_fps_option(int(TankConfig.fps_cap))
 	if _fauna_schooling_slider != null:
@@ -1344,6 +1374,16 @@ func _on_substrate(idx: int) -> void:
 func _on_aeration(idx: int) -> void:
 	TankConfig.aeration_type = _aeration_option.get_item_metadata(idx)
 	_update_aeration_desc()
+	_sync_aeration_live()
+
+
+func _sync_aeration_live() -> void:
+	var main: Node = get_tree().current_scene
+	if main == null:
+		return
+	var sim: Node = main.get("_sim") if main.get("_sim") != null else null
+	if sim != null and sim.has_method("sync_aeration_from_config"):
+		sim.sync_aeration_from_config(true)
 
 
 func _on_vessel(idx: int) -> void:
@@ -1396,6 +1436,7 @@ func _update_environment_desc() -> void:
 func _on_aeration_strength(v: float) -> void:
 	TankConfig.aeration_strength = v
 	_aeration_strength_label.text = "%.2f" % v
+	_sync_aeration_live()
 
 
 func _on_aeration_x(v: float) -> void:

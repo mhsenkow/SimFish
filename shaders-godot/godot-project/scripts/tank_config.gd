@@ -21,6 +21,16 @@ var dither_strength: float = 0.85
 # water/fog, light on saturated fauna). When false, the legacy uniform
 # dither applies everywhere.
 var dither_region_aware: bool = true
+# Index Bayer/IGN dither in world space so the pattern does not crawl on camera pans (#26).
+var dither_world_lock: bool = true
+# Blue-noise blend on low-saturation regions (palette_quantize uniform).
+var blue_noise_amount: float = 0.6
+# Accessibility — gate motion-heavy effects (#86).
+var reduced_motion: bool = false
+# UI font scale multiplier (#87) — 0.8× low vision … 1.5× large text.
+var ui_font_scale: float = 1.0
+# Shader cost tier: 0=full, 1=reduced, 2=potato (#19–21).
+var shader_perf_tier: int = 0
 # When true, the active palette is locally restricted to a hue-bank of
 # ~16 nearest indices for each fragment, enforcing the "real" 8-bit feel
 # instead of a downsampled HDR blend. Cosmetic — bank picking is per
@@ -261,6 +271,8 @@ var guardian_mind_info_seen: bool = false
 var consciousness_workspace_enabled: bool = true
 var consciousness_writeback_enabled: bool = true
 var consciousness_stream_enabled: bool = true
+# SENTIENCE_THE_FELT_SELF — phenomenal layer (body → affect → binding).
+var felt_self_enabled: bool = true
 # DARING §J #94 — keeper input consent toggles (local, opt-in where sensitive).
 var keeper_ears_enabled: bool = true
 var keeper_gaze_enabled: bool = true
@@ -2228,6 +2240,11 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "height", render_height)
 	cfg.set_value("render", "dither", dither_strength)
 	cfg.set_value("render", "dither_region_aware", dither_region_aware)
+	cfg.set_value("render", "dither_world_lock", dither_world_lock)
+	cfg.set_value("render", "blue_noise_amount", blue_noise_amount)
+	cfg.set_value("render", "reduced_motion", reduced_motion)
+	cfg.set_value("render", "ui_font_scale", ui_font_scale)
+	cfg.set_value("render", "shader_perf_tier", shader_perf_tier)
 	cfg.set_value("render", "palette_bank_lock", palette_bank_lock)
 	cfg.set_value("render", "outline_strength", outline_strength)
 	cfg.set_value("render", "crt_strength", crt_strength)
@@ -2305,6 +2322,7 @@ func save_to_disk() -> void:
 	cfg.set_value("ai", "consciousness_workspace_enabled", consciousness_workspace_enabled)
 	cfg.set_value("ai", "consciousness_writeback_enabled", consciousness_writeback_enabled)
 	cfg.set_value("ai", "consciousness_stream_enabled", consciousness_stream_enabled)
+	cfg.set_value("ai", "felt_self_enabled", felt_self_enabled)
 	cfg.set_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	cfg.set_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
 	cfg.set_value("ai", "keeper_mic_enabled", keeper_mic_enabled)
@@ -2494,6 +2512,11 @@ func load_from_disk() -> void:
 	render_height = cfg.get_value("render", "height", render_height)
 	dither_strength = cfg.get_value("render", "dither", dither_strength)
 	dither_region_aware = cfg.get_value("render", "dither_region_aware", dither_region_aware)
+	dither_world_lock = cfg.get_value("render", "dither_world_lock", dither_world_lock)
+	blue_noise_amount = cfg.get_value("render", "blue_noise_amount", blue_noise_amount)
+	reduced_motion = cfg.get_value("render", "reduced_motion", reduced_motion)
+	ui_font_scale = cfg.get_value("render", "ui_font_scale", ui_font_scale)
+	shader_perf_tier = int(cfg.get_value("render", "shader_perf_tier", shader_perf_tier))
 	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
@@ -2575,6 +2598,7 @@ func load_from_disk() -> void:
 			consciousness_writeback_enabled)
 	consciousness_stream_enabled = cfg.get_value("ai", "consciousness_stream_enabled",
 			consciousness_stream_enabled)
+	felt_self_enabled = cfg.get_value("ai", "felt_self_enabled", felt_self_enabled)
 	keeper_ears_enabled = cfg.get_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	keeper_gaze_enabled = cfg.get_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
 	keeper_mic_enabled = cfg.get_value("ai", "keeper_mic_enabled", keeper_mic_enabled)

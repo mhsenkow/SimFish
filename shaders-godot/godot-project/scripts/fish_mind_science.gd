@@ -5,6 +5,7 @@ extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
+const SimRngScript = preload("res://scripts/sim_rng.gd")
 
 
 # Panksepp primary-process read (#21).
@@ -136,7 +137,7 @@ static func tick_sleep_replay(f: Fish) -> void:
 				var boost: float = 0.12 if kind != "startled" else 0.06
 				FishMind.td_update_heatmap(f, cell, boost)
 				replayed = true
-			if f._dreaming and kind == "startled" and randf() < 0.08:
+			if f._dreaming and kind == "startled" and MindRng.for_fish(f).randf() < 0.08:
 				f._sleep_twitch_t = 0.18
 	if replayed and f._dreaming:
 		f._replay_glow = maxf(float(f.get("_replay_glow") if f.get("_replay_glow") != null else 0.0), 0.35)
@@ -180,11 +181,12 @@ static func tick_prospective(f: Fish, dt: float) -> void:
 		f._prospective["t"] = t
 
 
-static func inherit_disposition(parent_pers: Dictionary) -> Dictionary:
+static func inherit_disposition(f: Fish, parent_pers: Dictionary) -> Dictionary:
+	var g: RandomNumberGenerator = MindRng.for_fish(f, SimRngScript.STREAM_GENETICS)
 	var out: Dictionary = {}
 	for k in ["boldness", "curiosity", "sociability", "calm"]:
 		var base: float = float(parent_pers.get(k, 0.5))
-		out[k] = clampf(base + randf_range(-0.08, 0.08), 0.05, 1.0)
+		out[k] = clampf(base + g.randf_range(-0.08, 0.08), 0.05, 1.0)
 	return out
 
 

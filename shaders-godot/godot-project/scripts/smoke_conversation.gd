@@ -10,7 +10,6 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 
 
 func _initialize() -> void:

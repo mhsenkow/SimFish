@@ -7,6 +7,7 @@ extends RefCounted
 const FishMind = preload("res://scripts/fish_mind.gd")
 const GuardianMind = preload("res://scripts/guardian_mind.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
+const GuardianGenerative = preload("res://scripts/guardian_generative.gd")
 
 const SPEAK_COOLDOWN_S: float = 55.0
 const AUTOFeed_ARM_NUDGES: int = 3
@@ -36,13 +37,17 @@ static func guardian_steer(f: Fish, sim: Node, _dt: float) -> Vector3:
 	if not f.is_guardian or sim == null:
 		return Vector3.ZERO
 	var out: Vector3 = Vector3.ZERO
+	if sim.get("_guardian_arc") is Dictionary:
+		var steer_v: Variant = (sim._guardian_arc as Dictionary).get("_inf_steer", null)
+		if steer_v is Vector3 and (steer_v as Vector3).length_squared() > 0.0001:
+			out += steer_v as Vector3
 	var avg_h: float = tank_avg_hunger(sim)
-	if avg_h > HUNGRY_THRESHOLD and f._cached_glance_strength > 0.12:
+	if avg_h > HUNGRY_THRESHOLD and f._cached_glance_strength > 0.12 and out.length_squared() < 0.01:
 		var to_glass: Vector3 = f._cached_glance_point - f.position
 		to_glass.y *= 0.35
 		if to_glass.length_squared() > 0.08:
 			out += to_glass.normalized() * lerpf(0.35, 0.85, avg_h)
-	if avg_h > STARVE_THRESHOLD:
+	if avg_h > STARVE_THRESHOLD and out.y < 0.2:
 		var surface_y: float = f._water_surface_y() - 0.35
 		var up: float = surface_y - f.position.y
 		if up > 0.05:
@@ -166,6 +171,14 @@ static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int,
 			return "..."
 
 static func guardian_thought(f: Fish, sim: Node) -> String:
+	if sim != null and sim.get("_guardian_arc") is Dictionary:
+		var doubt: String = GuardianGenerative.doubt_line(sim._guardian_arc as Dictionary)
+		if doubt != "":
+			return "...%s" % doubt
+		var g: Dictionary = GuardianGenerative.ensure(sim._guardian_arc as Dictionary)
+		var cf: String = str(g.get("counterfactual", ""))
+		if cf != "" and randf() < 0.35:
+			return "...%s" % cf
 	var avg_h: float = tank_avg_hunger(sim)
 	if avg_h > STARVE_THRESHOLD:
 		return "...feed us?"
@@ -179,12 +192,13 @@ static func guardian_thought(f: Fish, sim: Node) -> String:
 
 
 static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dictionary:
-	# Returns optional {text, action, situation} — cheap tank scan only.
+	# Returns optional {text, action, situation} — active inference + tank scan.
 	var out: Dictionary = {}
 	if not f.is_guardian or sim == null:
 		return out
 	GuardianMind.ensure_mind(arc)
 	GuardianMind.update_wants(f, sim, arc)
+	var inf: Dictionary = GuardianGenerative.tick(f, sim, arc, dt)
 	var speak_cd: float = float(arc.get("speak_cd", 0.0))
 	speak_cd = maxf(0.0, speak_cd - dt)
 	arc["speak_cd"] = speak_cd
@@ -194,23 +208,31 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 	var avg_h: float = tank_avg_hunger(sim)
 	var nudges: int = int(arc.get("feed_nudges", 0))
 	var chapter: int = int(arc.get("chapter", 0))
-	var situation: String = ""
-	var action: String = ""
+	var situation: String = str(inf.get("situation", ""))
+	var action: String = str(inf.get("action", ""))
+	var urgency: float = float(inf.get("speak_urgency", 0.0))
 
-	if sim.water_chemistry != null:
+	# Legacy fallbacks when inference is quiet but tank state is extreme.
+	if situation == "" and sim.water_chemistry != null:
 		var nh3: float = float(sim.water_chemistry.ammonia)
 		var no2: float = float(sim.water_chemistry.nitrite)
 		if nh3 > 0.45 or no2 > 0.5:
 			situation = "water_stress"
 			GuardianMind.update_world_read(sim, arc)
-	elif KeeperCare.tank_needs_care_nudge(sim) and randf() < dt * 0.06:
-		situation = "tank_care"
-	elif avg_h > STARVE_THRESHOLD:
+	elif situation == "" and avg_h > STARVE_THRESHOLD and urgency > 0.35:
 		situation = "feed_nudge"
 		action = "drop_feed"
+	elif situation == "" and avg_h > HUNGRY_THRESHOLD and urgency > 0.28 and randf() < dt * 0.12:
+		situation = "feed_nudge"
+		action = "nudge_feed"
+
+	if situation == "feed_nudge":
 		nudges += 1
 		arc["feed_nudges"] = nudges
-		if nudges >= AUTOFeed_ARM_NUDGES and not bool(arc.get("autofeed_done", false)):
+		if action == "":
+			action = "drop_feed" if avg_h > STARVE_THRESHOLD else "nudge_feed"
+		if nudges >= AUTOFeed_ARM_NUDGES and not bool(arc.get("autofeed_done", false)) \
+				and avg_h > STARVE_THRESHOLD:
 			var cfg := sim.get_node_or_null("/root/TankConfig")
 			var may: bool = cfg == null or bool(cfg.get("guardian_may_enable_autofeed"))
 			var already: bool = cfg != null and bool(cfg.auto_feed_fauna)
@@ -220,18 +242,13 @@ static func evaluate_tick(f: Fish, sim: Node, arc: Dictionary, dt: float) -> Dic
 				situation = "autofeed_on"
 				chapter = mini(chapter + 1, 4)
 				arc["chapter"] = chapter
-	elif avg_h > HUNGRY_THRESHOLD and randf() < dt * 0.08:
-		situation = "feed_nudge"
-		action = "nudge_feed"
-		nudges += 1
-		arc["feed_nudges"] = nudges
-	elif sim.has_method("daylight"):
+	elif situation == "" and sim.has_method("daylight"):
 		var dl: float = float(sim.daylight())
 		var was: float = float(arc.get("last_daylight", dl))
 		arc["last_daylight"] = dl
-		if was < 0.2 and dl > 0.35 and f.familiarity > 0.2:
+		if was < 0.2 and dl > 0.35 and f.familiarity > 0.2 and urgency > 0.2:
 			situation = "morning"
-	elif randf() < dt * 0.014:
+	elif situation == "observe" or (situation == "" and randf() < dt * 0.014 and urgency < 0.55):
 		var subj: Fish = _pick_observe_subject(f, sim)
 		if subj != null:
 			situation = "observe"

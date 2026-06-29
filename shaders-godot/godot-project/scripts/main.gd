@@ -328,9 +328,9 @@ func _zoom_camera_by_factor(factor: float) -> void:
 	if camera == null:
 		return
 	if _current_projection_id == "perspective":
-		radius = clampf(radius * factor, MIN_RADIUS, MAX_RADIUS)
+		radius = CameraController.zoom_radius(radius, factor)
 	else:
-		camera.size = clampf(camera.size * factor, 2.0, 80.0)
+		camera.size = CameraController.zoom_ortho(camera.size, factor)
 	_apply_camera()
 
 
@@ -580,12 +580,12 @@ func _finish_pond_conduct() -> void:
 	if _pond_conduct_pts.size() < 3:
 		_pond_conduct_pts.clear()
 		return
-	var cfg: Dictionary = TopdownMotion.conduct_from_stroke(_pond_conduct_pts)
+	var cfg: TopdownMotion.ConductResult = TopdownMotion.conduct_from_stroke(_pond_conduct_pts)
 	var mc := get_node_or_null("/root/MusicContext")
 	if mc != null and mc.has_method("conduct"):
-		mc.conduct(String(cfg.get("move", "sweep")), String(cfg.get("formation", "circle")))
+		mc.conduct(cfg.move, cfg.formation)
 	if _sim != null and _sim.has_method("set_conduct_anchor"):
-		_sim.set_conduct_anchor(cfg.get("center", Vector3.ZERO), float(cfg.get("radius", 1.0)))
+		_sim.set_conduct_anchor(cfg.center, cfg.radius)
 	_pond_conduct_pts.clear()
 	_haptic(14)
 
@@ -891,12 +891,15 @@ func _toggle_residents_panel() -> void:
 			_residents_panel.sync_from_main()
 
 
-const SENSITIVITY: float = 0.006
-const ZOOM_FACTOR: float = 1.12
-const MIN_RADIUS: float = 8.0
-const MAX_RADIUS: float = 40.0
-const MIN_PITCH: float = -1.45
-const MAX_PITCH: float = 1.45
+# Camera tuning re-exported from CameraController (single source of truth — the
+# orbit/pan/dolly math now lives there; these aliases keep main's other
+# references, e.g. persistence clamps, pointed at the same values). #2 / 0B.
+const SENSITIVITY: float = CameraController.SENSITIVITY
+const ZOOM_FACTOR: float = CameraController.ZOOM_FACTOR
+const MIN_RADIUS: float = CameraController.MIN_RADIUS
+const MAX_RADIUS: float = CameraController.MAX_RADIUS
+const MIN_PITCH: float = CameraController.MIN_PITCH
+const MAX_PITCH: float = CameraController.MAX_PITCH
 const PAN_SPEED: float = 6.0
 # Auto-orbit angular speed (rad/sec). Now a var so the Camera Views panel
 # can tune it live; default mirrors the old const value.
@@ -920,8 +923,8 @@ var _drag_total: float = 0.0
 var _drag_button: int = 0  # which button initiated; used for click-vs-drag dispatch
 var _auto_orbit: bool = false
 var _auto_orbit_was_pressed: bool = false
-const PAN_MOUSE_SENSITIVITY: float = 0.012  # world units per pixel at radius=1
-const DOLLY_MOUSE_SENSITIVITY: float = 0.012  # log-ish dolly per pixel
+const PAN_MOUSE_SENSITIVITY: float = CameraController.PAN_MOUSE_SENSITIVITY
+const DOLLY_MOUSE_SENSITIVITY: float = CameraController.DOLLY_MOUSE_SENSITIVITY
 # Follow-cam: when set, camera target tracks this Node3D.
 var _follow_target: Node3D = null
 # Set true when an LMB-down event lands on a creature (picking dispatch in
@@ -930,6 +933,7 @@ var _follow_target: Node3D = null
 # ALSO starts an orbit drag and every creature click spun the camera.
 # Cleared the next frame LMB releases.
 var _suppress_drag_until_release: bool = false
+var _press_skip_feed: bool = false
 
 # Aquascape sculpting (terrain, hardscape, trim, unified undo).
 var _aquascape := AquascapeController.new()
@@ -977,7 +981,7 @@ const TAP_MAX_TIME: float = 0.25  # seconds
 # or two between touch-down and lift micro-rotates the camera AND eats the
 # tap event — the most common "this feels unfinished" mobile bug. 8dp is the
 # Material guideline for "touch slop".
-const DRAG_DEADZONE_PX: float = 8.0
+const DRAG_DEADZONE_PX: float = CameraController.DRAG_DEADZONE_PX
 # Set once per drag-start; flips true the moment cumulative motion crosses
 # DRAG_DEADZONE_PX. Camera-motion code only fires when this is true.
 var _drag_committed: bool = false
@@ -1053,6 +1057,7 @@ var _notification_sort: int = NOTIF_SORT_NEWEST
 var _notification_story_idx: int = 0
 var _notification_toast_queue: Array[Dictionary] = []
 var _notification_toast_active: int = 0
+var _toast_recent_keys: Dictionary = {}
 
 var _notifications_panel: PanelContainer = null
 var _notifications_list: VBoxContainer = null
@@ -1087,11 +1092,10 @@ var _coachmark_overlay: Control = null
 var _coachmark_step: int = 0
 var _onboarding: Node = null
 
-# Tap-to-feed: 9/0 cycles type; plain click/tap on water drops food.
+# Tap-to-feed: pick food in the footer dock; click/tap water to drop.
 var _feed_subtype: int = WasteParticle.FOOD_SUB_PELLET
-const _FEED_TYPE_LABELS: Array[String] = [
-	"Flakes", "Pellets", "Bloodworm", "Algae wafer",
-]
+var _feed_dock: HBoxContainer = null
+var _feed_btns: Array[Button] = []
 var _feed_toast: Label = null
 var _feed_toast_tween: Tween = null
 
@@ -1204,6 +1208,7 @@ func _ready() -> void:
 	# ---- Top HUD: build stat chips, apply responsive layout, watch resizes ----
 	_setup_hud_styling()
 	_setup_footer_bar()
+	_setup_feed_dock()
 	_setup_speed_hud()
 	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
@@ -1431,6 +1436,12 @@ func _apply_render_config() -> void:
 			Vector2(float(render_w), float(render_h)))
 		sm.set_shader_parameter("region_aware_dither",
 			1.0 if cfg.dither_region_aware else 0.0)
+		sm.set_shader_parameter("dither_world_lock",
+			1.0 if cfg.dither_world_lock else 0.0)
+		sm.set_shader_parameter("dither_world_origin",
+			Vector2(float(cfg.camera_target_x), float(cfg.camera_target_z)))
+		sm.set_shader_parameter("blue_noise_amount", float(cfg.blue_noise_amount))
+		sm.set_shader_parameter("shader_perf_tier", float(cfg.shader_perf_tier))
 		sm.set_shader_parameter("palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
 		sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
@@ -1447,6 +1458,7 @@ func _apply_render_config() -> void:
 		# the verdant default. Built at runtime so no extra PNGs are needed.
 		_apply_biotope_palette(sm, cfg)
 		_apply_adaptive_shader_cost()
+	VoxelMat.set_shader_perf_tier(int(cfg.shader_perf_tier))
 	_sync_biotope_ui_cohesion(cfg)
 	# Integer upscale: lock the display rect to an integer multiple of the
 	# SubViewport size, centered, letterboxed with the parent control's
@@ -1861,7 +1873,10 @@ func _process_mouse_input(dt: float) -> void:
 			_finish_pond_conduct()
 		if _drag_button == MOUSE_BUTTON_LEFT and _drag_mode == "orbit" \
 				and _drag_total < DRAG_DEADZONE_PX and not _aquascape.is_active:
-			_try_pick_plant_at(_last_mouse)
+			if not _press_skip_feed and not is_pond_mode():
+				_drop_food_at_cursor(_drag_start)
+			else:
+				_try_pick_plant_at(_last_mouse)
 		_orbiting = false
 		_aquascape.end_stroke()
 		_aquascape.end_drag()
@@ -1883,7 +1898,7 @@ func _process_mouse_input(dt: float) -> void:
 		# exempt — those are tool actions, not navigation, and need to fire
 		# on the click itself. Once committed, stays committed for the
 		# duration of this drag.
-		if not _drag_committed and _drag_total >= DRAG_DEADZONE_PX:
+		if not _drag_committed and CameraController.drag_committed(_drag_total):
 			_drag_committed = true
 		var nav_committed: bool = _drag_committed \
 				or _drag_mode == "paint" or _drag_mode == "wood_drag" \
@@ -1893,8 +1908,7 @@ func _process_mouse_input(dt: float) -> void:
 				"pan":
 					_pan_target(delta)
 				"dolly":
-					radius = clampf(radius * (1.0 + delta.y * DOLLY_MOUSE_SENSITIVITY),
-						MIN_RADIUS, MAX_RADIUS)
+					radius = CameraController.dolly(radius, delta.y)
 					_apply_camera()
 				"paint":
 					if _aquascape.can_paint() and _aquascape.allows_drag_paint():
@@ -1911,9 +1925,9 @@ func _process_mouse_input(dt: float) -> void:
 						_pan_target(delta)
 						_pond_conduct_add(_project_to_surface(mouse_now))
 					else:
-						yaw -= delta.x * SENSITIVITY
-						pitch -= delta.y * SENSITIVITY
-						pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
+						var ob: Vector2 = CameraController.orbit(yaw, pitch, delta)
+						yaw = ob.x
+						pitch = ob.y
 						_apply_camera()
 
 
@@ -1924,8 +1938,8 @@ func _process_mouse_input(dt: float) -> void:
 		if g_now and not _auto_orbit_was_pressed:
 			_auto_orbit = not _auto_orbit
 		_auto_orbit_was_pressed = g_now
-	if _auto_orbit:
-		yaw += AUTO_ORBIT_SPEED * dt
+	if _auto_orbit and AccessibilityRuntime.motion_scale() > 0.0:
+		yaw = CameraController.auto_orbit_yaw(yaw, AUTO_ORBIT_SPEED, dt)
 		_apply_camera()
 	elif TopdownMotion.overhead_yaw_spin and _current_projection_id == "top_down_ortho":
 		yaw += 0.035 * dt
@@ -2036,9 +2050,9 @@ func _project_to_surface(mouse_pos: Vector2) -> Vector3:
 		return INVALID_HIT
 	var sv_pos: Vector2 = _window_mouse_to_viewport(mouse_pos)
 	var origin: Vector3 = camera.project_ray_origin(sv_pos)
-	var dir: Vector3 = camera.project_ray_normal(sv_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv_pos).normalized()
 	var surface_y: float = float(world.get("WATER_HEIGHT")) if world.get("WATER_HEIGHT") != null else 6.5
-	if dir.y > -0.01:
+	if absf(dir.y) < 1e-5:
 		return INVALID_HIT
 	var t: float = (surface_y - origin.y) / dir.y
 	if t < 0.0:
@@ -2105,11 +2119,13 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	if _sim == null or _aquascape.is_active:
 		return false
 	if display == null or not display.get_global_rect().has_point(mouse_pos):
+		_show_feed_toast("Click inside the tank view")
 		return false
 	if _click_hits_interactive_hud(mouse_pos):
 		return false
 	var hit: Vector3 = _project_to_surface(mouse_pos)
 	if hit == INVALID_HIT:
+		_show_feed_toast("Aim at the water inside the tank")
 		return false
 	if world != null and world.has_method("spawn_feeding_boil"):
 		world.spawn_feeding_boil(hit)
@@ -2118,16 +2134,76 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	else:
 		_sim._spawn_waste(hit, 0.45, WasteParticle.KIND_FOOD, _feed_subtype)
 	_alert_fish_to_feed(hit, _feed_subtype)
-	_show_feed_toast(_FEED_TYPE_LABELS[_feed_subtype])
+	_show_feed_toast("%s dropped" % _feed_toast_label())
 	_haptic(10)
 	if _onboarding != null:
 		_onboarding.on_first_feed()
 	return true
 
 
+func _set_feed_subtype(subtype: int) -> void:
+	_feed_subtype = posmod(subtype, UiIcons.FEED_SUBTYPE_KEYS.size())
+	_sync_feed_dock()
+	_show_feed_toast("%s — click water to drop" % _feed_toast_label())
+
+
+func _feed_toast_label() -> String:
+	return UiIcons.feed_button_label(UiIcons.feed_subtype_key(_feed_subtype), _is_mobile())
+
+
 func _cycle_feed_subtype(delta: int) -> void:
-	_feed_subtype = posmod(_feed_subtype + delta, _FEED_TYPE_LABELS.size())
-	_show_feed_toast("Food: %s (tap water to drop)" % _FEED_TYPE_LABELS[_feed_subtype])
+	_set_feed_subtype(_feed_subtype + delta)
+
+
+func _setup_feed_dock() -> void:
+	if footer_bar == null:
+		return
+	var hbox: HBoxContainer = footer_bar.get_node_or_null("Margin/HBox") as HBoxContainer
+	if hbox == null:
+		return
+	_feed_dock = HBoxContainer.new()
+	_feed_dock.name = "FeedDock"
+	_feed_dock.add_theme_constant_override("separation", 6)
+	_feed_dock.tooltip_text = UiIcons.feed_tooltip("dock")
+	var feed_lbl := Label.new()
+	feed_lbl.text = UiIcons.feed_label("dock")
+	feed_lbl.tooltip_text = UiIcons.feed_tooltip("dock")
+	PanelTheme.apply_font(feed_lbl, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+	feed_lbl.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
+	feed_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_feed_dock.add_child(feed_lbl)
+	_feed_dock.add_child(PanelTheme.make_hud_chip_divider())
+	_feed_btns.clear()
+	var compact: bool = _is_mobile()
+	for i in UiIcons.FEED_SUBTYPE_KEYS.size():
+		var btn := Button.new()
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.custom_minimum_size = Vector2(56 if compact else 0, PanelTheme._button_min_height() - 4)
+		var food_id: String = UiIcons.FEED_SUBTYPE_KEYS[i]
+		UiIcons.apply_feed_button(btn, food_id, i == _feed_subtype, compact)
+		var idx: int = i
+		btn.pressed.connect(func(): _set_feed_subtype(idx))
+		_feed_dock.add_child(btn)
+		_feed_btns.append(btn)
+	var spacer_idx: int = hbox.get_node("Spacer").get_index()
+	hbox.add_child(_feed_dock)
+	hbox.move_child(_feed_dock, spacer_idx)
+	_sync_feed_dock()
+
+
+func _sync_feed_dock() -> void:
+	if _feed_dock == null:
+		return
+	var show: bool = not _aquascape.is_active
+	_feed_dock.visible = show
+	var compact: bool = _is_mobile()
+	for i in _feed_btns.size():
+		UiIcons.apply_feed_button(
+			_feed_btns[i], UiIcons.FEED_SUBTYPE_KEYS[i], i == _feed_subtype, compact)
+
+
+func _sync_feed_dock_visibility() -> void:
+	_sync_feed_dock()
 
 
 func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> void:
@@ -2844,7 +2920,8 @@ func _on_fish_thought_spoke(speaker: Fish, text: String) -> void:
 	_defer_voice_presentation(func() -> void:
 		var sp: Fish = _fish_by_id(fish_id)
 		if follow_this and sp != null:
-			_show_follow_thought_typewriter(sp, nm, line, true)
+			var is_reply: bool = MindConversation.session_active(sp)
+			_show_follow_thought_typewriter(sp, nm, line, is_reply)
 		elif has_method("_push_notification"):
 			_push_notification("fish_thought", "info", nm, line, false), VOICE_BODY_FIRST_DELAY_S)
 
@@ -2861,6 +2938,7 @@ func _on_fish_thought_streaming(fish_id: String, partial: String, situation: Str
 		_follow_thought_strip_body.text = partial.strip_edges()
 		_follow_thought_tw_full = partial.strip_edges()
 		_follow_thought_tw_idx = partial.length()
+		_layout_follow_thought_strip()
 
 
 func _pulse_creature_affect(creature: Node) -> void:
@@ -3114,6 +3192,10 @@ func _layout_follow_thought_strip() -> void:
 		left_pad = maxf(left_pad, _residents_panel.size.x + edge + 12.0)
 	var strip_w: float = clampf(vp.x * 0.38, 300.0, 420.0)
 	var strip_h: float = 92.0
+	if _follow_thought_strip_body != null and _follow_thought_strip_body.text != "":
+		var line_h: float = float(PanelTheme.scaled_size(PanelTheme.SIZE_BODY)) + 6.0
+		var lines: int = maxi(1, _follow_thought_strip_body.get_line_count())
+		strip_h = maxf(92.0, float(lines) * line_h + 40.0)
 	if _keeper_ack_label != null and _keeper_ack_label.visible:
 		strip_h = 118.0
 	var toast_clearance: float = 0.0
@@ -3214,9 +3296,12 @@ func _follow_thought_typewriter_step(gen: int) -> void:
 	if _follow_thought_strip_body == null:
 		return
 	if _follow_thought_tw_idx >= _follow_thought_tw_full.length():
+		_layout_follow_thought_strip()
 		return
 	_follow_thought_tw_idx += 1
 	_follow_thought_strip_body.text = _follow_thought_tw_full.substr(0, _follow_thought_tw_idx)
+	if _follow_thought_tw_idx >= _follow_thought_tw_full.length():
+		_layout_follow_thought_strip()
 	var delay: float = FOLLOW_THOUGHT_CHAR_S
 	var ch: String = _follow_thought_tw_full.substr(_follow_thought_tw_idx - 1, 1)
 	if ch in [".", ",", "!", "?", ";", ":"]:
@@ -4114,6 +4199,7 @@ func _aquascape_workbench_width() -> float:
 
 func _sync_aquascape_chrome(_active: bool) -> void:
 	_sync_aquascape_view_bar()
+	_sync_feed_dock_visibility()
 	_apply_panel_layout()
 	_apply_hud_layout()
 	_sync_rail_toggles()
@@ -4177,6 +4263,7 @@ func _sync_aquascape_view_bar() -> void:
 		return
 	var show: bool = _aquascape.is_active and not _immersive_mode
 	_aquascape_view_bar.visible = show
+	_sync_feed_dock()
 	if not show:
 		return
 	var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -4457,19 +4544,21 @@ func _input(event: InputEvent) -> void:
 							or not _light_btn.get_global_rect().has_point(mb.position)):
 					_light_panel.visible = false
 					_sync_light_btn()
-				# LMB on a creature (tight pick) → follow. Open water → feed.
+				# LMB on a creature (tight pick) → follow. Short click on water → feed (on release).
 				# Shift+LMB on water → startle (tap on glass).
+				_press_skip_feed = false
 				var picked: Node3D = _pick_creature_at_click(mb.position)
 				if picked != null:
 					_assign_creature_target(picked)
 					_suppress_drag_until_release = true
+					_press_skip_feed = true
 				elif Input.is_key_pressed(KEY_SHIFT):
 					_startle_fish_near_tap(mb.position)
 					_suppress_drag_until_release = true
+					_press_skip_feed = true
 				elif is_pond_mode() and _pond_surface_tap(mb.position):
 					_suppress_drag_until_release = true
-				elif _drop_food_at_cursor(mb.position):
-					_suppress_drag_until_release = true
+					_press_skip_feed = true
 
 
 # ---- Touch gesture handlers ----
@@ -4744,7 +4833,7 @@ func _setup_mobile_ui() -> void:
 	
 	# Update the controls hint to show touch gestures instead of keyboard.
 	if controls_hint != null:
-		controls_hint.text = "drag orbit · pinch zoom · 2-finger pan + twist · tap creature · double-tap reset · long-press auto-orbit · edge-swipe settings"
+		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · pick food in footer · tap creature to follow"
 	
 	# Wire up mobile-only MobileHUD actions (speed dock wired in _setup_speed_hud).
 	_mobile_hud = get_node_or_null("MobileHUD")
@@ -4786,13 +4875,8 @@ func _apply_camera() -> void:
 	# the single convergence point for pan / WASD / follow-cam — clamping
 	# here means a stray big delta from any of those paths can't push the
 	# target through the camera (breaking `look_at`) or to ±∞.
-	target.x = clampf(target.x, -20.0, 20.0)
-	target.y = clampf(target.y, -2.0, 12.0)
-	target.z = clampf(target.z, -20.0, 20.0)
-	var x := cos(hero_pitch) * sin(hero_yaw)
-	var y := sin(hero_pitch)
-	var z := cos(hero_pitch) * cos(hero_yaw)
-	var pos: Vector3 = target + Vector3(x, y, z) * radius
+	target = CameraController.clamp_target(target)
+	var pos: Vector3 = CameraController.eye_position(target, hero_yaw, hero_pitch, radius)
 	# Pixel-snap camera: round the eye position to multiples of the
 	# world-space size of a single render pixel. Eliminates the sub-pixel
 	# jitter you see on swimming fish when the camera is drifting.
@@ -4818,13 +4902,10 @@ func _apply_camera() -> void:
 func _pan_target(delta: Vector2) -> void:
 	if camera == null:
 		return
+	# Dragging RIGHT pushes the scene right (target moves left). The basis
+	# right/up + radius-scaled sensitivity math lives in CameraController.
 	var basis: Basis = camera.global_transform.basis
-	var right: Vector3 = basis.x
-	var up: Vector3 = basis.y
-	# Negate so dragging RIGHT pushes the scene right (target moves left).
-	var pan_sc: float = PAN_MOUSE_SENSITIVITY * radius
-	target -= right * (delta.x * pan_sc)
-	target += up * (delta.y * pan_sc)
+	target = CameraController.pan_target(target, delta, basis.x, basis.y, radius)
 	# `target` is clamped to a sane box inside `_apply_camera()` (every
 	# update path calls through there, so the clamp lives at the single
 	# convergence point).
@@ -6669,6 +6750,14 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 	if _notifications.size() > NOTIF_MAX_HISTORY:
 		_notifications.pop_front()
 	_update_notification_badge()
+	if show_toast:
+		var dedup_key: String = "%s|%s" % [kind, body]
+		var now_unix: int = int(Time.get_unix_time_from_system())
+		if _toast_recent_keys.has(dedup_key) \
+				and now_unix - int(_toast_recent_keys[dedup_key]) < 180:
+			show_toast = false
+		else:
+			_toast_recent_keys[dedup_key] = now_unix
 	if show_toast:
 		_notification_toast_queue.append(notif)
 		_pump_notification_toast_queue()
@@ -9018,7 +9107,7 @@ func _show_coachmark_step(step: int) -> void:
 	var hints: Array[String] = [
 		"Use the right rail: Create · World · Look · System · Alerts",
 		"Tap the stat chips at the top for water chemistry and history",
-		"Click water to feed fish (9/0 to change food). Drag to orbit.",
+		"Click water to feed · pick food in the footer · drag to orbit.",
 	]
 	if step >= hints.size():
 		_set_global_pref("coachmarks_seen", true)
@@ -9206,7 +9295,7 @@ func _maybe_show_tutorial() -> void:
 	else:
 		hints = [
 			"• Drag to orbit the tank",
-			"• Click water to feed (9/0 cycles food type)",
+			"• Pick food in the footer, then tap water to feed",
 			"• Tap a creature to follow it",
 			"• Stat chips at top — tap for water & history",
 			"• Right rail — Create · World · Look · System · Alerts",

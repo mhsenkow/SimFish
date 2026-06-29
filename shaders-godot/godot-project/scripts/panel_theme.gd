@@ -118,9 +118,28 @@ const SIZE_TITLE: int = 26
 const SIZE_DISPLAY: int = 34
 
 
+static func font_scale() -> float:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml == null:
+		return 1.0
+	var st: SceneTree = ml as SceneTree
+	if st == null or st.root == null:
+		return 1.0
+	var cfg := st.root.get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return 1.0
+	return clampf(float(cfg.ui_font_scale), 0.8, 1.5)
+
+
+static func scaled_size(base: int) -> int:
+	return maxi(8, int(round(float(base) * font_scale())))
+
+
 # Apply a font family (+ optional size) to any text control. Hides the
 # per-class override-key differences between Label/Button and RichTextLabel.
 static func apply_font(node: Control, font: Font, size: int = -1) -> void:
+	if size > 0:
+		size = scaled_size(size)
 	if node is RichTextLabel:
 		node.add_theme_font_override("normal_font", font)
 		if size > 0:
@@ -403,7 +422,7 @@ static func make_title(text: String) -> Label:
 static func make_subtitle(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
+	l.add_theme_font_size_override("font_size", scaled_size(SIZE_CAPTION))
 	l.add_theme_color_override("font_color", DIM_FG)
 	return l
 
@@ -414,7 +433,7 @@ static func make_subtitle(text: String) -> Label:
 static func make_section(text: String) -> Label:
 	var l := Label.new()
 	l.text = text.to_upper()
-	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
+	l.add_theme_font_size_override("font_size", scaled_size(SIZE_CAPTION))
 	l.add_theme_color_override("font_color", SECTION_FG)
 	return l
 
@@ -424,7 +443,7 @@ static func make_section(text: String) -> Label:
 static func make_description() -> Label:
 	var l := Label.new()
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	l.add_theme_font_size_override("font_size", SIZE_CAPTION)
+	l.add_theme_font_size_override("font_size", scaled_size(SIZE_CAPTION))
 	l.add_theme_color_override("font_color", DIM_FG)
 	return l
 

@@ -24,6 +24,24 @@ if [[ -z "$MODEL_PATH" ]]; then
   exit 1
 fi
 
+# SYSTEMIC #18 — warn before loading a 250MB+ model on low-RAM hosts.
+MIN_FREE_MB="${GUARDIAN_LLM_MIN_FREE_MB:-2048}"
+if command -v vm_stat >/dev/null 2>&1; then
+  free_pages="$(vm_stat | awk '/Pages free/ {gsub("\\.", "", $3); print $3}')"
+  page_size="$(vm_stat | awk '/page size/ {gsub(/[^0-9]/, "", $8); print $8}')"
+  if [[ -n "$free_pages" && -n "$page_size" ]]; then
+    free_mb=$((free_pages * page_size / 1024 / 1024))
+    if (( free_mb < MIN_FREE_MB )); then
+      echo "WARNING: only ~${free_mb}MB free RAM — embedded LLM needs ~${MIN_FREE_MB}MB+." >&2
+    fi
+  fi
+elif [[ -r /proc/meminfo ]]; then
+  free_mb="$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)"
+  if [[ -n "$free_mb" ]] && (( free_mb < MIN_FREE_MB )); then
+    echo "WARNING: only ~${free_mb}MB MemAvailable — embedded LLM needs ~${MIN_FREE_MB}MB+." >&2
+  fi
+fi
+
 if ! [[ -f "$MODEL_PATH" ]]; then
   echo "Model not found: $MODEL_PATH" >&2
   exit 1
