@@ -46,7 +46,7 @@ Tested on Ubuntu / Debian-based distros. The binary already has the exec bit set
 
 ### Steam
 
-Coming to Steam as **walstad loom** (App ID `4796460`). See [`steam/README.md`](steam/README.md) for depot setup, GodotSteam install, and upload steps.
+**Coming soon** on [Steam](https://store.steampowered.com/app/4796460/) — Early Access planned **July 7, 2026**. [Wishlist](https://store.steampowered.com/app/4796460/) to get notified. GitHub releases stay free; a Steam purchase helps fund more dev time.
 
 ## Pick your tank
 
