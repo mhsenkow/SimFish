@@ -355,6 +355,7 @@ const CONDUCT_MOVES: Array = [
 
 
 func _ready() -> void:
+	set_process_unhandled_input(true)
 	_build_ui()
 	_pull_from_config()
 	visible = false
@@ -369,7 +370,9 @@ func _ready() -> void:
 			mr.track_changed.connect(_on_sync_track_changed)
 
 
-func _input(event: InputEvent) -> void:
+func _unhandled_input(event: InputEvent) -> void:
+	if PanelTheme.typing_focus_in_ui(get_viewport()):
+		return
 	if event.is_action_pressed("ui_cancel") and visible:
 		_close()
 		get_viewport().set_input_as_handled()

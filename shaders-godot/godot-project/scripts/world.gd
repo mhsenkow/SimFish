@@ -3331,44 +3331,68 @@ func _build_snail_body(snail: Node3D) -> void:
 
 # ---- Initial population ----
 
+const RESPAWN_FISH_TOTAL: int = 6
+const RESPAWN_SHRIMP_COUNT: int = 4
+
+
+func _respawn_fish_species_keys(stocking: Dictionary) -> Array[String]:
+	var keys: Array[String] = []
+	for species_name in stocking.keys():
+		if species_name == "shrimp" or species_name == "snails":
+			continue
+		if int(stocking[species_name]) <= 0:
+			continue
+		var entry: Dictionary = TankConfig.SPECIES_LIBRARY.get(species_name, {})
+		if entry.is_empty():
+			continue
+		keys.append(String(species_name))
+	return keys
+
+
+func _respawn_fish_counts(stocking: Dictionary) -> Dictionary:
+	var counts: Dictionary = {}
+	var species_keys: Array[String] = _respawn_fish_species_keys(stocking)
+	if species_keys.is_empty():
+		species_keys = ["glassdart"]
+	var idx: int = 0
+	for _i in RESPAWN_FISH_TOTAL:
+		var sp: String = species_keys[idx % species_keys.size()]
+		counts[sp] = int(counts.get(sp, 0)) + 1
+		idx += 1
+	return counts
+
+
 func _respawn_extinct_fauna() -> void:
-	# Called by SimDriver if the auto-respawn toggle is checked and the tank
-	# has been completely devoid of fauna for 5 seconds. Rebuilds the current
-	# preset but forces a count of 10 for every species.
+	# Called by SimDriver if the auto-respawn toggle is checked and every
+	# fauna class has been gone for 5 seconds. Seeds a small starter mix —
+	# not a full preset restock.
 	var cfg = get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
-		
+	if sim != null and sim.has_method("fauna_completely_extinct") \
+			and not sim.fauna_completely_extinct():
+		return
+
 	var stocking: Dictionary = {}
 	if cfg.tank_preset == "custom":
 		stocking = {
-			"glassdart": 10,
-			"mudsifter": 10,
-			"betta": 10,
-			"shrimp": 10
+			"glassdart": 1,
+			"mudsifter": 1,
+			"betta": 1,
+			"shrimp": 1,
 		}
 	else:
 		var preset: Dictionary = cfg.current_tank_preset()
 		stocking = preset.get("stocking", {}).duplicate()
-		for key in stocking.keys():
-			stocking[key] = 10
-			
-	if stocking.is_empty():
-		stocking = {"glassdart": 10, "mudsifter": 10, "shrimp": 10}
 
+	if stocking.is_empty():
+		stocking = {"glassdart": 1, "mudsifter": 1, "shrimp": 1}
+
+	var fish_counts: Dictionary = _respawn_fish_counts(stocking)
 	var phenotype_mult: float = _initial_phenotype_spread()
 
-	# Spawn Fish via _spawn_fish_at — this is the same path the initial
-	# population uses, and crucially it calls _apply_water_column_scale on
-	# the genome so respawned fish get their preferred_y / home_y_radius
-	# rescaled to this tank's water column. The old manual `Fish.new()`
-	# path skipped that, so on tall tanks every respawned fish pinned to
-	# the bottom (preferred_y was the reference-tank value of ~3.5
-	# regardless of actual substrate height).
-	for species_name in stocking.keys():
-		if species_name == "shrimp" or species_name == "snails":
-			continue
-		var count: int = int(stocking[species_name])
+	for species_name in fish_counts.keys():
+		var count: int = int(fish_counts[species_name])
 		if count <= 0:
 			continue
 		var entry: Dictionary = TankConfig.SPECIES_LIBRARY.get(species_name, {})
@@ -3383,14 +3407,13 @@ func _respawn_extinct_fauna() -> void:
 			_apply_founding_cohort_spread(g, i, count)
 			_spawn_fish_at(g, _sample_fish_spawn_pos(g))
 
-	# Shrimp: only when the preset stocking dict includes them.
+	# Shrimp (arthropods): only when the preset includes them.
 	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
-	if _stocking_shrimp_count() > 0:
+	if stocking.has("shrimp") and sim != null and sim.shrimp.is_empty():
 		if is_saltwater:
 			_spawn_marine_shrimp(false)
-		elif stocking.has("shrimp"):
-			var shrimp_count: int = int(stocking["shrimp"])
-			for i in shrimp_count:
+		else:
+			for i in RESPAWN_SHRIMP_COUNT:
 				var xz: Vector2 = _sample_clear_xz_in_band(
 					-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.6, 0.45, 36, 0.0, 0.44)
 				var sp := clamp_xyz_in_tank(spawn_position_on_floor(xz.x, xz.y, 0.1), 0.3)

@@ -23,6 +23,11 @@ func setup(main: Node) -> void:
 	_main = main
 
 
+func _prepare_open() -> void:
+	if _main != null and _main.has_method("_prepare_panel_open"):
+		_main.call("_prepare_panel_open")
+
+
 func ensure_backdrop() -> void:
 	if _main == null:
 		return
@@ -90,6 +95,7 @@ func toggle_side(id: String) -> void:
 
 
 func open_side(id: String) -> void:
+	_prepare_open()
 	close_modal()
 	for sid in [SIDE_SETTINGS, SIDE_RENDER, SIDE_SOUND, SIDE_LIGHT, SIDE_NOTIFICATIONS]:
 		if sid != id:
@@ -118,6 +124,7 @@ func toggle_modal(id: String) -> void:
 
 
 func open_modal(id: String) -> void:
+	_prepare_open()
 	close_side_panels()
 	if _open_modal != "" and _open_modal != id:
 		close_modal()

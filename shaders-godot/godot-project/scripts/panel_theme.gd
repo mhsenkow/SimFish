@@ -80,6 +80,18 @@ const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0
 const TOAST_STACK_W: float = 280.0
 const TOAST_STACK_H: float = 240.0
+
+
+# True when keyboard focus is in a text field — suppress game shortcuts/panel toggles.
+static func typing_focus_in_ui(viewport: Viewport) -> bool:
+	var focus: Control = viewport.gui_get_focus_owner()
+	if focus == null:
+		return false
+	if focus is LineEdit or focus is TextEdit:
+		return true
+	if focus.get_parent() is SpinBox:
+		return true
+	return false
 const SHELF_TOP_BAR_H: float = 64.0
 const SHELF_CARD_MIN_W: float = 260.0
 const SHELF_CARD_MAX_W: float = 320.0

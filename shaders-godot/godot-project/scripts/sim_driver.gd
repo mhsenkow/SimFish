@@ -3389,10 +3389,10 @@ func _tick(dt: float) -> void:
 	_run_evolution_burst(dt)
 	_run_ecosystem_diary(dt)
 
-	# 6a. Auto-Respawn Fauna if completely empty
+	# 6a. Auto-Respawn Fauna if completely empty (fish, shrimp, snails, etc.)
 	var cfg = _cfg()
 	if cfg != null and cfg.auto_respawn_fauna:
-		if fish.is_empty() and shrimp.is_empty() and eggs.is_empty():
+		if fauna_completely_extinct():
 			_extinction_timer += dt
 			if _extinction_timer >= 5.0:
 				_extinction_timer = 0.0
@@ -4623,6 +4623,37 @@ func _count_snails_and_eggs() -> Dictionary:
 			if script != null and script.resource_path.ends_with("snail_egg.gd"):
 				eggs_n += 1
 	return {"snails": snails, "eggs": eggs_n}
+
+
+# True when no fish, shrimp, eggs, snails, or other stocked fauna remain.
+# Auto-respawn waits for this so trumpet snails / glass snails don't get
+# duplicated while the tank still has a cleanup crew.
+func fauna_completely_extinct() -> bool:
+	if _count_live_fish() > 0 or _count_live_shrimp() > 0:
+		return false
+	for e in eggs:
+		if is_instance_valid(e):
+			return false
+	for cl in clams:
+		if is_instance_valid(cl):
+			return false
+	var sc: Dictionary = _count_snails_and_eggs()
+	if int(sc.get("snails", 0)) > 0 or int(sc.get("eggs", 0)) > 0:
+		return false
+	var tree: SceneTree = get_tree()
+	if tree != null:
+		for n in tree.get_nodes_in_group("trumpet_snails"):
+			if is_instance_valid(n):
+				return false
+		for n in tree.get_nodes_in_group("sea_cucumbers"):
+			if is_instance_valid(n):
+				return false
+	var w: Node = get_parent()
+	if w != null:
+		var wriggle: Variant = w.get("wriggle_root")
+		if wriggle is Node3D and (wriggle as Node3D).get_child_count() > 0:
+			return false
+	return true
 
 
 func _refresh_library_analysis_cache() -> void:

@@ -123,20 +123,23 @@ const MSAA_LABELS: Array[String] = ["Off", "2x", "4x", "8x"]
 
 
 func _ready() -> void:
+	set_process_unhandled_input(true)
 	_build_ui()
 	_pull_from_config()
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
-func _input(event: InputEvent) -> void:
+func _unhandled_input(event: InputEvent) -> void:
+	if PanelTheme.typing_focus_in_ui(get_viewport()):
+		return
 	if visible and event.is_action_pressed("ui_cancel"):
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		get_viewport().set_input_as_handled()
 		return
-	# R toggles this panel. (O toggles the settings panel.) We use unhandled
-	# input so the corner button can still toggle programmatically.
+	# R toggles this panel. (O toggles the settings panel.) Unhandled input
+	# lets LineEdit/TextEdit consume typed keys first.
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
 			var main: Node = get_tree().current_scene
@@ -144,6 +147,7 @@ func _input(event: InputEvent) -> void:
 				main.call("_ui_toggle_side", "render")
 			else:
 				toggle()
+			get_viewport().set_input_as_handled()
 
 
 func toggle() -> void:

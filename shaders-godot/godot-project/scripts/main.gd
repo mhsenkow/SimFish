@@ -845,6 +845,11 @@ func _toggle_camera_views_panel() -> void:
 		_camera_views_panel.set("main_ref", self)
 		add_child(_camera_views_panel)
 		_apply_panel_layout()
+	var opening: bool = not _camera_views_panel.visible
+	if opening:
+		_prepare_panel_open()
+		if _ui_panels != null:
+			_ui_panels.close_side_panels()
 	_camera_views_panel.visible = not _camera_views_panel.visible
 	if _camera_views_panel.visible and _camera_views_panel.has_method("sync_from_main"):
 		_camera_views_panel.sync_from_main()
@@ -882,7 +887,12 @@ func _toggle_residents_panel() -> void:
 		_residents_panel.set("main_ref", self)
 		add_child(_residents_panel)
 		_residents_panel.z_index = 130
-	_apply_panel_layout()
+		_apply_panel_layout()
+	var opening: bool = not _residents_panel.visible
+	if opening:
+		_prepare_panel_open()
+		if _ui_panels != null:
+			_ui_panels.close_modal()
 	_residents_panel.visible = not _residents_panel.visible
 	if _residents_panel.visible:
 		if _ui_panels != null:
@@ -2278,18 +2288,58 @@ func _handle_shortcut(key: int, action: Callable) -> void:
 
 
 func _typing_focus_in_ui() -> bool:
-	var focus: Control = get_viewport().gui_get_focus_owner()
-	return focus is LineEdit or focus is TextEdit
+	return PanelTheme.typing_focus_in_ui(get_viewport())
+
+
+func _keeper_input_active() -> bool:
+	return _keeper_say_edit != null and is_instance_valid(_keeper_say_edit) \
+			and _keeper_say_edit.has_focus()
+
+
+func _prepare_panel_open() -> void:
+	_close_rail_flyout()
+	_close_chip_popups()
+
+
+func _close_rail_flyout() -> bool:
+	if _rail_flyout != null and _rail_flyout.visible:
+		_rail_flyout.visible = false
+		return true
+	return false
+
+
+func _close_residents_panel() -> void:
+	if _residents_panel == null:
+		return
+	_residents_panel.visible = false
+	if _residents_panel.has_method("_hide_panel"):
+		_residents_panel.call("_hide_panel")
+
+
+func _close_camera_views_panel() -> void:
+	if _camera_views_panel == null:
+		return
+	_camera_views_panel.visible = false
 
 
 func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 	if _ui_panels != null and _ui_panels.is_modal_open():
 		return true
 	for panel in [settings_panel, render_panel, sound_panel, library_panel,
-			creature_creator_panel, fish_store_panel]:
+			creature_creator_panel, fish_store_panel, _notifications_panel,
+			_light_panel, _residents_panel, _camera_views_panel]:
 		if panel != null and panel.visible \
 				and panel.get_global_rect().has_point(mouse_pos):
 			return true
+	if _rail_flyout != null and _rail_flyout.visible \
+			and _rail_flyout.get_global_rect().has_point(mouse_pos):
+		return true
+	if _follow_thought_strip != null and _follow_thought_strip.visible \
+			and _follow_thought_strip.get_global_rect().has_point(mouse_pos):
+		return true
+	if _cheat_sheet != null and is_instance_valid(_cheat_sheet) \
+			and _cheat_sheet.get_global_rect().has_point(mouse_pos):
+		return true
 	if footer_bar != null and footer_bar.visible \
 			and footer_bar.get_global_rect().has_point(mouse_pos):
 		return true
@@ -3029,7 +3079,7 @@ func _build_follow_thought_ui() -> void:
 	_follow_thought_strip = PanelContainer.new()
 	_follow_thought_strip.name = "FollowThoughtStrip"
 	_follow_thought_strip.visible = false
-	_follow_thought_strip.mouse_filter = Control.MOUSE_FILTER_PASS
+	_follow_thought_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_follow_thought_strip.z_index = 97
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.05, 0.08, 0.14, 0.88)
@@ -3090,6 +3140,7 @@ func _on_keeper_say_focus_exited() -> void:
 	if _keeper_say_edit == null:
 		return
 	_submit_keeper_line(_keeper_say_edit.text)
+	_pump_notification_toast_queue()
 
 
 func _submit_keeper_line(raw: String) -> void:
@@ -3199,7 +3250,7 @@ func _layout_follow_thought_strip() -> void:
 	if _keeper_ack_label != null and _keeper_ack_label.visible:
 		strip_h = 118.0
 	var toast_clearance: float = 0.0
-	if _notification_toast_active > 0:
+	if _notification_toast_active > 0 and not _keeper_input_active():
 		toast_clearance = PanelTheme.TOAST_STACK_H + 10.0
 	_follow_thought_strip.anchor_left = 0.0
 	_follow_thought_strip.anchor_top = 1.0
@@ -4532,18 +4583,28 @@ func _input(event: InputEvent) -> void:
 					closed_chip_popup = true
 				if closed_chip_popup:
 					_chip_popup_key = ""
+				if _rail_flyout != null and _rail_flyout.visible:
+					var on_rail: bool = false
+					for btn in _ordered_rail_buttons():
+						if btn.get_global_rect().has_point(mb.position):
+							on_rail = true
+							break
+					if not _rail_flyout.get_global_rect().has_point(mb.position) and not on_rail:
+						_close_rail_flyout()
 				if _notifications_panel != null and _notifications_panel.visible \
-						and not _notifications_panel.get_global_rect().has_point(mb.position) \
-						and notifications_toggle != null \
-						and not notifications_toggle.get_global_rect().has_point(mb.position):
-					_notifications_panel.visible = false
-					_sync_rail_toggles()
+						and not _notifications_panel.get_global_rect().has_point(mb.position):
+					var on_alerts_rail: bool = _rail_alerts_btn != null \
+							and _rail_alerts_btn.get_global_rect().has_point(mb.position)
+					if not on_alerts_rail:
+						_close_notifications_panel()
+						_sync_rail_toggles()
 				if _light_panel != null and _light_panel.visible \
 						and not _light_panel.get_global_rect().has_point(mb.position) \
 						and (_light_btn == null \
-							or not _light_btn.get_global_rect().has_point(mb.position)):
-					_light_panel.visible = false
-					_sync_light_btn()
+							or not _light_btn.get_global_rect().has_point(mb.position)) \
+						and (_rail_appearance_btn == null \
+							or not _rail_appearance_btn.get_global_rect().has_point(mb.position)):
+					_close_light_panel()
 				# LMB on a creature (tight pick) → follow. Short click on water → feed (on release).
 				# Shift+LMB on water → startle (tap on glass).
 				_press_skip_feed = false
@@ -6271,11 +6332,13 @@ func _chip_popup_size_for_lines(line_count: int, min_w: float = 236.0) -> Vector
 
 
 func _ui_toggle_side(id: String) -> void:
+	_prepare_panel_open()
 	_ui_panels.toggle_side(id)
 	_sync_rail_toggles()
 
 
 func _ui_toggle_modal(id: String) -> void:
+	_prepare_panel_open()
 	_ui_panels.toggle_modal(id)
 	_sync_rail_toggles()
 	_sync_viewport_update_mode(_aquascape.is_active)
@@ -6427,6 +6490,7 @@ func _toggle_rail_flyout(group_id: String, anchor: Button) -> void:
 			and String(_rail_flyout.get_meta("group")) == group_id:
 		_rail_flyout.visible = false
 		return
+	_close_chip_popups()
 	for c in _rail_flyout_vbox.get_children():
 		c.queue_free()
 	_rail_flyout.set_meta("group", group_id)
@@ -6767,6 +6831,8 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 
 func _pump_notification_toast_queue() -> void:
 	if _notifications_toast_layer == null:
+		return
+	if _typing_focus_in_ui():
 		return
 	while _notification_toast_active < NOTIF_TOAST_MAX_ACTIVE and not _notification_toast_queue.is_empty():
 		var notif: Dictionary = _notification_toast_queue.pop_front()
@@ -9171,51 +9237,97 @@ func _show_coachmark_step(step: int) -> void:
 # tutorial_seen=true so it never returns. Doesn't block sim — user can
 # dismiss instantly or admire the tank behind it.
 func _dismiss_blocking_overlays() -> bool:
-	var dismissed := false
-	if library_panel != null and library_panel.visible:
-		if library_panel.has_method("close"):
-			library_panel.close()
-		else:
-			library_panel.visible = false
-		dismissed = true
+	# One layer per press — innermost / most transient UI first.
+	if _close_rail_flyout():
+		return true
+	if _chip_popup_key != "":
+		_close_chip_popups()
+		return true
+	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
+		_toggle_cheat_sheet()
+		return true
+	if _camera_views_panel != null and _camera_views_panel.visible:
+		_close_camera_views_panel()
+		return true
+	if _residents_panel != null and _residents_panel.visible:
+		_close_residents_panel()
+		return true
+	if _notifications_panel != null and _notifications_panel.visible:
+		_close_notifications_panel()
+		_sync_rail_toggles()
+		return true
+	if _light_panel != null and _light_panel.visible:
+		_close_light_panel()
+		return true
 	if settings_panel != null and settings_panel.visible:
-		settings_panel.visible = false
-		settings_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		dismissed = true
+		if settings_panel.has_method("toggle"):
+			settings_panel.toggle()
+		else:
+			settings_panel.visible = false
+			settings_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if _ui_panels != null:
+			_ui_panels.notify_side_closed(UiPanelManager.SIDE_SETTINGS)
+		_sync_rail_toggles()
+		return true
 	if render_panel != null and render_panel.visible:
 		render_panel.visible = false
 		render_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		dismissed = true
+		if _ui_panels != null:
+			_ui_panels.notify_side_closed(UiPanelManager.SIDE_RENDER)
+		_sync_rail_toggles()
+		return true
 	if sound_panel != null and sound_panel.visible:
-		sound_panel.visible = false
-		sound_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		dismissed = true
-	if fish_store_panel != null and fish_store_panel.visible:
-		fish_store_panel.visible = false
-		fish_store_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		dismissed = true
+		if sound_panel.has_method("_close"):
+			sound_panel._close()
+		else:
+			sound_panel.visible = false
+			sound_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if _ui_panels != null:
+			_ui_panels.notify_side_closed(UiPanelManager.SIDE_SOUND)
+		_sync_rail_toggles()
+		return true
 	if creature_creator_panel != null and creature_creator_panel.visible:
 		if creature_creator_panel.has_method("close"):
 			creature_creator_panel.close()
 		else:
 			creature_creator_panel.visible = false
-		dismissed = true
+		if _ui_panels != null:
+			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_CREATOR)
+		_sync_rail_toggles()
+		return true
+	if fish_store_panel != null and fish_store_panel.visible:
+		fish_store_panel.visible = false
+		fish_store_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		if _ui_panels != null:
+			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_STORE)
+		_sync_rail_toggles()
+		return true
+	if library_panel != null and library_panel.visible:
+		if library_panel.has_method("close"):
+			library_panel.close()
+		else:
+			library_panel.visible = false
+		if _ui_panels != null:
+			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_LIBRARY)
+		_sync_rail_toggles()
+		return true
 	if walkthrough_overlay != null and walkthrough_overlay.visible:
-		# ESC during the walkthrough finishes it (resumes the sim).
 		if walkthrough_overlay.has_method("_finish"):
 			walkthrough_overlay._finish()
 		else:
 			walkthrough_overlay.visible = false
-		dismissed = true
+		return true
 	if _tutorial_overlay != null and is_instance_valid(_tutorial_overlay):
 		_dismiss_tutorial_overlay(_tutorial_overlay)
-		dismissed = true
-	if _ui_panels.is_modal_open():
+		return true
+	if _ui_panels != null and _ui_panels.is_modal_open():
 		_ui_panels.close_modal()
 		_sync_rail_toggles()
-		dismissed = true
-	_dismiss_radial_menu()
-	return dismissed
+		return true
+	if _radial_menu != null and is_instance_valid(_radial_menu):
+		_dismiss_radial_menu()
+		return true
+	return false
 
 
 func _maybe_show_tutorial() -> void:

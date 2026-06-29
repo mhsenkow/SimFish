@@ -14,11 +14,17 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 - **CI / reference:** Guardian model cache; `data-schemas/validate.py` + `sim-rust` compile job; `.gitattributes`.
 - **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`, ADRs for `sim-rust/` and `data-schemas/`.
 
+## v0.2.23
+
+- **Cognition:** Active inference (expected free energy bids), GRU-lite world model, predictive theory of mind, inter-fish signal bus, emotional contagion, multi-goal motor blending, cognition LOD tiers, bid-generator registry, cognitive spine DAG.
+- **MindState:** Schema migration ladder, sleep consolidation (episodic → semantic), sentience eval harness with per-module ablation.
+- **UI:** Panel focus stacking, keeper input vs notification toast layout, HUD click-through fixes.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.23) (macOS / Windows / Linux / Android).
+
 ## v0.2.22
 
-Latest tagged release at time of writing. See
-[GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.22) for binaries
-(macOS / Windows / Linux / Android).
+Keeper care loop, Guardian advisor, aquascaping craft, pond view. See
+[GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.22).
 
 ## Earlier
 

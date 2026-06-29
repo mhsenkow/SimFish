@@ -104,14 +104,17 @@ var _pending_substrate: String = "aquasoil"
 
 
 func _ready() -> void:
+	set_process_unhandled_input(true)
 	_build_ui()
 	_pull_from_config()
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
-func _input(event: InputEvent) -> void:
+func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
+		return
+	if PanelTheme.typing_focus_in_ui(get_viewport()):
 		return
 	if event.is_action_pressed("ui_cancel"):
 		_revert_staged_stocking()
@@ -124,6 +127,7 @@ func _input(event: InputEvent) -> void:
 			_revert_staged_stocking()
 			visible = false
 			mouse_filter = Control.MOUSE_FILTER_IGNORE
+			get_viewport().set_input_as_handled()
 
 
 func toggle() -> void:
@@ -483,7 +487,7 @@ func _build_ui() -> void:
 
 	_add_section(vbox_adv, "Automation")
 	_auto_respawn_check = CheckBox.new()
-	_auto_respawn_check.text = "Auto-respawn extinct creatures (10 per species)"
+	_auto_respawn_check.text = "Auto-respawn when tank is empty (~6 fish + cleanup crew)"
 	_auto_respawn_check.toggled.connect(func(v): TankConfig.auto_respawn_fauna = v)
 	vbox_adv.add_child(_auto_respawn_check)
 

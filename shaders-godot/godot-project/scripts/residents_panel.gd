@@ -50,6 +50,7 @@ var _stat_accum: float = 0.0
 
 
 func _ready() -> void:
+	set_process_unhandled_input(true)
 	PanelTheme.apply_panel_chrome(self)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	custom_minimum_size = Vector2(320, 0)
@@ -603,16 +604,17 @@ func _process(delta: float) -> void:
 			pip.color = _condition_color(c)
 
 
-func _input(event: InputEvent) -> void:
+func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event.is_action_pressed("ui_cancel"):
 		_hide_panel()
 		get_viewport().set_input_as_handled()
 		return
-	# Down arrow enters the card list from the header/search. Once a card holds
-	# focus, Godot's neighbor navigation handles ↑/↓ and Enter follows it.
+	# Down arrow enters the card list from the header. Skip while search is focused.
 	if event.is_action_pressed("ui_down"):
+		if PanelTheme.typing_focus_in_ui(get_viewport()):
+			return
 		var fo: Control = get_viewport().gui_get_focus_owner()
 		if not _card_by_id.values().has(fo) and not _card_by_id.is_empty():
 			(_card_by_id.values()[0] as Control).grab_focus()
