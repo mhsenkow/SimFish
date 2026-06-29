@@ -157,6 +157,18 @@ func apply_to_fish(f: Fish) -> void:
 	f._dream_wisp = dream_wisp
 
 
+## Mirror the Global Workspace decision (workspace / focus / ignition) — for which
+## MindState is the authority — onto the fish runtime fields the rest of tick()
+## still reads. The single typed propagation point (#14/#15 / 0E); as more readers
+## move onto MindState these three writes shrink toward nothing.
+func commit_workspace_to(f: Fish) -> void:
+	if f == null:
+		return
+	f._mind_workspace = workspace.duplicate(true)
+	f.attention_focus = attention_focus
+	f._workspace_ignited = workspace_ignited
+
+
 func snapshot() -> Dictionary:
 	return {
 		"schema_version": schema_version,

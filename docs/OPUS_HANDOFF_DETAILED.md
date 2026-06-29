@@ -43,7 +43,7 @@ with acceptance criteria and smoke specs. Keep it in sync as sessions land.*
 | 1 | 0A — ARCHITECTURE.md | ✅ shipped 2026-06-28 ([ARCHITECTURE.md](ARCHITECTURE.md); ENGINEERING #91/#8) |
 | 2 | 0B — CameraController extract | ✅ shipped 2026-06-28 (`camera_controller.gd` + `smoke_camera_controller.gd`; ENGINEERING #2 partial; commit 3032364 + main.gd delegation in 0fbe6fd) |
 | 3 | 0C — fish locomotion extract | ✅ shipped 2026-06-28 (`fish_locomotion.gd` first slice: wall/clearance steering + `smoke_fish_locomotion.gd`; ENGINEERING #1 partial; commit e1c4923) |
-| 4 | 0E — MindState phase 1 | 🟡 guard landed 2026-06-28 (`smoke_mind_state_roundtrip.gd` + dual-write audit; commit 11f0298). The single-channel **flip** deferred — behavior-sensitive XL (every `tick()` reader of `f.*` must reroute). See ARCHITECTURE.md §8 |
+| 4 | 0E — MindState phase 1 | 🟡 step 1 landed 2026-06-28: `broadcast` is MindState-authoritative for the workspace triplet via `commit_workspace_to()` (read-back removed; **latent attention_focus revert bug fixed**); `smoke_workspace_channel.gd` + 9 cognition smokes green. **Remaining:** reader-side migration (felt-self + `tick()` read `f.*`; `tick_attention` path still reverts). See ARCHITECTURE.md §8 |
 | 5 | 3A — SimRng sweep | ⬜ next |
 | 6 | 1C — multi-goal blending (META #9) | ⬜ |
 | 7 | 5A — mock LLM for CI (META #77) | ⬜ |

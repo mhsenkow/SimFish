@@ -398,6 +398,17 @@ Tracked here per OPUS_HANDOFF 0E so the carve has an honest backlog. Baseline
     subset back byte-stably and does **not** clobber sync-only fields (hunger,
     neuromodulators); dict fields are deep-copied. This is the golden test that lets
     the eventual single-channel flip proceed without silently corrupting the mind.
+  - **0E step 1 landed (2026-06-28).** `broadcast` is now **MindState-authoritative**
+    for the workspace triplet: it writes `ms.workspace/.attention_focus/.workspace_ignited`
+    and mirrors them onto the fish through one typed method `MindState.commit_workspace_to(f)`
+    — the read-back of `f.attention_focus` inside `broadcast` is gone. This also **fixed
+    a latent revert bug**: `broadcast` set `ms.workspace` but not `ms.attention_focus`,
+    so `MindChannel.commit`'s `apply_to_fish` reverted `attention_focus` to its stale
+    cycle-start value each frame while the workspace persisted. Guarded by
+    [`smoke_workspace_channel.gd`] (sync→broadcast→commit keeps the focus) and the 9
+    cognition smokes (no regression). **Remaining:** the felt-self ticks + the rest of
+    `tick()` still read `f.*` directly — the full reader-side migration (and the
+    non-workspace `tick_attention` path, which has the same revert) is the next step.
 - **Cross-god `has_method()` probes.** `main.gd` guards ~all `SimDriver`/`World`
   calls; `fish.gd` probes `world`/`sim`. **Target:** typed `Creature`/`Mind`/
   `HabitatQuery` interfaces (#13).

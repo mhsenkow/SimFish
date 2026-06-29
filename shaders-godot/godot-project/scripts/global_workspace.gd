@@ -160,19 +160,25 @@ static func run_competition(bids: Array) -> Dictionary:
 
 
 static func broadcast(f: Fish, result: Dictionary, ms) -> void:
+	# MindState is the AUTHORITY for the workspace triplet (workspace / focus /
+	# ignition); commit_workspace_to() mirrors it onto the fish fields the rest of
+	# tick() still reads. (#14/#15 / 0E.) This also fixes a latent revert: broadcast
+	# used to set ms.workspace but NOT ms.attention_focus, so MindChannel.commit's
+	# apply_to_fish reverted attention_focus to its stale cycle-start value while the
+	# workspace persisted — now the whole triplet moves together.
 	var contents: Array = result.get("contents", [])
 	ms.workspace = contents.duplicate(true)
-	ms.workspace_ignited = bool(result.get("ignited", false))
-	f._mind_workspace = contents.duplicate(true)
 	if contents.is_empty():
-		f.attention_focus = ""
+		ms.attention_focus = ""
+		ms.workspace_ignited = false
+		ms.commit_workspace_to(f)
 		f._behavior_ws_bias = Vector3.ZERO
-		f._workspace_ignited = false
 		return
+	ms.workspace_ignited = bool(result.get("ignited", false))
 	var primary: Dictionary = contents[0]
-	f.attention_focus = str(primary.get("label", ""))
-	f._workspace_ignited = ms.workspace_ignited
-	_apply_behavior_bias(f, str(f.attention_focus), float(primary.get("salience", 0.0)))
+	ms.attention_focus = str(primary.get("label", ""))
+	ms.commit_workspace_to(f)
+	_apply_behavior_bias(f, ms.attention_focus, float(primary.get("salience", 0.0)))
 
 
 static func _apply_behavior_bias(f: Fish, focus: String, salience: float) -> void:
