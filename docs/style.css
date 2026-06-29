@@ -180,6 +180,72 @@ pre code {
   color: var(--accent-warm);
 }
 
+.status-banner h2 {
+  color: var(--accent);
+}
+
+/* ---------- steam callout ---------- */
+
+.steam-panel {
+  margin-top: 28px;
+  padding: 22px 24px;
+  max-width: 540px;
+  background: linear-gradient(135deg, rgba(27, 40, 56, 0.95) 0%, rgba(20, 51, 65, 0.9) 100%);
+  border: 1px solid #3d5a73;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.steam-eyebrow {
+  margin: 0 0 10px;
+  font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #66c0f4;
+}
+
+.steam-lead {
+  margin: 0 0 16px;
+  font-size: 15px;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.steam-lead strong {
+  color: var(--accent-bright);
+}
+
+.steam-btn {
+  display: inline-block;
+  padding: 12px 22px;
+  background: linear-gradient(180deg, #47bfff 0%, #1a9fff 100%);
+  border: 1px solid #1f7eb8;
+  border-radius: 4px;
+  color: #0a1820;
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  border-bottom: none;
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.steam-btn:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  border-bottom: none;
+}
+
+.honest-note {
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(102, 192, 244, 0.2);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+  font-style: italic;
+}
+
 .downloads {
   display: flex;
   flex-wrap: wrap;
