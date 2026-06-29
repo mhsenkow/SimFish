@@ -51,6 +51,34 @@ with acceptance criteria and smoke specs. Keep it in sync as sessions land.*
 | 9 | 2A — material pool (META #22) | ⬜ |
 | 10 | 3B — record/replay phase 1 (META #33) | ⬜ |
 
+### Tier-1 sentience engine — SHIPPED 2026-06-28/29 (all on master)
+
+META §A (sentient behaviour) **9/10**: #2 pred-error salience, #3 GRU world model (1B),
+#4 predictive theory-of-mind, #5 inter-fish signals (1D), #6 metacog gating, #7 Φ→risk,
+#8 sleep→semantic schemas, #9 multi-goal blend (1C), #10 emotional contagion — all `[x]`.
+**#1 active-inference = PARTIAL** (free_energy *bid* shipped via 1A; the full "EFE as the
+single action-selection core" is the XL·XL epic — still open).
+
+META §B (cognition framework) **8/10**: #11 kernel, #12 bid registry, #13 module DAG,
+#14 ablation, #15 MindState channel, #17 schema migration, #18 trace bus, #20 LOD tiers —
+all `[x]`. **Open: #16** standalone addon (M·XL), **#19** promote guardian policy-model to
+all fish under the #20 budget (M·L, now unblocked).
+
+New cognition smokes (CI-able): camera_controller, fish_locomotion, mind_state_roundtrip,
+workspace_channel, motor_blend, active_inference, world_model_gru, fish_signals, contagion,
+cognition_framework, theory_of_mind, sleep_consolidation, mind_migration, module_graph,
+bid_registry, mind_lod.
+
+### What's left (the genuinely hard three) + the Opus-only next thing
+
+Only 3 Tier-1 items remain, each a dedicated pass: **#1-full** (active-inference core, epic),
+**#19** (promote policy-model, integration — most tractable), **#16** (addon packaging).
+**They all share one blocker:** there is no way to verify a mind change makes fish *more
+sentient* vs just *different* — the smokes test mechanics, not behaviour quality. So the
+highest-leverage next thing is a **sentience eval harness** (golden behavioural traces +
+integration/Φ measures): design *what* defines a working mind, then every risky epic becomes
+falsifiable. That is the Opus-only deliverable; Cursor builds the epics against it.
+
 ---
 
 ## TIER 0 — Do this first (blocks everything else)
