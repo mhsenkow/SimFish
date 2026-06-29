@@ -73,6 +73,10 @@ static func collect_bids(f: Fish, _sim: Node) -> Array:
 		var hs: float = float(hint.get("salience", 0.0))
 		if hs > 0.25:
 			bids.append(_bid("memory", hs, ["memory", str(hint.get("kind", "past"))]))
+	# 1D / META #5 — a heard inter-fish signal enters the workspace (intersubjectivity).
+	var sigb: Dictionary = FishSignals.collect_signal_bid(f)
+	if not sigb.is_empty() and float(sigb.get("salience", 0.0)) > 0.05:
+		bids.append(sigb)
 	# DARING §A — keeper as percept
 	var kb: Dictionary = KeeperInput.collect_keeper_bid(f)
 	if not kb.is_empty():

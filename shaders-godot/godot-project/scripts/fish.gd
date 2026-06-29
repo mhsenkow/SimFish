@@ -340,6 +340,9 @@ var _learned_words: Dictionary = {}
 var _word_milestones: Dictionary = {}
 var _world_model: Dictionary = {}
 var _prediction_error: float = 0.0
+# 1D — inter-fish signalling state (emitted/heard signal + learned reliability).
+# Transient (≈3s decay) so it isn't persisted; managed entirely by FishSignals.
+var _signal_state: Dictionary = {}
 var _life_stance: String = ""
 var _stance_drift_t: float = 0.0
 var _active_plan: Dictionary = {}
@@ -1204,6 +1207,10 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMind.tick_personality_conditioning(self, dt)
 	FishMind.tick_home_confidence(self, dt)
 	FishMind.tick_prediction_surprise(self, sim, dt)
+	# 1D — emit our own signal + listen to neighbours BEFORE attention, so a heard
+	# alarm/food/mate call can enter this cycle's workspace as a bid.
+	FishSignals.tick(self, dt)
+	FishSignals.scan(self, neighbors)
 	MindCycle.run_attention_phase(self, sim, _ms, dt)
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
