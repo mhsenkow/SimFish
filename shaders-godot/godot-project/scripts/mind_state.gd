@@ -4,7 +4,7 @@ extends RefCounted
 # CONSCIOUSNESS_ENGINEERING §A — unified MindState: the fish's mind as one object.
 # fish.gd still owns scalar fields for save compat; MindState syncs each tick.
 
-const SCHEMA_VERSION: int = 3
+const SCHEMA_VERSION: int = 4
 
 var schema_version: int = SCHEMA_VERSION
 var full_fidelity: bool = true
@@ -226,7 +226,10 @@ func to_dict() -> Dictionary:
 	}
 
 
-func from_dict(d: Dictionary) -> void:
+func from_dict(d_in: Dictionary) -> void:
+	# META #17 — walk an older save up the migration ladder before reading, so new
+	# fields are defaulted explicitly rather than degrading silently.
+	var d: Dictionary = MindMigration.migrate(d_in, SCHEMA_VERSION)
 	schema_version = int(d.get("schema_version", SCHEMA_VERSION))
 	full_fidelity = bool(d.get("full_fidelity", true))
 	mood = float(d.get("mood", mood))
