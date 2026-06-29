@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>walstad loom — generative pixel-art Walstad aquarium</title>
-  <meta name="description" content="A generative pixel-art Walstad aquarium running as a 3D voxel scene through a palette-quantize + dither shader pipeline. Plants grow, fish school and breed, shrimp climb plants, snails crawl the glass." />
-  <meta property="og:title" content="walstad loom — generative pixel-art Walstad aquarium" />
-  <meta property="og:description" content="Self-balancing voxel ecosystem rendered as 48-color pixel art. Plants grow, fish breed, snails crawl, shrimp molt — every creature is an agent with a genome and a behavior tree." />
+  <title>walstad loom — generative Walstad aquarium simulation</title>
+  <meta name="description" content="A generative pixel-art Walstad aquarium. 3D voxel sim, palette-quantize render pipeline, closed nutrient loop. Plants grow, fish breed, ecosystem self-balances." />
+  <meta property="og:title" content="walstad loom" />
+  <meta property="og:description" content="Self-balancing voxel ecosystem rendered as 48-color pixel art. Plants grow, fish breed, snails crawl — every creature is an agent with a genome and a behavior tree." />
   <meta property="og:image" content="https://mhsenkow.github.io/SimFish/img/void-tank.png" />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://mhsenkow.github.io/SimFish/" />
@@ -17,14 +17,16 @@
 <body>
   <header class="site-nav">
     <div class="site-nav-inner">
-      <span class="site-mark">walstad loom</span>
+      <div>
+        <span class="site-mark">walstad loom</span>
+        <span class="site-mark-sub">SimFish / v0.2.22</span>
+      </div>
       <nav class="site-links">
         <a href="#download">Download</a>
-        <a href="#steam">Steam</a>
         <a href="#status">Status</a>
+        <a href="#features">Features</a>
         <a href="#scenarios">Scenarios</a>
         <a href="#gallery">Gallery</a>
-        <a href="https://github.com/mhsenkow/SimFish/issues">Issues</a>
         <a href="https://github.com/mhsenkow/SimFish">GitHub</a>
       </nav>
     </div>
@@ -33,221 +35,244 @@
   <header class="hero" id="top">
     <div class="hero-inner">
       <h1>walstad loom</h1>
-      <p class="tagline">A generative pixel-art aquarium. 3D voxel scene → palette-quantize + dither → chunky 48-color pixels. Plants grow voxel by voxel, fish school and breed, shrimp molt, snails crawl the glass. The whole thing self-balances over a few minutes of watching.</p>
-      <p class="version-pill">Latest release · <strong>v0.2.22</strong> — <a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.22">download</a></p>
+      <p class="hero-deck">Generative Walstad aquarium. Continuous 3D voxel simulation → palette-quantize + dither → 48-color pixel output. Closed nutrient loop; population dynamics settle over minutes of observation.</p>
+
+      <dl class="spec-strip">
+        <div class="spec-cell">
+          <dt>Release</dt>
+          <dd><a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.22">v0.2.22</a></dd>
+        </div>
+        <div class="spec-cell">
+          <dt>Runtime</dt>
+          <dd>Godot 4.6+</dd>
+        </div>
+        <div class="spec-cell">
+          <dt>Steam EA</dt>
+          <dd>7 Jul 2026</dd>
+        </div>
+      </dl>
+
       <div class="downloads" id="download">
-        <a class="dl-btn dl-mac" href="https://github.com/mhsenkow/SimFish/releases/latest">
+        <a class="dl-btn" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">macOS</span>
-          <span class="hint">Universal · Apple Silicon + Intel</span>
+          <span class="hint">universal · arm64 + x86_64</span>
         </a>
-        <a class="dl-btn dl-win" href="https://github.com/mhsenkow/SimFish/releases/latest">
+        <a class="dl-btn" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">Windows</span>
           <span class="hint">x86_64</span>
         </a>
-        <a class="dl-btn dl-linux" href="https://github.com/mhsenkow/SimFish/releases/latest">
+        <a class="dl-btn" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">Linux</span>
           <span class="hint">x86_64</span>
         </a>
-        <a class="dl-btn dl-android" href="https://github.com/mhsenkow/SimFish/releases/latest">
+        <a class="dl-btn" href="https://github.com/mhsenkow/SimFish/releases/latest">
           <span class="platform">Android</span>
-          <span class="hint">ARM64 · APK</span>
+          <span class="hint">arm64 · apk</span>
         </a>
       </div>
-      <p class="releases-link"><a href="https://github.com/mhsenkow/SimFish/releases">All releases</a> · <a href="https://github.com/mhsenkow/SimFish">Source on GitHub</a> · <a href="https://github.com/mhsenkow/SimFish/issues">Report a bug</a></p>
+      <p class="releases-link"><a href="https://github.com/mhsenkow/SimFish/releases">All releases</a> · <a href="https://github.com/mhsenkow/SimFish/issues">Issues</a></p>
+
       <aside class="steam-panel" id="steam">
-        <p class="steam-eyebrow">Coming soon on Steam · Early Access</p>
-        <p class="steam-lead">Planned launch <strong>July 7, 2026</strong> — a living tank you watch more than you play. Same voxel Walstad sim, palette-quantized pixels, fish that breed and schools that breathe. Wishlist to get notified when the store unlocks.</p>
-        <a class="steam-btn" href="https://store.steampowered.com/app/4796460/">Wishlist on Steam</a>
-        <p class="honest-note">Honest disclaimer: the GitHub releases are free — same build, no paywall. But I'm one person on nights and weekends. Steam sales are what buy the hours; if enough people pick it up there, walstad loom gets more features, fixes, and polish. Try it free first — if it hooks you, wishlisting or buying on Steam is the most direct way to keep the tank evolving.</p>
+        <p class="steam-eyebrow">Steam · Early Access</p>
+        <p class="steam-lead"><strong>July 7, 2026.</strong> Same build as GitHub — wishlist for launch notification.</p>
+        <a class="steam-btn" href="https://store.steampowered.com/app/4796460/">Wishlist</a>
+        <p class="honest-note">GitHub releases are free. Steam purchases fund development time — try the build first, buy if you want more of it.</p>
       </aside>
     </div>
     <figure class="hero-shot">
-      <img src="img/void-tank.png" alt="A planted aquarium floating in the void — pixel-art voxel fish over sand and hardscape" loading="eager" />
-      <figcaption>Void environment — the classic isolated tank floating in dark space</figcaption>
+      <img src="img/void-tank.png" alt="Planted aquarium in void environment — pixel-art voxel fish over substrate" loading="eager" />
+      <figcaption>Fig. 1 — void preset · isolated tank · 48-color quantize pass</figcaption>
     </figure>
   </header>
 
-  <section class="status-banner" id="status">
-    <h2>Where it's at</h2>
-    <p class="section-lead">Active development as of <strong>June 2026</strong>. The public builds are playable; the backlog is deep; Steam Early Access is the next milestone.</p>
-    <div class="grid">
-      <article class="feature">
-        <h3>Latest release — v0.2.22</h3>
-        <p>Keeper care loop: fish open up as water quality and stocking settle from crisis → thriving. Guardian advisor mode when the tank is stressed. Aquascaping craft, pond view, top-down dance formations, and a bundled SmolLM Guardian voice on desktop builds.</p>
-      </article>
-      <article class="feature">
-        <h3>In the repo right now</h3>
-        <p>Cognition foundations — recurrent world models, inter-fish signal bus, emotional contagion in schools. Engineering carve-outs (camera, locomotion, mind state) so the sim stays maintainable as it grows. Idea docs track 250+ shipped items and what's next.</p>
-      </article>
-      <article class="feature">
-        <h3>Steam Early Access</h3>
-        <p>Store page is live as <strong>Coming Soon</strong> — planned unlock <strong>July 7, 2026</strong>. Early Access with community feedback on whether to push realism, fantasy ambient tank, or more interactivity. <a href="https://store.steampowered.com/app/4796460/">Wishlist on Steam</a>.</p>
-      </article>
-      <article class="feature">
-        <h3>How to help</h3>
-        <p>Play the free build, file <a href="https://github.com/mhsenkow/SimFish/issues">GitHub issues</a>, or grab it on Steam when it launches. Either way you get the same game — Steam revenue is what funds more time on it.</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="whats-new" id="new">
-    <h2>What's new in v0.2.22</h2>
-    <div class="grid">
-      <article class="feature">
-        <h3>Keeper care loop</h3>
-        <p>Steady the tank first — fish open up to conversation as care improves from crisis → stressed → steady → thriving. Type comfort words (<em>safe</em>, <em>calm</em>, <em>trust</em>) to soothe spooked fish. Overstressed tanks block verbal replies until water quality and stocking settle.</p>
-      </article>
-      <article class="feature">
-        <h3>Guardian advisor</h3>
-        <p>When the tank is stressed, the Guardian fish switches to advisor mode and offers care hints instead of idle chatter. Bond and tier feedback shows in the keeper input bar as you interact.</p>
-      </article>
-      <article class="feature">
-        <h3>Stability &amp; polish</h3>
-        <p>Editor warnings cleaned up, smoke tests cover keeper care tiers, and sim stats now emit <code>tank_care_mood</code> / <code>tank_care_tier</code> for overlays and debugging.</p>
-      </article>
-      <article class="feature">
-        <h3>Still in v0.2.21</h3>
-        <p>Aquascaping craft, pond view, top-down dance formations, and deeper fish minds — plus tank-load crash fixes, snail predator safety, and non-finite transform recovery.</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="features">
-    <h2>What's in the tank</h2>
-    <div class="grid">
-      <article class="feature">
-        <h3>Plants that actually grow</h3>
-        <p>Every plant builds itself voxel by voxel over real time, fed by a nutrient field under the substrate. Six leaf forms (paddle, ribbon, lance, needle, column, moss). Vallisneria sends out horizontal runners that root into daughter plants. Cryptocorynes melt under low light and regrow from the rhizome.</p>
-      </article>
-      <article class="feature">
-        <h3>Fish with genomes and behavior trees</h3>
-        <p>Each fish has a heritable genome — body shape, fin length, color, swim pattern, mouth orientation, eye size, tail fork depth. Lineages drift over generations into visible morphs. Tetras school, angelfish hover and brood their eggs, guppy males flare for females, livebearer females release free-swimming fry instead of laying eggs.</p>
-      </article>
-      <article class="feature">
-        <h3>Walstad food web</h3>
-        <p>Closed nutrient loop: plants ← substrate ← waste ← creatures. Shrimp graze plant tips and snap at fry. Snails crawl glass and clear detritus. Fish defecate. Bettas hunt shrimp. Algae blooms when nutrients spike. Auto-balances over a few minutes.</p>
-      </article>
-      <article class="feature">
-        <h3>Day/night cycle</h3>
-        <p>A 6-minute day/night cycle drives plant photosynthesis (visible O2 pearling), fish activity (cory species nocturnal, schoolers diurnal), and surface gulping when oxygen drops too low.</p>
-      </article>
-      <article class="feature">
-        <h3>Saltwater reef mode</h3>
-        <p>Switch the preset and the tank turns into a saltwater reef: ocean-sand substrate, four coral morphs (branching staghorn, brain dome, table, soft feathery), a mixed school of tropical fish where every individual rolls a unique morph at spawn, marine snails (turbo, trochus, nassarius), and skunk cleaner shrimp that set up cleaning stations.</p>
-      </article>
-      <article class="feature">
-        <h3>Pixel-perfect aesthetic</h3>
-        <p>Internal sim runs at full 3D continuous. The render pass quantizes to chunky pixels and a 48-color palette via a custom GDShader. Animation emerges from physics, not keyframes — every tail wag, every wall-bounce, every settle is calculated.</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="scenarios" id="scenarios">
-    <h2>Pick your tank</h2>
-    <p class="section-lead">Tap <strong>+ New tank</strong> in the game to open the scenario picker — eight curated themes that each combine a distinct tank shape, substrate, lighting, and stocking. Every scenario produces a visibly different silhouette of glass, not just a different fish mix.</p>
-    <figure class="scenario-shot">
-      <img src="img/tank-menu-scenarios.png" alt="Scenario picker showing Walstad Jungle, Iwagumi, Blackwater, and Coral Reef presets" loading="lazy" />
-      <figcaption>Eight scenarios — from Walstad jungle to reef cube, hex showtank, and polyp biosphere</figcaption>
-    </figure>
-    <div class="scenario-grid">
-      <article class="scenario-card">
-        <h3>Walstad Jungle</h3>
-        <p class="scenario-meta">box · 8×4×7</p>
-        <p>Dense planted community: cardinal tetras, harlequins, cory, mouthbrooding gourami pair, cleaner shrimp.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Iwagumi Stone Garden</h3>
-        <p class="scenario-meta">wide box · 11×3×5</p>
-        <p>Sand + bright sun + a single tetra school over almost-empty negative space.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Blackwater Biotope</h3>
-        <p class="scenario-meta">column · 6×3×9</p>
-        <p>Tall narrow tank, driftwood-stained warm water, killifish + cory + guppy.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Coral Reef Cube</h3>
-        <p class="scenario-meta">cube · 6.5²×7</p>
-        <p>Saltwater reef: corals, anemones, clams, mixed reef morphs. Coral tips pulse and glow at night.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Cichlid Hex Showtank</h3>
-        <p class="scenario-meta">hex · 7²×8</p>
-        <p>Hexagonal show tank — angelfish + gourami pairs defend wedges of floor.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Polyp Biosphere</h3>
-        <p class="scenario-meta">sphere · 5²×6</p>
-        <p>No fish — cherry shrimp colony, freshwater hydra polyps, filter-feeding clams.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Nature Aquarium Column</h3>
-        <p class="scenario-meta">cylinder · 5.5²×8</p>
-        <p>Tall planted column with every behavior on display at once.</p>
-      </article>
-      <article class="scenario-card">
-        <h3>Apex Predator Den</h3>
-        <p class="scenario-meta">box · 6×4×6</p>
-        <p>Cozy dim tank — betta + dwarf puffer contest opposite corners.</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="gallery" id="gallery">
-    <h2>In the sim</h2>
-    <p class="section-lead">Tanks can float in the void, sit on a bedroom desk, or frame a sunny window. Lighting, fog, and post-process all quantize through the same 48-color palette.</p>
-    <div class="gallery-grid">
-      <figure>
-        <img src="img/planted-community.png" alt="Planted community tank with live stat chips and thriving ecosystem" loading="lazy" />
-        <figcaption>Planted community — live stat chips track fish, shrimp, water chemistry, and morph drift</figcaption>
-      </figure>
-      <figure>
-        <img src="img/driftwood-biotope.png" alt="Driftwood biotope with tetras and shrimp over sand" loading="lazy" />
-        <figcaption>Blackwater driftwood — warm lamp, tannin-stained water, schooling tetras</figcaption>
-      </figure>
-      <figure>
-        <img src="img/reef-cube.png" alt="Saltwater reef cube with corals and mixed reef fish" loading="lazy" />
-        <figcaption>Reef cube — corals respire, bleach under stress, and glow after dark</figcaption>
-      </figure>
-      <figure>
-        <img src="img/void-tank.png" alt="Rectangular tank floating alone in dark space with checkered floor plane" loading="lazy" />
-        <figcaption>Void preset — classic isolated tank with no room props</figcaption>
-      </figure>
-    </div>
-  </section>
-
-  <section class="install">
-    <h2>Installing</h2>
-    <div class="install-grid">
-      <div>
-        <h3>macOS</h3>
-        <p>Download <code>walstad-loom-mac.zip</code>, unzip, then <strong>right-click → Open → Open</strong> in the Gatekeeper dialog. The app is ad-hoc signed but not Apple-notarized.</p>
-        <p class="muted">If macOS says <em>"WalstadLoom.app is damaged and can't be opened"</em> (Chrome quarantine bug), open Terminal and run <code>xattr -dr com.apple.quarantine ~/Downloads/WalstadLoom.app</code>, then double-click again.</p>
+  <main>
+    <section id="status">
+      <div class="section-head">
+        <h2><span class="sec-num">01</span> Status</h2>
+        <p class="section-lead">Active development, June 2026. Public builds are stable; Steam Early Access is the next release gate.</p>
       </div>
-      <div>
-        <h3>Windows</h3>
-        <p>Download <code>walstad-loom-windows.zip</code>, unzip, double-click <code>WalstadLoom.exe</code>. SmartScreen will warn that the publisher is unknown — click <strong>More info → Run anyway</strong>.</p>
+      <div class="grid grid-3">
+        <article class="feature">
+          <h3>v0.2.22 shipped</h3>
+          <p>Keeper care tiers, Guardian advisor, aquascaping craft, pond view, top-down formations, SmolLM Guardian voice on desktop.</p>
+        </article>
+        <article class="feature">
+          <h3>In development</h3>
+          <p>Recurrent world models, inter-fish signal bus, emotional contagion. Locomotion and mind-state carve-outs for maintainability.</p>
+        </article>
+        <article class="feature">
+          <h3>Distribution</h3>
+          <p>GitHub Releases (free). <a href="https://store.steampowered.com/app/4796460/">Steam wishlist</a> for EA launch. Revenue → dev hours.</p>
+        </article>
       </div>
-      <div>
-        <h3>Linux</h3>
-        <p>Download <code>walstad-loom-linux.tar.gz</code>, then:</p>
-        <pre><code>tar -xzf walstad-loom-linux.tar.gz
+    </section>
+
+    <section id="new">
+      <div class="section-head">
+        <h2><span class="sec-num">02</span> v0.2.22 notes</h2>
+      </div>
+      <div class="grid">
+        <article class="feature">
+          <h3>Keeper care loop</h3>
+          <p>Fish open to conversation as care improves: crisis → stressed → steady → thriving. Comfort lexicon (<em>safe</em>, <em>calm</em>, <em>trust</em>) soothes spooked individuals. Verbal replies gated when tank is overstressed.</p>
+        </article>
+        <article class="feature">
+          <h3>Guardian advisor</h3>
+          <p>Stressed tanks trigger advisor mode — care hints over idle chatter. Bond tier reflected in keeper input bar.</p>
+        </article>
+        <article class="feature">
+          <h3>Telemetry</h3>
+          <p><code>tank_care_mood</code> / <code>tank_care_tier</code> in sim stats. Smoke tests for care tiers. Editor warning cleanup.</p>
+        </article>
+        <article class="feature">
+          <h3>Prior (v0.2.21)</h3>
+          <p>Aquascaping craft, pond view, dance formations, deeper fish minds. Tank-load crash fixes, snail predator safety, transform recovery.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="features">
+      <div class="section-head">
+        <h2><span class="sec-num">03</span> Subsystems</h2>
+        <p class="section-lead">Walstad-style closed loop. Each agent carries a genome; behavior emerges from physics and state machines, not keyframes.</p>
+      </div>
+      <div class="grid grid-3">
+        <article class="feature">
+          <h3>Plant growth</h3>
+          <p>Voxel-by-voxel construction from substrate nutrient field. Six leaf morphs, runners, crypt melt/regrow from rhizome.</p>
+        </article>
+        <article class="feature">
+          <h3>Fish genetics</h3>
+          <p>Heritable morphology and swim pattern. Schooling, brooding, live-bearing, morph drift across generations.</p>
+        </article>
+        <article class="feature">
+          <h3>Food web</h3>
+          <p>plants ← substrate ← waste ← fauna. Grazing, predation, algae bloom/crash cycles. Self-balancing over ~minutes.</p>
+        </article>
+        <article class="feature">
+          <h3>Photoperiod</h3>
+          <p>6-minute day/night. Photosynthesis, O₂ pearling, species-specific diurnal/nocturnal activity, surface gulping at low O₂.</p>
+        </article>
+        <article class="feature">
+          <h3>Reef mode</h3>
+          <p>Saltwater preset: coral morphs, mixed reef fish morphs at spawn, marine inverts, night bioluminescence on coral tips.</p>
+        </article>
+        <article class="feature">
+          <h3>Render pipeline</h3>
+          <p>Continuous 3D sim → GDShader palette quantize + dither. 48-color output. Motion from simulation state.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="scenarios">
+      <div class="section-head">
+        <h2><span class="sec-num">04</span> Scenarios</h2>
+        <p class="section-lead">Eight presets. Each sets tank geometry, substrate, lighting, and stocking — distinct glass silhouette, not just species swap.</p>
+      </div>
+      <figure class="scenario-shot">
+        <img src="img/tank-menu-scenarios.png" alt="Scenario picker — Walstad Jungle, Iwagumi, Blackwater, Coral Reef" loading="lazy" />
+        <figcaption>Fig. 2 — scenario picker · 8 presets</figcaption>
+      </figure>
+      <div class="scenario-grid">
+        <article class="scenario-card">
+          <h3>Walstad Jungle</h3>
+          <p class="scenario-meta">box 8×4×7</p>
+          <p>Planted community: tetras, harlequins, cory, gourami pair, shrimp.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Iwagumi</h3>
+          <p class="scenario-meta">wide 11×3×5</p>
+          <p>Sand, high light, single tetra school, negative space.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Blackwater</h3>
+          <p class="scenario-meta">column 6×3×9</p>
+          <p>Tannin-stained water, driftwood, killifish, cory, guppy.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Reef Cube</h3>
+          <p class="scenario-meta">cube 6.5²×7</p>
+          <p>Saltwater reef: corals, clams, mixed morph school.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Hex Showtank</h3>
+          <p class="scenario-meta">hex 7²×8</p>
+          <p>Angelfish + gourami pairs, territorial wedges.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Polyp Biosphere</h3>
+          <p class="scenario-meta">sphere 5²×6</p>
+          <p>Shrimp colony, hydra polyps, clams — no fish.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>NA Column</h3>
+          <p class="scenario-meta">cylinder 5.5²×8</p>
+          <p>Tall planted column, full behavior stack.</p>
+        </article>
+        <article class="scenario-card">
+          <h3>Predator Den</h3>
+          <p class="scenario-meta">box 6×4×6</p>
+          <p>Dim tank: betta vs dwarf puffer, opposite territories.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="gallery">
+      <div class="section-head">
+        <h2><span class="sec-num">05</span> Captures</h2>
+        <p class="section-lead">Environment presets: void, desk, window. All passes through the same quantize shader.</p>
+      </div>
+      <div class="gallery-grid">
+        <figure>
+          <img src="img/planted-community.png" alt="Planted community with stat chips" loading="lazy" />
+          <figcaption>Planted community · live stat chips · morph drift</figcaption>
+        </figure>
+        <figure>
+          <img src="img/driftwood-biotope.png" alt="Blackwater driftwood biotope" loading="lazy" />
+          <figcaption>Blackwater · tannin stain · schooling tetras</figcaption>
+        </figure>
+        <figure>
+          <img src="img/reef-cube.png" alt="Saltwater reef cube" loading="lazy" />
+          <figcaption>Reef cube · coral respiration · night glow</figcaption>
+        </figure>
+        <figure>
+          <img src="img/void-tank.png" alt="Void preset tank" loading="lazy" />
+          <figcaption>Void · no room props</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="install">
+      <div class="section-head">
+        <h2><span class="sec-num">06</span> Installation</h2>
+      </div>
+      <div class="install-grid">
+        <div class="install-block">
+          <h3>macOS</h3>
+          <p>Extract <code>walstad-loom-mac.zip</code>. Right-click <code>WalstadLoom.app</code> → Open → Open (Gatekeeper). Ad-hoc signed, not notarized.</p>
+          <p class="muted">Quarantine error: <code>xattr -dr com.apple.quarantine ~/Downloads/WalstadLoom.app</code></p>
+        </div>
+        <div class="install-block">
+          <h3>Windows</h3>
+          <p>Extract <code>walstad-loom-windows.zip</code>. Run <code>WalstadLoom.exe</code>. SmartScreen: More info → Run anyway.</p>
+        </div>
+        <div class="install-block">
+          <h3>Linux</h3>
+          <p>Extract archive, then:</p>
+          <pre><code>tar -xzf walstad-loom-linux.tar.gz
 ./WalstadLoom-linux.x86_64</code></pre>
-        <p class="muted">Tested on Ubuntu / Debian. Exec bit already set.</p>
+          <p class="muted">Tested Ubuntu/Debian. Exec bit preset.</p>
+        </div>
+        <div class="install-block">
+          <h3>Android</h3>
+          <p>Install <code>walstad-loom.apk</code>. May require unknown-sources permission. Android 8.0+.</p>
+        </div>
       </div>
-      <div>
-        <h3>Android</h3>
-        <p>Download <code>walstad-loom.apk</code> to your device. Tap the downloaded file and follow the prompts to install.</p>
-        <p class="muted">You may need to enable <strong>Install from unknown sources</strong> in Settings → Security. Requires Android 8.0+.</p>
-      </div>
-    </div>
-  </section>
+    </section>
+  </main>
 
   <footer>
-    <p>
-      Built with Godot 4. Source on <a href="https://github.com/mhsenkow/SimFish">GitHub</a>.
-      <a href="https://github.com/mhsenkow/SimFish/issues">Issues and PRs welcome</a>.
-    </p>
+    <p>Godot 4 · <a href="https://github.com/mhsenkow/SimFish">mhsenkow/SimFish</a> · sleepingox</p>
   </footer>
 </body>
 </html>
