@@ -186,10 +186,30 @@ jobs:
 
       - name: Package macOS
         if: matrix.name == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_API_KEY: ${{ secrets.NOTARY_API_KEY }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          mkdir -p artifacts build/WalstadLoom.app/Contents/MacOS
-          cp shaders-godot/godot-project/steam_appid.txt build/WalstadLoom.app/Contents/MacOS/
+          mkdir -p artifacts
           bash scripts/bundle_macos_llama_dylibs.sh build/WalstadLoom.app
+          if [[ -n "${MACOS_CERTIFICATE:-}" ]]; then
+            bash scripts/import_macos_signing_cert.sh
+            bash scripts/sign_macos_app.sh build/WalstadLoom.app
+            if [[ ( -n "${NOTARY_API_KEY:-}" && -n "${NOTARY_API_KEY_ID:-}" && -n "${NOTARY_API_ISSUER:-}" ) \
+               || ( -n "${APPLE_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ) ]]; then
+              bash scripts/notarize_macos_app.sh build/WalstadLoom.app
+            else
+              echo "Skipping notarization — add NOTARY_* or APPLE_ID secrets to enable."
+            fi
+          else
+            echo "Skipping codesign — add MACOS_CERTIFICATE secret to enable Developer ID signing."
+          fi
           cd build
           zip -r ../artifacts/walstad-loom-mac.zip WalstadLoom.app
 

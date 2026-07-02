@@ -20,16 +20,7 @@ All builds live on the [Releases page](https://github.com/mhsenkow/SimFish/relea
 
 ### macOS — [`walstad-loom-mac.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/walstad-loom-mac.zip) (universal, Intel + Apple Silicon)
 
-Unzip, then double-click `WalstadLoom.app`. The app is **ad-hoc signed** but not Apple-notarized, so Gatekeeper will warn you on first launch:
-
-1. **Right-click `WalstadLoom.app` → Open → Open** in the dialog.
-2. If macOS instead says *"WalstadLoom.app is damaged and can't be opened"* (Chrome downloads sometimes trigger this), open Terminal and run:
-   ```bash
-   xattr -dr com.apple.quarantine ~/Downloads/WalstadLoom.app
-   ```
-   then double-click again.
-
-macOS only nags once.
+Unzip, then double-click `WalstadLoom.app`. Builds are **Developer ID signed and Apple-notarized** — no Terminal workaround needed.
 
 ### Windows — [`walstad-loom-windows.zip`](https://github.com/mhsenkow/SimFish/releases/latest/download/walstad-loom-windows.zip) (x86_64)
 
