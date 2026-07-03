@@ -132,6 +132,9 @@ static func arc_chapter_line(f: Fish, _sim: Node, arc: Dictionary, chapter: int,
 		"obituary":
 			var dec: String = str(arc.get("_deceased_name", nm))
 			return "%s is gone. I remember them." % dec
+		"witnessed_death":
+			var dec2: String = str(arc.get("_witnessed_name", "someone"))
+			return "...%s passed. The school is giving them space." % dec2
 		"observe":
 			var on: String = str(arc.get("_observe_name", "someone"))
 			var of: String = str(arc.get("_observe_feel", "calm"))

@@ -65,8 +65,12 @@ var _visual_dirty: bool = true
 var _light_response_t: float = 0.0
 var _roots_lod_hidden: bool = false
 var _view_lod_hidden: bool = false
+var _lod_tick: int = 0
 const VIEW_LOD_DIST_SQ: float = 28.0 * 28.0
 const VIEW_LOD_MIN_DENSITY: float = 0.45
+
+# PERFORMANCE_REALTIME #70 — reuse morph shells instead of rebuilding voxels.
+static var _morph_shell_cache: Dictionary = {}
 
 
 func init_genome(g: Dictionary) -> void:
@@ -213,7 +217,8 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 	elif not scale.is_finite() or scale.x < 0.01:
 		scale = Vector3.ONE
 	_apply_vitality_visual(dl, world)
-	if transform.is_finite():
+	_lod_tick += 1
+	if transform.is_finite() and _lod_tick % 10 == 0:
 		_update_view_lod()
 		_update_mat_lod()
 	_light_response_t += dt
@@ -530,20 +535,44 @@ func should_remove() -> bool:
 
 # ---- Mesh construction ----
 
+func _shell_cache_key() -> String:
+	var flower_k: int = flower_stage if flower_stage != FlowerStage.NONE else 0
+	var root_q: int = int(snappedf(root_length_current, 0.25) * 4.0)
+	var flags: int = (1 if quilted else 0) | (2 if wavy else 0)
+	return "%s|%d|%d|%d|rq%d|f%d" % [morph, leaf_count, bud_stage, flower_k, root_q, flags]
+
+
+func _mount_cached_shell(shell: Node3D) -> void:
+	for c in shell.get_children():
+		add_child(c.duplicate())
+
+
+func _store_shell_cache(key: String) -> void:
+	var shell := Node3D.new()
+	for c in get_children():
+		shell.add_child(c.duplicate())
+	_morph_shell_cache[key] = shell
+
+
 func _build() -> void:
 	for c in get_children():
 		c.queue_free()
-	match morph:
-		"frogbit": _build_frogbit()
-		"salvinia": _build_salvinia()
-		"water_lettuce": _build_water_lettuce()
-		"red_root": _build_red_root()
-		"azolla": _build_azolla()
-		"water_hyacinth": _build_water_hyacinth()
-		"water_spangle": _build_water_spangle()
-		_: _build_duckweed()
-	if flower_stage != FlowerStage.NONE:
-		_add_flower_voxel()
+	var key: String = _shell_cache_key()
+	if _morph_shell_cache.has(key):
+		_mount_cached_shell(_morph_shell_cache[key] as Node3D)
+	else:
+		match morph:
+			"frogbit": _build_frogbit()
+			"salvinia": _build_salvinia()
+			"water_lettuce": _build_water_lettuce()
+			"red_root": _build_red_root()
+			"azolla": _build_azolla()
+			"water_hyacinth": _build_water_hyacinth()
+			"water_spangle": _build_water_spangle()
+			_: _build_duckweed()
+		if flower_stage != FlowerStage.NONE:
+			_add_flower_voxel()
+		_store_shell_cache(key)
 	_visual_dirty = true
 	_update_root_lod()
 

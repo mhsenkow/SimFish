@@ -380,6 +380,7 @@ func read_json(path: String) -> Dictionary:
 		return {}
 	var text: String = f.get_as_text()
 	f.close()
+	text = SaveHelpers.sanitize_json_text(text)
 	var parsed: Variant = JSON.parse_string(text)
 	if parsed is Dictionary:
 		return parsed

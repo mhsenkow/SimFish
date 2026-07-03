@@ -9,9 +9,7 @@ const MindStateScript = preload("res://scripts/mind_state.gd")
 
 static func for_cycle(f: Fish, rich: bool = true) -> MindState:
 	assert(f != null, "MindChannel.for_cycle requires a Fish")
-	var ms: MindState = MindState.for_fish(f, rich)
-	ms.sync_from_fish(f)
-	return ms
+	return MindState.for_fish(f, rich)
 
 
 static func commit(f: Fish, ms: MindState) -> void:

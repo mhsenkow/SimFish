@@ -494,7 +494,13 @@ func _apply_visual_uniforms(reset: bool = false) -> void:
 func _maybe_spawn_bubbles(dt: float) -> void:
 	if not TankConfig.music_sync_bubbles:
 		return
-	var world := get_tree().current_scene.get_node_or_null("World") if get_tree().current_scene else null
+	var ml: MainLoop = Engine.get_main_loop()
+	if not (ml is SceneTree):
+		return
+	var scene: Node = (ml as SceneTree).current_scene
+	if scene == null:
+		return
+	var world: Node = scene.get_node_or_null("SubViewport/World")
 	if world == null:
 		return
 	var visuals: Node = world.get_node_or_null("AquariumVisuals")

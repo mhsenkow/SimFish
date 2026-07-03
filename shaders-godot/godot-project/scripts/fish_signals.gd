@@ -21,23 +21,28 @@ const KINDS: Array[String] = [ALARM, FOOD, MATE, SUBMIT]
 const _INTERP_MIN: float = 0.3
 const _INTERP_MAX: float = 1.3
 const _INTERP_DEFAULT: float = 0.7
+const _HEARD_RING_CAP: int = 8
 
 
-static func _state(f: Fish) -> Dictionary:
-	if not (f.get("_signal_state") is Dictionary):
-		f._signal_state = {}
-	return f._signal_state
+static func _state(f) -> Dictionary:
+	var existing: Variant = f.get("_signal_state")
+	if existing is Dictionary:
+		return existing as Dictionary
+	var fresh: Dictionary = {}
+	if f is Object:
+		(f as Object).set("_signal_state", fresh)
+	return fresh
 
 
 # What signal does this fish's state broadcast right now? Priority: danger first.
-static func signal_for_state(f: Fish) -> String:
+static func signal_for_state(f) -> String:
 	if f._startle_remaining > 0.0 or f.spooked > 0.5:
 		return ALARM
 	if f.goal_kind == "food" and f.hunger > 0.5:
 		return FOOD
-	if f.partner != null and is_instance_valid(f.partner):
+	if f.get("has_mate") == true or (f.get("partner") != null and is_instance_valid(f.get("partner"))):
 		return MATE
-	if f.rank_within_species < 0.3 and f.stress > 0.3:
+	if f.get("rank_within_species") != null and float(f.rank_within_species) < 0.3 and f.stress > 0.3:
 		return SUBMIT
 	return ""
 
@@ -60,7 +65,7 @@ static func tick(f: Fish, dt: float) -> void:
 	f._signal_state = st
 
 
-static func active_signal(f: Fish) -> String:
+static func active_signal(f) -> String:
 	var st: Dictionary = _state(f)
 	return str(st.get("sig", "")) if float(st.get("t", 0.0)) > 0.0 else ""
 
@@ -92,17 +97,32 @@ static func scan(f: Fish, neighbors: Array) -> void:
 	st["heard_str"] = (1.0 - sqrt(best_d2) / RADIUS) if best_sig != "" else 0.0
 	st["prev_spook"] = f.spooked
 	f._signal_state = st
+	_record_heard(f, best_sig, float(st["heard_str"]))
+
+
+static func _record_heard(f, kind: String, strength: float) -> void:
+	if kind == "":
+		return
+	var ring: Array = f._heard_signals
+	if not ring.is_empty():
+		var last: Variant = ring[ring.size() - 1]
+		if last is Dictionary and str((last as Dictionary).get("kind", "")) == kind:
+			(last as Dictionary)["str"] = strength
+			return
+	ring.append({"kind": kind, "str": strength})
+	while ring.size() > _HEARD_RING_CAP:
+		ring.pop_front()
 
 
 # Learned reliability of a signal for this receiver, in [_INTERP_MIN, _INTERP_MAX].
-static func interpret(f: Fish, sig: String) -> float:
+static func interpret(f, sig: String) -> float:
 	var st: Dictionary = _state(f)
 	var learn: Dictionary = st.get("learn", {})
 	return float(learn.get(sig, _INTERP_DEFAULT))
 
 
 # Nudge a signal's learned reliability toward trust (good) or discount (bad).
-static func reinforce(f: Fish, sig: String, good: bool) -> void:
+static func reinforce(f, sig: String, good: bool) -> void:
 	var st: Dictionary = _state(f)
 	var learn: Dictionary = st.get("learn", {})
 	var cur: float = float(learn.get(sig, _INTERP_DEFAULT))
@@ -113,7 +133,7 @@ static func reinforce(f: Fish, sig: String, good: bool) -> void:
 
 
 # The heard signal as a Global Workspace bid (intersubjectivity → attention).
-static func collect_signal_bid(f: Fish) -> Dictionary:
+static func collect_signal_bid(f) -> Dictionary:
 	var st: Dictionary = _state(f)
 	var heard: String = str(st.get("heard", ""))
 	if heard == "":

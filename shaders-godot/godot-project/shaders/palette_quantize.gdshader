@@ -57,6 +57,9 @@ uniform vec2 dither_world_origin = vec2(0.0, 0.0);
 uniform float palette_bank_lock : hint_range(0.0, 1.0) = 1.0;
 // 0 = no edge outline. 1 = strong dark line on every silhouette.
 uniform float outline_strength : hint_range(0.0, 1.0) = 0.0;
+// Extra ink on saturated life (fauna, plants, coral) — reads as a second
+// outline pass on top of the watercolor quantize without outlining water.
+uniform float creature_outline_strength : hint_range(0.0, 1.0) = 0.0;
 // 0 = no CRT overlay. 1 = full scanlines + vignette.
 uniform float crt_strength : hint_range(0.0, 1.0) = 0.0;
 // Multiplicative tint applied to the source BEFORE quantization. main.gd
@@ -130,7 +133,8 @@ float luma_of(vec3 c) {
 // Classify a source color into one of three hue banks:
 //   0 = cool (water, sky, blue/green dominant)
 //   1 = neutral / mid (substrate browns, mid greens, grays)
-//   2 = warm (fauna corals, oranges, reds, yellows)
+//   2 = warm (fauna corals, oranges, reds, yellows; indices 35–46)
+// Highlights at 32–34 (white + icy blues) classify via the blue-dominant rule.
 // Each bank covers 16 contiguous palette indices when palette_size == 48,
 // matching the project's planted_48.png layout convention.
 int classify_bank(vec3 c) {
@@ -157,8 +161,11 @@ int classify_bank(vec3 c) {
 	if (r > b && r >= g * 0.85) {
 		return 2; // warm
 	}
-	// Green-dominant straddles neutral and cool depending on blue mix.
+	// Green-dominant: saturated foliage → cool bank (greens 8–15); olives stay neutral.
 	if (g > b * 1.15) {
+		if (sat >= 0.25 && g >= r * 0.92) {
+			return 0;
+		}
 		return 1;
 	}
 	return 0;
@@ -176,10 +183,14 @@ void fragment() {
 	// Health-driven mood grade — thriving tanks stay vivid; stressed ones cool + dull.
 	float stress = 1.0 - health_grade;
 	src = mix(src, src * vec3(0.92, 0.96, 1.04), stress * 0.42);
-	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.28);
+	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.18);
 	float luma = luma_of(src);
-	src = mix(vec3(luma), src, 1.08);
-	src *= 1.04;
+	float maxc2 = max(max(src.r, src.g), src.b);
+	float minc2 = min(min(src.r, src.g), src.b);
+	float sat_post = (maxc2 - minc2) / max(maxc2, 0.001);
+	float sat_lift = mix(1.08, 1.0, smoothstep(0.38, 0.72, sat_post));
+	src = mix(vec3(luma), src, sat_lift);
+	src *= mix(1.04, 1.0, smoothstep(0.42, 0.78, sat_post));
 
 	// ---- Region-aware dither strength ----
 	float maxc = max(max(src.r, src.g), src.b);
@@ -201,6 +212,8 @@ void fragment() {
 	float low_sat_factor = 1.0 - smoothstep(0.18, 0.55, sat);
 	region_d *= mix(1.0, bright_suppress, low_sat_factor);
 	float eff_dither = mix(dither_strength, region_d, region_aware_dither);
+	// Vivid fauna/plants: lighter dither so silhouettes stay legible through glass.
+	eff_dither *= mix(1.0, 0.42, smoothstep(0.42, 0.78, sat));
 	// Flat-area clustering (#6): when neighbours share luma, keep terraces flat.
 	vec2 step_uv_cluster = 1.0 / internal_resolution;
 	float lc_pre = luma;
@@ -247,9 +260,20 @@ void fragment() {
 			best2 = d; bi = i;
 		}
 	}
-	// Fallback: if the locked bank only produced one candidate (rare; can
-	// happen at extreme edge of the bank), open the search to full palette
-	// for the runner-up only.
+	// Adjacent-bank bridge when runner-up is a poor match (#18).
+	if (locked && best2 > best * 1.06) {
+		int lo = max(bank_start - bank_size, 0);
+		int hi = min(bank_end + bank_size, palette_size);
+		for (int j = lo; j < hi; j++) {
+			if (j >= bank_start && j < bank_end) continue;
+			vec3 p = palette_color(j);
+			float d = dot(src - p, src - p);
+			if (d < best2) {
+				best2 = d; bi = j;
+			}
+		}
+	}
+	// Rare: still no runner-up — scan full palette once.
 	if (locked && best2 > 1e8) {
 		for (int j = 0; j < 64; j++) {
 			if (j >= palette_size) break;
@@ -312,7 +336,8 @@ void fragment() {
 	float over = max(src_luma - 0.85, 0.0);
 	float hdr_lift = clamp(over * 1.6, 0.0, 0.85);
 	if (hdr_lift > 0.001) {
-		vec3 hot_white = vec3(1.0, 0.97, 0.90);
+		vec3 hot_hue = normalize(max(src, vec3(0.001)));
+		vec3 hot_white = mix(hot_hue, vec3(1.0, 0.97, 0.90), 0.32);
 		result = mix(result, hot_white, hdr_lift);
 	}
 	// Selective glow on emissives — pearling, biolum, fixtures (#73).
@@ -331,7 +356,7 @@ void fragment() {
 	// gradients in the water column or distant geometry fire only the
 	// thin band → a 1-px stroke. The result reads as "closer = thicker"
 	// without needing the SubViewport's depth texture wired through.
-	if (outline_strength > 0.001) {
+	if (shader_perf_tier < 1.95 && outline_strength > 0.001) {
 		vec2 step_uv = 1.0 / internal_resolution;
 		float lc = luma_of(src);
 		float ln1 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb * palette_tint);
@@ -365,8 +390,36 @@ void fragment() {
 		float subject_w = mix(1.0, smoothstep(0.12, 0.50, sat), outline_subject_bias);
 		float k_thin = outline_strength * edge_near * (1.0 - edge_far * 0.6) * subject_w;
 		float k_thick = outline_strength * edge_near * edge_far * subject_w;
+		float caustic_false = smoothstep(0.04, 0.18, lvar) * (1.0 - smoothstep(0.14, 0.42, sat));
+		k_thin *= 1.0 - caustic_false * 0.78;
+		k_thick *= 1.0 - caustic_false * 0.78;
 		float darken = mix(1.0, 0.35, k_thin) * mix(1.0, 0.22, k_thick);
 		result *= darken;
+	}
+
+	// Creature ink — second outline pass on saturated subjects only. Keeps
+	// fish/plants readable when the glass + blue-noise watercolor is strong.
+	if (creature_outline_strength > 0.001) {
+		vec2 step_uv = 1.0 / internal_resolution;
+		float lc = luma_of(src);
+		float ln1 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb * palette_tint);
+		float ls1 = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv.y)).rgb * palette_tint);
+		float le1 = luma_of(texture(TEXTURE, UV + vec2( step_uv.x, 0.0)).rgb * palette_tint);
+		float lw1 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb * palette_tint);
+		float dmax_near = max(max(abs(lc - ln1), abs(lc - ls1)),
+		                     max(abs(lc - le1), abs(lc - lw1)));
+		float edge_creature = smoothstep(0.10, 0.28, dmax_near);
+		float ln2 = luma_of(texture(TEXTURE, UV + vec2(0.0, -step_uv.y * 2.0)).rgb * palette_tint);
+		float ls2 = luma_of(texture(TEXTURE, UV + vec2(0.0,  step_uv.y * 2.0)).rgb * palette_tint);
+		float le2 = luma_of(texture(TEXTURE, UV + vec2( step_uv.x * 2.0, 0.0)).rgb * palette_tint);
+		float lw2 = luma_of(texture(TEXTURE, UV + vec2(-step_uv.x * 2.0, 0.0)).rgb * palette_tint);
+		float dmax_far = max(max(abs(lc - ln2), abs(lc - ls2)),
+		                    max(abs(lc - le2), abs(lc - lw2)));
+		float edge_creature_thick = smoothstep(0.18, 0.38, dmax_far);
+		float life_sat = smoothstep(0.20, 0.55, sat);
+		float k_creature = creature_outline_strength * life_sat * edge_creature;
+		float k_creature_thick = creature_outline_strength * life_sat * edge_creature * edge_creature_thick;
+		result *= mix(1.0, 0.28, k_creature) * mix(1.0, 0.14, k_creature_thick * 0.85);
 	}
 
 	// ---- Standalone vignette ----
@@ -382,7 +435,7 @@ void fragment() {
 	}
 
 	// ---- CRT scanline + vignette overlay ----
-	if (crt_strength > 0.001) {
+	if (shader_perf_tier < 1.95 && crt_strength > 0.001) {
 		float sl = 0.5 + 0.5 * cos(FRAGCOORD.y * 3.1415926 * 0.5);
 		float scan = 1.0;
 		if (crt_mode < 0.5) {

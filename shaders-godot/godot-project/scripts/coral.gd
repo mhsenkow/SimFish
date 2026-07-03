@@ -70,6 +70,7 @@ var _polyp_tips: Array = []  # Array[{node, phase, base_scale, base_albedo}]
 # Body voxels batched into one MultiMesh draw call (anemone / hydra / clam
 # tentacles stay as individual MeshInstance3D nodes for per-tentacle motion).
 var _body_batch: VoxelBatch = null
+var _grow_flush_tick: int = 0
 var _body_handles: Array[VoxelBatch.Handle] = []
 
 # Bleaching — when warmth runs too hot or O2 crashes, zooxanthellae are
@@ -204,7 +205,8 @@ func _grow_one() -> bool:
 	if generation >= 2 and randf() < clampf(0.08 + float(generation) * 0.015, 0.08, 0.25):
 		_add_architecture_accent()
 	current_height += 1
-	if _body_batch != null:
+	_grow_flush_tick += 1
+	if _body_batch != null and _grow_flush_tick % 5 == 0:
 		_body_batch.flush()
 	return true
 

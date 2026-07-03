@@ -60,5 +60,39 @@ func _initialize() -> void:
 		quit(1)
 		return
 
+	# Enlarged tank: overlay a small saved bed onto a larger fresh grid.
+	var small := TerrainVoxelGrid.new()
+	small.configure(4.0, 2.0, SUB, 4.0, 2.0, 0.0)
+	small.populate_initial(sculpt_ok, TerrainVoxelGrid.CellMaterial.AQUASOIL,
+		RandomNumberGenerator.new(), "box", {})
+	var snap: Dictionary = small.to_save_dict()
+	var large_fp := TankFootprint.new()
+	large_fp.half_w = 8.0
+	large_fp.half_d = 4.0
+	large_fp.substrate_y = SUB
+	large_fp.water_y = WH
+	var large_ok := func(x: float, y: float, z: float, margin: float) -> bool:
+		if y <= SUB + CELL * 0.6:
+			return large_fp.is_substrate_voxel(x, y, z, margin)
+		return y > -0.05 and y < WH - 0.35 and large_fp.is_inside(x, z, margin)
+	var large := TerrainVoxelGrid.new()
+	large.configure(8.0, 4.0, SUB, 8.0, 4.0, 0.0)
+	large.populate_initial(large_ok, TerrainVoxelGrid.CellMaterial.SAND,
+		RandomNumberGenerator.new(), "box", {})
+	if not large.overlay_save_dict(snap):
+		push_error("[smoke_terrain_sculpt] overlay_save_dict failed")
+		quit(1)
+		return
+	var edge_mat: int = large.get_material(large.cols - 1, 1, large.depths - 1)
+	if edge_mat == TerrainVoxelGrid.CellMaterial.EMPTY:
+		push_error("[smoke_terrain_sculpt] expanded region still bare after overlay")
+		quit(1)
+		return
+	var center_mat: int = large.get_material(large.cols / 2, 2, large.depths / 2)
+	if center_mat == TerrainVoxelGrid.CellMaterial.EMPTY:
+		push_error("[smoke_terrain_sculpt] saved sculpt not overlaid at center")
+		quit(1)
+		return
+
 	print("[smoke] terrain sculpt row renders OK")
 	quit(0)

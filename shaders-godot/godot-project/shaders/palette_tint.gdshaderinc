@@ -1,6 +1,11 @@
-// Shared global material tint — driven by TankConfig via VoxelMat.apply_global_palette().
-// Weight is applied on the CPU before pushing uniforms (hue/sat/warmth/value are
-// already scaled per material category).
+// Shared global material tint — driven by TankConfig via VoxelMat global uniforms.
+// Per-shader palette_* uniforms are music-sync overlays (0 / 1 = global only).
+
+global uniform vec4 iaq_palette_fauna;
+global uniform vec4 iaq_palette_foliage;
+global uniform vec4 iaq_palette_hardscape;
+global uniform vec4 iaq_palette_substrate;
+global uniform vec4 iaq_palette_water;
 
 vec3 apply_global_palette_tint(vec3 col, float hue_shift, float sat_mult,
 		float warmth, float val_mult) {
@@ -24,4 +29,13 @@ vec3 apply_global_palette_tint(vec3 col, float hue_shift, float sat_mult,
 		col = clamp(hue_rot * col, 0.0, 1.0);
 	}
 	return col;
+}
+
+vec3 apply_category_palette_tint(vec3 col, vec4 global_pal,
+		float hue_shift, float sat_mult, float warmth, float val_mult) {
+	return apply_global_palette_tint(col,
+		global_pal.x + hue_shift,
+		global_pal.y * sat_mult,
+		global_pal.z + warmth,
+		global_pal.w * val_mult);
 }

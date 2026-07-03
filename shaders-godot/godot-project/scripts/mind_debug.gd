@@ -21,9 +21,12 @@ const FishQualia = preload("res://scripts/fish_qualia.gd")
 const FishVolition = preload("res://scripts/fish_volition.gd")
 const FishConcepts = preload("res://scripts/fish_concepts.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const DeltaG = preload("res://scripts/delta_g.gd")
 
 
 static var _stream_log: PackedStringArray = PackedStringArray()
+static var _stream_head: int = 0
+static var _stream_count: int = 0
 static var _inspector_fish_id: String = ""
 const STREAM_MAX: int = 80
 
@@ -45,17 +48,37 @@ static func set_inspector_fish(f: Fish) -> void:
 		_inspector_fish_id = String(f.id)
 
 
+static func consciousness_stream_enabled() -> bool:
+	var cfg: Node = _tank_config()
+	if cfg == null:
+		return false
+	return bool(cfg.get("consciousness_stream_enabled") if cfg.get("consciousness_stream_enabled") != null else false)
+
+
 static func log_stream(f: Fish, line: String) -> void:
+	if not consciousness_stream_enabled():
+		return
 	if line.strip_edges() == "":
 		return
 	var nm: String = f.fish_name if f != null and f.fish_name != "" else "?"
-	_stream_log.append("%s: %s" % [nm, line.strip_edges()])
-	while _stream_log.size() > STREAM_MAX:
-		_stream_log.remove_at(0)
+	var entry: String = "%s: %s" % [nm, line.strip_edges()]
+	if _stream_log.size() < STREAM_MAX:
+		_stream_log.append(entry)
+		_stream_count = _stream_log.size()
+	else:
+		_stream_log[_stream_head % STREAM_MAX] = entry
+		_stream_head += 1
+		_stream_count = STREAM_MAX
 
 
 static func stream_log() -> PackedStringArray:
-	return _stream_log.duplicate()
+	if _stream_count <= STREAM_MAX:
+		return _stream_log.duplicate()
+	var out: PackedStringArray = PackedStringArray()
+	out.resize(STREAM_MAX)
+	for i in STREAM_MAX:
+		out[i] = _stream_log[(_stream_head + i) % STREAM_MAX]
+	return out
 
 
 static func inspector_text(f: Fish) -> String:
@@ -78,6 +101,10 @@ static func inspector_text(f: Fish) -> String:
 	lines.append("stance: %s" % str(f.get("_life_stance") if f.get("_life_stance") != null else ""))
 	lines.append("pred_err: %.2f" % float(f.get("_prediction_error") if f.get("_prediction_error") != null else 0.0))
 	lines.append("sentience: %.2f" % MindDaring.sentience_needle(f))
+	if DeltaG.overlay_enabled():
+		lines.append("=== Goal-legibility (ΔG diagnostic) ===")
+		for ln in DeltaG.inspector_lines(f, f.sim):
+			lines.append("  %s" % ln)
 	if f.get("_keeper_pending") is Dictionary and not (f._keeper_pending as Dictionary).is_empty():
 		var kp: Dictionary = f._keeper_pending as Dictionary
 		lines.append("keeper: \"%s\" (%s intent %s, sal %.2f)" % [
@@ -117,10 +144,8 @@ static func inspector_text(f: Fish) -> String:
 	var sm: Variant = f.get("_mind_self_model")
 	if sm is Dictionary:
 		lines.append("self: %s" % JSON.stringify(sm))
-	var bids: Array = GlobalWorkspace.collect_bids(f, f.sim)
-	lines.append("--- bids ---")
-	for b in bids:
-		lines.append("  %s %.2f" % [b.get("label", ""), float(b.get("salience", 0.0))])
+	# Committed coalition already shown in the workspace block above — do not
+	# re-run collect_bids() here (full bid pipeline every 0.25s was tank-wide lag).
 	if f.sim != null and f.sim.has_method("tank_mind_snapshot"):
 		var ts: Dictionary = f.sim.tank_mind_snapshot()
 		if not ts.is_empty():

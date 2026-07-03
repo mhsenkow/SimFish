@@ -10,6 +10,7 @@ func _initialize() -> void:
 	await process_frame
 	var failed: Array[String] = []
 
+	MindEval.enable_dev_run(true)
 	print(MindEval.scorecard(root))
 	var r: Dictionary = MindEval.run_all(root)
 

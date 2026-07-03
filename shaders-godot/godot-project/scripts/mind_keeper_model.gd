@@ -13,27 +13,31 @@ const THEME_MAX: int = 5
 const SPEECH_RING_MAX: int = 8
 
 
-static func ensure(f: Fish) -> Dictionary:
-	if f.get("_keeper_model") == null or not (f._keeper_model is Dictionary):
-		f._keeper_model = {
-			"schema_version": SCHEMA_VERSION,
-			"speech_themes": PackedStringArray(),
-			"speech_ring": [],
-			"tone_history": [],
-			"keeper_mood_valence": 0.0,
-			"keeper_mood_arousal": 0.22,
-			"player_moniker": "the big shape",
-			"care_trust": 0.3,
-			"speech_read": "still learning your sounds",
-			"conversation_count": 0,
-			"greeting_ritual": "",
-			"prosody_baseline": {"valence": 0.0, "arousal": 0.22},
-			"last_absence_s": 0,
-		}
-	return f._keeper_model
+static func ensure(f) -> Dictionary:
+	var existing: Variant = f.get("_keeper_model")
+	if existing is Dictionary:
+		return existing as Dictionary
+	var fresh: Dictionary = {
+		"schema_version": SCHEMA_VERSION,
+		"speech_themes": PackedStringArray(),
+		"speech_ring": [],
+		"tone_history": [],
+		"keeper_mood_valence": 0.0,
+		"keeper_mood_arousal": 0.22,
+		"player_moniker": "the big shape",
+		"care_trust": 0.3,
+		"speech_read": "still learning your sounds",
+		"conversation_count": 0,
+		"greeting_ritual": "",
+		"prosody_baseline": {"valence": 0.0, "arousal": 0.22},
+		"last_absence_s": 0,
+	}
+	if f is Object:
+		(f as Object).set("_keeper_model", fresh)
+	return fresh
 
 
-static func on_keeper_line(f: Fish, text: String, result: Dictionary, sim: Node) -> void:
+static func on_keeper_line(f, text: String, result: Dictionary, sim: Node) -> void:
 	var km: Dictionary = ensure(f)
 	km["conversation_count"] = int(km.get("conversation_count", 0)) + 1
 	var ring: Array = km.get("speech_ring", [])
@@ -75,7 +79,7 @@ static func on_keeper_line(f: Fish, text: String, result: Dictionary, sim: Node)
 		MindSelfModel.update_self_summary(f, "the soft-sound shape teaches me words")
 
 
-static func prosody_delta(f: Fish, valence: float, arousal: float) -> Dictionary:
+static func prosody_delta(f, valence: float, arousal: float) -> Dictionary:
 	var km: Dictionary = ensure(f)
 	var base: Dictionary = km.get("prosody_baseline", {})
 	return {
@@ -84,7 +88,7 @@ static func prosody_delta(f: Fish, valence: float, arousal: float) -> Dictionary
 	}
 
 
-static func note_absence(f: Fish, gap_s: int) -> void:
+static func note_absence(f, gap_s: int) -> void:
 	var km: Dictionary = ensure(f)
 	km["last_absence_s"] = gap_s
 	if gap_s >= 86400 * 3:
@@ -94,7 +98,7 @@ static func note_absence(f: Fish, gap_s: int) -> void:
 	f._keeper_model = km
 
 
-static func note_care_event(f: Fish, kind: String) -> void:
+static func note_care_event(f, kind: String) -> void:
 	var km: Dictionary = ensure(f)
 	var trust: float = float(km.get("care_trust", 0.3))
 	match kind:
@@ -108,7 +112,7 @@ static func note_care_event(f: Fish, kind: String) -> void:
 	f._keeper_model = km
 
 
-static func record_greeting_ritual(f: Fish, keeper_line: String, fish_line: String) -> void:
+static func record_greeting_ritual(f, keeper_line: String, fish_line: String) -> void:
 	var km: Dictionary = ensure(f)
 	if keeper_line.strip_edges() == "":
 		return
@@ -120,7 +124,7 @@ static func record_greeting_ritual(f: Fish, keeper_line: String, fish_line: Stri
 	f._keeper_model = km
 
 
-static func consolidate_idle(f: Fish, _sim: Node) -> void:
+static func consolidate_idle(f, _sim: Node) -> void:
 	if not f._asleep and f.stress > 0.4:
 		return
 	var km: Dictionary = ensure(f)
@@ -132,7 +136,7 @@ static func consolidate_idle(f: Fish, _sim: Node) -> void:
 	f._keeper_model = km
 
 
-static func merge_context(ctx: Dictionary, f: Fish, sim: Node = null) -> Dictionary:
+static func merge_context(ctx: Dictionary, f, sim: Node = null) -> Dictionary:
 	var out: Dictionary = ctx.duplicate(true)
 	var km: Dictionary = ensure(f)
 	out["keeper_moniker"] = str(km.get("player_moniker", ""))
@@ -157,16 +161,16 @@ static func merge_context(ctx: Dictionary, f: Fish, sim: Node = null) -> Diction
 	return out
 
 
-static func to_dict(f: Fish) -> Dictionary:
+static func to_dict(f) -> Dictionary:
 	return ensure(f).duplicate(true)
 
 
-static func from_dict(f: Fish, d: Variant) -> void:
+static func from_dict(f, d: Variant) -> void:
 	if d is Dictionary:
 		f._keeper_model = (d as Dictionary).duplicate(true)
 
 
-static func _extract_themes(_f: Fish, km: Dictionary, text: String) -> void:
+static func _extract_themes(_f, km: Dictionary, text: String) -> void:
 	var counts: Dictionary = {}
 	for tok in text.strip_edges().to_lower().split(" ", false):
 		if tok.length() < 3:
@@ -181,7 +185,7 @@ static func _extract_themes(_f: Fish, km: Dictionary, text: String) -> void:
 	km["speech_themes"] = themes
 
 
-static func _update_moniker(_f: Fish, km: Dictionary, sim: Node) -> void:
+static func _update_moniker(_f, km: Dictionary, sim: Node) -> void:
 	var trust: float = float(km.get("care_trust", 0.3))
 	var conv: int = int(km.get("conversation_count", 0))
 	var tones: Array = km.get("tone_history", [])
@@ -218,7 +222,7 @@ static func _update_speech_read(km: Dictionary) -> void:
 		km["speech_read"] = "still learning your sounds"
 
 
-static func _propose_belief_from_line(f: Fish, text: String, result: Dictionary) -> void:
+static func _propose_belief_from_line(f, text: String, result: Dictionary) -> void:
 	var lower: String = text.strip_edges().to_lower()
 	var belief: String = ""
 	if lower.contains("safe") or lower.contains("calm"):

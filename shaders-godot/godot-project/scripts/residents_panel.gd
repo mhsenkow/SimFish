@@ -47,6 +47,7 @@ var _highlight_card: Control = null
 var _journal_layer: Control = null
 var _rebuild_queued: bool = false
 var _stat_accum: float = 0.0
+var _ui_ticker_bound: bool = false
 
 
 func _ready() -> void:
@@ -280,7 +281,52 @@ func sync_from_main() -> void:
 	_sync_tool_buttons()
 	_rebuild_list()
 	_update_now_following(main_ref.get("_follow_target"))
-	set_process(true)
+	_bind_ui_ticker(true)
+
+
+func _bind_ui_ticker(on: bool) -> void:
+	var ticker: Node = get_node_or_null("/root/UiTicker")
+	if ticker == null:
+		set_process(on and visible)
+		return
+	if on and visible and not _ui_ticker_bound:
+		if not ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.connect(_on_ui_ticker)
+		_ui_ticker_bound = true
+		set_process(false)
+	elif (not on or not visible) and _ui_ticker_bound:
+		if ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.disconnect(_on_ui_ticker)
+		_ui_ticker_bound = false
+
+
+func _on_ui_ticker(delta: float) -> void:
+	if not visible:
+		return
+	_stat_accum += delta
+	if _stat_accum < 1.0:
+		return
+	_stat_accum = 0.0
+	_refresh_card_stats()
+
+
+func _refresh_card_stats() -> void:
+	for id in _card_by_id:
+		var card: Control = _card_by_id[id]
+		if not is_instance_valid(card):
+			continue
+		var c: Variant = card.get_meta("creature")
+		if c == null or not is_instance_valid(c):
+			continue
+		var sub: Label = card.get_meta("sub_lbl")
+		if sub != null:
+			sub.text = _sub_text(c)
+		var star: Button = card.get_meta("star")
+		if star != null:
+			star.text = "★" if _is_favorite(c) else "☆"
+		var pip: ColorRect = card.get_meta("pip", null)
+		if pip != null:
+			pip.color = _condition_color(c)
 
 
 func _connect_sim() -> void:
@@ -585,23 +631,7 @@ func _process(delta: float) -> void:
 	if _stat_accum < 1.0:
 		return
 	_stat_accum = 0.0
-	# Refresh the (slowly changing) sub-line + star on existing cards in place.
-	for id in _card_by_id:
-		var card: Control = _card_by_id[id]
-		if not is_instance_valid(card):
-			continue
-		var c: Variant = card.get_meta("creature")
-		if c == null or not is_instance_valid(c):
-			continue
-		var sub: Label = card.get_meta("sub_lbl")
-		if sub != null:
-			sub.text = _sub_text(c)
-		var star: Button = card.get_meta("star")
-		if star != null:
-			star.text = "★" if _is_favorite(c) else "☆"
-		var pip: ColorRect = card.get_meta("pip", null)
-		if pip != null:
-			pip.color = _condition_color(c)
+	_refresh_card_stats()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -623,6 +653,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _hide_panel() -> void:
 	visible = false
+	_bind_ui_ticker(false)
 	set_process(false)
 
 

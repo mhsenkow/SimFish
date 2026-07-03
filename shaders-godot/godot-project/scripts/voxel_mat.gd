@@ -8,6 +8,8 @@ extends RefCounted
 class_name VoxelMat
 
 const SHADER_PATH := "res://shaders/voxel.gdshader"
+const _ShaderWarmCapture = preload("res://scripts/shader_warm_capture.gd")
+const _BakedCaustics = preload("res://scripts/baked_caustics.gd")
 static var _shader: Shader = null
 
 
@@ -62,6 +64,7 @@ const FAUNA_SSS_DEFAULT: float = 0.22
 const FAUNA_IRID_DEFAULT: float = 0.18
 const FAUNA_SSS_EXPERIMENTAL: float = 0.34
 const FAUNA_IRID_EXPERIMENTAL: float = 0.45
+const FAUNA_RIM: float = 0.40
 # Originally 1.12. Bumping past ~1.15 makes the palette-quantize dither
 # pattern read as a visible grid on bright fish — neighbouring palette
 # entries land too far apart in value. 1.14 keeps fauna slightly above
@@ -75,7 +78,7 @@ const FAUNA_LIGHTEN: float = 0.05    # restored from 0.07 — same dither reason
 const FOLIAGE_GREEN_SATURATION: float = 1.55  # hue in green band
 const FOLIAGE_OTHER_SATURATION: float = 1.30  # all other hues
 const FOLIAGE_VALUE: float = 1.08             # subtler than fauna so plants
-                                              # don't outshine creatures
+											  # don't outshine creatures
 
 
 static func boost_life_color(color: Color, sat_mult: float = FAUNA_SATURATION) -> Color:
@@ -145,6 +148,7 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("room_haze_strength", haze_strength)
 	m.set_shader_parameter("room_haze_color", Vector3(haze_color.r, haze_color.g, haze_color.b))
+	m.set_shader_parameter("palette_global_scale", 0.5)
 	_room_mat_cache[key] = m
 	return m
 
@@ -184,8 +188,11 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	var boosted: Color = boost_life_color(color, _biotope_fauna_sat_mult())
 	var cache_key: Color = _snap(boosted)
 	if _fauna_mat_cache.has(cache_key):
-		return _fauna_mat_cache[cache_key]
+		var cached: ShaderMaterial = _fauna_mat_cache[cache_key]
+		cached.set_shader_parameter("fauna_rim", FAUNA_RIM)
+		return cached
 	var m: ShaderMaterial = make(boosted).duplicate()
+	m.set_shader_parameter("palette_category", 1)
 	m.set_shader_parameter("color_vibrancy", 1.24)
 	var exp_on: bool = _experimental_on()
 	m.set_shader_parameter("sss_strength",
@@ -193,8 +200,62 @@ static func make_fauna(color: Color) -> ShaderMaterial:
 	m.set_shader_parameter("irid_strength",
 		FAUNA_IRID_EXPERIMENTAL if exp_on else FAUNA_IRID_DEFAULT)
 	m.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
+	m.set_shader_parameter("fauna_rim", FAUNA_RIM)
 	_cache_admit(_fauna_mat_cache, _fauna_key_queue, cache_key, m)
 	return m
+
+
+# Lightweight color carrier for FaunaVoxelBuilder — no shader, no cache entry.
+static func fauna_color_carrier(color: Color) -> ShaderMaterial:
+	var boosted: Color = boost_life_color(color, _biotope_fauna_sat_mult())
+	var m := ShaderMaterial.new()
+	m.set_shader_parameter("albedo", boosted)
+	return m
+
+
+static func fauna_color_from_material(mat: Material) -> Color:
+	if mat is ShaderMaterial:
+		return read_albedo(mat as ShaderMaterial)
+	return Color.WHITE
+
+
+static var _fauna_mm_template: ShaderMaterial = null
+static var _fauna_mm_mats: Array = []
+const FAUNA_MM_SHADER_PATH := "res://shaders/voxel_fauna_mm.gdshader"
+const FAUNA_MM_CAP: int = 320
+
+
+static func _ensure_fauna_mm_template() -> void:
+	if _fauna_mm_template != null and is_instance_valid(_fauna_mm_template):
+		return
+	_fauna_mm_template = ShaderMaterial.new()
+	_fauna_mm_template.shader = load(FAUNA_MM_SHADER_PATH) as Shader
+	_fauna_mm_template.set_shader_parameter("color_vibrancy", 1.24)
+	var exp_on: bool = _experimental_on()
+	_fauna_mm_template.set_shader_parameter("sss_strength",
+		FAUNA_SSS_EXPERIMENTAL if exp_on else FAUNA_SSS_DEFAULT)
+	_fauna_mm_template.set_shader_parameter("irid_strength",
+		FAUNA_IRID_EXPERIMENTAL if exp_on else FAUNA_IRID_DEFAULT)
+	_fauna_mm_template.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
+	_fauna_mm_template.set_shader_parameter("fauna_rim", FAUNA_RIM)
+
+
+static func make_fauna_mm() -> ShaderMaterial:
+	_ensure_fauna_mm_template()
+	var m: ShaderMaterial = _fauna_mm_template.duplicate() as ShaderMaterial
+	if _fauna_mm_mats.size() < FAUNA_MM_CAP and not _fauna_mm_mats.has(m):
+		_fauna_mm_mats.append(m)
+	return m
+
+
+static func refresh_fauna_rims() -> void:
+	for m in _fauna_mat_cache.values():
+		if m is ShaderMaterial and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
+			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
+	for m in _fauna_mm_mats:
+		if m is ShaderMaterial and is_instance_valid(m) \
+				and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
+			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
 
 
 static func make_metallic_fauna(color: Color, strength: float = 0.55) -> ShaderMaterial:
@@ -245,10 +306,20 @@ static func shader_perf_tier() -> int:
 
 static func set_shader_perf_tier(tier: int) -> void:
 	_shader_perf_tier = clampi(tier, 0, 2)
+	_ShaderWarmCapture.record("shader_perf_tier_%d" % _shader_perf_tier)
 	var blob_max: int = 16 if _shader_perf_tier >= 2 else 32
+	var caustic_on: float = 0.0 if _shader_perf_tier >= 2 else 1.0
+	var irid: float = 0.35 if _shader_perf_tier >= 1 else 1.0
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("blob_shadow_max", blob_max)
+			mat.set_shader_parameter("caustic_enabled", caustic_on)
+	for mat in _fauna_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("iridescence_mix", irid)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("sss_strength", 0.45 if _shader_perf_tier >= 2 else 0.85)
 
 static func make_substrate_caustic(color: Color, material_id: int = 0) -> ShaderMaterial:
 	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
@@ -288,18 +359,26 @@ static func make_foliage(color: Color) -> ShaderMaterial:
 	# boost_foliage_color so they still read vibrant, but lowering the
 	# shader vibrancy a notch reduces palette banding on dense leaves.
 	m.set_shader_parameter("color_vibrancy", 1.22)
+	m.set_shader_parameter("sss_color", Vector3(0.85, 1.0, 0.55))
 	_cache_admit(_foliage_mat_cache, _foliage_key_queue, cache_key, m)
 	return m
 
 
 # Surface blooms — much calmer than canopy leaves; per-petal GPU flutter
 # at leaf defaults reads as chaotic jitter on small flower voxels.
+static var _flower_foliage_cache: Dictionary = {}
+
+
 static func make_flower_foliage(color: Color) -> ShaderMaterial:
+	var key: String = "%s" % [str(_snap(color))]
+	if _flower_foliage_cache.has(key):
+		return _flower_foliage_cache[key]
 	var m: ShaderMaterial = make_foliage(color).duplicate() as ShaderMaterial
 	m.set_shader_parameter("sway_amplitude", 0.014)
 	m.set_shader_parameter("sway_speed", 0.75)
 	m.set_shader_parameter("flutter_amplitude", 0.005)
 	m.set_shader_parameter("flutter_speed", 1.2)
+	_flower_foliage_cache[key] = m
 	return m
 
 
@@ -310,6 +389,12 @@ static func update_caustic_uniforms(intensity: float, color: Color) -> void:
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("caustic_intensity", eff)
 			mat.set_shader_parameter("light_color", color)
+
+
+static func update_substrate_wave_scale(wave_scale: float) -> void:
+	for mat in _sub_caustic_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("wave_scale", wave_scale)
 
 
 static var _water_shader: Shader = null
@@ -388,18 +473,36 @@ static var _glass_shader: Shader = null
 const GLASS_SHADER_PATH := "res://shaders/glass.gdshader"
 static var _glass_mat: ShaderMaterial = null
 
+static var _glass_shape_id: float = -1.0
+static var _glass_water_y: float = -1.0
+
+
 static func make_glass(shape_id: float, water_y: float) -> ShaderMaterial:
 	if _glass_mat == null:
 		_glass_shader = load(GLASS_SHADER_PATH) as Shader
 		_glass_mat = ShaderMaterial.new()
 		_glass_mat.shader = _glass_shader
-	_glass_mat.set_shader_parameter("tank_shape_id", shape_id)
-	_glass_mat.set_shader_parameter("water_surface_y", water_y)
+	if not is_equal_approx(_glass_shape_id, shape_id) or not is_equal_approx(_glass_water_y, water_y):
+		_glass_mat.set_shader_parameter("tank_shape_id", shape_id)
+		_glass_mat.set_shader_parameter("water_surface_y", water_y)
+		_glass_shape_id = shape_id
+		_glass_water_y = water_y
 	return _glass_mat
 
 
 static var _trans_shader: Shader = null
 static var _trans_cache: Dictionary = {}
+static var _mouthbrood_cache: Dictionary = {}
+
+
+static func make_mouthbrood_bulge(color: Color) -> ShaderMaterial:
+	var key: Color = Color(snappedf(color.r, 0.04), snappedf(color.g, 0.04), snappedf(color.b, 0.04))
+	if _mouthbrood_cache.has(key):
+		return _mouthbrood_cache[key]
+	var m: ShaderMaterial = make_fauna(color)
+	_mouthbrood_cache[key] = m
+	return m
+
 
 static func make_translucent(color: Color) -> ShaderMaterial:
 	var key: Color = Color(snappedf(color.r, 0.02), snappedf(color.g, 0.02), snappedf(color.b, 0.02), snappedf(color.a, 0.05))
@@ -446,6 +549,13 @@ static func update_aquatic_uniforms(intensity: float, light_color: Color, water_
 			mat.set_shader_parameter("water_surface_y", water_y)
 			mat.set_shader_parameter("day_phase_offset", day_offset)
 			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+	for mat in _fauna_mm_mats:
+		if mat is ShaderMaterial and is_instance_valid(mat):
+			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
+			mat.set_shader_parameter("aquatic_light_color", light_color)
+			mat.set_shader_parameter("water_surface_y", water_y)
+			mat.set_shader_parameter("day_phase_offset", day_offset)
+			mat.set_shader_parameter("aquatic_shimmer", shimmer)
 
 
 static func update_fixture_glow(glow: float, color: Color, water_y: float,
@@ -457,6 +567,11 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
 	for mat in _fauna_mat_cache.values():
 		if is_instance_valid(mat):
+			mat.set_shader_parameter("tank_fixture_glow", glow)
+			mat.set_shader_parameter("tank_fixture_color", color)
+			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	for mat in _fauna_mm_mats:
+		if mat is ShaderMaterial and is_instance_valid(mat):
 			mat.set_shader_parameter("tank_fixture_glow", glow)
 			mat.set_shader_parameter("tank_fixture_color", color)
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
@@ -479,10 +594,17 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 
 
 static var _foliage_mm_mats: Array = []
+static var _mat_palette_last: Dictionary = {}
+static var _palette_globals_ready: bool = false
+const FOLIAGE_MM_CAP: int = 96
+
 
 static func register_foliage_mm(mat: ShaderMaterial) -> void:
-	if mat != null and not _foliage_mm_mats.has(mat):
-		_foliage_mm_mats.append(mat)
+	if mat == null or _foliage_mm_mats.has(mat):
+		return
+	if _foliage_mm_mats.size() >= FOLIAGE_MM_CAP:
+		return
+	_foliage_mm_mats.append(mat)
 
 
 # Shared MultiMesh-aware voxel material — voxel_mm.gdshader reads color from
@@ -571,9 +693,22 @@ static func update_substrate_blob_shadows(points: Array) -> void:
 			packed.append(points[i] as Vector4)
 		else:
 			packed.append(Vector4.ZERO)
+	var blob_tex: ImageTexture = _blob_shadow_texture(packed)
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("blob_shadow_points", packed)
+			if blob_tex != null:
+				mat.set_shader_parameter("blob_shadow_tex", blob_tex)
+				mat.set_shader_parameter("blob_shadow_tex_count", mini(points.size(), 16))
+
+
+static func _blob_shadow_texture(points: Array[Vector4]) -> ImageTexture:
+	# PERFORMANCE_UNTHROTTLED #84 — pack live blob casters into a 16×1 data texture.
+	var img := Image.create(16, 1, false, Image.FORMAT_RGBAF)
+	for i in 16:
+		var p: Vector4 = points[i] if i < points.size() else Vector4.ZERO
+		img.set_pixel(i, 0, Color(p.x, p.y, p.z, p.w))
+	return ImageTexture.create_from_image(img)
 
 
 static func update_substrate_shadow_choreo(
@@ -601,10 +736,57 @@ static func update_foliage_sss(strength: float) -> void:
 			mat.set_shader_parameter("sss_strength", strength)
 
 
+static func _ensure_palette_globals() -> void:
+	if _palette_globals_ready:
+		return
+	# global_shader_parameter_get_list() is editor-only; project.godot [shader_globals]
+	# registers these at startup. Runtime only pushes values via set().
+	_palette_globals_ready = true
+
+
+static func _vec4_palette(p: Dictionary) -> Vector4:
+	return Vector4(float(p.get("hue", 0.0)), float(p.get("sat", 1.0)),
+		float(p.get("warmth", 0.0)), float(p.get("val", 1.0)))
+
+
+static func _push_palette_globals(fauna_p: Dictionary, foliage_p: Dictionary,
+		hardscape_p: Dictionary, sub_p: Dictionary, water_p: Dictionary) -> void:
+	_ensure_palette_globals()
+	RenderingServer.global_shader_parameter_set("iaq_palette_fauna", _vec4_palette(fauna_p))
+	RenderingServer.global_shader_parameter_set("iaq_palette_foliage", _vec4_palette(foliage_p))
+	RenderingServer.global_shader_parameter_set("iaq_palette_hardscape", _vec4_palette(hardscape_p))
+	RenderingServer.global_shader_parameter_set("iaq_palette_substrate", _vec4_palette(sub_p))
+	RenderingServer.global_shader_parameter_set("iaq_palette_water", _vec4_palette(water_p))
+
+
+static func _apply_palette_overlay(mat: ShaderMaterial,
+		oh: float, osat: float, owarm: float, oval: float) -> void:
+	if mat == null or not is_instance_valid(mat):
+		return
+	mat.set_shader_parameter("palette_hue_shift", oh)
+	mat.set_shader_parameter("palette_saturation", osat)
+	mat.set_shader_parameter("palette_warmth", owarm)
+	mat.set_shader_parameter("palette_value", oval)
+
+
+static func _clear_palette_overlay(mat: ShaderMaterial) -> void:
+	if mat == null or not is_instance_valid(mat):
+		return
+	mat.set_shader_parameter("palette_hue_shift", 0.0)
+	mat.set_shader_parameter("palette_saturation", 1.0)
+	mat.set_shader_parameter("palette_warmth", 0.0)
+	mat.set_shader_parameter("palette_value", 1.0)
+
+
 static func _apply_palette_to_material(mat: ShaderMaterial, hue: float, sat: float,
 		warmth: float, val: float) -> void:
 	if mat == null or not is_instance_valid(mat):
 		return
+	var mid: int = mat.get_instance_id()
+	var key: Vector4 = Vector4(hue, sat, warmth, val)
+	if _mat_palette_last.get(mid, Vector4.INF) == key:
+		return
+	_mat_palette_last[mid] = key
 	mat.set_shader_parameter("palette_hue_shift", hue)
 	mat.set_shader_parameter("palette_saturation", sat)
 	mat.set_shader_parameter("palette_warmth", warmth)
@@ -628,66 +810,186 @@ static func read_albedo(mat: ShaderMaterial, fallback: Color = Color.WHITE) -> C
 	return v as Color if v is Color else fallback
 
 
+static var _palette_hash: int = 0
+static var _palette_pending: bool = false
+static var _last_music_shimmer: float = -1.0
+
+
+static func request_global_palette(cfg: Node, water_mat: ShaderMaterial = null) -> void:
+	if cfg == null:
+		return
+	var h: int = hash("%s|%s|%s|%s" % [
+		str(snappedf(float(cfg.material_hue_shift), 0.001)),
+		str(snappedf(float(cfg.material_saturation), 0.001)),
+		str(snappedf(float(cfg.material_warmth), 0.001)),
+		str(snappedf(float(cfg.material_value), 0.001)),
+	])
+	if h == _palette_hash and not _palette_pending:
+		return
+	_palette_hash = h
+	_palette_cfg_pending = cfg
+	_palette_water_pending = water_mat
+	if _palette_pending:
+		return
+	_palette_pending = true
+	var st: SceneTree = Engine.get_main_loop() as SceneTree
+	if st != null:
+		st.process_frame.connect(_flush_palette_once, CONNECT_ONE_SHOT)
+
+
+static var _palette_cfg_pending: Node = null
+static var _palette_water_pending: ShaderMaterial = null
+
+
+static func _flush_palette_once() -> void:
+	_palette_pending = false
+	apply_global_palette(_palette_cfg_pending, _palette_water_pending)
+
+
 static func apply_global_palette(cfg: Node, water_mat: ShaderMaterial = null) -> void:
 	if cfg == null:
 		return
 	var fauna_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_fauna))
+	var foliage_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_foliage))
+	var hardscape_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_hardscape))
+	var sub_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_substrate))
+	var water_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_water))
+	_push_palette_globals(fauna_p, foliage_p, hardscape_p, sub_p, water_p)
+	# Globals + palette_category on voxel.gdshader — clear per-mat overlays only.
 	for mat in _fauna_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, fauna_p.hue, fauna_p.sat, fauna_p.warmth, fauna_p.val)
-	var foliage_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_foliage))
+			_clear_palette_overlay(mat as ShaderMaterial)
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, foliage_p.hue, foliage_p.sat, foliage_p.warmth, foliage_p.val)
+			_clear_palette_overlay(mat as ShaderMaterial)
 	for mat in _foliage_mm_mats:
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, foliage_p.hue, foliage_p.sat, foliage_p.warmth, foliage_p.val)
-	var hardscape_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_hardscape))
+			_clear_palette_overlay(mat as ShaderMaterial)
 	for mat in _mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, hardscape_p.hue, hardscape_p.sat, hardscape_p.warmth, hardscape_p.val)
+			_clear_palette_overlay(mat as ShaderMaterial)
 	for mat in _room_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, hardscape_p.hue * 0.5, hardscape_p.sat, hardscape_p.warmth * 0.5, hardscape_p.val)
+			_clear_palette_overlay(mat as ShaderMaterial)
 	if _voxel_mm_mat != null and is_instance_valid(_voxel_mm_mat):
-		_apply_palette_to_material(_voxel_mm_mat, hardscape_p.hue, hardscape_p.sat, hardscape_p.warmth, hardscape_p.val)
-	var sub_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_substrate))
+		_clear_palette_overlay(_voxel_mm_mat)
 	for mat in _sub_opaque_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, sub_p.hue, sub_p.sat, sub_p.warmth, sub_p.val)
+			_clear_palette_overlay(mat as ShaderMaterial)
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(mat, sub_p.hue, sub_p.sat, sub_p.warmth, sub_p.val)
-	var water_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_water))
+			_clear_palette_overlay(mat as ShaderMaterial)
 	if water_mat != null and is_instance_valid(water_mat):
-		_apply_palette_to_material(water_mat, water_p.hue, water_p.sat, water_p.warmth, water_p.val)
+		_clear_palette_overlay(water_mat)
 
 
 # Music-sync overlay — stacks on top of the global palette while a track drives
 # the tank. Fauna + foliage get the full tint; hardscape/substrate a gentler wash.
 static func apply_music_sync_overlay(overlay: Dictionary, shimmer: float) -> void:
-	var cfg: Node = Engine.get_main_loop().root.get_node_or_null("/root/TankConfig")
-	var fauna_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_fauna)) \
-		if cfg != null else {"hue": 0.0, "sat": 1.0, "warmth": 0.0, "val": 1.0}
-	var foliage_p: Dictionary = _scaled_palette_params(cfg, float(cfg.material_weight_foliage)) \
-		if cfg != null else fauna_p
 	var oh: float = float(overlay.get("hue", 0.0))
 	var osat: float = float(overlay.get("sat", 1.0))
 	var owarm: float = float(overlay.get("warmth", 0.0))
 	var oval: float = float(overlay.get("val", 1.0))
 	for mat in _fauna_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(
-				mat, fauna_p.hue + oh, fauna_p.sat * osat, fauna_p.warmth + owarm, fauna_p.val * oval)
-			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+			_apply_palette_overlay(mat, oh, osat, owarm, oval)
+			if absf(shimmer - _last_music_shimmer) > 0.02:
+				mat.set_shader_parameter("aquatic_shimmer", shimmer)
+				_last_music_shimmer = shimmer
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
-			_apply_palette_to_material(
-				mat, foliage_p.hue + oh * 0.65, foliage_p.sat * lerpf(1.0, osat, 0.7),
-				foliage_p.warmth + owarm * 0.5, foliage_p.val * lerpf(1.0, oval, 0.7))
+			_apply_palette_overlay(mat, oh * 0.65, lerpf(1.0, osat, 0.7),
+				owarm * 0.5, lerpf(1.0, oval, 0.7))
 	for mat in _foliage_mm_mats:
 		if is_instance_valid(mat):
-			_apply_palette_to_material(
-				mat, foliage_p.hue + oh * 0.65, foliage_p.sat * lerpf(1.0, osat, 0.7),
-				foliage_p.warmth + owarm * 0.5, foliage_p.val * lerpf(1.0, oval, 0.7))
+			_apply_palette_overlay(mat, oh * 0.65, lerpf(1.0, osat, 0.7),
+				owarm * 0.5, lerpf(1.0, oval, 0.7))
 
+
+# PERFORMANCE_REALTIME #64 — load + pre-draw hot shader variants on the menu.
+static var _shader_warm_done: bool = false
+
+
+static func warm_shader_variants(cfg: Node = null) -> void:
+	if _shader_warm_done:
+		return
+	_shader_warm_done = true
+	_warm_shaders_cpu(cfg)
+	_ShaderWarmCapture.replay_warm()
+	if DisplayServer.get_name() == "headless":
+		return
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	if tree == null or tree.root == null:
+		return
+	var warm := ShaderGpuWarm.new()
+	tree.root.call_deferred("add_child", warm)
+
+
+static func _warm_shaders_cpu(cfg: Node = null) -> void:
+	_get_shader()
+	_ShaderWarmCapture.record("voxel")
+	make(Color8(100, 120, 90))
+	_ShaderWarmCapture.record("fauna")
+	make_fauna(Color(0.55, 0.42, 0.32))
+	make_fauna_mm()
+	make_foliage(Color(0.42, 0.72, 0.36))
+	make_flower_foliage(Color(0.92, 0.55, 0.68))
+	make_substrate_opaque(Color8(82, 62, 44))
+	var sub_caustic: ShaderMaterial = make_substrate_caustic(Color8(92, 72, 52))
+	_BakedCaustics.apply_to_material(sub_caustic, _shader_perf_tier)
+	_ShaderWarmCapture.record("substrate_caustic")
+	make_water(Color(0.22, 0.52, 0.62), Color(0.06, 0.16, 0.28), 0.0, 12.0)
+	_ShaderWarmCapture.record("water")
+	make_surface_ripple()
+	make_bubble()
+	make_glass(0.0, 12.0)
+	make_emissive(Color(1.0, 0.9, 0.72))
+	make_translucent(Color(0.5, 0.8, 0.9, 0.42))
+	make_room(Color8(140, 130, 120))
+	if cfg != null:
+		apply_global_palette(cfg)
+	else:
+		var tree: SceneTree = Engine.get_main_loop() as SceneTree
+		if tree != null and tree.root != null:
+			var tank_cfg: Node = tree.root.get_node_or_null("/root/TankConfig")
+			if tank_cfg != null:
+				apply_global_palette(tank_cfg)
+
+
+class ShaderGpuWarm extends Node:
+	func _ready() -> void:
+		call_deferred("_draw_warm")
+
+
+	func _draw_warm() -> void:
+		var vp := SubViewport.new()
+		vp.size = Vector2i(8, 8)
+		vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+		vp.disable_3d = false
+		add_child(vp)
+		var root3d := Node3D.new()
+		vp.add_child(root3d)
+		var cam := Camera3D.new()
+		cam.current = true
+		cam.position = Vector3(0.0, 0.0, 4.0)
+		root3d.add_child(cam)
+		var box := BoxMesh.new()
+		box.size = Vector3(0.4, 0.4, 0.4)
+		var mats: Array[ShaderMaterial] = [
+			VoxelMat.make(Color8(100, 120, 90)),
+			VoxelMat.make_fauna_mm(),
+			VoxelMat.make_foliage(Color(0.42, 0.72, 0.36)),
+			VoxelMat.make_surface_ripple(),
+			VoxelMat.make_water(Color(0.22, 0.52, 0.62), Color(0.06, 0.16, 0.28), 0.0, 12.0),
+		]
+		var x: float = -4.0
+		for mat in mats:
+			var mi := MeshInstance3D.new()
+			mi.mesh = box
+			mi.material_override = mat
+			mi.position = Vector3(x, 0.0, 0.0)
+			root3d.add_child(mi)
+			x += 2.0
+		await get_tree().process_frame
+		await get_tree().process_frame
+		queue_free()

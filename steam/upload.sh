@@ -84,8 +84,21 @@ password="${STEAM_PASSWORD:-}"
 guard="${STEAM_GUARD_CODE:-}"
 echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft — set live in Steamworks})..."
 
+# Try cached steamcmd session first — avoids a password prompt when already logged in.
 if [[ -z "$password" ]]; then
-	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME} (Cancel if using cached login):")"
+	set +e
+	output="$(run_upload "$STEAM_USERNAME" "" "$guard" 2>&1)"
+	status=$?
+	set -e
+	echo "$output"
+	if [[ $status -eq 0 ]]; then
+		exit 0
+	fi
+	if [[ "$output" != *"Cached credentials not found"* && "$output" != *"Invalid Password"* && "$output" != *"Account Logon Denied"* && "$output" != *"Steam Guard"* ]]; then
+		exit "$status"
+	fi
+	echo "Cached login unavailable — prompting for credentials..."
+	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME}:")"
 fi
 
 set +e
@@ -98,7 +111,7 @@ status=$?
 set -e
 echo "$output"
 
-if [[ $status -ne 0 && "$output" == *"Cached credentials not found"* ]]; then
+if [[ $status -ne 0 && "$output" == *"Cached credentials not found"* && -z "$password" ]]; then
 	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME}:")"
 	if [[ -z "$password" ]]; then
 		echo "Upload cancelled — password required." >&2
@@ -114,7 +127,11 @@ fi
 if [[ $status -ne 0 ]]; then
 	if [[ "$output" == *"Steam Guard"* || "$output" == *"Account Logon Denied"* ]]; then
 		if [[ -z "$guard" ]]; then
-			guard="$(prompt_text "Steam Guard code for ${STEAM_USERNAME}:")"
+			guard="$(prompt_text "Steam Guard code for ${STEAM_USERNAME} (5 chars from email or Steam app — NOT your password):")"
+		fi
+		if [[ ${#guard} -gt 8 ]]; then
+			echo "That looks like a password, not a Steam Guard code. Use the 5-character code from your email or Steam mobile app." >&2
+			exit 1
 		fi
 		if [[ -n "$guard" ]]; then
 			echo "Retrying with Steam Guard code..."

@@ -61,8 +61,8 @@ void fragment() {
 		f = 0.68;
 	}
 	vec3 col = v_inst_color * f;
-	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
-		palette_warmth, palette_value);
+	col = apply_category_palette_tint(col, iaq_palette_foliage,
+		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
 	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);

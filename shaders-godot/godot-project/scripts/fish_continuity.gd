@@ -79,6 +79,31 @@ static func on_death_weight(f: Fish) -> float:
 	return clampf(thread_strength(f) * (1.2 if f.fish_name != "" else 0.8), 0.3, 2.0)
 
 
+# SENTIENCE_THE_SPARK #84 — bonded fish approach/settle after load + absence.
+static func apply_return_beat(f: Fish, sim: Node) -> void:
+	if not enabled() or f == null or sim == null:
+		return
+	if not sim.has_method("night_rt_f") or float(sim.night_rt_f("return_grace_s")) <= 0.0:
+		return
+	if f.familiarity < 0.28 and f.fish_name == "":
+		return
+	var ct: Dictionary = ensure(f)
+	ct["away_pickup"] = "still here after the quiet"
+	(f._felt_self as Dictionary)["continuity"] = ct
+	f._continuity_return_beat = maxf(float(f._continuity_return_beat),
+			lerpf(6.0, 12.0, f.familiarity))
+	f.arousal = clampf(float(f.arousal) + 0.06 + f.familiarity * 0.08, 0.0, 1.0)
+	f.mood = clampf(f.mood + 0.04 + f.familiarity * 0.05, -1.0, 1.0)
+	if sim.has_method("get_player_glance"):
+		var glance: Dictionary = sim.get_player_glance()
+		var pt: Vector3 = glance.get("point", Vector3.ZERO)
+		if pt != Vector3.ZERO:
+			f._interest_target = pt
+			f._interest_remaining = lerpf(2.0, 4.5, f.familiarity)
+			if f.current_mode == Fish.Mode.REST and f.familiarity > 0.45:
+				f.current_mode = Fish.Mode.CRUISE
+
+
 static func inspector_lines(f: Fish) -> PackedStringArray:
 	var ct: Dictionary = ensure(f)
 	var lines: PackedStringArray = PackedStringArray([

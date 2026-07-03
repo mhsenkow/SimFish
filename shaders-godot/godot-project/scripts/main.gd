@@ -20,10 +20,13 @@ const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const _DartTrailPoolScript = preload("res://scripts/dart_trail_pool.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
 const OnboardingRuntimeScript = preload("res://scripts/onboarding_runtime.gd")
+const _QuantizeShader = preload("res://shaders/palette_quantize.gdshader")
+const _QuantizePotatoShader = preload("res://shaders/palette_quantize_potato.gdshader")
 
 const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
 const VOICE_BODY_FIRST_DELAY_S: float = 0.75
@@ -235,12 +238,14 @@ var _follow_inner_thought_cd: float = 0.0
 var _follow_inner_thought_last_line: String = ""
 var _workspace_inspector: Label = null
 var _workspace_inspector_accum: float = 0.0
+var _perf_hud: Label = null
 # In-place body label for streaming away-recap toasts (avoids notification spam).
 var _guardian_recap_toast_body: Label = null
 var _last_guardian_line_shown: String = ""
 # Selection reticle ring on the currently-followed creature (distinct from the
 # favorite halos). Lives under `world`, repositioned each frame.
 var _follow_reticle: MeshInstance3D = null
+var _attention_halo: MeshInstance3D = null
 var _reticle_phase: float = 0.0
 # Cinematic framing + auto-tour "cinema mode".
 var _follow_lock: bool = false            # true = rigidly centered; false = deadzone roam
@@ -1106,8 +1111,11 @@ var _onboarding: Node = null
 var _feed_subtype: int = WasteParticle.FOOD_SUB_PELLET
 var _feed_dock: HBoxContainer = null
 var _feed_btns: Array[Button] = []
+var _feed_toast_panel: PanelContainer = null
 var _feed_toast: Label = null
 var _feed_toast_tween: Tween = null
+var _feed_hint_shown: bool = false
+var _feed_dock_lbl: Label = null
 
 
 func _is_mobile() -> bool:
@@ -1119,10 +1127,15 @@ func _is_touch_active() -> bool:
 
 
 func _ready() -> void:
+	_DartTrailPoolScript.reset_for_test()
+	MainUiRefs.bind_from(self)
+	ShaderUniformLedger.set_debug(OS.is_debug_build())
 	# Apply render-config values BEFORE the SubViewport assigns its texture
 	# so the resolution change takes effect.
 	_ensure_post_pipeline()
 	_apply_render_config()
+	VoxelMat.warm_shader_variants(get_node_or_null("/root/TankConfig"))
+	VoxelMat.refresh_fauna_rims()
 	_wire_post_textures()
 	# Restore camera state if we saved it before a scene reload. Otherwise
 	# fall back to defaults set at declaration.
@@ -1219,6 +1232,7 @@ func _ready() -> void:
 	_setup_hud_styling()
 	_setup_footer_bar()
 	_setup_feed_dock()
+	call_deferred("_maybe_feed_hint")
 	_setup_speed_hud()
 	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
@@ -1415,7 +1429,9 @@ func _exit_tree() -> void:
 func _apply_render_config() -> void:
 	# Read TankConfig render settings and apply them to the SubViewport,
 	# the palette-quantize shader on the Display TextureRect, and the camera.
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := MainUiRefs.tank_config(self)
+	if cfg == null:
+		cfg = get_node_or_null("/root/TankConfig")
 	if cfg == null:
 		return
 	var render_w: int = int(cfg.render_width)
@@ -1424,6 +1440,8 @@ func _apply_render_config() -> void:
 		var oriented: Vector2i = _oriented_mobile_render_size(render_w, render_h)
 		render_w = oriented.x
 		render_h = oriented.y
+	if not RenderResolutionAudit.post_matches_3d(render_w, render_h, render_w, render_h):
+		push_warning("Render post chain must match 3D internal resolution")
 	# SubViewport size.
 	if is_instance_valid(sub_viewport):
 		sub_viewport.size = Vector2i(render_w, render_h)
@@ -1436,27 +1454,32 @@ func _apply_render_config() -> void:
 	# Palette quantize shader uniforms (runs on the internal-res post pass).
 	var sm := _quantize_material()
 	if sm != null:
+		var tier: int = int(cfg.shader_perf_tier)
+		var want_shader: Shader = _QuantizePotatoShader if tier >= 2 else _QuantizeShader
+		if sm.shader != want_shader:
+			sm.shader = want_shader
 		var dither_v: float = float(cfg.dither_strength)
 		if render_w <= 256:
 			dither_v = maxf(dither_v, 0.90)
 		if bool(cfg.get("pixel_purity")):
 			dither_v = maxf(dither_v, 0.94)
 		sm.set_shader_parameter("dither_strength", dither_v)
-		sm.set_shader_parameter("internal_resolution",
+		ShaderUniformLedger.write(sm, &"internal_resolution",
 			Vector2(float(render_w), float(render_h)))
-		sm.set_shader_parameter("region_aware_dither",
+		ShaderUniformLedger.write(sm, &"region_aware_dither",
 			1.0 if cfg.dither_region_aware else 0.0)
-		sm.set_shader_parameter("dither_world_lock",
+		ShaderUniformLedger.write(sm, &"dither_world_lock",
 			1.0 if cfg.dither_world_lock else 0.0)
-		sm.set_shader_parameter("dither_world_origin",
+		ShaderUniformLedger.write(sm, &"dither_world_origin",
 			Vector2(float(cfg.camera_target_x), float(cfg.camera_target_z)))
-		sm.set_shader_parameter("blue_noise_amount", float(cfg.blue_noise_amount))
-		sm.set_shader_parameter("shader_perf_tier", float(cfg.shader_perf_tier))
-		sm.set_shader_parameter("palette_bank_lock",
+		ShaderUniformLedger.write(sm, &"blue_noise_amount", float(cfg.blue_noise_amount))
+		ShaderUniformLedger.write(sm, &"shader_perf_tier", float(cfg.shader_perf_tier))
+		ShaderUniformLedger.write(sm, &"palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
-		sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
-		sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
-		sm.set_shader_parameter("material_hue_shift", float(cfg.material_hue_shift))
+		ShaderUniformLedger.write(sm, &"outline_strength", float(cfg.outline_strength))
+		ShaderUniformLedger.write(sm, &"creature_outline_strength", float(cfg.creature_outline_strength))
+		ShaderUniformLedger.write(sm, &"crt_strength", float(cfg.crt_strength))
+		ShaderUniformLedger.write(sm, &"material_hue_shift", float(cfg.material_hue_shift))
 		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
 		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
 		sm.set_shader_parameter("material_value", float(cfg.material_value))
@@ -1469,6 +1492,15 @@ func _apply_render_config() -> void:
 		_apply_biotope_palette(sm, cfg)
 		_apply_adaptive_shader_cost()
 	VoxelMat.set_shader_perf_tier(int(cfg.shader_perf_tier))
+	if sm != null:
+		var tier: int = int(cfg.shader_perf_tier)
+		if tier >= 2:
+			sm.set_shader_parameter("outline_strength", 0.0)
+			sm.set_shader_parameter("crt_strength", 0.0)
+			sm.set_shader_parameter("film_grain_strength", 0.0)
+		elif tier >= 1:
+			sm.set_shader_parameter("outline_strength", minf(float(cfg.outline_strength), 0.15))
+			sm.set_shader_parameter("crt_strength", minf(float(cfg.crt_strength), 0.12))
 	_sync_biotope_ui_cohesion(cfg)
 	# Integer upscale: lock the display rect to an integer multiple of the
 	# SubViewport size, centered, letterboxed with the parent control's
@@ -1653,6 +1685,7 @@ func apply_material_palette() -> void:
 
 
 func _process(dt: float) -> void:
+	ShaderUniformLedger.tick(dt)
 	_aquascape.tick_paint_cooldown(dt)
 
 	# Top-HUD idle-dim. Mirrors MobileHUD: after HUD_IDLE_DIM_SECONDS of no
@@ -1695,6 +1728,7 @@ func _process(dt: float) -> void:
 	# adaptive quality controller below. Both are no-ops without the
 	# corresponding TankConfig toggle, so the cost is just one append.
 	_record_frame_time(dt)
+	PerfGovernor.record_frame(dt)
 	_adaptive_quality_tick(dt)
 
 	# Periodic autosave. Only ticks the accumulator when we're actually
@@ -1711,7 +1745,13 @@ func _process(dt: float) -> void:
 	# Cheap (1 vec assignment + a few clamps + a distance) — runs every
 	# frame is fine. The fish.gd side only consults it on its 10 Hz tick.
 	if _sim != null and camera != null and _sim.has_method("update_player_glance"):
-		_sim.update_player_glance(camera.global_position)
+		var cp: Vector3 = camera.global_position
+		var rot_h: float = camera.global_basis.get_euler().length()
+		if cp.distance_squared_to(_glance_cam_pos) > 0.0004 \
+				or absf(rot_h - _glance_cam_rot_hash) > 0.002:
+			_glance_cam_pos = cp
+			_glance_cam_rot_hash = rot_h
+			_sim.update_player_glance(cp)
 	
 	# ---- Touch: long-press detection (runs every frame while finger is down) ----
 	if _touches.size() == 1 and not _long_press_fired:
@@ -1773,8 +1813,10 @@ func _process(dt: float) -> void:
 
 	_tick_keeper_input(dt)
 	_update_follow_reticle(dt)
+	_update_attention_halo(dt)
 	_tick_follow_inner_thoughts(dt)
 	_tick_workspace_inspector(dt)
+	_tick_perf_hud(dt)
 	_update_follow_dof()
 	if _cinema_active:
 		_cinema_accum += dt
@@ -2086,6 +2128,10 @@ func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 	var hit: Vector3 = _project_to_surface(mouse_pos)
 	if hit == INVALID_HIT:
 		return
+	if Input.is_key_pressed(KEY_SHIFT) and world != null \
+			and world.has_method("wipe_mineral_spots_near"):
+		if world.wipe_mineral_spots_near(hit) > 0:
+			return
 	if world != null and world.has_method("spawn_glass_tap_ripples"):
 		world.spawn_glass_tap_ripples(hit)
 	elif world != null and world.has_method("spawn_burst_ripple"):
@@ -2137,18 +2183,46 @@ func _drop_food_at_cursor(mouse_pos: Vector2) -> bool:
 	if hit == INVALID_HIT:
 		_show_feed_toast("Aim at the water inside the tank")
 		return false
-	if world != null and world.has_method("spawn_feeding_boil"):
-		world.spawn_feeding_boil(hit)
+	_play_feed_vfx(hit)
+	var feed_hit: Vector3 = hit
+	if world != null and world.get("WATER_HEIGHT") != null:
+		feed_hit.y = float(world.WATER_HEIGHT) - 0.025
 	if _sim.has_method("spawn_player_food"):
-		_sim.spawn_player_food(hit, _feed_subtype)
+		_sim.spawn_player_food(feed_hit, _feed_subtype)
 	else:
-		_sim._spawn_waste(hit, 0.45, WasteParticle.KIND_FOOD, _feed_subtype)
-	_alert_fish_to_feed(hit, _feed_subtype)
-	_show_feed_toast("%s dropped" % _feed_toast_label())
+		_sim._spawn_waste(feed_hit, 0.45, WasteParticle.KIND_FOOD, _feed_subtype)
+	var noticed: int = _alert_fish_to_feed(feed_hit, _feed_subtype)
+	var msg: String = "%s dropped" % _feed_toast_label()
+	if noticed > 0:
+		msg = "%s · %d fish noticed" % [msg, noticed]
+	else:
+		msg = "%s · watch for ripples" % msg
+	_show_feed_toast(msg)
+	_pulse_feed_dock()
 	_haptic(10)
 	if _onboarding != null:
 		_onboarding.on_first_feed()
+	_clear_click_drag_state()
 	return true
+
+
+func _clear_click_drag_state() -> void:
+	_orbiting = false
+	_drag_mode = ""
+	_drag_button = 0
+	_drag_total = 0.0
+	_drag_committed = false
+	_press_skip_feed = false
+	_suppress_drag_until_release = false
+
+
+func _play_feed_vfx(hit: Vector3) -> void:
+	if world == null:
+		return
+	if world.has_method("spawn_feeding_boil"):
+		world.spawn_feeding_boil(hit)
+	elif world.has_method("spawn_burst_ripple"):
+		world.spawn_burst_ripple(hit, 1.75)
 
 
 func _set_feed_subtype(subtype: int) -> void:
@@ -2176,11 +2250,12 @@ func _setup_feed_dock() -> void:
 	_feed_dock.add_theme_constant_override("separation", 6)
 	_feed_dock.tooltip_text = UiIcons.feed_tooltip("dock")
 	var feed_lbl := Label.new()
-	feed_lbl.text = UiIcons.feed_label("dock")
+	feed_lbl.text = "Feed · click water"
 	feed_lbl.tooltip_text = UiIcons.feed_tooltip("dock")
 	PanelTheme.apply_font(feed_lbl, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
 	feed_lbl.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 	feed_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_feed_dock_lbl = feed_lbl
 	_feed_dock.add_child(feed_lbl)
 	_feed_dock.add_child(PanelTheme.make_hud_chip_divider())
 	_feed_btns.clear()
@@ -2212,13 +2287,22 @@ func _sync_feed_dock() -> void:
 			_feed_btns[i], UiIcons.FEED_SUBTYPE_KEYS[i], i == _feed_subtype, compact)
 
 
+func _pulse_feed_dock() -> void:
+	if _feed_dock == null:
+		return
+	var tw := create_tween()
+	tw.tween_property(_feed_dock, "modulate", Color(1.35, 1.22, 0.82, 1.0), 0.12)
+	tw.tween_property(_feed_dock, "modulate", Color.WHITE, 0.35)
+
+
 func _sync_feed_dock_visibility() -> void:
 	_sync_feed_dock()
 
 
-func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> void:
+func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> int:
 	if _sim == null:
-		return
+		return 0
+	var noticed: int = 0
 	var radius_sq: float = 196.0 if food_subtype == WasteParticle.FOOD_SUB_WORM else 81.0
 	for f in _sim.fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
@@ -2237,31 +2321,60 @@ func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> void:
 			f._startle_remaining = 0.35
 		elif food_subtype == WasteParticle.FOOD_SUB_FLAKE and int(f.mouth_orientation) < 0:
 			f.burst_remaining = maxf(float(f.burst_remaining), 0.35)
+		noticed += 1
+	return noticed
+
+
+func _maybe_feed_hint() -> void:
+	if _feed_hint_shown or _aquascape.is_active or is_pond_mode() or _sim == null:
+		return
+	_feed_hint_shown = true
+	_show_feed_toast("Choose food below · click the water to drop")
 
 
 func _show_feed_toast(text: String) -> void:
-	if _feed_toast == null or not is_instance_valid(_feed_toast):
+	if _feed_toast_panel == null or not is_instance_valid(_feed_toast_panel):
+		_feed_toast_panel = PanelContainer.new()
+		_feed_toast_panel.name = "FeedToast"
+		_feed_toast_panel.add_theme_stylebox_override("panel", PanelTheme.make_hud_cluster_style())
+		_feed_toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_feed_toast_panel.z_index = 80
+		_feed_toast_panel.anchor_left = 0.5
+		_feed_toast_panel.anchor_right = 0.5
+		_feed_toast_panel.anchor_top = 1.0
 		_feed_toast = Label.new()
-		_feed_toast.name = "FeedToast"
-		_feed_toast.add_theme_font_size_override("font_size", 13)
-		_feed_toast.add_theme_color_override("font_color", Color(0.95, 0.92, 0.75))
 		_feed_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_feed_toast.anchor_left = 0.5
-		_feed_toast.anchor_right = 0.5
-		_feed_toast.anchor_top = 1.0
-		_feed_toast.offset_left = -160.0
-		_feed_toast.offset_right = 160.0
-		_feed_toast.offset_top = -(_hud_bottom_inset() + 28.0)
-		_feed_toast.offset_bottom = -(_hud_bottom_inset() + 8.0)
+		PanelTheme.apply_font(_feed_toast, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+		_feed_toast.add_theme_color_override("font_color", Color(0.98, 0.96, 0.82))
 		_feed_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(_feed_toast)
+		var pad := MarginContainer.new()
+		pad.add_theme_constant_override("margin_left", 12)
+		pad.add_theme_constant_override("margin_right", 12)
+		pad.add_theme_constant_override("margin_top", 6)
+		pad.add_theme_constant_override("margin_bottom", 6)
+		pad.add_child(_feed_toast)
+		_feed_toast_panel.add_child(pad)
+		add_child(_feed_toast_panel)
+	_layout_feed_toast()
 	if _feed_toast_tween != null and is_instance_valid(_feed_toast_tween):
 		_feed_toast_tween.kill()
 	_feed_toast.text = text
-	_feed_toast.modulate.a = 1.0
+	_feed_toast_panel.modulate.a = 1.0
+	_feed_toast_panel.visible = true
+	_layout_feed_toast()
 	_feed_toast_tween = create_tween()
-	_feed_toast_tween.tween_interval(1.8)
-	_feed_toast_tween.tween_property(_feed_toast, "modulate:a", 0.0, 0.5)
+	_feed_toast_tween.tween_interval(2.6)
+	_feed_toast_tween.tween_property(_feed_toast_panel, "modulate:a", 0.0, 0.6)
+
+
+func _layout_feed_toast() -> void:
+	if _feed_toast_panel == null or not is_instance_valid(_feed_toast_panel):
+		return
+	var inset: float = _hud_bottom_inset() + 36.0
+	_feed_toast_panel.offset_left = -220.0
+	_feed_toast_panel.offset_right = 220.0
+	_feed_toast_panel.offset_top = -(inset + 34.0)
+	_feed_toast_panel.offset_bottom = -inset
 
 
 func _fade_in_from_black() -> void:
@@ -3402,7 +3515,13 @@ func _ensure_workspace_inspector() -> void:
 
 
 func _tick_workspace_inspector(dt: float) -> void:
-	if not OS.is_debug_build():
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	var show_panel: bool = OS.is_debug_build()
+	if cfg != null and cfg.get("inner_life_panel") != null:
+		show_panel = bool(cfg.inner_life_panel)
+	if not show_panel:
+		if _workspace_inspector != null and is_instance_valid(_workspace_inspector):
+			_workspace_inspector.visible = false
 		return
 	_ensure_workspace_inspector()
 	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
@@ -3416,6 +3535,11 @@ func _tick_workspace_inspector(dt: float) -> void:
 	MindDebug.set_inspector_fish(f)
 	var lines: PackedStringArray = PackedStringArray()
 	lines.append(MindDebug.inspector_text(f))
+	if f.get("_spark_signals") is Dictionary:
+		var sig: Dictionary = f._spark_signals as Dictionary
+		lines.append("affect v=%.2f a=%.2f · φ=%.2f" % [
+			float(sig.get("valence", 0.0)), float(sig.get("arousal", 0.0)),
+			float(sig.get("phi_proxy", 0.0))])
 	var stream: PackedStringArray = MindDebug.stream_log()
 	if stream.size() > 0:
 		lines.append("--- stream ---")
@@ -3424,6 +3548,32 @@ func _tick_workspace_inspector(dt: float) -> void:
 	_workspace_inspector.text = "\n".join(lines)
 	_workspace_inspector.position = Vector2(12, 12)
 	_workspace_inspector.visible = true
+
+
+func _ensure_perf_hud() -> void:
+	if _perf_hud != null and is_instance_valid(_perf_hud):
+		return
+	_perf_hud = Label.new()
+	_perf_hud.visible = false
+	_perf_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	PanelTheme.apply_font(_perf_hud, PanelTheme.FONT_MONO, PanelTheme.SIZE_CAPTION)
+	_perf_hud.add_theme_color_override("font_color", Color(0.75, 0.88, 0.78, 0.85))
+	add_child(_perf_hud)
+
+
+func _tick_perf_hud(_dt: float) -> void:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null or not bool(cfg.get("perf_hud_enabled") if cfg.get("perf_hud_enabled") != null else false):
+		if _perf_hud != null and is_instance_valid(_perf_hud):
+			_perf_hud.visible = false
+		return
+	_ensure_perf_hud()
+	var fish_n: int = _sim.fish.size() if _sim != null else 0
+	var draw_n: int = floori(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+	_perf_hud.text = PerfGovernor.hud_line(fish_n, draw_n)
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	_perf_hud.position = Vector2(vp.x - 420.0, 8.0)
+	_perf_hud.visible = true
 
 
 
@@ -3617,6 +3767,47 @@ func _update_follow_reticle(dt: float) -> void:
 	_reticle_phase += dt
 	var pulse: float = 1.0 + 0.10 * sin(_reticle_phase * 3.0)
 	_follow_reticle.scale = Vector3(pulse, pulse, pulse)
+
+
+# SENTIENCE_THE_SPARK #70 — subtle halo on what the followed fish attends to.
+func _update_attention_halo(dt: float) -> void:
+	var show: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
+		and is_instance_valid(_follow_target) and _follow_target is Fish
+	if not show:
+		if _attention_halo != null and is_instance_valid(_attention_halo):
+			_attention_halo.visible = false
+		return
+	var ff: Fish = _follow_target as Fish
+	var focus: String = str(ff.attention_focus if ff.get("attention_focus") != null else "")
+	var focus_pos: Vector3 = ff._interest_target if ff.get("_interest_target") is Vector3 else Vector3.ZERO
+	if focus == "" or focus_pos.length_squared() < 0.04 \
+			or focus_pos.distance_squared_to(ff.global_position) < 0.16:
+		if _attention_halo != null and is_instance_valid(_attention_halo):
+			_attention_halo.visible = false
+		return
+	if _attention_halo == null or not is_instance_valid(_attention_halo):
+		if world == null or not is_instance_valid(world):
+			return
+		_attention_halo = MeshInstance3D.new()
+		var disc := TorusMesh.new()
+		disc.inner_radius = 0.22
+		disc.outer_radius = 0.30
+		_attention_halo.mesh = disc
+		var mat := StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = Color(1.0, 0.82, 0.35, 0.42)
+		mat.emission_enabled = true
+		mat.emission = Color(1.0, 0.78, 0.28)
+		mat.emission_energy_multiplier = 1.1
+		_attention_halo.material_override = mat
+		_attention_halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		world.add_child(_attention_halo)
+	_attention_halo.visible = true
+	_attention_halo.global_position = focus_pos
+	_reticle_phase += dt
+	var halo_pulse: float = 1.0 + 0.14 * sin(_reticle_phase * 4.2)
+	_attention_halo.scale = Vector3(halo_pulse, halo_pulse, halo_pulse)
 
 
 # Re-acquire and re-follow the saved creature after a tank load. Called by
@@ -4535,6 +4726,15 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
+		# Short-click feed on LMB release (before the pressed branch).
+		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
+			# Short click on water → feed (on release, before _process polling).
+			if not _aquascape.is_active and not is_pond_mode() \
+					and not _press_skip_feed and _drag_button == MOUSE_BUTTON_LEFT \
+					and _drag_mode == "orbit" and _drag_total < DRAG_DEADZONE_PX:
+				if _drop_food_at_cursor(_drag_start):
+					get_viewport().set_input_as_handled()
+					return
 		if mb.pressed:
 			if mb.button_index == MOUSE_BUTTON_WHEEL_UP \
 					or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -4605,8 +4805,7 @@ func _input(event: InputEvent) -> void:
 						and (_rail_appearance_btn == null \
 							or not _rail_appearance_btn.get_global_rect().has_point(mb.position)):
 					_close_light_panel()
-				# LMB on a creature (tight pick) → follow. Short click on water → feed (on release).
-				# Shift+LMB on water → startle (tap on glass).
+				# LMB on a creature → follow. Short click on water → feed. Shift+LMB → startle.
 				_press_skip_feed = false
 				var picked: Node3D = _pick_creature_at_click(mb.position)
 				if picked != null:
@@ -4698,12 +4897,12 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 				else:
 					_last_tap_time = now
 					_last_tap_pos = ev.position
-					# Tiny pulse on creature pick — confirms the tap landed on
-					# something selectable vs an empty-water tap (food drop).
+					# Creature tap → follow; empty water tap → feed.
 					if _touch_pick_creature(ev.position):
 						_haptic(10)
-					else:
+					elif not _aquascape.is_active and not is_pond_mode():
 						_drop_food_at_cursor(ev.position)
+						_haptic(10)
 			
 			# Check for completed edge-swipe gesture: started near right edge,
 			# moved at least EDGE_SWIPE_MIN_PX to the left. Fire BEFORE we
@@ -5077,15 +5276,28 @@ func _refresh_state_chip() -> void:
 	_update_chip("state", state_value, state_sub, true, state_warn)
 
 
+func _fauna_age_sub(adults: int, juveniles: int, fry: int, total: int, cap: int) -> String:
+	var ages: String = "%dA" % adults
+	if juveniles > 0:
+		ages += " %dJ" % juveniles
+	if fry > 0:
+		ages += " %dF" % fry
+	if cap > 0:
+		return "%s · %d/%d" % [ages, total, cap]
+	return ages
+
+
 func _render_header() -> void:
 	if _chips.is_empty():
 		return
 
 	var fish_total: int = int(_stats.get("fish_total", 0))
 	var fish_adults: int = int(_stats.get("fish_adults", 0))
+	var fish_juveniles: int = int(_stats.get("fish_juveniles", 0))
 	var fish_fry: int = int(_stats.get("fish_fry", 0))
 	var shrimp_total: int = int(_stats.get("shrimp_total", 0))
 	var shrimp_adults: int = int(_stats.get("shrimp_adults", 0))
+	var shrimp_juveniles: int = int(_stats.get("shrimp_juveniles", 0))
 	var shrimp_fry: int = int(_stats.get("shrimp_fry", 0))
 	var snail_total: int = int(_stats.get("snails_total", 0))
 	var snail_adults: int = int(_stats.get("snails_adults", 0))
@@ -5141,12 +5353,13 @@ func _render_header() -> void:
 		if fish_total <= 0:
 			fish_sub = "—"
 		elif fish_cap > 0:
-			fish_sub = "%dA %dF · %d/%d" % [fish_adults, fish_fry, fish_total, fish_cap]
+			fish_sub = _fauna_age_sub(fish_adults, fish_juveniles, fish_fry, fish_total, fish_cap)
 		else:
-			fish_sub = "%dA %dF" % [fish_adults, fish_fry]
+			fish_sub = _fauna_age_sub(fish_adults, fish_juveniles, fish_fry, fish_total, 0)
 		_update_chip("fish", str(fish_total), fish_sub, true, over_cap)
 		_update_chip("shrimp", str(shrimp_total),
-			("%dA %dF" % [shrimp_adults, shrimp_fry]) if shrimp_total > 0 else "—",
+			_fauna_age_sub(shrimp_adults, shrimp_juveniles, shrimp_fry, shrimp_total, 0)
+				if shrimp_total > 0 else "—",
 			true, false)
 		_update_chip("snails", str(snail_total),
 			("%dA %dB" % [snail_adults, snail_babies]) if snail_total > 0 else "—",
@@ -5515,6 +5728,7 @@ func _apply_adaptive_shader_cost() -> void:
 	if sm == null or cfg == null:
 		return
 	sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
+	sm.set_shader_parameter("creature_outline_strength", float(cfg.creature_outline_strength))
 	sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
 	sm.set_shader_parameter("region_aware_dither",
 		1.0 if cfg.dither_region_aware else 0.0)
@@ -5557,6 +5771,10 @@ func _adaptive_quality_tick(dt: float) -> void:
 		return
 	var fps: float = _frame_history_avg_fps()
 	var target_fps: float = float(cfg.get("adaptive_quality_target_fps"))
+	# #63 — fold governor p95 pressure into the FPS the scaler sees.
+	fps -= PerfGovernor.adaptive_fps_penalty()
+	var governor_down: bool = PerfGovernor.governor_step_down()
+	var governor_block_up: bool = PerfGovernor.governor_step_up_block()
 	# Find current tier index.
 	var cur_w: int = int(cfg.get("render_width"))
 	var cur_h: int = int(cfg.get("render_height"))
@@ -5568,8 +5786,8 @@ func _adaptive_quality_tick(dt: float) -> void:
 			break
 	if cur_idx < 0:
 		return  # custom resolution; don't auto-adjust
-	# Step down if we're missing target by >10%.
-	if fps < target_fps * 0.90:
+	# Step down if we're missing target by >10%, or the governor is hot.
+	if fps < target_fps * 0.90 or (governor_down and fps < target_fps * 1.08):
 		if cur_idx > 0:
 			var nt: Dictionary = _ADAPTIVE_RES_TIERS[cur_idx - 1]
 			cfg.set("render_width", int(nt["w"]))
@@ -5583,7 +5801,7 @@ func _adaptive_quality_tick(dt: float) -> void:
 			_frame_history.fill(0.0)
 			return
 	# Step up if we have >25% headroom and could increase quality.
-	if fps > target_fps * 1.25:
+	if fps > target_fps * 1.25 and not governor_block_up:
 		if _adaptive_shader_cost > 0:
 			_adaptive_shader_cost -= 1
 			_apply_adaptive_shader_cost()
@@ -5614,6 +5832,17 @@ const _TOD_DAWN: Vector3 = Vector3(1.02, 0.88, 0.82)
 const _TOD_DAY: Vector3 = Vector3(1.00, 1.00, 1.00)
 const _TOD_DUSK: Vector3 = Vector3(1.04, 0.82, 0.70)
 const _TOD_NIGHT: Vector3 = Vector3(0.38, 0.42, 0.52)
+var _palette_tint_smooth: Vector3 = Vector3(1.0, 1.0, 1.0)
+var _last_written_palette_tint: Vector3 = Vector3(-999.0, -999.0, -999.0)
+var _glance_cam_pos: Vector3 = Vector3(INF, INF, INF)
+var _glance_cam_rot_hash: float = 0.0
+const _PALETTE_TINT_EPS: float = 1.0 / 512.0
+
+
+func _write_palette_tint_if_changed(mat: ShaderMaterial, tint: Vector3) -> void:
+	if tint.distance_squared_to(_last_written_palette_tint) >= _PALETTE_TINT_EPS * _PALETTE_TINT_EPS:
+		ShaderUniformLedger.write(mat, "palette_tint", tint)
+		_last_written_palette_tint = tint
 
 
 func _update_palette_tod_tint() -> void:
@@ -5677,10 +5906,14 @@ func _update_palette_tod_tint() -> void:
 		if _sim != null and _sim.get("calm") != null:
 			calm = clampf(float(_sim.calm), 0.0, 1.0)
 		var breath: float = 1.0 + AestheticsRuntime.ambient_breath(_ambient_breath_t, calm)
-		mat.set_shader_parameter("palette_tint", t * breath)
+		var target_t: Vector3 = t * breath
+		_palette_tint_smooth = _palette_tint_smooth.lerp(target_t, minf(1.0, get_process_delta_time() * 2.4))
+		_write_palette_tint_if_changed(mat, _palette_tint_smooth)
 	else:
 		var breath_e: float = 1.0 + AestheticsRuntime.ambient_breath(_ambient_breath_t, 0.75)
-		mat.set_shader_parameter("palette_tint", t * breath_e)
+		var target_e: Vector3 = t * breath_e
+		_palette_tint_smooth = _palette_tint_smooth.lerp(target_e, minf(1.0, get_process_delta_time() * 2.4))
+		_write_palette_tint_if_changed(mat, _palette_tint_smooth)
 	# Drive the day/night palette blend off the same daylight curve the
 	# sim uses for photosynthesis. Smoothstep on top of the cosine bell so
 	# the transition has a defined "dusk" knee instead of feeling washy.
@@ -5707,6 +5940,7 @@ func _update_palette_tod_tint() -> void:
 		else:
 			mat.set_shader_parameter("bloom_strength", 0.85)
 			mat.set_shader_parameter("bloom_threshold", 0.68)
+	night_blend = smoothstep(0.0, 1.0, night_blend)
 	mat.set_shader_parameter("palette_night_blend", night_blend)
 	# Push user-controlled post-process uniforms every tick. Cheap (constant
 	# count of small uniforms) and lets the sliders react live.
@@ -5722,12 +5956,17 @@ func _update_palette_tod_tint() -> void:
 		# user has actually moved them off the legacy values (we still set
 		# every frame for simplicity — the shader handles 0 gracefully).
 		mat.set_shader_parameter("outline_strength", float(cfg.outline_strength))
+		mat.set_shader_parameter("creature_outline_strength", float(cfg.creature_outline_strength))
 		mat.set_shader_parameter("dither_strength", float(cfg.dither_strength))
 		mat.set_shader_parameter("crt_strength", float(cfg.crt_strength))
 		mat.set_shader_parameter("region_aware_dither",
 			1.0 if cfg.dither_region_aware else 0.0)
 		mat.set_shader_parameter("palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
+		mat.set_shader_parameter("dither_world_lock",
+			1.0 if cfg.dither_world_lock else 0.0)
+		mat.set_shader_parameter("dither_world_origin",
+			Vector2(float(cfg.camera_target_x), float(cfg.camera_target_z)))
 		# Bloom is now a real user control — always push the slider value so
 		# the panel feels responsive. The dynamic night-bloom boost is
 		# preserved by the per-section logic above, which writes BEFORE this
@@ -5737,7 +5976,7 @@ func _update_palette_tod_tint() -> void:
 		mat.set_shader_parameter("film_grain_strength", float(cfg.film_grain_strength))
 		mat.set_shader_parameter("selective_glow", float(cfg.selective_glow_strength))
 		mat.set_shader_parameter("crt_mode", float(cfg.crt_mode))
-		mat.set_shader_parameter("outline_subject_bias", 0.65)
+		mat.set_shader_parameter("outline_subject_bias", 0.82)
 		mat.set_shader_parameter("dither_substrate_coarse", 0.35)
 		var trans: float = 1.0
 		if world != null:
@@ -8819,6 +9058,8 @@ func _show_corrupt_save_prompt(state_path: String) -> void:
 					if d.has("terrain") and world != null \
 							and world.has_method("terrain_apply_save_dict"):
 						world.terrain_apply_save_dict(d["terrain"])
+						if _sim != null and _sim.has_method("_clamp_loaded_entities"):
+							_sim.call("_clamp_loaded_entities")
 					if d.has("aquascape"):
 						_restore_aquascape(d["aquascape"])
 		dialog.queue_free())
@@ -8985,6 +9226,7 @@ func _apply_battery_saver_visuals() -> void:
 		sm.set_shader_parameter("palette_bank_lock",
 			1.0 if cfg.get("palette_bank_lock") else 0.0)
 		sm.set_shader_parameter("outline_strength", float(cfg.get("outline_strength")))
+		sm.set_shader_parameter("creature_outline_strength", float(cfg.get("creature_outline_strength")))
 		sm.set_shader_parameter("crt_strength", float(cfg.get("crt_strength")))
 		sm.set_shader_parameter("dither_strength", float(cfg.get("dither_strength")))
 

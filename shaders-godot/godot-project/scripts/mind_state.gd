@@ -34,7 +34,9 @@ var current_thought: String = ""
 var goal_kind: String = ""
 
 # Workspace + self (§B, §G)
-var workspace: Array = []  # [{label, salience, coalition}]
+# [{label, salience, coalition}] — cycle-fresh refs from GlobalWorkspace.run_competition();
+# commit_workspace_to() deep-copies onto the fish. (PERFORMANCE_UNTHROTTLED #14)
+var workspace: Array = []
 var workspace_ignited: bool = false
 var self_model: Dictionary = {}
 var meta_states: PackedStringArray = PackedStringArray()
@@ -66,7 +68,7 @@ var dream_wisp: String = ""
 
 
 static func for_fish(f: Fish, rich: bool):
-	var ms = load("res://scripts/mind_state.gd").new()
+	var ms := MindState.new()
 	ms.full_fidelity = rich
 	ms.sync_from_fish(f)
 	return ms
@@ -161,7 +163,7 @@ func apply_to_fish(f: Fish) -> void:
 ## MindState is the authority — onto the fish runtime fields the rest of tick()
 ## still reads. The single typed propagation point (#14/#15 / 0E); as more readers
 ## move onto MindState these three writes shrink toward nothing.
-func commit_workspace_to(f: Fish) -> void:
+func commit_workspace_to(f) -> void:
 	if f == null:
 		return
 	f._mind_workspace = workspace.duplicate(true)

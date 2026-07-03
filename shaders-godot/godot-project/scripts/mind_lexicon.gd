@@ -175,7 +175,7 @@ static func tick_decay(f: Fish, dt: float) -> void:
 	f._learned_words = lex
 
 
-static func food_bid_boost(f: Fish, text: String) -> float:
+static func food_bid_boost(f, text: String) -> float:
 	if not comprehend(f, text):
 		return 0.0
 	var lex: Dictionary = ensure_dict(f)
@@ -243,6 +243,8 @@ static func inherit_from_parent(f: Fish, parent: Fish) -> void:
 			e["inherited"] = true
 			out[k] = e
 		f._learned_words = out
+	const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
+	MindSoulPass3.inherit_learned_values(f, parent)
 
 
 static func to_dict(f: Fish) -> Dictionary:

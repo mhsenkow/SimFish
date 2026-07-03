@@ -16,6 +16,7 @@ const FishVolition = preload("res://scripts/fish_volition.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const MindSelfModel = preload("res://scripts/mind_self_model.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
+const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 
 
 func _initialize() -> void:
@@ -40,6 +41,10 @@ func _make_fish() -> Fish:
 	f.stress = 0.35
 	f.arousal = 0.4
 	f.familiarity = 0.55
+	f.habituated = {"player": 0.42}
+	f.bonds = {"bond-smoke": 0.61}
+	f._longing_residue = 0.33
+	FishMind.record_salient(f, "fed", "hand-fed near the glass", 0.72, f.position)
 	f._cached_glance_strength = 0.0
 	f.position = Vector3(1, 2, 3)
 	return f
@@ -91,8 +96,23 @@ func _run_all() -> bool:
 		return _fail("from_dict restore failed")
 	var thread_before: float = FishContinuity.thread_strength(f)
 	var mind_d: Dictionary = FishMind.mind_to_dict(f)
+	var save_d: Dictionary = f.to_save_dict()
 	var f2: Fish = _make_fish()
 	FishMind.apply_mind_dict(f2, mind_d)
+	f2.apply_save_dict(save_d)
 	if absf(FishContinuity.thread_strength(f2) - thread_before) > 0.05:
 		return _fail("continuity thread lost on mind save/load")
+	if absf(f2.mood - f.mood) > 0.02 or absf(f2.arousal - f.arousal) > 0.02:
+		return _fail("affect lost on save-soul roundtrip")
+	if absf(float(f2.habituated.get("player", 0.0)) - float(f.habituated.get("player", 0.0))) > 0.02:
+		return _fail("habituation lost on save-soul roundtrip")
+	if absf(float(f2.bonds.get("bond-smoke", 0.0)) - float(f.bonds.get("bond-smoke", 0.0))) > 0.02:
+		return _fail("bonds lost on save-soul roundtrip")
+	if absf(f2._longing_residue - f._longing_residue) > 0.02:
+		return _fail("longing residue lost on save-soul roundtrip")
+	if f2.salient_memories.size() != f.salient_memories.size():
+		return _fail("salient memories lost on save-soul roundtrip")
+	var store: Array = EpisodicMemory.ensure_store(f2)
+	if store.is_empty() and not EpisodicMemory.ensure_store(f).is_empty():
+		return _fail("episodic store lost on save-soul roundtrip")
 	return true

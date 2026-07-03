@@ -67,7 +67,7 @@ static func local_clearance_push(f: Fish, neighbors: Array, plants: Array) -> Ve
 		var weave_y: float = TopdownMotion.collision_weave_y(f.position.y - nf.position.y, rel_sp)
 		if absf(weave_y) > 0.01:
 			push.y += weave_y
-		push += d.normalized() * (FISH_PERSONAL_SPACE - sqrt(d2)) * 1.9
+		push += d * ((FISH_PERSONAL_SPACE - sqrt(d2)) / maxf(sqrt(d2), 0.001)) * 1.9
 	for p in plants:
 		if not is_instance_valid(p):
 			continue
@@ -76,7 +76,7 @@ static func local_clearance_push(f: Fish, neighbors: Array, plants: Array) -> Ve
 		var d2p: float = to_p.length_squared()
 		if d2p < 1e-6 or d2p >= plant_r2:
 			continue
-		push += to_p.normalized() * (PLANT_CLEARANCE - sqrt(d2p)) * 1.3
+		push += to_p * ((PLANT_CLEARANCE - sqrt(d2p)) / maxf(sqrt(d2p), 0.001)) * 1.3
 	return push
 
 

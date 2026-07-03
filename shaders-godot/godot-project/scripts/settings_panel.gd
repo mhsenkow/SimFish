@@ -14,6 +14,8 @@ extends PanelContainer
 const OllamaOnboarding = preload("res://scripts/ollama_onboarding.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const FAUNA_MOTION_STEP: float = 0.5
+const FAUNA_VALUE_LABEL_W: float = 108.0
 
 signal apply_requested
 
@@ -89,6 +91,7 @@ var _ai_model_edit: LineEdit
 var _ai_theme_edit: LineEdit
 var _ai_status_label: Label
 var _ai_status_timer: float = 0.0
+var _ui_ticker_bound: bool = false
 var _co2_slider: HSlider
 var _co2_label: Label
 var _spectrum_slider: HSlider
@@ -118,6 +121,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("ui_cancel"):
 		_revert_staged_stocking()
+		_bind_ui_ticker(false)
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		get_viewport().set_input_as_handled()
@@ -125,6 +129,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_O or event.keycode == KEY_ESCAPE:
 			_revert_staged_stocking()
+			_bind_ui_ticker(false)
 			visible = false
 			mouse_filter = Control.MOUSE_FILTER_IGNORE
 			get_viewport().set_input_as_handled()
@@ -133,12 +138,39 @@ func _unhandled_input(event: InputEvent) -> void:
 func toggle() -> void:
 	if visible:
 		_revert_staged_stocking()
+		_bind_ui_ticker(false)
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 	else:
 		visible = true
 		mouse_filter = Control.MOUSE_FILTER_STOP
+		_bind_ui_ticker(true)
 		_pull_from_config()
+
+
+func _bind_ui_ticker(on: bool) -> void:
+	var ticker: Node = get_node_or_null("/root/UiTicker")
+	if ticker == null:
+		set_process(on and visible)
+		return
+	if on and visible and not _ui_ticker_bound:
+		if not ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.connect(_on_ui_ticker)
+		_ui_ticker_bound = true
+		set_process(false)
+	elif (not on or not visible) and _ui_ticker_bound:
+		if ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.disconnect(_on_ui_ticker)
+		_ui_ticker_bound = false
+
+
+func _on_ui_ticker(delta: float) -> void:
+	if not visible:
+		return
+	_ai_status_timer += delta
+	if _ai_status_timer >= 1.0:
+		_ai_status_timer = 0.0
+		_refresh_ai_status()
 
 
 # Build the inner control tree once. Layout is a VBoxContainer with a title
@@ -416,20 +448,24 @@ func _build_ui() -> void:
 	# -- Fauna tab (live swim/grouping — no Apply/reload required) --
 	_add_section(vbox_fauna, "Schooling")
 	var fauna_school_hint := PanelTheme.make_description()
-	fauna_school_hint.text = "Adjust how tightly fish school and spread through the tank. Changes apply immediately."
+	fauna_school_hint.text = "Adjust how tightly fish school and spread through the tank. Sliders snap to preset steps — changes apply immediately."
 	vbox_fauna.add_child(fauna_school_hint)
 	_fauna_schooling_label = Label.new()
 	_fauna_schooling_slider = PanelTheme.add_slider_row(
-		vbox_fauna, "Schooling intensity", 0.0, 2.0, 0.05, _fauna_schooling_label)
-	_fauna_schooling_slider.value_changed.connect(func(v):
-		TankConfig.fauna_schooling_mult = v
-		_fauna_schooling_label.text = "%.2f" % v)
+		vbox_fauna, "Schooling intensity", 0.0, 2.0, FAUNA_MOTION_STEP,
+		_fauna_schooling_label, 5, FAUNA_VALUE_LABEL_W)
+	_bind_fauna_slider(_fauna_schooling_slider, 0.0, 2.0,
+		func(v: float) -> void:
+			TankConfig.fauna_schooling_mult = v
+			_fauna_schooling_label.text = _fauna_schooling_caption(v))
 	_fauna_separation_label = Label.new()
 	_fauna_separation_slider = PanelTheme.add_slider_row(
-		vbox_fauna, "Personal space", 0.5, 2.0, 0.05, _fauna_separation_label)
-	_fauna_separation_slider.value_changed.connect(func(v):
-		TankConfig.fauna_separation_mult = v
-		_fauna_separation_label.text = "%.2f" % v)
+		vbox_fauna, "Personal space", 0.5, 2.0, FAUNA_MOTION_STEP,
+		_fauna_separation_label, 4, FAUNA_VALUE_LABEL_W)
+	_bind_fauna_slider(_fauna_separation_slider, 0.5, 2.0,
+		func(v: float) -> void:
+			TankConfig.fauna_separation_mult = v
+			_fauna_separation_label.text = _fauna_separation_caption(v))
 	_fauna_pulse_check = CheckBox.new()
 	_fauna_pulse_check.text = "School breathing pulse (synchronized tighten/loosen)"
 	_fauna_pulse_check.toggled.connect(func(v): TankConfig.fauna_school_pulse_enabled = v)
@@ -442,18 +478,25 @@ func _build_ui() -> void:
 		_fauna_pulse_amp_label.text = "%.2f" % v)
 
 	_add_section(vbox_fauna, "Movement")
+	var fauna_move_hint := PanelTheme.make_description()
+	fauna_move_hint.text = "Wander and speed use four preset steps each — each notch should look clearly different in the tank."
+	vbox_fauna.add_child(fauna_move_hint)
 	_fauna_wander_label = Label.new()
 	_fauna_wander_slider = PanelTheme.add_slider_row(
-		vbox_fauna, "Wander / roam", 0.0, 2.0, 0.05, _fauna_wander_label)
-	_fauna_wander_slider.value_changed.connect(func(v):
-		TankConfig.fauna_wander_mult = v
-		_fauna_wander_label.text = "%.2f" % v)
+		vbox_fauna, "Wander / roam", 0.0, 2.0, FAUNA_MOTION_STEP,
+		_fauna_wander_label, 5, FAUNA_VALUE_LABEL_W)
+	_bind_fauna_slider(_fauna_wander_slider, 0.0, 2.0,
+		func(v: float) -> void:
+			TankConfig.fauna_wander_mult = v
+			_fauna_wander_label.text = _fauna_wander_caption(v))
 	_fauna_speed_label = Label.new()
 	_fauna_speed_slider = PanelTheme.add_slider_row(
-		vbox_fauna, "Swim speed", 0.5, 2.0, 0.05, _fauna_speed_label)
-	_fauna_speed_slider.value_changed.connect(func(v):
-		TankConfig.fauna_speed_mult = v
-		_fauna_speed_label.text = "%.2f" % v)
+		vbox_fauna, "Swim speed", 0.5, 2.0, FAUNA_MOTION_STEP,
+		_fauna_speed_label, 4, FAUNA_VALUE_LABEL_W)
+	_bind_fauna_slider(_fauna_speed_slider, 0.5, 2.0,
+		func(v: float) -> void:
+			TankConfig.fauna_speed_mult = v
+			_fauna_speed_label.text = _fauna_speed_caption(v))
 
 	_add_section(vbox_fauna, "Social reactions")
 	_fauna_mourning_check = CheckBox.new()
@@ -472,7 +515,7 @@ func _build_ui() -> void:
 	_reduced_motion_check.tooltip_text = "Turns off school pulse, plant sway, and cinematic auto-orbit."
 	_reduced_motion_check.toggled.connect(func(v):
 		TankConfig.reduced_motion = v
-		TankConfig.save_to_disk())
+		TankConfig.request_save_to_disk())
 	vbox_adv.add_child(_reduced_motion_check)
 	var font_desc := PanelTheme.make_description()
 	font_desc.text = "Reopen panels after changing font size."
@@ -483,7 +526,7 @@ func _build_ui() -> void:
 	_ui_font_scale_slider.value_changed.connect(func(v: float):
 		TankConfig.ui_font_scale = v
 		_ui_font_scale_label.text = "%.0f%%" % (v * 100.0)
-		TankConfig.save_to_disk())
+		TankConfig.request_save_to_disk())
 
 	_add_section(vbox_adv, "Automation")
 	_auto_respawn_check = CheckBox.new()
@@ -522,7 +565,7 @@ func _build_ui() -> void:
 		if v:
 			TankConfig.fps_cap = 30
 			_select_fps_option(30)
-		TankConfig.save_to_disk()
+		TankConfig.request_save_to_disk()
 		_apply_fps_cap_live()
 		# Live-apply the visual side too — the main scene owns the display
 		# ShaderMaterial. Without this the toggle would only take effect
@@ -547,7 +590,7 @@ func _build_ui() -> void:
 		if v != 30 and bool(TankConfig.battery_saver):
 			TankConfig.battery_saver = false
 			_battery_saver_check.set_pressed_no_signal(false)
-		TankConfig.save_to_disk()
+		TankConfig.request_save_to_disk()
 		_apply_fps_cap_live())
 
 	# -- AI tab --
@@ -756,6 +799,53 @@ func _new_settings_tab(tabs: TabContainer, title: String) -> VBoxContainer:
 	return vbox
 
 
+func _snap_fauna(v: float, lo: float, hi: float) -> float:
+	return clampf(snapped(v, FAUNA_MOTION_STEP), lo, hi)
+
+
+func _bind_fauna_slider(slider: HSlider, lo: float, hi: float, setter: Callable) -> void:
+	slider.value_changed.connect(func(v: float) -> void:
+		var snapped_v: float = _snap_fauna(v, lo, hi)
+		if not is_equal_approx(snapped_v, v):
+			slider.set_value_no_signal(snapped_v)
+		setter.call(snapped_v)
+	)
+
+
+func _fauna_schooling_caption(v: float) -> String:
+	match int(round(v / FAUNA_MOTION_STEP)):
+		0: return "Loose · %.1f" % v
+		1: return "Drift · %.1f" % v
+		2: return "Balanced · %.1f" % v
+		3: return "Tight · %.1f" % v
+		_: return "Dense · %.1f" % v
+
+
+func _fauna_separation_caption(v: float) -> String:
+	match int(round((v - 0.5) / FAUNA_MOTION_STEP)):
+		0: return "Close · %.1f" % v
+		1: return "Normal · %.1f" % v
+		2: return "Roomy · %.1f" % v
+		_: return "Wide · %.1f" % v
+
+
+func _fauna_wander_caption(v: float) -> String:
+	match int(round(v / FAUNA_MOTION_STEP)):
+		0: return "Cornered · %.1f" % v
+		1: return "Home · %.1f" % v
+		2: return "Balanced · %.1f" % v
+		3: return "Roam · %.1f" % v
+		_: return "Explorer · %.1f" % v
+
+
+func _fauna_speed_caption(v: float) -> String:
+	match int(round((v - 0.5) / FAUNA_MOTION_STEP)):
+		0: return "Slow · %.1f" % v
+		1: return "Natural · %.1f" % v
+		2: return "Energetic · %.1f" % v
+		_: return "Fast · %.1f" % v
+
+
 # Section header with a 4-px spacer above so each group reads as a chunk
 # instead of running into the previous slider row.
 func _add_section(parent: Node, label: String) -> void:
@@ -842,15 +932,19 @@ func _pull_from_config() -> void:
 	if _fps_cap_option != null:
 		_select_fps_option(int(TankConfig.fps_cap))
 	if _fauna_schooling_slider != null:
+		var school_v: float = _snap_fauna(TankConfig.fauna_schooling_mult, 0.0, 2.0)
+		TankConfig.fauna_schooling_mult = school_v
 		_fauna_schooling_slider.set_block_signals(true)
-		_fauna_schooling_slider.value = TankConfig.fauna_schooling_mult
+		_fauna_schooling_slider.value = school_v
 		_fauna_schooling_slider.set_block_signals(false)
-		_fauna_schooling_label.text = "%.2f" % TankConfig.fauna_schooling_mult
+		_fauna_schooling_label.text = _fauna_schooling_caption(school_v)
 	if _fauna_separation_slider != null:
+		var sep_v: float = _snap_fauna(TankConfig.fauna_separation_mult, 0.5, 2.0)
+		TankConfig.fauna_separation_mult = sep_v
 		_fauna_separation_slider.set_block_signals(true)
-		_fauna_separation_slider.value = TankConfig.fauna_separation_mult
+		_fauna_separation_slider.value = sep_v
 		_fauna_separation_slider.set_block_signals(false)
-		_fauna_separation_label.text = "%.2f" % TankConfig.fauna_separation_mult
+		_fauna_separation_label.text = _fauna_separation_caption(sep_v)
 	if _fauna_pulse_check != null:
 		_fauna_pulse_check.button_pressed = TankConfig.fauna_school_pulse_enabled
 	if _fauna_pulse_amp_slider != null:
@@ -859,15 +953,19 @@ func _pull_from_config() -> void:
 		_fauna_pulse_amp_slider.set_block_signals(false)
 		_fauna_pulse_amp_label.text = "%.2f" % TankConfig.fauna_school_pulse_amplitude
 	if _fauna_wander_slider != null:
+		var wander_v: float = _snap_fauna(TankConfig.fauna_wander_mult, 0.0, 2.0)
+		TankConfig.fauna_wander_mult = wander_v
 		_fauna_wander_slider.set_block_signals(true)
-		_fauna_wander_slider.value = TankConfig.fauna_wander_mult
+		_fauna_wander_slider.value = wander_v
 		_fauna_wander_slider.set_block_signals(false)
-		_fauna_wander_label.text = "%.2f" % TankConfig.fauna_wander_mult
+		_fauna_wander_label.text = _fauna_wander_caption(wander_v)
 	if _fauna_speed_slider != null:
+		var speed_v: float = _snap_fauna(TankConfig.fauna_speed_mult, 0.5, 2.0)
+		TankConfig.fauna_speed_mult = speed_v
 		_fauna_speed_slider.set_block_signals(true)
-		_fauna_speed_slider.value = TankConfig.fauna_speed_mult
+		_fauna_speed_slider.value = speed_v
 		_fauna_speed_slider.set_block_signals(false)
-		_fauna_speed_label.text = "%.2f" % TankConfig.fauna_speed_mult
+		_fauna_speed_label.text = _fauna_speed_caption(speed_v)
 	if _fauna_mourning_check != null:
 		_fauna_mourning_check.button_pressed = TankConfig.fauna_mourning_enabled
 	if _fauna_glance_check != null:
@@ -985,17 +1083,6 @@ func _sync_guardian_download_progress() -> void:
 		_guardian_dl_progress_label.text = ""
 
 
-func _process(_dt: float) -> void:
-	if not visible:
-		return
-	# Refresh AI status periodically while the panel is open (cheap;
-	# AIDirector.status_summary is a single string format).
-	_ai_status_timer += _dt
-	if _ai_status_timer >= 1.0:
-		_ai_status_timer = 0.0
-		_refresh_ai_status()
-
-
 func _push_ai_to_director() -> void:
 	var ai := get_node_or_null("/root/AIDirector")
 	if ai == null:
@@ -1107,7 +1194,7 @@ func _on_guardian_download_pressed() -> void:
 	TankConfig.guardian_voice_enabled = true
 	if _guardian_voice_check != null:
 		_guardian_voice_check.set_pressed_no_signal(true)
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 	_push_ai_to_director()
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_method("ensure_boot"):
@@ -1134,7 +1221,7 @@ func _on_guardian_voice_toggled(on: bool) -> void:
 			_sentience_voice_off_check.set_pressed_no_signal(false)
 		_sync_voice_detail_enabled()
 	TankConfig.guardian_voice_enabled = on
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 	_push_ai_to_director()
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and on and glm.has_method("ensure_boot"):
@@ -1151,30 +1238,30 @@ func _on_fish_thought_voice_toggled(on: bool) -> void:
 			_sentience_voice_off_check.set_pressed_no_signal(false)
 		_sync_voice_detail_enabled()
 	TankConfig.fish_thought_voice_enabled = on
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 	_push_ai_to_director()
 
 
 func _on_keeper_ears_toggled(on: bool) -> void:
 	TankConfig.keeper_ears_enabled = on
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 
 
 func _on_keeper_gaze_toggled(on: bool) -> void:
 	TankConfig.keeper_gaze_enabled = on
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 
 
 func _on_keeper_mic_toggled(on: bool) -> void:
 	TankConfig.keeper_mic_enabled = on
 	if not on:
 		KeeperInput.set_mic_rms(0.0)
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 
 
 func _on_sentience_voice_off_toggled(on: bool) -> void:
 	TankConfig.sentience_voice_off = on
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 	_sync_voice_detail_enabled()
 	_push_ai_to_director()
 
@@ -1195,7 +1282,7 @@ func _on_voice_language_selected(idx: int) -> void:
 	if _voice_language_option == null:
 		return
 	TankConfig.voice_language = String(_voice_language_option.get_item_metadata(idx))
-	TankConfig.save_to_disk()
+	TankConfig.request_save_to_disk()
 	_push_ai_to_director()
 
 
@@ -1330,7 +1417,13 @@ func _on_volumetric(v: bool) -> void:
 
 func _on_music_enabled(v: bool) -> void:
 	TankConfig.music_enabled = v
-	var amb = get_tree().current_scene.get_node_or_null("AmbientAudio")
+	var ml: MainLoop = Engine.get_main_loop()
+	if not (ml is SceneTree):
+		return
+	var scene: Node = (ml as SceneTree).current_scene
+	if scene == null:
+		return
+	var amb: Node = scene.get_node_or_null("AmbientAudio")
 	if amb != null and amb.has_method("silence_immediately"):
 		amb.silence_immediately()
 
@@ -1392,7 +1485,13 @@ func _sync_aeration_live() -> void:
 
 func _on_vessel(idx: int) -> void:
 	var slug: String = _vessel_option.get_item_metadata(idx)
+	var old_w: float = TankConfig.tank_half_w
+	var old_d: float = TankConfig.tank_half_d
+	TankConfig.begin_settings_batch()
 	TankConfig.apply_vessel_preset(slug)
+	if not is_equal_approx(TankConfig.tank_half_w, old_w) \
+			or not is_equal_approx(TankConfig.tank_half_d, old_d):
+		TankConfig.rebuild_terrain_on_load = true
 	_update_vessel_desc()
 	# Push preset dimensions into sliders + shape dropdown without marking custom.
 	for i in _shape_option.item_count:
@@ -1403,6 +1502,7 @@ func _on_vessel(idx: int) -> void:
 	_d_slider.value = TankConfig.tank_half_d * 2.0
 	_h_slider.value = TankConfig.tank_height
 	_update_value_labels()
+	TankConfig.end_settings_batch()
 
 
 func _sync_vessel_dropdown() -> void:
@@ -1423,11 +1523,13 @@ func _update_vessel_desc() -> void:
 
 
 func _on_environment(idx: int) -> void:
+	TankConfig.begin_settings_batch()
 	TankConfig.environment_preset = _environment_option.get_item_metadata(idx)
 	_update_environment_desc()
 	var suggested: String = TankConfig.suggested_lighting_for_environment(TankConfig.environment_preset)
 	if suggested != "" and TankConfig.has_method("apply_lighting_preset"):
 		TankConfig.apply_lighting_preset(suggested)
+	TankConfig.end_settings_batch()
 
 
 func _update_environment_desc() -> void:
@@ -1687,9 +1789,10 @@ func _on_apply() -> void:
 	# Preserve camera before the reload so the view doesn't snap back to
 	# defaults. Main node has save_camera_state() that stashes yaw/pitch/etc
 	# into TankConfig + saves to disk.
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
+	TankConfig.begin_settings_batch()
 	_commit_staged_stocking()
 	# Drop stale fauna whenever stocking/substrate changed in this panel OR
 	# the on-disk save's header doesn't match what we're applying. Without
@@ -1705,10 +1808,12 @@ func _on_apply() -> void:
 		if clear_save and saves.has_method("clear_active_state"):
 			saves.clear_active_state()
 	TankConfig.rebuild_terrain_on_load = true
-	TankConfig.save_to_disk()
+	TankConfig.end_settings_batch(true)
 	_panel_snapshot = {}
 	apply_requested.emit()
-	get_tree().reload_current_scene()
+	var tree := PanelTheme.main_tree(self)
+	if tree != null:
+		tree.reload_current_scene()
 
 
 # --- Performance helpers ---

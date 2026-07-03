@@ -33,6 +33,7 @@ var clams_root: Node3D = null
 # white biofilm in the first 1-2 weeks of a new tank, then settles back
 # as bacteria balance out and shrimp / otos graze it.
 var _driftwood_voxels: Array[MeshInstance3D] = []
+var _last_contact_ao_points: Array = []
 # Substrate ripple-sculpting state. Phase walks forward in sim-time so the
 # sand bed's ripple pattern evolves over sim-minutes. Strength + direction
 # are static per session; aeration angle drives the direction so flow
@@ -62,6 +63,13 @@ var _heater_glow: OmniLight3D = null
 # new tanks show. Saved/loaded via TankConfig if we ever want to
 # persist it across sessions; for now it's per-session.
 var biofilm_progress: float = 0.0
+var _tank_phi_coherence: float = 0.5
+
+
+func set_tank_phi_coherence(v: float) -> void:
+	_tank_phi_coherence = clampf(v, 0.0, 1.0)
+
+
 var _biofilm_apply_t: float = 0.0
 # Microfauna swarm + detrital worm carpet. Both are pure-visual entity
 # populations maintained by _process below — they're not part of the
@@ -84,8 +92,8 @@ const WRIGGLE_PER_MULM_FRAC: float = 0.55
 var _wriggle_refill_t: float = 0.0
 var _tiny_life_scalar_cache: Dictionary = {"micro": 1.0, "wriggle": 1.0}
 var _tiny_life_scalar_ttl: float = 0.0
-var _life_bounds_timer: float = 0.0
 const LIFE_BOUNDS_INTERVAL: float = 0.22
+var _world_cadence_booted: bool = false
 
 # Coarse environment field — light penetration + warmth sampled on a 1 m grid
 # and refreshed ~4 Hz so hundreds of plant ticks don't each query floaters.
@@ -254,6 +262,9 @@ func _ready() -> void:
 	plants_root = Node3D.new(); plants_root.name = "Plants"; add_child(plants_root)
 	fauna_root = Node3D.new(); fauna_root.name = "Fauna"; add_child(fauna_root)
 	waste_root = Node3D.new(); waste_root.name = "Waste"; add_child(waste_root)
+	var waste_batch := WasteParticleBatch.new()
+	waste_batch.name = "WasteBatch"
+	waste_root.add_child(waste_batch)
 	algae_root = Node3D.new(); algae_root.name = "Algae"; add_child(algae_root)
 	clams_root = Node3D.new(); clams_root.name = "Clams"; add_child(clams_root)
 	microfauna_root = MicrofaunaSwarm.new(); microfauna_root.name = "Microfauna"; add_child(microfauna_root)
@@ -269,8 +280,10 @@ func _ready() -> void:
 	sim.plants_root = plants_root
 	sim.fauna_root = fauna_root
 	sim.waste_root = waste_root
+	sim.waste_batch = waste_batch
 	sim.algae_root = algae_root
 	sim.clams_root = clams_root
+	_boot_world_cadence()
 
 	# Stagger the build across frames so the GPU command buffer can drain
 	# between resource batches. Doing everything synchronously hammered Metal
@@ -282,6 +295,7 @@ func _ready() -> void:
 		_caustics_mat = ShaderMaterial.new()
 		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
 	_build_substrate()
+	_apply_water_wave_scale_uniforms()
 	# Empty / guided tanks (walkthrough): start the tank completely bare so
 	# the player stocks plants, fauna, snails, and hardscape themselves.
 	var cfg_empty := get_node_or_null("/root/TankConfig")
@@ -460,6 +474,13 @@ const LIGHT_CYCLE_INTERVAL: float = 0.1
 var _light_cycle_accum: float = 0.0
 var _last_caustic_intensity: float = -1.0
 var _last_caustic_color: Color = Color(0.55, 0.75, 0.95)
+var _last_glass_shape_id: float = -1.0
+var _last_glass_shape_band: float = -1.0
+var _last_glass_reflection: float = -1.0
+var _last_glass_sparkle: float = -1.0
+var _last_glass_rim: float = -1.0
+var _last_glass_water_y: float = -1.0
+var _last_glass_caustic_band: float = -1.0
 var _cached_lighting: Dictionary = {}
 var _cached_water_column: Dictionary = {}
 
@@ -481,15 +502,46 @@ var _cfg_node: Node = null
 func _refresh_atmosphere_caches(adt: float) -> void:
 	if sim == null:
 		return
-	_cached_lighting = WorldAtmosphere.day_night_lighting(sim, _cfg_node)
+	var fresh: Dictionary = WorldAtmosphere.day_night_lighting(sim, _cfg_node)
+	for k in fresh:
+		if k == "atmosphere" and fresh[k] is Dictionary:
+			var atm_dst: Dictionary = _cached_lighting.get("atmosphere", {})
+			if atm_dst.is_empty() and not _cached_lighting.has("atmosphere"):
+				_cached_lighting["atmosphere"] = atm_dst
+			for ak in fresh[k]:
+				atm_dst[ak] = fresh[k][ak]
+		else:
+			_cached_lighting[k] = fresh[k]
 	var bloom: float = float(sim.bloom_intensity)
 	var wc = sim.water_chemistry if sim.get("water_chemistry") != null else null
 	var atm: Dictionary = _cached_lighting.get("atmosphere", {})
-	_cached_water_column = WorldAtmosphere.water_column_bundle(
+	var wc_fresh: Dictionary = WorldAtmosphere.water_column_bundle(
 		tannins, bloom, floater_coverage(), wc,
 		C_WATER_SHALLOW, C_WATER_DEEP, float(atm.get("tannin_affinity", 0.0)))
+	for wk in wc_fresh:
+		_cached_water_column[wk] = wc_fresh[wk]
 	if tannins < 0.55:
 		tannins = minf(0.55, tannins + 0.00007 * adt)
+
+
+func advance_substrate_ripple(sdt: float) -> void:
+	_substrate_ripple_phase += sdt * 0.018
+
+
+func _boot_world_cadence() -> void:
+	if _world_cadence_booted:
+		return
+	_world_cadence_booted = true
+	SimCadence.every(ENV_FIELD_REBUILD_S, Callable(self, "_cadence_env_field"), 0.05)
+	SimCadence.every(LIFE_BOUNDS_INTERVAL, Callable(self, "_cadence_life_bounds"), 0.11)
+
+
+func _cadence_env_field(_dt: float) -> void:
+	_rebuild_environment_field()
+
+
+func _cadence_life_bounds(_dt: float) -> void:
+	_enforce_all_life_bounds()
 
 
 func _process(dt: float) -> void:
@@ -500,11 +552,6 @@ func _process(dt: float) -> void:
 	# Update lofi room environment animations
 	_room_time_passed += sdt
 
-	# Substrate ripple sculpting — walk the ripple_phase forward at a slow
-	# rate (about 1 unit per sim-minute) so the sand-bed pattern visibly
-	# evolves over many minutes of play. Strength + direction picked once
-	# at world startup (the aeration system dictates flow direction).
-	_substrate_ripple_phase += sdt * 0.018
 	if _build_graze_cells > 0:
 		_build_patina = clampf(
 			_build_patina + sdt * 0.000035 * float(_build_graze_cells), 0.0, 1.0)
@@ -635,11 +682,6 @@ func _process(dt: float) -> void:
 	_maintain_tubifex_patches(sdt)
 	_maintain_mycelium_patches(sdt)
 	_maintain_biofilm_patches(sdt)
-	_refresh_environment_field(sdt)
-	_life_bounds_timer = maxf(0.0, _life_bounds_timer - sdt)
-	if _life_bounds_timer <= 0.0:
-		_life_bounds_timer = LIFE_BOUNDS_INTERVAL
-		_enforce_all_life_bounds()
 	_maintain_substrate_film(sdt)
 	_understory_t = maxf(0.0, _understory_t - sdt)
 	if _understory_t <= 0.0:
@@ -869,6 +911,7 @@ func _process(dt: float) -> void:
 				intensity = WorldAtmosphere.modulate_caustic_intensity(intensity, trans, bact)
 			if mv != null and mv.has_method("caustic_mul"):
 				intensity *= float(mv.caustic_mul())
+			intensity *= lerpf(0.90, 1.10, _tank_phi_coherence)
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
 				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
 				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
@@ -896,17 +939,36 @@ func _process(dt: float) -> void:
 						shape_id = 1.0
 					elif TANK_SHAPE == "sphere":
 						shape_id = 2.0
-					_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
 					var fixture_glow_g: float = deep_night * (1.0 if tank_lights_on else 0.0)
-					_glass_material_ref.set_shader_parameter(
-						"shape_band", 0.45 + dl * 0.35 + fixture_glow_g * 0.55)
-					_glass_material_ref.set_shader_parameter(
-						"reflection_strength", 0.15 + dl * 0.12 + fixture_glow_g * 0.22)
-					_glass_material_ref.set_shader_parameter(
-						"sparkle", fixture_glow_g * 0.9)
-					_glass_material_ref.set_shader_parameter(
-						"rim_chrome", 0.55 + fixture_glow_g * 0.35)
-					_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
+					var shape_band: float = 0.45 + dl * 0.35 + fixture_glow_g * 0.55
+					var reflection: float = 0.15 + dl * 0.12 + fixture_glow_g * 0.22
+					var sparkle: float = fixture_glow_g * 0.9
+					var rim: float = 0.55 + fixture_glow_g * 0.35
+					var caustic_band: float = 0.0
+					if show_caustics and sim != null and sim.has_method("topdown_caustic_beat"):
+						caustic_band = clampf(intensity * 0.22 + float(sim.topdown_caustic_beat()) * 0.18, 0.0, 0.55)
+					var glass_changed: bool = absf(shape_id - _last_glass_shape_id) > 0.01 \
+						or absf(shape_band - _last_glass_shape_band) > 0.02 \
+						or absf(reflection - _last_glass_reflection) > 0.02 \
+						or absf(sparkle - _last_glass_sparkle) > 0.02 \
+						or absf(rim - _last_glass_rim) > 0.02 \
+						or absf(WATER_HEIGHT - _last_glass_water_y) > 0.02 \
+						or absf(caustic_band - _last_glass_caustic_band) > 0.02
+					if glass_changed:
+						_last_glass_shape_id = shape_id
+						_last_glass_shape_band = shape_band
+						_last_glass_reflection = reflection
+						_last_glass_sparkle = sparkle
+						_last_glass_rim = rim
+						_last_glass_water_y = WATER_HEIGHT
+						_last_glass_caustic_band = caustic_band
+						_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
+						_glass_material_ref.set_shader_parameter("shape_band", shape_band)
+						_glass_material_ref.set_shader_parameter("reflection_strength", reflection)
+						_glass_material_ref.set_shader_parameter("sparkle", sparkle)
+						_glass_material_ref.set_shader_parameter("rim_chrome", rim)
+						_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
+						_glass_material_ref.set_shader_parameter("caustic_band", caustic_band)
 
 		# Sync god ray materials to the light cycle and Render panel parameters.
 		var density: float = 0.02
@@ -944,6 +1006,13 @@ func _process(dt: float) -> void:
 				if _cached_lighting.has("sunset_hour"):
 					sunset_w = float(_cached_lighting["sunset_hour"])
 				mat.set_shader_parameter("sunset_warmth", clampf(sunset_w, 0.0, 1.0))
+				mat.set_shader_parameter("dust_mote_density", clampf(dl * 0.22, 0.04, 0.28))
+		if _water_material_ref != null and _flow_field != null \
+				and _water_material_ref.get_shader_parameter("pond_wake_activity") != null:
+			var probe: Vector3 = Vector3(0.0, WATER_HEIGHT * 0.55, 0.0)
+			var fs: float = flow_strength_at(probe)
+			_water_material_ref.set_shader_parameter(
+				"pond_wake_activity", clampf(fs * 0.45, 0.0, 0.55))
 		# Soft fish occluders + substrate blob shadows share one fish[] scan.
 		_update_fish_lighting_contributors()
 
@@ -1318,6 +1387,7 @@ func _water_mat() -> ShaderMaterial:
 	var deep := Color(C_WATER_DEEP.r, C_WATER_DEEP.g, C_WATER_DEEP.b, 0.20)
 	var m := VoxelMat.make_water(shallow, deep, SUBSTRATE_DEPTH, WATER_HEIGHT)
 	m.set_shader_parameter("wave_amplitude", 0.028)
+	m.set_shader_parameter("wave_scale", _water_wave_scale())
 	m.set_shader_parameter("caustic_intensity", 0.55)
 	var shape_id: float = 0.0
 	if TANK_SHAPE == "cylinder":
@@ -1536,6 +1606,19 @@ func _footprint() -> TankFootprint:
 	return _footprint_cache
 
 
+func _water_wave_scale() -> float:
+	var fp := _footprint()
+	var span: float = maxf(fp.half_w * 2.0, fp.half_d * 2.0)
+	return clampf(2.8 / maxf(span, 1.2), 0.28, 0.55)
+
+
+func _apply_water_wave_scale_uniforms() -> void:
+	var ws: float = _water_wave_scale()
+	if _caustics_mat != null:
+		_caustics_mat.set_shader_parameter("wave_scale", ws)
+	VoxelMat.update_substrate_wave_scale(ws)
+
+
 # Public XZ sampler. Used by SimDriver when it needs a random tank-interior
 # position for algae or anything else spawned at runtime, without exposing
 # the private RNG / sampling internals.
@@ -1605,7 +1688,7 @@ func _apply_founding_cohort_spread(g: Dictionary, i: int, count: int) -> void:
 	# Ring-seed home territories so patrol zones cover the footprint from day one.
 	var fp := _footprint()
 	var ring_a: float = TAU * float(i) / float(count) + randf_range(-0.3, 0.3)
-	var ring_r: float = fp.effective_radius(0.35) * randf_range(0.32, 0.78)
+	var ring_r: float = fp.effective_radius(0.35) * randf_range(0.40, 0.88)
 	g["home_x"] = cos(ring_a) * ring_r
 	g["home_z"] = sin(ring_a) * ring_r
 
@@ -2540,9 +2623,14 @@ func terrain_to_save_dict() -> Dictionary:
 func terrain_apply_save_dict(d: Dictionary) -> bool:
 	if terrain_grid == null or d.is_empty():
 		return false
-	var ok: bool = terrain_grid.apply_save_dict(d)
+	var ok: bool
+	if terrain_grid.save_dimensions_match(d):
+		ok = terrain_grid.apply_save_dict(d)
+	else:
+		ok = terrain_grid.overlay_save_dict(d)
 	if ok:
 		rebuild_substrate_mesh()
+		sync_terrain_nutrients()
 	return ok
 
 
@@ -2605,6 +2693,16 @@ func _build_hardscape(populate: bool = true) -> void:
 		_:
 			pass  # default
 
+	var hs_batch := HardscapeBatch.new()
+	var add_driftwood_cube: Callable = func(center: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
+		var fit: Vector2 = _fit_xz_inside_tank(center.x, center.z, 0.2)
+		var p: Vector3 = Vector3(fit.x, center.y, fit.y)
+		p.y = clampf(p.y, SUBSTRATE_DEPTH - 0.25, WATER_HEIGHT - 0.35)
+		if not is_inside_tank_volume(p.x, p.y, p.z, 0.2):
+			return null
+		var mi := _add_cube(c, p, size, mat)
+		_mark_hardscape_occupancy(p, size)
+		return mi
 	var add_hardscape_cube: Callable = func(center: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
 		var fit: Vector2 = _fit_xz_inside_tank(center.x, center.z, 0.2)
 		var p: Vector3 = Vector3(fit.x, center.y, fit.y)
@@ -2612,9 +2710,9 @@ func _build_hardscape(populate: bool = true) -> void:
 		p.y = clampf(p.y, SUBSTRATE_DEPTH - 0.25, WATER_HEIGHT - 0.35)
 		if not is_inside_tank_volume(p.x, p.y, p.z, 0.2):
 			return null
-		var mi := _add_cube(c, p, size, mat)
+		hs_batch.add(c, p, size, mat)
 		_mark_hardscape_occupancy(p, size)
-		return mi
+		return null
 
 	# 1. Procedural Driftwood Spline (Bezier Curve)
 	var bezier: Callable = func(c0: Vector3, c1: Vector3, c2: Vector3, c3: Vector3, t: float) -> Vector3:
@@ -2648,7 +2746,7 @@ func _build_hardscape(populate: bool = true) -> void:
 		var size := lerpf(0.62, 0.25, t)
 		
 		# Spawn dark wood core voxel
-		var mi_d: MeshInstance3D = add_hardscape_cube.call(p, Vector3(size, size, size), mat_dark)
+		var mi_d: MeshInstance3D = add_driftwood_cube.call(p, Vector3(size, size, size), mat_dark)
 		if mi_d != null:
 			_driftwood_voxels.append(mi_d)
 		
@@ -2665,7 +2763,7 @@ func _build_hardscape(populate: bool = true) -> void:
 		# Spawn light wood bark accent voxels on side walls perpendicular to growth
 		for dx in [-1, 1]:
 			var offset: Vector3 = Vector3(0.0, size * 0.4, 0.0) + normal * dx * size * 0.38
-			var mi_l: MeshInstance3D = add_hardscape_cube.call(
+			var mi_l: MeshInstance3D = add_driftwood_cube.call(
 				p + offset, Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
 			if mi_l != null:
 				_driftwood_voxels.append(mi_l)
@@ -2704,13 +2802,13 @@ func _build_hardscape(populate: bool = true) -> void:
 			step_offset += Vector3(sin(float(j) * 1.5) * 0.04, cos(float(j) * 1.2) * 0.03, sin(float(j) * 0.8) * 0.04)
 			twig_p += step_offset
 			
-			var mi_d: MeshInstance3D = add_hardscape_cube.call(
+			var mi_d: MeshInstance3D = add_driftwood_cube.call(
 				twig_p, Vector3(size, size, size), mat_dark)
 			if mi_d != null:
 				_driftwood_voxels.append(mi_d)
 			
 			if size > 0.22:
-				var mi_l: MeshInstance3D = add_hardscape_cube.call(
+				var mi_l: MeshInstance3D = add_driftwood_cube.call(
 					twig_p + Vector3(0.0, size * 0.42, 0.0),
 					Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
 				if mi_l != null:
@@ -2727,10 +2825,15 @@ func _build_hardscape(populate: bool = true) -> void:
 		var m := stone_dark if is_dark else stone_mat
 		var b_rot := Basis.from_euler(rot)
 		var rotated_offset := b_rot * offset
-		var mi: MeshInstance3D = add_hardscape_cube.call(center + rotated_offset, size, m)
-		if mi == null:
+		var world_center: Vector3 = center + rotated_offset
+		var fit: Vector2 = _fit_xz_inside_tank(world_center.x, world_center.z, 0.2)
+		var p: Vector3 = Vector3(fit.x, world_center.y, fit.y)
+		p.y = clampf(p.y, SUBSTRATE_DEPTH - 0.25, WATER_HEIGHT - 0.35)
+		if not is_inside_tank_volume(p.x, p.y, p.z, 0.2):
 			return null
+		var mi := _add_cube(c, p, size, m)
 		mi.basis = b_rot * Basis.from_euler(Vector3(_rng.randf_range(-0.06, 0.06), _rng.randf_range(-0.06, 0.06), _rng.randf_range(-0.06, 0.06)))
+		_mark_hardscape_occupancy(p, size)
 		_rock_voxels.append(mi)
 		return mi
 
@@ -2766,6 +2869,9 @@ func _build_hardscape(populate: bool = true) -> void:
 	elif hs_stones_mult > 0.01:
 		_build_iwagumi_clusters(add_rock_voxel, add_hardscape_cube,
 			stone_mat, stone_dark, hs_pebbles_mult)
+
+	# PERFORMANCE_UNTHROTTLED #79 — batch static pebbles into per-material MultiMesh.
+	hs_batch.flush()
 
 	# Publish hardscape contact-AO footprints to the substrate shaders.
 	# We pick the 8 lowest hardscape voxels (those nearest the substrate
@@ -2818,7 +2924,10 @@ func _publish_substrate_contact_ao() -> void:
 	for i in mini(8, pool.size()):
 		var e = pool[i]
 		pts.append(Vector4(e["x"], e["y"], e["z"], e["r"]))
+	_last_contact_ao_points = pts
 	VoxelMat.update_substrate_contact_ao(pts)
+	if _substrate_container != null and not pts.is_empty():
+		SubstrateAoBake.apply_to_container(_substrate_container, pts, SUBSTRATE_DEPTH)
 
 
 # Original three-island Iwagumi (Oyaishi / Fukuishi / Soishi) + pebble
@@ -5198,11 +5307,30 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 const _GOD_RAY_OCCLUDER_SLOTS: int = 8
 const _BLOB_SHADOW_SLOTS: int = 32
 const _RIPPLE_POOL_SIZE: int = 24
+const _TAP_RIPPLE_POOL_SIZE: int = 12
 var _occluder_buf: Array = []
+var _occluder_smooth: Array[Vector4] = []
 var _blob_buf: Array = []
 var _ripple_pool: Array = []
+var _tap_ripple_pool: Array[MeshInstance3D] = []
+var _tap_ripple_pool_i: int = 0
 var _ripple_pool_i: int = 0
 var _active_ripples: int = 0
+
+
+func _smooth_god_ray_occluders(target: Array[Vector4]) -> Array[Vector4]:
+	const LERP: float = 0.18
+	var out: Array[Vector4] = []
+	for i in _GOD_RAY_OCCLUDER_SLOTS:
+		var tgt: Vector4 = target[i] if i < target.size() else Vector4.ZERO
+		var cur: Vector4 = _occluder_smooth[i] if i < _occluder_smooth.size() else Vector4.ZERO
+		if tgt.w < 0.001:
+			cur = cur.lerp(Vector4.ZERO, LERP)
+		else:
+			cur = cur.lerp(tgt, LERP)
+		out.append(cur)
+	_occluder_smooth = out
+	return out
 
 
 func _insert_bounded_fish(buf: Array, fish: Node3D, sort_key: float, max_n: int) -> void:
@@ -5334,9 +5462,10 @@ func _update_fish_lighting_contributors() -> void:
 					radius))
 			else:
 				packed.append(Vector4.ZERO)
+		var smooth_packed: Array[Vector4] = _smooth_god_ray_occluders(packed)
 		for mat in _god_ray_materials:
 			if mat != null:
-				mat.set_shader_parameter("occluders", packed)
+				mat.set_shader_parameter("occluders", smooth_packed)
 	if need_blobs:
 		var blob_packed: Array[Vector4] = []
 		for i in _BLOB_SHADOW_SLOTS:
@@ -5912,6 +6041,10 @@ func _refresh_environment_field(sdt: float) -> void:
 	_env_field_t += sdt
 	if _env_field_t < ENV_FIELD_REBUILD_S and _env_field_ready:
 		return
+	_rebuild_environment_field()
+
+
+func _rebuild_environment_field() -> void:
 	_env_field_t = 0.0
 	_env_field_ready = true
 	_env_light.clear()
@@ -6121,6 +6254,21 @@ func _clear_mineral_spots() -> void:
 	_mineral_spots.clear()
 
 
+func wipe_mineral_spots_near(pos: Vector3, radius: float = 0.48) -> int:
+	var removed: int = 0
+	var r2: float = radius * radius
+	for i in range(_mineral_spots.size() - 1, -1, -1):
+		var spot: MeshInstance3D = _mineral_spots[i]
+		if not is_instance_valid(spot):
+			_mineral_spots.remove_at(i)
+			continue
+		if spot.global_position.distance_squared_to(pos) < r2:
+			spot.queue_free()
+			_mineral_spots.remove_at(i)
+			removed += 1
+	return removed
+
+
 func _add_mineral_spot_at(pos: Vector3) -> void:
 	if _mineral_spots.size() >= MINERAL_SPOT_CAP:
 		return
@@ -6275,12 +6423,17 @@ func spawn_burst_ripple(pos: Vector3, intensity: float = 1.0) -> void:
 	# Initial alpha scales with intensity so a small bubble-pop ripple is
 	# fainter than a fish breach.
 	var start_c := Color8(225, 240, 245)
-	start_c.a = clampf(intensity, 0.4, 1.0)
-	fade_mat.set_shader_parameter("albedo", start_c)
+	start_c.a = clampf(intensity * 0.55, 0.22, 0.72)
+	fade_mat.set_shader_parameter("albedo", Color(start_c.r, start_c.g, start_c.b, 0.0))
+	var peak_c := start_c
 	var faded := start_c
 	faded.a = 0.0
+	var fade_in: float = minf(0.14, duration * 0.22)
 	tw.tween_method(_set_ripple_albedo.bind(fade_mat),
-		start_c, faded, duration) \
+		Color(start_c.r, start_c.g, start_c.b, 0.0), peak_c, fade_in) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_method(_set_ripple_albedo.bind(fade_mat),
+		peak_c, faded, duration - fade_in) \
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.chain().tween_callback(func() -> void:
 		ring.visible = false
@@ -6310,11 +6463,15 @@ func spawn_glass_tap_ripples(pos: Vector3) -> void:
 
 
 func spawn_feeding_boil(pos: Vector3) -> void:
-	for i in 6:
-		var ang: float = float(i) / 6.0 * TAU
-		var off := Vector3(cos(ang) * 0.35, 0.0, sin(ang) * 0.35)
-		spawn_burst_ripple(pos + off, randf_range(0.85, 1.35))
-	spawn_glass_tap_ripples(pos)
+	var surf_y: float = WATER_HEIGHT - 0.025
+	var center := Vector3(pos.x, surf_y, pos.z)
+	TransientParticlePool.burst(self, "splash", center)
+	for i in 10:
+		var ang: float = float(i) / 10.0 * TAU + randf_range(-0.25, 0.25)
+		var rad: float = randf_range(0.12, 0.62)
+		var off := Vector3(cos(ang) * rad, 0.0, sin(ang) * rad)
+		spawn_burst_ripple(center + off, randf_range(1.05, 1.75))
+	spawn_glass_tap_ripples(center)
 	for f in _floaters:
 		if not is_instance_valid(f) or not (f is FloatingPlant):
 			continue
@@ -6327,11 +6484,8 @@ func spawn_feeding_boil(pos: Vector3) -> void:
 
 
 func _spawn_tap_ripple_ring(pos: Vector3, delay: float, alpha: float, end_size: float) -> void:
-	var ring := MeshInstance3D.new()
-	var qm := QuadMesh.new()
-	qm.size = Vector2(1.0, 1.0)
-	qm.orientation = PlaneMesh.FACE_Y
-	ring.mesh = qm
+	var ring: MeshInstance3D = _acquire_tap_ripple_ring()
+	ring.visible = true
 	var base_col := Color(0.90, 0.96, 1.0, alpha)
 	var mat := VoxelMat.make_surface_ripple(base_col).duplicate() as ShaderMaterial
 	mat.set_shader_parameter("ripple_color", base_col)
@@ -6339,7 +6493,7 @@ func _spawn_tap_ripple_ring(pos: Vector3, delay: float, alpha: float, end_size: 
 	ring.material_override = mat
 	ring.position = Vector3(pos.x, WATER_HEIGHT - 0.025, pos.z)
 	ring.scale = Vector3(0.3, 1.0, 0.3)
-	add_child(ring)
+	ring.rotation = Vector3.ZERO
 	var tw := create_tween()
 	if delay > 0.0:
 		tw.tween_interval(delay)
@@ -6350,7 +6504,24 @@ func _spawn_tap_ripple_ring(pos: Vector3, delay: float, alpha: float, end_size: 
 	faded.a = 0.0
 	tw.tween_method(_set_surface_ripple_color.bind(mat), base_col, faded, 0.95) \
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.chain().tween_callback(ring.queue_free)
+	tw.chain().tween_callback(func() -> void:
+		ring.visible = false)
+
+
+func _acquire_tap_ripple_ring() -> MeshInstance3D:
+	if _tap_ripple_pool.is_empty():
+		for _i in _TAP_RIPPLE_POOL_SIZE:
+			var ring := MeshInstance3D.new()
+			var qm := QuadMesh.new()
+			qm.size = Vector2(1.0, 1.0)
+			qm.orientation = PlaneMesh.FACE_Y
+			ring.mesh = qm
+			ring.visible = false
+			add_child(ring)
+			_tap_ripple_pool.append(ring)
+	var ring_node: MeshInstance3D = _tap_ripple_pool[_tap_ripple_pool_i % _tap_ripple_pool.size()]
+	_tap_ripple_pool_i += 1
+	return ring_node
 
 
 func _set_surface_ripple_color(c: Color, mat: ShaderMaterial) -> void:
@@ -7839,20 +8010,21 @@ func spawn_creature_substrate_dust(pos: Vector3, intensity: float = 1.0) -> void
 
 
 func spawn_surface_wake(pos: Vector3, speed: float) -> void:
-	if speed < 0.45:
+	if speed < 0.62:
 		return
-	spawn_burst_ripple(pos, clampf(speed * 0.35, 0.35, 1.1))
+	spawn_burst_ripple(pos, clampf(speed * 0.22, 0.28, 0.65))
 
 
 func spawn_surface_wake_ex(pos: Vector3, speed: float, yaw_rate: float, move_heading: Vector3) -> void:
-	if speed < 0.35:
+	if speed < 0.55:
 		return
 	var intensity: float = TopdownMotion.wake_intensity(speed, yaw_rate, absf(yaw_rate) > 0.65)
+	intensity = clampf(intensity * 0.55, 0.28, 0.72)
 	spawn_burst_ripple(pos, intensity)
-	if move_heading.length_squared() > 1e-4 and speed > 0.55:
+	if move_heading.length_squared() > 1e-4 and speed > 0.75:
 		var back: Vector3 = pos - move_heading.normalized() * 0.35
 		back.y = pos.y
-		spawn_burst_ripple(back, intensity * 0.55)
+		spawn_burst_ripple(back, intensity * 0.38)
 
 
 func spawn_substrate_dust(pos: Vector3) -> void:

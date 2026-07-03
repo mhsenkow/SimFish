@@ -12,6 +12,7 @@ const SIGNALS: String = "signals"          # 1D inter-fish signal bus
 const CONTAGION: String = "contagion"      # META #10 emotional contagion
 const THEORY_OF_MIND: String = "theory_of_mind"
 const WORLD_MODEL: String = "world_model"  # generative / active-inference model
+const SOUL: String = "soul"                # learned soul / habits / narrative stack
 
 static var _disabled: Dictionary = {}
 

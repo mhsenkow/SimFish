@@ -6,14 +6,22 @@
 
 extends Node
 
+const _SynthRingBuffer = preload("res://scripts/synth_ring_buffer.gd")
+const _PotatoAmbientBed = preload("res://scripts/potato_ambient_bed.gd")
+
 const SAMPLE_RATE: int = 22050
 const DELAY_LEN: int = 4096
 const MAX_SAMPLES_PER_FRAME: int = 512
 const MAX_SAMPLES_CATCHUP: int = 4096
-const AUDIO_FILL_BUDGET_US: int = 8000
+const AUDIO_FILL_BUDGET_US: int = 5000
+const DSP_BLOCK_SIZE: int = 64
 const BUBBLE_MAX: int = 8
 const ENV_REFRESH_INTERVAL: float = 0.1
 const INV_SAMPLE_RATE: float = 1.0 / 22050.0
+const ENV_LUT_SIZE: int = 256
+
+static var _env_lut_attack: PackedFloat32Array = PackedFloat32Array()
+static var _env_lut_release: PackedFloat32Array = PackedFloat32Array()
 
 const SCALE_MAJOR: Array[float] = [
 	261.63, 293.66, 329.63, 392.00, 440.00,
@@ -189,6 +197,12 @@ var _player_air: AudioStreamPlayer = null
 var _playback_drums: AudioStreamGeneratorPlayback = null
 var _playback_synth: AudioStreamGeneratorPlayback = null
 var _playback_air: AudioStreamGeneratorPlayback = null
+# PERFORMANCE_REALTIME #79 — synth on worker; main thread only push_frame.
+var _synth_mutex: Mutex = Mutex.new()
+var _synth_queue_drums: PackedVector2Array = PackedVector2Array()
+var _synth_queue_synth: PackedVector2Array = PackedVector2Array()
+var _synth_queue_air: PackedVector2Array = PackedVector2Array()
+var _synth_task_id: int = -1
 var _pending: Array = []
 var _bubble_bursts: Array = []
 var _plink_lpf: float = 0.0
@@ -324,12 +338,21 @@ var _swim_activity: float = 0.0
 # Per-fish presence pan in [-1, 1]: the follow camera biases the ambience
 # toward where the watched creature sits, so the Portal cam feels intimate.
 var _presence_pan: float = 0.0
+var _event_pan: float = 0.0
 
 
 # Called by the follow camera to position the soundscape toward the creature
 # you're watching (x in viewport-normalized [-1,1]; 0 when not following).
 func set_presence_pan(p: float) -> void:
 	_presence_pan = clampf(p, -1.0, 1.0)
+
+
+# SENTIENCE_THE_SPARK #72 — pan eat/startle SFX toward world X in the tank.
+func set_event_world_pos(pos: Vector3) -> void:
+	var tank_w: float = float(_smooth.get("tank_width", 12.0))
+	if tank_w < 0.5:
+		tank_w = 12.0
+	_event_pan = clampf(pos.x / maxf(tank_w * 0.5, 1.0), -1.0, 1.0)
 var _vinyl_pop_env: float = 0.0
 var _vinyl_pop_freq: float = 1.0
 var _vinyl_pop_t: float = 0.0
@@ -392,6 +415,12 @@ var _bc_phase: float = 0.0
 
 # Schooling/feeding visual hooks.
 var _last_school_t: float = 0.0
+# SENTIENCE_THE_SPARK #73 — school arousal contagion harmonic swell.
+var _contagion_harmonic: float = 0.0
+var _death_hush: float = 0.0
+var _o2_stress_phase: float = 0.0
+var _o2_stress_lpf: float = 0.0
+var _last_contagion_t: float = 0.0
 
 # In-game-day → key modulation.
 var _last_day_index: int = 0
@@ -435,6 +464,15 @@ var _cached_pump_gate: float = 0.6
 var _cached_pad_detune: float = 1.0    # 1.0 = no detune; multiplied into pad phase increments
 # Harmony.
 var _cached_key_mod: float = 0.35
+# Thread-safe cfg snapshot — refreshed on main thread in _refresh_mix_cache().
+var _cached_trance_bed_active: bool = false
+var _cached_potato_bed: bool = false
+var _cached_plink_bed_active: bool = false
+var _cached_delay_amount: float = 0.35
+var _cached_sidechain: float = 0.55
+var _cached_influence_aeration: float = 1.0
+var _cached_influence_fish: float = 1.0
+var _cached_music_seed: int = 1
 # Phrase-state gain matrix — computed from _phrase_state each refresh.
 var _state_kick_gain: float = 1.0
 var _state_bass_gain: float = 1.0
@@ -503,6 +541,7 @@ func _make_stream(bus_name: String, vol_db: float) -> AudioStreamPlayer:
 
 
 func _cfg() -> Node:
+	# Main thread only — WorkerThreadPool synth reads _cached_* instead.
 	return get_node_or_null("/root/TankConfig")
 
 
@@ -605,7 +644,7 @@ func _pp(user_val: float, key: String, strength: float = 0.7) -> float:
 	return user_val
 
 
-func _trance_bed_active() -> bool:
+func _compute_trance_bed_active() -> bool:
 	if not _ambient_enabled() or _complexity() <= 0.06:
 		return false
 	# Any persona drives the full groove engine (its swing / tempo / sidechain /
@@ -616,7 +655,11 @@ func _trance_bed_active() -> bool:
 	return st == "trance" or st == "hybrid"
 
 
-func _plink_bed_active() -> bool:
+func _trance_bed_active() -> bool:
+	return _cached_trance_bed_active
+
+
+func _compute_plink_bed_active() -> bool:
 	# A persona takes over the bed entirely, so the sparse plink layer steps aside.
 	if not _active_persona().is_empty():
 		return false
@@ -624,8 +667,14 @@ func _plink_bed_active() -> bool:
 	return _ambient_enabled() and (st == "ambient" or (st == "hybrid" and _complexity() < 0.45))
 
 
+func _plink_bed_active() -> bool:
+	return _cached_plink_bed_active
+
+
 func silence_immediately() -> void:
+	_synth_mutex.lock()
 	_pending.clear()
+	_synth_mutex.unlock()
 	_bubble_bursts.clear()
 	_kick_env = 0.0
 	_sidechain = 1.0
@@ -979,8 +1028,8 @@ func _compute_state_gains() -> void:
 		PhraseState.VERSE:
 			_state_kick_gain = 1.0
 			_state_bass_gain = 1.0
-			_state_arp_gain = 1.0
-			_state_pad_gain = 1.0
+			_state_arp_gain = 1.0 + _contagion_harmonic * 0.28
+			_state_pad_gain = 1.0 + _contagion_harmonic * 0.38
 			_state_hat_gain = 1.0
 			_state_lead_gain = 0.0
 			_state_riser_gain = 0.0
@@ -1104,7 +1153,7 @@ func _advance_phrase_state_at_bar(_bar_num: int) -> void:
 		_enter_phrase_state(PhraseState.VERSE, 8)
 		return
 
-	var rng_seed: int = (_phrase_idx * 1009 + _music_seed()) & 0x7FFFFFFF
+	var rng_seed: int = (_phrase_idx * 1009 + _cached_music_seed) & 0x7FFFFFFF
 	var roll: float = float(rng_seed % 100) / 100.0
 
 	if form == "trance":
@@ -1330,6 +1379,10 @@ func _scale_freq(degree: int, octave: int = 0) -> float:
 
 func _rebuild_tonal_cache() -> void:
 	_cached_scale = _get_current_scale()
+	_rebuild_tonal_voices()
+
+
+func _rebuild_tonal_voices() -> void:
 	# Pick a voicing by jazziness (0..1 → triad..add9..maj9..sus2+9).
 	# Minor flag flips to a darker bank when O₂ is low.
 	var minor_mode: bool = float(_smooth.get("o2", 0.85)) < 0.45
@@ -1355,7 +1408,22 @@ func _lpf_alpha(cutoff_hz: float) -> float:
 	return INV_SAMPLE_RATE / (rc + INV_SAMPLE_RATE)
 
 
+func _refresh_thread_cfg_snapshot() -> void:
+	_cached_delay_amount = _cfg_float("music_delay_amount", 0.35)
+	_cached_trance_bed_active = _compute_trance_bed_active()
+	_cached_plink_bed_active = _compute_plink_bed_active()
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	_cached_potato_bed = cfg != null and int(cfg.get("shader_perf_tier")) >= 2
+	_cached_energy = _energy()
+	_cached_hat_mix = _cfg_float("music_hat_mix", 0.38)
+	_cached_sidechain = _pp(_cfg_float("music_sidechain", 0.55), "sidechain")
+	_cached_influence_aeration = _influence("music_influence_aeration")
+	_cached_influence_fish = _influence("music_influence_fish")
+	_cached_music_seed = _music_seed()
+
+
 func _refresh_mix_cache() -> void:
+	_refresh_thread_cfg_snapshot()
 	_cached_bpm = _bpm()
 	_cached_beat_scale = _cached_bpm / 60.0 * INV_SAMPLE_RATE
 	_cached_energy = _energy()
@@ -1449,7 +1517,7 @@ func _note_gain(base: float, is_event: bool = false) -> float:
 
 func play_note(freq: float, amp: float, dur: float, mod_ratio: float = 2.01,
 		mod_index: float = 1.5, decay_speed: float = 2.5, attack_time: float = 0.0,
-		is_event: bool = false) -> void:
+		is_event: bool = false, pan: float = 0.0) -> void:
 	if not _master_enabled():
 		return
 	if _pending.size() > 8:
@@ -1459,10 +1527,12 @@ func play_note(freq: float, amp: float, dur: float, mod_ratio: float = 2.01,
 		return
 	if is_event and attack_time < 0.010:
 		attack_time = 0.010
+	_synth_mutex.lock()
 	_pending.append([
 		freq, dur, final_amp, 0.0, 0.0, mod_ratio, mod_index,
-		decay_speed, attack_time, dur,
+		decay_speed, attack_time, dur, clampf(pan, -1.0, 1.0),
 	])
+	_synth_mutex.unlock()
 
 
 func play_supersaw(freq: float, amp: float, dur: float, is_event: bool = false) -> void:
@@ -1507,6 +1577,8 @@ func play_aquarium_event(event_name: String, intensity: float = -1.0, species: S
 		"eat":
 			var eat_i: float = intensity if intensity >= 0.0 else randf_range(0.35, 0.65)
 			play_eat_sfx(eat_i, species)
+		"startle":
+			play_startle_sfx(intensity if intensity >= 0.0 else 0.55)
 		"plant":
 			play_plant_sfx(intensity if intensity >= 0.0 else randf_range(0.25, 0.55))
 		"bubble":
@@ -1544,9 +1616,17 @@ func play_eat_sfx(intensity: float = 0.5, species: String = "") -> void:
 	var tone: Array = _species_tone(species)
 	var freq: float = _scale_freq(4 + int(tone[0]), int(tone[1])) * float(tone[2])
 	if _trance_bed_active():
-		play_bell_pluck(freq, 0.022 + intensity * 0.018, 0.22)
+		play_bell_pluck(freq, 0.022 + intensity * 0.018, 0.22, _event_pan)
 	else:
-		play_rhodes(freq, 0.038 + intensity * 0.028, 0.38)
+		play_rhodes(freq, 0.038 + intensity * 0.028, 0.38, _event_pan)
+	_event_pan = lerpf(_event_pan, 0.0, 0.35)
+
+
+func play_startle_sfx(intensity: float = 0.5) -> void:
+	var freq: float = _scale_freq(7) * lerpf(1.02, 1.08, intensity)
+	play_bell_pluck(freq, 0.03 + intensity * 0.02, 0.18, _event_pan)
+	play_bell_pluck(freq * 1.5, 0.018 + intensity * 0.012, 0.12, _event_pan)
+	_event_pan = lerpf(_event_pan, 0.0, 0.35)
 
 
 func play_plant_sfx(intensity: float = 0.4) -> void:
@@ -1646,12 +1726,12 @@ func _trigger_kick(velocity: float = 1.0) -> void:
 	if _kick_env < 0.06:
 		_kick_phase = 0.0
 	_kick_env = velocity
-	_kick_pitch = lerpf(58.0, 72.0, _energy())
+	_kick_pitch = lerpf(58.0, 72.0, _cached_energy)
 	# Sidechain depth scales with phrase state — slammer in DROP.
 	var slam_mult: float = 0.85
 	if _phrase_state == PhraseState.DROP:
 		slam_mult = lerpf(0.7, 0.45, _cached_drop_intensity)
-	_sidechain = lerpf(0.72, 0.38, _pp(_cfg_float("music_sidechain", 0.55), "sidechain")) * slam_mult
+	_sidechain = lerpf(0.72, 0.38, _cached_sidechain) * slam_mult
 
 
 func _trigger_hat(velocity: float = 1.0) -> void:
@@ -1724,21 +1804,21 @@ func play_school_stab(intensity: float = 0.55) -> void:
 
 # DX-style bell pluck — high mod ratio + index, long decay. Sits perfectly in
 # the lofi / Bonobo palette.
-func play_bell_pluck(freq: float, amp: float, dur: float = 0.85) -> void:
+func play_bell_pluck(freq: float, amp: float, dur: float = 0.85, pan: float = 0.0) -> void:
 	if not _events_enabled():
 		return
-	play_note(freq, amp, dur, 3.5, 2.4, 1.0, 0.004, true)
+	play_note(freq, amp, dur, 3.5, 2.4, 1.0, 0.004, true, pan)
 	# Layer a quieter octave-down "body" note for warmth.
-	play_note(freq * 0.5, amp * 0.45, dur * 0.9, 1.0, 0.6, 1.4, 0.008, true)
+	play_note(freq * 0.5, amp * 0.45, dur * 0.9, 1.0, 0.6, 1.4, 0.008, true, pan)
 
 
 # Rhodes-style electric piano — gentle FM, hammer-on attack.
-func play_rhodes(freq: float, amp: float, dur: float = 0.7) -> void:
+func play_rhodes(freq: float, amp: float, dur: float = 0.7, pan: float = 0.0) -> void:
 	if not _events_enabled():
 		return
-	play_note(freq, amp, dur, 1.0, 0.85, 1.8, 0.012, true)
+	play_note(freq, amp, dur, 1.0, 0.85, 1.8, 0.012, true, pan)
 	# Slight bell harmonic on top — DX-like character.
-	play_note(freq * 2.0, amp * 0.18, dur * 0.6, 1.4, 1.2, 2.4, 0.012, true)
+	play_note(freq * 2.0, amp * 0.18, dur * 0.6, 1.4, 1.2, 2.4, 0.012, true, pan)
 
 
 func _kick_on_quarter(quarter: int) -> bool:
@@ -1774,10 +1854,10 @@ func _kick_on_quarter(quarter: int) -> bool:
 func _hat_on_quarter(quarter: int) -> bool:
 	if _phrase_state == PhraseState.BREAKDOWN:
 		return false
-	var aeration: float = float(_smooth.get("aeration", 0.0)) * _influence("music_influence_aeration")
-	var fish: float = float(_smooth.get("fish", 0)) * _influence("music_influence_fish")
+	var aeration: float = float(_smooth.get("aeration", 0.0)) * _cached_influence_aeration
+	var fish: float = float(_smooth.get("fish", 0)) * _cached_influence_fish
 	var density: float = clampf(aeration * 0.35 + fish / 30.0, 0.0, 1.0)
-	return quarter % 2 == 1 and density > lerpf(0.28, 0.08, _cfg_float("music_hat_mix", 0.55))
+	return quarter % 2 == 1 and density > lerpf(0.28, 0.08, _cached_hat_mix)
 
 
 # Convert raw fractional 16th position → "swung" 16th by delaying odd 16ths.
@@ -1888,13 +1968,30 @@ func _advance_sequencer(quarter: int, _sixteenth: int, raw_16f: float) -> void:
 			else:
 				_bass_freq = _scale_freq(0, -1 if float(_smooth.get("bloom", 0.0)) < 0.4 else 0)
 			_bass_inc = _bass_freq * INV_SAMPLE_RATE
-			_rebuild_tonal_cache()
+			_rebuild_tonal_voices()
 		_cached_bass_active = quarter % 2 == 0
 
 
 func _noise_sample() -> float:
 	_noise_seed = (_noise_seed * 1103515245 + 12345) & 0x7FFFFFFF
 	return (float(_noise_seed) / 2147483647.0) * 2.0 - 1.0
+
+
+static func _ensure_env_luts() -> void:
+	if _env_lut_release.size() == ENV_LUT_SIZE:
+		return
+	_env_lut_attack.resize(ENV_LUT_SIZE)
+	_env_lut_release.resize(ENV_LUT_SIZE)
+	for i in ENV_LUT_SIZE:
+		var t: float = float(i) / float(ENV_LUT_SIZE - 1)
+		_env_lut_attack[i] = smoothstep(0.0, 1.0, t)
+		var rel: float = t
+		_env_lut_release[i] = rel * rel * (3.0 - 2.0 * rel)
+
+
+static func _env_lut_sample(lut: PackedFloat32Array, t: float) -> float:
+	var idx: int = int(clampf(t, 0.0, 1.0) * float(ENV_LUT_SIZE - 1))
+	return lut[idx]
 
 
 func _one_pole_cached(input: float, state: float, alpha: float) -> float:
@@ -2329,17 +2426,59 @@ func _playback_headroom() -> int:
 		mini(_playback_synth.get_frames_available(), _playback_air.get_frames_available()))
 
 
+func _run_synth_batch(batch: int) -> void:
+	_synth_mutex.lock()
+	_fill_playback_buffers(batch)
+	_synth_mutex.unlock()
+
+
+func _drain_synth_queues(max_frames: int = -1) -> int:
+	if _playback_drums == null or _playback_synth == null or _playback_air == null:
+		return 0
+	var ring_written: int = 0
+	if _SynthRingBuffer.filled() > 0 and max_frames != 0:
+		var cap: int = max_frames if max_frames > 0 else _SynthRingBuffer.filled()
+		ring_written = _SynthRingBuffer.pop_into(_playback_synth, null, cap)
+	_synth_mutex.lock()
+	var d: PackedVector2Array = _synth_queue_drums
+	var s: PackedVector2Array = _synth_queue_synth
+	var a: PackedVector2Array = _synth_queue_air
+	_synth_queue_drums = PackedVector2Array()
+	_synth_queue_synth = PackedVector2Array()
+	_synth_queue_air = PackedVector2Array()
+	_synth_mutex.unlock()
+	var n: int = mini(mini(d.size(), s.size()), a.size())
+	if max_frames >= 0:
+		n = mini(n, max_frames)
+	for i in n:
+		_playback_drums.push_frame(d[i])
+		_playback_synth.push_frame(s[i])
+		_playback_air.push_frame(a[i])
+	return n + ring_written
+
+
 func _fill_playback_buffers(batch: int) -> void:
 	if batch <= 0:
 		return
-	var trance_on: bool = _trance_bed_active()
-	var delay_amt: float = _cfg_float("music_delay_amount", 0.35)
+	if _cached_potato_bed:
+		_fill_playback_buffers_potato(batch)
+		return
+	var trance_on: bool = _cached_trance_bed_active
+	var delay_amt: float = _cached_delay_amount
 	var delay_fb: float = lerpf(0.14, 0.28, _cached_energy) if trance_on else 0.0
 	var delay_mix: float = lerpf(0.06, 0.16, _cached_energy) * delay_amt if trance_on else 0.0
 	var pending_n: int = _pending.size()
 	var vinyl_active: bool = _cached_vinyl > 0.001
 	var wow_active: bool = _cached_tape_wow > 0.001
 	var bitcrush_active: bool = _cached_bitcrush > 0.001
+	_ensure_env_luts()
+
+	var blk_drums := PackedVector2Array()
+	var blk_synth := PackedVector2Array()
+	var blk_air := PackedVector2Array()
+	blk_drums.resize(batch)
+	blk_synth.resize(batch)
+	blk_air.resize(batch)
 
 	for _f in batch:
 		# ---- Drums + Synth bed (multi-stream renderer writes _f_*) ----
@@ -2359,8 +2498,6 @@ func _fill_playback_buffers(batch: int) -> void:
 			var note = _pending[j]
 			var dur: float = note[1]
 			if dur <= INV_SAMPLE_RATE:
-				_pending.remove_at(j)
-				pending_n -= 1
 				continue
 
 			var decay_speed: float = note[7]
@@ -2371,10 +2508,9 @@ func _fill_playback_buffers(batch: int) -> void:
 			var elapsed: float = initial_dur - dur
 			if attack_time > 0.0 and elapsed < attack_time:
 				var atk_denom: float = maxf(attack_time, INV_SAMPLE_RATE * 4.0)
-				env = smoothstep(0.0, 1.0, elapsed / atk_denom)
+				env = _env_lut_sample(_env_lut_attack, elapsed / atk_denom)
 			else:
-				var rel: float = clampf(dur * decay_speed, 0.0, 1.0)
-				env = rel * rel * (3.0 - 2.0 * rel)
+				env = _env_lut_sample(_env_lut_release, clampf(dur * decay_speed, 0.0, 1.0))
 
 			plinks += _render_pending_note(note, env)
 
@@ -2383,11 +2519,13 @@ func _fill_playback_buffers(batch: int) -> void:
 
 		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
 		plinks = _plink_lpf
-
 		var bubbles: Vector2 = _mix_bubble_bursts()
 		var event_vol: float = _cached_vol
-		_f_air_l = (plinks + bubbles.x) * event_vol
-		_f_air_r = (plinks + bubbles.y) * event_vol
+		var pan_use: float = _event_pan
+		var pan_l: float = 1.0 - maxf(pan_use, 0.0) * 0.55
+		var pan_r: float = 1.0 + minf(pan_use, 0.0) * 0.55
+		_f_air_l = (plinks * pan_l + bubbles.x) * event_vol
+		_f_air_r = (plinks * pan_r + bubbles.y) * event_vol
 
 		# Ping-pong delay on the air bus (synth bed already has bus reverb).
 		if trance_on and delay_mix > 0.0:
@@ -2400,10 +2538,15 @@ func _fill_playback_buffers(batch: int) -> void:
 			_f_air_r = _f_air_r * (1.0 - delay_mix) + delayed_r * delay_mix
 
 		# Vinyl crackle goes onto the Air bus (envelope/dust character).
+		var shared_noise: float = 0.0
+		var noise_ready: bool = false
+		if vinyl_active or bitcrush_active:
+			shared_noise = _noise_sample()
+			noise_ready = true
 		if vinyl_active:
 			var vinyl: float = _vinyl_sample()
 			_f_air_l += vinyl
-			_f_air_r += vinyl * 0.78 + _noise_sample() * _cached_vinyl * 0.004
+			_f_air_r += vinyl * 0.78 + shared_noise * _cached_vinyl * 0.004
 
 		# ---- Aquatic ambience bed ----
 		var aer_smooth: float = float(_smooth.get("aeration", 0.0))
@@ -2411,20 +2554,35 @@ func _fill_playback_buffers(batch: int) -> void:
 		var pearl_amb: float = clampf((o2_amb - 0.87) * 3.0, 0.0, 1.0)
 		var fizz_drive: float = maxf(aer_smooth - 0.06, 0.0) * 0.85 + pearl_amb * 0.35
 		if fizz_drive > 0.012:
+			if not noise_ready:
+				shared_noise = _noise_sample()
+				noise_ready = true
 			_water_fizz_lfo = fposmod(_water_fizz_lfo + 0.38 * INV_SAMPLE_RATE, 1.0)
 			var breathe: float = 0.35 + 0.65 * (0.5 + 0.5 * sin(_water_fizz_lfo * TAU))
 			var amb_level: float = fizz_drive * breathe * 0.0032
-			_water_lpf_l = _one_pole_cached(_noise_sample(), _water_lpf_l, _lpf_alpha(920.0))
-			_water_lpf_r = _one_pole_cached(_noise_sample(), _water_lpf_r, _lpf_alpha(1080.0))
+			_water_lpf_l = _one_pole_cached(shared_noise, _water_lpf_l, _lpf_alpha(920.0))
+			_water_lpf_r = _one_pole_cached(-shared_noise * 0.85, _water_lpf_r, _lpf_alpha(1080.0))
 			_f_air_l += (_water_lpf_l * 0.72 + _water_lpf_r * 0.08) * amb_level
 			_f_air_r += (_water_lpf_r * 0.72 + _water_lpf_l * 0.08) * amb_level
 
+		# SENTIENCE_THE_SPARK E71 — low O₂ stress tone at dawn (tank gasping for air).
+		var o2_stress: float = clampf((0.48 - o2_amb) / 0.38, 0.0, 1.0)
+		var dl_amb: float = clampf(float(_smooth.get("daylight", 1.0)), 0.0, 1.0)
+		var dawn_gate: float = clampf(1.0 - absf(dl_amb - 0.18) * 3.8, 0.0, 1.0)
+		var stress_drive: float = o2_stress * dawn_gate
+		if stress_drive > 0.015:
+			_o2_stress_phase = fposmod(_o2_stress_phase + 78.0 * INV_SAMPLE_RATE, 1.0)
+			var tone: float = sin(_o2_stress_phase * TAU) * stress_drive * 0.0024
+			_o2_stress_lpf = _one_pole_cached(tone, _o2_stress_lpf, _lpf_alpha(140.0))
+			_f_air_l += _o2_stress_lpf
+			_f_air_r += _o2_stress_lpf * 0.92
+
 		# Per-fish presence pan: bias the whole air bus toward the watched fish.
 		if _presence_pan != 0.0:
-			var pan_l: float = 1.0 - maxf(_presence_pan, 0.0) * 0.5
-			var pan_r: float = 1.0 + minf(_presence_pan, 0.0) * 0.5
-			_f_air_l *= pan_l
-			_f_air_r *= pan_r
+			var presence_pan_l: float = 1.0 - maxf(_presence_pan, 0.0) * 0.5
+			var presence_pan_r: float = 1.0 + minf(_presence_pan, 0.0) * 0.5
+			_f_air_l *= presence_pan_l
+			_f_air_r *= presence_pan_r
 
 		# Tape wow — applied to the synth bus only so drums stay rhythmically tight.
 		if wow_active:
@@ -2451,9 +2609,9 @@ func _fill_playback_buffers(batch: int) -> void:
 		var air_l: float = _soft_clip(_f_air_l)
 		var air_r: float = _soft_clip(_f_air_r)
 
-		_playback_drums.push_frame(Vector2(drums_l, drums_r))
-		_playback_synth.push_frame(Vector2(synth_l, synth_r))
-		_playback_air.push_frame(Vector2(air_l, air_r))
+		blk_drums[_f] = Vector2(drums_l, drums_r)
+		blk_synth[_f] = Vector2(synth_l, synth_r)
+		blk_air[_f] = Vector2(air_l, air_r)
 
 		# Recording — write the summed pre-bus mix to the recording buffer.
 		if _recording and _recording_buffer.size() < _recording_max_samples:
@@ -2463,16 +2621,54 @@ func _fill_playback_buffers(batch: int) -> void:
 
 		_sample_clock += 1
 
+	_synth_queue_drums.append_array(blk_drums)
+	_synth_queue_synth.append_array(blk_synth)
+	_synth_queue_air.append_array(blk_air)
+	if batch > 0:
+		var ring_l := PackedFloat32Array()
+		var ring_r := PackedFloat32Array()
+		ring_l.resize(batch)
+		ring_r.resize(batch)
+		for i in batch:
+			ring_l[i] = blk_synth[i].x
+			ring_r[i] = blk_synth[i].y
+		_SynthRingBuffer.push_stereo(ring_l, ring_r)
+
+	for j in range(_pending.size() - 1, -1, -1):
+		if float(_pending[j][1]) <= INV_SAMPLE_RATE:
+			_pending.remove_at(j)
+
+
+func _fill_playback_buffers_potato(batch: int) -> void:
+	_PotatoAmbientBed.ensure_built()
+	var blk_synth := PackedVector2Array()
+	var blk_air := PackedVector2Array()
+	var zeros := PackedVector2Array()
+	blk_synth.resize(batch)
+	blk_air.resize(batch)
+	zeros.resize(batch)
+	for i in batch:
+		var bed: Vector2 = _PotatoAmbientBed.next_stereo()
+		blk_synth[i] = bed * 0.55
+		blk_air[i] = bed * 0.25
+		zeros[i] = Vector2.ZERO
+		_sample_clock += 1
+	_synth_queue_drums.append_array(zeros)
+	_synth_queue_synth.append_array(blk_synth)
+	_synth_queue_air.append_array(blk_air)
+
 
 func _process(_dt: float) -> void:
 	if _playback == null:
 		return
 
 	if _sim_ref == null or not is_instance_valid(_sim_ref):
-		var scene := get_tree().current_scene
-		if scene != null:
-			_sim_ref = scene.get_node_or_null("SubViewport/World/SimDriver")
-			_world_ref = scene.get_node_or_null("SubViewport/World")
+		var ml: MainLoop = Engine.get_main_loop()
+		if ml is SceneTree:
+			var scene: Node = (ml as SceneTree).current_scene
+			if scene != null:
+				_sim_ref = scene.get_node_or_null("SubViewport/World/SimDriver")
+				_world_ref = scene.get_node_or_null("SubViewport/World")
 
 	if not _master_enabled():
 		return
@@ -2488,6 +2684,9 @@ func _process(_dt: float) -> void:
 		_refresh_mix_cache()
 	else:
 		_smooth_environment(sim_dt * 0.35)
+
+	_contagion_harmonic = maxf(0.0, _contagion_harmonic - _dt * 0.38)
+	_death_hush = maxf(0.0, _death_hush - _dt * 0.18)
 
 	if _plink_bed_active() and _sim_ref != null and not _trance_bed_active():
 		_accent_t -= sim_dt
@@ -2538,6 +2737,8 @@ func _process(_dt: float) -> void:
 		if TopdownMotion.pond_active:
 			target_db += 2.0
 			target_db = lerpf(target_db, max_db, 0.18)
+		if _death_hush > 0.01:
+			target_db -= _death_hush * 24.0
 	if _player_drums != null:
 		_player_drums.volume_db = target_db
 	if _player_synth != null:
@@ -2552,27 +2753,44 @@ func _process(_dt: float) -> void:
 	# Procedural synth — tempo is sample-clock driven, so we must keep the
 	# generator fed even when the 3D pass drops FPS (High fidelity + dense tanks).
 	var fill_start_us: int = Time.get_ticks_usec()
-	while true:
+	while Time.get_ticks_usec() - fill_start_us < AUDIO_FILL_BUDGET_US:
+		_drain_synth_queues()
 		var headroom: int = _playback_headroom()
 		if headroom <= 0:
 			break
+		if _synth_task_id >= 0:
+			if WorkerThreadPool.is_task_completed(_synth_task_id):
+				_synth_task_id = -1
+			else:
+				if headroom < 128:
+					WorkerThreadPool.wait_for_task_completion(_synth_task_id)
+					_synth_task_id = -1
+					_drain_synth_queues()
+				break
 		var batch: int = mini(headroom, MAX_SAMPLES_CATCHUP)
 		if headroom <= MAX_SAMPLES_PER_FRAME:
 			batch = headroom
-		_fill_playback_buffers(batch)
-		if Time.get_ticks_usec() - fill_start_us >= AUDIO_FILL_BUDGET_US:
-			break
+		_refresh_thread_cfg_snapshot()
+		_synth_task_id = WorkerThreadPool.add_task(_run_synth_batch.bind(batch))
 		if _playback_headroom() <= MAX_SAMPLES_PER_FRAME:
 			break
+	_drain_synth_queues()
+
+
+var _live_status_cache: Dictionary = {}
+var _live_status_bar: int = -1
 
 
 func get_live_status() -> Dictionary:
+	var bar_key: int = _last_bar
+	if bar_key == _live_status_bar and not _live_status_cache.is_empty():
+		return _live_status_cache
 	var beat_phase: float = fposmod(_cached_beat_time, 1.0)
 	var bar_phase: float = fposmod(_cached_beat_time / 4.0, 1.0)
 	var scale_mode: String = "major"
 	if TankConfig.music_mood in ["calm", "deep"]:
 		scale_mode = "minor"
-	return {
+	_live_status_cache = {
 		"bpm": _cached_bpm,
 		"vitality": _tank_vitality,
 		"chord_root": _chord_root,
@@ -2597,6 +2815,8 @@ func get_live_status() -> Dictionary:
 		"humanize": _cached_humanize,
 		"scale_mode": scale_mode,
 	}
+	_live_status_bar = bar_key
+	return _live_status_cache
 
 
 func _phrase_state_name() -> String:
@@ -2716,6 +2936,27 @@ func play_schooling_event(intensity: float = 0.55) -> void:
 		return
 	_last_school_t = now
 	play_school_stab(intensity)
+
+
+# SENTIENCE_THE_SPARK #73 — brief harmonic swell when tank-wide arousal spikes.
+func pulse_contagion_harmonic(spike: float) -> void:
+	if not _events_enabled():
+		return
+	var now: float = float(_sample_clock) * INV_SAMPLE_RATE
+	if now - _last_contagion_t < 2.5:
+		return
+	_last_contagion_t = now
+	_contagion_harmonic = clampf(spike * 2.4, 0.12, 0.92)
+	play_school_stab(clampf(0.35 + spike * 1.6, 0.35, 0.88))
+
+
+# SENTIENCE_THE_SPARK E74 — near-silence beat when a favourite fish dies.
+func pulse_favourite_death_hush() -> void:
+	if not _events_enabled():
+		return
+	_death_hush = 1.0
+	if _phrase_state != PhraseState.BREAKDOWN:
+		_enter_phrase_state(PhraseState.BREAKDOWN, 4)
 
 
 # Sim-driver fires this on food drop. Sends the bed into a 2-bar BUILD that

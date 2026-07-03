@@ -33,6 +33,10 @@ uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+// 0 = hardscape global, 1 = fauna global (#47). Music-sync overlays still use palette_* above.
+uniform int palette_category = 0;
+// Room props use 0.5 so desk/wall tint is gentler than in-tank hardscape.
+uniform float palette_global_scale = 1.0;
 // Fauna-only structural colour (experimental). Default 0 = no-op, so non-fauna
 // voxels and the legacy look are unchanged; VoxelMat.make_fauna raises these
 // when TankConfig.experimental_visuals is on.
@@ -41,6 +45,11 @@ uniform vec3 sss_color : source_color = vec3(1.0, 0.85, 0.62);
 uniform float irid_strength : hint_range(0.0, 1.0) = 0.0;
 // Silver/gold/pearl scale flash — distinct from irid thin-film (#35).
 uniform float metallic_strength : hint_range(0.0, 1.0) = 0.0;
+// Fry fin translucency + age fin wear (#55, #68, #69).
+uniform float fin_translucency : hint_range(0.0, 1.0) = 0.0;
+// Fauna silhouette ink — dark view-edge rim so creatures stay readable
+// through glass reflections and the palette watercolor pass.
+uniform float fauna_rim : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -73,7 +82,9 @@ void fragment() {
 		f = 0.76;
 	}
 	vec3 col = albedo.rgb * f;
-	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
+	vec4 gpal = palette_category == 1 ? iaq_palette_fauna : iaq_palette_hardscape;
+	gpal *= palette_global_scale;
+	col = apply_category_palette_tint(col, gpal, palette_hue_shift, palette_saturation,
 		palette_warmth, palette_value);
 	col = apply_vibrancy(col, color_vibrancy);
 
@@ -122,6 +133,11 @@ void fragment() {
 		float rim = pow(1.0 - clamp(dot(n, normalize(VIEW)), 0.0, 1.0), 3.0);
 		col = mix(col, col * 0.75 + sss_color * 0.5, rim * sss_strength);
 	}
+	if (fin_translucency > 0.001) {
+		float fin_rim = pow(1.0 - clamp(dot(n, normalize(VIEW)), 0.0, 1.0), 2.0);
+		col = mix(col, col * 0.52 + sss_color * 0.42, fin_rim * fin_translucency);
+		col *= 1.0 - fin_translucency * 0.10;
+	}
 	// Iridescent / structural colour — palette-quantized hue steps (#32).
 	if (irid_strength > 0.001) {
 		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
@@ -140,6 +156,12 @@ void fragment() {
 		float band_m = floor(fres_m * 3.0) / 3.0;
 		col += vec3(spec * 0.42) * metallic_strength;
 		col = mix(col, col * vec3(1.12, 1.10, 1.06), band_m * metallic_strength * 0.35);
+	}
+	if (fauna_rim > 0.001) {
+		float view_edge = pow(1.0 - clamp(dot(n, normalize(VIEW)), 0.0, 1.0), 1.75);
+		float side_edge = 1.0 - abs(n.y);
+		float ink = view_edge * mix(0.48, 1.0, side_edge);
+		col = mix(col, col * 0.26, ink * fauna_rim);
 	}
 
 	ALBEDO = col;

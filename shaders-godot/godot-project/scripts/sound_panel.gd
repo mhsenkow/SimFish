@@ -16,6 +16,10 @@ var _persona_option: OptionButton
 var _slider_rows: Dictionary = {}
 var _check_rows: Dictionary = {}
 var _telemetry_t: float = 0.0
+var _ui_ticker_bound: bool = false
+var _sync_levels_hash: int = 0
+var _last_badge_text: String = ""
+var _last_live_text: String = ""
 var _record_button: Button
 var _record_label: Label
 # Music sync (tank ↔ Spotify / local audio)
@@ -389,14 +393,38 @@ func _process(dt: float) -> void:
 	if not visible:
 		set_process(false)
 		return
-	_telemetry_t -= dt
-	if _telemetry_t <= 0.0:
-		_telemetry_t = 0.18
-		_refresh_live_readout()
-		_refresh_recording_label()
+	_on_ui_ticker(dt)
+
+
+func _bind_ui_ticker(on: bool) -> void:
+	var ticker: Node = get_node_or_null("/root/UiTicker")
+	if ticker == null:
+		set_process(on and visible)
+		return
+	if on and visible and not _ui_ticker_bound:
+		if not ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.connect(_on_ui_ticker)
+		_ui_ticker_bound = true
+		set_process(false)
+	elif (not on or not visible) and _ui_ticker_bound:
+		if ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.disconnect(_on_ui_ticker)
+		_ui_ticker_bound = false
+
+
+func _on_ui_ticker(delta: float) -> void:
+	if not visible:
+		return
+	_telemetry_t -= delta
+	if _telemetry_t > 0.0:
+		return
+	_telemetry_t = 0.3
+	_refresh_live_readout()
+	_refresh_recording_label()
+	if _sync_levels_changed():
 		_refresh_sync_visualizer()
-		_update_panel_mode()
-		_refresh_calibrate_label()
+	_update_panel_mode()
+	_refresh_calibrate_label()
 
 
 func toggle() -> void:
@@ -405,7 +433,7 @@ func toggle() -> void:
 	else:
 		visible = true
 		mouse_filter = Control.MOUSE_FILTER_STOP
-		set_process(true)
+		_bind_ui_ticker(true)
 		_pull_from_config()
 		_refresh_live_readout()
 		_update_panel_mode()
@@ -414,6 +442,7 @@ func toggle() -> void:
 
 
 func _close() -> void:
+	_bind_ui_ticker(false)
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
@@ -1070,6 +1099,18 @@ func _save_spotify_creds() -> void:
 		TankConfig.spotify_client_secret = _sync_client_secret_edit.text.strip_edges()
 
 
+func _sync_levels_changed() -> bool:
+	var mr := _music_reactive()
+	if mr == null:
+		return false
+	var levels: Dictionary = mr.get_meter_levels() if mr.has_method("get_meter_levels") else mr.get_drive()
+	var h: int = hash("%s" % [levels])
+	if h == _sync_levels_hash:
+		return false
+	_sync_levels_hash = h
+	return true
+
+
 func _refresh_sync_visualizer() -> void:
 	var mr := _music_reactive()
 	if mr == null or _sync_bars.is_empty():
@@ -1098,7 +1139,10 @@ func _refresh_sync_visualizer() -> void:
 
 
 func _music_reactive() -> Node:
-	var main := get_tree().current_scene
+	var ml: MainLoop = Engine.get_main_loop()
+	if not (ml is SceneTree):
+		return null
+	var main: Node = (ml as SceneTree).current_scene
 	if main == null:
 		return null
 	return main.get_node_or_null("MusicReactive")
@@ -1240,14 +1284,17 @@ func _refresh_live_readout() -> void:
 			]
 		)
 	if _state_badge != null:
-		_state_badge.text = "%s   ·   %d bars left   ·   %.0f BPM" % [
+		var badge: String = "%s   ·   %d bars left   ·   %.0f BPM" % [
 			_state_badge_style(state_name),
 			bars_left,
 			bpm,
 		]
+		if badge != _last_badge_text:
+			_state_badge.text = badge
+			_last_badge_text = badge
 		_state_badge.add_theme_color_override("font_color", _state_badge_color(state_name))
 	if _live_label != null:
-		_live_label.text = (
+		var live: String = (
 			"vitality %.0f%%  ·  %s phrase\n" % [vit * 100.0, zone]
 			+ "fish %d  plants %d  biomass %d  bloom %.2f  O₂ %.2f  light %.0f%%\n"
 			% [
@@ -1267,10 +1314,16 @@ func _refresh_live_readout() -> void:
 				dance_line,
 			]
 		)
+		if live != _last_live_text:
+			_live_label.text = live
+			_last_live_text = live
 
 
 func _ambient() -> Node:
-	var main := get_tree().current_scene
+	var ml: MainLoop = Engine.get_main_loop()
+	if not (ml is SceneTree):
+		return null
+	var main: Node = (ml as SceneTree).current_scene
 	if main == null:
 		return null
 	return main.get_node_or_null("AmbientAudio")

@@ -90,8 +90,8 @@ void fragment() {
 	}
 	vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	vec3 col = albedo.rgb * f;
-	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
-		palette_warmth, palette_value);
+	col = apply_category_palette_tint(col, iaq_palette_substrate,
+		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
 	col = apply_material_grain(col, n, material_id, world_pos, grain_variation);
 	// Hardscape contact shadow / AO — only meaningful on the top face
 	// (where the hardscape footprint touches the substrate). Side / bottom

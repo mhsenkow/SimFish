@@ -370,7 +370,11 @@ func _on_buy(idx: int) -> void:
 	if idx < 0 or idx >= _options.size():
 		return
 	if _world == null:
-		_world = get_tree().current_scene.get_node_or_null("SubViewport/World")
+		var ml: MainLoop = Engine.get_main_loop()
+		if ml is SceneTree:
+			var scene: Node = (ml as SceneTree).current_scene
+			if scene != null:
+				_world = scene.get_node_or_null("SubViewport/World")
 	if _world == null or not _world.has_method("spawn_purchased_fish"):
 		return
 	var g: Dictionary = _options[idx]

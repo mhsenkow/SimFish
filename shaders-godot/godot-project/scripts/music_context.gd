@@ -23,6 +23,20 @@ var _ctx: Dictionary = {
 	"centroid": 0.5, "brightness": 0.5, "timbre_sharp": 0.5,
 }
 
+func _main_scene() -> Node:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).current_scene
+	return null
+
+
+func _world_node() -> Node:
+	var scene: Node = _main_scene()
+	if scene == null:
+		return null
+	return scene.get_node_or_null("SubViewport/World")
+
+
 var _dance_blend: float = 0.0
 var _drop_tension: float = 0.0
 var _drop_flash: float = 0.0
@@ -690,11 +704,13 @@ func _update_drop_flash(dt: float) -> void:
 
 
 func _pulse_overhead_beat() -> void:
-	var sim: Node = get_tree().root.get_node_or_null("Main/SubViewport/World/SimDriver")
+	var world: Node = _world_node()
+	if world == null:
+		return
+	var sim: Node = world.get_node_or_null("SimDriver")
 	if sim != null and sim.has_method("pulse_sync_turn"):
 		sim.pulse_sync_turn(Vector3(1, 0, 0), Vector3.ZERO)
-	var world: Node = get_tree().root.get_node_or_null("Main/SubViewport/World")
-	if world != null and world.has_method("spawn_glass_tap_ripples"):
+	if world.has_method("spawn_glass_tap_ripples"):
 		var wh: float = float(world.get("WATER_HEIGHT")) if world.get("WATER_HEIGHT") != null else 6.5
 		world.spawn_glass_tap_ripples(Vector3(0.0, wh, 0.0))
 
@@ -707,7 +723,7 @@ func _update_phrase_choreography() -> void:
 	if not bool(_ctx.active):
 		return
 	_overhead_view = TopdownMotion.pond_active
-	var main_node: Node = get_tree().root.get_node_or_null("Main")
+	var main_node: Node = _main_scene()
 	if not _overhead_view and main_node != null:
 		_overhead_view = TopdownMotion.is_overhead(main_node)
 	if _conduct_until > 0.0 and not _conduct_move.is_empty():
@@ -758,7 +774,8 @@ func _update_dance_blend(dt: float) -> void:
 		else:
 			target = maxf(baseline, 0.22)
 	var rate: float = 1.6 if target > _dance_blend else 1.2
-	var sim_hush: Node = get_tree().root.get_node_or_null("Main/SubViewport/World/SimDriver") if get_tree() else null
+	var world: Node = _world_node()
+	var sim_hush: Node = world.get_node_or_null("SimDriver") if world != null else null
 	if sim_hush != null and sim_hush.has_method("daylight") and float(sim_hush.daylight()) < 0.28:
 		target *= 0.48
 	_dance_blend = lerpf(_dance_blend, target, clampf(dt * rate, 0.0, 1.0))
@@ -816,7 +833,7 @@ func _maybe_drop_bubbles(_dt: float) -> void:
 		return
 	if not bool(TankConfig.music_enabled) and String(_ctx.source) == "generative":
 		return
-	var world := get_tree().current_scene.get_node_or_null("World") if get_tree().current_scene else null
+	var world: Node = _world_node()
 	if world == null:
 		return
 	var visuals: Node = world.get_node_or_null("AquariumVisuals")
@@ -865,7 +882,7 @@ func _resolved_genre() -> String:
 
 
 func _tank_health_mult() -> float:
-	var world := get_tree().current_scene.get_node_or_null("World") if get_tree().current_scene else null
+	var world: Node = _world_node()
 	if world == null or world.get("sim") == null:
 		return 1.0
 	var sim: Node = world.sim
@@ -887,7 +904,10 @@ func _tank_health_mult() -> float:
 
 
 func _music_reactive() -> Node:
-	return get_tree().get_first_node_in_group("music_reactive")
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).get_first_node_in_group("music_reactive")
+	return null
 
 
 func _effective_latency_ms() -> float:
@@ -901,7 +921,7 @@ func _effective_latency_ms() -> float:
 
 
 func _ambient_audio() -> Node:
-	var scene := get_tree().current_scene
+	var scene: Node = _main_scene()
 	if scene == null:
 		return null
 	return scene.get_node_or_null("AmbientAudio")

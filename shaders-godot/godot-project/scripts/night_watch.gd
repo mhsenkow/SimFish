@@ -62,6 +62,7 @@ static func tick_sleep(f: Fish, sim, dt: float) -> void:
 	_tick_dream_content(f, sim, dt)
 	NightWatchExtras.tick_sleep_extras(f, sim, dt, dl, phase)
 	_tick_sleep_cluster(f, sim, dt)
+	_tick_night_watcher_glance(f, sim, dt)
 	_pick_night_watcher(sim)
 
 
@@ -324,7 +325,33 @@ static func _pick_night_watcher(sim) -> void:
 		best._night_watcher = true
 	else:
 		tm["watcher_fish_id"] = ""
-	sim._tank_mind = tm
+		sim._tank_mind = tm
+
+
+static func _tick_night_watcher_glance(f: Fish, sim, dt: float) -> void:
+	if not f._night_watcher or sim == null:
+		return
+	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	if dl > 0.32:
+		return
+	var phase: float = float(sim.day_phase) if sim.get("day_phase") != null else 0.5
+	var deep_night: bool = phase > 0.70 and phase < 0.92
+	var hour: int = int(Time.get_datetime_dict_from_system().get("hour", 12))
+	var odd_open: bool = deep_night or hour == 1 or hour == 2 or hour == 3
+	if not odd_open:
+		return
+	if not sim.has_method("get_player_glance"):
+		return
+	var glance: Dictionary = sim.get_player_glance()
+	var g_str: float = float(glance.get("strength", 0.0))
+	if g_str < 0.08:
+		return
+	var g_pt: Variant = glance.get("point", Vector3.ZERO)
+	if not (g_pt is Vector3) or (g_pt as Vector3).length_squared() < 0.01:
+		return
+	f._interest_target = g_pt as Vector3
+	f._interest_remaining = maxf(f._interest_remaining, 0.35 + g_str * 0.9)
+	f.curiosity_drive = clampf(f.curiosity_drive + dt * 0.05, 0.0, 1.0)
 
 
 static func _tick_night_consolidation(sim, dt: float) -> void:

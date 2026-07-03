@@ -316,6 +316,10 @@ static var _shared_pearling_mesh_medium: SphereMesh = null
 # a whole leaf can be shed/decayed as a unit. _leaf_ages stays parallel.
 var _foliage_batch: VoxelBatch = null
 var _foliage_mat: ShaderMaterial = null
+var _blush_last_sat: float = -1.0
+var _blush_last_warmth: float = -99.0
+var _blush_last_sss: float = -1.0
+var _blush_last_vibrancy: float = -1.0
 var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
 # Last wilt level we wrote into the leaf-tip handles. Tracked so the
@@ -994,10 +998,8 @@ func _ensure_shared_pearling_assets() -> void:
 
 func _configure_pearling_emitter(particles: GPUParticles3D) -> void:
 	_ensure_shared_pearling_assets()
-	var pm: ParticleProcessMaterial = _shared_pearling_material.duplicate()
-	pm.scale_min = randf_range(0.10, 0.18)
-	pm.scale_max = randf_range(0.22, 0.36)
-	particles.process_material = pm
+	if particles.process_material != _shared_pearling_material:
+		particles.process_material = _shared_pearling_material
 	var bubble_mesh: SphereMesh = _shared_pearling_mesh.duplicate()
 	var bubble_mat: ShaderMaterial = bubble_mesh.material.duplicate()
 	bubble_mat.set_shader_parameter("bubble_color", Color(
@@ -1952,18 +1954,20 @@ func _clamp_growth_offset(local: Vector3, reach: float = -1.0) -> Vector3:
 
 func _clamp_root_to_footprint() -> void:
 	var w := _footprint_world()
-	if w == null:
+	if w == null or is_epiphyte:
 		return
 	var reach: float = _plant_lateral_reach()
 	var g: Vector3 = global_position
 	var floor_y: float = g.y
 	if w.has_method("column_surface_y"):
 		floor_y = float(w.call("column_surface_y", g.x, g.z))
-	if w.has_method("fits_plant_at") and w.fits_plant_at(g.x, g.z, reach, 0.2, floor_y):
-		return
-	var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, 0.2 + reach)
+	var xz: Vector2 = Vector2(g.x, g.z)
 	if w.has_method("clamp_plant_site"):
 		xz = w.clamp_plant_site(g.x, g.z, reach, 0.2, floor_y)
+	elif w.has_method("clamp_xz_in_tank"):
+		xz = w.clamp_xz_in_tank(g.x, g.z, 0.2 + reach, floor_y)
+	# Always snap the crown to the sculpted substrate surface — saved Y from a
+	# smaller tank or a flat rebuild must not leave stems buried or floating.
 	global_position = Vector3(xz.x, floor_y, xz.y)
 
 
@@ -1971,12 +1975,17 @@ func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
 	var w := _footprint_world()
 	if w == null:
 		return
-	var g: Vector3 = node.global_position
-	if g.y > water_surface_y - 0.08 and w.has_method("clamp_emergent_in_tank"):
-		node.global_position = w.clamp_emergent_in_tank(g, margin)
+	# Reclamp in plant-local offsets so moving the crown doesn't scatter voxels.
+	var plant_g: Vector3 = global_position
+	var offset: Vector3 = node.global_position - plant_g
+	var wx: float = plant_g.x + offset.x
+	var wy: float = plant_g.y + offset.y
+	var wz: float = plant_g.z + offset.z
+	if wy > water_surface_y - 0.08 and w.has_method("clamp_emergent_in_tank"):
+		node.global_position = w.clamp_emergent_in_tank(Vector3(wx, wy, wz), margin)
 		return
-	var xz: Vector2 = w.clamp_xz_in_tank(g.x, g.z, margin)
-	node.global_position = Vector3(xz.x, g.y, xz.y)
+	var xz: Vector2 = w.clamp_xz_in_tank(wx, wz, margin)
+	node.global_position = Vector3(xz.x, wy, xz.y)
 
 
 func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
@@ -2000,9 +2009,8 @@ func _reclamp_voxels_to_footprint() -> void:
 	for v in bloom_voxels:
 		if is_instance_valid(v):
 			_clamp_node_xz_to_footprint(v, 0.18)
-	for v in root_voxels:
-		if is_instance_valid(v):
-			_clamp_node_xz_to_footprint(v, 0.15)
+	# Root voxels hang below the crown in local -Y; reclamp only the stem/leaf
+	# canopy so glass poke-through is fixed without scattering buried roots.
 
 
 # Called by SimDriver each tick.
@@ -3450,8 +3458,14 @@ func _tick_dynamic_blush(sim_v: Node) -> void:
 	var mature: float = 0.0
 	if sim_v != null:
 		mature = clampf(float(sim_v.tank_age_s) / 3600.0, 0.0, 1.0)
-	_foliage_mat.set_shader_parameter("palette_saturation", lerpf(1.0, 0.78, depth * 0.55))
-	_foliage_mat.set_shader_parameter("palette_warmth", mature * 0.12 - depth * 0.1)
+	var sat: float = lerpf(1.0, 0.78, depth * 0.55)
+	var warmth: float = mature * 0.12 - depth * 0.1
+	if absf(sat - _blush_last_sat) > 0.05:
+		_foliage_mat.set_shader_parameter("palette_saturation", sat)
+		_blush_last_sat = sat
+	if absf(warmth - _blush_last_warmth) > 0.05:
+		_foliage_mat.set_shader_parameter("palette_warmth", warmth)
+		_blush_last_warmth = warmth
 	if red_potential < 0.05:
 		return
 	var dl: float = sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5
@@ -3460,9 +3474,14 @@ func _tick_dynamic_blush(sim_v: Node) -> void:
 		blush *= 0.35
 	if _shade_mult < 0.8 and red_potential > 0.15:
 		var green_back: float = clampf((1.0 - _shade_mult) * red_potential, 0.0, 0.4)
-		_foliage_mat.set_shader_parameter("color_vibrancy", 1.0 - green_back * 0.22)
-	_foliage_mat.set_shader_parameter("sss_strength",
-		lerpf(0.35, 0.85, blush) * (1.1 - leaf_thickness * 0.4))
+		var vib: float = 1.0 - green_back * 0.22
+		if absf(vib - _blush_last_vibrancy) > 0.05:
+			_foliage_mat.set_shader_parameter("color_vibrancy", vib)
+			_blush_last_vibrancy = vib
+	var sss: float = lerpf(0.35, 0.85, blush) * (1.1 - leaf_thickness * 0.4)
+	if absf(sss - _blush_last_sss) > 0.05:
+		_foliage_mat.set_shader_parameter("sss_strength", sss)
+		_blush_last_sss = sss
 
 
 func graze_palatability() -> float:

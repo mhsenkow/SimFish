@@ -135,6 +135,41 @@ static func can_verbal_reply(sim: Node, f: Fish, too_wary: bool) -> bool:
 	return conversation_openness(sim, f) >= 0.38
 
 
+static func note_keeper_ambient(f: Fish, kind: String, strength: float = 0.5) -> void:
+	if f == null:
+		return
+	if f.get("_keeper_pending") == null:
+		f._keeper_pending = {}
+	var kp: Dictionary = f._keeper_pending as Dictionary
+	match kind:
+		"feed":
+			kp["keeper_intent"] = "food"
+			kp["keeper_felt"] = "care"
+			kp["keeper_valence"] = 0.25
+		"water_change", "prune":
+			kp["keeper_intent"] = "comfort"
+			kp["keeper_felt"] = "calm"
+			kp["keeper_valence"] = 0.18
+		"gaze":
+			kp["keeper_intent"] = "greeting"
+			kp["keeper_felt"] = "neutral"
+			kp["keeper_valence"] = 0.1
+		_:
+			return
+	kp["keeper_arousal"] = clampf(strength, 0.0, 1.0)
+	f._keeper_pending = kp
+
+
+static func broadcast_keeper_ambient(sim: Node, world_pos: Vector3, kind: String,
+		strength: float = 0.5, radius: float = 8.0) -> void:
+	if sim == null or sim.get("fish") == null:
+		return
+	var r2: float = radius * radius
+	for ff in sim.fish:
+		if is_instance_valid(ff) and ff.position.distance_squared_to(world_pos) <= r2:
+			note_keeper_ambient(ff, kind, strength)
+
+
 static func is_comfort_intent(interp: Dictionary) -> bool:
 	var felt: String = str(interp.get("keeper_felt", ""))
 	var intent: String = str(interp.get("keeper_intent", ""))

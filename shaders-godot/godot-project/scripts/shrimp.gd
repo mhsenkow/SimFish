@@ -138,6 +138,8 @@ const CLEAN_RADIUS: float = 1.4
 const CLEAN_HOLD_DURATION: float = 3.0
 const CLEAN_COOLDOWN: float = 12.0
 var _clean_cooldown: float = 0.0
+# SENTIENCE_THE_SPARK B35 — repeat clients at the cleaning station.
+var clean_clients: Dictionary = {}
 var _shelter_target: Plant = null
 const SHELTER_SCAN_RADIUS: float = 3.4
 # Tracks how many successful broods this individual has had. Used for
@@ -308,6 +310,7 @@ func init_genome(genome: Dictionary) -> void:
 	var theta: float = randf() * TAU
 	heading = Vector3(sin(theta), 0.0, -cos(theta))
 	_last_yaw = atan2(heading.x, -heading.z)
+	_visual_heading = heading
 	# Start with random hunger so they don't all forage at once.
 	hunger = randf_range(0.2, 0.5)
 	# Make sure babies start at substrate level.
@@ -342,8 +345,8 @@ func _build_body() -> void:
 	var mat_body := VoxelMat.make_translucent(body_color)
 	var mat_belly := VoxelMat.make_translucent(belly_color)
 	var mat_eye := VoxelMat.make(Color8(11, 11, 14))
-	var mat_dark := VoxelMat.make_fauna(base_color.darkened(0.3))
-	var mat_antenna := VoxelMat.make_fauna(base_color.darkened(0.15))
+	var mat_dark := VoxelMat.fauna_color_carrier(base_color.darkened(0.3))
+	var mat_antenna := VoxelMat.fauna_color_carrier(base_color.darkened(0.15))
 	if toxin_level > 0.35:
 		var warn: Color = base_color.lerp(Color8(245, 235, 80), clampf(toxin_level * 0.55, 0.0, 0.55))
 		# Warning coloration stays translucent — the toxin signal is the
@@ -380,7 +383,7 @@ func _build_body() -> void:
 	var antenna_mat: Material = mat_antenna
 	var antenna_len: float = 0.9 * antenna_length_factor
 	if is_cleaner:
-		antenna_mat = VoxelMat.make_fauna(Color8(250, 250, 250))
+		antenna_mat = VoxelMat.fauna_color_carrier(Color8(250, 250, 250))
 		antenna_len = maxf(antenna_len, 1.6)
 	if body_shape == "crab":
 		antenna_len *= 0.4
@@ -391,7 +394,7 @@ func _build_body() -> void:
 	# Rostrum - the saw-toothed snout spike between the eyes. Caridina carry a
 	# long one; crabs have none.
 	if rostrum_length > 0.05 and body_shape != "crab":
-		var rost_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.1))
+		var rost_mat: Material = VoxelMat.fauna_color_carrier(base_color.darkened(0.1))
 		_voxel(_bank_pivot, Vector3(0, v * 0.45, -v * (1.3 + rostrum_length * 0.8)),
 			Vector3(v * 0.07, v * 0.1, v * (0.4 + rostrum_length * 0.9)), rost_mat)
 
@@ -416,7 +419,7 @@ func _build_body() -> void:
 	# Cleaner-shrimp spine stripe: a single bright white voxel running along
 	# the top of the body. The signature "skunk" stripe of Lysmata amboinensis.
 	if is_cleaner:
-		var stripe_mat := VoxelMat.make_fauna(Color8(252, 252, 252))
+		var stripe_mat := VoxelMat.fauna_color_carrier(Color8(252, 252, 252))
 		_voxel(_bank_pivot, Vector3(0, v * 0.65, -v * 0.8),
 			Vector3(v * 0.16, v * 0.08, v * 0.6), stripe_mat)
 		_voxel(_bank_pivot, Vector3(0, v * 0.7, 0),
@@ -427,7 +430,7 @@ func _build_body() -> void:
 	# Defensive dorsal spines (Amano/cherry-style exaggerated trait). Higher
 	# values add a more pronounced ridge, acting as visible anti-predator armor.
 	if defense_spines > 0.12:
-		var spine_mat: Material = VoxelMat.make_fauna(base_color.lightened(0.12))
+		var spine_mat: Material = VoxelMat.fauna_color_carrier(base_color.lightened(0.12))
 		var spine_n: int = clampi(int(round(1.0 + defense_spines * 4.0)), 1, 5)
 		for i in spine_n:
 			var t: float = float(i) / float(maxi(1, spine_n - 1))
@@ -440,7 +443,7 @@ func _build_body() -> void:
 	if filter_fans:
 		_build_filter_fans(v)
 	elif growth_factor > 1.05 or adult_voxel_scale > 0.12:
-		var fan_mat: Material = VoxelMat.make_fauna(accent_color.lightened(0.05))
+		var fan_mat: Material = VoxelMat.fauna_color_carrier(accent_color.lightened(0.05))
 		var fan_n: int = clampi(2 + int((growth_factor - 1.0) * 5.0), 2, 5)
 		for i in fan_n:
 			var t: float = float(i) / float(maxi(1, fan_n - 1))
@@ -450,7 +453,7 @@ func _build_body() -> void:
 			_voxel(_bank_pivot, Vector3(-v * 0.22, -v * 0.28, zf),
 				Vector3(v * 0.09, v * 0.07, v * 0.24), fan_mat)
 	if toxin_level > 0.32:
-		var warn_mat: Material = VoxelMat.make_fauna(base_color.lerp(Color8(250, 228, 110),
+		var warn_mat: Material = VoxelMat.fauna_color_carrier(base_color.lerp(Color8(250, 228, 110),
 			clampf(toxin_level * 0.55, 0.0, 0.55)))
 		var flange_h: float = v * (0.10 + toxin_level * 0.20)
 		for zf in [-v * 0.35, v * 0.05, v * 0.45]:
@@ -570,7 +573,7 @@ func _build_mantis_core(v: float, lenf: float, mat_body: Material, mat_belly: Ma
 			Vector3(v * 0.6, v * 0.16, v * 0.55 * lenf), mat_belly)
 	_build_eyes(v, -v * 1.4 * lenf, mat_eye, mat_dark)
 	# Raptorial appendages folded under the head (the smasher/spearer arms).
-	var rap_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.25).lerp(accent_color, 0.2))
+	var rap_mat: Material = VoxelMat.fauna_color_carrier(base_color.darkened(0.25).lerp(accent_color, 0.2))
 	for x_side in [-1.0, 1.0]:
 		_voxel(_bank_pivot, Vector3(x_side * v * 0.32, -v * 0.15, -v * 1.35 * lenf),
 			Vector3(v * 0.12, v * 0.12, v * 0.5 * lenf), rap_mat)
@@ -604,7 +607,7 @@ func _build_eyes(v: float, z: float, mat_eye: Material, mat_dark: Material) -> v
 func _build_claws(v: float, lenf: float) -> void:
 	if claw_size <= 0.05:
 		return
-	var claw_mat: Material = VoxelMat.make_fauna(base_color.darkened(0.38).lerp(accent_color, 0.16))
+	var claw_mat: Material = VoxelMat.fauna_color_carrier(base_color.darkened(0.38).lerp(accent_color, 0.16))
 	for side in [-1.0, 1.0]:
 		# claw_asymmetry enlarges the right claw and shrinks the left — the
 		# pistol shrimp / fiddler crab signature.
@@ -637,7 +640,7 @@ func _build_legs(v: float, mat_dark: Material) -> void:
 func _build_filter_fans(v: float) -> void:
 	# Bamboo / wood shrimp hold feathery feeding fans forward of the mouth and
 	# sweep the current. Two splayed fan clusters.
-	var fan_mat: Material = VoxelMat.make_fauna(base_color.lightened(0.05))
+	var fan_mat: Material = VoxelMat.fauna_color_carrier(base_color.lightened(0.05))
 	for side in [-1.0, 1.0]:
 		for k in 3:
 			var spread: float = lerpf(0.2, 0.6, float(k) / 2.0)
@@ -650,7 +653,7 @@ func _build_shrimp_pattern(v: float, lenf: float) -> void:
 	# 1 = bands (crystal/bee red-white rings), 2 = saddle spots (sexy/ghost),
 	# 3 = lateral stripe (amano dashes). Continuous modulators reshape each so a
 	# colony's markings drift wider / bolder / denser over generations.
-	var pat_mat: Material = VoxelMat.make_fauna(accent_color)
+	var pat_mat: Material = VoxelMat.fauna_color_carrier(accent_color)
 	var sizem: float = 0.6 + pattern_scale * 0.8
 	var thickm: float = 0.6 + pattern_intensity * 0.8
 	match pattern_type:
@@ -689,7 +692,7 @@ func _is_shelter_plant(p: Plant) -> bool:
 
 
 func _pick_shelter_plant(plants: Array) -> Plant:
-	var best: Plant = null
+	var candidates: Array = []
 	var best_score: float = INF
 	for p in _nearby_plants(plants, SHELTER_SCAN_RADIUS):
 		if not (p is Plant):
@@ -700,12 +703,20 @@ func _pick_shelter_plant(plants: Array) -> Plant:
 		var d2: float = pl.global_position.distance_squared_to(position)
 		if d2 > SHELTER_SCAN_RADIUS * SHELTER_SCAN_RADIUS:
 			continue
-		# Favor larger sessile forms as better refuge.
 		var score: float = d2 - float(pl.biomass()) * 0.02
 		if score < best_score:
 			best_score = score
-			best = pl
-	return best
+		candidates.append({"plant": pl, "score": score})
+	if candidates.is_empty():
+		return null
+	# Don't send every fleeing shrimp to the same anemone — pick among near-ties.
+	var cutoff: float = best_score + 0.8
+	var viable: Array = []
+	for c in candidates:
+		if float((c as Dictionary).get("score", INF)) <= cutoff:
+			viable.append(c)
+	var pick: Dictionary = viable[int(get_instance_id()) % viable.size()] as Dictionary
+	return pick.get("plant", null) as Plant
 
 
 func _nearby_plants(plants: Array, radius: float) -> Array:
@@ -718,6 +729,18 @@ func _nearby_algae(algae_array: Array, radius: float) -> Array:
 	if sim != null and sim.has_method("query_algae_in_radius"):
 		return sim.query_algae_in_radius(position, radius)
 	return algae_array
+
+
+func _note_cleaning_familiarity(client: Node3D) -> void:
+	if client == null or not is_instance_valid(client):
+		return
+	var cid: String = String(client.get("id")) if client.get("id") != null else ""
+	if cid == "":
+		return
+	clean_clients[cid] = clampf(float(clean_clients.get(cid, 0.0)) + 0.14, 0.0, 1.0)
+	if client is Fish:
+		var ff: Fish = client as Fish
+		ff.cleaner_familiarity[id] = clampf(float(ff.cleaner_familiarity.get(id, 0.0)) + 0.14, 0.0, 1.0)
 
 
 func _nearby_fish(radius_sq: float) -> Array:
@@ -736,6 +759,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# the sinking + fading animation and queue_free.
 	if _dying:
 		return events
+
+	_prev_target_velocity = _target_velocity
 
 	age += dt
 	hunger = clampf(hunger + dt * 0.011, 0.0, 1.0)
@@ -814,6 +839,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			current_mode = Mode.REST
 			var shelter_pos: Vector3 = _shelter_target.global_position
 			shelter_pos.y = _shelter_target.top_world_y() - 0.12
+			var ring: float = _instance_yaw()
+			shelter_pos += Vector3(cos(ring), 0.0, sin(ring)) * 0.34
 			var to_cover: Vector3 = shelter_pos - position
 			if to_cover.length() < 0.55:
 				shelter_bonus = maxf(shelter_bonus, 0.45 + predator_pressure * 0.45)
@@ -906,6 +933,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 					continue
 				# Score = stress level. Highest-stress fish in range wins.
 				var s: float = float(f.stress)
+				var fam: float = float(clean_clients.get(String(f.id), 0.0))
+				s += fam * 0.35
 				if s > best_score:
 					best_score = s
 					best = f
@@ -926,6 +955,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 						float(_clean_target.stress) - dt * 0.20)
 				hunger = maxf(0.0, hunger - dt * 0.08)
 				if _clean_hold >= CLEAN_HOLD_DURATION:
+					_note_cleaning_familiarity(_clean_target)
 					_clean_hold = 0.0
 					_clean_target = null
 					_clean_cooldown = CLEAN_COOLDOWN
@@ -1053,15 +1083,25 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			best_w_d2 = d2
 			best_w = w
 	if best_w != null:
-		current_mode = Mode.FORAGE_WASTE
-		var to_w: Vector3 = best_w.global_position - position
-		if to_w.length() < 0.3:
-			events["eat_waste"] = best_w
-			hunger = maxf(0.0, hunger - 0.30)
-		else:
-			target_velocity += to_w.normalized() * max_speed * 0.9
-			_apply_target(target_velocity)
-			return events
+		var wpos: Vector3 = best_w.global_position
+		var crowd_n: int = 0
+		for n in neighbors:
+			if not (n is Shrimp) or n == self:
+				continue
+			if (n as Shrimp).position.distance_squared_to(wpos) < 0.28 * 0.28:
+				crowd_n += 1
+		if crowd_n < 2:
+			current_mode = Mode.FORAGE_WASTE
+			var ring: float = _instance_yaw()
+			var stand_off: Vector3 = Vector3(cos(ring), 0.0, sin(ring)) * 0.24
+			var to_w: Vector3 = (wpos + stand_off) - position
+			if to_w.length() < 0.3:
+				events["eat_waste"] = best_w
+				hunger = maxf(0.0, hunger - 0.30)
+			else:
+				target_velocity += to_w.normalized() * max_speed * 0.9
+				_apply_target(target_velocity)
+				return events
 
 	# Tier 5.5: ALGAE - Shrimp are excellent algae eaters.
 	if hunger > 0.2:
@@ -1271,6 +1311,10 @@ func _constrain_velocity_to_tank(vel: Vector3) -> Vector3:
 
 
 var _target_velocity: Vector3 = Vector3.ZERO
+var _prev_target_velocity: Vector3 = Vector3.ZERO
+var _visual_heading: Vector3 = Vector3(0.0, 0.0, -1.0)
+var _was_camera_visible: bool = true
+const VISUAL_TURN_CAP: float = 5.5
 
 
 func _look_up_for_direction(d: Vector3) -> Vector3:
@@ -1289,9 +1333,13 @@ func _motion_substep(dt: float) -> void:
 		_target_velocity.y -= 1.2 * dt
 	var target_dir: Vector3 = heading
 	var target_spd: float = 0.0
-	if _target_velocity.length_squared() > 1e-4:
-		target_spd = _target_velocity.length()
-		target_dir = _target_velocity.normalized()
+	var brain_target: Vector3 = _target_velocity
+	if sim != null and sim.has_method("sim_tick_blend"):
+		var blend: float = sim.sim_tick_blend()
+		brain_target = _prev_target_velocity.lerp(_target_velocity, blend)
+	if brain_target.length_squared() > 1e-4:
+		target_spd = brain_target.length()
+		target_dir = brain_target.normalized()
 	target_spd *= _day_activity_mult()
 	if target_spd > speed + 0.42 and target_spd > 0.5:
 		_escape_remaining = maxf(_escape_remaining, 0.38)
@@ -1362,7 +1410,7 @@ func _motion_substep(dt: float) -> void:
 			var up_r: Vector3 = _look_up_for_direction(recover_d)
 			transform.basis = Basis.looking_at(recover_d, up_r)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
-		var d: Vector3 = heading
+		var d: Vector3 = _visual_heading_for_display(dt, heading)
 		if d.is_finite():
 			var up: Vector3 = _look_up_for_direction(d)
 			look_at(position + d, up)
@@ -1376,6 +1424,41 @@ func _motion_substep(dt: float) -> void:
 	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 	if _bank_pivot != null:
 		_bank_pivot.rotation.z = _bank
+
+
+func _visual_heading_for_display(dt: float, desired: Vector3) -> Vector3:
+	if desired.length_squared() < 1e-6:
+		return _visual_heading
+	if _visual_heading.length_squared() < 1e-6:
+		_visual_heading = desired
+		return _visual_heading
+	var angle: float = _visual_heading.angle_to(desired)
+	if angle < 0.0003:
+		_visual_heading = desired
+		return _visual_heading
+	var axis: Vector3 = _visual_heading.cross(desired)
+	if axis.length_squared() < 1e-6:
+		_visual_heading = desired
+		return _visual_heading
+	axis = axis.normalized()
+	var step: float = minf(VISUAL_TURN_CAP * dt, angle)
+	_visual_heading = _visual_heading.rotated(axis, step).normalized()
+	return _visual_heading
+
+
+func _snap_motion_interp() -> void:
+	_prev_target_velocity = _target_velocity
+	if heading.length_squared() > 1e-6:
+		_visual_heading = heading
+
+
+func _update_visibility_interp() -> void:
+	if sim == null or not sim.has_method("is_creature_visible_to_camera"):
+		return
+	var vis: bool = sim.is_creature_visible_to_camera(self)
+	if vis != _was_camera_visible:
+		_snap_motion_interp()
+	_was_camera_visible = vis
 
 
 # ---- Physics + animation (render rate) ----
@@ -1392,8 +1475,10 @@ func _process(dt: float) -> void:
 		_animate_death(dt)
 		return
 
+	_update_visibility_interp()
+
 	# Substep at high time_scale — same stability rationale as fish.gd.
-	var n_steps: int = clampi(int(ceil(minf(dt, 0.32) / maxf(0.035 / clampf(speed / maxf(max_speed, 0.12), 0.5, 1.4), 0.022))), 1, 14)
+	var n_steps: int = clampi(int(ceil(minf(dt, 0.32) / maxf(0.035 / clampf(speed / maxf(max_speed, 0.12), 0.5, 1.4), 0.022))), 1, 7)
 	var sub_dt: float = dt / float(n_steps)
 	for _step_i in n_steps:
 		_motion_substep(sub_dt)
@@ -1689,8 +1774,12 @@ func _wall_avoid(_b: AABB) -> Vector3:
 	return Vector3.ZERO
 
 
+func _instance_yaw() -> float:
+	return float(get_instance_id() % 1024) / 1024.0 * TAU
+
+
 func _neighbor_clearance_push(neighbors: Array) -> Vector3:
-	const SHRIMP_SPACE: float = 0.14
+	const SHRIMP_SPACE: float = 0.21
 	var r2: float = SHRIMP_SPACE * SHRIMP_SPACE
 	var push := Vector3.ZERO
 	for n in neighbors:
@@ -1700,8 +1789,12 @@ func _neighbor_clearance_push(neighbors: Array) -> Vector3:
 		var d: Vector3 = position - s.position
 		d.y *= 0.55
 		var d2: float = d.length_squared()
-		if d2 < 1e-6 or d2 >= r2:
+		if d2 >= r2:
 			continue
+		if d2 < 1e-6:
+			var ang: float = _instance_yaw()
+			d = Vector3(cos(ang), 0.0, sin(ang))
+			d2 = 1.0
 		push += d.normalized() * (SHRIMP_SPACE - sqrt(d2)) * 1.5
 	return push
 
@@ -1717,8 +1810,12 @@ func _plant_clearance_push(plants: Array) -> Vector3:
 		var d: Vector3 = position - p.global_position
 		d.y *= 0.45
 		var d2: float = d.length_squared()
-		if d2 < 1e-6 or d2 >= r2:
+		if d2 >= r2:
 			continue
+		if d2 < 1e-6:
+			var ang: float = _instance_yaw() + 0.7
+			d = Vector3(cos(ang), 0.0, sin(ang))
+			d2 = 1.0
 		push += d.normalized() * (PLANT_SPACE - sqrt(d2)) * 1.2
 		checked += 1
 		if checked >= 8:
@@ -1940,6 +2037,7 @@ func to_save_dict() -> Dictionary:
 		"_dying": _dying,
 		"_dying_timer": _dying_timer,
 		"_dying_wall_start_unix": _dying_wall_start_unix,
+		"clean_clients": clean_clients.duplicate(),
 	}
 
 
@@ -1982,6 +2080,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	_dying = bool(d.get("_dying", false))
 	_dying_timer = float(d.get("_dying_timer", 0.0))
 	_dying_wall_start_unix = int(d.get("_dying_wall_start_unix", 0))
+	var saved_clients: Variant = d.get("clean_clients", null)
+	if saved_clients is Dictionary:
+		clean_clients = (saved_clients as Dictionary).duplicate()
 	if _dying and _dying_wall_start_unix == 0:
 		_dying_wall_start_unix = int(Time.get_unix_time_from_system())
 	if _dying and _dying_timer <= 0.0:

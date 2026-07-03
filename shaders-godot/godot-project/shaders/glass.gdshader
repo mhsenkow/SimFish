@@ -31,6 +31,8 @@ uniform float biofilm_iridescence : hint_range(0.0, 1.0) = 0.5;
 // room" read. Subtle by default to preserve the pixel-art palette.
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
 uniform float screen_reflection : hint_range(0.0, 1.0) = 0.22;
+// Faint travelling caustic band on vertical panes (SENTIENCE_THE_SPARK #53).
+uniform float caustic_band : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 world_pos;
 
@@ -64,14 +66,22 @@ void fragment() {
 	room_ref *= 0.35 + 0.65 * fresnel;
 	col = mix(col, vec3(0.55, 0.48, 0.42), room_ref * reflection_strength);
 
+	// Travelling caustic shimmer on vertical glass (water light leak).
+	if (caustic_band > 0.001 && abs(n.y) < 0.42) {
+		float band_y = fract(world_pos.y * 0.22 - TIME * 0.14 + world_pos.x * 0.05);
+		float band = smoothstep(0.42, 0.5, band_y) * (1.0 - smoothstep(0.54, 0.62, band_y));
+		col += vec3(0.55, 0.82, 0.95) * band * caustic_band * fresnel * 0.35;
+	}
+
 	// Screen-space reflection: mirror the framebuffer horizontally and nudge
 	// by the surface normal so the room + tank contents ghost across the pane.
 	// Weighted by fresnel so it only blooms at grazing angles, like real glass.
 	if (screen_reflection > 0.001) {
-		vec2 refl_uv = vec2(1.0 - SCREEN_UV.x, SCREEN_UV.y) + n.xy * 0.035;
+		vec2 refl_uv = vec2(1.0 - SCREEN_UV.x, SCREEN_UV.y) + n.xy * 0.028;
 		vec3 refl = texture(screen_tex, clamp(refl_uv, vec2(0.001), vec2(0.999))).rgb;
-		float refl_w = fresnel * screen_reflection;
-		col = mix(col, refl, clamp(refl_w, 0.0, 0.5));
+		float cam_up = smoothstep(0.25, 0.82, abs(view_dir.y));
+		float refl_w = fresnel * screen_reflection * mix(0.38, 1.0, cam_up);
+		col = mix(col, refl, clamp(refl_w, 0.0, 0.32));
 	}
 
 	// Waterline meniscus brightening on interior glass. The real meniscus

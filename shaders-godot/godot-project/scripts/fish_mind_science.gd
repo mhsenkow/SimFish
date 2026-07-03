@@ -5,6 +5,7 @@ extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
+const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 const SimRngScript = preload("res://scripts/sim_rng.gd")
 
 
@@ -76,14 +77,73 @@ static func tick_hypothesis(f: Fish, region_idx: int, outcome: String) -> void:
 	f._hypotheses[key] = h
 
 
-static func tick_theory_of_mind(f: Fish, neighbors: Array) -> void:
-	f.inferred_states.clear()
-	var best_alert: Dictionary = {}
+const TOM_NEIGHBOR_K: int = 4
+const TOM_MODEL_CAP: int = 8
+const TOM_HYSTERESIS_S: float = 0.5
+const TOM_DELTA_EPS: float = 0.04
+
+
+static func _tom_nearest(f, neighbors: Array) -> Array:
+	var scored: Array = []
 	for n in neighbors:
 		if not (n is Fish) or n == f:
 			continue
-		var other: Fish = n
-		var oid: String = String(other.id)
+		var other: Fish = n as Fish
+		if str(other.id) == "":
+			continue
+		scored.append({"fish": other, "d2": f.position.distance_squared_to(other.position)})
+	scored.sort_custom(func(a, b): return float(a.get("d2", 999.0)) < float(b.get("d2", 999.0)))
+	var out: Array = []
+	for i in range(mini(TOM_NEIGHBOR_K, scored.size())):
+		out.append((scored[i] as Dictionary).get("fish"))
+	return out
+
+
+static func _tom_touch_lru(f, oid: String) -> void:
+	var order: Array = f._tom_model_ids if f.get("_tom_model_ids") is Array else []
+	order.erase(oid)
+	order.append(oid)
+	while order.size() > TOM_MODEL_CAP:
+		var drop: String = str(order[0])
+		order.remove_at(0)
+		f._tom_pred.erase(drop)
+	f._tom_model_ids = order
+
+
+static func tick_theory_of_mind(f, neighbors: Array) -> void:
+	f.inferred_states.clear()
+	var best_alert: Dictionary = {}
+	var model_set: Array = f._tom_model_ids if f.get("_tom_model_ids") is Array else []
+	var nearest: Array = _tom_nearest(f, neighbors)
+	var next_ids: Array = []
+	for other in nearest:
+		if other is Fish:
+			next_ids.append(str((other as Fish).id))
+	var changed: bool = next_ids.size() != model_set.size()
+	if not changed:
+		for i in next_ids.size():
+			if str(next_ids[i]) != str(model_set[i]):
+				changed = true
+				break
+	if changed:
+		f._tom_set_hold = float(f.get("_tom_set_hold") if f.get("_tom_set_hold") != null else 0.0) + 1.0 / 15.0
+		if float(f._tom_set_hold) < TOM_HYSTERESIS_S and model_set.size() > 0:
+			nearest = []
+			for oid in model_set:
+				for n in neighbors:
+					if n is Fish and str((n as Fish).id) == str(oid):
+						nearest.append(n)
+						break
+		else:
+			f._tom_model_ids = next_ids.duplicate()
+			f._tom_set_hold = 0.0
+	else:
+		f._tom_set_hold = 0.0
+	for n in nearest:
+		if not (n is Fish):
+			continue
+		var other: Fish = n as Fish
+		var oid: String = str(other.id)
 		if oid == "":
 			continue
 		var label: String = "neutral"
@@ -96,27 +156,31 @@ static func tick_theory_of_mind(f: Fish, neighbors: Array) -> void:
 		elif other.lead_score > 0.55:
 			label = "dominant"
 		f.inferred_states[oid] = label
-		# META #4 — predictive ToM: learn whether THIS neighbour tends to charge
-		# (close distance while heading straight at us) when it's a threat/dominant,
-		# so we can act on the *prediction*, not just the present label.
 		var to_me: Vector3 = f.position - other.position
 		var d: float = to_me.length()
-		var rec: Dictionary = f._tom_pred.get(oid, {"charge": 0.0, "prev_d": d})
+		var rec: Dictionary = f._tom_pred.get(oid, {"charge": 0.0, "prev_d": d, "hd": other.heading, "sp": other.speed})
 		var facing: float = 0.0
 		if other.heading.length_squared() > 1e-6 and d > 1e-3:
-			facing = other.heading.normalized().dot(to_me / d)   # 1 = aimed at us
-		var closing: float = float(rec.get("prev_d", d)) - d      # >0 = getting nearer
-		var aggressive: bool = (label == "threat" or label == "dominant") \
-				and facing > 0.4 and closing > 0.0
-		rec["charge"] = lerpf(float(rec.get("charge", 0.0)), 1.0 if aggressive else 0.0, 0.08)
-		rec["prev_d"] = d
-		f._tom_pred[oid] = rec
-		# Anticipatory alarm: a fish we've learned charges, now near and aimed at us.
-		if float(rec["charge"]) > 0.4 and d < 4.0 and facing > 0.3:
+			facing = other.heading.normalized().dot(to_me / d)
+		var closing: float = float(rec.get("prev_d", d)) - d
+		var hd: Vector3 = rec.get("hd", Vector3.ZERO) if rec.get("hd") is Vector3 else Vector3.ZERO
+		var moved: bool = hd.distance_squared_to(other.heading) > TOM_DELTA_EPS * TOM_DELTA_EPS \
+				or absf(float(rec.get("sp", other.speed)) - other.speed) > TOM_DELTA_EPS
+		if moved or not f._tom_pred.has(oid):
+			var aggressive: bool = (label == "threat" or label == "dominant") \
+					and facing > 0.4 and closing > 0.0
+			rec["charge"] = lerpf(float(rec.get("charge", 0.0)), 1.0 if aggressive else 0.0, 0.08)
+			rec["prev_d"] = d
+			rec["hd"] = other.heading
+			rec["sp"] = other.speed
+			f._tom_pred[oid] = rec
+			_tom_touch_lru(f, oid)
+		if float(rec.get("charge", 0.0)) > 0.4 and d < 4.0 and facing > 0.3:
 			var level: float = float(rec["charge"]) * (1.0 - d / 4.0)
 			if level > float(best_alert.get("level", 0.0)):
 				best_alert = {"oid": oid, "level": level}
 	f._tom_alert = best_alert
+	MindSoulPass2.tick_tom_intents(f, neighbors)
 	# Keeper theory-of-mind (#35).
 	var kp: Variant = f.get("_keeper_pending")
 	if kp is Dictionary and not (kp as Dictionary).is_empty():
@@ -139,7 +203,7 @@ static func predicted_charge(f: Fish, oid: String) -> float:
 
 # META #4 — the anticipatory-threat bid: attend to / flee a predicted charger
 # before contact. Empty when no learned aggressor is bearing down.
-static func collect_predict_bid(f: Fish) -> Dictionary:
+static func collect_predict_bid(f) -> Dictionary:
 	var alert: Variant = f.get("_tom_alert")
 	if not (alert is Dictionary) or (alert as Dictionary).is_empty():
 		return {}
@@ -208,8 +272,10 @@ static func reconsolidate_memory(f: Fish, kind: String, safer: bool) -> void:
 			e["weight"] = clampf(w2 - 0.05, 0.0, 1.0)
 
 
-static func push_prospective(f: Fish, intent: String, pos: Vector3, ttl: float) -> void:
-	f._prospective = {"intent": intent, "pos": pos, "t": ttl}
+static func push_prospective(f, intent: String, pos: Vector3, ttl: float) -> void:
+	if f == null:
+		return
+	f.set("_prospective", {"intent": intent, "pos": pos, "t": ttl})
 
 
 static func tick_prospective(f: Fish, dt: float) -> void:
@@ -259,8 +325,10 @@ static func tank_enrichment(sim: Node) -> float:
 	return clampf(plants * 0.55 + o2 * 0.45, 0.0, 1.0)
 
 
-static func novelty_cell_key(f: Fish) -> String:
-	var w: Node = f._world_node()
+static func novelty_cell_key(f) -> String:
+	var w: Node = null
+	if f != null and f.has_method("_world_node"):
+		w = f._world_node()
 	if w == null:
 		return "-1"
 	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)

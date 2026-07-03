@@ -1,6 +1,7 @@
 extends RefCounted
-
 # SENTIENCE_THE_FELT_SELF §5 — self-evidencing generative model.
+
+const _MindSimSnapScript = preload("res://scripts/mind_sim_snap.gd")
 
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
@@ -46,7 +47,7 @@ static func tick(f: Fish, sim: Node, dt: float) -> void:
 	var km: Dictionary = MindKeeperModel.ensure(f)
 	g["keeper_pred"] = lerpf(float(g.get("keeper_pred", 0.5)),
 			0.45 + f.familiarity * 0.35 + float(km.get("trust", 0.0)) * 0.2, clampf(dt * 0.4, 0.0, 1.0))
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	var dl: float = MindSimSnap.daylight_of(sim)
 	g["precision"] = lerpf(float(g.get("precision", 0.55)), clampf(0.35 + dl * 0.45, 0.2, 0.9),
 			clampf(dt * 0.8, 0.0, 1.0))
 	g["uncertainty"] = clampf(1.0 - float(g["precision"]) * float(g["world_pred"]), 0.05, 0.95)
@@ -55,8 +56,13 @@ static func tick(f: Fish, sim: Node, dt: float) -> void:
 	sp["hunger"] = lerpf(float(sp.get("hunger", 0.35)), 0.35 + clampf(f.age / maxf(f.max_age_s, 1.0), 0.0, 1.0) * 0.05,
 			dt * 0.001)
 	g["set_points"] = sp
-	# Counterfactual stub (#46).
-	if f.stress > 0.5 and randf() < dt * 0.02:
+	# SOUL #37 — counterfactual protention, grounded in body + boldness.
+	const MindSoul = preload("res://scripts/mind_soul.gd")
+	if MindSoul.enabled():
+		var cf: String = MindSoul.counterfactual_for(f)
+		if cf != "":
+			g["counterfactual"] = cf
+	elif f.stress > 0.5 and MindRng.for_fish(f).randf() < dt * 0.02:
 		g["counterfactual"] = "open water ahead" if f._trait("boldness") > 0.55 else "stay near cover"
 	(f._felt_self as Dictionary)["generative"] = g
 

@@ -899,9 +899,13 @@ func _randomize() -> void:
 func _resolve_world() -> void:
 	if _world != null and is_instance_valid(_world):
 		return
-	_world = get_tree().current_scene.get_node_or_null("SubViewport/World")
-	if _world == null:
-		var found: Node = get_tree().root.find_child("World", true, false)
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		var scene: Node = (ml as SceneTree).current_scene
+		if scene != null:
+			_world = scene.get_node_or_null("SubViewport/World")
+	if _world == null and ml is SceneTree:
+		var found: Node = (ml as SceneTree).root.find_child("World", true, false)
 		if found is Node3D:
 			_world = found
 

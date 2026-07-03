@@ -12,6 +12,7 @@ const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
+const MindWorkerCfg = preload("res://scripts/mind_worker_cfg.gd")
 
 static var gaze_fish_id: String = ""
 static var gaze_seconds: float = 0.0
@@ -30,27 +31,34 @@ static func _tank_config() -> Node:
 	return st.root.get_node_or_null("/root/TankConfig")
 
 
-static func ears_enabled() -> bool:
+static func _cfg_bool(key: String, default: bool) -> bool:
+	if not Thread.is_main_thread():
+		if MindWorkerCfg.active:
+			return MindWorkerCfg.read_bool(key, default)
+		return default
 	var cfg: Node = _tank_config()
 	if cfg == null:
-		return true
-	if bool(cfg.get("sentience_voice_off")):
+		return default
+	var v: Variant = cfg.get(key)
+	if v is bool:
+		return v
+	if v == null:
+		return default
+	return default if v == false else true
+
+
+static func ears_enabled() -> bool:
+	if _cfg_bool("sentience_voice_off", false):
 		return false
-	return bool(cfg.get("keeper_ears_enabled") if cfg.get("keeper_ears_enabled") != null else true)
+	return _cfg_bool("keeper_ears_enabled", true)
 
 
 static func gaze_enabled() -> bool:
-	var cfg: Node = _tank_config()
-	if cfg == null:
-		return true
-	return bool(cfg.get("keeper_gaze_enabled") if cfg.get("keeper_gaze_enabled") != null else true)
+	return _cfg_bool("keeper_gaze_enabled", true)
 
 
 static func mic_enabled() -> bool:
-	var cfg: Node = _tank_config()
-	if cfg == null:
-		return false
-	return bool(cfg.get("keeper_mic_enabled") if cfg.get("keeper_mic_enabled") != null else false)
+	return _cfg_bool("keeper_mic_enabled", false)
 
 
 static func score_tone(text: String) -> Dictionary:
@@ -197,7 +205,7 @@ static func on_creature_named(f: Fish, name: String) -> void:
 	MindLexicon.pair_creature_name(f, name)
 
 
-static func collect_keeper_bid(f: Fish) -> Dictionary:
+static func collect_keeper_bid(f) -> Dictionary:
 	if f.get("_keeper_message_salience") == null:
 		return {}
 	var sal: float = float(f._keeper_message_salience)
@@ -222,7 +230,7 @@ static func collect_keeper_bid(f: Fish) -> Dictionary:
 	}
 
 
-static func collect_gaze_bid(f: Fish) -> Dictionary:
+static func collect_gaze_bid(f) -> Dictionary:
 	if not gaze_enabled() or gaze_fish_id == "" or str(f.id) != gaze_fish_id:
 		return {}
 	if gaze_seconds < 2.8:
@@ -232,7 +240,7 @@ static func collect_gaze_bid(f: Fish) -> Dictionary:
 	return {"label": "being_watched", "salience": sal, "coalition": ["player", "social"]}
 
 
-static func collect_cursor_bid(f: Fish) -> Dictionary:
+static func collect_cursor_bid(f) -> Dictionary:
 	if cursor_near_fish_id == "" or str(f.id) != cursor_near_fish_id:
 		return {}
 	if cursor_speed > 2.4:

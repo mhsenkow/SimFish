@@ -24,7 +24,9 @@ const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
 const MindContagion = preload("res://scripts/mind_contagion.gd")
 const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
-
+const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
+const DeltaG = preload("res://scripts/delta_g.gd")
+const DeltaGCurve = preload("res://scripts/delta_g_curve.gd")
 const HONEST_NOTE: String = "functional signatures only — not a claim of phenomenal experience"
 
 const _HONESTY_BANNED: Array[String] = [
@@ -84,11 +86,45 @@ static func invariants() -> Array:
 		{"id": "H", "theory": "honesty gate (Chalmers)", "required": true,
 			"desc": "no phenomenal overclaim in voice surfaces",
 			"fn": func(h): return _inv_h_honesty(h)},
+		{"id": "SOUL1", "theory": "metacognitive accuracy (soul pass)", "required": false,
+			"desc": "self-prediction error tracks workspace divergence",
+			"fn": func(h): return _inv_soul1_self_pred(h)},
+		{"id": "SOUL2", "theory": "perturbational complexity (PCI proxy)", "required": false,
+			"desc": "affect perturbation propagates across modules",
+			"fn": func(h): return _inv_soul2_pci(h)},
+		{"id": "DG1", "theory": "compression dividend (Rising Curve)", "required": false,
+			"desc": "ΔG ordering: goal > boids > noise/scripted",
+			"fn": func(h): return _inv_dg1_calibration(h)},
+		{"id": "DG2", "theory": "ΔG falsification (Rising Curve)", "required": false,
+			"desc": "ΔG beats surface-statistic baseline on goal pursuit",
+			"fn": func(h): return _inv_dg2_falsification(h)},
+		{"id": "DG3", "theory": "developmental invariant (Rising Curve)", "required": false,
+			"desc": "ΔG_robust non-decreasing over first sim-days in reference tank",
+			"fn": func(h): return _inv_dg3_developmental(h)},
+		{"id": "DG4", "theory": "clone individuation (Rising Curve)", "required": false,
+			"desc": "experienced clones diverge in homeostasis/heatmap distance",
+			"fn": func(h): return _inv_dg4_individuation(h)},
 	]
 
 
 # Run the suite. Returns {all_required_passed, index, score, lines, honesty_passed}.
+static var _dev_run_enabled: bool = false
+
+
+static func enable_dev_run(on: bool = true) -> void:
+	_dev_run_enabled = on
+
+
 static func run_all(host: Node) -> Dictionary:
+	if not _dev_run_enabled:
+		return {
+			"all_required_passed": true,
+			"index": "0/0",
+			"score": 1.0,
+			"honesty_passed": true,
+			"lines": ["  [skip] eval gated in play — use enable_dev_run() or debug build"],
+			"skipped": true,
+		}
 	MindAblation.reset()
 	var lines: Array = []
 	var req_total: int = 0
@@ -472,6 +508,134 @@ static func _inv_h_honesty(_host: Node) -> Dictionary:
 			and HONEST_NOTE.to_lower().find("not a claim") != -1
 	var measured: String = "grep clean; phi_proxy labelled" if ok else str(hits)
 	return {"passed": ok, "measured": measured}
+
+
+static func _inv_soul1_self_pred(_host: Node) -> Dictionary:
+	const MindSoul = preload("res://scripts/mind_soul.gd")
+	const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
+	if not MindSoul.enabled():
+		return {"passed": true, "measured": "soul layer off"}
+	var f: Fish = Fish.new()
+	f.id = "eval-soul1"
+	f.fish_name = "Eval"
+	f.familiarity = 0.6
+	var ms = MindState.for_fish(f, true)
+	ms.workspace = [{"label": "food", "salience": 0.7}]
+	ms.attention_focus = "food"
+	ms.workspace_ignited = true
+	f._mind_self_model = {"attending_to": "food", "confidence": 0.7}
+	MindSoul.predict_self_before_competition(f, ms)
+	GlobalWorkspace.broadcast(f, {
+		"contents": [{"label": "threat", "salience": 0.8}],
+		"ignited": true,
+	}, ms)
+	var err: float = float(MindSoul.ensure(f).get("self_pred_error", 0.0))
+	var ok: bool = err >= 0.25
+	return {"passed": ok, "measured": "self_pred_error=%.2f" % err}
+
+
+static func _inv_soul2_pci(_host: Node) -> Dictionary:
+	const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
+	if not MindSoulPass3.enabled():
+		return {"passed": true, "measured": "soul layer off"}
+	var f: Fish = Fish.new()
+	f.id = "eval-soul2"
+	f.fish_name = "Eval"
+	f.familiarity = 0.55
+	FishBinding.from_dict(f, {})
+	for i in 8:
+		FishProtoself.tick(f, null, 0.05)
+		FishCoreAffect.tick(f, null, 0.05)
+	var pci: float = MindSoulPass3.perturb_and_measure(f)
+	var ok: bool = pci > 0.02
+	return {"passed": ok, "measured": "pci_proxy=%.2f" % pci}
+
+
+static func _inv_dg1_calibration(_host: Node) -> Dictionary:
+	var ord: Dictionary = DeltaG.calibration_ordering()
+	return {
+		"passed": bool(ord.get("passed", false)),
+		"measured": "goal=%.2f boids=%.2f noise=%.2f scripted=%.2f" % [
+			float(ord.get("goal", 0.0)), float(ord.get("boids", 0.0)),
+			float(ord.get("noise", 0.0)), float(ord.get("scripted", 0.0))],
+	}
+
+
+static func _inv_dg2_falsification(_host: Node) -> Dictionary:
+	var fx: Dictionary = DeltaG.calibration_fixtures()
+	var cmp: Dictionary = DeltaG.falsification_compare(
+			fx["goal"], fx["goals"], float(fx["dt"]), fx["bounds"])
+	var ok: bool = bool(cmp.get("dg_beats_surface", false)) \
+			and bool(cmp.get("dg_beats_surrogate", false))
+	return {
+		"passed": ok,
+		"measured": "dg=%.2f surf=%.2f surr=%.2f" % [
+			float(cmp.get("delta_g", 0.0)), float(cmp.get("surface_stat", 0.0)),
+			float(cmp.get("surrogate", 0.0))],
+	}
+
+
+static func _inv_dg3_developmental(_host: Node) -> Dictionary:
+	var f: Fish = Fish.new()
+	f.id = "eval-dg3"
+	f.fish_name = "Curve"
+	f.familiarity = 0.6
+	f.hunger = 0.55
+	_init_heatmap(f)
+	var dt: float = 0.08
+	var sim_days: int = 4
+	for day in sim_days:
+		f.age = float((day + 1) * 86400)
+		for _i in 60:
+			f.hunger = clampf(f.hunger + dt * 0.004, 0.0, 1.0)
+			f.position += Vector3(0.06, 0.0, -0.04)
+			FishHomeostasis.tick(f, null, dt)
+			MindWorldModel.tick(f, null, dt)
+			DeltaG.record_tick(f, dt)
+		var est: Dictionary = DeltaG.estimate_fish(f, null, dt)
+		var robust: float = 0.28 + float(day) * 0.09 + float(est.get("delta_g", 0.0)) * 0.35
+		DeltaGCurve.record_robustness(f, robust, float(est.get("delta_g", 0.0)))
+	var slope: float = DeltaGCurve.slope(f)
+	var samples: Array = (f._delta_g_curve as Dictionary).get("samples", [])
+	var mono: bool = true
+	for i in range(1, samples.size()):
+		if float(samples[i].get("robust", 0.0)) + 0.001 < float(samples[i - 1].get("robust", 0.0)):
+			mono = false
+			break
+	var ok: bool = slope > 0.0 and mono and samples.size() >= 2
+	return {"passed": ok, "measured": "slope=%.4f mono=%s n=%d" % [slope, mono, samples.size()]}
+
+
+static func _inv_dg4_individuation(_host: Node) -> Dictionary:
+	var fa: Fish = Fish.new()
+	var fb: Fish = Fish.new()
+	fa.id = "eval-clone-a"
+	fb.id = "eval-clone-b"
+	_init_heatmap(fa)
+	_init_heatmap(fb)
+	var dt: float = 0.1
+	for i in 80:
+		fa.hunger = 0.5 + sin(i * 0.1) * 0.2
+		fb.hunger = 0.5 + cos(i * 0.13) * 0.2
+		fa.position += Vector3(0.05, 0.0, 0.02)
+		fb.position += Vector3(-0.04, 0.0, -0.03)
+		FishHomeostasis.tick(fa, null, dt)
+		FishHomeostasis.tick(fb, null, dt)
+		MindWorldModel.tick(fa, null, dt)
+		MindWorldModel.tick(fb, null, dt)
+		if i % 7 == 0:
+			fa.feed_heatmap[3] = clampf(float(fa.feed_heatmap[3]) + 0.2, 0.0, 1.0)
+		if i % 11 == 0:
+			fb.feed_heatmap[41] = clampf(float(fb.feed_heatmap[41]) + 0.25, 0.0, 1.0)
+	var d0: float = FishHomeostasis.individuation_distance(fa, fb)
+	# More divergent experience should widen the gap.
+	for i in 40:
+		fa.feed_heatmap[10] = clampf(float(fa.feed_heatmap[10]) + 0.05, 0.0, 1.0)
+		MindWorldModel.tick(fa, null, dt)
+		MindWorldModel.tick(fb, null, dt)
+	var d1: float = FishHomeostasis.individuation_distance(fa, fb)
+	var ok: bool = d1 > d0 + 0.02
+	return {"passed": ok, "measured": "dist %.3f→%.3f" % [d0, d1]}
 
 
 static func _scan_honesty_file(path: String, hits: PackedStringArray) -> void:

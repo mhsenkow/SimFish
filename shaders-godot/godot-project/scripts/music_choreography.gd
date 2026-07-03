@@ -83,8 +83,15 @@ static func classify_genre(tempo: float, energy: float, danceability: float, val
 	return "pop"
 
 
+static var _genre_profile_cache: Dictionary = {}
+
+
 static func profile_for_genre(genre: String) -> Dictionary:
-	return GENRE_PROFILES.get(genre, GENRE_PROFILES["pop"]).duplicate()
+	if _genre_profile_cache.has(genre):
+		return _genre_profile_cache[genre] as Dictionary
+	var p: Dictionary = GENRE_PROFILES.get(genre, GENRE_PROFILES["pop"]).duplicate()
+	_genre_profile_cache[genre] = p
+	return p
 
 
 static func pick_move(

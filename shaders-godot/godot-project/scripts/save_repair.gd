@@ -33,17 +33,17 @@ static func _repair_sim(raw: Variant) -> Dictionary:
 		return {}
 	var sim: Dictionary = (raw as Dictionary).duplicate(true)
 	if sim.has("day_phase"):
-		sim["day_phase"] = clampf(float(sim["day_phase"]), 0.0, 1.0)
+		sim["day_phase"] = clampf(SaveHelpers._num(sim["day_phase"], 0.0), 0.0, 1.0)
 	if sim.has("dissolved_o2"):
-		sim["dissolved_o2"] = clampf(float(sim["dissolved_o2"]), 0.0, 1.0)
+		sim["dissolved_o2"] = clampf(SaveHelpers._num(sim["dissolved_o2"], 0.0), 0.0, 1.0)
 	if sim.has("stability"):
-		sim["stability"] = clampf(float(sim["stability"]), 0.0, 1.0)
+		sim["stability"] = clampf(SaveHelpers._num(sim["stability"], 0.0), 0.0, 1.0)
 	if sim.has("tank_age_s"):
-		sim["tank_age_s"] = maxf(0.0, float(sim["tank_age_s"]))
+		sim["tank_age_s"] = maxf(0.0, SaveHelpers._num(sim["tank_age_s"], 0.0))
 	if sim.has("elapsed_runtime_s"):
-		sim["elapsed_runtime_s"] = maxf(0.0, float(sim["elapsed_runtime_s"]))
+		sim["elapsed_runtime_s"] = maxf(0.0, SaveHelpers._num(sim["elapsed_runtime_s"], 0.0))
 	if sim.has("time_scale"):
-		sim["time_scale"] = clampf(float(sim["time_scale"]), 0.0, 64.0)
+		sim["time_scale"] = clampf(SaveHelpers._num(sim["time_scale"], 1.0), 0.0, 64.0)
 	if sim.has("tank_mind") and not (sim["tank_mind"] is Dictionary):
 		sim.erase("tank_mind")
 	if sim.has("guardian_arc") and not (sim["guardian_arc"] is Dictionary):

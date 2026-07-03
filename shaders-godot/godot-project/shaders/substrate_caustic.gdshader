@@ -47,6 +47,10 @@ uniform vec4 blob_shadow_points[32];
 uniform float blob_shadow_gain : hint_range(0.0, 1.5) = 1.0;
 uniform float blob_shadow_flash : hint_range(0.0, 1.0) = 0.0;
 uniform int blob_shadow_max : hint_range(8, 32) = 32;
+uniform sampler2D blob_shadow_tex : filter_nearest;
+uniform int blob_shadow_tex_count = 0;
+uniform sampler2D baked_caustics_tex : filter_linear, repeat_enable;
+uniform float caustic_baked = 0.0;
 uniform float shadow_calm : hint_range(0.0, 1.0) = 0.0;
 uniform float caustic_beat_pulse : hint_range(0.0, 1.0) = 0.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
@@ -92,11 +96,17 @@ float worley_caustic(vec2 uv, float t) {
 // a fainter, broader smudge than one hovering just over the sand.
 float compute_blob_shadow(vec3 world_pos) {
 	float shade = 1.0;
+	int max_i = blob_shadow_tex_count > 0 ? min(blob_shadow_tex_count, 16) : blob_shadow_max;
 	for (int i = 0; i < 32; i++) {
-		if (i >= blob_shadow_max) {
+		if (i >= max_i) {
 			continue;
 		}
-		vec4 p = blob_shadow_points[i];
+		vec4 p;
+		if (blob_shadow_tex_count > 0) {
+			p = texelFetch(blob_shadow_tex, ivec2(i, 0), 0);
+		} else {
+			p = blob_shadow_points[i];
+		}
 		if (p.w < 0.001) {
 			continue;
 		}
@@ -177,8 +187,8 @@ void fragment() {
         f = 0.68;        // +Z / -Z sides
     }
     vec3 base_color = albedo.rgb * f;
-    base_color = apply_global_palette_tint(base_color, palette_hue_shift,
-        palette_saturation, palette_warmth, palette_value);
+    base_color = apply_category_palette_tint(base_color, iaq_palette_substrate,
+        palette_hue_shift, palette_saturation, palette_warmth, palette_value);
     vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
     base_color = apply_material_grain(base_color, material_id, world_pos, grain_variation);
     // Hardscape contact AO darkens the substrate within registered
@@ -233,10 +243,14 @@ void fragment() {
                           1.0 + eff_strength * 0.20, shade);
     }
     
-    // 2. Caustics projection (same logic as caustics.gdshader)
+    // 2. Caustics projection (Worley live, or baked tile on potato tier)
     vec2 uv = world_pos.xz * caustic_scale;
     float t = TIME * caustic_speed;
-
+    float caustics = 0.0;
+    if (caustic_baked > 0.5) {
+        vec2 bt = uv * 0.12 + vec2(t * 0.04, -t * 0.03);
+        caustics = texture(baked_caustics_tex, bt).r * 0.46;
+    } else {
     // Same surface-gradient UV distortion as caustics.gdshader so the
     // pattern slides + warps with the overhead surface motion rather
     // than only modulating in brightness.
@@ -252,7 +266,8 @@ void fragment() {
     float cc1 = worley_caustic(uv * 0.85, t * 0.6);
     float cc2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
     float cweb = cc1 * 0.65 + cc1 * cc2 * 0.9;
-    float caustics = smoothstep(0.15, 0.85, cweb) * 0.46;
+    caustics = smoothstep(0.15, 0.85, cweb) * 0.46;
+    }
 
 	float edge_fade_x = clamp(1.0 - abs(world_pos.x) / 7.5, 0.0, 1.0);
 	float edge_fade_z = clamp(1.0 - abs(world_pos.z) / 3.5, 0.0, 1.0);

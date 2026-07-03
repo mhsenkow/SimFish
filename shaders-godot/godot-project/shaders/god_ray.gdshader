@@ -31,6 +31,8 @@ uniform float occluder_strength : hint_range(0.0, 1.0) = 0.65;
 // Posterize beam alpha into palette-friendly bands (#15).
 uniform float beam_posterize : hint_range(0.0, 1.0) = 0.55;
 uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
+// Suspended particulate sparkle in the shaft (#59).
+uniform float dust_mote_density : hint_range(0.0, 1.0) = 0.35;
 
 varying vec3 local_pos;
 varying vec3 world_vertex;
@@ -99,6 +101,13 @@ void fragment() {
 
 	float bands = floor(alpha * 5.0 + 0.5) / 5.0;
 	alpha = mix(alpha, bands, beam_posterize);
+	if (dust_mote_density > 0.001) {
+		float motes = smoothstep(0.78, 1.0,
+			sin(world_vertex.x * 11.0 + time * 2.2)
+			* sin(world_vertex.z * 10.0 - time * 1.7)
+			* sin(world_vertex.y * 8.5 + time * 1.4));
+		alpha += dust_mote_density * motes * vertical_curve * 0.16;
+	}
 
 	vec3 beam_rgb = mix(beam_color.rgb,
 		beam_color.rgb * vec3(1.12, 0.92, 0.78), sunset_warmth * 0.65);

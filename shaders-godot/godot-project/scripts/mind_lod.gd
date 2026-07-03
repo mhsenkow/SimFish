@@ -20,7 +20,7 @@ const T3_VOICE: int = 3
 
 
 # Status weight: guardian > named > familiar > anonymous.
-static func status_rank(f: Fish) -> int:
+static func status_rank(f) -> int:
 	if f.is_guardian:
 		return 3
 	if f.fish_name != "":
@@ -31,7 +31,7 @@ static func status_rank(f: Fish) -> int:
 
 
 # Assign a cognition tier. budget_pressure 0 = idle, 1 = overloaded (demotes all).
-static func tier_for(f: Fish, visible: bool, budget_pressure: float = 0.0) -> int:
+static func tier_for(f, visible: bool, budget_pressure: float = 0.0) -> int:
 	var status: int = status_rank(f)
 	var base: int
 	if visible:
@@ -61,3 +61,24 @@ static func runs_world_model(tier: int) -> bool:
 
 static func runs_voice(tier: int) -> bool:
 	return tier >= T3_VOICE
+
+
+const TIER_HYSTERESIS_S: float = 0.5
+
+
+# PERFORMANCE_UNTHROTTLED #9 — debounce tier transitions at frustum edges.
+static func tier_for_hysteresis(f, visible: bool, budget_pressure: float, dt: float,
+		current_tier: int) -> int:
+	var target: int = tier_for(f, visible, budget_pressure)
+	if f == null:
+		return target
+	if target == current_tier:
+		f._lod_tier_hold_s = 0.0
+		return current_tier
+	var hold: float = float(f.get("_lod_tier_hold_s") if f.get("_lod_tier_hold_s") != null else 0.0)
+	hold += maxf(dt, 0.0)
+	f._lod_tier_hold_s = hold
+	if hold < TIER_HYSTERESIS_S:
+		return current_tier
+	f._lod_tier_hold_s = 0.0
+	return target

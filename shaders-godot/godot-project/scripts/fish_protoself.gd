@@ -3,6 +3,7 @@ extends RefCounted
 # SENTIENCE_THE_FELT_SELF §1 — felt body schema (Damasio protoself).
 
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const MindSoul = preload("res://scripts/mind_soul.gd")
 
 const SCHEMA_VERSION: int = 1
 
@@ -11,10 +12,11 @@ static func enabled() -> bool:
 	return FeltSelfLayer.layer_enabled()
 
 
-static func ensure(f: Fish) -> Dictionary:
-	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):
-		f._felt_self = {}
-	var fs: Dictionary = f._felt_self as Dictionary
+static func ensure(f) -> Dictionary:
+	var fs_v: Variant = f.get("_felt_self")
+	var fs: Dictionary = {}
+	if fs_v is Dictionary:
+		fs = (fs_v as Dictionary).duplicate(true)
 	if fs.get("protoself") == null or not (fs["protoself"] is Dictionary):
 		fs["protoself"] = {
 			"schema_version": SCHEMA_VERSION,
@@ -28,11 +30,12 @@ static func ensure(f: Fish) -> Dictionary:
 			"predicted_hunger": 0.3,
 			"body_changed_notice": "",
 		}
-	f._felt_self = fs
+	if f is Object:
+		(f as Object).set("_felt_self", fs)
 	return fs["protoself"] as Dictionary
 
 
-static func tick(f: Fish, _sim: Node, dt: float) -> void:
+static func tick(f, _sim: Node, dt: float) -> void:
 	if not enabled() or f == null:
 		return
 	var pb: Dictionary = ensure(f)
@@ -51,6 +54,13 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 			clampf(dt * 2.5, 0.0, 1.0))
 	var comfort: float = clampf(1.0 - f.stress * 0.55 - f.hunger * 0.25 - o2_pen * 0.3, 0.0, 1.0)
 	pb["comfort"] = lerpf(float(pb.get("comfort", 0.5)), comfort, clampf(dt * 1.2, 0.0, 1.0))
+	# SOUL #47 — aging body as interoceptive truth.
+	if MindSoul.enabled():
+		var mort: Dictionary = MindSoul.mortality_shift(f)
+		var decline: float = float(mort.get("decline", 0.0))
+		if decline > 0.35:
+			pb["vitality_decline"] = lerpf(float(pb.get("vitality_decline", 0.0)), decline, dt * 0.4)
+			pb["comfort"] = lerpf(float(pb.get("comfort", 0.5)), comfort * (1.0 - decline * 0.35), dt * 0.6)
 	pb["pain"] = lerpf(float(pb.get("pain", 0.0)),
 			clampf(f.stress * 0.4 + o2_pen * 0.5, 0.0, 1.0), clampf(dt * 1.5, 0.0, 1.0))
 	# Bodily prediction error → surprise (#4).
@@ -69,13 +79,13 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	(f._felt_self as Dictionary)["protoself"] = pb
 
 
-static func baseline_bid(f: Fish) -> Dictionary:
+static func baseline_bid(f) -> Dictionary:
 	var pb: Dictionary = ensure(f)
 	var hum: float = 0.18 + float(pb.get("gill_rhythm", 0.5)) * 0.12 + float(pb.get("comfort", 0.5)) * 0.08
 	return {"label": "body_hum", "salience": hum, "coalition": ["body", "interoception"]}
 
 
-static func organ_bids(f: Fish) -> Array:
+static func organ_bids(f) -> Array:
 	var pb: Dictionary = ensure(f)
 	var out: Array = []
 	if float(pb.get("gut_fullness", 0.0)) > 0.42:
@@ -93,7 +103,7 @@ static func organ_bids(f: Fish) -> Array:
 	return out
 
 
-static func dominant_source(f: Fish) -> String:
+static func dominant_source(f) -> String:
 	var pb: Dictionary = ensure(f)
 	var best: String = "comfort"
 	var best_v: float = float(pb.get("comfort", 0.5))
@@ -105,7 +115,7 @@ static func dominant_source(f: Fish) -> String:
 	return best
 
 
-static func inspector_lines(f: Fish) -> PackedStringArray:
+static func inspector_lines(f) -> PackedStringArray:
 	var pb: Dictionary = ensure(f)
 	return PackedStringArray([
 		"gills %.2f · gut %.2f · fins %.2f" % [
@@ -117,11 +127,11 @@ static func inspector_lines(f: Fish) -> PackedStringArray:
 	])
 
 
-static func to_dict(f: Fish) -> Dictionary:
+static func to_dict(f) -> Dictionary:
 	return ensure(f).duplicate(true)
 
 
-static func from_dict(f: Fish, d: Variant) -> void:
+static func from_dict(f, d: Variant) -> void:
 	if d is not Dictionary:
 		return
 	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):

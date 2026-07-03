@@ -39,6 +39,8 @@ var palette_bank_lock: bool = true
 # Soft global outline at color-discontinuities (NES-style readability).
 # 0 = off (default), up to 1 = strong dark line on every silhouette.
 var outline_strength: float = 0.0
+# Extra post-process ink on fauna/plants — independent of outline_strength.
+var creature_outline_strength: float = 0.36
 # CRT scanline overlay strength. 0 = off (default). Pairs with palette
 # quantize for a heavier retro display feel.
 var crt_strength: float = 0.0
@@ -47,12 +49,18 @@ var crt_strength: float = 0.0
 # the final monitor. Eliminates subpixel shimmer on creature motion at
 # the cost of letterboxing.
 var integer_upscale: bool = false
+# SENTIENCE_THE_SPARK — mind→render bridge + follow-mode inner life panel.
+var spark_expression_enabled: bool = true
+var inner_life_panel: bool = OS.is_debug_build()
+var perf_hud_enabled: bool = false
 # Adaptive quality — main.gd watches a rolling FPS average and steps the
 # SubViewport resolution (plus optionally MSAA / fog) down when frame
 # rate falls below the target, then back up when there's headroom.
 # Lets a single TankConfig render the tank correctly across desktop +
-# mobile without manual tuning.
-var adaptive_quality: bool = false
+# mobile without manual tuning. On by default — main.gd steps SubViewport
+# resolution down when frame rate falls below target_fps, then back up
+# when there is headroom (see _adaptive_quality_tick).
+var adaptive_quality: bool = true
 var adaptive_quality_target_fps: int = 55
 # Snap the orbit camera to the world-space size of a single render pixel
 # so swimming creatures don't sub-pixel-jitter against the static
@@ -60,11 +68,9 @@ var adaptive_quality_target_fps: int = 55
 # smooth auto-orbit cinematography.
 var pixel_snap_camera: bool = false
 # Cinematic depth-of-field on the followed creature. When following a fish, the
-# far/near layers blur so the eye locks onto the subject. Off by default — on
-# the Mobile renderer the blur reads through the palette pass as a dreamy
-# full-frame smear that some find striking and others find wrong, so it's an
-# opt-in "look" rather than the default.
-var follow_depth_of_field: bool = false
+# far/near layers blur so the eye locks onto the subject. On by default on
+# desktop; mobile preset still resets it off (palette pass smear reads wrong there).
+var follow_depth_of_field: bool = true
 # Follow DOF tuning — only applied when follow_depth_of_field is on.
 var follow_dof_blur_strength: float = 0.06      # 0..0.25 — blur intensity
 var follow_dof_far_softness: float = 2.0        # far transition width (world units)
@@ -269,12 +275,18 @@ var guardian_mind_consent: String = "pending"
 var guardian_mind_info_seen: bool = false
 # Consciousness engineering ablation toggles (CONSCIOUSNESS_ENGINEERING_IDEAS §J #99).
 var consciousness_workspace_enabled: bool = true
+# PERFORMANCE_REALTIME #95 — batched attention/bind/encode on WorkerThreadPool.
+var mind_brain_threads: bool = true
+# PERFORMANCE_UNTHROTTLED #1 — 15 Hz mind cadence (0 = legacy per-frame).
+var mind_cadence_hz: float = 15.0
 var consciousness_writeback_enabled: bool = true
 var consciousness_stream_enabled: bool = true
 # META #1-full — unified expected-free-energy drives (see docs/ACTIVE_INFERENCE_CORE.md).
 var consciousness_active_inference: bool = true
 # SENTIENCE_THE_FELT_SELF — phenomenal layer (body → affect → binding).
 var felt_self_enabled: bool = true
+# SENTIENCE_THE_RISING_CURVE §A9 — off-by-default goal-legibility overlay (never "consciousness").
+var delta_g_overlay_enabled: bool = false
 # DARING §J #94 — keeper input consent toggles (local, opt-in where sensitive).
 var keeper_ears_enabled: bool = true
 var keeper_gaze_enabled: bool = true
@@ -717,8 +729,10 @@ func current_vessel_profile() -> Dictionary:
 
 
 func apply_vessel_preset(slug: String) -> void:
+	begin_settings_batch()
 	vessel_preset = slug
 	if slug == "custom" or not VESSEL_PRESETS.has(slug):
+		end_settings_batch()
 		return
 	var preset: Dictionary = VESSEL_PRESETS[slug]
 	for key in preset.keys():
@@ -726,6 +740,7 @@ func apply_vessel_preset(slug: String) -> void:
 			continue
 		if key in self:
 			set(key, preset[key])
+	end_settings_batch()
 
 
 # ---- Fauna ----
@@ -738,10 +753,10 @@ var auto_feed_fauna: bool = false
 var guardian_companion_enabled: bool = true
 var guardian_may_enable_autofeed: bool = true
 # Live swim/grouping multipliers — read every fish tick; no reload required.
-var fauna_schooling_mult: float = 1.0
-var fauna_separation_mult: float = 1.0
-var fauna_wander_mult: float = 1.0
-var fauna_speed_mult: float = 1.0
+var fauna_schooling_mult: float = 0.85
+var fauna_separation_mult: float = 1.15
+var fauna_wander_mult: float = 1.35
+var fauna_speed_mult: float = 1.05
 var fauna_school_pulse_enabled: bool = true
 var fauna_school_pulse_amplitude: float = 0.15
 var fauna_mourning_enabled: bool = true
@@ -1615,14 +1630,17 @@ const LIGHTING_PRESETS: Dictionary = {
 
 
 func apply_lighting_preset(slug: String) -> void:
+	begin_settings_batch()
 	lighting_preset = slug
 	if slug == "custom" or not LIGHTING_PRESETS.has(slug):
+		end_settings_batch()
 		return
 	var preset: Dictionary = LIGHTING_PRESETS[slug]
 	for key in preset.keys():
 		if key == "label":
 			continue
 		set(key, preset[key])
+	end_settings_batch()
 
 
 func suggested_lighting_for_environment(env_slug: String) -> String:
@@ -2088,16 +2106,59 @@ func current_substrate_profile() -> Dictionary:
 # single-file path on first launch (TankSaves' migration step copies the
 # old file into slot 1 so this is a tight backstop, not a hot path).
 const LEGACY_SAVE_PATH := "user://tank_config.cfg"
+const SAVE_COALESCE_S: float = 0.5
+
+var _save_timer: Timer = null
+var _save_in_flight: bool = false
+var _save_queued: bool = false
+var _settings_batch_depth: int = 0
+var _save_pending_from_batch: bool = false
 
 
-func _current_save_path() -> String:
-	var saves := get_node_or_null("/root/TankSaves")
-	if saves == null:
-		return LEGACY_SAVE_PATH
-	return saves.config_path(int(saves.active_slot))
+# PERFORMANCE_REALTIME #87 — coalesce preset cascades into one save at batch end.
+func begin_settings_batch() -> void:
+	_settings_batch_depth += 1
+
+
+func end_settings_batch(flush_save: bool = false) -> void:
+	_settings_batch_depth = maxi(0, _settings_batch_depth - 1)
+	if _settings_batch_depth > 0:
+		return
+	if _save_pending_from_batch or flush_save:
+		_save_pending_from_batch = false
+		request_save_to_disk()
+
+
+func request_save_to_disk() -> void:
+	if _settings_batch_depth > 0:
+		_save_pending_from_batch = true
+		return
+	if _save_timer != null:
+		_save_timer.start()
 
 
 func save_to_disk() -> void:
+	if _save_in_flight:
+		_save_queued = true
+		return
+	_save_in_flight = true
+	var cfg: ConfigFile = _build_save_config_file()
+	var path: String = _current_save_path()
+	var self_ref: Object = self
+	WorkerThreadPool.add_task(func() -> void:
+		cfg.save(path)
+		# call_deferred is thread-safe; never touch the scene tree from the worker.
+		self_ref.call_deferred("_on_save_worker_finished"))
+
+
+func _on_save_worker_finished() -> void:
+	_save_in_flight = false
+	if _save_queued:
+		_save_queued = false
+		save_to_disk()
+
+
+func _build_save_config_file() -> ConfigFile:
 	var cfg := ConfigFile.new()
 	cfg.set_value("tank", "half_w", tank_half_w)
 	cfg.set_value("tank", "half_d", tank_half_d)
@@ -2262,6 +2323,7 @@ func save_to_disk() -> void:
 	cfg.set_value("render", "shader_perf_tier", shader_perf_tier)
 	cfg.set_value("render", "palette_bank_lock", palette_bank_lock)
 	cfg.set_value("render", "outline_strength", outline_strength)
+	cfg.set_value("render", "creature_outline_strength", creature_outline_strength)
 	cfg.set_value("render", "crt_strength", crt_strength)
 	cfg.set_value("render", "integer_upscale", integer_upscale)
 	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
@@ -2335,16 +2397,26 @@ func save_to_disk() -> void:
 	cfg.set_value("ai", "guardian_voice_explainer_seen", guardian_voice_explainer_seen)
 	cfg.set_value("ai", "sentience_voice_off", sentience_voice_off)
 	cfg.set_value("ai", "consciousness_workspace_enabled", consciousness_workspace_enabled)
+	cfg.set_value("ai", "mind_brain_threads", mind_brain_threads)
+	cfg.set_value("ai", "mind_cadence_hz", mind_cadence_hz)
 	cfg.set_value("ai", "consciousness_writeback_enabled", consciousness_writeback_enabled)
 	cfg.set_value("ai", "consciousness_stream_enabled", consciousness_stream_enabled)
 	cfg.set_value("ai", "consciousness_active_inference", consciousness_active_inference)
 	cfg.set_value("ai", "felt_self_enabled", felt_self_enabled)
+	cfg.set_value("ai", "delta_g_overlay_enabled", delta_g_overlay_enabled)
 	cfg.set_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	cfg.set_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
 	cfg.set_value("ai", "keeper_mic_enabled", keeper_mic_enabled)
 	cfg.set_value("ai", "voice_language", voice_language)
 	cfg.set_value("ai", "mind_system_version_seen", mind_system_version_seen)
-	cfg.save(_current_save_path())
+	return cfg
+
+
+func _current_save_path() -> String:
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves == null:
+		return LEGACY_SAVE_PATH
+	return saves.config_path(int(saves.active_slot))
 
 
 func load_from_disk() -> void:
@@ -2535,6 +2607,7 @@ func load_from_disk() -> void:
 	shader_perf_tier = int(cfg.get_value("render", "shader_perf_tier", shader_perf_tier))
 	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
+	creature_outline_strength = cfg.get_value("render", "creature_outline_strength", creature_outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
 	experimental_visuals = cfg.get_value("render", "experimental_visuals", experimental_visuals)
 	pixel_purity = cfg.get_value("render", "pixel_purity", pixel_purity)
@@ -2610,6 +2683,8 @@ func load_from_disk() -> void:
 	sentience_voice_off = cfg.get_value("ai", "sentience_voice_off", sentience_voice_off)
 	consciousness_workspace_enabled = cfg.get_value("ai", "consciousness_workspace_enabled",
 			consciousness_workspace_enabled)
+	mind_brain_threads = cfg.get_value("ai", "mind_brain_threads", mind_brain_threads)
+	mind_cadence_hz = float(cfg.get_value("ai", "mind_cadence_hz", mind_cadence_hz))
 	consciousness_writeback_enabled = cfg.get_value("ai", "consciousness_writeback_enabled",
 			consciousness_writeback_enabled)
 	consciousness_stream_enabled = cfg.get_value("ai", "consciousness_stream_enabled",
@@ -2617,6 +2692,7 @@ func load_from_disk() -> void:
 	consciousness_active_inference = cfg.get_value("ai", "consciousness_active_inference",
 			consciousness_active_inference)
 	felt_self_enabled = cfg.get_value("ai", "felt_self_enabled", felt_self_enabled)
+	delta_g_overlay_enabled = cfg.get_value("ai", "delta_g_overlay_enabled", delta_g_overlay_enabled)
 	keeper_ears_enabled = cfg.get_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
 	keeper_gaze_enabled = cfg.get_value("ai", "keeper_gaze_enabled", keeper_gaze_enabled)
 	keeper_mic_enabled = cfg.get_value("ai", "keeper_mic_enabled", keeper_mic_enabled)
@@ -2664,6 +2740,11 @@ func effective_fish_thought_voice_enabled() -> bool:
 
 
 func _ready() -> void:
+	_save_timer = Timer.new()
+	_save_timer.one_shot = true
+	_save_timer.wait_time = SAVE_COALESCE_S
+	_save_timer.timeout.connect(save_to_disk)
+	add_child(_save_timer)
 	load_from_disk()
 	var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
 	Aesthetics.apply_first_launch_defaults(self)
@@ -2811,10 +2892,10 @@ func reset_to_defaults() -> void:
 	auto_feed_fauna = false
 	cycle_start_mode = "established"
 	plant_youth_scale = 0.52
-	fauna_schooling_mult = 1.0
-	fauna_separation_mult = 1.0
-	fauna_wander_mult = 1.0
-	fauna_speed_mult = 1.0
+	fauna_schooling_mult = 0.85
+	fauna_separation_mult = 1.15
+	fauna_wander_mult = 1.35
+	fauna_speed_mult = 1.05
 	fauna_school_pulse_enabled = true
 	fauna_school_pulse_amplitude = 0.15
 	fauna_mourning_enabled = true
@@ -2837,6 +2918,7 @@ func reset_to_defaults() -> void:
 	dither_region_aware = true
 	palette_bank_lock = true
 	outline_strength = 0.0
+	creature_outline_strength = 0.36
 	crt_strength = 0.0
 	integer_upscale = false
 	pixel_snap_camera = false

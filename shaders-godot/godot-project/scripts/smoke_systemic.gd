@@ -25,6 +25,8 @@ func _run_all() -> bool:
 		return false
 	if not _test_save_json_bound():
 		return false
+	if not _test_inf_json_roundtrip():
+		return false
 	return true
 
 
@@ -70,6 +72,43 @@ func _test_save_json_bound() -> bool:
 	return true
 
 
+func _test_inf_json_roundtrip() -> bool:
+	var saves: Node = TankSavesScript.new()
+	var path: String = "user://smoke_systemic_inf.json"
+	var abs: String = ProjectSettings.globalize_path(path)
+	var raw: String = JSON.stringify({"home": [INF, 1.0, 2.0], "neg": -INF})
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return _fail("could not create inf fixture")
+	f.store_string(raw)
+	f.close()
+	var d: Dictionary = saves.read_json(path)
+	if FileAccess.file_exists(abs):
+		DirAccess.remove_absolute(abs)
+	if d.is_empty():
+		return _fail("read_json must parse legacy ±INF saves")
+	if not (d.get("home") is Array):
+		return _fail("read_json must preserve inf-sanitized arrays")
+	if not _test_save_repair_null_sim():
+		return false
+	return true
+
+
+func _test_save_repair_null_sim() -> bool:
+	var fixed: Dictionary = SaveRepair.sanitize({
+		"version": 1,
+		"sim": {"stability": null, "day_phase": null, "time_scale": null},
+		"fish": [],
+		"plants": [],
+	})
+	var sim: Dictionary = fixed.get("sim", {})
+	if not (sim is Dictionary):
+		return _fail("SaveRepair must tolerate null sim scalars")
+	if SaveHelpers._num(sim.get("stability", 1.0), 1.0) != 0.0:
+		return _fail("SaveRepair must coerce null stability to 0")
+	return true
+
+
 func _test_save_repair() -> bool:
 	var raw: Dictionary = {
 		"version": "bad",
@@ -80,6 +119,6 @@ func _test_save_repair() -> bool:
 	var fixed: Dictionary = SaveRepair.sanitize(raw)
 	if not (fixed.get("fish") is Array) or (fixed["fish"] as Array).size() != 2:
 		return _fail("SaveRepair must filter invalid fish entries")
-	if float((fixed["sim"] as Dictionary).get("stability", 0.0)) > 1.0:
+	if SaveHelpers._num((fixed["sim"] as Dictionary).get("stability", 0.0), 0.0) > 1.0:
 		return _fail("SaveRepair must clamp stability")
 	return true

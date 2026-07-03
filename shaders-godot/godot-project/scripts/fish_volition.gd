@@ -3,6 +3,7 @@ extends RefCounted
 # SENTIENCE_THE_FELT_SELF §9 — felt volition / endogenous agency.
 
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
 
 const SCHEMA_VERSION: int = 1
 
@@ -42,7 +43,7 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	if f.current_intention != "" and str(v.get("intention_hold", "")) == "":
 		v["intention_hold"] = f.current_intention
 	elif f.current_intention == "" and str(v.get("intention_hold", "")) != "":
-		if randf() < dt * 0.08:
+		if MindRng.for_fish(f).randf() < dt * 0.08:
 			f.current_intention = str(v["intention_hold"])
 	# Mend will (#88).
 	if bool(f.get("_mend_pending")) and float(v.get("will_pool", 1.0)) > 0.35:
@@ -65,6 +66,7 @@ static func try_veto(f: Fish) -> bool:
 		v["veto_cd"] = 1.2
 		v["authorship"] = clampf(float(v.get("authorship", 0.0)) + 0.08, 0.0, 1.0)
 		(f._felt_self as Dictionary)["volition"] = v
+		MindSoulPass3.record_veto(f, null)
 		return true
 	return false
 

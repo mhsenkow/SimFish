@@ -77,10 +77,32 @@ static func present(f: Fish) -> Dictionary:
 	var now_label: String = "idle"
 	var now_line: String = ""
 	var just_was: String = ""
+	var width_s: float = float(fn.get("present_width", 1.0)) * PRESENT_S
+	var now_ms: int = Time.get_ticks_msec()
+	var held_labels: Dictionary = {}
+	for fr in frames:
+		if not fr is Dictionary:
+			continue
+		var age_s: float = float(now_ms - int((fr as Dictionary).get("t", now_ms))) / 1000.0
+		if age_s > width_s:
+			continue
+		var lb: String = str((fr as Dictionary).get("label", "idle"))
+		held_labels[lb] = int(held_labels.get(lb, 0)) + 1
+		if bool((fr as Dictionary).get("ignited", false)):
+			held_labels[lb] = int(held_labels.get(lb, 0)) + 1
+	if not held_labels.is_empty():
+		var best_lb: String = "idle"
+		var best_n: int = 0
+		for lb in held_labels.keys():
+			if int(held_labels[lb]) > best_n:
+				best_n = int(held_labels[lb])
+				best_lb = str(lb)
+		now_label = best_lb
 	if not frames.is_empty():
 		var last: Dictionary = frames[-1]
-		now_label = str(last.get("label", "idle"))
 		now_line = str(last.get("line", ""))
+		if now_line == "":
+			now_line = f.workspace_thought_for(now_label) if now_label != "idle" else ""
 	if frames.size() > 1:
 		just_was = str((frames[-2] as Dictionary).get("label", ""))
 	var proto: String = FishGenerativeSelf.protention(f)

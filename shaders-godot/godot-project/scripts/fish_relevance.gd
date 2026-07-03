@@ -4,6 +4,7 @@ extends RefCounted
 
 const FishCoreAffect = preload("res://scripts/fish_core_affect.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
+const FishSparkBehavior = preload("res://scripts/fish_spark_behavior.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
 
@@ -15,10 +16,11 @@ static func enabled() -> bool:
 	return FeltSelfLayer.layer_enabled()
 
 
-static func ensure(f: Fish) -> Dictionary:
-	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):
-		f._felt_self = {}
-	var fs: Dictionary = f._felt_self as Dictionary
+static func ensure(f) -> Dictionary:
+	var fs_v: Variant = f.get("_felt_self")
+	var fs: Dictionary = {}
+	if fs_v is Dictionary:
+		fs = (fs_v as Dictionary).duplicate(true)
 	if fs.get("relevance") == null or not (fs["relevance"] is Dictionary):
 		fs["relevance"] = {
 			"schema_version": SCHEMA_VERSION,
@@ -26,11 +28,12 @@ static func ensure(f: Fish) -> Dictionary:
 			"boredom": 0.0,
 			"last_surprise_t": 0.0,
 		}
-	f._felt_self = fs
+	if f is Object:
+		(f as Object).set("_felt_self", fs)
 	return fs["relevance"] as Dictionary
 
 
-static func realize(f: Fish, _sim: Node, bids: Array, dt: float) -> Array:
+static func realize(f, _sim, bids: Array, dt: float) -> Array:
 	if not enabled() or bids.is_empty():
 		return bids
 	var rel: Dictionary = ensure(f)
@@ -42,7 +45,7 @@ static func realize(f: Fish, _sim: Node, bids: Array, dt: float) -> Array:
 			clampf(curious * 0.5 + (1.0 - absf(val)) * 0.2, 0.05, 0.75), dt * 0.08)
 	var out: Array = []
 	for b in bids:
-		var nb: Dictionary = (b as Dictionary).duplicate(true)
+		var nb: Dictionary = (b as Dictionary)
 		var label: String = str(nb.get("label", ""))
 		var sal: float = float(nb.get("salience", 0.0))
 		# Caring from core (#20).
@@ -76,10 +79,14 @@ static func realize(f: Fish, _sim: Node, bids: Array, dt: float) -> Array:
 			var hk: String = str((f._episodic_retrieval_hint as Dictionary).get("kind", ""))
 			if hk != "" and label.contains(hk):
 				sal *= 1.12
+		# SENTIENCE_THE_SPARK #42 — Markov blanket narrows external percepts under extremis.
+		sal *= FishSparkBehavior.markov_blanket_percept_scale(f, label)
 		nb["salience"] = maxf(0.0, sal)
 		nb["felt_tone"] = FishCoreAffect.tone_for_label(f, label)
 		out.append(nb)
-	out.sort_custom(func(a, b): return float(a.get("salience", 0.0)) > float(b.get("salience", 0.0)))
+	var max_sal: float = 0.0
+	for b in out:
+		max_sal = maxf(max_sal, float(b.get("salience", 0.0)))
 	# Finite economy (#23).
 	var total: float = 0.0
 	for b in out:
@@ -89,7 +96,7 @@ static func realize(f: Fish, _sim: Node, bids: Array, dt: float) -> Array:
 		for b in out:
 			b["salience"] = float(b.get("salience", 0.0)) * scale
 	# Boredom (#29).
-	var flat: bool = out.is_empty() or float(out[0].get("salience", 0.0)) < 0.28
+	var flat: bool = out.is_empty() or max_sal < 0.28
 	if flat:
 		rel["boredom"] = clampf(float(rel.get("boredom", 0.0)) + dt * 0.04, 0.0, 1.0)
 		if rel["boredom"] > 0.55:
@@ -97,5 +104,9 @@ static func realize(f: Fish, _sim: Node, bids: Array, dt: float) -> Array:
 					"coalition": ["self", "explore"], "affordance": "manufacture_goal"})
 	else:
 		rel["boredom"] = maxf(0.0, float(rel.get("boredom", 0.0)) - dt * 0.02)
-	(f._felt_self as Dictionary)["relevance"] = rel
+	var fs_out: Variant = f.get("_felt_self")
+	if fs_out is Dictionary:
+		(fs_out as Dictionary)["relevance"] = rel
+		if f is Object:
+			(f as Object).set("_felt_self", fs_out)
 	return out

@@ -171,9 +171,10 @@ func _toggle_settings() -> void:
 	var panel: Variant = _main.get("settings_panel")
 	if panel == null:
 		return
-	if panel.visible and panel.has_method("toggle"):
+	if panel.has_method("toggle"):
 		panel.toggle()
-	elif panel.has_method("_pull_from_config"):
+		return
+	if panel.has_method("_pull_from_config"):
 		panel.visible = true
 		panel.mouse_filter = Control.MOUSE_FILTER_STOP
 		panel._pull_from_config()
@@ -182,6 +183,9 @@ func _toggle_settings() -> void:
 func _toggle_render() -> void:
 	var panel: Variant = _main.get("render_panel")
 	if panel == null:
+		return
+	if panel.has_method("toggle"):
+		panel.toggle()
 		return
 	if panel.visible:
 		panel.visible = false
@@ -197,13 +201,14 @@ func _toggle_sound() -> void:
 	var panel: Variant = _main.get("sound_panel")
 	if panel == null:
 		return
+	if panel.has_method("toggle"):
+		panel.toggle()
+		return
 	if panel.visible and panel.has_method("_close"):
 		panel._close()
-		panel.set_process(false)
 	elif panel.has_method("_pull_from_config"):
 		panel.visible = true
 		panel.mouse_filter = Control.MOUSE_FILTER_STOP
-		panel.set_process(true)
 		panel._pull_from_config()
 		if panel.has_method("_refresh_live_readout"):
 			panel._refresh_live_readout()

@@ -25,6 +25,7 @@ SteamService="*res://scripts/steam_service.gd"
 AIDirector="*res://scripts/ai_director.gd"
 GuardianLlm="*res://scripts/guardian_llm.gd"
 MusicContext="*res://scripts/music_context.gd"
+UiTicker="*res://scripts/ui_ticker.gd"
 
 [display]
 
@@ -44,6 +45,29 @@ renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.05, 0.04, 0.07, 1)
 2d/snap/snap_2d_transforms_to_pixel=true
+
+[shader_globals]
+
+iaq_palette_fauna={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_palette_foliage={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_palette_hardscape={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_palette_substrate={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_palette_water={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
 
 [steam]
 

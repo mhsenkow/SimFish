@@ -19,7 +19,7 @@ const GRU_HIDDEN: int = 8
 const GRU_OUT: int = 3   # predicts next [hunger, stress, curiosity]
 
 
-static func ensure_model(f: Fish) -> Dictionary:
+static func ensure_model(f) -> Dictionary:
 	if f.get("_world_model") == null or not (f._world_model is Dictionary):
 		f._world_model = {
 			"weights": _default_weights(),
@@ -62,8 +62,8 @@ static func _zeros(n: int) -> PackedFloat32Array:
 
 # Seeded weight init, deterministic from the fish id (same id → same model, so a
 # replay reproduces the fish's mind). Small uniform weights keep the cell stable.
-static func _gru_init(f: Fish) -> Dictionary:
-	var id_str: String = String(f.id) if f.get("id") != null else "anon"
+static func _gru_init(f) -> Dictionary:
+	var id_str: String = str(f.id) if f.get("id") != null else "anon"
 	var rng := RandomNumberGenerator.new()
 	rng.seed = SimRng.stream_seed(0x5EED, SimRng.entity_stream_name("world_model_gru", id_str))
 	return {
@@ -125,7 +125,29 @@ static func _gru_step(m: Dictionary, x: PackedFloat32Array) -> Dictionary:
 	return {"pred": pred, "gate_mean": gate_sum / float(GRU_HIDDEN)}
 
 
-static func state_vector(f: Fish) -> PackedFloat32Array:
+# Delta-rule on output layer: reduce next-step prediction error over a life.
+static func _gru_learn_readout(m: Dictionary, actual: PackedFloat32Array,
+		predicted: PackedFloat32Array, dt: float) -> void:
+	if not m.has("gw") or predicted.size() < GRU_OUT:
+		return
+	var gw: Dictionary = m["gw"]
+	if not gw.has("Wo") or not gw.has("h"):
+		return
+	var lr: float = clampf(dt * 0.14, 0.004, 0.09)
+	var h: PackedFloat32Array = m["h"]
+	var Wo: PackedFloat32Array = gw["Wo"]
+	for o in GRU_OUT:
+		var err: float = actual[o] - predicted[o]
+		if absf(err) < 0.001:
+			continue
+		var base: int = o * GRU_HIDDEN
+		for i in GRU_HIDDEN:
+			Wo[base + i] = clampf(Wo[base + i] + lr * err * h[i], -1.2, 1.2)
+	gw["Wo"] = Wo
+	m["gw"] = gw
+
+
+static func state_vector(f) -> PackedFloat32Array:
 	var v: PackedFloat32Array = PackedFloat32Array()
 	v.resize(STATE_DIM)
 	v[0] = f.hunger
@@ -137,7 +159,7 @@ static func state_vector(f: Fish) -> PackedFloat32Array:
 	return v
 
 
-static func tick(f: Fish, _sim: Node, dt: float) -> void:
+static func tick(f, _sim: Node, dt: float) -> void:
 	var m: Dictionary = ensure_model(f)
 	var s: PackedFloat32Array = state_vector(f)
 	var w: PackedFloat32Array = m.get("weights", _default_weights())
@@ -150,9 +172,17 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	var novelty: float = clampf(f.curiosity_drive * 0.6 + f.surprise * 0.4, 0.0, 1.0)
 	m["variance"] = lerpf(float(m.get("variance", 0.35)), 0.15 + novelty * 0.55, dt * 0.5)
 	m["updates"] = int(m.get("updates", 0)) + 1
-	# Online nudge — cheap linear adaptation
+	# Online adaptation — error-driven nudge (§E42), not blind schedule drift.
+	var pred_h: float = float((m["predicted"] as Vector3).x) if m.get("predicted") is Vector3 else f.hunger
+	var pred_s: float = float((m["predicted"] as Vector3).y) if m.get("predicted") is Vector3 else f.stress
+	var err_vec: PackedFloat32Array = PackedFloat32Array()
+	err_vec.resize(3)
+	err_vec[0] = f.hunger - pred_h
+	err_vec[1] = f.stress - pred_s
+	err_vec[2] = f.surprise
+	var lr_lin: float = clampf(dt * 0.05, 0.002, 0.04)
 	for i in STATE_DIM:
-		w[i] = clampf(w[i] + (s[i] - 0.5) * dt * 0.02, 0.05, 0.85)
+		w[i] = clampf(w[i] + err_vec[i % 3] * lr_lin, 0.05, 0.85)
 	m["weights"] = w
 	# 1B — recurrent GRU-lite pass: score LAST tick's prediction against the state
 	# we actually landed in (predictive-processing error WITH temporal context),
@@ -160,8 +190,22 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	var gp: PackedFloat32Array = m.get("gru_pred", _zeros(GRU_OUT))
 	var gerr: float = (absf(gp[0] - s[0]) + absf(gp[1] - s[1]) + absf(gp[2] - s[2])) / 3.0
 	m["gru_error"] = lerpf(float(m.get("gru_error", 0.0)), gerr, clampf(dt * 3.0, 0.0, 1.0))
+	var gh: Array = m.get("gru_err_hist", [])
+	gh.append(float(m["gru_error"]))
+	while gh.size() > 64:
+		gh.pop_front()
+	m["gru_err_hist"] = gh
 	var step: Dictionary = _gru_step(m, s)
 	m["gru_pred"] = step["pred"]
+	# SOUL #14 — online delta on readout head (deterministic per fish).
+	_gru_learn_readout(m, s, gp, dt)
+	if int(m.get("updates", 0)) <= 3:
+		m["pe_baseline"] = maxf(float(m.get("pe_baseline", 0.0)), float(m.get("error", 0.0)))
+		m["gru_pe_baseline"] = maxf(float(m.get("gru_pe_baseline", 0.0)), float(m.get("gru_error", 0.0)))
+	var baseline: float = float(m.get("pe_baseline", float(m.get("error", 0.0))))
+	m["pe_progress"] = maxf(0.0, baseline - float(m.get("error", 0.0)))
+	m["learning_progress"] = lerpf(float(m.get("learning_progress", 0.0)),
+			float(m["pe_progress"]), clampf(dt * 2.5, 0.0, 1.0))
 	# Fold a small CENTERED nudge into variance (info gain): when the recurrent
 	# model is more surprised than the linear baseline, exploration gets more
 	# epistemic value (sharpens active inference, 1A); less surprised → calmer.
@@ -172,7 +216,82 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	f._prediction_error = float(m.get("error", 0.0))
 
 
-static func imagined_threat(f: Fish, heading: Vector3) -> float:
+static func model_confidence(f) -> float:
+	var m: Dictionary = ensure_model(f)
+	return clampf(1.0 - float(m.get("gru_error", 0.45)) * 1.15, 0.08, 0.95)
+
+
+static func predicted_interior_gap(f) -> float:
+	var m: Dictionary = ensure_model(f)
+	if m.get("gru_pred") is PackedFloat32Array:
+		var gp: PackedFloat32Array = m["gru_pred"] as PackedFloat32Array
+		if gp.size() >= 2:
+			return clampf(float(gp[0]) * 0.65 + float(gp[1]) * 0.35, 0.0, 1.0)
+	var pred: Variant = m.get("predicted")
+	if pred is Vector3:
+		var p: Vector3 = pred as Vector3
+		return clampf(p.x * 0.65 + p.y * 0.35, 0.0, 1.0)
+	return clampf(f.hunger * 0.6 + f.stress * 0.4, 0.0, 1.0)
+
+
+static func action_improvement_bonus(f, label: String) -> float:
+	var gap: float = predicted_interior_gap(f)
+	var conf: float = model_confidence(f)
+	match label:
+		"food", "forage":
+			return gap * conf * 0.35
+		"threat", "safety":
+			return (1.0 - gap) * conf * 0.25
+		"rest", "night_quiet":
+			return float(f.get("_rest_debt") if f.get("_rest_debt") != null else 0.0) * conf * 0.3
+		_:
+			return 0.0
+
+
+static func stimulus_novelty(f, key: String) -> float:
+	# §E52 — learned precision replaces timer-only habituation floor.
+	var m: Dictionary = ensure_model(f)
+	var learned_floor: float = clampf(float(m.get("gru_error", 0.35)) * 0.55, 0.05, 0.45)
+	var timer_nov: float = float(f.habituated.get(key, 1.0)) if f.get("habituated") is Dictionary else 1.0
+	return clampf(maxf(timer_nov, learned_floor), 0.0, 1.0)
+
+
+static func replan_bias(f, obstacle_normal: Vector3) -> Vector3:
+	# §E44 — skirt around unmodeled blockage while keeping goal pressure.
+	if obstacle_normal.length_squared() < 1e-6:
+		return Vector3.ZERO
+	var conf: float = model_confidence(f)
+	var skirt: Vector3 = Vector3(-obstacle_normal.z, 0.0, obstacle_normal.x).normalized()
+	return skirt * (0.35 + (1.0 - conf) * 0.45)
+
+
+static func learning_progress(f) -> float:
+	var m: Dictionary = ensure_model(f)
+	return float(m.get("learning_progress", 0.0))
+
+
+static func pe_fell_over_life(f, min_ticks: int = 40) -> bool:
+	var m: Dictionary = ensure_model(f)
+	if int(m.get("updates", 0)) < min_ticks:
+		return false
+	var hist: Array = m.get("gru_err_hist", [])
+	if hist.size() >= 24:
+		var early: float = 0.0
+		var late: float = 0.0
+		for i in 12:
+			early += float(hist[i])
+			late += float(hist[hist.size() - 12 + i])
+		early /= 12.0
+		late /= 12.0
+		if late < early - 0.012:
+			return true
+	var lin_prog: float = float(m.get("pe_progress", 0.0))
+	var gru_drop: float = float(m.get("gru_pe_baseline", 0.0)) - float(m.get("gru_error", 0.0))
+	var lp: float = float(m.get("learning_progress", 0.0))
+	return lin_prog > 0.008 or gru_drop > 0.015 or lp > 0.01
+
+
+static func imagined_threat(f, heading: Vector3) -> float:
 	var m: Dictionary = ensure_model(f)
 	var open: float = 1.0 - f.stress * 0.4
 	var err: float = float(m.get("error", 0.0))
@@ -181,7 +300,7 @@ static func imagined_threat(f: Fish, heading: Vector3) -> float:
 	return clampf(open * 0.25 + err * 0.35, 0.0, 0.75)
 
 
-static func counterfactual_regret(f: Fish, missed: bool) -> void:
+static func counterfactual_regret(f, missed: bool) -> void:
 	if not missed:
 		return
 	var m: Dictionary = ensure_model(f)
@@ -190,14 +309,14 @@ static func counterfactual_regret(f: Fish, missed: bool) -> void:
 	f.foraging_commitment = clampf(f.foraging_commitment + 0.08, 0.0, 1.0)
 
 
-static func expected_free_energy_explore(f: Fish) -> float:
+static func expected_free_energy_explore(f) -> float:
 	var m: Dictionary = ensure_model(f)
 	var info_gain: float = float(m.get("variance", 0.35))
 	var goal: float = f.curiosity_drive * 0.6 + (1.0 - f.stress) * 0.2
 	return clampf(info_gain * 0.55 + goal * 0.45, 0.0, 1.0)
 
 
-static func curiosity_target_bias(f: Fish) -> Vector3:
+static func curiosity_target_bias(f) -> Vector3:
 	var m: Dictionary = ensure_model(f)
 	if float(m.get("error", 0.0)) < 0.18:
 		return Vector3.ZERO
@@ -209,7 +328,7 @@ static func curiosity_target_bias(f: Fish) -> Vector3:
 			* float(m.get("error", 0.0))
 
 
-static func precision_scale(f: Fish, label: String) -> float:
+static func precision_scale(f, label: String) -> float:
 	var m: Dictionary = ensure_model(f)
 	var clarity: float = 1.0 - float(m.get("variance", 0.35)) * 0.65
 	if label == "threat" and f.stress > 0.5:
@@ -233,7 +352,7 @@ static func _arr_to_pack(v: Variant) -> PackedFloat32Array:
 	return out
 
 
-static func to_dict(f: Fish) -> Dictionary:
+static func to_dict(f) -> Dictionary:
 	var m: Dictionary = ensure_model(f).duplicate(true)
 	if m.get("weights") is PackedFloat32Array:
 		m["weights"] = _pack_to_arr(m["weights"])
@@ -253,7 +372,7 @@ static func to_dict(f: Fish) -> Dictionary:
 	return m
 
 
-static func from_dict(f: Fish, d: Variant) -> void:
+static func from_dict(f, d: Variant) -> void:
 	if not d is Dictionary:
 		return
 	var m: Dictionary = (d as Dictionary).duplicate(true)

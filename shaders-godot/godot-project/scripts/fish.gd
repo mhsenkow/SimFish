@@ -22,7 +22,10 @@ const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 const FishJournal = preload("res://scripts/fish_journal.gd")
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
+const _MindTickScript = preload("res://scripts/mind_tick.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")
+const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
+const _MindBrainPoolScript = preload("res://scripts/mind_brain_pool.gd")
 const SimRngScript = preload("res://scripts/sim_rng.gd")
 const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindDaring = preload("res://scripts/mind_daring.gd")
@@ -36,6 +39,7 @@ const FishQualia = preload("res://scripts/fish_qualia.gd")
 const FishBinding = preload("res://scripts/fish_binding.gd")
 const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
+const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
 
 const MATURITY_FRY := 0
@@ -319,6 +323,69 @@ var _mind_workspace: Array = []
 var _mind_self_model: Dictionary = {}
 var _behavior_ws_bias: Vector3 = Vector3.ZERO
 var _workspace_ignited: bool = false
+@warning_ignore("unused_private_class_variable")
+var _ws_bids_digest: int = -1
+@warning_ignore("unused_private_class_variable")
+var _ws_broadcast_digest: int = -2
+@warning_ignore("unused_private_class_variable")
+var _ws_competition_cache: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _cycle_bias_cache: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _salient_prune_t: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lod_tier_hold_s: float = 0.0
+var _sleep_mind_cd: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _mind_accum: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _mind_stagger: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _ws_bias_lerp_from: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _ws_bias_lerp_to: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _bond_seek_cached: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _bond_seek_t0: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _player_watched: bool = false
+var _feed_heatmap_decay_mul: float = 1.0
+var _feed_heatmap_top3: Array = []
+@warning_ignore("unused_private_class_variable")
+var _bid_slow_cache: Array = []
+@warning_ignore("unused_private_class_variable")
+var _bid_slow_accum: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _bid_dirty: int = 0
+@warning_ignore("unused_private_class_variable")
+var _bid_slow_due: bool = true
+@warning_ignore("unused_private_class_variable")
+var _bid_last_daylight: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _bid_pool: Array = []
+@warning_ignore("unused_private_class_variable")
+var _bid_pool_i: int = 0
+@warning_ignore("unused_private_class_variable")
+var _meta_ring: Array = []
+@warning_ignore("unused_private_class_variable")
+var _meta_ring_head: int = 0
+# PERFORMANCE_UNTHROTTLED #40 — boids accumulators reused for social bids.
+var _boids_neighbor_count: int = 0
+var _boids_shared_focus: String = ""
+var _boids_shared_sal: float = 0.0
+# PERFORMANCE_UNTHROTTLED #42 — mate scan cadence cache.
+var _mate_scan_cd: float = 0.0
+var _cached_preferred_mate: Fish = null
+var _cached_breed_partner: Fish = null
+@warning_ignore("unused_private_class_variable")
+var _tom_model_ids: Array = []
+@warning_ignore("unused_private_class_variable")
+var _tom_set_hold: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _self_model_cache: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _self_model_key: String = ""
 var _last_ws_encode_label: String = ""
 var _thought_stream: String = ""
 var _thought_stream_age: float = 0.0
@@ -340,9 +407,17 @@ var _learned_words: Dictionary = {}
 var _word_milestones: Dictionary = {}
 var _world_model: Dictionary = {}
 var _prediction_error: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _delta_g_curve: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _delta_g_traj: Array = []
+@warning_ignore("unused_private_class_variable")
+var _delta_g_log: Array = []
 # 1D — inter-fish signalling state (emitted/heard signal + learned reliability).
 # Transient (≈3s decay) so it isn't persisted; managed entirely by FishSignals.
 var _signal_state: Dictionary = {}
+# Heard-signal ring for mind-worker capture (FishSignals.scan → proxy).
+var _heard_signals: Array = []
 # META #4 — predictive theory-of-mind: per-neighbour learned "charge" tendency
 # (oid → {charge, prev_d}) + the current strongest predicted aggressor.
 var _tom_pred: Dictionary = {}
@@ -362,6 +437,57 @@ var _mend_trust: float = 0.0
 var _mend_pending: bool = false
 var _peak_stress_recent: float = 0.0
 var _longing_residue: float = 0.0
+# Externally managed mind LOD + homeostasis (sim_driver, mind_cycle, fish_homeostasis).
+@warning_ignore("unused_private_class_variable")
+var _mind_lod_tier: int = 2
+@warning_ignore("unused_private_class_variable")
+var _cycle_lod_tier: int = 2
+@warning_ignore("unused_private_class_variable")
+var _homeostasis: Dictionary = {}
+# Per-instance fauna overrides (biolum / belly / vibrancy) for MultiMesh batches (#51).
+var _fauna_inst_custom: Color = Color(0.0, 0.0, 0.0, 0.0)
+var _glow_meshes: Array = []  # PERFORMANCE_UNTHROTTLED #65
+var _last_biolum_strength: float = -1.0
+@warning_ignore("unused_private_class_variable")
+var _homeostatic_feed_point: Vector3 = Vector3.ZERO
+# SENTIENCE_THE_SPARK — expression/behavior (fish_spark_*.gd, global_workspace).
+@warning_ignore("unused_private_class_variable")
+var _spark_state: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _spark_signals: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _spark_motion: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _spark_milestones: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _hide_timer: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _longing_linger_pos: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _breath_phase: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _self_summary_voice_cd: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _last_winning_affordance: String = ""
+@warning_ignore("unused_private_class_variable")
+var _fin_nicks: int = 0
+# Soul / continuity / salience caches (mind_soul*.gd, fish_mind.gd, sim_driver).
+@warning_ignore("unused_private_class_variable")
+var _soul_mind: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _legacy_drive: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _mourning_spacing_w: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _witnessed_death_spacing: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _continuity_return_beat: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _salient_ring_head: int = 0
+@warning_ignore("unused_private_class_variable")
+var _salient_top_cache: Array = []
+@warning_ignore("unused_private_class_variable")
+var _feed_heatmap_best: float = 0.0
 var _curiosity_about_keeper: float = 0.0
 var _convo: Dictionary = {}
 var _dialogue_ring: Array = []
@@ -718,6 +844,7 @@ var _territory_cooldown: float = 0.0
 # to the cleaner, slows to a stop, and tilts slightly while being
 # cleaned. shrimp.gd already pursues stressed fish; this gates the
 # fish to also seek out a clean.
+var cleaner_familiarity: Dictionary = {}     # shrimp id -> trust [0,1]
 var _seeking_clean: bool = false
 var _being_cleaned: float = 0.0              # seconds remaining at station
 
@@ -1180,7 +1307,7 @@ func _mind_subsystem_fields_alive() -> bool:
 		and _keeper_pending.size() >= 0 and _keeper_message_salience >= 0.0 \
 		and _learned_words.size() >= 0 and _word_milestones.size() >= 0 \
 		and _world_model.size() >= 0 and _prediction_error >= 0.0 \
-		and _signal_state.size() >= 0 and _tom_pred.size() >= 0 and _tom_alert.size() >= 0 \
+		and _signal_state.size() >= 0 and _heard_signals.size() >= 0 and _tom_pred.size() >= 0 and _tom_alert.size() >= 0 \
 		and _semantic_schemas.size() >= 0 \
 		and _life_stance.length() >= 0 and _stance_drift_t >= 0.0 \
 		and _active_plan.size() >= 0 and _bid_salience_mods.size() >= 0 \
@@ -1194,6 +1321,17 @@ func _mind_subsystem_fields_alive() -> bool:
 		and _aesthetic_hue >= 0.0 and _aesthetic_linger >= 0.0 and foraging_commitment >= 0.0
 
 
+func _sleep_skips_mind_tick(dt: float) -> bool:
+	# PERFORMANCE_UNTHROTTLED #8 — asleep fish skip mind ticks; dream/consolidation on a cadence.
+	if not _asleep or _dreaming or _startle_remaining > 0.02:
+		return false
+	_sleep_mind_cd = maxf(0.0, _sleep_mind_cd - dt)
+	if _sleep_mind_cd <= 0.0:
+		_sleep_mind_cd = 0.85
+		return false
+	return true
+
+
 # Maintain the unified inner-life state. Called once per brain tick BEFORE the
 # behavior tiers so mood/curiosity/spooked/familiarity are fresh when the
 # steering reads them. Returns nothing; mutates state in place. Throttle-safe:
@@ -1201,18 +1339,26 @@ func _mind_subsystem_fields_alive() -> bool:
 func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = []) -> void:
 	assert(_mind_subsystem_fields_alive())
 	var _ms = MindChannel.for_cycle(self, is_guardian or fish_name != "" or familiarity > 0.4)
+	var _brain_async: bool = MindBrainPool.enabled()
+	if _brain_async:
+		MindBrainPool.apply_pending(self, _ms)
 	var _prev_snap: Dictionary = MindCycle.snapshot_prev(self)
 	var _tick_snap: Dictionary = _ms.snapshot()
 	# Decay working memory with emotionally-weighted rates (#25).
 	if not memory.is_empty():
-		var keep: Array = []
-		for e in memory:
-			var kind: String = String(e.get("kind", ""))
+		var i: int = 0
+		while i < memory.size():
+			var e: Dictionary = memory[i] as Dictionary
+			var kind: String = str(e.get("kind", ""))
 			var mult: float = FishMind.memory_decay_mult(kind)
 			e["t"] = float(e.get("t", 0.0)) - dt * mult
 			if float(e["t"]) > 0.0:
-				keep.append(e)
-		memory = keep
+				i += 1
+			else:
+				var last_i: int = memory.size() - 1
+				if i < last_i:
+					memory[i] = memory[last_i]
+				memory.resize(last_i)
 
 	FishMind.tick_personality_conditioning(self, dt)
 	FishMind.tick_home_confidence(self, dt)
@@ -1225,7 +1371,13 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	# META #10 — affect drifts toward the school's mood (excitement/calm spread).
 	if MindAblation.enabled(MindAblation.CONTAGION):
 		MindContagion.tick(self, neighbors, dt)
-	MindCycle.run_attention_phase(self, sim, _ms, dt)
+	var _mind_sleep_skip: bool = _sleep_skips_mind_tick(dt)
+	var _mind_gate: Dictionary = _MindTickScript.advance(self, sim, dt)
+	var _mind_dt: float = float(_mind_gate.get("mind_dt", dt))
+	var _run_mind: bool = bool(_mind_gate.get("run", true)) and not _mind_sleep_skip
+	if not _brain_async and _run_mind:
+		_MindTickScript.on_mind_tick_start(self)
+		MindCycle.run_attention_phase(self, sim, _ms, _mind_dt)
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
 	MindDaring.tick(self, sim, dt, neighbors)
@@ -1245,7 +1397,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	if quirks.is_empty() and id != "":
 		FishMind.seed_quirks(self)
 	_patrol_heatmap_refresh_t -= dt
-	if _patrol_heatmap_refresh_t <= 0.0:
+	if _patrol_heatmap_refresh_t <= 0.0 and _run_mind:
 		_patrol_heatmap_refresh_t = 45.0
 		FishMind.refresh_patrol_from_heatmap(self)
 
@@ -1307,7 +1459,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMindScience.tick_sleep_replay(self)
 	FishMindScience.tick_prospective(self, dt)
 	FishMindScience.tick_neuromodulators(self, dt, satisfaction, surprise)
-	if not neighbors.is_empty() and MindAblation.enabled(MindAblation.THEORY_OF_MIND):
+	if _run_mind and not neighbors.is_empty() and MindAblation.enabled(MindAblation.THEORY_OF_MIND):
 		FishMindScience.tick_theory_of_mind(self, neighbors)
 		for n in neighbors:
 			if n is Fish and MindConversation.session_active(n as Fish):
@@ -1357,10 +1509,17 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	lead_score = lerpf(lead_score, clampf(lead_target, 0.0, 1.0), clampf(dt * 0.2, 0.0, 1.0))
 
 	FishMind.tick_salient_decay(self, dt)
-	FishMind.tick_bond_arcs(self, dt)
-	CognitionKernel.run_bind_encode_learn(self, _ms, sim, dt)
-	MindChannel.commit(self, _ms)
-	MindCycle.store_snapshot(self, _tick_snap, _ms)
+	if _run_mind:
+		if _brain_async:
+			MindCycle.run_bind_phase(self, sim, _ms, _mind_dt)
+			MindCycle.run_encode_phase(self, _ms)
+			MindCycle.tick_post_cycle(self, sim, _mind_dt)
+			MindBrainPool.queue_cognition(self, _ms, _mind_dt)
+		else:
+			CognitionKernel.run_bind_encode_learn(self, _ms, sim, _mind_dt)
+		MindChannel.commit(self, _ms)
+		MindCycle.store_snapshot(self, _tick_snap, _ms)
+		_MindTickScript.on_mind_tick_end(self)
 	if _thought_stream != "":
 		_thought_stream_age += dt
 		if _thought_stream != _last_stream_logged:
@@ -1415,6 +1574,8 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0, food_subtype: int = -1) 
 	var iz: int = int(rz * FEED_HEATMAP_SIZE)
 	var idx: int = ix + iy * FEED_HEATMAP_SIZE + iz * FEED_HEATMAP_SIZE * FEED_HEATMAP_SIZE
 	feed_heatmap[idx] = minf(1.0, feed_heatmap[idx] + 0.30 * weight)
+	FishMind.note_heatmap_cell(self, idx, float(feed_heatmap[idx]))
+	GlobalWorkspace.mark_bid_dirty(self, GlobalWorkspace.DIRTY_FEED)
 
 
 # Sample the feed_heatmap at a given world position. Returns 0..1 — higher
@@ -1475,6 +1636,7 @@ func get_bio_summary() -> String:
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
 var burst_remaining: float = 0.0
+var _drive_soa_integrated: bool = false
 # Flips to true while in MALE courtship display - drives the renderer to
 # flare the tail wag and over-bank into the S-curve dance. Cleared
 # automatically when courtship ends or the fish moves out of display
@@ -1610,6 +1772,12 @@ var _school_phase_offset: float = 0.0
 # afterimages are world-positioned so the smear visibly trails the fry
 # rather than dragging behind in body-local space.
 var _fry_trail_timer: float = 0.0
+var _fry_smear_count: int = 0
+var _belly_flash_cd: float = 0.0
+var _last_belly_flash_push: float = -1.0
+var _fauna_color_t: float = 0.0
+var _stress_flush_t: float = 0.0
+var _last_stress_flush_k: float = -1.0
 var _last_yaw: float = 0.0
 var _motion_transform_warned: bool = false
 var _bank: float = 0.0
@@ -2060,39 +2228,39 @@ func _apply_swim_pattern_defaults() -> void:
 	max_turn_rate = 2.6 # default reset
 	match swim_pattern:
 		"school":
-			home_radius = 4.0
-			wander_strength = 1.15
+			home_radius = 5.0
+			wander_strength = 1.25
 			dart_chance = 0.005
 			max_turn_rate = 2.6
 		"shoal":
-			home_radius = 4.5
-			wander_strength = 1.3
+			home_radius = 5.5
+			wander_strength = 1.4
 			dart_chance = 0.01
 			max_turn_rate = 2.5
 		"dart":
-			home_radius = 3.0
-			wander_strength = 0.7
+			home_radius = 3.5
+			wander_strength = 0.75
 			dart_chance = 0.045
 			dart_speed_mult = 1.9
 			max_turn_rate = 3.2
 		"hover":
-			home_radius = 2.2 # increased from 0.9 for wider, more natural hovering area
-			wander_strength = 0.35
+			home_radius = 2.8 # increased from 0.9 for wider, more natural hovering area
+			wander_strength = 0.42
 			dart_chance = 0.002
 			max_turn_rate = 1.1 # slow, elegant centerpiece turns
 		"cruise":
-			home_radius = 6.0
-			wander_strength = 0.55
+			home_radius = 7.0
+			wander_strength = 0.65
 			dart_chance = 0.003
 			max_turn_rate = 1.8
 		"meander":
-			home_radius = 3.5
-			wander_strength = 1.5
+			home_radius = 4.2
+			wander_strength = 1.65
 			dart_chance = 0.0
 			max_turn_rate = 1.5
 		"shuffle":
-			home_radius = 5.0
-			wander_strength = 1.2
+			home_radius = 6.0
+			wander_strength = 1.35
 			dart_chance = 0.012
 			dart_speed_mult = 1.4
 			max_turn_rate = 2.2
@@ -2244,6 +2412,13 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 
 func _build_body() -> void:
 	_voxel_builder = FaunaVoxelBuilder.new()
+	var fish_n: int = 0
+	if sim != null and sim.get("fish") is Array:
+		fish_n = (sim.fish as Array).size()
+	if _FaunaSpeciesBatchScript.should_enable(fish_n):
+		var w: Node = _world_node()
+		if w is Node3D:
+			_voxel_builder.enable_species_batch(w as Node3D, species)
 	# Voxel fish facing -Z (Godot's default "forward"). With look_at, the fish
 	# faces its velocity correctly without extra rotation tricks.
 	#
@@ -2800,6 +2975,7 @@ func _build_body() -> void:
 		_voxel_builder.flush_all()
 		_cached_meshes = _voxel_builder.handles.duplicate()
 	_apply_lod_ranges()
+	_rebuild_glow_mesh_cache()
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -2861,35 +3037,41 @@ func _make_mat(color: Color) -> ShaderMaterial:
 # tweens to zero scale and alpha over ~0.35s, then queue_free's. Color
 # matches the fry's body so the smear reads as a streak of the fish
 # itself, not a generic puff.
+# Off-frustum analytic body step — drag toward current heading without a full brain tick.
+func analytic_body_step(dt: float) -> void:
+	if _dying:
+		return
+	var drag: float = exp(-maxf(dt, 0.0) * 1.85)
+	speed = clampf(speed * drag + 0.015, 0.05, max_speed)
+	if heading.length_squared() < 1e-6:
+		heading = Vector3(0.0, 0.0, -1.0)
+
+
 func _spawn_fry_trail_smear() -> void:
+	const MAX_PER_FISH: int = 2
+	const _DartTrailPoolScript = preload("res://scripts/dart_trail_pool.gd")
+	if _fry_smear_count >= MAX_PER_FISH:
+		return
 	var parent: Node = get_parent()
 	if parent == null:
 		return
-	var mi := MeshInstance3D.new()
-	var v: float = 0.10  # fry voxel scale
-	mi.mesh = VoxelMat.get_box(Vector3(v, v * 0.6, v * 1.4))
-	var smear_color: Color = Color(base_color.r, base_color.g, base_color.b, 0.45)
-	var mat: ShaderMaterial = VoxelMat.make_translucent(smear_color).duplicate()
-	mi.material_override = mat
-	# Order matters: add to the scene tree FIRST so global_position +
-	# look_at have a valid global transform to work against. The earlier
-	# version called look_at before add_child, which Godot reports as
-	# "Node not inside tree" and returns identity Transform3D — that's
-	# what was spamming the debugger.
-	parent.add_child(mi)
-	mi.global_position = global_position
-	if heading.length_squared() > 0.001:
-		var d: Vector3 = heading.normalized()
-		var up := _look_up_for_direction(d)
-		mi.look_at_from_position(global_position, global_position + d, up)
-	const TRAIL_LIFETIME: float = 0.35
-	var tw := create_tween().set_parallel(true)
-	tw.tween_property(mi, "scale", Vector3(0.4, 0.4, 0.2), TRAIL_LIFETIME) \
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	var faded: Color = Color(smear_color.r, smear_color.g, smear_color.b, 0.0)
-	tw.tween_property(mat, "shader_parameter/albedo", faded, TRAIL_LIFETIME) \
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.chain().tween_callback(mi.queue_free)
+	var tank_n: int = int(parent.get_meta("_fry_smear_tank", 0))
+	if tank_n >= 36:
+		return
+	var smear_color: Color = Color(base_color.r, base_color.g, base_color.b, 0.38)
+	var released := Callable(self, "_on_fry_smear_released")
+	if not _DartTrailPoolScript.spawn(parent, global_transform, smear_color, heading, released):
+		return
+	parent.set_meta("_fry_smear_tank", tank_n + 1)
+	_fry_smear_count += 1
+
+
+func _on_fry_smear_released() -> void:
+	_fry_smear_count = maxi(_fry_smear_count - 1, 0)
+	var parent: Node = get_parent()
+	if parent != null:
+		var tank_n: int = int(parent.get_meta("_fry_smear_tank", 0))
+		parent.set_meta("_fry_smear_tank", maxi(tank_n - 1, 0))
 
 
 # Locate the closest cleaner shrimp/wrasse within `radius`. Walks
@@ -2936,7 +3118,7 @@ func _update_mouthbrood_bulge() -> void:
 			anchor = self
 		_mouthbrood_bulge.mesh = VoxelMat.get_box(
 			Vector3(v * 1.9, v * 1.1, v * 2.4))
-		_mouthbrood_bulge.material_override = VoxelMat.make_fauna(
+		_mouthbrood_bulge.material_override = VoxelMat.make_mouthbrood_bulge(
 			accent_color.lerp(Color(0.92, 0.88, 0.78), 0.55))
 		anchor.add_child(_mouthbrood_bulge)
 		# Below + slightly forward of the head: real cichlid throat
@@ -2950,6 +3132,9 @@ func _update_mouthbrood_bulge() -> void:
 
 
 func _apply_belly_flash_uniform(strength: float) -> void:
+	strength = clampf(strength, 0.0, 0.68)
+	_fauna_inst_custom.g = strength
+	_push_fauna_inst_custom()
 	for c in get_children():
 		if c is MeshInstance3D:
 			var sm := (c as MeshInstance3D).material_override as ShaderMaterial
@@ -2957,10 +3142,29 @@ func _apply_belly_flash_uniform(strength: float) -> void:
 				sm.set_shader_parameter("belly_flash", strength)
 
 
+func _push_fauna_inst_custom() -> void:
+	if _cached_meshes.is_empty():
+		return
+	var cr: float = clampf(_fauna_inst_custom.r, 0.0, 0.72)
+	var cg: float = clampf(_fauna_inst_custom.g, 0.0, 0.68)
+	var cb: float = clampf(_fauna_inst_custom.b, 0.0, 0.42)
+	for child in _cached_meshes:
+		if not (child is VoxelBatch.Handle):
+			continue
+		var h: VoxelBatch.Handle = child
+		var static_a: float = float(h.get_meta("fauna_custom_a", 0.0)) \
+			if h.has_meta("fauna_custom_a") else 0.0
+		static_a = clampf(static_a, 0.0, 0.85)
+		h.set_custom_data(Color(cr, cg, cb, static_a))
+
+
 func _apply_stress_flush() -> void:
 	if _cached_meshes.is_empty():
 		return
 	var k: float = clampf((stress - 0.40) / 0.60, 0.0, 1.0)
+	if _last_stress_flush_k >= 0.0 and absf(k - _last_stress_flush_k) < 0.10:
+		return
+	_last_stress_flush_k = k
 	if k <= 0.001:
 		for child in _cached_meshes:
 			if child is VoxelBatch.Handle:
@@ -3007,10 +3211,22 @@ func _tick_substrate_compaction(dt: float) -> void:
 # the first call so each bioluminescent individual carries its own copy;
 # the duplicate is tagged via meta so subsequent calls reuse it.
 func _apply_bioluminescence_uniform(strength: float) -> void:
-	for c in get_children():
-		if not (c is MeshInstance3D):
+	strength = clampf(strength, 0.0, 0.72)
+	# PERFORMANCE_UNTHROTTLED #66 — skip redundant uniform writes.
+	if absf(strength - _last_biolum_strength) < 0.02:
+		return
+	_last_biolum_strength = strength
+	_fauna_inst_custom.r = strength
+	_push_fauna_inst_custom()
+	if _glow_meshes.is_empty():
+		_rebuild_glow_mesh_cache()
+	# PERFORMANCE_UNTHROTTLED #67 — batch path only when no legacy per-voxel glow meshes.
+	if _glow_meshes.is_empty():
+		return
+	for mi_v in _glow_meshes:
+		if not (mi_v is MeshInstance3D) or not is_instance_valid(mi_v):
 			continue
-		var mi: MeshInstance3D = c
+		var mi: MeshInstance3D = mi_v as MeshInstance3D
 		var sm: ShaderMaterial = mi.material_override as ShaderMaterial
 		if sm == null:
 			continue
@@ -3025,7 +3241,24 @@ func _apply_bioluminescence_uniform(strength: float) -> void:
 			accent_color.r, accent_color.g, accent_color.b))
 
 
+func _rebuild_glow_mesh_cache() -> void:
+	_glow_meshes.clear()
+	var stack: Array = [self]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back() as Node
+		for c in n.get_children():
+			if c is MeshInstance3D:
+				var mi: MeshInstance3D = c as MeshInstance3D
+				var sm: ShaderMaterial = mi.material_override as ShaderMaterial
+				if sm != null and sm.get_shader_parameter("bioluminescence") != null:
+					_glow_meshes.append(mi)
+			elif c.get_child_count() > 0:
+				stack.append(c)
+
+
 func _apply_overhead_readability_uniform(strength: float) -> void:
+	_fauna_inst_custom.b = strength
+	_push_fauna_inst_custom()
 	for c in get_children():
 		if not (c is MeshInstance3D):
 			continue
@@ -3038,6 +3271,32 @@ func _apply_overhead_readability_uniform(strength: float) -> void:
 			mi.set_meta("readability_owned", true)
 			sm = mi.material_override as ShaderMaterial
 		sm.set_shader_parameter("color_vibrancy", 1.0 + strength * 0.32)
+
+
+static func _walk_fauna_material_nodes(f: Fish, fn: Callable) -> void:
+	if f == null or fn == null:
+		return
+	var stack: Array = [f]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		for c in n.get_children():
+			if c is MeshInstance3D:
+				var mi: MeshInstance3D = c
+				var sm: ShaderMaterial = mi.material_override as ShaderMaterial
+				if sm != null:
+					fn.call(mi, sm)
+			if c.get_child_count() > 0:
+				stack.push_back(c)
+	if f._voxel_builder != null:
+		for batch in f._voxel_builder.get_batches():
+			if not (batch is VoxelBatch):
+				continue
+			var mmi: MultiMeshInstance3D = (batch as VoxelBatch).mmi
+			if mmi == null or not is_instance_valid(mmi):
+				continue
+			var batch_sm: ShaderMaterial = mmi.material_override as ShaderMaterial
+			if batch_sm != null:
+				fn.call(mmi, batch_sm)
 
 
 func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -3259,38 +3518,45 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					expired.append(k)
 			for k in expired:
 				grudges.erase(k)
+		# PERFORMANCE_UNTHROTTLED #11 — bond arcs on the decay throttle, not every brain tick.
+		if not bonds.is_empty():
+			for oid in bonds.keys():
+				var aff: float = float(bonds[oid])
+				bonds[oid] = clampf(aff - decay_dt * 0.002, -1.0, 1.0)
+				if aff > 0.2 and familiarity > 0.3:
+					bonds[oid] = clampf(float(bonds[oid]) + decay_dt * 0.0015, -1.0, 1.0)
 		if not habituated.is_empty():
 			var hab_decay: float = FishMind.habituation_decay_rate(self) * decay_dt
 			for k in habituated.keys():
 				habituated[k] = clampf(
 					float(habituated[k]) + hab_decay * 0.0008, 0.0, 1.0)
 		if feed_heatmap.size() > 0:
-			# One bulk decay step per throttle window instead of stochastic
-			# per-tick. Multiplicative so peaks fade proportionally.
 			var heat_decay: float = pow(0.985, decay_dt / 0.1)
-			for i in range(feed_heatmap.size()):
-				feed_heatmap[i] *= heat_decay
+			_feed_heatmap_decay_mul = maxf(0.01, float(_feed_heatmap_decay_mul) * heat_decay)
+			if _feed_heatmap_decay_mul < 0.22:
+				for i in range(feed_heatmap.size()):
+					feed_heatmap[i] *= _feed_heatmap_decay_mul
+				_feed_heatmap_decay_mul = 1.0
+				_feed_heatmap_best = 0.0
+				_feed_heatmap_top3.clear()
 	# Hunger accumulates slowly. Real fish go days without eating; we keep
 	# the rate gentle so fish can spend more time on courtship / schooling
 	# / exploration than on frantic foraging. 0.006/s = ~165s from sated
 	# to starvation if the fish never finds a bite (longer than most
 	# fish lifespans, so starvation is a real but uncommon kill switch).
-	hunger = clampf(hunger + dt * 0.006, 0.0, 1.0)
-	# Walstad balance: well-planted, oxygenated tanks support fish with less
-	# supplemental feeding pressure.
-	if sim != null and sim.dissolved_o2 > 0.72 and sim.total_plant_biomass > 280:
-		hunger = maxf(0.0, hunger - dt * 0.0018)
-	# Fry graze microfauna (#42): the base of the food web feeds recruitment, so
-	# fry survival depends on a healthy copepod / daphnia bloom — and a tank
-	# with no microfauna starves its young.
-	if maturity == MATURITY_FRY and sim != null:
-		var w_micro: Node = sim.get_parent()
-		if w_micro != null and w_micro.has_method("live_microfauna_count"):
-			var micro_n: int = w_micro.live_microfauna_count()
-			if micro_n > 4:
-				hunger = maxf(0.0, hunger - dt * clampf(float(micro_n) / 60.0, 0.0, 1.0) * 0.012)
-	var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
-	energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
+	# Hunger/energy when not integrated by MindDriveSoA (#51).
+	if not _drive_soa_integrated:
+		hunger = clampf(hunger + dt * 0.006, 0.0, 1.0)
+		if sim != null and sim.dissolved_o2 > 0.72 and sim.total_plant_biomass > 280:
+			hunger = maxf(0.0, hunger - dt * 0.0018)
+		if maturity == MATURITY_FRY and sim != null:
+			var w_micro: Node = sim.get_parent()
+			if w_micro != null and w_micro.has_method("live_microfauna_count"):
+				var micro_n: int = w_micro.live_microfauna_count()
+				if micro_n > 4:
+					hunger = maxf(0.0, hunger - dt * clampf(float(micro_n) / 60.0, 0.0, 1.0) * 0.012)
+		var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
+		energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 	burst_remaining = maxf(0.0, burst_remaining - dt)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
@@ -3383,7 +3649,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			# a static voxel can't sell on its own. World caps the mulm
 			# carpet so the persistent voxels don't balloon.
 			if sim != null and position.y < sim.substrate_top_y + 1.0:
-				var w := get_tree().current_scene.get_node_or_null("SubViewport/World")
+				var w := _world_node()
 				if w != null:
 					if w.has_method("add_mulm_voxel"):
 						w.add_mulm_voxel(global_position)
@@ -3425,9 +3691,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Schooling stress climbs if too few conspecifics nearby.
 	var conspecifics_nearby: int = 0
-	for n in neighbors:
-		if n is Fish and (n as Fish).species == species:
-			conspecifics_nearby += 1
+	if (swim_pattern == "school" or swim_pattern == "shoal") and _boids_neighbor_count > 0:
+		conspecifics_nearby = _boids_neighbor_count
+	else:
+		for n in neighbors:
+			if n is Fish and (n as Fish).species == species:
+				conspecifics_nearby += 1
 	# Social need scales with how strong a schooler the species is (#88): a
 	# tight schooler kept under-numbered is chronically stressed (teaching
 	# "don't keep just one tetra"), while a solitary species is content alone.
@@ -3465,6 +3734,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Inner life: mood, curiosity, lingering fear, sleep, relief, blink, memory.
 	# Runs before the behavior tiers so steering reads a fresh emotional state.
 	_update_inner_life(dt, conspecifics_nearby, neighbors)
+	_MindTickScript.lerp_visuals(self, dt)
 
 	_update_maturity()
 
@@ -4061,9 +4331,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# the moment a clean "and we're done" punctuation
 				# instead of cleanly resuming cruise.
 				burst_remaining = 0.4
+				_belly_flash = 0.55
 				partner.breed_cooldown = 35.0
 				partner.energy = maxf(0.0, partner.energy - 0.35)
 				partner.burst_remaining = 0.4
+				partner._belly_flash = 0.55
 				breed_count += 1
 				partner.breed_count += 1
 				# Bio: both parents log an offspring. Each spawn produces a
@@ -4623,11 +4895,19 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			and hunger < 0.5 and energy > 0.65 / season_breed \
 			and stress < 0.4 * season_breed \
 			and _behavior_rng().randf() >= _logistic_breed_suppress():
-		# Mate loyalty (#83): prefer re-bonding with the previous partner if it's
-		# nearby and available, before rolling a fresh mate.
-		var candidate: Fish = _find_preferred_mate(neighbors)
-		if candidate == null:
-			candidate = _find_breeding_partner(neighbors)
+		# PERFORMANCE_UNTHROTTLED #42 — mate scans at 0.5 Hz with cached refs.
+		_mate_scan_cd -= dt
+		if _mate_scan_cd <= 0.0:
+			_mate_scan_cd = 0.5
+			_cached_preferred_mate = _find_preferred_mate(neighbors)
+			_cached_breed_partner = _find_breeding_partner(neighbors)
+		var candidate: Fish = null
+		if _cached_preferred_mate != null and is_instance_valid(_cached_preferred_mate) \
+				and _cached_preferred_mate.partner == null:
+			candidate = _cached_preferred_mate
+		elif _cached_breed_partner != null and is_instance_valid(_cached_breed_partner) \
+				and _cached_breed_partner.partner == null:
+			candidate = _cached_breed_partner
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
 			partner = candidate
@@ -4752,6 +5032,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var anchor_w: float = 0.14 if swim_pattern == "school" else 0.10
 			anchor_w *= float(music_mods.get("home_pull", 1.0))
 			anchor_w *= maxf(0.02, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.96)
+			anchor_w *= lerpf(1.0, 0.32, clampf(float(fauna_rt.get("wander", 1.0)) / 2.5, 0.0, 1.0))
 			desired += soft_home.normalized() * effective_max * anchor_w \
 				* minf(soft_d / maxf(home_radius * float(music_mods.get("home_radius", 1.0)), 0.5), 1.0)
 
@@ -4887,10 +5168,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var to_home: Vector3 = Vector3(home_x - position.x, 0.0, home_z - position.z)
 	var dist_home: float = to_home.length()
 	var eff_home_r: float = home_radius * float(music_mods.get("home_radius", 1.0))
+	eff_home_r *= lerpf(0.82, 1.95, clampf(float(fauna_rt.get("wander", 1.0)) / 2.5, 0.0, 1.0))
 	if dist_home > eff_home_r:
 		var pull_strength: float = clampf(
 			(dist_home / maxf(eff_home_r, 0.5)) - 1.0, 0.0, 2.0)
 		var pull_mult: float = 0.5 * float(music_mods.get("home_pull", 1.0))
+		pull_mult *= lerpf(1.35, 0.35, clampf(float(fauna_rt.get("wander", 1.0)) / 2.5, 0.0, 1.0))
 		pull_mult *= lerpf(0.75, 1.15, home_confidence)
 		pull_mult *= maxf(0.04, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.92)
 		if swim_pattern == "hover":
@@ -5448,6 +5731,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		drift_radius *= float(music_mods.get("home_radius", 1.0))
 		drift_radius += float(music_mods.get("sweep", 0.0)) * 2.8
 		drift_interval /= maxf(float(music_mods.get("home_drift", 1.0)), 1.0)
+		drift_interval /= maxf(float(fauna_rt.get("wander", 1.0)) * 0.55, 0.35)
 		_home_drift_timer = drift_interval
 		_home_loop_angle += _behavior_rng().randf_range(-0.8, 0.8)
 		var w := _world_node()
@@ -5796,21 +6080,20 @@ func _process(dt: float) -> void:
 		_apply_bioluminescence_uniform(_replay_glow * 0.55)
 
 	_update_pheromone_trail()
+	# Belly/silver flash: courtship + spawn only — music sync used to drive this
+	# every frame via instance custom data and read as the whole fish strobing.
+	_belly_flash_cd = maxf(0.0, _belly_flash_cd - dt)
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
-		_apply_belly_flash_uniform(_belly_flash)
 	if _silver_flash > 0.0:
 		_silver_flash = maxf(0.0, _silver_flash - dt * 3.5)
-		_apply_belly_flash_uniform(_belly_flash + _silver_flash * 0.85)
-	elif sim != null and sim.has_method("sync_turn_active") and sim.sync_turn_active():
-		var pol: float = sim.sync_polarization() if sim.has_method("sync_polarization") else 0.5
-		_silver_flash = maxf(_silver_flash, pol * 0.55)
-	var mm_treble: Dictionary = _music_mods()
-	if bool(mm_treble.get("overhead_view", false)):
-		var ts: float = float(mm_treble.get("treble_shimmer", 0.0))
-		if ts > 0.18:
-			_silver_flash = maxf(_silver_flash, ts * 0.24)
-			_apply_belly_flash_uniform(_belly_flash + _silver_flash * 0.85)
+	var belly_push: float = clampf(_belly_flash + _silver_flash * 0.45, 0.0, 0.55)
+	if belly_push > 0.01 and absf(belly_push - _last_belly_flash_push) > 0.03:
+		_apply_belly_flash_uniform(belly_push)
+		_last_belly_flash_push = belly_push
+	elif belly_push <= 0.01 and _last_belly_flash_push > 0.01:
+		_apply_belly_flash_uniform(0.0)
+		_last_belly_flash_push = 0.0
 	if TopdownMotion.pond_active and sim != null:
 		var y_min: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
 		var y_max: float = _water_surface_y() - 0.4
@@ -5818,7 +6101,10 @@ func _process(dt: float) -> void:
 		_apply_overhead_readability_uniform(band)
 	if _mouth_gape > 0.0:
 		_mouth_gape = maxf(0.0, _mouth_gape - dt * 5.5)
-	_apply_stress_flush()
+	_stress_flush_t -= dt
+	if _stress_flush_t <= 0.0:
+		_stress_flush_t = 0.12
+		_apply_stress_flush()
 	_tick_substrate_compaction(dt)
 	if sim != null and sim.has_method("spark_calm"):
 		var calm: float = sim.spark_calm()
@@ -5858,6 +6144,8 @@ func _process(dt: float) -> void:
 	var sub_dt: float = dt / float(n_steps)
 	for _step in n_steps:
 		_motion_substep(sub_dt)
+
+	_tick_fauna_body_color(dt)
 
 	# Posture overlays. Layered on top of the bank pivot's natural roll
 	# from _motion_substep so the cleaning + sleep poses ride on top of
@@ -6080,6 +6368,26 @@ func _safe_normalize(v: Vector3, fallback: Vector3 = Vector3(0.0, 0.0, -1.0)) ->
 			return fallback.normalized()
 		return Vector3(0.0, 0.0, -1.0)
 	return v.normalized()
+
+
+func _sanitize_posture_pivot(p: Node3D) -> void:
+	if p == null or not is_instance_valid(p):
+		return
+	if not p.transform.is_finite() or not p.scale.is_finite():
+		p.transform = Transform3D.IDENTITY
+		return
+	p.scale = Vector3(
+		clampf(p.scale.x, 0.08, 2.2),
+		clampf(p.scale.y, 0.08, 2.2),
+		clampf(p.scale.z, 0.08, 2.2))
+	var r: Vector3 = p.rotation
+	if not r.is_finite():
+		p.rotation = Vector3.ZERO
+	else:
+		p.rotation = Vector3(
+			clampf(r.x, -PI * 0.55, PI * 0.55),
+			clampf(r.y, -PI, PI),
+			clampf(r.z, -PI * 0.65, PI * 0.65))
 
 
 func _repair_motion_state() -> void:
@@ -6373,8 +6681,9 @@ func _motion_substep(dt: float) -> void:
 					if bg > 0.15 and _biolum_wake_t <= 0.0 and w_h.has_method("spawn_burst_ripple"):
 						w_h.spawn_burst_ripple(global_position, 0.32 + bg * 0.55)
 						_biolum_wake_t = lerpf(0.55, 0.22, bg)
-	if velocity.y > 0.12:
-		_belly_flash = 1.0
+	if velocity.y > 0.12 and _belly_flash_cd <= 0.0 and _courtship_sync:
+		_belly_flash = maxf(_belly_flash, 0.42)
+		_belly_flash_cd = 0.22
 
 	# ---- Face the heading. look_at points local -Z at the target. Body is
 	# built so its forward = -Z, so the fish faces its motion correctly.
@@ -6605,8 +6914,11 @@ func _motion_substep(dt: float) -> void:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4)
 		if _music_kick_pulse > 0.02:
-			var kick_scale: float = 1.0 + _music_kick_pulse * 0.11
+			var kick_scale: float = 1.0 + _music_kick_pulse * 0.06
 			_body_mid_pivot.scale = Vector3(kick_scale, kick_scale * 0.92, 1.0)
+		elif not is_equal_approx(_body_mid_pivot.scale.x, 1.0):
+			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(Vector3.ONE,
+				clampf(dt * 8.0, 0.0, 1.0))
 	if _head_pivot != null:
 		# Smooth head rotation in to avoid pop when locomotion changes.
 		var head_target: float = sin(_swim_phase + head_phase) * head_amp
@@ -6728,33 +7040,38 @@ func _motion_substep(dt: float) -> void:
 			_bank_pivot.scale = _bank_pivot.scale.lerp(Vector3.ONE,
 				clampf(dt * 6.0, 0.0, 1.0))
 
-	# ---- Courtship color saturation boost ----
-	# Males get progressively more vivid as courtship intensity builds.
-	# This is the "color pulse" from GOALS.md #11 — the fish visibly
-	# brightens from "interested" to "climax flash" at spawn. Applied
-	# by temporarily saturating the shader albedo on all mesh children.
-	# Courtship flare (males build to a vivid flash at spawn) + stress pallor
-	# (any fish drains color toward pale grey when badly stressed). Both write the
-	# same per-voxel albedo, so they share one writer to avoid fighting over it.
+	_sanitize_posture_pivot(_bank_pivot)
+	_sanitize_posture_pivot(_tail_pivot)
+	_sanitize_posture_pivot(_body_mid_pivot)
+	_sanitize_posture_pivot(_head_pivot)
+	if not transform.is_finite() or not scale.is_finite():
+		_repair_motion_state()
+
+
+# Whole-body albedo tints (courtship flare, pallor). Must NOT run inside
+# _motion_substep — that path fires up to 20× per render frame and was
+# rewriting every voxel color on arousal/music ticks → visible strobing.
+func _tick_fauna_body_color(dt: float) -> void:
+	if _cached_meshes.is_empty() or _dying:
+		return
+	_fauna_color_t -= dt
+	if _fauna_color_t > 0.0:
+		return
+	_fauna_color_t = 0.16
+
 	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
 		flare = 0.58 if _courtship_sync else _courtship_intensity * 0.42
-	# CONTENTMENT SHIMMER + MOOD COLOR. A safe, fed, social fish glows a touch
-	# more vivid (positive emotional readout — the game previously only showed
-	# negative states). A sudden water-quality improvement adds a brief relief
-	# brightening. These ride the same albedo channel as courtship flare.
-	var aff_color: Dictionary = FishMind.animation_modifiers(self)
-	flare += clampf(mood, 0.0, 1.0) * 0.16 + _relief_pulse * 0.18 \
-		+ float(aff_color.get("color_flare", 0.0))
-	var pallor: float = clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.5
-	# Fear + sadness drain color: a frightened or miserable fish goes pale.
-	pallor = clampf(pallor + spooked * 0.35 + clampf(-mood, 0.0, 1.0) * 0.25 \
-		+ float(aff_color.get("color_pallor", 0.0)), 0.0, 0.85)
+	# Relief pulse only — skip continuous mood/arousal tints during cruise.
+	flare += _relief_pulse * 0.14
+	var pallor: float = clampf((stress - 0.62) / 0.38, 0.0, 1.0) * 0.45
+	pallor = clampf(pallor + spooked * 0.28 + clampf(-mood, 0.0, 1.0) * 0.18, 0.0, 0.75)
+
 	if flare > 0.001 or pallor > 0.001:
 		if not _courtship_color_active:
 			_courtship_color_active = true
 			_last_courtship_color_step = -999
-		var step: int = int(round(flare * 50.0)) * 1000 + int(round(pallor * 50.0))
+		var step: int = int(round(flare * 24.0)) * 1000 + int(round(pallor * 24.0))
 		if step != _last_courtship_color_step:
 			_last_courtship_color_step = step
 			for child in _cached_meshes:
@@ -6762,11 +7079,11 @@ func _motion_substep(dt: float) -> void:
 					var h: VoxelBatch.Handle = child
 					var c: Color = FaunaVoxelBuilder.handle_orig_color(h)
 					if flare > 0.0:
-						c = c.lightened(flare * 0.3)
-						c.s = minf(1.0, c.s + flare)
+						c = c.lightened(flare * 0.22)
+						c.s = minf(1.0, c.s + flare * 0.85)
 					if pallor > 0.0:
 						c.s = maxf(0.0, c.s * (1.0 - pallor))
-						c = c.lerp(Color(0.72, 0.74, 0.78), pallor * 0.5)
+						c = c.lerp(Color(0.72, 0.74, 0.78), pallor * 0.45)
 					h.set_color(c)
 	elif _courtship_color_active:
 		_courtship_color_active = false
@@ -6811,7 +7128,13 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 	# nudges this fish into formation. The vector's magnitude scales with how
 	# urgently the fish needs to school (tightness).
 	if neighbors.is_empty():
+		_boids_neighbor_count = 0
+		_boids_shared_focus = ""
+		_boids_shared_sal = 0.0
 		return Vector3.ZERO
+
+	_boids_shared_focus = ""
+	_boids_shared_sal = 0.0
 
 	const LOOKAHEAD: float = 0.4         # seconds of future-prediction
 	const VIEW_DOT_THRESHOLD: float = -0.4  # cos(~115°) - rear blind spot
@@ -6823,8 +7146,55 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 	var count_conspecific: int = 0
 	var effective_sep_radius: float = separation_radius * separation_mult / tightness
 	var sep_r2: float = effective_sep_radius * effective_sep_radius
-	# Leader tracking: weight cohesion toward the highest-lead-score neighbor
-	# so a school visibly follows a leader rather than a faceless centroid.
+	var batch_idx: int = -1
+	var use_batch: bool = MindBoidsBuffer.has_outputs_for(self)
+	if use_batch:
+		batch_idx = MindBoidsBuffer.index_for(self)
+		use_batch = batch_idx >= 0
+	if use_batch:
+		sep = MindBoidsBuffer.sep_accum[batch_idx]
+		ali = MindBoidsBuffer.ali_accum[batch_idx]
+		coh = MindBoidsBuffer.coh_center[batch_idx]
+		count_conspecific = MindBoidsBuffer.neighbor_counts[batch_idx]
+		school_speed_sum = float(MindBoidsBuffer.school_speed_milli[batch_idx]) / 1000.0
+	else:
+		for n in neighbors:
+			if not n is Fish or n == self:
+				continue
+			var f: Fish = n
+			var diff: Vector3 = position - f.position
+			var d2: float = diff.length_squared()
+			if d2 < 1e-4:
+				continue
+			if d2 < sep_r2:
+				var sep_push: Vector3 = diff
+				if mouth_orientation == 0:
+					sep_push.y *= 0.38
+				elif mouth_orientation == 1:
+					sep_push.y *= 0.55
+				var defer: float = 1.0
+				if f.species == species and f.rank_within_species > rank_within_species + 0.12:
+					defer = 1.6
+				if not grudges.is_empty() and f.id != "" and grudges.has(f.id):
+					defer = maxf(defer, 1.8)
+				sep += sep_push.normalized() / maxf(sqrt(d2), 0.1) * defer
+			if f.species != species:
+				continue
+			if absf(diff.y) > maxf(home_y_radius, f.home_y_radius) * 2.4:
+				continue
+			var to_neighbor: Vector3 = -diff
+			var dot_v: float = heading.dot(to_neighbor.normalized())
+			if dot_v < VIEW_DOT_THRESHOLD:
+				continue
+			var predicted_pos: Vector3 = f.position + f.velocity * LOOKAHEAD
+			ali += f.heading
+			coh += predicted_pos
+			school_speed_sum += f.speed
+			count_conspecific += 1
+			if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
+				sep.y += signf(-diff.y) * 0.28
+
+	# Leader tracking + friendship still need the neighbor list.
 	var best_lead: float = lead_score
 	var leader_pos: Vector3 = Vector3.ZERO
 	var have_leader: bool = false
@@ -6839,51 +7209,35 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		var d2: float = diff.length_squared()
 		if d2 < 1e-4:
 			continue
-		# Separation considers all species (you don't want to swim into anyone).
-		if d2 < sep_r2:
-			var sep_push: Vector3 = diff
-			if mouth_orientation == 0:
-				sep_push.y *= 0.38
-			elif mouth_orientation == 1:
-				sep_push.y *= 0.55
-			# PECKING ORDER: a subordinate yields extra space to a dominant
-			# conspecific (and to a fish it bears a grudge against), so the
-			# social hierarchy is visible as deferential spacing.
+		if use_batch and d2 < sep_r2 and f.species == species:
 			var defer: float = 1.0
-			if f.species == species and f.rank_within_species > rank_within_species + 0.12:
+			if f.rank_within_species > rank_within_species + 0.12:
 				defer = 1.6
 			if not grudges.is_empty() and f.id != "" and grudges.has(f.id):
 				defer = maxf(defer, 1.8)
-			sep += sep_push.normalized() / maxf(sqrt(d2), 0.1) * defer
-		# Alignment + cohesion are conspecific-only and view-cone-gated.
+			if defer > 1.01:
+				var sep_push: Vector3 = diff
+				if mouth_orientation == 0:
+					sep_push.y *= 0.38
+				elif mouth_orientation == 1:
+					sep_push.y *= 0.55
+				sep += sep_push.normalized() / maxf(sqrt(d2), 0.1) * (defer - 1.0)
 		if f.species != species:
 			continue
-		# Track the most "leaderly" conspecific in view.
 		if f.lead_score > best_lead and d2 < 16.0:
 			best_lead = f.lead_score
 			leader_pos = f.position + f.velocity * 0.4
 			have_leader = true
-		# FRIENDSHIP: a fish keeps closer company with a bonded friend (a past
-		# mate or frequent companion), so named residents pair off visibly.
 		if not bonds.is_empty() and f.id != "":
 			var aff: float = float(bonds.get(f.id, 0.0))
 			if aff > 0.1 and d2 > 0.36:
 				friend_pull += (f.position - position).normalized() * aff
 				friend_w += aff
-		if absf(diff.y) > maxf(home_y_radius, f.home_y_radius) * 2.4:
-			continue
-		var to_neighbor: Vector3 = -diff  # f.position - position
-		var dot_v: float = heading.dot(to_neighbor.normalized())
-		if dot_v < VIEW_DOT_THRESHOLD:
-			continue  # behind us, ignore
-		var predicted_pos: Vector3 = f.position + f.velocity * LOOKAHEAD
-		ali += f.heading
-		coh += predicted_pos
-		school_speed_sum += f.speed
-		count_conspecific += 1
-		# Vertical de-stack: nudge away from conspecifics on the same plane.
-		if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
-			sep.y += signf(-diff.y) * 0.28
+			if aff >= 0.35 and f._workspace_ignited and f.attention_focus != "":
+				var sal: float = aff * 0.55
+				if sal > _boids_shared_sal:
+					_boids_shared_sal = sal
+					_boids_shared_focus = f.attention_focus
 
 	var steer := sep * 2.85
 
@@ -6960,6 +7314,7 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		if sim.has_method("conduct_anchor_pull"):
 			steer += sim.conduct_anchor_pull(position) * 0.48
 
+	_boids_neighbor_count = count_conspecific
 	return steer
 
 
@@ -7029,6 +7384,15 @@ func _world_node() -> Node:
 	return sim.get_parent()
 
 
+func _fauna_tier_scale(raw: float, lo: float, hi: float, tiers: PackedFloat32Array) -> float:
+	var t: float = clampf(raw, lo, hi)
+	var step: float = (hi - lo) / float(maxi(tiers.size() - 1, 1))
+	var idx: float = (t - lo) / step
+	var lo_i: int = int(floor(idx))
+	var hi_i: int = mini(lo_i + 1, tiers.size() - 1)
+	return lerpf(tiers[lo_i], tiers[hi_i], idx - float(lo_i))
+
+
 func _fauna_runtime() -> Dictionary:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
@@ -7042,11 +7406,23 @@ func _fauna_runtime() -> Dictionary:
 			"mourning": true,
 			"glance": true,
 		}
+	var schooling_raw: float = float(cfg.fauna_schooling_mult)
+	var separation_raw: float = float(cfg.fauna_separation_mult)
+	var wander_raw: float = float(cfg.fauna_wander_mult)
+	var speed_raw: float = float(cfg.fauna_speed_mult)
 	return {
-		"schooling": float(cfg.fauna_schooling_mult),
-		"separation": float(cfg.fauna_separation_mult),
-		"wander": float(cfg.fauna_wander_mult),
-		"speed": float(cfg.fauna_speed_mult),
+		"schooling": _fauna_tier_scale(
+			schooling_raw, 0.0, 2.0,
+			PackedFloat32Array([0.05, 0.55, 1.0, 1.45, 1.95])),
+		"separation": _fauna_tier_scale(
+			separation_raw, 0.5, 2.0,
+			PackedFloat32Array([0.72, 1.0, 1.38, 1.85])),
+		"wander": _fauna_tier_scale(
+			wander_raw, 0.0, 2.0,
+			PackedFloat32Array([0.08, 0.48, 1.0, 1.65, 2.45])),
+		"speed": _fauna_tier_scale(
+			speed_raw, 0.5, 2.0,
+			PackedFloat32Array([0.62, 1.0, 1.32, 1.72])),
 		"pulse_on": bool(cfg.fauna_school_pulse_enabled) and not bool(cfg.reduced_motion),
 		"pulse_amp": float(cfg.fauna_school_pulse_amplitude),
 		"mourning": bool(cfg.fauna_mourning_enabled),
@@ -7062,12 +7438,12 @@ func _tank_home_spread_xz() -> float:
 		return 1.8
 	var hw: float = float(w.get("TANK_HALF_W")) if w.get("TANK_HALF_W") != null else 4.0
 	var hd: float = float(w.get("TANK_HALF_D")) if w.get("TANK_HALF_D") != null else 4.0
-	return clampf(maxf(hw, hd) * 0.22, 1.8, 5.0)
+	return clampf(maxf(hw, hd) * 0.30, 2.0, 6.5)
 
 
 func _tank_is_dome() -> bool:
 	var w := _world_node()
-	return w != null and String(w.get("TANK_SHAPE")) == "sphere"
+	return w != null and str(w.get("TANK_SHAPE")) == "sphere"
 
 
 func _water_surface_y() -> float:
@@ -7860,7 +8236,7 @@ func to_save_dict() -> Dictionary:
 		"familiarity": familiarity,
 		"mood": mood,
 		"arousal": arousal,
-		"mind": FishMind.mind_to_dict(self),
+		"mind": FishMind.mind_to_dict(self, sim != null and sim.has_method("save_mind_delta") and sim.save_mind_delta()),
 		"character_bio": character_bio,
 		"is_guardian": is_guardian,
 		"bonds": bonds.duplicate(),
@@ -8180,6 +8556,14 @@ func _apply_target_from_desired(desired: Vector3, max_spd: float) -> Vector3:
 
 
 func _lateral_boundary_context(gp: Vector3 = global_position, body_m: float = -1.0,
+		heading_hint: Vector3 = Vector3.ZERO) -> Dictionary:
+	const _MindBoundaryCacheScript = preload("res://scripts/mind_boundary_cache.gd")
+	if body_m < 0.0:
+		body_m = _body_tank_margin()
+	return _MindBoundaryCacheScript.lateral(self, gp, body_m, heading_hint)
+
+
+func _lateral_boundary_context_uncached(gp: Vector3 = global_position, body_m: float = -1.0,
 		heading_hint: Vector3 = Vector3.ZERO) -> Dictionary:
 	if body_m < 0.0:
 		body_m = _body_tank_margin()

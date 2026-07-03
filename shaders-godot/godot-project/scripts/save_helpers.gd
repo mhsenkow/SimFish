@@ -79,3 +79,26 @@ static func array_to_vec2(a, fallback: Vector2 = Vector2.ZERO) -> Vector2:
 	if a is Array and a.size() >= 2:
 		return Vector2(_num(a[0]), _num(a[1]))
 	return fallback
+
+
+# ---- JSON round-trip ----
+
+static func sanitize_for_json(v: Variant) -> Variant:
+	if v is float:
+		return null if not is_finite(v) else v
+	if v is Array:
+		var out_a: Array = []
+		for x in v:
+			out_a.append(sanitize_for_json(x))
+		return out_a
+	if v is Dictionary:
+		var out_d: Dictionary = {}
+		for k in v.keys():
+			out_d[k] = sanitize_for_json(v[k])
+		return out_d
+	return v
+
+
+static func sanitize_json_text(text: String) -> String:
+	# Godot JSON.stringify encodes ±INF as ±1e99999; strtod rejects that exponent.
+	return text.replace("-1e99999", "null").replace("1e99999", "null")

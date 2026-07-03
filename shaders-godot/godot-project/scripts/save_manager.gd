@@ -26,6 +26,9 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 	if d.has("terrain") and world != null and world.has_method("terrain_apply_save_dict") \
 			and not TankConfig.rebuild_terrain_on_load:
 		world.terrain_apply_save_dict(d["terrain"])
+		# Terrain sculpt changes surface Y; re-anchor ground plants after overlay.
+		if sim != null and sim.has_method("_clamp_loaded_entities"):
+			sim.call("_clamp_loaded_entities")
 	if TankConfig.rebuild_terrain_on_load:
 		TankConfig.rebuild_terrain_on_load = false
 		TankConfig.save_to_disk()
@@ -47,7 +50,9 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 	var live_ts: float = float(sim.time_scale)
 	if live_ts > 0.0:
 		pending_time_scale = live_ts
+	sim.set_save_mind_delta(skip_thumbnail)
 	var state_d: Dictionary = sim.save_state()
+	sim.set_save_mind_delta(false)
 	state_d["sim"]["time_scale"] = pending_time_scale
 	# Persist the followed creature (+ mode/scope) so reopening resumes it.
 	# save_state() ran _ensure_ids(), so the followed creature already has an id.
@@ -63,10 +68,8 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 		if not terrain_d.is_empty():
 			state_d["terrain"] = terrain_d
 	var path: String = saves.state_path(int(saves.active_slot))
-	var err: int = saves.write_text_atomic(path, JSON.stringify(state_d, "  "))
-	if err != OK:
-		push_warning("[walstad_loom] save failed at %s: err %d" % [path, err])
-		return pending_time_scale
+	var payload: Variant = SaveHelpers.sanitize_for_json(state_d)
+	WorkerThreadPool.add_task(_async_serialize_and_write.bind(path, payload))
 	if not skip_thumbnail and host.has_method("_save_thumbnail"):
 		host.call("_save_thumbnail", saves.thumbnail_path(int(saves.active_slot)))
 	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
@@ -95,3 +98,29 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 	meta["last_opened_unix"] = int(Time.get_unix_time_from_system())
 	saves.update_tank_meta(int(saves.active_slot), meta)
 	return pending_time_scale
+
+
+static func _async_serialize_and_write(path: String, payload: Variant) -> void:
+	_async_write_save(path, JSON.stringify(payload, "  "))
+
+
+static func _async_write_save(path: String, json_text: String) -> void:
+	# Worker thread — no scene tree access; mirror TankSaves.write_text_atomic.
+	var base_dir: String = path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(base_dir):
+		DirAccess.make_dir_recursive_absolute(base_dir)
+	var tmp: String = path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		push_warning("[walstad_loom] async save open failed at %s: err %d" % [tmp, FileAccess.get_open_error()])
+		return
+	f.store_string(json_text)
+	f.close()
+	if FileAccess.file_exists(path):
+		var bak: String = path + ".bak"
+		if FileAccess.file_exists(bak):
+			DirAccess.remove_absolute(bak)
+		DirAccess.copy_absolute(path, bak)
+	var err: Error = DirAccess.rename_absolute(tmp, path)
+	if err != OK:
+		push_warning("[walstad_loom] async save rename failed at %s: err %d" % [path, err])

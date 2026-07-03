@@ -29,21 +29,18 @@ static func ensure(f: Fish) -> Dictionary:
 	return fs["concepts"] as Dictionary
 
 
-static func tick(f: Fish, _sim: Node, dt: float) -> void:
+static func ingest_episode(f: Fish, kind: String, text: String, weight: float,
+		entry: Dictionary = {}) -> void:
 	if not enabled() or f == null:
 		return
 	var c: Dictionary = ensure(f)
-	var store: Array = EpisodicMemory.ensure_store(f)
-	if store.is_empty() or randf() >= dt * 0.08:
-		return
 	var kinds: Array = c.get("kinds", [])
-	var last: Dictionary = store[-1]
-	var kind: String = str(last.get("kind", "moment"))
-	var key: String = "%s@%d" % [kind, int(last.get("cell", -1)) if last.has("cell") else hash(str(last.get("text", "")))]
+	var cell: int = int(entry.get("cell", -1)) if entry.has("cell") else -1
+	var key: String = "%s@%d" % [kind, cell if cell >= 0 else hash(text)]
 	var found: Dictionary = {}
 	for k in kinds:
 		if str((k as Dictionary).get("key", "")) == key:
-			found = k
+			found = k as Dictionary
 			break
 	if found.is_empty():
 		found = {
@@ -51,7 +48,7 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 			"label": "kind-of-%s" % kind,
 			"count": 0,
 			"affect": FishCoreAffect.valence(f),
-			"weight": float(last.get("weight", 0.5)),
+			"weight": weight,
 		}
 		kinds.append(found)
 	found["count"] = int(found.get("count", 0)) + 1
@@ -60,7 +57,14 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 	while kinds.size() > MAX_CONCEPTS:
 		kinds.pop_front()
 	c["kinds"] = kinds
-	# Proto-abstractions (#56).
+	(f._felt_self as Dictionary)["concepts"] = c
+
+
+static func tick(f: Fish, _sim: Node, _dt: float) -> void:
+	if not enabled() or f == null:
+		return
+	var c: Dictionary = ensure(f)
+	# Proto-abstractions only — episodic clustering moved to encode time (#33).
 	var proto: Array = c.get("proto", [])
 	if f.hunger > 0.55 and not proto.has("scarcity"):
 		proto.append("scarcity")

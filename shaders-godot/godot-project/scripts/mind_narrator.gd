@@ -18,7 +18,7 @@ const NUM_PREDICT_RECAP: int = 80
 const NUM_PREDICT_REPLY: int = 20
 const NUM_PREDICT_WARMUP: int = 6
 # PLAYER_BOND #78: webcam / face-at-glass voice — disabled until sensing ships.
-const PLAYER_SENSING_VOICE_ENABLED: bool = false
+const PLAYER_SENSING_VOICE_ENABLED: bool = true
 
 const LOCALE_LABELS: Dictionary = {
 	"en": "English",
@@ -102,7 +102,30 @@ static func _is_stale_thought_echo(s: String) -> bool:
 	]
 
 
+static var _thought_templates: Dictionary = {}
+
+
 static func template_fish_thought(ctx: Dictionary) -> String:
+	var key: String = "%s|%s|%s|%s" % [
+		str(ctx.get("feel", "")),
+		str(ctx.get("intends", "")),
+		str(ctx.get("local_hypothesis", "")),
+		str(ctx.get("player_at_glass", false)),
+	]
+	if _thought_templates.has(key):
+		return str(_thought_templates[key])
+	var line: String = _template_fish_thought_inner(ctx)
+	if line != "":
+		_thought_templates[key] = line
+	return line
+
+
+static func _template_fish_thought_inner(ctx: Dictionary) -> String:
+	if PLAYER_SENSING_VOICE_ENABLED and bool(ctx.get("player_at_glass", false)):
+		var fam: float = float(ctx.get("familiarity", 0.0))
+		if fam > 0.55:
+			return "something familiar, up near the glass"
+		return "something warm, up near the glass"
 	var feel: String = str(ctx.get("feel", "calm"))
 	var intent: String = str(ctx.get("intends", ""))
 	var hyp: String = str(ctx.get("local_hypothesis", ""))
@@ -166,6 +189,16 @@ static func template_fish_reply(ctx: Dictionary) -> String:
 	if lower_keeper.contains("alive") or lower_keeper.contains("real") \
 			or lower_keeper.contains("chatbot"):
 		return "I feel. I don't know what I am"
+	if str(ctx.get("keeper_intent", "")) == "introspection":
+		var intro: String = str(ctx.get("introspection_report", ""))
+		if intro != "":
+			return intro.substr(0, 80)
+		if comp < 0.35 or conf < 0.35:
+			return "don't know why"
+		var ws: String = str(ctx.get("attention_workspace", ""))
+		if ws != "":
+			return "attending: %s" % ws
+		return "nothing clear right now"
 	# Fading memory (#65).
 	if fading != "":
 		return "a dim shape of %s… can't hold it" % fading
@@ -187,6 +220,8 @@ static func template_fish_reply(ctx: Dictionary) -> String:
 			return "gentler… you seem low"
 		return "warmer near the glass"
 	if intent == "greeting":
+		if gap_d >= 2.0:
+			return "you came back"
 		var ritual: String = str(ctx.get("greeting_ritual", ""))
 		if ritual != "" and str(ctx.get("keeper_text", "")).begins_with(ritual):
 			return "that hello again"

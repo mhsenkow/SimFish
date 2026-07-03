@@ -10,23 +10,31 @@ extends RefCounted
 
 const RADIUS: float = 6.0
 const RADIUS2: float = RADIUS * RADIUS
+const _MindArousalFieldScript = preload("res://scripts/mind_arousal_field.gd")
+const _MindPairCacheScript = preload("res://scripts/mind_pair_cache.gd")
 
 
 # Nudge f.arousal (fast) and f.mood (slower) toward the proximity-weighted mean of
 # nearby conspecifics, scaled by how socially susceptible this fish is.
 static func tick(f: Fish, neighbors: Array, dt: float) -> void:
-	if neighbors.is_empty():
-		return
 	var sum_ar: float = 0.0
 	var sum_mood: float = 0.0
 	var sum_w: float = 0.0
+	var wnode: Node = f.get_parent()
+	if wnode == null and f.sim != null:
+		wnode = f.sim.get_parent()
+	var field_ar: float = _MindArousalFieldScript.sample_at(wnode, f.global_position)
+	if field_ar > 0.01:
+		sum_ar += field_ar * 2.4
+		sum_w += 2.4
 	for n in neighbors:
 		if not (n is Fish) or n == f:
 			continue
-		var d2: float = f.position.distance_squared_to(n.position)
-		if d2 >= RADIUS2:
+		var pair: Dictionary = _MindPairCacheScript.get_pair(f, n)
+		var dist: float = float(pair.get("dist", f.position.distance_to(n.position)))
+		if dist >= RADIUS:
 			continue
-		var w: float = 1.0 - sqrt(d2) / RADIUS   # closer neighbours weigh more
+		var w: float = 1.0 - dist / RADIUS
 		sum_ar += n.arousal * w
 		sum_mood += n.mood * w
 		sum_w += w

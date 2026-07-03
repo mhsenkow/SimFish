@@ -1,6 +1,8 @@
 extends RefCounted
 class_name VoxelBatch
 
+const _MultiMeshBufferBlit = preload("res://scripts/multimesh_buffer_blit.gd")
+
 # A MultiMesh-backed batch of unit-box voxels drawn by ONE MultiMeshInstance3D
 # (one draw call) instead of one MeshInstance3D node per voxel. This is what
 # lets a plant with hundreds of voxels cost a single draw call and a single
@@ -33,6 +35,10 @@ class Handle extends RefCounted:
 		if alive and batch != null:
 			batch._apply_color(index, c)
 
+	func set_custom_data(c: Color) -> void:
+		if alive and batch != null:
+			batch._apply_custom(index, c)
+
 	# Re-write this voxel's per-instance transform. Used by entities that
 	# animate individual voxels (biofilm sheet sway, algae waver) without
 	# moving the whole batch via the parent Node3D's transform.
@@ -52,12 +58,18 @@ var _count: int = 0
 var _visible: int = 0
 var _xforms: Array[Transform3D] = []
 var _colors: PackedColorArray = PackedColorArray()
+var _customs: PackedColorArray = PackedColorArray()
+var _use_custom: bool = false
 
 
-func _init(parent: Node3D, material: Material, initial_capacity: int = 64) -> void:
+func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
+		use_custom_data: bool = false) -> void:
+	_use_custom = use_custom_data
 	_mm = MultiMesh.new()
 	_mm.transform_format = MultiMesh.TRANSFORM_3D
 	_mm.use_colors = true
+	if _use_custom:
+		_mm.use_custom_data = true
 	_mm.instance_count = maxi(1, initial_capacity)
 	_mm.visible_instance_count = 0
 	_mm.mesh = VoxelMat.get_box(UNIT_BOX)
@@ -88,9 +100,14 @@ func add(xform: Transform3D, color: Color) -> Handle:
 		safe_xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
 	_xforms.append(safe_xform)
 	_colors.append(color)
+	var custom: Color = Color(0.0, 0.0, 0.0, 1.0)
+	if _use_custom:
+		_customs.append(custom)
 	_ensure_capacity(_count)
 	_mm.set_instance_transform(i, safe_xform)
 	_mm.set_instance_color(i, color)
+	if _use_custom:
+		_mm.set_instance_custom_data(i, custom)
 	var h := Handle.new()
 	h.batch = self
 	h.index = i
@@ -106,7 +123,16 @@ func flush() -> void:
 		return
 	_visible = _count
 	_mm.visible_instance_count = _visible
+	if _count >= 8:
+		blit_buffer()
 
+
+func blit_buffer() -> void:
+	if _mm == null or _count <= 0:
+		return
+	var xforms_arr: Array = []
+	xforms_arr.assign(_xforms.slice(0, _count))
+	_MultiMeshBufferBlit.upload(_mm, xforms_arr, _colors, _customs, _count, _use_custom)
 
 func _ensure_capacity(n: int) -> void:
 	if n <= _mm.instance_count:
@@ -123,6 +149,8 @@ func _ensure_capacity(n: int) -> void:
 			_xforms[i] = xform
 		_mm.set_instance_transform(i, xform)
 		_mm.set_instance_color(i, _colors[i])
+		if _use_custom and i < _customs.size():
+			_mm.set_instance_custom_data(i, _customs[i])
 	_visible = mini(_visible, _count)
 	_mm.visible_instance_count = _visible
 
@@ -131,6 +159,13 @@ func _apply_color(i: int, c: Color) -> void:
 	if i >= 0 and i < _count:
 		_colors[i] = c
 		_mm.set_instance_color(i, c)
+
+
+func _apply_custom(i: int, c: Color) -> void:
+	if not _use_custom or i < 0 or i >= _count:
+		return
+	_customs[i] = c
+	_mm.set_instance_custom_data(i, c)
 
 
 func _apply_transform(i: int, x: Transform3D) -> void:
@@ -161,6 +196,7 @@ func clear() -> void:
 	_visible = 0
 	_xforms.clear()
 	_colors.resize(0)
+	_customs.resize(0)
 	if _mm != null:
 		_mm.visible_instance_count = 0
 

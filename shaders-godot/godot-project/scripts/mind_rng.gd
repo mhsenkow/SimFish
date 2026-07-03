@@ -12,14 +12,16 @@ static func sim_rng(sim: Node) -> Variant:
 	return sim.get("rng")
 
 
-static func entity_id(entity: Node) -> String:
+static func entity_id(entity) -> String:
 	if entity == null:
 		return "null"
 	if entity.get("id") != null:
-		var sid: String = String(entity.id)
+		var sid: String = str(entity.id)
 		if sid.strip_edges() != "":
 			return sid
-	return "inst_%d" % entity.get_instance_id()
+	if entity is Object and (entity as Object).has_method("get_instance_id"):
+		return "inst_%d" % (entity as Object).get_instance_id()
+	return "anon_%d" % hash(str(entity))
 
 
 static func stream(sim: Node, entity_id_key: String, base: String) -> RandomNumberGenerator:
@@ -32,13 +34,32 @@ static func stream(sim: Node, entity_id_key: String, base: String) -> RandomNumb
 	return fb
 
 
-static func for_fish(f: Node, base: String = SimRngScript.STREAM_COGNITION) -> RandomNumberGenerator:
+static func stream_for_tick(sim: Node, entity_id_key: String, base: String, tick_index: int) -> RandomNumberGenerator:
+	var keyed: String = "%s|t%d" % [entity_id_key, tick_index]
+	return stream(sim, keyed, base)
+
+
+static func for_fish(f, base: String = SimRngScript.STREAM_COGNITION) -> RandomNumberGenerator:
 	if f == null:
 		var fb := RandomNumberGenerator.new()
 		fb.seed = SimRngScript.stream_seed(0xCAFEF155, base)
 		return fb
-	var sim: Node = f.get("sim") as Node
-	return stream(sim, entity_id(f), base)
+	var sim: Variant = f.get("sim") if f is Object else null
+	var eid: String = entity_id(f)
+	if sim is Node:
+		return stream(sim as Node, eid, base)
+	var local := RandomNumberGenerator.new()
+	local.seed = SimRngScript.stream_seed(0xCAFEF155, "%s|%s" % [base, eid])
+	return local
+
+
+static func for_fish_tick(f, base: String = SimRngScript.STREAM_COGNITION) -> RandomNumberGenerator:
+	if f == null:
+		return for_fish(f, base)
+	var sim: Variant = f.get("sim") if f is Object else null
+	if sim is Node and sim.get("_mind_tick_index") != null:
+		return stream_for_tick(sim as Node, entity_id(f), base, int(sim._mind_tick_index))
+	return for_fish(f, base)
 
 
 static func golden_sample(f: Node, n: int = 4) -> PackedFloat32Array:

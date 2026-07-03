@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bk8b1puat2x74"
+path="res://.godot/imported/mind_boids.glsl-87e3338101b4fa0bdaa874f2c1c79ddf.res"
+
+[deps]
+
+source_file="res://shaders/mind_boids.glsl"
+dest_files=["res://.godot/imported/mind_boids.glsl-87e3338101b4fa0bdaa874f2c1c79ddf.res"]
+
+[params]
+

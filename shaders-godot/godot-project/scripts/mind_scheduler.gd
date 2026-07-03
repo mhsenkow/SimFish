@@ -4,6 +4,7 @@ extends RefCounted
 
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
+const _MindNarratorWorkerScript = preload("res://scripts/mind_narrator_worker.gd")
 const MindWriteback = preload("res://scripts/mind_writeback.gd")
 const MindDaring = preload("res://scripts/mind_daring.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
@@ -12,6 +13,8 @@ const FishMind = preload("res://scripts/fish_mind.gd")
 const THOUGHT_INTERVAL_CALM: float = 8.0
 const THOUGHT_INTERVAL_IGNITED: float = 2.5
 const THOUGHT_INTERVAL_AMBIENT: float = 22.0
+const SN_IDLE := &"idle"
+const SN_SITUATION := &"situation"
 const MAX_QUEUE: int = 12
 const AMBIENT_QUEUE_CUTOFF: int = 8
 const MEMORY_PRESSURE_BYTES: int = 2_200_000_000
@@ -27,16 +30,42 @@ static var _stats: Dictionary = {
 }
 static var _op_cache: Dictionary = {}
 static var _pending_async: Dictionary = {}
+static var _worker_mutex: Mutex = Mutex.new()
+static var _worker_results: Dictionary = {}  # cache_key -> {op, prompt}
+static var _worker_inflight: Dictionary = {}  # cache_key -> {fish, ctx, task_id, use_glm}
+static var _ai_director: Node = null
+static var _guardian_llm: Node = null
+static var _tank_config: Node = null
+
+
+static func _resolve_autoloads() -> void:
+	if _tank_config != null and is_instance_valid(_tank_config):
+		return
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml == null:
+		return
+	var st: SceneTree = ml as SceneTree
+	if st == null or st.root == null or not st.root.is_inside_tree():
+		return
+	_tank_config = st.root.get_node_or_null("/root/TankConfig")
+	_ai_director = st.root.get_node_or_null("/root/AIDirector")
+	_guardian_llm = st.root.get_node_or_null("/root/GuardianLlm")
 
 
 static func _autoload(name: String) -> Node:
-	var ml: MainLoop = Engine.get_main_loop()
-	if ml == null:
-		return null
-	var st: SceneTree = ml as SceneTree
-	if st == null or st.root == null or not st.root.is_inside_tree():
-		return null
-	return st.root.get_node_or_null("/root/" + name)
+	_resolve_autoloads()
+	match name:
+		"TankConfig": return _tank_config
+		"AIDirector": return _ai_director
+		"GuardianLlm": return _guardian_llm
+		_:
+			var ml: MainLoop = Engine.get_main_loop()
+			if ml == null:
+				return null
+			var st: SceneTree = ml as SceneTree
+			if st == null or st.root == null or not st.root.is_inside_tree():
+				return null
+			return st.root.get_node_or_null("/root/" + name)
 
 
 static func stats() -> Dictionary:
@@ -44,6 +73,7 @@ static func stats() -> Dictionary:
 	_stats["in_flight"] = _in_flight
 	_stats["pending_async"] = _pending_async.size()
 	_stats["op_cache_size"] = _op_cache.size()
+	_stats["worker_inflight"] = _worker_inflight.size()
 	return _stats.duplicate()
 
 
@@ -56,6 +86,87 @@ static func reset_stats_for_test() -> void:
 	_queue.clear()
 	_in_flight = false
 	_pending_async.clear()
+	_worker_mutex.lock()
+	_worker_results.clear()
+	_worker_inflight.clear()
+	_worker_mutex.unlock()
+
+
+static func poll_workers() -> void:
+	if _worker_inflight.is_empty():
+		return
+	var finished: Array[String] = []
+	for key in _worker_inflight:
+		var job: Dictionary = _worker_inflight[key]
+		var task_id: int = int(job.get("task_id", -1))
+		if task_id < 0 or not WorkerThreadPool.is_task_completed(task_id):
+			continue
+		WorkerThreadPool.wait_for_task_completion(task_id)
+		finished.append(str(key))
+	for key in finished:
+		_finish_worker_job(key)
+
+
+static func _finish_worker_job(cache_key: String) -> void:
+	var job: Variant = _worker_inflight.get(cache_key, null)
+	if job == null:
+		return
+	_worker_inflight.erase(cache_key)
+	_worker_mutex.lock()
+	var packed: Variant = _worker_results.get(cache_key, null)
+	if packed is Dictionary:
+		_worker_results.erase(cache_key)
+	_worker_mutex.unlock()
+	if not (packed is Dictionary):
+		_in_flight = false
+		if not _queue.is_empty():
+			_pump()
+		return
+	var result: Dictionary = packed as Dictionary
+	var f: Fish = job.get("fish")
+	var ctx: Dictionary = job.get("ctx", {})
+	var line: String = str(result.get("line", ""))
+	if line != "" and f != null and is_instance_valid(f):
+		f._thought_stream = line
+		f._current_thought = line
+	var fb: Dictionary = result.get("op", {}) as Dictionary
+	if bool(job.get("use_glm", false)):
+		var glm: Node = _autoload("GuardianLlm")
+		if glm != null and glm.has_method("queue_generate"):
+			ctx["fish_id"] = str(f.id) if f != null else ""
+			_pending_async[cache_key] = {"fish": f, "ctx": ctx, "t0": Time.get_ticks_msec()}
+			glm.call("queue_generate", "cog|" + cache_key,
+					String(result.get("prompt", "")), fb.get("line", ""), ctx,
+					MindNarrator.NUM_PREDICT_FISH_THOUGHT)
+		_apply_cached(f, fb, ctx)
+		return
+	_op_cache[cache_key] = fb
+	_apply_cached(f, fb, ctx)
+	_stats["reflections"] += 1
+	_in_flight = false
+	if not _queue.is_empty():
+		_pump()
+
+
+static func _worker_build_thought(cache_key: String, ctx: Dictionary) -> void:
+	var pkg: Dictionary = _MindNarratorWorkerScript.build_thought_package(ctx)
+	_worker_mutex.lock()
+	_worker_results[cache_key] = pkg
+	_worker_mutex.unlock()
+
+
+static func run_worker_smoke(ctx: Dictionary) -> bool:
+	reset_stats_for_test()
+	var key: String = "smoke|worker"
+	var tid: int = WorkerThreadPool.add_task(_worker_build_thought.bind(key, ctx.duplicate(true)))
+	while not WorkerThreadPool.is_task_completed(tid):
+		pass
+	WorkerThreadPool.wait_for_task_completion(tid)
+	_worker_mutex.lock()
+	var ok: bool = _worker_results.has(key) and (_worker_results[key] as Dictionary).has("op")
+	_worker_results.erase(key)
+	_worker_mutex.unlock()
+	return ok
 
 
 static func should_throttle_external() -> bool:
@@ -117,19 +228,50 @@ static func tick_fish(f: Fish, sim: Node, dt: float) -> void:
 		var idle: float = float(sim._room_idle_s)
 		if idle > 45.0:
 			interval *= lerpf(1.0, 3.2, clampf(idle / 180.0, 0.0, 1.0))
+	# #3 — asleep fish poll thoughts ~4× slower; dreams still fire on their cadence.
+	if f._asleep:
+		interval *= 4.0
 	f._thought_tick_cd = interval
 	_run_internal_thought(f, sim, ignited)
 
 
+static func _audience_wants_prose(f: Fish, sim: Node) -> bool:
+	if f.is_voiced_individual() or f.is_guardian:
+		return true
+	if sim != null and sim.has_method("is_creature_favorited"):
+		if sim.is_creature_favorited(f):
+			return true
+	var cfg: Node = _autoload("TankConfig")
+	if cfg != null and bool(cfg.get("inner_life_panel")):
+		return true
+	return false
+
+
+static func _room_idle_no_panel(sim: Node) -> bool:
+	if sim == null or sim.get("_room_idle_s") == null:
+		return false
+	if float(sim._room_idle_s) < 45.0:
+		return false
+	var cfg: Node = _autoload("TankConfig")
+	if cfg != null and bool(cfg.get("inner_life_panel")):
+		return false
+	return true
+
+
 static func _run_internal_thought(f: Fish, sim: Node, deep: bool) -> void:
-	var situation: String = f.attention_focus if f.attention_focus != "" else "idle"
-	var ctx: Dictionary = MindContext.build_for_fish(f, sim, situation)
+	var situation: String = f.attention_focus if f.attention_focus != "" else str(SN_IDLE)
+	var want_prose: bool = _audience_wants_prose(f, sim) and not _room_idle_no_panel(sim)
+	var ctx: Dictionary = MindContext.build_for_fish(f, sim, situation, null, want_prose)
 	_stats["cycles"] += 1
-	# Internal monologue (#22) — template always; model when eligible
-	var internal: String = _internal_template(f, ctx)
-	f._thought_stream = internal
-	f._thought_stream_age = 0.0
-	f._current_thought = internal
+	# #4/#17 — keep thought state; defer narrator prose when nobody is listening.
+	if want_prose:
+		var internal: String = _internal_template(f, ctx)
+		f._thought_stream = internal
+		f._thought_stream_age = 0.0
+		f._current_thought = internal
+	else:
+		f._thought_stream_age = 0.0
+		f._current_thought = ""
 	# System 2 gate (#27)
 	if not deep and f.surprise < 0.35 and f.stress < 0.5:
 		return
@@ -151,7 +293,24 @@ static func _run_internal_thought(f: Fish, sim: Node, deep: bool) -> void:
 	_pump()
 
 
+static var _pass3_script: GDScript = null
+
+
+static func _pass3() -> GDScript:
+	if _pass3_script == null:
+		_pass3_script = load("res://scripts/mind_soul_pass3.gd") as GDScript
+	return _pass3_script
+
+
 static func _internal_template(f: Fish, ctx: Dictionary) -> String:
+	var p3: GDScript = _pass3()
+	if p3 != null and p3.enabled():
+		var rare: String = p3.hard_choice_line(f)
+		if rare != "":
+			return rare
+		rare = p3.surface_counterfactual_line(f, null)
+		if rare != "":
+			return rare
 	var ws: Variant = f.get("_mind_workspace")
 	var line: String = ""
 	if ws is Array and (ws as Array).size() > 0:
@@ -173,37 +332,32 @@ static func _cache_key(f: Fish, ctx: Dictionary) -> String:
 	return "%s|%s|%s|%s" % [
 		str(f.id), str(ctx.get("feel", "")),
 		str(ctx.get("attention_workspace", "")),
-		str(ctx.get("situation", "")),
+		str(ctx.get(SN_SITUATION, "")),
 	]
 
 
 static func _pump() -> void:
 	if _in_flight or _queue.is_empty():
 		return
-	_queue.sort_custom(func(a, b): return float(a.get("priority", 0.0)) > float(b.get("priority", 0.0)))
+	# #20 — insertion discipline for tiny queues.
+	if _queue.size() > 2:
+		_queue.sort_custom(func(a, b): return float(a.get("priority", 0.0)) > float(b.get("priority", 0.0)))
 	var job: Dictionary = _queue[0]
 	_queue.remove_at(0)
-	_in_flight = true
 	var f: Fish = job.get("fish")
 	var ctx: Dictionary = job.get("ctx", {})
 	var cache_key: String = String(job.get("cache_key", ""))
-	var fb: Dictionary = CognitiveSchema.template_op(ctx)
+	var use_glm: bool = false
 	var glm: Node = _autoload("GuardianLlm")
 	if glm != null and glm.has_method("is_ready") and bool(glm.call("is_ready")) \
 			and glm.has_method("queue_generate"):
-		var prompt: String = MindNarrator.build_fish_thought_prompt(ctx)
-		ctx["fish_id"] = str(f.id)
-		_pending_async[cache_key] = {"fish": f, "ctx": ctx, "t0": Time.get_ticks_msec()}
-		glm.call("queue_generate", "cog|" + cache_key, prompt, fb.get("line", ""), ctx,
-				MindNarrator.NUM_PREDICT_FISH_THOUGHT)
-		_apply_cached(f, fb, ctx)
-		return
-	_op_cache[cache_key] = fb
-	_apply_cached(f, fb, ctx)
-	_stats["reflections"] += 1
-	_in_flight = false
-	if not _queue.is_empty():
-		_pump()
+		use_glm = true
+	_in_flight = true
+	var tid: int = WorkerThreadPool.add_task(
+			_worker_build_thought.bind(cache_key, ctx.duplicate(true)))
+	_worker_inflight[cache_key] = {
+		"fish": f, "ctx": ctx, "task_id": tid, "use_glm": use_glm,
+	}
 
 
 static func _apply_cached(f: Fish, op: Dictionary, ctx: Dictionary) -> void:
@@ -213,7 +367,7 @@ static func _apply_cached(f: Fish, op: Dictionary, ctx: Dictionary) -> void:
 	if line != "":
 		f._thought_stream = line
 		f._current_thought = line
-		f._last_cog_op = op.duplicate(true)
+		f._last_cog_op = op.duplicate(false)
 		f._last_cog_validation = "reflection"
 	MindDaring.apply_model_op(f, op, ctx)
 

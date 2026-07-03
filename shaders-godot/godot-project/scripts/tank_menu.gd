@@ -39,6 +39,7 @@ var _syncing_select_all: bool = false
 func _ready() -> void:
 	_setup_chrome()
 	_setup_top_bar()
+	VoxelMat.warm_shader_variants(get_node_or_null("/root/TankConfig"))
 	get_viewport().size_changed.connect(_apply_responsive_layout)
 	_apply_responsive_layout()
 	_refresh()

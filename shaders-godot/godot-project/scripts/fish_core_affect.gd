@@ -12,10 +12,11 @@ static func enabled() -> bool:
 	return FeltSelfLayer.layer_enabled()
 
 
-static func ensure(f: Fish) -> Dictionary:
-	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):
-		f._felt_self = {}
-	var fs: Dictionary = f._felt_self as Dictionary
+static func ensure(f) -> Dictionary:
+	var fs_v: Variant = f.get("_felt_self")
+	var fs: Dictionary = {}
+	if fs_v is Dictionary:
+		fs = (fs_v as Dictionary).duplicate(true)
 	if fs.get("core_affect") == null or not (fs["core_affect"] is Dictionary):
 		fs["core_affect"] = {
 			"schema_version": SCHEMA_VERSION,
@@ -25,11 +26,12 @@ static func ensure(f: Fish) -> Dictionary:
 			"residue": 0.0,
 			"tonic": 0.0,
 		}
-	f._felt_self = fs
+	if f is Object:
+		(f as Object).set("_felt_self", fs)
 	return fs["core_affect"] as Dictionary
 
 
-static func tick(f: Fish, _sim: Node, dt: float) -> void:
+static func tick(f, _sim: Node, dt: float) -> void:
 	if not enabled() or f == null:
 		return
 	var pb: Dictionary = FishProtoself.ensure(f)
@@ -66,6 +68,11 @@ static func tick(f: Fish, _sim: Node, dt: float) -> void:
 
 
 static func _texture_label(source: String, f: Fish) -> String:
+	var pb: Dictionary = FishProtoself.ensure(f)
+	if float(pb.get("vitality_decline", 0.0)) > 0.45:
+		return "slow fade"
+	if f.spooked > 0.55 and float(pb.get("vitality_decline", 0.0)) < 0.25:
+		return "sharp fright"
 	match source:
 		"gut_fullness":
 			return "hollow ache"
@@ -85,15 +92,15 @@ static func _texture_label(source: String, f: Fish) -> String:
 			return "neutral"
 
 
-static func valence(f: Fish) -> float:
+static func valence(f) -> float:
 	return float(ensure(f).get("valence", 0.0))
 
 
-static func texture(f: Fish) -> String:
+static func texture(f) -> String:
 	return str(ensure(f).get("texture", "neutral"))
 
 
-static func tone_for_label(f: Fish, label: String) -> float:
+static func tone_for_label(f, label: String) -> float:
 	var v: float = valence(f)
 	if label in ["threat", "gills", "vibration"]:
 		return clampf(v - 0.25, -1.0, 0.5)
@@ -102,15 +109,15 @@ static func tone_for_label(f: Fish, label: String) -> float:
 	return v * 0.5
 
 
-static func narrator_hint(f: Fish) -> String:
+static func narrator_hint(f) -> String:
 	return str(ensure(f).get("texture", ""))
 
 
-static func to_dict(f: Fish) -> Dictionary:
+static func to_dict(f) -> Dictionary:
 	return ensure(f).duplicate(true)
 
 
-static func from_dict(f: Fish, d: Variant) -> void:
+static func from_dict(f, d: Variant) -> void:
 	if d is not Dictionary:
 		return
 	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):

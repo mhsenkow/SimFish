@@ -19,7 +19,7 @@ uniform float flutter_amplitude = 0.03;
 // brightening every leaf edge at midnight and turning the tank into a
 // neon forest.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.34;
-uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
+uniform vec3 sss_color : source_color = vec3(0.85, 1.00, 0.55);
 uniform float sss_daylight : hint_range(0.0, 1.0) = 1.0;
 uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
@@ -81,8 +81,8 @@ void fragment() {
         f = 0.76;        // +Z / -Z sides
     }
     vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
-    col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
-        palette_warmth, palette_value);
+    col = apply_category_palette_tint(col, iaq_palette_foliage,
+		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
     // Subsurface rim — at grazing view angles the leaf reads as
     // translucent and picks up a warm tint from light passing through.
     // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.
@@ -95,8 +95,10 @@ void fragment() {
         float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);
         float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
         float top_catch = smoothstep(0.20, 0.88, n.y);
-        col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
-        col *= 1.0 + wash * (0.62 + top_catch * 0.42);
+        float leaf_green = smoothstep(0.28, 0.68, col.g - max(col.r, col.b));
+        float wash_col = mix(1.0, 0.42, leaf_green);
+        col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch) * wash_col;
+        col *= 1.0 + wash * mix(0.62 + top_catch * 0.42, 0.28, leaf_green);
     }
     ALBEDO = col;
 }

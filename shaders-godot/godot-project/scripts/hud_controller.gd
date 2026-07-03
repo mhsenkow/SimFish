@@ -21,12 +21,16 @@ static func water_chip_subtitle(stats: Dictionary) -> String:
 	var mode: String = String(stats.get("hud_mode", "established"))
 	if mode == "reef" or not not stats.get("is_saltwater", false):
 		return "O₂ %d%%" % o2_pct
-	var cycle: String = String(stats.get("cycle_label", ""))
 	if mode == "cycle":
 		return "O₂ %d%%" % o2_pct
-	if cycle.is_empty():
-		return "O₂ %d%%" % o2_pct
-	return cycle
+	# established / growth: primary line is already O₂ % — never repeat cycle_label
+	# alone ("cycled") or it reads like "31% cycled" beside the O₂ value.
+	var cycle: String = String(stats.get("cycle_label", ""))
+	if cycle == "cycled":
+		return "biofilter online"
+	if not cycle.is_empty():
+		return cycle
+	return "tap for chemistry"
 
 
 static func water_chip_warn(stats: Dictionary) -> bool:

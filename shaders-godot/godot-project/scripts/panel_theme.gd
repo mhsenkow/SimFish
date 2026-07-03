@@ -485,7 +485,8 @@ static func make_spacer(height: int) -> Control:
 # the caller (so they can hold a reference for live updates) and is
 # right-aligned in a fixed-width column for tidy decimal alignment.
 static func add_slider_row(parent: Node, label_text: String, min_val: float,
-		max_val: float, step: float, value_label: Label) -> HSlider:
+		max_val: float, step: float, value_label: Label,
+		tick_count: int = 0, value_label_width: float = 56.0) -> HSlider:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	parent.add_child(row)
@@ -500,13 +501,15 @@ static func add_slider_row(parent: Node, label_text: String, min_val: float,
 	s.min_value = min_val
 	s.max_value = max_val
 	s.step = step
+	if tick_count > 0:
+		s.tick_count = tick_count
 	s.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	# Bumped to 24px so a fingertip can actually grab the thumb on touch
 	# without the slider feeling like a hairline on tablets.
 	s.custom_minimum_size = Vector2(0, 24)
 	row.add_child(s)
 
-	value_label.custom_minimum_size = Vector2(56, 0)
+	value_label.custom_minimum_size = Vector2(value_label_width, 0)
 	value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	value_label.add_theme_color_override("font_color", VALUE_FG)
 	# Numeric readout → Mono so decimals line up in the fixed-width column.
@@ -837,3 +840,27 @@ static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:
 	btn.add_theme_stylebox_override("focus",
 		_rail_button_stylebox(Color(0, 0, 0, 0), 6))
 	btn.modulate = Color(1, 1, 1, 1) if active else Color(0.92, 0.94, 0.98, 0.95)
+
+
+# Safe main-scene lookup — get_tree() can be null during reload/teardown.
+static func main_scene(from: Node) -> Node:
+	if from == null or not is_instance_valid(from):
+		return null
+	var tree: SceneTree = from.get_tree()
+	if tree != null:
+		return tree.current_scene
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).current_scene
+	return null
+
+
+static func main_tree(from: Node) -> SceneTree:
+	if from != null and is_instance_valid(from):
+		var tree: SceneTree = from.get_tree()
+		if tree != null:
+			return tree
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return ml as SceneTree
+	return null

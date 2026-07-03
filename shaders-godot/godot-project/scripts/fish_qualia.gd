@@ -77,7 +77,7 @@ static func report_line(f: Fish) -> String:
 			return ""
 
 
-static func higher_order(f: Fish) -> String:
+static func higher_order(f) -> String:
 	var tex: String = FishCoreAffect.texture(f)
 	if tex == "neutral":
 		return ""

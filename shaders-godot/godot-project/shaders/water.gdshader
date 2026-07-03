@@ -33,7 +33,7 @@ uniform float tank_shape_id : hint_range(0.0, 3.0) = 0.0;
 // heterotrophic bacteria explode and fail to colonize substrate. Clears
 // once the cycle establishes and ammonia drops.
 uniform float bacterial_bloom : hint_range(0.0, 1.0) = 0.0;
-uniform vec3 bloom_color : source_color = vec3(0.92, 0.94, 0.96);
+uniform vec3 bloom_color : source_color = vec3(0.86, 0.88, 0.84);
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -43,14 +43,14 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 // surface wave slope, so plants/fish/substrate seen through the water gently
 // wobble. Kept subtle by default so the chunky pixel look survives.
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float refraction_strength : hint_range(0.0, 0.08) = 0.018;
+uniform float refraction_strength : hint_range(0.0, 0.08) = 0.013;
 // Depth absorption — warm wavelengths (red, then green) fade with depth, the
 // way real water swallows red light first. Gives the column a sense of volume.
 uniform float depth_absorption : hint_range(0.0, 1.0) = 0.4;
 // Shader depth haze for Metal/macOS where volumetric fog is off (#11, #20).
 uniform float aerial_haze : hint_range(0.0, 1.0) = 0.0;
-uniform float surface_reflection : hint_range(0.0, 1.0) = 0.28;
-uniform float underside_mirror : hint_range(0.0, 1.0) = 0.34;
+uniform float surface_reflection : hint_range(0.0, 1.0) = 0.24;
+uniform float underside_mirror : hint_range(0.0, 1.0) = 0.24;
 uniform vec3 room_sky_color : source_color = vec3(0.55, 0.48, 0.42);
 // Top-down / pond mode: calm glass (#17) + health sheen (#20).
 uniform float pond_calm : hint_range(0.0, 1.0) = 0.0;
@@ -132,10 +132,13 @@ void fragment() {
 	// pixel-art tonal step in a 1.5 m-tall water column.
 	float band_count = float(depth_fog_band_count);
 	float depth_quant = floor(depth_norm * band_count + 0.5) / band_count;
+	float ign = fract(52.9829189 * fract(0.06711056 * world_pos.x + 0.00583715 * world_pos.z));
+	depth_quant += (ign - 0.5) * (0.85 / band_count) * depth_fog_bands;
+	depth_quant = clamp(depth_quant, 0.0, 1.0);
 	float depth_used = mix(depth_norm, depth_quant, depth_fog_bands);
 	vec3 col = mix(shallow_color.rgb, deep_color.rgb, depth_used * depth_used);
-	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
-		palette_warmth, palette_value);
+	col = apply_category_palette_tint(col, iaq_palette_water,
+		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
 
 	// Depth fog toward deep color — also uses the quantized depth so
 	// the fog density steps in the same bands as the depth gradient.
@@ -232,24 +235,20 @@ void fragment() {
 	alpha += ice_rim * 0.06;
 	alpha += bacterial_bloom * 0.18;
 
-	// ---- Screen-space refraction ----
-	// Offset the screen sample by the surface wave slope (and a little by the
-	// surface normal) so the scene behind the water shimmers. We composite the
-	// refracted background into the water color and lift alpha where we do so,
-	// so the wobble is actually visible through the translucent volume.
+	// Refraction at the air/water interface only — mid-column fauna stay sharp (#REFINE).
 	if (refraction_strength > 0.0001) {
 		vec2 wob = vec2(
 			sin(world_pos.x * 1.7 + world_pos.z * 1.1 + TIME * 0.9),
 			cos(world_pos.z * 1.9 - world_pos.x * 0.8 - TIME * 0.75));
-		wob += n.xz * 1.5;
+		wob += n.xz * 1.2;
+		float surf_prox = 1.0 - smoothstep(0.0, 0.38, abs(world_pos.y - water_surface_y));
+		float depth_refr = (1.0 - depth_used) * mix(0.18, 1.0, surf_prox);
+		wob *= 0.28 + depth_refr * 0.38;
 		vec2 ruv = SCREEN_UV + wob * refraction_strength;
 		vec3 refr = texture(screen_tex, clamp(ruv, vec2(0.001), vec2(0.999))).rgb;
-		// Tint the refracted light by the water color (light that travels
-		// through more water picks up its hue) and fold it in. Stronger in the
-		// clear shallows, fades where the water is already murky/opaque.
-		float refr_mix = clamp(0.5 * (1.0 - depth_used) * (1.0 - bacterial_bloom), 0.0, 0.55);
-		col = mix(col, refr * mix(vec3(1.0), col + 0.5, 0.4), refr_mix);
-		alpha = max(alpha, refr_mix * 0.7);
+		float refr_mix = clamp((0.08 + depth_refr * 0.18) * (1.0 - bacterial_bloom), 0.0, 0.32);
+		col = mix(col, refr * mix(vec3(1.0), col + 0.5, 0.35), refr_mix);
+		alpha = max(alpha, refr_mix * 0.28);
 	}
 
 	ALBEDO = col;

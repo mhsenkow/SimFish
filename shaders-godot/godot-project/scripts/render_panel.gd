@@ -2,8 +2,8 @@
 #
 # Sibling to settings_panel.gd - exposes the 3D rendering pipeline knobs:
 # SubViewport resolution, dither strength, palette toggle, fog parameters,
-# camera FOV, MSAA. Most apply via scene reload (Apply button); a few like
-# fog density + FOV update live as you drag.
+# camera FOV, MSAA. Apply rebuilds the viewport live; fog density + FOV also
+# update as you drag.
 
 extends PanelContainer
 
@@ -56,6 +56,13 @@ var _adaptive_target_label: Label
 var _save_status: Label
 # Frame-time mini-sparkline drawn as a Control with a custom _draw.
 var _frame_graph: Control = null
+var _graph_pts: PackedVector2Array = PackedVector2Array()
+var _graph_label_tick: int = 0
+var _graph_hist_sum: float = 0.0
+var _graph_hist_worst: float = 0.0
+var _graph_hist_n: int = 0
+var _last_frame_dt: float = -1.0
+var _ui_ticker_bound: bool = false
 var _frame_graph_label: Label = null
 var _mat_hue: HSlider
 var _mat_hue_label: Label
@@ -134,6 +141,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if PanelTheme.typing_focus_in_ui(get_viewport()):
 		return
 	if visible and event.is_action_pressed("ui_cancel"):
+		_bind_ui_ticker(false)
 		visible = false
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		get_viewport().set_input_as_handled()
@@ -142,7 +150,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# lets LineEdit/TextEdit consume typed keys first.
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_R:
-			var main: Node = get_tree().current_scene
+			var main: Node = PanelTheme.main_scene(self)
 			if main != null and main.has_method("_ui_toggle_side"):
 				main.call("_ui_toggle_side", "render")
 			else:
@@ -154,16 +162,55 @@ func toggle() -> void:
 	visible = not visible
 	if visible:
 		mouse_filter = Control.MOUSE_FILTER_STOP
+		_bind_ui_ticker(true)
 		_pull_from_config()
 		_refresh_palette_inspector()
 	else:
+		_bind_ui_ticker(false)
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+
+func _bind_ui_ticker(on: bool) -> void:
+	var ticker: Node = get_node_or_null("/root/UiTicker")
+	if ticker == null:
+		set_process(on and visible)
+		return
+	if on and visible and not _ui_ticker_bound:
+		if not ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.connect(_on_ui_ticker)
+		_ui_ticker_bound = true
+		set_process(false)
+	elif (not on or not visible) and _ui_ticker_bound:
+		if ticker.tick.is_connected(_on_ui_ticker):
+			ticker.tick.disconnect(_on_ui_ticker)
+		_ui_ticker_bound = false
+
+
+func _on_ui_ticker(_delta: float) -> void:
+	if not visible or _frame_graph == null:
+		return
+	var main := PanelTheme.main_scene(self)
+	if main == null or not main.has_method("get_frame_history_ordered"):
+		return
+	var hist: PackedFloat32Array = main.get_frame_history_ordered()
+	if hist.is_empty():
+		return
+	var tail: float = hist[hist.size() - 1]
+	if tail > 0.0001 and not is_equal_approx(tail, _last_frame_dt):
+		_last_frame_dt = tail
+		_graph_hist_sum += tail
+		_graph_hist_n += 1
+		_graph_hist_worst = maxf(_graph_hist_worst, tail)
+		_frame_graph.queue_redraw()
+		_graph_label_tick += 1
+		if _graph_label_tick % 10 == 0:
+			_update_frame_graph_label()
 
 
 func _refresh_palette_inspector() -> void:
 	if _palette_inspector == null:
 		return
-	var main: Node = get_tree().current_scene
+	var main: Node = PanelTheme.main_scene(self)
 	_palette_inspector.refresh_from_main(main)
 
 
@@ -179,7 +226,7 @@ func _build_ui() -> void:
 
 	outer.add_child(PanelTheme.make_title("Rendering"))
 	outer.add_child(PanelTheme.make_subtitle(
-		"Pick a fidelity tier, then tune the look. Apply reloads for resolution / MSAA."))
+		"Pick a fidelity tier, then tune the look. Apply rebuilds the render viewport."))
 	outer.add_child(PanelTheme.make_rule())
 
 	_build_quality_hero(outer)
@@ -228,8 +275,7 @@ func _build_ui() -> void:
 	#            reloading the scene. Use this when you've found a dither
 	#            / pixel-art combo you like and want it to stick across
 	#            sessions while keeping your tank state intact.
-	#   Apply  — save + reload the scene (required for resolution / MSAA
-	#            changes; optional for everything else).
+	#   Apply  — save + rebuild the render viewport (resolution / MSAA / fog).
 	_save_status = Label.new()
 	_save_status.add_theme_font_size_override("font_size", 10)
 	_save_status.add_theme_color_override("font_color", Color8(150, 230, 150))
@@ -237,7 +283,7 @@ func _build_ui() -> void:
 	outer.add_child(_save_status)
 	var save_btn := PanelTheme.make_secondary_button("Save (no reload)")
 	save_btn.pressed.connect(_on_save_only)
-	var apply := PanelTheme.make_primary_button("Apply (reload)")
+	var apply := PanelTheme.make_primary_button("Apply")
 	apply.pressed.connect(_on_apply)
 	outer.add_child(PanelTheme.make_panel_footer(func(): visible = false, apply, [save_btn]))
 
@@ -369,7 +415,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	capture_body.add_child(photo_desc)
 	_signature_shot_btn = PanelTheme.make_secondary_button("Signature shot (Shift+F12)")
 	_signature_shot_btn.pressed.connect(func():
-		var main: Node = get_tree().current_scene
+		var main: Node = PanelTheme.main_scene(self)
 		if main != null and main.has_method("_take_signature_shot"):
 			main.call("_take_signature_shot"))
 	capture_body.add_child(_signature_shot_btn)
@@ -389,7 +435,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
 	_integer_upscale_check.toggled.connect(func(v):
 		TankConfig.integer_upscale = v
-		var main: Node = get_tree().current_scene
+		var main: Node = PanelTheme.main_scene(self)
 		if main != null and main.has_method("_apply_display_layout"):
 			main.call("_apply_display_layout"))
 	polish_body.add_child(_integer_upscale_check)
@@ -401,7 +447,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_pixel_purity_check.text = "True 8-bit purity (bank-lock + heavy dither)"
 	_pixel_purity_check.toggled.connect(func(v):
 		TankConfig.pixel_purity = v
-		var main: Node = get_tree().current_scene
+		var main: Node = PanelTheme.main_scene(self)
 		if main != null and main.has_method("_apply_render_config"):
 			main.call("_apply_render_config"))
 	polish_body.add_child(_pixel_purity_check)
@@ -416,7 +462,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 			2: TankConfig.colorblind_palette = "deutan"
 			3: TankConfig.colorblind_palette = "tritan"
 			_: TankConfig.colorblind_palette = "none"
-		var main: Node = get_tree().current_scene
+		var main: Node = PanelTheme.main_scene(self)
 		if main != null and main.has_method("_apply_render_config"):
 			main.call("_apply_render_config"))
 	polish_body.add_child(_colorblind_option)
@@ -869,43 +915,24 @@ func _sync_material_sliders() -> void:
 	_mat_w_water_label.text = "%.2f" % TankConfig.material_weight_water
 
 
-func _process(_dt: float) -> void:
-	# Repaint the sparkline while the panel is visible. Cheap (custom
-	# _draw, polyline only) and the user is presumably watching it.
-	if visible and _frame_graph != null:
-		_frame_graph.queue_redraw()
-		_update_frame_graph_label()
-
-
 func _update_frame_graph_label() -> void:
 	if _frame_graph_label == null:
 		return
-	var main := get_tree().current_scene
-	if main == null or not main.has_method("get_frame_history_ordered"):
-		return
-	var hist: PackedFloat32Array = main.get_frame_history_ordered()
-	var sum: float = 0.0
-	var n: int = 0
-	var worst: float = 0.0
-	for v in hist:
-		if v > 0.0001:
-			sum += v
-			n += 1
-			if v > worst:
-				worst = v
-	if n == 0:
+	if _graph_hist_n <= 0:
 		_frame_graph_label.text = "—"
 		return
-	var avg_dt: float = sum / float(n)
+	var avg_dt: float = _graph_hist_sum / float(_graph_hist_n)
 	var avg_fps: float = 1.0 / avg_dt
-	var worst_fps: float = 1.0 / maxf(worst, 0.0001)
-	_frame_graph_label.text = "avg %.0f fps · 1%% low %.0f fps" % [avg_fps, worst_fps]
+	var worst_fps: float = 1.0 / maxf(_graph_hist_worst, 0.0001)
+	var label: String = "avg %.0f fps · 1%% low %.0f fps" % [avg_fps, worst_fps]
+	if _frame_graph_label.text != label:
+		_frame_graph_label.text = label
 
 
 func _draw_frame_graph() -> void:
 	if _frame_graph == null:
 		return
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main == null or not main.has_method("get_frame_history_ordered"):
 		return
 	var hist: PackedFloat32Array = main.get_frame_history_ordered()
@@ -925,8 +952,9 @@ func _draw_frame_graph() -> void:
 	_frame_graph.draw_line(
 		Vector2(0, budget_y), Vector2(w, budget_y),
 		Color(0.55, 0.85, 0.55, 0.45), 1.0)
-	# Sample line.
-	var pts: PackedVector2Array = PackedVector2Array()
+	# Sample line — reuse polyline buffer.
+	if _graph_pts.size() != hist.size():
+		_graph_pts.resize(hist.size())
 	for i in hist.size():
 		var dt_v: float = hist[i]
 		if dt_v <= 0.0:
@@ -934,9 +962,9 @@ func _draw_frame_graph() -> void:
 		var x: float = float(i) / float(maxi(1, hist.size() - 1)) * w
 		var ynorm: float = clampf(dt_v / y_max_dt, 0.0, 1.0)
 		var y: float = h - ynorm * h
-		pts.append(Vector2(x, y))
-	if pts.size() >= 2:
-		_frame_graph.draw_polyline(pts, Color(0.85, 0.92, 0.55, 0.95), 1.2)
+		_graph_pts[i] = Vector2(x, y)
+	if _graph_pts.size() >= 2:
+		_frame_graph.draw_polyline(_graph_pts, Color(0.85, 0.92, 0.55, 0.95), 1.2)
 
 
 func _update_labels() -> void:
@@ -962,7 +990,7 @@ func _on_dither(v: float) -> void:
 
 
 func _push_live_quantize() -> void:
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main == null:
 		return
 	var display := main.get_node_or_null("Display")
@@ -976,7 +1004,7 @@ func _push_live_quantize() -> void:
 
 
 func _push_live_quantize_param(param_name: String, value: Variant) -> void:
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main != null:
 		var display := main.get_node_or_null("Display")
 		if display != null and display.material is ShaderMaterial:
@@ -1002,7 +1030,7 @@ func _on_fog_ambient(v: float) -> void:
 
 
 func _apply_fog_live() -> void:
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main == null:
 		return
 	var we := main.get_node_or_null("SubViewport/World/WorldEnvironment")
@@ -1016,7 +1044,7 @@ func _on_fov(v: float) -> void:
 	TankConfig.camera_fov = v
 	_fov_label.text = "%d°" % int(v)
 	# Live: update the active camera.
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main == null:
 		return
 	var cam := main.get_node_or_null("SubViewport/World/Camera3D")
@@ -1038,16 +1066,20 @@ func _on_film_stock_selected(idx: int) -> void:
 
 
 func _apply_material_palette() -> void:
-	var main := get_tree().current_scene
+	var main := PanelTheme.main_scene(self)
 	if main != null and main.has_method("apply_material_palette"):
 		main.call("apply_material_palette")
 
 
 func _on_apply() -> void:
-	# Preserve current camera view before the scene reload.
-	var main := get_tree().current_scene
+	_bind_ui_ticker(false)
+	var main := PanelTheme.main_scene(self)
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
 	TankConfig.save_to_disk()
-	# Reload scene so resolution + MSAA + palette toggle take effect.
-	get_tree().reload_current_scene()
+	if main != null and main.has_method("_apply_render_config"):
+		main.call("_apply_render_config")
+		return
+	var tree := PanelTheme.main_tree(self)
+	if tree != null:
+		tree.reload_current_scene()

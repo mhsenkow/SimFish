@@ -7,6 +7,7 @@ const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
+const _MindDirtySaveScript = preload("res://scripts/mind_dirty_save.gd")
 
 static var _convo_script: GDScript = null
 
@@ -27,7 +28,20 @@ const DDM_THRESHOLD_BASE: float = 1.05
 
 const FOOD_SUB_KEYS: Array = ["flake", "pellet", "worm", "wafer"]
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const FishSparkBehavior = preload("res://scripts/fish_spark_behavior.gd")
 const FishBinding = preload("res://scripts/fish_binding.gd")
+const MindSoul = preload("res://scripts/mind_soul.gd")
+const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
+const DeltaG = preload("res://scripts/delta_g.gd")
+const DeltaGCurve = preload("res://scripts/delta_g_curve.gd")
+
+static var _pass3_script: GDScript = null
+
+
+static func _pass3() -> GDScript:
+	if _pass3_script == null:
+		_pass3_script = load("res://scripts/mind_soul_pass3.gd") as GDScript
+	return _pass3_script
 const SALIENT_MAX: int = 12
 const VOICED_FAMILIARITY: float = 0.62
 const TD_ALPHA: float = 0.12
@@ -40,14 +54,14 @@ const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 
 # ---- Perception (#1) ----
 
-static func in_vision_cone(f: Fish, target_pos: Vector3) -> bool:
+static func in_vision_cone(f, target_pos: Vector3) -> bool:
 	var to_t: Vector3 = target_pos - f.position
 	if to_t.length_squared() < 1e-4:
 		return true
 	return f.heading.dot(to_t.normalized()) >= VIEW_DOT_THRESHOLD
 
 
-static func perceives_pos(f: Fish, target_pos: Vector3, max_dist: float, sim: Node = null) -> bool:
+static func perceives_pos(f, target_pos: Vector3, max_dist: float, sim: Node = null) -> bool:
 	var scale: float = 1.0
 	if sim != null and sim.has_method("daylight"):
 		scale = lerpf(0.45, 1.0, clampf(float(sim.daylight()) / 0.35, 0.0, 1.0))
@@ -64,7 +78,7 @@ static func perceives_pos(f: Fish, target_pos: Vector3, max_dist: float, sim: No
 
 # ---- Affect (#26, #27, #32) ----
 
-static func tick_affect(f: Fish, dt: float) -> void:
+static func tick_affect(f, dt: float) -> void:
 	var arousal_target: float = f.stress * 0.55 + f.spooked * 0.45 + f.hunger * 0.25
 	arousal_target += clampf(f.mood, 0.0, 1.0) * 0.15
 	if f.burst_remaining > 0.0 or f._startle_remaining > 0.0:
@@ -83,7 +97,7 @@ static func tick_affect(f: Fish, dt: float) -> void:
 	f._contentment = clampf((f.mood + 1.0) * 0.5 * (1.0 - f.arousal) * (1.0 - f.stress), 0.0, 1.0)
 
 
-static func emotional_state(f: Fish) -> String:
+static func emotional_state(f) -> String:
 	var v: float = f.mood
 	var a: float = f.arousal
 	if f._asleep:
@@ -92,7 +106,13 @@ static func emotional_state(f: Fish) -> String:
 		return "cozy"
 	if f.vigilance > 0.55:
 		return "anxious"
-	if f._contentment > 0.65 and a < 0.35:
+	var content: float = 0.0
+	var content_v: Variant = f.get("_contentment")
+	if content_v != null:
+		content = float(content_v)
+	else:
+		content = clampf((f.mood + 1.0) * 0.5 * (1.0 - f.arousal) * (1.0 - f.stress), 0.0, 1.0)
+	if content > 0.65 and a < 0.35:
 		return "content"
 	if a > 0.65 and v > 0.2:
 		return "excited"
@@ -109,7 +129,7 @@ static func emotional_state(f: Fish) -> String:
 	return "calm"
 
 
-static func animation_modifiers(f: Fish) -> Dictionary:
+static func animation_modifiers(f) -> Dictionary:
 	var v: float = f.mood
 	var a: float = f.arousal
 	var content: float = clampf(v, 0.0, 1.0)
@@ -138,17 +158,17 @@ static func animation_modifiers(f: Fish) -> Dictionary:
 	return out
 
 
-static func nudge_arousal(f: Fish, amount: float) -> void:
+static func nudge_arousal(f, amount: float) -> void:
 	f.arousal = clampf(f.arousal + amount, 0.0, 1.0)
 
 
 # ---- Deliberation (#10–12) ----
 
-static func personality_commit_speed(f: Fish) -> float:
+static func personality_commit_speed(f) -> float:
 	return lerpf(0.55, 1.45, f._trait("boldness"))
 
 
-static func ddm_threshold(f: Fish) -> float:
+static func ddm_threshold(f) -> float:
 	# Scared fish decide faster (lower threshold) — Vol II #32.
 	# Low self-model confidence → higher threshold (hesitate) — META #6.
 	var fear: float = clampf(f.spooked * 0.55 + f.stress * 0.45 + f.vigilance * 0.35, 0.0, 1.0)
@@ -160,10 +180,13 @@ static func ddm_threshold(f: Fish) -> float:
 	# META #1 Phase 2 — flat EFE landscape → deliberate longer (M1).
 	if MindActiveInference.enabled_for(f, null):
 		thr *= lerpf(1.0, 1.32, MindActiveInference.efe_flatness(f))
+	if MindSoul.enabled():
+		thr *= MindSoul.ddm_threshold_scale(f)
+		thr *= MindSoulPass2.competence_hesitation_scale(f)
 	return thr
 
 
-static func update_conflict(f: Fish, approach: float, avoid: float,
+static func update_conflict(f, approach: float, avoid: float,
 		toward_pos: Vector3, away_from_pos: Vector3) -> void:
 	f._delib_approach_pos = toward_pos
 	f._delib_avoid_pos = away_from_pos
@@ -183,7 +206,7 @@ static func update_conflict(f: Fish, approach: float, avoid: float,
 		f._delib_decided = false
 
 
-static func tick_ddm(f: Fish, dt: float, approach: float, avoid: float, sim: Node = null) -> void:
+static func tick_ddm(f, dt: float, approach: float, avoid: float, sim: Node = null) -> void:
 	if not f._delib_active or f._delib_decided:
 		return
 	var thr: float = ddm_threshold(f)
@@ -209,13 +232,18 @@ static func tick_ddm(f: Fish, dt: float, approach: float, avoid: float, sim: Nod
 		f._delib_choice = 2
 
 
-static func deliberation_tie_break(f: Fish, _sim: Node) -> int:
+static func deliberation_tie_break(f, _sim: Node) -> int:
 	if not f._delib_active or f._delib_decided:
 		return 0
 	var total: float = maxf(f._delib_ev_approach + f._delib_ev_avoid, 0.01)
 	var conflict: float = 1.0 - absf(f._delib_ev_approach - f._delib_ev_avoid) / total
 	if conflict < 0.72:
 		return 0
+	var cf_nudge: float = FishSparkBehavior.counterfactual_ddm_nudge(f)
+	if cf_nudge > 0.02:
+		f._delib_ev_avoid += cf_nudge
+	elif cf_nudge < -0.02:
+		f._delib_ev_approach += absf(cf_nudge)
 	var ctx: Dictionary = {
 		"feel": emotional_state(f),
 		"delib_conflict": conflict,
@@ -225,6 +253,10 @@ static func deliberation_tie_break(f: Fish, _sim: Node) -> int:
 	f._last_cog_op = op.duplicate(true)
 	f._last_cog_validation = "delib_tie"
 	if str(op.get("choice", "")) == "approach":
+		var dom: String = dominant_need(f)
+		var chosen: String = "food" if dom != "food" else "explore"
+		if _pass3().enabled():
+			_pass3().try_effortful_override(f, dom, chosen)
 		f._delib_decided = true
 		f._delib_choice = 1
 		return 1
@@ -233,7 +265,7 @@ static func deliberation_tie_break(f: Fish, _sim: Node) -> int:
 	return 2
 
 
-static func stream_tense_tag(f: Fish) -> String:
+static func stream_tense_tag(f) -> String:
 	if f._asleep and f._dreaming:
 		return "imagining"
 	if f.get("_episodic_retrieval_hint") is Dictionary:
@@ -241,7 +273,7 @@ static func stream_tense_tag(f: Fish) -> String:
 	return "now"
 
 
-static func autobiography_dict(f: Fish) -> Dictionary:
+static func autobiography_dict(f) -> Dictionary:
 	return {
 		"origin": "hatched here" if f.generation <= 1 else "lineage %d" % f.generation,
 		"defining": str(f._self_summary).substr(0, 80) if f.get("_self_summary") else "",
@@ -250,7 +282,7 @@ static func autobiography_dict(f: Fish) -> Dictionary:
 	}
 
 
-static func deliberation_steer(f: Fish, _dt: float, effective_max: float) -> Vector3:
+static func deliberation_steer(f, _dt: float, effective_max: float) -> Vector3:
 	if not f._delib_active:
 		return Vector3.ZERO
 	var to_approach: Vector3 = f._delib_approach_pos - f.position
@@ -275,7 +307,7 @@ static func deliberation_steer(f: Fish, _dt: float, effective_max: float) -> Vec
 	return lean.normalized() * effective_max * 0.38
 
 
-static func tick_commitment(f: Fish, dt: float, proposed_mode: int) -> bool:
+static func tick_commitment(f, dt: float, proposed_mode: int) -> bool:
 	var dwell_need: float = COMMIT_DWELL / personality_commit_speed(f)
 	if f.stress > 0.65 or f.spooked > 0.45:
 		dwell_need *= 0.42
@@ -290,7 +322,7 @@ static func tick_commitment(f: Fish, dt: float, proposed_mode: int) -> bool:
 	return false
 
 
-static func indecision_modifiers(f: Fish) -> Dictionary:
+static func indecision_modifiers(f) -> Dictionary:
 	if not f._delib_active or f._delib_decided:
 		return {}
 	var total: float = maxf(f._delib_ev_approach + f._delib_ev_avoid, 0.01)
@@ -304,12 +336,12 @@ static func indecision_modifiers(f: Fish) -> Dictionary:
 	}
 
 
-static func aim_before_burst(f: Fish) -> void:
+static func aim_before_burst(f) -> void:
 	if f._aim_remaining <= 0.0:
 		f._aim_remaining = lerpf(0.12, 0.22, 1.0 - f._trait("boldness"))
 
 
-static func maybe_double_take(f: Fish, curiosity: float) -> void:
+static func maybe_double_take(f, curiosity: float) -> void:
 	if f._double_take_remaining > 0.0:
 		return
 	if curiosity > 0.45 and MindRng.for_fish(f).randf() < 0.22:
@@ -331,12 +363,12 @@ static func memory_decay_mult(kind: String) -> float:
 			return 1.0
 
 
-static func habituation_decay_rate(f: Fish) -> float:
+static func habituation_decay_rate(f) -> float:
 	# High curiosity → novelty returns slower (stay interested longer).
 	return lerpf(1.4, 0.55, f._trait("curiosity"))
 
 
-static func tick_personality_conditioning(f: Fish, dt: float) -> void:
+static func tick_personality_conditioning(f, dt: float) -> void:
 	if f.personality.is_empty():
 		return
 	if f.familiarity > 0.35 and f._cached_glance_strength > 0.2:
@@ -355,12 +387,13 @@ static func tick_personality_conditioning(f: Fish, dt: float) -> void:
 
 
 # Needs hierarchy (#31 Vol I): safety > food > social > rest > play > explore.
-static func dominant_need(f: Fish) -> String:
+static func dominant_need(f) -> String:
 	if f.spooked > 0.4 or f.stress > 0.7 or f._startle_remaining > 0.0:
 		return "safety"
 	if f.hunger > 0.55:
 		return "food"
-	if f.partner != null or f.brooding_remaining > 0.0:
+	if f.get("has_mate") == true or float(f.get("brooding_remaining") if f.get("brooding_remaining") != null else 0.0) > 0.0 \
+			or (f.get("partner") != null and is_instance_valid(f.get("partner"))):
 		return "social"
 	if f._asleep:
 		return "rest"
@@ -371,7 +404,7 @@ static func dominant_need(f: Fish) -> String:
 	return "calm"
 
 
-static func dominant_wants(f: Fish) -> PackedStringArray:
+static func dominant_wants(f) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	match dominant_need(f):
 		"safety":
@@ -393,7 +426,7 @@ static func dominant_wants(f: Fish) -> PackedStringArray:
 	return out
 
 
-static func need_blocks_action(f: Fish, action: String) -> bool:
+static func need_blocks_action(f, action: String) -> bool:
 	var need: String = dominant_need(f)
 	match action:
 		"play", "explore":
@@ -403,19 +436,19 @@ static func need_blocks_action(f: Fish, action: String) -> bool:
 	return false
 
 
-static func tick_mood_disposition(f: Fish, dt: float, satisfaction: float) -> void:
+static func tick_mood_disposition(f, dt: float, satisfaction: float) -> void:
 	# Leaky reward integral — Vol II #26 / Vol I #35.
 	var rpe: float = satisfaction - f.mood_disposition
 	f.mood_disposition = clampf(
 		f.mood_disposition + rpe * clampf(dt * 0.08, 0.0, 0.12), -0.35, 0.45)
 
 
-static func mood_baseline(f: Fish) -> float:
+static func mood_baseline(f) -> float:
 	return lerpf(-0.1, 0.4, (f._trait("calm") + f._trait("boldness")) * 0.5) \
 		+ f.mood_disposition
 
 
-static func tick_prediction_surprise(f: Fish, sim: Node, dt: float) -> void:
+static func tick_prediction_surprise(f, sim: Node, dt: float) -> void:
 	f.surprise = maxf(0.0, f.surprise - dt * 0.35)
 	var predicted_feed: bool = false
 	if sim != null and sim.has_method("feed_anticipation_active"):
@@ -429,7 +462,7 @@ static func tick_prediction_surprise(f: Fish, sim: Node, dt: float) -> void:
 		f.surprise = clampf(f.surprise + dt * 0.8, 0.0, 1.0)
 
 
-static func tick_attention(f: Fish, _sim: Node) -> void:
+static func tick_attention(f, _sim) -> void:
 	var best: String = ""
 	var best_s: float = 0.0
 	if f.spooked > 0.35 or f._startle_remaining > 0.0:
@@ -450,7 +483,7 @@ static func tick_attention(f: Fish, _sim: Node) -> void:
 	f.attention_focus = best if best_s > 0.28 else ""
 
 
-static func update_intention(f: Fish) -> void:
+static func update_intention(f) -> void:
 	if f._delib_active and not f._delib_decided:
 		f.current_intention = "weighing options"
 		return
@@ -480,12 +513,12 @@ static func update_intention(f: Fish) -> void:
 					f.current_intention = "cruising"
 
 
-static func seed_quirks(f: Fish) -> void:
+static func seed_quirks(f) -> void:
 	if not f.quirks.is_empty():
 		return
 	var h: int = 0
-	for i in String(f.id).length():
-		h = (h * 31 + String(f.id).unicode_at(i)) & 0x7fffffff
+	for i in str(f.id).length():
+		h = (h * 31 + str(f.id).unicode_at(i)) & 0x7fffffff
 	var pool: Array = [
 		"rests in the left corner", "avoids the filter current",
 		"greets at the same rock", "patrols the surface at dusk",
@@ -497,8 +530,19 @@ static func seed_quirks(f: Fish) -> void:
 		f.quirks[1] = pool[(h * 13 + 1) % pool.size()]
 
 
-static func record_salient(f: Fish, kind: String, text: String, intensity: float = 0.5,
+static func _salient_memories(f) -> Array:
+	var v: Variant = f.get("salient_memories")
+	if v is Array:
+		return v as Array
+	var fresh: Array = []
+	if f is Object:
+		(f as Object).set("salient_memories", fresh)
+	return fresh
+
+
+static func record_salient(f, kind: String, text: String, intensity: float = 0.5,
 		pos: Vector3 = Vector3.INF) -> void:
+	var mem: Array = _salient_memories(f)
 	var weight: float = clampf(intensity, 0.1, 1.0)
 	if f.surprise > 0.35:
 		weight = clampf(weight + f.surprise * 0.25, 0.0, 1.0)
@@ -506,47 +550,110 @@ static func record_salient(f: Fish, kind: String, text: String, intensity: float
 		"kind": kind,
 		"text": text,
 		"weight": weight,
+		"w0": weight,
+		"t0": Time.get_ticks_msec() / 1000.0,
+		"decay_mult": memory_decay_mult(kind),
 		"age": 0.0,
 	}
-	if not f.salient_memories.is_empty():
-		var prev: Dictionary = f.salient_memories[-1]
+	if not mem.is_empty():
+		var prev: Dictionary = mem[-1]
 		if String(prev.get("text", "")) == text and String(prev.get("kind", "")) == kind:
 			return
 	if pos.is_finite() and not is_inf(pos.x):
 		entry["pos"] = pos
-	f.salient_memories.append(entry)
-	while f.salient_memories.size() > SALIENT_MAX:
-		f.salient_memories.pop_front()
+	# #15 — ring buffer cap without O(n) pop_front.
+	if mem.size() < SALIENT_MAX:
+		mem.append(entry)
+	else:
+		if f.get("_salient_ring_head") == null:
+			if f is Object:
+				(f as Object).set("_salient_ring_head", 0)
+		var idx: int = int(f.get("_salient_ring_head") if f.get("_salient_ring_head") != null else 0) % SALIENT_MAX
+		mem[idx] = entry
+		if f is Object:
+			(f as Object).set("_salient_ring_head", int(f.get("_salient_ring_head") if f.get("_salient_ring_head") != null else 0) + 1)
+	_rebuild_salient_top(f)
+	# SENTIENCE_THE_SPARK C49 — strong salient moments graduate to episodic store.
+	if weight >= EpisodicMemory.SALIENT_PROMOTE_WEIGHT:
+		EpisodicMemory.ingest_salient_entry(f, entry)
 
 
-static func tick_salient_decay(f: Fish, dt: float) -> void:
+static func _salient_weight_now(e: Dictionary, now: float = -1.0) -> float:
+	if now < 0.0:
+		now = Time.get_ticks_msec() / 1000.0
+	if e.has("w0") and e.has("t0"):
+		var mult: float = float(e.get("decay_mult", 1.0))
+		var elapsed: float = now - float(e.get("t0", now))
+		return maxf(0.0, float(e.get("w0", 0.0)) - elapsed * 0.004 * mult)
+	return float(e.get("weight", 0.0))
+
+
+static func tick_salient_decay(f, dt: float) -> void:
+	# PERFORMANCE_UNTHROTTLED #10 — analytic decay; prune on a slow cadence only.
+	f._salient_prune_t = float(f._salient_prune_t) - dt
+	if float(f._salient_prune_t) > 0.0:
+		return
+	f._salient_prune_t = 2.0
+	var now: float = Time.get_ticks_msec() / 1000.0
 	var keep: Array = []
 	for e in f.salient_memories:
-		var w: float = float(e.get("weight", 0.5))
-		var mult: float = memory_decay_mult(String(e.get("kind", "")))
-		w = maxf(0.0, w - dt * 0.004 * mult)
+		if not (e is Dictionary):
+			continue
+		var w: float = _salient_weight_now(e as Dictionary, now)
 		if w > 0.08:
 			e["weight"] = w
-			e["age"] = float(e.get("age", 0.0)) + dt
+			e["w0"] = w
+			e["t0"] = now
 			keep.append(e)
 	f.salient_memories = keep
+	_rebuild_salient_top(f)
 
 
-static func top_salient_memories(f: Fish, n: int = 3) -> PackedStringArray:
-	var sorted: Array = f.salient_memories.duplicate()
-	sorted.sort_custom(func(a, b): return float(a.get("weight", 0.0)) > float(b.get("weight", 0.0)))
+static func _rebuild_salient_top(f, n: int = 3) -> void:
+	var mem: Array = _salient_memories(f)
+	var best: Array = []
+	for e in mem:
+		if e is not Dictionary:
+			continue
+		var w: float = float(e.get("weight", 0.0))
+		if e.has("w0"):
+			w = _salient_weight_now(e as Dictionary)
+		if w < 0.08:
+			continue
+		var insert_at: int = best.size()
+		for i in best.size():
+			if w > float(best[i].get("weight", 0.0)):
+				insert_at = i
+				break
+		if best.size() < n:
+			best.insert(insert_at, e)
+		elif insert_at < n:
+			best.insert(insert_at, e)
+			best.remove_at(n)
 	var out: PackedStringArray = PackedStringArray()
-	for i in range(mini(n, sorted.size())):
-		var txt: String = String(sorted[i].get("text", ""))
-		var w: float = float(sorted[i].get("weight", 0.5))
+	for i in best.size():
+		var txt: String = String(best[i].get("text", ""))
+		var w: float = float(best[i].get("weight", 0.5))
 		if w < 0.25:
 			out.append("a dim memory of %s" % txt)
 		else:
 			out.append(txt)
-	return out
+	if f is Object:
+		(f as Object).set("_salient_top_cache", out)
 
 
-static func salient_avoid_steer(f: Fish, at_pos: Vector3) -> Vector3:
+static func top_salient_memories(f, n: int = 3) -> PackedStringArray:
+	if f.get("_salient_top_cache") is PackedStringArray:
+		var cached: PackedStringArray = f._salient_top_cache as PackedStringArray
+		if cached.size() >= mini(n, cached.size()):
+			return cached.slice(0, mini(n, cached.size()))
+	_rebuild_salient_top(f, n)
+	if f.get("_salient_top_cache") is PackedStringArray:
+		return (f._salient_top_cache as PackedStringArray).slice(0, mini(n, (f._salient_top_cache as PackedStringArray).size()))
+	return PackedStringArray()
+
+
+static func salient_avoid_steer(f, at_pos: Vector3) -> Vector3:
 	var push: Vector3 = Vector3.ZERO
 	for e in f.salient_memories:
 		if String(e.get("kind", "")) != "startled":
@@ -567,7 +674,11 @@ static func salient_avoid_steer(f: Fish, at_pos: Vector3) -> Vector3:
 	return push.normalized()
 
 
-static func bond_seek_steer(f: Fish, neighbors: Array, dist2: Array, count: int) -> Vector3:
+static func bond_seek_steer(f, neighbors: Array, dist2: Array, count: int) -> Vector3:
+	var now: float = Time.get_ticks_msec() / 1000.0
+	var t0: float = float(f.get("_bond_seek_t0") if f.get("_bond_seek_t0") != null else 0.0)
+	if now - t0 < 5.0 and f.get("_bond_seek_cached") is Vector3:
+		return f._bond_seek_cached as Vector3
 	var best: Vector3 = Vector3.ZERO
 	var best_w: float = 0.0
 	for i in count:
@@ -594,10 +705,12 @@ static func bond_seek_steer(f: Fish, neighbors: Array, dist2: Array, count: int)
 		if score > best_w:
 			best_w = score
 			best = dir.normalized()
+	f._bond_seek_cached = best
+	f._bond_seek_t0 = now
 	return best
 
 
-static func dominance_hint(f: Fish) -> String:
+static func dominance_hint(f) -> String:
 	if f.lead_score > 0.62:
 		return "leads the shoal"
 	if f.lead_score < 0.28 and f.rank_within_species > 0.65:
@@ -605,7 +718,7 @@ static func dominance_hint(f: Fish) -> String:
 	return ""
 
 
-static func grudge_voice_hints(f: Fish, sim: Node) -> PackedStringArray:
+static func grudge_voice_hints(f, sim: Node) -> PackedStringArray:
 	var out: PackedStringArray = PackedStringArray()
 	if f.grudges.is_empty() or sim == null or sim.get("fish") == null:
 		return out
@@ -638,12 +751,14 @@ static func society_snapshot(sim: Node) -> Dictionary:
 	return {"leaders": leaders, "bond_pairs": bonds_n >> 1}
 
 
-static func salient_relevant_for_situation(f: Fish, situation: String, n: int = 2) -> PackedStringArray:
+static func salient_relevant_for_situation(f, situation: String, n: int = 2) -> PackedStringArray:
 	var tag: String = situation.strip_edges().to_lower()
 	var hits: Array = []
 	for e in f.salient_memories:
 		var kind: String = String(e.get("kind", ""))
 		var w: float = float(e.get("weight", 0.0))
+		if e.has("w0"):
+			w = _salient_weight_now(e as Dictionary)
 		if w < 0.2:
 			continue
 		if tag == "" or kind == tag or (tag == "inspect" and w > 0.4):
@@ -657,28 +772,35 @@ static func salient_relevant_for_situation(f: Fish, situation: String, n: int = 
 	return out
 
 
-static func td_update_heatmap(f: Fish, cell_idx: int, reward: float) -> void:
+static func _heatmap_best(f, skip_idx: int = -1) -> float:
+	if f.get("_feed_heatmap_best") != null and skip_idx < 0:
+		return float(f._feed_heatmap_best)
+	var best: float = 0.0
+	for j in range(Fish.FEED_HEATMAP_SIZE * Fish.FEED_HEATMAP_SIZE * Fish.FEED_HEATMAP_SIZE):
+		if j != skip_idx:
+			best = maxf(best, float(f.feed_heatmap[j]))
+	if skip_idx < 0:
+		f._feed_heatmap_best = best
+	return best
+
+
+static func td_update_heatmap(f, cell_idx: int, reward: float) -> void:
 	if cell_idx < 0 or cell_idx >= f.feed_heatmap.size():
 		return
 	var old: float = float(f.feed_heatmap[cell_idx])
-	var best_next: float = 0.0
-	for ix in range(Fish.FEED_HEATMAP_SIZE):
-		for iy in range(Fish.FEED_HEATMAP_SIZE):
-			for iz in range(Fish.FEED_HEATMAP_SIZE):
-				var j: int = ix + iy * Fish.FEED_HEATMAP_SIZE \
-					+ iz * Fish.FEED_HEATMAP_SIZE * Fish.FEED_HEATMAP_SIZE
-				if j != cell_idx:
-					best_next = maxf(best_next, float(f.feed_heatmap[j]))
+	var best_next: float = _heatmap_best(f, cell_idx)
 	var target: float = reward + TD_GAMMA * best_next
 	# Eligibility trace (#28): credit assignment across recent path
 	var trace: float = float(f.get("_td_eligibility_peak") if f.get("_td_eligibility_peak") != null else 0.0)
 	trace = trace * 0.88 + 1.0
 	f._td_eligibility_peak = trace
 	var delta: float = target - old
-	f.feed_heatmap[cell_idx] = clampf(old + TD_ALPHA * delta * trace, 0.0, 8.0)
+	var new_val: float = clampf(old + TD_ALPHA * delta * trace, 0.0, 8.0)
+	f.feed_heatmap[cell_idx] = new_val
+	f._feed_heatmap_best = maxf(float(f.get("_feed_heatmap_best") if f.get("_feed_heatmap_best") != null else 0.0), new_val)
 
 
-static func heatmap_cell_at(f: Fish, pos: Vector3) -> int:
+static func heatmap_cell_at(f, pos: Vector3) -> int:
 	var w: Node = f._world_node()
 	if w == null:
 		return -1
@@ -692,7 +814,7 @@ static func heatmap_cell_at(f: Fish, pos: Vector3) -> int:
 	return ix + iy * sz + iz * sz * sz
 
 
-static func tick_bond_arcs(f: Fish, dt: float) -> void:
+static func tick_bond_arcs(f, dt: float) -> void:
 	for oid in f.bonds.keys():
 		var aff: float = float(f.bonds[oid])
 		f.bonds[oid] = clampf(aff - dt * 0.002, -1.0, 1.0)
@@ -703,13 +825,13 @@ static func tick_bond_arcs(f: Fish, dt: float) -> void:
 		f.grudges[gid] = maxf(0.0, g - dt * 0.004)
 
 
-static func apply_arousal_contagion(f: Fish, neighbor_arousal: float, dt: float) -> void:
+static func apply_arousal_contagion(f, neighbor_arousal: float, dt: float) -> void:
 	if neighbor_arousal < 0.35:
 		return
 	f.arousal = clampf(f.arousal + neighbor_arousal * dt * 0.08 * f.schooling_strength, 0.0, 1.0)
 
 
-static func inspect_mind_summary(f: Fish) -> Dictionary:
+static func inspect_mind_summary(f) -> Dictionary:
 	return {
 		"feel": emotional_state(f),
 		"wants": dominant_wants(f),
@@ -721,20 +843,49 @@ static func inspect_mind_summary(f: Fish) -> Dictionary:
 	}
 
 
-static func record_food_preference(f: Fish, subtype: int, satisfaction: float) -> void:
+static func record_food_preference(f, subtype: int, satisfaction: float) -> void:
 	var key: String = FOOD_SUB_KEYS[clampi(subtype, 0, FOOD_SUB_KEYS.size() - 1)]
 	var prev: float = float(f.food_preferences.get(key, 0.5))
 	f.food_preferences[key] = clampf(prev + satisfaction * 0.08, 0.0, 1.0)
 
 
-static func food_preference_mult(f: Fish, subtype: int) -> float:
+static func food_preference_mult(f, subtype: int) -> float:
 	var key: String = FOOD_SUB_KEYS[clampi(subtype, 0, FOOD_SUB_KEYS.size() - 1)]
 	var pref: float = float(f.food_preferences.get(key, 0.5))
 	return lerpf(1.15, 0.82, pref)
 
 
-static func refresh_patrol_from_heatmap(f: Fish) -> void:
+static func heatmap_effective(f, idx: int) -> float:
+	if idx < 0 or idx >= f.feed_heatmap.size():
+		return 0.0
+	var mul: float = float(f.get("_feed_heatmap_decay_mul") if f.get("_feed_heatmap_decay_mul") != null else 1.0)
+	return float(f.feed_heatmap[idx]) * mul
+
+
+static func note_heatmap_cell(f, idx: int, heat: float) -> void:
+	if idx < 0:
+		return
+	f._feed_heatmap_best = maxf(float(f.get("_feed_heatmap_best") if f.get("_feed_heatmap_best") != null else 0.0), heat)
+	var top: Array = f._feed_heatmap_top3 if f.get("_feed_heatmap_top3") is Array else []
+	var entry: Dictionary = {"idx": idx, "heat": heat}
+	var pos: int = top.size()
+	for i in top.size():
+		if heat > float((top[i] as Dictionary).get("heat", 0.0)):
+			pos = i
+			break
+	if top.size() < 3:
+		top.insert(pos, entry)
+	elif pos < 3:
+		top.insert(pos, entry)
+		top.resize(3)
+	f._feed_heatmap_top3 = top
+
+
+static func refresh_patrol_from_heatmap(f) -> void:
 	if f.feed_heatmap.is_empty() or f.maturity != Fish.MATURITY_ADULT:
+		return
+	if f.get("_feed_heatmap_top3") is Array and not (f._feed_heatmap_top3 as Array).is_empty():
+		_refresh_patrol_from_top3(f)
 		return
 	var best: Array = []
 	var w: Node = f._world_node()
@@ -761,10 +912,49 @@ static func refresh_patrol_from_heatmap(f: Fish) -> void:
 	best.sort_custom(func(a, b): return float(a["heat"]) > float(b["heat"]))
 	f.patrol_anchors.clear()
 	for i in range(mini(3, best.size())):
-		f.patrol_anchors.append(best[i]["pos"])
+		var pos: Vector3 = best[i]["pos"] as Vector3
+		if EpisodicMemory.schema_valence_at(f, pos) < -0.55:
+			continue
+		f.patrol_anchors.append(pos)
+	FishSparkBehavior.bias_patrol_anchors_from_schemas(f)
 
 
-static func tick_home_confidence(f: Fish, dt: float) -> void:
+static func _refresh_patrol_from_top3(f) -> void:
+	var w: Node = f._world_node()
+	if w == null:
+		return
+	var hw: float = float(w.get("TANK_HALF_W") if w.get("TANK_HALF_W") != null else 8.0)
+	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
+	var hh: float = float(w.get("TANK_HEIGHT") if w.get("TANK_HEIGHT") != null else 7.0)
+	var sz: int = Fish.FEED_HEATMAP_SIZE
+	f.patrol_anchors.clear()
+	for e in f._feed_heatmap_top3:
+		if not (e is Dictionary):
+			continue
+		var heat: float = float((e as Dictionary).get("heat", 0.0))
+		if heat < 0.18:
+			continue
+		var idx: int = int((e as Dictionary).get("idx", -1))
+		if idx < 0:
+			continue
+		var grid: int = sz * sz
+		var iz: int = int(idx / float(grid))
+		var rem: int = idx - iz * grid
+		var iy: int = int(rem / float(sz))
+		var ix: int = rem - iy * sz
+		var pos: Vector3 = Vector3(
+			(ix + 0.5) / float(sz) * hw * 2.0 - hw,
+			(iy + 0.5) / float(sz) * hh,
+			(iz + 0.5) / float(sz) * hd * 2.0 - hd)
+		if w.has_method("clamp_xyz_in_tank"):
+			pos = w.clamp_xyz_in_tank(pos, 0.5, f._body_tank_margin())
+		if EpisodicMemory.schema_valence_at(f, pos) < -0.55:
+			continue
+		f.patrol_anchors.append(pos)
+	FishSparkBehavior.bias_patrol_anchors_from_schemas(f)
+
+
+static func tick_home_confidence(f, dt: float) -> void:
 	if f.visited_regions.is_empty():
 		return
 	var visited: int = 0
@@ -776,7 +966,8 @@ static func tick_home_confidence(f: Fish, dt: float) -> void:
 		clampf(dt * 0.08, 0.0, 1.0))
 
 
-static func mind_to_dict(f: Fish) -> Dictionary:
+# Save-boundary serializer — called from Fish.to_save_dict() only (#24 audit).
+static func mind_to_dict(f, delta: bool = false) -> Dictionary:
 	var ms = MindState.for_fish(f, true)
 	ms.sync_from_fish(f)
 	var d: Dictionary = ms.to_dict()
@@ -810,12 +1001,19 @@ static func mind_to_dict(f: Fish) -> Dictionary:
 		"autobiography": autobiography_dict(f),
 		"conversation": _mind_conversation().call("to_dict", f),
 		"felt_self": FishBinding.to_dict(f),
+		"soul_mind": MindSoul.to_dict(f),
+		"delta_g": DeltaG.to_dict(f),
+		"delta_g_curve": DeltaGCurve.to_dict(f),
+		"homeostasis": FishHomeostasis.to_dict(f),
 	})
 	d["schema_version"] = MIND_SCHEMA_VERSION
+	if delta:
+		return _MindDirtySaveScript.filter_dict(f, d)
+	_MindDirtySaveScript.clear(f)
 	return d
 
 
-static func apply_mind_dict(f: Fish, d: Dictionary) -> void:
+static func apply_mind_dict(f, d: Dictionary) -> void:
 	var ms = MindState.new()
 	ms.from_dict(d)
 	ms.apply_to_fish(f)
@@ -866,9 +1064,16 @@ static func apply_mind_dict(f: Fish, d: Dictionary) -> void:
 	f.foraging_commitment = float(d.get("foraging_commitment", f.foraging_commitment))
 	_mind_conversation().call("from_dict", f, d.get("conversation", null))
 	FishBinding.from_dict(f, d.get("felt_self", null))
+	MindSoul.from_dict(f, d.get("soul_mind", null))
+	DeltaG.from_dict(f, d.get("delta_g", null))
+	DeltaGCurve.from_dict(f, d.get("delta_g_curve", null))
+	FishHomeostasis.from_dict(f, d.get("homeostasis", null))
+	var snap: Variant = d.get("continuity_snap", null)
+	if snap is Dictionary:
+		_pass3().continuity_on_restore(f, snap as Dictionary)
 
 
-static func offline_character_bio(f: Fish) -> String:
+static func offline_character_bio(f) -> String:
 	var sp: String = f.species.capitalize() if f.species != "" else "fish"
 	var ep: String = CreatureNaming.epithet_for_personality(
 			f.personality, f.id if f.id != "" else f.fish_name)

@@ -41,8 +41,8 @@ void fragment() {
 		f = 0.68;        // +Z / -Z sides
 	}
 	vec3 col = v_inst_color * f;
-	col = apply_global_palette_tint(col, palette_hue_shift, palette_saturation,
-		palette_warmth, palette_value);
+	col = apply_category_palette_tint(col, iaq_palette_hardscape,
+		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
 	if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
 		float span = max(fixture_water_top - fixture_water_floor, 0.5);
 		float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);

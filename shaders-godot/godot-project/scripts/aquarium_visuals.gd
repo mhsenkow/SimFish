@@ -73,6 +73,13 @@ func register_glass(root: Node3D, mat: ShaderMaterial) -> void:
 
 
 func tick(dt: float, ambient_due: bool) -> void:
+	if ambient_due and _sim != null and _sim.has_method("_get_camera") and _world != null:
+		var cam: Camera3D = _sim._get_camera()
+		if cam != null:
+			var tank_mid: Vector3 = _world.global_position + Vector3(0.0, 3.5, 0.0)
+			if cam.global_position.distance_to(tank_mid) > 18.0 \
+					and not cam.is_position_in_frustum(tank_mid):
+				return
 	if not ambient_due or _world == null:
 		if _screenshot_boost_t > 0.0:
 			_screenshot_boost_t = maxf(0.0, _screenshot_boost_t - dt)
@@ -132,23 +139,9 @@ func record_compaction(x: float, z: float, amount: float = 0.02) -> void:
 func spawn_splash_crown(pos: Vector3) -> void:
 	if _world == null:
 		return
-	var root := Node3D.new()
-	root.position = Vector3(pos.x, _world.WATER_HEIGHT - 0.03, pos.z)
-	_world.add_child(root)
-	for i in 5:
-		var ang: float = float(i) / 5.0 * TAU
-		var drop := MeshInstance3D.new()
-		drop.mesh = VoxelMat.get_box(Vector3(0.08, 0.12, 0.08))
-		drop.material_override = VoxelMat.make(Color8(210, 235, 245))
-		drop.position = Vector3(cos(ang) * 0.12, 0.08, sin(ang) * 0.12)
-		root.add_child(drop)
-		var tw := create_tween()
-		tw.tween_property(drop, "position", drop.position + Vector3(
-			cos(ang) * 0.35, 0.55, sin(ang) * 0.35), 0.35) \
-			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(drop, "scale", Vector3(0.2, 0.2, 0.2), 0.35)
+	const _TransientParticlePoolScript = preload("res://scripts/transient_particle_pool.gd")
+	_TransientParticlePoolScript.burst(_world, "splash", Vector3(pos.x, _world.WATER_HEIGHT - 0.03, pos.z))
 	spawn_burst_ripple_proxy(pos)
-	get_tree().create_timer(0.45).timeout.connect(root.queue_free)
 
 
 func spawn_pop_spray(pos: Vector3) -> void:
@@ -266,10 +259,15 @@ func spawn_snail_bubble(pos: Vector3) -> void:
 	p.draw_pass_1 = bm
 	_world.add_child(p)
 	p.emitting = true
-	var audio := get_tree().current_scene.get_node_or_null("AmbientAudio")
+	var main: Node = _world.get_parent().get_parent() if _world != null else null
+	var audio: Node = main.get_node_or_null("AmbientAudio") if main != null else null
 	if audio != null and audio.has_method("play_bubble_sfx"):
 		audio.play_bubble_sfx(randf_range(0.1, 0.24), clampf((pos.x / maxf(float(_world.TANK_HALF_W), 0.1)), -1.0, 1.0))
-	get_tree().create_timer(1.5).timeout.connect(p.queue_free)
+	var st: SceneTree = _world.get_tree() if _world != null else null
+	if st != null:
+		st.create_timer(1.5).timeout.connect(p.queue_free)
+	else:
+		p.queue_free()
 
 
 func spawn_predation_flash(pos: Vector3) -> void:
@@ -567,6 +565,8 @@ func _maybe_filter_cavitation(sdt: float) -> void:
 	_filter_cavitation_t = randf_range(4.0, 10.0)
 	var intake: Vector3 = _sim.get("filter_intake_pos")
 	if intake != Vector3.ZERO:
+		const _TransientParticlePoolScript = preload("res://scripts/transient_particle_pool.gd")
+		_TransientParticlePoolScript.burst(_world, "cavitation", intake + Vector3(0, 0.12, 0))
 		spawn_snail_bubble(intake + Vector3(0, 0.12, 0))
 
 

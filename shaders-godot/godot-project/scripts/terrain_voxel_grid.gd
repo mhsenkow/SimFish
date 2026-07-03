@@ -611,6 +611,53 @@ func build_render_buckets(y_max_limit: float, _caustic_rows_from_top: int,
 	return buckets
 
 
+func save_dimensions_match(d: Dictionary) -> bool:
+	if d.is_empty():
+		return false
+	var sc: int = int(d.get("cols", 0))
+	var sd: int = int(d.get("depths", 0))
+	var sr: int = int(d.get("rows", 0))
+	if sc != cols or sd != depths or sr != rows:
+		return false
+	if not is_equal_approx(float(d.get("half_w", half_w)), half_w):
+		return false
+	if not is_equal_approx(float(d.get("half_d", half_d)), half_d):
+		return false
+	if not is_equal_approx(float(d.get("y_max", y_max)), y_max):
+		return false
+	if not is_equal_approx(float(d.get("y_origin", y_origin)), y_origin):
+		return false
+	var count: int = sc * sd * sr
+	var mat_arr: Array = d.get("materials", [])
+	var nut_arr: Array = d.get("nutrients", [])
+	return mat_arr.size() >= count and nut_arr.size() >= count
+
+
+# When the tank grew since the save was written, replacing the whole grid would
+# leave bare floor in the expanded region. Overlay saved sculpt onto the
+# freshly-built bed instead (same strategy as SubstrateGrid.apply_save_dict).
+func overlay_save_dict(d: Dictionary) -> bool:
+	if d.is_empty():
+		return false
+	var saved := TerrainVoxelGrid.new()
+	if not saved.apply_save_dict(d):
+		return false
+	for cy in rows:
+		for cx in cols:
+			for cz in depths:
+				var center: Vector3 = cell_center(cx, cy, cz)
+				if center.y > y_max + CELL_SIZE * 0.25:
+					continue
+				var si: Vector3i = saved.world_to_cell(center)
+				if not saved._in_bounds(si.x, si.y, si.z):
+					continue
+				var sm: int = saved.get_material(si.x, si.y, si.z)
+				if sm == CellMaterial.EMPTY:
+					continue
+				_set_cell(cx, cy, cz, sm, saved.get_nutrient(si.x, si.y, si.z))
+	return true
+
+
 func to_save_dict() -> Dictionary:
 	return {
 		"half_w": half_w,

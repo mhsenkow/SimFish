@@ -12,6 +12,43 @@ const MindConversation = preload("res://scripts/mind_conversation.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 
+const OLLAMA_PARSE_MAX_BYTES: int = 8192
+
+
+static func _capped_ollama_utf8(body: PackedByteArray) -> String:
+	if body.size() > OLLAMA_PARSE_MAX_BYTES:
+		body = body.slice(0, OLLAMA_PARSE_MAX_BYTES)
+	return body.get_string_from_utf8()
+
+
+static func _parse_ollama_outer(body: PackedByteArray) -> Dictionary:
+	var text: String = _capped_ollama_utf8(body)
+	if text.is_empty():
+		return {}
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return {}
+	var parsed: Variant = json.get_data()
+	return parsed if parsed is Dictionary else {}
+
+
+static func _parse_ollama_json_text(text: String) -> Dictionary:
+	if text.is_empty():
+		return {}
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return {}
+	var parsed: Variant = json.get_data()
+	return parsed if parsed is Dictionary else {}
+
+
+static func _parse_ollama_inner_response(body: PackedByteArray) -> Dictionary:
+	var outer: Dictionary = _parse_ollama_outer(body)
+	var inner_text: String = String(outer.get("response", ""))
+	if inner_text.length() > OLLAMA_PARSE_MAX_BYTES:
+		inner_text = inner_text.substr(0, OLLAMA_PARSE_MAX_BYTES)
+	return _parse_ollama_json_text(inner_text)
+
 # AIDirector — optional local-Ollama bridge that adds names, bios, mood
 # nudges, and ambient narration WITHOUT any cloud calls.
 #
@@ -135,6 +172,8 @@ var _thought_pending: Array = []
 var _thought_in_flight: bool = false
 var _followed_fish_id: String = ""
 var _crisis_active: bool = false
+var _minute_batch_timer: float = 0.0
+var _minute_batch_in_flight: bool = false
 
 
 # ---- Lifecycle ---------------------------------------------------------
@@ -194,6 +233,10 @@ func _process(dt: float) -> void:
 	# Drive the throttle. SimDriver polls intent_refresh_due() and calls
 	# push_tank_summary() when ready, so we only track elapsed seconds here.
 	_intent_timer += dt
+	_minute_batch_timer += dt
+	if _minute_batch_timer >= intent_refresh_period_s:
+		_minute_batch_timer = 0.0
+		flush_minute_batch({})
 	# Background top-up of the name pool. Free, no game impact when off.
 	if conn_state == ConnState.OK and _ai_name_pool.size() < NAME_POOL_REFILL_BELOW \
 			and not _name_fetch_in_flight:
@@ -206,9 +249,26 @@ func _process(dt: float) -> void:
 func intent_refresh_due() -> bool:
 	if not enabled or conn_state != ConnState.OK:
 		return false
-	if _intent_in_flight:
+	if _intent_in_flight or _minute_batch_in_flight:
 		return false
 	return _intent_timer >= intent_refresh_period_s
+
+
+# PERFORMANCE_UNTHROTTLED #94 — one director round-trip per minute when possible.
+func flush_minute_batch(summary: Dictionary) -> void:
+	if not enabled or conn_state != ConnState.OK or _minute_batch_in_flight:
+		return
+	_minute_batch_in_flight = true
+	if _bio_pending.size() > 0 and not _bio_in_flight:
+		_request_bio_batch()
+	if chronicle_enabled and _chronicle_queue.size() > 0:
+		_flush_chronicle()
+	if not _intent_in_flight and _intent_timer >= intent_refresh_period_s and not summary.is_empty():
+		push_tank_summary(summary)
+	# Coalesce thought API pressure with the minute window (#55).
+	if _thought_pending.size() > 0 and not _thought_in_flight and _effective_fish_thought_voice():
+		_pump_fish_thought()
+	_minute_batch_in_flight = false
 
 
 # ---- Config plumbing ---------------------------------------------------
@@ -331,9 +391,8 @@ func _on_test_response(result: int, code: int, _headers: PackedStringArray, body
 		last_error = "Ollama did not respond at %s (HTTP %d, result %d). Is `ollama serve` running?" % [endpoint, code, result]
 		emit_signal("connection_tested", false, last_error)
 		return
-	var text: String = body.get_string_from_utf8()
-	var parsed: Variant = JSON.parse_string(text)
-	if not (parsed is Dictionary):
+	var parsed: Dictionary = _parse_ollama_outer(body)
+	if parsed.is_empty():
 		conn_state = ConnState.ERROR
 		last_error = "Ollama returned malformed JSON."
 		emit_signal("connection_tested", false, last_error)
@@ -463,12 +522,8 @@ func _on_names_response(result: int, code: int, _h: PackedStringArray, body: Pac
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		conn_state = ConnState.OFFLINE
 		return
-	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if not (outer is Dictionary):
-		return
-	var inner_text: String = String(outer.get("response", ""))
-	var inner: Variant = JSON.parse_string(inner_text)
-	if not (inner is Dictionary):
+	var inner: Dictionary = _parse_ollama_inner_response(body)
+	if inner.is_empty():
 		return
 	var names: Variant = inner.get("names", [])
 	if not (names is Array):
@@ -703,12 +758,8 @@ func _on_bios_response(result: int, code: int, _h: PackedStringArray, body: Pack
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		conn_state = ConnState.OFFLINE
 		return
-	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if not (outer is Dictionary):
-		return
-	var inner_text: String = String(outer.get("response", ""))
-	var inner: Variant = JSON.parse_string(inner_text)
-	if not (inner is Dictionary):
+	var inner: Dictionary = _parse_ollama_inner_response(body)
+	if inner.is_empty():
 		return
 	var bios: Variant = inner.get("bios", [])
 	if bios is Array:
@@ -807,12 +858,8 @@ func _on_intent_response(result: int, code: int, _h: PackedStringArray, body: Pa
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		conn_state = ConnState.OFFLINE
 		return
-	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if not (outer is Dictionary):
-		return
-	var inner_text: String = String(outer.get("response", ""))
-	var inner: Variant = JSON.parse_string(inner_text)
-	if not (inner is Dictionary):
+	var inner: Dictionary = _parse_ollama_inner_response(body)
+	if inner.is_empty():
 		return
 	_apply_intent_payload(inner)
 	conn_state = ConnState.OK
@@ -963,11 +1010,8 @@ func _flush_chronicle() -> void:
 func _on_chronicle_response(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		return
-	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if not (outer is Dictionary):
-		return
-	var inner: Variant = JSON.parse_string(String(outer.get("response", "")))
-	if not (inner is Dictionary):
+	var inner: Dictionary = _parse_ollama_inner_response(body)
+	if inner.is_empty():
 		return
 	var line: String = String(inner.get("line", "")).strip_edges()
 	if line != "" and not MindNarrator.chronicle_repeat(line):
@@ -1026,13 +1070,8 @@ func _on_design_response(result: int, code: int, _h: PackedStringArray, body: Pa
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		emit_signal("tank_designed", {})
 		return
-	var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if not (outer is Dictionary):
-		emit_signal("tank_designed", {})
-		return
-	var inner_text: String = String(outer.get("response", ""))
-	var inner: Variant = JSON.parse_string(inner_text)
-	if not (inner is Dictionary):
+	var inner: Dictionary = _parse_ollama_inner_response(body)
+	if inner.is_empty():
 		emit_signal("tank_designed", {})
 		return
 	# Validate + sanitize: LLM can produce nonsense values. Clamp floats,
@@ -1266,9 +1305,11 @@ func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: 
 	var line: String = fb
 	var ok: bool = result == HTTPRequest.RESULT_SUCCESS and code == 200
 	if ok:
-		var outer: Variant = JSON.parse_string(body.get_string_from_utf8())
-		if outer is Dictionary:
+		var outer: Dictionary = _parse_ollama_outer(body)
+		if not outer.is_empty():
 			var raw: String = String(outer.get("response", ""))
+			if raw.length() > OLLAMA_PARSE_MAX_BYTES:
+				raw = raw.substr(0, OLLAMA_PARSE_MAX_BYTES)
 			var max_w: int = GUARDIAN_MAX_WORDS
 			if bool(job.get("is_thought", false)):
 				max_w = MindNarrator.FISH_THOUGHT_MAX_WORDS

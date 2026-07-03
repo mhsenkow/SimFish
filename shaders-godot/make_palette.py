@@ -23,17 +23,15 @@ PALETTES = {
         # substrate browns (8)
         "#1a120c", "#2c1f15", "#432f1f", "#5d4128",
         "#785538", "#95714e", "#b18f6a", "#cdb088",
-        # stone grays (8)
-        "#1a1a1f", "#2a2a30", "#3d3d44", "#555560",
-        "#707081", "#8c8ca0", "#a8a8bd", "#c4c4d6",
+        # stone grays — true neutral ramp (#5), not blue-tinted
+        "#1a1a1a", "#2a2a2a", "#3a3a3a", "#4a4a4a", "#5c5c5c", "#707070", "#8a8a8a", "#a4a4a4",
         # highlights / glass (3)
         "#ffffff", "#e0eef2", "#b9d6df",
-        # fish accents (7)
-        "#c33b3b", "#d97e2c", "#e6c92a", "#2a7a4b",
-        "#4a52c4", "#872cb0", "#c44a8e",
-        # extra wood/decay browns (4) + deep slot (1) + light slot (1)
-        "#2c1810", "#1a0f08", "#0d0805", "#503820",
-        "#000000", "#f8f4e0",
+        # warm fauna — 2 value steps per hue (#3, #6); 16 slots total
+        "#6a2020", "#c33b3b", "#8a4818", "#d97e2c",
+        "#8a7010", "#e6c92a", "#283888", "#4060ff",
+        "#5a2088", "#872cb0", "#882050", "#c44a8e",
+        "#000000",
     ],
     "blackwater_48": [
         "#0a0907", "#15110b", "#251c10", "#382a14",
@@ -44,7 +42,7 @@ PALETTES = {
         "#6c894e", "#95ad6f", "#0d1015", "#1a1d22",
         "#2c2f34", "#444751", "#5d6068", "#777a82",
         "#92959c", "#adb0b6", "#c8cad0", "#e2e3e7",
-        "#ffffff", "#f4e4c8", "#e0c89a",
+        "#ffffff", "#f4e4c8", "#e0c89a", "#f5ead8",
         "#a13a2a", "#b86a30", "#d4a838", "#2e5a3c",
         "#3a4ca0", "#5e2c80", "#9c3c70", "#000000",
         "#7d6240", "#5a4630", "#3c2f20", "#241b12",

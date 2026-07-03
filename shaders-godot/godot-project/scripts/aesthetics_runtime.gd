@@ -6,7 +6,8 @@ extends RefCounted
 const BEAUTY_DEFAULTS: Dictionary = {
 	"render_width": 512,
 	"render_height": 288,
-	"outline_strength": 0.14,
+	"outline_strength": 0.16,
+	"creature_outline_strength": 0.38,
 	"dither_strength": 0.88,
 	"dither_region_aware": true,
 	"palette_bank_lock": true,
@@ -102,7 +103,8 @@ static func fauna_saturation_mult(key: String) -> float:
 
 # 1 = thriving/clear, 0 = stressed/murky — drives palette health grade.
 static func health_grade_from_transmittance(transmittance: float) -> float:
-	return clampf(transmittance, 0.0, 1.0)
+	# Cycled tanks sit ~0.88–0.98; map so healthy water reads as grade 1.0 (#9).
+	return clampf((transmittance - 0.72) / 0.26, 0.0, 1.0)
 
 
 static func ambient_breath(t: float, calm: float = 1.0) -> float:
