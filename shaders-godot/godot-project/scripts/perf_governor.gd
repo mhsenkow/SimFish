@@ -9,6 +9,7 @@ const TARGET_FRAME_MS: float = 16.6
 const SPIKE_MS: float = 28.0
 
 const _MindTickScript = preload("res://scripts/mind_tick.gd")
+const _MindCacheStatsScript = preload("res://scripts/mind_cache_stats.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 
 static var _frame_ring: PackedFloat32Array = PackedFloat32Array()
@@ -22,7 +23,12 @@ static var _scopes: Dictionary = {}
 static var _scope_active: Dictionary = {}
 static var _alloc_baseline: int = -1
 static var _alloc_last_frame: int = 0
+static var _alloc_scope_tag: String = ""
 static var _ledger: Dictionary = {}
+
+
+static func alloc_scope_tag() -> String:
+	return _alloc_scope_tag
 
 
 static func record_ledger(item_id: int, before_us: int, after_us: int) -> void:
@@ -31,6 +37,21 @@ static func record_ledger(item_id: int, before_us: int, after_us: int) -> void:
 
 static func ledger_snapshot() -> Dictionary:
 	return _ledger.duplicate(true)
+
+
+static func ledger_hud_suffix(max_items: int = 3) -> String:
+	if _ledger.is_empty():
+		return ""
+	var keys: Array = _ledger.keys()
+	keys.sort()
+	var parts: PackedStringArray = PackedStringArray()
+	for i in mini(keys.size(), max_items):
+		var k: String = str(keys[i])
+		var row: Dictionary = _ledger[k]
+		var saved_us: int = int(row.get("before_us", 0)) - int(row.get("after_us", 0))
+		if saved_us > 0:
+			parts.append("#%s −%.1fms" % [k, float(saved_us) / 1000.0])
+	return "" if parts.is_empty() else " · " + ", ".join(parts)
 
 
 static func reset_for_test() -> void:
@@ -44,6 +65,7 @@ static func reset_for_test() -> void:
 	_scope_active.clear()
 	_alloc_baseline = -1
 	_alloc_last_frame = 0
+	_alloc_scope_tag = ""
 	_ledger.clear()
 
 
@@ -59,9 +81,12 @@ static func record_frame(dt_sec: float) -> void:
 	if ms >= SPIKE_MS:
 		last_spike_subsystem = _top_scope_name()
 	_scope_active.clear()
+	var prev_alloc: int = _alloc_last_frame
 	_alloc_last_frame = OS.get_static_memory_usage()
 	if _alloc_baseline < 0:
 		_alloc_baseline = _alloc_last_frame
+	elif _alloc_last_frame > prev_alloc + 4096:
+		_alloc_scope_tag = _top_scope_name()
 
 
 static func _pressure_from_ring() -> float:
@@ -139,6 +164,17 @@ static func hud_line(fish_n: int, draw_n: int) -> String:
 		var habit: Dictionary = MindSoulPass2.habit_stats()
 		if int(habit.get("attempts", 0)) > 20:
 			line += " · habit %.0f%%" % [float(habit.get("rate", 0.0)) * 100.0]
+	var cache_suffix: String = _MindCacheStatsScript.hud_suffix()
+	if cache_suffix != "":
+		line += cache_suffix
+	line += ledger_hud_suffix()
+	var alloc_d: int = alloc_delta_since_baseline()
+	if alloc_d != 0:
+		var tag: String = _alloc_scope_tag
+		if tag != "":
+			line += " · alloc %+d (%s)" % [alloc_d, tag]
+		else:
+			line += " · alloc %+d" % alloc_d
 	if last_spike_subsystem != "" and last_frame_ms >= SPIKE_MS:
 		line += " · spike:%s" % last_spike_subsystem
 	var scopes: Dictionary = scopes_snapshot()

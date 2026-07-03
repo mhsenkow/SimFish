@@ -363,14 +363,17 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	_msaa_option.item_selected.connect(func(idx):
 		TankConfig.msaa = idx
 		_sync_fidelity_buttons()
-		_update_fidelity_summary())
+		_update_fidelity_summary()
+		_commit_render_to_main())
 
 
 func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	var palette_body := _make_fold_section(vbox, "Palette & quantize", true)
 	_palette_check = CheckBox.new()
 	_palette_check.text = "Enable palette quantization"
-	_palette_check.toggled.connect(func(v): TankConfig.palette_enabled = v)
+	_palette_check.toggled.connect(func(v):
+		TankConfig.palette_enabled = v
+		_commit_render_to_main())
 	palette_body.add_child(_palette_check)
 	_dither_label = Label.new()
 	_dither = PanelTheme.add_slider_row(palette_body, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
@@ -435,9 +438,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
 	_integer_upscale_check.toggled.connect(func(v):
 		TankConfig.integer_upscale = v
-		var main: Node = PanelTheme.main_scene(self)
-		if main != null and main.has_method("_apply_display_layout"):
-			main.call("_apply_display_layout"))
+		_commit_render_to_main())
 	polish_body.add_child(_integer_upscale_check)
 	_pixel_snap_check = CheckBox.new()
 	_pixel_snap_check.text = "Pixel-snap camera"
@@ -591,6 +592,13 @@ func _apply_fidelity_preset(preset: Dictionary) -> void:
 		_msaa_option.select(int(TankConfig.msaa))
 	_sync_fidelity_buttons()
 	_update_fidelity_summary()
+	_commit_render_to_main()
+
+
+func _commit_render_to_main() -> void:
+	var main: Node = PanelTheme.main_scene(self)
+	if main != null and main.has_method("_apply_render_config"):
+		main.call("_apply_render_config")
 
 
 func _fidelity_preset_index() -> int:
@@ -981,6 +989,7 @@ func _on_resolution(idx: int) -> void:
 	TankConfig.render_height = int(r["h"])
 	_sync_fidelity_buttons()
 	_update_fidelity_summary()
+	_commit_render_to_main()
 
 
 func _on_dither(v: float) -> void:

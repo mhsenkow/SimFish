@@ -38,10 +38,12 @@ static func day_night_lighting(sim_n: Node, cfg: Node) -> Dictionary:
 	elif dp > 0.92:
 		dawn_glow = (dp - 0.92) / 0.08
 	sunset_hour = maxf(sunset_hour, dawn_glow * 0.5)
-	var deep_night: float = 1.0 - smoothstep(0.08, 0.38, dl)
+	var deep_night: float = 1.0 - smoothstep(0.04, 0.58, dl)
 	var tank_lights_on: bool = true
 	var atm: Dictionary = atmosphere_profile(cfg)
 	sunset_hour = minf(1.5, sunset_hour * float(atm["sunset_boost"]))
+	const SUNSET_SHADER_CAP: float = 1.5
+	sunset_hour = minf(SUNSET_SHADER_CAP, sunset_hour)
 	deep_night = clampf(deep_night * float(atm["night_depth_boost"]), 0.0, 1.0)
 	if cfg != null:
 		tank_lights_on = not not cfg.tank_lights_on

@@ -33,11 +33,19 @@ static func run() -> void:
 	if n <= 0:
 		MindBoidsBuffer.backend = "none"
 		return
-	if _try_gpu(n):
+	# Topological schooling uses the CPU path until the GPU shader catches up.
+	if _try_gpu(n) and not _needs_topo_cpu(n):
 		MindBoidsBuffer.backend = "gpu"
 		return
 	_cpu_dispatch(n)
 	MindBoidsBuffer.backend = "cpu"
+
+
+static func _needs_topo_cpu(n: int) -> bool:
+	for i in n:
+		if MindBoidsBuffer.uses_topo_at(i):
+			return true
+	return false
 
 
 static func _try_gpu(n: int) -> bool:
@@ -163,6 +171,10 @@ static func _ensure_gpu() -> bool:
 static func _cpu_dispatch(n: int) -> void:
 	var grid: Dictionary = _build_index_grid(n)
 	var inv_cell: float = 1.0 / CELL_SIZE
+	var topo_d2: PackedFloat32Array = PackedFloat32Array()
+	topo_d2.resize(MindBoidsBuffer.N_TOPO)
+	var topo_idx: PackedInt32Array = PackedInt32Array()
+	topo_idx.resize(MindBoidsBuffer.N_TOPO)
 	for i in n:
 		var pos_i: Vector3 = MindBoidsBuffer.positions[i]
 		var head_i: Vector3 = MindBoidsBuffer.headings[i]
@@ -170,48 +182,161 @@ static func _cpu_dispatch(n: int) -> void:
 		var home_y: float = MindBoidsBuffer.home_y_radii[i]
 		var sep_r: float = MindBoidsBuffer.separation_radii[i]
 		var sep_r2: float = sep_r * sep_r
+		var use_topo: bool = MindBoidsBuffer.uses_topo_at(i)
 		var sep := Vector3.ZERO
 		var ali := Vector3.ZERO
 		var coh := Vector3.ZERO
 		var speed_sum: float = 0.0
 		var nc: int = 0
-		var cell_i := Vector2i(
-			int(floor(pos_i.x * inv_cell)), int(floor(pos_i.z * inv_cell)))
-		for ox in _CELL_OFFS:
-			for oz in _CELL_OFFS:
-				var bucket: Array = grid.get(cell_i + Vector2i(ox, oz), [])
-				for j_v in bucket:
-					var j: int = int(j_v)
+		for t in MindBoidsBuffer.N_TOPO:
+			topo_neighbors_store(i, t, -1)
+		if use_topo:
+			for t in MindBoidsBuffer.N_TOPO:
+				topo_d2[t] = 1e9
+				topo_idx[t] = -1
+			var topo_n: int = 0
+			var cell_i := Vector2i(
+				int(floor(pos_i.x * inv_cell)), int(floor(pos_i.z * inv_cell)))
+			for ox in range(-2, 3):
+				for oz in range(-2, 3):
+					var bucket: Array = grid.get(cell_i + Vector2i(ox, oz), [])
+					for j_v in bucket:
+						var j: int = int(j_v)
+						if j == i:
+							continue
+						var diff: Vector3 = pos_i - MindBoidsBuffer.positions[j]
+						var d2: float = diff.length_squared()
+						if d2 < 1e-4 or d2 > MindBoidsBuffer.MAX_CANDIDATE_R2:
+							continue
+						if MindBoidsBuffer.species_hash[j] != sp_i:
+							if d2 < sep_r2:
+								var push: Vector3 = diff
+								push.y *= 0.45
+								sep += push.normalized() / maxf(sqrt(d2), 0.1)
+							continue
+						if absf(diff.y) > home_y * 2.4:
+							continue
+						var to_n: Vector3 = -diff
+						if head_i.dot(to_n.normalized()) < MindBoidsBuffer.VIEW_DOT:
+							continue
+						topo_n = _insert_topo(topo_d2, topo_idx, topo_n, _buddy_topo_d2(i, j, d2), j)
+			if topo_n < MindBoidsBuffer.N_TOPO and n <= 64:
+				for j in n:
 					if j == i:
 						continue
-					var diff: Vector3 = pos_i - MindBoidsBuffer.positions[j]
-					var d2: float = diff.length_squared()
-					if d2 < 1e-4:
+					var diff2: Vector3 = pos_i - MindBoidsBuffer.positions[j]
+					var d2b: float = diff2.length_squared()
+					if d2b < 1e-4 or d2b > MindBoidsBuffer.MAX_CANDIDATE_R2:
 						continue
-					if d2 < sep_r2:
-						var push: Vector3 = diff
-						push.y *= 0.45
-						sep += push.normalized() / maxf(sqrt(d2), 0.1)
 					if MindBoidsBuffer.species_hash[j] != sp_i:
 						continue
-					if absf(diff.y) > home_y * 2.4:
+					if absf(diff2.y) > home_y * 2.4:
 						continue
-					var to_n: Vector3 = -diff
-					if head_i.dot(to_n.normalized()) < MindBoidsBuffer.VIEW_DOT:
+					var to_nb: Vector3 = -diff2
+					if head_i.dot(to_nb.normalized()) < MindBoidsBuffer.VIEW_DOT:
 						continue
-					var predicted: Vector3 = MindBoidsBuffer.positions[j] \
-							+ MindBoidsBuffer.velocities[j] * MindBoidsBuffer.LOOKAHEAD
-					ali += MindBoidsBuffer.headings[j]
-					coh += predicted
-					speed_sum += MindBoidsBuffer.velocities[j].length()
-					nc += 1
-					if absf(diff.y) < home_y * 0.85:
-						sep.y += signf(-diff.y) * 0.28
+					topo_n = _insert_topo(topo_d2, topo_idx, topo_n, _buddy_topo_d2(i, j, d2b), j)
+			nc = topo_n
+			for t in range(topo_n):
+				var j: int = topo_idx[t]
+				if j < 0:
+					continue
+				topo_neighbors_store(i, t, j)
+				var diff: Vector3 = pos_i - MindBoidsBuffer.positions[j]
+				var d2: float = diff.length_squared()
+				var to_n: Vector3 = -diff
+				var flank_w: float = _flank_weight(head_i, to_n)
+				if d2 < sep_r2:
+					var push: Vector3 = diff
+					push.y *= 0.45
+					var ang_sep: float = 1.0 / maxf(sqrt(d2), 0.12)
+					sep += push.normalized() * ang_sep * flank_w
+				var predicted: Vector3 = MindBoidsBuffer.positions[j] \
+						+ MindBoidsBuffer.velocities[j] * MindBoidsBuffer.LOOKAHEAD
+				ali += MindBoidsBuffer.headings[j] * flank_w
+				coh += predicted * flank_w
+				speed_sum += MindBoidsBuffer.velocities[j].length() * flank_w
+				if absf(diff.y) < home_y * 0.85:
+					sep.y += signf(-diff.y) * 0.28 * flank_w
+		else:
+			var cell_i := Vector2i(
+				int(floor(pos_i.x * inv_cell)), int(floor(pos_i.z * inv_cell)))
+			for ox in _CELL_OFFS:
+				for oz in _CELL_OFFS:
+					var bucket: Array = grid.get(cell_i + Vector2i(ox, oz), [])
+					for j_v in bucket:
+						var j: int = int(j_v)
+						if j == i:
+							continue
+						var diff: Vector3 = pos_i - MindBoidsBuffer.positions[j]
+						var d2: float = diff.length_squared()
+						if d2 < 1e-4:
+							continue
+						if d2 < sep_r2:
+							var push: Vector3 = diff
+							push.y *= 0.45
+							sep += push.normalized() / maxf(sqrt(d2), 0.1)
+						if MindBoidsBuffer.species_hash[j] != sp_i:
+							continue
+						if absf(diff.y) > home_y * 2.4:
+							continue
+						var to_n: Vector3 = -diff
+						if head_i.dot(to_n.normalized()) < MindBoidsBuffer.VIEW_DOT:
+							continue
+						var predicted: Vector3 = MindBoidsBuffer.positions[j] \
+								+ MindBoidsBuffer.velocities[j] * MindBoidsBuffer.LOOKAHEAD
+						ali += MindBoidsBuffer.headings[j]
+						coh += predicted
+						speed_sum += MindBoidsBuffer.velocities[j].length()
+						nc += 1
+						if absf(diff.y) < home_y * 0.85:
+							sep.y += signf(-diff.y) * 0.28
 		MindBoidsBuffer.sep_accum[i] = sep
 		MindBoidsBuffer.ali_accum[i] = ali
 		MindBoidsBuffer.coh_center[i] = coh
 		MindBoidsBuffer.neighbor_counts[i] = nc
 		MindBoidsBuffer.school_speed_milli[i] = int(speed_sum * 1000.0)
+
+
+static func topo_neighbors_store(fish_idx: int, slot: int, neighbor_idx: int) -> void:
+	var flat: int = fish_idx * MindBoidsBuffer.N_TOPO + slot
+	if flat >= 0 and flat < MindBoidsBuffer.topo_neighbors.size():
+		MindBoidsBuffer.topo_neighbors[flat] = neighbor_idx
+
+
+static func _buddy_topo_d2(fish_i: int, fish_j: int, d2: float) -> float:
+	if fish_i < 0 or fish_j < 0 or fish_i >= MindBoidsBuffer.count or fish_j >= MindBoidsBuffer.count:
+		return d2
+	var fi: Node = MindBoidsBuffer.fish_refs[fish_i]
+	var fj: Node = MindBoidsBuffer.fish_refs[fish_j]
+	if fi != null and fj != null and fi.get("partner") == fj:
+		return d2 * 0.72
+	return d2
+
+
+static func _insert_topo(dists: PackedFloat32Array, indices: PackedInt32Array,
+		count: int, d2: float, j: int) -> int:
+	var n_topo: int = MindBoidsBuffer.N_TOPO
+	if count < n_topo:
+		dists[count] = d2
+		indices[count] = j
+		return count + 1
+	var worst: int = 0
+	for k in range(1, n_topo):
+		if dists[k] > dists[worst]:
+			worst = k
+	if d2 >= dists[worst]:
+		return count
+	dists[worst] = d2
+	indices[worst] = j
+	return n_topo
+
+
+static func _flank_weight(head: Vector3, to_neighbor: Vector3) -> float:
+	if to_neighbor.length_squared() < 1e-6:
+		return 1.0
+	var align: float = absf(head.normalized().dot(to_neighbor.normalized()))
+	return 1.0 + MindBoidsBuffer.flank_bias * (1.0 - align)
 
 
 static func _build_index_grid(n: int) -> Dictionary:

@@ -8,6 +8,7 @@ const MindCycle = preload("res://scripts/mind_cycle.gd")
 const MindChannel = preload("res://scripts/mind_channel.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
+const MindCacheRegistry = preload("res://scripts/mind_cache_registry.gd")
 
 
 static func workspace_trace(f, sim) -> Dictionary:
@@ -78,6 +79,7 @@ static func _replay_baseline(f) -> void:
 	f._bid_pool_i = 0
 	f._soul_mind = {}
 	f._episodic_retrieval_hint = {}
+	MindCacheRegistry.reset_transient(f)
 	MindSoulPass2.reset_habit_stats_for_test()
 	EpisodicMemory.clear_caches_for_test()
 
@@ -115,3 +117,17 @@ static func run_smoke_n_tick(f, sim, n: int = 8) -> bool:
 		if not traces_match(t1, t2):
 			return false
 	return true
+
+
+static func golden_digest_hash(f, sim, n_ticks: int = 16) -> int:
+	if f == null:
+		return 0
+	var h: int = 0
+	for _i in n_ticks:
+		_replay_baseline(f)
+		var t: Dictionary = workspace_trace(f, sim)
+		h = (h * 31 + int(t.get("digest", 0))) & 0x7fffffff
+		var winners: PackedStringArray = t.get("winners", PackedStringArray()) as PackedStringArray
+		for w in winners:
+			h = (h * 31 + w.hash()) & 0x7fffffff
+	return h

@@ -7,6 +7,9 @@ const DEFAULT_HZ: float = 15.0
 const SLOW_LANE_SCALE: float = 0.5  # #25 idle-tank half cadence
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 
+static var _snap_hz: float = -1.0
+static var _snap_idle_mult: float = 1.0
+
 static var _stats: Dictionary = {
 	"ticks": 0, "skipped_frames": 0, "hz_target": DEFAULT_HZ,
 }
@@ -22,6 +25,15 @@ static func reset_stats_for_test() -> void:
 	_achieved_ticks = 0
 	_achieved_hz = 0.0
 	_eligible_fish = 1
+	_snap_hz = -1.0
+	_snap_idle_mult = 1.0
+
+
+static func apply_ambient_snap(d: Dictionary) -> void:
+	if d.is_empty():
+		return
+	_snap_hz = float(d.get("mind_cadence_hz", DEFAULT_HZ))
+	_snap_idle_mult = float(d.get("mind_idle_mult", 1.0))
 
 
 static func set_eligible_fish(n: int) -> void:
@@ -60,6 +72,8 @@ static func stats() -> Dictionary:
 
 
 static func target_hz() -> float:
+	if _snap_hz >= 0.0:
+		return _snap_hz
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree and (ml as SceneTree).root != null:
 		var cfg: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
@@ -78,6 +92,8 @@ static func enabled() -> bool:
 
 
 static func idle_slow_mult(sim: Node) -> float:
+	if _snap_idle_mult > 0.0 and _snap_idle_mult < 1.0:
+		return _snap_idle_mult
 	if sim == null or sim.get("_room_idle_s") == null:
 		return 1.0
 	var idle: float = float(sim._room_idle_s)

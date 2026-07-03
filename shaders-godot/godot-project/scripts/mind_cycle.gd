@@ -23,6 +23,8 @@ const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
 const DeltaG = preload("res://scripts/delta_g.gd")
 const DeltaGCurve = preload("res://scripts/delta_g_curve.gd")
 const PokeHarness = preload("res://scripts/poke_harness.gd")
+const _MindCacheRegistryScript = preload("res://scripts/mind_cache_registry.gd")
+const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 
 enum Phase { PERCEIVE, APPRAISE, ATTEND, BROADCAST, DELIBERATE, ENCODE, LEARN, BIND }
 
@@ -55,17 +57,25 @@ static func workspace_enabled() -> bool:
 
 
 static func _lod_tier(f) -> int:
-	if f != null and f.get("_cycle_lod_tier") != null:
+	if f != null:
 		return int(f._cycle_lod_tier)
-	if f != null and f.get("_mind_lod_tier") != null:
-		return int(f._mind_lod_tier)
 	return MindLOD.T2_WORLD_MODEL
 
 
 static func begin_cycle(f, sim = null) -> void:
 	if f == null:
 		return
-	f._cycle_lod_tier = _lod_tier(f)
+	# REFINEMENT_II #10 — one tier snapshot per cycle from sim_driver's LOD.
+	f._cycle_lod_tier = int(f._mind_lod_tier)
+	if OS.is_debug_build() and int(f._cycle_lod_tier) != int(f._mind_lod_tier):
+		push_warning("[mind_cycle] cycle tier diverged from sim tier for %s" % str(f.id))
+	f._cycle_use_efe = MindActiveInference.enabled_for(f, sim)
+	var focus_now: String = f.attention_focus if f.attention_focus != "" else "idle"
+	if f._episodic_hint_focus != "" and f._episodic_hint_focus != focus_now:
+		f._episodic_retrieval_hint = {}
+		f._episodic_retrieval_hint_ttl = 0.0
+		EpisodicMemory.clear_retrieve_cache_for(f)
+	f._episodic_hint_focus = focus_now
 	GlobalWorkspace.cache_cycle_bias_targets(f)
 	# PERFORMANCE_UNTHROTTLED #28 — one episodic retrieval per cycle.
 	if sim != null and MindLOD.runs_workspace(_lod_tier(f)):
@@ -193,6 +203,7 @@ static func _diagnostic_slot(f, period: int) -> int:
 
 
 static func tick_post_cycle(f: Fish, sim: Node, dt: float) -> void:
+	_MindCacheRegistryScript.tick_retrieval_hint(f, dt)
 	MindSelfModel.tick_self_summary_voice_cd(f, dt)
 	if MindLOD.runs_world_model(_lod_tier(f)):
 		EpisodicMemory.tick_decay(f, dt)

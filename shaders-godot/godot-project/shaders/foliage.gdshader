@@ -21,6 +21,8 @@ uniform float flutter_amplitude = 0.03;
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.34;
 uniform vec3 sss_color : source_color = vec3(0.85, 1.00, 0.55);
 uniform float sss_daylight : hint_range(0.0, 1.0) = 1.0;
+uniform vec3 flow_dir = vec3(0.0, 0.0, 1.0);
+uniform float flow_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_top = 99.0;
@@ -42,7 +44,8 @@ void vertex() {
     // 2. Slow gentle sway (swimming pool current / wind)
     float time_sway = TIME * sway_speed;
     float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
-    float sway = sin(time_sway + phase) * sway_amplitude;
+    float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
+    float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude;
     
     // Scale sway by height (higher vertices sway more)
     // Local Y of the vertex shows the height from the instance origin

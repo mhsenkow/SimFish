@@ -97,6 +97,19 @@ static func spawn(parent: Node, gp: Transform3D, smear_color: Color, heading: Ve
 				return
 			_release_slot(s))
 		return true
+	# REFINEMENT_II #79 — steal the oldest active slot instead of dropping.
+	var oldest: Dictionary = {}
+	var oldest_t: float = -1.0
+	for s in _slots:
+		if not (s is Dictionary) or not bool(s.get("busy", false)):
+			continue
+		var rem: float = float(s.get("t", 0.0))
+		if rem > oldest_t:
+			oldest_t = rem
+			oldest = s
+	if not oldest.is_empty():
+		_release_slot(oldest)
+		return spawn(parent, gp, smear_color, heading, on_release)
 	return false
 
 

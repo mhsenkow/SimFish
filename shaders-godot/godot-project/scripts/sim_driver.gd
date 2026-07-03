@@ -43,6 +43,7 @@ const _StoryChronicleBufferScript = preload("res://scripts/story_chronicle_buffe
 const _WastePhysicsBatchScript = preload("res://scripts/waste_physics_batch.gd")
 const _MindBoidsBufferScript = preload("res://scripts/mind_boids_buffer.gd")
 const _MindBoidsComputeScript = preload("res://scripts/mind_boids_compute.gd")
+const _MotionFieldScript = preload("res://scripts/motion_field.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 
 signal stats_changed(stats: Dictionary)
@@ -115,6 +116,17 @@ var world: Node = null
 # toward the intake and despawn there, closing the "tiny life sucked in
 # by the filter" loop that real planted tanks always have.
 var filter_intake_pos: Vector3 = Vector3.ZERO
+
+
+func filter_intake_active() -> bool:
+	if filter_intake_pos == Vector3.ZERO:
+		return false
+	for c in clams:
+		if c == null or not is_instance_valid(c):
+			continue
+		if int(c.get("current_mode")) == Clam.Mode.FEEDING:
+			return true
+	return aeration_fixture == "filter" and _filter_clog < 0.88
 
 # Bloom intensity 0..1 (smoothed). Driven by the algae step each tick;
 # world.gd reads it to lerp the water material toward green. Smoothing
@@ -538,9 +550,10 @@ func _tick_cast_change_guardian() -> void:
 
 
 func record_feed_drop(world_pos: Vector3, food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
-	_feed_memory.append({"pos": world_pos, "t": 0.0, "subtype": food_subtype})
+	_feed_memory.append({"pos": world_pos, "t": 0.0, "subtype": food_subtype, "w": 1.0})
 	while _feed_memory.size() > FEED_MEMORY_CAP:
 		_feed_memory.pop_front()
+	_nudge_fish_feed_heatmap_at(world_pos, 0.14)
 	# Also record the wall-clock minute-of-day for anticipation tracking.
 	# Dedup the same minute so a player who drops 5 pellets in a row only
 	# counts as one "feeding event" — pattern matters, frequency doesn't.
@@ -594,6 +607,25 @@ func feed_anticipation_active() -> bool:
 		_feed_anticipation_cache_minute = now_mod
 		_feed_anticipation_cached = _compute_feed_anticipation(now_mod)
 	return _feed_anticipation_cached
+
+
+const FEED_SATIETY_GRACE_S: int = 600
+const FEED_SATIETY_HUNGER: float = 0.48
+const _GuardianFishScript = preload("res://scripts/guardian_fish.gd")
+
+
+func tank_recently_fed(grace_s: int = FEED_SATIETY_GRACE_S) -> bool:
+	if _last_feed_unix <= 0:
+		return false
+	return int(Time.get_unix_time_from_system()) - _last_feed_unix < grace_s
+
+
+func tank_avg_hunger() -> float:
+	return _GuardianFishScript.tank_avg_hunger(self)
+
+
+func tank_feed_satiety_ok() -> bool:
+	return tank_recently_fed() and tank_avg_hunger() < FEED_SATIETY_HUNGER
 
 
 func _compute_feed_anticipation(now_mod: int) -> bool:
@@ -730,6 +762,21 @@ func pulse_glass_tap(world_pos: Vector3) -> void:
 	KeeperCare.broadcast_keeper_ambient(self, world_pos, "gaze", base_strength, 7.0)
 	_player_glance_strength = base_strength
 	_player_glance_hold_s = 3.0
+	var tap_away: Vector3 = Vector3.ZERO
+	var tap_n: int = 0
+	for ff in fish:
+		if not is_instance_valid(ff) or ff.get("_dying") == true:
+			continue
+		if ff.position.distance_squared_to(world_pos) > TAP_R2:
+			continue
+		var d: Vector3 = ff.position - world_pos
+		d.y = 0.0
+		if d.length_squared() > 0.04:
+			tap_away += d.normalized()
+			tap_n += 1
+	if tap_n > 0:
+		tap_away = (tap_away / float(tap_n)).normalized()
+	_MotionFieldScript.inject_startle(fish, world_pos, base_strength * 0.55, tap_away, false)
 	_glass_tap_count += 1
 	if daylight() < 0.28:
 		NightWatch.note_night_disturbance(self)
@@ -737,24 +784,79 @@ func pulse_glass_tap(world_pos: Vector3) -> void:
 
 var _glass_tap_count: int = 0
 var _pending_witness_line: Dictionary = {}
+var _shadow_cooldown: float = 0.0
+
+
+func pulse_shadow(origin: Vector3, extent: float = 1.0) -> void:
+	if _shadow_cooldown > 0.0:
+		return
+	_shadow_cooldown = 0.35
+	_MotionFieldScript.inject_shadow(fish, origin, extent)
+	topdown.pulse_density_wave(origin, 0.72)
+	var w_node: Node = get_parent()
+	if w_node != null and w_node.has_method("spawn_burst_ripple"):
+		w_node.spawn_burst_ripple(origin, 0.55)
+	_play_ambient_event("startle", 0.72, "", origin)
 
 
 func anticipated_feed_surface_pos() -> Vector3:
 	if _feed_memory.is_empty():
 		return Vector3.ZERO
 	var sum: Vector3 = Vector3.ZERO
-	var n: int = 0
+	var n: float = 0.0
 	for entry in _feed_memory:
 		var e: Dictionary = entry
 		if float(e.get("t", 0.0)) >= FEED_MEMORY_TTL:
 			continue
 		var p: Vector3 = e.get("pos", Vector3.ZERO)
+		var w: float = float(e.get("w", 1.0))
 		p.y = maxf(p.y, substrate_top_y + 0.8)
-		sum += p
-		n += 1
+		sum += p * w
+		n += w
 	if n <= 0:
 		return Vector3.ZERO
 	return sum / float(n)
+
+
+func feeders_near(world_pos: Vector3, radius: float = 1.6) -> float:
+	var r2: float = radius * radius
+	var best: float = 0.0
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var d2: float = (f.global_position - world_pos).length_squared()
+		if d2 < r2:
+			best = maxf(best, 1.0 - sqrt(d2) / radius)
+	return best
+
+
+func _nudge_fish_feed_heatmap_at(world_pos: Vector3, weight: float) -> void:
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		if f.feed_heatmap.size() == 0:
+			continue
+		var cell: int = FishMind.heatmap_cell_at(f, world_pos)
+		if cell < 0 or cell >= f.feed_heatmap.size():
+			continue
+		f.feed_heatmap[cell] = minf(8.0, float(f.feed_heatmap[cell]) + weight)
+		FishMind.note_heatmap_cell(f, cell, float(f.feed_heatmap[cell]))
+
+
+func _apply_chemistry_stress_relief_immediate() -> void:
+	if water_chemistry == null:
+		return
+	var nh3: float = float(water_chemistry.ammonia)
+	var no2: float = float(water_chemistry.nitrite)
+	var chem_now: float = maxf(clampf((nh3 - 0.25) / 0.75, 0.0, 1.0),
+		clampf((no2 - 0.35) / 0.85, 0.0, 1.0))
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		if f._prev_chem_stress - chem_now > 0.02:
+			f.stress = clampf(f.stress - (f._prev_chem_stress - chem_now) * 0.45, 0.0, 1.0)
+			f._relief_pulse = 1.0
+		f._prev_chem_stress = chem_now
 
 
 # Sample the tank-wide schooling pulse phase. Returns -1..1, sin-shaped.
@@ -773,8 +875,16 @@ func school_pulse_phase() -> float:
 var topdown: SimTopdown = SimTopdown.new()
 
 
-func pulse_startle_bolt(origin: Vector3) -> void:
+func pulse_startle_bolt(origin: Vector3, salience: float = 1.0, turn_away: Vector3 = Vector3.ZERO) -> void:
 	topdown.pulse_startle_bolt(origin)
+	var night: float = daylight()
+	var night_scale: float = lerpf(0.58, 1.0, clampf(night / 0.35, 0.0, 1.0))
+	var eff_sal: float = clampf(salience * night_scale, 0.0, 1.0)
+	topdown.startle_bolt_remaining = lerpf(0.22, 0.62, eff_sal)
+	var away: Vector3 = turn_away
+	if away.length_squared() < 1e-4:
+		away = Vector3.ZERO
+	_MotionFieldScript.inject_startle(fish, origin, eff_sal, away, eff_sal > 0.5)
 	# SENTIENCE_THE_SPARK #67 — radial water pulse when the tank startles.
 	topdown.pulse_density_wave(origin, 0.88)
 	var w_node: Node = get_parent()
@@ -3484,6 +3594,7 @@ func _tick(dt: float) -> void:
 	_sync_rng()
 	tank_age_s += dt
 	_ambient_snap = _AmbientSnapScript.capture(self)
+	_MindTickScript.apply_ambient_snap(_ambient_snap)
 	# Prune queue_freed fauna before any tick logic that iterates fish/shrimp
 	# (guardian pick, cast-change counts, spatial rebuild). Stale refs survive
 	# until the engine deletes the node at frame end; casting them throws.
@@ -3513,6 +3624,7 @@ func _tick(dt: float) -> void:
 	_school_pulse_phase += dt * TAU / SCHOOL_PULSE_PERIOD
 	if _school_pulse_phase > TAU * 1000.0:
 		_school_pulse_phase = fmod(_school_pulse_phase, TAU)
+	_shadow_cooldown = maxf(0.0, _shadow_cooldown - dt)
 	topdown.tick(self, dt, _school_pulse_phase)
 	_prune_invalid(plants)
 	_resilience_cooldown_s = maxf(0.0, _resilience_cooldown_s - dt)
@@ -3662,6 +3774,9 @@ func _tick(dt: float) -> void:
 	_mind_tick_index += 1
 	_MindBoidsBufferScript.capture(fish, _mind_tick_index)
 	_MindBoidsComputeScript.run()
+	var motion_cfg: Node = _cfg()
+	_MotionFieldScript.sync_tuning(motion_cfg)
+	_MotionFieldScript.tick(fish, dt, world)
 	_FaunaSpeciesBatchScript.set_active(_FaunaSpeciesBatchScript.should_enable(fish_n))
 
 	# Off-frustum brain throttle. Flip the phase each tick so off-screen
@@ -3681,6 +3796,12 @@ func _tick(dt: float) -> void:
 	_shrimp_brain_phase = 1 - _shrimp_brain_phase
 	_MindPairCacheScript.begin_tick()
 	_MindArousalFieldScript.begin_tick(dt)
+	_begin_music_mods_frame()
+	if _music_mc_cache != null and _music_mc_cache.has_method("tank_ambient_scalar"):
+		_MotionFieldScript.tick_music_sweep(
+			fish,
+			float(_music_mc_cache.tank_ambient_scalar("sweep")),
+			float(_music_mc_cache.tank_ambient_scalar("beat_phase")))
 	_MindDriveSoAScript.integrate_fish(fish, dt, self)
 	var cam: Camera3D = _get_camera()
 	var have_cam: bool = cam != null
@@ -4031,6 +4152,7 @@ func _tick(dt: float) -> void:
 		pore_no3 = substrate.pore_water_nitrate_leak()
 	water_chemistry.tick(dt, self, get_parent(), plant_biomass,
 		waste_nh3 + substrate_nh3, pore_no3, _is_saltwater_tank())
+	_apply_chemistry_stress_relief_immediate()
 	_refresh_tank_vitals(bloom_pressure, n_total, plant_biomass)
 	var bloom_favor: bool = bloom_pressure > 0.35  # for algae.tick's pressure-curve
 
@@ -4963,6 +5085,11 @@ func _hatch(e: FishEgg) -> void:
 	fry.maturity = Fish.MATURITY_FRY
 	fry.hunger = 0.3
 	fry.energy = 1.0
+	# LIVING_MOTION #89 — fry form tight nervous micro-schools on hatch.
+	if fry.swim_pattern in ["school", "shoal"] or fry.schooling_strength > 0.35:
+		fry.swim_pattern = "school"
+		fry.schooling_strength = maxf(fry.schooling_strength, 1.35)
+		fry.max_turn_rate = maxf(fry.max_turn_rate, 4.2)
 	register_fish(fry)
 	fry._reclamp_territory_to_tank()
 	var mc := get_node_or_null("/root/MusicContext")
@@ -6565,6 +6692,8 @@ func load_state(d: Dictionary) -> void:
 	time_scale = SaveHelpers._num(sim_d.get("time_scale", 1.0), 1.0)
 	if not is_finite(time_scale) or time_scale < 0.0:
 		time_scale = 1.0
+	if w_load != null and w_load.has_method("flush_chemistry_visuals"):
+		w_load.call("flush_chemistry_visuals")
 
 	# "Previously on the tank" recap. When the gap since the last save is
 	# meaningful (≥ 15 min real time) and the AI is enabled+narrating, ask

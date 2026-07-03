@@ -126,8 +126,12 @@ func toggle() -> void:
 		if sim != null:
 			var cur: float = float(sim.time_scale)
 			if cur > 0.0:
+				TimeAuthority.set_base_scale(cur)
 				_saved_time_scale = cur
-				sim.time_scale = 0.0
+				if _host != null and _host.has_method("_push_time_pause"):
+					_host.call("_push_time_pause", "aquascape")
+				else:
+					sim.time_scale = 0.0
 				_paused_sim_for_aquascape = true
 		if _host != null and _host.has_method("clear_follow"):
 			_host.call("clear_follow")
@@ -143,7 +147,10 @@ func toggle() -> void:
 		if _placement_gizmo != null:
 			_placement_gizmo.visible = false
 		if sim != null and _paused_sim_for_aquascape:
-			sim.time_scale = _saved_time_scale
+			if _host != null and _host.has_method("_pop_time_pause"):
+				_host.call("_pop_time_pause", "aquascape")
+			else:
+				sim.time_scale = _saved_time_scale
 		_paused_sim_for_aquascape = false
 		if _preview != null:
 			_preview.visible = false

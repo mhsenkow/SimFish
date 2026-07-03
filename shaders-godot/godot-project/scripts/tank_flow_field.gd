@@ -36,7 +36,7 @@ func configure(half_w: float, half_d: float, floor_y: float, water_y: float,
 
 func tick(dt: float) -> void:
 	_phase += dt
-	var decay: float = exp(-2.6 * dt)
+	var decay: float = exp(-2.1 * dt)
 	for i in _vel.size():
 		_vel[i] *= decay
 	_seed_jet(dt)
@@ -159,3 +159,14 @@ func _at(x: int, y: int, z: int) -> Vector3:
 
 func _at_set(x: int, y: int, z: int, v: Vector3) -> void:
 	_vel[_idx(x, y, z)] = v
+
+
+func tick_convection(dt: float, daylight: float) -> void:
+	var rise: Vector3 = Vector3(0.0, 0.08 + daylight * 0.06, 0.0)
+	var drift: Vector3 = Vector3(sin(_phase * 0.18), 0.0, cos(_phase * 0.18)) * 0.05
+	var night_flip: float = lerpf(-1.0, 1.0, daylight)
+	for z in GRID_Z:
+		for y in GRID_Y:
+			for x in GRID_X:
+				var mix: Vector3 = rise * (float(y) / float(GRID_Y)) + drift * night_flip
+				_at_set(x, y, z, _at(x, y, z) + mix * dt * 0.35)

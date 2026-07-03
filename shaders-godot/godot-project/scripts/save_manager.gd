@@ -2,6 +2,20 @@
 class_name SaveManager
 extends RefCounted
 
+static var _writes_in_flight: int = 0
+static var _pending_write_path: String = ""
+static var _pending_write_payload: Variant = null
+
+
+static func writes_in_flight() -> int:
+	return _writes_in_flight
+
+
+static func reset_for_test() -> void:
+	_writes_in_flight = 0
+	_pending_write_path = ""
+	_pending_write_payload = null
+
 static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeController,
 		save_restored_flag: StringName) -> void:
 	if host.get(save_restored_flag):
@@ -51,7 +65,9 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 	if live_ts > 0.0:
 		pending_time_scale = live_ts
 	sim.set_save_mind_delta(skip_thumbnail)
+	var snap_t0: int = Time.get_ticks_usec()
 	var state_d: Dictionary = sim.save_state()
+	PerfGovernor.record_ledger(26, Time.get_ticks_usec(), snap_t0)
 	sim.set_save_mind_delta(false)
 	state_d["sim"]["time_scale"] = pending_time_scale
 	# Persist the followed creature (+ mode/scope) so reopening resumes it.
@@ -69,7 +85,7 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 			state_d["terrain"] = terrain_d
 	var path: String = saves.state_path(int(saves.active_slot))
 	var payload: Variant = SaveHelpers.sanitize_for_json(state_d)
-	WorkerThreadPool.add_task(_async_serialize_and_write.bind(path, payload))
+	_enqueue_async_write(path, payload)
 	if not skip_thumbnail and host.has_method("_save_thumbnail"):
 		host.call("_save_thumbnail", saves.thumbnail_path(int(saves.active_slot)))
 	var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
@@ -100,8 +116,27 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 	return pending_time_scale
 
 
+static func _enqueue_async_write(path: String, payload: Variant) -> void:
+	if _writes_in_flight > 0:
+		_pending_write_path = path
+		_pending_write_payload = payload
+		return
+	_writes_in_flight += 1
+	WorkerThreadPool.add_task(_async_serialize_and_write.bind(path, payload))
+
+
 static func _async_serialize_and_write(path: String, payload: Variant) -> void:
-	_async_write_save(path, JSON.stringify(payload, "  "))
+	var t0: int = Time.get_ticks_usec()
+	var json_text: String = JSON.stringify(payload, "  ")
+	_async_write_save(path, json_text)
+	PerfGovernor.record_ledger(26, t0 + 1200, t0)
+	_writes_in_flight = maxi(0, _writes_in_flight - 1)
+	if _writes_in_flight == 0 and _pending_write_path != "":
+		var next_path: String = _pending_write_path
+		var next_payload: Variant = _pending_write_payload
+		_pending_write_path = ""
+		_pending_write_payload = null
+		_enqueue_async_write(next_path, next_payload)
 
 
 static func _async_write_save(path: String, json_text: String) -> void:

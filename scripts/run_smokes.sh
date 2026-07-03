@@ -22,11 +22,10 @@ should_skip() {
 	return 1
 }
 
-mapfile -t SMOKES < <(find "$PROJECT/scripts" -maxdepth 1 -name 'smoke_*.gd' -print | sort)
-
 failed=0
 passed=0
-for path in "${SMOKES[@]}"; do
+while IFS= read -r path; do
+	[[ -z "$path" ]] && continue
 	script="$(basename "$path")"
 	if should_skip "$script"; then
 		echo "[smoke] SKIP $script"
@@ -40,7 +39,7 @@ for path in "${SMOKES[@]}"; do
 		echo "[smoke] FAIL $script" >&2
 		failed=$((failed + 1))
 	fi
-done
+done < <(find "$PROJECT/scripts" -maxdepth 1 -name 'smoke_*.gd' -print | sort)
 
 echo "[smoke] done: $passed passed, $failed failed, ${#SKIP[@]} skipped"
 if (( failed > 0 )); then

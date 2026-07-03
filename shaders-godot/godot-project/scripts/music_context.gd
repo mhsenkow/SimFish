@@ -572,7 +572,7 @@ func _refresh(dt: float) -> void:
 	_update_drop_tension(dt)
 	_update_drop_flash(dt)
 	_conduct_until = maxf(0.0, _conduct_until - dt)
-	_update_phrase_choreography()
+	_update_phrase_choreography(dt)
 	_update_dance_blend(dt)
 	_apply_visual_uniforms(dt)
 	_maybe_drop_bubbles(dt)
@@ -719,7 +719,7 @@ func notify_drop_pulse() -> void:
 	_drop_pulse = true
 
 
-func _update_phrase_choreography() -> void:
+func _update_phrase_choreography(dt: float = 0.016) -> void:
 	if not bool(_ctx.active):
 		return
 	_overhead_view = TopdownMotion.pond_active
@@ -759,8 +759,9 @@ func _update_phrase_choreography() -> void:
 				_current_move = "spiral"
 				_current_formation = "ring"
 	else:
-		_formation_morph = TopdownMotion.formation_morph_blend(
+		var target_morph: float = TopdownMotion.formation_morph_blend(
 			int(_ctx.phrase_bars_left), float(_ctx.bar_phase), float(_ctx.phrase_progress))
+		_formation_morph = lerpf(_formation_morph, target_morph, minf(1.0, dt * 5.5))
 	_ctx.move = _current_move
 	_ctx.formation = _current_formation
 

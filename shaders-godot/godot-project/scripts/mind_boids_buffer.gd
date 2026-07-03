@@ -4,6 +4,9 @@ extends RefCounted
 # PERFORMANCE_UNTHROTTLED #57 — shared SoA layout for CPU/GPU boids backends.
 
 const MAX_FISH: int = 256
+const N_TOPO: int = 7
+static var flank_bias: float = 0.45
+const MAX_CANDIDATE_R2: float = 36.0
 const RADIUS_SQ: float = 9.0
 const VIEW_DOT: float = -0.4
 const LOOKAHEAD: float = 0.4
@@ -15,18 +18,27 @@ static var separation_radii: PackedFloat32Array = PackedFloat32Array()
 static var home_y_radii: PackedFloat32Array = PackedFloat32Array()
 static var species_hash: PackedInt32Array = PackedInt32Array()
 static var lead_scores: PackedFloat32Array = PackedFloat32Array()
-static var fish_refs: Array[Fish] = []
+static var fish_refs: Array = []
 
 static var sep_accum: PackedVector3Array = PackedVector3Array()
 static var ali_accum: PackedVector3Array = PackedVector3Array()
 static var coh_center: PackedVector3Array = PackedVector3Array()
 static var neighbor_counts: PackedInt32Array = PackedInt32Array()
 static var school_speed_milli: PackedInt32Array = PackedInt32Array()
+static var swim_topo: PackedByteArray = PackedByteArray()
+static var topo_neighbors: PackedInt32Array = PackedInt32Array()
 
 static var count: int = 0
 static var tick_serial: int = 0
 static var backend: String = "none"
 static var _fish_index: Dictionary = {}
+
+
+static func sync_tuning(cfg: Node) -> void:
+	if cfg == null:
+		return
+	flank_bias = clampf(float(cfg.get("motion_flank_bias") if cfg.get("motion_flank_bias") != null else flank_bias),
+		0.0, 1.5)
 
 
 static func reset_for_test() -> void:
@@ -43,10 +55,13 @@ static func reset_for_test() -> void:
 	coh_center = PackedVector3Array()
 	neighbor_counts = PackedInt32Array()
 	school_speed_milli = PackedInt32Array()
+	swim_topo = PackedByteArray()
+	topo_neighbors = PackedInt32Array()
 	count = 0
 	tick_serial = 0
 	backend = "none"
 	_fish_index.clear()
+	flank_bias = 0.45
 
 
 static func capture(fish_arr: Array, serial: int) -> int:
@@ -64,10 +79,12 @@ static func capture(fish_arr: Array, serial: int) -> int:
 		species_hash.resize(need)
 		lead_scores.resize(need)
 		fish_refs.resize(need)
+		swim_topo.resize(need)
+		topo_neighbors.resize(need * N_TOPO)
 	for f in fish_arr:
 		if count >= MAX_FISH or not is_instance_valid(f) or f.get("_dying") == true:
 			continue
-		if not (f is Fish):
+		if f.get("species") == null:
 			continue
 		positions[count] = f.position
 		velocities[count] = f.velocity if f.get("velocity") != null else Vector3.ZERO
@@ -76,6 +93,11 @@ static func capture(fish_arr: Array, serial: int) -> int:
 		home_y_radii[count] = float(f.home_y_radius if f.get("home_y_radius") != null else 0.35)
 		species_hash[count] = hash(str(f.species))
 		lead_scores[count] = float(f.lead_score if f.get("lead_score") != null else 0.0)
+		var sp: String = str(f.swim_pattern if f.get("swim_pattern") != null else "school")
+		var sch: float = float(f.schooling_strength if f.get("schooling_strength") != null else 0.0)
+		swim_topo[count] = 1 if (sp == "school" or sp == "shoal") and sch > 0.4 else 0
+		for t in N_TOPO:
+			topo_neighbors[count * N_TOPO + t] = -1
 		fish_refs[count] = f
 		_fish_index[f] = count
 		count += 1
@@ -97,33 +119,52 @@ static func _trim(n: int) -> void:
 	coh_center.resize(n)
 	neighbor_counts.resize(n)
 	school_speed_milli.resize(n)
+	swim_topo.resize(n)
+	topo_neighbors.resize(n * N_TOPO)
 	for i in n:
 		sep_accum[i] = Vector3.ZERO
 		ali_accum[i] = Vector3.ZERO
 		coh_center[i] = Vector3.ZERO
 		neighbor_counts[i] = 0
 		school_speed_milli[i] = 0
+		for t in N_TOPO:
+			topo_neighbors[i * N_TOPO + t] = -1
 
 
-static func index_for(f: Fish) -> int:
+static func topo_neighbor_at(idx: int, slot: int) -> int:
+	if idx < 0 or slot < 0 or slot >= N_TOPO:
+		return -1
+	var flat: int = idx * N_TOPO + slot
+	if flat < 0 or flat >= topo_neighbors.size():
+		return -1
+	return topo_neighbors[flat]
+
+
+static func uses_topo_at(idx: int) -> bool:
+	if idx < 0 or idx >= swim_topo.size():
+		return false
+	return swim_topo[idx] != 0
+
+
+static func index_for(f: Node) -> int:
 	if f == null or count <= 0:
 		return -1
 	return int(_fish_index.get(f, -1))
 
 
-static func has_outputs_for(f: Fish) -> bool:
+static func has_outputs_for(f: Node) -> bool:
 	var idx: int = index_for(f)
 	return idx >= 0 and backend != "none"
 
 
-static func neighbor_count_for(f: Fish) -> int:
+static func neighbor_count_for(f: Node) -> int:
 	var idx: int = index_for(f)
 	if idx < 0:
 		return 0
 	return neighbor_counts[idx]
 
 
-static func school_avg_speed_for(f: Fish) -> float:
+static func school_avg_speed_for(f: Node) -> float:
 	var idx: int = index_for(f)
 	if idx < 0 or neighbor_counts[idx] <= 0:
 		return 0.0

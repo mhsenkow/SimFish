@@ -182,6 +182,7 @@ func get_music_clock() -> Dictionary:
 		"downbeat": beat_phase < 0.06,
 		"phrase_state": phrase.get("phrase_state", "verse"),
 		"phrase_progress": phrase.get("phrase_progress", bar_phase),
+		"wall_clock": true,
 		"confidence": _clock_confidence,
 		"drop_detected": _drop_detect_until > 0.0,
 		"onsets": [],
@@ -358,10 +359,14 @@ func stop() -> void:
 		_player.stop()
 	_track_meta = {}
 	_audio_features = {}
+	_drive.beat = 0.0
+	_beat_cooldown = 0.0
+	_beat_serial += 1
 	_decay_drive(1.0)
 	_drive.active = false
 	_analyzer.reset()
 	_analysis = {}
+	_apply_visual_uniforms(true)
 	_emit_sync_state()
 
 

@@ -75,7 +75,7 @@ static func tier_for_hysteresis(f, visible: bool, budget_pressure: float, dt: fl
 	if target == current_tier:
 		f._lod_tier_hold_s = 0.0
 		return current_tier
-	var hold: float = float(f.get("_lod_tier_hold_s") if f.get("_lod_tier_hold_s") != null else 0.0)
+	var hold: float = f._lod_tier_hold_s
 	hold += maxf(dt, 0.0)
 	f._lod_tier_hold_s = hold
 	if hold < TIER_HYSTERESIS_S:

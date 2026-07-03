@@ -65,6 +65,10 @@ var _cached_glance_point: Vector3 = Vector3.ZERO
 var _prediction_error: float = 0.0
 var _world_model: Dictionary = {}
 var _episodic_retrieval_hint: Dictionary = {}
+var _episodic_retrieval_hint_ttl: float = 0.0
+var _episodic_hint_focus: String = ""
+var _cycle_use_efe: bool = false
+var _bid_decayed_this_cycle: bool = false
 var _bid_salience_mods: Dictionary = {}
 var _bid_slow_cache: Array = []
 var _bid_slow_accum: float = 0.0
@@ -213,6 +217,10 @@ static func capture(f: Fish) -> Dictionary:
 	p._prediction_error = _fish_float(f, "_prediction_error")
 	p._world_model = _fish_dict(f, "_world_model")
 	p._episodic_retrieval_hint = _fish_dict(f, "_episodic_retrieval_hint")
+	p._episodic_retrieval_hint_ttl = _fish_float(f, "_episodic_retrieval_hint_ttl")
+	p._episodic_hint_focus = _fish_str(f, "_episodic_hint_focus")
+	p._cycle_use_efe = _fish_bool(f, "_cycle_use_efe")
+	p._bid_decayed_this_cycle = _fish_bool(f, "_bid_decayed_this_cycle")
 	p._bid_salience_mods = _fish_dict(f, "_bid_salience_mods")
 	p._bid_slow_cache = _fish_array(f, "_bid_slow_cache")
 	p._bid_slow_accum = _fish_float(f, "_bid_slow_accum")
@@ -398,6 +406,10 @@ static func from_dict(d: Dictionary) -> MindFishProxy:
 	p._prediction_error = float(d.get("_prediction_error", 0.0))
 	_copy_dict_field(d, "_world_model", p, "_world_model")
 	_copy_dict_field(d, "_episodic_retrieval_hint", p, "_episodic_retrieval_hint")
+	p._episodic_retrieval_hint_ttl = float(d.get("_episodic_retrieval_hint_ttl", 0.0))
+	p._episodic_hint_focus = str(d.get("_episodic_hint_focus", ""))
+	p._cycle_use_efe = bool(d.get("_cycle_use_efe", false))
+	p._bid_decayed_this_cycle = bool(d.get("_bid_decayed_this_cycle", false))
 	_copy_dict_field(d, "_bid_salience_mods", p, "_bid_salience_mods")
 	_copy_array_field(d, "_bid_slow_cache", p, "_bid_slow_cache")
 	p._bid_slow_accum = float(d.get("_bid_slow_accum", 0.0))
@@ -524,6 +536,10 @@ func to_dict() -> Dictionary:
 		"_prediction_error": _prediction_error,
 		"_world_model": _world_model.duplicate(true),
 		"_episodic_retrieval_hint": _episodic_retrieval_hint.duplicate(true),
+		"_episodic_retrieval_hint_ttl": _episodic_retrieval_hint_ttl,
+		"_episodic_hint_focus": _episodic_hint_focus,
+		"_cycle_use_efe": _cycle_use_efe,
+		"_bid_decayed_this_cycle": _bid_decayed_this_cycle,
 		"_bid_salience_mods": _bid_salience_mods.duplicate(true),
 		"_bid_slow_cache": _bid_slow_cache.duplicate(true),
 		"_bid_slow_accum": _bid_slow_accum,
@@ -598,6 +614,10 @@ func apply_mind_to(f: Fish) -> void:
 	f._world_model = _world_model.duplicate(true)
 	f._keeper_pending = _keeper_pending.duplicate(true)
 	f._episodic_retrieval_hint = _episodic_retrieval_hint.duplicate(true)
+	f._episodic_retrieval_hint_ttl = _episodic_retrieval_hint_ttl
+	f._episodic_hint_focus = _episodic_hint_focus
+	f._cycle_use_efe = _cycle_use_efe
+	f._bid_decayed_this_cycle = _bid_decayed_this_cycle
 	f._bid_salience_mods = _bid_salience_mods.duplicate(true)
 	f._bid_slow_cache = _bid_slow_cache.duplicate(true)
 	f._bid_slow_accum = _bid_slow_accum

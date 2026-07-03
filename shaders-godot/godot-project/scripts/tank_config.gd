@@ -283,6 +283,8 @@ var consciousness_writeback_enabled: bool = true
 var consciousness_stream_enabled: bool = true
 # META #1-full — unified expected-free-energy drives (see docs/ACTIVE_INFERENCE_CORE.md).
 var consciousness_active_inference: bool = true
+# REFINEMENT_II — quantize episodic vectors to 8-bit on worker threads (smaller snapshots).
+var episodic_quant_8bit: bool = true
 # SENTIENCE_THE_FELT_SELF — phenomenal layer (body → affect → binding).
 var felt_self_enabled: bool = true
 # SENTIENCE_THE_RISING_CURVE §A9 — off-by-default goal-legibility overlay (never "consciousness").
@@ -757,8 +759,13 @@ var fauna_schooling_mult: float = 0.85
 var fauna_separation_mult: float = 1.15
 var fauna_wander_mult: float = 1.35
 var fauna_speed_mult: float = 1.05
-var fauna_school_pulse_enabled: bool = true
+var fauna_school_pulse_enabled: bool = false
 var fauna_school_pulse_amplitude: float = 0.15
+var motion_n_topo: int = 7
+var motion_wave_speed: float = 5.2
+var motion_flank_bias: float = 0.45
+var motion_agitation_decay: float = 2.6
+var motion_propagation_blend: float = 0.44
 var fauna_mourning_enabled: bool = true
 var fauna_player_glance_enabled: bool = true
 
@@ -833,6 +840,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			# makes them instantly recognisable as "tetra-shaped".
 			"adipose_fin": true,
 			"body_shape": "fusiform",
+			"motion_gait_bias": 1.08,
 		},
 	},
 	"mudsifter": {
@@ -872,6 +880,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			# segmentation. Extra rear filler voxels close the gap
 			# between the body and the tail peduncle.
 			"body_shape": "anguilliform",
+			"motion_glide_bias": 0.82,
+			"motion_gait_bias": 0.92,
 		},
 	},
 	"betta": {
@@ -920,6 +930,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			# betta per tank this rarely fires (no conspecific to chase),
 			# but two bettas immediately reveal the behavior.
 			"is_territorial": true,
+			"motion_glide_bias": 0.78,
+			"motion_gait_bias": 1.14,
 		},
 	},
 	"killifish": {
@@ -1195,6 +1207,8 @@ const SPECIES_LIBRARY: Dictionary = {
 			"tail_shape": 0,                     # forked
 			"eye_size_factor": 1.05,
 			"body_shape": "fusiform",
+			"motion_gait_bias": 0.94,
+			"motion_glide_bias": 0.55,
 		},
 	},
 	"otocinclus": {
@@ -2308,6 +2322,11 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("fauna", "school_pulse_amplitude", fauna_school_pulse_amplitude)
 	cfg.set_value("fauna", "mourning_enabled", fauna_mourning_enabled)
 	cfg.set_value("fauna", "player_glance_enabled", fauna_player_glance_enabled)
+	cfg.set_value("motion", "n_topo", motion_n_topo)
+	cfg.set_value("motion", "wave_speed", motion_wave_speed)
+	cfg.set_value("motion", "flank_bias", motion_flank_bias)
+	cfg.set_value("motion", "agitation_decay", motion_agitation_decay)
+	cfg.set_value("motion", "propagation_blend", motion_propagation_blend)
 	cfg.set_value("preset", "tank", tank_preset)
 	cfg.set_value("preset", "glassdarts", custom_glassdart_count)
 	cfg.set_value("preset", "mudsifters", custom_mudsifter_count)
@@ -2402,6 +2421,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("ai", "consciousness_writeback_enabled", consciousness_writeback_enabled)
 	cfg.set_value("ai", "consciousness_stream_enabled", consciousness_stream_enabled)
 	cfg.set_value("ai", "consciousness_active_inference", consciousness_active_inference)
+	cfg.set_value("ai", "episodic_quant_8bit", episodic_quant_8bit)
 	cfg.set_value("ai", "felt_self_enabled", felt_self_enabled)
 	cfg.set_value("ai", "delta_g_overlay_enabled", delta_g_overlay_enabled)
 	cfg.set_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
@@ -2592,6 +2612,11 @@ func load_from_disk() -> void:
 	fauna_school_pulse_amplitude = cfg.get_value("fauna", "school_pulse_amplitude", fauna_school_pulse_amplitude)
 	fauna_mourning_enabled = cfg.get_value("fauna", "mourning_enabled", fauna_mourning_enabled)
 	fauna_player_glance_enabled = cfg.get_value("fauna", "player_glance_enabled", fauna_player_glance_enabled)
+	motion_n_topo = int(cfg.get_value("motion", "n_topo", motion_n_topo))
+	motion_wave_speed = float(cfg.get_value("motion", "wave_speed", motion_wave_speed))
+	motion_flank_bias = float(cfg.get_value("motion", "flank_bias", motion_flank_bias))
+	motion_agitation_decay = float(cfg.get_value("motion", "agitation_decay", motion_agitation_decay))
+	motion_propagation_blend = float(cfg.get_value("motion", "propagation_blend", motion_propagation_blend))
 	tank_preset = cfg.get_value("preset", "tank", tank_preset)
 	custom_glassdart_count = cfg.get_value("preset", "glassdarts", custom_glassdart_count)
 	custom_mudsifter_count = cfg.get_value("preset", "mudsifters", custom_mudsifter_count)
@@ -2691,6 +2716,7 @@ func load_from_disk() -> void:
 			consciousness_stream_enabled)
 	consciousness_active_inference = cfg.get_value("ai", "consciousness_active_inference",
 			consciousness_active_inference)
+	episodic_quant_8bit = cfg.get_value("ai", "episodic_quant_8bit", episodic_quant_8bit)
 	felt_self_enabled = cfg.get_value("ai", "felt_self_enabled", felt_self_enabled)
 	delta_g_overlay_enabled = cfg.get_value("ai", "delta_g_overlay_enabled", delta_g_overlay_enabled)
 	keeper_ears_enabled = cfg.get_value("ai", "keeper_ears_enabled", keeper_ears_enabled)
@@ -2896,7 +2922,7 @@ func reset_to_defaults() -> void:
 	fauna_separation_mult = 1.15
 	fauna_wander_mult = 1.35
 	fauna_speed_mult = 1.05
-	fauna_school_pulse_enabled = true
+	fauna_school_pulse_enabled = false
 	fauna_school_pulse_amplitude = 0.15
 	fauna_mourning_enabled = true
 	fauna_player_glance_enabled = true

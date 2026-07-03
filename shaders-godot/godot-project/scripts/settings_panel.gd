@@ -65,6 +65,12 @@ var _fauna_speed_slider: HSlider
 var _fauna_speed_label: Label
 var _fauna_mourning_check: CheckBox
 var _fauna_glance_check: CheckBox
+var _motion_wave_slider: HSlider
+var _motion_wave_label: Label
+var _motion_flank_slider: HSlider
+var _motion_flank_label: Label
+var _motion_decay_slider: HSlider
+var _motion_decay_label: Label
 var _preset_option: OptionButton
 var _preset_desc: Label
 var _diet_chart: RichTextLabel
@@ -497,6 +503,29 @@ func _build_ui() -> void:
 		func(v: float) -> void:
 			TankConfig.fauna_speed_mult = v
 			_fauna_speed_label.text = _fauna_speed_caption(v))
+
+	_add_section(vbox_fauna, "Murmuration tuning")
+	var motion_hint := PanelTheme.make_description()
+	motion_hint.text = "Wave speed and flank bias shape how turns travel through schools. Applies live."
+	vbox_fauna.add_child(motion_hint)
+	_motion_wave_label = Label.new()
+	_motion_wave_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Manoeuvre wave speed", 2.0, 12.0, 0.25, _motion_wave_label)
+	_motion_wave_slider.value_changed.connect(func(v):
+		TankConfig.motion_wave_speed = v
+		_motion_wave_label.text = "%.1f" % v)
+	_motion_flank_label = Label.new()
+	_motion_flank_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Flank coupling", 0.0, 1.2, 0.05, _motion_flank_label)
+	_motion_flank_slider.value_changed.connect(func(v):
+		TankConfig.motion_flank_bias = v
+		_motion_flank_label.text = "%.2f" % v)
+	_motion_decay_label = Label.new()
+	_motion_decay_slider = PanelTheme.add_slider_row(
+		vbox_fauna, "Agitation decay", 0.8, 6.0, 0.1, _motion_decay_label)
+	_motion_decay_slider.value_changed.connect(func(v):
+		TankConfig.motion_agitation_decay = v
+		_motion_decay_label.text = "%.1f" % v)
 
 	_add_section(vbox_fauna, "Social reactions")
 	_fauna_mourning_check = CheckBox.new()
@@ -966,6 +995,21 @@ func _pull_from_config() -> void:
 		_fauna_speed_slider.value = speed_v
 		_fauna_speed_slider.set_block_signals(false)
 		_fauna_speed_label.text = _fauna_speed_caption(speed_v)
+	if _motion_wave_slider != null:
+		_motion_wave_slider.set_block_signals(true)
+		_motion_wave_slider.value = TankConfig.motion_wave_speed
+		_motion_wave_slider.set_block_signals(false)
+		_motion_wave_label.text = "%.1f" % TankConfig.motion_wave_speed
+	if _motion_flank_slider != null:
+		_motion_flank_slider.set_block_signals(true)
+		_motion_flank_slider.value = TankConfig.motion_flank_bias
+		_motion_flank_slider.set_block_signals(false)
+		_motion_flank_label.text = "%.2f" % TankConfig.motion_flank_bias
+	if _motion_decay_slider != null:
+		_motion_decay_slider.set_block_signals(true)
+		_motion_decay_slider.value = TankConfig.motion_agitation_decay
+		_motion_decay_slider.set_block_signals(false)
+		_motion_decay_label.text = "%.1f" % TankConfig.motion_agitation_decay
 	if _fauna_mourning_check != null:
 		_fauna_mourning_check.button_pressed = TankConfig.fauna_mourning_enabled
 	if _fauna_glance_check != null:

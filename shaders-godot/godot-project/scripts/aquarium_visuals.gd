@@ -106,6 +106,8 @@ func tick(dt: float, ambient_due: bool) -> void:
 
 func begin_screenshot_boost(duration: float = 3.0) -> void:
 	_screenshot_boost_t = duration
+	if _world == null:
+		return
 	if _world.get("_water_material_ref") != null:
 		var wm: ShaderMaterial = _world._water_material_ref
 		wm.set_shader_parameter("wave_amplitude", 0.042)
@@ -114,7 +116,7 @@ func begin_screenshot_boost(duration: float = 3.0) -> void:
 		wm.set_shader_parameter("depth_fog", 0.55)
 		wm.set_shader_parameter("surface_reflection", 0.38)
 		wm.set_shader_parameter("underside_mirror", 0.42)
-	var cfg := _world.get_node_or_null("/root/TankConfig")
+	var cfg: Node = _cfg if _cfg != null else get_node_or_null("/root/TankConfig")
 	if cfg != null and bool(cfg.get("photo_mode_enhanced")):
 		AestheticsRuntime.apply_photo_mode_grade(cfg, true)
 		get_tree().create_timer(duration).timeout.connect(
@@ -332,8 +334,10 @@ func sync_aquatic_uniforms(intensity: float, light_color: Color, water_y: float,
 		intensity * boost, light_color, water_y, day_offset, shimmer * boost)
 
 
-func sync_foliage_uniforms(canopy_shade: float, water_y: float, daylight: float) -> void:
+func sync_foliage_uniforms(canopy_shade: float, water_y: float, daylight: float,
+		flow: Vector3 = Vector3.ZERO, flow_strength: float = 0.0) -> void:
 	VoxelMat.update_foliage_uniforms(canopy_shade, water_y, daylight)
+	VoxelMat.update_foliage_flow(flow, flow_strength)
 
 
 func _build_ambient_emitters() -> void:

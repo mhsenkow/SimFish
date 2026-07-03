@@ -86,6 +86,8 @@ var _bleach_recovery_logged: bool = false
 # the target derived in tick() so the visual extension/retraction reads
 # as a slow biological response rather than an instant pose change.
 var _feeding_extension: float = 0.5
+var _clam_snap_t: float = 0.0
+var _touch_retract_t: float = 0.0
 var _base_growth_rate: float = 0.0
 
 
@@ -791,6 +793,8 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 			h.rotation.z = cos(_sessile_phase * 1.2 + float(i) * 0.6) * 0.22
 	elif coral_form == "clam":
 		var open_amount: float = 0.18 + 0.16 * (0.5 + 0.5 * sin(_sessile_phase * 0.8))
+		if _clam_snap_t > 0.02:
+			open_amount = lerpf(0.02, open_amount, 1.0 - clampf(_clam_snap_t / 0.42, 0.0, 1.0))
 		for i in _clam_shell_parts.size():
 			var p_v: Variant = _clam_shell_parts[i]
 			if p_v == null or not (p_v is Node3D) or not is_instance_valid(p_v):
@@ -1171,6 +1175,17 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Lerp to target slowly — tentacles take seconds to extend / retract,
 	# they don't snap like a fish reaction.
 	_feeding_extension = lerpf(_feeding_extension, target_feeding, clampf(dt * 0.6, 0.0, 1.0))
+	_touch_retract_t = maxf(0.0, _touch_retract_t - dt)
+	_clam_snap_t = maxf(0.0, _clam_snap_t - dt)
+	if sim_n != null and sim_n.get("fish") != null:
+		for ff in sim_n.fish:
+			if is_instance_valid(ff) and ff.get("_dying") != true:
+				if ff.position.distance_squared_to(global_position) < 2.25:
+					_touch_retract_t = 0.45
+					_feeding_extension = minf(_feeding_extension, 0.08)
+					if coral_form == "clam":
+						_clam_snap_t = 0.42
+					break
 	super.tick(dt, substrate)
 
 

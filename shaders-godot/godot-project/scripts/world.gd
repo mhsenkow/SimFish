@@ -107,6 +107,11 @@ var _env_field_ready: bool = false
 var _flow_field: TankFlowField = null
 var _flow_tick_accum: float = 0.0
 const FLOW_TICK_INTERVAL: float = 0.10
+var _filter_jet_pos: Vector3 = Vector3.ZERO
+var _filter_flow_origin: Vector3 = Vector3.ZERO
+var _flow_lane_mote_t: float = 0.0
+var _flow_lane_motes: Array = []
+const FLOW_LANE_MOTE_CAP: int = 14
 
 # Shared pearling emitter pool (replaces per-plant GPUParticles3D nodes).
 var _pearling_pool: Array[GPUParticles3D] = []
@@ -419,15 +424,16 @@ func _ready() -> void:
 
 	# Find the directional light so we can dim it on the day/night cycle.
 	# The light is a sibling under SubViewport/World, accessible by name.
-	_directional_light = get_parent().get_node_or_null("DirectionalLight3D")
-	_world_environment = get_parent().get_node_or_null("WorldEnvironment")
-
-	# Toggle volumetric beams based on TankConfig.light_volumetric.
-	var we := get_parent().get_node_or_null("WorldEnvironment")
-	if we != null and we.environment != null and cfg != null:
-		# Disable heavy built-in volumetric fog to avoid macOS fence timeouts / performance degradation.
-		# The light beams are now drawn via super-performant shader meshes.
-		we.environment.volumetric_fog_enabled = false
+	var parent := get_parent()
+	if parent != null:
+		_directional_light = parent.get_node_or_null("DirectionalLight3D")
+		_world_environment = parent.get_node_or_null("WorldEnvironment")
+		# Toggle volumetric beams based on TankConfig.light_volumetric.
+		var we := parent.get_node_or_null("WorldEnvironment")
+		if we != null and we.environment != null and cfg != null:
+			# Disable heavy built-in volumetric fog to avoid macOS fence timeouts / performance degradation.
+			# The light beams are now drawn via super-performant shader meshes.
+			we.environment.volumetric_fog_enabled = false
 
 	print_verbose("[walstad_loom] world built: ", get_child_count(), " top-level nodes; ",
 		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
@@ -579,6 +585,9 @@ func _process(dt: float) -> void:
 			_flow_field.tick(_flow_tick_accum)
 		_flow_tick_accum = 0.0
 
+	_tick_flow_lane_motes(sdt)
+	_tick_seed_drifts(sdt)
+
 	if _ambient_due and sim != null:
 		_refresh_atmosphere_caches(adt)
 		var ln: Dictionary = _cached_lighting
@@ -587,7 +596,14 @@ func _process(dt: float) -> void:
 		var deep_night: float = ln["deep_night"]
 		if _heater_glow != null and _cfg_node != null:
 			var hon: bool = not not _cfg_node.heater_enabled
-			_heater_glow.light_energy = 0.6 if hon else 0.04
+			if hon:
+				var shimmer: float = 0.58 + sin(_room_time_passed * 3.6) * 0.11 \
+						+ sin(_room_time_passed * 8.2) * 0.05
+				_heater_glow.light_energy = shimmer
+				if _flow_field != null:
+					_flow_field.deposit(_heater_world_pos, Vector3(0.0, 0.28, 0.0), 0.06)
+			else:
+				_heater_glow.light_energy = 0.04
 			_heater_glow.visible = hon
 
 		# 1. Update Sky Color
@@ -739,8 +755,10 @@ func _process(dt: float) -> void:
 			var fixture_glow_amb: float = ln_w["deep_night"] * (1.0 if ln_w["tank_lights_on"] else 0.0)
 			var foliage_light: float = maxf(ln_w["dl"], fixture_glow_amb * 0.82)
 			var bloom: float = float(column.get("bloom_haze", 0.0))
+			var fvec: Vector3 = foliage_flow_vec()
 			_visuals.sync_foliage_uniforms(
-				clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light)
+				clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light,
+				fvec, clampf(fvec.length() * 2.2, 0.0, 1.0))
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
 	# light; the SpotLight3Ds in the fixture give the focused aquarium beam.
@@ -1189,6 +1207,9 @@ func _drift_floaters(adt: float) -> void:
 			# Return jet pushes mats away from the intake corner.
 			drift_vec = -jet.normalized() * 0.028
 	drift_vec += Vector3(sin(_floater_t * 0.08), 0, cos(_floater_t * 0.06)) * 0.018
+	var flow_probe: Vector3 = sample_flow(Vector3(0.0, surface_y - 0.05, 0.0))
+	if flow_probe.length_squared() > 1e-6:
+		drift_vec += Vector3(flow_probe.x, 0.0, flow_probe.z) * 0.04
 	var dance_pull: Vector3 = Vector3.ZERO
 	var dance_strength: float = 0.0
 	if TopdownMotion.pond_active and has_node("/root/MusicContext"):
@@ -1693,6 +1714,27 @@ func _apply_founding_cohort_spread(g: Dictionary, i: int, count: int) -> void:
 	g["home_z"] = sin(ring_a) * ring_r
 
 
+func _fish_spawn_body_radius(g: Dictionary) -> float:
+	var voxel_scale: float = float(g.get("adult_voxel_scale", 0.18))
+	var max_g: float = float(g.get("max_growth", 1.35))
+	return clampf(voxel_scale * 7.5 * max_g * 0.42, 0.32, 1.1)
+
+
+func _spawn_pos_clear_of_fish(pos: Vector3, body_r: float) -> bool:
+	if fauna_root == null:
+		return true
+	for c in fauna_root.get_children():
+		if not (c is Fish) or not is_instance_valid(c):
+			continue
+		var other: Fish = c as Fish
+		if other._dying:
+			continue
+		var sep: float = body_r + clampf(other.adult_voxel_scale * other._maturity_scale() * 2.2, 0.28, 0.9)
+		if other.global_position.distance_squared_to(pos) < sep * sep:
+			return false
+	return true
+
+
 func _sample_fish_spawn_pos(g: Dictionary = {}) -> Vector3:
 	var y_min: float = SUBSTRATE_DEPTH + 0.35
 	var y_max: float = WATER_HEIGHT - 0.45
@@ -1703,14 +1745,23 @@ func _sample_fish_spawn_pos(g: Dictionary = {}) -> Vector3:
 	elif g.has("preferred_y"):
 		col_frac = clampf((float(g["preferred_y"]) - SUBSTRATE_DEPTH) / col, 0.05, 0.95)
 	col_frac = clampf(col_frac + randf_range(-0.1, 0.1), 0.05, 0.95)
-	if TANK_SHAPE == "sphere" or TANK_SHAPE == "cylinder":
-		var target_y: float = lerpf(y_min, y_max, col_frac)
-		for _attempt in 36:
-			var pt: Vector3 = _sample_point_in_tank(
+	var body_r: float = _fish_spawn_body_radius(g)
+	var fallback: Vector3 = clamp_xyz_in_tank(_sample_point_in_tank(y_min, y_max, 0.35), 0.35)
+	for _attempt in 40:
+		var pt: Vector3
+		if TANK_SHAPE == "sphere" or TANK_SHAPE == "cylinder":
+			var target_y: float = lerpf(y_min, y_max, col_frac)
+			pt = _sample_point_in_tank(
 				target_y - col * 0.08, target_y + col * 0.08, 0.35)
-			if is_inside_tank_volume(pt.x, pt.y, pt.z, 0.32):
-				return clamp_xyz_in_tank(pt, 0.35)
-	return clamp_xyz_in_tank(_sample_point_in_tank(y_min, y_max, 0.35), 0.35)
+			if not is_inside_tank_volume(pt.x, pt.y, pt.z, 0.32):
+				continue
+			pt = clamp_xyz_in_tank(pt, 0.35)
+		else:
+			pt = clamp_xyz_in_tank(_sample_point_in_tank(y_min, y_max, 0.35), 0.35)
+		if _spawn_pos_clear_of_fish(pt, body_r):
+			return pt
+		fallback = pt
+	return fallback
 
 
 func _substrate_edge_bias(default: float = 0.48) -> float:
@@ -1962,8 +2013,15 @@ func _sample_substrate_xz(margin: float = 0.35, edge_bias: float = -1.0,
 			if min_lateral_room > 0.0 \
 					and fp.lateral_room(xz.x, xz.y, margin, SUBSTRATE_DEPTH) < min_lateral_room:
 				continue
+			if _hardscape_cover_density(xz.x, xz.y, 0.42) > 0.55:
+				continue
 			return xz
 		return fp.random_point(margin, _rng)
+	for _attempt in 24:
+		var xz2: Vector2 = _footprint().random_point(margin, _rng)
+		if _hardscape_cover_density(xz2.x, xz2.y, 0.42) > 0.55:
+			continue
+		return xz2
 	return _footprint().random_point(margin, _rng)
 
 
@@ -4785,7 +4843,7 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 			0.06, 0.55)
 	
 	# Initialize the child plant using the parent's genetic traits
-	p.init(1, child_cfg)
+	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
 	if child_cfg.has("generation"):
 		p.generation = int(child_cfg["generation"])
 	if child_cfg.has("parent_lineage"):
@@ -5364,7 +5422,10 @@ func _find_tank_camera() -> Camera3D:
 func _topdown_surface_active() -> bool:
 	if TopdownMotion.pond_active:
 		return true
-	var main_n: Node = get_tree().root.get_node_or_null("Main")
+	var tree := get_tree()
+	if tree == null or tree.root == null:
+		return TopdownMotion.pond_active
+	var main_n: Node = tree.root.get_node_or_null("Main")
 	return main_n != null and TopdownMotion.is_overhead(main_n)
 
 
@@ -6214,6 +6275,29 @@ func ambient_to_save() -> Dictionary:
 	}
 
 
+func flush_chemistry_visuals() -> void:
+	# REFINEMENT_II #93 — water/light visuals match chemistry immediately after load.
+	if sim == null:
+		return
+	var fresh: Dictionary = WorldAtmosphere.day_night_lighting(sim, _cfg_node)
+	_cached_lighting = fresh
+	var bloom: float = float(sim.bloom_intensity)
+	var wc = sim.water_chemistry if sim.get("water_chemistry") != null else null
+	var atm: Dictionary = _cached_lighting.get("atmosphere", {})
+	var wc_fresh: Dictionary = WorldAtmosphere.water_column_bundle(
+		tannins, bloom, floater_coverage(), wc,
+		C_WATER_SHALLOW, C_WATER_DEEP, float(atm.get("tannin_affinity", 0.0)))
+	_cached_water_column = wc_fresh
+	# Nudge the 10 Hz cosmetic tick on the next _process frame (light/sky/etc.).
+	_ambient_accum = AMBIENT_VISUAL_INTERVAL
+	if _water_material_ref != null and not _cached_water_column.is_empty():
+		var ln_w: Dictionary = _cached_lighting
+		var column: Dictionary = _cached_water_column
+		var atm2: Dictionary = ln_w.get("atmosphere", {})
+		var ice: float = WorldAtmosphere.ice_lens_uniform(ln_w, atm2)
+		WorldAtmosphere.apply_water_shader(_water_material_ref, column, ln_w, ice)
+
+
 func restore_ambient(d: Variant) -> void:
 	if _active_substrate_profile.get("is_saltwater", false):
 		return
@@ -6390,10 +6474,20 @@ func restore_floaters(arr: Variant) -> void:
 			fp.vitality = clampf(float(d.vitality), 0.0, 1.0)
 		if d.has("id"):
 			fp.id = String(d.id)
+		if d.has("bud_stage"):
+			fp.bud_stage = int(d.bud_stage)
+		if d.has("flower_stage"):
+			fp.flower_stage = int(d.flower_stage)
+		if d.has("turion_buried"):
+			fp.turion_buried = bool(d.turion_buried)
+		if d.has("root_biofilm"):
+			fp.root_biofilm = clampf(float(d.root_biofilm), 0.0, 1.0)
+		if d.has("root_length_current"):
+			fp.root_length_current = float(d.root_length_current)
+		if d.has("age_s"):
+			fp.age_s = float(d.age_s)
 
 
-# One-shot expanding ripple ring at the surface. Reuses a small pool so pond
-# dances don't allocate hundreds of MeshInstance3D nodes per second (#92).
 func spawn_burst_ripple(pos: Vector3, intensity: float = 1.0) -> void:
 	if _active_ripples >= _RIPPLE_POOL_SIZE + 6:
 		return
@@ -6702,13 +6796,122 @@ func _spawn_aeration_system() -> void:
 		sim.set("aeration_flow_rate", float(rates.get("flow_rate", 0.0)))
 		sim.set("aeration_fixture", String(rates.get("fixture", "disk")))
 	_init_flow_field()
+	# REFINEMENT_II #47 — pellet drift needs a target even on disk/stick fixtures.
+	if sim != null and sim.filter_intake_pos == Vector3.ZERO:
+		if _filter_flow_origin != Vector3.ZERO:
+			sim.filter_intake_pos = _filter_flow_origin
+		elif _filter_jet_pos != Vector3.ZERO:
+			sim.filter_intake_pos = _filter_jet_pos
 
 
 func _configure_substrate_flow(origin: Vector3, jet: Vector3, flow_rate: float) -> void:
+	_filter_flow_origin = origin
+	_filter_jet_pos = jet
 	var flow: Dictionary = WorldAtmosphere.substrate_flow_from_jet(origin, jet, flow_rate)
 	_substrate_ripple_dir = flow["dir"]
 	_substrate_ripple_strength = flow["strength"]
 	VoxelMat.update_substrate_flow_origin(origin, clampf(flow_rate * 0.75, 0.25, 0.55))
+
+
+func begin_seed_drift(start: Vector3, land: Vector3) -> void:
+	# LIVING_MOTION #69 — visible seeds advect on the flow field before settling.
+	var mote := MeshInstance3D.new()
+	mote.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
+	mote.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
+	add_child(mote)
+	mote.global_position = start
+	_flow_lane_motes.append({
+		"node": mote,
+		"land": land,
+		"life": randf_range(2.8, 4.6),
+		"kind": "seed",
+	})
+
+
+func _tick_seed_drifts(dt: float) -> void:
+	if _flow_lane_motes.is_empty():
+		return
+	var i: int = _flow_lane_motes.size() - 1
+	while i >= 0:
+		var e: Dictionary = _flow_lane_motes[i]
+		if e.get("kind", "") != "seed":
+			i -= 1
+			continue
+		var life: float = float(e.get("life", 0.0)) - dt
+		e["life"] = life
+		var n: MeshInstance3D = e.get("node") as MeshInstance3D
+		if life <= 0.0 or n == null or not is_instance_valid(n):
+			if n != null and is_instance_valid(n):
+				n.queue_free()
+			_flow_lane_motes.remove_at(i)
+			i -= 1
+			continue
+		var land: Vector3 = e.get("land", Vector3.ZERO) as Vector3
+		var flow_v: Vector3 = sample_flow(n.global_position)
+		var to_land: Vector3 = land - n.global_position
+		to_land.y = 0.0
+		var drift: Vector3 = flow_v * dt * 1.15 + Vector3(0.0, -0.18, 0.0) * dt
+		if to_land.length_squared() > 0.08:
+			drift += to_land.normalized() * dt * 0.35
+		n.global_position += drift
+		if n.global_position.distance_squared_to(land) < 0.06:
+			n.queue_free()
+			_flow_lane_motes.remove_at(i)
+		i -= 1
+
+
+func _tick_flow_lane_motes(dt: float) -> void:
+	# LIVING_MOTION #72 — micro-tracers ride the filter jet so current is visible.
+	if _filter_jet_pos == Vector3.ZERO:
+		return
+	_flow_lane_mote_t += dt
+	if _flow_lane_mote_t >= 0.38:
+		_flow_lane_mote_t = 0.0
+		_spawn_flow_lane_mote()
+	var i: int = _flow_lane_motes.size() - 1
+	while i >= 0:
+		var e: Dictionary = _flow_lane_motes[i]
+		if e.get("kind", "") != "lane":
+			i -= 1
+			continue
+		var life: float = float(e.get("life", 0.0)) - dt
+		e["life"] = life
+		var n: MeshInstance3D = e.get("node") as MeshInstance3D
+		if life <= 0.0 or n == null or not is_instance_valid(n):
+			if n != null and is_instance_valid(n):
+				n.queue_free()
+			_flow_lane_motes.remove_at(i)
+			i -= 1
+			continue
+		var flow_v: Vector3 = sample_flow(n.global_position)
+		n.global_position += flow_v * dt * 1.35 + Vector3(0.0, 0.05, 0.0) * dt
+		i -= 1
+
+
+func _spawn_flow_lane_mote() -> void:
+	if _flow_lane_motes.size() >= FLOW_LANE_MOTE_CAP:
+		return
+	var lane_count: int = 0
+	for e in _flow_lane_motes:
+		if e is Dictionary and e.get("kind", "") == "lane":
+			lane_count += 1
+	if lane_count >= 8:
+		return
+	var mote := MeshInstance3D.new()
+	mote.mesh = VoxelMat.get_box(Vector3(0.04, 0.04, 0.04))
+	mote.material_override = VoxelMat.make_bubble(Color(0.82, 0.94, 0.98, 0.35))
+	add_child(mote)
+	var spawn: Vector3 = _filter_jet_pos
+	if _filter_flow_origin != Vector3.ZERO:
+		spawn = _filter_flow_origin.lerp(_filter_jet_pos, randf_range(0.15, 0.45))
+	spawn.y = clampf(spawn.y, SUBSTRATE_DEPTH + 0.2, WATER_HEIGHT - 0.35)
+	mote.global_position = spawn + Vector3(
+		randf_range(-0.12, 0.12), randf_range(-0.08, 0.08), randf_range(-0.12, 0.12))
+	_flow_lane_motes.append({
+		"node": mote,
+		"life": randf_range(1.6, 2.8),
+		"kind": "lane",
+	})
 
 
 # --- Bubble disk ---
@@ -6984,6 +7187,12 @@ func _emit_filter_outflow(parent: Node, spout_end: Vector3) -> void:
 	p.position = spout_end
 	var pm := _make_bubble_process_material(
 		Vector3(0, -0.2, 1), 0.85, 1.35, 0.75, 14.0, 12.0)
+	if _flow_field != null:
+		var jet_flow: Vector3 = sample_flow(spout_end)
+		if jet_flow.length_squared() > 1e-4:
+			var jet_dir: Vector3 = Vector3(jet_flow.x, -0.15, jet_flow.z).normalized()
+			pm = _make_bubble_process_material(
+				jet_dir, 0.85, 1.35, 0.55, 14.0, 14.0)
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = Vector3(0.05, 0.08, 0.02)
 	p.process_material = pm
@@ -7967,10 +8176,32 @@ func sample_flow(pos: Vector3) -> Vector3:
 	return _flow_field.sample(pos)
 
 
+func deposit_flow_burst(origin: Vector3, vel: Vector3, strength: float) -> void:
+	if _flow_field == null:
+		return
+	_flow_field.deposit(origin, vel, strength)
+	for i in 3:
+		_flow_field.deposit(origin + Vector3(0.0, float(i) * 0.35, 0.0), vel * 0.6, strength * 0.55)
+
+
+func tick_flow_convection(dt: float) -> void:
+	if _flow_field == null or sim == null:
+		return
+	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	_flow_field.tick_convection(dt, dl)
+
+
+func foliage_flow_vec() -> Vector3:
+	if _flow_field == null:
+		return Vector3.ZERO
+	var probe: Vector3 = Vector3(0.0, WATER_HEIGHT * 0.55, 0.0)
+	return _flow_field.sample(probe)
+
+
 func deposit_wake(pos: Vector3, vel: Vector3, body_size: float) -> void:
 	if _flow_field == null or vel.length_squared() < 1e-6:
 		return
-	_flow_field.deposit(pos, vel, body_size * 0.075)
+	_flow_field.deposit(pos, vel, body_size * 0.095)
 
 
 func flow_strength_at(pos: Vector3) -> float:
@@ -8027,6 +8258,16 @@ func spawn_surface_wake_ex(pos: Vector3, speed: float, yaw_rate: float, move_hea
 		spawn_burst_ripple(back, intensity * 0.38)
 
 
+func _kick_bristle_worms_near(pos: Vector3) -> void:
+	for c in get_children():
+		if c == null or not is_instance_valid(c):
+			continue
+		if c.get_script() != null and str(c.get_script().resource_path).ends_with("bristle_worm.gd"):
+			if c.global_position.distance_squared_to(pos) < 2.8:
+				c._emerged_t = maxf(float(c._emerged_t), 0.65)
+				c._phase += 1.2
+
+
 func spawn_substrate_dust(pos: Vector3) -> void:
 	var container := get_node_or_null("Mulm")
 	if container == null:
@@ -8060,6 +8301,7 @@ func spawn_substrate_dust(pos: Vector3) -> void:
 		tw.tween_property(mi, "scale", Vector3(0.2, 0.2, 0.2), 1.4) \
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 		tw.chain().tween_callback(mi.queue_free)
+	_kick_bristle_worms_near(pos)
 
 
 # Called by sim_driver when a waste particle settles. Mulm depth scales with
@@ -8541,6 +8783,12 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 				var anchor: Vector3 = _find_nearest_hardscape_anchor(spawn_pos)
 				if anchor != Vector3.ZERO:
 					spawn_pos = anchor
+				else:
+					push_warning("[walstad_loom] epiphyte spawn has no hardscape — rooting in substrate")
+			var max_h: int = int(cfg.get("max_height", cfg.get("max_h", 12)))
+			var col: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.5)
+			cfg["spawn_initial_height"] = maxi(1, mini(max_h,
+				int(col / maxf(Plant.VOXEL_SIZE * 1.1, 0.1))))
 			spawn_seedling(spawn_pos,
 				genome.get("ramp_override", []), int(cfg["generation"]), cfg)
 			return true

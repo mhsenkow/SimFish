@@ -6,22 +6,29 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
-- **Security:** SHA256-verified model/plugin downloads; runtime GGUF hash gate; bounded save reads; keeper prompt hardening; LLM queue cap; rotating save backups; `SaveRepair` sanitizes corrupt saves.
 - **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`, ADRs for `sim-rust/` and `data-schemas/`.
+
+## v0.2.25
+
+- **macOS:** Disable volumetric fog on Metal (fence-timeout fix); shader-based light beams.
+- **Spawn:** Body-radius-aware fish placement; chemistry visuals flush on load.
+- **Keeper UI:** Feed dock status, time-pause stack, governor-driven shader tier steps.
+- **Atmosphere:** Filter-jet flow lanes, foliage shimmer, room lighting sync.
+- **Docs:** README status table + new gameplay screenshots.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.25) (macOS / Windows / Linux / Android).
 
 ## v0.2.24
 
-- **Performance:** `mind_kernel` unified tick, perf governor, sim cadence + timer wheel, GPU boids compute, batched fauna/waste/hardscape, potato shader tier, baked caustics, ambient snap.
-- **Soul / spark:** Three-pass soul mind, fish spark behavior + expression, ΔG felt-self curves, arousal field, narrator worker.
-- **Visual:** Eight biome palettes (blackwater, reef, brackish, tanganyika, temperate, etc.) with per-band shader globals.
+- **Performance:** `mind_kernel` unified tick, perf governor, GPU boids, batched fauna/waste, potato shader tier.
+- **Soul / spark:** Three-pass soul mind, fish spark behavior + expression, ΔG felt-self curves.
+- **Visual:** Eight biome palettes with per-band shader globals.
 - **macOS:** Developer ID signed + notarized release pipeline in CI.
-- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.24) (macOS / Windows / Linux / Android).
+- See [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.24).
 
 ## v0.2.23
 
-- **Cognition:** Active inference (expected free energy bids), GRU-lite world model, predictive theory of mind, inter-fish signal bus, emotional contagion, multi-goal motor blending, cognition LOD tiers, bid-generator registry, cognitive spine DAG.
-- **MindState:** Schema migration ladder, sleep consolidation (episodic → semantic), sentience eval harness with per-module ablation.
-- **UI:** Panel focus stacking, keeper input vs notification toast layout, HUD click-through fixes.
+- **Cognition:** Active inference, GRU-lite world model, inter-fish signal bus, emotional contagion, sentience eval harness.
+- **UI:** Panel focus stacking, keeper input vs notification toast layout.
 - See [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.23).
 
 ## v0.2.22

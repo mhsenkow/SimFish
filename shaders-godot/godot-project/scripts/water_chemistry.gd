@@ -12,6 +12,16 @@ enum CyclePhase {
 
 const SIM_DAY_S: float = 864.0
 
+
+static func soft_ceil(v: float, cap: float) -> float:
+	# REFINEMENT_II #58 — asymptotic ceiling so keeper actions still move the needle.
+	v = maxf(0.0, v)
+	if v <= cap:
+		return v
+	var over: float = v - cap
+	return cap + over / (1.0 + over * 0.65)
+
+
 var ammonia: float = 0.0
 var nitrite: float = 0.0
 var nitrate: float = 0.0
@@ -182,9 +192,9 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 		var anaer: float = float(sim.substrate.total_anaerobic())
 		nitrate = maxf(0.0, nitrate - clampf(anaer * 0.0006, 0.0, 0.004) * dt)
 	nitrate = maxf(0.0, nitrate - dt * 0.0006)
-	ammonia = clampf(ammonia, 0.0, 2.0)
-	nitrite = clampf(nitrite, 0.0, 2.0)
-	nitrate = clampf(nitrate, 0.0, 3.0)
+	ammonia = soft_ceil(ammonia, 2.0)
+	nitrite = soft_ceil(nitrite, 2.0)
+	nitrate = soft_ceil(nitrate, 3.0)
 	# General hardness slowly drawn down by plant uptake (#9). Not replenished
 	# except by a water change; surfaces as soft-water drift over a long tank.
 	gh = maxf(1.0, gh - clampf(float(plant_biomass) / 6000.0, 0.0, 0.0006) * dt)

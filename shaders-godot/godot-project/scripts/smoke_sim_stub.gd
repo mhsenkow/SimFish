@@ -4,3 +4,4 @@ extends Node
 const SimRngScript = preload("res://scripts/sim_rng.gd")
 
 var rng: SimRngScript = SimRngScript.new()
+var time_scale: float = 1.0

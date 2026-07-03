@@ -31,7 +31,11 @@ const MindDebug = preload("res://scripts/mind_debug.gd")
 const MindDaring = preload("res://scripts/mind_daring.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
 const MindLexicon = preload("res://scripts/mind_lexicon.gd")
+const _MindCacheRegistryScript = preload("res://scripts/mind_cache_registry.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
+const _MotionFieldScript = preload("res://scripts/motion_field.gd")
+const _MotionWaveScript = preload("res://scripts/motion_wave.gd")
+const _MotionSchoolScript = preload("res://scripts/motion_school.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
@@ -394,6 +398,14 @@ var _thought_tick_cd: float = 0.0
 var _writeback_cd: float = 0.0
 var _episodic_store: Array = []
 var _episodic_retrieval_hint: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _episodic_retrieval_hint_ttl: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _episodic_hint_focus: String = ""
+@warning_ignore("unused_private_class_variable")
+var _cycle_use_efe: bool = false
+@warning_ignore("unused_private_class_variable")
+var _bid_decayed_this_cycle: bool = false
 var _self_summary: String = ""
 var _mind_writeback_log: Array = []
 var _mind_snapshot_prev: Dictionary = {}
@@ -726,7 +738,7 @@ var swim_pattern: String = "school"
 # user: when a lineage drifts so far that it doesn't match the founder
 # silhouette anymore, the HUD shows it as a separate morph.
 func morph_label() -> String:
-	var lib = get_tree().root.get_node_or_null("TankConfig")
+	var lib: Node = get_node_or_null("/root/TankConfig") if is_inside_tree() else null
 	if lib == null or not lib.SPECIES_LIBRARY.has(species):
 		return species
 	var template: Dictionary = lib.SPECIES_LIBRARY[species].get("genome", {})
@@ -792,6 +804,7 @@ var is_livebearer: bool = false
 # _gestation_genome caches the offspring genome (like shrimp.gravid_partner_genome).
 var _gestation_progress: float = 0.0
 var _gestation_genome: Dictionary = {}
+var _gestation_load_grace_s: float = 0.0
 const GESTATION_DURATION: float = 25.0  # sim seconds of visible pregnancy
 
 # Clutch guarding flag (genome-driven). Species that guard their eggs after
@@ -985,6 +998,7 @@ func _apply_panic_burst(amount: float) -> void:
 	if amount <= 0.0:
 		return
 	burst_remaining = maxf(burst_remaining, amount)
+	motion_stamina = maxf(0.0, motion_stamina - amount * 0.35)
 	if FeltSelfLayer.layer_enabled() and (stress > 0.45 or spooked > 0.35):
 		FishVolition.try_veto(self)
 
@@ -1380,9 +1394,10 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 		MindCycle.run_attention_phase(self, sim, _ms, _mind_dt)
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
-	MindDaring.tick(self, sim, dt, neighbors)
-	MindConversation.tick(self, dt, sim)
-	MindLexicon.try_pair_on_feed(self, sim)
+	if _run_mind:
+		MindDaring.tick(self, sim, _mind_dt, neighbors)
+		MindConversation.tick(self, _mind_dt, sim)
+		MindLexicon.try_pair_on_feed(self, sim)
 	if _keeper_message_salience > 0.28:
 		var keeper_text: String = str(_keeper_pending.get("keeper_text", ""))
 		if keeper_text != "":
@@ -1636,6 +1651,23 @@ func get_bio_summary() -> String:
 # Burst mode: when fleeing or chasing food, fish can momentarily exceed
 # max_speed by burst_multiplier. Drains energy faster.
 var burst_remaining: float = 0.0
+# LIVING_MOTION §B — propagating manoeuvre scalar (school/shoal only).
+var motion_agitation: float = 0.0
+var motion_agitation_snap: float = 0.0
+var motion_turn_intent: Vector3 = Vector3.ZERO
+var motion_refractory: float = 0.0
+var motion_freeze_t: float = 0.0
+var motion_stamina: float = 1.0
+var motion_lead_boost: float = 0.0
+var school_id: int = -1
+var _steer_carry: Vector3 = Vector3.ZERO
+var _shuffle_hop_t: float = 0.0
+var _cruise_wp_angle: float = 0.0
+var _gait_amp_bias: float = 1.0
+var _motion_glide_bias: float = 0.5
+var _curiosity_return_t: float = 0.0
+var _prev_burst_snap: float = 0.0
+var _idle_glance_t: float = 0.0
 var _drive_soa_integrated: bool = false
 # Flips to true while in MALE courtship display - drives the renderer to
 # flare the tail wag and over-bank into the S-curve dance. Cleared
@@ -1884,6 +1916,8 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 	)
 	_swim_phase = r.randf() * TAU
 	_wag_freq_jitter = r.randf_range(0.88, 1.12)
+	_gait_amp_bias = r.randf_range(0.82, 1.18)
+	_motion_glide_bias = r.randf_range(0.35, 0.72)
 	_school_phase_offset = r.randf_range(-0.1, 0.1)
 	_speed_personality = r.randf_range(0.82, 1.18)
 	_home_loop_angle = r.randf() * TAU
@@ -2185,6 +2219,10 @@ func init_genome(genome: Dictionary) -> void:
 		_saved_genome["is_bioluminescent"] = true
 	# Swim pattern + territory (heritable).
 	swim_pattern = String(genome.get("swim_pattern", swim_pattern))
+	if genome.has("motion_glide_bias"):
+		_motion_glide_bias = clampf(float(genome.get("motion_glide_bias")), 0.0, 1.0)
+	if genome.has("motion_gait_bias"):
+		_gait_amp_bias = clampf(float(genome.get("motion_gait_bias")), 0.7, 1.35)
 	# Apply pattern-derived defaults FIRST so explicit genome values can
 	# override them on the next reads below.
 	_apply_swim_pattern_defaults()
@@ -2264,6 +2302,12 @@ func _apply_swim_pattern_defaults() -> void:
 			dart_chance = 0.012
 			dart_speed_mult = 1.4
 			max_turn_rate = 2.2
+		"sit":
+			home_radius = 2.2
+			wander_strength = 0.18
+			dart_chance = 0.0
+			max_turn_rate = 4.2
+			dart_speed_mult = 2.4
 
 
 func _apply_predator_morphology() -> void:
@@ -3467,6 +3511,9 @@ func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_
 	var sweep: float = float(mods.get("sweep", 0.0))
 	if sweep < 0.01:
 		return desired
+	# LIVING_MOTION #15 — sweep enters through the flock, not uniformly.
+	if _MotionWaveScript.uses_wave(self):
+		return desired
 	var target: Vector3 = _music_cross_tank_target(mods, 0.55)
 	var blend: float = float(mods.get("dance_blend", 1.0))
 	_nudge_home_toward_music_target(target, 0.09 * sweep * blend)
@@ -3560,7 +3607,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	burst_remaining = maxf(0.0, burst_remaining - dt)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
+	var prev_startle: float = _startle_remaining
 	_startle_remaining = maxf(0.0, _startle_remaining - dt)
+	if prev_startle > 0.08 and _startle_remaining <= 0.0 and _trait("boldness") > 0.42 \
+			and _trait("curiosity") > 0.32 and _interest_target.length_squared() > 0.08:
+		_curiosity_return_t = lerpf(1.4, 2.6, _trait("curiosity"))
 	# Acclimation: counts down from ACCLIMATION_DURATION when the fish
 	# is newly spawned. Caps cycle-spike stress accrual while it ticks.
 	_acclimation_remaining = maxf(0.0, _acclimation_remaining - dt)
@@ -3610,11 +3661,14 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# Gestation progress (livebearer females only)
 	if is_livebearer and sex == 1 and _gestation_progress > 0.0:
-		_gestation_progress += dt / GESTATION_DURATION
-		if _gestation_progress >= 1.0:
-			events["release_livebearer_fry"] = _gestation_genome.duplicate(true)
-			_gestation_progress = 0.0
-			_gestation_genome = {}
+		if _gestation_load_grace_s > 0.0:
+			_gestation_load_grace_s = maxf(0.0, _gestation_load_grace_s - dt)
+		else:
+			_gestation_progress += dt / GESTATION_DURATION
+			if _gestation_progress >= 1.0:
+				events["release_livebearer_fry"] = _gestation_genome.duplicate(true)
+				_gestation_progress = 0.0
+				_gestation_genome = {}
 	# Mouthbrooding: bulge grows for MOUTHBROOD_DURATION, then the
 	# female releases her brood. Stress / heavy chase can spit early
 	# (real cichlid behavior).
@@ -4429,8 +4483,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				if y_delta > home_y_radius * 1.5:
 					d2 *= 1.0 + clampf((y_delta - home_y_radius * 1.5) * 0.45, 0.0, 1.0)
 				d2 *= _food_appeal_multiplier(w)
-				# Bold fish discount food cost; timid fish inflate it.
-				d2 *= lerpf(1.6, 0.55, clampf(boldness / 1.8, 0.0, 1.0))
+				# Bold fish discount food cost; timid fish inflate it — but hunger
+				# urgency overrides pecking order so timid fish aren't starved (#51).
+				var hunger_urgency: float = clampf((hunger - 0.42) / 0.58, 0.0, 1.0)
+				var bold_scale: float = lerpf(1.6, 0.55, clampf(boldness / 1.8, 0.0, 1.0))
+				d2 *= lerpf(bold_scale, 1.0, hunger_urgency * 0.9)
+				d2 *= lerpf(1.0, 0.82, rank_within_species * hunger_urgency * 0.35)
 			if d2 < max_dist_sq and d2 < best_d2:
 				best_d2 = d2
 				best_w = w
@@ -4955,10 +5013,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	tightness *= float(music_mods.get("tightness", 1.0))
 	if sim != null and sim.has_method("sync_settle"):
 		tightness *= 1.0 + sim.sync_settle() * 0.4
-	# Tank-wide school pulse. Synchronised across every fish that samples
-	# sim.school_pulse(), so the entire group visibly breathes in and out.
-	if bool(fauna_rt.get("pulse_on", true)) and sim != null and sim.has_method("school_pulse"):
-		tightness *= 1.0 + sim.school_pulse() * float(fauna_rt.get("pulse_amp", 0.15))
+	# Tank-wide school pulse retired (LIVING_MOTION #5) — breathing is emergent
+	# from topological waves instead of a synchronized broadcast.
 	# Mourning: when a same-species schoolmate just died nearby, intensify
 	# cohesion and dampen our top speed for ~60s.
 	var mourning_w: float = 0.0
@@ -5000,9 +5056,44 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					break
 	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
 	var school_w: float = schooling_strength * float(fauna_rt.get("schooling", 1.0))
+	if sim != null and _MotionWaveScript.uses_wave(self):
+		var dl_sleep: float = float(sim.daylight()) if sim.get("daylight") != null else 1.0
+		if dl_sleep < 0.18:
+			school_w *= lerpf(0.32, 1.0, dl_sleep / 0.18)
+			desired += Vector3(
+				sin(_swim_phase * 0.28 + float(get_instance_id() % 17) * 0.2),
+				sin(_swim_phase * 0.19) * 0.06,
+				cos(_swim_phase * 0.24)) * effective_max * 0.07
+	# Curiosity breakaway (#27) — peel toward novelty; cohesion decides if others follow.
+	if _MotionWaveScript.uses_wave(self) and curiosity_drive > 0.5 and _interest_remaining > 0.15 \
+			and _trait("curiosity") > 0.35 and burst_remaining <= 0.0:
+		var peel_pt: Vector3 = _cached_glance_point if _cached_glance_strength > 0.2 else Vector3.ZERO
+		if peel_pt == Vector3.ZERO and sim != null and sim.has_method("nearest_food_scent"):
+			peel_pt = sim.nearest_food_scent(position)
+		if peel_pt != Vector3.ZERO:
+			var peel: Vector3 = peel_pt - position
+			peel.y *= 0.25
+			if peel.length_squared() > 0.12:
+				desired += peel.normalized() * effective_max * curiosity_drive * 0.38
+	if _curiosity_return_t > 0.0 and burst_remaining <= 0.0:
+		_curiosity_return_t = maxf(0.0, _curiosity_return_t - dt)
+		var back: Vector3 = _interest_target - position
+		back.y *= 0.2
+		if back.length_squared() > 0.05:
+			desired += back.normalized() * effective_max * 0.3 * _curiosity_return_t
+	if _MotionWaveScript.uses_wave(self):
+		desired += _boids(neighbors, tightness, fauna_sep) * school_w
+		desired += _MotionFieldScript.threat_avoid_steer(self, effective_max) * school_w
+		desired += _MotionWaveScript.turn_intent_steer(self, effective_max) * school_w
 	if float(music_mods.get("sweep", 0.0)) > 0.2:
 		school_w *= maxf(0.22, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.72)
-	desired += _boids(neighbors, tightness, fauna_sep) * school_w
+	# Pair-bond choreography (#33) — mirror partner at close range.
+	if partner != null and is_instance_valid(partner) and partner.get("_dying") != true:
+		var pd: Vector3 = partner.position - position
+		if pd.length_squared() < 2.25:
+			var mirror: Vector3 = partner.velocity if partner.get("velocity") != null else Vector3.ZERO
+			if mirror.length_squared() > 0.02:
+				desired += mirror.normalized() * effective_max * 0.38
 	if school_w > 0.35 and burst_remaining <= 0.0 and _startle_remaining <= 0.0 \
 			and float(music_mods.get("sweep", 0.0)) < 0.25:
 		_home_loop_angle += dt * TopdownMotion.calm_mill_rate(stress, float(_music_mods().get("sweep", 0.0)) > 0.35)
@@ -5016,6 +5107,24 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		to_mill.y = 0.0
 		if to_mill.length_squared() > 0.08:
 			desired += to_mill.normalized() * effective_max * 0.28
+	# Cruiser perimeter patrol (#34).
+	if swim_pattern == "cruise" and schooling_strength < 0.4:
+		_cruise_wp_angle += dt * lerpf(0.22, 0.38, _trait("boldness"))
+		var patrol_r: float = maxf(home_radius * 0.85, 2.4)
+		var patrol_target := Vector3(
+			home_x + cos(_cruise_wp_angle) * patrol_r,
+			home_y if is_finite(home_y) else preferred_y,
+			home_z + sin(_cruise_wp_angle) * patrol_r,
+		)
+		var to_patrol: Vector3 = patrol_target - position
+		to_patrol.y *= 0.35
+		if to_patrol.length_squared() > 0.15:
+			desired += to_patrol.normalized() * effective_max * 0.42
+	# Hover station-keep (#32).
+	if swim_pattern == "hover" and schooling_strength < 0.4:
+		var patch: Vector3 = Vector3(home_x, home_y if is_finite(home_y) else preferred_y, home_z) - position
+		if patch.length_squared() > 0.08:
+			desired += patch.normalized() * effective_max * 0.22
 	if sim != null and sim.has_method("sync_turn_heading_for") and sim.sync_turn_active():
 		var sync_h: Vector3 = sim.sync_turn_heading_for(position, get_instance_id())
 		if sync_h.length_squared() > 1e-4:
@@ -5483,15 +5592,26 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	# STRESS CONTAGION + STARTLE PROPAGATION.
 	if sim != null and sim.has_method("startle_bolt_active") and sim.startle_bolt_active():
-		var bolt_o: Vector3 = sim.startle_bolt_origin() if sim.has_method("startle_bolt_origin") else Vector3.ZERO
-		var d_bolt: float = Vector2(position.x - bolt_o.x, position.z - bolt_o.z).length()
-		if d_bolt < 9.0 and _startle_remaining <= 0.0:
-			var prox_b: float = 1.0 - clampf(d_bolt / 9.0, 0.0, 1.0)
-			var radial: Vector3 = TopdownMotion.startle_radial_dir(
-				position, bolt_o, _startle_heading if _startle_heading.length_squared() > 0.01 else heading)
-			_startle_heading = radial
-			_startle_remaining = maxf(_startle_remaining, lerpf(0.22, 0.58, prox_b))
-			_apply_panic_burst(lerpf(0.2, 0.55, prox_b))
+		if _MotionWaveScript.uses_wave(self):
+			if motion_agitation > 0.06 and _startle_remaining <= 0.0:
+				var bolt_o: Vector3 = sim.startle_bolt_origin() if sim.has_method("startle_bolt_origin") else Vector3.ZERO
+				var radial: Vector3 = TopdownMotion.startle_radial_dir(
+					position, bolt_o, motion_turn_intent if motion_turn_intent.length_squared() > 0.01 else heading)
+				_startle_heading = radial
+				var prox_b: float = clampf(motion_agitation, 0.0, 1.0)
+				_startle_remaining = maxf(_startle_remaining, lerpf(0.18, 0.55, prox_b))
+				_apply_panic_burst(lerpf(0.15, 0.5, prox_b))
+				motion_refractory = _MotionWaveScript.REFRACTORY_DURATION
+		else:
+			var bolt_o: Vector3 = sim.startle_bolt_origin() if sim.has_method("startle_bolt_origin") else Vector3.ZERO
+			var d_bolt: float = Vector2(position.x - bolt_o.x, position.z - bolt_o.z).length()
+			if d_bolt < 9.0 and _startle_remaining <= 0.0:
+				var prox_b: float = 1.0 - clampf(d_bolt / 9.0, 0.0, 1.0)
+				var radial: Vector3 = TopdownMotion.startle_radial_dir(
+					position, bolt_o, _startle_heading if _startle_heading.length_squared() > 0.01 else heading)
+				_startle_heading = radial
+				_startle_remaining = maxf(_startle_remaining, lerpf(0.22, 0.58, prox_b))
+				_apply_panic_burst(lerpf(0.2, 0.55, prox_b))
 	# Every fish — not just
 	# school/shoal species — picks up the panic of conspecifics in
 	# neighborhood range. The signal weakens with distance so a panic
@@ -5547,6 +5667,30 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var st_scale: float = NightWatch.startle_scale(self)
 			_startle_remaining = lerpf(0.18, 0.45, prox) * st_scale
 			_apply_panic_burst(lerpf(0.15, 0.40, prox) * st_scale)
+
+	# Pattern-specific locomotion (#36–38, #35).
+	if swim_pattern == "shuffle":
+		_shuffle_hop_t = maxf(0.0, _shuffle_hop_t - dt)
+		if _shuffle_hop_t <= 0.0 and speed < 0.35 and _behavior_rng().randf() < dt * 0.35:
+			_shuffle_hop_t = _behavior_rng().randf_range(0.18, 0.42)
+			burst_remaining = maxf(burst_remaining, 0.12)
+			heading_offset += Vector3(
+				_behavior_rng().randf_range(-0.5, 0.5), 0.08, _behavior_rng().randf_range(-0.5, 0.5))
+		elif _shuffle_hop_t > 0.0:
+			desired *= 0.35
+	elif swim_pattern == "meander":
+		desired += Vector3(
+			sin(_swim_phase * 1.7) * effective_max * 0.12,
+			sin(_swim_phase * 2.3) * 0.06,
+			cos(_swim_phase * 1.4) * effective_max * 0.12)
+	elif swim_pattern == "sit" and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
+		desired *= lerpf(0.04, 0.18, hunger)
+		if hunger > 0.55 and _behavior_rng().randf() < dt * 0.08:
+			burst_remaining = 0.22
+			motion_stamina = maxf(0.0, motion_stamina - 0.08)
+	elif swim_pattern == "dart":
+		var surface_y: float = _water_surface_y() - 0.15
+		desired.y += clampf(surface_y - position.y, -0.2, 0.35) * effective_max * 0.35
 
 	# DART TRIGGER. swim_pattern "dart" fish (killifish, shrimp-hunters) burst
 	# unpredictably, breaking the tank's overall motion rhythm. dart_chance
@@ -6259,9 +6403,21 @@ func _day_activity_mult() -> float:
 # Triggers the death-animation state. Called by SimDriver when a die event
 # fires (old age / starvation). Idempotent so multiple die events in the
 # same tick don't reset the timer.
+func _clear_partner_refs_on_death() -> void:
+	if partner != null and is_instance_valid(partner) and partner is Fish:
+		var p: Fish = partner as Fish
+		if p.partner == self:
+			p.partner = null
+		if p._mate_id == id:
+			p._mate_id = ""
+	partner = null
+	_mate_id = ""
+
+
 func start_dying() -> void:
 	if _dying:
 		return
+	_clear_partner_refs_on_death()
 	_dying = true
 	_dying_timer = DEATH_DURATION
 	# Stamp wall-clock so the safety net in _animate_death can force-free
@@ -6478,6 +6634,13 @@ func _motion_substep(dt: float) -> void:
 		target_spd = 0.0
 		_motion_target_spd = 0.0
 
+	motion_freeze_t = maxf(0.0, motion_freeze_t - dt)
+	motion_stamina = clampf(motion_stamina + dt * (0.04 if burst_remaining <= 0.0 else 0.012), 0.0, 1.0)
+	if motion_freeze_t > 0.02 and _MotionWaveScript.uses_wave(self):
+		target_spd *= lerpf(0.08, 0.35, motion_freeze_t / 0.35)
+	if motion_stamina < 0.35:
+		target_spd *= lerpf(0.55, 1.0, motion_stamina / 0.35)
+
 	var body_m: float = _body_tank_margin()
 	if _hydro_profile.is_empty():
 		_refresh_hydro_profile()
@@ -6516,6 +6679,13 @@ func _motion_substep(dt: float) -> void:
 
 	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
 	eff_turn *= TopdownMotion.turn_rate_at_speed(speed, max_speed)
+	eff_turn *= _MotionWaveScript.agitation_turn_boost(motion_agitation)
+	if maturity == MATURITY_SENESCENT:
+		eff_turn *= 0.78
+	elif maturity == MATURITY_FRY:
+		eff_turn *= 1.12
+	var min_turn_r: float = lerpf(0.35, 2.6, clampf(speed / maxf(max_speed, 0.12), 0.0, 1.0))
+	eff_turn = minf(eff_turn, min_turn_r * max_turn_rate)
 	if TopdownMotion.pond_active or bool(music_mm.get("overhead_view", false)):
 		var psig: TopdownMotion.PathSignature = TopdownMotion.plan_path_signature(
 			locomotion_type, swim_pattern)
@@ -6574,7 +6744,7 @@ func _motion_substep(dt: float) -> void:
 	var pec_push: float = 0.0
 	if full_hydro:
 		stroke_push = Hydrodynamics.stroke_thrust(
-			_swim_phase, _hydro_profile, speed, target_spd, max_speed)
+			_swim_phase, _hydro_profile, speed, target_spd, max_speed) * 1.22
 		pec_push = Hydrodynamics.pec_thrust(_swim_phase, _hydro_profile, speed, target_spd)
 		if w_h != null and w_h.has_method("draft_in_wake"):
 			var draft: float = w_h.draft_in_wake(global_position, heading)
@@ -6586,6 +6756,12 @@ func _motion_substep(dt: float) -> void:
 	else:
 		speed = move_toward(speed, target_spd, eff_accel * dt * 0.7)
 	speed *= TopdownMotion.burst_glide_speed_mult(_swim_phase, swim_pattern)
+	if burst_remaining > _prev_burst_snap + 0.08 and swim_pattern == "sit":
+		global_position -= heading * 0.045 * _body_tank_margin()
+	_prev_burst_snap = burst_remaining
+	# LIVING_MOTION #45 — outside fish on a hard turn hold the arc with a touch more speed.
+	if _MotionWaveScript.uses_wave(self) and absf(_last_yaw_rate) > 0.45:
+		speed *= 1.0 + clampf(absf(_last_yaw_rate) * 0.06, 0.0, 0.1)
 	_brake_pose = Hydrodynamics.brake_pose_amount(speed, target_spd)
 	_station_keep = Hydrodynamics.station_keep_pec(
 		_swim_phase, flow_vel.length(), target_spd)
@@ -6721,6 +6897,8 @@ func _motion_substep(dt: float) -> void:
 		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
 		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate) * (1.15 if absf(yaw_rate) > 0.5 else 1.0)
+		if _MotionWaveScript.uses_wave(self):
+			bank_target = lerpf(bank_target, _MotionSchoolScript.bank_correlation(self), 0.38)
 		var dance_bank: float = float(mm.get("dance_bank", 0.0))
 		if dance_bank > 0.02:
 			var accent: float = maxf(float(mm.get("kick_thump", 0.0)), float(mm.get("snare_flick", 0.0)))
@@ -6844,6 +7022,9 @@ func _motion_substep(dt: float) -> void:
 
 	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
 		speed, _motion_target_spd, max_speed)
+	hydro_effort += clampf(absf(_motion_target_spd - speed) / maxf(max_speed, 0.1), 0.0, 0.5) * 0.45
+	if flow_vel.length_squared() > 0.02:
+		hydro_effort += flow_vel.length() * 0.18
 	if hydro_effort > 0.04:
 		tail_amp += hydro_effort * 0.52
 		wag_amp_extra += hydro_effort * 0.32
@@ -6893,18 +7074,22 @@ func _motion_substep(dt: float) -> void:
 		_music_snare_flick = maxf(_music_snare_flick - dt * 11.0, 0.0)
 		_music_eye_flash = maxf(_music_eye_flash - dt * 8.0, 0.0)
 		_music_trail_ghost = maxf(_music_trail_ghost - dt * 5.5, 0.0)
-		_swim_phase += dt * wag_freq * _wag_freq_jitter
-	if (swim_pattern == "school" or swim_pattern == "shoal") \
-			and schooling_strength >= 0.45 and sim != null \
-			and sim.has_method("school_pulse_phase"):
-		var shared: float = float(sim.school_pulse_phase()) + _school_phase_offset
-		var delta: float = wrapf(shared - _swim_phase, -PI, PI)
-		_swim_phase += delta * clampf(dt * 5.5, 0.0, 1.0)
+		var coast_phase: float = 1.0
+		if swim_pattern in ["cruise", "hover", "meander"] and speed < max_speed * 0.45:
+			coast_phase = lerpf(1.0, 0.2, _motion_glide_bias)
+		_swim_phase += dt * wag_freq * _wag_freq_jitter * coast_phase
+	# Tail-beat phase lock to tank pulse retired (LIVING_MOTION #5).
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
-			+ minf(speed * 0.18, 0.25)) + _music_snare_flick * 0.42
+			+ minf(speed * 0.18, 0.25)) * _gait_amp_bias + _music_snare_flick * 0.42
 		if _brake_pose > 0.12:
 			_tail_pivot.rotation.y += _brake_pose * 0.38
+			if _pec_right_pivot != null:
+				_pec_right_pivot.rotation.z += _brake_pose * 0.55
+			if _pec_left_pivot != null:
+				_pec_left_pivot.rotation.z -= _brake_pose * 0.55
+			if _bank_pivot != null:
+				_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.22 * _brake_pose, dt * 6.0)
 		if _music_trail_ghost > 0.02:
 			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.12
 			_tail_pivot.scale.z = lerpf(1.0, 1.06, _music_trail_ghost)
@@ -6944,6 +7129,10 @@ func _motion_substep(dt: float) -> void:
 		# Decay the saccade target back toward 0 so the twitch is a brief
 		# pulse, not a sustained head-cock.
 		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
+		_idle_glance_t -= dt
+		if rest_factor > 0.35 and speed < max_speed * 0.35 and _idle_glance_t <= 0.0:
+			_idle_glance_t = _behavior_rng().randf_range(2.8, 6.5)
+			_saccade_target = _behavior_rng().randf_range(-0.35, 0.35)
 		# Eye gaze hold: between saccades the gaze settles toward whatever the
 		# fish is attending to (a passing neighbor / the watching player), so the
 		# head reads as "looking at something" rather than dead-ahead. Smoothed
@@ -6996,6 +7185,9 @@ func _motion_substep(dt: float) -> void:
 	var fin_mood: float = clampf(mood, -1.0, 1.0) * 0.18 - spooked * 0.4 \
 		- clampf((stress - 0.55) / 0.45, 0.0, 1.0) * 0.3 + float(aff_anim.get("fin_amp", 0.0))
 	pec_amp = maxf(pec_amp + fin_mood, 0.06)
+	if speed < max_speed * 0.08:
+		pec_amp = maxf(pec_amp, 0.14)
+		_swim_phase += dt * pec_freq * 0.85
 	if bow > 0.08:
 		pec_amp += bow * 0.22 * dance_blend
 	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
@@ -7112,7 +7304,24 @@ func _update_maturity() -> void:
 	_color_maturity = clampf(t / 0.28, 0.0, 1.0)
 
 
+func motion_agitation_display() -> float:
+	if sim == null or not sim.has_method("sim_tick_blend"):
+		return motion_agitation
+	return lerpf(motion_agitation_snap, motion_agitation, sim.sim_tick_blend())
+
+
 # ---- Boids ----
+
+func _uses_topological_schooling() -> bool:
+	return _MotionWaveScript.uses_wave(self)
+
+
+func _flank_neighbor_weight(to_neighbor: Vector3) -> float:
+	if to_neighbor.length_squared() < 1e-6:
+		return 1.0
+	var align: float = absf(heading.normalized().dot(to_neighbor.normalized()))
+	return 1.0 + MindBoidsBuffer.flank_bias * (1.0 - align)
+
 
 func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1.0) -> Vector3:
 	# Improved schooling. Three rules (sep + ali + coh) with three upgrades:
@@ -7158,6 +7367,12 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		count_conspecific = MindBoidsBuffer.neighbor_counts[batch_idx]
 		school_speed_sum = float(MindBoidsBuffer.school_speed_milli[batch_idx]) / 1000.0
 	else:
+		var topo_d2: PackedFloat32Array = PackedFloat32Array()
+		topo_d2.resize(MindBoidsBuffer.N_TOPO)
+		var topo_fish: Array[Fish] = []
+		topo_fish.resize(MindBoidsBuffer.N_TOPO)
+		var topo_n: int = 0
+		var use_topo: bool = _uses_topological_schooling()
 		for n in neighbors:
 			if not n is Fish or n == self:
 				continue
@@ -7165,6 +7380,33 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 			var diff: Vector3 = position - f.position
 			var d2: float = diff.length_squared()
 			if d2 < 1e-4:
+				continue
+			if use_topo:
+				if f.species != species:
+					if d2 < sep_r2:
+						var sep_push: Vector3 = diff
+						if mouth_orientation == 0:
+							sep_push.y *= 0.38
+						elif mouth_orientation == 1:
+							sep_push.y *= 0.55
+						sep += sep_push.normalized() / maxf(sqrt(d2), 0.1)
+					continue
+				if absf(diff.y) > maxf(home_y_radius, f.home_y_radius) * 2.4:
+					continue
+				if heading.dot((-diff).normalized()) < VIEW_DOT_THRESHOLD:
+					continue
+				if topo_n < MindBoidsBuffer.N_TOPO:
+					topo_d2[topo_n] = d2
+					topo_fish[topo_n] = f
+					topo_n += 1
+				else:
+					var worst: int = 0
+					for k in range(1, MindBoidsBuffer.N_TOPO):
+						if topo_d2[k] > topo_d2[worst]:
+							worst = k
+					if d2 < topo_d2[worst]:
+						topo_d2[worst] = d2
+						topo_fish[worst] = f
 				continue
 			if d2 < sep_r2:
 				var sep_push: Vector3 = diff
@@ -7193,6 +7435,34 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 			count_conspecific += 1
 			if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
 				sep.y += signf(-diff.y) * 0.28
+		if use_topo:
+			count_conspecific = topo_n
+			for t in range(topo_n):
+				var f: Fish = topo_fish[t]
+				if f == null:
+					continue
+				var diff: Vector3 = position - f.position
+				var d2: float = diff.length_squared()
+				var to_neighbor: Vector3 = -diff
+				var flank_w: float = _flank_neighbor_weight(to_neighbor)
+				if d2 < sep_r2:
+					var sep_push: Vector3 = diff
+					if mouth_orientation == 0:
+						sep_push.y *= 0.38
+					elif mouth_orientation == 1:
+						sep_push.y *= 0.55
+					var defer: float = 1.0
+					if f.rank_within_species > rank_within_species + 0.12:
+						defer = 1.6
+					if not grudges.is_empty() and f.id != "" and grudges.has(f.id):
+						defer = maxf(defer, 1.8)
+					sep += sep_push.normalized() * (1.0 / maxf(sqrt(d2), 0.12)) * flank_w * defer
+				var predicted_pos: Vector3 = f.position + f.velocity * LOOKAHEAD
+				ali += f.heading * flank_w
+				coh += predicted_pos * flank_w
+				school_speed_sum += f.speed * flank_w
+				if absf(diff.y) < maxf(home_y_radius, 0.35) * 0.85:
+					sep.y += signf(-diff.y) * 0.28 * flank_w
 
 	# Leader tracking + friendship still need the neighbor list.
 	var best_lead: float = lead_score
@@ -7245,28 +7515,30 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		ali /= float(count_conspecific)
 		coh /= float(count_conspecific)
 		var school_avg_speed: float = school_speed_sum / float(count_conspecific)
-		var ali_strength: float = 1.15
+		var ali_strength: float = 1.15 if swim_pattern == "school" else 0.72
 		if sim != null and sim.has_method("sync_polarization"):
 			var pol: float = float(sim.sync_polarization())
 			ali_strength *= TopdownMotion.polarization_align_boost(pol)
 			tightness *= 1.0 + TopdownMotion.polarization_tightness(pol) * 0.35
-		# Dense local groups soften cohesion so the school reads as a loose
-		# cloud instead of a single tight ball.
 		var density_factor: float = 1.0
-		if count_conspecific >= 6:
-			density_factor = 0.42
-		elif count_conspecific >= 4:
-			density_factor = 0.62
-		elif count_conspecific >= 3:
-			density_factor = 0.80
-		var coh_strength: float = 0.82 * tightness * density_factor
+		if not _uses_topological_schooling():
+			if count_conspecific >= 6:
+				density_factor = 0.42
+			elif count_conspecific >= 4:
+				density_factor = 0.62
+			elif count_conspecific >= 3:
+				density_factor = 0.80
+		var equalize: float = sqrt(float(MindBoidsBuffer.N_TOPO) / maxf(float(count_conspecific), 1.0))
+		var coh_strength: float = (0.82 if swim_pattern == "school" else 0.58) \
+				* tightness * density_factor * equalize
 		# Alignment: steer toward avg heading.
 		if ali.length() > 0.001:
 			steer += ali.normalized() * ali_strength
 		# Cohesion: steer toward predicted center of mass + a stable personal
 		# slot so conspecifics fan out around the group instead of stacking.
 		var slot_angle: float = float(get_instance_id() % 360) * 0.174532925
-		var slot_r: float = clampf(separation_radius * 2.35 / maxf(tightness, 0.7), 0.7, 2.0)
+		var slot_r: float = clampf(separation_radius * (2.35 if swim_pattern == "school" else 3.1) \
+				/ maxf(tightness, 0.7), 0.7, 2.6)
 		var formation_slot: Vector3 = Vector3(
 			cos(slot_angle) * slot_r,
 			sin(float(get_instance_id() % 127) * 0.11) * slot_r * 0.35,
@@ -7282,15 +7554,30 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 			var to_leader: Vector3 = leader_pos - position
 			to_leader.y *= 0.5
 			if to_leader.length() > 0.6 and to_leader.length_squared() > 1e-4:
-				var fan: float = (best_lead - lead_score) * 0.9
+				var fan: float = (best_lead - lead_score + motion_lead_boost) * 0.9
 				if to_leader.length() > 1.2:
 					fan *= 1.18
 				steer += to_leader.normalized() * fan
-		# Edge shimmer — perimeter fish jockey inward.
+		# Jockeying for the core (#21) — timid fish push inward, bold fish margin.
+		if _uses_topological_schooling() and count_conspecific >= 3:
+			var to_c_j: Vector3 = coh - position
+			to_c_j.y = 0.0
+			if to_c_j.length_squared() > 0.05:
+				var margin_pref: float = lerpf(0.42, -0.28, _trait("boldness"))
+				steer += to_c_j.normalized() * margin_pref * 0.35
+		# Marginal-fish opacity — hull fish swim faster back into the body.
 		var to_c: Vector3 = coh - position
 		to_c.y = 0.0
 		var edge_dist: float = to_c.length()
-		if edge_dist > 2.2 and count_conspecific >= 4:
+		if _uses_topological_schooling() and count_conspecific >= 3:
+			var enclosed: float = clampf(float(count_conspecific) / float(MindBoidsBuffer.N_TOPO), 0.0, 1.0)
+			if enclosed < 0.55:
+				steer += to_c.normalized() * 0.38 * (1.0 - enclosed)
+			elif edge_dist > 2.2:
+				steer += to_c.normalized() * 0.42
+			elif edge_dist > 0.05 and edge_dist < 1.35:
+				steer -= to_c.normalized() * 0.28
+		elif edge_dist > 2.2 and count_conspecific >= 4:
 			steer += to_c.normalized() * 0.42
 		elif edge_dist > 0.05 and edge_dist < 1.35:
 			steer -= to_c.normalized() * 0.28
@@ -7578,7 +7865,7 @@ func _short_subspecies_tag(subspecies: String) -> String:
 
 
 func _founder_divergence_score(genome: Dictionary) -> int:
-	var lib = get_tree().root.get_node_or_null("TankConfig")
+	var lib: Node = get_node_or_null("/root/TankConfig") if is_inside_tree() else null
 	if lib == null or not lib.SPECIES_LIBRARY.has(species):
 		return 0
 	var template: Dictionary = lib.SPECIES_LIBRARY[species].get("genome", {})
@@ -8182,6 +8469,13 @@ static func _genome_from_json(g: Dictionary) -> Dictionary:
 	return out
 
 
+func _growth_factor_for_save() -> float:
+	if is_finite(growth_factor) and growth_factor > 0.0:
+		return growth_factor
+	push_warning("[Fish] invalid growth_factor on save for %s — writing 1.0" % id)
+	return 1.0
+
+
 func to_save_dict() -> Dictionary:
 	return {
 		"id": id,
@@ -8203,7 +8497,7 @@ func to_save_dict() -> Dictionary:
 		"acclimation_remaining": _acclimation_remaining,
 		"nibble_cooldown": nibble_cooldown,
 		"breed_count": breed_count,
-		"growth_factor": growth_factor,
+		"growth_factor": _growth_factor_for_save(),
 		"heading_offset": SaveHelpers.vec3_to_array(heading_offset),
 		"partner_id": _id_of(partner),
 		"court_timer": court_timer,
@@ -8272,6 +8566,7 @@ func to_save_dict() -> Dictionary:
 # a second pass after every entity has its id assigned.
 func apply_save_dict(d: Dictionary) -> void:
 	id = String(d.get("id", id))
+	_MindCacheRegistryScript.reset_transient(self)
 	# Replay init_genome with the saved genome — this re-derives all the
 	# phenotype fields including the dimorphic transformation.
 	var g: Dictionary = _genome_from_json(d.get("genome", {}))
@@ -8324,6 +8619,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	burst_remaining = float(d.get("burst_remaining", 0.0))
 	_gestation_progress = float(d.get("gestation_progress", 0.0))
 	_gestation_genome = _genome_from_json(d.get("gestation_genome", {}))
+	if _gestation_progress >= 1.0:
+		_gestation_progress = clampf(_gestation_progress, 0.85, 0.99)
+		_gestation_load_grace_s = 4.0
 	var home: Array = d.get("home", [])
 	if home.size() >= 3:
 		home_x = SaveHelpers._num(home[0], home_x)
@@ -8552,7 +8850,14 @@ func _try_claim_build_cave_territory() -> void:
 
 
 func _apply_target_from_desired(desired: Vector3, max_spd: float) -> Vector3:
-	return _constrain_velocity_to_tank(desired.limit_length(max_spd))
+	var raw: Vector3 = desired.limit_length(max_spd)
+	if raw.length_squared() < 1e-6:
+		_steer_carry = _steer_carry.lerp(Vector3.ZERO, 0.35)
+		return _constrain_velocity_to_tank(raw)
+	# LIVING_MOTION #24 — slight underdamped steer so fish overshoot and settle.
+	_steer_carry = _steer_carry.lerp(raw - raw.normalized() * minf(raw.length(), max_spd) * 0.92, 0.18)
+	var carried: Vector3 = raw + _steer_carry * 0.14
+	return _constrain_velocity_to_tank(carried.limit_length(max_spd * 1.06))
 
 
 func _lateral_boundary_context(gp: Vector3 = global_position, body_m: float = -1.0,

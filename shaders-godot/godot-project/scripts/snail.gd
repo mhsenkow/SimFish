@@ -593,6 +593,8 @@ func _process(dt: float) -> void:
 	# Pulse rate jumps when pursuing detritus - the snail visibly speeds up
 	# toward food, which is the real "cleaner crew converging" pattern.
 	var pulse_rate: float = 2.2 if _pursuing_waste else 1.35
+	if _eating_pulse_remaining > 0.0 and not _pursuing_waste:
+		pulse_rate = 4.6  # LIVING_MOTION #85 — in-place rasp while grazing
 	_pulse_phase += dt * pulse_rate
 	var pulse_factor: float = 0.5 + 0.5 * sin(_pulse_phase)  # 0..1
 	var forward_stroke: float = maxf(0.0, sin(_pulse_phase))

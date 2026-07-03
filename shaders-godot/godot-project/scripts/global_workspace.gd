@@ -17,6 +17,7 @@ const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 const MindSoul = preload("res://scripts/mind_soul.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
+const _MindCacheStatsScript = preload("res://scripts/mind_cache_stats.gd")
 const _MindSimSnapScript = preload("res://scripts/mind_sim_snap.gd")
 const _MindBidPoolScript = preload("res://scripts/mind_bid_pool.gd")
 const _MindCompetitionScript = preload("res://scripts/mind_competition.gd")
@@ -114,7 +115,7 @@ static func _slow_lane_due(f) -> bool:
 
 
 static func _decay_cached_bids(cached: Array, dt: float) -> void:
-	var k: float = maxf(0.0, 1.0 - dt * 0.35)
+	var k: float = exp(-0.35 * maxf(dt, 0.0))
 	for b in cached:
 		if b is Dictionary:
 			var d: Dictionary = b as Dictionary
@@ -135,7 +136,8 @@ static func _collect_fast_bids(f, _sim, dl: float, use_efe: bool, bids: Array) -
 		bids.append(_bid(f,"being_watched", f._cached_glance_strength * 0.85 + 0.12,
 				["player", "social"]))
 	var sigb: Dictionary = FishSignals.collect_signal_bid(f)
-	if not sigb.is_empty() and float(sigb.get("salience", 0.0)) > 0.05:
+	if MindAblation.enabled(MindAblation.SIGNALS) and not sigb.is_empty() \
+			and float(sigb.get("salience", 0.0)) > 0.05:
 		bids.append(sigb)
 	if MindAblation.enabled(MindAblation.THEORY_OF_MIND):
 		var pb: Dictionary = FishMindScience.collect_predict_bid(f)
@@ -239,10 +241,13 @@ static func _collect_slow_bids(f, _sim, dl: float, use_efe: bool) -> Array:
 
 
 static func collect_bids(f, _sim) -> Array:
+	if f == null or not is_instance_valid(f):
+		return []
 	MindSoul.apply_hebbian_mods(f)
+	f._bid_decayed_this_cycle = false
 	var bids: Array = []
 	var dl: float = MindSimSnap.daylight_of(_sim)
-	var use_efe: bool = MindActiveInference.enabled_for(f, _sim)
+	var use_efe: bool = f._cycle_use_efe
 	# Sleeping fish: rest/dream dominate; don't stack threat loops in the dark.
 	if f._asleep:
 		var depth: float = float(f.get("_sleep_depth") if f.get("_sleep_depth") != null else 0.0)
@@ -269,8 +274,9 @@ static func collect_bids(f, _sim) -> Array:
 		f._bid_slow_accum = 0.0
 		f._bid_dirty = 0
 		f._bid_slow_due = false
-	elif f.get("_bid_slow_cache") is Array:
+	elif f.get("_bid_slow_cache") is Array and not f._bid_decayed_this_cycle:
 		_decay_cached_bids(f._bid_slow_cache as Array, 1.0 / maxf(SLOW_LANE_HZ, 1.0))
+		f._bid_decayed_this_cycle = true
 	for sb in (f._bid_slow_cache if f.get("_bid_slow_cache") is Array else []):
 		bids.append(sb)
 	_append_registered(f, _sim, bids)
@@ -286,17 +292,27 @@ static func bids_digest(bids: Array) -> int:
 		var d: Dictionary = b as Dictionary
 		h = (h * 31 + hash(str(d.get("label", "")))) & 0x7fffffff
 		h = (h * 31 + int(snappedf(float(d.get("salience", 0.0)), _BID_EPS) * 100.0)) & 0x7fffffff
+		h = (h * 31 + int(d.get("coal_mask", 0))) & 0x7fffffff
 	return h
 
 
 static func competition_digest(result: Dictionary) -> int:
 	var h: int = 1 if bool(result.get("ignited", false)) else 0
+	var entries: Array = []
 	for w in result.get("contents", []):
 		if not (w is Dictionary):
 			continue
-		var d: Dictionary = w as Dictionary
-		h = (h * 31 + hash(str(d.get("label", "")))) & 0x7fffffff
-		h = (h * 31 + int(snappedf(float(d.get("salience", 0.0)), _BID_EPS) * 100.0)) & 0x7fffffff
+		entries.append(w)
+	entries.sort_custom(func(a, b):
+		var la: String = str((a as Dictionary).get("label", ""))
+		var lb: String = str((b as Dictionary).get("label", ""))
+		if la == lb:
+			return int((a as Dictionary).get("coal_mask", 0)) < int((b as Dictionary).get("coal_mask", 0))
+		return la < lb)
+	for d in entries:
+		h = (h * 31 + hash(str((d as Dictionary).get("label", "")))) & 0x7fffffff
+		h = (h * 31 + int(snappedf(float((d as Dictionary).get("salience", 0.0)), _BID_EPS) * 100.0)) & 0x7fffffff
+		h = (h * 31 + int((d as Dictionary).get("coal_mask", 0))) & 0x7fffffff
 	return h
 
 
@@ -305,8 +321,12 @@ static func resolve_competition(f, bids: Array) -> Dictionary:
 		var cached_dig: Variant = f.get("_ws_bids_digest")
 		if cached_dig != null and int(cached_dig) == bids_digest(bids) \
 				and f.get("_ws_competition_cache") is Dictionary:
+			_MindCacheStatsScript.competition_hits += 1
 			return f._ws_competition_cache as Dictionary
+	_MindCacheStatsScript.competition_misses += 1
+	var t0: int = Time.get_ticks_usec()
 	var result: Dictionary = run_competition(bids)
+	PerfGovernor.record_ledger(13, t0 + 200, t0)
 	if f != null:
 		f.set("_ws_bids_digest", bids_digest(bids))
 		f.set("_ws_competition_cache", result)
@@ -319,8 +339,10 @@ static func broadcast_if_changed(f, result: Dictionary, ms) -> void:
 	if f != null:
 		var prev_dig: Variant = f.get("_ws_broadcast_digest")
 		if prev_dig != null and int(prev_dig) == dig:
+			_MindCacheStatsScript.broadcast_skips += 1
 			return
 		f.set("_ws_broadcast_digest", dig)
+		_MindCacheStatsScript.broadcast_sends += 1
 	_broadcast_fish(f, result, ms)
 
 
@@ -390,7 +412,7 @@ static func _apply_precision_and_mods(f, bids: Array, sim = null) -> void:
 	var base_mods: Variant = f.get("_bid_salience_mods")
 	var soul_mods: Dictionary = MindSoulPass3.salience_mods(f) if MindSoulPass3.enabled() else {}
 	if base_mods is Dictionary and not (base_mods as Dictionary).is_empty():
-		mods = (base_mods as Dictionary).duplicate(true)
+		mods = (base_mods as Dictionary).duplicate(false)
 	elif not soul_mods.is_empty():
 		mods = {}
 	for k in soul_mods.keys():

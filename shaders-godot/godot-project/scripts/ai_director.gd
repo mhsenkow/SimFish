@@ -13,6 +13,7 @@ const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 
 const OLLAMA_PARSE_MAX_BYTES: int = 8192
+static var _parse_warned: bool = false
 
 
 static func _capped_ollama_utf8(body: PackedByteArray) -> String:
@@ -37,6 +38,9 @@ static func _parse_ollama_json_text(text: String) -> Dictionary:
 		return {}
 	var json := JSON.new()
 	if json.parse(text) != OK:
+		if not _parse_warned:
+			_parse_warned = true
+			push_warning("[AIDirector] Ollama JSON parse failed; sample: %s" % text.substr(0, 200))
 		return {}
 	var parsed: Variant = json.get_data()
 	return parsed if parsed is Dictionary else {}
@@ -233,6 +237,7 @@ func _process(dt: float) -> void:
 	# Drive the throttle. SimDriver polls intent_refresh_due() and calls
 	# push_tank_summary() when ready, so we only track elapsed seconds here.
 	_intent_timer += dt
+	_decay_intent_staleness(dt)
 	_minute_batch_timer += dt
 	if _minute_batch_timer >= intent_refresh_period_s:
 		_minute_batch_timer = 0.0
@@ -813,6 +818,30 @@ func get_intent_drift(rel_pos: Vector3) -> Dictionary:
 	}
 
 
+func _decay_intent_staleness(dt: float) -> void:
+	if _intent_cells.is_empty():
+		return
+	var age_s: float = 0.0
+	if _intent_last_refresh_unix > 0:
+		age_s = maxf(0.0, float(Time.get_unix_time_from_system()) - float(_intent_last_refresh_unix))
+	var stale: float = clampf(age_s / maxf(intent_refresh_period_s * 2.5, 30.0), 0.0, 1.0)
+	var k: float = exp(-(1.2 + stale * 2.8) * dt)
+	for i in _intent_cells.size():
+		var cell: Variant = _intent_cells[i]
+		if not (cell is Dictionary):
+			continue
+		var d: Dictionary = cell
+		var inten: float = float(d.get("intensity", 0.0)) * k
+		if inten < 0.015:
+			_intent_cells[i] = null
+			continue
+		var drift_v: Vector3 = d.get("drift", Vector3.ZERO)
+		if drift_v is Vector3:
+			d["drift"] = (drift_v as Vector3) * k
+		d["intensity"] = inten
+		_intent_cells[i] = d
+
+
 # Called by SimDriver each refresh window. The summary dict is small:
 #   { fish_count, shrimp_count, snail_count, o2, ammonia, day_phase,
 #     named_fish: [{id, name, hunger, stress}], recent_events: [...] }
@@ -1133,8 +1162,17 @@ func status_summary() -> String:
 		ConnState.UNKNOWN:  bits.append("Ollama: not tested")
 		ConnState.OK:       bits.append("Ollama · %s · %d names" % [model, _ai_name_pool.size()])
 		ConnState.CHECKING: bits.append("Ollama: checking…")
-		ConnState.OFFLINE:  bits.append("Ollama offline")
-		ConnState.ERROR:    bits.append("Ollama error: %s" % last_error)
+		ConnState.OFFLINE:  bits.append("Ollama not running — start `ollama serve`")
+		ConnState.ERROR:
+			var err_l: String = last_error.to_lower()
+			if "not installed" in err_l or "not installed" in last_error:
+				bits.append("Ollama reachable · model `%s` missing" % model)
+			elif "did not respond" in err_l or "http" in err_l:
+				bits.append("Ollama not reachable at %s" % endpoint)
+			elif "malformed json" in err_l:
+				bits.append("Ollama returned bad JSON")
+			else:
+				bits.append("Ollama error: %s" % last_error)
 	if embedded_enabled:
 		match embedded_conn_state:
 			ConnState.OK:       bits.append("HTTP embedded · %s" % embedded_model)

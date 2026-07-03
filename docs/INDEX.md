@@ -63,6 +63,7 @@ idea at a time.
 | [PLANT_IMPROVEMENT_IDEAS.md](PLANT_IMPROVEMENT_IDEAS.md) | Flora growth, food web |
 | [HYDRODYNAMIC_LIFE_IDEAS.md](HYDRODYNAMIC_LIFE_IDEAS.md) | Water flow, hydrodynamics |
 | [TOPDOWN_MOTION_IDEAS.md](TOPDOWN_MOTION_IDEAS.md) | Top-down pond motion |
+| [LIVING_MOTION_IDEAS.md](LIVING_MOTION_IDEAS.md) | **The murmuration pass** — 100 ideas making motion read as life: topological (starling) schooling for schooling species only, correlation that *propagates* instead of being broadcast, momentum-true bodies, growth you can watch, one shared flow field coupling fish/plants/water, and micro-motion so nothing is ever still. Gated by an order-parameter eval + mind replay-parity |
 | [AQUASCAPING_CRAFT_IDEAS.md](AQUASCAPING_CRAFT_IDEAS.md) | Aquascape tools & objects |
 
 ### Look, feel, onboarding
@@ -71,6 +72,7 @@ idea at a time.
 |---|---|
 | [AESTHETICS_IDEAS.md](AESTHETICS_IDEAS.md) | Render pipeline, visual polish |
 | [REFINEMENT_100_IDEAS.md](REFINEMENT_100_IDEAS.md) | **The refinement pass** — 100 items, zero additions: fix the green-plant palette bug, color fidelity, quantize/motion/UI tuning, lossless performance |
+| [REFINEMENT_II_100_IDEAS.md](REFINEMENT_II_100_IDEAS.md) | **The refinement pass II** — 100 items, zero additions, two audits deep: harden today's fresh machinery (mind tick, digests, murmuration waves), finish Perf I's partials, save/load fidelity, spawn/lifecycle/feeding edge cases, chemistry the keeper can feel, unbreakable guardian, and the regression triad in CI. Verified findings marked [V], audit-then-fix marked [A] |
 | [MUSIC_DANCE_IDEAS.md](MUSIC_DANCE_IDEAS.md) | Ambient audio, fish dance |
 | [ONBOARDING_LEGIBILITY_IDEAS.md](ONBOARDING_LEGIBILITY_IDEAS.md) | New-player legibility |
 

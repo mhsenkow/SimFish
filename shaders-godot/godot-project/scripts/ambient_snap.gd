@@ -9,6 +9,8 @@ var dissolved_o2: float = 0.8
 var tank_age_s: float = 0.0
 var music_sweep: float = 0.0
 var music_beat_phase: float = 0.0
+var mind_cadence_hz: float = 15.0
+var mind_idle_mult: float = 1.0
 
 
 static func capture(sim: Node) -> Dictionary:
@@ -29,6 +31,18 @@ static func capture(sim: Node) -> Dictionary:
 	if mc != null and mc.has_method("tank_ambient_scalar"):
 		snap.music_sweep = float(mc.call("tank_ambient_scalar", "sweep"))
 		snap.music_beat_phase = float(mc.call("tank_ambient_scalar", "beat_phase"))
+	var cfg: Node = null
+	if sim is Node and (sim as Node).is_inside_tree():
+		cfg = (sim as Node).get_node_or_null("/root/TankConfig")
+	else:
+		var ml: MainLoop = Engine.get_main_loop()
+		if ml is SceneTree and (ml as SceneTree).root != null:
+			cfg = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+	if cfg != null and cfg.get("mind_cadence_hz") != null:
+		snap.mind_cadence_hz = maxf(0.0, float(cfg.mind_cadence_hz))
+	if sim != null and sim.get("_room_idle_s") != null:
+		var idle: float = float(sim._room_idle_s)
+		snap.mind_idle_mult = 0.5 if idle >= 30.0 else 1.0
 	return snap.to_dict()
 
 
@@ -40,6 +54,8 @@ static func from_dict(d: Dictionary) -> RefCounted:
 	snap.tank_age_s = float(d.get("tank_age_s", 0.0))
 	snap.music_sweep = float(d.get("music_sweep", 0.0))
 	snap.music_beat_phase = float(d.get("music_beat_phase", 0.0))
+	snap.mind_cadence_hz = float(d.get("mind_cadence_hz", 15.0))
+	snap.mind_idle_mult = float(d.get("mind_idle_mult", 1.0))
 	return snap
 
 
@@ -51,4 +67,6 @@ func to_dict() -> Dictionary:
 		"tank_age_s": tank_age_s,
 		"music_sweep": music_sweep,
 		"music_beat_phase": music_beat_phase,
+		"mind_cadence_hz": mind_cadence_hz,
+		"mind_idle_mult": mind_idle_mult,
 	}

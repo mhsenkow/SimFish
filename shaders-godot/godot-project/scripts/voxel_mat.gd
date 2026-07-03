@@ -310,6 +310,8 @@ static func set_shader_perf_tier(tier: int) -> void:
 	var blob_max: int = 16 if _shader_perf_tier >= 2 else 32
 	var caustic_on: float = 0.0 if _shader_perf_tier >= 2 else 1.0
 	var irid: float = 0.35 if _shader_perf_tier >= 1 else 1.0
+	var outline_scale: float = 0.0 if _shader_perf_tier >= 2 else 1.0
+	var region_dither: float = 0.0 if _shader_perf_tier >= 2 else 1.0
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("blob_shadow_max", blob_max)
@@ -320,6 +322,20 @@ static func set_shader_perf_tier(tier: int) -> void:
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_strength", 0.45 if _shader_perf_tier >= 2 else 0.85)
+	_shader_tier_post_outline = outline_scale
+	_shader_tier_post_dither = region_dither
+
+
+static var _shader_tier_post_outline: float = 1.0
+static var _shader_tier_post_dither: float = 1.0
+
+
+static func tier_post_outline_scale() -> float:
+	return _shader_tier_post_outline
+
+
+static func tier_post_region_dither() -> float:
+	return _shader_tier_post_dither
 
 static func make_substrate_caustic(color: Color, material_id: int = 0) -> ShaderMaterial:
 	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
@@ -634,6 +650,20 @@ static func update_foliage_uniforms(canopy_shade: float, water_y: float, dayligh
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_daylight", daylight)
+
+
+static func update_foliage_flow(flow: Vector3, strength: float) -> void:
+	var flow_dir: Vector3 = flow
+	if flow_dir.length_squared() > 1e-6:
+		flow_dir = flow_dir.normalized()
+	for mat in _foliage_mm_mats:
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("flow_dir", flow_dir)
+			mat.set_shader_parameter("flow_strength", strength)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("flow_dir", flow_dir)
+			mat.set_shader_parameter("flow_strength", strength)
 
 
 # Push a substrate ripple_phase value to every cached substrate_caustic

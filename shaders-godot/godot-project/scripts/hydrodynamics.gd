@@ -127,10 +127,10 @@ static func buoyancy_step(y: float, hover_y: float, speed: float, target_spd: fl
 		dt: float, bob_t: float, profile: Dictionary) -> Dictionary:
 	var spring: float = float(profile.get("buoyancy", 0.2))
 	var bob_t_next: float = bob_t + dt * 0.55
-	var bob: float = sin(bob_t_next) * 0.012 * (1.0 - clampf(speed * 1.2, 0.0, 0.85))
+	var bob: float = sin(bob_t_next) * 0.022 * (1.0 - clampf(speed * 1.2, 0.0, 0.85))
 	var sink: float = 0.0
 	if target_spd < 0.08 and speed < 0.12:
-		sink = -0.018 * dt
+		sink = -0.032 * dt
 	var lift: float = (hover_y - y) * spring * dt + bob + sink
 	return {"y_delta": lift, "bob_t": bob_t_next}
 
@@ -166,7 +166,5 @@ static func centripetal_bank(speed: float, yaw_rate: float) -> float:
 	return clampf(speed * yaw_rate * 0.08, -0.35, 0.35)
 
 
-static func use_full_physics(sim: Node, creature: Node3D) -> bool:
-	if sim == null or not sim.has_method("is_creature_visible_to_camera"):
-		return true
-	return sim.is_creature_visible_to_camera(creature)
+static func use_full_physics(_sim: Node, _creature: Node3D) -> bool:
+	return true

@@ -29,6 +29,8 @@ static func stats_from_sim(sim: Node) -> Dictionary:
 		s["ammonia"] = float(wc.ammonia)
 		s["nitrite"] = float(wc.nitrite)
 		s["nitrate"] = float(wc.nitrate)
+		if wc.has_method("toxic_ammonia_level"):
+			s["toxic_ammonia"] = float(wc.toxic_ammonia_level())
 	if sim.has_method("_is_saltwater_tank"):
 		s["is_saltwater"] = bool(sim._is_saltwater_tank())
 		if sim.has_method("_max_reef_bleach"):
@@ -62,13 +64,17 @@ static func mood_score(stats: Dictionary) -> float:
 	var biomass: float = float(stats.get("plant_total_biomass", 0))
 	var algae: float = float(stats.get("algae_clusters", 0))
 	var waste: float = float(stats.get("waste_particles", 0))
-	return clampf(
+	var score: float = clampf(
 		0.30 * o2
 		+ 0.30 * clampf(biomass / 600.0, 0.0, 1.0)
 		+ 0.20 * clampf(1.0 - algae / 60.0, 0.0, 1.0)
 		+ 0.20 * clampf(1.0 - waste / 100.0, 0.0, 1.0)
 		- clampf(ammonia * 0.25, 0.0, 0.35),
 		0.0, 1.0)
+	var toxic: float = float(stats.get("toxic_ammonia", ammonia * 0.35))
+	if ammonia >= 0.18 or toxic >= 0.08:
+		return minf(score, 0.42)
+	return score
 
 
 static func tier_from_stats(stats: Dictionary) -> int:
@@ -160,6 +166,8 @@ static func note_keeper_ambient(f: Fish, kind: String, strength: float = 0.5) ->
 	f._keeper_pending = kp
 
 
+const _MotionFieldScript = preload("res://scripts/motion_field.gd")
+
 static func broadcast_keeper_ambient(sim: Node, world_pos: Vector3, kind: String,
 		strength: float = 0.5, radius: float = 8.0) -> void:
 	if sim == null or sim.get("fish") == null:
@@ -168,6 +176,8 @@ static func broadcast_keeper_ambient(sim: Node, world_pos: Vector3, kind: String
 	for ff in sim.fish:
 		if is_instance_valid(ff) and ff.position.distance_squared_to(world_pos) <= r2:
 			note_keeper_ambient(ff, kind, strength)
+	if kind == "calm" and sim.get("fish") != null:
+		_MotionFieldScript.inject_calm(sim.fish, world_pos, strength * 0.45)
 
 
 static func is_comfort_intent(interp: Dictionary) -> bool:

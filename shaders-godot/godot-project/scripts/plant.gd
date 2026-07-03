@@ -167,6 +167,7 @@ var _emersed_remaining: float = EMERSED_DURATION_S
 
 var current_height: int = 0
 var growth_progress: float = 0.0
+var _growth_load_hold_s: float = 0.0
 var voxels: Array[MeshInstance3D] = []
 var has_flower: bool = false
 var has_emerged: bool = false   # true once tip has reached the water surface
@@ -187,6 +188,8 @@ const EPIPHYTE_NUTRIENT_MULT: float = 0.55
 # produces one branch, not an endless cascade.
 var _pending_trim_nodes: Array[int] = []
 const MAX_PENDING_TRIM_NODES: int = 4
+var _trim_recoil_t: float = 0.0
+var _trim_regrowth_boost: float = 0.0
 
 # Canopy life cycle: vegetative growth stops at the water surface, then
 # flower/seed/senescence closes the Walstad nutrient loop.
@@ -207,6 +210,7 @@ var _t: float = 0.0
 var _world_pos: Vector3 = Vector3.ZERO
 # Transient bend (radians) from a fish brushing past; springs back in tick().
 var _brush_bend: Vector2 = Vector2.ZERO
+var _brush_bend_vel: Vector2 = Vector2.ZERO
 # Last-tick growth diagnostics — surfaced by tap-a-plant inspector (#21).
 var _growth_diag: Dictionary = {}
 var _gust_tilt: Vector2 = Vector2.ZERO
@@ -577,6 +581,19 @@ func apply_save_dict(d: Dictionary) -> void:
 	# Loaded plants are established — no emersed-form display. Setting to
 	# 0 skips the size/color boost we apply to brand-new spawns.
 	_emersed_remaining = 0.0
+	_growth_load_hold_s = 0.35
+	_reconcile_life_phase_from_geometry()
+
+
+func _reconcile_life_phase_from_geometry() -> void:
+	var top_y: float = global_position.y + float(current_height) * VOXEL_SIZE * 0.95
+	if top_y > water_surface_y - 0.25:
+		if life_phase < LifePhase.CANOPY:
+			life_phase = LifePhase.CANOPY
+			has_emerged = true
+	elif life_phase >= LifePhase.CANOPY and top_y < water_surface_y - 0.6:
+		life_phase = LifePhase.VEGETATIVE
+		has_emerged = false
 
 
 func _ready() -> void:
@@ -727,10 +744,17 @@ func _apply_sway_personality() -> void:
 		if _foliage_mat != null:
 			_foliage_mat.set_shader_parameter("flutter_speed", 4.8)
 			_foliage_mat.set_shader_parameter("sway_speed", 2.2)
+	var height_w: float = lerpf(0.78, 1.38, float(current_height) / float(maxi(max_height, 1)))
+	if life_phase == LifePhase.SENESCENT or is_dying:
+		amp *= 0.55
+		flutter *= 0.7
+		height_w *= 0.72
+	tip_mult *= height_w
 	if _foliage_mat != null:
 		_foliage_mat.set_shader_parameter("sway_amplitude", amp)
 		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter)
 		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult)
+		_foliage_mat.set_shader_parameter("sway_speed", 2.2 / height_w)
 
 
 func _visual_youth_scale() -> float:
@@ -1067,6 +1091,36 @@ func _enter_canopy() -> void:
 		_begin_flowering()
 	elif not uses_flowering and has_method("_spawn_canopy_propagule"):
 		call("_spawn_canopy_propagule")
+	_apply_canopy_layover()
+
+
+func _apply_canopy_layover() -> void:
+	# LIVING_MOTION #67 — emergent stems lay over the meniscus instead of
+	# stopping upright at the surface cap.
+	if voxels.is_empty():
+		return
+	var surface_local_y: float = water_surface_y - global_position.y
+	var lay_n: int = mini(3, voxels.size())
+	for i in lay_n:
+		var vi: int = voxels.size() - 1 - i
+		var v: MeshInstance3D = voxels[vi]
+		if not is_instance_valid(v) or v.position.y < surface_local_y - VOXEL_SIZE * 0.45:
+			continue
+		var lean: float = lerpf(0.22, 0.68, float(i) / float(maxi(1, lay_n - 1)))
+		var tw := create_tween()
+		tw.tween_property(v, "rotation:x", -lean, 0.95) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(v, "position:y",
+			v.position.y + VOXEL_SIZE * lerpf(0.06, 0.14, float(i) / float(maxi(1, lay_n - 1))),
+			0.75).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	var top_v: MeshInstance3D = voxels.back()
+	if is_instance_valid(top_v):
+		var base_y: float = top_v.position.y
+		var bob := create_tween().set_loops()
+		bob.tween_property(top_v, "position:y", base_y + VOXEL_SIZE * 0.05, 2.1) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		bob.tween_property(top_v, "position:y", base_y - VOXEL_SIZE * 0.03, 2.1) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _spawn_meniscus_break() -> void:
@@ -1109,6 +1163,8 @@ func _enter_senescence() -> void:
 		_enter_dormant_bulb()
 		return
 	life_phase = LifePhase.SENESCENT
+	sway_amplitude *= 0.42
+	_apply_sway_personality()
 	if _pearling_active and _pearling_particles != null:
 		_pearling_active = false
 		_pearling_particles.emitting = false
@@ -1991,6 +2047,10 @@ func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
 func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
 	add_child(mi)
 	_clamp_node_xz_to_footprint(mi, margin)
+	mi.scale = Vector3(0.02, 0.02, 0.02)
+	var tw := create_tween()
+	tw.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(mi, "scale", Vector3.ONE, 0.95)
 	voxels.append(mi)
 
 
@@ -2045,7 +2105,20 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# that springs back over ~1s, so the scenery visibly reacts to its
 	# inhabitants instead of ignoring them.
 	if _brush_bend.length_squared() > 1e-6:
-		_brush_bend = _brush_bend.lerp(Vector2.ZERO, clampf(dt * 3.5, 0.0, 1.0))
+		var spring_k: float = 8.5
+		var damp: float = 3.2
+		_brush_bend_vel += (-_brush_bend * spring_k - _brush_bend_vel * damp) * dt
+		_brush_bend += _brush_bend_vel * dt
+		if _brush_bend.length() < 0.004 and _brush_bend_vel.length() < 0.02:
+			_brush_bend = Vector2.ZERO
+			_brush_bend_vel = Vector2.ZERO
+	if _trim_recoil_t > 0.0:
+		_trim_recoil_t = maxf(0.0, _trim_recoil_t - dt)
+		_brush_bend_vel += Vector2(
+			sin(_trim_recoil_t * 9.0) * 0.12 * _trim_recoil_t,
+			cos(_trim_recoil_t * 7.5) * 0.08 * _trim_recoil_t) * dt
+	if _trim_regrowth_boost > 1.01:
+		_trim_regrowth_boost = maxf(1.0, _trim_regrowth_boost - dt * 0.07)
 	if _gust_tilt.length_squared() > 1e-6:
 		_gust_tilt = _gust_tilt.lerp(Vector2.ZERO, clampf(dt * 1.8, 0.0, 1.0))
 	# Circumnutation (#5): a very slow elliptical nod of the growing tip,
@@ -2323,7 +2396,11 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 	var growth_diag: Dictionary = _compute_growth_rate(growth_nutrient, light_pen, sim_v)
 	var effective_rate: float = float(growth_diag.get("effective_rate", growth_rate * 0.5))
-	growth_progress += effective_rate * dt
+	effective_rate *= _trim_regrowth_boost
+	if _growth_load_hold_s > 0.0:
+		_growth_load_hold_s = maxf(0.0, _growth_load_hold_s - dt)
+	else:
+		growth_progress += effective_rate * dt
 	if growth_progress >= 1.0:
 		growth_progress = 0.0
 		if _starch < 0.06:
@@ -2882,6 +2959,11 @@ func _tick_pearling(_dt: float) -> void:
 		# pearling hard (style-guide 1px → 2×2 → 3×3 tiers after quantize).
 		var pm: ParticleProcessMaterial = _pearling_particles.process_material as ParticleProcessMaterial
 		if pm != null:
+			if w != null and w.has_method("sample_flow"):
+				var flow_v: Vector3 = w.sample_flow(global_position)
+				var rise: Vector3 = Vector3(flow_v.x * 0.35, 1.0, flow_v.z * 0.35).normalized()
+				pm.direction = rise
+				pm.gravity = Vector3(flow_v.x * 0.12, 0.10, flow_v.z * 0.12)
 			if pearl_factor > 0.72:
 				pm.scale_min = 0.10
 				pm.scale_max = 0.22
@@ -3011,7 +3093,15 @@ func trim_for_aquascape(frac: float, mode: String = "all") -> Dictionary:
 				if voxels.is_empty():
 					break
 				_decay_one_voxel()
+	_trigger_trim_recoil()
 	return snap
+
+
+func _trigger_trim_recoil() -> void:
+	# LIVING_MOTION #68 — keeper trim echoes as spring-back + regrowth burst.
+	_trim_recoil_t = 1.35
+	_trim_regrowth_boost = 1.85
+	_brush_bend_vel += Vector2(randf_range(-0.42, 0.42), randf_range(-0.28, 0.32))
 
 
 func _shed_oldest_leaf() -> void:
@@ -3099,9 +3189,10 @@ func _flutter_leaves(_dt: float) -> void:
 # ---- Flow response ----
 
 func _get_flow_bias() -> float:
-	# Sample a rough flow direction from the aeration system's position.
-	# Plants on the same side as the aerator get pushed away; plants on the
-	# opposite side barely feel it.
+	var w: Node = get_parent()
+	if w != null and w.has_method("sample_flow"):
+		var flow: Vector3 = w.sample_flow(_world_pos)
+		return clampf(flow.x * 0.55 + flow.z * 0.35, -0.65, 0.65)
 	var sim_driver: Node = _find_sim()
 	if sim_driver == null:
 		return 0.0
@@ -3211,6 +3302,7 @@ func nibble(amount: int) -> int:
 	if any_stem_lost and current_height > 0 \
 			and _pending_trim_nodes.size() < MAX_PENDING_TRIM_NODES:
 		_pending_trim_nodes.append(current_height)
+		_trigger_trim_recoil()
 
 	if current_height <= 0 and voxels.is_empty() and not _has_live_leaf_voxel():
 		_on_death()
@@ -3618,11 +3710,15 @@ func _spawn_visible_seed_drift(seed_pos: Vector3) -> void:
 	var world: Node = w.get_parent()
 	if world == null:
 		return
+	var start: Vector3 = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
+	if world.has_method("begin_seed_drift"):
+		world.begin_seed_drift(start, seed_pos)
+		return
 	var drift_vis := MeshInstance3D.new()
 	drift_vis.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
 	drift_vis.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
 	world.add_child(drift_vis)
-	drift_vis.global_position = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
+	drift_vis.global_position = start
 	var land: Vector3 = Vector3(seed_pos.x, float(world.get("SUBSTRATE_DEPTH")) + 0.08, seed_pos.z)
 	var tw := world.create_tween()
 	tw.tween_property(drift_vis, "global_position", land, randf_range(2.5, 4.5)) \

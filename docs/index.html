@@ -23,7 +23,7 @@
     <div class="site-nav-inner">
       <div class="site-brand">
         <a href="#top" class="site-mark" style="color:inherit;border:none">walstad loom</a>
-        <span class="site-mark-sub">v0.2.24</span>
+        <span class="site-mark-sub">v0.2.25</span>
       </div>
       <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav-panel">Menu</button>
       <div id="site-nav-panel">
@@ -48,7 +48,7 @@
       <dl class="spec-strip">
         <div class="spec-cell">
           <dt>Release</dt>
-          <dd><a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.24">v0.2.24</a></dd>
+          <dd><a href="https://github.com/mhsenkow/SimFish/releases/tag/v0.2.25">v0.2.25</a></dd>
         </div>
         <div class="spec-cell">
           <dt>Runtime</dt>
@@ -97,12 +97,12 @@
     <section id="status" class="reveal">
       <div class="section-head">
         <h2><span class="sec-num">01</span> Status</h2>
-        <p class="section-lead">Active development, June 2026. Public builds are stable; Steam Early Access is the next release gate.</p>
+        <p class="section-lead">Active development, July 2026. Public builds are stable; Steam Early Access launches July 7.</p>
       </div>
       <div class="grid grid-3">
         <article class="feature">
-          <h3>v0.2.24 shipped</h3>
-          <p>Mind kernel + perf governor, soul/spark expression layers, eight biome palettes, batched fauna rendering, notarized macOS builds.</p>
+          <h3>v0.2.25 shipped</h3>
+          <p>macOS Metal perf fixes, spawn safety, keeper UI polish, flow/atmosphere refinements. Mind kernel + soul spark + eight biome palettes from v0.2.24.</p>
         </article>
         <article class="feature">
           <h3>In development</h3>
@@ -117,24 +117,24 @@
 
     <section id="new" class="reveal">
       <div class="section-head">
-        <h2><span class="sec-num">02</span> v0.2.24 notes</h2>
+        <h2><span class="sec-num">02</span> v0.2.25 notes</h2>
       </div>
       <div class="grid">
         <article class="feature">
-          <h3>Performance &amp; mind kernel</h3>
-          <p>Unified <code>mind_kernel</code> tick path, perf governor, sim cadence + timer wheel, GPU boids compute, batched fauna/waste particles, potato fidelity shader tier.</p>
+          <h3>macOS stability</h3>
+          <p>Volumetric fog off on Metal — eliminates fence timeouts. Light beams via performant shader meshes instead.</p>
         </article>
         <article class="feature">
-          <h3>Soul &amp; spark</h3>
-          <p>Three-pass soul mind layer, fish spark behavior/expression, ΔG curves for felt self, arousal field, and narrator worker offload.</p>
+          <h3>Keeper &amp; workspace</h3>
+          <p>Follow a fish to see felt self + tank mind in the workspace inspector. Steady the tank before fish talk back.</p>
         </article>
         <article class="feature">
-          <h3>Biome palettes</h3>
-          <p>Eight water-type palettes (blackwater, reef, brackish, tanganyika, temperate, and more) with shader-global band tints per substrate/fauna/foliage.</p>
+          <h3>Spawn &amp; chemistry</h3>
+          <p>Body-radius-aware fish spawning; water/light visuals sync immediately after save load.</p>
         </article>
         <article class="feature">
-          <h3>macOS notarized</h3>
-          <p>Developer ID signed + Apple-notarized macOS builds in CI — double-click <code>WalstadLoom.app</code> without Gatekeeper workarounds.</p>
+          <h3>Prior (v0.2.24)</h3>
+          <p>Mind kernel, soul/spark layers, eight biome palettes, notarized macOS builds, batched fauna rendering.</p>
         </article>
       </div>
     </section>
@@ -181,6 +181,14 @@
         <p class="section-lead">Environment presets: void, desk, window. All passes through the same quantize shader.</p>
       </div>
       <div class="gallery-grid">
+        <figure>
+          <img src="img/keeper-blackwater-focus.png" width="1920" height="1080" alt="Blackwater tank — workspace inspector and keeper dialogue with Bean" loading="lazy" decoding="async" />
+          <figcaption>Keeper focus · felt self · blackwater biotope</figcaption>
+        </figure>
+        <figure>
+          <img src="img/isometric-workspace-moss.png" width="1920" height="1080" alt="Isometric view — workspace inspector and Moss dialogue" loading="lazy" decoding="async" />
+          <figcaption>Isometric · workspace inspector · keeper care gate</figcaption>
+        </figure>
         <figure>
           <img src="img/planted-community.png" width="1920" height="1080" alt="Planted community with stat chips" loading="lazy" decoding="async" />
           <figcaption>Planted community · live stat chips · morph drift</figcaption>

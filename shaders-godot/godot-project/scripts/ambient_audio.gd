@@ -197,7 +197,8 @@ var _player_air: AudioStreamPlayer = null
 var _playback_drums: AudioStreamGeneratorPlayback = null
 var _playback_synth: AudioStreamGeneratorPlayback = null
 var _playback_air: AudioStreamGeneratorPlayback = null
-# PERFORMANCE_REALTIME #79 — synth on worker; main thread only push_frame.
+# PERFORMANCE_REALTIME #79 / REFINEMENT_II #30 — synth on worker + ring buffer;
+# main thread only drains SynthRingBuffer into AudioStreamGeneratorPlayback.
 var _synth_mutex: Mutex = Mutex.new()
 var _synth_queue_drums: PackedVector2Array = PackedVector2Array()
 var _synth_queue_synth: PackedVector2Array = PackedVector2Array()

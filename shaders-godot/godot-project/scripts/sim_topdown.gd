@@ -145,12 +145,14 @@ static func caustic_beat_pulse() -> float:
 	var energy: float = 0.0
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree:
-		var mc: Node = (ml as SceneTree).root.get_node_or_null("MusicContext")
-		if mc != null and mc.get("_ctx") is Dictionary:
-			var ctx: Dictionary = mc._ctx
-			down = bool(ctx.get("downbeat", false))
-			bass = float(ctx.get("bass", 0.0))
-			energy = float(ctx.get("energy", 0.0))
+		var st: SceneTree = ml as SceneTree
+		if st.root != null:
+			var mc: Node = st.root.get_node_or_null("MusicContext")
+			if mc != null and mc.get("_ctx") is Dictionary:
+				var ctx: Dictionary = mc._ctx
+				down = bool(ctx.get("downbeat", false))
+				bass = float(ctx.get("bass", 0.0))
+				energy = float(ctx.get("energy", 0.0))
 	return TopdownMotion.caustic_beat_pulse(down, bass, energy)
 
 
@@ -232,7 +234,7 @@ func tick(sim: SimDriver, dt: float, school_pulse_phase: float) -> void:
 	predator_wave_cd = maxf(0.0, predator_wave_cd - dt)
 
 
-func _tick_flock_events(sim: SimDriver, dt: float, school_pulse_phase: float) -> void:
+func _tick_flock_events(sim: SimDriver, dt: float, _school_pulse_phase: float) -> void:
 	var active: bool = TopdownMotion.pond_active
 	if sim.world != null and sim.world.has_method("_topdown_surface_active"):
 		active = active or sim.world._topdown_surface_active()
@@ -245,9 +247,8 @@ func _tick_flock_events(sim: SimDriver, dt: float, school_pulse_phase: float) ->
 		pulse_sync_turn()
 		return
 	if group_reversal_timer <= 0.0 and sim.fish.size() >= 4 and sync_turn_remaining <= 0.0:
-		if sin(school_pulse_phase) > 0.94:
-			group_reversal_timer = randf_range(16.0, 26.0)
-			pulse_sync_turn(Vector3.ZERO, _school_centroid(sim))
+		group_reversal_timer = randf_range(18.0, 28.0)
+		pulse_sync_turn(Vector3.ZERO, _school_centroid(sim))
 	if edge_turn_cooldown > 0.0:
 		return
 	var hw: float = 8.0

@@ -34,6 +34,8 @@ var download_progress: float = 0.0
 
 var _llama: RefCounted = null
 var _queue: Array = []
+var _queue_seq: int = 0
+var _last_spoken_seq: int = -1
 var _current_job: Dictionary = {}
 var _http: HTTPRequest = null
 var _load_timer: Timer = null
@@ -386,7 +388,9 @@ func queue_generate(cache_key: String, prompt: String, fallback: String,
 		"context": context.duplicate(true),
 		"stream": stream,
 		"num_predict": n_pred,
+		"seq": _queue_seq,
 	})
+	_queue_seq += 1
 	while _queue.size() > QUEUE_MAX:
 		_queue.pop_front()
 	if state == State.READY:
@@ -683,6 +687,9 @@ func _on_generation_finished(full_text: String) -> void:
 	else:
 		fin = MindNarrator.finalize_line(ctx, full_text, fb, max_w)
 	var line: String = String(fin.get("line", fb))
+	var spoken_seq: int = int(_current_job.get("seq", -1))
+	if spoken_seq >= 0:
+		_last_spoken_seq = spoken_seq
 	if not _queue.is_empty():
 		_queue.pop_front()
 	state = State.READY
@@ -719,8 +726,22 @@ func cancel_thought_generation(cache_key: String) -> void:
 
 func _on_generation_error(message: String) -> void:
 	push_warning("[GuardianLlm] generation error: %s" % message)
+	if _current_job.is_empty() and _queue.is_empty():
+		state = State.READY
+		return
+	var retries: int = int(_current_job.get("_error_retries", 0))
+	if retries < 1 and not _current_job.is_empty():
+		_current_job["_error_retries"] = retries + 1
+		state = State.READY
+		_pump_queue()
+		return
+	var fb: String = str(_current_job.get("fallback", ""))
+	if fb != "":
+		_on_generation_finished(fb)
+		return
 	if not _queue.is_empty():
 		_queue.pop_front()
+	_current_job = {}
 	state = State.READY
 	_pump_queue()
 

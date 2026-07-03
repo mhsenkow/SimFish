@@ -216,6 +216,7 @@ var _preview_drag_last: Vector2 = Vector2.ZERO
 var _preview_frame_accum: float = 0.0
 var _sim_saved_time_scale: float = 1.0
 var _sim_paused_for_panel: bool = false
+var _sim_roster_bound: bool = false
 
 var _detail_name: Label = null
 var _detail_source_badge: Label = null
@@ -264,6 +265,7 @@ func open() -> void:
 	_refresh_list()
 	set_process(true)
 	_pause_sim_for_modal()
+	_bind_sim_roster(true)
 	_resume_preview_rendering()
 
 
@@ -299,6 +301,7 @@ func _close_panel() -> void:
 	z_index = 0
 	set_process(false)
 	_resume_sim_after_modal()
+	_bind_sim_roster(false)
 	_pause_preview_rendering()
 	if _preview_texture_rect != null:
 		_preview_texture_rect.visible = false
@@ -772,6 +775,24 @@ func _request_preview_frame() -> void:
 	if not _preview_viewport_ok():
 		return
 	_preview_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+
+func _bind_sim_roster(on: bool) -> void:
+	var sim := get_tree().root.find_child("SimDriver", true, false)
+	if sim == null:
+		return
+	if on and not _sim_roster_bound:
+		if sim.has_signal("creature_added") and not sim.is_connected("creature_added", _on_library_changed):
+			sim.connect("creature_added", _on_library_changed)
+		if sim.has_signal("creature_removed") and not sim.is_connected("creature_removed", _on_library_changed):
+			sim.connect("creature_removed", _on_library_changed)
+		_sim_roster_bound = true
+	elif not on and _sim_roster_bound:
+		if sim.is_connected("creature_added", _on_library_changed):
+			sim.disconnect("creature_added", _on_library_changed)
+		if sim.is_connected("creature_removed", _on_library_changed):
+			sim.disconnect("creature_removed", _on_library_changed)
+		_sim_roster_bound = false
 
 
 func _pause_sim_for_modal() -> void:

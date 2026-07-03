@@ -1518,6 +1518,10 @@ func _process(dt: float) -> void:
 		var walk_factor: float = clampf(speed * 5.0, 0.0, 1.0) \
 			* clampf(1.0 - speed * 0.55, 0.0, 1.0)
 		_bank_pivot.position.y = sin(_swim_phase * 2.0) * 0.014 * walk_factor
+		if current_mode == Mode.NIBBLE or current_mode == Mode.FORAGE_WASTE:
+			var grab: float = 0.5 + 0.5 * sin(_swim_phase * 4.4)
+			_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.38 * grab, dt * 7.0)
+			_bank_pivot.position.z = lerpf(_bank_pivot.position.z, -0.05 * grab, dt * 5.0)
 
 	# Egg-cluster visibility: visible only during the gravid window.
 	if _egg_cluster != null and _egg_cluster.visible != is_gravid:

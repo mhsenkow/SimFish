@@ -37,6 +37,12 @@ jobs:
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --import
 
+      - name: Regression triad (REFINEMENT_II #85)
+        run: |
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_perf_realtime.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_murmuration.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_save_roundtrip.gd
+
       - name: Run smoke suite
         run: bash scripts/run_smokes.sh
 

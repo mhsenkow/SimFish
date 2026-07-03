@@ -6,6 +6,8 @@ const FishMind = preload("res://scripts/fish_mind.gd")
 const FishConcepts = preload("res://scripts/fish_concepts.gd")
 const _MindDirtySaveScript = preload("res://scripts/mind_dirty_save.gd")
 const _MindWorkerCfgScript = preload("res://scripts/mind_worker_cfg.gd")
+const _MindCacheStatsScript = preload("res://scripts/mind_cache_stats.gd")
+const _TankConfigWarnScript = preload("res://scripts/tank_config_warn.gd")
 
 const VECTOR_DIM: int = 32
 const STORE_MAX: int = 64
@@ -19,6 +21,18 @@ const RETRIEVE_TTL_S: float = 2.0
 
 static func clear_caches_for_test() -> void:
 	_retrieve_cache.clear()
+
+
+static func clear_retrieve_cache_for(f) -> void:
+	if f == null or not (f is Fish) or str((f as Fish).id) == "":
+		return
+	var prefix: String = "%s|" % str((f as Fish).id)
+	var stale: Array[String] = []
+	for k in _retrieve_cache.keys():
+		if str(k).begins_with(prefix):
+			stale.append(str(k))
+	for k in stale:
+		_retrieve_cache.erase(k)
 
 
 static func _pass3() -> GDScript:
@@ -35,6 +49,7 @@ static func _quantize_enabled() -> bool:
 		var cfg: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
 		if cfg != null and cfg.get("episodic_quant_8bit") != null:
 			return bool(cfg.episodic_quant_8bit)
+		return _TankConfigWarnScript.bool_or_warn(cfg, "episodic_quant_8bit", true)
 	return true
 
 
@@ -236,7 +251,10 @@ static func retrieve_for_situation(f, situation: String, k: int = 2) -> PackedSt
 	if cached is Dictionary:
 		var cd: Dictionary = cached as Dictionary
 		if now - float(cd.get("t", 0.0)) < RETRIEVE_TTL_S:
+			_MindCacheStatsScript.retrieval_hits += 1
 			return cd.get("out", PackedStringArray()) as PackedStringArray
+	_MindCacheStatsScript.retrieval_misses += 1
+	var t0: int = Time.get_ticks_usec()
 	var q: PackedFloat32Array = embed(situation, f.attention_focus)
 	var hint: String = _kind_bucket(situation)
 	if hint == "" and f.attention_focus != "":
@@ -251,7 +269,9 @@ static func retrieve_for_situation(f, situation: String, k: int = 2) -> PackedSt
 				"salience": SaveHelpers._num(h.get("weight", 0.4), 0.4),
 				"pos": h.get("pos", Vector3.ZERO),
 			}
+			f._episodic_retrieval_hint_ttl = 0.42
 	_retrieve_cache[cache_key] = {"t": now, "out": out}
+	PerfGovernor.record_ledger(17, Time.get_ticks_usec(), t0)
 	return out
 
 

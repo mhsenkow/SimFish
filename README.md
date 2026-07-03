@@ -1,18 +1,39 @@
 # walstad loom
 
-
-
-<img width="2560" height="1440" alt="Screenshot 2026-05-20 at 10 57 35 AM" src="https://github.com/user-attachments/assets/b0d223df-5dc5-4149-a863-265be0290852" />
-<img width="2560" height="1440" alt="Screenshot 2026-05-20 at 4 06 02 PM" src="https://github.com/user-attachments/assets/8b8a9c07-869c-4462-98bf-074c32911a56" />
-<img width="2560" height="1440" alt="Screenshot 2026-05-20 at 3 44 23 PM" src="https://github.com/user-attachments/assets/1838bd1a-bddf-4924-be2e-1de1b5e5b71a" />
-
-
-
-
-
 A generative pixel-art aquarium running as a 3D voxel scene through a palette-quantize + dither shader pipeline. Plants grow, fish school and breed, shrimp climb plants and snap at fry, snails crawl the glass and eat detritus, **clams filter waste from the column, corals respire + bleach + glow at night, dwarf gourami defend their territory and incubate fry in their throats**. The whole thing self-balances into a Walstad-style equilibrium over a few minutes of watching.
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
+
+**Latest release: [v0.2.25](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.25)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
+
+## Where things are at (July 2026)
+
+| Area | Status |
+|---|---|
+| **Playable builds** | macOS (notarized), Windows, Linux, Android — free on [GitHub Releases](https://github.com/mhsenkow/SimFish/releases) |
+| **Steam** | Desktop depots uploaded; EA launch July 7. Same binaries as GitHub. |
+| **Ecosystem sim** | Walstad nutrient loop, 8 scenario presets, saltwater reef mode, aquascaping craft |
+| **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, three-pass soul/spark layer |
+| **Keeper loop** | Care tiers gate conversation — steady the tank first, then fish open up; comfort words soothe spooked fish |
+| **Performance** | Mind kernel tick path, perf governor, batched fauna/waste, potato fidelity tier, eight biome palettes |
+| **In progress** | Sentience eval harness hardening, mind-kernel GDExtension, Steam EA polish |
+
+### Screenshots
+
+**Keeper focus — blackwater biotope.** Workspace inspector shows felt self, tank mind, and dialogue with a followed fish. Type to a fish; stressed tanks block replies until care improves.
+
+![Blackwater tank with workspace inspector and keeper dialogue](docs/img/keeper-blackwater-focus.png)
+
+**Isometric workspace.** Pond/isometric camera + camera-views panel. Moss asks *"what is this place?"* — the keeper-care gate in action.
+
+![Isometric tank with workspace inspector and Moss dialogue](docs/img/isometric-workspace-moss.png)
+
+| | |
+|---|---|
+| ![Planted community](docs/img/planted-community.png) | ![Scenario picker](docs/img/tank-menu-scenarios.png) |
+| Planted community · live stat chips | Eight scenario presets |
+| ![Reef cube](docs/img/reef-cube.png) | ![Void tank](docs/img/void-tank.png) |
+| Saltwater reef cube | Void environment preset |
 
 ## Download
 
@@ -37,7 +58,7 @@ Tested on Ubuntu / Debian-based distros. The binary already has the exec bit set
 
 ### Steam
 
-**Coming soon** on [Steam](https://store.steampowered.com/app/4796460/) — Early Access planned **July 7, 2026**. [Wishlist](https://store.steampowered.com/app/4796460/) to get notified. GitHub releases stay free; a Steam purchase helps fund more dev time.
+On [Steam](https://store.steampowered.com/app/4796460/) — Early Access **July 7, 2026**. [Wishlist](https://store.steampowered.com/app/4796460/) to get notified. GitHub releases stay free; a Steam purchase helps fund more dev time.
 
 ## Pick your tank
 
@@ -145,9 +166,25 @@ Substrate nutrients ← waste deposits + reservoir trickle
 
 ## Recent additions
 
-Major systems shipped in the v0.1.66+ window:
+### v0.2.25 — polish & stability
 
-### Living balance pass (100-item holistic sweep)
+- **macOS performance** — volumetric fog disabled on Metal (fence-timeout fix); shader-based light beams instead
+- **Spawn safety** — fish spawn positions respect body radius; chemistry visuals flush immediately after load
+- **Keeper UI** — feed dock status, time-pause stack for modal panels, governor-driven shader tier steps
+- **Flow & atmosphere** — filter-jet flow lanes, foliage shimmer, improved room lighting sync
+
+### v0.2.24 — mind kernel & soul spark
+
+- **Mind kernel** — unified cognition tick, perf governor, GPU boids, batched fauna/waste particles
+- **Soul / spark** — three-pass soul mind, fish spark behavior/expression, ΔG felt-self curves
+- **Biome palettes** — eight water-type palettes with per-band shader globals
+- **macOS** — Developer ID signed + notarized CI builds
+
+### v0.2.23 — cognition stack
+
+Active inference, GRU-lite world model, inter-fish signal bus, emotional contagion, sentience eval harness, keeper-care UI polish. See [CHANGELOG.md](CHANGELOG.md).
+
+### Living balance pass (v0.1.66+)
 
 A whole-system retune so every tank feels like a real, self-balancing,
 forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
@@ -305,16 +342,18 @@ cd shaders-godot/godot-project
 godot --path . --headless --export-debug "macOS" ../../build/WalstadLoom.app
 ```
 
-### CI releases (macOS + Windows + Linux)
+### CI releases (macOS + Windows + Linux + Android)
 
-Pushing a version tag builds all three platforms on GitHub Actions and uploads the zips to [Releases](https://github.com/mhsenkow/SimFish/releases):
+Pushing a version tag builds all four platforms on GitHub Actions and uploads to [Releases](https://github.com/mhsenkow/SimFish/releases). macOS builds are Developer ID signed and notarized when `NOTARY_*` / `APPLE_ID` secrets are set.
 
 ```bash
-git tag v0.1.67
-git push origin v0.1.67
+git tag v0.2.25
+git push origin v0.2.25
 ```
 
-Workflow: `.github/workflows/release.yml` (Godot 4.6.3, export presets in `export_presets.cfg`). You can also run it manually from **Actions → Release builds → Run workflow** (artifacts only; no Release unless you pushed a tag).
+Workflow: `.github/workflows/release.yml` (Godot 4.6.3, export presets in `export_presets.cfg`). Run manually from **Actions → Release builds** for artifacts only (no Release unless tagged).
+
+Steam desktop upload: `./steam/stage_content.sh` then `STEAM_USERNAME=you ./steam/upload.sh` — see [`steam/README.md`](steam/README.md).
 
 ## Repository layout
 

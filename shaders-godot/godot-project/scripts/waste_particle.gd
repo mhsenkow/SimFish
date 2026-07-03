@@ -41,6 +41,7 @@ var _vis_color: Color = Color.WHITE
 var _interp_from: Vector3 = Vector3.ZERO
 var _interp_to: Vector3 = Vector3.ZERO
 var _was_camera_visible: bool = true
+var _food_fade: float = 0.0
 var _fallback_mesh: MeshInstance3D = null
 
 
@@ -128,15 +129,17 @@ func init(value: float, top_y: float, particle_kind: int = KIND_FISH,
 func tick(dt: float, substrate: SubstrateGrid) -> bool:
 	_interp_from = position
 	_life += dt
+	if kind == KIND_FOOD and _life >= MAX_LIFE * 0.82:
+		_food_fade = clampf((_life - MAX_LIFE * 0.82) / (MAX_LIFE * 0.18), 0.0, 1.0)
+		_apply_food_expire_visual()
 	if _life >= MAX_LIFE:
 		return true
 	var w: Node = _resolve_world()
+	var sim_n: Variant = w.get("sim") if w != null else null
 	if not settled:
 		var skip_batch_physics: bool = false
-		if w != null:
-			var sim_n: Variant = w.get("sim")
-			if sim_n != null and bool(sim_n.get("_waste_physics_batched")) and kind != KIND_FOOD:
-				skip_batch_physics = true
+		if sim_n != null and bool(sim_n.get("_waste_physics_batched")) and kind != KIND_FOOD:
+			skip_batch_physics = true
 		var floor_y: float = substrate_top_y
 		if w != null and w.has_method("column_surface_y"):
 			floor_y = w.column_surface_y(position.x, position.z)
@@ -145,9 +148,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 			var fall_rate: float = FALL_SPEED
 			if kind == KIND_FOOD:
 				var surf_y: float = _food_surface_y(w)
+				var feeder_pull: float = 0.0
+				if sim_n != null and sim_n.has_method("feeders_near"):
+					feeder_pull = float(sim_n.feeders_near(global_position, 1.8))
+				var float_bonus: float = feeder_pull * 10.0
 				match food_subtype:
 					FOOD_SUB_FLAKE:
-						if _life < 16.0:
+						if _life < 16.0 + float_bonus:
 							can_fall = false
 							position.y = maxf(position.y, surf_y + 0.04)
 							position.y += sin(_life * 4.2) * 0.02 * dt
@@ -167,7 +174,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 							position.y += sin(_life * 2.0) * 0.012 * dt
 						fall_rate = FALL_SPEED * 0.32
 					_:
-						if _life < 3.0:
+						if _life < 3.0 + float_bonus:
 							can_fall = false
 							position.y = maxf(position.y, surf_y + 0.02)
 							position.y += sin(_life * 3.0) * 0.015 * dt
@@ -175,6 +182,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 							position.z += cos(_life * 0.9) * 0.04 * dt
 
 			if can_fall:
+				if w != null and w.has_method("sample_flow"):
+					var flow_v: Vector3 = w.sample_flow(global_position)
+					var flow_mag: float = Vector2(flow_v.x, flow_v.z).length()
+					fall_rate *= lerpf(1.35, 0.42, clampf(flow_mag * 2.2, 0.0, 1.0))
 				position.y -= fall_rate * dt
 				var swirl_t: float = _life * 1.1
 				var px: float = position.x
@@ -188,7 +199,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 				var intake_pull: Vector2 = Vector2.ZERO
 				if w != null:
 					var sim_batch: Variant = w.get("sim")
-					if sim_batch != null:
+					if sim_batch != null and sim_batch.has_method("filter_intake_active") \
+							and bool(sim_batch.filter_intake_active()):
 						var intake_pos_v: Variant = sim_batch.get("filter_intake_pos")
 						if intake_pos_v != null and intake_pos_v is Vector3:
 							var dx: float = (intake_pos_v as Vector3).x - position.x
@@ -220,6 +232,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 		_push_visual()
 		if _settle_timer > 4.0:
 			return true
+		_try_fish_stir_lift(w, dt)
 		return false
 	if w != null and w.has_method("clamp_xyz_in_tank"):
 		global_position = w.clamp_xyz_in_tank(global_position, 0.18, voxel_size * 0.5)
@@ -241,6 +254,30 @@ func _process(_dt: float) -> void:
 	var blend: float = sim_n.sim_tick_blend()
 	position = _interp_from.lerp(_interp_to, blend)
 	_push_visual()
+
+
+func _try_fish_stir_lift(w: Node, dt: float) -> void:
+	if w == null or settled:
+		return
+	var sim_n: Variant = w.get("sim")
+	if sim_n == null:
+		return
+	var fish_arr: Variant = sim_n.get("fish")
+	if not (fish_arr is Array):
+		return
+	for f_v in fish_arr as Array:
+		if f_v == null or not is_instance_valid(f_v):
+			continue
+		var fp: Vector3 = f_v.position as Vector3
+		if Vector2(fp.x - position.x, fp.z - position.z).length_squared() > 0.42:
+			continue
+		var spd: float = float(f_v.get("speed") if f_v.get("speed") != null else 0.0)
+		if spd < 0.28:
+			continue
+		settled = false
+		_settle_timer = 0.0
+		position.y += dt * lerpf(0.08, 0.22, clampf(spd, 0.0, 1.0))
+		break
 
 
 func _reset_motion_interp() -> void:
@@ -266,6 +303,17 @@ func _orphan_batch_slot() -> void:
 func _hide_fallback_mesh() -> void:
 	if _fallback_mesh != null and is_instance_valid(_fallback_mesh):
 		_fallback_mesh.visible = false
+
+
+func _apply_food_expire_visual() -> void:
+	if _fallback_mesh == null or not is_instance_valid(_fallback_mesh):
+		return
+	var mat_v: Variant = _fallback_mesh.material_override
+	if mat_v is ShaderMaterial:
+		var faded: Color = _vis_color
+		faded.a = lerpf(_vis_color.a, 0.12, _food_fade)
+		(mat_v as ShaderMaterial).set_shader_parameter("albedo", faded)
+	_fallback_mesh.scale = Vector3.ONE * maxf(voxel_size, 0.08) * lerpf(1.0, 0.55, _food_fade)
 
 
 func _sync_fallback_mesh() -> void:

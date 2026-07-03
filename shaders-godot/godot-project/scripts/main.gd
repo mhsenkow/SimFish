@@ -400,7 +400,15 @@ func apply_camera_preset(preset_id: String) -> void:
 	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
 	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
-	var base_r: float = maxf(tank_h * 1.5, maxf(tank_hw, tank_hd) * 2.4)
+	var fp := _tank_footprint_from_config(cfg)
+	var footprint_r: float = fp.effective_radius(0.35) if fp != null else maxf(tank_hw, tank_hd)
+	var base_r: float = maxf(tank_h * 1.5, footprint_r * 2.4)
+	var shape: String = String(fp.shape) if fp != null else "box"
+	match shape:
+		"sphere", "cylinder":
+			base_r *= 1.1
+		"triangle", "hex":
+			base_r *= 0.94
 	_release_cinematic_follow()
 	_auto_orbit = false
 	match preset_id:
@@ -548,7 +556,8 @@ func _pond_surface_tap(mouse_pos: Vector2) -> bool:
 	elif world != null and world.has_method("spawn_burst_ripple"):
 		world.spawn_burst_ripple(hit, 1.5)
 	if _sim.has_method("pulse_startle_bolt"):
-		_sim.pulse_startle_bolt(hit)
+		var salience: float = 1.0
+		_sim.pulse_startle_bolt(hit, salience)
 	_haptic(10)
 	for f in _sim.fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
@@ -1115,6 +1124,7 @@ var _feed_toast_panel: PanelContainer = null
 var _feed_toast: Label = null
 var _feed_toast_tween: Tween = null
 var _feed_hint_shown: bool = false
+var _feed_dock_refresh_t: float = 0.0
 var _feed_dock_lbl: Label = null
 
 
@@ -1144,7 +1154,8 @@ func _ready() -> void:
 	_apply_camera()
 	# Subscribe to SimDriver stats - they emit at ~1Hz with the ecosystem snapshot.
 	await get_tree().process_frame
-	_sim = world.get_node_or_null("SimDriver")
+	if world != null:
+		_sim = world.get_node_or_null("SimDriver")
 	if _sim != null and _sim.has_signal("stats_changed"):
 		_sim.connect("stats_changed", _on_stats_changed)
 	if _sim != null and _sim.has_signal("eco_event"):
@@ -1483,9 +1494,10 @@ func _apply_render_config() -> void:
 		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
 		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
 		sm.set_shader_parameter("material_value", float(cfg.material_value))
-		var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
-		if world_vis != null:
-			sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
+		if world != null:
+			var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
+			if world_vis != null:
+				sm.set_shader_parameter("seasonal_warmth", world_vis.seasonal_palette_shift())
 		# Per-biotope palette swap: a blackwater tank quantizes through amber
 		# tannin colors, a reef through bright alkaline blues, planted through
 		# the verdant default. Built at runtime so no extra PNGs are needed.
@@ -1516,13 +1528,14 @@ func _apply_render_config() -> void:
 		_current_projection_id = "perspective"
 		camera.fov = float(cfg.camera_fov)
 	# Fog: read from environment if available.
-	var we := world.get_node_or_null("WorldEnvironment")
-	if we != null and we.environment != null:
-		# Keep volumetric fog off on Metal/macOS — it was a major fence-timeout source.
-		we.environment.volumetric_fog_enabled = false
-		we.environment.volumetric_fog_density = float(cfg.fog_density)
-		we.environment.volumetric_fog_anisotropy = float(cfg.fog_anisotropy)
-		we.environment.volumetric_fog_ambient_inject = float(cfg.fog_ambient_inject)
+	if world != null:
+		var we := world.get_node_or_null("WorldEnvironment")
+		if we != null and we.environment != null:
+			# Keep volumetric fog off on Metal/macOS — it was a major fence-timeout source.
+			we.environment.volumetric_fog_enabled = false
+			we.environment.volumetric_fog_density = float(cfg.fog_density)
+			we.environment.volumetric_fog_anisotropy = float(cfg.fog_anisotropy)
+			we.environment.volumetric_fog_ambient_inject = float(cfg.fog_ambient_inject)
 	apply_material_palette()
 
 
@@ -1731,6 +1744,11 @@ func _process(dt: float) -> void:
 	PerfGovernor.record_frame(dt)
 	_adaptive_quality_tick(dt)
 
+	_feed_dock_refresh_t += dt
+	if _feed_dock_refresh_t >= 2.0:
+		_feed_dock_refresh_t = 0.0
+		_sync_feed_dock()
+
 	# Periodic autosave. Only ticks the accumulator when we're actually
 	# playing (not aquascape-paused, not manually paused) so the 5-minute
 	# clock measures user-attention not wall-clock.
@@ -1752,6 +1770,13 @@ func _process(dt: float) -> void:
 			_glance_cam_pos = cp
 			_glance_cam_rot_hash = rot_h
 			_sim.update_player_glance(cp)
+	if _sim != null and camera != null and TopdownMotion.is_overhead(self):
+		if _shadow_cam_pos == Vector3.INF:
+			_shadow_cam_pos = camera.global_position
+		var shadow_move: float = camera.global_position.distance_to(_shadow_cam_pos)
+		_shadow_cam_pos = camera.global_position
+		if shadow_move > 0.55 and _sim.has_method("pulse_shadow"):
+			_sim.pulse_shadow(camera.global_position + Vector3(0.0, -1.2, 0.0), clampf(shadow_move * 0.35, 0.5, 1.0))
 	
 	# ---- Touch: long-press detection (runs every frame while finger is down) ----
 	if _touches.size() == 1 and not _long_press_fired:
@@ -2138,8 +2163,33 @@ func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 		world.spawn_burst_ripple(hit, 1.75)
 	if _sim.has_method("pulse_glass_tap"):
 		_sim.pulse_glass_tap(hit)
+	var nearest_prox: float = 0.0
+	for f in _sim.fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var dx0: float = f.position.x - hit.x
+		var dz0: float = f.position.z - hit.z
+		var d2_0: float = dx0 * dx0 + dz0 * dz0
+		if d2_0 > GLASS_TAP_RADIUS_SQ:
+			continue
+		nearest_prox = maxf(nearest_prox, 1.0 - clampf(sqrt(d2_0) / GLASS_TAP_RADIUS, 0.0, 1.0))
 	if _sim.has_method("pulse_startle_bolt"):
-		_sim.pulse_startle_bolt(hit)
+		var tap_away: Vector3 = Vector3.ZERO
+		var tap_n: int = 0
+		for f in _sim.fish:
+			if not is_instance_valid(f) or f.get("_dying") == true:
+				continue
+			var dx0: float = f.position.x - hit.x
+			var dz0: float = f.position.z - hit.z
+			if dx0 * dx0 + dz0 * dz0 > GLASS_TAP_RADIUS_SQ:
+				continue
+			var d: Vector3 = Vector3(dx0, 0.0, dz0)
+			if d.length_squared() > 0.04:
+				tap_away += d.normalized()
+				tap_n += 1
+		if tap_n > 0:
+			tap_away = (tap_away / float(tap_n)).normalized()
+		_sim.pulse_startle_bolt(hit, maxf(nearest_prox, 0.15), tap_away)
 	_haptic(14)
 	for f in _sim.fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
@@ -2156,6 +2206,7 @@ func _startle_fish_near_tap(mouse_pos: Vector2) -> void:
 			away_xz = Vector3(randf_range(-1, 1), 0.0, randf_range(-1, 1))
 		var away: Vector3 = away_xz.normalized()
 		var toward: Vector3 = -away
+		f._interest_target = hit
 		# Inner ring: some fish dart toward the tap (curiosity). Outer: flee.
 		var curious: bool = dist < 7.0 and prox > 0.42 and randf() < 0.38
 		if curious:
@@ -2285,6 +2336,21 @@ func _sync_feed_dock() -> void:
 	for i in _feed_btns.size():
 		UiIcons.apply_feed_button(
 			_feed_btns[i], UiIcons.FEED_SUBTYPE_KEYS[i], i == _feed_subtype, compact)
+	if _feed_dock_lbl != null:
+		_feed_dock_lbl.text = _feed_dock_status_text()
+		var fed: bool = _feed_dock_lbl.text.begins_with("Fed")
+		_feed_dock_lbl.add_theme_color_override(
+			"font_color", Color(0.78, 0.94, 0.82) if fed else PanelTheme.SECTION_FG)
+
+
+func _feed_dock_status_text() -> String:
+	if _sim != null and _sim.has_method("tank_feed_satiety_ok") \
+			and bool(_sim.tank_feed_satiety_ok()):
+		return "Fed · click water"
+	if _sim != null and _sim.has_method("tank_avg_hunger"):
+		if float(_sim.tank_avg_hunger()) >= 0.62:
+			return "Feed · fish hungry"
+	return "Feed · click water"
 
 
 func _pulse_feed_dock() -> void:
@@ -2302,6 +2368,11 @@ func _sync_feed_dock_visibility() -> void:
 func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> int:
 	if _sim == null:
 		return 0
+	if _sim.has_method("get") and _sim.get("fish") != null:
+		const _MF = preload("res://scripts/motion_field.gd")
+		_MF.inject_feeding(_sim.fish, hit, 0.72)
+		if world != null:
+			_MF.deposit_feeding_burst(world, hit, 0.22)
 	var noticed: int = 0
 	var radius_sq: float = 196.0 if food_subtype == WasteParticle.FOOD_SUB_WORM else 81.0
 	for f in _sim.fish:
@@ -2472,16 +2543,29 @@ func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 	return false
 
 
-var _saved_time_scale: float = 1.0
+var _saved_time_scale: float = 1.0  # legacy; TimeAuthority owns live scale
+
+
+func _push_time_pause(reason: String) -> void:
+	if _sim != null:
+		TimeAuthority.push_pause(_sim, reason)
+
+
+func _pop_time_pause(reason: String) -> void:
+	if _sim != null:
+		TimeAuthority.pop_pause(_sim, reason)
+
 
 func _toggle_pause() -> void:
 	if _sim == null:
 		return
 	if float(_sim.time_scale) > 0.0:
+		TimeAuthority.set_base_scale(float(_sim.time_scale))
 		_saved_time_scale = float(_sim.time_scale)
-		_sim.time_scale = 0.0
+		TimeAuthority.push_pause(_sim, "player")
 	else:
-		_sim.time_scale = _saved_time_scale
+		TimeAuthority.pop_pause(_sim, "player")
+		_saved_time_scale = TimeAuthority.base_scale()
 	_sync_viewport_update_mode(_aquascape.is_active)
 	_sync_speed_hud()
 	_haptic(12)
@@ -2500,8 +2584,10 @@ func _toggle_motion_debug() -> void:
 func _set_time_scale(s: float) -> void:
 	if _sim == null:
 		return
-	_sim.time_scale = s
+	TimeAuthority.set_base_scale(s)
 	_saved_time_scale = s
+	if not TimeAuthority.is_paused():
+		_sim.time_scale = s
 	_sync_viewport_update_mode(_aquascape.is_active)
 	_sync_speed_hud()
 	_haptic(12)
@@ -5653,7 +5739,7 @@ func _on_viewport_resized() -> void:
 	_apply_hud_layout()
 	_apply_rail_dock_layout()
 	_apply_panel_layout()
-	_apply_display_layout()
+	_apply_render_config()
 
 
 # Resize the Display TextureRect based on the current TankConfig settings.
@@ -5727,11 +5813,13 @@ func _apply_adaptive_shader_cost() -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if sm == null or cfg == null:
 		return
-	sm.set_shader_parameter("outline_strength", float(cfg.outline_strength))
-	sm.set_shader_parameter("creature_outline_strength", float(cfg.creature_outline_strength))
+	sm.set_shader_parameter("outline_strength",
+		float(cfg.outline_strength) * VoxelMat.tier_post_outline_scale())
+	sm.set_shader_parameter("creature_outline_strength",
+		float(cfg.creature_outline_strength) * VoxelMat.tier_post_outline_scale())
 	sm.set_shader_parameter("crt_strength", float(cfg.crt_strength))
 	sm.set_shader_parameter("region_aware_dither",
-		1.0 if cfg.dither_region_aware else 0.0)
+		(1.0 if cfg.dither_region_aware else 0.0) * VoxelMat.tier_post_region_dither())
 	sm.set_shader_parameter("palette_bank_lock",
 		1.0 if cfg.palette_bank_lock else 0.0)
 	sm.set_shader_parameter("bloom_strength", float(cfg.get("pp_bloom_strength")))
@@ -5757,6 +5845,12 @@ func _apply_adaptive_shader_cost() -> void:
 func _adaptive_quality_tick(dt: float) -> void:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null or not bool(cfg.get("adaptive_quality")):
+		return
+	# REFINEMENT_II #74 — step shader cost immediately on governor breach.
+	if PerfGovernor.governor_step_down() and _adaptive_shader_cost < 3:
+		_adaptive_shader_cost += 1
+		_apply_adaptive_shader_cost()
+		_frame_history.fill(0.0)
 		return
 	_adaptive_t += dt
 	if _adaptive_t < _ADAPTIVE_TICK_S:
@@ -5836,6 +5930,7 @@ var _palette_tint_smooth: Vector3 = Vector3(1.0, 1.0, 1.0)
 var _last_written_palette_tint: Vector3 = Vector3(-999.0, -999.0, -999.0)
 var _glance_cam_pos: Vector3 = Vector3(INF, INF, INF)
 var _glance_cam_rot_hash: float = 0.0
+var _shadow_cam_pos: Vector3 = Vector3(INF, INF, INF)
 const _PALETTE_TINT_EPS: float = 1.0 / 512.0
 
 
@@ -6115,7 +6210,7 @@ func _setup_hud_styling() -> void:
 	if menu_button != null:
 		UiIcons.apply_rail_button(menu_button, "menu", _is_mobile())
 
-	_rail_vbox = right_cluster.get_node_or_null("VBox") as VBoxContainer
+	_rail_vbox = right_cluster.get_node_or_null("VBox") as VBoxContainer if right_cluster != null else null
 	if _rail_vbox != null:
 		_rail_vbox.add_theme_constant_override("separation", 8)
 	if _rail_hbox == null and right_cluster != null:
@@ -6131,7 +6226,8 @@ func _setup_hud_styling() -> void:
 		PanelTheme.style_rail_button(btn, false)
 	_apply_rail_button_labels(false)
 
-	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator
+	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator \
+		if right_cluster != null else null
 	if divider != null:
 		var rule_style := StyleBoxFlat.new()
 		rule_style.bg_color = PanelTheme.RULE_FG
@@ -7828,6 +7924,8 @@ func _toggle_light_panel() -> void:
 func _ensure_light_panel() -> void:
 	if _light_panel != null and is_instance_valid(_light_panel):
 		return
+	# REFINEMENT_II #70 — block preset→custom flips while wiring controls.
+	_light_applying_preset = true
 	_light_panel = PanelContainer.new()
 	_light_panel.name = "LightPanel"
 	_light_panel.visible = false
@@ -8138,6 +8236,7 @@ func _ensure_light_panel() -> void:
 	outer.add_child(PanelTheme.make_panel_footer(func() -> void:
 		_close_light_panel()
 		_sync_rail_toggles()))
+	_pull_light_panel_values()
 
 
 # 2D pad widget for the sun direction. The X axis maps to cfg.light_yaw

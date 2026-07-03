@@ -11,6 +11,8 @@ uniform float tip_sway_mult : hint_range(1.0, 3.0) = 2.1;
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 uniform float water_surface_y = 99.0;
 uniform float daylight : hint_range(0.0, 1.0) = 1.0;
+uniform vec3 flow_dir = vec3(0.0, 0.0, 1.0);
+uniform float flow_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_floor = 0.0;
@@ -38,7 +40,8 @@ void vertex() {
 
 	float time_sway = TIME * sway_speed;
 	float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
-	float sway = sin(time_sway + phase) * sway_amplitude * height_factor;
+	float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
+	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor;
 	VERTEX.x += sway;
 	VERTEX.z += sway * 0.35;
 

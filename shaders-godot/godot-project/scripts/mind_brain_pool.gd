@@ -7,6 +7,7 @@ extends RefCounted
 const _MindCycleScript = preload("res://scripts/mind_cycle.gd")
 const _FeltSelfLayerScript = preload("res://scripts/felt_self_layer.gd")
 const _MindWorkerCfgScript = preload("res://scripts/mind_worker_cfg.gd")
+const _TankConfigWarnScript = preload("res://scripts/tank_config_warn.gd")
 
 static var _mutex: Mutex = Mutex.new()
 static var _pending_jobs: Array = []
@@ -91,7 +92,9 @@ static func begin_tick(sim: Node) -> void:
 			keeper_mic = bool(cfg.get("keeper_mic_enabled") if cfg.get("keeper_mic_enabled") != null else false)
 			if cfg.get("episodic_quant_8bit") != null:
 				episodic_quant = bool(cfg.episodic_quant_8bit)
-	if sim.get("_mind_budget_pressure") != null:
+			else:
+				episodic_quant = _TankConfigWarnScript.bool_or_warn(cfg, "episodic_quant_8bit", true)
+	if sim != null and sim.get("_mind_budget_pressure") != null:
 		mind_pressure = float(sim._mind_budget_pressure)
 	_worker_cfg = {
 		"felt_self_enabled": felt_on,
@@ -103,7 +106,7 @@ static func begin_tick(sim: Node) -> void:
 		"keeper_mic_enabled": keeper_mic,
 		"episodic_quant_8bit": episodic_quant,
 		"mind_budget_pressure": mind_pressure,
-		"mind_tick_index": int(sim.get("_mind_tick_index") if sim.get("_mind_tick_index") != null else 0),
+		"mind_tick_index": int(sim.get("_mind_tick_index") if sim != null and sim.get("_mind_tick_index") != null else 0),
 	}
 	var w: int = _snap_write_idx
 	_snap_banks[w] = MindSimSnap.capture(sim)

@@ -53,10 +53,10 @@ static func _unpack_competition(packed: Dictionary, soa) -> Dictionary:
 	var idxs: Variant = packed.get("indices", [])
 	if idxs is PackedInt32Array:
 		for i in idxs:
-			winners.append(soa.source_at(int(i)).duplicate(true))
+			winners.append(soa.source_at(int(i)).duplicate(false))
 	elif idxs is Array:
 		for i in idxs:
-			winners.append(soa.source_at(int(i)).duplicate(true))
+			winners.append(soa.source_at(int(i)).duplicate(false))
 	return {
 		"contents": winners,
 		"ignited": bool(packed.get("ignited", false)),

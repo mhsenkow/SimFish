@@ -84,28 +84,49 @@ func init(color: Color = Color8(120, 165, 60), kind: int = AlgaeKind.CLUSTER) ->
 # ---- Save / load ----
 
 func to_save_dict() -> Dictionary:
+	var voxels_out: Array = []
+	for h in _voxels:
+		if h == null:
+			continue
+		voxels_out.append(SaveHelpers.vec3_to_array(h.local_pos))
 	return {
 		"pos": SaveHelpers.vec3_to_array(global_position),
 		"color": SaveHelpers.color_to_array(_color),
 		"age": _age,
 		"phase": _phase,
 		"voxel_count": _voxels.size(),
+		"voxels": voxels_out,
 		"kind": _kind,
 	}
 
 
 func apply_save_dict(d: Dictionary) -> void:
-	init(SaveHelpers.array_to_color(d.get("color", []), _color),
-		int(d.get("kind", AlgaeKind.CLUSTER)))
+	_clear_voxels()
+	_color = SaveHelpers.array_to_color(d.get("color", []), _color)
+	_kind = int(d.get("kind", AlgaeKind.CLUSTER))
 	_age = float(d.get("age", 0.0))
 	_phase = float(d.get("phase", randf() * TAU))
-	# Re-add voxels to roughly match the saved cluster size. tick() will
-	# rebuild the precise shape, but starting with the right count avoids
-	# a visible "shrinking and regrowing" snap on restore.
-	var target_count: int = int(d.get("voxel_count", 1))
-	while _voxels.size() < target_count:
-		_add_voxel(Vector3(randf_range(-0.2, 0.2), randf_range(-0.1, 0.1),
-			randf_range(-0.2, 0.2)), randf_range(0.6, 1.0))
+	var saved_voxels: Variant = d.get("voxels", [])
+	if saved_voxels is Array and not (saved_voxels as Array).is_empty():
+		for v in saved_voxels:
+			var lp: Vector3 = SaveHelpers.array_to_vec3(v, Vector3.ZERO)
+			_add_voxel(lp, randf_range(0.55, 1.0))
+	else:
+		init(_color, _kind)
+		var target_count: int = int(d.get("voxel_count", 1))
+		while _voxels.size() < target_count:
+			_add_voxel(Vector3(randf_range(-0.2, 0.2), randf_range(-0.1, 0.1),
+				randf_range(-0.2, 0.2)), randf_range(0.6, 1.0))
+
+
+func _clear_voxels() -> void:
+	for h in _voxels:
+		if h != null and h.alive:
+			h.hide()
+	_voxels.clear()
+	if _batch != null and is_instance_valid(_batch.mmi):
+		_batch.mmi.queue_free()
+	_batch = null
 
 
 # Called by SimDriver each tick. Returns true if the algae should die off.
@@ -125,15 +146,17 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 	if _graze_pressure > 0.12:
 		_age = maxf(0.0, _age - dt * _graze_pressure * 0.35)
 	_phase += dt
-	# Cluster + GSA ripple with flow; surface scum slides without rotating
-	# (it's anchored to the water film); hair algae waves in two axes.
+	var flow_s: float = 0.0
+	var w: Node = get_parent()
+	if w != null and w.has_method("flow_strength_at"):
+		flow_s = w.flow_strength_at(global_position)
 	match _kind:
 		AlgaeKind.SURFACE:
 			# Hardly moves — just a soft bob.
 			position.y += sin(_phase * 0.8) * 0.0008
 		AlgaeKind.HAIR:
-			rotation.z = sin(_phase * 1.2) * 0.22
-			rotation.x = cos(_phase * 0.9) * 0.10
+			rotation.z = sin(_phase * 1.2 + flow_s * 2.0) * (0.22 + flow_s * 0.08)
+			rotation.x = cos(_phase * 0.9) * (0.10 + flow_s * 0.05)
 		AlgaeKind.GSA:
 			pass  # GSA dots stick rigidly to glass
 		AlgaeKind.GDA:
@@ -204,9 +227,9 @@ func tick(dt: float, conditions_favor: bool) -> bool:
 				_add_voxel(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.9, -VOXEL_SIZE * 0.6), 0.7)
 			if _voxels.size() < 5 and life_frac > 0.85:
 				_add_voxel(Vector3(0, VOXEL_SIZE * 1.4, 0), 0.6)
-	var w: Node = _clamp_world_node()
-	if w != null and w.has_method("clamp_xyz_in_tank"):
-		global_position = w.clamp_xyz_in_tank(global_position, 0.22, VOXEL_SIZE * 2.0)
+	var clamp_w: Node = _clamp_world_node()
+	if clamp_w != null and clamp_w.has_method("clamp_xyz_in_tank"):
+		global_position = clamp_w.clamp_xyz_in_tank(global_position, 0.22, VOXEL_SIZE * 2.0)
 	# Senescence fade: in the last 15 % of life, scale shrinks slightly so
 	# the cluster visibly retreats before disappearing.
 	if life_frac > 0.85:
