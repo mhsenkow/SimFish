@@ -1927,6 +1927,30 @@ func _apply_mature_cold_start() -> void:
 	_mature_creatures(sim.shrimp)
 	if sim.snails_root != null and is_instance_valid(sim.snails_root):
 		_mature_creatures(sim.snails_root.get_children())
+	_mature_plants()
+
+
+# Grow the founding plants up to near-full height so an "established" tank
+# actually reads as planted from the first frame. This matters for far more
+# than looks: plant biomass is the tank's biofilter, its daytime O2 engine, and
+# its fish carrying capacity. A cycled tank that spawned tiny seedlings starved
+# its early carrying capacity and could hypoxia-crash (esp. no-aeration scapes
+# like Iwagumi) before the carpet grew in. Mixed 70-100% heights keep it natural.
+func _mature_plants() -> void:
+	if sim == null:
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.randomize()
+	for p in sim.plants:
+		if p == null or not is_instance_valid(p) or not p.has_method("_grow_one"):
+			continue
+		var maxh: int = int(p.get("max_height")) if p.get("max_height") != null else 1
+		var target: int = clampi(int(round(float(maxh) * rng.randf_range(0.7, 1.0))), 1, maxh)
+		var guard: int = 0
+		while int(p.current_height) < target and guard < 64:
+			if not p._grow_one():
+				break
+			guard += 1
 
 
 # Bump lineage depth + spread ages on a set of founder creatures. Static + duck-
@@ -3755,7 +3779,11 @@ func _current_plant_layout() -> Dictionary:
 
 
 func _plant_extra_count(layout: Dictionary, key: String) -> int:
-	return maxi(0, int(layout.get("extras", {}).get(key, _DEFAULT_PLANT_EXTRAS.get(key, 0))))
+	# Gentle calm-density trim on accent plants so the scape reads less busy.
+	# Softer than the main-species scalar so themed layouts keep their character.
+	const EXTRA_CALM: float = 0.75
+	var raw: int = int(layout.get("extras", {}).get(key, _DEFAULT_PLANT_EXTRAS.get(key, 0)))
+	return maxi(0, int(round(float(raw) * EXTRA_CALM)))
 
 
 func _pick_site_min_dist_from_center(min_dist: float, margin: float = 0.4,
@@ -4229,11 +4257,17 @@ func _spawn_initial_plants() -> void:
 		await _spawn_freshwater_plant_extras(species_specs, layout)
 		return
 
+	# Calm-density scalar: the default Walstad jungle read as visually chaotic
+	# (a wall of swaying blades). Thin the swaying species at spawn so the scape
+	# breathes — carpets/runners still fill in over play time, just less densely.
+	# Epiphytes (moss/fern) are left alone: they hug hardscape and barely sway.
+	const CALM_DENSITY: float = 0.65
+
 	# --- Background wall: valli forest (shape-aware placement) ---
 	# Cluster jitter widened to 0.55 + per-blade fit check enforced so
 	# blades don't pile on top of each other.
 	var bg_band: Vector2 = _spawn_z_band("background")
-	var bg_rows: int = maxi(0, int(round(8.0 * m_valli)))
+	var bg_rows: int = maxi(0, int(round(8.0 * m_valli * CALM_DENSITY)))
 	for _row in bg_rows:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			bg_band.x, bg_band.y, 0.55, 0.70, 36, 0.40, 0.40)
@@ -4250,14 +4284,14 @@ func _spawn_initial_plants() -> void:
 
 	# --- Midground rosettes (crypts) + red accent stems scattered ---
 	var mid_band: Vector2 = _spawn_z_band("mid")
-	var mid_crypts: int = maxi(0, int(round(18.0 * m_crypt)))
+	var mid_crypts: int = maxi(0, int(round(18.0 * m_crypt * CALM_DENSITY)))
 	for i in mid_crypts:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			mid_band.x, mid_band.y, 0.45, 0.70, 36, 0.55, 0.50)
 		_spawn_plant(species_specs[1], spawn_position_on_floor(xz.x, xz.y),
 			_rng.randi_range(2, 4))
 	await get_tree().process_frame
-	var mid_reds: int = maxi(0, int(round(9.0 * m_red)))
+	var mid_reds: int = maxi(0, int(round(9.0 * m_red * CALM_DENSITY)))
 	for i in mid_reds:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			mid_band.x, mid_band.y, 0.45, 0.70, 36, 0.55, 0.50)
@@ -4269,7 +4303,7 @@ func _spawn_initial_plants() -> void:
 	# runner propagation (Vallisneria-style stolons) to fill in over
 	# play time rather than spawning everything packed at start.
 	var fg_band: Vector2 = _spawn_z_band("foreground")
-	var fg_carpet: int = maxi(0, int(round(30.0 * m_carpet)))
+	var fg_carpet: int = maxi(0, int(round(30.0 * m_carpet * CALM_DENSITY)))
 	for i in fg_carpet:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			fg_band.x, fg_band.y, 0.40, 0.55, 36, 0.30, 0.58)
@@ -4809,6 +4843,11 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	var fit: Vector2 = clamp_plant_site(pos.x, pos.z, seed_reach, 0.25)
 	var sp: Vector3 = spawn_position_on_floor(fit.x, fit.y)
 	if not fits_plant_at(sp.x, sp.z, seed_reach, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45):
+		# Autonomous runner spread self-limits: a crowded target simply yields no
+		# daughter, so carpets stop once their zone is full instead of scattering
+		# new plants across open substrate (the old behavior that walled the tank).
+		if bool(seed_config.get("autonomous_spread", false)):
+			return
 		var alt_band: Vector2 = _spawn_z_band("scatter")
 		var alt: Vector2 = _pick_ecology_site(
 			is_saltwater, alt_band.x, alt_band.y, 0.35, 0.45)

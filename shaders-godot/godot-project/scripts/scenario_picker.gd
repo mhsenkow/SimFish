@@ -98,12 +98,17 @@ const SCENARIOS: Array[Dictionary] = [
 		"id": "iwagumi",
 		"name": "Iwagumi Stone Garden",
 		"tagline": "Wide shallow box · sand · single tetra school · bright sun",
-		"body": "Long shallow rectangle (11×3 with low ceiling) so the negative space dominates. Bright cool lighting + sand floor + no aeration. Three asymmetric stones, no driftwood, almost no plants. A single tight cardinal tetra school is the only living motion. Sunlit-window room.",
+		"body": "Long shallow rectangle (11×3 with low ceiling) so the negative space dominates. Bright cool lighting + sand floor + a hidden sponge filter for gentle surface turnover. Three asymmetric stones, no driftwood, almost no plants. A single tight cardinal tetra school is the only living motion. Sunlit-window room.",
 		"accent_color": Color8(220, 215, 200),
 		"config": {
 			"tank_preset": "iwagumi_school",
 			"substrate_type": "sand",
-			"aeration_type": "none",
+			# A carpet-only sand scape can't carry an 18-fish school through the
+			# night on surface exchange alone (dawn O2 crashed). A discreet sponge
+			# filter (disk), run a touch stronger, adds the gentle gas turnover a
+			# real Iwagumi needs to hold the dawn O2 trough above the stress band.
+			"aeration_type": "disk",
+			"aeration_strength": 0.9,
 			"tank_shape": "box",
 			"tank_half_w": 11.0,
 			"tank_half_d": 3.0,
@@ -305,7 +310,7 @@ const SCENARIOS: Array[Dictionary] = [
 		"body": "Pico-reef cube (4×4×5). Warm LEDs + minimal aeration — corals glow at night but heat stress can bleach colonies if you don't manage warmth. One clownfish hosts in anemones. Turn the heater off in the lights panel to watch warmth drop near the rod.",
 		"accent_color": Color8(255, 175, 95),
 		"config": {
-			"tank_preset": "reef",
+			"tank_preset": "nano_reef",
 			"substrate_type": "ocean_sand",
 			"aeration_type": "none",
 			"tank_shape": "cube",

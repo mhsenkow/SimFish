@@ -1840,6 +1840,19 @@ const TANK_PRESETS: Dictionary = {
 	# ---- Scenario-specific presets ----
 	# Tightly-curated stocking dicts that pair with the new-tank scenario
 	# picker. Each is shaped around what THAT scenario wants to show off.
+	# Pico reef — a single hosting clownfish plus a couple of tiny reef morphs.
+	# The full "reef" preset's 16-fish school suffocated a 4×4×5 pico overnight
+	# (dawn O2 crash); a real nano runs a very light bioload. Warmth-driven
+	# bleaching stays as the intended tutorial challenge.
+	"nano_reef": {
+		"label": "Nano reef (pico)",
+		"stocking": {
+			"reef_fish": 3,
+		},
+		"phenotype_spread": 2.0,
+		"substrate": "ocean_sand",
+		"description": "Pico reef cube — very light bioload; warmth-management bleaching tutorial.",
+	},
 	"polyp_lab": {
 		"label": "Polyp lab (no fish)",
 		# Zero fish — the showcase here is the sessile + microfauna layer.

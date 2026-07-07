@@ -7054,11 +7054,11 @@ func _motion_substep(dt: float) -> void:
 		pec_amp_extra += float(mm.get("fin_flare", 0.0)) * dance_blend
 		if float(mm.get("downbeat_pulse", 0.0)) > 0.5:
 			wag_amp_extra += 0.14 * dance_blend
-		_music_kick_pulse = maxf(_music_kick_pulse - dt * 9.0, float(mm.get("kick_thump", 0.0)) * dance_blend)
-		_music_snare_flick = maxf(_music_snare_flick - dt * 11.0, float(mm.get("snare_flick", 0.0)) * dance_blend)
+		_music_kick_pulse = maxf(_music_kick_pulse - dt * 5.0, float(mm.get("kick_thump", 0.0)) * dance_blend)
+		_music_snare_flick = maxf(_music_snare_flick - dt * 7.0, float(mm.get("snare_flick", 0.0)) * dance_blend)
 		_music_snare_flick = maxf(_music_snare_flick, float(mm.get("wave_tail", 0.0)) * dance_blend * 0.55)
 		if eye_spot or _color_vibrancy(base_color) > 0.62:
-			_music_eye_flash = maxf(_music_eye_flash - dt * 8.0,
+			_music_eye_flash = maxf(_music_eye_flash - dt * 4.5,
 				float(mm.get("eye_flash", 0.0)) * dance_blend)
 		_music_trail_ghost = maxf(_music_trail_ghost - dt * 5.5,
 			float(mm.get("motion_trail", 0.0)) * dance_blend)
@@ -7099,7 +7099,7 @@ func _motion_substep(dt: float) -> void:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4)
 		if _music_kick_pulse > 0.02:
-			var kick_scale: float = 1.0 + _music_kick_pulse * 0.06
+			var kick_scale: float = 1.0 + _music_kick_pulse * 0.03
 			_body_mid_pivot.scale = Vector3(kick_scale, kick_scale * 0.92, 1.0)
 		elif not is_equal_approx(_body_mid_pivot.scale.x, 1.0):
 			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(Vector3.ONE,
@@ -7162,7 +7162,7 @@ func _motion_substep(dt: float) -> void:
 		# voxel resolution (no separate eyelid geometry needed).
 		var blink_sq: float = 1.0 - (0.18 if _blink_remaining > 0.0 else 0.0)
 		var gape_z: float = 1.0 + _mouth_gape * 0.28
-		var eye_pulse: float = 1.0 + _music_eye_flash * 0.14
+		var eye_pulse: float = 1.0 + _music_eye_flash * 0.06
 		_head_pivot.scale = Vector3(breath * eye_pulse, blink_sq, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:

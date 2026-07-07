@@ -6,7 +6,14 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
-- **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`, ADRs for `sim-rust/` and `data-schemas/`.
+- **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`.
+
+## v0.2.26
+
+- **Scenario balance:** Iwagumi gets a discreet sponge filter so dawn O2 holds; pico reef uses new `nano_reef` preset (3 fish, not 16).
+- **Established tanks:** Founding plants mature to 70–100% height on cold start — real biofilter biomass from frame one.
+- **Ambient audio:** Richer layered bed synthesis and music-context sync.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.26) (macOS / Windows / Linux / Android).
 
 ## v0.2.25
 

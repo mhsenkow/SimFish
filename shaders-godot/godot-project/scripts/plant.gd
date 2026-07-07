@@ -742,7 +742,7 @@ func _apply_sway_personality() -> void:
 		amp = maxf(amp, 0.10)
 		flutter = 0.065
 		if _foliage_mat != null:
-			_foliage_mat.set_shader_parameter("flutter_speed", 4.8)
+			_foliage_mat.set_shader_parameter("flutter_speed", 3.2)
 			_foliage_mat.set_shader_parameter("sway_speed", 2.2)
 	var height_w: float = lerpf(0.78, 1.38, float(current_height) / float(maxi(max_height, 1)))
 	if life_phase == LifePhase.SENESCENT or is_dying:
@@ -750,11 +750,19 @@ func _apply_sway_personality() -> void:
 		flutter *= 0.7
 		height_w *= 0.72
 	tip_mult *= height_w
+	# Global calm factor: the tank read as chaotic with every plant swaying hard.
+	# Pull sway/flutter amplitude and tip whip down, and slow the sway rate, so the
+	# foliage drifts on a lazy current instead of thrashing. Tuned for "alive but
+	# smooth" — motion is still present, just gentle and legible.
+	const CALM_AMP: float = 0.55
+	const CALM_FLUTTER: float = 0.5
+	const CALM_TIP: float = 0.7
+	const CALM_SPEED: float = 0.65
 	if _foliage_mat != null:
-		_foliage_mat.set_shader_parameter("sway_amplitude", amp)
-		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter)
-		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult)
-		_foliage_mat.set_shader_parameter("sway_speed", 2.2 / height_w)
+		_foliage_mat.set_shader_parameter("sway_amplitude", amp * CALM_AMP)
+		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter * CALM_FLUTTER)
+		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult * CALM_TIP)
+		_foliage_mat.set_shader_parameter("sway_speed", 2.2 / height_w * CALM_SPEED)
 
 
 func _visual_youth_scale() -> float:
@@ -2598,6 +2606,10 @@ func _finalize_runner() -> void:
 			# daughter reads as the same species rather than slowly drifting
 			# into something else.
 			var cfg: Dictionary = get_seed_config()
+			# Autonomous spread: if the daughter's spot is already crowded, the
+			# runner should just not produce a plant there — NOT relocate it into
+			# open water. This lets density self-limit instead of filling the tank.
+			cfg["autonomous_spread"] = true
 			if is_carpet or has_plantlets:
 				cfg["no_mutate"] = true
 			cfg["variegation"] = variegation
@@ -2619,10 +2631,12 @@ func _finalize_runner() -> void:
 	_runner_progress = 0.0
 	# Carpet species fire more often than vallisneria — that's what makes
 	# them carpet. Plantlets sit between the two.
+	# Longer cooldowns keep runner spread from packing the tank into a wall of
+	# foliage over play time — carpets still fill in, just more slowly.
 	if is_carpet:
-		_runner_cooldown = randf_range(35.0, 70.0)
+		_runner_cooldown = randf_range(60.0, 110.0)
 	elif has_plantlets:
-		_runner_cooldown = randf_range(60.0, 120.0)
+		_runner_cooldown = randf_range(90.0, 160.0)
 	else:
 		_runner_cooldown = randf_range(RUNNER_COOLDOWN_MIN, RUNNER_COOLDOWN_MAX)
 

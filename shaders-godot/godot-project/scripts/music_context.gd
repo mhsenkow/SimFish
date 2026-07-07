@@ -439,20 +439,25 @@ func visual_mix() -> Dictionary:
 	var pal: Dictionary = MusicChoreography.mood_palette(
 		float(_ctx.valence), String(_ctx.mode), env, int(_ctx.key))
 	pal = _gentle_palette(pal)
-	var light_boost: float = float(_ctx.energy_env) * 0.14 * i
+	# "Alive but smooth": visuals track the slow energy envelope (a swell), and the
+	# per-beat drop_flash contributes only a gentle lift — never a strobe. Keeping
+	# the flash terms small is what stops lights/caustics pulsing on every downbeat.
+	var light_boost: float = float(_ctx.energy_env) * 0.10 * i
 	if _drop_flash > 0.25:
-		light_boost += _drop_flash * 0.18
-	var plant_boost: float = float(_ctx.energy_env) * 0.22 * i
-	var caustic_boost: float = float(_ctx.energy_env) * 0.15 * i + _drop_flash * 0.12
+		light_boost += _drop_flash * 0.07
+	# Music barely nudges plant sway now — plants are driven by their own slow
+	# current, not the beat (keeps the foliage from twitching to the music).
+	var plant_boost: float = float(_ctx.energy_env) * 0.07 * i
+	var caustic_boost: float = float(_ctx.energy_env) * 0.10 * i + _drop_flash * 0.04
 	return {
 		"light_mul": 1.0 + light_boost,
 		"light_warmth": clampf((float(_ctx.valence) - 0.4) * 0.22, -0.1, 0.28) * color_gain,
 		"plant_sway": 1.0 + plant_boost,
 		"caustic_mul": 1.0 + caustic_boost,
-		"bubble_burst": _drop_flash > 0.55,
-		"bubble_rate": 1.0 + float(_ctx.energy_env) * 0.65 * i + _drop_flash * 0.45,
+		"bubble_burst": _drop_flash > 0.7,
+		"bubble_rate": 1.0 + float(_ctx.energy_env) * 0.45 * i + _drop_flash * 0.18,
 		"palette": pal,
-		"shimmer": clampf(float(_ctx.energy_env) * 0.22 + _drop_flash * 0.12, 0.0, 0.28) * i * color_gain,
+		"shimmer": clampf(float(_ctx.energy_env) * 0.16 + _drop_flash * 0.05, 0.0, 0.22) * i * color_gain,
 		"drop_flash": _drop_flash,
 	}
 
@@ -693,13 +698,14 @@ func _update_drop_tension(dt: float) -> void:
 
 func _update_drop_flash(dt: float) -> void:
 	if _drop_pulse:
-		_drop_flash = maxf(_drop_flash, 0.38)
+		_drop_flash = maxf(_drop_flash, 0.24)
 		_drop_pulse = false
 	elif String(_ctx.phrase_state) == "drop" and bool(_ctx.downbeat):
-		_drop_flash = maxf(_drop_flash, 0.22)
+		_drop_flash = maxf(_drop_flash, 0.14)
 	if bool(_ctx.downbeat) and _overhead_view and bool(_ctx.active):
 		_pulse_overhead_beat()
-	_drop_flash = lerpf(_drop_flash, 0.0, clampf(dt * 2.0, 0.0, 1.0))
+	# Slow decay turns the downbeat hit into a soft swell instead of a strobe.
+	_drop_flash = lerpf(_drop_flash, 0.0, clampf(dt * 1.3, 0.0, 1.0))
 	_ctx.drop_flash = _drop_flash
 
 

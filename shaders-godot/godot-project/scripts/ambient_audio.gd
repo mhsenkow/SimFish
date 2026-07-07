@@ -243,6 +243,9 @@ var _last_quarter: int = -1
 var _last_sixteenth: int = -1
 var _last_sixteenth_raw: int = -1
 var _chord_root: int = 0
+# Remembered major/minor choice — gives scale selection hysteresis so the mode
+# doesn't flip-flop while the tank hovers near the major/minor boundary.
+var _last_scale_major: bool = true
 var _kick_env: float = 0.0
 var _kick_phase: float = 0.0
 var _kick_pitch: float = 68.0
@@ -752,6 +755,13 @@ func _refresh_environment() -> void:
 		_env["biomass"] = int(_sim_ref.total_plant_biomass)
 	if _world_ref != null and is_instance_valid(_world_ref) and "tannins" in _world_ref:
 		_env["tannins"] = clampf(float(_world_ref.tannins), 0.0, 1.0)
+	# Equilibrium signals for the Us motif — the song the tank earns by holding
+	# balance. Read raw (not smoothed) so the ESTABLISHED edge is a real moment.
+	if "stability" in _sim_ref:
+		_env["stability"] = clampf(float(_sim_ref.stability), 0.0, 1.0)
+	if _sim_ref.get("water_chemistry") != null:
+		var wc: WaterChemistry = _sim_ref.water_chemistry
+		_env["established"] = int(wc.cycle_phase) >= int(WaterChemistry.CyclePhase.ESTABLISHED)
 	var cfg := _cfg()
 	if cfg != null and cfg.has_method("current_substrate_profile"):
 		_env["saltwater"] = not not cfg.current_substrate_profile().get("is_saltwater", false)
@@ -759,7 +769,9 @@ func _refresh_environment() -> void:
 
 func _smooth_environment(dt: float) -> void:
 	var smooth_k: float = _cfg_float("music_smooth_rate", 0.55)
-	var rate: float = clampf(dt * lerpf(1.2, 6.5, smooth_k * _drive()), 0.0, 1.0)
+	# Gentler follow: cap how fast the music tracks tank metrics so vitality
+	# swings glide in over seconds instead of lurching frame-to-frame.
+	var rate: float = clampf(dt * lerpf(0.8, 3.2, smooth_k * _drive()), 0.0, 1.0)
 	for key in _env.keys():
 		var target: float = float(_env[key]) if typeof(_env[key]) in [TYPE_FLOAT, TYPE_INT] else 0.0
 		if typeof(_env[key]) == TYPE_BOOL:
@@ -788,8 +800,10 @@ func _compute_vitality() -> float:
 
 func _update_performance_params() -> void:
 	var vit: float = _tank_vitality
-	_bars_per_phrase = clampi(int(lerpf(8, 2, vit)), 2, 8)
-	_sixteenth_div = 1 if vit > 0.55 else (2 if vit > 0.28 else 4)
+	# Calm: longer phrases (fewer transitions) and a sparser arp (fewer 16th
+	# notes) so the music reads as spacious rather than busy/jittery.
+	_bars_per_phrase = clampi(int(lerpf(16, 4, vit)), 4, 16)
+	_sixteenth_div = 2 if vit > 0.55 else (3 if vit > 0.28 else 4)
 	var dl: float = float(_smooth.get("daylight", 1.0))
 	var zone: int = 1 if dl > 0.38 else 0
 	if zone != _daylight_zone:
@@ -1223,17 +1237,24 @@ func _react_to_event(event_name: String, _species: String = "") -> void:
 			return
 	match event_name:
 		"birth":
+			# Calm: births are constant in a breeding tank, so only occasionally
+			# reharmonize — otherwise the chord root churns nonstop. The soft
+			# phrase nudge still lets the moment register without a key change.
 			if bed_on:
-				_chord_root = (_chord_root + 2) % 5
 				_phrase_idx += 1
+				if randf() < 0.25:
+					_chord_root = (_chord_root + 2) % 5
 				_rebuild_tonal_cache()
 			# Most births are background events — soft chorus lift, not a drop.
 			if _phrase_state == PhraseState.VERSE and randf() < 0.18:
 				_phrase_force_state = PhraseState.CHORUS
 		"spawn":
+			# Spawning is rarer and more of a "moment" than birth — reharmonize
+			# about half the time rather than every single spawn.
 			if bed_on:
-				_chord_root = (_chord_root + 2) % 5
 				_phrase_idx += 1
+				if randf() < 0.5:
+					_chord_root = (_chord_root + 2) % 5
 				_rebuild_tonal_cache()
 			# Spawning IS the moment — force a build into a drop next bar.
 			if _cached_drop_intensity > 0.2:
@@ -1246,7 +1267,10 @@ func _react_to_event(event_name: String, _species: String = "") -> void:
 			if _cached_breakdown_depth > 0.2 and _phrase_state != PhraseState.BREAKDOWN:
 				_phrase_force_state = PhraseState.BREAKDOWN
 		"plant":
-			_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
+			# Plant/propagation events fire often — only occasionally switch the
+			# arp pattern so the harmony/melody stays put most of the time.
+			if randf() < 0.2:
+				_active_arp_idx = (_active_arp_idx + 1) % ARP_BANK.size()
 		"eat":
 			_arp_octave = mini(_arp_octave + 1, 1)
 		"story":
@@ -1347,11 +1371,13 @@ func _get_current_scale() -> Array[float]:
 	major_weight = lerpf(major_weight, 0.25, react * 0.35 if salt else 0.0)
 	major_weight = lerpf(major_weight, 0.2, tannins * react * 0.5)
 
-	if major_weight > 0.58:
-		return SCALE_MAJOR
-	if major_weight < 0.38:
-		return SCALE_MINOR
-	return SCALE_MAJOR if dl > 0.45 else SCALE_MINOR
+	# Hysteresis: only flip mode when the tank clearly crosses over (wide
+	# dead-band), otherwise hold the current scale so the harmony stays settled.
+	if major_weight > 0.62:
+		_last_scale_major = true
+	elif major_weight < 0.34:
+		_last_scale_major = false
+	return SCALE_MAJOR if _last_scale_major else SCALE_MINOR
 
 
 func _bpm() -> float:
@@ -1361,10 +1387,13 @@ func _bpm() -> float:
 	var bloom: float = float(_smooth.get("bloom", 0.0)) * _influence("music_influence_bloom")
 	var dl: float = float(_smooth.get("daylight", 1.0)) * _influence("music_influence_day")
 	var fish: float = float(_smooth.get("fish", 0)) * _influence("music_influence_fish")
-	var base: float = lerpf(78.0, 128.0, e * 0.5 + vit * tempo_follow * 0.4)
-	base *= lerpf(0.92, 1.08, bloom * _drive())
-	base *= lerpf(0.94, 1.06, dl)
-	base += clampf(fish * 0.35, 0.0, 8.0)
+	# Calm: narrower base tempo band and gentler metric modulation so BPM holds
+	# steady instead of drifting with every bloom / daylight / fish change.
+	# (Persona bpm_mul below still lets Lo-fi crawl and ABGT lift.)
+	var base: float = lerpf(85.0, 116.0, e * 0.5 + vit * tempo_follow * 0.4)
+	base *= lerpf(0.96, 1.05, bloom * _drive())
+	base *= lerpf(0.96, 1.04, dl)
+	base += clampf(fish * 0.2, 0.0, 5.0)
 	if float(_smooth.get("o2", 0.85)) < 0.45:
 		base *= 0.88
 	# Persona tempo bias (Monk/Lo-fi slow it right down, ABGT pushes it up).
@@ -1726,7 +1755,8 @@ func play_spawn_sfx(species: String = "") -> void:
 func _trigger_kick(velocity: float = 1.0) -> void:
 	if _kick_env < 0.06:
 		_kick_phase = 0.0
-	_kick_env = velocity
+	# While the Us motif sings, the bed steps back so the theme can float.
+	_kick_env = velocity * _hymn_duck
 	_kick_pitch = lerpf(58.0, 72.0, _cached_energy)
 	# Sidechain depth scales with phrase state — slammer in DROP.
 	var slam_mult: float = 0.85
@@ -1740,19 +1770,19 @@ func _trigger_hat(velocity: float = 1.0) -> void:
 	var mute_p: float = clampf(0.05 + _cached_humanize * 0.3, 0.0, 0.55)
 	if randf() < mute_p:
 		return
-	_hat_env = velocity
+	_hat_env = velocity * _hymn_duck
 
 
 func _trigger_clap(velocity: float = 1.0) -> void:
 	if _cached_clap_mix <= 0.001:
 		return
-	_clap_env = velocity
+	_clap_env = velocity * _hymn_duck
 
 
 func _trigger_shaker_grain(velocity: float = 1.0) -> void:
 	if _cached_shaker_mix <= 0.001:
 		return
-	_shaker_env = velocity
+	_shaker_env = velocity * _hymn_duck
 
 
 func _trigger_tom(pitch_hz: float = 140.0, velocity: float = 1.0) -> void:
@@ -1788,7 +1818,7 @@ func _trigger_pwm_bass(velocity: float = 1.0) -> void:
 	if _cached_pwm_amp <= 0.0005:
 		return
 	_pwm_active = true
-	_pwm_env = velocity
+	_pwm_env = velocity * _hymn_duck
 	# Use a frequency between the bass root and a fifth above for movement.
 	_pwm_inc = (_bass_freq * 1.5) * INV_SAMPLE_RATE
 
@@ -1820,6 +1850,98 @@ func play_rhodes(freq: float, amp: float, dur: float = 0.7, pan: float = 0.0) ->
 	play_note(freq, amp, dur, 1.0, 0.85, 1.8, 0.012, true, pan)
 	# Slight bell harmonic on top — DX-like character.
 	play_note(freq * 2.0, amp * 0.18, dur * 0.6, 1.4, 1.2, 2.4, 0.012, true, pan)
+
+
+# ---- The Us motif — the tank's own song ----
+# A recurring melodic theme, earned rather than scheduled. It plays once, in
+# full, the first time the tank reaches ESTABLISHED — the moment the ecosystem
+# has sculpted a stable balance out of churn — and afterwards only rarely, at
+# dusk, when stability is high: the tank remembering its own founding.
+#
+# The contour sets the song's arc in scale degrees, so it sings in whatever
+# key and mode the tank is in: a quiet start on the root (nothing here yet),
+# a climb through the fifth (sculpting), an octave lift with a reach above it
+# (the glitch still loves), then the fall home — ending on root and fifth
+# sounding TOGETHER over a low Rhodes root. Two voices, one chord: "Us."
+#
+# Each entry: [scale_degree, octave, gap_after_s, amplitude].
+const US_MOTIF: Array = [
+	[0, 0, 0.95, 0.055],   # home, barely there
+	[2, 0, 0.95, 0.062],   # reaching
+	[4, 0, 1.50, 0.070],   # the fifth — holds
+	[7, 0, 1.10, 0.084],   # octave: the light
+	[9, 0, 1.75, 0.064],   # above it — wonder
+	[7, 0, 1.00, 0.058],
+	[5, 0, 0.90, 0.052],
+	[4, 0, 1.60, 0.056],   # rest on the fifth
+	[2, 0, 1.05, 0.047],
+	[0, 0, 2.60, 0.058],   # home again — sounded WITH the fifth (see player)
+]
+
+var _hymn_idx: int = -1          # -1 idle; else index into US_MOTIF
+var _hymn_note_t: float = 0.0
+var _hymn_cooldown: float = 240.0  # boot/load grace so it never fires on open
+var _hymn_duck: float = 1.0        # 1 = bed at full; eases toward 0.35 while singing
+var _hymn_pending: bool = false    # ESTABLISHED edge waiting for the grace to pass
+var _was_established: bool = false
+var _establish_seen: bool = false  # first env read seeds the edge detector
+
+
+func _tick_hymn(dt: float) -> void:
+	_hymn_cooldown = maxf(0.0, _hymn_cooldown - dt)
+	var established: bool = bool(_env.get("established", false))
+	if not _establish_seen and _env.has("established"):
+		# Seed the edge detector from the first real read — loading an already-
+		# established tank must not count as "the moment it happened".
+		_establish_seen = true
+		_was_established = established
+	elif _establish_seen and established and not _was_established:
+		_hymn_pending = true   # the tank just earned its balance
+	if _establish_seen:
+		_was_established = established
+
+	if _hymn_idx < 0:
+		_hymn_duck = move_toward(_hymn_duck, 1.0, dt * 0.22)
+		if _hymn_cooldown <= 0.0 and (_hymn_pending or _hymn_dusk_ready()):
+			_hymn_pending = false
+			_hymn_idx = 0
+			_hymn_note_t = 0.35
+		return
+
+	_hymn_duck = move_toward(_hymn_duck, 0.35, dt * 0.55)
+	_hymn_note_t -= dt
+	if _hymn_note_t > 0.0:
+		return
+	var n: Array = US_MOTIF[_hymn_idx]
+	var deg: int = int(n[0])
+	var oct: int = int(n[1])
+	var amp: float = float(n[3])
+	var last: bool = _hymn_idx == US_MOTIF.size() - 1
+	play_bell_pluck(_scale_freq(deg, oct), amp, 1.35 if not last else 2.2)
+	if _hymn_idx == 0:
+		# Low Rhodes root under the first note — ground to stand on.
+		play_rhodes(_scale_freq(0, -1), 0.045, 1.8)
+	elif last:
+		# The naming: fifth rings WITH the root, low Rhodes beneath both.
+		play_bell_pluck(_scale_freq(4, oct), amp * 0.80, 2.2)
+		play_rhodes(_scale_freq(0, -1), 0.052, 2.6)
+	_hymn_note_t = float(n[2]) * randf_range(0.96, 1.08)  # human breath
+	_hymn_idx += 1
+	if _hymn_idx >= US_MOTIF.size():
+		_hymn_idx = -1
+		# Rare afterwards — roughly once per sim-day, drifting.
+		_hymn_cooldown = randf_range(760.0, 1100.0)
+
+
+func _hymn_dusk_ready() -> bool:
+	if not bool(_env.get("established", false)):
+		return false
+	if float(_env.get("stability", 0.0)) < 0.82:
+		return false
+	if float(_smooth.get("bloom", 0.0)) > 0.35:
+		return false
+	var dl: float = float(_smooth.get("daylight", 1.0))
+	return dl > 0.16 and dl < 0.42   # dusk / early dark — vespers hour
 
 
 func _kick_on_quarter(quarter: int) -> bool:
@@ -1858,7 +1980,9 @@ func _hat_on_quarter(quarter: int) -> bool:
 	var aeration: float = float(_smooth.get("aeration", 0.0)) * _cached_influence_aeration
 	var fish: float = float(_smooth.get("fish", 0)) * _cached_influence_fish
 	var density: float = clampf(aeration * 0.35 + fish / 30.0, 0.0, 1.0)
-	return quarter % 2 == 1 and density > lerpf(0.28, 0.08, _cached_hat_mix)
+	# Calm: thin the on-beat hats from every other beat (2/bar) to 1/bar; the
+	# offbeat 16th hats in _advance_sequencer still carry the main groove.
+	return quarter % 4 == 2 and density > lerpf(0.28, 0.08, _cached_hat_mix)
 
 
 # Convert raw fractional 16th position → "swung" 16th by delaying odd 16ths.
@@ -2688,6 +2812,7 @@ func _process(_dt: float) -> void:
 
 	_contagion_harmonic = maxf(0.0, _contagion_harmonic - _dt * 0.38)
 	_death_hush = maxf(0.0, _death_hush - _dt * 0.18)
+	_tick_hymn(_dt)
 
 	if _plink_bed_active() and _sim_ref != null and not _trance_bed_active():
 		_accent_t -= sim_dt
