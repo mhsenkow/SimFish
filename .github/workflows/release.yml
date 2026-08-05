@@ -224,8 +224,17 @@ jobs:
         if: matrix.name == 'Linux'
         run: |
           chmod +x build/WalstadLoom-linux.x86_64
+          # Godot export may omit GDExtension sidecars — copy release .so next to the binary.
+          cp -f "$PROJECT_PATH/addons/godotsteam/linux64/libgodotsteam.linux.template_release.x86_64.so" build/
+          cp -f "$PROJECT_PATH/addons/godotsteam/linux64/libsteam_api.so" build/
+          cp -f "$PROJECT_PATH/addons/godot_llama/bin/libgodot_llama.linux.template_release.x86_64.so" build/
           mkdir -p artifacts
-          tar -czf artifacts/walstad-loom-linux.tar.gz -C build WalstadLoom-linux.x86_64 steam_appid.txt
+          tar -czf artifacts/walstad-loom-linux.tar.gz -C build \
+            WalstadLoom-linux.x86_64 \
+            libgodotsteam.linux.template_release.x86_64.so \
+            libsteam_api.so \
+            libgodot_llama.linux.template_release.x86_64.so \
+            steam_appid.txt
 
       - name: Package Android
         if: matrix.name == 'Android'
