@@ -11,6 +11,12 @@ mkdir -p "$CONTENT/windows" "$CONTENT/linux" "$CONTENT/macos"
 
 if [[ -f "$BUILD/WalstadLoom.exe" ]]; then
 	cp "$BUILD/WalstadLoom.exe" "$CONTENT/windows/"
+	# GodotSteam / Guardian sidecars from the Windows export zip
+	shopt -s nullglob
+	for f in "$BUILD"/*.dll; do
+		cp "$f" "$CONTENT/windows/"
+	done
+	shopt -u nullglob
 	echo "Staged Windows build"
 else
 	echo "Missing $BUILD/WalstadLoom.exe — export with the Windows Desktop preset first" >&2
@@ -19,6 +25,11 @@ fi
 if [[ -f "$BUILD/WalstadLoom-linux.x86_64" ]]; then
 	cp "$BUILD/WalstadLoom-linux.x86_64" "$CONTENT/linux/"
 	chmod +x "$CONTENT/linux/WalstadLoom-linux.x86_64"
+	shopt -s nullglob
+	for f in "$BUILD"/*.so; do
+		cp "$f" "$CONTENT/linux/"
+	done
+	shopt -u nullglob
 	echo "Staged Linux build"
 else
 	echo "Missing $BUILD/WalstadLoom-linux.x86_64 — export with the Linux preset first" >&2
@@ -30,5 +41,7 @@ if [[ -d "$BUILD/WalstadLoom.app" ]]; then
 else
 	echo "Missing $BUILD/WalstadLoom.app — export with the macOS preset first" >&2
 fi
+# steam_appid.txt is for local non-Steam launches only — omit from depots.
+rm -f "$CONTENT/windows/steam_appid.txt" "$CONTENT/linux/steam_appid.txt"
 
 echo "Content staged under steam/content/"
