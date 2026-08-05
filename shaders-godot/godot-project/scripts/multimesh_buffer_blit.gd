@@ -14,6 +14,9 @@ static func _stride_for(mm: MultiMesh, use_custom: bool) -> int:
 
 
 static func _write_xform(buf: PackedFloat32Array, base: int, xform: Transform3D) -> void:
+	# Godot stores Transform3D as basis.rows[0..2] then origin components:
+	#   rows[0] = (x.x, y.x, z.x), rows[1] = (x.y, y.y, z.y), …
+	# Matches RendererMeshStorage::multimesh_instance_set_transform.
 	var b: Basis = xform.basis
 	var o: Vector3 = xform.origin
 	buf[base + 0] = b.x.x

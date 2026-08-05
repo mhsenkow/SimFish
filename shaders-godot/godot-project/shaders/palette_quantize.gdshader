@@ -74,6 +74,10 @@ uniform float material_value : hint_range(0.7, 1.3) = 1.0;
 uniform float health_grade : hint_range(0.0, 1.0) = 1.0;
 // Palette-locked paper grain (#77).
 uniform float film_grain_strength : hint_range(0.0, 1.0) = 0.0;
+// Soft display AA + banding break — runs after quantize so MultiMesh stays
+// untouched. Defaults off; Mac quality preset enables a light dose.
+uniform float fxaa_strength : hint_range(0.0, 1.0) = 0.0;
+uniform float deband_strength : hint_range(0.0, 1.0) = 0.0;
 // Extra emissive bloom shoulder on hot pixels (#73).
 uniform float selective_glow : hint_range(0.0, 1.0) = 0.0;
 // Suppress outlines on low-sat water/substrate (#72).
@@ -470,6 +474,30 @@ void fragment() {
 	if (film_grain_strength > 0.001) {
 		float grain = ign(px * 1.3 + vec2(17.0, 31.0)) * film_grain_strength * 0.08;
 		result = clamp(result + vec3(grain), 0.0, 1.0);
+	}
+
+	// Cheap FXAA-lite — blend toward a 4-tap neighborhood on high-contrast edges.
+	// Softens stair-steps when SubViewport MSAA is Off (Mac Metal path).
+	if (fxaa_strength > 0.001) {
+		vec2 step_uv = 1.0 / internal_resolution;
+		vec3 c_n = texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb;
+		vec3 c_s = texture(TEXTURE, UV + vec2(0.0,  step_uv.y)).rgb;
+		vec3 c_e = texture(TEXTURE, UV + vec2( step_uv.x, 0.0)).rgb;
+		vec3 c_w = texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb;
+		vec3 blur = (c_n + c_s + c_e + c_w) * 0.25;
+		float lc = luma_of(result);
+		float edge = max(max(abs(lc - luma_of(c_n)), abs(lc - luma_of(c_s))),
+			max(abs(lc - luma_of(c_e)), abs(lc - luma_of(c_w))));
+		float k = smoothstep(0.04, 0.18, edge) * fxaa_strength * 0.72;
+		result = mix(result, blur, k);
+	}
+
+	// Triangular deband noise — breaks flat posterize terraces without soft blur.
+	if (deband_strength > 0.001) {
+		float n1 = ign(px);
+		float n2 = ign(px + vec2(19.0, 47.0));
+		float tri = n1 + n2; // approx [-1, 1] triangular
+		result = clamp(result + vec3(tri * deband_strength * 0.012), 0.0, 1.0);
 	}
 
 	COLOR = vec4(result, 1.0);

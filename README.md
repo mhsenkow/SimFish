@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.26](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.26)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
+**Latest release: [v0.2.28](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.28)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
 
 ## Where things are at (July 2026)
 

@@ -9,27 +9,27 @@ render_mode blend_add, depth_draw_never, cull_disabled, unshaded;
 uniform vec4 beam_color : source_color = vec4(0.55, 0.75, 1.0, 0.08);
 uniform float speed : hint_range(0.1, 5.0) = 1.0;
 uniform float noise_scale : hint_range(0.1, 10.0) = 1.8;
-uniform float edge_fade : hint_range(0.0, 1.0) = 0.06;
-uniform float falloff_exponent : hint_range(1.0, 5.0) = 1.2;
+uniform float edge_fade : hint_range(0.0, 1.0) = 0.12;
+uniform float falloff_exponent : hint_range(1.0, 5.0) = 1.85;
 uniform float occlusion : hint_range(0.0, 1.0) = 0.0;
 // Forward-scatter anisotropy. Real underwater god rays brighten when
 // viewed along the beam axis (Henyey-Greenstein g>0). Default 0.5 gives
 // a noticeable boost when looking down the shaft without overwhelming
 // the side-on read.
-uniform float forward_scatter : hint_range(0.0, 1.0) = 0.5;
+uniform float forward_scatter : hint_range(0.0, 1.0) = 0.42;
 // How much the beam dissipates as it travels down through the water
 // column. 0 = uniform brightness top-to-bottom (old behavior). 1 = fully
 // extinct at the substrate. Real underwater shafts dim with depth as
 // suspended particulates scatter the light away — 0.7 reads as a soft
 // fall-off that still hits the substrate visibly.
-uniform float depth_dissipation : hint_range(0.0, 1.0) = 0.7;
+uniform float depth_dissipation : hint_range(0.0, 1.0) = 0.78;
 // Per-fish soft occluders. xyz = world position, w = effective radius.
 // w == 0 marks an unused slot. World.gd refreshes the active 8 closest
 // fish per visual tick so this is cheap to evaluate per fragment.
 uniform vec4 occluders[8];
 uniform float occluder_strength : hint_range(0.0, 1.0) = 0.65;
 // Posterize beam alpha into palette-friendly bands (#15).
-uniform float beam_posterize : hint_range(0.0, 1.0) = 0.55;
+uniform float beam_posterize : hint_range(0.0, 1.0) = 0.32;
 uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 // Suspended particulate sparkle in the shaft (#59).
 uniform float dust_mote_density : hint_range(0.0, 1.0) = 0.35;

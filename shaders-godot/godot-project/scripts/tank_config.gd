@@ -40,7 +40,8 @@ var palette_bank_lock: bool = true
 # 0 = off (default), up to 1 = strong dark line on every silhouette.
 var outline_strength: float = 0.0
 # Extra post-process ink on fauna/plants — independent of outline_strength.
-var creature_outline_strength: float = 0.36
+# Kept soft so quantize doesn't crush fish into black silhouettes.
+var creature_outline_strength: float = 0.20
 # CRT scanline overlay strength. 0 = off (default). Pairs with palette
 # quantize for a heavier retro display feel.
 var crt_strength: float = 0.0
@@ -164,7 +165,11 @@ var material_weight_water: float = 0.75
 # Camera.
 var camera_fov: float = 50.0
 # Anti-aliasing on the SubViewport. 0=off, 1=2x, 2=4x, 3=8x.
-var msaa: int = 2
+# macOS defaults Off — Metal + MSAA corrupts MultiMesh transforms.
+var msaa: int = 0 if OS.get_name() == "macOS" else 2
+# Soft edge AA + deband on the post/display pass (does not touch 3D MSAA).
+var display_fxaa: float = 0.45 if OS.get_name() == "macOS" else 0.0
+var display_deband: float = 0.35 if OS.get_name() == "macOS" else 0.15
 # Camera state - preserved across scene reloads so changing settings doesn't
 # snap the view back to the default. Saved by main.gd.save_camera_state()
 # right before a panel triggers reload_current_scene.
@@ -2357,6 +2362,8 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "outline_strength", outline_strength)
 	cfg.set_value("render", "creature_outline_strength", creature_outline_strength)
 	cfg.set_value("render", "crt_strength", crt_strength)
+	cfg.set_value("render", "display_fxaa", display_fxaa)
+	cfg.set_value("render", "display_deband", display_deband)
 	cfg.set_value("render", "integer_upscale", integer_upscale)
 	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
 	cfg.set_value("render", "follow_depth_of_field", follow_depth_of_field)
@@ -2647,6 +2654,8 @@ func load_from_disk() -> void:
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
 	creature_outline_strength = cfg.get_value("render", "creature_outline_strength", creature_outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
+	display_fxaa = float(cfg.get_value("render", "display_fxaa", display_fxaa))
+	display_deband = float(cfg.get_value("render", "display_deband", display_deband))
 	experimental_visuals = cfg.get_value("render", "experimental_visuals", experimental_visuals)
 	pixel_purity = cfg.get_value("render", "pixel_purity", pixel_purity)
 	colorblind_palette = String(cfg.get_value("render", "colorblind_palette", colorblind_palette))
@@ -2681,6 +2690,14 @@ func load_from_disk() -> void:
 	material_weight_water = cfg.get_value("material", "weight_water", material_weight_water)
 	camera_fov = cfg.get_value("render", "fov", camera_fov)
 	msaa = cfg.get_value("render", "msaa", msaa)
+	# Metal + MSAA corrupts MultiMesh — never persist On on macOS.
+	if OS.get_name() == "macOS":
+		msaa = 0
+		creature_outline_strength = minf(float(creature_outline_strength), 0.22)
+		if float(display_fxaa) < 0.05:
+			display_fxaa = 0.45
+		if float(display_deband) < 0.05:
+			display_deband = 0.35
 	camera_state_saved = cfg.get_value("camera", "saved", false)
 	camera_yaw = cfg.get_value("camera", "yaw", camera_yaw)
 	camera_pitch = cfg.get_value("camera", "pitch", camera_pitch)
@@ -2957,7 +2974,7 @@ func reset_to_defaults() -> void:
 	dither_region_aware = true
 	palette_bank_lock = true
 	outline_strength = 0.0
-	creature_outline_strength = 0.36
+	creature_outline_strength = 0.20
 	crt_strength = 0.0
 	integer_upscale = false
 	pixel_snap_camera = false
@@ -2983,7 +3000,9 @@ func reset_to_defaults() -> void:
 	material_weight_hardscape = 1.0
 	material_weight_water = 0.75
 	camera_fov = 50.0
-	msaa = 2
+	msaa = 0 if OS.get_name() == "macOS" else 2
+	display_fxaa = 0.45 if OS.get_name() == "macOS" else 0.0
+	display_deband = 0.35 if OS.get_name() == "macOS" else 0.15
 	# Camera view.
 	camera_state_saved = false
 	camera_yaw = -0.55

@@ -30,7 +30,7 @@ uniform float biofilm_iridescence : hint_range(0.0, 1.0) = 0.5;
 // contents shimmer in the glass at grazing angles — the "real glass in a real
 // room" read. Subtle by default to preserve the pixel-art palette.
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float screen_reflection : hint_range(0.0, 1.0) = 0.22;
+uniform float screen_reflection : hint_range(0.0, 1.0) = 0.0;
 // Faint travelling caustic band on vertical panes (SENTIENCE_THE_SPARK #53).
 uniform float caustic_band : hint_range(0.0, 1.0) = 0.0;
 
@@ -100,11 +100,11 @@ void fragment() {
 		* step(abs(n.y), 0.35) * step(0.0, wl_signed);
 	float ring_below = smoothstep(0.025, 0.0, abs(wl_signed + 0.018))
 		* step(abs(n.y), 0.35) * step(wl_signed, 0.0);
-	col += vec3(0.92, 0.99, 1.0) * ring_above * 0.55;
-	col -= vec3(0.10, 0.14, 0.18) * ring_below * 0.35;
+	col += vec3(0.92, 0.99, 1.0) * ring_above * 0.28;
+	col -= vec3(0.10, 0.14, 0.18) * ring_below * 0.22;
 	// Broader falloff so the original soft glow still reads.
 	float meniscus = (1.0 - smoothstep(0.0, 0.18, wl)) * step(abs(n.y), 0.35);
-	col += vec3(0.88, 0.96, 1.0) * meniscus * 0.16;
+	col += vec3(0.88, 0.96, 1.0) * meniscus * 0.08;
 
 	// Biofilm + condensation green/brown creep from corners. The biofilm
 	// here gets a thin-film iridescent shimmer — real glass-side biofilm

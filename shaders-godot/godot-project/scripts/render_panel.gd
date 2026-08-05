@@ -50,6 +50,12 @@ var _fog_ambient_label: Label
 var _fov: HSlider
 var _fov_label: Label
 var _msaa_option: OptionButton
+var _fxaa: HSlider
+var _fxaa_label: Label
+var _deband: HSlider
+var _deband_label: Label
+var _creature_outline: HSlider
+var _creature_outline_label: Label
 var _adaptive_check: CheckBox
 var _adaptive_target: HSlider
 var _adaptive_target_label: Label
@@ -117,6 +123,13 @@ const FIDELITY_PRESETS: Array = [
 		"label": "High",
 		"w": 1024, "h": 576, "msaa": 2,
 		"tip": "1024×576 with 4× MSAA — default desktop fidelity",
+	},
+	{
+		"key": "mac_safe",
+		"label": "Mac Safe",
+		"w": 1024, "h": 576, "msaa": 0,
+		"shader_tier": 0,
+		"tip": "1024×576, MSAA Off, soft FXAA/deband — Metal-stable look",
 	},
 ]
 const RESOLUTIONS: Array = [
@@ -291,7 +304,7 @@ func _build_ui() -> void:
 func _build_quality_hero(parent: VBoxContainer) -> void:
 	_add_section(parent, "Fidelity")
 	var hero_hint := PanelTheme.make_description()
-	hero_hint.text = "One tap sets render resolution + MSAA. Use Apply to rebuild the viewport."
+	hero_hint.text = "One tap sets render resolution + MSAA. Use Apply to rebuild the viewport. On Mac, MSAA stays Off (Metal stability)."
 	parent.add_child(hero_hint)
 
 	var fidelity_row := HBoxContainer.new()
@@ -361,10 +374,34 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	for label in MSAA_LABELS:
 		_msaa_option.add_item(label)
 	_msaa_option.item_selected.connect(func(idx):
-		TankConfig.msaa = idx
+		TankConfig.msaa = 0 if OS.get_name() == "macOS" else idx
+		if OS.get_name() == "macOS":
+			_msaa_option.select(0)
 		_sync_fidelity_buttons()
 		_update_fidelity_summary()
 		_commit_render_to_main())
+	_fxaa_label = Label.new()
+	_fxaa = PanelTheme.add_slider_row(parent, "Display FXAA", 0.0, 1.0, 0.05, _fxaa_label)
+	_fxaa.value_changed.connect(func(v):
+		TankConfig.display_fxaa = v
+		_fxaa_label.text = "%.2f" % v
+		_push_live_quantize_param("fxaa_strength", v))
+	_deband_label = Label.new()
+	_deband = PanelTheme.add_slider_row(parent, "Deband", 0.0, 1.0, 0.05, _deband_label)
+	_deband.value_changed.connect(func(v):
+		TankConfig.display_deband = v
+		_deband_label.text = "%.2f" % v
+		_push_live_quantize_param("deband_strength", v))
+	var aa_hint := PanelTheme.make_description()
+	aa_hint.text = "FXAA/deband soften edges without Metal MSAA. Mac Safe turns both on."
+	parent.add_child(aa_hint)
+	_creature_outline_label = Label.new()
+	_creature_outline = PanelTheme.add_slider_row(
+		parent, "Creature outline", 0.0, 1.0, 0.02, _creature_outline_label)
+	_creature_outline.value_changed.connect(func(v):
+		TankConfig.creature_outline_strength = v
+		_creature_outline_label.text = "%.2f" % v
+		_push_live_quantize_param("creature_outline_strength", v))
 
 
 func _build_rendering_tab(vbox: VBoxContainer) -> void:
@@ -587,9 +624,35 @@ func _apply_fidelity_preset(preset: Dictionary) -> void:
 		TankConfig.shader_perf_tier = maxi(TankConfig.shader_perf_tier, 1)
 	elif key in ["sharp", "high"]:
 		TankConfig.shader_perf_tier = 0
+	elif key == "mac_safe":
+		TankConfig.msaa = 0
+		TankConfig.shader_perf_tier = 0
+		TankConfig.creature_outline_strength = 0.18
+		TankConfig.display_fxaa = 0.45
+		TankConfig.display_deband = 0.35
+		TankConfig.outline_strength = 0.0
+		TankConfig.crt_strength = 0.0
+		TankConfig.integer_upscale = false
+	if OS.get_name() == "macOS":
+		TankConfig.msaa = 0
 	_pull_resolution_option()
 	if _msaa_option != null:
 		_msaa_option.select(int(TankConfig.msaa))
+	if _fxaa != null:
+		_fxaa.set_block_signals(true)
+		_fxaa.value = float(TankConfig.display_fxaa)
+		_fxaa.set_block_signals(false)
+		_fxaa_label.text = "%.2f" % float(TankConfig.display_fxaa)
+	if _deband != null:
+		_deband.set_block_signals(true)
+		_deband.value = float(TankConfig.display_deband)
+		_deband.set_block_signals(false)
+		_deband_label.text = "%.2f" % float(TankConfig.display_deband)
+	if _creature_outline != null:
+		_creature_outline.set_block_signals(true)
+		_creature_outline.value = float(TankConfig.creature_outline_strength)
+		_creature_outline.set_block_signals(false)
+		_creature_outline_label.text = "%.2f" % float(TankConfig.creature_outline_strength)
 	_sync_fidelity_buttons()
 	_update_fidelity_summary()
 	_commit_render_to_main()
@@ -608,6 +671,14 @@ func _fidelity_preset_index() -> int:
 				and int(p["h"]) == TankConfig.render_height \
 				and int(p["msaa"]) == int(TankConfig.msaa) \
 				and int(p.get("shader_tier", 0)) == int(TankConfig.shader_perf_tier):
+			# Prefer Mac Safe when FXAA is on at high res / MSAA off.
+			if String(p.get("key", "")) == "mac_safe" \
+					and float(TankConfig.display_fxaa) < 0.2:
+				continue
+			if String(p.get("key", "")) == "high" \
+					and float(TankConfig.display_fxaa) >= 0.2 \
+					and int(TankConfig.msaa) == 0:
+				continue
 			return i
 	return -1
 
@@ -861,6 +932,21 @@ func _pull_from_config() -> void:
 	_fov.value = TankConfig.camera_fov
 	_fov.set_block_signals(false)
 	_msaa_option.select(int(TankConfig.msaa))
+	if _fxaa != null:
+		_fxaa.set_block_signals(true)
+		_fxaa.value = float(TankConfig.display_fxaa)
+		_fxaa.set_block_signals(false)
+		_fxaa_label.text = "%.2f" % float(TankConfig.display_fxaa)
+	if _deband != null:
+		_deband.set_block_signals(true)
+		_deband.value = float(TankConfig.display_deband)
+		_deband.set_block_signals(false)
+		_deband_label.text = "%.2f" % float(TankConfig.display_deband)
+	if _creature_outline != null:
+		_creature_outline.set_block_signals(true)
+		_creature_outline.value = float(TankConfig.creature_outline_strength)
+		_creature_outline.set_block_signals(false)
+		_creature_outline_label.text = "%.2f" % float(TankConfig.creature_outline_strength)
 	_sync_fidelity_buttons()
 	_sync_adaptive_controls()
 	if _adaptive_target != null:

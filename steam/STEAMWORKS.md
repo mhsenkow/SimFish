@@ -17,7 +17,17 @@ App ID **4796460** · Store name **walstad loom**
    - Linux: `WalstadLoom-linux.x86_64`
    - macOS: `WalstadLoom.app`
 
-3. **Copy depot IDs:**
+3. **macOS 64-bit flag (required)** — App Admin → Edit Steamworks Settings →
+   Application → **Supported Operating Systems** → under macOS check:
+   - **64 Bit (Intel) Binaries Included**
+   - **Apple Silicon Binaries Included** (universal export includes arm64)
+   Without these, Steam shows the false banner *“Your current macOS version is
+   unable to run 32-bit games”* even though the Godot 4.6 export is universal
+   64-bit (`x86_64` + `arm64`). Click **Save**, then the **Publish** tab and
+   publish. Docs: [Platforms](https://partner.steamgames.com/doc/store/application/platforms).
+   If CI notarized the build cleanly, also check **App Bundles Are Notarized**.
+
+4. **Copy depot IDs:**
    ```bash
    cp steam/depot_ids.env.example steam/depot_ids.env
    # edit steam/depot_ids.env with your depot IDs

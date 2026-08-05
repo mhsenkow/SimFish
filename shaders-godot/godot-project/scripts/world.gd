@@ -962,6 +962,12 @@ func _process(dt: float) -> void:
 					var reflection: float = 0.15 + dl * 0.12 + fixture_glow_g * 0.22
 					var sparkle: float = fixture_glow_g * 0.9
 					var rim: float = 0.55 + fixture_glow_g * 0.35
+					# Mac can't use screen-space glass reflection — lean on
+					# room tint + chrome rim so panes still feel glassy.
+					if OS.get_name() == "macOS":
+						reflection = maxf(reflection, 0.42 + dl * 0.12)
+						rim = maxf(rim, 0.72)
+						sparkle = maxf(sparkle, 0.12 + fixture_glow_g * 0.5)
 					var caustic_band: float = 0.0
 					if show_caustics and sim != null and sim.has_method("topdown_caustic_beat"):
 						caustic_band = clampf(intensity * 0.22 + float(sim.topdown_caustic_beat()) * 0.18, 0.0, 0.55)
@@ -1007,14 +1013,13 @@ func _process(dt: float) -> void:
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
 		if fixture_active and (dl > 0.08 or deep_night > 0.25):
-			ray_alpha = maxf(ray_alpha, 0.05 + fixture_energy * 0.12)
+			ray_alpha = maxf(ray_alpha, 0.03 + fixture_energy * 0.08)
+		ray_alpha *= 0.82  # Soften hard cone read against palette dither.
 		var trans_ray: float = float(_cached_water_column.get("transmittance", 1.0))
 		ray_alpha = WorldAtmosphere.modulate_god_ray_alpha(ray_alpha, trans_ray)
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
-		# Matches the range used in _add_god_ray_beam — lowered from
-		# 1.5..4.0 to 1.0..2.4 so even the most anisotropic config still
-		# gives a beam wide enough to read as a shaft.
-		var exponent: float = lerp(1.0, 2.4, (anisotropy + 0.9) / 1.8)
+		# Slightly higher exponent → softer cylinder edges (less "solid cone").
+		var exponent: float = lerp(1.35, 2.65, (anisotropy + 0.9) / 1.8)
 
 		for mat in _god_ray_materials:
 			if mat != null:
@@ -7963,19 +7968,28 @@ func _build_room_lava_lamp(parent: Node3D, base_pos: Vector3,
 
 
 func _build_room_lamp(parent: Node3D, base_pos: Vector3,
-
 		accent: Color, light_col: Color) -> void:
-	var stand_mat: ShaderMaterial = VoxelMat.make(Color8(45, 40, 38))
-	var shade_mat: ShaderMaterial = VoxelMat.make(accent.lightened(0.15))
+	# Mid-gray metal — near-black stems vanish into palette dither at 512–1024
+	# internal res and look like a floating shade with a missing neck.
+	var stand_mat: ShaderMaterial = VoxelMat.make(Color8(92, 86, 80))
+	# Warm parchment shade — lean toward the lamp light so it reads lit, not
+	# a black slab after night-palette quantize.
+	var shade_col: Color = accent.lightened(0.28).lerp(Color(1.0, 0.86, 0.58), 0.42)
+	shade_col = shade_col.lerp(light_col, 0.22)
+	var shade_mat: ShaderMaterial = VoxelMat.make(shade_col)
+	var glow_mat: ShaderMaterial = VoxelMat.make(Color(
+		clampf(light_col.r * 1.15, 0.0, 1.0),
+		clampf(light_col.g * 1.05, 0.0, 1.0),
+		clampf(light_col.b * 0.85, 0.0, 1.0)))
 	# Base disc.
 	var base := MeshInstance3D.new()
-	base.mesh = VoxelMat.get_box(Vector3(0.6, 0.12, 0.6))
+	base.mesh = VoxelMat.get_box(Vector3(0.72, 0.14, 0.72))
 	base.material_override = stand_mat
-	base.position = base_pos + Vector3(0, 0.06, 0)
+	base.position = base_pos + Vector3(0, 0.07, 0)
 	parent.add_child(base)
-	# Stem.
+	# Stem — thick enough to survive pixel quantize + dither.
 	var stem := MeshInstance3D.new()
-	stem.mesh = VoxelMat.get_box(Vector3(0.16, 2.2, 0.16))
+	stem.mesh = VoxelMat.get_box(Vector3(0.28, 2.2, 0.28))
 	stem.material_override = stand_mat
 	stem.position = base_pos + Vector3(0, 1.2, 0)
 	parent.add_child(stem)
@@ -7990,12 +8004,19 @@ func _build_room_lamp(parent: Node3D, base_pos: Vector3,
 	shade_top.material_override = shade_mat
 	shade_top.position = base_pos + Vector3(0, 2.78, 0)
 	parent.add_child(shade_top)
-	# Lamp light — small omni for the warm pool of light at the base.
+	# Inner glow plug — sells "bulb on" without relying on OmniLight shading.
+	var glow := MeshInstance3D.new()
+	glow.mesh = VoxelMat.get_box(Vector3(0.42, 0.18, 0.42))
+	glow.material_override = glow_mat
+	glow.position = base_pos + Vector3(0, 2.52, 0)
+	parent.add_child(glow)
+	# Warm pool under the shade.
 	var lamp_light := OmniLight3D.new()
 	lamp_light.light_color = light_col
 	lamp_light.light_energy = 0.25
 	lamp_light.omni_range = 8.0
 	lamp_light.omni_attenuation = 2.4
+	lamp_light.shadow_enabled = false
 	lamp_light.position = base_pos + Vector3(0, 2.55, 0)
 	parent.add_child(lamp_light)
 

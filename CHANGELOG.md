@@ -8,6 +8,13 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 - **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`.
 
+## v0.2.28
+
+- **macOS Metal:** Force MSAA Off, skip screen-texture water/glass (black-slab fix), safe MultiMesh uploads, skip GPU boids.
+- **Look polish:** Soft waterline, warmer room lamp, softer god rays, dusk dither ease, display FXAA/deband, **Mac Safe** render preset.
+- **Icons:** Wire `res://icon.png` into macOS/Windows/web/Android export presets (no more Godot robot in Steam).
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.28) (macOS / Windows / Linux / Android).
+
 ## v0.2.26
 
 - **Scenario balance:** Iwagumi gets a discreet sponge filter so dawn O2 holds; pico reef uses new `nano_reef` preset (3 fish, not 16).

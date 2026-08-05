@@ -90,6 +90,11 @@ func sync_slot(slot: int, world_pos: Vector3, size: float, color: Color) -> void
 func flush_blit() -> void:
 	if not _dirty or _mm == null:
 		return
+	# macOS: keep per-instance path (sync_slot already wrote); bulk blit
+	# has been a Metal corruption vector under load.
+	if OS.get_name() == "macOS":
+		_dirty = false
+		return
 	var xforms_arr: Array = []
 	xforms_arr.assign(_xforms)
 	MultiMeshBufferBlit.upload(_mm, xforms_arr, _colors, PackedColorArray(), CAP, false)

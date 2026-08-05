@@ -498,6 +498,14 @@ static func make_glass(shape_id: float, water_y: float) -> ShaderMaterial:
 		_glass_shader = load(GLASS_SHADER_PATH) as Shader
 		_glass_mat = ShaderMaterial.new()
 		_glass_mat.shader = _glass_shader
+	# Metal screen_texture samples are often black — skip on macOS and
+	# compensate with a stronger room fresnel/rim so glass doesn't go flat.
+	var mac: bool = OS.get_name() == "macOS"
+	_glass_mat.set_shader_parameter("screen_reflection", 0.0 if mac else 0.22)
+	if mac:
+		_glass_mat.set_shader_parameter("reflection_strength", 0.58)
+		_glass_mat.set_shader_parameter("rim_chrome", 0.78)
+		_glass_mat.set_shader_parameter("rim_brightness", 0.48)
 	if not is_equal_approx(_glass_shape_id, shape_id) or not is_equal_approx(_glass_water_y, water_y):
 		_glass_mat.set_shader_parameter("tank_shape_id", shape_id)
 		_glass_mat.set_shader_parameter("water_surface_y", water_y)

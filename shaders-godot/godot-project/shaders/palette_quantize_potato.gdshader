@@ -24,6 +24,8 @@ uniform float health_grade : hint_range(0.0, 1.0) = 1.0;
 uniform float blue_noise_amount : hint_range(0.0, 1.0) = 0.6;
 uniform float vignette_strength : hint_range(0.0, 1.0) = 0.35;
 uniform float vignette_falloff : hint_range(0.5, 4.0) = 1.6;
+uniform float fxaa_strength : hint_range(0.0, 1.0) = 0.0;
+uniform float deband_strength : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -150,6 +152,25 @@ void fragment() {
 		float r2 = dot(vc, vc) * 4.0;
 		float v = pow(clamp(r2, 0.0, 1.0), vignette_falloff);
 		result *= mix(1.0, 1.0 - vignette_strength * 0.55, v);
+	}
+
+	if (fxaa_strength > 0.001) {
+		vec2 step_uv = 1.0 / internal_resolution;
+		vec3 c_n = texture(TEXTURE, UV + vec2(0.0, -step_uv.y)).rgb;
+		vec3 c_s = texture(TEXTURE, UV + vec2(0.0,  step_uv.y)).rgb;
+		vec3 c_e = texture(TEXTURE, UV + vec2( step_uv.x, 0.0)).rgb;
+		vec3 c_w = texture(TEXTURE, UV + vec2(-step_uv.x, 0.0)).rgb;
+		vec3 blur = (c_n + c_s + c_e + c_w) * 0.25;
+		float lc = luma_of(result);
+		float edge = max(max(abs(lc - luma_of(c_n)), abs(lc - luma_of(c_s))),
+			max(abs(lc - luma_of(c_e)), abs(lc - luma_of(c_w))));
+		float k = smoothstep(0.04, 0.18, edge) * fxaa_strength * 0.72;
+		result = mix(result, blur, k);
+	}
+	if (deband_strength > 0.001) {
+		float n1 = ign(px);
+		float n2 = ign(px + vec2(19.0, 47.0));
+		result = clamp(result + vec3((n1 + n2) * deband_strength * 0.012), 0.0, 1.0);
 	}
 
 	COLOR = vec4(result, 1.0);

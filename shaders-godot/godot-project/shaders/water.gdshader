@@ -1,6 +1,9 @@
 // Voxel-aquarium water volume — depth tint, dual ripples, meniscus, caustics, fog.
 
 shader_type spatial;
+// depth_draw_opaque matches the shipped look. Floaters are placed above the
+// water mesh so depth doesn't eat them (see world.gd). On Metal we still
+// keep refraction_strength=0 so hint_screen_texture can't paint black.
 render_mode blend_mix, cull_disabled, depth_draw_opaque, unshaded;
 
 uniform vec4 shallow_color : source_color = vec4(0.42, 0.62, 0.66, 0.12);
@@ -43,7 +46,7 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 // surface wave slope, so plants/fish/substrate seen through the water gently
 // wobble. Kept subtle by default so the chunky pixel look survives.
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float refraction_strength : hint_range(0.0, 0.08) = 0.013;
+uniform float refraction_strength : hint_range(0.0, 0.08) = 0.0;
 // Depth absorption — warm wavelengths (red, then green) fade with depth, the
 // way real water swallows red light first. Gives the column a sense of volume.
 uniform float depth_absorption : hint_range(0.0, 1.0) = 0.4;
@@ -205,12 +208,13 @@ void fragment() {
 	float vertical = 1.0 - abs(n.y);
 
 	// Meniscus bright ring — top cap only (avoid a cut line on curved walls).
-	col += vec3(0.92, 0.98, 1.0) * meniscus * max(0.0, n.y - 0.55) * 0.14;
+	col += vec3(0.92, 0.98, 1.0) * meniscus * max(0.0, n.y - 0.55) * 0.08;
 
 	// Corner meniscus on polygon tanks only; curved volumes use the top ring.
+	// Kept subtle — a strong cyan band here read as a debug clipping line.
 	float corner_meniscus = near_surface * vertical;
 	if (tank_shape_id < 0.5) {
-		col += vec3(0.85, 0.95, 1.0) * corner_meniscus * 0.18;
+		col += vec3(0.85, 0.95, 1.0) * corner_meniscus * 0.05;
 	}
 
 	col = mix(col, shallow_color.rgb * 0.82, fresnel * 0.28);

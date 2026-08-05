@@ -1475,12 +1475,22 @@ func _apply_render_config() -> void:
 		_post_viewport.size = Vector2i(render_w, render_h)
 		_wire_post_textures()
 	# MSAA: 0=disabled, 1=2x, 2=4x, 3=8x (matches Viewport.MSAA enum).
+	# Metal + Forward Mobile + MSAA regularly corrupts MultiMesh instance
+	# transforms (vertical plant/hardscape spikes). Force Off on macOS.
+	var mac: bool = OS.get_name() == "macOS"
 	if is_instance_valid(sub_viewport):
-		sub_viewport.msaa_3d = int(cfg.msaa) as Viewport.MSAA
+		var msaa_v: int = int(cfg.msaa)
+		if mac:
+			msaa_v = 0
+		sub_viewport.msaa_3d = msaa_v as Viewport.MSAA
 	# Palette quantize shader uniforms (runs on the internal-res post pass).
 	var sm := _quantize_material()
 	if sm != null:
 		var tier: int = int(cfg.shader_perf_tier)
+		# Potato tier strips outline/CRT and caps palette search — on Metal it
+		# also reads as "crushed" blacks. Prefer the full quantize path on macOS.
+		if mac and tier >= 2:
+			tier = 0
 		var want_shader: Shader = _QuantizePotatoShader if tier >= 2 else _QuantizeShader
 		if sm.shader != want_shader:
 			sm.shader = want_shader
@@ -1499,16 +1509,30 @@ func _apply_render_config() -> void:
 		ShaderUniformLedger.write(sm, &"dither_world_origin",
 			Vector2(float(cfg.camera_target_x), float(cfg.camera_target_z)))
 		ShaderUniformLedger.write(sm, &"blue_noise_amount", float(cfg.blue_noise_amount))
-		ShaderUniformLedger.write(sm, &"shader_perf_tier", float(cfg.shader_perf_tier))
+		ShaderUniformLedger.write(sm, &"shader_perf_tier", float(tier))
 		ShaderUniformLedger.write(sm, &"palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
 		ShaderUniformLedger.write(sm, &"outline_strength", float(cfg.outline_strength))
-		ShaderUniformLedger.write(sm, &"creature_outline_strength", float(cfg.creature_outline_strength))
+		var creature_outline: float = float(cfg.creature_outline_strength)
+		if mac:
+			creature_outline = minf(creature_outline, 0.18)
+		ShaderUniformLedger.write(sm, &"creature_outline_strength", creature_outline)
 		ShaderUniformLedger.write(sm, &"crt_strength", float(cfg.crt_strength))
-		ShaderUniformLedger.write(sm, &"material_hue_shift", float(cfg.material_hue_shift))
-		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
-		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
-		sm.set_shader_parameter("material_value", float(cfg.material_value))
+		var fxaa_v: float = float(cfg.get("display_fxaa"))
+		var deband_v: float = float(cfg.get("display_deband"))
+		if mac and fxaa_v < 0.05:
+			fxaa_v = 0.45
+		if mac and deband_v < 0.05:
+			deband_v = 0.35
+		sm.set_shader_parameter("fxaa_strength", fxaa_v)
+		sm.set_shader_parameter("deband_strength", deband_v)
+		# Hue/sat/warmth already land on materials via VoxelMat globals
+		# (iaq_palette_*). Applying them again here double-rotates the frame —
+		# reds vanish into greens and the slider "fixes" them weirdly.
+		ShaderUniformLedger.write(sm, &"material_hue_shift", 0.0)
+		sm.set_shader_parameter("material_saturation", 1.0)
+		sm.set_shader_parameter("material_warmth", 0.0)
+		sm.set_shader_parameter("material_value", 1.0)
 		if world != null:
 			var world_vis := world.get_node_or_null("AquariumVisuals") as AquariumVisuals
 			if world_vis != null:
@@ -1704,12 +1728,13 @@ func apply_material_palette() -> void:
 		if wm is ShaderMaterial:
 			water_mat = wm
 	VoxelMat.apply_global_palette(cfg, water_mat)
+	# Post quantize must not re-apply the same tint (see _apply_render_config).
 	var sm := _quantize_material()
 	if sm != null:
-		sm.set_shader_parameter("material_hue_shift", float(cfg.material_hue_shift))
-		sm.set_shader_parameter("material_saturation", float(cfg.material_saturation))
-		sm.set_shader_parameter("material_warmth", float(cfg.material_warmth))
-		sm.set_shader_parameter("material_value", float(cfg.material_value))
+		sm.set_shader_parameter("material_hue_shift", 0.0)
+		sm.set_shader_parameter("material_saturation", 1.0)
+		sm.set_shader_parameter("material_warmth", 0.0)
+		sm.set_shader_parameter("material_value", 1.0)
 
 
 func _process(dt: float) -> void:
@@ -6597,9 +6622,20 @@ func _update_palette_tod_tint() -> void:
 		# user has actually moved them off the legacy values (we still set
 		# every frame for simplicity — the shader handles 0 gracefully).
 		mat.set_shader_parameter("outline_strength", float(cfg.outline_strength))
-		mat.set_shader_parameter("creature_outline_strength", float(cfg.creature_outline_strength))
-		mat.set_shader_parameter("dither_strength", float(cfg.dither_strength))
+		var creature_outline_live: float = float(cfg.creature_outline_strength)
+		if OS.get_name() == "macOS":
+			creature_outline_live = minf(creature_outline_live, 0.18)
+		mat.set_shader_parameter("creature_outline_strength", creature_outline_live)
+		# Dusk/night: ease dither so dark palette entries keep midtones instead
+		# of crushing to black stipple.
+		var dither_live: float = float(cfg.dither_strength)
+		if dl < 0.45:
+			var dusk_ease: float = smoothstep(0.45, 0.08, dl)
+			dither_live *= lerpf(1.0, 0.62, dusk_ease)
+		mat.set_shader_parameter("dither_strength", dither_live)
 		mat.set_shader_parameter("crt_strength", float(cfg.crt_strength))
+		mat.set_shader_parameter("fxaa_strength", float(cfg.get("display_fxaa")))
+		mat.set_shader_parameter("deband_strength", float(cfg.get("display_deband")))
 		mat.set_shader_parameter("region_aware_dither",
 			1.0 if cfg.dither_region_aware else 0.0)
 		mat.set_shader_parameter("palette_bank_lock",

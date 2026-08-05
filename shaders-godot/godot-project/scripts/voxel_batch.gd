@@ -130,6 +130,20 @@ func flush() -> void:
 func blit_buffer() -> void:
 	if _mm == null or _count <= 0:
 		return
+	# Metal has historically corrupted bulk MultiMesh uploads under MSAA /
+	# fence pressure. Per-instance writes are slower but stable on macOS.
+	if OS.get_name() == "macOS":
+		for i in range(_count):
+			var xform: Transform3D = _xforms[i]
+			if not xform.is_finite():
+				xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+			_mm.set_instance_transform(i, xform)
+			_mm.set_instance_color(i, _colors[i])
+			if _use_custom and i < _customs.size():
+				_mm.set_instance_custom_data(i, _customs[i])
+		for i in range(_count, _mm.instance_count):
+			_mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO))
+		return
 	var xforms_arr: Array = []
 	xforms_arr.assign(_xforms.slice(0, _count))
 	_MultiMeshBufferBlit.upload(_mm, xforms_arr, _colors, _customs, _count, _use_custom)

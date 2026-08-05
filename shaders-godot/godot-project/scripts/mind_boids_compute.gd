@@ -49,7 +49,8 @@ static func _needs_topo_cpu(n: int) -> bool:
 
 
 static func _try_gpu(n: int) -> bool:
-	if _gpu_failed or DisplayServer.get_name() == "headless":
+	# Extra local RenderingDevice + MultiMesh load on Metal fences badly.
+	if _gpu_failed or DisplayServer.get_name() == "headless" or OS.get_name() == "macOS":
 		return false
 	if not _ensure_gpu():
 		return false
