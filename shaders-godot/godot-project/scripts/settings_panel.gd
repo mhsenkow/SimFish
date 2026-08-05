@@ -704,7 +704,11 @@ func _build_ui() -> void:
 	_ai_enabled_check.toggled.connect(_on_ai_enabled_toggled)
 	vbox_ai.add_child(_ai_enabled_check)
 	var ai_desc := PanelTheme.make_description()
-	ai_desc.text = "Adds AI-generated names, moods, and (optional) tank chronicle lines. Runs locally — no data leaves your machine."
+	ai_desc.text = (
+		"Optional generative AI (local only): fish names, moods, and tank "
+		+ "chronicle lines via Ollama and/or the built-in Guardian model. "
+		+ "Nothing is sent to a remote server. Disclosed in the Steam Content Survey."
+	)
 	vbox_ai.add_child(ai_desc)
 	# Status line — driven by AIDirector.status_summary()
 	_ai_status_label = Label.new()

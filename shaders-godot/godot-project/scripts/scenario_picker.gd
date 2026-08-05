@@ -499,6 +499,10 @@ func _ready() -> void:
 
 	vb.add_child(PanelTheme.make_panel_footer(_cancel))
 
+	# Pad: jump focus onto first "Open this tank" so Cross doesn't fire New
+	# behind the modal.
+	PanelTheme.schedule_couch_focus(self, PackedStringArray(["Open this tank"]))
+
 
 const Ol = preload("res://scripts/onboarding_legibility.gd")
 
@@ -806,7 +810,8 @@ func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_
 
 func _show_wildcard_preview(sc: Dictionary, rolled_cfg: Dictionary) -> void:
 	var cfg_holder: Array = [rolled_cfg.duplicate(true)]
-	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL)
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL,
+			Callable(), PackedStringArray(["Open this tank"]))
 	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
@@ -848,6 +853,29 @@ func _show_wildcard_preview(sc: Dictionary, rolled_cfg: Dictionary) -> void:
 func _cancel() -> void:
 	canceled.emit()
 	queue_free()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not event.is_pressed() or event.is_echo():
+		return
+	if event.is_action_pressed("ui_cancel") \
+			or (event is InputEventJoypadButton \
+				and (event as InputEventJoypadButton).button_index == JOY_BUTTON_B):
+		_cancel()
+		get_viewport().set_input_as_handled()
+		return
+	# Cross / ui_accept: activate focused Open / Close / More when tank_menu's
+	# handler doesn't see us as the focus owner yet.
+	var accept: bool = event.is_action_pressed("ui_accept") \
+			or event.is_action_pressed("feed")
+	if not accept and event is InputEventJoypadButton:
+		accept = (event as InputEventJoypadButton).button_index == JOY_BUTTON_A
+	if not accept:
+		return
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus is BaseButton and is_ancestor_of(focus):
+		(focus as BaseButton).pressed.emit()
+		get_viewport().set_input_as_handled()
 
 
 # Apply a chosen scenario's config dict to the TankConfig autoload. Idempotent

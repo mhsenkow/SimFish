@@ -1,10 +1,13 @@
-# Retro "Buy New Fish" store.
+# Retro "Adopt New Fish" panel.
 #
 # When the population crashes (or just for fun) the user clicks a corner
 # button and gets three procedurally-generated unique fish. They can take
 # home up to two of them; each one becomes a real spawn into the world.
+# NOTE: This is a free in-game mechanic — no real money, no Steam Wallet,
+# no microtransactions. Valve build review #24083947 flagged shop-looking
+# UI as IAP; keep player-facing copy on "adopt / arrivals", never buy/store/$.
 #
-# Visual vibe: arcade pet shop. Neon borders, monospace text, big shouty
+# Visual vibe: arcade hatchery. Neon borders, monospace text, big shouty
 # header. The actual fish-card content (color swatches, traits) is built
 # dynamically so the generator and the rendering aren't coupled.
 
@@ -13,8 +16,8 @@ extends PanelContainer
 
 # 3 generated genome dicts. Each entry gets one card.
 var _options: Array = []
-var _purchased: int = 0
-const MAX_PURCHASES: int = 2
+var _adopted: int = 0
+const MAX_ADOPTIONS: int = 2
 
 # Reference to the world for spawning. Resolved lazily.
 var _world: Node3D = null
@@ -51,7 +54,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		var main: Node = get_tree().current_scene
 		if main != null and main.has_method("_on_modal_closed"):
-			main.call("_on_modal_closed", "store")
+			main.call("_on_modal_closed", "adopt")
 		get_viewport().set_input_as_handled()
 
 
@@ -66,9 +69,8 @@ func toggle() -> void:
 
 func _build_ui() -> void:
 	custom_minimum_size = Vector2(420, 0)
-	# Use the shared dark rounded chrome so the store reads as part of the
-	# same panel family. Cards inside keep their arcade-cyan border so the
-	# shop still feels like a destination, not just another settings page.
+	# Use the shared dark rounded chrome so the panel reads as part of the
+	# same panel family. Cards inside keep their arcade-cyan border.
 	PanelTheme.apply_panel_chrome(self)
 
 	# Outer layout — title, subtitle, status, cards, footer.
@@ -79,14 +81,14 @@ func _build_ui() -> void:
 	# Retro neon header. The double-bar glyphs frame the title without
 	# needing a font with built-in flourishes.
 	var title := Label.new()
-	title.text = "═══ FISH STORE ═══"
+	title.text = "═══ ADOPT FISH ═══"
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color8(255, 110, 200))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "select up to 2 of 3"
+	subtitle.text = "free · take home up to 2 of 3"
 	subtitle.add_theme_font_size_override("font_size", 11)
 	subtitle.add_theme_color_override("font_color", Color8(180, 230, 255))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -123,12 +125,14 @@ func _build_ui() -> void:
 
 
 func _regenerate() -> void:
-	_purchased = 0
+	_adopted = 0
 	_options.clear()
 	for i in 3:
 		_options.append(_random_genome(i))
-	_status_label.text = "0 / %d caught" % MAX_PURCHASES
+	_status_label.text = "0 / %d adopted" % MAX_ADOPTIONS
 	_rebuild_cards()
+	# Couch: land focus on first Adopt button when a pad is driving.
+	PanelTheme.schedule_couch_focus(self, PackedStringArray(["ADOPT", "Reroll"]))
 
 
 func _rebuild_cards() -> void:
@@ -141,10 +145,9 @@ func _rebuild_cards() -> void:
 
 func _make_card(idx: int) -> Control:
 	var g: Dictionary = _options[idx]
-	# Outer card frame. Cyan-on-dark-blue is the arcade "shop card" look —
+	# Outer card frame. Cyan-on-dark-blue arcade hatchery look —
 	# kept intentionally distinct from the muted panel chrome so the cards
-	# read as merchandise rather than form rows. Rounded corners + thicker
-	# padding lift the card off the panel background.
+	# read as arrivals rather than form rows.
 	var frame := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.08, 0.10, 0.16, 0.92)
@@ -201,34 +204,33 @@ func _make_card(idx: int) -> Control:
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(desc)
 
-	# Buy button. Styled bright cyan-on-dark to match the card border so
-	# tapping feels like clicking the bezel itself.
-	var buy := Button.new()
-	buy.text = "BUY"
-	buy.custom_minimum_size = Vector2(64, 32)
-	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	buy.add_theme_color_override("font_color", Color8(20, 28, 36))
-	buy.add_theme_color_override("font_hover_color", Color8(20, 28, 36))
-	buy.add_theme_color_override("font_pressed_color", Color8(20, 28, 36))
-	var buy_normal := StyleBoxFlat.new()
-	buy_normal.bg_color = Color8(60, 200, 255)
-	buy_normal.corner_radius_top_left = 4
-	buy_normal.corner_radius_top_right = 4
-	buy_normal.corner_radius_bottom_left = 4
-	buy_normal.corner_radius_bottom_right = 4
-	buy_normal.content_margin_left = 12
-	buy_normal.content_margin_right = 12
-	buy_normal.content_margin_top = 6
-	buy_normal.content_margin_bottom = 6
-	buy.add_theme_stylebox_override("normal", buy_normal)
-	var buy_hover := buy_normal.duplicate() as StyleBoxFlat
-	buy_hover.bg_color = Color8(120, 230, 255)
-	buy.add_theme_stylebox_override("hover", buy_hover)
-	var buy_pressed := buy_normal.duplicate() as StyleBoxFlat
-	buy_pressed.bg_color = Color8(40, 170, 220)
-	buy.add_theme_stylebox_override("pressed", buy_pressed)
-	buy.pressed.connect(_on_buy.bind(idx))
-	hb.add_child(buy)
+	# Adopt button — cyan bezel action (free; never a purchase).
+	var adopt := Button.new()
+	adopt.text = "ADOPT"
+	adopt.custom_minimum_size = Vector2(64, 32)
+	adopt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	adopt.add_theme_color_override("font_color", Color8(20, 28, 36))
+	adopt.add_theme_color_override("font_hover_color", Color8(20, 28, 36))
+	adopt.add_theme_color_override("font_pressed_color", Color8(20, 28, 36))
+	var adopt_normal := StyleBoxFlat.new()
+	adopt_normal.bg_color = Color8(60, 200, 255)
+	adopt_normal.corner_radius_top_left = 4
+	adopt_normal.corner_radius_top_right = 4
+	adopt_normal.corner_radius_bottom_left = 4
+	adopt_normal.corner_radius_bottom_right = 4
+	adopt_normal.content_margin_left = 12
+	adopt_normal.content_margin_right = 12
+	adopt_normal.content_margin_top = 6
+	adopt_normal.content_margin_bottom = 6
+	adopt.add_theme_stylebox_override("normal", adopt_normal)
+	var adopt_hover := adopt_normal.duplicate() as StyleBoxFlat
+	adopt_hover.bg_color = Color8(120, 230, 255)
+	adopt.add_theme_stylebox_override("hover", adopt_hover)
+	var adopt_pressed := adopt_normal.duplicate() as StyleBoxFlat
+	adopt_pressed.bg_color = Color8(40, 170, 220)
+	adopt.add_theme_stylebox_override("pressed", adopt_pressed)
+	adopt.pressed.connect(_on_adopt.bind(idx))
+	hb.add_child(adopt)
 	return frame
 
 
@@ -364,8 +366,8 @@ func _random_genome(slot_idx: int) -> Dictionary:
 	}
 
 
-func _on_buy(idx: int) -> void:
-	if _purchased >= MAX_PURCHASES:
+func _on_adopt(idx: int) -> void:
+	if _adopted >= MAX_ADOPTIONS:
 		return
 	if idx < 0 or idx >= _options.size():
 		return
@@ -375,40 +377,42 @@ func _on_buy(idx: int) -> void:
 			var scene: Node = (ml as SceneTree).current_scene
 			if scene != null:
 				_world = scene.get_node_or_null("SubViewport/World")
-	if _world == null or not _world.has_method("spawn_purchased_fish"):
-		return
-	var g: Dictionary = _options[idx]
-	_world.spawn_purchased_fish(g)
-	_purchased += 1
+	if _world == null or not _world.has_method("spawn_adopted_fish"):
+		if _world != null and _world.has_method("spawn_purchased_fish"):
+			_world.spawn_purchased_fish(_options[idx])
+		else:
+			return
+	else:
+		_world.spawn_adopted_fish(_options[idx])
+	_adopted += 1
 	var card_frame: PanelContainer = _cards_container.get_child(idx) as PanelContainer
 	if card_frame == null:
 		return
 	card_frame.modulate = Color(0.6, 0.6, 0.6, 1.0)
-	var buy_btn: Button = _find_buy_button(card_frame)
-	if buy_btn != null:
-		buy_btn.disabled = true
-		buy_btn.text = "ADDED"
-	_status_label.text = "%d / %d caught" % [_purchased, MAX_PURCHASES]
-	if _purchased >= MAX_PURCHASES:
-		_status_label.text = "%d / %d caught - SOLD OUT" % [_purchased, MAX_PURCHASES]
-		# Disable other buy buttons.
+	var adopt_btn: Button = _find_adopt_button(card_frame)
+	if adopt_btn != null:
+		adopt_btn.disabled = true
+		adopt_btn.text = "ADOPTED"
+	_status_label.text = "%d / %d adopted" % [_adopted, MAX_ADOPTIONS]
+	if _adopted >= MAX_ADOPTIONS:
+		_status_label.text = "%d / %d adopted — all taken" % [_adopted, MAX_ADOPTIONS]
 		for c in _cards_container.get_children():
 			for sub in c.get_children():
 				_disable_children(sub)
 
 
-func _find_buy_button(root: Node) -> Button:
-	if root is Button and (root as Button).text == "BUY":
+func _find_adopt_button(root: Node) -> Button:
+	if root is Button and (root as Button).text == "ADOPT":
 		return root as Button
 	for child in root.get_children():
-		var found: Button = _find_buy_button(child)
+		var found: Button = _find_adopt_button(child)
 		if found != null:
 			return found
 	return null
 
 
 func _disable_children(node: Node) -> void:
-	if node is Button and (node as Button).text == "BUY":
+	if node is Button and (node as Button).text == "ADOPT":
 		(node as Button).disabled = true
 	for c in node.get_children():
 		_disable_children(c)

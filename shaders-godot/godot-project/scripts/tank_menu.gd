@@ -48,6 +48,7 @@ func _ready() -> void:
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm != null and glm.has_signal("consent_required"):
 		glm.consent_required.connect(_on_guardian_consent_required)
+	_setup_gamepad_menu()
 
 
 func _setup_chrome() -> void:
@@ -105,6 +106,43 @@ func _setup_top_bar() -> void:
 	_action_row.add_child(bar_spacer)
 	_action_row.add_child(_manage_cluster)
 	_action_row.add_child(_info_btn)
+	var quit_btn := PanelTheme.make_secondary_button("Quit")
+	quit_btn.tooltip_text = "Quit to desktop (controller-friendly)"
+	quit_btn.focus_mode = Control.FOCUS_ALL
+	quit_btn.pressed.connect(_confirm_quit_from_menu)
+	_action_row.add_child(quit_btn)
+
+
+func _confirm_quit_from_menu() -> void:
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL,
+			Callable(), PackedStringArray(["Cancel"]))
+	var overlay: Control = root["overlay"]
+	var center: CenterContainer = root["center"]
+	var panel := PanelContainer.new()
+	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 150.0, 0.7, 0.4)
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	vb.add_child(PanelTheme.make_title("Quit walstad loom?"))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	vb.add_child(row)
+	var cancel := PanelTheme.make_secondary_button("Cancel")
+	cancel.focus_mode = Control.FOCUS_ALL
+	cancel.pressed.connect(func(): overlay.queue_free())
+	row.add_child(cancel)
+	var quit_btn := PanelTheme.make_primary_button("Quit")
+	quit_btn.focus_mode = Control.FOCUS_ALL
+	quit_btn.pressed.connect(func():
+		overlay.queue_free()
+		get_tree().quit())
+	row.add_child(quit_btn)
+	cancel.focus_neighbor_right = quit_btn.get_path()
+	quit_btn.focus_neighbor_left = cancel.get_path()
+	cancel.call_deferred("grab_focus")
 
 
 func _toggle_overflow_menu() -> void:
@@ -197,6 +235,7 @@ func _refresh() -> void:
 	_sync_select_all_checkbox()
 	_update_bulk_delete_ui()
 	_apply_responsive_layout()
+	call_deferred("_focus_first_menu_control")
 
 
 func _build_empty_hero() -> void:
@@ -352,10 +391,115 @@ func _make_card(entry: Dictionary) -> Control:
 
 	var open_btn := PanelTheme.make_primary_button("Open tank")
 	open_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	open_btn.focus_mode = Control.FOCUS_ALL
 	open_btn.pressed.connect(func(): _on_open(slot))
+	open_btn.set_meta("tank_open_slot", slot)
 	vb.add_child(open_btn)
 
 	return card
+
+
+func _setup_gamepad_menu() -> void:
+	var gp := get_node_or_null("/root/GamepadInput")
+	if gp == null:
+		return
+	if not gp.active_changed.is_connected(_on_menu_gamepad_active):
+		gp.active_changed.connect(_on_menu_gamepad_active)
+	if not gp.joy_connected.is_connected(_on_menu_joy_connected):
+		gp.joy_connected.connect(_on_menu_joy_connected)
+	_on_menu_gamepad_active(gp.is_gamepad_active())
+
+
+func _on_menu_joy_connected(_device: int, joy_name: String) -> void:
+	# Lightweight label flash via title tooltip — menu has no feed toast.
+	if _title_label != null:
+		_title_label.tooltip_text = "Controller connected — %s" % joy_name
+
+
+func _on_menu_gamepad_active(active: bool) -> void:
+	PanelTheme.apply_couch_focus_tree(self, active)
+	if _new_btn != null:
+		_new_btn.focus_mode = Control.FOCUS_ALL
+	if _guided_btn != null:
+		_guided_btn.focus_mode = Control.FOCUS_ALL
+	if _design_btn != null:
+		_design_btn.focus_mode = Control.FOCUS_ALL
+	if active:
+		call_deferred("_focus_first_menu_control")
+
+
+func _focus_first_menu_control() -> void:
+	var gp := get_node_or_null("/root/GamepadInput")
+	if gp == null or not gp.couch_focus_wanted():
+		return
+	var open_btns: Array[Button] = []
+	for card in _grid.get_children():
+		_collect_open_buttons(card, open_btns)
+	# Wire vertical neighbors for D-pad.
+	for i in range(open_btns.size()):
+		var b: Button = open_btns[i]
+		if i > 0:
+			b.focus_neighbor_top = open_btns[i - 1].get_path()
+		if i + 1 < open_btns.size():
+			b.focus_neighbor_bottom = open_btns[i + 1].get_path()
+		if _new_btn != null:
+			b.focus_neighbor_left = _new_btn.get_path()
+	# Keep card chrome (checkbox / icon buttons) out of the D-pad path so
+	# focus stays on Open / New / Guided actions.
+	_suppress_card_chrome_focus()
+	if not open_btns.is_empty():
+		open_btns[0].grab_focus()
+	elif _new_btn != null:
+		_new_btn.grab_focus()
+
+
+func _suppress_card_chrome_focus() -> void:
+	for card in _grid.get_children():
+		_set_chrome_focus_none(card)
+
+
+func _set_chrome_focus_none(n: Node) -> void:
+	if n is BaseButton and not (n as BaseButton).has_meta("tank_open_slot"):
+		# Leave top-bar New/Guided/Design alone (not under _grid).
+		(n as BaseButton).focus_mode = Control.FOCUS_NONE
+	for c in n.get_children():
+		_set_chrome_focus_none(c)
+
+
+func _collect_open_buttons(n: Node, out: Array[Button]) -> void:
+	if n is Button and (n as Button).has_meta("tank_open_slot"):
+		out.append(n as Button)
+	for c in n.get_children():
+		_collect_open_buttons(c, out)
+
+
+# Godot may navigate with D-pad while ui_accept joy binding is missing —
+# activate the focused control ourselves on Cross / ui_accept / feed.
+func _unhandled_input(event: InputEvent) -> void:
+	if not event.is_pressed() or event.is_echo():
+		return
+	var accept: bool = event.is_action_pressed("ui_accept") \
+			or event.is_action_pressed("feed")
+	if not accept and event is InputEventJoypadButton:
+		var jb: InputEventJoypadButton = event as InputEventJoypadButton
+		accept = jb.button_index == JOY_BUTTON_A
+	if not accept:
+		return
+	if _activate_focused_button():
+		get_viewport().set_input_as_handled()
+
+
+func _activate_focused_button() -> bool:
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus == null or not is_ancestor_of(focus):
+		return false
+	if focus is BaseButton:
+		var btn: BaseButton = focus as BaseButton
+		if btn.disabled or not btn.visible:
+			return false
+		btn.pressed.emit()
+		return true
+	return false
 
 
 func _format_status_glance(entry: Dictionary) -> String:
@@ -512,7 +656,8 @@ func _open_scenario_picker() -> void:
 
 
 func _show_orientation_picker() -> void:
-	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL)
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL,
+			Callable(), PackedStringArray(["Auto"]))
 	var overlay: Control = root["overlay"]
 	var center: CenterContainer = root["center"]
 
@@ -580,7 +725,8 @@ func _set_walkthrough_offer_seen() -> void:
 
 
 func _show_walkthrough_offer() -> void:
-	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL)
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_MENU_MODAL,
+			Callable(), PackedStringArray(["Guided tour"]))
 	var overlay: Control = root["overlay"]
 	var center: CenterContainer = root["center"]
 

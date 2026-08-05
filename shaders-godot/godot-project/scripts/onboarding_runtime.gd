@@ -7,6 +7,8 @@ var _resume_btn: Button = null
 var _help_overlay: Control = null
 var _nudge_panel: PanelContainer = null
 var _caption_label: Label = null
+var _card_overlay: Control = null
+var _card_ok_btn: Button = null
 
 var _last_mood: float = 1.0
 var _last_alert_kind: String = ""
@@ -177,14 +179,18 @@ func toggle_help() -> void:
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(body)
 	var mobile: bool = _main.has_method("_is_mobile") and bool(_main.call("_is_mobile"))
-	body.text = _help_body(mobile, "")
-	search.text_changed.connect(func(t: String): body.text = _help_body(mobile, t))
+	var gamepad: bool = false
+	var gp := _main.get_node_or_null("/root/GamepadInput") if _main != null else null
+	if gp != null:
+		gamepad = gp.is_gamepad_active()
+	body.text = _help_body(mobile, "", gamepad)
+	search.text_changed.connect(func(t: String): body.text = _help_body(mobile, t, gamepad))
 	var close := PanelTheme.make_primary_button("Close")
 	close.pressed.connect(toggle_help)
 	vb.add_child(close)
 
 
-func _help_body(mobile: bool, query: String) -> String:
+func _help_body(mobile: bool, query: String, gamepad: bool = false) -> String:
 	if query.strip_edges() != "":
 		var hits: PackedStringArray = OnboardingLegibility.search_help(query)
 		if hits.is_empty():
@@ -192,8 +198,12 @@ func _help_body(mobile: bool, query: String) -> String:
 		return "\n".join(hits)
 	var parts: Array[String] = []
 	parts.append("[b]Controls[/b]")
-	for line in OnboardingLegibility.cheat_sheet_lines(mobile):
+	for line in OnboardingLegibility.cheat_sheet_lines(mobile, gamepad):
 		parts.append(line)
+	if not gamepad and not mobile:
+		parts.append("\n[b]Gamepad[/b]")
+		for line in OnboardingLegibility.cheat_sheet_lines(false, true):
+			parts.append(line)
 	parts.append("\n[b]Tank tells[/b]")
 	for row in OnboardingLegibility.TANK_TELLS:
 		parts.append("• %s → %s" % [row.cue, row.meaning])
@@ -349,6 +359,7 @@ func _show_nudge(id: String, text: String, action: Callable) -> void:
 	_nudge_panel.offset_bottom = -72.0
 	_nudge_panel.offset_top = -120.0
 	_nudge_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_nudge_panel.z_index = PanelTheme.Z_ONBOARDING - 10
 	PanelTheme.apply_panel_chrome(_nudge_panel)
 	_main.add_child(_nudge_panel)
 	var hb := HBoxContainer.new()
@@ -359,14 +370,18 @@ func _show_nudge(id: String, text: String, action: Callable) -> void:
 	lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(lab)
+	var focus_btn: Button = null
 	if action.is_valid():
 		var go := PanelTheme.make_primary_button("Do it")
+		go.focus_mode = Control.FOCUS_ALL
 		go.pressed.connect(func():
 			action.call()
 			_dismiss_nudge()
 			_nudge_cooldown = 120.0)
 		hb.add_child(go)
+		focus_btn = go
 	var dismiss := PanelTheme.make_secondary_button("Not now")
+	dismiss.focus_mode = Control.FOCUS_ALL
 	dismiss.pressed.connect(func():
 		_ignored_nudges += 1
 		if _active_nudge_id == "o2":
@@ -375,6 +390,20 @@ func _show_nudge(id: String, text: String, action: Callable) -> void:
 		_dismiss_nudge()
 		_nudge_cooldown = 90.0 + float(_ignored_nudges) * 60.0)
 	hb.add_child(dismiss)
+	if focus_btn == null:
+		focus_btn = dismiss
+	focus_btn.call_deferred("grab_focus")
+
+
+func has_blocking_nudge() -> bool:
+	return _nudge_panel != null and is_instance_valid(_nudge_panel)
+
+
+func dismiss_nudge() -> bool:
+	if not has_blocking_nudge():
+		return false
+	_dismiss_nudge()
+	return true
 
 
 func _dismiss_nudge() -> void:
@@ -518,11 +547,20 @@ func _show_caption(text: String) -> void:
 func _show_card(title: String, body: String) -> void:
 	if _main == null:
 		return
+	# Replace any existing card so focus always lands on the newest one.
+	dismiss_card()
 	var overlay := Control.new()
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.z_index = PanelTheme.Z_ONBOARDING
+	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
 	_main.add_child(overlay)
+	_card_overlay = overlay
+	var scrim := ColorRect.new()
+	scrim.color = Color(0, 0, 0, 0.45)
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(scrim)
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_CENTER)
 	panel.offset_left = -220
@@ -540,8 +578,83 @@ func _show_card(title: String, body: String) -> void:
 	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(b)
 	var ok := PanelTheme.make_primary_button("Got it")
-	ok.pressed.connect(overlay.queue_free)
+	ok.focus_mode = Control.FOCUS_ALL
+	ok.pressed.connect(dismiss_card)
 	vb.add_child(ok)
+	_card_ok_btn = ok
+	# Cross / Circle / ui_* — don't rely solely on Godot focus routing.
+	overlay.gui_input.connect(_on_card_overlay_gui_input)
+	ok.call_deferred("grab_focus")
+	call_deferred("_ensure_card_focus")
+
+
+func has_blocking_card() -> bool:
+	return _card_overlay != null and is_instance_valid(_card_overlay)
+
+
+func dismiss_card() -> bool:
+	if _card_overlay == null or not is_instance_valid(_card_overlay):
+		_card_overlay = null
+		_card_ok_btn = null
+		return false
+	_card_overlay.queue_free()
+	_card_overlay = null
+	_card_ok_btn = null
+	return true
+
+
+func _ensure_card_focus() -> void:
+	if _card_ok_btn == null or not is_instance_valid(_card_ok_btn):
+		return
+	_card_ok_btn.grab_focus()
+
+
+func _on_card_overlay_gui_input(event: InputEvent) -> void:
+	# Mouse/touch on scrim — joypad is handled in _unhandled_input (GUI
+	# doesn't always route joy events to Control.gui_input).
+	if event is InputEventMouseButton and event.pressed:
+		dismiss_card()
+		if _main != null:
+			_main.get_viewport().set_input_as_handled()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if has_blocking_card():
+		if not event.is_pressed() or event.is_echo():
+			return
+		var accept: bool = event.is_action_pressed("ui_accept") \
+				or event.is_action_pressed("feed")
+		var cancel: bool = event.is_action_pressed("ui_cancel")
+		if event is InputEventJoypadButton:
+			var jb: InputEventJoypadButton = event as InputEventJoypadButton
+			if jb.button_index == JOY_BUTTON_A:
+				accept = true
+			elif jb.button_index == JOY_BUTTON_B:
+				cancel = true
+		if accept or cancel:
+			dismiss_card()
+			get_viewport().set_input_as_handled()
+		return
+	if has_blocking_nudge():
+		if not event.is_pressed() or event.is_echo():
+			return
+		var n_accept: bool = event.is_action_pressed("ui_accept") \
+				or event.is_action_pressed("feed")
+		var n_cancel: bool = event.is_action_pressed("ui_cancel")
+		if event is InputEventJoypadButton:
+			var nj: InputEventJoypadButton = event as InputEventJoypadButton
+			if nj.button_index == JOY_BUTTON_A:
+				n_accept = true
+			elif nj.button_index == JOY_BUTTON_B:
+				n_cancel = true
+		if n_accept or n_cancel:
+			# Prefer activating focused nudge button; fall back to dismiss.
+			var focus: Control = get_viewport().gui_get_focus_owner()
+			if n_accept and focus is BaseButton and is_ancestor_of(focus):
+				(focus as BaseButton).pressed.emit()
+			else:
+				dismiss_nudge()
+			get_viewport().set_input_as_handled()
 
 
 func _show_end_tour_summary() -> void:

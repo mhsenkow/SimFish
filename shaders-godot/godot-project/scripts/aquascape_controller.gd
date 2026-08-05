@@ -203,6 +203,19 @@ func adjust_brush(delta: int) -> void:
 	brush_radius = clampi(brush_radius + delta, 1, 4)
 
 
+func cycle_tool(dir: int) -> void:
+	if not is_active or AQUASCAPE_TOOLS.is_empty():
+		return
+	var idx: int = AQUASCAPE_TOOLS.find(tool)
+	if idx < 0:
+		idx = 0
+	var n: int = AQUASCAPE_TOOLS.size()
+	idx = (idx + dir) % n
+	if idx < 0:
+		idx += n
+	set_tool(AQUASCAPE_TOOLS[idx])
+
+
 func tick_paint_cooldown(dt: float) -> void:
 	if _paint_cooldown > 0.0:
 		_paint_cooldown = maxf(0.0, _paint_cooldown - dt)
@@ -360,6 +373,18 @@ func has_selection() -> bool:
 	if _wood_drag != null and is_instance_valid(_wood_drag):
 		return true
 	return not _drag_cluster.is_empty()
+
+
+func clear_selection() -> void:
+	_selected_build_cell = INVALID_GRID
+	_multi_select.clear()
+	_wood_drag = null
+	_drag_cluster.clear()
+	_click_anchor = INVALID_GRID
+	end_gumball_drag()
+	_sync_placement_gizmo()
+	if _selection_label != null:
+		_selection_label.text = "Nothing selected — Select tool or Shift+click"
 
 
 func begin_gumball_drag(mouse_pos: Vector2) -> bool:

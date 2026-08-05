@@ -340,6 +340,11 @@ missing. This is both an ethics floor and a market expander.*
   user scale (0.8×–1.5×) for low-vision players. *M · M*
 - [ ] **88. Input remapping.** Controls are hardcoded across `main.gd` + panels; a rebind
   panel via Godot `InputMap` persisted to `user://bindings.cfg`. *L · M*
+  — **Partial 2026-08-04:** DualSense / Steam Deck couch controls ship shared
+  InputMap actions (`gamepad_bindings.gd` + `GamepadInput` autoload), stick
+  camera, center reticle, menu focus, aquascape pad tools, Options controller
+  menu, and aquascape escape (○ clear/exit, △ toggle, Esc, Options → Exit).
+  Remap UI still open.
 - [ ] **89. Complete the caption coverage.** Caption infra exists in `onboarding_runtime.gd`
   but sound cues (filter column, snail crawl, splashes) and key eco-events aren't all
   captioned; audit + fill. *M · M*

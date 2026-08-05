@@ -1281,7 +1281,7 @@ func _select_entry(entry: Dictionary) -> void:
 	var src: String = String(entry.get("source", ""))
 	var src_label: String = {
 		"founder": "Founder cohort",
-		"store": "Store purchase",
+		"store": "Adopted",
 		"evolved": "Bred in tank",
 		"speciated": "Emergent subspecies",
 	}.get(src, src)

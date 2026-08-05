@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${1:-$ROOT/depot_ids.env}"
+LOG="${STEAM_UPLOAD_LOG:-$ROOT/output/steam_upload.log}"
+VIZ="$ROOT/upload_viz.sh"
 
 if [[ ! -f "$ENV_FILE" ]]; then
 	echo "Copy depot_ids.env.example to depot_ids.env and set your depot IDs." >&2
@@ -25,8 +27,6 @@ if [[ -z "$STEAM_USERNAME" ]]; then
 	echo "Set STEAM_USERNAME in the environment (your Steamworks partner account)." >&2
 	exit 1
 fi
-# Empty setlive = draft upload (set live manually in Steamworks → Builds).
-# To publish in one step: STEAM_SETLIVE=default ./steam/upload.sh
 STEAM_SETLIVE="${STEAM_SETLIVE:-}"
 
 if ! command -v steamcmd >/dev/null 2>&1; then
@@ -48,6 +48,7 @@ gen_vdf() {
 }
 
 mkdir -p "$ROOT/output"
+: >"$LOG"
 gen_vdf "$ROOT/app_build.vdf.template" "$ROOT/app_build.vdf"
 gen_vdf "$ROOT/depot_build_win.vdf.template" "$ROOT/depot_build_win.vdf"
 gen_vdf "$ROOT/depot_build_linux.vdf.template" "$ROOT/depot_build_linux.vdf"
@@ -55,17 +56,39 @@ gen_vdf "$ROOT/depot_build_mac.vdf.template" "$ROOT/depot_build_mac.vdf"
 
 prompt_hidden() {
 	local title="$1"
+	if [[ -t 0 ]]; then
+		echo -n "${title} "
+		read -rs password
+		echo
+		printf '%s' "$password"
+		return
+	fi
 	osascript -e "display dialog \"${title}\" default answer \"\" with hidden answer" \
 		-e 'text returned of result' 2>/dev/null || true
 }
 
 prompt_text() {
 	local title="$1"
+	if [[ -t 0 ]]; then
+		echo -n "${title} "
+		read -r guard
+		printf '%s' "$guard"
+		return
+	fi
 	osascript -e "display dialog \"${title}\" default answer \"\"" \
 		-e 'text returned of result' 2>/dev/null || true
 }
 
-run_upload() {
+# macOS: fake a TTY so steamcmd flushes lines (piped uploads otherwise look frozen).
+run_steamcmd() {
+	if [[ "$(uname -s)" == "Darwin" ]] && command -v script >/dev/null 2>&1; then
+		script -q /dev/null steamcmd "$@"
+	else
+		steamcmd "$@"
+	fi
+}
+
+run_upload_live() {
 	local user="$1" pass="${2:-}" guard="${3:-}"
 	local -a args=()
 	if [[ -n "$guard" ]]; then
@@ -77,69 +100,60 @@ run_upload() {
 		args+=(+login "$user")
 	fi
 	args+=(+run_app_build "$ROOT/app_build.vdf" +quit)
-	steamcmd "${args[@]}"
+
+	echo ""
+	echo "╔══════════════════════════════════════════════════════╗"
+	echo "║  walstad loom  →  Steam  (~${total_mb} MB · 3 depots)      ║"
+	echo "║  Progress bar below · log: steam/output/steam_upload.log ║"
+	echo "╚══════════════════════════════════════════════════════╝"
+	echo ""
+
+	set -o pipefail
+	if [[ -t 1 && -x "$VIZ" ]]; then
+		run_steamcmd "${args[@]}" 2>&1 | tee -a "$LOG" | bash "$VIZ"
+	else
+		run_steamcmd "${args[@]}" 2>&1 | tee -a "$LOG"
+	fi
+	return "${PIPESTATUS[0]}"
 }
 
 password="${STEAM_PASSWORD:-}"
 guard="${STEAM_GUARD_CODE:-}"
-echo "Uploading build for AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft — set live in Steamworks})..."
+total_mb="$(du -sm "$ROOT/content" 2>/dev/null | awk '{print $1}')"
+echo "Uploading AppID $STEAM_APP_ID as $STEAM_USERNAME (branch: ${STEAM_SETLIVE:-draft})."
 
-# Try cached steamcmd session first — avoids a password prompt when already logged in.
 if [[ -z "$password" ]]; then
-	set +e
-	output="$(run_upload "$STEAM_USERNAME" "" "$guard" 2>&1)"
-	status=$?
-	set -e
-	echo "$output"
-	if [[ $status -eq 0 ]]; then
-		exit 0
-	fi
-	if [[ "$output" != *"Cached credentials not found"* && "$output" != *"Invalid Password"* && "$output" != *"Account Logon Denied"* && "$output" != *"Steam Guard"* ]]; then
-		exit "$status"
-	fi
-	echo "Cached login unavailable — prompting for credentials..."
-	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME}:")"
+	echo "Using cached steamcmd login (run ./steam/login_once.sh if this fails)."
 fi
 
 set +e
-if [[ -n "$password" ]]; then
-	output="$(run_upload "$STEAM_USERNAME" "$password" "$guard" 2>&1)"
-else
-	output="$(run_upload "$STEAM_USERNAME" "" "$guard" 2>&1)"
-fi
+run_upload_live "$STEAM_USERNAME" "$password" "$guard"
 status=$?
 set -e
-echo "$output"
 
-if [[ $status -ne 0 && "$output" == *"Cached credentials not found"* && -z "$password" ]]; then
-	password="$(prompt_hidden "Steam password for ${STEAM_USERNAME}:")"
-	if [[ -z "$password" ]]; then
-		echo "Upload cancelled — password required." >&2
-		exit 1
+if [[ $status -ne 0 ]]; then
+	if grep -q "Cached credentials not found" "$LOG" 2>/dev/null && [[ -z "$password" ]]; then
+		echo "Need password."
+		password="$(prompt_hidden "Steam password for ${STEAM_USERNAME}:")"
+		[[ -n "$password" ]] || exit 1
+		set +e
+		run_upload_live "$STEAM_USERNAME" "$password" "$guard"
+		status=$?
+		set -e
 	fi
-	set +e
-	output="$(run_upload "$STEAM_USERNAME" "$password" "$guard" 2>&1)"
-	status=$?
-	set -e
-	echo "$output"
 fi
 
 if [[ $status -ne 0 ]]; then
-	if [[ "$output" == *"Steam Guard"* || "$output" == *"Account Logon Denied"* ]]; then
-		if [[ -z "$guard" ]]; then
-			guard="$(prompt_text "Steam Guard code for ${STEAM_USERNAME} (5 chars from email or Steam app — NOT your password):")"
-		fi
+	if grep -q "Steam Guard\|Account Logon Denied" "$LOG" 2>/dev/null; then
+		[[ -n "$guard" ]] || guard="$(prompt_text "Steam Guard code (5 chars):")"
 		if [[ ${#guard} -gt 8 ]]; then
-			echo "That looks like a password, not a Steam Guard code. Use the 5-character code from your email or Steam mobile app." >&2
+			echo "Use the 5-char Guard code, not your password." >&2
 			exit 1
 		fi
-		if [[ -n "$guard" ]]; then
-			echo "Retrying with Steam Guard code..."
-			run_upload "$STEAM_USERNAME" "$password" "$guard"
-		else
-			exit 1
-		fi
+		[[ -n "$guard" ]] || exit 1
+		run_upload_live "$STEAM_USERNAME" "$password" "$guard"
 	else
+		echo "Upload failed — tail -30 $LOG" >&2
 		exit "$status"
 	fi
 fi

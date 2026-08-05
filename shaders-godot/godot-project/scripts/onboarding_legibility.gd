@@ -107,7 +107,20 @@ static func tier_color(tier: int) -> Color:
 		_: return Color8(230, 120, 110)
 
 
-static func cheat_sheet_lines(mobile: bool) -> PackedStringArray:
+static func cheat_sheet_lines(mobile: bool, gamepad: bool = false) -> PackedStringArray:
+	if gamepad:
+		return PackedStringArray([
+			"Options — Controller menu (Settings, Adopt fish, Residents…)",
+			"Left stick — pan (aim reticle in Aquascape)",
+			"Right stick — orbit",
+			"L2 / R2 — zoom · brush − / + in Aquascape",
+			"Cross — feed / place / confirm · Circle — back (exit Aquascape)",
+			"Square — follow · Triangle — Aquascape on/off (also exits)",
+			"D-pad ←/→ — cycle follow · ↑/↓ — sim speed",
+			"L1 / R1 — Residents / Portal · tools in Aquascape",
+			"Create — help · L3 — Settings · R3 — photo (hold — reset)",
+			"Options — also: Tank list · Quit game",
+		])
 	if mobile:
 		return PackedStringArray([
 			"Drag — orbit camera",
@@ -140,12 +153,16 @@ static func control_hint_for_context(ctx: String) -> String:
 	match ctx:
 		"aquascape":
 			return "Paint substrate · place hardscape · [ / ] brush · Backspace undo · B exit"
+		"aquascape_pad":
+			return "LS aim · Cross place · L1/R1 tools · ○/△ exit"
 		"follow":
 			return "← / → cycle subjects · Esc release · C portal"
 		"immersive":
 			return "Tap edge for controls · H exit focus"
 		"mobile":
 			return "Drag look · tap water feed · double-tap reset · ❓ help"
+		"gamepad":
+			return "RS look · LS pan · Cross feed · Square follow · Create help"
 		_:
 			return "Drag look · tap water feed · tap chips for details · ? help"
 

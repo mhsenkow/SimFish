@@ -53,6 +53,9 @@ STEAM_USERNAME=your_partner_account ./steam/upload.sh
 
 ## Store page checklist
 
+See also **`steam/REVIEW_FEEDBACK.md`** for Valve build-review failures
+(Build `#24083947`) and the fix checklist before resubmit.
+
 Generate capsule art and screenshots. First-time setup creates a local venv
 (git-ignored) with Pillow:
 

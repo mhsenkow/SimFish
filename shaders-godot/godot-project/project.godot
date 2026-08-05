@@ -26,6 +26,7 @@ AIDirector="*res://scripts/ai_director.gd"
 GuardianLlm="*res://scripts/guardian_llm.gd"
 MusicContext="*res://scripts/music_context.gd"
 UiTicker="*res://scripts/ui_ticker.gd"
+GamepadInput="*res://scripts/gamepad_input.gd"
 
 [display]
 

@@ -57,6 +57,14 @@ func is_modal_open() -> bool:
 	return _open_modal != ""
 
 
+func is_side_open() -> bool:
+	return _open_side != ""
+
+
+func is_any_panel_open() -> bool:
+	return is_modal_open() or is_side_open()
+
+
 func close_side_panels() -> void:
 	_close_side(SIDE_SETTINGS)
 	_close_side(SIDE_RENDER)
@@ -114,6 +122,7 @@ func open_side(id: String) -> void:
 		SIDE_NOTIFICATIONS:
 			if _main.has_method("_open_notifications_panel_exclusive"):
 				_main.call("_open_notifications_panel_exclusive")
+	_grab_couch_focus_in_open_panel()
 
 
 func toggle_modal(id: String) -> void:
@@ -154,6 +163,7 @@ func open_modal(id: String) -> void:
 				sp.z_index = 200
 				if sp.has_method("_regenerate"):
 					sp._regenerate()
+	_grab_couch_focus_in_open_panel()
 
 
 func notify_side_closed(id: String) -> void:
@@ -275,3 +285,44 @@ func _set_backdrop(on: bool) -> void:
 	ensure_backdrop()
 	if _backdrop != null:
 		_backdrop.visible = on
+
+
+func _grab_couch_focus_in_open_panel() -> void:
+	var panel: Control = _visible_panel_control()
+	if panel == null:
+		return
+	var prefer := PackedStringArray()
+	if panel == _main.get("fish_store_panel"):
+		prefer = PackedStringArray(["ADOPT", "Reroll", "Close"])
+	elif panel == _main.get("library_panel"):
+		prefer = PackedStringArray(["Close"])
+	PanelTheme.grab_couch_focus(panel, prefer)
+
+
+func _visible_panel_control() -> Control:
+	if _main == null:
+		return null
+	var candidates: Array = [
+		_main.get("settings_panel"),
+		_main.get("render_panel"),
+		_main.get("sound_panel"),
+		_main.get("library_panel"),
+		_main.get("creature_creator_panel"),
+		_main.get("fish_store_panel"),
+	]
+	for c in candidates:
+		if c is Control and (c as Control).visible:
+			return c as Control
+	return null
+
+
+func _first_focusable_button(n: Node) -> BaseButton:
+	if n is BaseButton:
+		var b: BaseButton = n as BaseButton
+		if b.focus_mode != Control.FOCUS_NONE and b.visible and not b.disabled:
+			return b
+	for c in n.get_children():
+		var found: BaseButton = _first_focusable_button(c)
+		if found != null:
+			return found
+	return null

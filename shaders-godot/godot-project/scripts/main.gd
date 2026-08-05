@@ -826,7 +826,7 @@ func clear_follow_target() -> void:
 # file simple and means the button picks up whatever theme/sizing the rest
 # of the cluster uses. Inserted above the existing RailDivider so it sits
 # in the "view tools" group (Light / Render / Sound) instead of the modal
-# cluster (Library / Store / Creator).
+# cluster (Library / Adopt / Creator).
 func _install_camera_views_rail_button() -> void:
 	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
 	if cluster_vbox == null:
@@ -913,6 +913,10 @@ func _toggle_residents_panel() -> void:
 			_ui_panels.close_side_panels()
 		if _residents_panel.has_method("sync_from_main"):
 			_residents_panel.sync_from_main()
+		var gp := get_node_or_null("/root/GamepadInput")
+		if gp != null and gp.couch_focus_wanted():
+			PanelTheme.apply_couch_focus_tree(_residents_panel, true)
+			_residents_panel.call_deferred("grab_focus")
 
 
 # Camera tuning re-exported from CameraController (single source of truth — the
@@ -958,6 +962,15 @@ var _follow_target: Node3D = null
 # Cleared the next frame LMB releases.
 var _suppress_drag_until_release: bool = false
 var _press_skip_feed: bool = false
+
+# Couch / DualSense: center reticle + aquascape paint hold.
+var _gamepad_reticle: Control = null
+var _gamepad_reticle_dot: ColorRect = null
+var _gamepad_paint_held: bool = false
+var _gamepad_r3_armed: bool = false
+var _gamepad_r3_did_hold: bool = false
+var _gamepad_aquascape_tip_shown: bool = false
+var _gamepad_menu: Control = null
 
 # Aquascape sculpting (terrain, hardscape, trim, unified undo).
 var _aquascape := AquascapeController.new()
@@ -1287,6 +1300,8 @@ func _ready() -> void:
 	_build_follow_thought_ui()
 	if _rail_vbox != null and _onboarding != null:
 		_onboarding.install_help_rail_button(_rail_vbox)
+
+	_setup_gamepad()
 
 
 func _toggle_portal() -> void:
@@ -1858,6 +1873,7 @@ func _process(dt: float) -> void:
 	_sync_rail_toggles()
 
 	# WASD pan target along view direction (desktop only — no keyboard on mobile).
+	# Gamepad left stick pans when not in aquascape (aquascape uses LS for reticle).
 	if not _is_touch_active() and not _typing_focus_in_ui():
 		var fwd: Vector3 = (target - camera.global_position)
 		fwd.y = 0.0
@@ -1877,6 +1893,7 @@ func _process(dt: float) -> void:
 				moved = false  # _reset_camera_to_default already called _apply_camera
 			if moved:
 				_apply_camera()
+		_process_gamepad_camera(dt)
 
 	# Timelapse + dance capture (needs dt from _process).
 	if _timelapse_active:
@@ -2112,10 +2129,12 @@ func _process_mouse_input(dt: float) -> void:
 			_key_was_pressed[KEY_Z] = z_down
 
 	# Aquascape preview voxel: shown at the substrate projection of the
-	# current mouse/touch position, ONLY when in aquascape mode.
-	var cursor_pos: Vector2 = _touches.values()[0] if _touches.size() > 0 else get_window().get_mouse_position()
+	# current mouse/touch/reticle position, ONLY when in aquascape mode.
+	var cursor_pos: Vector2 = _aim_screen_pos()
 	if _aquascape.is_active:
 		_aquascape.update_workbench(cursor_pos)
+		_process_gamepad_aquascape(dt, cursor_pos)
+	_update_gamepad_reticle_visual()
 
 
 func _update_aquascape_preview(mouse_pos: Vector2) -> void:
@@ -2473,6 +2492,523 @@ func _handle_shortcut(key: int, action: Callable) -> void:
 
 func _typing_focus_in_ui() -> bool:
 	return PanelTheme.typing_focus_in_ui(get_viewport())
+
+
+func _setup_gamepad() -> void:
+	var gp := get_node_or_null("/root/GamepadInput")
+	if gp == null:
+		return
+	if not gp.active_changed.is_connected(_on_gamepad_active_changed):
+		gp.active_changed.connect(_on_gamepad_active_changed)
+	if not gp.joy_connected.is_connected(_on_gamepad_joy_connected):
+		gp.joy_connected.connect(_on_gamepad_joy_connected)
+	_ensure_gamepad_reticle()
+	_on_gamepad_active_changed(gp.is_gamepad_active())
+
+
+func _on_gamepad_active_changed(active: bool) -> void:
+	PanelTheme.apply_couch_focus_tree(self, active)
+	_sync_aquascape_pad_focus()
+	if _gamepad_reticle != null:
+		_gamepad_reticle.visible = active
+	if not active:
+		_gamepad_paint_held = false
+		if _aquascape.is_active:
+			_aquascape.end_stroke()
+
+
+func _on_gamepad_joy_connected(_device: int, joy_name: String) -> void:
+	_show_feed_toast("Controller — Options menu · △ aquascape · ○ back (%s)" % joy_name)
+
+
+func _ensure_gamepad_reticle() -> void:
+	if _gamepad_reticle != null and is_instance_valid(_gamepad_reticle):
+		return
+	_gamepad_reticle = Control.new()
+	_gamepad_reticle.name = "GamepadReticle"
+	_gamepad_reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gamepad_reticle.z_index = 90
+	_gamepad_reticle.visible = false
+	add_child(_gamepad_reticle)
+	_gamepad_reticle_dot = ColorRect.new()
+	_gamepad_reticle_dot.size = Vector2(10, 10)
+	_gamepad_reticle_dot.color = Color(0.95, 0.97, 1.0, 0.85)
+	_gamepad_reticle_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gamepad_reticle.add_child(_gamepad_reticle_dot)
+	var ring := ColorRect.new()
+	ring.size = Vector2(22, 22)
+	ring.position = Vector2(-6, -6)
+	ring.color = Color(0.55, 0.75, 1.0, 0.35)
+	ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gamepad_reticle.add_child(ring)
+	_gamepad_reticle.move_child(_gamepad_reticle_dot, -1)
+
+
+func _gamepad() -> Node:
+	return get_node_or_null("/root/GamepadInput")
+
+
+func _aim_screen_pos() -> Vector2:
+	if _touches.size() > 0:
+		return _touches.values()[0]
+	var gp := _gamepad()
+	if gp != null and gp.is_gamepad_active():
+		return gp.reticle_screen_pos(get_viewport().get_visible_rect().size)
+	return get_window().get_mouse_position()
+
+
+func _gui_blocks_tank_actions() -> bool:
+	if _typing_focus_in_ui():
+		return true
+	if _gamepad_menu != null and is_instance_valid(_gamepad_menu):
+		return true
+	if _onboarding != null and _onboarding.has_method("has_blocking_card") \
+			and bool(_onboarding.call("has_blocking_card")):
+		return true
+	if _onboarding != null and _onboarding.has_method("has_blocking_nudge") \
+			and bool(_onboarding.call("has_blocking_nudge")):
+		return true
+	if _ui_panels != null and _ui_panels.is_any_panel_open():
+		return true
+	if _residents_panel != null and is_instance_valid(_residents_panel) \
+			and _residents_panel.visible:
+		return true
+	if _camera_views_panel != null and is_instance_valid(_camera_views_panel) \
+			and _camera_views_panel.visible:
+		return true
+	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
+		return true
+	var focus: Control = get_viewport().gui_get_focus_owner()
+	if focus == null:
+		return false
+	# Focused HUD / menu controls should receive Cross as ui_accept, not feed.
+	return focus is BaseButton or focus is Slider or focus is LineEdit \
+			or focus is TextEdit or focus is ItemList or focus is Tree
+
+
+func _process_gamepad_camera(dt: float) -> void:
+	var gp := _gamepad()
+	if gp == null or not gp.is_gamepad_active() or camera == null:
+		return
+	if _typing_focus_in_ui():
+		return
+	# Side/modal panels: leave sticks to Godot ui_* focus navigation.
+	if not _aquascape.is_active and _gui_blocks_tank_actions():
+		return
+	# Aquascape: left stick moves reticle; right stick still orbits.
+	if _aquascape.is_active:
+		gp.update_aquascape_reticle(dt, get_viewport().get_visible_rect().size)
+	else:
+		var pan_delta: Vector2 = gp.pan_pixel_delta(dt)
+		if pan_delta.length_squared() > 0.0:
+			_pan_target(pan_delta)
+	var look_delta: Vector2 = gp.look_pixel_delta(dt)
+	if look_delta.length_squared() > 0.0:
+		var ob: Vector2 = CameraController.orbit(yaw, pitch, look_delta)
+		yaw = ob.x
+		pitch = ob.y
+		_apply_camera()
+	if not _aquascape.is_active:
+		var zf: float = gp.zoom_factor_for_dt(dt)
+		if absf(zf - 1.0) > 0.0001:
+			_zoom_camera_by_factor(zf)
+	# R3 hold → reset camera
+	if _gamepad_r3_armed and gp.r3_hold_triggered() and not _gamepad_r3_did_hold:
+		_gamepad_r3_did_hold = true
+		_reset_camera_to_default()
+
+
+func _process_gamepad_aquascape(_dt: float, cursor_pos: Vector2) -> void:
+	var gp := _gamepad()
+	if gp == null or not gp.is_gamepad_active():
+		return
+	if gp.consume_brush_edge("down"):
+		_aquascape.adjust_brush(-1)
+	if gp.consume_brush_edge("up"):
+		_aquascape.adjust_brush(1)
+	if _gamepad_paint_held and _aquascape.can_paint() and _aquascape.allows_drag_paint():
+		_aquascape.place(cursor_pos)
+		_aquascape.mark_painted()
+
+
+func _update_gamepad_reticle_visual() -> void:
+	var gp := _gamepad()
+	if _gamepad_reticle == null or gp == null:
+		return
+	if not gp.is_gamepad_active():
+		_gamepad_reticle.visible = false
+		return
+	_gamepad_reticle.visible = true
+	var pos: Vector2 = gp.reticle_screen_pos(get_viewport().get_visible_rect().size)
+	_gamepad_reticle.position = pos - Vector2(5, 5)
+
+
+func _handle_gamepad_action(event: InputEvent) -> bool:
+	if event is InputEventKey:
+		return false
+	if not (event is InputEventJoypadButton or event is InputEventJoypadMotion):
+		# Allow action presses that originated from joy via is_action_* even on
+		# aggregated events — but skip pure keyboard (handled elsewhere).
+		if not event.is_action_type():
+			return false
+	if _typing_focus_in_ui():
+		return false
+	var gp := _gamepad()
+	if gp == null or not gp.has_joypad():
+		return false
+
+	# Blocking onboarding cards (away recap, tips) steal Cross / Circle first.
+	if _gamepad_menu != null and is_instance_valid(_gamepad_menu):
+		if event.is_action_pressed("ui_cancel") \
+				or (event is InputEventJoypadButton \
+					and (event as InputEventJoypadButton).button_index == JOY_BUTTON_B):
+			if event.is_pressed() and not event.is_echo():
+				_close_gamepad_menu()
+				return true
+		# Let focused menu buttons receive Cross via ui_accept.
+		if event.is_action_pressed("feed") or event.is_action_pressed("ui_accept") \
+				or (event is InputEventJoypadButton \
+					and (event as InputEventJoypadButton).button_index == JOY_BUTTON_A):
+			return false
+		return false
+	if _onboarding != null and _onboarding.has_method("has_blocking_card") \
+			and bool(_onboarding.call("has_blocking_card")):
+		if event.is_action_pressed("feed") or event.is_action_pressed("ui_accept") \
+				or event.is_action_pressed("ui_cancel") \
+				or (event is InputEventJoypadButton and (
+					(event as InputEventJoypadButton).button_index == JOY_BUTTON_A
+					or (event as InputEventJoypadButton).button_index == JOY_BUTTON_B)):
+			if event.is_pressed() and not event.is_echo():
+				_onboarding.call("dismiss_card")
+				return true
+		return false
+	# Soft nudges (O₂ toast, etc.) — Cross activates focused btn / Circle dismisses.
+	if _onboarding != null and _onboarding.has_method("has_blocking_nudge") \
+			and bool(_onboarding.call("has_blocking_nudge")):
+		if event.is_pressed() and not event.is_echo():
+			if event.is_action_pressed("ui_cancel") \
+					or (event is InputEventJoypadButton \
+						and (event as InputEventJoypadButton).button_index == JOY_BUTTON_B):
+				_onboarding.call("dismiss_nudge")
+				return true
+			if event.is_action_pressed("feed") or event.is_action_pressed("ui_accept") \
+					or (event is InputEventJoypadButton \
+						and (event as InputEventJoypadButton).button_index == JOY_BUTTON_A):
+				var focus: Control = get_viewport().gui_get_focus_owner()
+				if focus is BaseButton:
+					(focus as BaseButton).pressed.emit()
+				else:
+					_onboarding.call("dismiss_nudge")
+				return true
+		return false
+
+	# R3 arm / release (photo vs hold-reset).
+	if event.is_action_pressed("photo") or event.is_action_pressed("camera_reset"):
+		_gamepad_r3_armed = true
+		_gamepad_r3_did_hold = false
+		return true
+	if event.is_action_released("photo") or event.is_action_released("camera_reset"):
+		if _gamepad_r3_armed and not _gamepad_r3_did_hold:
+			if is_pond_mode():
+				take_pond_photo()
+			else:
+				_take_photo()
+		_gamepad_r3_armed = false
+		_gamepad_r3_did_hold = false
+		return true
+
+	if not event.is_pressed() or event.is_echo():
+		if event.is_action_released("feed") and _gamepad_paint_held:
+			_gamepad_paint_held = false
+			_aquascape.end_stroke()
+			return true
+		return false
+
+	if event.is_action_pressed("pause"):
+		# Options: couch menu hub (Settings / Residents / …). Keyboard P still
+		# pauses via _handle_shortcut.
+		if _gamepad() != null and _gamepad().is_gamepad_active():
+			_toggle_gamepad_menu()
+		else:
+			_toggle_pause()
+		return true
+	if event.is_action_pressed("help"):
+		_toggle_cheat_sheet()
+		return true
+	if event.is_action_pressed("settings"):
+		_ui_toggle_side(UiPanelManager.SIDE_SETTINGS)
+		return true
+	# Triangle always toggles aquascape — even when workbench buttons stole focus
+	# (that was trapping players in build mode).
+	if event.is_action_pressed("aquascape"):
+		_gamepad_toggle_aquascape()
+		return true
+	# Circle in aquascape: clear selection first, then exit build.
+	if event.is_action_pressed("ui_cancel") \
+			or (event is InputEventJoypadButton \
+				and (event as InputEventJoypadButton).button_index == JOY_BUTTON_B):
+		if _aquascape.is_active:
+			if _aquascape.has_selection():
+				_aquascape.clear_selection()
+				_show_feed_toast("Selection cleared · ○ again to exit")
+			else:
+				_gamepad_toggle_aquascape()
+			return true
+
+	# When a panel/menu has focus, leave D-pad / Cross to Godot ui_* navigation.
+	# Aquascape place/tools still run below when build is active (clear focus).
+	if _gui_blocks_tank_actions() and not _aquascape.is_active:
+		return false
+	if _aquascape.is_active and _gui_blocks_tank_actions():
+		# Drop workbench focus so LS/Cross aim & place instead of clicking chips.
+		var fo: Control = get_viewport().gui_get_focus_owner()
+		if fo != null:
+			fo.release_focus()
+
+	# Shoulders: tools in aquascape, Residents / Portal otherwise.
+	if event.is_action_pressed("residents") or event.is_action_pressed("tool_prev"):
+		if _aquascape.is_active:
+			_aquascape.cycle_tool(-1)
+		else:
+			_toggle_residents_panel()
+		return true
+	if event.is_action_pressed("portal") or event.is_action_pressed("tool_next"):
+		if _aquascape.is_active:
+			_aquascape.cycle_tool(1)
+		else:
+			_toggle_portal()
+		return true
+
+	if event.is_action_pressed("follow_prev"):
+		if _aquascape.is_active and _aquascape.has_selection():
+			_aquascape.nudge_selection(Vector3(-TerrainVoxelGrid.CELL_SIZE, 0, 0))
+		else:
+			cycle_follow(-1)
+		return true
+	if event.is_action_pressed("follow_next"):
+		if _aquascape.is_active and _aquascape.has_selection():
+			_aquascape.nudge_selection(Vector3(TerrainVoxelGrid.CELL_SIZE, 0, 0))
+		else:
+			cycle_follow(1)
+		return true
+	if event.is_action_pressed("speed_up"):
+		_cycle_sim_speed(1)
+		return true
+	if event.is_action_pressed("speed_down"):
+		_cycle_sim_speed(-1)
+		return true
+
+	if event.is_action_pressed("follow_pick"):
+		if _aquascape.is_active:
+			return false
+		var picked: Node3D = _pick_creature_at_click(_aim_screen_pos())
+		if picked != null:
+			_assign_creature_target(picked)
+		return true
+
+	if event.is_action_pressed("feed"):
+		var aim: Vector2 = _aim_screen_pos()
+		if _aquascape.is_active:
+			_aquascape.begin_stroke()
+			_aquascape.place(aim)
+			_gamepad_paint_held = true
+			return true
+		_drop_food_at_cursor(aim)
+		return true
+
+	return false
+
+
+func _gamepad_toggle_aquascape() -> void:
+	var entering: bool = not _aquascape.is_active
+	_toggle_aquascape()
+	var gp := _gamepad()
+	if gp != null:
+		gp.reset_reticle()
+	_sync_aquascape_pad_focus()
+	if _aquascape.is_active:
+		# Don't leave focus trapped on palette chips.
+		var fo: Control = get_viewport().gui_get_focus_owner()
+		if fo != null:
+			fo.release_focus()
+		if not _gamepad_aquascape_tip_shown:
+			_gamepad_aquascape_tip_shown = true
+			_show_feed_toast("LS aim · Cross place · ○ clear/exit · △ exit · Options menu")
+		elif gp != null and gp.is_gamepad_active():
+			_show_feed_toast("○ or △ to leave Aquascape · Options → Exit")
+	elif entering == false:
+		_show_feed_toast("Left Aquascape")
+
+
+func _sync_aquascape_pad_focus() -> void:
+	# Couch focus on the workbench palette traps D-pad / Cross on chips and
+	# made aquascape feel inescapable. Keep palette mouse-usable but FOCUS_NONE
+	# while a pad is driving build mode; restore when leaving.
+	var gp := _gamepad()
+	var pad_on: bool = gp != null and gp.is_gamepad_active()
+	var pad_build: bool = pad_on and _aquascape.is_active
+	for root in [aquascape_palette, _aquascape_view_bar]:
+		if root == null or not is_instance_valid(root):
+			continue
+		if pad_build:
+			PanelTheme.apply_couch_focus_tree(root, false, true)
+		else:
+			PanelTheme.apply_couch_focus_tree(root, pad_on)
+	if pad_build:
+		var fo: Control = get_viewport().gui_get_focus_owner()
+		if fo != null and aquascape_palette != null and aquascape_palette.is_ancestor_of(fo):
+			fo.release_focus()
+		elif fo != null and _aquascape_view_bar != null and _aquascape_view_bar.is_ancestor_of(fo):
+			fo.release_focus()
+
+
+func _cycle_sim_speed(dir: int) -> void:
+	if _aquascape.is_active:
+		return
+	var scales: Array[float] = [1.0, 4.0, 16.0]
+	var cur: float = _saved_time_scale
+	var idx: int = 0
+	for i in range(scales.size()):
+		if absf(scales[i] - cur) < 0.05:
+			idx = i
+			break
+	idx = clampi(idx + dir, 0, scales.size() - 1)
+	_set_time_scale(scales[idx])
+
+
+func _toggle_gamepad_menu() -> void:
+	if _gamepad_menu != null and is_instance_valid(_gamepad_menu):
+		_close_gamepad_menu()
+		return
+	_open_gamepad_menu()
+
+
+func _close_gamepad_menu() -> bool:
+	if _gamepad_menu == null or not is_instance_valid(_gamepad_menu):
+		_gamepad_menu = null
+		return false
+	_gamepad_menu.queue_free()
+	_gamepad_menu = null
+	return true
+
+
+func _open_gamepad_menu() -> void:
+	_close_gamepad_menu()
+	_prepare_panel_open()
+	var overlay := Control.new()
+	overlay.name = "GamepadMenu"
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.z_index = PanelTheme.Z_HELP
+	add_child(overlay)
+	_gamepad_menu = overlay
+	var scrim := ColorRect.new()
+	scrim.color = Color(0, 0, 0, 0.5)
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and ev.pressed:
+			_close_gamepad_menu())
+	overlay.add_child(scrim)
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.offset_left = -180
+	panel.offset_right = 180
+	panel.offset_top = -280
+	panel.offset_bottom = 280
+	PanelTheme.apply_panel_chrome(panel)
+	overlay.add_child(panel)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(scroll)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 6)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vb)
+	vb.add_child(PanelTheme.make_title("Controller menu"))
+	vb.add_child(PanelTheme.make_rule())
+	var aqua_label: String = "Exit Aquascape" if _aquascape.is_active else "Aquascape"
+	var entries: Array = []
+	# Exit first while building — easiest couch escape after ○ / △.
+	if _aquascape.is_active:
+		entries.append([aqua_label, func(): _close_gamepad_menu(); _gamepad_toggle_aquascape()])
+	entries.append_array([
+		["Settings", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SETTINGS)],
+		["Residents", func(): _close_gamepad_menu(); _toggle_residents_panel()],
+		["Camera views", func(): _close_gamepad_menu(); _toggle_camera_views_panel()],
+		["Adopt fish", func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_STORE)],
+		["Library", func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY)],
+		["Sound", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SOUND)],
+		["Rendering", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_RENDER)],
+	])
+	if not _aquascape.is_active:
+		entries.append([aqua_label, func(): _close_gamepad_menu(); _gamepad_toggle_aquascape()])
+	entries.append_array([
+		["Help", func(): _close_gamepad_menu(); _toggle_cheat_sheet()],
+		["Pause / Resume", func(): _close_gamepad_menu(); _toggle_pause()],
+		["Tank list", func(): _close_gamepad_menu(); _on_back_to_menu()],
+		["Quit game", func(): _close_gamepad_menu(); _confirm_quit_game()],
+		["Close menu", func(): _close_gamepad_menu()],
+	])
+	var first_btn: Button = null
+	var prev: Button = null
+	for entry in entries:
+		var btn := PanelTheme.make_primary_button(String(entry[0]))
+		btn.focus_mode = Control.FOCUS_ALL
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var cb: Callable = entry[1]
+		btn.pressed.connect(cb)
+		vb.add_child(btn)
+		if first_btn == null:
+			first_btn = btn
+		if prev != null:
+			prev.focus_neighbor_bottom = btn.get_path()
+			btn.focus_neighbor_top = prev.get_path()
+		prev = btn
+	if first_btn != null:
+		first_btn.call_deferred("grab_focus")
+
+
+func _confirm_quit_game() -> void:
+	# Pad-reachable quit — required for Full Controller Support (Valve #24083947).
+	var root := PanelTheme.make_modal_root(self, PanelTheme.Z_HELP,
+			Callable(), PackedStringArray(["Cancel"]))
+	var overlay: Control = root["overlay"]
+	overlay.name = "QuitConfirm"
+	var center: CenterContainer = root["center"]
+	var panel := PanelContainer.new()
+	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 160.0, 0.7, 0.4)
+	center.add_child(panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	panel.add_child(vb)
+	vb.add_child(PanelTheme.make_title("Quit walstad loom?"))
+	vb.add_child(PanelTheme.make_subtitle("Progress autosaves. You can reopen from Steam anytime."))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	vb.add_child(row)
+	var cancel := PanelTheme.make_secondary_button("Cancel")
+	cancel.focus_mode = Control.FOCUS_ALL
+	cancel.pressed.connect(func(): overlay.queue_free())
+	row.add_child(cancel)
+	var quit_btn := PanelTheme.make_primary_button("Quit")
+	quit_btn.focus_mode = Control.FOCUS_ALL
+	quit_btn.pressed.connect(func():
+		overlay.queue_free()
+		_quit_to_desktop())
+	row.add_child(quit_btn)
+	cancel.focus_neighbor_right = quit_btn.get_path()
+	quit_btn.focus_neighbor_left = cancel.get_path()
+	cancel.call_deferred("grab_focus")
+
+
+func _quit_to_desktop() -> void:
+	_persist_last_quit_unix()
+	if _save_restored:
+		save_active_tank(true)
+	get_tree().quit()
 
 
 func _keeper_input_active() -> bool:
@@ -4504,10 +5040,14 @@ func _toggle_aquascape() -> void:
 	if not _aquascape.is_active:
 		_restore_aquascape_camera()
 	if _aquascape.is_active and _onboarding != null:
+		var gp := _gamepad()
+		var pad: bool = gp != null and gp.is_gamepad_active()
 		_onboarding.show_mode_coachmark(
 			"aquascape",
 			"Aquascape mode",
-			"Scroll zooms · Shift+scroll build height · 1–4 views · F reset · B exit."
+			("LS aim · Cross place · L1/R1 tools · ○ or △ exit"
+				if pad else
+				"Scroll zooms · Shift+scroll build height · 1–4 views · F reset · B exit.")
 		)
 	_sync_aquascape_view_bar()
 	_apply_panel_layout()
@@ -4531,6 +5071,7 @@ func _sync_aquascape_chrome(_active: bool) -> void:
 	_apply_panel_layout()
 	_apply_hud_layout()
 	_sync_rail_toggles()
+	_sync_aquascape_pad_focus()
 
 
 func _ensure_aquascape_view_bar() -> void:
@@ -4783,8 +5324,13 @@ func _input(event: InputEvent) -> void:
 	# Any input keeps the top HUD lit. Cheap, runs once per input event.
 	if event is InputEventMouseMotion or event is InputEventMouseButton or \
 			event is InputEventScreenTouch or event is InputEventScreenDrag or \
-			event is InputEventKey:
+			event is InputEventKey or event is InputEventJoypadButton or \
+			event is InputEventJoypadMotion:
 		_notify_hud_input()
+
+	if _handle_gamepad_action(event):
+		get_viewport().set_input_as_handled()
+		return
 
 	if event.is_action_pressed("ui_cancel"):
 		if _dismiss_blocking_overlays():
@@ -6854,7 +7400,7 @@ func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
 			return [
 				{"label": "Creature Creator", "tip": "Design fish, shrimp, plants…",
 					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_CREATOR)},
-				{"label": "Fish Store", "tip": "Buy procedurally generated fish",
+				{"label": "Adopt fish", "tip": "Free procedurally generated fish (no purchases)",
 					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_STORE)},
 				{"label": "Life Library", "tip": "Discovered species collection",
 					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY)},
@@ -9372,8 +9918,8 @@ func _show_discovery_toast(entry: Dictionary) -> void:
 	var src_hint: String = ""
 	if src == "founder":
 		src_hint = " · founder"
-	elif src == "store":
-		src_hint = " · store"
+	elif src == "store" or src == "adopt":
+		src_hint = " · adopted"
 	_push_notification(
 		"discovery",
 		NOTIF_SEVERITY_INFO,
@@ -9483,7 +10029,8 @@ func _toggle_cheat_sheet() -> void:
 	panel.add_child(vb)
 	vb.add_child(PanelTheme.make_title("Controls"))
 	vb.add_child(PanelTheme.make_rule())
-	var lines: PackedStringArray = OnboardingLegibility.cheat_sheet_lines(_is_mobile())
+	var lines: PackedStringArray = OnboardingLegibility.cheat_sheet_lines(
+			_is_mobile(), _gamepad() != null and _gamepad().is_gamepad_active())
 	for line in lines:
 		var lab := Label.new()
 		lab.text = line
@@ -9579,6 +10126,18 @@ func _show_coachmark_step(step: int) -> void:
 # dismiss instantly or admire the tank behind it.
 func _dismiss_blocking_overlays() -> bool:
 	# One layer per press — innermost / most transient UI first.
+	var quit_confirm: Node = get_node_or_null("QuitConfirm")
+	if quit_confirm != null and is_instance_valid(quit_confirm):
+		quit_confirm.queue_free()
+		return true
+	if _close_gamepad_menu():
+		return true
+	if _onboarding != null and _onboarding.has_method("dismiss_card") \
+			and bool(_onboarding.call("dismiss_card")):
+		return true
+	if _onboarding != null and _onboarding.has_method("dismiss_nudge") \
+			and bool(_onboarding.call("dismiss_nudge")):
+		return true
 	if _close_rail_flyout():
 		return true
 	if _chip_popup_key != "":
@@ -9667,6 +10226,9 @@ func _dismiss_blocking_overlays() -> bool:
 		return true
 	if _radial_menu != null and is_instance_valid(_radial_menu):
 		_dismiss_radial_menu()
+		return true
+	if _aquascape.is_active:
+		_gamepad_toggle_aquascape()
 		return true
 	return false
 

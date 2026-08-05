@@ -8836,10 +8836,15 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 
 
 func spawn_purchased_fish(genome: Dictionary) -> void:
+	spawn_adopted_fish(genome)
+
+
+func spawn_adopted_fish(genome: Dictionary) -> void:
 	var g: Dictionary = genome.duplicate(true)
 	if TANK_SHAPE == "sphere":
 		g["preferred_y_frac"] = randf_range(0.1, 0.9)
 	_spawn_fish_at(g, _sample_fish_spawn_pos(g))
+
 
 
 func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:

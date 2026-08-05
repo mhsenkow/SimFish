@@ -870,6 +870,6 @@ func _make_empty_state() -> Control:
 	msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	msg.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	msg.text = "No creatures match your filter or search." if has_any \
-		else "No residents yet — add some from the Fish Store."
+		else "No residents yet — open Adopt fish to add a few."
 	box.add_child(msg)
 	return box

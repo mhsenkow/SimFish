@@ -92,6 +92,49 @@ static func typing_focus_in_ui(viewport: Viewport) -> bool:
 	if focus.get_parent() is SpinBox:
 		return true
 	return false
+
+
+# Couch / gamepad: HUD rail + icon buttons normally opt out of focus (mouse-first).
+# When a pad is driving, flip them to FOCUS_ALL so D-pad / ui_* navigation works.
+static var _couch_focus: bool = false
+
+
+static func set_couch_focus(enabled: bool) -> void:
+	_couch_focus = enabled
+
+
+static func couch_focus() -> bool:
+	return _couch_focus
+
+
+static func _chrome_focus_mode() -> Control.FocusMode:
+	return Control.FOCUS_ALL if _couch_focus else Control.FOCUS_NONE
+
+
+# Walk a UI subtree and apply couch focus mode to Buttons that opted out via
+# style_rail_button / make_icon_button / etc. Safe to call on mode toggles.
+# force_none: mute focus on this subtree only (doesn't flip the global couch flag).
+static func apply_couch_focus_tree(root: Node, enabled: bool, force_none: bool = false) -> void:
+	if not force_none:
+		set_couch_focus(enabled)
+	if root == null:
+		return
+	_apply_couch_focus_recursive(root, false if force_none else enabled, force_none)
+
+
+static func _apply_couch_focus_recursive(n: Node, enabled: bool, force_none: bool = false) -> void:
+	if n is Button:
+		var b: Button = n as Button
+		if force_none:
+			b.focus_mode = Control.FOCUS_NONE
+		elif b.focus_mode == Control.FOCUS_NONE or b.focus_mode == Control.FOCUS_ALL:
+			# Don't steal focus from LineEdit siblings — buttons only.
+			if enabled:
+				b.focus_mode = Control.FOCUS_ALL
+			elif b.get_meta("couch_was_none", false):
+				b.focus_mode = Control.FOCUS_NONE
+	for c in n.get_children():
+		_apply_couch_focus_recursive(c, enabled, force_none)
 const SHELF_TOP_BAR_H: float = 64.0
 const SHELF_CARD_MIN_W: float = 260.0
 const SHELF_CARD_MAX_W: float = 320.0
@@ -268,8 +311,11 @@ static func make_page_background(parent: Control) -> ColorRect:
 
 
 # Modal overlay: dim scrim + centered host. Returns { overlay, center, panel_slot }.
-static func make_modal_root(parent: Control, z_index: int = Z_MENU_MODAL,
-		on_dismiss: Callable = Callable()) -> Dictionary:
+# Schedules couch focus into the overlay on the next frame so callers can finish
+# building buttons/fields in the same stack frame.
+static func make_modal_root(parent: Node, z_index: int = Z_MENU_MODAL,
+		on_dismiss: Callable = Callable(),
+		prefer_focus_text: PackedStringArray = PackedStringArray()) -> Dictionary:
 	var overlay := Control.new()
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -291,7 +337,98 @@ static func make_modal_root(parent: Control, z_index: int = Z_MENU_MODAL,
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(center)
 
+	schedule_couch_focus(overlay, prefer_focus_text)
 	return {"overlay": overlay, "center": center, "scrim": scrim}
+
+
+# Pull DualSense / Deck focus into a newly opened modal or panel.
+# Prefer buttons whose text contains any prefer_focus_text substring; else the
+# first LineEdit; else the first focusable BaseButton.
+static func grab_couch_focus(root: Node,
+		prefer_focus_text: PackedStringArray = PackedStringArray()) -> void:
+	if root == null or not is_instance_valid(root):
+		return
+	var tree := root.get_tree()
+	if tree == null:
+		return
+	var gp: Node = tree.root.get_node_or_null("GamepadInput")
+	if gp == null or not gp.couch_focus_wanted():
+		return
+	apply_couch_focus_tree(root, true)
+	var target: Control = _preferred_focusable(root, prefer_focus_text)
+	if target != null:
+		target.call_deferred("grab_focus")
+
+
+static func schedule_couch_focus(root: Node,
+		prefer_focus_text: PackedStringArray = PackedStringArray()) -> void:
+	if root == null or not is_instance_valid(root):
+		return
+	var tree := root.get_tree()
+	if tree == null:
+		# Not in tree yet — try again once added.
+		root.ready.connect(func():
+			schedule_couch_focus(root, prefer_focus_text), CONNECT_ONE_SHOT)
+		return
+	tree.process_frame.connect(func():
+		if is_instance_valid(root):
+			grab_couch_focus(root, prefer_focus_text), CONNECT_ONE_SHOT)
+
+
+static func _preferred_focusable(root: Node,
+		prefer_focus_text: PackedStringArray) -> Control:
+	if not prefer_focus_text.is_empty():
+		var preferred: BaseButton = _find_button_matching(root, prefer_focus_text)
+		if preferred != null:
+			return preferred
+	var edit: LineEdit = _find_first_line_edit(root)
+	if edit != null:
+		return edit
+	return _find_first_focusable_button(root)
+
+
+static func _find_button_matching(n: Node, prefer: PackedStringArray) -> BaseButton:
+	if n is BaseButton:
+		var b: BaseButton = n as BaseButton
+		if _focusable_button_ok(b):
+			var t: String = b.text
+			for p in prefer:
+				if t.findn(p) >= 0:
+					return b
+	for c in n.get_children():
+		var found: BaseButton = _find_button_matching(c, prefer)
+		if found != null:
+			return found
+	return null
+
+
+static func _find_first_line_edit(n: Node) -> LineEdit:
+	if n is LineEdit:
+		var e: LineEdit = n as LineEdit
+		if e.focus_mode != Control.FOCUS_NONE and e.visible and e.editable:
+			return e
+	for c in n.get_children():
+		var found: LineEdit = _find_first_line_edit(c)
+		if found != null:
+			return found
+	return null
+
+
+static func _find_first_focusable_button(n: Node) -> BaseButton:
+	if n is BaseButton:
+		var b: BaseButton = n as BaseButton
+		if _focusable_button_ok(b):
+			return b
+	for c in n.get_children():
+		var found: BaseButton = _find_first_focusable_button(c)
+		if found != null:
+			return found
+	return null
+
+
+static func _focusable_button_ok(b: BaseButton) -> bool:
+	return b.focus_mode != Control.FOCUS_NONE and b.visible and not b.disabled \
+			and b.is_visible_in_tree()
 
 
 # Viewport-relative modal panel sizing (replaces fixed 720×580 offsets).
@@ -563,7 +700,16 @@ static func make_primary_button(text: String) -> Button:
 	b.add_theme_stylebox_override("hover", _filled_stylebox(PRIMARY_BG_HOVER))
 	b.add_theme_stylebox_override("pressed",
 		_filled_stylebox(PRIMARY_BG.darkened(0.15)))
-	b.add_theme_stylebox_override("focus", _filled_stylebox(PRIMARY_BG))
+	# Distinct focus ring so DualSense / D-pad selection is obvious.
+	var focus_sb := _filled_stylebox(PRIMARY_BG_HOVER)
+	focus_sb.border_color = Color(0.95, 0.97, 1.0, 0.95)
+	focus_sb.border_width_left = 2
+	focus_sb.border_width_top = 2
+	focus_sb.border_width_right = 2
+	focus_sb.border_width_bottom = 2
+	b.add_theme_stylebox_override("focus", focus_sb)
+	b.focus_mode = _chrome_focus_mode()
+	b.set_meta("couch_was_none", true)
 	return b
 
 
@@ -577,7 +723,15 @@ static func make_secondary_button(text: String) -> Button:
 	b.add_theme_stylebox_override("normal", _outlined_stylebox())
 	b.add_theme_stylebox_override("hover", _filled_stylebox(Color(0.22, 0.28, 0.36, 0.7)))
 	b.add_theme_stylebox_override("pressed", _filled_stylebox(Color(0.32, 0.38, 0.48, 0.8)))
-	b.add_theme_stylebox_override("focus", _outlined_stylebox())
+	var focus_sb := _outlined_stylebox()
+	focus_sb.border_color = Color(0.85, 0.92, 1.0, 0.95)
+	focus_sb.border_width_left = 2
+	focus_sb.border_width_top = 2
+	focus_sb.border_width_right = 2
+	focus_sb.border_width_bottom = 2
+	b.add_theme_stylebox_override("focus", focus_sb)
+	b.focus_mode = _chrome_focus_mode()
+	b.set_meta("couch_was_none", true)
 	return b
 
 
@@ -610,7 +764,8 @@ static func make_chip_button(text: String) -> Button:
 static func make_icon_button(glyph: String) -> Button:
 	var b := Button.new()
 	b.text = glyph
-	b.focus_mode = Control.FOCUS_NONE
+	b.set_meta("couch_was_none", true)
+	b.focus_mode = _chrome_focus_mode()
 	var side: int = 40 if _button_min_height() >= 48 else 32
 	b.custom_minimum_size = Vector2(side, side)
 	apply_font(b, FONT_SANS, SIZE_ITEM)
@@ -760,7 +915,8 @@ static func _rail_button_stylebox(bg: Color, radius: int = 8) -> StyleBoxFlat:
 # is open so the dock communicates state at a glance.
 static func style_rail_button(btn: Button, active: bool = false) -> void:
 	btn.flat = true
-	btn.focus_mode = Control.FOCUS_NONE
+	btn.set_meta("couch_was_none", true)
+	btn.focus_mode = _chrome_focus_mode()
 	btn.custom_minimum_size = Vector2(RAIL_BUTTON, RAIL_BUTTON)
 	btn.add_theme_font_size_override("font_size", 20)
 	btn.add_theme_stylebox_override("normal",
@@ -781,7 +937,8 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 
 # Compact tool chip for aquascape / inline toolbars.
 static func style_compact_tool_button(btn: Button, active: bool = false) -> void:
-	btn.focus_mode = Control.FOCUS_NONE
+	btn.set_meta("couch_was_none", true)
+	btn.focus_mode = _chrome_focus_mode()
 	btn.custom_minimum_size = Vector2(0, 28)
 	apply_font(btn, FONT_SANS, SIZE_CAPTION)
 	var fg: Color = PRIMARY_FG if active else LABEL_FG
@@ -827,7 +984,8 @@ static func make_hud_chip_divider() -> Control:
 
 static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:
 	btn.flat = true
-	btn.focus_mode = Control.FOCUS_NONE
+	btn.set_meta("couch_was_none", true)
+	btn.focus_mode = _chrome_focus_mode()
 	btn.custom_minimum_size = Vector2(0, _button_min_height())
 	btn.add_theme_font_size_override("font_size", 14)
 	var normal_bg: Color = RAIL_ACTIVE_BG if active else Color(0, 0, 0, 0)
