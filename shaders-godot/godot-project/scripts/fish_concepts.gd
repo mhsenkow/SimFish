@@ -15,7 +15,9 @@ static func enabled() -> bool:
 	return FeltSelfLayer.layer_enabled()
 
 
-static func ensure(f: Fish) -> Dictionary:
+static func ensure(f) -> Dictionary:
+	if f == null:
+		return {}
 	if f.get("_felt_self") == null or not (f._felt_self is Dictionary):
 		f._felt_self = {}
 	var fs: Dictionary = f._felt_self as Dictionary
@@ -29,7 +31,7 @@ static func ensure(f: Fish) -> Dictionary:
 	return fs["concepts"] as Dictionary
 
 
-static func ingest_episode(f: Fish, kind: String, text: String, weight: float,
+static func ingest_episode(f, kind: String, text: String, weight: float,
 		entry: Dictionary = {}) -> void:
 	if not enabled() or f == null:
 		return

@@ -23,13 +23,16 @@ static func classify_bank(c: Color) -> int:
 	var maxc: float = maxf(maxf(r, g), b)
 	var minc: float = minf(minf(r, g), b)
 	var sat: float = (maxc - minc) / maxf(maxc, 0.001)
-	if sat < 0.18:
+	var luma: float = r * 0.299 + g * 0.587 + b * 0.114
+	if sat < 0.22:
 		return NEUTRAL_BANK
-	if r > b and g > b * 1.10 and g < r and g >= r * 0.55 and sat < 0.72:
+	if r > b and g > b * 0.92 and g < r * 1.08 and g >= r * 0.42 and sat < 0.82 and luma < 0.78:
+		return NEUTRAL_BANK
+	if r > g and r > b and (r - g) < 0.18 and (g - b) > 0.02 and sat < 0.55 and luma < 0.70:
 		return NEUTRAL_BANK
 	if b > r and b >= g * 0.85:
 		return COOL_BANK
-	if r > b and r >= g * 0.85:
+	if r > b and r >= g * 0.92 and (r - g) > 0.12:
 		return WARM_BANK
 	if g > b * 1.15:
 		if sat >= 0.25 and g >= r * 0.92:

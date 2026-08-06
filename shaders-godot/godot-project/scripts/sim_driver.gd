@@ -1230,7 +1230,15 @@ func fish_carrying_capacity() -> int:
 		_:
 			aeration_bonus = 0
 	var raw: float = (float(biomass_cap) + float(aeration_bonus)) * w_volume_mult
-	return clampi(int(round(raw)), CARRYING_CAPACITY_MIN, CARRYING_CAPACITY_MAX)
+	var soft: int = clampi(int(round(raw)), CARRYING_CAPACITY_MIN, CARRYING_CAPACITY_MAX)
+	# Density dial + hard node ceiling (see TankConfig.population_cap).
+	# Resolved through _cfg() rather than the bare autoload identifier so
+	# this file still compiles in the headless `extends SceneTree` smoke
+	# scripts, which run without autoloads registered.
+	var cfg_pop: Node = _cfg()
+	if cfg_pop == null:
+		return soft
+	return int(cfg_pop.population_cap("fish", soft))
 
 
 # Lagged carrying capacity (#35): the tank doesn't respond instantly to a

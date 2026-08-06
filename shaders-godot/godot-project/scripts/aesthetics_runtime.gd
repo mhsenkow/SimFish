@@ -2,19 +2,25 @@
 class_name AestheticsRuntime
 extends RefCounted
 
+const TankFidelity := preload("res://scripts/tank_fidelity_runtime.gd")
+
 # First-launch curated look (#99). Does not override saved render prefs once applied.
 const BEAUTY_DEFAULTS: Dictionary = {
 	"render_width": 512,
 	"render_height": 288,
 	"outline_strength": 0.16,
 	"creature_outline_strength": 0.38,
-	"dither_strength": 0.88,
+	"dither_strength": 0.72,
 	"dither_region_aware": true,
+	"dither_world_lock": true,
+	"room_dither_scale": 0.35,
 	"palette_bank_lock": true,
 	"pp_vignette_strength": 0.26,
 	"pp_vignette_falloff": 1.55,
 	"pp_bloom_strength": 0.72,
 	"pp_bloom_threshold": 0.70,
+	"film_grain_strength": 0.0,
+	"camera_fov": 45.0,
 	"lighting_preset": "sunset",
 	"sunset_drama": 0.82,
 	"light_caustics": true,
@@ -185,6 +191,22 @@ static func apply_photo_mode_grade(cfg: Node, on: bool) -> void:
 		for key: String in PHOTO_MODE_GRADE:
 			_photo_revert[key] = cfg.get(key)
 			cfg.set(key, PHOTO_MODE_GRADE[key])
+		# REAL_TANK_FIDELITY #194 — person-held photo bundle.
+		var bundle: Dictionary = TankFidelity.photo_mode_bundle()
+		for key: String in ["photo_handheld", "photo_horizon_roll_deg", "photo_macro_mode",
+				"photo_sensor_noise", "photo_mode_enhanced"]:
+			if not _photo_revert.has(key):
+				_photo_revert[key] = cfg.get(key)
+			if key == "photo_handheld":
+				cfg.set(key, true)
+			elif key == "photo_macro_mode":
+				cfg.set(key, true)
+			elif key == "photo_horizon_roll_deg":
+				cfg.set(key, float(bundle.get("horizon_roll_deg", 1.4)))
+			elif key == "photo_sensor_noise":
+				cfg.set(key, float(bundle.get("sensor_noise", 0.18)))
+			elif key == "photo_mode_enhanced":
+				cfg.set(key, true)
 	else:
 		for key: String in _photo_revert:
 			cfg.set(key, _photo_revert[key])
@@ -216,10 +238,10 @@ static func ui_palette_tokens(hexes: Array) -> Dictionary:
 	var accent := Color.from_string("#" + String(hexes[36]), Color(0.8, 0.3, 0.2))
 	var bg_base := Color(0.06, 0.07, 0.12, 0.92)
 	return {
-		"bg": bg_base.lerp(water.darkened(0.88), 0.14),
-		"border": Color(water.r, water.g, water.b, 0.55).lerp(Color(0.35, 0.45, 0.6, 0.55), 0.35),
-		"section": green.lightened(0.35).lerp(Color(0.65, 0.80, 1.0), 0.45),
-		"primary_bg": accent.darkened(0.15).lerp(Color(0.22, 0.58, 0.88), 0.55),
-		"glass_tint": Color(water.r * 0.12, water.g * 0.14, water.b * 0.18, 0.55),
+		"bg": bg_base.lerp(water.darkened(0.88), 0.22),
+		"border": Color(water.r, water.g, water.b, 0.62).lerp(Color(0.35, 0.45, 0.6, 0.55), 0.22),
+		"section": green.lightened(0.35).lerp(Color(0.65, 0.80, 1.0), 0.35),
+		"primary_bg": accent.darkened(0.12).lerp(Color(0.22, 0.58, 0.88), 0.42),
+		"glass_tint": Color(water.r * 0.14, water.g * 0.16, water.b * 0.20, 0.58),
 	}
 

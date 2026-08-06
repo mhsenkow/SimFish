@@ -8,6 +8,7 @@ extends Node3D
 
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
 
 @export var wall_normal: Vector3 = Vector3.RIGHT
 @export var wall_min: Vector3 = Vector3(-7.6, 2.0, -3.6)
@@ -63,7 +64,7 @@ var snail_name: String = ""
 var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
 
-const SPEED: float = 0.18                  # units per second; ~3 minutes coast-to-coast
+const SPEED: float = 0.11                  # genuinely slow — REAL_TANK_FIDELITY #107
 const TURN_INTERVAL_MIN: float = 6.0
 const TURN_INTERVAL_MAX: float = 14.0
 # Halved from 0.30 — the old chance produced multi-second freezes every
@@ -370,6 +371,13 @@ func _process(dt: float) -> void:
 		if graze_boost > 0.02 and w_sn.has_method("_is_hardscape_occupied") \
 				and w_sn._is_hardscape_occupied(global_position.x, global_position.z, 0.35):
 			hunger = clampf(hunger - graze_boost * dt * 0.4, 0.0, 1.0)
+	# REAL_TANK_FIDELITY #22/#100 — grazing leaves clean tracks in green dust.
+	if hunger > 0.15 and absf(wall_normal.y) < 0.55 and w_sn != null:
+		var fid: Variant = w_sn.get("fidelity")
+		if fid is TankFidelityRuntime and randf() < dt * 0.45:
+			(fid as TankFidelityRuntime).record_graze_track(global_position, 0.14 * shell_size)
+			(fid as TankFidelityRuntime).glass_dust = maxf(0.0,
+				(fid as TankFidelityRuntime).glass_dust - dt * 0.0015)
 	if hunger >= STARVE_HUNGER:
 		energy = clampf(energy - STARVE_DRAIN * dt, 0.0, 1.0)
 	elif hunger < 0.5:
@@ -495,6 +503,20 @@ func _process(dt: float) -> void:
 				_lay_egg_sac()
 				energy = clampf(energy - 0.2, 0.0, 1.0)
 				hunger = clampf(hunger + 0.15, 0.0, 1.0)
+			elif at_cap and w != null and w.get("fidelity") != null:
+				# REAL_TANK_FIDELITY #199 — tell the player the ceiling is binding.
+				var fr: Variant = w.get("fidelity")
+				if fr is TankFidelityRuntime:
+					var msg: String = (fr as TankFidelityRuntime).note_cap_bind("snail")
+					if msg != "" and w.has_method("toast"):
+						w.toast(msg)
+					elif msg != "" and Engine.get_main_loop() != null:
+						var ml: MainLoop = Engine.get_main_loop()
+						var main: Node = null
+						if ml is SceneTree:
+							main = (ml as SceneTree).root.get_node_or_null("Main")
+						if main != null and main.has_method("show_toast"):
+							main.show_toast(msg)
 			var rebound: float = 1.0
 			var sim_n2 := _get_sim()
 			if sim_n2 != null and int(sim_n2.snail_predator_count) == 0:
@@ -1618,6 +1640,10 @@ func _lay_egg_sac() -> void:
 	sac.set("wall_normal", wall_normal)
 	sac.set("wall_min", wall_min)
 	sac.set("wall_max", wall_max)
+	# REAL_TANK_FIDELITY #103–104 — clutch morph by species.
+	var clutch: String = "disc" if shell_shape == "ramshorn" else "sausage"
+	sac.set("clutch_morph", clutch)
+	sac.set("clutch_scale", 0.55 if clutch == "disc" else 0.85)
 	# Inherit shell traits with mutation. Color drift ~0.18 per generation;
 	# size mutation small so the trend is mostly visual.
 	var color_muta := 0.18
@@ -1882,11 +1908,17 @@ func _check_predator_threat(dt: float) -> void:
 
 
 func _die_starved() -> void:
-	# Starvation death. The decomposing snail drops a small detritus pellet
-	# back into the system (returning its nutrients), then frees itself.
+	# Starvation death. Drop an empty shell into the substrate drift
+	# (REAL_TANK_FIDELITY #83/#109) plus a small detritus pellet, then free.
 	var sim := _get_sim()
-	if sim != null and sim.has_method("_spawn_waste"):
+	var w := _world_node()
+	if w != null and w.has_method("spawn_empty_snail_shell"):
+		w.spawn_empty_snail_shell(global_position, shell_color, shell_size, shell_shape)
+	elif sim != null and sim.has_method("_spawn_waste"):
 		sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.05,
+			WasteParticle.KIND_SNAIL)
+	if sim != null and sim.has_method("_spawn_waste"):
+		sim._spawn_waste(global_position + Vector3(0, -0.05, 0), 0.04,
 			WasteParticle.KIND_SNAIL)
 	_return_shell_minerals()
 	queue_free()
@@ -1914,8 +1946,13 @@ func _choose_new_direction() -> void:
 		# Cap the pause to a short interval so it reads as "resting" not
 		# "frozen." When the timer expires we run _choose_new_direction
 		# again, which usually rolls a new heading rather than another
-		# pause.
-		_t_until_turn = randf_range(PAUSE_DURATION_MIN, PAUSE_DURATION_MAX)
+		# pause. (#107 — never fully stationary for long.)
+		_t_until_turn = randf_range(PAUSE_DURATION_MIN, minf(PAUSE_DURATION_MAX, 1.8))
+		return
+	# REAL_TANK_FIDELITY #108 — occasional climb toward surface for air (pulmonate).
+	if absf(wall_normal.y) < 0.55 and randf() < 0.08:
+		_direction = Vector2(0.0, 1.0)
+		_t_until_turn = randf_range(2.5, 5.0)
 		return
 	# Bias the new heading toward the current heading so the turn reads
 	# as a gentle redirection rather than a 180° flip. We rotate the old

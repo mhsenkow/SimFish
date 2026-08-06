@@ -1,63 +1,64 @@
-# Cross-platform HUD glyphs. Android often ships without color emoji fonts, so
-# rail buttons and stat chips fall back to short ASCII labels on mobile.
+# Cross-platform HUD glyphs. One monochrome geometric language everywhere
+# (VISUAL_POLISH #179–#181) — no color-emoji / ASCII split. Tooltips carry
+# the readable name; buttons show a single consistent mark.
 class_name UiIcons
 extends RefCounted
 
 const RAIL: Dictionary = {
-	"portal": {"emoji": "👁", "text": "Pi", "tip": "Follow portal (creature PiP)"},
-	"aquascape": {"emoji": "🪨", "text": "Sc", "tip": "Aquascape — sculpt substrate & hardscape"},
-	"creator": {"emoji": "✦", "text": "Cr", "tip": "Creature creator"},
-	"store": {"emoji": "🐟", "text": "Ad", "tip": "Adopt fish (free)"},
-	"library": {"emoji": "📚", "text": "Lb", "tip": "Species library"},
-	"notifications": {"emoji": "🔔", "text": "Nt", "tip": "Notification center"},
-	"render": {"emoji": "▦", "text": "Rd", "tip": "Rendering panel"},
-	"sound": {"emoji": "♪", "text": "Sn", "tip": "Sound studio"},
-	"settings": {"emoji": "⚙", "text": "Gt", "tip": "Settings"},
-	"menu": {"emoji": "≡", "text": "Mn", "tip": "Save and return to tank menu"},
-	"immersive": {"emoji": "⛶", "text": "Fs", "tip": "Focus mode — hide menus"},
-	"light": {"emoji": "💡", "text": "Lt", "tip": "Light settings — tank lights, intensity, warmth, caustics"},
-	"create": {"emoji": "✦", "text": "Mk", "tip": "Create — creature designer, fish adoption, life library"},
-	"world": {"emoji": "🪨", "text": "Wr", "tip": "World — aquascape sculpting and follow portal"},
-	"appearance": {"emoji": "▦", "text": "Lk", "tip": "Look & feel — lighting, rendering, sound"},
-	"system": {"emoji": "⚙", "text": "Sy", "tip": "System — tank settings and stocking"},
-	"alerts": {"emoji": "🔔", "text": "Al", "tip": "Alerts — notifications and discoveries"},
-	"help": {"emoji": "❓", "text": "?", "tip": "Help — controls, glossary, tank tells"},
+	"portal": {"emoji": "◉", "text": "◉", "tip": "Follow portal (creature PiP)"},
+	"aquascape": {"emoji": "▣", "text": "▣", "tip": "Aquascape — sculpt substrate & hardscape"},
+	"creator": {"emoji": "✦", "text": "✦", "tip": "Creature creator"},
+	"store": {"emoji": "◇", "text": "◇", "tip": "Adopt fish (free)"},
+	"library": {"emoji": "☰", "text": "☰", "tip": "Species library"},
+	"notifications": {"emoji": "◔", "text": "◔", "tip": "Notification center"},
+	"render": {"emoji": "▦", "text": "▦", "tip": "Rendering panel"},
+	"sound": {"emoji": "♪", "text": "♪", "tip": "Sound studio"},
+	"settings": {"emoji": "⚙", "text": "⚙", "tip": "Settings"},
+	"menu": {"emoji": "≡", "text": "≡", "tip": "Save and return to tank menu"},
+	"immersive": {"emoji": "⛶", "text": "⛶", "tip": "Focus mode — hide menus"},
+	"light": {"emoji": "☼", "text": "☼", "tip": "Light settings — tank lights, intensity, warmth, caustics"},
+	"create": {"emoji": "✦", "text": "✦", "tip": "Create — creature designer, fish adoption, life library"},
+	"world": {"emoji": "▣", "text": "▣", "tip": "World — aquascape sculpting and follow portal"},
+	"appearance": {"emoji": "▦", "text": "▦", "tip": "Look & feel — lighting, rendering, sound"},
+	"system": {"emoji": "⚙", "text": "⚙", "tip": "System — tank settings and stocking"},
+	"alerts": {"emoji": "⚠", "text": "⚠", "tip": "Alerts — notifications and discoveries"},
+	"help": {"emoji": "?", "text": "?", "tip": "Help — controls, glossary, tank tells"},
 }
 
 const CHIPS: Dictionary = {
-	"state": {"emoji": "◴", "text": "T"},
-	"mood": {"emoji": "♥", "text": "M"},
-	"fish": {"emoji": "🐟", "text": "F"},
-	"shrimp": {"emoji": "🦐", "text": "S"},
-	"snails": {"emoji": "🐌", "text": "N"},
-	"flora": {"emoji": "🌿", "text": "P"},
-	"water": {"emoji": "💧", "text": "W"},
-	"morphs": {"emoji": "✦", "text": "*"},
-	"alert": {"emoji": "⚠", "text": "!"},
+	"state": {"emoji": "◷", "text": "◷"},
+	"mood": {"emoji": "♥", "text": "♥"},
+	"fish": {"emoji": "◇", "text": "◇"},
+	"shrimp": {"emoji": "›", "text": "›"},
+	"snails": {"emoji": "◎", "text": "◎"},
+	"flora": {"emoji": "⁂", "text": "⁂"},
+	"water": {"emoji": "≈", "text": "≈"},
+	"morphs": {"emoji": "✦", "text": "✦"},
+	"alert": {"emoji": "⚠", "text": "⚠"},
 }
 
 const MOBILE_HUD: Dictionary = {
-	"pause": {"emoji": "⏸", "text": "||"},
-	"play": {"emoji": "▶", "text": ">"},
-	"photo": {"emoji": "📷", "text": "Ph"},
-	"undo": {"emoji": "↩", "text": "Un"},
+	"pause": {"emoji": "❚❚", "text": "❚❚"},
+	"play": {"emoji": "▶", "text": "▶"},
+	"photo": {"emoji": "▣", "text": "▣"},
+	"undo": {"emoji": "↩", "text": "↩"},
 }
 
 const FAUNA: Dictionary = {
-	"fish": {"emoji": "🐟", "text": "fish"},
-	"shrimp": {"emoji": "🦐", "text": "shrimp"},
-	"snail": {"emoji": "🐌", "text": "snail"},
-	"plant": {"emoji": "🌿", "text": "plant"},
+	"fish": {"emoji": "◇", "text": "fish"},
+	"shrimp": {"emoji": "›", "text": "shrimp"},
+	"snail": {"emoji": "◎", "text": "snail"},
+	"plant": {"emoji": "⁂", "text": "plant"},
 }
 
 const MENU: Dictionary = {
 	"duplicate": {"emoji": "⧉", "text": "Dup", "tip": "Duplicate tank"},
-	"delete": {"emoji": "🗑", "text": "Del", "tip": "Delete tank"},
+	"delete": {"emoji": "✕", "text": "Del", "tip": "Delete tank"},
 	"edit": {"emoji": "✎", "text": "Ed", "tip": "Rename tank"},
 	"more": {"emoji": "⋯", "text": "...", "tip": "More actions"},
 }
 
-# Player food picker (footer dock). Buttons always show a readable name; emoji
+# Player food picker (footer dock). Buttons always show a readable name; glyph
 # is a prefix on desktop only (never icon-only — too tiny in the footer bar).
 const FEED: Dictionary = {
 	"dock": {
@@ -67,7 +68,7 @@ const FEED: Dictionary = {
 		"tip": "Pick a food, then click or tap the water to drop it",
 	},
 	"flake": {
-		"emoji": "✨",
+		"emoji": "✧",
 		"text": "Fl",
 		"name": "Flakes",
 		"tip": "Flakes — float on the surface. Top & mid feeders rush up.",
@@ -96,7 +97,9 @@ const FEED_SUBTYPE_KEYS: Array[String] = ["flake", "pellet", "worm", "wafer"]
 
 
 static func use_color_emoji() -> bool:
-	return not (OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile"))
+	# Always monochrome geometric — emoji font gaps caused the mobile ASCII
+	# fallback split that made the rail look like two products (#179).
+	return false
 
 
 static func _pick(entry: Dictionary, force_short: bool = false) -> String:
@@ -160,10 +163,9 @@ static func feed_button_label(id: String, force_short: bool = false) -> String:
 	var name: String = String(e.get("name", e.get("text", id)))
 	if force_short:
 		return String(e.get("text", name))
-	if use_color_emoji():
-		var em: String = String(e.get("emoji", ""))
-		if em.strip_edges() != "":
-			return "%s %s" % [em, name]
+	var em: String = String(e.get("emoji", ""))
+	if em.strip_edges() != "":
+		return "%s %s" % [em, name]
 	return name
 
 

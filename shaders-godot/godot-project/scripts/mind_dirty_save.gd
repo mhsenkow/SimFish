@@ -10,7 +10,7 @@ static func reset_for_test() -> void:
 	_dirty.clear()
 
 
-static func mark(f: Fish, field: String) -> void:
+static func mark(f, field: String) -> void:
 	if f == null or field == "":
 		return
 	var fid: String = str(f.id)
@@ -22,11 +22,11 @@ static func mark(f: Fish, field: String) -> void:
 	_dirty[fid] = arr
 
 
-static func mark_all_mind(f: Fish) -> void:
+static func mark_all_mind(f) -> void:
 	mark(f, "full")
 
 
-static func clear(f: Fish) -> void:
+static func clear(f) -> void:
 	if f == null:
 		return
 	var fid: String = str(f.id)
@@ -34,7 +34,7 @@ static func clear(f: Fish) -> void:
 		_dirty.erase(fid)
 
 
-static func is_dirty(f: Fish) -> bool:
+static func is_dirty(f) -> bool:
 	if f == null:
 		return false
 	var fid: String = str(f.id)

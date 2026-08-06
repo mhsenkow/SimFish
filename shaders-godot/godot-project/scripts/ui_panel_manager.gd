@@ -296,7 +296,17 @@ func _grab_couch_focus_in_open_panel() -> void:
 		prefer = PackedStringArray(["ADOPT", "Reroll", "Close"])
 	elif panel == _main.get("library_panel"):
 		prefer = PackedStringArray(["Close"])
-	PanelTheme.grab_couch_focus(panel, prefer)
+	elif panel == _main.get("_light_panel"):
+		prefer = PackedStringArray(["Close", "Reset", "Apply"])
+	elif panel == _main.get("_notifications_panel"):
+		prefer = PackedStringArray(["Close", "Clear", "Dismiss"])
+	elif panel == _main.get("settings_panel"):
+		prefer = PackedStringArray(["Close", "Apply", "Save"])
+	elif panel == _main.get("render_panel"):
+		prefer = PackedStringArray(["Close", "Mac Safe", "Apply"])
+	elif panel == _main.get("sound_panel"):
+		prefer = PackedStringArray(["Close", "Mute"])
+	PanelTheme.schedule_couch_focus(panel, prefer)
 
 
 func _visible_panel_control() -> Control:
@@ -306,6 +316,8 @@ func _visible_panel_control() -> Control:
 		_main.get("settings_panel"),
 		_main.get("render_panel"),
 		_main.get("sound_panel"),
+		_main.get("_light_panel"),
+		_main.get("_notifications_panel"),
 		_main.get("library_panel"),
 		_main.get("creature_creator_panel"),
 		_main.get("fish_store_panel"),

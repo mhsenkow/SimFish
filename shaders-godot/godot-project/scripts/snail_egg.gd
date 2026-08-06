@@ -29,6 +29,9 @@ extends Node3D
 @export var inherited_shell_pattern_density: float = 0.5
 @export var inherited_parent_lineage: String = "Founders"
 @export var inherited_parent_keys: Array = []
+# REAL_TANK_FIDELITY #103–104 — disc (ramshorn) vs sausage (pond) clutch.
+@export var clutch_morph: String = "sausage"
+@export var clutch_scale: float = 0.85
 
 const HATCH_TIME: float = 60.0
 
@@ -100,20 +103,38 @@ func _ready() -> void:
 
 
 func _build_visual() -> void:
-	# Smaller, less obtrusive sac than before - just 2 tiny voxels so the
-	# tank doesn't get visually polluted with pending eggs.
-	var c := Color8(235, 220, 170)
+	# REAL_TANK_FIDELITY #103–104 — gelatinous clutch with visible dots.
+	# Ramshorn: flat disc. Pond/bladder: elongated sausage.
+	var c := Color8(235, 220, 170, 180)
 	var c2 := Color8(215, 200, 150)
-	var positions: Array[Vector3] = [
-		Vector3(0, 0, 0),
-		Vector3(0.04, 0.02, 0),
-	]
-	for i in positions.size():
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(0.06, 0.06, 0.06))
-		mi.position = positions[i]
-		mi.material_override = VoxelMat.make_fauna(c if (i & 1) == 0 else c2)
-		add_child(mi)
+	var dot := Color8(90, 70, 50)
+	var sc: float = clampf(clutch_scale, 0.4, 1.2)
+	if clutch_morph == "disc":
+		# Flat translucent disc of eggs.
+		var base := MeshInstance3D.new()
+		base.mesh = VoxelMat.get_box(Vector3(0.22 * sc, 0.04 * sc, 0.22 * sc))
+		base.material_override = VoxelMat.make_fauna(c)
+		add_child(base)
+		for i in 5:
+			var ang: float = float(i) / 5.0 * TAU
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(0.035, 0.035, 0.035))
+			mi.position = Vector3(cos(ang) * 0.07 * sc, 0.03, sin(ang) * 0.07 * sc)
+			mi.material_override = VoxelMat.make_fauna(dot)
+			add_child(mi)
+	else:
+		# Elongated sausage clutch.
+		for i in 4:
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(0.07 * sc, 0.06 * sc, 0.07 * sc))
+			mi.position = Vector3(float(i) * 0.05 * sc, 0.02 * float(i % 2), 0.0)
+			mi.material_override = VoxelMat.make_fauna(c if (i & 1) == 0 else c2)
+			add_child(mi)
+			var d := MeshInstance3D.new()
+			d.mesh = VoxelMat.get_box(Vector3(0.025, 0.025, 0.025))
+			d.position = mi.position + Vector3(0.01, 0.02, 0.0)
+			d.material_override = VoxelMat.make_fauna(dot)
+			add_child(d)
 
 
 func _process(dt: float) -> void:

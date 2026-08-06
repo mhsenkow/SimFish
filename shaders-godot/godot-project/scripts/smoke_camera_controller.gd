@@ -39,15 +39,15 @@ func _initialize() -> void:
 	# --- Dolly: radius scales with vertical drag, clamped to the orbit shell.
 	_assert(failed, _approx(CameraController.dolly(20.0, 0.0), 20.0),
 			"dolly with zero delta is identity")
-	_assert(failed, _approx(CameraController.dolly(20.0, 100.0), CameraController.MAX_RADIUS),
+	_assert(failed, _approx(CameraController.dolly(20.0, 1000.0), CameraController.MAX_RADIUS),
 			"dolly out past MAX_RADIUS clamps")
-	_assert(failed, _approx(CameraController.dolly(20.0, -100.0), CameraController.MIN_RADIUS),
+	_assert(failed, _approx(CameraController.dolly(20.0, -1000.0), CameraController.MIN_RADIUS),
 			"dolly in past MIN_RADIUS clamps")
 
 	# --- Zoom: perspective (radius) + ortho (size) clamps.
 	_assert(failed, _approx(CameraController.zoom_radius(20.0, 1.12), 22.4),
 			"zoom_radius scales by factor")
-	_assert(failed, _approx(CameraController.zoom_radius(8.0, 0.5), CameraController.MIN_RADIUS),
+	_assert(failed, _approx(CameraController.zoom_radius(8.0, 0.4), CameraController.MIN_RADIUS),
 			"zoom_radius clamps to MIN_RADIUS")
 	_assert(failed, _approx(CameraController.zoom_radius(40.0, 2.0), CameraController.MAX_RADIUS),
 			"zoom_radius clamps to MAX_RADIUS")
@@ -55,6 +55,20 @@ func _initialize() -> void:
 			"zoom_ortho scales by factor")
 	_assert(failed, _approx(CameraController.zoom_ortho(1.0, 0.5), CameraController.ORTHO_MIN_SIZE),
 			"zoom_ortho clamps to ORTHO_MIN_SIZE")
+
+	# Trackpad / magnify helpers — soft steps, correct zoom-in direction.
+	var tp_in: float = CameraController.zoom_factor_from_scroll(0.2, true, 1)
+	_assert(failed, tp_in < 1.0 and tp_in > 0.90,
+			"precise trackpad scroll-up zooms in gently")
+	var burst: float = CameraController.zoom_factor_from_scroll(1.0, true, 8)
+	_assert(failed, burst < 1.0 and burst > 0.92,
+			"macOS wheel-burst spray softens instead of 12% jumps")
+	var mag_in: float = CameraController.zoom_factor_from_magnify(1.05)
+	_assert(failed, mag_in < 1.0,
+			"magnify>1 shrinks radius (zoom in)")
+	var mag_out: float = CameraController.zoom_factor_from_magnify(0.95)
+	_assert(failed, mag_out > 1.0,
+			"magnify<1 grows radius (zoom out)")
 
 	# --- Pan: drag right pushes the scene right (target moves left).
 	var pt: Vector3 = CameraController.pan_target(

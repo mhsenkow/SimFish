@@ -6,10 +6,10 @@ extends Node
 
 var _frame := 0
 var _angles := [
-	{"yaw": -0.55, "pitch": 0.48, "radius": 17.5, "name": "default"},
-	{"yaw": 0.0,   "pitch": 0.20, "radius": 16.0, "name": "front"},
-	{"yaw": 0.85,  "pitch": 0.40, "radius": 17.0, "name": "right_3q"},
-	{"yaw": -0.55, "pitch": 0.10, "radius": 14.0, "name": "low"},
+	{"yaw": -0.42, "pitch": 0.18, "radius": 15.5, "name": "hero"},
+	{"yaw": 0.0,   "pitch": 0.14, "radius": 16.0, "name": "front"},
+	{"yaw": 0.72,  "pitch": 0.18, "radius": 15.8, "name": "right_3q"},
+	{"yaw": -0.42, "pitch": 0.10, "radius": 14.5, "name": "low"},
 ]
 var _state := 0
 var _state_timer := 0
@@ -24,7 +24,7 @@ func _ready() -> void:
 
 func _apply_camera(idx: int) -> void:
 	var a: Dictionary = _angles[idx]
-	var target := Vector3(0.0, 3.0, 0.0)
+	var target := Vector3(0.0, 2.8, 0.0)
 	var yaw: float = a["yaw"]
 	var pitch: float = a["pitch"]
 	var r: float = a["radius"]

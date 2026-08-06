@@ -29,6 +29,9 @@ uniform float room_haze_strength : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 room_haze_color : source_color = vec3(0.92, 0.84, 0.74);
 uniform float room_haze_near : hint_range(0.0, 40.0) = 8.0;
 uniform float room_haze_far : hint_range(2.0, 80.0) = 28.0;
+// REAL_TANK_FIDELITY #183 — orange-peel / plaster grain on room props.
+// Default 0 keeps in-tank voxels flat; make_room() raises this.
+uniform float grain_variation : hint_range(0.0, 1.0) = 0.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -125,6 +128,16 @@ void fragment() {
 		float view_z = -VERTEX.z;
 		float fog = smoothstep(room_haze_near, room_haze_far, view_z) * room_haze_strength;
 		col = mix(col, room_haze_color, fog);
+	}
+
+	// Subtle plaster / orange-peel grain for room surfaces (#183).
+	if (grain_variation > 0.001 && room_haze_strength > 0.001) {
+		vec3 gp = v_world_pos * 4.7;
+		float g = fract(sin(dot(floor(gp), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+		float g2 = fract(sin(dot(floor(gp * 2.3), vec3(39.346, 11.135, 83.155))) * 24634.857);
+		float peel = (g * 0.65 + g2 * 0.35 - 0.5) * grain_variation;
+		float rake = pow(1.0 - abs(dot(n, normalize(VIEW))), 1.6);
+		col *= 1.0 + peel * (0.10 + rake * 0.14);
 	}
 
 	// Subsurface rim — warm translucent edge at grazing view angles (ported from

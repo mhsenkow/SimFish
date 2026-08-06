@@ -8,6 +8,13 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 - **Docs:** `CONTRIBUTING.md`, `docs/INDEX.md`, `docs/ENGINEERING_CREED.md`.
 
+## v0.2.29
+
+- **Real-tank fidelity:** Stratified substrate at the glass, valli surface-lie, green dust + graze tracks, turbidity, floater mat, gooseneck LED, airline, counter mirror; reference scenarios `snail_bar` / `valli_jungle` / `counter_nano`.
+- **Lived-in tank:** Translucent pond shells, hair on old leaves, empty-shell trough, backlight jungle preset, scum line, equipment-in-frame toggle.
+- **HUD:** Clear gutters so feed/speed and creature card/rail stop overlapping; shorter feed chips.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.29) (macOS / Windows / Linux / Android).
+
 ## v0.2.28
 
 - **macOS Metal:** Force MSAA Off, skip screen-texture water/glass (black-slab fix), safe MultiMesh uploads, skip GPU boids.

@@ -71,9 +71,17 @@ static func _build_sky_plane(parent: Node3D, wall_z: float, sky_y: float,
 	var sky_rgb: Array = preset.get("light_color", [255, 235, 200])
 	var sky_col := Color8(sky_rgb[0], sky_rgb[1], sky_rgb[2])
 	var sky_mat: ShaderMaterial = VoxelMat.make(sky_col).duplicate()
+	sky_mat.set_shader_parameter("albedo", sky_col.lightened(0.08))
 	sky.material_override = sky_mat
 	sky.position = Vector3(0.0, sky_y, wall_z - 0.22)
 	parent.add_child(sky)
+	# Window value gradient — brighter at the top, bloom shoulder (#21–22).
+	var sky_top := MeshInstance3D.new()
+	sky_top.name = "WindowSkyTop"
+	sky_top.mesh = VoxelMat.get_box(Vector3(SKY_W * 0.92, SKY_H * 0.35, 0.06))
+	sky_top.material_override = VoxelMat.make(sky_col.lightened(0.22))
+	sky_top.position = Vector3(0.0, sky_y + SKY_H * 0.28, wall_z - 0.18)
+	parent.add_child(sky_top)
 	state["sky_mat"] = sky_mat
 
 
@@ -326,8 +334,8 @@ static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 	var night_on: float = deep_night * (1.0 if tank_lights_on else 0.12)
 
 	if spill != null and is_instance_valid(spill):
-		var day_spill: float = 0.14 + dl * 0.18
-		var night_spill: float = fixture_energy * 2.6
+		var day_spill: float = 0.28 + dl * 0.32
+		var night_spill: float = fixture_energy * 3.4
 		var spill_e: float = lerpf(day_spill, night_spill, night_on)
 		spill.light_energy = spill_e
 		var day_col: Color = Color(1.0, 0.96, 0.88)
@@ -336,14 +344,15 @@ static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 		spill.position.y = desk_y + 0.08 + night_on * 0.55
 
 	if wall_bounce != null and is_instance_valid(wall_bounce):
-		var bounce_day: float = 0.05 + dl * 0.08 + sunset * 0.10
-		var bounce_night: float = fixture_energy * 1.75 * night_on
+		var bounce_day: float = 0.14 + dl * 0.16 + sunset * 0.22
+		var bounce_night: float = fixture_energy * 2.8 * night_on
 		wall_bounce.light_energy = bounce_day + bounce_night
-		wall_bounce.light_color = fixture_color.lerp(Color(1.0, 0.94, 0.82), 1.0 - night_on * 0.85)
+		wall_bounce.light_color = fixture_color.lerp(Color(1.0, 0.88, 0.72), 1.0 - night_on * 0.72)
 
 	if side_light != null and is_instance_valid(side_light):
-		var side_e: float = 0.12 + dl * 0.14 + sunset * 0.12
-		side_light.light_energy = side_e * lerpf(1.0, 0.28, deep_night)
+		# Dimmer side fill — room must stay below tank mid-water (#18, #27).
+		var side_e: float = 0.06 + dl * 0.08 + sunset * 0.08
+		side_light.light_energy = side_e * lerpf(1.0, 0.10, deep_night)
 
 	if desk_rim != null and is_instance_valid(desk_rim):
 		desk_rim.light_color = fixture_color.lerp(Color(1.0, 0.95, 0.88), 0.25)
@@ -352,8 +361,10 @@ static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 		desk_rim.light_energy = lerpf(rim_day, rim_night, night_on)
 
 	if window_glow != null and is_instance_valid(window_glow):
-		window_glow.light_color = fixture_color.lerp(Color(0.75, 0.82, 0.95), 0.35)
-		window_glow.light_energy = fixture_energy * 0.55 * night_on
+		var moon_rim: float = clampf((0.24 - dl) / 0.24, 0.0, 1.0) * deep_night
+		window_glow.light_color = Color(0.58, 0.70, 0.94).lerp(
+			fixture_color, night_on * 0.28)
+		window_glow.light_energy = fixture_energy * 0.55 * night_on + moon_rim * 0.48
 
 	# Subtle haze tint toward fixture — keep it gentle so walls don't flood green.
 	var haze_day: Color = haze_base

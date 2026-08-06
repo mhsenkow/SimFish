@@ -32,6 +32,7 @@ var _light_size: HSlider
 var _light_height_label: Label
 var _light_size_label: Label
 var _light_volumetric_check: CheckBox
+var _equipment_in_frame_check: CheckBox
 var _music_enabled_check: CheckBox
 var _sound_studio_btn: Button
 var _substrate_option: OptionButton
@@ -277,12 +278,14 @@ func _build_ui() -> void:
 	# in main.gd. Yaw/pitch sliders deleted here so there's only one place to
 	# touch them.)
 
-	# Fixture selection (bar vs spotlight).
+	# Fixture selection (bar / spotlight / gooseneck).
 	_light_fixture_option = PanelTheme.add_dropdown_row(vbox_tank, "Fixture")
 	_light_fixture_option.add_item("Bar (long LED)")
 	_light_fixture_option.set_item_metadata(0, "bar")
 	_light_fixture_option.add_item("Spotlight (pendant)")
 	_light_fixture_option.set_item_metadata(1, "spotlight")
+	_light_fixture_option.add_item("Gooseneck (clip-on)")
+	_light_fixture_option.set_item_metadata(2, "gooseneck")
 	_light_fixture_option.item_selected.connect(func(idx): _on_fixture(idx))
 
 	_light_height_label = Label.new()
@@ -297,6 +300,11 @@ func _build_ui() -> void:
 	_light_volumetric_check.text = "Show light beams (god rays)"
 	_light_volumetric_check.toggled.connect(func(v): _on_volumetric(v))
 	vbox_tank.add_child(_light_volumetric_check)
+
+	_equipment_in_frame_check = CheckBox.new()
+	_equipment_in_frame_check.text = "Show equipment in frame"
+	_equipment_in_frame_check.toggled.connect(func(v): _on_equipment_in_frame(v))
+	vbox_tank.add_child(_equipment_in_frame_check)
 
 	var look_hint := PanelTheme.make_description()
 	look_hint.text = "Sun, warmth, and post-process live in Look → Lighting on the right rail."
@@ -326,6 +334,8 @@ func _build_ui() -> void:
 	_diet_chart.add_theme_color_override("default_color", Color(0.86, 0.90, 0.96, 0.95))
 	_diet_chart.add_theme_font_size_override("normal_font_size", 11)
 	vbox_stock.add_child(_diet_chart)
+
+	_build_density_section(vbox_stock)
 
 	# -- Environment tab --
 	_add_section(vbox_env, "Substrate")
@@ -599,7 +609,7 @@ func _build_ui() -> void:
 		# Live-apply the visual side too — the main scene owns the display
 		# ShaderMaterial. Without this the toggle would only take effect
 		# after a scene reload.
-		var main := get_tree().current_scene
+		var main: Node = get_tree().current_scene
 		if main != null and main.has_method("_apply_battery_saver_visuals"):
 			main._apply_battery_saver_visuals())
 	vbox_adv.add_child(_battery_saver_check)
@@ -886,6 +896,160 @@ func _add_section(parent: Node, label: String) -> void:
 	parent.add_child(PanelTheme.make_section(label))
 
 
+# ---- Density & limits ----------------------------------------------------
+#
+# Two dials that answer two different questions:
+#
+#   "How full should a healthy tank be?"  → Density budget (ecology).
+#     Scales the soft carrying capacities the sim derives from plant
+#     biomass, aeration and volume. Below 1.0 the tank runs pristine and
+#     understocked; above 1.0 the player has asked for crowding and the
+#     fish accumulate stocking stress for it.
+#
+#   "How many nodes may ever exist?"      → Hard ceilings (performance).
+#     Absolute counts nothing may exceed. These exist so a tank left
+#     breeding overnight can't grind the frame rate down.
+#
+# The captions under each slider spell out the live number for the tank
+# as currently sized, because "60 fish" means something very different in
+# a nano cube than in a 75-gallon.
+
+# Sliders are built from one table so adding a creature kind is a single
+# row here plus a row in TankConfig.POP_CAP_DEFAULTS.
+const _DENSITY_ROWS: Array[Dictionary] = [
+	{"kind": "fish",       "label": "Fish",        "field": "pop_cap_fish"},
+	{"kind": "snail",      "label": "Snails",      "field": "pop_cap_snail"},
+	{"kind": "shrimp",     "label": "Shrimp",      "field": "pop_cap_shrimp"},
+	{"kind": "plant",      "label": "Plants",      "field": "pop_cap_plant"},
+	{"kind": "floater",    "label": "Floaters",    "field": "pop_cap_floater"},
+	{"kind": "microfauna", "label": "Microfauna",  "field": "pop_cap_microfauna"},
+]
+
+var _density_slider: HSlider = null
+var _density_label: Label = null
+var _density_caption: Label = null
+var _pop_scale_check: CheckBox = null
+# kind -> {"slider": HSlider, "value": Label}
+var _pop_cap_rows: Dictionary = {}
+var _pop_cap_caption: Label = null
+
+
+func _build_density_section(parent: Node) -> void:
+	_add_section(parent, "Density & limits")
+
+	var intro := PanelTheme.make_description()
+	intro.text = (
+		"Density is an ecology dial — it scales how much life the tank's plants, "
+		+ "aeration and volume will support. The ceilings below are a hard stop on "
+		+ "how many things can ever exist, so a tank left running overnight can't "
+		+ "breed itself into a slideshow.")
+	parent.add_child(intro)
+
+	_density_label = Label.new()
+	_density_slider = PanelTheme.add_slider_row(
+		parent, "Density budget", 0.35, 1.60, 0.05, _density_label, 0, 64.0)
+	_density_slider.value_changed.connect(func(v: float):
+		TankConfig.density_budget = v
+		_refresh_density_readouts()
+		TankConfig.request_save_to_disk())
+
+	_density_caption = PanelTheme.make_description()
+	parent.add_child(_density_caption)
+
+	parent.add_child(PanelTheme.make_spacer(4))
+	_pop_scale_check = CheckBox.new()
+	_pop_scale_check.text = "Scale ceilings with tank size"
+	_pop_scale_check.tooltip_text = (
+		"On: a nano cube gets proportionally lower ceilings than a 75-gallon. "
+		+ "Off: every tank uses the raw numbers below.")
+	_pop_scale_check.toggled.connect(func(v: bool):
+		TankConfig.pop_scale_with_tank = v
+		_refresh_density_readouts()
+		TankConfig.request_save_to_disk())
+	parent.add_child(_pop_scale_check)
+
+	for row in _DENSITY_ROWS:
+		var kind: String = String(row["kind"])
+		var defaults: Dictionary = TankConfig.POP_CAP_DEFAULTS.get(kind, {})
+		var value_label := Label.new()
+		var slider: HSlider = PanelTheme.add_slider_row(
+			parent, "Max " + String(row["label"]).to_lower(),
+			float(defaults.get("slider_min", 1)),
+			float(defaults.get("slider_max", 100)),
+			1.0, value_label, 0, 64.0)
+		var field: String = String(row["field"])
+		slider.value_changed.connect(func(v: float):
+			TankConfig.set(field, int(v))
+			_refresh_density_readouts()
+			TankConfig.request_save_to_disk())
+		_pop_cap_rows[kind] = {"slider": slider, "value": value_label}
+
+	_pop_cap_caption = PanelTheme.make_description()
+	parent.add_child(_pop_cap_caption)
+
+	_sync_density_controls()
+
+
+# Push TankConfig → widgets. Called on open and after reset-to-defaults.
+func _sync_density_controls() -> void:
+	if _density_slider == null:
+		return
+	_density_slider.set_block_signals(true)
+	_density_slider.value = float(TankConfig.density_budget)
+	_density_slider.set_block_signals(false)
+	if _pop_scale_check != null:
+		_pop_scale_check.set_pressed_no_signal(bool(TankConfig.pop_scale_with_tank))
+	for row in _DENSITY_ROWS:
+		var kind: String = String(row["kind"])
+		var widgets: Dictionary = _pop_cap_rows.get(kind, {})
+		var slider: HSlider = widgets.get("slider")
+		if slider == null:
+			continue
+		slider.set_block_signals(true)
+		slider.value = float(TankConfig.get(String(row["field"])))
+		slider.set_block_signals(false)
+	_refresh_density_readouts()
+
+
+# Widgets → captions. The effective numbers depend on tank size, so this
+# also has to re-run whenever the shape/size sliders move.
+func _refresh_density_readouts() -> void:
+	if _density_label == null:
+		return
+	var d: float = float(TankConfig.density_budget)
+	_density_label.text = "%.2f×" % d
+	var mood: String = "balanced"
+	if d < 0.70:
+		mood = "sparse — pristine water, lots of open space"
+	elif d < 0.95:
+		mood = "understocked — forgiving, slow to foul"
+	elif d <= 1.15:
+		mood = "balanced — the tuned default"
+	elif d <= 1.35:
+		mood = "busy — expect stocking stress in a weak tank"
+	else:
+		mood = "crowded — fish take ongoing stress above capacity"
+	if _density_caption != null:
+		_density_caption.text = mood
+
+	var ratio: float = TankConfig.tank_volume_ratio()
+	var parts: PackedStringArray = PackedStringArray()
+	for row in _DENSITY_ROWS:
+		var kind: String = String(row["kind"])
+		var widgets: Dictionary = _pop_cap_rows.get(kind, {})
+		var value_label: Label = widgets.get("value")
+		var effective: int = TankConfig.population_hard_cap(kind)
+		if value_label != null:
+			value_label.text = str(effective)
+		parts.append("%s %d" % [String(row["label"]).to_lower(), effective])
+	if _pop_cap_caption != null:
+		var scale_note: String = "this tank is %.2f× the reference volume" % ratio
+		if not bool(TankConfig.pop_scale_with_tank):
+			scale_note = "size scaling off — raw numbers apply to every tank"
+		_pop_cap_caption.text = ("Effective ceilings (" + scale_note + "): "
+			+ ", ".join(parts) + ".")
+
+
 # ---- Push/pull TankConfig ----
 
 func _pull_from_config() -> void:
@@ -916,6 +1080,8 @@ func _pull_from_config() -> void:
 	_light_height.value = TankConfig.light_height
 	_light_size.value = TankConfig.light_size
 	_light_volumetric_check.button_pressed = TankConfig.light_volumetric
+	if _equipment_in_frame_check != null:
+		_equipment_in_frame_check.button_pressed = bool(TankConfig.get("equipment_in_frame"))
 	if _music_enabled_check != null:
 		_music_enabled_check.button_pressed = TankConfig.music_enabled
 	# Pick the fixture option matching current type.
@@ -964,6 +1130,7 @@ func _pull_from_config() -> void:
 			_ui_font_scale_label.text = "%.0f%%" % (float(TankConfig.ui_font_scale) * 100.0)
 	if _fps_cap_option != null:
 		_select_fps_option(int(TankConfig.fps_cap))
+	_sync_density_controls()
 	if _fauna_schooling_slider != null:
 		var school_v: float = _snap_fauna(TankConfig.fauna_schooling_mult, 0.0, 2.0)
 		TankConfig.fauna_schooling_mult = school_v
@@ -1463,6 +1630,11 @@ func _on_volumetric(v: bool) -> void:
 	TankConfig.light_volumetric = v
 
 
+func _on_equipment_in_frame(v: bool) -> void:
+	# REAL_TANK_FIDELITY #162 — live toggle; World hides meshes next fidelity tick.
+	TankConfig.set("equipment_in_frame", v)
+
+
 func _on_music_enabled(v: bool) -> void:
 	TankConfig.music_enabled = v
 	var ml: MainLoop = Engine.get_main_loop()
@@ -1477,7 +1649,7 @@ func _on_music_enabled(v: bool) -> void:
 
 
 func _open_sound_studio() -> void:
-	var main := get_tree().current_scene
+	var main: Node = get_tree().current_scene
 	if main == null:
 		return
 	if main.has_method("_ui_open_side"):
@@ -1495,6 +1667,8 @@ func _on_w(v: float) -> void:
 	TankConfig.vessel_preset = "custom"
 	_sync_vessel_dropdown()
 	_w_label.text = "%.1f" % v
+	# Hard ceilings scale with volume — keep the Density captions honest.
+	_refresh_density_readouts()
 
 
 func _on_d(v: float) -> void:
@@ -1502,6 +1676,8 @@ func _on_d(v: float) -> void:
 	TankConfig.vessel_preset = "custom"
 	_sync_vessel_dropdown()
 	_d_label.text = "%.1f" % v
+	# Hard ceilings scale with volume — keep the Density captions honest.
+	_refresh_density_readouts()
 
 
 func _on_h(v: float) -> void:
@@ -1509,6 +1685,8 @@ func _on_h(v: float) -> void:
 	TankConfig.vessel_preset = "custom"
 	_sync_vessel_dropdown()
 	_h_label.text = "%.1f" % v
+	# Hard ceilings scale with volume — keep the Density captions honest.
+	_refresh_density_readouts()
 
 
 func _on_substrate(idx: int) -> void:
@@ -1550,6 +1728,7 @@ func _on_vessel(idx: int) -> void:
 	_d_slider.value = TankConfig.tank_half_d * 2.0
 	_h_slider.value = TankConfig.tank_height
 	_update_value_labels()
+	_refresh_density_readouts()
 	TankConfig.end_settings_batch()
 
 
@@ -1837,7 +2016,7 @@ func _on_apply() -> void:
 	# Preserve camera before the reload so the view doesn't snap back to
 	# defaults. Main node has save_camera_state() that stashes yaw/pitch/etc
 	# into TankConfig + saves to disk.
-	var main := PanelTheme.main_scene(self)
+	var main: Node = PanelTheme.main_scene(self)
 	if main != null and main.has_method("save_camera_state"):
 		main.save_camera_state()
 	TankConfig.begin_settings_batch()

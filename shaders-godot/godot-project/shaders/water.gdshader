@@ -63,6 +63,27 @@ uniform float pond_wake_activity : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 pond_color_spill : source_color = vec3(0.0);
 uniform float pond_color_spill_gain : hint_range(0.0, 1.0) = 0.0;
 uniform vec4 pond_dimple_points[12];
+// Specular glint band — tracks fixture position along tank width (#52).
+uniform float fixture_glint_center : hint_range(-24.0, 24.0) = 0.0;
+uniform float fixture_glint_width : hint_range(0.5, 16.0) = 7.0;
+uniform float tank_half_depth : hint_range(1.0, 24.0) = 4.0;
+uniform float flow_distortion : hint_range(0.0, 1.0) = 0.0;
+uniform float turbidity_haze : hint_range(0.0, 1.0) = 0.0;
+uniform float floor_bounce : hint_range(0.0, 1.0) = 0.0;
+// REAL_TANK_FIDELITY water-as-medium leftovers.
+uniform float tannin_depth_ramp : hint_range(0.0, 1.0) = 0.0;
+uniform float protein_film : hint_range(0.0, 1.0) = 0.0;
+uniform float thermal_seam : hint_range(0.0, 1.0) = 0.0;
+uniform float thermal_seam_y = 4.5;
+uniform vec3 heater_world_pos = vec3(0.0);
+uniform float heater_shimmer : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 bubble_column_pos = vec3(0.0);
+uniform float bubble_column_glow : hint_range(0.0, 1.0) = 0.0;
+uniform float column_own_color : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 column_tint_rgb : source_color = vec3(0.55, 0.72, 0.42);
+uniform float bed_attenuation : hint_range(0.0, 1.0) = 0.35;
+uniform float turbidity_cone : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 fixture_world_pos = vec3(0.0, 8.0, 0.0);
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -148,18 +169,49 @@ void fragment() {
 	col = mix(col, deep_color.rgb, depth_used * depth_fog * 0.35);
 
 	// Depth absorption: red goes first, then green, leaving the deep column
-	// blue-shifted. Subtle, scaled by depth_used so the surface stays neutral.
+	// blue-shifted. Stronger than before so "this is water" reads at a glance (#32).
 	col *= mix(vec3(1.0),
-		vec3(1.0 - depth_used * 0.55, 1.0 - depth_used * 0.22, 1.0),
+		vec3(1.0 - depth_used * 0.72, 1.0 - depth_used * 0.32, 1.0),
 		depth_absorption);
+	// Mid-column cyan shift — water as a medium, not tinted glass (#35).
+	col = mix(col, col * vec3(0.92, 1.02, 1.08), depth_used * (1.0 - depth_used) * 0.28);
 
-	// Aerial perspective — back of tank desaturates into the water tint (#11).
-	col = mix(col, deep_color.rgb, depth_used * aerial_haze * 0.32);
-	// Murky-water scatter glow around bright objects (#19).
+	// Aerial perspective — back of tank desaturates into the water tint (#11, #33).
+	col = mix(col, deep_color.rgb, depth_used * aerial_haze * 0.42);
+	float horiz_depth = clamp((world_pos.z + tank_half_depth) / max(tank_half_depth * 2.0, 0.1), 0.0, 1.0);
+	col = mix(col, deep_color.rgb, horiz_depth * aerial_haze * 0.36);
+	// Depth-scaled contrast — distant subjects lose punch (#37).
+	float through_water = clamp(depth_used * 0.55 + horiz_depth * 0.45, 0.0, 1.0);
+	float col_luma = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(vec3(col_luma), col, 1.0 - through_water * 0.30);
+	// Turbidity milky read (#40 / REAL_TANK_FIDELITY #39–47).
+	if (turbidity_haze > 0.01) {
+		col = mix(col, bloom_color, turbidity_haze * (0.22 + depth_used * 0.38));
+		// Bacterial bloom scatters forward and washes contrast (milk, not grey fog).
+		float milk = turbidity_haze * (0.55 + bacterial_bloom * 0.45);
+		float luma = dot(col, vec3(0.299, 0.587, 0.114));
+		col = mix(col, vec3(luma) * bloom_color * 1.08, milk * 0.42);
+		col = mix(col, col * 0.92 + bloom_color * 0.18, milk * depth_used * 0.35);
+	}
+	// Depth-dependent contrast falloff (#40) — back glass milkier.
+	float contrast_loss = clamp(horiz_depth * 0.55 + depth_used * 0.35, 0.0, 1.0)
+		* (0.35 + turbidity_haze * 0.45);
+	float cl = dot(col, vec3(0.299, 0.587, 0.114));
+	col = mix(vec3(cl), col, 1.0 - contrast_loss * 0.55);
+	// Warm substrate bounce in the lower column (#43).
+	col = mix(col, col * vec3(1.08, 1.03, 0.94),
+		floor_bounce * (1.0 - depth_used) * depth_used * 0.42);
+	// Low-frequency flow warp (#39).
+	if (flow_distortion > 0.001) {
+		float flow_w = sin(world_pos.x * 0.07 + world_pos.y * 0.04 + TIME * 0.11)
+			* cos(world_pos.z * 0.06 - TIME * 0.08);
+		col *= 1.0 + flow_w * flow_distortion * 0.04 * (0.35 + depth_used * 0.65);
+	}
+	// Murky-water scatter glow around bright objects (#19 / #41).
 	float murk_glow = bacterial_bloom * 0.42 + bloom_haze * 0.28;
 	if (murk_glow > 0.01) {
 		float bright = max(max(col.r, col.g), col.b);
-		col += light_color * smoothstep(0.32, 0.88, bright) * murk_glow * 0.16;
+		col += light_color * smoothstep(0.32, 0.88, bright) * murk_glow * 0.32;
 	}
 
 	// Organic caustics web instead of sine interference.
@@ -179,6 +231,9 @@ void fragment() {
 	col += light_color * caustics * 0.24 * caustic_absorb;
 
 	vec3 n = normalize(NORMAL);
+	// Deep corners go genuinely dark (#38).
+	float corner_dark = pow(depth_used, 1.35) * (1.0 - abs(n.y) * 0.35);
+	col *= 1.0 - corner_dark * 0.28;
 	float surface = smoothstep(0.55, 0.92, n.y);
 	float fresnel = pow(1.0 - abs(dot(n, VIEW)), 2.2);
 	col = mix(col, shallow_color.rgb * 1.18, surface * 0.42);
@@ -199,27 +254,97 @@ void fragment() {
 		vec3 view_dir = normalize(VIEW);
 		float from_below = smoothstep(0.15, 0.82, -view_dir.y) * surface;
 		float ceil_web = worley_caustic(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
-		col += light_color * ceil_web * from_below * underside_mirror * 0.32;
-		col += vec3(0.92, 0.97, 1.0) * from_below * underside_mirror * 0.12;
+		col += light_color * ceil_web * from_below * underside_mirror * 0.46;
+		col += vec3(0.92, 0.97, 1.0) * from_below * underside_mirror * 0.20;
+		col += room_sky_color * from_below * underside_mirror * surface_reflection * 0.18;
 	}
 
-	float meniscus = surface * (0.65 + 0.35 * sin(world_pos.x * 2.4 + world_pos.z * 2.1));
-	float near_surface = 1.0 - smoothstep(0.0, 0.25, abs(world_pos.y - water_surface_y));
+	float meniscus = surface * (0.65 + 0.35 * sin(world_pos.x * 2.4 + world_pos.z * 2.1 + TIME * 0.35));
+	// 1px-class meniscus band — style guide §1; was a soft 0.25wu gradient (#45).
+	float near_surface = 1.0 - smoothstep(0.0, 0.07, abs(world_pos.y - water_surface_y));
 	float vertical = 1.0 - abs(n.y);
 
-	// Meniscus bright ring — top cap only (avoid a cut line on curved walls).
-	col += vec3(0.92, 0.98, 1.0) * meniscus * max(0.0, n.y - 0.55) * 0.08;
+	// Meniscus bright ring — day side brighter than the water below (#46).
+	col += vec3(1.0, 1.0, 0.98) * meniscus * max(0.0, n.y - 0.50) * 0.18;
+	col = mix(col, col * vec3(1.08, 1.06, 1.02), near_surface * surface * 0.22);
+
+	// Above/below split — warm lighter air-side, cool submerged (#47).
+	float above_line = smoothstep(water_surface_y - 0.05, water_surface_y + 0.02, world_pos.y);
+	float below_line = 1.0 - smoothstep(water_surface_y - 0.02, water_surface_y + 0.08, world_pos.y);
+	col = mix(col, col * vec3(1.07, 1.03, 0.96), above_line * 0.26);
+	col = mix(col, col * vec3(0.93, 0.98, 1.06), below_line * 0.24);
+
+	// Fixture specular glint on the surface cap (#52).
+	if (surface > 0.01) {
+		float glint_dist = abs(world_pos.x - fixture_glint_center);
+		float glint = smoothstep(fixture_glint_width * 0.52, fixture_glint_width * 0.06, glint_dist);
+		glint *= 0.55 + 0.45 * sin(world_pos.z * 1.8 + TIME * 0.65);
+		col += light_color * glint * surface * (0.22 + caustic_intensity * 0.28);
+	}
 
 	// Corner meniscus on polygon tanks only; curved volumes use the top ring.
-	// Kept subtle — a strong cyan band here read as a debug clipping line.
 	float corner_meniscus = near_surface * vertical;
 	if (tank_shape_id < 0.5) {
-		col += vec3(0.85, 0.95, 1.0) * corner_meniscus * 0.05;
+		col += vec3(0.92, 0.98, 1.0) * corner_meniscus * 0.09;
 	}
+	// Bright rim where water meets vertical glass (#54).
+	float glass_rim = (1.0 - smoothstep(0.0, 0.10, abs(world_pos.y - water_surface_y)))
+		* step(0.32, abs(n.y));
+	col += vec3(0.94, 0.99, 1.0) * glass_rim * 0.16;
 
 	col = mix(col, shallow_color.rgb * 0.82, fresnel * 0.28);
 
 	col = mix(col, tint_color.rgb, tint_strength);
+	// #45 — tannin staining deepens with depth (tea ramp).
+	if (tannin_depth_ramp > 0.01 && tint_strength > 0.01) {
+		col = mix(col, tint_color.rgb * vec3(0.85, 0.55, 0.28),
+			tint_strength * tannin_depth_ramp * depth_used * 0.85);
+	}
+	// #52 — water's own green-gold colour (valli jungle backlight).
+	if (column_own_color > 0.01) {
+		col = mix(col, column_tint_rgb, column_own_color * (0.25 + depth_used * 0.35));
+	}
+	// #46 — surface-to-substrate light attenuation darkens the bed.
+	col *= 1.0 - bed_attenuation * depth_used * depth_used * 0.55;
+	// #50 — convection shimmer near the heater (vertical refraction read).
+	if (heater_shimmer > 0.01) {
+		float hd = length(world_pos.xz - heater_world_pos.xz);
+		float column = exp(-hd * hd * 1.55) * heater_shimmer;
+		float shim = sin(world_pos.y * 11.0 - TIME * 2.8 + world_pos.x * 2.0) * 0.5 + 0.5;
+		float shim2 = sin(world_pos.y * 17.0 + TIME * 3.6) * 0.5 + 0.5;
+		float mix_s = mix(shim, shim2, 0.35);
+		col *= 1.0 + column * mix_s * 0.12;
+		col += light_color * column * mix_s * 0.10;
+		// Slight warm shift in the rising plume (#50).
+		col = mix(col, col * vec3(1.08, 1.02, 0.94), column * mix_s * 0.35);
+	}
+	// #51 — thermal layering seam.
+	if (thermal_seam > 0.01) {
+		float seam = 1.0 - smoothstep(0.0, 0.22, abs(world_pos.y - thermal_seam_y));
+		col = mix(col, col * vec3(1.04, 1.02, 0.96), seam * thermal_seam * 0.45);
+		col += vec3(0.9, 0.95, 1.0) * seam * thermal_seam * 0.06;
+	}
+	// #44/#170 — soft glow around the bubble column.
+	if (bubble_column_glow > 0.01) {
+		float bd = length(world_pos.xz - bubble_column_pos.xz);
+		float halo = exp(-bd * bd * 2.2) * bubble_column_glow;
+		col += light_color * halo * (0.18 + turbidity_haze * 0.25);
+	}
+	// #62 — protein film sheen on open surface.
+	if (protein_film > 0.01 && surface > 0.2) {
+		float film = protein_film * surface * (0.4 + 0.6 * fresnel);
+		float iri = 0.5 + 0.5 * sin(world_pos.x * 3.0 + world_pos.z * 2.2 + TIME * 0.2);
+		col = mix(col, col * vec3(1.05, 1.02, 0.95) + vec3(0.08, 0.06, 0.04) * iri,
+			film * 0.35);
+	}
+	// #173 — turbidity cone from fixture to substrate.
+	if (turbidity_cone > 0.01 && turbidity_haze > 0.05) {
+		vec3 to_fix = normalize(fixture_world_pos - world_pos);
+		float along = max(dot(to_fix, vec3(0.0, 1.0, 0.0)), 0.0);
+		float cone = along * turbidity_haze * turbidity_cone;
+		col += light_color * cone * 0.12;
+		col = mix(col, bloom_color, cone * 0.18);
+	}
 	col = mix(col, col * vec3(1.08, 0.92, 0.82), sunset_warmth * 0.35);
 	col = mix(col, col * vec3(0.72, 0.82, 1.05), moonlight * 0.28);
 	// Bacterial bloom haze — push the whole column toward bloom_color

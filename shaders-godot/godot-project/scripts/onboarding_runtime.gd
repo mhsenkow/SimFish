@@ -188,6 +188,7 @@ func toggle_help() -> void:
 	var close := PanelTheme.make_primary_button("Close")
 	close.pressed.connect(toggle_help)
 	vb.add_child(close)
+	PanelTheme.schedule_couch_focus(_help_overlay, PackedStringArray(["Close"]))
 
 
 func _help_body(mobile: bool, query: String, gamepad: bool = false) -> String:

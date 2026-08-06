@@ -12,20 +12,21 @@ extends RefCounted
 
 # ---- Color tokens ------------------------------------------------------------
 
-const BG: Color = Color(0.06, 0.07, 0.12, 0.92)
+const BG: Color = Color(0.06, 0.07, 0.12, 0.75)
 const BORDER: Color = Color(0.35, 0.45, 0.6, 0.55)
 const TITLE_FG: Color = Color(0.95, 0.96, 0.98)
 const SECTION_FG: Color = Color(0.65, 0.80, 1.0, 0.85)
-const LABEL_FG: Color = Color(0.85, 0.88, 0.93)
+const LABEL_FG: Color = Color(0.88, 0.90, 0.94)
 const VALUE_FG: Color = Color(0.98, 0.99, 1.0)
-const DIM_FG: Color = Color(0.78, 0.83, 0.90, 0.75)
+const DIM_FG: Color = Color(0.82, 0.86, 0.92, 0.88)
 const RULE_FG: Color = Color(0.35, 0.45, 0.6, 0.45)
 const PRIMARY_BG: Color = Color(0.22, 0.58, 0.88, 0.9)
 const PRIMARY_BG_HOVER: Color = Color(0.32, 0.68, 0.96, 0.95)
 const PRIMARY_FG: Color = Color(0.98, 0.99, 1.0)
-const HUD_BG: Color = Color(0.06, 0.07, 0.12, 0.78)
-const HUD_BORDER: Color = Color(0.35, 0.45, 0.6, 0.5)
-const RAIL_ACTIVE_BG: Color = Color(0.28, 0.42, 0.58, 0.85)
+const HUD_BG: Color = Color(0.06, 0.07, 0.12, 0.62)
+const HUD_BORDER: Color = Color(0.35, 0.45, 0.6, 0.45)
+const RAIL_ACTIVE_BG: Color = Color(0.42, 0.62, 0.86, 0.96)
+const RAIL_ACTIVE_BORDER: Color = Color(0.72, 0.88, 1.0, 0.85)
 const SHELF_BG: Color = Color(0.05, 0.04, 0.07, 1.0)
 const SHELF_CARD_BG: Color = Color(0.07, 0.08, 0.13, 0.95)
 const MODAL_SCRIM: Color = Color(0.0, 0.0, 0.0, 0.55)
@@ -56,6 +57,14 @@ static func glass_panel_tint() -> Color:
 	return _cohesion_glass_tint if _cohesion_active else Color(0.07, 0.08, 0.11, 0.55)
 
 
+static func cohesion_active() -> bool:
+	return _cohesion_active
+
+
+static func cohesion_border() -> Color:
+	return _cohesion_border if _cohesion_active else BORDER
+
+
 # ---- Overlay z-index (document stacking order) -------------------------------
 
 const Z_WALKTHROUGH: int = 280
@@ -69,17 +78,53 @@ const Z_TUTORIAL: int = 500
 
 # ---- HUD layout constants ----------------------------------------------------
 
-const HUD_TOP: float = 52.0
-const HUD_BOTTOM: float = 34.0
+const HUD_TOP: float = 44.0
+const HUD_BOTTOM: float = 28.0
 const FOOTER_HEIGHT: float = 48.0
 const EDGE_MARGIN: float = 12.0
 const RAIL_WIDTH: float = 56.0
+# Gap between the right rail icons and any leftward-docked chrome (portal card).
+const RAIL_CLEARANCE: float = 14.0
 const RAIL_BOTTOM_HEIGHT: float = 60.0
 const RAIL_BUTTON: float = 48.0
+# Creature follow card width (side-by-side layout) — keep in sync with main._relayout_portal.
+const PORTAL_CARD_W: float = 312.0
+const PORTAL_CARD_W_ABOVE: float = 208.0
 const PANEL_MIN_W: float = 360.0
 const PANEL_MAX_W: float = 520.0
-const TOAST_STACK_W: float = 280.0
-const TOAST_STACK_H: float = 240.0
+const TOAST_STACK_W: float = 260.0
+const TOAST_STACK_H: float = 160.0
+
+
+# Right-edge inset that clears the vertical rail with a readable gutter.
+static func rail_chrome_inset() -> float:
+	return RAIL_WIDTH + EDGE_MARGIN + RAIL_CLEARANCE
+
+
+# Right-edge inset that also clears an open creature follow card.
+static func portal_chrome_inset(portal_open: bool, above_layout: bool = false) -> float:
+	var rail: float = rail_chrome_inset()
+	if not portal_open:
+		return rail
+	var card_w: float = PORTAL_CARD_W_ABOVE if above_layout else PORTAL_CARD_W
+	return rail + card_w + 10.0
+
+# Shared corner radii (#194).
+const CORNER_CHIP: int = 4
+const CORNER_PANEL: int = 10
+const CORNER_MODAL: int = 12
+
+
+# Transient notification cards — bottom-right, clear of the tank (#187).
+static func layout_toast_stack(layer: Control, bottom_inset: float) -> void:
+	layer.anchor_left = 1.0
+	layer.anchor_top = 1.0
+	layer.anchor_right = 1.0
+	layer.anchor_bottom = 1.0
+	layer.offset_left = -(EDGE_MARGIN + TOAST_STACK_W + RAIL_WIDTH)
+	layer.offset_right = -(EDGE_MARGIN + RAIL_WIDTH)
+	layer.offset_top = -(bottom_inset + TOAST_STACK_H)
+	layer.offset_bottom = -bottom_inset
 
 
 # True when keyboard focus is in a text field — suppress game shortcuts/panel toggles.
@@ -239,10 +284,7 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 	style.border_width_top = 1
 	style.border_width_right = 1
 	style.border_width_bottom = 1
-	style.corner_radius_top_left = 12
-	style.corner_radius_top_right = 12
-	style.corner_radius_bottom_left = 12
-	style.corner_radius_bottom_right = 12
+	style.set_corner_radius_all(CORNER_MODAL)
 	# Generous inner padding — the old panels were CRAMPED right against the
 	# rounded edge; bumping to 18/14 gives the form room to breathe.
 	style.content_margin_left = 18
@@ -381,10 +423,12 @@ static func _preferred_focusable(root: Node,
 		var preferred: BaseButton = _find_button_matching(root, prefer_focus_text)
 		if preferred != null:
 			return preferred
-	var edit: LineEdit = _find_first_line_edit(root)
-	if edit != null:
-		return edit
-	return _find_first_focusable_button(root)
+	# Couch / DualSense: land on a button, not a search LineEdit. Keyboard
+	# users can still Tab into edits; pads should never open into typing focus.
+	var btn: BaseButton = _find_first_focusable_button(root)
+	if btn != null:
+		return btn
+	return _find_first_line_edit(root)
 
 
 static func _find_button_matching(n: Node, prefer: PackedStringArray) -> BaseButton:
@@ -486,18 +530,6 @@ static func layout_side_panel(panel: Control, rail_inset: float, top: float,
 	else:
 		panel.offset_left = -(rail_inset + width)
 		panel.offset_right = -rail_inset
-
-
-# Transient notification cards — bottom-left stack, clear of side panels + rail.
-static func layout_toast_stack(layer: Control, bottom_inset: float) -> void:
-	layer.anchor_left = 0.0
-	layer.anchor_top = 1.0
-	layer.anchor_right = 0.0
-	layer.anchor_bottom = 1.0
-	layer.offset_left = EDGE_MARGIN
-	layer.offset_right = EDGE_MARGIN + TOAST_STACK_W
-	layer.offset_top = -(bottom_inset + TOAST_STACK_H)
-	layer.offset_bottom = -bottom_inset
 
 
 # Title row with an optional trailing Close — used by full-screen modals whose
@@ -928,8 +960,13 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 	btn.add_theme_stylebox_override("focus",
 		_rail_button_stylebox(Color(0, 0, 0, 0)))
 	if active:
-		btn.add_theme_stylebox_override("normal",
-			_rail_button_stylebox(RAIL_ACTIVE_BG))
+		var active_box := _rail_button_stylebox(RAIL_ACTIVE_BG)
+		active_box.border_color = RAIL_ACTIVE_BORDER
+		active_box.border_width_left = 2
+		active_box.border_width_top = 2
+		active_box.border_width_right = 2
+		active_box.border_width_bottom = 2
+		btn.add_theme_stylebox_override("normal", active_box)
 		btn.modulate = Color(1.0, 1.0, 1.0, 1.0)
 	else:
 		btn.modulate = Color(0.92, 0.94, 0.98, 0.92)
@@ -980,6 +1017,14 @@ static func make_hud_chip_divider() -> Control:
 	sep.add_theme_stylebox_override("separator", rule)
 	sep.custom_minimum_size = Vector2(2, 22)
 	return sep
+
+
+# Wider silent gap between chip groups (#167).
+static func make_hud_chip_group_spacer() -> Control:
+	var sp := Control.new()
+	sp.custom_minimum_size = Vector2(14, 0)
+	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return sp
 
 
 static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:

@@ -170,7 +170,7 @@ func _build_ui() -> void:
 	_fov_slider.min_value = 24.0
 	_fov_slider.max_value = 90.0
 	_fov_slider.step = 1.0
-	_fov_slider.value = 55.0
+	_fov_slider.value = 45.0
 	_fov_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_fov_slider.custom_minimum_size = Vector2(0, 24)
 	_fov_slider.value_changed.connect(_on_fov_changed)
@@ -200,7 +200,7 @@ func sync_from_main() -> void:
 	var auto_orb: bool = bool(main_ref.get("_auto_orbit") if main_ref.get("_auto_orbit") != null else false)
 	if _auto_orbit_check != null:
 		_auto_orbit_check.set_pressed_no_signal(auto_orb)
-	var fov_v: float = 55.0
+	var fov_v: float = 45.0
 	if main_ref.get("camera") != null and main_ref.camera != null:
 		fov_v = float(main_ref.camera.fov)
 	if _fov_slider != null:
@@ -313,7 +313,7 @@ func _refresh_fov_slider_for_projection(proj_id: String) -> void:
 		_fov_slider.min_value = 24.0
 		_fov_slider.max_value = 90.0
 		_fov_slider.step = 1.0
-		var cur_fov: float = 55.0
+		var cur_fov: float = 45.0
 		if main_ref.get("camera") != null and main_ref.camera != null:
 			cur_fov = float(main_ref.camera.fov)
 		_fov_slider.set_value_no_signal(cur_fov)

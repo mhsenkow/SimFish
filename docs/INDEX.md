@@ -71,6 +71,8 @@ idea at a time.
 | Doc | Focus |
 |---|---|
 | [AESTHETICS_IDEAS.md](AESTHETICS_IDEAS.md) | Render pipeline, visual polish |
+| [VISUAL_POLISH_200_IDEAS.md](VISUAL_POLISH_200_IDEAS.md) | **200 things that would make it look better** — a holistic pass over the shipped frame: composition, room-vs-tank hierarchy, dither energy, chrome. Graded against the capture set |
+| [REAL_TANK_FIDELITY_200.md](REAL_TANK_FIDELITY_200.md) | **200 steps to a tank that looks like the real one** — graded against photographs of the three actual aquariums the game is based on. Stratified substrate at the glass, surface-bending vallisneria, green dust and snail grazing tracks, turbidity, a real floating mat, equipment in frame. Ships the three reference tanks as scenarios plus the density budget and hard population ceilings that make reference-density tanks safe |
 | [REFINEMENT_100_IDEAS.md](REFINEMENT_100_IDEAS.md) | **The refinement pass** — 100 items, zero additions: fix the green-plant palette bug, color fidelity, quantize/motion/UI tuning, lossless performance |
 | [REFINEMENT_II_100_IDEAS.md](REFINEMENT_II_100_IDEAS.md) | **The refinement pass II** — 100 items, zero additions, two audits deep: harden today's fresh machinery (mind tick, digests, murmuration waves), finish Perf I's partials, save/load fidelity, spawn/lifecycle/feeding edge cases, chemistry the keeper can feel, unbreakable guardian, and the regression triad in CI. Verified findings marked [V], audit-then-fix marked [A] |
 | [MUSIC_DANCE_IDEAS.md](MUSIC_DANCE_IDEAS.md) | Ambient audio, fish dance |

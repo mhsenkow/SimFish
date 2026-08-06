@@ -992,6 +992,8 @@ func _place_terrain(hit: Vector3) -> void:
 	if brush_radius <= 1:
 		if _world.has_method("terrain_place_tool"):
 			var terrain_undo: Dictionary = _world.terrain_place_tool(hit.x, hit.z, tool)
+			if not terrain_undo.is_empty() and _world.has_method("disturb_substrate"):
+				_world.disturb_substrate(0.35)
 			if not terrain_undo.is_empty():
 				_push_undo({"kind": "terrain_cell", "payload": terrain_undo, "label": tool})
 				_rebuild_substrate_mesh(false)

@@ -142,12 +142,12 @@ static func ensure_store(f) -> Array:
 	return f._episodic_store as Array
 
 
-static func encode_episode(f: Fish, kind: String, text: String, salience: float,
+static func encode_episode(f, kind: String, text: String, salience: float,
 		pos: Vector3 = Vector3.INF) -> void:
 	_append_episode(f, kind, text, salience, pos)
 
 
-static func ingest_salient_entry(f: Fish, entry: Dictionary) -> void:
+static func ingest_salient_entry(f, entry: Dictionary) -> void:
 	var kind: String = str(entry.get("kind", "self"))
 	var text: String = str(entry.get("text", ""))
 	if text == "":
@@ -160,7 +160,9 @@ static func ingest_salient_entry(f: Fish, entry: Dictionary) -> void:
 	_append_episode(f, kind, text, weight, pos)
 
 
-static func _append_episode(f: Fish, kind: String, text: String, salience: float,
+# Accepts Fish or MindFishProxy — worker cognition promotes salient moments
+# through the same path as the main thread.
+static func _append_episode(f, kind: String, text: String, salience: float,
 		pos: Vector3 = Vector3.INF) -> void:
 	var store: Array = ensure_store(f)
 	var entry: Dictionary = {

@@ -33,6 +33,7 @@ uniform float beam_posterize : hint_range(0.0, 1.0) = 0.32;
 uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 // Suspended particulate sparkle in the shaft (#59).
 uniform float dust_mote_density : hint_range(0.0, 1.0) = 0.35;
+uniform float water_surface_y = 6.5;
 
 varying vec3 local_pos;
 varying vec3 world_vertex;
@@ -86,6 +87,9 @@ void fragment() {
 	float scatter_boost = mix(1.0, 1.0 + scatter * 0.85, forward_scatter);
 
 	float alpha = beam_color.a * pow(fresnel, falloff_exponent) * vertical_curve * shimmer * scatter_boost;
+	// Air gap above the waterline — fixture cone reads in open air (#68).
+	float air_gap = smoothstep(water_surface_y - 0.12, water_surface_y + 0.04, world_vertex.y);
+	alpha *= mix(1.42, 1.0, air_gap);
 	alpha *= 1.0 - occlusion * 0.72;
 
 	float fish_block = 0.0;

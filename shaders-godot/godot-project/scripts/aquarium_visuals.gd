@@ -4,6 +4,7 @@
 extends Node3D
 class_name AquariumVisuals
 
+const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
 const TICK_INTERVAL: float = 0.1
 const SLIME_CAP: int = 96
 const SPARKLE_CAP: int = 12
@@ -129,6 +130,24 @@ func screenshot_boost_active() -> bool:
 
 func seasonal_palette_shift() -> float:
 	return _seasonal_hue
+
+
+func sync_snow_density(transmittance: float) -> void:
+	if _snow_particles == null or not is_instance_valid(_snow_particles):
+		return
+	var murk: float = clampf(1.0 - transmittance, 0.0, 1.0)
+	_snow_particles.amount = int(lerpf(22.0, 52.0, murk * 0.65 + 0.35))
+	_snow_particles.emitting = _snow_particles.amount > 0
+	# REAL_TANK_FIDELITY #42–43 — advect particulate with the flow field.
+	if _world != null and _world.has_method("sample_flow") and _snow_particles.process_material is ParticleProcessMaterial:
+		var pm: ParticleProcessMaterial = _snow_particles.process_material
+		var flow: Vector3 = _world.sample_flow(Vector3(0.0, float(_world.WATER_HEIGHT) * 0.5, 0.0))
+		var dir := Vector3(flow.x, -0.55, flow.z)
+		if dir.length_squared() < 1e-5:
+			dir = Vector3(0.05, -1.0, 0.03)
+		pm.direction = dir.normalized()
+		pm.initial_velocity_min = 0.02 + flow.length() * 0.15
+		pm.initial_velocity_max = 0.08 + flow.length() * 0.35
 
 
 func record_compaction(x: float, z: float, amount: float = 0.02) -> void:
@@ -362,7 +381,7 @@ func _build_ambient_emitters() -> void:
 	# Suspended particulate ("marine snow"): fine motes drifting slowly down
 	# through the whole column, catching the light. Gives the water tangible
 	# density. Density is nudged with murkiness in the world ambient tick.
-	_snow_particles = _make_box_emitter("MarineSnow", 26, 9.0,
+	_snow_particles = _make_box_emitter("MarineSnow", 38, 9.0,
 		Vector3(0, sd + col_h * 0.5, 0), Vector3(hw, col_h * 0.48, hd),
 		Vector3(0.05, -1.0, 0.03), 0.015, 0.05, Color(0.80, 0.86, 0.86, 0.10))
 
@@ -525,6 +544,46 @@ func _update_glass_cosmetics(sdt: float) -> void:
 	_glass_mat.set_shader_parameter("biofilm", clampf(bio * 0.85 + bloom * 0.25, 0.0, 0.7))
 	var humidity: float = clampf(float(_world.get("tannins")) if _world.get("tannins") != null else 0.0, 0.0, 1.0)
 	_glass_mat.set_shader_parameter("condensation", humidity * 0.55)
+	# REAL_TANK_FIDELITY #21–24 — green dust film + grazing tracks.
+	var fid: Variant = _world.get("fidelity") if _world != null else null
+	if fid != null and fid is TankFidelityRuntime:
+		var fr: TankFidelityRuntime = fid
+		var light: float = 0.55
+		var nutrients: float = 0.3
+		var daylight: float = 0.7
+		if _sim != null:
+			light = clampf(float(_sim.get("light_level")) if _sim.get("light_level") != null else 0.55, 0.0, 1.0)
+			daylight = clampf(float(_sim.get("day_phase")) if _sim.get("day_phase") != null else 0.5, 0.0, 1.0)
+			daylight = 1.0 - absf(daylight - 0.5) * 2.0
+		if _world.get("substrate_grid") != null:
+			nutrients = 0.35
+		fr.tick_glass_dust(sdt, light, nutrients, 0.0, daylight)
+		_glass_mat.set_shader_parameter("green_dust", fr.glass_dust)
+		_glass_mat.set_shader_parameter("dust_panel_bias", fr.dust_panel_bias)
+		_glass_mat.set_shader_parameter("graze_tracks", fr.track_uniform_array())
+		_glass_mat.set_shader_parameter("salt_creep", clampf(bio * 0.45 + humidity * 0.3, 0.0, 0.7))
+		_glass_mat.set_shader_parameter("edge_glow", 0.55)
+		_glass_mat.set_shader_parameter("chroma_fringe", 0.35)
+		_glass_mat.set_shader_parameter("room_reflection_flip", 0.55)
+		_glass_mat.set_shader_parameter("corner_ghost", 0.35)
+		_glass_mat.set_shader_parameter("waterline_refract", 0.45)
+		_glass_mat.set_shader_parameter("condensation_lower",
+			clampf(humidity * 0.4 + (0.25 if bio > 0.3 else 0.0), 0.0, 0.7))
+		# REAL_TANK_FIDELITY #61 — scum line scales with floating mat coverage.
+		var cover: float = 0.0
+		if _world.has_method("floater_coverage"):
+			cover = float(_world.floater_coverage())
+		_glass_mat.set_shader_parameter("scum_line",
+			clampf(cover * 0.95 + bio * 0.15, 0.0, 0.9))
+		_glass_mat.set_shader_parameter("screen_reflection",
+			maxf(float(_glass_mat.get_shader_parameter("screen_reflection")), 0.28))
+		# Established reference tanks start with visible dust.
+		if fr.glass_dust < 0.08 and bio > 0.4:
+			fr.glass_dust = 0.22
+		if _world.get("_light_fixture_root") != null and is_instance_valid(_world._light_fixture_root):
+			_glass_mat.set_shader_parameter("fixture_ghost_pos",
+				_world._light_fixture_root.global_position)
+			_glass_mat.set_shader_parameter("fixture_ghost", 0.45)
 	if randf() < sdt * 0.002 and _glass_walls.size() > 0:
 		_add_mineral_streak()
 

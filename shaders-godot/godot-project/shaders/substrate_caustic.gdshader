@@ -186,10 +186,15 @@ void fragment() {
     } else {
         f = 0.68;        // +Z / -Z sides
     }
+    vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
     vec3 base_color = albedo.rgb * f;
+    if (n.y > 0.7) {
+        vec2 bed_cell = floor(world_pos.xz * 9.0);
+        float bed_hash = hash21(bed_cell + floor(world_pos.y * 14.0));
+        base_color *= mix(0.94, 1.06, bed_hash);
+    }
     base_color = apply_category_palette_tint(base_color, iaq_palette_substrate,
         palette_hue_shift, palette_saturation, palette_warmth, palette_value);
-    vec3 world_pos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
     base_color = apply_material_grain(base_color, material_id, world_pos, grain_variation);
     // Hardscape contact AO darkens the substrate within registered
     // footprints on the top face only — matches substrate_opaque.
@@ -226,10 +231,12 @@ void fragment() {
             // the gain peaks; at d=2 it's back to ~1.0.
             flow_gain = 1.0 + flow_origin.w * exp(-d2 / 1.4);
         }
-        // Two harmonics: a slow base wave and a faster cross-ripple.
-        float r = sin(along * 0.9 + ripple_phase) * 0.55
-                + sin(along * 2.2 + across * 0.5 + ripple_phase * 1.3) * 0.25
-                + sin(across * 1.4 - ripple_phase * 0.7) * 0.20;
+        // Two harmonics plus hash — pure sin ripples band horizontally (#81).
+        float micro = (hash21(floor(world_pos.xz * 1.6) + ripple_phase) - 0.5) * 0.22;
+        float r = sin(along * 0.9 + ripple_phase) * 0.42
+                + sin(along * 2.2 + across * 0.5 + ripple_phase * 1.3) * 0.18
+                + sin(across * 1.4 - ripple_phase * 0.7) * 0.14
+                + micro;
         // Add a higher-frequency third harmonic only in flow zones so
         // the close-to-intake substrate visibly reads as "current-
         // worked" — finer parallel grooves on top of the base ripple.
@@ -288,9 +295,9 @@ void fragment() {
 	// light reads as chunky pixel-art steps (matches water.gdshader).
 	float caust_raw = caustics * caustic_intensity * up_fade * light_fade * wave_mod
 		* (1.0 + caustic_beat_pulse * 0.48);
-	float band_count = 4.0;
+	float band_count = 5.0;
 	float caust_quant = floor(caust_raw * band_count + 0.5) / band_count;
-	float final_intensity = mix(caust_raw, caust_quant, 0.72);
+	float final_intensity = mix(caust_raw, caust_quant, 0.55);
 
     // 3. Add caustics additively to the base voxel color
     ALBEDO = base_color + light_color.rgb * final_intensity;

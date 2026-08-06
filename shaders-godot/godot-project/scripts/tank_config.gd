@@ -16,7 +16,7 @@ extends Node
 var render_width: int = 1024
 var render_height: int = 576
 # Palette quantize shader strength.
-var dither_strength: float = 0.85
+var dither_strength: float = 0.72
 # When true, dither strength varies by region (heavy on low-saturation
 # water/fog, light on saturated fauna). When false, the legacy uniform
 # dither applies everywhere.
@@ -24,7 +24,9 @@ var dither_region_aware: bool = true
 # Index Bayer/IGN dither in world space so the pattern does not crawl on camera pans (#26).
 var dither_world_lock: bool = true
 # Blue-noise blend on low-saturation regions (palette_quantize uniform).
-var blue_noise_amount: float = 0.6
+var blue_noise_amount: float = 0.45
+# Room/background dither scale relative to tank (VISUAL_POLISH #15, #141).
+var room_dither_scale: float = 0.35
 # Accessibility — gate motion-heavy effects (#86).
 var reduced_motion: bool = false
 # UI font scale multiplier (#87) — 0.8× low vision … 1.5× large text.
@@ -40,8 +42,8 @@ var palette_bank_lock: bool = true
 # 0 = off (default), up to 1 = strong dark line on every silhouette.
 var outline_strength: float = 0.0
 # Extra post-process ink on fauna/plants — independent of outline_strength.
-# Kept soft so quantize doesn't crush fish into black silhouettes.
-var creature_outline_strength: float = 0.20
+# On by default so mid-tone fish stay readable against substrate (#118).
+var creature_outline_strength: float = 0.34
 # CRT scanline overlay strength. 0 = off (default). Pairs with palette
 # quantize for a heavier retro display feel.
 var crt_strength: float = 0.0
@@ -78,6 +80,11 @@ var follow_dof_far_softness: float = 2.0        # far transition width (world un
 var follow_dof_near_softness: float = 1.6       # near transition width
 var follow_dof_focus_margin: float = 1.2        # distance from subject to in-focus zone edge
 var follow_dof_near_enabled: bool = true        # blur in front of subject (can cause haze)
+# Soft tank-focused DOF when not following — blurs the room, keeps the aquarium sharp (#7).
+var tank_room_dof: bool = true
+var tank_room_dof_blur: float = 0.048
+# Style-guide §8 — on-screen palette count verifier (debug builds / render panel).
+var palette_count_debug: bool = false
 # If false, the palette pass is bypassed and you see raw HDR colors. Useful
 # for spotting bugs in lighting + composition.
 var palette_enabled: bool = true
@@ -91,11 +98,19 @@ var pixel_purity: bool = false
 var colorblind_palette: String = "none"
 # One-time curated beauty defaults (#99).
 var beauty_defaults_applied: bool = false
-var film_grain_strength: float = 0.04
+var film_grain_strength: float = 0.0
 var selective_glow_strength: float = 0.55
 var crt_mode: float = 0.0
 # F12 applies a richer post grade briefly (#78).
 var photo_mode_enhanced: bool = true
+# REAL_TANK_FIDELITY §L — "photo taken by a person" bundle (items 187–194).
+var photo_handheld: bool = false
+var photo_horizon_roll_deg: float = 0.0
+var photo_macro_mode: bool = false
+var photo_sensor_noise: float = 0.0
+var equipment_in_frame: bool = true  # item 162 — hide plumbing/fixtures
+# Effective POP_CAP scale under PerfGovernor pressure (item 200). 1.0 = full.
+var pop_cap_pressure_scale: float = 1.0
 # Instant-mature cold start: when set, a newly created (non-empty, non-loaded)
 # tank spawns already "established" — biofilm patina, a couple of generations of
 # lineage depth on the founders, and a spread of ages. Off = watch it grow in.
@@ -163,7 +178,7 @@ var material_weight_substrate: float = 1.0
 var material_weight_hardscape: float = 1.0
 var material_weight_water: float = 0.75
 # Camera.
-var camera_fov: float = 50.0
+var camera_fov: float = 45.0
 # Anti-aliasing on the SubViewport. 0=off, 1=2x, 2=4x, 3=8x.
 # macOS defaults Off — Metal + MSAA corrupts MultiMesh transforms.
 var msaa: int = 0 if OS.get_name() == "macOS" else 2
@@ -173,11 +188,11 @@ var display_deband: float = 0.35 if OS.get_name() == "macOS" else 0.15
 # Camera state - preserved across scene reloads so changing settings doesn't
 # snap the view back to the default. Saved by main.gd.save_camera_state()
 # right before a panel triggers reload_current_scene.
-var camera_yaw: float = -0.55
-var camera_pitch: float = 0.48
-var camera_radius: float = 17.5
+var camera_yaw: float = -0.42
+var camera_pitch: float = 0.18
+var camera_radius: float = 15.5
 var camera_target_x: float = 0.0
-var camera_target_y: float = 3.0
+var camera_target_y: float = 2.8
 var camera_target_z: float = 0.0
 # A "do we have one saved?" flag - false on first launch means use defaults.
 var camera_state_saved: bool = false
@@ -320,6 +335,117 @@ var new_tank_fit: String = "auto"
 var water_surface_fraction: float = 0.93  # water reaches 93% up the tank
 var substrate_depth_fraction: float = 0.23  # substrate is 23% of tank height
 
+# ---- Population density budget ----
+# Two separate ideas, deliberately kept apart:
+#
+#   1. `density_budget` is an ECOLOGY dial. It scales the *soft* carrying
+#      capacities the sim already computes from plant biomass, aeration,
+#      mulm and volume. Turning it down means a healthier, emptier tank;
+#      turning it up means the player has asked for crowding and will
+#      pay for it in stocking stress. It never protects the frame rate.
+#
+#   2. `pop_cap_*` are PERFORMANCE ceilings. They are hard, absolute
+#      node counts that nothing in the sim may exceed no matter how
+#      lush the tank gets. A Walstad jungle left running overnight will
+#      happily breed snails and propagate runners until the frame budget
+#      dies; these stop that from ever being possible.
+#
+# Both funnel through `population_cap()` so every subsystem — fish,
+# snails, shrimp, microfauna, plants, floaters — enforces them the same
+# way instead of each inventing its own clamp.
+#
+# `pop_scale_with_tank` ties the hard ceilings to tank volume, so a
+# 4×4×4.5 nano cube can't hold 60 fish just because a 75-gallon can. The
+# reference volume below matches the default box (16×8×14 game units) —
+# the same reference `sim_driver.fish_carrying_capacity()` uses, so the
+# soft and hard limits agree about what "a normal tank" means.
+const POP_REFERENCE_VOLUME: float = 8.0 * 4.0 * 7.0 * 4.0
+
+# Per-kind ceilings at reference volume, and the floor those ceilings are
+# never scaled below (so a fishbowl still gets a playable tank, just a
+# small one). Kept as one table so adding a kind is a single line.
+# `slider_max` is the top of the Settings slider for that kind and the
+# clamp the ini loader applies — one number so the UI and a hand-edited
+# config can never disagree about what is a legal ceiling.
+const POP_CAP_DEFAULTS: Dictionary = {
+	"fish":       {"cap": 60,  "floor": 8,  "slider_min": 8,  "slider_max": 120},
+	"snail":      {"cap": 96,  "floor": 8,  "slider_min": 4,  "slider_max": 160},
+	"shrimp":     {"cap": 48,  "floor": 6,  "slider_min": 4,  "slider_max": 120},
+	"plant":      {"cap": 180, "floor": 24, "slider_min": 20, "slider_max": 300},
+	"floater":    {"cap": 220, "floor": 12, "slider_min": 10, "slider_max": 400},
+	"microfauna": {"cap": 320, "floor": 40, "slider_min": 40, "slider_max": 800},
+}
+
+# 0.5 = sparse/pristine, 1.0 = the tuned default, 1.6 = deliberately
+# overstocked. Applied to soft capacities only.
+var density_budget: float = 1.0
+# When true, the hard ceilings below are scaled by tank volume.
+var pop_scale_with_tank: bool = true
+var pop_cap_fish: int = 60
+var pop_cap_snail: int = 96
+var pop_cap_shrimp: int = 48
+var pop_cap_plant: int = 180
+var pop_cap_floater: int = 220
+var pop_cap_microfauna: int = 320
+
+
+# Live tank volume as a fraction of the reference tank. Clamped so a
+# sphere bowl doesn't collapse to zero and a giant custom box doesn't
+# hand out an unbounded budget.
+func tank_volume_ratio() -> float:
+	var live: float = tank_half_w * tank_half_d * tank_height * 4.0
+	if live <= 0.0:
+		return 1.0
+	return clampf(live / POP_REFERENCE_VOLUME, 0.30, 2.00)
+
+
+func _pop_cap_field(kind: String) -> int:
+	match kind:
+		"fish": return pop_cap_fish
+		"snail": return pop_cap_snail
+		"shrimp": return pop_cap_shrimp
+		"plant": return pop_cap_plant
+		"floater": return pop_cap_floater
+		"microfauna": return pop_cap_microfauna
+	return 0
+
+
+# The absolute node ceiling for `kind` in the tank as currently sized.
+# Returns 0 for an unknown kind, which callers read as "no ceiling" so a
+# typo degrades to today's behaviour rather than freezing spawns.
+func population_hard_cap(kind: String) -> int:
+	var row: Variant = POP_CAP_DEFAULTS.get(kind)
+	if not (row is Dictionary):
+		return 0
+	var base: int = _pop_cap_field(kind)
+	if base <= 0:
+		return 0
+	var scaled_base: float = float(base) * clampf(pop_cap_pressure_scale, 0.55, 1.0)
+	if not pop_scale_with_tank:
+		return maxi(1, int(round(scaled_base)))
+	var floor_n: int = int((row as Dictionary).get("floor", 1))
+	return maxi(floor_n, int(round(scaled_base * tank_volume_ratio())))
+
+
+# The one call every carrying-capacity function should end with.
+# `soft_cap` is whatever the ecology computed; the result is that value
+# scaled by the player's density dial and then clamped to the hard
+# ceiling. Never returns less than 1 for a kind the tank supports.
+func population_cap(kind: String, soft_cap: int) -> int:
+	var scaled: int = maxi(1, int(round(float(soft_cap) * density_budget)))
+	var hard: int = population_hard_cap(kind)
+	if hard <= 0:
+		return scaled
+	return mini(scaled, hard)
+
+
+func _load_pop_cap(cfg: ConfigFile, key: String, kind: String, fallback: int) -> int:
+	var row: Dictionary = POP_CAP_DEFAULTS.get(kind, {})
+	var lo: int = int(row.get("slider_min", 1))
+	var hi: int = int(row.get("slider_max", 999))
+	return clampi(int(cfg.get_value("population", key, fallback)), lo, hi)
+
+
 # ---- Lighting ----
 # light_energy: 0-1 multiplier on the directional + ambient brightness
 # light_yaw: 0-1 normalised position (rotation around Y axis)
@@ -329,10 +455,12 @@ var light_yaw: float = 0.5
 var light_pitch: float = 0.3
 # light_color shifts warm/cool: 0 = cool blue daylight, 1 = warm tungsten
 var light_warmth: float = 0.6
-# Visible aquarium fixture above the tank. Two physical layouts:
+# Visible aquarium fixture above the tank. Three physical layouts:
 #   "bar"       - long horizontal LED bar spanning ~80% of tank width.
 #                 Casts a wide focused beam down via multiple spots.
 #   "spotlight" - single circular pendant fixture, narrower beam.
+#   "gooseneck" - clip-on rim clamp + flexible arm + hard-edged light pool
+#                 (Counter Nano — REAL_TANK_FIDELITY #152–153).
 var light_fixture: String = "bar"
 # Height of the fixture above the water surface (1.0 = level with tank top).
 var light_height: float = 1.4
@@ -378,6 +506,10 @@ var sunset_drama: float = 0.75
 
 # ---- Moonlight + accent point lights ----
 var moonlight_enabled: bool = true
+# REAL_TANK_FIDELITY #164 — warm rear fill that backlights foliage.
+var backlight_enabled: bool = false
+var backlight_intensity: float = 0.0
+var backlight_color: Color = Color(1.0, 0.62, 0.28)
 var moonlight_intensity: float = 0.4
 var moonlight_color: Color = Color(0.55, 0.70, 1.0)
 var accent1_enabled: bool = false
@@ -625,6 +757,28 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"tannin_affinity": 0.12,
 		"sim_clock": true,
 	},
+	# Reference room for the Counter Nano scenario — the small rimless cube
+	# that lives on a bathroom counter under a clip-on gooseneck LED. Cool
+	# speckled stone, pale wall, no window: the tank is the only real light
+	# source in frame, which is exactly why those photos read so well.
+	"counter_mirror": {
+		"label": "Bathroom counter",
+		"description": "Speckled stone counter + pale wall + a clip-on gooseneck LED. No window — the tank is the brightest thing in the room.",
+		"suggested_lighting": "shop_display",
+		"desk_color": [172, 166, 158],
+		"wall_color": [224, 216, 203],
+		"accent_color": [148, 172, 182],
+		"light_color": [244, 248, 255],
+		"include_lamp": true,
+		"include_books": false,
+		"include_plant": false,
+		"include_window": false,
+		"include_clock": false,
+		"include_mug": true,
+		"room_warmth": 0.42,
+		"night_depth_boost": 1.06,
+		"sim_clock": false,
+	},
 }
 
 
@@ -823,7 +977,7 @@ const SPECIES_LIBRARY: Dictionary = {
 			"base_color": Color8(220, 32, 50),
 			"marking_color": Color8(70, 185, 245),
 			"accent_color": Color8(190, 26, 42),
-			"adult_voxel_scale": 0.18,
+			"adult_voxel_scale": 0.21,
 			"size_potential": 0.95,
 			"jaw_claw_size": 0.05,
 			"max_age_s": 220.0,
@@ -1645,6 +1799,19 @@ const LIGHTING_PRESETS: Dictionary = {
 		"sunset_drama": 0.55,
 		"pp_vignette_strength": 0.26, "pp_bloom_strength": 0.60,
 	},
+	# REAL_TANK_FIDELITY #164 — backlighting as a supported look (Tank B/C).
+	"backlit_jungle": {
+		"label": "Backlit jungle",
+		"global_intensity": 0.32, "global_warmth": 0.82,
+		"tank_fixture_intensity": 0.28,
+		"tank_fixture_color": Color(1.0, 0.94, 0.82),
+		"tank_lights_on": true, "light_caustics": true,
+		"sunset_drama": 0.86,
+		"pp_vignette_strength": 0.34, "pp_bloom_strength": 0.74,
+		"backlight_enabled": true,
+		"backlight_intensity": 0.85,
+		"backlight_color": Color(1.0, 0.62, 0.28),
+	},
 }
 
 
@@ -1993,6 +2160,90 @@ const TANK_PRESETS: Dictionary = {
 		"hardscape_style": "polyp_jar",
 		"description": "Nano shrimp tank: dense Monte Carlo-style carpet, bucephalandra-like crypts on stones, Christmas moss on a tiny driftwood branch. No predator fish.",
 	},
+	# ---- Keeper reference tanks --------------------------------------------
+	# The three presets below are modelled on real photographs of the tanks
+	# this game is based on, not on aquascaping-magazine ideals. They exist
+	# because the competition-scape presets above are all *finished* tanks —
+	# swept substrate, no pest snails, no biofilm, no algae. Real tanks that
+	# somebody actually lives with look different, and the look is worth
+	# being able to reach on purpose. See docs/REAL_TANK_FIDELITY_200.md.
+	"snail_bar": {
+		"label": "Snail bar (gravel + stone)",
+		# Almost no fish on purpose. In the reference photo the snails ARE
+		# the livestock — big pond snails grazing the glass, Malaysian
+		# trumpets ploughing the gravel, one small fish passing through.
+		"stocking": {"guppy": 3, "shrimp": 4},
+		"phenotype_spread": 0.7,
+		# A gravel tank with an airstone and no CO2 grows very little. What
+		# it does grow is a thin film of algae on everything, which is what
+		# the snail population is actually eating.
+		"plant_palette": {
+			"valli": 0.20, "crypt": 0.35, "red_stem": 0.0,
+			"carpet": 0.0, "moss": 0.90, "java_fern": 0.60,
+		},
+		"plant_layout": {
+			"mode": "corner_refuge",
+			"extras": {"spirals": 0, "branch_ferns": 1, "hydra": 0, "marimo": 0, "riccia": 0},
+		},
+		"hardscape_style": "boulder_field",
+		"terrain_relief": [
+			# The gravel banks up against the stone on the left and thins to
+			# almost nothing at the front glass — that visible slope is what
+			# makes the layered substrate cross-section readable.
+			{"x": -0.60, "z": -0.20, "radius": 5, "mode": "raise"},
+			{"x":  0.30, "z":  0.55, "radius": 3, "mode": "dig"},
+		],
+		"description": "A working snail tank, not a showpiece. Mixed pea gravel banked against one layered ochre stone, a fine-bubble airstone running a visible column, and a big grazing snail population doing the cleanup. Water is slightly hazy. Plants are incidental.",
+	},
+	"valli_jungle": {
+		"label": "Vallisneria jungle (snail bed)",
+		# Livebearers + fry + a small mid-water school. The fry matter: in
+		# the reference photo half the visible fish are juveniles hiding in
+		# the blades, which is what makes the jungle read as *lived in*.
+		"stocking": {"guppy": 8, "glassdart": 6, "shrimp": 6},
+		"phenotype_spread": 1.2,
+		# Valli dominates everything. This is the one preset where a single
+		# plant species is allowed to take the whole tank — the blades run
+		# floor to surface and then bend and lie along it.
+		"plant_palette": {
+			"valli": 3.10, "crypt": 0.35, "red_stem": 0.0,
+			"carpet": 0.15, "moss": 1.00, "java_fern": 0.55,
+		},
+		"plant_layout": {
+			"mode": "ridge_strip",
+			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 0, "riccia": 1},
+		},
+		"hardscape_style": "twin_logs",
+		"terrain_relief": [
+			# Soil mounded along the back where the valli runners are thickest,
+			# with a shallow trough at the front where shells collect.
+			{"x": -0.20, "z": -0.55, "radius": 5, "mode": "raise"},
+			{"x":  0.10, "z":  0.60, "radius": 4, "mode": "dig"},
+		],
+		"description": "Wall-to-wall vallisneria over a gravel-capped soil bed, with a ramshorn colony and a drift of empty shells collecting in the low spot at the front. Driftwood buried in the blades. Hair algae on the older leaves. Backlit warm.",
+	},
+	"counter_nano": {
+		"label": "Counter nano (floating garden)",
+		# Deliberately understocked. The interest is the surface: duckweed,
+		# salvinia and a hyacinth rosette trailing roots into the column.
+		"stocking": {"shrimp": 10, "guppy": 2},
+		"phenotype_spread": 0.9,
+		# Epiphytes on the hardscape, nothing rooted in open substrate, and
+		# a heavy floating layer. Riccia carries the surface mat.
+		"plant_palette": {
+			"valli": 0.0, "crypt": 0.3, "red_stem": 0.0,
+			"carpet": 0.35, "moss": 1.50, "java_fern": 0.95,
+		},
+		"plant_layout": {
+			"mode": "nano_planted",
+			"extras": {"spirals": 0, "branch_ferns": 1, "hydra": 0, "marimo": 1, "riccia": 9},
+		},
+		"hardscape_style": "iwagumi",
+		"terrain_relief": [
+			{"x":  0.15, "z": -0.35, "radius": 3, "mode": "raise"},
+		],
+		"description": "Small rimless cube on a bathroom counter under a clip-on gooseneck LED. One upright stone, one wood branch, moss over both, and a thick floating mat of duckweed and salvinia with a hyacinth rosette. Green dust on the glass. Airline arcs in over the rim.",
+	},
 }
 
 
@@ -2074,6 +2325,19 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(26, 18, 12), Color8(44, 31, 21), Color8(67, 47, 31),
 			Color8(93, 65, 40), Color8(120, 85, 56), Color8(149, 113, 78),
 		],
+		# REAL_TANK_FIDELITY §A — thin gravel/sand cap over near-black soil.
+		"cap_fraction": 0.28,
+		"soil_color": [18, 12, 8],
+		"cap_color": [110, 95, 72],
+		"boundary_wave": 0.20,
+		"mix_band": 0.32,
+		"anoxic_darken": 0.70,
+		"grain_population": 0.55,
+		"root_density": 0.55,
+		"tunnel_strength": 0.25,
+		"detritus_amount": 0.35,
+		"gas_pocket": 0.18,
+		"slope_hint": 0.35,
 		"description": "Rich planted-tank substrate. Default. Plants thrive.",
 	},
 	"sand": {
@@ -2084,6 +2348,18 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(180, 165, 130), Color8(200, 185, 150), Color8(215, 200, 168),
 			Color8(225, 215, 185), Color8(235, 225, 200), Color8(245, 235, 215),
 		],
+		"cap_fraction": 0.88,
+		"soil_color": [120, 100, 70],
+		"cap_color": [220, 205, 175],
+		"boundary_wave": 0.08,
+		"mix_band": 0.15,
+		"anoxic_darken": 0.25,
+		"grain_population": 0.95,
+		"root_density": 0.15,
+		"tunnel_strength": 0.05,
+		"detritus_amount": 0.15,
+		"gas_pocket": 0.02,
+		"slope_hint": 0.15,
 		"description": "Inert white sand. Poor nutrients. Plants grow slowly.",
 	},
 	"eco_complete": {
@@ -2094,6 +2370,18 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(15, 12, 10), Color8(28, 22, 18), Color8(40, 32, 26),
 			Color8(55, 45, 36), Color8(70, 58, 46), Color8(90, 74, 60),
 		],
+		"cap_fraction": 0.35,
+		"soil_color": [12, 10, 8],
+		"cap_color": [55, 45, 36],
+		"boundary_wave": 0.16,
+		"mix_band": 0.28,
+		"anoxic_darken": 0.65,
+		"grain_population": 0.70,
+		"root_density": 0.40,
+		"tunnel_strength": 0.20,
+		"detritus_amount": 0.30,
+		"gas_pocket": 0.22,
+		"slope_hint": 0.25,
 		"description": "Volcanic black substrate. Very rich. Algae risk.",
 	},
 	"inert_gravel": {
@@ -2104,6 +2392,20 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(85, 85, 96), Color8(105, 105, 115), Color8(125, 125, 135),
 			Color8(145, 145, 155), Color8(165, 165, 175), Color8(185, 185, 195),
 		],
+		# Tank A — thick pale pea-gravel cap over a thin soil band.
+		"cap_fraction": 0.72,
+		"soil_color": [32, 24, 16],
+		"cap_color": [196, 174, 118],
+		"boundary_wave": 0.22,
+		"mix_band": 0.28,
+		"anoxic_darken": 0.45,
+		"grain_population": 1.0,
+		"root_density": 0.05,
+		"tunnel_strength": 0.45,
+		"detritus_amount": 0.40,
+		"gas_pocket": 0.08,
+		"slope_hint": 0.85,
+		"glass_contact": 0.85,
 		"description": "Sterile gravel. Plants survive only on water column dosing.",
 	},
 	"ocean_sand": {
@@ -2118,6 +2420,18 @@ const SUBSTRATE_PROFILES: Dictionary = {
 			Color8(228, 215, 188), Color8(238, 226, 200), Color8(245, 234, 210),
 			Color8(250, 240, 218), Color8(252, 245, 226), Color8(255, 250, 235),
 		],
+		"cap_fraction": 0.90,
+		"soil_color": [180, 160, 130],
+		"cap_color": [245, 234, 210],
+		"boundary_wave": 0.06,
+		"mix_band": 0.12,
+		"anoxic_darken": 0.15,
+		"grain_population": 0.90,
+		"root_density": 0.0,
+		"tunnel_strength": 0.0,
+		"detritus_amount": 0.10,
+		"gas_pocket": 0.0,
+		"slope_hint": 0.10,
 		# is_saltwater flips the world build from plants → corals and
 		# unlocks the reef_fish species library entry.
 		"is_saltwater": true,
@@ -2198,11 +2512,20 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("tank", "shape", tank_shape)
 	cfg.set_value("tank", "vessel_preset", vessel_preset)
 	cfg.set_value("tank", "dome", tank_shape == "sphere")
+	cfg.set_value("population", "density_budget", density_budget)
+	cfg.set_value("population", "scale_with_tank", pop_scale_with_tank)
+	cfg.set_value("population", "cap_fish", pop_cap_fish)
+	cfg.set_value("population", "cap_snail", pop_cap_snail)
+	cfg.set_value("population", "cap_shrimp", pop_cap_shrimp)
+	cfg.set_value("population", "cap_plant", pop_cap_plant)
+	cfg.set_value("population", "cap_floater", pop_cap_floater)
+	cfg.set_value("population", "cap_microfauna", pop_cap_microfauna)
 	cfg.set_value("light", "energy", light_energy)
 	cfg.set_value("light", "yaw", light_yaw)
 	cfg.set_value("light", "pitch", light_pitch)
 	cfg.set_value("light", "warmth", light_warmth)
 	cfg.set_value("light", "fixture", light_fixture)
+	cfg.set_value("light", "equipment_in_frame", equipment_in_frame)
 	cfg.set_value("light", "height", light_height)
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
@@ -2219,6 +2542,10 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("light", "day_length_s", day_length_s)
 	cfg.set_value("light", "sunset_drama", sunset_drama)
 	cfg.set_value("light", "moonlight_enabled", moonlight_enabled)
+	cfg.set_value("light", "backlight_enabled", backlight_enabled)
+	cfg.set_value("light", "backlight_intensity", backlight_intensity)
+	cfg.set_value("light", "backlight_color",
+		[backlight_color.r, backlight_color.g, backlight_color.b])
 	cfg.set_value("light", "moonlight_intensity", moonlight_intensity)
 	cfg.set_value("light", "moonlight_color",
 		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
@@ -2355,6 +2682,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "dither_region_aware", dither_region_aware)
 	cfg.set_value("render", "dither_world_lock", dither_world_lock)
 	cfg.set_value("render", "blue_noise_amount", blue_noise_amount)
+	cfg.set_value("render", "room_dither_scale", room_dither_scale)
 	cfg.set_value("render", "reduced_motion", reduced_motion)
 	cfg.set_value("render", "ui_font_scale", ui_font_scale)
 	cfg.set_value("render", "shader_perf_tier", shader_perf_tier)
@@ -2372,6 +2700,9 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "follow_dof_near_softness", follow_dof_near_softness)
 	cfg.set_value("render", "follow_dof_focus_margin", follow_dof_focus_margin)
 	cfg.set_value("render", "follow_dof_near_enabled", follow_dof_near_enabled)
+	cfg.set_value("render", "tank_room_dof", tank_room_dof)
+	cfg.set_value("render", "tank_room_dof_blur", tank_room_dof_blur)
+	cfg.set_value("render", "palette_count_debug", palette_count_debug)
 	cfg.set_value("render", "adaptive_quality", adaptive_quality)
 	cfg.set_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	cfg.set_value("render", "palette_enabled", palette_enabled)
@@ -2477,11 +2808,25 @@ func load_from_disk() -> void:
 	# Legacy saves used "sphere" for the vertical cylinder tank.
 	if tank_shape == "sphere" and not cfg.get_value("tank", "dome", false):
 		tank_shape = "cylinder"
+	# Population budget. Ranges match the Settings sliders so a hand-edited
+	# ini can't hand the sim a cap of -1 or a density of 40.
+	density_budget = clampf(
+		float(cfg.get_value("population", "density_budget", density_budget)), 0.35, 1.60)
+	pop_scale_with_tank = bool(
+		cfg.get_value("population", "scale_with_tank", pop_scale_with_tank))
+	pop_cap_fish = _load_pop_cap(cfg, "cap_fish", "fish", pop_cap_fish)
+	pop_cap_snail = _load_pop_cap(cfg, "cap_snail", "snail", pop_cap_snail)
+	pop_cap_shrimp = _load_pop_cap(cfg, "cap_shrimp", "shrimp", pop_cap_shrimp)
+	pop_cap_plant = _load_pop_cap(cfg, "cap_plant", "plant", pop_cap_plant)
+	pop_cap_floater = _load_pop_cap(cfg, "cap_floater", "floater", pop_cap_floater)
+	pop_cap_microfauna = _load_pop_cap(
+		cfg, "cap_microfauna", "microfauna", pop_cap_microfauna)
 	light_energy = cfg.get_value("light", "energy", light_energy)
 	light_yaw = cfg.get_value("light", "yaw", light_yaw)
 	light_pitch = cfg.get_value("light", "pitch", light_pitch)
 	light_warmth = cfg.get_value("light", "warmth", light_warmth)
 	light_fixture = cfg.get_value("light", "fixture", light_fixture)
+	equipment_in_frame = bool(cfg.get_value("light", "equipment_in_frame", equipment_in_frame))
 	light_height = cfg.get_value("light", "height", light_height)
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
@@ -2502,6 +2847,12 @@ func load_from_disk() -> void:
 	day_length_s = cfg.get_value("light", "day_length_s", day_length_s)
 	sunset_drama = cfg.get_value("light", "sunset_drama", sunset_drama)
 	moonlight_enabled = cfg.get_value("light", "moonlight_enabled", moonlight_enabled)
+	backlight_enabled = bool(cfg.get_value("light", "backlight_enabled", backlight_enabled))
+	backlight_intensity = float(cfg.get_value("light", "backlight_intensity", backlight_intensity))
+	var bl_rgb: Array = cfg.get_value("light", "backlight_color",
+		[backlight_color.r, backlight_color.g, backlight_color.b])
+	if bl_rgb.size() >= 3:
+		backlight_color = Color(float(bl_rgb[0]), float(bl_rgb[1]), float(bl_rgb[2]))
 	moonlight_intensity = cfg.get_value("light", "moonlight_intensity", moonlight_intensity)
 	var moon_rgb: Array = cfg.get_value("light", "moonlight_color",
 		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
@@ -2647,6 +2998,7 @@ func load_from_disk() -> void:
 	dither_region_aware = cfg.get_value("render", "dither_region_aware", dither_region_aware)
 	dither_world_lock = cfg.get_value("render", "dither_world_lock", dither_world_lock)
 	blue_noise_amount = cfg.get_value("render", "blue_noise_amount", blue_noise_amount)
+	room_dither_scale = float(cfg.get_value("render", "room_dither_scale", room_dither_scale))
 	reduced_motion = cfg.get_value("render", "reduced_motion", reduced_motion)
 	ui_font_scale = cfg.get_value("render", "ui_font_scale", ui_font_scale)
 	shader_perf_tier = int(cfg.get_value("render", "shader_perf_tier", shader_perf_tier))
@@ -2673,6 +3025,9 @@ func load_from_disk() -> void:
 	follow_dof_near_softness = float(cfg.get_value("render", "follow_dof_near_softness", follow_dof_near_softness))
 	follow_dof_focus_margin = float(cfg.get_value("render", "follow_dof_focus_margin", follow_dof_focus_margin))
 	follow_dof_near_enabled = bool(cfg.get_value("render", "follow_dof_near_enabled", follow_dof_near_enabled))
+	tank_room_dof = bool(cfg.get_value("render", "tank_room_dof", tank_room_dof))
+	tank_room_dof_blur = float(cfg.get_value("render", "tank_room_dof_blur", tank_room_dof_blur))
+	palette_count_debug = bool(cfg.get_value("render", "palette_count_debug", palette_count_debug))
 	adaptive_quality = cfg.get_value("render", "adaptive_quality", adaptive_quality)
 	adaptive_quality_target_fps = cfg.get_value("render", "adaptive_quality_target_fps", adaptive_quality_target_fps)
 	palette_enabled = cfg.get_value("render", "palette_enabled", palette_enabled)
@@ -2693,7 +3048,7 @@ func load_from_disk() -> void:
 	# Metal + MSAA corrupts MultiMesh — never persist On on macOS.
 	if OS.get_name() == "macOS":
 		msaa = 0
-		creature_outline_strength = minf(float(creature_outline_strength), 0.22)
+		creature_outline_strength = minf(float(creature_outline_strength), 0.38)
 		if float(display_fxaa) < 0.05:
 			display_fxaa = 0.45
 		if float(display_deband) < 0.05:
@@ -2838,6 +3193,15 @@ func reset_to_defaults() -> void:
 	tank_half_d = 4.0
 	tank_height = 7.0
 	apply_screen_fitted_dimensions()
+	# Population budget.
+	density_budget = 1.0
+	pop_scale_with_tank = true
+	pop_cap_fish = int(POP_CAP_DEFAULTS["fish"]["cap"])
+	pop_cap_snail = int(POP_CAP_DEFAULTS["snail"]["cap"])
+	pop_cap_shrimp = int(POP_CAP_DEFAULTS["shrimp"]["cap"])
+	pop_cap_plant = int(POP_CAP_DEFAULTS["plant"]["cap"])
+	pop_cap_floater = int(POP_CAP_DEFAULTS["floater"]["cap"])
+	pop_cap_microfauna = int(POP_CAP_DEFAULTS["microfauna"]["cap"])
 	# Lighting.
 	light_energy = 0.5
 	light_yaw = 0.5
@@ -2970,12 +3334,14 @@ func reset_to_defaults() -> void:
 	# Render pipeline.
 	render_width = 1024
 	render_height = 576
-	dither_strength = 0.85
+	dither_strength = 0.72
 	dither_region_aware = true
 	palette_bank_lock = true
 	outline_strength = 0.0
-	creature_outline_strength = 0.20
+	creature_outline_strength = 0.34
 	crt_strength = 0.0
+	crt_mode = 0.0
+	selective_glow_strength = 0.55
 	integer_upscale = false
 	pixel_snap_camera = false
 	follow_depth_of_field = false
@@ -2984,6 +3350,9 @@ func reset_to_defaults() -> void:
 	follow_dof_near_softness = 1.6
 	follow_dof_focus_margin = 1.2
 	follow_dof_near_enabled = true
+	tank_room_dof = false
+	tank_room_dof_blur = 0.048
+	palette_count_debug = false
 	adaptive_quality = false
 	adaptive_quality_target_fps = 55
 	palette_enabled = true
@@ -2999,17 +3368,17 @@ func reset_to_defaults() -> void:
 	material_weight_substrate = 1.0
 	material_weight_hardscape = 1.0
 	material_weight_water = 0.75
-	camera_fov = 50.0
+	camera_fov = 45.0
 	msaa = 0 if OS.get_name() == "macOS" else 2
 	display_fxaa = 0.45 if OS.get_name() == "macOS" else 0.0
 	display_deband = 0.35 if OS.get_name() == "macOS" else 0.15
 	# Camera view.
 	camera_state_saved = false
-	camera_yaw = -0.55
-	camera_pitch = 0.48
-	camera_radius = 17.5
+	camera_yaw = -0.42
+	camera_pitch = 0.18
+	camera_radius = 15.5
 	camera_target_x = 0.0
-	camera_target_y = 3.0
+	camera_target_y = 2.8
 	camera_target_z = 0.0
 
 

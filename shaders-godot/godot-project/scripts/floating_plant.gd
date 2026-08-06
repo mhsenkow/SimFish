@@ -221,6 +221,14 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 	if transform.is_finite() and _lod_tick % 10 == 0:
 		_update_view_lod()
 		_update_mat_lod()
+	# REAL_TANK_FIDELITY #59 — roots sway on the flow field independently of leaves.
+	if world != null and world.has_method("sample_flow"):
+		var flow: Vector3 = world.sample_flow(global_position + Vector3(0, -0.4, 0))
+		for child in get_children():
+			if child is MeshInstance3D and bool(child.get_meta("root_sway", false)):
+				var ph: float = float(child.get_meta("root_phase", 0.0))
+				child.rotation.x = sin(age_s * 1.1 + ph) * 0.12 + flow.z * 0.35
+				child.rotation.z = cos(age_s * 0.9 + ph) * 0.10 + flow.x * 0.35
 	_light_response_t += dt
 	if _visual_dirty or _light_response_t >= 6.0:
 		_light_response_t = 0.0
@@ -621,21 +629,43 @@ func _leaf(pos: Vector3, size: Vector3, color: Color, rot: Vector3 = Vector3.ZER
 
 
 func _root_strands(count: int, length: float, spread: float = 1.0) -> void:
+	# REAL_TANK_FIDELITY #58–60 — hanging roots as a real vertical element,
+	# with biofilm fuzz on older strands.
 	var root_color: Color = base_color.darkened(0.45)
+	if morph == "water_hyacinth":
+		length = maxf(length, 2.8)
+		count = maxi(count, 6)
+	var bio_col: Color = root_color.lerp(Color8(200, 195, 170), clampf(root_biofilm, 0.0, 1.0) * 0.65)
 	for i in count:
 		var ang: float = float(i) / float(maxi(1, count)) * TAU
 		var rx: float = cos(ang) * leaf_size * 0.18 * spread
 		var rz: float = sin(ang) * leaf_size * 0.18 * spread
 		var seg_len: float = length * (0.7 + 0.5 * float((i % 3)) / 2.0)
 		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(0.05, seg_len, 0.05))
-		var mat: ShaderMaterial = VoxelMat.make_foliage(root_color)
+		mi.mesh = VoxelMat.get_box(Vector3(0.05 + root_biofilm * 0.03, seg_len, 0.05 + root_biofilm * 0.03))
+		var mat: ShaderMaterial = VoxelMat.make_foliage(bio_col)
 		mat.set_shader_parameter("sss_strength", 0.42)
 		mi.material_override = mat
 		_configure_mesh_instance(mi)
 		mi.name = "root_%d" % i
+		mi.set_meta("root_sway", true)
+		mi.set_meta("root_phase", ang)
 		add_child(mi)
 		mi.position = Vector3(rx, -seg_len * 0.5 - 0.02, rz)
+	# REAL_TANK_FIDELITY #64 — bubbles trapped under floating leaves.
+	if morph in ["water_hyacinth", "salvinia", "frogbit", "water_lettuce"]:
+		var trapped: int = 2 if morph == "duckweed" else 4
+		for bi in trapped:
+			var bub := MeshInstance3D.new()
+			bub.name = "TrappedBubble"
+			var bs: float = randf_range(0.04, 0.07)
+			bub.mesh = VoxelMat.get_box(Vector3(bs, bs, bs))
+			bub.material_override = VoxelMat.make_bubble()
+			bub.position = Vector3(
+				randf_range(-leaf_size * 0.35, leaf_size * 0.35),
+				-0.06 - randf() * 0.08,
+				randf_range(-leaf_size * 0.35, leaf_size * 0.35))
+			add_child(bub)
 
 
 func _build_duckweed() -> void:

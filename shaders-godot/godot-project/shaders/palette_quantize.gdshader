@@ -74,16 +74,24 @@ uniform float material_value : hint_range(0.7, 1.3) = 1.0;
 uniform float health_grade : hint_range(0.0, 1.0) = 1.0;
 // Palette-locked paper grain (#77).
 uniform float film_grain_strength : hint_range(0.0, 1.0) = 0.0;
+// REAL_TANK_FIDELITY #191–192 — warm highlight rolloff + shadow sensor noise.
+uniform float highlight_rolloff : hint_range(0.0, 1.0) = 0.0;
+uniform float sensor_noise : hint_range(0.0, 1.0) = 0.0;
 // Soft display AA + banding break — runs after quantize so MultiMesh stays
 // untouched. Defaults off; Mac quality preset enables a light dose.
 uniform float fxaa_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float deband_strength : hint_range(0.0, 1.0) = 0.0;
 // Extra emissive bloom shoulder on hot pixels (#73).
-uniform float selective_glow : hint_range(0.0, 1.0) = 0.0;
+uniform float selective_glow : hint_range(0.0, 1.0) = 0.55;
 // Suppress outlines on low-sat water/substrate (#72).
 uniform float outline_subject_bias : hint_range(0.0, 1.0) = 0.65;
 // Coarser cluster-dot dither on earth-tone substrate (#8).
 uniform float dither_substrate_coarse : hint_range(0.0, 1.0) = 0.35;
+// Room/background dither as a fraction of tank dither (VISUAL_POLISH #15/#141).
+uniform float room_dither_scale : hint_range(0.0, 1.0) = 0.35;
+// Resolution-independent dither cell — keeps stipple size stable at 4K (#144).
+uniform float dither_cell_scale : hint_range(0.5, 4.0) = 1.0;
+uniform float palette_count_debug : hint_range(0.0, 1.0) = 0.0;
 // 0 = cosine scanline, 1 = aperture grille, 2 = shadow mask (#74).
 uniform float crt_mode : hint_range(0.0, 2.0) = 0.0;
 
@@ -148,22 +156,27 @@ int classify_bank(vec3 c) {
 	float maxc = max(max(r, g), b);
 	float minc = min(min(r, g), b);
 	float sat = (maxc - minc) / max(maxc, 0.001);
+	float luma = dot(c, vec3(0.299, 0.587, 0.114));
 	// Very desaturated → neutral bank (browns / grays).
-	if (sat < 0.18) {
+	if (sat < 0.22) {
 		return 1;
 	}
-	// Earth-tone browns (substrate, wood, mulch): red leads but green is
-	// still a strong second — not coral pink. Neutral bank holds the
-	// substrate ramp (palette indices 16–23).
-	if (r > b && g > b * 1.10 && g < r && g >= r * 0.55 && sat < 0.72) {
+	// Earth-tone browns (substrate, wood, mulch, desk): red leads but green
+	// is still a strong second — not coral pink. Broader than before so
+	// warm-bank magenta speckles on floor tiles die (#16, #159).
+	if (r > b && g > b * 0.92 && g < r * 1.08 && g >= r * 0.42 && sat < 0.82 && luma < 0.78) {
+		return 1;
+	}
+	// Near-brown pinks that would otherwise hit warm bank 2.
+	if (r > g && r > b && (r - g) < 0.18 && (g - b) > 0.02 && sat < 0.55 && luma < 0.70) {
 		return 1;
 	}
 	// Saturated: pick by dominant channel ratio.
 	if (b > r && b >= g * 0.85) {
 		return 0; // cool
 	}
-	if (r > b && r >= g * 0.85) {
-		return 2; // warm
+	if (r > b && r >= g * 0.92 && (r - g) > 0.12) {
+		return 2; // warm — require a clearer red lead so browns stay neutral
 	}
 	// Green-dominant: saturated foliage → cool bank (greens 8–15); olives stay neutral.
 	if (g > b * 1.15) {
@@ -186,8 +199,8 @@ void fragment() {
 	src *= palette_tint;
 	// Health-driven mood grade — thriving tanks stay vivid; stressed ones cool + dull.
 	float stress = 1.0 - health_grade;
-	src = mix(src, src * vec3(0.92, 0.96, 1.04), stress * 0.42);
-	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.18);
+	src = mix(src, src * vec3(0.92, 0.96, 1.04), stress * 0.55);
+	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.38);
 	float luma = luma_of(src);
 	float maxc2 = max(max(src.r, src.g), src.b);
 	float minc2 = min(min(src.r, src.g), src.b);
@@ -232,6 +245,13 @@ void fragment() {
 	int bank_hint = classify_bank(src);
 	bool is_substrate = (bank_hint == 1 && sat < 0.55 && luma < 0.62);
 	float coarse = is_substrate ? dither_substrate_coarse : 0.0;
+	// Room/background: neutral bank, brighter than underwater substrate —
+	// dial dither down so the room stays calm behind the tank (#15, #141).
+	float room_like = float(bank_hint == 1)
+		* (1.0 - smoothstep(0.12, 0.42, sat))
+		* smoothstep(0.38, 0.72, luma)
+		* (1.0 - float(is_substrate));
+	eff_dither *= mix(1.0, clamp(room_dither_scale, 0.0, 1.0), room_like);
 
 	// ---- Palette-bank candidate selection ----
 	int bank = classify_bank(src);
@@ -296,7 +316,7 @@ void fragment() {
 	float denom = max(dot(ab, ab), 1e-6);
 	float t = clamp(dot(src - a, ab) / denom, 0.0, 1.0);
 
-	vec2 screen_px = UV * internal_resolution;
+	vec2 screen_px = UV * internal_resolution / max(dither_cell_scale, 0.5);
 	vec2 world_px = dither_world_origin + (UV - 0.5) * internal_resolution;
 	vec2 px = mix(screen_px, world_px, dither_world_lock);
 	float dpat_coarse = mix(bayer_at(px * 0.5), ign(px * 1.7), 0.55);
@@ -338,10 +358,11 @@ void fragment() {
 	// source sits, so a gentle 0.92 reads as "a bit hot" while a 1.4
 	// (very emissive coral or fixture) actually saturates to bloom.
 	float over = max(src_luma - 0.85, 0.0);
-	float hdr_lift = clamp(over * 1.6, 0.0, 0.85);
+	float hdr_lift = clamp(over * 1.35, 0.0, 0.55);
 	if (hdr_lift > 0.001) {
 		vec3 hot_hue = normalize(max(src, vec3(0.001)));
-		vec3 hot_white = mix(hot_hue, vec3(1.0, 0.97, 0.90), 0.32);
+		// Keep hue in the bloom shoulder (#76) — less cream washout.
+		vec3 hot_white = mix(hot_hue, vec3(1.0, 0.94, 0.82), 0.18);
 		result = mix(result, hot_white, hdr_lift);
 	}
 	// Selective glow on emissives — pearling, biolum, fixtures (#73).
@@ -427,12 +448,10 @@ void fragment() {
 	}
 
 	// ---- Standalone vignette ----
-	// Independent of CRT. Always-on soft corner darkening that pulls the
-	// eye to the tank centre. UV is 0..1; dot(uv_centered, uv_centered)
-	// gives squared distance from frame centre. pow() controls falloff
-	// curve — vignette_falloff=1.0 is linear, higher = darker corners.
+	// Tank-centred when possible: bias toward optical centre slightly above
+	// frame mid so off-centre tanks still get served (#8).
 	if (vignette_strength > 0.001) {
-		vec2 vc = UV - 0.5;
+		vec2 vc = UV - vec2(0.5, 0.46);
 		float r2 = dot(vc, vc) * 4.0;  // 0 at centre, 1 at frame corners
 		float v = pow(clamp(r2, 0.0, 1.0), vignette_falloff);
 		result *= mix(1.0, 1.0 - vignette_strength * 0.55, v);
@@ -475,6 +494,21 @@ void fragment() {
 		float grain = ign(px * 1.3 + vec2(17.0, 31.0)) * film_grain_strength * 0.08;
 		result = clamp(result + vec3(grain), 0.0, 1.0);
 	}
+	// #191 — highlight rolloff rather than clipping (warm shoulder).
+	if (highlight_rolloff > 0.001) {
+		float hi = max(max(result.r, result.g), result.b);
+		float soft = smoothstep(0.72, 1.05, hi);
+		vec3 warm = result * vec3(1.05, 0.98, 0.88);
+		result = mix(result, warm * (0.92 + soft * 0.08), soft * highlight_rolloff);
+		result = min(result, vec3(0.98, 0.96, 0.92));
+	}
+	// #192 — sensor noise in the shadows (phone-camera scaled).
+	if (sensor_noise > 0.001) {
+		float luma = dot(result, vec3(0.299, 0.587, 0.114));
+		float shadow = 1.0 - smoothstep(0.08, 0.42, luma);
+		float n = (ign(px + vec2(TIME * 0.7, 9.0)) - 0.5) * sensor_noise * shadow * 0.14;
+		result = clamp(result + vec3(n), 0.0, 1.0);
+	}
 
 	// Cheap FXAA-lite — blend toward a 4-tap neighborhood on high-contrast edges.
 	// Softens stair-steps when SubViewport MSAA is Off (Mac Metal path).
@@ -498,6 +532,11 @@ void fragment() {
 		float n2 = ign(px + vec2(19.0, 47.0));
 		float tri = n1 + n2; // approx [-1, 1] triangular
 		result = clamp(result + vec3(tri * deband_strength * 0.012), 0.0, 1.0);
+	}
+
+	// Palette-count debug stripe — STYLE_GUIDE §8 (#154).
+	if (palette_count_debug > 0.5 && UV.x < 0.18 && UV.y > 0.88) {
+		result = mix(result, vec3(0.12, 0.18, 0.10), 0.72);
 	}
 
 	COLOR = vec4(result, 1.0);

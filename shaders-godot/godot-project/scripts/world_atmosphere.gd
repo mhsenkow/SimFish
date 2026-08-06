@@ -77,7 +77,7 @@ static func water_column_bundle(tannins: float, bloom: float, floater_coverage: 
 	if bloom > 0.01:
 		var algae_green := Color(0.36, 0.62, 0.32)
 		tinted = tinted.lerp(algae_green, bloom * 0.65)
-	var tint_strength: float = eff_tannins * 0.70 + bloom * 0.55
+	var tint_strength: float = eff_tannins * 0.88 + bloom * 0.62
 	var shallow_a: float = 0.12 + eff_tannins * 0.12 + bloom * 0.14
 	var deep_a: float = 0.20 + eff_tannins * 0.18 + bloom * 0.22
 	var bact_bloom: float = bacterial_bloom_from_chemistry(water_chemistry)
@@ -153,8 +153,11 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 		clampf(0.40 + (1.0 - trans) * 0.38, 0.0, 0.82))
 	var dn: Dictionary = water_day_night_uniforms(day_night)
 	mat.set_shader_parameter("surface_reflection",
-		clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.48))
-	mat.set_shader_parameter("underside_mirror", 0.34)
+		clampf(0.28 + float(dn["sunset_warmth"]) * 0.22, 0.0, 0.52))
+	mat.set_shader_parameter("underside_mirror", 0.48)
+	mat.set_shader_parameter("turbidity_haze", clampf((1.0 - trans) * 0.85, 0.0, 0.72))
+	mat.set_shader_parameter("flow_distortion", 0.38)
+	mat.set_shader_parameter("floor_bounce", clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.55))
 	# hint_screen_texture often returns black on Metal and paints a dark
 	# slab over the tank. Forward+ on non-Mac can take a light refraction.
 	var method := String(RenderingServer.get_current_rendering_method())
@@ -164,9 +167,9 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	mat.set_shader_parameter("refraction_strength", want_refr)
 	var room_warm: float = float(dn["sunset_warmth"])
 	mat.set_shader_parameter("room_sky_color", Vector3(
-		lerp(0.52, 0.72, room_warm),
-		lerp(0.58, 0.62, room_warm),
-		lerp(0.68, 0.55, room_warm)))
+		lerp(0.48, 0.78, room_warm),
+		lerp(0.52, 0.66, room_warm),
+		lerp(0.62, 0.52, room_warm)))
 	mat.set_shader_parameter("sunset_warmth", dn["sunset_warmth"])
 	mat.set_shader_parameter("moonlight", dn["moonlight"])
 	mat.set_shader_parameter("day_phase_offset", dn["day_phase_offset"])

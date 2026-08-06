@@ -4,6 +4,7 @@ shader_type spatial;
 render_mode unshaded, cull_back;
 
 uniform float sway_speed = 1.6;
+uniform float sway_phase_offset = 0.0;
 uniform float sway_amplitude = 0.08;
 uniform float flutter_speed = 3.6;
 uniform float flutter_amplitude = 0.03;
@@ -18,8 +19,9 @@ uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_floor = 0.0;
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
-uniform float sss_strength : hint_range(0.0, 1.0) = 0.28;
-uniform vec3 sss_color : source_color = vec3(1.00, 0.92, 0.68);
+uniform float sss_strength : hint_range(0.0, 1.0) = 0.42;
+uniform vec3 sss_color : source_color = vec3(1.00, 0.94, 0.62);
+uniform float backlight_boost : hint_range(0.0, 1.0) = 0.55;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -38,15 +40,15 @@ void vertex() {
 	float height_norm = clamp((world_pos.y - 0.5) / max(water_surface_y - 0.5, 1.0), 0.0, 1.0);
 	float height_factor = height_norm * height_norm * tip_sway_mult;
 
-	float time_sway = TIME * sway_speed;
-	float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
+	float time_sway = TIME * sway_speed + sway_phase_offset;
+	float phase = world_pos.x * 0.4 + world_pos.z * 0.3 + sway_phase_offset * 0.37;
 	float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
 	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor;
 	VERTEX.x += sway;
 	VERTEX.z += sway * 0.35;
 
-	float time_flutter = TIME * flutter_speed;
-	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0;
+	float time_flutter = TIME * flutter_speed + sway_phase_offset * 1.15;
+	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0 + sway_phase_offset * 0.61;
 	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
 	VERTEX.y += flutter * height_factor * 0.3;
 }
@@ -75,7 +77,13 @@ void fragment() {
 	// to almost nothing at night.
 	float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
 	float lit = max(daylight, tank_fixture_glow * 0.85);
+	// REAL_TANK_FIDELITY #121 — backlit translucency: veins darker, thin blade luminous.
+	float backlit = pow(max(-dot(n, VIEW), 0.0), 1.8) * backlight_boost * lit;
+	col = mix(col, col * 0.55 + sss_color * 0.85, backlit * 0.65);
 	col = mix(col, col * 0.7 + sss_color * 0.55, rim * sss_strength * (0.4 + 0.6 * lit));
+	// Vein darkening through the luminous blade.
+	float vein = step(0.82, fract(v_world_pos.y * 7.0 + v_world_pos.x * 3.0));
+	col *= 1.0 - vein * backlit * 0.18;
 	if (tank_fixture_glow > 0.001 && v_world_pos.y < water_surface_y - 0.05) {
 		float span = max(water_surface_y - fixture_water_floor, 0.5);
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);

@@ -2004,6 +2004,12 @@ func init_genome(genome: Dictionary) -> void:
 	if subspecies_id == "":
 		subspecies_id = species
 	base_color = _coerce_color(genome.get("base_color", base_color), base_color)
+	var ind_h: float = _behavior_rng().randf_range(-0.07, 0.07)
+	var ind_s: float = _behavior_rng().randf_range(0.94, 1.08)
+	base_color = Color.from_hsv(
+		clampf(base_color.h + ind_h, 0.0, 1.0),
+		clampf(base_color.s * ind_s, 0.0, 1.0),
+		clampf(base_color.v * _behavior_rng().randf_range(0.92, 1.06), 0.0, 1.0))
 	accent_color = _coerce_color(genome.get("accent_color", accent_color), accent_color)
 	if genome.has("tail_color"):
 		tail_color = _coerce_color(genome["tail_color"], tail_color)
@@ -2479,11 +2485,13 @@ func _build_body() -> void:
 	#   +Y = up
 	var v: float = adult_voxel_scale
 	var mat_body := _make_mat(base_color)
-	var mat_top := _make_mat(base_color.lightened(0.30))
-	var mat_belly := _make_mat(base_color.darkened(0.50))
+	var mat_top := _make_mat(base_color.lightened(0.42))
+	var mat_belly := _make_mat(base_color.darkened(0.58))
 	var mat_accent := _make_mat(accent_color)
 	var mat_eye := VoxelMat.make(Color8(11, 26, 34))
-	var mat_fin := _make_mat(base_color.darkened(0.15))
+	var mat_fin := VoxelMat.make_translucent(
+		Color(base_color.darkened(0.12).r, base_color.darkened(0.12).g,
+			base_color.darkened(0.12).b, 0.62).lerp(accent_color, 0.12))
 	# Tail fin material: defaults to a darker shade of base_color, but if
 	# the genome supplied an explicit tail_color we use that (male guppies'
 	# bright red/orange fan against a dark body).
@@ -2536,13 +2544,14 @@ func _build_body() -> void:
 		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_belly)
 	# Eyes — style-guide 1-voxel + highlight pixel for silhouette clarity.
 	var es: float = eye_size_factor
-	var eye_core: float = v * 0.14 * hp * es
+	var eye_core: float = maxf(v * 0.14 * hp * es, v * 0.11 * hp)
 	var mat_eye_hi := VoxelMat.make(Color8(210, 228, 235))
+	var eye_hi: float = maxf(v * 0.08 * hp * es, v * 0.06 * hp)
 	for x_side in [-1.0, 1.0]:
 		_add_voxel_to(head, Vector3(x_side * v * 0.4 * hp, v * 0.1 * hp, -2.38 * v),
 			Vector3(eye_core, eye_core, eye_core), mat_eye)
 		_add_voxel_to(head, Vector3(x_side * v * 0.42 * hp, v * 0.14 * hp, -2.44 * v),
-			Vector3(v * 0.08 * hp * es, v * 0.08 * hp * es, v * 0.08 * es), mat_eye_hi)
+			Vector3(eye_hi, eye_hi, eye_hi), mat_eye_hi)
 	# Mouth indicator: a small accent voxel positioned by mouth_orientation.
 	# +1 = downturned (sifters), -1 = upturned (surface feeders), 0 = neutral.
 	var mouth_y: float = -v * 0.25 * hp * float(mouth_orientation) - v * 0.1 * hp
@@ -6229,6 +6238,11 @@ func _process(dt: float) -> void:
 	_belly_flash_cd = maxf(0.0, _belly_flash_cd - dt)
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
+	# Iridescent flank flash when the fish turns broadside to the overhead fixture (#120).
+	if velocity.length_squared() > 0.10:
+		var flank_up: float = absf(global_transform.basis.x.y)
+		if flank_up > 0.76:
+			_silver_flash = maxf(_silver_flash, 0.52)
 	if _silver_flash > 0.0:
 		_silver_flash = maxf(0.0, _silver_flash - dt * 3.5)
 	var belly_push: float = clampf(_belly_flash + _silver_flash * 0.45, 0.0, 0.55)
@@ -6908,6 +6922,9 @@ func _motion_substep(dt: float) -> void:
 		_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 		if _bank_pivot != null:
 			_bank_pivot.rotation.z = _bank
+			if _body_mid_pivot != null:
+				_body_mid_pivot.rotation.y = lerpf(_body_mid_pivot.rotation.y,
+					-yaw_rate * 0.12, clampf(dt * 8.0, 0.0, 1.0))
 			# Sifting nose-down tilt. While _sift_timer > 0 we apply a pitch
 			# rotation around X so the fish's head points down at the
 			# substrate - the classic cory grazing pose. Lerp in + out for

@@ -199,6 +199,9 @@ var emergent_growth: bool = true   # tall stems/corals stop at water_surface_y
 var uses_flowering: bool = true    # corals override to false (planula instead)
 var monocarpic: bool = false       # die after one reproductive cycle
 var _canopy_timer: float = 0.0
+## Infinite meniscus bob — must be killed before stem voxels are freed, or Godot
+## reports "Infinite loop detected" when the PropertyTweener target vanishes.
+var _canopy_bob_tween: Tween = null
 var _seeds_cast_this_cycle: int = 0
 const MAX_SEEDS_PER_CYCLE: int = 3
 const SEED_SITE_NUTRIENT_MIN: float = 0.08  # above SubstrateGrid baseline
@@ -763,6 +766,9 @@ func _apply_sway_personality() -> void:
 		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter * CALM_FLUTTER)
 		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult * CALM_TIP)
 		_foliage_mat.set_shader_parameter("sway_speed", 2.2 / height_w * CALM_SPEED)
+		_foliage_mat.set_shader_parameter("sss_strength", 0.42)
+		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
+		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
 
 
 func _visual_youth_scale() -> float:
@@ -985,6 +991,9 @@ func _ensure_shared_pearling_assets() -> void:
 	pm.turbulence_noise_scale = 1.6
 	pm.turbulence_influence_min = 0.05
 	pm.turbulence_influence_max = 0.18
+	# ±1px lateral wobble as bubbles rise (style guide §4, #135).
+	pm.orbit_velocity_min = 0.14
+	pm.orbit_velocity_max = 0.42
 	# Tiny bubbles so the palette quantizer locks them into single sharp
 	# pixel specks rather than soft blobs. After quantization a 0.06 scale
 	# bubble at typical camera distance reads as a 1-2 pixel highlight —
@@ -1102,33 +1111,68 @@ func _enter_canopy() -> void:
 	_apply_canopy_layover()
 
 
+func _stop_canopy_bob() -> void:
+	if _canopy_bob_tween != null:
+		if is_instance_valid(_canopy_bob_tween):
+			_canopy_bob_tween.kill()
+		_canopy_bob_tween = null
+
+
 func _apply_canopy_layover() -> void:
-	# LIVING_MOTION #67 — emergent stems lay over the meniscus instead of
-	# stopping upright at the surface cap.
+	# REAL_TANK_FIDELITY #113 — valli / ribbon blades that reach the surface
+	# bend at the waterline and lie along it for a long run, instead of a
+	# short tip lean. Other emergents keep the lighter meniscus layover.
 	if voxels.is_empty():
 		return
+	_stop_canopy_bob()
 	var surface_local_y: float = water_surface_y - global_position.y
-	var lay_n: int = mini(3, voxels.size())
+	var ribbon: bool = leaf_form == "ribbon" or species_id.contains("valli") \
+		or species_id.contains("vallisneria") or species_id.contains("cattail")
+	var lay_n: int = mini(voxels.size(), 14 if ribbon else 3)
+	var lie_dir: float = 1.0 if fmod(absf(global_position.x * 12.7 + global_position.z * 3.1), 1.0) > 0.5 else -1.0
 	for i in lay_n:
 		var vi: int = voxels.size() - 1 - i
 		var v: MeshInstance3D = voxels[vi]
-		if not is_instance_valid(v) or v.position.y < surface_local_y - VOXEL_SIZE * 0.45:
+		if not is_instance_valid(v):
 			continue
-		var lean: float = lerpf(0.22, 0.68, float(i) / float(maxi(1, lay_n - 1)))
+		if not ribbon and v.position.y < surface_local_y - VOXEL_SIZE * 0.45:
+			continue
+		var t: float = float(i) / float(maxi(1, lay_n - 1))
+		var lean: float
+		var along: float
+		if ribbon:
+			# Bend to nearly horizontal, then slide along the surface.
+			lean = lerpf(0.35, 1.45, t)
+			along = VOXEL_SIZE * lerpf(0.15, 2.8, t * t)
+		else:
+			lean = lerpf(0.22, 0.68, t)
+			along = VOXEL_SIZE * lerpf(0.06, 0.14, t)
 		var tw := create_tween()
-		tw.tween_property(v, "rotation:x", -lean, 0.95) \
+		tw.tween_property(v, "rotation:x", -lean * lie_dir, 1.15) \
 			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(v, "position:y",
-			v.position.y + VOXEL_SIZE * lerpf(0.06, 0.14, float(i) / float(maxi(1, lay_n - 1))),
-			0.75).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		# Keep tip near the meniscus and extend horizontally along surface.
+		var target_y: float = surface_local_y + VOXEL_SIZE * lerpf(0.02, 0.10, t) if ribbon \
+			else v.position.y + VOXEL_SIZE * lerpf(0.06, 0.14, t)
+		tw.parallel().tween_property(v, "position:y", target_y, 0.9) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		if ribbon:
+			tw.parallel().tween_property(v, "position:x",
+				v.position.x + along * lie_dir, 1.05) \
+				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			# Slight twist along the blade (#112).
+			tw.parallel().tween_property(v, "rotation:z",
+				lerpf(0.0, 0.35, t) * lie_dir, 1.0)
 	var top_v: MeshInstance3D = voxels.back()
 	if is_instance_valid(top_v):
 		var base_y: float = top_v.position.y
-		var bob := create_tween().set_loops()
+		# Bind to the tip voxel so aquascape trim / melt / dormancy can't leave
+		# an infinite PropertyTweener pointed at a freed MeshInstance3D.
+		var bob := create_tween().set_loops().bind_node(top_v)
 		bob.tween_property(top_v, "position:y", base_y + VOXEL_SIZE * 0.05, 2.1) \
 			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		bob.tween_property(top_v, "position:y", base_y - VOXEL_SIZE * 0.03, 2.1) \
 			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		_canopy_bob_tween = bob
 
 
 func _spawn_meniscus_break() -> void:
@@ -1390,6 +1434,7 @@ func _ensure_foliage_batch() -> VoxelBatch:
 		if _foliage_mat == null:
 			_foliage_mat = ShaderMaterial.new()
 			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
+			_foliage_mat.set_shader_parameter("sway_phase_offset", _phase)
 			VoxelMat.register_foliage_mm(_foliage_mat)
 		_apply_sway_personality()
 		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
@@ -1421,6 +1466,13 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 			if a != null:
 				col = a
 		var inst_xform: Transform3D = leaf_xform * mi.transform
+		# Per-voxel value jitter (#101) — depth within a plant mass.
+		var h: float = fmod(sin(inst_xform.origin.x * 12.9898 + inst_xform.origin.y * 37.233
+				+ inst_xform.origin.z * 78.233) * 43758.5453, 1.0)
+		if h < 0.0:
+			h += 1.0
+		var val_mult: float = 0.86 + h * 0.22
+		col = Color(col.r * val_mult, col.g * val_mult, col.b * val_mult, col.a)
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
 		group.append(batch.add(scaled, col))
 		mi.queue_free()
@@ -1913,7 +1965,12 @@ func _apply_leaf_wilt() -> void:
 		return
 	# Target wilt: 0 at health >= 0.65, climbs to 1 as health falls to 0.10.
 	# Smoothstep gives an easing rather than a hard knee.
-	var target_wilt: float = smoothstep(0.65, 0.10, _health_smooth)
+	# REAL_TANK_FIDELITY #115/#118 — older leaves brown tips even when healthy.
+	var age_wilt: float = 0.0
+	if not _leaf_ages.is_empty():
+		var oldest: float = _t - _leaf_ages[0]
+		age_wilt = clampf(oldest / 180.0, 0.0, 0.55)
+	var target_wilt: float = maxf(smoothstep(0.65, 0.10, _health_smooth), age_wilt * 0.7)
 	# Only repaint if the change is meaningful — keeps a healthy plant
 	# from re-writing the multimesh every tick.
 	if absf(target_wilt - _wilt_applied) < 0.06:
@@ -3058,6 +3115,8 @@ func _begin_dying() -> void:
 func _decay_one_voxel() -> void:
 	if voxels.is_empty():
 		return
+	# Tip dies first — that tip is also the canopy bob target.
+	_stop_canopy_bob()
 	# Remove from the top (tips die first).
 	var v: MeshInstance3D = voxels.pop_back()
 	if is_instance_valid(v):
@@ -3071,6 +3130,7 @@ func _decay_one_voxel() -> void:
 func trim_for_aquascape(frac: float, mode: String = "all") -> Dictionary:
 	if is_dying or voxels.is_empty():
 		return {}
+	_stop_canopy_bob()
 	var snap: Dictionary = to_save_dict()
 	var amount: float = clampf(frac, 0.05, 0.75)
 	match mode:
@@ -3147,6 +3207,7 @@ func trigger_crypt_melt() -> void:
 			randf_range(-VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.55),
 		), ramp[clampi(int(randf() * 5.0), 0, 5)] as Color)
 	# Burst: remove all stem voxels rapidly + clear the foliage MultiMesh.
+	_stop_canopy_bob()
 	for v in voxels:
 		if is_instance_valid(v):
 			_spawn_melt_ghost(v.global_position - global_position,
@@ -3226,12 +3287,25 @@ func _get_flow_bias() -> float:
 
 func _apply_pinholes() -> void:
 	_has_pinholes = true
-	# Make some voxels in the middle of the plant invisible (gaps in leaves).
+	# REAL_TANK_FIDELITY #116 — torn / holed blades: prefer mid-leaf voxels on
+	# ribbons so tips stay, leaving ragged gaps rather than random salt.
 	var n_holes: int = maxi(1, int(voxels.size() / 6.0))
+	var ribbon: bool = leaf_form == "ribbon" or species_id.contains("valli")
 	for i in n_holes:
-		var idx: int = randi() % maxi(1, voxels.size())
+		var idx: int
+		if ribbon and voxels.size() > 4:
+			# Mid-blade band (avoid base + tip).
+			var lo: int = int(float(voxels.size()) * 0.25)
+			var hi: int = int(float(voxels.size()) * 0.85)
+			idx = clampi(lo + randi() % maxi(1, hi - lo), 0, voxels.size() - 1)
+		else:
+			idx = randi() % maxi(1, voxels.size())
 		if idx < voxels.size() and is_instance_valid(voxels[idx]):
 			voxels[idx].visible = false
+			# Neighboring nibble for a torn edge read.
+			if ribbon and idx + 1 < voxels.size() and randf() < 0.45 \
+					and is_instance_valid(voxels[idx + 1]):
+				voxels[idx + 1].visible = false
 
 
 # Fish nibbling: remove up to `amount` bites from flower or stem tip.
@@ -3289,6 +3363,8 @@ func nibble(amount: int) -> int:
 	var removed: int = 0
 	var any_stem_lost: bool = false
 	var stem_before: int = voxels.size()
+	if amount > 0 and not voxels.is_empty():
+		_stop_canopy_bob()
 	for i in amount:
 		if not voxels.is_empty():
 			var v: MeshInstance3D = voxels.pop_back()
@@ -3404,6 +3480,11 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		st.biofilm = clampf(float(st.get("biofilm", 0.0)) + dt * 0.012, 0.0, 1.0)
 		if leaf_form in ["paddle", "spade", "lobed"]:
 			st.gsa = clampf(float(st.get("gsa", 0.0)) + dt * 0.007, 0.0, 1.0)
+		# REAL_TANK_FIDELITY #73/#117 — hair algae accumulates on old ribbon leaves.
+		if leaf_form == "ribbon" or species_id.contains("valli"):
+			var age_s: float = float(st.get("age_s", 0.0))
+			if age_s > 45.0:
+				st.hair = clampf(float(st.get("hair", 0.0)) + dt * 0.008, 0.0, 1.0)
 		if leaf_form in ["needle", "downy", "pinnate"] and sim_v != null:
 			var waste_arr: Variant = sim_v.get("waste")
 			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
@@ -3415,6 +3496,7 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		_visual_tick_t = 0.25
 		_tick_nyctinasty(sim_v)
 		_tick_dynamic_blush(sim_v)
+		_tick_leaf_hair_visuals()
 		if _foliage_mat != null and leaf_form in ["paddle", "spade", "lobed"]:
 			var film_avg: float = 0.0
 			var gsa_avg: float = 0.0
@@ -3430,6 +3512,36 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 						0.72, film_mix))
 				_foliage_mat.set_shader_parameter("palette_warmth",
 					float(_foliage_mat.get_shader_parameter("palette_warmth")) + gsa_avg * 0.18)
+
+
+var _leaf_hair_nodes: Array = []
+
+
+func _tick_leaf_hair_visuals() -> void:
+	# Spawn sparse filament voxels on aged ribbon leaves (#73/#117).
+	if not (leaf_form == "ribbon" or species_id.contains("valli")):
+		return
+	if voxels.is_empty() or _leaf_hair_nodes.size() >= 8:
+		return
+	var hair_avg: float = 0.0
+	for st in _leaf_states:
+		hair_avg += float(st.get("hair", 0.0))
+	if not _leaf_states.is_empty():
+		hair_avg /= float(_leaf_states.size())
+	if hair_avg < 0.25 or randf() > hair_avg * 0.55:
+		return
+	var idx: int = clampi(int(float(voxels.size()) * randf_range(0.35, 0.9)), 0, voxels.size() - 1)
+	var host: MeshInstance3D = voxels[idx]
+	if not is_instance_valid(host) or not host.visible:
+		return
+	var fil := MeshInstance3D.new()
+	fil.name = "LeafHair"
+	fil.mesh = VoxelMat.get_box(Vector3(0.04, randf_range(0.18, 0.38), 0.04))
+	fil.material_override = VoxelMat.make_foliage(Color8(70, 110, 55))
+	fil.position = host.position + Vector3(randf_range(-0.06, 0.06), 0.02, randf_range(-0.06, 0.06))
+	fil.rotation = Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.5, 0.5))
+	add_child(fil)
+	_leaf_hair_nodes.append(fil)
 
 
 func _tick_root_bubbles(dt: float, substrate: SubstrateGrid) -> void:
@@ -3511,6 +3623,7 @@ func _enter_dormant_bulb() -> void:
 	life_phase = LifePhase.DORMANT_BULB
 	_bulb_buried = true
 	_dormant_timer = 0.0
+	_stop_canopy_bob()
 	for v in voxels:
 		if is_instance_valid(v):
 			v.queue_free()

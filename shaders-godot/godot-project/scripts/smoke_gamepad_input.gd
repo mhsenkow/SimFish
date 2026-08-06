@@ -135,6 +135,19 @@ func _initialize() -> void:
 	var grab_src_ok: bool = (load("res://scripts/panel_theme.gd") as Script).source_code \
 			.contains("func grab_couch_focus")
 	_assert(failed, grab_src_ok, "PanelTheme.grab_couch_focus defined")
+	var pt_src: String = (load("res://scripts/panel_theme.gd") as Script).source_code
+	_assert(failed, pt_src.find("_find_first_focusable_button(root)") \
+					< pt_src.find("_find_first_line_edit(root)") \
+			or pt_src.contains("land on a button"),
+			"couch prefer focuses buttons before LineEdit")
+	var main_src: String = (load("res://scripts/main.gd") as Script).source_code
+	_assert(failed, main_src.contains("schedule_couch_focus(_camera_views_panel"),
+			"Camera Views open schedules couch focus")
+	_assert(failed, main_src.contains("schedule_couch_focus(_residents_panel"),
+			"Residents open schedules couch focus")
+	var uip_src: String = (load("res://scripts/ui_panel_manager.gd") as Script).source_code
+	_assert(failed, uip_src.contains("_light_panel") and uip_src.contains("_notifications_panel"),
+			"UiPanelManager couch-focuses light + notifications")
 	host.queue_free()
 	PanelTheme.set_couch_focus(false)
 

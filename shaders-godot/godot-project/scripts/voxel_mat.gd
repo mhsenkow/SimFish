@@ -64,7 +64,7 @@ const FAUNA_SSS_DEFAULT: float = 0.22
 const FAUNA_IRID_DEFAULT: float = 0.18
 const FAUNA_SSS_EXPERIMENTAL: float = 0.34
 const FAUNA_IRID_EXPERIMENTAL: float = 0.45
-const FAUNA_RIM: float = 0.40
+const FAUNA_RIM: float = 0.58
 # Originally 1.12. Bumping past ~1.15 makes the palette-quantize dither
 # pattern read as a visible grid on bright fish — neighbouring palette
 # entries land too far apart in value. 1.14 keeps fauna slightly above
@@ -148,7 +148,12 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("room_haze_strength", haze_strength)
 	m.set_shader_parameter("room_haze_color", Vector3(haze_color.r, haze_color.g, haze_color.b))
-	m.set_shader_parameter("palette_global_scale", 0.5)
+	# Gentler palette tint + lower value so room never out-competes the tank.
+	m.set_shader_parameter("palette_global_scale", 0.35)
+	m.set_shader_parameter("palette_saturation", 0.72)
+	m.set_shader_parameter("palette_value", 0.82)
+	# REAL_TANK_FIDELITY #183 — subtle orange-peel / plaster grain on walls.
+	m.set_shader_parameter("grain_variation", 0.55)
 	_room_mat_cache[key] = m
 	return m
 
@@ -284,6 +289,7 @@ static func make_substrate_opaque(color: Color, material_id: int = 0) -> ShaderM
 	m.shader = _get_sub_opaque_shader()
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("material_id", material_id)
+	m.set_shader_parameter("palette_saturation", 0.82)
 	_sub_opaque_mat_cache[cache_key] = m
 	return m
 
@@ -345,6 +351,7 @@ static func make_substrate_caustic(color: Color, material_id: int = 0) -> Shader
 	m.shader = _get_sub_caustic_shader()
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("material_id", material_id)
+	m.set_shader_parameter("palette_saturation", 0.82)
 	m.set_shader_parameter("blob_shadow_max", 16 if _shader_perf_tier >= 2 else 32)
 	_sub_caustic_mat_cache[cache_key] = m
 	return m
@@ -502,6 +509,8 @@ static func make_glass(shape_id: float, water_y: float) -> ShaderMaterial:
 	# compensate with a stronger room fresnel/rim so glass doesn't go flat.
 	var mac: bool = OS.get_name() == "macOS"
 	_glass_mat.set_shader_parameter("screen_reflection", 0.0 if mac else 0.22)
+	_glass_mat.set_shader_parameter("caustic_band", 0.48)
+	_glass_mat.set_shader_parameter("fingerprint_strength", 0.16)
 	if mac:
 		_glass_mat.set_shader_parameter("reflection_strength", 0.58)
 		_glass_mat.set_shader_parameter("rim_chrome", 0.78)
@@ -696,6 +705,29 @@ static func update_substrate_flow_origin(origin: Vector3, gain: float) -> void:
 	for mat in _sub_caustic_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("flow_origin", v)
+
+
+# REAL_TANK_FIDELITY §A — push stratified soil/cap cross-section uniforms into
+# every opaque substrate material (side walls at the glass are where it reads).
+static func apply_substrate_strata(params: Dictionary) -> void:
+	if params.is_empty():
+		return
+	var keys: Array[String] = [
+		"bed_bottom_y", "bed_top_y", "cap_fraction", "boundary_wave", "mix_band",
+		"anoxic_darken", "grain_population", "root_density", "tunnel_strength",
+		"detritus_amount", "bed_age", "wet_line_y", "glass_contact", "gas_pocket",
+		"slope_hint",
+	]
+	for mat in _sub_opaque_mat_cache.values():
+		if not is_instance_valid(mat):
+			continue
+		for k in keys:
+			if params.has(k):
+				mat.set_shader_parameter(k, params[k])
+		if params.has("soil_color"):
+			mat.set_shader_parameter("soil_color", params["soil_color"])
+		if params.has("cap_color"):
+			mat.set_shader_parameter("cap_color", params["cap_color"])
 
 
 # Push hardscape contact-AO footprints (driftwood roots, rock bases) into

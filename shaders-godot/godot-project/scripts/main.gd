@@ -162,8 +162,8 @@ var _last_rail_sync_hash: int = -1
 var _mobile_render_orientation: int = -1
 # Idle-dim state for the top HUD (mirrors MobileHUD's behavior).
 var _hud_idle_seconds: float = 0.0
-const HUD_IDLE_DIM_SECONDS: float = 6.0
-const HUD_DIM_MODULATE: Color = Color(1, 1, 1, 0.45)
+const HUD_IDLE_DIM_SECONDS: float = 4.0
+const HUD_DIM_MODULATE: Color = Color(1, 1, 1, 0.20)
 const SCREENSAVER_DIM_MODULATE: Color = Color(1, 1, 1, 0.08)
 const NIGHT_WATCHSCREENSAVER_S: float = 120.0
 var _moonlight_suggested: bool = false
@@ -239,9 +239,15 @@ var _follow_inner_thought_last_line: String = ""
 var _workspace_inspector: Label = null
 var _workspace_inspector_accum: float = 0.0
 var _perf_hud: Label = null
+var _palette_count_accum: float = 0.0
+var _palette_count_cached: int = -1
 # In-place body label for streaming away-recap toasts (avoids notification spam).
 var _guardian_recap_toast_body: Label = null
 var _last_guardian_line_shown: String = ""
+var _photo_letterbox_top: ColorRect = null
+var _photo_letterbox_bottom: ColorRect = null
+var _photo_flash: ColorRect = null
+var _palette_debug_label: Label = null
 # Selection reticle ring on the currently-followed creature (distinct from the
 # favorite halos). Lives under `world`, repositioned each frame.
 var _follow_reticle: MeshInstance3D = null
@@ -267,17 +273,25 @@ var _key_was_pressed: Dictionary = {}
 
 # Orbit state - default angle is the "feels nice" view the user landed on
 # (drag to refine, F to reset back to this).
-const DEFAULT_TARGET := Vector3(0, 3.0, 0)
-const DEFAULT_RADIUS := 17.5
-const DEFAULT_YAW := -0.55
-const DEFAULT_PITCH := 0.48
+# Hero rest pose — tank as subject without crowding the frame.
+# Optical centre / rule-of-thirds Y; slight above-looking pitch; FOV ~45°.
+const DEFAULT_TARGET := Vector3(0, 2.8, 0)
+const DEFAULT_RADIUS := 15.5
+const DEFAULT_YAW := -0.42
+const DEFAULT_PITCH := 0.18
+const DEFAULT_FOV := 45.0
+# Rule-of-thirds bias — substrate ~lower third, waterline ~upper third (#6).
+const HERO_TARGET_Y_FRAC := 0.36
+# Soft framing — allow close zooms; only stop short of clipping the glass.
+const HERO_MAX_FILL := 0.95
+const HERO_TARGET_FILL := 0.58
 # Portrait-cylinder camera defaults. A tall round tank seen from a portrait
 # phone reads best with the camera level (low pitch), pulled back further
 # (cylinder is taller than the standard box), and looking at mid-height.
 # Computed dynamically in _default_camera_for_tank() so it tracks the
 # tank's actual height instead of hard-coding.
-const PORTRAIT_DEFAULT_PITCH := 0.18
-const PORTRAIT_DEFAULT_YAW := -0.35
+const PORTRAIT_DEFAULT_PITCH := 0.14
+const PORTRAIT_DEFAULT_YAW := -0.28
 
 var target: Vector3 = DEFAULT_TARGET
 var radius: float = DEFAULT_RADIUS
@@ -295,24 +309,40 @@ func _default_camera_for_tank() -> Dictionary:
 	var shape: String = String(cfg.get("tank_shape")) if cfg != null else "box"
 	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
+	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
 	var vp: Vector2 = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1536, 864)
 	var portrait: bool = vp.y > vp.x * 1.02
 	# Tall round tank seen on a tall screen: portrait camera.
 	if shape == "cylinder" and portrait:
-		var radius_px: float = clampf(tank_h * 1.65 + tank_hw * 1.6, 9.0, 28.0)
+		var radius_px: float = clampf(tank_h * 1.35 + tank_hw * 1.25, 9.0, 24.0)
 		return {
-			"target": Vector3(0.0, tank_h * 0.42, 0.0),
+			"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
 			"radius": radius_px,
 			"yaw": PORTRAIT_DEFAULT_YAW,
 			"pitch": PORTRAIT_DEFAULT_PITCH,
 		}
-	# Anything else: classic 3/4 box-tank defaults.
+	# Hero 3/4 — optical centre, designed pitch. Radius scales from the
+	# empirical DEFAULT_RADIUS that fills ~68% for an 8-unit half-width box.
+	var span: float = maxf(tank_hw, tank_hd * 0.85)
+	var hero_r: float = DEFAULT_RADIUS * (span / 8.0)
 	return {
-		"target": DEFAULT_TARGET,
-		"radius": DEFAULT_RADIUS,
+		"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
+		"radius": clampf(hero_r, MIN_RADIUS, MAX_RADIUS),
 		"yaw": DEFAULT_YAW,
 		"pitch": DEFAULT_PITCH,
 	}
+
+
+# Soft clamp — keep a tiny margin so extreme zoom-in doesn't clip glass,
+# but leave a wide orbit shell for intentional close-ups and pull-backs.
+func _clamp_radius_to_frame(r: float) -> float:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
+	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
+	var span: float = maxf(tank_hw, tank_hd * 0.85)
+	# Absolute floor for close-ups (~3.5 on a standard box); no hero-fill lock.
+	var min_r: float = clampf(span * 0.35, MIN_RADIUS, DEFAULT_RADIUS * 0.55)
+	return clampf(r, min_r, MAX_RADIUS)
 
 
 # Apply the shape-aware defaults to the camera state. Used by F-key reset,
@@ -329,14 +359,40 @@ func _reset_camera_to_default() -> void:
 	_apply_camera()
 
 
-func _zoom_camera_by_factor(factor: float) -> void:
+func _zoom_camera_by_factor(factor: float, coast: bool = false) -> void:
 	if camera == null:
 		return
 	if _current_projection_id == "perspective":
+		var prev_r: float = radius
 		radius = CameraController.zoom_radius(radius, factor)
+		# Trackpad / pinch stream continuous events — coasting fights them.
+		if coast:
+			_cam_zoom_vel = (radius - prev_r) * 6.0
+		else:
+			_cam_zoom_vel = 0.0
 	else:
 		camera.size = CameraController.zoom_ortho(camera.size, factor)
+		_cam_zoom_vel = 0.0
 	_apply_camera()
+
+
+func _zoom_from_scroll_event(mb: InputEventMouseButton) -> void:
+	var wheel_up: bool = mb.button_index == MOUSE_BUTTON_WHEEL_UP
+	if _aquascape_scroll_build_plane(wheel_up):
+		return
+	if _mouse_over_porthole():
+		_adjust_portal_zoom(1.1 if wheel_up else (1.0 / 1.1))
+		return
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms - _wheel_burst_msec < 80:
+		_wheel_burst_count += 1
+	else:
+		_wheel_burst_count = 1
+	_wheel_burst_msec = now_ms
+	# Camera: wheel-up = zoom in = smaller radius.
+	var zf: float = CameraController.zoom_factor_from_scroll(
+		mb.factor, wheel_up, _wheel_burst_count)
+	_zoom_camera_by_factor(zf, false)
 
 
 func _save_aquascape_camera() -> void:
@@ -433,15 +489,15 @@ func apply_camera_preset(preset_id: String) -> void:
 			pitch = 1.40
 			radius = float(top_frame["radius"])
 		"three_quarter":
-			# Classic perspective from front-right, slight tilt down.
-			target = Vector3(0.0, tank_h * 0.4, 0.0)
-			yaw = -0.55
-			pitch = 0.48
-			radius = base_r * 1.05
+			# Hero composition — optical centre, designed pitch (#10).
+			target = Vector3(0.0, tank_h * 0.40, 0.0)
+			yaw = DEFAULT_YAW
+			pitch = DEFAULT_PITCH
+			radius = DEFAULT_RADIUS * (maxf(tank_hw, tank_hd * 0.85) / 8.0)
 		_:
 			_reset_camera_to_default()
 			return
-	radius = clampf(radius, MIN_RADIUS, MAX_RADIUS)
+	radius = _clamp_radius_to_frame(radius)
 	pitch = clampf(pitch, MIN_PITCH, MAX_PITCH)
 	_apply_camera()
 	_haptic(10)
@@ -867,6 +923,9 @@ func _toggle_camera_views_panel() -> void:
 	_camera_views_panel.visible = not _camera_views_panel.visible
 	if _camera_views_panel.visible and _camera_views_panel.has_method("sync_from_main"):
 		_camera_views_panel.sync_from_main()
+	if _camera_views_panel.visible:
+		PanelTheme.schedule_couch_focus(_camera_views_panel,
+				PackedStringArray(["Front", "Reset", "Follow"]))
 
 
 # Add a Residents toggle to the right rail. Like Camera Views, it lives in the
@@ -913,10 +972,9 @@ func _toggle_residents_panel() -> void:
 			_ui_panels.close_side_panels()
 		if _residents_panel.has_method("sync_from_main"):
 			_residents_panel.sync_from_main()
-		var gp := get_node_or_null("/root/GamepadInput")
-		if gp != null and gp.couch_focus_wanted():
-			PanelTheme.apply_couch_focus_tree(_residents_panel, true)
-			_residents_panel.call_deferred("grab_focus")
+		# Prefer nav / tools — not the search LineEdit (typing focus on couch).
+		PanelTheme.schedule_couch_focus(_residents_panel,
+				PackedStringArray(["Cinema", "Shuffle", "Lead", "▶"]))
 
 
 # Camera tuning re-exported from CameraController (single source of truth — the
@@ -949,6 +1007,15 @@ var _last_mouse: Vector2 = Vector2.ZERO
 var _drag_start: Vector2 = Vector2.ZERO  # to distinguish click from drag
 var _drag_total: float = 0.0
 var _drag_button: int = 0  # which button initiated; used for click-vs-drag dispatch
+# Orbit/zoom inertia — short ease-out after drag stops (#196).
+var _cam_spin_yaw: float = 0.0
+var _cam_spin_pitch: float = 0.0
+var _cam_zoom_vel: float = 0.0
+const _CAM_SPIN_DECAY: float = 9.5
+const _CAM_SPIN_GAIN: float = 1.0
+# macOS trackpad sprays many wheel events — count bursts to soften steps.
+var _wheel_burst_count: int = 0
+var _wheel_burst_msec: int = 0
 var _auto_orbit: bool = false
 var _auto_orbit_was_pressed: bool = false
 const PAN_MOUSE_SENSITIVITY: float = CameraController.PAN_MOUSE_SENSITIVITY
@@ -1077,7 +1144,7 @@ var _discovery_toast_tween: Tween = null
 
 # ---- Notification center + toast feed ----
 const NOTIF_MAX_HISTORY: int = 300
-const NOTIF_TOAST_MAX_ACTIVE: int = 3
+const NOTIF_TOAST_MAX_ACTIVE: int = 2
 const NOTIF_SORT_NEWEST: int = 0
 const NOTIF_SORT_OLDEST: int = 1
 const NOTIF_SORT_SEVERITY: int = 2
@@ -1331,11 +1398,13 @@ func _restore_camera_state() -> void:
 	yaw = float(cfg.camera_yaw)
 	pitch = float(cfg.camera_pitch)
 	radius = float(cfg.camera_radius)
-	# Saved views from extreme scroll-zoom can pin the camera inside the glass.
+	# Saved views from extreme scroll-zoom can pin the camera inside the glass,
+	# and the brief 11.8 hero default was too tight — bump stale close saves.
 	var d: Dictionary = _default_camera_for_tank()
-	var sane_min: float = maxf(MIN_RADIUS, float(d["radius"]) * 0.55)
-	if radius < sane_min:
-		radius = float(d["radius"])
+	var hero_r: float = float(d["radius"])
+	var sane_min: float = maxf(MIN_RADIUS, hero_r * 0.45)
+	if radius < sane_min or radius < hero_r * 0.72:
+		radius = hero_r
 	target = Vector3(
 		float(cfg.camera_target_x),
 		float(cfg.camera_target_y),
@@ -1509,15 +1578,37 @@ func _apply_render_config() -> void:
 		ShaderUniformLedger.write(sm, &"dither_world_origin",
 			Vector2(float(cfg.camera_target_x), float(cfg.camera_target_z)))
 		ShaderUniformLedger.write(sm, &"blue_noise_amount", float(cfg.blue_noise_amount))
+		ShaderUniformLedger.write(sm, &"room_dither_scale", float(cfg.room_dither_scale))
+		var cell_scale: float = clampf(float(render_w) / 384.0, 1.0, 3.0)
+		sm.set_shader_parameter("dither_cell_scale", cell_scale)
+		sm.set_shader_parameter("palette_count_debug",
+			1.0 if bool(cfg.get("palette_count_debug")) else 0.0)
+		_update_palette_debug_label(bool(cfg.get("palette_count_debug")))
 		ShaderUniformLedger.write(sm, &"shader_perf_tier", float(tier))
 		ShaderUniformLedger.write(sm, &"palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
 		ShaderUniformLedger.write(sm, &"outline_strength", float(cfg.outline_strength))
 		var creature_outline: float = float(cfg.creature_outline_strength)
 		if mac:
-			creature_outline = minf(creature_outline, 0.18)
+			creature_outline = minf(creature_outline, 0.36)
 		ShaderUniformLedger.write(sm, &"creature_outline_strength", creature_outline)
 		ShaderUniformLedger.write(sm, &"crt_strength", float(cfg.crt_strength))
+		ShaderUniformLedger.write(sm, &"selective_glow", float(cfg.selective_glow_strength))
+		ShaderUniformLedger.write(sm, &"crt_mode", float(cfg.crt_mode))
+		ShaderUniformLedger.write(sm, &"film_grain_strength", float(cfg.film_grain_strength))
+		# REAL_TANK_FIDELITY #191–192 — photo-mode rolloff + sensor noise.
+		# Gate on handheld/macro/noise only — photo_mode_enhanced defaults true
+		# and would otherwise leave noise on for every session.
+		var photo_look: bool = bool(cfg.get("photo_handheld")) \
+			or bool(cfg.get("photo_macro_mode")) \
+			or float(cfg.get("photo_sensor_noise")) > 0.01
+		if photo_look:
+			sm.set_shader_parameter("highlight_rolloff", 0.65)
+			sm.set_shader_parameter("sensor_noise",
+				maxf(float(cfg.get("photo_sensor_noise")), 0.18))
+		else:
+			sm.set_shader_parameter("highlight_rolloff", 0.0)
+			sm.set_shader_parameter("sensor_noise", 0.0)
 		var fxaa_v: float = float(cfg.get("display_fxaa"))
 		var deband_v: float = float(cfg.get("display_deband"))
 		if mac and fxaa_v < 0.05:
@@ -1591,7 +1682,7 @@ const BIOTOPE_PALETTES: Dictionary = {
 		"872cb0","c44a8e","2c1810","1a0f08","0d0805","503820","000000","f8f4e0",
 	],
 	"blackwater": [
-		"0a0907","15110b","251c10","382a14","4d3a1c","6a5128","8c7042","b9986a",
+		"0a0704","120c06","241808","3a220e","503016","6a4018","8c5a22","b07838",
 		"0c0905","1a130a","2b2014","3d2f1e","57442d","735c40","927758","b29575",
 		"0e1a0d","1b2d18","2c4527","4a6738","6c894e","95ad6f","0d1015","1a1d22",
 		"2c2f34","444751","5d6068","777a82","92959c","adb0b6","c8cad0","e2e3e7",
@@ -1647,7 +1738,7 @@ const BIOTOPE_PALETTES: Dictionary = {
 		"602878","904868","000000","585040","403828","282018","f0ece0","ffffff",
 	],
 	"reef": [
-		"081828","102838","183848","205868","288898","40b0c8","70d0e0","a8ecf4",
+		"061828","0c2840","143860","1c5890","2490b8","40b8d8","68d8f0","a0f0fc",
 		"081818","102828","184038","205850","287868","389878","50b898","78d8b8",
 		"201008","382010","502818","683820","805028","986838","b08048","c89858",
 		"101018","202028","303038","404048","505058","606068","707078","808088",
@@ -1760,6 +1851,8 @@ func _process(dt: float) -> void:
 		top_hud.modulate = hud_dim
 	if right_rail != null and right_rail.modulate != hud_dim:
 		right_rail.modulate = hud_dim
+	if _rail_flyout != null and _rail_flyout.modulate != hud_dim:
+		_rail_flyout.modulate = hud_dim
 	if footer_bar != null and footer_bar.modulate != hud_dim:
 		footer_bar.modulate = hud_dim
 	if screensaver and not _moonlight_suggested:
@@ -1958,6 +2051,9 @@ func _process_mouse_input(dt: float) -> void:
 
 	if any_btn and not _orbiting and not _suppress_drag_until_release:
 		_orbiting = true
+		_cam_spin_yaw = 0.0
+		_cam_spin_pitch = 0.0
+		_cam_zoom_vel = 0.0
 		_last_mouse = mouse_now
 		_drag_start = mouse_now
 		_drag_total = 0.0
@@ -2027,7 +2123,10 @@ func _process_mouse_input(dt: float) -> void:
 				"pan":
 					_pan_target(delta)
 				"dolly":
+					var prev_r: float = radius
 					radius = CameraController.dolly(radius, delta.y)
+					if dt > 0.0:
+						_cam_zoom_vel = (radius - prev_r) / dt
 					_apply_camera()
 				"paint":
 					if _aquascape.can_paint() and _aquascape.allows_drag_paint():
@@ -2047,7 +2146,28 @@ func _process_mouse_input(dt: float) -> void:
 						var ob: Vector2 = CameraController.orbit(yaw, pitch, delta)
 						yaw = ob.x
 						pitch = ob.y
+						if dt > 0.0:
+							_cam_spin_yaw = (-delta.x * CameraController.SENSITIVITY) / dt * _CAM_SPIN_GAIN
+							_cam_spin_pitch = (-delta.y * CameraController.SENSITIVITY) / dt * _CAM_SPIN_GAIN
 						_apply_camera()
+
+
+	# Short ease-out after orbit/zoom release (#196).
+	if not _orbiting and not _auto_orbit:
+		var spin_decay: float = exp(-_CAM_SPIN_DECAY * dt)
+		var cam_coasted: bool = false
+		if absf(_cam_spin_yaw) > 0.0005 or absf(_cam_spin_pitch) > 0.0005:
+			yaw += _cam_spin_yaw * dt
+			pitch = clampf(pitch + _cam_spin_pitch * dt, MIN_PITCH, MAX_PITCH)
+			_cam_spin_yaw *= spin_decay
+			_cam_spin_pitch *= spin_decay
+			cam_coasted = true
+		if _current_projection_id == "perspective" and absf(_cam_zoom_vel) > 0.004:
+			radius = clampf(radius + _cam_zoom_vel * dt, MIN_RADIUS, MAX_RADIUS)
+			_cam_zoom_vel *= spin_decay
+			cam_coasted = true
+		if cam_coasted:
+			_apply_camera()
 
 
 	# G toggles auto-orbit. (Space used to do this; it's now reserved as the
@@ -2340,13 +2460,14 @@ func _setup_feed_dock() -> void:
 	var hbox: HBoxContainer = footer_bar.get_node_or_null("Margin/HBox") as HBoxContainer
 	if hbox == null:
 		return
+	hbox.add_theme_constant_override("separation", 14)
 	_feed_dock = HBoxContainer.new()
 	_feed_dock.name = "FeedDock"
-	_feed_dock.add_theme_constant_override("separation", 6)
+	_feed_dock.add_theme_constant_override("separation", 8)
 	_feed_dock.tooltip_text = UiIcons.feed_tooltip("dock")
 	var feed_lbl := Label.new()
-	feed_lbl.text = "Feed · click water"
-	feed_lbl.tooltip_text = UiIcons.feed_tooltip("dock")
+	feed_lbl.text = "Feed"
+	feed_lbl.tooltip_text = "Pick a food, then click the water to drop it"
 	PanelTheme.apply_font(feed_lbl, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
 	feed_lbl.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 	feed_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2354,20 +2475,25 @@ func _setup_feed_dock() -> void:
 	_feed_dock.add_child(feed_lbl)
 	_feed_dock.add_child(PanelTheme.make_hud_chip_divider())
 	_feed_btns.clear()
-	var compact: bool = _is_mobile()
+	var compact: bool = true
 	for i in UiIcons.FEED_SUBTYPE_KEYS.size():
 		var btn := Button.new()
 		btn.focus_mode = Control.FOCUS_NONE
-		btn.custom_minimum_size = Vector2(56 if compact else 0, PanelTheme._button_min_height() - 4)
+		btn.custom_minimum_size = Vector2(44, PanelTheme._button_min_height() - 4)
 		var food_id: String = UiIcons.FEED_SUBTYPE_KEYS[i]
 		UiIcons.apply_feed_button(btn, food_id, i == _feed_subtype, compact)
 		var idx: int = i
 		btn.pressed.connect(func(): _set_feed_subtype(idx))
 		_feed_dock.add_child(btn)
 		_feed_btns.append(btn)
+	# SpeedDock | divider | FeedDock | Spacer | ControlsHint — keep clusters apart.
 	var spacer_idx: int = hbox.get_node("Spacer").get_index()
+	var speed_feed_div: Control = PanelTheme.make_hud_chip_divider()
+	speed_feed_div.name = "SpeedFeedDivider"
+	hbox.add_child(speed_feed_div)
+	hbox.move_child(speed_feed_div, spacer_idx)
 	hbox.add_child(_feed_dock)
-	hbox.move_child(_feed_dock, spacer_idx)
+	hbox.move_child(_feed_dock, spacer_idx + 1)
 	_sync_feed_dock()
 
 
@@ -2376,7 +2502,10 @@ func _sync_feed_dock() -> void:
 		return
 	var show: bool = not _aquascape.is_active
 	_feed_dock.visible = show
-	var compact: bool = _is_mobile()
+	var div: Node = footer_bar.get_node_or_null("Margin/HBox/SpeedFeedDivider") if footer_bar != null else null
+	if div is CanvasItem:
+		(div as CanvasItem).visible = show
+	var compact: bool = true
 	for i in _feed_btns.size():
 		UiIcons.apply_feed_button(
 			_feed_btns[i], UiIcons.FEED_SUBTYPE_KEYS[i], i == _feed_subtype, compact)
@@ -2390,11 +2519,11 @@ func _sync_feed_dock() -> void:
 func _feed_dock_status_text() -> String:
 	if _sim != null and _sim.has_method("tank_feed_satiety_ok") \
 			and bool(_sim.tank_feed_satiety_ok()):
-		return "Fed · click water"
+		return "Fed"
 	if _sim != null and _sim.has_method("tank_avg_hunger"):
 		if float(_sim.tank_avg_hunger()) >= 0.62:
-			return "Feed · fish hungry"
-	return "Feed · click water"
+			return "Hungry"
+	return "Feed"
 
 
 func _pulse_feed_dock() -> void:
@@ -2499,10 +2628,28 @@ func _fade_in_from_black() -> void:
 	overlay.color = Color.BLACK
 	add_child(overlay)
 	overlay.modulate.a = 1.0
+	_maybe_play_opening_camera()
 	var tw := create_tween()
 	tw.tween_property(overlay, "modulate:a", 0.0, 0.42) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	tw.tween_callback(overlay.queue_free)
+
+
+func _maybe_play_opening_camera() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg != null and cfg.camera_state_saved:
+		return
+	var hero: Dictionary = _default_camera_for_tank()
+	var end_r: float = clampf(float(hero["radius"]), MIN_RADIUS, MAX_RADIUS)
+	var start_r: float = clampf(end_r * 1.38, MIN_RADIUS, MAX_RADIUS)
+	radius = start_r
+	_apply_camera()
+	var tw := create_tween()
+	tw.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_method(func(r: float) -> void:
+		radius = r
+		_apply_camera()
+	, start_r, end_r, 2.4)
 
 
 # ---- Time controls + photo mode ----
@@ -3204,8 +3351,28 @@ func _take_photo() -> void:
 	var world_node := get_node_or_null("SubViewport/World")
 	if world_node != null and world_node.has_method("begin_screenshot_boost"):
 		world_node.begin_screenshot_boost(3.0)
+	_play_photo_flash()
 	_set_hud_visible_for_photo(false)
 	_request_viewport_image(_finish_photo_with_hud_restore)
+
+
+func _play_photo_flash() -> void:
+	if _photo_flash == null or not is_instance_valid(_photo_flash):
+		_photo_flash = ColorRect.new()
+		_photo_flash.name = "PhotoFlash"
+		_photo_flash.color = Color(1, 1, 1, 0)
+		_photo_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_photo_flash.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_photo_flash.z_index = 500
+		add_child(_photo_flash)
+	_photo_flash.visible = true
+	_photo_flash.modulate.a = 1.0
+	var tw := create_tween()
+	tw.tween_property(_photo_flash, "modulate:a", 0.0, 0.22) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(func() -> void:
+		if is_instance_valid(_photo_flash):
+			_photo_flash.visible = false)
 
 
 func _take_signature_shot() -> void:
@@ -3227,6 +3394,74 @@ func _set_hud_visible_for_photo(visible: bool) -> void:
 		right_rail.visible = visible
 	if footer_bar != null:
 		footer_bar.visible = visible
+	if _rail_flyout != null:
+		_rail_flyout.visible = visible
+	if _notifications_toast_layer != null:
+		_notifications_toast_layer.visible = visible
+	if _feed_toast_panel != null:
+		_feed_toast_panel.visible = visible
+	if _immersive_exit_btn != null:
+		_immersive_exit_btn.visible = visible
+	_set_photo_letterbox(not visible)
+
+
+func _set_photo_letterbox(on: bool) -> void:
+	if not on:
+		if _photo_letterbox_top != null and is_instance_valid(_photo_letterbox_top):
+			_photo_letterbox_top.visible = false
+		if _photo_letterbox_bottom != null and is_instance_valid(_photo_letterbox_bottom):
+			_photo_letterbox_bottom.visible = false
+		return
+	if display == null:
+		return
+	var vp: Vector2 = display.get_rect().size
+	if vp.y < 1.0:
+		return
+	var target_aspect: float = 16.0 / 9.0
+	var bar_h: float = maxf(0.0, (vp.y - vp.x / target_aspect) * 0.5)
+	if bar_h < 2.0:
+		if _photo_letterbox_top != null:
+			_photo_letterbox_top.visible = false
+		if _photo_letterbox_bottom != null:
+			_photo_letterbox_bottom.visible = false
+		return
+	for which in ["top", "bottom"]:
+		var rect: ColorRect = _photo_letterbox_top if which == "top" else _photo_letterbox_bottom
+		if rect == null or not is_instance_valid(rect):
+			rect = ColorRect.new()
+			rect.name = "PhotoLetterbox" + which.capitalize()
+			rect.color = Color(0.02, 0.02, 0.03, 1.0)
+			rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			rect.z_index = 490
+			add_child(rect)
+			if which == "top":
+				_photo_letterbox_top = rect
+			else:
+				_photo_letterbox_bottom = rect
+		rect.visible = true
+		rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		if which == "top":
+			rect.offset_bottom = -(vp.y - bar_h)
+		else:
+			rect.offset_top = vp.y - bar_h
+
+
+func _update_palette_debug_label(on: bool) -> void:
+	if not on:
+		if _palette_debug_label != null and is_instance_valid(_palette_debug_label):
+			_palette_debug_label.visible = false
+		return
+	if _palette_debug_label == null or not is_instance_valid(_palette_debug_label):
+		_palette_debug_label = Label.new()
+		_palette_debug_label.name = "PaletteCountDebug"
+		_palette_debug_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_palette_debug_label.z_index = 120
+		add_child(_palette_debug_label)
+	PanelTheme.as_mono(_palette_debug_label, PanelTheme.SIZE_CAPTION)
+	_palette_debug_label.add_theme_color_override("font_color", Color(0.92, 0.96, 0.72, 0.92))
+	_palette_debug_label.text = "palette ≤48 · STYLE_GUIDE §8"
+	_palette_debug_label.position = Vector2(10, 10)
+	_palette_debug_label.visible = true
 
 
 func _finish_photo_with_hud_restore(img: Image) -> void:
@@ -4208,7 +4443,24 @@ func _ensure_perf_hud() -> void:
 	add_child(_perf_hud)
 
 
-func _tick_perf_hud(_dt: float) -> void:
+func _sample_palette_color_count() -> int:
+	if display == null or display.texture == null:
+		return -1
+	var img: Image = display.texture.get_image()
+	if img == null or img.get_width() < 8:
+		return -1
+	var step_x: int = maxi(1, img.get_width() / 96)
+	var step_y: int = maxi(1, img.get_height() / 54)
+	var seen: Dictionary = {}
+	for y in range(0, img.get_height(), step_y):
+		for x in range(0, img.get_width(), step_x):
+			var c: Color = img.get_pixel(x, y)
+			var key: int = (int(c.r * 255.0) << 16) | (int(c.g * 255.0) << 8) | int(c.b * 255.0)
+			seen[key] = true
+	return seen.size()
+
+
+func _tick_perf_hud(dt: float) -> void:
 	var cfg: Node = get_node_or_null("/root/TankConfig")
 	if cfg == null or not bool(cfg.get("perf_hud_enabled") if cfg.get("perf_hud_enabled") != null else false):
 		if _perf_hud != null and is_instance_valid(_perf_hud):
@@ -4217,9 +4469,17 @@ func _tick_perf_hud(_dt: float) -> void:
 	_ensure_perf_hud()
 	var fish_n: int = _sim.fish.size() if _sim != null else 0
 	var draw_n: int = floori(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
-	_perf_hud.text = PerfGovernor.hud_line(fish_n, draw_n)
+	_palette_count_accum += dt
+	if _palette_count_accum >= 1.25 or _palette_count_cached < 0:
+		_palette_count_accum = 0.0
+		_palette_count_cached = _sample_palette_color_count()
+	var pal_line: String = ""
+	if _palette_count_cached >= 0:
+		var ok: String = "ok" if _palette_count_cached <= 48 else "OVER"
+		pal_line = " · colours %d/48 %s" % [_palette_count_cached, ok]
+	_perf_hud.text = PerfGovernor.hud_line(fish_n, draw_n) + pal_line
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	_perf_hud.position = Vector2(vp.x - 420.0, 8.0)
+	_perf_hud.position = Vector2(vp.x - 520.0, 8.0)
 	_perf_hud.visible = true
 
 
@@ -4331,14 +4591,16 @@ var _follow_dof_amount: float = 0.0
 func _update_follow_dof() -> void:
 	if camera == null:
 		return
-	var want: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
+	var want_follow: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
 		and is_instance_valid(_follow_target)
-	# Opt-in: the follow depth-of-field is off unless the player enables it in
-	# the Render panel. When disabled, `want` falls to false so any active blur
-	# eases out and the camera attributes are cleared below.
 	var cfg_dof := get_node_or_null("/root/TankConfig")
-	if cfg_dof == null or not bool(cfg_dof.follow_depth_of_field):
-		want = false
+	var want_room: bool = cfg_dof != null and bool(cfg_dof.get("tank_room_dof"))
+	# REAL_TANK_FIDELITY #189–190 — photo / macro shallow DOF.
+	var want_photo: bool = cfg_dof != null and (
+		bool(cfg_dof.get("photo_handheld")) or bool(cfg_dof.get("photo_macro_mode")))
+	if cfg_dof != null and not bool(cfg_dof.follow_depth_of_field):
+		want_follow = false
+	var want: bool = want_follow or want_room or want_photo
 	# Ease the effect in/out so toggling follow doesn't pop the focus.
 	_follow_dof_amount = lerpf(_follow_dof_amount, 1.0 if want else 0.0, 0.12)
 	if _follow_dof_amount < 0.01 and not want:
@@ -4351,19 +4613,34 @@ func _update_follow_dof() -> void:
 	if camera.attributes != _follow_cam_attr:
 		camera.attributes = _follow_cam_attr
 	var dist: float = 6.0
-	if want:
+	if want_follow:
 		dist = maxf(camera.global_position.distance_to(_follow_target.global_position), 0.5)
+	elif want_room or want_photo:
+		dist = maxf(camera.global_position.distance_to(target), 0.5)
 	var blur_strength: float = 0.06
 	var far_soft: float = 2.0
 	var near_soft: float = 1.6
 	var focus_margin: float = 1.2
 	var near_on: bool = true
 	if cfg_dof != null:
-		blur_strength = float(cfg_dof.follow_dof_blur_strength)
-		far_soft = float(cfg_dof.follow_dof_far_softness)
-		near_soft = float(cfg_dof.follow_dof_near_softness)
-		focus_margin = float(cfg_dof.follow_dof_focus_margin)
-		near_on = bool(cfg_dof.follow_dof_near_enabled)
+		if want_photo:
+			blur_strength = 0.22 if bool(cfg_dof.get("photo_macro_mode")) else 0.14
+			far_soft = 1.4 if bool(cfg_dof.get("photo_macro_mode")) else 2.2
+			near_soft = 1.1
+			focus_margin = 0.55 if bool(cfg_dof.get("photo_macro_mode")) else 1.0
+			near_on = true
+		elif want_follow:
+			blur_strength = float(cfg_dof.follow_dof_blur_strength)
+			far_soft = float(cfg_dof.follow_dof_far_softness)
+			near_soft = float(cfg_dof.follow_dof_near_softness)
+			focus_margin = float(cfg_dof.follow_dof_focus_margin)
+			near_on = bool(cfg_dof.follow_dof_near_enabled)
+		elif want_room:
+			blur_strength = float(cfg_dof.tank_room_dof_blur)
+			far_soft = 3.2
+			near_soft = 2.4
+			focus_margin = 2.0
+			near_on = false
 	_follow_cam_attr.dof_blur_far_enabled = true
 	_follow_cam_attr.dof_blur_far_distance = dist + focus_margin
 	_follow_cam_attr.dof_blur_far_transition = far_soft
@@ -4376,7 +4653,8 @@ func _update_follow_dof() -> void:
 	# followed creature sits on screen, so the Portal cam feels intimate.
 	var audio := get_node_or_null("AmbientAudio")
 	if audio != null and audio.has_method("set_presence_pan"):
-		if want and not camera.is_position_behind(_follow_target.global_position):
+		if want_follow and _follow_target != null \
+				and not camera.is_position_behind(_follow_target.global_position):
 			var sp: Vector2 = camera.unproject_position(_follow_target.global_position)
 			var vw: float = maxf(float(sub_viewport.size.x), 1.0)
 			audio.set_presence_pan(clampf((sp.x / vw) * 2.0 - 1.0, -1.0, 1.0) * _follow_dof_amount)
@@ -4709,10 +4987,15 @@ var _portal_label_skip: int = 0
 func _update_portal_pip() -> void:
 	if camera == null or portal_container == null:
 		return
+	var was_open: bool = portal_container.visible
 	if _follow_mode == FollowMode.OFF:
 		portal_container.visible = false
+		if was_open:
+			_apply_hud_layout()
 		return
 	portal_container.visible = true
+	if not was_open:
+		_relayout_portal()
 
 	var target_node: Node3D = _follow_target
 	var has_target: bool = target_node != null and is_instance_valid(target_node)
@@ -4953,12 +5236,12 @@ func _relayout_portal() -> void:
 	if portal_container == null or _portal_info_panel == null:
 		return
 	var above: bool = _portal_layout == PortalLayout.ABOVE
-	var card_w: float = 208.0 if above else 312.0
+	var card_w: float = PanelTheme.PORTAL_CARD_W_ABOVE if above else PanelTheme.PORTAL_CARD_W
 	var card_h: float = 330.0 if above else 176.0
 	var port: float = 156.0 if above else 104.0
 
-	# Dock the card top-right, clear of the rail + top HUD.
-	var right_inset: float = PanelTheme.RAIL_WIDTH + 10.0
+	# Dock the card top-right, clear of the rail + top HUD (readable gutter).
+	var right_inset: float = PanelTheme.rail_chrome_inset()
 	var top_inset: float = PanelTheme.HUD_TOP + 6.0
 	portal_container.anchor_left = 1.0
 	portal_container.anchor_right = 1.0
@@ -4968,6 +5251,8 @@ func _relayout_portal() -> void:
 	portal_container.offset_left = -right_inset - card_w
 	portal_container.offset_top = top_inset
 	portal_container.offset_bottom = top_inset + card_h
+	# Keep the top stats chips from sliding under the card.
+	_apply_hud_layout()
 
 	if _portal_glass_bg != null:
 		_portal_glass_bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -5350,7 +5635,8 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion or event is InputEventMouseButton or \
 			event is InputEventScreenTouch or event is InputEventScreenDrag or \
 			event is InputEventKey or event is InputEventJoypadButton or \
-			event is InputEventJoypadMotion:
+			event is InputEventJoypadMotion or event is InputEventMagnifyGesture \
+			or event is InputEventPanGesture:
 		_notify_hud_input()
 
 	if _handle_gamepad_action(event):
@@ -5377,7 +5663,21 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenDrag:
 		_handle_screen_drag(event as InputEventScreenDrag)
 		return
-	
+
+	# ---- macOS trackpad pinch (desktop; mobile uses ScreenDrag pinch) ----
+	if event is InputEventMagnifyGesture and not _is_touch_active():
+		var mg: InputEventMagnifyGesture = event as InputEventMagnifyGesture
+		if _click_hits_interactive_hud(mg.position):
+			return
+		if _mouse_over_porthole():
+			# magnify > 1 → fingers apart → zoom in portal.
+			_adjust_portal_zoom(clampf(mg.factor, 0.85, 1.18))
+		else:
+			# Returns radius multiplier directly (magnify > 1 → factor < 1).
+			_zoom_camera_by_factor(CameraController.zoom_factor_from_magnify(mg.factor), false)
+		get_viewport().set_input_as_handled()
+		return
+
 	# ---- Mouse events (skip when touch is active) ----
 	if _is_touch_active():
 		return
@@ -5397,21 +5697,10 @@ func _input(event: InputEvent) -> void:
 					or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 				if _click_hits_interactive_hud(mb.position):
 					return
-			if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-				if _aquascape_scroll_build_plane(true):
-					pass
-				elif _mouse_over_porthole():
-					_adjust_portal_zoom(1.1)
-				else:
-					_zoom_camera_by_factor(1.0 / ZOOM_FACTOR)
-			elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				if _aquascape_scroll_build_plane(false):
-					pass
-				elif _mouse_over_porthole():
-					_adjust_portal_zoom(1.0 / 1.1)
-				else:
-					_zoom_camera_by_factor(ZOOM_FACTOR)
-			elif mb.button_index == MOUSE_BUTTON_LEFT:
+				_zoom_from_scroll_event(mb)
+				get_viewport().set_input_as_handled()
+				return
+			if mb.button_index == MOUSE_BUTTON_LEFT:
 				# Clicks on the magnifier don't pick or drop food; a
 				# double-click there promotes the follow to cinematic.
 				if _mouse_over_portal_card():
@@ -5706,10 +5995,19 @@ func _setup_footer_bar() -> void:
 	footer_bar.offset_right = -PanelTheme.EDGE_MARGIN
 	footer_bar.offset_top = -PanelTheme.FOOTER_HEIGHT
 	footer_bar.offset_bottom = 0.0
+	var margin: MarginContainer = footer_bar.get_node_or_null("Margin") as MarginContainer
+	if margin != null:
+		margin.add_theme_constant_override("margin_left", 12)
+		margin.add_theme_constant_override("margin_right", 12)
+		margin.add_theme_constant_override("margin_top", 6)
+		margin.add_theme_constant_override("margin_bottom", 6)
 	if controls_hint != null:
 		controls_hint.label_settings = null
 		PanelTheme.apply_font(controls_hint, PanelTheme.FONT_MONO, PanelTheme.SIZE_SMALL)
 		controls_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+		# Keybind strip dirties every screenshot — hide by default (#178).
+		controls_hint.visible = false
+		controls_hint.modulate.a = 0.0
 
 
 func _setup_speed_hud() -> void:
@@ -5779,6 +6077,8 @@ func _setup_mobile_ui() -> void:
 func _apply_camera() -> void:
 	if camera == null:
 		return
+	if _current_projection_id == "perspective":
+		radius = _clamp_radius_to_frame(radius)
 	var hero_yaw: float = yaw
 	var hero_pitch: float = pitch
 	var mc := get_node_or_null("/root/MusicContext")
@@ -5799,6 +6099,13 @@ func _apply_camera() -> void:
 	# jitter you see on swimming fish when the camera is drifting.
 	# world_per_pixel ≈ 2·tan(fov/2)·radius / render_height
 	var cfg := get_node_or_null("/root/TankConfig")
+	# REAL_TANK_FIDELITY #187–188 — handheld photo drift when enabled.
+	if cfg != null and bool(cfg.get("photo_handheld")):
+		var held: Dictionary = CameraController.handheld_offset(Time.get_ticks_msec() * 0.001, 1.0)
+		pos += held.get("pos", Vector3.ZERO) as Vector3
+		camera.rotation.z = float(held.get("roll", 0.0))
+	else:
+		camera.rotation.z = 0.0
 	if cfg != null and bool(cfg.get("pixel_snap_camera")):
 		var fov_rad: float = deg_to_rad(float(camera.fov))
 		var rh: float = maxf(64.0, float(sub_viewport.size.y))
@@ -6019,7 +6326,7 @@ func _render_header() -> void:
 				if shrimp_total > 0 else "—",
 			true, false)
 		_update_chip("snails", str(snail_total),
-			("%dA %dB" % [snail_adults, snail_babies]) if snail_total > 0 else "—",
+			("%d adults · %d babies" % [snail_adults, snail_babies]) if snail_total > 0 else "—",
 			true, false)
 
 	# Flora chip.
@@ -6179,7 +6486,11 @@ func _build_hud_chips() -> void:
 	for d in defs:
 		var key: String = String(d["key"])
 		var tier: String = String(d.get("tier", "secondary"))
-		if key == "state" or (tier == "secondary" and key == "fish"):
+		if key == "state":
+			bar.add_child(PanelTheme.make_hud_chip_group_spacer())
+			bar.add_child(PanelTheme.make_hud_chip_divider())
+		elif tier == "secondary" and key == "fish":
+			bar.add_child(PanelTheme.make_hud_chip_group_spacer())
 			bar.add_child(PanelTheme.make_hud_chip_divider())
 		var chip: Control = _make_chip(String(d["icon"]), d["color"] as Color, key, tier)
 		bar.add_child(chip)
@@ -6224,10 +6535,12 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 	style.bg_color = Color(0, 0, 0, 0)
 	style.border_color = accent
 	style.border_width_left = 3 if tier == "primary" else 2
-	style.corner_radius_top_left = 4
-	style.corner_radius_top_right = 4
-	style.corner_radius_bottom_left = 4
-	style.corner_radius_bottom_right = 4
+	style.corner_radius_top_left = PanelTheme.CORNER_CHIP
+	style.corner_radius_top_right = PanelTheme.CORNER_CHIP
+	style.corner_radius_bottom_left = PanelTheme.CORNER_CHIP
+	style.corner_radius_bottom_right = PanelTheme.CORNER_CHIP
+	if PanelTheme.cohesion_active():
+		style.border_color = accent.lerp(PanelTheme.cohesion_border(), 0.45)
 	style.content_margin_left = 8
 	style.content_margin_right = 10
 	style.content_margin_top = 4
@@ -6235,18 +6548,24 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 	pc.add_theme_stylebox_override("panel", style)
 
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
+	hb.add_theme_constant_override("separation", 6)
+	hb.alignment = BoxContainer.ALIGNMENT_CENTER
 	pc.add_child(hb)
 
+	var icon_wrap := CenterContainer.new()
+	icon_wrap.custom_minimum_size = Vector2(18, 20)
 	var icon_lbl := Label.new()
 	icon_lbl.text = icon
 	icon_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_ITEM)
 	icon_lbl.add_theme_color_override("font_color", accent)
-	hb.add_child(icon_lbl)
+	icon_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	icon_wrap.add_child(icon_lbl)
+	hb.add_child(icon_wrap)
 
 	# Value → Mono so digits line up; size carries the tier hierarchy.
 	var value_lbl := Label.new()
 	value_lbl.add_theme_color_override("font_color", PanelTheme.VALUE_FG)
+	value_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	PanelTheme.as_mono(value_lbl, PanelTheme.SIZE_BODY if tier == "primary" else PanelTheme.SIZE_SMALL)
 	hb.add_child(value_lbl)
 
@@ -6254,6 +6573,7 @@ func _make_chip(icon: String, accent: Color, key: String = "", tier: String = "s
 	var sublabel_lbl := Label.new()
 	sublabel_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	sublabel_lbl.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	sublabel_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	hb.add_child(sublabel_lbl)
 
 	pc.set_meta("value_label", value_lbl)
@@ -6498,6 +6818,7 @@ const _TOD_DAY: Vector3 = Vector3(1.00, 1.00, 1.00)
 const _TOD_DUSK: Vector3 = Vector3(1.04, 0.82, 0.70)
 const _TOD_NIGHT: Vector3 = Vector3(0.38, 0.42, 0.52)
 var _palette_tint_smooth: Vector3 = Vector3(1.0, 1.0, 1.0)
+var _palette_night_blend_smooth: float = 0.0
 var _last_written_palette_tint: Vector3 = Vector3(-999.0, -999.0, -999.0)
 var _glance_cam_pos: Vector3 = Vector3(INF, INF, INF)
 var _glance_cam_rot_hash: float = 0.0
@@ -6607,7 +6928,10 @@ func _update_palette_tod_tint() -> void:
 			mat.set_shader_parameter("bloom_strength", 0.85)
 			mat.set_shader_parameter("bloom_threshold", 0.68)
 	night_blend = smoothstep(0.0, 1.0, night_blend)
-	mat.set_shader_parameter("palette_night_blend", night_blend)
+	_palette_night_blend_smooth = lerpf(
+		_palette_night_blend_smooth, night_blend,
+		minf(1.0, get_process_delta_time() * 0.35))
+	mat.set_shader_parameter("palette_night_blend", _palette_night_blend_smooth)
 	# Push user-controlled post-process uniforms every tick. Cheap (constant
 	# count of small uniforms) and lets the sliders react live.
 	if cfg != null:
@@ -6624,7 +6948,7 @@ func _update_palette_tod_tint() -> void:
 		mat.set_shader_parameter("outline_strength", float(cfg.outline_strength))
 		var creature_outline_live: float = float(cfg.creature_outline_strength)
 		if OS.get_name() == "macOS":
-			creature_outline_live = minf(creature_outline_live, 0.18)
+			creature_outline_live = minf(creature_outline_live, 0.36)
 		mat.set_shader_parameter("creature_outline_strength", creature_outline_live)
 		# Dusk/night: ease dither so dark palette entries keep midtones instead
 		# of crushing to black stipple.
@@ -6633,6 +6957,7 @@ func _update_palette_tod_tint() -> void:
 			var dusk_ease: float = smoothstep(0.45, 0.08, dl)
 			dither_live *= lerpf(1.0, 0.62, dusk_ease)
 		mat.set_shader_parameter("dither_strength", dither_live)
+		mat.set_shader_parameter("room_dither_scale", float(cfg.get("room_dither_scale")))
 		mat.set_shader_parameter("crt_strength", float(cfg.crt_strength))
 		mat.set_shader_parameter("fxaa_strength", float(cfg.get("display_fxaa")))
 		mat.set_shader_parameter("deband_strength", float(cfg.get("display_deband")))
@@ -6653,7 +6978,7 @@ func _update_palette_tod_tint() -> void:
 		mat.set_shader_parameter("film_grain_strength", float(cfg.film_grain_strength))
 		mat.set_shader_parameter("selective_glow", float(cfg.selective_glow_strength))
 		mat.set_shader_parameter("crt_mode", float(cfg.crt_mode))
-		mat.set_shader_parameter("outline_subject_bias", 0.82)
+		mat.set_shader_parameter("outline_subject_bias", 0.92)
 		mat.set_shader_parameter("dither_substrate_coarse", 0.35)
 		var trans: float = 1.0
 		if world != null:
@@ -6731,7 +7056,7 @@ func _apply_display_layout() -> void:
 func _rail_edge_inset() -> float:
 	if _rail_dock == "bottom":
 		return PanelTheme.EDGE_MARGIN + 4.0
-	return PanelTheme.RAIL_WIDTH + PanelTheme.EDGE_MARGIN + 4.0
+	return PanelTheme.rail_chrome_inset()
 
 
 func _hud_bottom_inset() -> float:
@@ -6941,7 +7266,7 @@ func _apply_rail_dock_layout() -> void:
 			right_rail.offset_left = -64.0
 			right_rail.offset_top = 48.0
 			right_rail.offset_right = -8.0
-			right_rail.offset_bottom = -32.0
+			right_rail.offset_bottom = -40.0
 
 
 func _apply_panel_layout() -> void:
@@ -7053,12 +7378,20 @@ func _apply_hud_layout() -> void:
 			chip.visible = true
 
 	var rail_edge: float = _rail_edge_inset()
-	var left_inset: float = 128.0 if layout != "compact" else 112.0
+	var left_inset: float = 96.0 if layout != "compact" else 88.0
 	if aqua_build:
 		left_inset = _aquascape_workbench_left() + _aquascape_workbench_width() + 8.0
 	if stats_bar != null:
+		# Shrink the top bar footprint — don't span the full tank width (#169, #171).
+		# When the creature card is open, leave a clear gutter so morph/snail
+		# chips don't slide under Squish / the follow portal.
+		var portal_open: bool = portal_container != null and portal_container.visible
+		var above_layout: bool = _portal_layout == PortalLayout.ABOVE
+		var right_cap: float = PanelTheme.portal_chrome_inset(portal_open, above_layout)
+		right_cap = maxf(right_cap, w * 0.22)
 		stats_bar.offset_left = left_inset
-		stats_bar.offset_right = -rail_edge
+		stats_bar.offset_right = -right_cap
+		stats_bar.offset_top = 4.0
 
 	if layout_changed:
 		_render_header()
@@ -7383,7 +7716,14 @@ func _setup_rail_groups() -> void:
 	_notif_badge.text = ""
 	_notif_badge.add_theme_font_size_override("font_size", 9)
 	_notif_badge.add_theme_color_override("font_color", Color(1.0, 0.85, 0.35))
-	_notif_badge.position = Vector2(34, 2)
+	# Keep the count inside the rail button so it can't spill onto the portal card.
+	_notif_badge.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_notif_badge.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_notif_badge.offset_left = -22.0
+	_notif_badge.offset_right = -2.0
+	_notif_badge.offset_top = 1.0
+	_notif_badge.offset_bottom = 14.0
+	_notif_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_notif_badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if _rail_alerts_btn != null:
 		_rail_alerts_btn.add_child(_notif_badge)
@@ -7799,11 +8139,22 @@ func _spawn_notification_toast(notif: Dictionary) -> void:
 		_layout_follow_thought_strip()
 
 	var tw := create_tween()
-	tw.tween_property(card, "modulate:a", 1.0, 0.20)
-	tw.parallel().tween_property(card, "scale", Vector2.ONE, 0.20)
+	tw.set_parallel(true)
+	card.position.x = PanelTheme.TOAST_STACK_W
+	tw.tween_property(card, "modulate:a", 1.0, 0.28) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(card, "scale", Vector2.ONE, 0.28) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(card, "position:x", 0.0, 0.32) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.set_parallel(false)
 	tw.tween_interval(4.2)
-	tw.tween_property(card, "modulate:a", 0.0, 1.15)
-	tw.parallel().tween_property(card, "position:y", card.position.y - 14.0, 1.15)
+	tw.set_parallel(true)
+	tw.tween_property(card, "modulate:a", 0.0, 0.85) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_property(card, "position:x", 28.0, 0.85) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.set_parallel(false)
 	tw.tween_callback(func() -> void:
 		if is_instance_valid(card):
 			card.queue_free()
@@ -9561,7 +9912,7 @@ func _apply_immersive_mode() -> void:
 	if right_rail != null:
 		right_rail.visible = not _immersive_mode
 	if controls_hint != null:
-		controls_hint.visible = not _immersive_mode
+		controls_hint.visible = false
 	if footer_hint_spacer != null:
 		footer_hint_spacer.visible = not _immersive_mode
 	if footer_bar != null:
@@ -9692,12 +10043,27 @@ func _save_thumbnail(path: String) -> void:
 func _capture_thumbnail_to_path(path: String) -> void:
 	if sub_viewport == null or not is_instance_valid(sub_viewport):
 		return
-	# Wait for the SubViewport to finish presenting before GPU readback.
+	# Hero composition for shelf thumbnails (#199).
+	var saved_cam := {
+		"target": target, "radius": radius, "yaw": yaw, "pitch": pitch,
+	}
+	var hero: Dictionary = _default_camera_for_tank()
+	target = hero["target"]
+	radius = clampf(float(hero["radius"]), MIN_RADIUS, MAX_RADIUS)
+	yaw = float(hero["yaw"])
+	pitch = float(hero["pitch"])
+	_apply_camera()
+	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var img: Image = null
 	var tex: ViewportTexture = sub_viewport.get_texture()
 	if tex != null:
 		img = tex.get_image()
+	target = saved_cam["target"]
+	radius = float(saved_cam["radius"])
+	yaw = float(saved_cam["yaw"])
+	pitch = float(saved_cam["pitch"])
+	_apply_camera()
 	if img != null and img.get_width() > 0 and img.get_height() > 0:
 		_finish_save_thumbnail(img, path)
 	else:
@@ -10076,6 +10442,7 @@ func _toggle_cheat_sheet() -> void:
 	var close := PanelTheme.make_primary_button("Close")
 	close.pressed.connect(_toggle_cheat_sheet)
 	vb.add_child(close)
+	PanelTheme.schedule_couch_focus(_cheat_sheet, PackedStringArray(["Close"]))
 
 
 func _maybe_show_coachmarks() -> void:
