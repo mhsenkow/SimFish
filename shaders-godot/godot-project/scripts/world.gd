@@ -13,6 +13,7 @@ const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
 const PlantEcologyAdapterScript = preload("res://scripts/plant_ecology_adapter.gd")
+const SeedMoteDynamics = preload("res://scripts/seed_mote_dynamics.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -7548,19 +7549,28 @@ func _configure_substrate_flow(origin: Vector3, jet: Vector3, flow_rate: float) 
 	VoxelMat.update_substrate_flow_origin(origin, clampf(flow_rate * 0.75, 0.25, 0.55))
 
 
-func begin_seed_drift(start: Vector3, land: Vector3) -> void:
-	# LIVING_MOTION #69 — visible seeds advect on the flow field before settling.
+func begin_seed_drift(start: Vector3, genome: Dictionary,
+		dormancy: Dictionary = {}) -> bool:
+	# Seeds exist in the bank only after their bounded visible mote settles.
+	var live_seeds: int = 0
+	for entry_v in _flow_lane_motes:
+		if entry_v is Dictionary and String(entry_v.get("kind", "")) == "seed":
+			live_seeds += 1
+	if live_seeds >= 24:
+		return false
 	var mote := MeshInstance3D.new()
 	mote.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
 	mote.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))
 	add_child(mote)
 	mote.global_position = start
+	var state: Dictionary = SeedMoteDynamics.make_state(
+		start, genome, dormancy, randf_range(3.5, 6.5))
 	_flow_lane_motes.append({
 		"node": mote,
-		"land": land,
-		"life": randf_range(2.8, 4.6),
+		"state": state,
 		"kind": "seed",
 	})
+	return true
 
 
 func _tick_seed_drifts(dt: float) -> void:
@@ -7572,24 +7582,25 @@ func _tick_seed_drifts(dt: float) -> void:
 		if e.get("kind", "") != "seed":
 			i -= 1
 			continue
-		var life: float = float(e.get("life", 0.0)) - dt
-		e["life"] = life
 		var n: MeshInstance3D = e.get("node") as MeshInstance3D
-		if life <= 0.0 or n == null or not is_instance_valid(n):
+		var state: Dictionary = e.get("state", {})
+		if n == null or not is_instance_valid(n) or state.is_empty():
 			if n != null and is_instance_valid(n):
 				n.queue_free()
 			_flow_lane_motes.remove_at(i)
 			i -= 1
 			continue
-		var land: Vector3 = e.get("land", Vector3.ZERO) as Vector3
-		var flow_v: Vector3 = sample_flow(n.global_position)
-		var to_land: Vector3 = land - n.global_position
-		to_land.y = 0.0
-		var drift: Vector3 = flow_v * dt * 1.15 + Vector3(0.0, -0.18, 0.0) * dt
-		if to_land.length_squared() > 0.08:
-			drift += to_land.normalized() * dt * 0.35
-		n.global_position += drift
-		if n.global_position.distance_squared_to(land) < 0.06:
+		var flow_v: Vector3 = sample_flow(state.get("position", n.global_position))
+		var settled: bool = SeedMoteDynamics.integrate(
+			state, dt, flow_v, SUBSTRATE_DEPTH + 0.08, WATER_HEIGHT,
+			func(x: float, z: float) -> Vector2:
+				return _fit_xz_inside_tank(x, z, 0.25))
+		n.global_position = state.position
+		if settled:
+			if substrate_grid != null:
+				substrate_grid.add_seed_lot_at(
+					state.position, state.get("genome", {}), 0.35,
+					state.get("dormancy", {}))
 			n.queue_free()
 			_flow_lane_motes.remove_at(i)
 		i -= 1

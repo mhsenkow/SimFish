@@ -4682,22 +4682,12 @@ func _cast_seed() -> bool:
 	var world: Node = sim_driver.get_parent()
 	if world == null:
 		return false
-	var seed_pos: Vector3 = global_position + Vector3(
-		randf_range(-1.5, 1.5), 0.0, randf_range(-1.5, 1.5))
-	var w := _footprint_world()
-	if w != null and w.has_method("clamp_plant_site"):
-		var reach: float = _plant_lateral_reach()
-		var xz: Vector2 = w.clamp_plant_site(seed_pos.x, seed_pos.z, reach, 0.25)
-		seed_pos.x = xz.x
-		seed_pos.z = xz.y
-	# Seed bank (#14): bury seed; germination handled in _tick_seeding.
-	if sim_driver.substrate != null:
-		_spawn_visible_seed_drift(seed_pos)
+	if sim_driver.substrate != null and world.has_method("begin_seed_drift"):
 		var seed_genome: Dictionary = get_seed_config()
-		sim_driver.substrate.add_seed_lot_at(seed_pos, seed_genome, 0.35, {
+		var start: Vector3 = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
+		return bool(world.begin_seed_drift(start, seed_genome, {
 			"type": String(seed_genome.get("dormancy_type", dormancy_type)),
-		})
-		return true
+		}))
 	return false
 
 
@@ -4709,9 +4699,6 @@ func _spawn_visible_seed_drift(seed_pos: Vector3) -> void:
 	if world == null:
 		return
 	var start: Vector3 = global_position + Vector3(0, _get_stem_top() * 0.5, 0)
-	if world.has_method("begin_seed_drift"):
-		world.begin_seed_drift(start, seed_pos)
-		return
 	var drift_vis := MeshInstance3D.new()
 	drift_vis.mesh = VoxelMat.get_box(Vector3(0.05, 0.05, 0.05))
 	drift_vis.material_override = VoxelMat.make_foliage(Color8(120, 90, 45))

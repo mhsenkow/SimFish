@@ -218,10 +218,12 @@ rooted plants do not.*
 runtime reproduction mutates clones, and `PlantGenome.blend()` is not used by
 normal flowering.*
 
-- [ ] **39. Flow-integrated seed landing.** Simulate the visible seed mote
+- [x] **39. Flow-integrated seed landing.** Simulate the visible seed mote
   against `TankFlowField` first and deposit into the seed bank at its actual
   final cell, rather than selecting a destination before the drift animation.
-  Extends Plant Improvement #47 / Naturalism #440. *M · L*
+  — Shipped with bounded flow-integrated motes, tank/floor clamping, final-cell
+  deposition, and a no-flow settling fallback. Extends Plant Improvement #47 /
+  Naturalism #440. *M · L*
 - [x] **40. Structured seed bank.** Replace each scalar cell with a bounded set
   of seed lots containing genome identity, quantity, age, viability, and
   dormancy requirements, while migrating old scalar saves into anonymous lots.
