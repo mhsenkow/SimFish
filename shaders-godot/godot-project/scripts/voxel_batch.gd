@@ -79,6 +79,8 @@ var _customs: PackedColorArray = PackedColorArray()
 var _use_custom: bool = false
 var _bounds_dirty: bool = true
 var _bounds_margin: Vector3 = Vector3(0.75, 0.35, 0.75)
+var _deferred_indices: Array[int] = []
+var _deferred_cursor: int = 0
 
 
 func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
@@ -105,6 +107,21 @@ func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
 # size baked into the basis scale, so the shared unit-box mesh can represent any
 # voxel size/orientation). Returns a Handle the caller can recolor / remove.
 func add(xform: Transform3D, color: Color) -> Handle:
+	var h: Handle = _reserve(xform, color, false)
+	_write_instance(h.index)
+	return h
+
+
+# Reserve a stable biological handle immediately, but defer its GPU write.
+# Large cached leaves use this so their descriptors can be admitted in one
+# growth step and uploaded in bounded chunks over later ticks.
+func add_deferred(xform: Transform3D, color: Color) -> Handle:
+	var h: Handle = _reserve(xform, color, true)
+	_deferred_indices.append(h.index)
+	return h
+
+
+func _reserve(xform: Transform3D, color: Color, deferred: bool) -> Handle:
 	var i: int = _count
 	_count += 1
 	# Guard against non-finite transforms (NaN/Inf) that would flood the
@@ -123,11 +140,7 @@ func add(xform: Transform3D, color: Color) -> Handle:
 	var custom: Color = Color(0.0, 0.0, 0.0, 1.0)
 	if _use_custom:
 		_customs.append(custom)
-	_ensure_capacity(_count)
-	_mm.set_instance_transform(i, safe_xform)
-	_mm.set_instance_color(i, color)
-	if _use_custom:
-		_mm.set_instance_custom_data(i, custom)
+	_ensure_capacity(_count, i if deferred else -1)
 	var h := Handle.new()
 	h.batch = self
 	h.index = i
@@ -137,9 +150,37 @@ func add(xform: Transform3D, color: Color) -> Handle:
 	return h
 
 
+func _write_instance(i: int) -> void:
+	_mm.set_instance_transform(i, _xforms[i])
+	_mm.set_instance_color(i, _colors[i])
+	if _use_custom:
+		_mm.set_instance_custom_data(i, _customs[i])
+
+
+func has_deferred_writes() -> bool:
+	return _deferred_cursor < _deferred_indices.size()
+
+
+# Returns the number of GPU instance writes performed. Visibility is committed
+# exactly once after the final chunk, avoiding partially drawn leaf silhouettes.
+func process_deferred_writes(max_writes: int) -> int:
+	var wrote: int = 0
+	while wrote < maxi(0, max_writes) and has_deferred_writes():
+		_write_instance(_deferred_indices[_deferred_cursor])
+		_deferred_cursor += 1
+		wrote += 1
+	if not has_deferred_writes() and not _deferred_indices.is_empty():
+		_deferred_indices.clear()
+		_deferred_cursor = 0
+		flush()
+	return wrote
+
+
 # Commit pending instance writes in one GPU upload (avoids Metal fence stalls
 # when hundreds of plants bake leaves in the same frame).
 func flush() -> void:
+	if has_deferred_writes():
+		return
 	if _count == _visible and not _bounds_dirty:
 		return
 	_visible = _count
@@ -209,7 +250,7 @@ func blit_buffer() -> void:
 	xforms_arr.assign(_xforms.slice(0, _count))
 	_MultiMeshBufferBlit.upload(_mm, xforms_arr, _colors, _customs, _count, _use_custom)
 
-func _ensure_capacity(n: int) -> void:
+func _ensure_capacity(n: int, first_unwritten: int = -1) -> void:
 	if n <= _mm.instance_count:
 		return
 	var new_cap: int = maxi(64, _mm.instance_count * 2)
@@ -217,7 +258,8 @@ func _ensure_capacity(n: int) -> void:
 		new_cap *= 2
 	_mm.instance_count = new_cap
 	# Re-apply from the mirror — resizing may have dropped existing instances.
-	for i in range(_count):
+	var rewrite_count: int = first_unwritten if first_unwritten >= 0 else _count
+	for i in range(rewrite_count):
 		var xform: Transform3D = _xforms[i]
 		if not xform.is_finite():
 			xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
@@ -274,6 +316,8 @@ func clear() -> void:
 	_xforms.clear()
 	_colors.resize(0)
 	_customs.resize(0)
+	_deferred_indices.clear()
+	_deferred_cursor = 0
 	_bounds_dirty = true
 	if _mm != null:
 		_mm.visible_instance_count = 0

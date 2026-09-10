@@ -357,6 +357,8 @@ const PLANT_LOD_HEIGHT_BONUS_MAX: float = 12.0
 const PLANT_LOD_FADE_MARGIN: float = 4.0
 var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
+const LEAF_BAKE_DEFER_THRESHOLD: int = 16
+const LEAF_BAKE_CHUNK_SIZE: int = 12
 # Last wilt level we wrote into the leaf-tip handles. Tracked so the
 # per-tick wilt pass only touches the multimesh when health has moved
 # noticeably — repaint cost stays near-zero when nothing's changing.
@@ -1716,14 +1718,29 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		ramp: Array, age_frac: float, mods: Dictionary) -> Array:
 	var batch := _ensure_foliage_batch()
 	var group: Array = []
+	var defer_upload: bool = template.size() >= LEAF_BAKE_DEFER_THRESHOLD
 	for v in template:
 		var lv: LeafShapes.LeafVoxel = v
 		var inst_xform: Transform3D = leaf_xform * lv.xform
 		var scaled := Transform3D(inst_xform.basis.scaled(lv.size), inst_xform.origin)
-		group.append(batch.add(scaled, _voxel_depth_jitter(
-			lv.base_color(ramp, age_frac, mods), inst_xform.origin)))
-	batch.flush()
+		var color: Color = _voxel_depth_jitter(
+			lv.base_color(ramp, age_frac, mods), inst_xform.origin)
+		group.append(batch.add_deferred(scaled, color) if defer_upload
+			else batch.add(scaled, color))
+	if defer_upload:
+		# The growth step that admitted this leaf pays for its first bounded
+		# chunk. Remaining chunks consume later tank-wide growth slots.
+		batch.process_deferred_writes(LEAF_BAKE_CHUNK_SIZE)
+	else:
+		batch.flush()
 	return group
+
+
+func _process_leaf_bake_queue() -> void:
+	if _foliage_batch == null or not _foliage_batch.has_deferred_writes():
+		return
+	if _try_consume_growth_budget():
+		_foliage_batch.process_deferred_writes(LEAF_BAKE_CHUNK_SIZE)
 
 
 # Per-voxel value jitter (#101) — depth within a plant mass.
@@ -2497,6 +2514,7 @@ func _reclamp_voxels_to_footprint() -> void:
 
 # Called by SimDriver each tick.
 func tick(dt: float, substrate: SubstrateGrid) -> void:
+	_process_leaf_bake_queue()
 	# Refresh world-space anchor every tick. _ready() captures _world_pos
 	# from global_position, but several spawn paths (base Plant, BranchPlant,
 	# Coral, and the save-load _spawn_plant_from_dict path) assign

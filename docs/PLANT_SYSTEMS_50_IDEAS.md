@@ -121,9 +121,10 @@ rooted plants do not.*
   AABB with live instance bounds expanded by maximum sway, recomputed only when
   transforms change. — Shipped with configurable sway margins and render
   registry smoke coverage. *S · L*
-- [ ] **22. Amortized leaf baking.** Queue large leaf templates as bounded
+- [x] **22. Amortized leaf baking.** Queue large leaf templates as bounded
   chunks consumed across frames under the existing tank-wide plant growth
-  budget, with one final batch flush. *M · M*
+  budget, with one final batch flush. — Shipped with stable up-front handles,
+  12-instance upload chunks, and atomic final visibility. *M · M*
 - [x] **23. Data-only leaf template cache.** Cache immutable
   transform/color descriptors for each quantized leaf form and size instead of
   allocating temporary `MeshInstance3D` trees before every bake. — Shipped for
