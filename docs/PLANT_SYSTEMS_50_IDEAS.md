@@ -1,0 +1,255 @@
+# Plant Systems — 50 Campaign
+
+*Drafted 2026-09-10. Technical game-design backlog for the plant systems campaign.*
+
+The brief: make aquarium plants visually alive, computationally scalable,
+generatively distinct, and ecologically consequential. This document reconciles
+the focused 50-item pass with `PLANT_NATURALISM_1000_IDEAS.md`,
+`PLANT_IMPROVEMENT_IDEAS.md`, and shipped work in `GOALS.md`; items extend those
+systems rather than rebuilding them.
+
+**Format:** **Effort** S (≤2h), M (half-day), L (full day+). **Impact** S
+(polish), M (noticeable), L (system-changing). Mark one item complete only after
+its targeted smoke, `dev/compile_check.gd`, and `smoke_tank_shapes.gd` pass.
+Use one focused commit per item: `PLANT_SYSTEMS_50 #N`.
+
+## If this campaign only does ten
+
+1. **#26 Foliage material lifetime** — fixes a silent correctness bug above 96 plants.
+2. **#21 Dynamic foliage bounds** — makes existing frustum culling useful.
+3. **#14 Rooted-plant visibility ranges** — bounds distant rendering cost.
+4. **#16 Batched stems** — removes the largest rooted-plant draw-call source.
+5. **#24 Distance-bucketed plant ticks** — creates CPU room for richer ecology.
+6. **#42 Honest iron and CO₂ fields** — replaces inferred deficiencies with causes.
+7. **#40 Structured seed bank** — substrate for real dispersal, crossing, and succession.
+8. **#29 Visible etiolation** — makes light competition readable in plant form.
+9. **#41 Runtime outcrossing** — activates the shipped but unused genome blend.
+10. **#1 Foliage caustics** — visually seats plants in the same water as the tank.
+
+**Sequencing:** technical scale → ecological substrate → generative growth →
+reproduction → visuals. The numbered categories remain stable for design
+reference; implementation follows dependency order, not numeric order.
+
+---
+
+## Artistic & Visuals (1–13)
+
+*Grounding: `foliage.gdshader`, `foliage_mm.gdshader`, `voxel_mat.gd`,
+`plant.gd`, `world.gd`, and the existing palette/caustic pipeline.*
+
+- [ ] **1. Foliage caustic shimmer.** Port the existing lightweight aquatic
+  caustic term from `voxel.gdshader` into both foliage shaders and update it
+  through the current throttled global-uniform path. Keep it palette-stable and
+  disable it at the lowest shader tier. *Effort: M · Impact: L*
+- [ ] **2. Per-instance leaf thickness.** Enable MultiMesh custom data and pack
+  a normalized thickness value while baking each leaf voxel; use it to attenuate
+  backlight and the fake SSS rim on petioles and thick leaf centers. *M · M*
+- [ ] **3. Resolve the dormant stem shader.** Measure the existing unused
+  `stem_subsurface.gdshader` against the foliage material after stems are
+  batched; wire it in if it improves stem readability without excess material
+  churn, otherwise remove the dead shader factory and asset. *S · M*
+- [ ] **4. Waterline wet-sheen band.** Use the existing water-surface uniform to
+  add a narrow, view-dependent highlight around foliage crossing the waterline,
+  with reduced intensity under the palette potato tier. *S · M*
+- [ ] **5. Per-leaf sway desynchronization.** Add a stable phase value to baked
+  leaf instances so leaves within one crown ripple independently while
+  preserving the existing per-plant sway personality. Extends Naturalism #204.
+  *M · M*
+- [ ] **6. Spatial gust wave.** Extend the shipped CPU gust tilt
+  (Plant Improvement #30 / Naturalism #202) with a bounded shader wave driven
+  by gust origin, radius, and age, so disturbances propagate across nearby
+  foliage rather than rotating every leaf uniformly. *M · L*
+- [ ] **7. Plant canopy blob shadows.** Merge a budgeted set of plant crown
+  spheres into the substrate shader's existing blob-shadow input, prioritizing
+  nearby and high-biomass plants alongside fish. *M · L*
+- [ ] **8. Baked crown self-occlusion.** During leaf baking, estimate local
+  foliage density and darken only the instance base color of crowded interior
+  voxels. This gives crowns depth without real-time AO or shadow maps. *M · M*
+- [ ] **9. Light-history anthocyanin.** Extend the shipped dynamic blush and
+  `red_potential` with a slowly accumulated per-leaf light dose, making exposed
+  tops redden while shaded old leaves stay green. Completes the shared pigment
+  intent of Naturalism #281–282. *M · L*
+- [ ] **10. Translucent senescence batch.** Move late-senescent leaf handles
+  into a small secondary batch using a palette-safe translucent foliage
+  material, preserving the shipped leaf lifecycle while leaves thin to amber
+  before shedding. Extends Naturalism #67/#292. *L · M*
+- [ ] **11. Canopy-attenuated god rays.** Build a low-resolution canopy-density
+  mask from crown summaries every few seconds and sample it in
+  `god_ray.gdshader`, allowing dense planting to interrupt fake light shafts.
+  *L · M*
+- [ ] **12. Leaf-anchored pearling.** Choose living mature leaf handles as
+  origins for the shared pearling pool and add a brief host-leaf highlight when
+  a bubble detaches. Extends Naturalism #178/#779 without adding per-plant
+  particle systems. *M · L*
+- [ ] **13. Golden-hour foliage rim.** Feed the existing day phase and light
+  direction into a restrained warm edge term during dawn and dusk, respecting
+  accessibility and shader performance tiers. Extends Naturalism #289. *S · M*
+
+## Technical Rendering (14–26)
+
+*Grounding: rooted plants already batch leaves through `VoxelBatch`, while
+stems remain individual `MeshInstance3D` nodes. Floaters have explicit LOD;
+rooted plants do not.*
+
+- [ ] **14. Rooted-plant visibility ranges.** Apply height-scaled
+  `visibility_range_end` and self-fade settings to rooted stem and foliage
+  renderers, using the proven fish/floater LOD conventions. *S · L*
+- [ ] **15. Reversible leaf instance LOD.** At distance, zero-scale a stable
+  subset of non-silhouette leaf handles and restore their original transforms
+  when near; never delete handles or alter biological biomass. *M · M*
+- [ ] **16. Batched rooted stems.** Replace per-voxel stem `MeshInstance3D`
+  nodes with a second per-plant `VoxelBatch`, retaining stable handles for
+  grazing, aging, save restore, and color updates. *L · L*
+- [ ] **17. Tank-wide far-foliage batch.** For distant plants only, mirror
+  simplified stem and leaf transforms into one world-owned MultiMesh and hide
+  their private render batches. Gate the feature on profiling because transfer
+  overhead can outweigh draw-call savings in small tanks. *L · M*
+- [ ] **18. Measured plant/fragment pooling.** Instrument spawn/free churn
+  during trimming and die-offs; add bounded resettable pools only for node types
+  shown to produce meaningful allocation spikes. Preserve `queue_free()` as the
+  fallback for oversized or incompatible instances. *L · S*
+- [ ] **19. MultiMesh buffer compaction.** When live handles remain below one
+  quarter of capacity for a sustained interval, rebuild into a smaller buffer
+  and remap handles atomically. Never compact during an active bake. *M · M*
+- [ ] **20. Static-plant sleep state.** Skip nonessential visual/state work for
+  plants with no growth, damage, deficiency, reproduction, or environment
+  changes, and wake them through explicit dirty signals. Continue chemistry at
+  the required coarse rate. *M · M*
+- [ ] **21. Dynamic foliage bounds.** Replace `VoxelBatch`'s oversized constant
+  AABB with live instance bounds expanded by maximum sway, recomputed only when
+  transforms change. *S · L*
+- [ ] **22. Amortized leaf baking.** Queue large leaf templates as bounded
+  chunks consumed across frames under the existing tank-wide plant growth
+  budget, with one final batch flush. *M · M*
+- [ ] **23. Data-only leaf template cache.** Cache immutable
+  transform/color descriptors for each quantized leaf form and size instead of
+  allocating temporary `MeshInstance3D` trees before every bake. *L · L*
+- [ ] **24. Distance-bucketed plant simulation.** Tick distant plants at lower
+  frequency with accumulated elapsed time and deterministic scheduling, while
+  keeping nearby, reproducing, or stressed plants responsive. Extends the
+  motion-only intent of Naturalism #222. *M · L*
+- [ ] **25. Hardscape occluders.** Generate conservative occluder volumes for
+  large opaque rocks and driftwood only, avoiding thin or moving geometry;
+  enable them only when profiling proves a net win for typical tank cameras.
+  *L · S*
+- [ ] **26. Foliage material lifetime registry.** Replace the silent
+  `FOLIAGE_MM_CAP = 96` refusal with weak-owner registration and stale-entry
+  eviction, ensuring every living plant continues receiving daylight, flow,
+  and palette uniforms. *S · L*
+
+## Generative Growth (27–38)
+
+*Grounding: `PlantGenome` already carries branching parameters and mutation;
+`BranchPlant` is L-system-inspired but has no rule rewriting.*
+
+- [ ] **27. Bounded L-system grammar.** Add optional axiom and production-rule
+  traits with a small interpreter for forward, turn, push, and pop commands.
+  Derive incrementally under depth, symbol, voxel, and per-tick limits, falling
+  back to current probabilistic branching for old genomes. *L · L*
+- [ ] **28. Auxin apical dominance.** Compute a cheap apex hormone value that
+  decays down nodes and suppresses lateral release; apex loss immediately
+  removes the source and frees nearby buds. Implements Naturalism #4. *M · L*
+- [ ] **29. Visible etiolation.** Convert accumulated low-light history into
+  longer internodes and temporarily reduced leaf investment at placement time,
+  while bright growth remains compact. Implements Naturalism #3/#176/#197.
+  *M · L*
+- [ ] **30. Stem growth-history samples.** Store a compact limiting-factor code
+  on each new stem handle and expose the vertical history in the plant
+  inspector. Extend the shipped live limiting-factor diagnostic rather than
+  recomputing old conditions. *M · M*
+- [ ] **31. Root/shoot resource reservoirs.** Split plant reserves into root
+  uptake and shoot demand pools connected by a genome-defined transport rate,
+  producing tip-first starvation when vascular capacity is insufficient. *L · L*
+- [ ] **32. Juvenile/adult heteroblasty.** Add juvenile and adult leaf forms to
+  the genome and transition by node age, independently from the shipped
+  submerged/emergent heterophylly. Implements Naturalism #51. *L · L*
+- [ ] **33. Space-colonized crown fill.** Offer branch species a bounded set of
+  attraction points in lit free volume and steer tips toward unclaimed points,
+  yielding asymmetrical airy crowns without replacing the base growth budget.
+  *L · L*
+- [ ] **34. Species growth curves.** Add genome-defined establishment,
+  acceleration, and plateau parameters and use a sigmoid multiplier around the
+  existing soft-min resource rate. Old genomes retain the current curve through
+  defaults. *M · M*
+- [ ] **35. Architectural reiteration after damage.** When biomass loss exceeds
+  a configurable fraction, restart a scaled copy of the growth program from a
+  surviving node rather than merely resuming the severed axis. Completes
+  Naturalism #27. *L · L*
+- [ ] **36. Nutrient-seeking roots.** Grow visible root tips incrementally
+  toward richer neighboring substrate cells while preserving the current
+  golden-angle fallback in uniform soil. Implements Naturalism #125. *M · L*
+- [ ] **37. Seasonal bulb wake gates.** Add photoperiod and temperature windows
+  to the shipped timed/rich-substrate bulb resprout path, with a maximum dormant
+  duration safety valve. Extends Naturalism #260/#490. *M · M*
+- [ ] **38. Constrained procedural species.** Sample new genomes from correlated
+  ecological archetypes and reject implausible trait combinations before
+  mutation, keeping hand-authored `RealSpeciesLibrary` entries as anchors.
+  *L · L*
+
+## Reproduction & Ecology (39–50)
+
+*Grounding: the substrate has scalar seed/allelopathy/root-oxygen channels,
+runtime reproduction mutates clones, and `PlantGenome.blend()` is not used by
+normal flowering.*
+
+- [ ] **39. Flow-integrated seed landing.** Simulate the visible seed mote
+  against `TankFlowField` first and deposit into the seed bank at its actual
+  final cell, rather than selecting a destination before the drift animation.
+  Extends Plant Improvement #47 / Naturalism #440. *M · L*
+- [ ] **40. Structured seed bank.** Replace each scalar cell with a bounded set
+  of seed lots containing genome identity, quantity, age, viability, and
+  dormancy requirements, while migrating old scalar saves into anonymous lots.
+  Implements Naturalism #404. *L · L*
+- [ ] **41. Runtime outcrossing.** Pair compatible mature flowers within a
+  pollination radius and produce offspring through the shipped
+  `PlantGenome.blend()` function; self or clonal mutation remains the fallback
+  when no partner exists. Implements Naturalism #366. *M · L*
+- [ ] **42. Honest iron and CO₂ fields.** Add bounded dirty-cell availability
+  channels fed by water chemistry and substrate processes, and make roots
+  consume them so deficiency visuals reflect a cause the player can change.
+  Extends GOALS H #58 / Naturalism #907. *L · L*
+- [ ] **43. Mulm mineralization loop.** Route shed/dead plant biomass into a
+  per-cell litter/mulm reservoir that settles and releases nutrients over time
+  instead of returning a flat amount instantly. Extends Naturalism #272/#805.
+  *L · L*
+- [ ] **44. Reproductive cattail puffs.** Turn `_puff_seed()` into bounded
+  surface-flow seed motes that attempt rooting at valid shoreline cells, using
+  the common capacity and seed-bank rules. Completes the existing stub and
+  Naturalism #514. *M · M*
+- [ ] **45. Surface-plant ecology adapter.** Register lily pads, cattails,
+  nautilus plants, and fractal moss through a small common ecological interface
+  for biomass, nutrient demand, grazing, and death without forcing them to
+  inherit `Plant`. *L · L*
+- [ ] **46. Complete hardscape epiphyte placement.** Extend the shipped
+  layout-time epiphyte placement to manual/library/autonomous spawn paths and
+  validate attachment against rock/wood surfaces before substrate fallback.
+  Extends Naturalism #129/#662. *M · M*
+- [ ] **47. Family-aware allelopathy.** Store a bounded emitter-family mix per
+  affected cell and add heritable family resistance, preventing emitters and
+  close kin from suffering the same penalty as competitors. Extends
+  Naturalism #682/#699. *L · L*
+- [ ] **48. Root-footprint competition.** Register coarse per-plant root
+  footprints and divide each cell's available uptake by overlapping active root
+  mass, replacing the current large-plant halo strip. Extends GOALS F #36 /
+  Naturalism #133/#146. *L · L*
+- [ ] **49. Grazing-driven selection.** Track lifetime grazing pressure and let
+  survivors pass a bounded defense/palatability shift with an explicit growth
+  cost through the existing mutation pipeline. Runtime acclimation remains
+  nonheritable until reproduction. *M · L*
+- [ ] **50. Succession and establishment ledger.** Record germination,
+  establishment, and local extinction in `PlantLineageRegistry`, then use
+  recent disturbance and cell maturity to bias eligible seed lots without
+  overriding environmental requirements. Extends Naturalism #409/#696. *L · L*
+
+---
+
+## Campaign verification
+
+- Rendering items report before/after visible instances, draw calls or frame
+  time under the Mobile renderer and macOS-safe MultiMesh path.
+- Growth/genome items round-trip old and new genomes and remain deterministic
+  under a fixed seed.
+- Substrate/save items load legacy scalar saves, serialize the new format, and
+  reload without losing total mass or viability.
+- Ecology items run under population caps and cannot create unbounded nodes,
+  records, shader materials, or per-frame work.

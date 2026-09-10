@@ -15,6 +15,11 @@ file/line pointers so it can be picked up directly. Format follows
 > H6 (succession). Almost all of that shipped. So most of what's below is about
 > **fixing regressions, retuning, and adding life/legibility** — not new
 > subsystems. Don't rebuild what's there; tune and animate it.
+>
+> The follow-on [Plant Systems 50 campaign](PLANT_SYSTEMS_50_IDEAS.md) covers
+> render scaling, generative architecture, structured reproduction, and deeper
+> ecology. Where the two docs overlap, this tuning pass is the shipped
+> foundation and the campaign item is the extension.
 
 ---
 
