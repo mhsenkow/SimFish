@@ -166,14 +166,24 @@ func tick(dt: float) -> void:
 
 
 func _puff_seed() -> void:
-	# Remove a head voxel and spawn a tiny floating seed particle.
 	if _head_voxels_arr.is_empty():
 		return
 	var v: MeshInstance3D = _head_voxels_arr.pop_back()
 	if is_instance_valid(v):
-		# Could spawn a new cattail seedling here in the future.
-		# For now, the visual effect is what matters: seed head shrinks.
+		var start: Vector3 = v.global_position
+		var world: Node = _find_seed_world()
+		if world != null:
+			world.begin_cattail_puff(start)
 		v.queue_free()
+
+
+func _find_seed_world() -> Node:
+	var cursor: Node = get_parent()
+	while cursor != null:
+		if cursor.has_method("begin_cattail_puff"):
+			return cursor
+		cursor = cursor.get_parent()
+	return null
 
 
 func ecology_biomass() -> float:

@@ -6,7 +6,8 @@ const MAX_HORIZONTAL_SPEED: float = 0.9
 
 
 static func make_state(start: Vector3, genome: Dictionary, dormancy: Dictionary,
-		lifetime_s: float = 5.0, surface_only: bool = false) -> Dictionary:
+		lifetime_s: float = 5.0, surface_only: bool = false,
+		quantity: float = 0.35) -> Dictionary:
 	return {
 		"position": start,
 		"velocity": Vector3.ZERO,
@@ -14,6 +15,7 @@ static func make_state(start: Vector3, genome: Dictionary, dormancy: Dictionary,
 		"dormancy": dormancy.duplicate(true),
 		"life": clampf(lifetime_s, 0.5, MAX_LIFETIME_S),
 		"surface_only": surface_only,
+		"quantity": clampf(quantity, 0.01, 0.35),
 	}
 
 

@@ -247,10 +247,11 @@ normal flowering.*
   instead of returning a flat amount instantly. — Shipped with bounded
   plant-detritus settling, mass-conserving mineralization, and pre-reservoir
   save fallback. Extends Naturalism #272/#805. *L · L*
-- [ ] **44. Reproductive cattail puffs.** Turn `_puff_seed()` into bounded
+- [x] **44. Reproductive cattail puffs.** Turn `_puff_seed()` into bounded
   surface-flow seed motes that attempt rooting at valid shoreline cells, using
   the common capacity and seed-bank rules. Completes the existing stub and
-  Naturalism #514. *M · M*
+  Naturalism #514. — Shipped with common bounded motes, surface-flow advection,
+  shoreline/hardscape validation, and structured-bank/capacity gating. *M · M*
 - [x] **45. Surface-plant ecology adapter.** Register lily pads, cattails,
   nautilus plants, and fractal moss through a small common ecological interface
   for biomass, nutrient demand, grazing, and death without forcing them to

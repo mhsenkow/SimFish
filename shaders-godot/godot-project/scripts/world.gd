@@ -7550,7 +7550,8 @@ func _configure_substrate_flow(origin: Vector3, jet: Vector3, flow_rate: float) 
 
 
 func begin_seed_drift(start: Vector3, genome: Dictionary,
-		dormancy: Dictionary = {}) -> bool:
+		dormancy: Dictionary = {}, surface_only: bool = false,
+		quantity: float = 0.35) -> bool:
 	# Seeds exist in the bank only after their bounded visible mote settles.
 	var live_seeds: int = 0
 	for entry_v in _flow_lane_motes:
@@ -7564,7 +7565,7 @@ func begin_seed_drift(start: Vector3, genome: Dictionary,
 	add_child(mote)
 	mote.global_position = start
 	var state: Dictionary = SeedMoteDynamics.make_state(
-		start, genome, dormancy, randf_range(3.5, 6.5))
+		start, genome, dormancy, randf_range(3.5, 6.5), surface_only, quantity)
 	_flow_lane_motes.append({
 		"node": mote,
 		"state": state,
@@ -7597,13 +7598,35 @@ func _tick_seed_drifts(dt: float) -> void:
 				return _fit_xz_inside_tank(x, z, 0.25))
 		n.global_position = state.position
 		if settled:
-			if substrate_grid != null:
+			var shoreline_ok: bool = not bool(state.get("surface_only", false)) \
+				or _valid_shoreline_seed_cell(state.position)
+			if substrate_grid != null and shoreline_ok:
 				substrate_grid.add_seed_lot_at(
-					state.position, state.get("genome", {}), 0.35,
+					state.position, state.get("genome", {}),
+					float(state.get("quantity", 0.35)),
 					state.get("dormancy", {}))
 			n.queue_free()
 			_flow_lane_motes.remove_at(i)
 		i -= 1
+
+
+func begin_cattail_puff(start: Vector3) -> bool:
+	return begin_seed_drift(start, {
+		"species_id": "cattail",
+		"common_name": "Cattail",
+		"generation": 1,
+		"parent_lineage": "Cattail stand",
+		"repro_mode": PlantGenome.REPRO_SEED,
+	}, {"type": PlantGenome.DORMANCY_NONE}, true, 0.18)
+
+
+func _valid_shoreline_seed_cell(pos: Vector3) -> bool:
+	if not _is_inside_tank(pos.x, pos.z, 0.2):
+		return false
+	# Cattails establish only in the shallow outer quarter of the footprint.
+	return _edge_proximity(pos.x, pos.z) >= 0.68 \
+		and not _is_hardscape_occupied(pos.x, pos.z, 0.28) \
+		and not plants_at_capacity()
 
 
 func _tick_flow_lane_motes(dt: float) -> void:
