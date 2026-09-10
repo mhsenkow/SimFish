@@ -328,6 +328,9 @@ static func set_shader_perf_tier(tier: int) -> void:
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_strength", 0.45 if _shader_perf_tier >= 2 else 0.85)
+			mat.set_shader_parameter("aquatic_caustic_intensity", 0.0 if _shader_perf_tier >= 2 else 1.0)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("aquatic_caustic_intensity", 0.0 if _shader_perf_tier >= 2 else 1.0)
 	_shader_tier_post_outline = outline_scale
 	_shader_tier_post_dither = region_dither
 
@@ -568,6 +571,7 @@ static func get_bubble_material() -> ShaderMaterial:
 
 static func update_aquatic_uniforms(intensity: float, light_color: Color, water_y: float,
 		day_offset: float, shimmer: float) -> void:
+	var foliage_intensity: float = 0.0 if _shader_perf_tier >= 2 else intensity
 	for mat in _mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
@@ -589,6 +593,19 @@ static func update_aquatic_uniforms(intensity: float, light_color: Color, water_
 			mat.set_shader_parameter("water_surface_y", water_y)
 			mat.set_shader_parameter("day_phase_offset", day_offset)
 			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("aquatic_caustic_intensity", foliage_intensity)
+			mat.set_shader_parameter("aquatic_light_color", light_color)
+			mat.set_shader_parameter("fixture_water_top", water_y)
+			mat.set_shader_parameter("day_phase_offset", day_offset)
+			mat.set_shader_parameter("aquatic_shimmer", shimmer)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("aquatic_caustic_intensity", foliage_intensity)
+		mat.set_shader_parameter("aquatic_light_color", light_color)
+		mat.set_shader_parameter("water_surface_y", water_y)
+		mat.set_shader_parameter("day_phase_offset", day_offset)
+		mat.set_shader_parameter("aquatic_shimmer", shimmer)
 
 
 static func update_fixture_glow(glow: float, color: Color, water_y: float,

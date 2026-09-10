@@ -17,6 +17,10 @@ uniform float flow_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_floor = 0.0;
+uniform float aquatic_caustic_intensity : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
+uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
+uniform float day_phase_offset = 0.0;
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.42;
@@ -72,6 +76,18 @@ void fragment() {
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
 	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);
+	}
+	// Bounded two-wave caustic shared with voxel.gdshader. This deliberately
+	// stays cheaper than the substrate Worley web and is disabled on low tier.
+	if (aquatic_caustic_intensity > 0.001 && v_world_pos.y < water_surface_y - 0.08) {
+		vec2 cuv = v_world_pos.xz * 1.12;
+		float t = TIME * 0.76 + day_phase_offset * 6.28318;
+		float cwave = sin(cuv.x * 2.0 + t) * sin(cuv.y * 1.65 - t * 0.9)
+			+ sin((cuv.x + cuv.y) * 1.3 + t);
+		float caustics = smoothstep(0.08, 0.75, cwave) * aquatic_caustic_intensity;
+		col += aquatic_light_color * caustics * 0.22;
+		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
+		col += vec3(shim, shim * 0.6, -shim * 0.4);
 	}
 	// Subsurface rim — thin grazing-angle warm halo. Day-tracked so the
 	// effect peaks at midday when real backlight is strongest and fades

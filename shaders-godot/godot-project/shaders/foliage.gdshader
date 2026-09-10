@@ -27,6 +27,10 @@ uniform float tank_fixture_glow : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 tank_fixture_color : source_color = vec3(1.0, 0.94, 0.82);
 uniform float fixture_water_top = 99.0;
 uniform float fixture_water_floor = 0.0;
+uniform float aquatic_caustic_intensity : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
+uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
+uniform float day_phase_offset = 0.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -86,6 +90,16 @@ void fragment() {
     vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
     col = apply_category_palette_tint(col, iaq_palette_foliage,
 		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
+    if (aquatic_caustic_intensity > 0.001 && v_world_pos.y < fixture_water_top - 0.08) {
+        vec2 cuv = v_world_pos.xz * 1.12;
+        float t = TIME * 0.76 + day_phase_offset * 6.28318;
+        float cwave = sin(cuv.x * 2.0 + t) * sin(cuv.y * 1.65 - t * 0.9)
+            + sin((cuv.x + cuv.y) * 1.3 + t);
+        float caustics = smoothstep(0.08, 0.75, cwave) * aquatic_caustic_intensity;
+        col += aquatic_light_color * caustics * 0.22;
+        float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
+        col += vec3(shim, shim * 0.6, -shim * 0.4);
+    }
     // Subsurface rim — at grazing view angles the leaf reads as
     // translucent and picks up a warm tint from light passing through.
     // pow(1-NdotV, 3) keeps the rim a thin sliver instead of a halo.

@@ -37,10 +37,11 @@ reference; implementation follows dependency order, not numeric order.
 *Grounding: `foliage.gdshader`, `foliage_mm.gdshader`, `voxel_mat.gd`,
 `plant.gd`, `world.gd`, and the existing palette/caustic pipeline.*
 
-- [ ] **1. Foliage caustic shimmer.** Port the existing lightweight aquatic
+- [x] **1. Foliage caustic shimmer.** Port the existing lightweight aquatic
   caustic term from `voxel.gdshader` into both foliage shaders and update it
   through the current throttled global-uniform path. Keep it palette-stable and
-  disable it at the lowest shader tier. *Effort: M · Impact: L*
+  disable it at the lowest shader tier. — Shipped with the bounded two-wave
+  voxel term, shared throttled updates, and a zero-cost low-tier gate. *Effort: M · Impact: L*
 - [ ] **2. Per-instance leaf thickness.** Enable MultiMesh custom data and pack
   a normalized thickness value while baking each leaf voxel; use it to attenuate
   backlight and the fake SSS rim on petioles and thick leaf centers. *M · M*
