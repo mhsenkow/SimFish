@@ -12,7 +12,7 @@ static func runtime_lights_with_shadows(root: Node) -> Array[String]:
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
 		if n is Light3D and (n as Light3D).shadow_enabled:
-			bad.append(n.get_path())
+			bad.append(String(n.get_path()) if n.is_inside_tree() else n.name)
 		for c in n.get_children():
 			stack.append(c)
 	return bad

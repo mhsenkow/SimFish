@@ -93,7 +93,7 @@ static func boost_life_color(color: Color, sat_mult: float = FAUNA_SATURATION) -
 static func _biotope_fauna_sat_mult() -> float:
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree:
-		var tc: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+		var tc: Node = (ml as SceneTree).root.get_node_or_null("TankConfig")
 		if tc != null:
 			var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
 			var key: String = Aesthetics.biotope_palette_key(tc)
@@ -183,7 +183,7 @@ static func make(color: Color) -> ShaderMaterial:
 static func _experimental_on() -> bool:
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree:
-		var tc: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+		var tc: Node = (ml as SceneTree).root.get_node_or_null("TankConfig")
 		if tc != null:
 			return bool(tc.get("experimental_visuals"))
 	return false
@@ -1132,7 +1132,7 @@ static func _warm_shaders_cpu(cfg: Node = null) -> void:
 	else:
 		var tree: SceneTree = Engine.get_main_loop() as SceneTree
 		if tree != null and tree.root != null:
-			var tank_cfg: Node = tree.root.get_node_or_null("/root/TankConfig")
+			var tank_cfg: Node = tree.root.get_node_or_null("TankConfig")
 			if tank_cfg != null:
 				apply_global_palette(tank_cfg)
 
