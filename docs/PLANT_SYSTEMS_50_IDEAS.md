@@ -230,10 +230,12 @@ normal flowering.*
   — Shipped with eight-lot/one-unit cell bounds, genome-bearing germination,
   JSON roundtrip coverage, and anonymous scalar migration. Implements
   Naturalism #404. *L · L*
-- [ ] **41. Runtime outcrossing.** Pair compatible mature flowers within a
+- [x] **41. Runtime outcrossing.** Pair compatible mature flowers within a
   pollination radius and produce offspring through the shipped
   `PlantGenome.blend()` function; self or clonal mutation remains the fallback
-  when no partner exists. Implements Naturalism #366. *M · L*
+  when no partner exists. — Shipped with bounded nearest-partner lookup,
+  compatibility/cooldown gates, blended mutation, and both-parent lineage
+  retention. Implements Naturalism #366. *M · L*
 - [x] **42. Honest iron and CO₂ fields.** Add bounded dirty-cell availability
   channels fed by water chemistry and substrate processes, and make roots
   consume them so deficiency visuals reflect a cause the player can change.

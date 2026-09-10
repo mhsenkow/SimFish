@@ -159,6 +159,10 @@ var _starch: float = 0.35
 var _light_avg: float = 0.5
 var _grazing_pressure: float = 0.0
 var _pollen_ready: bool = false
+var _pollination_cooldown_s: float = 0.0
+const POLLINATION_RADIUS: float = 3.0
+const POLLINATION_COOLDOWN_S: float = 45.0
+const MAX_POLLINATION_CANDIDATES: int = 16
 var _heterophylly_applied: bool = false
 # Circumnutation (#5): growing tips trace a slow circle over minutes. Seeded
 # per-plant so a bed of stems doesn't nod in lockstep.
@@ -670,6 +674,7 @@ func to_save_dict() -> Dictionary:
 		"plant_age_s": plant_age_s,
 		"_starch": _starch,
 		"_grazing_pressure": _grazing_pressure,
+			"_pollination_cooldown_s": _pollination_cooldown_s,
 		"_submersed_leaf_form": _submersed_leaf_form,
 		"_heterophylly_applied": _heterophylly_applied,
 		"_bulb_buried": _bulb_buried,
@@ -722,6 +727,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	plant_age_s = float(d.get("plant_age_s", plant_age_s))
 	_starch = float(d.get("_starch", _starch))
 	_grazing_pressure = float(d.get("_grazing_pressure", _grazing_pressure))
+	_pollination_cooldown_s = maxf(
+		0.0, float(d.get("_pollination_cooldown_s", 0.0)))
 	_submersed_leaf_form = String(d.get("_submersed_leaf_form", _submersed_leaf_form))
 	_heterophylly_applied = not not d.get("_heterophylly_applied", false)
 	_bulb_buried = not not d.get("_bulb_buried", false)
@@ -2845,6 +2852,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_world_pos = global_position
 	_clamp_root_to_footprint()
 	plant_age_s += dt
+	_pollination_cooldown_s = maxf(0.0, _pollination_cooldown_s - dt)
 	if life_phase == LifePhase.DORMANT_BULB:
 		_tick_dormant_bulb(dt, substrate)
 		return
@@ -4725,12 +4733,61 @@ func get_seed_config() -> Dictionary:
 	base_g["parent_keys"] = [my_key] if my_key != "" else []
 	base_g["plant_name"] = ""
 	base_g["script"] = get_script()
-	var cfg: Dictionary = PlantGenome.duplicate_mutate(base_g, generation + 1)
+	var cfg: Dictionary = {}
+	var partner: Plant = _find_pollination_partner()
+	if partner != null:
+		var partner_g: Dictionary = PlantGenome.from_plant(partner)
+		cfg = PlantGenome.outcross(base_g, partner_g,
+			maxi(generation, partner.generation) + 1)
+		cfg["script"] = get_script()
+		_pollination_cooldown_s = POLLINATION_COOLDOWN_S
+		partner._pollination_cooldown_s = POLLINATION_COOLDOWN_S
+	else:
+		cfg = PlantGenome.duplicate_mutate(base_g, generation + 1)
 	var sim_n: Node = _find_sim()
 	if sim_n != null:
 		EvolutionPressure.apply_plant_seed_config(
 			cfg, EvolutionPressure.sample_from_sim(sim_n, global_position))
 	return cfg
+
+
+func _find_pollination_partner() -> Plant:
+	if _pollination_cooldown_s > 0.0:
+		return null
+	var sim_n: Node = _find_sim()
+	if sim_n == null or not sim_n.has_method("query_plants_in_radius"):
+		return null
+	var checked: int = 0
+	var best: Plant = null
+	var best_d2: float = POLLINATION_RADIUS * POLLINATION_RADIUS
+	for candidate_v in sim_n.query_plants_in_radius(global_position, POLLINATION_RADIUS):
+		if checked >= MAX_POLLINATION_CANDIDATES:
+			break
+		checked += 1
+		if not (candidate_v is Plant):
+			continue
+		var candidate: Plant = candidate_v
+		if candidate == self or not is_instance_valid(candidate):
+			continue
+		if candidate.flower_stage != FlowerStage.MATURE \
+				or not candidate._pollen_ready \
+				or candidate._pollination_cooldown_s > 0.0:
+			continue
+		if not _flowers_compatible(candidate):
+			continue
+		var d2: float = global_position.distance_squared_to(candidate.global_position)
+		if d2 <= best_d2:
+			best_d2 = d2
+			best = candidate
+	return best
+
+
+func _flowers_compatible(other: Plant) -> bool:
+	if other == null or other.repro_mode != PlantGenome.REPRO_SEED:
+		return false
+	if species_id != "" and other.species_id != "":
+		return species_id == other.species_id
+	return leaf_form == other.leaf_form
 
 
 

@@ -481,6 +481,30 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	return out
 
 
+static func outcross(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
+	var blended: Dictionary = blend(a, b, generation)
+	var parents: Array = []
+	for source in [a, b]:
+		var lineage: String = String(source.get(
+			"plant_name", source.get("parent_lineage", "Founders")))
+		if lineage != "" and not parents.has(lineage):
+			parents.append(lineage)
+	var keys: Array = []
+	for source in [a, b]:
+		var source_keys: Variant = source.get("parent_keys", [])
+		if source_keys is Array:
+			for key in source_keys:
+				if key != "" and not keys.has(key) and keys.size() < 4:
+					keys.append(key)
+	blended.parent_lineage = " × ".join(parents) if not parents.is_empty() else "Founders"
+	blended.parent_keys = keys
+	var offspring: Dictionary = mutate(blended, REPRO_SEED)
+	offspring.generation = generation
+	offspring.parent_lineage = blended.parent_lineage
+	offspring.parent_keys = keys
+	return offspring
+
+
 static func _rng_range(lo: int, hi: int) -> int:
 	return lo + randi() % maxi(1, hi - lo + 1)
 
