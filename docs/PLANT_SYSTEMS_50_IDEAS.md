@@ -163,9 +163,10 @@ rooted plants do not.*
   traits with a small interpreter for forward, turn, push, and pop commands.
   Derive incrementally under depth, symbol, voxel, and per-tick limits, falling
   back to current probabilistic branching for old genomes. *L · L*
-- [ ] **28. Auxin apical dominance.** Compute a cheap apex hormone value that
+- [x] **28. Auxin apical dominance.** Compute a cheap apex hormone value that
   decays down nodes and suppresses lateral release; apex loss immediately
-  removes the source and frees nearby buds. Implements Naturalism #4. *M · L*
+  removes the source and frees nearby buds. — Shipped with architecture-only
+  O(nodes) profiles and immediate cut-triggered release. Implements Naturalism #4. *M · L*
 - [x] **29. Visible etiolation.** Convert accumulated low-light history into
   longer internodes and temporarily reduced leaf investment at placement time,
   while bright growth remains compact. — Shipped with future-only internode

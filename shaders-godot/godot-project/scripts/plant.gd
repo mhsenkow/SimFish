@@ -126,7 +126,10 @@ var ls_angle: float = 35.0
 var ls_ratio: float = 0.72
 var ls_depth: int = 2
 var etiolation_sensitivity: float = 0.0
+var auxin_dominance: float = 0.0
 var _internode_extension_y: float = 0.0
+var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
+var _auxin_rebuild_count: int = 0
 var _submersed_leaf_form: String = ""
 var plant_age_s: float = 0.0
 var _starch: float = 0.35
@@ -598,6 +601,7 @@ func to_save_dict() -> Dictionary:
 			"ls_ratio": ls_ratio,
 			"ls_depth": ls_depth,
 			"etiolation_sensitivity": etiolation_sensitivity,
+			"auxin_dominance": auxin_dominance,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -1554,6 +1558,7 @@ func _grow_one() -> bool:
 
 	current_height += 1
 	_internode_extension_y += VOXEL_SIZE * 0.65 * etiolation
+	_rebuild_auxin_profile()
 	_cast_root_shadow()
 
 	# Root growth: add a root every 3-4 stem voxels. As the plant matures
@@ -1615,6 +1620,22 @@ func _current_etiolation() -> float:
 		return 0.0
 	var low_light: float = clampf((0.48 - _light_avg) / 0.38, 0.0, 1.0)
 	return low_light * etiolation_sensitivity
+
+
+func _rebuild_auxin_profile(apex_present: bool = true) -> void:
+	# Called only when architecture changes; never from tick().
+	_auxin_by_node.resize(current_height)
+	for i in current_height:
+		var distance: int = current_height - 1 - i
+		_auxin_by_node[i] = auxin_dominance * exp(-float(distance) * 0.55) \
+			if apex_present else 0.0
+	_auxin_rebuild_count += 1
+
+
+func auxin_at_node(node_index: int) -> float:
+	if node_index < 0 or node_index >= _auxin_by_node.size():
+		return 0.0
+	return _auxin_by_node[node_index]
 
 
 # Naturalism #761 — per-voxel hue/value jitter keyed off asymmetry_seed.
@@ -3964,6 +3985,7 @@ func nibble(amount: int) -> int:
 	# queue up dozens of branches.
 	if any_stem_lost and current_height > 0 \
 			and _pending_trim_nodes.size() < MAX_PENDING_TRIM_NODES:
+		_rebuild_auxin_profile(false)
 		_pending_trim_nodes.append(current_height)
 		_trigger_trim_recoil()
 
