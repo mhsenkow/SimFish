@@ -848,22 +848,43 @@ static func build_runner(start: Vector3, end: Vector3, color: Color) -> Array:
 
 
 # ---- Flower bud ----
-# Small green sphere-ish cluster that will later open into petals.
+# Compact three-lobed cluster that will later open into petals. The low lobe
+# overlaps the calyx so the silhouette remains connected at pixel distance.
 static func build_bud(color: Color) -> Array:
 	var nodes: Array = []
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.5))
-	# Calm flower mat — full foliage sway reads as tip thrash on tiny blooms.
-	mi.material_override = VoxelMat.make_flower_foliage(color)
-	mi.position = Vector3.ZERO
-	nodes.append(mi)
-	# Two tiny sepal voxels at the base.
-	for dx in [-1, 1]:
-		var sepal := MeshInstance3D.new()
-		sepal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.3))
-		sepal.material_override = VoxelMat.make_flower_foliage(color.darkened(0.3))
-		sepal.position = Vector3(float(dx) * VOXEL_SIZE * 0.35, -VOXEL_SIZE * 0.2, 0)
-		nodes.append(sepal)
+	for spec in [
+		[Vector3(0.0, VOXEL_SIZE * 0.10, 0.0), Vector3(0.46, 0.50, 0.46)],
+		[Vector3(-VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.02, 0.0), Vector3(0.28, 0.34, 0.32)],
+		[Vector3(VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.02, 0.0), Vector3(0.28, 0.34, 0.32)],
+	]:
+		var lobe := MeshInstance3D.new()
+		lobe.mesh = VoxelMat.get_box(VOXEL_SIZE * spec[1])
+		# Calm flower mat — full foliage sway reads as tip thrash on tiny blooms.
+		lobe.material_override = VoxelMat.make_flower_foliage(color)
+		lobe.position = spec[0]
+		nodes.append(lobe)
+	return nodes
+
+
+# Short green transition shared by buds, open blooms, and pods. Keeping this
+# separate lets Plant retain one rigid flower transform while the petals only
+# perform their small local opening motion.
+static func build_flower_attachment(color: Color, silhouette: String = "default") -> Array:
+	var nodes: Array = []
+	var pedicel := MeshInstance3D.new()
+	var pedicel_h: float = 0.34 if silhouette == "spike" else 0.28
+	pedicel.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * 0.16, VOXEL_SIZE * pedicel_h, VOXEL_SIZE * 0.16))
+	pedicel.material_override = VoxelMat.make_flower_foliage(color.darkened(0.18))
+	pedicel.position = Vector3(0.0, -VOXEL_SIZE * pedicel_h * 0.42, 0.0)
+	nodes.append(pedicel)
+	var calyx := MeshInstance3D.new()
+	var calyx_w: float = 0.30 if silhouette == "crypt" else 0.36
+	calyx.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * calyx_w, VOXEL_SIZE * 0.14, VOXEL_SIZE * calyx_w))
+	calyx.material_override = VoxelMat.make_flower_foliage(color)
+	calyx.position = Vector3(0.0, -VOXEL_SIZE * 0.02, 0.0)
+	nodes.append(calyx)
 	return nodes
 
 
@@ -937,11 +958,13 @@ static func update_flower(nodes: Array, n_petals: int, open_frac: float) -> void
 # Darkened, slightly larger than a bud. Precursor to seed release.
 static func build_seed_pod(color: Color) -> Array:
 	var nodes: Array = []
-	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.48, VOXEL_SIZE * 0.4))
-	mi.material_override = VoxelMat.make_flower_foliage(color.darkened(0.35))
-	mi.position = Vector3(0, -VOXEL_SIZE * 0.05, 0)
-	nodes.append(mi)
+	for side in [-1.0, 1.0]:
+		var lobe := MeshInstance3D.new()
+		lobe.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.27, VOXEL_SIZE * 0.48, VOXEL_SIZE * 0.32))
+		lobe.material_override = VoxelMat.make_flower_foliage(color.darkened(0.35))
+		lobe.position = Vector3(side * VOXEL_SIZE * 0.11, VOXEL_SIZE * 0.05, 0)
+		nodes.append(lobe)
 	return nodes
 
 
@@ -970,11 +993,16 @@ static func build_spike_flower(stalk_color: Color, tip_color: Color) -> Array:
 # Crypt / rosette — low spathe hugging the crown.
 static func build_crypt_bud(color: Color) -> Array:
 	var nodes: Array = []
-	var spathe := MeshInstance3D.new()
-	spathe.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.55))
-	spathe.material_override = VoxelMat.make_flower_foliage(color.darkened(0.2))
-	spathe.position = Vector3(0, -VOXEL_SIZE * 0.06, 0)
-	nodes.append(spathe)
+	for spec in [
+		[Vector3(0.0, VOXEL_SIZE * 0.01, 0.0), Vector3(0.48, 0.24, 0.48)],
+		[Vector3(-VOXEL_SIZE * 0.17, VOXEL_SIZE * 0.07, 0.0), Vector3(0.24, 0.28, 0.30)],
+		[Vector3(VOXEL_SIZE * 0.17, VOXEL_SIZE * 0.07, 0.0), Vector3(0.24, 0.28, 0.30)],
+	]:
+		var spathe := MeshInstance3D.new()
+		spathe.mesh = VoxelMat.get_box(VOXEL_SIZE * spec[1])
+		spathe.material_override = VoxelMat.make_flower_foliage(color.darkened(0.2))
+		spathe.position = spec[0]
+		nodes.append(spathe)
 	return nodes
 
 

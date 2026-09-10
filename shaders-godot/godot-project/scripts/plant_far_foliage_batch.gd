@@ -39,6 +39,9 @@ func update_far_batch(plants: Array, camera: Camera3D, dt: float) -> void:
 		for plant in plants:
 			if plant == null or not is_instance_valid(plant):
 				continue
+			if not _eligible_for_mirroring(plant):
+				_set_private_visible(plant, true)
+				continue
 			if camera.global_position.distance_squared_to(plant.global_position) < FAR_DIST_SQ:
 				continue
 			far.append(plant)
@@ -73,6 +76,14 @@ func update_far_batch(plants: Array, camera: Camera3D, dt: float) -> void:
 	for plant in _mirrored_plants:
 		_set_private_visible(plant, false)
 	enabled_by_profile = true
+
+
+func _eligible_for_mirroring(plant: Plant) -> bool:
+	# Flowers and pods remain live Node3D geometry. Mirroring only their
+	# stem/leaves would freeze one half of the plant and hide its private
+	# anchor, so reproductive plants stay wholly private.
+	return plant != null and not plant.has_flower \
+		and plant.flower_stage == Plant.FlowerStage.NONE
 
 
 func _live_render_count(batch: VoxelBatch) -> int:

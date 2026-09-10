@@ -790,6 +790,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	_emersed_remaining = 0.0
 	_growth_load_hold_s = 0.35
 	_reconcile_life_phase_from_geometry()
+	_restore_flower_geometry()
 
 
 func _reconcile_life_phase_from_geometry() -> void:
@@ -1048,9 +1049,17 @@ func _apply_sway_personality() -> void:
 		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult * CALM_TIP)
 		_foliage_mat.set_shader_parameter("sway_speed", sway_speed / height_w * CALM_SPEED)
 		_foliage_mat.set_shader_parameter("flutter_speed", flutter_speed)
+		# Leaves retain ambient shader life, but a flower-bearing plant cannot
+		# have its foliage gust front visually outrun the rigid structural tip.
+		_foliage_mat.set_shader_parameter(
+			"gust_response", 0.16 if has_flower and flower_stage != FlowerStage.NONE else 1.0)
 		_foliage_mat.set_shader_parameter("sss_strength", 0.42)
 		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
 		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
+	if _stem_mat != null:
+		# CPU root lean is the sole authority for a flowering structural stem.
+		_stem_mat.set_shader_parameter(
+			"gust_response", 0.0 if has_flower and flower_stage != FlowerStage.NONE else 1.0)
 
 
 func _visual_youth_scale() -> float:
@@ -1105,7 +1114,11 @@ func _tick_plant_mood(dt: float) -> void:
 
 func apply_gust_tilt(vec: Vector2, strength: float) -> void:
 	wake_plant("environment")
-	_gust_tilt = (_gust_tilt + vec * strength).limit_length(0.12)
+	var bloom_weight: float = 1.0
+	if has_flower and flower_stage != FlowerStage.NONE:
+		bloom_weight = 0.48 if flower_stage == FlowerStage.BUD else 0.28
+	_gust_tilt = (_gust_tilt + vec * strength * bloom_weight).limit_length(
+		0.055 if bloom_weight < 1.0 else 0.12)
 
 
 func _update_height_ghost_marker() -> void:
@@ -1470,25 +1483,39 @@ func _apply_default_growth_strategy() -> void:
 		emergent_growth = true
 
 
-# Snap the tip bloom onto the real stem tip (XZ wander included). Ride the
-# plant lean with the tip — do not counter-rotate, or petals float off-axis.
+# Snap the complete bloom onto the live top stem transform. The handle's basis
+# includes canopy layover, while its scale belongs to the stem voxel and must
+# not leak into the flower.
 func _stabilize_flower_against_lean() -> void:
 	if _flower_node == null or not is_instance_valid(_flower_node):
 		return
 	if flower_stage == FlowerStage.NONE:
 		return
-	_flower_node.rotation = Vector3.ZERO
-	_flower_node.position = _tip_bloom_local_pos()
+	var tip := _live_top_stem_handle()
+	if tip == null:
+		_flower_node.position = _tip_bloom_local_pos()
+		return
+	var tip_basis: Basis = tip.transform.basis.orthonormalized()
+	var anchor: Vector3 = tip.transform.origin + tip_basis.y * VOXEL_SIZE * 0.08
+	_flower_node.transform = Transform3D(tip_basis, anchor)
+
+
+func _live_top_stem_handle() -> VoxelBatch.Handle:
+	for i in range(voxels.size() - 1, -1, -1):
+		var tip: VoxelBatch.Handle = voxels[i]
+		if tip != null and tip.alive:
+			return tip
+	return null
 
 
 # Local position of the growing tip — last stem voxel when present, else the
 # lean-aware height used by growth. Nest slightly into the tip so the bloom
 # reads as attached, not hovering above a thin green line.
 func _tip_bloom_local_pos() -> Vector3:
-	for i in range(voxels.size() - 1, -1, -1):
-		var tip: VoxelBatch.Handle = voxels[i]
-		if tip != null and tip.alive:
-			return tip.local_pos + Vector3(0.0, VOXEL_SIZE * 0.12, 0.0)
+	var tip := _live_top_stem_handle()
+	if tip != null:
+		var tip_up: Vector3 = tip.transform.basis.orthonormalized().y
+		return tip.transform.origin + tip_up * VOXEL_SIZE * 0.08
 	var rel: float = 1.0
 	var lean: Vector2 = _stem_lean_offset(rel)
 	return Vector3(lean.x, _get_stem_top() - VOXEL_SIZE * 0.05, lean.y)
@@ -2856,9 +2883,10 @@ func _reclamp_voxels_to_footprint() -> void:
 			for child in leaf.get_children():
 				if child is Node3D:
 					_clamp_node_xz_to_footprint(child, 0.2)
-	for v in bloom_voxels:
-		if is_instance_valid(v):
-			_clamp_node_xz_to_footprint(v, 0.18)
+	# Bloom voxels are authored in flower-local coordinates. Clamp their parent
+	# once so repeated enforcement cannot collapse or scatter the silhouette.
+	if _flower_node != null and is_instance_valid(_flower_node):
+		_clamp_node_xz_to_footprint(_flower_node, 0.18)
 	# Root voxels hang below the crown in local -Y; reclamp only the stem/leaf
 	# canopy so glass poke-through is fixed without scattering buried roots.
 
@@ -3540,15 +3568,8 @@ func _begin_flowering() -> void:
 	_pick_flower_palette()
 	_flower_silhouette = _resolve_flower_silhouette()
 	# Build bud.
-	_flower_node = Node3D.new()
-	_flower_node.name = "Flower"
-	_flower_node.position = _tip_bloom_local_pos()
-	add_child(_flower_node)
-	_stabilize_flower_against_lean()
-	var bud_voxels: Array = _build_flower_bud_voxels()
-	for v in bud_voxels:
-		_flower_node.add_child(v)
-		bloom_voxels.append(v)
+	_create_flower_node()
+	_build_flower_stage_geometry()
 	_apply_sway_personality()
 	if first_flower and sim_gate != null and sim_gate.has_method("emit_eco_event"):
 		var fl: String = common_name if common_name != "" else plant_name
@@ -3579,6 +3600,70 @@ func _build_flower_bud_voxels() -> Array:
 			return LeafShapes.build_crypt_bud(_flower_petal_color.darkened(0.25))
 		_:
 			return LeafShapes.build_bud(_flower_petal_color.darkened(0.3))
+
+
+func _flower_attachment_color() -> Color:
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	return ramp[3] as Color
+
+
+func _create_flower_node() -> void:
+	if _flower_node != null and is_instance_valid(_flower_node):
+		return
+	_flower_node = Node3D.new()
+	_flower_node.name = "Flower"
+	add_child(_flower_node)
+	_stabilize_flower_against_lean()
+
+
+func _append_flower_voxels(nodes: Array) -> void:
+	if _flower_node == null or not is_instance_valid(_flower_node):
+		return
+	for v in nodes:
+		_flower_node.add_child(v)
+		bloom_voxels.append(v)
+
+
+func _build_flower_stage_geometry() -> void:
+	if _flower_node == null or not is_instance_valid(_flower_node):
+		return
+	_append_flower_voxels(LeafShapes.build_flower_attachment(
+		_flower_attachment_color(), _flower_silhouette))
+	match flower_stage:
+		FlowerStage.BUD:
+			_append_flower_voxels(_build_flower_bud_voxels())
+		FlowerStage.OPENING, FlowerStage.MATURE:
+			_build_flower_meshes_once()
+			_update_flower_opening(
+				_flower_open_frac if flower_stage == FlowerStage.OPENING else 1.0)
+		FlowerStage.SEED_POD, FlowerStage.RELEASING:
+			_append_flower_voxels(LeafShapes.build_seed_pod(_flower_center_color))
+
+
+func _update_flower_opening(open_frac: float) -> void:
+	open_frac = clampf(open_frac, 0.0, 1.0)
+	if _flower_silhouette == "default":
+		LeafShapes.update_flower(bloom_voxels.slice(2), 5, open_frac)
+		return
+	# Spike/spathe forms open by a tiny local expansion. Never scale the anchor
+	# or pedicel: that would reintroduce a visible tip gap.
+	var open_scale := Vector3.ONE.lerp(Vector3(1.08, 1.12, 1.08), open_frac)
+	for i in range(2, bloom_voxels.size()):
+		var voxel: Node3D = bloom_voxels[i]
+		if voxel != null and is_instance_valid(voxel):
+			voxel.scale = open_scale
+
+
+func _restore_flower_geometry() -> void:
+	if flower_stage == FlowerStage.NONE:
+		has_flower = false
+		return
+	has_flower = true
+	_flower_silhouette = _resolve_flower_silhouette()
+	_clear_bloom()
+	_create_flower_node()
+	_build_flower_stage_geometry()
+	_apply_sway_personality()
 
 
 # Pick a petal + center color pair, biased by the current tank's light /
@@ -3684,13 +3769,10 @@ func _tick_flowering(dt: float) -> void:
 				_flower_open_frac = 0.0
 				# Clear bud voxels and build the flower meshes once.
 				_clear_bloom()
-				_build_flower_meshes_once()
+				_build_flower_stage_geometry()
 		FlowerStage.OPENING:
 			_flower_open_frac = clampf(_flower_timer / 4.0, 0.0, 1.0)
-			if _flower_silhouette == "default":
-				LeafShapes.update_flower(bloom_voxels, 5, _flower_open_frac)
-			elif _flower_node != null and is_instance_valid(_flower_node):
-				_flower_node.scale = Vector3.ONE.lerp(Vector3(1.08, 1.12, 1.08), _flower_open_frac)
+			_update_flower_opening(_flower_open_frac)
 			if _flower_timer > 4.0:
 				flower_stage = FlowerStage.MATURE
 				_flower_timer = 0.0
@@ -3700,12 +3782,7 @@ func _tick_flowering(dt: float) -> void:
 				flower_stage = FlowerStage.SEED_POD
 				_flower_timer = 0.0
 				_clear_bloom()
-				# Build seed pod.
-				var pod_voxels: Array = LeafShapes.build_seed_pod(_flower_center_color)
-				if _flower_node != null and is_instance_valid(_flower_node):
-					for v in pod_voxels:
-						_flower_node.add_child(v)
-						bloom_voxels.append(v)
+				_build_flower_stage_geometry()
 		FlowerStage.SEED_POD:
 			# Mature for 10 seconds, then release seeds.
 			if _flower_timer > 10.0:
@@ -3740,8 +3817,7 @@ func _build_flower_meshes_once() -> void:
 			flower_voxels = LeafShapes.build_flower(
 				_flower_petal_color, _flower_center_color, 5, 0.0)
 	for v in flower_voxels:
-		_flower_node.add_child(v)
-		bloom_voxels.append(v)
+		_append_flower_voxels([v])
 
 
 func _clear_bloom() -> void:
