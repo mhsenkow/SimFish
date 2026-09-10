@@ -505,6 +505,30 @@ static func outcross(a: Dictionary, b: Dictionary, generation: int) -> Dictionar
 	return offspring
 
 
+static func apply_grazing_selection(offspring: Dictionary,
+		lifetime_pressure: float) -> Dictionary:
+	var out: Dictionary = offspring.duplicate(true)
+	var pressure: float = clampf(lifetime_pressure, 0.0, 1.0)
+	if pressure <= 0.0:
+		return out
+	# Selection is applied once, after mutation/blend. The bounded defense
+	# advantage carries an explicit inherited growth and nutrient cost.
+	var defense_shift: float = pressure * 0.10
+	out.palatability = clampf(
+		float(out.get("palatability", DEFAULTS.palatability))
+			- pressure * 0.12, 0.05, 1.0)
+	out.leaf_thickness = clampf(
+		float(out.get("leaf_thickness", DEFAULTS.leaf_thickness))
+			+ defense_shift, 0.05, 1.0)
+	out.growth_rate = clampf(
+		float(out.get("growth_rate", DEFAULTS.growth_rate))
+			- pressure * 0.04, 0.04, 0.48)
+	out.nutrient_demand = clampf(
+		float(out.get("nutrient_demand", DEFAULTS.nutrient_demand))
+			+ pressure * 0.025, 0.01, 1.0)
+	return out
+
+
 static func _rng_range(lo: int, hi: int) -> int:
 	return lo + randi() % maxi(1, hi - lo + 1)
 

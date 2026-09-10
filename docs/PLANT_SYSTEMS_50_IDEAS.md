@@ -274,10 +274,12 @@ normal flowering.*
   mass, replacing the current large-plant halo strip. Extends GOALS F #36 /
   Naturalism #133/#146. — Shipped with bounded 13-cell footprints, proportional
   active-root sharing, and 2 Hz refresh/stale-root cleanup. *L · L*
-- [ ] **49. Grazing-driven selection.** Track lifetime grazing pressure and let
+- [x] **49. Grazing-driven selection.** Track lifetime grazing pressure and let
   survivors pass a bounded defense/palatability shift with an explicit growth
   cost through the existing mutation pipeline. Runtime acclimation remains
-  nonheritable until reproduction. *M · L*
+  nonheritable until reproduction. — Shipped with persistent lifetime pressure,
+  reproduction-only bounded defense shifts, and explicit growth/nutrient costs.
+  *M · L*
 - [x] **50. Succession and establishment ledger.** Record germination,
   establishment, and local extinction in `PlantLineageRegistry`, then use
   recent disturbance and cell maturity to bias eligible seed lots without

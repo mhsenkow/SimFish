@@ -158,6 +158,8 @@ var plant_age_s: float = 0.0
 var _starch: float = 0.35
 var _light_avg: float = 0.5
 var _grazing_pressure: float = 0.0
+var _lifetime_grazing_pressure: float = 0.0
+var _heritable_palatability: float = 0.65
 var _pollen_ready: bool = false
 var _pollination_cooldown_s: float = 0.0
 const POLLINATION_RADIUS: float = 3.0
@@ -472,6 +474,7 @@ func _ensure_plant_named() -> void:
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	var enriched: Dictionary = PlantGenome.enrich(params)
 	PlantGenome.apply_to_plant(self, enriched)
+	_heritable_palatability = palatability
 	if params.has("ramp_override") and params.ramp_override is Array:
 		ramp_override = params.ramp_override
 	_submersed_leaf_form = leaf_form
@@ -674,7 +677,9 @@ func to_save_dict() -> Dictionary:
 		"plant_age_s": plant_age_s,
 		"_starch": _starch,
 		"_grazing_pressure": _grazing_pressure,
-			"_pollination_cooldown_s": _pollination_cooldown_s,
+		"_lifetime_grazing_pressure": _lifetime_grazing_pressure,
+		"_heritable_palatability": _heritable_palatability,
+		"_pollination_cooldown_s": _pollination_cooldown_s,
 		"_submersed_leaf_form": _submersed_leaf_form,
 		"_heterophylly_applied": _heterophylly_applied,
 		"_bulb_buried": _bulb_buried,
@@ -727,6 +732,10 @@ func apply_save_dict(d: Dictionary) -> void:
 	plant_age_s = float(d.get("plant_age_s", plant_age_s))
 	_starch = float(d.get("_starch", _starch))
 	_grazing_pressure = float(d.get("_grazing_pressure", _grazing_pressure))
+	_lifetime_grazing_pressure = clampf(
+		float(d.get("_lifetime_grazing_pressure", 0.0)), 0.0, 1.0)
+	_heritable_palatability = clampf(
+		float(d.get("_heritable_palatability", palatability)), 0.05, 1.0)
 	_pollination_cooldown_s = maxf(
 		0.0, float(d.get("_pollination_cooldown_s", 0.0)))
 	_submersed_leaf_form = String(d.get("_submersed_leaf_form", _submersed_leaf_form))
@@ -4117,6 +4126,8 @@ func _on_flower_consumed() -> void:
 func nibble(amount: int) -> int:
 	wake_plant("damage")
 	_grazing_pressure = clampf(_grazing_pressure + float(amount) * 0.08, 0.0, 1.0)
+	_lifetime_grazing_pressure = clampf(
+		_lifetime_grazing_pressure + float(amount) * 0.025, 0.0, 1.0)
 	# Aufwuchs grazing (#30): eat leaf biofilm without always removing tissue.
 	if _graze_leaf_biofilm(amount):
 		return amount
@@ -4729,6 +4740,9 @@ func get_seed_config() -> Dictionary:
 	if lib != null and lib.has_method("make_species_key"):
 		my_key = String(lib.make_species_key(get_plant_genome()))
 	var base_g: Dictionary = PlantGenome.from_plant(self)
+	# Acclimation changes the live plant's palatability, but selection starts
+	# from the inherited value and is applied only to produced offspring.
+	base_g["palatability"] = _heritable_palatability
 	base_g["parent_lineage"] = plant_name
 	base_g["parent_keys"] = [my_key] if my_key != "" else []
 	base_g["plant_name"] = ""
@@ -4737,6 +4751,7 @@ func get_seed_config() -> Dictionary:
 	var partner: Plant = _find_pollination_partner()
 	if partner != null:
 		var partner_g: Dictionary = PlantGenome.from_plant(partner)
+		partner_g["palatability"] = partner._heritable_palatability
 		cfg = PlantGenome.outcross(base_g, partner_g,
 			maxi(generation, partner.generation) + 1)
 		cfg["script"] = get_script()
@@ -4744,6 +4759,11 @@ func get_seed_config() -> Dictionary:
 		partner._pollination_cooldown_s = POLLINATION_COOLDOWN_S
 	else:
 		cfg = PlantGenome.duplicate_mutate(base_g, generation + 1)
+	var selection_pressure: float = _lifetime_grazing_pressure
+	if partner != null:
+		selection_pressure = (_lifetime_grazing_pressure
+			+ partner._lifetime_grazing_pressure) * 0.5
+	cfg = PlantGenome.apply_grazing_selection(cfg, selection_pressure)
 	var sim_n: Node = _find_sim()
 	if sim_n != null:
 		EvolutionPressure.apply_plant_seed_config(
