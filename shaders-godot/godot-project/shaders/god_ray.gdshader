@@ -34,6 +34,9 @@ uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 // Suspended particulate sparkle in the shaft (#59).
 uniform float dust_mote_density : hint_range(0.0, 1.0) = 0.35;
 uniform float water_surface_y = 6.5;
+uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
+uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0); // min xz, size xz
+uniform float canopy_attenuation : hint_range(0.0, 1.0) = 0.0;
 
 varying vec3 local_pos;
 varying vec3 world_vertex;
@@ -102,6 +105,11 @@ void fragment() {
 		fish_block = max(fish_block, smoothstep(oc.w, oc.w * 0.35, d));
 	}
 	alpha *= 1.0 - fish_block * occluder_strength;
+	if (canopy_attenuation > 0.001) {
+		vec2 canopy_uv = (world_vertex.xz - canopy_bounds.xy) / max(canopy_bounds.zw, vec2(0.01));
+		float canopy = texture(canopy_density_tex, clamp(canopy_uv, vec2(0.0), vec2(1.0))).r;
+		alpha *= 1.0 - canopy * canopy_attenuation;
+	}
 
 	float bands = floor(alpha * 5.0 + 0.5) / 5.0;
 	alpha = mix(alpha, bands, beam_posterize);

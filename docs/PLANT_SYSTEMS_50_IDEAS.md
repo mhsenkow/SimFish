@@ -84,10 +84,11 @@ reference; implementation follows dependency order, not numeric order.
   material, preserving the shipped leaf lifecycle while leaves thin to amber
   before shedding. Extends Naturalism #67/#292. — Shipped with one secondary
   batch per plant, atomic handle replacement, and no per-leaf materials. *L · M*
-- [ ] **11. Canopy-attenuated god rays.** Build a low-resolution canopy-density
+- [x] **11. Canopy-attenuated god rays.** Build a low-resolution canopy-density
   mask from crown summaries every few seconds and sample it in
   `god_ray.gdshader`, allowing dense planting to interrupt fake light shafts.
-  *L · M*
+  — Shipped as a 16×8 texture refreshed every three seconds from at most 128
+  crowns, with a lowest-tier hard disable. *L · M*
 - [ ] **12. Leaf-anchored pearling.** Choose living mature leaf handles as
   origins for the shared pearling pool and add a brief host-leaf highlight when
   a bubble detaches. Extends Naturalism #178/#779 without adding per-plant

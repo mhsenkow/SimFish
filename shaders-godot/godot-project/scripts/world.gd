@@ -9,6 +9,7 @@
 extends Node3D
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+const CanopyDensityBuilder = preload("res://scripts/canopy_density.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
@@ -6031,6 +6032,8 @@ var _occluder_buf: Array = []
 var _occluder_smooth: Array[Vector4] = []
 var _blob_buf: Array = []
 var _plant_blob_buf: Array = []
+var _canopy_density_tex: ImageTexture = null
+var _canopy_density_next_ms: int = 0
 var _ripple_pool: Array = []
 var _tap_ripple_pool: Array[MeshInstance3D] = []
 var _tap_ripple_pool_i: int = 0
@@ -6154,6 +6157,7 @@ func _update_fish_lighting_contributors() -> void:
 	var cam_pos: Vector3 = cam.global_position if cam != null else Vector3.ZERO
 	var have_cam: bool = cam != null
 	var bed_y: float = sim.substrate_top_y
+	_update_canopy_density_input()
 	_occluder_buf.clear()
 	_blob_buf.clear()
 	_plant_blob_buf.clear()
@@ -6220,6 +6224,29 @@ func _update_fish_lighting_contributors() -> void:
 			else:
 				blob_packed.append(Vector4.ZERO)
 		VoxelMat.update_substrate_blob_shadows(blob_packed)
+
+
+func _update_canopy_density_input() -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _canopy_density_next_ms:
+		return
+	_canopy_density_next_ms = now_ms + 3000
+	var enabled: bool = VoxelMat.shader_perf_tier() < 2 and not _god_ray_materials.is_empty()
+	if enabled:
+		var image: Image = CanopyDensityBuilder.build(
+			sim.plants, TANK_HALF_W, TANK_HALF_D)
+		if _canopy_density_tex == null:
+			_canopy_density_tex = ImageTexture.create_from_image(image)
+		else:
+			_canopy_density_tex.update(image)
+	for mat in _god_ray_materials:
+		if mat == null:
+			continue
+		mat.set_shader_parameter("canopy_attenuation", 0.52 if enabled else 0.0)
+		mat.set_shader_parameter("canopy_bounds", Vector4(
+			-TANK_HALF_W, -TANK_HALF_D, TANK_HALF_W * 2.0, TANK_HALF_D * 2.0))
+		if enabled:
+			mat.set_shader_parameter("canopy_density_tex", _canopy_density_tex)
 
 
 func _spawn_floaters() -> void:
