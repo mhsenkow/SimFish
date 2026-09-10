@@ -187,10 +187,10 @@ rooted plants do not.*
   attraction points in lit free volume and steer tips toward unclaimed points,
   yielding asymmetrical airy crowns without replacing the base growth budget.
   *L · L*
-- [ ] **34. Species growth curves.** Add genome-defined establishment,
+- [x] **34. Species growth curves.** Add genome-defined establishment,
   acceleration, and plateau parameters and use a sigmoid multiplier around the
-  existing soft-min resource rate. Old genomes retain the current curve through
-  defaults. *M · M*
+  existing soft-min resource rate. — Shipped as a bounded sigmoid multiplier;
+  zero acceleration preserves the legacy rate. *M · M*
 - [ ] **35. Architectural reiteration after damage.** When biomass loss exceeds
   a configurable fraction, restart a scaled copy of the growth program from a
   surviving node rather than merely resuming the severed axis. Completes

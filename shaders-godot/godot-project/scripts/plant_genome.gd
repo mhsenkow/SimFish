@@ -74,6 +74,9 @@ const DEFAULTS: Dictionary = {
 	"etiolation_sensitivity": 0.0,
 	"auxin_dominance": 0.0,
 	"vascular_transport_rate": 0.0,
+	"growth_curve_establishment": 1.0,
+	"growth_curve_acceleration": 0.0,
+	"growth_curve_plateau": 1.0,
 }
 
 
@@ -167,6 +170,9 @@ static func from_plant(p: Plant) -> Dictionary:
 		"etiolation_sensitivity": p.etiolation_sensitivity,
 		"auxin_dominance": p.auxin_dominance,
 		"vascular_transport_rate": p.vascular_transport_rate,
+		"growth_curve_establishment": p.growth_curve_establishment,
+		"growth_curve_acceleration": p.growth_curve_acceleration,
+		"growth_curve_plateau": p.growth_curve_plateau,
 	})
 
 
@@ -220,6 +226,9 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.etiolation_sensitivity = clampf(float(e.etiolation_sensitivity), 0.0, 1.0)
 	p.auxin_dominance = clampf(float(e.auxin_dominance), 0.0, 1.0)
 	p.vascular_transport_rate = clampf(float(e.vascular_transport_rate), 0.0, 1.0)
+	p.growth_curve_establishment = clampf(float(e.growth_curve_establishment), 0.1, 1.5)
+	p.growth_curve_acceleration = clampf(float(e.growth_curve_acceleration), 0.0, 16.0)
+	p.growth_curve_plateau = clampf(float(e.growth_curve_plateau), 0.1, 1.5)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -272,6 +281,12 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		float(out.auxin_dominance) + _rng_signed(0.04) * sigma, 0.0, 1.0)
 	out.vascular_transport_rate = clampf(
 		float(out.vascular_transport_rate) + _rng_signed(0.04) * sigma, 0.0, 1.0)
+	out.growth_curve_establishment = clampf(
+		float(out.growth_curve_establishment) + _rng_signed(0.05) * sigma, 0.1, 1.5)
+	out.growth_curve_acceleration = clampf(
+		float(out.growth_curve_acceleration) + _rng_signed(0.5) * sigma, 0.0, 16.0)
+	out.growth_curve_plateau = clampf(
+		float(out.growth_curve_plateau) + _rng_signed(0.05) * sigma, 0.1, 1.5)
 	# Macro-mutations only on full-strength sexual paths.
 	if sigma >= 0.8 and randf() < 0.04 * sigma:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
@@ -325,6 +340,9 @@ static func drift_distance(g: Dictionary, baseline: Dictionary = {}) -> float:
 		["etiolation_sensitivity", 1.0],
 		["auxin_dominance", 1.0],
 		["vascular_transport_rate", 1.0],
+		["growth_curve_establishment", 1.4],
+		["growth_curve_acceleration", 16.0],
+		["growth_curve_plateau", 1.4],
 	]
 	for p in pairs:
 		var key: String = String(p[0])
@@ -361,6 +379,12 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.auxin_dominance = lerpf(float(ea.auxin_dominance), float(eb.auxin_dominance), 0.5)
 	out.vascular_transport_rate = lerpf(
 		float(ea.vascular_transport_rate), float(eb.vascular_transport_rate), 0.5)
+	out.growth_curve_establishment = lerpf(
+		float(ea.growth_curve_establishment), float(eb.growth_curve_establishment), 0.5)
+	out.growth_curve_acceleration = lerpf(
+		float(ea.growth_curve_acceleration), float(eb.growth_curve_acceleration), 0.5)
+	out.growth_curve_plateau = lerpf(
+		float(ea.growth_curve_plateau), float(eb.growth_curve_plateau), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
 	out.allelopathy_resistance = lerpf(
 		float(ea.allelopathy_resistance), float(eb.allelopathy_resistance), 0.5)

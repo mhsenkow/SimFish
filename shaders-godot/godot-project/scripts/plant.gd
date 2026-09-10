@@ -128,6 +128,9 @@ var ls_depth: int = 2
 var etiolation_sensitivity: float = 0.0
 var auxin_dominance: float = 0.0
 var vascular_transport_rate: float = 0.0
+var growth_curve_establishment: float = 1.0
+var growth_curve_acceleration: float = 0.0
+var growth_curve_plateau: float = 1.0
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
@@ -607,6 +610,9 @@ func to_save_dict() -> Dictionary:
 			"etiolation_sensitivity": etiolation_sensitivity,
 			"auxin_dominance": auxin_dominance,
 			"vascular_transport_rate": vascular_transport_rate,
+			"growth_curve_establishment": growth_curve_establishment,
+			"growth_curve_acceleration": growth_curve_acceleration,
+			"growth_curve_plateau": growth_curve_plateau,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -776,7 +782,8 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 			var warmth: float = float(w_temp.effective_warmth_at(_world_pos))
 			f_temp = clampf(1.0 - absf(warmth - temp_opt) * 1.4, 0.35, 1.15)
 	var core: float = _softmin_chain([f_nutrient, f_light, f_co2, f_starch, f_temp, f_transport])
-	var effective_rate: float = growth_rate * core
+	var curve_mult: float = _species_growth_curve_multiplier()
+	var effective_rate: float = growth_rate * core * curve_mult
 	if sim_v != null and sim_v.has_method("sim_day"):
 		var mature: float = clampf(float(sim_v.sim_day()) / 30.0, 0.0, 1.0)
 		if growth_rate > 0.20 and not is_epiphyte and not is_carpet:
@@ -806,6 +813,7 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 		"f_starch": f_starch,
 		"f_temp": f_temp,
 		"f_transport": f_transport,
+		"growth_curve_mult": curve_mult,
 		"limiting_factor": limiting,
 		"shade_light": shade_light,
 		"growth_progress": growth_progress,
@@ -813,6 +821,14 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 	}
 	_growth_diag = diag
 	return diag
+
+
+func _species_growth_curve_multiplier() -> float:
+	if growth_curve_acceleration <= 0.0:
+		return 1.0
+	var maturity: float = clampf(float(current_height) / float(maxi(1, max_height)), 0.0, 1.0)
+	var sigmoid: float = 1.0 / (1.0 + exp(-growth_curve_acceleration * (maturity - 0.5)))
+	return lerpf(growth_curve_establishment, growth_curve_plateau, sigmoid)
 
 
 func get_growth_inspector() -> Dictionary:
