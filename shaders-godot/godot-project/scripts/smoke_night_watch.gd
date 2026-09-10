@@ -5,7 +5,7 @@ extends SceneTree
 
 const NightWatch = preload("res://scripts/night_watch.gd")
 const TankMind = preload("res://scripts/tank_mind.gd")
-const Stub = preload("res://scripts/smoke_night_watch_stub.gd")
+const Stub = preload("res://scripts/night_watch_test_stub.gd")
 
 
 func _initialize() -> void:

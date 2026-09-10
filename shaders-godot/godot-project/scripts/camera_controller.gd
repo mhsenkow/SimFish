@@ -17,11 +17,10 @@ extends RefCounted
 const SENSITIVITY: float = 0.006            # radians per pixel, orbit drag
 const DOLLY_MOUSE_SENSITIVITY: float = 0.012  # log-ish dolly per pixel
 const PAN_MOUSE_SENSITIVITY: float = 0.012  # world units per pixel at radius=1
+# One mouse-wheel notch, as a radius multiplier. Kept as the reference step
+# that WHEEL_NOTCH_LOG below is derived from.
 const ZOOM_FACTOR: float = 1.12
-# Trackpad / precise-scroll: map event.factor into a log zoom step. Higher =
-# more movement per finger swipe. Discrete mouse wheels still feel like one
-# ZOOM_FACTOR notch when factor ≈ 1.
-const TRACKPAD_ZOOM_GAIN: float = 0.085
+# Pinch sensitivity: how much of a macOS magnify gesture becomes zoom.
 const MAGNIFY_ZOOM_GAIN: float = 1.55
 const MIN_RADIUS: float = 4.0
 const MACRO_MIN_RADIUS: float = 2.2  # REAL_TANK_FIDELITY #193
@@ -75,32 +74,67 @@ static func zoom_ortho(size: float, factor: float) -> float:
 	return clampf(size * factor, ORTHO_MIN_SIZE, ORTHO_MAX_SIZE)
 
 
-# Convert a scroll-wheel / trackpad factor into a multiplicative zoom.
-# Positive factor → zoom in (smaller radius). Uses event.factor so macOS
-# precise scrolling isn't quantized into jerky 12% steps.
-# burst_count: how many wheel events landed in the last ~80ms (trackpad spray).
-static func zoom_factor_from_scroll(scroll_factor: float, wheel_up: bool,
-		burst_count: int = 1) -> float:
+# ---- Zoom request accumulation ----------------------------------------------
+#
+# The old per-event classifier picked between three different step formulas
+# depending on the reported factor and how many events had arrived in the last
+# 80 ms. A single macOS trackpad flick crosses all three: the first events took
+# a 12% bite each (pow(ZOOM_FACTOR, 1.0)), then the burst branch dropped to
+# 4.7%, then precise deltas fell to 0.85%. A 14x swing in step size inside one
+# gesture is exactly what "jumpy trackpad zoom" feels like, and 4.7% per event
+# at the ~90 events/s a trackpad streams is ~60x per second — it hits the clamp
+# before you have finished the gesture.
+#
+# Instead every input converts to a signed amount of *log zoom* and is added to
+# a budget that the camera drains at a bounded rate per second. A mouse wheel
+# (a few large notches) and a trackpad (a flood of small ones) now produce the
+# same total travel for the same physical gesture, and the response is
+# continuous — there is no branch to cross mid-flick.
+
+# Log-zoom contributed by one full mouse-wheel notch. ln(1.12) ~= 0.113.
+const WHEEL_NOTCH_LOG: float = 0.113
+# Ceiling on the queued budget, so spinning the wheel hard cannot bank a zoom
+# that keeps running long after you stop. ln(6) ~= 1.79 — about 6x travel.
+const ZOOM_BUDGET_MAX: float = 1.79
+# How fast the budget drains. Higher = snappier, lower = more glide.
+const ZOOM_RESPONSE: float = 12.0
+# Hard cap on log-zoom applied per second, so a dense event stream cannot
+# outrun the frame rate. e^2.2 ~= 9x per second at full tilt.
+const ZOOM_RATE_MAX: float = 2.2
+
+
+# Log-zoom for one scroll event. `scroll_factor` is InputEventMouseButton.factor:
+# macOS precise trackpads report fractional values, a notched wheel reports ~1.
+# Positive result = zoom out; the caller negates for wheel-up.
+static func scroll_log_zoom(scroll_factor: float) -> float:
 	var mag: float = absf(scroll_factor)
 	if mag < 0.0001:
 		mag = 1.0
-	var step: float = 1.0
-	# Precise trackpad: tiny factors. Discrete mouse: ~1.0. Rapid sprays of
-	# factor≈1 (macOS without precise deltas) also need softening.
-	if mag < 0.85:
-		step = exp(mag * TRACKPAD_ZOOM_GAIN)
-	elif burst_count >= 3:
-		step = exp(TRACKPAD_ZOOM_GAIN * 0.55)
-	else:
-		step = pow(ZOOM_FACTOR, clampf(mag, 0.5, 2.5))
-	return (1.0 / step) if wheel_up else step
+	# One continuous curve. Sub-linear so a hard wheel spin (factor > 1) does
+	# not scale away, and so precise deltas stay proportional.
+	return WHEEL_NOTCH_LOG * sqrt(clampf(mag, 0.02, 4.0))
 
 
-# macOS trackpad pinch → InputEventMagnifyGesture.factor (1 = unchanged).
-# Returns the radius multiplier (magnify > 1 → zoom in → factor < 1).
-static func zoom_factor_from_magnify(magnify: float) -> float:
+# Log-zoom for a macOS pinch. InputEventMagnifyGesture.factor is 1 = unchanged.
+static func magnify_log_zoom(magnify: float) -> float:
 	var m: float = clampf(magnify, 0.5, 2.0)
-	return 1.0 / pow(m, MAGNIFY_ZOOM_GAIN)
+	return -log(m) * MAGNIFY_ZOOM_GAIN
+
+
+# Drain `budget` for one frame. Returns [applied_log_zoom, remaining_budget].
+static func drain_zoom_budget(budget: float, dt: float) -> Array:
+	if absf(budget) < 0.0001:
+		return [0.0, 0.0]
+	var k: float = clampf(dt * ZOOM_RESPONSE, 0.0, 1.0)
+	var applied: float = budget * k
+	# Rate cap keeps a flood of events from turning into a teleport.
+	var cap: float = ZOOM_RATE_MAX * maxf(dt, 0.0001)
+	applied = clampf(applied, -cap, cap)
+	return [applied, budget - applied]
+
+
+static func clamp_zoom_budget(budget: float) -> float:
+	return clampf(budget, -ZOOM_BUDGET_MAX, ZOOM_BUDGET_MAX)
 
 
 # Pan: slide target perpendicular to the view using the camera basis right/up.

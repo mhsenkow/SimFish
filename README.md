@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.29](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.29)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
+**Latest release: [v0.2.30](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.30)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
 
 ## Where things are at (July 2026)
 
@@ -258,8 +258,18 @@ forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
 - Plant spatial grid (cuts O(plants × fish) per-tick scans by ~5–10×)
 - Distance LOD for fauna voxels via Godot's `visibility_range_end`
 - Self-tuning render tier — rolling FPS average auto-steps resolution
+- Frame budget tracks the actual fps cap, so a 30 fps-capped handheld no longer
+  reads as permanently over budget (which used to pin every fish at the lowest
+  cognition tier and max out shader cost)
+- First-launch render resolution seeded from the detected device tier
 - Frame-budget sparkline in the Render panel
 - Lazy substrate cell ticks (only diffuses dirty cells near active plants/waste)
+
+### Mobile chrome
+- Display safe-area insets (notch, punch-hole, home indicator) applied to the
+  tank shelf, stats bar, footer, right rail and every side panel
+- Touch targets sized from physical inches rather than render pixels, so a
+  1536 px viewport stretched onto a phone still yields a ~7 mm button
 
 ### Tank scenarios (the picker shown above)
 - Eight curated themes with distinct shapes (box, cube, hex, cylinder, sphere) + footprints + lighting + stocking
@@ -392,7 +402,8 @@ SimFish/
 - **UI / HUD** — `main.gd`, `hud_controller.gd`, `mobile_hud.gd`, `ui_panel_manager.gd`, `ui_icons.gd`, `panel_theme.gd`, `settings_panel.gd`, `render_panel.gd`, `sound_panel.gd`, `library_panel.gd`, `camera_views_panel.gd`, `fish_store.gd`, `scenario_picker.gd`, `creature_creator.gd` / `creature_naming.gd`, `lineage_tree_view.gd`, `walkthrough.gd`, `ollama_onboarding.gd`.
 - **Rendering helpers** — `voxel_mat.gd`, `voxel_batch.gd`, `capture.gd` (F12 photo + timelapse).
 - **Species data** — `real_species_library.gd` / `real_species_fauna.gd`.
-- **Dev-only** — `motion_debug_overlay.gd`, `smoke_tank_shapes.gd`.
+- **Chrome geometry** — `safe_area.gd` (display cutout insets, viewport-space), `panel_theme.gd` (tokens, touch-target sizing, panel transitions).
+- **Dev-only** — `motion_debug_overlay.gd`, `smoke_*.gd`, `dev/compile_check.gd`.
 
 ### `shaders/` (the pipeline)
 

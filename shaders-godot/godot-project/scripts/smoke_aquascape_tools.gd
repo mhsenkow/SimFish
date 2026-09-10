@@ -3,7 +3,7 @@ extends SceneTree
 # Exercise aquascape tool ergonomics: views, drag rules, nudge, line/box anchors.
 func _initialize() -> void:
 	await process_frame
-	var w: Node3D = load("res://scripts/smoke_aquascape_stub.gd").new() as Node3D
+	var w: Node3D = load("res://scripts/aquascape_test_stub.gd").new() as Node3D
 	w.name = "SmokeToolsStub"
 	root.add_child(w)
 	var hs := Node3D.new()
@@ -11,7 +11,7 @@ func _initialize() -> void:
 	w.add_child(hs)
 
 	var host := Node.new()
-	host.set_script(load("res://scripts/smoke_aquascape_ui_host.gd"))
+	host.set_script(load("res://scripts/aquascape_test_ui_host.gd"))
 	root.add_child(host)
 
 	var cam := Camera3D.new()

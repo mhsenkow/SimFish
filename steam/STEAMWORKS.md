@@ -27,7 +27,24 @@ App ID **4796460** · Store name **walstad loom**
    publish. Docs: [Platforms](https://partner.steamgames.com/doc/store/application/platforms).
    If CI notarized the build cleanly, also check **App Bundles Are Notarized**.
 
-4. **Copy depot IDs:**
+4. **Upload the Client Icon** (App Admin → **Store Presence → Library Assets**
+   → *Client Icon*): [`steam/store/assets/icons/clienticon.ico`](store/assets/icons/clienticon.ico).
+
+   This is the one icon Steam will *not* take from the build. Windows embeds
+   its icon into `WalstadLoom.exe` at export (`application/modify_resources`)
+   and macOS gets `icon.icns` inside the `.app`, but **Linux ELF binaries carry
+   no icon at all**, so on the Linux client and Steam Deck this file is the only
+   icon Steam has. The field also **rejects PNG** — it must be `.ico`, which is
+   why `clienticon.png` sitting next to it was never accepted.
+
+   Regenerate it (plus every capsule) with:
+   ```bash
+   steam/store/.venv/bin/python steam/store/generate_assets.py
+   ```
+   Library Assets changes go live only after **Publish** on the store page —
+   uploading alone leaves the placeholder showing.
+
+5. **Copy depot IDs:**
    ```bash
    cp steam/depot_ids.env.example steam/depot_ids.env
    # edit steam/depot_ids.env with your depot IDs

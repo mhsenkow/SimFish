@@ -2,7 +2,6 @@ extends SceneTree
 
 # REFINEMENT_II #39 — fish mind fields survive save/load without stale digests.
 
-const MindCacheRegistry = preload("res://scripts/mind_cache_registry.gd")
 
 
 func _initialize() -> void:

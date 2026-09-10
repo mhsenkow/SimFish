@@ -305,7 +305,7 @@ var pitch: float = DEFAULT_PITCH
 # in landscape keep the classic 3/4 perspective. Returns {target, radius,
 # yaw, pitch} so callers can apply uniformly.
 func _default_camera_for_tank() -> Dictionary:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var shape: String = String(cfg.get("tank_shape")) if cfg != null else "box"
 	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
@@ -336,7 +336,7 @@ func _default_camera_for_tank() -> Dictionary:
 # Soft clamp — keep a tiny margin so extreme zoom-in doesn't clip glass,
 # but leave a wide orbit shell for intentional close-ups and pull-backs.
 func _clamp_radius_to_frame(r: float) -> float:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
 	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
 	var span: float = maxf(tank_hw, tank_hd * 0.85)
@@ -383,16 +383,118 @@ func _zoom_from_scroll_event(mb: InputEventMouseButton) -> void:
 	if _mouse_over_porthole():
 		_adjust_portal_zoom(1.1 if wheel_up else (1.0 / 1.1))
 		return
-	var now_ms: int = Time.get_ticks_msec()
-	if now_ms - _wheel_burst_msec < 80:
-		_wheel_burst_count += 1
-	else:
-		_wheel_burst_count = 1
-	_wheel_burst_msec = now_ms
-	# Camera: wheel-up = zoom in = smaller radius.
-	var zf: float = CameraController.zoom_factor_from_scroll(
-		mb.factor, wheel_up, _wheel_burst_count)
-	_zoom_camera_by_factor(zf, false)
+	# Wheel-up = zoom in = smaller radius = negative log zoom.
+	var lz: float = CameraController.scroll_log_zoom(mb.factor)
+	_queue_zoom(-lz if wheel_up else lz, mb.position)
+
+
+# Two-finger trackpad scroll. `delta` is in scroll units, positive-down for y
+# and positive-right for x on macOS.
+func _handle_pan_gesture(pg: InputEventPanGesture) -> void:
+	var d: Vector2 = pg.delta
+	if d.length_squared() < 0.000001:
+		return
+	if _mouse_over_porthole():
+		if absf(d.y) > 0.01:
+			_adjust_portal_zoom(1.0 - clampf(d.y, -0.4, 0.4) * 0.12)
+		return
+	if Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_SPACE):
+		# Shift + two fingers slides the tank, matching Shift + drag.
+		_pan_camera_by_pixels(d * TRACKPAD_PAN_PIXELS)
+		return
+	# Vertical → zoom. Fingers up (delta.y negative on macOS) pushes in, the
+	# same direction as a wheel-up notch.
+	if absf(d.y) > 0.001:
+		_queue_zoom(d.y * TRACKPAD_PAN_ZOOM, pg.position)
+	# Horizontal → orbit yaw. Free on a trackpad and it is the one camera axis
+	# you cannot otherwise reach without pressing a button.
+	if absf(d.x) > 0.001:
+		yaw += d.x * TRACKPAD_PAN_YAW
+		_cam_spin_yaw = 0.0
+		_apply_camera()
+
+
+# Scroll units → log zoom. Tuned so one comfortable two-finger swipe is roughly
+# a 2x change, which is about what the same gesture does in a map app.
+const TRACKPAD_PAN_ZOOM: float = 0.085
+# Scroll units → radians of yaw.
+const TRACKPAD_PAN_YAW: float = 0.028
+# Scroll units → the pixel delta the existing pan path expects.
+const TRACKPAD_PAN_PIXELS: float = 9.0
+
+
+# Shared by Shift + two-finger scroll and the Shift-drag path, so both move the
+# tank by the same amount for the same visual distance.
+func _pan_camera_by_pixels(delta_px: Vector2) -> void:
+	if camera == null:
+		return
+	var basis_c: Basis = camera.global_transform.basis
+	target = CameraController.pan_target(target, delta_px,
+		basis_c.x, basis_c.y, radius)
+	_apply_camera()
+
+
+# Add to the pending zoom budget. `anchor_px` is where the gesture happened;
+# _drain_zoom() keeps the world point under it roughly fixed on screen.
+func _queue_zoom(log_zoom: float, anchor_px: Vector2 = Vector2.INF) -> void:
+	_zoom_budget = CameraController.clamp_zoom_budget(_zoom_budget + log_zoom)
+	if anchor_px != Vector2.INF:
+		_zoom_anchor_px = anchor_px
+	# A fresh zoom request cancels the orbit-release coast so the two do not
+	# fight over `radius`.
+	_cam_zoom_vel = 0.0
+
+
+# Called once per frame from _process. Applies a slice of the queued zoom.
+func _drain_zoom(dt: float) -> void:
+	if absf(_zoom_budget) < 0.0001:
+		return
+	var out: Array = CameraController.drain_zoom_budget(_zoom_budget, dt)
+	var applied: float = float(out[0])
+	_zoom_budget = float(out[1])
+	if absf(_zoom_budget) < 0.0005:
+		_zoom_budget = 0.0
+	if absf(applied) < 0.000001:
+		return
+	var before: Vector3 = _zoom_anchor_world()
+	_zoom_camera_by_factor(exp(applied), false)
+	# Cursor-anchored zoom: nudge the orbit target so the point that was under
+	# the pointer stays put. Partial (not 1.0) so the camera still drifts back
+	# toward the tank centre rather than letting you crawl away on the anchor.
+	if before != Vector3.INF and _current_projection_id == "perspective":
+		var after: Vector3 = _zoom_anchor_world()
+		if after != Vector3.INF:
+			target = CameraController.clamp_target(target + (before - after) * 0.85)
+			_apply_camera()
+
+
+# World point on the tank-centre plane under the zoom anchor pixel.
+func _zoom_anchor_world() -> Vector3:
+	if camera == null or _zoom_anchor_px == Vector2.INF:
+		return Vector3.INF
+	if display == null or not display.visible:
+		return Vector3.INF
+	# The 3D view is rendered into a SubViewport and blitted through `display`,
+	# so a window pixel has to be mapped into that rect before it means
+	# anything to the camera.
+	var rect: Rect2 = display.get_global_rect()
+	if rect.size.x <= 1.0 or rect.size.y <= 1.0:
+		return Vector3.INF
+	if not rect.has_point(_zoom_anchor_px):
+		return Vector3.INF
+	var vp_size: Vector2 = Vector2(camera.get_viewport().get_visible_rect().size)
+	var local: Vector2 = (_zoom_anchor_px - rect.position) / rect.size * vp_size
+	var origin: Vector3 = camera.project_ray_origin(local)
+	var dir: Vector3 = camera.project_ray_normal(local)
+	# Intersect the plane through the orbit target facing the camera.
+	var n: Vector3 = (camera.global_position - target).normalized()
+	var denom: float = dir.dot(n)
+	if absf(denom) < 0.0001:
+		return Vector3.INF
+	var t: float = (target - origin).dot(n) / denom
+	if t <= 0.0 or t > 500.0:
+		return Vector3.INF
+	return origin + dir * t
 
 
 func _save_aquascape_camera() -> void:
@@ -452,7 +554,7 @@ func _aquascape_scroll_build_plane(wheel_up: bool) -> bool:
 # tank from a distinctive angle. Cylinder tanks scale the radius up to keep
 # the full vertical column in frame. Box tanks use their half-width.
 func apply_camera_preset(preset_id: String) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var tank_h: float = float(cfg.get("tank_height")) if cfg != null else 7.0
 	var tank_hw: float = float(cfg.get("tank_half_w")) if cfg != null else 8.0
 	var tank_hd: float = float(cfg.get("tank_half_d")) if cfg != null else 4.0
@@ -504,7 +606,7 @@ func apply_camera_preset(preset_id: String) -> void:
 
 
 func save_camera_view_slot(idx: int) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	var view: Dictionary = {
@@ -521,7 +623,7 @@ func save_camera_view_slot(idx: int) -> void:
 
 
 func recall_camera_view_slot(idx: int) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	var view: Dictionary = {}
@@ -551,7 +653,7 @@ func set_auto_orbit_speed(v: float) -> void:
 func set_camera_fov(v: float) -> void:
 	if camera != null:
 		camera.fov = clampf(v, 20.0, 110.0)
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.camera_fov = float(camera.fov) if camera != null else v
 
@@ -693,7 +795,7 @@ func _show_pond_view_hint() -> void:
 
 
 func _apply_pond_visuals(on: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	if on:
@@ -732,7 +834,7 @@ func apply_camera_projection(proj_id: String) -> void:
 		"perspective":
 			camera.projection = Camera3D.PROJECTION_PERSPECTIVE
 			# Restore the user's last FOV if Light panel had one saved.
-			var cfg := get_node_or_null("/root/TankConfig")
+			var cfg := _cfg()
 			if cfg != null:
 				camera.fov = float(cfg.get("camera_fov") if cfg.get("camera_fov") != null else 55.0)
 		"orthographic":
@@ -780,7 +882,7 @@ func get_camera_projection_id() -> String:
 # Used both on initial projection switch and when the panel needs a
 # starting value for the size slider.
 func _ortho_size_from_tank() -> float:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return 18.0
 	var tank_h: float = float(cfg.get("tank_height") if cfg.get("tank_height") != null else 7.0)
@@ -847,7 +949,7 @@ func _topdown_perspective_radius(half_ext: Vector2, shape: String) -> float:
 
 
 func _topdown_framing() -> Dictionary:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var fp := _tank_footprint_from_config(cfg)
 	var half_ext: Vector2 = _topdown_plan_half_extents(fp)
 	var target_y: float = fp.water_y if cfg != null else 6.5
@@ -1011,11 +1113,19 @@ var _drag_button: int = 0  # which button initiated; used for click-vs-drag disp
 var _cam_spin_yaw: float = 0.0
 var _cam_spin_pitch: float = 0.0
 var _cam_zoom_vel: float = 0.0
+# Queued log-zoom from wheel / pinch, drained at a bounded rate in _process so
+# a trackpad's event flood and a mouse wheel's few notches feel the same.
+var _zoom_budget: float = 0.0
+# Screen point the pending zoom should stay anchored to. Zooming toward the
+# orbit centre makes whatever you were looking at slide out of frame, which is
+# most of why trackpad zoom felt wrong.
+var _zoom_anchor_px: Vector2 = Vector2.INF
+# Set on a Shift+LMB press; consumed on release if the pointer never moved far
+# enough to count as a pan drag.
+var _shift_startle_armed: bool = false
 const _CAM_SPIN_DECAY: float = 9.5
 const _CAM_SPIN_GAIN: float = 1.0
 # macOS trackpad sprays many wheel events — count bursts to soften steps.
-var _wheel_burst_count: int = 0
-var _wheel_burst_msec: int = 0
 var _auto_orbit: bool = false
 var _auto_orbit_was_pressed: bool = false
 const PAN_MOUSE_SENSITIVITY: float = CameraController.PAN_MOUSE_SENSITIVITY
@@ -1208,6 +1318,25 @@ var _feed_dock_refresh_t: float = 0.0
 var _feed_dock_lbl: Label = null
 
 
+# Memoised TankConfig autoload handle. main.gd resolved the "/root/TankConfig"
+# scene path in ~85 places, several of them inside _process(), so every
+# rendered frame paid for path resolution to a node that is created once at
+# boot and never moves.
+var _cfg_cache: Node = null
+
+
+func _cfg() -> Node:
+	if _cfg_cache != null and is_instance_valid(_cfg_cache):
+		return _cfg_cache
+	if is_inside_tree():
+		_cfg_cache = get_node_or_null("/root/TankConfig")
+	else:
+		var ml: MainLoop = Engine.get_main_loop()
+		if ml is SceneTree and (ml as SceneTree).root != null:
+			_cfg_cache = (ml as SceneTree).root.get_node_or_null("TankConfig")
+	return _cfg_cache
+
+
 func _is_mobile() -> bool:
 	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
 
@@ -1224,7 +1353,7 @@ func _ready() -> void:
 	# so the resolution change takes effect.
 	_ensure_post_pipeline()
 	_apply_render_config()
-	VoxelMat.warm_shader_variants(get_node_or_null("/root/TankConfig"))
+	VoxelMat.warm_shader_variants(_cfg())
 	VoxelMat.refresh_fauna_rims()
 	_wire_post_textures()
 	# Restore camera state if we saved it before a scene reload. Otherwise
@@ -1392,7 +1521,7 @@ func _restore_camera_state() -> void:
 	# Pull preserved camera yaw/pitch/radius/target from TankConfig if the
 	# user has saved it (i.e. they Applied settings at least once and we
 	# stashed the current view before reload).
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not cfg.camera_state_saved:
 		return
 	yaw = float(cfg.camera_yaw)
@@ -1415,7 +1544,7 @@ func _restore_camera_state() -> void:
 func _apply_portrait_camera_defaults_if_unsaved() -> void:
 	if not _is_mobile():
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or cfg.camera_state_saved:
 		return
 	# Use the shape-aware defaults helper. It already knows that a cylinder
@@ -1434,7 +1563,7 @@ func _apply_portrait_camera_defaults_if_unsaved() -> void:
 # reload_current_scene(). Stashes the current view so we can restore it
 # in the next _ready().
 func save_camera_state() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	cfg.camera_yaw = yaw
@@ -1526,7 +1655,7 @@ func _apply_render_config() -> void:
 	# the palette-quantize shader on the Display TextureRect, and the camera.
 	var cfg := MainUiRefs.tank_config(self)
 	if cfg == null:
-		cfg = get_node_or_null("/root/TankConfig")
+		cfg = _cfg()
 	if cfg == null:
 		return
 	var render_w: int = int(cfg.render_width)
@@ -1761,7 +1890,7 @@ func _biotope_palette_textures(key: String) -> Array:
 	if _biotope_palette_cache.has(key):
 		return _biotope_palette_cache[key]
 	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var cb_mode := "none"
 	if cfg != null:
 		cb_mode = String(cfg.get("colorblind_palette"))
@@ -1810,7 +1939,7 @@ func _sync_biotope_ui_cohesion(cfg: Node) -> void:
 
 
 func apply_material_palette() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	var water_mat: ShaderMaterial = null
@@ -1856,7 +1985,7 @@ func _process(dt: float) -> void:
 	if footer_bar != null and footer_bar.modulate != hud_dim:
 		footer_bar.modulate = hud_dim
 	if screensaver and not _moonlight_suggested:
-		var cfg_m := get_node_or_null("/root/TankConfig")
+		var cfg_m := _cfg()
 		if cfg_m != null and cfg_m.has_method("apply_lighting_preset"):
 			cfg_m.apply_lighting_preset("moonlit")
 			_moonlight_suggested = true
@@ -1926,7 +2055,7 @@ func _process(dt: float) -> void:
 				_haptic(22)
 				_show_radial_menu(_tap_start_pos)
 			else:
-				_auto_orbit = not _auto_orbit
+				_auto_orbit = AccessibilityRuntime.allow_auto_orbit(not _auto_orbit)
 				_haptic(15)
 				print_verbose("[walstad_loom] long-press: auto-orbit %s" % ("ON" if _auto_orbit else "OFF"))
 	
@@ -2152,6 +2281,8 @@ func _process_mouse_input(dt: float) -> void:
 						_apply_camera()
 
 
+	_drain_zoom(dt)
+
 	# Short ease-out after orbit/zoom release (#196).
 	if not _orbiting and not _auto_orbit:
 		var spin_decay: float = exp(-_CAM_SPIN_DECAY * dt)
@@ -2175,7 +2306,7 @@ func _process_mouse_input(dt: float) -> void:
 	if not _is_touch_active() and not _typing_focus_in_ui():
 		var g_now: bool = Input.is_key_pressed(KEY_G)
 		if g_now and not _auto_orbit_was_pressed:
-			_auto_orbit = not _auto_orbit
+			_auto_orbit = AccessibilityRuntime.allow_auto_orbit(not _auto_orbit)
 		_auto_orbit_was_pressed = g_now
 	if _auto_orbit and AccessibilityRuntime.motion_scale() > 0.0:
 		yaw = CameraController.auto_orbit_yaw(yaw, AUTO_ORBIT_SPEED, dt)
@@ -2636,7 +2767,7 @@ func _fade_in_from_black() -> void:
 
 
 func _maybe_play_opening_camera() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null and cfg.camera_state_saved:
 		return
 	var hero: Dictionary = _default_camera_for_tank()
@@ -3376,7 +3507,7 @@ func _play_photo_flash() -> void:
 
 
 func _take_signature_shot() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		AestheticsRuntime.apply_signature_shot(cfg, _sim)
 		_apply_render_config()
@@ -3603,7 +3734,7 @@ func follow_creature(creature: Node, mode: int = FollowMode.PIP) -> void:
 		MindScheduler.precache_for_fish(creature as Fish, _sim)
 		if _sim.has_method("request_creature_thought"):
 			var thought: String = String(_sim.request_creature_thought(creature, "follow")).strip_edges()
-			var cfg := get_node_or_null("/root/TankConfig")
+			var cfg := _cfg()
 			if thought != "" and cfg != null and bool(cfg.effective_fish_thought_voice_enabled()):
 				_show_follow_thought_typewriter(creature as Fish, _creature_display_name(creature), thought)
 	if portal_container != null:
@@ -3885,7 +4016,7 @@ func _refresh_favorite_halos() -> void:
 
 
 func _voice_ui_enabled() -> bool:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	return cfg == null or not bool(cfg.sentience_voice_off)
 
 
@@ -3949,7 +4080,7 @@ func _find_toast_body_label(card: PanelContainer) -> Label:
 func _on_fish_thought_spoke(speaker: Fish, text: String) -> void:
 	if text.strip_edges() == "" or speaker == null:
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null and not bool(cfg.effective_fish_thought_voice_enabled()):
 		if is_instance_valid(speaker) and speaker.has_method("answer_affect_cue"):
 			speaker.answer_affect_cue("gaze_lock")
@@ -4366,7 +4497,7 @@ func _tick_follow_inner_thoughts(dt: float) -> void:
 		return
 	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not bool(cfg.effective_fish_thought_voice_enabled()):
 		return
 	if _follow_thought_tw_full != "" and _follow_thought_tw_idx < _follow_thought_tw_full.length():
@@ -4397,7 +4528,7 @@ func _ensure_workspace_inspector() -> void:
 
 
 func _tick_workspace_inspector(dt: float) -> void:
-	var cfg: Node = get_node_or_null("/root/TankConfig")
+	var cfg: Node = _cfg()
 	var show_panel: bool = OS.is_debug_build()
 	if cfg != null and cfg.get("inner_life_panel") != null:
 		show_panel = bool(cfg.inner_life_panel)
@@ -4449,7 +4580,11 @@ func _sample_palette_color_count() -> int:
 	var img: Image = display.texture.get_image()
 	if img == null or img.get_width() < 8:
 		return -1
+	# Deliberate integer division: these are pixel strides for the sampling
+	# loop below, so the truncation is the point.
+	@warning_ignore("integer_division")
 	var step_x: int = maxi(1, img.get_width() / 96)
+	@warning_ignore("integer_division")
 	var step_y: int = maxi(1, img.get_height() / 54)
 	var seen: Dictionary = {}
 	for y in range(0, img.get_height(), step_y):
@@ -4461,7 +4596,7 @@ func _sample_palette_color_count() -> int:
 
 
 func _tick_perf_hud(dt: float) -> void:
-	var cfg: Node = get_node_or_null("/root/TankConfig")
+	var cfg: Node = _cfg()
 	if cfg == null or not bool(cfg.get("perf_hud_enabled") if cfg.get("perf_hud_enabled") != null else false):
 		if _perf_hud != null and is_instance_valid(_perf_hud):
 			_perf_hud.visible = false
@@ -4593,7 +4728,7 @@ func _update_follow_dof() -> void:
 		return
 	var want_follow: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
 		and is_instance_valid(_follow_target)
-	var cfg_dof := get_node_or_null("/root/TankConfig")
+	var cfg_dof := _cfg()
 	var want_room: bool = cfg_dof != null and bool(cfg_dof.get("tank_room_dof"))
 	# REAL_TANK_FIDELITY #189–190 — photo / macro shallow DOF.
 	var want_photo: bool = cfg_dof != null and (
@@ -5527,7 +5662,7 @@ func _aquascape_import_continue() -> void:
 
 
 func _maybe_open_aquascape_on_load() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not bool(cfg.get("aquascape_pending")):
 		return
 	cfg.aquascape_pending = false
@@ -5538,7 +5673,7 @@ func _maybe_open_aquascape_on_load() -> void:
 # ---- Walkthrough hooks (called by walkthrough.gd) ----
 
 func _maybe_start_walkthrough() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	if cfg.walkthrough_pending:
@@ -5664,6 +5799,25 @@ func _input(event: InputEvent) -> void:
 		_handle_screen_drag(event as InputEventScreenDrag)
 		return
 
+	# ---- macOS trackpad two-finger scroll ----
+	# Godot's macOS backend routes a PRECISE scrolling device (a trackpad) to
+	# InputEventPanGesture and only falls back to wheel buttons for a notched
+	# mouse. Nothing consumed the pan gesture, which is why two fingers up and
+	# down did nothing on a MacBook while the same motion on a mouse zoomed.
+	#
+	# Mapping, chosen to match what a trackpad user already expects from other
+	# 3D viewers:
+	#   two fingers up / down     → zoom (push in / pull out)
+	#   two fingers left / right  → orbit yaw (spin the tank)
+	#   Shift + two fingers       → pan, both axes
+	if event is InputEventPanGesture and not _is_touch_active():
+		var pg: InputEventPanGesture = event as InputEventPanGesture
+		if _click_hits_interactive_hud(pg.position):
+			return
+		_handle_pan_gesture(pg)
+		get_viewport().set_input_as_handled()
+		return
+
 	# ---- macOS trackpad pinch (desktop; mobile uses ScreenDrag pinch) ----
 	if event is InputEventMagnifyGesture and not _is_touch_active():
 		var mg: InputEventMagnifyGesture = event as InputEventMagnifyGesture
@@ -5673,8 +5827,9 @@ func _input(event: InputEvent) -> void:
 			# magnify > 1 → fingers apart → zoom in portal.
 			_adjust_portal_zoom(clampf(mg.factor, 0.85, 1.18))
 		else:
-			# Returns radius multiplier directly (magnify > 1 → factor < 1).
-			_zoom_camera_by_factor(CameraController.zoom_factor_from_magnify(mg.factor), false)
+			# Pinch feeds the same budget as the wheel, so the two blend
+			# instead of fighting for `radius`.
+			_queue_zoom(CameraController.magnify_log_zoom(mg.factor), mg.position)
 		get_viewport().set_input_as_handled()
 		return
 
@@ -5685,6 +5840,15 @@ func _input(event: InputEvent) -> void:
 		var mb: InputEventMouseButton = event
 		# Short-click feed on LMB release (before the pressed branch).
 		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
+			# Shift + click (not drag) startles the fish. A Shift *drag* is a
+			# camera pan, so this only fires when the pointer stayed put.
+			if _shift_startle_armed and _drag_total < DRAG_DEADZONE_PX \
+					and not _aquascape.is_active:
+				_shift_startle_armed = false
+				_startle_fish_near_tap(_drag_start)
+				get_viewport().set_input_as_handled()
+				return
+			_shift_startle_armed = false
 			# Short click on water → feed (on release, before _process polling).
 			if not _aquascape.is_active and not is_pond_mode() \
 					and not _press_skip_feed and _drag_button == MOUSE_BUTTON_LEFT \
@@ -5759,8 +5923,14 @@ func _input(event: InputEvent) -> void:
 					_suppress_drag_until_release = true
 					_press_skip_feed = true
 				elif Input.is_key_pressed(KEY_SHIFT):
-					_startle_fish_near_tap(mb.position)
-					_suppress_drag_until_release = true
+					# Deliberately NOT startling here. Shift is also the pan
+					# modifier, and firing on press used to set
+					# _suppress_drag_until_release, which killed the drag before
+					# _process_mouse_input could start it — so Shift+drag pan
+					# could never engage. The startle now fires on release only
+					# if the pointer never left the deadzone, exactly like the
+					# short-click feed above.
+					_shift_startle_armed = true
 					_press_skip_feed = true
 				elif is_pond_mode() and _pond_surface_tap(mb.position):
 					_suppress_drag_until_release = true
@@ -5987,14 +6157,24 @@ func _touch_pick_creature(screen_pos: Vector2) -> bool:
 
 # ---- Mobile UI setup ----
 
+# Footer geometry, re-applied on every viewport resize. Kept separate from
+# _setup_footer_bar (which also does one-shot styling + signal wiring) because
+# a portrait<->landscape flip changes the safe-area inset under the bar.
+func _apply_footer_layout() -> void:
+	if footer_bar == null:
+		return
+	var pad: Vector4 = _safe_pad()
+	footer_bar.offset_left = PanelTheme.EDGE_MARGIN + pad.x
+	footer_bar.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
+	footer_bar.offset_top = -(PanelTheme.FOOTER_HEIGHT + pad.w)
+	footer_bar.offset_bottom = -pad.w
+
+
 func _setup_footer_bar() -> void:
 	if footer_bar == null:
 		return
 	footer_bar.add_theme_stylebox_override("panel", PanelTheme.make_footer_bar_style())
-	footer_bar.offset_left = PanelTheme.EDGE_MARGIN
-	footer_bar.offset_right = -PanelTheme.EDGE_MARGIN
-	footer_bar.offset_top = -PanelTheme.FOOTER_HEIGHT
-	footer_bar.offset_bottom = 0.0
+	_apply_footer_layout()
 	var margin: MarginContainer = footer_bar.get_node_or_null("Margin") as MarginContainer
 	if margin != null:
 		margin.add_theme_constant_override("margin_left", 12)
@@ -6098,7 +6278,7 @@ func _apply_camera() -> void:
 	# world-space size of a single render pixel. Eliminates the sub-pixel
 	# jitter you see on swimming fish when the camera is drifting.
 	# world_per_pixel ≈ 2·tan(fov/2)·radius / render_height
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	# REAL_TANK_FIDELITY #187–188 — handheld photo drift when enabled.
 	if cfg != null and bool(cfg.get("photo_handheld")):
 		var held: Dictionary = CameraController.handheld_offset(Time.get_ticks_msec() * 0.001, 1.0)
@@ -6629,6 +6809,7 @@ func _on_viewport_resized() -> void:
 	_apply_mobile_render_orientation_if_needed()
 	_apply_hud_layout()
 	_apply_rail_dock_layout()
+	_apply_footer_layout()
 	_apply_panel_layout()
 	_apply_render_config()
 
@@ -6701,7 +6882,7 @@ var _adaptive_shader_cost: int = 0
 
 func _apply_adaptive_shader_cost() -> void:
 	var sm := _quantize_material()
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if sm == null or cfg == null:
 		return
 	sm.set_shader_parameter("outline_strength",
@@ -6734,7 +6915,7 @@ func _apply_adaptive_shader_cost() -> void:
 
 
 func _adaptive_quality_tick(dt: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not bool(cfg.get("adaptive_quality")):
 		return
 	# REFINEMENT_II #74 — step shader cost immediately on governor breach.
@@ -6756,6 +6937,14 @@ func _adaptive_quality_tick(dt: float) -> void:
 		return
 	var fps: float = _frame_history_avg_fps()
 	var target_fps: float = float(cfg.get("adaptive_quality_target_fps"))
+	# Never chase a target the frame cap forbids. Mobile defaults to
+	# fps_cap = 30 while the quality target ships at 55, so without this the
+	# scaler read every capped-but-healthy device as 25 fps short and walked
+	# the render resolution all the way down to 256x144 on first launch.
+	# Aim just under the cap so a device that is genuinely holding the cap
+	# reads as having headroom.
+	if Engine.max_fps > 0:
+		target_fps = minf(target_fps, float(Engine.max_fps) * 0.97)
 	# #63 — fold governor p95 pressure into the FPS the scaler sees.
 	fps -= PerfGovernor.adaptive_fps_penalty()
 	var governor_down: bool = PerfGovernor.governor_step_down()
@@ -6841,7 +7030,7 @@ func _update_palette_tod_tint() -> void:
 		phase = fposmod(float(_sim.day_phase), 1.0)
 	# Pick the four anchor tints — built-in unless the user has overridden
 	# them in the per-phase color section of the Light panel.
-	var cfg_pre := get_node_or_null("/root/TankConfig")
+	var cfg_pre := _cfg()
 	var dawn_v: Vector3 = _TOD_DAWN
 	var day_v: Vector3 = _TOD_DAY
 	var dusk_v: Vector3 = _TOD_DUSK
@@ -6867,7 +7056,7 @@ func _update_palette_tod_tint() -> void:
 	#   2. Warmth nudges hue between cool and warm (cfg.light_warmth 0..1).
 	#   3. Master kill switch overrides everything → near-black.
 	# Defaults preserve the legacy feel when sliders sit at their mid-points.
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		# Global intensity is a 2-segment curve anchored at 0.5 → 1.0 so saved
 		# tanks keep their look. Below 0.5 the scene dims down toward 0.15;
@@ -6997,7 +7186,7 @@ func _update_palette_tod_tint() -> void:
 func _apply_display_layout() -> void:
 	if display == null:
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	var integer_lock: bool = cfg != null and bool(cfg.get("integer_upscale"))
 	if not integer_lock:
 		# Restore full-rect anchored layout (matches the .tscn default).
@@ -7053,16 +7242,25 @@ func _apply_display_layout() -> void:
 	display.offset_bottom = origin.y + out_size.y
 
 
+# Cached display safe-area padding (left, top, right, bottom) in viewport
+# pixels. Zero on desktop; on a notched phone this is what keeps the stats bar
+# out from under the cutout and the footer above the home indicator.
+func _safe_pad() -> Vector4:
+	return SafeArea.insets(get_viewport())
+
+
 func _rail_edge_inset() -> float:
+	var pad: Vector4 = _safe_pad()
 	if _rail_dock == "bottom":
-		return PanelTheme.EDGE_MARGIN + 4.0
-	return PanelTheme.rail_chrome_inset()
+		return PanelTheme.EDGE_MARGIN + 4.0 + pad.z
+	return PanelTheme.rail_chrome_inset(get_viewport()) + pad.z
 
 
 func _hud_bottom_inset() -> float:
+	var pad_b: float = _safe_pad().w
 	if _rail_dock == "bottom":
-		return PanelTheme.FOOTER_HEIGHT + PanelTheme.RAIL_BOTTOM_HEIGHT
-	return PanelTheme.FOOTER_HEIGHT
+		return PanelTheme.FOOTER_HEIGHT + PanelTheme.RAIL_BOTTOM_HEIGHT + pad_b
+	return PanelTheme.FOOTER_HEIGHT + pad_b
 
 
 func _want_bottom_rail(_vp: Vector2) -> bool:
@@ -7242,38 +7440,38 @@ func _apply_rail_dock_layout() -> void:
 			_rail_vbox.visible = true
 		_apply_rail_button_labels(dock == "bottom")
 
+	var pad: Vector4 = _safe_pad()
 	if dock == "bottom":
 		right_rail.anchor_left = 0.0
 		right_rail.anchor_top = 1.0
 		right_rail.anchor_right = 1.0
 		right_rail.anchor_bottom = 1.0
-		right_rail.offset_left = PanelTheme.EDGE_MARGIN
-		right_rail.offset_top = -PanelTheme.RAIL_BOTTOM_HEIGHT
-		right_rail.offset_right = -PanelTheme.EDGE_MARGIN
-		right_rail.offset_bottom = -PanelTheme.EDGE_MARGIN
+		right_rail.offset_left = PanelTheme.EDGE_MARGIN + pad.x
+		right_rail.offset_top = -(PanelTheme.RAIL_BOTTOM_HEIGHT + pad.w)
+		right_rail.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
+		right_rail.offset_bottom = -(PanelTheme.EDGE_MARGIN + pad.w)
 	else:
 		var compact: bool = _hud_layout == "compact"
 		right_rail.anchor_left = 1.0
 		right_rail.anchor_top = 0.0
 		right_rail.anchor_right = 1.0
 		right_rail.anchor_bottom = 1.0
-		if compact:
-			right_rail.offset_left = -56.0
-			right_rail.offset_top = 44.0
-			right_rail.offset_right = -4.0
-			right_rail.offset_bottom = -76.0
-		else:
-			right_rail.offset_left = -64.0
-			right_rail.offset_top = 48.0
-			right_rail.offset_right = -8.0
-			right_rail.offset_bottom = -40.0
+		# Rail width follows the touch-sized buttons (identity on desktop).
+		var btn_edge: float = PanelTheme.rail_button_size(get_viewport())
+		var gutter: float = 4.0 if compact else 8.0
+		var rail_w: float = maxf(56.0 if compact else 64.0, btn_edge + gutter * 2.0)
+		right_rail.offset_left = -(rail_w + pad.z)
+		right_rail.offset_top = (44.0 if compact else 48.0) + pad.y
+		right_rail.offset_right = -(gutter + pad.z)
+		right_rail.offset_bottom = -((76.0 if compact else 40.0) + pad.w)
 
 
 func _apply_panel_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var top: float = PanelTheme.HUD_TOP
+	var pad: Vector4 = _safe_pad()
+	var top: float = PanelTheme.HUD_TOP + pad.y
 	var bottom: float = _hud_bottom_inset()
-	var edge: float = PanelTheme.EDGE_MARGIN
+	var edge: float = PanelTheme.EDGE_MARGIN + pad.x
 	var rail: float = _rail_edge_inset()
 	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
 
@@ -7377,10 +7575,17 @@ func _apply_hud_layout() -> void:
 		elif k != "alert":
 			chip.visible = true
 
-	var rail_edge: float = _rail_edge_inset()
-	var left_inset: float = 96.0 if layout != "compact" else 88.0
+	var pad: Vector4 = _safe_pad()
+	var left_inset: float = (96.0 if layout != "compact" else 88.0) + pad.x
 	if aqua_build:
 		left_inset = _aquascape_workbench_left() + _aquascape_workbench_width() + 8.0
+	# Menu cluster rides the same top/left inset as the stats bar so the two
+	# stay on one baseline under a notch.
+	if left_cluster != null:
+		left_cluster.offset_left = 8.0 + pad.x
+		left_cluster.offset_top = 6.0 + pad.y
+	if top_hud != null:
+		top_hud.offset_bottom = PanelTheme.HUD_TOP + pad.y
 	if stats_bar != null:
 		# Shrink the top bar footprint — don't span the full tank width (#169, #171).
 		# When the creature card is open, leave a clear gutter so morph/snail
@@ -7390,8 +7595,9 @@ func _apply_hud_layout() -> void:
 		var right_cap: float = PanelTheme.portal_chrome_inset(portal_open, above_layout)
 		right_cap = maxf(right_cap, w * 0.22)
 		stats_bar.offset_left = left_inset
-		stats_bar.offset_right = -right_cap
-		stats_bar.offset_top = 4.0
+		stats_bar.offset_right = -(right_cap + pad.z)
+		stats_bar.offset_top = 4.0 + pad.y
+		stats_bar.offset_bottom = 50.0 + pad.y
 
 	if layout_changed:
 		_render_header()
@@ -9292,7 +9498,7 @@ func _on_sun_pad_input(ev: InputEvent, pad: Control) -> void:
 	# camera's `yaw` / `pitch` class members at line 180/181.
 	var light_yaw_v: float = clampf(pos.x / sz.x, 0.0, 1.0)
 	var light_pitch_v: float = clampf(pos.y / sz.y, 0.0, 1.0)
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.light_yaw = light_yaw_v
 		cfg.light_pitch = light_pitch_v
@@ -9311,7 +9517,7 @@ func _on_sun_pad_draw(pad: Control) -> void:
 	pad.draw_line(Vector2(0, sz.y * 0.5), Vector2(sz.x, sz.y * 0.5),
 		Color(0.4, 0.45, 0.55, 0.4))
 	# Marker for the current sun position
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	# See _on_sun_pad_input — these locals avoid shadowing camera yaw/pitch.
@@ -9363,7 +9569,7 @@ func _add_light_section(parent: Node, label_text: String) -> void:
 
 
 func _pull_light_panel_values() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	# Suppress the "user touched a control → switch to Custom" hook while we
@@ -9496,7 +9702,7 @@ func _day_phase_label(p: float) -> String:
 func _refresh_light_panel_live() -> void:
 	if _light_day_phase_slider == null or _sim == null:
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null or not bool(cfg.day_cycle_enabled):
 		return
 	if _light_day_phase_slider.has_focus():
@@ -9524,7 +9730,7 @@ func _sync_light_btn() -> void:
 func _light_mark_custom() -> void:
 	if _light_applying_preset:
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.lighting_preset = "custom"
 	if _light_preset_option != null and _light_preset_option.item_count > 0:
@@ -9532,27 +9738,27 @@ func _light_mark_custom() -> void:
 
 
 func _on_light_tank_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tank_lights_on = v
 
 
 func _on_heater_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.heater_enabled = v
 	_light_mark_custom()
 
 
 func _on_light_caustics_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.light_caustics = v
 	_light_mark_custom()
 
 
 func _on_global_intensity_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.global_intensity = v
 	if _light_global_intensity_value != null:
@@ -9561,7 +9767,7 @@ func _on_global_intensity_changed(v: float) -> void:
 
 
 func _on_global_warmth_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.global_warmth = v
 	if _light_global_warmth_value != null:
@@ -9570,7 +9776,7 @@ func _on_global_warmth_changed(v: float) -> void:
 
 
 func _on_fixture_intensity_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tank_fixture_intensity = v
 	if _light_fixture_intensity_value != null:
@@ -9579,21 +9785,21 @@ func _on_fixture_intensity_changed(v: float) -> void:
 
 
 func _on_fixture_color_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tank_fixture_color = c
 	_light_mark_custom()
 
 
 func _on_light_master_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.light_master_enabled = v
 	_light_mark_custom()
 
 
 func _on_day_cycle_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.day_cycle_enabled = v
 	_light_mark_custom()
@@ -9609,7 +9815,7 @@ func _on_day_phase_changed(v: float) -> void:
 
 
 func _on_day_length_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.day_length_s = v
 	if _light_day_length_value != null:
@@ -9618,7 +9824,7 @@ func _on_day_length_changed(v: float) -> void:
 
 
 func _on_sunset_drama_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.sunset_drama = v
 	if _light_sunset_drama_value != null:
@@ -9627,14 +9833,14 @@ func _on_sunset_drama_changed(v: float) -> void:
 
 
 func _on_moon_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.moonlight_enabled = v
 	_light_mark_custom()
 
 
 func _on_moon_intensity_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.moonlight_intensity = v
 	if _light_moon_intensity_value != null:
@@ -9643,21 +9849,21 @@ func _on_moon_intensity_changed(v: float) -> void:
 
 
 func _on_moon_color_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.moonlight_color = c
 	_light_mark_custom()
 
 
 func _on_accent1_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent1_enabled = v
 	_light_mark_custom()
 
 
 func _on_accent1_intensity_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent1_intensity = v
 	if _light_accent1_intensity_value != null:
@@ -9666,21 +9872,21 @@ func _on_accent1_intensity_changed(v: float) -> void:
 
 
 func _on_accent1_color_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent1_color = c
 	_light_mark_custom()
 
 
 func _on_accent2_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent2_enabled = v
 	_light_mark_custom()
 
 
 func _on_accent2_intensity_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent2_intensity = v
 	if _light_accent2_intensity_value != null:
@@ -9689,14 +9895,14 @@ func _on_accent2_intensity_changed(v: float) -> void:
 
 
 func _on_accent2_color_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.accent2_color = c
 	_light_mark_custom()
 
 
 func _on_pp_vignette_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_vignette_strength = v
 	if _light_pp_vignette_value != null:
@@ -9705,7 +9911,7 @@ func _on_pp_vignette_changed(v: float) -> void:
 
 
 func _on_pp_bloom_threshold_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_bloom_threshold = v
 	if _light_pp_bloom_threshold_value != null:
@@ -9714,7 +9920,7 @@ func _on_pp_bloom_threshold_changed(v: float) -> void:
 
 
 func _on_pp_bloom_strength_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_bloom_strength = v
 	if _light_pp_bloom_strength_value != null:
@@ -9723,7 +9929,7 @@ func _on_pp_bloom_strength_changed(v: float) -> void:
 
 
 func _on_pp_outline_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.outline_strength = v
 	if _light_pp_outline_value != null:
@@ -9732,7 +9938,7 @@ func _on_pp_outline_changed(v: float) -> void:
 
 
 func _on_pp_dither_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.dither_strength = v
 	if _light_pp_dither_value != null:
@@ -9741,7 +9947,7 @@ func _on_pp_dither_changed(v: float) -> void:
 
 
 func _on_pp_crt_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.crt_strength = v
 	if _light_pp_crt_value != null:
@@ -9750,7 +9956,7 @@ func _on_pp_crt_changed(v: float) -> void:
 
 
 func _on_pp_vignette_falloff_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_vignette_falloff = v
 	if _light_pp_vignette_falloff_value != null:
@@ -9759,21 +9965,21 @@ func _on_pp_vignette_falloff_changed(v: float) -> void:
 
 
 func _on_pp_region_dither_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.dither_region_aware = v
 	_light_mark_custom()
 
 
 func _on_pp_bank_lock_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.palette_bank_lock = v
 	_light_mark_custom()
 
 
 func _on_ambient_floor_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.ambient_floor = v
 	if _light_ambient_floor_value != null:
@@ -9782,7 +9988,7 @@ func _on_ambient_floor_changed(v: float) -> void:
 
 
 func _on_biolum_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.biolum_multiplier = v
 	if _light_biolum_value != null:
@@ -9791,7 +9997,7 @@ func _on_biolum_changed(v: float) -> void:
 
 
 func _on_caustic_strength_changed(v: float) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.caustic_intensity_user = v
 	if _light_caustic_strength_value != null:
@@ -9800,35 +10006,35 @@ func _on_caustic_strength_changed(v: float) -> void:
 
 
 func _on_tod_override_toggled(v: bool) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tod_use_overrides = v
 	_light_mark_custom()
 
 
 func _on_tod_dawn_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tod_dawn_color = c
 	_light_mark_custom()
 
 
 func _on_tod_day_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tod_day_color = c
 	_light_mark_custom()
 
 
 func _on_tod_dusk_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tod_dusk_color = c
 	_light_mark_custom()
 
 
 func _on_tod_night_changed(c: Color) -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null:
 		cfg.tod_night_color = c
 	_light_mark_custom()
@@ -9844,7 +10050,7 @@ func _on_lighting_randomize_pressed() -> void:
 	# Apply through the same path as the dropdown so UI stays in sync, then
 	# nudge a few key values for variety. Marking custom afterwards so the
 	# dropdown reflects the manual tweak.
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	_light_applying_preset = true
@@ -9870,7 +10076,7 @@ func _on_lighting_preset_selected(idx: int) -> void:
 	if _light_preset_option == null:
 		return
 	var slug: String = String(_light_preset_option.get_item_metadata(idx))
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	_light_applying_preset = true
@@ -10180,7 +10386,7 @@ func _on_focus_in() -> void:
 
 
 func _persist_last_quit_unix() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	cfg.last_quit_unix = int(Time.get_unix_time_from_system())
@@ -10191,7 +10397,7 @@ func _persist_last_quit_unix() -> void:
 # Cheap heuristic for classifying device tier on first mobile launch.
 # Records screen class only — does not override render resolution or adaptive quality.
 func _pick_device_tier_if_unset() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	if String(cfg.device_tier) != "":
@@ -10211,14 +10417,50 @@ func _pick_device_tier_if_unset() -> void:
 		cfg.device_tier = "high"
 	else:
 		cfg.device_tier = "mid"
+	_seed_render_budget_for_tier(cfg, String(cfg.device_tier))
 	cfg.save_to_disk()
 	print_verbose("[walstad_loom] device_tier picked: %s (short side %d px, %.1f GB RAM)" \
 		% [cfg.device_tier, short_side, ram_gb])
 
 
+# First-launch render budget. Without this every device — a 3 GB phone
+# included — booted at the desktop default of 1024x576 and only found its way
+# down through the adaptive scaler, which costs the player several seconds of
+# stutter and a SubViewport reallocation per step. Desktop keeps its default;
+# only handhelds get seeded.
+const _TIER_RENDER_SEED := {
+	"low": Vector2i(384, 216),
+	"mid": Vector2i(512, 288),
+	"high": Vector2i(768, 432),
+}
+
+
+func _seed_render_budget_for_tier(cfg: Node, tier: String) -> void:
+	if cfg == null or not _is_mobile():
+		return
+	if not _TIER_RENDER_SEED.has(tier):
+		return
+	var seed_res: Vector2i = _TIER_RENDER_SEED[tier]
+	cfg.set("render_width", seed_res.x)
+	cfg.set("render_height", seed_res.y)
+	# Low-tier handhelds also start with the cheap post stack; the adaptive
+	# controller can still walk it back up if the device turns out to cope.
+	if tier == "low":
+		_adaptive_shader_cost = 2
+	elif tier == "mid":
+		_adaptive_shader_cost = 1
+	# The first _apply_render_config() already ran from _on_viewport_resized()
+	# with the desktop default, so re-apply now that the budget is seeded.
+	_apply_render_config()
+	if _adaptive_shader_cost > 0:
+		_apply_adaptive_shader_cost()
+	print_verbose("[walstad_loom] seeded render budget %dx%d for tier %s"
+		% [seed_res.x, seed_res.y, tier])
+
+
 # ---- FPS cap (battery saver) ----
 func _apply_fps_cap() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	# First-mobile-launch default: if no cap is set, lock to 30 — sim ticks
@@ -10249,7 +10491,7 @@ func _apply_fps_cap() -> void:
 # ShaderMaterial and writes uniforms; falls back to a no-op if the material
 # isn't ready yet (e.g. called before _apply_render_config in _ready).
 func _apply_battery_saver_visuals() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	var sm := _quantize_material()
@@ -10284,7 +10526,7 @@ func _apply_battery_saver_visuals() -> void:
 # accept a soft "you were away" message readily; sim time-skip would need
 # a more careful implementation.
 func _show_welcome_back_if_returning() -> void:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg == null:
 		return
 	var last_quit: int = int(cfg.last_quit_unix)
@@ -10562,29 +10804,29 @@ func _dismiss_blocking_overlays() -> bool:
 	if _light_panel != null and _light_panel.visible:
 		_close_light_panel()
 		return true
-	if settings_panel != null and settings_panel.visible:
+	# is_panel_open() rather than .visible: a panel mid-close is still visible,
+	# and a second Escape must fall through to the next layer instead of
+	# re-opening the one that is already on its way out.
+	if PanelTheme.is_panel_open(settings_panel):
 		if settings_panel.has_method("toggle"):
 			settings_panel.toggle()
 		else:
-			settings_panel.visible = false
-			settings_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			PanelTheme.transition_panel(settings_panel, false)
 		if _ui_panels != null:
 			_ui_panels.notify_side_closed(UiPanelManager.SIDE_SETTINGS)
 		_sync_rail_toggles()
 		return true
-	if render_panel != null and render_panel.visible:
-		render_panel.visible = false
-		render_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if PanelTheme.is_panel_open(render_panel):
+		PanelTheme.transition_panel(render_panel, false)
 		if _ui_panels != null:
 			_ui_panels.notify_side_closed(UiPanelManager.SIDE_RENDER)
 		_sync_rail_toggles()
 		return true
-	if sound_panel != null and sound_panel.visible:
+	if PanelTheme.is_panel_open(sound_panel):
 		if sound_panel.has_method("_close"):
 			sound_panel._close()
 		else:
-			sound_panel.visible = false
-			sound_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			PanelTheme.transition_panel(sound_panel, false)
 		if _ui_panels != null:
 			_ui_panels.notify_side_closed(UiPanelManager.SIDE_SOUND)
 		_sync_rail_toggles()
@@ -10639,7 +10881,7 @@ func _dismiss_blocking_overlays() -> bool:
 func _maybe_show_tutorial() -> void:
 	if bool(_global_pref("tutorial_seen", false)):
 		return
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg := _cfg()
 	if cfg != null and cfg.tutorial_seen:
 		_set_global_pref("tutorial_seen", true)
 		return

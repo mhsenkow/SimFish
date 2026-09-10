@@ -163,13 +163,24 @@ func _toggle_overflow_menu() -> void:
 func _apply_responsive_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	var narrow: bool = vp.x < PanelTheme.MOBILE_NARROW_W
+	# The tank shelf is the first screen a phone player sees, and in landscape
+	# the cutout sits on one of the long edges — right where the leftmost card
+	# and the title row live. Inset the whole shelf, not just the top.
+	var pad: Vector4 = SafeArea.insets(get_viewport())
 
 	if _top_shell != null:
 		var top_h: float = PanelTheme.SHELF_TOP_BAR_H
 		if narrow:
 			top_h = 96.0
+		_top_shell.offset_left = PanelTheme.EDGE_MARGIN + pad.x
+		_top_shell.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
+		_top_shell.offset_top = PanelTheme.EDGE_MARGIN + pad.y
 		_top_shell.offset_bottom = _top_shell.offset_top + top_h
-		_scroll.offset_top = _top_shell.offset_top + top_h + PanelTheme.EDGE_MARGIN
+	if _scroll != null and _top_shell != null:
+		_scroll.offset_left = PanelTheme.EDGE_MARGIN + pad.x
+		_scroll.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
+		_scroll.offset_top = _top_shell.offset_bottom + PanelTheme.EDGE_MARGIN
+		_scroll.offset_bottom = -(PanelTheme.EDGE_MARGIN + pad.w)
 
 	if _create_cluster != null:
 		_create_cluster.visible = true
@@ -202,7 +213,8 @@ func _grid_metrics() -> Dictionary:
 	var portrait: bool = vp.y > vp.x * 1.02
 	# Inner width: viewport minus the scroll's edge insets and the vertical
 	# scrollbar gutter, so cards don't run under the scrollbar.
-	var avail: float = vp.x - PanelTheme.EDGE_MARGIN * 2.0 - 16.0
+	var pad: Vector4 = SafeArea.insets(get_viewport())
+	var avail: float = vp.x - PanelTheme.EDGE_MARGIN * 2.0 - 16.0 - pad.x - pad.z
 	var cols: int
 	if portrait or vp.x < 520.0:
 		cols = 1

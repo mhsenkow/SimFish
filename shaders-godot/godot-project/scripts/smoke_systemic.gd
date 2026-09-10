@@ -4,7 +4,6 @@ extends SceneTree
 
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const TankSavesScript = preload("res://scripts/tank_saves.gd")
-const SaveRepair = preload("res://scripts/save_repair.gd")
 
 
 func _initialize() -> void:

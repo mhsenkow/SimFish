@@ -31,11 +31,23 @@ static func allow_auto_orbit(requested: bool) -> bool:
 	return requested
 
 
+# motion_scale() is read from world.gd's per-frame sway tick, so the autoload
+# handle is memoised rather than re-resolved from the scene path each call.
+static var _cfg_cache: Node = null
+
+
+static func reset_cache_for_test() -> void:
+	_cfg_cache = null
+
+
 static func _cfg() -> Node:
+	if _cfg_cache != null and is_instance_valid(_cfg_cache):
+		return _cfg_cache
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml == null:
 		return null
 	var st: SceneTree = ml as SceneTree
 	if st == null or st.root == null:
 		return null
-	return st.root.get_node_or_null("/root/TankConfig")
+	_cfg_cache = st.root.get_node_or_null("TankConfig")
+	return _cfg_cache

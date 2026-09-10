@@ -4,7 +4,6 @@ extends SceneTree
 # the current version with new fields explicitly defaulted, a current save is
 # untouched, a newer save is never downgraded, and MindState.from_dict applies it.
 
-const MindMigration = preload("res://scripts/mind_migration.gd")
 const MindStateScript = preload("res://scripts/mind_state.gd")
 
 

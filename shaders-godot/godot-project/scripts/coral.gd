@@ -30,7 +30,6 @@
 extends Plant
 class_name Coral
 
-const GOLDEN_ANGLE: float = 2.39996322972865332
 
 @export var coral_form: String = "dome"
 # Bright tip color for staghorn-style corals (zooxanthellae glow on the

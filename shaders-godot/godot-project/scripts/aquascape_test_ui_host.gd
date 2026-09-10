@@ -1,3 +1,10 @@
+# Host node the aquascape UI smokes mount panels onto.
+#
+# Deliberately NOT named smoke_* : run_smokes.sh and smoke_runner.gd glob
+# scripts/smoke_*.gd and execute every match. This is a helper, not a smoke —
+# it has no SceneTree MainLoop, so being executed booted the whole game and
+# hung the run forever. That is what used to stall the aggregate runner.
+
 extends Node
 
 var last_camera_view: String = ""

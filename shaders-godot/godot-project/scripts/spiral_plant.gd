@@ -10,7 +10,6 @@
 extends Plant
 class_name SpiralPlant
 
-const GOLDEN_ANGLE: float = 2.39996322972865332
 const MAX_WALL_BOUNCES: int = 8
 # Half-width of a paddle voxel + safety pad for inside tests.
 const VOXEL_FOOTPRINT: float = VOXEL_SIZE * 0.55

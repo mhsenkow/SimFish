@@ -11,8 +11,6 @@ extends Node3D
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
-const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
-const PerfGovernor = preload("res://scripts/perf_governor.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -513,6 +511,30 @@ var _dead_floaters_scratch: Array = []
 # Cached TankConfig autoload — never moves, so the per-frame /root/TankConfig
 # path lookups in _process are wasteful. Resolved once in _ready.
 var _cfg_node: Node = null
+
+
+# Drive the global water-column uniforms from the tank's actual water state.
+# Tannins darken and swing the residue amber (blackwater); turbidity adds
+# broadband attenuation and in-scatter (a milky tank, not a dark one).
+func _push_water_column() -> void:
+	# Resolve TankConfig properly rather than trusting _cfg_node: it is null on
+	# some boot paths, and silently falling back to the constant meant the
+	# player's Render-panel setting was ignored in exactly those cases.
+	var cfg: Node = _cfg_node
+	if cfg == null or not is_instance_valid(cfg):
+		cfg = get_node_or_null("/root/TankConfig")
+	var strength: float = VoxelMat.WATER_EXTINCTION_DEFAULT
+	if cfg != null and cfg.get("water_extinction") != null:
+		strength = float(cfg.get("water_extinction"))
+	if strength <= 0.001:
+		VoxelMat.disable_water_column()
+		return
+	var turb: float = 0.0
+	if _water_material_ref != null:
+		var th: Variant = _water_material_ref.get_shader_parameter("turbidity_haze")
+		if th != null:
+			turb = float(th)
+	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb)
 
 
 func _refresh_atmosphere_caches(adt: float) -> void:
@@ -1112,6 +1134,9 @@ func _tick_tank_fidelity(sdt: float) -> void:
 		var cur: float = float(cfg.get("pop_cap_pressure_scale"))
 		cfg.set("pop_cap_pressure_scale",
 			TankFidelityRuntime.auto_tune_cap_scale(pressure, cur))
+	# Push the water-column extinction globals. One write per ambient tick
+	# (10 Hz) covers every in-tank shader — see palette_tint.gdshaderinc.
+	_push_water_column()
 	# Feed turbidity spike into water column cosmetics.
 	if _water_material_ref != null:
 		if fidelity.turbidity_spike > 0.01:
@@ -1155,14 +1180,14 @@ func _tick_tank_fidelity(sdt: float) -> void:
 
 func _apply_equipment_in_frame() -> void:
 	# REAL_TANK_FIDELITY #162 — aesthetic choice: hide plumbing/fixtures in shot.
-	var show: bool = true
+	var visible_now: bool = true
 	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
 	if cfg != null:
-		show = bool(cfg.get("equipment_in_frame"))
+		visible_now = bool(cfg.get("equipment_in_frame"))
 	for node_name: String in ["Aeration", "Heater"]:
 		var n: Node = get_node_or_null(node_name)
 		if n is Node3D:
-			(n as Node3D).visible = show
+			(n as Node3D).visible = visible_now
 	if _light_fixture_root == null:
 		return
 	# Keep SpotLights so the tank still illuminates; hide fixture body + beams.
@@ -1170,7 +1195,7 @@ func _apply_equipment_in_frame() -> void:
 		if child is Light3D:
 			continue
 		if child is Node3D:
-			(child as Node3D).visible = show
+			(child as Node3D).visible = visible_now
 
 
 func wipe_glass_dust(amount: float = 0.85) -> void:
@@ -3915,15 +3940,23 @@ func _build_snail_body(snail: Node3D) -> void:
 	# REAL_TANK_FIDELITY #96 — pond / apple shells read translucent with the
 	# body visible inside (Tank A close shots). Keep foot opaque.
 	var translucent_shell: bool = shell_shape in ["turbo", "apple", "limpet"]
+	# Shell voxels are collected so snail.gd can erode them (apex first) when
+	# the water goes soft. Foot geometry is excluded — flesh does not dissolve.
+	var shell_voxels: Array = []
 	var add_box := func(par: Node3D, pos: Vector3, size: Vector3, col: Color) -> void:
 		var is_foot: bool = absf(col.r - body_color.r) < 0.02 \
 			and absf(col.g - body_color.g) < 0.02 and absf(col.b - body_color.b) < 0.02
+		var made: Node = null
 		if translucent_shell and not is_foot:
 			var tc := Color(col.r, col.g, col.b, 0.58)
-			_add_cube(par, pos, size, VoxelMat.make_translucent(tc))
+			made = _add_cube(par, pos, size, VoxelMat.make_translucent(tc))
 		else:
-			_add_cube(par, pos, size, _fauna_mat(col))
+			made = _add_cube(par, pos, size, _fauna_mat(col))
+		if not is_foot and made is MeshInstance3D:
+			shell_voxels.append(made)
 	SnailShell.build(snail, g, add_box)
+	if snail.has_method("register_shell_voxels"):
+		snail.call("register_shell_voxels", shell_voxels)
 	# REAL_TANK_FIDELITY #36 — foot pad pressed flat to the glass when
 	# viewing through a pane (Tank A signature).
 	var wn: Variant = snail.get("wall_normal") if "wall_normal" in snail else Vector3.UP
@@ -5064,7 +5097,16 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	# Epiphytes anchor to driftwood / rock above the substrate — skip the
 	# floor-fit and hardscape-collision checks, those guard against ground
 	# plants colliding with stones.
-	if not is_epiphyte:
+	if is_epiphyte:
+		# Actually put them ON something. This path (initial scatter and the
+		# scenario palettes) only ever skipped the floor checks, so moss and
+		# java fern were left sitting on open sand — the one placement rule
+		# that defines an epiphyte was applied on the library-spawn path but
+		# not here.
+		var host: Vector3 = _find_nearest_hardscape_anchor(pos)
+		if host != Vector3.ZERO:
+			pos = host
+	else:
 		var fit: Vector2 = clamp_plant_site(pos.x, pos.z, reach, 0.28)
 		if not fits_plant_at(fit.x, fit.y, reach, 0.28):
 			return
@@ -5109,9 +5151,6 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 
 
 # Called by Plant.gd when an emergent (above-water) plant casts a seed.
-# Return a hardscape voxel position close to `near_pos` suitable for
-# epiphyte attachment, or Vector3.ZERO if no hardscape is available.
-# Used by spawn_library_entry for Anubias/Buce/Java fern style species.
 # Apply a curated aquascape template — drops a coordinated planting layout
 # matching a real aquascaping style. Called from the settings panel. Each
 # template specifies a foreground carpet, midground rosettes, background
@@ -5211,6 +5250,9 @@ func _apply_template_canvas(template_name: String) -> void:
 	rebuild_substrate_mesh()
 
 
+# Return a hardscape voxel position close to `near_pos` suitable for epiphyte
+# attachment, or Vector3.ZERO if no hardscape is available. Used by both
+# spawn_library_entry and _spawn_plant for Anubias/Buce/Java fern/moss.
 func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
 	for p_v in _build_epiphyte_anchors:
 		if not (p_v is Vector3):
@@ -8415,7 +8457,7 @@ func _build_room_environment() -> void:
 
 
 func _build_counter_mirror_props(parent: Node3D, desk_y: float,
-		desk_half_w: float, desk_half_d: float, wall_mat: Material,
+		desk_half_w: float, desk_half_d: float, _wall_mat: Material,
 		haze_tint: Color) -> void:
 	# REAL_TANK_FIDELITY #179–181 — mirror behind the tank + white mat under it.
 	var mirror_mat := VoxelMat.make_emissive(Color(0.72, 0.78, 0.82))
@@ -8465,7 +8507,7 @@ func _build_counter_mirror_props(parent: Node3D, desk_y: float,
 
 
 func _build_room_floor_caustic(parent: Node3D, desk_y: float,
-		desk_half_w: float, desk_half_d: float) -> void:
+		_desk_half_w: float, desk_half_d: float) -> void:
 	# Simple caustic pool on the desk in front of the tank (#78).
 	var shader := load("res://shaders/caustics.gdshader") as Shader
 	if shader == null:

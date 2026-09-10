@@ -624,43 +624,45 @@ static func build_bud(color: Color) -> Array:
 	var nodes: Array = []
 	var mi := MeshInstance3D.new()
 	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.5))
-	mi.material_override = VoxelMat.make_foliage(color)
+	# Calm flower mat — full foliage sway reads as tip thrash on tiny blooms.
+	mi.material_override = VoxelMat.make_flower_foliage(color)
 	mi.position = Vector3.ZERO
 	nodes.append(mi)
 	# Two tiny sepal voxels at the base.
 	for dx in [-1, 1]:
 		var sepal := MeshInstance3D.new()
 		sepal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.3))
-		sepal.material_override = VoxelMat.make_foliage(color.darkened(0.3))
+		sepal.material_override = VoxelMat.make_flower_foliage(color.darkened(0.3))
 		sepal.position = Vector3(float(dx) * VOXEL_SIZE * 0.35, -VOXEL_SIZE * 0.2, 0)
 		nodes.append(sepal)
 	return nodes
 
 
 # ---- Open flower ----
-# 4-6 petal voxels arranged radially around a center pistil.
-# `open_frac` 0..1 controls how far the petals have spread.
+# Compact tip cluster — petals hug the pistil so the bloom reads as a bud
+# opening on the stem tip, not a ring of floating candy boxes.
 static func build_flower(petal_color: Color, center_color: Color,
-		n_petals: int = 7, open_frac: float = 1.0) -> Array:
+		n_petals: int = 5, open_frac: float = 1.0) -> Array:
 	var nodes: Array = []
-	# Center pistil / stamen cluster.
+	n_petals = clampi(n_petals, 4, 6)
+	# Center pistil / stamen cluster — sits in the stem tip.
 	var center := MeshInstance3D.new()
-	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.4))
+	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28))
 	center.material_override = VoxelMat.make_flower_foliage(center_color)
-	center.position = Vector3(0, VOXEL_SIZE * 0.1, 0)
+	center.position = Vector3(0, VOXEL_SIZE * 0.02, 0)
 	nodes.append(center)
 	for side in [-1.0, 1.0]:
 		var stamen := MeshInstance3D.new()
-		stamen.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.12))
+		stamen.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.08, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.08))
 		stamen.material_override = VoxelMat.make_flower_foliage(center_color.lightened(0.15))
-		stamen.position = Vector3(side * VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.18, 0)
+		stamen.position = Vector3(side * VOXEL_SIZE * 0.08, VOXEL_SIZE * 0.08, 0)
 		nodes.append(stamen)
-	# Petals fan outward as open_frac increases.
+	# Petals fan tightly — max spread ~0.38 voxel so they stay on the tip.
 	for i in n_petals:
 		var angle: float = float(i) / float(n_petals) * TAU
-		var spread: float = open_frac * VOXEL_SIZE * 0.92
+		var spread: float = open_frac * VOXEL_SIZE * 0.38
 		var petal := MeshInstance3D.new()
-		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.62, VOXEL_SIZE * 0.24, VOXEL_SIZE * 0.52))
+		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.28))
 		var shade: float = sin(float(i) * 2.3) * 0.08
 		var pc: Color = Color(
 			clampf(petal_color.r + shade, 0.0, 1.0),
@@ -670,38 +672,24 @@ static func build_flower(petal_color: Color, center_color: Color,
 		petal.material_override = VoxelMat.make_flower_foliage(pc)
 		petal.position = Vector3(
 			cos(angle) * spread,
-			VOXEL_SIZE * 0.05 - open_frac * VOXEL_SIZE * 0.15,
+			-VOXEL_SIZE * 0.02 - open_frac * VOXEL_SIZE * 0.04,
 			sin(angle) * spread,
 		)
-		petal.rotation.z = cos(angle) * open_frac * 0.4
-		petal.rotation.x = sin(angle) * open_frac * 0.4
+		petal.rotation.z = cos(angle) * open_frac * 0.22
+		petal.rotation.x = sin(angle) * open_frac * 0.22
 		nodes.append(petal)
-	# Inner petal ring — shorter, slightly lighter, fills the bloom center.
-	if open_frac > 0.35:
-		var inner_n: int = maxi(4, n_petals - 2)
-		for i in inner_n:
-			var angle2: float = float(i) / float(inner_n) * TAU + 0.22
-			var spread2: float = open_frac * VOXEL_SIZE * 0.48
-			var inner := MeshInstance3D.new()
-			inner.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.32))
-			inner.material_override = VoxelMat.make_flower_foliage(petal_color.lightened(0.08))
-			inner.position = Vector3(
-				cos(angle2) * spread2,
-				VOXEL_SIZE * 0.08 - open_frac * VOXEL_SIZE * 0.08,
-				sin(angle2) * spread2,
-			)
-			nodes.append(inner)
 	return nodes
 
 
 static func update_flower(nodes: Array, n_petals: int, open_frac: float) -> void:
+	n_petals = clampi(n_petals, 4, 6)
 	if nodes.size() < n_petals + 1:
 		return
-	# nodes[0]=center, [1..2]=stamen, [3..3+n_petals-1]=outer petals, rest=inner ring
+	# nodes[0]=center, [1..2]=stamen, [3..3+n_petals-1]=outer petals
 	var petal_start: int = 3
 	for i in n_petals:
 		var angle: float = float(i) / float(n_petals) * TAU
-		var spread: float = open_frac * VOXEL_SIZE * 0.92
+		var spread: float = open_frac * VOXEL_SIZE * 0.38
 		var idx: int = petal_start + i
 		if idx >= nodes.size():
 			break
@@ -709,11 +697,11 @@ static func update_flower(nodes: Array, n_petals: int, open_frac: float) -> void
 		if is_instance_valid(petal):
 			petal.position = Vector3(
 				cos(angle) * spread,
-				VOXEL_SIZE * 0.05 - open_frac * VOXEL_SIZE * 0.15,
+				-VOXEL_SIZE * 0.02 - open_frac * VOXEL_SIZE * 0.04,
 				sin(angle) * spread,
 			)
-			petal.rotation.z = cos(angle) * open_frac * 0.4
-			petal.rotation.x = sin(angle) * open_frac * 0.4
+			petal.rotation.z = cos(angle) * open_frac * 0.22
+			petal.rotation.x = sin(angle) * open_frac * 0.22
 
 
 # ---- Seed pod ----
@@ -721,8 +709,9 @@ static func update_flower(nodes: Array, n_petals: int, open_frac: float) -> void
 static func build_seed_pod(color: Color) -> Array:
 	var nodes: Array = []
 	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.55))
-	mi.material_override = VoxelMat.make_foliage(color.darkened(0.35))
+	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.4, VOXEL_SIZE * 0.48, VOXEL_SIZE * 0.4))
+	mi.material_override = VoxelMat.make_flower_foliage(color.darkened(0.35))
+	mi.position = Vector3(0, -VOXEL_SIZE * 0.05, 0)
 	nodes.append(mi)
 	return nodes
 
@@ -732,9 +721,9 @@ static func build_spike_bud(color: Color) -> Array:
 	var nodes: Array = []
 	for i in 3:
 		var seg := MeshInstance3D.new()
-		seg.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.38))
-		seg.material_override = VoxelMat.make_foliage(color.darkened(0.15 + float(i) * 0.05))
-		seg.position = Vector3(0, float(i) * VOXEL_SIZE * 0.42, 0)
+		seg.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.32))
+		seg.material_override = VoxelMat.make_flower_foliage(color.darkened(0.15 + float(i) * 0.05))
+		seg.position = Vector3(0, float(i) * VOXEL_SIZE * 0.36 - VOXEL_SIZE * 0.08, 0)
 		nodes.append(seg)
 	return nodes
 
@@ -742,9 +731,9 @@ static func build_spike_bud(color: Color) -> Array:
 static func build_spike_flower(stalk_color: Color, tip_color: Color) -> Array:
 	var nodes: Array = build_spike_bud(stalk_color.darkened(0.1))
 	var tip := MeshInstance3D.new()
-	tip.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.42, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.42))
+	tip.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.34, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.34))
 	tip.material_override = VoxelMat.make_flower_foliage(tip_color)
-	tip.position = Vector3(0, VOXEL_SIZE * 1.35, 0)
+	tip.position = Vector3(0, VOXEL_SIZE * 0.95, 0)
 	nodes.append(tip)
 	return nodes
 
@@ -753,9 +742,9 @@ static func build_spike_flower(stalk_color: Color, tip_color: Color) -> Array:
 static func build_crypt_bud(color: Color) -> Array:
 	var nodes: Array = []
 	var spathe := MeshInstance3D.new()
-	spathe.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9))
-	spathe.material_override = VoxelMat.make_foliage(color.darkened(0.2))
-	spathe.position = Vector3(0, VOXEL_SIZE * 0.05, 0)
+	spathe.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.55))
+	spathe.material_override = VoxelMat.make_flower_foliage(color.darkened(0.2))
+	spathe.position = Vector3(0, -VOXEL_SIZE * 0.06, 0)
 	nodes.append(spathe)
 	return nodes
 
@@ -763,16 +752,19 @@ static func build_crypt_bud(color: Color) -> Array:
 static func build_crypt_flower(petal_color: Color, center_color: Color) -> Array:
 	var nodes: Array = []
 	var center := MeshInstance3D.new()
-	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.35))
+	center.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.22))
 	center.material_override = VoxelMat.make_flower_foliage(center_color)
-	center.position = Vector3(0, VOXEL_SIZE * 0.12, 0)
+	center.position = Vector3(0, -VOXEL_SIZE * 0.02, 0)
 	nodes.append(center)
 	for i in 4:
 		var angle: float = float(i) / 4.0 * TAU
 		var petal := MeshInstance3D.new()
-		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.45, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.32))
+		petal.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.1, VOXEL_SIZE * 0.2))
 		petal.material_override = VoxelMat.make_flower_foliage(petal_color)
-		petal.position = Vector3(cos(angle) * VOXEL_SIZE * 0.38, VOXEL_SIZE * 0.1, sin(angle) * VOXEL_SIZE * 0.38)
+		petal.position = Vector3(
+			cos(angle) * VOXEL_SIZE * 0.2,
+			-VOXEL_SIZE * 0.04,
+			sin(angle) * VOXEL_SIZE * 0.2)
 		nodes.append(petal)
 	return nodes
 

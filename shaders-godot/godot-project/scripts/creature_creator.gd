@@ -46,6 +46,8 @@ const PATTERNS: Array = [
 	["Solid", 0], ["Lateral stripe", 1], ["Spots", 2], ["Vertical bars", 3],
 	["Two-tone band", 4], ["Rear wedge", 5], ["Reticulated (net)", 6],
 	["Marbled", 7], ["Head mask", 8], ["Ocellated rows", 9],
+	["Lateral line", 10], ["Rosette (leopard)", 11], ["Chevron", 12],
+	["Countershaded", 13], ["Constellation", 14],
 ]
 const SHELL_SHAPES: Array = [
 	["Turbo (round)", "turbo"], ["Trochus (cone)", "trochus"],

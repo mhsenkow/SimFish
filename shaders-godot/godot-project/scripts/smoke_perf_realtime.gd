@@ -5,21 +5,10 @@ extends SceneTree
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const _MindBrainPoolScript = preload("res://scripts/mind_brain_pool.gd")
-const MindEval = preload("res://scripts/mind_eval.gd")
-const SimCadence = preload("res://scripts/sim_cadence.gd")
 const _VoxelMatScript = preload("res://scripts/voxel_mat.gd")
-const WasteParticleBatch = preload("res://scripts/waste_particle_batch.gd")
-const FloatingPlant = preload("res://scripts/floating_plant.gd")
-const SimDriver = preload("res://scripts/sim_driver.gd")
-const MindLOD = preload("res://scripts/mind_lod.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
-const MindReplayParity = preload("res://scripts/mind_replay_parity.gd")
 const _MindTickScript = preload("res://scripts/mind_tick.gd")
-const MindKernel = preload("res://scripts/mind_kernel.gd")
 const _MindPromptSkeletonScript = preload("res://scripts/mind_prompt_skeleton.gd")
-const ShaderUniformLedger = preload("res://scripts/shader_uniform_ledger.gd")
-const ShaderWarmCapture = preload("res://scripts/shader_warm_capture.gd")
 
 
 func _initialize() -> void:

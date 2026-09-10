@@ -1,6 +1,5 @@
 extends SceneTree
 
-const WorldAtmosphere = preload("res://scripts/world_atmosphere.gd")
 
 
 func _init() -> void:

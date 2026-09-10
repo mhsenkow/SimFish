@@ -3,7 +3,6 @@ extends SceneTree
 # SYSTEMIC #16 — template voice produces text when no LLM is available.
 
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 
 

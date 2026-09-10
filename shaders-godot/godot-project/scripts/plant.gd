@@ -115,6 +115,11 @@ var emersed_leaf_form: String = ""
 var dormancy_type: String = PlantGenome.DORMANCY_NONE
 var repro_mode: String = PlantGenome.REPRO_SEED
 var asymmetry_seed: int = 0
+# Leaf arrangement around the stem — see _phyllotaxis_yaw(). Left empty in the
+# genome means "derive from the other traits" (whorled_leaves -> whorled,
+# otherwise the golden-angle spiral that most stem plants use).
+var phyllotaxis: String = ""
+var whorl_count: int = 3
 var ls_angle: float = 35.0
 var ls_ratio: float = 0.72
 var ls_depth: int = 2
@@ -391,6 +396,7 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		emersed_leaf_form = leaf_form
 	if asymmetry_seed == 0:
 		asymmetry_seed = randi()
+	_resolve_phyllotaxis()
 	# Cache substrate boost computed below — read TankConfig ONCE here so
 	# the per-tick path can skip the autoload lookup × 100 plants × 10 Hz.
 	_substrate_boost = _compute_substrate_boost()
@@ -423,6 +429,31 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_grow_one()
 	_warm_start_growth_vitals()
 	_apply_sway_personality()
+
+
+# Fill in the leaf arrangement when the genome does not state one. Derived
+# from traits the species data already carries, so no existing plant entry has
+# to be edited to get a correct-looking rosette.
+func _resolve_phyllotaxis() -> void:
+	whorl_count = clampi(whorl_count, 2, 6)
+	if phyllotaxis != "":
+		return
+	if whorled_leaves:
+		phyllotaxis = PHYLLO_WHORLED
+		return
+	match leaf_form:
+		"ribbon":
+			# Vallisneria and friends fan from the crown in two ranks.
+			phyllotaxis = PHYLLO_DISTICHOUS
+		"needle", "pinnate":
+			phyllotaxis = PHYLLO_WHORLED
+			whorl_count = 4
+		"round", "four_leaf", "starburst":
+			# Rosettes and pads: even radial spacing beats a spiral here.
+			phyllotaxis = PHYLLO_WHORLED
+			whorl_count = 5
+		_:
+			phyllotaxis = PHYLLO_SPIRAL
 
 
 # Pull TankConfig.substrate_type once and translate it into the per-plant
@@ -724,48 +755,84 @@ func get_growth_inspector() -> Dictionary:
 
 
 func _apply_sway_personality() -> void:
+	# Per-habit motion so the tank isn't one uniform mass (#29 / #32 / #33).
+	# Swords stay almost stiff; stems bend mid-column; carpets shimmer; ribbons
+	# tip-weight without thrashing.
 	var amp: float = sway_amplitude
-	var flutter: float = 0.03
-	var tip_mult: float = 2.15
+	var flutter: float = 0.028
+	var tip_mult: float = 1.55
+	var flutter_speed: float = 2.4
+	var sway_speed: float = 1.55
 	match leaf_form:
-		"needle", "downy":
-			amp = maxf(amp, 0.14)
-			flutter = 0.05
-		"ribbon", "lance", "pinnate":
-			amp = maxf(amp, 0.22)
-			tip_mult = 2.45
-			if max_height >= 10:
-				tip_mult = 2.85
-		"paddle", "spade", "lobed":
-			amp = minf(amp, 0.12)
+		"paddle", "spade", "lobed", "oval":
+			# Swords / crypts — almost stiff.
+			amp = minf(amp, 0.08)
+			flutter = 0.012
+			tip_mult = 1.15
+			sway_speed = 1.1
+		"lance", "pinnate", "fingered":
+			# Stem plants — flexible mid-column, soft tip.
+			amp = clampf(amp, 0.12, 0.20)
+			flutter = 0.022
+			tip_mult = 1.65
+			sway_speed = 1.35
+		"ribbon":
+			# Vallisneria — clear tip-weighted curve, no whip.
+			amp = maxf(amp, 0.18)
 			flutter = 0.018
+			tip_mult = 2.05 if max_height >= 10 else 1.75
+			sway_speed = 1.25
+		"needle", "downy":
+			# Fine leaves — lawn shimmer (#33).
+			amp = minf(maxf(amp, 0.06), 0.10)
+			flutter = 0.055
+			flutter_speed = 4.2
+			tip_mult = 1.25
+			sway_speed = 2.0
 		"column":
-			amp = minf(amp, 0.10)
+			amp = minf(amp, 0.09)
+			flutter = 0.016
+			tip_mult = 1.35
+		"round", "four_leaf", "starburst":
+			amp = minf(amp, 0.07)
+			flutter = 0.014
+			tip_mult = 1.1
 	if is_carpet:
-		amp = maxf(amp, 0.10)
-		flutter = 0.065
-		if _foliage_mat != null:
-			_foliage_mat.set_shader_parameter("flutter_speed", 3.2)
-			_foliage_mat.set_shader_parameter("sway_speed", 2.2)
-	var height_w: float = lerpf(0.78, 1.38, float(current_height) / float(maxi(max_height, 1)))
+		amp = minf(maxf(amp, 0.05), 0.09)
+		flutter = 0.06
+		flutter_speed = 4.6
+		tip_mult = 1.05
+		sway_speed = 2.2
+	if is_epiphyte:
+		# Cling to host — leaf flutter, almost no root lean.
+		amp = minf(amp, 0.06)
+		flutter = maxf(flutter, 0.04)
+		flutter_speed = maxf(flutter_speed, 3.4)
+		tip_mult = minf(tip_mult, 1.2)
+		sway_speed = 1.4
+	var height_w: float = lerpf(0.85, 1.18, float(current_height) / float(maxi(max_height, 1)))
 	if life_phase == LifePhase.SENESCENT or is_dying:
 		amp *= 0.55
 		flutter *= 0.7
 		height_w *= 0.72
+	# Tip bloom present — calm the Multimesh tip under the flower so it
+	# doesn't thrash beneath a stabilizing bloom.
+	if has_flower and flower_stage != FlowerStage.NONE:
+		amp *= 0.72
+		tip_mult *= 0.55
+		flutter *= 0.65
 	tip_mult *= height_w
-	# Global calm factor: the tank read as chaotic with every plant swaying hard.
-	# Pull sway/flutter amplitude and tip whip down, and slow the sway rate, so the
-	# foliage drifts on a lazy current instead of thrashing. Tuned for "alive but
-	# smooth" — motion is still present, just gentle and legible.
-	const CALM_AMP: float = 0.55
-	const CALM_FLUTTER: float = 0.5
-	const CALM_TIP: float = 0.7
-	const CALM_SPEED: float = 0.65
+	# Global calm: alive but smooth — lazy current, not thrash.
+	const CALM_AMP: float = 0.62
+	const CALM_FLUTTER: float = 0.55
+	const CALM_TIP: float = 0.78
+	const CALM_SPEED: float = 0.72
 	if _foliage_mat != null:
 		_foliage_mat.set_shader_parameter("sway_amplitude", amp * CALM_AMP)
 		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter * CALM_FLUTTER)
 		_foliage_mat.set_shader_parameter("tip_sway_mult", tip_mult * CALM_TIP)
-		_foliage_mat.set_shader_parameter("sway_speed", 2.2 / height_w * CALM_SPEED)
+		_foliage_mat.set_shader_parameter("sway_speed", sway_speed / height_w * CALM_SPEED)
+		_foliage_mat.set_shader_parameter("flutter_speed", flutter_speed)
 		_foliage_mat.set_shader_parameter("sss_strength", 0.42)
 		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
 		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
@@ -855,6 +922,13 @@ func _build_initial_roots() -> void:
 # stacking them on a single column.
 var _rhizome_attach_points: PackedVector3Array = PackedVector3Array()
 var _rhizome_voxels: Array[MeshInstance3D] = []
+# Direction the rhizome creeps along its host, and how far it has got. An
+# epiphyte does not gain height like a stem plant — it travels. Keeping the
+# heading lets growth extend the same runner instead of rebuilding it.
+var _rhizome_dir: Vector3 = Vector3.RIGHT
+var _rhizome_segments: int = 0
+const RHIZOME_MAX_SEGMENTS: int = 14
+const RHIZOME_STEP: float = VOXEL_SIZE * 0.55
 
 func _build_holdfast_anchor() -> void:
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
@@ -868,6 +942,7 @@ func _build_holdfast_anchor() -> void:
 	# directions, not all parallel.
 	var dir_angle: float = randf() * TAU
 	var dir: Vector3 = Vector3(cos(dir_angle), 0.0, sin(dir_angle))
+	_rhizome_dir = dir
 	var rhizome_color: Color = (ramp[0] as Color).darkened(0.15)
 	# Pale root-hair color — slightly cream-tinted off-white, the visible
 	# signal that "this plant has rhizome roots on display."
@@ -908,7 +983,68 @@ func _build_holdfast_anchor() -> void:
 		anchor.position = seg_pos + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
 		add_child(anchor)
 		root_voxels.append(anchor)
+	_rhizome_segments = rhizome_len
 	_root_count = root_voxels.size()
+
+
+# This individual's persistent rhizome curl, radians per segment. Always at
+# least RHIZOME_CURL_MIN so the runner arcs across its host rather than
+# occasionally drawing a straight line.
+const RHIZOME_CURL_MIN: float = 0.07
+const RHIZOME_CURL_MAX: float = 0.19
+
+
+func _rhizome_curl() -> float:
+	var h: int = (asymmetry_seed ^ 0x5F3759DF) & 0x7FFFFFFF
+	var mag: float = lerpf(RHIZOME_CURL_MIN, RHIZOME_CURL_MAX,
+		float(h % 1000) / 1000.0)
+	return mag if (h & 1) == 0 else -mag
+
+
+# Extend the rhizome one segment further along the host. Called from growth
+# instead of adding stem height: a rhizome plant answers good conditions by
+# creeping further across its wood or rock, which is what makes an old
+# anubias sprawl over a branch instead of standing taller. The heading drifts
+# slightly each step so the runner curves with the surface rather than
+# marching in a straight line.
+func _extend_rhizome() -> bool:
+	if _rhizome_segments >= RHIZOME_MAX_SEGMENTS:
+		return false
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var rhizome_color: Color = (ramp[0] as Color).darkened(0.15)
+	var hair_color: Color = Color(0.86, 0.84, 0.74)
+	# Curve the runner. A symmetric jitter alone can land on ~0 for a given
+	# seed, which produces a rhizome marching in a dead-straight line — the
+	# exact machined look this is meant to avoid. So each plant gets a
+	# persistent curl (direction and magnitude from its seed, with a floor)
+	# and the jitter only wobbles around it. Deterministic per plant, so a
+	# reload retraces the same path.
+	var bend: float = _rhizome_curl() + _node_jitter(_rhizome_segments, 0.10)
+	_rhizome_dir = _rhizome_dir.rotated(Vector3.UP, bend).normalized()
+	var seg_pos: Vector3 = _clamp_growth_offset(
+		_rhizome_dir * float(_rhizome_segments) * RHIZOME_STEP)
+	var seg := MeshInstance3D.new()
+	seg.mesh = VoxelMat.get_box(Vector3(
+		VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.45))
+	seg.material_override = VoxelMat.make_foliage(rhizome_color)
+	seg.position = seg_pos
+	add_child(seg)
+	_rhizome_voxels.append(seg)
+	_rhizome_attach_points.append(seg_pos)
+	var cross: Vector3 = Vector3(-_rhizome_dir.z, 0.0, _rhizome_dir.x)
+	for side in [-1.0, 1.0]:
+		var hair := MeshInstance3D.new()
+		hair.mesh = VoxelMat.get_box(Vector3(
+			VOXEL_SIZE * 0.10, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.10))
+		hair.material_override = VoxelMat.make_foliage(hair_color)
+		hair.position = seg_pos + cross * side * VOXEL_SIZE * 0.30 \
+			+ Vector3(0.0, -VOXEL_SIZE * 0.20, 0.0)
+		hair.rotation.z = -side * 0.35
+		add_child(hair)
+		root_voxels.append(hair)
+	_rhizome_segments += 1
+	_root_count = root_voxels.size()
+	return true
 
 
 func _add_root(root_ramp: Array) -> void:
@@ -1079,11 +1215,59 @@ func _setup_pearling() -> void:
 
 
 func _apply_default_growth_strategy() -> void:
+	# Habit-aware flowering: carpets / fine needles / plain columns stay leafy;
+	# emergents, crypts/paddles, and ribbons that reach the surface may bloom.
 	match leaf_form:
-		"paddle", "needle":
+		"paddle", "spade", "lobed", "oval":
+			# Crypts / swords — rare spathe blooms, not tip daisies.
 			emergent_growth = false
+			uses_flowering = true
+		"needle", "downy":
+			emergent_growth = false
+			uses_flowering = false
+		"column":
+			emergent_growth = true
+			uses_flowering = false
+		"ribbon":
+			emergent_growth = true
+			uses_flowering = true
+		"lance", "pinnate", "fingered":
+			emergent_growth = true
+			# Stem plants flower as a rare canopy event, not a permanent hat.
+			uses_flowering = true
 		_:
 			emergent_growth = true
+	if is_carpet:
+		uses_flowering = false
+		emergent_growth = false
+	if species_id.contains("cattail"):
+		uses_flowering = true
+		emergent_growth = true
+
+
+# Snap the tip bloom onto the real stem tip (XZ wander included). Ride the
+# plant lean with the tip — do not counter-rotate, or petals float off-axis.
+func _stabilize_flower_against_lean() -> void:
+	if _flower_node == null or not is_instance_valid(_flower_node):
+		return
+	if flower_stage == FlowerStage.NONE:
+		return
+	_flower_node.rotation = Vector3.ZERO
+	_flower_node.position = _tip_bloom_local_pos()
+
+
+# Local position of the growing tip — last stem voxel when present, else the
+# lean-aware height used by growth. Nest slightly into the tip so the bloom
+# reads as attached, not hovering above a thin green line.
+func _tip_bloom_local_pos() -> Vector3:
+	for i in range(voxels.size() - 1, -1, -1):
+		var v: Variant = voxels[i]
+		if v is Node3D and is_instance_valid(v):
+			var tip: Node3D = v as Node3D
+			return tip.position + Vector3(0.0, VOXEL_SIZE * 0.12, 0.0)
+	var rel: float = 1.0
+	var lean: Vector2 = _stem_lean_offset(rel)
+	return Vector3(lean.x, _get_stem_top() - VOXEL_SIZE * 0.05, lean.y)
 
 
 func _at_surface_cap() -> bool:
@@ -1321,6 +1505,15 @@ func _grow_one() -> bool:
 	# carpet the substrate under their stem with roots, not just have
 	# a tight bundle directly below.
 	_root_growth_counter += 1
+	# Epiphytes spend growth travelling, not rooting: every third node the
+	# rhizome creeps one more segment across its host, so a mature anubias
+	# sprawls along the branch it was tied to instead of piling leaves on one
+	# spot. Once the runner hits its span it goes back to thickening up.
+	if is_epiphyte:
+		if _root_growth_counter >= 3:
+			_root_growth_counter = 0
+			_extend_rhizome()
+		return true
 	# Lift the cap to 5 + ceil(height/4), maxing at 12. So a 4-voxel
 	# sapling has the original 5-root cap; a 28-voxel sword can grow up
 	# to 12 root columns spreading well past the stem.
@@ -1334,17 +1527,28 @@ func _grow_one() -> bool:
 
 
 func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
-	# Legacy single-voxel growth for backward compatibility.
+	# The plainest growth form — moss, and the fallback for any leaf form that
+	# bails. It used to be a perfectly straight stack of identical cubes all
+	# bowing along +X, which is the most obviously procedural thing in the
+	# tank. Three cheap corrections: taper toward the tip, wander a little,
+	# and lean the way this individual leans.
 	var ramp_idx: int = clampi(int(rel * 5.0), 0, 5)
 	var color: Color = ramp[ramp_idx]
 	var mi := MeshInstance3D.new()
-	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE))
+	# Quantised to 4 steps so VoxelMat's box cache stays small — a continuous
+	# taper would mint a new mesh per node.
+	var taper_step: int = clampi(int(rel * 4.0), 0, 3)
+	var thickness: float = VOXEL_SIZE * (1.0 - 0.11 * float(taper_step))
+	mi.mesh = VoxelMat.get_box(Vector3(thickness, VOXEL_SIZE, thickness))
 	mi.material_override = VoxelMat.make_foliage(color)
-	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
+	var lean: Vector2 = _stem_lean_offset(rel)
+	var wander: float = VOXEL_SIZE * 0.16
 	mi.position = _clamp_growth_offset(Vector3(
-		lat + photo_offset.x,
+		lean.x + photo_offset.x + _node_jitter(current_height, wander),
+		# Y spacing stays exactly one voxel: _recalc_height() reads the column
+		# index straight back out of local_y / VOXEL_SIZE.
 		current_height * VOXEL_SIZE + VOXEL_SIZE * 0.5,
-		photo_offset.y,
+		lean.y + photo_offset.y + _node_jitter(current_height + 7919, wander),
 	))
 	_register_stem_voxel(mi)
 
@@ -1485,19 +1689,23 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	# leaf_node is a transient transform holder (never added to the tree); its
 	# orientation is baked into the foliage MultiMesh by _bake_leaf.
 	var leaf_node := Node3D.new()
-	# Position along the stem with phototropism.
-	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
+	# Position along the stem with phototropism, leaning the way this
+	# individual leans rather than always along +X.
+	var lean: Vector2 = _stem_lean_offset(rel)
 	leaf_node.position = _clamp_growth_offset(Vector3(
-		lat + photo_offset.x,
+		lean.x + photo_offset.x,
 		current_height * VOXEL_SIZE * 0.9 + VOXEL_SIZE * 0.5,
-		photo_offset.y,
+		lean.y + photo_offset.y,
 	))
-	# Fan outward from center, alternating sides.
-	var side: float = 1.0 if (current_height % 2 == 0) else -1.0
-	leaf_node.rotation.y = side * 0.4 + rel * 0.2
-	# Build the paddle leaf.
+	# Set around the stem by the species' divergence angle, not a flip-flop.
+	leaf_node.rotation.y = _leaf_yaw(current_height, 0.10)
+	leaf_node.rotation.x = _shade_pitch()
+	# Build the paddle leaf. Shade leaves run larger; mid-stem leaves are the
+	# biggest on the plant.
+	var span: float = _shade_size_mult() * _node_size_gradient(rel)
 	var leaf_voxels: Array = LeafShapes.build_paddle(
-		clampi(leaf_length, 2, 6), ramp, age_frac, 2, 0.5, _leaf_mods())
+		clampi(int(round(float(leaf_length) * span)), 2, 6),
+		ramp, age_frac, 2, 0.5, _leaf_mods())
 	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
 	_leaf_ages.append(_t)
 	_register_leaf_age(_t)
@@ -1532,11 +1740,11 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	stem_mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35))
 	var stem_color: Color = ramp[0] if ramp.size() > 0 else Color8(40, 70, 30)
 	stem_mi.material_override = VoxelMat.make_foliage(stem_color.darkened(0.1))
-	var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.6
+	var lean_l: Vector2 = _stem_lean_offset(rel)
 	stem_mi.position = _clamp_growth_offset(Vector3(
-		lat + photo_offset.x,
+		lean_l.x + photo_offset.x,
 		current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.5,
-		photo_offset.y,
+		lean_l.y + photo_offset.y,
 	))
 	_register_stem_voxel(stem_mi)
 	if current_height % 2 == 0:
@@ -1587,7 +1795,7 @@ func _leaf_mods() -> Dictionary:
 func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2, kind: String) -> void:
 	var leaf_node := Node3D.new()
-	var side: float = 1.0 if (current_height % 2 == 0) else -1.0
+	var yaw: float = _leaf_yaw(current_height)
 	# Epiphytes with a rhizome trunk attach each new leaf at the next
 	# attachment point along the trunk, cycling through. Reads as the
 	# rhizome producing leaves along its length — not all stacked at base.
@@ -1600,20 +1808,23 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 			VOXEL_SIZE * 0.35,
 			photo_offset.y * 0.4,
 		)
-		# Leaves emerge perpendicular to the rhizome direction.
-		leaf_node.rotation.y = side * 0.35 + randf_range(-0.2, 0.2)
+		# Leaves emerge around the rhizome by the same divergence angle.
+		leaf_node.rotation.y = yaw
 	else:
-		var lat: float = sin(rel * PI * 0.6) * sway_amplitude * 0.55
+		var lean_s: Vector2 = _stem_lean_offset(rel) * 0.92
 		leaf_node.position = _clamp_growth_offset(Vector3(
-			lat + photo_offset.x,
+			lean_s.x + photo_offset.x,
 			current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4,
-			photo_offset.y,
+			lean_s.y + photo_offset.y,
 		))
-		leaf_node.rotation.y = side * 0.35 + rel * 0.18
+		leaf_node.rotation.y = yaw
+	leaf_node.rotation.x = _shade_pitch()
 	# Apply emersed-form size boost when the plant is still in its first
 	# minute. Linear fade so the transition reads as growth changing form.
 	var emersed_k: float = clampf(_emersed_remaining / EMERSED_DURATION_S, 0.0, 1.0)
-	var lsm: float = clampf(leaf_size_mult * _visual_youth_scale() * (1.0 + emersed_k * 0.15), 0.5, 1.8)
+	var lsm: float = clampf(leaf_size_mult * _visual_youth_scale()
+		* (1.0 + emersed_k * 0.15) * _shade_size_mult() * _node_size_gradient(rel),
+		0.5, 1.8)
 	var mods: Dictionary = _leaf_mods()
 	# Stem internode — visible thin stem segment for whorled-leaf plants
 	# (Rotala, Limnophila). Without this they read as a stack of leaves
@@ -1636,8 +1847,9 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 			var sw: int = clampi(int(3.0 * lsm + 0.5), 2, 5)
 			leaf_voxels = LeafShapes.build_spade(ramp, age_frac, sl, sw, mods)
 		"cordate":
-			# Cordate leaves stay flat-ish; bias rotation to camera plane.
-			leaf_node.rotation.y = side * 0.2
+			# Cordate leaves stay flat-ish, but still spaced by divergence.
+			leaf_node.rotation.y = yaw
+			leaf_node.rotation.x = _shade_pitch() * 0.5
 			leaf_voxels = LeafShapes.build_cordate(ramp, age_frac, mods)
 		"pinnate":
 			var pl: int = clampi(int(leaf_length * lsm), 3, 7)
@@ -1666,8 +1878,9 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 		"downy":
 			leaf_voxels = LeafShapes.build_downy(ramp, age_frac, mods)
 		"round":
-			# Pads sit flat — kill the tilt and lay them on the surface plane.
-			leaf_node.rotation = Vector3.ZERO
+			# Pads sit flat on the surface plane, rotated only about Y so a
+			# raft of them does not share one orientation.
+			leaf_node.rotation = Vector3(0.0, yaw, 0.0)
 			var radius: int = clampi(int(2.0 * lsm), 2, 4)
 			leaf_voxels = LeafShapes.build_round_pad(radius, ramp, age_frac, mods)
 		"oval":
@@ -1694,7 +1907,10 @@ func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2)
 	# MultiMesh just like leaves.
 	var n := Node3D.new()
 	var y: float = current_height * VOXEL_SIZE * 0.82 + VOXEL_SIZE * 0.45
-	var side: float = -1.0 if (current_height % 2 == 0) else 1.0
+	# Accessories sit on the divergence spiral too, one half-step off the
+	# leaf at this node so they read as a branchlet beside it.
+	var acc_yaw: float = _phyllotaxis_yaw(current_height) + PI * 0.5
+	var side: float = cos(acc_yaw)
 	n.position = _clamp_growth_offset(Vector3(
 		photo_offset.x + side * VOXEL_SIZE * randf_range(0.45, 1.2),
 		y,
@@ -2163,8 +2379,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_t += dt
 
 	# ---- Flow-based sway ----
-	# The dynamic time-based sway is fully offloaded to the GPU foliage.gdshader.
-	# We only apply the slow-changing downstream flow lean on the CPU.
+	# Dynamic time-based sway lives on the GPU (foliage_mm). CPU only applies a
+	# soft root lean so the plant isn't a rigid stick — leaf motion stays on GPU.
 	var flow_bias: float = _get_flow_bias()
 	# Brush bend: a fish that swam through the foliage left a transient push
 	# that springs back over ~1s, so the scenery visibly reacts to its
@@ -2192,9 +2408,20 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_circumnutation_phase += dt * 0.18
 	var nutation: float = 0.012 if current_height < max_height else 0.004
 	if has_flower and flower_stage >= FlowerStage.OPENING:
-		nutation *= 0.35
-	rotation.z = flow_bias * 0.04 + _brush_bend.x + _gust_tilt.x + sin(_circumnutation_phase) * nutation
-	rotation.x = _brush_bend.y + _gust_tilt.y + cos(_circumnutation_phase) * nutation * 0.7
+		nutation *= 0.2
+	# Epiphytes barely lean at the root; carpets even less.
+	var lean_scale: float = 0.55
+	if is_epiphyte:
+		lean_scale = 0.22
+	elif is_carpet:
+		lean_scale = 0.28
+	elif leaf_form in ["paddle", "spade", "lobed", "oval"]:
+		lean_scale = 0.38
+	rotation.z = (flow_bias * 0.025 + _brush_bend.x * 0.7 + _gust_tilt.x * 0.65
+			+ sin(_circumnutation_phase) * nutation) * lean_scale
+	rotation.x = (_brush_bend.y * 0.7 + _gust_tilt.y * 0.65
+			+ cos(_circumnutation_phase) * nutation * 0.7) * lean_scale
+	_stabilize_flower_against_lean()
 	_height_ghost_timer += dt
 	if _height_ghost_timer > 180.0:
 		_height_ghost_timer = 0.0
@@ -2482,9 +2709,9 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# ---- Pearling ----
 	_tick_pearling(dt)
 
-	# Submerged plants can still flower at genetic max height.
-	if not emergent_growth and not has_flower \
-			and current_height >= max_height - 1 and randf() < 0.0005:
+	# Submerged plants can still flower at genetic max height — rare event.
+	if uses_flowering and not emergent_growth and not has_flower \
+			and current_height >= max_height - 1 and randf() < 0.00008:
 		_begin_flowering()
 
 	# Seeding (submerged mature plants).
@@ -2533,7 +2760,8 @@ func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) ->
 	if life_phase == LifePhase.CANOPY and not has_flower and uses_flowering \
 			and not monocarpic and not is_dying:
 		_canopy_timer += dt
-		if _canopy_timer >= 25.0:
+		# Reflower as a seasonal event (~2+ min), not a permanent tip hat.
+		if _canopy_timer >= 140.0:
 			_canopy_timer = 0.0
 			_begin_flowering()
 	if not is_epiphyte:
@@ -2701,6 +2929,8 @@ func _finalize_runner() -> void:
 # ---- Flowering lifecycle ----
 
 func _begin_flowering() -> void:
+	if not uses_flowering:
+		return
 	if flower_stage != FlowerStage.NONE:
 		return
 	var sim_gate: Node = _find_sim()
@@ -2720,12 +2950,14 @@ func _begin_flowering() -> void:
 	# Build bud.
 	_flower_node = Node3D.new()
 	_flower_node.name = "Flower"
-	_flower_node.position = Vector3(0, _get_stem_top() + VOXEL_SIZE * 0.15, 0)
+	_flower_node.position = _tip_bloom_local_pos()
 	add_child(_flower_node)
+	_stabilize_flower_against_lean()
 	var bud_voxels: Array = _build_flower_bud_voxels()
 	for v in bud_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
+	_apply_sway_personality()
 	if first_flower and sim_gate != null and sim_gate.has_method("emit_eco_event"):
 		var fl: String = common_name if common_name != "" else plant_name
 		if fl != "":
@@ -2738,7 +2970,11 @@ func _begin_flowering() -> void:
 func _resolve_flower_silhouette() -> String:
 	if species_id.contains("cattail") or (emergent_growth and leaf_form == "ribbon"):
 		return "spike"
-	if leaf_form in ["paddle", "spade", "downy"] or species_id.contains("crypt"):
+	if leaf_form in ["paddle", "spade", "lobed", "oval", "downy"] \
+			or species_id.contains("crypt"):
+		return "crypt"
+	# Lance / stem / column — small spathe rather than a big radial daisy.
+	if leaf_form in ["lance", "pinnate", "fingered", "column"]:
 		return "crypt"
 	return "default"
 
@@ -2860,7 +3096,7 @@ func _tick_flowering(dt: float) -> void:
 		FlowerStage.OPENING:
 			_flower_open_frac = clampf(_flower_timer / 4.0, 0.0, 1.0)
 			if _flower_silhouette == "default":
-				LeafShapes.update_flower(bloom_voxels, 7, _flower_open_frac)
+				LeafShapes.update_flower(bloom_voxels, 5, _flower_open_frac)
 			elif _flower_node != null and is_instance_valid(_flower_node):
 				_flower_node.scale = Vector3.ONE.lerp(Vector3(1.08, 1.12, 1.08), _flower_open_frac)
 			if _flower_timer > 4.0:
@@ -2893,6 +3129,7 @@ func _tick_flowering(dt: float) -> void:
 					_flower_node = null
 				flower_stage = FlowerStage.NONE
 				has_flower = false
+				_apply_sway_personality()
 				_finish_reproduction_cycle()
 
 
@@ -2909,7 +3146,7 @@ func _build_flower_meshes_once() -> void:
 				_flower_petal_color, _flower_center_color)
 		_:
 			flower_voxels = LeafShapes.build_flower(
-				_flower_petal_color, _flower_center_color, 7, 0.0)
+				_flower_petal_color, _flower_center_color, 5, 0.0)
 	for v in flower_voxels:
 		_flower_node.add_child(v)
 		bloom_voxels.append(v)
@@ -3876,6 +4113,138 @@ func get_seed_config() -> Dictionary:
 
 
 
+# ---- Phyllotaxis ------------------------------------------------------------
+#
+# Every leaf used to be placed by `side = ±1` off `current_height % 2`, which
+# put the whole plant into two opposing planes: from any angle it read as a
+# flat stack of the same leaf, and two specimens of a species were identical.
+# Real plants set each successive leaf at a species-typical divergence angle
+# around the stem:
+#
+#   spiral / alternate  ~137.5°  the golden angle — most stem plants, swords
+#   distichous           180°    two-ranked (Vallisneria, some cryptocorynes)
+#   decussate             90°    opposite pairs rotating 90° per node (Rotala)
+#   whorled            360/n     n leaves at one node (Limnophila, Egeria)
+#
+# The divergence is what produces the packed, non-repeating rosette look, and
+# because each plant also carries a per-individual phase offset, a clump of
+# one species no longer lines up leaf-for-leaf.
+const GOLDEN_ANGLE: float = 2.39996323  # 137.507° in radians
+
+# Light heading in radians, refreshed by _phototropic_offset(). NAN until the
+# first growth step resolves TankConfig (headless tests never do).
+var _light_yaw_cache: float = NAN
+
+# How far a leaf may twist off its divergence angle to face the lamp. Real
+# plants do this at the petiole — it is what produces a "leaf mosaic", the
+# non-overlapping tiling you see looking down on a shade plant. Kept well
+# under half so the underlying arrangement still reads.
+const LEAF_MOSAIC_BIAS: float = 0.3
+
+const PHYLLO_SPIRAL: String = "spiral"
+const PHYLLO_DISTICHOUS: String = "distichous"
+const PHYLLO_DECUSSATE: String = "decussate"
+const PHYLLO_WHORLED: String = "whorled"
+
+
+# Stable 0..TAU phase so two plants of one species do not present the same
+# leaf face. Derived from asymmetry_seed, so it survives save/load and is
+# inherited-with-drift exactly like the rest of the genome.
+func _phyllotaxis_phase() -> float:
+	return float(asymmetry_seed % 3600) / 3600.0 * TAU
+
+
+# Yaw for the leaf at node index `node`, in radians.
+func _phyllotaxis_yaw(node: int) -> float:
+	var phase: float = _phyllotaxis_phase()
+	match phyllotaxis:
+		PHYLLO_DISTICHOUS:
+			return phase + float(node % 2) * PI
+		PHYLLO_DECUSSATE:
+			# Opposite pairs, each pair rotated a quarter turn from the last.
+			@warning_ignore("integer_division")
+			var pair: int = node / 2
+			return phase + float(pair) * (PI * 0.5) + float(node % 2) * PI
+		PHYLLO_WHORLED:
+			var n: int = maxi(2, whorl_count)
+			@warning_ignore("integer_division")
+			var ring: int = node / n
+			# Successive whorls half-step so leaves are not stacked in columns.
+			return phase + float(node % n) * (TAU / float(n)) \
+				+ float(ring) * (TAU / float(n)) * 0.5
+		_:
+			return phase + float(node) * GOLDEN_ANGLE
+
+
+# Final leaf heading: the species' divergence angle, twisted part-way toward
+# the light. Under a strongly side-lit tank the whole plant visibly turns to
+# face the lamp without collapsing into a single plane.
+func _leaf_yaw(node: int, jitter_spread: float = 0.09) -> float:
+	var yaw: float = _phyllotaxis_yaw(node) + _node_jitter(node, jitter_spread)
+	if is_nan(_light_yaw_cache):
+		return yaw
+	# Shaded plants reach harder for what light there is.
+	var bias: float = LEAF_MOSAIC_BIAS * (0.6 + 0.4 * _shade_leaf_factor())
+	var delta: float = wrapf(_light_yaw_cache - yaw, -PI, PI)
+	return yaw + delta * bias
+
+
+# Small deterministic per-node wobble. Perfect divergence angles read as
+# machined; a couple of degrees of scatter is what makes it read as grown.
+func _node_jitter(node: int, spread: float) -> float:
+	var h: int = (asymmetry_seed ^ (node * 2654435761)) & 0x7FFFFFFF
+	return (float(h % 2000) / 1000.0 - 1.0) * spread
+
+
+# The direction this individual leans. The old fixed `sin(rel)` arc bent every
+# plant along +X, so a row of stems all bowed the same way.
+func _lean_dir() -> Vector2:
+	var a: float = _phyllotaxis_phase()
+	return Vector2(cos(a), sin(a))
+
+
+# Lateral offset of the node at `rel` (0 = base, 1 = tip) along the lean.
+func _stem_lean_offset(rel: float) -> Vector2:
+	return _lean_dir() * (sin(rel * PI * 0.6) * sway_amplitude * 0.6)
+
+
+# ---- Light-driven leaf plasticity --------------------------------------------
+#
+# A shade leaf and a sun leaf of the same species are different organs: the
+# shade leaf is larger, thinner and held closer to horizontal to catch what
+# little light there is, the sun leaf is smaller and steeper. Because leaves
+# are baked at growth time, a plant that spent its life under a taller
+# neighbour keeps that record in its geometry — you can read a plant's light
+# history off its silhouette.
+func _shade_leaf_factor() -> float:
+	# 0 = full light, 1 = deep shade.
+	var lit: float = clampf(_light_avg / 0.48, 0.0, 1.0)
+	if _shade_mult < 1.0:
+		lit *= 0.6
+	return clampf(1.0 - lit, 0.0, 1.0)
+
+
+# Size multiplier: shade leaves run up to ~28% larger.
+func _shade_size_mult() -> float:
+	return 1.0 + _shade_leaf_factor() * 0.28
+
+
+# Pitch in radians: shade leaves lie flatter to present more area upward.
+func _shade_pitch() -> float:
+	return -_shade_leaf_factor() * 0.42
+
+
+# Leaf area along the stem. Real stems carry their largest leaves in the
+# mid-canopy: the apex is still expanding and the base is shaded out by
+# everything above it. A flat size for every node is one of the strongest
+# "procedural" tells.
+func _node_size_gradient(rel: float) -> float:
+	# Peaks ~0.62 up the stem, tapering to 0.78x at the base and 0.72x at the tip.
+	var t: float = clampf(rel, 0.0, 1.0)
+	return lerpf(0.78, 1.0, smoothstep(0.0, 0.62, t)) \
+		- smoothstep(0.62, 1.0, t) * 0.28
+
+
 func _phototropic_offset() -> Vector2:
 	var cfg := _find_sim()
 	if cfg == null:
@@ -3889,6 +4258,10 @@ func _phototropic_offset() -> Vector2:
 	if tc == null:
 		return Vector2.ZERO
 	var yaw_rad: float = float(tc.light_yaw) * TAU
+	# Cached for _leaf_yaw(): _phototropic_offset() is already called once per
+	# growth step, so the leaf-mosaic twist below rides on this lookup instead
+	# of resolving the autoload again per leaf.
+	_light_yaw_cache = yaw_rad
 	var photo_strength: float = 0.04
 	var height_factor: float = float(current_height) / float(maxi(1, max_height))
 	var bias: float = photo_strength * height_factor

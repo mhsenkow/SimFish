@@ -233,6 +233,17 @@ func draw_gh(amount: float) -> void:
 	gh = maxf(0.5, gh - maxf(0.0, amount))
 
 
+# A growing or repairing shell takes carbonate out of the water. This is the
+# other half of add_gh(): a heavy snail colony in a small tank measurably
+# softens it, which is exactly how a real snail population self-limits — too
+# many shells strip the buffer, the buffer crash starts eroding those shells,
+# and breeding stops until the colony thins out.
+func draw_carbonate(amount: float) -> void:
+	var a: float = maxf(0.0, amount)
+	gh = maxf(0.5, gh - a)
+	kh = maxf(0.5, kh - a * 0.4)
+
+
 # Dissolving shells / molts slowly return calcium carbonate to the water (#19).
 func add_gh(amount: float) -> void:
 	gh = clampf(gh + maxf(0.0, amount), 0.5, 18.0)

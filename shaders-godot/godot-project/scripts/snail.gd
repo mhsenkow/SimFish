@@ -8,7 +8,6 @@ extends Node3D
 
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
-const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
 
 @export var wall_normal: Vector3 = Vector3.RIGHT
 @export var wall_min: Vector3 = Vector3(-7.6, 2.0, -3.6)
@@ -60,6 +59,14 @@ const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
 # more of them. Toxic lineages drift toward denser, bolder markings (aposematism).
 @export var shell_pattern_scale: float = 0.5
 @export var shell_pattern_density: float = 0.5
+# Shell wall thickness, 0..1. Nerites and trochus lay down heavy calcite and
+# shrug off soft water for a long time; ramshorns and bladder snails build
+# thin, and pit within minutes of the KH bottoming out. Heritable.
+@export var shell_thickness: float = 0.5
+# True once a genome or save has stated a thickness; otherwise _ready() derives
+# one from the shell shape so every existing species entry gets a sensible
+# value without being edited.
+var _shell_thickness_explicit: bool = false
 var snail_name: String = ""
 var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
@@ -242,6 +249,7 @@ func get_saved_genome() -> Dictionary:
 		"shell_pattern": shell_pattern,
 		"shell_pattern_scale": shell_pattern_scale,
 		"shell_pattern_density": shell_pattern_density,
+		"shell_thickness": shell_thickness,
 		"generation": generation,
 		"snail_name": snail_name,
 		"parent_lineage": parent_lineage,
@@ -272,6 +280,9 @@ func apply_genome_metadata(g: Dictionary) -> void:
 	shell_pattern = int(g.get("shell_pattern", shell_pattern))
 	shell_pattern_scale = clampf(float(g.get("shell_pattern_scale", shell_pattern_scale)), 0.0, 1.0)
 	shell_pattern_density = clampf(float(g.get("shell_pattern_density", shell_pattern_density)), 0.0, 1.0)
+	if g.has("shell_thickness"):
+		shell_thickness = clampf(float(g["shell_thickness"]), 0.05, 1.0)
+		_shell_thickness_explicit = true
 	generation = int(g.get("generation", generation))
 	snail_name = String(g.get("snail_name", snail_name))
 	parent_lineage = String(g.get("parent_lineage", parent_lineage))
@@ -334,7 +345,31 @@ func _ready() -> void:
 	# motion to stay on that exact plane forever, regardless of what the
 	# wall_min / wall_max box-clamp would otherwise permit.
 	_wall_anchor_offset = wall_normal.dot(position)
+	if not _shell_thickness_explicit:
+		shell_thickness = _default_shell_thickness(shell_shape)
 	call_deferred("_sync_initial_orientation")
+
+
+# Shell wall thickness by silhouette, matching how these animals actually
+# build. Nerites (turbo + operculum) and trochus lay down heavy calcite and
+# survive soft water for a long time; ramshorns and bladder snails are thin
+# and pit fast — which is exactly the order a real keeper watches them go.
+static func _default_shell_thickness(shape: String) -> float:
+	match shape:
+		"trochus", "conch":
+			return 0.9
+		"turbo", "nassarius":
+			return 0.7
+		"limpet":
+			return 0.6
+		"apple":
+			return 0.5
+		"tower":
+			return 0.4
+		"ramshorn":
+			return 0.2
+		_:
+			return 0.5
 
 
 func _process(dt: float) -> void:
@@ -382,6 +417,13 @@ func _process(dt: float) -> void:
 		energy = clampf(energy - STARVE_DRAIN * dt, 0.0, 1.0)
 	elif hunger < 0.5:
 		energy = clampf(energy + ENERGY_REGEN * dt, 0.0, 1.0)
+	# Shell chemistry. Self-throttled to SHELL_CHECK_PERIOD internally, so
+	# this is one float compare on most frames.
+	_tick_shell_condition(dt, _get_sim())
+	# Repairing a dissolving shell costs body condition — an eroding snail
+	# runs down even when it is eating well.
+	if shell_condition < 0.8:
+		energy = clampf(energy - (0.8 - shell_condition) * 0.004 * dt, 0.0, 1.0)
 	if energy <= 0.0 and not is_baby:
 		_die_starved()
 		return
@@ -499,7 +541,8 @@ func _process(dt: float) -> void:
 				var sim_n := _get_sim()
 				if sim_n != null:
 					at_cap = _count_snails() >= int(w.snail_carrying_capacity())
-			if not at_cap and energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX:
+			if not at_cap and energy >= BREED_ENERGY_MIN and hunger <= BREED_HUNGER_MAX \
+					and shell_breeding_ok():
 				_lay_egg_sac()
 				energy = clampf(energy - 0.2, 0.0, 1.0)
 				hunger = clampf(hunger + 0.15, 0.0, 1.0)
@@ -707,6 +750,271 @@ func _process(dt: float) -> void:
 	_ensure_finite_transform()
 
 
+# ---- Shell condition ---------------------------------------------------------
+#
+# A snail shell is aragonite sitting in the water it lives in. Below about
+# KH 3 — and worse below pH 7 — the water is undersaturated and starts taking
+# the shell back, apex first, because the oldest whorls are the thinnest and
+# have had the longest exposure. Every freshwater keeper has seen it: a white
+# chalky spire, then pitting, then a hole at the tip.
+#
+# The tank already simulated KH and pH; nothing consumed them. This closes the
+# loop, and it is the one care signal that is genuinely legible at a glance —
+# you can see a water problem on the animals before you open a panel.
+#
+# Erosion is close to one-way. `_shell_scar` is the high-water mark of damage
+# and it never recovers: fixing the water lets the snail re-deposit at the
+# growing edge (condition climbs back toward the ceiling), but the pitted apex
+# stays pitted. That asymmetry is the point — neglect leaves a mark.
+
+# 1.0 pristine, 0.0 badly eroded.
+var shell_condition: float = 1.0
+# Worst damage ever taken. Caps how far shell_condition can recover.
+var _shell_scar: float = 0.0
+var _shell_voxels: Array[MeshInstance3D] = []
+# Voxel base colors, captured before any chalking so recovery can restore them.
+var _shell_base_colors: PackedColorArray = PackedColorArray()
+var _shell_visual_step: int = -1
+var _shell_check_t: float = 0.0
+var _shell_warned: bool = false
+
+# Water this soft starts dissolving shell; comfortably above it, nothing.
+const KH_SAFE: float = 4.0
+const KH_CRITICAL: float = 1.0
+const PH_SAFE: float = 7.2
+const PH_CRITICAL: float = 6.2
+# Full-tilt erosion for a paper-thin shell, per second.
+const SHELL_EROSION_RATE: float = 0.010
+# Re-deposition is far slower than loss, and only up to the scar ceiling.
+const SHELL_RECOVERY_RATE: float = 0.0022
+# Carbonate (dGH-equivalent) a single adult shell pulls per second just
+# existing, and the extra it pulls while actively re-depositing.
+const SHELL_UPKEEP_DRAW: float = 0.00022
+const SHELL_REPAIR_DRAW: float = 0.00060
+const SHELL_CHECK_PERIOD: float = 2.0
+# Chalk / pitting is restyled in this many discrete steps, so a slow slide
+# does not re-tint voxels every couple of seconds.
+const SHELL_VISUAL_STEPS: int = 5
+# Bone white — what calcite looks like once the periostracum has gone.
+const SHELL_CHALK: Color = Color(0.86, 0.85, 0.79)
+
+
+# Called by world.gd once the shell geometry exists. Sorted smallest-first:
+# box volume is a shape-agnostic proxy for whorl age, so the front of this
+# array is the apex on a cone or tower and the inner coil on a ramshorn.
+func register_shell_voxels(vox: Array) -> void:
+	_shell_voxels.clear()
+	_shell_base_colors = PackedColorArray()
+	var typed: Array[MeshInstance3D] = []
+	for v in vox:
+		if v is MeshInstance3D and is_instance_valid(v):
+			typed.append(v as MeshInstance3D)
+	typed.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
+		return _voxel_volume(a) < _voxel_volume(b))
+	_shell_voxels = typed
+	for v in _shell_voxels:
+		_shell_base_colors.append(_voxel_albedo(v))
+	# Re-apply whatever damage a loaded save carried.
+	_shell_visual_step = -1
+	_apply_shell_visual()
+
+
+static func _voxel_volume(mi: MeshInstance3D) -> float:
+	if mi == null or not (mi.mesh is BoxMesh):
+		return 0.0
+	var sz: Vector3 = (mi.mesh as BoxMesh).size
+	return sz.x * sz.y * sz.z
+
+
+static func _voxel_albedo(mi: MeshInstance3D) -> Color:
+	var m: Material = mi.material_override
+	if m is ShaderMaterial:
+		var v: Variant = (m as ShaderMaterial).get_shader_parameter("albedo")
+		if v is Color:
+			return v
+	elif m is StandardMaterial3D:
+		return (m as StandardMaterial3D).albedo_color
+	return Color.WHITE
+
+
+# How aggressive the water is toward calcium carbonate, 0..1.
+static func shell_dissolution_pressure(kh: float, ph: float) -> float:
+	var kh_p: float = clampf((KH_SAFE - kh) / maxf(0.01, KH_SAFE - KH_CRITICAL), 0.0, 1.0)
+	var ph_p: float = clampf((PH_SAFE - ph) / maxf(0.01, PH_SAFE - PH_CRITICAL), 0.0, 1.0)
+	# Acidity and low buffering compound: soft AND acid is far worse than
+	# either alone, which is exactly the blackwater-tank failure mode.
+	return clampf(maxf(kh_p, ph_p) * (0.65 + 0.55 * minf(kh_p, ph_p) + 0.35), 0.0, 1.0)
+
+
+func _tick_shell_condition(dt: float, sim: Node) -> void:
+	_shell_check_t += dt
+	if _shell_check_t < SHELL_CHECK_PERIOD:
+		return
+	var elapsed: float = _shell_check_t
+	_shell_check_t = 0.0
+	if sim == null:
+		return
+	var wc: Variant = sim.get("water_chemistry")
+	if wc == null:
+		return
+	var kh: float = float(wc.get("kh"))
+	var ph: float = float(wc.get("ph"))
+	var pressure: float = shell_dissolution_pressure(kh, ph)
+	# A thick shell buys time, it does not grant immunity.
+	var resist: float = lerpf(1.0, 0.28, clampf(shell_thickness, 0.0, 1.0))
+	if pressure > 0.01:
+		var loss: float = SHELL_EROSION_RATE * pressure * resist * elapsed
+		shell_condition = clampf(shell_condition - loss, 0.0, 1.0)
+		_shell_scar = maxf(_shell_scar, 1.0 - shell_condition)
+	else:
+		# Good water: re-deposit, but never past the damage already done.
+		var ceiling: float = clampf(1.0 - _shell_scar * 0.75, 0.15, 1.0)
+		if shell_condition < ceiling:
+			shell_condition = minf(ceiling,
+				shell_condition + SHELL_RECOVERY_RATE * elapsed)
+			_draw_carbonate(wc, elapsed * SHELL_REPAIR_DRAW)
+	# Ongoing shell maintenance and growth costs carbonate whatever the water
+	# is doing. Scaled by body size, so a colony of big apple snails pulls the
+	# buffer down far faster than a few bladder snails — and that draw is what
+	# eventually erodes them. The loop closes on itself.
+	_draw_carbonate(wc, elapsed * SHELL_UPKEEP_DRAW
+		* shell_size * (0.35 if is_baby else 1.0))
+	_apply_shell_visual()
+	_maybe_warn_shell()
+
+
+func _draw_carbonate(wc: Variant, amount: float) -> void:
+	if wc == null or amount <= 0.0:
+		return
+	if wc.has_method("draw_carbonate"):
+		wc.call("draw_carbonate", amount)
+
+
+# One story-log line the first time a snail's shell visibly goes. This is the
+# care nudge: the player sees a chalky snail and gets told why.
+func _maybe_warn_shell() -> void:
+	if _shell_warned or shell_condition > 0.62:
+		return
+	_shell_warned = true
+	var sim: Node = _get_sim()
+	if sim != null and sim.has_method("log_story_event"):
+		sim.log_story_event(
+			"%s's shell is going chalky at the tip — the water is too soft to hold it."
+				% _ensure_named_str())
+
+
+func _ensure_named_str() -> String:
+	_ensure_named()
+	return snail_name
+
+
+# Restyle the shell for the current condition. Damage eats from the oldest
+# whorls outward: chalk first, then pitting (the voxel shrinks), then the very
+# tip is gone entirely.
+func _apply_shell_visual() -> void:
+	if _shell_voxels.is_empty():
+		return
+	var damage: float = clampf(1.0 - shell_condition, 0.0, 1.0)
+	var step: int = int(round(damage * float(SHELL_VISUAL_STEPS)))
+	if step == _shell_visual_step:
+		return
+	_shell_visual_step = step
+	var frac: float = float(step) / float(SHELL_VISUAL_STEPS)
+	var n: int = _shell_voxels.size()
+	# Erosion reaches at most two thirds of the way down the shell — the
+	# aperture lip is new growth and stays sound.
+	var affected: int = int(round(float(n) * frac * 0.66))
+	for i in n:
+		var mi: MeshInstance3D = _shell_voxels[i]
+		if mi == null or not is_instance_valid(mi):
+			continue
+		var base: Color = _shell_base_colors[i] if i < _shell_base_colors.size() else Color.WHITE
+		if i >= affected:
+			_set_voxel_albedo(mi, base)
+			mi.visible = true
+			mi.scale = Vector3.ONE
+			continue
+		# 0 at the erosion front, 1 at the apex — oldest tissue is worst hit.
+		var depth: float = 1.0 - (float(i) / maxf(1.0, float(affected)))
+		_set_voxel_albedo(mi, base.lerp(SHELL_CHALK, clampf(0.35 + depth * 0.65, 0.0, 1.0)))
+		# Pitting: the worst-hit whorls physically lose material.
+		var shrink: float = 1.0 - clampf((depth - 0.45) * 0.85, 0.0, 0.42)
+		mi.scale = Vector3.ONE * shrink
+		# Past the last step the apex has simply gone.
+		mi.visible = not (step >= SHELL_VISUAL_STEPS and depth > 0.82)
+
+
+# VoxelMat caches and SHARES materials by colour, so writing albedo straight
+# onto material_override would chalk every creature in the tank that happens to
+# use the same shade. Take a private copy the first time a voxel is actually
+# restyled — only snails in bad water pay for it.
+const _META_OWN_MAT: StringName = &"snail_own_shell_mat"
+
+
+func _set_voxel_albedo(mi: MeshInstance3D, col: Color) -> void:
+	var m: Material = mi.material_override
+	if m == null:
+		return
+	if not mi.has_meta(_META_OWN_MAT):
+		if _voxel_albedo(mi).is_equal_approx(col):
+			return  # nothing to change; don't fork the shared material
+		m = m.duplicate()
+		mi.material_override = m
+		mi.set_meta(_META_OWN_MAT, true)
+	if m is ShaderMaterial:
+		(m as ShaderMaterial).set_shader_parameter("albedo", col)
+	elif m is StandardMaterial3D:
+		(m as StandardMaterial3D).albedo_color = col
+
+
+# Health consequence. A badly eroded snail is leaking body condition into
+# repair and is not fit to breed.
+func shell_breeding_ok() -> bool:
+	return shell_condition > 0.45
+
+
+# Weak attraction toward a nearby snail that is actively feeding. Only bites
+# when this snail has nothing better to do and is hungry enough to care, so a
+# fed colony still disperses normally.
+# How far off the snail's own wall plane a candidate may sit and still count
+# as "on the same surface". Shared by the food scan and the neighbour scan.
+const OFF_PLANE_MAX: float = 1.5
+const AGGREGATE_RADIUS: float = 2.2
+const AGGREGATE_HUNGER_MIN: float = 0.35
+const AGGREGATE_STEER: float = 0.35
+
+
+func _follow_feeding_neighbour(tangent: Vector3, bitangent: Vector3, dt: float) -> void:
+	if hunger < AGGREGATE_HUNGER_MIN or _clamped or _paused:
+		return
+	var best_n: Node3D = null
+	var best_d2: float = AGGREGATE_RADIUS * AGGREGATE_RADIUS
+	for other in get_tree().get_nodes_in_group("snails"):
+		if other == self or not is_instance_valid(other) or not (other is Node3D):
+			continue
+		# Only follow a snail that is mid-rasp; a neighbour merely crawling
+		# past carries no information about food.
+		if float(other.get("_eating_pulse_remaining")) <= 0.0:
+			continue
+		var to_o: Vector3 = (other as Node3D).global_position - global_position
+		# Same surface only — no pull through the glass to a snail on the floor.
+		if absf(wall_normal.dot(to_o)) > OFF_PLANE_MAX:
+			continue
+		var d2: float = to_o.length_squared()
+		if d2 < best_d2:
+			best_d2 = d2
+			best_n = other as Node3D
+	if best_n == null:
+		return
+	var to_n: Vector3 = best_n.global_position - global_position
+	var local: Vector2 = Vector2(to_n.dot(tangent), to_n.dot(bitangent))
+	if local.length_squared() < 1e-6:
+		return
+	# Hungrier snails commit harder to the trail.
+	var pull: float = AGGREGATE_STEER * clampf(hunger, 0.0, 1.0)
+	_steer_direction(_direction.lerp(local.normalized(), pull).normalized(), dt)
+
+
 func _safe_unit(v: Vector3, fallback: Vector3) -> Vector3:
 	if not v.is_finite() or v.length_squared() < 1e-8:
 		if fallback.is_finite() and fallback.length_squared() > 1e-8:
@@ -773,7 +1081,6 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	# units away in the wall_normal axis, so they crawl uselessly toward
 	# the projection. 1.5 units off-plane matches the comment that used
 	# to claim this filter existed.
-	const OFF_PLANE_MAX: float = 1.5
 	var best: Node3D = null
 	var best_d2: float = 5.0 * 5.0
 	var waste_near: Array = sim.waste
@@ -843,8 +1150,14 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 						best_d2 = d2f
 						best = fp
 
+	# Nothing of its own to eat — follow a neighbour that IS eating. Real
+	# snails pile onto a wafer within a minute, and they find it by tracking
+	# each other's mucus trails, not by seeing the food. Doing it as a weak
+	# pull toward whichever neighbour is mid-rasp reproduces the pile without
+	# any explicit "go to the wafer" rule, and it costs one group scan.
 	if best == null:
 		_pursuing_waste = false
+		_follow_feeding_neighbour(tangent, bitangent, dt)
 		return
 	# Compare in global space consistently — both endpoints in global, so
 	# the snail's parent transform doesn't skew the comparison.
@@ -1694,6 +2007,12 @@ func _lay_egg_sac() -> void:
 	# Aposematism: toxic lineages drift toward denser, bolder shell markings.
 	sac.set("inherited_shell_pattern_density",
 		clampf(shell_pattern_density + randf_range(-0.1, 0.1) + new_toxin * 0.12, 0.0, 1.0))
+	# Shell wall thickness inherits with drift. Soft water is a real selection
+	# pressure: parents that are visibly eroding bias their young thicker,
+	# so a tank left soft breeds a heavier-shelled line over generations.
+	var thick_bias: float = (1.0 - shell_condition) * 0.10
+	sac.set("inherited_shell_thickness",
+		clampf(shell_thickness + randf_range(-0.06, 0.06) + thick_bias, 0.05, 1.0))
 	sac.set("inherited_parent_lineage", snail_name)
 	sac.set("inherited_parent_keys", SpeciesLibScript.new().parent_keys_for_breeding([get_saved_genome()]))
 
@@ -2056,6 +2375,10 @@ func to_save_dict() -> Dictionary:
 		"shell_pattern": shell_pattern,
 		"shell_pattern_scale": shell_pattern_scale,
 		"shell_pattern_density": shell_pattern_density,
+		"shell_thickness": shell_thickness,
+		"shell_condition": shell_condition,
+		"shell_scar": _shell_scar,
+		"shell_warned": _shell_warned,
 		"generation": generation,
 		"sex": sex,
 		"direction": SaveHelpers.vec2_to_array(_direction),
@@ -2104,6 +2427,15 @@ func apply_save_dict(d: Dictionary) -> void:
 	shell_pattern = int(d.get("shell_pattern", shell_pattern))
 	shell_pattern_scale = clampf(float(d.get("shell_pattern_scale", shell_pattern_scale)), 0.0, 1.0)
 	shell_pattern_density = clampf(float(d.get("shell_pattern_density", shell_pattern_density)), 0.0, 1.0)
+	if d.has("shell_thickness"):
+		shell_thickness = clampf(float(d["shell_thickness"]), 0.05, 1.0)
+		_shell_thickness_explicit = true
+	shell_condition = clampf(float(d.get("shell_condition", shell_condition)), 0.0, 1.0)
+	_shell_scar = clampf(float(d.get("shell_scar", _shell_scar)), 0.0, 1.0)
+	_shell_warned = not not d.get("shell_warned", _shell_warned)
+	# Force a restyle so a loaded eroded shell comes back chalky, not pristine.
+	_shell_visual_step = -1
+	_apply_shell_visual()
 	generation = int(d.get("generation", 0))
 	sex = int(d.get("sex", 0))
 	_direction = SaveHelpers.array_to_vec2(d.get("direction", []), Vector2.RIGHT)

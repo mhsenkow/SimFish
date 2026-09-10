@@ -17,6 +17,12 @@ var render_width: int = 1024
 var render_height: int = 576
 # Palette quantize shader strength.
 var dither_strength: float = 0.72
+# Water-column extinction (0 = off). Light travelling through water loses red
+# first, so depth and distance desaturate toward the water's own colour — the
+# single strongest cue that you are looking THROUGH water rather than at
+# objects with a blue tint over them. Also gives the tank free atmospheric
+# perspective: near fish read warm and near, far ones recede.
+var water_extinction: float = 0.62
 # When true, dither strength varies by region (heavy on low-saturation
 # water/fog, light on saturated fauna). When false, the legacy uniform
 # dither applies everywhere.
@@ -2679,6 +2685,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "width", render_width)
 	cfg.set_value("render", "height", render_height)
 	cfg.set_value("render", "dither", dither_strength)
+	cfg.set_value("render", "water_extinction", water_extinction)
 	cfg.set_value("render", "dither_region_aware", dither_region_aware)
 	cfg.set_value("render", "dither_world_lock", dither_world_lock)
 	cfg.set_value("render", "blue_noise_amount", blue_noise_amount)
@@ -2995,6 +3002,8 @@ func load_from_disk() -> void:
 	render_width = cfg.get_value("render", "width", render_width)
 	render_height = cfg.get_value("render", "height", render_height)
 	dither_strength = cfg.get_value("render", "dither", dither_strength)
+	water_extinction = clampf(
+		float(cfg.get_value("render", "water_extinction", water_extinction)), 0.0, 1.5)
 	dither_region_aware = cfg.get_value("render", "dither_region_aware", dither_region_aware)
 	dither_world_lock = cfg.get_value("render", "dither_world_lock", dither_world_lock)
 	blue_noise_amount = cfg.get_value("render", "blue_noise_amount", blue_noise_amount)

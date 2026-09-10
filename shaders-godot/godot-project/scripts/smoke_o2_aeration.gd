@@ -97,7 +97,7 @@ func _test_overstock_floor(cfg: Node, failed: Array[String]) -> void:
 	sim.queue_free()
 
 
-func _make_tick_sim(cfg: Node, n_fish: int, plant_bm: int) -> SimDriver:
+func _make_tick_sim(_cfg: Node, n_fish: int, plant_bm: int) -> SimDriver:
 	var sim: SimDriver = SimDriver.new()
 	sim.name = "SmokeO2Tick"
 	sim.total_plant_biomass = plant_bm

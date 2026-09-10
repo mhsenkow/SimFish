@@ -10,6 +10,9 @@ import browser_cookie3
 from playwright.sync_api import sync_playwright
 
 ASSETS = Path(__file__).resolve().parent / "assets"
+# NOTE: this does not match the shipping app id (4796460 in project.godot and
+# STEAMWORKS.md). Confirm before running — this script drives the live partner
+# site and would edit whichever app this points at.
 APP_ID = 1202304
 STORE_URL = f"https://partner.steamgames.com/admin/game/edit/{APP_ID}?activetab=tab_graphicalassets"
 
@@ -17,7 +20,11 @@ STORE_URL = f"https://partner.steamgames.com/admin/game/edit/{APP_ID}?activetab=
 def collect_files() -> list[Path]:
     paths: list[Path] = []
     for folder in ("screenshots", "capsules", "icons"):
-        paths.extend(sorted((ASSETS / folder).glob("*.png")))
+        # .ico as well as .png: the Library Assets "Client Icon" field only
+        # accepts .ico, so a png-only glob silently skipped the one asset that
+        # decides what Steam shows in the library and on Linux/Steam Deck.
+        for pattern in ("*.png", "*.ico"):
+            paths.extend(sorted((ASSETS / folder).glob(pattern)))
     return [p for p in paths if p.name != "_icon_src.png"]
 
 

@@ -59,7 +59,35 @@ func _ready() -> void:
 		_build_action_row()
 		set_process(true)
 	_apply_layout()
-	get_viewport().size_changed.connect(_apply_layout)
+	get_viewport().size_changed.connect(_on_viewport_resized)
+
+
+# A resize can change the viewport<->screen ratio, which changes the physical
+# size of every button. Re-stamp them, then re-run layout.
+func _on_viewport_resized() -> void:
+	if _is_mobile:
+		var btn_size: Vector2 = _btn_size()
+		var fs: int = _font_size()
+		for btn in _all_buttons():
+			btn.custom_minimum_size = btn_size
+			btn.add_theme_font_size_override("font_size", fs)
+	_apply_layout()
+
+
+func _all_buttons() -> Array[Button]:
+	var out: Array[Button] = []
+	for b in [_pause_btn, _photo_btn, _undo_btn, _camera_views_btn, _residents_btn]:
+		if b != null:
+			out.append(b)
+	for k in _speed_btns.keys():
+		var sb: Button = _speed_btns[k]
+		if sb != null:
+			out.append(sb)
+	if _build_row != null:
+		for c in _build_row.get_children():
+			if c is Button:
+				out.append(c as Button)
+	return out
 
 
 func _process(dt: float) -> void:
@@ -110,42 +138,39 @@ func sync_time_scale(ts: float) -> void:
 	_highlight_speed(best_key)
 
 
+# Button size is driven by PanelTheme.min_touch_px(), which converts a ~7 mm
+# finger target into viewport pixels for this specific screen. The old
+# dpi->scale remap guessed at that relationship and under-sized the cluster on
+# any phone whose panel is much wider than our 1536 px render target.
 func _btn_size() -> Vector2:
 	if not _is_mobile:
 		return Vector2(44, 34)
-	var dpi: float = float(DisplayServer.screen_get_dpi())
-	var sc: float = 1.0
-	if dpi > 0.0:
-		sc = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.6), 1.0, 1.6)
-	return Vector2(56.0 * sc, 48.0 * sc)
+	var edge: float = PanelTheme.touch_size(get_viewport(), 48.0)
+	return Vector2(maxf(56.0, edge * 1.16), edge)
 
 
 func _font_size() -> int:
 	if not _is_mobile:
 		return 14
-	var dpi: float = float(DisplayServer.screen_get_dpi())
-	var sc: float = 1.0
-	if dpi > 0.0:
-		sc = clampf(remap(dpi, 320.0, 160.0, 1.0, 1.4), 1.0, 1.4)
-	return int(round(18.0 * sc))
+	var edge: float = PanelTheme.touch_size(get_viewport(), 48.0)
+	return int(round(clampf(18.0 * (edge / 48.0), 18.0, 30.0)))
 
 
+# Delegates to SafeArea so the action cluster, the top stats bar and the
+# footer all read the same notch geometry (they used to disagree — only this
+# file did the screen->viewport conversion).
 func _safe_area() -> Rect2:
-	var area: Rect2i = DisplayServer.get_display_safe_area()
 	var win: Vector2 = get_viewport().get_visible_rect().size
-	if area.size.x <= 0 or area.size.y <= 0:
+	var r: Rect2 = SafeArea.rect(get_viewport())
+	if r.size.x <= 0.0 or r.size.y <= 0.0:
+		return Rect2(0, 0, win.x, win.y)
+	if is_equal_approx(r.size.x, win.x) and is_equal_approx(r.size.y, win.y):
+		# No cutout reported (desktop, or a bezel-less panel). Keep the old
+		# hand-tuned chrome gutters verbatim so the cluster lands exactly where
+		# it always has on devices without a cutout.
 		var bottom_pad: float = 72.0 if _is_mobile else 16.0
 		return Rect2(0, 24, win.x, win.y - bottom_pad)
-	var scale_x: float = win.x / float(DisplayServer.screen_get_size().x)
-	var scale_y: float = win.y / float(DisplayServer.screen_get_size().y)
-	if scale_x > 0.0 and scale_y > 0.0:
-		return Rect2(
-			float(area.position.x) * scale_x,
-			float(area.position.y) * scale_y,
-			float(area.size.x) * scale_x,
-			float(area.size.y) * scale_y,
-		)
-	return Rect2(area.position, area.size)
+	return r
 
 
 func _build_speed_row() -> void:

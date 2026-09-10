@@ -27,6 +27,7 @@ extends Node3D
 @export var inherited_shell_pattern: int = 0
 @export var inherited_shell_pattern_scale: float = 0.5
 @export var inherited_shell_pattern_density: float = 0.5
+@export var inherited_shell_thickness: float = 0.5
 @export var inherited_parent_lineage: String = "Founders"
 @export var inherited_parent_keys: Array = []
 # REAL_TANK_FIDELITY #103–104 — disc (ramshorn) vs sausage (pond) clutch.
@@ -69,6 +70,7 @@ func to_save_dict() -> Dictionary:
 		"inherited_shell_pattern": inherited_shell_pattern,
 		"inherited_shell_pattern_scale": inherited_shell_pattern_scale,
 		"inherited_shell_pattern_density": inherited_shell_pattern_density,
+		"inherited_shell_thickness": inherited_shell_thickness,
 		"age": _age,
 	}
 
@@ -95,6 +97,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	inherited_shell_pattern = int(d.get("inherited_shell_pattern", inherited_shell_pattern))
 	inherited_shell_pattern_scale = float(d.get("inherited_shell_pattern_scale", inherited_shell_pattern_scale))
 	inherited_shell_pattern_density = float(d.get("inherited_shell_pattern_density", inherited_shell_pattern_density))
+	inherited_shell_thickness = float(d.get("inherited_shell_thickness", inherited_shell_thickness))
 	_age = float(d.get("age", 0.0))
 
 
@@ -219,6 +222,8 @@ func _hatch() -> void:
 	baby.set("shell_pattern", inherited_shell_pattern)
 	baby.set("shell_pattern_scale", inherited_shell_pattern_scale)
 	baby.set("shell_pattern_density", inherited_shell_pattern_density)
+	baby.set("shell_thickness", inherited_shell_thickness)
+	baby.set("_shell_thickness_explicit", true)
 	baby.set("parent_lineage", inherited_parent_lineage)
 	baby.set("_parent_keys", inherited_parent_keys.duplicate())
 	if baby.has_method("_ensure_named"):

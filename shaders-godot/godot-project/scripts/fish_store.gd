@@ -358,7 +358,9 @@ func _random_genome(slot_idx: int) -> Dictionary:
 		"tail_fork_depth": randf_range(0.5, 1.3),
 		"size_potential": randf_range(0.75, 2.2),
 		"jaw_claw_size": randf_range(0.0, 1.0),
-		"pattern_type": randi() % 4,
+		# Weighted toward the four classic motifs, with a real chance at the
+		# scatter morphs so the shelf does not show four near-identical fish.
+		"pattern_type": (randi() % 4) if randf() < 0.7 else [11, 12, 13, 14][randi() % 4],
 		"color_dot_count": randi_range(0, 3),
 		"has_barbels": has_barbels,
 		"armor_plates": armor,

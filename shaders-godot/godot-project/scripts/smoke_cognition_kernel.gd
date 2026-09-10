@@ -2,7 +2,7 @@ extends SceneTree
 
 # META #11 + #15 + #31 — cognition kernel + deterministic mind RNG.
 
-const SimStubScript = preload("res://scripts/smoke_sim_stub.gd")
+const SimStubScript = preload("res://scripts/sim_test_stub.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishScript = preload("res://scripts/fish.gd")
 

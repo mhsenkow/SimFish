@@ -4,9 +4,6 @@ extends SceneTree
 # golden rng, short soak, boot hygiene, residents wiring.
 
 const _MotionWave = preload("res://scripts/motion_wave.gd")
-const DartTrailPool = preload("res://scripts/dart_trail_pool.gd")
-const TimeAuthority = preload("res://scripts/time_authority.gd")
-const SimRng = preload("res://scripts/sim_rng.gd")
 
 
 func _initialize() -> void:
@@ -100,7 +97,7 @@ func _test_dart_trail_pool(failed: Array[String]) -> void:
 func _test_time_authority(failed: Array[String]) -> void:
 	TimeAuthority.reset_for_test()
 	var sim := Node.new()
-	sim.set_script(load("res://scripts/smoke_sim_stub.gd"))
+	sim.set_script(load("res://scripts/sim_test_stub.gd"))
 	sim.set("time_scale", 1.0)
 	root.add_child(sim)
 	TimeAuthority.set_base_scale(4.0)

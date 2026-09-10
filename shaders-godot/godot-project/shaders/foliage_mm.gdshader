@@ -38,7 +38,8 @@ void vertex() {
 	v_world_pos = world_pos;
 
 	float height_norm = clamp((world_pos.y - 0.5) / max(water_surface_y - 0.5, 1.0), 0.0, 1.0);
-	float height_factor = height_norm * height_norm * tip_sway_mult;
+	// Gentle power curve: flexible mid-column, soft tip — avoids squared tip whip.
+	float height_factor = pow(height_norm, 1.35) * tip_sway_mult;
 
 	float time_sway = TIME * sway_speed + sway_phase_offset;
 	float phase = world_pos.x * 0.4 + world_pos.z * 0.3 + sway_phase_offset * 0.37;
@@ -92,5 +93,8 @@ void fragment() {
 		col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
 		col *= 1.0 + wash * (0.62 + top_catch * 0.42);
 	}
+	// Water column — red dies first with depth and distance. Global uniform, so
+	// it costs one compare on anything above the waterline or out of the tank.
+	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
 	ALBEDO = col;
 }

@@ -70,6 +70,14 @@ iaq_palette_water={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+iaq_water_absorb={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_water_body={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
 
 [steam]
 

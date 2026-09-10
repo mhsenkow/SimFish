@@ -1842,6 +1842,7 @@ var _live_snails: Array = []
 # per-tick "/root/TankConfig" lookup and per-event "AmbientAudio" tree walk were
 # pure overhead since neither node ever moves.
 var _cfg_cache: Node = null
+var _ai_cache: Node = null
 var _ambient_audio_cache: Node = null
 # Cached active 3D camera for off-frustum brain-skip. Refreshed lazily when
 # null/invalid. The camera is parented under SubViewport/World so we walk
@@ -2811,7 +2812,7 @@ func _physics_process(dt: float) -> void:
 	# Light panel. The rest of the sim keeps ticking either way. Cycle
 	# length is also slider-driven (TankConfig.day_length_s); the constant
 	# DAY_LENGTH_S is now just a fallback when no cfg is mounted (tests).
-	var cfg_tc := get_node_or_null("/root/TankConfig")
+	var cfg_tc: Node = _cfg()
 	if cfg_tc == null or bool(cfg_tc.day_cycle_enabled):
 		var cycle_len: float = DAY_LENGTH_S
 		if cfg_tc != null:
@@ -2846,6 +2847,20 @@ func _cfg() -> Node:
 			if ml is SceneTree and (ml as SceneTree).root != null:
 				_cfg_cache = (ml as SceneTree).root.get_node_or_null("TankConfig")
 	return _cfg_cache
+
+
+# Cached AIDirector autoload accessor — same rationale as _cfg(): the node
+# never moves, so resolving "/root/AIDirector" once per sim tick was pure
+# string-path overhead.
+func _ai_director() -> Node:
+	if _ai_cache == null or not is_instance_valid(_ai_cache):
+		if is_inside_tree():
+			_ai_cache = get_node_or_null("/root/AIDirector")
+		else:
+			var ml: MainLoop = Engine.get_main_loop()
+			if ml is SceneTree and (ml as SceneTree).root != null:
+				_ai_cache = (ml as SceneTree).root.get_node_or_null("AIDirector")
+	return _ai_cache
 
 
 # Cached Camera3D accessor. Used to off-frustum-skip the brain tick of
@@ -4271,7 +4286,7 @@ func _tick(dt: float) -> void:
 			Algae.AlgaeKind.GSA, Algae.AlgaeKind.GDA:
 				# Pin to the nearest glass wall. We pick a side at random
 				# and snap X or Z to the tank wall half-extent.
-				var tc: Node = get_node_or_null("/root/TankConfig")
+				var tc: Node = _cfg()
 				var half_w: float = 6.0
 				var half_d: float = 4.5
 				if tc != null:
@@ -4641,7 +4656,7 @@ func _tick(dt: float) -> void:
 	# intent refresh. The whole call is a single HTTP POST every ~60 s and
 	# returns asynchronously; no per-tick latency. Off when AI is disabled
 	# or Ollama is unreachable.
-	var ai_d: Node = get_node_or_null("/root/AIDirector")
+	var ai_d: Node = _ai_director()
 	if ai_d != null and ai_d.has_method("intent_refresh_due") and ai_d.intent_refresh_due():
 		if ai_d.has_method("flush_minute_batch"):
 			ai_d.flush_minute_batch(_build_ai_summary())

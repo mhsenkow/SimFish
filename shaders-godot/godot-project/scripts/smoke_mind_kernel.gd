@@ -2,7 +2,6 @@ extends SceneTree
 
 # PERFORMANCE_UNTHROTTLED #49/#50 — mind kernel boot self-test + SoA parity.
 
-const MindKernel = preload("res://scripts/mind_kernel.gd")
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 
 

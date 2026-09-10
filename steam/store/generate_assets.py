@@ -234,7 +234,38 @@ def save_icons() -> list[Path]:
     else:
         icon.resize((32, 32), Image.Resampling.NEAREST).save(client_icon, optimize=True)
     paths.append(client_icon)
+
+    # Steamworks' "Client Icon" field only accepts .ico — a PNG is rejected at
+    # upload, which is how the store ended up showing a placeholder instead of
+    # the game's icon. Windows and macOS embed their icons from res://icon.png
+    # at export time; Linux binaries carry no icon at all, so on Steam Deck and
+    # the Linux client this .ico is the ONLY icon Steam has to work with.
+    paths.append(save_client_ico(icons_dir, icon))
     return paths
+
+
+# Sizes Windows/Steam pick between. 256 is stored PNG-compressed inside the
+# .ico (Vista+ convention), the rest as classic BMP frames.
+CLIENT_ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def save_client_ico(icons_dir: Path, fallback: Image.Image) -> Path:
+    frames: list[Image.Image] = []
+    for size in CLIENT_ICO_SIZES:
+        src = LOGO_DIR / f"icon_{size}.png"
+        if src.exists():
+            # Prefer hand-sized art when it exists — a 16px downscale of the
+            # 512 loses the one-pixel highlights the pixel art is built on.
+            frames.append(Image.open(src).convert("RGBA"))
+        else:
+            frames.append(fallback.resize((size, size), Image.Resampling.NEAREST))
+    out = icons_dir / "clienticon.ico"
+    # Pillow writes the LAST-appended set from `sizes`, so hand the largest
+    # frame in as the base and the rest as append_images.
+    frames[-1].save(out, format="ICO",
+                    sizes=[(s, s) for s in CLIENT_ICO_SIZES],
+                    append_images=frames[:-1])
+    return out
 
 
 def main() -> None:

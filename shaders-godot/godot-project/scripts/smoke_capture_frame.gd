@@ -17,14 +17,14 @@ func _initialize() -> void:
 		var img: Image = sv.get_texture().get_image()
 		if img != null:
 			img.save_png(art_dir.path_join("smoke_raw.png"))
-			print("[smoke_capture] raw ", img.get_size(), " center=", img.get_pixel(img.get_width()/2, img.get_height()/2))
+			print("[smoke_capture] raw ", img.get_size(), " center=", img.get_pixel(img.get_width() >> 1, img.get_height() >> 1))
 	# Final on-screen TextureRect (post quantize).
 	var display := main.get_node_or_null("Display") as TextureRect
 	if display != null and display.texture != null:
 		var dimg: Image = display.texture.get_image()
 		if dimg != null:
 			dimg.save_png(art_dir.path_join("smoke_post.png"))
-			print("[smoke_capture] post ", dimg.get_size(), " center=", dimg.get_pixel(dimg.get_width()/2, dimg.get_height()/2))
+			print("[smoke_capture] post ", dimg.get_size(), " center=", dimg.get_pixel(dimg.get_width() >> 1, dimg.get_height() >> 1))
 	# Also whole window
 	var root_img: Image = root.get_viewport().get_texture().get_image()
 	if root_img != null:

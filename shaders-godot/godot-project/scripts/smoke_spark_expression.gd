@@ -4,7 +4,6 @@ extends SceneTree
 
 const FishSparkExpression = preload("res://scripts/fish_spark_expression.gd")
 const FishSparkBehavior = preload("res://scripts/fish_spark_behavior.gd")
-const MindChannel = preload("res://scripts/mind_channel.gd")
 
 
 func _init() -> void:

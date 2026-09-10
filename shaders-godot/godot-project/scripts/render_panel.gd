@@ -12,6 +12,8 @@ var _res_option: OptionButton
 var _film_option: OptionButton
 var _dither: HSlider
 var _dither_label: Label
+var _water_extinction: HSlider
+var _water_extinction_label: Label
 var _palette_check: CheckBox
 var _region_aware_check: CheckBox
 var _dither_world_check: CheckBox
@@ -172,15 +174,14 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func toggle() -> void:
-	visible = not visible
-	if visible:
-		mouse_filter = Control.MOUSE_FILTER_STOP
+	if PanelTheme.is_panel_open(self):
+		_bind_ui_ticker(false)
+		PanelTheme.transition_panel(self, false)
+	else:
+		PanelTheme.transition_panel(self, true)
 		_bind_ui_ticker(true)
 		_pull_from_config()
 		_refresh_palette_inspector()
-	else:
-		_bind_ui_ticker(false)
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _bind_ui_ticker(on: bool) -> void:
@@ -415,6 +416,17 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_dither_label = Label.new()
 	_dither = PanelTheme.add_slider_row(palette_body, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
 	_dither.value_changed.connect(func(v): _on_dither(v))
+	# Water column: how hard the tank's water eats light on its way to the eye.
+	# Red goes first, so raising this pushes depth toward blue-green and gives
+	# the tank atmospheric perspective. 0 renders the contents as if in air.
+	_water_extinction_label = Label.new()
+	_water_extinction = PanelTheme.add_slider_row(
+		palette_body, "Water depth colour", 0.0, 1.5, 0.05, _water_extinction_label)
+	_water_extinction.tooltip_text = \
+		"How much the water absorbs light. Higher = deeper, bluer distance."
+	_water_extinction.value_changed.connect(func(v: float):
+		TankConfig.water_extinction = v
+		_water_extinction_label.text = "%.2f" % v)
 	_region_aware_check = CheckBox.new()
 	_region_aware_check.text = "Region-aware dither (recommended)"
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
@@ -836,6 +848,11 @@ func _add_section(parent: Node, label: String) -> void:
 func _pull_from_config() -> void:
 	_pull_resolution_option()
 	_dither.value = TankConfig.dither_strength
+	if _water_extinction != null:
+		_water_extinction.set_block_signals(true)
+		_water_extinction.value = TankConfig.water_extinction
+		_water_extinction.set_block_signals(false)
+		_water_extinction_label.text = "%.2f" % TankConfig.water_extinction
 	_palette_check.button_pressed = TankConfig.palette_enabled
 	if _experimental_check != null:
 		_experimental_check.button_pressed = TankConfig.experimental_visuals
@@ -1157,6 +1174,10 @@ func _on_film_stock_selected(idx: int) -> void:
 	_sync_material_sliders()
 	if _dither != null:
 		_dither.value = TankConfig.dither_strength
+	if _water_extinction != null:
+		_water_extinction.set_block_signals(true)
+		_water_extinction.value = TankConfig.water_extinction
+		_water_extinction.set_block_signals(false)
 	_update_labels()
 
 

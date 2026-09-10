@@ -2,7 +2,6 @@ extends SceneTree
 
 # META_ENGINEERING #31 — SimRng named streams are stable and independent.
 
-const SimRng = preload("res://scripts/sim_rng.gd")
 
 
 func _initialize() -> void:

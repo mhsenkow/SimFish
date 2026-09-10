@@ -3,11 +3,8 @@ extends SceneTree
 # REFINEMENT_II deferred L-items — soak, golden replay, offline parity, lifecycle,
 # synth ring, guardian cadence, boot hygiene, fast-forward, CI triad helpers.
 
-const MindReplayParity = preload("res://scripts/mind_replay_parity.gd")
-const SynthRingBuffer = preload("res://scripts/synth_ring_buffer.gd")
 const _MotionWave = preload("res://scripts/motion_wave.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
-const MindContext = preload("res://scripts/mind_context.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 
 
@@ -112,7 +109,7 @@ func _test_guardian_queue_order(failed: Array[String]) -> void:
 func _test_fast_forward_restore(failed: Array[String]) -> void:
 	TimeAuthority.reset_for_test()
 	var sim := Node.new()
-	sim.set_script(load("res://scripts/smoke_sim_stub.gd"))
+	sim.set_script(load("res://scripts/sim_test_stub.gd"))
 	root.add_child(sim)
 	TimeAuthority.set_base_scale(16.0)
 	TimeAuthority.push_pause(sim, "test_ff")
@@ -210,7 +207,6 @@ func _test_soak(failed: Array[String]) -> void:
 	_MotionWave.reset_for_test()
 	var t: float = 0.0
 	var step: float = 0.05
-	var errors_before: int = 0
 	var frame_i: int = 0
 	while t < soak_s:
 		if frame_i % 4 == 0:

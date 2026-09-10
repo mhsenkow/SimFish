@@ -5,8 +5,22 @@ extends RefCounted
 # Rolling p95 frame time → budget_pressure 0..1 for MindLOD; µs scopes for the perf HUD.
 
 const FRAME_RING: int = 60
+# Fallback budget when nothing has capped the frame rate: 60 fps.
 const TARGET_FRAME_MS: float = 16.6
 const SPIKE_MS: float = 28.0
+# A spike is a frame that overruns the budget by this much.
+const SPIKE_RATIO: float = SPIKE_MS / TARGET_FRAME_MS
+
+# Live frame budget. This USED to be the 16.6 ms constant, which quietly broke
+# every capped-frame-rate device: mobile defaults to fps_cap = 30, so a
+# perfectly healthy 33 ms frame read as a 100% budget overrun. budget_pressure
+# pinned at 1.0 forever, which meant MindLOD demoted every fish to its lowest
+# cognition tier and the adaptive scaler ratcheted shader cost to maximum —
+# on hardware that was hitting its target exactly. The budget now follows
+# Engine.max_fps.
+static var target_frame_ms: float = TARGET_FRAME_MS
+static var spike_ms: float = SPIKE_MS
+static var _target_cap_seen: int = -1
 
 const _MindTickScript = preload("res://scripts/mind_tick.gd")
 const _MindCacheStatsScript = preload("res://scripts/mind_cache_stats.gd")
@@ -25,6 +39,17 @@ static var _alloc_baseline: int = -1
 static var _alloc_last_frame: int = 0
 static var _alloc_scope_tag: String = ""
 static var _ledger: Dictionary = {}
+
+# record_frame() runs on literally every rendered frame, so it must not
+# allocate. _sort_scratch is a single reused buffer for the p95 percentile;
+# the percentile itself only needs recomputing every PRESSURE_STRIDE frames
+# (budget_pressure feeds MindLOD tiers and the adaptive-resolution ladder,
+# both of which move on ~1 s timescales), with an immediate escalation path so
+# a real spike is never smoothed away.
+const PRESSURE_STRIDE: int = 6
+const ALLOC_STRIDE: int = 15
+static var _sort_scratch: PackedFloat32Array = PackedFloat32Array()
+static var _stride_tick: int = 0
 
 
 static func alloc_scope_tag() -> String:
@@ -54,6 +79,23 @@ static func ledger_hud_suffix(max_items: int = 3) -> String:
 	return "" if parts.is_empty() else " · " + ", ".join(parts)
 
 
+# Re-read the engine frame cap and recompute the budget. Cheap (one int
+# compare in the common case), called from record_frame so a mid-session
+# change in Settings -> Performance takes effect immediately.
+static func refresh_target() -> void:
+	var cap: int = Engine.max_fps
+	if cap == _target_cap_seen:
+		return
+	_target_cap_seen = cap
+	if cap > 0:
+		# Never claim a budget looser than 60 fps' worth of slack when the cap
+		# is very low; a 15 fps cap should still flag a 200 ms hitch.
+		target_frame_ms = clampf(1000.0 / float(cap), TARGET_FRAME_MS, 50.0)
+	else:
+		target_frame_ms = TARGET_FRAME_MS
+	spike_ms = target_frame_ms * SPIKE_RATIO
+
+
 static func reset_for_test() -> void:
 	_frame_ring = PackedFloat32Array()
 	_frame_head = 0
@@ -67,6 +109,11 @@ static func reset_for_test() -> void:
 	_alloc_last_frame = 0
 	_alloc_scope_tag = ""
 	_ledger.clear()
+	_sort_scratch = PackedFloat32Array()
+	_stride_tick = 0
+	target_frame_ms = TARGET_FRAME_MS
+	spike_ms = SPIKE_MS
+	_target_cap_seen = -1
 
 
 static func record_frame(dt_sec: float) -> void:
@@ -77,29 +124,45 @@ static func record_frame(dt_sec: float) -> void:
 	_frame_ring[_frame_head] = ms
 	_frame_head = (_frame_head + 1) % FRAME_RING
 	_frame_count = mini(_frame_count + 1, FRAME_RING)
-	budget_pressure = _pressure_from_ring()
-	if ms >= SPIKE_MS:
+	_stride_tick += 1
+	refresh_target()
+	var spiking: bool = ms >= spike_ms
+	if spiking or _stride_tick % PRESSURE_STRIDE == 0 or _frame_count <= PRESSURE_STRIDE:
+		budget_pressure = _pressure_from_ring()
+	else:
+		# Between percentile refreshes, let a single bad frame push pressure up
+		# straight away — never down. Recovery waits for the real p95.
+		budget_pressure = maxf(budget_pressure, _pressure_from_ms(ms))
+	if spiking:
 		last_spike_subsystem = _top_scope_name()
 	_scope_active.clear()
-	var prev_alloc: int = _alloc_last_frame
-	_alloc_last_frame = OS.get_static_memory_usage()
-	if _alloc_baseline < 0:
-		_alloc_baseline = _alloc_last_frame
-	elif _alloc_last_frame > prev_alloc + 4096:
-		_alloc_scope_tag = _top_scope_name()
+	# get_static_memory_usage() is a debug-HUD readout, not a control signal.
+	# Polling it every frame cost more than the number was worth.
+	if _stride_tick % ALLOC_STRIDE == 0 or _alloc_baseline < 0:
+		var prev_alloc: int = _alloc_last_frame
+		_alloc_last_frame = OS.get_static_memory_usage()
+		if _alloc_baseline < 0:
+			_alloc_baseline = _alloc_last_frame
+		elif _alloc_last_frame > prev_alloc + 4096:
+			_alloc_scope_tag = _top_scope_name()
+
+
+static func _pressure_from_ms(ms: float) -> float:
+	return clampf((ms - target_frame_ms * 0.85) / (target_frame_ms * 1.1), 0.0, 1.0)
 
 
 static func _pressure_from_ring() -> float:
 	if _frame_count <= 0:
 		return 0.0
-	var samples: PackedFloat32Array = PackedFloat32Array()
-	samples.resize(_frame_count)
+	# Reused scratch — resize() on a PackedArray that is already the right
+	# length is a no-op, so the steady state is allocation-free.
+	if _sort_scratch.size() != _frame_count:
+		_sort_scratch.resize(_frame_count)
 	for i in _frame_count:
-		samples[i] = _frame_ring[i]
-	samples.sort()
+		_sort_scratch[i] = _frame_ring[i]
+	_sort_scratch.sort()
 	var p95_idx: int = clampi(int(ceil(float(_frame_count) * 0.95)) - 1, 0, _frame_count - 1)
-	var p95: float = samples[p95_idx]
-	return clampf((p95 - TARGET_FRAME_MS * 0.85) / (TARGET_FRAME_MS * 1.1), 0.0, 1.0)
+	return _pressure_from_ms(_sort_scratch[p95_idx])
 
 
 # #63 — bias adaptive resolution down when the governor is stressed.
@@ -175,7 +238,7 @@ static func hud_line(fish_n: int, draw_n: int) -> String:
 			line += " · alloc %+d (%s)" % [alloc_d, tag]
 		else:
 			line += " · alloc %+d" % alloc_d
-	if last_spike_subsystem != "" and last_frame_ms >= SPIKE_MS:
+	if last_spike_subsystem != "" and last_frame_ms >= spike_ms:
 		line += " · spike:%s" % last_spike_subsystem
 	var scopes: Dictionary = scopes_snapshot()
 	if not scopes.is_empty():

@@ -192,6 +192,15 @@ vec3 stratified_bed_color(vec3 world_pos, vec3 n, vec3 base_col) {
 	return col;
 }
 
+// World position for the water-column extinction below — the substrate is
+// the deepest surface in the tank and has to recede with everything else,
+// or the floor stays bright while the water above it goes blue.
+varying vec3 v_wpos;
+
+void vertex() {
+	v_wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
 void fragment() {
 	vec3 n = normalize(NORMAL);
 	float f;
@@ -238,5 +247,7 @@ void fragment() {
 		float bayer = fract(sin(dot(bcell, vec2(12.9898, 78.233))) * 43758.5453);
 		col = mix(col * 0.86, col * 1.07, step(0.5, bayer));
 	}
+	// Water column — deepest surface in the tank, so it recedes the most.
+	col = apply_water_column(col, v_wpos.y, length(VERTEX));
 	ALBEDO = col;
 }

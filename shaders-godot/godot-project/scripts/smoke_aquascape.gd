@@ -5,7 +5,7 @@ const ObjectMeshes := preload("res://scripts/aquascape_object_meshes.gd")
 # Compile + exercise aquascape build grid, object library, blueprints, save round-trip.
 func _initialize() -> void:
 	await process_frame
-	var w: Node3D = load("res://scripts/smoke_aquascape_stub.gd").new() as Node3D
+	var w: Node3D = load("res://scripts/aquascape_test_stub.gd").new() as Node3D
 	w.name = "SmokeAquascapeStub"
 	root.add_child(w)
 	var hs := Node3D.new()

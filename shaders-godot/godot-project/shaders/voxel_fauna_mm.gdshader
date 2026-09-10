@@ -148,5 +148,8 @@ void fragment() {
 		col = mix(col, col * 0.26, ink * fauna_rim);
 	}
 
+	// Water column — red dies first with depth and distance. Global uniform, so
+	// it costs one compare on anything above the waterline or out of the tank.
+	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
 	ALBEDO = col;
 }

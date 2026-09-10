@@ -1735,9 +1735,15 @@ var body_depth_factor: float = 1.0   # body height stretch factor (0.7-1.4) - pu
 var head_proportion: float = 1.0     # head size relative to body (0.7-1.3)
 var dorsal_height_factor: float = 1.0  # dorsal fin height multiplier (0.6-1.6)
 var tail_fork_depth: float = 1.0     # how spread the top/bottom prongs are (0.5-1.5)
+# Number of discrete lateral motifs _paint_lateral_pattern() knows how to draw.
+# Anything outside 0..PATTERN_TYPE_COUNT-1 falls through to solid, so raising
+# this is save-compatible in both directions.
+const PATTERN_TYPE_COUNT: int = 15
 var pattern_type: int = 1            # 0=solid, 1=lateral stripe, 2=spots, 3=vertical bars,
 									 # 4=two-tone band, 5=rear wedge, 6=reticulation, 7=blotch,
-									 # 8=head-band, 9=ocellated, 10=lateral line
+									 # 8=head-band, 9=ocellated, 10=lateral line,
+									 # 11=rosette, 12=chevron, 13=countershaded,
+									 # 14=constellation speckle
 var color_dot_count: int = 0         # extra accent dots (0-4)
 # Continuous pattern modulators (heritable). The discrete pattern_type picks the
 # macro layout; these floats reshape it so each lineage reads as a unique face:
@@ -1955,6 +1961,39 @@ func _ready() -> void:
 
 
 # ---- Setup ----
+
+# Memoised autoload handles. These are resolved once per run and shared by
+# every Fish — the per-instance `get_node_or_null("/root/...")` calls they
+# replace ran inside the per-fish tick and the motion substep, so with a
+# stocked tank the engine was doing thousands of scene-path resolutions a
+# second to reach two nodes that never move.
+static var _tank_cfg_cache: Node = null
+static var _music_ctx_cache: Node = null
+
+
+static func _autoload(cached: Node, node_name: String) -> Node:
+	if cached != null and is_instance_valid(cached):
+		return cached
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree and (ml as SceneTree).root != null:
+		return (ml as SceneTree).root.get_node_or_null(node_name)
+	return null
+
+
+static func tank_cfg() -> Node:
+	_tank_cfg_cache = _autoload(_tank_cfg_cache, "TankConfig")
+	return _tank_cfg_cache
+
+
+static func music_ctx() -> Node:
+	_music_ctx_cache = _autoload(_music_ctx_cache, "MusicContext")
+	return _music_ctx_cache
+
+
+static func reset_autoload_cache_for_test() -> void:
+	_tank_cfg_cache = null
+	_music_ctx_cache = null
+
 
 # Coerce a genome color value to a Color regardless of how it arrived. Breeding
 # produces Colors, save/load round-trips through Arrays, but a genome that has
@@ -2425,9 +2464,11 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	genome["second_dorsal"] = g.randf() < 0.7
 	genome["body_width_factor"] = g.randf_range(0.7, 1.15)
 	# A fifth of reef morphs roll the richer marine patterns: reticulated
-	# boxfish net, masked butterflyfish band, ocellated spot rows.
-	if g.randf() < 0.20:
-		genome["pattern_type"] = [6, 8, 9][g.randi() % 3]
+	# boxfish net, masked butterflyfish band, ocellated spot rows, plus the
+	# scatter motifs (rosette / chevron / countershaded / constellation) that
+	# keep a big reef shoal from reading as four repeated stamps.
+	if g.randf() < 0.30:
+		genome["pattern_type"] = [6, 8, 9, 11, 12, 13, 14][g.randi() % 7]
 	# Rare bold body plans seen on the reef: a flattened ray/flounder or a
 	# rounded boxfish.
 	var shape_roll: float = g.randf()
@@ -2484,6 +2525,9 @@ func _build_body() -> void:
 	#   +X = right (lateral, where stripes and pectorals go)
 	#   +Y = up
 	var v: float = adult_voxel_scale
+	# Per-individual bilateral deviation — see _individual_asymmetry(). Read by
+	# the eye highlight, the pectorals and the caudal nick below.
+	var asym: Dictionary = _individual_asymmetry()
 	var mat_body := _make_mat(base_color)
 	var mat_top := _make_mat(base_color.lightened(0.42))
 	var mat_belly := _make_mat(base_color.darkened(0.58))
@@ -2547,10 +2591,15 @@ func _build_body() -> void:
 	var eye_core: float = maxf(v * 0.14 * hp * es, v * 0.11 * hp)
 	var mat_eye_hi := VoxelMat.make(Color8(210, 228, 235))
 	var eye_hi: float = maxf(v * 0.08 * hp * es, v * 0.06 * hp)
+	var eye_lift: float = float(asym["eye_lift"])
 	for x_side in [-1.0, 1.0]:
 		_add_voxel_to(head, Vector3(x_side * v * 0.4 * hp, v * 0.1 * hp, -2.38 * v),
 			Vector3(eye_core, eye_core, eye_core), mat_eye)
-		_add_voxel_to(head, Vector3(x_side * v * 0.42 * hp, v * 0.14 * hp, -2.44 * v),
+		# The catchlight sits a hair higher on one side than the other. At a
+		# 512x288 render that is a single pixel of difference, and it is enough
+		# to stop two fish reading as the same sprite flipped.
+		_add_voxel_to(head,
+			Vector3(x_side * v * 0.42 * hp, (0.14 + x_side * eye_lift) * v * hp, -2.44 * v),
 			Vector3(eye_hi, eye_hi, eye_hi), mat_eye_hi)
 	# Mouth indicator: a small accent voxel positioned by mouth_orientation.
 	# +1 = downturned (sifters), -1 = upturned (surface feeders), 0 = neutral.
@@ -2887,18 +2936,20 @@ func _build_body() -> void:
 			Vector3(v * 0.10, v * 0.25, v * 0.4), mat_fin)
 	# Pectoral fins on both sides - each gets its own pivot so they can
 	# flutter independently like a real fish's hovering stroke.
+	var pec_r: float = float(asym["pec_r"])
+	var pec_l: float = float(asym["pec_l"])
 	_pec_right_pivot = Node3D.new()
 	_pec_right_pivot.name = "PecRight"
 	_pec_right_pivot.position = Vector3(v * 0.55, -v * 0.1, v * 0.2)
 	_body_mid_pivot.add_child(_pec_right_pivot)
 	_add_voxel_to(_pec_right_pivot, Vector3(v * 0.1, 0, 0),
-		Vector3(v * 0.12, v * 0.25, v * 0.5), mat_fin)
+		Vector3(v * 0.12, v * 0.25 * pec_r, v * 0.5 * pec_r), mat_fin)
 	_pec_left_pivot = Node3D.new()
 	_pec_left_pivot.name = "PecLeft"
 	_pec_left_pivot.position = Vector3(-v * 0.55, -v * 0.1, v * 0.2)
 	_body_mid_pivot.add_child(_pec_left_pivot)
 	_add_voxel_to(_pec_left_pivot, Vector3(-v * 0.1, 0, 0),
-		Vector3(v * 0.12, v * 0.25, v * 0.5), mat_fin)
+		Vector3(v * 0.12, v * 0.25 * pec_l, v * 0.5 * pec_l), mat_fin)
 	# Ventral feelers: gouramis (and other anabantids) have their pelvic fins
 	# reduced to long thread-like "feelers" that trail well below the body.
 	# Two slim voxel filaments hanging from the front belly, swept slightly
@@ -2926,6 +2977,15 @@ func _build_body() -> void:
 	# Tail peduncle (narrow connector).
 	_add_voxel_to(_tail_pivot, Vector3(0, 0, 0),
 		Vector3(v * 0.5, v * 0.6, v), mat_body)
+	# Healed caudal nick — a notch of body-dark punched into one side of the
+	# peduncle on roughly a fifth of individuals. Reads as a survived
+	# encounter rather than a modelling error, and it is the cheapest possible
+	# cue that this particular fish has a history.
+	if bool(asym["nick"]):
+		_add_voxel_to(_tail_pivot,
+			Vector3(float(asym["nick_side"]) * v * 0.22,
+				float(asym["nick_y"]) * v, v * 0.28),
+			Vector3(v * 0.14, v * 0.16, v * 0.20), mat_belly)
 	# Tail fin shape - one of four templates picked by `tail_shape`. Each
 	# uses fin_length_factor for overall size + tail_fork_depth for the
 	# fork separation, but the silhouette differs.
@@ -3384,7 +3444,7 @@ func _music_mods() -> Dictionary:
 		"color_vibrancy": (_color_vibrancy(base_color) + _color_vibrancy(accent_color)) * 0.5,
 	}
 	var mods: Dictionary
-	var mc := get_node_or_null("/root/MusicContext")
+	var mc: Node = music_ctx()
 	if mc != null and mc.has_method("fauna_behavior_mods"):
 		mods = mc.fauna_behavior_mods(get_instance_id(), traits)
 	else:
@@ -3407,10 +3467,10 @@ func _tick_music_affect(dt: float) -> void:
 	# valence and a small arousal lift on energetic music. Off by default, so this
 	# is a single bool check unless the keeper has music sync on — no per-frame
 	# cost otherwise (the "doesn't bog down" contract).
-	var cfg: Node = get_node_or_null("/root/TankConfig")
+	var cfg: Node = tank_cfg()
 	if cfg == null or not bool(cfg.get("music_sync_enabled")) or not bool(cfg.get("music_sync_fish")):
 		return
-	var music: Node = get_node_or_null("/root/MusicContext")
+	var music: Node = music_ctx()
 	if music == null or not music.has_method("is_active") or not bool(music.call("is_active")):
 		return
 	var intensity: float = clampf(float(cfg.get("music_sync_intensity")), 0.0, 1.0)
@@ -3458,7 +3518,7 @@ func _music_cross_tank_target(mods: Dictionary, vertical_bias: float = 0.35) -> 
 	var hd: float = float(w.get("TANK_HALF_D") if w.get("TANK_HALF_D") != null else 4.0)
 	var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
 	var top_y: float = _water_surface_y() - 0.4
-	var mc := get_node_or_null("/root/MusicContext")
+	var mc: Node = music_ctx()
 	if mc != null and float(mods.get("dance_blend", 0.0)) > 0.08 and mc.has_method("compute_dance_target"):
 		var cam_yaw: float = 0.0
 		if w.has_method("_find_tank_camera"):
@@ -6216,7 +6276,7 @@ func _process(dt: float) -> void:
 					strength *= (1.0 - bleach) \
 						* clampf(float(sim.dissolved_o2) / 0.88, 0.35, 1.0)
 			# Light panel master multiplier — 0 hides biolum entirely, >1 over-bright.
-			var tc := get_node_or_null("/root/TankConfig")
+			var tc: Node = tank_cfg()
 			if tc != null:
 				strength *= clampf(float(tc.biolum_multiplier), 0.0, 3.0)
 			_apply_bioluminescence_uniform(strength)
@@ -7698,7 +7758,7 @@ func _fauna_tier_scale(raw: float, lo: float, hi: float, tiers: PackedFloat32Arr
 
 
 func _fauna_runtime() -> Dictionary:
-	var cfg := get_node_or_null("/root/TankConfig")
+	var cfg: Node = tank_cfg()
 	if cfg == null:
 		return {
 			"schooling": 1.0,
@@ -8039,6 +8099,44 @@ func _paint_scale_rows(body: Node3D, v: float, seg_count: int, _mat_scale) -> vo
 				Vector3(v * 0.07, v * 0.10, v * 0.72), row_mat)
 
 
+# Stable 31-bit hash of this fish's identity. Used by the scatter patterns so
+# the same individual rebuilds an identical coat every load, while two fish of
+# the same species still differ. Falls back to the instance id for fish that
+# have not been assigned a persistent id yet (previews, the creator panel).
+func _pattern_hash() -> int:
+	var src: String = id if id != "" else str(get_instance_id())
+	var h: int = 2166136261
+	for i in src.length():
+		h = (h ^ src.unicode_at(i)) & 0xFFFFFFFF
+		h = (h * 16777619) & 0xFFFFFFFF
+	return (h ^ (h >> 15)) & 0x7FFFFFFF
+
+
+# Per-individual bilateral deviation, derived from _pattern_hash() so it is
+# stable for a given fish and uncorrelated between siblings. Magnitudes are
+# deliberately small (a few percent) — the goal is that a shoal stops reading
+# as one mesh repeated, not that anything looks deformed.
+func _individual_asymmetry() -> Dictionary:
+	var h: int = _pattern_hash()
+	# 0..1 draws from successive LCG steps of the id hash.
+	h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+	var d0: float = float(h % 1000) / 1000.0
+	h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+	var d1: float = float(h % 1000) / 1000.0
+	h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+	var d2: float = float(h % 1000) / 1000.0
+	# One pectoral runs up to 7% longer than the other, in either direction.
+	var lean: float = (d0 - 0.5) * 0.14
+	return {
+		"pec_r": 1.0 + lean,
+		"pec_l": 1.0 - lean,
+		"eye_lift": (d1 - 0.5) * 0.06,
+		"nick": d2 > 0.80,
+		"nick_side": 1.0 if d1 > 0.5 else -1.0,
+		"nick_y": (d0 - 0.5) * 0.5,
+	}
+
+
 func _paint_lateral_pattern(ptype: int, body: Node3D, v: float, seg_count: int,
 		mat_a, mat_m, strength: float) -> void:
 	if ptype <= 0 or seg_count <= 0:
@@ -8139,6 +8237,77 @@ func _paint_lateral_pattern(ptype: int, body: Node3D, v: float, seg_count: int,
 					_add_voxel_to(body, Vector3(xs * v * 0.54, v * 0.02, i * v),
 						Vector3(v * 0.08 * sizem, v * 0.08 * sizem, v * 0.22 * sizem),
 						_make_mat(base_color.lightened(0.28 + pattern_intensity * 0.12)))
+		11:
+			# Rosette / leopard: a pale core ringed by a darker annulus. Two
+			# concentric voxels read as a rosette once the palette quantizer
+			# has crushed them to 2 flat colors — the same trick real
+			# pixel-art uses for a big cat's coat.
+			var ring_mat = _make_mat(base_color.darkened(0.30 + pattern_contrast * 0.40))
+			var core_mat = _make_mat(
+				(marking_color if _marking_color_set else accent_color).lightened(0.18))
+			var rows_r: int = 1 if dens < 0.55 else 2
+			for i in seg:
+				for r in rows_r:
+					var ry: float = 0.0 if rows_r <= 1 else (float(r) - 0.5) * v * 0.52
+					for xs in [-1.0, 1.0]:
+						_add_voxel_to(body, Vector3(xs * v * 0.5, ry, i * v),
+							Vector3(v * 0.15 * sizem, v * 0.40 * sizem, v * 0.40 * sizem),
+							ring_mat)
+						_add_voxel_to(body, Vector3(xs * v * 0.53, ry, i * v),
+							Vector3(v * 0.13 * sizem, v * 0.20 * sizem, v * 0.20 * sizem),
+							core_mat)
+		12:
+			# Chevron / zigzag: dashes that alternate above and below the
+			# midline so the flank reads as a running V-series (pike, killifish,
+			# many Aphyosemion). Amplitude tracks intensity.
+			var amp: float = v * (0.16 + 0.30 * pattern_intensity)
+			for i in seg:
+				var up: bool = i % 2 == 0
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body,
+						Vector3(xs * v * 0.5, amp if up else -amp, i * v),
+						Vector3(v * 0.15 * sizem, v * 0.44 * thickm, v * 0.34 * sizem), mat_a)
+					_add_voxel_to(body,
+						Vector3(xs * v * 0.5, (-amp if up else amp) * 0.45, i * v + v * 0.30),
+						Vector3(v * 0.14 * sizem, v * 0.30 * thickm, v * 0.26 * sizem), mat_m)
+		13:
+			# Countershading ramp: four thin bands stepping dorsal->ventral
+			# from the top tone to the belly tone. No hard motif at all — this
+			# is the smooth "photographic" morph that makes a shoal of stripes
+			# and spots look less uniform.
+			var bands: int = 4
+			var top_c: Color = base_color.lightened(0.30 + pattern_contrast * 0.22)
+			var bot_c: Color = base_color.darkened(0.34 + pattern_contrast * 0.30)
+			for bi in bands:
+				var f: float = float(bi) / float(bands - 1)
+				var band_mat = _make_mat(top_c.lerp(bot_c, f))
+				var by: float = lerpf(v * 0.46, -v * 0.46, f)
+				for i in seg:
+					for xs in [-1.0, 1.0]:
+						_add_voxel_to(body, Vector3(xs * v * 0.5, by, i * v),
+							Vector3(v * 0.12 * sizem, v * 0.26, v * 0.95), band_mat)
+		14:
+			# Constellation speckle: fine pale dots scattered by a stable hash
+			# of this fish's id, so every individual carries its own star-map
+			# and siblings never stamp identically. Deterministic — a reload
+			# rebuilds the exact same scatter.
+			var h: int = _pattern_hash()
+			var dots: int = clampi(4 + int(round(dens * 8.0)), 4, 12)
+			var speck_mat = _make_mat(
+				(marking_color if _marking_color_set else accent_color).lightened(0.34))
+			for d in dots:
+				h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+				# Span the same z range the other motifs use — segment centres
+				# run 0..(seg-1)*v; going to seg*v would drop a speck a whole
+				# voxel past the last body segment.
+				var dz: float = float(h % 1000) / 1000.0 * float(maxi(seg - 1, 1)) * v
+				h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+				var dy: float = (float(h % 1000) / 1000.0 - 0.5) * v * 1.05
+				h = (h * 1103515245 + 12345) & 0x7FFFFFFF
+				var ds: float = v * (0.09 + 0.09 * float(h % 100) / 100.0) * sizem
+				for xs in [-1.0, 1.0]:
+					_add_voxel_to(body, Vector3(xs * v * 0.52, dy, dz),
+						Vector3(v * 0.11 * sizem, ds, ds), speck_mat)
 		_:
 			pass
 
@@ -8459,7 +8628,7 @@ func _apply_saltation(g: Dictionary) -> void:
 			g["body_depth_factor"] = clampf(float(g.get("body_depth_factor", 1.0)) * 1.5, 0.7, 1.4)
 			g["body_elongation"] = clampf(float(g.get("body_elongation", 1.0)) * 0.7, 0.65, 1.55)
 		"disruptive":
-			g["pattern_type_b"] = _behavior_rng().randi() % 10
+			g["pattern_type_b"] = _behavior_rng().randi() % PATTERN_TYPE_COUNT
 			g["pattern_blend"] = _behavior_rng().randf_range(0.55, 0.9)
 			g["pattern_contrast"] = clampf(float(g.get("pattern_contrast", 0.5)) + 0.4, 0.0, 1.0)
 			g["pattern_density"] = clampf(float(g.get("pattern_density", 0.5)) + 0.3, 0.0, 1.0)

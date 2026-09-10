@@ -4,7 +4,6 @@
 extends Node3D
 class_name AquariumVisuals
 
-const TankFidelityRuntime = preload("res://scripts/tank_fidelity_runtime.gd")
 const TICK_INTERVAL: float = 0.1
 const SLIME_CAP: int = 96
 const SPARKLE_CAP: int = 12

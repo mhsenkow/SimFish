@@ -143,14 +143,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func toggle() -> void:
-	if visible:
+	if PanelTheme.is_panel_open(self):
 		_revert_staged_stocking()
 		_bind_ui_ticker(false)
-		visible = false
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		PanelTheme.transition_panel(self, false)
 	else:
-		visible = true
-		mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(self, true)
 		_bind_ui_ticker(true)
 		_pull_from_config()
 

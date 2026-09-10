@@ -244,7 +244,7 @@ and CPU only applies slow flow lean + circumnutation
 ([plant.gd:1800–1815](../shaders-godot/godot-project/scripts/plant.gd:1800)).
 Good foundation — these add variety and responsiveness.
 
-- **29. Per-species sway personality.** Stiff swords barely move; fine-leaf
+- [x] **29. Per-species sway personality.** Stiff swords barely move; fine-leaf
   stems and hairgrass shimmer. Drive `sway_amplitude` / `sway_frequency` from
   leaf form so the tank doesn't sway as one uniform mass. *M · M*
 - **30. Gust events.** Occasional tank-wide flow pulses (filter surge,
@@ -254,10 +254,10 @@ Good foundation — these add variety and responsiveness.
   ([line 1807](../shaders-godot/godot-project/scripts/plant.gd:1807)) springs
   back in ~1 s; make a big fish pushing through dense stems visibly part them
   more, so cover feels physical. *S · M*
-- **32. Tip-weighted sway.** Tall stems should sway more at the tip than the
+- [x] **32. Tip-weighted sway.** Tall stems should sway more at the tip than the
   base (already partly in `foliage_mm.gdshader` via `tip_sway_mult`) — verify
   it's pronounced enough to read on `valli` and `red_stem`. *S · M*
-- **33. Carpet shimmer.** Hairgrass/carpet plants get a fast, low-amplitude
+- [x] **33. Carpet shimmer.** Hairgrass/carpet plants get a fast, low-amplitude
   high-frequency flutter distinct from tall-stem sway, so the foreground feels
   like a living lawn. *S · M*
 - **34. Bubble release on stem flex.** When a healthy plant is brushed hard, pop
@@ -291,9 +291,12 @@ genuinely new angles.
   greener in shade, blush deeper red under strong light — the real
   light-driven anthocyanin response, layered on the existing `red_potential`
   blush. *M · M*
-- **41. Flower variety per species.** Lily blooms are great; give cattail,
+- [x] **41. Flower variety per species.** Lily blooms are great; give cattail,
   emergent stems, and crypts distinct flower silhouettes so flowering events
   (C25) read as "*that* species bloomed," not a generic pop. *M · M*
+  Also: tip blooms use calm flower materials + counter-lean against root sway
+  so they no longer bat at the tip; carpets/needles default `uses_flowering`
+  off; canopy reflower slowed to a seasonal event.
 - **42. Backlight bloom at the surface.** Emergent leaves and pads catch a soft
   rim of light where they break the meniscus — extends the wet-sheen work and
   makes the waterline a visual feature. *M · S*

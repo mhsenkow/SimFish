@@ -56,19 +56,68 @@ func _initialize() -> void:
 	_assert(failed, _approx(CameraController.zoom_ortho(1.0, 0.5), CameraController.ORTHO_MIN_SIZE),
 			"zoom_ortho clamps to ORTHO_MIN_SIZE")
 
-	# Trackpad / magnify helpers — soft steps, correct zoom-in direction.
-	var tp_in: float = CameraController.zoom_factor_from_scroll(0.2, true, 1)
-	_assert(failed, tp_in < 1.0 and tp_in > 0.90,
-			"precise trackpad scroll-up zooms in gently")
-	var burst: float = CameraController.zoom_factor_from_scroll(1.0, true, 8)
-	_assert(failed, burst < 1.0 and burst > 0.92,
-			"macOS wheel-burst spray softens instead of 12% jumps")
-	var mag_in: float = CameraController.zoom_factor_from_magnify(1.05)
-	_assert(failed, mag_in < 1.0,
-			"magnify>1 shrinks radius (zoom in)")
-	var mag_out: float = CameraController.zoom_factor_from_magnify(0.95)
-	_assert(failed, mag_out > 1.0,
-			"magnify<1 grows radius (zoom out)")
+	# ---- Zoom budget: one continuous curve, drained at a bounded rate -------
+	# The old per-event classifier switched between three step formulas inside
+	# a single trackpad flick (12% -> 4.7% -> 0.85% per event). Every input now
+	# converts to log zoom on one curve.
+	var precise: float = CameraController.scroll_log_zoom(0.2)
+	var notch: float = CameraController.scroll_log_zoom(1.0)
+	var hard: float = CameraController.scroll_log_zoom(3.0)
+	_assert(failed, precise > 0.0 and notch > precise and hard > notch,
+			"scroll response is monotonic in event magnitude")
+	_assert(failed, _approx(notch, CameraController.WHEEL_NOTCH_LOG),
+			"a factor-1 wheel notch is exactly one reference step")
+	# Sub-linear: a 15x bigger event must not be 15x the zoom.
+	_assert(failed, hard < precise * 15.0,
+			"scroll response is sub-linear, so a hard spin cannot teleport")
+	# No branch to fall off: neighbouring magnitudes stay close together.
+	var a: float = CameraController.scroll_log_zoom(0.84)
+	var b: float = CameraController.scroll_log_zoom(0.86)
+	_assert(failed, absf(a - b) < 0.005,
+			"no discontinuity across the old 0.85 branch point")
+
+	# Pinch: magnify > 1 = fingers apart = zoom in = negative log zoom.
+	_assert(failed, CameraController.magnify_log_zoom(1.05) < 0.0,
+			"magnify>1 zooms in")
+	_assert(failed, CameraController.magnify_log_zoom(0.95) > 0.0,
+			"magnify<1 zooms out")
+
+	# The budget must be bounded, drain toward zero, and never outrun the cap.
+	var big: float = CameraController.clamp_zoom_budget(99.0)
+	_assert(failed, _approx(big, CameraController.ZOOM_BUDGET_MAX),
+			"queued zoom is capped so a hard spin cannot bank a huge glide")
+	var d1: Array = CameraController.drain_zoom_budget(1.0, 1.0 / 60.0)
+	_assert(failed, float(d1[0]) > 0.0 and float(d1[1]) < 1.0,
+			"draining consumes part of the budget")
+	_assert(failed, float(d1[0]) <= CameraController.ZOOM_RATE_MAX / 60.0 + 1e-6,
+			"per-frame zoom respects the rate cap")
+	# A dense event stream (240 fps worth of drains) must not exceed the cap.
+	var budget: float = CameraController.ZOOM_BUDGET_MAX
+	var total: float = 0.0
+	for _i in 240:
+		var step: Array = CameraController.drain_zoom_budget(budget, 1.0 / 240.0)
+		total += float(step[0])
+		budget = float(step[1])
+	_assert(failed, total <= CameraController.ZOOM_RATE_MAX + 1e-3,
+			"one second of draining stays under the per-second cap")
+	# And it must actually converge, not hang around forever.
+	_assert(failed, absf(budget) < CameraController.ZOOM_BUDGET_MAX * 0.05,
+			"the budget drains to near zero within a second")
+	# Frame rate must not change how far a given budget travels.
+	var slow: float = 0.0
+	var sb: float = 1.0
+	for _i in 30:
+		var st: Array = CameraController.drain_zoom_budget(sb, 1.0 / 30.0)
+		slow += float(st[0]); sb = float(st[1])
+	var fast: float = 0.0
+	var fb: float = 1.0
+	for _i in 120:
+		var st2: Array = CameraController.drain_zoom_budget(fb, 1.0 / 120.0)
+		fast += float(st2[0]); fb = float(st2[1])
+	_assert(failed, absf(slow - fast) < 0.06,
+			"same travel at 30 and 120 fps (%.3f vs %.3f)" % [slow, fast])
+	_assert(failed, _approx(float(CameraController.drain_zoom_budget(0.0, 0.016)[0]), 0.0),
+			"an empty budget applies nothing")
 
 	# --- Pan: drag right pushes the scene right (target moves left).
 	var pt: Vector3 = CameraController.pan_target(

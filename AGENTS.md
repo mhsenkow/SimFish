@@ -37,6 +37,23 @@ All the same project.
   web landing page via a relative `href`; `shaders-godot/godot-project/assets/fonts/`
   feeds the Godot theme via `res://`. Neither runtime can read the other's copy, so
   both must exist. Don't "dedupe" them.
+- **Compile-check everything fast:** `dev/compile_check.gd` loads every script in
+  `scripts/` and reports parse failures — a few seconds, versus minutes for the
+  full smoke suite. Run it after any broad edit:
+  `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://dev/compile_check.gd`.
+  **New `class_name`s need a project rescan** before they resolve headlessly
+  (`--headless --path <project> --editor --quit` rebuilds
+  `.godot/global_script_class_cache.cfg`); without it you get
+  `Identifier "Foo" not declared in the current scope` from `--script` runs only.
+- **Never name a test helper `smoke_*`.** `run_smokes.sh` and `smoke_runner.gd`
+  glob `scripts/smoke_*.gd` and *execute* every match. A helper with no
+  `extends SceneTree` has no MainLoop, so Godot boots the main scene instead and
+  the run hangs forever — that is why the aggregate runner used to never return.
+  Helpers are named `*_test_stub.gd` / `*_test_ui_host.gd` instead. Audit with:
+  `for f in scripts/smoke_*.gd; do grep -q "^extends SceneTree" "$f" || echo "$f"; done`
+- **`smoke_runner.gd` still has no per-script timeout,** so one genuinely slow
+  smoke (`smoke_tank_balance.gd` is a soak) can stall an unattended run. Wrap it
+  with your own timeout when running the suite from CI or an agent.
 - **Smoke test:** `scripts/smoke_tank_shapes.gd` (`extends SceneTree`) validates that
   every tank shape builds. Run it headless, it's not referenced by the game:
   `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://scripts/smoke_tank_shapes.gd`.

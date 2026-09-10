@@ -387,8 +387,8 @@ static func make_foliage(color: Color) -> ShaderMaterial:
 	return m
 
 
-# Surface blooms — much calmer than canopy leaves; per-petal GPU flutter
-# at leaf defaults reads as chaotic jitter on small flower voxels.
+# Surface blooms — rigid tip ornaments. Any GPU sway detaches petals from the
+# stem tip and reads as floating candy boxes bouncing in the water column.
 static var _flower_foliage_cache: Dictionary = {}
 
 
@@ -397,10 +397,10 @@ static func make_flower_foliage(color: Color) -> ShaderMaterial:
 	if _flower_foliage_cache.has(key):
 		return _flower_foliage_cache[key]
 	var m: ShaderMaterial = make_foliage(color).duplicate() as ShaderMaterial
-	m.set_shader_parameter("sway_amplitude", 0.014)
-	m.set_shader_parameter("sway_speed", 0.75)
-	m.set_shader_parameter("flutter_amplitude", 0.005)
-	m.set_shader_parameter("flutter_speed", 1.2)
+	m.set_shader_parameter("sway_amplitude", 0.0)
+	m.set_shader_parameter("sway_speed", 0.0)
+	m.set_shader_parameter("flutter_amplitude", 0.0)
+	m.set_shader_parameter("flutter_speed", 0.0)
 	_flower_foliage_cache[key] = m
 	return m
 
@@ -827,6 +827,75 @@ static func _push_palette_globals(fauna_p: Dictionary, foliage_p: Dictionary,
 	RenderingServer.global_shader_parameter_set("iaq_palette_hardscape", _vec4_palette(hardscape_p))
 	RenderingServer.global_shader_parameter_set("iaq_palette_substrate", _vec4_palette(sub_p))
 	RenderingServer.global_shader_parameter_set("iaq_palette_water", _vec4_palette(water_p))
+
+
+# ---- Water column ------------------------------------------------------------
+#
+# Pushed as two global uniforms (see palette_tint.gdshaderinc) so every in-tank
+# shader picks it up from one write per change instead of a per-material loop.
+#
+# Absorption coefficients are the shape of real freshwater attenuation, scaled
+# for a tank-sized world rather than an ocean: red an order of magnitude
+# stronger than blue. Tannins push the whole curve up and swing the residue
+# amber; turbidity mostly adds in-scatter, which is what makes a hazy tank read
+# as milky rather than dark.
+# Ratios follow real freshwater attenuation (red ~6x blue); magnitudes are
+# tuned for a tank-sized path so a near fish loses ~8% of its red and the
+# substrate ~20%, rather than the whole scene going cyan. See
+# smoke_water_column.gd, which pins the resulting curve.
+const WATER_ABSORB_CLEAR: Vector3 = Vector3(0.0300, 0.0095, 0.0050)
+# Tannin-stained water flips the curve: blue and green are absorbed hardest,
+# and what survives is amber. That is blackwater.
+const WATER_ABSORB_TANNIN: Vector3 = Vector3(0.0160, 0.0270, 0.0480)
+const WATER_BODY_CLEAR: Vector3 = Vector3(0.075, 0.145, 0.155)
+const WATER_BODY_TANNIN: Vector3 = Vector3(0.150, 0.095, 0.045)
+const WATER_EXTINCTION_DEFAULT: float = 0.62
+
+
+# Pure: water state in, the two packed uniforms out. Split from the push so it
+# can be asserted headlessly — the dummy renderer does not store globals, so
+# reading them back after a set() returns null.
+# Returns [absorb_rgb + strength, body_rgb + surface_y].
+static func water_column_uniforms(surface_y: float, strength: float,
+		tannins: float = 0.0, turbidity: float = 0.0) -> Array:
+	var t: float = clampf(tannins, 0.0, 1.0)
+	var turb: float = clampf(turbidity, 0.0, 1.0)
+	var absorb: Vector3 = WATER_ABSORB_CLEAR.lerp(WATER_ABSORB_TANNIN, t)
+	# Suspended solids attenuate broadly rather than selectively — a murky tank
+	# reads milky, not blue.
+	absorb += Vector3.ONE * turb * 0.016
+	var body: Vector3 = WATER_BODY_CLEAR.lerp(WATER_BODY_TANNIN, t)
+	body = body.lerp(Vector3(0.20, 0.21, 0.19), turb * 0.55)
+	var s: float = clampf(strength, 0.0, 2.0)
+	return [
+		Vector4(absorb.x, absorb.y, absorb.z, s),
+		Vector4(body.x, body.y, body.z, surface_y),
+	]
+
+
+# Transmittance of one channel over a tank path. Mirrors the shader exactly
+# (see apply_water_column in palette_tint.gdshaderinc) so the smoke can pin the
+# curve the player actually sees.
+const WATER_VIEW_WEIGHT: float = 0.35
+
+
+static func water_transmittance(absorb_k: float, depth: float,
+		view_dist: float, strength: float) -> float:
+	if strength <= 0.0 or depth <= 0.0:
+		return 1.0
+	return exp(-absorb_k * (depth + view_dist * WATER_VIEW_WEIGHT) * strength)
+
+
+# strength 0 disables the effect entirely (room shots, potato tier, tests).
+static func push_water_column(surface_y: float, strength: float,
+		tannins: float = 0.0, turbidity: float = 0.0) -> void:
+	var u: Array = water_column_uniforms(surface_y, strength, tannins, turbidity)
+	RenderingServer.global_shader_parameter_set("iaq_water_absorb", u[0])
+	RenderingServer.global_shader_parameter_set("iaq_water_body", u[1])
+
+
+static func disable_water_column() -> void:
+	RenderingServer.global_shader_parameter_set("iaq_water_absorb", Vector4(0, 0, 0, 0))
 
 
 static func _apply_palette_overlay(mat: ShaderMaterial,

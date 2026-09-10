@@ -7,6 +7,14 @@ const DORMANCY_NONE: String = "none"
 const DORMANCY_TUBER: String = "tuber"
 const DORMANCY_TURION: String = "turion"
 
+# Mirrors of Plant's PHYLLO_* constants. PlantGenome is a RefCounted schema
+# holder and must not depend on the Plant node class, so the strings live in
+# both places; the smoke pins them equal.
+const DEFAULTS_PHYLLO_SPIRAL: String = "spiral"
+const DEFAULTS_PHYLLO_DISTICHOUS: String = "distichous"
+const DEFAULTS_PHYLLO_DECUSSATE: String = "decussate"
+const DEFAULTS_PHYLLO_WHORLED: String = "whorled"
+
 const REPRO_SEED: String = "seed"
 const REPRO_SPORE: String = "spore"
 const REPRO_PLANTLET: String = "plantlet"
@@ -53,6 +61,10 @@ const DEFAULTS: Dictionary = {
 	"dormancy_type": DORMANCY_NONE,
 	"repro_mode": REPRO_SEED,
 	"asymmetry_seed": 0,
+	# Leaf arrangement around the stem. "" = derive from leaf_form /
+	# whorled_leaves at init (see Plant._resolve_phyllotaxis).
+	"phyllotaxis": "",
+	"whorl_count": 3,
 	"ls_angle": 35.0,
 	"ls_ratio": 0.72,
 	"ls_depth": 2,
@@ -131,6 +143,8 @@ static func from_plant(p: Plant) -> Dictionary:
 		"dormancy_type": p.dormancy_type,
 		"repro_mode": p.repro_mode,
 		"asymmetry_seed": p.asymmetry_seed,
+		"phyllotaxis": p.phyllotaxis,
+		"whorl_count": p.whorl_count,
 		"ls_angle": p.ls_angle,
 		"ls_ratio": p.ls_ratio,
 		"ls_depth": p.ls_depth,
@@ -177,6 +191,8 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.dormancy_type = String(e.dormancy_type)
 	p.repro_mode = String(e.repro_mode)
 	p.asymmetry_seed = int(e.asymmetry_seed)
+	p.phyllotaxis = String(e.phyllotaxis)
+	p.whorl_count = int(e.whorl_count)
 	p.ls_angle = float(e.ls_angle)
 	p.ls_ratio = float(e.ls_ratio)
 	p.ls_depth = int(e.ls_depth)
@@ -195,6 +211,23 @@ static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
 	if randf() < 0.04:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
 		out.leaf_form = forms[randi() % forms.size()]
+		# A new leaf form needs its arrangement re-derived, not the parent's.
+		out.phyllotaxis = ""
+	# Every individual gets its own asymmetry phase. Without this, offspring
+	# inherited the parent's seed verbatim and a whole lineage presented the
+	# same leaf face and the same node jitter — a clump of clones.
+	out.asymmetry_seed = randi()
+	# Architecture sport: a rare heritable jump to a different leaf
+	# arrangement. This is the trait that changes a lineage's silhouette
+	# wholesale rather than nudging a number.
+	if randf() < 0.012:
+		var arrangements: Array[String] = [
+			DEFAULTS_PHYLLO_SPIRAL, DEFAULTS_PHYLLO_DISTICHOUS,
+			DEFAULTS_PHYLLO_DECUSSATE, DEFAULTS_PHYLLO_WHORLED,
+		]
+		out.phyllotaxis = arrangements[randi() % arrangements.size()]
+		out.whorl_count = 2 + randi() % 4
+		out.plant_name = ""
 	# Variegation sport (#22)
 	if randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -217,10 +250,15 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.palatability = lerpf(float(ea.palatability), float(eb.palatability), 0.5)
 	out.leaf_thickness = lerpf(float(ea.leaf_thickness), float(eb.leaf_thickness), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
+	out.asymmetry_seed = randi()
 	if randf() < 0.5:
 		out.leaf_form = String(ea.leaf_form)
+		out.phyllotaxis = String(ea.phyllotaxis)
+		out.whorl_count = int(ea.whorl_count)
 	else:
 		out.leaf_form = String(eb.leaf_form)
+		out.phyllotaxis = String(eb.phyllotaxis)
+		out.whorl_count = int(eb.whorl_count)
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:

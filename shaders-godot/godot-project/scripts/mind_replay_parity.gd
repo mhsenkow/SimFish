@@ -5,10 +5,8 @@ extends RefCounted
 
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 const MindCycle = preload("res://scripts/mind_cycle.gd")
-const MindChannel = preload("res://scripts/mind_channel.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
-const MindCacheRegistry = preload("res://scripts/mind_cache_registry.gd")
 
 
 static func workspace_trace(f, sim) -> Dictionary:

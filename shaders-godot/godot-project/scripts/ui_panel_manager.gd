@@ -158,8 +158,11 @@ func open_modal(id: String) -> void:
 		MODAL_STORE:
 			var sp: Variant = _main.get("fish_store_panel")
 			if sp != null:
-				sp.visible = true
-				sp.mouse_filter = Control.MOUSE_FILTER_STOP
+				# Through transition_panel, not a bare `visible = true`: the
+				# store closes via _hide_panel(), so a re-open inside the
+				# out-tween has to cancel that tween or its completion
+				# callback hides the panel again a frame later.
+				PanelTheme.transition_panel(sp, true)
 				sp.z_index = 200
 				if sp.has_method("_regenerate"):
 					sp._regenerate()
@@ -185,8 +188,7 @@ func _toggle_settings() -> void:
 		panel.toggle()
 		return
 	if panel.has_method("_pull_from_config"):
-		panel.visible = true
-		panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(panel, true)
 		panel._pull_from_config()
 
 
@@ -197,12 +199,10 @@ func _toggle_render() -> void:
 	if panel.has_method("toggle"):
 		panel.toggle()
 		return
-	if panel.visible:
-		panel.visible = false
-		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if PanelTheme.is_panel_open(panel):
+		PanelTheme.transition_panel(panel, false)
 	else:
-		panel.visible = true
-		panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(panel, true)
 		if panel.has_method("_pull_from_config"):
 			panel._pull_from_config()
 
@@ -214,11 +214,10 @@ func _toggle_sound() -> void:
 	if panel.has_method("toggle"):
 		panel.toggle()
 		return
-	if panel.visible and panel.has_method("_close"):
+	if PanelTheme.is_panel_open(panel) and panel.has_method("_close"):
 		panel._close()
 	elif panel.has_method("_pull_from_config"):
-		panel.visible = true
-		panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(panel, true)
 		panel._pull_from_config()
 		if panel.has_method("_refresh_live_readout"):
 			panel._refresh_live_readout()
@@ -228,30 +227,29 @@ func _show_panel(panel: Variant) -> void:
 	if panel == null:
 		return
 	if panel.has_method("toggle"):
-		if not panel.visible:
-			panel.visible = true
-			panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		if not PanelTheme.is_panel_open(panel):
+			PanelTheme.transition_panel(panel, true)
 			if panel.has_method("_pull_from_config"):
 				panel._pull_from_config()
 			elif panel.has_method("_regenerate"):
 				panel._regenerate()
 	else:
-		panel.visible = true
-		panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(panel, true)
 
 
 func _hide_panel(panel: Variant) -> void:
 	if panel == null:
 		return
-	panel.visible = false
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	PanelTheme.transition_panel(panel, false)
 
 
 func _close_side(id: String) -> void:
 	match id:
 		SIDE_SETTINGS:
 			var panel: Variant = _main.get("settings_panel")
-			if panel != null and panel.visible and panel.has_method("toggle"):
+			# is_panel_open(), not .visible — a panel already fading out is
+			# still "visible", and toggling it would re-open it.
+			if panel != null and PanelTheme.is_panel_open(panel) and panel.has_method("toggle"):
 				panel.toggle()
 		SIDE_RENDER:
 			_hide_panel(_main.get("render_panel"))

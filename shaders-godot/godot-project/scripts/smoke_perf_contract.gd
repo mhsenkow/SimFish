@@ -2,7 +2,6 @@ extends SceneTree
 
 # PERFORMANCE_UNTHROTTLED #100 — automated 150-fish contract receipt (headless).
 
-const SimDriver = preload("res://scripts/sim_driver.gd")
 const _MindTickScript = preload("res://scripts/mind_tick.gd")
 
 

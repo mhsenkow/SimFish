@@ -173,6 +173,15 @@ vec3 apply_material_grain(vec3 col, int mat_id, vec3 world_pos, float variation)
 	return col;
 }
 
+// World position for the water-column extinction below — the substrate is
+// the deepest surface in the tank and has to recede with everything else,
+// or the floor stays bright while the water above it goes blue.
+varying vec3 v_wpos;
+
+void vertex() {
+	v_wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+}
+
 void fragment() {
     // 1. Base voxel shading
     vec3 n = normalize(NORMAL);
@@ -300,5 +309,7 @@ void fragment() {
 	float final_intensity = mix(caust_raw, caust_quant, 0.55);
 
     // 3. Add caustics additively to the base voxel color
-    ALBEDO = base_color + light_color.rgb * final_intensity;
+    // Water column — deepest surface in the tank, so it recedes the most.
+    ALBEDO = apply_water_column(base_color + light_color.rgb * final_intensity,
+        v_wpos.y, length(VERTEX));
 }

@@ -96,9 +96,69 @@ const TOAST_STACK_W: float = 260.0
 const TOAST_STACK_H: float = 160.0
 
 
+# ---- Touch-target sizing -----------------------------------------------------
+#
+# The game renders into a fixed 1536x864-ish viewport and lets `stretch/mode =
+# viewport` scale it to whatever panel the device has. That is great for the
+# pixel art and terrible for hit targets: a 48 px rail button on a 1536-wide
+# viewport shown on a 852 pt phone screen lands at ~27 pt, well under the ~44 pt
+# / 7 mm minimum every mobile HIG asks for. Fingers are the same size no matter
+# what we render at, so the minimum has to be computed in *physical* units and
+# converted back into viewport pixels.
+#
+# 0.28 in ~= 7.1 mm ~= 44 pt at 160 dpi — the common floor across iOS/Android.
+const MIN_TOUCH_INCHES: float = 0.28
+const _TOUCH_SCALE_CAP: float = 2.4
+
+static var _touch_px_cache: Dictionary = {}
+
+
+static func is_touch_device() -> bool:
+	return OS.has_feature("mobile") or OS.has_feature("android") or OS.has_feature("ios")
+
+
+# Smallest square, in viewport pixels, that is still comfortably tappable on
+# this device. Returns 0.0 on desktop (mouse targets need no floor).
+static func min_touch_px(vp: Viewport) -> float:
+	if vp == null or not is_touch_device():
+		return 0.0
+	var view: Vector2 = vp.get_visible_rect().size
+	var screen: Vector2i = DisplayServer.screen_get_size()
+	var dpi: float = float(DisplayServer.screen_get_dpi())
+	if view.x <= 0.0 or screen.x <= 0 or dpi <= 1.0:
+		return 0.0
+	var key: String = "%d/%d/%d" % [int(view.x), screen.x, int(dpi)]
+	if _touch_px_cache.has(key):
+		return _touch_px_cache[key]
+	# Physical pixels needed for one finger, expressed in viewport pixels.
+	var need_screen_px: float = MIN_TOUCH_INCHES * dpi
+	var px: float = need_screen_px * (view.x / float(screen.x))
+	_touch_px_cache[key] = px
+	return px
+
+
+# Grow `base` up to the touch floor, but never past _TOUCH_SCALE_CAP x so a
+# mis-reported DPI cannot blow the HUD up over the tank.
+static func touch_size(vp: Viewport, base: float) -> float:
+	var floor_px: float = min_touch_px(vp)
+	if floor_px <= base:
+		return base
+	return minf(floor_px, base * _TOUCH_SCALE_CAP)
+
+
+# Rail button edge for this device — 48 px on desktop, finger-sized on phones.
+static func rail_button_size(vp: Viewport) -> float:
+	return touch_size(vp, RAIL_BUTTON)
+
+
 # Right-edge inset that clears the vertical rail with a readable gutter.
-static func rail_chrome_inset() -> float:
-	return RAIL_WIDTH + EDGE_MARGIN + RAIL_CLEARANCE
+# Overload-ish: pass a viewport on touch devices so the gutter tracks the
+# grown rail buttons instead of the desktop constant.
+static func rail_chrome_inset(vp: Viewport = null) -> float:
+	var width: float = RAIL_WIDTH
+	if vp != null:
+		width = maxf(RAIL_WIDTH, rail_button_size(vp) + 8.0)
+	return width + EDGE_MARGIN + RAIL_CLEARANCE
 
 
 # Right-edge inset that also clears an open creature follow card.
@@ -517,6 +577,115 @@ static func apply_side_dock(panel: Control, edge: String = "right") -> void:
 		panel.anchor_top = 0.0
 		panel.anchor_right = 1.0
 		panel.anchor_bottom = 1.0
+
+
+# ---- Panel motion ------------------------------------------------------------
+#
+# Side panels used to pop in and out with a bare `visible = not visible`. A
+# short fade plus a settle scale pivoted on the docked edge is what makes the
+# chrome feel attached to the app rather than blitted over it, and the pivot
+# tells the eye WHERE the panel came from — which matters on a phone, where
+# the rail is a thumb-reach away from the panel it opens.
+#
+# Reduced motion (Settings -> Accessibility) collapses this to an instant
+# show/hide — the whole point of that switch is that nothing slides.
+const PANEL_FADE_IN_S: float = 0.16
+const PANEL_FADE_OUT_S: float = 0.12
+# Render-only scale, not a position slide. Control.position writes back into
+# anchor offsets, so tweening it would fight layout_side_panel() and leave the
+# panel parked wherever the tween stopped. scale/pivot_offset are pure draw
+# transforms — layout never sees them.
+const PANEL_SETTLE_SCALE: float = 0.965
+
+const _META_TWEEN: StringName = &"panel_transition_tween"
+const _META_CLOSING: StringName = &"panel_closing"
+
+
+# True while a panel is on screen and not already fading away. Callers that
+# ask "is this panel open?" must prefer this over `.visible`, which stays true
+# for the length of the out-tween.
+static func is_panel_open(panel: Control) -> bool:
+	if panel == null or not panel.visible:
+		return false
+	return not _is_closing(panel)
+
+
+# get_meta() logs an error for a key that was never set, even when a default
+# is supplied, so every read is guarded.
+static func _is_closing(panel: Control) -> bool:
+	return panel.has_meta(_META_CLOSING) and bool(panel.get_meta(_META_CLOSING))
+
+
+static func _kill_panel_tween(panel: Control) -> void:
+	if not panel.has_meta(_META_TWEEN):
+		return
+	var prev: Variant = panel.get_meta(_META_TWEEN)
+	if prev is Tween and (prev as Tween).is_valid():
+		(prev as Tween).kill()
+	if panel.has_meta(_META_TWEEN):
+		panel.remove_meta(_META_TWEEN)
+
+
+static func _reset_panel_transform(panel: Control) -> void:
+	panel.modulate.a = 1.0
+	panel.scale = Vector2.ONE
+	panel.pivot_offset = Vector2.ZERO
+
+
+# Grow the panel out of the edge it is docked against: pivot on that edge so
+# the scale reads as "this came from the rail", not "this zoomed from nowhere".
+static func _set_dock_pivot(panel: Control, edge: String) -> void:
+	var sz: Vector2 = panel.size
+	panel.pivot_offset = Vector2(0.0 if edge == "left" else sz.x, sz.y * 0.5)
+
+
+# Fade `panel` in or out with a short settle. `edge` matches apply_side_dock.
+static func transition_panel(panel: Control, open: bool, edge: String = "right") -> void:
+	if panel == null:
+		return
+	if not open and not panel.visible:
+		return
+	# A second close request mid-animation is a no-op, so a stray
+	# click-outside during the fade cannot ping-pong the panel.
+	if not open and _is_closing(panel):
+		return
+	_kill_panel_tween(panel)
+	if AccessibilityRuntime.reduced_motion_enabled():
+		panel.set_meta(_META_CLOSING, false)
+		panel.visible = open
+		_reset_panel_transform(panel)
+		panel.mouse_filter = Control.MOUSE_FILTER_STOP if open else Control.MOUSE_FILTER_IGNORE
+		return
+	if open:
+		panel.set_meta(_META_CLOSING, false)
+		panel.visible = true
+		panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		_set_dock_pivot(panel, edge)
+		panel.modulate.a = 0.0
+		panel.scale = Vector2(PANEL_SETTLE_SCALE, PANEL_SETTLE_SCALE)
+		var tw_in: Tween = panel.create_tween().set_parallel(true)
+		tw_in.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_CUBIC)
+		tw_in.tween_property(panel, "modulate:a", 1.0, PANEL_FADE_IN_S)
+		tw_in.tween_property(panel, "scale", Vector2.ONE, PANEL_FADE_IN_S)
+		panel.set_meta(_META_TWEEN, tw_in)
+		return
+	panel.set_meta(_META_CLOSING, true)
+	# Stop taking input the instant the close starts — a fading panel must not
+	# swallow the tap that lands behind it.
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_dock_pivot(panel, edge)
+	var tw_out: Tween = panel.create_tween().set_parallel(true)
+	tw_out.set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_CUBIC)
+	tw_out.tween_property(panel, "modulate:a", 0.0, PANEL_FADE_OUT_S)
+	tw_out.tween_property(panel, "scale",
+		Vector2(PANEL_SETTLE_SCALE, PANEL_SETTLE_SCALE), PANEL_FADE_OUT_S)
+	tw_out.chain().tween_callback(func() -> void:
+		# Guard against a re-open that landed while we were fading.
+		if _is_closing(panel):
+			panel.visible = false
+			_reset_panel_transform(panel)
+			panel.set_meta(_META_CLOSING, false))
+	panel.set_meta(_META_TWEEN, tw_out)
 
 
 static func layout_side_panel(panel: Control, rail_inset: float, top: float,
@@ -949,8 +1118,14 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 	btn.flat = true
 	btn.set_meta("couch_was_none", true)
 	btn.focus_mode = _chrome_focus_mode()
-	btn.custom_minimum_size = Vector2(RAIL_BUTTON, RAIL_BUTTON)
-	btn.add_theme_font_size_override("font_size", 20)
+	var edge: float = RAIL_BUTTON
+	if btn.is_inside_tree():
+		edge = rail_button_size(btn.get_viewport())
+	btn.custom_minimum_size = Vector2(edge, edge)
+	# Scale the glyph with the button so a finger-sized target does not read as
+	# a small icon lost in a big empty square.
+	btn.add_theme_font_size_override("font_size",
+		int(round(20.0 * clampf(edge / RAIL_BUTTON, 1.0, 1.6))))
 	btn.add_theme_stylebox_override("normal",
 		_rail_button_stylebox(Color(0, 0, 0, 0)))
 	btn.add_theme_stylebox_override("hover",

@@ -1,6 +1,5 @@
 extends SceneTree
 
-const MindReplayParity = preload("res://scripts/mind_replay_parity.gd")
 
 
 func _initialize() -> void:

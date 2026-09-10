@@ -428,11 +428,10 @@ func _on_ui_ticker(delta: float) -> void:
 
 
 func toggle() -> void:
-	if visible:
+	if PanelTheme.is_panel_open(self):
 		_close()
 	else:
-		visible = true
-		mouse_filter = Control.MOUSE_FILTER_STOP
+		PanelTheme.transition_panel(self, true)
 		_bind_ui_ticker(true)
 		_pull_from_config()
 		_refresh_live_readout()
@@ -443,8 +442,7 @@ func toggle() -> void:
 
 func _close() -> void:
 	_bind_ui_ticker(false)
-	visible = false
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	PanelTheme.transition_panel(self, false)
 
 
 func _build_ui() -> void:

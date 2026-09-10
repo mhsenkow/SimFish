@@ -3,9 +3,6 @@ extends SceneTree
 # REFINEMENT_II §A — mind-stack decay, digests, hint TTL, cache reset.
 
 const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
-const MindCacheRegistry = preload("res://scripts/mind_cache_registry.gd")
-const MindCacheStats = preload("res://scripts/mind_cache_stats.gd")
-const MindReplayParity = preload("res://scripts/mind_replay_parity.gd")
 
 
 func _initialize() -> void:

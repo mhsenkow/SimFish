@@ -2,7 +2,6 @@ extends SceneTree
 
 # LIVING_MOTION #96 — topological boids must not change mind workspace traces.
 
-const MindReplayParity = preload("res://scripts/mind_replay_parity.gd")
 
 
 func _initialize() -> void:

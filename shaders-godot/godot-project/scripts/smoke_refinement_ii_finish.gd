@@ -3,10 +3,6 @@ extends SceneTree
 # REFINEMENT_II finish bundle — foliage cache, node diet, sleep/wake, feed fairness,
 # camera×shape, alloc attribution, chemistry visuals, filter intake.
 
-const VoxelMat = preload("res://scripts/voxel_mat.gd")
-const DartTrailPool = preload("res://scripts/dart_trail_pool.gd")
-const PerfGovernor = preload("res://scripts/perf_governor.gd")
-const TankFootprint = preload("res://scripts/tank_footprint.gd")
 const _MotionWave = preload("res://scripts/motion_wave.gd")
 
 
@@ -63,7 +59,6 @@ func _test_sleep_wake_edges(failed: Array[String]) -> void:
 	f._startle_remaining = 0.2
 	_assert(failed, not f._sleep_skips_mind_tick(0.05), "startle wakes mind path")
 	f._asleep = false
-	var gate: Dictionary = {"run": true, "mind_dt": 0.05}
 	var skip: bool = f._sleep_skips_mind_tick(0.05)
 	_assert(failed, not skip, "awake fish never sleep-skip mind")
 	f.queue_free()
