@@ -1879,8 +1879,12 @@ func rinse_filter() -> void:
 	log_story_event("Filter rinsed — flow restored.")
 
 
+func get_filter_clog() -> float:
+	return _filter_clog
+
+
 # Player maintenance: water change (#93/#8) — dilutes nitrate, refreshes
-# minerals. Surfaced via the care-nudge path.
+# minerals. Surfaced via the care-nudge path and Care dock (PLAYER_WISH #1).
 func do_water_change(fraction: float = 0.35) -> void:
 	if water_chemistry != null and water_chemistry.has_method("apply_water_change"):
 		water_chemistry.apply_water_change(fraction)
@@ -6860,6 +6864,13 @@ func _emit_away_recap(gap_s: int) -> void:
 			gap_s, stability, int(tank_legacy.get("crashes", 0)), _away_dream_count, _guardian_arc)
 	extras.merge(NightWatch.away_summary_extra(self, gap_s))
 	extras["away_summary"] = summary
+	# COMMS #241 — claim return ceremony so welcome_back is suppressed.
+	var host: Node = null
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		host = (ml as SceneTree).current_scene
+	if host != null and host.has_method("claim_return_ceremony"):
+		host.call("claim_return_ceremony", "away")
 	if g != null and _guardian_companion_enabled():
 		GuardianMind.record_player_action(_guardian_arc, "away_recap",
 				"you were away for %s" % human_gap)
@@ -6874,10 +6885,6 @@ func _emit_away_recap(gap_s: int) -> void:
 			ctx_extra["fish_count"] = fish.size()
 			ctx_extra["shrimp_count"] = shrimp.size()
 			_speak_guardian(g, "away_recap", "", ctx_extra)
-		var host: Node = null
-		var ml: MainLoop = Engine.get_main_loop()
-		if ml is SceneTree:
-			host = (ml as SceneTree).current_scene
 		if host != null:
 			var ob: Variant = host.get("_onboarding")
 			if ob != null and ob.has_method("show_away_recap_card"):
@@ -6898,6 +6905,10 @@ func _emit_away_recap(gap_s: int) -> void:
 		elif fish.size() > int(tank_legacy.get("peak_fish", 0)) - 1 and fish.size() > 0:
 			tail = "Everyone's still here, holding steady."
 		log_story_event("You were away for %s. %s" % [human_gap, tail])
+		if host != null:
+			var ob2: Variant = host.get("_onboarding")
+			if ob2 != null and ob2.has_method("show_away_recap_card"):
+				ob2.call("show_away_recap_card", human_gap, tail)
 		return
 	var named: int = 0
 	for f in fish:

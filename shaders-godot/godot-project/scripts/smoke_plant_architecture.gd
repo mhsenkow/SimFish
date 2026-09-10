@@ -258,6 +258,8 @@ func _initialize() -> void:
 	var bud_amp: float = float(bud_mat.get_shader_parameter("sway_amplitude"))
 	_assert(failed, bud_amp <= 0.0001,
 		"bud flower mat has zero sway (got %.3f)" % bud_amp)
+	_assert(failed, float(bud_mat.get_shader_parameter("motion_lock")) > 0.5,
+		"bud flower mat locks vertex motion")
 	for n in bud_nodes:
 		if is_instance_valid(n):
 			(n as Node).free()

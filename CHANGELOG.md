@@ -6,6 +6,14 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.31
+
+- **Plant Systems 50:** foliage caustics, canopy blob shadows, spatial gusts, desync leaf sway, golden-hour rim, senescence batching, flowering tip stability.
+- **Fish alive:** body-first fear/habit kits (`fish_alive.gd`) — readable motion before LLM voice.
+- **Comms inbox:** toast policy, quiet mute, death window, kind filters (`comms_inbox.gd`).
+- **Spawn settle:** new fish ease into position instead of hard teleports.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.31) (macOS / Windows / Linux / Android).
+
 ## v0.2.30
 
 - **Frame budget follows the fps cap.** `PerfGovernor` measured every frame

@@ -43,6 +43,15 @@ func _initialize() -> void:
 		"facing synced to final heading")
 	_assert(failed, fresh.target_velocity.length() > 0.01,
 		"initial propulsion intent avoids freeze")
+	_assert(failed, absf(fresh.heading.y) < 0.001, "settle heading is level")
+	_assert(failed, absf(fresh.heading_offset.y) < 0.001, "settle heading offset is level")
+	_assert(failed, absf(fresh._hover_depth - fresh.global_position.y) < 0.001,
+		"settle re-anchors hover to the live spawn depth")
+	var seeded_breath: float = sin(fresh._breath_phase * TAU) * fresh._breath_amplitude()
+	_assert(failed, absf(fresh._breath_y_offset - seeded_breath) < 0.0001,
+		"breath oscillator is seeded so the first frame has no pop")
+	var settle_delta: float = fresh._breath_motion_delta(1.0 / 60.0)
+	_assert(failed, absf(settle_delta) < 0.008, "seeded breath first step is a frame delta")
 
 	var other := Fish.new()
 	host.add_child(other)

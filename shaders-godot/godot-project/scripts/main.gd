@@ -1317,6 +1317,24 @@ var _feed_hint_shown: bool = false
 var _feed_dock_refresh_t: float = 0.0
 var _feed_dock_lbl: Label = null
 
+# PLAYER_WISH #1 — Care dock (water change + filter rinse) beside Feed.
+var _care_dock: HBoxContainer = null
+var _care_water_btn: Button = null
+var _care_filter_btn: Button = null
+var _care_toast_cooldown_t: float = 0.0
+
+# PLAYER_WISH #81/#121 — shared corner toast (photo / autosave / care).
+var _status_toast: Control = null
+var _status_toast_tween: Tween = null
+
+# COMMS_AI foundations — shared toast/quiet/return/death policy state.
+var _comms_state: Dictionary = {}
+var _comms_session_start_s: float = 0.0
+var _comms_pending_consent: Variant = null  # null | bool (needs_download)
+var _comms_consent_timer_armed: bool = false
+var _comms_tier_chip_shown: bool = false
+var _comms_death_flush_armed: bool = false
+
 
 # Memoised TankConfig autoload handle. main.gd resolved the "/root/TankConfig"
 # scene path in ~85 places, several of them inside _process(), so every
@@ -1452,8 +1470,10 @@ func _ready() -> void:
 	_setup_hud_styling()
 	_setup_footer_bar()
 	_setup_feed_dock()
+	_setup_care_dock()
 	call_deferred("_maybe_feed_hint")
 	_setup_speed_hud()
+	_refresh_controls_hint()
 	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
 	_build_hud_chips()
@@ -1482,15 +1502,19 @@ func _ready() -> void:
 	# a 60-fps lock to reduce GPU heat). Mobile gets a 60-fps default on first
 	# launch if no cap has been set.
 	_apply_fps_cap()
-	# Welcome-back toast and time-stamp persistence — only meaningful on
-	# subsequent launches, but cheap to set up unconditionally.
-	_show_welcome_back_if_returning()
+	# COMMS #281 — session clock for consent deferral.
+	_comms_session_start_s = Time.get_ticks_msec() / 1000.0
+	# Welcome-back waits until after save restore so away recap can XOR it
+	# (COMMS #241). Flush runs after load attempt.
 	# Tank state restore. Defers a frame so world.gd._ready has fully run
 	# (substrate exists, roots are set up, plants_root etc. are wired) before
 	# we start spawning entities into it.
 	if _sim != null:
 		call_deferred("_try_load_saved_state")
+	else:
+		call_deferred("_flush_return_welcome_if_needed")
 	call_deferred("_maybe_show_sentience_intro")
+	call_deferred("_maybe_show_voice_tier_chip")
 		
 	_build_portal_info_ui()
 	_build_follow_thought_ui()
@@ -2010,6 +2034,9 @@ func _process(dt: float) -> void:
 	if _feed_dock_refresh_t >= 2.0:
 		_feed_dock_refresh_t = 0.0
 		_sync_feed_dock()
+		_sync_care_dock()
+	if _care_toast_cooldown_t > 0.0:
+		_care_toast_cooldown_t = maxf(0.0, _care_toast_cooldown_t - dt)
 
 	# Periodic autosave. Only ticks the accumulator when we're actually
 	# playing (not aquascape-paused, not manually paused) so the 5-minute
@@ -2018,7 +2045,11 @@ func _process(dt: float) -> void:
 		_autosave_accum += dt
 		if _autosave_accum >= AUTOSAVE_INTERVAL_S:
 			_autosave_accum = 0.0
-			save_active_tank(not get_window().has_focus())
+			var focused: bool = get_window().has_focus()
+			save_active_tank(not focused)
+			# PLAYER_WISH #121 — quiet ceremony only when the player is watching.
+			if focused:
+				_show_status_toast("Saved")
 
 	# Player-glance hook. Push the camera's world position into the sim
 	# so bold fish can drift over when the player leans into the glass.
@@ -2667,6 +2698,113 @@ func _pulse_feed_dock() -> void:
 
 func _sync_feed_dock_visibility() -> void:
 	_sync_feed_dock()
+	_sync_care_dock()
+
+
+func _setup_care_dock() -> void:
+	# PLAYER_WISH #1 — Water + Filter verbs visible beside Feed, no nudge required.
+	if footer_bar == null:
+		return
+	var hbox: HBoxContainer = footer_bar.get_node_or_null("Margin/HBox") as HBoxContainer
+	if hbox == null or _feed_dock == null:
+		return
+	_care_dock = HBoxContainer.new()
+	_care_dock.name = "CareDock"
+	_care_dock.add_theme_constant_override("separation", 8)
+	_care_dock.tooltip_text = UiIcons.care_tooltip("dock")
+	var care_lbl := Label.new()
+	care_lbl.text = "Care"
+	care_lbl.tooltip_text = UiIcons.care_tooltip("dock")
+	PanelTheme.apply_font(care_lbl, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+	care_lbl.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
+	care_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_care_dock.add_child(care_lbl)
+	_care_dock.add_child(PanelTheme.make_hud_chip_divider())
+	_care_water_btn = Button.new()
+	_care_water_btn.focus_mode = Control.FOCUS_NONE
+	_care_water_btn.custom_minimum_size = Vector2(52, PanelTheme._button_min_height() - 4)
+	UiIcons.apply_care_button(_care_water_btn, "water", false, true)
+	_care_water_btn.pressed.connect(_on_care_water_pressed)
+	_care_dock.add_child(_care_water_btn)
+	_care_filter_btn = Button.new()
+	_care_filter_btn.focus_mode = Control.FOCUS_NONE
+	_care_filter_btn.custom_minimum_size = Vector2(52, PanelTheme._button_min_height() - 4)
+	UiIcons.apply_care_button(_care_filter_btn, "filter", false, true)
+	_care_filter_btn.pressed.connect(_on_care_filter_pressed)
+	_care_dock.add_child(_care_filter_btn)
+	# Speed | div | Feed | div | Care | Spacer | ControlsHint
+	var feed_idx: int = _feed_dock.get_index()
+	var feed_care_div: Control = PanelTheme.make_hud_chip_divider()
+	feed_care_div.name = "FeedCareDivider"
+	hbox.add_child(feed_care_div)
+	hbox.move_child(feed_care_div, feed_idx + 1)
+	hbox.add_child(_care_dock)
+	hbox.move_child(_care_dock, feed_idx + 2)
+	_sync_care_dock()
+
+
+func _sync_care_dock() -> void:
+	if _care_dock == null:
+		return
+	var show: bool = not _aquascape.is_active
+	_care_dock.visible = show
+	var div: Node = footer_bar.get_node_or_null("Margin/HBox/FeedCareDivider") if footer_bar != null else null
+	if div is CanvasItem:
+		(div as CanvasItem).visible = show
+	if _care_water_btn != null:
+		UiIcons.apply_care_button(_care_water_btn, "water", false, true)
+	if _care_filter_btn != null:
+		var clogged: bool = false
+		if _sim != null and _sim.has_method("get_filter_clog"):
+			clogged = float(_sim.get_filter_clog()) >= 0.28
+		UiIcons.apply_care_button(_care_filter_btn, "filter", clogged, true)
+		if clogged:
+			_care_filter_btn.tooltip_text = "%s — due for a rinse" % UiIcons.care_tooltip("filter")
+
+
+func _on_care_water_pressed() -> void:
+	if _sim == null or not _sim.has_method("do_water_change"):
+		return
+	if _care_toast_cooldown_t > 0.0:
+		return
+	_sim.do_water_change(0.25)
+	_care_toast_cooldown_t = 1.2
+	_pulse_care_dock()
+	_show_status_toast("Water changed · nitrate eased")
+	_push_notification("care", NOTIF_SEVERITY_INFO, "Water change",
+		"About a quarter of the water was refreshed.", false)
+
+
+func _on_care_filter_pressed() -> void:
+	if _sim == null or not _sim.has_method("rinse_filter"):
+		return
+	if _care_toast_cooldown_t > 0.0:
+		return
+	_sim.rinse_filter()
+	_care_toast_cooldown_t = 1.2
+	_pulse_care_dock()
+	_sync_care_dock()
+	_show_status_toast("Filter rinsed · flow restored")
+	_push_notification("care", NOTIF_SEVERITY_INFO, "Filter rinsed",
+		"Flow is back. Most of the good bacteria stayed.", false)
+
+
+func _pulse_care_dock() -> void:
+	if _care_dock == null:
+		return
+	var tw := create_tween()
+	tw.tween_property(_care_dock, "modulate", Color(0.82, 1.2, 1.35, 1.0), 0.12)
+	tw.tween_property(_care_dock, "modulate", Color.WHITE, 0.35)
+
+
+func _refresh_controls_hint() -> void:
+	# PLAYER_WISH #41 — always-on footer legend of the sacred verbs.
+	if controls_hint == null:
+		return
+	if _is_mobile():
+		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · Care in footer · tap creature to follow · photo"
+	else:
+		controls_hint.text = "orbit · Feed · Care · click creature to follow · F12 photo · ? help"
 
 
 func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> int:
@@ -3838,10 +3976,10 @@ func _on_creature_removed(c: Node) -> void:
 	if c == null or not is_inside_tree():
 		return
 	# Memorial: a favorite has died — mark it even if we weren't following it.
+	# COMMS #361 — window multiple deaths into one summary toast.
 	if _sim != null and _sim.has_method("is_favorite") and _sim.is_favorite(c):
 		var fav_name: String = _creature_display_name(c)
-		if has_method("_push_notification"):
-			_push_notification("residents", "important", "In memoriam", "%s has passed on" % fav_name, true)
+		_note_resident_death(fav_name)
 		if _sim.has_method("_note_ai_event"):
 			_sim._note_ai_event("creature_died", "%s, a favorite, has died" % fav_name)
 	# Follow handoff — only when the departed creature was the one we followed.
@@ -3857,7 +3995,9 @@ func _on_creature_removed(c: Node) -> void:
 		follow_creature(nxt, _follow_mode)
 	else:
 		clear_follow()
-	if name_str != "" and has_method("_push_notification"):
+	# Follow-handoff "swam on" is ambient — skip toast when death summary pending.
+	if name_str != "" and has_method("_push_notification") \
+			and not bool(_comms_state.get("death_pending", false)):
 		_push_notification("residents", "info", "Residents", "%s swam on" % name_str, true)
 
 
@@ -4630,6 +4770,38 @@ func _on_guardian_llm_status(message: String) -> void:
 
 
 func _on_guardian_consent_required(needs_download: bool) -> void:
+	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
+		return
+	# COMMS #281 — no LLM consent modal in the first five minutes.
+	var now_s: float = Time.get_ticks_msec() / 1000.0
+	if CommsInbox.consent_deferred(_comms_session_start_s, now_s):
+		_comms_pending_consent = needs_download
+		_arm_consent_defer_timer()
+		return
+	_show_guardian_consent_modal(needs_download)
+
+
+func _arm_consent_defer_timer() -> void:
+	if _comms_consent_timer_armed:
+		return
+	_comms_consent_timer_armed = true
+	var remaining: float = CommsInbox.CONSENT_DEFER_S \
+			- ((Time.get_ticks_msec() / 1000.0) - _comms_session_start_s)
+	if remaining < 0.05:
+		remaining = 0.05
+	get_tree().create_timer(remaining).timeout.connect(_flush_deferred_consent)
+
+
+func _flush_deferred_consent() -> void:
+	_comms_consent_timer_armed = false
+	if _comms_pending_consent == null:
+		return
+	var needs: bool = bool(_comms_pending_consent)
+	_comms_pending_consent = null
+	_show_guardian_consent_modal(needs)
+
+
+func _show_guardian_consent_modal(needs_download: bool) -> void:
 	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
 		return
 	var glm := get_node_or_null("/root/GuardianLlm")
@@ -5578,6 +5750,7 @@ func _sync_aquascape_view_bar() -> void:
 	var show: bool = _aquascape.is_active and not _immersive_mode
 	_aquascape_view_bar.visible = show
 	_sync_feed_dock()
+	_sync_care_dock()
 	if not show:
 		return
 	var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -6227,8 +6400,7 @@ func _setup_mobile_ui() -> void:
 	_apply_rail_dock_layout()
 	
 	# Update the controls hint to show touch gestures instead of keyboard.
-	if controls_hint != null:
-		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · pick food in footer · tap creature to follow"
+	_refresh_controls_hint()
 	
 	# Wire up mobile-only MobileHUD actions (speed dock wired in _setup_speed_hud).
 	_mobile_hud = get_node_or_null("MobileHUD")
@@ -6237,6 +6409,10 @@ func _setup_mobile_ui() -> void:
 			_mobile_hud.connect("photo_pressed", _take_photo)
 		if _mobile_hud.has_signal("undo_pressed"):
 			_mobile_hud.connect("undo_pressed", _aquascape_undo)
+		if _mobile_hud.has_signal("water_pressed"):
+			_mobile_hud.connect("water_pressed", _on_care_water_pressed)
+		if _mobile_hud.has_signal("filter_pressed"):
+			_mobile_hud.connect("filter_pressed", _on_care_filter_pressed)
 		if _mobile_hud.has_signal("aquascape_tool_pressed"):
 			_mobile_hud.connect("aquascape_tool_pressed", func(tool: String):
 				_aquascape.set_tool(tool))
@@ -7853,6 +8029,8 @@ func _open_notifications_panel_exclusive() -> void:
 		return
 	_notifications_panel.visible = true
 	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	# COMMS #44 — badge honesty: opening marks currently listed rows read.
+	_mark_visible_notifications_read()
 	_refresh_notifications_panel()
 
 
@@ -8061,12 +8239,9 @@ func _ensure_notifications_ui() -> void:
 	root.add_child(controls)
 
 	_notifications_filter_kind = OptionButton.new()
-	_notifications_filter_kind.add_item("Kind: All", 0)
-	_notifications_filter_kind.add_item("Kind: Discovery", 1)
-	_notifications_filter_kind.add_item("Kind: Population", 2)
-	_notifications_filter_kind.add_item("Kind: Water", 3)
-	_notifications_filter_kind.add_item("Kind: Milestone", 4)
-	_notifications_filter_kind.add_item("Kind: Welcome", 5)
+	for i in range(CommsInbox.KIND_FILTER_ENTRIES.size()):
+		var entry: Dictionary = CommsInbox.KIND_FILTER_ENTRIES[i]
+		_notifications_filter_kind.add_item(String(entry.get("label", "Kind")), i)
 	_notifications_filter_kind.item_selected.connect(_on_notifications_kind_filter_selected)
 	controls.add_child(_notifications_filter_kind)
 
@@ -8112,13 +8287,11 @@ func _ensure_notifications_ui() -> void:
 
 
 func _on_notifications_kind_filter_selected(idx: int) -> void:
-	match idx:
-		1: _notification_filter_kind = "discovery"
-		2: _notification_filter_kind = "population"
-		3: _notification_filter_kind = "water_alert"
-		4: _notification_filter_kind = "milestone"
-		5: _notification_filter_kind = "welcome_back"
-		_: _notification_filter_kind = NOTIF_FILTER_ALL
+	if idx >= 0 and idx < CommsInbox.KIND_FILTER_ENTRIES.size():
+		_notification_filter_kind = String(
+				CommsInbox.KIND_FILTER_ENTRIES[idx].get("id", NOTIF_FILTER_ALL))
+	else:
+		_notification_filter_kind = NOTIF_FILTER_ALL
 	_refresh_notifications_panel()
 
 
@@ -8146,19 +8319,7 @@ func _clear_notifications() -> void:
 
 
 func _kind_icon(kind: String) -> String:
-	match kind:
-		"discovery":
-			return UiIcons.fauna_label("fish")
-		"population":
-			return "◉"
-		"water_alert":
-			return "!"
-		"milestone":
-			return "*"
-		"welcome_back":
-			return "↺"
-		_:
-			return "•"
+	return CommsInbox.kind_icon(kind)
 
 
 func _severity_rank(sev: String) -> int:
@@ -8277,16 +8438,23 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 	if _notifications.size() > NOTIF_MAX_HISTORY:
 		_notifications.pop_front()
 	_update_notification_badge()
+	# COMMS #121 — quiet mutes ambient toasts; history still records.
+	var quiet: bool = _comms_quiet_active()
+	if show_toast and not CommsInbox.allows_toast(kind, severity, quiet):
+		show_toast = false
 	if show_toast:
-		var dedup_key: String = "%s|%s" % [kind, body]
+		var dedup_key: String = "%s|%s|%s" % [kind, severity, body]
 		var now_unix: int = int(Time.get_unix_time_from_system())
-		if _toast_recent_keys.has(dedup_key) \
+		# Critical bypasses body-dedup (COMMS #18-lite).
+		var bypass_dedup: bool = severity == NOTIF_SEVERITY_CRITICAL
+		if not bypass_dedup and _toast_recent_keys.has(dedup_key) \
 				and now_unix - int(_toast_recent_keys[dedup_key]) < 180:
 			show_toast = false
 		else:
 			_toast_recent_keys[dedup_key] = now_unix
 	if show_toast:
-		_notification_toast_queue.append(notif)
+		# COMMS #1 — priority enqueue into the shared notif toast lane.
+		CommsInbox.enqueue_toast(_notification_toast_queue, notif)
 		_pump_notification_toast_queue()
 	if _notifications_panel != null and _notifications_panel.visible:
 		_refresh_notifications_panel()
@@ -8297,7 +8465,8 @@ func _pump_notification_toast_queue() -> void:
 		return
 	if _typing_focus_in_ui():
 		return
-	while _notification_toast_active < NOTIF_TOAST_MAX_ACTIVE and not _notification_toast_queue.is_empty():
+	while _notification_toast_active < CommsInbox.TOAST_MAX_VISIBLE \
+			and not _notification_toast_queue.is_empty():
 		var notif: Dictionary = _notification_toast_queue.pop_front()
 		_spawn_notification_toast(notif)
 
@@ -10217,6 +10386,8 @@ func _try_load_saved_state() -> void:
 	if _sim != null and _sim.has_method("reset_make_it_there_session"):
 		_sim.reset_make_it_there_session()
 	_sync_speed_hud()
+	# After night-watch away recap may have claimed the return ceremony.
+	_flush_return_welcome_if_needed()
 
 
 # Snapshot the world to disk. Called by:
@@ -10525,6 +10696,86 @@ func _apply_battery_saver_visuals() -> void:
 # fast-forward the sim — that'd risk creature/state divergence. Players
 # accept a soft "you were away" message readily; sim time-skip would need
 # a more careful implementation.
+func _comms_quiet_active() -> bool:
+	var cfg := _cfg()
+	return cfg != null and bool(cfg.sentience_voice_off)
+
+
+func _mark_visible_notifications_read() -> void:
+	for n in _notifications:
+		if not (n is Dictionary):
+			continue
+		var kind: String = String(n.get("kind", ""))
+		var sev: String = String(n.get("severity", ""))
+		if _notification_filter_kind != NOTIF_FILTER_ALL and kind != _notification_filter_kind:
+			continue
+		if _notification_filter_severity != NOTIF_FILTER_ALL and sev != _notification_filter_severity:
+			continue
+		n["read"] = true
+	_update_notification_badge()
+
+
+func claim_return_ceremony(kind: String) -> bool:
+	return CommsInbox.claim_return_ceremony(_comms_state, kind)
+
+
+func _flush_return_welcome_if_needed() -> void:
+	# Away recap already claimed the ceremony during load — skip welcome.
+	if CommsInbox.return_ceremony(_comms_state) == "away":
+		return
+	_show_welcome_back_if_returning()
+
+
+func _note_resident_death(name_str: String) -> void:
+	var now_s: float = Time.get_ticks_msec() / 1000.0
+	CommsInbox.note_death(_comms_state, name_str, now_s)
+	if _comms_death_flush_armed:
+		return
+	_comms_death_flush_armed = true
+	get_tree().create_timer(CommsInbox.DEATH_WINDOW_S).timeout.connect(_flush_death_summary)
+
+
+func _flush_death_summary() -> void:
+	_comms_death_flush_armed = false
+	var summary: Dictionary = CommsInbox.flush_death_summary(_comms_state)
+	if summary.is_empty():
+		return
+	_push_notification(
+		String(summary.get("kind", "residents")),
+		String(summary.get("severity", NOTIF_SEVERITY_IMPORTANT)),
+		String(summary.get("title", "In memoriam")),
+		String(summary.get("body", "")),
+		true
+	)
+
+
+func _maybe_show_voice_tier_chip() -> void:
+	# COMMS #161 — once per session, honest voice tier.
+	if _comms_tier_chip_shown:
+		return
+	_comms_tier_chip_shown = true
+	var quiet: bool = _comms_quiet_active()
+	if quiet:
+		return
+	var director := get_node_or_null("/root/AIDirector")
+	var tier: String = "template"
+	if director != null:
+		if director.has_method("_update_active_llm_tier"):
+			director._update_active_llm_tier()
+		tier = String(director.get("active_llm_tier"))
+	var line: String = CommsInbox.tier_chip_line(tier)
+	_push_notification("system", NOTIF_SEVERITY_INFO, "Voice", line, true)
+
+
+## COMMS #401 — ambient captions rate-limited via shared policy.
+func request_ambient_caption(text: String) -> bool:
+	if text.strip_edges() == "":
+		return false
+	var quiet: bool = _comms_quiet_active()
+	var now_s: float = Time.get_ticks_msec() / 1000.0
+	return CommsInbox.caption_allowed(_comms_state, now_s, quiet)
+
+
 func _show_welcome_back_if_returning() -> void:
 	var cfg := _cfg()
 	if cfg == null:
@@ -10536,6 +10787,9 @@ func _show_welcome_back_if_returning() -> void:
 	var delta: int = now - last_quit
 	if delta < 30:
 		return  # ignore brief reloads
+	# COMMS #241 — XOR with away recap.
+	if not claim_return_ceremony("welcome"):
+		return
 	var msg: String = "Welcome back. You were away for %s." % _format_duration(delta)
 	_push_notification("welcome_back", NOTIF_SEVERITY_IMPORTANT, "Welcome back", msg, true)
 
@@ -11051,32 +11305,81 @@ func _dismiss_radial_menu() -> void:
 	_radial_menu = null
 
 
-# ---- Photo feedback toast ----
-# Lightweight Label that flashes in for 1.5s after a photo is taken so the
-# user gets visual confirmation. Mobile-only; desktop uses the existing
-# verbose log.
+# ---- Status / photo toasts (PLAYER_WISH #81, #121) ----
+# Corner confirmation for photo, autosave, and care — desktop and mobile.
 func _show_photo_toast(path: String) -> void:
-	if not _is_mobile():
-		return
-	var lab := Label.new()
-	# Show just the filename, not the full path — useful but not noisy.
 	var file_name: String = path.get_file()
-	lab.text = "Photo saved: %s" % file_name
 	_push_notification("system", NOTIF_SEVERITY_INFO, "Photo saved", file_name, false)
-	lab.add_theme_color_override("font_color", Color(0.85, 1.0, 0.85, 1))
-	lab.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	lab.add_theme_constant_override("outline_size", 4)
-	lab.add_theme_font_size_override("font_size", 14)
+	_show_status_toast("Photo saved · %s" % file_name, path)
+
+
+func _show_status_toast(message: String, reveal_path: String = "") -> void:
+	if message.strip_edges() == "":
+		return
+	# COMMS #1/#121 — status joins quiet matrix (autosave hush when quiet).
+	if not CommsInbox.allows_status_toast(message, _comms_quiet_active()):
+		return
+	if _status_toast != null and is_instance_valid(_status_toast):
+		_status_toast.queue_free()
+	_status_toast = null
+	if _status_toast_tween != null and is_instance_valid(_status_toast_tween):
+		_status_toast_tween.kill()
+	_status_toast_tween = null
+	var toast_panel := PanelContainer.new()
+	toast_panel.name = "StatusToast"
+	toast_panel.mouse_filter = Control.MOUSE_FILTER_STOP if reveal_path != "" else Control.MOUSE_FILTER_IGNORE
+	toast_panel.z_index = 400
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.06, 0.09, 0.12, 0.82)
+	sb.set_corner_radius_all(8)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 8
+	sb.content_margin_bottom = 8
+	toast_panel.add_theme_stylebox_override("panel", sb)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	toast_panel.add_child(row)
+	var lab := Label.new()
+	lab.text = message
+	PanelTheme.apply_font(lab, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+	lab.add_theme_color_override("font_color", Color(0.88, 0.96, 0.90, 1.0))
 	lab.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lab.anchor_left = 0.0
-	lab.anchor_right = 1.0
-	lab.anchor_top = 1.0
-	lab.anchor_bottom = 1.0
-	lab.offset_top = -120
-	lab.offset_bottom = -90
-	add_child(lab)
-	var tw := create_tween()
-	tw.tween_interval(1.5)
-	tw.tween_property(lab, "modulate:a", 0.0, 0.8)
-	tw.tween_callback(lab.queue_free)
+	row.add_child(lab)
+	if reveal_path != "":
+		var reveal := Button.new()
+		reveal.text = "Reveal"
+		reveal.focus_mode = Control.FOCUS_NONE
+		reveal.tooltip_text = "Show in folder"
+		PanelTheme.apply_font(reveal, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+		PanelTheme.style_hud_toggle_button(reveal, false)
+		var abs_path: String = reveal_path
+		if abs_path.begins_with("user://") or abs_path.begins_with("res://"):
+			abs_path = ProjectSettings.globalize_path(abs_path)
+		reveal.pressed.connect(func() -> void:
+			if abs_path != "" and FileAccess.file_exists(abs_path):
+				OS.shell_show_in_file_manager(abs_path)
+			elif abs_path != "":
+				OS.shell_show_in_file_manager(abs_path.get_base_dir()))
+		row.add_child(reveal)
+	toast_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	toast_panel.anchor_left = 0.5
+	toast_panel.anchor_right = 0.5
+	toast_panel.anchor_top = 1.0
+	toast_panel.anchor_bottom = 1.0
+	toast_panel.offset_left = -180
+	toast_panel.offset_right = 180
+	toast_panel.offset_top = -118
+	toast_panel.offset_bottom = -78
+	toast_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	add_child(toast_panel)
+	_status_toast = toast_panel
+	var hold: float = 2.4 if reveal_path != "" else 1.25
+	_status_toast_tween = create_tween()
+	_status_toast_tween.tween_interval(hold)
+	_status_toast_tween.tween_property(toast_panel, "modulate:a", 0.0, 0.55)
+	_status_toast_tween.tween_callback(func() -> void:
+		if is_instance_valid(toast_panel):
+			toast_panel.queue_free()
+		if _status_toast == toast_panel:
+			_status_toast = null)

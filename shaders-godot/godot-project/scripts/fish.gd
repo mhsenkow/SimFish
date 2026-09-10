@@ -45,6 +45,7 @@ const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const FishAlive = preload("res://scripts/fish_alive.gd")
 const FishSpawnSettle = preload("res://scripts/fish_spawn_settle.gd")
 
 const MATURITY_FRY := 0
@@ -515,6 +516,10 @@ var _reaction_point: Vector3 = Vector3.ZERO
 var _fidget_kind: int = 0   # 0 none, 1 shimmy, 2 yawn-gape, 3 substrate-flash
 var _fidget_remaining: float = 0.0
 var _fidget_cooldown: float = 0.0
+# FISH_ALIVE #521 — freeze → flee → hide → peek → recover.
+var _fear_phase: int = 0
+var _fear_phase_t: float = 0.0
+var _fear_peek_dir: Vector3 = Vector3.ZERO
 # Social bonds: other fish ids this individual has chosen to associate with,
 # id -> affinity [-1,1] (>0 friend, <0 rival). Built from repeated co-schooling
 # and grudges. Cheap to maintain (updated on the decay throttle).
@@ -1421,6 +1426,9 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	if _startle_remaining > 0.0:
 		spooked = maxf(spooked, clampf(0.55 + (1.0 - _trait("boldness")) * 0.45, 0.0, 1.0))
 		vigilance = clampf(vigilance + dt * 0.5, 0.0, 1.0)
+		# FISH_ALIVE #521 — startle opens the freeze→flee→hide→peek arc.
+		if _fear_phase == FishAlive.FEAR_NONE:
+			FishAlive.begin_fear_freeze(self, 0.18)
 	spooked = maxf(0.0, spooked - dt * 0.12)
 
 	# Reaction-shot + fidget timers.
@@ -1925,7 +1933,7 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 	var r: RandomNumberGenerator = rng if rng != null else _behavior_rng()
 	heading_offset = Vector3(
 		r.randf_range(-0.5, 0.5),
-		r.randf_range(-0.2, 0.2),
+		0.0,
 		r.randf_range(-0.5, 0.5),
 	)
 	_swim_phase = r.randf() * TAU
@@ -1940,9 +1948,11 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 		heading = Vector3(sin(theta), 0.0, -cos(theta))
 	else:
 		heading = _safe_normalize(heading)
+	heading.y = 0.0
+	heading = _safe_normalize(heading)
 	_breath_phase = r.randf()
 	_buoy_bob_t = r.randf() * TAU
-	_breath_y_offset = 0.0
+	heading_offset.y = 0.0
 	_last_yaw = atan2(heading.x, -heading.z)
 	_decay_throttle_t = r.randf() * DECAY_THROTTLE_PERIOD
 	_life_jitter = r.randf_range(-0.12, 0.15)
@@ -1976,6 +1986,13 @@ func begin_fry_spawn(mother_depth: float, mother_heading: Vector3 = Vector3.ZERO
 func _begin_spawn_settle(duration: float) -> void:
 	_spawn_settle_duration = clampf(duration, 0.05, FishSpawnSettle.FRESH_DURATION)
 	_spawn_settle_remaining = _spawn_settle_duration
+	if is_finite(global_position.y):
+		_hover_depth = global_position.y
+	_breath_y_offset = sin(_breath_phase * TAU) * _breath_amplitude()
+	if heading.is_finite():
+		heading.y = 0.0
+		heading = _safe_normalize(heading)
+	heading_offset.y = 0.0
 	if heading.length_squared() > 1e-6:
 		target_velocity = heading.normalized() * max_speed * 0.32
 
@@ -2354,56 +2371,10 @@ func init_genome(genome: Dictionary) -> void:
 	_apply_lod_ranges()
 
 
-# Apply per-pattern defaults. Only fills in fields the genome hasn't already
-# overridden (sentinel-style: a default of 1.0 / 2.5 / 0.0 means "use the
-# pattern's pick"). Each pattern shapes how the fish wanders + how often it
-# darts; the actual schooling weight stays driven by genome.schooling_strength.
+# Apply per-pattern defaults via FISH_ALIVE #761 habit kit.
 func _apply_swim_pattern_defaults() -> void:
-	max_turn_rate = 2.6 # default reset
-	match swim_pattern:
-		"school":
-			home_radius = 5.0
-			wander_strength = 1.25
-			dart_chance = 0.005
-			max_turn_rate = 2.6
-		"shoal":
-			home_radius = 5.5
-			wander_strength = 1.4
-			dart_chance = 0.01
-			max_turn_rate = 2.5
-		"dart":
-			home_radius = 3.5
-			wander_strength = 0.75
-			dart_chance = 0.045
-			dart_speed_mult = 1.9
-			max_turn_rate = 3.2
-		"hover":
-			home_radius = 2.8 # increased from 0.9 for wider, more natural hovering area
-			wander_strength = 0.42
-			dart_chance = 0.002
-			max_turn_rate = 1.1 # slow, elegant centerpiece turns
-		"cruise":
-			home_radius = 7.0
-			wander_strength = 0.65
-			dart_chance = 0.003
-			max_turn_rate = 1.8
-		"meander":
-			home_radius = 4.2
-			wander_strength = 1.65
-			dart_chance = 0.0
-			max_turn_rate = 1.5
-		"shuffle":
-			home_radius = 6.0
-			wander_strength = 1.35
-			dart_chance = 0.012
-			dart_speed_mult = 1.4
-			max_turn_rate = 2.2
-		"sit":
-			home_radius = 2.2
-			wander_strength = 0.18
-			dart_chance = 0.0
-			max_turn_rate = 4.2
-			dart_speed_mult = 2.4
+	max_turn_rate = 2.6
+	FishAlive.apply_habit_kit(self)
 
 
 func _apply_predator_morphology() -> void:
@@ -3958,6 +3929,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Tier 0: wall avoidance always runs (additive). Lateral glass only — floor
 	# repulsion is handled by vertical band + home_y so fish don't climb the column.
 	desired += _wall_avoid(world_bounds) * 4.0
+	# FISH_ALIVE #841 — lateral-line flinch from neighbor bursts (even behind).
+	desired += FishAlive.lateral_line_flinch(self, neighbors)
+	# FISH_ALIVE #521 — fear arc steering (peek/recover).
+	var in_cover_now: bool = stress > STRESS_HIDE_THRESHOLD and current_mode == Mode.FLEE
+	desired += FishAlive.tick_fear_arc(self, dt, in_cover_now)
 	# Tier 0.1: soft anti-intersection steering. Keeps body volumes from
 	# visually occupying the same space (other fish / dense plants /
 	# hardscape) while staying subtle enough to preserve schooling.
@@ -3992,6 +3968,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			gulp_dir.x += sin(_swim_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
 			desired += gulp_dir.normalized() * effective_max * 1.4
 			current_mode = Mode.FORAGE
+			if _behavior_rng().randf() < dt * 1.8:
+				FishAlive.world_answer(self, "gulp")
 			# Don't return — let wall avoid still mix in so we don't pin to glass.
 
 	# Tier 0.3: EGG-GUARDING / BROODING. Pair-bonding species (currently
@@ -4122,6 +4100,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				# clear alpha status across many bouts.
 				if not bio.is_empty():
 					bio["fights_won"] = int(bio.get("fights_won", 0)) + 1
+				FishAlive.maybe_earn_fin_nick(self, 0.06)
 				rank_within_species = clampf(rank_within_species + 0.02, 0.0, 1.0)
 				tgt.rank_within_species = clampf(tgt.rank_within_species - 0.02, 0.0, 1.0)
 				_territory_chase_target = null
@@ -4361,6 +4340,10 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			to_cover.y = lerpf(preferred_y, nearest_cover._world_pos.y + 0.4, 0.55)
 			desired += to_cover.normalized() * effective_max * 0.7
 			current_mode = Mode.FLEE
+			if _fear_phase != FishAlive.FEAR_HIDE and _fear_phase != FishAlive.FEAR_PEEK:
+				_fear_phase = FishAlive.FEAR_HIDE
+				_fear_phase_t = maxf(_fear_phase_t, 2.5)
+			FishAlive.world_answer(self, "hide")
 		else:
 			var w_stress: Node = sim.get_parent() if sim != null else null
 			if w_stress != null and w_stress.has_method("query_build_shelter_near"):
@@ -5202,7 +5185,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if back.length_squared() > 0.05:
 			desired += back.normalized() * effective_max * 0.3 * _curiosity_return_t
 	if _MotionWaveScript.uses_wave(self):
-		desired += _boids(neighbors, tightness, fauna_sep) * school_w
+		desired += _boids(neighbors, tightness, fauna_sep * FishAlive.posture_sep_mult(self)) * school_w
 		desired += _MotionFieldScript.threat_avoid_steer(self, effective_max) * school_w
 		desired += _MotionWaveScript.turn_intent_steer(self, effective_max) * school_w
 	if float(music_mods.get("sweep", 0.0)) > 0.2:
@@ -5321,7 +5304,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# If dissolved O2 is low, override: every fish biases up toward the
 	# surface to gulp - the real-world "fish at the surface" symptom of an
 	# under-aerated tank.
-	var target_y: float = home_y
+	var target_y: float = home_y + FishAlive.posture_y_offset(self)
 	# Aerial respiration trip overrides home_y for its duration.
 	if _aerial_timer > 0.0:
 		target_y = _aerial_target_y
@@ -5338,8 +5321,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var stress_gain: float = lerpf(0.55, 1.0, dl)
 			stress = clampf(stress + dt * severity * 0.05 * stress_gain, 0.0, 1.0)
 	# Zero-mean depth wobble — keeps layers alive without drifting up/down.
-	target_y += sin(_swim_phase * 0.45 + float(get_instance_id() % 53) * 0.11) \
-		* home_y_radius * 0.16
+	# Hold the spawn depth during settle so posture + wobble cannot fight the
+	# hover spring and produce a first-second bob.
+	if _spawn_settle_remaining > 0.0:
+		target_y = global_position.y
+	else:
+		target_y += sin(_swim_phase * 0.45 + float(get_instance_id() % 53) * 0.11) \
+			* home_y_radius * 0.16
 	var dy: float = target_y - position.y
 	# Stronger Y pull beyond home_y_radius; gentle within it. Result: fish
 	# actively defend their water column layer instead of all sinking to
@@ -5410,6 +5398,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		pull_mult *= lerpf(1.35, 0.35, clampf(float(fauna_rt.get("wander", 1.0)) / 2.5, 0.0, 1.0))
 		pull_mult *= lerpf(0.75, 1.15, home_confidence)
 		pull_mult *= maxf(0.04, 1.0 - float(music_mods.get("sweep", 0.0)) * 0.92)
+		pull_mult *= FishAlive.home_loiter_mult(self)
 		if swim_pattern == "hover":
 			pull_mult = 0.15 # gentler pull to avoid centering oscillations / spinning
 		# Don't tug fish through glass when a saved home sits outside the footprint.
@@ -5420,6 +5409,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			if inward.length_squared() > 1e-6 and home_dir.dot(inward) < -0.12:
 				pull_strength *= 0.15
 		desired += to_home.normalized() * effective_max * pull_mult * pull_strength
+	elif to_home.length_squared() > 1e-6:
+		# FISH_ALIVE #481 — soft loaf attract inside home radius when calm/sated.
+		var soft: float = FishAlive.home_soft_attract(self, dist_home, eff_home_r)
+		if soft > 0.001:
+			desired += to_home.normalized() * effective_max * soft
 
 	# PLAYER GLANCE. Bold fish drift toward the spot the player is staring
 	# at — the real-aquarium moment of fish noticing you've leaned into
@@ -5908,9 +5902,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# substrate flash) that break the metronome of constant swimming. Only when
 	# calm, slow, and not already busy. Cheap: just arms a timer the animation
 	# layer reads; the actual motion is applied in _motion_substep.
+	# FISH_ALIVE #1 — denser idle micro-life (shorter cooldown, higher rate).
+	var calm_trait: float = float(personality.get("calm", 0.5)) if personality is Dictionary else 0.5
+	var fidget_rate: float = dt * lerpf(0.16, 0.08, calm_trait)
 	if _fidget_cooldown <= 0.0 and _fidget_remaining <= 0.0 and speed < 0.7 \
 			and burst_remaining <= 0.0 and _startle_remaining <= 0.0 \
-			and not _asleep and _behavior_rng().randf() < dt * 0.08:
+			and not _asleep and _behavior_rng().randf() < fidget_rate:
 		var r: float = _behavior_rng().randf()
 		if r < 0.45:
 			_fidget_kind = 1   # shimmy
@@ -5927,10 +5924,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var wf := _world_node()
 			if wf != null and wf.has_method("spawn_substrate_dust"):
 				wf.spawn_substrate_dust(global_position)
+			FishAlive.world_answer(self, "sift")
 		else:
 			_fidget_kind = 1
 			_fidget_remaining = 0.5
-		_fidget_cooldown = _behavior_rng().randf_range(5.0, 12.0)
+		_fidget_cooldown = _behavior_rng().randf_range(2.5, 7.0)
 
 	# PLANT BRUSH: passing bodies deflect foliage (#43).
 	if speed > 0.55 and _behavior_rng().randf() < dt * 0.6:
@@ -6445,6 +6443,8 @@ func _process(dt: float) -> void:
 func _apply_posture_overlays(dt: float) -> void:
 	if _bank_pivot == null:
 		return
+	# FISH_ALIVE #641 — torn caudal from fights / wear.
+	FishAlive.apply_fin_nicks_visual(self)
 	# Cleaning tilt — the recipient presents flank to the cleaner.
 	if _being_cleaned > 0.05:
 		var target_roll: float = 0.42 * sign(sin(get_instance_id() * 0.01))
@@ -6716,6 +6716,16 @@ func _face_direction(d: Vector3) -> void:
 	_reset_facing_from_direction(d)
 
 
+func _breath_amplitude() -> float:
+	var load: float = maxf(_breath_load, 0.55)
+	var amplitude: float = 0.028 + clampf(load - 1.0, 0.0, 1.0) * 0.04
+	if _asleep:
+		amplitude *= 0.45
+	elif speed > max_speed * 0.55:
+		amplitude *= 0.35
+	return amplitude
+
+
 func _breath_motion_delta(dt: float) -> float:
 	# Frame-correct successor to FishAlive.micro_idle_y: preserve that helper's
 	# living-breath intent without accumulating an absolute sine every frame.
@@ -6724,11 +6734,7 @@ func _breath_motion_delta(dt: float) -> float:
 	var previous_phase: float = _breath_phase
 	var load: float = maxf(_breath_load, 0.55)
 	_breath_phase += dt * lerpf(0.7, 1.55, clampf(load - 0.4, 0.0, 1.2))
-	var amplitude: float = 0.028 + clampf(load - 1.0, 0.0, 1.0) * 0.04
-	if _asleep:
-		amplitude *= 0.45
-	elif speed > max_speed * 0.55:
-		amplitude *= 0.35
+	var amplitude: float = _breath_amplitude()
 	var next_offset: float = sin(_breath_phase * TAU) * amplitude
 	var delta: float = next_offset - _breath_y_offset
 	# Legacy/new fish begin with zero stored offset. Use the analytical
@@ -6945,6 +6951,9 @@ func _motion_substep(dt: float) -> void:
 		speed = _motion_velocity_floor(speed)
 	if burst_remaining > _prev_burst_snap + 0.08 and swim_pattern == "sit":
 		global_position -= heading * 0.045 * _body_tank_margin()
+	# FISH_ALIVE #881 — dart answers with ripple/plant wake.
+	if burst_remaining > _prev_burst_snap + 0.12:
+		FishAlive.world_answer(self, "dart")
 	_prev_burst_snap = burst_remaining
 	# LIVING_MOTION #45 — outside fish on a hard turn hold the arc with a touch more speed.
 	if _MotionWaveScript.uses_wave(self) and absf(_last_yaw_rate) > 0.45:
@@ -6953,12 +6962,18 @@ func _motion_substep(dt: float) -> void:
 	_station_keep = Hydrodynamics.station_keep_pec(
 		_swim_phase, flow_vel.length(), target_spd)
 	if full_hydro:
-		var buoy: Dictionary = Hydrodynamics.buoyancy_step(
-			global_position.y, _hover_depth, speed, target_spd, dt, _buoy_bob_t, _hydro_profile)
-		var y_delta: float = float(buoy.get("y_delta", 0.0))
-		if is_finite(y_delta):
-			global_position.y += y_delta * settle_factor
-		_buoy_bob_t = float(buoy.get("bob_t", _buoy_bob_t))
+		if settle_factor < 1.0:
+			# Intro: pin hydro hover to the current depth and skip the spring.
+			# Breath still fades in below; established fish are unchanged.
+			_hover_depth = global_position.y
+			_buoy_bob_t += dt * 0.55
+		else:
+			var buoy: Dictionary = Hydrodynamics.buoyancy_step(
+				global_position.y, _hover_depth, speed, target_spd, dt, _buoy_bob_t, _hydro_profile)
+			var y_delta: float = float(buoy.get("y_delta", 0.0))
+			if is_finite(y_delta):
+				global_position.y += y_delta
+			_buoy_bob_t = float(buoy.get("bob_t", _buoy_bob_t))
 	# Integrate the oscillator's change, not its absolute sine sample. Adding
 	# the absolute amplitude each frame caused severe FPS-dependent Y drift.
 	var breath_y: float = _breath_motion_delta(dt)

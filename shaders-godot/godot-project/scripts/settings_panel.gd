@@ -640,7 +640,7 @@ func _build_ui() -> void:
 		+ "Nothing leaves your machine.")
 	vbox_ai.add_child(voice_desc)
 	_sentience_voice_off_check = CheckBox.new()
-	_sentience_voice_off_check.text = "Quiet mode — hide all voice text"
+	_sentience_voice_off_check.text = "Quiet mode — hide voice text and ambient toasts"
 	_sentience_voice_off_check.toggled.connect(_on_sentience_voice_off_toggled)
 	vbox_ai.add_child(_sentience_voice_off_check)
 	_voice_detail_box = VBoxContainer.new()

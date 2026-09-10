@@ -401,11 +401,21 @@ static func make_flower_foliage(color: Color) -> ShaderMaterial:
 	var key: String = "%s" % [str(_snap(color))]
 	if _flower_foliage_cache.has(key):
 		return _flower_foliage_cache[key]
-	var m: ShaderMaterial = make_foliage(color).duplicate() as ShaderMaterial
+	# Fresh material — do not duplicate a live foliage cache entry that later
+	# receives flow/gust writes. Blooms stay visually in the plant family but
+	# their vertices never leave the authored mesh.
+	var boosted: Color = boost_foliage_color(color)
+	var m := ShaderMaterial.new()
+	m.shader = _get_foliage_shader()
+	m.set_shader_parameter("albedo", boosted)
+	m.set_shader_parameter("color_vibrancy", 1.22)
+	m.set_shader_parameter("sss_color", Vector3(0.85, 1.0, 0.55))
 	m.set_shader_parameter("sway_amplitude", 0.0)
 	m.set_shader_parameter("sway_speed", 0.0)
 	m.set_shader_parameter("flutter_amplitude", 0.0)
 	m.set_shader_parameter("flutter_speed", 0.0)
+	m.set_shader_parameter("flow_strength", 0.0)
+	m.set_shader_parameter("motion_lock", 1.0)
 	_flower_foliage_cache[key] = m
 	return m
 

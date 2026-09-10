@@ -28,6 +28,9 @@ const PLANT_RAMP: Array[Color] = [
 	Color8(121, 192, 105),
 ]
 const VOXEL_SIZE: float = 0.32
+# Sit the bloom on the tip face so the pedicel nests inside the last stem
+# voxel. A shallower nest left a visible air gap and read as a floating cube.
+const FLOWER_TIP_NEST: float = VOXEL_SIZE * 0.46
 
 # Stress palette for nutrient deficiency (yellowing / browning).
 const STRESS_RAMP: Array[Color] = [
@@ -1031,12 +1034,12 @@ func _apply_sway_personality() -> void:
 		amp *= 0.55
 		flutter *= 0.7
 		height_w *= 0.72
-	# Tip bloom present — calm the Multimesh tip under the flower so it
-	# doesn't thrash beneath a stabilizing bloom.
+	# Tip bloom present — the flower is a rigid child of the stem tip.
+	# Kill Multimesh tip travel so GPU foliage cannot slide out from under it.
 	if has_flower and flower_stage != FlowerStage.NONE:
-		amp *= 0.72
-		tip_mult *= 0.55
-		flutter *= 0.65
+		amp *= 0.48
+		tip_mult *= 0.22
+		flutter *= 0.40
 	tip_mult *= height_w
 	# Global calm: alive but smooth — lazy current, not thrash.
 	const CALM_AMP: float = 0.62
@@ -1057,7 +1060,9 @@ func _apply_sway_personality() -> void:
 		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
 		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
 	if _stem_mat != null:
-		# CPU root lean is the sole authority for a flowering structural stem.
+		# Structural stems never GPU-sway — flowers parent to the CPU handle.
+		_stem_mat.set_shader_parameter("sway_amplitude", 0.0)
+		_stem_mat.set_shader_parameter("flutter_amplitude", 0.0)
 		_stem_mat.set_shader_parameter(
 			"gust_response", 0.0 if has_flower and flower_stage != FlowerStage.NONE else 1.0)
 
@@ -1496,7 +1501,7 @@ func _stabilize_flower_against_lean() -> void:
 		_flower_node.position = _tip_bloom_local_pos()
 		return
 	var tip_basis: Basis = tip.transform.basis.orthonormalized()
-	var anchor: Vector3 = tip.transform.origin + tip_basis.y * VOXEL_SIZE * 0.08
+	var anchor: Vector3 = tip.transform.origin + tip_basis.y * FLOWER_TIP_NEST
 	_flower_node.transform = Transform3D(tip_basis, anchor)
 
 
@@ -1515,7 +1520,7 @@ func _tip_bloom_local_pos() -> Vector3:
 	var tip := _live_top_stem_handle()
 	if tip != null:
 		var tip_up: Vector3 = tip.transform.basis.orthonormalized().y
-		return tip.transform.origin + tip_up * VOXEL_SIZE * 0.08
+		return tip.transform.origin + tip_up * FLOWER_TIP_NEST
 	var rel: float = 1.0
 	var lean: Vector2 = _stem_lean_offset(rel)
 	return Vector3(lean.x, _get_stem_top() - VOXEL_SIZE * 0.05, lean.y)
@@ -2361,10 +2366,18 @@ func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2)
 				mi3.position = Vector3(side * VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.24 * float(i), VOXEL_SIZE * 0.16 * float(i))
 				acc_voxels.append(mi3)
 		_:
-			var mi4 := MeshInstance3D.new()
-			mi4.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.28))
-			mi4.material_override = VoxelMat.make_foliage(accent.lightened(0.10))
-			acc_voxels.append(mi4)
+			# Column / moss fallback — a short connected stub, never a lone
+			# mid-air cube. Two stacked voxels share the leaf group's sway.
+			for i in 2:
+				var mi4 := MeshInstance3D.new()
+				mi4.mesh = VoxelMat.get_box(Vector3(
+					VOXEL_SIZE * 0.20, VOXEL_SIZE * 0.28, VOXEL_SIZE * 0.20))
+				mi4.material_override = VoxelMat.make_foliage(accent.lightened(0.04 * float(i)))
+				mi4.position = Vector3(
+					side * VOXEL_SIZE * 0.10,
+					VOXEL_SIZE * 0.22 * float(i),
+					0.0)
+				acc_voxels.append(mi4)
 	_leaf_groups.append(_bake_leaf(n, acc_voxels))
 	_leaf_ages.append(_t)
 	_register_leaf_age(_t)
@@ -2885,8 +2898,10 @@ func _reclamp_voxels_to_footprint() -> void:
 					_clamp_node_xz_to_footprint(child, 0.2)
 	# Bloom voxels are authored in flower-local coordinates. Clamp their parent
 	# once so repeated enforcement cannot collapse or scatter the silhouette.
+	# Never clamp the flower independently of its stem tip — that opens a
+	# visible air gap. The tip handle was already reclamped above; ride it.
 	if _flower_node != null and is_instance_valid(_flower_node):
-		_clamp_node_xz_to_footprint(_flower_node, 0.18)
+		_stabilize_flower_against_lean()
 	# Root voxels hang below the crown in local -Y; reclamp only the stem/leaf
 	# canopy so glass poke-through is fixed without scattering buried roots.
 
@@ -3621,6 +3636,8 @@ func _append_flower_voxels(nodes: Array) -> void:
 		return
 	for v in nodes:
 		_flower_node.add_child(v)
+		if v is GeometryInstance3D:
+			_apply_visibility_range_to(v as GeometryInstance3D)
 		bloom_voxels.append(v)
 
 

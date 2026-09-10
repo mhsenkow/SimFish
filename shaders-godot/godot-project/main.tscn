@@ -487,7 +487,7 @@ size_flags_stretch_ratio = 2.0
 mouse_filter = 2
 horizontal_alignment = 2
 clip_text = true
-text = "drag orbit · scroll zoom · pick food in footer · click water to feed · F reset camera · drag to orbit · click creature to follow · Shift+click startle glass"
+text = "orbit · Feed · Care · click creature to follow · F12 photo · ? help"
 
 [node name="MobileHUD" type="Control" parent="."]
 anchors_preset = 15

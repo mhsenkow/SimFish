@@ -95,6 +95,28 @@ const FEED: Dictionary = {
 
 const FEED_SUBTYPE_KEYS: Array[String] = ["flake", "pellet", "worm", "wafer"]
 
+# Keeper Care dock (PLAYER_WISH #1) — same footer language as Feed.
+const CARE: Dictionary = {
+	"dock": {
+		"emoji": "",
+		"text": "Care",
+		"name": "Care",
+		"tip": "Keep the tank — change water or rinse the filter",
+	},
+	"water": {
+		"emoji": "≈",
+		"text": "H₂O",
+		"name": "Water",
+		"tip": "Partial water change — dilutes nitrate, refreshes minerals",
+	},
+	"filter": {
+		"emoji": "◎",
+		"text": "Fil",
+		"name": "Filter",
+		"tip": "Rinse the filter — restores flow (keeps most of the good bacteria)",
+	},
+}
+
 
 static func use_color_emoji() -> bool:
 	# Always monochrome geometric — emoji font gaps caused the mobile ASCII
@@ -180,6 +202,33 @@ static func apply_feed_button(btn: Button, id: String, active: bool = false,
 		return
 	btn.text = feed_button_label(id, force_short)
 	btn.tooltip_text = feed_tooltip(id)
+	PanelTheme.style_hud_toggle_button(btn, active)
+	PanelTheme.apply_font(btn, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
+	btn.add_theme_constant_override("outline_size", 0)
+
+
+static func care_button_label(id: String, force_short: bool = false) -> String:
+	var e: Dictionary = CARE.get(id, {})
+	var name: String = String(e.get("name", e.get("text", id)))
+	if force_short:
+		return String(e.get("text", name))
+	var em: String = String(e.get("emoji", ""))
+	if em.strip_edges() != "":
+		return "%s %s" % [em, name]
+	return name
+
+
+static func care_tooltip(id: String) -> String:
+	var e: Dictionary = CARE.get(id, {})
+	return String(e.get("tip", id))
+
+
+static func apply_care_button(btn: Button, id: String, active: bool = false,
+		force_short: bool = false) -> void:
+	if btn == null:
+		return
+	btn.text = care_button_label(id, force_short)
+	btn.tooltip_text = care_tooltip(id)
 	PanelTheme.style_hud_toggle_button(btn, active)
 	PanelTheme.apply_font(btn, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
 	btn.add_theme_constant_override("outline_size", 0)

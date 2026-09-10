@@ -54,7 +54,7 @@ func _initialize() -> void:
 	tip.set_transform(laid_xform)
 	plant._stabilize_flower_against_lean()
 	var expected_pos: Vector3 = tip.transform.origin \
-		+ tip.transform.basis.orthonormalized().y * Plant.VOXEL_SIZE * 0.08
+		+ tip.transform.basis.orthonormalized().y * Plant.FLOWER_TIP_NEST
 	_assert(failed, plant._flower_node.position.distance_to(expected_pos) < 0.0001,
 		"flower anchor follows the live top handle without lag")
 	_assert(failed, plant._flower_node.basis.y.normalized().dot(
@@ -89,6 +89,14 @@ func _initialize() -> void:
 	_assert(failed, pedicel.position.y < calyx.position.y
 			and bud_base.position.y >= calyx.position.y,
 		"bud silhouette forms a connected stem-to-calyx-to-head chain")
+	var pedicel_box: BoxMesh = (pedicel as MeshInstance3D).mesh as BoxMesh
+	_assert(failed, pedicel_box != null and pedicel_box.size.x >= Plant.VOXEL_SIZE * 0.34,
+		"column pedicel is stem-width, not a wire")
+	var bloom_mat: ShaderMaterial = (pedicel as MeshInstance3D).material_override as ShaderMaterial
+	_assert(failed, bloom_mat != null
+			and float(bloom_mat.get_shader_parameter("motion_lock")) > 0.5
+			and is_zero_approx(float(bloom_mat.get_shader_parameter("sway_amplitude"))),
+		"flower material locks out GPU vertex displacement")
 
 	# Far consolidation must reject the whole reproductive plant and restore
 	# private draw batches if it had been mirrored on the previous rebuild.

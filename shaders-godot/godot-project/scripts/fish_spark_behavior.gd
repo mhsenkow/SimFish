@@ -10,6 +10,7 @@ const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const FishAlive = preload("res://scripts/fish_alive.gd")
 
 
 static func enabled() -> bool:
@@ -194,18 +195,9 @@ static func landscape_range_scale(fear: float) -> float:
 	return lerpf(1.0, 0.42, clampf(fear, 0.0, 1.0))
 
 
-# SENTIENCE_THE_SPARK #78 — rest/hover vertical bob from protoself gill rhythm.
 static func breath_hover_offset(f: Fish, dt: float) -> float:
-	if not enabled() or f.get("_dying") == true:
-		return 0.0
-	var resting: bool = f._asleep or f.current_mode == Fish.Mode.REST \
-			or (f.speed < 0.32 and f.swim_pattern == "hover")
-	if not resting:
-		return 0.0
-	var ps: Dictionary = FishProtoself.ensure(f)
-	var rhythm: float = float(ps.get("gill_rhythm", 1.0))
-	f._breath_phase += dt * lerpf(0.55, 1.35, rhythm)
-	return sin(f._breath_phase * TAU) * 0.11 * rhythm
+	# FISH_ALIVE #121 — breath bob always on (not only when spark layer enabled).
+	return FishAlive.micro_idle_y(f, dt)
 
 
 static func feed_anticipation_drift(f: Fish, sim: Node) -> Vector3:

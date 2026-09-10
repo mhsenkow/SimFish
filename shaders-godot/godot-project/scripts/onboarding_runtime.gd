@@ -525,6 +525,10 @@ func _refresh_controls_hint(stats: Dictionary = {}) -> void:
 func _show_caption(text: String) -> void:
 	if _main == null:
 		return
+	# COMMS #401 — one ambient caption / 20s (also respects quiet).
+	if _main.has_method("request_ambient_caption") \
+			and not bool(_main.call("request_ambient_caption", text)):
+		return
 	if _caption_label != null and is_instance_valid(_caption_label):
 		_caption_label.queue_free()
 	_caption_label = Label.new()

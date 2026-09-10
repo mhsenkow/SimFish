@@ -38,6 +38,8 @@ uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+// 1 = skip vertex displacement. Tip blooms must stay locked to the stem.
+uniform float motion_lock : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -47,24 +49,26 @@ void vertex() {
     // 1. Get world space position for spatial variance
     vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
     v_world_pos = world_pos;
-    
-    // 2. Slow gentle sway (swimming pool current / wind)
-    float time_sway = TIME * sway_speed;
-    float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
-    float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
-    float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude;
-    
-    // Scale sway by height (higher vertices sway more)
-    // Local Y of the vertex shows the height from the instance origin
-    float height_factor = max(0.0, VERTEX.y + 0.4); 
-    VERTEX.x += sway * height_factor;
-    VERTEX.z += sway * 0.35 * height_factor;
-    
-    // 3. High-frequency leaf flutter
-    float time_flutter = TIME * flutter_speed;
-    float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0;
-    float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
-    VERTEX.y += flutter * height_factor * 0.3;
+    // Tip blooms set motion_lock; Godot forbids `return` in vertex().
+    if (motion_lock <= 0.5) {
+        // 2. Slow gentle sway (swimming pool current / wind)
+        float time_sway = TIME * sway_speed;
+        float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
+        float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
+        float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude;
+
+        // Scale sway by height (higher vertices sway more)
+        // Local Y of the vertex shows the height from the instance origin
+        float height_factor = max(0.0, VERTEX.y + 0.4);
+        VERTEX.x += sway * height_factor;
+        VERTEX.z += sway * 0.35 * height_factor;
+
+        // 3. High-frequency leaf flutter
+        float time_flutter = TIME * flutter_speed;
+        float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0;
+        float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
+        VERTEX.y += flutter * height_factor * 0.3;
+    }
 }
 
 vec3 apply_vibrancy(vec3 col, float vib) {
