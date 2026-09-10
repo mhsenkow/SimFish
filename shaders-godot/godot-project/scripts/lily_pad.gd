@@ -224,6 +224,29 @@ func fry_shade_factor() -> float:
 	return clampf(effective_shade_radius() / maxf(pad_radius, 0.01), 0.0, 1.0) * 0.55
 
 
+func ecology_biomass() -> float:
+	return float(_current_pad_voxels) + (2.0 if _stem_built else 0.0)
+
+
+func ecology_nutrient_demand() -> float:
+	return 0.22
+
+
+func ecology_graze(amount: int) -> int:
+	var removed: int = 0
+	for _i in amount:
+		var before: int = _current_pad_voxels
+		_shed_edge_voxel()
+		if _current_pad_voxels >= before:
+			break
+		removed += 1
+	return removed
+
+
+func ecology_die() -> void:
+	queue_free()
+
+
 func _surface_drift_vec() -> Vector3:
 	var n: Node = get_parent()
 	while n != null:

@@ -12,6 +12,7 @@ const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
+const PlantEcologyAdapterScript = preload("res://scripts/plant_ecology_adapter.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -1597,17 +1598,41 @@ func _sway_surface_plants(adt: float) -> void:
 	var mv := _music_visual_node()
 	if mv != null and mv.has_method("plant_sway_mult"):
 		sway_dt *= float(mv.plant_sway_mult())
+	var ecology_biomass: float = 0.0
 	for mp in _math_plants:
 		if not is_instance_valid(mp):
 			continue
 		if mp.has_method("tick"):
 			mp.tick(sway_dt)
+		ecology_biomass += _tick_surface_plant_ecology(mp, adt)
 	_lily_pad_t += adt
 	for lp in _lily_pads:
 		if not is_instance_valid(lp):
 			continue
 		if lp.has_method("tick"):
 			lp.tick(sway_dt)
+		ecology_biomass += _tick_surface_plant_ecology(lp, adt)
+	_surface_plant_biomass = ecology_biomass
+	if sim != null:
+		sim.surface_plant_biomass = ecology_biomass
+	for id_v in _surface_ecology_adapters.keys():
+		var cached: Variant = _surface_ecology_adapters[id_v]
+		if cached == null or not cached.is_alive():
+			_surface_ecology_adapters.erase(id_v)
+
+
+func _tick_surface_plant_ecology(host: Node, dt: float) -> float:
+	var id: int = host.get_instance_id()
+	var adapter: Variant = _surface_ecology_adapters.get(id)
+	if adapter == null:
+		adapter = PlantEcologyAdapterScript.new(host)
+		_surface_ecology_adapters[id] = adapter
+	adapter.tick(dt, sim.substrate if sim != null else null)
+	return float(adapter.biomass())
+
+
+func surface_plant_biomass() -> float:
+	return _surface_plant_biomass
 
 
 # ---- Materials ----
@@ -6218,6 +6243,8 @@ const FLOATER_GROWTH_INTERVAL: float = 3.0
 var _lily_pads: Array = []
 var _lily_pad_t: float = 0.0
 var _math_plants: Array = []
+var _surface_ecology_adapters: Dictionary = {}
+var _surface_plant_biomass: float = 0.0
 
 
 # Spawn the three new mathematical plant types:

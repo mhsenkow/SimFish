@@ -1216,6 +1216,7 @@ func recent_feed_spot_bias(pos: Vector3, radius: float) -> Dictionary:
 # walk of snails_root just for the oxygen step).
 var snail_count: int = 0
 var total_plant_biomass: int = 0
+var surface_plant_biomass: float = 0.0
 # Health-weighted biomass: melting / etiolating / bleaching plants count for
 # little, so a plant crash compounds into an O2 crisis (#29). Updated each tick
 # alongside total_plant_biomass.
@@ -3798,8 +3799,8 @@ func _tick(dt: float) -> void:
 		var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
 		photo_bm += float(bm) * hf
 	_update_plant_far_batch(plant_camera, dt)
-	total_plant_biomass = plant_biomass
-	total_photosynthetic_biomass = photo_bm
+	total_plant_biomass = plant_biomass + int(round(surface_plant_biomass))
+	total_photosynthetic_biomass = photo_bm + surface_plant_biomass
 	_log_growth_debug(dt)
 	# Plant fragments (stem cuttings rooting).
 	var frag_i: int = plant_fragments.size() - 1

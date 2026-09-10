@@ -238,10 +238,12 @@ normal flowering.*
   surface-flow seed motes that attempt rooting at valid shoreline cells, using
   the common capacity and seed-bank rules. Completes the existing stub and
   Naturalism #514. *M · M*
-- [ ] **45. Surface-plant ecology adapter.** Register lily pads, cattails,
+- [x] **45. Surface-plant ecology adapter.** Register lily pads, cattails,
   nautilus plants, and fractal moss through a small common ecological interface
   for biomass, nutrient demand, grazing, and death without forcing them to
-  inherit `Plant`. *L · L*
+  inherit `Plant`. — Shipped with capability adapters, coarse nutrient uptake,
+  litter-returning death, grazing, and unified photosynthetic accounting.
+  *L · L*
 - [ ] **46. Complete hardscape epiphyte placement.** Extend the shipped
   layout-time epiphyte placement to manual/library/autonomous spawn paths and
   validate attachment against rock/wood surfaces before substrate fallback.

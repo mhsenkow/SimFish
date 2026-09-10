@@ -176,5 +176,34 @@ func _puff_seed() -> void:
 		v.queue_free()
 
 
+func ecology_biomass() -> float:
+	return float(_stalk_voxels.size() + _head_voxels_arr.size() + _leaves_built * 5)
+
+
+func ecology_nutrient_demand() -> float:
+	return 0.34
+
+
+func ecology_graze(amount: int) -> int:
+	var removed: int = 0
+	for _i in amount:
+		var target: MeshInstance3D = null
+		if not _head_voxels_arr.is_empty():
+			target = _head_voxels_arr.pop_back()
+		elif not _stalk_voxels.is_empty():
+			target = _stalk_voxels.pop_back()
+			_current_height = maxi(0, _current_height - 1)
+		if target == null:
+			break
+		if is_instance_valid(target):
+			target.queue_free()
+		removed += 1
+	return removed
+
+
+func ecology_die() -> void:
+	queue_free()
+
+
 func _make_mat(c: Color) -> Material:
 	return VoxelMat.make_foliage(c)

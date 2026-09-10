@@ -269,5 +269,21 @@ func graze(amount: int) -> int:
 	return removed
 
 
+func ecology_biomass() -> float:
+	return float(_all_voxels.size())
+
+
+func ecology_nutrient_demand() -> float:
+	return 0.10
+
+
+func ecology_graze(amount: int) -> int:
+	return graze(amount)
+
+
+func ecology_die() -> void:
+	queue_free()
+
+
 func _make_mat(c: Color) -> Material:
 	return VoxelMat.make_foliage(c)

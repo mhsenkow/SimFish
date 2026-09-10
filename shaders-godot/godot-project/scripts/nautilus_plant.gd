@@ -124,5 +124,31 @@ func _age_voxels() -> void:
 			_all_voxels[i].set_meta("aged", true)
 
 
+func ecology_biomass() -> float:
+	return float(_all_voxels.size())
+
+
+func ecology_nutrient_demand() -> float:
+	return 0.18
+
+
+func ecology_graze(amount: int) -> int:
+	var removed: int = 0
+	for _i in amount:
+		if _all_voxels.is_empty():
+			break
+		var voxel: MeshInstance3D = _all_voxels.pop_back()
+		if not _voxel_birth_times.is_empty():
+			_voxel_birth_times.pop_back()
+		if is_instance_valid(voxel):
+			voxel.queue_free()
+		removed += 1
+	return removed
+
+
+func ecology_die() -> void:
+	queue_free()
+
+
 func _make_mat(c: Color) -> Material:
 	return VoxelMat.make_foliage(c)
