@@ -110,9 +110,11 @@ rooted plants do not.*
   during trimming and die-offs; add bounded resettable pools only for node types
   shown to produce meaningful allocation spikes. Preserve `queue_free()` as the
   fallback for oversized or incompatible instances. *L · S*
-- [ ] **19. MultiMesh buffer compaction.** When live handles remain below one
+- [x] **19. MultiMesh buffer compaction.** When live handles remain below one
   quarter of capacity for a sustained interval, rebuild into a smaller buffer
-  and remap handles atomically. Never compact during an active bake. *M · M*
+  and remap handles atomically. Never compact during an active bake. — Shipped
+  with a five-second hold, 64-slot floor, and stable live-handle remapping.
+  *M · M*
 - [ ] **20. Static-plant sleep state.** Skip nonessential visual/state work for
   plants with no growth, damage, deficiency, reproduction, or environment
   changes, and wake them through explicit dirty signals. Continue chemistry at

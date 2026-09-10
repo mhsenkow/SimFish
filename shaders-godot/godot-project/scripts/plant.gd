@@ -2515,6 +2515,10 @@ func _reclamp_voxels_to_footprint() -> void:
 # Called by SimDriver each tick.
 func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_process_leaf_bake_queue()
+	if _foliage_batch != null:
+		_foliage_batch.consider_compaction(dt)
+	if _stem_batch != null:
+		_stem_batch.consider_compaction(dt)
 	# Refresh world-space anchor every tick. _ready() captures _world_pos
 	# from global_position, but several spawn paths (base Plant, BranchPlant,
 	# Coral, and the save-load _spawn_plant_from_dict path) assign

@@ -81,6 +81,10 @@ var _bounds_dirty: bool = true
 var _bounds_margin: Vector3 = Vector3(0.75, 0.35, 0.75)
 var _deferred_indices: Array[int] = []
 var _deferred_cursor: int = 0
+var _handles: Array[WeakRef] = []
+var _underutilized_s: float = 0.0
+const COMPACT_HOLD_S: float = 5.0
+const MIN_CAPACITY: int = 64
 
 
 func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
@@ -147,6 +151,7 @@ func _reserve(xform: Transform3D, color: Color, deferred: bool) -> Handle:
 	h.local_pos = xform.origin
 	h.base_color = color
 	h.transform = xform
+	_handles.append(weakref(h))
 	return h
 
 
@@ -174,6 +179,76 @@ func process_deferred_writes(max_writes: int) -> int:
 		_deferred_cursor = 0
 		flush()
 	return wrote
+
+
+# Shrink sustained sparse buffers without invalidating biological handles.
+# Callers invoke this at coarse simulation cadence; compaction is forbidden
+# while a deferred bake owns unwritten slots.
+func consider_compaction(dt: float) -> bool:
+	if _mm == null or has_deferred_writes():
+		_underutilized_s = 0.0
+		return false
+	var live_count: int = 0
+	for handle_ref in _handles:
+		var h: Handle = handle_ref.get_ref() as Handle
+		if h != null and h.alive:
+			live_count += 1
+	var capacity: int = _mm.instance_count
+	if capacity <= MIN_CAPACITY or live_count * 4 >= capacity:
+		_underutilized_s = 0.0
+		return false
+	_underutilized_s += maxf(0.0, dt)
+	if _underutilized_s < COMPACT_HOLD_S:
+		return false
+	_compact_live_handles(live_count)
+	_underutilized_s = 0.0
+	return true
+
+
+func _compact_live_handles(live_count: int) -> void:
+	var new_xforms: Array[Transform3D] = []
+	var new_colors := PackedColorArray()
+	var new_customs := PackedColorArray()
+	var new_handles: Array[Handle] = []
+	for handle_ref in _handles:
+		var h: Handle = handle_ref.get_ref() as Handle
+		if h == null or not h.alive:
+			if h != null:
+				h.index = -1
+				h.batch = null
+			continue
+		var old_index: int = h.index
+		h.index = new_handles.size()
+		new_handles.append(h)
+		new_xforms.append(_xforms[old_index])
+		new_colors.append(_colors[old_index])
+		if _use_custom:
+			new_customs.append(_customs[old_index])
+
+	var new_mm := MultiMesh.new()
+	new_mm.transform_format = MultiMesh.TRANSFORM_3D
+	new_mm.use_colors = true
+	new_mm.use_custom_data = _use_custom
+	var new_capacity: int = MIN_CAPACITY
+	while new_capacity < maxi(1, live_count):
+		new_capacity *= 2
+	new_mm.instance_count = new_capacity
+	new_mm.mesh = _mm.mesh
+	_mm = new_mm
+	mmi.multimesh = _mm
+	_xforms = new_xforms
+	_colors = new_colors
+	_customs = new_customs
+	_handles.clear()
+	for h in new_handles:
+		_handles.append(weakref(h))
+	_count = live_count
+	_visible = live_count
+	for i in _count:
+		_write_instance(i)
+	_mm.visible_instance_count = _visible
+	_bounds_dirty = true
+	_refresh_custom_aabb()
 
 
 # Commit pending instance writes in one GPU upload (avoids Metal fence stalls
@@ -311,6 +386,13 @@ func _hide(i: int) -> void:
 
 
 func clear() -> void:
+	for handle_ref in _handles:
+		var h: Handle = handle_ref.get_ref() as Handle
+		if h != null:
+			h.alive = false
+			h.visible = false
+			h.index = -1
+			h.batch = null
 	_count = 0
 	_visible = 0
 	_xforms.clear()
@@ -318,6 +400,8 @@ func clear() -> void:
 	_customs.resize(0)
 	_deferred_indices.clear()
 	_deferred_cursor = 0
+	_handles.clear()
+	_underutilized_s = 0.0
 	_bounds_dirty = true
 	if _mm != null:
 		_mm.visible_instance_count = 0
