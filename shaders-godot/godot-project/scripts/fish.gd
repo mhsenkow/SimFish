@@ -45,6 +45,7 @@ const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const FishSpawnSettle = preload("res://scripts/fish_spawn_settle.gd")
 
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
@@ -1848,6 +1849,11 @@ var linear_accel: float = 2.5    # units/sec^2 - how fast speed changes
 var _hydro_profile: Dictionary = {}
 var _hover_depth: float = 0.0
 var _buoy_bob_t: float = 0.0
+var _breath_y_offset: float = 0.0
+var _spawn_settle_remaining: float = 0.0
+var _spawn_settle_duration: float = FishSpawnSettle.FRESH_DURATION
+var _spawn_heading_supplied: bool = false
+var _spawn_depth_target_y: float = INF
 var _brake_pose: float = 0.0
 var _station_keep: float = 0.0
 var _surface_wake_t: float = 0.0
@@ -1914,6 +1920,8 @@ func _genetics_rng() -> RandomNumberGenerator:
 
 
 func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
+	if _spawn_variation_applied:
+		return
 	var r: RandomNumberGenerator = rng if rng != null else _behavior_rng()
 	heading_offset = Vector3(
 		r.randf_range(-0.5, 0.5),
@@ -1927,20 +1935,60 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 	_school_phase_offset = r.randf_range(-0.1, 0.1)
 	_speed_personality = r.randf_range(0.82, 1.18)
 	_home_loop_angle = r.randf() * TAU
-	var theta: float = r.randf() * TAU
-	heading = Vector3(sin(theta), 0.0, -cos(theta))
+	if not _spawn_heading_supplied:
+		var theta: float = r.randf() * TAU
+		heading = Vector3(sin(theta), 0.0, -cos(theta))
+	else:
+		heading = _safe_normalize(heading)
+	_breath_phase = r.randf()
+	_buoy_bob_t = r.randf() * TAU
+	_breath_y_offset = 0.0
 	_last_yaw = atan2(heading.x, -heading.z)
 	_decay_throttle_t = r.randf() * DECAY_THROTTLE_PERIOD
 	_life_jitter = r.randf_range(-0.12, 0.15)
 	_growth_variance = r.randf_range(0.86, 1.14)
 	_home_y_drift_timer = r.randf_range(8.0, 24.0)
 	_spawn_variation_applied = true
+	_begin_spawn_settle(FishSpawnSettle.FRY_DURATION \
+		if maturity == MATURITY_FRY and is_finite(_spawn_depth_target_y) \
+		else FishSpawnSettle.FRESH_DURATION)
+	_reset_facing_from_direction(heading)
+
+
+func set_spawn_heading(direction: Vector3) -> void:
+	if not direction.is_finite() or direction.length_squared() < 1e-6:
+		return
+	heading = direction.normalized()
+	_spawn_heading_supplied = true
+
+
+func begin_fry_spawn(mother_depth: float, mother_heading: Vector3 = Vector3.ZERO) -> void:
+	if is_finite(mother_depth):
+		home_y = mother_depth
+		_hover_depth = mother_depth
+	if mother_heading.is_finite() and mother_heading.length_squared() > 1e-6:
+		set_spawn_heading(mother_heading)
+		target_velocity = heading * max_speed * 0.22
+	_spawn_depth_target_y = preferred_y
+	_begin_spawn_settle(FishSpawnSettle.FRY_DURATION)
+
+
+func _begin_spawn_settle(duration: float) -> void:
+	_spawn_settle_duration = clampf(duration, 0.05, FishSpawnSettle.FRESH_DURATION)
+	_spawn_settle_remaining = _spawn_settle_duration
+	if heading.length_squared() > 1e-6:
+		target_velocity = heading.normalized() * max_speed * 0.32
+
+
+func spawn_settle_factor() -> float:
+	return FishSpawnSettle.factor(_spawn_settle_remaining, _spawn_settle_duration)
 
 
 func _ready() -> void:
 	if id != "":
 		apply_spawn_variation()
-	speed = 0.0
+	if not _spawn_variation_applied:
+		speed = 0.0
 
 	_food_glow = OmniLight3D.new()
 	_food_glow.light_color = Color.WHITE
@@ -2289,10 +2337,13 @@ func init_genome(genome: Dictionary) -> void:
 		home_x = global_position.x + _behavior_rng().randf_range(-spread_xz, spread_xz)
 		home_z = global_position.z + _behavior_rng().randf_range(-spread_xz, spread_xz)
 	if is_inf(home_y):
-		home_y = preferred_y + _behavior_rng().randf_range(-0.6, 0.6)
+		# The spawner already sampled within the species' preferred band.
+		# Anchor to that final clamped depth so startup has no correction snap.
+		home_y = global_position.y
 	if sim != null:
 		_reclamp_territory_to_tank()
 		_try_claim_build_cave_territory()
+	_hover_depth = home_y
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
@@ -5297,7 +5348,12 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if sim != null and float(sim.daylight()) < 0.25:
 		effective_y_radius *= 0.62
 	var dy_outside: float = maxf(0.0, absf(dy) - effective_y_radius)
-	desired.y += signf(dy) * (effective_y_radius * 0.55 + dy_outside * 1.65)
+	var vertical_home_pull: float = signf(dy) \
+		* (effective_y_radius * 0.55 + dy_outside * 1.65)
+	if _spawn_settle_remaining > 0.0:
+		vertical_home_pull *= FishSpawnSettle.factor(
+			_spawn_settle_remaining, _spawn_settle_duration)
+	desired.y += vertical_home_pull
 	# Don't keep tugging toward the meniscus once the fish is already there —
 	# that pins mid-water species sideways under the ceiling.
 	if _aerial_timer <= 0.0 and sim != null and _meniscus_headroom() < 0.55:
@@ -6241,6 +6297,16 @@ func _process(dt: float) -> void:
 		dt *= sim.time_scale
 		if dt <= 0.0:
 			return  # paused
+	if is_finite(_spawn_depth_target_y) and not is_inf(_spawn_depth_target_y):
+		# Fry begin in the mother's layer, then migrate gently toward their
+		# inherited species niche instead of snapping there at birth.
+		var depth_rate: float = maxf(0.04, absf(_spawn_depth_target_y - home_y) / 14.0)
+		home_y = move_toward(home_y, _spawn_depth_target_y, depth_rate * dt)
+		_hover_depth = home_y
+		if absf(home_y - _spawn_depth_target_y) < 0.01:
+			home_y = _spawn_depth_target_y
+			_hover_depth = home_y
+			_spawn_depth_target_y = INF
 
 	# Fry dart trail — only emit when this fish is actually a fry AND in
 	# a burst. The fry-juvenile-play burst sets burst_remaining to 0.4s,
@@ -6650,6 +6716,39 @@ func _face_direction(d: Vector3) -> void:
 	_reset_facing_from_direction(d)
 
 
+func _breath_motion_delta(dt: float) -> float:
+	# Frame-correct successor to FishAlive.micro_idle_y: preserve that helper's
+	# living-breath intent without accumulating an absolute sine every frame.
+	if _dying:
+		return 0.0
+	var previous_phase: float = _breath_phase
+	var load: float = maxf(_breath_load, 0.55)
+	_breath_phase += dt * lerpf(0.7, 1.55, clampf(load - 0.4, 0.0, 1.2))
+	var amplitude: float = 0.028 + clampf(load - 1.0, 0.0, 1.0) * 0.04
+	if _asleep:
+		amplitude *= 0.45
+	elif speed > max_speed * 0.55:
+		amplitude *= 0.35
+	var next_offset: float = sin(_breath_phase * TAU) * amplitude
+	var delta: float = next_offset - _breath_y_offset
+	# Legacy/new fish begin with zero stored offset. Use the analytical
+	# previous sample so the first frame cannot pop to an arbitrary phase.
+	if is_zero_approx(_breath_y_offset) and previous_phase > 0.0:
+		delta = FishSpawnSettle.oscillator_delta(
+			previous_phase, _breath_phase, amplitude)
+	_breath_y_offset = next_offset
+	return delta
+
+
+func _motion_velocity_floor(current_speed: float) -> float:
+	if _asleep or _dying or motion_freeze_t > 0.05:
+		return current_speed
+	if current_mode == Mode.REST and swim_pattern == "sit":
+		return maxf(current_speed, 0.02)
+	var floor_speed: float = 0.04 + (0.03 if swim_pattern == "hover" else 0.0)
+	return maxf(current_speed, floor_speed)
+
+
 func _motion_substep(dt: float) -> void:
 	if not is_finite(speed):
 		speed = 0.0
@@ -6669,6 +6768,13 @@ func _motion_substep(dt: float) -> void:
 	var music_mm: Dictionary = _music_mods()
 	var eff_accel: float = linear_accel * float(music_mm.get("accel", 1.0))
 	var eff_turn: float = max_turn_rate * float(music_mm.get("turn", 1.0))
+	var settle_factor: float = 1.0
+	if _spawn_settle_remaining > 0.0:
+		_spawn_settle_remaining = maxf(0.0, _spawn_settle_remaining - dt)
+		settle_factor = FishSpawnSettle.factor(
+			_spawn_settle_remaining, _spawn_settle_duration)
+		eff_accel *= lerpf(0.28, 1.0, settle_factor)
+		eff_turn *= lerpf(0.35, 1.0, settle_factor)
 	# Decompose the brain's target into a desired direction + desired speed.
 	# Sifting fish (cory mid-graze) almost stop while the timer is active.
 	var target_dir: Vector3 = heading
@@ -6698,6 +6804,8 @@ func _motion_substep(dt: float) -> void:
 	# Rest debt (#84): a sleep-deprived fish moves sluggishly through the day.
 	if _rest_debt > 0.05:
 		target_spd *= 1.0 - clampf(_rest_debt, 0.0, 1.0) * 0.25
+	if settle_factor < 1.0:
+		target_spd *= lerpf(0.32, 1.0, settle_factor)
 	# Enrichment vs boredom (#85): a barren tank is dull — fish drift listlessly;
 	# a complex, well-planted tank keeps them lively and exploring.
 	if sim != null:
@@ -6830,6 +6938,11 @@ func _motion_substep(dt: float) -> void:
 	else:
 		speed = move_toward(speed, target_spd, eff_accel * dt * 0.7)
 	speed *= TopdownMotion.burst_glide_speed_mult(_swim_phase, swim_pattern)
+	# Keep living motion above zero, but ramp that floor during startup.
+	if settle_factor < 1.0:
+		speed = maxf(speed, _motion_velocity_floor(0.0) * settle_factor)
+	else:
+		speed = _motion_velocity_floor(speed)
 	if burst_remaining > _prev_burst_snap + 0.08 and swim_pattern == "sit":
 		global_position -= heading * 0.045 * _body_tank_margin()
 	_prev_burst_snap = burst_remaining
@@ -6844,8 +6957,13 @@ func _motion_substep(dt: float) -> void:
 			global_position.y, _hover_depth, speed, target_spd, dt, _buoy_bob_t, _hydro_profile)
 		var y_delta: float = float(buoy.get("y_delta", 0.0))
 		if is_finite(y_delta):
-			global_position.y += y_delta
+			global_position.y += y_delta * settle_factor
 		_buoy_bob_t = float(buoy.get("bob_t", _buoy_bob_t))
+	# Integrate the oscillator's change, not its absolute sine sample. Adding
+	# the absolute amplitude each frame caused severe FPS-dependent Y drift.
+	var breath_y: float = _breath_motion_delta(dt)
+	if is_finite(breath_y):
+		global_position.y += breath_y * settle_factor
 	if wall_t > 0.35:
 		speed = minf(speed, target_spd * lerpf(1.0, 0.68, wall_t))
 
@@ -6971,6 +7089,7 @@ func _motion_substep(dt: float) -> void:
 		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
 		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate) * (1.15 if absf(yaw_rate) > 0.5 else 1.0)
+		bank_target *= settle_factor
 		if _MotionWaveScript.uses_wave(self):
 			bank_target = lerpf(bank_target, _MotionSchoolScript.bank_correlation(self), 0.38)
 		var dance_bank: float = float(mm.get("dance_bank", 0.0))
@@ -8678,6 +8797,16 @@ func to_save_dict() -> Dictionary:
 		"velocity": SaveHelpers.vec3_to_array(velocity),
 		"heading": SaveHelpers.vec3_to_array(heading),
 		"speed": SaveHelpers._num(speed, 0.0),
+		"hover_depth": SaveHelpers._num(_hover_depth, global_position.y),
+		"buoy_bob_t": SaveHelpers._num(_buoy_bob_t, 0.0),
+		"breath_phase": SaveHelpers._num(_breath_phase, 0.0),
+		"breath_y_offset": SaveHelpers._num(_breath_y_offset, 0.0),
+		"spawn_settle_remaining": SaveHelpers._num(_spawn_settle_remaining, 0.0),
+		"spawn_settle_duration": SaveHelpers._num(_spawn_settle_duration,
+			FishSpawnSettle.FRESH_DURATION),
+		"spawn_depth_target_y": SaveHelpers._num(
+			_spawn_depth_target_y if is_finite(_spawn_depth_target_y) \
+				and not is_inf(_spawn_depth_target_y) else -9999.0, -9999.0),
 		"current_mode": int(current_mode),
 		"breed_cooldown": breed_cooldown,
 		"acclimation_remaining": _acclimation_remaining,
@@ -8775,6 +8904,25 @@ func apply_save_dict(d: Dictionary) -> void:
 	speed = SaveHelpers._num(d.get("speed", 0.0), 0.0)
 	if not is_finite(speed):
 		speed = 0.0
+	_hover_depth = SaveHelpers._num(d.get("hover_depth", global_position.y), global_position.y)
+	_buoy_bob_t = SaveHelpers._num(d.get("buoy_bob_t",
+		FishSpawnSettle.seeded_phase(id, 2) * TAU), 0.0)
+	_breath_phase = SaveHelpers._num(d.get("breath_phase",
+		FishSpawnSettle.seeded_phase(id, 3)), 0.0)
+	_breath_y_offset = SaveHelpers._num(d.get("breath_y_offset", 0.0), 0.0)
+	var saved_settle_duration: float = SaveHelpers._num(
+		d.get("spawn_settle_duration", FishSpawnSettle.FRESH_DURATION),
+		FishSpawnSettle.FRESH_DURATION)
+	var saved_settle_remaining: float = SaveHelpers._num(
+		d.get("spawn_settle_remaining", 0.0), 0.0)
+	var saved_fraction: float = clampf(
+		saved_settle_remaining / maxf(saved_settle_duration, 0.001), 0.0, 1.0)
+	_spawn_settle_duration = FishSpawnSettle.RESTORE_DURATION
+	_spawn_settle_remaining = FishSpawnSettle.RESTORE_DURATION \
+		* (saved_fraction if saved_settle_remaining > 0.0 else 1.0)
+	var saved_depth_target: float = SaveHelpers._num(
+		d.get("spawn_depth_target_y", -9999.0), -9999.0)
+	_spawn_depth_target_y = saved_depth_target if saved_depth_target > -9000.0 else INF
 	current_mode = int(d.get("current_mode", Mode.CRUISE)) as Mode
 	breed_cooldown = float(d.get("breed_cooldown", 0.0))
 	# Default: fully acclimated on load (assume reloaded fish are
@@ -8818,6 +8966,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	if global_position.length_squared() < 0.25 \
 			and is_finite(home_x) and is_finite(home_y) and is_finite(home_z):
 		global_position = Vector3(home_x, home_y, home_z)
+	if not is_finite(_hover_depth) or is_inf(_hover_depth):
+		_hover_depth = global_position.y
 	if not scale.is_finite() or scale.x <= 0.0:
 		scale = Vector3.ONE * _maturity_scale() * growth_factor
 	_reset_facing_from_direction(heading)

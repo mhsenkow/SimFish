@@ -2042,7 +2042,9 @@ func _sample_fish_spawn_pos(g: Dictionary = {}) -> Vector3:
 				continue
 			pt = clamp_xyz_in_tank(pt, 0.35)
 		else:
-			pt = clamp_xyz_in_tank(_sample_point_in_tank(y_min, y_max, 0.35), 0.35)
+			var target_y: float = lerpf(y_min, y_max, col_frac)
+			pt = clamp_xyz_in_tank(_sample_point_in_tank(
+				target_y - col * 0.08, target_y + col * 0.08, 0.35), 0.35)
 		if _spawn_pos_clear_of_fish(pt, body_r):
 			return pt
 		fallback = pt
@@ -9899,7 +9901,7 @@ func _spawn_fish_at(genome: Dictionary, pos: Vector3) -> void:
 					inward_xz = Vector3.FORWARD
 				var twist: float = randf_range(-PI * 0.4, PI * 0.4)
 				var biased: Vector3 = inward_xz.rotated(Vector3.UP, twist)
-				f.set("heading", biased)
+				f.set_spawn_heading(biased)
 	f.init_genome(genome)
 	sim.register_fish(f)
 	var mc := get_node_or_null("/root/MusicContext")

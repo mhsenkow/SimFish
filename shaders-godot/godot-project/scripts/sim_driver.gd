@@ -5059,6 +5059,7 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 		fry.maturity = Fish.MATURITY_FRY
 		fry.hunger = 0.25
 		fry.energy = 0.95
+		fry.begin_fry_spawn(mother.global_position.y, mother.heading)
 		register_fish(fry)
 		MindLexicon.inherit_from_parent(fry, mother)
 		fry._reclamp_territory_to_tank()
@@ -5093,6 +5094,7 @@ func _release_brooded_fry(mother: Fish, brood_genome: Dictionary, count: int) ->
 		fry.maturity = Fish.MATURITY_FRY
 		fry.hunger = 0.20
 		fry.energy = 0.95
+		fry.begin_fry_spawn(mother.global_position.y, mother.heading)
 		register_fish(fry)
 		MindLexicon.inherit_from_parent(fry, mother)
 		fry._reclamp_territory_to_tank()
@@ -5132,6 +5134,7 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 			fry.maturity = Fish.MATURITY_FRY
 			fry.hunger = 0.25
 			fry.energy = 0.95
+			fry.begin_fry_spawn(mother.global_position.y, mother.heading)
 			register_fish(fry)
 			fry._reclamp_territory_to_tank()
 		# Mother's belly is empty: extra exhaustion + small recovery cooldown.
@@ -5218,6 +5221,7 @@ func _hatch(e: FishEgg) -> void:
 	fry.maturity = Fish.MATURITY_FRY
 	fry.hunger = 0.3
 	fry.energy = 1.0
+	fry.begin_fry_spawn(e.global_position.y)
 	# LIVING_MOTION #89 — fry form tight nervous micro-schools on hatch.
 	if fry.swim_pattern in ["school", "shoal"] or fry.schooling_strength > 0.35:
 		fry.swim_pattern = "school"

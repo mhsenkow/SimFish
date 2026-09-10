@@ -127,7 +127,10 @@ static func buoyancy_step(y: float, hover_y: float, speed: float, target_spd: fl
 		dt: float, bob_t: float, profile: Dictionary) -> Dictionary:
 	var spring: float = float(profile.get("buoyancy", 0.2))
 	var bob_t_next: float = bob_t + dt * 0.55
-	var bob: float = sin(bob_t_next) * 0.022 * (1.0 - clampf(speed * 1.2, 0.0, 0.85))
+	var bob_amp: float = 0.022 * (1.0 - clampf(speed * 1.2, 0.0, 0.85))
+	# Return the oscillator displacement over this step. Adding the absolute
+	# sine sample every frame produces frame-rate-dependent vertical drift.
+	var bob: float = (sin(bob_t_next) - sin(bob_t)) * bob_amp
 	var sink: float = 0.0
 	if target_spd < 0.08 and speed < 0.12:
 		sink = -0.032 * dt
