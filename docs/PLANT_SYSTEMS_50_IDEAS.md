@@ -56,10 +56,11 @@ reference; implementation follows dependency order, not numeric order.
   add a narrow, view-dependent highlight around foliage crossing the waterline,
   with reduced intensity under the palette potato tier. — Shipped as a 13 cm
   bounded band with a 0.10 potato-tier cap. *S · M*
-- [ ] **5. Per-leaf sway desynchronization.** Add a stable phase value to baked
+- [x] **5. Per-leaf sway desynchronization.** Add a stable phase value to baked
   leaf instances so leaves within one crown ripple independently while
   preserving the existing per-plant sway personality. Extends Naturalism #204.
-  *M · M*
+  — Shipped in custom-data G using a deterministic geometry/order hash; material
+  count remains one per plant. *M · M*
 - [ ] **6. Spatial gust wave.** Extend the shipped CPU gust tilt
   (Plant Improvement #30 / Naturalism #202) with a bounded shader wave driven
   by gust origin, radius, and age, so disturbances propagate across nearby

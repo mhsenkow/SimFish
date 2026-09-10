@@ -37,10 +37,12 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
 varying float v_leaf_thickness;
+varying float v_leaf_phase;
 
 void vertex() {
 	v_inst_color = COLOR.rgb;
 	v_leaf_thickness = clamp(INSTANCE_CUSTOM.r, 0.0, 1.0);
+	v_leaf_phase = INSTANCE_CUSTOM.g * 6.2831853;
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_world_pos = world_pos;
 
@@ -48,15 +50,17 @@ void vertex() {
 	// Gentle power curve: flexible mid-column, soft tip — avoids squared tip whip.
 	float height_factor = pow(height_norm, 1.35) * tip_sway_mult;
 
-	float time_sway = TIME * sway_speed + sway_phase_offset;
-	float phase = world_pos.x * 0.4 + world_pos.z * 0.3 + sway_phase_offset * 0.37;
+	float time_sway = TIME * sway_speed + sway_phase_offset + v_leaf_phase;
+	float phase = world_pos.x * 0.4 + world_pos.z * 0.3
+		+ sway_phase_offset * 0.37 + v_leaf_phase;
 	float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
 	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor;
 	VERTEX.x += sway;
 	VERTEX.z += sway * 0.35;
 
-	float time_flutter = TIME * flutter_speed + sway_phase_offset * 1.15;
-	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0 + sway_phase_offset * 0.61;
+	float time_flutter = TIME * flutter_speed + sway_phase_offset * 1.15 + v_leaf_phase;
+	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0
+		+ sway_phase_offset * 0.61 + v_leaf_phase * 1.7;
 	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
 	VERTEX.y += flutter * height_factor * 0.3;
 }

@@ -1916,6 +1916,7 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 	var batch := _ensure_foliage_batch()
 	var leaf_xform: Transform3D = leaf_node.transform
 	var group: Array = []
+	var leaf_phase: float = _stable_leaf_phase(leaf_xform.origin, _leaf_groups.size())
 	var voxel_i: int = 0
 	for v in leaf_voxels:
 		var mi: MeshInstance3D = v as MeshInstance3D
@@ -1935,7 +1936,7 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
 		var handle: VoxelBatch.Handle = batch.add(
 			scaled, _voxel_depth_jitter(col, inst_xform.origin))
-		handle.set_custom_data(Color(_leaf_thickness(size, voxel_i, leaf_voxels.size()), 0.0, 0.0, 1.0))
+		handle.set_custom_data(Color(_leaf_thickness(size, voxel_i, leaf_voxels.size()), leaf_phase, 0.0, 1.0))
 		group.append(handle)
 		voxel_i += 1
 		mi.queue_free()
@@ -1953,6 +1954,7 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		ramp: Array, age_frac: float, mods: Dictionary) -> Array:
 	var batch := _ensure_foliage_batch()
 	var group: Array = []
+	var leaf_phase: float = _stable_leaf_phase(leaf_xform.origin, _leaf_groups.size())
 	var defer_upload: bool = template.size() >= LEAF_BAKE_DEFER_THRESHOLD
 	var voxel_i: int = 0
 	for v in template:
@@ -1964,7 +1966,7 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		var handle: VoxelBatch.Handle = batch.add_deferred(scaled, color) if defer_upload \
 			else batch.add(scaled, color)
 		handle.set_custom_data(Color(
-			_leaf_thickness(lv.size, voxel_i, template.size()), 0.0, 0.0, 1.0))
+			_leaf_thickness(lv.size, voxel_i, template.size()), leaf_phase, 0.0, 1.0))
 		group.append(handle)
 		voxel_i += 1
 	if defer_upload:
@@ -1984,6 +1986,14 @@ func _leaf_thickness(size: Vector3, voxel_i: int, voxel_count: int) -> float:
 	var geometric: float = clampf(sorted_dims[0] / maxf(VOXEL_SIZE * 0.55, 0.001), 0.0, 1.0)
 	var center: float = 1.0 - absf((float(voxel_i) + 0.5) / maxf(float(voxel_count), 1.0) * 2.0 - 1.0)
 	return clampf(maxf(geometric, center * 0.62), 0.0, 1.0)
+
+
+func _stable_leaf_phase(origin: Vector3, leaf_index: int) -> float:
+	# Pure hash of persistent geometry/order: stable across frames and save
+	# rebuilds, with one phase shared by all voxels belonging to a leaf.
+	var seed_value: float = origin.x * 12.9898 + origin.y * 37.719 \
+		+ origin.z * 19.913 + float(leaf_index) * 7.123 + float(asymmetry_seed) * 0.001
+	return fposmod(sin(seed_value) * 43758.5453, 1.0)
 
 
 func _process_leaf_bake_queue() -> void:
