@@ -110,10 +110,12 @@ rooted plants do not.*
   overhead can outweigh draw-call savings in small tanks. — Shipped behind
   12-plant/600-instance and 1.8 ms rebuild gates; 600 instances mirrored in
   1.4–1.7 ms while consolidating 23 draws in headless profiling. *L · M*
-- [ ] **18. Measured plant/fragment pooling.** Instrument spawn/free churn
+- [x] **18. Measured plant/fragment pooling.** Instrument spawn/free churn
   during trimming and die-offs; add bounded resettable pools only for node types
   shown to produce meaningful allocation spikes. Preserve `queue_free()` as the
-  fallback for oversized or incompatible instances. *L · S*
+  fallback for oversized or incompatible instances. — Shipped for measured
+  `PlantFragment` churn only, after an eight-finish gate, with a 32-node cap
+  and full mutable-state reset. *L · S*
 - [x] **19. MultiMesh buffer compaction.** When live handles remain below one
   quarter of capacity for a sustained interval, rebuild into a smaller buffer
   and remap handles atomically. Never compact during an active bake. — Shipped

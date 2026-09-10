@@ -2,6 +2,8 @@
 extends Node3D
 class_name PlantFragment
 
+signal finished(fragment: PlantFragment)
+
 const VOXEL_SIZE: float = 0.32
 const ROOT_TIME_S: float = 8.0
 const DRIFT_DECAY: float = 0.12
@@ -18,6 +20,7 @@ var _mesh: MeshInstance3D = null
 
 func init(from_pos: Vector3, g: Dictionary, ramp: Array, units: int,
 		velocity: Vector3) -> void:
+	visible = true
 	global_position = from_pos
 	genome = g.duplicate(true)
 	ramp_override = ramp.duplicate()
@@ -27,6 +30,8 @@ func init(from_pos: Vector3, g: Dictionary, ramp: Array, units: int,
 
 
 func _build_mesh() -> void:
+	if _mesh != null and is_instance_valid(_mesh):
+		_mesh.free()
 	_mesh = MeshInstance3D.new()
 	_mesh.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.7))
 	var c: Color = Color8(44, 90, 48)
@@ -63,14 +68,14 @@ func tick(dt: float, sim: SimDriver, world: Node) -> void:
 
 func _try_root(sim: SimDriver, world: Node) -> void:
 	if sim == null or world == null:
-		queue_free()
+		_finish()
 		return
 	if sim.substrate == null:
-		queue_free()
+		_finish()
 		return
 	var n: float = sim.substrate.get_at(global_position)
 	if n < SubstrateGrid.NUTRIENT_BASELINE + 0.06:
-		queue_free()
+		_finish()
 		return
 	if world.has_method("spawn_seedling"):
 		# Naturalism #361 — clonal rooting uses fragment-strength mutation.
@@ -79,7 +84,31 @@ func _try_root(sim: SimDriver, world: Node) -> void:
 		cfg["parent_lineage"] = String(genome.get("plant_name",
 			genome.get("parent_lineage", "Fragment")))
 		world.spawn_seedling(global_position, ramp_override, int(cfg.generation), cfg)
-	queue_free()
+	_finish()
+
+
+func _finish() -> void:
+	if finished.get_connections().is_empty():
+		queue_free()
+	else:
+		finished.emit(self)
+
+
+func reset_for_pool() -> void:
+	genome.clear()
+	ramp_override.clear()
+	biomass_units = 2
+	_age = 0.0
+	_rooting = false
+	_root_timer = 0.0
+	_velocity = Vector3.ZERO
+	position = Vector3.ZERO
+	rotation = Vector3.ZERO
+	scale = Vector3.ONE
+	visible = false
+	if _mesh != null and is_instance_valid(_mesh):
+		_mesh.free()
+	_mesh = null
 
 
 func to_save_dict() -> Dictionary:

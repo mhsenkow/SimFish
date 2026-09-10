@@ -88,6 +88,15 @@ var fish: Array[Fish] = []
 var shrimp: Array[Shrimp] = []
 var plants: Array[Plant] = []
 var plant_fragments: Array = []
+const PLANT_FRAGMENT_POOL_CAP: int = 32
+const PLANT_FRAGMENT_POOL_CHURN_GATE: int = 8
+const PLANT_FRAGMENT_CHURN_WINDOW_MSEC: int = 30000
+var _plant_fragment_pool: Array[PlantFragment] = []
+var _plant_fragment_spawns: int = 0
+var _plant_fragment_finishes: int = 0
+var _plant_fragment_allocations: int = 0
+var _plant_fragment_window_started_msec: int = 0
+var _plant_fragment_pooling_enabled: bool = false
 var waste: Array[WasteParticle] = []
 var eggs: Array[FishEgg] = []
 var algae: Array = []   # Algae nodes; untyped so the script loads even if
@@ -719,13 +728,62 @@ func dissolved_co2_level() -> float:
 
 func spawn_plant_fragment(at: Vector3, genome: Dictionary, ramp: Array,
 		units: int, velocity: Vector3) -> void:
-	var frag := PlantFragment.new()
-	if plants_root != null:
-		plants_root.add_child(frag)
+	_refresh_plant_fragment_churn_window()
+	_plant_fragment_spawns += 1
+	var frag: PlantFragment = null
+	if _plant_fragment_pooling_enabled and not _plant_fragment_pool.is_empty():
+		frag = _plant_fragment_pool.pop_back()
 	else:
+		frag = PlantFragment.new()
+		_plant_fragment_allocations += 1
+	if plants_root != null:
+		if frag.get_parent() != plants_root:
+			if frag.get_parent() != null:
+				frag.reparent(plants_root)
+			else:
+				plants_root.add_child(frag)
+	elif frag.get_parent() == null:
 		add_child(frag)
+	if not frag.finished.is_connected(_on_plant_fragment_finished):
+		frag.finished.connect(_on_plant_fragment_finished)
 	frag.init(at, genome, ramp, units, velocity)
 	plant_fragments.append(frag)
+
+
+func _on_plant_fragment_finished(frag: PlantFragment) -> void:
+	plant_fragments.erase(frag)
+	_plant_fragment_finishes += 1
+	_refresh_plant_fragment_churn_window()
+	if _plant_fragment_finishes >= PLANT_FRAGMENT_POOL_CHURN_GATE:
+		_plant_fragment_pooling_enabled = true
+	if _plant_fragment_pooling_enabled \
+			and _plant_fragment_pool.size() < PLANT_FRAGMENT_POOL_CAP:
+		frag.reset_for_pool()
+		_plant_fragment_pool.append(frag)
+	else:
+		frag.queue_free()
+
+
+func _refresh_plant_fragment_churn_window() -> void:
+	var now: int = Time.get_ticks_msec()
+	if _plant_fragment_window_started_msec == 0:
+		_plant_fragment_window_started_msec = now
+	elif now - _plant_fragment_window_started_msec > PLANT_FRAGMENT_CHURN_WINDOW_MSEC:
+		_plant_fragment_window_started_msec = now
+		_plant_fragment_spawns = 0
+		_plant_fragment_finishes = 0
+		_plant_fragment_pooling_enabled = false
+
+
+func plant_fragment_pool_stats() -> Dictionary:
+	return {
+		"spawns": _plant_fragment_spawns,
+		"finishes": _plant_fragment_finishes,
+		"allocations": _plant_fragment_allocations,
+		"pooled": _plant_fragment_pool.size(),
+		"enabled": _plant_fragment_pooling_enabled,
+		"cap": PLANT_FRAGMENT_POOL_CAP,
+	}
 
 
 # Light spectrum 0..1 (cool→warm). Used by plant red intensification:
@@ -6677,6 +6735,8 @@ func load_state(d: Dictionary) -> void:
 		var frag := PlantFragment.new()
 		if plants_root != null:
 			plants_root.add_child(frag)
+		if not frag.finished.is_connected(_on_plant_fragment_finished):
+			frag.finished.connect(_on_plant_fragment_finished)
 		frag.apply_save_dict(frag_dict)
 		plant_fragments.append(frag)
 
