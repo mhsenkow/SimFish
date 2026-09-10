@@ -269,6 +269,10 @@ var _brush_bend: Vector2 = Vector2.ZERO
 var _brush_bend_vel: Vector2 = Vector2.ZERO
 # Last-tick growth diagnostics — surfaced by tap-a-plant inspector (#21).
 var _growth_diag: Dictionary = {}
+var _stem_limit_history: PackedByteArray = PackedByteArray()
+const LIMIT_FACTOR_NAMES: Array[String] = [
+	"balanced", "light", "nutrient", "co2", "starch", "temperature", "transport",
+]
 var _gust_tilt: Vector2 = Vector2.ZERO
 var _mood_pulse_t: float = 0.0
 var _height_ghost_y: float = -1.0
@@ -671,6 +675,7 @@ func to_save_dict() -> Dictionary:
 		"_bulb_buried": _bulb_buried,
 		"_dormant_timer": _dormant_timer,
 		"_light_avg": _light_avg,
+		"_stem_limit_history": _stem_history_snapshot(),
 		"_internode_extension_y": _internode_extension_y,
 		"_root_reserve": _root_reserve,
 		"_shoot_reserve": _shoot_reserve,
@@ -722,6 +727,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	_bulb_buried = not not d.get("_bulb_buried", false)
 	_dormant_timer = float(d.get("_dormant_timer", 0.0))
 	_light_avg = float(d.get("_light_avg", _light_avg))
+	var saved_limits: Array = d.get("_stem_limit_history", [])
+	if not saved_limits.is_empty():
+		_stem_limit_history.resize(mini(saved_limits.size(), voxels.size()))
+		for i in _stem_limit_history.size():
+			var code: int = clampi(int(saved_limits[i]), 0, LIMIT_FACTOR_NAMES.size() - 1)
+			_stem_limit_history[i] = code
+			voxels[i].growth_limit_code = code
 	_internode_extension_y = maxf(0.0, float(d.get("_internode_extension_y", 0.0)))
 	_root_reserve = clampf(float(d.get("_root_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	_shoot_reserve = clampf(float(d.get("_shoot_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
@@ -885,7 +897,33 @@ func get_growth_inspector() -> Dictionary:
 		"limiting_factor": lim,
 		"limiting_text": lim_text,
 		"diag": _growth_diag.duplicate(),
+		"stem_history": get_stem_growth_history(),
 	}
+
+
+func get_stem_growth_history() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for i in voxels.size():
+		var code: int = voxels[i].growth_limit_code
+		out.append({
+			"height": voxels[i].local_pos.y,
+			"code": code,
+			"factor": LIMIT_FACTOR_NAMES[clampi(code, 0, LIMIT_FACTOR_NAMES.size() - 1)],
+		})
+	return out
+
+
+func _stem_history_snapshot() -> Array:
+	var out: Array = []
+	for handle in voxels:
+		out.append(handle.growth_limit_code)
+	return out
+
+
+func _current_limit_code() -> int:
+	var factor: String = String(_growth_diag.get("limiting_factor", "balanced"))
+	var index: int = LIMIT_FACTOR_NAMES.find(factor)
+	return index if index >= 0 else 0
 
 
 func _apply_sway_personality() -> void:
@@ -2615,7 +2653,9 @@ func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
 	# shared batch instance reveal and never allocates a voxel Node3D.
 	handle.transform = final_xform
 	handle.local_pos = final_xform.origin
+	handle.growth_limit_code = _current_limit_code()
 	voxels.append(handle)
+	_stem_limit_history.append(handle.growth_limit_code)
 	var tw := create_tween()
 	tw.tween_method(func(k: float) -> void:
 		if handle.alive:

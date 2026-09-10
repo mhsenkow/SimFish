@@ -33,6 +33,8 @@ class Handle extends RefCounted:
 	var alive: bool = true
 	var visible: bool = true
 	var lod_visible: bool = true
+	# One byte-scale code; plant history must not allocate a dictionary per voxel.
+	var growth_limit_code: int = 0
 
 	func set_color(c: Color) -> void:
 		if alive and batch != null:

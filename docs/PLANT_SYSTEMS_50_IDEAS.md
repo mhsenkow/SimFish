@@ -173,10 +173,10 @@ rooted plants do not.*
   while bright growth remains compact. — Shipped with future-only internode
   extension, bounded leaf investment, and legacy-zero sensitivity. Implements Naturalism #3/#176/#197.
   *M · L*
-- [ ] **30. Stem growth-history samples.** Store a compact limiting-factor code
+- [x] **30. Stem growth-history samples.** Store a compact limiting-factor code
   on each new stem handle and expose the vertical history in the plant
-  inspector. Extend the shipped live limiting-factor diagnostic rather than
-  recomputing old conditions. *M · M*
+  inspector. — Shipped as one integer per handle with save/load and an
+  on-demand inspector history; old conditions are never recomputed. *M · M*
 - [x] **31. Root/shoot resource reservoirs.** Split plant reserves into root
   uptake and shoot demand pools connected by a genome-defined transport rate,
   producing tip-first starvation when vascular capacity is insufficient. —
