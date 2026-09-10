@@ -166,9 +166,10 @@ rooted plants do not.*
 - [ ] **28. Auxin apical dominance.** Compute a cheap apex hormone value that
   decays down nodes and suppresses lateral release; apex loss immediately
   removes the source and frees nearby buds. Implements Naturalism #4. *M · L*
-- [ ] **29. Visible etiolation.** Convert accumulated low-light history into
+- [x] **29. Visible etiolation.** Convert accumulated low-light history into
   longer internodes and temporarily reduced leaf investment at placement time,
-  while bright growth remains compact. Implements Naturalism #3/#176/#197.
+  while bright growth remains compact. — Shipped with future-only internode
+  extension, bounded leaf investment, and legacy-zero sensitivity. Implements Naturalism #3/#176/#197.
   *M · L*
 - [ ] **30. Stem growth-history samples.** Store a compact limiting-factor code
   on each new stem handle and expose the vertical history in the plant

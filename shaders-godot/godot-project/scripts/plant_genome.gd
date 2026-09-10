@@ -70,6 +70,8 @@ const DEFAULTS: Dictionary = {
 	"ls_angle": 35.0,
 	"ls_ratio": 0.72,
 	"ls_depth": 2,
+	# Opt-in: zero preserves the pre-campaign fixed-internode morphology.
+	"etiolation_sensitivity": 0.0,
 }
 
 
@@ -160,6 +162,7 @@ static func from_plant(p: Plant) -> Dictionary:
 		"ls_angle": p.ls_angle,
 		"ls_ratio": p.ls_ratio,
 		"ls_depth": p.ls_depth,
+		"etiolation_sensitivity": p.etiolation_sensitivity,
 	})
 
 
@@ -210,6 +213,7 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.ls_angle = float(e.ls_angle)
 	p.ls_ratio = float(e.ls_ratio)
 	p.ls_depth = int(e.ls_depth)
+	p.etiolation_sensitivity = clampf(float(e.etiolation_sensitivity), 0.0, 1.0)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -256,6 +260,8 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		float(out.ls_angle) + _rng_signed(4.0) * sigma, 15.0, 55.0)
 	out.ls_ratio = clampf(
 		float(out.ls_ratio) + _rng_signed(0.04) * sigma, 0.45, 0.92)
+	out.etiolation_sensitivity = clampf(
+		float(out.etiolation_sensitivity) + _rng_signed(0.04) * sigma, 0.0, 1.0)
 	# Macro-mutations only on full-strength sexual paths.
 	if sigma >= 0.8 and randf() < 0.04 * sigma:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
@@ -306,6 +312,7 @@ static func drift_distance(g: Dictionary, baseline: Dictionary = {}) -> float:
 		["temp_opt", 0.75],
 		["ls_angle", 40.0],
 		["ls_ratio", 0.47],
+		["etiolation_sensitivity", 1.0],
 	]
 	for p in pairs:
 		var key: String = String(p[0])
@@ -337,6 +344,8 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.co2_demand = lerpf(float(ea.co2_demand), float(eb.co2_demand), 0.5)
 	out.palatability = lerpf(float(ea.palatability), float(eb.palatability), 0.5)
 	out.leaf_thickness = lerpf(float(ea.leaf_thickness), float(eb.leaf_thickness), 0.5)
+	out.etiolation_sensitivity = lerpf(
+		float(ea.etiolation_sensitivity), float(eb.etiolation_sensitivity), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
 	out.allelopathy_resistance = lerpf(
 		float(ea.allelopathy_resistance), float(eb.allelopathy_resistance), 0.5)

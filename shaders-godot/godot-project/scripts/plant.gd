@@ -125,6 +125,8 @@ var whorl_count: int = 3
 var ls_angle: float = 35.0
 var ls_ratio: float = 0.72
 var ls_depth: int = 2
+var etiolation_sensitivity: float = 0.0
+var _internode_extension_y: float = 0.0
 var _submersed_leaf_form: String = ""
 var plant_age_s: float = 0.0
 var _starch: float = 0.35
@@ -595,6 +597,7 @@ func to_save_dict() -> Dictionary:
 			"ls_angle": ls_angle,
 			"ls_ratio": ls_ratio,
 			"ls_depth": ls_depth,
+			"etiolation_sensitivity": etiolation_sensitivity,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -626,6 +629,7 @@ func to_save_dict() -> Dictionary:
 		"_bulb_buried": _bulb_buried,
 		"_dormant_timer": _dormant_timer,
 		"_light_avg": _light_avg,
+		"_internode_extension_y": _internode_extension_y,
 	}
 
 
@@ -670,6 +674,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	_bulb_buried = not not d.get("_bulb_buried", false)
 	_dormant_timer = float(d.get("_dormant_timer", 0.0))
 	_light_avg = float(d.get("_light_avg", _light_avg))
+	_internode_extension_y = maxf(0.0, float(d.get("_internode_extension_y", 0.0)))
 	# Loaded plants are established — no emersed-form display. Setting to
 	# 0 skips the size/color boost we apply to brand-new spawns.
 	_emersed_remaining = 0.0
@@ -1473,6 +1478,12 @@ func _grow_one() -> bool:
 	var rel: float = float(current_height) / float(maxi(1, max_height - 1))
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
 	var age_frac: float = 0.0  # new growth = age 0
+	# Etiolation is applied only to tissue placed from this point onward.
+	# Existing handles are never transformed, so a light change cannot teleport
+	# a mature stem. Old genomes have sensitivity=0 and retain exact spacing.
+	var etiolation: float = _current_etiolation()
+	var base_leaf_scale: float = leaf_size_mult
+	leaf_size_mult *= lerpf(1.0, 0.62, etiolation)
 
 	# Apply health-based color shift.
 	var effective_ramp: Array = ramp
@@ -1497,6 +1508,7 @@ func _grow_one() -> bool:
 	if not _pending_trim_nodes.is_empty():
 		var cut_y: int = _pending_trim_nodes.pop_front()
 		_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
+		leaf_size_mult = base_leaf_scale
 		return true
 
 	match leaf_form:
@@ -1530,6 +1542,7 @@ func _grow_one() -> bool:
 			_grow_shaped_leaf(effective_ramp, age_frac, rel, photo_offset, "lobed")
 		_:
 			_grow_column_voxel(effective_ramp, rel, photo_offset)
+	leaf_size_mult = base_leaf_scale
 	# Morphological elaboration from lineage + health:
 	# mature, thriving lineages occasionally add accessory modules
 	# (side fronds / branchlets / nodules) so architecture complexity
@@ -1540,6 +1553,7 @@ func _grow_one() -> bool:
 			_add_evolutionary_accessory(effective_ramp, rel, photo_offset)
 
 	current_height += 1
+	_internode_extension_y += VOXEL_SIZE * 0.65 * etiolation
 	_cast_root_shadow()
 
 	# Root growth: add a root every 3-4 stem voxels. As the plant matures
@@ -1590,10 +1604,17 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 		lean.x + photo_offset.x + _node_jitter(current_height, wander),
 		# Y spacing stays exactly one voxel: _recalc_height() reads the column
 		# index straight back out of local_y / VOXEL_SIZE.
-		current_height * VOXEL_SIZE + VOXEL_SIZE * 0.5,
+		current_height * VOXEL_SIZE + _internode_extension_y + VOXEL_SIZE * 0.5,
 		lean.y + photo_offset.y + _node_jitter(current_height + 7919, wander),
 	))
 	_register_stem_voxel(mi)
+
+
+func _current_etiolation() -> float:
+	if etiolation_sensitivity <= 0.0:
+		return 0.0
+	var low_light: float = clampf((0.48 - _light_avg) / 0.38, 0.0, 1.0)
+	return low_light * etiolation_sensitivity
 
 
 # Naturalism #761 — per-voxel hue/value jitter keyed off asymmetry_seed.
@@ -1788,7 +1809,7 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	var lean: Vector2 = _stem_lean_offset(rel)
 	leaf_node.position = _clamp_growth_offset(Vector3(
 		lean.x + photo_offset.x,
-		current_height * VOXEL_SIZE * 0.9 + VOXEL_SIZE * 0.5,
+		current_height * VOXEL_SIZE * 0.9 + _internode_extension_y + VOXEL_SIZE * 0.5,
 		lean.y + photo_offset.y,
 	))
 	# Set around the stem by the species' divergence angle, not a flip-flop.
@@ -1843,7 +1864,7 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	var lean_l: Vector2 = _stem_lean_offset(rel)
 	stem_mi.position = _clamp_growth_offset(Vector3(
 		lean_l.x + photo_offset.x,
-		current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.5,
+		current_height * VOXEL_SIZE * 0.85 + _internode_extension_y + VOXEL_SIZE * 0.5,
 		lean_l.y + photo_offset.y,
 	))
 	var stem_pos: Vector3 = stem_mi.position
@@ -1920,7 +1941,7 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 		var lean_s: Vector2 = _stem_lean_offset(rel) * 0.92
 		leaf_node.position = _clamp_growth_offset(Vector3(
 			lean_s.x + photo_offset.x,
-			current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.4,
+			current_height * VOXEL_SIZE * 0.85 + _internode_extension_y + VOXEL_SIZE * 0.4,
 			lean_s.y + photo_offset.y,
 		))
 		leaf_node.rotation.y = yaw
@@ -2031,7 +2052,7 @@ func _add_evolutionary_accessory(ramp: Array, rel: float, photo_offset: Vector2)
 	# n is a transient transform holder; accessory voxels bake into the foliage
 	# MultiMesh just like leaves.
 	var n := Node3D.new()
-	var y: float = current_height * VOXEL_SIZE * 0.82 + VOXEL_SIZE * 0.45
+	var y: float = current_height * VOXEL_SIZE * 0.82 + _internode_extension_y + VOXEL_SIZE * 0.45
 	# Accessories sit on the divergence spiral too, one half-step off the
 	# leaf at this node so they read as a branchlet beside it.
 	var acc_yaw: float = _phyllotaxis_yaw(current_height) + PI * 0.5
@@ -4692,7 +4713,7 @@ func _get_stem_top() -> float:
 		factor = 0.9
 	elif leaf_form == "lance":
 		factor = 0.85
-	return current_height * VOXEL_SIZE * factor
+	return current_height * VOXEL_SIZE * factor + _internode_extension_y
 
 
 # Quick world-space height of the top voxel (for fish to target nibbling).
