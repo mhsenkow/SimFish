@@ -1899,7 +1899,9 @@ func _ensure_foliage_batch() -> VoxelBatch:
 			_foliage_mat.set_shader_parameter("sway_phase_offset", _phase)
 			VoxelMat.register_foliage_mm(_foliage_mat)
 		_apply_sway_personality()
-		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
+		# RGBA custom data is the bounded per-leaf visual channel. R starts with
+		# geometric thickness; later channels remain available without materials.
+		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256, true)
 		_apply_visibility_range_to(_foliage_batch.mmi)
 	return _foliage_batch
 
@@ -1914,6 +1916,7 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 	var batch := _ensure_foliage_batch()
 	var leaf_xform: Transform3D = leaf_node.transform
 	var group: Array = []
+	var voxel_i: int = 0
 	for v in leaf_voxels:
 		var mi: MeshInstance3D = v as MeshInstance3D
 		if mi == null:
@@ -1930,7 +1933,11 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 				col = a
 		var inst_xform: Transform3D = leaf_xform * mi.transform
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
-		group.append(batch.add(scaled, _voxel_depth_jitter(col, inst_xform.origin)))
+		var handle: VoxelBatch.Handle = batch.add(
+			scaled, _voxel_depth_jitter(col, inst_xform.origin))
+		handle.set_custom_data(Color(_leaf_thickness(size, voxel_i, leaf_voxels.size()), 0.0, 0.0, 1.0))
+		group.append(handle)
+		voxel_i += 1
 		mi.queue_free()
 	batch.flush()
 	return group
@@ -1947,14 +1954,19 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 	var batch := _ensure_foliage_batch()
 	var group: Array = []
 	var defer_upload: bool = template.size() >= LEAF_BAKE_DEFER_THRESHOLD
+	var voxel_i: int = 0
 	for v in template:
 		var lv: LeafShapes.LeafVoxel = v
 		var inst_xform: Transform3D = leaf_xform * lv.xform
 		var scaled := Transform3D(inst_xform.basis.scaled(lv.size), inst_xform.origin)
 		var color: Color = _voxel_depth_jitter(
 			lv.base_color(ramp, age_frac, mods), inst_xform.origin)
-		group.append(batch.add_deferred(scaled, color) if defer_upload
-			else batch.add(scaled, color))
+		var handle: VoxelBatch.Handle = batch.add_deferred(scaled, color) if defer_upload \
+			else batch.add(scaled, color)
+		handle.set_custom_data(Color(
+			_leaf_thickness(lv.size, voxel_i, template.size()), 0.0, 0.0, 1.0))
+		group.append(handle)
+		voxel_i += 1
 	if defer_upload:
 		# The growth step that admitted this leaf pays for its first bounded
 		# chunk. Remaining chunks consume later tank-wide growth slots.
@@ -1962,6 +1974,16 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 	else:
 		batch.flush()
 	return group
+
+
+func _leaf_thickness(size: Vector3, voxel_i: int, voxel_count: int) -> float:
+	# Geometry provides the baseline; the middle of a leaf/petiole receives a
+	# small deterministic boost so its fake transmission cannot look paper-thin.
+	var sorted_dims: Array[float] = [absf(size.x), absf(size.y), absf(size.z)]
+	sorted_dims.sort()
+	var geometric: float = clampf(sorted_dims[0] / maxf(VOXEL_SIZE * 0.55, 0.001), 0.0, 1.0)
+	var center: float = 1.0 - absf((float(voxel_i) + 0.5) / maxf(float(voxel_count), 1.0) * 2.0 - 1.0)
+	return clampf(maxf(geometric, center * 0.62), 0.0, 1.0)
 
 
 func _process_leaf_bake_queue() -> void:

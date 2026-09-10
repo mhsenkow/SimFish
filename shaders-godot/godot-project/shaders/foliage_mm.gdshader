@@ -35,9 +35,11 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
+varying float v_leaf_thickness;
 
 void vertex() {
 	v_inst_color = COLOR.rgb;
+	v_leaf_thickness = clamp(INSTANCE_CUSTOM.r, 0.0, 1.0);
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_world_pos = world_pos;
 
@@ -95,9 +97,12 @@ void fragment() {
 	float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
 	float lit = max(daylight, tank_fixture_glow * 0.85);
 	// REAL_TANK_FIDELITY #121 — backlit translucency: veins darker, thin blade luminous.
-	float backlit = pow(max(-dot(n, VIEW), 0.0), 1.8) * backlight_boost * lit;
+	float thin_transmission = mix(1.0, 0.28, v_leaf_thickness);
+	float backlit = pow(max(-dot(n, VIEW), 0.0), 1.8) * backlight_boost * lit
+		* thin_transmission;
 	col = mix(col, col * 0.55 + sss_color * 0.85, backlit * 0.65);
-	col = mix(col, col * 0.7 + sss_color * 0.55, rim * sss_strength * (0.4 + 0.6 * lit));
+	col = mix(col, col * 0.7 + sss_color * 0.55,
+		rim * sss_strength * (0.4 + 0.6 * lit) * thin_transmission);
 	// Vein darkening through the luminous blade.
 	float vein = step(0.82, fract(v_world_pos.y * 7.0 + v_world_pos.x * 3.0));
 	col *= 1.0 - vein * backlit * 0.18;

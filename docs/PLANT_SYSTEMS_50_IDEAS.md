@@ -42,9 +42,10 @@ reference; implementation follows dependency order, not numeric order.
   through the current throttled global-uniform path. Keep it palette-stable and
   disable it at the lowest shader tier. — Shipped with the bounded two-wave
   voxel term, shared throttled updates, and a zero-cost low-tier gate. *Effort: M · Impact: L*
-- [ ] **2. Per-instance leaf thickness.** Enable MultiMesh custom data and pack
+- [x] **2. Per-instance leaf thickness.** Enable MultiMesh custom data and pack
   a normalized thickness value while baking each leaf voxel; use it to attenuate
-  backlight and the fake SSS rim on petioles and thick leaf centers. *M · M*
+  backlight and the fake SSS rim on petioles and thick leaf centers. — Shipped
+  in custom-data R with deterministic center weighting and no extra materials. *M · M*
 - [ ] **3. Resolve the dormant stem shader.** Measure the existing unused
   `stem_subsurface.gdshader` against the foliage material after stems are
   batched; wire it in if it improves stem readability without excess material
