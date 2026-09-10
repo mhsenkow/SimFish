@@ -18,7 +18,7 @@ func _initialize() -> void:
 	var world_source := FileAccess.get_file_as_string("res://scripts/world.gd")
 	_assert(failed, world_source.contains("reduced_motion_enabled()"),
 		"CPU gust respects reduced motion")
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_06_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_06_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

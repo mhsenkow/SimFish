@@ -1,5 +1,8 @@
 extends SceneTree
 
+class LineageWorld extends Node3D:
+	var plant_lineages := PlantLineageRegistry.new()
+
 
 func _init() -> void:
 	var failed: Array[String] = []
@@ -56,6 +59,41 @@ func _init() -> void:
 		"establishment recorded")
 	_assert(failed, int(entry.get("extinctions", 0)) == 1,
 		"local extinction recorded")
+
+	# Production-shaped ownership: World -> Plants -> Plant. Initialization,
+	# establishment, and death must resolve the registry through the container.
+	var world := LineageWorld.new()
+	root.add_child(world)
+	var plants := Node3D.new()
+	plants.name = "Plants"
+	world.add_child(plants)
+	var live := Plant.new()
+	live.plant_name = "Ledger Plant"
+	plants.add_child(live)
+	var live_genome := {
+		"plant_name": "Ledger Plant",
+		"species_id": "production_shape",
+		"is_epiphyte": true,
+		"from_seed_bank": true,
+		"lineage_cell": "3:4",
+	}
+	world.plant_lineages.record_germination(live_genome, "3:4")
+	live.init(0, live_genome)
+	live.init(0, live_genome) # spawn/load retries remain idempotent
+	var live_lid: String = PlantLineageRegistry.lineage_id_for(live_genome)
+	var live_entry: Dictionary = world.plant_lineages.get_entry(live_lid)
+	_assert(failed, int(live_entry.get("count", 0)) == 1,
+		"nested production plant registers exactly once")
+	_assert(failed, int(live_entry.get("establishments", 0)) == 1,
+		"nested production plant establishes exactly once")
+	live._on_death()
+	live._on_death()
+	live_entry = world.plant_lineages.get_entry(live_lid)
+	_assert(failed, int(live_entry.get("count", 0)) == 0
+			and int(live_entry.get("extinctions", 0)) == 1,
+		"nested production plant unregisters with one extinction")
+	world.free()
+
 	for i in 300:
 		registry.record_germination({
 			"species_id": "s%d" % i,

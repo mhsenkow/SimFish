@@ -16,7 +16,7 @@ func _initialize() -> void:
 	_assert(failed, VoxelMat._foliage_mat_cache.size() <= VoxelMat._CACHE_MAX,
 		"phase adds no material variants")
 	plant.free()
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_05_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_05_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

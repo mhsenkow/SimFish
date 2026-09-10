@@ -21,7 +21,7 @@ func _initialize() -> void:
 	_assert(failed, plant._senescence_batch._count == 1,
 		"one batch serves migrated leaf voxels")
 	plant.queue_free()
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_10_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_10_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

@@ -502,12 +502,13 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	if pk is Array:
 		_parent_keys = (pk as Array).duplicate()
 	# Naturalism #441 — register into the world's lineage book when present.
-	var w: Node = get_parent()
-	if w != null and w.get("plant_lineages") != null:
-		var reg: Variant = w.get("plant_lineages")
-		if reg is PlantLineageRegistry:
-			(reg as PlantLineageRegistry).register_genome(
-				PlantGenome.from_plant(self), get_instance_id())
+	var lineage_registry: PlantLineageRegistry = _resolve_lineage_registry()
+	if lineage_registry != null:
+		lineage_registry.register_genome(
+			PlantGenome.from_plant(self), get_instance_id())
+		if bool(params.get("from_seed_bank", false)):
+			lineage_registry.record_establishment(
+				get_instance_id(), String(params.get("lineage_cell", "")))
 	if params.has("emergent_growth"):
 		emergent_growth = not not params["emergent_growth"]
 	if params.has("monocarpic"):
@@ -535,6 +536,19 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	_warm_start_growth_vitals()
 	_apply_sway_personality()
 	_apply_rooted_visibility_ranges()
+
+
+func _resolve_lineage_registry() -> PlantLineageRegistry:
+	# Plants normally live at World/Plants/Plant, but save/load and tests may
+	# insert additional containers. Walk ownership rather than assuming the
+	# immediate parent is World.
+	var cursor: Node = self
+	while cursor != null:
+		var candidate: Variant = cursor.get("plant_lineages")
+		if candidate is PlantLineageRegistry:
+			return candidate as PlantLineageRegistry
+		cursor = cursor.get_parent()
+	return null
 
 
 # Fill in the leaf arrangement when the genome does not state one. Derived
@@ -1926,12 +1940,13 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 		var bm := mi.mesh as BoxMesh
 		if bm != null:
 			size = bm.size
-		var col: Color = Color(1, 1, 1, 1)
-		var sm := mi.material_override as ShaderMaterial
-		if sm != null:
-			var a = sm.get_shader_parameter("albedo")
-			if a != null:
-				col = a
+		var col: Color = mi.get_meta("foliage_base_color", Color(1, 1, 1, 1))
+		if not mi.has_meta("foliage_base_color"):
+			var sm := mi.material_override as ShaderMaterial
+			if sm != null:
+				var a = sm.get_shader_parameter("albedo")
+				if a != null:
+					col = a
 		var inst_xform: Transform3D = leaf_xform * mi.transform
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
 		var baked_color: Color = _apply_baked_self_occlusion(
@@ -4825,10 +4840,9 @@ func _on_death() -> void:
 	if sim_driver != null and sim_driver.substrate != null:
 		sim_driver.substrate.deposit_litter_at(global_position, 0.35)
 		sim_driver.substrate.note_disturbance_at(global_position, 0.2)
-	var world: Node = get_parent()
-	if world != null and world.get("plant_lineages") is PlantLineageRegistry:
-		(world.plant_lineages as PlantLineageRegistry).unregister_plant(
-			get_instance_id())
+	var lineage_registry: PlantLineageRegistry = _resolve_lineage_registry()
+	if lineage_registry != null:
+		lineage_registry.unregister_plant(get_instance_id())
 
 
 func _emerge_above_water() -> void:

@@ -20,7 +20,7 @@ func _initialize() -> void:
 		var source := FileAccess.get_file_as_string(path)
 		_assert(failed, source.contains("sun_edge") and source.contains("foliage_light_dir"),
 			"%s has restrained directional rim" % path)
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_13_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_13_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

@@ -169,14 +169,15 @@ func _initialize() -> void:
 
 
 # Bake one leaf twice into the same plant — once from the shared template,
-# once from the public node builder — and require identical handle counts and
-# instance transforms. Colors are compared loosely: the node path reads its
-# albedo back out of VoxelMat's snapped material cache, so it lands within one
-# cache-quantization step of the template path's exact boosted color.
+# once from the public node builder — and require identical handle counts,
+# instance transforms, and deterministic base recipes. Optional visual metadata
+# is checked at recipe construction, separately from geometry baking.
 func _check_form_parity(failed: Array[String], host: Node3D, form: String) -> void:
 	var p: Plant = _make(host, {"leaf_form": "column", "max_height": 8})
 	var mods: Dictionary = {"variegation": 0.0, "quilted": true, "wavy": true,
 		"tone_under": Color8(90, 60, 40), "iridescence": 0.3}
+	var geometry_mods: Dictionary = {
+		"variegation": 0.0, "quilted": true, "wavy": true}
 	var age: float = 0.42
 	var holder := Node3D.new()
 	holder.position = Vector3(0.4, 1.1, -0.3)
@@ -184,9 +185,30 @@ func _check_form_parity(failed: Array[String], host: Node3D, form: String) -> vo
 
 	var params: Dictionary = _params_for(form)
 	var tpl: Array = LeafShapes.get_leaf_template(form, params)
+	var recipe_nodes: Array = _nodes_for(form, params, age, mods)
+	for i in mini(tpl.size(), recipe_nodes.size()):
+		var expected: Color = (tpl[i] as LeafShapes.LeafVoxel).raw_color(
+			RAMP, age, mods)
+		var actual: Color = (recipe_nodes[i] as MeshInstance3D).get_meta(
+			"leaf_raw_color", Color.TRANSPARENT)
+		if not expected.is_equal_approx(actual):
+			failed.append("%s: node/template base recipe matches at voxel %d"
+				% [form, i])
+			break
+		var expected_base: Color = (tpl[i] as LeafShapes.LeafVoxel).base_color(
+			RAMP, age, mods)
+		var actual_base: Color = (recipe_nodes[i] as MeshInstance3D).get_meta(
+			"foliage_base_color", Color.TRANSPARENT)
+		if not expected_base.is_equal_approx(actual_base):
+			failed.append("%s: node/template deterministic base transform matches at voxel %d"
+				% [form, i])
+			break
+	for node in recipe_nodes:
+		(node as Node).free()
 	var from_tpl: Array = p._bake_leaf_template(
-		holder.transform, tpl, RAMP, age, mods)
-	var from_nodes: Array = p._bake_leaf(holder, _nodes_for(form, params, age, mods))
+		holder.transform, tpl, RAMP, age, geometry_mods)
+	var from_nodes: Array = p._bake_leaf(
+		holder, _nodes_for(form, params, age, geometry_mods))
 
 	var ok: bool = from_tpl.size() == from_nodes.size() and not from_tpl.is_empty()
 	if not ok:
@@ -195,7 +217,6 @@ func _check_form_parity(failed: Array[String], host: Node3D, form: String) -> vo
 	else:
 		var worst_pos: float = 0.0
 		var worst_basis: float = 0.0
-		var worst_col: float = 0.0
 		for i in from_tpl.size():
 			var a: VoxelBatch.Handle = from_tpl[i]
 			var b: VoxelBatch.Handle = from_nodes[i]
@@ -203,17 +224,11 @@ func _check_form_parity(failed: Array[String], host: Node3D, form: String) -> vo
 			for axis in 3:
 				worst_basis = maxf(worst_basis,
 					(a.transform.basis[axis] - b.transform.basis[axis]).length())
-			worst_col = maxf(worst_col, maxf(absf(a.base_color.r - b.base_color.r),
-				maxf(absf(a.base_color.g - b.base_color.g),
-					absf(a.base_color.b - b.base_color.b))))
 		if worst_pos > 0.0001:
 			failed.append("%s: instance origins match (worst %.5f)" % [form, worst_pos])
 		if worst_basis > 0.0001:
 			failed.append("%s: instance scale/rotation matches (worst %.5f)"
 				% [form, worst_basis])
-		if worst_col > 0.05:
-			failed.append("%s: base colors agree within the material cache snap"
-				% form + " (worst %.3f)" % worst_col)
 	holder.free()
 	p.free()
 

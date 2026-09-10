@@ -5448,10 +5448,9 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		lineage_cell = sim.substrate.cell_key_at(sp)
 	if bool(seed_config.get("from_seed_bank", false)):
 		plant_lineages.record_germination(child_cfg, lineage_cell)
+		child_cfg["lineage_cell"] = lineage_cell
 	# Initialize the child plant using the parent's genetic traits
 	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
-	if bool(seed_config.get("from_seed_bank", false)):
-		plant_lineages.record_establishment(p.get_instance_id(), lineage_cell)
 	if child_cfg.has("generation"):
 		p.generation = int(child_cfg["generation"])
 	if child_cfg.has("parent_lineage"):

@@ -25,7 +25,7 @@ func _initialize() -> void:
 	_assert(failed, source.contains("shader_perf_tier() < 2"),
 		"lowest tier disables canopy attenuation")
 	plant.queue_free()
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_11_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_11_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

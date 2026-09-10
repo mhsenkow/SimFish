@@ -32,7 +32,7 @@ func _initialize() -> void:
 		and not source.contains("_pearling_particles.name = \"Pearling\""),
 		"pearling uses shared world pool only")
 	plant.queue_free()
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_12_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_12_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

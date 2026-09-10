@@ -312,8 +312,14 @@ static func _nodes_from_template(tpl: Array, ramp: Array, age_frac: float,
 		var lv: LeafVoxel = v
 		var mi := MeshInstance3D.new()
 		mi.mesh = VoxelMat.get_box(lv.size)
-		mi.material_override = VoxelMat.make_foliage(
-			lv.raw_color(ramp, age_frac, mods))
+		var raw_color: Color = lv.raw_color(ramp, age_frac, mods)
+		# The shared material cache is deliberately color-quantized. Preserve
+		# the exact deterministic recipe alongside the render material so the
+		# node bake and data-template bake cannot diverge based on whichever
+		# nearby color first occupied a cache bucket.
+		mi.set_meta("leaf_raw_color", raw_color)
+		mi.set_meta("foliage_base_color", VoxelMat.boost_foliage_color(raw_color))
+		mi.material_override = VoxelMat.make_foliage(raw_color)
 		mi.transform = lv.xform
 		nodes.append(mi)
 	return nodes

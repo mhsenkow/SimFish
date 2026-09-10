@@ -30,7 +30,7 @@ func _initialize() -> void:
 	_assert(failed, source.contains("red_potential * v_light_dose"),
 		"shader combines dose with species red potential")
 	host.queue_free()
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_09_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_09_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

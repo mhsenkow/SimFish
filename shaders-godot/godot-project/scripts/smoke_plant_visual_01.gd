@@ -33,6 +33,7 @@ func _initialize() -> void:
 	if failed.is_empty():
 		print("SMOKE_PLANT_VISUAL_01_OK")
 		quit(0)
+		return
 	for message in failed:
 		push_error(message)
 	quit(1)

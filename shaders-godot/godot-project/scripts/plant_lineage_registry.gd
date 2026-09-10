@@ -6,6 +6,7 @@ class_name PlantLineageRegistry
 
 var _by_id: Dictionary = {}  # lineage_id -> Dictionary
 var _plant_lineage: Dictionary = {}  # plant instance_id -> lineage_id
+var _established_plants: Dictionary = {}  # live instance_id -> true
 const EVENT_HISTORY_CAP: int = 256
 var _events: Array = []
 var _event_seq: int = 0
@@ -24,6 +25,11 @@ static func lineage_id_for(g: Dictionary) -> String:
 
 func register_genome(g: Dictionary, plant_instance_id: int = 0) -> String:
 	var lid: String = lineage_id_for(g)
+	if plant_instance_id != 0 and _plant_lineage.has(plant_instance_id):
+		var registered_lid: String = String(_plant_lineage[plant_instance_id])
+		if registered_lid == lid:
+			return lid
+		unregister_plant(plant_instance_id)
 	var gen: int = int(g.get("generation", 0))
 	var drift: float = PlantGenome.drift_distance(g)
 	if not _by_id.has(lid):
@@ -57,6 +63,7 @@ func unregister_plant(plant_instance_id: int) -> void:
 		return
 	var lid: String = String(_plant_lineage[plant_instance_id])
 	_plant_lineage.erase(plant_instance_id)
+	_established_plants.erase(plant_instance_id)
 	if not _by_id.has(lid):
 		return
 	var e: Dictionary = _by_id[lid]
@@ -78,10 +85,13 @@ func record_germination(g: Dictionary, cell_key: String = "") -> String:
 func record_establishment(plant_instance_id: int, cell_key: String = "") -> void:
 	if not _plant_lineage.has(plant_instance_id):
 		return
+	if _established_plants.has(plant_instance_id):
+		return
 	var lid: String = String(_plant_lineage[plant_instance_id])
 	var e: Dictionary = _by_id.get(lid, {})
 	if e.is_empty():
 		return
+	_established_plants[plant_instance_id] = true
 	e.establishments = int(e.get("establishments", 0)) + 1
 	_append_event("establishment", lid, cell_key)
 

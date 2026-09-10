@@ -15,7 +15,7 @@ func _initialize() -> void:
 	VoxelMat.set_shader_perf_tier(0)
 	_assert(failed, float(mat.get_shader_parameter("wet_sheen_strength")) >= 0.30,
 		"full tier restores wet sheen")
-	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_04_OK"); quit(0)
+	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_04_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
 

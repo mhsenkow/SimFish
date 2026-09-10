@@ -24,6 +24,7 @@ const SPHERE_RADIUS: float = 1.55
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
 const SnailShell = preload("res://scripts/snail_shell.gd")
+const ProceduralPlantSpecies = preload("res://scripts/procedural_plant_species.gd")
 
 enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING, CLAM }
 
@@ -857,14 +858,7 @@ func _randomize() -> void:
 			_genome["appetite"] = randf_range(0.6, 1.6)
 			_genome["max_age_s"] = float(randi_range(360, 1100))
 		Kind.PLANT:
-			_genome["_ramp_base"] = Color.from_hsv(randf_range(0.2, 0.45), randf_range(0.5, 1.0), randf_range(0.4, 0.8))
-			_genome["_ramp_tip"] = Color.from_hsv(randf_range(0.12, 0.5), randf_range(0.4, 1.0), randf_range(0.7, 1.0))
-			_genome["max_height"] = float(randi_range(6, 28))
-			_genome["growth_rate"] = randf_range(0.1, 0.5)
-			_genome["sway_amplitude"] = randf_range(0.05, 0.8)
-			_genome["leaf_length"] = float(randi_range(2, 11))
-			_genome["max_roots"] = float(randi_range(3, 11))
-			_genome["leaf_form"] = LEAF_FORMS[randi() % LEAF_FORMS.size()][1]
+			_randomize_plant()
 		Kind.CORAL:
 			_genome["_ramp_base"] = Color.from_hsv(randf_range(0.0, 0.12), randf_range(0.45, 0.95), randf_range(0.45, 0.85))
 			_genome["_ramp_tip"] = Color.from_hsv(randf_range(0.05, 0.18), randf_range(0.35, 0.85), randf_range(0.75, 1.0))
@@ -894,6 +888,17 @@ func _randomize() -> void:
 			_genome["max_age_s"] = float(randi_range(180, 360))
 	_rebuild_controls()
 	_reload_preview()
+
+
+func _randomize_plant(seed: int = -1) -> void:
+	# Generated designer plants are the intentional production consumer of the
+	# constrained sampler. Hand-authored library stock remains exact.
+	_genome = ProceduralPlantSpecies.sample(seed)
+	var ramp: Array = _genome.get("ramp_override", [])
+	if ramp.size() == 6:
+		_genome["_ramp_base"] = ramp[0]
+		_genome["_ramp_tip"] = ramp[5]
+	_genome.erase("ramp_override")
 
 
 # ---- Spawning into the tank -------------------------------------------------

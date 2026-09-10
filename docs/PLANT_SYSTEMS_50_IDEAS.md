@@ -124,7 +124,8 @@ rooted plants do not.*
   their private render batches. Gate the feature on profiling because transfer
   overhead can outweigh draw-call savings in small tanks. — Shipped behind
   12-plant/600-instance and 1.8 ms rebuild gates; 600 instances mirrored in
-  1.4–1.7 ms while consolidating 23 draws in headless profiling. *L · M*
+  1.42–1.84 ms while consolidating 23 draws in headless profiling, exercising
+  both the enabled path and the over-budget fallback. *L · M*
 - [x] **18. Measured plant/fragment pooling.** Instrument spawn/free churn
   during trimming and die-offs; add bounded resettable pools only for node types
   shown to produce meaningful allocation spikes. Preserve `queue_free()` as the
