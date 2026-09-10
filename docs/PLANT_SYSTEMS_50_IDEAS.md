@@ -258,10 +258,12 @@ normal flowering.*
   inherit `Plant`. — Shipped with capability adapters, coarse nutrient uptake,
   litter-returning death, grazing, and unified photosynthetic accounting.
   *L · L*
-- [ ] **46. Complete hardscape epiphyte placement.** Extend the shipped
+- [x] **46. Complete hardscape epiphyte placement.** Extend the shipped
   layout-time epiphyte placement to manual/library/autonomous spawn paths and
   validate attachment against rock/wood surfaces before substrate fallback.
-  Extends Naturalism #129/#662. *M · M*
+  — Shipped with shared bounded rock/wood lookup across initial, library, and
+  autonomous paths plus rooted substrate fallback. Extends Naturalism
+  #129/#662. *M · M*
 - [x] **47. Family-aware allelopathy.** Store a bounded emitter-family mix per
   affected cell and add heritable family resistance, preventing emitters and
   close kin from suffering the same penalty as competitors. Extends

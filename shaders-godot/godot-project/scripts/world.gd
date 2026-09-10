@@ -14,6 +14,7 @@ const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
 const PlantEcologyAdapterScript = preload("res://scripts/plant_ecology_adapter.gd")
 const SeedMoteDynamics = preload("res://scripts/seed_mote_dynamics.gd")
+const EpiphyteAttachment = preload("res://scripts/epiphyte_attachment.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -5163,6 +5164,9 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 		var host: Vector3 = _find_nearest_hardscape_anchor(pos)
 		if host != Vector3.ZERO:
 			pos = host
+		else:
+			is_epiphyte = false
+			pos = spawn_position_on_floor(pos.x, pos.z)
 	else:
 		var fit: Vector2 = clamp_plant_site(pos.x, pos.z, reach, 0.28)
 		if not fits_plant_at(fit.x, fit.y, reach, 0.28):
@@ -5311,48 +5315,21 @@ func _apply_template_canvas(template_name: String) -> void:
 # attachment, or Vector3.ZERO if no hardscape is available. Used by both
 # spawn_library_entry and _spawn_plant for Anubias/Buce/Java fern/moss.
 func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
+	var surfaces: Array = []
 	for p_v in _build_epiphyte_anchors:
-		if not (p_v is Vector3):
-			continue
-		var p: Vector3 = p_v
-		if p.distance_squared_to(near_pos) < 36.0:
-			return p + Vector3(0, 0.12, 0)
-	for p_v in _build_shelter_points:
-		if not (p_v is Vector3):
-			continue
-		var sp: Vector3 = p_v
-		if sp.distance_squared_to(near_pos) < 25.0:
-			return sp + Vector3(0, 0.2, 0)
-	if _driftwood_voxels.is_empty():
-		var hs: Node = get_node_or_null("Hardscape")
-		if hs == null:
-			return Vector3.ZERO
-		# Scan hardscape root children as fallback (rocks are stored there).
-		var best_stone: MeshInstance3D = null
-		var best_stone_d2: float = INF
-		for c in hs.get_children():
-			if not (c is MeshInstance3D):
-				continue
-			var d2: float = (c.global_position - near_pos).length_squared()
-			if d2 < best_stone_d2:
-				best_stone_d2 = d2
-				best_stone = c
-		return Vector3.ZERO if best_stone == null else best_stone.global_position
-	# Driftwood: pick the closest top-side voxel so the rhizome rests on
-	# the wood surface and the leaves emerge upward.
-	var best: MeshInstance3D = null
-	var best_d2: float = INF
+		if p_v is Vector3:
+			surfaces.append({"position": p_v, "kind": "wood"})
 	for mi in _driftwood_voxels:
-		if mi == null or not is_instance_valid(mi):
-			continue
-		var d2: float = (mi.global_position - near_pos).length_squared()
-		if d2 < best_d2:
-			best_d2 = d2
-			best = mi
-	if best == null:
+		if mi != null and is_instance_valid(mi):
+			surfaces.append({"position": mi.global_position, "kind": "wood"})
+	for mi in _rock_voxels:
+		if mi != null and is_instance_valid(mi):
+			surfaces.append({"position": mi.global_position, "kind": "rock"})
+	var attachment: Dictionary = EpiphyteAttachment.nearest_valid(near_pos, surfaces)
+	if attachment.is_empty():
 		return Vector3.ZERO
-	# Offset slightly upward so the epiphyte rhizome sits on top of the wood.
-	return best.global_position + Vector3(0, 0.25, 0)
+	var offset: float = 0.25 if String(attachment.kind) == "wood" else 0.20
+	return (attachment.position as Vector3) + Vector3(0, offset, 0)
 
 
 func propagate_plant(source: Plant) -> bool:
@@ -5389,7 +5366,17 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		seed_reach = maxf(seed_reach, float(seed_config["max_horizontal_extent"]) + 0.08)
 	var fit: Vector2 = clamp_plant_site(pos.x, pos.z, seed_reach, 0.25)
 	var sp: Vector3 = spawn_position_on_floor(fit.x, fit.y)
-	if not fits_plant_at(sp.x, sp.z, seed_reach, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45):
+	var epiphyte_attached: bool = false
+	if bool(seed_config.get("is_epiphyte", false)):
+		var anchor: Vector3 = _find_nearest_hardscape_anchor(pos)
+		if anchor != Vector3.ZERO:
+			sp = anchor
+			epiphyte_attached = true
+		else:
+			seed_config = seed_config.duplicate(true)
+			seed_config["is_epiphyte"] = false
+	if not epiphyte_attached and (not fits_plant_at(
+			sp.x, sp.z, seed_reach, 0.25) or _is_hardscape_occupied(sp.x, sp.z, 0.45)):
 		# Autonomous runner spread self-limits: a crowded target simply yields no
 		# daughter, so carpets stop once their zone is full instead of scattering
 		# new plants across open substrate (the old behavior that walled the tank).
@@ -9760,6 +9747,7 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 					spawn_pos = anchor
 				else:
 					push_warning("[walstad_loom] epiphyte spawn has no hardscape — rooting in substrate")
+					cfg["is_epiphyte"] = false
 			var max_h: int = int(cfg.get("max_height", cfg.get("max_h", 12)))
 			var col: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.5)
 			cfg["spawn_initial_height"] = maxi(1, mini(max_h,
