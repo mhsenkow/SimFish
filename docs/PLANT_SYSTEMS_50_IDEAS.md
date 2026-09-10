@@ -206,9 +206,10 @@ rooted plants do not.*
   to the shipped timed/rich-substrate bulb resprout path, with a maximum dormant
   duration safety valve. — Shipped with opt-in windows, maximum dormancy, and
   unchanged legacy rich-substrate fallback. Extends Naturalism #260/#490. *M · M*
-- [ ] **38. Constrained procedural species.** Sample new genomes from correlated
+- [x] **38. Constrained procedural species.** Sample new genomes from correlated
   ecological archetypes and reject implausible trait combinations before
-  mutation, keeping hand-authored `RealSpeciesLibrary` entries as anchors.
+  mutation, keeping hand-authored `RealSpeciesLibrary` entries as anchors. —
+  Shipped with fixed-seed sampling, eight-attempt rejection, and anchored fallback.
   *L · L*
 
 ## Reproduction & Ecology (39–50)
