@@ -227,10 +227,11 @@ normal flowering.*
   — Shipped with sparse bounded pore-water exchange, root uptake, grounded
   deficiency cues, and legacy-safe defaults. Extends GOALS H #58 /
   Naturalism #907. *L · L*
-- [ ] **43. Mulm mineralization loop.** Route shed/dead plant biomass into a
+- [x] **43. Mulm mineralization loop.** Route shed/dead plant biomass into a
   per-cell litter/mulm reservoir that settles and releases nutrients over time
-  instead of returning a flat amount instantly. Extends Naturalism #272/#805.
-  *L · L*
+  instead of returning a flat amount instantly. — Shipped with bounded
+  plant-detritus settling, mass-conserving mineralization, and pre-reservoir
+  save fallback. Extends Naturalism #272/#805. *L · L*
 - [ ] **44. Reproductive cattail puffs.** Turn `_puff_seed()` into bounded
   surface-flow seed motes that attempt rooting at valid shoreline cells, using
   the common capacity and seed-bank rules. Completes the existing stub and

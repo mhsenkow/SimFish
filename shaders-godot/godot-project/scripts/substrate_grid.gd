@@ -35,6 +35,8 @@ const ROOT_O2_MAX: float = 1.0
 const ANAEROBIC_MAX: float = 1.0
 const IRON_MAX: float = 1.5
 const CO2_MAX: float = 1.2
+const MULM_MAX: float = 8.0
+const MULM_MINERALIZE_RATE: float = 0.0025
 const IRON_LEGACY_DEFAULT: float = 0.7
 const CO2_LEGACY_DEFAULT: float = 0.42
 const CHANNEL_DIFFUSION: float = 0.06
@@ -107,6 +109,7 @@ var root_oxygen: Array = []
 var anaerobic_gas: Array = []
 var iron_availability: Array = []
 var co2_availability: Array = []
+var mulm: Array = []
 var _dirty_channels: Dictionary = {}
 var _next_dirty_channels: Dictionary = {}
 # Scratch buffer for diffusion. Preallocated once in init() so tick()
@@ -147,6 +150,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(anaerobic_gas)
 	_init_channel_grid(iron_availability, IRON_LEGACY_DEFAULT)
 	_init_channel_grid(co2_availability, CO2_LEGACY_DEFAULT)
+	_init_channel_grid(mulm)
 	_dirty_channels.clear()
 
 
@@ -286,6 +290,21 @@ func consume_co2_at(world_pos: Vector3, amount: float) -> float:
 	return _consume_availability_at(co2_availability, world_pos, amount)
 
 
+func get_mulm_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return mulm[c.x][c.y]
+
+
+func deposit_litter_at(world_pos: Vector3, biomass: float) -> float:
+	var c := _cell_at(world_pos)
+	var room: float = MULM_MAX - float(mulm[c.x][c.y])
+	var accepted: float = minf(maxf(0.0, biomass), maxf(0.0, room))
+	if accepted > 0.0:
+		mulm[c.x][c.y] = float(mulm[c.x][c.y]) + accepted
+		_mark_channel_dirty(c)
+	return accepted
+
+
 func _consume_availability_at(grid: Array, world_pos: Vector3, amount: float) -> float:
 	var c := _cell_at(world_pos)
 	var taken: float = minf(maxf(0.0, amount), float(grid[c.x][c.y]))
@@ -347,6 +366,7 @@ func tick_channels(dt: float) -> void:
 	_tick_channel_field(anaerobic_gas, ANAEROBIC_MAX, dt)
 	_tick_availability_field(iron_availability, IRON_MAX)
 	_tick_availability_field(co2_availability, CO2_MAX)
+	_tick_mulm(dt)
 	# Re-dirty cells with residual values for slow diffusion
 	_next_dirty_channels.clear()
 	for cell_v in _dirty_channels.keys():
@@ -356,7 +376,8 @@ func tick_channels(dt: float) -> void:
 				or root_oxygen[cell.x][cell.y] > 0.01 \
 				or anaerobic_gas[cell.x][cell.y] > 0.01 \
 				or absf(iron_availability[cell.x][cell.y] - IRON_LEGACY_DEFAULT) > 0.01 \
-				or absf(co2_availability[cell.x][cell.y] - CO2_LEGACY_DEFAULT) > 0.01:
+				or absf(co2_availability[cell.x][cell.y] - CO2_LEGACY_DEFAULT) > 0.01 \
+				or mulm[cell.x][cell.y] > 0.001:
 			_next_dirty_channels[cell] = true
 	var swap: Dictionary = _dirty_channels
 	_dirty_channels = _next_dirty_channels
@@ -380,6 +401,23 @@ func _tick_availability_field(grid: Array, max_val: float) -> void:
 		grid[cell.x][cell.y] = clampf(
 			current + (sum / maxf(count, 1.0) - current) * CHANNEL_DIFFUSION,
 			0.0, max_val)
+
+
+func _tick_mulm(dt: float) -> void:
+	for cell_v in _dirty_channels.keys():
+		var cell: Vector2i = cell_v
+		var reservoir: float = float(mulm[cell.x][cell.y])
+		if reservoir <= 0.0:
+			continue
+		var released: float = minf(
+			reservoir, reservoir * MULM_MINERALIZE_RATE * maxf(0.0, dt))
+		var nutrient_room: float = NUTRIENT_MAX - float(nutrients[cell.x][cell.y])
+		released = minf(released, maxf(0.0, nutrient_room))
+		if released <= 0.0:
+			continue
+		mulm[cell.x][cell.y] = reservoir - released
+		nutrients[cell.x][cell.y] = float(nutrients[cell.x][cell.y]) + released
+		_mark_dirty(cell)
 
 
 func tick_night_memory(dt: float, sim) -> void:
@@ -555,7 +593,8 @@ func to_save_dict() -> Dictionary:
 		"anaerobic_flat": _pack_channel_flat(anaerobic_gas),
 		"iron_availability_flat": _pack_channel_flat(iron_availability),
 		"co2_availability_flat": _pack_channel_flat(co2_availability),
-		"schema_version": 2,
+		"mulm_flat": _pack_channel_flat(mulm),
+		"schema_version": 3,
 	}
 
 
@@ -595,3 +634,6 @@ func apply_save_dict(d: Dictionary) -> void:
 	# leaves legacy-equivalent defaults when these fields are absent.
 	_apply_channel_flat(iron_availability, d.get("iron_availability_flat", []), sx, sz)
 	_apply_channel_flat(co2_availability, d.get("co2_availability_flat", []), sx, sz)
+	# Pre-v3 saves already realized their flat detritus return, so an absent
+	# reservoir correctly migrates to zero rather than duplicating nutrients.
+	_apply_channel_flat(mulm, d.get("mulm_flat", []), sx, sz)

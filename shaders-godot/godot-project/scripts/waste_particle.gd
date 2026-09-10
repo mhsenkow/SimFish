@@ -16,6 +16,7 @@ const KIND_FISH: int = 0
 const KIND_SHRIMP: int = 1
 const KIND_SNAIL: int = 2
 const KIND_FOOD: int = 3
+const KIND_PLANT: int = 4
 
 # Player-dropped food variants (only meaningful when kind == KIND_FOOD).
 const FOOD_SUB_FLAKE: int = 0   # floats on surface — top feeders rush
@@ -111,6 +112,9 @@ func init(value: float, top_y: float, particle_kind: int = KIND_FISH,
 				_:
 					voxel_size = 0.22
 					color = Color8(255, 200, 110)  # sinking pellet — bright enough to spot
+		KIND_PLANT:
+			voxel_size = 0.10
+			color = Color8(92, 78, 43)
 		_:
 			voxel_size = 0.12
 			color = Color8(60, 45, 30)  # standard fish brown
@@ -223,7 +227,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 				if n_total > 6.0:
 					deposit *= 0.55
 			last_deposit_amount = deposit
-			substrate.add_at(position, deposit)
+			if kind == KIND_PLANT and substrate.has_method("deposit_litter_at"):
+				substrate.deposit_litter_at(position, deposit)
+			else:
+				substrate.add_at(position, deposit)
 			if randf() < 0.17 and w != null and w.has_method("add_mulm_voxel"):
 				w.add_mulm_voxel(global_position)
 	else:

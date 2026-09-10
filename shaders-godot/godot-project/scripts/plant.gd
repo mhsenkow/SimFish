@@ -3782,8 +3782,12 @@ func _spawn_decay_waste(at: Vector3) -> void:
 	if sim_driver == null:
 		return
 	if sim_driver.has_method("_spawn_waste"):
-		# WasteParticle.KIND_FISH = 0 used as generic plant detritus.
-		sim_driver._spawn_waste(at, 0.06, 0)
+		# The visual settles before entering mulm; it no longer grants an
+		# immediate dissolved-nutrient pulse.
+		sim_driver._spawn_waste(at, 0.06, WasteParticle.KIND_PLANT)
+	elif sim_driver.get("substrate") != null \
+			and sim_driver.substrate.has_method("deposit_litter_at"):
+		sim_driver.substrate.deposit_litter_at(at, 0.06)
 
 
 # ---- Leaf flutter ----
