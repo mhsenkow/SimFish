@@ -198,9 +198,10 @@ rooted plants do not.*
   a configurable fraction, restart a scaled copy of the growth program from a
   surviving node rather than merely resuming the severed axis. — Shipped once
   per bounded damage episode from a surviving mid-axis node. Completes Naturalism #27. *L · L*
-- [ ] **36. Nutrient-seeking roots.** Grow visible root tips incrementally
+- [x] **36. Nutrient-seeking roots.** Grow visible root tips incrementally
   toward richer neighboring substrate cells while preserving the current
-  golden-angle fallback in uniform soil. Implements Naturalism #125. *M · L*
+  golden-angle fallback in uniform soil. — Shipped with eight-cell coarse
+  sampling under the existing root-growth cadence. Implements Naturalism #125. *M · L*
 - [ ] **37. Seasonal bulb wake gates.** Add photoperiod and temperature windows
   to the shipped timed/rich-substrate bulb resprout path, with a maximum dormant
   duration safety valve. Extends Naturalism #260/#490. *M · M*

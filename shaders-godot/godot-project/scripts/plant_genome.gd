@@ -85,6 +85,7 @@ const DEFAULTS: Dictionary = {
 	"heteroblasty_node": 0,
 	"reiteration_loss_threshold": 0.0,
 	"reiteration_capacity": 0,
+	"root_foraging": 0.0,
 }
 
 
@@ -189,6 +190,7 @@ static func from_plant(p: Plant) -> Dictionary:
 		"heteroblasty_node": p.heteroblasty_node,
 		"reiteration_loss_threshold": p.reiteration_loss_threshold,
 		"reiteration_capacity": p.reiteration_capacity,
+		"root_foraging": p.root_foraging,
 	})
 
 
@@ -255,6 +257,7 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.heteroblasty_node = clampi(int(e.heteroblasty_node), 0, 64)
 	p.reiteration_loss_threshold = clampf(float(e.reiteration_loss_threshold), 0.0, 0.9)
 	p.reiteration_capacity = clampi(int(e.reiteration_capacity), 0, 4)
+	p.root_foraging = clampf(float(e.root_foraging), 0.0, 1.0)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -343,6 +346,8 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 	if float(out.reiteration_loss_threshold) > 0.0:
 		out.reiteration_loss_threshold = clampf(
 			float(out.reiteration_loss_threshold) + _rng_signed(0.03) * sigma, 0.1, 0.9)
+	out.root_foraging = clampf(
+		float(out.root_foraging) + _rng_signed(0.04) * sigma, 0.0, 1.0)
 	# Variegation sport (#22)
 	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -447,6 +452,7 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.reiteration_loss_threshold = lerpf(
 		float(ea.reiteration_loss_threshold), float(eb.reiteration_loss_threshold), 0.5)
 	out.reiteration_capacity = mini(int(ea.reiteration_capacity), int(eb.reiteration_capacity))
+	out.root_foraging = lerpf(float(ea.root_foraging), float(eb.root_foraging), 0.5)
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:

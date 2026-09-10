@@ -141,6 +141,7 @@ var _reiterations_used: int = 0
 var _reiteration_pending_node: int = -1
 var _damage_episode_active: bool = false
 var _peak_biomass: int = 0
+var root_foraging: float = 0.0
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
@@ -628,6 +629,7 @@ func to_save_dict() -> Dictionary:
 			"heteroblasty_node": heteroblasty_node,
 			"reiteration_loss_threshold": reiteration_loss_threshold,
 			"reiteration_capacity": reiteration_capacity,
+			"root_foraging": root_foraging,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -1179,10 +1181,7 @@ func _add_root(root_ramp: Array) -> void:
 	# first few roots already claimed. This is the visible "established
 	# plant has a denser root mat" effect.
 	var angle: float
-	if _root_count < 5:
-		angle = float(_root_count) / 5.0 * TAU
-	else:
-		angle = float(_root_count) * 2.39996  # golden angle in radians
+	angle = _nutrient_seeking_root_angle()
 	angle += randf_range(-0.4, 0.4)  # jitter
 	# Lateral spread: later-grown roots reach further from the stem,
 	# giving the mature plant a wider root halo just under the substrate
@@ -1226,6 +1225,32 @@ func _add_root(root_ramp: Array) -> void:
 				add_child(hair)
 				root_voxels.append(hair)
 	_root_count += 1
+
+
+func _nutrient_seeking_root_angle(substrate_override: SubstrateGrid = null) -> float:
+	var fallback: float = float(_root_count) / 5.0 * TAU \
+		if _root_count < 5 else float(_root_count) * 2.39996
+	if root_foraging <= 0.0:
+		return fallback
+	var substrate: SubstrateGrid = substrate_override
+	if substrate == null:
+		var sim: Node = _find_sim()
+		if sim == null or sim.get("substrate") == null:
+			return fallback
+		substrate = sim.substrate
+	var center: float = substrate.get_at(_world_pos)
+	var best_value: float = center
+	var best_angle: float = fallback
+	for i in 8:
+		var angle: float = float(i) / 8.0 * TAU
+		var probe: Vector3 = _world_pos + Vector3(cos(angle), 0.0, sin(angle)) * substrate.cell_size
+		var value: float = substrate.get_at(probe)
+		if value > best_value:
+			best_value = value
+			best_angle = angle
+	if best_value - center < 0.015:
+		return fallback
+	return lerp_angle(fallback, best_angle, root_foraging)
 
 
 func _ensure_shared_pearling_assets() -> void:
