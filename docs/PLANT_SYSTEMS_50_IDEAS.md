@@ -89,10 +89,11 @@ reference; implementation follows dependency order, not numeric order.
   `god_ray.gdshader`, allowing dense planting to interrupt fake light shafts.
   — Shipped as a 16×8 texture refreshed every three seconds from at most 128
   crowns, with a lowest-tier hard disable. *L · M*
-- [ ] **12. Leaf-anchored pearling.** Choose living mature leaf handles as
+- [x] **12. Leaf-anchored pearling.** Choose living mature leaf handles as
   origins for the shared pearling pool and add a brief host-leaf highlight when
   a bubble detaches. Extends Naturalism #178/#779 without adding per-plant
-  particle systems. *M · L*
+  particle systems. — Shipped with highest-mature-handle selection, a 0.22 s
+  reversible highlight, and removal of the private-emitter fallback. *M · L*
 - [ ] **13. Golden-hour foliage rim.** Feed the existing day phase and light
   direction into a restrained warm edge term during dawn and dusk, respecting
   accessibility and shader performance tiers. Extends Naturalism #289. *S · M*

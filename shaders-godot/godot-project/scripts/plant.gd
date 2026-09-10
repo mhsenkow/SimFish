@@ -376,6 +376,10 @@ var _pearling_active: bool = false
 var _pearling_eligible: bool = false
 var _pearling_opacity: float = 0.18
 var _pearling_strength: float = 1.0
+var _pearling_host: VoxelBatch.Handle = null
+var _pearling_host_restore: Color = Color.WHITE
+var _pearling_detach_t: float = 0.0
+var _pearling_highlight_t: float = 0.0
 static var _shared_pearling_material: ParticleProcessMaterial = null
 static var _shared_pearling_mesh: SphereMesh = null
 static var _shared_pearling_mesh_medium: SphereMesh = null
@@ -1419,20 +1423,6 @@ func _setup_pearling() -> void:
 			return
 		_configure_pearling_emitter(_pearling_particles)
 		return
-	_ensure_shared_pearling_assets()
-	_pearling_particles = GPUParticles3D.new()
-	_pearling_particles.name = "Pearling"
-	_pearling_particles.emitting = false
-	# Slightly denser stream than the old amount=3 — the per-particle scale
-	# dropped to 0.06..0.18 so total visible pixel coverage stays modest,
-	# but the eye reads a 6-bubble fountain as "really pearling" where 3
-	# bubbles felt incidental.
-	_pearling_particles.amount = 6
-	_pearling_particles.lifetime = randf_range(3.4, 5.0)
-	_pearling_particles.local_coords = false
-	_pearling_particles.visibility_aabb = AABB(Vector3(-2, -1, -2), Vector3(4, 8, 4))
-	_configure_pearling_emitter(_pearling_particles)
-	add_child(_pearling_particles)
 
 
 func _apply_default_growth_strategy() -> void:
@@ -3792,7 +3782,7 @@ func _cast_root_shadow() -> void:
 			Color(0.16, 0.20, 0.12), 0.22)
 
 
-func _tick_pearling(_dt: float) -> void:
+func _tick_pearling(dt: float) -> void:
 	# CO2-met plants become pearling-eligible even when the genome rng didn't
 	# pick them at spawn time — that's how real CO2-injected tanks light up
 	# half their stems with champagne bubbles instead of the random subset.
@@ -3877,11 +3867,7 @@ func _tick_pearling(_dt: float) -> void:
 				_pearling_particles.draw_pass_2 = med
 		elif _pearling_particles.draw_passes > 1:
 			_pearling_particles.draw_passes = 1
-		# Position at canopy tips for pearling hotspots.
-		var tip_y: float = _get_stem_top()
-		if leaf_form in ["paddle", "lily", "pad"]:
-			tip_y += VOXEL_SIZE * 0.8
-		_pearling_particles.position = Vector3(0, tip_y, 0)
+		_bind_pearling_to_leaf(dt)
 	elif _pearling_active:
 		_pearling_active = false
 		if _pearling_particles != null:
@@ -3891,6 +3877,44 @@ func _tick_pearling(_dt: float) -> void:
 		if w != null and w.has_method("release_pearling_emitter"):
 			w.release_pearling_emitter(self)
 		_pearling_particles = null
+
+
+func _select_pearling_host() -> VoxelBatch.Handle:
+	var best: VoxelBatch.Handle = null
+	for i in mini(_leaf_groups.size(), _leaf_states.size()):
+		var state: Dictionary = _leaf_states[i]
+		if int(state.get("phase", LeafPhase.EXPANDING)) != LeafPhase.MATURE:
+			continue
+		for handle_v in _leaf_groups[i]:
+			var handle: VoxelBatch.Handle = handle_v
+			if handle != null and handle.alive and handle.visible \
+					and (best == null or handle.local_pos.y > best.local_pos.y):
+				best = handle
+	return best
+
+
+func _bind_pearling_to_leaf(dt: float) -> void:
+	if _pearling_particles == null:
+		return
+	_pearling_detach_t -= dt
+	_pearling_highlight_t -= dt
+	if _pearling_host != null and _pearling_highlight_t <= 0.0:
+		if _pearling_host.alive:
+			_pearling_host.set_color(_pearling_host_restore)
+		_pearling_host = null
+	if _pearling_detach_t > 0.0:
+		return
+	var host := _select_pearling_host()
+	if host == null:
+		_pearling_particles.emitting = false
+		return
+	_pearling_particles.emitting = true
+	_pearling_particles.position = host.local_pos
+	_pearling_host = host
+	_pearling_host_restore = host.batch._colors[host.index]
+	host.set_color(_pearling_host_restore.lightened(0.18))
+	_pearling_highlight_t = 0.22
+	_pearling_detach_t = 1.15
 
 
 # ---- Seeding ----
