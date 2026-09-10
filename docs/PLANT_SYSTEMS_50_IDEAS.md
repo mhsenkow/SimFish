@@ -124,9 +124,10 @@ rooted plants do not.*
 - [ ] **22. Amortized leaf baking.** Queue large leaf templates as bounded
   chunks consumed across frames under the existing tank-wide plant growth
   budget, with one final batch flush. *M · M*
-- [ ] **23. Data-only leaf template cache.** Cache immutable
+- [x] **23. Data-only leaf template cache.** Cache immutable
   transform/color descriptors for each quantized leaf form and size instead of
-  allocating temporary `MeshInstance3D` trees before every bake. *L · L*
+  allocating temporary `MeshInstance3D` trees before every bake. — Shipped for
+  deterministic forms with a bounded 192-entry cache and parity smoke. *L · L*
 - [x] **24. Distance-bucketed plant simulation.** Tick distant plants at lower
   frequency with accumulated elapsed time and deterministic scheduling, while
   keeping nearby, reproducing, or stressed plants responsive. Extends the

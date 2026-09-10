@@ -1699,18 +1699,41 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 			if a != null:
 				col = a
 		var inst_xform: Transform3D = leaf_xform * mi.transform
-		# Per-voxel value jitter (#101) — depth within a plant mass.
-		var h: float = fmod(sin(inst_xform.origin.x * 12.9898 + inst_xform.origin.y * 37.233
-				+ inst_xform.origin.z * 78.233) * 43758.5453, 1.0)
-		if h < 0.0:
-			h += 1.0
-		var val_mult: float = 0.86 + h * 0.22
-		col = Color(col.r * val_mult, col.g * val_mult, col.b * val_mult, col.a)
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
-		group.append(batch.add(scaled, col))
+		group.append(batch.add(scaled, _voxel_depth_jitter(col, inst_xform.origin)))
 		mi.queue_free()
 	batch.flush()
 	return group
+
+
+# Bake a leaf from a LeafShapes data-only template (PLANT_SYSTEMS_50 #23).
+# Identical output to _bake_leaf minus the throwaway MeshInstance3D, BoxMesh
+# lookup and ShaderMaterial round-trip per voxel: the shared template carries
+# the local transform and box size, and the base color resolves here so this
+# plant's live ramp, leaf age and per-leaf variegation roll stay out of the
+# cache.
+func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
+		ramp: Array, age_frac: float, mods: Dictionary) -> Array:
+	var batch := _ensure_foliage_batch()
+	var group: Array = []
+	for v in template:
+		var lv: LeafShapes.LeafVoxel = v
+		var inst_xform: Transform3D = leaf_xform * lv.xform
+		var scaled := Transform3D(inst_xform.basis.scaled(lv.size), inst_xform.origin)
+		group.append(batch.add(scaled, _voxel_depth_jitter(
+			lv.base_color(ramp, age_frac, mods), inst_xform.origin)))
+	batch.flush()
+	return group
+
+
+# Per-voxel value jitter (#101) — depth within a plant mass.
+func _voxel_depth_jitter(col: Color, origin: Vector3) -> Color:
+	var h: float = fmod(sin(origin.x * 12.9898 + origin.y * 37.233
+			+ origin.z * 78.233) * 43758.5453, 1.0)
+	if h < 0.0:
+		h += 1.0
+	var val_mult: float = 0.86 + h * 0.22
+	return Color(col.r * val_mult, col.g * val_mult, col.b * val_mult, col.a)
 
 
 func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
@@ -1732,10 +1755,12 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	# Build the paddle leaf. Shade leaves run larger; mid-stem leaves are the
 	# biggest on the plant.
 	var span: float = _shade_size_mult() * _node_size_gradient(rel)
-	var leaf_voxels: Array = LeafShapes.build_paddle(
-		clampi(int(round(float(leaf_length) * span)), 2, 6),
-		ramp, age_frac, 2, 0.5, _leaf_mods())
-	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+	var template: Array = LeafShapes.get_leaf_template("paddle", {
+		"length": clampi(int(round(float(leaf_length) * span)), 2, 6),
+		"width": 2, "flatten": 0.5, "quilted": quilted, "wavy": wavy_edges,
+	})
+	_leaf_groups.append(_bake_leaf_template(
+		leaf_node.transform, template, ramp, age_frac, _leaf_mods()))
 	_leaf_ages.append(_t)
 	_register_leaf_age(_t)
 	leaf_node.free()
@@ -1752,10 +1777,14 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 	# Each blade emerges from the base and goes up. For ribbon plants,
 	# current_height tracks number of blades, not individual voxels.
 	var blade_len: int = clampi(leaf_length + _rng_range(-1, 2), 4, 14)
+	# The S-curve seed quantizes to one of LeafShapes' sway buckets so a bed
+	# of Vallisneria shares templates instead of minting one per blade.
 	var sway_seed: float = randf() * TAU
-	var leaf_voxels: Array = LeafShapes.build_ribbon(
-		blade_len, ramp, age_frac, sway_seed, _leaf_mods())
-	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+	var template: Array = LeafShapes.get_leaf_template("ribbon", {
+		"length": blade_len, "sway_seed": sway_seed, "wavy": wavy_edges,
+	})
+	_leaf_groups.append(_bake_leaf_template(
+		leaf_node.transform, template, ramp, age_frac, _leaf_mods()))
 	_leaf_ages.append(_t)
 	_register_leaf_age(_t)
 	leaf_node.free()
@@ -1780,9 +1809,11 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
 		leaf_node.position = stem_pos
-		var leaf_voxels: Array = LeafShapes.build_lance_pair(
-			ramp, age_frac, int(current_height / 2.0), _leaf_mods())
-		_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+		var template: Array = LeafShapes.get_leaf_template("lance", {
+			"pair_index": int(current_height / 2.0),
+		})
+		_leaf_groups.append(_bake_leaf_template(
+			leaf_node.transform, template, ramp, age_frac, _leaf_mods()))
 		_leaf_ages.append(_t)
 		_register_leaf_age(_t)
 		leaf_node.free()
@@ -1797,8 +1828,11 @@ func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset.y + randf_range(-0.05, 0.05),
 	))
 	var needle_len: int = clampi(leaf_length, 2, 6)
-	var leaf_voxels: Array = LeafShapes.build_needle(needle_len, ramp, age_frac)
-	_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
+	var template: Array = LeafShapes.get_leaf_template("needle", {
+		"length": needle_len,
+	})
+	_leaf_groups.append(_bake_leaf_template(
+		leaf_node.transform, template, ramp, age_frac, {}))
 	_leaf_ages.append(_t)
 	_register_leaf_age(_t)
 	leaf_node.free()
@@ -1869,20 +1903,31 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 		stem_mi.material_override = VoxelMat.make_foliage(stem_color)
 		stem_mi.position = leaf_node.position + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
 		_register_stem_voxel(stem_mi)
+	# Deterministic forms come from the shared data-only template cache (#23);
+	# the randomized ones below still build throwaway nodes, since their
+	# geometry is rolled per leaf and must not be shared.
+	var template: Array = []
 	var leaf_voxels: Array = []
 	match kind:
 		"spade":
 			var sl: int = clampi(int(leaf_length * lsm), 3, 8)
 			var sw: int = clampi(int(3.0 * lsm + 0.5), 2, 5)
-			leaf_voxels = LeafShapes.build_spade(ramp, age_frac, sl, sw, mods)
+			template = LeafShapes.get_leaf_template("spade", {
+				"length": sl, "width": sw,
+				"quilted": quilted, "wavy": wavy_edges,
+			})
 		"cordate":
 			# Cordate leaves stay flat-ish, but still spaced by divergence.
 			leaf_node.rotation.y = yaw
 			leaf_node.rotation.x = _shade_pitch() * 0.5
-			leaf_voxels = LeafShapes.build_cordate(ramp, age_frac, mods)
+			template = LeafShapes.get_leaf_template("cordate", {
+				"quilted": quilted, "wavy": wavy_edges,
+			})
 		"pinnate":
 			var pl: int = clampi(int(leaf_length * lsm), 3, 7)
-			leaf_voxels = LeafShapes.build_pinnate(pl, ramp, age_frac, mods)
+			template = LeafShapes.get_leaf_template("pinnate", {
+				"length": pl, "quilted": quilted,
+			})
 		"starburst":
 			# Starburst is a one-time rosette; only build at very low height
 			# (the rosette IS the plant) — otherwise it stacks weirdly.
@@ -1900,10 +1945,12 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 				_grow_column_voxel(ramp, rel, photo_offset)
 				leaf_node.free()
 				return
-			leaf_voxels = LeafShapes.build_four_leaf(ramp, age_frac, mods)
+			template = LeafShapes.get_leaf_template("four_leaf")
 		"fingered":
 			var fl: int = clampi(int(leaf_length * lsm), 4, 8)
-			leaf_voxels = LeafShapes.build_fingered(fl, ramp, age_frac, 3, mods)
+			template = LeafShapes.get_leaf_template("fingered", {
+				"length": fl, "fingers": 3, "quilted": quilted,
+			})
 		"downy":
 			leaf_voxels = LeafShapes.build_downy(ramp, age_frac, mods)
 		"round":
@@ -1913,14 +1960,21 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 			var radius: int = clampi(int(2.0 * lsm), 2, 4)
 			leaf_voxels = LeafShapes.build_round_pad(radius, ramp, age_frac, mods)
 		"oval":
-			leaf_voxels = LeafShapes.build_oval(ramp, age_frac)
+			template = LeafShapes.get_leaf_template("oval")
 		"lobed":
 			var ll: int = clampi(int(leaf_length * lsm), 3, 8)
-			leaf_voxels = LeafShapes.build_lobed(ll, ramp, age_frac)
+			template = LeafShapes.get_leaf_template("lobed", {"length": ll})
 		_:
 			_grow_column_voxel(ramp, rel, photo_offset)
 			leaf_node.free()
 			return
+	if not template.is_empty():
+		_leaf_groups.append(_bake_leaf_template(
+			leaf_node.transform, template, ramp, age_frac, mods))
+		_leaf_ages.append(_t)
+		_register_leaf_age(_t)
+		leaf_node.free()
+		return
 	if leaf_voxels.is_empty():
 		leaf_node.free()
 		return

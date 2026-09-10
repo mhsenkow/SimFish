@@ -35,6 +35,26 @@ class_name LeafShapes
 
 const VOXEL_SIZE: float = 0.32
 
+# Leaf-template cardinality guards (see "Data-only leaf templates" below).
+# Plant clamps its leaf dimensions well inside these already; they exist so a
+# future caller can't key the shared cache on an unbounded value.
+const TEMPLATE_MAX_LENGTH: int = 24
+const TEMPLATE_MAX_WIDTH: int = 8
+const TEMPLATE_MAX_FINGERS: int = 8
+const TEMPLATE_SWAY_BUCKETS: int = 24
+const TEMPLATE_FLATTEN_STEP: float = 0.05
+const TEMPLATE_CACHE_LIMIT: int = 192
+const TEMPLATE_KINDS := [
+	"paddle", "ribbon", "lance", "needle", "oval", "lobed",
+	"spade", "cordate", "pinnate", "fingered", "four_leaf",
+]
+
+static var _template_cache: Dictionary = {}
+static var _template_keys: Array[String] = []
+static var _template_hits: int = 0
+static var _template_misses: int = 0
+static var _template_evictions: int = 0
+
 # ---- Texture modifier helpers ----
 # Apply variegation chance + tone_under venation + iridescent sheen overlay.
 # tone_under_v can be a Color (used near leaf tip) or null (skip).
@@ -72,17 +92,247 @@ static func _wave_x_offset(wavy: bool, dx: int, row: int) -> float:
 	return sin(float(row) * 0.6 + float(dx) * 0.5) * VOXEL_SIZE * 0.18
 
 
+# ---- Data-only leaf templates ----
+#
+# `Plant._bake_leaf` reads exactly three things off each MeshInstance3D a
+# builder returns: the local transform, the BoxMesh size and the material's
+# albedo. A *template* is that data without the nodes — an immutable
+# Array[LeafVoxel] for one leaf form at one quantized size, shared by every
+# plant growing that form. The public builders below are thin wrappers that
+# materialize a template into MeshInstance3D nodes, so the node path and the
+# template path cannot drift apart.
+#
+# Color is stored as a recipe (`shade_t` / `midrib` / `modulated`), not a baked
+# Color: the ramp and age fraction are live per-plant state and variegation is
+# a per-leaf random roll, so folding them into the key would make the cache
+# unbounded and freeze per-individual variation. The color is resolved at bake
+# time instead.
+#
+# Forms with randomized geometry (round pads drop edge voxels, starburst tilts
+# each blade, downy scatters) have no template and keep the node path.
+class LeafVoxel extends RefCounted:
+	# Local transform, relative to the leaf's transient transform holder.
+	var xform: Transform3D = Transform3D.IDENTITY
+	# Box dimensions, taken back off VoxelMat's mesh cache so the template
+	# path and the node path agree to the last float.
+	var size: Vector3 = Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
+	# Position along the leaf (0 = base, 1 = tip) fed to `_leaf_color`.
+	var shade_t: float = 0.0
+	var midrib: bool = false
+	# Whether the texture modifiers (variegation / undertone / iridescence)
+	# apply. Structural voxels (fern rachis, clover stem) take the plain
+	# ramp color, as they always have.
+	var modulated: bool = true
+
+	func _init(p_pos: Vector3, p_size: Vector3, p_shade_t: float,
+			p_midrib: bool, p_modulated: bool = true) -> void:
+		xform = Transform3D(Basis(), p_pos)
+		size = VoxelMat.get_box(p_size).size
+		shade_t = p_shade_t
+		midrib = p_midrib
+		modulated = p_modulated
+
+	# Pre-boost color — what the builders hand to VoxelMat.make_foliage.
+	func raw_color(ramp: Array, age_frac: float, mods: Dictionary) -> Color:
+		var c: Color = LeafShapes._leaf_color(ramp, shade_t, age_frac, midrib)
+		if not modulated:
+			return c
+		return LeafShapes._modify_color(c, shade_t,
+			float(mods.get("variegation", 0.0)),
+			mods.get("tone_under", null),
+			float(mods.get("iridescence", 0.0)))
+
+	# The albedo `_bake_leaf` reads back off the foliage material.
+	func base_color(ramp: Array, age_frac: float, mods: Dictionary) -> Color:
+		return VoxelMat.boost_foliage_color(raw_color(ramp, age_frac, mods))
+
+
+static func supports_template(kind: String) -> bool:
+	return TEMPLATE_KINDS.has(kind)
+
+
+# Fetch (building on first use) the shared template for one leaf form. The
+# returned Array is owned by the cache — treat it as immutable.
+static func get_leaf_template(kind: String, params: Dictionary = {}) -> Array:
+	if not supports_template(kind):
+		return []
+	var norm: Dictionary = normalize_template_params(kind, params)
+	var key: String = _template_key(kind, norm)
+	var cached: Variant = _template_cache.get(key)
+	if cached != null:
+		_template_hits += 1
+		return cached
+	_template_misses += 1
+	var built: Array = _build_template(kind, norm)
+	_template_admit(key, built)
+	return built
+
+
+# Fold a caller's raw parameters onto the cache's grid: integers clamped,
+# continuous values quantized. Exposed so a caller (or a test) can build the
+# node path from exactly the parameters the template was keyed on.
+static func normalize_template_params(kind: String, params: Dictionary) -> Dictionary:
+	match kind:
+		"paddle":
+			return {
+				"length": _tpl_len(params.get("length", 4)),
+				"width": clampi(int(params.get("width", 2)), 1, TEMPLATE_MAX_WIDTH),
+				"flatten": snappedf(
+					clampf(float(params.get("flatten", 0.55)), 0.05, 1.0),
+					TEMPLATE_FLATTEN_STEP),
+				"quilted": bool(params.get("quilted", false)),
+				"wavy": bool(params.get("wavy", false)),
+			}
+		"ribbon":
+			return {
+				"length": _tpl_len(params.get("length", 6)),
+				"sway_bucket": _tpl_angle_bucket(float(params.get("sway_seed", 0.0))),
+				"wavy": bool(params.get("wavy", false)),
+			}
+		"lance":
+			return {"pair_index": posmod(int(params.get("pair_index", 0)), 2)}
+		"needle", "lobed":
+			return {"length": _tpl_len(params.get("length", 4))}
+		"spade":
+			return {
+				"length": _tpl_len(params.get("length", 5)),
+				"width": clampi(int(params.get("width", 3)), 1, TEMPLATE_MAX_WIDTH),
+				"quilted": bool(params.get("quilted", false)),
+				"wavy": bool(params.get("wavy", false)),
+			}
+		"cordate":
+			return {
+				"quilted": bool(params.get("quilted", false)),
+				"wavy": bool(params.get("wavy", false)),
+			}
+		"pinnate":
+			return {
+				"length": _tpl_len(params.get("length", 4)),
+				"quilted": bool(params.get("quilted", false)),
+			}
+		"fingered":
+			return {
+				"length": _tpl_len(params.get("length", 5)),
+				"fingers": clampi(int(params.get("fingers", 3)), 1, TEMPLATE_MAX_FINGERS),
+				"quilted": bool(params.get("quilted", false)),
+			}
+	# "oval" and "four_leaf" are fixed forms with no geometry parameters.
+	return {}
+
+
+# Bounded-memory metrics for the smoke test and the perf HUD.
+static func template_cache_stats() -> Dictionary:
+	var voxels: int = 0
+	for tpl in _template_cache.values():
+		voxels += (tpl as Array).size()
+	return {
+		"size": _template_cache.size(),
+		"limit": TEMPLATE_CACHE_LIMIT,
+		"hits": _template_hits,
+		"misses": _template_misses,
+		"evictions": _template_evictions,
+		"voxels": voxels,
+	}
+
+
+static func reset_template_cache() -> void:
+	_template_cache.clear()
+	_template_keys.clear()
+	_template_hits = 0
+	_template_misses = 0
+	_template_evictions = 0
+
+
+static func _tpl_len(v: Variant) -> int:
+	return clampi(int(v), 1, TEMPLATE_MAX_LENGTH)
+
+
+static func _tpl_angle_bucket(radians: float) -> int:
+	if not is_finite(radians):
+		return 0
+	var turns: float = fposmod(radians, TAU) / TAU
+	return posmod(int(round(turns * float(TEMPLATE_SWAY_BUCKETS))),
+		TEMPLATE_SWAY_BUCKETS)
+
+
+# Dictionary iteration follows insertion order, and normalize_template_params
+# always inserts the same keys in the same order per kind, so this is stable.
+static func _template_key(kind: String, norm: Dictionary) -> String:
+	var key: String = kind
+	for k in norm:
+		key += "|%s" % [norm[k]]
+	return key
+
+
+static func _build_template(kind: String, n: Dictionary) -> Array:
+	match kind:
+		"paddle":
+			return _template_paddle(n["length"], n["width"], n["flatten"],
+				n["quilted"], n["wavy"])
+		"ribbon":
+			return _template_ribbon(n["length"],
+				float(n["sway_bucket"]) / float(TEMPLATE_SWAY_BUCKETS) * TAU,
+				n["wavy"])
+		"lance":
+			return _template_lance_pair(n["pair_index"])
+		"needle":
+			return _template_needle(n["length"])
+		"oval":
+			return _template_oval()
+		"lobed":
+			return _template_lobed(n["length"])
+		"spade":
+			return _template_spade(n["length"], n["width"], n["quilted"], n["wavy"])
+		"cordate":
+			return _template_cordate(n["quilted"], n["wavy"])
+		"pinnate":
+			return _template_pinnate(n["length"], n["quilted"])
+		"fingered":
+			return _template_fingered(n["length"], n["fingers"], n["quilted"])
+		"four_leaf":
+			return _template_four_leaf()
+	return []
+
+
+static func _template_admit(key: String, tpl: Array) -> void:
+	while _template_keys.size() >= TEMPLATE_CACHE_LIMIT:
+		_template_cache.erase(_template_keys.pop_front())
+		_template_evictions += 1
+	_template_cache[key] = tpl
+	_template_keys.append(key)
+
+
+# Materialize a template into the MeshInstance3D nodes the public builders
+# have always returned. Colors resolve here, in template order, so the
+# variegation randf() sequence matches the pre-template builders exactly.
+static func _nodes_from_template(tpl: Array, ramp: Array, age_frac: float,
+		mods: Dictionary) -> Array:
+	var nodes: Array = []
+	for v in tpl:
+		var lv: LeafVoxel = v
+		var mi := MeshInstance3D.new()
+		mi.mesh = VoxelMat.get_box(lv.size)
+		mi.material_override = VoxelMat.make_foliage(
+			lv.raw_color(ramp, age_frac, mods))
+		mi.transform = lv.xform
+		nodes.append(mi)
+	return nodes
+
+
 # ---- Paddle leaf (rosette plants: Crypts, Swords) ----
 # A flat, 2-3 voxel wide, 4-7 voxel tall pointed oval. Wider in the middle,
 # tapering at both ends. The midrib (center column) is slightly darker.
 static func build_paddle(length: int, ramp: Array, age_frac: float,
 		width: int = 2, flatten: float = 0.55, mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var quilted: bool = bool(mods.get("quilted", false))
-	var wavy: bool = bool(mods.get("wavy", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_paddle(length, width, flatten,
+			bool(mods.get("quilted", false)), bool(mods.get("wavy", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_paddle(length: int, width: int, flatten: float,
+		quilted: bool, wavy: bool) -> Array:
+	var out: Array = []
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
 		# Width profile: diamond shape, widest at 40% of length.
@@ -91,10 +341,6 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 		var row_width: int = maxi(1, int(float(width) * profile))
 		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
-			var is_midrib: bool = (dx == 0)
-			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
-			var mi := MeshInstance3D.new()
 			var sx: float = VOXEL_SIZE * 0.9
 			var sy: float = VOXEL_SIZE * 0.9
 			var sz: float = VOXEL_SIZE * flatten
@@ -102,15 +348,14 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 			if i == length - 1:
 				sx *= 0.6
 				sz *= 0.6
-			mi.mesh = VoxelMat.get_box(Vector3(sx, sy, sz))
-			mi.material_override = VoxelMat.make_foliage(color)
-			mi.position = Vector3(
-				float(dx) * VOXEL_SIZE * 0.75 + _wave_x_offset(wavy, dx, i),
-				float(i) * VOXEL_SIZE * 0.85 + _quilt_offset(quilted, i * 3 + dx),
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					float(dx) * VOXEL_SIZE * 0.75 + _wave_x_offset(wavy, dx, i),
+					float(i) * VOXEL_SIZE * 0.85 + _quilt_offset(quilted, i * 3 + dx),
+					0.0,
+				),
+				Vector3(sx, sy, sz), t, dx == 0))
+	return out
 
 
 # ---- Ribbon leaf (blade plants: Vallisneria, Sagittaria) ----
@@ -118,39 +363,33 @@ static func build_paddle(length: int, ramp: Array, age_frac: float,
 # Gentle sinusoidal curve along its length for natural flowing look.
 static func build_ribbon(length: int, ramp: Array, age_frac: float,
 		sway_seed: float = 0.0, mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var wavy: bool = bool(mods.get("wavy", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_ribbon(length, sway_seed, bool(mods.get("wavy", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_ribbon(length: int, sway_seed: float, wavy: bool) -> Array:
+	var out: Array = []
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
-		var is_midrib: bool = (i < 2)
-		var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-		var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
-		var mi := MeshInstance3D.new()
 		# Slight width taper: base is 1.0, tip is 0.5.
 		var width_factor: float = 1.0 - t * 0.5
 		# Very tip is thin.
 		if i >= length - 2:
 			width_factor *= 0.6
-		mi.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * width_factor,
-			VOXEL_SIZE * 1.0,
-			VOXEL_SIZE * 0.4,
-		))
-		mi.material_override = VoxelMat.make_foliage(color)
 		# Gentle S-curve along the blade.
 		var curve_x: float = sin(t * PI + sway_seed) * VOXEL_SIZE * 0.4
 		if wavy:
 			curve_x += sin(float(i) * 0.55) * VOXEL_SIZE * 0.12
-		mi.position = Vector3(
-			curve_x,
-			float(i) * VOXEL_SIZE * 0.9,
-			0.0,
-		)
-		nodes.append(mi)
-	return nodes
+		out.append(LeafVoxel.new(
+			Vector3(curve_x, float(i) * VOXEL_SIZE * 0.9, 0.0),
+			Vector3(
+				VOXEL_SIZE * width_factor,
+				VOXEL_SIZE * 1.0,
+				VOXEL_SIZE * 0.4,
+			),
+			t, i < 2))
+	return out
 
 
 # ---- Lance leaf (stem plants: Ludwigia, Rotala) ----
@@ -158,62 +397,66 @@ static func build_ribbon(length: int, ramp: Array, age_frac: float,
 # These come in pairs (decussate phyllotaxis: each pair rotated 90°).
 static func build_lance_pair(ramp: Array, age_frac: float,
 		pair_index: int = 0, mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(_template_lance_pair(pair_index),
+		ramp, age_frac, mods)
+
+
+static func _template_lance_pair(pair_index: int) -> Array:
+	var out: Array = []
 	var leaf_len: int = 3
 	var yaw_offset: float = float(pair_index % 2) * PI * 0.5
 	for side in [-1, 1]:
 		for i in leaf_len:
 			var t: float = float(i) / float(leaf_len - 1)
-			var is_midrib: bool = (i == 1)
-			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
-			var mi := MeshInstance3D.new()
 			# Width profile: widest in the middle.
 			var w: float = 0.7 if i == 1 else 0.45
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * w,
-				VOXEL_SIZE * 0.45,
-				VOXEL_SIZE * 0.35,
-			))
-			mi.material_override = VoxelMat.make_foliage(color)
 			# Leaves angle outward from the stem.
 			var angle: float = float(side) * 0.7 + yaw_offset
 			var dist: float = float(i) * VOXEL_SIZE * 0.65
-			mi.position = Vector3(
-				cos(angle) * dist,
-				sin(angle) * dist * 0.3,
-				sin(angle) * dist,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					cos(angle) * dist,
+					sin(angle) * dist * 0.3,
+					sin(angle) * dist,
+				),
+				Vector3(
+					VOXEL_SIZE * w,
+					VOXEL_SIZE * 0.45,
+					VOXEL_SIZE * 0.35,
+				),
+				t, i == 1))
+	return out
 
 
 # ---- Needle leaf (carpet plants: Hairgrass, Eleocharis) ----
 # Very thin single-voxel blade, barely wider than a stem.
 static func build_needle(length: int, ramp: Array, age_frac: float) -> Array:
-	var nodes: Array = []
+	return _nodes_from_template(_template_needle(length), ramp, age_frac, {})
+
+
+static func _template_needle(length: int) -> Array:
+	var out: Array = []
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
-		var color: Color = _leaf_color(ramp, t, age_frac, false)
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.3,
-			VOXEL_SIZE * 0.8,
-			VOXEL_SIZE * 0.3,
-		))
-		mi.material_override = VoxelMat.make_foliage(color)
-		mi.position = Vector3(0, float(i) * VOXEL_SIZE * 0.75, 0)
-		nodes.append(mi)
-	return nodes
+		out.append(LeafVoxel.new(
+			Vector3(0, float(i) * VOXEL_SIZE * 0.75, 0),
+			Vector3(
+				VOXEL_SIZE * 0.3,
+				VOXEL_SIZE * 0.8,
+				VOXEL_SIZE * 0.3,
+			),
+			t, false, false))
+	return out
 
 
 # ---- Oval leaf (Anubias, Bucephalandra) ----
 # Short, wide, rounded. 3 voxels wide, 3-4 tall. Thick and waxy-looking.
 static func build_oval(ramp: Array, age_frac: float) -> Array:
-	var nodes: Array = []
+	return _nodes_from_template(_template_oval(), ramp, age_frac, {})
+
+
+static func _template_oval() -> Array:
+	var out: Array = []
 	# 3x4 grid with rounded corners (skip corners).
 	var pattern: Array = [
 		[0, 1, 0],
@@ -226,28 +469,29 @@ static func build_oval(ramp: Array, age_frac: float) -> Array:
 			if pattern[row][col] == 0:
 				continue
 			var t: float = float(row) / float(pattern.size() - 1)
-			var is_mid: bool = (col == 1)
-			var color: Color = _leaf_color(ramp, t, age_frac, is_mid)
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * 0.85,
-				VOXEL_SIZE * 0.4,
-				VOXEL_SIZE * 0.8,
-			))
-			mi.material_override = VoxelMat.make_foliage(color)
-			mi.position = Vector3(
-				(float(col) - 1.0) * VOXEL_SIZE * 0.7,
-				float(row) * VOXEL_SIZE * 0.65,
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					(float(col) - 1.0) * VOXEL_SIZE * 0.7,
+					float(row) * VOXEL_SIZE * 0.65,
+					0.0,
+				),
+				Vector3(
+					VOXEL_SIZE * 0.85,
+					VOXEL_SIZE * 0.4,
+					VOXEL_SIZE * 0.8,
+				),
+				t, col == 1, false))
+	return out
 
 
 # ---- Lobed leaf (Java Fern, Bolbitis) ----
 # Irregular, wider than lance, with indentations that suggest lobes.
 static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
-	var nodes: Array = []
+	return _nodes_from_template(_template_lobed(length), ramp, age_frac, {})
+
+
+static func _template_lobed(length: int) -> Array:
+	var out: Array = []
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
 		# Width oscillates to create lobe effect.
@@ -255,22 +499,19 @@ static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
 		var row_width: int = maxi(1, int(2.0 * lobe))
 		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
-			var is_midrib: bool = (dx == 0)
-			var color: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * 0.8,
-				VOXEL_SIZE * 0.9,
-				VOXEL_SIZE * 0.45,
-			))
-			mi.material_override = VoxelMat.make_foliage(color)
-			mi.position = Vector3(
-				float(dx) * VOXEL_SIZE * 0.7,
-				float(i) * VOXEL_SIZE * 0.8,
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					float(dx) * VOXEL_SIZE * 0.7,
+					float(i) * VOXEL_SIZE * 0.8,
+					0.0,
+				),
+				Vector3(
+					VOXEL_SIZE * 0.8,
+					VOXEL_SIZE * 0.9,
+					VOXEL_SIZE * 0.45,
+				),
+				t, dx == 0, false))
+	return out
 
 
 # ---- Spade leaf (Anubias barteri, A. coffeefolia, sword-form epiphytes) ----
@@ -278,12 +519,15 @@ static func build_lobed(length: int, ramp: Array, age_frac: float) -> Array:
 # a noticeable tip taper. Optional quilted texture for coffeefolia.
 static func build_spade(ramp: Array, age_frac: float, length: int = 5,
 		width: int = 3, mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var quilted: bool = bool(mods.get("quilted", false))
-	var wavy: bool = bool(mods.get("wavy", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_spade(length, width,
+			bool(mods.get("quilted", false)), bool(mods.get("wavy", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_spade(length: int, width: int, quilted: bool,
+		wavy: bool) -> Array:
+	var out: Array = []
 	for row in length:
 		var t: float = float(row) / float(maxi(1, length - 1))
 		# Spade profile: narrow at base, wide at 60% height, taper to point.
@@ -297,36 +541,33 @@ static func build_spade(ramp: Array, age_frac: float, length: int = 5,
 		var row_width: int = clampi(int(float(width) * profile), 1, width + 1)
 		var row_half: int = int(row_width / 2.0)
 		for dx in range(-row_half, row_half + 1):
-			var is_midrib: bool = (dx == 0)
-			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
-			var mi := MeshInstance3D.new()
 			var sy: float = VOXEL_SIZE * 0.4
 			# Tip and base voxels slightly smaller for rounded silhouette.
 			if row == length - 1 or row == 0:
 				sy *= 0.7
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * 0.95, sy, VOXEL_SIZE * 0.85))
-			mi.material_override = VoxelMat.make_foliage(color)
-			mi.position = Vector3(
-				float(dx) * VOXEL_SIZE * 0.7 + _wave_x_offset(wavy, dx, row),
-				float(row) * VOXEL_SIZE * 0.72 + _quilt_offset(quilted, row * 3 + dx),
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					float(dx) * VOXEL_SIZE * 0.7 + _wave_x_offset(wavy, dx, row),
+					float(row) * VOXEL_SIZE * 0.72 + _quilt_offset(quilted, row * 3 + dx),
+					0.0,
+				),
+				Vector3(VOXEL_SIZE * 0.95, sy, VOXEL_SIZE * 0.85),
+				t, dx == 0))
+	return out
 
 
 # ---- Cordate (heart) leaf (Red Root Floater, Limnobium) ----
 # Heart shape with a notch at the base. 4 voxels wide × 3-4 tall.
 static func build_cordate(ramp: Array, age_frac: float,
 		mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var quilted: bool = bool(mods.get("quilted", false))
-	var wavy: bool = bool(mods.get("wavy", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_cordate(bool(mods.get("quilted", false)),
+			bool(mods.get("wavy", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_cordate(quilted: bool, wavy: bool) -> Array:
+	var out: Array = []
 	# Pattern: 1 = voxel, 0 = empty. Heart shape laid out top-down.
 	var pattern: Array = [
 		[0, 1, 1, 1, 1, 0],  # top (widest)
@@ -341,25 +582,21 @@ static func build_cordate(ramp: Array, age_frac: float,
 				continue
 			var t: float = float(row) / float(pattern.size() - 1)
 			var col_centered: int = col - 3
-			var is_midrib: bool = (col == 2 or col == 3)
-			var base: Color = _leaf_color(ramp, t, age_frac, is_midrib)
-			var color: Color = _modify_color(base, t, varieg, tone_under_v, iridescence)
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * 0.85,
-				VOXEL_SIZE * 0.35,
-				VOXEL_SIZE * 0.85,
-			))
-			mi.material_override = VoxelMat.make_foliage(color)
-			mi.position = Vector3(
-				float(col_centered) * VOXEL_SIZE * 0.7
-					+ _wave_x_offset(wavy, col_centered, row),
-				float(pattern.size() - 1 - row) * VOXEL_SIZE * 0.55
-					+ _quilt_offset(quilted, row * 3 + col),
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					float(col_centered) * VOXEL_SIZE * 0.7
+						+ _wave_x_offset(wavy, col_centered, row),
+					float(pattern.size() - 1 - row) * VOXEL_SIZE * 0.55
+						+ _quilt_offset(quilted, row * 3 + col),
+					0.0,
+				),
+				Vector3(
+					VOXEL_SIZE * 0.85,
+					VOXEL_SIZE * 0.35,
+					VOXEL_SIZE * 0.85,
+				),
+				t, col == 2 or col == 3))
+	return out
 
 
 # ---- Pinnate / fern-divided leaf (Hygrophila pinnatifida, Bolbitis) ----
@@ -367,42 +604,38 @@ static func build_cordate(ramp: Array, age_frac: float,
 # toward the tip, giving the distinct fern silhouette.
 static func build_pinnate(length: int, ramp: Array, age_frac: float,
 		mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var quilted: bool = bool(mods.get("quilted", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_pinnate(length, bool(mods.get("quilted", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_pinnate(length: int, quilted: bool) -> Array:
+	var out: Array = []
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
-		var rachis_color: Color = _leaf_color(ramp, t, age_frac, true)
 		# Central rachis (midrib).
-		var stem := MeshInstance3D.new()
-		stem.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.32))
-		stem.material_override = VoxelMat.make_foliage(rachis_color)
-		stem.position = Vector3(0.0, float(i) * VOXEL_SIZE * 0.75
-			+ _quilt_offset(quilted, i), 0.0)
-		nodes.append(stem)
+		out.append(LeafVoxel.new(
+			Vector3(0.0, float(i) * VOXEL_SIZE * 0.75
+				+ _quilt_offset(quilted, i), 0.0),
+			Vector3(VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.32),
+			t, true, false))
 		# Leaflets: paired, length tapers toward the tip.
 		var leaflet_len: int = clampi(3 - int(t * 2.0), 1, 3)
 		for side in [-1, 1]:
 			for j in leaflet_len:
-				var leaflet := MeshInstance3D.new()
-				var c: Color = _modify_color(
-					_leaf_color(ramp, t, age_frac, j == 0), t, varieg, tone_under_v, iridescence)
-				leaflet.mesh = VoxelMat.get_box(Vector3(
-					VOXEL_SIZE * 0.55,
-					VOXEL_SIZE * 0.35,
-					VOXEL_SIZE * 0.45,
-				))
-				leaflet.material_override = VoxelMat.make_foliage(c)
-				leaflet.position = Vector3(
-					float(side) * (VOXEL_SIZE * 0.55 + float(j) * VOXEL_SIZE * 0.55),
-					float(i) * VOXEL_SIZE * 0.75,
-					0.0,
-				)
-				nodes.append(leaflet)
-	return nodes
+				out.append(LeafVoxel.new(
+					Vector3(
+						float(side) * (VOXEL_SIZE * 0.55 + float(j) * VOXEL_SIZE * 0.55),
+						float(i) * VOXEL_SIZE * 0.75,
+						0.0,
+					),
+					Vector3(
+						VOXEL_SIZE * 0.55,
+						VOXEL_SIZE * 0.35,
+						VOXEL_SIZE * 0.45,
+					),
+					t, j == 0))
+	return out
 
 
 # ---- Starburst rosette (Eriocaulon, Blyxa) ----
@@ -437,54 +670,48 @@ static func build_starburst(blades: int, blade_len: int, ramp: Array,
 # ---- Four-leaf clover (Marsilea hirsuta) ----
 static func build_four_leaf(ramp: Array, age_frac: float,
 		mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(_template_four_leaf(), ramp, age_frac, mods)
+
+
+static func _template_four_leaf() -> Array:
+	var out: Array = []
 	# Tiny vertical stem.
-	var stem := MeshInstance3D.new()
-	stem.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.25))
-	stem.material_override = VoxelMat.make_foliage(_leaf_color(ramp, 0.0, age_frac, true))
-	stem.position = Vector3.ZERO
-	nodes.append(stem)
+	out.append(LeafVoxel.new(
+		Vector3.ZERO,
+		Vector3(VOXEL_SIZE * 0.25, VOXEL_SIZE * 0.6, VOXEL_SIZE * 0.25),
+		0.0, true, false))
 	# Four leaflets at 90° offsets.
 	for i in 4:
 		var angle: float = float(i) * PI * 0.5
-		var leaflet := MeshInstance3D.new()
-		var c: Color = _modify_color(
-			_leaf_color(ramp, 1.0, age_frac, false), 1.0, varieg, tone_under_v, iridescence)
-		leaflet.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.55))
-		leaflet.material_override = VoxelMat.make_foliage(c)
-		leaflet.position = Vector3(
-			cos(angle) * VOXEL_SIZE * 0.55,
-			VOXEL_SIZE * 0.55,
-			sin(angle) * VOXEL_SIZE * 0.55,
-		)
-		nodes.append(leaflet)
-	return nodes
+		out.append(LeafVoxel.new(
+			Vector3(
+				cos(angle) * VOXEL_SIZE * 0.55,
+				VOXEL_SIZE * 0.55,
+				sin(angle) * VOXEL_SIZE * 0.55,
+			),
+			Vector3(VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.55),
+			1.0, false))
+	return out
 
 
 # ---- Fingered / Windelov tips (Java fern Windelov, Trident, Bolbitis) ----
 static func build_fingered(length: int, ramp: Array, age_frac: float,
 		fingers: int = 3, mods: Dictionary = {}) -> Array:
-	var nodes: Array = []
-	var varieg: float = float(mods.get("variegation", 0.0))
-	var iridescence: float = float(mods.get("iridescence", 0.0))
-	var quilted: bool = bool(mods.get("quilted", false))
-	var tone_under_v: Variant = mods.get("tone_under", null)
+	return _nodes_from_template(
+		_template_fingered(length, fingers, bool(mods.get("quilted", false))),
+		ramp, age_frac, mods)
+
+
+static func _template_fingered(length: int, fingers: int, quilted: bool) -> Array:
+	var out: Array = []
 	var base_len: int = int(length * 0.65)
 	for i in base_len:
 		var t: float = float(i) / float(maxi(1, length - 1))
-		var c: Color = _modify_color(
-			_leaf_color(ramp, t, age_frac, true), t, varieg, tone_under_v, iridescence)
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(
-			VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.4))
-		mi.material_override = VoxelMat.make_foliage(c)
-		mi.position = Vector3(0, float(i) * VOXEL_SIZE * 0.78
-			+ _quilt_offset(quilted, i), 0)
-		nodes.append(mi)
+		out.append(LeafVoxel.new(
+			Vector3(0, float(i) * VOXEL_SIZE * 0.78
+				+ _quilt_offset(quilted, i), 0),
+			Vector3(VOXEL_SIZE * 0.5, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.4),
+			t, true))
 	var tip_start_y: float = float(base_len) * VOXEL_SIZE * 0.78
 	for f in fingers:
 		var rel: float = float(f) / float(maxi(1, fingers - 1)) - 0.5
@@ -492,20 +719,16 @@ static func build_fingered(length: int, ramp: Array, age_frac: float,
 		var finger_len: int = length - base_len
 		for j in finger_len:
 			var t2: float = float(base_len + j) / float(maxi(1, length - 1))
-			var c2: Color = _modify_color(
-				_leaf_color(ramp, t2, age_frac, false), t2, varieg, tone_under_v, iridescence)
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(
-				VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.32))
-			mi.material_override = VoxelMat.make_foliage(c2)
 			var r: float = float(j) * VOXEL_SIZE * 0.7
-			mi.position = Vector3(
-				sin(fang) * r,
-				tip_start_y + cos(fang) * r,
-				0.0,
-			)
-			nodes.append(mi)
-	return nodes
+			out.append(LeafVoxel.new(
+				Vector3(
+					sin(fang) * r,
+					tip_start_y + cos(fang) * r,
+					0.0,
+				),
+				Vector3(VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.7, VOXEL_SIZE * 0.32),
+				t2, false))
+	return out
 
 
 # ---- Downy / Pogostemon helferi ----
