@@ -127,9 +127,13 @@ var ls_ratio: float = 0.72
 var ls_depth: int = 2
 var etiolation_sensitivity: float = 0.0
 var auxin_dominance: float = 0.0
+var vascular_transport_rate: float = 0.0
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
+var _root_reserve: float = 0.0
+var _shoot_reserve: float = 0.0
+const RESOURCE_RESERVOIR_CAP: float = 0.6
 var _submersed_leaf_form: String = ""
 var plant_age_s: float = 0.0
 var _starch: float = 0.35
@@ -602,6 +606,7 @@ func to_save_dict() -> Dictionary:
 			"ls_depth": ls_depth,
 			"etiolation_sensitivity": etiolation_sensitivity,
 			"auxin_dominance": auxin_dominance,
+			"vascular_transport_rate": vascular_transport_rate,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -634,6 +639,8 @@ func to_save_dict() -> Dictionary:
 		"_dormant_timer": _dormant_timer,
 		"_light_avg": _light_avg,
 		"_internode_extension_y": _internode_extension_y,
+		"_root_reserve": _root_reserve,
+		"_shoot_reserve": _shoot_reserve,
 	}
 
 
@@ -679,6 +686,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	_dormant_timer = float(d.get("_dormant_timer", 0.0))
 	_light_avg = float(d.get("_light_avg", _light_avg))
 	_internode_extension_y = maxf(0.0, float(d.get("_internode_extension_y", 0.0)))
+	_root_reserve = clampf(float(d.get("_root_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
+	_shoot_reserve = clampf(float(d.get("_shoot_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	# Loaded plants are established — no emersed-form display. Setting to
 	# 0 skips the size/color boost we apply to brand-new spawns.
 	_emersed_remaining = 0.0
@@ -757,13 +766,16 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 		var co2v: float = float(sim_v.dissolved_co2_level())
 		f_co2 = clampf(co2v / (co2v + co2_demand * 0.5), 0.2, 1.0)
 	var f_starch: float = lerpf(0.55, 1.0, clampf(_starch / 0.2, 0.0, 1.0))
+	var f_transport: float = 1.0
+	if vascular_transport_rate > 0.0:
+		f_transport = clampf(_shoot_reserve / maxf(nutrient_demand, 0.001), 0.12, 1.0)
 	var f_temp: float = 1.0
 	if sim_v != null:
 		var w_temp: Node = sim_v.get_parent()
 		if w_temp != null and w_temp.has_method("effective_warmth_at"):
 			var warmth: float = float(w_temp.effective_warmth_at(_world_pos))
 			f_temp = clampf(1.0 - absf(warmth - temp_opt) * 1.4, 0.35, 1.15)
-	var core: float = _softmin_chain([f_nutrient, f_light, f_co2, f_starch, f_temp])
+	var core: float = _softmin_chain([f_nutrient, f_light, f_co2, f_starch, f_temp, f_transport])
 	var effective_rate: float = growth_rate * core
 	if sim_v != null and sim_v.has_method("sim_day"):
 		var mature: float = clampf(float(sim_v.sim_day()) / 30.0, 0.0, 1.0)
@@ -777,6 +789,7 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 	var mins: Dictionary = {
 		"light": f_light, "nutrient": f_nutrient, "co2": f_co2,
 		"starch": f_starch, "temperature": f_temp,
+		"transport": f_transport,
 	}
 	var worst: float = 2.0
 	for key in mins:
@@ -792,6 +805,7 @@ func _compute_growth_rate(growth_nutrient: float, light_pen: float, sim_v: Node)
 		"f_co2": f_co2,
 		"f_starch": f_starch,
 		"f_temp": f_temp,
+		"f_transport": f_transport,
 		"limiting_factor": limiting,
 		"shade_light": shade_light,
 		"growth_progress": growth_progress,
@@ -811,6 +825,7 @@ func get_growth_inspector() -> Dictionary:
 		"co2": lim_text = "CO₂-starved"
 		"starch": lim_text = "building reserves"
 		"temperature": lim_text = "temperature-stressed"
+		"transport": lim_text = "vascular capacity limited"
 	return {
 		"species": label,
 		"health": health,
@@ -2908,6 +2923,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 	_tick_leaf_ecology(dt, substrate, sim_v)
 	_tick_age_senescence(dt)
+	_tick_resource_transport(dt)
 
 	# Health trends toward nutrient satisfaction, with slow decay when starved.
 	var target_health: float = 0.35 + 0.65 * nutrient_mult
@@ -3030,8 +3046,14 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			_starch = maxf(0.0, _starch - 0.05)
 			_spawn_growth_sparkle()
 			if not is_epiphyte:
-				substrate.consume_root_uptake(
-					get_instance_id(), _world_pos, nutrient_demand)
+				if vascular_transport_rate > 0.0:
+					var taken: float = substrate.consume_root_uptake(
+						get_instance_id(), _world_pos, nutrient_demand)
+					_root_reserve = minf(RESOURCE_RESERVOIR_CAP, _root_reserve + taken)
+					_shoot_reserve = maxf(0.0, _shoot_reserve - nutrient_demand)
+				else:
+					substrate.consume_root_uptake(
+						get_instance_id(), _world_pos, nutrient_demand)
 				substrate.consume_iron_at(
 					_world_pos, nutrient_demand * (0.025 + red_potential * 0.025))
 				substrate.consume_co2_at(
@@ -3084,6 +3106,15 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 								"%s is melting — leaves dropping, will regrow from the rhizome."
 								% label, 2)
 							_record_melt_cluster(sim_d)
+
+
+func _tick_resource_transport(dt: float) -> void:
+	if vascular_transport_rate <= 0.0:
+		return
+	var capacity: float = vascular_transport_rate * dt * (0.5 + 0.5 * health)
+	var moved: float = minf(_root_reserve, minf(capacity, RESOURCE_RESERVOIR_CAP - _shoot_reserve))
+	_root_reserve -= moved
+	_shoot_reserve += moved
 
 
 func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) -> void:

@@ -73,6 +73,7 @@ const DEFAULTS: Dictionary = {
 	# Opt-in: zero preserves the pre-campaign fixed-internode morphology.
 	"etiolation_sensitivity": 0.0,
 	"auxin_dominance": 0.0,
+	"vascular_transport_rate": 0.0,
 }
 
 
@@ -165,6 +166,7 @@ static func from_plant(p: Plant) -> Dictionary:
 		"ls_depth": p.ls_depth,
 		"etiolation_sensitivity": p.etiolation_sensitivity,
 		"auxin_dominance": p.auxin_dominance,
+		"vascular_transport_rate": p.vascular_transport_rate,
 	})
 
 
@@ -217,6 +219,7 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.ls_depth = int(e.ls_depth)
 	p.etiolation_sensitivity = clampf(float(e.etiolation_sensitivity), 0.0, 1.0)
 	p.auxin_dominance = clampf(float(e.auxin_dominance), 0.0, 1.0)
+	p.vascular_transport_rate = clampf(float(e.vascular_transport_rate), 0.0, 1.0)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -267,6 +270,8 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		float(out.etiolation_sensitivity) + _rng_signed(0.04) * sigma, 0.0, 1.0)
 	out.auxin_dominance = clampf(
 		float(out.auxin_dominance) + _rng_signed(0.04) * sigma, 0.0, 1.0)
+	out.vascular_transport_rate = clampf(
+		float(out.vascular_transport_rate) + _rng_signed(0.04) * sigma, 0.0, 1.0)
 	# Macro-mutations only on full-strength sexual paths.
 	if sigma >= 0.8 and randf() < 0.04 * sigma:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
@@ -319,6 +324,7 @@ static func drift_distance(g: Dictionary, baseline: Dictionary = {}) -> float:
 		["ls_ratio", 0.47],
 		["etiolation_sensitivity", 1.0],
 		["auxin_dominance", 1.0],
+		["vascular_transport_rate", 1.0],
 	]
 	for p in pairs:
 		var key: String = String(p[0])
@@ -353,6 +359,8 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.etiolation_sensitivity = lerpf(
 		float(ea.etiolation_sensitivity), float(eb.etiolation_sensitivity), 0.5)
 	out.auxin_dominance = lerpf(float(ea.auxin_dominance), float(eb.auxin_dominance), 0.5)
+	out.vascular_transport_rate = lerpf(
+		float(ea.vascular_transport_rate), float(eb.vascular_transport_rate), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
 	out.allelopathy_resistance = lerpf(
 		float(ea.allelopathy_resistance), float(eb.allelopathy_resistance), 0.5)

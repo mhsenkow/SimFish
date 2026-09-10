@@ -176,9 +176,10 @@ rooted plants do not.*
   on each new stem handle and expose the vertical history in the plant
   inspector. Extend the shipped live limiting-factor diagnostic rather than
   recomputing old conditions. *M · M*
-- [ ] **31. Root/shoot resource reservoirs.** Split plant reserves into root
+- [x] **31. Root/shoot resource reservoirs.** Split plant reserves into root
   uptake and shoot demand pools connected by a genome-defined transport rate,
-  producing tip-first starvation when vascular capacity is insufficient. *L · L*
+  producing tip-first starvation when vascular capacity is insufficient. —
+  Shipped with bounded conserving pools and a legacy single-charge path. *L · L*
 - [ ] **32. Juvenile/adult heteroblasty.** Add juvenile and adult leaf forms to
   the genome and transition by node age, independently from the shipped
   submerged/emergent heterophylly. Implements Naturalism #51. *L · L*
