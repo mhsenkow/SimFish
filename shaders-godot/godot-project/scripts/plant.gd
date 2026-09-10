@@ -398,6 +398,8 @@ const PLANT_LOD_HEIGHT_BONUS_MAX: float = 12.0
 const PLANT_LOD_FADE_MARGIN: float = 4.0
 var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
+var _crown_density_cells: Dictionary = {}
+const CROWN_DENSITY_CELL_CAP: int = 512
 const LEAF_BAKE_DEFER_THRESHOLD: int = 16
 const LEAF_BAKE_CHUNK_SIZE: int = 12
 const STATIC_SLEEP_AFTER_S: float = 5.0
@@ -1934,8 +1936,9 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 				col = a
 		var inst_xform: Transform3D = leaf_xform * mi.transform
 		var scaled := Transform3D(inst_xform.basis.scaled(size), inst_xform.origin)
-		var handle: VoxelBatch.Handle = batch.add(
-			scaled, _voxel_depth_jitter(col, inst_xform.origin))
+		var baked_color: Color = _apply_baked_self_occlusion(
+			_voxel_depth_jitter(col, inst_xform.origin), inst_xform.origin)
+		var handle: VoxelBatch.Handle = batch.add(scaled, baked_color)
 		handle.set_custom_data(Color(_leaf_thickness(size, voxel_i, leaf_voxels.size()), leaf_phase, 0.0, 1.0))
 		group.append(handle)
 		voxel_i += 1
@@ -1963,6 +1966,7 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		var scaled := Transform3D(inst_xform.basis.scaled(lv.size), inst_xform.origin)
 		var color: Color = _voxel_depth_jitter(
 			lv.base_color(ramp, age_frac, mods), inst_xform.origin)
+		color = _apply_baked_self_occlusion(color, inst_xform.origin)
 		var handle: VoxelBatch.Handle = batch.add_deferred(scaled, color) if defer_upload \
 			else batch.add(scaled, color)
 		handle.set_custom_data(Color(
@@ -1994,6 +1998,23 @@ func _stable_leaf_phase(origin: Vector3, leaf_index: int) -> float:
 	var seed_value: float = origin.x * 12.9898 + origin.y * 37.719 \
 		+ origin.z * 19.913 + float(leaf_index) * 7.123 + float(asymmetry_seed) * 0.001
 	return fposmod(sin(seed_value) * 43758.5453, 1.0)
+
+
+func _apply_baked_self_occlusion(color: Color, origin: Vector3) -> Color:
+	var cell := Vector3i(
+		floori(origin.x / 0.36), floori(origin.y / 0.36), floori(origin.z / 0.36))
+	var local_density: int = 0
+	for dx in range(-1, 2):
+		for dy in range(-1, 2):
+			for dz in range(-1, 2):
+				local_density += int(_crown_density_cells.get(
+					cell + Vector3i(dx, dy, dz), 0))
+	var shade: float = lerpf(1.0, 0.72, clampf(float(local_density) / 12.0, 0.0, 1.0))
+	if _crown_density_cells.has(cell):
+		_crown_density_cells[cell] = mini(int(_crown_density_cells[cell]) + 1, 6)
+	elif _crown_density_cells.size() < CROWN_DENSITY_CELL_CAP:
+		_crown_density_cells[cell] = 1
+	return Color(color.r * shade, color.g * shade, color.b * shade, color.a)
 
 
 func _process_leaf_bake_queue() -> void:

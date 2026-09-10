@@ -70,9 +70,10 @@ reference; implementation follows dependency order, not numeric order.
   spheres into the substrate shader's existing blob-shadow input, prioritizing
   nearby and high-biomass plants alongside fish. — Shipped with eight bounded
   crown slots sharing the existing 32-caster path; fish retain 24 reserved slots. *M · L*
-- [ ] **8. Baked crown self-occlusion.** During leaf baking, estimate local
+- [x] **8. Baked crown self-occlusion.** During leaf baking, estimate local
   foliage density and darken only the instance base color of crowded interior
-  voxels. This gives crowns depth without real-time AO or shadow maps. *M · M*
+  voxels. This gives crowns depth without real-time AO or shadow maps. —
+  Shipped with a deterministic 27-cell neighborhood and 512-cell per-plant cap. *M · M*
 - [ ] **9. Light-history anthocyanin.** Extend the shipped dynamic blush and
   `red_potential` with a slowly accumulated per-leaf light dose, making exposed
   tops redden while shaded old leaves stay green. Completes the shared pigment
