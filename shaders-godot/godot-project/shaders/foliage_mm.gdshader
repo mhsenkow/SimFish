@@ -21,6 +21,7 @@ uniform float aquatic_caustic_intensity : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
 uniform float day_phase_offset = 0.0;
+uniform float wet_sheen_strength : hint_range(0.0, 1.0) = 0.32;
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.42;
@@ -103,6 +104,9 @@ void fragment() {
 	col = mix(col, col * 0.55 + sss_color * 0.85, backlit * 0.65);
 	col = mix(col, col * 0.7 + sss_color * 0.55,
 		rim * sss_strength * (0.4 + 0.6 * lit) * thin_transmission);
+	float wet_band = 1.0 - smoothstep(0.03, 0.16, abs(v_world_pos.y - water_surface_y));
+	float wet_view = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.0);
+	col += vec3(0.16, 0.20, 0.22) * wet_band * wet_view * wet_sheen_strength;
 	// Vein darkening through the luminous blade.
 	float vein = step(0.82, fract(v_world_pos.y * 7.0 + v_world_pos.x * 3.0));
 	col *= 1.0 - vein * backlit * 0.18;

@@ -52,9 +52,10 @@ reference; implementation follows dependency order, not numeric order.
   churn, otherwise remove the dead shader factory and asset. — Removed after
   confirming zero callers; reuse saves one material per plant and keeps stems
   on the registered palette/lighting path. *S · M*
-- [ ] **4. Waterline wet-sheen band.** Use the existing water-surface uniform to
+- [x] **4. Waterline wet-sheen band.** Use the existing water-surface uniform to
   add a narrow, view-dependent highlight around foliage crossing the waterline,
-  with reduced intensity under the palette potato tier. *S · M*
+  with reduced intensity under the palette potato tier. — Shipped as a 13 cm
+  bounded band with a 0.10 potato-tier cap. *S · M*
 - [ ] **5. Per-leaf sway desynchronization.** Add a stable phase value to baked
   leaf instances so leaves within one crown ripple independently while
   preserving the existing per-plant sway personality. Extends Naturalism #204.

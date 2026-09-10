@@ -329,8 +329,10 @@ static func set_shader_perf_tier(tier: int) -> void:
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_strength", 0.45 if _shader_perf_tier >= 2 else 0.85)
 			mat.set_shader_parameter("aquatic_caustic_intensity", 0.0 if _shader_perf_tier >= 2 else 1.0)
+			mat.set_shader_parameter("wet_sheen_strength", 0.10 if _shader_perf_tier >= 2 else 0.32)
 	for mat in _live_foliage_mm_mats():
 		mat.set_shader_parameter("aquatic_caustic_intensity", 0.0 if _shader_perf_tier >= 2 else 1.0)
+		mat.set_shader_parameter("wet_sheen_strength", 0.10 if _shader_perf_tier >= 2 else 0.32)
 	_shader_tier_post_outline = outline_scale
 	_shader_tier_post_dither = region_dither
 
