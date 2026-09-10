@@ -250,10 +250,11 @@ normal flowering.*
   affected cell and add heritable family resistance, preventing emitters and
   close kin from suffering the same penalty as competitors. Extends
   Naturalism #682/#699. *L · L*
-- [ ] **48. Root-footprint competition.** Register coarse per-plant root
+- [x] **48. Root-footprint competition.** Register coarse per-plant root
   footprints and divide each cell's available uptake by overlapping active root
   mass, replacing the current large-plant halo strip. Extends GOALS F #36 /
-  Naturalism #133/#146. *L · L*
+  Naturalism #133/#146. — Shipped with bounded 13-cell footprints, proportional
+  active-root sharing, and 2 Hz refresh/stale-root cleanup. *L · L*
 - [ ] **49. Grazing-driven selection.** Track lifetime grazing pressure and let
   survivors pass a bounded defense/palatability shift with an explicit growth
   cost through the existing mutation pipeline. Runtime acclimation remains

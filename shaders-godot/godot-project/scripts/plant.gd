@@ -2982,7 +2982,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			_starch = maxf(0.0, _starch - 0.05)
 			_spawn_growth_sparkle()
 			if not is_epiphyte:
-				substrate.consume_at(_world_pos, nutrient_demand)
+				substrate.consume_root_uptake(
+					get_instance_id(), _world_pos, nutrient_demand)
 				substrate.consume_iron_at(
 					_world_pos, nutrient_demand * (0.025 + red_potential * 0.025))
 				substrate.consume_co2_at(
@@ -3050,7 +3051,8 @@ func _tick_canopy(dt: float, _nutrient_mult: float, substrate: SubstrateGrid) ->
 			_canopy_timer = 0.0
 			_begin_flowering()
 	if not is_epiphyte:
-		substrate.consume_at(_world_pos, nutrient_demand * 0.08 * dt)
+		substrate.consume_root_uptake(
+			get_instance_id(), _world_pos, nutrient_demand * 0.08 * dt)
 
 
 # Ribbon-form plants extend a horizontal stolon along the substrate that

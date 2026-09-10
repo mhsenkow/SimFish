@@ -19,6 +19,7 @@ extends Node
 class_name SubstrateGrid
 
 const SeedBankStore = preload("res://scripts/substrate_seed_bank.gd")
+const RootCompetition = preload("res://scripts/substrate_root_competition.gd")
 const NUTRIENT_BASELINE: float = 0.3
 const NUTRIENT_MAX: float = 3.0
 const DIFFUSION_RATE: float = 0.04
@@ -123,6 +124,7 @@ var _dirty_cells: Dictionary = {}
 # per call (or a new Array for the iteration snapshot).
 var _next_dirty: Dictionary = {}
 var _seed_lots = SeedBankStore.new()
+var _root_competition = RootCompetition.new()
 
 
 func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
@@ -154,6 +156,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(co2_availability, CO2_LEGACY_DEFAULT)
 	_init_channel_grid(mulm)
 	_seed_lots.init(cells_x, cells_z)
+	_root_competition.init(cells_x, cells_z)
 	_dirty_channels.clear()
 
 
@@ -202,6 +205,46 @@ func consume_at(world_pos: Vector3, amount: float) -> float:
 	if available <= 0.0:
 		return 0.0
 	var taken: float = minf(amount, available)
+	nutrients[c.x][c.y] -= taken
+	_mark_dirty(c)
+	return taken
+
+
+func begin_root_footprint_refresh() -> void:
+	_root_competition.begin_refresh()
+
+
+func register_root_footprint(plant_id: int, world_pos: Vector3,
+		radius_cells: int, active_mass: float) -> void:
+	_root_competition.register(
+		plant_id, _cell_at(world_pos), radius_cells, active_mass)
+
+
+func end_root_footprint_refresh() -> void:
+	_root_competition.end_refresh()
+
+
+func root_footprint_for(plant_id: int) -> Dictionary:
+	return _root_competition.footprint_for(plant_id)
+
+
+func consume_root_uptake(plant_id: int, world_pos: Vector3, amount: float) -> float:
+	var plan: Array = _root_competition.uptake_plan(plant_id, amount)
+	if plan.is_empty():
+		return consume_at(world_pos, amount)
+	var taken: float = 0.0
+	for part_v in plan:
+		var part: Dictionary = part_v
+		taken += _consume_cell(
+			part.get("cell", _cell_at(world_pos)), float(part.get("amount", 0.0)))
+	return taken
+
+
+func _consume_cell(c: Vector2i, amount: float) -> float:
+	var available: float = nutrients[c.x][c.y] - _active_baseline()
+	if available <= 0.0:
+		return 0.0
+	var taken: float = minf(maxf(0.0, amount), available)
 	nutrients[c.x][c.y] -= taken
 	_mark_dirty(c)
 	return taken

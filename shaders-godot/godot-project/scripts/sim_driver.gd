@@ -3813,27 +3813,31 @@ func _tick(dt: float) -> void:
 				plant_fragments.remove_at(frag_i)
 		frag_i -= 1
 
-	# Nutrient competition (#36): plants strip excess substrate nutrients.
-	# Throttled to 2 Hz — full-rate halo was ~10k substrate ops/sec in mature
-	# planted tanks with negligible visual difference at 10 Hz sim.
+	# Coarse root-footprint competition. Rebuild only at the existing 2 Hz
+	# ecology cadence, then divide each cell by overlapping active root mass.
 	_nutrient_strip_t += dt
 	if substrate != null and plant_biomass > 40 and _nutrient_strip_t >= NUTRIENT_STRIP_INTERVAL:
 		_nutrient_strip_t = 0.0
 		var strip: float = clampf(float(plant_biomass) / 600.0, 0.0, 0.006) \
 			* NUTRIENT_STRIP_INTERVAL
+		substrate.begin_root_footprint_refresh()
 		for p in plants:
-			if not is_instance_valid(p) or strip <= 0.0:
+			if not is_instance_valid(p) or bool(p.get("is_epiphyte")):
 				continue
 			var pp: Vector3 = p.global_position
-			substrate.consume_at(pp, strip * p.nutrient_demand * 0.4)
-			# Halo: bigger/older plants reach further for nutrients.
-			var reach: float = clampf(float(p.biomass()) / 30.0, 0.0, 1.0)
-			if reach > 0.25 and not p.get("is_epiphyte"):
-				var halo: float = strip * p.nutrient_demand * 0.18 * reach
-				substrate.consume_at(pp + Vector3(0.9, 0.0, 0.0), halo)
-				substrate.consume_at(pp + Vector3(-0.9, 0.0, 0.0), halo)
-				substrate.consume_at(pp + Vector3(0.0, 0.0, 0.9), halo)
-				substrate.consume_at(pp + Vector3(0.0, 0.0, -0.9), halo)
+			var root_mass: float = maxf(1.0, float(p.get("_root_count"))) \
+				* clampf(float(p.get("_health_smooth")), 0.05, 1.0)
+			var radius_cells: int = clampi(int(float(p.biomass()) / 24.0), 0, 2)
+			substrate.register_root_footprint(
+				p.get_instance_id(), pp, radius_cells, root_mass)
+		substrate.end_root_footprint_refresh()
+		if strip > 0.0:
+			for p in plants:
+				if not is_instance_valid(p) or bool(p.get("is_epiphyte")):
+					continue
+				substrate.consume_root_uptake(
+					p.get_instance_id(), p.global_position,
+					strip * p.nutrient_demand * 0.4)
 
 	# 4. Fish: gather neighbors, tick, collect events.
 	var events: Array[Dictionary] = []
