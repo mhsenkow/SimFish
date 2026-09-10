@@ -95,9 +95,11 @@ rooted plants do not.*
   `visibility_range_end` and self-fade settings to rooted stem and foliage
   renderers, using the proven fish/floater LOD conventions. — Shipped with a
   mature-height bonus and render-registry smoke coverage. *S · L*
-- [ ] **15. Reversible leaf instance LOD.** At distance, zero-scale a stable
+- [x] **15. Reversible leaf instance LOD.** At distance, zero-scale a stable
   subset of non-silhouette leaf handles and restore their original transforms
-  when near; never delete handles or alter biological biomass. *M · M*
+  when near; never delete handles or alter biological biomass. — Shipped with
+  transition-only extrema preservation and damage-safe handle visibility.
+  *M · M*
 - [x] **16. Batched rooted stems.** Replace per-voxel stem `MeshInstance3D`
   nodes with a second per-plant `VoxelBatch`, retaining stable handles for
   grazing, aging, save restore, and color updates. — Shipped with reversible

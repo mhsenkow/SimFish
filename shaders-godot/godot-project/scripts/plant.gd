@@ -367,6 +367,8 @@ var _static_sleep_stable_s: float = 0.0
 var _static_sleep_accum_s: float = 0.0
 var _static_sleep_dirty: bool = true
 var _static_sleep_env_signature: int = 0
+var _leaf_lod_reduced: bool = false
+var _leaf_lod_hidden: Array[VoxelBatch.Handle] = []
 # Last wilt level we wrote into the leaf-tip handles. Tracked so the
 # per-tick wilt pass only touches the multimesh when health has moved
 # noticeably — repaint cost stays near-zero when nothing's changing.
@@ -2481,6 +2483,53 @@ func _plant_visibility_range() -> float:
 	var height_bonus: float = minf(
 		float(max_height) * VOXEL_SIZE * 1.5, PLANT_LOD_HEIGHT_BONUS_MAX)
 	return PLANT_LOD_BASE_RANGE + height_bonus
+
+
+# Transition-only reversible LOD. Per-group extrema define the coarse
+# silhouette; only stable interior candidates are zero-scaled.
+func set_leaf_lod_reduced(reduced: bool) -> void:
+	if _leaf_lod_reduced == reduced:
+		return
+	_leaf_lod_reduced = reduced
+	if not reduced:
+		for h in _leaf_lod_hidden:
+			if h != null and h.alive:
+				h.set_lod_visible(true)
+		_leaf_lod_hidden.clear()
+		if _foliage_batch != null:
+			_foliage_batch.flush()
+		return
+
+	_leaf_lod_hidden.clear()
+	for group_v in _leaf_groups:
+		var group: Array = group_v
+		if group.size() < 5:
+			continue
+		var keep: Dictionary = {}
+		for axis in 3:
+			var min_h: VoxelBatch.Handle = null
+			var max_h: VoxelBatch.Handle = null
+			for value in group:
+				var h: VoxelBatch.Handle = value
+				if h == null or not h.alive:
+					continue
+				if min_h == null or h.local_pos[axis] < min_h.local_pos[axis]:
+					min_h = h
+				if max_h == null or h.local_pos[axis] > max_h.local_pos[axis]:
+					max_h = h
+			if min_h != null:
+				keep[min_h] = true
+			if max_h != null:
+				keep[max_h] = true
+		for value in group:
+			var h: VoxelBatch.Handle = value
+			if h == null or not h.alive or keep.has(h):
+				continue
+			if hash([asymmetry_seed, h.index]) & 1 == 0:
+				h.set_lod_visible(false)
+				_leaf_lod_hidden.append(h)
+	if _foliage_batch != null:
+		_foliage_batch.flush()
 
 
 func _apply_visibility_range_to(geometry: GeometryInstance3D) -> void:

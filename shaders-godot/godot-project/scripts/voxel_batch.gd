@@ -32,6 +32,7 @@ class Handle extends RefCounted:
 	var transform: Transform3D = Transform3D.IDENTITY
 	var alive: bool = true
 	var visible: bool = true
+	var lod_visible: bool = true
 
 	func set_color(c: Color) -> void:
 		if alive and batch != null:
@@ -48,7 +49,7 @@ class Handle extends RefCounted:
 		if alive and batch != null:
 			transform = xform
 			local_pos = xform.origin
-			if visible:
+			if visible and lod_visible:
 				batch._apply_transform(index, xform)
 
 	# Temporarily hide damage such as pinholes without changing biological
@@ -57,7 +58,16 @@ class Handle extends RefCounted:
 		if not alive or batch == null or visible == value:
 			return
 		visible = value
-		if visible:
+		if visible and lod_visible:
+			batch._apply_transform(index, transform)
+		else:
+			batch._hide(index)
+
+	func set_lod_visible(value: bool) -> void:
+		if not alive or batch == null or lod_visible == value:
+			return
+		lod_visible = value
+		if visible and lod_visible:
 			batch._apply_transform(index, transform)
 		else:
 			batch._hide(index)
@@ -67,6 +77,7 @@ class Handle extends RefCounted:
 			batch._hide(index)
 			alive = false
 			visible = false
+			lod_visible = false
 
 
 var mmi: MultiMeshInstance3D = null
@@ -391,6 +402,7 @@ func clear() -> void:
 		if h != null:
 			h.alive = false
 			h.visible = false
+			h.lod_visible = false
 			h.index = -1
 			h.batch = null
 	_count = 0
