@@ -86,6 +86,11 @@ const DEFAULTS: Dictionary = {
 	"reiteration_loss_threshold": 0.0,
 	"reiteration_capacity": 0,
 	"root_foraging": 0.0,
+	"bulb_photoperiod_min": -1.0,
+	"bulb_photoperiod_max": -1.0,
+	"bulb_temp_min": -1.0,
+	"bulb_temp_max": -1.0,
+	"bulb_max_dormancy_s": 0.0,
 }
 
 
@@ -191,6 +196,11 @@ static func from_plant(p: Plant) -> Dictionary:
 		"reiteration_loss_threshold": p.reiteration_loss_threshold,
 		"reiteration_capacity": p.reiteration_capacity,
 		"root_foraging": p.root_foraging,
+		"bulb_photoperiod_min": p.bulb_photoperiod_min,
+		"bulb_photoperiod_max": p.bulb_photoperiod_max,
+		"bulb_temp_min": p.bulb_temp_min,
+		"bulb_temp_max": p.bulb_temp_max,
+		"bulb_max_dormancy_s": p.bulb_max_dormancy_s,
 	})
 
 
@@ -258,6 +268,11 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.reiteration_loss_threshold = clampf(float(e.reiteration_loss_threshold), 0.0, 0.9)
 	p.reiteration_capacity = clampi(int(e.reiteration_capacity), 0, 4)
 	p.root_foraging = clampf(float(e.root_foraging), 0.0, 1.0)
+	p.bulb_photoperiod_min = clampf(float(e.bulb_photoperiod_min), -1.0, 1.0)
+	p.bulb_photoperiod_max = clampf(float(e.bulb_photoperiod_max), -1.0, 1.0)
+	p.bulb_temp_min = clampf(float(e.bulb_temp_min), -1.0, 1.0)
+	p.bulb_temp_max = clampf(float(e.bulb_temp_max), -1.0, 1.0)
+	p.bulb_max_dormancy_s = clampf(float(e.bulb_max_dormancy_s), 0.0, 86400.0)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -348,6 +363,9 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 			float(out.reiteration_loss_threshold) + _rng_signed(0.03) * sigma, 0.1, 0.9)
 	out.root_foraging = clampf(
 		float(out.root_foraging) + _rng_signed(0.04) * sigma, 0.0, 1.0)
+	if float(out.bulb_max_dormancy_s) > 0.0:
+		out.bulb_max_dormancy_s = clampf(
+			float(out.bulb_max_dormancy_s) + _rng_signed(300.0) * sigma, 120.0, 86400.0)
 	# Variegation sport (#22)
 	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -453,6 +471,9 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 		float(ea.reiteration_loss_threshold), float(eb.reiteration_loss_threshold), 0.5)
 	out.reiteration_capacity = mini(int(ea.reiteration_capacity), int(eb.reiteration_capacity))
 	out.root_foraging = lerpf(float(ea.root_foraging), float(eb.root_foraging), 0.5)
+	for key in ["bulb_photoperiod_min", "bulb_photoperiod_max", "bulb_temp_min",
+			"bulb_temp_max", "bulb_max_dormancy_s"]:
+		out[key] = lerpf(float(ea[key]), float(eb[key]), 0.5)
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:

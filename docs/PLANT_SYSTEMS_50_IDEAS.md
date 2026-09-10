@@ -202,9 +202,10 @@ rooted plants do not.*
   toward richer neighboring substrate cells while preserving the current
   golden-angle fallback in uniform soil. — Shipped with eight-cell coarse
   sampling under the existing root-growth cadence. Implements Naturalism #125. *M · L*
-- [ ] **37. Seasonal bulb wake gates.** Add photoperiod and temperature windows
+- [x] **37. Seasonal bulb wake gates.** Add photoperiod and temperature windows
   to the shipped timed/rich-substrate bulb resprout path, with a maximum dormant
-  duration safety valve. Extends Naturalism #260/#490. *M · M*
+  duration safety valve. — Shipped with opt-in windows, maximum dormancy, and
+  unchanged legacy rich-substrate fallback. Extends Naturalism #260/#490. *M · M*
 - [ ] **38. Constrained procedural species.** Sample new genomes from correlated
   ecological archetypes and reject implausible trait combinations before
   mutation, keeping hand-authored `RealSpeciesLibrary` entries as anchors.

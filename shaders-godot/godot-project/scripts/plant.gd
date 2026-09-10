@@ -142,6 +142,11 @@ var _reiteration_pending_node: int = -1
 var _damage_episode_active: bool = false
 var _peak_biomass: int = 0
 var root_foraging: float = 0.0
+var bulb_photoperiod_min: float = -1.0
+var bulb_photoperiod_max: float = -1.0
+var bulb_temp_min: float = -1.0
+var bulb_temp_max: float = -1.0
+var bulb_max_dormancy_s: float = 0.0
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
@@ -630,6 +635,11 @@ func to_save_dict() -> Dictionary:
 			"reiteration_loss_threshold": reiteration_loss_threshold,
 			"reiteration_capacity": reiteration_capacity,
 			"root_foraging": root_foraging,
+			"bulb_photoperiod_min": bulb_photoperiod_min,
+			"bulb_photoperiod_max": bulb_photoperiod_max,
+			"bulb_temp_min": bulb_temp_min,
+			"bulb_temp_max": bulb_temp_max,
+			"bulb_max_dormancy_s": bulb_max_dormancy_s,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -4394,7 +4404,16 @@ func _tick_dormant_bulb(dt: float, substrate: SubstrateGrid) -> void:
 	if _dormant_timer < 120.0:
 		return
 	var n: float = substrate.get_at(_world_pos)
-	if n < SubstrateGrid.NUTRIENT_BASELINE + 0.1:
+	var daylight: float = 0.5
+	var warmth: float = temp_opt
+	var sim: Node = _find_sim()
+	if sim != null:
+		if sim.has_method("daylight"):
+			daylight = float(sim.daylight())
+		var world: Node = sim.get_parent()
+		if world != null and world.has_method("effective_warmth_at"):
+			warmth = float(world.effective_warmth_at(_world_pos))
+	if not _bulb_wake_allowed(daylight, warmth, n):
 		return
 	life_phase = LifePhase.VEGETATIVE
 	_dormant_timer = 0.0
@@ -4402,6 +4421,23 @@ func _tick_dormant_bulb(dt: float, substrate: SubstrateGrid) -> void:
 	current_height = 0
 	for _i in 2:
 		_grow_one()
+
+
+func _bulb_wake_allowed(daylight: float, warmth: float, nutrient: float) -> bool:
+	if bulb_max_dormancy_s > 0.0 and _dormant_timer >= bulb_max_dormancy_s:
+		return true
+	if nutrient < SubstrateGrid.NUTRIENT_BASELINE + 0.1:
+		return false
+	# Negative windows are the legacy rich-substrate timer path.
+	if bulb_photoperiod_min < 0.0 or bulb_photoperiod_max < 0.0:
+		return true
+	if daylight < bulb_photoperiod_min or daylight > bulb_photoperiod_max:
+		return false
+	if bulb_temp_min >= 0.0 and warmth < bulb_temp_min:
+		return false
+	if bulb_temp_max >= 0.0 and warmth > bulb_temp_max:
+		return false
+	return true
 
 
 func _enter_dormant_bulb() -> void:
