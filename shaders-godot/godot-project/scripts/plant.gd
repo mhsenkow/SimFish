@@ -389,6 +389,8 @@ var _foliage_batch: VoxelBatch = null
 var _foliage_mat: ShaderMaterial = null
 var _stem_batch: VoxelBatch = null
 var _stem_mat: ShaderMaterial = null
+var _senescence_batch: VoxelBatch = null
+var _senescence_mat: ShaderMaterial = null
 var _blush_last_sat: float = -1.0
 var _blush_last_warmth: float = -99.0
 var _blush_last_sss: float = -1.0
@@ -427,6 +429,9 @@ func _exit_tree() -> void:
 	if _stem_batch != null:
 		_stem_batch.dispose()
 		_stem_batch = null
+	if _senescence_batch != null:
+		_senescence_batch.dispose()
+		_senescence_batch = null
 
 
 # ---- Runner propagation ----
@@ -4047,6 +4052,8 @@ func trigger_crypt_melt() -> void:
 		_stem_batch.clear()
 	if _foliage_batch != null:
 		_foliage_batch.clear()
+	if _senescence_batch != null:
+		_senescence_batch.clear()
 	_leaf_groups.clear()
 	_leaf_ages.clear()
 	_leaf_states.clear()
@@ -4263,6 +4270,7 @@ func _register_leaf_age(birth_t: float) -> void:
 		"mobile_n": 0.0,
 		"nyctinasty": 0.0,
 		"senesce_paint": 0.0,
+		"senescence_migrated": false,
 	})
 
 
@@ -4454,6 +4462,9 @@ func _paint_leaf_senescence(idx: int, st: Dictionary) -> void:
 	if absf(t - prev) < 0.08:
 		return
 	st.senesce_paint = t
+	if t >= 0.45 and not bool(st.get("senescence_migrated", false)):
+		_migrate_senescent_leaf(idx)
+		st.senescence_migrated = true
 	var grp: Array = _leaf_groups[idx] as Array
 	if grp.is_empty():
 		return
@@ -4465,6 +4476,35 @@ func _paint_leaf_senescence(idx: int, st: Dictionary) -> void:
 		var mid: VoxelBatch.Handle = grp[int(float(grp.size()) * 0.55)] as VoxelBatch.Handle
 		if mid != null and mid.alive:
 			mid.set_color(mid.base_color.lerp(_SENESCE_TIP_COLOR, (t - 0.45) * 1.2))
+
+
+func _ensure_senescence_batch() -> VoxelBatch:
+	if _senescence_batch == null:
+		_senescence_mat = ShaderMaterial.new()
+		_senescence_mat.shader = load("res://shaders/foliage_senescent_mm.gdshader")
+		_senescence_mat.set_shader_parameter("water_surface_y", water_surface_y)
+		_senescence_batch = VoxelBatch.new(self, _senescence_mat, 32, true)
+		_apply_visibility_range_to(_senescence_batch.mmi)
+	return _senescence_batch
+
+
+func _migrate_senescent_leaf(idx: int) -> void:
+	if idx < 0 or idx >= _leaf_groups.size():
+		return
+	var target := _ensure_senescence_batch()
+	var migrated: Array = []
+	for old_v in _leaf_groups[idx]:
+		var old: VoxelBatch.Handle = old_v
+		if old == null or not old.alive:
+			continue
+		var current_color: Color = old.batch._colors[old.index]
+		var replacement := target.add(old.transform, current_color)
+		replacement.base_color = old.base_color
+		replacement.set_custom_data(old.custom_data)
+		old.hide()
+		migrated.append(replacement)
+	_leaf_groups[idx] = migrated
+	target.flush()
 
 
 func _shed_leaf_at(idx: int) -> void:

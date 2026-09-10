@@ -79,10 +79,11 @@ reference; implementation follows dependency order, not numeric order.
   tops redden while shaded old leaves stay green. Completes the shared pigment
   intent of Naturalism #281–282. — Shipped as one bounded saved float per leaf,
   packed in custom-data B and uploaded only after visible dose changes. *M · L*
-- [ ] **10. Translucent senescence batch.** Move late-senescent leaf handles
+- [x] **10. Translucent senescence batch.** Move late-senescent leaf handles
   into a small secondary batch using a palette-safe translucent foliage
   material, preserving the shipped leaf lifecycle while leaves thin to amber
-  before shedding. Extends Naturalism #67/#292. *L · M*
+  before shedding. Extends Naturalism #67/#292. — Shipped with one secondary
+  batch per plant, atomic handle replacement, and no per-leaf materials. *L · M*
 - [ ] **11. Canopy-attenuated god rays.** Build a low-resolution canopy-density
   mask from crown summaries every few seconds and sample it in
   `god_ray.gdshader`, allowing dense planting to interrupt fake light shafts.
