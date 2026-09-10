@@ -33,8 +33,13 @@ const SEED_BANK_MAX: float = 1.0
 const ALLELO_MAX: float = 0.8
 const ROOT_O2_MAX: float = 1.0
 const ANAEROBIC_MAX: float = 1.0
+const IRON_MAX: float = 1.5
+const CO2_MAX: float = 1.2
+const IRON_LEGACY_DEFAULT: float = 0.7
+const CO2_LEGACY_DEFAULT: float = 0.42
 const CHANNEL_DIFFUSION: float = 0.06
 const CHANNEL_DECAY: float = 0.008
+const AVAILABILITY_RELAX_RATE: float = 0.08
 
 # Hoisted out of tick(): GDScript reallocates an inline array literal
 # every time the for-loop is entered, so the old `for off in [Vector2i(...),
@@ -100,6 +105,8 @@ var seed_bank: Array = []
 var allelochemical: Array = []
 var root_oxygen: Array = []
 var anaerobic_gas: Array = []
+var iron_availability: Array = []
+var co2_availability: Array = []
 var _dirty_channels: Dictionary = {}
 var _next_dirty_channels: Dictionary = {}
 # Scratch buffer for diffusion. Preallocated once in init() so tick()
@@ -138,15 +145,17 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(allelochemical)
 	_init_channel_grid(root_oxygen)
 	_init_channel_grid(anaerobic_gas)
+	_init_channel_grid(iron_availability, IRON_LEGACY_DEFAULT)
+	_init_channel_grid(co2_availability, CO2_LEGACY_DEFAULT)
 	_dirty_channels.clear()
 
 
-func _init_channel_grid(grid: Array) -> void:
+func _init_channel_grid(grid: Array, initial: float = 0.0) -> void:
 	grid.clear()
 	for x in cells_x:
 		var col: Array = []
 		col.resize(cells_z)
-		col.fill(0.0)
+		col.fill(initial)
 		grid.append(col)
 
 
@@ -245,6 +254,47 @@ func add_anaerobic_at(world_pos: Vector3, amount: float) -> void:
 	_mark_channel_dirty(c)
 
 
+func get_iron_availability_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return iron_availability[c.x][c.y]
+
+
+func get_co2_availability_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return co2_availability[c.x][c.y]
+
+
+# Exchange water-column chemistry into pore water only where roots make the
+# cell active. This keeps work proportional to planted/dirty cells.
+func exchange_water_availability_at(world_pos: Vector3, water_iron: float,
+		water_co2: float, dt: float) -> void:
+	var c := _cell_at(world_pos)
+	var k: float = clampf(dt * AVAILABILITY_RELAX_RATE, 0.0, 1.0)
+	var soil_iron: float = clampf(_active_reservoir_leak() * 900.0, 0.0, 0.35)
+	var iron_target: float = clampf(water_iron + soil_iron, 0.0, IRON_MAX)
+	var co2_target: float = clampf(water_co2, 0.0, CO2_MAX)
+	iron_availability[c.x][c.y] = lerpf(iron_availability[c.x][c.y], iron_target, k)
+	co2_availability[c.x][c.y] = lerpf(co2_availability[c.x][c.y], co2_target, k)
+	_mark_channel_dirty(c)
+
+
+func consume_iron_at(world_pos: Vector3, amount: float) -> float:
+	return _consume_availability_at(iron_availability, world_pos, amount)
+
+
+func consume_co2_at(world_pos: Vector3, amount: float) -> float:
+	return _consume_availability_at(co2_availability, world_pos, amount)
+
+
+func _consume_availability_at(grid: Array, world_pos: Vector3, amount: float) -> float:
+	var c := _cell_at(world_pos)
+	var taken: float = minf(maxf(0.0, amount), float(grid[c.x][c.y]))
+	grid[c.x][c.y] = maxf(0.0, float(grid[c.x][c.y]) - taken)
+	if taken > 0.0:
+		_mark_channel_dirty(c)
+	return taken
+
+
 func release_anaerobic_at(world_pos: Vector3, amount: float) -> float:
 	var c := _cell_at(world_pos)
 	var released: float = minf(amount, anaerobic_gas[c.x][c.y])
@@ -295,6 +345,8 @@ func tick_channels(dt: float) -> void:
 	_tick_channel_field(allelochemical, ALLELO_MAX, dt)
 	_tick_channel_field(root_oxygen, ROOT_O2_MAX, dt)
 	_tick_channel_field(anaerobic_gas, ANAEROBIC_MAX, dt)
+	_tick_availability_field(iron_availability, IRON_MAX)
+	_tick_availability_field(co2_availability, CO2_MAX)
 	# Re-dirty cells with residual values for slow diffusion
 	_next_dirty_channels.clear()
 	for cell_v in _dirty_channels.keys():
@@ -302,11 +354,32 @@ func tick_channels(dt: float) -> void:
 		if seed_bank[cell.x][cell.y] > 0.01 \
 				or allelochemical[cell.x][cell.y] > 0.01 \
 				or root_oxygen[cell.x][cell.y] > 0.01 \
-				or anaerobic_gas[cell.x][cell.y] > 0.01:
+				or anaerobic_gas[cell.x][cell.y] > 0.01 \
+				or absf(iron_availability[cell.x][cell.y] - IRON_LEGACY_DEFAULT) > 0.01 \
+				or absf(co2_availability[cell.x][cell.y] - CO2_LEGACY_DEFAULT) > 0.01:
 			_next_dirty_channels[cell] = true
 	var swap: Dictionary = _dirty_channels
 	_dirty_channels = _next_dirty_channels
 	_next_dirty_channels = swap
+
+
+func _tick_availability_field(grid: Array, max_val: float) -> void:
+	var to_process: Array = _dirty_channels.keys()
+	for cell_v in to_process:
+		var cell: Vector2i = cell_v
+		var sum: float = 0.0
+		var count: float = 0.0
+		for off in NEIGHBOR_OFFSETS:
+			var nx: int = cell.x + off.x
+			var nz: int = cell.y + off.y
+			if nx < 0 or nz < 0 or nx >= cells_x or nz >= cells_z:
+				continue
+			sum += float(grid[nx][nz])
+			count += 1.0
+		var current: float = float(grid[cell.x][cell.y])
+		grid[cell.x][cell.y] = clampf(
+			current + (sum / maxf(count, 1.0) - current) * CHANNEL_DIFFUSION,
+			0.0, max_val)
 
 
 func tick_night_memory(dt: float, sim) -> void:
@@ -337,6 +410,7 @@ func tick(_dt: float) -> void:
 	# neighbors, captured via _mark_dirty on add/consume). Empty dirty set
 	# = nothing to do this tick — common case once the tank settles.
 	if _dirty_cells.is_empty():
+		tick_channels(_dt)
 		return
 
 	# Snapshot the dirty set's cells into the scratch buffer. We only need
@@ -479,6 +553,9 @@ func to_save_dict() -> Dictionary:
 		"allelochemical_flat": _pack_channel_flat(allelochemical),
 		"root_oxygen_flat": _pack_channel_flat(root_oxygen),
 		"anaerobic_flat": _pack_channel_flat(anaerobic_gas),
+		"iron_availability_flat": _pack_channel_flat(iron_availability),
+		"co2_availability_flat": _pack_channel_flat(co2_availability),
+		"schema_version": 2,
 	}
 
 
@@ -514,3 +591,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	_apply_channel_flat(allelochemical, d.get("allelochemical_flat", []), sx, sz)
 	_apply_channel_flat(root_oxygen, d.get("root_oxygen_flat", []), sx, sz)
 	_apply_channel_flat(anaerobic_gas, d.get("anaerobic_flat", []), sx, sz)
+	# Saves before schema 2 had only global chemistry. init() deliberately
+	# leaves legacy-equivalent defaults when these fields are absent.
+	_apply_channel_flat(iron_availability, d.get("iron_availability_flat", []), sx, sz)
+	_apply_channel_flat(co2_availability, d.get("co2_availability_flat", []), sx, sz)

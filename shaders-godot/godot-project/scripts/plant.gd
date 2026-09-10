@@ -291,11 +291,11 @@ const SHADE_HEIGHT_DELTA: int = 2  # neighbor must be at least this much taller
 const SHADE_PENALTY: float = 0.55  # multiplier on nutrient_mult when shaded
 
 # ---- Deficiency tinting ----
-# Refreshed every 2.5-4 s. Modulates the top voxels of the plant toward
-# pale (CO₂ stress) or yellow (iron stress) when the relevant inferred
-# condition is met. Both are cosmetic — they don't accelerate decay.
+# Refreshed every 2.5-4 s. Grounded in the root cell's pore-water channels.
 var _deficiency_check_t: float = 0.0
 var _deficiency_active: String = ""  # "", "co2", "iron"
+var _root_iron_available: float = SubstrateGrid.IRON_LEGACY_DEFAULT
+var _root_co2_available: float = SubstrateGrid.CO2_LEGACY_DEFAULT
 var _has_pinholes: bool = false
 
 # ---- Flowering lifecycle ----
@@ -2233,16 +2233,14 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 	var daylight: float = 1.0
 	if sim_driver != null and sim_driver.has_method("daylight"):
 		daylight = float(sim_driver.daylight())
-	# CO₂ stress: high light, stalled growth, plant still healthy enough
-	# to register the visible symptom (a dying plant has bigger problems).
-	var co2_stressed: bool = daylight > 0.7 and growth_progress < 0.15 \
-		and current_height >= max_height - 1 and _health_smooth > 0.5
-	# Iron stress: nutrients are middling — plenty for survival, not
-	# enough for vivid pigment in new growth. Substrate baseline is the
-	# tell (aquasoil / eco_complete are iron-rich; sand / inert_gravel
-	# starve stem plants of micronutrients).
-	var iron_stressed: bool = nutrient_mult > 0.25 and nutrient_mult < 0.6 \
+	# Symptoms now report measured local availability. Environmental guards
+	# keep the cues readable: carbon demand matters under light, and iron
+	# chlorosis appears on otherwise viable tissue.
+	var co2_stressed: bool = daylight > 0.55 \
+		and _root_co2_available < maxf(0.16, co2_demand * 0.55) \
 		and _health_smooth > 0.5
+	var iron_stressed: bool = _root_iron_available < 0.24 \
+		and nutrient_mult > 0.2 and _health_smooth > 0.5
 	if sim_driver != null and sim_driver.get("tank_vitals") != null:
 		var phase: int = int(sim_driver.tank_vitals.get("cycle_phase", 0))
 		if phase == WaterChemistry.CyclePhase.AMMONIA_SPIKE:
@@ -2767,6 +2765,16 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			var bio: float = clampf(float(w.biofilm_progress), 0.0, 0.7)
 			nutrient_mult *= lerpf(0.72, 1.12, bio / 0.65)
 		nutrient_mult *= _vitals_growth_mult(sim_v)
+		if not is_epiphyte and sim_v.get("water_chemistry") != null:
+			var wc: Variant = sim_v.water_chemistry
+			var water_iron: float = float(wc.iron_level()) \
+				if wc.has_method("iron_level") else SubstrateGrid.IRON_LEGACY_DEFAULT
+			var water_co2: float = float(wc.dissolved_co2_level()) \
+				if wc.has_method("dissolved_co2_level") else SubstrateGrid.CO2_LEGACY_DEFAULT
+			substrate.exchange_water_availability_at(
+				_world_pos, water_iron, water_co2, dt)
+			_root_iron_available = substrate.get_iron_availability_at(_world_pos)
+			_root_co2_available = substrate.get_co2_availability_at(_world_pos)
 
 	# Substrate boost cached at init time — substrate type doesn't change
 	# without a scene reload, so re-reading TankConfig every tick × 100
@@ -2875,23 +2883,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if _health_smooth < 0.2 and not is_dying:
 		_begin_dying()
 
-	# CO₂ + iron deficiency tinting. We don't model these as separate
-	# substrate pools (yet) — instead we infer them from existing state:
-	#
-	#   CO₂ stress: light is HIGH (>0.7) but growth_progress isn't catching
-	#     up. Real planted-tank symptom: bright lights without CO₂ injection
-	#     mean photosynthesis stalls. Visible as a soft pale tint at the
-	#     plant's top voxels (newest growth, where carbon demand is highest).
-	#
-	#   Iron stress: nutrient_mult is mid-low (0.25..0.6) AND the substrate
-	#     is the inert / sand profile (low organic iron). Real symptom:
-	#     interveinal yellowing on new leaves while older leaves stay green.
-	#     We tint the top quartile of leaves toward yellow.
-	#
-	# Both are pure visual — they don't accelerate decay. They're cues for
-	# the player to tweak settings (CO₂: lower the light or pick a richer
-	# substrate; iron: switch to aquasoil or eco_complete). Tint applied
-	# every ~3s, not per-tick, since the result changes slowly.
+	# Local iron/CO₂ availability drives the existing new-growth cues.
 	_deficiency_check_t -= dt
 	if _deficiency_check_t <= 0.0:
 		_deficiency_check_t = randf_range(2.5, 4.0)
@@ -2991,6 +2983,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			_spawn_growth_sparkle()
 			if not is_epiphyte:
 				substrate.consume_at(_world_pos, nutrient_demand)
+				substrate.consume_iron_at(
+					_world_pos, nutrient_demand * (0.025 + red_potential * 0.025))
+				substrate.consume_co2_at(
+					_world_pos, nutrient_demand * (0.04 + co2_demand * 0.04))
 			_notify_growth_audio()
 			if emergent_growth and _at_surface_cap():
 				_enter_canopy()

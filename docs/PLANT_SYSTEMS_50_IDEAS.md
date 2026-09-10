@@ -221,10 +221,12 @@ normal flowering.*
   pollination radius and produce offspring through the shipped
   `PlantGenome.blend()` function; self or clonal mutation remains the fallback
   when no partner exists. Implements Naturalism #366. *M · L*
-- [ ] **42. Honest iron and CO₂ fields.** Add bounded dirty-cell availability
+- [x] **42. Honest iron and CO₂ fields.** Add bounded dirty-cell availability
   channels fed by water chemistry and substrate processes, and make roots
   consume them so deficiency visuals reflect a cause the player can change.
-  Extends GOALS H #58 / Naturalism #907. *L · L*
+  — Shipped with sparse bounded pore-water exchange, root uptake, grounded
+  deficiency cues, and legacy-safe defaults. Extends GOALS H #58 /
+  Naturalism #907. *L · L*
 - [ ] **43. Mulm mineralization loop.** Route shed/dead plant biomass into a
   per-cell litter/mulm reservoir that settles and releases nutrients over time
   instead of returning a flat amount instantly. Extends Naturalism #272/#805.
