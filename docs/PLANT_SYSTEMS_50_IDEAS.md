@@ -94,9 +94,11 @@ reference; implementation follows dependency order, not numeric order.
   a bubble detaches. Extends Naturalism #178/#779 without adding per-plant
   particle systems. — Shipped with highest-mature-handle selection, a 0.22 s
   reversible highlight, and removal of the private-emitter fallback. *M · L*
-- [ ] **13. Golden-hour foliage rim.** Feed the existing day phase and light
+- [x] **13. Golden-hour foliage rim.** Feed the existing day phase and light
   direction into a restrained warm edge term during dawn and dusk, respecting
-  accessibility and shader performance tiers. Extends Naturalism #289. *S · M*
+  accessibility and shader performance tiers. Extends Naturalism #289. —
+  Shipped with the live directional-light vector, a reduced-setting 0.42 gain,
+  and a lowest-tier hard disable. *S · M*
 
 ## Technical Rendering (14–26)
 

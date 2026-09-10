@@ -713,6 +713,21 @@ static func update_foliage_gust(origin: Vector3, radius: float, age: float,
 		mat.set_shader_parameter("gust_strength", bounded_strength)
 
 
+static func update_foliage_golden_hour(warmth: float, light_direction: Vector3,
+		reduced_motion: bool) -> void:
+	var tier_gain: float = 0.0 if _shader_perf_tier >= 2 else 1.0
+	var accessibility_gain: float = 0.42 if reduced_motion else 1.0
+	var amount: float = clampf(warmth, 0.0, 1.0) * tier_gain * accessibility_gain
+	var direction: Vector3 = light_direction.normalized()
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("golden_hour", amount)
+		mat.set_shader_parameter("foliage_light_dir", direction)
+	for mat in _foliage_mat_cache.values():
+		if is_instance_valid(mat):
+			mat.set_shader_parameter("golden_hour", amount)
+			mat.set_shader_parameter("foliage_light_dir", direction)
+
+
 # Push a substrate ripple_phase value to every cached substrate_caustic
 # material. World.gd advances this slowly with sim time so the sand bed's
 # imprinted ripple pattern walks forward over many sim-minutes — visible

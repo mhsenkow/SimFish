@@ -32,6 +32,8 @@ uniform vec3 aquatic_light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float aquatic_shimmer : hint_range(0.0, 1.0) = 0.0;
 uniform float day_phase_offset = 0.0;
 uniform float wet_sheen_strength : hint_range(0.0, 1.0) = 0.32;
+uniform float golden_hour : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 foliage_light_dir = vec3(0.25, 0.8, 0.35);
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
@@ -111,6 +113,9 @@ void fragment() {
     float wet_band = 1.0 - smoothstep(0.03, 0.16, abs(v_world_pos.y - fixture_water_top));
     float wet_view = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.0);
     col += vec3(0.16, 0.20, 0.22) * wet_band * wet_view * wet_sheen_strength;
+    float sun_edge = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5)
+        * max(dot(n, normalize(-foliage_light_dir)), 0.0);
+    col += vec3(0.18, 0.085, 0.025) * sun_edge * golden_hour;
     if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
         float span = max(fixture_water_top - fixture_water_floor, 0.5);
         float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);

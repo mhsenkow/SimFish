@@ -935,6 +935,12 @@ func _process(dt: float) -> void:
 				var pitch_deg: float = lerpf(-90.0, -10.0, clampf(float(cfg2.light_pitch), 0.0, 1.0))
 				_directional_light.rotation = Vector3(
 					deg_to_rad(pitch_deg), deg_to_rad(yaw_deg), 0.0)
+		var foliage_light_dir := Vector3(0.25, -0.8, 0.35)
+		if _directional_light != null:
+			foliage_light_dir = -_directional_light.global_basis.z
+		VoxelMat.update_foliage_golden_hour(
+			clampf(sunset_hour, 0.0, 1.0), foliage_light_dir,
+			AccessibilityRuntime.reduced_motion_enabled())
 		_update_accent_lights(cfg2, deep_night, master_on)
 		var fixture_active: bool = tank_lights_on and master_on
 		var fixture_glow: float = deep_night * (1.0 if fixture_active else 0.0)

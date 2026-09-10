@@ -27,6 +27,8 @@ uniform vec3 gust_direction = vec3(1.0, 0.0, 0.0);
 uniform float gust_age = 99.0;
 uniform float gust_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float red_potential : hint_range(0.0, 1.0) = 0.0;
+uniform float golden_hour : hint_range(0.0, 1.0) = 0.0;
+uniform vec3 foliage_light_dir = vec3(0.25, 0.8, 0.35);
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.42;
@@ -127,6 +129,9 @@ void fragment() {
 	float wet_band = 1.0 - smoothstep(0.03, 0.16, abs(v_world_pos.y - water_surface_y));
 	float wet_view = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.0);
 	col += vec3(0.16, 0.20, 0.22) * wet_band * wet_view * wet_sheen_strength;
+	float sun_edge = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5)
+		* max(dot(n, normalize(-foliage_light_dir)), 0.0);
+	col += vec3(0.18, 0.085, 0.025) * sun_edge * golden_hour;
 	// Vein darkening through the luminous blade.
 	float vein = step(0.82, fract(v_world_pos.y * 7.0 + v_world_pos.x * 3.0));
 	col *= 1.0 - vein * backlit * 0.18;
