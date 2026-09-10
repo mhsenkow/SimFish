@@ -91,9 +91,10 @@ reference; implementation follows dependency order, not numeric order.
 stems remain individual `MeshInstance3D` nodes. Floaters have explicit LOD;
 rooted plants do not.*
 
-- [ ] **14. Rooted-plant visibility ranges.** Apply height-scaled
+- [x] **14. Rooted-plant visibility ranges.** Apply height-scaled
   `visibility_range_end` and self-fade settings to rooted stem and foliage
-  renderers, using the proven fish/floater LOD conventions. *S · L*
+  renderers, using the proven fish/floater LOD conventions. — Shipped with a
+  mature-height bonus and render-registry smoke coverage. *S · L*
 - [ ] **15. Reversible leaf instance LOD.** At distance, zero-scale a stable
   subset of non-silhouette leaf handles and restore their original transforms
   when near; never delete handles or alter biological biomass. *M · M*

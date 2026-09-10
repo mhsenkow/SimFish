@@ -7,6 +7,7 @@ extends SceneTree
 func _initialize() -> void:
 	var host := Node3D.new()
 	root.add_child(host)
+	await process_frame
 	var mats: Array[ShaderMaterial] = []
 	var shader := Shader.new()
 	shader.code = """
@@ -54,6 +55,26 @@ uniform float flow_strength = 0.0;
 	batch.clear()
 	_assert(failed, batch.mmi.custom_aabb.size.x <= 2.01,
 		"empty batch resets to margin bounds")
+	# #14: rooted plant geometry receives a nonzero, height-scaled fade range.
+	var plant := Plant.new()
+	host.add_child(plant)
+	plant.init(3, {"max_height": 18, "leaf_form": "spade"})
+	var plant_range: float = plant._plant_visibility_range()
+	_assert(failed, plant_range > Plant.PLANT_LOD_BASE_RANGE,
+		"plant visibility range scales with mature height")
+	var ranged_geometry: int = 0
+	var stack: Array[Node] = [plant]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			if child is GeometryInstance3D:
+				var geometry := child as GeometryInstance3D
+				ranged_geometry += 1
+				_assert(failed, is_equal_approx(geometry.visibility_range_end, plant_range),
+					"rooted geometry receives plant visibility range")
+			if child.get_child_count() > 0:
+				stack.append(child)
+	_assert(failed, ranged_geometry > 0, "plant smoke built ranged geometry")
 	host.queue_free()
 	if failed.is_empty():
 		print("SMOKE_PLANT_RENDER_REGISTRY_OK")

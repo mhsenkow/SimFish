@@ -332,6 +332,9 @@ var _blush_last_sat: float = -1.0
 var _blush_last_warmth: float = -99.0
 var _blush_last_sss: float = -1.0
 var _blush_last_vibrancy: float = -1.0
+const PLANT_LOD_BASE_RANGE: float = 38.0
+const PLANT_LOD_HEIGHT_BONUS_MAX: float = 12.0
+const PLANT_LOD_FADE_MARGIN: float = 4.0
 var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
 # Last wilt level we wrote into the leaf-tip handles. Tracked so the
@@ -429,6 +432,7 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_grow_one()
 	_warm_start_growth_vitals()
 	_apply_sway_personality()
+	_apply_rooted_visibility_ranges()
 
 
 # Fill in the leaf arrangement when the genome does not state one. Derived
@@ -1642,6 +1646,7 @@ func _ensure_foliage_batch() -> VoxelBatch:
 			VoxelMat.register_foliage_mm(_foliage_mat)
 		_apply_sway_personality()
 		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256)
+		_apply_visibility_range_to(_foliage_batch.mmi)
 	return _foliage_batch
 
 
@@ -2328,11 +2333,38 @@ func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
 func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
 	add_child(mi)
 	_clamp_node_xz_to_footprint(mi, margin)
+	_apply_visibility_range_to(mi)
 	mi.scale = Vector3(0.02, 0.02, 0.02)
 	var tw := create_tween()
 	tw.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_property(mi, "scale", Vector3.ONE, 0.95)
 	voxels.append(mi)
+
+
+func _plant_visibility_range() -> float:
+	var height_bonus: float = minf(
+		float(max_height) * VOXEL_SIZE * 1.5, PLANT_LOD_HEIGHT_BONUS_MAX)
+	return PLANT_LOD_BASE_RANGE + height_bonus
+
+
+func _apply_visibility_range_to(geometry: GeometryInstance3D) -> void:
+	if geometry == null:
+		return
+	geometry.visibility_range_begin = 0.0
+	geometry.visibility_range_end = _plant_visibility_range()
+	geometry.visibility_range_end_margin = PLANT_LOD_FADE_MARGIN
+	geometry.visibility_range_fade_mode = GeometryInstance3D.VISIBILITY_RANGE_FADE_SELF
+
+
+func _apply_rooted_visibility_ranges() -> void:
+	var stack: Array[Node] = [self]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		for child in node.get_children():
+			if child is GeometryInstance3D:
+				_apply_visibility_range_to(child as GeometryInstance3D)
+			if child.get_child_count() > 0:
+				stack.append(child)
 
 
 func _reclamp_voxels_to_footprint() -> void:
