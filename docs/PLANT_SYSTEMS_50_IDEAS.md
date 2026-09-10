@@ -115,9 +115,10 @@ rooted plants do not.*
   plants with no growth, damage, deficiency, reproduction, or environment
   changes, and wake them through explicit dirty signals. Continue chemistry at
   the required coarse rate. *M · M*
-- [ ] **21. Dynamic foliage bounds.** Replace `VoxelBatch`'s oversized constant
+- [x] **21. Dynamic foliage bounds.** Replace `VoxelBatch`'s oversized constant
   AABB with live instance bounds expanded by maximum sway, recomputed only when
-  transforms change. *S · L*
+  transforms change. — Shipped with configurable sway margins and render
+  registry smoke coverage. *S · L*
 - [ ] **22. Amortized leaf baking.** Queue large leaf templates as bounded
   chunks consumed across frames under the existing tank-wide plant growth
   budget, with one final batch flush. *M · M*

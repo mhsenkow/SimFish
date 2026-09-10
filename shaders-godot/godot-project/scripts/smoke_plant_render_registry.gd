@@ -5,6 +5,8 @@ extends SceneTree
 
 
 func _initialize() -> void:
+	var host := Node3D.new()
+	root.add_child(host)
 	var mats: Array[ShaderMaterial] = []
 	var shader := Shader.new()
 	shader.code = """
@@ -36,6 +38,23 @@ uniform float flow_strength = 0.0;
 	VoxelMat._live_foliage_mm_mats()
 	_assert(failed, VoxelMat._foliage_mm_mats.size() < 128,
 		"registry evicts released materials")
+	# #21: bounds fit live transforms plus the configured shader-sway margin.
+	var batch := VoxelBatch.new(host, StandardMaterial3D.new(), 4)
+	batch.set_bounds_margin(Vector3(1.0, 0.5, 1.0))
+	batch.add(Transform3D(Basis().scaled(Vector3(2.0, 4.0, 2.0)),
+		Vector3(-3.0, 2.0, 1.0)), Color.GREEN)
+	batch.add(Transform3D(Basis().scaled(Vector3.ONE),
+		Vector3(5.0, 7.0, -2.0)), Color.GREEN)
+	batch.flush()
+	var bounds: AABB = batch.mmi.custom_aabb
+	_assert(failed, bounds.position.x <= -5.0 and bounds.end.x >= 6.5,
+		"dynamic bounds enclose transformed voxels and margin")
+	_assert(failed, bounds.size.x < 20.0 and bounds.size.y < 20.0,
+		"dynamic bounds replace oversized legacy AABB")
+	batch.clear()
+	_assert(failed, batch.mmi.custom_aabb.size.x <= 2.01,
+		"empty batch resets to margin bounds")
+	host.queue_free()
 	if failed.is_empty():
 		print("SMOKE_PLANT_RENDER_REGISTRY_OK")
 		quit(0)

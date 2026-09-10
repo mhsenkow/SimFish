@@ -60,6 +60,8 @@ var _xforms: Array[Transform3D] = []
 var _colors: PackedColorArray = PackedColorArray()
 var _customs: PackedColorArray = PackedColorArray()
 var _use_custom: bool = false
+var _bounds_dirty: bool = true
+var _bounds_margin: Vector3 = Vector3(0.75, 0.35, 0.75)
 
 
 func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
@@ -76,9 +78,9 @@ func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
 	mmi = MultiMeshInstance3D.new()
 	mmi.multimesh = _mm
 	mmi.material_override = material
-	# Voxels are small; without a generous custom AABB the MultiMesh can be
-	# frustum-culled too aggressively (its computed AABB lags buffer writes).
-	mmi.custom_aabb = AABB(Vector3(-40, -40, -40), Vector3(80, 80, 80))
+	# Start conservative enough for the first write; flush() replaces this with
+	# live bounds expanded by shader-sway margin.
+	mmi.custom_aabb = AABB(-_bounds_margin, _bounds_margin * 2.0)
 	parent.add_child(mmi)
 
 
@@ -99,6 +101,7 @@ func add(xform: Transform3D, color: Color) -> Handle:
 		push_warning("VoxelBatch.add: non-finite transform (pos=%s), hiding voxel." % xform.origin)
 		safe_xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
 	_xforms.append(safe_xform)
+	_bounds_dirty = true
 	_colors.append(color)
 	var custom: Color = Color(0.0, 0.0, 0.0, 1.0)
 	if _use_custom:
@@ -119,12 +122,52 @@ func add(xform: Transform3D, color: Color) -> Handle:
 # Commit pending instance writes in one GPU upload (avoids Metal fence stalls
 # when hundreds of plants bake leaves in the same frame).
 func flush() -> void:
-	if _count == _visible:
+	if _count == _visible and not _bounds_dirty:
 		return
 	_visible = _count
 	_mm.visible_instance_count = _visible
 	if _count >= 8:
 		blit_buffer()
+	_refresh_custom_aabb()
+
+
+func set_bounds_margin(margin: Vector3) -> void:
+	_bounds_margin = Vector3(
+		maxf(0.0, margin.x), maxf(0.0, margin.y), maxf(0.0, margin.z))
+	_bounds_dirty = true
+
+
+func _refresh_custom_aabb() -> void:
+	if mmi == null or not _bounds_dirty:
+		return
+	var have_live: bool = false
+	var min_v: Vector3 = Vector3.ZERO
+	var max_v: Vector3 = Vector3.ZERO
+	for xform in _xforms:
+		if not xform.is_finite():
+			continue
+		var bx: Vector3 = xform.basis.x.abs()
+		var by: Vector3 = xform.basis.y.abs()
+		var bz: Vector3 = xform.basis.z.abs()
+		var half: Vector3 = (bx + by + bz) * 0.5
+		if half.length_squared() <= 1e-10:
+			continue
+		var lo: Vector3 = xform.origin - half
+		var hi: Vector3 = xform.origin + half
+		if not have_live:
+			min_v = lo
+			max_v = hi
+			have_live = true
+		else:
+			min_v = min_v.min(lo)
+			max_v = max_v.max(hi)
+	if not have_live:
+		mmi.custom_aabb = AABB(-_bounds_margin, _bounds_margin * 2.0)
+	else:
+		min_v -= _bounds_margin
+		max_v += _bounds_margin
+		mmi.custom_aabb = AABB(min_v, max_v - min_v)
+	_bounds_dirty = false
 
 
 func blit_buffer() -> void:
@@ -190,6 +233,7 @@ func _apply_transform(i: int, x: Transform3D) -> void:
 			return
 		_xforms[i] = x
 		_mm.set_instance_transform(i, x)
+		_bounds_dirty = true
 
 
 func _hide(i: int) -> void:
@@ -203,6 +247,7 @@ func _hide(i: int) -> void:
 		var hidden := Transform3D(Basis().scaled(Vector3.ZERO), origin)
 		_xforms[i] = hidden
 		_mm.set_instance_transform(i, hidden)
+		_bounds_dirty = true
 
 
 func clear() -> void:
@@ -211,8 +256,10 @@ func clear() -> void:
 	_xforms.clear()
 	_colors.resize(0)
 	_customs.resize(0)
+	_bounds_dirty = true
 	if _mm != null:
 		_mm.visible_instance_count = 0
+		_refresh_custom_aabb()
 
 
 func queue_free() -> void:
