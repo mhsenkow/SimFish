@@ -79,6 +79,7 @@ const DEFAULTS: Dictionary = {
 	"growth_curve_plateau": 1.0,
 	"ls_axiom": "",
 	"ls_rule_f": "",
+	"crown_fill": 0.0,
 }
 
 
@@ -177,6 +178,7 @@ static func from_plant(p: Plant) -> Dictionary:
 		"growth_curve_plateau": p.growth_curve_plateau,
 		"ls_axiom": p.get("ls_axiom") if p.get("ls_axiom") != null else "",
 		"ls_rule_f": p.get("ls_rule_f") if p.get("ls_rule_f") != null else "",
+		"crown_fill": p.get("crown_fill") if p.get("crown_fill") != null else 0.0,
 	})
 
 
@@ -236,6 +238,8 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	if p.get("ls_axiom") != null:
 		p.set("ls_axiom", String(e.ls_axiom))
 		p.set("ls_rule_f", String(e.ls_rule_f))
+	if p.get("crown_fill") != null:
+		p.set("crown_fill", clampf(float(e.crown_fill), 0.0, 1.0))
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -294,6 +298,7 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		float(out.growth_curve_acceleration) + _rng_signed(0.5) * sigma, 0.0, 16.0)
 	out.growth_curve_plateau = clampf(
 		float(out.growth_curve_plateau) + _rng_signed(0.05) * sigma, 0.1, 1.5)
+	out.crown_fill = clampf(float(out.crown_fill) + _rng_signed(0.05) * sigma, 0.0, 1.0)
 	# Macro-mutations only on full-strength sexual paths.
 	if sigma >= 0.8 and randf() < 0.04 * sigma:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
@@ -352,6 +357,7 @@ static func drift_distance(g: Dictionary, baseline: Dictionary = {}) -> float:
 		["growth_curve_establishment", 1.4],
 		["growth_curve_acceleration", 16.0],
 		["growth_curve_plateau", 1.4],
+		["crown_fill", 1.0],
 	]
 	for p in pairs:
 		var key: String = String(p[0])
@@ -394,6 +400,7 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 		float(ea.growth_curve_acceleration), float(eb.growth_curve_acceleration), 0.5)
 	out.growth_curve_plateau = lerpf(
 		float(ea.growth_curve_plateau), float(eb.growth_curve_plateau), 0.5)
+	out.crown_fill = lerpf(float(ea.crown_fill), float(eb.crown_fill), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
 	out.allelopathy_resistance = lerpf(
 		float(ea.allelopathy_resistance), float(eb.allelopathy_resistance), 0.5)

@@ -26,11 +26,14 @@ var _ls_cursor: int = 0
 var _ls_yaw: float = 0.0
 var _ls_stack: Array[float] = []
 var _ls_voxels: int = 0
+var crown_fill: float = 0.0
+var _attraction_points: Array[Vector3] = []
 const LS_MAX_SYMBOLS: int = 256
 const LS_MAX_DEPTH: int = 4
 const LS_MAX_STACK: int = 8
 const LS_MAX_VOXELS: int = 96
 const LS_COMMANDS_PER_GROWTH: int = 16
+const MAX_ATTRACTION_POINTS: int = 24
 
 
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
@@ -39,14 +42,17 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	branch_chance = clampf(float(params.get("ls_ratio", branch_chance)), 0.1, 0.9)
 	ls_axiom = String(params.get("ls_axiom", ""))
 	ls_rule_f = String(params.get("ls_rule_f", ""))
+	crown_fill = clampf(float(params.get("crown_fill", 0.0)), 0.0, 1.0)
 	monocarpic = true
 	emergent_growth = true
 	super.init(initial_height, params)
 	if ls_axiom != "":
 		_ls_program = _derive_lsystem(ls_axiom, ls_rule_f, max_branch_depth)
+	_build_attraction_points()
 
 
 func _grow_one() -> bool:
+	_steer_to_attraction()
 	if ls_axiom != "":
 		return _grow_lsystem_increment()
 	# Grow a stem voxel like the parent class does, then maybe spawn a branch.
@@ -60,6 +66,37 @@ func _grow_one() -> bool:
 		_spawn_branch()
 		_last_branch_at = current_height
 	return true
+
+
+func _build_attraction_points() -> void:
+	_attraction_points.clear()
+	if crown_fill <= 0.0:
+		return
+	var count: int = clampi(int(round(crown_fill * float(MAX_ATTRACTION_POINTS))), 1, MAX_ATTRACTION_POINTS)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = asymmetry_seed
+	for i in count:
+		var angle: float = float(i) * 2.399963 + rng.randf_range(-0.2, 0.2)
+		var radius: float = VOXEL_SIZE * rng.randf_range(1.5, 4.5)
+		var y: float = VOXEL_SIZE * rng.randf_range(2.0, float(maxi(3, max_height)))
+		_attraction_points.append(Vector3(cos(angle) * radius, y, sin(angle) * radius))
+
+
+func _steer_to_attraction() -> void:
+	if _attraction_points.is_empty():
+		return
+	var tip := Vector3(0.0, _get_stem_top(), 0.0)
+	var best_i: int = 0
+	var best_d: float = INF
+	for i in _attraction_points.size():
+		var d: float = tip.distance_squared_to(_attraction_points[i])
+		if d < best_d:
+			best_d = d
+			best_i = i
+	var target: Vector3 = _attraction_points[best_i]
+	_ls_yaw = atan2(target.z - tip.z, target.x - tip.x)
+	if best_d <= VOXEL_SIZE * VOXEL_SIZE * 2.25:
+		_attraction_points.remove_at(best_i)
 
 
 func _derive_lsystem(axiom: String, rule_f: String, depth: int) -> String:
@@ -156,6 +193,7 @@ func to_save_dict() -> Dictionary:
 	d["_ls_program"] = _ls_program
 	d["_ls_cursor"] = _ls_cursor
 	d["_ls_voxels"] = _ls_voxels
+	d["crown_fill"] = crown_fill
 	d["_last_branch_at"] = _last_branch_at
 	# Recursively save children branches. Each is itself a BranchPlant.
 	var kids: Array = []
@@ -176,6 +214,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	max_branch_depth = int(d.get("max_branch_depth", max_branch_depth))
 	ls_axiom = String(d.get("ls_axiom", ""))
 	ls_rule_f = String(d.get("ls_rule_f", ""))
+	crown_fill = clampf(float(d.get("crown_fill", 0.0)), 0.0, 1.0)
 	_last_branch_at = int(d.get("_last_branch_at", -99))
 	super.apply_save_dict(d)
 	_ls_program = String(d.get("_ls_program", _derive_lsystem(ls_axiom, ls_rule_f, max_branch_depth)))

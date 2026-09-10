@@ -184,9 +184,10 @@ rooted plants do not.*
 - [ ] **32. Juvenile/adult heteroblasty.** Add juvenile and adult leaf forms to
   the genome and transition by node age, independently from the shipped
   submerged/emergent heterophylly. Implements Naturalism #51. *L · L*
-- [ ] **33. Space-colonized crown fill.** Offer branch species a bounded set of
+- [x] **33. Space-colonized crown fill.** Offer branch species a bounded set of
   attraction points in lit free volume and steer tips toward unclaimed points,
-  yielding asymmetrical airy crowns without replacing the base growth budget.
+  yielding asymmetrical airy crowns without replacing the base growth budget. —
+  Shipped with 24-point deterministic crowns and nearest-tip claiming.
   *L · L*
 - [x] **34. Species growth curves.** Add genome-defined establishment,
   acceleration, and plateau parameters and use a sigmoid multiplier around the
