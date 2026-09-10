@@ -19,18 +19,36 @@ class_name BranchPlant
 
 var _last_branch_at: int = -99
 var _branches: Array[BranchPlant] = []
+var ls_axiom: String = ""
+var ls_rule_f: String = ""
+var _ls_program: String = ""
+var _ls_cursor: int = 0
+var _ls_yaw: float = 0.0
+var _ls_stack: Array[float] = []
+var _ls_voxels: int = 0
+const LS_MAX_SYMBOLS: int = 256
+const LS_MAX_DEPTH: int = 4
+const LS_MAX_STACK: int = 8
+const LS_MAX_VOXELS: int = 96
+const LS_COMMANDS_PER_GROWTH: int = 16
 
 
 func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	branch_angle_deg = float(params.get("ls_angle", params.get("branch_angle_deg", branch_angle_deg)))
 	max_branch_depth = int(params.get("ls_depth", params.get("max_branch_depth", max_branch_depth)))
 	branch_chance = clampf(float(params.get("ls_ratio", branch_chance)), 0.1, 0.9)
+	ls_axiom = String(params.get("ls_axiom", ""))
+	ls_rule_f = String(params.get("ls_rule_f", ""))
 	monocarpic = true
 	emergent_growth = true
 	super.init(initial_height, params)
+	if ls_axiom != "":
+		_ls_program = _derive_lsystem(ls_axiom, ls_rule_f, max_branch_depth)
 
 
 func _grow_one() -> bool:
+	if ls_axiom != "":
+		return _grow_lsystem_increment()
 	# Grow a stem voxel like the parent class does, then maybe spawn a branch.
 	var grew: bool = super._grow_one()
 	if not grew:
@@ -42,6 +60,57 @@ func _grow_one() -> bool:
 		_spawn_branch()
 		_last_branch_at = current_height
 	return true
+
+
+func _derive_lsystem(axiom: String, rule_f: String, depth: int) -> String:
+	var clean_rule: String = _sanitize_symbols(rule_f)
+	var program: String = _sanitize_symbols(axiom).substr(0, LS_MAX_SYMBOLS)
+	for _i in mini(depth, LS_MAX_DEPTH):
+		var next: String = ""
+		for ch in program:
+			next += clean_rule if ch == "F" and clean_rule != "" else ch
+			if next.length() >= LS_MAX_SYMBOLS:
+				break
+		program = next.substr(0, LS_MAX_SYMBOLS)
+	return program
+
+
+func _sanitize_symbols(source: String) -> String:
+	var out: String = ""
+	for ch in source:
+		if ch in ["F", "+", "-", "[", "]"]:
+			out += ch
+	return out
+
+
+func _grow_lsystem_increment() -> bool:
+	if _ls_program == "":
+		_ls_program = _derive_lsystem(ls_axiom, ls_rule_f, max_branch_depth)
+	var commands: int = 0
+	while _ls_cursor < _ls_program.length() and commands < LS_COMMANDS_PER_GROWTH:
+		var command: String = _ls_program[_ls_cursor]
+		_ls_cursor += 1
+		commands += 1
+		match command:
+			"F":
+				if _ls_voxels >= LS_MAX_VOXELS:
+					return false
+				var grew: bool = super._grow_one()
+				if grew:
+					_ls_voxels += 1
+					rotation.y = _ls_yaw
+				return grew
+			"+":
+				_ls_yaw += deg_to_rad(branch_angle_deg)
+			"-":
+				_ls_yaw -= deg_to_rad(branch_angle_deg)
+			"[":
+				if _ls_stack.size() < LS_MAX_STACK:
+					_ls_stack.append(_ls_yaw)
+			"]":
+				if not _ls_stack.is_empty():
+					_ls_yaw = _ls_stack.pop_back()
+	return false
 
 
 func _spawn_branch() -> void:
@@ -82,6 +151,11 @@ func to_save_dict() -> Dictionary:
 	d["branch_angle_deg"] = branch_angle_deg
 	d["branch_depth"] = branch_depth
 	d["max_branch_depth"] = max_branch_depth
+	d["ls_axiom"] = ls_axiom
+	d["ls_rule_f"] = ls_rule_f
+	d["_ls_program"] = _ls_program
+	d["_ls_cursor"] = _ls_cursor
+	d["_ls_voxels"] = _ls_voxels
 	d["_last_branch_at"] = _last_branch_at
 	# Recursively save children branches. Each is itself a BranchPlant.
 	var kids: Array = []
@@ -100,8 +174,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	branch_angle_deg = float(d.get("branch_angle_deg", branch_angle_deg))
 	branch_depth = int(d.get("branch_depth", branch_depth))
 	max_branch_depth = int(d.get("max_branch_depth", max_branch_depth))
+	ls_axiom = String(d.get("ls_axiom", ""))
+	ls_rule_f = String(d.get("ls_rule_f", ""))
 	_last_branch_at = int(d.get("_last_branch_at", -99))
 	super.apply_save_dict(d)
+	_ls_program = String(d.get("_ls_program", _derive_lsystem(ls_axiom, ls_rule_f, max_branch_depth)))
+	_ls_cursor = clampi(int(d.get("_ls_cursor", 0)), 0, _ls_program.length())
+	_ls_voxels = clampi(int(d.get("_ls_voxels", current_height)), 0, LS_MAX_VOXELS)
 	# Rebuild children. Each child was added as a Node3D child of self with
 	# a local position; we restore the same structure by add_child'ing a
 	# new BranchPlant, setting its position from the saved global_position

@@ -77,6 +77,8 @@ const DEFAULTS: Dictionary = {
 	"growth_curve_establishment": 1.0,
 	"growth_curve_acceleration": 0.0,
 	"growth_curve_plateau": 1.0,
+	"ls_axiom": "",
+	"ls_rule_f": "",
 }
 
 
@@ -173,6 +175,8 @@ static func from_plant(p: Plant) -> Dictionary:
 		"growth_curve_establishment": p.growth_curve_establishment,
 		"growth_curve_acceleration": p.growth_curve_acceleration,
 		"growth_curve_plateau": p.growth_curve_plateau,
+		"ls_axiom": p.get("ls_axiom") if p.get("ls_axiom") != null else "",
+		"ls_rule_f": p.get("ls_rule_f") if p.get("ls_rule_f") != null else "",
 	})
 
 
@@ -229,6 +233,9 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.growth_curve_establishment = clampf(float(e.growth_curve_establishment), 0.1, 1.5)
 	p.growth_curve_acceleration = clampf(float(e.growth_curve_acceleration), 0.0, 16.0)
 	p.growth_curve_plateau = clampf(float(e.growth_curve_plateau), 0.1, 1.5)
+	if p.get("ls_axiom") != null:
+		p.set("ls_axiom", String(e.ls_axiom))
+		p.set("ls_rule_f", String(e.ls_rule_f))
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -308,6 +315,8 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		out.phyllotaxis = arrangements[randi() % arrangements.size()]
 		out.whorl_count = 2 + randi() % 4
 		out.plant_name = ""
+	if String(out.ls_axiom) != "" and sigma >= 0.8 and randf() < 0.02:
+		out.ls_angle = clampf(float(out.ls_angle) + _rng_signed(3.0), 15.0, 55.0)
 	# Variegation sport (#22)
 	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -399,6 +408,8 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 		out.leaf_form = String(eb.leaf_form)
 		out.phyllotaxis = String(eb.phyllotaxis)
 		out.whorl_count = int(eb.whorl_count)
+	out.ls_axiom = String(ea.ls_axiom) if randf() < 0.5 else String(eb.ls_axiom)
+	out.ls_rule_f = String(ea.ls_rule_f) if randf() < 0.5 else String(eb.ls_rule_f)
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:

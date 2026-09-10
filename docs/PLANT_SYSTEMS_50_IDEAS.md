@@ -159,10 +159,11 @@ rooted plants do not.*
 *Grounding: `PlantGenome` already carries branching parameters and mutation;
 `BranchPlant` is L-system-inspired but has no rule rewriting.*
 
-- [ ] **27. Bounded L-system grammar.** Add optional axiom and production-rule
+- [x] **27. Bounded L-system grammar.** Add optional axiom and production-rule
   traits with a small interpreter for forward, turn, push, and pop commands.
   Derive incrementally under depth, symbol, voxel, and per-tick limits, falling
-  back to current probabilistic branching for old genomes. *L · L*
+  back to current probabilistic branching for old genomes. — Shipped with
+  sanitized F/+/-/[/] commands and strict derivation/runtime caps. *L · L*
 - [x] **28. Auxin apical dominance.** Compute a cheap apex hormone value that
   decays down nodes and suppresses lateral release; apex loss immediately
   removes the source and frees nearby buds. — Shipped with architecture-only
