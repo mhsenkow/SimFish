@@ -194,10 +194,10 @@ rooted plants do not.*
   acceleration, and plateau parameters and use a sigmoid multiplier around the
   existing soft-min resource rate. — Shipped as a bounded sigmoid multiplier;
   zero acceleration preserves the legacy rate. *M · M*
-- [ ] **35. Architectural reiteration after damage.** When biomass loss exceeds
+- [x] **35. Architectural reiteration after damage.** When biomass loss exceeds
   a configurable fraction, restart a scaled copy of the growth program from a
-  surviving node rather than merely resuming the severed axis. Completes
-  Naturalism #27. *L · L*
+  surviving node rather than merely resuming the severed axis. — Shipped once
+  per bounded damage episode from a surviving mid-axis node. Completes Naturalism #27. *L · L*
 - [ ] **36. Nutrient-seeking roots.** Grow visible root tips incrementally
   toward richer neighboring substrate cells while preserving the current
   golden-angle fallback in uniform soil. Implements Naturalism #125. *M · L*

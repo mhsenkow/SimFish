@@ -135,6 +135,12 @@ var juvenile_leaf_form: String = ""
 var adult_leaf_form: String = ""
 var heteroblasty_node: int = 0
 var _heteroblasty_adult: bool = false
+var reiteration_loss_threshold: float = 0.0
+var reiteration_capacity: int = 0
+var _reiterations_used: int = 0
+var _reiteration_pending_node: int = -1
+var _damage_episode_active: bool = false
+var _peak_biomass: int = 0
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
@@ -620,6 +626,8 @@ func to_save_dict() -> Dictionary:
 			"juvenile_leaf_form": juvenile_leaf_form,
 			"adult_leaf_form": adult_leaf_form,
 			"heteroblasty_node": heteroblasty_node,
+			"reiteration_loss_threshold": reiteration_loss_threshold,
+			"reiteration_capacity": reiteration_capacity,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -655,6 +663,9 @@ func to_save_dict() -> Dictionary:
 		"_root_reserve": _root_reserve,
 		"_shoot_reserve": _shoot_reserve,
 		"_heteroblasty_adult": _heteroblasty_adult,
+		"_reiterations_used": _reiterations_used,
+		"_damage_episode_active": _damage_episode_active,
+		"_peak_biomass": _peak_biomass,
 	}
 
 
@@ -704,6 +715,9 @@ func apply_save_dict(d: Dictionary) -> void:
 	_shoot_reserve = clampf(float(d.get("_shoot_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	_heteroblasty_adult = bool(d.get(
 		"_heteroblasty_adult", heteroblasty_node > 0 and current_height >= heteroblasty_node))
+	_reiterations_used = clampi(int(d.get("_reiterations_used", 0)), 0, reiteration_capacity)
+	_damage_episode_active = bool(d.get("_damage_episode_active", false))
+	_peak_biomass = maxi(int(d.get("_peak_biomass", current_height)), current_height)
 	# Loaded plants are established — no emersed-form display. Setting to
 	# 0 skips the size/color boost we apply to brand-new spawns.
 	_emersed_remaining = 0.0
@@ -1556,6 +1570,12 @@ func _grow_one() -> bool:
 	# growth. The lateral cluster reads as the plant pushing a branch
 	# where its apical bud was lost. current_height is NOT incremented —
 	# we let the main stem resume from the next tick.
+	if _reiteration_pending_node >= 0:
+		_grow_side_shoot_at(effective_ramp, _reiteration_pending_node, photo_offset)
+		_reiteration_pending_node = -1
+		leaf_size_mult = base_leaf_scale
+		leaf_form = base_leaf_form
+		return true
 	if not _pending_trim_nodes.is_empty():
 		var cut_y: int = _pending_trim_nodes.pop_front()
 		_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
@@ -1606,6 +1626,9 @@ func _grow_one() -> bool:
 			_add_evolutionary_accessory(effective_ramp, rel, photo_offset)
 
 	current_height += 1
+	_peak_biomass = maxi(_peak_biomass, biomass())
+	if _damage_episode_active and biomass() >= int(float(_peak_biomass) * 0.9):
+		_damage_episode_active = false
 	_internode_extension_y += VOXEL_SIZE * 0.65 * etiolation
 	_rebuild_auxin_profile()
 	_cast_root_shadow()
@@ -4043,6 +4066,13 @@ func nibble(amount: int) -> int:
 		_spawn_stem_fragment(stem_before - voxels.size())
 
 	_recalc_height()
+	var loss_fraction: float = float(stem_before - voxels.size()) / float(maxi(1, _peak_biomass))
+	if reiteration_loss_threshold > 0.0 and loss_fraction >= reiteration_loss_threshold \
+			and not _damage_episode_active and _reiterations_used < reiteration_capacity \
+			and current_height > 0:
+		_damage_episode_active = true
+		_reiterations_used += 1
+		_reiteration_pending_node = clampi(current_height / 2, 0, current_height - 1)
 	# Real plants respond to apical loss by activating lateral buds — when
 	# fish bite the top off, side shoots push from the cut node on the
 	# next growth tick. We record the height at the cut so _grow_one can

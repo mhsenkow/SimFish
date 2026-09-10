@@ -83,6 +83,8 @@ const DEFAULTS: Dictionary = {
 	"juvenile_leaf_form": "",
 	"adult_leaf_form": "",
 	"heteroblasty_node": 0,
+	"reiteration_loss_threshold": 0.0,
+	"reiteration_capacity": 0,
 }
 
 
@@ -185,6 +187,8 @@ static func from_plant(p: Plant) -> Dictionary:
 		"juvenile_leaf_form": p.juvenile_leaf_form,
 		"adult_leaf_form": p.adult_leaf_form,
 		"heteroblasty_node": p.heteroblasty_node,
+		"reiteration_loss_threshold": p.reiteration_loss_threshold,
+		"reiteration_capacity": p.reiteration_capacity,
 	})
 
 
@@ -249,6 +253,8 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.juvenile_leaf_form = String(e.juvenile_leaf_form)
 	p.adult_leaf_form = String(e.adult_leaf_form)
 	p.heteroblasty_node = clampi(int(e.heteroblasty_node), 0, 64)
+	p.reiteration_loss_threshold = clampf(float(e.reiteration_loss_threshold), 0.0, 0.9)
+	p.reiteration_capacity = clampi(int(e.reiteration_capacity), 0, 4)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -334,6 +340,9 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 	if int(out.heteroblasty_node) > 0:
 		out.heteroblasty_node = clampi(
 			int(out.heteroblasty_node) + int(round(_rng_signed(1.0) * sigma)), 1, 64)
+	if float(out.reiteration_loss_threshold) > 0.0:
+		out.reiteration_loss_threshold = clampf(
+			float(out.reiteration_loss_threshold) + _rng_signed(0.03) * sigma, 0.1, 0.9)
 	# Variegation sport (#22)
 	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -435,6 +444,9 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 		if randf() < 0.5 else String(eb.adult_leaf_form)
 	out.heteroblasty_node = int(round(lerpf(
 		float(ea.heteroblasty_node), float(eb.heteroblasty_node), 0.5)))
+	out.reiteration_loss_threshold = lerpf(
+		float(ea.reiteration_loss_threshold), float(eb.reiteration_loss_threshold), 0.5)
+	out.reiteration_capacity = mini(int(ea.reiteration_capacity), int(eb.reiteration_capacity))
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:
