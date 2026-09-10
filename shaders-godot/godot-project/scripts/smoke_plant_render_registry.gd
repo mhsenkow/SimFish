@@ -75,6 +75,38 @@ uniform float flow_strength = 0.0;
 			if child.get_child_count() > 0:
 				stack.append(child)
 	_assert(failed, ranged_geometry > 0, "plant smoke built ranged geometry")
+	# #16: rooted structural stems share a second per-plant MultiMesh while
+	# retaining stable biological handles for removal and biomass.
+	var stem_plant := Plant.new()
+	host.add_child(stem_plant)
+	stem_plant.init(6, {"max_height": 12, "leaf_form": "column",
+		"asymmetry_seed": 4242})
+	_assert(failed, stem_plant._stem_batch != null
+			and stem_plant._stem_batch.mmi != null,
+		"multi-voxel rooted plant creates a stem batch")
+	_assert(failed, stem_plant.voxels.size() == 6,
+		"stem registry retains one stable handle per voxel")
+	var all_batched: bool = true
+	for h in stem_plant.voxels:
+		all_batched = all_batched and h != null and h.alive \
+			and h.batch == stem_plant._stem_batch
+	_assert(failed, all_batched, "every structural stem points at the shared batch")
+	_assert(failed, is_equal_approx(
+			stem_plant._stem_batch.mmi.visibility_range_end,
+			stem_plant._plant_visibility_range()),
+		"stem batch receives rooted visibility range")
+	var stem_bounds: AABB = stem_plant._stem_batch.mmi.custom_aabb
+	_assert(failed, stem_bounds.size.y > Plant.VOXEL_SIZE * 4.0
+			and stem_bounds.size.y < Plant.VOXEL_SIZE * 9.0,
+		"stem batch uses live dynamic bounds")
+	var removed_handle: VoxelBatch.Handle = stem_plant.voxels.back()
+	var biomass_before: int = stem_plant.biomass()
+	var eaten: int = stem_plant.nibble(1)
+	_assert(failed, eaten == 1 and not removed_handle.alive,
+		"grazing hides the removed stable stem handle")
+	_assert(failed, stem_plant.biomass() == stem_plant.current_height
+			and stem_plant.biomass() < biomass_before,
+		"stem removal updates biological biomass")
 	host.queue_free()
 	if failed.is_empty():
 		print("SMOKE_PLANT_RENDER_REGISTRY_OK")

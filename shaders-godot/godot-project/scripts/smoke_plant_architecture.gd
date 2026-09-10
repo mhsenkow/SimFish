@@ -174,13 +174,12 @@ func _initialize() -> void:
 	var ys: Array[float] = []
 	var xs: Dictionary = {}
 	var widths: Dictionary = {}
-	for v in col.voxels:
-		if not is_instance_valid(v):
+	for h in col.voxels:
+		if h == null or not h.alive:
 			continue
-		ys.append(v.position.y)
-		xs[snappedf(v.position.x, 0.005)] = true
-		if v.mesh is BoxMesh:
-			widths[snappedf((v.mesh as BoxMesh).size.x, 0.005)] = true
+		ys.append(h.local_pos.y)
+		xs[snappedf(h.local_pos.x, 0.005)] = true
+		widths[snappedf(h.transform.basis.x.length(), 0.005)] = true
 	ys.sort()
 	var spacing_ok: bool = true
 	for i in range(1, ys.size()):

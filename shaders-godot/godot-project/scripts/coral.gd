@@ -54,6 +54,10 @@ var _fern_tips: Array = []
 var _brain_positions: Array[Vector3] = []
 var _anemone_tentacles: Array[Node3D] = []
 var _anemone_tip_voxels: Array[Node3D] = []
+# A few coral forms still animate specialized polyp MeshInstance3Ds. Keep
+# those subclass-only nodes separate from Plant.voxels, which is now the
+# rooted-stem VoxelBatch handle registry.
+var _legacy_body_nodes: Array[MeshInstance3D] = []
 var _hydra_tentacles: Array[Node3D] = []
 var _clam_shell_parts: Array[Node3D] = []
 var _sessile_phase: float = 0.0
@@ -144,7 +148,7 @@ func _mesh_coral_voxel(pos: Vector3, size: Vector3, col: Color) -> MeshInstance3
 	mi.material_override = VoxelMat.make_foliage(col)
 	mi.position = pos
 	add_child(mi)
-	voxels.append(mi)
+	_legacy_body_nodes.append(mi)
 	return mi
 
 
@@ -995,7 +999,7 @@ func _recalc_height() -> void:
 	for h in _body_handles:
 		if h.alive:
 			max_local_y = maxf(max_local_y, h.local_pos.y)
-	for v in voxels:
+	for v in _legacy_body_nodes:
 		if is_instance_valid(v) and not v.is_queued_for_deletion():
 			max_local_y = maxf(max_local_y, to_local(v.global_position).y)
 	current_height = maxi(0, int(max_local_y / VOXEL_SIZE))
@@ -1012,8 +1016,8 @@ func nibble(amount: int) -> int:
 			if h != null and h.alive:
 				h.hide()
 			removed += 1
-		elif not voxels.is_empty():
-			var v: MeshInstance3D = voxels.pop_back()
+		elif not _legacy_body_nodes.is_empty():
+			var v: MeshInstance3D = _legacy_body_nodes.pop_back()
 			if is_instance_valid(v):
 				v.queue_free()
 			removed += 1
@@ -1021,7 +1025,7 @@ func nibble(amount: int) -> int:
 			break
 		growth_progress = 0.0
 	_recalc_height()
-	if current_height <= 0 and _live_body_voxel_count() == 0 and voxels.is_empty():
+	if current_height <= 0 and _live_body_voxel_count() == 0 and _legacy_body_nodes.is_empty():
 		_on_death()
 		queue_free()
 	return removed
@@ -1032,7 +1036,7 @@ func nibble(amount: int) -> int:
 # turnover is fastest and bleaching shows first. Restored from cached
 # base_albedo when bleach drops back to safe.
 func _apply_bleach_tint() -> void:
-	if _body_handles.is_empty() and voxels.is_empty():
+	if _body_handles.is_empty() and _legacy_body_nodes.is_empty():
 		return
 	var b: float = clampf(_bleach_level, 0.0, 1.0)
 	var pale := Color(0.96, 0.92, 0.86)
@@ -1044,12 +1048,12 @@ func _apply_bleach_tint() -> void:
 		var depth_w: float = clampf(float(i) / float(maxi(1, n_body - 1)), 0.0, 1.0)
 		var local_b: float = b * (0.45 + 0.55 * depth_w)
 		h.set_color(h.base_color.lerp(pale, local_b))
-	var n: int = voxels.size()
+	var n: int = _legacy_body_nodes.size()
 	for i in n:
 		# Load via Variant first so a freed entry doesn't blow up the
 		# typed assignment on Plant.voxels (Plant.nibble may have just
 		# queue_free'd one but not yet pruned the array slot).
-		var vx_v: Variant = voxels[i]
+		var vx_v: Variant = _legacy_body_nodes[i]
 		if vx_v == null or not (vx_v is MeshInstance3D) or not is_instance_valid(vx_v):
 			continue
 		var vx: MeshInstance3D = vx_v as MeshInstance3D

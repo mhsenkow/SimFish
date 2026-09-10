@@ -29,7 +29,9 @@ class Handle extends RefCounted:
 	var index: int = -1
 	var local_pos: Vector3 = Vector3.ZERO
 	var base_color: Color = Color.WHITE
+	var transform: Transform3D = Transform3D.IDENTITY
 	var alive: bool = true
+	var visible: bool = true
 
 	func set_color(c: Color) -> void:
 		if alive and batch != null:
@@ -44,12 +46,27 @@ class Handle extends RefCounted:
 	# moving the whole batch via the parent Node3D's transform.
 	func set_transform(xform: Transform3D) -> void:
 		if alive and batch != null:
-			batch._apply_transform(index, xform)
+			transform = xform
+			local_pos = xform.origin
+			if visible:
+				batch._apply_transform(index, xform)
+
+	# Temporarily hide damage such as pinholes without changing biological
+	# biomass. A later true restores the latest logical transform.
+	func set_visible(value: bool) -> void:
+		if not alive or batch == null or visible == value:
+			return
+		visible = value
+		if visible:
+			batch._apply_transform(index, transform)
+		else:
+			batch._hide(index)
 
 	func hide() -> void:
 		if alive and batch != null:
 			batch._hide(index)
 			alive = false
+			visible = false
 
 
 var mmi: MultiMeshInstance3D = null
@@ -116,6 +133,7 @@ func add(xform: Transform3D, color: Color) -> Handle:
 	h.index = i
 	h.local_pos = xform.origin
 	h.base_color = color
+	h.transform = xform
 	return h
 
 

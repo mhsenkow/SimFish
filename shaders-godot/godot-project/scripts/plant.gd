@@ -189,7 +189,9 @@ var _emersed_remaining: float = EMERSED_DURATION_S
 var current_height: int = 0
 var growth_progress: float = 0.0
 var _growth_load_hold_s: float = 0.0
-var voxels: Array[MeshInstance3D] = []
+# Stable handles for structural stem voxels. They retain the old individually
+# addressable semantics without retaining one MeshInstance3D per segment.
+var voxels: Array[VoxelBatch.Handle] = []
 var has_flower: bool = false
 var has_emerged: bool = false   # true once tip has reached the water surface
 var bloom_voxels: Array[MeshInstance3D] = []
@@ -344,6 +346,8 @@ static var _shared_pearling_mesh_medium: SphereMesh = null
 # a whole leaf can be shed/decayed as a unit. _leaf_ages stays parallel.
 var _foliage_batch: VoxelBatch = null
 var _foliage_mat: ShaderMaterial = null
+var _stem_batch: VoxelBatch = null
+var _stem_mat: ShaderMaterial = null
 var _blush_last_sat: float = -1.0
 var _blush_last_warmth: float = -99.0
 var _blush_last_sss: float = -1.0
@@ -1289,10 +1293,9 @@ func _stabilize_flower_against_lean() -> void:
 # reads as attached, not hovering above a thin green line.
 func _tip_bloom_local_pos() -> Vector3:
 	for i in range(voxels.size() - 1, -1, -1):
-		var v: Variant = voxels[i]
-		if v is Node3D and is_instance_valid(v):
-			var tip: Node3D = v as Node3D
-			return tip.position + Vector3(0.0, VOXEL_SIZE * 0.12, 0.0)
+		var tip: VoxelBatch.Handle = voxels[i]
+		if tip != null and tip.alive:
+			return tip.local_pos + Vector3(0.0, VOXEL_SIZE * 0.12, 0.0)
 	var rel: float = 1.0
 	var lean: Vector2 = _stem_lean_offset(rel)
 	return Vector3(lean.x, _get_stem_top() - VOXEL_SIZE * 0.05, lean.y)
@@ -1344,10 +1347,10 @@ func _apply_canopy_layover() -> void:
 	var lie_dir: float = 1.0 if fmod(absf(global_position.x * 12.7 + global_position.z * 3.1), 1.0) > 0.5 else -1.0
 	for i in lay_n:
 		var vi: int = voxels.size() - 1 - i
-		var v: MeshInstance3D = voxels[vi]
-		if not is_instance_valid(v):
+		var v: VoxelBatch.Handle = voxels[vi]
+		if v == null or not v.alive:
 			continue
-		if not ribbon and v.position.y < surface_local_y - VOXEL_SIZE * 0.45:
+		if not ribbon and v.local_pos.y < surface_local_y - VOXEL_SIZE * 0.45:
 			continue
 		var t: float = float(i) / float(maxi(1, lay_n - 1))
 		var lean: float
@@ -1359,32 +1362,17 @@ func _apply_canopy_layover() -> void:
 		else:
 			lean = lerpf(0.22, 0.68, t)
 			along = VOXEL_SIZE * lerpf(0.06, 0.14, t)
-		var tw := create_tween()
-		tw.tween_property(v, "rotation:x", -lean * lie_dir, 1.15) \
-			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		# Keep tip near the meniscus and extend horizontally along surface.
+		var xform: Transform3D = v.transform
+		xform.basis = Basis(Vector3.RIGHT, -lean * lie_dir) * xform.basis
 		var target_y: float = surface_local_y + VOXEL_SIZE * lerpf(0.02, 0.10, t) if ribbon \
-			else v.position.y + VOXEL_SIZE * lerpf(0.06, 0.14, t)
-		tw.parallel().tween_property(v, "position:y", target_y, 0.9) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			else v.local_pos.y + VOXEL_SIZE * lerpf(0.06, 0.14, t)
+		xform.origin.y = target_y
 		if ribbon:
-			tw.parallel().tween_property(v, "position:x",
-				v.position.x + along * lie_dir, 1.05) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-			# Slight twist along the blade (#112).
-			tw.parallel().tween_property(v, "rotation:z",
-				lerpf(0.0, 0.35, t) * lie_dir, 1.0)
-	var top_v: MeshInstance3D = voxels.back()
-	if is_instance_valid(top_v):
-		var base_y: float = top_v.position.y
-		# Bind to the tip voxel so aquascape trim / melt / dormancy can't leave
-		# an infinite PropertyTweener pointed at a freed MeshInstance3D.
-		var bob := create_tween().set_loops().bind_node(top_v)
-		bob.tween_property(top_v, "position:y", base_y + VOXEL_SIZE * 0.05, 2.1) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		bob.tween_property(top_v, "position:y", base_y - VOXEL_SIZE * 0.03, 2.1) \
-			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		_canopy_bob_tween = bob
+			xform.origin.x += along * lie_dir
+			xform.basis = Basis(Vector3.FORWARD, lerpf(0.0, 0.35, t) * lie_dir) * xform.basis
+		v.set_transform(xform)
+	if _stem_batch != null:
+		_stem_batch.flush()
 
 
 func _spawn_meniscus_break() -> void:
@@ -1787,10 +1775,11 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 		current_height * VOXEL_SIZE * 0.85 + VOXEL_SIZE * 0.5,
 		lean_l.y + photo_offset.y,
 	))
+	var stem_pos: Vector3 = stem_mi.position
 	_register_stem_voxel(stem_mi)
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
-		leaf_node.position = stem_mi.position
+		leaf_node.position = stem_pos
 		var leaf_voxels: Array = LeafShapes.build_lance_pair(
 			ramp, age_frac, int(current_height / 2.0), _leaf_mods())
 		_leaf_groups.append(_bake_leaf(leaf_node, leaf_voxels))
@@ -1879,8 +1868,7 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 			VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.85, VOXEL_SIZE * 0.18))
 		stem_mi.material_override = VoxelMat.make_foliage(stem_color)
 		stem_mi.position = leaf_node.position + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
-		add_child(stem_mi)
-		voxels.append(stem_mi)
+		_register_stem_voxel(stem_mi)
 	var leaf_voxels: Array = []
 	match kind:
 		"spade":
@@ -2198,8 +2186,8 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 	var n: int = voxels.size()
 	var cutoff: int = maxi(1, n - int(ceil(float(n) * 0.25)))
 	for i in n:
-		var vx: MeshInstance3D = voxels[i]
-		if not is_instance_valid(vx):
+		var vx: VoxelBatch.Handle = voxels[i]
+		if vx == null or not vx.alive:
 			continue
 		if i >= cutoff and new_state != "":
 			_apply_voxel_tint(vx, tint)
@@ -2251,34 +2239,16 @@ func _apply_leaf_wilt() -> void:
 # ShaderMaterial and rewriting albedo on the copy. Stores the original
 # albedo in a meta so _clear_voxel_tint can restore it. Idempotent — if
 # the voxel already has a tinted-copy material, just update the albedo.
-func _apply_voxel_tint(vx: MeshInstance3D, tint: Color) -> void:
-	var sm: ShaderMaterial = vx.material_override as ShaderMaterial
-	if sm == null:
-		return
-	var orig: Color
-	if vx.has_meta("base_albedo"):
-		var stored: Variant = vx.get_meta("base_albedo")
-		orig = stored as Color if stored is Color else Color.WHITE
-	else:
-		orig = VoxelMat.read_albedo(sm)
-		vx.set_meta("base_albedo", orig)
-	if not vx.has_meta("tint_mat"):
-		var dup: ShaderMaterial = sm.duplicate() as ShaderMaterial
-		vx.material_override = dup
-		vx.set_meta("tint_mat", true)
-	(vx.material_override as ShaderMaterial).set_shader_parameter(
-		"albedo", orig * tint)
+func _apply_voxel_tint(vx: VoxelBatch.Handle, tint: Color) -> void:
+	if vx != null and vx.alive:
+		vx.set_color(vx.base_color * tint)
 
 
 # Restore a voxel's original (cached, shared) material. Cheap when the
 # voxel was never tinted (no-op).
-func _clear_voxel_tint(vx: MeshInstance3D) -> void:
-	if not vx.has_meta("tint_mat"):
-		return
-	var stored: Variant = vx.get_meta("base_albedo")
-	var orig: Color = stored as Color if stored is Color else Color.WHITE
-	vx.material_override = VoxelMat.make_foliage(orig)
-	vx.remove_meta("tint_mat")
+func _clear_voxel_tint(vx: VoxelBatch.Handle) -> void:
+	if vx != null and vx.alive:
+		vx.set_color(vx.base_color)
 
 
 var _footprint_enforce_timer: float = 0.0
@@ -2366,15 +2336,55 @@ func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
 	node.global_position = Vector3(xz.x, wy, xz.y)
 
 
+func _ensure_stem_batch() -> VoxelBatch:
+	if _stem_batch == null:
+		if _stem_mat == null:
+			_stem_mat = ShaderMaterial.new()
+			_stem_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
+			_stem_mat.set_shader_parameter("sway_amplitude", 0.0)
+			VoxelMat.register_foliage_mm(_stem_mat)
+		_stem_batch = VoxelBatch.new(self, _stem_mat, 64)
+		_stem_batch.set_bounds_margin(Vector3(0.35, 0.25, 0.35))
+		_apply_visibility_range_to(_stem_batch.mmi)
+	return _stem_batch
+
+
 func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
+	# Keep builders as cheap templates, just like leaf baking. They are never
+	# retained in the scene tree after their transform/color is extracted.
 	add_child(mi)
 	_clamp_node_xz_to_footprint(mi, margin)
-	_apply_visibility_range_to(mi)
-	mi.scale = Vector3(0.02, 0.02, 0.02)
+	var size := Vector3(VOXEL_SIZE, VOXEL_SIZE, VOXEL_SIZE)
+	var box := mi.mesh as BoxMesh
+	if box != null:
+		size = box.size
+	var color: Color = Color.WHITE
+	var shader_mat := mi.material_override as ShaderMaterial
+	if shader_mat != null:
+		color = VoxelMat.read_albedo(shader_mat, color)
+	var final_xform := Transform3D(mi.transform.basis.scaled(size), mi.position)
+	remove_child(mi)
+	mi.free()
+	var tiny_xform := Transform3D(
+		final_xform.basis.scaled(Vector3.ONE * 0.02), final_xform.origin)
+	var handle: VoxelBatch.Handle = _ensure_stem_batch().add(tiny_xform, color)
+	# Logical transform is final from birth; the short tween only controls the
+	# shared batch instance reveal and never allocates a voxel Node3D.
+	handle.transform = final_xform
+	handle.local_pos = final_xform.origin
+	voxels.append(handle)
 	var tw := create_tween()
-	tw.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(mi, "scale", Vector3.ONE, 0.95)
-	voxels.append(mi)
+	tw.tween_method(func(k: float) -> void:
+		if handle.alive:
+			handle.set_transform(Transform3D(
+				final_xform.basis.scaled(Vector3.ONE * k), final_xform.origin)),
+		0.02, 1.0, 0.95).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(func() -> void:
+		if handle.alive:
+			handle.set_transform(final_xform)
+			if _stem_batch != null:
+				_stem_batch.flush())
+	_stem_batch.flush()
 
 
 func _plant_visibility_range() -> float:
@@ -2406,9 +2416,18 @@ func _apply_rooted_visibility_ranges() -> void:
 func _reclamp_voxels_to_footprint() -> void:
 	if _footprint_world() == null:
 		return
-	for v in voxels:
-		if is_instance_valid(v) and not v.is_queued_for_deletion():
-			_clamp_node_xz_to_footprint(v, 0.2)
+	var world := _footprint_world()
+	for h in voxels:
+		if h == null or not h.alive:
+			continue
+		var world_pos: Vector3 = global_transform * h.local_pos
+		var xz: Vector2 = world.clamp_xz_in_tank(world_pos.x, world_pos.z, 0.2)
+		var local_pos: Vector3 = to_local(Vector3(xz.x, world_pos.y, xz.y))
+		var xform: Transform3D = h.transform
+		xform.origin = local_pos
+		h.set_transform(xform)
+	if _stem_batch != null:
+		_stem_batch.flush()
 	for leaf in _leaf_nodes:
 		if leaf != null and is_instance_valid(leaf):
 			_clamp_node_xz_to_footprint(leaf, 0.28)
@@ -3427,11 +3446,13 @@ func _decay_one_voxel() -> void:
 	# Tip dies first — that tip is also the canopy bob target.
 	_stop_canopy_bob()
 	# Remove from the top (tips die first).
-	var v: MeshInstance3D = voxels.pop_back()
-	if is_instance_valid(v):
+	var v: VoxelBatch.Handle = voxels.pop_back()
+	if v != null and v.alive:
 		# Spawn a tiny waste particle at the voxel's world position.
-		_spawn_decay_waste(v.global_position)
-		v.queue_free()
+		_spawn_decay_waste(global_transform * v.local_pos)
+		v.hide()
+	if _stem_batch != null:
+		_stem_batch.flush()
 	_recalc_height()
 
 
@@ -3455,10 +3476,12 @@ func trim_for_aquascape(frac: float, mode: String = "all") -> Dictionary:
 			for _i in remove_s:
 				if voxels.is_empty():
 					break
-				var v: MeshInstance3D = voxels.pop_front()
-				if is_instance_valid(v):
-					_spawn_decay_waste(v.global_position)
-					v.queue_free()
+				var v: VoxelBatch.Handle = voxels.pop_front()
+				if v != null and v.alive:
+					_spawn_decay_waste(global_transform * v.local_pos)
+					v.hide()
+				if _stem_batch != null:
+					_stem_batch.flush()
 				_recalc_height()
 		"mow":
 			if is_carpet:
@@ -3518,12 +3541,13 @@ func trigger_crypt_melt() -> void:
 	# Burst: remove all stem voxels rapidly + clear the foliage MultiMesh.
 	_stop_canopy_bob()
 	for v in voxels:
-		if is_instance_valid(v):
-			_spawn_melt_ghost(v.global_position - global_position,
-				VoxelMat.read_albedo(v.material_override as ShaderMaterial, Color.GREEN))
-			_spawn_decay_waste(v.global_position)
-			v.queue_free()
+		if v != null and v.alive:
+			_spawn_melt_ghost(v.local_pos, v.base_color)
+			_spawn_decay_waste(global_transform * v.local_pos)
+			v.hide()
 	voxels.clear()
+	if _stem_batch != null:
+		_stem_batch.clear()
 	if _foliage_batch != null:
 		_foliage_batch.clear()
 	_leaf_groups.clear()
@@ -3610,12 +3634,14 @@ func _apply_pinholes() -> void:
 			idx = clampi(lo + randi() % maxi(1, hi - lo), 0, voxels.size() - 1)
 		else:
 			idx = randi() % maxi(1, voxels.size())
-		if idx < voxels.size() and is_instance_valid(voxels[idx]):
-			voxels[idx].visible = false
+		if idx < voxels.size() and voxels[idx] != null and voxels[idx].alive:
+			voxels[idx].set_visible(false)
 			# Neighboring nibble for a torn edge read.
 			if ribbon and idx + 1 < voxels.size() and randf() < 0.45 \
-					and is_instance_valid(voxels[idx + 1]):
-				voxels[idx + 1].visible = false
+					and voxels[idx + 1] != null and voxels[idx + 1].alive:
+				voxels[idx + 1].set_visible(false)
+	if _stem_batch != null:
+		_stem_batch.flush()
 
 
 # Fish nibbling: remove up to `amount` bites from flower or stem tip.
@@ -3677,9 +3703,9 @@ func nibble(amount: int) -> int:
 		_stop_canopy_bob()
 	for i in amount:
 		if not voxels.is_empty():
-			var v: MeshInstance3D = voxels.pop_back()
-			if is_instance_valid(v):
-				v.queue_free()
+			var v: VoxelBatch.Handle = voxels.pop_back()
+			if v != null and v.alive:
+				v.hide()
 			removed += 1
 			any_stem_lost = true
 		elif _take_youngest_leaf_voxel():
@@ -3689,6 +3715,8 @@ func nibble(amount: int) -> int:
 		else:
 			break
 		growth_progress = 0.0
+	if _stem_batch != null:
+		_stem_batch.flush()
 	# Fragment-to-plant (#13)
 	if stem_before >= 2 and voxels.size() < stem_before - 1:
 		_spawn_stem_fragment(stem_before - voxels.size())
@@ -3914,14 +3942,14 @@ func _tick_leaf_hair_visuals() -> void:
 	if hair_avg < 0.25 or randf() > hair_avg * 0.55:
 		return
 	var idx: int = clampi(int(float(voxels.size()) * randf_range(0.35, 0.9)), 0, voxels.size() - 1)
-	var host: MeshInstance3D = voxels[idx]
-	if not is_instance_valid(host) or not host.visible:
+	var host: VoxelBatch.Handle = voxels[idx]
+	if host == null or not host.alive or not host.visible:
 		return
 	var fil := MeshInstance3D.new()
 	fil.name = "LeafHair"
 	fil.mesh = VoxelMat.get_box(Vector3(0.04, randf_range(0.18, 0.38), 0.04))
 	fil.material_override = VoxelMat.make_foliage(Color8(70, 110, 55))
-	fil.position = host.position + Vector3(randf_range(-0.06, 0.06), 0.02, randf_range(-0.06, 0.06))
+	fil.position = host.local_pos + Vector3(randf_range(-0.06, 0.06), 0.02, randf_range(-0.06, 0.06))
 	fil.rotation = Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.5, 0.5))
 	add_child(fil)
 	_leaf_hair_nodes.append(fil)
@@ -4008,9 +4036,11 @@ func _enter_dormant_bulb() -> void:
 	_dormant_timer = 0.0
 	_stop_canopy_bob()
 	for v in voxels:
-		if is_instance_valid(v):
-			v.queue_free()
+		if v != null and v.alive:
+			v.hide()
 	voxels.clear()
+	if _stem_batch != null:
+		_stem_batch.clear()
 	current_height = 0
 
 
@@ -4022,8 +4052,14 @@ func _spawn_stem_fragment(units: int) -> void:
 		return
 	var g: Dictionary = PlantGenome.from_plant(self)
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var origin: Vector3 = global_position + Vector3(0, VOXEL_SIZE, 0)
+	for i in range(voxels.size() - 1, -1, -1):
+		var h: VoxelBatch.Handle = voxels[i]
+		if h != null and h.alive:
+			origin = global_transform * h.local_pos
+			break
 	sim.spawn_plant_fragment(
-		global_position + Vector3(randf_range(-0.2, 0.2), VOXEL_SIZE, randf_range(-0.2, 0.2)),
+		origin + Vector3(randf_range(-0.2, 0.2), 0.0, randf_range(-0.2, 0.2)),
 		g, ramp, units, Vector3(randf_range(-0.08, 0.08), 0.0, randf_range(-0.08, 0.08)))
 
 
@@ -4122,19 +4158,11 @@ func _has_live_leaf_voxel() -> bool:
 
 
 func _recalc_height() -> void:
-	# Stem voxels are direct children of the plant, so their local position.y is
-	# already the height offset — reading it avoids the global-transform flush
-	# that v.global_position forced on every voxel (this runs on every nibble
-	# and decay step, which fish grazing triggers constantly). The plant's only
-	# transform is a ~2° downstream lean, so the topmost local-y voxel is still
-	# the topmost, and local_y / VOXEL_SIZE is exactly the column index.
+	# Stem handles retain their plant-local position after moving into a batch.
 	var max_local_y: float = 0.0
-	for v in voxels:
-		if is_instance_valid(v) and not v.is_queued_for_deletion():
-			# to_local handles both direct-child stem voxels and the grandchild
-			# voxels SpiralPlant nests under a leaf_root — only runs on nibble /
-			# decay, not per frame, so the transform read is cheap here.
-			max_local_y = maxf(max_local_y, to_local(v.global_position).y)
+	for h in voxels:
+		if h != null and h.alive:
+			max_local_y = maxf(max_local_y, h.local_pos.y)
 	# Base-Plant leaf voxels live in the foliage MultiMesh (not the `voxels` node
 	# array), so fold their baked plant-local heights in too — many plant forms
 	# (paddle / ribbon / needle) grow only leaves and have no stem voxels at all.

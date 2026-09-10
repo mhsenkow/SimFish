@@ -98,9 +98,10 @@ rooted plants do not.*
 - [ ] **15. Reversible leaf instance LOD.** At distance, zero-scale a stable
   subset of non-silhouette leaf handles and restore their original transforms
   when near; never delete handles or alter biological biomass. *M · M*
-- [ ] **16. Batched rooted stems.** Replace per-voxel stem `MeshInstance3D`
+- [x] **16. Batched rooted stems.** Replace per-voxel stem `MeshInstance3D`
   nodes with a second per-plant `VoxelBatch`, retaining stable handles for
-  grazing, aging, save restore, and color updates. *L · L*
+  grazing, aging, save restore, and color updates. — Shipped with reversible
+  handle visibility, batched growth reveal, and subclass compatibility. *L · L*
 - [ ] **17. Tank-wide far-foliage batch.** For distant plants only, mirror
   simplified stem and leaf transforms into one world-owned MultiMesh and hide
   their private render batches. Gate the feature on profiling because transfer
