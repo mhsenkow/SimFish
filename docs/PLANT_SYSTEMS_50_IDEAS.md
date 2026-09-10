@@ -46,10 +46,12 @@ reference; implementation follows dependency order, not numeric order.
   a normalized thickness value while baking each leaf voxel; use it to attenuate
   backlight and the fake SSS rim on petioles and thick leaf centers. — Shipped
   in custom-data R with deterministic center weighting and no extra materials. *M · M*
-- [ ] **3. Resolve the dormant stem shader.** Measure the existing unused
+- [x] **3. Resolve the dormant stem shader.** Measure the existing unused
   `stem_subsurface.gdshader` against the foliage material after stems are
   batched; wire it in if it improves stem readability without excess material
-  churn, otherwise remove the dead shader factory and asset. *S · M*
+  churn, otherwise remove the dead shader factory and asset. — Removed after
+  confirming zero callers; reuse saves one material per plant and keeps stems
+  on the registered palette/lighting path. *S · M*
 - [ ] **4. Waterline wet-sheen band.** Use the existing water-surface uniform to
   add a narrow, view-dependent highlight around foliage crossing the waterline,
   with reduced intensity under the palette potato tier. *S · M*

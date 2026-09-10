@@ -407,7 +407,7 @@ SimFish/
 
 ### `shaders/` (the pipeline)
 
-`palette_quantize.gdshader` is the output stage (48-color LUT + Bayer dither + region dither + outline + CRT). `voxel*.gdshader` family are the faceted unshaded voxel materials (+ `voxel_mm`, `voxel_translucent`). `foliage*.gdshader` adds plant sway + SSS rim; `stem_subsurface.gdshader` the rim term. Water/glass stack: `water.gdshader`, `glass.gdshader`, `caustics.gdshader`, `substrate_caustic.gdshader`, `substrate_opaque.gdshader`, `surface_ripple.gdshader`, `bubble.gdshader`, `god_ray.gdshader`. `circle_mask.gdshader` masks the PiP portal; `palette_tint.gdshaderinc` is the shared tint include.
+`palette_quantize.gdshader` is the output stage (48-color LUT + Bayer dither + region dither + outline + CRT). `voxel*.gdshader` family are the faceted unshaded voxel materials (+ `voxel_mm`, `voxel_translucent`). `foliage*.gdshader` adds plant sway + SSS rim for both leaves and batched stems. Water/glass stack: `water.gdshader`, `glass.gdshader`, `caustics.gdshader`, `substrate_caustic.gdshader`, `substrate_opaque.gdshader`, `surface_ripple.gdshader`, `bubble.gdshader`, `god_ray.gdshader`. `circle_mask.gdshader` masks the PiP portal; `palette_tint.gdshaderinc` is the shared tint include.
 
 ## Architecture notes
 

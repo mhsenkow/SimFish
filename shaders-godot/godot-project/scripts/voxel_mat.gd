@@ -553,18 +553,6 @@ static func make_translucent(color: Color) -> ShaderMaterial:
 	return m
 
 
-static var _stem_shader: Shader = null
-
-static func make_stem(color: Color, daylight: float = 1.0) -> ShaderMaterial:
-	if _stem_shader == null:
-		_stem_shader = load("res://shaders/stem_subsurface.gdshader") as Shader
-	var m := ShaderMaterial.new()
-	m.shader = _stem_shader
-	m.set_shader_parameter("albedo", color)
-	m.set_shader_parameter("daylight", daylight)
-	return m
-
-
 static func get_bubble_material() -> ShaderMaterial:
 	return make_bubble()
 
