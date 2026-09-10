@@ -248,10 +248,11 @@ normal flowering.*
   layout-time epiphyte placement to manual/library/autonomous spawn paths and
   validate attachment against rock/wood surfaces before substrate fallback.
   Extends Naturalism #129/#662. *M · M*
-- [ ] **47. Family-aware allelopathy.** Store a bounded emitter-family mix per
+- [x] **47. Family-aware allelopathy.** Store a bounded emitter-family mix per
   affected cell and add heritable family resistance, preventing emitters and
   close kin from suffering the same penalty as competitors. Extends
-  Naturalism #682/#699. *L · L*
+  Naturalism #682/#699. — Shipped with four-family cell caps, decaying mixes,
+  scalar-save migration, and bounded inherited kin resistance. *L · L*
 - [x] **48. Root-footprint competition.** Register coarse per-plant root
   footprints and divide each cell's available uptake by overlapping active root
   mass, replacing the current large-plant halo strip. Extends GOALS F #36 /

@@ -20,6 +20,7 @@ class_name SubstrateGrid
 
 const SeedBankStore = preload("res://scripts/substrate_seed_bank.gd")
 const RootCompetition = preload("res://scripts/substrate_root_competition.gd")
+const AllelopathyStore = preload("res://scripts/substrate_allelopathy_store.gd")
 const NUTRIENT_BASELINE: float = 0.3
 const NUTRIENT_MAX: float = 3.0
 const DIFFUSION_RATE: float = 0.04
@@ -125,6 +126,7 @@ var _dirty_cells: Dictionary = {}
 var _next_dirty: Dictionary = {}
 var _seed_lots = SeedBankStore.new()
 var _root_competition = RootCompetition.new()
+var _allelopathy_families = AllelopathyStore.new()
 
 
 func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
@@ -157,6 +159,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(mulm)
 	_seed_lots.init(cells_x, cells_z)
 	_root_competition.init(cells_x, cells_z)
+	_allelopathy_families.init(cells_x, cells_z)
 	_dirty_channels.clear()
 
 
@@ -293,13 +296,35 @@ func _sync_seed_scalar(c: Vector2i) -> void:
 
 func get_allelochemical_at(world_pos: Vector3) -> float:
 	var c := _cell_at(world_pos)
-	return allelochemical[c.x][c.y]
+	return _allelopathy_families.total(c)
 
 
 func add_allelochemical_at(world_pos: Vector3, amount: float) -> void:
+	add_family_allelochemical_at(world_pos, "legacy:anonymous", amount)
+
+
+func add_family_allelochemical_at(world_pos: Vector3, family: String,
+		amount: float) -> float:
 	var c := _cell_at(world_pos)
-	allelochemical[c.x][c.y] = minf(allelochemical[c.x][c.y] + amount, ALLELO_MAX)
-	_mark_channel_dirty(c)
+	var accepted: float = _allelopathy_families.add(c, family, amount)
+	_sync_allelopathy_scalar(c)
+	if accepted > 0.0:
+		_mark_channel_dirty(c)
+	return accepted
+
+
+func get_allelopathy_pressure_at(world_pos: Vector3, family: String,
+		resistance: float) -> float:
+	return _allelopathy_families.pressure(
+		_cell_at(world_pos), family, resistance)
+
+
+func get_allelopathy_mix_at(world_pos: Vector3) -> Dictionary:
+	return _allelopathy_families.mix_at(_cell_at(world_pos))
+
+
+func _sync_allelopathy_scalar(c: Vector2i) -> void:
+	allelochemical[c.x][c.y] = _allelopathy_families.total(c)
 
 
 func get_root_oxygen_at(world_pos: Vector3) -> float:
@@ -431,7 +456,9 @@ func tick_channels(dt: float) -> void:
 	_seed_lots.tick_cells(active_cells, dt)
 	for cell_v in active_cells:
 		_sync_seed_scalar(cell_v)
-	_tick_channel_field(allelochemical, ALLELO_MAX, dt)
+	_allelopathy_families.tick_cells(active_cells, dt)
+	for cell_v in active_cells:
+		_sync_allelopathy_scalar(cell_v)
 	_tick_channel_field(root_oxygen, ROOT_O2_MAX, dt)
 	_tick_channel_field(anaerobic_gas, ANAEROBIC_MAX, dt)
 	_tick_availability_field(iron_availability, IRON_MAX)
@@ -665,7 +692,8 @@ func to_save_dict() -> Dictionary:
 		"co2_availability_flat": _pack_channel_flat(co2_availability),
 		"mulm_flat": _pack_channel_flat(mulm),
 		"seed_lots": _seed_lots.to_sparse_save(),
-		"schema_version": 4,
+		"allelopathy_families": _allelopathy_families.to_sparse_save(),
+		"schema_version": 5,
 	}
 
 
@@ -711,6 +739,19 @@ func apply_save_dict(d: Dictionary) -> void:
 				_seed_lots.migrate_scalar(Vector2i(x, z), float(seed_bank[x][z]))
 				_sync_seed_scalar(Vector2i(x, z))
 	_apply_channel_flat(allelochemical, d.get("allelochemical_flat", []), sx, sz)
+	var family_entries: Variant = d.get("allelopathy_families", [])
+	if family_entries is Array and not (family_entries as Array).is_empty():
+		_allelopathy_families.apply_sparse_save(family_entries)
+	else:
+		for x in mini(cells_x, sx):
+			for z in mini(cells_z, sz):
+				if float(allelochemical[x][z]) > 0.0:
+					_allelopathy_families.add(
+						Vector2i(x, z), "legacy:anonymous",
+						float(allelochemical[x][z]))
+	for x in cells_x:
+		for z in cells_z:
+			_sync_allelopathy_scalar(Vector2i(x, z))
 	_apply_channel_flat(root_oxygen, d.get("root_oxygen_flat", []), sx, sz)
 	_apply_channel_flat(anaerobic_gas, d.get("anaerobic_flat", []), sx, sz)
 	# Saves before schema 2 had only global chemistry. init() deliberately

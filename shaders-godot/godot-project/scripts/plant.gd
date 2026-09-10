@@ -111,6 +111,8 @@ var palatability: float = 0.65
 var leaf_thickness: float = 0.5
 var temp_opt: float = 0.55
 var allelopathy_strength: float = 0.0
+var allelopathy_family: String = ""
+var allelopathy_resistance: float = 0.0
 var emersed_leaf_form: String = ""
 var dormancy_type: String = PlantGenome.DORMANCY_NONE
 var repro_mode: String = PlantGenome.REPRO_SEED
@@ -584,6 +586,8 @@ func to_save_dict() -> Dictionary:
 			"leaf_thickness": leaf_thickness,
 			"temp_opt": temp_opt,
 			"allelopathy_strength": allelopathy_strength,
+			"allelopathy_family": allelopathy_family,
+			"allelopathy_resistance": allelopathy_resistance,
 			"emersed_leaf_form": emersed_leaf_form,
 			"dormancy_type": dormancy_type,
 			"repro_mode": repro_mode,
@@ -2809,7 +2813,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 	# Allelopathy + root oxygenation (#37, #38)
 	if not is_epiphyte:
-		var allelo: float = substrate.get_allelochemical_at(_world_pos)
+		var allelo: float = substrate.get_allelopathy_pressure_at(
+			_world_pos, allelopathy_family, allelopathy_resistance)
 		if allelo > 0.05:
 			var allelo_pen: float = 1.0 - clampf(allelo * 0.45, 0.0, 0.35)
 			nutrient_mult *= allelo_pen
@@ -2820,7 +2825,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			nutrient_mult *= o2_boost
 			growth_nutrient *= o2_boost
 		if allelopathy_strength > 0.05:
-			substrate.add_allelochemical_at(_world_pos, allelopathy_strength * dt * 0.04)
+			substrate.add_family_allelochemical_at(
+				_world_pos, allelopathy_family, allelopathy_strength * dt * 0.04)
 		if _root_count > 2:
 			substrate.add_root_oxygen_at(_world_pos, float(_root_count) * dt * 0.002)
 			substrate.release_anaerobic_at(_world_pos, float(_root_count) * dt * 0.001)

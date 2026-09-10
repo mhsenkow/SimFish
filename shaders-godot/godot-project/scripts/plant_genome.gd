@@ -57,6 +57,8 @@ const DEFAULTS: Dictionary = {
 	"leaf_thickness": 0.5,
 	"temp_opt": 0.55,
 	"allelopathy_strength": 0.0,
+	"allelopathy_family": "",
+	"allelopathy_resistance": 0.0,
 	"emersed_leaf_form": "",
 	"dormancy_type": DORMANCY_NONE,
 	"repro_mode": REPRO_SEED,
@@ -98,6 +100,14 @@ static func enrich(src: Dictionary) -> Dictionary:
 		out.palatability = maxf(float(out.palatability), 0.8)
 	if float(out.red_potential) > 0.7:
 		out.palatability = maxf(float(out.palatability), 0.7)
+	if float(out.allelopathy_strength) > 0.05:
+		if String(out.allelopathy_family) == "":
+			var family_source: String = sid if sid != "" \
+				else String(out.parent_lineage)
+			out.allelopathy_family = "family:%s" % family_source
+		# Legacy emitters gain the expected self/kin immunity on enrichment.
+		out.allelopathy_resistance = maxf(
+			float(out.allelopathy_resistance), 0.85)
 	if out.asymmetry_seed == 0:
 		out.asymmetry_seed = randi()
 	return out
@@ -139,6 +149,8 @@ static func from_plant(p: Plant) -> Dictionary:
 		"leaf_thickness": p.leaf_thickness,
 		"temp_opt": p.temp_opt,
 		"allelopathy_strength": p.allelopathy_strength,
+		"allelopathy_family": p.allelopathy_family,
+		"allelopathy_resistance": p.allelopathy_resistance,
 		"emersed_leaf_form": p.emersed_leaf_form,
 		"dormancy_type": p.dormancy_type,
 		"repro_mode": p.repro_mode,
@@ -187,6 +199,8 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 	p.leaf_thickness = float(e.leaf_thickness)
 	p.temp_opt = float(e.temp_opt)
 	p.allelopathy_strength = float(e.allelopathy_strength)
+	p.allelopathy_family = String(e.allelopathy_family)
+	p.allelopathy_resistance = clampf(float(e.allelopathy_resistance), 0.0, 1.0)
 	p.emersed_leaf_form = String(e.emersed_leaf_form)
 	p.dormancy_type = String(e.dormancy_type)
 	p.repro_mode = String(e.repro_mode)
@@ -236,6 +250,8 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		float(out.co2_demand) + _rng_signed(0.03) * sigma, 0.05, 1.0)
 	out.temp_opt = clampf(
 		float(out.temp_opt) + _rng_signed(0.03) * sigma, 0.15, 0.9)
+	out.allelopathy_resistance = clampf(
+		float(out.allelopathy_resistance) + _rng_signed(0.025) * sigma, 0.0, 1.0)
 	out.ls_angle = clampf(
 		float(out.ls_angle) + _rng_signed(4.0) * sigma, 15.0, 55.0)
 	out.ls_ratio = clampf(
@@ -322,6 +338,10 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 	out.palatability = lerpf(float(ea.palatability), float(eb.palatability), 0.5)
 	out.leaf_thickness = lerpf(float(ea.leaf_thickness), float(eb.leaf_thickness), 0.5)
 	out.allelopathy_strength = lerpf(float(ea.allelopathy_strength), float(eb.allelopathy_strength), 0.5)
+	out.allelopathy_resistance = lerpf(
+		float(ea.allelopathy_resistance), float(eb.allelopathy_resistance), 0.5)
+	out.allelopathy_family = String(ea.allelopathy_family) \
+		if randf() < 0.5 else String(eb.allelopathy_family)
 	out.asymmetry_seed = randi()
 	if randf() < 0.5:
 		out.leaf_form = String(ea.leaf_form)
