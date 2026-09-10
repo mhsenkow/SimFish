@@ -1853,6 +1853,10 @@ var _cam_cache: Camera3D = null
 # player can't see. Position integration still runs every render frame so
 # fish stay where they should when the camera swings back to them.
 var _off_frustum_phase: int = 0
+var _plant_tick_index: int = 0
+var _plant_tick_accum: Dictionary = {}
+const PLANT_TICK_NEAR_DIST_SQ: float = 32.0 * 32.0
+const PLANT_TICK_FAR_DIST_SQ: float = 44.0 * 44.0
 var _guardian_mind_accum: float = 0.0
 var _shrimp_brain_phase: int = 0
 var _mind_tick_index: int = 0
@@ -2893,6 +2897,32 @@ func is_creature_visible_to_camera(node: Node3D) -> bool:
 	return cam.is_position_in_frustum(node.global_position)
 
 
+func _plant_tick_divisor(plant: Plant, camera: Camera3D) -> int:
+	if camera == null or plant == null:
+		return 1
+	# Stress, death and active flowering remain responsive even when the camera
+	# is far away. Calm vegetation can safely integrate a larger accumulated dt.
+	if plant.is_dying or plant.health < 0.65 or int(plant.flower_stage) != 0:
+		return 1
+	var dist_sq: float = camera.global_position.distance_squared_to(plant.global_position)
+	if dist_sq <= PLANT_TICK_NEAR_DIST_SQ:
+		return 1
+	if dist_sq <= PLANT_TICK_FAR_DIST_SQ:
+		return 2
+	return 4
+
+
+func _tick_plant_distance_bucketed(plant: Plant, dt: float, camera: Camera3D) -> void:
+	var id_key: int = plant.get_instance_id()
+	var accumulated: float = float(_plant_tick_accum.get(id_key, 0.0)) + dt
+	var divisor: int = _plant_tick_divisor(plant, camera)
+	if divisor == 1 or int(id_key + _plant_tick_index) % divisor == 0:
+		plant.tick(accumulated, substrate)
+		_plant_tick_accum.erase(id_key)
+	else:
+		_plant_tick_accum[id_key] = accumulated
+
+
 func _entity_near_tank_wall(pos: Vector3, band: float = 0.65) -> bool:
 	var w: Node = get_parent()
 	if w != null and w.has_method("tank_lateral_boundary_info"):
@@ -3684,10 +3714,12 @@ func _tick(dt: float) -> void:
 	_pearling_slots_used = 0
 	var plant_biomass: int = 0
 	var photo_bm: float = 0.0
+	var plant_camera: Camera3D = _get_camera()
+	_plant_tick_index += 1
 	for p in plants:
 		if not is_instance_valid(p):
 			continue
-		p.tick(dt, substrate)
+		_tick_plant_distance_bucketed(p, dt, plant_camera)
 		var bm: int = p.biomass()
 		plant_biomass += bm
 		var h_v: Variant = p.get("_health_smooth")

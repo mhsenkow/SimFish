@@ -3,6 +3,8 @@ extends SceneTree
 # PLANT_SYSTEMS_50 #26 — every living foliage material receives global updates,
 # including populations beyond the retired 96-material hard cap.
 
+const PlantTickStub := preload("res://scripts/plant_tick_test_stub.gd")
+
 
 func _initialize() -> void:
 	var host := Node3D.new()
@@ -107,6 +109,28 @@ uniform float flow_strength = 0.0;
 	_assert(failed, stem_plant.biomass() == stem_plant.current_height
 			and stem_plant.biomass() < biomass_before,
 		"stem removal updates biological biomass")
+	# #24: far calm plants tick every fourth phase but receive all accumulated dt.
+	var sim := SimDriver.new()
+	host.add_child(sim)
+	var camera := Camera3D.new()
+	host.add_child(camera)
+	camera.global_position = Vector3.ZERO
+	var far_plant: Plant = PlantTickStub.new()
+	host.add_child(far_plant)
+	far_plant.global_position = Vector3(60.0, 0.0, 0.0)
+	for _step in 4:
+		sim._plant_tick_index += 1
+		sim._tick_plant_distance_bucketed(far_plant, 0.1, camera)
+	_assert(failed, int(far_plant.get("tick_calls")) == 1,
+		"far calm plant runs one of four deterministic tick phases")
+	var pending_dt: float = float(sim._plant_tick_accum.get(
+		far_plant.get_instance_id(), 0.0))
+	_assert(failed, is_equal_approx(
+			float(far_plant.get("integrated_dt")) + pending_dt, 0.4),
+		"integrated plus pending far-plant time preserves complete elapsed time")
+	far_plant.health = 0.5
+	_assert(failed, sim._plant_tick_divisor(far_plant, camera) == 1,
+		"stressed far plant returns to full tick rate")
 	host.queue_free()
 	if failed.is_empty():
 		print("SMOKE_PLANT_RENDER_REGISTRY_OK")

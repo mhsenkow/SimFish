@@ -127,10 +127,11 @@ rooted plants do not.*
 - [ ] **23. Data-only leaf template cache.** Cache immutable
   transform/color descriptors for each quantized leaf form and size instead of
   allocating temporary `MeshInstance3D` trees before every bake. *L · L*
-- [ ] **24. Distance-bucketed plant simulation.** Tick distant plants at lower
+- [x] **24. Distance-bucketed plant simulation.** Tick distant plants at lower
   frequency with accumulated elapsed time and deterministic scheduling, while
   keeping nearby, reproducing, or stressed plants responsive. Extends the
-  motion-only intent of Naturalism #222. *M · L*
+  motion-only intent of Naturalism #222. — Shipped with 1×/2×/4× distance
+  buckets and complete elapsed-time integration. *M · L*
 - [ ] **25. Hardscape occluders.** Generate conservative occluder volumes for
   large opaque rocks and driftwood only, avoiding thin or moving geometry;
   enable them only when profiling proves a net win for typical tank cameras.
