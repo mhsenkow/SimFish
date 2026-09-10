@@ -66,9 +66,10 @@ reference; implementation follows dependency order, not numeric order.
   by gust origin, radius, and age, so disturbances propagate across nearby
   foliage rather than rotating every leaf uniformly. — Shipped with an 8 m /
   3 s cap, distance-weighted CPU tilt, and reduced-motion hard disable. *M · L*
-- [ ] **7. Plant canopy blob shadows.** Merge a budgeted set of plant crown
+- [x] **7. Plant canopy blob shadows.** Merge a budgeted set of plant crown
   spheres into the substrate shader's existing blob-shadow input, prioritizing
-  nearby and high-biomass plants alongside fish. *M · L*
+  nearby and high-biomass plants alongside fish. — Shipped with eight bounded
+  crown slots sharing the existing 32-caster path; fish retain 24 reserved slots. *M · L*
 - [ ] **8. Baked crown self-occlusion.** During leaf baking, estimate local
   foliage density and darken only the instance base color of crowded interior
   voxels. This gives crowns depth without real-time AO or shadow maps. *M · M*

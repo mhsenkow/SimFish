@@ -2724,6 +2724,16 @@ func _plant_visibility_range() -> float:
 	return PLANT_LOD_BASE_RANGE + height_bonus
 
 
+func canopy_shadow_sphere() -> Vector4:
+	# One conservative crown summary replaces all leaf voxels in floor-shadow
+	# selection. Radius is bounded so dense tanks never inflate shader work.
+	var live_biomass: float = float(maxi(1, biomass()))
+	var radius: float = clampf(sqrt(live_biomass) * VOXEL_SIZE * 0.34, 0.22, 1.25)
+	var center_y: float = global_position.y + minf(
+		float(current_height) * VOXEL_SIZE * 0.62, maxf(0.25, water_surface_y - global_position.y))
+	return Vector4(global_position.x, center_y, global_position.z, radius)
+
+
 # Transition-only reversible LOD. Per-group extrema define the coarse
 # silhouette; only stable interior candidates are zero-scaled.
 func set_leaf_lod_reduced(reduced: bool) -> void:

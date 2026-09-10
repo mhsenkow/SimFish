@@ -6024,11 +6024,13 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 # sort over fish[] capped at the slot count, run once per ambient tick.
 const _GOD_RAY_OCCLUDER_SLOTS: int = 8
 const _BLOB_SHADOW_SLOTS: int = 32
+const _PLANT_BLOB_SHADOW_SLOTS: int = 8
 const _RIPPLE_POOL_SIZE: int = 24
 const _TAP_RIPPLE_POOL_SIZE: int = 12
 var _occluder_buf: Array = []
 var _occluder_smooth: Array[Vector4] = []
 var _blob_buf: Array = []
+var _plant_blob_buf: Array = []
 var _ripple_pool: Array = []
 var _tap_ripple_pool: Array[MeshInstance3D] = []
 var _tap_ripple_pool_i: int = 0
@@ -6154,6 +6156,7 @@ func _update_fish_lighting_contributors() -> void:
 	var bed_y: float = sim.substrate_top_y
 	_occluder_buf.clear()
 	_blob_buf.clear()
+	_plant_blob_buf.clear()
 	for f in sim.fish:
 		if not is_instance_valid(f):
 			continue
@@ -6165,7 +6168,17 @@ func _update_fish_lighting_contributors() -> void:
 		if need_blobs:
 			var h: float = f.global_position.y - bed_y
 			if h >= 0.0 and h <= 4.5:
-				_insert_bounded_fish(_blob_buf, f, h, _BLOB_SHADOW_SLOTS)
+				_insert_bounded_fish(_blob_buf, f, h,
+					_BLOB_SHADOW_SLOTS - _PLANT_BLOB_SHADOW_SLOTS)
+	if need_blobs:
+		for p in sim.plants:
+			if not is_instance_valid(p) or not p.has_method("canopy_shadow_sphere"):
+				continue
+			var crown: Vector4 = p.canopy_shadow_sphere()
+			var biomass_gain: float = 1.0 + sqrt(maxf(float(p.biomass()), 0.0)) * 0.15
+			var proximity: float = Vector2(crown.x - cam_pos.x, crown.z - cam_pos.z).length_squared()
+			_insert_bounded_fish(_plant_blob_buf, p, proximity / biomass_gain,
+				_PLANT_BLOB_SHADOW_SLOTS)
 	if need_god_rays:
 		var packed: Array[Vector4] = []
 		for i in _GOD_RAY_OCCLUDER_SLOTS:
@@ -6201,6 +6214,9 @@ func _update_fish_lighting_contributors() -> void:
 					fish_node.global_position.y,
 					fish_node.global_position.z,
 					radius))
+			elif i - _blob_buf.size() < _plant_blob_buf.size():
+				var plant_node: Node = _plant_blob_buf[i - _blob_buf.size()][0]
+				blob_packed.append(plant_node.canopy_shadow_sphere())
 			else:
 				blob_packed.append(Vector4.ZERO)
 		VoxelMat.update_substrate_blob_shadows(blob_packed)
