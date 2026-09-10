@@ -143,10 +143,11 @@ rooted plants do not.*
   keeping nearby, reproducing, or stressed plants responsive. Extends the
   motion-only intent of Naturalism #222. — Shipped with 1×/2×/4× distance
   buckets and complete elapsed-time integration. *M · L*
-- [ ] **25. Hardscape occluders.** Generate conservative occluder volumes for
+- [x] **25. Hardscape occluders.** Generate conservative occluder volumes for
   large opaque rocks and driftwood only, avoiding thin or moving geometry;
   enable them only when profiling proves a net win for typical tank cameras.
-  *L · S*
+  — Shipped with 72%-inset box volumes, opaque/static/chunky eligibility,
+  benefit scoring, and a potato-quality fallback. *L · S*
 - [x] **26. Foliage material lifetime registry.** Replace the silent
   `FOLIAGE_MM_CAP = 96` refusal with weak-owner registration and stale-entry
   eviction, ensuring every living plant continues receiving daylight, flow,

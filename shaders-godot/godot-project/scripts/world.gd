@@ -11,6 +11,7 @@ extends Node3D
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
+const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
 # slowly; visible as a brown tint in the water material.
@@ -46,6 +47,7 @@ var _substrate_ripple_dir: Vector2 = Vector2(1.0, 0.35)
 # spawn time so the plant sits visibly on top of a stone.
 var _rock_voxels: Array[MeshInstance3D] = []
 var _hardscape_occupancy: Dictionary = {}
+var _hardscape_occluder_stats: Dictionary = {}
 const HARDSCAPE_CELL_SIZE: float = 0.55
 const VOXEL_SIZE: float = 0.32
 # Glass mineral spots — tiny pale voxels that accumulate at the waterline
@@ -3304,11 +3306,37 @@ func _build_hardscape(populate: bool = true) -> void:
 	# bed, not floating above it"). Radius scaled by voxel size so a
 	# wide rock base AOs over a wider patch than a thin twig.
 	_publish_substrate_contact_ao()
+	_build_hardscape_occluders(c)
 	# Publish the filter intake position as the flow-origin so the
 	# substrate_caustic ripple-deepening kicks in. sim.filter_intake_pos
 	# is set later in the bootstrap flow, so we publish a zero-gain
 	# default now and let sim_driver re-publish when it's ready.
 	VoxelMat.update_substrate_flow_origin(Vector3.ZERO, 0.0)
+
+
+func _build_hardscape_occluders(parent: Node3D) -> void:
+	var candidates: Array = []
+	for entry in [
+			{"nodes": _rock_voxels, "kind": "rock"},
+			{"nodes": _driftwood_voxels, "kind": "wood"},
+	]:
+		for value in entry.nodes:
+			var mi := value as MeshInstance3D
+			if mi == null or not is_instance_valid(mi) or not (mi.mesh is BoxMesh):
+				continue
+			candidates.append({
+				"position": mi.position,
+				"size": (mi.mesh as BoxMesh).size,
+				"opaque": true,
+				"moving": false,
+				"kind": entry.kind,
+			})
+	var quality_tier: int = 0
+	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
+	if cfg != null and cfg.get("shader_cost_tier") != null:
+		quality_tier = int(cfg.shader_cost_tier)
+	_hardscape_occluder_stats = HardscapeOccludersScript.build(
+		parent, candidates, quality_tier)
 
 
 # Pick up to 8 hardscape voxels closest to the substrate surface and
