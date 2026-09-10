@@ -45,6 +45,7 @@ const CO2_LEGACY_DEFAULT: float = 0.42
 const CHANNEL_DIFFUSION: float = 0.06
 const CHANNEL_DECAY: float = 0.008
 const AVAILABILITY_RELAX_RATE: float = 0.08
+const CELL_MATURITY_LEGACY_DEFAULT: float = 0.5
 
 # Hoisted out of tick(): GDScript reallocates an inline array literal
 # every time the for-loop is entered, so the old `for off in [Vector2i(...),
@@ -83,6 +84,7 @@ func _active_reservoir_leak() -> float:
 # Local root-tab injection (#14): bump a cell's nutrients well above baseline.
 func add_root_tab_at(world_pos: Vector3, amount: float = 1.4) -> void:
 	add_at(world_pos, amount)
+	note_disturbance_at(world_pos, 0.18)
 
 
 # Total dissolved anaerobic gas across the bed — denitrification potential (#5).
@@ -113,6 +115,8 @@ var anaerobic_gas: Array = []
 var iron_availability: Array = []
 var co2_availability: Array = []
 var mulm: Array = []
+var cell_maturity: Array = []
+var cell_disturbance: Array = []
 var _dirty_channels: Dictionary = {}
 var _next_dirty_channels: Dictionary = {}
 # Scratch buffer for diffusion. Preallocated once in init() so tick()
@@ -157,6 +161,8 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(iron_availability, IRON_LEGACY_DEFAULT)
 	_init_channel_grid(co2_availability, CO2_LEGACY_DEFAULT)
 	_init_channel_grid(mulm)
+	_init_channel_grid(cell_maturity, CELL_MATURITY_LEGACY_DEFAULT)
+	_init_channel_grid(cell_disturbance)
 	_seed_lots.init(cells_x, cells_z)
 	_root_competition.init(cells_x, cells_z)
 	_allelopathy_families.init(cells_x, cells_z)
@@ -177,6 +183,11 @@ func _cell_at(world_pos: Vector3) -> Vector2i:
 	var cx: int = clampi(int(local.x / cell_size), 0, cells_x - 1)
 	var cz: int = clampi(int(local.z / cell_size), 0, cells_z - 1)
 	return Vector2i(cx, cz)
+
+
+func cell_key_at(world_pos: Vector3) -> String:
+	var c := _cell_at(world_pos)
+	return "%d:%d" % [c.x, c.y]
 
 
 # Flag a cell and its 4 immediate neighbors as dirty. Anything that
@@ -286,6 +297,18 @@ func take_seed_lot_at(world_pos: Vector3, amount: float) -> Dictionary:
 	return lot
 
 
+func take_eligible_seed_lot_at(world_pos: Vector3, amount: float,
+		environment: Dictionary) -> Dictionary:
+	var c := _cell_at(world_pos)
+	var lot: Dictionary = _seed_lots.consume_eligible(
+		c, amount, environment, float(cell_maturity[c.x][c.y]),
+		float(cell_disturbance[c.x][c.y]))
+	_sync_seed_scalar(c)
+	if float(lot.get("quantity", 0.0)) > 0.0:
+		_mark_channel_dirty(c)
+	return lot
+
+
 func get_seed_lots_at(world_pos: Vector3) -> Array:
 	return _seed_lots.lots_at(_cell_at(world_pos))
 
@@ -387,12 +410,33 @@ func get_mulm_at(world_pos: Vector3) -> float:
 	return mulm[c.x][c.y]
 
 
+func get_cell_maturity_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return cell_maturity[c.x][c.y]
+
+
+func get_cell_disturbance_at(world_pos: Vector3) -> float:
+	var c := _cell_at(world_pos)
+	return cell_disturbance[c.x][c.y]
+
+
+func note_disturbance_at(world_pos: Vector3, amount: float) -> void:
+	var c := _cell_at(world_pos)
+	cell_disturbance[c.x][c.y] = clampf(
+		float(cell_disturbance[c.x][c.y]) + maxf(0.0, amount), 0.0, 1.0)
+	cell_maturity[c.x][c.y] = clampf(
+		float(cell_maturity[c.x][c.y]) - maxf(0.0, amount) * 0.25, 0.0, 1.0)
+	_mark_channel_dirty(c)
+
+
 func deposit_litter_at(world_pos: Vector3, biomass: float) -> float:
 	var c := _cell_at(world_pos)
 	var room: float = MULM_MAX - float(mulm[c.x][c.y])
 	var accepted: float = minf(maxf(0.0, biomass), maxf(0.0, room))
 	if accepted > 0.0:
 		mulm[c.x][c.y] = float(mulm[c.x][c.y]) + accepted
+		cell_disturbance[c.x][c.y] = minf(
+			1.0, float(cell_disturbance[c.x][c.y]) + accepted * 0.015)
 		_mark_channel_dirty(c)
 	return accepted
 
@@ -464,6 +508,7 @@ func tick_channels(dt: float) -> void:
 	_tick_availability_field(iron_availability, IRON_MAX)
 	_tick_availability_field(co2_availability, CO2_MAX)
 	_tick_mulm(dt)
+	_tick_cell_history(active_cells, dt)
 	# Re-dirty cells with residual values for slow diffusion
 	_next_dirty_channels.clear()
 	for cell_v in _dirty_channels.keys():
@@ -474,7 +519,8 @@ func tick_channels(dt: float) -> void:
 				or anaerobic_gas[cell.x][cell.y] > 0.01 \
 				or absf(iron_availability[cell.x][cell.y] - IRON_LEGACY_DEFAULT) > 0.01 \
 				or absf(co2_availability[cell.x][cell.y] - CO2_LEGACY_DEFAULT) > 0.01 \
-				or mulm[cell.x][cell.y] > 0.001:
+				or mulm[cell.x][cell.y] > 0.001 \
+				or cell_disturbance[cell.x][cell.y] > 0.001:
 			_next_dirty_channels[cell] = true
 	var swap: Dictionary = _dirty_channels
 	_dirty_channels = _next_dirty_channels
@@ -515,6 +561,15 @@ func _tick_mulm(dt: float) -> void:
 		mulm[cell.x][cell.y] = reservoir - released
 		nutrients[cell.x][cell.y] = float(nutrients[cell.x][cell.y]) + released
 		_mark_dirty(cell)
+
+
+func _tick_cell_history(cells: Array, dt: float) -> void:
+	for cell_v in cells:
+		var cell: Vector2i = cell_v
+		cell_maturity[cell.x][cell.y] = clampf(
+			float(cell_maturity[cell.x][cell.y]) + dt / 7200.0, 0.0, 1.0)
+		cell_disturbance[cell.x][cell.y] = maxf(
+			0.0, float(cell_disturbance[cell.x][cell.y]) - dt / 1200.0)
 
 
 func tick_night_memory(dt: float, sim) -> void:
@@ -693,7 +748,9 @@ func to_save_dict() -> Dictionary:
 		"mulm_flat": _pack_channel_flat(mulm),
 		"seed_lots": _seed_lots.to_sparse_save(),
 		"allelopathy_families": _allelopathy_families.to_sparse_save(),
-		"schema_version": 5,
+		"cell_maturity_flat": _pack_channel_flat(cell_maturity),
+		"cell_disturbance_flat": _pack_channel_flat(cell_disturbance),
+		"schema_version": 6,
 	}
 
 
@@ -761,3 +818,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	# Pre-v3 saves already realized their flat detritus return, so an absent
 	# reservoir correctly migrates to zero rather than duplicating nutrients.
 	_apply_channel_flat(mulm, d.get("mulm_flat", []), sx, sz)
+	# Legacy cells begin mid-succession and undisturbed, matching the former
+	# unbiased seed selection until new local history accumulates.
+	_apply_channel_flat(cell_maturity, d.get("cell_maturity_flat", []), sx, sz)
+	_apply_channel_flat(cell_disturbance, d.get("cell_disturbance_flat", []), sx, sz)

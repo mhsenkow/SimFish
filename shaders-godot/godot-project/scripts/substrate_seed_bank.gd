@@ -97,6 +97,60 @@ func consume(cell: Vector2i, amount: float) -> Dictionary:
 	return out
 
 
+func consume_eligible(cell: Vector2i, amount: float, environment: Dictionary,
+		cell_maturity: float, disturbance: float) -> Dictionary:
+	var lots: Array = _cell_lots(cell)
+	var best_i: int = -1
+	var best_score: float = -1.0
+	for i in lots.size():
+		var lot: Dictionary = lots[i]
+		if not _dormancy_met(lot, environment):
+			continue
+		var genome: Dictionary = lot.get("genome", {})
+		var succession: float = clampf(
+			float(genome.get("succession_stage", 0.5)), 0.0, 1.0)
+		var disturbance_affinity: float = clampf(
+			float(genome.get("disturbance_affinity", 0.5)), 0.0, 1.0)
+		var maturity_match: float = 1.0 - absf(succession - cell_maturity) * 0.6
+		var disturbance_match: float = 1.0 \
+			- absf(disturbance_affinity - disturbance) * 0.4
+		var score: float = float(lot.get("viability", 0.0)) \
+			* float(lot.get("quantity", 0.0)) * maturity_match * disturbance_match
+		if score > best_score:
+			best_score = score
+			best_i = i
+	if best_i < 0:
+		return {}
+	return _consume_index(lots, best_i, amount)
+
+
+func _dormancy_met(lot: Dictionary, environment: Dictionary) -> bool:
+	if not bool(environment.get("environmental_ok", true)) \
+			or not bool(environment.get("nutrient_ok", true)):
+		return false
+	var dormancy: Dictionary = lot.get("dormancy", {})
+	var age: float = float(lot.get("age_s", 0.0))
+	if age < float(dormancy.get("min_age_s", 0.0)):
+		return false
+	var light: float = float(environment.get("daylight", 0.5))
+	if light < float(dormancy.get("min_light", 0.0)):
+		return false
+	if light > float(dormancy.get("max_light", 1.0)):
+		return false
+	return true
+
+
+func _consume_index(lots: Array, index: int, amount: float) -> Dictionary:
+	var chosen: Dictionary = lots[index]
+	var taken: float = minf(maxf(0.0, amount), float(chosen.get("quantity", 0.0)))
+	chosen.quantity = float(chosen.get("quantity", 0.0)) - taken
+	var out: Dictionary = chosen.duplicate(true)
+	out.quantity = taken
+	if float(chosen.quantity) <= 0.0001:
+		lots.remove_at(index)
+	return out
+
+
 func tick_cells(cells: Array, dt: float) -> void:
 	if dt <= 0.0:
 		return

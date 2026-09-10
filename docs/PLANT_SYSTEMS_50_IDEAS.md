@@ -262,10 +262,12 @@ normal flowering.*
   survivors pass a bounded defense/palatability shift with an explicit growth
   cost through the existing mutation pipeline. Runtime acclimation remains
   nonheritable until reproduction. *M · L*
-- [ ] **50. Succession and establishment ledger.** Record germination,
+- [x] **50. Succession and establishment ledger.** Record germination,
   establishment, and local extinction in `PlantLineageRegistry`, then use
   recent disturbance and cell maturity to bias eligible seed lots without
-  overriding environmental requirements. Extends Naturalism #409/#696. *L · L*
+  overriding environmental requirements. — Shipped with a 256-event persistent
+  ledger, saved cell history, dormancy-safe eligibility, and succession bias.
+  Extends Naturalism #409/#696. *L · L*
 
 ---
 

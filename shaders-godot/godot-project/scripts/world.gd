@@ -5428,8 +5428,15 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		child_cfg = PlantGenome.mutate(child_cfg, mode)
 		child_cfg["generation"] = generation
 
+	var lineage_cell: String = ""
+	if sim != null and sim.substrate != null:
+		lineage_cell = sim.substrate.cell_key_at(sp)
+	if bool(seed_config.get("from_seed_bank", false)):
+		plant_lineages.record_germination(child_cfg, lineage_cell)
 	# Initialize the child plant using the parent's genetic traits
 	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
+	if bool(seed_config.get("from_seed_bank", false)):
+		plant_lineages.record_establishment(p.get_instance_id(), lineage_cell)
 	if child_cfg.has("generation"):
 		p.generation = int(child_cfg["generation"])
 	if child_cfg.has("parent_lineage"):
@@ -6937,6 +6944,7 @@ func ambient_to_save() -> Dictionary:
 		"mineral_spots": minerals,
 		"lily_pads": lilies,
 		"math_plants": math_out,
+		"plant_lineages": plant_lineages.to_save_dict(),
 	}
 
 
@@ -6977,6 +6985,9 @@ func restore_ambient(d: Variant) -> void:
 				_add_mineral_spot_at(SaveHelpers.array_to_vec3(pos_a, Vector3.ZERO))
 		_restore_lily_pads_from_save(amb.get("lily_pads", []))
 		_restore_math_plants_from_save(amb.get("math_plants", []))
+		var lineage_v: Variant = amb.get("plant_lineages", {})
+		if lineage_v is Dictionary:
+			plant_lineages.from_save_dict(lineage_v)
 		_apply_biofilm_tints()
 	elif _lily_pads.is_empty() and _math_plants.is_empty():
 		_spawn_lily_pads()

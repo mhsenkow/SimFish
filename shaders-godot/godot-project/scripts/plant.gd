@@ -3611,7 +3611,11 @@ func _tick_seeding(dt: float) -> void:
 		if bank > 0.2 and seed_timer > 12.0:
 			var dl: float = sim_d.daylight() if sim_d.has_method("daylight") else 0.5
 			if dl > 0.45 and substrate_nutrient_ok(sim_d.substrate):
-				var lot: Dictionary = sim_d.substrate.take_seed_lot_at(_world_pos, 0.25)
+				var lot: Dictionary = sim_d.substrate.take_eligible_seed_lot_at(
+					_world_pos, 0.25, {
+						"daylight": dl,
+						"nutrient_ok": true,
+					})
 				if float(lot.get("quantity", 0.0)) > 0.1:
 					_germinate_seed_at(_world_pos, sim_d, lot.get("genome", {}))
 					seed_timer = 0.0
@@ -4384,13 +4388,14 @@ func _recalc_height() -> void:
 
 
 func _on_death() -> void:
-	# When a plant is fully eaten, its roots + decay matter return some
-	# nutrients to the substrate. Closes the cycle: without this the nutrient
-	# pool drifts down over time because waste gets eaten before settling.
-	# We add directly to the substrate grid since the plant's about to free.
 	var sim_driver: Node = _find_sim()
 	if sim_driver != null and sim_driver.substrate != null:
-		sim_driver.substrate.add_at(global_position, 0.35)
+		sim_driver.substrate.deposit_litter_at(global_position, 0.35)
+		sim_driver.substrate.note_disturbance_at(global_position, 0.2)
+	var world: Node = get_parent()
+	if world != null and world.get("plant_lineages") is PlantLineageRegistry:
+		(world.plant_lineages as PlantLineageRegistry).unregister_plant(
+			get_instance_id())
 
 
 func _emerge_above_water() -> void:
@@ -4427,6 +4432,7 @@ func _germinate_seed_at(pos: Vector3, sim_d: Node, seed_genome: Dictionary = {})
 			mutated_ramp, EvolutionPressure.sample_from_sim(sim_d, pos))
 	var cfg: Dictionary = seed_genome.duplicate(true) \
 		if not seed_genome.is_empty() else get_seed_config()
+	cfg["from_seed_bank"] = true
 	world.spawn_seedling(pos, mutated_ramp, int(cfg.get("generation", generation + 1)), cfg)
 
 
