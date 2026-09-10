@@ -199,28 +199,61 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
-	var out: Dictionary = enrich(src)
+	# Naturalism #361 — all sexual/seed paths go through mutate().
+	var out: Dictionary = mutate(src, REPRO_SEED)
 	out.generation = generation
-	out.max_height = clampi(int(out.max_height) + _rng_range(-2, 2), 4, 48)
-	out.growth_rate = clampf(float(out.growth_rate) + randf_range(-0.02, 0.02), 0.04, 0.48)
-	out.sway_amplitude = clampf(float(out.sway_amplitude) + randf_range(-0.04, 0.04), 0.06, 0.75)
-	out.leaf_length = clampi(int(out.leaf_length) + _rng_range(-1, 1), 2, 16)
-	out.leaf_size_mult = clampf(float(out.leaf_size_mult) + randf_range(-0.06, 0.06), 0.5, 1.8)
-	out.red_potential = clampf(float(out.red_potential) + randf_range(-0.04, 0.04), 0.0, 1.0)
-	out.palatability = clampf(float(out.palatability) + randf_range(-0.05, 0.05), 0.05, 1.0)
-	if randf() < 0.04:
+	return out
+
+
+# Naturalism #361 — single mutation gate for every propagation mode.
+# `mode` uses REPRO_* constants: seeds/spores mutate fully; fragments /
+# plantlets / bulbils keep ~15% of that sigma (clonal conservation).
+static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
+	var out: Dictionary = enrich(src)
+	var sigma: float = 1.0
+	match mode:
+		REPRO_FRAGMENT, REPRO_PLANTLET, REPRO_BULBIL:
+			sigma = 0.15
+		REPRO_SPORE:
+			sigma = 0.85
+		_:
+			sigma = 1.0
+	out.max_height = clampi(
+		int(out.max_height) + int(round(_rng_signed(2.0) * sigma)), 4, 48)
+	out.growth_rate = clampf(
+		float(out.growth_rate) + _rng_signed(0.02) * sigma, 0.04, 0.48)
+	out.sway_amplitude = clampf(
+		float(out.sway_amplitude) + _rng_signed(0.04) * sigma, 0.06, 0.75)
+	out.leaf_length = clampi(
+		int(out.leaf_length) + int(round(_rng_signed(1.0) * sigma)), 2, 16)
+	out.leaf_size_mult = clampf(
+		float(out.leaf_size_mult) + _rng_signed(0.06) * sigma, 0.5, 1.8)
+	out.red_potential = clampf(
+		float(out.red_potential) + _rng_signed(0.04) * sigma, 0.0, 1.0)
+	out.palatability = clampf(
+		float(out.palatability) + _rng_signed(0.05) * sigma, 0.05, 1.0)
+	out.co2_demand = clampf(
+		float(out.co2_demand) + _rng_signed(0.03) * sigma, 0.05, 1.0)
+	out.temp_opt = clampf(
+		float(out.temp_opt) + _rng_signed(0.03) * sigma, 0.15, 0.9)
+	out.ls_angle = clampf(
+		float(out.ls_angle) + _rng_signed(4.0) * sigma, 15.0, 55.0)
+	out.ls_ratio = clampf(
+		float(out.ls_ratio) + _rng_signed(0.04) * sigma, 0.45, 0.92)
+	# Macro-mutations only on full-strength sexual paths.
+	if sigma >= 0.8 and randf() < 0.04 * sigma:
 		var forms: Array[String] = ["column", "paddle", "ribbon", "lance", "needle"]
 		out.leaf_form = forms[randi() % forms.size()]
-		# A new leaf form needs its arrangement re-derived, not the parent's.
 		out.phyllotaxis = ""
 	# Every individual gets its own asymmetry phase. Without this, offspring
 	# inherited the parent's seed verbatim and a whole lineage presented the
 	# same leaf face and the same node jitter — a clump of clones.
-	out.asymmetry_seed = randi()
+	if sigma >= 0.5 or randf() < 0.35:
+		out.asymmetry_seed = randi()
 	# Architecture sport: a rare heritable jump to a different leaf
 	# arrangement. This is the trait that changes a lineage's silhouette
 	# wholesale rather than nudging a number.
-	if randf() < 0.012:
+	if sigma >= 0.8 and randf() < 0.012:
 		var arrangements: Array[String] = [
 			DEFAULTS_PHYLLO_SPIRAL, DEFAULTS_PHYLLO_DISTICHOUS,
 			DEFAULTS_PHYLLO_DECUSSATE, DEFAULTS_PHYLLO_WHORLED,
@@ -229,10 +262,49 @@ static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
 		out.whorl_count = 2 + randi() % 4
 		out.plant_name = ""
 	# Variegation sport (#22)
-	if randf() < 0.003:
+	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
 		out.plant_name = ""
 	return out
+
+
+# Naturalism #441 — normalized distance from species baseline / defaults.
+# Continuous traits only; categorical mismatches add a fixed penalty.
+static func drift_distance(g: Dictionary, baseline: Dictionary = {}) -> float:
+	var a: Dictionary = enrich(g)
+	var b: Dictionary = enrich(baseline) if not baseline.is_empty() else enrich({
+		"species_id": String(a.get("species_id", "")),
+		"leaf_form": String(a.get("leaf_form", "column")),
+	})
+	var acc: float = 0.0
+	var n: float = 0.0
+	var pairs: Array = [
+		["max_height", 44.0],
+		["growth_rate", 0.44],
+		["sway_amplitude", 0.69],
+		["leaf_length", 14.0],
+		["leaf_size_mult", 1.3],
+		["red_potential", 1.0],
+		["palatability", 0.95],
+		["co2_demand", 0.95],
+		["temp_opt", 0.75],
+		["ls_angle", 40.0],
+		["ls_ratio", 0.47],
+	]
+	for p in pairs:
+		var key: String = String(p[0])
+		var span: float = float(p[1])
+		acc += absf(float(a.get(key, 0.0)) - float(b.get(key, 0.0))) / maxf(span, 1e-4)
+		n += 1.0
+	if String(a.get("leaf_form", "")) != String(b.get("leaf_form", "")):
+		acc += 0.35
+		n += 1.0
+	if String(a.get("phyllotaxis", "")) != String(b.get("phyllotaxis", "")) \
+			and String(a.get("phyllotaxis", "")) != "" \
+			and String(b.get("phyllotaxis", "")) != "":
+		acc += 0.25
+		n += 1.0
+	return acc / maxf(n, 1.0)
 
 
 static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
@@ -268,3 +340,7 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 
 static func _rng_range(lo: int, hi: int) -> int:
 	return lo + randi() % maxi(1, hi - lo + 1)
+
+
+static func _rng_signed(amp: float) -> float:
+	return randf_range(-amp, amp)

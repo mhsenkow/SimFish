@@ -38,8 +38,15 @@ func _build_mesh() -> void:
 
 func tick(dt: float, sim: SimDriver, world: Node) -> void:
 	_age += dt
+	# Naturalism #201 — fragments ride the same flow field as foliage/floaters.
+	if world != null and world.has_method("sample_flow"):
+		var flow: Vector3 = world.sample_flow(global_position)
+		_velocity += flow * dt * 0.55
 	_velocity *= 1.0 - DRIFT_DECAY * dt
 	global_position += _velocity * dt
+	# Slow tumble while drifting.
+	rotation.y += dt * 0.35
+	rotation.x += dt * 0.12
 	# Sink slowly
 	global_position.y = maxf(0.2, global_position.y - dt * 0.08)
 	if world != null and world.has_method("clamp_to_tank"):
@@ -66,8 +73,11 @@ func _try_root(sim: SimDriver, world: Node) -> void:
 		queue_free()
 		return
 	if world.has_method("spawn_seedling"):
-		var cfg: Dictionary = genome.duplicate(true)
-		cfg["generation"] = int(cfg.get("generation", 0)) + 1
+		# Naturalism #361 — clonal rooting uses fragment-strength mutation.
+		var cfg: Dictionary = PlantGenome.mutate(genome, PlantGenome.REPRO_FRAGMENT)
+		cfg["generation"] = int(genome.get("generation", 0)) + 1
+		cfg["parent_lineage"] = String(genome.get("plant_name",
+			genome.get("parent_lineage", "Fragment")))
 		world.spawn_seedling(global_position, ramp_override, int(cfg.generation), cfg)
 	queue_free()
 

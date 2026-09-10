@@ -115,6 +115,9 @@ var _flow_lane_mote_t: float = 0.0
 var _flow_lane_motes: Array = []
 const FLOW_LANE_MOTE_CAP: int = 14
 
+# Naturalism #441 — named strains / drift bookkeeping for the plant meadow.
+var plant_lineages: PlantLineageRegistry = PlantLineageRegistry.new()
+
 # Shared pearling emitter pool (replaces per-plant GPUParticles3D nodes).
 var _pearling_pool: Array[GPUParticles3D] = []
 var _pearling_pool_root: Node3D = null
@@ -5360,17 +5363,18 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	p.water_surface_y = WATER_HEIGHT
 	p.generation = generation
 	
-	# Inherit properties from parent and slightly mutate max_height. Library
-	# spawns set no_mutate so the preset reads exactly — emergent seedlings
-	# go through the jitter path so generations actually drift.
+	# Inherit properties from parent. Library spawns set no_mutate so the
+	# preset reads exactly — emergent seedlings go through PlantGenome.mutate
+	# (Naturalism #361) so generations actually drift.
 	var child_cfg: Dictionary = PlantGenome.enrich(seed_config.duplicate())
 	if not bool(seed_config.get("no_mutate", false)):
-		var parent_max: int = seed_config.get("max_height", 10)
-		child_cfg["max_height"] = clampi(parent_max + _rng.randi_range(-2, 2), 4, 30)
-		child_cfg["growth_rate"] = clampf(
-			float(child_cfg.get("growth_rate", 0.18)) * randf_range(1.00, 1.18),
-			0.06, 0.55)
-	
+		var mode: String = String(seed_config.get("repro_mode", PlantGenome.REPRO_SEED))
+		if bool(seed_config.get("autonomous_spread", false)) \
+				and mode != PlantGenome.REPRO_SEED and mode != PlantGenome.REPRO_SPORE:
+			mode = PlantGenome.REPRO_FRAGMENT
+		child_cfg = PlantGenome.mutate(child_cfg, mode)
+		child_cfg["generation"] = generation
+
 	# Initialize the child plant using the parent's genetic traits
 	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
 	if child_cfg.has("generation"):

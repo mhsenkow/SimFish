@@ -141,6 +141,22 @@ var _visual_tick_t: float = 0.0
 const AGE_SENESCENCE_S: float = 180.0
 const TRANSPLANT_MELT_AGE_S: float = 30.0
 
+# Naturalism #41 — per-leaf lifecycle. Bud → expand → mature → senesce → shed.
+# Ages are sim-seconds; real aquatic leaves last days–weeks, compressed here so
+# a watching player sees turnover within a session.
+enum LeafPhase { BUD, EXPANDING, MATURE, SENESCENT, SHED }
+const LEAF_EXPAND_S: float = 8.0
+const LEAF_MATURE_S: float = 95.0
+const LEAF_SENESCE_S: float = 28.0
+const _SENESCE_TIP_COLOR: Color = Color(0.55, 0.48, 0.22)
+
+# Naturalism #1 — persistent desire direction for new voxel placement.
+# Combines phototropism (lamp), gravitropism (up), and flow lean. Refreshed
+# a few times a second; placement samples the xz of this vector.
+var _tropism: Vector3 = Vector3.UP
+var _tropism_refresh_t: float = 0.0
+const TROPISM_REFRESH_S: float = 0.45
+
 # Latin + common name (set by real-species library, "" for emergent plants
 # which fall back to plant_name's auto-generated handle).
 var latin_name: String = ""
@@ -400,12 +416,20 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	if asymmetry_seed == 0:
 		asymmetry_seed = randi()
 	_resolve_phyllotaxis()
+	_refresh_tropism()
 	# Cache substrate boost computed below — read TankConfig ONCE here so
 	# the per-tick path can skip the autoload lookup × 100 plants × 10 Hz.
 	_substrate_boost = _compute_substrate_boost()
 	var pk: Variant = params.get("parent_keys", [])
 	if pk is Array:
-		_parent_keys = pk.duplicate()
+		_parent_keys = (pk as Array).duplicate()
+	# Naturalism #441 — register into the world's lineage book when present.
+	var w: Node = get_parent()
+	if w != null and w.get("plant_lineages") != null:
+		var reg: Variant = w.get("plant_lineages")
+		if reg is PlantLineageRegistry:
+			(reg as PlantLineageRegistry).register_genome(
+				PlantGenome.from_plant(self), get_instance_id())
 	if params.has("emergent_growth"):
 		emergent_growth = not not params["emergent_growth"]
 	if params.has("monocarpic"):
@@ -1447,8 +1471,8 @@ func _grow_one() -> bool:
 	if red_potential > 0.0:
 		effective_ramp = _red_boosted_ramp(effective_ramp)
 
-	# Phototropism: bias the new voxel's lateral offset toward the light.
-	var photo_offset: Vector2 = _phototropic_offset()
+	# Tropism vector field (#1): light + up + flow → lateral placement lean.
+	var photo_offset: Vector2 = _tropism_lateral_offset()
 
 	# Trim response: if a recent nibble cut the top off, this growth tick
 	# spawns a side shoot from the cut node instead of resuming vertical
@@ -1537,7 +1561,7 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 	# tank. Three cheap corrections: taper toward the tip, wander a little,
 	# and lean the way this individual leans.
 	var ramp_idx: int = clampi(int(rel * 5.0), 0, 5)
-	var color: Color = ramp[ramp_idx]
+	var color: Color = _micro_vary_color(ramp[ramp_idx] as Color, current_height)
 	var mi := MeshInstance3D.new()
 	# Quantised to 4 steps so VoxelMat's box cache stays small — a continuous
 	# taper would mint a new mesh per node.
@@ -1555,6 +1579,18 @@ func _grow_column_voxel(ramp: Array, rel: float, photo_offset: Vector2) -> void:
 		lean.y + photo_offset.y + _node_jitter(current_height + 7919, wander),
 	))
 	_register_stem_voxel(mi)
+
+
+# Naturalism #761 — per-voxel hue/value jitter keyed off asymmetry_seed.
+# Kept tiny (± one palette-ish step) so clumps read organic, not noisy.
+func _micro_vary_color(base: Color, voxel_key: int) -> Color:
+	var h: int = (asymmetry_seed ^ (voxel_key * 2654435761) ^ 0x9E3779B9) & 0x7FFFFFFF
+	var dh: float = (float(h % 2000) / 1000.0 - 1.0) * 0.018
+	var dv: float = (float(int(float(h) / 2000.0) % 2000) / 1000.0 - 1.0) * 0.035
+	var c: Color = base
+	c.h = wrapf(c.h + dh, 0.0, 1.0)
+	c.v = clampf(c.v + dv, 0.05, 1.0)
+	return c
 
 
 # Lateral shoot pushed from a cut node after a fish nibbles the apex.
@@ -2409,6 +2445,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		_footprint_enforce_timer = 1.0 if _footprint_world() != null else 2.5
 		_reclamp_voxels_to_footprint()
 	_t += dt
+	_tropism_refresh_t -= dt
+	if _tropism_refresh_t <= 0.0:
+		_tropism_refresh_t = TROPISM_REFRESH_S
+		_refresh_tropism()
 
 	# ---- Flow-based sway ----
 	# Dynamic time-based sway lives on the GPU (foliage_mm). CPU only applies a
@@ -3488,6 +3528,7 @@ func trigger_crypt_melt() -> void:
 		_foliage_batch.clear()
 	_leaf_groups.clear()
 	_leaf_ages.clear()
+	_leaf_states.clear()
 	current_height = 0
 	_clear_bloom()
 	has_flower = false
@@ -3673,11 +3714,13 @@ func _register_leaf_age(birth_t: float) -> void:
 	_leaf_states.append({
 		"age_s": 0.0,
 		"birth_t": birth_t,
+		"phase": LeafPhase.EXPANDING,  # unfurl tween covers BUD → EXPANDING
 		"damage": 0.0,
 		"biofilm": 0.0,
 		"gsa": 0.0,
 		"mobile_n": 0.0,
 		"nyctinasty": 0.0,
+		"senesce_paint": 0.0,
 	})
 
 
@@ -3743,6 +3786,7 @@ func graze_detritus_fleck() -> bool:
 
 
 func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> void:
+	var shed_indices: Array[int] = []
 	for i in _leaf_states.size():
 		var st: Dictionary = _leaf_states[i]
 		st.age_s = float(st.get("age_s", 0.0)) + dt
@@ -3759,6 +3803,16 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
 				substrate.add_at(_world_pos, 0.002)
 			_tick_detritus_flecks(dt, sim_v)
+		# Naturalism #41 — advance leaf lifecycle phase.
+		_advance_leaf_phase(st, i)
+		if int(st.get("phase", LeafPhase.MATURE)) == LeafPhase.SHED:
+			shed_indices.append(i)
+		elif int(st.get("phase", LeafPhase.MATURE)) == LeafPhase.SENESCENT:
+			_paint_leaf_senescence(i, st)
+	# Shed oldest-first so parallel indices stay valid while popping.
+	shed_indices.reverse()
+	for si in shed_indices:
+		_shed_leaf_at(si)
 	_tick_root_bubbles(dt, substrate)
 	_visual_tick_t -= dt
 	if _visual_tick_t <= 0.0:
@@ -3769,9 +3823,9 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		if _foliage_mat != null and leaf_form in ["paddle", "spade", "lobed"]:
 			var film_avg: float = 0.0
 			var gsa_avg: float = 0.0
-			for st in _leaf_states:
-				film_avg += float(st.get("biofilm", 0.0))
-				gsa_avg += float(st.get("gsa", 0.0))
+			for st2 in _leaf_states:
+				film_avg += float(st2.get("biofilm", 0.0))
+				gsa_avg += float(st2.get("gsa", 0.0))
 			if not _leaf_states.is_empty():
 				film_avg /= float(_leaf_states.size())
 				gsa_avg /= float(_leaf_states.size())
@@ -3781,6 +3835,66 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 						0.72, film_mix))
 				_foliage_mat.set_shader_parameter("palette_warmth",
 					float(_foliage_mat.get_shader_parameter("palette_warmth")) + gsa_avg * 0.18)
+
+
+func _advance_leaf_phase(st: Dictionary, _idx: int) -> void:
+	var age_s: float = float(st.get("age_s", 0.0))
+	var phase: int = int(st.get("phase", LeafPhase.EXPANDING))
+	# Stress and health shorten mature life — starving plants turn over faster.
+	var life_scale: float = lerpf(0.55, 1.0, clampf(_health_smooth, 0.0, 1.0))
+	var mature_end: float = LEAF_EXPAND_S + LEAF_MATURE_S * life_scale
+	var senesce_end: float = mature_end + LEAF_SENESCE_S
+	match phase:
+		LeafPhase.BUD:
+			st.phase = LeafPhase.EXPANDING
+		LeafPhase.EXPANDING:
+			if age_s >= LEAF_EXPAND_S:
+				st.phase = LeafPhase.MATURE
+		LeafPhase.MATURE:
+			if age_s >= mature_end:
+				st.phase = LeafPhase.SENESCENT
+		LeafPhase.SENESCENT:
+			if age_s >= senesce_end:
+				st.phase = LeafPhase.SHED
+
+
+func _paint_leaf_senescence(idx: int, st: Dictionary) -> void:
+	if idx < 0 or idx >= _leaf_groups.size():
+		return
+	var prev: float = float(st.get("senesce_paint", 0.0))
+	var age_s: float = float(st.get("age_s", 0.0))
+	var life_scale: float = lerpf(0.55, 1.0, clampf(_health_smooth, 0.0, 1.0))
+	var mature_end: float = LEAF_EXPAND_S + LEAF_MATURE_S * life_scale
+	var t: float = clampf((age_s - mature_end) / maxf(LEAF_SENESCE_S, 0.01), 0.0, 1.0)
+	if absf(t - prev) < 0.08:
+		return
+	st.senesce_paint = t
+	var grp: Array = _leaf_groups[idx] as Array
+	if grp.is_empty():
+		return
+	# Tip first, then work inward — classic leaf dieback.
+	var tip: VoxelBatch.Handle = grp[grp.size() - 1] as VoxelBatch.Handle
+	if tip != null and tip.alive:
+		tip.set_color(tip.base_color.lerp(_SENESCE_TIP_COLOR, t * 0.85))
+	if t > 0.45 and grp.size() > 2:
+		var mid: VoxelBatch.Handle = grp[int(float(grp.size()) * 0.55)] as VoxelBatch.Handle
+		if mid != null and mid.alive:
+			mid.set_color(mid.base_color.lerp(_SENESCE_TIP_COLOR, (t - 0.45) * 1.2))
+
+
+func _shed_leaf_at(idx: int) -> void:
+	if idx < 0 or idx >= _leaf_groups.size():
+		return
+	var grp: Array = _leaf_groups[idx] as Array
+	_leaf_groups.remove_at(idx)
+	if idx < _leaf_ages.size():
+		_leaf_ages.remove_at(idx)
+	if idx < _leaf_states.size():
+		_leaf_states.remove_at(idx)
+	for h in grp:
+		if h != null and h.alive:
+			h.hide()
+	_spawn_decay_waste(global_position)
 
 
 var _leaf_hair_nodes: Array = []
@@ -4278,26 +4392,49 @@ func _node_size_gradient(rel: float) -> float:
 
 
 func _phototropic_offset() -> Vector2:
+	# Kept as a thin alias so older call sites / smokes still compile; new
+	# growth goes through _tropism_lateral_offset() (Naturalism #1).
+	return _tropism_lateral_offset()
+
+
+# Naturalism #1 — desire direction: lamp heading + up + local flow.
+func _refresh_tropism() -> void:
+	var up_w: float = 0.72
+	var light_w: float = 0.42
+	var flow_w: float = 0.22
+	var light_dir: Vector3 = Vector3.ZERO
 	var cfg := _find_sim()
-	if cfg == null:
-		return Vector2.ZERO
-	# Resolve TankConfig autoload explicitly — the conditional branch types
-	# are different (Node vs null) so split into a real if/else to silence
-	# the ternary-type-mismatch warning.
 	var tc: Node = null
-	if cfg.has_node("/root/TankConfig"):
+	if cfg != null and cfg.has_node("/root/TankConfig"):
 		tc = cfg.get_node("/root/TankConfig")
-	if tc == null:
-		return Vector2.ZERO
-	var yaw_rad: float = float(tc.light_yaw) * TAU
-	# Cached for _leaf_yaw(): _phototropic_offset() is already called once per
-	# growth step, so the leaf-mosaic twist below rides on this lookup instead
-	# of resolving the autoload again per leaf.
-	_light_yaw_cache = yaw_rad
-	var photo_strength: float = 0.04
+	if tc != null:
+		var yaw_rad: float = float(tc.light_yaw) * TAU
+		_light_yaw_cache = yaw_rad
+		# Lamp is above; lateral component points toward the light azimuth.
+		light_dir = Vector3(sin(yaw_rad), 0.35, cos(yaw_rad)).normalized()
+	var flow_dir: Vector3 = Vector3.ZERO
+	var w: Node = get_parent()
+	if w != null and w.has_method("sample_flow"):
+		flow_dir = w.sample_flow(_world_pos if _world_pos != Vector3.ZERO else global_position)
+		if flow_dir.length_squared() > 1e-8:
+			flow_dir = flow_dir.normalized()
+	# Shade-stressed plants lean harder into light; healthy plants stay upright.
+	var shade: float = _shade_leaf_factor()
+	light_w = lerpf(0.28, 0.55, shade)
+	up_w = lerpf(0.82, 0.55, shade)
+	var desire: Vector3 = Vector3.UP * up_w + light_dir * light_w + flow_dir * flow_w
+	if desire.length_squared() < 1e-8:
+		desire = Vector3.UP
+	_tropism = desire.normalized()
+
+
+func _tropism_lateral_offset() -> Vector2:
+	if _tropism.length_squared() < 1e-8:
+		_refresh_tropism()
+	# Strength grows with height — tips reach harder than the base.
 	var height_factor: float = float(current_height) / float(maxi(1, max_height))
-	var bias: float = photo_strength * height_factor
-	return Vector2(sin(yaw_rad) * bias, cos(yaw_rad) * bias)
+	var bias: float = 0.045 * height_factor * (0.7 + 0.5 * _shade_leaf_factor())
+	return Vector2(_tropism.x, _tropism.z) * bias
 
 
 func _get_stem_top() -> float:
