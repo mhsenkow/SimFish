@@ -115,10 +115,11 @@ rooted plants do not.*
   and remap handles atomically. Never compact during an active bake. — Shipped
   with a five-second hold, 64-slot floor, and stable live-handle remapping.
   *M · M*
-- [ ] **20. Static-plant sleep state.** Skip nonessential visual/state work for
+- [x] **20. Static-plant sleep state.** Skip nonessential visual/state work for
   plants with no growth, damage, deficiency, reproduction, or environment
   changes, and wake them through explicit dirty signals. Continue chemistry at
-  the required coarse rate. *M · M*
+  the required coarse rate. — Shipped with five-second calm detection,
+  two-second accumulated chemistry ticks, and explicit wake paths. *M · M*
 - [x] **21. Dynamic foliage bounds.** Replace `VoxelBatch`'s oversized constant
   AABB with live instance bounds expanded by maximum sway, recomputed only when
   transforms change. — Shipped with configurable sway margins and render

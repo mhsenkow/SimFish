@@ -2917,7 +2917,7 @@ func _tick_plant_distance_bucketed(plant: Plant, dt: float, camera: Camera3D) ->
 	var accumulated: float = float(_plant_tick_accum.get(id_key, 0.0)) + dt
 	var divisor: int = _plant_tick_divisor(plant, camera)
 	if divisor == 1 or int(id_key + _plant_tick_index) % divisor == 0:
-		plant.tick(accumulated, substrate)
+		plant.tick_sleep_aware(accumulated, substrate)
 		_plant_tick_accum.erase(id_key)
 	else:
 		_plant_tick_accum[id_key] = accumulated

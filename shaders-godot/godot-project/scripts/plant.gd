@@ -253,6 +253,7 @@ const MIN_HEALTH_FOR_FLOOR: float = 0.4
 # Called by a passing fish to deflect the plant. world_dir is the fish's
 # horizontal travel direction; amount scales with its speed/size.
 func brush(world_dir: Vector3, amount: float) -> void:
+	wake_plant("damage")
 	var add := Vector2(world_dir.x, world_dir.z) * clampf(amount, 0.65, 0.72)
 	_brush_bend = (_brush_bend + add).limit_length(0.55)
 	if amount > 0.22 and _health_smooth > 0.55 and randf() < 0.35:
@@ -359,6 +360,13 @@ var _leaf_groups: Array = []        # Array[Array[VoxelBatch.Handle]]
 var _leaf_ages: Array[float] = []  # birth time per leaf for aging
 const LEAF_BAKE_DEFER_THRESHOLD: int = 16
 const LEAF_BAKE_CHUNK_SIZE: int = 12
+const STATIC_SLEEP_AFTER_S: float = 5.0
+const STATIC_SLEEP_CHEMISTRY_S: float = 2.0
+var _static_sleeping: bool = false
+var _static_sleep_stable_s: float = 0.0
+var _static_sleep_accum_s: float = 0.0
+var _static_sleep_dirty: bool = true
+var _static_sleep_env_signature: int = 0
 # Last wilt level we wrote into the leaf-tip handles. Tracked so the
 # per-tick wilt pass only touches the multimesh when health has moved
 # noticeably — repaint cost stays near-zero when nothing's changing.
@@ -366,6 +374,16 @@ var _wilt_applied: float = 0.0
 # Subclasses (SpiralPlant) still use a node-based leaf model and reference this;
 # base Plant leaves go through _leaf_groups / the foliage MultiMesh instead.
 var _leaf_nodes: Array[Node3D] = []
+
+
+func _exit_tree() -> void:
+	if _foliage_batch != null:
+		_foliage_batch.dispose()
+		_foliage_batch = null
+	if _stem_batch != null:
+		_stem_batch.dispose()
+		_stem_batch = null
+
 
 # ---- Runner propagation ----
 # Vegetative spread (stolons). Ribbon-form plants (Vallisneria) periodically
@@ -923,6 +941,7 @@ func _tick_plant_mood(dt: float) -> void:
 
 
 func apply_gust_tilt(vec: Vector2, strength: float) -> void:
+	wake_plant("environment")
 	_gust_tilt = (_gust_tilt + vec * strength).limit_length(0.12)
 
 
@@ -2513,6 +2532,60 @@ func _reclamp_voxels_to_footprint() -> void:
 
 
 # Called by SimDriver each tick.
+func tick_sleep_aware(dt: float, substrate: SubstrateGrid) -> void:
+	var env_signature: int = _sleep_environment_signature(substrate)
+	if _static_sleeping:
+		_static_sleep_accum_s += dt
+		if env_signature != _static_sleep_env_signature:
+			wake_plant("environment")
+		if not _static_sleep_dirty \
+				and _static_sleep_accum_s < STATIC_SLEEP_CHEMISTRY_S:
+			return
+		var elapsed: float = _static_sleep_accum_s
+		_static_sleep_accum_s = 0.0
+		_static_sleep_dirty = false
+		_static_sleep_env_signature = env_signature
+		tick(elapsed, substrate)
+		if not _static_sleep_eligible():
+			_static_sleeping = false
+			_static_sleep_stable_s = 0.0
+		return
+
+	tick(dt, substrate)
+	if _static_sleep_eligible():
+		_static_sleep_stable_s += dt
+		if _static_sleep_stable_s >= STATIC_SLEEP_AFTER_S:
+			_static_sleeping = true
+			_static_sleep_dirty = false
+			_static_sleep_accum_s = 0.0
+			_static_sleep_env_signature = env_signature
+	else:
+		_static_sleep_stable_s = 0.0
+
+
+func wake_plant(_reason: String = "") -> void:
+	_static_sleep_dirty = true
+
+
+func _static_sleep_eligible() -> bool:
+	return current_height >= max_height and not is_dying and not _melt_active \
+		and life_phase == LifePhase.VEGETATIVE and flower_stage == FlowerStage.NONE \
+		and _pending_trim_nodes.is_empty() and _brush_bend.length_squared() < 1e-6 \
+		and _gust_tilt.length_squared() < 1e-6 and health >= 0.65 \
+		and (_foliage_batch == null or not _foliage_batch.has_deferred_writes())
+
+
+func _sleep_environment_signature(substrate: SubstrateGrid) -> int:
+	var nutrient_bucket: int = 0
+	if substrate != null and not is_epiphyte:
+		nutrient_bucket = int(round(substrate.get_at(global_position) * 20.0))
+	var sim: Node = _find_sim()
+	var daylight_bucket: int = int(round(sim.daylight() * 8.0)) \
+		if sim != null and sim.has_method("daylight") else 4
+	var flow_bucket: int = int(round(_get_flow_bias() * 10.0))
+	return hash([nutrient_bucket, daylight_bucket, flow_bucket])
+
+
 func tick(dt: float, substrate: SubstrateGrid) -> void:
 	_process_leaf_bake_queue()
 	if _foliage_batch != null:
@@ -3096,6 +3169,7 @@ func _finalize_runner() -> void:
 # ---- Flowering lifecycle ----
 
 func _begin_flowering() -> void:
+	wake_plant("reproduction")
 	if not uses_flowering:
 		return
 	if flower_stage != FlowerStage.NONE:
@@ -3503,6 +3577,7 @@ func _tick_seeding(dt: float) -> void:
 # ---- Decay & death ----
 
 func _begin_dying() -> void:
+	wake_plant("damage")
 	if is_dying:
 		return
 	is_dying = true
@@ -3534,6 +3609,7 @@ func _decay_one_voxel() -> void:
 
 # Aquascape trim tool — remove top fraction of stem, return snapshot for undo.
 func trim_for_aquascape(frac: float, mode: String = "all") -> Dictionary:
+	wake_plant("damage")
 	if is_dying or voxels.is_empty():
 		return {}
 	_stop_canopy_bob()
@@ -3765,6 +3841,7 @@ func _on_flower_consumed() -> void:
 
 
 func nibble(amount: int) -> int:
+	wake_plant("damage")
 	_grazing_pressure = clampf(_grazing_pressure + float(amount) * 0.08, 0.0, 1.0)
 	# Aufwuchs grazing (#30): eat leaf biofilm without always removing tissue.
 	if _graze_leaf_biofilm(amount):

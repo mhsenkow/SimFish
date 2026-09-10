@@ -411,5 +411,10 @@ func clear() -> void:
 func queue_free() -> void:
 	if mmi != null and is_instance_valid(mmi):
 		mmi.queue_free()
+	dispose()
+
+
+func dispose() -> void:
+	clear()
 	mmi = null
 	_mm = null
