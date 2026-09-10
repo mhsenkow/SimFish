@@ -614,11 +614,10 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 			mat.set_shader_parameter("tank_fixture_color", color)
 			mat.set_shader_parameter("fixture_water_top", water_y)
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			mat.set_shader_parameter("tank_fixture_glow", glow)
-			mat.set_shader_parameter("tank_fixture_color", color)
-			mat.set_shader_parameter("fixture_water_floor", water_floor)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("tank_fixture_glow", glow)
+		mat.set_shader_parameter("tank_fixture_color", color)
+		mat.set_shader_parameter("fixture_water_floor", water_floor)
 	if _voxel_mm_mat != null and is_instance_valid(_voxel_mm_mat):
 		_voxel_mm_mat.set_shader_parameter("tank_fixture_glow", glow)
 		_voxel_mm_mat.set_shader_parameter("tank_fixture_color", color)
@@ -626,18 +625,33 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 		_voxel_mm_mat.set_shader_parameter("fixture_water_floor", water_floor)
 
 
-static var _foliage_mm_mats: Array = []
+static var _foliage_mm_mats: Array[WeakRef] = []
 static var _mat_palette_last: Dictionary = {}
 static var _palette_globals_ready: bool = false
-const FOLIAGE_MM_CAP: int = 96
 
 
 static func register_foliage_mm(mat: ShaderMaterial) -> void:
-	if mat == null or _foliage_mm_mats.has(mat):
+	if mat == null:
 		return
-	if _foliage_mm_mats.size() >= FOLIAGE_MM_CAP:
-		return
-	_foliage_mm_mats.append(mat)
+	for existing in _live_foliage_mm_mats():
+		if existing == mat:
+			return
+	# Keep only a weak reference. The old hard cap silently stopped the 97th
+	# living plant from receiving daylight/flow/palette updates, while strong
+	# references also prevented dead per-plant materials from becoming stale.
+	_foliage_mm_mats.append(weakref(mat))
+
+
+static func _live_foliage_mm_mats() -> Array[ShaderMaterial]:
+	var live: Array[ShaderMaterial] = []
+	var kept: Array[WeakRef] = []
+	for ref in _foliage_mm_mats:
+		var value: Variant = ref.get_ref()
+		if value is ShaderMaterial and is_instance_valid(value):
+			live.append(value as ShaderMaterial)
+			kept.append(ref)
+	_foliage_mm_mats = kept
+	return live
 
 
 # Shared MultiMesh-aware voxel material — voxel_mm.gdshader reads color from
@@ -657,11 +671,10 @@ static func make_voxel_mm() -> ShaderMaterial:
 
 
 static func update_foliage_uniforms(canopy_shade: float, water_y: float, daylight: float) -> void:
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			mat.set_shader_parameter("canopy_shade", canopy_shade)
-			mat.set_shader_parameter("water_surface_y", water_y)
-			mat.set_shader_parameter("daylight", daylight)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("canopy_shade", canopy_shade)
+		mat.set_shader_parameter("water_surface_y", water_y)
+		mat.set_shader_parameter("daylight", daylight)
 	# Push daylight into node-based foliage too so the SSS rim there
 	# fades at night, matching the MultiMesh variant.
 	for mat in _foliage_mat_cache.values():
@@ -673,10 +686,9 @@ static func update_foliage_flow(flow: Vector3, strength: float) -> void:
 	var flow_dir: Vector3 = flow
 	if flow_dir.length_squared() > 1e-6:
 		flow_dir = flow_dir.normalized()
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			mat.set_shader_parameter("flow_dir", flow_dir)
-			mat.set_shader_parameter("flow_strength", strength)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("flow_dir", flow_dir)
+		mat.set_shader_parameter("flow_strength", strength)
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("flow_dir", flow_dir)
@@ -801,9 +813,8 @@ static func update_foliage_sss(strength: float) -> void:
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			mat.set_shader_parameter("sss_strength", strength)
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			mat.set_shader_parameter("sss_strength", strength)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("sss_strength", strength)
 
 
 static func _ensure_palette_globals() -> void:
@@ -1001,9 +1012,8 @@ static func apply_global_palette(cfg: Node, water_mat: ShaderMaterial = null) ->
 	for mat in _foliage_mat_cache.values():
 		if is_instance_valid(mat):
 			_clear_palette_overlay(mat as ShaderMaterial)
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			_clear_palette_overlay(mat as ShaderMaterial)
+	for mat in _live_foliage_mm_mats():
+		_clear_palette_overlay(mat)
 	for mat in _mat_cache.values():
 		if is_instance_valid(mat):
 			_clear_palette_overlay(mat as ShaderMaterial)
@@ -1039,10 +1049,9 @@ static func apply_music_sync_overlay(overlay: Dictionary, shimmer: float) -> voi
 		if is_instance_valid(mat):
 			_apply_palette_overlay(mat, oh * 0.65, lerpf(1.0, osat, 0.7),
 				owarm * 0.5, lerpf(1.0, oval, 0.7))
-	for mat in _foliage_mm_mats:
-		if is_instance_valid(mat):
-			_apply_palette_overlay(mat, oh * 0.65, lerpf(1.0, osat, 0.7),
-				owarm * 0.5, lerpf(1.0, oval, 0.7))
+	for mat in _live_foliage_mm_mats():
+		_apply_palette_overlay(mat, oh * 0.65, lerpf(1.0, osat, 0.7),
+			owarm * 0.5, lerpf(1.0, oval, 0.7))
 
 
 # PERFORMANCE_REALTIME #64 — load + pre-draw hot shader variants on the menu.

@@ -132,10 +132,11 @@ rooted plants do not.*
   large opaque rocks and driftwood only, avoiding thin or moving geometry;
   enable them only when profiling proves a net win for typical tank cameras.
   *L · S*
-- [ ] **26. Foliage material lifetime registry.** Replace the silent
+- [x] **26. Foliage material lifetime registry.** Replace the silent
   `FOLIAGE_MM_CAP = 96` refusal with weak-owner registration and stale-entry
   eviction, ensuring every living plant continues receiving daylight, flow,
-  and palette uniforms. *S · L*
+  and palette uniforms. — Shipped via weak material references and
+  `smoke_plant_render_registry.gd`. *S · L*
 
 ## Generative Growth (27–38)
 
