@@ -104,10 +104,12 @@ rooted plants do not.*
   nodes with a second per-plant `VoxelBatch`, retaining stable handles for
   grazing, aging, save restore, and color updates. — Shipped with reversible
   handle visibility, batched growth reveal, and subclass compatibility. *L · L*
-- [ ] **17. Tank-wide far-foliage batch.** For distant plants only, mirror
+- [x] **17. Tank-wide far-foliage batch.** For distant plants only, mirror
   simplified stem and leaf transforms into one world-owned MultiMesh and hide
   their private render batches. Gate the feature on profiling because transfer
-  overhead can outweigh draw-call savings in small tanks. *L · M*
+  overhead can outweigh draw-call savings in small tanks. — Shipped behind
+  12-plant/600-instance and 1.8 ms rebuild gates; 600 instances mirrored in
+  1.4–1.7 ms while consolidating 23 draws in headless profiling. *L · M*
 - [ ] **18. Measured plant/fragment pooling.** Instrument spawn/free churn
   during trimming and die-offs; add bounded resettable pools only for node types
   shown to produce meaningful allocation spikes. Preserve `queue_free()` as the

@@ -45,6 +45,7 @@ const _MindBoidsBufferScript = preload("res://scripts/mind_boids_buffer.gd")
 const _MindBoidsComputeScript = preload("res://scripts/mind_boids_compute.gd")
 const _MotionFieldScript = preload("res://scripts/motion_field.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
+const _PlantFarFoliageBatchScript = preload("res://scripts/plant_far_foliage_batch.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -109,6 +110,7 @@ var waste_root: Node3D = null
 var waste_batch: WasteParticleBatch = null
 var plants_root: Node3D = null
 var world: Node = null
+var _plant_far_batch: Node3D = null
 
 # Filter intake world-space position. Set by world._build_filter_aerator()
 # when the "filter" aeration profile is active; remains Vector3.ZERO for
@@ -2924,6 +2926,17 @@ func _tick_plant_distance_bucketed(plant: Plant, dt: float, camera: Camera3D) ->
 		_plant_tick_accum[id_key] = accumulated
 
 
+func _update_plant_far_batch(camera: Camera3D, dt: float) -> void:
+	if _plant_far_batch == null:
+		var host := get_parent() as Node3D
+		if host == null:
+			return
+		_plant_far_batch = _PlantFarFoliageBatchScript.new()
+		_plant_far_batch.name = "PlantFarFoliageBatch"
+		host.add_child(_plant_far_batch)
+	_plant_far_batch.update_far_batch(plants, camera, dt)
+
+
 func _entity_near_tank_wall(pos: Vector3, band: float = 0.65) -> bool:
 	var w: Node = get_parent()
 	if w != null and w.has_method("tank_lateral_boundary_info"):
@@ -3726,6 +3739,7 @@ func _tick(dt: float) -> void:
 		var h_v: Variant = p.get("_health_smooth")
 		var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
 		photo_bm += float(bm) * hf
+	_update_plant_far_batch(plant_camera, dt)
 	total_plant_biomass = plant_biomass
 	total_photosynthetic_biomass = photo_bm
 	_log_growth_debug(dt)
