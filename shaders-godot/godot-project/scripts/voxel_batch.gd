@@ -30,6 +30,7 @@ class Handle extends RefCounted:
 	var local_pos: Vector3 = Vector3.ZERO
 	var base_color: Color = Color.WHITE
 	var transform: Transform3D = Transform3D.IDENTITY
+	var custom_data: Color = Color(0.0, 0.0, 0.0, 1.0)
 	var alive: bool = true
 	var visible: bool = true
 	var lod_visible: bool = true
@@ -42,6 +43,7 @@ class Handle extends RefCounted:
 
 	func set_custom_data(c: Color) -> void:
 		if alive and batch != null:
+			custom_data = c
 			batch._apply_custom(index, c)
 
 	# Re-write this voxel's per-instance transform. Used by entities that

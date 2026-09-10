@@ -74,10 +74,11 @@ reference; implementation follows dependency order, not numeric order.
   foliage density and darken only the instance base color of crowded interior
   voxels. This gives crowns depth without real-time AO or shadow maps. —
   Shipped with a deterministic 27-cell neighborhood and 512-cell per-plant cap. *M · M*
-- [ ] **9. Light-history anthocyanin.** Extend the shipped dynamic blush and
+- [x] **9. Light-history anthocyanin.** Extend the shipped dynamic blush and
   `red_potential` with a slowly accumulated per-leaf light dose, making exposed
   tops redden while shaded old leaves stay green. Completes the shared pigment
-  intent of Naturalism #281–282. *M · L*
+  intent of Naturalism #281–282. — Shipped as one bounded saved float per leaf,
+  packed in custom-data B and uploaded only after visible dose changes. *M · L*
 - [ ] **10. Translucent senescence batch.** Move late-senescent leaf handles
   into a small secondary batch using a palette-safe translucent foliage
   material, preserving the shipped leaf lifecycle while leaves thin to amber

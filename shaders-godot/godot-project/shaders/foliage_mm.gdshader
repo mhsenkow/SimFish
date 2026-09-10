@@ -26,6 +26,7 @@ uniform vec4 gust_wave = vec4(0.0); // xyz origin, w radius
 uniform vec3 gust_direction = vec3(1.0, 0.0, 0.0);
 uniform float gust_age = 99.0;
 uniform float gust_strength : hint_range(0.0, 1.0) = 0.0;
+uniform float red_potential : hint_range(0.0, 1.0) = 0.0;
 // Subsurface rim — same warm translucent rim as foliage.gdshader so the
 // node-based and MultiMesh paths look identical.
 uniform float sss_strength : hint_range(0.0, 1.0) = 0.42;
@@ -42,11 +43,13 @@ varying vec3 v_inst_color;
 varying vec3 v_world_pos;
 varying float v_leaf_thickness;
 varying float v_leaf_phase;
+varying float v_light_dose;
 
 void vertex() {
 	v_inst_color = COLOR.rgb;
 	v_leaf_thickness = clamp(INSTANCE_CUSTOM.r, 0.0, 1.0);
 	v_leaf_phase = INSTANCE_CUSTOM.g * 6.2831853;
+	v_light_dose = clamp(INSTANCE_CUSTOM.b, 0.0, 1.0);
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_world_pos = world_pos;
 
@@ -91,6 +94,8 @@ void fragment() {
 	vec3 col = v_inst_color * f;
 	col = apply_category_palette_tint(col, iaq_palette_foliage,
 		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
+	vec3 anthocyanin = vec3(col.r * 1.18 + 0.10, col.g * 0.52, col.b * 0.62 + 0.04);
+	col = mix(col, anthocyanin, red_potential * v_light_dose * 0.58);
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
 	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);

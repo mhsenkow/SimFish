@@ -687,6 +687,7 @@ func to_save_dict() -> Dictionary:
 		"_bulb_buried": _bulb_buried,
 		"_dormant_timer": _dormant_timer,
 		"_light_avg": _light_avg,
+		"_leaf_light_doses": _leaf_light_doses_snapshot(),
 		"_stem_limit_history": _stem_history_snapshot(),
 		"_internode_extension_y": _internode_extension_y,
 		"_root_reserve": _root_reserve,
@@ -745,6 +746,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	_bulb_buried = not not d.get("_bulb_buried", false)
 	_dormant_timer = float(d.get("_dormant_timer", 0.0))
 	_light_avg = float(d.get("_light_avg", _light_avg))
+	_restore_leaf_light_doses(d.get("_leaf_light_doses", []))
 	var saved_limits: Array = d.get("_stem_limit_history", [])
 	if not saved_limits.is_empty():
 		_stem_limit_history.resize(mini(saved_limits.size(), voxels.size()))
@@ -1899,6 +1901,7 @@ func _ensure_foliage_batch() -> VoxelBatch:
 			_foliage_mat = ShaderMaterial.new()
 			_foliage_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
 			_foliage_mat.set_shader_parameter("sway_phase_offset", _phase)
+			_foliage_mat.set_shader_parameter("red_potential", red_potential)
 			VoxelMat.register_foliage_mm(_foliage_mat)
 		_apply_sway_personality()
 		# RGBA custom data is the bounded per-leaf visual channel. R starts with
@@ -4253,6 +4256,8 @@ func _register_leaf_age(birth_t: float) -> void:
 		"birth_t": birth_t,
 		"phase": LeafPhase.EXPANDING,  # unfurl tween covers BUD → EXPANDING
 		"damage": 0.0,
+		"light_dose": 0.0,
+		"dose_visual": -1.0,
 		"biofilm": 0.0,
 		"gsa": 0.0,
 		"mobile_n": 0.0,
@@ -4350,6 +4355,7 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 	shed_indices.reverse()
 	for si in shed_indices:
 		_shed_leaf_at(si)
+	_tick_leaf_light_dose(dt, sim_v)
 	_tick_root_bubbles(dt, substrate)
 	_visual_tick_t -= dt
 	if _visual_tick_t <= 0.0:
@@ -4372,6 +4378,48 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 						0.72, film_mix))
 				_foliage_mat.set_shader_parameter("palette_warmth",
 					float(_foliage_mat.get_shader_parameter("palette_warmth")) + gsa_avg * 0.18)
+
+
+func _tick_leaf_light_dose(dt: float, sim_v: Node) -> void:
+	if red_potential <= 0.0 or _leaf_states.is_empty():
+		return
+	var daylight_now: float = clampf(
+		float(sim_v.daylight()) if sim_v != null and sim_v.has_method("daylight") else 0.5,
+		0.0, 1.0)
+	for i in mini(_leaf_states.size(), _leaf_groups.size()):
+		var state: Dictionary = _leaf_states[i]
+		var canopy_position: float = float(i + 1) / float(maxi(1, _leaf_states.size()))
+		var exposure: float = daylight_now * lerpf(0.35, 1.0, canopy_position)
+		var dose: float = clampf(lerpf(float(state.get("light_dose", 0.0)),
+			exposure, clampf(dt / 45.0, 0.0, 1.0)), 0.0, 1.0)
+		state.light_dose = dose
+		if absf(dose - float(state.get("dose_visual", -1.0))) < 0.02:
+			continue
+		state.dose_visual = dose
+		for handle_v in _leaf_groups[i]:
+			var handle: VoxelBatch.Handle = handle_v
+			if handle != null and handle.alive:
+				var custom: Color = handle.custom_data
+				custom.b = dose
+				handle.set_custom_data(custom)
+
+
+func _leaf_light_doses_snapshot() -> Array:
+	var doses: Array = []
+	for state_v in _leaf_states:
+		doses.append(clampf(float((state_v as Dictionary).get("light_dose", 0.0)), 0.0, 1.0))
+	return doses
+
+
+func _restore_leaf_light_doses(saved: Variant) -> void:
+	if not saved is Array:
+		return
+	var values: Array = saved
+	for i in mini(values.size(), _leaf_states.size()):
+		var dose: float = clampf(float(values[i]), 0.0, 1.0)
+		var state: Dictionary = _leaf_states[i]
+		state.light_dose = dose
+		state.dose_visual = -1.0
 
 
 func _advance_leaf_phase(st: Dictionary, _idx: int) -> void:
