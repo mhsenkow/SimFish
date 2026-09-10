@@ -181,9 +181,10 @@ rooted plants do not.*
   uptake and shoot demand pools connected by a genome-defined transport rate,
   producing tip-first starvation when vascular capacity is insufficient. —
   Shipped with bounded conserving pools and a legacy single-charge path. *L · L*
-- [ ] **32. Juvenile/adult heteroblasty.** Add juvenile and adult leaf forms to
+- [x] **32. Juvenile/adult heteroblasty.** Add juvenile and adult leaf forms to
   the genome and transition by node age, independently from the shipped
-  submerged/emergent heterophylly. Implements Naturalism #51. *L · L*
+  submerged/emergent heterophylly. — Shipped with a persistent node threshold
+  and independent emersed morphology. Implements Naturalism #51. *L · L*
 - [x] **33. Space-colonized crown fill.** Offer branch species a bounded set of
   attraction points in lit free volume and steer tips toward unclaimed points,
   yielding asymmetrical airy crowns without replacing the base growth budget. —

@@ -131,6 +131,10 @@ var vascular_transport_rate: float = 0.0
 var growth_curve_establishment: float = 1.0
 var growth_curve_acceleration: float = 0.0
 var growth_curve_plateau: float = 1.0
+var juvenile_leaf_form: String = ""
+var adult_leaf_form: String = ""
+var heteroblasty_node: int = 0
+var _heteroblasty_adult: bool = false
 var _internode_extension_y: float = 0.0
 var _auxin_by_node: PackedFloat32Array = PackedFloat32Array()
 var _auxin_rebuild_count: int = 0
@@ -613,6 +617,9 @@ func to_save_dict() -> Dictionary:
 			"growth_curve_establishment": growth_curve_establishment,
 			"growth_curve_acceleration": growth_curve_acceleration,
 			"growth_curve_plateau": growth_curve_plateau,
+			"juvenile_leaf_form": juvenile_leaf_form,
+			"adult_leaf_form": adult_leaf_form,
+			"heteroblasty_node": heteroblasty_node,
 		},
 		"ramp_override": SaveHelpers.colors_to_array(ramp_override),
 		"water_surface_y": water_surface_y,
@@ -647,6 +654,7 @@ func to_save_dict() -> Dictionary:
 		"_internode_extension_y": _internode_extension_y,
 		"_root_reserve": _root_reserve,
 		"_shoot_reserve": _shoot_reserve,
+		"_heteroblasty_adult": _heteroblasty_adult,
 	}
 
 
@@ -694,6 +702,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	_internode_extension_y = maxf(0.0, float(d.get("_internode_extension_y", 0.0)))
 	_root_reserve = clampf(float(d.get("_root_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	_shoot_reserve = clampf(float(d.get("_shoot_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
+	_heteroblasty_adult = bool(d.get(
+		"_heteroblasty_adult", heteroblasty_node > 0 and current_height >= heteroblasty_node))
 	# Loaded plants are established — no emersed-form display. Setting to
 	# 0 skips the size/color boost we apply to brand-new spawns.
 	_emersed_remaining = 0.0
@@ -1518,6 +1528,12 @@ func _grow_one() -> bool:
 	# a mature stem. Old genomes have sensitivity=0 and retain exact spacing.
 	var etiolation: float = _current_etiolation()
 	var base_leaf_scale: float = leaf_size_mult
+	var base_leaf_form: String = leaf_form
+	if heteroblasty_node > 0:
+		_heteroblasty_adult = _heteroblasty_adult or current_height >= heteroblasty_node
+		var stage_form: String = adult_leaf_form if _heteroblasty_adult else juvenile_leaf_form
+		if stage_form != "":
+			leaf_form = stage_form
 	leaf_size_mult *= lerpf(1.0, 0.62, etiolation)
 
 	# Apply health-based color shift.
@@ -1544,6 +1560,7 @@ func _grow_one() -> bool:
 		var cut_y: int = _pending_trim_nodes.pop_front()
 		_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
 		leaf_size_mult = base_leaf_scale
+		leaf_form = base_leaf_form
 		return true
 
 	match leaf_form:
@@ -1578,6 +1595,7 @@ func _grow_one() -> bool:
 		_:
 			_grow_column_voxel(effective_ramp, rel, photo_offset)
 	leaf_size_mult = base_leaf_scale
+	leaf_form = base_leaf_form
 	# Morphological elaboration from lineage + health:
 	# mature, thriving lineages occasionally add accessory modules
 	# (side fronds / branchlets / nodules) so architecture complexity

@@ -80,6 +80,9 @@ const DEFAULTS: Dictionary = {
 	"ls_axiom": "",
 	"ls_rule_f": "",
 	"crown_fill": 0.0,
+	"juvenile_leaf_form": "",
+	"adult_leaf_form": "",
+	"heteroblasty_node": 0,
 }
 
 
@@ -179,6 +182,9 @@ static func from_plant(p: Plant) -> Dictionary:
 		"ls_axiom": p.get("ls_axiom") if p.get("ls_axiom") != null else "",
 		"ls_rule_f": p.get("ls_rule_f") if p.get("ls_rule_f") != null else "",
 		"crown_fill": p.get("crown_fill") if p.get("crown_fill") != null else 0.0,
+		"juvenile_leaf_form": p.juvenile_leaf_form,
+		"adult_leaf_form": p.adult_leaf_form,
+		"heteroblasty_node": p.heteroblasty_node,
 	})
 
 
@@ -240,6 +246,9 @@ static func apply_to_plant(p: Plant, g: Dictionary) -> void:
 		p.set("ls_rule_f", String(e.ls_rule_f))
 	if p.get("crown_fill") != null:
 		p.set("crown_fill", clampf(float(e.crown_fill), 0.0, 1.0))
+	p.juvenile_leaf_form = String(e.juvenile_leaf_form)
+	p.adult_leaf_form = String(e.adult_leaf_form)
+	p.heteroblasty_node = clampi(int(e.heteroblasty_node), 0, 64)
 
 
 static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
@@ -322,6 +331,9 @@ static func mutate(src: Dictionary, mode: String = REPRO_SEED) -> Dictionary:
 		out.plant_name = ""
 	if String(out.ls_axiom) != "" and sigma >= 0.8 and randf() < 0.02:
 		out.ls_angle = clampf(float(out.ls_angle) + _rng_signed(3.0), 15.0, 55.0)
+	if int(out.heteroblasty_node) > 0:
+		out.heteroblasty_node = clampi(
+			int(out.heteroblasty_node) + int(round(_rng_signed(1.0) * sigma)), 1, 64)
 	# Variegation sport (#22)
 	if sigma >= 0.8 and randf() < 0.003:
 		out.variegation = randf_range(0.4, 0.82)
@@ -417,6 +429,12 @@ static func blend(a: Dictionary, b: Dictionary, generation: int) -> Dictionary:
 		out.whorl_count = int(eb.whorl_count)
 	out.ls_axiom = String(ea.ls_axiom) if randf() < 0.5 else String(eb.ls_axiom)
 	out.ls_rule_f = String(ea.ls_rule_f) if randf() < 0.5 else String(eb.ls_rule_f)
+	out.juvenile_leaf_form = String(ea.juvenile_leaf_form) \
+		if randf() < 0.5 else String(eb.juvenile_leaf_form)
+	out.adult_leaf_form = String(ea.adult_leaf_form) \
+		if randf() < 0.5 else String(eb.adult_leaf_form)
+	out.heteroblasty_node = int(round(lerpf(
+		float(ea.heteroblasty_node), float(eb.heteroblasty_node), 0.5)))
 	if randf() < 0.5:
 		out.ramp_override = ea.get("ramp_override", [])
 	else:
