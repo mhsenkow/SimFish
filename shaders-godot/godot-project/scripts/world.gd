@@ -1280,19 +1280,39 @@ func cfg_preset_is(id: String) -> bool:
 
 func _tick_foliage_gust(adt: float) -> void:
 	_gust_timer += adt
+	if _gust_wave_age < 3.0:
+		_gust_wave_age += adt
+		VoxelMat.update_foliage_gust(_gust_wave_origin, _gust_wave_radius,
+			_gust_wave_age, _gust_wave_dir, _gust_wave_strength)
 	if _gust_timer < _gust_next_s:
 		return
 	_gust_timer = 0.0
 	_gust_next_s = randf_range(28.0, 52.0)
 	if sim == null:
 		return
+	if AccessibilityRuntime.reduced_motion_enabled() or sim.plants.is_empty():
+		VoxelMat.update_foliage_gust(Vector3.ZERO, 0.0, 3.0, Vector3.RIGHT, 0.0)
+		return
 	var dir := Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
 	if dir.length_squared() < 1e-4:
 		return
 	dir = dir.normalized()
+	var source: Node3D = sim.plants[randi() % sim.plants.size()] as Node3D
+	if source == null or not is_instance_valid(source):
+		return
+	_gust_wave_origin = source.global_position
+	_gust_wave_radius = randf_range(2.2, 4.8)
+	_gust_wave_age = 0.0
+	_gust_wave_dir = dir
+	_gust_wave_strength = randf_range(0.35, 0.75)
+	VoxelMat.update_foliage_gust(_gust_wave_origin, _gust_wave_radius,
+		0.0, dir, _gust_wave_strength)
 	for p in sim.plants:
 		if is_instance_valid(p) and p.has_method("apply_gust_tilt"):
-			p.apply_gust_tilt(Vector2(dir.x, dir.z), randf_range(0.35, 0.75))
+			var distance_gain: float = 1.0 - clampf(
+				p.global_position.distance_to(_gust_wave_origin) / _gust_wave_radius, 0.0, 1.0)
+			if distance_gain > 0.0:
+				p.apply_gust_tilt(Vector2(dir.x, dir.z), _gust_wave_strength * distance_gain)
 
 
 func _lily_pad_shade_at(world_pos: Vector3) -> float:
@@ -6225,6 +6245,11 @@ var _floater_t: float = 0.0
 var surface_drift_vec: Vector3 = Vector3.ZERO
 var _gust_timer: float = 0.0
 var _gust_next_s: float = 35.0
+var _gust_wave_origin: Vector3 = Vector3.ZERO
+var _gust_wave_radius: float = 0.0
+var _gust_wave_age: float = 3.0
+var _gust_wave_dir: Vector3 = Vector3.RIGHT
+var _gust_wave_strength: float = 0.0
 var _duckweed_accum: float = 0.0
 var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
 var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]

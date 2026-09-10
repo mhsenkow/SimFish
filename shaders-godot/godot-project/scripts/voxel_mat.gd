@@ -702,6 +702,17 @@ static func update_foliage_flow(flow: Vector3, strength: float) -> void:
 			mat.set_shader_parameter("flow_strength", strength)
 
 
+static func update_foliage_gust(origin: Vector3, radius: float, age: float,
+		direction: Vector3, strength: float) -> void:
+	var packed := Vector4(origin.x, origin.y, origin.z, clampf(radius, 0.0, 8.0))
+	var bounded_strength: float = clampf(strength, 0.0, 1.0)
+	for mat in _live_foliage_mm_mats():
+		mat.set_shader_parameter("gust_wave", packed)
+		mat.set_shader_parameter("gust_age", clampf(age, 0.0, 3.0))
+		mat.set_shader_parameter("gust_direction", direction.normalized())
+		mat.set_shader_parameter("gust_strength", bounded_strength)
+
+
 # Push a substrate ripple_phase value to every cached substrate_caustic
 # material. World.gd advances this slowly with sim time so the sand bed's
 # imprinted ripple pattern walks forward over many sim-minutes — visible

@@ -61,10 +61,11 @@ reference; implementation follows dependency order, not numeric order.
   preserving the existing per-plant sway personality. Extends Naturalism #204.
   — Shipped in custom-data G using a deterministic geometry/order hash; material
   count remains one per plant. *M · M*
-- [ ] **6. Spatial gust wave.** Extend the shipped CPU gust tilt
+- [x] **6. Spatial gust wave.** Extend the shipped CPU gust tilt
   (Plant Improvement #30 / Naturalism #202) with a bounded shader wave driven
   by gust origin, radius, and age, so disturbances propagate across nearby
-  foliage rather than rotating every leaf uniformly. *M · L*
+  foliage rather than rotating every leaf uniformly. — Shipped with an 8 m /
+  3 s cap, distance-weighted CPU tilt, and reduced-motion hard disable. *M · L*
 - [ ] **7. Plant canopy blob shadows.** Merge a budgeted set of plant crown
   spheres into the substrate shader's existing blob-shadow input, prioritizing
   nearby and high-biomass plants alongside fish. *M · L*
