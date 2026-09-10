@@ -18,6 +18,7 @@
 extends Node
 class_name SubstrateGrid
 
+const SeedBankStore = preload("res://scripts/substrate_seed_bank.gd")
 const NUTRIENT_BASELINE: float = 0.3
 const NUTRIENT_MAX: float = 3.0
 const DIFFUSION_RATE: float = 0.04
@@ -121,6 +122,7 @@ var _dirty_cells: Dictionary = {}
 # Working buffer reused each tick so we don't allocate a new Dictionary
 # per call (or a new Array for the iteration snapshot).
 var _next_dirty: Dictionary = {}
+var _seed_lots = SeedBankStore.new()
 
 
 func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
@@ -151,6 +153,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_init_channel_grid(iron_availability, IRON_LEGACY_DEFAULT)
 	_init_channel_grid(co2_availability, CO2_LEGACY_DEFAULT)
 	_init_channel_grid(mulm)
+	_seed_lots.init(cells_x, cells_z)
 	_dirty_channels.clear()
 
 
@@ -206,22 +209,43 @@ func consume_at(world_pos: Vector3, amount: float) -> float:
 
 func get_seed_bank_at(world_pos: Vector3) -> float:
 	var c := _cell_at(world_pos)
-	return seed_bank[c.x][c.y]
+	return _seed_lots.total_at(c)
 
 
 func add_seed_bank_at(world_pos: Vector3, amount: float) -> void:
+	add_seed_lot_at(world_pos, {}, amount, {})
+
+
+func add_seed_lot_at(world_pos: Vector3, genome: Dictionary, amount: float,
+		dormancy: Dictionary = {}) -> float:
 	var c := _cell_at(world_pos)
-	seed_bank[c.x][c.y] = minf(seed_bank[c.x][c.y] + amount, SEED_BANK_MAX)
-	_mark_channel_dirty(c)
+	var accepted: float = _seed_lots.add_lot(c, genome, amount, dormancy)
+	_sync_seed_scalar(c)
+	if accepted > 0.0:
+		_mark_channel_dirty(c)
+	return accepted
 
 
 func consume_seed_bank_at(world_pos: Vector3, amount: float) -> float:
+	var lot: Dictionary = take_seed_lot_at(world_pos, amount)
+	return float(lot.get("quantity", 0.0))
+
+
+func take_seed_lot_at(world_pos: Vector3, amount: float) -> Dictionary:
 	var c := _cell_at(world_pos)
-	var taken: float = minf(amount, seed_bank[c.x][c.y])
-	seed_bank[c.x][c.y] -= taken
-	if taken > 0.0:
+	var lot: Dictionary = _seed_lots.consume(c, amount)
+	_sync_seed_scalar(c)
+	if float(lot.get("quantity", 0.0)) > 0.0:
 		_mark_channel_dirty(c)
-	return taken
+	return lot
+
+
+func get_seed_lots_at(world_pos: Vector3) -> Array:
+	return _seed_lots.lots_at(_cell_at(world_pos))
+
+
+func _sync_seed_scalar(c: Vector2i) -> void:
+	seed_bank[c.x][c.y] = _seed_lots.total_at(c)
 
 
 func get_allelochemical_at(world_pos: Vector3) -> float:
@@ -360,7 +384,10 @@ func _tick_channel_field(grid: Array, max_val: float, dt: float) -> void:
 func tick_channels(dt: float) -> void:
 	if _dirty_channels.is_empty():
 		return
-	_tick_channel_field(seed_bank, SEED_BANK_MAX, dt)
+	var active_cells: Array = _dirty_channels.keys()
+	_seed_lots.tick_cells(active_cells, dt)
+	for cell_v in active_cells:
+		_sync_seed_scalar(cell_v)
 	_tick_channel_field(allelochemical, ALLELO_MAX, dt)
 	_tick_channel_field(root_oxygen, ROOT_O2_MAX, dt)
 	_tick_channel_field(anaerobic_gas, ANAEROBIC_MAX, dt)
@@ -594,7 +621,8 @@ func to_save_dict() -> Dictionary:
 		"iron_availability_flat": _pack_channel_flat(iron_availability),
 		"co2_availability_flat": _pack_channel_flat(co2_availability),
 		"mulm_flat": _pack_channel_flat(mulm),
-		"schema_version": 3,
+		"seed_lots": _seed_lots.to_sparse_save(),
+		"schema_version": 4,
 	}
 
 
@@ -627,6 +655,18 @@ func apply_save_dict(d: Dictionary) -> void:
 			if absf(v - eq) > EQUILIBRIUM_EPSILON:
 				_mark_dirty(Vector2i(x, z))
 	_apply_channel_flat(seed_bank, d.get("seed_bank_flat", []), sx, sz)
+	var structured: Variant = d.get("seed_lots", [])
+	if structured is Array and not (structured as Array).is_empty():
+		_seed_lots.apply_sparse_save(structured)
+		for x in cells_x:
+			for z in cells_z:
+				_sync_seed_scalar(Vector2i(x, z))
+	else:
+		# Legacy scalar cells become anonymous lots with unchanged quantity.
+		for x in mini(cells_x, sx):
+			for z in mini(cells_z, sz):
+				_seed_lots.migrate_scalar(Vector2i(x, z), float(seed_bank[x][z]))
+				_sync_seed_scalar(Vector2i(x, z))
 	_apply_channel_flat(allelochemical, d.get("allelochemical_flat", []), sx, sz)
 	_apply_channel_flat(root_oxygen, d.get("root_oxygen_flat", []), sx, sz)
 	_apply_channel_flat(anaerobic_gas, d.get("anaerobic_flat", []), sx, sz)

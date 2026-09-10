@@ -213,10 +213,12 @@ normal flowering.*
   against `TankFlowField` first and deposit into the seed bank at its actual
   final cell, rather than selecting a destination before the drift animation.
   Extends Plant Improvement #47 / Naturalism #440. *M · L*
-- [ ] **40. Structured seed bank.** Replace each scalar cell with a bounded set
+- [x] **40. Structured seed bank.** Replace each scalar cell with a bounded set
   of seed lots containing genome identity, quantity, age, viability, and
   dormancy requirements, while migrating old scalar saves into anonymous lots.
-  Implements Naturalism #404. *L · L*
+  — Shipped with eight-lot/one-unit cell bounds, genome-bearing germination,
+  JSON roundtrip coverage, and anonymous scalar migration. Implements
+  Naturalism #404. *L · L*
 - [ ] **41. Runtime outcrossing.** Pair compatible mature flowers within a
   pollination radius and produce offspring through the shipped
   `PlantGenome.blend()` function; self or clonal mutation remains the fallback

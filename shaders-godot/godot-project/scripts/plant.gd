@@ -3603,9 +3603,9 @@ func _tick_seeding(dt: float) -> void:
 		if bank > 0.2 and seed_timer > 12.0:
 			var dl: float = sim_d.daylight() if sim_d.has_method("daylight") else 0.5
 			if dl > 0.45 and substrate_nutrient_ok(sim_d.substrate):
-				var taken: float = sim_d.substrate.consume_seed_bank_at(_world_pos, 0.25)
-				if taken > 0.1:
-					_germinate_seed_at(_world_pos, sim_d)
+				var lot: Dictionary = sim_d.substrate.take_seed_lot_at(_world_pos, 0.25)
+				if float(lot.get("quantity", 0.0)) > 0.1:
+					_germinate_seed_at(_world_pos, sim_d, lot.get("genome", {}))
 					seed_timer = 0.0
 	if has_emerged:
 		if seed_timer >= 18.0 and randf() < 0.5:
@@ -4409,7 +4409,7 @@ func substrate_nutrient_ok(sub: SubstrateGrid) -> bool:
 	return sub.get_at(_world_pos) >= SubstrateGrid.NUTRIENT_BASELINE + SEED_SITE_NUTRIENT_MIN
 
 
-func _germinate_seed_at(pos: Vector3, sim_d: Node) -> void:
+func _germinate_seed_at(pos: Vector3, sim_d: Node, seed_genome: Dictionary = {}) -> void:
 	var world: Node = sim_d.get_parent()
 	if world == null or not world.has_method("spawn_seedling"):
 		return
@@ -4417,7 +4417,9 @@ func _germinate_seed_at(pos: Vector3, sim_d: Node) -> void:
 	if mutated_ramp.size() == 6:
 		EvolutionPressure.apply_plant_ramp(
 			mutated_ramp, EvolutionPressure.sample_from_sim(sim_d, pos))
-	world.spawn_seedling(pos, mutated_ramp, generation + 1, get_seed_config())
+	var cfg: Dictionary = seed_genome.duplicate(true) \
+		if not seed_genome.is_empty() else get_seed_config()
+	world.spawn_seedling(pos, mutated_ramp, int(cfg.get("generation", generation + 1)), cfg)
 
 
 func _cast_seed() -> bool:
@@ -4438,7 +4440,10 @@ func _cast_seed() -> bool:
 	# Seed bank (#14): bury seed; germination handled in _tick_seeding.
 	if sim_driver.substrate != null:
 		_spawn_visible_seed_drift(seed_pos)
-		sim_driver.substrate.add_seed_bank_at(seed_pos, 0.35)
+		var seed_genome: Dictionary = get_seed_config()
+		sim_driver.substrate.add_seed_lot_at(seed_pos, seed_genome, 0.35, {
+			"type": String(seed_genome.get("dormancy_type", dormancy_type)),
+		})
 		return true
 	return false
 
