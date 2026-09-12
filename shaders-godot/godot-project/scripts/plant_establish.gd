@@ -84,7 +84,11 @@ static func initial_height(requested: int, mature_height: int,
 const POOL_SURPLUS_VOXELS: int = 14
 # Ceiling, so a very tall vessel does not turn one plant into a hundred
 # voxels. Generous: it only bites on tanks past ~13 units of water.
-const MAX_PLANT_VOXELS: int = 52
+# Raised from 52: the Settings height slider goes to 20, whose water column
+# needs 47 voxels of blade before any surplus at all, so the old ceiling
+# squeezed the pooling surplus to 5 on the tallest tanks and the laid-over
+# run tore away from the stem it grew out of.
+const MAX_PLANT_VOXELS: int = 72
 
 
 # Voxels needed for a plant based at `base_y` to just touch the surface.
@@ -106,3 +110,26 @@ static func surface_height(base_y: float, water_y: float, voxel_size: float,
 	# not stunt a plant below its own genome.
 	return clampi(maxi(natural_max, reach + maxi(0, surplus)),
 		1, MAX_PLANT_VOXELS)
+
+
+# Starting height for an established surface-reaching plant.
+#
+# THE BUG THIS FIXES. The generic rule starts an established plant at 72% of
+# its mature height. On a small tank that happens to land past the
+# waterline, so valli opens already pooling; on a tall one it lands well
+# short - 10 voxels short at height 20 - and the plant then has to grow
+# there against a per-tick growth budget shared by every plant in the tank.
+# So "plants reach the surface" was quietly true only on small tanks.
+#
+# An established tank has, by definition, been running long enough for its
+# vallisneria to have reached the top. So it starts AT the waterline, with a
+# jittered share of the surplus already laid over - which also keeps the
+# stand ragged rather than a hedge cut to one level.
+static func established_surface_height(reach: int, mature: int,
+		roll: float) -> int:
+	var r: int = maxi(1, reach)
+	var m: int = maxi(r, mature)
+	var surplus: int = m - r
+	var laid: int = int(round(float(surplus)
+		* lerpf(0.30, 1.0, clampf(roll, 0.0, 1.0))))
+	return clampi(r + laid, 1, m)

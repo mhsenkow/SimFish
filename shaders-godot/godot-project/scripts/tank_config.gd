@@ -477,6 +477,11 @@ var light_volumetric: bool = true
 # Show surface caustics scrolling across the substrate. On by default.
 var light_caustics: bool = true
 
+# Shape of the driftwood (see scripts/driftwood_form.gd). "auto" defers to
+# the tank preset, which is what every tank did before this existed - the
+# form was reachable only by picking a template that happened to use it.
+var wood_form: String = "auto"
+
 # How grown-in an established tank's plants are, as a fraction of their own
 # mature height (see scripts/plant_establish.gd). "Established" used to mean
 # established chemistry only - the plants still spawned at nursery height,
@@ -2411,6 +2416,9 @@ const TANK_PRESETS: Dictionary = {
 	},
 	"shrimp_sanctuary": {
 		"label": "Shrimp sanctuary (nano planted)",
+		# Spiderwood is the classic shrimp-tank hardscape - thin limbs give
+		# them surface to graze and somewhere to hide.
+		"wood_form": "spider",
 		"stocking": {"shrimp": 22},
 		"phenotype_spread": 1.0,
 		"plant_palette": {
@@ -2461,6 +2469,9 @@ const TANK_PRESETS: Dictionary = {
 	},
 	"valli_jungle": {
 		"label": "Vallisneria jungle (snail bed)",
+		# A branch climbing through the blades is what the reference tanks
+		# actually look like; a log on the floor disappears under the valli.
+		"wood_form": "branch",
 		# Livebearers + fry + a small mid-water school. The fry matter: in
 		# the reference photo half the visible fish are juveniles hiding in
 		# the blades, which is what makes the jungle read as *lived in*.
@@ -2488,6 +2499,9 @@ const TANK_PRESETS: Dictionary = {
 	},
 	"night_lamp": {
 		"label": "Night lamp (one beam)",
+		# The beam needs something with height to fall across, or it lights
+		# gravel and nothing else.
+		"wood_form": "branch",
 		# Sparse on purpose. The subject is the light, not the livestock:
 		# a handful of fish crossing the beam reads far better than a crowd,
 		# because anything outside the cone is invisible anyway.
@@ -2829,6 +2843,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("light", "height", light_height)
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
+	cfg.set_value("tank", "wood_form", wood_form)
 	cfg.set_value("plants", "establish_scale", plant_establish_scale)
 	cfg.set_value("light", "room_darkness", room_darkness)
 	cfg.set_value("light", "spot_angle_deg", spot_angle_deg)
@@ -3148,6 +3163,7 @@ func load_from_disk() -> void:
 	light_height = cfg.get_value("light", "height", light_height)
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
+	wood_form = String(cfg.get_value("tank", "wood_form", wood_form))
 	plant_establish_scale = cfg.get_value("plants", "establish_scale", plant_establish_scale)
 	room_darkness = cfg.get_value("light", "room_darkness", room_darkness)
 	spot_angle_deg = cfg.get_value("light", "spot_angle_deg", spot_angle_deg)

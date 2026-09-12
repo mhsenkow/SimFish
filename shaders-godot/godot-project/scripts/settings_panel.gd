@@ -20,6 +20,7 @@ const FAUNA_VALUE_LABEL_W: float = 108.0
 signal apply_requested
 
 var _shape_option: OptionButton
+var _wood_form_option: OptionButton
 var _vessel_option: OptionButton
 var _vessel_desc: Label
 var _new_tank_fit_option: OptionButton
@@ -249,6 +250,27 @@ func _build_ui() -> void:
 		TankConfig.tank_shape = _shape_option.get_item_metadata(idx)
 		TankConfig.vessel_preset = "custom"
 		_sync_vessel_dropdown())
+
+	_wood_form_option = PanelTheme.add_dropdown_row(vbox_tank, tr("Driftwood"))
+	for entry in [
+			{"key": "auto",   "label": "Auto (match the tank style)"},
+			{"key": "log",    "label": "Log - low arc across the floor"},
+			{"key": "branch", "label": "Branch - climbs and forks upward"},
+			{"key": "spider", "label": "Spiderwood - thin limbs, spreading"},
+			{"key": "stump",  "label": "Stump - squat root mass"},
+			{"key": "none",   "label": "None - stone only"},
+		]:
+		_wood_form_option.add_item(String(entry["label"]))
+		_wood_form_option.set_item_metadata(
+			_wood_form_option.item_count - 1, String(entry["key"]))
+	_wood_form_option.item_selected.connect(func(idx):
+		TankConfig.wood_form = String(
+			_wood_form_option.get_item_metadata(idx)))
+	var wood_hint := PanelTheme.make_description()
+	wood_hint.text = tr(
+		"Shape of the driftwood, not how much of it. Takes effect on Apply, "
+		+ "which rebuilds the hardscape.")
+	vbox_tank.add_child(wood_hint)
 
 	_new_tank_fit_option = PanelTheme.add_dropdown_row(vbox_tank, "New tank footprint")
 	for entry in [
@@ -1173,6 +1195,12 @@ func _pull_from_config() -> void:
 		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
 			_shape_option.select(i)
 			break
+	if _wood_form_option != null:
+		for i in _wood_form_option.item_count:
+			if String(_wood_form_option.get_item_metadata(i)) \
+					== String(TankConfig.wood_form):
+				_wood_form_option.select(i)
+				break
 	if _new_tank_fit_option != null:
 		for i in _new_tank_fit_option.item_count:
 			if _new_tank_fit_option.get_item_metadata(i) == TankConfig.new_tank_fit:

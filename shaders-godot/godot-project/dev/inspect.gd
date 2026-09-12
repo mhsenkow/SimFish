@@ -91,6 +91,28 @@ func _apply_hides() -> void:
 					(n as Node3D).visible = false
 				else:
 					print("[inspect] NOT FOUND ", want)
-	for c in get_node("SubViewport/World").get_children():
-		print("[inspect] child: ", c.name)
+	# What height did the plants actually END UP at?
+	var w: Node = get_node("SubViewport/World")
+	var water: float = float(w.get("WATER_HEIGHT"))
+	var pr: Node = w.get_node_or_null("Plants")
+	if pr != null:
+		var n: int = 0
+		var reached: int = 0
+		var tops: Array = []
+		for c in pr.get_children():
+			if c.get("current_height") == null:
+				continue
+			n += 1
+			var top: float = float(c.call("top_world_y")) if c.has_method("top_world_y") else 0.0
+			tops.append(top)
+			if top >= water - 0.3:
+				reached += 1
+			if n <= 4:
+				print("[inspect] plant %s h=%d/%d top=%.2f water=%.2f pooling=%s" % [
+					str(c.get("species_id")), int(c.get("current_height")),
+					int(c.get("max_height")), top, water,
+					str(int(c.get("life_phase")))])
+		tops.sort()
+		print("[inspect] %d plants, %d reached the surface, tallest top=%.2f water=%.2f" % [
+			n, reached, (tops[-1] if tops.size() > 0 else 0.0), water])
 

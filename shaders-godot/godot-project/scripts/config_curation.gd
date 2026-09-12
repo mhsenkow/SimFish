@@ -212,6 +212,7 @@ const MANIFEST: Dictionary = {
 	"light_caustics": [TIER_ADVANCED, "lighting"],
 	# How grown-in an established tank opens (scripts/plant_establish.gd).
 	"plant_establish_scale": [TIER_COMMON, "flora"],
+	"wood_form": [TIER_COMMON, "tank"],
 	"music_simple_bed": [TIER_ADVANCED, "music"],
 	# Aimable spot rig (scripts/lighting_rig.gd). room_darkness is COMMON
 	# because "make the room dark" is a look a player reaches for directly;

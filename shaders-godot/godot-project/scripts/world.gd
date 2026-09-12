@@ -3184,12 +3184,25 @@ func _build_hardscape(populate: bool = true) -> void:
 	if cfg_hs != null:
 		var preset_hs: Dictionary = cfg_hs.current_tank_preset()
 		hs_style = String(preset_hs.get("hardscape_style", "default"))
+	# Wood FORM, not just how much of it. Every tank used to get the same
+	# single low arc across the floor, which left the whole middle and upper
+	# water column empty - see DriftwoodForm.
+	# Precedence: an explicit Settings choice wins, then the preset's own
+	# wood_form, then the style default. "auto" means "whatever this tank
+	# was designed with", which is what every tank did before the setting
+	# existed.
+	var hs_wood_form: String = "log"
+	var preset_form: String = ""
+	if cfg_hs != null:
+		var pw: Dictionary = cfg_hs.current_tank_preset()
+		preset_form = String(pw.get("wood_form", ""))
 	match hs_style:
 		"iwagumi":
 			hs_driftwood_mult = 0.0   # no wood — stones tell the story
 			hs_stones_mult = 1.0
 			hs_pebbles_mult = 1.5
 		"blackwater_heavy_wood":
+			hs_wood_form = "branch"
 			hs_driftwood_mult = 1.6   # thick tangle dominates
 			hs_stones_mult = 0.35
 			hs_pebbles_mult = 0.3
@@ -3198,19 +3211,34 @@ func _build_hardscape(populate: bool = true) -> void:
 			hs_stones_mult = 1.6
 			hs_pebbles_mult = 1.4
 		"polyp_jar":
+			# Deliberately left as the original single stub: the polyp jar is
+			# a tiny sphere whose hardscape is meant to be minimal, and a
+			# radiating stump pushes the carpet planting out past where the
+			# layout smoke (rightly) expects it.
 			hs_driftwood_mult = 0.35  # one short stub
 			hs_stones_mult = 0.40
 			hs_pebbles_mult = 0.5
 		"predator_corners":
+			hs_wood_form = "stump"
 			hs_driftwood_mult = 0.55  # corners get small piles
 			hs_stones_mult = 0.9
 			hs_pebbles_mult = 0.4
 		"twin_logs":
+			hs_wood_form = "log"
 			hs_driftwood_mult = 1.25
 			hs_stones_mult = 0.55
 			hs_pebbles_mult = 0.5
 		_:
 			pass  # default
+
+	if preset_form != "":
+		hs_wood_form = preset_form
+	if cfg_hs != null:
+		var override: String = String(cfg_hs.get("wood_form"))
+		if override != "" and override != "auto":
+			hs_wood_form = override
+			if override == "none":
+				hs_driftwood_mult = 0.0
 
 	var hs_batch := HardscapeBatch.new()
 	var add_driftwood_cube: Callable = func(center: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
@@ -3259,42 +3287,61 @@ func _build_hardscape(populate: bool = true) -> void:
 	# stub (polyp jar) without rewriting the bezier. Iwagumi /
 	# boulder_field skip the wood entirely (multiplier=0).
 	var build_driftwood: bool = hs_driftwood_mult > 0.001
-	var steps := int(round(80.0 * hs_driftwood_mult)) if build_driftwood else 0
-	for s in (range(steps + 1) if build_driftwood else []):
-		var t := float(s) / float(steps)
-		var p: Vector3 = bezier.call(p0, p1, p2, p3, t)
-		var size := lerpf(0.62, 0.25, t)
+	# A dedicated RNG seeded from the tank's own seed: stable across reloads,
+	# and it does NOT consume from _rng, which would shift every placement
+	# made after the hardscape.
+	var wood_rng := RandomNumberGenerator.new()
+	var seed_src: int = int(sim.tank_seed) if sim != null and sim.get("tank_seed") != null else 12345
+	wood_rng.seed = seed_src ^ 0x5EED0D
+	var wood_form: int = DriftwoodForm.form_id(hs_wood_form)
+	var wood_limbs: Array[Dictionary] = []
+	if build_driftwood:
+		wood_limbs = DriftwoodForm.limbs(wood_form, wood_rng,
+			TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, WATER_HEIGHT)
+	var base_steps := int(round(80.0 * hs_driftwood_mult)) if build_driftwood else 0
+	for limb in wood_limbs:
+		var l0: Vector3 = limb["p0"]
+		var l1: Vector3 = limb["p1"]
+		var l2: Vector3 = limb["p2"]
+		var l3: Vector3 = limb["p3"]
+		var thick0: float = limb["thick0"]
+		var thick1: float = limb["thick1"]
+		var steps: int = DriftwoodForm.limb_steps(limb, base_steps)
+		for s in range(steps + 1):
+			var t := float(s) / float(steps)
+			var p: Vector3 = bezier.call(l0, l1, l2, l3, t)
+			var size := lerpf(thick0, thick1, t)
+			
+			# Spawn dark wood core voxel
+			var mi_d: MeshInstance3D = add_driftwood_cube.call(p, Vector3(size, size, size), mat_dark)
+			if mi_d != null:
+				_driftwood_voxels.append(mi_d)
+			if s % 19 == 7:
+				add_driftwood_cube.call(
+					p + Vector3(0.0, size * 0.32, 0.0),
+					Vector3(size * 0.34, size * 0.22, size * 0.34), mat_moss)
 		
-		# Spawn dark wood core voxel
-		var mi_d: MeshInstance3D = add_driftwood_cube.call(p, Vector3(size, size, size), mat_dark)
-		if mi_d != null:
-			_driftwood_voxels.append(mi_d)
-		if s % 19 == 7:
-			add_driftwood_cube.call(
-				p + Vector3(0.0, size * 0.32, 0.0),
-				Vector3(size * 0.34, size * 0.22, size * 0.34), mat_moss)
+			# Calculate curve tangent for bark accent alignment
+			var next_t := minf(t + 0.01, 1.0)
+			var prev_t := maxf(t - 0.01, 0.0)
+			var tangent: Vector3 = (bezier.call(p0, p1, p2, p3, next_t) - bezier.call(p0, p1, p2, p3, prev_t)).normalized()
 		
-		# Calculate curve tangent for bark accent alignment
-		var next_t := minf(t + 0.01, 1.0)
-		var prev_t := maxf(t - 0.01, 0.0)
-		var tangent: Vector3 = (bezier.call(p0, p1, p2, p3, next_t) - bezier.call(p0, p1, p2, p3, prev_t)).normalized()
+			# Find orthogonal normal vector in XZ plane
+			var normal: Vector3 = Vector3(-tangent.z, 0.0, tangent.x).normalized()
+			if normal.length_squared() < 0.1:
+				normal = Vector3.BACK
 		
-		# Find orthogonal normal vector in XZ plane
-		var normal: Vector3 = Vector3(-tangent.z, 0.0, tangent.x).normalized()
-		if normal.length_squared() < 0.1:
-			normal = Vector3.BACK
-		
-		# Spawn light wood bark accent voxels on side walls perpendicular to growth
-		for dx in [-1, 1]:
-			var offset: Vector3 = Vector3(0.0, size * 0.4, 0.0) + normal * dx * size * 0.38
-			var mi_l: MeshInstance3D = add_driftwood_cube.call(
-				p + offset, Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
-			if mi_l != null:
-				_driftwood_voxels.append(mi_l)
+			# Spawn light wood bark accent voxels on side walls perpendicular to growth
+			for dx in [-1, 1]:
+				var offset: Vector3 = Vector3(0.0, size * 0.4, 0.0) + normal * dx * size * 0.38
+				var mi_l: MeshInstance3D = add_driftwood_cube.call(
+					p + offset, Vector3(size * 0.58, size * 0.58, size * 0.58), mat_light)
+				if mi_l != null:
+					_driftwood_voxels.append(mi_l)
 
 	# Side Twigs — only when we actually built a main trunk above.
 	var twig_configs: Array = []
-	if build_driftwood:
+	if build_driftwood and wood_form == DriftwoodForm.LOG:
 		twig_configs = [
 			{"t_start": 0.28, "length": 7, "angle_y": -0.65, "angle_z": 0.45, "scale_mult": 0.55},
 			{"t_start": 0.52, "length": 6, "angle_y": 0.85, "angle_z": 0.55, "scale_mult": 0.50},
@@ -5328,10 +5375,19 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	# An established tank has grown its plants, not just its biofilter.
 	# See PlantEstablish - previously valli was planted at 2-5 voxels
 	# against a mature height of 14-22, so a cycled tank opened with stubs.
-	initial_height = PlantEstablish.initial_height(
-		initial_height, mature_h, _plants_established(),
-		_plant_establish_scale(),
-		PlantEstablish.roll_for_position(pos.x, pos.z))
+	var est_roll: float = PlantEstablish.roll_for_position(pos.x, pos.z)
+	if bool(spec.get("reaches_surface", false)) and _plants_established():
+		# A tank that has been running long enough to be "established" has
+		# had time for its vallisneria to reach the top, whatever size it
+		# is. The generic 72%-of-mature rule only happened to clear the
+		# waterline on small tanks.
+		initial_height = PlantEstablish.established_surface_height(
+			PlantEstablish.surface_reach_voxels(pos.y, WATER_HEIGHT, VOXEL_SIZE),
+			mature_h, est_roll)
+	else:
+		initial_height = PlantEstablish.initial_height(
+			initial_height, mature_h, _plants_established(),
+			_plant_establish_scale(), est_roll)
 	p.init(initial_height, {
 		"max_height": mature_h,
 		"growth_rate": float(spec["rate"]),

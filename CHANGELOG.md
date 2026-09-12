@@ -6,6 +6,12 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.34
+
+- **Driftwood forms:** log / branch / spider / stump climb into the water column (`driftwood_form.gd`) instead of one floor arc.
+- **Settings:** wood form override or auto-from-preset; plant establish polish.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.34) (macOS / Windows / Linux / Android).
+
 ## v0.2.33
 
 - **Music reactivity:** ambient bed filter/timbre follows tank health (`music_reactivity.gd`) — muffled when struggling, open when thriving.
