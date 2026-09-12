@@ -7318,6 +7318,12 @@ func _apply_adaptive_shader_cost() -> void:
 	if _adaptive_shader_cost >= 3:
 		sm.set_shader_parameter("bloom_strength", 0.0)
 		sm.set_shader_parameter("dither_strength", 0.4)
+	# The water volume and its projected caustics are the other large
+	# full-screen shader cost. Keep tier 0 cinematic; only simplify their
+	# high-frequency Worley layers after the existing post-process fallback has
+	# stepped down. World caches the value, so this has no steady-state churn.
+	if world != null and world.has_method("set_aquatic_shader_detail"):
+		world.set_aquatic_shader_detail(_adaptive_shader_cost)
 	if _sim != null:
 		if _adaptive_shader_cost >= 3:
 			_sim.pearling_budget_scale = 0.0
@@ -7977,11 +7983,7 @@ func _apply_hud_layout() -> void:
 	var w: float = get_viewport().get_visible_rect().size.x
 	var is_touch: bool = _is_mobile()
 
-	var layout: String = "wide"
-	if w < 700.0 or (is_touch and w < 900.0):
-		layout = "compact"
-	elif w < 1100.0:
-		layout = "medium"
+	var layout: String = HudLayout.layout_for(w, is_touch)
 	var layout_changed: bool = layout != _hud_layout
 	if layout_changed:
 		_hud_layout = layout
@@ -8006,7 +8008,16 @@ func _apply_hud_layout() -> void:
 			chip.visible = true
 
 	var pad: Vector4 = _safe_pad()
-	var left_inset: float = (96.0 if layout != "compact" else 88.0) + pad.x
+	# Derive the stats bar's left edge from where the menu cluster ACTUALLY
+	# ends, not from a literal. The cluster sizes to its own contents, so a
+	# longer label, a bigger UI scale or a translated string used to slide
+	# the stats chips straight over the Menu and fullscreen buttons.
+	var cluster_w: float = 0.0
+	if left_cluster != null:
+		cluster_w = maxf(left_cluster.size.x,
+			left_cluster.get_combined_minimum_size().x)
+	var left_inset: float = HudLayout.stats_left_inset(
+		8.0 + pad.x, cluster_w, pad.x, w)
 	if aqua_build:
 		left_inset = _aquascape_workbench_left() + _aquascape_workbench_width() + 8.0
 	# Menu cluster rides the same top/left inset as the stats bar so the two

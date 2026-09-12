@@ -55,18 +55,24 @@ varying vec3 v_world_pos;
 varying float v_leaf_thickness;
 varying float v_leaf_phase;
 varying float v_light_dose;
+// Per-instance bend weight.  Plant.gd writes this from the voxel's local
+// height, making a ribbon's root stationary while its successive segments
+// progressively yield to the current.
+varying float v_flex_weight;
 
 void vertex() {
 	v_inst_color = COLOR.rgb;
 	v_leaf_thickness = clamp(INSTANCE_CUSTOM.r, 0.0, 1.0);
 	v_leaf_phase = INSTANCE_CUSTOM.g * 6.2831853;
 	v_light_dose = clamp(INSTANCE_CUSTOM.b, 0.0, 1.0);
+	v_flex_weight = clamp(INSTANCE_CUSTOM.a, 0.0, 1.0);
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_world_pos = world_pos;
 
-	float height_norm = clamp((world_pos.y - 0.5) / max(water_surface_y - 0.5, 1.0), 0.0, 1.0);
-	// Gentle power curve: flexible mid-column, soft tip — avoids squared tip whip.
-	float height_factor = pow(height_norm, 1.35) * tip_sway_mult;
+	// Local bend weight is the important difference between a shader wobble
+	// and a rooted plant: every blade starts pinned at the substrate, then its
+	// successive voxel segments lag farther behind in the current.
+	float height_factor = pow(v_flex_weight, 1.42) * tip_sway_mult;
 
 	// Settle distant foliage so it does not pixel-jitter.
 	float view_dist = length((VIEW_MATRIX * vec4(world_pos, 1.0)).xyz);
@@ -75,9 +81,21 @@ void vertex() {
 
 	float time_sway = TIME * sway_speed + sway_phase_offset + v_leaf_phase;
 	float phase = world_pos.x * 0.4 + world_pos.z * 0.3
-		+ sway_phase_offset * 0.37 + v_leaf_phase;
-	float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
-	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor * dist_fade;
+		+ sway_phase_offset * 0.37 + v_leaf_phase + v_flex_weight * 2.35;
+	// A travelling phase, rather than every segment swinging together, makes
+	// long ribbons describe a slow S-curve through the water.
+	float sway = sin(time_sway + phase) * sway_amplitude * height_factor * dist_fade;
+	vec2 flow_xz = flow_dir.xz;
+	float flow_len = length(flow_xz);
+	if (flow_len > 0.0001 && flow_strength > 0.001) {
+		vec2 current_dir = flow_xz / flow_len;
+		float current_phase = dot(world_pos.xz, current_dir) * 0.72
+			- TIME * (0.52 + flow_strength * 0.72) + v_leaf_phase * 0.55
+			+ v_flex_weight * 2.8;
+		float current_pulse = 0.44 + sin(current_phase) * 0.26;
+		VERTEX.xz += current_dir * current_pulse * flow_strength
+			* sway_amplitude * height_factor * dist_fade;
+	}
 	float gust_dist = distance(world_pos.xz, gust_wave.xz);
 	float gust_front = 1.0 - smoothstep(0.0, max(gust_wave.w * 0.22, 0.01),
 		abs(gust_dist - gust_age * max(gust_wave.w, 0.01) * 0.72));

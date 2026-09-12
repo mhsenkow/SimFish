@@ -311,6 +311,7 @@ func _ready() -> void:
 	if _caustics_mat == null:
 		_caustics_mat = ShaderMaterial.new()
 		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
+		_caustics_mat.set_shader_parameter("aquatic_detail", maxi(_aquatic_shader_detail, 0))
 	_build_substrate()
 	_apply_water_wave_scale_uniforms()
 	# Empty / guided tanks (walkthrough): start the tank completely bare so
@@ -455,6 +456,9 @@ func _ready() -> void:
 
 var _directional_light: DirectionalLight3D = null
 var _world_environment: WorldEnvironment = null
+# Current adaptive water-light tier.  Cached so a quality controller polling
+# at render rate does not issue redundant RenderingServer material updates.
+var _aquatic_shader_detail: int = -1
 # Optional accent / moonlight nodes — created on first _update_accent_lights
 # call so they only exist when the user enables them. Each is an OmniLight3D
 # positioned mid-water; moonlight is a faint cool DirectionalLight3D that
@@ -745,7 +749,10 @@ func _process(dt: float) -> void:
 	_maintain_mycelium_patches(sdt)
 	_maintain_biofilm_patches(sdt)
 	_maintain_substrate_film(sdt)
-	_tick_tank_fidelity(sdt)
+	# Fidelity state is deliberately slow-moving (biofilm, glass dust,
+	# turbidity and hardware visibility). Updating its many material uniforms
+	# at render rate was wasted driver work; it now rides the existing 10 Hz
+	# ambient cadence with the accumulated, sim-scaled delta below.
 	_understory_t = maxf(0.0, _understory_t - sdt)
 	if _understory_t <= 0.0:
 		_understory_t = randf_range(42.0, 72.0)
@@ -778,8 +785,10 @@ func _process(dt: float) -> void:
 		if _coral_recruit_timer <= 0.0:
 			_coral_recruit_timer = randf_range(CORAL_RECRUIT_MIN, CORAL_RECRUIT_MAX)
 			_maybe_recruit_coral()
-	if _ambient_due and _visuals != null:
-		_visuals.tick(adt, true)
+	if _ambient_due:
+		_tick_tank_fidelity(adt)
+		if _visuals != null:
+			_visuals.tick(adt, true)
 	if _ambient_due and _water_material_ref != null and not _cached_water_column.is_empty():
 		var column: Dictionary = _cached_water_column
 		_tick_surface_dimples(adt)
@@ -1172,6 +1181,23 @@ func _process(dt: float) -> void:
 		_duckweed_accum = 0.0
 		_floater_growth_step()
 
+
+
+## Extends Main's post-process quality ladder to the costly procedural water
+## lighting. Tier zero is always the authored, three-scale look.  The lower
+## tiers preserve the broad moving light cues while avoiding dozens of Worley
+## distance evaluations per shaded pixel on an overloaded GPU.
+func set_aquatic_shader_detail(detail: int) -> void:
+	var next: int = clampi(detail, 0, 3)
+	if next == _aquatic_shader_detail:
+		return
+	_aquatic_shader_detail = next
+	if _water_material_ref != null:
+		_water_material_ref.set_shader_parameter("aquatic_detail", next)
+	if _caustics_mat != null:
+		_caustics_mat.set_shader_parameter("aquatic_detail", next)
+	if _room_floor_caustic_mat != null:
+		_room_floor_caustic_mat.set_shader_parameter("aquatic_detail", next)
 
 
 func _tick_tank_fidelity(sdt: float) -> void:
@@ -1731,6 +1757,7 @@ func _water_mat() -> ShaderMaterial:
 	m.set_shader_parameter("wave_amplitude", 0.028)
 	m.set_shader_parameter("wave_scale", _water_wave_scale())
 	m.set_shader_parameter("caustic_intensity", 0.55)
+	m.set_shader_parameter("aquatic_detail", maxi(_aquatic_shader_detail, 0))
 	var shape_id: float = 0.0
 	if TANK_SHAPE == "cylinder":
 		shape_id = 1.0
@@ -9169,6 +9196,7 @@ func _build_room_floor_caustic(parent: Node3D, desk_y: float,
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
 	mat.set_shader_parameter("caustic_intensity", 0.0)
+	mat.set_shader_parameter("aquatic_detail", maxi(_aquatic_shader_detail, 0))
 	mat.set_shader_parameter("caustic_scale", 0.85)
 	mat.set_shader_parameter("light_color", Color(1.0, 0.94, 0.82))
 	_room_floor_caustic_mat = mat

@@ -10,6 +10,24 @@ const _SynthRingBuffer = preload("res://scripts/synth_ring_buffer.gd")
 const _PotatoAmbientBed = preload("res://scripts/potato_ambient_bed.gd")
 
 const SAMPLE_RATE: int = 22050
+
+# --- Output gain staging -------------------------------------------------
+#
+# Everything upstream is a product of fractions - user volume x complexity x
+# energy x vitality x per-voice mix x per-voice gain - and they compounded to
+# a bed peaking at -41 dBFS and averaging -58. An ambient bed sitting under a
+# game wants roughly -30 dBFS RMS: quiet enough to live under, loud enough
+# that the player does not raise their system volume and then get deafened by
+# the next UI sound.
+#
+# These three are the single place the absolute level is decided, so it can
+# be reasoned about and measured (dev/audio_probe.tscn writes a WAV) rather
+# than emerging from six multiplications. AIR is trimmed hardest because it
+# measured 16 dB under the synth, which made the spacious layer - the whole
+# point of an ambient bed - inaudible.
+const BUS_TRIM_DRUMS: float = 4.2
+const BUS_TRIM_SYNTH: float = 6.5
+const BUS_TRIM_AIR: float = 34.0
 const DELAY_LEN: int = 4096
 const MAX_SAMPLES_PER_FRAME: int = 512
 const MAX_SAMPLES_CATCHUP: int = 4096
@@ -274,6 +292,16 @@ var _cached_bpm: float = 110.0
 var _cached_beat_scale: float = 110.0 / 60.0 * INV_SAMPLE_RATE
 var _cached_beat_time: float = 0.0
 var _cached_vol: float = 0.35
+# Tank-reactive bed snapshot (see MusicReactivity). Read per sample on the
+# synth worker, so it is cached rather than recomputed.
+var _cached_bed_cutoff: float = 4000.0
+var _cached_bed_synth_gain: float = 1.0
+var _cached_bed_air_gain: float = 1.0
+# Night should be emptier, not just quieter: this thins the arp so there is
+# space between notes rather than the same line played at a lower volume.
+var _cached_bed_density: float = 1.0
+var _bed_lpf_l: float = 0.0
+var _bed_lpf_r: float = 0.0
 var _cached_kick_mix: float = 0.65
 var _cached_bass_mix: float = 0.75
 var _cached_arp_mix: float = 0.85
@@ -521,6 +549,18 @@ func _ready() -> void:
 	_accent_t = 4.0
 	_rebuild_tonal_cache()
 	_refresh_mix_cache()
+
+
+func _exit_tree() -> void:
+	# A synth batch dispatched to WorkerThreadPool holds _synth_mutex and
+	# writes this node's state. Nothing waited for it on the way out, so a
+	# batch in flight when the node leaves the tree - quitting, or switching
+	# tanks - kept running against a half-torn-down object. In practice that
+	# shows up as the process hanging on exit rather than as a clean crash,
+	# which is why it was easy to miss.
+	if _synth_task_id >= 0:
+		WorkerThreadPool.wait_for_task_completion(_synth_task_id)
+		_synth_task_id = -1
 
 
 func _make_stream(bus_name: String, vol_db: float) -> AudioStreamPlayer:
@@ -1443,7 +1483,13 @@ func _refresh_thread_cfg_snapshot() -> void:
 	_cached_trance_bed_active = _compute_trance_bed_active()
 	_cached_plink_bed_active = _compute_plink_bed_active()
 	var cfg: Node = get_node_or_null("/root/TankConfig")
-	_cached_potato_bed = cfg != null and int(cfg.get("shader_perf_tier")) >= 2
+	# Deliberately NOT shader_perf_tier. That is a GPU fidelity setting, and
+	# letting it swap the soundtrack for a drum-less loop meant choosing
+	# "potato" graphics silently turned the music off - the complaint that
+	# started this. The synth runs on a CPU worker; it gets its own switch.
+	_cached_potato_bed = cfg != null and (
+		bool(cfg.get("music_simple_bed"))
+		or String(cfg.get("device_tier")) == "low")
 	_cached_energy = _energy()
 	_cached_hat_mix = _cfg_float("music_hat_mix", 0.38)
 	_cached_sidechain = _pp(_cfg_float("music_sidechain", 0.55), "sidechain")
@@ -1458,7 +1504,29 @@ func _refresh_mix_cache() -> void:
 	_cached_beat_scale = _cached_bpm / 60.0 * INV_SAMPLE_RATE
 	_cached_energy = _energy()
 	var vit: float = _tank_vitality
-	_cached_vol = _user_volume() * _complexity() * lerpf(0.45, 1.0, _cached_energy) * lerpf(0.65, 1.0, vit)
+	# Complexity is deliberately NOT a factor here. It controls how much is
+	# happening - note density, how many layers - and using it as a level
+	# multiplier as well meant a mid complexity setting silently cost 6 dB
+	# for no musical reason. Energy and vitality stay, but as a gentle tilt
+	# rather than the near-halving they were: reactivity belongs in what the
+	# bed PLAYS, not in quietly turning it down.
+	# How the tank drives the bed: a struggling tank sounds muffled and
+	# airless, a thriving one opens up. Measured 0.6 dB of reaction before
+	# this existed - the bed was a loop, not a soundtrack.
+	var bed: Dictionary = MusicReactivity.full_params(
+		vit,
+		float(_smooth.get("o2", 0.6)),
+		float(_smooth.get("clarity", 0.6)),
+		float(_smooth.get("algae", 0.2)),
+		float(_smooth.get("nitrate", 0.3)),
+		float(_smooth.get("daylight", 1.0)))
+	_cached_bed_density = float(bed.get("density", 1.0))
+	_cached_bed_cutoff = float(bed["cutoff"])
+	_cached_bed_synth_gain = float(bed["synth_gain"])
+	_cached_bed_air_gain = float(bed["air_gain"])
+	_cached_vol = _user_volume() \
+		* lerpf(0.78, 1.06, _cached_energy) \
+		* lerpf(0.82, 1.04, vit)
 	# Fallback defaults match TankConfig's defaults exactly so the mix sounds
 	# identical whether or not the autoload is mounted (it always is at runtime;
 	# this just removes a latent inconsistency for headless / test contexts).
@@ -2020,7 +2088,10 @@ func _advance_sequencer(quarter: int, _sixteenth: int, raw_16f: float) -> void:
 	var swung_16: int = _swung_sixteenth_int(raw_16f)
 	if swung_16 != _last_sixteenth_raw:
 		_last_sixteenth_raw = swung_16
-		if swung_16 % _sixteenth_div == 0 and swung_16 != _last_sixteenth:
+		# Night thins the line by dropping notes, not by turning them down -
+		# a quiet busy arp still sounds busy. See MusicReactivity.step_stride.
+		var stride: int = MusicReactivity.step_stride(_cached_bed_density)
+		if swung_16 % (_sixteenth_div * stride) == 0 and swung_16 != _last_sixteenth:
 			_last_sixteenth = swung_16
 			var pat_idx: int = swung_16 % pattern.size()
 			var degree: int = int(pattern[pat_idx])
@@ -2533,6 +2604,14 @@ func _render_trance_streams() -> void:
 	s_r = lerpf(s_r, _lpf_master, centre_blend)
 
 	_lfo_phase = fposmod(_lfo_phase + _cached_lfo_hz * INV_SAMPLE_RATE, 1.0)
+	# Tank-reactive tone: one-pole low pass whose cutoff opens with tank
+	# health, plus a modest level bloom. This is the audible difference
+	# between a tank that is coping and one that is not.
+	var bed_a: float = _lpf_alpha(_cached_bed_cutoff)
+	_bed_lpf_l = _one_pole_cached(s_l, _bed_lpf_l, bed_a)
+	_bed_lpf_r = _one_pole_cached(s_r, _bed_lpf_r, bed_a)
+	s_l = _bed_lpf_l * _cached_bed_synth_gain
+	s_r = _bed_lpf_r * _cached_bed_synth_gain
 	_f_synth_l = s_l
 	_f_synth_r = s_r
 
@@ -2726,13 +2805,15 @@ func _fill_playback_buffers(batch: int) -> void:
 				_f_synth_l = lerpf(_f_synth_l, _bc_hold_l, _cached_bitcrush)
 				_f_synth_r = lerpf(_f_synth_r, _bc_hold_r, _cached_bitcrush)
 
-		# Per-stream DC block + soft clip.
-		var drums_l: float = _soft_clip(_f_drums_l)
-		var drums_r: float = _soft_clip(_f_drums_r)
-		var synth_l: float = _soft_clip(_dc_block(_f_synth_l))
-		var synth_r: float = _soft_clip(_dc_block_r(_f_synth_r))
-		var air_l: float = _soft_clip(_f_air_l)
-		var air_r: float = _soft_clip(_f_air_r)
+		# Per-stream DC block + trim + soft clip. See BUS_TRIM_*: the trim is
+		# the one place the absolute level is decided, instead of it falling
+		# out of six multiplied fractions.
+		var drums_l: float = _soft_clip(_f_drums_l * BUS_TRIM_DRUMS)
+		var drums_r: float = _soft_clip(_f_drums_r * BUS_TRIM_DRUMS)
+		var synth_l: float = _soft_clip(_dc_block(_f_synth_l) * BUS_TRIM_SYNTH)
+		var synth_r: float = _soft_clip(_dc_block_r(_f_synth_r) * BUS_TRIM_SYNTH)
+		var air_l: float = _soft_clip(_f_air_l * BUS_TRIM_AIR * _cached_bed_air_gain)
+		var air_r: float = _soft_clip(_f_air_r * BUS_TRIM_AIR * _cached_bed_air_gain)
 
 		blk_drums[_f] = Vector2(drums_l, drums_r)
 		blk_synth[_f] = Vector2(synth_l, synth_r)
@@ -2774,8 +2855,12 @@ func _fill_playback_buffers_potato(batch: int) -> void:
 	zeros.resize(batch)
 	for i in batch:
 		var bed: Vector2 = _PotatoAmbientBed.next_stereo()
-		blk_synth[i] = bed * 0.55
-		blk_air[i] = bed * 0.25
+		# Levelled against the full bed: the stub used to peak around
+		# -39 dBFS where the real bed peaks near -27, so even when it was
+		# playing it read as "the sound is broken" rather than "the sound
+		# is simple". _soft_clip downstream keeps the headroom honest.
+		blk_synth[i] = bed * 1.65
+		blk_air[i] = bed * 0.75
 		zeros[i] = Vector2.ZERO
 		_sample_clock += 1
 	_synth_queue_drums.append_array(zeros)

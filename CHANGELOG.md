@@ -6,6 +6,14 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.33
+
+- **Music reactivity:** ambient bed filter/timbre follows tank health (`music_reactivity.gd`) — muffled when struggling, open when thriving.
+- **Ambient gain staging:** drum/synth/air bus trims so the bed sits near -30 dBFS RMS instead of disappearing under UI.
+- **HUD layout:** stats bar left edge follows menu cluster width (`hud_layout.gd`) — survives translation / UI scale.
+- **Visual polish:** foliage MultiMesh sway, caustics and water shader refinements.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.33) (macOS / Windows / Linux / Android).
+
 ## v0.2.32
 
 - **Adopt arrivals:** free in-game hatchery panel (`adopt_panel.gd`) — no IAP / shop language.

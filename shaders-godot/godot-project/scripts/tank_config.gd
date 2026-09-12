@@ -624,6 +624,15 @@ var music_sync_latency_ms: float = 80.0
 var music_mood: String = "auto"
 # ambient | trance | hybrid — continuous bed character
 var music_style: String = "hybrid"
+# Swap the reactive synth bed for a cheap looping one.
+#
+# This used to be driven by shader_perf_tier >= 2 - a GRAPHICS preset. Pick
+# "potato" fidelity for a weak GPU and the soundtrack was silently replaced
+# by a stub with no drums at all and no reaction to the tank, which is a
+# strange thing for a graphics setting to do: the synth runs on a CPU
+# worker, not the GPU. It is now its own audio choice, defaulted on only
+# for devices actually classed as low-end.
+var music_simple_bed: bool = false
 # 0..1 — BPM, kick, arp density, filter sweep intensity
 var music_energy: float = 0.42
 # Sound studio — tank coupling & layer mix (0..1 unless noted).
@@ -2889,6 +2898,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("music", "dance_style", music_dance_style)
 	cfg.set_value("music", "mood", music_mood)
 	cfg.set_value("music", "style", music_style)
+	cfg.set_value("music", "simple_bed", music_simple_bed)
 	cfg.set_value("music", "energy", music_energy)
 	cfg.set_value("music", "coupling_floor", music_coupling_floor)
 	cfg.set_value("music", "smooth_rate", music_smooth_rate)
@@ -3220,6 +3230,7 @@ func load_from_disk() -> void:
 	music_dance_style = String(cfg.get_value("music", "dance_style", music_dance_style))
 	music_mood = cfg.get_value("music", "mood", music_mood)
 	music_style = cfg.get_value("music", "style", music_style)
+	music_simple_bed = cfg.get_value("music", "simple_bed", music_simple_bed)
 	music_energy = cfg.get_value("music", "energy", music_energy)
 	music_coupling_floor = cfg.get_value("music", "coupling_floor", music_coupling_floor)
 	music_smooth_rate = cfg.get_value("music", "smooth_rate", music_smooth_rate)

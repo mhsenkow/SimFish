@@ -1072,9 +1072,22 @@ func _apply_sway_personality() -> void:
 		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
 		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
 	if _stem_mat != null:
-		# Structural stems never GPU-sway — flowers parent to the CPU handle.
-		_stem_mat.set_shader_parameter("sway_amplitude", 0.0)
+		# Stem voxels now use the same anchored bend field as leaves. This makes
+		# a tall plant read as a chain of yielding internodes instead of a rigid
+		# green tower with independently wobbling leaves. Flowers remain locked
+		# because their CPU anchor cannot follow a GPU-deformed stem.
+		var stem_amp: float = 0.0
+		if not (has_flower and flower_stage != FlowerStage.NONE):
+			if leaf_form in ["lance", "pinnate", "fingered"]:
+				stem_amp = amp * 0.42
+			elif leaf_form == "column":
+				stem_amp = amp * 0.28
+			elif not is_epiphyte and not is_carpet:
+				stem_amp = amp * 0.16
+		_stem_mat.set_shader_parameter("sway_amplitude", stem_amp * CALM_AMP)
 		_stem_mat.set_shader_parameter("flutter_amplitude", 0.0)
+		_stem_mat.set_shader_parameter("tip_sway_mult", 1.0)
+		_stem_mat.set_shader_parameter("sway_speed", sway_speed / height_w * CALM_SPEED)
 		_stem_mat.set_shader_parameter(
 			"gust_response", 0.0 if has_flower and flower_stage != FlowerStage.NONE else 1.0)
 
@@ -2017,7 +2030,9 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 		var baked_color: Color = _apply_baked_self_occlusion(
 			_voxel_depth_jitter(col, inst_xform.origin), inst_xform.origin)
 		var handle: VoxelBatch.Handle = batch.add(scaled, baked_color)
-		handle.set_custom_data(Color(_leaf_thickness(size, voxel_i, leaf_voxels.size()), leaf_phase, 0.0, 1.0))
+		handle.set_custom_data(Color(
+			_leaf_thickness(size, voxel_i, leaf_voxels.size()), leaf_phase, 0.0,
+			_leaf_flex_weight(inst_xform.origin.y)))
 		group.append(handle)
 		voxel_i += 1
 		mi.queue_free()
@@ -2048,7 +2063,8 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		var handle: VoxelBatch.Handle = batch.add_deferred(scaled, color) if defer_upload \
 			else batch.add(scaled, color)
 		handle.set_custom_data(Color(
-			_leaf_thickness(lv.size, voxel_i, template.size()), leaf_phase, 0.0, 1.0))
+			_leaf_thickness(lv.size, voxel_i, template.size()), leaf_phase, 0.0,
+			_leaf_flex_weight(inst_xform.origin.y)))
 		group.append(handle)
 		voxel_i += 1
 	if defer_upload:
@@ -2068,6 +2084,15 @@ func _leaf_thickness(size: Vector3, voxel_i: int, voxel_count: int) -> float:
 	var geometric: float = clampf(sorted_dims[0] / maxf(VOXEL_SIZE * 0.55, 0.001), 0.0, 1.0)
 	var center: float = 1.0 - absf((float(voxel_i) + 0.5) / maxf(float(voxel_count), 1.0) * 2.0 - 1.0)
 	return clampf(maxf(geometric, center * 0.62), 0.0, 1.0)
+
+
+func _leaf_flex_weight(local_y: float) -> float:
+	# This is stored once in MultiMesh custom data, not recalculated per frame.
+	# Ribbon blades use leaf_length while stem plants use max_height, so both
+	# begin firmly rooted and get progressively more compliant toward the tip.
+	var span: float = maxf(float(maxi(max_height, leaf_length)) * VOXEL_SIZE,
+		VOXEL_SIZE * 2.0)
+	return clampf((local_y + VOXEL_SIZE * 0.45) / span, 0.0, 1.0)
 
 
 func _stable_leaf_phase(origin: Vector3, leaf_index: int) -> float:
@@ -2775,8 +2800,9 @@ func _ensure_stem_batch() -> VoxelBatch:
 		if _stem_mat == null:
 			_stem_mat = ShaderMaterial.new()
 			_stem_mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
-			_stem_mat.set_shader_parameter("sway_amplitude", 0.0)
+			_stem_mat.set_shader_parameter("sway_phase_offset", _phase)
 			VoxelMat.register_foliage_mm(_stem_mat)
+			_apply_sway_personality()
 		_stem_batch = VoxelBatch.new(self, _stem_mat, 64)
 		_stem_batch.set_bounds_margin(Vector3(0.35, 0.25, 0.35))
 		_apply_visibility_range_to(_stem_batch.mmi)
@@ -2807,6 +2833,10 @@ func _register_stem_voxel(mi: MeshInstance3D, margin: float = 0.22) -> void:
 	handle.transform = final_xform
 	handle.local_pos = final_xform.origin
 	handle.growth_limit_code = _current_limit_code()
+	# Keep each internode on the same travelling wave as its plant while its
+	# local-height channel pins the first segment to the roots.
+	handle.set_custom_data(Color(1.0, fposmod(_phase / TAU, 1.0), 0.0,
+		_leaf_flex_weight(final_xform.origin.y)))
 	voxels.append(handle)
 	_stem_limit_history.append(handle.growth_limit_code)
 	var tw := create_tween()

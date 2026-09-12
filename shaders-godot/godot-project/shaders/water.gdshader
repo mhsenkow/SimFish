@@ -16,6 +16,11 @@ uniform float wave2_amplitude : hint_range(0.0, 0.08) = 0.012;
 uniform float wave_speed = 0.85;
 uniform float wave_scale = 0.42;
 uniform float caustic_intensity : hint_range(0.0, 1.0) = 0.55;
+// Adaptive quality is driven by Main's existing shader-cost ladder.  The
+// default (0) preserves the full three-scale water-light pattern.  Lower
+// tiers remove only high-frequency layers first, so stressed hardware still
+// reads as moving water rather than a flat tinted box.
+uniform int aquatic_detail : hint_range(0, 3) = 0;
 uniform vec3 light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float water_floor_y = 1.0;
 uniform float water_surface_y = 6.5;
@@ -217,10 +222,26 @@ void fragment() {
 	// Organic caustics web instead of sine interference.
 	vec2 cuv = world_pos.xz * 1.15;
 	float t = TIME * 0.78 + day_phase_offset * 6.28318;
-	float cw1 = worley_caustic(cuv * 0.7, t * 0.6);
-	float cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
-	float cw3 = worley_caustic(cuv * 2.6 + vec2(15.0, 8.0), t * 0.28 + 3.0);
-	float caustics = smoothstep(0.12, 0.85, cw1 * 0.5 + cw1 * cw2 * 0.75 + cw2 * cw3 * 0.35) * caustic_intensity;
+	float cw1 = 0.0;
+	float cw2 = 0.0;
+	float cw3 = 0.0;
+	if (aquatic_detail < 3) {
+		cw1 = worley_caustic(cuv * 0.7, t * 0.6);
+		if (aquatic_detail < 2) {
+			cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
+			if (aquatic_detail < 1) {
+				cw3 = worley_caustic(cuv * 2.6 + vec2(15.0, 8.0), t * 0.28 + 3.0);
+			}
+		}
+	}
+	float caustic_web = cw1 * 0.5;
+	if (aquatic_detail < 2) {
+		caustic_web += cw1 * cw2 * 0.75;
+	}
+	if (aquatic_detail < 1) {
+		caustic_web += cw2 * cw3 * 0.35;
+	}
+	float caustics = smoothstep(0.12, 0.85, caustic_web) * caustic_intensity;
 	caustics *= 1.0 - depth_used * 0.35;
 	// Dampen caustic shimmer at the surface — thin stems flicker less (#28).
 	float surf_dist = abs(world_pos.y - water_surface_y);
@@ -240,7 +261,10 @@ void fragment() {
 	// Living ceiling: viewed from below, the surface fractures the light into a
 	// drifting bright web. Reuses the caustic Worley so it matches the floor.
 	if (surface > 0.01) {
-		float surf_web = worley_caustic(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
+		float surf_web = 0.0;
+		if (aquatic_detail < 3) {
+			surf_web = worley_caustic(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
+		}
 		col += light_color * surf_web * surface * 0.18;
 		// Room/sky sheen on the top cap (#24).
 		float refl = surface_reflection * pond_health_gloss;
@@ -253,7 +277,10 @@ void fragment() {
 		// Underside mirror — total-internal-reflection read from below (#17).
 		vec3 view_dir = normalize(VIEW);
 		float from_below = smoothstep(0.15, 0.82, -view_dir.y) * surface;
-		float ceil_web = worley_caustic(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
+		float ceil_web = 0.0;
+		if (aquatic_detail < 2) {
+			ceil_web = worley_caustic(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
+		}
 		col += light_color * ceil_web * from_below * underside_mirror * 0.46;
 		col += vec3(0.92, 0.97, 1.0) * from_below * underside_mirror * 0.20;
 		col += room_sky_color * from_below * underside_mirror * surface_reflection * 0.18;

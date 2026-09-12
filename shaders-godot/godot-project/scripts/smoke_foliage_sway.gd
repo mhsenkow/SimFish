@@ -79,6 +79,20 @@ func _initialize() -> void:
 	var mm_src: String = FileAccess.get_file_as_string(FOLIAGE_MM)
 	t.check(mm_src.contains("gust_response") and mm_src.contains("0.11 * dist_fade"),
 		"foliage_mm must fade gust push with distance")
+	# Rooted, segmented motion: a planted blade must not behave like one rigid
+	# card sliding sideways. Plant.gd bakes a local-height flex weight into the
+	# unused alpha custom channel; the shader then turns it into an anchored
+	# travelling bend in the direction of water flow.
+	t.check(mm_src.contains("v_flex_weight") and mm_src.contains("pow(v_flex_weight, 1.42)"),
+		"foliage_mm must use the per-segment rooted flex curve")
+	t.check(mm_src.contains("current_dir") and mm_src.contains("current_phase"),
+		"foliage_mm must carry a directional travelling current wave")
+	var plant_src: String = FileAccess.get_file_as_string("res://scripts/plant.gd")
+	t.check(plant_src.contains("func _leaf_flex_weight")
+		and plant_src.contains("_leaf_flex_weight(inst_xform.origin.y)"),
+		"plant leaf batches must bake local-height flex weights")
+	t.check(plant_src.contains("_leaf_flex_weight(final_xform.origin.y)"),
+		"plant stem batches must bake rooted flex weights too")
 
 	# --- The ramp maths, mirrored, so the intent is pinned ---
 	# smoothstep(start, end, d): 0 below start, 1 above end.

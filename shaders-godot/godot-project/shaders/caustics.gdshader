@@ -2,6 +2,9 @@ shader_type spatial;
 render_mode blend_add, depth_draw_never, cull_back, unshaded;
 
 uniform float caustic_intensity : hint_range(0.0, 1.0) = 1.0;
+// 0 = cinematic three-scale web; 3 = disabled.  Kept in lockstep with the
+// water-volume shader so adaptive quality degrades coherently.
+uniform int aquatic_detail : hint_range(0, 3) = 0;
 uniform float caustic_speed = 0.8;
 uniform float caustic_scale = 1.2;
 uniform vec4 light_color : source_color = vec4(1.0, 0.9, 0.8, 1.0);
@@ -79,10 +82,25 @@ void fragment() {
     // only where both overlap do we get the brightest convergence points —
     // exactly how real caustic filaments cross and brighten. The result is
     // an irregular, branching, drifting web with no visible sine tiling.
-    float c1 = worley_caustic(uv * 0.85, t * 0.6);
-    float c2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
-    float c3 = worley_caustic(uv * 2.85 + vec2(21.0, 11.0), t * 0.32 + 4.0);
-    float web = c1 * 0.55 + c1 * c2 * 0.75 + c2 * c3 * 0.42;
+    float c1 = 0.0;
+    float c2 = 0.0;
+    float c3 = 0.0;
+    if (aquatic_detail < 3) {
+        c1 = worley_caustic(uv * 0.85, t * 0.6);
+        if (aquatic_detail < 2) {
+            c2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
+            if (aquatic_detail < 1) {
+                c3 = worley_caustic(uv * 2.85 + vec2(21.0, 11.0), t * 0.32 + 4.0);
+            }
+        }
+    }
+    float web = c1 * 0.55;
+    if (aquatic_detail < 2) {
+        web += c1 * c2 * 0.75;
+    }
+    if (aquatic_detail < 1) {
+        web += c2 * c3 * 0.42;
+    }
     // Keep transitions gentle for the palette quantizer/dither.
     float caustics = smoothstep(0.15, 0.85, web) * 0.46;
 

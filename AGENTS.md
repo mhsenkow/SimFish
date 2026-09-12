@@ -46,6 +46,21 @@ All the same project.
   If you must run it, back up
   `~/Library/Application Support/Godot/app_userdata/walstad loom/tanks`
   first and restore afterwards.
+- **Looking at the game: `dev/inspect.tscn`.** Renders the live World from
+  four angles at 1152x648 into `inspect_*.png`, so visual work can be checked
+  by looking rather than by assertion. `-- hide=NodeName` removes a node so a
+  visual artifact can be bisected (`hide=WORLD` for everything), and
+  `-- settle=N` changes the build wait. **It pushes the palette tints the way
+  main.gd does** - without that the world renders desaturated, because the
+  registered defaults multiply saturation and value by the global palette.
+  Like `dev/capture.tscn` it builds a real World and therefore writes to a
+  real save slot: back up
+  `~/Library/Application Support/Godot/app_userdata/walstad loom/tanks` first.
+  `dev/footprint_probe.gd` lists meshes escaping the tank footprint (use real
+  `mesh.get_faces()` vertices, not the AABB - the AABB of a correct hex prism
+  IS a rectangle), and `dev/audio_probe.tscn` measures generated audio levels
+  per bus (`-- healthy` for a live-tank env, `-- fullbed` to force the full
+  synth). Both need a long settle: much of the World is built over ~200 frames.
 - **Never put comments in `project.godot`.** Godot's ConfigFile writer strips
   whitespace and folds a comment onto the line below it on the next re-save, so
   `# note` above `AppLog="*res://scripts/app_log.gd"` becomes one commented-out

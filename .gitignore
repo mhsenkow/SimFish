@@ -69,3 +69,13 @@ Thumbs.db
 
 # Per-script smoke logs (BROAD_DIRECTIONS #10) - regenerated every run.
 .smoke-logs/
+
+# Visual inspection harness output (dev/inspect.tscn)
+inspect_*.png
+inspect_*.png.import
+
+# Local scratch captures / release zips (not for git; CI publishes Releases).
+artifacts/
+scripts/smoke_baseline.txt
+shaders-godot/godot-project/inspect_*.png
+shaders-godot/godot-project/inspect_*.png.import
