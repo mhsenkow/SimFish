@@ -88,9 +88,7 @@ func _process(dt: float) -> void:
 
 	# Emergence cycle — surface at night, bury during the day. Real MTS
 	# is photophobic; coming out at night is the easy-to-read signal.
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	_is_emerged = dl < 0.35
 	var visible_depth: float = -SURFACE_EMERGE_DEPTH if _is_emerged else -BURIED_EMERGE_DEPTH
 	# Lerp the shell Y toward the target depth so the surface/burrow

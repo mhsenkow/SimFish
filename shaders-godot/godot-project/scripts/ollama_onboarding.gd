@@ -62,13 +62,13 @@ func _build_ui() -> void:
 	add_child(v)
 
 	var title := Label.new()
-	title.text = "Bring your tank to life"
+	title.text = tr("Bring your tank to life")
 	title.add_theme_font_size_override("font_size", 18)
 	title.add_theme_color_override("font_color", Color8(255, 215, 110))
 	v.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "Optional: install Ollama for AI-generated names, moods, and tank narration."
+	subtitle.text = tr("Optional: install Ollama for AI-generated names, moods, and tank narration.")
 	subtitle.add_theme_font_size_override("font_size", 12)
 	subtitle.add_theme_color_override("font_color", Color8(210, 220, 240))
 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -95,7 +95,7 @@ func _build_ui() -> void:
 	model_row.add_theme_constant_override("separation", 6)
 	v.add_child(model_row)
 	var ml := Label.new()
-	ml.text = "Model:"
+	ml.text = tr("Model:")
 	ml.add_theme_font_size_override("font_size", 11)
 	ml.add_theme_color_override("font_color", Color8(180, 195, 220))
 	model_row.add_child(ml)
@@ -125,7 +125,7 @@ func _build_ui() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	footer.add_child(spacer)
 	_close_button = Button.new()
-	_close_button.text = "Skip for now"
+	_close_button.text = tr("Skip for now")
 	_close_button.pressed.connect(_on_close)
 	footer.add_child(_close_button)
 
@@ -142,21 +142,21 @@ func _show_step(idx: int) -> void:
 	_step = idx
 	match idx:
 		0:
-			_step_label.text = "Step 1 of 3 — Download Ollama for your OS. It's a small CLI; the installer takes about a minute."
-			_action_button.text = "Open ollama.com/download"
+			_step_label.text = tr("Step 1 of 3 — Download Ollama for your OS. It's a small CLI; the installer takes about a minute.")
+			_action_button.text = tr("Open ollama.com/download")
 			_status_label.text = ""
 		1:
 			var m: String = (String(_ai.model) if _ai != null else "qwen2.5:3b")
 			_step_label.text = "Step 2 of 3 — Open a terminal and run:\n\n    ollama pull %s\n\n(This downloads ~2GB once. The model stays on your computer.)" % m
-			_action_button.text = "Copy command"
+			_action_button.text = tr("Copy command")
 			_status_label.text = ""
 		2:
-			_step_label.text = "Step 3 of 3 — Make sure Ollama is running (`ollama serve` in another terminal, or it auto-starts on Mac/Windows). Then click below."
-			_action_button.text = "Test Connection"
+			_step_label.text = tr("Step 3 of 3 — Make sure Ollama is running (`ollama serve` in another terminal, or it auto-starts on Mac/Windows). Then click below.")
+			_action_button.text = tr("Test Connection")
 			_status_label.text = ""
 		3:
-			_step_label.text = "All set. Your fish will start getting AI-flavored names within a few seconds. You can come back here any time to switch the model or turn AI off."
-			_action_button.text = "Done"
+			_step_label.text = tr("All set. Your fish will start getting AI-flavored names within a few seconds. You can come back here any time to switch the model or turn AI off.")
+			_action_button.text = tr("Done")
 			_status_label.text = ""
 		_:
 			pass
@@ -171,17 +171,17 @@ func _on_action_pressed() -> void:
 			var m: String = (String(_ai.model) if _ai != null else "qwen2.5:3b")
 			DisplayServer.clipboard_set("ollama pull " + m)
 			_status_label.add_theme_color_override("font_color", Color8(150, 230, 150))
-			_status_label.text = "Copied to clipboard."
+			_status_label.text = tr("Copied to clipboard.")
 			_show_step(2)
 		2:
 			if _ai != null:
 				_ai.enabled = true
 				_ai.test_connection()
 				_status_label.add_theme_color_override("font_color", Color8(180, 195, 220))
-				_status_label.text = "Testing connection..."
+				_status_label.text = tr("Testing connection...")
 			else:
 				_status_label.add_theme_color_override("font_color", Color8(230, 120, 120))
-				_status_label.text = "AIDirector unavailable. Restart the app and try again."
+				_status_label.text = tr("AIDirector unavailable. Restart the app and try again.")
 		3:
 			_on_close()
 

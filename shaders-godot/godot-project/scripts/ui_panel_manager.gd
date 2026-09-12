@@ -11,7 +11,7 @@ const SIDE_NOTIFICATIONS := "notifications"
 
 const MODAL_LIBRARY := "library"
 const MODAL_CREATOR := "creator"
-const MODAL_STORE := "store"
+const MODAL_ADOPT := "adopt"
 
 var _main: Node = null
 var _backdrop: ColorRect = null
@@ -83,8 +83,8 @@ func close_modal() -> void:
 			_close_library()
 		MODAL_CREATOR:
 			_close_creator()
-		MODAL_STORE:
-			_hide_panel(_main.get("fish_store_panel"))
+		MODAL_ADOPT:
+			_hide_panel(_main.get("adopt_panel"))
 	_open_modal = ""
 	_set_backdrop(false)
 
@@ -155,8 +155,8 @@ func open_modal(id: String) -> void:
 				cp.open()
 			if cp != null:
 				cp.z_index = 200
-		MODAL_STORE:
-			var sp: Variant = _main.get("fish_store_panel")
+		MODAL_ADOPT:
+			var sp: Variant = _main.get("adopt_panel")
 			if sp != null:
 				# Through transition_panel, not a bare `visible = true`: the
 				# store closes via _hide_panel(), so a re-open inside the
@@ -290,7 +290,7 @@ func _grab_couch_focus_in_open_panel() -> void:
 	if panel == null:
 		return
 	var prefer := PackedStringArray()
-	if panel == _main.get("fish_store_panel"):
+	if panel == _main.get("adopt_panel"):
 		prefer = PackedStringArray(["ADOPT", "Reroll", "Close"])
 	elif panel == _main.get("library_panel"):
 		prefer = PackedStringArray(["Close"])
@@ -318,7 +318,7 @@ func _visible_panel_control() -> Control:
 		_main.get("_notifications_panel"),
 		_main.get("library_panel"),
 		_main.get("creature_creator_panel"),
-		_main.get("fish_store_panel"),
+		_main.get("adopt_panel"),
 	]
 	for c in candidates:
 		if c is Control and (c as Control).visible:

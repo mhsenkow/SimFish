@@ -119,9 +119,10 @@ static func home_soft_attract(f: Fish, dist_home: float, home_r: float) -> float
 static func micro_idle_y(f: Fish, dt: float) -> float:
 	if f.get("_dying") == true:
 		return 0.0
-	var load: float = maxf(float(f._breath_load), 0.55)
-	f._breath_phase = float(f._breath_phase) + dt * lerpf(0.7, 1.55, clampf(load - 0.4, 0.0, 1.2))
-	var amp: float = 0.028 + clampf(load - 1.0, 0.0, 1.0) * 0.04
+	var breath_load: float = maxf(float(f._breath_load), 0.55)
+	f._breath_phase = float(f._breath_phase) \
+			+ dt * lerpf(0.7, 1.55, clampf(breath_load - 0.4, 0.0, 1.2))
+	var amp: float = 0.028 + clampf(breath_load - 1.0, 0.0, 1.0) * 0.04
 	if f._asleep:
 		amp *= 0.45
 	elif f.speed > f.max_speed * 0.55:

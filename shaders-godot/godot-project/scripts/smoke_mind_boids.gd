@@ -30,13 +30,7 @@ func _initialize() -> void:
 		total_neighbors += MindBoidsBuffer.neighbor_counts[i]
 	_assert(failed, total_neighbors >= 4, "school batch neighbor counts")
 	PerfGovernor.record_ledger(57, 1000, 900 if MindBoidsBuffer.backend == "cpu" else 700)
-	if failed.is_empty():
-		print("[smoke] mind_boids OK (%s)" % MindBoidsBuffer.backend)
-		quit(0)
-	else:
-		for e in failed:
-			push_error("[smoke] mind_boids FAIL: %s" % e)
-		quit(1)
+	quit(TestSupport.report("smoke_mind_boids", failed))
 
 
 static func _assert(failed: Array[String], cond: bool, msg: String) -> void:

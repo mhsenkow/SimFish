@@ -21,13 +21,7 @@ func _initialize() -> void:
 	DartTrailPool.reset_for_test()
 	await process_frame
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] refinement_ii_proof OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] refinement_ii_proof FAIL: %s" % msg)
-		quit(1)
+	quit(TestSupport.report("smoke_refinement_ii_proof", failed))
 
 
 func _test_spawn_spacing(failed: Array[String]) -> void:
@@ -37,7 +31,7 @@ func _test_spawn_spacing(failed: Array[String]) -> void:
 	await process_frame
 	await process_frame
 	if w.fauna_root == null:
-		_assert(failed, false, "world fauna_root missing")
+		TestSupport.check(failed, false, "world fauna_root missing")
 		w.queue_free()
 		return
 	var f1 := Fish.new()
@@ -46,16 +40,16 @@ func _test_spawn_spacing(failed: Array[String]) -> void:
 	f1.adult_voxel_scale = 0.2
 	var body_r: float = float(w.call("_fish_spawn_body_radius", {"adult_voxel_scale": 0.2}))
 	var too_close: bool = bool(w.call("_spawn_pos_clear_of_fish", Vector3(0.15, 1.2, 0.0), body_r))
-	_assert(failed, not too_close, "spawn rejects overlap with existing fish")
+	TestSupport.check(failed, not too_close, "spawn rejects overlap with existing fish")
 	var clear: bool = bool(w.call("_spawn_pos_clear_of_fish", Vector3(2.5, 1.2, 0.0), body_r))
-	_assert(failed, clear, "spawn accepts distant point")
+	TestSupport.check(failed, clear, "spawn accepts distant point")
 	w.queue_free()
 
 
 func _test_tank_config_roundtrip(failed: Array[String]) -> void:
 	var cfg := get_root().get_node_or_null("TankConfig")
 	if cfg == null:
-		_assert(failed, false, "TankConfig autoload missing")
+		TestSupport.check(failed, false, "TankConfig autoload missing")
 		return
 	var saved_w: int = int(cfg.render_width)
 	var saved_h: int = int(cfg.render_height)
@@ -69,9 +63,9 @@ func _test_tank_config_roundtrip(failed: Array[String]) -> void:
 	cfg.render_width = 640
 	cfg.render_height = 360
 	cfg.load_from_disk()
-	_assert(failed, int(cfg.render_width) == 512, "settings width round-trips (got %d)" % int(cfg.render_width))
-	_assert(failed, int(cfg.render_height) == 288, "settings height round-trips")
-	_assert(failed, int(cfg.msaa) == 2, "settings msaa round-trips")
+	TestSupport.check(failed, int(cfg.render_width) == 512, "settings width round-trips (got %d)" % int(cfg.render_width))
+	TestSupport.check(failed, int(cfg.render_height) == 288, "settings height round-trips")
+	TestSupport.check(failed, int(cfg.msaa) == 2, "settings msaa round-trips")
 	cfg.render_width = saved_w
 	cfg.render_height = saved_h
 	cfg.msaa = saved_msaa
@@ -88,7 +82,7 @@ func _test_dart_trail_pool(failed: Array[String]) -> void:
 	for i in DartTrailPool.POOL_SIZE + 2:
 		if DartTrailPool.spawn(parent, gp, Color.WHITE, Vector3.FORWARD, Callable()):
 			ok_count += 1
-	_assert(failed, ok_count >= DartTrailPool.POOL_SIZE,
+	TestSupport.check(failed, ok_count >= DartTrailPool.POOL_SIZE,
 		"dart pool serves %d slots (got %d ok)" % [DartTrailPool.POOL_SIZE, ok_count])
 	DartTrailPool.reset_for_test()
 	parent.queue_free()
@@ -102,12 +96,12 @@ func _test_time_authority(failed: Array[String]) -> void:
 	root.add_child(sim)
 	TimeAuthority.set_base_scale(4.0)
 	TimeAuthority.push_pause(sim, "aquascape")
-	_assert(failed, float(sim.time_scale) == 0.0, "aquascape pause freezes sim")
+	TestSupport.check(failed, float(sim.time_scale) == 0.0, "aquascape pause freezes sim")
 	TimeAuthority.push_pause(sim, "player")
 	TimeAuthority.pop_pause(sim, "aquascape")
-	_assert(failed, float(sim.time_scale) == 0.0, "player pause still holds")
+	TestSupport.check(failed, float(sim.time_scale) == 0.0, "player pause still holds")
 	TimeAuthority.pop_pause(sim, "player")
-	_assert(failed, absf(float(sim.time_scale) - 4.0) < 0.001, "resume restores base scale")
+	TestSupport.check(failed, absf(float(sim.time_scale) - 4.0) < 0.001, "resume restores base scale")
 	sim.queue_free()
 	TimeAuthority.reset_for_test()
 
@@ -115,8 +109,8 @@ func _test_time_authority(failed: Array[String]) -> void:
 func _test_golden_rng(failed: Array[String]) -> void:
 	var h1: int = _golden_hash()
 	var h2: int = _golden_hash()
-	_assert(failed, h1 == h2, "golden replay hash stable across runs")
-	_assert(failed, h1 != 0, "golden replay hash non-zero")
+	TestSupport.check(failed, h1 == h2, "golden replay hash stable across runs")
+	TestSupport.check(failed, h1 != 0, "golden replay hash non-zero")
 
 
 func _golden_hash() -> int:
@@ -143,12 +137,12 @@ func _test_short_soak(failed: Array[String]) -> void:
 		fish.append(f)
 	_MotionWave.reset_for_test()
 	var hit: Variant = _MotionWave.inject_at(fish, Vector3(0.2, 1.0, 0.0), 0.85)
-	_assert(failed, hit != null, "soak inject finds a schooler")
+	TestSupport.check(failed, hit != null, "soak inject finds a schooler")
 	if hit is Fish:
 		var ag0: float = float((hit as Fish).motion_agitation)
-		_assert(failed, ag0 > 0.5, "soak inject raises agitation")
+		TestSupport.check(failed, ag0 > 0.5, "soak inject raises agitation")
 		_MotionWave.tick(fish, 0.025 * 16.0)
-		_assert(failed, float((hit as Fish).motion_agitation) > ag0 * 0.35,
+		TestSupport.check(failed, float((hit as Fish).motion_agitation) > ag0 * 0.35,
 			"one 16× sim tick does not instantly zero agitation")
 	parent.queue_free()
 
@@ -167,18 +161,18 @@ func _test_script_todos(failed: Array[String]) -> void:
 				offenders.append(name)
 		name = dir.get_next()
 	dir.list_dir_end()
-	_assert(failed, offenders.is_empty(),
+	TestSupport.check(failed, offenders.is_empty(),
 		"production scripts should not carry TODO markers: %s" % ", ".join(offenders))
 
 
 func _test_residents_signals(failed: Array[String]) -> void:
 	var sim_script: Script = load("res://scripts/sim_driver.gd")
-	_assert(failed, sim_script != null, "sim_driver loads")
+	TestSupport.check(failed, sim_script != null, "sim_driver loads")
 	if sim_script == null:
 		return
 	var inst: Object = sim_script.new()
-	_assert(failed, inst.has_signal("creature_added"), "creature_added signal exists")
-	_assert(failed, inst.has_signal("creature_removed"), "creature_removed signal exists")
+	TestSupport.check(failed, inst.has_signal("creature_added"), "creature_added signal exists")
+	TestSupport.check(failed, inst.has_signal("creature_removed"), "creature_removed signal exists")
 
 
 func _test_intent_decay(failed: Array[String]) -> void:
@@ -190,11 +184,6 @@ func _test_intent_decay(failed: Array[String]) -> void:
 	if dir.has_method("_decay_intent_staleness"):
 		dir.call("_decay_intent_staleness", 1.0)
 	var cells: Array = dir.get("_intent_cells")
-	_assert(failed, cells[1] == null or float((cells[1] as Dictionary).get("intensity", 1.0)) < 0.5,
+	TestSupport.check(failed, cells[1] == null or float((cells[1] as Dictionary).get("intensity", 1.0)) < 0.5,
 		"stale intent cells decay")
 	dir.queue_free()
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)

@@ -184,7 +184,7 @@ func _build_speed_row() -> void:
 		add_child(_speed_container)
 
 	_pause_btn = _make_btn(UiIcons.mobile_hud_label("pause"), Color8(220, 180, 80))
-	_pause_btn.tooltip_text = "Pause / resume the simulation (P)"
+	_pause_btn.tooltip_text = tr("Pause / resume the simulation (P)")
 	_pause_btn.pressed.connect(func():
 		_buzz(18)
 		pause_pressed.emit())
@@ -209,28 +209,28 @@ func _build_action_row() -> void:
 	add_child(_action_container)
 
 	_camera_views_btn = _make_btn("CAM", Color8(180, 210, 240))
-	_camera_views_btn.tooltip_text = "Open Camera Views — presets, saved views, FOV, auto-orbit"
+	_camera_views_btn.tooltip_text = tr("Open Camera Views — presets, saved views, FOV, auto-orbit")
 	_camera_views_btn.pressed.connect(func():
 		_buzz(14)
 		camera_views_pressed.emit())
 	_action_container.add_child(_camera_views_btn)
 
 	_residents_btn = _make_btn("👥", Color8(200, 200, 240))
-	_residents_btn.tooltip_text = "Residents — follow & favorite your creatures"
+	_residents_btn.tooltip_text = tr("Residents — follow & favorite your creatures")
 	_residents_btn.pressed.connect(func():
 		_buzz(14)
 		residents_pressed.emit())
 	_action_container.add_child(_residents_btn)
 
 	_photo_btn = _make_btn(UiIcons.mobile_hud_label("photo"), Color8(150, 200, 170))
-	_photo_btn.tooltip_text = "Take a screenshot of the tank"
+	_photo_btn.tooltip_text = tr("Take a screenshot of the tank")
 	_photo_btn.pressed.connect(func():
 		_buzz(25)
 		photo_pressed.emit())
 	_action_container.add_child(_photo_btn)
 
 	_undo_btn = _make_btn(UiIcons.mobile_hud_label("undo"), Color8(220, 130, 130))
-	_undo_btn.tooltip_text = "Undo the last aquascape change"
+	_undo_btn.tooltip_text = tr("Undo the last aquascape change")
 	_undo_btn.pressed.connect(func():
 		_buzz(15)
 		undo_pressed.emit())

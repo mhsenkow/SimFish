@@ -25,30 +25,30 @@ func _initialize() -> void:
 	root.add_child(panel)
 
 	# ---- Open ---------------------------------------------------------------
-	_assert(failed, not PanelTheme.is_panel_open(panel), "hidden panel is not open")
+	TestSupport.check(failed, not PanelTheme.is_panel_open(panel), "hidden panel is not open")
 	PanelTheme.transition_panel(panel, true)
-	_assert(failed, panel.visible, "open shows the panel immediately")
-	_assert(failed, PanelTheme.is_panel_open(panel), "open panel reports open")
-	_assert(failed, panel.mouse_filter == Control.MOUSE_FILTER_STOP,
+	TestSupport.check(failed, panel.visible, "open shows the panel immediately")
+	TestSupport.check(failed, PanelTheme.is_panel_open(panel), "open panel reports open")
+	TestSupport.check(failed, panel.mouse_filter == Control.MOUSE_FILTER_STOP,
 		"open panel takes input")
 	await _settle(PanelTheme.PANEL_FADE_IN_S)
-	_assert(failed, is_equal_approx(panel.modulate.a, 1.0), "fade-in reaches full alpha")
-	_assert(failed, panel.scale.is_equal_approx(Vector2.ONE), "settle returns to 1:1 scale")
+	TestSupport.check(failed, is_equal_approx(panel.modulate.a, 1.0), "fade-in reaches full alpha")
+	TestSupport.check(failed, panel.scale.is_equal_approx(Vector2.ONE), "settle returns to 1:1 scale")
 
 	# ---- Close --------------------------------------------------------------
 	PanelTheme.transition_panel(panel, false)
-	_assert(failed, panel.visible, "closing panel is still drawn during the fade")
-	_assert(failed, not PanelTheme.is_panel_open(panel),
+	TestSupport.check(failed, panel.visible, "closing panel is still drawn during the fade")
+	TestSupport.check(failed, not PanelTheme.is_panel_open(panel),
 		"closing panel does NOT report open")
-	_assert(failed, panel.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+	TestSupport.check(failed, panel.mouse_filter == Control.MOUSE_FILTER_IGNORE,
 		"closing panel stops eating input straight away")
 	# A second close mid-fade must be inert.
 	PanelTheme.transition_panel(panel, false)
 	await _settle(PanelTheme.PANEL_FADE_OUT_S)
-	_assert(failed, not panel.visible, "fade-out ends hidden")
-	_assert(failed, is_equal_approx(panel.modulate.a, 1.0),
+	TestSupport.check(failed, not panel.visible, "fade-out ends hidden")
+	TestSupport.check(failed, is_equal_approx(panel.modulate.a, 1.0),
 		"alpha is restored so the next open is not invisible")
-	_assert(failed, panel.scale.is_equal_approx(Vector2.ONE), "scale restored after close")
+	TestSupport.check(failed, panel.scale.is_equal_approx(Vector2.ONE), "scale restored after close")
 
 	# ---- Re-open mid-close reverses cleanly ---------------------------------
 	PanelTheme.transition_panel(panel, true)
@@ -56,9 +56,9 @@ func _initialize() -> void:
 	PanelTheme.transition_panel(panel, false)
 	PanelTheme.transition_panel(panel, true)
 	await _settle(PanelTheme.PANEL_FADE_OUT_S + PanelTheme.PANEL_FADE_IN_S)
-	_assert(failed, panel.visible and PanelTheme.is_panel_open(panel),
+	TestSupport.check(failed, panel.visible and PanelTheme.is_panel_open(panel),
 		"re-open during a close wins")
-	_assert(failed, is_equal_approx(panel.modulate.a, 1.0),
+	TestSupport.check(failed, is_equal_approx(panel.modulate.a, 1.0),
 		"re-open during a close ends fully opaque")
 
 	# ---- The transform must be render-only ----------------------------------
@@ -67,35 +67,35 @@ func _initialize() -> void:
 	var src: String = FileAccess.get_file_as_string("res://scripts/panel_theme.gd")
 	var body: String = src.substr(src.find("static func transition_panel"))
 	body = body.substr(0, body.find("static func layout_side_panel"))
-	_assert(failed, not body.contains("position"),
+	TestSupport.check(failed, not body.contains("position"),
 		"transition never tweens Control.position (it rewrites layout offsets)")
 
 	# ---- Reduced motion is instant ------------------------------------------
 	if cfg != null:
 		cfg.set("reduced_motion", true)
 		AccessibilityRuntime.reset_cache_for_test()
-		_assert(failed, AccessibilityRuntime.reduced_motion_enabled(),
+		TestSupport.check(failed, AccessibilityRuntime.reduced_motion_enabled(),
 			"reduced motion reads back from config")
 		PanelTheme.transition_panel(panel, false)
-		_assert(failed, not panel.visible, "reduced motion closes instantly")
+		TestSupport.check(failed, not panel.visible, "reduced motion closes instantly")
 		PanelTheme.transition_panel(panel, true)
-		_assert(failed, panel.visible and is_equal_approx(panel.modulate.a, 1.0),
+		TestSupport.check(failed, panel.visible and is_equal_approx(panel.modulate.a, 1.0),
 			"reduced motion opens instantly at full alpha")
-		_assert(failed, not AccessibilityRuntime.allow_auto_orbit(true),
+		TestSupport.check(failed, not AccessibilityRuntime.allow_auto_orbit(true),
 			"reduced motion refuses auto-orbit at the toggle")
 		cfg.set("reduced_motion", restore_reduced)
 		AccessibilityRuntime.reset_cache_for_test()
 
 	# ---- Callers use is_panel_open(), not .visible ---------------------------
 	var main_src: String = FileAccess.get_file_as_string("res://scripts/main.gd")
-	_assert(failed, main_src.contains("if PanelTheme.is_panel_open(settings_panel):"),
+	TestSupport.check(failed, main_src.contains("if PanelTheme.is_panel_open(settings_panel):"),
 		"Escape handler checks is_panel_open for settings")
-	_assert(failed, main_src.contains("if PanelTheme.is_panel_open(render_panel):"),
+	TestSupport.check(failed, main_src.contains("if PanelTheme.is_panel_open(render_panel):"),
 		"Escape handler checks is_panel_open for render")
-	_assert(failed, main_src.contains("if PanelTheme.is_panel_open(sound_panel):"),
+	TestSupport.check(failed, main_src.contains("if PanelTheme.is_panel_open(sound_panel):"),
 		"Escape handler checks is_panel_open for sound")
 	var uip: String = FileAccess.get_file_as_string("res://scripts/ui_panel_manager.gd")
-	_assert(failed, uip.contains("PanelTheme.is_panel_open(panel)"),
+	TestSupport.check(failed, uip.contains("PanelTheme.is_panel_open(panel)"),
 		"panel manager checks is_panel_open before toggling a sibling closed")
 	# A panel closed through transition_panel must also be OPENED through it —
 	# a bare `visible = true` inside the out-tween gets undone by the tween's
@@ -104,7 +104,7 @@ func _initialize() -> void:
 	for line in uip.split("\n"):
 		if not line.strip_edges().begins_with("#"):
 			uip_code += line + "\n"
-	_assert(failed, not uip_code.contains("visible = true"),
+	TestSupport.check(failed, not uip_code.contains("visible = true"),
 		"panel manager opens panels through transition_panel, not raw visibility")
 
 	panel.queue_free()
@@ -124,8 +124,3 @@ func _settle(seconds: float) -> void:
 	var deadline: int = Time.get_ticks_msec() + int((seconds + 0.15) * 1000.0)
 	while Time.get_ticks_msec() < deadline:
 		await process_frame
-
-
-func _assert(failed: Array[String], cond: bool, label: String) -> void:
-	if not cond:
-		failed.append(label)

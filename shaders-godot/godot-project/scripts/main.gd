@@ -44,7 +44,11 @@ var _post_display: TextureRect = null
 @onready var settings_panel: PanelContainer = $SettingsPanel
 @onready var render_panel: PanelContainer = $RenderPanel
 @onready var sound_panel: PanelContainer = $SoundPanel
-@onready var fish_store_panel: PanelContainer = $FishStorePanel
+@onready var adopt_panel: PanelContainer = $AdoptPanel
+# Lazy-built; see _toggle_mind_panel (BROAD_DIRECTIONS #17).
+var _mind_panel: Control = null
+# Lazy-built; see _toggle_vessel_picker (tank realism pass).
+var _vessel_picker: Control = null
 @onready var library_panel: PanelContainer = $LibraryPanel
 @onready var creature_creator_panel: PanelContainer = $CreatureCreatorPanel
 @onready var walkthrough_overlay: Control = $WalkthroughOverlay
@@ -60,7 +64,7 @@ var _post_display: TextureRect = null
 @onready var settings_toggle: Button = %SettingsToggle
 @onready var render_toggle: Button = %RenderToggle
 @onready var sound_toggle: Button = %SoundToggle
-@onready var fish_store_toggle: Button = %FishStoreToggle
+@onready var adopt_toggle: Button = %AdoptToggle
 @onready var library_toggle: Button = %LibraryToggle
 @onready var creature_creator_toggle: Button = %CreatureCreatorToggle
 @onready var aquascape_toggle: Button = %AquascapeToggle
@@ -243,6 +247,7 @@ var _palette_count_accum: float = 0.0
 var _palette_count_cached: int = -1
 # In-place body label for streaming away-recap toasts (avoids notification spam).
 var _guardian_recap_toast_body: Label = null
+var _guardian_recap_toast: Toast = null
 var _last_guardian_line_shown: String = ""
 var _photo_letterbox_top: ColorRect = null
 var _photo_letterbox_bottom: ColorRect = null
@@ -717,39 +722,33 @@ func _pond_surface_tap(mouse_pos: Vector2) -> bool:
 		var salience: float = 1.0
 		_sim.pulse_startle_bolt(hit, salience)
 	_haptic(10)
+	# Response magnitudes come from PondMode (BROAD_DIRECTIONS #7); this loop
+	# keeps only the part that touches live Fish nodes.
 	for f in _sim.fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
 			continue
-		var dx: float = f.position.x - hit.x
-		var dz: float = f.position.z - hit.z
-		var d2: float = dx * dx + dz * dz
-		if d2 > 12.0:
+		if not PondMode.is_in_startle_range(f.position, hit):
 			continue
-		var prox: float = 1.0 - clampf(sqrt(d2) / 3.5, 0.0, 1.0)
-		var radial: Vector3 = TopdownMotion.startle_radial_dir(f.position, hit, f.heading)
-		f._startle_heading = radial
-		f._startle_remaining = maxf(float(f._startle_remaining), lerpf(0.12, 0.35, prox))
-		f.curiosity_drive = clampf(float(f.curiosity_drive) + prox * 0.08, 0.0, 1.0)
+		var prox: float = PondMode.startle_proximity(f.position, hit)
+		f._startle_heading = TopdownMotion.startle_radial_dir(f.position, hit, f.heading)
+		# max(): a nearer tap may extend a startle already in flight, never cut it.
+		f._startle_remaining = maxf(float(f._startle_remaining),
+				PondMode.startle_duration(prox))
+		f.curiosity_drive = PondMode.startle_curiosity(float(f.curiosity_drive), prox)
 	return true
 
 
 var _pond_conduct_pts: Array = []
-const _POND_CONDUCT_MIN_STEP: float = 0.35
 
 
 func _pond_conduct_add(hit: Vector3) -> void:
 	if hit == INVALID_HIT:
 		return
-	if _pond_conduct_pts.is_empty():
-		_pond_conduct_pts.append(hit)
-		return
-	var last: Vector3 = _pond_conduct_pts[_pond_conduct_pts.size() - 1]
-	if last.distance_to(hit) >= _POND_CONDUCT_MIN_STEP:
-		_pond_conduct_pts.append(hit)
+	PondMode.record_conduct_point(_pond_conduct_pts, hit)
 
 
 func _finish_pond_conduct() -> void:
-	if _pond_conduct_pts.size() < 3:
+	if not PondMode.conduct_stroke_is_gesture(_pond_conduct_pts):
 		_pond_conduct_pts.clear()
 		return
 	var cfg: TopdownMotion.ConductResult = TopdownMotion.conduct_from_stroke(_pond_conduct_pts)
@@ -763,26 +762,16 @@ func _finish_pond_conduct() -> void:
 
 
 func _school_centroid_xz() -> Vector2:
+	var fallback := Vector2(target.x, target.z)
 	if _sim == null:
-		return Vector2(target.x, target.z)
-	var c := Vector3.ZERO
-	var n: int = 0
-	for f in _sim.fish:
-		if is_instance_valid(f) and f.get("_dying") != true:
-			c += f.global_position
-			n += 1
-	if n <= 0:
-		return Vector2(target.x, target.z)
-	c /= float(n)
-	return Vector2(c.x, c.z)
+		return fallback
+	return PondMode.school_centroid_xz(_sim.fish, fallback)
 
 
 func _establish_pond_framing() -> void:
 	if _sim == null or _sim.fish.is_empty():
 		return
-	var cen: Vector2 = _school_centroid_xz()
-	target.x = lerpf(target.x, cen.x, 0.72)
-	target.z = lerpf(target.z, cen.y, 0.72)
+	target = PondMode.framing_target(target, _school_centroid_xz())
 	_apply_camera()
 
 
@@ -798,8 +787,9 @@ func _apply_pond_visuals(on: bool) -> void:
 	var cfg := _cfg()
 	if cfg == null:
 		return
+	cfg.pp_vignette_strength = PondMode.vignette_strength(
+			float(cfg.pp_vignette_strength), on)
 	if on:
-		cfg.pp_vignette_strength = maxf(float(cfg.pp_vignette_strength), 0.32)
 		if world != null:
 			var light: DirectionalLight3D = world.get_node_or_null("DirectionalLight3D") as DirectionalLight3D
 			if light != null:
@@ -807,8 +797,6 @@ func _apply_pond_visuals(on: bool) -> void:
 				light.light_energy = maxf(light.light_energy, 1.15)
 			if world.has_method("_tick_topdown_surface"):
 				world.call("_tick_topdown_surface", 0.0)
-	else:
-		cfg.pp_vignette_strength = maxf(float(cfg.pp_vignette_strength) * 0.85, 0.20)
 
 
 # Switch the camera projection. Each mode optionally snaps yaw/pitch to a
@@ -1033,6 +1021,53 @@ func _toggle_camera_views_panel() -> void:
 # Add a Residents toggle to the right rail. Like Camera Views, it lives in the
 # view-tools group (above the divider), built at runtime so it inherits the
 # cluster's theme/sizing.
+# Rail button for the Mind panel (BROAD_DIRECTIONS #17). Sits next to
+# Residents: "which creature" and "what is it thinking" belong together.
+func _install_mind_rail_button() -> void:
+	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
+	if cluster_vbox == null:
+		return
+	var btn := Button.new()
+	btn.name = "MindToggle"
+	btn.text = "🧠"
+	btn.tooltip_text = "Mind — what the followed creature is thinking (J)"
+	btn.custom_minimum_size = Vector2(48, 48)
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.pressed.connect(_toggle_mind_panel)
+	cluster_vbox.add_child(btn)
+	var divider: Node = cluster_vbox.get_node_or_null("RailDivider")
+	if divider != null:
+		cluster_vbox.move_child(btn, divider.get_index())
+
+
+# Lazy-build the Mind panel and toggle it. Reads main's _follow_target, so
+# following a creature and reading its mind are the same gesture.
+func _toggle_mind_panel() -> void:
+	if _mind_panel == null:
+		var script := load("res://scripts/mind_panel.gd")
+		_mind_panel = script.new() as Control
+		_mind_panel.name = "MindPanel"
+		_mind_panel.set("main_ref", self)
+		add_child(_mind_panel)
+		_apply_panel_layout()
+	var opening: bool = not _mind_panel.visible
+	if opening:
+		_prepare_panel_open()
+		if _ui_panels != null:
+			_ui_panels.close_side_panels()
+		# Nothing followed yet? Follow something, so the panel has a subject
+		# instead of opening onto its empty state.
+		if _follow_target == null or not is_instance_valid(_follow_target):
+			follow_random_fish()
+	_mind_panel.visible = opening
+	if _mind_panel.visible and _mind_panel.has_method("refresh"):
+		_mind_panel.refresh()
+	if _mind_panel.visible:
+		PanelTheme.schedule_couch_focus(_mind_panel,
+				PackedStringArray(["Show inner workings"]))
+
+
 func _install_residents_rail_button() -> void:
 	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
 	if cluster_vbox == null:
@@ -1255,30 +1290,18 @@ var _discovery_toast_tween: Tween = null
 # ---- Notification center + toast feed ----
 const NOTIF_MAX_HISTORY: int = 300
 const NOTIF_TOAST_MAX_ACTIVE: int = 2
-const NOTIF_SORT_NEWEST: int = 0
-const NOTIF_SORT_OLDEST: int = 1
-const NOTIF_SORT_SEVERITY: int = 2
-const NOTIF_FILTER_ALL: String = "all"
 const NOTIF_SEVERITY_INFO: String = "info"
 const NOTIF_SEVERITY_IMPORTANT: String = "important"
 const NOTIF_SEVERITY_CRITICAL: String = "critical"
 
 var _notifications: Array[Dictionary] = []
 var _notification_next_id: int = 1
-var _notification_filter_kind: String = NOTIF_FILTER_ALL
-var _notification_filter_severity: String = NOTIF_FILTER_ALL
-var _notification_sort: int = NOTIF_SORT_NEWEST
 var _notification_story_idx: int = 0
 var _notification_toast_queue: Array[Dictionary] = []
 var _notification_toast_active: int = 0
 var _toast_recent_keys: Dictionary = {}
 
-var _notifications_panel: PanelContainer = null
-var _notifications_list: VBoxContainer = null
-var _notifications_empty_label: Label = null
-var _notifications_filter_kind: OptionButton = null
-var _notifications_filter_severity: OptionButton = null
-var _notifications_sort: OptionButton = null
+var _notifications_panel: NotificationsPanel = null
 var _notifications_toast_layer: Control = null
 
 var _water_alert_low_o2_active: bool = false
@@ -1389,6 +1412,15 @@ func _ready() -> void:
 		_sim.connect("eco_event", _on_eco_event)
 	if _sim != null and _sim.has_signal("creature_removed"):
 		_sim.connect("creature_removed", _on_creature_removed)
+	# Achievements follow the same 1 Hz stats signal (BROAD_DIRECTIONS #2),
+	# and surface as in-game milestones on every platform (#3).
+	var steam_svc: Node = get_node_or_null("/root/SteamService")
+	if steam_svc != null and steam_svc.has_method("attach_sim"):
+		steam_svc.attach_sim(_sim)
+		var ach: Variant = steam_svc.get("achievements")
+		if ach != null and (ach as Node).has_signal("milestone_earned") \
+				and not (ach as Node).is_connected("milestone_earned", _on_milestone_earned):
+			(ach as Node).connect("milestone_earned", _on_milestone_earned)
 	if _sim != null and _sim.has_signal("favorites_changed"):
 		_sim.connect("favorites_changed", _refresh_favorite_halos)
 		_refresh_favorite_halos.call_deferred()
@@ -1418,8 +1450,8 @@ func _ready() -> void:
 		render_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_RENDER))
 	if sound_toggle != null:
 		sound_toggle.pressed.connect(func(): _ui_toggle_side(UiPanelManager.SIDE_SOUND))
-	if fish_store_toggle != null:
-		fish_store_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_STORE))
+	if adopt_toggle != null:
+		adopt_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_ADOPT))
 	if library_toggle != null:
 		library_toggle.pressed.connect(func(): _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY))
 	if creature_creator_toggle != null:
@@ -1433,6 +1465,7 @@ func _ready() -> void:
 	# Light / Render / Sound toggles instead of the Modal cluster.
 	_install_camera_views_rail_button()
 	_install_residents_rail_button()
+	_install_mind_rail_button()
 	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
@@ -1991,7 +2024,7 @@ func _process(dt: float) -> void:
 	_hud_idle_seconds += dt
 	if _sim != null and _sim.has_method("set_room_idle"):
 		_sim.set_room_idle(_hud_idle_seconds)
-	var dl_idle: float = float(_sim.daylight()) if _sim != null and _sim.has_method("daylight") else 1.0
+	var dl_idle: float = SimGate.daylight(_sim, 1.0)
 	var screensaver: bool = _hud_idle_seconds > NIGHT_WATCHSCREENSAVER_S and dl_idle < 0.35
 	if _sim != null and _sim.has_method("set_screensaver_mode"):
 		_sim.set_screensaver_mode(screensaver)
@@ -2350,6 +2383,8 @@ func _process_mouse_input(dt: float) -> void:
 	if not _is_touch_active() and not _typing_focus_in_ui():
 		_handle_shortcut(KEY_P, _toggle_pause)
 		_handle_shortcut(KEY_V, _toggle_camera_views_panel)
+		# J, not M: M already toggles Sound (and Shift+M motion debug).
+		_handle_shortcut(KEY_J, _toggle_mind_panel)
 		_handle_shortcut(KEY_1, func(): _on_one())
 		_handle_shortcut(KEY_2, func(): _on_two())
 		_handle_shortcut(KEY_3, func(): _on_three())
@@ -3368,37 +3403,39 @@ func _open_gamepad_menu() -> void:
 	scroll.add_child(vb)
 	vb.add_child(PanelTheme.make_title("Controller menu"))
 	vb.add_child(PanelTheme.make_rule())
-	var aqua_label: String = "Exit Aquascape" if _aquascape.is_active else "Aquascape"
-	var entries: Array = []
-	# Exit first while building — easiest couch escape after ○ / △.
-	if _aquascape.is_active:
-		entries.append([aqua_label, func(): _close_gamepad_menu(); _gamepad_toggle_aquascape()])
-	entries.append_array([
-		["Settings", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SETTINGS)],
-		["Residents", func(): _close_gamepad_menu(); _toggle_residents_panel()],
-		["Camera views", func(): _close_gamepad_menu(); _toggle_camera_views_panel()],
-		["Adopt fish", func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_STORE)],
-		["Library", func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY)],
-		["Sound", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SOUND)],
-		["Rendering", func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_RENDER)],
-	])
-	if not _aquascape.is_active:
-		entries.append([aqua_label, func(): _close_gamepad_menu(); _gamepad_toggle_aquascape()])
-	entries.append_array([
-		["Help", func(): _close_gamepad_menu(); _toggle_cheat_sheet()],
-		["Pause / Resume", func(): _close_gamepad_menu(); _toggle_pause()],
-		["Tank list", func(): _close_gamepad_menu(); _on_back_to_menu()],
-		["Quit game", func(): _close_gamepad_menu(); _confirm_quit_game()],
-		["Close menu", func(): _close_gamepad_menu()],
-	])
+	# Order + labels come from ControllerMenu so smoke_controller_coverage.gd
+	# can assert Valve's Full Controller Support checklist without a pad.
+	var aqua_label: String = ControllerMenu.AQUASCAPE_EXIT if _aquascape.is_active \
+			else ControllerMenu.AQUASCAPE_ENTER
+	var actions: Dictionary = {
+		aqua_label: func(): _close_gamepad_menu(); _gamepad_toggle_aquascape(),
+		"Settings": func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SETTINGS),
+		"Choose tank": func(): _close_gamepad_menu(); _toggle_vessel_picker(),
+		"Residents": func(): _close_gamepad_menu(); _toggle_residents_panel(),
+		"Mind": func(): _close_gamepad_menu(); _toggle_mind_panel(),
+		"Camera views": func(): _close_gamepad_menu(); _toggle_camera_views_panel(),
+		"Adopt fish": func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_ADOPT),
+		"Library": func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY),
+		"Sound": func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_SOUND),
+		"Rendering": func(): _close_gamepad_menu(); _ui_toggle_side(UiPanelManager.SIDE_RENDER),
+		"Copy tank code": func(): _close_gamepad_menu(); copy_share_code(),
+		"Help": func(): _close_gamepad_menu(); _toggle_cheat_sheet(),
+		"Pause / Resume": func(): _close_gamepad_menu(); _toggle_pause(),
+		"Tank list": func(): _close_gamepad_menu(); _on_back_to_menu(),
+		"Quit game": func(): _close_gamepad_menu(); _confirm_quit_game(),
+		"Close menu": func(): _close_gamepad_menu(),
+	}
 	var first_btn: Button = null
 	var prev: Button = null
-	for entry in entries:
-		var btn := PanelTheme.make_primary_button(String(entry[0]))
+	for label in ControllerMenu.destination_labels(_aquascape.is_active):
+		var cb: Variant = actions.get(label)
+		if cb == null:
+			push_error("[walstad_loom] pad menu has no action for '%s'" % label)
+			continue
+		var btn := PanelTheme.make_primary_button(label)
 		btn.focus_mode = Control.FOCUS_ALL
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		var cb: Callable = entry[1]
-		btn.pressed.connect(cb)
+		btn.pressed.connect(cb as Callable)
 		vb.add_child(btn)
 		if first_btn == null:
 			first_btn = btn
@@ -3483,11 +3520,61 @@ func _close_camera_views_panel() -> void:
 	_camera_views_panel.visible = false
 
 
+# Browse tanks the way you would in a shop. Lazy-built like the other
+# panels; see vessel_picker.gd for why this replaced a dropdown.
+func _toggle_vessel_picker() -> void:
+	if _vessel_picker == null:
+		var script := load("res://scripts/vessel_picker.gd")
+		_vessel_picker = script.new() as Control
+		_vessel_picker.name = "VesselPicker"
+		_vessel_picker.set("main_ref", self)
+		add_child(_vessel_picker)
+		if _vessel_picker.has_signal("vessel_chosen"):
+			_vessel_picker.connect("vessel_chosen", _on_vessel_chosen)
+		_apply_panel_layout()
+	var opening: bool = not _vessel_picker.visible
+	if opening:
+		_prepare_panel_open()
+		if _ui_panels != null:
+			_ui_panels.close_side_panels()
+		if _vessel_picker.has_method("sync_from_config"):
+			_vessel_picker.call("sync_from_config")
+	_vessel_picker.visible = opening
+	if opening:
+		PanelTheme.schedule_couch_focus(_vessel_picker,
+				PackedStringArray(["Use this tank"]))
+
+
+func close_vessel_picker() -> void:
+	if _vessel_picker == null:
+		return
+	_vessel_picker.visible = false
+	_sync_rail_toggles()
+
+
+func _on_vessel_chosen(key: String) -> void:
+	# The footprint changed, so the world has to be rebuilt around it.
+	var lg: Node = get_node_or_null("/root/AppLog")
+	if lg != null and lg.has_method("info"):
+		lg.info("vessel", "rebuilding tank for %s" % key)
+	_push_notification("system", NOTIF_SEVERITY_INFO,
+			tr("Tank changed"),
+			"%s — %s" % [TankSpec.volume_label(key), TankSpec.dimensions_label(key)],
+			true)
+
+
+func close_mind_panel() -> void:
+	if _mind_panel == null:
+		return
+	_mind_panel.visible = false
+	_sync_rail_toggles()
+
+
 func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 	if _ui_panels != null and _ui_panels.is_modal_open():
 		return true
 	for panel in [settings_panel, render_panel, sound_panel, library_panel,
-			creature_creator_panel, fish_store_panel, _notifications_panel,
+			creature_creator_panel, adopt_panel, _notifications_panel,
 			_light_panel, _residents_panel, _camera_views_panel]:
 		if panel != null and panel.visible \
 				and panel.get_global_rect().has_point(mouse_pos):
@@ -3738,15 +3825,128 @@ func _finish_photo_with_hud_restore(img: Image) -> void:
 	_finish_photo(img)
 
 
+# Save a photo as a POSTCARD: the shot plus a burned-in provenance strip and
+# a seed-bearing filename (BROAD_DIRECTIONS #19). Previously this wrote a
+# bare timestamped PNG, so a shared screenshot could not be traced back to
+# the tank that made it, let alone recreated.
+#
+# NB: this is a coroutine — it awaits a frame so the caption text can be
+# rasterised before the file is written. Callers need not await it.
 func _finish_photo(img: Image) -> void:
 	var dir: String = OS.get_user_data_dir() + "/captures"
 	DirAccess.make_dir_recursive_absolute(dir)
-	var ts: String = Time.get_datetime_string_from_system().replace(":", "-").replace("T", "_")
-	var path: String = dir + "/walstad_loom_" + ts + ".png"
-	img.save_png(path)
-	print_verbose("[walstad_loom] photo saved: ", path)
+	var tank_seed: int = _tank_seed()
+	var caption: String = TankShare.caption(_share_info())
+	var out: Image = TankShare.add_caption_strip(img, caption)
+	# MUST await: _burn_caption_text yields a frame for the text viewport to
+	# render, so calling it bare would save the PNG before the blit landed.
+	await _burn_caption_text(out, caption)
+	var path: String = dir + "/" + TankShare.postcard_filename(
+			tank_seed, int(Time.get_unix_time_from_system()))
+	out.save_png(path)
+	# Sidecar carries the full share code, so a saved postcard can be turned
+	# back into a tank even though the PNG's own metadata will not survive
+	# being sent anywhere.
+	var code: String = share_code()
+	if not code.is_empty():
+		var f := FileAccess.open(path.get_basename() + ".txt", FileAccess.WRITE)
+		if f != null:
+			f.store_string("%s\n%s\n" % [caption, code])
+			f.close()
+	var lg: Node = get_node_or_null("/root/AppLog")
+	if lg != null and lg.has_method("info"):
+		lg.info("photo", "postcard saved: %s" % path)
 	_haptic(25)
 	_show_photo_toast(path)
+
+
+# Current tank's seed, from the sim (it is already saved with the tank).
+func _tank_seed() -> int:
+	if _sim != null and _sim.get("tank_seed") != null:
+		return int(_sim.tank_seed)
+	return 0
+
+
+# Facts for the postcard caption + share code.
+func _share_info() -> Dictionary:
+	var info: Dictionary = {"seed": _tank_seed()}
+	var saves: Node = get_node_or_null("/root/TankSaves")
+	if saves != null:
+		var meta: Dictionary = saves.get_tank_meta(int(saves.active_slot))
+		var nm: String = String(meta.get("name", "")).strip_edges()
+		if not nm.is_empty():
+			info["tank_name"] = nm
+	if _sim != null:
+		if _sim.has_method("sim_day_label"):
+			info["sim_day"] = _sim.sim_day_label()
+		if _sim.get("fish") != null:
+			info["fish"] = (_sim.fish as Array).size()
+		if _sim.get("plants") != null:
+			info["plants"] = (_sim.plants as Array).size()
+	return info
+
+
+# Shareable code for this tank — seed plus the few config values that decide
+# how it looks and stocks. Public so a panel or the pad menu can copy it.
+func share_code() -> String:
+	var cfg: Node = _cfg()
+	if cfg == null:
+		return ""
+	var subset: Dictionary = {}
+	for key in TankShare.SHARED_KEYS:
+		var v: Variant = cfg.get(key)
+		if v != null:
+			subset[key] = v
+	return TankShare.make_code(_tank_seed(), subset)
+
+
+# Put the share code on the clipboard and tell the player.
+func copy_share_code() -> void:
+	var code: String = share_code()
+	if code.is_empty():
+		return
+	DisplayServer.clipboard_set(code)
+	_show_photo_toast("Tank code copied — seed %s"
+			% TankShare.seed_label(_tank_seed()))
+	var lg: Node = get_node_or_null("/root/AppLog")
+	if lg != null and lg.has_method("info"):
+		lg.info("share", "tank code copied (seed %d)" % _tank_seed())
+
+
+# Draw the caption into the darkened strip TankShare reserved. Rendering text
+# into an Image needs a rasteriser, so a throwaway SubViewport holding a
+# Label is used and its texture blitted in. Burned pixels rather than PNG
+# metadata: every chat app and social platform strips metadata, so it would
+# survive exactly zero shares.
+func _burn_caption_text(img: Image, text: String) -> void:
+	if img == null or text.strip_edges().is_empty():
+		return
+	var rect: Rect2i = TankShare.caption_rect(img)
+	if rect.size.x <= 0 or rect.size.y <= 0:
+		return
+	var vp := SubViewport.new()
+	vp.size = rect.size
+	vp.transparent_bg = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", 12)
+	lbl.add_theme_color_override("font_color", Color(0.86, 0.92, 1.0))
+	lbl.size = rect.size
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.clip_text = true
+	vp.add_child(lbl)
+	add_child(vp)
+	# One frame for the viewport to render before reading it back.
+	await RenderingServer.frame_post_draw
+	var tex: ViewportTexture = vp.get_texture()
+	if tex != null:
+		var caption_img: Image = tex.get_image()
+		if caption_img != null:
+			caption_img.convert(img.get_format())
+			img.blend_rect(caption_img,
+					Rect2i(Vector2i.ZERO, caption_img.get_size()), rect.position)
+	vp.queue_free()
 
 
 func _save_timelapse_frame(img: Image, frame_path: String) -> void:
@@ -4188,6 +4388,9 @@ func _on_guardian_recap_streaming(text: String) -> void:
 		return
 	if _guardian_recap_toast_body != null and is_instance_valid(_guardian_recap_toast_body):
 		_guardian_recap_toast_body.text = text.strip_edges()
+		# Text is still arriving — do not let it fade mid-sentence.
+		if _guardian_recap_toast != null and is_instance_valid(_guardian_recap_toast):
+			_guardian_recap_toast.hold(Toast.dwell_for(text))
 
 
 func _present_guardian_toast(title: String, body: String, severity: String,
@@ -4195,26 +4398,21 @@ func _present_guardian_toast(title: String, body: String, severity: String,
 	if not has_method("_push_notification"):
 		return
 	_guardian_recap_toast_body = null
-	if track_recap:
-		_push_notification("guardian", severity, title, body, important)
-		if _notifications_toast_layer != null and _notifications_toast_layer.get_child_count() > 0:
-			var card: Node = _notifications_toast_layer.get_child(
-					_notifications_toast_layer.get_child_count() - 1)
-			if card is PanelContainer:
-				var lbl: Label = _find_toast_body_label(card as PanelContainer)
-				if lbl != null:
-					_guardian_recap_toast_body = lbl
-	else:
-		_push_notification("guardian", severity, title, body, important)
-
-
-func _find_toast_body_label(card: PanelContainer) -> Label:
-	for c in card.get_children():
-		if c is VBoxContainer:
-			for ch in (c as VBoxContainer).get_children():
-				if ch is Label and (ch as Label).get_index() == 1:
-					return ch as Label
-	return null
+	_guardian_recap_toast = null
+	_push_notification("guardian", severity, title, body, important)
+	if not track_recap:
+		return
+	# Grab the toast that push just spawned so streamed recap text can be
+	# written into it. Asks the component for its body label rather than
+	# walking the tree for "the Label at index 1".
+	if _notifications_toast_layer == null:
+		return
+	for i in range(_notifications_toast_layer.get_child_count() - 1, -1, -1):
+		var t := _notifications_toast_layer.get_child(i) as Toast
+		if t != null and is_instance_valid(t) and not t.is_dismissing():
+			_guardian_recap_toast = t
+			_guardian_recap_toast_body = t.body_label()
+			break
 
 
 func _on_fish_thought_spoke(speaker: Fish, text: String) -> void:
@@ -5952,9 +6150,17 @@ func _input(event: InputEvent) -> void:
 		return
 
 	if event.is_action_pressed("ui_cancel"):
+		if _light_drag_kind != LightHandle.NONE:
+			_cancel_light_drag()
+			get_viewport().set_input_as_handled()
+			return
 		if _dismiss_blocking_overlays():
 			get_viewport().set_input_as_handled()
 			return
+
+	if _handle_light_handle_input(event):
+		get_viewport().set_input_as_handled()
+		return
 
 	if event is InputEventKey and event.pressed and not event.echo \
 			and not _typing_focus_in_ui():
@@ -6386,7 +6592,7 @@ func _setup_mobile_ui() -> void:
 	if settings_toggle != null: toggle_buttons.append(settings_toggle)
 	if render_toggle != null: toggle_buttons.append(render_toggle)
 	if sound_toggle != null: toggle_buttons.append(sound_toggle)
-	if fish_store_toggle != null: toggle_buttons.append(fish_store_toggle)
+	if adopt_toggle != null: toggle_buttons.append(adopt_toggle)
 	if creature_creator_toggle != null: toggle_buttons.append(creature_creator_toggle)
 	if aquascape_toggle != null: toggle_buttons.append(aquascape_toggle)
 	if portal_toggle != null: toggle_buttons.append(portal_toggle)
@@ -6494,7 +6700,38 @@ func _pan_target(delta: Vector2) -> void:
 	_apply_camera()
 
 
+# Keep the diagnostic log's tank context current (BROAD_DIRECTIONS #5), so an
+# exported report says which tank, preset and population were live. Rides the
+# existing 1 Hz stats signal rather than adding a timer.
+func _refresh_applog_context(stats: Dictionary) -> void:
+	var lg: Node = get_node_or_null("/root/AppLog")
+	if lg == null or not lg.has_method("set_context"):
+		return
+	var ctx: Dictionary = {
+		"fish": int(stats.get("fish_total", 0)),
+		"plants": int(stats.get("plants_alive", 0)),
+		"shrimp": int(stats.get("shrimp_total", 0)),
+		"snails": int(stats.get("snails_total", 0)),
+		"max_generation": int(stats.get("max_generation", 0)),
+		"dissolved_o2": "%.2f" % float(stats.get("dissolved_o2", 0.0)),
+		"ammonia": "%.3f" % float(stats.get("ammonia", 0.0)),
+	}
+	var saves: Node = get_node_or_null("/root/TankSaves")
+	if saves != null:
+		ctx["tank_slot"] = int(saves.active_slot)
+	var cfg: Node = _cfg()
+	if cfg != null:
+		ctx["preset"] = String(cfg.tank_preset)
+		ctx["substrate"] = String(cfg.substrate_type)
+	if _sim != null:
+		ctx["time_scale"] = "%.2f" % float(_sim.time_scale)
+		if _sim.has_method("sim_day_label"):
+			ctx["sim_day"] = _sim.sim_day_label()
+	lg.set_context(ctx)
+
+
 func _on_stats_changed(stats: Dictionary) -> void:
+	_refresh_applog_context(stats)
 	_stats = stats
 	_render_header()
 	_apply_ecology_hud_layout()
@@ -7269,9 +7506,7 @@ func _update_palette_tod_tint() -> void:
 	# Drive the day/night palette blend off the same daylight curve the
 	# sim uses for photosynthesis. Smoothstep on top of the cosine bell so
 	# the transition has a defined "dusk" knee instead of feeling washy.
-	var dl: float = 1.0
-	if _sim != null and _sim.has_method("daylight"):
-		dl = float(_sim.daylight())
+	var dl: float = SimGate.daylight(_sim, 1.0)
 	var night_blend: float = smoothstep(0.05, 0.55, 1.0 - dl)
 	if _sim != null:
 		var sunset_hour: float = clampf(
@@ -7523,7 +7758,7 @@ func _sync_rail_toggles() -> void:
 	h = h * 31 + int(render_panel != null and render_panel.visible)
 	h = h * 31 + int(sound_panel != null and sound_panel.visible)
 	h = h * 31 + int(_light_panel != null and _light_panel.visible)
-	h = h * 31 + int(fish_store_panel != null and fish_store_panel.visible)
+	h = h * 31 + int(adopt_panel != null and adopt_panel.visible)
 	h = h * 31 + int(library_panel != null and library_panel.visible)
 	h = h * 31 + int(creature_creator_panel != null and creature_creator_panel.visible)
 	h = h * 31 + int(_notifications_panel != null and _notifications_panel.visible)
@@ -7532,7 +7767,7 @@ func _sync_rail_toggles() -> void:
 	_last_rail_sync_hash = h
 	if _rail_create_btn != null:
 		var create_on: bool = (creature_creator_panel != null and creature_creator_panel.visible) \
-			or (fish_store_panel != null and fish_store_panel.visible) \
+			or (adopt_panel != null and adopt_panel.visible) \
 			or (library_panel != null and library_panel.visible)
 		PanelTheme.style_rail_button(_rail_create_btn, create_on)
 	if _rail_world_btn != null:
@@ -7568,8 +7803,8 @@ func _apply_rail_button_labels(force_short: bool) -> void:
 		UiIcons.apply_rail_button(aquascape_toggle, "aquascape", short)
 	if creature_creator_toggle != null:
 		UiIcons.apply_rail_button(creature_creator_toggle, "creator", short)
-	if fish_store_toggle != null:
-		UiIcons.apply_rail_button(fish_store_toggle, "store", short)
+	if adopt_toggle != null:
+		UiIcons.apply_rail_button(adopt_toggle, "adopt", short)
 	if library_toggle != null:
 		UiIcons.apply_rail_button(library_toggle, "library", short)
 	if notifications_toggle != null:
@@ -7671,6 +7906,25 @@ func _apply_panel_layout() -> void:
 	if _residents_panel != null:
 		PanelTheme.layout_side_panel(_residents_panel, edge, top, bottom, panel_w, "left")
 
+	# Mind docks left alongside Residents (BROAD_DIRECTIONS #17) — "which
+	# creature" and "what is it thinking" are the same question.
+	if _mind_panel != null:
+		PanelTheme.layout_side_panel(_mind_panel, edge, top, bottom, panel_w, "left")
+
+	# The vessel picker is a browsing surface, not a sidebar — centre it and
+	# give it room for two columns of cards.
+	if _vessel_picker != null:
+		var pick_w: float = clampf(vp.x * 0.62, 520.0, 900.0)
+		var pick_h: float = clampf(vp.y * 0.78, 420.0, 860.0)
+		_vessel_picker.anchor_left = 0.5
+		_vessel_picker.anchor_right = 0.5
+		_vessel_picker.anchor_top = 0.5
+		_vessel_picker.anchor_bottom = 0.5
+		_vessel_picker.offset_left = -pick_w * 0.5
+		_vessel_picker.offset_right = pick_w * 0.5
+		_vessel_picker.offset_top = -pick_h * 0.5
+		_vessel_picker.offset_bottom = pick_h * 0.5
+
 	_layout_follow_thought_strip()
 
 	if library_panel != null:
@@ -7703,13 +7957,13 @@ func _apply_panel_layout() -> void:
 		creature_creator_panel.offset_top = -modal_h * 0.5
 		creature_creator_panel.offset_bottom = modal_h * 0.5
 
-	var store_w: float = clampf(minf(vp.x * 0.42, 480.0), 320.0, 480.0)
-	var store_h: float = clampf(vp.y * 0.52, 360.0, 520.0)
-	if fish_store_panel != null:
-		fish_store_panel.offset_left = -store_w * 0.5
-		fish_store_panel.offset_right = store_w * 0.5
-		fish_store_panel.offset_top = -store_h * 0.5
-		fish_store_panel.offset_bottom = store_h * 0.5
+	var adopt_w: float = clampf(minf(vp.x * 0.42, 480.0), 320.0, 480.0)
+	var adopt_h: float = clampf(vp.y * 0.52, 360.0, 520.0)
+	if adopt_panel != null:
+		adopt_panel.offset_left = -adopt_w * 0.5
+		adopt_panel.offset_right = adopt_w * 0.5
+		adopt_panel.offset_top = -adopt_h * 0.5
+		adopt_panel.offset_bottom = adopt_h * 0.5
 
 	# The glass follow-card owns its own geometry (size depends on the chosen
 	# porthole layout); re-apply it on resize rather than forcing a square here.
@@ -7916,35 +8170,20 @@ func _sync_chip_popup_tooltips(suppress: bool) -> void:
 		chip.tooltip_text = "" if suppress else _chip_tooltip(key)
 
 
+# Kept as a thin alias: a few non-popup callers still want the chip look.
 func _chip_popup_stylebox(accent: Color = PanelTheme.HUD_BORDER) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.07, 0.12, 0.96)
-	style.border_color = Color(accent.r, accent.g, accent.b, 0.68)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 12
-	style.content_margin_right = 12
-	style.content_margin_top = 8
-	style.content_margin_bottom = 10
-	style.shadow_color = Color(0, 0, 0, 0.42)
-	style.shadow_size = 8
-	style.shadow_offset = Vector2(0, 4)
-	return style
+	return ChipPopup.stylebox(accent)
 
 
 func _position_chip_popup(panel: Control, chip_key: String) -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var sz: Vector2 = panel.size
-	if sz.x < 1.0:
-		sz = panel.custom_minimum_size
-	var x: float = (vp.x - sz.x) * 0.5
-	var y: float = PanelTheme.HUD_TOP + 6.0
-	var chip: Control = _get_chip(chip_key)
-	if chip != null:
-		var chip_rect: Rect2 = chip.get_global_rect()
-		x = clampf(chip_rect.position.x + chip_rect.size.x * 0.5 - sz.x * 0.5, 8.0, vp.x - sz.x - 8.0)
-		y = clampf(chip_rect.end.y + 6.0, PanelTheme.HUD_TOP, vp.y - sz.y - 8.0)
-	panel.position = Vector2(x, y)
+	var cp := panel as ChipPopup
+	if cp != null:
+		cp.place_under(_get_chip(chip_key), vp, PanelTheme.HUD_TOP)
+		return
+	# Non-ChipPopup callers (none today) keep the old centred fallback.
+	var sz: Vector2 = panel.size if panel.size.x >= 1.0 else panel.custom_minimum_size
+	panel.position = Vector2((vp.x - sz.x) * 0.5, PanelTheme.HUD_TOP + 6.0)
 
 
 func _history_popup_dimensions(hist_key: String) -> Vector2:
@@ -7958,9 +8197,7 @@ func _history_popup_dimensions(hist_key: String) -> Vector2:
 
 
 func _chip_popup_size_for_lines(line_count: int, min_w: float = 236.0) -> Vector2:
-	var body_h: float = float(maxi(line_count, 1)) * 17.0
-	var h: float = clampf(44.0 + body_h, 72.0, 200.0)
-	return Vector2(min_w, h)
+	return ChipPopup.size_for_lines(line_count, min_w)
 
 
 func _ui_toggle_side(id: String) -> void:
@@ -8031,7 +8268,12 @@ func _open_notifications_panel_exclusive() -> void:
 	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	# COMMS #44 — badge honesty: opening marks currently listed rows read.
 	_mark_visible_notifications_read()
-	_refresh_notifications_panel()
+	_refresh_notifications_panel_view()
+
+
+func close_notifications_panel() -> void:
+	_close_notifications_panel()
+	_sync_rail_toggles()
 
 
 func _close_notifications_panel() -> void:
@@ -8066,7 +8308,7 @@ func _setup_rail_groups() -> void:
 	# Hide legacy per-feature rail buttons; group flyouts replace them.
 	for btn in [
 		portal_toggle, aquascape_toggle, creature_creator_toggle,
-		fish_store_toggle, library_toggle, notifications_toggle,
+		adopt_toggle, library_toggle, notifications_toggle,
 		_light_btn, render_toggle, sound_toggle, settings_toggle,
 	]:
 		if btn != null:
@@ -8161,7 +8403,7 @@ func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
 				{"label": "Creature Creator", "tip": "Design fish, shrimp, plants…",
 					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_CREATOR)},
 				{"label": "Adopt fish", "tip": "Free procedurally generated fish (no purchases)",
-					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_STORE)},
+					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_ADOPT)},
 				{"label": "Life Library", "tip": "Discovered species collection",
 					"action": func(): _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY)},
 			]
@@ -8217,96 +8459,21 @@ func _ensure_notifications_ui() -> void:
 	_notifications_toast_layer.z_index = 95
 	add_child(_notifications_toast_layer)
 
-	_notifications_panel = PanelContainer.new()
-	_notifications_panel.visible = false
-	_notifications_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_notifications_panel.custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 360)
-	_notifications_panel.z_index = 110
-	PanelTheme.apply_panel_chrome(_notifications_panel)
+	# The panel owns its own chrome, filters and sorting now; main keeps the
+	# store (push, cap, dedup, badge). See notifications_panel.gd.
+	_notifications_panel = NotificationsPanel.new()
+	_notifications_panel.name = "NotificationsPanel"
+	_notifications_panel.main_ref = self
+	_notifications_panel.cleared.connect(_clear_notifications)
 	add_child(_notifications_panel)
-
-	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 8)
-	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_notifications_panel.add_child(root)
-
-	root.add_child(PanelTheme.make_title("Notifications"))
-	root.add_child(PanelTheme.make_rule())
-
-	var controls := HBoxContainer.new()
-	controls.add_theme_constant_override("separation", 6)
-	root.add_child(controls)
-
-	_notifications_filter_kind = OptionButton.new()
-	for i in range(CommsInbox.KIND_FILTER_ENTRIES.size()):
-		var entry: Dictionary = CommsInbox.KIND_FILTER_ENTRIES[i]
-		_notifications_filter_kind.add_item(String(entry.get("label", "Kind")), i)
-	_notifications_filter_kind.item_selected.connect(_on_notifications_kind_filter_selected)
-	controls.add_child(_notifications_filter_kind)
-
-	_notifications_filter_severity = OptionButton.new()
-	_notifications_filter_severity.add_item("Severity: All", 0)
-	_notifications_filter_severity.add_item("Severity: Info", 1)
-	_notifications_filter_severity.add_item("Severity: Important", 2)
-	_notifications_filter_severity.add_item("Severity: Critical", 3)
-	_notifications_filter_severity.item_selected.connect(_on_notifications_severity_filter_selected)
-	controls.add_child(_notifications_filter_severity)
-
-	_notifications_sort = OptionButton.new()
-	_notifications_sort.add_item("Sort: Newest", NOTIF_SORT_NEWEST)
-	_notifications_sort.add_item("Sort: Oldest", NOTIF_SORT_OLDEST)
-	_notifications_sort.add_item("Sort: Severity", NOTIF_SORT_SEVERITY)
-	_notifications_sort.item_selected.connect(_on_notifications_sort_selected)
-	controls.add_child(_notifications_sort)
-
-	var clear_btn := PanelTheme.make_secondary_button("Clear all")
-	clear_btn.pressed.connect(_clear_notifications)
-	controls.add_child(clear_btn)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(scroll)
-
-	_notifications_list = VBoxContainer.new()
-	_notifications_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_notifications_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_notifications_list)
-
-	_notifications_empty_label = Label.new()
-	_notifications_empty_label.text = "No notifications yet."
-	_notifications_empty_label.add_theme_color_override("font_color", Color(0.70, 0.76, 0.86, 0.9))
-	_notifications_list.add_child(_notifications_empty_label)
-
-	root.add_child(PanelTheme.make_panel_footer(func() -> void:
-		_close_notifications_panel()
-		_sync_rail_toggles()))
-
 	_apply_panel_layout()
 
 
-func _on_notifications_kind_filter_selected(idx: int) -> void:
-	if idx >= 0 and idx < CommsInbox.KIND_FILTER_ENTRIES.size():
-		_notification_filter_kind = String(
-				CommsInbox.KIND_FILTER_ENTRIES[idx].get("id", NOTIF_FILTER_ALL))
-	else:
-		_notification_filter_kind = NOTIF_FILTER_ALL
-	_refresh_notifications_panel()
-
-
-func _on_notifications_severity_filter_selected(idx: int) -> void:
-	match idx:
-		1: _notification_filter_severity = NOTIF_SEVERITY_INFO
-		2: _notification_filter_severity = NOTIF_SEVERITY_IMPORTANT
-		3: _notification_filter_severity = NOTIF_SEVERITY_CRITICAL
-		_: _notification_filter_severity = NOTIF_FILTER_ALL
-	_refresh_notifications_panel()
-
-
-func _on_notifications_sort_selected(idx: int) -> void:
-	_notification_sort = idx
-	_refresh_notifications_panel()
+# Hand the store to the panel to render. Kept as a named function because
+# several places (push, clear, mark-read) trigger a re-render.
+func _refresh_notifications_panel_view() -> void:
+	if _notifications_panel != null and is_instance_valid(_notifications_panel):
+		_notifications_panel.refresh(_notifications)
 
 
 func _clear_notifications() -> void:
@@ -8315,109 +8482,20 @@ func _clear_notifications() -> void:
 		_notification_story_idx = (_sim.story_events as Array).size()
 	else:
 		_notification_story_idx = 0
-	_refresh_notifications_panel()
+	_refresh_notifications_panel_view()
 
 
 func _kind_icon(kind: String) -> String:
 	return CommsInbox.kind_icon(kind)
 
 
-func _severity_rank(sev: String) -> int:
-	match sev:
-		NOTIF_SEVERITY_CRITICAL:
-			return 2
-		NOTIF_SEVERITY_IMPORTANT:
-			return 1
-		_:
-			return 0
-
-
-func _format_notification_age(unix_ts: int) -> String:
-	var delta: int = max(0, int(Time.get_unix_time_from_system()) - unix_ts)
-	if delta < 60:
-		return "%ds ago" % delta
-	if delta < 3600:
-		return "%dm ago" % int(delta / 60.0)
-	var h: int = int(delta / 3600.0)
-	if h < 24:
-		return "%dh ago" % h
-	return "%dd ago" % int(delta / 86400.0)
-
-
-func _refresh_notifications_panel() -> void:
-	if _notifications_list == null:
+func _on_milestone_earned(_api_name: String, definition: Dictionary) -> void:
+	var title: String = String(definition.get("title", ""))
+	if title.is_empty():
 		return
-	for c in _notifications_list.get_children():
-		c.queue_free()
-	var rows: Array[Dictionary] = []
-	for n in _notifications:
-		var kind: String = String(n.get("kind", "system"))
-		var sev: String = String(n.get("severity", NOTIF_SEVERITY_INFO))
-		if _notification_filter_kind != NOTIF_FILTER_ALL and kind != _notification_filter_kind:
-			continue
-		if _notification_filter_severity != NOTIF_FILTER_ALL and sev != _notification_filter_severity:
-			continue
-		rows.append(n)
-	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		if _notification_sort == NOTIF_SORT_OLDEST:
-			return int(a.get("ts", 0)) < int(b.get("ts", 0))
-		if _notification_sort == NOTIF_SORT_SEVERITY:
-			var ar: int = _severity_rank(String(a.get("severity", NOTIF_SEVERITY_INFO)))
-			var br: int = _severity_rank(String(b.get("severity", NOTIF_SEVERITY_INFO)))
-			if ar == br:
-				return int(a.get("ts", 0)) > int(b.get("ts", 0))
-			return ar > br
-		return int(a.get("ts", 0)) > int(b.get("ts", 0))
-	)
-	if rows.is_empty():
-		var empty := Label.new()
-		empty.text = "No notifications match this filter."
-		empty.add_theme_color_override("font_color", Color(0.70, 0.76, 0.86, 0.9))
-		_notifications_list.add_child(empty)
-		return
-	for n in rows:
-		_notifications_list.add_child(_build_notification_row(n))
-
-
-func _build_notification_row(n: Dictionary) -> Control:
-	var row := PanelContainer.new()
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.10, 0.12, 0.18, 0.78)
-	style.set_corner_radius_all(8)
-	style.content_margin_left = 10
-	style.content_margin_top = 8
-	style.content_margin_right = 10
-	style.content_margin_bottom = 8
-	row.add_theme_stylebox_override("panel", style)
-
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
-	row.add_child(hb)
-
-	var icon := Label.new()
-	icon.text = _kind_icon(String(n.get("kind", "system")))
-	icon.custom_minimum_size = Vector2(20, 0)
-	hb.add_child(icon)
-
-	var vb := VBoxContainer.new()
-	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb.add_child(vb)
-
-	var title := Label.new()
-	var title_txt: String = String(n.get("title", "Notification"))
-	var age_txt: String = _format_notification_age(int(n.get("ts", 0)))
-	title.text = "%s · %s" % [title_txt, age_txt]
-	title.add_theme_color_override("font_color", Color(0.92, 0.95, 0.99))
-	title.add_theme_font_size_override("font_size", 12)
-	vb.add_child(title)
-
-	var body := Label.new()
-	body.text = String(n.get("body", ""))
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_theme_color_override("font_color", Color(0.80, 0.86, 0.94, 0.95))
-	body.add_theme_font_size_override("font_size", 11)
-	vb.add_child(body)
-	return row
+	_push_notification("milestone", NOTIF_SEVERITY_IMPORTANT, "Milestone — %s" % title,
+			String(definition.get("desc", "")), true,
+			{"group": String(definition.get("group", ""))})
 
 
 func _push_notification(kind: String, severity: String, title: String, body: String,
@@ -8457,7 +8535,7 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 		CommsInbox.enqueue_toast(_notification_toast_queue, notif)
 		_pump_notification_toast_queue()
 	if _notifications_panel != null and _notifications_panel.visible:
-		_refresh_notifications_panel()
+		_refresh_notifications_panel_view()
 
 
 func _pump_notification_toast_queue() -> void:
@@ -8471,73 +8549,32 @@ func _pump_notification_toast_queue() -> void:
 		_spawn_notification_toast(notif)
 
 
+# Present one queued notification. Was 69 lines of hand-built PanelContainer,
+# StyleBoxFlat and tween; now the shared Toast component (messaging pass) —
+# which also gives it severity colour, click-to-dismiss, pause-on-hover, and
+# a dwell that scales with how much there is to read.
 func _spawn_notification_toast(notif: Dictionary) -> void:
+	if _notifications_toast_layer == null:
+		return
 	_notification_toast_active += 1
-	var card := PanelContainer.new()
-	card.modulate.a = 0.0
-	var stack_idx: int = _notification_toast_active - 1
-	var layer_h: float = _notifications_toast_layer.size.y
-	if layer_h < 1.0:
-		layer_h = PanelTheme.TOAST_STACK_H
-	card.position = Vector2(0.0, layer_h - float(stack_idx + 1) * 74.0)
-	card.scale = Vector2(0.96, 0.96)
-	card.custom_minimum_size = Vector2(PanelTheme.TOAST_STACK_W - 8.0, 64)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.09, 0.12, 0.19, 0.96)
-	style.border_color = Color(0.35, 0.45, 0.6, 0.75)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 7
-	style.content_margin_bottom = 7
-	card.add_theme_stylebox_override("panel", style)
-
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 2)
-	card.add_child(vb)
-
-	var title := Label.new()
-	title.text = "%s %s" % [_kind_icon(String(notif.get("kind", "system"))), String(notif.get("title", ""))]
-	title.add_theme_color_override("font_color", Color(0.95, 0.97, 1.0))
-	title.add_theme_font_size_override("font_size", 12)
-	vb.add_child(title)
-
-	var body := Label.new()
-	body.text = String(notif.get("body", ""))
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_theme_color_override("font_color", Color(0.80, 0.88, 0.96, 0.95))
-	body.add_theme_font_size_override("font_size", 10)
-	vb.add_child(body)
-	_notifications_toast_layer.add_child(card)
-	if _follow_thought_strip != null and _follow_thought_strip.visible:
-		_layout_follow_thought_strip()
-
-	var tw := create_tween()
-	tw.set_parallel(true)
-	card.position.x = PanelTheme.TOAST_STACK_W
-	tw.tween_property(card, "modulate:a", 1.0, 0.28) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(card, "scale", Vector2.ONE, 0.28) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(card, "position:x", 0.0, 0.32) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.set_parallel(false)
-	tw.tween_interval(4.2)
-	tw.set_parallel(true)
-	tw.tween_property(card, "modulate:a", 0.0, 0.85) \
-		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	tw.tween_property(card, "position:x", 28.0, 0.85) \
-		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	tw.set_parallel(false)
-	tw.tween_callback(func() -> void:
-		if is_instance_valid(card):
-			card.queue_free()
+	var kind: String = String(notif.get("kind", "system"))
+	var severity: String = String(notif.get("severity", NOTIF_SEVERITY_INFO))
+	var t: Toast = ToastStack.present(_notifications_toast_layer, {
+		"title": String(notif.get("title", "")),
+		"body": String(notif.get("body", "")),
+		"icon": _kind_icon(kind),
+		"level": Toast.level_for_severity(severity, kind),
+	})
+	if t == null:
+		_notification_toast_active = maxi(0, _notification_toast_active - 1)
+		return
+	t.dismissed.connect(func(_x):
 		_notification_toast_active = maxi(0, _notification_toast_active - 1)
 		if _follow_thought_strip != null and _follow_thought_strip.visible:
 			_layout_follow_thought_strip()
-		_pump_notification_toast_queue()
-	)
+		_pump_notification_toast_queue())
+	if _follow_thought_strip != null and _follow_thought_strip.visible:
+		_layout_follow_thought_strip()
 
 
 func _collect_story_notifications() -> void:
@@ -8618,7 +8655,7 @@ func _collect_water_alert_notifications() -> void:
 # Story popup — scrollable list of milestone events from sim.story_events.
 # Reuses the same chrome as the history popup but swaps the sparkline for
 # a RichTextLabel showing one event per line, newest first.
-var _story_popup: PanelContainer = null
+var _story_popup: ChipPopup = null
 var _story_list: RichTextLabel = null
 var _story_title: Label = null
 var _story_tab: String = "tank"
@@ -8637,20 +8674,12 @@ var _plant_hover_bar: ProgressBar = null
 func _ensure_story_popup() -> void:
 	if _story_popup != null and is_instance_valid(_story_popup):
 		return
-	_story_popup = PanelContainer.new()
-	_story_popup.visible = false
-	_story_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_story_popup.z_index = 220
+	_story_popup = ChipPopup.create(tr("Tank story"),
+		PanelTheme.HUD_BORDER, _close_chip_popups)
 	_story_popup.custom_minimum_size = Vector2(400, 248)
-	_story_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox())
-
-	var vbox := VBoxContainer.new()
+	var vbox: VBoxContainer = _story_popup.body
 	vbox.add_theme_constant_override("separation", 8)
-	_story_popup.add_child(vbox)
-
-	var header := PanelTheme.make_chip_popup_header("Tank story", _close_chip_popups)
-	vbox.add_child(header)
-	_story_title = header.get_child(0) as Label
+	_story_title = _story_popup.title_label
 
 	var tab_row := HBoxContainer.new()
 	tab_row.add_theme_constant_override("separation", 4)
@@ -8907,58 +8936,35 @@ func _update_plant_hover_meter() -> void:
 	_plant_hover_meter.visible = true
 
 
-var _water_popup: PanelContainer = null
+var _water_popup: ChipPopup = null
 var _water_detail: Label = null
-var _alert_popup: PanelContainer = null
+var _alert_popup: ChipPopup = null
 var _alert_detail: Label = null
 
 
 func _ensure_water_popup() -> void:
-	if _water_popup != null:
+	if _water_popup != null and is_instance_valid(_water_popup):
 		return
-	_water_popup = PanelContainer.new()
-	_water_popup.visible = false
-	_water_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_water_popup.z_index = 220
-	_water_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox(Color8(127, 183, 216)))
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 6)
-	_water_popup.add_child(vb)
-	vb.add_child(PanelTheme.make_chip_popup_header("Water chemistry", _close_chip_popups))
-	_water_detail = Label.new()
-	_water_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	PanelTheme.apply_font(_water_detail, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
-	vb.add_child(_water_detail)
+	_water_popup = ChipPopup.create(tr("Water chemistry"),
+		Color8(127, 183, 216), _close_chip_popups)
+	_water_detail = _water_popup.add_detail_label()
 	add_child(_water_popup)
 
 
 func _show_water_chemistry_popup(_chip_color: Color) -> void:
 	_ensure_water_popup()
-	var lines: PackedStringArray = OnboardingLegibility.water_detail_lines(_stats)
-	_water_detail.text = "\n".join(lines)
-	_water_popup.custom_minimum_size = _chip_popup_size_for_lines(lines.size(), 248.0)
-	_water_popup.size = _water_popup.custom_minimum_size
+	_water_popup.show_lines(OnboardingLegibility.water_detail_lines(_stats), 248.0)
 	_position_chip_popup(_water_popup, "water")
 	_water_popup.visible = true
 	_chip_popup_key = "water"
 
 
 func _ensure_alert_popup() -> void:
-	if _alert_popup != null:
+	if _alert_popup != null and is_instance_valid(_alert_popup):
 		return
-	_alert_popup = PanelContainer.new()
-	_alert_popup.visible = false
-	_alert_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_alert_popup.z_index = 220
-	_alert_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox(Color8(224, 112, 112)))
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 6)
-	_alert_popup.add_child(vb)
-	vb.add_child(PanelTheme.make_chip_popup_header("Tank alert", _close_chip_popups))
-	_alert_detail = Label.new()
-	_alert_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	PanelTheme.apply_font(_alert_detail, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
-	vb.add_child(_alert_detail)
+	_alert_popup = ChipPopup.create(tr("Tank alert"),
+		Color8(224, 112, 112), _close_chip_popups)
+	_alert_detail = _alert_popup.add_detail_label()
 	add_child(_alert_popup)
 
 
@@ -9020,7 +9026,7 @@ func _format_story_t(t: float, ev: Dictionary = {}) -> String:
 
 # History popup. Single instance — reused across taps. Opens centered
 # under the StatsBar with the sparkline + min / max / current labels.
-var _history_popup: PanelContainer = null
+var _history_popup: ChipPopup = null
 var _history_sparkline: Control = null
 var _history_title: Label = null
 var _history_stats: Label = null
@@ -9029,19 +9035,10 @@ var _history_stats: Label = null
 func _ensure_history_popup() -> void:
 	if _history_popup != null and is_instance_valid(_history_popup):
 		return
-	_history_popup = PanelContainer.new()
-	_history_popup.visible = false
-	_history_popup.mouse_filter = Control.MOUSE_FILTER_STOP
-	_history_popup.z_index = 220
-	_history_popup.add_theme_stylebox_override("panel", _chip_popup_stylebox())
-
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 6)
-	_history_popup.add_child(vbox)
-
-	var header := PanelTheme.make_chip_popup_header("Population", _close_chip_popups)
-	vbox.add_child(header)
-	_history_title = header.get_child(0) as Label
+	_history_popup = ChipPopup.create(tr("Population"),
+		PanelTheme.HUD_BORDER, _close_chip_popups)
+	var vbox: VBoxContainer = _history_popup.body
+	_history_title = _history_popup.title_label
 
 	_history_stats = Label.new()
 	_history_stats.add_theme_font_size_override("font_size", 10)
@@ -10315,7 +10312,7 @@ func _apply_immersive_mode() -> void:
 
 func _close_panels_for_immersive() -> void:
 	for panel in [
-		settings_panel, render_panel, sound_panel, fish_store_panel,
+		settings_panel, render_panel, sound_panel, adopt_panel,
 		library_panel, creature_creator_panel, _light_panel,
 	]:
 		if panel != null and panel.visible:
@@ -10457,6 +10454,24 @@ func _finish_save_thumbnail(img: Image, path: String) -> void:
 	var err: int = img.save_png(path)
 	if err != OK:
 		push_warning("[walstad_loom] thumbnail save failed at %s: err %d" % [path, err])
+
+
+# The save parsed fine but this build cannot open it — almost always a
+# newer-format save opened by an older build (BROAD_DIRECTIONS #4).
+# Deliberately NOT the corruption prompt: the file is intact, and offering
+# "start fresh" here would destroy a good tank that a game update would open.
+func _show_incompatible_save_prompt(_state_path: String, mig: Dictionary) -> void:
+	var dialog := AcceptDialog.new()
+	dialog.title = "Save format too new"
+	dialog.dialog_text = String(mig.get("reason", "This tank's save cannot be opened."))
+	if String(mig.get("refused", "")) == "future":
+		# No destructive option: the tank is recoverable by updating.
+		dialog.dialog_text += "\n\nThe tank has been left untouched."
+	dialog.ok_button_text = "Back to tanks"
+	add_child(dialog)
+	dialog.confirmed.connect(func(): _on_back_to_menu())
+	dialog.canceled.connect(func(): _on_back_to_menu())
+	dialog.popup_centered()
 
 
 # Show a modal prompt offering to start fresh or attempt the .bak file. Only
@@ -10701,16 +10716,16 @@ func _comms_quiet_active() -> bool:
 	return cfg != null and bool(cfg.sentience_voice_off)
 
 
+# Mark everything currently ON SCREEN as read.
+#
+# This used to re-implement the panel's filtering against main's own copy of
+# the filter state. Once the panel owned that state, main's copy went stale —
+# so this would have marked the wrong set read. Ask the panel what it is
+# actually showing instead of guessing.
 func _mark_visible_notifications_read() -> void:
-	for n in _notifications:
-		if not (n is Dictionary):
-			continue
-		var kind: String = String(n.get("kind", ""))
-		var sev: String = String(n.get("severity", ""))
-		if _notification_filter_kind != NOTIF_FILTER_ALL and kind != _notification_filter_kind:
-			continue
-		if _notification_filter_severity != NOTIF_FILTER_ALL and sev != _notification_filter_severity:
-			continue
+	if _notifications_panel == null or not is_instance_valid(_notifications_panel):
+		return
+	for n in _notifications_panel.visible_rows(_notifications):
 		n["read"] = true
 	_update_notification_badge()
 
@@ -11045,6 +11060,12 @@ func _dismiss_blocking_overlays() -> bool:
 	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
 		_toggle_cheat_sheet()
 		return true
+	if _vessel_picker != null and _vessel_picker.visible:
+		close_vessel_picker()
+		return true
+	if _mind_panel != null and _mind_panel.visible:
+		close_mind_panel()
+		return true
 	if _camera_views_panel != null and _camera_views_panel.visible:
 		_close_camera_views_panel()
 		return true
@@ -11094,11 +11115,11 @@ func _dismiss_blocking_overlays() -> bool:
 			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_CREATOR)
 		_sync_rail_toggles()
 		return true
-	if fish_store_panel != null and fish_store_panel.visible:
-		fish_store_panel.visible = false
-		fish_store_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if adopt_panel != null and adopt_panel.visible:
+		adopt_panel.visible = false
+		adopt_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		if _ui_panels != null:
-			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_STORE)
+			_ui_panels.notify_modal_closed(UiPanelManager.MODAL_ADOPT)
 		_sync_rail_toggles()
 		return true
 	if library_panel != null and library_panel.visible:
@@ -11383,3 +11404,251 @@ func _show_status_toast(message: String, reveal_path: String = "") -> void:
 			toast_panel.queue_free()
 		if _status_toast == toast_panel:
 			_status_toast = null)
+
+
+# ---------------------------------------------------------------------------
+# Direct light manipulation
+#
+# No modes. The handles fade in as the cursor approaches the lamp, you drag
+# them, and that is the whole interaction:
+#
+#   drag the LAMP ring  - move the lamp across its mount plane
+#   drag the AIM ring   - move where the cone lands on the substrate
+#   Esc / right-click   - cancel the drag and put it back
+#   release             - commit and save
+#
+# The previous version was double-click to enter a mode, drag, Escape to
+# leave - four steps to nudge a lamp, with nothing on screen to suggest any
+# of it was possible, and no way to undo a bad drag. Both handles are
+# visible and directly draggable because the rig stores a PAIR: a lamp that
+# always points at the same spot however you clamp it is a gimbal, and an
+# aim with no lamp position cannot say "clipped to the back-right corner".
+# ---------------------------------------------------------------------------
+
+var _light_gizmo: LightGizmo = null
+var _light_hover_kind: int = LightHandle.NONE
+var _light_drag_kind: int = LightHandle.NONE
+var _light_drag_before: Dictionary = {}
+var _light_cursor_set: bool = false
+
+
+func _light_cfg() -> Node:
+	return get_node_or_null("/root/TankConfig")
+
+
+func _ensure_light_gizmo() -> LightGizmo:
+	if _light_gizmo != null and is_instance_valid(_light_gizmo):
+		return _light_gizmo
+	_light_gizmo = LightGizmo.new()
+	_light_gizmo.name = "LightGizmo"
+	# Above Display, below the panels: it annotates the tank, it is not
+	# chrome that should sit over an open settings panel.
+	if display != null and display.get_parent() != null:
+		display.get_parent().add_child(_light_gizmo)
+		display.get_parent().move_child(
+			_light_gizmo, display.get_index() + 1)
+	else:
+		add_child(_light_gizmo)
+	return _light_gizmo
+
+
+func _viewport_to_window(sv: Vector2) -> Vector2:
+	if display == null or sub_viewport == null \
+			or sub_viewport.size.x <= 0 or sub_viewport.size.y <= 0:
+		return sv
+	var rect: Rect2 = display.get_global_rect()
+	return rect.position + Vector2(
+		sv.x / float(sub_viewport.size.x) * rect.size.x,
+		sv.y / float(sub_viewport.size.y) * rect.size.y)
+
+
+func _light_world_to_window(p: Vector3) -> Vector2:
+	if camera == null or p == Vector3.INF or camera.is_position_behind(p):
+		return Vector2.INF
+	return _viewport_to_window(camera.unproject_position(p))
+
+
+func _light_lamp_window() -> Vector2:
+	if world == null or not world.has_method("has_movable_light") \
+			or not world.has_movable_light():
+		return Vector2.INF
+	return _light_world_to_window(world.light_fixture_head_world())
+
+
+func _light_aim_window() -> Vector2:
+	if world == null or not world.has_method("light_aim_world"):
+		return Vector2.INF
+	return _light_world_to_window(world.light_aim_world())
+
+
+# Gizmo visibility + hover, refreshed from mouse motion.
+func _refresh_light_gizmo(window_pos: Vector2) -> void:
+	var lamp: Vector2 = _light_lamp_window()
+	if lamp == Vector2.INF:
+		if _light_gizmo != null and is_instance_valid(_light_gizmo):
+			_light_gizmo.refresh(Vector2.INF, Vector2.INF, 0.0,
+				LightHandle.NONE, LightHandle.NONE)
+		_set_light_hover(LightHandle.NONE)
+		return
+	var aim: Vector2 = _light_aim_window()
+	var reveal: float = LightHandle.reveal(window_pos, lamp)
+	var kind: int = LightHandle.NONE
+	if _light_drag_kind != LightHandle.NONE:
+		kind = _light_drag_kind
+		reveal = 1.0
+	elif reveal > 0.05:
+		kind = LightHandle.pick(window_pos, lamp, aim,
+			LightHandle.grab_radius(_is_touch_active()))
+	_set_light_hover(kind)
+	_ensure_light_gizmo().refresh(
+		lamp, aim, reveal, kind, _light_drag_kind)
+
+
+func _set_light_hover(kind: int) -> void:
+	if kind == _light_hover_kind:
+		return
+	_light_hover_kind = kind
+	# Only the lamp itself glows - the aim ring is a target on the gravel,
+	# not a light, and lighting it up would be a lie about what it is.
+	if world != null and world.has_method("set_light_highlight"):
+		world.set_light_highlight(kind == LightHandle.LAMP
+			or _light_drag_kind == LightHandle.LAMP)
+	var want_cursor: bool = kind != LightHandle.NONE
+	if want_cursor != _light_cursor_set:
+		_light_cursor_set = want_cursor
+		Input.set_default_cursor_shape(
+			Input.CURSOR_POINTING_HAND if want_cursor else Input.CURSOR_ARROW)
+
+
+# Returns true when the event was consumed.
+func _handle_light_handle_input(event: InputEvent) -> bool:
+	if world == null or camera == null:
+		return false
+	if event is InputEventMouseMotion:
+		var mm: InputEventMouseMotion = event as InputEventMouseMotion
+		_refresh_light_gizmo(mm.position)
+		if _light_drag_kind != LightHandle.NONE:
+			_light_drag_to(mm.position)
+			return true
+		# Hovering must never swallow motion - the camera still needs it.
+		return false
+	if event is InputEventMouseButton:
+		var mb: InputEventMouseButton = event as InputEventMouseButton
+		if _light_drag_kind != LightHandle.NONE:
+			# Right-click aborts mid-drag, the same as Escape.
+			if mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
+				_cancel_light_drag()
+				return true
+			if not mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+				_end_light_drag()
+				return true
+			return true
+		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			var lamp: Vector2 = _light_lamp_window()
+			if lamp == Vector2.INF:
+				return false
+			var kind: int = LightHandle.pick(
+				mb.position, lamp, _light_aim_window(),
+				LightHandle.grab_radius(_is_touch_active()))
+			if kind == LightHandle.NONE:
+				return false
+			_begin_light_drag(kind, mb.position)
+			return true
+	return false
+
+
+func _begin_light_drag(kind: int, window_pos: Vector2) -> void:
+	var cfg: Node = _light_cfg()
+	if cfg == null:
+		return
+	# Grabbing implies an aim: without one the rig falls back to the
+	# fixture's baked rake, and moving the lamp would not move the light.
+	if not LightingRig.has_aim(float(cfg.spot_aim_x), float(cfg.spot_aim_z)):
+		cfg.spot_aim_x = 0.0
+		cfg.spot_aim_z = 0.0
+		if world.has_method("set_light_aim"):
+			world.set_light_aim(0.0, 0.0)
+	_light_drag_kind = kind
+	_light_drag_before = LightHandle.snapshot(
+		float(cfg.spot_offset_x), float(cfg.spot_offset_z),
+		float(cfg.spot_aim_x), float(cfg.spot_aim_z))
+	_light_drag_to(window_pos)
+	_refresh_light_gizmo(window_pos)
+
+
+func _end_light_drag() -> void:
+	if _light_drag_kind == LightHandle.NONE:
+		return
+	_light_drag_kind = LightHandle.NONE
+	var cfg: Node = _light_cfg()
+	if cfg != null and LightHandle.snapshot_changed(
+			_light_drag_before, float(cfg.spot_offset_x),
+			float(cfg.spot_offset_z), float(cfg.spot_aim_x),
+			float(cfg.spot_aim_z)):
+		_persist_light_placement()
+	_light_drag_before = {}
+
+
+func _cancel_light_drag() -> void:
+	if _light_drag_kind == LightHandle.NONE:
+		return
+	var cfg: Node = _light_cfg()
+	if cfg != null and not _light_drag_before.is_empty():
+		var b: Dictionary = _light_drag_before
+		cfg.spot_offset_x = float(b.get("offset_x", 0.0))
+		cfg.spot_offset_z = float(b.get("offset_z", 0.0))
+		if world.has_method("set_light_aim"):
+			world.set_light_aim(float(b.get("aim_x", 0.0)),
+				float(b.get("aim_z", 0.0)))
+		if world.has_method("set_light_head_offset"):
+			world.set_light_head_offset(
+				float(cfg.spot_offset_x), float(cfg.spot_offset_z))
+	_light_drag_kind = LightHandle.NONE
+	_light_drag_before = {}
+
+
+func _light_drag_to(window_pos: Vector2) -> void:
+	if world == null or camera == null or _light_drag_kind == LightHandle.NONE:
+		return
+	var sv: Vector2 = _window_mouse_to_viewport(window_pos)
+	var origin: Vector3 = camera.project_ray_origin(sv)
+	var dir: Vector3 = camera.project_ray_normal(sv).normalized()
+	var hw: float = float(world.get("TANK_HALF_W"))
+	var hd: float = float(world.get("TANK_HALF_D"))
+	var cfg: Node = _light_cfg()
+	if cfg == null:
+		return
+	if _light_drag_kind == LightHandle.LAMP:
+		# The lamp moves across the plane of its own mount, not the water,
+		# so it tracks the cursor at the height it actually sits at.
+		var plane_y: float = world.light_rim_plane_y() \
+			if world.has_method("light_rim_plane_y") else float(world.get("TANK_HEIGHT"))
+		var hit: Vector3 = LightHandle.ray_plane_xz(origin, dir, plane_y)
+		if hit == Vector3.INF:
+			return
+		var off: Vector2 = LightHandle.offsets_from_world(hit, hw, hd)
+		cfg.spot_offset_x = off.x
+		cfg.spot_offset_z = off.y
+		if world.has_method("set_light_head_offset"):
+			world.set_light_head_offset(off.x, off.y)
+	else:
+		var sub_y: float = float(world.get("SUBSTRATE_DEPTH"))
+		var hit2: Vector3 = LightHandle.ray_plane_xz(origin, dir, sub_y)
+		if hit2 == Vector3.INF:
+			return
+		var aim: Vector2 = LightHandle.aim_from_world(hit2, hw, hd)
+		if world.has_method("set_light_aim"):
+			world.set_light_aim(aim.x, aim.y)
+
+
+func _persist_light_placement() -> void:
+	var cfg: Node = _light_cfg()
+	if cfg == null:
+		return
+	if cfg.has_method("request_save_to_disk"):
+		cfg.request_save_to_disk()
+	var lg: Node = get_node_or_null("/root/AppLog")
+	if lg != null and lg.has_method("info"):
+		lg.info("light", LightHandle.describe(
+			float(cfg.spot_offset_x), float(cfg.spot_offset_z),
+			float(cfg.spot_aim_x), float(cfg.spot_aim_z)))

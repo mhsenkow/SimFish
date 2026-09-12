@@ -21,20 +21,20 @@ func _initialize() -> void:
 		var frag: PlantFragment = sim.plant_fragments.back()
 		sim._on_plant_fragment_finished(frag)
 	var stats: Dictionary = sim.plant_fragment_pool_stats()
-	_assert(failed, bool(stats.enabled), "measured churn enables fragment pool")
-	_assert(failed, int(stats.finishes) == SimDriver.PLANT_FRAGMENT_POOL_CHURN_GATE,
+	TestSupport.check(failed, bool(stats.enabled), "measured churn enables fragment pool")
+	TestSupport.check(failed, int(stats.finishes) == SimDriver.PLANT_FRAGMENT_POOL_CHURN_GATE,
 		"finish instrumentation reaches gate")
-	_assert(failed, int(stats.pooled) == 1,
+	TestSupport.check(failed, int(stats.pooled) == 1,
 		"only post-gate compatible fragment is retained")
 	var pooled: PlantFragment = sim._plant_fragment_pool.back()
-	_assert(failed, pooled.genome.is_empty() and pooled.ramp_override.is_empty()
+	TestSupport.check(failed, pooled.genome.is_empty() and pooled.ramp_override.is_empty()
 		and pooled.biomass_units == 2 and pooled._age == 0.0
 		and pooled._velocity == Vector3.ZERO and not pooled.visible,
 		"pooled fragment resets every mutable field")
 
 	var allocations_before: int = int(stats.allocations)
 	sim.spawn_plant_fragment(Vector3.ZERO, {}, [], 2, Vector3.ZERO)
-	_assert(failed, int(sim.plant_fragment_pool_stats().allocations) == allocations_before,
+	TestSupport.check(failed, int(sim.plant_fragment_pool_stats().allocations) == allocations_before,
 		"enabled pool reuses without allocation")
 	var reused: PlantFragment = sim.plant_fragments.back()
 	sim._on_plant_fragment_finished(reused)
@@ -43,22 +43,9 @@ func _initialize() -> void:
 		var frag := PlantFragment.new()
 		fragment_root.add_child(frag)
 		sim._on_plant_fragment_finished(frag)
-	_assert(failed, sim._plant_fragment_pool.size() == SimDriver.PLANT_FRAGMENT_POOL_CAP,
+	TestSupport.check(failed, sim._plant_fragment_pool.size() == SimDriver.PLANT_FRAGMENT_POOL_CAP,
 		"pool is capped and oversized burst falls back to queue_free")
 
 	host.free()
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] plant_fragment_pool OK gate=%d cap=%d allocations=%d"
-			% [SimDriver.PLANT_FRAGMENT_POOL_CHURN_GATE,
-				SimDriver.PLANT_FRAGMENT_POOL_CAP, allocations_before])
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_fragment_pool", failed))

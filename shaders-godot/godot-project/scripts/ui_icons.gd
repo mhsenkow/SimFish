@@ -8,7 +8,7 @@ const RAIL: Dictionary = {
 	"portal": {"emoji": "◉", "text": "◉", "tip": "Follow portal (creature PiP)"},
 	"aquascape": {"emoji": "▣", "text": "▣", "tip": "Aquascape — sculpt substrate & hardscape"},
 	"creator": {"emoji": "✦", "text": "✦", "tip": "Creature creator"},
-	"store": {"emoji": "◇", "text": "◇", "tip": "Adopt fish (free)"},
+	"adopt": {"emoji": "◇", "text": "◇", "tip": "Adopt fish (free)"},
 	"library": {"emoji": "☰", "text": "☰", "tip": "Species library"},
 	"notifications": {"emoji": "◔", "text": "◔", "tip": "Notification center"},
 	"render": {"emoji": "▦", "text": "▦", "tip": "Rendering panel"},

@@ -27,10 +27,4 @@ func _initialize() -> void:
 		await process_frame
 		panel.queue_free()
 		await process_frame
-	if failed.is_empty():
-		print("[smoke_panels] all panel shells OK")
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke_panels] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_panels", failed))

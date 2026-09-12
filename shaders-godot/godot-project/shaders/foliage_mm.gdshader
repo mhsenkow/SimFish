@@ -6,6 +6,13 @@ render_mode unshaded, cull_back;
 uniform float sway_speed = 1.6;
 uniform float sway_phase_offset = 0.0;
 uniform float sway_amplitude = 0.08;
+// Distance sway fade — see foliage.gdshader. The tank renders into a
+// 512x288 buffer with pixel snapping, so full world-space sway on a plant
+// that covers a few pixels reads as those pixels jumping rather than
+// as motion. Far foliage settles instead.
+uniform float sway_fade_start = 6.0;
+uniform float sway_fade_end = 16.0;
+uniform float sway_fade_floor : hint_range(0.0, 1.0) = 0.12;
 uniform float flutter_speed = 3.6;
 uniform float flutter_amplitude = 0.03;
 uniform float tip_sway_mult : hint_range(1.0, 3.0) = 2.1;
@@ -41,6 +48,7 @@ uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -60,17 +68,22 @@ void vertex() {
 	// Gentle power curve: flexible mid-column, soft tip — avoids squared tip whip.
 	float height_factor = pow(height_norm, 1.35) * tip_sway_mult;
 
+	// Settle distant foliage so it does not pixel-jitter.
+	float view_dist = length((VIEW_MATRIX * vec4(world_pos, 1.0)).xyz);
+	float dist_fade = mix(1.0, sway_fade_floor,
+		smoothstep(sway_fade_start, sway_fade_end, view_dist));
+
 	float time_sway = TIME * sway_speed + sway_phase_offset + v_leaf_phase;
 	float phase = world_pos.x * 0.4 + world_pos.z * 0.3
 		+ sway_phase_offset * 0.37 + v_leaf_phase;
 	float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
-	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor;
+	float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * height_factor * dist_fade;
 	float gust_dist = distance(world_pos.xz, gust_wave.xz);
 	float gust_front = 1.0 - smoothstep(0.0, max(gust_wave.w * 0.22, 0.01),
 		abs(gust_dist - gust_age * max(gust_wave.w, 0.01) * 0.72));
 	float gust_fade = 1.0 - smoothstep(0.0, 2.2, gust_age);
 	vec2 gust_push = normalize(gust_direction.xz + vec2(0.0001)) * gust_front
-		* gust_fade * gust_strength * gust_response * height_factor * 0.11;
+		* gust_fade * gust_strength * gust_response * height_factor * 0.11 * dist_fade;
 	VERTEX.x += sway;
 	VERTEX.z += sway * 0.35;
 	VERTEX.xz += gust_push;
@@ -78,7 +91,7 @@ void vertex() {
 	float time_flutter = TIME * flutter_speed + sway_phase_offset * 1.15 + v_leaf_phase;
 	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0
 		+ sway_phase_offset * 0.61 + v_leaf_phase * 1.7;
-	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
+	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade;
 	VERTEX.y += flutter * height_factor * 0.3;
 }
 
@@ -147,5 +160,9 @@ void fragment() {
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
 	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+	// Shaped lamp. In an unshaded pipeline nothing responds to a light on
+	// its own, so the cone is evaluated here - this is what puts the beam
+	// ON the leaves instead of only in the water in front of them.
+	col = iaq_beam_light(v_world_pos, col);
 	ALBEDO = col;
 }

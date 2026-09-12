@@ -16,7 +16,7 @@ func _initialize() -> void:
 	var bids_b: Array = [
 		{"label": "food", "salience": 0.5, "coalition": ["threat"], "coal_mask": 4},
 	]
-	_assert(failed, GlobalWorkspace.bids_digest(bids_a) != GlobalWorkspace.bids_digest(bids_b),
+	TestSupport.check(failed, GlobalWorkspace.bids_digest(bids_a) != GlobalWorkspace.bids_digest(bids_b),
 		"bid digest folds in coal_mask")
 
 	var res_a: Dictionary = {"ignited": true, "contents": [
@@ -27,14 +27,14 @@ func _initialize() -> void:
 		{"label": "a", "salience": 0.6, "coal_mask": 1},
 		{"label": "b", "salience": 0.6, "coal_mask": 2},
 	]}
-	_assert(failed,
+	TestSupport.check(failed,
 		GlobalWorkspace.competition_digest(res_a) == GlobalWorkspace.competition_digest(res_b),
 		"competition digest is order-independent")
 
 	var slow: Array = [{"label": "food", "salience": 1.0, "coalition": ["food"], "coal_mask": 1}]
 	GlobalWorkspace._decay_cached_bids(slow, 0.1)
 	var sal_exp: float = float((slow[0] as Dictionary).get("salience", 0.0))
-	_assert(failed, absf(sal_exp - exp(-0.35 * 0.1)) < 0.02,
+	TestSupport.check(failed, absf(sal_exp - exp(-0.35 * 0.1)) < 0.02,
 		"slow-bid decay is exponential (got %.3f)" % sal_exp)
 
 	var parent := Node3D.new()
@@ -45,27 +45,16 @@ func _initialize() -> void:
 	f._episodic_retrieval_hint = {"kind": "food", "salience": 0.5}
 	f._episodic_retrieval_hint_ttl = 0.05
 	MindCacheRegistry.tick_retrieval_hint(f, 0.1)
-	_assert(failed, f._episodic_retrieval_hint.is_empty(), "retrieval hint TTL clears")
+	TestSupport.check(failed, f._episodic_retrieval_hint.is_empty(), "retrieval hint TTL clears")
 
 	f._ws_broadcast_digest = 42
 	MindCacheRegistry.reset_transient(f)
-	_assert(failed, int(f._ws_broadcast_digest) == -2, "cache registry clears broadcast digest")
+	TestSupport.check(failed, int(f._ws_broadcast_digest) == -2, "cache registry clears broadcast digest")
 
 	MindCacheStats.competition_misses = 0
 	GlobalWorkspace.resolve_competition(f, bids_a)
 	GlobalWorkspace.resolve_competition(f, bids_a)
-	_assert(failed, MindCacheStats.competition_hits >= 1, "competition cache hits on repeat")
+	TestSupport.check(failed, MindCacheStats.competition_hits >= 1, "competition cache hits on repeat")
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] refinement_ii_mind OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] refinement_ii_mind FAIL: %s" % msg)
-		quit(1)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)
+	quit(TestSupport.report("smoke_refinement_ii_mind", failed))

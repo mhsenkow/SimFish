@@ -45,16 +45,10 @@ static func decode_voxels(code: String) -> Dictionary:
 	return d
 
 
+# The blueprint library is a user-writable file under user://, so it is
+# untrusted input: bounded and type-checked via SafeJson (#6).
 static func load_library() -> Array:
-	if not FileAccess.file_exists(LIB_PATH):
-		return []
-	var f := FileAccess.open(LIB_PATH, FileAccess.READ)
-	if f == null:
-		return []
-	var parsed: Variant = JSON.parse_string(f.get_as_text())
-	if parsed is Array:
-		return parsed
-	return []
+	return SafeJson.read_array(LIB_PATH, SafeJson.DEFAULT_MAX_BYTES, "blueprint")
 
 
 static func save_library(entries: Array) -> void:

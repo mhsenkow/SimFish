@@ -8,11 +8,11 @@ func _initialize() -> void:
 	await process_frame
 	var failed: Array[String] = []
 
-	_assert(failed, TopdownMotion.is_overhead_from("top_down_ortho", 0.0),
+	TestSupport.check(failed, TopdownMotion.is_overhead_from("top_down_ortho", 0.0),
 			"ortho projection is overhead")
-	_assert(failed, not TopdownMotion.is_overhead_from("perspective", 0.5),
+	TestSupport.check(failed, not TopdownMotion.is_overhead_from("perspective", 0.5),
 			"low pitch side view is not overhead")
-	_assert(failed, TopdownMotion.is_overhead_from("perspective", 1.2),
+	TestSupport.check(failed, TopdownMotion.is_overhead_from("perspective", 1.2),
 			"steep pitch counts as overhead")
 
 	for vertical in TopdownMotion.VERTICAL_MOVES:
@@ -66,15 +66,4 @@ func _initialize() -> void:
 	if treble_r <= bass_r:
 		failed.append("treble EQ radius should exceed bass")
 
-	if failed.is_empty():
-		print("[smoke] topdown_motion OK")
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke] " + f)
-		quit(1)
-
-
-func _assert(failed: Array[String], ok: bool, msg: String) -> void:
-	if not ok:
-		failed.append(msg)
+	quit(TestSupport.report("smoke_topdown_motion", failed))

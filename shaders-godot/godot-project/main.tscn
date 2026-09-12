@@ -10,7 +10,7 @@
 [ext_resource type="Script" path="res://scripts/settings_panel.gd" id="7_settings"]
 [ext_resource type="Script" path="res://scripts/render_panel.gd" id="8_render"]
 [ext_resource type="Script" path="res://scripts/sound_panel.gd" id="8_sound"]
-[ext_resource type="Script" path="res://scripts/fish_store.gd" id="9_store"]
+[ext_resource type="Script" path="res://scripts/adopt_panel.gd" id="9_adopt"]
 [ext_resource type="Shader" path="res://shaders/circle_mask.gdshader" id="10_circle_mask"]
 [ext_resource type="Script" path="res://scripts/mobile_hud.gd" id="11_mobile_hud"]
 [ext_resource type="Script" path="res://scripts/library_panel.gd" id="12_library"]
@@ -326,7 +326,7 @@ theme_override_styles/hover = SubResource("SBF_button_hover")
 theme_override_styles/pressed = SubResource("SBF_button_pressed")
 theme_override_styles/focus = SubResource("SBE_button_flat")
 
-[node name="FishStoreToggle" type="Button" parent="RightRail/RightCluster/VBox"]
+[node name="AdoptToggle" type="Button" parent="RightRail/RightCluster/VBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(48, 48)
 tooltip_text = "New arrivals"
@@ -408,7 +408,7 @@ offset_right = 292.0
 offset_bottom = -48.0
 mouse_filter = 0
 
-[node name="FishStorePanel" type="PanelContainer" parent="."]
+[node name="AdoptPanel" type="PanelContainer" parent="."]
 anchor_left = 0.5
 anchor_top = 0.5
 anchor_right = 0.5
@@ -417,7 +417,7 @@ offset_left = -220.0
 offset_top = -240.0
 offset_right = 220.0
 offset_bottom = 240.0
-script = ExtResource("9_store")
+script = ExtResource("9_adopt")
 
 [node name="LibraryPanel" type="PanelContainer" parent="."]
 visible = false

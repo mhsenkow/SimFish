@@ -36,14 +36,14 @@ func _initialize() -> void:
 	MindBoidsBuffer.capture(all, 1)
 	MindBoidsCompute.run()
 	var pol_before: float = _polarization(school)
-	_assert(failed, pol_before > 0.85, "school starts aligned (%.2f)" % pol_before)
+	TestSupport.check(failed, pol_before > 0.85, "school starts aligned (%.2f)" % pol_before)
 
 	_MotionWave.inject_at(all, Vector3(2.5, 1.0, 0.0), 0.95, Vector3(-1.0, 0.0, 0.0))
 	var injected: int = 0
 	for f in school:
 		if f.motion_agitation > 0.35:
 			injected += 1
-	_assert(failed, injected >= 1, "startle injects local agitation")
+	TestSupport.check(failed, injected >= 1, "startle injects local agitation")
 
 	for step in 8:
 		MindBoidsBuffer.capture(all, 2 + step)
@@ -53,16 +53,10 @@ func _initialize() -> void:
 	for f in school:
 		if f.motion_agitation > 0.06:
 			hot += 1
-	_assert(failed, hot >= 3, "wave propagates through topo links (%d fish)" % hot)
+	TestSupport.check(failed, hot >= 3, "wave propagates through topo links (%d fish)" % hot)
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] motion_order OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] motion_order FAIL: %s" % msg)
-		quit(1)
+	quit(TestSupport.report("smoke_motion_order", failed))
 
 
 func _polarization(fish_arr: Array) -> float:
@@ -79,8 +73,3 @@ func _polarization(fish_arr: Array) -> float:
 	if n <= 0:
 		return 0.0
 	return sum.length() / float(n)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)

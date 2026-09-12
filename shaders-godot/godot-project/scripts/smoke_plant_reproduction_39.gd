@@ -15,26 +15,15 @@ func _init() -> void:
 				return Vector2(clampf(x, -0.6, 0.6), clampf(z, -0.6, 0.6)))
 		if settled:
 			break
-	_assert(failed, settled, "mote settles within bounded lifetime")
-	_assert(failed, state.position.x > 0.1, "flow changes final landing")
-	_assert(failed, absf(state.position.x) <= 0.601 and absf(state.position.z) <= 0.601,
+	TestSupport.check(failed, settled, "mote settles within bounded lifetime")
+	TestSupport.check(failed, state.position.x > 0.1, "flow changes final landing")
+	TestSupport.check(failed, absf(state.position.x) <= 0.601 and absf(state.position.z) <= 0.601,
 		"landing clamps inside tank")
-	_assert(failed, is_equal_approx(state.position.y, 0.1), "landing clamps to substrate")
+	TestSupport.check(failed, is_equal_approx(state.position.y, 0.1), "landing clamps to substrate")
 	var fallback := SeedMoteDynamics.make_state(Vector3(0, 0.5, 0), {}, {}, 2.0)
 	for _i in 30:
 		if SeedMoteDynamics.integrate(fallback, 0.1, Vector3.ZERO, 0.1, 3.0,
 				func(x: float, z: float) -> Vector2: return Vector2(x, z)):
 			break
-	_assert(failed, fallback.position.y <= 0.11, "zero-flow fallback settles")
-	if failed.is_empty():
-		print("[smoke_plant_reproduction_39] PASS")
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke_plant_reproduction_39] " + message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	TestSupport.check(failed, fallback.position.y <= 0.11, "zero-flow fallback settles")
+	quit(TestSupport.report("smoke_plant_reproduction_39", failed))

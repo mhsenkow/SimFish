@@ -20,19 +20,16 @@ func _initialize() -> void:
 	var light := LightStub.new()
 	plant._tick_leaf_light_dose(45.0, light)
 	light.free()
-	_assert(failed, handle.custom_data.b > 0.9, "bright mature leaf accumulates dose")
+	TestSupport.check(failed, handle.custom_data.b > 0.9, "bright mature leaf accumulates dose")
 	var saved := plant._leaf_light_doses_snapshot()
 	plant._leaf_states[0].light_dose = 0.0
 	plant._restore_leaf_light_doses(saved)
-	_assert(failed, float(plant._leaf_states[0].light_dose) > 0.9,
+	TestSupport.check(failed, float(plant._leaf_states[0].light_dose) > 0.9,
 		"bounded dose round-trips save data")
 	var source := FileAccess.get_file_as_string("res://shaders/foliage_mm.gdshader")
-	_assert(failed, source.contains("red_potential * v_light_dose"),
+	TestSupport.check(failed, source.contains("red_potential * v_light_dose"),
 		"shader combines dose with species red potential")
 	host.queue_free()
 	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_09_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
-
-func _assert(failed: Array[String], condition: bool, message: String) -> void:
-	if not condition: failed.append(message)

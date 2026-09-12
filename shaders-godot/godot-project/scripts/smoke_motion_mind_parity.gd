@@ -25,7 +25,7 @@ func _initialize() -> void:
 	f.heading = Vector3(1.0, 0.0, 0.0)
 	sim.register_fish(f)
 
-	_assert(failed, MindReplayParity.run_smoke(f, sim), "mind replay parity baseline")
+	TestSupport.check(failed, MindReplayParity.run_smoke(f, sim), "mind replay parity baseline")
 
 	var school: Array[Fish] = []
 	for i in 12:
@@ -42,19 +42,8 @@ func _initialize() -> void:
 	sim.register_fish(f)
 	MindBoidsBuffer.capture(school, 1)
 	MindBoidsCompute.run()
-	_assert(failed, MindReplayParity.run_smoke(f, sim),
+	TestSupport.check(failed, MindReplayParity.run_smoke(f, sim),
 		"mind replay parity after topo boids capture")
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] motion_mind_parity OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] motion_mind_parity FAIL: %s" % msg)
-		quit(1)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)
+	quit(TestSupport.report("smoke_motion_mind_parity", failed))

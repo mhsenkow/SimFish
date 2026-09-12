@@ -476,6 +476,52 @@ var light_size: float = 0.75
 var light_volumetric: bool = true
 # Show surface caustics scrolling across the substrate. On by default.
 var light_caustics: bool = true
+
+# How grown-in an established tank's plants are, as a fraction of their own
+# mature height (see scripts/plant_establish.gd). "Established" used to mean
+# established chemistry only - the plants still spawned at nursery height,
+# so a cycled tank opened with a mature filter and 3-voxel stubs. Fresh /
+# cycling tanks ignore this; there the small starts are the point.
+var plant_establish_scale: float = 0.72
+
+# ---- Aimable spot rig + room darkness (see scripts/lighting_rig.gd) ----
+#
+# These make "one clip-on lamp over a corner of a dark room" expressible as
+# a preset. Previously the fixture's cone angle, falloff, position and aim
+# were literals inside world.gd's fixture builder, so a lighting preset
+# could change the light's colour and brightness but never its *shape*.
+#
+# room_darkness is a separate axis from global_intensity on purpose:
+# intensity dims the sun, darkness crushes the whole room - sun, ambient
+# and background - while leaving the tank fixture alone. That is what makes
+# the tank the only lit object in frame rather than the brightest part of a
+# dim scene. 0 = untouched, 1 = the room goes black.
+var room_darkness: float = 0.0
+# Cone width and edge hardness. LightingRig.INHERIT (-1) keeps whatever the
+# chosen fixture type picks for itself, so these are additive - existing
+# tanks are unaffected until a preset opts in.
+var spot_angle_deg: float = -1.0
+var spot_attenuation: float = -1.0
+# Lamp head position as a fraction of the tank's own half-extent (-1..1), so
+# one preset frames the same way on a nano cube and on a six-footer.
+var spot_offset_x: float = 0.0
+var spot_offset_z: float = 0.0
+# Aim. tilt walks the beam back from straight-down toward the horizon; yaw
+# swings it around. A raking beam is what produces lit and unlit halves.
+var spot_tilt_deg: float = 0.0
+var spot_yaw_deg: float = 0.0
+# Where the cone lands, as a fraction of the tank's own half-extent
+# (-1..1, 0 = middle of the substrate). When set, this REPLACES tilt/yaw:
+# a lamp is pointed at the tank rather than rotated by Euler offsets, which
+# cannot know where the lamp ended up. LightingRig.AIM_OFF = not set.
+var spot_aim_x: float = -999.0
+var spot_aim_z: float = -999.0
+# Shadow casting is off for every stock fixture (it is not free). Without it
+# a hard cone still lights everything it reaches, so there is no contrast
+# between what the beam hits and what it does not.
+var spot_shadows: bool = false
+# Visible shaft multiplier. 0 hides the beam even when light_volumetric is on.
+var beam_strength: float = 1.0
 # Night-only player toggle — when false the aquarium fixture is off but the
 # sim day/night cycle keeps running.
 var tank_lights_on: bool = true
@@ -767,6 +813,26 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 	# that lives on a bathroom counter under a clip-on gooseneck LED. Cool
 	# speckled stone, pale wall, no window: the tank is the only real light
 	# source in frame, which is exactly why those photos read so well.
+	# The room in the reference photo: a dark green wall, a black window with
+	# night behind it, and no room lighting at all. Pairs with the clip-spot
+	# rig - the tank is the only light source in the frame.
+	"night_window": {
+		"label": "Night window",
+		"description": "Unlit room, dark green wall, night behind the glass. Pairs with Clip spot (dark room) - the tank is the only thing lit.",
+		"suggested_lighting": "clip_spot_night",
+		"desk_color": [26, 26, 28],
+		"wall_color": [30, 44, 30],
+		"accent_color": [96, 132, 88],
+		"light_color": [255, 224, 150],
+		"include_lamp": false,
+		"include_books": false,
+		"include_plant": false,
+		"include_window": true,
+		"include_lava_lamp": false,
+		"include_clock": false,
+		"room_warmth": 0.86,
+		"night_depth_boost": 1.45,
+	},
 	"counter_mirror": {
 		"label": "Bathroom counter",
 		"description": "Speckled stone counter + pale wall + a clip-on gooseneck LED. No window — the tank is the brightest thing in the room.",
@@ -793,99 +859,177 @@ func current_environment_profile() -> Dictionary:
 
 
 # ---- Vessel presets (shape + dimensions; independent of stocking biotope) ----
+# Vessel presets. GEOMETRY IS DERIVED FROM REAL AQUARIUM DIMENSIONS — see
+# scripts/tank_spec.gd, which holds the true inches and nominal volumes, and
+# smoke_tank_spec.gd, which fails if these two ever disagree.
+#
+# Hand-authored numbers used to drift from the labels: every box was exactly
+# 1 : 0.50 deep regardless of the tank it claimed to be (a real 75 is 0.375),
+# and neither "cube" was a cube (1 : 1 : 0.56). Generated from the catalogue,
+# the proportions are right by construction.
 const VESSEL_PRESETS: Dictionary = {
 	"custom": {
 		"label": "Custom",
 		"description": "Manual shape and size sliders. Pick a preset below to start from a known vessel.",
 	},
-	"standard_75g": {
-		"label": "75 gal rectangle",
-		"description": "Classic wide rectangle — default community footprint (16×8×14 in game units).",
+	"nano_5g": {
+		"label": "5 gallon nano",
+		"description": "Desk-scale starter. Shrimp, a betta, or a tiny nano school.",
 		"tank_shape": "box",
-		"tank_half_w": 8.0,
-		"tank_half_d": 4.0,
-		"tank_height": 7.0,
-		"water_surface_fraction": 0.93,
-		"substrate_depth_fraction": 0.23,
+		"tank_half_w": 3.5002,
+		"tank_half_d": 2.0776,
+		"tank_height": 4.9150,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.26,
 	},
-	"rimless_60p": {
-		"label": "60P rimless",
-		"description": "Taller, narrower rectangle — planted-tank proportions.",
+	"standard_10g": {
+		"label": "10 gallon",
+		"description": "The classic first tank. Cheap, forgiving, everywhere.",
 		"tank_shape": "box",
-		"tank_half_w": 7.0,
-		"tank_half_d": 3.5,
-		"tank_height": 8.0,
-		"water_surface_fraction": 0.94,
-		"substrate_depth_fraction": 0.20,
-	},
-	"nano_cube": {
-		"label": "Nano cube",
-		"description": "Small equal-sided cube — desk-scale aquascape.",
-		"tank_shape": "cube",
-		"tank_half_w": 4.0,
-		"tank_half_d": 4.0,
-		"tank_height": 4.5,
+		"tank_half_w": 4.1401,
+		"tank_half_d": 2.4575,
+		"tank_height": 5.6377,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.22,
 	},
-	"reef_cube": {
-		"label": "Reef cube",
-		"description": "Rimless saltwater cube — equal footprint, moderate height.",
+	"long_20g": {
+		"label": "20 gallon long",
+		"description": "Low and wide — more floor for corys and carpeting than a 29.",
+		"tank_shape": "box",
+		"tank_half_w": 5.6172,
+		"tank_half_d": 2.8189,
+		"tank_height": 5.6377,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.22,
+	},
+	"standard_29g": {
+		"label": "29 gallon",
+		"description": "Tall community tank. Room for stem plants to reach the light.",
+		"tank_shape": "box",
+		"tank_half_w": 5.6172,
+		"tank_half_d": 2.8189,
+		"tank_height": 7.6491,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
+	},
+	"breeder_40g": {
+		"label": "40 gallon breeder",
+		"description": "Deep front-to-back. The aquascaper's favourite footprint.",
+		"tank_shape": "box",
+		"tank_half_w": 6.4433,
+		"tank_half_d": 3.8246,
+		"tank_height": 7.0004,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.22,
+	},
+	"standard_55g": {
+		"label": "55 gallon",
+		"description": "Long and narrow — a corridor for schooling fish.",
+		"tank_shape": "box",
+		"tank_half_w": 8.0006,
+		"tank_half_d": 2.9939,
+		"tank_height": 8.5899,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
+	},
+	"standard_75g": {
+		"label": "75 gallon",
+		"description": "Wide community centrepiece. Stable, forgiving, heavy.",
+		"tank_shape": "box",
+		"tank_half_w": 8.0006,
+		"tank_half_d": 3.8246,
+		"tank_height": 8.5899,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
+	},
+	"standard_120g": {
+		"label": "120 gallon",
+		"description": "Deep enough to aquascape in layers. A serious piece of furniture.",
+		"tank_shape": "box",
+		"tank_half_w": 8.0006,
+		"tank_half_d": 4.7490,
+		"tank_height": 9.4979,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
+	},
+	"rimless_60p": {
+		"label": "60P rimless",
+		"description": "60 × 30 × 36 cm. The standard planted-tank canvas.",
+		"tank_shape": "box",
+		"tank_half_w": 4.6893,
+		"tank_half_d": 2.7834,
+		"tank_height": 6.3991,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.22,
+	},
+	"cube_30c": {
+		"label": "30C cube",
+		"description": "A true 30 cm cube. Iwagumi in miniature.",
 		"tank_shape": "cube",
-		"tank_half_w": 6.5,
-		"tank_half_d": 6.5,
-		"tank_height": 7.0,
-		"water_surface_fraction": 0.95,
-		"substrate_depth_fraction": 0.14,
+		"tank_half_w": 2.7834,
+		"tank_half_d": 2.7834,
+		"tank_height": 5.5669,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.26,
+	},
+	"reef_cube_20": {
+		"label": "Reef cube",
+		"description": "Rimless saltwater cube. Viewable from three sides.",
+		"tank_shape": "cube",
+		"tank_half_w": 4.1401,
+		"tank_half_d": 4.1401,
+		"tank_height": 7.6491,
+		"water_surface_fraction": 0.94,
+		"substrate_depth_fraction": 0.20,
 	},
 	"column_blackwater": {
-		"label": "Blackwater column",
-		"description": "Tall narrow box — vertical driftwood and stained water read best here.",
+		"label": "Column",
+		"description": "Tall and narrow. Tannins, driftwood, dim light.",
 		"tank_shape": "box",
-		"tank_half_w": 6.0,
-		"tank_half_d": 3.0,
-		"tank_height": 9.0,
+		"tank_half_w": 4.7490,
+		"tank_half_d": 2.8189,
+		"tank_height": 9.4979,
 		"water_surface_fraction": 0.94,
-		"substrate_depth_fraction": 0.18,
+		"substrate_depth_fraction": 0.20,
 	},
 	"breeder_shallow": {
-		"label": "Breeder tray",
-		"description": "Wide, shallow rectangle — carpet plants and surface floaters dominate.",
+		"label": "Shallow breeder",
+		"description": "Riparium proportions — wide surface, low water.",
 		"tank_shape": "box",
-		"tank_half_w": 8.0,
-		"tank_half_d": 4.0,
-		"tank_height": 4.5,
-		"water_surface_fraction": 0.90,
-		"substrate_depth_fraction": 0.28,
+		"tank_half_w": 6.4433,
+		"tank_half_d": 3.8246,
+		"tank_height": 4.9150,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.26,
 	},
 	"round_column": {
 		"label": "Round column",
-		"description": "Tall cylinder — portrait round tank.",
+		"description": "Cylindrical tower. Unusual sightlines, awkward to scape.",
 		"tank_shape": "cylinder",
-		"tank_half_w": 3.5,
-		"tank_half_d": 3.5,
-		"tank_height": 10.0,
-		"water_surface_fraction": 0.93,
+		"tank_half_w": 3.8246,
+		"tank_half_d": 3.8246,
+		"tank_height": 11.2345,
+		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
+	},
+	"hex_pan": {
+		"label": "Hex",
+		"description": "Six-sided shallow pan. Viewed from above as much as the side.",
+		"tank_shape": "hex",
+		"tank_half_w": 4.7490,
+		"tank_half_d": 4.7490,
+		"tank_height": 5.6377,
+		"water_surface_fraction": 0.92,
+		"substrate_depth_fraction": 0.22,
 	},
 	"fishbowl": {
 		"label": "Fishbowl",
-		"description": "Small dome bowl — compact hemisphere footprint.",
+		"description": "Charming and cruel. Almost no surface area for gas exchange.",
 		"tank_shape": "sphere",
-		"tank_half_w": 3.0,
-		"tank_half_d": 3.0,
-		"tank_height": 4.5,
-		"water_surface_fraction": 0.88,
-		"substrate_depth_fraction": 0.25,
-	},
-	"hex_pan": {
-		"label": "Hex pan",
-		"description": "Wide shallow hex — dish-style planted layout.",
-		"tank_shape": "hex",
-		"tank_half_w": 5.0,
-		"tank_half_d": 5.0,
-		"tank_height": 3.5,
-		"water_surface_fraction": 0.90,
+		"tank_half_w": 2.8189,
+		"tank_half_d": 2.8189,
+		"tank_height": 4.9150,
+		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.26,
 	},
 }
@@ -1144,11 +1288,19 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Dark slate body with a brilliant scarlet fan tail. Loose mid-water shoals.",
 		"genome": {
 			"species": "guppy",
-			# Matches the user's photo: charcoal-grey body, brilliant red
-			# flowing tail (a separate tail_color zone, see fish.gd).
-			"base_color": Color8(45, 50, 60),
+			# Fancy guppies are the most colour-variable fish anyone keeps -
+			# a real colony is orange next to black next to drab olive next
+			# to snakeskin, all at once. mixed_morphs + the "guppy" palette
+			# rolls a fresh colour per individual instead of rendering
+			# thirty identical charcoal fish. It is colour-only: the body
+			# plan, fan tail and finnage below are left alone (see
+			# FishMorphs.restyles_body).
+			"mixed_morphs": true,
+			"morph_palette": "guppy",
+			# Kept as the fallback for anything that skips the morph roll.
+			"base_color": Color8(72, 68, 54),
 			"accent_color": Color8(255, 240, 90),
-			"tail_color": Color8(240, 55, 30),
+			"tail_color": Color8(255, 140, 40),
 			"dimorphic": true,                   # males flashy, females silver
 			"adult_voxel_scale": 0.11,
 			"size_potential": 1.10,
@@ -1805,6 +1957,73 @@ const LIGHTING_PRESETS: Dictionary = {
 		"sunset_drama": 0.55,
 		"pp_vignette_strength": 0.26, "pp_bloom_strength": 0.60,
 	},
+	# ---- Spot rig looks (scripts/lighting_rig.gd) ----
+	# One lamp, a hard cone, and a room that goes black around it. These are
+	# the presets the aimable-spot work exists for: everything above can only
+	# change the light's colour and brightness, these change its SHAPE.
+	"clip_spot_night": {
+		"label": "Clip spot (dark room)",
+		# The room is essentially off. What little global light remains is
+		# window spill, and room_darkness crushes the rest to nothing.
+		"global_intensity": 0.06, "global_warmth": 0.94,
+		"room_darkness": 0.97,
+		"ambient_floor": 0.0,
+		# A single hot, very warm LED head - the bulb itself blows out.
+		"tank_fixture_intensity": 1.15,
+		"tank_fixture_color": Color(1.0, 0.84, 0.42),
+		"tank_lights_on": true,
+		"light_fixture": "gooseneck",
+		"light_caustics": true,
+		"light_volumetric": true,
+		# Clamped over one corner and raking down and across, so the far
+		# side of the tank falls out of the cone entirely.
+		"spot_angle_deg": 30.0,
+		"spot_attenuation": 2.6,
+		"spot_offset_x": 0.55,
+		"spot_offset_z": -0.15,
+		# Aimed, not rotated: the lamp is clamped over the back-right corner
+		# and pointed at a spot just left of centre on the substrate, so the
+		# cone rakes down ACROSS the tank. Euler offsets could not express
+		# this - added to the gooseneck's baked rake they pointed the beam
+		# out through the back wall.
+		"spot_tilt_deg": 0.0,
+		"spot_yaw_deg": 0.0,
+		"spot_aim_x": -0.22,
+		"spot_aim_z": 0.30,
+		# Shadows are what make the unlit half actually dark. Without them a
+		# hard cone still lights everything it reaches and the drama is gone.
+		"spot_shadows": true,
+		"beam_strength": 1.65,
+		"sunset_drama": 0.90,
+		"pp_vignette_strength": 0.55, "pp_vignette_falloff": 1.9,
+		"pp_bloom_threshold": 0.44, "pp_bloom_strength": 0.96,
+	},
+	"pendant_pool": {
+		"label": "Pendant pool (dark room)",
+		# Same darkness, different shape: a centred pendant dropping one
+		# tight circular pool straight down, no rake. Proves the rig is a
+		# system and not one hand-placed light.
+		"global_intensity": 0.12, "global_warmth": 0.60,
+		"room_darkness": 0.86,
+		"ambient_floor": 0.0,
+		"tank_fixture_intensity": 0.92,
+		"tank_fixture_color": Color(1.0, 0.95, 0.86),
+		"tank_lights_on": true,
+		"light_fixture": "spotlight",
+		"light_caustics": true,
+		"light_volumetric": true,
+		"spot_angle_deg": 24.0,
+		"spot_attenuation": 3.2,
+		"spot_offset_x": 0.0,
+		"spot_offset_z": 0.0,
+		"spot_tilt_deg": 0.0,
+		"spot_yaw_deg": 0.0,
+		"spot_shadows": true,
+		"beam_strength": 1.45,
+		"sunset_drama": 0.80,
+		"pp_vignette_strength": 0.50, "pp_vignette_falloff": 1.8,
+		"pp_bloom_threshold": 0.58, "pp_bloom_strength": 0.82,
+	},
 	# REAL_TANK_FIDELITY #164 — backlighting as a supported look (Tank B/C).
 	"backlit_jungle": {
 		"label": "Backlit jungle",
@@ -1821,6 +2040,31 @@ const LIGHTING_PRESETS: Dictionary = {
 }
 
 
+# Keys a lighting preset may set that must be RESET when a preset that does
+# not mention them is applied. Without this, switching from a spot-rig look
+# back to "Window daylight" leaves room_darkness at 0.92 and the shaped cone
+# still in place, so the daylight preset renders as a dark room - the preset
+# list stops being a set of looks and becomes order-dependent.
+const LIGHTING_RIG_DEFAULTS: Dictionary = {
+	"room_darkness": 0.0,
+	"spot_angle_deg": -1.0,
+	"spot_attenuation": -1.0,
+	"spot_offset_x": 0.0,
+	"spot_offset_z": 0.0,
+	"spot_tilt_deg": 0.0,
+	"spot_yaw_deg": 0.0,
+	"spot_aim_x": -999.0,
+	"spot_aim_z": -999.0,
+	"spot_shadows": false,
+	"beam_strength": 1.0,
+	"backlight_enabled": false,
+	"backlight_intensity": 0.0,
+	# NB moonlight_enabled is deliberately absent: its declared default is
+	# `true`, so listing it here would either be a no-op or silently turn
+	# moonlight off for every preset that never mentioned it.
+}
+
+
 func apply_lighting_preset(slug: String) -> void:
 	begin_settings_batch()
 	lighting_preset = slug
@@ -1828,6 +2072,11 @@ func apply_lighting_preset(slug: String) -> void:
 		end_settings_batch()
 		return
 	var preset: Dictionary = LIGHTING_PRESETS[slug]
+	# Reset first, so a preset is a complete description of a look rather
+	# than a diff against whatever was selected before it.
+	for key in LIGHTING_RIG_DEFAULTS.keys():
+		if not preset.has(key):
+			set(key, LIGHTING_RIG_DEFAULTS[key])
 	for key in preset.keys():
 		if key == "label":
 			continue
@@ -2228,6 +2477,35 @@ const TANK_PRESETS: Dictionary = {
 		],
 		"description": "Wall-to-wall vallisneria over a gravel-capped soil bed, with a ramshorn colony and a drift of empty shells collecting in the low spot at the front. Driftwood buried in the blades. Hair algae on the older leaves. Backlit warm.",
 	},
+	"night_lamp": {
+		"label": "Night lamp (one beam)",
+		# Sparse on purpose. The subject is the light, not the livestock:
+		# a handful of fish crossing the beam reads far better than a crowd,
+		# because anything outside the cone is invisible anyway.
+		# Guppy-dominant on purpose. Cardinal tetras (glassdart) are scarlet
+		# and neon blue, which under a warm amber beam read as magenta and
+		# fight the light. A livebearer colony in mixed morphs is what the
+		# reference tanks actually hold, and the drab olive ones are what
+		# make the tangerine ones read as bright.
+		"stocking": {"guppy": 16, "shrimp": 12},
+		"phenotype_spread": 1.0,
+		# Tall ribbon leaves running floor-to-surface are what the beam is
+		# for - they catch it edge-on and glow, and they throw the long
+		# vertical shadows that make the unlit side read as dark.
+		"plant_palette": {
+			"valli": 2.60, "crypt": 0.45, "red_stem": 0.0,
+			"carpet": 0.10, "moss": 0.85, "java_fern": 0.40,
+		},
+		"plant_layout": {
+			"mode": "ridge_strip",
+			"extras": {"spirals": 0, "branch_ferns": 1, "hydra": 0, "marimo": 1, "riccia": 2},
+		},
+		"hardscape_style": "twin_logs",
+		"terrain_relief": [
+			{"x": -0.15, "z": -0.50, "radius": 4, "mode": "raise"},
+		],
+		"description": "A dark room and one clip-on lamp over the back right corner. Tall vallisneria floor to surface, a few catappa leaves gone soft and amber on the gravel, and a hard warm cone raking down through it. Everything the beam misses is black.",
+	},
 	"counter_nano": {
 		"label": "Counter nano (floating garden)",
 		# Deliberately understocked. The interest is the surface: duckweed,
@@ -2320,6 +2598,13 @@ func current_aeration_profile() -> Dictionary:
 var substrate_type: String = "aquasoil"
 # Set by settings Apply so the next scene load rebuilds terrain from the
 # newly chosen substrate instead of restoring the old saved voxel grid.
+# Settings-screen verbosity (BROAD_DIRECTIONS #18): "simple" shows the 19
+# essentials, "advanced" adds the tuning surface, "expert" adds debug knobs.
+# See ConfigCuration.MODE_TIERS.
+var settings_mode: String = "simple"
+# UI language (BROAD_DIRECTIONS #14). "en" is the source language;
+# "en_XA" is the development pseudolocale. See scripts/localization.gd.
+var locale: String = "en"
 var rebuild_terrain_on_load: bool = false
 
 const SUBSTRATE_PROFILES: Dictionary = {
@@ -2535,6 +2820,18 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("light", "height", light_height)
 	cfg.set_value("light", "size", light_size)
 	cfg.set_value("light", "volumetric", light_volumetric)
+	cfg.set_value("plants", "establish_scale", plant_establish_scale)
+	cfg.set_value("light", "room_darkness", room_darkness)
+	cfg.set_value("light", "spot_angle_deg", spot_angle_deg)
+	cfg.set_value("light", "spot_attenuation", spot_attenuation)
+	cfg.set_value("light", "spot_offset_x", spot_offset_x)
+	cfg.set_value("light", "spot_offset_z", spot_offset_z)
+	cfg.set_value("light", "spot_tilt_deg", spot_tilt_deg)
+	cfg.set_value("light", "spot_yaw_deg", spot_yaw_deg)
+	cfg.set_value("light", "spot_aim_x", spot_aim_x)
+	cfg.set_value("light", "spot_aim_z", spot_aim_z)
+	cfg.set_value("light", "spot_shadows", spot_shadows)
+	cfg.set_value("light", "beam_strength", beam_strength)
 	cfg.set_value("light", "caustics", light_caustics)
 	cfg.set_value("light", "tank_on", tank_lights_on)
 	cfg.set_value("light", "heater_enabled", heater_enabled)
@@ -2692,6 +2989,10 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "room_dither_scale", room_dither_scale)
 	cfg.set_value("render", "reduced_motion", reduced_motion)
 	cfg.set_value("render", "ui_font_scale", ui_font_scale)
+	# BROAD_DIRECTIONS #14 / #18. Both were reachable from Settings but never
+	# written here, so they reset on every restart.
+	cfg.set_value("ui", "locale", locale)
+	cfg.set_value("ui", "settings_mode", settings_mode)
 	cfg.set_value("render", "shader_perf_tier", shader_perf_tier)
 	cfg.set_value("render", "palette_bank_lock", palette_bank_lock)
 	cfg.set_value("render", "outline_strength", outline_strength)
@@ -2837,6 +3138,18 @@ func load_from_disk() -> void:
 	light_height = cfg.get_value("light", "height", light_height)
 	light_size = cfg.get_value("light", "size", light_size)
 	light_volumetric = cfg.get_value("light", "volumetric", light_volumetric)
+	plant_establish_scale = cfg.get_value("plants", "establish_scale", plant_establish_scale)
+	room_darkness = cfg.get_value("light", "room_darkness", room_darkness)
+	spot_angle_deg = cfg.get_value("light", "spot_angle_deg", spot_angle_deg)
+	spot_attenuation = cfg.get_value("light", "spot_attenuation", spot_attenuation)
+	spot_offset_x = cfg.get_value("light", "spot_offset_x", spot_offset_x)
+	spot_offset_z = cfg.get_value("light", "spot_offset_z", spot_offset_z)
+	spot_tilt_deg = cfg.get_value("light", "spot_tilt_deg", spot_tilt_deg)
+	spot_yaw_deg = cfg.get_value("light", "spot_yaw_deg", spot_yaw_deg)
+	spot_aim_x = cfg.get_value("light", "spot_aim_x", spot_aim_x)
+	spot_aim_z = cfg.get_value("light", "spot_aim_z", spot_aim_z)
+	spot_shadows = cfg.get_value("light", "spot_shadows", spot_shadows)
+	beam_strength = cfg.get_value("light", "beam_strength", beam_strength)
 	light_caustics = cfg.get_value("light", "caustics", light_caustics)
 	tank_lights_on = cfg.get_value("light", "tank_on", tank_lights_on)
 	heater_enabled = cfg.get_value("light", "heater_enabled", heater_enabled)
@@ -3010,6 +3323,8 @@ func load_from_disk() -> void:
 	room_dither_scale = float(cfg.get_value("render", "room_dither_scale", room_dither_scale))
 	reduced_motion = cfg.get_value("render", "reduced_motion", reduced_motion)
 	ui_font_scale = cfg.get_value("render", "ui_font_scale", ui_font_scale)
+	locale = String(cfg.get_value("ui", "locale", locale))
+	settings_mode = String(cfg.get_value("ui", "settings_mode", settings_mode))
 	shader_perf_tier = int(cfg.get_value("render", "shader_perf_tier", shader_perf_tier))
 	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)

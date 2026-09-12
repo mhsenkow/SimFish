@@ -30,15 +30,15 @@ func _initialize() -> void:
 	b.global_position = a.global_position
 	b.apply_save_dict(saved)
 
-	_assert(failed, b.id == a.id, "id round-trips")
-	_assert(failed, absf(b.hunger - 0.42) < 0.01, "hunger round-trips")
-	_assert(failed, int(b._ws_broadcast_digest) == -2,
+	TestSupport.check(failed, b.id == a.id, "id round-trips")
+	TestSupport.check(failed, absf(b.hunger - 0.42) < 0.01, "hunger round-trips")
+	TestSupport.check(failed, int(b._ws_broadcast_digest) == -2,
 		"transient broadcast digest cleared on load (got %d)" % int(b._ws_broadcast_digest))
-	_assert(failed, int(b._ws_bids_digest) == -1, "transient bids digest cleared on load")
-	_assert(failed, b._episodic_retrieval_hint.is_empty(), "retrieval hint cleared on load")
+	TestSupport.check(failed, int(b._ws_bids_digest) == -1, "transient bids digest cleared on load")
+	TestSupport.check(failed, b._episodic_retrieval_hint.is_empty(), "retrieval hint cleared on load")
 
 	var saved2: Dictionary = b.to_save_dict()
-	_assert(failed, not saved2.has("_ws_broadcast_digest"),
+	TestSupport.check(failed, not saved2.has("_ws_broadcast_digest"),
 		"mind digests not serialized in save dict")
 
 	var alg := Algae.new()
@@ -50,23 +50,12 @@ func _initialize() -> void:
 	var alg2 := Algae.new()
 	parent.add_child(alg2)
 	alg2.apply_save_dict(alg_saved)
-	_assert(failed, alg2._voxels.size() == alg._voxels.size(),
+	TestSupport.check(failed, alg2._voxels.size() == alg._voxels.size(),
 		"algae voxel count round-trips (got %d want %d)" % [alg2._voxels.size(), alg._voxels.size()])
 	if alg._voxels.size() > 0:
 		var d0: float = (alg._voxels[0] as VoxelBatch.Handle).local_pos.distance_to(
 			(alg2._voxels[0] as VoxelBatch.Handle).local_pos)
-		_assert(failed, d0 < 0.02, "algae voxel layout round-trips")
+		TestSupport.check(failed, d0 < 0.02, "algae voxel layout round-trips")
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] save_roundtrip OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] save_roundtrip FAIL: %s" % msg)
-		quit(1)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)
+	quit(TestSupport.report("smoke_save_roundtrip", failed))

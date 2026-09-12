@@ -109,10 +109,4 @@ func _initialize() -> void:
 	w.queue_free()
 	await process_frame
 
-	if failed.is_empty():
-		print("[smoke] topdown pond OK")
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_topdown_pond", failed))

@@ -431,7 +431,7 @@ func _build_list_column() -> Control:
 	v.add_child(_list_panel)
 
 	var lineage_hint := Label.new()
-	lineage_hint.text = "Lines link offspring → parents"
+	lineage_hint.text = tr("Lines link offspring → parents")
 	lineage_hint.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	lineage_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	_list_panel.add_child(lineage_hint)
@@ -474,7 +474,7 @@ func _build_list_column() -> Control:
 	# put one here so a panel that opens before _refresh_list (defensive) has
 	# something readable in the list slot.
 	var placeholder := Label.new()
-	placeholder.text = "Loading…"
+	placeholder.text = tr("Loading…")
 	placeholder.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	placeholder.add_theme_font_size_override("font_size", 11)
 	_list_root.add_child(placeholder)
@@ -537,7 +537,7 @@ func _build_preview_column() -> Control:
 	v.add_child(controls)
 
 	var auto := CheckBox.new()
-	auto.text = "Auto-rotate"
+	auto.text = tr("Auto-rotate")
 	auto.button_pressed = _preview_auto
 	auto.toggled.connect(func(p):
 		_preview_auto = p
@@ -550,7 +550,7 @@ func _build_preview_column() -> Control:
 	controls.add_child(reset)
 
 	var hint := Label.new()
-	hint.text = "drag preview to rotate"
+	hint.text = tr("drag preview to rotate")
 	hint.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	controls.add_child(hint)
@@ -567,7 +567,7 @@ func _build_detail_column() -> Control:
 	v.add_theme_constant_override("separation", 8)
 
 	_detail_name = Label.new()
-	_detail_name.text = "Select a species"
+	_detail_name.text = tr("Select a species")
 	PanelTheme.as_serif(_detail_name, PanelTheme.SIZE_SECTION, true)
 	_detail_name.add_theme_color_override("font_color", PanelTheme.TITLE_FG)
 	_detail_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1237,7 +1237,7 @@ func _select_entry(entry: Dictionary) -> void:
 		_selected_key = ""
 		_selected_genome = {}
 		_selected_organism_type = ""
-		_detail_name.text = "Select a species"
+		_detail_name.text = tr("Select a species")
 		_detail_source_badge.text = ""
 		_detail_meta.text = ""
 		_clear_children(_detail_swatches)
@@ -1251,7 +1251,7 @@ func _select_entry(entry: Dictionary) -> void:
 		if _preview_column != null:
 			_preview_column.visible = _scope != Scope.ECOSYSTEM
 		if _detail_genome_label != null:
-			_detail_genome_label.text = "Field guide" if _scope == Scope.ECOSYSTEM else "Genome"
+			_detail_genome_label.text = tr("Field guide") if _scope == Scope.ECOSYSTEM else "Genome"
 		_clear_preview_creature()
 		return
 
@@ -1270,7 +1270,7 @@ func _select_entry(entry: Dictionary) -> void:
 	if _preview_column != null:
 		_preview_column.visible = true
 	if _detail_genome_label != null:
-		_detail_genome_label.text = "Genome"
+		_detail_genome_label.text = tr("Genome")
 	var genome_raw: Dictionary = entry.get("genome", {})
 	var genome: Dictionary = SpeciesLibrary.genome_from_serialisable(genome_raw)
 	var otype: String = String(entry.get("organism_type", SpeciesLibrary.organism_type(genome)))
@@ -1281,7 +1281,8 @@ func _select_entry(entry: Dictionary) -> void:
 	var src: String = String(entry.get("source", ""))
 	var src_label: String = {
 		"founder": "Founder cohort",
-		"store": "Adopted",
+		"adopt": "Adopted",
+		"store": "Adopted",  # legacy saves (pre-rename)
 		"evolved": "Bred in tank",
 		"speciated": "Emergent subspecies",
 	}.get(src, src)
@@ -1313,14 +1314,14 @@ func _select_entry(entry: Dictionary) -> void:
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	var pinned: bool = lib != null and lib.is_pinned(_selected_key)
 	if _scope == Scope.GLOBAL:
-		_pin_button.text = "Unpin from Global"
+		_pin_button.text = tr("Unpin from Global")
 		_pin_button.disabled = false
 	else:
-		_pin_button.text = "Unpin from Global" if pinned else "Pin to Global"
+		_pin_button.text = tr("Unpin from Global") if pinned else "Pin to Global"
 		_pin_button.disabled = false
 	_pin_button.tooltip_text = ""
 	_spawn_button.disabled = false
-	_spawn_button.text = "Spawn in Tank"
+	_spawn_button.text = tr("Spawn in Tank")
 	if _share_button != null:
 		_share_button.disabled = false
 	_spawn_button.tooltip_text = ""
@@ -1421,7 +1422,7 @@ func _select_ecosystem_entry(entry: Dictionary) -> void:
 	_detail_meta.text = ""
 	# Relabel "Genome" section to "Field guide" — these aren't genomes.
 	if _detail_genome_label != null:
-		_detail_genome_label.text = "Field guide"
+		_detail_genome_label.text = tr("Field guide")
 	# Hide the preview column entirely. Ecosystem entities don't have
 	# a single canonical preview creature (a "tubifex patch" is many
 	# worms; a "biofilm patch" is slime; a "swarm" is a cloud) — the
@@ -1430,11 +1431,11 @@ func _select_ecosystem_entry(entry: Dictionary) -> void:
 		_preview_column.visible = false
 	# These are environmental — pinning + spawning are off-flow.
 	_pin_button.disabled = true
-	_pin_button.text = "(environmental)"
-	_pin_button.tooltip_text = "Ecosystem entities aren't lineages — they appear automatically based on tank conditions."
+	_pin_button.text = tr("(environmental)")
+	_pin_button.tooltip_text = tr("Ecosystem entities aren't lineages — they appear automatically based on tank conditions.")
 	_spawn_button.disabled = true
-	_spawn_button.text = "(automatic)"
-	_spawn_button.tooltip_text = "These spawn from chemistry, death, age, or stocking — not directly."
+	_spawn_button.text = tr("(automatic)")
+	_spawn_button.tooltip_text = tr("These spawn from chemistry, death, age, or stocking — not directly.")
 	# No preview creature.
 	_clear_preview_creature()
 
@@ -1490,7 +1491,7 @@ func _on_share_strain_pressed() -> void:
 		return
 	var code: String = lib.encode_strain(_selected_genome)
 	if code == "":
-		_detail_meta.text = "Could not encode this strain."
+		_detail_meta.text = tr("Could not encode this strain.")
 		return
 	DisplayServer.clipboard_set(code)
 	_detail_meta.text = "Strain code copied to clipboard (%d chars). Paste it to a friend." % code.length()
@@ -1502,17 +1503,17 @@ func _on_import_strain_pressed() -> void:
 		return
 	var g: Dictionary = lib.decode_strain(DisplayServer.clipboard_get())
 	if g.is_empty():
-		_detail_meta.text = "No valid strain code on the clipboard."
+		_detail_meta.text = tr("No valid strain code on the clipboard.")
 		return
 	var world: Node = get_tree().root.find_child("World", true, false)
 	if world == null:
 		world = get_tree().current_scene
 	if world == null or not world.has_method("spawn_library_entry"):
-		_detail_meta.text = "Cannot import: world not available."
+		_detail_meta.text = tr("Cannot import: world not available.")
 		return
 	var otype: String = String(g.get("organism_type", "fish"))
 	var ok: bool = not not world.spawn_library_entry(g, otype)
-	_detail_meta.text = "Imported strain into your tank." if ok else "Import failed (incompatible tank?)."
+	_detail_meta.text = tr("Imported strain into your tank.") if ok else "Import failed (incompatible tank?)."
 
 
 func _on_spawn_pressed() -> void:
@@ -1522,11 +1523,11 @@ func _on_spawn_pressed() -> void:
 	if world == null:
 		world = get_tree().current_scene
 	if world == null or not world.has_method("spawn_library_entry"):
-		_detail_meta.text = "Cannot spawn: world not available."
+		_detail_meta.text = tr("Cannot spawn: world not available.")
 		return
 	var ok: bool = not not world.spawn_library_entry(
 		_selected_genome.duplicate(true), _selected_organism_type)
-	_detail_meta.text = "Spawned into tank." if ok else "Spawn failed for this entry."
+	_detail_meta.text = tr("Spawned into tank.") if ok else "Spawn failed for this entry."
 
 
 # ---- Preview creature lifecycle ---------------------------------------------

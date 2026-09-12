@@ -81,14 +81,14 @@ func _build_ui() -> void:
 	# Retro neon header. The double-bar glyphs frame the title without
 	# needing a font with built-in flourishes.
 	var title := Label.new()
-	title.text = "═══ ADOPT FISH ═══"
+	title.text = tr("═══ ADOPT FISH ═══")
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color8(255, 110, 200))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "free · take home up to 2 of 3"
+	subtitle.text = tr("free · take home up to 2 of 3")
 	subtitle.add_theme_font_size_override("font_size", 11)
 	subtitle.add_theme_color_override("font_color", Color8(180, 230, 255))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -206,7 +206,7 @@ func _make_card(idx: int) -> Control:
 
 	# Adopt button — cyan bezel action (free; never a purchase).
 	var adopt := Button.new()
-	adopt.text = "ADOPT"
+	adopt.text = tr("ADOPT")
 	adopt.custom_minimum_size = Vector2(64, 32)
 	adopt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	adopt.add_theme_color_override("font_color", Color8(20, 28, 36))
@@ -380,12 +380,8 @@ func _on_adopt(idx: int) -> void:
 			if scene != null:
 				_world = scene.get_node_or_null("SubViewport/World")
 	if _world == null or not _world.has_method("spawn_adopted_fish"):
-		if _world != null and _world.has_method("spawn_purchased_fish"):
-			_world.spawn_purchased_fish(_options[idx])
-		else:
-			return
-	else:
-		_world.spawn_adopted_fish(_options[idx])
+		return
+	_world.spawn_adopted_fish(_options[idx])
 	_adopted += 1
 	var card_frame: PanelContainer = _cards_container.get_child(idx) as PanelContainer
 	if card_frame == null:
@@ -394,7 +390,7 @@ func _on_adopt(idx: int) -> void:
 	var adopt_btn: Button = _find_adopt_button(card_frame)
 	if adopt_btn != null:
 		adopt_btn.disabled = true
-		adopt_btn.text = "ADOPTED"
+		adopt_btn.text = tr("ADOPTED")
 	_status_label.text = "%d / %d adopted" % [_adopted, MAX_ADOPTIONS]
 	if _adopted >= MAX_ADOPTIONS:
 		_status_label.text = "%d / %d adopted — all taken" % [_adopted, MAX_ADOPTIONS]

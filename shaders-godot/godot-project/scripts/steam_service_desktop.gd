@@ -32,6 +32,12 @@ func _ready() -> void:
 		if Steam.isSteamRunning():
 			user_label = Steam.getPersonaName()
 		print("[walstad_loom] Steam initialized (AppID %d, user %s)" % [APP_ID, user_label])
+		# NB: this GodotSteam build exposes requestUserStats()/getAchievement()
+		# but NOT requestCurrentStats() — calling it is a *parse* error that
+		# takes this whole script down, killing Steam init. steamInitEx()
+		# already loads the current user's stats, and the achievement node
+		# reconciles against getAchievement(), so nothing extra is needed.
+		_notify_achievements(true)
 	else:
 		var verbal: String = str(init.get("verbal", init))
 		if _benign_steam_unavailable(verbal):
@@ -43,3 +49,13 @@ func _ready() -> void:
 func _process(_delta: float) -> void:
 	if is_steam_running:
 		Steam.run_callbacks()
+
+
+# Hand the Steam-ready flag to the achievement node owned by steam_service.gd.
+func _notify_achievements(is_ready: bool) -> void:
+	var parent: Node = get_parent()
+	if parent == null:
+		return
+	var ach: Node = parent.get_node_or_null("Achievements")
+	if ach != null and ach.has_method("set_steam_ready"):
+		ach.set_steam_ready(is_ready)

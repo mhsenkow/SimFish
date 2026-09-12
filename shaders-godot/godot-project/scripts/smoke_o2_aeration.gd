@@ -126,10 +126,4 @@ static func O2_floor_target(fixture: String, strength: float) -> float:
 
 
 func _report(failed: Array[String]) -> void:
-	if failed.is_empty():
-		print("[smoke] o2_aeration OK")
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_o2_aeration", failed))

@@ -169,6 +169,44 @@ const STUCK_PROGRESS_MIN_SQ: float = 0.008 * 0.008  # ~8 mm minimum progress
 # tick. 1.5 s is enough for the snail to crawl meaningfully away from
 # the corner on its new wall before another transition can fire.
 var _wall_transition_cooldown: float = 0.0
+# --- Surface film (REAL_TANK_FIDELITY: the waterline band) ---------------
+#
+# Pulmonate snails (bladder, pond, ramshorn) glide inverted along the
+# underside of the surface film, hanging from the water's surface tension
+# with the foot spread flat against it and the shell dangling below. In a
+# real planted tank this is where the snails congregate: a dense band right
+# at the waterline, plus a handful upside-down out in open water.
+#
+# Modelled as one more attachment surface. wall_normal = DOWN (the film's
+# inward normal points down into the water), which the existing tangent /
+# bitangent basis already handles - the snail simply hangs from it.
+
+# How close to the waterline a climbing glass snail must be to flip onto it.
+const FILM_REACH: float = 0.34
+# Chance per scan tick of taking the film when in reach. Below 1.0 so the
+# waterline keeps a mix of snails on the glass and snails under the film,
+# which is what the band actually looks like.
+const FILM_ATTACH_CHANCE: float = 0.55
+# How long a snail glides under the film before letting go.
+const FILM_DWELL_MIN: float = 8.0
+const FILM_DWELL_MAX: float = 26.0
+# Heavy, operculate shells break through the film more easily, so they take
+# it less often. Big apple snails still surface - just not as reliably.
+const FILM_SIZE_PENALTY: float = 0.45
+# The film sits just under the water plane so the shell is visibly wetted
+# rather than floating on top of it.
+const FILM_SUBMERGE: float = 0.05
+
+# Depth below the water surface that counts as "at the waterline". A snail
+# inside this band crawls along it instead of wandering back down the glass,
+# which is what produces the dense line of snails at the surface.
+const WATERLINE_BAND: float = 0.55
+const WATERLINE_DWELL_MIN: float = 6.0
+const WATERLINE_DWELL_MAX: float = 16.0
+
+# Remaining glide time; > 0.0 exactly when the snail is under the film.
+var _film_dwell: float = 0.0
+
 const WALL_TRANSITION_COOLDOWN: float = 1.5
 # Set when the snail is attached to a CURVED tank wall (cylinder or
 # sphere). Curved walls don't have a single fixed inward normal —
@@ -456,9 +494,22 @@ func _process(dt: float) -> void:
 		# substrate-glass corner from oscillating climb/descend every
 		# scan tick.
 		_wall_transition_cooldown = maxf(0.0, _wall_transition_cooldown - scan_dt)
+		# Surface-film glide runs on its own clock, outside the transition
+		# cooldown: a snail under the film is not "between walls", it is
+		# grazing, and cutting that short would break up the waterline band.
+		if _film_dwell > 0.0:
+			_film_dwell -= scan_dt
+			if _film_dwell <= 0.0:
+				_release_surface_film()
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
 		if _retreat_remaining <= 0.0 and not _clamped and _wall_transition_cooldown <= 0.0:
+			# Waterline → surface film. Checked before the descent so a
+			# snail that has just climbed to the top takes the film instead
+			# of turning straight back down the glass.
+			if _try_attach_to_surface_film():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
 			# Glass → substrate descent for snails on vertical glass.
-			if _try_descend_to_substrate():
+			elif _try_descend_to_substrate():
 				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
 			# Substrate → glass climb for snails on the floor near a
 			# wall. The boundary-bounce hook this used to live in
@@ -1339,6 +1390,84 @@ func _try_climb_onto_glass() -> bool:
 	return true
 
 
+# True while the snail is gliding inverted under the surface film.
+func on_surface_film() -> bool:
+	return _film_dwell > 0.0
+
+
+func _water_y() -> float:
+	var w := _world_node()
+	if w == null:
+		return 6.5
+	var v: Variant = w.get("WATER_HEIGHT")
+	return 6.5 if v == null else float(v)
+
+
+# Flip from vertical glass onto the underside of the water surface. Only
+# fires for a snail that has actually climbed to the waterline, which is
+# why it is cheap: the Y test rejects almost every caller immediately.
+func _try_attach_to_surface_film() -> bool:
+	if _film_dwell > 0.0:
+		return false
+	# Vertical surfaces only - a substrate snail is nowhere near the film.
+	if absf(wall_normal.dot(Vector3.UP)) > 0.55:
+		return false
+	var water_y: float = _water_y()
+	if global_position.y < water_y - FILM_REACH:
+		return false
+	# Heavier shells hang from surface tension less reliably.
+	var chance: float = SnailSurface.film_attach_chance(
+		FILM_ATTACH_CHANCE, shell_size, FILM_SIZE_PENALTY)
+	if randf() > chance:
+		return false
+
+	wall_normal = Vector3.DOWN
+	_curved_attached = false
+	_attached_plant = null
+	_attached_lily_pad = null
+	_film_dwell = randf_range(FILM_DWELL_MIN, FILM_DWELL_MAX)
+	# Hang just under the water plane, and step off the glass so the snail
+	# reads as out on the film rather than still stuck to the corner.
+	global_position.y = SnailSurface.film_plane_y(water_y, FILM_SUBMERGE)
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# Head away from the glass it just left, out across the film.
+	_direction = Vector2(randf_range(-0.5, 0.5), 1.0).normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	return true
+
+
+# Let go of the film. Snails that drift back over a wall grab the glass;
+# the rest simply sink, which is exactly what a released pond snail does.
+func _release_surface_film() -> void:
+	_film_dwell = 0.0
+	var w := _world_node()
+	var took_glass := false
+	if w != null and w.has_method("tank_lateral_boundary_info"):
+		var info: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
+		var inward: Vector3 = info.get("inward", Vector3.ZERO)
+		if inward.length_squared() > 0.1 \
+				and float(info.get("clearance", 99.0)) <= FILM_REACH:
+			wall_normal = inward.normalized()
+			_wall_anchor_offset = wall_normal.dot(global_position)
+			# Nose down - it is coming off the surface, not climbing again.
+			_direction = Vector2(randf_range(-0.30, 0.30), -1.0).normalized()
+			took_glass = true
+	if not took_glass:
+		# Sink. wall_normal returns to UP so the substrate clamp catches it
+		# on the way down and it lands the right way up.
+		wall_normal = Vector3.UP
+		var ang := randf() * TAU
+		_direction = Vector2(cos(ang), sin(ang))
+	_curved_attached = false
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+
+
 # Try to descend from a vertical glass wall down onto the substrate.
 # Called periodically (scan_due) — a glass snail crawling along the
 # substrate-glass corner doesn't go OUTSIDE the tank, so boundary_bounce
@@ -1671,9 +1800,16 @@ func _shell_up() -> Vector3:
 	# The previous version returned -wall_normal, which put the shell on
 	# the OUTWARD side of the snail — i.e. embedded in the glass with
 	# the foot pointing INTO the tank. Reads as "snail facing wrong way."
-	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
+	#
+	# NB the sign matters on a vertical normal, it is not always UP. A snail
+	# gliding along the UNDERSIDE of the surface film has wall_normal = DOWN
+	# (the inward normal of the film points down into the water), and its
+	# shell hangs beneath its foot. Returning a bare Vector3.UP here would
+	# stand those snails upright on top of the water instead of inverting
+	# them under it.
+	if wall_normal.length_squared() < 1e-8:
 		return Vector3.UP
-	return _safe_unit(wall_normal, Vector3.UP)
+	return SnailSurface.shell_up_for(wall_normal)
 
 
 func _slerp_rotation_toward(target_basis: Basis, blend: float) -> void:
@@ -1737,6 +1873,21 @@ func _world_node() -> Node:
 # triangle, cylinder, and sphere glass. Crawl stays on the spawn wall plane
 # but X/Y/Z are pulled back inside the tank footprint every frame.
 func _reclamp_to_footprint() -> void:
+	# Under the film the snail is on a horizontal plane just below the water
+	# surface. Hold that plane exactly, and let the normal tank clamp keep
+	# it inside the walls, so it can glide right up to the glass.
+	if _film_dwell > 0.0:
+		var wf := _world_node()
+		var film_y: float = SnailSurface.film_plane_y(_water_y(), FILM_SUBMERGE)
+		global_position.y = film_y
+		if wf != null and wf.has_method("clamp_xyz_in_tank"):
+			var margin_f: float = 0.20 + shell_size * 0.05
+			global_position = wf.clamp_xyz_in_tank(
+				global_position, margin_f, 0.0)
+			global_position.y = film_y
+		_wall_anchor_offset = wall_normal.dot(global_position)
+		return
+
 	var w := _world_node()
 	# Tighter clamp margin so snails can actually crawl right up to the
 	# glass surface (and approach hardscape voxels close enough to attach).
@@ -2273,6 +2424,22 @@ func _choose_new_direction() -> void:
 		_direction = Vector2(0.0, 1.0)
 		_t_until_turn = randf_range(2.5, 5.0)
 		return
+	# Waterline band. In a real tank the snails are not scattered evenly up
+	# the glass - they pile into a dense line at the surface, because that is
+	# where the biofilm collects and where a pulmonate goes to breathe. A
+	# snail that has already reached the top therefore crawls ALONG the
+	# waterline rather than turning back down it.
+	if absf(wall_normal.y) < 0.55 and _film_dwell <= 0.0:
+		if SnailSurface.in_waterline_band(
+				global_position.y, _water_y(), WATERLINE_BAND):
+			# Near-horizontal heading, holding station in the band. The
+			# small upward component keeps it pressed against the surface
+			# instead of sagging out of the band over time.
+			_direction = Vector2(
+				1.0 if randf() < 0.5 else -1.0,
+				randf_range(0.0, 0.35)).normalized()
+			_t_until_turn = randf_range(WATERLINE_DWELL_MIN, WATERLINE_DWELL_MAX)
+			return
 	# Bias the new heading toward the current heading so the turn reads
 	# as a gentle redirection rather than a 180° flip. We rotate the old
 	# direction by a moderate random angle instead of picking pure uniform
@@ -2355,6 +2522,10 @@ func to_save_dict() -> Dictionary:
 		"id": id,
 		"pos": SaveHelpers.vec3_to_array(global_position),
 		"wall_normal": SaveHelpers.vec3_to_array(wall_normal),
+		# Must ride along with wall_normal: a DOWN normal means "under the
+		# surface film", and without the remaining glide time the snail
+		# reloads hanging inverted with no timer left to release it.
+		"film_dwell": _film_dwell,
 		"wall_min": SaveHelpers.vec3_to_array(wall_min),
 		"wall_max": SaveHelpers.vec3_to_array(wall_max),
 		"is_baby": is_baby,
@@ -2407,6 +2578,11 @@ func to_save_dict() -> Dictionary:
 func apply_save_dict(d: Dictionary) -> void:
 	id = String(d.get("id", id))
 	wall_normal = SaveHelpers.array_to_vec3(d.get("wall_normal", []), wall_normal)
+	_film_dwell = maxf(0.0, float(d.get("film_dwell", 0.0)))
+	# Belt and braces: an inverted normal with no glide time left cannot
+	# release itself, so give it one rather than stranding the snail.
+	if _film_dwell <= 0.0 and SnailSurface.is_film_normal(wall_normal):
+		_film_dwell = randf_range(FILM_DWELL_MIN, FILM_DWELL_MAX)
 	wall_min = SaveHelpers.array_to_vec3(d.get("wall_min", []), wall_min)
 	wall_max = SaveHelpers.array_to_vec3(d.get("wall_max", []), wall_max)
 	is_baby = not not d.get("is_baby", is_baby)

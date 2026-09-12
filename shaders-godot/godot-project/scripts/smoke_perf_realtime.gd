@@ -275,13 +275,7 @@ func _initialize() -> void:
 	lod_fish.id = "lod_probe"
 	_assert(failed, MindLOD.tier_for(lod_fish, true, 1.0) <= MindLOD.T1_WORKSPACE,
 			"MindLOD demotes visible fish under max pressure")
-	if failed.is_empty():
-		print("[smoke] perf_realtime OK")
-		quit(0)
-	else:
-		for e in failed:
-			push_error("[smoke] perf_realtime FAIL: %s" % e)
-		quit(1)
+	quit(TestSupport.report("smoke_perf_realtime", failed))
 
 
 static func _noop_cadence(_d: float) -> void:

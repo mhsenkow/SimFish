@@ -109,11 +109,11 @@ func _mirror_batch(plant: Plant, source: VoxelBatch) -> void:
 		_batch.add(to_local_xform * world_xform, h.base_color)
 
 
-func _set_private_visible(plant: Plant, visible: bool) -> void:
+func _set_private_visible(plant: Plant, should_show: bool) -> void:
 	if plant._foliage_batch != null and plant._foliage_batch.mmi != null:
-		plant._foliage_batch.mmi.visible = visible
+		plant._foliage_batch.mmi.visible = should_show
 	if plant._stem_batch != null and plant._stem_batch.mmi != null:
-		plant._stem_batch.mmi.visible = visible
+		plant._stem_batch.mmi.visible = should_show
 
 
 func _restore_private_batches() -> void:

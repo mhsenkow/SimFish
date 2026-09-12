@@ -139,7 +139,7 @@ func tick(dt: float, sim: SimDriver, world: Node, plant_biomass: int,
 		bacteria_colony + dt * (0.0018 + biofilm * 0.004 + age_growth * 0.0006
 			+ mulm_boost * 0.003),
 		0.04, 1.0)
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl < 0.28:
 		bacteria_colony = clampf(bacteria_colony + dt * 0.00032, 0.04, 1.0)
 	# Bacteria die-back (#2): a starved biofilter slowly shrinks. When there's
@@ -265,7 +265,7 @@ func apply_water_change(fraction: float = 0.35) -> void:
 func _tick_carbonate(dt: float, sim: SimDriver, plant_biomass: int) -> void:
 	if sim == null:
 		return
-	var dl: float = sim.daylight() if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var biomass_f: float = clampf(float(plant_biomass) / 420.0, 0.0, 1.2)
 	var photo_draw: float = dl * biomass_f * 0.0018 * dt
 	var night_resp: float = (1.0 - dl) * biomass_f * 0.0012 * dt

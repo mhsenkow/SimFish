@@ -40,7 +40,7 @@ static func tick(f: Fish, sim: Node, dt: float) -> void:
 		intensity = clampf(intensity + dt * 0.15, 0.0, 1.0)
 	objs[tex] = {"intensity": intensity, "attended": f.attention_focus == tex}
 	# Sensory character (#72).
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	objs["light"] = {"intensity": dl, "character": "sharp" if dl > 0.6 else "dim"}
 	objs["water"] = {"intensity": 1.0 - f.stress * 0.4, "character": "heavy" if f.stress > 0.5 else "easy"}
 	# Keeper qualia (#77).

@@ -41,7 +41,7 @@ func _initialize() -> void:
 	var elapsed_us: int = Time.get_ticks_usec() - t0
 	var per_fish_us: float = float(elapsed_us) / float(64 * 24)
 	print("[smoke] topo_boids 64×24 ticks = %d µs (%.1f µs/fish/tick)" % [elapsed_us, per_fish_us])
-	_assert(failed, per_fish_us < 900.0,
+	TestSupport.check(failed, per_fish_us < 900.0,
 		"topo boids perf budget (%.1f µs/fish/tick)" % per_fish_us)
 
 	var hot: int = 0
@@ -53,18 +53,7 @@ func _initialize() -> void:
 	for f in school:
 		if f.motion_agitation > 0.05:
 			hot += 1
-	_assert(failed, hot >= 4, "dense flock still propagates waves (%d hot)" % hot)
+	TestSupport.check(failed, hot >= 4, "dense flock still propagates waves (%d hot)" % hot)
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] motion_topo_perf OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] motion_topo_perf FAIL: %s" % msg)
-		quit(1)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)
+	quit(TestSupport.report("smoke_motion_topo_perf", failed))

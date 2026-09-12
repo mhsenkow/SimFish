@@ -57,9 +57,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 7.0,
-			"tank_half_d": 4.0,
-			"tank_height": 6.0,
+			"tank_half_w": 9.0,
+			"tank_half_d": 5.0,
+			"tank_height": 7.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.20,
 			"light_fixture": "bar",
@@ -67,6 +67,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "cozy_shop",
 			"co2_level": 0.2,
 			"light_spectrum": 0.50,
+			"camera_yaw": -0.35,
+			"camera_pitch": 0.16,
+			"camera_radius": 20.0,
+			"camera_target_y": 3.4,
+			"camera_fov": 46.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -82,9 +88,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 8.0,
-			"tank_half_d": 4.0,
-			"tank_height": 7.0,
+			"tank_half_w": 10.0,
+			"tank_half_d": 5.5,
+			"tank_height": 8.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.23,
 			"light_fixture": "bar",
@@ -92,6 +98,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "cozy_shop",
 			"co2_level": 0.3,
 			"light_spectrum": 0.55,
+			"camera_yaw": -0.62,
+			"camera_pitch": 0.12,
+			"camera_radius": 22.0,
+			"camera_target_y": 3.8,
+			"camera_fov": 48.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -110,9 +122,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "disk",
 			"aeration_strength": 0.9,
 			"tank_shape": "box",
-			"tank_half_w": 11.0,
-			"tank_half_d": 3.0,
-			"tank_height": 5.0,
+			"tank_half_w": 12.0,
+			"tank_half_d": 4.0,
+			"tank_height": 6.0,
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.18,
 			"light_fixture": "bar",
@@ -123,6 +135,13 @@ const SCENARIOS: Array[Dictionary] = [
 			# use keeps the negative space clean instead of greening over.
 			"co2_level": 0.25,
 			"light_spectrum": 0.35,
+			"cycle_start_mode": "established",
+			"camera_yaw": -0.06,
+			"camera_pitch": 0.05,
+			"camera_radius": 25.0,
+			"camera_target_y": 2.8,
+			"camera_fov": 40.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -135,12 +154,24 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_preset": "blackwater_biotope",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
-			"vessel_preset": "column_blackwater",
 			"light_fixture": "spotlight",
 			"environment_preset": "dark_cabinet",
 			"lighting_preset": "dim_warm",
 			"co2_level": 0.0,
 			"light_spectrum": 0.80,
+			"tank_shape": "box",
+			"tank_half_w": 6.0,
+			"tank_half_d": 4.0,
+			"tank_height": 11.0,
+			"cycle_start_mode": "established",
+			"camera_yaw": -0.85,
+			"camera_pitch": -0.06,
+			"camera_radius": 19.0,
+			"camera_target_y": 5.0,
+			"camera_fov": 52.0,
+			"water_surface_fraction": 0.95,
+			"substrate_depth_fraction": 0.26,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -153,7 +184,6 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_preset": "reef",
 			"substrate_type": "ocean_sand",
 			"aeration_type": "stick",
-			"vessel_preset": "reef_cube",
 			"light_fixture": "spotlight",
 			"environment_preset": "sunny_window",
 			"lighting_preset": "reef",
@@ -161,6 +191,18 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_spectrum": 0.20,
 			"cycle_start_mode": "established",
 			"light_warmth": 0.72,
+			"tank_shape": "cube",
+			"tank_half_w": 6.5,
+			"tank_half_d": 6.5,
+			"tank_height": 8.0,
+			"camera_yaw": -0.78,
+			"camera_pitch": 0.22,
+			"camera_radius": 17.5,
+			"camera_target_y": 3.6,
+			"camera_fov": 45.0,
+			"water_surface_fraction": 0.94,
+			"substrate_depth_fraction": 0.18,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -176,7 +218,7 @@ const SCENARIOS: Array[Dictionary] = [
 			"tank_shape": "hex",
 			"tank_half_w": 7.0,
 			"tank_half_d": 7.0,
-			"tank_height": 8.0,
+			"tank_height": 10.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "spotlight",
@@ -184,6 +226,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "cozy_shop",
 			"co2_level": 0.2,
 			"light_spectrum": 0.50,
+			"cycle_start_mode": "established",
+			"camera_yaw": -1.05,
+			"camera_pitch": 0.34,
+			"camera_radius": 22.0,
+			"camera_target_y": 4.2,
+			"camera_fov": 50.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -197,9 +246,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "eco_complete",
 			"aeration_type": "none",
 			"tank_shape": "sphere",
-			"tank_half_w": 5.0,
-			"tank_half_d": 5.0,
-			"tank_height": 6.0,
+			"tank_half_w": 6.5,
+			"tank_half_d": 6.5,
+			"tank_height": 7.5,
 			"water_surface_fraction": 0.90,
 			"substrate_depth_fraction": 0.26,
 			"light_fixture": "spotlight",
@@ -207,6 +256,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "planted",
 			"co2_level": 0.0,
 			"light_spectrum": 0.45,
+			"cycle_start_mode": "established",
+			"camera_yaw": 0.30,
+			"camera_pitch": 0.10,
+			"camera_radius": 15.0,
+			"camera_target_y": 3.4,
+			"camera_fov": 55.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -221,9 +277,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "cylinder",
-			"tank_half_w": 5.5,
-			"tank_half_d": 5.5,
-			"tank_height": 8.0,
+			"tank_half_w": 7.0,
+			"tank_half_d": 7.0,
+			"tank_height": 10.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.20,
 			"light_fixture": "spotlight",
@@ -231,6 +287,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "planted",
 			"co2_level": 0.5,
 			"light_spectrum": 0.60,
+			"camera_yaw": -0.50,
+			"camera_pitch": -0.02,
+			"camera_radius": 21.0,
+			"camera_target_y": 4.8,
+			"camera_fov": 44.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -244,9 +306,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "eco_complete",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 6.0,
-			"tank_half_d": 4.0,
-			"tank_height": 6.0,
+			"tank_half_w": 9.0,
+			"tank_half_d": 5.5,
+			"tank_height": 7.5,
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.24,
 			"light_fixture": "spotlight",
@@ -254,6 +316,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "dim_warm",
 			"co2_level": 0.0,
 			"light_spectrum": 0.65,
+			"cycle_start_mode": "established",
+			"camera_yaw": -0.30,
+			"camera_pitch": -0.10,
+			"camera_radius": 19.0,
+			"camera_target_y": 3.2,
+			"camera_fov": 54.0,
+			"vessel_preset": "custom",
 		},
 	},
 	# ---- New scenarios (added with the plant-realism + AI pass) ----
@@ -268,9 +337,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "eco_complete",
 			"aeration_type": "disk",
 			"tank_shape": "box",
-			"tank_half_w": 5.0,
-			"tank_half_d": 4.0,
-			"tank_height": 5.0,
+			"tank_half_w": 7.0,
+			"tank_half_d": 5.0,
+			"tank_height": 6.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.24,
 			"light_fixture": "bar",
@@ -278,6 +347,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "planted",
 			"co2_level": 0.45,
 			"light_spectrum": 0.55,
+			"cycle_start_mode": "established",
+			"camera_yaw": -0.45,
+			"camera_pitch": 0.02,
+			"camera_radius": 13.0,
+			"camera_target_y": 2.6,
+			"camera_fov": 38.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -291,9 +367,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 10.0,
-			"tank_half_d": 4.0,
-			"tank_height": 8.0,
+			"tank_half_w": 12.0,
+			"tank_half_d": 5.0,
+			"tank_height": 9.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "bar",
@@ -301,6 +377,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "planted",
 			"co2_level": 0.7,
 			"light_spectrum": 0.75,
+			"cycle_start_mode": "established",
+			"camera_yaw": 0.00,
+			"camera_pitch": 0.10,
+			"camera_radius": 27.0,
+			"camera_target_y": 4.2,
+			"camera_fov": 42.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -314,9 +397,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "ocean_sand",
 			"aeration_type": "none",
 			"tank_shape": "cube",
-			"tank_half_w": 4.0,
-			"tank_half_d": 4.0,
-			"tank_height": 5.0,
+			"tank_half_w": 5.5,
+			"tank_half_d": 5.5,
+			"tank_height": 6.5,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.16,
 			"light_fixture": "spotlight",
@@ -327,6 +410,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"light_warmth": 0.82,
 			"heater_enabled": false,
+			"camera_yaw": -0.90,
+			"camera_pitch": 0.26,
+			"camera_radius": 13.5,
+			"camera_target_y": 3.0,
+			"camera_fov": 47.0,
+			"vessel_preset": "custom",
 		},
 	},
 	# ---- Keeper reference tanks ----
@@ -351,9 +440,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "stick",
 			"aeration_strength": 1.0,
 			"tank_shape": "box",
-			"tank_half_w": 7.0,
-			"tank_half_d": 3.5,
-			"tank_height": 6.0,
+			"tank_half_w": 9.0,
+			"tank_half_d": 4.5,
+			"tank_height": 7.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.28,
 			"light_fixture": "bar",
@@ -361,8 +450,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "cozy_shop",
 			"co2_level": 0.0,
 			"light_spectrum": 0.45,
-			"camera_pitch": 0.08,
-			"camera_radius": 12.5,
+			"camera_pitch": -0.04,
+			"camera_radius": 17.0,
+			"camera_yaw": -0.55,
+			"camera_target_y": 4.4,
+			"camera_fov": 46.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -378,9 +471,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 7.0,
-			"tank_half_d": 3.5,
-			"tank_height": 8.0,
+			"tank_half_w": 9.0,
+			"tank_half_d": 4.5,
+			"tank_height": 9.5,
 			"water_surface_fraction": 0.95,
 			"substrate_depth_fraction": 0.28,
 			"light_fixture": "bar",
@@ -388,8 +481,12 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "backlit_jungle",
 			"co2_level": 0.15,
 			"light_spectrum": 0.62,
-			"camera_pitch": 0.06,
-			"camera_radius": 13.0,
+			"camera_pitch": -0.12,
+			"camera_radius": 19.5,
+			"camera_yaw": -0.68,
+			"camera_target_y": 4.6,
+			"camera_fov": 50.0,
+			"vessel_preset": "custom",
 		},
 	},
 	{
@@ -405,15 +502,56 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "stick",
 			"aeration_strength": 0.8,
-			"vessel_preset": "nano_cube",
 			"substrate_depth_fraction": 0.28,
 			"light_fixture": "gooseneck",
 			"environment_preset": "counter_mirror",
 			"lighting_preset": "shop_display",
 			"co2_level": 0.0,
 			"light_spectrum": 0.48,
-			"camera_pitch": 0.10,
-			"camera_radius": 9.5,
+			"camera_pitch": 0.30,
+			"camera_radius": 11.5,
+			"tank_shape": "cube",
+			"tank_half_w": 4.5,
+			"tank_half_d": 4.5,
+			"tank_height": 6.5,
+			"camera_yaw": -0.40,
+			"camera_target_y": 3.8,
+			"camera_fov": 43.0,
+			"water_surface_fraction": 0.94,
+			"vessel_preset": "custom",
+		},
+	},
+	{
+		"id": "night_lamp",
+		"name": "Night Lamp",
+		"tagline": "Corner hex · dark room · one clip-on beam",
+		"body": "The room light is off and the window behind is night. One clip-on gooseneck lamp is clamped over the back right corner, throwing a hard warm cone down and across the tank. Tall vallisneria catches it edge-on and glows; catappa leaves gone soft and amber sit in the lit pool on the gravel. Everything the beam misses falls to black. The lamp head itself is the brightest thing in the frame.",
+		"accent_color": Color8(255, 206, 110),
+		"silhouette": "🔦🌾",
+		"config": {
+			"tank_preset": "night_lamp",
+			"cycle_start_mode": "established",
+			"substrate_type": "inert_gravel",
+			"aeration_type": "filter",
+			"vessel_preset": "custom",
+			"tank_shape": "hex",
+			"tank_half_w": 5.0,
+			"tank_half_d": 5.0,
+			"tank_height": 11.0,
+			"water_surface_fraction": 0.95,
+			"substrate_depth_fraction": 0.20,
+			"light_fixture": "gooseneck",
+			"environment_preset": "night_window",
+			"lighting_preset": "clip_spot_night",
+			"co2_level": 0.0,
+			"light_spectrum": 0.70,
+			# Low and close, looking slightly up into the beam so the shaft
+			# crosses the frame rather than pointing away from the camera.
+			"camera_yaw": -0.52,
+			"camera_pitch": -0.05,
+			"camera_radius": 17.0,
+			"camera_target_y": 5.6,
+			"camera_fov": 52.0,
 		},
 	},
 	# ---- Wildcard: AI-or-random tank generation ----
@@ -436,14 +574,21 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 8.0,
-			"tank_half_d": 4.0,
-			"tank_height": 7.0,
+			"tank_half_w": 10.0,
+			"tank_half_d": 5.0,
+			"tank_height": 8.0,
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "bar",
 			"environment_preset": "bedroom_desk",
 			"lighting_preset": "cozy_shop",
+			"cycle_start_mode": "established",
+			"camera_yaw": -0.42,
+			"camera_pitch": 0.18,
+			"camera_radius": 22.0,
+			"camera_target_y": 3.8,
+			"camera_fov": 45.0,
+			"vessel_preset": "custom",
 		},
 	},
 ]
@@ -654,7 +799,7 @@ func _build_card(sc: Dictionary) -> Control:
 	var meta: Dictionary = Ol.SCENARIO_META.get(sid, {})
 	if bool(meta.get("recommended", false)):
 		var ribbon := Label.new()
-		ribbon.text = "★ Best for beginners"
+		ribbon.text = tr("★ Best for beginners")
 		ribbon.add_theme_color_override("font_color", Color8(255, 230, 120))
 		ribbon.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 		vb.add_child(ribbon)
@@ -668,7 +813,7 @@ func _build_card(sc: Dictionary) -> Control:
 		vb.add_child(tier)
 	if bool(meta.get("maint_warning", false)):
 		var warn := Label.new()
-		warn.text = "Higher-maintenance — best once you've kept a tank"
+		warn.text = tr("Higher-maintenance — best once you've kept a tank")
 		warn.add_theme_color_override("font_color", Color8(230, 160, 110))
 		warn.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -804,7 +949,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 	vb.add_child(subtitle)
 	vb.add_child(PanelTheme.make_rule())
 	var hint := PanelTheme.make_description()
-	hint.text = "Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'."
+	hint.text = tr("Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'.")
 	vb.add_child(hint)
 
 	var input := LineEdit.new()
@@ -843,7 +988,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 	go_btn.pressed.connect(func():
 		var prompt: String = input.text.strip_edges()
 		if prompt == "":
-			status.text = "Type a few words first, or hit 'Skip AI'."
+			status.text = tr("Type a few words first, or hit 'Skip AI'.")
 			return
 		status.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 		status.text = "Asking %s to design your tank…" % String(ai.model)
@@ -859,7 +1004,7 @@ func _request_ai_design(sc: Dictionary, ai: Node, prompt: String,
 		status: Label, go_btn: Button) -> void:
 	if not ai.has_method("design_tank"):
 		# Fallback: roll random if the director doesn't have the helper.
-		status.text = "AI design helper missing — rolling random instead."
+		status.text = tr("AI design helper missing — rolling random instead.")
 		var rolled: Dictionary = sc.duplicate(true)
 		rolled["config"] = random_wildcard_config()
 		scenario_chosen.emit(rolled)
@@ -875,7 +1020,7 @@ func _request_ai_design(sc: Dictionary, ai: Node, prompt: String,
 func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_btn: Button) -> void:
 	if config.is_empty():
 		status.add_theme_color_override("font_color", Color8(230, 165, 120))
-		status.text = "AI returned an empty design — rolling random instead."
+		status.text = tr("AI returned an empty design — rolling random instead.")
 		if go_btn != null:
 			go_btn.disabled = false
 		var rolled: Dictionary = sc.duplicate(true)

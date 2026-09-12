@@ -455,7 +455,7 @@ func _build_ui() -> void:
 
 	outer.add_child(PanelTheme.make_title("Sound Studio"))
 	var subtitle := PanelTheme.make_description()
-	subtitle.text = "Now Playing for your track · Tank score for procedural ambient · Choreography for the dance."
+	subtitle.text = tr("Now Playing for your track · Tank score for procedural ambient · Choreography for the dance.")
 	outer.add_child(subtitle)
 	outer.add_child(PanelTheme.make_rule())
 
@@ -522,7 +522,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(_tank_score_body, "Vibe presets")
 	var preset_desc := PanelTheme.make_description()
-	preset_desc.text = "Pick a vibe — snaps the whole studio. Sliders below tune from there."
+	preset_desc.text = tr("Pick a vibe — snaps the whole studio. Sliders below tune from there.")
 	_tank_score_body.add_child(preset_desc)
 	var preset_flow := FlowContainer.new()
 	preset_flow.add_theme_constant_override("h_separation", 6)
@@ -609,7 +609,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(_tank_score_body, "Drop & build")
 	var drop_desc := PanelTheme.make_description()
-	drop_desc.text = "Breeding triggers a build into a drop. Deaths trigger a breakdown."
+	drop_desc.text = tr("Breeding triggers a build into a drop. Deaths trigger a breakdown.")
 	_tank_score_body.add_child(drop_desc)
 	_add_slider_group(_tank_score_body, SLIDERS["drops"])
 
@@ -618,19 +618,19 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(_tank_score_body, "Lo-fi character")
 	var lofi_desc := PanelTheme.make_description()
-	lofi_desc.text = "Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO."
+	lofi_desc.text = tr("Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO.")
 	_tank_score_body.add_child(lofi_desc)
 	_add_slider_group(_tank_score_body, SLIDERS["lofi"])
 
 	_add_section(_tank_score_body, "Extra voices")
 	var voices_desc := PanelTheme.make_description()
-	voices_desc.text = "Sub-bass adds depth; PWM bass plays \"&\"s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement."
+	voices_desc.text = tr("Sub-bass adds depth; PWM bass plays \"&\"s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement.")
 	_tank_score_body.add_child(voices_desc)
 	_add_slider_group(_tank_score_body, SLIDERS["voices"])
 
 	_add_section(_tank_score_body, "Tank state → sound")
 	var tank_state_desc := PanelTheme.make_description()
-	tank_state_desc.text = "Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day."
+	tank_state_desc.text = tr("Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day.")
 	_tank_score_body.add_child(tank_state_desc)
 	_add_slider_group(_tank_score_body, SLIDERS["tank_state"])
 
@@ -645,19 +645,19 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(_tank_score_body, "Metric influence")
 	var infl_desc := PanelTheme.make_description()
-	infl_desc.text = "How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring."
+	infl_desc.text = tr("How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring.")
 	_tank_score_body.add_child(infl_desc)
 	_add_slider_group(_tank_score_body, SLIDERS["influence"])
 
 	_add_section(_tank_score_body, "Record this jam")
 	var rec_desc := PanelTheme.make_description()
-	rec_desc.text = "Capture the procedural performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes."
+	rec_desc.text = tr("Capture the procedural performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes.")
 	_tank_score_body.add_child(rec_desc)
 	var rec_row := HBoxContainer.new()
 	rec_row.add_theme_constant_override("separation", 8)
 	_tank_score_body.add_child(rec_row)
 	_record_button = PanelTheme.make_primary_button("⏺ Record")
-	_record_button.tooltip_text = "Start / stop recording the master output."
+	_record_button.tooltip_text = tr("Start / stop recording the master output.")
 	_record_button.pressed.connect(_on_toggle_recording)
 	rec_row.add_child(_record_button)
 	_record_label = Label.new()
@@ -668,15 +668,15 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	action_row.add_theme_constant_override("separation", 8)
 	_tank_score_body.add_child(action_row)
 	var random_btn := PanelTheme.make_primary_button("🎲 Randomize")
-	random_btn.tooltip_text = "Randomize sliders, style, and seed — still follows the live tank."
+	random_btn.tooltip_text = tr("Randomize sliders, style, and seed — still follows the live tank.")
 	random_btn.pressed.connect(_on_randomize)
 	action_row.add_child(random_btn)
 	var wild_btn := PanelTheme.make_secondary_button("🎲 Wild")
-	wild_btn.tooltip_text = "Randomize everything including mood and style."
+	wild_btn.tooltip_text = tr("Randomize everything including mood and style.")
 	wild_btn.pressed.connect(func(): _on_randomize(true))
 	action_row.add_child(wild_btn)
 	var nudge_btn := PanelTheme.make_secondary_button("↻ Nudge phrase")
-	nudge_btn.tooltip_text = "Force a harmonic / arp shift from current tank state."
+	nudge_btn.tooltip_text = tr("Force a harmonic / arp shift from current tank state.")
 	nudge_btn.pressed.connect(_on_nudge_phrase)
 	action_row.add_child(nudge_btn)
 
@@ -685,7 +685,7 @@ func _build_choreography_tab(vbox: VBoxContainer) -> void:
 	_add_section(vbox, "Live readout")
 	_state_badge = Label.new()
 	PanelTheme.as_mono(_state_badge, PanelTheme.SIZE_ITEM)
-	_state_badge.text = "verse"
+	_state_badge.text = tr("verse")
 	vbox.add_child(_state_badge)
 	_live_label = PanelTheme.make_description()
 	_live_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -693,7 +693,7 @@ func _build_choreography_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(vbox, "Dance style")
 	var dance_desc := PanelTheme.make_description()
-	dance_desc.text = "How the school moves — auto follows the track genre, or lock a style."
+	dance_desc.text = tr("How the school moves — auto follows the track genre, or lock a style.")
 	vbox.add_child(dance_desc)
 	var dance_flow := FlowContainer.new()
 	dance_flow.add_theme_constant_override("h_separation", 6)
@@ -718,7 +718,7 @@ func _build_choreography_tab(vbox: VBoxContainer) -> void:
 		conduct_flow.add_child(cbtn)
 
 	var capture_btn := PanelTheme.make_secondary_button("📸 Capture dance")
-	capture_btn.tooltip_text = "Save a 2s PNG burst + hero frame while the tank dances."
+	capture_btn.tooltip_text = tr("Save a 2s PNG burst + hero frame while the tank dances.")
 	capture_btn.pressed.connect(_on_capture_dance)
 	vbox.add_child(capture_btn)
 
@@ -737,7 +737,7 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 	sync_top.add_theme_constant_override("separation", 12)
 	vbox.add_child(sync_top)
 	_sync_enable_check = CheckBox.new()
-	_sync_enable_check.text = "Sync tank to music"
+	_sync_enable_check.text = tr("Sync tank to music")
 	_sync_enable_check.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_sync_enable_check.toggled.connect(_on_sync_enabled_toggled)
 	sync_top.add_child(_sync_enable_check)
@@ -766,12 +766,12 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 
 	var load_btn := PanelTheme.make_primary_button("Choose audio file…")
 	load_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	load_btn.tooltip_text = "Pick MP3, OGG, or WAV from your computer."
+	load_btn.tooltip_text = tr("Pick MP3, OGG, or WAV from your computer.")
 	load_btn.pressed.connect(_on_sync_local_file)
 	vbox.add_child(load_btn)
 
 	var demo_label := PanelTheme.make_description()
-	demo_label.text = "Example demos — tap to play a bundled track:"
+	demo_label.text = tr("Example demos — tap to play a bundled track:")
 	vbox.add_child(demo_label)
 	var demo_grid := GridContainer.new()
 	demo_grid.columns = 2
@@ -815,17 +815,17 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 		_sync_bars.append(bar)
 
 	_bar_legend = PanelTheme.make_description()
-	_bar_legend.text = "Bass · Mid · Treble · Beat"
+	_bar_legend.text = tr("Bass · Mid · Treble · Beat")
 	vbox.add_child(_bar_legend)
 
 	var calibrate_desc := PanelTheme.make_description()
-	calibrate_desc.text = "Calibrate this track (session only — not saved):"
+	calibrate_desc.text = tr("Calibrate this track (session only — not saved):")
 	vbox.add_child(calibrate_desc)
 	var calibrate_row := HBoxContainer.new()
 	calibrate_row.add_theme_constant_override("separation", 6)
 	vbox.add_child(calibrate_row)
 	var reset_meters_btn := PanelTheme.make_secondary_button("Reset meters")
-	reset_meters_btn.tooltip_text = "Re-learn auto-gain for bass/mid/treble on this track."
+	reset_meters_btn.tooltip_text = tr("Re-learn auto-gain for bass/mid/treble on this track.")
 	reset_meters_btn.pressed.connect(_on_calibrate_reset_meters)
 	calibrate_row.add_child(reset_meters_btn)
 	var lat_down := PanelTheme.make_secondary_button("−20 ms")
@@ -1386,17 +1386,17 @@ func _on_toggle_recording() -> void:
 		if amb.has_method("stop_recording_and_save"):
 			var path: String = String(amb.stop_recording_and_save())
 			if path == "":
-				_record_label.text = "Save failed."
+				_record_label.text = tr("Save failed.")
 			else:
 				# Show just the filename — user://… is shell-meaningless.
 				var fname: String = path.get_file()
 				_record_label.text = "Saved %s" % fname
-		_record_button.text = "⏺ Record"
+		_record_button.text = tr("⏺ Record")
 	else:
 		if amb.has_method("start_recording"):
 			amb.start_recording()
-			_record_button.text = "⏹ Stop"
-			_record_label.text = "Recording…"
+			_record_button.text = tr("⏹ Stop")
+			_record_label.text = tr("Recording…")
 
 
 func _refresh_recording_label() -> void:

@@ -79,14 +79,7 @@ func _initialize() -> void:
 			failed.append("%s: %s" % [case["preset"], err])
 		w.queue_free()
 		await process_frame
-	if failed.is_empty():
-		print("[smoke] scenario plant layouts OK: ",
-			", ".join(CASES.map(func(c): return String(c["preset"]))))
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke_scenario_layouts] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_scenario_layouts", failed))
 
 
 func _check_case(world: Node3D, case: Dictionary) -> String:

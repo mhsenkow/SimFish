@@ -12,12 +12,15 @@ config_version=5
 
 config/name="walstad loom"
 config/description="Generative pixel-art Walstad aquarium. 3D voxel content rendered through palette-quantized 512x288 SubViewport."
+config/version="0.2.31"
 run/main_scene="res://tank_menu.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.png"
 
 [autoload]
 
+AppLog="*res://scripts/app_log.gd"
+Localization="*res://scripts/localization.gd"
 TankSaves="*res://scripts/tank_saves.gd"
 TankConfig="*res://scripts/tank_config.gd"
 SpeciesLibrary="*res://scripts/species_library.gd"
@@ -44,32 +47,48 @@ theme/custom="res://assets/theme/walstad_theme.tres"
 textures/canvas_textures/default_texture_filter=0
 renderer/rendering_method="mobile"
 renderer/rendering_method.web="mobile"
-occlusion_culling/use_occlusion_culling=true
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.05, 0.04, 0.07, 1)
+occlusion_culling/use_occlusion_culling=true
 2d/snap/snap_2d_transforms_to_pixel=true
 
 [shader_globals]
 
+iaq_beam_origin={
+"type": "vec3",
+"value": Vector3(0, 999, 0)
+}
+iaq_beam_dir={
+"type": "vec3",
+"value": Vector3(0, -1, 0)
+}
+iaq_beam_cone={
+"type": "vec4",
+"value": Vector4(-1, -1, 30, 0)
+}
+iaq_beam_tint={
+"type": "vec4",
+"value": Vector4(1, 0.9, 0.7, 1)
+}
 iaq_palette_fauna={
 "type": "vec4",
-"value": Vector4(0, 0, 0, 0)
+"value": Vector4(0, 1, 0, 1)
 }
 iaq_palette_foliage={
 "type": "vec4",
-"value": Vector4(0, 0, 0, 0)
+"value": Vector4(0, 1, 0, 1)
 }
 iaq_palette_hardscape={
 "type": "vec4",
-"value": Vector4(0, 0, 0, 0)
+"value": Vector4(0, 1, 0, 1)
 }
 iaq_palette_substrate={
 "type": "vec4",
-"value": Vector4(0, 0, 0, 0)
+"value": Vector4(0, 1, 0, 1)
 }
 iaq_palette_water={
 "type": "vec4",
-"value": Vector4(0, 0, 0, 0)
+"value": Vector4(0, 1, 0, 1)
 }
 iaq_water_absorb={
 "type": "vec4",

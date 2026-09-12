@@ -85,18 +85,18 @@ func _build_ui() -> void:
 	row2.add_child(_make_preset_btn("Top", PRESET_TOP))
 	row2.add_child(_make_preset_btn("3/4", PRESET_THREE_QUARTER))
 	var pond := PanelTheme.make_primary_button("Pond mode")
-	pond.tooltip_text = "Top-down orthographic view tuned for surface patterns and dance"
+	pond.tooltip_text = tr("Top-down orthographic view tuned for surface patterns and dance")
 	pond.pressed.connect(_on_pond_pressed)
 	body.add_child(pond)
 	var reset := PanelTheme.make_primary_button("Reset view")
-	reset.tooltip_text = "Frame the tank using the default for its shape and orientation"
+	reset.tooltip_text = tr("Frame the tank using the default for its shape and orientation")
 	reset.pressed.connect(_on_reset_pressed)
 	body.add_child(reset)
 
 	body.add_child(PanelTheme.make_rule())
 	body.add_child(PanelTheme.make_section("Projection"))
 	_projection_option = OptionButton.new()
-	_projection_option.tooltip_text = "Switch how the 3D scene is flattened to 2D"
+	_projection_option.tooltip_text = tr("Switch how the 3D scene is flattened to 2D")
 	_projection_option.add_item("Perspective (default)")
 	_projection_option.set_item_metadata(0, PROJECTION_PERSPECTIVE)
 	_projection_option.add_item("Orthographic (parallel)")
@@ -135,8 +135,8 @@ func _build_ui() -> void:
 	body.add_child(PanelTheme.make_rule())
 	body.add_child(PanelTheme.make_section("Motion"))
 	_auto_orbit_check = CheckBox.new()
-	_auto_orbit_check.text = "Auto-orbit (cinematic spin)"
-	_auto_orbit_check.tooltip_text = "Slowly rotate the camera around the tank"
+	_auto_orbit_check.text = tr("Auto-orbit (cinematic spin)")
+	_auto_orbit_check.tooltip_text = tr("Slowly rotate the camera around the tank")
 	_auto_orbit_check.toggled.connect(_on_auto_orbit_toggled)
 	body.add_child(_auto_orbit_check)
 
@@ -149,8 +149,8 @@ func _build_ui() -> void:
 		_on_auto_orbit_speed_changed(v))
 
 	_follow_check = CheckBox.new()
-	_follow_check.text = "Follow a random fish"
-	_follow_check.tooltip_text = "Camera tracks a random fish; uncheck to release"
+	_follow_check.text = tr("Follow a random fish")
+	_follow_check.tooltip_text = tr("Camera tracks a random fish; uncheck to release")
 	_follow_check.toggled.connect(_on_follow_toggled)
 	body.add_child(_follow_check)
 
@@ -159,7 +159,7 @@ func _build_ui() -> void:
 	_fov_label = Label.new()
 	_fov_label.text = "55°"
 	_fov_row_label = Label.new()
-	_fov_row_label.text = "FOV"
+	_fov_row_label.text = tr("FOV")
 	_fov_row_label.custom_minimum_size = Vector2(160, 0)
 	_fov_row_label.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	var fov_row := HBoxContainer.new()
@@ -318,7 +318,7 @@ func _refresh_fov_slider_for_projection(proj_id: String) -> void:
 			cur_fov = float(main_ref.camera.fov)
 		_fov_slider.set_value_no_signal(cur_fov)
 		if _fov_row_label != null:
-			_fov_row_label.text = "FOV"
+			_fov_row_label.text = tr("FOV")
 		if _fov_label != null:
 			_fov_label.text = "%d°" % int(cur_fov)
 	else:
@@ -330,6 +330,6 @@ func _refresh_fov_slider_for_projection(proj_id: String) -> void:
 			cur_size = float(main_ref.camera.size)
 		_fov_slider.set_value_no_signal(cur_size)
 		if _fov_row_label != null:
-			_fov_row_label.text = "Size"
+			_fov_row_label.text = tr("Size")
 		if _fov_label != null:
 			_fov_label.text = "%.1f" % cur_size

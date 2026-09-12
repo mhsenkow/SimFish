@@ -24,9 +24,9 @@ func _initialize() -> void:
 	damaged.set_visible(false)
 
 	plant.set_leaf_lod_reduced(true)
-	_assert(failed, not plant._leaf_lod_hidden.is_empty(),
+	TestSupport.check(failed, not plant._leaf_lod_hidden.is_empty(),
 		"far LOD hides stable interior instances")
-	_assert(failed, plant.biomass() == biomass_before
+	TestSupport.check(failed, plant.biomass() == biomass_before
 		and _alive_count(plant) == alive_before,
 		"LOD changes neither biomass nor alive handles")
 	var hidden_indices: Array[int] = []
@@ -36,30 +36,23 @@ func _initialize() -> void:
 	var unchanged: Array[int] = []
 	for h in plant._leaf_lod_hidden:
 		unchanged.append(h.index)
-	_assert(failed, hidden_indices == unchanged,
+	TestSupport.check(failed, hidden_indices == unchanged,
 		"unchanged far state performs no rebuild")
 
 	plant.set_leaf_lod_reduced(false)
-	_assert(failed, plant._leaf_lod_hidden.is_empty(), "near LOD restores subset")
-	_assert(failed, not damaged.visible and damaged.lod_visible,
+	TestSupport.check(failed, plant._leaf_lod_hidden.is_empty(), "near LOD restores subset")
+	TestSupport.check(failed, not damaged.visible and damaged.lod_visible,
 		"LOD restoration does not revive biological damage")
 	for group in plant._leaf_groups:
 		for value in group:
 			var h: VoxelBatch.Handle = value
 			if h.alive and h.visible:
-				_assert(failed, h.lod_visible, "all healthy leaves restore near")
+				TestSupport.check(failed, h.lod_visible, "all healthy leaves restore near")
 
 	plant.free()
 	host.free()
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] plant_leaf_lod OK alive=%d hidden=%d"
-			% [alive_before, hidden_indices.size()])
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
+	quit(TestSupport.report("smoke_plant_leaf_lod", failed))
 
 
 func _alive_count(plant: Plant) -> int:
@@ -70,8 +63,3 @@ func _alive_count(plant: Plant) -> int:
 			if h != null and h.alive:
 				total += 1
 	return total
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)

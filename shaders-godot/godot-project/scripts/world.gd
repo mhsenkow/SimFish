@@ -7,6 +7,7 @@
 # Subsystems extracted to WorldWaterVisuals + WorldFloaterManager helpers.
 
 extends Node3D
+class_name World
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const CanopyDensityBuilder = preload("res://scripts/canopy_density.gd")
@@ -686,10 +687,14 @@ func _process(dt: float) -> void:
 			if _cfg_node != null:
 				fix_col = _cfg_node.tank_fixture_color
 				fix_e = float(_cfg_node.tank_fixture_intensity)
+			var room_dark: float = 0.0
+			if _cfg_node != null:
+				room_dark = clampf(float(_cfg_node.room_darkness), 0.0, 1.0)
 			WorldRoomBuilder.tick_room_lights(
 				_room_tank_spill, _room_wall_bounce, _room_side_light,
 				_room_desk_rim, _room_window_glow, ln,
-				fix_col, fix_e, ln["tank_lights_on"], -0.6, _room_haze_base)
+				fix_col, fix_e, ln["tank_lights_on"], -0.6, _room_haze_base,
+				room_dark)
 
 	# 3. Update Clock hands (sim day-phase or wall time per room preset)
 	if _ambient_due and _room_clock_hour_pivot != null and _room_clock_min_pivot != null:
@@ -855,6 +860,16 @@ func _process(dt: float) -> void:
 		deep_night = clampf(deep_night * lerpf(0.55, 1.25, sunset_drama * 0.45), 0.0, 1.0)
 		# Master kill switch: zero out energies so every downstream multiplier
 		# collapses to ~0 (directional/spot/fill all read from these).
+		# Room darkness (see TankConfig). Crushes the ROOM - sun, ambient and
+		# background - and deliberately leaves fixture_energy alone, so the
+		# tank stays lit while everything around it goes to black. This is a
+		# different axis from global_intensity, which dims the sun but keeps
+		# the scene reading as one evenly-lit room.
+		var darkness: float = 0.0
+		if cfg2 != null:
+			darkness = clampf(float(cfg2.room_darkness), 0.0, 1.0)
+		if darkness > 0.001:
+			global_energy = LightingRig.darkened(global_energy, darkness)
 		var master_on: bool = cfg2 == null or bool(cfg2.light_master_enabled)
 		if not master_on:
 			global_energy = 0.0
@@ -902,13 +917,16 @@ func _process(dt: float) -> void:
 		# etc. read correctly.
 		var spot_day: float = 0.4 + dl * (fixture_energy * 6.0)
 		var spot_night: float = fixture_energy * 8.0 if tank_lights_on else 0.0
-		var spot_energy: float = lerpf(spot_day, spot_night, deep_night)
+		# Darkness counts as night here: see LightingRig.lamp_dominance. A
+		# blacked-out room hands the scene to the lamp whatever the clock says.
+		var lamp_rule: float = LightingRig.lamp_dominance(deep_night, darkness)
+		var spot_energy: float = lerpf(spot_day, spot_night, lamp_rule)
 		var sphere_soft: bool = TANK_SHAPE == "sphere"
 		if sphere_soft:
 			spot_energy *= 0.68
 		# Fixture spotlights take the user's RGB at night; day blends toward
 		# the global beam so the cycle still feels like a sun arc.
-		var fixture_lit: Color = fixture_color.lerp(beam_color, 1.0 - deep_night)
+		var fixture_lit: Color = fixture_color.lerp(beam_color, 1.0 - lamp_rule)
 		for spot in _light_fixture_spots:
 			if not is_instance_valid(spot):
 				continue
@@ -943,7 +961,13 @@ func _process(dt: float) -> void:
 			AccessibilityRuntime.reduced_motion_enabled())
 		_update_accent_lights(cfg2, deep_night, master_on)
 		var fixture_active: bool = tank_lights_on and master_on
-		var fixture_glow: float = deep_night * (1.0 if fixture_active else 0.0)
+		# Unconditional: the shaped cone must reach the foliage shaders even
+		# when volumetric beams are off, because it is what lights the
+		# plants, not just what draws the visible shaft.
+		_sync_beam_cone_globals(fixture_color, fixture_energy, darkness,
+			fixture_active)
+		var fixture_glow: float = LightingRig.lamp_dominance(deep_night, darkness) \
+			* (1.0 if fixture_active else 0.0)
 		fixture_glow *= clampf(fixture_energy * 1.85, 0.0, 1.0)
 		_sync_fixture_housing_glow(fixture_active, fixture_energy, fixture_color, dl, deep_night)
 		if _world_environment != null and _world_environment.environment != null:
@@ -957,7 +981,8 @@ func _process(dt: float) -> void:
 				if cfg2 != null:
 					floor_v = clampf(float(cfg2.ambient_floor), 0.0, 1.0) * 0.35
 				# Tank must stay the brightest thing — clamp room ambient (#27).
-				env.ambient_light_energy = minf(maxf(base_amb, floor_v), _ROOM_AMBIENT_CAP)
+				env.ambient_light_energy = LightingRig.darkened_ambient(
+					maxf(base_amb, floor_v), _ROOM_AMBIENT_CAP, darkness)
 				var amb_day := Color(0.48, 0.50, 0.55)
 				var amb_night := Color(0.04, 0.05, 0.10)
 				env.ambient_light_color = amb_day.lerp(amb_night, smoothstep(0.0, 1.0, deep_night))
@@ -1066,9 +1091,12 @@ func _process(dt: float) -> void:
 		var base_alpha: float = density * 10.0
 		var ray_day: float = dl * 0.75
 		var ray_night: float = 1.05 if tank_lights_on else 0.0
-		var ray_mix: float = lerpf(ray_day, ray_night, deep_night)
+		var beam_rule: float = LightingRig.lamp_dominance(deep_night, darkness)
+		var ray_mix: float = lerpf(ray_day, ray_night, beam_rule)
 		# God-ray opacity blends day side (global) with night side (fixture).
-		var ray_energy_mix: float = lerpf(global_energy, fixture_energy, deep_night)
+		# Under darkness this must follow the LAMP, not the sun - the sun's
+		# energy is exactly what darkness has just taken away.
+		var ray_energy_mix: float = lerpf(global_energy, fixture_energy, beam_rule)
 		var ray_alpha: float = base_alpha * ray_mix * (ray_energy_mix / 0.5)
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
@@ -1080,6 +1108,14 @@ func _process(dt: float) -> void:
 			ray_alpha = maxf(ray_alpha, 0.055 + fixture_energy * 0.12)
 		var trans_ray: float = float(_cached_water_column.get("transmittance", 1.0))
 		ray_alpha = WorldAtmosphere.modulate_god_ray_alpha(ray_alpha, trans_ray)
+		# Per-tank shaft strength, lifted by room darkness - a visible beam
+		# only reads against a dark surround, so the darker the room the more
+		# of the shaft survives.
+		var beam_cfg := _cfg_node
+		if beam_cfg != null:
+			ray_alpha = LightingRig.beam_alpha(
+				ray_alpha, float(beam_cfg.beam_strength),
+				float(beam_cfg.room_darkness))
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
 		# Slightly higher exponent → softer cylinder edges (less "solid cone").
 		var exponent: float = lerp(1.35, 2.65, (anisotropy + 0.9) / 1.8)
@@ -4760,7 +4796,11 @@ func _spawn_initial_plants() -> void:
 	# Some plants land on the driftwood (epiphytes) too.
 
 	var species_specs: Array[Dictionary] = [
+		# Vallisneria runs floor-to-surface then bends and lies ALONG the
+		# waterline - the signature of a valli jungle. Its height is derived
+		# from the tank's own water column, not this range.
 		{"name": "valli",    "max": [14, 22], "rate": 0.18, "sway": 0.22,
+		 "reaches_surface": true, "surface_pooling": true,
 		 "leaf_form": "ribbon", "leaf_length": 8, "max_roots": 4,
 		 "ramp": [Color8(16, 38, 20), Color8(29, 59, 34), Color8(44, 90, 48),
 				  Color8(62, 127, 64), Color8(87, 162, 83), Color8(121, 192, 105)]},
@@ -4772,7 +4812,10 @@ func _spawn_initial_plants() -> void:
 		 "leaf_form": "needle", "leaf_length": 3, "max_roots": 3,
 		 "ramp": [Color8(40, 90, 35), Color8(60, 122, 52), Color8(82, 152, 70),
 				  Color8(110, 180, 92), Color8(145, 205, 118), Color8(180, 225, 145)]},
+		# Stem plants reach the surface and break the meniscus, but they do
+		# not run along it the way a ribbon blade does.
 		{"name": "red_stem", "max": [11, 18], "rate": 0.18, "sway": 0.16,
+		 "reaches_surface": true,
 		 "leaf_form": "lance", "leaf_length": 3, "max_roots": 4,
 		 "ramp": [Color8(78, 32, 30), Color8(115, 50, 40), Color8(155, 70, 52),
 				  Color8(180, 95, 72), Color8(200, 125, 90), Color8(215, 160, 120)]},
@@ -5170,6 +5213,22 @@ func _maybe_recruit_coral() -> void:
 		sim.register_plant(c)
 
 
+# True when the tank is meant to open already grown in.
+func _plants_established() -> bool:
+	if _cfg_node == null:
+		return false
+	return String(_cfg_node.get("cycle_start_mode")) != "fresh"
+
+
+func _plant_establish_scale() -> float:
+	if _cfg_node == null:
+		return PlantEstablish.ESTABLISHED_FRAC
+	var raw: Variant = _cfg_node.get("plant_establish_scale")
+	if raw == null:
+		return PlantEstablish.ESTABLISHED_FRAC
+	return clampf(float(raw), 0.0, 1.0)
+
+
 func _plant_youth_scale() -> float:
 	if _cfg_node != null and String(_cfg_node.get("cycle_start_mode")) == "fresh":
 		var raw: Variant = _cfg_node.get("plant_youth_scale")
@@ -5228,14 +5287,33 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	p.water_surface_y = WATER_HEIGHT
 	p.generation = 0
 	var max_range: Array = spec["max"]
+	var mature_h: int = _rng.randi_range(int(max_range[0]), int(max_range[1]))
+	# Species that reach the surface in reality should reach it in whatever
+	# tank they are planted in. A fixed voxel count cannot: valli's 22-voxel
+	# ceiling is 7.0 units of blade against an 8.25-unit water column, so it
+	# finished growing a metre short and the whole surface-layover path was
+	# unreachable. See PlantEstablish.surface_height.
+	var pools: bool = not not spec.get("surface_pooling", false)
+	if bool(spec.get("reaches_surface", false)):
+		mature_h = PlantEstablish.surface_height(
+			pos.y, WATER_HEIGHT, VOXEL_SIZE, mature_h,
+			PlantEstablish.POOL_SURPLUS_VOXELS if pools else 0)
+	# An established tank has grown its plants, not just its biofilter.
+	# See PlantEstablish - previously valli was planted at 2-5 voxels
+	# against a mature height of 14-22, so a cycled tank opened with stubs.
+	initial_height = PlantEstablish.initial_height(
+		initial_height, mature_h, _plants_established(),
+		_plant_establish_scale(),
+		PlantEstablish.roll_for_position(pos.x, pos.z))
 	p.init(initial_height, {
-		"max_height": _rng.randi_range(int(max_range[0]), int(max_range[1])),
+		"max_height": mature_h,
 		"growth_rate": float(spec["rate"]),
 		"sway_amplitude": float(spec["sway"]),
 		"leaf_form": spec.get("leaf_form", "column"),
 		"leaf_length": int(spec.get("leaf_length", 4)),
 		"max_roots": int(spec.get("max_roots", 5)),
 		"is_epiphyte": is_epiphyte,
+		"surface_pooling": pools,
 	})
 	sim.register_plant(p)
 
@@ -5417,7 +5495,17 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		alt = clamp_plant_site(alt.x, alt.y, seed_reach, 0.25)
 		sp.x = alt.x
 		sp.z = alt.y
-	var script: Script = seed_config.get("script", load("res://scripts/plant.gd"))
+	# A seed taken straight from a live plant carries a real Script here, but
+	# one restored from the seed bank on disk has been through JSON, where a
+	# Script can only survive as its path. Accept either.
+	var script_v: Variant = seed_config.get("script", null)
+	var script: Script = null
+	if script_v is Script:
+		script = script_v
+	elif script_v is String and not String(script_v).is_empty():
+		script = load(String(script_v)) as Script
+	if script == null:
+		script = load("res://scripts/plant.gd") as Script
 	var p = script.new()
 	plants_root.add_child(p)
 	p.global_position = sp
@@ -5637,10 +5725,31 @@ func _build_light_fixture() -> void:
 	var fixture_type: String = "bar"
 	var height_above: float = 1.4
 	var size_frac: float = 0.75
+	# Aimable spot rig (scripts/lighting_rig.gd). Each of these defaults to
+	# "inherit", so a fixture keeps its own hand-tuned cone until a lighting
+	# preset deliberately overrides it.
+	var rig_angle: float = LightingRig.INHERIT
+	var rig_atten: float = LightingRig.INHERIT
+	var rig_off_x: float = 0.0
+	var rig_off_z: float = 0.0
+	var rig_tilt: float = 0.0
+	var rig_yaw: float = 0.0
+	var rig_shadows: bool = false
+	var rig_aim_x: float = LightingRig.AIM_OFF
+	var rig_aim_z: float = LightingRig.AIM_OFF
 	if cfg != null:
 		fixture_type = String(cfg.light_fixture)
 		height_above = float(cfg.light_height)
 		size_frac = float(cfg.light_size)
+		rig_angle = float(cfg.spot_angle_deg)
+		rig_atten = float(cfg.spot_attenuation)
+		rig_off_x = float(cfg.spot_offset_x)
+		rig_off_z = float(cfg.spot_offset_z)
+		rig_tilt = float(cfg.spot_tilt_deg)
+		rig_yaw = float(cfg.spot_yaw_deg)
+		rig_shadows = bool(cfg.spot_shadows)
+		rig_aim_x = float(cfg.spot_aim_x)
+		rig_aim_z = float(cfg.spot_aim_z)
 
 	_god_ray_materials.clear()
 	_fixture_emit_mats.clear()
@@ -5650,44 +5759,49 @@ func _build_light_fixture() -> void:
 	add_child(_light_fixture_root)
 
 	if fixture_type == "gooseneck":
-		# REAL_TANK_FIDELITY #152–153 — clip-on rim clamp + flexible arm +
-		# hard-edged light pool (Counter Nano).
-		_light_fixture_root.position = Vector3(TANK_HALF_W * 0.15, TANK_HEIGHT + 0.05, -TANK_HALF_D + 0.15)
+		# REAL_TANK_FIDELITY #152-153 - clip-on rim clamp + flexible arm +
+		# hard-edged light pool.
+		#
+		# The ROOT rides the HEAD, not the clamp. A gooseneck moves by
+		# bending its neck while the clamp stays bitten to the rim, so the
+		# head is the thing that moves and everything else is rebuilt to
+		# reach it. Parenting the root to the clamp instead is what made
+		# dragging the lamp carry its clamp out over the open water with
+		# the cable trailing off into the room.
+		_light_fixture_root.position = LightingRig.head_position(
+			TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, 0.62,
+			0.15 + rig_off_x, -0.80 + rig_off_z)
+		var head_emit := _register_fixture_emit(
+			VoxelMat.make_emissive(Color(1.65, 1.55, 1.35)))
 		var clamp_mat := VoxelMat.make(Color8(32, 34, 38))
-		var arm_mat := VoxelMat.make(Color8(48, 50, 55))
-		var head_emit := _register_fixture_emit(VoxelMat.make_emissive(Color(1.65, 1.55, 1.35)))
-		# Rim clamp.
-		_add_cube(_light_fixture_root, Vector3(0.0, 0.0, 0.0), Vector3(0.35, 0.18, 0.22), clamp_mat)
-		_add_cube(_light_fixture_root, Vector3(0.0, -0.12, 0.08), Vector3(0.28, 0.08, 0.12), clamp_mat)
-		# Gooseneck segments arcing inward over the water.
-		var segs: Array[Vector3] = [
-			Vector3(0.05, 0.25, 0.15), Vector3(0.12, 0.55, 0.45),
-			Vector3(0.05, 0.70, 0.95), Vector3(-0.15, 0.55, 1.35),
-			Vector3(-0.35, 0.28, 1.65),
-		]
-		for i in segs.size():
-			_add_cube(_light_fixture_root, segs[i], Vector3(0.10, 0.10, 0.10), arm_mat)
-		var head_pos: Vector3 = Vector3(-0.42, 0.12, 1.85)
-		_add_cube(_light_fixture_root, head_pos, Vector3(0.42, 0.18, 0.42), clamp_mat)
-		_add_cube(_light_fixture_root, head_pos + Vector3(0, -0.12, 0), Vector3(0.32, 0.05, 0.32), head_emit)
-		# Cable running off-frame (#154).
-		for i in 6:
-			_add_cube(_light_fixture_root, Vector3(0.15 + float(i) * 0.12, -0.05 - float(i) * 0.08, -0.1),
-				Vector3(0.06, 0.06, 0.06), VoxelMat.make(Color8(24, 24, 28)))
+		# Lamp head, at the root's own origin.
+		_add_cube(_light_fixture_root, Vector3.ZERO,
+			Vector3(0.42, 0.18, 0.42), clamp_mat)
+		_add_cube(_light_fixture_root, Vector3(0.0, -0.12, 0.0),
+			Vector3(0.32, 0.05, 0.32), head_emit)
 		var spot := SpotLight3D.new()
-		spot.position = head_pos + Vector3(0, -0.2, 0)
-		spot.rotation_degrees = Vector3(-78, -18, 0)
-		spot.spot_range = TANK_HEIGHT + height_above + 2.5
-		spot.spot_angle = 22.0  # hard-edged pool
-		spot.spot_attenuation = 1.8
-		spot.shadow_enabled = false
+		spot.name = "LampSpot"
+		spot.position = Vector3(0.0, -0.2, 0.0)
+		spot.rotation_degrees = Vector3(-78 + rig_tilt, -18 + rig_yaw, 0)
+		if LightingRig.has_aim(rig_aim_x, rig_aim_z):
+			spot.rotation_degrees = LightingRig.look_rotation_deg(
+				_light_fixture_root.position + spot.position,
+				LightingRig.aim_target(TANK_HALF_W, TANK_HALF_D,
+					SUBSTRATE_DEPTH, rig_aim_x, rig_aim_z))
+		spot.spot_range = TANK_HEIGHT + height_above + 4.0
+		spot.spot_angle = LightingRig.resolve_angle(rig_angle, 22.0)
+		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, 1.8)
+		spot.shadow_enabled = rig_shadows
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
+		_rebuild_gooseneck()
 		if cfg != null and cfg.light_volumetric:
-			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle, height_above)
+			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 		return
 
-	_light_fixture_root.position = Vector3(0, TANK_HEIGHT + height_above, 0)
+	_light_fixture_root.position = LightingRig.head_position(
+		TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, height_above,
+		rig_off_x, rig_off_z)
 
 	var dark := VoxelMat.make(Color8(28, 28, 32))
 	var panel := VoxelMat.make(Color8(255, 248, 228))   # warm panel face
@@ -5712,19 +5826,23 @@ func _build_light_fixture() -> void:
 		# Single SpotLight pointing down.
 		var spot := SpotLight3D.new()
 		spot.position = Vector3(0, -0.2, 0)
-		spot.rotation_degrees = Vector3(-90, 0, 0)
+		spot.rotation_degrees = LightingRig.aim_rotation_deg(rig_tilt, rig_yaw)
+		if LightingRig.has_aim(rig_aim_x, rig_aim_z):
+			spot.rotation_degrees = LightingRig.look_rotation_deg(
+				_light_fixture_root.position + spot.position,
+				LightingRig.aim_target(TANK_HALF_W, TANK_HALF_D,
+					SUBSTRATE_DEPTH, rig_aim_x, rig_aim_z))
 		spot.spot_range = TANK_HEIGHT + height_above + 3.0
-		spot.spot_angle = 38.0
-		spot.spot_attenuation = 1.4
-		if TANK_SHAPE == "sphere":
-			spot.spot_angle = 56.0
-			spot.spot_attenuation = 0.9
-		spot.shadow_enabled = false
+		var def_angle: float = 56.0 if TANK_SHAPE == "sphere" else 38.0
+		var def_atten: float = 0.9 if TANK_SHAPE == "sphere" else 1.4
+		spot.spot_angle = LightingRig.resolve_angle(rig_angle, def_angle)
+		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, def_atten)
+		spot.shadow_enabled = rig_shadows
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
 
 		if cfg != null and cfg.light_volumetric:
-			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle, height_above)
+			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 	else:
 		# Bar - long thin housing across the tank width.
 		var bar_length: float = size_frac * TANK_HALF_W * 2.0
@@ -5768,7 +5886,7 @@ func _build_light_fixture() -> void:
 			_light_fixture_spots.append(spot)
 
 			if cfg != null and cfg.light_volumetric:
-				_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle, height_above)
+				_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 
 	if TANK_SHAPE == "sphere":
 		_apply_sphere_aquarium_lighting()
@@ -5789,6 +5907,10 @@ func _sync_fixture_housing_glow(active: bool, energy: float, col: Color,
 	var brightness: float = lerpf(day_read, night_read, deep_night)
 	if not active:
 		brightness = lerpf(day_read * 0.35, 0.05, deep_night)
+	if _light_highlight_on:
+		# Lift rather than recolour, so a highlighted lamp still reads as
+		# that lamp. Floored so hovering an OFF fixture still shows.
+		brightness = maxf(brightness * LIGHT_HIGHLIGHT_BOOST, 0.55)
 	var base := Color(1.22, 1.16, 0.98)
 	var bloom := Color(1.28, 1.24, 1.05)
 	for i in _fixture_emit_mats.size():
@@ -5903,10 +6025,241 @@ func _apply_sphere_aquarium_lighting() -> void:
 	add_child(_sphere_fill_light)
 
 
-func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, height_above: float) -> void:
-	# Calculate height from spotlight down to substrate.
-	var spot_y: float = TANK_HEIGHT + height_above + spot.position.y
-	var dist: float = spot_y - SUBSTRATE_DEPTH
+# Push the live spot into the shader globals that the unshaded voxel and
+# foliage shaders read. Without this the lamp lights the water volume but
+# not the plants standing in it - see shaders/beam_cone.gdshaderinc.
+func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
+		darkness: float, active: bool) -> void:
+	var spot: SpotLight3D = null
+	for s in _light_fixture_spots:
+		if is_instance_valid(s):
+			spot = s
+			break
+	if spot == null or not active or fixture_energy <= 0.001:
+		RenderingServer.global_shader_parameter_set(
+			"iaq_beam_cone", Vector4(-1.0, -1.0, 30.0, 0.0))
+		return
+	RenderingServer.global_shader_parameter_set(
+		"iaq_beam_origin", spot.global_position)
+	RenderingServer.global_shader_parameter_set(
+		"iaq_beam_dir", LightingRig.spot_forward(spot))
+	RenderingServer.global_shader_parameter_set(
+		"iaq_beam_cone", LightingRig.cone_params(
+			spot.spot_angle, spot.spot_range, fixture_energy))
+	RenderingServer.global_shader_parameter_set(
+		"iaq_beam_tint", LightingRig.cone_tint(fixture_color, darkness))
+
+
+# --- Live light manipulation (see scripts/light_handle.gd) --------------
+#
+# Rebuilding the whole fixture on every mouse-move would be absurd, so a
+# drag moves the existing nodes: the fixture root carries the visible lamp,
+# the spot re-aims from its new position, and the shaft mesh is rebuilt
+# (it is one cone - cheap, and its length genuinely changes with the move).
+
+# Hover / grabbed affordance. The lamp is a small dark object in a dark
+# room; without a visible response to the cursor there is no way to
+# discover that it can be picked up at all.
+var _light_highlight_on: bool = false
+
+
+# Just a flag: _sync_fixture_housing_glow rewrites the emissive albedo every
+# frame from the daylight curve, so anything written directly here would be
+# clobbered on the next tick. The boost is applied inside that sync instead.
+func set_light_highlight(on: bool) -> void:
+	_light_highlight_on = on
+
+
+const LIGHT_HIGHLIGHT_BOOST: float = 1.85
+
+
+func light_fixture_head_world() -> Vector3:
+	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
+		return Vector3.INF
+	for s in _light_fixture_spots:
+		if is_instance_valid(s):
+			return s.global_position
+	return _light_fixture_root.global_position
+
+
+# Where the cone lands, in world space - the anchor for the aim handle.
+# Rebuild the clamp, neck and cable so they reach the head wherever it is.
+# Called on build and on every drag step - it is a handful of small boxes,
+# far cheaper than rebuilding the whole fixture.
+const GOOSENECK_PART := "GooseneckPart"
+
+
+func _rebuild_gooseneck() -> void:
+	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
+		return
+	for child in _light_fixture_root.get_children():
+		if child is MeshInstance3D and child.has_meta(GOOSENECK_PART):
+			child.queue_free()
+	var corners: Array[Vector3] = _tank_footprint_corners()
+	var rim_y: float = TANK_HEIGHT + 0.05
+	var head_world: Vector3 = _light_fixture_root.position
+	var clamp_world: Vector3 = Gooseneck.clamp_point(head_world, corners, rim_y)
+	var outward: Vector3 = Gooseneck.outward_at(clamp_world, corners)
+	var clamp_mat := VoxelMat.make(Color8(32, 34, 38))
+	var arm_mat := VoxelMat.make(Color8(48, 50, 55))
+	var cable_mat := VoxelMat.make(Color8(24, 24, 28))
+
+	# Everything is authored in world space then expressed relative to the
+	# root, because the root is the head and the head is what moved.
+	var base: Vector3 = head_world
+
+	# The clamp itself, biting over the rim.
+	_add_goose_cube(clamp_world - base, Vector3(0.35, 0.18, 0.22), clamp_mat)
+	_add_goose_cube(clamp_world - base + Vector3(0.0, -0.12, 0.0)
+		+ outward * 0.06, Vector3(0.28, 0.10, 0.14), clamp_mat)
+
+	# Neck: skip the last sample, which is the head itself.
+	var arm: Array[Vector3] = Gooseneck.arm_samples(clamp_world, head_world)
+	for i in range(arm.size() - 1):
+		var t: float = Gooseneck.ARM_THICKNESS
+		_add_goose_cube(arm[i] - base, Vector3(t, t, t), arm_mat)
+
+	# Cable over the rim and down the outside of the glass.
+	var cable: Array[Vector3] = Gooseneck.cable_samples(
+		clamp_world, outward, TANK_HEIGHT * 0.55)
+	for p in cable:
+		var ct: float = Gooseneck.CABLE_THICKNESS
+		_add_goose_cube(p - base, Vector3(ct, ct, ct), cable_mat)
+
+
+func _add_goose_cube(local_pos: Vector3, size: Vector3, mat: Material) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(size)
+	mi.material_override = mat
+	mi.set_meta(GOOSENECK_PART, true)
+	_light_fixture_root.add_child(mi)
+	mi.position = local_pos
+
+
+func light_aim_world() -> Vector3:
+	if _cfg_node == null:
+		return Vector3.INF
+	var ax: float = float(_cfg_node.spot_aim_x)
+	var az: float = float(_cfg_node.spot_aim_z)
+	if not LightingRig.has_aim(ax, az):
+		return Vector3.INF
+	return LightingRig.aim_target(
+		TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ax, az)
+
+
+func light_rim_plane_y() -> float:
+	var h: float = 1.4
+	if _cfg_node != null:
+		h = float(_cfg_node.light_height)
+		if String(_cfg_node.light_fixture) == "gooseneck":
+			# The gooseneck head hangs just over the rim, so that is the
+			# plane the drag should track - not the taller pendant mount.
+			h = 0.62
+	return TANK_HEIGHT + h
+
+
+func has_movable_light() -> bool:
+	return _light_fixture_root != null \
+		and is_instance_valid(_light_fixture_root) \
+		and not _light_fixture_spots.is_empty()
+
+
+# Move the lamp. Offsets are -1..1 fractions of the tank's own half-extent.
+func set_light_head_offset(offset_x: float, offset_z: float) -> void:
+	if not has_movable_light():
+		return
+	var fixture: String = "bar"
+	var height_above: float = 1.4
+	if _cfg_node != null:
+		fixture = String(_cfg_node.light_fixture)
+		height_above = float(_cfg_node.light_height)
+	# The gooseneck clamps to the rim; the others hang above it.
+	var above: float = 0.62 if fixture == "gooseneck" else height_above
+	var want: Vector3 = LightHandle.head_world(
+		TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, above, offset_x, offset_z)
+	if fixture == "gooseneck":
+		# Keep the head within reach of the rim it is clamped to. A neck
+		# that stretches across the room stops reading as one object.
+		var rim_y: float = TANK_HEIGHT + 0.05
+		var clamp_world: Vector3 = Gooseneck.clamp_point(
+			want, _tank_footprint_corners(), rim_y)
+		want = Gooseneck.constrain_head(want, clamp_world,
+			Gooseneck.max_reach(TANK_HALF_W, TANK_HALF_D))
+	_light_fixture_root.position = want
+	if fixture == "gooseneck":
+		_rebuild_gooseneck()
+	_reaim_light_spots()
+	_rebuild_light_beam()
+
+
+func set_light_aim(aim_x: float, aim_z: float) -> void:
+	if _cfg_node != null:
+		_cfg_node.spot_aim_x = aim_x
+		_cfg_node.spot_aim_z = aim_z
+	_reaim_light_spots()
+	_rebuild_light_beam()
+
+
+func _reaim_light_spots() -> void:
+	if _cfg_node == null or _light_fixture_root == null:
+		return
+	var ax: float = float(_cfg_node.spot_aim_x)
+	var az: float = float(_cfg_node.spot_aim_z)
+	if not LightingRig.has_aim(ax, az):
+		return
+	var target: Vector3 = LightingRig.aim_target(
+		TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ax, az)
+	for s in _light_fixture_spots:
+		if not is_instance_valid(s):
+			continue
+		s.rotation_degrees = LightingRig.look_rotation_deg(
+			_light_fixture_root.position + s.position, target)
+
+
+func _rebuild_light_beam() -> void:
+	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
+		return
+	if _cfg_node == null or not bool(_cfg_node.light_volumetric):
+		return
+	# Drop the old shaft (and its motes) before building the new one, or a
+	# few seconds of dragging leaves a fan of stale cones in the tank.
+	for child in _light_fixture_root.get_children():
+		if child is MeshInstance3D and String(child.name).begins_with("BeamShaft"):
+			_god_ray_materials.erase((child as MeshInstance3D).material_override)
+			child.queue_free()
+		elif child is GPUParticles3D and String(child.name).begins_with("DustMotes"):
+			child.queue_free()
+	var height_above: float = float(_cfg_node.light_height)
+	for s in _light_fixture_spots:
+		if is_instance_valid(s):
+			_add_god_ray_beam(_light_fixture_root, s, s.spot_angle)
+			break
+
+
+# NB no height_above parameter: the shaft reads the lamp's REAL height off
+# the fixture that carries it (parent.position.y), because the nominal
+# light_height is wrong for the gooseneck, whose clamp sits on the rim.
+func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> void:
+	# Length along the AIM direction, not straight down. A raked beam
+	# travels further before it lands than a vertical one, and the shaft
+	# used to be a vertical cylinder regardless of where the light pointed
+	# - so a tilted spot lit one wall while its visible beam went somewhere
+	# else entirely.
+	# The lamp's REAL height, read from the fixture that carries it. The old
+	# form assumed every fixture root sits at TANK_HEIGHT + height_above,
+	# which is true for the pendant and the bar but NOT the gooseneck - its
+	# clamp sits on the rim at TANK_HEIGHT + 0.05, so with the default
+	# light_height of 1.4 the shaft was built from a phantom lamp 1.35 units
+	# above the one you can see. That is why the beam did not look like it
+	# came from the lamp.
+	var spot_y: float = parent.position.y + spot.position.y
+	# Read the light's ACTUAL forward axis rather than rebuilding it from
+	# euler angles. A look-at rotation can carry a non-zero Z that a
+	# tilt/yaw reconstruction silently drops, which would leave the visible
+	# shaft pointing somewhere the light is not.
+	var aim: Vector3 = LightingRig.spot_forward(spot)
+	var dist: float = LightingRig.beam_span(
+		spot_y, SUBSTRATE_DEPTH, aim, (spot_y - SUBSTRATE_DEPTH) * 2.6)
 	if dist <= 0.1:
 		return
 
@@ -5914,7 +6267,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 	var mesh := CylinderMesh.new()
 	mesh.top_radius = 0.05
 	# Widen bottom radius to match spotlight visual angle.
-	mesh.bottom_radius = dist * tan(deg_to_rad(spot_angle * 0.45))
+	mesh.bottom_radius = LightingRig.beam_end_radius(dist, spot_angle * 0.90)
 	mesh.height = dist
 	mesh.cap_top = false
 	mesh.cap_bottom = false
@@ -5922,10 +6275,15 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 	mesh.rings = 4
 
 	var mi := MeshInstance3D.new()
+	mi.name = "BeamShaft"
 	mi.mesh = mesh
 	
-	# Position the mesh. CylinderMesh is centered, so offset down by half height.
-	mi.position = Vector3(spot.position.x, spot.position.y - dist * 0.5, spot.position.z)
+	# CylinderMesh runs along local +Y and is centred, so push it half a
+	# length along the aim direction and rotate +Y onto that direction.
+	mi.position = spot.position + aim * (dist * 0.5)
+	# Local -Y points along the beam so UV.y = 0 (the bright, sealed end of
+	# the shaft) stays at the lamp. See LightingRig.beam_basis.
+	mi.basis = LightingRig.beam_basis(aim)
 	
 	# Load the shader and create a material.
 	var shader := load("res://shaders/god_ray.gdshader") as Shader
@@ -5937,6 +6295,8 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 		# from the daylight curve in the _process loop; the initial 0 is
 		# just so the first frame before the loop runs doesn't flash.
 		mat.set_shader_parameter("beam_color", Color(1.0, 0.95, 0.80, 0.0))
+		# beam_color.a is driven per-frame from the daylight curve; the
+		# per-tank strength + darkness lift ride along with it there.
 		mat.set_shader_parameter("speed", 1.2)
 		mat.set_shader_parameter("noise_scale", 1.8)
 		# Tight top/bottom seal — the asymmetric depth dissipation handles
@@ -5946,6 +6306,17 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float, hei
 		mat.set_shader_parameter("forward_scatter", 0.55)
 		mat.set_shader_parameter("depth_dissipation", 0.72)
 		mat.set_shader_parameter("water_surface_y", WATER_HEIGHT)
+		# Clip the shaft to the tank. Without this the cone's far end draws
+		# straight through the glass - on a hex, whose walls are not
+		# axis-aligned, that is a bright straight line across the corner.
+		var fp_planes: Array[Vector4] = LightingRig.footprint_plane_vec4s(
+			_tank_footprint_corners())
+		var plane_n: int = 0
+		for v in fp_planes:
+			if v != Vector4.ZERO:
+				plane_n += 1
+		mat.set_shader_parameter("tank_planes", fp_planes)
+		mat.set_shader_parameter("tank_plane_count", plane_n)
 
 		# Falloff exponent is overwritten each frame from TankConfig fog
 		# anisotropy. Lowered base range (1.0..2.4 from 1.5..4.0) so the
@@ -6105,7 +6476,7 @@ func _tick_topdown_surface(_sdt: float) -> void:
 	if not _topdown_surface_active() or sim == null or _water_material_ref == null:
 		return
 	var motion_e: float = sim.topdown_motion_energy() if sim.has_method("topdown_motion_energy") else 0.0
-	var dl: float = sim.daylight() if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var calm: float = TopdownMotion.surface_calm_factor(motion_e, dl < 0.22)
 	var stress: float = sim.topdown_tank_stress() if sim.has_method("topdown_tank_stress") else 0.0
 	var cycle_ok: bool = sim.topdown_cycle_ok() if sim.has_method("topdown_cycle_ok") else true
@@ -6845,9 +7216,7 @@ func _rebuild_environment_field() -> void:
 	_env_field_ready = true
 	_env_light.clear()
 	_env_warmth.clear()
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var heater_on: bool = true
 	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
 		heater_on = not not _cfg_node.heater_enabled
@@ -6880,9 +7249,7 @@ func _light_penetration_uncached(world_pos: Vector3) -> float:
 
 
 func _warmth_uncached(world_pos: Vector3) -> float:
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var heater_on: bool = true
 	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
 		heater_on = not not _cfg_node.heater_enabled
@@ -6946,9 +7313,7 @@ func release_pearling_emitter(plant: Node3D) -> void:
 
 
 func surface_warmth_at(world_pos: Vector3) -> float:
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var heater_on: bool = true
 	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
 		heater_on = not not _cfg_node.heater_enabled
@@ -8261,6 +8626,15 @@ func _build_heater() -> void:
 # as the tank so the room feels of-a-piece, not pasted on.
 
 # Desaturate + darken room props so the tank remains the light source (#17).
+# Room surface value ladder — see _build_room_environment. Each step must
+# clear a palette bucket or the surfaces merge after quantisation.
+const ROOM_VALUE_DESK: float = 0.16
+const ROOM_VALUE_WALL: float = 0.44
+const ROOM_VALUE_CABINET: float = 0.52
+const ROOM_VALUE_KICK: float = 0.74
+const ROOM_VALUE_FLOOR: float = 0.80
+
+
 func _room_calm_color(c: Color, darken: float, desat: float) -> Color:
 	var out: Color = c.darkened(clampf(darken, 0.0, 0.9))
 	var luma: float = out.r * 0.299 + out.g * 0.587 + out.b * 0.114
@@ -8293,8 +8667,23 @@ func _build_room_environment() -> void:
 	var accent_color: Color = Color8(accent_rgb[0], accent_rgb[1], accent_rgb[2])
 	var light_color: Color = Color8(light_rgb[0], light_rgb[1], light_rgb[2])
 	# Desaturate + darken the room so the tank stays the light source (#17, #18).
-	desk_color = _room_calm_color(desk_color, 0.22, 0.32)
-	wall_color = _room_calm_color(wall_color, 0.38, 0.40)
+	# ROOM VALUE LADDER.
+	#
+	# The room rendered as one flat beige — wall, desk, cabinet and floor all
+	# indistinguishable — which is what made the tank look like it was
+	# floating in a void even after the stand was built. The cause is not
+	# that the colours were identical; it is that they were CLOSE, and the
+	# palette-quantize pass snaps near values into the same palette entry.
+	# Below one palette step apart, two surfaces render as the same colour no
+	# matter what you set.
+	#
+	# So the surfaces are spaced deliberately, brightest to darkest, in the
+	# order an interior actually reads: the desk top catches the tank's own
+	# light, the wall sits behind it, the cabinet is a vertical face in
+	# shadow, and the floor is darkest. Keep these gaps wide or the ladder
+	# collapses back into beige.
+	desk_color = _room_calm_color(desk_color, ROOM_VALUE_DESK, 0.30)
+	wall_color = _room_calm_color(wall_color, ROOM_VALUE_WALL, 0.42)
 	accent_color = _room_calm_color(accent_color, 0.28, 0.35)
 	# Cache four shades of the desk colour so the surface reads as
 	# organic wood grain instead of a 2-tone checkerboard. Hash-noise
@@ -8360,6 +8749,12 @@ func _build_room_environment() -> void:
 		lip.material_override = desk_dark_mat
 		lip.position = Vector3(px2, desk_y + 0.02, desk_half_d - 0.1)
 		room.add_child(lip)
+
+	# The tank stood on a floating slab: a 1.2-thick desk surface with
+	# nothing beneath it and no floor, so the whole thing read as levitating
+	# in a void (tank realism pass). A real aquarium sits on a stand.
+	_build_tank_stand(room, desk_y, desk_half_w, desk_half_d,
+		desk_color, haze_tint)
 
 	_build_room_floor_caustic(room, desk_y, desk_half_w, desk_half_d)
 
@@ -8670,6 +9065,99 @@ func _build_counter_mirror_props(parent: Node3D, desk_y: float,
 	# Cropped counter edge — a short return that disappears out of frame.
 	_add_cube(parent, Vector3(desk_half_w * 0.95, desk_y + 0.02, desk_half_d * 0.35),
 		Vector3(0.55, 0.08, 1.2), VoxelMat.make_room(Color8(228, 226, 220), 0.4, haze_tint))
+
+
+# Cabinet + floor beneath the desk surface (tank realism pass).
+#
+# THE SCALE TRICK. A stand is furniture for a HUMAN, so it is ~30 inches tall
+# whatever tank goes on it — a nano and a 120 gallon sit at the same height.
+# Holding it constant while the tank above varies is precisely what makes
+# tank size read: the viewer gets a fixed reference to measure against. Scale
+# the stand with the tank and every tank looks identical.
+#
+# Proportions follow real aquarium cabinets: the body is inset so the surface
+# overhangs it, and a recessed toe-kick keeps it from reading as a monolith.
+func _build_tank_stand(parent: Node3D, desk_y: float, desk_half_w: float,
+		desk_half_d: float, desk_color: Color, haze_tint: Color) -> void:
+	# The cabinet builds its OWN materials rather than reusing the desk's.
+	# Sharing them made the stand the same tone as the surface, the wall and
+	# the floor — it read as a pale plinth, and the doors were invisible.
+	# Real stands are darker than the top they carry; the contrast is what
+	# separates the mass and sells it as furniture.
+	# Room materials are deliberately flattened (palette_global_scale 0.35,
+	# haze blending) so the room never out-competes the tank. Good direction,
+	# but it ate the stand's separation — cabinet, desk, wall and floor all
+	# landed on one beige. Differentiate by VALUE, and use a low haze: the
+	# cabinet is the nearest thing to camera, so it should hold its own tone
+	# rather than fading into the back wall.
+	var body_mat: ShaderMaterial = VoxelMat.make_room(
+		desk_color.darkened(ROOM_VALUE_CABINET), 0.18, haze_tint)
+	var door_mat: ShaderMaterial = VoxelMat.make_room(
+		desk_color.darkened(ROOM_VALUE_CABINET - 0.14), 0.18, haze_tint)
+	var dark_mat: ShaderMaterial = VoxelMat.make_room(
+		desk_color.darkened(ROOM_VALUE_KICK), 0.14, haze_tint)
+	var stand_h: float = TankSpec.units_for_inches(30.0)
+	var top_y: float = desk_y - 1.2
+	var floor_y: float = top_y - stand_h
+
+	# Overhang: real cabinet tops proud the body by an inch or two, not a
+	# foot. Too much and the surface looks unsupported.
+	var inset: float = 0.55
+	var body_hw: float = maxf(1.0, desk_half_w - inset)
+	var body_hd: float = maxf(0.8, desk_half_d - inset * 0.7)
+	var kick_h: float = minf(0.9, stand_h * 0.14)
+	var body_h: float = stand_h - kick_h
+	var body_y: float = top_y - body_h * 0.5
+
+	var body := MeshInstance3D.new()
+	body.name = "StandBody"
+	body.mesh = VoxelMat.get_box(Vector3(body_hw * 2.0, body_h, body_hd * 2.0))
+	body.material_override = body_mat
+	body.position = Vector3(0.0, body_y, 0.0)
+	parent.add_child(body)
+
+	var kick := MeshInstance3D.new()
+	kick.name = "StandToeKick"
+	kick.mesh = VoxelMat.get_box(Vector3(
+		maxf(0.5, body_hw - 0.35) * 2.0, kick_h, maxf(0.4, body_hd - 0.35) * 2.0))
+	kick.material_override = dark_mat
+	kick.position = Vector3(0.0, floor_y + kick_h * 0.5, 0.0)
+	parent.add_child(kick)
+
+	# Two doors with handles. Cheap, and it is the detail that turns a box
+	# into furniture.
+	var door_z: float = body_hd + 0.03
+	var door_h: float = body_h * 0.78
+	var door_w: float = body_hw * 0.92
+	for side in [-1.0, 1.0]:
+		var door := MeshInstance3D.new()
+		door.mesh = VoxelMat.get_box(Vector3(door_w * 0.48, door_h, 0.06))
+		door.material_override = door_mat
+		door.position = Vector3(side * door_w * 0.25, body_y, door_z)
+		parent.add_child(door)
+		var handle := MeshInstance3D.new()
+		handle.mesh = VoxelMat.get_box(Vector3(0.10, door_h * 0.26, 0.10))
+		handle.material_override = dark_mat
+		handle.position = Vector3(side * 0.24, body_y, door_z + 0.08)
+		parent.add_child(handle)
+
+	# Floor. Without it the stand ends in nothing and the grounding is lost.
+	var floor_mi := MeshInstance3D.new()
+	floor_mi.name = "RoomFloor"
+	floor_mi.mesh = VoxelMat.get_box(Vector3(
+		desk_half_w * 4.0, 0.4, desk_half_d * 5.0))
+	# Notably darker than the cabinet, or the stand dissolves into the floor.
+	# Cooler and darker than the cabinet: a warm cabinet against a cool floor
+	# separates by hue as well as value, which survives the palette squeeze
+	# better than value alone.
+	# Darkest, and cooled toward blue: separating by HUE as well as value
+	# survives the palette squeeze better than value alone, and a cool floor
+	# under warm furniture is what a lamplit room actually looks like.
+	floor_mi.material_override = VoxelMat.make_room(
+		desk_color.darkened(ROOM_VALUE_FLOOR).lerp(Color(0.09, 0.10, 0.14), 0.66),
+		0.35, haze_tint)
+	floor_mi.position = Vector3(0.0, floor_y - 0.2, desk_half_d * 0.9)
+	parent.add_child(floor_mi)
 
 
 func _build_room_floor_caustic(parent: Node3D, desk_y: float,
@@ -9224,7 +9712,7 @@ func deposit_flow_burst(origin: Vector3, vel: Vector3, strength: float) -> void:
 func tick_flow_convection(dt: float) -> void:
 	if _flow_field == null or sim == null:
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	_flow_field.tick_convection(dt, dl)
 
 
@@ -9746,9 +10234,9 @@ func spawn_mycelium_patch(at: Vector3) -> Node3D:
 	return p
 
 
-# Public entry point for the retro fish store. Picks a sensible spawn
+# Public entry point for the Adopt panel. Picks a sensible spawn
 # position near the top-center (so the new arrival drops in visibly), then
-# delegates to the private spawn helper. The fish_store.gd panel calls
+# delegates to the private spawn helper. The adopt_panel.gd panel calls
 # this; nothing else does.
 func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool:
 	if sim == null or fauna_root == null:
@@ -9832,10 +10320,6 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 			return true
 		_:
 			return false
-
-
-func spawn_purchased_fish(genome: Dictionary) -> void:
-	spawn_adopted_fish(genome)
 
 
 func spawn_adopted_fish(genome: Dictionary) -> void:

@@ -11,9 +11,9 @@ const ARCHETYPES: Array[Dictionary] = [
 ]
 
 
-static func sample(seed: int = -1) -> Dictionary:
+static func sample(species_seed: int = -1) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = seed if seed >= 0 else randi()
+	rng.seed = species_seed if species_seed >= 0 else randi()
 	for _attempt in MAX_REJECTIONS:
 		var archetype: Dictionary = ARCHETYPES[rng.randi_range(0, ARCHETYPES.size() - 1)]
 		var anchors: Array = RealSpeciesLibrary.in_category(String(archetype.category))

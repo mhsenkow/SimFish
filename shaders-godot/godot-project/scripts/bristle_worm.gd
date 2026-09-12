@@ -91,9 +91,7 @@ func _process(dt: float) -> void:
 
 	# Day/night gate. Real bristle worms come out at dusk + retreat by
 	# dawn. We lerp the emerged amount so the rise is gradual.
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var emerged_target: float = clampf((0.30 - dl) / 0.30, 0.0, 1.0)
 	_emerged_t = lerpf(_emerged_t, emerged_target, sdt * 0.35)
 	var target_depth: float = lerpf(-HIDE_DEPTH, SHOW_DEPTH, _emerged_t)

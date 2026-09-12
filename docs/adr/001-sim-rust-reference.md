@@ -1,6 +1,6 @@
 # ADR 001: Keep `sim-rust/` as reference-only
 
-**Status:** Accepted · **Date:** 2026-06-28
+**Status:** Superseded by [ADR 003](003-sim-rust-as-oracle.md) · **Date:** 2026-06-28
 
 ## Context
 

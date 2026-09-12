@@ -103,7 +103,7 @@ static func record_quiet_moment(arc: Dictionary, line: String) -> void:
 
 
 static func compose_quiet_inner_line(sim: Node, _arc: Dictionary, gap_s: int) -> String:
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	if gap_s >= 3600 and dl < 0.25:
 		return "while you slept I watched the light move on the glass"
 	if gap_s >= 7200:

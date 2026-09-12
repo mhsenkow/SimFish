@@ -39,10 +39,4 @@ func _initialize() -> void:
 				])
 		w.queue_free()
 		await process_frame
-	if failed.is_empty():
-		print("[smoke] all tank shapes OK: ", ", ".join(SHAPES))
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_tank_shapes", failed))

@@ -19,10 +19,10 @@ func _initialize() -> void:
 	var a0: float = calm.arousal
 	for _i in 30:
 		MindContagion.tick(calm, mob, 0.1)
-	_assert(failed, calm.arousal > a0 + 0.2, "calm fish catches the mob's agitation (%.2f→%.2f)" % [a0, calm.arousal])
-	_assert(failed, calm.arousal <= 1.0 and calm.arousal <= 0.9 + 1e-3,
+	TestSupport.check(failed, calm.arousal > a0 + 0.2, "calm fish catches the mob's agitation (%.2f→%.2f)" % [a0, calm.arousal])
+	TestSupport.check(failed, calm.arousal <= 1.0 and calm.arousal <= 0.9 + 1e-3,
 			"contagion never overshoots the local mean / clamps (got %.3f)" % calm.arousal)
-	_assert(failed, calm.mood < 0.0, "negative school mood spreads too (slower)")
+	TestSupport.check(failed, calm.mood < 0.0, "negative school mood spreads too (slower)")
 
 	# A jittery fish among calm neighbours settles.
 	var jittery: Fish = _mk("jittery", Vector3(0, 2, 0), 0.9, 0.0)
@@ -32,7 +32,7 @@ func _initialize() -> void:
 	]
 	for _j in 30:
 		MindContagion.tick(jittery, serene, 0.1)
-	_assert(failed, jittery.arousal < 0.5, "jittery fish calms among serene neighbours (%.2f)" % jittery.arousal)
+	TestSupport.check(failed, jittery.arousal < 0.5, "jittery fish calms among serene neighbours (%.2f)" % jittery.arousal)
 
 	# Susceptibility: a bold loner absorbs less than a timid schooler (same mob).
 	var bold: Fish = _mk("bold", Vector3(0, 2, 0), 0.1, 0.0)
@@ -44,23 +44,17 @@ func _initialize() -> void:
 	for _k in 10:
 		MindContagion.tick(bold, mob, 0.1)
 		MindContagion.tick(timid, mob, 0.1)
-	_assert(failed, timid.arousal > bold.arousal,
+	TestSupport.check(failed, timid.arousal > bold.arousal,
 			"timid schooler absorbs more than a bold loner (timid=%.2f bold=%.2f)" % [timid.arousal, bold.arousal])
-	_assert(failed, MindContagion.susceptibility(bold) < MindContagion.susceptibility(timid),
+	TestSupport.check(failed, MindContagion.susceptibility(bold) < MindContagion.susceptibility(timid),
 			"bold fish has lower susceptibility")
 
 	# No neighbours → no change (and no crash).
 	var alone: Fish = _mk("alone", Vector3(0, 2, 0), 0.5, 0.0)
 	MindContagion.tick(alone, [], 0.1)
-	_assert(failed, is_equal_approx(alone.arousal, 0.5), "a lone fish's affect is untouched")
+	TestSupport.check(failed, is_equal_approx(alone.arousal, 0.5), "a lone fish's affect is untouched")
 
-	if failed.is_empty():
-		print("[smoke] contagion OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] " + msg)
-		quit(1)
+	quit(TestSupport.report("smoke_contagion", failed))
 
 
 func _mk(id: String, pos: Vector3, arousal: float, mood: float) -> Fish:
@@ -71,8 +65,3 @@ func _mk(id: String, pos: Vector3, arousal: float, mood: float) -> Fish:
 	f.arousal = arousal
 	f.mood = mood
 	return f
-
-
-func _assert(failed: Array[String], ok: bool, msg: String) -> void:
-	if not ok:
-		failed.append(msg)

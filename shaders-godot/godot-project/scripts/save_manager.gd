@@ -16,6 +16,15 @@ static func reset_for_test() -> void:
 	_pending_write_path = ""
 	_pending_write_payload = null
 
+# AppLog is an autoload, so it is absent in headless --script runs and in any
+# static context before the tree exists. Never assume it is there.
+static func _log() -> Node:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).root.get_node_or_null("AppLog")
+	return null
+
+
 static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeController,
 		save_restored_flag: StringName) -> void:
 	if host.get(save_restored_flag):
@@ -34,6 +43,33 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 		if host.has_method("_show_corrupt_save_prompt"):
 			host.call("_show_corrupt_save_prompt", path)
 		return
+	# Schema gate (BROAD_DIRECTIONS #4). A save from a newer build is refused
+	# outright rather than loaded with its new fields silently dropped — the
+	# next autosave would otherwise write that loss back over the player's
+	# tank. This runs before SaveRepair so a refused save is never mutated.
+	var mig: Dictionary = SaveMigrations.migrate(d)
+	var lg: Node = _log()
+	if not bool(mig.get("ok", false)):
+		var msg: String = "refusing save at %s: %s (format %d, this build %d)" % [
+			path, String(mig.get("reason", "")), int(mig.get("from", -1)),
+			SaveMigrations.CURRENT_VERSION,
+		]
+		if lg != null:
+			lg.error("save", msg)
+		else:
+			push_error("[walstad_loom] %s" % msg)
+		if host.has_method("_show_incompatible_save_prompt"):
+			host.call("_show_incompatible_save_prompt", path, mig)
+		return
+	if int(mig.get("from", 0)) != int(mig.get("to", 0)):
+		var mmsg: String = "migrated save %s: format %d -> %d" % [
+			path, int(mig.get("from", 0)), int(mig.get("to", 0)),
+		]
+		if lg != null:
+			lg.info("save", mmsg)
+		else:
+			print("[walstad_loom] %s" % mmsg)
+	d = mig.get("dict", d)
 	d = SaveRepair.sanitize(d)
 	if sim != null and sim.has_method("load_state"):
 		sim.load_state(d)
@@ -83,6 +119,10 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 		var terrain_d: Dictionary = world.terrain_to_save_dict()
 		if not terrain_d.is_empty():
 			state_d["terrain"] = terrain_d
+	# Stamp the schema version so this file can be migrated or refused later
+	# (BROAD_DIRECTIONS #4). Must happen before sanitize_for_json so the
+	# stamp survives into the payload.
+	SaveMigrations.stamp(state_d)
 	var path: String = saves.state_path(int(saves.active_slot))
 	var payload: Variant = SaveHelpers.sanitize_for_json(state_d)
 	_enqueue_async_write(path, payload)
@@ -147,6 +187,8 @@ static func _async_write_save(path: String, json_text: String) -> void:
 	var tmp: String = path + ".tmp"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
+		# Worker thread: push_warning is thread-safe, AppLog's file handle is
+		# not, so this path deliberately stays on push_warning.
 		push_warning("[walstad_loom] async save open failed at %s: err %d" % [tmp, FileAccess.get_open_error()])
 		return
 	f.store_string(json_text)

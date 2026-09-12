@@ -9,6 +9,14 @@ uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float color_vibrancy : hint_range(0.5, 2.0) = 1.0;
 uniform float sway_speed = 1.6;
 uniform float sway_amplitude = 0.08;
+// Distance sway fade. The tank renders into a 512x288 buffer with pixel
+// snapping, so a distant plant occupies only a few pixels — full
+// world-space sway makes those pixels jump between positions rather than
+// read as motion. Past sway_fade_start the amplitude ramps to
+// sway_fade_floor so far foliage settles instead of jittering.
+uniform float sway_fade_start = 6.0;
+uniform float sway_fade_end = 16.0;
+uniform float sway_fade_floor : hint_range(0.0, 1.0) = 0.12;
 uniform float flutter_speed = 3.6;
 uniform float flutter_amplitude = 0.03;
 // Subsurface-scattering rim — thin leaves get a warm translucent edge
@@ -42,6 +50,7 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 uniform float motion_lock : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 varying vec3 v_world_pos;
 
@@ -51,11 +60,16 @@ void vertex() {
     v_world_pos = world_pos;
     // Tip blooms set motion_lock; Godot forbids `return` in vertex().
     if (motion_lock <= 0.5) {
+        // Distance fade: settle far foliage so it does not pixel-jitter.
+        float view_dist = length((VIEW_MATRIX * vec4(world_pos, 1.0)).xyz);
+        float dist_fade = mix(1.0, sway_fade_floor,
+            smoothstep(sway_fade_start, sway_fade_end, view_dist));
+
         // 2. Slow gentle sway (swimming pool current / wind)
         float time_sway = TIME * sway_speed;
         float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
         float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
-        float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude;
+        float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * dist_fade;
 
         // Scale sway by height (higher vertices sway more)
         // Local Y of the vertex shows the height from the instance origin
@@ -66,7 +80,7 @@ void vertex() {
         // 3. High-frequency leaf flutter
         float time_flutter = TIME * flutter_speed;
         float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0;
-        float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude;
+        float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade;
         VERTEX.y += flutter * height_factor * 0.3;
     }
 }
@@ -133,5 +147,9 @@ void fragment() {
     // Water column — red dies first with depth and distance. Global uniform, so
     // it costs one compare on anything above the waterline or out of the tank.
     col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+    // Shaped lamp. In an unshaded pipeline nothing responds to a light on
+    // its own, so the cone is evaluated here - this is what puts the beam
+    // ON the leaves instead of only in the water in front of them.
+    col = iaq_beam_light(v_world_pos, col);
     ALBEDO = col;
 }

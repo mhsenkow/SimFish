@@ -78,7 +78,7 @@ static func try_guardian_dream_journal(sim, note: String) -> void:
 
 
 static func night_perception_scale(sim) -> float:
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	return lerpf(0.42, 1.0, clampf(dl / 0.35, 0.0, 1.0))
 
 
@@ -89,7 +89,7 @@ static func night_stillness(sim) -> float:
 
 
 static func _tick_threat_time_dilation(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var still: float = TankMind._night_f(sim, "night_stillness")
 	if dl > 0.32:
 		TankMind._set_night_f(sim, "night_stillness", lerpf(still, 0.0, dt * 0.2))
@@ -106,7 +106,7 @@ static func _tick_threat_time_dilation(sim, dt: float) -> void:
 
 
 static func _tick_grief_night(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.32:
 		return
 	if sim.get("_mourning_events") is not Array or (sim._mourning_events as Array).is_empty():
@@ -121,7 +121,7 @@ static func _tick_grief_night(sim, dt: float) -> void:
 
 
 static func _tick_slow_fauna(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var active: float = 0.0
 	if dl < 0.28:
 		var snails: int = sim.get("snails").size() if sim.get("snails") is Array else 0
@@ -132,7 +132,7 @@ static func _tick_slow_fauna(sim, dt: float) -> void:
 
 
 static func _tick_biofilter_night(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.3 or sim.get("water_chemistry") == null:
 		return
 	var wc = sim.water_chemistry
@@ -164,7 +164,7 @@ static func _tick_season_night(sim, _dt: float) -> void:
 
 
 static func _tick_watcher_sweep(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.32:
 		return
 	var tm: Dictionary = TankMind.ensure(sim)
@@ -190,7 +190,7 @@ static func _tick_watcher_sweep(sim, dt: float) -> void:
 
 
 static func _tick_collective_dream(sim) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.28:
 		return
 	var dreamers: Array = []
@@ -216,7 +216,7 @@ static func _tick_collective_dream(sim) -> void:
 static func _tick_dawn_spark(sim, _dt: float) -> void:
 	if TankMind._night_f(sim, "dawn_spark_t") > 0.0:
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var phase: float = TankMind._float_prop(sim, "day_phase", 0.5)
 	if dl > 0.22 and dl < 0.42 and phase > 0.02 and phase < 0.14:
 		if sim.has_method("trigger_dawn_spark"):
@@ -229,7 +229,7 @@ static func _tick_dawn_spark(sim, _dt: float) -> void:
 
 
 static func _tick_2am_confession(sim, room_idle_s: float, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.18 or room_idle_s < 180.0:
 		return
 	var cd: float = TankMind._night_f(sim, "confession_cd", 3600.0)
@@ -252,7 +252,7 @@ static func _tick_2am_confession(sim, room_idle_s: float, dt: float) -> void:
 static func _tick_nightlight_ritual(sim, room_idle_s: float, dt: float) -> void:
 	if room_idle_s < 300.0:
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.25:
 		return
 	var tm: Dictionary = TankMind.ensure(sim)
@@ -267,7 +267,7 @@ static func _tick_nightlight_ritual(sim, room_idle_s: float, dt: float) -> void:
 
 
 static func _tick_vigil_gift(sim, room_idle_s: float, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.35 or room_idle_s > 120.0:
 		return
 	for f in TankMind._fish_list(sim):
@@ -278,7 +278,7 @@ static func _tick_vigil_gift(sim, room_idle_s: float, dt: float) -> void:
 
 
 static func _tick_accessibility_pulse(sim, _dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.35 and TankMind._night_f(sim, "dawn_spark_t") <= 0.0:
 		return
 	TankMind._set_night_f(sim, "night_a11y_pulse", sin(Time.get_ticks_msec() * 0.0012) * 0.5 + 0.5)
@@ -295,7 +295,7 @@ static func _tick_wisdom(sim, dt: float) -> void:
 
 
 static func _tick_detrital_digestion(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.32:
 		return
 	var waste_n: int = sim.get("waste").size() if sim.get("waste") is Array else 0

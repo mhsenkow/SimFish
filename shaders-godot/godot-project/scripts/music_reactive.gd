@@ -696,8 +696,10 @@ func _on_token_response(result: int, code: int, _headers: PackedStringArray, bod
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		emit_signal("status_message", "Spotify login failed (HTTP %d)." % code, true)
 		return
-	var data: Variant = JSON.parse_string(body.get_string_from_utf8())
-	if typeof(data) != TYPE_DICTIONARY:
+	# Network input: bounded before it is parsed (#6).
+	var data: Dictionary = SafeJson.parse_body(
+		body, SafeJson.NETWORK_MAX_BYTES, "spotify")
+	if data.is_empty():
 		emit_signal("status_message", "Spotify token response was not JSON.", true)
 		return
 	_token = String(data.get("access_token", ""))
@@ -710,9 +712,9 @@ func _on_api_response(result: int, code: int, _headers: PackedStringArray, body:
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
 		emit_signal("status_message", "Spotify API error (HTTP %d)." % code, true)
 		return
-	var text: String = body.get_string_from_utf8()
-	var data: Variant = JSON.parse_string(text)
-	if typeof(data) != TYPE_DICTIONARY:
+	var data: Dictionary = SafeJson.parse_body(
+		body, SafeJson.NETWORK_MAX_BYTES, "spotify")
+	if data.is_empty():
 		emit_signal("status_message", "Unexpected Spotify response.", true)
 		return
 	var kind: String = String(_pending_api.get("kind", ""))

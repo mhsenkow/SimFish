@@ -1152,9 +1152,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# heterotrophic species. We approximate with a smooth function of
 	# O2 + (1 - bleach) and let day vs night both qualify so corals
 	# always look alive when healthy.
-	var daylight_factor: float = 0.5
-	if sim_n != null and sim_n.has_method("daylight"):
-		daylight_factor = float(sim_n.daylight())
+	var daylight_factor: float = SimGate.daylight(sim_n, 0.5)
 	# Both day and night extension is full; only twilight transitions
 	# pinch slightly. Health × O2 × not-bleached drives the magnitude.
 	var dawn_dusk_factor: float = 1.0 - 4.0 * absf(daylight_factor - 0.5) * absf(daylight_factor - 0.5)

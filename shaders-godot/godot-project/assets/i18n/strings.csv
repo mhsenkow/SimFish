@@ -1,0 +1,201 @@
+key,en
+(automatic),(automatic)
+(environmental),(environmental)
+0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds).,0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds).
+0 = off · 0.3 = passive · 0.6 = medium · 1.0 = pressurized. Higher CO2 makes red plants redden and stems pearl visibly.,0 = off · 0.3 = passive · 0.6 = medium · 1.0 = pressurized. Higher CO2 makes red plants redden and stems pearl visibly.
+0 residents,0 residents
+A fish here can develop a voice,A fish here can develop a voice
+ADOPT,ADOPT
+ADOPTED,ADOPTED
+AI Director unavailable.,AI Director unavailable.
+AI design helper missing — rolling random instead.,AI design helper missing — rolling random instead.
+AI returned an empty design — rolling random instead.,AI returned an empty design — rolling random instead.
+AIDirector unavailable. Restart the app and try again.,AIDirector unavailable. Restart the app and try again.
+Adjust how tightly fish school and spread through the tank. Sliders snap to preset steps — changes apply immediately.,Adjust how tightly fish school and spread through the tank. Sliders snap to preset steps — changes apply immediately.
+Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day.,Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day.
+All set. Your fish will start getting AI-flavored names within a few seconds. You can come back here any time to switch the model or turn AI off.,All set. Your fish will start getting AI-flavored names within a few seconds. You can come back here any time to switch the model or turn AI off.
+Amplify fauna sheen (SSS + iridescence),Amplify fauna sheen (SSS + iridescence)
+"Applies to newly created tanks only — cycled chemistry, biofilm patina, mixed ages.","Applies to newly created tanks only — cycled chemistry, biofilm patina, mixed ages."
+Auto-adjust fidelity to hit target FPS,Auto-adjust fidelity to hit target FPS
+Auto-feed (screensaver mode — simulates ⌘+click feeding),Auto-feed (screensaver mode — simulates ⌘+click feeding)
+Auto-orbit (cinematic spin),Auto-orbit (cinematic spin)
+Auto-respawn when tank is empty (~6 fish + cleanup crew),Auto-respawn when tank is empty (~6 fish + cleanup crew)
+Auto-rotate,Auto-rotate
+Auto-tour your creatures — advances every few seconds when idle,Auto-tour your creatures — advances every few seconds when idle
+Bank lock restricts each pixel to a local palette slice for a truer 8-bit look.,Bank lock restricts each pixel to a local palette slice for a truer 8-bit look.
+Bass · Mid · Treble · Beat,Bass · Mid · Treble · Beat
+"Battery saver (caps at 30fps, lighter visuals)","Battery saver (caps at 30fps, lighter visuals)"
+Blur background while following a creature,Blur background while following a creature
+Blur foreground (near DOF),Blur foreground (near DOF)
+"Boosts bloom, vignette, and glow while saving a capture.","Boosts bloom, vignette, and glow while saving a capture."
+Breeding triggers a build into a drop. Deaths trigger a breakdown.,Breeding triggers a build into a drop. Deaths trigger a breakdown.
+Bring your tank to life,Bring your tank to life
+Calibrate this track (session only — not saved):,Calibrate this track (session only — not saved):
+Camera tracks a random fish; uncheck to release,Camera tracks a random fish; uncheck to release
+Cannot import: world not available.,Cannot import: world not available.
+Cannot spawn: world not available.,Cannot spawn: world not available.
+Capture the procedural performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes.,Capture the procedural performance to a stereo WAV. Saves to user://recordings/ — up to 4 minutes.
+Cinematic framing: Lead (camera leads + lets it roam) vs Lock (centered),Cinematic framing: Lead (camera leads + lets it roam) vs Lock (centered)
+Copied to clipboard.,Copied to clipboard.
+Copied to clipboard. ,Copied to clipboard. 
+Copy command,Copy command
+Could not encode this strain.,Could not encode this strain.
+Could not place any (tank may be full).,Could not place any (tank may be full).
+Create an empty tank and walk through stocking step by step,Create an empty tank and walk through stocking step by step
+Cycle:,Cycle:
+Delete selected,Delete selected
+Done,Done
+Drop a curated planting from a real aquascape style. Adds plants live — no Apply needed.,Drop a curated planting from a real aquascape style. Adds plants live — no Apply needed.
+Ecosystem entities aren't lineages — they appear automatically based on tank conditions.,Ecosystem entities aren't lineages — they appear automatically based on tank conditions.
+Embedded endpoint:,Embedded endpoint:
+Embedded model:,Embedded model:
+Enable AI (local Ollama),Enable AI (local Ollama)
+Enable HTTP embedded fallback,Enable HTTP embedded fallback
+Enable palette quantization,Enable palette quantization
+"Enable sound and mix layers in Sound Studio (Look → Sound, or M).","Enable sound and mix layers in Sound Studio (Look → Sound, or M)."
+Endpoint:,Endpoint:
+Example demos — tap to play a bundled track:,Example demos — tap to play a bundled track:
+"Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'.","Examples: 'red plant showcase', 'zen carpet only', 'chaotic alien biosphere', 'shrimp paradise'."
+F12 saves a clean capture; Shift+F12 runs the signature poster preset.,F12 saves a clean capture; Shift+F12 runs the signature poster preset.
+FOV,FOV
+FXAA/deband soften edges without Metal MSAA. Mac Safe turns both on.,FXAA/deband soften edges without Metal MSAA. Mac Safe turns both on.
+Favorite,Favorite
+Field guide,Field guide
+Fine-tune between tiers — overrides the fidelity buttons above.,Fine-tune between tiers — overrides the fidelity buttons above.
+Finish ✓,Finish ✓
+Fish thoughts when following or inspecting,Fish thoughts when following or inspecting
+Follow a random fish,Follow a random fish
+Force a harmonic / arp shift from current tank state.,Force a harmonic / arp shift from current tank state.
+Frame the tank using the default for its shape and orientation,Frame the tank using the default for its shape and orientation
+Genome,Genome
+Give your Guardian a voice?,Give your Guardian a voice?
+Global material tint overlay — does not change saved fish or plant genomes. Preview is live.,Global material tint overlay — does not change saved fish or plant genomes. Preview is live.
+Got it,Got it
+Green line = target frame budget; spikes above = hitch frames.,Green line = target frame budget; spikes above = hitch frames.
+Guardian diary lines (built-in model when available),Guardian diary lines (built-in model when available)
+Guardian may turn on auto-feed when starving,Guardian may turn on auto-feed when starving
+Hide inner workings,Hide inner workings
+Higher-maintenance — best once you've kept a tank,Higher-maintenance — best once you've kept a tank
+"How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring.","How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring."
+How strongly the global tint affects each material family (0 = unchanged).,How strongly the global tint affects each material family (0 = unchanged).
+"How the school moves — auto follows the track genre, or lock a style.","How the school moves — auto follows the track genre, or lock a style."
+Imported strain into your tank.,Imported strain into your tank.
+Integer upscale (eliminate sub-pixel shimmer),Integer upscale (eliminate sub-pixel shimmer)
+Life journal,Life journal
+Lines link offspring → parents,Lines link offspring → parents
+Loading…,Loading…
+"Log growth diagnostics (seconds per voxel, every ~10 s)","Log growth diagnostics (seconds per voxel, every ~10 s)"
+Microphone room presence (opt-in),Microphone room presence (opt-in)
+Model:,Model:
+Mourning behavior after deaths (school tightens + slows),Mourning behavior after deaths (school tightens + slows)
+Naming theme:,Naming theme:
+New empty tank and open build mode — sculpt before you stock fish,New empty tank and open build mode — sculpt before you stock fish
+New tanks start established (skip the cycle),New tanks start established (skip the cycle)
+Next creature (→),Next creature (→)
+No creatures match your filter or search.,No creatures match your filter or search.
+No suitable installed model found. Try `ollama pull qwen2.5:3b` in a terminal.,No suitable installed model found. Try `ollama pull qwen2.5:3b` in a terminal.
+No valid strain code on the clipboard.,No valid strain code on the clipboard.
+Not now — template voice only,Not now — template voice only
+Nothing pressing.,Nothing pressing.
+Nothing to report right now.,Nothing to report right now.
+Now Playing for your track · Tank score for procedural ambient · Choreography for the dance.,Now Playing for your track · Tank score for procedural ambient · Choreography for the dance.
+"One tap sets render resolution + MSAA. Use Apply to rebuild the viewport. On Mac, MSAA stays Off (Metal stability).","One tap sets render resolution + MSAA. Use Apply to rebuild the viewport. On Mac, MSAA stays Off (Metal stability)."
+"One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep.","One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep."
+Only if you run a separate /api/generate server. Normal play uses the built-in model above.,Only if you run a separate /api/generate server. Normal play uses the built-in model above.
+"Open Camera Views — presets, saved views, FOV, auto-orbit","Open Camera Views — presets, saved views, FOV, auto-orbit"
+Open aquascape tools,Open aquascape tools
+Open fish designer,Open fish designer
+Open ollama.com/download,Open ollama.com/download
+Open plant designer,Open plant designer
+Open shrimp designer,Open shrimp designer
+Open snail designer,Open snail designer
+Optional — structure helps fish feel safe,Optional — structure helps fish feel safe
+"Optional: install Ollama for AI-generated names, moods, and tank narration.","Optional: install Ollama for AI-generated names, moods, and tank narration."
+Palette bank lock (8-bit feel),Palette bank lock (8-bit feel)
+Pause / resume the simulation (P),Pause / resume the simulation (P)
+Photo mode grade on screenshots,Photo mode grade on screenshots
+"Pick MP3, OGG, or WAV from your computer.","Pick MP3, OGG, or WAV from your computer."
+Pick a type and tune the sliders.,Pick a type and tune the sliders.
+Pick a vibe — snaps the whole studio. Sliders below tune from there.,Pick a vibe — snaps the whole studio. Sliders below tune from there.
+Pixel-snap camera,Pixel-snap camera
+Plant limiting-factor tint (light / CO₂ / nutrient),Plant limiting-factor tint (light / CO₂ / nutrient)
+Player attention (bold fish drift toward camera stare),Player attention (bold fish drift toward camera stare)
+Previous creature (←),Previous creature (←)
+Probing Ollama…,Probing Ollama…
+Project website and GitHub issues,Project website and GitHub issues
+Quiet mode — hide voice text and ambient toasts,Quiet mode — hide voice text and ambient toasts
+Quit to desktop (controller-friendly),Quit to desktop (controller-friendly)
+Randomize everything including mood and style.,Randomize everything including mood and style.
+"Randomize sliders, style, and seed — still follows the live tank.","Randomize sliders, style, and seed — still follows the live tank."
+Re-learn auto-gain for bass/mid/treble on this track.,Re-learn auto-gain for bass/mid/treble on this track.
+Rebuilds fauna materials — click Apply after toggling.,Rebuilds fauna materials — click Apply after toggling.
+Recording…,Recording…
+"Reduced motion (less sway, pulse, auto-orbit)","Reduced motion (less sway, pulse, auto-orbit)"
+Region-aware dither (recommended),Region-aware dither (recommended)
+Reopen panels after changing font size.,Reopen panels after changing font size.
+Residents — follow & favorite your creatures,Residents — follow & favorite your creatures
+SETTINGS_TITLE,SETTINGS_TITLE
+Save a 2s PNG burst + hero frame while the tank dances.,Save a 2s PNG burst + hero frame while the tank dances.
+Save failed.,Save failed.
+Scale ceilings with tank size,Scale ceilings with tank size
+School breathing pulse (synchronized tighten/loosen),School breathing pulse (synchronized tighten/loosen)
+Select a species,Select a species
+Select all,Select all
+Select for bulk delete,Select for bulk delete
+Settings,Settings
+Show equipment in frame,Show equipment in frame
+Show light beams (god rays),Show light beams (god rays)
+Size,Size
+Skip for now,Skip for now
+Skip the walkthrough — lands you in a living preset tank,Skip the walkthrough — lands you in a living preset tank
+Slowly rotate the camera around the tank,Slowly rotate the camera around the tank
+"Small minds, private voice","Small minds, private voice"
+"Smart dither: heavier on muted water/fog, lighter on saturated fauna.","Smart dither: heavier on muted water/fog, lighter on saturated fauna."
+Sort,Sort
+Spawn in Tank,Spawn in Tank
+Spawned into tank.,Spawned into tank.
+Start / stop recording the master output.,Start / stop recording the master output.
+"Steam builds include the model. Slim builds download once (~250MB, resumable).","Steam builds include the model. Slim builds download once (~250MB, resumable)."
+Step 1 of 3 — Download Ollama for your OS. It's a small CLI; the installer takes about a minute.,Step 1 of 3 — Download Ollama for your OS. It's a small CLI; the installer takes about a minute.
+"Step 3 of 3 — Make sure Ollama is running (`ollama serve` in another terminal, or it auto-starts on Mac/Windows). Then click below.","Step 3 of 3 — Make sure Ollama is running (`ollama serve` in another terminal, or it auto-starts on Mac/Windows). Then click below."
+"Steps resolution down when the GPU can't keep up, back up when there's headroom.","Steps resolution down when the GPU can't keep up, back up when there's headroom."
+Stop following (Esc),Stop following (Esc)
+"Sub-bass adds depth; PWM bass plays \""&\""s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement.","Sub-bass adds depth; PWM bass plays \""&\""s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement."
+"Sun, warmth, and post-process live in Look → Lighting on the right rail.","Sun, warmth, and post-process live in Look → Lighting on the right rail."
+Sustained gaze as social signal,Sustained gaze as social signal
+Switch how the 3D scene is flattened to 2D,Switch how the 3D scene is flattened to 2D
+Sync tank to music,Sync tank to music
+Take a screenshot of the tank,Take a screenshot of the tank
+Tank not available right now.,Tank not available right now.
+Tap a creature to follow,Tap a creature to follow
+Test Connection,Test Connection
+Testing connection...,Testing connection...
+Text channel to followed fish,Text channel to followed fish
+"These spawn from chemistry, death, age, or stocking — not directly.","These spawn from chemistry, death, age, or stocking — not directly."
+Top-down orthographic view tuned for surface patterns and dance,Top-down orthographic view tuned for surface patterns and dance
+True 8-bit purity (bank-lock + heavy dither),True 8-bit purity (bank-lock + heavy dither)
+"Turns off school pulse, plant sway, and cinematic auto-orbit.","Turns off school pulse, plant sway, and cinematic auto-orbit."
+"Type a few words first, or hit 'Skip AI'.","Type a few words first, or hit 'Skip AI'."
+Undo the last aquascape change,Undo the last aquascape change
+Unpin from Global,Unpin from Global
+Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger.,Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger.
+Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO.,Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO.
+Voice language:,Voice language:
+Wander and speed use four preset steps each — each notch should look clearly different in the tank.,Wander and speed use four preset steps each — each notch should look clearly different in the tank.
+Wave speed and flank bias shape how turns travel through schools. Applies live.,Wave speed and flank bias shape how turns travel through schools. Applies live.
+Width / depth / height need Apply (reload) to rebuild the tank.,Width / depth / height need Apply (reload) to rebuild the tank.
+World-space dither lock (less shimmer on pan),World-space dither lock (less shimmer on pan)
+Write tank chronicle (ambient sentences),Write tank chronicle (ambient sentences)
+Yes — download & enable,Yes — download & enable
+"design a custom organism, then stock the tank with it","design a custom organism, then stock the tank with it"
+drag preview to rotate,drag preview to rotate
+free · take home up to 2 of 3,free · take home up to 2 of 3
+spotify:track:,spotify:track:
+verse,verse
+⏹ Stop,⏹ Stop
+⏺ Record,⏺ Record
+═══ ADOPT FISH ═══,═══ ADOPT FISH ═══
+★ Best for beginners,★ Best for beginners
+✓ Saved. Settings will persist across reloads.,✓ Saved. Settings will persist across reloads.
+✦ CREATURE CREATOR ✦,✦ CREATURE CREATOR ✦
+🔒 Lock,🔒 Lock

@@ -143,9 +143,7 @@ func _step(dt: float) -> void:
 	# Phototaxis: real zooplankton rise toward light by day (and sink at night).
 	# We bias drift gently upward during daylight so swarms gather in the lit
 	# upper column / god-ray shafts, then disperse downward after dark.
-	var daylight: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		daylight = float(sim.daylight())
+	var daylight: float = SimGate.daylight(sim, 1.0)
 	var photo_bias: float = (daylight - 0.45) * DRIFT_SPEED * 0.9
 	for p: Plankton in _plankton:
 		if not p.alive:

@@ -48,7 +48,7 @@ static func observe(f: Fish, sim: Node, arc: Dictionary) -> Dictionary:
 	if sim != null and sim.get("water_chemistry") != null:
 		var chem = sim.water_chemistry
 		toxic = clampf(maxf(float(chem.ammonia), float(chem.nitrite)) * 0.55, 0.0, 1.0)
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var keeper: float = clampf(f.familiarity * 0.45 + f._cached_glance_strength * 0.55, 0.0, 1.0)
 	var mind: Dictionary = arc.get("mind", {}) if arc.get("mind") is Dictionary else {}
 	if int(mind.get("visit_count", 0)) >= 8:

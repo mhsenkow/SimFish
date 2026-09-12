@@ -43,10 +43,10 @@ func _initialize() -> void:
 		"length": 5, "width": 3, "quilted": false, "wavy": false})
 	var again: Array = LeafShapes.get_leaf_template("spade", {
 		"length": 5, "width": 3, "quilted": false, "wavy": false})
-	_assert(failed, not first.is_empty(), "spade template builds voxels")
-	_assert(failed, first == again, "an equivalent request returns the same Array")
+	TestSupport.check(failed, not first.is_empty(), "spade template builds voxels")
+	TestSupport.check(failed, first == again, "an equivalent request returns the same Array")
 	var stats: Dictionary = LeafShapes.template_cache_stats()
-	_assert(failed, int(stats.misses) == 1 and int(stats.hits) == 1,
+	TestSupport.check(failed, int(stats.misses) == 1 and int(stats.hits) == 1,
 		"second equivalent build is a hit (%d miss / %d hit)"
 			% [int(stats.misses), int(stats.hits)])
 	# A geometry-affecting input must key a distinct entry.
@@ -56,7 +56,7 @@ func _initialize() -> void:
 		"length": 5, "width": 3, "quilted": true, "wavy": false})
 	LeafShapes.get_leaf_template("spade", {
 		"length": 5, "width": 3, "quilted": false, "wavy": true})
-	_assert(failed, int(LeafShapes.template_cache_stats().size) == 4,
+	TestSupport.check(failed, int(LeafShapes.template_cache_stats().size) == 4,
 		"length / quilted / wavy each key their own template (%d entries)"
 			% int(LeafShapes.template_cache_stats().size))
 
@@ -66,15 +66,15 @@ func _initialize() -> void:
 		LeafShapes.get_leaf_template("ribbon", {
 			"length": 8, "sway_seed": randf() * TAU, "wavy": false})
 	var ribbon_stats: Dictionary = LeafShapes.template_cache_stats()
-	_assert(failed, int(ribbon_stats.size) <= LeafShapes.TEMPLATE_SWAY_BUCKETS,
+	TestSupport.check(failed, int(ribbon_stats.size) <= LeafShapes.TEMPLATE_SWAY_BUCKETS,
 		"500 random sway seeds fold into at most %d buckets (got %d)"
 			% [LeafShapes.TEMPLATE_SWAY_BUCKETS, int(ribbon_stats.size)])
-	_assert(failed, int(ribbon_stats.hits) > 400,
+	TestSupport.check(failed, int(ribbon_stats.hits) > 400,
 		"most of those 500 builds are cache hits (%d)" % int(ribbon_stats.hits))
 	# Out-of-range integers clamp rather than key an entry per value.
 	var huge: Dictionary = LeafShapes.normalize_template_params(
 		"paddle", {"length": 9999, "width": 9999, "flatten": 12.0})
-	_assert(failed, int(huge.length) == LeafShapes.TEMPLATE_MAX_LENGTH
+	TestSupport.check(failed, int(huge.length) == LeafShapes.TEMPLATE_MAX_LENGTH
 			and int(huge.width) == LeafShapes.TEMPLATE_MAX_WIDTH
 			and float(huge.flatten) <= 1.0,
 		"absurd dimensions clamp onto the grid")
@@ -88,14 +88,14 @@ func _initialize() -> void:
 			"flatten": 0.05 + float(i % 19) * 0.05,
 			"quilted": i % 2 == 0, "wavy": i % 3 == 0})
 	var bounded: Dictionary = LeafShapes.template_cache_stats()
-	_assert(failed, int(bounded.size) <= LeafShapes.TEMPLATE_CACHE_LIMIT,
+	TestSupport.check(failed, int(bounded.size) <= LeafShapes.TEMPLATE_CACHE_LIMIT,
 		"cache never exceeds its limit (%d/%d)"
 			% [int(bounded.size), LeafShapes.TEMPLATE_CACHE_LIMIT])
-	_assert(failed, int(bounded.evictions) > 0, "the limit actually evicts")
-	_assert(failed, int(bounded.voxels) > 0, "stats report resident voxel count")
+	TestSupport.check(failed, int(bounded.evictions) > 0, "the limit actually evicts")
+	TestSupport.check(failed, int(bounded.voxels) > 0, "stats report resident voxel count")
 	LeafShapes.reset_template_cache()
 	var cleared: Dictionary = LeafShapes.template_cache_stats()
-	_assert(failed, int(cleared.size) == 0 and int(cleared.hits) == 0
+	TestSupport.check(failed, int(cleared.size) == 0 and int(cleared.hits) == 0
 			and int(cleared.misses) == 0 and int(cleared.voxels) == 0,
 		"reset clears entries and metrics")
 
@@ -106,13 +106,13 @@ func _initialize() -> void:
 	for v in tpl:
 		if v is Node or not (v is LeafShapes.LeafVoxel):
 			all_data = false
-	_assert(failed, all_data and not tpl.is_empty(),
+	TestSupport.check(failed, all_data and not tpl.is_empty(),
 		"pinnate template holds LeafVoxel data, never Nodes")
 	var v0: LeafShapes.LeafVoxel = tpl[0]
-	_assert(failed, v0.size.length() > 0.0
+	TestSupport.check(failed, v0.size.length() > 0.0
 			and v0.xform.basis.is_equal_approx(Basis()),
 		"a descriptor carries box dimensions and a local transform")
-	_assert(failed, v0.base_color(RAMP, 0.5, {}).a > 0.0,
+	TestSupport.check(failed, v0.base_color(RAMP, 0.5, {}).a > 0.0,
 		"a descriptor resolves a material base color")
 
 	# ---- Per-leaf color variation is not baked into the cache ---------------
@@ -120,10 +120,10 @@ func _initialize() -> void:
 	var seen: Dictionary = {}
 	for i in 24:
 		seen[str(tpl[1].base_color(RAMP, 0.4, varieg_mods).to_html())] = true
-	_assert(failed, seen.size() > 1,
+	TestSupport.check(failed, seen.size() > 1,
 		"variegation still rolls per bake off a shared template (%d colors)"
 			% seen.size())
-	_assert(failed, tpl[1].base_color(RAMP, 0.1, {})
+	TestSupport.check(failed, tpl[1].base_color(RAMP, 0.1, {})
 			!= tpl[1].base_color(RAMP, 0.9, {}),
 		"leaf age still drives color off a shared template")
 
@@ -134,7 +134,7 @@ func _initialize() -> void:
 	for form in EXPECTED_VOXELS:
 		_check_form_parity(failed, host, form)
 		var tpl_form: Array = LeafShapes.get_leaf_template(form, _params_for(form))
-		_assert(failed, tpl_form.size() == int(EXPECTED_VOXELS[form]),
+		TestSupport.check(failed, tpl_form.size() == int(EXPECTED_VOXELS[form]),
 			"%s template holds %d voxels (got %d)"
 				% [form, int(EXPECTED_VOXELS[form]), tpl_form.size()])
 
@@ -153,7 +153,7 @@ func _initialize() -> void:
 				handles += 1
 				if h == null or not (h as VoxelBatch.Handle).transform.is_finite():
 					handles = -99999
-		_assert(failed, groups > 0 and handles > 0,
+		TestSupport.check(failed, groups > 0 and handles > 0,
 			"%s bakes finite leaf handles through the template path (%d/%d)"
 				% [form, groups, handles])
 		p.free()
@@ -298,8 +298,3 @@ func _make(host: Node3D, params: Dictionary) -> Plant:
 	host.add_child(p)
 	p.init(1, params)
 	return p
-
-
-func _assert(failed: Array[String], cond: bool, label: String) -> void:
-	if not cond:
-		failed.append(label)

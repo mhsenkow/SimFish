@@ -163,6 +163,17 @@ func effective_size() -> float:
 # Animation
 var _swim_phase: float = 0.0
 var _tail_pivot: Node3D = null
+# ---- Crawling gait (shrimp motion pass) ----
+#
+# Driven by DISTANCE TRAVELLED, not by time. A time-driven cycle keeps
+# paddling when the animal stops, which reads as a treadmill; a
+# distance-driven one stops dead with the body and speeds up when it hurries,
+# which is what makes it look like the legs are what move it.
+var _leg_pivots: Array = []
+var _gait_phase: float = 0.0
+var _gait_bob: float = 0.0
+var _body_pivot_rest_y: float = 0.0
+
 var _antenna_pivot: Node3D = null
 var _antenna_seg_pivots: Array = []
 var _bank_pivot: Node3D = null
@@ -357,6 +368,10 @@ func _build_body() -> void:
 	_bank_pivot = Node3D.new()
 	_bank_pivot.name = "BankPivot"
 	add_child(_bank_pivot)
+	# Gait bob is applied relative to this, so capture it once here rather
+	# than at each body-plan's _build_legs call site (there are four, and
+	# only one of them got it the first time).
+	_body_pivot_rest_y = _bank_pivot.position.y
 
 	# ---- Body-plan core (carapace/thorax + abdomen + eyes + claws + legs +
 	# _tail_pivot). Each branch creates _tail_pivot so the shared egg cluster
@@ -625,16 +640,27 @@ func _build_claws(v: float, lenf: float) -> void:
 
 
 func _build_legs(v: float, mat_dark: Material) -> void:
-	# Small dark voxels under the body (visual interest). leg_length_factor
-	# scales their length.
+	# Each leg hangs off its own pivot so the gait can swing it. They used to
+	# be bare voxels welded to the body, which meant a "walking" shrimp slid
+	# along with its legs frozen — the single biggest tell that it was not
+	# really crawling.
 	var ll: float = leg_length_factor
+	_leg_pivots.clear()
 	for i in 3:
 		var xside: float = 0.5 - randf() * 0.3
 		var zoff: float = -0.4 + i * 0.4
-		_voxel(_bank_pivot, Vector3(xside * v, -v * 0.4, zoff * v),
-			Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)
-		_voxel(_bank_pivot, Vector3(-xside * v, -v * 0.4, zoff * v),
-			Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)
+		for side in [1.0, -1.0]:
+			var pivot := Node3D.new()
+			pivot.name = "Leg%d%s" % [i, "R" if side > 0.0 else "L"]
+			pivot.position = Vector3(side * xside * v, -v * 0.12, zoff * v)
+			_bank_pivot.add_child(pivot)
+			_voxel(pivot, Vector3(0.0, -v * 0.28, 0.0),
+				Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)
+			# Alternating tripod: neighbouring legs on a side are out of
+			# phase, and the two sides are offset, which is how real
+			# arthropods keep three feet down at all times.
+			var phase: float = float(i) * PI * 0.67 + (0.0 if side > 0.0 else PI)
+			_leg_pivots.append({"node": pivot, "phase": phase, "side": side})
 
 
 func _build_filter_fans(v: float) -> void:
@@ -1411,6 +1437,18 @@ func _motion_substep(dt: float) -> void:
 			transform.basis = Basis.looking_at(recover_d, up_r)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
 		var d: Vector3 = _visual_heading_for_display(dt, heading)
+		# GROUND-LOCK. Orienting to the full 3D heading pitched the whole
+		# body nose-down whenever gravity pulled it toward the substrate, so
+		# a shrimp "crawling" was permanently tipped forward at whatever
+		# angle it happened to be descending at. A walking animal stays
+		# level: flatten to yaw while it is on the bottom, and only allow
+		# pitch when it is genuinely swimming in open water.
+		var on_bottom: bool = global_position.y <= substrate_top_y + _ground_band()
+		if on_bottom:
+			d = Vector3(d.x, 0.0, d.z)
+			if d.length_squared() < 1e-6:
+				d = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+			d = d.normalized()
 		if d.is_finite():
 			var up: Vector3 = _look_up_for_direction(d)
 			look_at(position + d, up)
@@ -1420,10 +1458,99 @@ func _motion_substep(dt: float) -> void:
 	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 	_last_yaw = current_yaw
 	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
-	var bank_target: float = clampf(-yaw_rate * 0.2, -0.4, 0.4)
+	# On the bottom a turning animal leans only slightly — banking like an
+	# aircraft is a swimmer's motion and read as the shrimp rolling over.
+	var grounded: bool = global_position.y <= substrate_top_y + _ground_band()
+	var bank_limit: float = 0.12 if grounded else 0.4
+	var bank_target: float = clampf(-yaw_rate * (0.07 if grounded else 0.2),
+		-bank_limit, bank_limit)
 	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 	if _bank_pivot != null:
 		_bank_pivot.rotation.z = _bank
+	_tick_gait(dt, grounded)
+
+
+# ---- Crawling gait ----------------------------------------------------
+
+# How far above the substrate still counts as "on the bottom". Scaled by the
+# animal so a big lobster is not judged by a shrimp's clearance.
+func _ground_band() -> float:
+	return 0.18 + effective_size() * 0.35
+
+
+# Gait character per body plan. This is where "different ways of crawling"
+# lives — a crab does not move like a lobster, and the difference is mostly
+# step rate, amplitude, and whether it walks sideways.
+#
+#   steps_per_unit : leg cycles per world unit travelled. Higher = scurrying.
+#   swing          : how far a leg swings, radians.
+#   bob            : vertical body bob per step, world units.
+#   waddle         : side-to-side yaw wobble, radians.
+#   sideways       : how much the body faces across its direction of travel.
+func _gait_profile() -> Dictionary:
+	match body_shape:
+		"crab":
+			# Crabs walk SIDEWAYS — the leg joints only bend that way. Facing
+			# across the direction of travel is the whole silhouette.
+			return {"steps_per_unit": 7.5, "swing": 0.55, "bob": 0.030,
+				"waddle": 0.05, "sideways": 1.0}
+		"lobster":
+			# Heavy and deliberate: long slow strides, real weight transfer.
+			return {"steps_per_unit": 3.2, "swing": 0.42, "bob": 0.055,
+				"waddle": 0.10, "sideways": 0.0}
+		"mantis":
+			# Stalking — low, smooth, minimal bob so it reads as deliberate.
+			return {"steps_per_unit": 4.5, "swing": 0.34, "bob": 0.018,
+				"waddle": 0.04, "sideways": 0.0}
+		_:
+			# Caridean shrimp: quick, light, high step rate, tiny amplitude.
+			return {"steps_per_unit": 9.0, "swing": 0.30, "bob": 0.022,
+				"waddle": 0.13, "sideways": 0.0}
+
+
+# Advance the walk cycle and pose the body from it.
+func _tick_gait(dt: float, grounded: bool) -> void:
+	if _bank_pivot == null:
+		return
+	var g: Dictionary = _gait_profile()
+	if grounded:
+		# Distance-driven: the cycle advances with ground covered, so the
+		# legs stop when the animal stops and quicken when it hurries.
+		_gait_phase += speed * dt * float(g["steps_per_unit"]) * TAU
+	else:
+		# Swimming: legs tuck and idle rather than freezing mid-stride.
+		_gait_phase += dt * 1.5
+	_gait_phase = fposmod(_gait_phase, TAU)
+
+	var moving: float = clampf(speed / 0.35, 0.0, 1.0) if grounded else 0.0
+
+	# Legs swing fore/aft around their own pivots, in alternating tripod.
+	for entry in _leg_pivots:
+		var node: Node3D = entry.get("node")
+		if node == null or not is_instance_valid(node):
+			continue
+		var ph: float = _gait_phase + float(entry["phase"])
+		var swing: float = sin(ph) * float(g["swing"]) * moving
+		# Lift on the forward half of the stroke so the leg clears the
+		# ground instead of scraping through it.
+		var lift: float = maxf(0.0, cos(ph)) * float(g["swing"]) * 0.45 * moving
+		node.rotation.x = swing
+		node.rotation.z = lift * float(entry["side"])
+
+	# Body bob at twice leg frequency — two footfalls per cycle.
+	var bob: float = sin(_gait_phase * 2.0) * float(g["bob"]) * moving
+	_gait_bob = lerpf(_gait_bob, bob, clampf(dt * 12.0, 0.0, 1.0))
+	_bank_pivot.position.y = _body_pivot_rest_y + _gait_bob
+
+	# Waddle: a small yaw wobble in step with the legs. Subtle, but it is
+	# what stops a walking animal looking like it is on rails.
+	var waddle: float = sin(_gait_phase) * float(g["waddle"]) * moving
+	_bank_pivot.rotation.y = waddle
+
+	# Crabs face across their travel direction.
+	var sideways: float = float(g["sideways"])
+	if sideways > 0.0:
+		_bank_pivot.rotation.y = waddle + (PI * 0.5) * sideways
 
 
 func _visual_heading_for_display(dt: float, desired: Vector3) -> Vector3:

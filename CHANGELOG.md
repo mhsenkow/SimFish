@@ -6,6 +6,17 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.32
+
+- **Adopt arrivals:** free in-game hatchery panel (`adopt_panel.gd`) — no IAP / shop language.
+- **Gooseneck lamp:** clamp stays on the rim; neck bends when you drag the head.
+- **Fish growth:** continuous size curve from newborn → adult (`fish_growth.gd`).
+- **Steamworks:** achievements / stats / cloud / rich-presence contract + partner manifest docs.
+- **Settings curation:** state vs settings vs internal knobs separated (`config_curation.gd`).
+- **i18n scaffold:** localization module + English string table.
+- **World / tank:** footprint probes, lighting rig + light gizmo, snail shell polish, chemistry oracle ADR.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.32) (macOS / Windows / Linux / Android).
+
 ## v0.2.31
 
 - **Plant Systems 50:** foliage caustics, canopy blob shadows, spatial gusts, desync leaf sway, golden-hour rim, senescence batching, flowering tip stability.

@@ -40,10 +40,4 @@ func _initialize() -> void:
 		failed.append("schema_version should be 3+")
 	if ms2.prediction_error > 0.15:
 		failed.append("round-trip prediction_error")
-	if failed.is_empty():
-		print("[smoke] mind_channel OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] " + msg)
-		quit(1)
+	quit(TestSupport.report("smoke_mind_channel", failed))

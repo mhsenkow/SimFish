@@ -63,7 +63,8 @@ impl World {
     pub fn tick(&mut self, dt: f32) {
         self.elapsed += dt;
         self.substrate.step(dt, &mut self.rng);
-        self.chem.surface_exchange(self.surface_y, self.agitation, dt);
+        self.chem
+            .surface_exchange(self.surface_y, self.agitation, dt);
         nitrogen_cycle_step(&mut self.chem, &mut self.substrate, dt);
         self.chem.diffuse(dt, &self.substrate);
     }

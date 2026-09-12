@@ -26,34 +26,23 @@ func _initialize() -> void:
 	while not plant._static_sleeping and settle_steps < 20:
 		plant.tick_sleep_aware(0.5, substrate)
 		settle_steps += 1
-	_assert(failed, plant._static_sleeping, "stable mature plant enters sleep")
+	TestSupport.check(failed, plant._static_sleeping, "stable mature plant enters sleep")
 	var age_before: float = plant.plant_age_s
 	for i in 3:
 		plant.tick_sleep_aware(0.2, substrate)
-	_assert(failed, is_equal_approx(plant.plant_age_s, age_before),
+	TestSupport.check(failed, is_equal_approx(plant.plant_age_s, age_before),
 		"sub-coarse sleeping ticks skip full state work")
-	_assert(failed, is_equal_approx(plant._static_sleep_accum_s, 0.6),
+	TestSupport.check(failed, is_equal_approx(plant._static_sleep_accum_s, 0.6),
 		"sleeping dt accumulates exactly")
 
 	plant.current_height = 0
 	plant.wake_plant("growth")
 	plant.tick_sleep_aware(0.1, substrate)
-	_assert(failed, not plant._static_sleeping, "growth dirtiness wakes plant")
-	_assert(failed, is_equal_approx(plant.plant_age_s, age_before + 0.7),
+	TestSupport.check(failed, not plant._static_sleeping, "growth dirtiness wakes plant")
+	TestSupport.check(failed, is_equal_approx(plant.plant_age_s, age_before + 0.7),
 		"wake integrates all accumulated dt exactly once")
 
 	plant.free()
 	host.free()
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] plant_static_sleep OK accumulated=0.600 wake_dt=0.700")
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_static_sleep", failed))

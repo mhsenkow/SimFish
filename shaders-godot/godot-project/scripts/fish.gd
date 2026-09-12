@@ -45,7 +45,6 @@ const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
-const FishAlive = preload("res://scripts/fish_alive.gd")
 const FishSpawnSettle = preload("res://scripts/fish_spawn_settle.gd")
 
 const MATURITY_FRY := 0
@@ -519,6 +518,9 @@ var _fidget_cooldown: float = 0.0
 # FISH_ALIVE #521 — freeze → flee → hide → peek → recover.
 var _fear_phase: int = 0
 var _fear_phase_t: float = 0.0
+# Read cross-file by fish_alive.gd (`f._fear_peek_dir`), which the analyser
+# cannot see — hence the ignore. Deleting this breaks the fear-peek behaviour.
+@warning_ignore("unused_private_class_variable")
 var _fear_peek_dir: Vector3 = Vector3.ZERO
 # Social bonds: other fish ids this individual has chosen to associate with,
 # id -> affinity [-1,1] (>0 friend, <0 rival). Built from repeated co-schooling
@@ -1471,7 +1473,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	if sim != null and sim.has_method("sim_day"):
 		MakeItThere.apply_mood_weather(self, int(sim.sim_day()), dt)
 	var enrich: float = FishMindScience.tank_enrichment(sim)
-	var dl_guard: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	var dl_guard: float = SimGate.daylight(sim, 1.0)
 	# Dark-room guard (#36): at night, resting is correct; barren tanks still drift.
 	if dl_guard < 0.28:
 		if enrich < 0.32 and calm_now:
@@ -2410,13 +2412,13 @@ func _apply_predator_morphology() -> void:
 		jaw_claw_size = clampf(jaw_claw_size + 0.20, 0.0, 1.2)
 
 
+# Body scale as a fraction of adult size. Continuous in age rather than one
+# fixed number per maturity stage - see FishGrowth for why (three
+# rubber-stamped sizes instead of the continuum a real breeding tank shows).
 func _maturity_scale() -> float:
-	match maturity:
-		MATURITY_FRY:        return 0.35
-		MATURITY_JUVENILE:   return 0.65
-		MATURITY_ADULT:      return 1.0
-		MATURITY_SENESCENT:  return 0.95
-		_: return 1.0
+	if max_age_s <= 0.0:
+		return 1.0
+	return FishGrowth.scale_for(age / max_age_s)
 
 
 # Mixed-morph spawn: when a reef-style species has mixed_morphs=true,
@@ -2426,22 +2428,12 @@ func _maturity_scale() -> float:
 # in place; init_genome reads the post-mutation values below.
 func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	var g: RandomNumberGenerator = _genetics_rng()
-	# Curated tropical color palette - inspired by clownfish, tangs,
-	# chromis, anthias, royal grammas. Each entry is (base, accent).
-	# Accent is the contrasting bar / lateral stripe color.
-	var palettes: Array = [
-		[Color8(245, 110, 30), Color8(255, 255, 255)],  # clownfish orange + white
-		[Color8(255, 215, 40), Color8(45, 35, 25)],     # yellow tang + dark mask
-		[Color8(35, 95, 220), Color8(255, 230, 30)],    # blue tang + yellow tail
-		[Color8(60, 170, 215), Color8(245, 245, 245)],  # chromis blue-cyan + white
-		[Color8(230, 70, 130), Color8(255, 235, 90)],   # anthias pink + amber
-		[Color8(110, 60, 180), Color8(255, 220, 70)],   # royal gramma purple + yellow
-		[Color8(245, 245, 245), Color8(35, 35, 50)],    # damselfish pearl + black
-		[Color8(220, 60, 50), Color8(255, 245, 180)],   # squirrelfish red + cream
-		[Color8(40, 80, 60), Color8(255, 200, 90)],     # moorish idol dark + yellow
-	]
-	var palette_idx: int = g.randi() % palettes.size()
-	var p: Array = palettes[palette_idx]
+	# Palettes live in FishMorphs so a genome can name which one it rolls
+	# from ("reef" is the default and keeps the original behaviour exactly;
+	# guppies roll the fancy-guppy spread instead of thirty identical fish).
+	var palette_name: String = String(genome.get("morph_palette", "reef"))
+	var palette_idx: int = FishMorphs.index_for(palette_name, g.randf())
+	var p: Array = FishMorphs.entry(palette_name, palette_idx)
 	genome["base_color"] = p[0]
 	genome["accent_color"] = p[1]
 	# The accent doubles as marking_color so morph patterns (two-tone band,
@@ -2453,6 +2445,12 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 		genome["tail_color"] = p[1]
 	else:
 		genome["tail_color"] = Color(g.randf(), g.randf() * 0.6 + 0.3, g.randf())
+	if not FishMorphs.restyles_body(palette_name):
+		# Colour-only morph. A guppy morph is the same fish in a different
+		# colour, so leave the species' own body plan, size and finnage
+		# alone - rerolling them below would turn half the colony into
+		# disc-shaped reef fish.
+		return
 	# Body shape: most reef fish are compressed (laterally flat) like
 	# tangs / angelfish. Smaller chance of fusiform (anthias / chromis).
 	genome["body_shape"] = "compressed" if g.randf() < 0.65 else "fusiform"
@@ -2460,7 +2458,7 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	# horizontal stripes, spots, or solid. The clownfish palette (index 0)
 	# is forced to crisp edged white vertical bars - the unmistakable
 	# Amphiprion look - rather than a random pattern.
-	if palette_idx == 0:
+	if palette_idx == 0 and palette_name == "reef":
 		genome["pattern_type"] = 3
 		genome["bar_edged"] = true
 	else:
@@ -3858,7 +3856,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Rest debt (#84): a fish disturbed at night banks fatigue; sleeping pays it
 	# back. High rest debt makes it sluggish the next day (applied to the
 	# day-activity multiplier below).
-	var dl_rest: float = sim.daylight() if sim != null and sim.has_method("daylight") else 0.5
+	var dl_rest: float = SimGate.daylight(sim, 0.5)
 	if dl_rest < 0.3:
 		_rest_debt = clampf(_rest_debt + stress * dt * 0.02, 0.0, 1.0)
 		if _asleep:
@@ -5310,7 +5308,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		target_y = _aerial_target_y
 	if sim != null and sim.get("dissolved_o2") != null:
 		var o2: float = float(sim.dissolved_o2)
-		var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+		var dl: float = SimGate.daylight(sim, 1.0)
 		# At deep night, diurnal fish rest and tolerate mildly lower O2 without
 		# panic-darting. Keep emergency behavior for truly low values.
 		var gulp_threshold: float = lerpf(0.22, SURFACE_GULP_O2, dl)
@@ -6324,9 +6322,7 @@ func _process(dt: float) -> void:
 		_biolum_t += dt
 		if _biolum_t > 1.0:
 			_biolum_t = 0.0
-			var dl: float = 1.0
-			if sim != null and sim.has_method("daylight"):
-				dl = float(sim.daylight())
+			var dl: float = SimGate.daylight(sim, 1.0)
 			# Strength ramps from 0 (dawn/dusk) to ~1 (midnight). Mute
 			# entirely during the day so the fish reads normal then.
 			var strength: float = smoothstep(0.32, 0.05, dl)
@@ -6717,8 +6713,8 @@ func _face_direction(d: Vector3) -> void:
 
 
 func _breath_amplitude() -> float:
-	var load: float = maxf(_breath_load, 0.55)
-	var amplitude: float = 0.028 + clampf(load - 1.0, 0.0, 1.0) * 0.04
+	var breath_load: float = maxf(_breath_load, 0.55)
+	var amplitude: float = 0.028 + clampf(breath_load - 1.0, 0.0, 1.0) * 0.04
 	if _asleep:
 		amplitude *= 0.45
 	elif speed > max_speed * 0.55:
@@ -6732,8 +6728,8 @@ func _breath_motion_delta(dt: float) -> float:
 	if _dying:
 		return 0.0
 	var previous_phase: float = _breath_phase
-	var load: float = maxf(_breath_load, 0.55)
-	_breath_phase += dt * lerpf(0.7, 1.55, clampf(load - 0.4, 0.0, 1.2))
+	var breath_load: float = maxf(_breath_load, 0.55)
+	_breath_phase += dt * lerpf(0.7, 1.55, clampf(breath_load - 0.4, 0.0, 1.2))
 	var amplitude: float = _breath_amplitude()
 	var next_offset: float = sin(_breath_phase * TAU) * amplitude
 	var delta: float = next_offset - _breath_y_offset

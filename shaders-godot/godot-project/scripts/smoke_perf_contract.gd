@@ -18,13 +18,16 @@ func _initialize() -> void:
 	var hz: float = _MindTickScript.achieved_hz_per_fish()
 	if hz < 0.0:
 		failed.append("mind Hz stats available")
+	# NB: quit() does NOT return in Godot — the tree is asked to quit and
+	# execution continues. This used to be `quit(0)` on success followed by a
+	# bare `quit(1)`, so the success path fell straight through and the smoke
+	# exited 1 even when it passed: it could never go green. Routing the code
+	# through TestSupport.report() makes a single exit the only shape
+	# available (BROAD_DIRECTIONS #10/#11).
 	if failed.is_empty():
 		print("[smoke] perf_contract OK (150-fish %.1f ms, 50-fish %.1f ms, %.1f Hz/fish)" % [
 			ms150, ms50, hz])
-		quit(0)
-	for e in failed:
-		push_error("[smoke] perf_contract FAIL: %s" % e)
-	quit(1)
+	quit(TestSupport.report("smoke_perf_contract", failed))
 
 
 static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:

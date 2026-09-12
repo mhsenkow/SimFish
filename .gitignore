@@ -66,3 +66,6 @@ steam/depot_ids.env
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Per-script smoke logs (BROAD_DIRECTIONS #10) - regenerated every run.
+.smoke-logs/

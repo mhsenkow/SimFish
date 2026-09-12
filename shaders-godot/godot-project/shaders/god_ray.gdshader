@@ -38,6 +38,20 @@ uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
 uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0); // min xz, size xz
 uniform float canopy_attenuation : hint_range(0.0, 1.0) = 0.0;
 
+// Tank footprint, as up to 8 inward half-planes: a point p is inside when
+// dot(plane.xy, p.xz) <= plane.z for every plane. Count 0 disables it.
+//
+// WHY. The shaft is a cone mesh that starts at the lamp and widens toward
+// the substrate. Nothing constrained it to the tank, so whenever the beam
+// was wide or aimed off-centre the cone's far end drew straight through
+// the glass - on a hex tank, whose walls are not axis-aligned, that reads
+// as a bright straight line cutting across the corner. Clipping here fixes
+// the whole class: however the lamp is aimed or however far it spreads,
+// the visible shaft only ever exists inside the water.
+uniform vec4 tank_planes[8];
+uniform int tank_plane_count = 0;
+uniform float tank_clip_softness : hint_range(0.01, 1.0) = 0.16;
+
 varying vec3 local_pos;
 varying vec3 world_vertex;
 
@@ -105,6 +119,19 @@ void fragment() {
 		fish_block = max(fish_block, smoothstep(oc.w, oc.w * 0.35, d));
 	}
 	alpha *= 1.0 - fish_block * occluder_strength;
+	if (tank_plane_count > 0) {
+		float outside = -1e9;
+		for (int i = 0; i < 8; i++) {
+			if (i >= tank_plane_count) {
+				break;
+			}
+			vec4 pl = tank_planes[i];
+			outside = max(outside, dot(pl.xy, world_vertex.xz) - pl.z);
+		}
+		// Fade rather than hard-clip, so the shaft dies at the glass
+		// instead of ending on a visible cut edge.
+		alpha *= 1.0 - smoothstep(-tank_clip_softness, tank_clip_softness, outside);
+	}
 	if (canopy_attenuation > 0.001) {
 		vec2 canopy_uv = (world_vertex.xz - canopy_bounds.xy) / max(canopy_bounds.zw, vec2(0.01));
 		float canopy = texture(canopy_density_tex, clamp(canopy_uv, vec2(0.0), vec2(1.0))).r;

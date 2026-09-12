@@ -18,7 +18,11 @@ extends Node
 const TANKS_DIR := "user://tanks"
 const INDEX_PATH := "user://tanks/index.cfg"
 const LEGACY_CONFIG_PATH := "user://tank_config.cfg"
-const STATE_VERSION := 1
+# Schema version of state.json. SaveMigrations owns the value and does the
+# stamping/gating (BROAD_DIRECTIONS #4) — this alias exists because callers
+# and docs referred to TankSaves.STATE_VERSION. It was previously a dead
+# constant: declared, never written, never read.
+const STATE_VERSION: int = SaveMigrations.CURRENT_VERSION
 const MAX_JSON_BYTES: int = 52_428_800  # 50 MiB
 const BACKUP_COUNT: int = 3
 

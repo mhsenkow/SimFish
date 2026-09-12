@@ -2785,7 +2785,10 @@ func _record_organism_discovery(g: Dictionary, silent: bool = false) -> void:
 	var source: String = "evolved"
 	var subspecies_id: String = String(g.get("subspecies_id", species_id))
 	if species_id.begins_with("stranger_"):
-		source = "store"
+		# Persisted discovery source. Legacy saves wrote "store" (from the
+		# old Fish Store naming); readers still accept it (library_panel
+		# src_label, main._discovery_source_label). Never a purchase.
+		source = "adopt"
 	elif gen == 0:
 		source = "founder"
 	elif species_id != "" and subspecies_id != "" and subspecies_id != species_id:

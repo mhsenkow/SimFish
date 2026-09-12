@@ -78,6 +78,10 @@ var _diet_chart: RichTextLabel
 var _w_label: Label
 var _d_label: Label
 var _h_label: Label
+var _diag_status: Label = null
+var _settings_mode_option: OptionButton = null
+var _locale_option: OptionButton = null
+
 # AI companion widgets
 var _ai_enabled_check: CheckBox
 var _ai_chronicle_check: CheckBox
@@ -210,7 +214,18 @@ func _build_ui() -> void:
 
 	# -- Tank tab --
 	_add_section(vbox_tank, "Shape & size")
-	_vessel_option = PanelTheme.add_dropdown_row(vbox_tank, "Vessel preset")
+	# Browsing beats a dropdown: the picker draws every vessel to a shared
+	# scale, which is the only way to see that a 20 long is wide and low or
+	# that a nano is a fraction of a 75. The dropdown stays for quick
+	# switching once you know what you want.
+	var browse := PanelTheme.make_primary_button(tr("Browse tanks…"))
+	browse.tooltip_text = tr("See every tank drawn to the same scale")
+	browse.pressed.connect(func():
+		var m: Node = _main_node()
+		if m != null and m.has_method("_toggle_vessel_picker"):
+			m.call("_toggle_vessel_picker"))
+	vbox_tank.add_child(browse)
+	_vessel_option = PanelTheme.add_dropdown_row(vbox_tank, tr("Vessel preset"))
 	for key in TankConfig.VESSEL_PRESETS.keys():
 		var vlabel: String = TankConfig.VESSEL_PRESETS[key]["label"]
 		_vessel_option.add_item(vlabel)
@@ -246,23 +261,23 @@ func _build_ui() -> void:
 	_new_tank_fit_option.item_selected.connect(func(idx):
 		TankConfig.new_tank_fit = _new_tank_fit_option.get_item_metadata(idx))
 	var fit_hint := PanelTheme.make_description()
-	fit_hint.text = "Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger."
+	fit_hint.text = tr("Used when you create a new tank. Auto picks a tall cylinder in portrait and a wide box in landscape; desktop defaults are larger.")
 	vbox_tank.add_child(fit_hint)
 
 	_w_label = Label.new()
 	_w_slider = PanelTheme.add_slider_row(vbox_tank, "Width", 4.0, 24.0, 0.5, _w_label)
-	_w_slider.value_changed.connect(func(v): _on_w(v))
+	_w_slider.value_changed.connect(func(v): _on_w(v); _update_vessel_desc())
 
 	_d_label = Label.new()
 	_d_slider = PanelTheme.add_slider_row(vbox_tank, "Depth", 2.0, 14.0, 0.5, _d_label)
-	_d_slider.value_changed.connect(func(v): _on_d(v))
+	_d_slider.value_changed.connect(func(v): _on_d(v); _update_vessel_desc())
 
 	_h_label = Label.new()
 	_h_slider = PanelTheme.add_slider_row(vbox_tank, "Height", 4.0, 20.0, 0.5, _h_label)
-	_h_slider.value_changed.connect(func(v): _on_h(v))
+	_h_slider.value_changed.connect(func(v): _on_h(v); _update_vessel_desc())
 
 	var reload_badge := PanelTheme.make_description()
-	reload_badge.text = "Width / depth / height need Apply (reload) to rebuild the tank."
+	reload_badge.text = tr("Width / depth / height need Apply (reload) to rebuild the tank.")
 	vbox_tank.add_child(reload_badge)
 
 	# -- Light fixture (tank setup) --
@@ -295,17 +310,17 @@ func _build_ui() -> void:
 	_light_size.value_changed.connect(func(v): _on_light_size(v))
 
 	_light_volumetric_check = CheckBox.new()
-	_light_volumetric_check.text = "Show light beams (god rays)"
+	_light_volumetric_check.text = tr("Show light beams (god rays)")
 	_light_volumetric_check.toggled.connect(func(v): _on_volumetric(v))
 	vbox_tank.add_child(_light_volumetric_check)
 
 	_equipment_in_frame_check = CheckBox.new()
-	_equipment_in_frame_check.text = "Show equipment in frame"
+	_equipment_in_frame_check.text = tr("Show equipment in frame")
 	_equipment_in_frame_check.toggled.connect(func(v): _on_equipment_in_frame(v))
 	vbox_tank.add_child(_equipment_in_frame_check)
 
 	var look_hint := PanelTheme.make_description()
-	look_hint.text = "Sun, warmth, and post-process live in Look → Lighting on the right rail."
+	look_hint.text = tr("Sun, warmth, and post-process live in Look → Lighting on the right rail.")
 	vbox_tank.add_child(look_hint)
 
 	# -- Stocking tab --
@@ -382,7 +397,7 @@ func _build_ui() -> void:
 	# the next Apply / reload of the scene.
 	_add_section(vbox_env, "Plants — Aquascape Templates")
 	var aq_desc := PanelTheme.make_description()
-	aq_desc.text = "Drop a curated planting from a real aquascape style. Adds plants live — no Apply needed."
+	aq_desc.text = tr("Drop a curated planting from a real aquascape style. Adds plants live — no Apply needed.")
 	vbox_env.add_child(aq_desc)
 	var aq_row1 := HBoxContainer.new()
 	aq_row1.add_theme_constant_override("separation", 6)
@@ -422,7 +437,7 @@ func _build_ui() -> void:
 	_co2_slider = PanelTheme.add_slider_row(vbox_env, "CO2 level", 0.0, 1.0, 0.05, _co2_label)
 	_co2_slider.value_changed.connect(_on_co2_level_changed)
 	var co2_desc := PanelTheme.make_description()
-	co2_desc.text = "0 = off · 0.3 = passive · 0.6 = medium · 1.0 = pressurized. Higher CO2 makes red plants redden and stems pearl visibly."
+	co2_desc.text = tr("0 = off · 0.3 = passive · 0.6 = medium · 1.0 = pressurized. Higher CO2 makes red plants redden and stems pearl visibly.")
 	vbox_env.add_child(co2_desc)
 	# Light spectrum slider — cool↔warm LED tuning. Real aquascapers swap
 	# bulbs to bring out reds or greens; we expose the same lever.
@@ -431,14 +446,14 @@ func _build_ui() -> void:
 		0.0, 1.0, 0.05, _spectrum_label)
 	_spectrum_slider.value_changed.connect(_on_light_spectrum_changed)
 	var sp_desc := PanelTheme.make_description()
-	sp_desc.text = "0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds)."
+	sp_desc.text = tr("0 = cool / blue (boosts greens) · 0.5 = neutral · 1.0 = warm / red (boosts reds).")
 	vbox_env.add_child(sp_desc)
 	_plant_limit_overlay_check = CheckBox.new()
-	_plant_limit_overlay_check.text = "Plant limiting-factor tint (light / CO₂ / nutrient)"
+	_plant_limit_overlay_check.text = tr("Plant limiting-factor tint (light / CO₂ / nutrient)")
 	_plant_limit_overlay_check.toggled.connect(func(v): TankConfig.plant_limit_overlay = v)
 	vbox_env.add_child(_plant_limit_overlay_check)
 	_debug_growth_check = CheckBox.new()
-	_debug_growth_check.text = "Log growth diagnostics (seconds per voxel, every ~10 s)"
+	_debug_growth_check.text = tr("Log growth diagnostics (seconds per voxel, every ~10 s)")
 	_debug_growth_check.toggled.connect(func(v): TankConfig.debug_growth_logging = v)
 	vbox_env.add_child(_debug_growth_check)
 
@@ -462,7 +477,7 @@ func _build_ui() -> void:
 	# -- Fauna tab (live swim/grouping — no Apply/reload required) --
 	_add_section(vbox_fauna, "Schooling")
 	var fauna_school_hint := PanelTheme.make_description()
-	fauna_school_hint.text = "Adjust how tightly fish school and spread through the tank. Sliders snap to preset steps — changes apply immediately."
+	fauna_school_hint.text = tr("Adjust how tightly fish school and spread through the tank. Sliders snap to preset steps — changes apply immediately.")
 	vbox_fauna.add_child(fauna_school_hint)
 	_fauna_schooling_label = Label.new()
 	_fauna_schooling_slider = PanelTheme.add_slider_row(
@@ -481,7 +496,7 @@ func _build_ui() -> void:
 			TankConfig.fauna_separation_mult = v
 			_fauna_separation_label.text = _fauna_separation_caption(v))
 	_fauna_pulse_check = CheckBox.new()
-	_fauna_pulse_check.text = "School breathing pulse (synchronized tighten/loosen)"
+	_fauna_pulse_check.text = tr("School breathing pulse (synchronized tighten/loosen)")
 	_fauna_pulse_check.toggled.connect(func(v): TankConfig.fauna_school_pulse_enabled = v)
 	vbox_fauna.add_child(_fauna_pulse_check)
 	_fauna_pulse_amp_label = Label.new()
@@ -493,7 +508,7 @@ func _build_ui() -> void:
 
 	_add_section(vbox_fauna, "Movement")
 	var fauna_move_hint := PanelTheme.make_description()
-	fauna_move_hint.text = "Wander and speed use four preset steps each — each notch should look clearly different in the tank."
+	fauna_move_hint.text = tr("Wander and speed use four preset steps each — each notch should look clearly different in the tank.")
 	vbox_fauna.add_child(fauna_move_hint)
 	_fauna_wander_label = Label.new()
 	_fauna_wander_slider = PanelTheme.add_slider_row(
@@ -514,7 +529,7 @@ func _build_ui() -> void:
 
 	_add_section(vbox_fauna, "Murmuration tuning")
 	var motion_hint := PanelTheme.make_description()
-	motion_hint.text = "Wave speed and flank bias shape how turns travel through schools. Applies live."
+	motion_hint.text = tr("Wave speed and flank bias shape how turns travel through schools. Applies live.")
 	vbox_fauna.add_child(motion_hint)
 	_motion_wave_label = Label.new()
 	_motion_wave_slider = PanelTheme.add_slider_row(
@@ -537,25 +552,25 @@ func _build_ui() -> void:
 
 	_add_section(vbox_fauna, "Social reactions")
 	_fauna_mourning_check = CheckBox.new()
-	_fauna_mourning_check.text = "Mourning behavior after deaths (school tightens + slows)"
+	_fauna_mourning_check.text = tr("Mourning behavior after deaths (school tightens + slows)")
 	_fauna_mourning_check.toggled.connect(func(v): TankConfig.fauna_mourning_enabled = v)
 	vbox_fauna.add_child(_fauna_mourning_check)
 	_fauna_glance_check = CheckBox.new()
-	_fauna_glance_check.text = "Player attention (bold fish drift toward camera stare)"
+	_fauna_glance_check.text = tr("Player attention (bold fish drift toward camera stare)")
 	_fauna_glance_check.toggled.connect(func(v): TankConfig.fauna_player_glance_enabled = v)
 	vbox_fauna.add_child(_fauna_glance_check)
 
 	# -- Advanced tab --
 	_add_section(vbox_adv, "Accessibility")
 	_reduced_motion_check = CheckBox.new()
-	_reduced_motion_check.text = "Reduced motion (less sway, pulse, auto-orbit)"
-	_reduced_motion_check.tooltip_text = "Turns off school pulse, plant sway, and cinematic auto-orbit."
+	_reduced_motion_check.text = tr("Reduced motion (less sway, pulse, auto-orbit)")
+	_reduced_motion_check.tooltip_text = tr("Turns off school pulse, plant sway, and cinematic auto-orbit.")
 	_reduced_motion_check.toggled.connect(func(v):
 		TankConfig.reduced_motion = v
 		TankConfig.request_save_to_disk())
 	vbox_adv.add_child(_reduced_motion_check)
 	var font_desc := PanelTheme.make_description()
-	font_desc.text = "Reopen panels after changing font size."
+	font_desc.text = tr("Reopen panels after changing font size.")
 	vbox_adv.add_child(font_desc)
 	_ui_font_scale_label = Label.new()
 	_ui_font_scale_slider = PanelTheme.add_slider_row(
@@ -567,23 +582,23 @@ func _build_ui() -> void:
 
 	_add_section(vbox_adv, "Automation")
 	_auto_respawn_check = CheckBox.new()
-	_auto_respawn_check.text = "Auto-respawn when tank is empty (~6 fish + cleanup crew)"
+	_auto_respawn_check.text = tr("Auto-respawn when tank is empty (~6 fish + cleanup crew)")
 	_auto_respawn_check.toggled.connect(func(v): TankConfig.auto_respawn_fauna = v)
 	vbox_adv.add_child(_auto_respawn_check)
 
 	_auto_feed_check = CheckBox.new()
-	_auto_feed_check.text = "Auto-feed (screensaver mode — simulates ⌘+click feeding)"
+	_auto_feed_check.text = tr("Auto-feed (screensaver mode — simulates ⌘+click feeding)")
 	_auto_feed_check.toggled.connect(func(v): TankConfig.auto_feed_fauna = v)
 	vbox_adv.add_child(_auto_feed_check)
 	var _guardian_autofeed_check := CheckBox.new()
-	_guardian_autofeed_check.text = "Guardian may turn on auto-feed when starving"
+	_guardian_autofeed_check.text = tr("Guardian may turn on auto-feed when starving")
 	_guardian_autofeed_check.button_pressed = TankConfig.guardian_may_enable_autofeed
 	_guardian_autofeed_check.toggled.connect(func(v): TankConfig.guardian_may_enable_autofeed = v)
 	vbox_adv.add_child(_guardian_autofeed_check)
 
 	_add_section(vbox_adv, "Sound")
 	var sound_hint := PanelTheme.make_description()
-	sound_hint.text = "Enable sound and mix layers in Sound Studio (Look → Sound, or M)."
+	sound_hint.text = tr("Enable sound and mix layers in Sound Studio (Look → Sound, or M).")
 	vbox_adv.add_child(sound_hint)
 	_sound_studio_btn = PanelTheme.make_primary_button("Open Sound Studio…")
 	_sound_studio_btn.pressed.connect(_open_sound_studio)
@@ -596,7 +611,7 @@ func _build_ui() -> void:
 	# applied at scene-load by main._apply_fps_cap().
 	_add_section(vbox_adv, "Performance")
 	_battery_saver_check = CheckBox.new()
-	_battery_saver_check.text = "Battery saver (caps at 30fps, lighter visuals)"
+	_battery_saver_check.text = tr("Battery saver (caps at 30fps, lighter visuals)")
 	_battery_saver_check.toggled.connect(func(v):
 		TankConfig.battery_saver = v
 		if v:
@@ -630,6 +645,97 @@ func _build_ui() -> void:
 		TankConfig.request_save_to_disk()
 		_apply_fps_cap_live())
 
+	# --- Settings verbosity (BROAD_DIRECTIONS #18) ---
+	# TankConfig carries 284 properties, of which only 19 are first-session
+	# essentials and 32 are not settings at all (persisted state / save
+	# bookkeeping). This lets the screen admit that instead of presenting
+	# everything at once. ConfigCuration owns the classification; the gate
+	# in smoke_config_curation.gd keeps it honest as knobs are added.
+	_add_section(vbox_adv, "Settings detail")
+	var mode_hint := PanelTheme.make_description()
+	var _cc: Dictionary = ConfigCuration.summary()
+	mode_hint.text = (
+		"%d settings across %d properties. Simple shows the %d that matter "
+		% [int(_cc["settings"]), int(_cc["total"]),
+			ConfigCuration.properties_in_tier(ConfigCuration.TIER_ESSENTIAL).size()]
+		+ "first; Expert adds debug knobs. Nothing is removed — only hidden."
+	)
+	vbox_adv.add_child(mode_hint)
+	_settings_mode_option = PanelTheme.add_dropdown_row(vbox_adv, "Detail level")
+	for entry in [
+			{"label": "Simple", "value": ConfigCuration.MODE_SIMPLE},
+			{"label": "Advanced", "value": ConfigCuration.MODE_ADVANCED},
+			{"label": "Expert", "value": ConfigCuration.MODE_EXPERT},
+		]:
+		_settings_mode_option.add_item(String(entry["label"]))
+		_settings_mode_option.set_item_metadata(
+			_settings_mode_option.item_count - 1, String(entry["value"]))
+	_sync_settings_mode()
+	_settings_mode_option.item_selected.connect(func(idx):
+		TankConfig.settings_mode = String(_settings_mode_option.get_item_metadata(idx))
+		TankConfig.request_save_to_disk())
+
+	# --- Language (BROAD_DIRECTIONS #14) ---
+	_add_section(vbox_adv, tr("Language"))
+	var lang_hint := PanelTheme.make_description()
+	lang_hint.text = tr(
+		"Pseudolocale renders every translated string in brackets with accents. "
+		+ "Anything still in plain English was never wrapped for translation, "
+		+ "and anything clipped will not survive a real one."
+	)
+	vbox_adv.add_child(lang_hint)
+	_locale_option = PanelTheme.add_dropdown_row(vbox_adv, tr("Language"))
+	var i18n: Node = get_node_or_null("/root/Localization")
+	if i18n != null:
+		for entry in i18n.available_locales():
+			_locale_option.add_item(String(entry["label"]))
+			_locale_option.set_item_metadata(
+				_locale_option.item_count - 1, String(entry["code"]))
+	_sync_locale_option()
+	_locale_option.item_selected.connect(func(idx):
+		var code: String = String(_locale_option.get_item_metadata(idx))
+		TankConfig.locale = code
+		TankConfig.request_save_to_disk()
+		var svc: Node = get_node_or_null("/root/Localization")
+		if svc != null:
+			svc.set_locale(code))
+
+	# --- Sharing (BROAD_DIRECTIONS #19) ---
+	_add_section(vbox_adv, "Share this tank")
+	var share_hint := PanelTheme.make_description()
+	share_hint.text = (
+		"Copies a code carrying this tank's seed and setup. Photos (F12) are "
+		+ "saved as postcards with the seed burned in, plus a .txt sidecar "
+		+ "holding the code."
+	)
+	vbox_adv.add_child(share_hint)
+	var share_btn := PanelTheme.make_secondary_button("Copy tank code")
+	share_btn.pressed.connect(func():
+		var m: Node = _main_node()
+		if m != null and m.has_method("copy_share_code"):
+			m.copy_share_code())
+	vbox_adv.add_child(share_btn)
+
+	# --- Diagnostics (BROAD_DIRECTIONS #5) ---
+	# A player-facing bug-report path: previously there was none, and the
+	# game kept no log at all, so "my tank broke" arrived with no evidence.
+	_add_section(vbox_adv, "Diagnostics")
+	var diag_hint := PanelTheme.make_description()
+	diag_hint.text = (
+		"Copies build, platform, current tank state and the recent log to "
+		+ "your clipboard for a bug report. Nothing is sent anywhere — "
+		+ "the game has no telemetry."
+	)
+	vbox_adv.add_child(diag_hint)
+	_diag_status = Label.new()
+	_diag_status.add_theme_font_size_override("font_size", 11)
+	_diag_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_diag_status.text = _diag_summary()
+	vbox_adv.add_child(_diag_status)
+	var diag_btn := PanelTheme.make_secondary_button("Copy diagnostics")
+	diag_btn.pressed.connect(_on_copy_diagnostics)
+	vbox_adv.add_child(diag_btn)
+
 	# -- AI tab --
 	# Voice first (on-device, private) — separate from optional Ollama names/chronicle.
 	_add_section(vbox_ai, "Voice & thoughts (on-device)")
@@ -640,18 +746,18 @@ func _build_ui() -> void:
 		+ "Nothing leaves your machine.")
 	vbox_ai.add_child(voice_desc)
 	_sentience_voice_off_check = CheckBox.new()
-	_sentience_voice_off_check.text = "Quiet mode — hide voice text and ambient toasts"
+	_sentience_voice_off_check.text = tr("Quiet mode — hide voice text and ambient toasts")
 	_sentience_voice_off_check.toggled.connect(_on_sentience_voice_off_toggled)
 	vbox_ai.add_child(_sentience_voice_off_check)
 	_voice_detail_box = VBoxContainer.new()
 	_voice_detail_box.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(_voice_detail_box)
 	_guardian_voice_check = CheckBox.new()
-	_guardian_voice_check.text = "Guardian diary lines (built-in model when available)"
+	_guardian_voice_check.text = tr("Guardian diary lines (built-in model when available)")
 	_guardian_voice_check.toggled.connect(_on_guardian_voice_toggled)
 	_voice_detail_box.add_child(_guardian_voice_check)
 	_fish_thought_voice_check = CheckBox.new()
-	_fish_thought_voice_check.text = "Fish thoughts when following or inspecting"
+	_fish_thought_voice_check.text = tr("Fish thoughts when following or inspecting")
 	_fish_thought_voice_check.toggled.connect(_on_fish_thought_voice_toggled)
 	_voice_detail_box.add_child(_fish_thought_voice_check)
 	_add_section(vbox_ai, "Keeper ears (local)")
@@ -661,22 +767,22 @@ func _build_ui() -> void:
 		+ "Gaze and cursor are optional social signals. Mic uses volume only — no speech-to-text.")
 	vbox_ai.add_child(keeper_desc)
 	_keeper_ears_check = CheckBox.new()
-	_keeper_ears_check.text = "Text channel to followed fish"
+	_keeper_ears_check.text = tr("Text channel to followed fish")
 	_keeper_ears_check.toggled.connect(_on_keeper_ears_toggled)
 	vbox_ai.add_child(_keeper_ears_check)
 	_keeper_gaze_check = CheckBox.new()
-	_keeper_gaze_check.text = "Sustained gaze as social signal"
+	_keeper_gaze_check.text = tr("Sustained gaze as social signal")
 	_keeper_gaze_check.toggled.connect(_on_keeper_gaze_toggled)
 	vbox_ai.add_child(_keeper_gaze_check)
 	_keeper_mic_check = CheckBox.new()
-	_keeper_mic_check.text = "Microphone room presence (opt-in)"
+	_keeper_mic_check.text = tr("Microphone room presence (opt-in)")
 	_keeper_mic_check.toggled.connect(_on_keeper_mic_toggled)
 	vbox_ai.add_child(_keeper_mic_check)
 	var lang_row := HBoxContainer.new()
 	lang_row.add_theme_constant_override("separation", 6)
 	_voice_detail_box.add_child(lang_row)
 	var lang_lbl := Label.new()
-	lang_lbl.text = "Voice language:"
+	lang_lbl.text = tr("Voice language:")
 	lang_lbl.add_theme_font_size_override("font_size", 11)
 	lang_row.add_child(lang_lbl)
 	_voice_language_option = OptionButton.new()
@@ -691,7 +797,7 @@ func _build_ui() -> void:
 	_voice_language_option.item_selected.connect(_on_voice_language_selected)
 	lang_row.add_child(_voice_language_option)
 	var guardian_dl_desc := PanelTheme.make_description()
-	guardian_dl_desc.text = "Steam builds include the model. Slim builds download once (~250MB, resumable)."
+	guardian_dl_desc.text = tr("Steam builds include the model. Slim builds download once (~250MB, resumable).")
 	_voice_detail_box.add_child(guardian_dl_desc)
 	_guardian_dl_progress_label = Label.new()
 	_guardian_dl_progress_label.add_theme_font_size_override("font_size", 11)
@@ -708,7 +814,7 @@ func _build_ui() -> void:
 	# uses as fallback, so toggling this is purely additive — nothing breaks
 	# when it's unreachable, players just keep the built-in experience.
 	_ai_enabled_check = CheckBox.new()
-	_ai_enabled_check.text = "Enable AI (local Ollama)"
+	_ai_enabled_check.text = tr("Enable AI (local Ollama)")
 	_ai_enabled_check.toggled.connect(_on_ai_enabled_toggled)
 	vbox_ai.add_child(_ai_enabled_check)
 	var ai_desc := PanelTheme.make_description()
@@ -728,7 +834,7 @@ func _build_ui() -> void:
 	ai_row1.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(ai_row1)
 	var ep_lbl := Label.new()
-	ep_lbl.text = "Endpoint:"
+	ep_lbl.text = tr("Endpoint:")
 	ep_lbl.add_theme_font_size_override("font_size", 11)
 	ai_row1.add_child(ep_lbl)
 	_ai_endpoint_edit = LineEdit.new()
@@ -740,7 +846,7 @@ func _build_ui() -> void:
 	ai_row2.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(ai_row2)
 	var md_lbl := Label.new()
-	md_lbl.text = "Model:"
+	md_lbl.text = tr("Model:")
 	md_lbl.add_theme_font_size_override("font_size", 11)
 	ai_row2.add_child(md_lbl)
 	_ai_model_edit = LineEdit.new()
@@ -753,7 +859,7 @@ func _build_ui() -> void:
 	ai_row3.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(ai_row3)
 	var th_lbl := Label.new()
-	th_lbl.text = "Naming theme:"
+	th_lbl.text = tr("Naming theme:")
 	th_lbl.add_theme_font_size_override("font_size", 11)
 	ai_row3.add_child(th_lbl)
 	_ai_theme_edit = LineEdit.new()
@@ -763,22 +869,22 @@ func _build_ui() -> void:
 	ai_row3.add_child(_ai_theme_edit)
 	# Chronicle toggle
 	_ai_chronicle_check = CheckBox.new()
-	_ai_chronicle_check.text = "Write tank chronicle (ambient sentences)"
+	_ai_chronicle_check.text = tr("Write tank chronicle (ambient sentences)")
 	_ai_chronicle_check.toggled.connect(_on_ai_chronicle_toggled)
 	vbox_ai.add_child(_ai_chronicle_check)
 	_add_section(vbox_ai, "Advanced: HTTP fallback (optional)")
 	var embedded_desc := PanelTheme.make_description()
-	embedded_desc.text = "Only if you run a separate /api/generate server. Normal play uses the built-in model above."
+	embedded_desc.text = tr("Only if you run a separate /api/generate server. Normal play uses the built-in model above.")
 	vbox_ai.add_child(embedded_desc)
 	_ai_embedded_check = CheckBox.new()
-	_ai_embedded_check.text = "Enable HTTP embedded fallback"
+	_ai_embedded_check.text = tr("Enable HTTP embedded fallback")
 	_ai_embedded_check.toggled.connect(_on_ai_embedded_toggled)
 	vbox_ai.add_child(_ai_embedded_check)
 	var embedded_row := HBoxContainer.new()
 	embedded_row.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(embedded_row)
 	var emb_lbl := Label.new()
-	emb_lbl.text = "Embedded endpoint:"
+	emb_lbl.text = tr("Embedded endpoint:")
 	emb_lbl.add_theme_font_size_override("font_size", 11)
 	embedded_row.add_child(emb_lbl)
 	_ai_embedded_endpoint_edit = LineEdit.new()
@@ -790,7 +896,7 @@ func _build_ui() -> void:
 	embedded_row2.add_theme_constant_override("separation", 6)
 	vbox_ai.add_child(embedded_row2)
 	var emb_md := Label.new()
-	emb_md.text = "Embedded model:"
+	emb_md.text = tr("Embedded model:")
 	emb_md.add_theme_font_size_override("font_size", 11)
 	embedded_row2.add_child(emb_md)
 	_ai_embedded_model_edit = LineEdit.new()
@@ -956,7 +1062,7 @@ func _build_density_section(parent: Node) -> void:
 
 	parent.add_child(PanelTheme.make_spacer(4))
 	_pop_scale_check = CheckBox.new()
-	_pop_scale_check.text = "Scale ceilings with tank size"
+	_pop_scale_check.text = tr("Scale ceilings with tank size")
 	_pop_scale_check.tooltip_text = (
 		"On: a nano cube gets proportionally lower ceilings than a 75-gallon. "
 		+ "Off: every tank uses the raw numbers below.")
@@ -1275,7 +1381,7 @@ func _refresh_ai_status() -> void:
 		return
 	var ai := get_node_or_null("/root/AIDirector")
 	if ai == null:
-		_ai_status_label.text = "AI Director unavailable."
+		_ai_status_label.text = tr("AI Director unavailable.")
 	else:
 		_ai_status_label.text = String(ai.status_summary())
 	_sync_guardian_download_button()
@@ -1554,7 +1660,7 @@ func _on_ai_pick_installed() -> void:
 		# We also subscribe one-shot to the signal so the swap happens
 		# automatically without a second click.
 		_ai_status_label.add_theme_color_override("font_color", Color8(180, 195, 220))
-		_ai_status_label.text = "Probing Ollama…"
+		_ai_status_label.text = tr("Probing Ollama…")
 		ai.test_connection()
 		if not ai.connection_tested.is_connected(_on_ai_pick_after_probe):
 			ai.connection_tested.connect(_on_ai_pick_after_probe, CONNECT_ONE_SHOT)
@@ -1572,7 +1678,7 @@ func _apply_picked_model(ai: Node) -> void:
 	var pick: String = String(ai.pick_best_installed_model())
 	if pick == "":
 		_ai_status_label.add_theme_color_override("font_color", Color8(230, 120, 120))
-		_ai_status_label.text = "No suitable installed model found. Try `ollama pull qwen2.5:3b` in a terminal."
+		_ai_status_label.text = tr("No suitable installed model found. Try `ollama pull qwen2.5:3b` in a terminal.")
 		return
 	TankConfig.ai_model = pick
 	_ai_model_edit.text = pick
@@ -1740,11 +1846,31 @@ func _sync_vessel_dropdown() -> void:
 	_update_vessel_desc()
 
 
+# Describe the vessel the way a shop would: real dimensions, real volume, and
+# what it will actually hold. "half_w 8.0" told the player nothing; "75 gallon
+# · 48 × 18 × 21 in · holds a community of 36+ small fish" tells them
+# everything (tank realism pass — see scripts/tank_spec.gd).
 func _update_vessel_desc() -> void:
 	var key: String = TankConfig.vessel_preset
 	var preset: Dictionary = TankConfig.VESSEL_PRESETS.get(key, {})
-	if _vessel_desc != null:
-		_vessel_desc.text = String(preset.get("description", ""))
+	if _vessel_desc == null:
+		return
+	var lines: Array[String] = []
+	# Catalogue vessels quote their nominal size; custom geometry is measured.
+	if TankSpec.has_spec(key):
+		lines.append("%s  ·  %s"
+			% [TankSpec.volume_label(key), TankSpec.dimensions_label(key)])
+	else:
+		lines.append(TankSpec.measured_label(
+			TankConfig.tank_shape, TankConfig.tank_half_w, TankConfig.tank_half_d,
+			TankConfig.tank_height, TankConfig.water_surface_fraction))
+	var blurb: String = String(preset.get("description", ""))
+	if not blurb.is_empty():
+		lines.append(blurb)
+	lines.append(TankSpec.stocking_hint(
+		TankConfig.tank_shape, TankConfig.tank_half_w, TankConfig.tank_half_d,
+		TankConfig.tank_height, TankConfig.water_surface_fraction))
+	_vessel_desc.text = "\n".join(lines)
 
 
 func _on_environment(idx: int) -> void:
@@ -2056,3 +2182,66 @@ func _select_fps_option(cap: int) -> void:
 # reloading the scene. Engine.max_fps = 0 means uncapped.
 func _apply_fps_cap_live() -> void:
 	Engine.max_fps = int(TankConfig.fps_cap)
+
+
+# --- Diagnostics (BROAD_DIRECTIONS #5) -------------------------------------
+
+func _applog() -> Node:
+	return get_node_or_null("/root/AppLog")
+
+
+func _diag_summary() -> String:
+	var lg: Node = _applog()
+	if lg == null:
+		return "Log unavailable."
+	var counts: Dictionary = lg.level_counts()
+	return "%s — %d warnings, %d errors this session." % [
+		lg.session_header_line(),
+		int(counts.get("WARN", 0)),
+		int(counts.get("ERROR", 0)),
+	]
+
+
+func _on_copy_diagnostics() -> void:
+	var lg: Node = _applog()
+	if lg == null:
+		return
+	DisplayServer.clipboard_set(lg.export_report())
+	lg.info("ui", "diagnostics copied to clipboard")
+	if _diag_status != null:
+		_diag_status.text = tr("Copied to clipboard. ") + _diag_summary()
+
+
+# Reflect the saved verbosity mode in the dropdown (BROAD_DIRECTIONS #18).
+func _sync_settings_mode() -> void:
+	if _settings_mode_option == null:
+		return
+	var want: String = String(TankConfig.settings_mode)
+	for i in _settings_mode_option.item_count:
+		if String(_settings_mode_option.get_item_metadata(i)) == want:
+			_settings_mode_option.select(i)
+			return
+	_settings_mode_option.select(0)
+
+
+# The main scene node, for the few actions that live there (share code).
+func _main_node() -> Node:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		return (ml as SceneTree).current_scene
+	return null
+
+
+# Reflect the saved locale in the dropdown (BROAD_DIRECTIONS #14).
+func _sync_locale_option() -> void:
+	# item_count can be 0 when the Localization autoload is unavailable (test
+	# hosts, tool scripts). select() on an empty popup is an index error, so
+	# leave the empty dropdown alone rather than crashing the whole panel.
+	if _locale_option == null or _locale_option.item_count == 0:
+		return
+	var want: String = String(TankConfig.locale)
+	for i in _locale_option.item_count:
+		if String(_locale_option.get_item_metadata(i)) == want:
+			_locale_option.select(i)
+			return
+	_locale_option.select(0)

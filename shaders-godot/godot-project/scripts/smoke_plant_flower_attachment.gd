@@ -42,8 +42,8 @@ func _initialize() -> void:
 	for i in mini(plant.bloom_voxels.size(), locals_before.size()):
 		locals_stable = locals_stable \
 			and (plant.bloom_voxels[i] as Node3D).transform.is_equal_approx(locals_before[i])
-	_assert(failed, locals_stable, "repeated reclamp preserves every bloom local transform")
-	_assert(failed, absf(plant._flower_node.global_position.x) <= 0.251,
+	TestSupport.check(failed, locals_stable, "repeated reclamp preserves every bloom local transform")
+	TestSupport.check(failed, absf(plant._flower_node.global_position.x) <= 0.251,
 		"reclamp moves the complete flower inside the footprint")
 
 	# Live handle position and layover basis are both inherited by the anchor.
@@ -55,9 +55,9 @@ func _initialize() -> void:
 	plant._stabilize_flower_against_lean()
 	var expected_pos: Vector3 = tip.transform.origin \
 		+ tip.transform.basis.orthonormalized().y * Plant.FLOWER_TIP_NEST
-	_assert(failed, plant._flower_node.position.distance_to(expected_pos) < 0.0001,
+	TestSupport.check(failed, plant._flower_node.position.distance_to(expected_pos) < 0.0001,
 		"flower anchor follows the live top handle without lag")
-	_assert(failed, plant._flower_node.basis.y.normalized().dot(
+	TestSupport.check(failed, plant._flower_node.basis.y.normalized().dot(
 		tip.transform.basis.orthonormalized().y) > 0.999,
 		"flower inherits canopy layover orientation")
 
@@ -66,34 +66,34 @@ func _initialize() -> void:
 	plant._ensure_stem_batch()
 	plant._ensure_foliage_batch()
 	plant._apply_sway_personality()
-	_assert(failed, is_zero_approx(float(
+	TestSupport.check(failed, is_zero_approx(float(
 		plant._stem_mat.get_shader_parameter("gust_response"))),
 		"flowering structural stem has no GPU gust displacement")
-	_assert(failed, float(plant._foliage_mat.get_shader_parameter("gust_response")) <= 0.17,
+	TestSupport.check(failed, float(plant._foliage_mat.get_shader_parameter("gust_response")) <= 0.17,
 		"flowering leaves retain strongly attenuated gust")
 	plant.apply_gust_tilt(Vector2.RIGHT, 1.0)
-	_assert(failed, plant._gust_tilt.length() <= 0.0551,
+	TestSupport.check(failed, plant._gust_tilt.length() <= 0.0551,
 		"heavy bloom CPU gust stays bounded")
 	plant.rotation.z = plant._gust_tilt.x * 0.65
 	plant._stabilize_flower_against_lean()
 	var expected_world: Vector3 = plant.global_transform * expected_pos
-	_assert(failed, plant._flower_node.global_position.distance_to(expected_world) < 0.0001,
+	TestSupport.check(failed, plant._flower_node.global_position.distance_to(expected_world) < 0.0001,
 		"whole-plant gust leaves no structural tip-to-flower gap")
 
 	# Bud is a bridge plus compact cluster, never a lone detached cube.
-	_assert(failed, plant.bloom_voxels.size() >= 5,
+	TestSupport.check(failed, plant.bloom_voxels.size() >= 5,
 		"bud includes pedicel, calyx, and compact multi-voxel head")
 	var pedicel: Node3D = plant.bloom_voxels[0]
 	var calyx: Node3D = plant.bloom_voxels[1]
 	var bud_base: Node3D = plant.bloom_voxels[2]
-	_assert(failed, pedicel.position.y < calyx.position.y
+	TestSupport.check(failed, pedicel.position.y < calyx.position.y
 			and bud_base.position.y >= calyx.position.y,
 		"bud silhouette forms a connected stem-to-calyx-to-head chain")
 	var pedicel_box: BoxMesh = (pedicel as MeshInstance3D).mesh as BoxMesh
-	_assert(failed, pedicel_box != null and pedicel_box.size.x >= Plant.VOXEL_SIZE * 0.34,
+	TestSupport.check(failed, pedicel_box != null and pedicel_box.size.x >= Plant.VOXEL_SIZE * 0.34,
 		"column pedicel is stem-width, not a wire")
 	var bloom_mat: ShaderMaterial = (pedicel as MeshInstance3D).material_override as ShaderMaterial
-	_assert(failed, bloom_mat != null
+	TestSupport.check(failed, bloom_mat != null
 			and float(bloom_mat.get_shader_parameter("motion_lock")) > 0.5
 			and is_zero_approx(float(bloom_mat.get_shader_parameter("sway_amplitude"))),
 		"flower material locks out GPU vertex displacement")
@@ -103,12 +103,12 @@ func _initialize() -> void:
 	var far_batch := FarBatchScript.new()
 	host.add_child(far_batch)
 	await process_frame
-	_assert(failed, not far_batch._eligible_for_mirroring(plant),
+	TestSupport.check(failed, not far_batch._eligible_for_mirroring(plant),
 		"active flower/seed-pod plant is excluded from far mirroring")
 	far_batch._mirrored_plants.append(plant)
 	far_batch._set_private_visible(plant, false)
 	far_batch.update_far_batch([], null, FarBatchScript.REBUILD_INTERVAL_S)
-	_assert(failed, plant._stem_batch.mmi.visible and plant._foliage_batch.mmi.visible,
+	TestSupport.check(failed, plant._stem_batch.mmi.visible and plant._foliage_batch.mmi.visible,
 		"far-batch fallback restores flowering plant private batches")
 
 	# Save restoration rebuilds stage-specific geometry rather than restoring
@@ -120,22 +120,11 @@ func _initialize() -> void:
 	var restored: Plant = PlantScript.new()
 	host.add_child(restored)
 	restored.apply_save_dict(saved)
-	_assert(failed, restored.flower_stage == Plant.FlowerStage.SEED_POD,
+	TestSupport.check(failed, restored.flower_stage == Plant.FlowerStage.SEED_POD,
 		"save restores flower stage")
-	_assert(failed, restored._flower_node != null and restored.bloom_voxels.size() >= 4,
+	TestSupport.check(failed, restored._flower_node != null and restored.bloom_voxels.size() >= 4,
 		"save restores attached seed-pod geometry")
 
 	host.free()
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] plant_flower_attachment OK")
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_flower_attachment", failed))

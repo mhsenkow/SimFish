@@ -126,7 +126,7 @@ static func away_summary_extra(sim, gap_s: int) -> Dictionary:
 		out["tank_away_lines"] = lines
 	if gap_s >= 3600 and float(tm.get("night_quality", 0.5)) > 0.55:
 		out["managed_alone"] = true
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var phase: float = TankMind._float_prop(sim, "day_phase", 0.5)
 	if dl < 0.32 or (phase > 0.65 and phase < 0.88):
 		out["returned_in_dark"] = true
@@ -279,7 +279,7 @@ static func _tick_dream_content(f: Fish, sim, dt: float) -> void:
 static func _tick_sleep_cluster(f: Fish, sim, dt: float) -> void:
 	if not f._asleep or f.swim_pattern not in ["school", "shoal"]:
 		return
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.28:
 		return
 	var center: Vector3 = Vector3.ZERO
@@ -300,7 +300,7 @@ static func _tick_sleep_cluster(f: Fish, sim, dt: float) -> void:
 static func _pick_night_watcher(sim) -> void:
 	if sim == null:
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	if dl > 0.3:
 		return
 	var tm: Dictionary = TankMind.ensure(sim)
@@ -331,7 +331,7 @@ static func _pick_night_watcher(sim) -> void:
 static func _tick_night_watcher_glance(f: Fish, sim, dt: float) -> void:
 	if not f._night_watcher or sim == null:
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.32:
 		return
 	var phase: float = float(sim.day_phase) if sim.get("day_phase") != null else 0.5
@@ -355,7 +355,7 @@ static func _tick_night_watcher_glance(f: Fish, sim, dt: float) -> void:
 
 
 static func _tick_night_consolidation(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	if dl > 0.32:
 		return
 	for f in TankMind._fish_list(sim):
@@ -368,7 +368,7 @@ static func _tick_night_consolidation(sim, dt: float) -> void:
 
 
 static func _tick_collective_contagion(sim, dt: float) -> void:
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	if dl > 0.35:
 		return
 	var tm: Dictionary = TankMind.ensure(sim)
@@ -403,7 +403,7 @@ static func _tick_guardian_vigil(sim, _dt: float) -> void:
 	var g: Fish = sim._find_guardian_fish()
 	if not TankMind._fauna_alive(g):
 		return
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	if dl > 0.35:
 		return
 	if g._asleep and g.is_guardian:
@@ -412,4 +412,4 @@ static func _tick_guardian_vigil(sim, _dt: float) -> void:
 
 
 static func dl_safe(sim) -> float:
-	return float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	return SimGate.daylight(sim, 0.5)

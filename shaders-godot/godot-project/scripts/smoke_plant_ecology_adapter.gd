@@ -38,30 +38,19 @@ func _run() -> void:
 	var nutrient_before: float = grid.get_at(Vector3.ZERO)
 	for host in hosts:
 		var adapter = Adapter.new(host)
-		_assert(failed, adapter.biomass() > 0.0,
+		TestSupport.check(failed, adapter.biomass() > 0.0,
 			"%s reports biomass" % host.get_class())
-		_assert(failed, adapter.nutrient_demand() > 0.0,
+		TestSupport.check(failed, adapter.nutrient_demand() > 0.0,
 			"%s reports nutrient demand" % host.get_class())
 		adapter.tick(2.1, grid)
-		_assert(failed, host.has_method("ecology_graze"),
+		TestSupport.check(failed, host.has_method("ecology_graze"),
 			"%s exposes grazing" % host.get_class())
-	_assert(failed, grid.get_at(Vector3.ZERO) < nutrient_before,
+	TestSupport.check(failed, grid.get_at(Vector3.ZERO) < nutrient_before,
 		"adapter ecology consumes substrate nutrients")
 	var death_adapter = Adapter.new(moss)
 	var mulm_before: float = grid.get_mulm_at(Vector3.ZERO)
 	death_adapter.die(grid)
-	_assert(failed, grid.get_mulm_at(Vector3.ZERO) > mulm_before,
+	TestSupport.check(failed, grid.get_mulm_at(Vector3.ZERO) > mulm_before,
 		"adapter death deposits bounded litter")
 
-	if failed.is_empty():
-		print("[smoke_plant_ecology_adapter] PASS")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke_plant_ecology_adapter] " + msg)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_ecology_adapter", failed))

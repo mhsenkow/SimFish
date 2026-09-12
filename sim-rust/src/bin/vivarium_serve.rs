@@ -82,21 +82,17 @@ type ClientStore = Arc<Mutex<HashMap<String, ClientSnapshot>>>;
 fn main() {
     let args = Args::parse();
 
-    let web_root = resolve_web_root(args.web_root.clone())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "error: could not locate the Godot web build.\n\
+    let web_root = resolve_web_root(args.web_root.clone()).unwrap_or_else(|| {
+        eprintln!(
+            "error: could not locate the Godot web build.\n\
                  Pass --web-root <dir> pointing at the directory that contains \
                  index.html (e.g. shaders-godot/godot-project/web/build)."
-            );
-            std::process::exit(2);
-        });
+        );
+        std::process::exit(2);
+    });
 
     if !web_root.join("index.html").is_file() {
-        eprintln!(
-            "error: --web-root={} has no index.html",
-            web_root.display()
-        );
+        eprintln!("error: --web-root={} has no index.html", web_root.display());
         std::process::exit(2);
     }
 
@@ -129,7 +125,9 @@ fn main() {
         // stalls the static-file path. tiny_http is sync, so this is the
         // standard pattern.
         std::thread::spawn(move || {
-            if let Err(e) = handle(request, &web_root, &clients, log_stdout, prometheus, timeout) {
+            if let Err(e) = handle(
+                request, &web_root, &clients, log_stdout, prometheus, timeout,
+            ) {
                 eprintln!("request error: {e}");
             }
         });
@@ -211,16 +209,22 @@ fn serve_static(req: Request, web_root: &Path, path: &str) -> std::io::Result<()
 
     // Special-case index.html: inject the telemetry shim so the page knows
     // its own origin and how to POST stats up.
-    let (bytes, mime) = if candidate.file_name().map(|n| n == "index.html").unwrap_or(false) {
+    let (bytes, mime) = if candidate
+        .file_name()
+        .map(|n| n == "index.html")
+        .unwrap_or(false)
+    {
         let html = String::from_utf8_lossy(&bytes).to_string();
-        (inject_telemetry_shim(&html).into_bytes(), "text/html; charset=utf-8".to_string())
+        (
+            inject_telemetry_shim(&html).into_bytes(),
+            "text/html; charset=utf-8".to_string(),
+        )
     } else {
         (bytes, mime)
     };
 
-    let resp = Response::from_data(bytes).with_header(
-        Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap(),
-    );
+    let resp = Response::from_data(bytes)
+        .with_header(Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap());
     req.respond(with_common_headers(resp))
 }
 
@@ -253,29 +257,25 @@ fn mime_for(path: &Path) -> String {
 // the /telemetry path reachable from arbitrary local pages during testing.
 fn with_common_headers<R: std::io::Read>(resp: Response<R>) -> Response<R> {
     resp.with_header(
-        Header::from_bytes(
-            &b"Cross-Origin-Opener-Policy"[..],
-            &b"same-origin"[..],
-        )
-        .unwrap(),
+        Header::from_bytes(&b"Cross-Origin-Opener-Policy"[..], &b"same-origin"[..]).unwrap(),
     )
     .with_header(
-        Header::from_bytes(
-            &b"Cross-Origin-Embedder-Policy"[..],
-            &b"require-corp"[..],
-        )
-        .unwrap(),
+        Header::from_bytes(&b"Cross-Origin-Embedder-Policy"[..], &b"require-corp"[..]).unwrap(),
     )
     .with_header(
-        Header::from_bytes(
-            &b"Cross-Origin-Resource-Policy"[..],
-            &b"cross-origin"[..],
-        )
-        .unwrap(),
+        Header::from_bytes(&b"Cross-Origin-Resource-Policy"[..], &b"cross-origin"[..]).unwrap(),
     )
     .with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
-    .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, HEAD"[..]).unwrap())
-    .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap())
+    .with_header(
+        Header::from_bytes(
+            &b"Access-Control-Allow-Methods"[..],
+            &b"GET, POST, HEAD"[..],
+        )
+        .unwrap(),
+    )
+    .with_header(
+        Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap(),
+    )
 }
 
 // ---- HTML shim injected into index.html --------------------------------------------
@@ -474,7 +474,10 @@ fn render_prometheus(clients: &ClientStore, timeout: Duration) -> String {
     // user-agent fragment so the operator can tell sessions apart.
     // Prometheus wants label values escaped.
     for name in &metric_names {
-        out.push_str(&format!("# HELP vivarium_{} {} reported by clients.\n", name, name));
+        out.push_str(&format!(
+            "# HELP vivarium_{} {} reported by clients.\n",
+            name, name
+        ));
         out.push_str(&format!("# TYPE vivarium_{} gauge\n", name));
         for c in guard.values() {
             if let Some(v) = c.metrics.get(name) {
@@ -517,7 +520,9 @@ fn render_prometheus(clients: &ClientStore, timeout: Duration) -> String {
     }
 
     // Seconds-since-last-seen so alerts can fire on stalled clients.
-    out.push_str("# HELP vivarium_client_age_seconds Seconds since last telemetry POST from this client.\n");
+    out.push_str(
+        "# HELP vivarium_client_age_seconds Seconds since last telemetry POST from this client.\n",
+    );
     out.push_str("# TYPE vivarium_client_age_seconds gauge\n");
     for c in guard.values() {
         let age = now.duration_since(c.last_seen).as_secs_f64();

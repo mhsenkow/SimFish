@@ -15,7 +15,7 @@ func _initialize() -> void:
 	await process_frame
 	var failed: Array[String] = []
 
-	_assert(failed, load("res://scripts/mind_state.gd") != null, "mind_state.gd compiles")
+	TestSupport.check(failed, load("res://scripts/mind_state.gd") != null, "mind_state.gd compiles")
 
 	var f: Fish = Fish.new()
 	root.add_child(f)
@@ -44,19 +44,19 @@ func _initialize() -> void:
 
 	# --- sync_from_fish copies tracked fields off the fish.
 	var ms = MindState.for_fish(f, true)
-	_assert(failed, is_equal_approx(ms.mood, 0.31) and is_equal_approx(ms.arousal, 0.62),
+	TestSupport.check(failed, is_equal_approx(ms.mood, 0.31) and is_equal_approx(ms.arousal, 0.62),
 			"sync copies affect scalars")
-	_assert(failed, ms.attention_focus == "food" and ms.current_intention == "approach",
+	TestSupport.check(failed, ms.attention_focus == "food" and ms.current_intention == "approach",
 			"sync copies cognitive labels")
-	_assert(failed, is_equal_approx(ms.hunger, 0.66) and is_equal_approx(ms.dopamine, 0.7),
+	TestSupport.check(failed, is_equal_approx(ms.hunger, 0.66) and is_equal_approx(ms.dopamine, 0.7),
 			"sync copies sync-only scalars (hunger/neuromodulators)")
-	_assert(failed, ms.workspace.size() == 1 and String(ms.workspace[0].get("label")) == "food",
+	TestSupport.check(failed, ms.workspace.size() == 1 and String(ms.workspace[0].get("label")) == "food",
 			"sync copies the workspace array")
-	_assert(failed, ms.workspace_ignited == true, "sync copies ignition flag")
+	TestSupport.check(failed, ms.workspace_ignited == true, "sync copies ignition flag")
 
 	# --- deep-copy independence: mutating the fish's dict must NOT bleed into ms.
 	f._mind_workspace.append({"label": "threat", "salience": 0.9})
-	_assert(failed, ms.workspace.size() == 1, "ms.workspace is a deep copy, not aliased")
+	TestSupport.check(failed, ms.workspace.size() == 1, "ms.workspace is a deep copy, not aliased")
 
 	# --- apply_to_fish writes the writable subset back, byte-stable.
 	var g: Fish = Fish.new()
@@ -68,15 +68,15 @@ func _initialize() -> void:
 	ms.attention_focus = "mate"
 	ms.workspace = [{"label": "mate", "salience": 0.8}]
 	ms.apply_to_fish(g)
-	_assert(failed, is_equal_approx(g.mood, -0.2), "apply writes mood back")
-	_assert(failed, g.attention_focus == "mate", "apply writes attention_focus back")
-	_assert(failed, g._mind_workspace.size() == 1 and String(g._mind_workspace[0].get("label")) == "mate",
+	TestSupport.check(failed, is_equal_approx(g.mood, -0.2), "apply writes mood back")
+	TestSupport.check(failed, g.attention_focus == "mate", "apply writes attention_focus back")
+	TestSupport.check(failed, g._mind_workspace.size() == 1 and String(g._mind_workspace[0].get("label")) == "mate",
 			"apply writes the workspace back")
 
 	# --- apply must NOT clobber sync-only fields.
-	_assert(failed, is_equal_approx(g.hunger, 0.05),
+	TestSupport.check(failed, is_equal_approx(g.hunger, 0.05),
 			"apply leaves sync-only hunger untouched")
-	_assert(failed, is_equal_approx(g.dopamine, 0.45),
+	TestSupport.check(failed, is_equal_approx(g.dopamine, 0.45),
 			"apply leaves sync-only dopamine untouched")
 
 	# --- full round-trip is byte-stable for the writable subset:
@@ -86,16 +86,10 @@ func _initialize() -> void:
 	ms2.apply_to_fish(g)
 	var ms3 = MindState.for_fish(g, true)
 	var after: Dictionary = ms3.snapshot()
-	_assert(failed, _snapshots_equal(before, after),
+	TestSupport.check(failed, _snapshots_equal(before, after),
 			"sync->apply->sync is byte-stable (no drift)")
 
-	if failed.is_empty():
-		print("[smoke] mind_state_roundtrip OK")
-		quit(0)
-	else:
-		for m in failed:
-			push_error("[smoke] " + m)
-		quit(1)
+	quit(TestSupport.report("smoke_mind_state_roundtrip", failed))
 
 
 func _snapshots_equal(a: Dictionary, b: Dictionary) -> bool:
@@ -110,8 +104,3 @@ func _snapshots_equal(a: Dictionary, b: Dictionary) -> bool:
 		elif str(av) != str(bv):
 			return false
 	return true
-
-
-func _assert(failed: Array[String], ok: bool, msg: String) -> void:
-	if not ok:
-		failed.append(msg)

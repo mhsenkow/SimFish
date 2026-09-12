@@ -20,13 +20,13 @@ func _initialize() -> void:
 	var prag_low: float = MindActiveInference.pragmatic_value(f, "food")
 	f.hunger = 0.9
 	var prag_high: float = MindActiveInference.pragmatic_value(f, "food")
-	_assert(failed, prag_high > prag_low, "pragmatic food value rises with hunger (%.2f→%.2f)" % [prag_low, prag_high])
+	TestSupport.check(failed, prag_high > prag_low, "pragmatic food value rises with hunger (%.2f→%.2f)" % [prag_low, prag_high])
 
 	f.spooked = 0.1
 	var thr_low: float = MindActiveInference.pragmatic_value(f, "threat")
 	f.spooked = 0.8
 	var thr_high: float = MindActiveInference.pragmatic_value(f, "threat")
-	_assert(failed, thr_high > thr_low, "pragmatic threat value rises with fright")
+	TestSupport.check(failed, thr_high > thr_low, "pragmatic threat value rises with fright")
 
 	# (b) Epistemic value tracks world-model uncertainty.
 	var g: Fish = _mk("ai-epi")
@@ -36,7 +36,7 @@ func _initialize() -> void:
 	var epi_certain: float = MindActiveInference.epistemic_value(g, "novelty")
 	g._world_model["variance"] = 0.7
 	var epi_uncertain: float = MindActiveInference.epistemic_value(g, "novelty")
-	_assert(failed, epi_uncertain > epi_certain, "epistemic value rises with uncertainty (%.2f→%.2f)" % [epi_certain, epi_uncertain])
+	TestSupport.check(failed, epi_uncertain > epi_certain, "epistemic value rises with uncertainty (%.2f→%.2f)" % [epi_certain, epi_uncertain])
 
 	# (c) THE UNIFICATION — one objective, the right trade-off in both regimes.
 	var hungry: Fish = _mk("ai-hungry")
@@ -46,7 +46,7 @@ func _initialize() -> void:
 	MindWorldModel.ensure_model(hungry)
 	var hf: float = MindActiveInference.efe_salience(hungry, "food")
 	var hn: float = MindActiveInference.efe_salience(hungry, "novelty")
-	_assert(failed, hf > hn, "hungry+incurious → food dominates (food=%.2f > novelty=%.2f)" % [hf, hn])
+	TestSupport.check(failed, hf > hn, "hungry+incurious → food dominates (food=%.2f > novelty=%.2f)" % [hf, hn])
 
 	var curious: Fish = _mk("ai-curious")
 	curious.hunger = 0.1
@@ -56,20 +56,14 @@ func _initialize() -> void:
 	curious._world_model["variance"] = 0.55
 	var cf: float = MindActiveInference.efe_salience(curious, "food")
 	var cn: float = MindActiveInference.efe_salience(curious, "novelty")
-	_assert(failed, cn > cf, "sated+curious → exploring dominates (novelty=%.2f > food=%.2f)" % [cn, cf])
+	TestSupport.check(failed, cn > cf, "sated+curious → exploring dominates (novelty=%.2f > food=%.2f)" % [cn, cf])
 
 	# Safety property: the drop-in salience for a hungry fish is in the same ballpark
 	# as the legacy `hunger + 0.1` drive (so Phase 1 won't lurch the behaviour).
-	_assert(failed, hf > 0.4 and hf < 1.3 and is_finite(hf),
+	TestSupport.check(failed, hf > 0.4 and hf < 1.3 and is_finite(hf),
 			"hungry food EFE salience is a sane drop-in (%.2f vs legacy ~%.2f)" % [hf, hungry.hunger + 0.1])
 
-	if failed.is_empty():
-		print("[smoke] active_inference_core OK")
-		quit(0)
-	else:
-		for m in failed:
-			push_error("[smoke] " + m)
-		quit(1)
+	quit(TestSupport.report("smoke_active_inference_core", failed))
 
 
 func _mk(id: String) -> Fish:
@@ -77,8 +71,3 @@ func _mk(id: String) -> Fish:
 	root.add_child(f)
 	f.id = id
 	return f
-
-
-func _assert(failed: Array[String], ok: bool, msg: String) -> void:
-	if not ok:
-		failed.append(msg)

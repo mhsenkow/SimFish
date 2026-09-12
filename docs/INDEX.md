@@ -8,6 +8,7 @@ Map of the idea-doc backlog and supporting docs. **Shipped progress** also lives
 | Doc | What it is |
 |---|---|
 | [GOALS.md](GOALS.md) | Master shipped/backlog tracker |
+| [BROAD_DIRECTIONS_20.md](BROAD_DIRECTIONS_20.md) | **20 broad improvement directions** + the append-only application log tracking work against them |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, smokes, commit conventions |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release history |
 | [../AGENTS.md](../AGENTS.md) | Repo layout for agents/contributors |
@@ -84,6 +85,7 @@ idea at a time.
 |---|---|
 | [001-sim-rust-reference.md](adr/001-sim-rust-reference.md) | `sim-rust/` stays reference-only |
 | [002-data-schemas-reference.md](adr/002-data-schemas-reference.md) | `data-schemas/` stays non-normative until wired |
+| [003-sim-rust-as-oracle.md](adr/003-sim-rust-as-oracle.md) | `sim-rust/` kept and tested as a chemistry oracle (supersedes 001) |
 
 ## Web landing
 

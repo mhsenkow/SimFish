@@ -84,7 +84,7 @@ static func tick(sim, dt: float, room_idle_s: float = 0.0) -> void:
 	var tm: Dictionary = ensure(sim)
 	tm["ignition_cd"] = maxf(0.0, float(tm.get("ignition_cd", 0.0)) - dt)
 	tm["stream_cd"] = maxf(0.0, float(tm.get("stream_cd", 0.0)) - dt)
-	var dl: float = float(sim.daylight()) if sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var phase: float = _float_prop(sim, "day_phase", 0.5)
 	var is_night: bool = dl < 0.28
 	if is_night:
@@ -132,9 +132,7 @@ static func tick_coarse(sim, _dt: float, away: bool = false) -> void:
 	if sim == null:
 		return
 	var tm: Dictionary = ensure(sim)
-	var dl: float = 0.12
-	if sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 0.12)
 	var bids: Array = collect_bids(sim, tm, dl, 999.0 if away else 0.0)
 	var result: Dictionary = _run_competition(bids)
 	_broadcast(sim, tm, result, dl, 999.0 if away else 0.0)
@@ -209,7 +207,7 @@ static func mood_overlay(sim) -> Dictionary:
 	var tm: Dictionary = ensure(sim)
 	var v: float = float(tm.get("mood_valence", 0.0))
 	var a: float = float(tm.get("mood_arousal", 0.18))
-	var dl: float = float(sim.daylight()) if sim != null and sim.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim, 0.5)
 	var night_wash: float = 1.0 - clampf(dl / 0.35, 0.0, 1.0)
 	return {
 		"hue": v * 0.07 - night_wash * 0.04,

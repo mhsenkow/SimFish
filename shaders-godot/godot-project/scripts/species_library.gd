@@ -673,17 +673,13 @@ func _color_to_hex(c: Variant) -> String:
 
 
 func _load_global() -> void:
-	if not FileAccess.file_exists(GLOBAL_PATH):
+	# The cross-tank library is a user-writable file that accumulates for the
+	# life of the install, so it is both untrusted and unbounded in principle
+	# — cap it rather than parsing whatever is on disk (#6). 8 MiB is far
+	# above a realistic library and far below "ate the player's RAM".
+	var d: Dictionary = SafeJson.read_dict(GLOBAL_PATH, 8_388_608, "species_library")
+	if d.is_empty():
 		return
-	var f := FileAccess.open(GLOBAL_PATH, FileAccess.READ)
-	if f == null:
-		return
-	var text: String = f.get_as_text()
-	f.close()
-	var parsed: Variant = JSON.parse_string(text)
-	if not (parsed is Dictionary):
-		return
-	var d: Dictionary = parsed
 	var entries: Variant = d.get("entries", [])
 	if entries is Array:
 		global_entries = entries

@@ -14,10 +14,10 @@ func _initialize() -> void:
 	for i in 13:
 		var remaining: float = SpawnSettle.FRESH_DURATION * (1.0 - float(i) / 12.0)
 		var value: float = SpawnSettle.factor(remaining, SpawnSettle.FRESH_DURATION)
-		_assert(failed, value >= previous, "settle factor monotonic at step %d" % i)
-		_assert(failed, value >= 0.0 and value <= 1.0, "settle factor bounded")
+		TestSupport.check(failed, value >= previous, "settle factor monotonic at step %d" % i)
+		TestSupport.check(failed, value >= 0.0 and value <= 1.0, "settle factor bounded")
 		previous = value
-	_assert(failed, SpawnSettle.factor(0.0, SpawnSettle.FRESH_DURATION) == 1.0,
+	TestSupport.check(failed, SpawnSettle.factor(0.0, SpawnSettle.FRESH_DURATION) == 1.0,
 		"established factor exactly one")
 
 	# Fresh production-shaped setup anchors its territory and hydro hover to
@@ -27,9 +27,9 @@ func _initialize() -> void:
 	fresh.global_position = Vector3(1.0, 4.2, -0.5)
 	fresh.init_genome({"species": "settle_test", "preferred_y": 2.4,
 		"swim_pattern": "cruise", "max_speed": 1.4})
-	_assert(failed, absf(fresh.home_y - 4.2) < 0.001, "fresh home matches spawn Y")
-	_assert(failed, absf(fresh._hover_depth - 4.2) < 0.001, "fresh hover matches spawn Y")
-	_assert(failed, absf(fresh.preferred_y - 2.4) < 0.001, "species depth retained")
+	TestSupport.check(failed, absf(fresh.home_y - 4.2) < 0.001, "fresh home matches spawn Y")
+	TestSupport.check(failed, absf(fresh._hover_depth - 4.2) < 0.001, "fresh hover matches spawn Y")
+	TestSupport.check(failed, absf(fresh.preferred_y - 2.4) < 0.001, "species depth retained")
 
 	# A wall-safe supplied heading survives variation and facing is synced.
 	var safe_heading := Vector3(0.8, 0.0, -0.2).normalized()
@@ -37,30 +37,30 @@ func _initialize() -> void:
 	var seeded := RandomNumberGenerator.new()
 	seeded.seed = 1234
 	fresh.apply_spawn_variation(seeded)
-	_assert(failed, fresh.heading.distance_to(safe_heading) < 0.001,
+	TestSupport.check(failed, fresh.heading.distance_to(safe_heading) < 0.001,
 		"spawner heading preserved")
-	_assert(failed, -fresh.global_basis.z.normalized().dot(safe_heading) > 0.999,
+	TestSupport.check(failed, -fresh.global_basis.z.normalized().dot(safe_heading) > 0.999,
 		"facing synced to final heading")
-	_assert(failed, fresh.target_velocity.length() > 0.01,
+	TestSupport.check(failed, fresh.target_velocity.length() > 0.01,
 		"initial propulsion intent avoids freeze")
-	_assert(failed, absf(fresh.heading.y) < 0.001, "settle heading is level")
-	_assert(failed, absf(fresh.heading_offset.y) < 0.001, "settle heading offset is level")
-	_assert(failed, absf(fresh._hover_depth - fresh.global_position.y) < 0.001,
+	TestSupport.check(failed, absf(fresh.heading.y) < 0.001, "settle heading is level")
+	TestSupport.check(failed, absf(fresh.heading_offset.y) < 0.001, "settle heading offset is level")
+	TestSupport.check(failed, absf(fresh._hover_depth - fresh.global_position.y) < 0.001,
 		"settle re-anchors hover to the live spawn depth")
 	var seeded_breath: float = sin(fresh._breath_phase * TAU) * fresh._breath_amplitude()
-	_assert(failed, absf(fresh._breath_y_offset - seeded_breath) < 0.0001,
+	TestSupport.check(failed, absf(fresh._breath_y_offset - seeded_breath) < 0.0001,
 		"breath oscillator is seeded so the first frame has no pop")
 	var settle_delta: float = fresh._breath_motion_delta(1.0 / 60.0)
-	_assert(failed, absf(settle_delta) < 0.008, "seeded breath first step is a frame delta")
+	TestSupport.check(failed, absf(settle_delta) < 0.008, "seeded breath first step is a frame delta")
 
 	var other := Fish.new()
 	host.add_child(other)
 	var seeded_other := RandomNumberGenerator.new()
 	seeded_other.seed = 4321
 	other.apply_spawn_variation(seeded_other)
-	_assert(failed, absf(fresh._breath_phase - other._breath_phase) > 0.001,
+	TestSupport.check(failed, absf(fresh._breath_phase - other._breath_phase) > 0.001,
 		"breath oscillators desynchronized")
-	_assert(failed, absf(fresh._buoy_bob_t - other._buoy_bob_t) > 0.001,
+	TestSupport.check(failed, absf(fresh._buoy_bob_t - other._buoy_bob_t) > 0.001,
 		"buoy oscillators desynchronized")
 
 	# Fry inherit their mother's layer first and retain a gradual species target.
@@ -69,21 +69,21 @@ func _initialize() -> void:
 	fry.preferred_y = 2.1
 	fry.global_position.y = 4.0
 	fry.begin_fry_spawn(3.95, Vector3.RIGHT)
-	_assert(failed, absf(fry.home_y - 3.95) < 0.001, "fry inherits mother depth")
-	_assert(failed, absf(fry._spawn_depth_target_y - 2.1) < 0.001,
+	TestSupport.check(failed, absf(fry.home_y - 3.95) < 0.001, "fry inherits mother depth")
+	TestSupport.check(failed, absf(fry._spawn_depth_target_y - 2.1) < 0.001,
 		"fry keeps species migration target")
 
 	# Breath + buoy integration should agree closely at common frame rates.
 	var d30: float = _integrated_vertical_displacement(30)
 	var d60: float = _integrated_vertical_displacement(60)
 	var d120: float = _integrated_vertical_displacement(120)
-	_assert(failed, absf(d30 - d60) < 0.003 and absf(d60 - d120) < 0.003,
+	TestSupport.check(failed, absf(d30 - d60) < 0.003 and absf(d60 - d120) < 0.003,
 		"30/60/120 FPS vertical displacement agrees: %.5f %.5f %.5f" % [d30, d60, d120])
 	var probe := Fish.new()
 	probe._breath_phase = 0.73
 	probe._breath_load = 1.2
 	var first_delta: float = probe._breath_motion_delta(1.0 / 30.0)
-	_assert(failed, absf(first_delta) < 0.02, "initial frame delta bounded")
+	TestSupport.check(failed, absf(first_delta) < 0.02, "initial frame delta bounded")
 
 	# Save/restore preserves hover and oscillator state, then uses the shorter
 	# restore envelope. Legacy saves safely anchor hover at their saved depth.
@@ -94,10 +94,10 @@ func _initialize() -> void:
 	host.add_child(restored)
 	restored.global_position = fresh.global_position
 	restored.apply_save_dict(saved)
-	_assert(failed, absf(restored._hover_depth - 4.15) < 0.001, "hover depth restores")
-	_assert(failed, restored._spawn_settle_duration == SpawnSettle.RESTORE_DURATION,
+	TestSupport.check(failed, absf(restored._hover_depth - 4.15) < 0.001, "hover depth restores")
+	TestSupport.check(failed, restored._spawn_settle_duration == SpawnSettle.RESTORE_DURATION,
 		"restore uses short envelope")
-	_assert(failed, restored._spawn_settle_remaining > 0.0, "settle progress restores")
+	TestSupport.check(failed, restored._spawn_settle_remaining > 0.0, "settle progress restores")
 	var legacy: Dictionary = saved.duplicate(true)
 	for key in ["hover_depth", "buoy_bob_t", "breath_phase", "breath_y_offset",
 			"spawn_settle_remaining", "spawn_settle_duration", "spawn_depth_target_y"]:
@@ -106,12 +106,12 @@ func _initialize() -> void:
 	host.add_child(legacy_fish)
 	legacy_fish.global_position = fresh.global_position
 	legacy_fish.apply_save_dict(legacy)
-	_assert(failed, absf(legacy_fish._hover_depth - legacy_fish.global_position.y) < 0.001,
+	TestSupport.check(failed, absf(legacy_fish._hover_depth - legacy_fish.global_position.y) < 0.001,
 		"legacy hover defaults to saved depth")
-	_assert(failed, legacy_fish.spawn_settle_factor() < 1.0, "legacy restore eases in")
+	TestSupport.check(failed, legacy_fish.spawn_settle_factor() < 1.0, "legacy restore eases in")
 
 	fresh._spawn_settle_remaining = 0.0
-	_assert(failed, fresh.spawn_settle_factor() == 1.0,
+	TestSupport.check(failed, fresh.spawn_settle_factor() == 1.0,
 		"normal full behavior restored after envelope")
 
 	if failed.is_empty():
@@ -144,8 +144,3 @@ func _integrated_vertical_displacement(fps: int) -> float:
 		bob_t = float(buoy.bob_t)
 	fish.free()
 	return displacement
-
-
-func _assert(failed: Array[String], condition: bool, message: String) -> void:
-	if not condition:
-		failed.append(message)

@@ -573,9 +573,7 @@ func _tick_cell_history(cells: Array, dt: float) -> void:
 
 
 func tick_night_memory(dt: float, sim) -> void:
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.32:
 		return
 	if sim == null or sim.get("waste") is not Array:

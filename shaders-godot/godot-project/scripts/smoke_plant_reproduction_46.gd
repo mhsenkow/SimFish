@@ -11,26 +11,15 @@ func _init() -> void:
 		{"position": Vector3(0, 0, 0), "kind": "substrate"},
 	]
 	var near_rock: Dictionary = EpiphyteAttachment.nearest_valid(Vector3.ZERO, surfaces)
-	_assert(failed, String(near_rock.get("kind", "")) == "rock",
+	TestSupport.check(failed, String(near_rock.get("kind", "")) == "rock",
 		"nearest rock surface selected")
 	var near_wood: Dictionary = EpiphyteAttachment.nearest_valid(Vector3(3, 1.8, 0), surfaces)
-	_assert(failed, String(near_wood.get("kind", "")) == "wood",
+	TestSupport.check(failed, String(near_wood.get("kind", "")) == "wood",
 		"wood surface selected")
 	var absent: Dictionary = EpiphyteAttachment.nearest_valid(
 		Vector3(20, 0, 0), surfaces)
-	_assert(failed, absent.is_empty(), "distant hardscape triggers substrate fallback")
-	_assert(failed, EpiphyteAttachment.nearest_valid(
+	TestSupport.check(failed, absent.is_empty(), "distant hardscape triggers substrate fallback")
+	TestSupport.check(failed, EpiphyteAttachment.nearest_valid(
 		Vector3.ZERO, [{"position": Vector3.ZERO, "kind": "substrate"}]).is_empty(),
 		"substrate is not accepted as attachment")
-	if failed.is_empty():
-		print("[smoke_plant_reproduction_46] PASS")
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke_plant_reproduction_46] " + message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_reproduction_46", failed))

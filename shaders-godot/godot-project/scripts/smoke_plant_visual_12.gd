@@ -15,26 +15,23 @@ func _initialize() -> void:
 		{"phase": Plant.LeafPhase.MATURE},
 		{"phase": Plant.LeafPhase.EXPANDING},
 	]
-	_assert(failed, plant._select_pearling_host() == mature,
+	TestSupport.check(failed, plant._select_pearling_host() == mature,
 		"pearling selects only mature living handles")
 	plant._pearling_particles = GPUParticles3D.new()
 	plant.add_child(plant._pearling_particles)
 	plant._bind_pearling_to_leaf(2.0)
-	_assert(failed, plant._pearling_particles.position == mature.local_pos,
+	TestSupport.check(failed, plant._pearling_particles.position == mature.local_pos,
 		"shared emitter binds to selected leaf")
-	_assert(failed, batch._colors[mature.index].get_luminance() > mature.base_color.get_luminance(),
+	TestSupport.check(failed, batch._colors[mature.index].get_luminance() > mature.base_color.get_luminance(),
 		"host receives brief detach highlight")
 	plant._bind_pearling_to_leaf(0.3)
-	_assert(failed, batch._colors[mature.index].is_equal_approx(mature.base_color),
+	TestSupport.check(failed, batch._colors[mature.index].is_equal_approx(mature.base_color),
 		"host highlight restores")
 	var source := FileAccess.get_file_as_string("res://scripts/plant.gd")
-	_assert(failed, source.contains("claim_pearling_emitter(self)")
+	TestSupport.check(failed, source.contains("claim_pearling_emitter(self)")
 		and not source.contains("_pearling_particles.name = \"Pearling\""),
 		"pearling uses shared world pool only")
 	plant.queue_free()
 	if failed.is_empty(): print("SMOKE_PLANT_VISUAL_12_OK"); quit(0); return
 	for message in failed: push_error(message)
 	quit(1)
-
-func _assert(failed: Array[String], condition: bool, message: String) -> void:
-	if not condition: failed.append(message)

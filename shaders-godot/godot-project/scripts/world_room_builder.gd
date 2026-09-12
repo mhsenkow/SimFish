@@ -327,7 +327,11 @@ static func tick_window(state: Dictionary, ln: Dictionary, room_time: float,
 static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 		side_light: OmniLight3D, desk_rim: SpotLight3D, window_glow: OmniLight3D,
 		ln: Dictionary, fixture_color: Color, fixture_energy: float,
-		tank_lights_on: bool, desk_y: float, haze_base: Color) -> void:
+		tank_lights_on: bool, desk_y: float, haze_base: Color,
+		darkness: float = 0.0) -> void:
+	# `darkness` is TankConfig.room_darkness. Ambient room fill is crushed by
+	# it; light thrown BY the tank is only trimmed, so a lit tank still glows
+	# onto its surroundings instead of looking pasted into a black void.
 	var dl: float = ln["dl"]
 	var deep_night: float = ln["deep_night"]
 	var sunset: float = ln["sunset_hour"]
@@ -337,7 +341,7 @@ static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 		var day_spill: float = 0.28 + dl * 0.32
 		var night_spill: float = fixture_energy * 3.4
 		var spill_e: float = lerpf(day_spill, night_spill, night_on)
-		spill.light_energy = spill_e
+		spill.light_energy = LightingRig.tank_spill(spill_e, darkness)
 		var day_col: Color = Color(1.0, 0.96, 0.88)
 		var night_col: Color = fixture_color.lerp(Color(0.82, 0.90, 1.0), 0.12)
 		spill.light_color = day_col.lerp(night_col, night_on)
@@ -346,25 +350,30 @@ static func tick_room_lights(spill: OmniLight3D, wall_bounce: OmniLight3D,
 	if wall_bounce != null and is_instance_valid(wall_bounce):
 		var bounce_day: float = 0.14 + dl * 0.16 + sunset * 0.22
 		var bounce_night: float = fixture_energy * 2.8 * night_on
-		wall_bounce.light_energy = bounce_day + bounce_night
+		wall_bounce.light_energy = LightingRig.room_fill(bounce_day, darkness) \
+			+ LightingRig.tank_spill(bounce_night, darkness)
 		wall_bounce.light_color = fixture_color.lerp(Color(1.0, 0.88, 0.72), 1.0 - night_on * 0.72)
 
 	if side_light != null and is_instance_valid(side_light):
 		# Dimmer side fill — room must stay below tank mid-water (#18, #27).
 		var side_e: float = 0.06 + dl * 0.08 + sunset * 0.08
-		side_light.light_energy = side_e * lerpf(1.0, 0.10, deep_night)
+		side_light.light_energy = LightingRig.room_fill(
+			side_e * lerpf(1.0, 0.10, deep_night), darkness)
 
 	if desk_rim != null and is_instance_valid(desk_rim):
 		desk_rim.light_color = fixture_color.lerp(Color(1.0, 0.95, 0.88), 0.25)
 		var rim_day: float = 0.04 + dl * 0.06
 		var rim_night: float = fixture_energy * 1.9 * night_on
-		desk_rim.light_energy = lerpf(rim_day, rim_night, night_on)
+		desk_rim.light_energy = LightingRig.tank_spill(
+			lerpf(rim_day, rim_night, night_on), darkness)
 
 	if window_glow != null and is_instance_valid(window_glow):
 		var moon_rim: float = clampf((0.24 - dl) / 0.24, 0.0, 1.0) * deep_night
 		window_glow.light_color = Color(0.58, 0.70, 0.94).lerp(
 			fixture_color, night_on * 0.28)
-		window_glow.light_energy = fixture_energy * 0.55 * night_on + moon_rim * 0.48
+		window_glow.light_energy = LightingRig.tank_spill(
+			fixture_energy * 0.55 * night_on, darkness) \
+			+ LightingRig.room_fill(moon_rim * 0.48, darkness)
 
 	# Subtle haze tint toward fixture — keep it gentle so walls don't flood green.
 	var haze_day: Color = haze_base

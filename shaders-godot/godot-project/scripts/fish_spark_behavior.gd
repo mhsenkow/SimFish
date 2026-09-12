@@ -10,7 +10,6 @@ const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
-const FishAlive = preload("res://scripts/fish_alive.gd")
 
 
 static func enabled() -> bool:

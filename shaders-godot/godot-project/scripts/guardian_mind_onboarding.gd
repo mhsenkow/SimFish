@@ -47,7 +47,7 @@ func _build_ui() -> void:
 
 	var title := Label.new()
 	title.name = "TitleLabel"
-	title.text = "Give your Guardian a voice?"
+	title.text = tr("Give your Guardian a voice?")
 	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
 	title.add_theme_color_override("font_color", Color8(255, 215, 110))
 	v.add_child(title)
@@ -97,33 +97,33 @@ func _apply_mode(mode: int) -> void:
 	match mode:
 		Mode.NORTH_STAR:
 			if title != null:
-				title.text = "Small minds, private voice"
+				title.text = tr("Small minds, private voice")
 			body.text = (
 				"This tank simulates real inner lives — moods, wants, memory — in every fish. "
 				+ "Optionally, your device turns that into quiet diary text. Nothing is sent anywhere; "
 				+ "the model only voices what the simulation already knows. We never claim consciousness — "
 				+ "only patterns your machine imagines, privately, for you. "
 				+ "You're not a perfect creator — just someone making a soul anyway.")
-			_accept_btn.text = "Got it"
+			_accept_btn.text = tr("Got it")
 			_decline_btn.visible = false
 		Mode.BUNDLED_INFO:
 			if title != null:
-				title.text = "A fish here can develop a voice"
+				title.text = tr("A fish here can develop a voice")
 			body.text = (
 				"One fish in your tank can speak in its own words — a small model bundled with "
 				+ "the game, private and offline. Template thoughts still work if you skip this.")
-			_accept_btn.text = "Got it"
+			_accept_btn.text = tr("Got it")
 			_decline_btn.visible = false
 		_:
 			if title != null:
-				title.text = "A fish here can develop a voice"
+				title.text = tr("A fish here can develop a voice")
 			body.text = (
 				"One fish here can develop a voice — it runs on your device, private. "
 				+ "This one-time download is about 250MB to your save folder, then works offline. "
 				+ "Want that?")
-			_accept_btn.text = "Yes — download & enable"
+			_accept_btn.text = tr("Yes — download & enable")
 			_decline_btn.visible = true
-			_decline_btn.text = "Not now — template voice only"
+			_decline_btn.text = tr("Not now — template voice only")
 
 
 func _on_accept() -> void:

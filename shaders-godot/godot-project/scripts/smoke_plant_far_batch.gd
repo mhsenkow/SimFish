@@ -33,14 +33,14 @@ func _initialize() -> void:
 	var far_batch: Node3D = FarBatchScript.new()
 	host.add_child(far_batch)
 	far_batch.update_far_batch(plants, camera, FarBatchScript.REBUILD_INTERVAL_S)
-	_assert(failed, far_batch.last_instance_count >= FarBatchScript.MIN_INSTANCES,
+	TestSupport.check(failed, far_batch.last_instance_count >= FarBatchScript.MIN_INSTANCES,
 		"population gate measures dense far foliage")
-	_assert(failed, far_batch.last_saved_draws >= FarBatchScript.MIN_FAR_PLANTS - 1,
+	TestSupport.check(failed, far_batch.last_saved_draws >= FarBatchScript.MIN_FAR_PLANTS - 1,
 		"gate records draw calls consolidated")
 	if far_batch.last_rebuild_usec <= FarBatchScript.MAX_REBUILD_USEC:
-		_assert(failed, far_batch.enabled_by_profile,
+		TestSupport.check(failed, far_batch.enabled_by_profile,
 			"measured profitable mirror enables global batch")
-		_assert(failed, not plants[0]._foliage_batch.mmi.visible,
+		TestSupport.check(failed, not plants[0]._foliage_batch.mmi.visible,
 			"private batch hides only after successful mirror")
 	var measured_instances: int = far_batch.last_instance_count
 	var measured_saved_draws: int = far_batch.last_saved_draws
@@ -48,8 +48,8 @@ func _initialize() -> void:
 	var measured_gate: bool = far_batch.enabled_by_profile
 
 	far_batch.update_far_batch([], camera, FarBatchScript.REBUILD_INTERVAL_S)
-	_assert(failed, not far_batch.enabled_by_profile, "small population falls back")
-	_assert(failed, plants[0]._foliage_batch.mmi.visible,
+	TestSupport.check(failed, not far_batch.enabled_by_profile, "small population falls back")
+	TestSupport.check(failed, plants[0]._foliage_batch.mmi.visible,
 		"fallback restores private render batches")
 
 	for plant in plants:
@@ -57,17 +57,4 @@ func _initialize() -> void:
 	far_batch.free()
 	host.free()
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] plant_far_batch OK instances=%d saved_draws=%d rebuild_us=%d gate=%s"
-			% [measured_instances, measured_saved_draws,
-				measured_usec, str(measured_gate)])
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_plant_far_batch", failed))

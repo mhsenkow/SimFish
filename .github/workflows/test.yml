@@ -15,8 +15,15 @@ env:
 
 jobs:
   smoke:
-    name: Headless smokes
+    # Sharded 4 ways and parallel within each shard (BROAD_DIRECTIONS #10).
+    # The serial runner took >10 min locally and had no per-script timeout,
+    # so one slow soak could wedge an unattended run.
+    name: Headless smokes ${{ matrix.shard }}/4
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
 
@@ -37,14 +44,42 @@ jobs:
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --import
 
+      - name: Compile check (BROAD_DIRECTIONS #11 — now catches compile errors)
+        run: |
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --editor --quit
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://dev/compile_check.gd
+
       - name: Regression triad (REFINEMENT_II #85)
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_perf_realtime.gd
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_murmuration.gd
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_save_roundtrip.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_save_versioning.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_app_log.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_safe_json.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_pond_mode.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_test_support.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_service_contracts.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_mind_legible.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_config_curation.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_tank_share.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_foliage_sway.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_chemistry_oracle.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_localization.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_tank_spec.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_panel_contract.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_shrimp_gait.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_toast.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_notifications_panel.gd
 
-      - name: Run smoke suite
-        run: bash scripts/run_smokes.sh
+      - name: Broad-directions contracts (#1-#8 #10 #11 #17-#19)
+        run: |
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_controller_coverage.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_steam_stats.gd
+          "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_milestones.gd
+
+      - name: Run smoke suite (shard ${{ matrix.shard }}/4)
+        run: bash scripts/run_smokes.sh --shard ${{ matrix.shard }}/4 --timeout 240
 
   reference:
     name: Reference crates & schemas
@@ -58,10 +93,16 @@ jobs:
         run: |
           pip install jsonschema
           python3 data-schemas/validate.py
-      - name: sim-rust compile check
+      # Was `cargo test --no-run` against a crate with ZERO #[test] functions,
+      # plus an example whose output went to /dev/null — i.e. it proved the
+      # crate compiled and asserted nothing. It now has real tests pinning the
+      # nitrogen cycle, so run them.
+      - name: sim-rust tests
         run: |
           cd sim-rust
-          cargo test --no-run
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --release
           cargo run --release --example cycle >/dev/null
 
   lint:

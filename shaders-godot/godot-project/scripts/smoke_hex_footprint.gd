@@ -43,10 +43,55 @@ func _initialize() -> void:
 					failed.append("snail wall_normal %d points away from tank center" % i)
 		w.queue_free()
 
-	if failed.is_empty():
-		print("[smoke] hex footprint + snail spawn OK")
-		quit(0)
+	# --- anything spanning the FRONT PANE must use the pane, not the box ---
+	# TANK_HALF_W is the bounding box. On a box they are the same; on a hex
+	# the front pane is far narrower, so a full-width bar at z = half_d
+	# hangs out past the glass on both sides. The waterline tick did exactly
+	# that and rendered as a stray line straight through the tank.
+	var hexc: Array = [
+		Vector3(5.0, 0.0, 0.0), Vector3(2.5, 0.0, 5.0), Vector3(-2.5, 0.0, 5.0),
+		Vector3(-5.0, 0.0, 0.0), Vector3(-2.5, 0.0, -5.0), Vector3(2.5, 0.0, -5.0)]
+	var fe: Dictionary = TankFootprint.front_edge_of(hexc)
+	if not bool(fe.get("ok", false)):
+		failed.append("a hex must have a front pane")
 	else:
-		for f in failed:
-			push_error("[smoke_hex_footprint] " + f)
-		quit(1)
+		var fe_len: float = float(fe["length"])
+		if absf(fe_len - 5.0) > 0.01:
+			failed.append("hex front pane should be 5 wide, got %.2f" % fe_len)
+		if fe_len >= 10.0:
+			failed.append("the pane must be narrower than the bounding box")
+		var fe_mid: Vector3 = fe["mid"]
+		if absf(fe_mid.z - 5.0) > 0.01:
+			failed.append("front pane should sit at z=5, got %.2f" % fe_mid.z)
+		# A bar of that length centred on the pane stays inside the glass.
+		var half_span: float = (fe_len - 0.8) * 0.5
+		for s_x in [-half_span, 0.0, half_span]:
+			if not LightingRig.inside_footprint(
+					fe_mid.x + s_x, fe_mid.z - 0.03, hexc, 0.05):
+				failed.append("tick end at x=%.2f pokes outside the glass" % s_x)
+	# A square tank must be unaffected.
+	var boxc: Array = [
+		Vector3(6.0, 0.0, 4.0), Vector3(-6.0, 0.0, 4.0),
+		Vector3(-6.0, 0.0, -4.0), Vector3(6.0, 0.0, -4.0)]
+	var fb: Dictionary = TankFootprint.front_edge_of(boxc)
+	if absf(float(fb["length"]) - 12.0) > 0.01:
+		failed.append("a box front pane should be its full width")
+	if bool(TankFootprint.front_edge_of([]).get("ok", true)):
+		failed.append("no corners must mean no pane")
+	# Wiring: the tick must actually use it.
+	var av: String = _read_src("res://scripts/aquarium_visuals.gd")
+	if not av.contains("TankFootprint.front_edge_of("):
+		failed.append("the waterline tick must be sized from the front pane")
+	if av.contains("_world.TANK_HALF_W) - 0.4"):
+		failed.append("the waterline tick must not use the bounding box")
+
+	quit(TestSupport.report("smoke_hex_footprint", failed))
+
+
+func _read_src(path: String) -> String:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return ""
+	var txt: String = f.get_as_text()
+	f.close()
+	return txt

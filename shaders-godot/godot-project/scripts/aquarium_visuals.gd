@@ -50,18 +50,31 @@ func setup(world: Node3D, sim: Node) -> void:
 func _build_waterline_tick() -> void:
 	if _world == null:
 		return
-	# Full-width tick only makes sense on rectilinear tanks; on a cylinder the
-	# bar would span the bounding box and poke through the glass into the void.
+	# Curved vessels have no flat front pane to run a tick along.
 	var shape: String = String(_world.TANK_SHAPE)
 	if shape == "cylinder" or shape == "sphere":
 		return
+	# Size the tick to the FRONT PANE, not to TANK_HALF_W. Those are the
+	# same on a box and very different on a hex, whose front pane is far
+	# narrower than its bounding box - a full-width bar there hangs two
+	# units out past the glass on each side and reads as a stray line
+	# through the tank. The old code guarded cylinders and spheres for
+	# exactly this reason and simply did not think of the hex.
+	if not _world.has_method("_tank_footprint_corners"):
+		return
+	var edge: Dictionary = TankFootprint.front_edge_of(
+		_world._tank_footprint_corners())
+	if not bool(edge.get("ok", false)):
+		return
+	var span: float = maxf(0.2, float(edge["length"]) - 0.8)
+	var mid: Vector3 = edge["mid"]
 	var mi := MeshInstance3D.new()
 	mi.name = "WaterlineTick"
-	var hw: float = float(_world.TANK_HALF_W) - 0.4
-	mi.mesh = VoxelMat.get_box(Vector3(hw * 2.0, 0.04, 0.04))
+	mi.mesh = VoxelMat.get_box(Vector3(span, 0.04, 0.04))
 	mi.material_override = VoxelMat.make(Color8(170, 210, 230))
-	mi.position = Vector3(0.0, float(_world.WATER_HEIGHT), float(_world.TANK_HALF_D) - 0.03)
 	_world.add_child(mi)
+	mi.position = Vector3(mid.x, float(_world.WATER_HEIGHT), mid.z - 0.03)
+	mi.rotation.y = float(edge["yaw"])
 
 
 func register_glass(root: Node3D, mat: ShaderMaterial) -> void:
@@ -650,7 +663,7 @@ func _maybe_glass_sparkle(sdt: float) -> void:
 	if _glass_mat == null or _sim == null:
 		return
 	_sparkle_t -= sdt
-	var dl: float = _sim.daylight() if _sim.has_method("daylight") else 1.0
+	var dl: float = SimGate.daylight(_sim, 1.0)
 	if dl < 0.35:
 		_glass_mat.set_shader_parameter("sparkle", 0.0)
 		return

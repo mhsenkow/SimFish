@@ -50,14 +50,14 @@ func _initialize() -> void:
 	MindBoidsBuffer.capture(all, 1)
 	MindBoidsCompute.run()
 	var pol_before: float = _polarization(school)
-	_assert(failed, pol_before > 0.45, "40-fish school reads cohesive (%.2f)" % pol_before)
+	TestSupport.check(failed, pol_before > 0.45, "40-fish school reads cohesive (%.2f)" % pol_before)
 
 	_MotionWave.inject_at(school, Vector3(2.5, 1.0, 0.0), 0.95, Vector3(-1.0, 0.0, 0.0))
 	var inj_hot: int = 0
 	for f in school:
 		if f.motion_agitation > 0.35:
 			inj_hot += 1
-	_assert(failed, inj_hot >= 1, "startle injects local leader (%d)" % inj_hot)
+	TestSupport.check(failed, inj_hot >= 1, "startle injects local leader (%d)" % inj_hot)
 
 	for step in 8:
 		MindBoidsBuffer.capture(school, 2 + step)
@@ -67,14 +67,14 @@ func _initialize() -> void:
 	for f in school:
 		if f.motion_agitation > 0.05:
 			wave_n += 1
-	_assert(failed, wave_n >= 3, "startle wave spreads through flock (%d)" % wave_n)
+	TestSupport.check(failed, wave_n >= 3, "startle wave spreads through flock (%d)" % wave_n)
 	_MotionField.inject_shadow(all, Vector3(0.0, 3.2, 0.0), 1.0)
 	var freeze_n: int = 0
 	for f in school:
 		if f.motion_freeze_t > 0.05:
 			freeze_n += 1
-	_assert(failed, freeze_n >= 6, "shadow freeze hits school (%d)" % freeze_n)
-	_assert(failed, betta.motion_agitation < 0.06,
+	TestSupport.check(failed, freeze_n >= 6, "shadow freeze hits school (%d)" % freeze_n)
+	TestSupport.check(failed, betta.motion_agitation < 0.06,
 		"lone betta ignores school shadow (%.2f)" % betta.motion_agitation)
 
 	var pol_after: float = _polarization(school)
@@ -82,13 +82,7 @@ func _initialize() -> void:
 		pol_before, pol_after, freeze_n, wave_n])
 
 	parent.queue_free()
-	if failed.is_empty():
-		print("[smoke] murmuration_capture OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] murmuration_capture FAIL: %s" % msg)
-		quit(1)
+	quit(TestSupport.report("smoke_murmuration_capture", failed))
 
 
 func _polarization(fish_arr: Array) -> float:
@@ -105,8 +99,3 @@ func _polarization(fish_arr: Array) -> float:
 	if n <= 0:
 		return 0.0
 	return sum.length() / float(n)
-
-
-func _assert(failed: Array[String], cond: bool, msg: String) -> void:
-	if not cond:
-		failed.append(msg)

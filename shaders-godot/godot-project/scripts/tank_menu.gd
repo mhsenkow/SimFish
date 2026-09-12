@@ -64,22 +64,22 @@ func _setup_top_bar() -> void:
 	_new_btn.pressed.connect(_on_new_pressed)
 
 	_guided_btn = PanelTheme.make_secondary_button("+ Guided setup")
-	_guided_btn.tooltip_text = "Create an empty tank and walk through stocking step by step"
+	_guided_btn.tooltip_text = tr("Create an empty tank and walk through stocking step by step")
 	_guided_btn.pressed.connect(_on_guided_pressed)
 
 	_design_btn = PanelTheme.make_secondary_button("Design a scape")
-	_design_btn.tooltip_text = "New empty tank and open build mode — sculpt before you stock fish"
+	_design_btn.tooltip_text = tr("New empty tank and open build mode — sculpt before you stock fish")
 	_design_btn.pressed.connect(_on_design_scape_pressed)
 
 	_info_btn = PanelTheme.make_ghost_button("Info")
-	_info_btn.tooltip_text = "Project website and GitHub issues"
+	_info_btn.tooltip_text = tr("Project website and GitHub issues")
 	_info_btn.pressed.connect(func(): AppLinks.show_info_popup(self))
 
 	_create_cluster = PanelTheme.make_action_cluster(
 		[_new_btn, _guided_btn, _design_btn], 8)
 
 	_select_all = CheckBox.new()
-	_select_all.text = "Select all"
+	_select_all.text = tr("Select all")
 	_select_all.toggled.connect(_on_select_all_toggled)
 
 	_delete_selected_btn = PanelTheme.make_secondary_button("Delete selected")
@@ -107,7 +107,7 @@ func _setup_top_bar() -> void:
 	_action_row.add_child(_manage_cluster)
 	_action_row.add_child(_info_btn)
 	var quit_btn := PanelTheme.make_secondary_button("Quit")
-	quit_btn.tooltip_text = "Quit to desktop (controller-friendly)"
+	quit_btn.tooltip_text = tr("Quit to desktop (controller-friendly)")
 	quit_btn.focus_mode = Control.FOCUS_ALL
 	quit_btn.pressed.connect(_confirm_quit_from_menu)
 	_action_row.add_child(quit_btn)
@@ -334,7 +334,7 @@ func _make_card(entry: Dictionary) -> Control:
 	# Leading select checkbox — folded into the title row so the card opens
 	# straight into the thumbnail instead of a floating "Select" band up top.
 	var select_cb := CheckBox.new()
-	select_cb.tooltip_text = "Select for bulk delete"
+	select_cb.tooltip_text = tr("Select for bulk delete")
 	select_cb.button_pressed = _selected_slots.has(slot)
 	select_cb.toggled.connect(func(on: bool): _set_slot_selected(slot, on))
 	title_row.add_child(select_cb)
@@ -590,7 +590,7 @@ func _sync_select_all_checkbox() -> void:
 func _update_bulk_delete_ui() -> void:
 	var n: int = _selected_slots.size()
 	_delete_selected_btn.disabled = n <= 0
-	_delete_selected_btn.text = "Delete selected" if n <= 1 else "Delete selected (%d)" % n
+	_delete_selected_btn.text = tr("Delete selected") if n <= 1 else "Delete selected (%d)" % n
 
 
 func _prune_stale_selection() -> void:

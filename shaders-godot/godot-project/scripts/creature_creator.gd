@@ -24,7 +24,6 @@ const SPHERE_RADIUS: float = 1.55
 const SHRIMP_PREVIEW_SCALE: float = 2.8
 const SNAIL_PREVIEW_SCALE: float = 1.6
 const SnailShell = preload("res://scripts/snail_shell.gd")
-const ProceduralPlantSpecies = preload("res://scripts/procedural_plant_species.gd")
 
 enum Kind { FISH, SHRIMP, SNAIL, PLANT, CORAL, FLOATING, CLAM }
 
@@ -184,14 +183,14 @@ func _build_ui() -> void:
 	add_child(outer)
 
 	var title := Label.new()
-	title.text = "✦ CREATURE CREATOR ✦"
+	title.text = tr("✦ CREATURE CREATOR ✦")
 	title.add_theme_font_size_override("font_size", 20)
 	title.add_theme_color_override("font_color", Color8(120, 230, 200))
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(title)
 
 	var subtitle := Label.new()
-	subtitle.text = "design a custom organism, then stock the tank with it"
+	subtitle.text = tr("design a custom organism, then stock the tank with it")
 	subtitle.add_theme_font_size_override("font_size", 11)
 	subtitle.add_theme_color_override("font_color", Color8(180, 200, 225))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -255,7 +254,7 @@ func _build_ui() -> void:
 	outer.add_child(PanelTheme.make_rule())
 
 	_status = Label.new()
-	_status.text = "Pick a type and tune the sliders."
+	_status.text = tr("Pick a type and tune the sliders.")
 	_status.add_theme_font_size_override("font_size", 12)
 	_status.add_theme_color_override("font_color", Color8(140, 240, 160))
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -890,10 +889,10 @@ func _randomize() -> void:
 	_reload_preview()
 
 
-func _randomize_plant(seed: int = -1) -> void:
+func _randomize_plant(plant_seed: int = -1) -> void:
 	# Generated designer plants are the intentional production consumer of the
 	# constrained sampler. Hand-authored library stock remains exact.
-	_genome = ProceduralPlantSpecies.sample(seed)
+	_genome = ProceduralPlantSpecies.sample(plant_seed)
 	var ramp: Array = _genome.get("ramp_override", [])
 	if ramp.size() == 6:
 		_genome["_ramp_base"] = ramp[0]
@@ -920,7 +919,7 @@ func _resolve_world() -> void:
 func _add_to_tank(count: int) -> void:
 	_resolve_world()
 	if _world == null or not _world.has_method("spawn_library_entry"):
-		_status.text = "Tank not available right now."
+		_status.text = tr("Tank not available right now.")
 		return
 	var otype: String = _otype_string()
 	var added: int = 0
@@ -930,7 +929,7 @@ func _add_to_tank(count: int) -> void:
 	if added > 0:
 		_status.text = "Added %d %s to the tank." % [added, _kind_plural(added)]
 	else:
-		_status.text = "Could not place any (tank may be full)."
+		_status.text = tr("Could not place any (tank may be full).")
 
 
 func _kind_plural(n: int) -> String:

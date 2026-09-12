@@ -18,29 +18,29 @@ func _initialize() -> void:
 	for i in 68:
 		handles[i].hide()
 	var survivors: Array[VoxelBatch.Handle] = handles.slice(68)
-	_assert(failed, not batch.consider_compaction(4.9),
+	TestSupport.check(failed, not batch.consider_compaction(4.9),
 		"sparse buffer does not compact before hold interval")
 
 	var deferred: VoxelBatch.Handle = batch.add_deferred(
 		Transform3D(Basis().scaled(Vector3.ONE * 0.1), Vector3(90, 0, 0)), Color.RED)
-	_assert(failed, not batch.consider_compaction(10.0),
+	TestSupport.check(failed, not batch.consider_compaction(10.0),
 		"active writes block compaction")
 	batch.process_deferred_writes(1)
-	_assert(failed, not batch.consider_compaction(4.9),
+	TestSupport.check(failed, not batch.consider_compaction(4.9),
 		"blocked write resets sustained interval")
-	_assert(failed, batch.consider_compaction(0.2), "sustained sparse buffer compacts")
-	_assert(failed, batch._mm.instance_count == VoxelBatch.MIN_CAPACITY,
+	TestSupport.check(failed, batch.consider_compaction(0.2), "sustained sparse buffer compacts")
+	TestSupport.check(failed, batch._mm.instance_count == VoxelBatch.MIN_CAPACITY,
 		"capacity shrinks to bounded floor")
 
 	var expected_index: int = 0
 	for h in survivors + [deferred]:
-		_assert(failed, h.alive and h.batch == batch and h.index == expected_index,
+		TestSupport.check(failed, h.alive and h.batch == batch and h.index == expected_index,
 			"live handle remapped contiguously")
 		h.set_color(Color.BLUE)
-		_assert(failed, batch._colors[h.index] == Color.BLUE,
+		TestSupport.check(failed, batch._colors[h.index] == Color.BLUE,
 			"remapped handle still addresses its instance")
 		expected_index += 1
-	_assert(failed, handles[0].index == -1 and handles[0].batch == null,
+	TestSupport.check(failed, handles[0].index == -1 and handles[0].batch == null,
 		"dead handle is explicitly detached")
 
 	batch.clear()
@@ -50,16 +50,4 @@ func _initialize() -> void:
 	host.free()
 	batch = null
 	await process_frame
-	if failed.is_empty():
-		print("[smoke] voxel_batch_compaction OK live=%d capacity=%d"
-			% [expected_index, VoxelBatch.MIN_CAPACITY])
-		quit(0)
-	else:
-		for message in failed:
-			push_error("[smoke] FAIL: %s" % message)
-		quit(1)
-
-
-func _assert(failed: Array[String], condition: bool, label: String) -> void:
-	if not condition:
-		failed.append(label)
+	quit(TestSupport.report("smoke_voxel_batch_compaction", failed))

@@ -258,6 +258,14 @@ var _trim_regrowth_boost: float = 0.0
 enum LifePhase { VEGETATIVE, CANOPY, SENESCENT, DORMANT_BULB }
 var life_phase: int = LifePhase.VEGETATIVE
 var emergent_growth: bool = true   # tall stems/corals stop at water_surface_y
+# Ribbon blades (vallisneria, cattail) do not stop at the waterline - they
+# bend there and keep running along the surface. _apply_canopy_layover has
+# always known how to draw that; what stopped it happening is that entering
+# the canopy froze max_height at whatever height the tip had reached, so
+# there was never any surplus blade to lay down. A pooling plant enters the
+# canopy (for the bend, the meniscus break, flowering) but keeps growing to
+# the max_height it was given.
+var surface_pooling: bool = false
 var uses_flowering: bool = true    # corals override to false (planula instead)
 var monocarpic: bool = false       # die after one reproductive cycle
 var _canopy_timer: float = 0.0
@@ -514,6 +522,8 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 				get_instance_id(), String(params.get("lineage_cell", "")))
 	if params.has("emergent_growth"):
 		emergent_growth = not not params["emergent_growth"]
+	if params.has("surface_pooling"):
+		surface_pooling = not not params["surface_pooling"]
 	if params.has("monocarpic"):
 		monocarpic = not not params["monocarpic"]
 	if params.has("uses_flowering"):
@@ -689,6 +699,7 @@ func to_save_dict() -> Dictionary:
 		"seed_timer": seed_timer,
 		"life_phase": int(life_phase),
 		"emergent_growth": emergent_growth,
+		"surface_pooling": surface_pooling,
 		"uses_flowering": uses_flowering,
 		"monocarpic": monocarpic,
 		"_canopy_timer": _canopy_timer,
@@ -745,6 +756,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	seed_timer = float(d.get("seed_timer", 0.0))
 	life_phase = int(d.get("life_phase", LifePhase.VEGETATIVE if not has_emerged else LifePhase.CANOPY))
 	emergent_growth = not not d.get("emergent_growth", emergent_growth)
+	surface_pooling = not not d.get("surface_pooling", surface_pooling)
 	uses_flowering = not not d.get("uses_flowering", uses_flowering)
 	monocarpic = not not d.get("monocarpic", monocarpic)
 	_canopy_timer = float(d.get("_canopy_timer", 0.0))
@@ -830,7 +842,7 @@ func _warm_start_growth_vitals() -> void:
 	var w: Node = sim_v.get_parent()
 	if w == null or not w.has_method("light_penetration_at"):
 		return
-	var dl: float = float(sim_v.daylight()) if sim_v.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim_v, 0.5)
 	var lp: float = float(w.light_penetration_at(_world_pos if _world_pos != Vector3.ZERO else global_position))
 	_light_avg = maxf(_light_avg, lp * dl * 0.85)
 
@@ -1491,7 +1503,7 @@ func _apply_default_growth_strategy() -> void:
 # Snap the complete bloom onto the live top stem transform. The handle's basis
 # includes canopy layover, while its scale belongs to the stem voxel and must
 # not leak into the flower.
-func _stabilize_flower_against_lean() -> void:
+func _stabilize_flower_against_lean(dt: float = 0.0) -> void:
 	if _flower_node == null or not is_instance_valid(_flower_node):
 		return
 	if flower_stage == FlowerStage.NONE:
@@ -1502,7 +1514,14 @@ func _stabilize_flower_against_lean() -> void:
 		return
 	var tip_basis: Basis = tip.transform.basis.orthonormalized()
 	var anchor: Vector3 = tip.transform.origin + tip_basis.y * FLOWER_TIP_NEST
-	_flower_node.transform = Transform3D(tip_basis, anchor)
+	# Damped follow, not an assignment. The anchor is the sum of stem lean,
+	# canopy layover, gust tilt, circumnutation, brush bend and a voxel
+	# re-lay on every growth step; snapping a rigid bloom onto that sum
+	# reproduced all of it at full amplitude with zero lag, which is what
+	# read as the flower thrashing on a calm stem. See FlowerMotion.
+	_flower_node.transform = FlowerMotion.step(
+		_flower_node.transform, Transform3D(tip_basis, anchor), dt,
+		dt <= 0.0)
 
 
 func _live_top_stem_handle() -> VoxelBatch.Handle:
@@ -1535,7 +1554,11 @@ func _enter_canopy() -> void:
 		return
 	life_phase = LifePhase.CANOPY
 	has_emerged = true
-	max_height = current_height
+	# Freezing max_height here is what stopped surface pooling from ever
+	# happening: the blade reached the waterline and immediately stopped,
+	# so the layover had nothing but the vertical stem to bend.
+	if not surface_pooling:
+		max_height = current_height
 	_canopy_timer = 0.0
 	# Heterophylly (#1): swap to emersed leaf morphology at surface.
 	if not _heterophylly_applied and emersed_leaf_form != "" \
@@ -1558,6 +1581,15 @@ func _stop_canopy_bob() -> void:
 		_canopy_bob_tween = null
 
 
+# How many voxels get pinned to the water plane when a plant reaches the
+# surface. The ribbon count is the length of the surface run, and it is the
+# SAME number PlantEstablish uses to size the surplus blade - if the two
+# ever disagree, a pooling plant either tears (too little surplus laid) or
+# pokes a stub above the waterline (too much surplus unlaid).
+const CANOPY_LAY_RIBBON: int = 14
+const CANOPY_LAY_OTHER: int = 3
+
+
 func _apply_canopy_layover() -> void:
 	# REAL_TANK_FIDELITY #113 — valli / ribbon blades that reach the surface
 	# bend at the waterline and lie along it for a long run, instead of a
@@ -1568,7 +1600,8 @@ func _apply_canopy_layover() -> void:
 	var surface_local_y: float = water_surface_y - global_position.y
 	var ribbon: bool = leaf_form == "ribbon" or species_id.contains("valli") \
 		or species_id.contains("vallisneria") or species_id.contains("cattail")
-	var lay_n: int = mini(voxels.size(), 14 if ribbon else 3)
+	var lay_n: int = mini(voxels.size(),
+		CANOPY_LAY_RIBBON if ribbon else CANOPY_LAY_OTHER)
 	var lie_dir: float = 1.0 if fmod(absf(global_position.x * 12.7 + global_position.z * 3.1), 1.0) > 0.5 else -1.0
 	for i in lay_n:
 		var vi: int = voxels.size() - 1 - i
@@ -2543,9 +2576,7 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 	if voxels.is_empty():
 		return
 	var sim_driver: Node = _find_sim()
-	var daylight: float = 1.0
-	if sim_driver != null and sim_driver.has_method("daylight"):
-		daylight = float(sim_driver.daylight())
+	var daylight: float = SimGate.daylight(sim_driver, 1.0)
 	# Symptoms now report measured local availability. Environmental guards
 	# keep the cues readable: carbon demand matters under light, and iron
 	# chlorosis appears on otherwise viable tissue.
@@ -3037,7 +3068,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			+ sin(_circumnutation_phase) * nutation) * lean_scale
 	rotation.x = (_brush_bend.y * 0.7 + _gust_tilt.y * 0.65
 			+ cos(_circumnutation_phase) * nutation * 0.7) * lean_scale
-	_stabilize_flower_against_lean()
+	_stabilize_flower_against_lean(dt)
 	_height_ghost_timer += dt
 	if _height_ghost_timer > 180.0:
 		_height_ghost_timer = 0.0
@@ -3165,8 +3196,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			nutrient_mult *= clampf(temp_mult, 0.35, 1.15)
 
 	# Diel starch + light average (#3, #2)
-	_light_avg = lerpf(_light_avg, light_pen * (sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5), dt * 0.08)
-	var dl_s: float = sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5
+	_light_avg = lerpf(_light_avg, light_pen * (SimGate.daylight(sim_v, 0.5)), dt * 0.08)
+	var dl_s: float = SimGate.daylight(sim_v, 0.5)
 	if dl_s > 0.35:
 		_starch = clampf(_starch + dt * light_pen * 0.06, 0.0, 1.0)
 	else:
@@ -3295,7 +3326,8 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if emergent_growth and life_phase == LifePhase.VEGETATIVE and _at_surface_cap():
 		_enter_canopy()
 
-	if life_phase == LifePhase.CANOPY or current_height >= max_height:
+	if (life_phase == LifePhase.CANOPY and not surface_pooling) \
+			or current_height >= max_height:
 		_tick_canopy(dt, nutrient_mult, substrate)
 		return
 
@@ -3329,6 +3361,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			_notify_growth_audio()
 			if emergent_growth and _at_surface_cap():
 				_enter_canopy()
+			# A pooling blade keeps growing after it reaches the waterline,
+			# so the bend has to be re-applied to each new voxel. The
+			# layover only ran once, on entering the canopy - without this
+			# the surplus blade grows straight up out of the water instead
+			# of lying along it.
+			elif surface_pooling and life_phase == LifePhase.CANOPY:
+				_apply_canopy_layover()
 
 	# ---- Pearling ----
 	_tick_pearling(dt)
@@ -3910,9 +3949,7 @@ func _tick_pearling(dt: float) -> void:
 	if not _pearling_eligible:
 		return
 	var o2: float = float(sim_driver.get("dissolved_o2"))
-	var daylight: float = 1.0
-	if sim_driver.has_method("daylight"):
-		daylight = sim_driver.daylight()
+	var daylight: float = SimGate.daylight(sim_driver, 1.0)
 	# Pearl when: O2 super-saturated + bright light + plant healthy + tall
 	# enough that you'd actually see the bubble stream. CO2-met plants
 	# get a multiplicative boost so a dosed tank reads dramatically — the
@@ -4034,7 +4071,7 @@ func _tick_seeding(dt: float) -> void:
 	if sim_d != null and sim_d.substrate != null:
 		var bank: float = sim_d.substrate.get_seed_bank_at(_world_pos)
 		if bank > 0.2 and seed_timer > 12.0:
-			var dl: float = sim_d.daylight() if sim_d.has_method("daylight") else 0.5
+			var dl: float = SimGate.daylight(sim_d, 0.5)
 			if dl > 0.45 and substrate_nutrient_ok(sim_d.substrate):
 				var lot: Dictionary = sim_d.substrate.take_eligible_seed_lot_at(
 					_world_pos, 0.25, {
@@ -4371,6 +4408,9 @@ func nibble(amount: int) -> int:
 			and current_height > 0:
 		_damage_episode_active = true
 		_reiterations_used += 1
+		# Integer division is intended: the cut node is the midpoint stem
+		# segment, and segments are discrete.
+		@warning_ignore("integer_division")
 		_reiteration_pending_node = clampi(current_height / 2, 0, current_height - 1)
 	# Real plants respond to apical loss by activating lateral buds — when
 	# fish bite the top off, side shoots push from the cut node on the
@@ -4524,7 +4564,7 @@ func _tick_leaf_light_dose(dt: float, sim_v: Node) -> void:
 	if red_potential <= 0.0 or _leaf_states.is_empty():
 		return
 	var daylight_now: float = clampf(
-		float(sim_v.daylight()) if sim_v != null and sim_v.has_method("daylight") else 0.5,
+		SimGate.daylight(sim_v, 0.5),
 		0.0, 1.0)
 	for i in mini(_leaf_states.size(), _leaf_groups.size()):
 		var state: Dictionary = _leaf_states[i]
@@ -4819,7 +4859,7 @@ func _spawn_stem_fragment(units: int) -> void:
 
 
 func _tick_nyctinasty(sim_v: Node) -> void:
-	var dl: float = sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim_v, 0.5)
 	var fold: float = lerpf(0.0, -0.26, 1.0 - dl)
 	rotation.x = _brush_bend.y + fold * 0.15
 
@@ -4861,7 +4901,7 @@ func _tick_dynamic_blush(sim_v: Node) -> void:
 		_blush_last_warmth = warmth
 	if red_potential < 0.05:
 		return
-	var dl: float = sim_v.daylight() if sim_v != null and sim_v.has_method("daylight") else 0.5
+	var dl: float = SimGate.daylight(sim_v, 0.5)
 	var blush: float = clampf(red_potential * dl * _shade_mult, 0.0, 1.0)
 	if dl < 0.35:
 		blush *= 0.35

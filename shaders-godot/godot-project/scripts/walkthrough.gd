@@ -146,7 +146,7 @@ func _build_ui() -> void:
 	_back_btn.pressed.connect(_on_back)
 	row.add_child(_back_btn)
 	var skip := PanelTheme.make_secondary_button("Skip")
-	skip.tooltip_text = "Skip the walkthrough — lands you in a living preset tank"
+	skip.tooltip_text = tr("Skip the walkthrough — lands you in a living preset tank")
 	skip.pressed.connect(_skip)
 	row.add_child(skip)
 	var spacer := Control.new()
@@ -206,12 +206,12 @@ func _show_step() -> void:
 	var tool: String = String(s.get("tool", ""))
 	_action_btn.visible = tool != ""
 	match tool:
-		"aquascape": _action_btn.text = "Open aquascape tools"
-		"plant": _action_btn.text = "Open plant designer"
-		"snail": _action_btn.text = "Open snail designer"
-		"shrimp": _action_btn.text = "Open shrimp designer"
-		"fish": _action_btn.text = "Open fish designer"
-	_next_btn.text = "Finish ✓" if _step == _steps.size() - 1 else "Next ▸"
+		"aquascape": _action_btn.text = tr("Open aquascape tools")
+		"plant": _action_btn.text = tr("Open plant designer")
+		"snail": _action_btn.text = tr("Open snail designer")
+		"shrimp": _action_btn.text = tr("Open shrimp designer")
+		"fish": _action_btn.text = tr("Open fish designer")
+	_next_btn.text = tr("Finish ✓") if _step == _steps.size() - 1 else "Next ▸"
 	_update_count()
 	_update_effect_readout()
 	_apply_live_pause(s)
@@ -244,7 +244,7 @@ func _update_count() -> void:
 		if ckey != "hardscape":
 			_count_lbl.text = ""
 		else:
-			_count_lbl.text = "Optional — structure helps fish feel safe"
+			_count_lbl.text = tr("Optional — structure helps fish feel safe")
 		return
 	var counts: Dictionary = _main.wt_counts()
 	var n: int = int(counts.get(ckey, 0))

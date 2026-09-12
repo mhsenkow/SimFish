@@ -59,10 +59,4 @@ func _initialize() -> void:
 	var hex_ext: Vector2 = _plan_half_extents(hex)
 	if hex_ext.x < 5.0 or hex_ext.y < 2.4:
 		failed.append("hex: AABB extents too small (%.2f, %.2f)" % [hex_ext.x, hex_ext.y])
-	if failed.is_empty():
-		print("[smoke] topdown framing OK: ", ", ".join(SHAPES))
-		quit(0)
-	else:
-		for f in failed:
-			push_error("[smoke] " + f)
-		quit(1)
+	quit(TestSupport.report("smoke_topdown_framing", failed))

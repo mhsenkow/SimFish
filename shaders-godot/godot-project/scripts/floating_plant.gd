@@ -112,9 +112,7 @@ func get_genome() -> Dictionary:
 
 # Per-clump sim step (10 Hz from World._floater_growth_step).
 func tick(dt: float, world: Node, sim: Node) -> void:
-	var dl: float = 1.0
-	if sim != null and sim.has_method("daylight"):
-		dl = float(sim.daylight())
+	var dl: float = SimGate.daylight(sim, 1.0)
 	var warmth: float = 0.55
 	if world != null and world.has_method("surface_warmth_at"):
 		warmth = float(world.surface_warmth_at(global_position))
@@ -782,16 +780,47 @@ func _build_water_spangle() -> void:
 	_root_strands(2, root_length_current * 0.45, 0.45)
 
 
+# Bloom on a floater. Sized and seated RELATIVE TO THE LEAF (#19 follow-up).
+#
+# This used to be a single 0.12 cube at `leaf_size * 0.25` above the origin.
+# A floater's main leaf is only `leaf_size * 0.55` (≈0.165) across and 0.07
+# thick, so that cube was ~73% of the whole leaf's width, TALLER than the
+# leaf is wide, and hovering clear above it — it read as a pastel block
+# bobbing near the plant rather than a flower on it.
+#
+# Now: a flat petal plate seated into the leaf surface plus a small center
+# pip, both scaled from leaf_size so a big floater gets a big bloom and a
+# duckweed frond gets a speck.
 func _add_flower_voxel() -> void:
-	var fi := MeshInstance3D.new()
-	var fsz: float = 0.08 if flower_stage == FlowerStage.BUD else 0.12
-	fi.mesh = VoxelMat.get_box(Vector3(fsz, fsz * 1.2, fsz))
-	fi.material_override = VoxelMat.make_foliage(
-		Color8(240, 200, 220) if flower_stage == FlowerStage.OPEN else Color8(180, 140, 90))
-	_configure_mesh_instance(fi)
-	fi.position = Vector3(0, leaf_size * 0.25, 0)
-	fi.name = "flower"
-	add_child(fi)
+	var open: bool = flower_stage == FlowerStage.OPEN
+	# Fractions of leaf_size, not absolute units — the old bug was a fixed
+	# size that swamped small morphs.
+	var petal_w: float = leaf_size * (0.30 if open else 0.17)
+	var petal_h: float = leaf_size * 0.055
+	# Leaf plate is 0.07 tall and centred on y=0, so its top is ~0.035.
+	# Seat the bloom just into that surface instead of floating above it.
+	var seat_y: float = 0.030
+
+	var petals := MeshInstance3D.new()
+	petals.mesh = VoxelMat.get_box(Vector3(petal_w, petal_h, petal_w * 0.85))
+	petals.material_override = VoxelMat.make_foliage(
+		Color8(240, 200, 220) if open else Color8(180, 140, 90))
+	_configure_mesh_instance(petals)
+	petals.position = Vector3(0, seat_y, 0)
+	petals.name = "flower"
+	add_child(petals)
+
+	# Center pip only once open — a closed bud is a single form.
+	if not open:
+		return
+	var pip := MeshInstance3D.new()
+	var pip_w: float = petal_w * 0.36
+	pip.mesh = VoxelMat.get_box(Vector3(pip_w, petal_h * 1.4, pip_w))
+	pip.material_override = VoxelMat.make_foliage(Color8(250, 235, 180))
+	_configure_mesh_instance(pip)
+	pip.position = Vector3(0, seat_y + petal_h * 0.7, 0)
+	pip.name = "flower_center"
+	add_child(pip)
 
 
 # ---- Save / load v2 ----

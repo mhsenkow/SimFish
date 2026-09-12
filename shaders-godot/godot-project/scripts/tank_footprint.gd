@@ -654,3 +654,44 @@ func footprint_corners(segments: int = 24) -> Array[Vector3]:
 			pts.append(Vector3(-half_w, 0.0, -half_d))
 			pts.append(Vector3(half_w, 0.0, -half_d))
 	return pts
+
+
+# The front edge of the footprint: the perimeter edge whose midpoint sits
+# furthest toward +Z, i.e. the pane the viewer looks through.
+#
+# WHY THIS EXISTS. Anything drawn "across the front of the tank" was being
+# sized from TANK_HALF_W, which is the BOUNDING BOX, not the glass. On a
+# box those are the same; on a hex the front pane is much narrower than the
+# box, so a full-width bar at z = half_d hangs out past the glass on both
+# sides. The waterline tick did exactly that and read as a stray line
+# poking out of the tank - the code even predicted it, but guarded only
+# cylinders and spheres.
+#
+# Returns {"mid": Vector3, "length": float, "yaw": float, "ok": bool}.
+static func front_edge_of(corners: Array) -> Dictionary:
+	var miss := {"mid": Vector3.ZERO, "length": 0.0, "yaw": 0.0, "ok": false}
+	if corners.size() < 3:
+		return miss
+	var best_mid := Vector3.ZERO
+	var best_len: float = 0.0
+	var best_yaw: float = 0.0
+	var best_z: float = -INF
+	for i in corners.size():
+		var a: Vector3 = corners[i]
+		var b: Vector3 = corners[(i + 1) % corners.size()]
+		var mid: Vector3 = (a + b) * 0.5
+		var seg := Vector2(b.x - a.x, b.z - a.z)
+		if seg.length() < 0.01:
+			continue
+		if mid.z > best_z:
+			best_z = mid.z
+			best_mid = mid
+			best_len = seg.length()
+			best_yaw = -atan2(b.z - a.z, b.x - a.x)
+	if best_len <= 0.0:
+		return miss
+	return {"mid": best_mid, "length": best_len, "yaw": best_yaw, "ok": true}
+
+
+func front_edge() -> Dictionary:
+	return front_edge_of(footprint_corners())

@@ -305,7 +305,7 @@ func _build_ui() -> void:
 func _build_quality_hero(parent: VBoxContainer) -> void:
 	_add_section(parent, "Fidelity")
 	var hero_hint := PanelTheme.make_description()
-	hero_hint.text = "One tap sets render resolution + MSAA. Use Apply to rebuild the viewport. On Mac, MSAA stays Off (Metal stability)."
+	hero_hint.text = tr("One tap sets render resolution + MSAA. Use Apply to rebuild the viewport. On Mac, MSAA stays Off (Metal stability).")
 	parent.add_child(hero_hint)
 
 	var fidelity_row := HBoxContainer.new()
@@ -330,9 +330,9 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	parent.add_child(_adaptive_block)
 
 	_adaptive_check = CheckBox.new()
-	_adaptive_check.text = "Auto-adjust fidelity to hit target FPS"
+	_adaptive_check.text = tr("Auto-adjust fidelity to hit target FPS")
 	_adaptive_check.button_pressed = false
-	_adaptive_check.tooltip_text = "Steps resolution down when the GPU can't keep up, back up when there's headroom."
+	_adaptive_check.tooltip_text = tr("Steps resolution down when the GPU can't keep up, back up when there's headroom.")
 	_adaptive_check.toggled.connect(func(v):
 		TankConfig.adaptive_quality = v
 		_sync_adaptive_controls())
@@ -343,7 +343,7 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	PanelTheme.as_mono(_frame_graph_label, PanelTheme.SIZE_CAPTION)
 	_adaptive_block.add_child(_frame_graph_label)
 	var spark_hint := PanelTheme.make_description()
-	spark_hint.text = "Green line = target frame budget; spikes above = hitch frames."
+	spark_hint.text = tr("Green line = target frame budget; spikes above = hitch frames.")
 	_adaptive_block.add_child(spark_hint)
 
 	_frame_graph = Control.new()
@@ -368,7 +368,7 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 	_res_option.item_selected.connect(func(idx): _on_resolution(idx))
 	parent.add_child(_res_option)
 	var res_hint := PanelTheme.make_description()
-	res_hint.text = "Fine-tune between tiers — overrides the fidelity buttons above."
+	res_hint.text = tr("Fine-tune between tiers — overrides the fidelity buttons above.")
 	parent.add_child(res_hint)
 
 	_msaa_option = PanelTheme.add_dropdown_row(parent, "MSAA")
@@ -394,7 +394,7 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 		_deband_label.text = "%.2f" % v
 		_push_live_quantize_param("deband_strength", v))
 	var aa_hint := PanelTheme.make_description()
-	aa_hint.text = "FXAA/deband soften edges without Metal MSAA. Mac Safe turns both on."
+	aa_hint.text = tr("FXAA/deband soften edges without Metal MSAA. Mac Safe turns both on.")
 	parent.add_child(aa_hint)
 	_creature_outline_label = Label.new()
 	_creature_outline = PanelTheme.add_slider_row(
@@ -408,7 +408,7 @@ func _build_quality_hero(parent: VBoxContainer) -> void:
 func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	var palette_body := _make_fold_section(vbox, "Palette & quantize", true)
 	_palette_check = CheckBox.new()
-	_palette_check.text = "Enable palette quantization"
+	_palette_check.text = tr("Enable palette quantization")
 	_palette_check.toggled.connect(func(v):
 		TankConfig.palette_enabled = v
 		_commit_render_to_main())
@@ -428,11 +428,11 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 		TankConfig.water_extinction = v
 		_water_extinction_label.text = "%.2f" % v)
 	_region_aware_check = CheckBox.new()
-	_region_aware_check.text = "Region-aware dither (recommended)"
+	_region_aware_check.text = tr("Region-aware dither (recommended)")
 	_region_aware_check.toggled.connect(func(v): TankConfig.dither_region_aware = v)
 	palette_body.add_child(_region_aware_check)
 	_dither_world_check = CheckBox.new()
-	_dither_world_check.text = "World-space dither lock (less shimmer on pan)"
+	_dither_world_check.text = tr("World-space dither lock (less shimmer on pan)")
 	_dither_world_check.toggled.connect(func(v):
 		TankConfig.dither_world_lock = v
 		_push_live_quantize())
@@ -444,26 +444,26 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 		_blue_noise_label.text = "%.2f" % v
 		_push_live_quantize())
 	_bank_lock_check = CheckBox.new()
-	_bank_lock_check.text = "Palette bank lock (8-bit feel)"
+	_bank_lock_check.text = tr("Palette bank lock (8-bit feel)")
 	_bank_lock_check.toggled.connect(func(v): TankConfig.palette_bank_lock = v)
 	palette_body.add_child(_bank_lock_check)
 	var rad_desc := PanelTheme.make_description()
-	rad_desc.text = "Smart dither: heavier on muted water/fog, lighter on saturated fauna."
+	rad_desc.text = tr("Smart dither: heavier on muted water/fog, lighter on saturated fauna.")
 	palette_body.add_child(rad_desc)
 	var bl_desc := PanelTheme.make_description()
-	bl_desc.text = "Bank lock restricts each pixel to a local palette slice for a truer 8-bit look."
+	bl_desc.text = tr("Bank lock restricts each pixel to a local palette slice for a truer 8-bit look.")
 	palette_body.add_child(bl_desc)
 	_palette_inspector = PaletteInspector.new()
 	palette_body.add_child(_palette_inspector)
 
 	var capture_body := _make_fold_section(vbox, "Capture & photo", false)
 	_photo_mode_check = CheckBox.new()
-	_photo_mode_check.text = "Photo mode grade on screenshots"
-	_photo_mode_check.tooltip_text = "Boosts bloom, vignette, and glow while saving a capture."
+	_photo_mode_check.text = tr("Photo mode grade on screenshots")
+	_photo_mode_check.tooltip_text = tr("Boosts bloom, vignette, and glow while saving a capture.")
 	_photo_mode_check.toggled.connect(func(v): TankConfig.photo_mode_enhanced = v)
 	capture_body.add_child(_photo_mode_check)
 	var photo_desc := PanelTheme.make_description()
-	photo_desc.text = "F12 saves a clean capture; Shift+F12 runs the signature poster preset."
+	photo_desc.text = tr("F12 saves a clean capture; Shift+F12 runs the signature poster preset.")
 	capture_body.add_child(photo_desc)
 	_signature_shot_btn = PanelTheme.make_secondary_button("Signature shot (Shift+F12)")
 	_signature_shot_btn.pressed.connect(func():
@@ -484,17 +484,17 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 		TankConfig.crt_strength = v
 		_crt_label.text = "%.2f" % v)
 	_integer_upscale_check = CheckBox.new()
-	_integer_upscale_check.text = "Integer upscale (eliminate sub-pixel shimmer)"
+	_integer_upscale_check.text = tr("Integer upscale (eliminate sub-pixel shimmer)")
 	_integer_upscale_check.toggled.connect(func(v):
 		TankConfig.integer_upscale = v
 		_commit_render_to_main())
 	polish_body.add_child(_integer_upscale_check)
 	_pixel_snap_check = CheckBox.new()
-	_pixel_snap_check.text = "Pixel-snap camera"
+	_pixel_snap_check.text = tr("Pixel-snap camera")
 	_pixel_snap_check.toggled.connect(func(v): TankConfig.pixel_snap_camera = v)
 	polish_body.add_child(_pixel_snap_check)
 	_pixel_purity_check = CheckBox.new()
-	_pixel_purity_check.text = "True 8-bit purity (bank-lock + heavy dither)"
+	_pixel_purity_check.text = tr("True 8-bit purity (bank-lock + heavy dither)")
 	_pixel_purity_check.toggled.connect(func(v):
 		TankConfig.pixel_purity = v
 		var main: Node = PanelTheme.main_scene(self)
@@ -519,25 +519,25 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 
 	var effects_body := _make_fold_section(vbox, "Fauna & tank startup", false)
 	_experimental_check = CheckBox.new()
-	_experimental_check.text = "Amplify fauna sheen (SSS + iridescence)"
+	_experimental_check.text = tr("Amplify fauna sheen (SSS + iridescence)")
 	_experimental_check.toggled.connect(func(v): TankConfig.experimental_visuals = v)
 	effects_body.add_child(_experimental_check)
 	var exp_desc := PanelTheme.make_description()
-	exp_desc.text = "Rebuilds fauna materials — click Apply after toggling."
+	exp_desc.text = tr("Rebuilds fauna materials — click Apply after toggling.")
 	effects_body.add_child(exp_desc)
 	_matured_check = CheckBox.new()
-	_matured_check.text = "New tanks start established (skip the cycle)"
+	_matured_check.text = tr("New tanks start established (skip the cycle)")
 	_matured_check.toggled.connect(func(v):
 		TankConfig.start_matured = v
 		TankConfig.cycle_start_mode = "established" if v else "fresh")
 	effects_body.add_child(_matured_check)
 	var mat_desc := PanelTheme.make_description()
-	mat_desc.text = "Applies to newly created tanks only — cycled chemistry, biofilm patina, mixed ages."
+	mat_desc.text = tr("Applies to newly created tanks only — cycled chemistry, biofilm patina, mixed ages.")
 	effects_body.add_child(mat_desc)
 
 	var dof_body := _make_fold_section(vbox, "Follow depth-of-field", false)
 	_follow_dof_check = CheckBox.new()
-	_follow_dof_check.text = "Blur background while following a creature"
+	_follow_dof_check.text = tr("Blur background while following a creature")
 	_follow_dof_check.toggled.connect(func(v):
 		TankConfig.follow_depth_of_field = v
 		_sync_follow_dof_controls())
@@ -563,7 +563,7 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 		TankConfig.follow_dof_near_softness = v
 		_follow_dof_near_soft_label.text = "%.1f" % v)
 	_follow_dof_near_check = CheckBox.new()
-	_follow_dof_near_check.text = "Blur foreground (near DOF)"
+	_follow_dof_near_check.text = tr("Blur foreground (near DOF)")
 	_follow_dof_near_check.toggled.connect(func(v): TankConfig.follow_dof_near_enabled = v)
 	dof_body.add_child(_follow_dof_near_check)
 
@@ -754,12 +754,12 @@ func _pull_resolution_option() -> void:
 
 func _build_color_tab(vbox: VBoxContainer) -> void:
 	var hint := PanelTheme.make_description()
-	hint.text = "Global material tint overlay — does not change saved fish or plant genomes. Preview is live."
+	hint.text = tr("Global material tint overlay — does not change saved fish or plant genomes. Preview is live.")
 	vbox.add_child(hint)
 
 	_add_section(vbox, "Film stock")
 	var film_hint := PanelTheme.make_description()
-	film_hint.text = "One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep."
+	film_hint.text = tr("One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep.")
 	vbox.add_child(film_hint)
 	_film_option = OptionButton.new()
 	for k in TankConfig.FILM_STOCKS.keys():
@@ -797,7 +797,7 @@ func _build_color_tab(vbox: VBoxContainer) -> void:
 
 	_add_section(vbox, "Category blend")
 	var blend_hint := PanelTheme.make_description()
-	blend_hint.text = "How strongly the global tint affects each material family (0 = unchanged)."
+	blend_hint.text = tr("How strongly the global tint affects each material family (0 = unchanged).")
 	vbox.add_child(blend_hint)
 	_mat_w_fauna_label = Label.new()
 	_mat_w_fauna = PanelTheme.add_slider_row(vbox, "Fauna", 0.0, 1.0, 0.01, _mat_w_fauna_label)
@@ -835,7 +835,7 @@ func _build_color_tab(vbox: VBoxContainer) -> void:
 func _on_save_only() -> void:
 	TankConfig.save_to_disk()
 	if _save_status != null:
-		_save_status.text = "✓ Saved. Settings will persist across reloads."
+		_save_status.text = tr("✓ Saved. Settings will persist across reloads.")
 
 
 # Section header with a 4-px spacer above so each group reads as a chunk

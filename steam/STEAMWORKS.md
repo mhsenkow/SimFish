@@ -51,6 +51,76 @@ App ID **4796460** · Store name **walstad loom**
    ```
    `steam/depot_ids.env` is git-ignored (local only); only the `.example` is committed.
 
+
+## Achievements, Cloud & Rich Presence (BROAD_DIRECTIONS #2)
+
+Code side lives in `scripts/steam_stats.gd` (contract + pure evaluation),
+`scripts/steam_achievements.gd` (driver + Steam calls), wired by
+`scripts/steam_service.gd`. Gated by `scripts/smoke_steam_stats.gd`.
+
+### 1. Achievements — partner-site config
+
+`SteamStats.ACHIEVEMENTS` is the **source of truth**. Every API Name below must
+exist in App Admin → **Achievements** with the same API Name, or the unlock is
+silently dropped by Steam. Regenerate this table any time the array changes:
+
+```gdscript
+print(SteamStats.partner_manifest())
+```
+
+| API Name | Display Name | Description |
+|---|---|---|
+| `ACH_CYCLED` | Cycled | Bring a tank through the nitrogen cycle to established. |
+| `ACH_FIRST_FRY` | New Arrivals | See your first fry hatch in a tank you built. |
+| `ACH_GEN_3` | Third Generation | Raise a lineage to its third generation. |
+| `ACH_GEN_10` | Ten Generations Deep | Raise a lineage to its tenth generation. |
+| `ACH_MORPH_FIRST` | Something New | Watch a lineage drift far enough to become its own morph. |
+| `ACH_MORPH_5` | Speciation Event | Hold five distinct emergent morphs in one tank. |
+| `ACH_SHRIMP_COLONY` | Colony | Grow a shrimp population past twenty-five. |
+| `ACH_SNAIL_CREW` | Cleanup Crew | Keep ten or more snails working the glass. |
+| `ACH_JUNGLE` | Jungle | Fill a tank with thirty living plants. |
+| `ACH_FLOWERING` | Above the Waterline | Coax an aquatic plant into flowering. |
+| `ACH_BALANCED` | Walstad Balance | Hold a cycled tank at healthy oxygen and near-zero ammonia, understocked, for ten sim minutes. |
+| `ACH_LIBRARY_10` | Field Notes | Record ten species in the library. |
+| `ACH_LIBRARY_25` | Taxonomist | Record twenty-five species in the library. |
+| `ACH_OLD_TANK` | Mature Tank | Keep a single tank running for a hundred sim days. |
+
+Each needs an unlocked + locked icon (64×64 png) uploaded on the partner site.
+
+### 2. Steam Cloud — use Auto-Cloud, not the API
+
+Saves are plain files under `user://`, so **Auto-Cloud** covers them with no
+code. App Admin → **Cloud** → Auto-Cloud, add one root per platform:
+
+| Platform | Root | Path | Pattern |
+|---|---|---|---|
+| Windows | `WinAppDataRoaming` | `Godot/app_userdata/walstad loom` | `tanks/*` |
+| macOS | `MacHome` | `Library/Application Support/Godot/app_userdata/walstad loom` | `tanks/*` |
+| Linux | `LinuxHome` | `.local/share/godot/app_userdata/walstad loom` | `tanks/*` |
+
+Also add a second pattern per root for the achievement mirror and species
+library: `steam_stats.json`, `species_library_global.json`.
+
+**Do not sync** `guardian/` — the bundled GGUF is ~250MB and ships in the depot.
+
+Quota: set bytes generously (a mature tank's `state.json` can approach the
+50 MiB `MAX_JSON_BYTES` ceiling) and file count ≥ 64 (3 rotated backups ×
+slots).
+
+### 3. Rich Presence — localisation token
+
+`steam_achievements.gd` sets `status` plus `steam_display = "#Status_Tank"`.
+Steam renders nothing unless that token is declared: App Admin → **Rich
+Presence Localization**, English:
+
+```
+Status_Tank = {#status}
+```
+
+Without it the friends list shows a blank status rather than
+"Cycled tank · 12 fish · 30 plants · gen 4".
+
+
 ## Local development
 
 Install GodotSteam (once per clone):

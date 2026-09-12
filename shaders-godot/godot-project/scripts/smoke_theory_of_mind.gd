@@ -27,17 +27,17 @@ func _initialize() -> void:
 		FishMindScience.tick_theory_of_mind(f, [a])
 
 	var charge: float = FishMindScience.predicted_charge(f, "charger")
-	_assert(failed, charge > 0.4, "fish LEARNS the charger's tendency (%.2f)" % charge)
+	TestSupport.check(failed, charge > 0.4, "fish LEARNS the charger's tendency (%.2f)" % charge)
 
 	var pb: Dictionary = FishMindScience.collect_predict_bid(f)
-	_assert(failed, str(pb.get("label", "")) == "threat" and float(pb.get("salience", 0.0)) > 0.0,
+	TestSupport.check(failed, str(pb.get("label", "")) == "threat" and float(pb.get("salience", 0.0)) > 0.0,
 			"a predicted charger raises an anticipatory threat bid")
-	_assert(failed, _has_bid(GlobalWorkspace.collect_bids(f, null), "threat"),
+	TestSupport.check(failed, _has_bid(GlobalWorkspace.collect_bids(f, null), "threat"),
 			"anticipatory threat enters the workspace (flee BEFORE contact, not after)")
 
 	# #14 ablation: lesion theory-of-mind → the predictive threat disappears.
 	MindAblation.set_enabled(MindAblation.THEORY_OF_MIND, false)
-	_assert(failed, not _has_bid(GlobalWorkspace.collect_bids(f, null), "threat"),
+	TestSupport.check(failed, not _has_bid(GlobalWorkspace.collect_bids(f, null), "threat"),
 			"ablating theory-of-mind removes the predictive threat bid")
 	MindAblation.reset()
 
@@ -49,18 +49,12 @@ func _initialize() -> void:
 	b.heading = Vector3.ZERO
 	for _i in 40:
 		FishMindScience.tick_theory_of_mind(g, [b])
-	_assert(failed, FishMindScience.predicted_charge(g, "loiterer") < 0.2,
+	TestSupport.check(failed, FishMindScience.predicted_charge(g, "loiterer") < 0.2,
 			"a non-approaching neighbour is NOT learned as a charger (%.2f)" % FishMindScience.predicted_charge(g, "loiterer"))
-	_assert(failed, FishMindScience.collect_predict_bid(g).is_empty(),
+	TestSupport.check(failed, FishMindScience.collect_predict_bid(g).is_empty(),
 			"no anticipatory bid for a calm neighbour")
 
-	if failed.is_empty():
-		print("[smoke] theory_of_mind OK")
-		quit(0)
-	else:
-		for msg in failed:
-			push_error("[smoke] " + msg)
-		quit(1)
+	quit(TestSupport.report("smoke_theory_of_mind", failed))
 
 
 func _mk(id: String, pos: Vector3) -> Fish:
@@ -76,8 +70,3 @@ func _has_bid(bids: Array, label: String) -> bool:
 		if str(bd.get("label", "")) == label:
 			return true
 	return false
-
-
-func _assert(failed: Array[String], ok: bool, msg: String) -> void:
-	if not ok:
-		failed.append(msg)

@@ -82,7 +82,7 @@ func _build_ui() -> void:
 
 	# --- Now following bar ---
 	_now_lbl = Label.new()
-	_now_lbl.text = "Tap a creature to follow"
+	_now_lbl.text = tr("Tap a creature to follow")
 	PanelTheme.as_serif(_now_lbl, PanelTheme.SIZE_BODY)
 	_now_lbl.add_theme_color_override("font_color", Color8(255, 215, 80))
 	_now_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -93,15 +93,15 @@ func _build_ui() -> void:
 	nav.add_theme_constant_override("separation", 6)
 	outer.add_child(nav)
 	var prev_btn := PanelTheme.make_secondary_button("◀")
-	prev_btn.tooltip_text = "Previous creature (←)"
+	prev_btn.tooltip_text = tr("Previous creature (←)")
 	prev_btn.pressed.connect(func(): _call_main("cycle_follow", [-1]))
 	nav.add_child(prev_btn)
 	var next_btn := PanelTheme.make_secondary_button("▶")
-	next_btn.tooltip_text = "Next creature (→)"
+	next_btn.tooltip_text = tr("Next creature (→)")
 	next_btn.pressed.connect(func(): _call_main("cycle_follow", [1]))
 	nav.add_child(next_btn)
 	var cycle_lbl := Label.new()
-	cycle_lbl.text = "Cycle:"
+	cycle_lbl.text = tr("Cycle:")
 	cycle_lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	cycle_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	nav.add_child(cycle_lbl)
@@ -113,7 +113,7 @@ func _build_ui() -> void:
 	_scope_option.item_selected.connect(func(i): _call_main("set_cycle_scope", [i]))
 	nav.add_child(_scope_option)
 	var stop_btn := PanelTheme.make_secondary_button("✕")
-	stop_btn.tooltip_text = "Stop following (Esc)"
+	stop_btn.tooltip_text = tr("Stop following (Esc)")
 	stop_btn.pressed.connect(func(): _call_main("clear_follow", []))
 	nav.add_child(stop_btn)
 
@@ -123,14 +123,14 @@ func _build_ui() -> void:
 	outer.add_child(tools1)
 	_lock_btn = PanelTheme.make_secondary_button("⤢ Lead")
 	_lock_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_lock_btn.tooltip_text = "Cinematic framing: Lead (camera leads + lets it roam) vs Lock (centered)"
+	_lock_btn.tooltip_text = tr("Cinematic framing: Lead (camera leads + lets it roam) vs Lock (centered)")
 	_lock_btn.pressed.connect(func():
 		_call_main("toggle_follow_lock", [])
 		_sync_tool_buttons())
 	tools1.add_child(_lock_btn)
 	_cinema_btn = PanelTheme.make_secondary_button("🎬 Cinema")
 	_cinema_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_cinema_btn.tooltip_text = "Auto-tour your creatures — advances every few seconds when idle"
+	_cinema_btn.tooltip_text = tr("Auto-tour your creatures — advances every few seconds when idle")
 	_cinema_btn.pressed.connect(func():
 		_call_main("toggle_cinema_mode", [])
 		_sync_tool_buttons())
@@ -171,7 +171,7 @@ func _build_ui() -> void:
 	sort_row.add_theme_constant_override("separation", 8)
 	outer.add_child(sort_row)
 	var sort_lbl := Label.new()
-	sort_lbl.text = "Sort"
+	sort_lbl.text = tr("Sort")
 	sort_lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	sort_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	sort_row.add_child(sort_lbl)
@@ -257,7 +257,7 @@ func _sync_tool_buttons() -> void:
 	if main_ref == null:
 		return
 	if _lock_btn != null and main_ref.has_method("is_follow_lock"):
-		_lock_btn.text = "🔒 Lock" if bool(main_ref.is_follow_lock()) else "⤢ Lead"
+		_lock_btn.text = tr("🔒 Lock") if bool(main_ref.is_follow_lock()) else "⤢ Lead"
 	if _cinema_btn != null and main_ref.has_method("is_cinema_active"):
 		_cinema_btn.modulate = Color(0.5, 1.0, 0.6) if bool(main_ref.is_cinema_active()) else Color(1, 1, 1)
 
@@ -390,7 +390,7 @@ func _rebuild_list() -> void:
 	if roster.is_empty():
 		_list_vbox.add_child(_make_empty_state())
 		if _count_lbl != null:
-			_count_lbl.text = "0 residents"
+			_count_lbl.text = tr("0 residents")
 		return
 
 	# Group under "★ Favorites" / "All residents" headers when favorites sort to
@@ -565,7 +565,7 @@ func _make_card(c: Node) -> Control:
 		journal_btn.focus_mode = Control.FOCUS_NONE
 		journal_btn.custom_minimum_size = Vector2(30, 34)
 		journal_btn.text = "📖"
-		journal_btn.tooltip_text = "Life journal"
+		journal_btn.tooltip_text = tr("Life journal")
 		journal_btn.pressed.connect(func(): _show_fish_journal(cref))
 		row.add_child(journal_btn)
 
@@ -577,7 +577,7 @@ func _make_card(c: Node) -> Control:
 	star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	star.add_theme_font_size_override("font_size", 16)
 	star.text = "★" if _is_favorite(c) else "☆"
-	star.tooltip_text = "Favorite"
+	star.tooltip_text = tr("Favorite")
 	star.pressed.connect(func(): _on_star_pressed(cref))
 	row.add_child(star)
 
@@ -608,7 +608,7 @@ func _update_now_following(node: Variant) -> void:
 	var n: Node = node as Node
 	if n == null or not is_instance_valid(n):
 		if _now_lbl != null:
-			_now_lbl.text = "Tap a creature to follow"
+			_now_lbl.text = tr("Tap a creature to follow")
 		return
 	if _now_lbl != null:
 		_now_lbl.text = "Following  %s" % _creature_name(n)
@@ -869,7 +869,7 @@ func _make_empty_state() -> Control:
 	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	msg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	msg.add_theme_color_override("font_color", PanelTheme.DIM_FG)
-	msg.text = "No creatures match your filter or search." if has_any \
+	msg.text = tr("No creatures match your filter or search.") if has_any \
 		else "No residents yet — open Adopt fish to add a few."
 	box.add_child(msg)
 	return box
