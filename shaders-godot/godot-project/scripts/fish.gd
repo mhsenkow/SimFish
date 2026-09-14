@@ -3357,7 +3357,7 @@ func _apply_bioluminescence_uniform(strength: float) -> void:
 	if _glow_meshes.is_empty():
 		return
 	for mi_v in _glow_meshes:
-		if not (mi_v is MeshInstance3D) or not is_instance_valid(mi_v):
+		if not is_instance_valid(mi_v) or not (mi_v is MeshInstance3D):
 			continue
 		var mi: MeshInstance3D = mi_v as MeshInstance3D
 		var sm: ShaderMaterial = mi.material_override as ShaderMaterial
@@ -9388,7 +9388,7 @@ func resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
 	var pid: String = String(saved.get("partner_id", ""))
 	if pid != "" and id_map.has(pid):
 		var p: Node = id_map[pid]
-		if p is Fish and is_instance_valid(p):
+		if is_instance_valid(p) and p is Fish:
 			partner = p
 
 

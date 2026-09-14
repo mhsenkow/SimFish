@@ -306,6 +306,51 @@ const CONE_AMBIENT_FLOOR: float = 0.30
 # Softness of the cone rim as a fraction of its half-angle.
 const CONE_INNER_FRAC: float = 0.55
 
+# How dark the world goes outside the cone in a NORMALLY LIT room, i.e. at
+# room_darkness 0 (VISUAL_DIRECTIONS #1).
+#
+# This used to be 1.0, which meant the cone multiplied everything by exactly
+# one and the analytic light model - the only light model the unshaded
+# pipeline has - did nothing at all unless the player went and turned room
+# darkness up. Sixteen lights in world.gd, 343 lines of rig, and at default
+# settings a plant under the lamp rendered identically to a plant in the far
+# corner. A 2026-09-13 capture measured the whole tank inside a 23-level
+# luminance band for exactly this reason.
+#
+# 0.74 is a lit room with a lamp in it: a clear pool under the fixture,
+# corners that fall away, nothing crushed. room_darkness still walks it the
+# rest of the way down to CONE_AMBIENT_FLOOR.
+const CONE_SHAPING_FLOOR: float = 0.74
+
+
+# Collapse a fixture's spot positions into the segment the shader should treat
+# as the light source: {origin, axis, is_line}.
+#
+# A bar fixture is built as four SpotLights spaced along the housing and only
+# the first was ever published to the shader globals, so the commonest fixture
+# in the game lit the tank from one end. Taking the extremes of the set gives
+# the housing back its length; a single-spot fixture returns a zero axis and
+# the shader's segment maths collapses to a point.
+static func beam_segment(positions: Array) -> Dictionary:
+	var out: Dictionary = {
+		"origin": Vector3.ZERO, "axis": Vector3.ZERO, "is_line": false,
+	}
+	if positions.is_empty():
+		return out
+	var lo: Vector3 = positions[0]
+	var hi: Vector3 = positions[0]
+	for p in positions:
+		var v: Vector3 = p
+		lo = Vector3(minf(lo.x, v.x), minf(lo.y, v.y), minf(lo.z, v.z))
+		hi = Vector3(maxf(hi.x, v.x), maxf(hi.y, v.y), maxf(hi.z, v.z))
+	out["origin"] = (lo + hi) * 0.5
+	var axis: Vector3 = (hi - lo) * 0.5
+	# Below a few centimetres the "bar" is a point and the extra branch in the
+	# shader buys nothing.
+	out["is_line"] = axis.length() > 0.15
+	out["axis"] = axis if out["is_line"] else Vector3.ZERO
+	return out
+
 
 # (cos_outer, cos_inner, range, energy) for the shader global.
 static func cone_params(angle_deg: float, reach: float,
@@ -320,9 +365,14 @@ static func cone_params(angle_deg: float, reach: float,
 # (r, g, b, ambient_outside). Darkness drives how far the unlit half falls,
 # so the same lamp reads as a gentle pool in a lit room and as the only
 # light source in a dark one.
-static func cone_tint(color: Color, darkness: float) -> Vector4:
+static func cone_tint(color: Color, darkness: float,
+		shaping: float = 1.0) -> Vector4:
 	var d: float = clampf(darkness, 0.0, 1.0)
-	var ambient: float = lerpf(1.0, CONE_AMBIENT_FLOOR, d)
+	# `shaping` (TankConfig.light_shaping) scales how much the cone is allowed
+	# to shape a lit room. 0 restores the pre-VISUAL_DIRECTIONS behaviour where
+	# the lamp only mattered once the room was blacked out.
+	var lit_floor: float = lerpf(1.0, CONE_SHAPING_FLOOR, clampf(shaping, 0.0, 1.0))
+	var ambient: float = lerpf(lit_floor, CONE_AMBIENT_FLOOR, d)
 	return Vector4(color.r, color.g, color.b, ambient)
 
 
@@ -341,3 +391,33 @@ static func cone_tint(color: Color, darkness: float) -> Vector4:
 static func lamp_dominance(deep_night: float, darkness: float) -> float:
 	return clampf(maxf(clampf(deep_night, 0.0, 1.0),
 		clampf(darkness, 0.0, 1.0)), 0.0, 1.0)
+
+
+# How far NIGHT alone is allowed to crush the room, before the player's own
+# room_darkness setting is considered (VISUAL_DIRECTIONS #15).
+#
+# The day/night machinery is genuinely good — a second night palette LUT, a
+# smooth blend driven by daylight(), highlight burnthrough so emissives stay
+# bright against the moonlit field. It is all TINT. The composition at midnight
+# is identical to the composition at noon: the same surfaces, lit the same way,
+# in different colours.
+#
+# In a real room the difference is not the colour of the light, it is WHERE the
+# light is. At night the room stops being lit and the tank becomes the only
+# light source in it, and everything not in the tank falls away. That inversion
+# needs the room to darken on the clock, not only when a player finds a slider.
+#
+# Not 1.0: a pitch-black room is a deliberate choice (room_darkness is still
+# there for it), not what an unattended tank looks like at 2am with a street
+# lamp outside.
+const NIGHT_ROOM_DARKNESS: float = 0.72
+
+
+# The darkness the room should actually be rendered at: the player's setting,
+# or what the clock implies, whichever is deeper. Taking the max rather than
+# adding means a player who has set 0.9 does not get pushed to 1.0 at midnight,
+# and a player who has set 0 still gets a night.
+static func effective_room_darkness(player_darkness: float,
+		deep_night: float) -> float:
+	return clampf(maxf(clampf(player_darkness, 0.0, 1.0),
+		clampf(deep_night, 0.0, 1.0) * NIGHT_ROOM_DARKNESS), 0.0, 1.0)

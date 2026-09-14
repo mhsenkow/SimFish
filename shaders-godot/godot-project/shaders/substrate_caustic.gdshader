@@ -34,7 +34,11 @@ uniform vec4 flow_origin = vec4(0.0, 0.0, 0.0, 0.0);
 // finer grain near current and coarser grain in still pockets. We
 // modulate the existing material_grain effect by world position so
 // the pattern varies naturally instead of looking like wallpaper.
-uniform float grain_variation : hint_range(0.0, 1.0) = 0.45;
+// Lowered 0.45 -> 0.22 with the palette lock (VISUAL_DIRECTIONS #5/#7): a
+// grain amplitude that used to be smeared across off-palette intermediates now
+// jumps a whole palette rung, and the substrate measured as the noisiest
+// surface in the frame.
+uniform float grain_variation : hint_range(0.0, 1.0) = 0.22;
 // Hardscape contact AO — same convention as substrate_opaque.gdshader.
 // xyz = footprint center, w = radius. World.gd publishes one slot per
 // driftwood root + rock base it places. Up to 8 active points.
@@ -58,7 +62,18 @@ uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
+// ---- Canopy shade (VISUAL_DIRECTIONS #4) ----
+// Plants shading the floor beneath them. canopy_density.gd already builds this
+// 16x8 R-float map every three seconds and, until now, handed it only to the
+// god-ray material — so the beams dimmed under the canopy while the substrate
+// they landed on did not. Same convention as god_ray.gdshader: bounds are
+// (min xz, size xz), and a strength of 0 skips the sample entirely, which also
+// keeps an unbound sampler (white, i.e. full shade) from blacking the floor.
+uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
+uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
+uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -309,7 +324,24 @@ void fragment() {
 	float final_intensity = mix(caust_raw, caust_quant, 0.55);
 
     // 3. Add caustics additively to the base voxel color
+    // The fixture cone shapes the BASE only — caustics are the light itself
+    // arriving, so dimming them by the same cone would double-count the lamp
+    // and flatten the pattern the whole shader exists to draw
+    // (VISUAL_DIRECTIONS #1).
     // Water column — deepest surface in the tank, so it recedes the most.
-    ALBEDO = apply_water_column(base_color + light_color.rgb * final_intensity,
+    vec3 lit_base = iaq_beam_light_n(v_wpos, world_normal, base_color);
+    float caust_shaded = final_intensity;
+    if (canopy_shade > 0.001) {
+        vec2 canopy_uv = (v_wpos.xz - canopy_bounds.xy) / max(canopy_bounds.zw, vec2(0.01));
+        float canopy = texture(canopy_density_tex,
+            clamp(canopy_uv, vec2(0.0), vec2(1.0))).r;
+        float shade = 1.0 - canopy * canopy_shade;
+        lit_base *= shade;
+        // Caustics are the light arriving through the surface, so leaves
+        // overhead cut them harder than they cut the diffuse floor.
+        caust_shaded *= shade * shade;
+    }
+    ALBEDO = apply_water_column(
+        lit_base + light_color.rgb * caust_shaded,
         v_wpos.y, length(VERTEX));
 }

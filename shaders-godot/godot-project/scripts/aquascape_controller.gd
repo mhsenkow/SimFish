@@ -1781,7 +1781,7 @@ func _gather_procedural_cluster(hit: Vector3) -> Array[Node3D]:
 		return out
 	const CLUSTER_R: float = 1.2
 	for child in hs.get_children():
-		if not (child is MeshInstance3D) or not is_instance_valid(child):
+		if not is_instance_valid(child) or not (child is MeshInstance3D):
 			continue
 		if _placed.has(child):
 			continue

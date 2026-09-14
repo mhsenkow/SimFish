@@ -10,7 +10,7 @@ static func reset_for_test() -> void:
 	for row in _pools.values():
 		if row is Dictionary:
 			for p in (row as Dictionary).values():
-				if p is Node and is_instance_valid(p):
+				if is_instance_valid(p) and p is Node:
 					(p as Node).queue_free()
 	_pools.clear()
 

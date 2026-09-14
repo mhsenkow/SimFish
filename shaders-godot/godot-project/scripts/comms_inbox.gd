@@ -9,6 +9,72 @@ const DEATH_WINDOW_S: float = 8.0
 const TOAST_QUEUE_SOFT_CAP: int = 8
 const TOAST_MAX_VISIBLE: int = 2
 
+# ---- History coalescing (VISUAL_DIRECTIONS #19) -----------------------------
+#
+# The toast lane was already well policed — two visible, a soft cap of eight, a
+# 20 s caption floor, death batching. The badge still read 53 inside the first
+# twenty seconds of a boot, because every one of those rules governs
+# PRESENTATION and none of them governs the record. Each push appended a row.
+#
+# Two toasts on screen both headed "Population collapse" was the tell: the
+# existing dedup key was kind|severity|BODY, so two different sentences under
+# one headline counted as two events. A player does not experience them as two
+# events; they experience one bad thing happening.
+#
+# So repeats fold into the row they repeat, and the row carries a count.
+const COALESCE_WINDOW_S: int = 240
+# Critical events may repeat sooner than ambient ones, but "sooner" is not
+# "always" — an unbounded bypass is how you get the same alarm twice.
+const COALESCE_WINDOW_CRITICAL_S: int = 45
+
+
+## Window a repeat of `severity` has to arrive inside to fold into its
+## predecessor rather than start a new row.
+static func coalesce_window_for(severity: String) -> int:
+	return COALESCE_WINDOW_CRITICAL_S if severity == "critical" else COALESCE_WINDOW_S
+
+
+## Fold `notif` into `history`, coalescing a recent repeat of the same
+## kind+title instead of appending a second row.
+##
+## Matching on TITLE, not body: the title is the event, the body is this
+## instance of it. Returns the index written, appending when nothing matches.
+## The folded row keeps the newest body, carries `repeat`, and goes unread
+## again — a second occurrence is news even if the first was dismissed.
+static func coalesce_into(history: Array, notif: Dictionary, now_s: int) -> int:
+	var kind: String = String(notif.get("kind", "system"))
+	var title: String = String(notif.get("title", ""))
+	var window: int = coalesce_window_for(String(notif.get("severity", "info")))
+	# Newest first: only the most recent match matters.
+	for i in range(history.size() - 1, -1, -1):
+		var row: Dictionary = history[i]
+		if String(row.get("kind", "")) != kind or String(row.get("title", "")) != title:
+			continue
+		if now_s - int(row.get("ts", 0)) > window:
+			break
+		row["ts"] = now_s
+		row["body"] = notif.get("body", row.get("body", ""))
+		row["severity"] = notif.get("severity", row.get("severity", "info"))
+		row["repeat"] = int(row.get("repeat", 1)) + 1
+		row["read"] = false
+		return i
+	# Stamp on append. Callers build the dictionary before they know the clock,
+	# and a row whose ts stayed 0 would look infinitely old to the next repeat
+	# — every event would start a new row and the coalescing would silently
+	# do nothing.
+	notif["ts"] = now_s
+	history.append(notif)
+	return history.size() - 1
+
+
+## "Population collapse" -> "Population collapse (x3)". Titles are rendered in
+## a fixed-width chip, so the count goes at the end where it can be clipped
+## without eating the words.
+static func display_title(row: Dictionary) -> String:
+	var title: String = String(row.get("title", ""))
+	var n: int = int(row.get("repeat", 1))
+	return title if n <= 1 else "%s (x%d)" % [title, n]
+
 const KIND_ALL: String = "all"
 
 ## Dropdown order for the notification center kind filter.

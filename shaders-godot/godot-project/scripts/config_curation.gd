@@ -100,7 +100,15 @@ const MANIFEST: Dictionary = {
 	"palette_enabled": [TIER_ADVANCED, "render"],
 	"experimental_visuals": [TIER_EXPERT, "misc"],
 	"pixel_purity": [TIER_ADVANCED, "render"],
+	# Not a setting: dev/visual_capture.gd sets it before main.tscn boots so a
+	# capture run neither reads nor writes the player's tank.
+	"capture_mode": [TIER_STATE, "misc"],
+	"palette_lock": [TIER_ADVANCED, "render"],
+	"light_shaping": [TIER_COMMON, "render"],
+	"depth_legibility": [TIER_COMMON, "render"],
 	"colorblind_palette": [TIER_ESSENTIAL, "accessibility"],
+	"duotone_mode": [TIER_COMMON, "render"],
+	"duotone_levels": [TIER_ADVANCED, "render"],
 	"beauty_defaults_applied": [TIER_STATE, "render"],
 	"film_grain_strength": [TIER_ADVANCED, "render"],
 	"selective_glow_strength": [TIER_ADVANCED, "render"],

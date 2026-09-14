@@ -2234,5 +2234,5 @@ func resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
 	var pid: String = String(saved.get("partner_id", ""))
 	if pid != "" and id_map.has(pid):
 		var p: Node = id_map[pid]
-		if p is Shrimp and is_instance_valid(p):
+		if is_instance_valid(p) and p is Shrimp:
 			partner = p

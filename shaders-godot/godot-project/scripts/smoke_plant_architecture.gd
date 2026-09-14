@@ -285,7 +285,7 @@ func _initialize() -> void:
 	var open_nodes: Array = LeafShapes.build_flower(Color8(230, 130, 200), Color8(245, 220, 90), 5, 1.0)
 	var max_spread: float = 0.0
 	for n2 in open_nodes:
-		if n2 is Node3D and is_instance_valid(n2):
+		if is_instance_valid(n2) and n2 is Node3D:
 			max_spread = maxf(max_spread, Vector2((n2 as Node3D).position.x, (n2 as Node3D).position.z).length())
 	TestSupport.check(failed, max_spread <= Plant.VOXEL_SIZE * 0.45,
 		"open flower petals hug the tip (spread %.3f)" % max_spread)

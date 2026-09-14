@@ -18,6 +18,15 @@ static func reset_for_test() -> void:
 
 # AppLog is an autoload, so it is absent in headless --script runs and in any
 # static context before the tree exists. Never assume it is there.
+# True while dev/visual_capture.gd is driving the app. Reads through the
+# autoload rather than a static of its own so there is exactly one switch.
+static func _capture_mode(host: Node) -> bool:
+	if host == null:
+		return false
+	var cfg := host.get_node_or_null("/root/TankConfig")
+	return cfg != null and bool(cfg.get("capture_mode"))
+
+
 static func _log() -> Node:
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree:
@@ -28,6 +37,12 @@ static func _log() -> Node:
 static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeController,
 		save_restored_flag: StringName) -> void:
 	if host.get(save_restored_flag):
+		return
+	# VISUAL_DIRECTIONS #20 — a capture run builds its tank from a named
+	# scenario so the frame is comparable between commits. Restoring the
+	# player's saved state would make every capture a different picture.
+	if _capture_mode(host):
+		host.set(save_restored_flag, true)
 		return
 	host.set(save_restored_flag, true)
 	var saves := host.get_node_or_null("/root/TankSaves")
@@ -93,6 +108,9 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 static func save_active(host: Node, sim: Node, world: Node, aquascape: AquascapeController,
 		pending_time_scale: float, skip_thumbnail: bool = false) -> float:
 	if sim == null or not sim.has_method("save_state"):
+		return pending_time_scale
+	# Never let a capture run write its synthetic tank over the player's slot.
+	if _capture_mode(host):
 		return pending_time_scale
 	var saves := host.get_node_or_null("/root/TankSaves")
 	if saves == null:

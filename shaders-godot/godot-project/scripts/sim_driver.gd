@@ -2744,7 +2744,7 @@ func _reconcile_shrimp_registry() -> void:
 		if is_instance_valid(s):
 			seen[s.get_instance_id()] = true
 	for child in fauna_root.get_children():
-		if child is Shrimp and is_instance_valid(child):
+		if is_instance_valid(child) and child is Shrimp:
 			var sid: int = child.get_instance_id()
 			if seen.has(sid):
 				continue

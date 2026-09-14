@@ -1,4 +1,5 @@
-# Live 48-color biotope swatch grid — day + night preview (#2).
+# Live biotope swatch grid — day + night preview (#2). Usually 48 slots;
+# a duotone tank uploads a shorter ramp, so the row is width-driven.
 class_name PaletteInspector
 extends VBoxContainer
 
@@ -45,11 +46,14 @@ func _fill_row(row: HBoxContainer, tex: Texture2D, _night: bool) -> void:
 	if tex == null:
 		return
 	var img: Image = tex.get_image()
-	if img == null or img.get_width() < 48:
+	if img == null or img.get_width() < 1:
 		return
-	for i in 48:
+	var slots: int = img.get_width()
+	# Keep the row about as wide as the 48-slot case whatever the count is.
+	var swatch_w: float = clampf(240.0 / float(slots), 5.0, 40.0)
+	for i in slots:
 		var sw := ColorRect.new()
-		sw.custom_minimum_size = Vector2(5, 14)
+		sw.custom_minimum_size = Vector2(swatch_w, 14)
 		sw.color = img.get_pixel(i, 0)
 		sw.tooltip_text = "#%s" % sw.color.to_html(false)
 		row.add_child(sw)

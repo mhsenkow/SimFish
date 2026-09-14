@@ -6,6 +6,18 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.35
+
+- **Light shaping:** fixture cone on every surface; bar lights as segments; directional key (Render → Light shaping).
+- **Palette lock:** final nearest-palette snap after post — ~39 colours out of a 48 ramp, not 15k+.
+- **Occluder shadows:** fish / plants / hardscape cast on each other with contact hardening.
+- **Depth legibility:** visible water-column extinction without cyan wash (Render → Depth).
+- **Night restage:** room darkens on the clock; tank becomes the light source.
+- **Subject framing:** follow zooms to the creature, restores your shot on exit.
+- **Care feedback:** water change / filter rinse bursts at the action site.
+- **Duotone themes,** render-panel tab split, readable footer labels, coalesced notifications, toast dismiss + dock.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.35) (macOS / Windows / Linux / Android).
+
 ## v0.2.34
 
 - **Driftwood forms:** log / branch / spider / stump climb into the water column (`driftwood_form.gd`) instead of one floor arc.

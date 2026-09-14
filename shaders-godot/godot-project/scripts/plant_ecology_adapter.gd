@@ -68,4 +68,4 @@ func _node() -> Node:
 	if _host == null:
 		return null
 	var host: Variant = _host.get_ref()
-	return host as Node if host is Node and is_instance_valid(host) else null
+	return host as Node if is_instance_valid(host) and host is Node else null

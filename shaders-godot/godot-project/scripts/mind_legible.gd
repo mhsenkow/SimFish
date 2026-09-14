@@ -280,7 +280,12 @@ static func _derive_mood_key(state: Object) -> String:
 static func _field(state: Object, key: String) -> Variant:
 	if state == null:
 		return null
-	if state is Node and not is_instance_valid(state):
+	# NOT `state is Node and not is_instance_valid(state)`: `is` throws
+	# "Left operand of 'is' is a previously freed instance" on exactly the
+	# input this check exists to catch. `state` is already typed Object, so
+	# the validity test alone is both correct and stricter - it also catches
+	# freed non-Node Objects.
+	if not is_instance_valid(state):
 		return null
 	var v: Variant = state.get(key)
 	if v != null:

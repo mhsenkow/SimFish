@@ -2,8 +2,7 @@
 
 shader_type spatial;
 // depth_draw_opaque matches the shipped look. Floaters are placed above the
-// water mesh so depth doesn't eat them (see world.gd). On Metal we still
-// keep refraction_strength=0 so hint_screen_texture can't paint black.
+// water mesh so depth doesn't eat them (see world.gd).
 render_mode blend_mix, cull_disabled, depth_draw_opaque, unshaded;
 
 uniform vec4 shallow_color : source_color = vec4(0.42, 0.62, 0.66, 0.12);
@@ -50,8 +49,24 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 // The scene behind the glass is sampled with a UV offset driven by the
 // surface wave slope, so plants/fish/substrate seen through the water gently
 // wobble. Kept subtle by default so the chunky pixel look survives.
-uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
-uniform float refraction_strength : hint_range(0.0, 0.08) = 0.0;
+// SCREEN-SPACE REFRACTION WAS REMOVED HERE (VISUAL_DIRECTIONS #12).
+//
+// It never ran. world_atmosphere.gd enabled it only when
+// `OS.get_name() != "macOS" and RenderingServer.get_current_rendering_method()
+// == "forward_plus"`, and project.godot ships `renderer/rendering_method="mobile"`
+// (with the web override also mobile), so the second half of that condition was
+// false in every build on every platform. The uniform, the branch and the
+// screen-texture sampler had been carried, and described in this header as
+// "the single biggest 'this is real water' lever", for as long as they had
+// existed without once executing.
+//
+// Deleted rather than switched on: the reason macOS was excluded — Metal
+// returning black for hint_screen_texture and painting a dark slab over the
+// tank — is real and is the platform this is developed on, so enabling the
+// path would mean shipping an effect nobody here can see fail. The wobble
+// itself is worth having; the mobile-safe way to get it is to displace the
+// surface's own terms rather than sample the screen, and that is a deliberate
+// piece of work rather than a flag flip.
 // Depth absorption — warm wavelengths (red, then green) fade with depth, the
 // way real water swallows red light first. Gives the column a sense of volume.
 uniform float depth_absorption : hint_range(0.0, 1.0) = 0.4;
@@ -89,6 +104,23 @@ uniform vec3 column_tint_rgb : source_color = vec3(0.55, 0.72, 0.42);
 uniform float bed_attenuation : hint_range(0.0, 1.0) = 0.35;
 uniform float turbidity_cone : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 fixture_world_pos = vec3(0.0, 8.0, 0.0);
+// ---- Surface specular (VISUAL_DIRECTIONS #3) ----
+// The one place a real aquarium photograph is blown out is the water surface
+// directly under the fixture, and this render had nothing like it: a capture
+// measured p99 at 158/255, with the palette's own `ffffff` and `f8f4e0` rungs
+// never selected anywhere in the frame. The existing glint and glass-rim terms
+// are 0.16-0.22 additive washes on a translucent surface — they tint, they do
+// not blow out.
+//
+// A tight Blinn lobe against the fixture position does. Deliberately narrow:
+// the point is a small hot band the eye reads as wet, not a brighter tank.
+// gain 0 is off; world_atmosphere.gd drives it.
+uniform float surface_spec_gain : hint_range(0.0, 3.0) = 0.0;
+// 190 was a mirror. A rippled surface is not a mirror — its glitter path is
+// broad and multi-lobed, and at a 512x288 internal render a lobe that tight
+// falls between pixels: the first version of this moved the frame's p99 by
+// nothing at all.
+uniform float surface_spec_power : hint_range(8.0, 400.0) = 56.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -252,6 +284,7 @@ void fragment() {
 	col += light_color * caustics * 0.24 * caustic_absorb;
 
 	vec3 n = normalize(NORMAL);
+	float spec_alpha = 0.0;
 	// Deep corners go genuinely dark (#38).
 	float corner_dark = pow(depth_used, 1.35) * (1.0 - abs(n.y) * 0.35);
 	col *= 1.0 - corner_dark * 0.28;
@@ -307,6 +340,28 @@ void fragment() {
 		float glint = smoothstep(fixture_glint_width * 0.52, fixture_glint_width * 0.06, glint_dist);
 		glint *= 0.55 + 0.45 * sin(world_pos.z * 1.8 + TIME * 0.65);
 		col += light_color * glint * surface * (0.22 + caustic_intensity * 0.28);
+	}
+
+	// Specular glint where the fixture reflects off the surface. Computed in
+	// view space, which is where NORMAL and VIEW already live.
+	if (surface_spec_gain > 0.001) {
+		vec3 lp_view = (VIEW_MATRIX * vec4(fixture_world_pos, 1.0)).xyz;
+		vec3 l_dir = normalize(lp_view - VERTEX);
+		vec3 h_dir = normalize(l_dir + normalize(VIEW));
+		// Only the up-facing surface, and only where the water is actually
+		// lit — a shaded corner of the meniscus must not spark.
+		float spec = pow(max(dot(n, h_dir), 0.0), surface_spec_power) * surface;
+		// Toward white, not toward light_color: light_color is the water's own
+		// blue-green transmission tint, and a highlight wearing it can never
+		// reach the top of the palette. A specular is the light source seen
+		// directly, so it takes the source's colour, not the medium's.
+		col += mix(light_color, vec3(1.0, 0.98, 0.94), 0.62) * spec * surface_spec_gain;
+		// AND the surface must become opaque where it sparks. This is the step
+		// that was missing first time round: the water is blend_mix with alpha
+		// capped at 0.62, so however hot `col` gets a translucent fragment can
+		// only contribute 62% of it and the highlight never blows out. A real
+		// specular hides what is behind it.
+		spec_alpha = clamp(spec * surface_spec_gain, 0.0, 1.0);
 	}
 
 	// Corner meniscus on polygon tanks only; curved volumes use the top ring.
@@ -391,22 +446,7 @@ void fragment() {
 	alpha += ice_rim * 0.06;
 	alpha += bacterial_bloom * 0.18;
 
-	// Refraction at the air/water interface only — mid-column fauna stay sharp (#REFINE).
-	if (refraction_strength > 0.0001) {
-		vec2 wob = vec2(
-			sin(world_pos.x * 1.7 + world_pos.z * 1.1 + TIME * 0.9),
-			cos(world_pos.z * 1.9 - world_pos.x * 0.8 - TIME * 0.75));
-		wob += n.xz * 1.2;
-		float surf_prox = 1.0 - smoothstep(0.0, 0.38, abs(world_pos.y - water_surface_y));
-		float depth_refr = (1.0 - depth_used) * mix(0.18, 1.0, surf_prox);
-		wob *= 0.28 + depth_refr * 0.38;
-		vec2 ruv = SCREEN_UV + wob * refraction_strength;
-		vec3 refr = texture(screen_tex, clamp(ruv, vec2(0.001), vec2(0.999))).rgb;
-		float refr_mix = clamp((0.08 + depth_refr * 0.18) * (1.0 - bacterial_bloom), 0.0, 0.32);
-		col = mix(col, refr * mix(vec3(1.0), col + 0.5, 0.35), refr_mix);
-		alpha = max(alpha, refr_mix * 0.28);
-	}
-
 	ALBEDO = col;
-	ALPHA = clamp(alpha, 0.04, 0.62);
+	// The specular is allowed past the translucency cap; nothing else is.
+	ALPHA = max(clamp(alpha, 0.04, 0.62), spec_alpha * 0.96);
 }

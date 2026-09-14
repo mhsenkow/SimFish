@@ -178,6 +178,45 @@ static func min_radius_for_mode(macro: bool) -> float:
 
 # Eye position from spherical orbit coords. +pitch puts the eye above the
 # target (y = sin(pitch)); yaw rotates around Y.
+# ---- Subject framing (VISUAL_DIRECTIONS #8) ---------------------------------
+#
+# THE PROBLEM. A fish is roughly 7x4 pixels at the shipped 512x288 internal
+# render — under 1% of the tank area for the whole shoal. Two hundred-odd
+# fish_* and mind_* scripts drive a creature the player cannot see the face of.
+#
+# Following one did not help, because CINEMATIC follow only ever moved the
+# orbit TARGET. Clicking a fish re-centred the same wide shot on it. The camera
+# was pointed at the subject and still 20 units away from a 0.6-unit animal.
+#
+# So: how close must the camera be for a subject of a given world height to
+# occupy `want_frac` of the viewport?
+#
+#   visible world height at distance d = 2 * d * tan(fov/2)
+#   subject_h / visible_h = want_frac   =>   d = subject_h / (2*want_frac*tan(fov/2))
+#
+# 0.16 of frame height is ~46px at the 288-line internal render — enough for a
+# body, a tail beat and a fin, which is the whole point.
+const FOLLOW_SUBJECT_FRAC: float = 0.16
+# Never smaller than this, whatever the subject: pushing the near plane into a
+# fry is a nausea machine, and the glass is in the way anyway.
+const FOLLOW_MIN_RADIUS: float = 2.6
+
+
+# Orbit radius that frames a subject of `subject_h` world units at `want_frac`
+# of the viewport height.
+#
+# Clamped to [FOLLOW_MIN_RADIUS, current_radius]: following may only ever move
+# the camera IN. A tiny subject must not fling the camera out past where the
+# player had it, and a large one should simply not change the shot.
+static func radius_for_subject(subject_h: float, fov_deg: float,
+		current_radius: float, want_frac: float = FOLLOW_SUBJECT_FRAC) -> float:
+	var frac: float = clampf(want_frac, 0.02, 0.9)
+	var half_fov: float = deg_to_rad(clampf(fov_deg, 5.0, 170.0)) * 0.5
+	var tan_half: float = maxf(tan(half_fov), 0.001)
+	var want: float = maxf(subject_h, 0.02) / (2.0 * frac * tan_half)
+	return clampf(want, FOLLOW_MIN_RADIUS, maxf(current_radius, FOLLOW_MIN_RADIUS))
+
+
 static func eye_position(target: Vector3, yaw: float, pitch: float,
 		radius: float) -> Vector3:
 	var x: float = cos(pitch) * sin(yaw)

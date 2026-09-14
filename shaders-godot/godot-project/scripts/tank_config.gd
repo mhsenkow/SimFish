@@ -10,6 +10,18 @@
 
 extends Node
 
+# ---- Capture mode ----
+# Set by dev/visual_capture.gd before main.tscn is instantiated
+# (VISUAL_DIRECTIONS #20). Never persisted, never set by the game.
+#
+# A capture run has to build a KNOWN tank — a fixed scenario, a fixed seed,
+# no restored state — and it must not write any of that over the player's
+# save on the way out. So capture mode is the one flag that suspends both
+# halves of persistence: this file's save_to_disk() and SaveManager's
+# try_load()/save_active(). Three early returns, one flag, no test-only code
+# paths inside the systems being measured.
+var capture_mode: bool = false
+
 # ---- Rendering parameters ----
 # Internal SubViewport resolution. Smaller = more pixelated / chunkier.
 # Common choices: 256x144 (chunky), 512x288 (balanced), 768x432, 1024x576 (default).
@@ -23,6 +35,12 @@ var dither_strength: float = 0.72
 # objects with a blue tint over them. Also gives the tank free atmospheric
 # perspective: near fish read warm and near, far ones recede.
 var water_extinction: float = 0.62
+# VISUAL_DIRECTIONS #11 — depth legibility. Stretches the DEPTH half of the
+# light path so the surface-to-substrate gradient is something you can see
+# rather than something you can only measure (~9% in red at 1.0). Separate
+# from water_extinction because raising extinction deepens the horizontal wash
+# too, and that is what turns the whole tank cyan. 1.0 is physical scale.
+var depth_legibility: float = 2.6
 # When true, dither strength varies by region (heavy on low-saturation
 # water/fog, light on saturated fauna). When false, the legacy uniform
 # dither applies everywhere.
@@ -44,6 +62,24 @@ var shader_perf_tier: int = 0
 # instead of a downsampled HDR blend. Cosmetic — bank picking is per
 # fragment, no asset change.
 var palette_bank_lock: bool = true
+# VISUAL_DIRECTIONS #5 — re-snap the finished frame onto the palette.
+#
+# Quantization happens mid-shader; outline, vignette, CRT, grain, highlight
+# rolloff, FXAA and deband all run AFTER it and every one of them emits
+# off-palette colour (FXAA blends between neighbouring pixels outright). A
+# reproducible capture measured 15,535 distinct colours out of a 48-entry
+# palette, and 39 with this on. This is the final nearest-palette snap,
+# ordered-dithered against
+# the same Bayer cell, that makes the palette a contract instead of a
+# suggestion. 0 restores the old behaviour.
+var palette_lock: float = 1.0
+# VISUAL_DIRECTIONS #1 — how much the tank's own fixture is allowed to shape a
+# normally-lit room. Every 3D shader here is `unshaded`, so the analytic cone
+# in shaders/beam_cone.gdshaderinc is the only light model the tank has; its
+# out-of-cone floor used to be a flat 1.0 unless the player raised
+# room_darkness, which made all sixteen lights in world.gd decorative. 0
+# restores that. 1 gives a lit room a real pool of light under the fixture.
+var light_shaping: float = 1.0
 # Soft global outline at color-discontinuities (NES-style readability).
 # 0 = off (default), up to 1 = strong dark line on every silhouette.
 var outline_strength: float = 0.0
@@ -102,6 +138,11 @@ var experimental_visuals: bool = false
 var pixel_purity: bool = false
 # Color-vision palette variant: none | protan | deutan | tritan (#96).
 var colorblind_palette: String = "none"
+# Pure duotone render mode — the whole tank quantizes through a two-color ramp
+# instead of the biotope palette. Key into AestheticsRuntime.DUOTONE_RAMPS, or
+# "none". `duotone_levels` is how many rungs that ramp gets (2 = hard 1-bit).
+var duotone_mode: String = "none"
+var duotone_levels: int = 6
 # One-time curated beauty defaults (#99).
 var beauty_defaults_applied: bool = false
 var film_grain_strength: float = 0.0
@@ -2798,6 +2839,8 @@ func request_save_to_disk() -> void:
 
 
 func save_to_disk() -> void:
+	if capture_mode:
+		return
 	if _save_in_flight:
 		_save_queued = true
 		return
@@ -3020,6 +3063,9 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("ui", "settings_mode", settings_mode)
 	cfg.set_value("render", "shader_perf_tier", shader_perf_tier)
 	cfg.set_value("render", "palette_bank_lock", palette_bank_lock)
+	cfg.set_value("render", "palette_lock", palette_lock)
+	cfg.set_value("render", "light_shaping", light_shaping)
+	cfg.set_value("render", "depth_legibility", depth_legibility)
 	cfg.set_value("render", "outline_strength", outline_strength)
 	cfg.set_value("render", "creature_outline_strength", creature_outline_strength)
 	cfg.set_value("render", "crt_strength", crt_strength)
@@ -3042,6 +3088,8 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "experimental_visuals", experimental_visuals)
 	cfg.set_value("render", "pixel_purity", pixel_purity)
 	cfg.set_value("render", "colorblind_palette", colorblind_palette)
+	cfg.set_value("render", "duotone_mode", duotone_mode)
+	cfg.set_value("render", "duotone_levels", duotone_levels)
 	cfg.set_value("render", "beauty_defaults_applied", beauty_defaults_applied)
 	cfg.set_value("render", "film_grain_strength", film_grain_strength)
 	cfg.set_value("render", "selective_glow_strength", selective_glow_strength)
@@ -3354,6 +3402,9 @@ func load_from_disk() -> void:
 	settings_mode = String(cfg.get_value("ui", "settings_mode", settings_mode))
 	shader_perf_tier = int(cfg.get_value("render", "shader_perf_tier", shader_perf_tier))
 	palette_bank_lock = cfg.get_value("render", "palette_bank_lock", palette_bank_lock)
+	palette_lock = float(cfg.get_value("render", "palette_lock", palette_lock))
+	light_shaping = float(cfg.get_value("render", "light_shaping", light_shaping))
+	depth_legibility = float(cfg.get_value("render", "depth_legibility", depth_legibility))
 	outline_strength = cfg.get_value("render", "outline_strength", outline_strength)
 	creature_outline_strength = cfg.get_value("render", "creature_outline_strength", creature_outline_strength)
 	crt_strength = cfg.get_value("render", "crt_strength", crt_strength)
@@ -3362,6 +3413,8 @@ func load_from_disk() -> void:
 	experimental_visuals = cfg.get_value("render", "experimental_visuals", experimental_visuals)
 	pixel_purity = cfg.get_value("render", "pixel_purity", pixel_purity)
 	colorblind_palette = String(cfg.get_value("render", "colorblind_palette", colorblind_palette))
+	duotone_mode = String(cfg.get_value("render", "duotone_mode", duotone_mode))
+	duotone_levels = int(cfg.get_value("render", "duotone_levels", duotone_levels))
 	beauty_defaults_applied = cfg.get_value("render", "beauty_defaults_applied", beauty_defaults_applied)
 	film_grain_strength = float(cfg.get_value("render", "film_grain_strength", film_grain_strength))
 	selective_glow_strength = float(cfg.get_value("render", "selective_glow_strength", selective_glow_strength))
@@ -3688,6 +3741,9 @@ func reset_to_defaults() -> void:
 	dither_strength = 0.72
 	dither_region_aware = true
 	palette_bank_lock = true
+	palette_lock = 1.0
+	light_shaping = 1.0
+	depth_legibility = 2.6
 	outline_strength = 0.0
 	creature_outline_strength = 0.34
 	crt_strength = 0.0

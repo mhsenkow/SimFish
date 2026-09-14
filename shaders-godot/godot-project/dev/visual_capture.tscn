@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://visual_capture_iaq"]
+
+[ext_resource type="Script" path="res://dev/visual_capture.gd" id="1_capture"]
+
+[node name="VisualCapture" type="Node"]
+script = ExtResource("1_capture")

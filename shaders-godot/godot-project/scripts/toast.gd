@@ -14,7 +14,10 @@ extends PanelContainer
 #
 #   * **Severity variants.** A critical low-oxygen warning rendered in the
 #     same blue as "photo saved". Level now drives the accent.
-#   * **Dismiss on click.** There was no way to get rid of one early.
+#   * **Dismiss on click.** There was no way to get rid of one early. Clicking
+#     the body still works, but a visible ✕ is the affordance people look for —
+#     "click anywhere" is not discoverable, and on touch it competes with the
+#     action button.
 #   * **Pause on hover.** The old dwell ran regardless, so a toast could fade
 #     while you were still reading it.
 #   * **Dwell that scales with length.** A fixed 4.2 s gave a six-word toast
@@ -48,6 +51,10 @@ const CHARS_PER_SECOND: float = 12.0
 
 const ENTER_S: float = 0.28
 const EXIT_S: float = 0.5
+# Toasts dock bottom-LEFT (the right edge belongs to the rail + its panels), so
+# they slide in from off the left edge and leave the same way.
+const SLIDE_IN_X: float = -PanelTheme.TOAST_STACK_W
+const SLIDE_OUT_X: float = -28.0
 
 var level: int = Level.INFO
 var dwell: float = DWELL_MIN
@@ -105,10 +112,18 @@ func _configure(cfg: Dictionary) -> void:
 	style.content_margin_bottom = 7
 	add_theme_stylebox_override("panel", style)
 
+	# Row, not column: the ✕ pins to the top-right of the card while the
+	# title/body/action stack keeps the remaining width.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(row)
+
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 2)
 	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(vb)
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(vb)
 
 	if not title.is_empty():
 		var title_lbl := Label.new()
@@ -138,8 +153,28 @@ func _configure(cfg: Dictionary) -> void:
 		btn.pressed.connect(_on_action)
 		vb.add_child(btn)
 
+	row.add_child(_make_close_button(accent))
+
 	mouse_entered.connect(func(): _hovered = true)
 	mouse_exited.connect(func(): _hovered = false)
+
+
+# Compact dismiss affordance. Flat and accent-colored so it reads as chrome
+# rather than as a second action next to the toast's real action button.
+func _make_close_button(accent: Color) -> Button:
+	var btn := Button.new()
+	btn.text = "✕"
+	btn.tooltip_text = tr("Dismiss")
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(18, 18)
+	btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	btn.add_theme_font_size_override("font_size", 10)
+	btn.add_theme_color_override("font_color", Color(accent.r, accent.g, accent.b, 0.75))
+	btn.add_theme_color_override("font_hover_color", Color(0.98, 0.99, 1.0))
+	btn.add_theme_color_override("font_pressed_color", Color(0.98, 0.99, 1.0))
+	btn.pressed.connect(dismiss)
+	return btn
 
 
 func _ready() -> void:
@@ -163,7 +198,7 @@ func _ready() -> void:
 	_hug_content()
 	var tw := create_tween()
 	tw.set_parallel(true)
-	position.x = PanelTheme.TOAST_STACK_W
+	position.x = SLIDE_IN_X
 	tw.tween_property(self, "modulate:a", 1.0, ENTER_S) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_property(self, "scale", Vector2.ONE, ENTER_S) \
@@ -206,7 +241,7 @@ func dismiss() -> void:
 	tw.set_parallel(true)
 	tw.tween_property(self, "modulate:a", 0.0, EXIT_S) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	tw.tween_property(self, "position:x", 28.0, EXIT_S) \
+	tw.tween_property(self, "position:x", SLIDE_OUT_X, EXIT_S) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	tw.set_parallel(false)
 	tw.tween_callback(func() -> void:

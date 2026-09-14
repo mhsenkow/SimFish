@@ -389,8 +389,11 @@ static func cache_cycle_bias_targets(f) -> void:
 		feed = f._homeostatic_feed_point as Vector3
 	var mate_pos: Vector3 = Vector3.ZERO
 	var partner: Variant = f.get("partner")
-	if partner != null and f.get("has_mate") == true and partner is Node3D \
-			and is_instance_valid(partner as Node3D):
+	# is_instance_valid FIRST. A bonded mate dying is routine - fish have a
+	# ~4 minute lifespan and bonds outlive them - and `is` throws on a freed
+	# instance, so this ran the type test on a dead fish every tick.
+	if partner != null and is_instance_valid(partner) \
+			and f.get("has_mate") == true and partner is Node3D:
 		mate_pos = (partner as Node3D).position
 	f._cycle_bias_cache = {
 		"glance": f._cached_glance_point if f.get("_cached_glance_point") is Vector3 else Vector3.ZERO,

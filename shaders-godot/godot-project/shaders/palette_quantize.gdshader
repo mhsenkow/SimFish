@@ -122,6 +122,32 @@ float ign(vec2 p) {
 uniform float blue_noise_amount : hint_range(0.0, 1.0) = 0.6;
 // 0=full palette search, 1=32-cap, 2=24-cap (#19–20).
 uniform float shader_perf_tier : hint_range(0.0, 2.0) = 0.0;
+// ---- Duotone mode ----
+// 0 = normal biotope palette. 1 = pure duotone: the frame is projected onto
+// the ramp between palette index 0 and palette_size-1 by luma, quantized
+// against the (duotone) palette texture main.gd uploads, and projected once
+// more at the end so bloom / outline / FXAA / grain cannot smuggle a third
+// hue back in. Partial values give a "tinted" grade rather than a hard duotone.
+uniform float duotone_amount : hint_range(0.0, 1.0) = 0.0;
+// ---- Palette lock (VISUAL_DIRECTIONS #5) ----
+// The quantize above picks a palette colour. Everything after it — outline
+// darkening, creature ink, vignette, CRT, film grain, highlight rolloff,
+// sensor noise, the FXAA neighbourhood blend, deband — then moves that colour
+// off the palette, and FXAA in particular interpolates BETWEEN neighbours. A
+// reproducible capture (dev/visual_capture.tscn, beginner_sandbox, hero angle)
+// measured 15,535 distinct colours coming out of a 48-entry palette — 324x —
+// and a crashed-reef save measured 19,618. The palette was a suggestion, not a
+// contract. With this on, the same capture measures 39.
+//
+// So the frame is re-snapped to the palette as the genuine last word, using
+// the same ordered-dither cell the first pass used — a darkened outline lands
+// on a real darker rung, a vignette gradient dithers between two rungs instead
+// of terracing, and grain/FXAA keep doing useful work by perturbing the INPUT
+// to that final choice rather than its output.
+//
+// 0 = off (the pre-2026-09-13 behaviour). 1 = every output pixel is a palette
+// entry. Fractional values mix toward the snapped colour.
+uniform float palette_lock : hint_range(0.0, 1.0) = 0.0;
 
 vec3 palette_color(int idx) {
 	float u = (float(idx) + 0.5) / float(palette_size);
@@ -140,6 +166,102 @@ vec3 palette_color_day(int idx) {
 
 float luma_of(vec3 c) {
 	return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+// How much harder a hue error is punished than a value error when choosing
+// palette candidates. Plain RGB distance is hue-blind, and a 48-colour palette
+// with six hue banks has large gaps: the nearest RGB neighbour of a tan wall
+// pixel that sits between two browns can be a bright GREEN, because the
+// palette has no tan rung above it. The first run of the palette lock rendered
+// a beige plaster wall as 74% tan and 12.6% chartreuse for exactly that reason.
+//
+// Dither is supposed to walk along VALUE, not across hue, so chroma error is
+// weighted well above luma error.
+const float PAL_CHROMA_WEIGHT = 3.0;
+
+// Perceptual-ish palette distance: luma error plus chroma error, the latter
+// weighted by PAL_CHROMA_WEIGHT. Chroma is the colour minus its own luma, so
+// two rungs of the same hue at different brightness read as close and two
+// rungs of different hue at the same brightness read as far.
+float pal_dist(vec3 a, vec3 b) {
+	float la = luma_of(a);
+	float lb = luma_of(b);
+	float dl = la - lb;
+	vec3 dc = (a - vec3(la)) - (b - vec3(lb));
+	return dl * dl + dot(dc, dc) * PAL_CHROMA_WEIGHT;
+}
+
+// Nearest two palette entries to `c`, ordered-dithered between them by
+// `dpat` (the same signed -0.5..0.5 cell the main quantize uses).
+//
+// Deliberately searches the WHOLE palette rather than honouring
+// palette_bank_lock: the post chain legitimately moves a pixel across banks
+// (an inked fauna edge belongs in the neutral dark rungs, not in the fauna
+// bank it started in), and confining the snap to the source bank would turn
+// every outline into a saturated smear. pal_dist does the hue-keeping job the
+// bank lock does in the main pass, without the hard boundary.
+//
+// `neutral_bias` (0..1) pushes the choice away from saturated rungs. Driven by
+// the existing `room_like` heuristic so room geometry cannot borrow the fauna
+// accent bank — VISUAL_POLISH #28 / VISUAL_DIRECTIONS #6. The accents are what
+// make a living thing read as a living thing; a wall that can reach them
+// spends the palette's only loud colours on plaster.
+//
+// `dpat` must already be scaled by the region-aware dither strength. The first
+// version of this function used the raw Bayer/IGN cell, so the final snap
+// dithered at full amplitude everywhere and undid every region policy above it
+// — the quiet room (room_dither_scale 0.35), the light touch on saturated
+// fauna, the flat-area clustering. The result was a frame that was correctly
+// 48 colours and looked like static.
+vec3 snap_to_palette(vec3 c, float dpat, float neutral_bias) {
+	int ai = 0;
+	int bi = 0;
+	float best = 1e9;
+	float best2 = 1e9;
+	for (int i = 0; i < 64; i++) {
+		if (i >= palette_size) break;
+		vec3 p = palette_color(i);
+		float d = pal_dist(c, p);
+		if (neutral_bias > 0.001) {
+			float pmax = max(max(p.r, p.g), p.b);
+			float pmin = min(min(p.r, p.g), p.b);
+			float psat = (pmax - pmin) / max(pmax, 0.001);
+			// Hard exclusion above the accent threshold, not just a penalty
+			// (VISUAL_POLISH #28 / VISUAL_DIRECTIONS #6). The palette's loud
+			// rungs are what make a living thing read as a living thing; a
+			// wall that can reach them spends them on plaster.
+			//
+			// Safe to make hard because `room_like` only fires on
+			// LOW-SATURATION neutral-bank pixels in the first place — a red
+			// book or a warm mug is never flagged as room, so this cannot
+			// grey out the props, only the flat surfaces behind them.
+			if (psat > 0.35 && neutral_bias > 0.5) {
+				continue;
+			}
+			d += (pmax - pmin) * neutral_bias * 0.35;
+		}
+		if (d < best) {
+			best2 = best; bi = ai;
+			best = d;     ai = i;
+		} else if (d < best2) {
+			best2 = d; bi = i;
+		}
+	}
+	vec3 a2 = palette_color(ai);
+	vec3 b2 = palette_color(bi);
+	vec3 ab = b2 - a2;
+	float denom = max(dot(ab, ab), 1e-6);
+	float t = clamp(dot(c - a2, ab) / denom, 0.0, 1.0);
+	return (t > 0.5 + dpat) ? b2 : a2;
+}
+
+// Map a color onto the duotone segment by luminance. The endpoints are read
+// straight out of the palette texture, so the line the source lands on is the
+// same line the palette rungs sit on — the two nearest rungs stay adjacent and
+// the ordered dither keeps working exactly as it does for a 48-color palette.
+vec3 duotone_project(vec3 c) {
+	float l = clamp(luma_of(c), 0.0, 1.0);
+	return mix(palette_color(0), palette_color(palette_size - 1), l);
 }
 
 // Classify a source color into one of three hue banks:
@@ -197,10 +319,38 @@ void fragment() {
 	// Time-of-day tint. Multiplicative so values that were already darkened
 	// by night lighting in 3D don't double-darken; the tint just shifts hue.
 	src *= palette_tint;
-	// Health-driven mood grade — thriving tanks stay vivid; stressed ones cool + dull.
+	// ---- Health-driven mood grade (VISUAL_DIRECTIONS #14) ----
+	//
+	// This used to be a 4% cool shift and at most a 38% desaturation, driven by
+	// water clarity alone. A tank that had lost every fish and every shrimp
+	// rendered identically to a thriving one; the only way to know was the
+	// toast. On a frame whose median saturation is already ~0.13, 38% of nearly
+	// nothing is nothing.
+	//
+	// A sick tank does three things a healthy one does not, and all three are
+	// value-and-hue changes the eye reads across the room:
+	//   1. it loses its highlights — light stops coming back off surfaces,
+	//   2. it loses its blacks — suspended matter fills the shadows,
+	//   3. it goes green-grey, not blue-grey; algal and bacterial murk is warm
+	//      green, and the cool shift that was here read as "evening", which is
+	//      the opposite of alarming.
+	//
+	// Together those are a contrast collapse toward a sick midtone, which is
+	// exactly what a struggling tank looks like through glass.
 	float stress = 1.0 - health_grade;
-	src = mix(src, src * vec3(0.92, 0.96, 1.04), stress * 0.55);
-	src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.38);
+	if (stress > 0.001) {
+		float sick_luma = luma_of(src);
+		// 1 + 2: compress toward the frame's own midtone, lifting blacks and
+		// pulling highlights down at the same time.
+		float pivot = mix(sick_luma, 0.42, 0.5);
+		src = mix(src, vec3(pivot) + (src - vec3(sick_luma)) * 0.55, stress * 0.62);
+		// 3: green-grey cast, strongest in the shadows where murk settles.
+		vec3 murk = vec3(0.74, 0.86, 0.66);
+		float shadow_w = 1.0 - smoothstep(0.15, 0.72, sick_luma);
+		src = mix(src, src * murk, stress * (0.30 + shadow_w * 0.34));
+		// …and the colour goes out of everything, harder than before.
+		src = mix(vec3(luma_of(src)), src, 1.0 - stress * 0.55);
+	}
 	float luma = luma_of(src);
 	float maxc2 = max(max(src.r, src.g), src.b);
 	float minc2 = min(min(src.r, src.g), src.b);
@@ -208,7 +358,6 @@ void fragment() {
 	float sat_lift = mix(1.08, 1.0, smoothstep(0.38, 0.72, sat_post));
 	src = mix(vec3(luma), src, sat_lift);
 	src *= mix(1.04, 1.0, smoothstep(0.42, 0.78, sat_post));
-
 	// ---- Region-aware dither strength ----
 	float maxc = max(max(src.r, src.g), src.b);
 	float minc = min(min(src.r, src.g), src.b);
@@ -247,11 +396,25 @@ void fragment() {
 	float coarse = is_substrate ? dither_substrate_coarse : 0.0;
 	// Room/background: neutral bank, brighter than underwater substrate —
 	// dial dither down so the room stays calm behind the tank (#15, #141).
+	// The luma gate used to start at 0.38, which assumed the room was BRIGHTER
+	// than the tank. Once the room haze ceiling put it where it belongs
+	// (VISUAL_DIRECTIONS #2) the gate stopped firing and the room got the full
+	// dither budget it exists to be spared. It only needs to exclude genuine
+	// shadow now, not everything below mid-grey.
 	float room_like = float(bank_hint == 1)
 		* (1.0 - smoothstep(0.12, 0.42, sat))
-		* smoothstep(0.38, 0.72, luma)
+		* smoothstep(0.08, 0.26, luma)
 		* (1.0 - float(is_substrate));
 	eff_dither *= mix(1.0, clamp(room_dither_scale, 0.0, 1.0), room_like);
+
+	// Duotone: collapse chroma onto the ramp before quantizing, so the nearest
+	// rungs are picked by tone rather than by an arbitrary RGB distance from a
+	// saturated source to a two-color palette. Deliberately after the dither
+	// heuristics above — those still read the real chroma, so fauna keep their
+	// crisp silhouettes and water keeps its smooth stipple.
+	if (duotone_amount > 0.001) {
+		src = mix(src, duotone_project(src), duotone_amount);
+	}
 
 	// ---- Palette-bank candidate selection ----
 	int bank = classify_bank(src);
@@ -265,7 +428,9 @@ void fragment() {
 	int bi = 0;
 	float best = 1e9;
 	float best2 = 1e9;
-	bool locked = palette_bank_lock > 0.5;
+	// Bank lock would confine the search to a third of the ramp — every
+	// duotone rung has to stay reachable, so the lock is off in duotone.
+	bool locked = palette_bank_lock > 0.5 && duotone_amount < 0.5;
 	int search_cap = palette_size;
 	if (shader_perf_tier >= 1.5) {
 		search_cap = min(palette_size, 24);
@@ -532,6 +697,27 @@ void fragment() {
 		float n2 = ign(px + vec2(19.0, 47.0));
 		float tri = n1 + n2; // approx [-1, 1] triangular
 		result = clamp(result + vec3(tri * deband_strength * 0.012), 0.0, 1.0);
+	}
+
+	// Duotone re-projection — last word on hue. Outline/vignette/CRT darkening,
+	// grain and FXAA all survive as tone changes; the warm bloom shoulder and
+	// the neighborhood blur cannot reintroduce off-ramp color.
+	if (duotone_amount > 0.001) {
+		result = mix(result, duotone_project(result), duotone_amount);
+	}
+
+	// ---- Palette lock: the last word on colour (#5) ----
+	// After duotone re-projection so the two agree, and skipped on the potato
+	// tier where a second full-palette search is not worth the taps (that tier
+	// already runs the reduced palette_quantize_potato shader for most of the
+	// chain, and caps the search at 24).
+	if (palette_lock > 0.001 && shader_perf_tier < 1.95) {
+		// The neutral bias is a room-vs-fauna palette policy and has no meaning
+		// against a two-colour ramp, where "less saturated" just means "one end
+		// of the ramp" — it would drag every room pixel toward an endpoint.
+		float snap_bias = room_like * (1.0 - step(0.5, duotone_amount));
+		result = mix(result, snap_to_palette(result, dpat * eff_dither, snap_bias),
+			palette_lock);
 	}
 
 	// Palette-count debug stripe — STYLE_GUIDE §8 (#154).

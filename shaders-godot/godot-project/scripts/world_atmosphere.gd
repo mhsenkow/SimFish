@@ -155,16 +155,18 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	mat.set_shader_parameter("surface_reflection",
 		clampf(0.28 + float(dn["sunset_warmth"]) * 0.22, 0.0, 0.52))
 	mat.set_shader_parameter("underside_mirror", 0.48)
+	# VISUAL_DIRECTIONS #3 — the tank's only genuine blown-out highlight.
+	# Scaled by clarity: a murky tank scatters the reflection instead of
+	# mirroring it, which is exactly what a cloudy tank looks like.
+	mat.set_shader_parameter("surface_spec_gain", 1.7 * clampf(trans, 0.0, 1.0))
+	mat.set_shader_parameter("surface_spec_power", 56.0)
 	mat.set_shader_parameter("turbidity_haze", clampf((1.0 - trans) * 0.85, 0.0, 0.72))
 	mat.set_shader_parameter("flow_distortion", 0.38)
 	mat.set_shader_parameter("floor_bounce", clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.55))
-	# hint_screen_texture often returns black on Metal and paints a dark
-	# slab over the tank. Forward+ on non-Mac can take a light refraction.
-	var method := String(RenderingServer.get_current_rendering_method())
-	var want_refr: float = 0.0
-	if OS.get_name() != "macOS" and method == "forward_plus":
-		want_refr = 0.013
-	mat.set_shader_parameter("refraction_strength", want_refr)
+	# Screen-space refraction removed — see the header of water.gdshader
+	# (VISUAL_DIRECTIONS #12). The gate that used to live here tested for the
+	# forward_plus renderer, which project.godot never selects, so the branch
+	# was unreachable in every shipped build.
 	var room_warm: float = float(dn["sunset_warmth"])
 	mat.set_shader_parameter("room_sky_color", Vector3(
 		lerp(0.48, 0.78, room_warm),

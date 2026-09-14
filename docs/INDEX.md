@@ -9,6 +9,7 @@ Map of the idea-doc backlog and supporting docs. **Shipped progress** also lives
 |---|---|
 | [GOALS.md](GOALS.md) | Master shipped/backlog tracker |
 | [BROAD_DIRECTIONS_20.md](BROAD_DIRECTIONS_20.md) | **20 broad improvement directions** + the append-only application log tracking work against them |
+| [VISUAL_DIRECTIONS_20.md](VISUAL_DIRECTIONS_20.md) | **20 directions with frame-level impact** — measured from a live `main.tscn` capture: the value hierarchy, the unshaded light model, palette fidelity, subject size. Companion to BROAD_DIRECTIONS_20 |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, smokes, commit conventions |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release history |
 | [../AGENTS.md](../AGENTS.md) | Repo layout for agents/contributors |
@@ -71,6 +72,7 @@ idea at a time.
 
 | Doc | Focus |
 |---|---|
+| [VISUAL_DIRECTIONS_20.md](VISUAL_DIRECTIONS_20.md) | **20 directions with frame-level impact** — the measured 2026-09-13 capture pass. Room wall / mid-water / substrate sit inside 4 luminance levels; every spatial shader is unshaded; the "48-colour" render measures 19,618 colours. Grades the older capture-set claims |
 | [AESTHETICS_IDEAS.md](AESTHETICS_IDEAS.md) | Render pipeline, visual polish |
 | [VISUAL_POLISH_200_IDEAS.md](VISUAL_POLISH_200_IDEAS.md) | **200 things that would make it look better** — a holistic pass over the shipped frame: composition, room-vs-tank hierarchy, dither energy, chrome. Graded against the capture set |
 | [REAL_TANK_FIDELITY_200.md](REAL_TANK_FIDELITY_200.md) | **200 steps to a tank that looks like the real one** — graded against photographs of the three actual aquariums the game is based on. Stratified substrate at the glass, surface-bending vallisneria, green dust and snail grazing tracks, turbidity, a real floating mat, equipment in frame. Ships the three reference tanks as scenarios plus the density budget and hard population ceilings that make reference-density tanks safe |

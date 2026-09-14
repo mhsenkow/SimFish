@@ -9,6 +9,80 @@ const SKY_H: float = 5.0
 const SILHOUETTE_BASE_Y: float = -SKY_H * 0.44
 const SILHOUETTE_MAX_H: float = 0.72
 
+# ---- Room aerial perspective (VISUAL_DIRECTIONS #2) --------------------------
+#
+# THE BUG THIS REPLACES. world.gd authors a deliberate room value ladder
+# (ROOM_VALUE_DESK 0.16 -> ROOM_VALUE_FLOOR 0.80) with a comment explaining
+# that surfaces closer than one palette step apart collapse into the same
+# colour. The wall comes out of that ladder at roughly luma 87.
+#
+# Then VoxelMat.make_room hazes it. voxel.gdshader mixes each room fragment
+# toward `room_haze_color` by view distance at strength 0.65, and that colour
+# was derived from the LIGHT FIXTURE — a warm near-white around luma 229. At
+# the wall's view distance the mix factor is ~0.42, so 87 becomes ~147. A
+# 2026-09-13 capture measured the wall at p50 143, the mid-water at 147 and
+# the substrate at 144: subject, background and floor inside four luminance
+# levels of each other.
+#
+# Aerial perspective is a real effect and worth keeping. What is wrong is its
+# TARGET. Distance does not push a surface toward the lamp; it pushes it toward
+# the ambient the surface is sitting in, and in a room whose brightest object
+# is meant to be the aquarium that ambient is dark and slightly cool. So the
+# haze target is built from the room's own shadow with a trace of lamp warmth,
+# and then hard-capped: haze may reduce contrast, never raise value.
+
+# Hard ceiling on the luminance (0..1) any room surface may reach after haze.
+# Set from the measured baseline: mid-water sat at p50 147/255 = 0.576, and
+# FrameMetrics.BACKGROUND_SEPARATION_MIN asks for 40 levels of gap, so the
+# room's brightest hazed pixel must land at or under (147 - 40)/255 = 0.4196.
+# Rounded down, not up — smoke_room_value_ladder asserts the gap, and a
+# ceiling that only just clears it is a ceiling that will not survive the next
+# preset someone adds.
+const ROOM_HAZE_LUMA_CEILING: float = 0.41
+# How much lamp colour survives into the haze target. Enough to keep the room
+# reading as warm-lit rather than as neutral fog; not enough to lift it.
+const HAZE_LAMP_MIX: float = 0.22
+
+
+static func luma_of(c: Color) -> float:
+	return c.r * 0.299 + c.g * 0.587 + c.b * 0.114
+
+
+# Scale a colour so its luminance is at most `ceiling`. Scaling rather than
+# lerping toward black preserves hue and saturation, which matters because the
+# haze target is the only warmth the far wall has left.
+static func clamp_luma(c: Color, ceiling: float) -> Color:
+	var l: float = luma_of(c)
+	if l <= ceiling or l <= 0.0001:
+		return c
+	var k: float = ceiling / l
+	return Color(c.r * k, c.g * k, c.b * k, c.a)
+
+
+# The colour distant room surfaces recede toward.
+#
+# `shadow` is the room's own darkest authored surface (the desk, post-ladder),
+# `lamp` the fixture colour. Result is capped at ROOM_HAZE_LUMA_CEILING so no
+# preset — however bright its light_color — can push the background back up
+# through the subject.
+static func haze_target(lamp: Color, shadow: Color) -> Color:
+	var base: Color = shadow.lerp(lamp, HAZE_LAMP_MIX)
+	return clamp_luma(base, ROOM_HAZE_LUMA_CEILING)
+
+
+# Mirrors voxel.gdshader's room haze so the ceiling can be asserted headlessly
+# against the value the player actually sees. Same shape as
+# VoxelMat.water_transmittance mirroring apply_water_column.
+#
+#   fog = smoothstep(near, far, view_z) * strength
+#   out = mix(surface, haze, fog)
+static func hazed_luma(surface_luma: float, haze_luma: float,
+		strength: float, view_z: float,
+		near: float = 8.0, far: float = 28.0) -> float:
+	var t: float = clampf((view_z - near) / maxf(far - near, 0.001), 0.0, 1.0)
+	var fog: float = (t * t * (3.0 - 2.0 * t)) * clampf(strength, 0.0, 1.0)
+	return lerpf(surface_luma, haze_luma, fog)
+
 
 static func build_window(parent: Node3D, wall_z: float, desk_y: float, preset: Dictionary,
 		frame_mat: Material) -> Dictionary:

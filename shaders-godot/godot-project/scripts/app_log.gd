@@ -35,6 +35,9 @@ enum Level { DEBUG, INFO, WARN, ERROR }
 
 const LEVEL_NAMES: Array[String] = ["DEBUG", "INFO", "WARN", "ERROR"]
 
+# Default destination. Every Godot process on a machine shares ONE user://
+# directory, so these are a machine-wide singleton path, not a per-process one
+# — see log_dir below before assuming otherwise.
 const LOG_DIR := "user://logs"
 const CURRENT_LOG := "user://logs/session.log"
 # Sessions kept as session.log.1 ... session.log.N.
@@ -49,6 +52,15 @@ const FLUSH_EVERY: int = 16
 
 # Below this level, calls are dropped before any string work.
 var min_level: int = Level.INFO
+
+# Where THIS instance writes. The shipping autoload uses the default, but
+# user:// is shared by every Godot process for this project — a second process
+# booting rotates session.log away and truncates a fresh one at the same path,
+# under the first process's feet. Anything that needs a log only it can touch
+# (tests under the parallel smoke runner) sets this to a private directory
+# BEFORE the node enters the tree, and reads back through current_log().
+var log_dir: String = LOG_DIR
+var log_name: String = "session.log"
 
 var _ring: Array[Dictionary] = []
 var _ring_head: int = 0
@@ -140,6 +152,13 @@ func session_header_line() -> String:
 	]
 
 
+# The file this instance is writing, which is CURRENT_LOG only while log_dir
+# and log_name are left at their defaults. Read through this, never through
+# the const, or you are reading whichever file currently sits at that name.
+func current_log() -> String:
+	return "%s/%s" % [log_dir, log_name]
+
+
 func build_version() -> String:
 	var v: String = String(ProjectSettings.get_setting("application/config/version", ""))
 	return v if not v.is_empty() else "dev"
@@ -225,14 +244,14 @@ func _log(level: int, tag: String, message: String) -> void:
 
 
 func _open_session() -> void:
-	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(LOG_DIR)):
+	if not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(log_dir)):
 		var err: Error = DirAccess.make_dir_recursive_absolute(
-			ProjectSettings.globalize_path(LOG_DIR))
+			ProjectSettings.globalize_path(log_dir))
 		if err != OK:
 			_disk_ok = false
 			return
 	_rotate()
-	_file = FileAccess.open(CURRENT_LOG, FileAccess.WRITE)
+	_file = FileAccess.open(current_log(), FileAccess.WRITE)
 	if _file == null:
 		# A read-only user dir must not take the game down with it.
 		_disk_ok = false
@@ -242,17 +261,18 @@ func _open_session() -> void:
 
 # session.log -> .1 -> .2 -> .3, dropping the oldest.
 func _rotate() -> void:
-	var oldest: String = "%s.%d" % [CURRENT_LOG, KEEP_SESSIONS]
+	var base: String = current_log()
+	var oldest: String = "%s.%d" % [base, KEEP_SESSIONS]
 	if FileAccess.file_exists(oldest):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(oldest))
 	for i in range(KEEP_SESSIONS, 1, -1):
-		var from: String = "%s.%d" % [CURRENT_LOG, i - 1]
-		var to: String = "%s.%d" % [CURRENT_LOG, i]
+		var from: String = "%s.%d" % [base, i - 1]
+		var to: String = "%s.%d" % [base, i]
 		if FileAccess.file_exists(from):
 			DirAccess.rename_absolute(
 				ProjectSettings.globalize_path(from),
 				ProjectSettings.globalize_path(to))
-	if FileAccess.file_exists(CURRENT_LOG):
+	if FileAccess.file_exists(base):
 		DirAccess.rename_absolute(
-			ProjectSettings.globalize_path(CURRENT_LOG),
-			ProjectSettings.globalize_path("%s.1" % CURRENT_LOG))
+			ProjectSettings.globalize_path(base),
+			ProjectSettings.globalize_path("%s.1" % base))

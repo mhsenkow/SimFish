@@ -6,8 +6,51 @@ extends SceneTree
 # these assertions are mostly about it being unbreakable: bounded memory,
 # bounded disk, no throw on a bad call, and a report that actually carries
 # the build identity a bug report needs.
+#
+# WHY THIS WRITES TO A PRIVATE DIRECTORY.
+#
+# user:// is one directory per PROJECT, not per process: every Godot run for
+# "walstad loom" resolves it to the same path, whatever checkout it booted
+# from. AppLog is an autoload, and autoloads DO register under `--script`, so
+# each of the ~175 smokes opens a session on the shared
+# user://logs/session.log at boot — and _open_session() both rotates the
+# previous file to .1 and truncates a fresh one at the same name.
+#
+# Under scripts/run_smokes.sh, which runs 8 of them at once, this smoke used
+# to write to that shared path and then re-open it BY NAME to assert on it. A
+# sibling process booting in between swapped the file out, so the read landed
+# on a newly-truncated file and "the session log must not be empty" failed.
+# It passed as often as it did only because the window is narrow.
+#
+# So the instance under test gets a directory named after this process, which
+# no other process can collide with, and every assertion reads back through
+# lg.current_log() rather than the AppLogScript.CURRENT_LOG const. That makes
+# the smoke independent instead of merely serialised, and — because the file
+# is now stable while we look at it — lets us assert its CONTENTS, its
+# rotation and its size cap for real, which the shared path never allowed.
 
 const AppLogScript = preload("res://scripts/app_log.gd")
+
+
+# A directory only this process can name. Same project, same user://, but
+# concurrent smokes are separate processes with distinct pids.
+static func _private_dir(suffix: String) -> String:
+	return "user://logs_smoke_app_log_%d_%s" % [OS.get_process_id(), suffix]
+
+
+static func _remove_dir(path: String) -> void:
+	var d: DirAccess = DirAccess.open(path)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var name: String = d.get_next()
+	while not name.is_empty():
+		if not d.current_is_dir():
+			DirAccess.remove_absolute(
+				ProjectSettings.globalize_path("%s/%s" % [path, name]))
+		name = d.get_next()
+	d.list_dir_end()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 func _initialize() -> void:
@@ -16,8 +59,14 @@ func _initialize() -> void:
 
 	var lg: Node = AppLogScript.new()
 	lg.name = "AppLogTest"
+	# Must be set BEFORE the node enters the tree: _ready() opens the session.
+	var log_dir: String = _private_dir("main")
+	lg.log_dir = log_dir
 	root.add_child(lg)
 	await process_frame
+	TestSupport.check(failed, lg.current_log().begins_with(log_dir),
+		"the instance under test must write to its own directory, got %s"
+			% lg.current_log())
 
 	# --- Session header carries the facts a report needs ---
 	var header: String = lg.session_header_line()
@@ -132,20 +181,127 @@ func _initialize() -> void:
 	TestSupport.check(failed, not junk_line.is_empty(),
 		"format_entry must tolerate an empty entry")
 
-	# --- The log file exists and is bounded ---
+	# --- The log file exists, carries the session, and is bounded ---
+	# Read through the instance's own path, never AppLogScript.CURRENT_LOG:
+	# the const names a file every other Godot process also rotates.
+	lg.info("filetest", "marker-on-disk")
 	lg.flush()
-	TestSupport.check(failed, FileAccess.file_exists(AppLogScript.CURRENT_LOG),
-		"a session log file must be written at %s" % AppLogScript.CURRENT_LOG)
-	var f := FileAccess.open(AppLogScript.CURRENT_LOG, FileAccess.READ)
+	var log_path: String = lg.current_log()
+	TestSupport.check(failed, FileAccess.file_exists(log_path),
+		"a session log file must be written at %s" % log_path)
+	var f := FileAccess.open(log_path, FileAccess.READ)
 	if f != null:
 		var size: int = f.get_length()
+		f.seek(0)
+		var text: String = f.get_as_text()
 		f.close()
 		TestSupport.check(failed, size > 0, "the session log must not be empty")
 		# MAX_BYTES plus the one truncation notice line.
 		TestSupport.check(failed, size <= AppLogScript.MAX_BYTES + 4096,
 			"the session log must respect MAX_BYTES (%d), got %d"
 				% [AppLogScript.MAX_BYTES, size])
+		# Non-empty is not enough: a log missing its header is the one thing
+		# that makes a bug report useless, so assert the header reached DISK
+		# and not just the in-memory ring.
+		TestSupport.check(failed, text.contains("session start"),
+			"the session log must open with a session-start line")
+		TestSupport.check(failed, text.contains("walstad loom"),
+			"the session log header must name the build")
+		TestSupport.check(failed, text.contains(lg.build_version()),
+			"the session log header must carry the build version")
+		TestSupport.check(failed, text.contains("marker-on-disk"),
+			"entries logged before flush() must reach disk")
 	else:
 		TestSupport.check(failed, false, "the session log must be readable")
+
+	# --- Rotation keeps exactly KEEP_SESSIONS old sessions ---
+	# Only testable now that the directory is ours: on the shared path the
+	# rotation under test is racing ~150 other processes doing the same thing.
+	var rot_dir: String = _private_dir("rot")
+	var sessions: int = AppLogScript.KEEP_SESSIONS + 2
+	for i in sessions:
+		var r: Node = AppLogScript.new()
+		r.log_dir = rot_dir
+		root.add_child(r)
+		await process_frame
+		r.info("rot", "rotation-marker-%d" % i)
+		r.flush()
+		root.remove_child(r)
+		r.free()
+	var rot_base: String = "%s/session.log" % rot_dir
+	TestSupport.check(failed, not FileAccess.file_exists(
+			"%s.%d" % [rot_base, AppLogScript.KEEP_SESSIONS + 1]),
+		"rotation must cap at KEEP_SESSIONS (%d), found a .%d"
+			% [AppLogScript.KEEP_SESSIONS, AppLogScript.KEEP_SESSIONS + 1])
+	# Newest session is the live file; each .N is one session older.
+	for i in AppLogScript.KEEP_SESSIONS + 1:
+		var path: String = rot_base if i == 0 else "%s.%d" % [rot_base, i]
+		var want: String = "rotation-marker-%d" % (sessions - 1 - i)
+		TestSupport.check(failed, FileAccess.file_exists(path),
+			"rotation must keep %s" % path)
+		var rf := FileAccess.open(path, FileAccess.READ)
+		if rf != null:
+			var body: String = rf.get_as_text()
+			rf.close()
+			TestSupport.check(failed, body.contains(want),
+				"%s must hold %s" % [path, want])
+	# The oldest session must be GONE, not merely unreferenced.
+	var dropped := FileAccess.open(
+		"%s.%d" % [rot_base, AppLogScript.KEEP_SESSIONS], FileAccess.READ)
+	if dropped != null:
+		var tail: String = dropped.get_as_text()
+		dropped.close()
+		TestSupport.check(failed, not tail.contains("rotation-marker-0"),
+			"the session beyond KEEP_SESSIONS must be discarded")
+
+	# --- The byte cap actually stops the file growing ---
+	# The old assertion only checked the log was under MAX_BYTES, which a 35 KB
+	# file passes without ever exercising the cap. Write past it for real.
+	var cap_dir: String = _private_dir("cap")
+	var cap: Node = AppLogScript.new()
+	cap.log_dir = cap_dir
+	root.add_child(cap)
+	await process_frame
+	# Entries sized so one FLUSH_EVERY batch stays under the 4096 slack below,
+	# otherwise the final batch overshoots the cap by more than we allow.
+	var filler: String = "x".repeat(200)
+	for i in 10000:
+		cap.info("cap", filler)
+	cap.flush()
+	var cap_path: String = cap.current_log()
+	var cf := FileAccess.open(cap_path, FileAccess.READ)
+	if cf != null:
+		var cap_size: int = cf.get_length()
+		cf.seek(maxi(0, cap_size - 4096))
+		var cap_tail: String = cf.get_as_text()
+		cf.close()
+		TestSupport.check(failed, cap_size >= AppLogScript.MAX_BYTES,
+			"the cap test must actually reach MAX_BYTES (%d), got %d"
+				% [AppLogScript.MAX_BYTES, cap_size])
+		TestSupport.check(failed, cap_size <= AppLogScript.MAX_BYTES + 4096,
+			"writing past the cap must stop the file growing, got %d" % cap_size)
+		TestSupport.check(failed, cap_tail.contains("log size cap"),
+			"a capped log must say so in the file, so it is not mistaken "
+			+ "for one that simply stopped")
+	else:
+		TestSupport.check(failed, false, "the capped log must be readable")
+	# Logging must survive the cap: memory keeps going when disk stops.
+	var after_cap: int = int(cap.level_counts().get("INFO", 0))
+	cap.info("cap", "still logging after the cap")
+	TestSupport.check(failed,
+		int(cap.level_counts().get("INFO", 0)) == after_cap + 1,
+		"the log must keep recording in memory once the disk cap is hit")
+	root.remove_child(cap)
+	cap.free()
+
+	# --- Leave no litter: these directories are per-process ---
+	root.remove_child(lg)
+	lg.free()
+	for d in [log_dir, rot_dir, cap_dir]:
+		_remove_dir(d)
+	for d in [log_dir, rot_dir, cap_dir]:
+		TestSupport.check(failed,
+			not DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(d)),
+			"the smoke must clean up its private log dir %s" % d)
 
 	quit(TestSupport.report("smoke_app_log", failed))

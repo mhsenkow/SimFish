@@ -205,7 +205,10 @@ func build_row(n: Dictionary) -> Control:
 	hb.add_child(vb)
 
 	var title := Label.new()
-	title.text = "%s · %s" % [String(n.get("title", "Notification")),
+	# display_title carries the repeat count for coalesced rows — three
+	# collapses in a row is one entry reading "(x3)", not three entries
+	# (VISUAL_DIRECTIONS #19).
+	title.text = "%s · %s" % [CommsInbox.display_title(n),
 		format_age(int(n.get("ts", 0)))]
 	title.add_theme_color_override("font_color", Color(0.92, 0.95, 0.99))
 	title.add_theme_font_size_override("font_size", 12)

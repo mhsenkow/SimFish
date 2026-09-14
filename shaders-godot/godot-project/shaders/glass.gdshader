@@ -224,6 +224,20 @@ void fragment() {
 	float chrome_outside = smoothstep(0.78, 1.0, fresnel) * smoothstep(0.45, 0.92, n.y);
 	float chrome = max(chrome_band, chrome_outside) * rim_chrome;
 	col += vec3(1.0, 0.97, 0.92) * chrome * 0.45;
+	// VISUAL_DIRECTIONS #3 — let the rim actually blow out.
+	//
+	// The rim is a polished horizontal lip sitting directly under the light
+	// bar: in every photograph of a lit aquarium it is the hardest specular in
+	// the frame. Here it could not be, because the glass writes ALPHA capped
+	// at 0.30 — however white `col` went, a rim fragment contributed at most
+	// 30% of it over whatever was behind. A capture measured the whole hero
+	// frame topping out at luma 180 with the palette's own white rungs never
+	// selected anywhere.
+	//
+	// The narrow band only: chrome_outside is the soft silhouette lift, which
+	// should stay soft. This is the lip.
+	float rim_spec = smoothstep(0.93, 0.995, n.y) * rim_chrome;
+	col += vec3(1.0, 0.99, 0.96) * rim_spec * 0.85;
 
 	// Rare sparkle pixels when light grazes.
 	float sp = pow(max(dot(n, normalize(view_dir + vec3(0.2, 0.8, 0.1))), 0.0), 48.0);
@@ -293,5 +307,8 @@ void fragment() {
 	alpha += chrome * 0.08;
 	alpha += fresnel_rim * 0.07 + edge_ink * 0.04;
 	ALBEDO = col;
-	ALPHA = clamp(alpha, 0.02, 0.30);
+	// The rim specular is the one thing allowed past the translucency cap —
+	// a mirrored lip hides what is behind it. Everything else about the glass
+	// is still glass.
+	ALPHA = max(clamp(alpha, 0.02, 0.30), rim_spec * 0.94);
 }

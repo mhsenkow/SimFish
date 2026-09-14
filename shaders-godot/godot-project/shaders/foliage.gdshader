@@ -150,6 +150,6 @@ void fragment() {
     // Shaped lamp. In an unshaded pipeline nothing responds to a light on
     // its own, so the cone is evaluated here - this is what puts the beam
     // ON the leaves instead of only in the water in front of them.
-    col = iaq_beam_light(v_world_pos, col);
+    col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
     ALBEDO = col;
 }

@@ -858,7 +858,7 @@ func register_shell_voxels(vox: Array) -> void:
 	_shell_base_colors = PackedColorArray()
 	var typed: Array[MeshInstance3D] = []
 	for v in vox:
-		if v is MeshInstance3D and is_instance_valid(v):
+		if is_instance_valid(v) and v is MeshInstance3D:
 			typed.append(v as MeshInstance3D)
 	typed.sort_custom(func(a: MeshInstance3D, b: MeshInstance3D) -> bool:
 		return _voxel_volume(a) < _voxel_volume(b))

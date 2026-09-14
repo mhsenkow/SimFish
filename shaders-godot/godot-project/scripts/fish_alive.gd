@@ -214,7 +214,7 @@ static func lateral_line_flinch(f: Fish, neighbors: Array) -> Vector3:
 	var best := Vector3.ZERO
 	var best_w: float = 0.0
 	for n in neighbors:
-		if not (n is Fish) or n == f or not is_instance_valid(n):
+		if not is_instance_valid(n) or not (n is Fish) or n == f:
 			continue
 		var other: Fish = n
 		if float(other.burst_remaining) < 0.12 and float(other._startle_remaining) < 0.08:

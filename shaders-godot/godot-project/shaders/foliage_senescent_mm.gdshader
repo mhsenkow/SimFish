@@ -5,6 +5,7 @@ uniform float alpha_scale : hint_range(0.0, 1.0) = 0.62;
 uniform float water_surface_y = 99.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 varying vec3 v_color;
 varying vec3 v_world_pos;
@@ -22,6 +23,9 @@ void fragment() {
 	float face = n.y > 0.7 ? 1.0 : (n.y < -0.7 ? 0.58 : 0.76);
 	vec3 amber = v_color * vec3(1.08, 0.88, 0.55) * face;
 	amber = apply_category_palette_tint(amber, iaq_palette_foliage, 0.0, 0.92, 0.08, 1.0);
+	// Analytic fixture cone (VISUAL_DIRECTIONS #1) — dying leaves live in the
+	// same light as living ones.
+	amber = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, amber);
 	ALBEDO = apply_water_column(amber, v_world_pos.y, length(VERTEX));
 	ALPHA = alpha_scale;
 }

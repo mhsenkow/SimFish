@@ -756,7 +756,7 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 		# so the very ends ribbon visibly rather than swinging as rigid rods.
 		for i in _anemone_tentacles.size():
 			var t_v: Variant = _anemone_tentacles[i]
-			if t_v == null or not (t_v is Node3D) or not is_instance_valid(t_v):
+			if t_v == null or not is_instance_valid(t_v) or not (t_v is Node3D):
 				continue
 			var t: Node3D = t_v as Node3D
 			if t.is_queued_for_deletion():
@@ -779,7 +779,7 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 			# slightly past the base axis (real anemone tip motion).
 			if t.has_meta("tip_ref"):
 				var tip_var: Variant = t.get_meta("tip_ref")
-				if tip_var != null and tip_var is Node3D and is_instance_valid(tip_var):
+				if tip_var != null and is_instance_valid(tip_var) and tip_var is Node3D:
 					var tip: Node3D = tip_var as Node3D
 					if not tip.is_queued_for_deletion():
 						var lift: float = sin(_sessile_phase * 2.4 + tp * 1.3) * VOXEL_SIZE * 0.06
@@ -787,7 +787,7 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 	elif coral_form == "hydra_fresh":
 		for i in _hydra_tentacles.size():
 			var h_v: Variant = _hydra_tentacles[i]
-			if h_v == null or not (h_v is Node3D) or not is_instance_valid(h_v):
+			if h_v == null or not is_instance_valid(h_v) or not (h_v is Node3D):
 				continue
 			var h: Node3D = h_v as Node3D
 			if h.is_queued_for_deletion():
@@ -800,7 +800,7 @@ func _animate_sessile_motion(sim_n: Node = null) -> void:
 			open_amount = lerpf(0.02, open_amount, 1.0 - clampf(_clam_snap_t / 0.42, 0.0, 1.0))
 		for i in _clam_shell_parts.size():
 			var p_v: Variant = _clam_shell_parts[i]
-			if p_v == null or not (p_v is Node3D) or not is_instance_valid(p_v):
+			if p_v == null or not is_instance_valid(p_v) or not (p_v is Node3D):
 				continue
 			var p: Node3D = p_v as Node3D
 			if p.is_queued_for_deletion():
@@ -885,7 +885,7 @@ func _animate_polyp_tips(sim_n: Node = null) -> void:
 			else:
 				h.set_color(h.base_color)
 			continue
-		if n_v == null or not (n_v is Node3D) or not is_instance_valid(n_v):
+		if n_v == null or not is_instance_valid(n_v) or not (n_v is Node3D):
 			entry["node"] = null  # mark stale so we can drop later
 			continue
 		var n: Node3D = n_v as Node3D
@@ -1054,7 +1054,7 @@ func _apply_bleach_tint() -> void:
 		# typed assignment on Plant.voxels (Plant.nibble may have just
 		# queue_free'd one but not yet pruned the array slot).
 		var vx_v: Variant = _legacy_body_nodes[i]
-		if vx_v == null or not (vx_v is MeshInstance3D) or not is_instance_valid(vx_v):
+		if vx_v == null or not is_instance_valid(vx_v) or not (vx_v is MeshInstance3D):
 			continue
 		var vx: MeshInstance3D = vx_v as MeshInstance3D
 		if vx.is_queued_for_deletion():

@@ -70,6 +70,22 @@ iaq_beam_tint={
 "type": "vec4",
 "value": Vector4(1, 0.9, 0.7, 1)
 }
+iaq_beam_axis={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_occluder_tex={
+"type": "sampler2D",
+"value": ""
+}
+iaq_occluder_info={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_water_depth={
+"type": "vec4",
+"value": Vector4(1, 0, 0, 0)
+}
 iaq_palette_fauna={
 "type": "vec4",
 "value": Vector4(0, 1, 0, 1)

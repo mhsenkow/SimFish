@@ -10,6 +10,7 @@ class_name VoxelMat
 const SHADER_PATH := "res://shaders/voxel.gdshader"
 const _ShaderWarmCapture = preload("res://scripts/shader_warm_capture.gd")
 const _BakedCaustics = preload("res://scripts/baked_caustics.gd")
+const _RoomBuilder = preload("res://scripts/world_room_builder.gd")
 static var _shader: Shader = null
 
 
@@ -137,7 +138,7 @@ static var _room_mat_cache: Dictionary = {}
 # toward a warm haze with view distance. Tank-side voxels keep using
 # `make()` and stay crisp.
 static func make_room(color: Color, haze_strength: float = 0.65,
-		haze_color: Color = Color(0.92, 0.84, 0.74)) -> ShaderMaterial:
+		haze_color: Color = Color(0.20, 0.18, 0.17)) -> ShaderMaterial:
 	var key: String = "%s_%s" % [
 		Color(snappedf(color.r, 0.01), snappedf(color.g, 0.01), snappedf(color.b, 0.01)),
 		snappedf(haze_strength, 0.05)]
@@ -147,20 +148,38 @@ static func make_room(color: Color, haze_strength: float = 0.65,
 	m.shader = _get_shader()
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("room_haze_strength", haze_strength)
-	m.set_shader_parameter("room_haze_color", Vector3(haze_color.r, haze_color.g, haze_color.b))
+	var capped_haze: Color = _RoomBuilder.clamp_luma(haze_color,
+		_RoomBuilder.ROOM_HAZE_LUMA_CEILING)
+	m.set_shader_parameter("room_haze_color",
+		Vector3(capped_haze.r, capped_haze.g, capped_haze.b))
 	# Gentler palette tint + lower value so room never out-competes the tank.
 	m.set_shader_parameter("palette_global_scale", 0.35)
 	m.set_shader_parameter("palette_saturation", 0.72)
 	m.set_shader_parameter("palette_value", 0.82)
 	# REAL_TANK_FIDELITY #183 — subtle orange-peel / plaster grain on walls.
-	m.set_shader_parameter("grain_variation", 0.55)
+	#
+	# Dropped 0.55 -> 0.18 with the palette lock (VISUAL_DIRECTIONS #5/#7).
+	# The grain multiplies the surface by up to +/-24% brightness. Before the
+	# lock, the post chain smeared that across off-palette intermediates and it
+	# read as texture; with every output pixel snapped to a palette entry, a
+	# 24% wobble is a whole rung, and a flat plaster wall came out as
+	# salt-and-pepper across two browns. Sub-rung grain is grain; supra-rung
+	# grain is noise.
+	m.set_shader_parameter("grain_variation", 0.18)
 	_room_mat_cache[key] = m
 	return m
 
 
 # Push a shared haze tint onto all cached room materials (desk/wall props).
+# VISUAL_DIRECTIONS #2 — the room's aerial-perspective target, clamped here
+# rather than at each call site. This is the uniform that took a wall authored
+# at luma 87 and rendered it at 143, level with the mid-water it is supposed
+# to sit behind. The ceiling is enforced at the write so no caller — including
+# the night path, which lerps the haze toward the fixture colour — can raise
+# the background back through the subject.
 static func update_room_haze(color: Color) -> void:
-	var hc := Vector3(color.r, color.g, color.b)
+	var capped: Color = _RoomBuilder.clamp_luma(color, _RoomBuilder.ROOM_HAZE_LUMA_CEILING)
+	var hc := Vector3(capped.r, capped.g, capped.b)
 	for m in _room_mat_cache.values():
 		if m is ShaderMaterial:
 			(m as ShaderMaterial).set_shader_parameter("room_haze_color", hc)
@@ -258,7 +277,7 @@ static func refresh_fauna_rims() -> void:
 		if m is ShaderMaterial and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
 			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
 	for m in _fauna_mm_mats:
-		if m is ShaderMaterial and is_instance_valid(m) \
+		if is_instance_valid(m) and m is ShaderMaterial \
 				and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
 			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
 
@@ -485,6 +504,10 @@ static func make_emissive(color: Color) -> ShaderMaterial:
 	m.set_shader_parameter("albedo", color)
 	# Keep fixture panels hot through palette tint + night quantize.
 	m.set_shader_parameter("palette_value", 1.18)
+	# A lamp is not lit by its own cone (VISUAL_DIRECTIONS #1). Without this
+	# the fixture cone dims the emissive panel — the brightest object in the
+	# frame — because the panel sits above the tank, outside the cone it casts.
+	m.set_shader_parameter("light_exempt", 1.0)
 	return m
 
 
@@ -587,7 +610,7 @@ static func update_aquatic_uniforms(intensity: float, light_color: Color, water_
 			mat.set_shader_parameter("day_phase_offset", day_offset)
 			mat.set_shader_parameter("aquatic_shimmer", shimmer)
 	for mat in _fauna_mm_mats:
-		if mat is ShaderMaterial and is_instance_valid(mat):
+		if is_instance_valid(mat) and mat is ShaderMaterial:
 			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
 			mat.set_shader_parameter("aquatic_light_color", light_color)
 			mat.set_shader_parameter("water_surface_y", water_y)
@@ -621,7 +644,7 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 			mat.set_shader_parameter("tank_fixture_color", color)
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
 	for mat in _fauna_mm_mats:
-		if mat is ShaderMaterial and is_instance_valid(mat):
+		if is_instance_valid(mat) and mat is ShaderMaterial:
 			mat.set_shader_parameter("tank_fixture_glow", glow)
 			mat.set_shader_parameter("tank_fixture_color", color)
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
@@ -664,7 +687,7 @@ static func _live_foliage_mm_mats() -> Array[ShaderMaterial]:
 	var kept: Array[WeakRef] = []
 	for ref in _foliage_mm_mats:
 		var value: Variant = ref.get_ref()
-		if value is ShaderMaterial and is_instance_valid(value):
+		if is_instance_valid(value) and value is ShaderMaterial:
 			live.append(value as ShaderMaterial)
 			kept.append(ref)
 	_foliage_mm_mats = kept
@@ -807,6 +830,22 @@ static func update_substrate_contact_ao(points: Array) -> void:
 			mat.set_shader_parameter("contact_ao_points", packed)
 
 
+# Push the canopy shade map into every substrate material (VISUAL_DIRECTIONS
+# #4). `strength` 0 clears it, and clearing must also unbind nothing — the
+# shaders skip the sample entirely at 0, so a stale texture is harmless.
+static func update_substrate_canopy(tex: Texture2D, bounds: Vector4,
+		strength: float) -> void:
+	var k: float = clampf(strength, 0.0, 1.0)
+	for cache in [_sub_caustic_mat_cache, _sub_opaque_mat_cache]:
+		for mat in cache.values():
+			if not is_instance_valid(mat):
+				continue
+			mat.set_shader_parameter("canopy_shade", k)
+			mat.set_shader_parameter("canopy_bounds", bounds)
+			if k > 0.001 and tex != null:
+				mat.set_shader_parameter("canopy_density_tex", tex)
+
+
 # Push soft blob-shadow casters (the nearest fish) into the substrate caustic
 # material so the floor darkens beneath swimming fish. Same packing convention
 # as contact AO: Array of Vector4 (xyz = world position, w = radius). Only the
@@ -825,6 +864,62 @@ static func update_substrate_blob_shadows(points: Array) -> void:
 			if blob_tex != null:
 				mat.set_shader_parameter("blob_shadow_tex", blob_tex)
 				mat.set_shader_parameter("blob_shadow_tex_count", mini(points.size(), 16))
+
+
+# ---- Global occluder field (VISUAL_DIRECTIONS #4) --------------------------
+#
+# Same packed-sphere convention as the substrate blob buffer, promoted to a
+# shader global so every surface that samples the light can sample what blocks
+# it. Until this existed, shadow casting in the whole project reached exactly
+# one surface — the substrate — and nothing in the tank cast onto anything
+# else.
+const OCCLUDER_SLOTS: int = 16
+static var _occluder_tex: ImageTexture = null
+
+
+# `points` is (world position, radius) spheres, most important first — the
+# first OCCLUDER_SLOTS are kept and the rest dropped. `gain` 0 disables the
+# whole path in-shader.
+static func publish_occluders(points: Array, gain: float) -> void:
+	var live: int = 0
+	var img := Image.create(OCCLUDER_SLOTS, 1, false, Image.FORMAT_RGBAF)
+	for i in OCCLUDER_SLOTS:
+		var p: Vector4 = Vector4.ZERO
+		if i < points.size() and points[i] is Vector4:
+			p = points[i]
+		if p.w > 0.001:
+			live = i + 1
+		img.set_pixel(i, 0, Color(p.x, p.y, p.z, p.w))
+	if _occluder_tex == null:
+		_occluder_tex = ImageTexture.create_from_image(img)
+	else:
+		_occluder_tex.update(img)
+	RenderingServer.global_shader_parameter_set("iaq_occluder_tex", _occluder_tex)
+	RenderingServer.global_shader_parameter_set(
+		"iaq_occluder_info",
+		Vector4(float(live), clampf(gain, 0.0, 1.0), 0.0, 0.0))
+
+
+static func disable_occluders() -> void:
+	RenderingServer.global_shader_parameter_set(
+		"iaq_occluder_info", Vector4(0.0, 0.0, 0.0, 0.0))
+
+
+# Merge the tank's shadow casters into one list, most legible first.
+#
+# Order matters because the field is capped at OCCLUDER_SLOTS: fish move and a
+# moving shadow is the one the eye follows, plant crowns are the largest and
+# most constant blockers, hardscape is already partly handled by the substrate
+# contact-AO bake and so goes last.
+static func merge_occluders(fish: Array, crowns: Array, hardscape: Array) -> Array:
+	var out: Array = []
+	for group in [fish, crowns, hardscape]:
+		for v in group:
+			if out.size() >= OCCLUDER_SLOTS:
+				return out
+			if v is Vector4 and (v as Vector4).w > 0.001:
+				out.append(v)
+	return out
 
 
 static func _blob_shadow_texture(points: Array[Vector4]) -> ImageTexture:
@@ -904,6 +999,16 @@ const WATER_ABSORB_TANNIN: Vector3 = Vector3(0.0160, 0.0270, 0.0480)
 const WATER_BODY_CLEAR: Vector3 = Vector3(0.075, 0.145, 0.155)
 const WATER_BODY_TANNIN: Vector3 = Vector3(0.150, 0.095, 0.045)
 const WATER_EXTINCTION_DEFAULT: float = 0.62
+# VISUAL_DIRECTIONS #11 — how far the depth half of the light path is
+# stretched before extinction is applied. See iaq_water_depth in
+# palette_tint.gdshaderinc for why this is separate from strength.
+#
+# 2.6 takes the surface-to-substrate red gradient from ~9% to ~20% and the
+# in-scatter wash from 6.5% to ~20%, which is the difference between a depth
+# cue you can measure and one you can see. It scales the depth term only, so
+# the horizontal wash — the thing that turns the tank cyan when `strength`
+# is raised instead — is untouched.
+const WATER_DEPTH_GAIN_DEFAULT: float = 2.6
 
 
 # Pure: water state in, the two packed uniforms out. Split from the push so it
@@ -934,18 +1039,23 @@ const WATER_VIEW_WEIGHT: float = 0.35
 
 
 static func water_transmittance(absorb_k: float, depth: float,
-		view_dist: float, strength: float) -> float:
+		view_dist: float, strength: float,
+		depth_gain: float = WATER_DEPTH_GAIN_DEFAULT) -> float:
 	if strength <= 0.0 or depth <= 0.0:
 		return 1.0
-	return exp(-absorb_k * (depth + view_dist * WATER_VIEW_WEIGHT) * strength)
+	var path: float = depth * maxf(depth_gain, 0.01) + view_dist * WATER_VIEW_WEIGHT
+	return exp(-absorb_k * path * strength)
 
 
 # strength 0 disables the effect entirely (room shots, potato tier, tests).
 static func push_water_column(surface_y: float, strength: float,
-		tannins: float = 0.0, turbidity: float = 0.0) -> void:
+		tannins: float = 0.0, turbidity: float = 0.0,
+		depth_gain: float = WATER_DEPTH_GAIN_DEFAULT) -> void:
 	var u: Array = water_column_uniforms(surface_y, strength, tannins, turbidity)
 	RenderingServer.global_shader_parameter_set("iaq_water_absorb", u[0])
 	RenderingServer.global_shader_parameter_set("iaq_water_body", u[1])
+	RenderingServer.global_shader_parameter_set(
+		"iaq_water_depth", Vector4(maxf(depth_gain, 0.01), 0.0, 0.0, 0.0))
 
 
 static func disable_water_column() -> void:

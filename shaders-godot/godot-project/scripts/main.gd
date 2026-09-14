@@ -266,6 +266,8 @@ var _cinema_auto: bool = false            # true when the idle screensaver start
 const FOLLOW_LEAD_TIME: float = 0.4       # seconds of velocity lookahead
 const FOLLOW_LERP_K: float = 3.0
 const FOLLOW_DEADZONE: float = 0.9        # world units the subject may roam before the cam chases
+# Orbit radius to restore when a CINEMATIC follow ends. 0 = nothing saved.
+var _follow_saved_radius: float = 0.0
 const CINEMA_INTERVAL_S: float = 12.0
 const SCREENSAVER_IDLE_S: float = 45.0    # idle time before an auto favorites-tour kicks in
 
@@ -1773,6 +1775,7 @@ func _apply_render_config() -> void:
 		ShaderUniformLedger.write(sm, &"shader_perf_tier", float(tier))
 		ShaderUniformLedger.write(sm, &"palette_bank_lock",
 			1.0 if cfg.palette_bank_lock else 0.0)
+		ShaderUniformLedger.write(sm, &"palette_lock", float(cfg.get("palette_lock")))
 		ShaderUniformLedger.write(sm, &"outline_strength", float(cfg.outline_strength))
 		var creature_outline: float = float(cfg.creature_outline_strength)
 		if mac:
@@ -1940,34 +1943,79 @@ func _current_biotope_palette_key(cfg: Node) -> String:
 	return AestheticsRuntime.biotope_palette_key(cfg)
 
 
+# Moonlit variant of a day palette slot. Darken + cool, but keep near-white
+# highlights mostly intact so emissive content still burns through.
+func _night_palette_color(c: Color) -> Color:
+	var lum: float = c.get_luminance()
+	var night := c.darkened(0.42)
+	night = night.lerp(Color(night.r * 0.7, night.g * 0.82, night.b * 1.1, 1.0), 0.5)
+	night = c.lerp(night, clampf(1.0 - lum * 0.6, 0.3, 1.0))
+	night.a = 1.0
+	return night
+
+
+# Cache identity for a palette build: the biotope plus every setting that
+# rewrites its entries. Without the suffix, flipping colorblind mode (or
+# duotone) handed back the stale texture for an already-built biotope.
+func _palette_variant_key(key: String, cfg: Node) -> String:
+	if cfg == null:
+		return key
+	return "%s|%s|%s|%d" % [
+		key,
+		String(cfg.get("colorblind_palette")),
+		String(cfg.get("duotone_mode")),
+		int(cfg.get("duotone_levels")),
+	]
+
+
 # Build (and cache) day+night ImageTextures for a biotope palette key.
-# Night is a darkened, cooled copy of the day ramp, preserving the brightest
-# slots so emissive content still burns through the moonlit field.
+# In duotone mode the biotope hexes are replaced wholesale by a two-color
+# ramp, so the texture can be narrower than 48 — callers must push the width
+# as `palette_size`.
 func _biotope_palette_textures(key: String) -> Array:
-	if _biotope_palette_cache.has(key):
-		return _biotope_palette_cache[key]
-	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
 	var cfg := _cfg()
+	var cache_key := _palette_variant_key(key, cfg)
+	if _biotope_palette_cache.has(cache_key):
+		return _biotope_palette_cache[cache_key]
+	var hexes: Array = BIOTOPE_PALETTES.get(key, BIOTOPE_PALETTES["planted"])
 	var cb_mode := "none"
+	var duo_mode := "none"
+	var duo_levels: int = 6
 	if cfg != null:
 		cb_mode = String(cfg.get("colorblind_palette"))
-	hexes = AestheticsRuntime.remap_palette_hexes(hexes, cb_mode)
-	var day_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
-	var night_img := Image.create(48, 1, false, Image.FORMAT_RGBA8)
-	for i in range(min(48, hexes.size())):
-		var c := Color.from_string("#" + String(hexes[i]), Color.BLACK)
-		day_img.set_pixel(i, 0, c)
-		var lum: float = c.get_luminance()
-		# Darken + cool; keep near-white highlights mostly intact.
-		var night := c.darkened(0.42)
-		night = night.lerp(Color(night.r * 0.7, night.g * 0.82, night.b * 1.1, 1.0), 0.5)
-		night = c.lerp(night, clampf(1.0 - lum * 0.6, 0.3, 1.0))
-		night.a = 1.0
-		night_img.set_pixel(i, 0, night)
+		duo_mode = String(cfg.get("duotone_mode"))
+		duo_levels = int(cfg.get("duotone_levels"))
+	var duo_hexes: Array = AestheticsRuntime.duotone_hexes(duo_mode, duo_levels)
+	if not duo_hexes.is_empty():
+		# Duotone replaces the palette, so the colorblind remap has nothing
+		# left to correct — the ramp is one hue by construction.
+		hexes = duo_hexes
+	else:
+		hexes = AestheticsRuntime.remap_palette_hexes(hexes, cb_mode)
+	var width: int = clampi(hexes.size(), 1, 48)
+	var day_img := Image.create(width, 1, false, Image.FORMAT_RGBA8)
+	var night_img := Image.create(width, 1, false, Image.FORMAT_RGBA8)
+	if duo_hexes.is_empty():
+		for i in range(width):
+			var c := Color.from_string("#" + String(hexes[i]), Color.BLACK)
+			day_img.set_pixel(i, 0, c)
+			night_img.set_pixel(i, 0, _night_palette_color(c))
+	else:
+		# Night has to stay a straight line between its own endpoints: the
+		# shader projects source luma onto that segment, and a per-rung
+		# darkening curve would bend the rungs off it.
+		var lo := Color.from_string("#" + String(hexes[0]), Color.BLACK)
+		var hi := Color.from_string("#" + String(hexes[width - 1]), Color.WHITE)
+		var lo_n := _night_palette_color(lo)
+		var hi_n := _night_palette_color(hi)
+		for i in range(width):
+			var t: float = 0.0 if width < 2 else float(i) / float(width - 1)
+			day_img.set_pixel(i, 0, lo.lerp(hi, t))
+			night_img.set_pixel(i, 0, lo_n.lerp(hi_n, t))
 	var day_tex := ImageTexture.create_from_image(day_img)
 	var night_tex := ImageTexture.create_from_image(night_img)
 	var out: Array = [day_tex, night_tex]
-	_biotope_palette_cache[key] = out
+	_biotope_palette_cache[cache_key] = out
 	return out
 
 
@@ -1980,6 +2028,12 @@ func _apply_biotope_palette(sm: ShaderMaterial, cfg: Node) -> void:
 	if texs.size() == 2:
 		sm.set_shader_parameter("palette_tex", texs[0])
 		sm.set_shader_parameter("palette_tex_night", texs[1])
+		var tex: Texture2D = texs[0]
+		ShaderUniformLedger.write(sm, &"palette_size", tex.get_width())
+		var duo: bool = false
+		if cfg != null:
+			duo = AestheticsRuntime.duotone_active(String(cfg.get("duotone_mode")))
+		ShaderUniformLedger.write(sm, &"duotone_amount", 1.0 if duo else 0.0)
 
 
 func _sync_biotope_ui_cohesion(cfg: Node) -> void:
@@ -2157,6 +2211,20 @@ func _process(dt: float) -> void:
 				var dist: float = d.length()
 				if dist > FOLLOW_DEADZONE:
 					target = target.lerp(aim - d.normalized() * FOLLOW_DEADZONE, t)
+			# VISUAL_DIRECTIONS #8 — and actually GET CLOSE. Following used to
+			# move only the target, so clicking a fish re-centred the same wide
+			# shot on a 0.6-unit animal 20 units away. Eased at half the
+			# tracking rate so the push-in reads as a camera move rather than a
+			# snap, and radius_for_subject can only ever bring it in.
+			# The ceiling is the shot the player had, not the current radius —
+			# clamping against a radius the ease is already shrinking would
+			# ratchet the camera inward every frame.
+			var ceil_r: float = _follow_saved_radius if _follow_saved_radius > 0.0 else radius
+			var want_r: float = CameraController.radius_for_subject(
+				_follow_subject_height(_follow_target),
+				float(camera.fov) if camera != null else 45.0,
+				ceil_r)
+			radius = lerpf(radius, want_r, 1.0 - exp(-FOLLOW_LERP_K * 0.5 * dt))
 			_apply_camera()
 			
 	if _follow_mode != FollowMode.OFF or (_portal_info_panel != null and _portal_info_panel.visible):
@@ -2672,7 +2740,7 @@ func _setup_feed_dock() -> void:
 	_feed_dock.add_child(feed_lbl)
 	_feed_dock.add_child(PanelTheme.make_hud_chip_divider())
 	_feed_btns.clear()
-	var compact: bool = true
+	var compact: bool = _footer_labels_compact()
 	for i in UiIcons.FEED_SUBTYPE_KEYS.size():
 		var btn := Button.new()
 		btn.focus_mode = Control.FOCUS_NONE
@@ -2702,7 +2770,7 @@ func _sync_feed_dock() -> void:
 	var div: Node = footer_bar.get_node_or_null("Margin/HBox/SpeedFeedDivider") if footer_bar != null else null
 	if div is CanvasItem:
 		(div as CanvasItem).visible = show
-	var compact: bool = true
+	var compact: bool = _footer_labels_compact()
 	for i in _feed_btns.size():
 		UiIcons.apply_feed_button(
 			_feed_btns[i], UiIcons.FEED_SUBTYPE_KEYS[i], i == _feed_subtype, compact)
@@ -2711,6 +2779,27 @@ func _sync_feed_dock() -> void:
 		var fed: bool = _feed_dock_lbl.text.begins_with("Fed")
 		_feed_dock_lbl.add_theme_color_override(
 			"font_color", Color(0.78, 0.94, 0.82) if fed else PanelTheme.SECTION_FG)
+
+
+# Whether the footer's Feed / Care buttons fall back to two-letter labels.
+#
+# VISUAL_DIRECTIONS #18. This was hardcoded `true` at both call sites, so the
+# primary verbs of the game always rendered as `Fl` `Pt` `Wm` `Wf` / `H2O`
+# `Fil` — unglossed abbreviations for Flakes, Pellets, Worm, Wafer, Water,
+# Filter. UiIcons already carried the readable `name` for each and a comment
+# saying buttons "always show a readable name"; the short path was simply the
+# only one ever taken.
+#
+# Compact is now what it claims to be: a response to not having room. The
+# breakpoint is the one hud_layout.gd already defines for the top bar, so the
+# footer and the stats bar agree about when the window is narrow.
+func _footer_labels_compact() -> bool:
+	if _is_mobile():
+		return true
+	if _hud_layout != "":
+		return _hud_layout == "compact"
+	var vp: Vector2 = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1536, 864)
+	return HudLayout.layout_for(vp.x, _is_touch_active()) == "compact"
 
 
 func _feed_dock_status_text() -> String:
@@ -2758,13 +2847,13 @@ func _setup_care_dock() -> void:
 	_care_water_btn = Button.new()
 	_care_water_btn.focus_mode = Control.FOCUS_NONE
 	_care_water_btn.custom_minimum_size = Vector2(52, PanelTheme._button_min_height() - 4)
-	UiIcons.apply_care_button(_care_water_btn, "water", false, true)
+	UiIcons.apply_care_button(_care_water_btn, "water", false, _footer_labels_compact())
 	_care_water_btn.pressed.connect(_on_care_water_pressed)
 	_care_dock.add_child(_care_water_btn)
 	_care_filter_btn = Button.new()
 	_care_filter_btn.focus_mode = Control.FOCUS_NONE
 	_care_filter_btn.custom_minimum_size = Vector2(52, PanelTheme._button_min_height() - 4)
-	UiIcons.apply_care_button(_care_filter_btn, "filter", false, true)
+	UiIcons.apply_care_button(_care_filter_btn, "filter", false, _footer_labels_compact())
 	_care_filter_btn.pressed.connect(_on_care_filter_pressed)
 	_care_dock.add_child(_care_filter_btn)
 	# Speed | div | Feed | div | Care | Spacer | ControlsHint
@@ -2787,12 +2876,12 @@ func _sync_care_dock() -> void:
 	if div is CanvasItem:
 		(div as CanvasItem).visible = show
 	if _care_water_btn != null:
-		UiIcons.apply_care_button(_care_water_btn, "water", false, true)
+		UiIcons.apply_care_button(_care_water_btn, "water", false, _footer_labels_compact())
 	if _care_filter_btn != null:
 		var clogged: bool = false
 		if _sim != null and _sim.has_method("get_filter_clog"):
 			clogged = float(_sim.get_filter_clog()) >= 0.28
-		UiIcons.apply_care_button(_care_filter_btn, "filter", clogged, true)
+		UiIcons.apply_care_button(_care_filter_btn, "filter", clogged, _footer_labels_compact())
 		if clogged:
 			_care_filter_btn.tooltip_text = "%s — due for a rinse" % UiIcons.care_tooltip("filter")
 
@@ -2805,6 +2894,8 @@ func _on_care_water_pressed() -> void:
 	_sim.do_water_change(0.25)
 	_care_toast_cooldown_t = 1.2
 	_pulse_care_dock()
+	# …and in the tank, not only on the button (VISUAL_DIRECTIONS #16).
+	_play_care_feedback("water_change", 0.7)
 	_show_status_toast("Water changed · nitrate eased")
 	_push_notification("care", NOTIF_SEVERITY_INFO, "Water change",
 		"About a quarter of the water was refreshed.", false)
@@ -2818,10 +2909,34 @@ func _on_care_filter_pressed() -> void:
 	_sim.rinse_filter()
 	_care_toast_cooldown_t = 1.2
 	_pulse_care_dock()
+	# A rinse puffs trapped detritus off the intake and lifts silt — at the
+	# intake, where it happened (VISUAL_DIRECTIONS #16).
+	_play_care_feedback("filter_rinse", 0.8, _filter_intake_world_pos())
 	_sync_care_dock()
 	_show_status_toast("Filter rinsed · flow restored")
 	_push_notification("care", NOTIF_SEVERITY_INFO, "Filter rinsed",
 		"Flow is back. Most of the good bacteria stayed.", false)
+
+
+# Hand a care action to the world's feedback driver. One place, so the grammar
+# cannot drift between actions (VISUAL_DIRECTIONS #16).
+func _play_care_feedback(action: String, magnitude: float,
+		origin: Vector3 = Vector3.INF) -> void:
+	if world == null or not world.has_method("play_care_feedback"):
+		return
+	world.call("play_care_feedback", action, magnitude, origin)
+
+
+# Where the filter intake sits, so a rinse is felt at the equipment rather
+# than in the middle of the tank. Falls back to the tank centre.
+func _filter_intake_world_pos() -> Vector3:
+	if world == null:
+		return Vector3.INF
+	if _sim != null and _sim.get("filter_intake_pos") != null:
+		var intake: Vector3 = _sim.filter_intake_pos
+		if intake != Vector3.ZERO:
+			return intake
+	return Vector3.INF
 
 
 func _pulse_care_dock() -> void:
@@ -4055,9 +4170,28 @@ func _finish_dance_capture() -> void:
 
 # Public follow API. One creature, one presentation mode. Used by the Residents
 # panel, click/tap picking, cycling, and the portal toggle.
+# World-space height of a followed creature, for framing. Falls back to a
+# small-tetra default rather than 0 — an unknown subject should still get a
+# close-up, just a conservative one.
+func _follow_subject_height(creature: Node) -> float:
+	if creature == null or not is_instance_valid(creature):
+		return 0.6
+	var scale_v: Variant = creature.get("adult_voxel_scale")
+	if scale_v != null:
+		# Same conversion the blob-shadow radius uses, doubled for full body
+		# height rather than a footprint radius.
+		return clampf(float(scale_v) * 5.2, 0.25, 3.0)
+	return 0.6
+
+
 func follow_creature(creature: Node, mode: int = FollowMode.PIP) -> void:
 	if creature == null or not is_instance_valid(creature) or not (creature is Node3D):
 		return
+	# Remember the shot the player had, so leaving a follow does not strand
+	# them nose-to-glass. Captured on ENTRY only — re-following while already
+	# followed must not overwrite it with the pushed-in radius.
+	if _follow_mode != FollowMode.CINEMATIC:
+		_follow_saved_radius = radius
 	if _follow_target != creature:
 		_clear_follow_thought_ui()
 		_follow_inner_thought_last_line = ""
@@ -4096,6 +4230,11 @@ func set_follow_mode(mode: int) -> void:
 
 # Stop following entirely: clears the target and hides the portal + info panel.
 func clear_follow() -> void:
+	# Give the player back the shot they had before the push-in (#8).
+	if _follow_mode == FollowMode.CINEMATIC and _follow_saved_radius > 0.0:
+		radius = _follow_saved_radius
+		_apply_camera()
+	_follow_saved_radius = 0.0
 	_follow_target = null
 	_follow_mode = FollowMode.OFF
 	_cinema_active = false
@@ -4322,7 +4461,7 @@ func _refresh_favorite_halos() -> void:
 		return
 	var want: Dictionary = {}
 	for c in _sim.favorite_creatures():
-		if c is Node3D and is_instance_valid(c):
+		if is_instance_valid(c) and c is Node3D:
 			want[c.get_instance_id()] = c
 	# Drop halos for creatures that are no longer favorites (or are gone).
 	for id in _fav_halos.keys():
@@ -7591,13 +7730,46 @@ func _update_palette_tod_tint() -> void:
 			var wc: Variant = world.get("_cached_water_column")
 			if wc is Dictionary and not (wc as Dictionary).is_empty():
 				trans = float((wc as Dictionary).get("transmittance", 1.0))
-		mat.set_shader_parameter("health_grade",
-			AestheticsRuntime.health_grade_from_transmittance(trans))
+		mat.set_shader_parameter("health_grade", _tank_health_grade(trans))
 		if bool(cfg.pixel_purity):
 			mat.set_shader_parameter("dither_strength", maxf(float(cfg.dither_strength), 0.94))
 			mat.set_shader_parameter("palette_bank_lock", 1.0)
 			mat.set_shader_parameter("film_grain_strength",
 				maxf(float(cfg.film_grain_strength), 0.08))
+
+
+# The tank's health as one 0..1 number for the grade shader
+# (VISUAL_DIRECTIONS #14). Clarity alone could not tell a thriving tank from
+# one whose stock had been wiped out in perfectly clear water.
+#
+# Every signal is optional: a missing sim, or a sim that predates one of these
+# accessors, contributes 1.0 (healthy) rather than dragging the grade down —
+# a tank must never LOOK sick because a getter was renamed.
+func _tank_health_grade(transmittance: float) -> float:
+	var clarity: float = AestheticsRuntime.health_grade_from_transmittance(transmittance)
+	var fauna: float = 1.0
+	var algae_ok: float = 1.0
+	var plants: float = 1.0
+	if _sim != null:
+		# Fauna: live stock against the tank's own carrying capacity, so a
+		# lightly-stocked nano is not permanently "sick".
+		var live: int = _sim.fish.size() + _sim.shrimp.size()
+		var want: float = 6.0
+		if world != null and world.has_method("_pop_cap"):
+			want = maxf(float(world.call("_pop_cap", "fish", 6)), 1.0)
+		fauna = clampf(float(live) / maxf(want * 0.45, 1.0), 0.0, 1.0)
+		if _sim.has_method("fauna_completely_extinct") and _sim.fauna_completely_extinct():
+			fauna = 0.0
+		# Algae: crowding against the tank's own capacity.
+		if world != null and world.has_method("algae_carrying_capacity"):
+			var cap: float = maxf(float(world.call("algae_carrying_capacity")), 1.0)
+			algae_ok = 1.0 - clampf(float(_sim.algae.size()) / cap, 0.0, 1.0)
+		# Plants: the sim's own stability read is the best single proxy we
+		# have for "the planted side of this tank is working".
+		var stab: Variant = _sim.get("stability")
+		if stab != null:
+			plants = clampf(float(stab), 0.0, 1.0)
+	return AestheticsRuntime.health_grade_from_state(clarity, fauna, algae_ok, plants)
 
 
 func _apply_display_layout() -> void:
@@ -7883,6 +8055,43 @@ func _apply_rail_dock_layout() -> void:
 		right_rail.offset_bottom = -((76.0 if compact else 40.0) + pad.w)
 
 
+# How far in from the left edge the toast stack starts. A left-docked panel
+# owns that corner while it is open, so the stack steps to its right rather
+# than hiding behind it.
+#
+# _apply_panel_layout() runs on panel CREATION and on resize, not on every
+# open/close, so the stack listens to the left panels directly — otherwise a
+# panel opened after the first toast would simply cover it.
+func _watch_left_panels() -> void:
+	for panel in [_residents_panel, _mind_panel, library_panel]:
+		var c: Control = panel as Control
+		if c == null or not is_instance_valid(c):
+			continue
+		if not c.visibility_changed.is_connected(_relayout_toast_stack):
+			c.visibility_changed.connect(_relayout_toast_stack)
+
+
+func _relayout_toast_stack() -> void:
+	if _notifications_toast_layer == null \
+			or not is_instance_valid(_notifications_toast_layer):
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var pad: Vector4 = _safe_pad()
+	var edge: float = PanelTheme.EDGE_MARGIN + pad.x
+	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
+	PanelTheme.layout_toast_stack(_notifications_toast_layer, _hud_bottom_inset(),
+		_toast_left_inset(edge, panel_w))
+	ToastStack.relayout(_notifications_toast_layer)
+
+
+func _toast_left_inset(edge: float, panel_w: float) -> float:
+	for panel in [_residents_panel, _mind_panel, library_panel]:
+		var c: Control = panel as Control
+		if c != null and is_instance_valid(c) and c.visible:
+			return edge + panel_w + 10.0
+	return edge
+
+
 func _apply_panel_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
 	var pad: Vector4 = _safe_pad()
@@ -7906,8 +8115,8 @@ func _apply_panel_layout() -> void:
 			var body_h: float = vp.y - top - bottom - 100.0
 			scroll.custom_minimum_size = Vector2(0, clampf(body_h, 280.0, 640.0))
 
-	if _notifications_toast_layer != null:
-		PanelTheme.layout_toast_stack(_notifications_toast_layer, bottom)
+	_watch_left_panels()
+	_relayout_toast_stack()
 
 	if _residents_panel != null:
 		PanelTheme.layout_side_panel(_residents_panel, edge, top, bottom, panel_w, "left")
@@ -8523,7 +8732,11 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 	}
 	_notification_next_id += 1
 	notif["read"] = false
-	_notifications.append(notif)
+	notif["repeat"] = 1
+	# VISUAL_DIRECTIONS #19 — fold repeats into the row they repeat rather than
+	# appending. The toast lane was already policed; the badge was not, which is
+	# how it read 53 inside the first twenty seconds of a boot.
+	CommsInbox.coalesce_into(_notifications, notif, now)
 	if _notifications.size() > NOTIF_MAX_HISTORY:
 		_notifications.pop_front()
 	_update_notification_badge()
@@ -8532,12 +8745,15 @@ func _push_notification(kind: String, severity: String, title: String, body: Str
 	if show_toast and not CommsInbox.allows_toast(kind, severity, quiet):
 		show_toast = false
 	if show_toast:
-		var dedup_key: String = "%s|%s|%s" % [kind, severity, body]
+		# Keyed on TITLE, not body: two different sentences under one headline
+		# ("Fish extirpated", "Shrimp colony collapsed" both under "Population
+		# collapse") are one event to the player, and stacking them was the
+		# visible half of #19. Critical gets a shorter window, not no window.
+		var dedup_key: String = "%s|%s" % [kind, title]
 		var now_unix: int = int(Time.get_unix_time_from_system())
-		# Critical bypasses body-dedup (COMMS #18-lite).
-		var bypass_dedup: bool = severity == NOTIF_SEVERITY_CRITICAL
-		if not bypass_dedup and _toast_recent_keys.has(dedup_key) \
-				and now_unix - int(_toast_recent_keys[dedup_key]) < 180:
+		var dedup_window: int = CommsInbox.coalesce_window_for(severity)
+		if _toast_recent_keys.has(dedup_key) \
+				and now_unix - int(_toast_recent_keys[dedup_key]) < dedup_window:
 			show_toast = false
 		else:
 			_toast_recent_keys[dedup_key] = now_unix

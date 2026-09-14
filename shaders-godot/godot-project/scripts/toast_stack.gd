@@ -83,7 +83,7 @@ static func present(layer: Control, cfg: Dictionary) -> Toast:
 	t.dismissed.connect(func(_x): relayout(layer))
 	trim(layer)
 	# Height is only known after a layout pass, so settle first.
-	t.call_deferred("set", "position", Vector2(PanelTheme.TOAST_STACK_W, 0.0))
+	t.call_deferred("set", "position", Vector2(Toast.SLIDE_IN_X, 0.0))
 	# The layer is a plain Control, not a Container - it has no queue_sort.
 	# _deferred_relayout is what actually places the toast, two frames on.
 	_deferred_relayout(layer)

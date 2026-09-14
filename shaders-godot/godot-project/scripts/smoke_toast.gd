@@ -83,6 +83,55 @@ func _initialize() -> void:
 	t.check(titleonly.body_label() == null,
 		"a toast with no body must return null, not the title label")
 
+	# --- Every toast carries a visible dismiss control ---
+	# "Click anywhere on the card" was the only way out, which is not an
+	# affordance anyone can see — and on touch it fights the action button.
+	var closable: Toast = Toast.create({"title": "Fed", "body": "The school came up."})
+	host.add_child(closable)
+	await process_frame
+	var close_btn: Button = _find_close_button(closable)
+	t.check(close_btn != null, "a toast exposes a visible dismiss button")
+	if close_btn != null:
+		t.check(not close_btn.tooltip_text.is_empty(),
+			"the dismiss button is labelled for hover / screen readers")
+		close_btn.pressed.emit()
+		t.check(closable.is_dismissing(),
+			"pressing the dismiss button actually dismisses the toast")
+
+	# An actionable toast keeps BOTH controls: dismissing and acting are
+	# different intents and must not share one button.
+	var acted: Array[int] = []
+	var actionable: Toast = Toast.create({
+		"body": "Oxygen dipping.",
+		"action_label": "Aerate",
+		"action": func(): acted.append(1),
+	})
+	host.add_child(actionable)
+	await process_frame
+	t.check(_find_close_button(actionable) != null,
+		"a toast with an action still gets its own dismiss button")
+
+	# --- Toasts dock bottom-left, clear of the rail-side panels ---
+	var dock_layer := Control.new()
+	root.add_child(dock_layer)
+	PanelTheme.layout_toast_stack(dock_layer, 40.0)
+	t.approx(dock_layer.anchor_left, 0.0, "toast stack anchors to the left edge")
+	t.approx(dock_layer.anchor_right, 0.0, "toast stack does not stretch right")
+	t.check(dock_layer.offset_left >= 0.0,
+		"left-docked offsets are measured inward from the left edge, got %.1f"
+			% dock_layer.offset_left)
+	t.approx(dock_layer.offset_right - dock_layer.offset_left,
+		PanelTheme.TOAST_STACK_W, "the stack keeps its width when docked left")
+	var docked_x: float = dock_layer.offset_left
+	# An open left panel must push the stack aside, not sit on top of it.
+	PanelTheme.layout_toast_stack(dock_layer, 40.0, PanelTheme.EDGE_MARGIN + 320.0)
+	t.check(dock_layer.offset_left > docked_x,
+		"a left-docked panel pushes the toast stack clear of itself")
+	t.check(Toast.SLIDE_IN_X < 0.0,
+		"toasts slide in from off the LEFT edge now they dock there")
+	t.check(Toast.SLIDE_OUT_X < 0.0, "and leave the same way")
+	dock_layer.queue_free()
+
 	# --- Critical messages linger ---
 	var crit_toast: Toast = Toast.create(
 		{"title": "!", "body": "Low O2", "level": Toast.Level.CRITICAL})
@@ -186,3 +235,15 @@ func _initialize() -> void:
 	t.equals(ToastStack.relayout(null), 0, "relayout(null) is a no-op")
 
 	quit(t.finish())
+
+
+# The toast's dismiss control, wherever it sits in the card's layout.
+func _find_close_button(node: Node) -> Button:
+	for child in node.get_children():
+		var btn := child as Button
+		if btn != null and btn.text == "✕":
+			return btn
+		var nested: Button = _find_close_button(child)
+		if nested != null:
+			return nested
+	return null

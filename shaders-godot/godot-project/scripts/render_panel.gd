@@ -12,6 +12,10 @@ var _res_option: OptionButton
 var _film_option: OptionButton
 var _dither: HSlider
 var _dither_label: Label
+var _palette_lock: HSlider
+var _palette_lock_label: Label
+var _light_shaping: HSlider
+var _light_shaping_label: Label
 var _water_extinction: HSlider
 var _water_extinction_label: Label
 var _palette_check: CheckBox
@@ -22,6 +26,9 @@ var _blue_noise_label: Label
 var _experimental_check: CheckBox
 var _pixel_purity_check: CheckBox
 var _colorblind_option: OptionButton
+var _duotone_option: OptionButton
+var _duotone_levels: HSlider
+var _duotone_levels_label: Label
 var _palette_inspector: PaletteInspector
 var _photo_mode_check: CheckBox
 var _signature_shot_btn: Button
@@ -142,6 +149,19 @@ const RESOLUTIONS: Array = [
 	{"label": "1024×576 (high default)", "w": 1024, "h": 576},
 ]
 const MSAA_LABELS: Array[String] = ["Off", "2x", "4x", "8x"]
+# Duotone ramps (keys into AestheticsRuntime.DUOTONE_RAMPS). Index order is
+# the OptionButton order — append, never reorder.
+const DUOTONE_MODES: Array[String] = [
+	"none", "moonlight", "handheld", "sepia", "ink", "amber",
+]
+const DUOTONE_LABELS: Array[String] = [
+	"Full color",
+	"Duotone — moonlight (navy / ice)",
+	"Duotone — handheld (olive / lime)",
+	"Duotone — sepia (umber / cream)",
+	"Duotone — ink (black / paper)",
+	"Duotone — amber (CRT phosphor)",
+]
 
 
 func _ready() -> void:
@@ -243,14 +263,31 @@ func _build_ui() -> void:
 		"Pick a fidelity tier, then tune the look. Apply rebuilds the render viewport."))
 	outer.add_child(PanelTheme.make_rule())
 
-	_build_quality_hero(outer)
-
-	outer.add_child(PanelTheme.make_rule())
-
+	# The fidelity hero used to sit here, directly on `outer`, ABOVE the tabs
+	# and outside any scroll container. It is ~600 px of buttons, frame graph
+	# and sliders, so on a normal panel height it ate everything and left the
+	# tab bodies a ~90 px slot — the Color theme tab was effectively
+	# unreachable, since a ScrollContainer that short cannot be scrolled to
+	# content you cannot see. It is a tab of its own now: three equal-height
+	# scrolling tabs under a pinned title, each with the full panel body.
 	var tabs := TabContainer.new()
 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Floor so the footer + title can never squeeze the bodies flat again.
+	tabs.custom_minimum_size = Vector2(0, 240)
 	outer.add_child(tabs)
+
+	var fidelity_scroll := ScrollContainer.new()
+	fidelity_scroll.name = "Fidelity"
+	fidelity_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fidelity_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	fidelity_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	tabs.add_child(fidelity_scroll)
+
+	var vbox_fidelity := VBoxContainer.new()
+	vbox_fidelity.add_theme_constant_override("separation", 8)
+	vbox_fidelity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fidelity_scroll.add_child(vbox_fidelity)
 
 	var render_scroll := ScrollContainer.new()
 	render_scroll.name = "Post-process"
@@ -276,8 +313,11 @@ func _build_ui() -> void:
 	vbox_color.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	color_scroll.add_child(vbox_color)
 
+	_build_quality_hero(vbox_fidelity)
 	_build_rendering_tab(vbox)
 	_build_color_tab(vbox_color)
+	# Fidelity first: opening the panel should still land on the one-tap tiers.
+	tabs.current_tab = 0
 
 	# Footer buttons — attached to `outer` (NOT tab bodies) so Close + Save +
 	# Apply stay pinned at the bottom of the panel below the scroll area.
@@ -416,6 +456,33 @@ func _build_rendering_tab(vbox: VBoxContainer) -> void:
 	_dither_label = Label.new()
 	_dither = PanelTheme.add_slider_row(palette_body, "Dither strength", 0.0, 1.0, 0.05, _dither_label)
 	_dither.value_changed.connect(func(v): _on_dither(v))
+	# VISUAL_DIRECTIONS #5 — the final nearest-palette snap. At 1.0 every pixel
+	# the game emits is a palette entry; below that the post chain's outline,
+	# grain and FXAA are allowed to drift off it, which is what a reproducible
+	# capture measured as 15,535 colours out of a 48-entry palette.
+	_palette_lock_label = Label.new()
+	_palette_lock = PanelTheme.add_slider_row(
+		palette_body, "Palette lock", 0.0, 1.0, 0.05, _palette_lock_label)
+	_palette_lock.tooltip_text = \
+		"Re-snap the finished frame onto the palette. 1 = strict 48 colours."
+	_palette_lock.value_changed.connect(func(v: float):
+		TankConfig.palette_lock = v
+		_palette_lock_label.text = "%.2f" % v
+		_push_live_quantize_param("palette_lock", v))
+	# VISUAL_DIRECTIONS #1 — how hard the tank's own fixture shapes a lit room.
+	# 0 is the pre-2026-09-13 behaviour where the cone multiplied by one and
+	# nothing in the tank responded to the lamp.
+	_light_shaping_label = Label.new()
+	_light_shaping = PanelTheme.add_slider_row(
+		palette_body, "Light shaping", 0.0, 1.0, 0.05, _light_shaping_label)
+	_light_shaping.tooltip_text = \
+		"How much the fixture's cone shapes the tank. 0 = flat, unlit look."
+	_light_shaping.value_changed.connect(func(v: float):
+		TankConfig.light_shaping = v
+		_light_shaping_label.text = "%.2f" % v
+		var main_n: Node = PanelTheme.main_scene(self)
+		if main_n != null and main_n.has_method("_apply_render_config"):
+			main_n.call("_apply_render_config"))
 	# Water column: how hard the tank's water eats light on its way to the eye.
 	# Red goes first, so raising this pushes depth toward blue-green and gives
 	# the tank atmospheric perspective. 0 renders the contents as if in air.
@@ -757,6 +824,27 @@ func _build_color_tab(vbox: VBoxContainer) -> void:
 	hint.text = tr("Global material tint overlay — does not change saved fish or plant genomes. Preview is live.")
 	vbox.add_child(hint)
 
+	_add_section(vbox, "Duotone")
+	var duotone_desc := PanelTheme.make_description()
+	duotone_desc.text = tr("Quantizes the whole tank through one two-color ramp — "
+		+ "this overrides the biotope palette and every tint below. "
+		+ "Fewer tones = harder 1-bit stipple.")
+	vbox.add_child(duotone_desc)
+	_duotone_option = OptionButton.new()
+	for i in DUOTONE_MODES.size():
+		_duotone_option.add_item(tr(DUOTONE_LABELS[i]), i)
+	_duotone_option.item_selected.connect(func(idx: int):
+		TankConfig.duotone_mode = DUOTONE_MODES[clampi(idx, 0, DUOTONE_MODES.size() - 1)]
+		_commit_render_to_main())
+	vbox.add_child(_duotone_option)
+	_duotone_levels_label = Label.new()
+	_duotone_levels = PanelTheme.add_slider_row(vbox, "Tones", 2.0, 16.0, 1.0,
+		_duotone_levels_label)
+	_duotone_levels.value_changed.connect(func(v):
+		TankConfig.duotone_levels = int(v)
+		_duotone_levels_label.text = "%d" % int(v)
+		_commit_render_to_main())
+
 	_add_section(vbox, "Film stock")
 	var film_hint := PanelTheme.make_description()
 	film_hint.text = tr("One-tap mood presets — set tint, dither, vignette and bloom together. Save to keep.")
@@ -848,6 +936,8 @@ func _add_section(parent: Node, label: String) -> void:
 func _pull_from_config() -> void:
 	_pull_resolution_option()
 	_dither.value = TankConfig.dither_strength
+	_sync_slider(_palette_lock, TankConfig.palette_lock)
+	_sync_slider(_light_shaping, TankConfig.light_shaping)
 	if _water_extinction != null:
 		_water_extinction.set_block_signals(true)
 		_water_extinction.value = TankConfig.water_extinction
@@ -908,6 +998,16 @@ func _pull_from_config() -> void:
 			else 2 if TankConfig.colorblind_palette == "deutan"
 			else 3 if TankConfig.colorblind_palette == "tritan"
 			else 0)
+	if _duotone_option != null:
+		var duo_idx: int = DUOTONE_MODES.find(TankConfig.duotone_mode)
+		_duotone_option.set_block_signals(true)
+		_duotone_option.select(maxi(duo_idx, 0))
+		_duotone_option.set_block_signals(false)
+	if _duotone_levels != null:
+		_duotone_levels.set_block_signals(true)
+		_duotone_levels.value = float(TankConfig.duotone_levels)
+		_duotone_levels.set_block_signals(false)
+		_duotone_levels_label.text = "%d" % TankConfig.duotone_levels
 	if _photo_mode_check != null:
 		_photo_mode_check.set_block_signals(true)
 		_photo_mode_check.button_pressed = TankConfig.photo_mode_enhanced
@@ -1078,8 +1178,23 @@ func _draw_frame_graph() -> void:
 		_frame_graph.draw_polyline(_graph_pts, Color(0.85, 0.92, 0.55, 0.95), 1.2)
 
 
+# Set a slider without re-firing its value_changed handler. Several of these
+# write straight back into TankConfig, so a plain assignment during a refresh
+# is a write disguised as a read.
+func _sync_slider(slider: HSlider, value: float) -> void:
+	if slider == null:
+		return
+	slider.set_block_signals(true)
+	slider.value = value
+	slider.set_block_signals(false)
+
+
 func _update_labels() -> void:
 	_dither_label.text = "%.2f" % _dither.value
+	if _palette_lock_label != null:
+		_palette_lock_label.text = "%.2f" % _palette_lock.value
+	if _light_shaping_label != null:
+		_light_shaping_label.text = "%.2f" % _light_shaping.value
 	_fog_density_label.text = "%.3f" % _fog_density.value
 	_fog_anisotropy_label.text = "%.2f" % _fog_anisotropy.value
 	_fog_ambient_label.text = "%.2f" % _fog_ambient.value
@@ -1174,6 +1289,8 @@ func _on_film_stock_selected(idx: int) -> void:
 	_sync_material_sliders()
 	if _dither != null:
 		_dither.value = TankConfig.dither_strength
+	_sync_slider(_palette_lock, TankConfig.palette_lock)
+	_sync_slider(_light_shaping, TankConfig.light_shaping)
 	if _water_extinction != null:
 		_water_extinction.set_block_signals(true)
 		_water_extinction.value = TankConfig.water_extinction

@@ -11,6 +11,15 @@ class_name World
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
 const CanopyDensityBuilder = preload("res://scripts/canopy_density.gd")
+# Preloaded rather than reached by class_name: a class added since the last
+# editor import is not yet in the global class cache, so a CLI run (the capture
+# harness, a headless smoke) fails to parse this file entirely. Cheap insurance
+# for any newly-added class.
+# Named *Script so they do not shadow the global class names once the editor
+# has registered them — the preload is for CLI runs before that import, not a
+# replacement for the class.
+const ScapeCompositionScript = preload("res://scripts/scape_composition.gd")
+const CareFeedbackScript = preload("res://scripts/care_feedback.gd")
 const MicrofaunaSwarm = preload("res://scripts/microfauna_swarm.gd")
 const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
@@ -40,6 +49,34 @@ var clams_root: Node3D = null
 # as bacteria balance out and shrimp / otos graze it.
 var _driftwood_voxels: Array[MeshInstance3D] = []
 var _last_contact_ao_points: Array = []
+# Which side of the tank the focal mass leans to, -1 or +1. Drawn once from
+# the seeded RNG so a tank is asymmetric the same way every time it is built
+# (VISUAL_DIRECTIONS #17). 0 = not yet drawn.
+var _focal_side_cache: int = 0
+# How far the hardscape slides toward the focal power-point, as a fraction of
+# the power-point's own offset.
+#
+# OFF, DELIBERATELY. The machinery below works and the composition metric liked
+# it — measured focal offset went 0.062 (no bias) -> 0.085 (plant bias only)
+# -> 0.103 (shift 0.6). Then `smoke_scenario_layouts` failed, and it was right
+# to: sliding the wood does not just move the wood. Plants are placed against
+# `_is_hardscape_occupied`, so a displaced tangle REJECTS the plantings the
+# layouts are contracted to produce — `apex_tank` lost its corner refuge
+# (1 corner plant of 22) and `polyp_lab`'s carpet drifted past its radius.
+# Confirmed by bisection: with this at 0.0 and the plant bias untouched, the
+# layout smoke passes.
+#
+# The lesson is that hardscape and planting are coupled through occupancy, so
+# moving one without re-authoring the other trades a composition metric for a
+# layout guarantee. Getting past ~0.12 needs the layouts to compose AROUND a
+# focal mass — a background stand set back in Z beside the wood — which is a
+# layout change, not a constant. Left here, wired and documented, so that work
+# has somewhere to start.
+#
+# (Item counts also vary 91-104 between runs of the same seed, because the
+# layout spawn interleaves `await get_tree().process_frame`. Differences under
+# ~0.03 in the measured offset are noise.)
+const HARDSCAPE_FOCAL_SHIFT: float = 0.0
 # Substrate ripple-sculpting state. Phase walks forward in sim-time so the
 # sand bed's ripple pattern evolves over sim-minutes. Strength + direction
 # are static per session; aeration angle drives the direction so flow
@@ -484,7 +521,7 @@ var _room_window_glow: OmniLight3D = null
 var _room_floor_caustic: MeshInstance3D = null
 var _room_floor_caustic_mat: ShaderMaterial = null
 var _surface_dimples: Array[Dictionary] = []
-var _room_haze_base: Color = Color(0.92, 0.84, 0.74)
+var _room_haze_base: Color = Color(0.20, 0.18, 0.17)
 var _room_clock_hour_pivot: Node3D = null
 var _room_clock_min_pivot: Node3D = null
 var _room_record_disc: MeshInstance3D = null
@@ -548,7 +585,10 @@ func _push_water_column() -> void:
 		var th: Variant = _water_material_ref.get_shader_parameter("turbidity_haze")
 		if th != null:
 			turb = float(th)
-	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb)
+	var depth_gain: float = VoxelMat.WATER_DEPTH_GAIN_DEFAULT
+	if cfg != null and cfg.get("depth_legibility") != null:
+		depth_gain = float(cfg.get("depth_legibility"))
+	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb, depth_gain)
 
 
 func _refresh_atmosphere_caches(adt: float) -> void:
@@ -694,6 +734,11 @@ func _process(dt: float) -> void:
 			var room_dark: float = 0.0
 			if _cfg_node != null:
 				room_dark = clampf(float(_cfg_node.room_darkness), 0.0, 1.0)
+			# Night crushes the room whether or not the player asked for it
+			# (VISUAL_DIRECTIONS #15). Same effective value the shaped cone
+			# uses, so the room lights and the shader agree about the hour.
+			room_dark = LightingRig.effective_room_darkness(
+				room_dark, float(ln.get("deep_night", 0.0)))
 			WorldRoomBuilder.tick_room_lights(
 				_room_tank_spill, _room_wall_bounce, _room_side_light,
 				_room_desk_rim, _room_window_glow, ln,
@@ -973,7 +1018,13 @@ func _process(dt: float) -> void:
 		# Unconditional: the shaped cone must reach the foliage shaders even
 		# when volumetric beams are off, because it is what lights the
 		# plants, not just what draws the visible shaft.
-		_sync_beam_cone_globals(fixture_color, fixture_energy, darkness,
+		# VISUAL_DIRECTIONS #15 — night crushes the room on the clock, not only
+		# when the player finds the room_darkness slider. Without this the
+		# day/night cycle is a tint: the same composition at midnight as at
+		# noon, in a different colour.
+		var room_dark_now: float = LightingRig.effective_room_darkness(
+			darkness, deep_night)
+		_sync_beam_cone_globals(fixture_color, fixture_energy, room_dark_now,
 			fixture_active)
 		var fixture_glow: float = LightingRig.lamp_dominance(deep_night, darkness) \
 			* (1.0 if fixture_active else 0.0)
@@ -1122,9 +1173,15 @@ func _process(dt: float) -> void:
 		# of the shaft survives.
 		var beam_cfg := _cfg_node
 		if beam_cfg != null:
+			# The EFFECTIVE darkness, not the raw setting (VISUAL_DIRECTIONS
+			# #13/#15). A visible shaft only reads against a dark surround, and
+			# night now supplies that surround on its own — so the beams come
+			# out at night without the player having to find a slider, which is
+			# what kept the whole volumetric path out of the default frame.
 			ray_alpha = LightingRig.beam_alpha(
 				ray_alpha, float(beam_cfg.beam_strength),
-				float(beam_cfg.room_darkness))
+				LightingRig.effective_room_darkness(
+					float(beam_cfg.room_darkness), deep_night))
 		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
 		# Slightly higher exponent → softer cylinder edges (less "solid cone").
 		var exponent: float = lerp(1.35, 2.65, (anisotropy + 0.9) / 1.8)
@@ -1633,7 +1690,7 @@ func _drift_floaters(adt: float) -> void:
 		if fp.linked_parent_id != "" and fp.tether_timer < 4.5:
 			fp.tether_timer += adt
 			var parent_v: Variant = _floater_by_id.get(fp.linked_parent_id)
-			if parent_v is FloatingPlant and is_instance_valid(parent_v):
+			if is_instance_valid(parent_v) and parent_v is FloatingPlant:
 				var parent: FloatingPlant = parent_v
 				if parent.position.is_finite():
 					var rest: Vector3 = fp.get_meta("tether_offset", Vector3.ZERO)
@@ -2072,7 +2129,7 @@ func _spawn_pos_clear_of_fish(pos: Vector3, body_r: float) -> bool:
 	if fauna_root == null:
 		return true
 	for c in fauna_root.get_children():
-		if not (c is Fish) or not is_instance_valid(c):
+		if not is_instance_valid(c) or not (c is Fish):
 			continue
 		var other: Fish = c as Fish
 		if other._dying:
@@ -3298,6 +3355,24 @@ func _build_hardscape(populate: bool = true) -> void:
 	if build_driftwood:
 		wood_limbs = DriftwoodForm.limbs(wood_form, wood_rng,
 			TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, WATER_HEIGHT)
+		# VISUAL_DIRECTIONS #17 — slide the whole tangle toward the tank's
+		# focal power-point.
+		#
+		# Biasing the plants alone moved the measured focal offset from 0.062
+		# to 0.085 and no further, because hardscape mass scales with the cube
+		# of its radius and outweighs everything growing. A TRANSLATION rather
+		# than a pull toward a point: the driftwood's form is the thing
+		# DriftwoodForm exists to shape, and collapsing it toward a target
+		# would flatten the shape to move the average.
+		var wood_shift: float = ScapeCompositionScript.power_point_x(
+			TANK_HALF_W, _focal_side()) * HARDSCAPE_FOCAL_SHIFT
+		if absf(wood_shift) > 0.01:
+			for limb in wood_limbs:
+				for key in ["p0", "p1", "p2", "p3"]:
+					var cp: Vector3 = limb[key]
+					cp.x = clampf(cp.x + wood_shift,
+						-TANK_HALF_W * 0.86, TANK_HALF_W * 0.86)
+					limb[key] = cp
 	var base_steps := int(round(80.0 * hs_driftwood_mult)) if build_driftwood else 0
 	for limb in wood_limbs:
 		var l0: Vector3 = limb["p0"]
@@ -4531,6 +4606,18 @@ func _spawn_epiphytes_on_hardscape(_specs: Array, moss_spec: Dictionary,
 		_spawn_plant(fern_spec, jf_pos, _rng.randi_range(1, 2))
 
 
+# Derived from the tank seed, NOT from _rng: drawing from the shared stream
+# would shift every placement made after the first caller, and hardscape and
+# plants ask at different points in the build.
+func _focal_side() -> int:
+	if _focal_side_cache == 0:
+		var seed_src: int = 12345
+		if sim != null and sim.get("tank_seed") != null:
+			seed_src = int(sim.tank_seed)
+		_focal_side_cache = 1 if ((seed_src ^ 0xF0CA1) & 1) == 0 else -1
+	return _focal_side_cache
+
+
 func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 		layout: Dictionary) -> void:
 	var m_valli: float = float(palette.get("valli", 1.0))
@@ -5312,6 +5399,23 @@ func _plant_youth_scale() -> float:
 
 func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 	initial_height = maxi(1, int(round(float(initial_height) * _plant_youth_scale())))
+	# VISUAL_DIRECTIONS #17 — pull the tall species toward the tank's focal
+	# power-point before fitting.
+	#
+	# Every layout in _spawn_plants_for_layout is symmetric by construction
+	# (two opposite corners, a disc on the origin), and a measured capture put
+	# the resulting focal offset at 0.062 of half-width: dead centre. Biasing
+	# by HEIGHT rather than uniformly is the difference between building a
+	# background stand on one side with open foreground on the other, and just
+	# sliding the same centred blob sideways — carpets keep their spread.
+	var mature_hint: int = 6
+	var max_range_hint: Variant = spec.get("max")
+	if max_range_hint is Array and (max_range_hint as Array).size() >= 2:
+		mature_hint = int((max_range_hint as Array)[1])
+	var pull: float = ScapeCompositionScript.focal_pull_for_height(mature_hint)
+	if pull > 0.001:
+		pos.x = ScapeCompositionScript.bias_toward(
+			pos.x, ScapeCompositionScript.power_point_x(TANK_HALF_W, _focal_side()), pull)
 	var is_epiphyte: bool = not not spec.get("is_epiphyte", false)
 	var reach: float = float(spec.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
 	# Epiphytes anchor to driftwood / rock above the substrate — skip the
@@ -5345,7 +5449,7 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 			var spacing: float = maxf(0.32, reach * 0.55)
 			var sp2: float = spacing * spacing
 			for sibling in plants_root.get_children():
-				if not (sibling is Plant) or not is_instance_valid(sibling):
+				if not is_instance_valid(sibling) or not (sibling is Plant):
 					continue
 				var op: Plant = sibling
 				if op.is_epiphyte:
@@ -6114,23 +6218,36 @@ func _apply_sphere_aquarium_lighting() -> void:
 func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 		darkness: float, active: bool) -> void:
 	var spot: SpotLight3D = null
+	var positions: Array = []
 	for s in _light_fixture_spots:
 		if is_instance_valid(s):
-			spot = s
-			break
+			if spot == null:
+				spot = s
+			positions.append(s.global_position)
 	if spot == null or not active or fixture_energy <= 0.001:
 		RenderingServer.global_shader_parameter_set(
 			"iaq_beam_cone", Vector4(-1.0, -1.0, 30.0, 0.0))
+		RenderingServer.global_shader_parameter_set(
+			"iaq_beam_axis", Vector4(0.0, 0.0, 0.0, 0.0))
 		return
+	# A bar is a segment, not its leftmost spot (VISUAL_DIRECTIONS #1).
+	var seg: Dictionary = LightingRig.beam_segment(positions)
+	var axis: Vector3 = seg["axis"]
 	RenderingServer.global_shader_parameter_set(
-		"iaq_beam_origin", spot.global_position)
+		"iaq_beam_origin", seg["origin"])
+	RenderingServer.global_shader_parameter_set(
+		"iaq_beam_axis",
+		Vector4(axis.x, axis.y, axis.z, 1.0 if bool(seg["is_line"]) else 0.0))
 	RenderingServer.global_shader_parameter_set(
 		"iaq_beam_dir", LightingRig.spot_forward(spot))
 	RenderingServer.global_shader_parameter_set(
 		"iaq_beam_cone", LightingRig.cone_params(
 			spot.spot_angle, spot.spot_range, fixture_energy))
+	var shaping: float = 1.0
+	if _cfg_node != null and _cfg_node.get("light_shaping") != null:
+		shaping = float(_cfg_node.get("light_shaping"))
 	RenderingServer.global_shader_parameter_set(
-		"iaq_beam_tint", LightingRig.cone_tint(fixture_color, darkness))
+		"iaq_beam_tint", LightingRig.cone_tint(fixture_color, darkness, shaping))
 
 
 # --- Live light manipulation (see scripts/light_handle.gd) --------------
@@ -6312,7 +6429,6 @@ func _rebuild_light_beam() -> void:
 			child.queue_free()
 		elif child is GPUParticles3D and String(child.name).begins_with("DustMotes"):
 			child.queue_free()
-	var height_above: float = float(_cfg_node.light_height)
 	for s in _light_fixture_spots:
 		if is_instance_valid(s):
 			_add_god_ray_beam(_light_fixture_root, s, s.spot_angle)
@@ -6685,6 +6801,7 @@ func _update_fish_lighting_contributors() -> void:
 			else:
 				blob_packed.append(Vector4.ZERO)
 		VoxelMat.update_substrate_blob_shadows(blob_packed)
+		_publish_occluder_field(blob_packed)
 
 
 func _update_canopy_density_input() -> void:
@@ -6692,22 +6809,88 @@ func _update_canopy_density_input() -> void:
 	if now_ms < _canopy_density_next_ms:
 		return
 	_canopy_density_next_ms = now_ms + 3000
-	var enabled: bool = VoxelMat.shader_perf_tier() < 2 and not _god_ray_materials.is_empty()
-	if enabled:
+	# The map is worth building whenever the perf tier allows, not only when
+	# volumetric beams exist. It used to be gated on _god_ray_materials because
+	# the beams were its only consumer; the substrate is a consumer now, and a
+	# tank with the beams switched off still has plants shading its floor.
+	var buildable: bool = VoxelMat.shader_perf_tier() < 2
+	if buildable:
 		var image: Image = CanopyDensityBuilder.build(
 			sim.plants, TANK_HALF_W, TANK_HALF_D)
 		if _canopy_density_tex == null:
 			_canopy_density_tex = ImageTexture.create_from_image(image)
 		else:
 			_canopy_density_tex.update(image)
+	var beams: bool = buildable and not _god_ray_materials.is_empty()
+	var bounds := Vector4(
+		-TANK_HALF_W, -TANK_HALF_D, TANK_HALF_W * 2.0, TANK_HALF_D * 2.0)
 	for mat in _god_ray_materials:
 		if mat == null:
 			continue
-		mat.set_shader_parameter("canopy_attenuation", 0.52 if enabled else 0.0)
-		mat.set_shader_parameter("canopy_bounds", Vector4(
-			-TANK_HALF_W, -TANK_HALF_D, TANK_HALF_W * 2.0, TANK_HALF_D * 2.0))
-		if enabled:
+		mat.set_shader_parameter("canopy_attenuation", 0.52 if beams else 0.0)
+		mat.set_shader_parameter("canopy_bounds", bounds)
+		if beams:
 			mat.set_shader_parameter("canopy_density_tex", _canopy_density_tex)
+	# The same map shades the floor the beams land on (VISUAL_DIRECTIONS #4).
+	# Weaker than the beam attenuation: a leaf blocks a shaft of light almost
+	# completely, but the floor beneath it still catches scattered light from
+	# the rest of the tank.
+	VoxelMat.update_substrate_canopy(
+		_canopy_density_tex, bounds, 0.34 if buildable else 0.0)
+
+
+# VISUAL_DIRECTIONS #4 — hand the tank's shadow casters to every lit surface,
+# not just the substrate.
+#
+# `blob_packed` is already the merged fish + plant-crown set the substrate
+# uses, ordered by height above the bed and camera proximity. Hardscape rides
+# along from the contact-AO pass, which only ever reached the sand under the
+# wood; with a global field the same footprints darken whatever stands beside
+# them too.
+func _publish_occluder_field(blob_packed: Array) -> void:
+	if VoxelMat.shader_perf_tier() >= 2:
+		VoxelMat.disable_occluders()
+		return
+	var fish_and_crowns: Array = []
+	for v in blob_packed:
+		if v is Vector4 and (v as Vector4).w > 0.001:
+			fish_and_crowns.append(v)
+	var merged: Array = VoxelMat.merge_occluders(
+		fish_and_crowns, [], _last_contact_ao_points)
+	# 0.62 rather than 1.0: these are sphere proxies for voxel bodies, so a
+	# full-strength shadow would read as a hard round blob under an angular
+	# fish. Enough to ground, not enough to advertise the proxy.
+	VoxelMat.publish_occluders(merged, 0.62 if not merged.is_empty() else 0.0)
+
+
+# VISUAL_DIRECTIONS #16 — spend a care action's feedback in the TANK.
+#
+# The grammar lives in CareFeedback (pure); this is the hand that spends it on
+# the machinery that already exists: the transient particle pool, the glass
+# wipe and the substrate disturb. Before this, the strongest feedback any care
+# action produced was a flash on the button the player had just pressed.
+func play_care_feedback(action: String, magnitude: float,
+		origin: Vector3 = Vector3.INF) -> bool:
+	var evt: Dictionary = CareFeedbackScript.event_for(action, magnitude)
+	if evt.is_empty():
+		return false
+	var at: Vector3 = origin
+	if at == Vector3.INF:
+		at = Vector3(0.0, WATER_HEIGHT - 0.25, 0.0)
+	if bool(evt.get("at_surface", false)):
+		at.y = WATER_HEIGHT - 0.18
+	at = clamp_xyz_in_tank(at, 0.35)
+	var spread: float = maxf(TANK_HALF_W * 0.35, 0.6)
+	for off in CareFeedbackScript.burst_offsets(int(evt.get("bursts", 1)), spread):
+		TransientParticlePool.burst(self, String(evt["kind"]),
+			clamp_xyz_in_tank(at + off, 0.3))
+	var wipe: float = float(evt.get("glass_wipe", 0.0))
+	if wipe > 0.01:
+		wipe_glass_dust(wipe)
+	var disturb: float = float(evt.get("substrate_disturb", 0.0))
+	if disturb > 0.01:
+		disturb_substrate(disturb)
+	return true
 
 
 func _spawn_floaters() -> void:
@@ -8774,10 +8957,10 @@ func _build_room_environment() -> void:
 	# Use VoxelMat.make_room so the desk + wall fade toward the warm
 	# haze colour with view distance — pushes the room geometry back
 	# behind the tank visually.
-	var haze_tint: Color = Color(
-		light_color.r * 0.92 + 0.08,
-		light_color.g * 0.86 + 0.06,
-		light_color.b * 0.78 + 0.04)
+	# Distant room surfaces recede toward the room's own shadow with a trace of
+	# lamp warmth — NOT toward the lamp itself, which is what erased the value
+	# ladder above. See WorldRoomBuilder.haze_target (VISUAL_DIRECTIONS #2).
+	var haze_tint: Color = WorldRoomBuilder.haze_target(light_color, desk_color)
 	_room_haze_base = haze_tint
 	var desk_mat: ShaderMaterial = VoxelMat.make_room(desk_color, 0.55, haze_tint)
 	var desk_dark_mat: ShaderMaterial = VoxelMat.make_room(desk_color.darkened(0.18), 0.55, haze_tint)

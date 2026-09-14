@@ -121,7 +121,9 @@ static func is_inside_tank(world: Object, x: float, z: float,
 static func _has(provider: Object, method: String) -> bool:
 	if provider == null:
 		return false
-	if provider is Node and not is_instance_valid(provider):
+	# See mind_legible._field: testing `is` first throws on the very case
+	# this is meant to detect.
+	if not is_instance_valid(provider):
 		return false
 	if provider.has_method(method):
 		return true

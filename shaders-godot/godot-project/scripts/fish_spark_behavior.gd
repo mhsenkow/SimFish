@@ -223,7 +223,7 @@ static func pulse_feed_contagion_at(sim: Node, pos: Vector3, eater: Node,
 	const RADIUS: float = 7.0
 	const R2: float = RADIUS * RADIUS
 	for n in sim.fish:
-		if not (n is Fish) or not is_instance_valid(n) or n == eater:
+		if not is_instance_valid(n) or not (n is Fish) or n == eater:
 			continue
 		var d2: float = n.position.distance_squared_to(pos)
 		if d2 > R2:

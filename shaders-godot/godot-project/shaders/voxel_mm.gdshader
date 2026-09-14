@@ -18,6 +18,7 @@ uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -54,5 +55,8 @@ void fragment() {
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
 	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+	// Analytic fixture cone — the only light model an unshaded pipeline has.
+	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
+	col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
 	ALBEDO = col;
 }

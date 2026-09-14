@@ -169,9 +169,10 @@ func _subject() -> Object:
 	if main_ref == null or not is_instance_valid(main_ref):
 		return null
 	var target: Variant = main_ref.get("_follow_target")
-	if target == null or not (target is Object):
-		return null
-	if target is Node and not is_instance_valid(target):
+	# Validity BEFORE any `is`: a freed instance throws on `is`, and a
+	# followed creature dying is routine. is_instance_valid also returns
+	# false for non-Object variants, which is the same answer this wanted.
+	if target == null or not is_instance_valid(target):
 		return null
 	return target
 

@@ -27,6 +27,21 @@ global uniform vec4 iaq_palette_water;
 // non-aquatic surface pay one float compare.
 global uniform vec4 iaq_water_absorb;
 global uniform vec4 iaq_water_body;
+// x = depth legibility gain, yzw spare (VISUAL_DIRECTIONS #11).
+//
+// The extinction below is physically shaped and, at aquarium scale, almost
+// invisible: measured against the shipped constants, the whole water column
+// removes about 9% of red and 1.5% of blue between the surface and the
+// substrate. That is the entire sense of depth the medium contributes, while
+// the room haze it competes with was moving the background by 60 luminance
+// levels. Correct physics, an order of magnitude under the noise.
+//
+// This gain scales the DEPTH half of the light path only. Scaling the whole
+// path — i.e. raising `strength` — deepens the vertical gradient and the
+// horizontal wash together, and the horizontal wash is what turned the tank
+// cyan at the default camera radius the last time someone tried it. This is a
+// declared artistic control, not a claim about water.
+global uniform vec4 iaq_water_depth;
 
 
 // `world_y` is the fragment's world height, `view_dist` its distance from the
@@ -46,7 +61,8 @@ vec3 apply_water_column(vec3 col, float world_y, float view_dist) {
 	// that distance is AIR — the camera orbits outside the glass, and only the
 	// last stretch is actually in water. Weighting it fully turned the whole
 	// tank cyan at the default camera radius.
-	float path = depth + view_dist * 0.35;
+	float depth_gain = max(iaq_water_depth.x, 0.01);
+	float path = depth * depth_gain + view_dist * 0.35;
 	vec3 transmit = exp(-iaq_water_absorb.rgb * path * strength);
 	// In-scatter saturates with path length: distant water tends toward its own
 	// colour rather than toward black. Kept gentle — this is a wash, not fog.

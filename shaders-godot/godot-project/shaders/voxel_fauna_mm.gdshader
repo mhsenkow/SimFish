@@ -17,7 +17,12 @@ uniform float belly_flash : hint_range(0.0, 1.0) = 0.0;
 uniform float bioluminescence : hint_range(0.0, 1.0) = 0.0;
 uniform vec3 biolum_color : source_color = vec3(0.65, 0.85, 1.0);
 uniform float room_haze_strength : hint_range(0.0, 1.0) = 0.0;
-uniform vec3 room_haze_color : source_color = vec3(0.92, 0.84, 0.74);
+// Aerial-perspective target for room geometry. Dark on purpose: distance
+// pushes a surface toward the ambient it sits in, and in a room whose
+// brightest object is meant to be the tank that ambient is dark. A warm
+// near-white here is what erased the room value ladder (VISUAL_DIRECTIONS #2)
+// — VoxelMat.update_room_haze now caps whatever is written.
+uniform vec3 room_haze_color : source_color = vec3(0.20, 0.18, 0.17);
 uniform float room_haze_near : hint_range(0.0, 40.0) = 8.0;
 uniform float room_haze_far : hint_range(2.0, 80.0) = 28.0;
 uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
@@ -33,6 +38,7 @@ uniform float fauna_rim : hint_range(0.0, 1.0) = 0.0;
 uniform float fauna_vertex_bend : hint_range(0.0, 1.0) = 1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -151,5 +157,8 @@ void fragment() {
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
 	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+	// Analytic fixture cone — the only light model an unshaded pipeline has.
+	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
+	col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
 	ALBEDO = col;
 }

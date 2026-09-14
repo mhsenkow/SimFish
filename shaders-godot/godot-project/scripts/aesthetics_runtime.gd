@@ -113,6 +113,55 @@ static func health_grade_from_transmittance(transmittance: float) -> float:
 	return clampf((transmittance - 0.72) / 0.26, 0.0, 1.0)
 
 
+# ---- Tank health as a picture (VISUAL_DIRECTIONS #14) ----------------------
+#
+# THE PROBLEM. The entire visual response to tank health was
+# health_grade_from_transmittance() — water clarity, and nothing else — driving
+# a 4% cool shift and at most a 38% desaturation. A capture of a tank that had
+# suffered total fish extirpation, a shrimp-colony collapse and an algae bloom
+# rendered indistinguishable from a thriving one. Two "Population collapse"
+# toasts on screen were the only way to know.
+#
+# Clarity is the wrong sole input because a tank can die perfectly clear: a
+# heater failure or an ammonia spike kills the stock without clouding the
+# water. So health reads from four independent signals, and the WORST of them
+# leads rather than the average — one catastrophic axis should not be diluted
+# by three healthy ones.
+#
+# Weights are deliberately not equal. Fauna loss is the thing a keeper grieves;
+# algae is ugly but survivable; clarity and plant vigour are slow indicators.
+const HEALTH_WEIGHTS: Dictionary = {
+	"clarity": 0.22,
+	"fauna": 0.34,
+	"algae": 0.20,
+	"plants": 0.24,
+}
+# How much the worst single axis is allowed to pull the blended grade down.
+# 0 = pure weighted mean, 1 = the grade IS the worst axis.
+const HEALTH_WORST_PULL: float = 0.55
+
+
+# Each argument is already 0..1 where 1 is healthy.
+#   clarity   water transmittance, remapped by health_grade_from_transmittance
+#   fauna     live stock against what the tank should carry
+#   algae     1 - algae crowding
+#   plants    plant vigour / biomass against capacity
+static func health_grade_from_state(clarity: float, fauna: float,
+		algae_ok: float, plants: float) -> float:
+	var axes: Dictionary = {
+		"clarity": clampf(clarity, 0.0, 1.0),
+		"fauna": clampf(fauna, 0.0, 1.0),
+		"algae": clampf(algae_ok, 0.0, 1.0),
+		"plants": clampf(plants, 0.0, 1.0),
+	}
+	var mean: float = 0.0
+	var worst: float = 1.0
+	for key: String in axes:
+		mean += float(axes[key]) * float(HEALTH_WEIGHTS[key])
+		worst = minf(worst, float(axes[key]))
+	return clampf(lerpf(mean, worst, HEALTH_WORST_PULL), 0.0, 1.0)
+
+
 static func ambient_breath(t: float, calm: float = 1.0) -> float:
 	return sin(t * 0.35) * 0.012 * clampf(calm, 0.0, 1.0)
 
@@ -144,6 +193,45 @@ static func remap_palette_hexes(hexes: Array, mode: String) -> Array:
 					h = lerpf(h, 0.48, 0.50)
 					s = clampf(s * 0.88, 0.0, 1.0)
 		out[i] = Color.from_hsv(h, s, v).to_html(false)
+	return out
+
+
+# --- Pure duotone mode ---------------------------------------------------
+# Two colors, one ramp, nothing else. The whole tank render is quantized
+# through this instead of the 48-slot biotope palette; palette_quantize's
+# `duotone_amount` projects source luma onto the same segment so the ordered
+# dither still lands between adjacent rungs (that stipple is what keeps a
+# two-color image from reading as flat posterization).
+#
+# Ramps are [shadow, highlight] hex pairs. Entries are a plain sRGB lerp
+# between them — the shader interpolates the same way, so every rung sits
+# exactly on the line the shader projects onto.
+const DUOTONE_RAMPS: Dictionary = {
+	"moonlight": ["0a1424", "cfe8ff"],
+	"handheld": ["0f380f", "9bbc0f"],
+	"sepia": ["241a12", "f0dfc0"],
+	"ink": ["121212", "f4f0e6"],
+	"amber": ["1a0d02", "ffb347"],
+}
+const DUOTONE_LEVELS_MIN: int = 2
+const DUOTONE_LEVELS_MAX: int = 16
+
+
+static func duotone_active(mode: String) -> bool:
+	return DUOTONE_RAMPS.has(mode)
+
+
+# The ramp as hex entries, dark to light, or [] when duotone is off.
+static func duotone_hexes(mode: String, levels: int) -> Array:
+	if not duotone_active(mode):
+		return []
+	var ends: Array = DUOTONE_RAMPS[mode]
+	var lo := Color.from_string("#" + String(ends[0]), Color.BLACK)
+	var hi := Color.from_string("#" + String(ends[1]), Color.WHITE)
+	var n: int = clampi(levels, DUOTONE_LEVELS_MIN, DUOTONE_LEVELS_MAX)
+	var out: Array = []
+	for i in n:
+		out.append(lo.lerp(hi, float(i) / float(n - 1)).to_html(false))
 	return out
 
 

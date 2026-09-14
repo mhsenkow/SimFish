@@ -175,14 +175,22 @@ const CORNER_PANEL: int = 10
 const CORNER_MODAL: int = 12
 
 
-# Transient notification cards — bottom-right, clear of the tank (#187).
-static func layout_toast_stack(layer: Control, bottom_inset: float) -> void:
-	layer.anchor_left = 1.0
+# Transient notification cards — bottom-LEFT, clear of the tank (#187).
+#
+# They used to sit bottom-right, where they shared an edge with the rail and
+# every panel that docks against it: an open panel covered the newest toast,
+# which is the one most worth reading. The right edge is the controls side;
+# messages get the left. `left_inset` slides the stack clear of whatever is
+# currently docked left, so an open Residents / Mind / Library panel pushes
+# the toasts aside instead of burying them.
+static func layout_toast_stack(layer: Control, bottom_inset: float,
+		left_inset: float = EDGE_MARGIN) -> void:
+	layer.anchor_left = 0.0
 	layer.anchor_top = 1.0
-	layer.anchor_right = 1.0
+	layer.anchor_right = 0.0
 	layer.anchor_bottom = 1.0
-	layer.offset_left = -(EDGE_MARGIN + TOAST_STACK_W + RAIL_WIDTH)
-	layer.offset_right = -(EDGE_MARGIN + RAIL_WIDTH)
+	layer.offset_left = left_inset
+	layer.offset_right = left_inset + TOAST_STACK_W
 	layer.offset_top = -(bottom_inset + TOAST_STACK_H)
 	layer.offset_bottom = -bottom_inset
 

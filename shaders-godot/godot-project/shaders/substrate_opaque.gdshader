@@ -6,7 +6,9 @@ uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform int material_id = 0;
 // Region-density variation. Real substrate beds aren't uniformly
 // speckled — fine vs coarse grain patches break up the tile pattern.
-uniform float grain_variation : hint_range(0.0, 1.0) = 0.45;
+// See substrate_caustic.gdshader — lowered with the palette lock so grain
+// stays sub-rung (VISUAL_DIRECTIONS #5/#7).
+uniform float grain_variation : hint_range(0.0, 1.0) = 0.22;
 // Hardscape contact-shadow AO. Up to 8 hardscape feet (driftwood roots,
 // rock bases) — xyz = footprint center, w = radius.
 uniform vec4 contact_ao_points[8];
@@ -35,7 +37,18 @@ uniform float glass_contact : hint_range(0.0, 1.0) = 0.7;
 uniform float gas_pocket : hint_range(0.0, 1.0) = 0.15;
 uniform float slope_hint : hint_range(0.0, 1.0) = 0.0;
 
+// ---- Canopy shade (VISUAL_DIRECTIONS #4) ----
+// Plants shading the floor beneath them. canopy_density.gd already builds this
+// 16x8 R-float map every three seconds and, until now, handed it only to the
+// god-ray material — so the beams dimmed under the canopy while the substrate
+// they landed on did not. Same convention as god_ray.gdshader: bounds are
+// (min xz, size xz), and a strength of 0 skips the sample entirely, which also
+// keeps an unbound sampler (white, i.e. full shade) from blacking the floor.
+uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
+uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
+uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -249,5 +262,14 @@ void fragment() {
 	}
 	// Water column — deepest surface in the tank, so it recedes the most.
 	col = apply_water_column(col, v_wpos.y, length(VERTEX));
+	// Analytic fixture cone — the only light model an unshaded pipeline has.
+	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
+	col = iaq_beam_light_n(v_wpos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+	if (canopy_shade > 0.001) {
+		vec2 canopy_uv = (v_wpos.xz - canopy_bounds.xy) / max(canopy_bounds.zw, vec2(0.01));
+		float canopy = texture(canopy_density_tex,
+			clamp(canopy_uv, vec2(0.0), vec2(1.0))).r;
+		col *= 1.0 - canopy * canopy_shade;
+	}
 	ALBEDO = col;
 }

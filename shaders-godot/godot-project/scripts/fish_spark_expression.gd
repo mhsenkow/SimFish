@@ -257,7 +257,7 @@ static func tank_phi_coherence(fish_list: Array) -> float:
 	var sum: float = 0.0
 	var n: int = 0
 	for f in fish_list:
-		if f is Fish and is_instance_valid(f) and f.get("_dying") != true:
+		if is_instance_valid(f) and f is Fish and f.get("_dying") != true:
 			var bd: Dictionary = FishBinding.ensure(f)
 			sum += float(bd.get("phi_proxy", 0.0))
 			n += 1

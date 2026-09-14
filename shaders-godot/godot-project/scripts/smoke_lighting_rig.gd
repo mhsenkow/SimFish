@@ -294,7 +294,16 @@ func _init() -> void:
 
 	var tint_dark: Vector4 = R.cone_tint(Color(1.0, 0.84, 0.42), 0.97)
 	var tint_lit: Vector4 = R.cone_tint(Color(1.0, 0.84, 0.42), 0.0)
-	t.approx(tint_lit.w, 1.0, "no darkness leaves the unlit half alone")
+	# WAS: t.approx(tint_lit.w, 1.0, "no darkness leaves the unlit half alone").
+	# That assertion pinned a no-op. An out-of-cone floor of exactly 1.0 means
+	# the cone multiplies every fragment by one, so the project's only light
+	# model did nothing at default settings — VISUAL_DIRECTIONS #1. The
+	# contract is now that a lit room is still SHAPED, and that
+	# light_shaping 0 is the opt-out that restores the old flat behaviour.
+	t.approx(tint_lit.w, R.CONE_SHAPING_FLOOR,
+		"a lit room is still shaped by the cone")
+	t.approx(R.cone_tint(Color.WHITE, 0.0, 0.0).w, 1.0,
+		"light_shaping 0 restores the unshaped behaviour")
 	t.check(tint_dark.w < tint_lit.w,
 		"darkness drops what is outside the cone (%.3f < %.3f)"
 		% [tint_dark.w, tint_lit.w])
@@ -322,7 +331,9 @@ func _init() -> void:
 		var src: String = _read(sh)
 		t.check(src.contains("beam_cone.gdshaderinc"),
 			"%s includes the cone" % sh.get_file())
-		t.check(src.contains("iaq_beam_light("),
+		# Either form counts: iaq_beam_light_n is the directional variant that
+		# took over these call sites when the cone gained a normal.
+		t.check(src.contains("iaq_beam_light(") or src.contains("iaq_beam_light_n("),
 			"%s actually applies the cone to its albedo" % sh.get_file())
 
 	# --- room lights obey darkness ---------------------------------------

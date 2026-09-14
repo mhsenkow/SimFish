@@ -26,6 +26,8 @@ uniform float vignette_strength : hint_range(0.0, 1.0) = 0.35;
 uniform float vignette_falloff : hint_range(0.5, 4.0) = 1.6;
 uniform float fxaa_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float deband_strength : hint_range(0.0, 1.0) = 0.0;
+// Pure duotone — see palette_quantize.gdshader for the full note.
+uniform float duotone_amount : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -54,6 +56,11 @@ vec3 palette_color(int idx) {
 
 float luma_of(vec3 c) {
 	return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+vec3 duotone_project(vec3 c) {
+	float l = clamp(luma_of(c), 0.0, 1.0);
+	return mix(palette_color(0), palette_color(palette_size - 1), l);
 }
 
 int classify_bank(vec3 c) {
@@ -102,6 +109,11 @@ void fragment() {
 	float eff_dither = mix(dither_strength, region_d, region_aware_dither);
 	eff_dither *= mix(1.0, 0.42, smoothstep(0.42, 0.78, sat));
 
+	// Duotone after the dither heuristics — see palette_quantize.gdshader.
+	if (duotone_amount > 0.001) {
+		src = mix(src, duotone_project(src), duotone_amount);
+	}
+
 	int bank = classify_bank(src);
 	int bank_size = palette_size / 3;
 	int bank_start = bank * bank_size;
@@ -110,7 +122,7 @@ void fragment() {
 	int bi = 0;
 	float best = 1e9;
 	float best2 = 1e9;
-	bool locked = palette_bank_lock > 0.5;
+	bool locked = palette_bank_lock > 0.5 && duotone_amount < 0.5;
 	const int SEARCH_CAP = 24;
 	for (int i = 0; i < SEARCH_CAP; i++) {
 		if (i >= palette_size) {
@@ -171,6 +183,10 @@ void fragment() {
 		float n1 = ign(px);
 		float n2 = ign(px + vec2(19.0, 47.0));
 		result = clamp(result + vec3((n1 + n2) * deband_strength * 0.012), 0.0, 1.0);
+	}
+
+	if (duotone_amount > 0.001) {
+		result = mix(result, duotone_project(result), duotone_amount);
 	}
 
 	COLOR = vec4(result, 1.0);
