@@ -6,6 +6,19 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.36
+
+- **Real-tank look:** lit tanks no longer dimmed with the room; the rear backlight actually lights the tank; lamp-coloured haze; pink grow-LED tint.
+- **Plants:** narrow, upright, many-bladed vallisneria with per-blade colour, working leaf transmission, aufwuchs fuzz, torn tips; hair-algae mounds; no lily-pad rods in the jungle presets.
+- **Water:** total-internal-reflection mirror under the surface; frogbit / water lettuce root curtains; film, trapped bubbles, light-catching motes.
+- **Fish:** readable vivid colour; new endler, rummy-nose, ember tetra; guppy dimorphism; species depth bands, individual pacing and darts, livebearer display, pecking.
+- **Hex Jungle** scenario (glass cloche, red ramshorns, mystery snail).
+- **Bigger tanks:** every template ~1.25x; stocking and plants scale with volume; camera fits the tank; Compact/Standard/Large/Grand chooser.
+- **Light move mode fixed:** the beam no longer changes on touch and the lamp no longer flies off.
+- **UI pass:** one region layout (no overlapping panels), one header-x close on every panel, actions-only footers, shared scroll/style; water-chemistry popup and Help-Escape fixed.
+- **Saves:** captures can no longer delete a save slot's state.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.36) (macOS / Windows / Linux / Android).
+
 ## v0.2.35
 
 - **Light shaping:** fixture cone on every surface; bar lights as segments; directional key (Render → Light shaping).
