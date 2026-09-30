@@ -44,14 +44,15 @@ static func show_info_popup(parent: Node) -> void:
 	panel.offset_top = -170
 	panel.offset_right = 240
 	panel.offset_bottom = 170
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	overlay.add_child(panel)
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 10)
 	panel.add_child(vb)
 
-	vb.add_child(PanelTheme.make_title("walstad loom"))
+	# House header: title + × (Close used to be a plain button at the end).
+	vb.add_child(PanelTheme.make_panel_header("walstad loom", func(): overlay.queue_free()))
 	vb.add_child(PanelTheme.make_rule())
 
 	var body := PanelTheme.make_description()
@@ -59,7 +60,7 @@ static func show_info_popup(parent: Node) -> void:
 	body.add_theme_font_size_override("font_size", PanelTheme.SIZE_BODY)
 	vb.add_child(body)
 
-	var site_btn := Button.new()
+	var site_btn := PanelTheme.make_secondary_button("")
 	site_btn.text = "Open project website"
 	site_btn.tooltip_text = GITHUB_PAGES
 	site_btn.custom_minimum_size = Vector2(0, 44)
@@ -68,7 +69,7 @@ static func show_info_popup(parent: Node) -> void:
 		overlay.queue_free())
 	vb.add_child(site_btn)
 
-	var issues_btn := Button.new()
+	var issues_btn := PanelTheme.make_secondary_button("")
 	issues_btn.text = "Report an issue on GitHub"
 	issues_btn.tooltip_text = GITHUB_ISSUES
 	issues_btn.custom_minimum_size = Vector2(0, 44)
@@ -77,17 +78,12 @@ static func show_info_popup(parent: Node) -> void:
 		overlay.queue_free())
 	vb.add_child(issues_btn)
 
-	var repo_btn := Button.new()
+	var repo_btn := PanelTheme.make_ghost_button("")
 	repo_btn.text = "View source repository"
 	repo_btn.tooltip_text = GITHUB_REPO
 	repo_btn.custom_minimum_size = Vector2(0, 40)
-	repo_btn.flat = true
 	repo_btn.pressed.connect(func():
 		open_repo()
 		overlay.queue_free())
 	vb.add_child(repo_btn)
 
-	var close := Button.new()
-	close.text = "Close"
-	close.pressed.connect(func(): overlay.queue_free())
-	vb.add_child(close)

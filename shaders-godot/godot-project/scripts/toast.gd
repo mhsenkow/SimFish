@@ -98,18 +98,13 @@ func _configure(cfg: Dictionary) -> void:
 	scale = Vector2(0.96, 0.96)
 
 	var accent: Color = LEVEL_ACCENT.get(level, LEVEL_ACCENT[Level.INFO])
-	var style := StyleBoxFlat.new()
+	# Shared transient-surface chrome (same radius/padding as the status
+	# toast, feed toast and follow strip).
+	var style: StyleBoxFlat = PanelTheme.make_toast_style(accent, true)
 	style.bg_color = BG
-	style.border_color = accent
-	style.set_border_width_all(1)
 	# A thicker leading edge in the accent colour reads as severity at a
 	# glance without tinting the text.
 	style.border_width_left = 3
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 10
-	style.content_margin_right = 10
-	style.content_margin_top = 7
-	style.content_margin_bottom = 7
 	add_theme_stylebox_override("panel", style)
 
 	# Row, not column: the ✕ pins to the top-right of the card while the
@@ -167,9 +162,12 @@ func _make_close_button(accent: Color) -> Button:
 	btn.tooltip_text = tr("Dismiss")
 	btn.flat = true
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = Vector2(18, 18)
+	# Hit target, not glyph size: 18 px was below any touch minimum. The
+	# glyph stays small; the button grows to a finger on touch devices.
+	var side: float = 44.0 if PanelTheme.is_touch_device() else 26.0
+	btn.custom_minimum_size = Vector2(side, side)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	btn.add_theme_font_size_override("font_size", 10)
+	btn.add_theme_font_size_override("font_size", 12)
 	btn.add_theme_color_override("font_color", Color(accent.r, accent.g, accent.b, 0.75))
 	btn.add_theme_color_override("font_hover_color", Color(0.98, 0.99, 1.0))
 	btn.add_theme_color_override("font_pressed_color", Color(0.98, 0.99, 1.0))

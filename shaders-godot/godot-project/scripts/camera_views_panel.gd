@@ -55,23 +55,11 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", 8)
-	add_child(outer)
-
-	outer.add_child(PanelTheme.make_title("Camera Views"))
-	outer.add_child(PanelTheme.make_rule())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer.add_child(scroll)
-
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 8)
-	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(body)
+	# House pattern: header ×, scrolling body, no footer (no actions).
+	var shell: Dictionary = PanelTheme.make_panel_shell("Camera Views",
+		func(): visible = false)
+	add_child(shell.root)
+	var body: VBoxContainer = shell.body
 
 	body.add_child(PanelTheme.make_section("Presets"))
 	var row1 := HBoxContainer.new()
@@ -180,8 +168,6 @@ func _build_ui() -> void:
 	_fov_label.add_theme_color_override("font_color", PanelTheme.VALUE_FG)
 	PanelTheme.as_mono(_fov_label, PanelTheme.SIZE_BODY)
 	fov_row.add_child(_fov_label)
-
-	outer.add_child(PanelTheme.make_panel_footer(func(): visible = false))
 
 
 func _make_preset_btn(label: String, preset_id: String) -> Button:

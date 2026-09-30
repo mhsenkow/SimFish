@@ -68,17 +68,15 @@ func _build_ui() -> void:
 	add_child(outer)
 
 	# --- Title + live count ---
-	var title_row := HBoxContainer.new()
+	# House header: title, live count, then the one × close at the right.
+	var title_row := PanelTheme.make_panel_header("Residents", func(): _hide_panel())
 	outer.add_child(title_row)
-	title_row.add_child(PanelTheme.make_title("Residents"))
-	var sp := Control.new()
-	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	title_row.add_child(sp)
 	_count_lbl = Label.new()
 	PanelTheme.as_mono(_count_lbl, PanelTheme.SIZE_CAPTION)
 	_count_lbl.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	_count_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	title_row.add_child(_count_lbl)
+	title_row.move_child(_count_lbl, 1)
 	outer.add_child(PanelTheme.make_rule())
 
 	# --- Now following bar ---
@@ -90,14 +88,17 @@ func _build_ui() -> void:
 	_now_lbl.clip_text = true
 	outer.add_child(_now_lbl)
 
-	var nav := HBoxContainer.new()
-	nav.add_theme_constant_override("separation", 6)
+	# Flow rows throughout: the fixed rows summed to ~584 px and forced the
+	# panel past PANEL_MIN_W. They wrap at narrow widths instead.
+	var nav := _flow_row(6)
 	outer.add_child(nav)
 	var prev_btn := PanelTheme.make_secondary_button("◀")
+	prev_btn.custom_minimum_size.x = 44
 	prev_btn.tooltip_text = tr("Previous creature (←)")
 	prev_btn.pressed.connect(func(): _call_main("cycle_follow", [-1]))
 	nav.add_child(prev_btn)
 	var next_btn := PanelTheme.make_secondary_button("▶")
+	next_btn.custom_minimum_size.x = 44
 	next_btn.tooltip_text = tr("Next creature (→)")
 	next_btn.pressed.connect(func(): _call_main("cycle_follow", [1]))
 	nav.add_child(next_btn)
@@ -113,14 +114,15 @@ func _build_ui() -> void:
 	_scope_option.add_item("Species", 2)
 	_scope_option.item_selected.connect(func(i): _call_main("set_cycle_scope", [i]))
 	nav.add_child(_scope_option)
-	var stop_btn := PanelTheme.make_secondary_button("✕")
+	# Labelled, not a bare ✕ — the glyph read as a second close button for
+	# the panel itself.
+	var stop_btn := PanelTheme.make_secondary_button(tr("Stop following"))
 	stop_btn.tooltip_text = tr("Stop following (Esc)")
 	stop_btn.pressed.connect(func(): _call_main("clear_follow", []))
 	nav.add_child(stop_btn)
 
 	# Tools — view/camera row, then per-creature actions row.
-	var tools1 := HBoxContainer.new()
-	tools1.add_theme_constant_override("separation", 6)
+	var tools1 := _flow_row(6)
 	outer.add_child(tools1)
 	_lock_btn = PanelTheme.make_secondary_button("⤢ Lead")
 	_lock_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -138,8 +140,7 @@ func _build_ui() -> void:
 	tools1.add_child(_cinema_btn)
 	tools1.add_child(_tools_btn("🎲 Shuffle", "Follow a random creature in the current scope", "follow_random"))
 
-	var tools2 := HBoxContainer.new()
-	tools2.add_theme_constant_override("separation", 6)
+	var tools2 := _flow_row(6)
 	outer.add_child(tools2)
 	tools2.add_child(_tools_btn("Species", "View the followed creature's species in the Library", "view_followed_in_library"))
 	tools2.add_child(_tools_btn("Lineage", "View the followed creature's ancestry tree", "view_followed_lineage"))
@@ -157,8 +158,7 @@ func _build_ui() -> void:
 	outer.add_child(_search)
 
 	# --- Type filter chips ---
-	var chips := HBoxContainer.new()
-	chips.add_theme_constant_override("separation", 4)
+	var chips := _flow_row(4)
 	outer.add_child(chips)
 	_add_filter_chip(chips, Filter.ALL, "All")
 	_add_filter_chip(chips, Filter.FISH, "🐟")
@@ -207,8 +207,14 @@ func _build_ui() -> void:
 
 	list_wrap.add_child(_make_edge_fade(true))
 	list_wrap.add_child(_make_edge_fade(false))
+	# No footer: the panel has no actions, and Close lives in the header.
 
-	outer.add_child(PanelTheme.make_panel_footer(func(): _hide_panel()))
+
+func _flow_row(sep: int) -> HFlowContainer:
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("h_separation", sep)
+	row.add_theme_constant_override("v_separation", sep)
+	return row
 
 
 func _make_edge_fade(top: bool) -> ColorRect:
@@ -232,6 +238,7 @@ func _make_edge_fade(top: bool) -> ColorRect:
 func _add_filter_chip(parent: Node, f: int, label: String) -> void:
 	var b := PanelTheme.make_secondary_button(label)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.custom_minimum_size.x = 48
 	b.pressed.connect(func():
 		_filter = f
 		_sync_chip_state()
@@ -249,6 +256,7 @@ func _sync_chip_state() -> void:
 func _tools_btn(label: String, tip: String, method: String) -> Button:
 	var b := PanelTheme.make_secondary_button(label)
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	b.custom_minimum_size.x = 72
 	b.tooltip_text = tip
 	b.pressed.connect(func(): _call_main(method, []))
 	return b
@@ -824,13 +832,14 @@ func _show_fish_journal(f: Fish) -> void:
 	var panel := PanelContainer.new()
 	panel.custom_minimum_size = Vector2(340, 280)
 	panel.set_anchors_preset(Control.PRESET_CENTER)
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	layer.add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 8)
 	panel.add_child(vb)
 	var nm: String = _creature_name(f)
-	vb.add_child(PanelTheme.make_title("Journal — %s" % nm))
+	vb.add_child(PanelTheme.make_panel_header("Journal — %s" % nm, _dismiss_fish_journal))
+	vb.add_child(PanelTheme.make_rule())
 	var body := RichTextLabel.new()
 	body.bbcode_enabled = true
 	body.fit_content = true
@@ -842,9 +851,6 @@ func _show_fish_journal(f: Fish) -> void:
 		story_bb = "[b]Story[/b]\n%s\n\n" % "\n".join(PackedStringArray(story_lines))
 	body.text = story_bb + FishJournal.format_bbcode(f.fish_journal, nm)
 	vb.add_child(body)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	vb.add_child(row)
 	var export_btn := PanelTheme.make_secondary_button("Export")
 	export_btn.pressed.connect(func():
 		var path: String = "user://journal_%s.txt" % String(f.id)
@@ -852,10 +858,7 @@ func _show_fish_journal(f: Fish) -> void:
 		if f_out != null:
 			f_out.store_string(FishJournal.export_plain(f.fish_journal, nm))
 			f_out.close())
-	row.add_child(export_btn)
-	var close_btn := PanelTheme.make_secondary_button("Close")
-	close_btn.pressed.connect(_dismiss_fish_journal)
-	row.add_child(close_btn)
+	vb.add_child(PanelTheme.make_panel_footer(Callable(), export_btn))
 	layer.gui_input.connect(func(ev: InputEvent):
 		if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
 			_dismiss_fish_journal())

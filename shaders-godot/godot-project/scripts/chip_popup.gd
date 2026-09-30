@@ -27,12 +27,16 @@ const BG: Color = Color(0.06, 0.07, 0.12, 0.96)
 const LINE_H: float = 17.0
 const CHROME_H: float = 44.0
 const MIN_H: float = 72.0
-const MAX_H: float = 200.0
+const MAX_H: float = 320.0
+# Horizontal chrome (stylebox content margins) — a detail label is given
+# the popup width minus this, so it wraps at a real width.
+const CHROME_W: float = 24.0
 
 var body: VBoxContainer = null
 var title_label: Label = null
 
 var _detail: Label = null
+var _detail_scroll: ScrollContainer = null
 
 
 static func create(title: String, accent: Color = PanelTheme.HUD_BORDER,
@@ -47,7 +51,7 @@ static func stylebox(accent: Color = PanelTheme.HUD_BORDER) -> StyleBoxFlat:
 	style.bg_color = BG
 	style.border_color = Color(accent.r, accent.g, accent.b, 0.68)
 	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
+	style.set_corner_radius_all(PanelTheme.CORNER_PANEL)
 	style.content_margin_left = 12
 	style.content_margin_right = 12
 	style.content_margin_top = 8
@@ -93,10 +97,19 @@ func set_title(text: String) -> void:
 func add_detail_label() -> Label:
 	if _detail != null and is_instance_valid(_detail):
 		return _detail
+	# In the shared scroll body, with a real minimum width. An autowrap
+	# Label measured before layout has width 0, wraps one glyph per line and
+	# reports a huge minimum height — the water popup came out 274x5538 px,
+	# running off the bottom of the screen. The width fixes the measurement;
+	# the scroller caps the height whatever the text.
+	_detail_scroll = PanelTheme.make_panel_scroll()
+	body.add_child(_detail_scroll)
 	_detail = Label.new()
 	_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_detail.custom_minimum_size.x = 236.0 - CHROME_W
 	PanelTheme.apply_font(_detail, PanelTheme.FONT_SANS, PanelTheme.SIZE_SMALL)
-	body.add_child(_detail)
+	_detail_scroll.get_child(0).add_child(_detail)
 	return _detail
 
 
@@ -109,6 +122,7 @@ func detail_label() -> Label:
 func show_lines(lines: PackedStringArray, min_w: float = 236.0) -> void:
 	var l: Label = add_detail_label()
 	l.text = "\n".join(lines)
+	l.custom_minimum_size.x = maxf(0.0, min_w - CHROME_W)
 	custom_minimum_size = size_for_lines(lines.size(), min_w)
 	size = custom_minimum_size
 
@@ -119,6 +133,12 @@ func place_under(chip: Control, viewport_size: Vector2, hud_top: float) -> void:
 	var sz: Vector2 = size
 	if sz.x < 1.0:
 		sz = custom_minimum_size
+	# Never taller than the space under the HUD; the detail body scrolls.
+	var max_h: float = maxf(MIN_H, viewport_size.y - hud_top - 16.0)
+	if sz.y > max_h:
+		sz.y = max_h
+		custom_minimum_size.y = minf(custom_minimum_size.y, max_h)
+		size = Vector2(size.x, max_h)
 	var x: float = (viewport_size.x - sz.x) * 0.5
 	var y: float = hud_top + 6.0
 	if chip != null and is_instance_valid(chip):

@@ -52,18 +52,22 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 8)
-	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# House pattern: header ×, filters pinned under it, the list in the
+	# shared scroll body, "Clear all" as the footer action.
+	var clear_btn := PanelTheme.make_secondary_button(tr("Clear all"))
+	clear_btn.pressed.connect(func(): cleared.emit())
+	var shell: Dictionary = PanelTheme.make_panel_shell(tr("Notifications"),
+		_request_close, [clear_btn])
+	var root: VBoxContainer = shell.root
 	add_child(root)
 
-	root.add_child(PanelTheme.make_title(tr("Notifications")))
-	root.add_child(PanelTheme.make_rule())
-
-	var controls := HBoxContainer.new()
-	controls.add_theme_constant_override("separation", 6)
+	# Flow, not a row: three dropdowns side by side need ~560 px and forced
+	# the panel wider than PANEL_MIN_W. They wrap onto a second line instead.
+	var controls := HFlowContainer.new()
+	controls.add_theme_constant_override("h_separation", 6)
+	controls.add_theme_constant_override("v_separation", 6)
 	root.add_child(controls)
+	root.move_child(controls, 2)
 
 	_kind_opt = OptionButton.new()
 	for i in range(CommsInbox.KIND_FILTER_ENTRIES.size()):
@@ -86,21 +90,8 @@ func _build_ui() -> void:
 	_sort_opt.item_selected.connect(_on_sort_selected)
 	controls.add_child(_sort_opt)
 
-	var clear_btn := PanelTheme.make_secondary_button(tr("Clear all"))
-	clear_btn.pressed.connect(func(): cleared.emit())
-	controls.add_child(clear_btn)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(scroll)
-
-	_list = VBoxContainer.new()
-	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list = shell.body
 	_list.add_theme_constant_override("separation", 6)
-	scroll.add_child(_list)
-
-	root.add_child(PanelTheme.make_panel_footer(_request_close))
 
 
 # --- Filtering + sorting (pure, so the smoke can check them directly) ------

@@ -38,9 +38,9 @@ var _selected: String = ""
 
 
 func _ready() -> void:
-	PanelTheme.apply_panel_chrome(self)
+	PanelTheme.apply_modal_chrome(self)
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	custom_minimum_size = Vector2(560, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	_build_ui()
 	visible = false
 
@@ -50,7 +50,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_title(tr("Choose a tank")))
+	outer.add_child(PanelTheme.make_panel_header(tr("Choose a tank"), _request_close))
 	var sub := PanelTheme.make_description()
 	sub.text = tr(
 		"Every tank is drawn to the same scale, so you can see how they "
@@ -81,8 +81,7 @@ func _build_ui() -> void:
 		body.add_child(grid)
 		for spec in group["specs"]:
 			grid.add_child(_build_card(spec))
-
-	outer.add_child(PanelTheme.make_panel_footer(_request_close))
+	# No footer: picking a card is the action; Close is the header ×.
 
 
 # Catalogue split into bands. Shaped vessels last, as a character group.

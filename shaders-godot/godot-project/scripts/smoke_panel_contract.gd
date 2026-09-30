@@ -9,7 +9,11 @@ extends SceneTree
 #
 # Every player-facing panel must be dismissable THREE ways, because players
 # reach for different ones:
-#   1. a visible Close control,
+#   1. a visible Close control — and it is always the SAME one: the header
+#      "×" from PanelTheme.make_panel_header / make_panel_shell, top-right,
+#      focusable, tooltip "Close (Esc)". Footers carry actions only, so a
+#      panel never has two closes in two places (the pre-cleanup UI had
+#      Close bottom-right, top-right, bottom-centre and full-width),
 #   2. the Escape key,
 #   3. its own rail/menu toggle.
 #
@@ -31,24 +35,75 @@ const MANAGED_PANELS: Array[String] = [
 	"library_panel.gd", "adopt_panel.gd",
 ]
 
+# Other surfaces held to the header-× convention (not named *_panel.gd).
+const HEADER_CLOSE_SCRIPTS: Array[String] = [
+	"vessel_picker.gd", "creature_creator.gd", "chip_popup.gd",
+	"onboarding_runtime.gd", "guardian_mind_onboarding.gd",
+	"ollama_onboarding.gd", "app_links.gd",
+]
+
 
 func _initialize() -> void:
 	var t := TestSupport.Suite.new("smoke_panel_contract")
 	var main_src: String = FileAccess.get_file_as_string("res://scripts/main.gd")
 	t.check(not main_src.is_empty(), "main.gd readable")
 
-	# --- 1. Every panel offers a visible way out ---
-	for name in _all_panels():
+	# --- 1. Every panel offers ONE visible way out: the header × ---
+	var checked: PackedStringArray = _all_panels()
+	for extra in PANELS.keys() + MANAGED_PANELS + HEADER_CLOSE_SCRIPTS:
+		if not checked.has(String(extra)):
+			checked.append(String(extra))
+	for name in checked:
 		var src: String = FileAccess.get_file_as_string("res://scripts/" + name)
+		t.check(not src.is_empty(), "%s readable" % name)
 		if src.is_empty():
 			continue
-		var has_footer: bool = src.contains("make_panel_footer")
-		var has_close: bool = src.contains("make_close_button")
-		var has_header: bool = src.contains("make_panel_header")
-		t.check(has_footer or has_close or has_header,
-			"%s has no Close control — it can be opened and not dismissed. "
+		var has_header: bool = src.contains("make_panel_header(") \
+			or src.contains("make_panel_shell(") \
+			or src.contains("make_chip_popup_header(")
+		t.check(has_header,
+			"%s has no header × — use PanelTheme.make_panel_header(title, on_close) "
 				% name
-			+ "Use PanelTheme.make_panel_footer(on_close).")
+			+ "or make_panel_shell(); a panel must not be open-only.")
+		# The old conventions: a labelled Close pill, or a footer that still
+		# renders Close. Footers are actions-only: pass Callable().
+		t.check(not src.contains("make_close_button("),
+			"%s uses make_close_button — the close is the header ×" % name)
+		var at: int = src.find("make_panel_footer(")
+		while at >= 0:
+			t.check(src.substr(at, 30).begins_with("make_panel_footer(Callable()"),
+				"%s passes on_close to make_panel_footer — footers are actions only" % name)
+			at = src.find("make_panel_footer(", at + 1)
+
+	# --- 1b. The shared chrome actually builds what the contract promises ---
+	var closed: Array[int] = [0]
+	var header: HBoxContainer = PanelTheme.make_panel_header("T", func(): closed[0] += 1)
+	var x: Button = PanelTheme.find_header_close(header)
+	t.check(x != null, "make_panel_header builds a header close")
+	if x != null:
+		t.check(x.text == "×", "header close is the × glyph (got '%s')" % x.text)
+		t.check(x.tooltip_text == PanelTheme.HEADER_CLOSE_TOOLTIP, "header close tooltip")
+		t.check(x.focus_mode == Control.FOCUS_ALL,
+			"header close must be focusable so a pad can always reach it")
+		t.check(header.get_child(header.get_child_count() - 1) == x,
+			"header close sits at the right edge")
+		x.pressed.emit()
+		t.check(closed[0] == 1, "header close calls on_close")
+	header.free()
+	var primary := PanelTheme.make_primary_button("Go")
+	var other := PanelTheme.make_secondary_button("Other")
+	var footer: VBoxContainer = PanelTheme.make_panel_footer(Callable(), primary, [other])
+	var texts: PackedStringArray = []
+	for b in footer.find_children("*", "Button", true, false):
+		texts.append((b as Button).text)
+	t.check(not texts.has("Close"), "actions-only footer renders no Close (%s)" % [texts])
+	t.check(texts.size() == 2 and texts[1] == "Go", "footer primary is rightmost (%s)" % [texts])
+	footer.free()
+	var shell: Dictionary = PanelTheme.make_panel_shell("S", func(): pass)
+	t.check(shell.get("scroll") is ScrollContainer and shell.get("body") is VBoxContainer,
+		"make_panel_shell gives a scroll body")
+	t.check(shell.get("footer") == null, "make_panel_shell with no actions has no footer")
+	(shell.root as Node).free()
 
 	# --- 2. Bespoke panels have a close function, and Escape reaches it ---
 	for name in PANELS.keys():

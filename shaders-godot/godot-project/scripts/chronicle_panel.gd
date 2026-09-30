@@ -24,6 +24,7 @@ var _pos: int = -1
 # main.gd sets this before refresh() when the panel opens: jump to the newest
 # page (the in-progress chapter, or the away recap just written).
 var _jump_latest: bool = true
+var _page_scroll: ScrollContainer = null
 
 
 func _ready() -> void:
@@ -36,15 +37,19 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", 8)
+	# House pattern: header ×, the chapter nav pinned under it, and the page
+	# in the shared scroll body (the page used to scroll inside its own
+	# RichTextLabel, so it behaved unlike every other panel).
+	var shell: Dictionary = PanelTheme.make_panel_shell("Chronicle", close_panel)
+	var outer: VBoxContainer = shell.root
+	var page: VBoxContainer = shell.body
+	_page_scroll = shell.scroll
 	add_child(outer)
-	outer.add_child(PanelTheme.make_panel_header("Chronicle", close_panel))
-	outer.add_child(PanelTheme.make_rule())
 
 	var nav := HBoxContainer.new()
 	nav.add_theme_constant_override("separation", 6)
 	outer.add_child(nav)
+	outer.move_child(nav, 2)
 	_prev_btn = PanelTheme.make_icon_button("◀")
 	_prev_btn.tooltip_text = tr("Previous chapter")
 	_prev_btn.pressed.connect(func() -> void: _turn(-1))
@@ -68,20 +73,18 @@ func _build_ui() -> void:
 	PanelTheme.as_serif(_title_lbl, PanelTheme.SIZE_SECTION, true)
 	_title_lbl.add_theme_color_override("font_color", PanelTheme.TITLE_FG)
 	_title_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	outer.add_child(_title_lbl)
+	page.add_child(_title_lbl)
 
 	_body = RichTextLabel.new()
 	_body.bbcode_enabled = true
-	_body.fit_content = false
-	_body.scroll_active = true
+	_body.fit_content = true
+	_body.scroll_active = false
 	_body.selection_enabled = true
 	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_body.custom_minimum_size = Vector2(0, 240)
 	_body.add_theme_color_override("default_color", Color(0.88, 0.91, 0.96, 0.96))
 	PanelTheme.apply_font(_body, PanelTheme.FONT_SERIF, PanelTheme.SIZE_ITEM)
-	outer.add_child(_body)
-	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	page.add_child(_body)
 
 
 func _chronicle() -> Node:
@@ -127,7 +130,8 @@ func refresh() -> void:
 	var d1: int = int(prose.get("d1", d0))
 	var span: String = "Day %d" % d0 if d1 <= d0 else "Days %d–%d" % [d0, d1]
 	_body.text = _SPAN_FMT % [span, TankChronicleScript.prose_bbcode(prose)]
-	_body.scroll_to_line(0)
+	if _page_scroll != null:
+		_page_scroll.scroll_vertical = 0
 	_prev_btn.disabled = _pos <= 0
 	_next_btn.disabled = _pos >= n - 1
 

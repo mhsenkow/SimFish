@@ -1052,17 +1052,17 @@ func _toggle_camera_views_panel() -> void:
 		_camera_views_panel.set("main_ref", self)
 		add_child(_camera_views_panel)
 		_apply_panel_layout()
-	var opening: bool = not _camera_views_panel.visible
-	if opening:
-		_prepare_panel_open()
-		if _ui_panels != null:
-			_ui_panels.close_side_panels()
-	_camera_views_panel.visible = not _camera_views_panel.visible
-	if _camera_views_panel.visible and _camera_views_panel.has_method("sync_from_main"):
+	# Right column: opening it closes whatever else sits there (the
+	# manager's region exclusivity), so no close_side_panels() here.
+	if PanelTheme.is_panel_open(_camera_views_panel):
+		_close_camera_views_panel()
+		return
+	_prepare_panel_open()
+	_ui_panels.open(UiPanelManager.PANEL_CAMERA_VIEWS)
+	if _camera_views_panel.has_method("sync_from_main"):
 		_camera_views_panel.sync_from_main()
-	if _camera_views_panel.visible:
-		PanelTheme.schedule_couch_focus(_camera_views_panel,
-				PackedStringArray(["Front", "Reset", "Follow"]))
+	PanelTheme.schedule_couch_focus(_camera_views_panel,
+			PackedStringArray(["Front", "Reset", "Follow"]))
 
 
 # Add a Residents toggle to the right rail. Like Camera Views, it lives in the
@@ -1098,21 +1098,20 @@ func _toggle_mind_panel() -> void:
 		_mind_panel.set("main_ref", self)
 		add_child(_mind_panel)
 		_apply_panel_layout()
-	var opening: bool = not _mind_panel.visible
-	if opening:
-		_prepare_panel_open()
-		if _ui_panels != null:
-			_ui_panels.close_side_panels()
-		# Nothing followed yet? Follow something, so the panel has a subject
-		# instead of opening onto its empty state.
-		if _follow_target == null or not is_instance_valid(_follow_target):
-			follow_random_fish()
-	_mind_panel.visible = opening
-	if _mind_panel.visible and _mind_panel.has_method("refresh"):
+	if PanelTheme.is_panel_open(_mind_panel):
+		close_mind_panel()
+		return
+	_prepare_panel_open()
+	# Nothing followed yet? Follow something, so the panel has a subject
+	# instead of opening onto its empty state.
+	if _follow_target == null or not is_instance_valid(_follow_target):
+		follow_random_fish()
+	# Left column: the manager closes Residents / Chronicle if either is open.
+	_ui_panels.open(UiPanelManager.PANEL_MIND)
+	if _mind_panel.has_method("refresh"):
 		_mind_panel.refresh()
-	if _mind_panel.visible:
-		PanelTheme.schedule_couch_focus(_mind_panel,
-				PackedStringArray(["Show inner workings"]))
+	PanelTheme.schedule_couch_focus(_mind_panel,
+			PackedStringArray(["Show inner workings"]))
 
 
 # Chronicle panel — the tank's history as chapters (L).
@@ -1142,18 +1141,16 @@ func _toggle_chronicle_panel() -> void:
 		_chronicle_panel.set("main_ref", self)
 		add_child(_chronicle_panel)
 		_apply_panel_layout()
-	var opening: bool = not _chronicle_panel.visible
-	if opening:
-		_prepare_panel_open()
-		if _ui_panels != null:
-			_ui_panels.close_side_panels()
-	_chronicle_panel.visible = opening
-	if _chronicle_panel.visible:
-		if _chronicle_panel.get("_jump_latest") != null:
-			_chronicle_panel.set("_jump_latest", true)
-		if _chronicle_panel.has_method("refresh"):
-			_chronicle_panel.refresh()
-		PanelTheme.schedule_couch_focus(_chronicle_panel)
+	if PanelTheme.is_panel_open(_chronicle_panel):
+		close_chronicle_panel()
+		return
+	_prepare_panel_open()
+	_ui_panels.open(UiPanelManager.PANEL_CHRONICLE)
+	if _chronicle_panel.get("_jump_latest") != null:
+		_chronicle_panel.set("_jump_latest", true)
+	if _chronicle_panel.has_method("refresh"):
+		_chronicle_panel.refresh()
+	PanelTheme.schedule_couch_focus(_chronicle_panel)
 
 
 func _install_residents_rail_button() -> void:
@@ -1184,22 +1181,18 @@ func _toggle_residents_panel() -> void:
 		_residents_panel.name = "ResidentsPanel"
 		_residents_panel.set("main_ref", self)
 		add_child(_residents_panel)
-		_residents_panel.z_index = 130
 		_apply_panel_layout()
-	var opening: bool = not _residents_panel.visible
-	if opening:
-		_prepare_panel_open()
-		if _ui_panels != null:
-			_ui_panels.close_modal()
-	_residents_panel.visible = not _residents_panel.visible
-	if _residents_panel.visible:
-		if _ui_panels != null:
-			_ui_panels.close_side_panels()
-		if _residents_panel.has_method("sync_from_main"):
-			_residents_panel.sync_from_main()
-		# Prefer nav / tools — not the search LineEdit (typing focus on couch).
-		PanelTheme.schedule_couch_focus(_residents_panel,
-				PackedStringArray(["Cinema", "Shuffle", "Lead", "▶"]))
+	if PanelTheme.is_panel_open(_residents_panel):
+		_close_residents_panel()
+		return
+	_prepare_panel_open()
+	_ui_panels.close_modal()
+	_ui_panels.open(UiPanelManager.PANEL_RESIDENTS)
+	if _residents_panel.has_method("sync_from_main"):
+		_residents_panel.sync_from_main()
+	# Prefer nav / tools — not the search LineEdit (typing focus on couch).
+	PanelTheme.schedule_couch_focus(_residents_panel,
+			PackedStringArray(["Cinema", "Shuffle", "Lead", "▶"]))
 
 
 # Camera tuning re-exported from CameraController (single source of truth — the
@@ -3092,9 +3085,9 @@ func _show_feed_toast(text: String) -> void:
 	if _feed_toast_panel == null or not is_instance_valid(_feed_toast_panel):
 		_feed_toast_panel = PanelContainer.new()
 		_feed_toast_panel.name = "FeedToast"
-		_feed_toast_panel.add_theme_stylebox_override("panel", PanelTheme.make_hud_cluster_style())
+		_feed_toast_panel.add_theme_stylebox_override("panel", PanelTheme.make_toast_style(Color(0, 0, 0, 0), true))
 		_feed_toast_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_feed_toast_panel.z_index = 80
+		_feed_toast_panel.z_index = PanelTheme.Z_CENTRE_TOAST
 		_feed_toast_panel.anchor_left = 0.5
 		_feed_toast_panel.anchor_right = 0.5
 		_feed_toast_panel.anchor_top = 1.0
@@ -3104,10 +3097,8 @@ func _show_feed_toast(text: String) -> void:
 		_feed_toast.add_theme_color_override("font_color", Color(0.98, 0.96, 0.82))
 		_feed_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		var pad := MarginContainer.new()
-		pad.add_theme_constant_override("margin_left", 12)
-		pad.add_theme_constant_override("margin_right", 12)
-		pad.add_theme_constant_override("margin_top", 6)
-		pad.add_theme_constant_override("margin_bottom", 6)
+		pad.add_theme_constant_override("margin_left", 2)
+		pad.add_theme_constant_override("margin_right", 2)
 		pad.add_child(_feed_toast)
 		_feed_toast_panel.add_child(pad)
 		add_child(_feed_toast_panel)
@@ -3121,16 +3112,16 @@ func _show_feed_toast(text: String) -> void:
 	_feed_toast_tween = create_tween()
 	_feed_toast_tween.tween_interval(2.6)
 	_feed_toast_tween.tween_property(_feed_toast_panel, "modulate:a", 0.0, 0.6)
+	# Faded out = gone: an alpha-0 panel still held the centre slot.
+	_feed_toast_tween.tween_callback(func() -> void:
+		if _feed_toast_panel != null and is_instance_valid(_feed_toast_panel):
+			_feed_toast_panel.visible = false)
 
 
 func _layout_feed_toast() -> void:
 	if _feed_toast_panel == null or not is_instance_valid(_feed_toast_panel):
 		return
-	var inset: float = _hud_bottom_inset() + 36.0
-	_feed_toast_panel.offset_left = -220.0
-	_feed_toast_panel.offset_right = 220.0
-	_feed_toast_panel.offset_top = -(inset + 34.0)
-	_feed_toast_panel.offset_bottom = -inset
+	_relayout_bottom_centre(_ui_regions()[HudLayout.BOTTOM_CENTRE])
 
 
 func _fade_in_from_black() -> void:
@@ -3604,18 +3595,13 @@ func _open_gamepad_menu() -> void:
 	panel.offset_right = 180
 	panel.offset_top = -280
 	panel.offset_bottom = 280
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	overlay.add_child(panel)
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(scroll)
-	var vb := VBoxContainer.new()
+	# House shell: header × pinned above the scrolling destination list.
+	var shell: Dictionary = PanelTheme.make_panel_shell("Controller menu", _close_gamepad_menu)
+	panel.add_child(shell.root)
+	var vb: VBoxContainer = shell.body
 	vb.add_theme_constant_override("separation", 6)
-	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(vb)
-	vb.add_child(PanelTheme.make_title("Controller menu"))
-	vb.add_child(PanelTheme.make_rule())
 	# Order + labels come from ControllerMenu so smoke_controller_coverage.gd
 	# can assert Valve's Full Controller Support checklist without a pad.
 	var aqua_label: String = ControllerMenu.AQUASCAPE_EXIT if _aquascape.is_active \
@@ -3669,7 +3655,7 @@ func _confirm_quit_game() -> void:
 	overlay.name = "QuitConfirm"
 	var center: CenterContainer = root["center"]
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 160.0, 0.7, 0.4)
 	center.add_child(panel)
 	var vb := VBoxContainer.new()
@@ -3731,7 +3717,7 @@ func _close_residents_panel() -> void:
 func _close_camera_views_panel() -> void:
 	if _camera_views_panel == null:
 		return
-	_camera_views_panel.visible = false
+	PanelTheme.transition_panel(_camera_views_panel, false)
 
 
 # Browse tanks the way you would in a shop. Lazy-built like the other
@@ -3746,23 +3732,23 @@ func _toggle_vessel_picker() -> void:
 		if _vessel_picker.has_signal("vessel_chosen"):
 			_vessel_picker.connect("vessel_chosen", _on_vessel_chosen)
 		_apply_panel_layout()
-	var opening: bool = not _vessel_picker.visible
-	if opening:
-		_prepare_panel_open()
-		if _ui_panels != null:
-			_ui_panels.close_side_panels()
-		if _vessel_picker.has_method("sync_from_config"):
-			_vessel_picker.call("sync_from_config")
-	_vessel_picker.visible = opening
-	if opening:
-		PanelTheme.schedule_couch_focus(_vessel_picker,
-				PackedStringArray(["Use this tank"]))
+	if PanelTheme.is_panel_open(_vessel_picker):
+		close_vessel_picker()
+		return
+	_prepare_panel_open()
+	# A centred modal like Library / Creator: scrim, side panels closed.
+	_ui_panels.close_side_panels()
+	if _vessel_picker.has_method("sync_from_config"):
+		_vessel_picker.call("sync_from_config")
+	_ui_panels.open(UiPanelManager.MODAL_VESSEL)
+	PanelTheme.schedule_couch_focus(_vessel_picker,
+			PackedStringArray(["Use this tank"]))
 
 
 func close_vessel_picker() -> void:
 	if _vessel_picker == null:
 		return
-	_vessel_picker.visible = false
+	PanelTheme.transition_panel(_vessel_picker, false)
 	_sync_rail_toggles()
 
 
@@ -3780,14 +3766,14 @@ func _on_vessel_chosen(key: String) -> void:
 func close_mind_panel() -> void:
 	if _mind_panel == null:
 		return
-	_mind_panel.visible = false
+	PanelTheme.transition_panel(_mind_panel, false)
 	_sync_rail_toggles()
 
 
 func close_chronicle_panel() -> void:
 	if _chronicle_panel == null:
 		return
-	_chronicle_panel.visible = false
+	PanelTheme.transition_panel(_chronicle_panel, false)
 	_sync_rail_toggles()
 
 
@@ -4804,15 +4790,7 @@ func _build_follow_thought_ui() -> void:
 	# Anchored to the bottom: let content (history lines) grow the panel UP
 	# instead of pushing it off-screen.
 	_follow_thought_strip.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.05, 0.08, 0.14, 0.88)
-	style.border_color = Color(0.42, 0.62, 0.88, 0.55)
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(10)
-	style.content_margin_left = 14
-	style.content_margin_right = 14
-	style.content_margin_top = 10
-	style.content_margin_bottom = 10
+	var style: StyleBoxFlat = PanelTheme.make_toast_style(Color(0.42, 0.62, 0.88, 0.55))
 	_follow_thought_strip.add_theme_stylebox_override("panel", style)
 	add_child(_follow_thought_strip)
 	var vb := VBoxContainer.new()
@@ -5469,7 +5447,8 @@ func _tick_keeper_input(dt: float) -> void:
 					else KeeperCare.placeholder_for_fish(f, _sim)
 			# The say box lives in the strip — keep it reachable before the
 			# fish has had a first thought.
-			if _follow_thought_strip != null and not _follow_thought_strip.visible:
+			if _follow_thought_strip != null and not _follow_thought_strip.visible \
+					and not bool(_follow_thought_strip.get_meta("_hidden_for_modal", false)):
 				_follow_thought_strip.visible = true
 				_follow_thought_strip.modulate.a = 1.0
 				if _follow_thought_strip_name != null and _follow_thought_strip_name.text == "":
@@ -5525,36 +5504,86 @@ func _tick_tank_channel() -> void:
 
 
 func _layout_follow_thought_strip() -> void:
+	_layout_follow_thought_strip_in(_ui_regions())
+
+
+# The strip lives in the top of BOTTOM_LEFT_STACK (beside whichever left
+# panel is open, above the toasts) and never grows past it. Its height is
+# MEASURED at the width it will have: get_line_count() before the label had
+# been laid out at that width counted one word per line, which once made a
+# 1500 px strip starting at y = -694. max_lines_visible caps the body so the
+# container's own minimum cannot outgrow the region either.
+func _layout_follow_thought_strip_in(regions: Dictionary) -> void:
 	if _follow_thought_strip == null:
 		return
+	if _ui_panels != null and _ui_panels.is_region_open(HudLayout.CENTRE_MODAL):
+		_hide_for_modal(_follow_thought_strip, true)
+		return
+	var area: Rect2 = _bottom_stack_rects(regions)["strip"]
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var bottom: float = _hud_bottom_inset()
-	var edge: float = PanelTheme.EDGE_MARGIN
-	var left_pad: float = edge + 8.0
-	if _residents_panel != null and _residents_panel.visible:
-		left_pad = maxf(left_pad, _residents_panel.size.x + edge + 12.0)
-	var strip_w: float = clampf(vp.x * 0.38, 300.0, 420.0)
-	var strip_h: float = 92.0
-	if _follow_thought_strip_body != null and _follow_thought_strip_body.text != "":
-		var line_h: float = float(PanelTheme.scaled_size(PanelTheme.SIZE_BODY)) + 6.0
-		var lines: int = maxi(1, _follow_thought_strip_body.get_line_count())
-		strip_h = maxf(92.0, float(lines) * line_h + 40.0)
+	var strip_w: float = minf(area.size.x, clampf(vp.x * 0.38, 300.0, 420.0))
+	var inner_w: float = maxf(40.0, strip_w - 28.0)
+	var fixed_h: float = 20.0 + 8.0
+	if _follow_thought_strip_name != null and _follow_thought_strip_name.text != "":
+		fixed_h += _label_line_h(_follow_thought_strip_name) + 4.0
+	if _keeper_say_edit != null and _keeper_say_edit.visible:
+		fixed_h += maxf(34.0, _keeper_say_edit.get_combined_minimum_size().y) + 4.0
 	if _keeper_ack_label != null and _keeper_ack_label.visible:
-		strip_h = maxf(strip_h, 118.0)
+		fixed_h += _label_text_h(_keeper_ack_label, inner_w, 2) + 4.0
 	if _keeper_history_label != null and _keeper_history_label.visible:
-		var cap_h: float = float(PanelTheme.scaled_size(PanelTheme.SIZE_CAPTION)) + 5.0
-		strip_h += float(maxi(1, _keeper_history_label.get_line_count())) * cap_h
-	var toast_clearance: float = 0.0
-	if _notification_toast_active > 0 and not _keeper_input_active():
-		toast_clearance = PanelTheme.TOAST_STACK_H + 10.0
-	_follow_thought_strip.anchor_left = 0.0
-	_follow_thought_strip.anchor_top = 1.0
-	_follow_thought_strip.anchor_right = 0.0
-	_follow_thought_strip.anchor_bottom = 1.0
-	_follow_thought_strip.offset_left = left_pad
-	_follow_thought_strip.offset_right = left_pad + strip_w
-	_follow_thought_strip.offset_bottom = -(bottom + 10.0 + toast_clearance)
-	_follow_thought_strip.offset_top = -(bottom + 10.0 + strip_h + toast_clearance)
+		_keeper_history_label.max_lines_visible = 3
+		fixed_h += _label_text_h(_keeper_history_label, inner_w, 3) + 4.0
+	var strip_h: float = maxf(92.0, fixed_h)
+	if _follow_thought_strip_body != null:
+		var body_line: float = _label_line_h(_follow_thought_strip_body)
+		var fit_lines: int = maxi(1, int(floor((area.size.y - fixed_h) / maxf(1.0, body_line))))
+		_follow_thought_strip_body.max_lines_visible = fit_lines
+		if _follow_thought_strip_body.text != "":
+			strip_h = maxf(strip_h,
+				fixed_h + _label_text_h(_follow_thought_strip_body, inner_w, fit_lines))
+	strip_h = minf(strip_h, area.size.y)
+	# The estimate above can undercount the container's own overhead; trim
+	# body lines until its real minimum fits the area.
+	if _follow_thought_strip_body != null and _follow_thought_strip_body.text != "":
+		var body_line2: float = maxf(1.0, _label_line_h(_follow_thought_strip_body))
+		for _i in 6:
+			var real_h: float = _follow_thought_strip.get_combined_minimum_size().y
+			if real_h <= area.size.y + 0.5:
+				break
+			var cut: int = int(ceil((real_h - area.size.y) / body_line2))
+			if _follow_thought_strip_body.max_lines_visible > 1:
+				_follow_thought_strip_body.max_lines_visible = maxi(1,
+					_follow_thought_strip_body.max_lines_visible - cut)
+			elif _keeper_history_label != null and _keeper_history_label.visible \
+					and _keeper_history_label.max_lines_visible > 1:
+				_keeper_history_label.max_lines_visible = maxi(1,
+					_keeper_history_label.max_lines_visible - cut)
+			else:
+				break
+		strip_h = minf(maxf(strip_h, _follow_thought_strip.get_combined_minimum_size().y),
+			area.size.y)
+	_follow_thought_strip.z_index = PanelTheme.Z_STACK
+	_follow_thought_strip.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	HudLayout.place(_follow_thought_strip,
+		Rect2(area.position.x, area.end.y - strip_h, strip_w, strip_h))
+
+
+func _label_line_h(l: Label) -> float:
+	var font: Font = l.get_theme_font("font")
+	var fs: int = l.get_theme_font_size("font_size")
+	return font.get_height(fs) + float(l.get_theme_constant("line_spacing"))
+
+
+# Wrapped height of a label's text at `width`, capped at `max_lines`.
+func _label_text_h(l: Label, width: float, max_lines: int) -> float:
+	if l.text == "":
+		return 0.0
+	var font: Font = l.get_theme_font("font")
+	var fs: int = l.get_theme_font_size("font_size")
+	var line_h: float = _label_line_h(l)
+	var sz: Vector2 = font.get_multiline_string_size(l.text, HORIZONTAL_ALIGNMENT_LEFT, width, fs)
+	var lines: int = maxi(1, int(ceil(sz.y / maxf(1.0, font.get_height(fs)))))
+	return float(mini(lines, max_lines)) * line_h
 
 
 func _clear_follow_thought_ui() -> void:
@@ -5566,6 +5595,8 @@ func _clear_follow_thought_ui() -> void:
 	_follow_thought_symbol = null
 	if _follow_thought_strip != null:
 		_follow_thought_strip.visible = false
+		# Nothing to bring back when a modal closes.
+		_follow_thought_strip.set_meta("_hidden_for_modal", false)
 	if _follow_thought_strip_body != null:
 		_follow_thought_strip_body.text = ""
 	if _follow_thought_strip_name != null:
@@ -5730,8 +5761,11 @@ func _tick_workspace_inspector(dt: float) -> void:
 		for i in range(maxi(0, stream.size() - 4), stream.size()):
 			lines.append(stream[i])
 	_workspace_inspector.text = "\n".join(lines)
-	_workspace_inspector.position = Vector2(12, 12)
+	if _ui_panels != null and _ui_panels.is_region_open(HudLayout.LEFT_COLUMN):
+		_workspace_inspector.visible = false
+		return
 	_workspace_inspector.visible = true
+	_place_workspace_inspector(_ui_regions())
 
 
 func _ensure_perf_hud() -> void:
@@ -6578,17 +6612,7 @@ func _relayout_portal() -> void:
 	var card_h: float = 330.0 if above else 176.0
 	var port: float = 156.0 if above else 104.0
 
-	# Dock the card top-right, clear of the rail + top HUD (readable gutter).
-	var right_inset: float = PanelTheme.rail_chrome_inset()
-	var top_inset: float = PanelTheme.HUD_TOP + 6.0
-	portal_container.anchor_left = 1.0
-	portal_container.anchor_right = 1.0
-	portal_container.anchor_top = 0.0
-	portal_container.anchor_bottom = 0.0
-	portal_container.offset_right = -right_inset
-	portal_container.offset_left = -right_inset - card_w
-	portal_container.offset_top = top_inset
-	portal_container.offset_bottom = top_inset + card_h
+	_place_portal_card()
 	# Keep the top stats chips from sliding under the card.
 	_apply_hud_layout()
 
@@ -6643,6 +6667,50 @@ func _relayout_portal() -> void:
 	root.add_child(_portal_ctrls)
 	_portal_info_panel.add_child(root)
 	_portal_scaffold = root
+
+
+# The follow card docks top-right, beside the rail - or, while a right-column
+# panel is open, beside THAT panel. Where it would then land on the left
+# column or the bottom band (narrow windows) it steps aside entirely and
+# comes back when the column closes.
+var _portal_hidden_by_layout: bool = false
+
+
+func _portal_card_size() -> Vector2:
+	var above: bool = _portal_layout == PortalLayout.ABOVE
+	return Vector2(PanelTheme.PORTAL_CARD_W_ABOVE if above else PanelTheme.PORTAL_CARD_W,
+		330.0 if above else 176.0)
+
+
+func _place_portal_card() -> void:
+	if portal_container == null or _ui_panels == null:
+		return
+	var regions: Dictionary = _ui_regions()
+	var card_sz: Vector2 = _portal_card_size()
+	var right_col: Rect2 = regions[HudLayout.RIGHT_COLUMN]
+	var right_open: bool = _ui_panels.is_region_open(HudLayout.RIGHT_COLUMN)
+	var left_open: bool = _ui_panels.is_region_open(HudLayout.LEFT_COLUMN)
+	var right_edge: float = right_col.end.x
+	if right_open:
+		right_edge = right_col.position.x - HudLayout.GAP
+		var rc: Control = _ui_panels.control_of(_ui_panels.open_in(HudLayout.RIGHT_COLUMN))
+		if rc != null:
+			right_edge = minf(right_edge, rc.get_global_rect().position.x - HudLayout.GAP)
+	var r := Rect2(right_edge - card_sz.x, right_col.position.y, card_sz.x, card_sz.y)
+	HudLayout.place(portal_container, r)
+	var blocked: bool = r.position.x < 0.0 \
+		or r.intersects(regions[HudLayout.BOTTOM_LEFT_STACK]) \
+		or r.intersects(regions[HudLayout.BOTTOM_CENTRE]) \
+		or (left_open and r.intersects(regions[HudLayout.LEFT_COLUMN]))
+	if blocked:
+		if portal_container.visible:
+			portal_container.visible = false
+			_portal_hidden_by_layout = true
+	elif _portal_hidden_by_layout:
+		_portal_hidden_by_layout = false
+		if _follow_mode != FollowMode.OFF and _follow_target != null \
+				and is_instance_valid(_follow_target):
+			portal_container.visible = true
 
 
 func _toggle_portal_layout() -> void:
@@ -7394,7 +7462,10 @@ func _apply_footer_layout() -> void:
 	var pad: Vector4 = _safe_pad()
 	footer_bar.offset_left = PanelTheme.EDGE_MARGIN + pad.x
 	footer_bar.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
-	footer_bar.offset_top = -(PanelTheme.FOOTER_HEIGHT + pad.w)
+	# The bar's content decides its height (56 px, not the 48 the constant
+	# used to say — the difference hung 8 px off the bottom of the screen).
+	var fh: float = maxf(PanelTheme.FOOTER_HEIGHT, footer_bar.get_combined_minimum_size().y)
+	footer_bar.offset_top = -(fh + pad.w)
 	footer_bar.offset_bottom = -pad.w
 
 
@@ -8768,104 +8839,297 @@ func _apply_rail_dock_layout() -> void:
 		var gutter: float = 4.0 if compact else 8.0
 		var rail_w: float = maxf(56.0 if compact else 64.0, btn_edge + gutter * 2.0)
 		right_rail.offset_left = -(rail_w + pad.z)
-		right_rail.offset_top = (44.0 if compact else 48.0) + pad.y
+		# Between the MEASURED top bar and footer: the old -40 bottom ran the
+		# cluster 8 px into the 56 px footer.
+		var vp_r: Vector2 = get_viewport().get_visible_rect().size
+		right_rail.offset_top = maxf((44.0 if compact else 48.0) + pad.y,
+			_measured_top_bar_bottom() + HudLayout.GAP)
 		right_rail.offset_right = -(gutter + pad.z)
-		right_rail.offset_bottom = -((76.0 if compact else 40.0) + pad.w)
+		right_rail.offset_bottom = -maxf((76.0 if compact else 40.0) + pad.w,
+			_measured_footer_h(vp_r) + HudLayout.GAP)
 
 
-# How far in from the left edge the toast stack starts. A left-docked panel
-# owns that corner while it is open, so the stack steps to its right rather
-# than hiding behind it.
+# ---- HUD regions ----------------------------------------------------------
 #
-# _apply_panel_layout() runs on panel CREATION and on resize, not on every
-# open/close, so the stack listens to the left panels directly — otherwise a
-# panel opened after the first toast would simply cover it.
-func _watch_left_panels() -> void:
-	for panel in [_residents_panel, _mind_panel, library_panel]:
-		var c: Control = panel as Control
-		if c == null or not is_instance_valid(c):
-			continue
-		if not c.visibility_changed.is_connected(_relayout_toast_stack):
-			c.visibility_changed.connect(_relayout_toast_stack)
+# Everything the HUD layers over the render goes into ONE HudLayout region
+# (see hud_layout.gd): the two side columns, the bottom-left stack (toasts +
+# follow-thought strip + say box), the bottom-centre slot (feed hint, status
+# toast, onboarding nudge) and the centred modal. The regions are computed
+# from the MEASURED top bar, footer and rail - the literals they replace
+# (HUD_TOP 44, FOOTER_HEIGHT 48, rail anchor - 210) were each 6-30 px wrong.
+# UiPanelManager owns which panel holds a region; main only feeds it rects.
+var _ui_regions_pending: bool = false
+
+
+func _measured_top_bar_bottom() -> float:
+	var b: float = PanelTheme.HUD_TOP + _safe_pad().y
+	for n in [left_cluster, stats_bar]:
+		var c: Control = n as Control
+		if c != null and c.is_visible_in_tree() and c.size.y > 1.0:
+			b = maxf(b, c.get_global_rect().end.y)
+	return b
+
+
+func _measured_footer_h(vp: Vector2) -> float:
+	var h: float = PanelTheme.FOOTER_HEIGHT + _safe_pad().w
+	if footer_bar != null and footer_bar.is_visible_in_tree() and footer_bar.size.y > 1.0:
+		h = maxf(h, vp.y - footer_bar.get_global_rect().position.y)
+	return h
+
+
+func _measured_rail_left() -> float:
+	var rc: Control = get_node_or_null("RightRail/RightCluster") as Control
+	if rc != null and rc.is_visible_in_tree() and rc.size.x > 1.0:
+		return rc.get_global_rect().position.x
+	return -1.0
+
+
+func _ui_regions() -> Dictionary:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var left_open: bool = _ui_panels != null and _ui_panels.is_region_open(HudLayout.LEFT_COLUMN)
+	var right_open: bool = _ui_panels != null and _ui_panels.is_region_open(HudLayout.RIGHT_COLUMN)
+	var left_extent: float = 0.0
+	var right_extent: float = 0.0
+	if left_open:
+		var lc: Control = _ui_panels.control_of(_ui_panels.open_in(HudLayout.LEFT_COLUMN))
+		if lc != null:
+			left_extent = lc.get_global_rect().end.x
+	if right_open:
+		var rc: Control = _ui_panels.control_of(_ui_panels.open_in(HudLayout.RIGHT_COLUMN))
+		if rc != null:
+			right_extent = rc.get_global_rect().position.x
+	return HudLayout.regions(vp, _safe_pad(), _rail_dock, _measured_top_bar_bottom(),
+		_measured_footer_h(vp), _measured_rail_left(), left_open, right_open,
+		left_extent, right_extent)
+
+
+# While a centred modal (and its scrim) is up, the bottom band's contents
+# would only show through the scrim, under the modal: step them aside and
+# bring them back when it closes.
+func _hide_for_modal(c: Control, hide: bool) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	if hide and c.visible:
+		c.visible = false
+		c.set_meta("_hidden_for_modal", true)
+	elif not hide and bool(c.get_meta("_hidden_for_modal", false)):
+		c.remove_meta("_hidden_for_modal")
+		c.visible = true
+
+
+# Every HUD panel, in its region. Idempotent - re-run on each layout so a
+# lazily built panel joins the moment it exists.
+func _register_ui_panels(vp: Vector2) -> void:
+	if _ui_panels == null:
+		return
+	var right: String = HudLayout.RIGHT_COLUMN
+	var left: String = HudLayout.LEFT_COLUMN
+	var modal: String = HudLayout.CENTRE_MODAL
+	if settings_panel != null:
+		_ui_panels.register(UiPanelManager.SIDE_SETTINGS, settings_panel, right)
+	if render_panel != null:
+		_ui_panels.register(UiPanelManager.SIDE_RENDER, render_panel, right)
+	if sound_panel != null:
+		_ui_panels.register(UiPanelManager.SIDE_SOUND, sound_panel, right)
+	if _light_panel != null:
+		_ui_panels.register(UiPanelManager.SIDE_LIGHT, _light_panel, right)
+	if _notifications_panel != null:
+		_ui_panels.register(UiPanelManager.SIDE_NOTIFICATIONS, _notifications_panel, right)
+	if _camera_views_panel != null:
+		_ui_panels.register(UiPanelManager.PANEL_CAMERA_VIEWS, _camera_views_panel, right,
+			Vector2.ZERO, _close_camera_views_panel)
+	if _residents_panel != null:
+		_ui_panels.register(UiPanelManager.PANEL_RESIDENTS, _residents_panel, left,
+			Vector2.ZERO, _close_residents_panel)
+	if _mind_panel != null:
+		_ui_panels.register(UiPanelManager.PANEL_MIND, _mind_panel, left,
+			Vector2.ZERO, close_mind_panel)
+	if _chronicle_panel != null:
+		_ui_panels.register(UiPanelManager.PANEL_CHRONICLE, _chronicle_panel, left,
+			Vector2.ZERO, close_chronicle_panel)
+	# Modals: centred, clamped to the viewport minus margins, scrim behind.
+	if library_panel != null:
+		_ui_panels.register(UiPanelManager.MODAL_LIBRARY, library_panel, modal,
+			Vector2(clampf(vp.x * 0.62, 520.0, 960.0), clampf(vp.y * 0.86, 420.0, 900.0)))
+	if creature_creator_panel != null:
+		_ui_panels.register(UiPanelManager.MODAL_CREATOR, creature_creator_panel, modal,
+			Vector2(clampf(vp.x * 0.55, 560.0, 860.0), clampf(vp.y * 0.66, 420.0, 640.0)))
+	if adopt_panel != null:
+		_ui_panels.register(UiPanelManager.MODAL_ADOPT, adopt_panel, modal,
+			Vector2(clampf(minf(vp.x * 0.42, 480.0), 320.0, 480.0),
+				clampf(vp.y * 0.52, 360.0, 520.0)))
+	if _vessel_picker != null:
+		_ui_panels.register(UiPanelManager.MODAL_VESSEL, _vessel_picker, modal,
+			Vector2(clampf(vp.x * 0.62, 520.0, 900.0), clampf(vp.y * 0.78, 420.0, 860.0)),
+			close_vessel_picker)
+
+
+# A registered panel opened or closed: the bottom band, the portal card and
+# the rail toggles depend on which columns are occupied. Coalesced to one
+# pass per frame (several panels can change in one exclusivity sweep).
+func _on_ui_regions_changed() -> void:
+	if _ui_regions_pending:
+		return
+	_ui_regions_pending = true
+	call_deferred("_flush_ui_regions_changed")
+
+
+func _flush_ui_regions_changed() -> void:
+	_ui_regions_pending = false
+	if _ui_panels != null:
+		_ui_panels.relayout(_ui_regions())
+	_relayout_bottom_stacks()
+	_place_portal_card()
+	_sync_rail_toggles()
+
+
+# Split BOTTOM_LEFT_STACK: the notification toasts own its bottom while any
+# are showing, the follow-thought strip + say box sit directly above them.
+func _bottom_stack_rects(regions: Dictionary) -> Dictionary:
+	var stack: Rect2 = regions[HudLayout.BOTTOM_LEFT_STACK]
+	var th: float = minf(PanelTheme.TOAST_STACK_H, stack.size.y)
+	var toasts := Rect2(stack.position.x, stack.end.y - th,
+		minf(PanelTheme.TOAST_STACK_W, stack.size.x), th)
+	var strip_bottom: float = stack.end.y
+	if _notification_toast_active > 0 and not _keeper_input_active():
+		strip_bottom = toasts.position.y - HudLayout.GAP
+	var strip := Rect2(stack.position.x, stack.position.y, stack.size.x,
+		maxf(0.0, strip_bottom - stack.position.y))
+	return {"toasts": toasts, "strip": strip}
+
+
+func _relayout_bottom_stacks() -> void:
+	var regions: Dictionary = _ui_regions()
+	var modal_up: bool = _ui_panels != null and _ui_panels.is_region_open(HudLayout.CENTRE_MODAL)
+	_hide_for_modal(_follow_thought_strip, modal_up)
+	_hide_for_modal(_notifications_toast_layer, modal_up)
+	if _onboarding != null:
+		for key in ["_nudge_panel", "_caption_label"]:
+			var ov: Variant = _onboarding.get(key)
+			if is_instance_valid(ov) and ov is Control:
+				_hide_for_modal(ov as Control, modal_up)
+	if modal_up:
+		for c in [_status_toast, _feed_toast_panel]:
+			if c != null and is_instance_valid(c):
+				(c as Control).visible = false
+	_relayout_toast_stack_in(regions)
+	_layout_follow_thought_strip_in(regions)
+	_relayout_bottom_centre(regions[HudLayout.BOTTOM_CENTRE])
+	_place_workspace_inspector(regions)
 
 
 func _relayout_toast_stack() -> void:
+	_relayout_toast_stack_in(_ui_regions())
+
+
+func _relayout_toast_stack_in(regions: Dictionary) -> void:
 	if _notifications_toast_layer == null \
 			or not is_instance_valid(_notifications_toast_layer):
 		return
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var pad: Vector4 = _safe_pad()
-	var edge: float = PanelTheme.EDGE_MARGIN + pad.x
-	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
-	PanelTheme.layout_toast_stack(_notifications_toast_layer, _hud_bottom_inset(),
-		_toast_left_inset(edge, panel_w))
+	HudLayout.place(_notifications_toast_layer, _bottom_stack_rects(regions)["toasts"])
+	_notifications_toast_layer.z_index = PanelTheme.Z_STACK
 	ToastStack.relayout(_notifications_toast_layer)
 
 
-func _toast_left_inset(edge: float, panel_w: float) -> float:
-	for panel in [_residents_panel, _mind_panel, library_panel]:
-		var c: Control = panel as Control
-		if c != null and is_instance_valid(c) and c.visible:
-			return edge + panel_w + 10.0
-	return edge
+# BOTTOM_CENTRE is one queue: the onboarding nudge (interactive) sits at the
+# bottom, then the status toast, then the feed hint; each is clamped to the
+# slot's width and whatever no longer fits (only the feed hint can) waits.
+# The feed and status toasts used to share one hard-coded spot and draw on
+# top of each other; the nudge was a full-width bar across the rail.
+func _relayout_bottom_centre(r: Rect2) -> void:
+	if _ui_panels != null and _ui_panels.is_region_open(HudLayout.CENTRE_MODAL):
+		for c in [_status_toast, _feed_toast_panel]:
+			if c != null and is_instance_valid(c):
+				(c as Control).visible = false
+		return
+	var items: Array[Control] = []
+	var nudge: Control = null
+	var caption: Control = null
+	if _onboarding != null:
+		var nv: Variant = _onboarding.get("_nudge_panel")
+		if is_instance_valid(nv) and nv is Control and (nv as Control).visible:
+			nudge = nv as Control
+			items.append(nudge)
+	if _status_toast != null and is_instance_valid(_status_toast) and _status_toast.visible:
+		items.append(_status_toast)
+	if _onboarding != null:
+		var cv: Variant = _onboarding.get("_caption_label")
+		if is_instance_valid(cv) and cv is Control and (cv as Control).visible:
+			caption = cv as Control
+			items.append(caption)
+	if _feed_toast_panel != null and is_instance_valid(_feed_toast_panel) \
+			and _feed_toast_panel.visible:
+		items.append(_feed_toast_panel)
+	var y: float = r.end.y
+	for c in items:
+		var ms: Vector2 = c.get_combined_minimum_size()
+		var want_w: float = r.size.x if c == nudge else (440.0 if c == _feed_toast_panel else 360.0)
+		var w: float = minf(r.size.x, maxf(ms.x, want_w))
+		# An autowrap label reports its minimum height for the width it had
+		# BEFORE this placement (the nudge came out 1177 px tall): measure
+		# the text at the slot width instead, and re-run once it has settled.
+		var h: float = maxf(minf(ms.y, r.size.y), 1.0)
+		if c is Label:
+			h = maxf(1.0, _label_text_h(c as Label, w, 2))
+		if not c.minimum_size_changed.is_connected(_queue_bottom_centre):
+			c.minimum_size_changed.connect(_queue_bottom_centre)
+		if y - h < r.position.y - 0.5 and (c == _feed_toast_panel or c == caption):
+			c.visible = false
+			continue
+		HudLayout.place(c, Rect2(r.position.x + (r.size.x - w) * 0.5, y - h, w, h))
+		c.z_index = PanelTheme.Z_CENTRE_TOAST
+		y -= h + HudLayout.GAP
+
+
+var _bottom_centre_pending: bool = false
+
+
+func _queue_bottom_centre() -> void:
+	if _bottom_centre_pending:
+		return
+	_bottom_centre_pending = true
+	call_deferred("_flush_bottom_centre")
+
+
+func _flush_bottom_centre() -> void:
+	_bottom_centre_pending = false
+	_relayout_bottom_centre(_ui_regions()[HudLayout.BOTTOM_CENTRE])
+
+
+# Debug inner-life readout: the free top of the left column (above the
+# bottom stack), and out of the way entirely while a left panel is open. It
+# used to sit at a literal (12, 12) - across the top bar and the column.
+func _place_workspace_inspector(regions: Dictionary) -> void:
+	if _workspace_inspector == null or not is_instance_valid(_workspace_inspector):
+		return
+	if _ui_panels != null and _ui_panels.is_region_open(HudLayout.LEFT_COLUMN):
+		_workspace_inspector.visible = false
+		return
+	var col: Rect2 = regions[HudLayout.LEFT_COLUMN]
+	var stack: Rect2 = regions[HudLayout.BOTTOM_LEFT_STACK]
+	var bottom: float = col.end.y
+	if stack.position.x < col.end.x:
+		bottom = minf(bottom, stack.position.y - HudLayout.GAP)
+	var r := Rect2(col.position, Vector2(col.size.x, maxf(0.0, bottom - col.position.y)))
+	var font: Font = _workspace_inspector.get_theme_font("font")
+	var fs: int = _workspace_inspector.get_theme_font_size("font_size")
+	var line_h: float = font.get_height(fs) + float(_workspace_inspector.get_theme_constant("line_spacing"))
+	_workspace_inspector.max_lines_visible = maxi(1, int(floor(r.size.y / maxf(1.0, line_h))))
+	_workspace_inspector.custom_minimum_size = Vector2(r.size.x, 0.0)
+	HudLayout.place(_workspace_inspector, r)
 
 
 func _apply_panel_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var pad: Vector4 = _safe_pad()
-	var top: float = PanelTheme.HUD_TOP + pad.y
-	var bottom: float = _hud_bottom_inset()
-	var edge: float = PanelTheme.EDGE_MARGIN + pad.x
-	var rail: float = _rail_edge_inset()
-	var panel_w: float = clampf(vp.x * 0.33, PanelTheme.PANEL_MIN_W, PanelTheme.PANEL_MAX_W)
+	_register_ui_panels(vp)
+	var regions: Dictionary = _ui_regions()
+	if _ui_panels != null:
+		_ui_panels.relayout(regions)
+	var col: Rect2 = regions[HudLayout.LEFT_COLUMN]
+	var top: float = col.position.y
+	var bottom: float = vp.y - col.end.y
 
-	for panel in [settings_panel, render_panel, sound_panel]:
-		if panel != null:
-			PanelTheme.layout_side_panel(panel, rail, top, bottom, panel_w, "right")
-
-	if _notifications_panel != null:
-		PanelTheme.layout_side_panel(_notifications_panel, rail, top, bottom, panel_w, "right")
-
-	if _light_panel != null:
-		PanelTheme.layout_side_panel(_light_panel, rail, top, bottom, panel_w, "right")
-		var scroll: Control = _light_panel.get_meta("scroll_container", null) as Control
-		if scroll != null:
-			var body_h: float = vp.y - top - bottom - 100.0
-			scroll.custom_minimum_size = Vector2(0, clampf(body_h, 280.0, 640.0))
-
-	_watch_left_panels()
-	_relayout_toast_stack()
-
-	if _residents_panel != null:
-		PanelTheme.layout_side_panel(_residents_panel, edge, top, bottom, panel_w, "left")
-
-	# Mind docks left alongside Residents (BROAD_DIRECTIONS #17) — "which
-	# creature" and "what is it thinking" are the same question.
-	if _mind_panel != null:
-		PanelTheme.layout_side_panel(_mind_panel, edge, top, bottom, panel_w, "left")
-
-	if _chronicle_panel != null:
-		PanelTheme.layout_side_panel(_chronicle_panel, edge, top, bottom, panel_w, "left")
-
-	# The vessel picker is a browsing surface, not a sidebar — centre it and
-	# give it room for two columns of cards.
-	if _vessel_picker != null:
-		var pick_w: float = clampf(vp.x * 0.62, 520.0, 900.0)
-		var pick_h: float = clampf(vp.y * 0.78, 420.0, 860.0)
-		_vessel_picker.anchor_left = 0.5
-		_vessel_picker.anchor_right = 0.5
-		_vessel_picker.anchor_top = 0.5
-		_vessel_picker.anchor_bottom = 0.5
-		_vessel_picker.offset_left = -pick_w * 0.5
-		_vessel_picker.offset_right = pick_w * 0.5
-		_vessel_picker.offset_top = -pick_h * 0.5
-		_vessel_picker.offset_bottom = pick_h * 0.5
-
-	_layout_follow_thought_strip()
-
-	if library_panel != null:
-		PanelTheme.layout_side_panel(library_panel, edge, top, bottom, panel_w, "left")
-		library_panel.offset_right = -rail
+	_relayout_bottom_stacks()
 
 	if aquascape_palette != null:
 		var work_w: float = _aquascape_workbench_width()
@@ -8879,27 +9143,6 @@ func _apply_panel_layout() -> void:
 		aquascape_palette.offset_right = work_left + work_w
 		aquascape_palette.offset_bottom = -bottom
 	_sync_aquascape_view_bar()
-
-	if _camera_views_panel != null:
-		var cam_w: float = clampf(panel_w * 0.72, 280.0, 380.0)
-		PanelTheme.layout_side_panel(_camera_views_panel, rail, top, bottom, cam_w, "right")
-		_camera_views_panel.z_index = 130
-
-	var modal_w: float = clampf(vp.x * 0.55, 560.0, 820.0)
-	var modal_h: float = clampf(vp.y * 0.62, 420.0, 620.0)
-	if creature_creator_panel != null:
-		creature_creator_panel.offset_left = -modal_w * 0.5
-		creature_creator_panel.offset_right = modal_w * 0.5
-		creature_creator_panel.offset_top = -modal_h * 0.5
-		creature_creator_panel.offset_bottom = modal_h * 0.5
-
-	var adopt_w: float = clampf(minf(vp.x * 0.42, 480.0), 320.0, 480.0)
-	var adopt_h: float = clampf(vp.y * 0.52, 360.0, 520.0)
-	if adopt_panel != null:
-		adopt_panel.offset_left = -adopt_w * 0.5
-		adopt_panel.offset_right = adopt_w * 0.5
-		adopt_panel.offset_top = -adopt_h * 0.5
-		adopt_panel.offset_bottom = adopt_h * 0.5
 
 	# The glass follow-card owns its own geometry (size depends on the chosen
 	# porthole layout); re-apply it on resize rather than forcing a square here.
@@ -9272,7 +9515,7 @@ func _setup_rail_groups() -> void:
 	_rail_flyout.name = "RailFlyout"
 	_rail_flyout.visible = false
 	_rail_flyout.mouse_filter = Control.MOUSE_FILTER_STOP
-	_rail_flyout.z_index = 120
+	_rail_flyout.z_index = PanelTheme.Z_FLYOUT
 	PanelTheme.apply_panel_chrome(_rail_flyout)
 	add_child(_rail_flyout)
 	_rail_flyout_vbox = VBoxContainer.new()
@@ -9315,16 +9558,20 @@ func _toggle_rail_flyout(group_id: String, anchor: Button) -> void:
 		_rail_flyout.visible = false
 		return
 	_close_chip_popups()
+	# remove_child first: a queue_free()d child still counts toward the
+	# flyout's minimum size until the frame ends, which mis-sized it.
 	for c in _rail_flyout_vbox.get_children():
+		_rail_flyout_vbox.remove_child(c)
 		c.queue_free()
 	_rail_flyout.set_meta("group", group_id)
 	var items: Array[Dictionary] = _rail_flyout_items(group_id)
+	# Same header as every popover: group name + the × close.
+	_rail_flyout_vbox.add_child(PanelTheme.make_chip_popup_header(
+		tr(group_id.capitalize()), func(): _rail_flyout.visible = false))
 	for item in items:
-		var b := Button.new()
-		b.text = String(item.get("label", "?"))
+		var b := PanelTheme.make_menu_item_button(String(item.get("label", "?")))
 		b.tooltip_text = String(item.get("tip", ""))
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.custom_minimum_size = Vector2(200, 36)
+		b.custom_minimum_size = Vector2(200, 32)
 		b.pressed.connect(func():
 			_rail_flyout.visible = false
 			var action: Callable = item.get("action")
@@ -9332,9 +9579,32 @@ func _toggle_rail_flyout(group_id: String, anchor: Button) -> void:
 				action.call())
 		_rail_flyout_vbox.add_child(b)
 	_rail_flyout.visible = true
+	_place_rail_flyout(anchor)
+	# Once more after layout: the flyout's header and items settle their
+	# minimum size a frame later, and the clamp must use the real height.
+	call_deferred("_place_rail_flyout", anchor)
+
+
+# Beside the rail cluster (its MEASURED left edge, not anchor.x - 210 with a
+# 200 px guess at a 236 px panel), level with the button that opened it, and
+# clamped to the work area so a low group never runs under the footer.
+func _place_rail_flyout(anchor: Control) -> void:
+	if _rail_flyout == null or not is_instance_valid(anchor) or not _rail_flyout.visible:
+		return
+	var regions: Dictionary = _ui_regions()
+	var rail: Rect2 = regions[HudLayout.RAIL]
+	var work: Rect2 = regions[HudLayout.LEFT_COLUMN]
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var ms: Vector2 = _rail_flyout.get_combined_minimum_size()
 	var grect: Rect2 = anchor.get_global_rect()
-	_rail_flyout.global_position = Vector2(grect.position.x - 210.0, grect.position.y)
-	_rail_flyout.size = Vector2(200, 8 + items.size() * 40)
+	var pos := Vector2.ZERO
+	if _rail_dock == "bottom":
+		pos.x = clampf(grect.position.x, PanelTheme.EDGE_MARGIN, maxf(PanelTheme.EDGE_MARGIN, vp.x - ms.x - PanelTheme.EDGE_MARGIN))
+		pos.y = rail.position.y - HudLayout.GAP - ms.y
+	else:
+		pos.x = rail.position.x - HudLayout.GAP - ms.x
+		pos.y = clampf(grect.position.y, work.position.y, maxf(work.position.y, work.end.y - ms.y))
+	HudLayout.place(_rail_flyout, Rect2(pos, ms))
 
 
 func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
@@ -10191,7 +10461,10 @@ func _ensure_light_panel() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	_light_panel.add_child(outer)
 
-	outer.add_child(PanelTheme.make_title("Light"))
+	# House header: title + × (the panel has no actions, so no footer).
+	outer.add_child(PanelTheme.make_panel_header("Light", func() -> void:
+		_close_light_panel()
+		_sync_rail_toggles()))
 	outer.add_child(PanelTheme.make_rule())
 
 	# Preset row: dropdown at the top so users can grab a curated look in
@@ -10234,14 +10507,14 @@ func _ensure_light_panel() -> void:
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.custom_minimum_size = Vector2(0, 560)
+	# No height floor: the panel is placed into RIGHT_COLUMN and the scroll
+	# fills what is left (a 560 px floor ran the panel into the footer).
 	outer.add_child(scroll)
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 8)
 	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(vbox)
 	# Stash so _position_light_panel can resize it to fit the viewport.
-	_light_panel.set_meta("scroll_container", scroll)
 
 	# ---- Global section ----
 	_add_light_section(vbox, "Global")
@@ -10485,10 +10758,6 @@ func _ensure_light_panel() -> void:
 	var hint := PanelTheme.make_description()
 	hint.text = "Master off renders the tank near-black. For fixture type, direction, and beams open Settings."
 	vbox.add_child(hint)
-
-	outer.add_child(PanelTheme.make_panel_footer(func() -> void:
-		_close_light_panel()
-		_sync_rail_toggles()))
 	_pull_light_panel_values()
 
 
@@ -11883,13 +12152,14 @@ func _toggle_cheat_sheet() -> void:
 	panel.offset_top = -220
 	panel.offset_right = 240
 	panel.offset_bottom = 220
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	_cheat_sheet.add_child(panel)
-	var vb := VBoxContainer.new()
+	# House shell: header × over a scrolling list (was a full-width primary
+	# Close at the bottom).
+	var shell: Dictionary = PanelTheme.make_panel_shell("Controls", _toggle_cheat_sheet)
+	panel.add_child(shell.root)
+	var vb: VBoxContainer = shell.body
 	vb.add_theme_constant_override("separation", 6)
-	panel.add_child(vb)
-	vb.add_child(PanelTheme.make_title("Controls"))
-	vb.add_child(PanelTheme.make_rule())
 	var lines: PackedStringArray = OnboardingLegibility.cheat_sheet_lines(
 			_is_mobile(), _gamepad() != null and _gamepad().is_gamepad_active())
 	for line in lines:
@@ -11898,10 +12168,7 @@ func _toggle_cheat_sheet() -> void:
 		lab.add_theme_font_size_override("font_size", 13)
 		lab.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 		vb.add_child(lab)
-	var close := PanelTheme.make_primary_button("Close")
-	close.pressed.connect(_toggle_cheat_sheet)
-	vb.add_child(close)
-	PanelTheme.schedule_couch_focus(_cheat_sheet, PackedStringArray(["Close"]))
+	PanelTheme.schedule_couch_focus(_cheat_sheet, PackedStringArray(["×"]))
 
 
 func _maybe_show_coachmarks() -> void:
@@ -12008,16 +12275,22 @@ func _dismiss_blocking_overlays() -> bool:
 	if _cheat_sheet != null and is_instance_valid(_cheat_sheet):
 		_toggle_cheat_sheet()
 		return true
-	if _vessel_picker != null and _vessel_picker.visible:
+	# Registered panels (columns + modals) close newest-first — the manager's
+	# Escape order. The explicit checks below remain as a fallback for a
+	# panel that is open but not (yet) registered.
+	if _ui_panels != null and _ui_panels.close_top():
+		_sync_rail_toggles()
+		return true
+	if _vessel_picker != null and PanelTheme.is_panel_open(_vessel_picker):
 		close_vessel_picker()
 		return true
-	if _mind_panel != null and _mind_panel.visible:
+	if _mind_panel != null and PanelTheme.is_panel_open(_mind_panel):
 		close_mind_panel()
 		return true
-	if _chronicle_panel != null and _chronicle_panel.visible:
+	if _chronicle_panel != null and PanelTheme.is_panel_open(_chronicle_panel):
 		close_chronicle_panel()
 		return true
-	if _camera_views_panel != null and _camera_views_panel.visible:
+	if _camera_views_panel != null and PanelTheme.is_panel_open(_camera_views_panel):
 		_close_camera_views_panel()
 		return true
 	if _residents_panel != null and _residents_panel.visible:
@@ -12145,7 +12418,7 @@ func _maybe_show_tutorial() -> void:
 	panel.offset_top = -200
 	panel.offset_right = 220
 	panel.offset_bottom = 200
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	overlay.add_child(panel)
 	var scroll := ScrollContainer.new()
 	scroll.custom_minimum_size = Vector2(400, 0)
@@ -12300,15 +12573,8 @@ func _show_status_toast(message: String, reveal_path: String = "") -> void:
 	var toast_panel := PanelContainer.new()
 	toast_panel.name = "StatusToast"
 	toast_panel.mouse_filter = Control.MOUSE_FILTER_STOP if reveal_path != "" else Control.MOUSE_FILTER_IGNORE
-	toast_panel.z_index = 400
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.06, 0.09, 0.12, 0.82)
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 12
-	sb.content_margin_right = 12
-	sb.content_margin_top = 8
-	sb.content_margin_bottom = 8
-	toast_panel.add_theme_stylebox_override("panel", sb)
+	toast_panel.z_index = PanelTheme.Z_CENTRE_TOAST
+	toast_panel.add_theme_stylebox_override("panel", PanelTheme.make_toast_style())
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	toast_panel.add_child(row)
@@ -12346,6 +12612,7 @@ func _show_status_toast(message: String, reveal_path: String = "") -> void:
 	toast_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	add_child(toast_panel)
 	_status_toast = toast_panel
+	_relayout_bottom_centre(_ui_regions()[HudLayout.BOTTOM_CENTRE])
 	var hold: float = 2.4 if reveal_path != "" else 1.25
 	_status_toast_tween = create_tween()
 	_status_toast_tween.tween_interval(hold)

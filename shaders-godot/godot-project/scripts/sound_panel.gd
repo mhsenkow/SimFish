@@ -446,14 +446,14 @@ func _close() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(500, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	PanelTheme.apply_panel_chrome(self)
 
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_title("Sound Studio"))
+	outer.add_child(PanelTheme.make_panel_header("Sound Studio", _close))
 	var subtitle := PanelTheme.make_description()
 	subtitle.text = tr("Now Playing for your track · Tank score for procedural ambient · Choreography for the dance.")
 	outer.add_child(subtitle)
@@ -475,7 +475,9 @@ func _build_ui() -> void:
 
 	var save := PanelTheme.make_primary_button("Save")
 	save.pressed.connect(_on_save)
-	outer.add_child(PanelTheme.make_panel_footer(_close, save))
+	# Actions only — Close is the header ×.
+	outer.add_child(PanelTheme.make_panel_footer(Callable(), save))
+	PanelTheme.fit_panel_content(outer)
 
 
 func _new_tab_scroll(tabs: TabContainer, title: String) -> VBoxContainer:
@@ -733,8 +735,9 @@ func _build_music_sync_section(vbox: VBoxContainer) -> void:
 	)
 	vbox.add_child(intro)
 
-	var sync_top := HBoxContainer.new()
-	sync_top.add_theme_constant_override("separation", 12)
+	# Stacked, not side by side: checkbox + slider row needed ~390 px.
+	var sync_top := VBoxContainer.new()
+	sync_top.add_theme_constant_override("separation", 6)
 	vbox.add_child(sync_top)
 	_sync_enable_check = CheckBox.new()
 	_sync_enable_check.text = tr("Sync tank to music")

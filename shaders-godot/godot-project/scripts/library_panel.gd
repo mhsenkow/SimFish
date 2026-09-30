@@ -337,7 +337,7 @@ func _build_ui() -> void:
 	# Background dim. We render a ColorRect filling the whole panel before any
 	# content so the underlying tank reads as "behind glass" rather than fully
 	# obscured — players still get a sense the sim is alive back there.
-	PanelTheme.apply_panel_chrome(self)
+	PanelTheme.apply_modal_chrome(self)
 
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
@@ -345,14 +345,12 @@ func _build_ui() -> void:
 	outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(outer)
 
-	# ---- Header (title + tabs + close) ----
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 12)
+	# ---- Header (house pattern: title + ×), scope tabs on the row below ----
+	outer.add_child(PanelTheme.make_panel_header("Life Library", close))
+	var header := HFlowContainer.new()
+	header.add_theme_constant_override("h_separation", 8)
+	header.add_theme_constant_override("v_separation", 6)
 	outer.add_child(header)
-
-	var title := PanelTheme.make_title("Life Library")
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title)
 
 	_tab_tank = _make_tab_button("This Tank", true)
 	_tab_tank.pressed.connect(func(): _set_scope(Scope.TANK))
@@ -366,9 +364,6 @@ func _build_ui() -> void:
 	_tab_species = _make_tab_button("Species 🌿", false)
 	_tab_species.pressed.connect(func(): _set_scope(Scope.SPECIES))
 	header.add_child(_tab_species)
-
-	var close_btn := PanelTheme.make_close_button(close)
-	header.add_child(close_btn)
 
 	outer.add_child(PanelTheme.make_rule())
 

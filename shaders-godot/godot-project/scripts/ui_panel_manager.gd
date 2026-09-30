@@ -1,7 +1,32 @@
-# Central panel open/close policy: side panels are mutually exclusive;
-# modals get a dim backdrop and block tank input.
+# Central panel open/close policy.
+#
+# Every HUD panel lives in ONE HudLayout region and registers here:
+#
+#     _ui_panels.register(id, control, HudLayout.LEFT_COLUMN)
+#     _ui_panels.register(id, control, HudLayout.CENTRE_MODAL, Vector2(w, h))
+#
+# A region holds one panel at a time: when a registered control becomes
+# visible — through open(), transition_panel(), or a bare `visible = true` —
+# every other open panel in that region is closed, and when the regions say
+# both columns cannot fit (COLUMNS_EXCLUSIVE) the opposite column closes too.
+# Visibility is WATCHED, not reported, so a panel that hides itself with
+# `visible = false` (Adopt's own Close did, skipping notify_modal_closed and
+# leaving the scrim up) still releases its slot. relayout(regions) places
+# every registered control into its rect with its region's z band; close_top()
+# is the Escape order (newest open panel first).
+#
+# The legacy side/modal ids below keep their bespoke open/close paths; they
+# are registered like everything else so exclusivity and Escape cover them.
 class_name UiPanelManager
 extends RefCounted
+
+const PANEL_MIND := "mind"
+const PANEL_CHRONICLE := "chronicle"
+const PANEL_RESIDENTS := "residents"
+const PANEL_CAMERA_VIEWS := "camera_views"
+const MODAL_VESSEL := "vessel_picker"
+const _SIDE_IDS: Array[String] = ["settings", "render", "sound", "light", "notifications"]
+const _MODAL_IDS: Array[String] = ["library", "creator", "adopt"]
 
 const SIDE_SETTINGS := "settings"
 const SIDE_RENDER := "render"
@@ -17,6 +42,197 @@ var _main: Node = null
 var _backdrop: ColorRect = null
 var _open_side: String = ""
 var _open_modal: String = ""
+# id -> {"control": Control, "region": String, "size": Vector2, "close": Callable}
+var _entries: Dictionary = {}
+var _regions: Dictionary = {}
+# Open order, newest last — Escape closes from the end.
+var _order: Array[String] = []
+
+
+# Register (or re-register) a panel into a HudLayout region. Idempotent:
+# main calls it from every _apply_panel_layout so lazily built panels join
+# as soon as they exist. `modal_size` is the preferred size in CENTRE_MODAL
+# (clamped to the region); `close_fn` replaces the default fade-out close.
+func register(id: String, control: Control, region: String,
+		modal_size: Vector2 = Vector2.ZERO, close_fn: Callable = Callable()) -> void:
+	if control == null or not is_instance_valid(control):
+		return
+	var prev: Variant = (_entries.get(id, {}) as Dictionary).get("control", null)
+	_entries[id] = {"control": control, "region": region, "size": modal_size,
+		"close": close_fn}
+	control.z_index = PanelTheme.z_for_region(region)
+	if not (prev is Control) or prev != control:
+		control.visibility_changed.connect(_on_entry_visibility.bind(id))
+		if control.visible:
+			_mark_open(id)
+	if not _regions.is_empty():
+		_place(id)
+
+
+func region_of(id: String) -> String:
+	return String((_entries.get(id, {}) as Dictionary).get("region", ""))
+
+
+func control_of(id: String) -> Control:
+	var c: Variant = (_entries.get(id, {}) as Dictionary).get("control", null)
+	if is_instance_valid(c) and c is Control:
+		return c as Control
+	return null
+
+
+func is_open(id: String) -> bool:
+	var c: Control = control_of(id)
+	return c != null and PanelTheme.is_panel_open(c)
+
+
+# Newest open panel in a region, or "".
+func open_in(region: String) -> String:
+	for i in range(_order.size() - 1, -1, -1):
+		var id: String = _order[i]
+		if region_of(id) == region and is_open(id):
+			return id
+	return ""
+
+
+func is_region_open(region: String) -> bool:
+	return open_in(region) != ""
+
+
+func open(id: String) -> void:
+	var c: Control = control_of(id)
+	if c == null:
+		return
+	_prepare_open()
+	PanelTheme.transition_panel(c, true)
+	# Already visible (re-open inside a fade-out) emits no visibility_changed.
+	_mark_open(id)
+
+
+func close(id: String) -> void:
+	var e: Dictionary = _entries.get(id, {}) as Dictionary
+	if e.is_empty():
+		return
+	if id in _SIDE_IDS:
+		_close_side(id)
+		if _open_side == id:
+			_open_side = ""
+		return
+	if id in _MODAL_IDS:
+		if _open_modal == id:
+			close_modal()
+		else:
+			_close_modal_id(id)
+		return
+	var fn: Callable = e.get("close", Callable())
+	if fn.is_valid():
+		fn.call()
+	else:
+		var c: Control = control_of(id)
+		if c != null:
+			PanelTheme.transition_panel(c, false)
+
+
+func toggle(id: String) -> void:
+	if is_open(id):
+		close(id)
+	else:
+		open(id)
+
+
+# Escape: close the most recently opened panel that is still open.
+func close_top() -> bool:
+	for i in range(_order.size() - 1, -1, -1):
+		var id: String = _order[i]
+		if is_open(id):
+			close(id)
+			return true
+	return false
+
+
+# Place every registered panel into `regions` (HudLayout.regions()).
+func relayout(regions: Dictionary) -> void:
+	_regions = regions
+	for id in _entries.keys():
+		if control_of(String(id)) != null:
+			_place(String(id))
+	if bool(_regions.get(HudLayout.COLUMNS_EXCLUSIVE, false)):
+		var l: String = open_in(HudLayout.LEFT_COLUMN)
+		var r: String = open_in(HudLayout.RIGHT_COLUMN)
+		if l != "" and r != "":
+			close(l if _order.find(l) < _order.find(r) else r)
+
+
+func _place(id: String) -> void:
+	var e: Dictionary = _entries.get(id, {}) as Dictionary
+	var c: Control = control_of(id)
+	if c == null or not _regions.has(e.get("region", "")):
+		return
+	var region: String = String(e["region"])
+	var r: Rect2 = _regions[region]
+	if r.size.x <= 0.0 or r.size.y <= 0.0:
+		return
+	var rect: Rect2 = r
+	if region == HudLayout.CENTRE_MODAL:
+		var want: Vector2 = e.get("size", Vector2.ZERO)
+		rect = HudLayout.centred_in(r, want if want != Vector2.ZERO else r.size)
+	# A panel's own floor must not beat its region: clamp it and let the
+	# panel's scroll body take up the difference.
+	c.custom_minimum_size = c.custom_minimum_size.min(rect.size)
+	HudLayout.place(c, rect, region == HudLayout.RIGHT_COLUMN)
+
+
+func _mark_open(id: String) -> void:
+	_order.erase(id)
+	_order.append(id)
+	var region: String = region_of(id)
+	var cols: Array[String] = [HudLayout.LEFT_COLUMN, HudLayout.RIGHT_COLUMN]
+	var excl: bool = bool(_regions.get(HudLayout.COLUMNS_EXCLUSIVE, false))
+	for other in _entries.keys():
+		var oid: String = String(other)
+		if oid == id or not is_open(oid):
+			continue
+		var oreg: String = region_of(oid)
+		var clash: bool = oreg == region \
+			or (excl and region in cols and oreg in cols)
+		if clash:
+			close(oid)
+	if id in _SIDE_IDS:
+		_open_side = id
+	elif region == HudLayout.CENTRE_MODAL:
+		_open_modal = id
+	_sync_backdrop()
+	if not _regions.is_empty():
+		_place(id)
+
+
+func _on_entry_visibility(id: String) -> void:
+	var c: Control = control_of(id)
+	if c == null:
+		return
+	if c.visible:
+		if _order.is_empty() or _order[_order.size() - 1] != id:
+			_mark_open(id)
+	else:
+		_order.erase(id)
+		if _open_side == id:
+			_open_side = ""
+		if _open_modal == id:
+			_open_modal = ""
+	_sync_backdrop()
+	if _main != null and _main.has_method("_on_ui_regions_changed"):
+		_main.call("_on_ui_regions_changed")
+
+
+func _sync_backdrop() -> void:
+	var any_modal: bool = false
+	for id in _entries.keys():
+		var c: Control = control_of(String(id))
+		if c != null and c.visible and region_of(String(id)) == HudLayout.CENTRE_MODAL:
+			any_modal = true
+	if any_modal:
+		_set_backdrop(true)
+	elif _open_modal == "":
+		_set_backdrop(false)
 
 
 func setup(main: Node) -> void:
@@ -40,7 +256,7 @@ func ensure_backdrop() -> void:
 	_backdrop.anchor_bottom = 1.0
 	_backdrop.visible = false
 	_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-	_backdrop.z_index = 150
+	_backdrop.z_index = PanelTheme.Z_MODAL_SCRIM
 	_backdrop.gui_input.connect(_on_backdrop_input)
 	_main.add_child(_backdrop)
 	_main.move_child(_backdrop, 0)
@@ -72,26 +288,46 @@ func close_side_panels() -> void:
 	_close_side(SIDE_LIGHT)
 	_close_side(SIDE_NOTIFICATIONS)
 	_open_side = ""
+	# The rest of the right column (Camera views) is a side panel too.
+	for id in _entries.keys():
+		var sid: String = String(id)
+		if not (sid in _SIDE_IDS) and region_of(sid) == HudLayout.RIGHT_COLUMN \
+				and is_open(sid):
+			close(sid)
 
 
 func close_modal() -> void:
-	if _open_modal == "":
-		_set_backdrop(false)
-		return
-	match _open_modal:
+	var was: String = _open_modal
+	_open_modal = ""
+	if was != "":
+		_close_modal_id(was)
+	# Any other modal-region panel (vessel picker) goes with it.
+	for id in _entries.keys():
+		var mid: String = String(id)
+		if mid != was and region_of(mid) == HudLayout.CENTRE_MODAL and is_open(mid):
+			close(mid)
+	_set_backdrop(false)
+
+
+func _close_modal_id(id: String) -> void:
+	match id:
 		MODAL_LIBRARY:
 			_close_library()
 		MODAL_CREATOR:
 			_close_creator()
 		MODAL_ADOPT:
 			_hide_panel(_main.get("adopt_panel"))
-	_open_modal = ""
-	_set_backdrop(false)
+		_:
+			if not (id in _MODAL_IDS) and _entries.has(id):
+				close(id)
 
 
 func close_all() -> void:
 	close_side_panels()
 	close_modal()
+	for id in _entries.keys():
+		if is_open(String(id)):
+			close(String(id))
 
 
 func toggle_side(id: String) -> void:
@@ -148,13 +384,13 @@ func open_modal(id: String) -> void:
 			elif lp != null:
 				_show_panel(lp)
 			if lp != null:
-				lp.z_index = 200
+				lp.z_index = PanelTheme.Z_MENU_MODAL
 		MODAL_CREATOR:
 			var cp: Variant = _main.get("creature_creator_panel")
 			if cp != null and cp.has_method("open"):
 				cp.open()
 			if cp != null:
-				cp.z_index = 200
+				cp.z_index = PanelTheme.Z_MENU_MODAL
 		MODAL_ADOPT:
 			var sp: Variant = _main.get("adopt_panel")
 			if sp != null:
@@ -163,7 +399,7 @@ func open_modal(id: String) -> void:
 				# out-tween has to cancel that tween or its completion
 				# callback hides the panel again a frame later.
 				PanelTheme.transition_panel(sp, true)
-				sp.z_index = 200
+				sp.z_index = PanelTheme.Z_MENU_MODAL
 				if sp.has_method("_regenerate"):
 					sp._regenerate()
 	_grab_couch_focus_in_open_panel()

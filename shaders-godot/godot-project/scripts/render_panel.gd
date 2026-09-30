@@ -249,7 +249,7 @@ func _refresh_palette_inspector() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(420, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	PanelTheme.apply_panel_chrome(self)
 
 	# Outer layout: title + rule at top, scrolling section list in the middle,
@@ -258,7 +258,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_title("Rendering"))
+	outer.add_child(PanelTheme.make_panel_header("Rendering", func(): visible = false))
 	outer.add_child(PanelTheme.make_subtitle(
 		"Pick a fidelity tier, then tune the look. Apply rebuilds the render viewport."))
 	outer.add_child(PanelTheme.make_rule())
@@ -339,7 +339,9 @@ func _build_ui() -> void:
 	save_btn.pressed.connect(_on_save_only)
 	var apply := PanelTheme.make_primary_button("Apply")
 	apply.pressed.connect(_on_apply)
-	outer.add_child(PanelTheme.make_panel_footer(func(): visible = false, apply, [save_btn]))
+	# Actions only (primary rightmost) — Close is the header ×.
+	outer.add_child(PanelTheme.make_panel_footer(Callable(), apply, [save_btn]))
+	PanelTheme.fit_panel_content(outer)
 
 
 func _build_quality_hero(parent: VBoxContainer) -> void:

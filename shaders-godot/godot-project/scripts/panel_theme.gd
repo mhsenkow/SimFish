@@ -67,6 +67,16 @@ static func cohesion_border() -> Color:
 
 # ---- Overlay z-index (document stacking order) -------------------------------
 
+# In-game HUD bands, one per HudLayout region (low to high). Every region's
+# z lives here so two regions can never tie by accident — they used to be
+# literals (0, 80, 97, 110, 120, 130, 200, 220, 400) scattered over main.gd.
+const Z_HUD: int = 0
+const Z_STACK: int = 96
+const Z_COLUMN: int = 110
+const Z_FLYOUT: int = 130
+const Z_POPOVER: int = 220
+const Z_CENTRE_TOAST: int = 270
+const Z_MODAL_SCRIM: int = 399  # Z_MENU_MODAL - 1
 const Z_WALKTHROUGH: int = 280
 const Z_HELP: int = 290
 const Z_ONBOARDING: int = 300
@@ -78,9 +88,12 @@ const Z_TUTORIAL: int = 500
 
 # ---- HUD layout constants ----------------------------------------------------
 
-const HUD_TOP: float = 44.0
+# Fallbacks only: main.gd MEASURES the top bar and footer (HudLayout.regions).
+# These match what the chrome actually renders (the old 44 / 48 did not, so
+# every panel sat 8 px under the stats bar and the footer hung off-screen).
+const HUD_TOP: float = 52.0
 const HUD_BOTTOM: float = 28.0
-const FOOTER_HEIGHT: float = 48.0
+const FOOTER_HEIGHT: float = 56.0
 const EDGE_MARGIN: float = 12.0
 const RAIL_WIDTH: float = 56.0
 # Gap between the right rail icons and any leftward-docked chrome (portal card).
@@ -344,7 +357,11 @@ static func as_mono(node: Control, size: int = SIZE_SMALL, medium: bool = false)
 
 # Applies the dark rounded backdrop + generous padding to a PanelContainer.
 # Call once from each panel's _build_ui() before adding any children.
-static func apply_panel_chrome(panel: PanelContainer) -> void:
+#
+# ONE radius per family: docked side panels and HUD popovers use CORNER_PANEL,
+# centred modals (dialogs over a scrim) pass modal=true for CORNER_MODAL. The
+# chrome is otherwise identical, so a side panel and a modal read as siblings.
+static func apply_panel_chrome(panel: PanelContainer, modal: bool = false) -> void:
 	var style := StyleBoxFlat.new()
 	style.bg_color = _cohesion_bg if _cohesion_active else BG
 	style.border_color = _cohesion_border if _cohesion_active else BORDER
@@ -352,7 +369,7 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 	style.border_width_top = 1
 	style.border_width_right = 1
 	style.border_width_bottom = 1
-	style.set_corner_radius_all(CORNER_MODAL)
+	style.set_corner_radius_all(CORNER_MODAL if modal else CORNER_PANEL)
 	# Generous inner padding — the old panels were CRAMPED right against the
 	# rounded edge; bumping to 18/14 gives the form room to breathe.
 	style.content_margin_left = 18
@@ -363,6 +380,35 @@ static func apply_panel_chrome(panel: PanelContainer) -> void:
 	style.shadow_size = 8
 	style.shadow_offset = Vector2(0, 4)
 	panel.add_theme_stylebox_override("panel", style)
+
+
+# Centred dialog chrome — apply_panel_chrome with the modal radius.
+static func apply_modal_chrome(panel: PanelContainer) -> void:
+	apply_panel_chrome(panel, true)
+
+
+# Transient surface chrome shared by notification toasts, the feed toast, the
+# status toast and the follow-thought strip: one radius (CORNER_PANEL), one
+# padding scale, HUD translucency. `accent` tints the border (a severity
+# colour on toasts); leave it transparent for the neutral HUD border.
+# `compact` tightens the padding for single-line toasts.
+static func make_toast_style(accent: Color = Color(0, 0, 0, 0),
+		compact: bool = false) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(HUD_BG.r, HUD_BG.g, HUD_BG.b, 0.86)
+	s.border_color = HUD_BORDER if accent.a <= 0.0 else accent
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(CORNER_PANEL)
+	var h: float = 10.0 if compact else 12.0
+	var v: float = 6.0 if compact else 8.0
+	s.content_margin_left = h
+	s.content_margin_right = h
+	s.content_margin_top = v
+	s.content_margin_bottom = v
+	s.shadow_color = Color(0, 0, 0, 0.3)
+	s.shadow_size = 4
+	s.shadow_offset = Vector2(0, 2)
+	return s
 
 
 # Lighter card chrome for the tank shelf grid — same family as side panels but
@@ -547,9 +593,27 @@ static func _focusable_button_ok(b: BaseButton) -> bool:
 static func layout_modal_panel(panel: PanelContainer, vp: Vector2,
 		min_w: float = MODAL_MIN_W, min_h: float = MODAL_MIN_H,
 		max_w_frac: float = 0.92, max_h_frac: float = 0.88) -> void:
-	var w: float = clampf(vp.x * max_w_frac, min_w, vp.x - EDGE_MARGIN * 2.0)
-	var h: float = clampf(vp.y * max_h_frac, min_h, vp.y - EDGE_MARGIN * 2.0)
-	panel.custom_minimum_size = Vector2(w, h)
+	# The viewport ceiling wins over the minimum: a 560 px floor on a 600 px
+	# window used to push the modal past the footer. Clamp and let it scroll.
+	var w: float = minf(maxf(vp.x * max_w_frac, min_w), vp.x - EDGE_MARGIN * 2.0)
+	var h: float = minf(maxf(vp.y * max_h_frac, min_h), vp.y - EDGE_MARGIN * 2.0)
+	panel.custom_minimum_size = Vector2(maxf(0.0, w), maxf(0.0, h))
+
+
+# z band for a HudLayout region name.
+static func z_for_region(region: String) -> int:
+	match region:
+		"LEFT_COLUMN", "RIGHT_COLUMN":
+			return Z_COLUMN
+		"BOTTOM_LEFT_STACK":
+			return Z_STACK
+		"BOTTOM_CENTRE":
+			return Z_CENTRE_TOAST
+		"CENTRE_MODAL":
+			return Z_MENU_MODAL
+		"RAIL":
+			return Z_FLYOUT
+	return Z_HUD
 
 
 # Standard top-bar row for menu pages.
@@ -709,36 +773,90 @@ static func layout_side_panel(panel: Control, rail_inset: float, top: float,
 		panel.offset_right = -rail_inset
 
 
-# Title row with an optional trailing Close — used by full-screen modals whose
-# header also carries tabs or filters (Life Library, Notifications, etc.).
+# ---- Panel header / footer / shell ---------------------------------------
+#
+# THE PANEL PATTERN (every side panel, modal and popover):
+#   header  — title on the left, ONE compact "×" close at the top-right
+#             (make_panel_header). It is always focusable so a pad or the
+#             keyboard can reach it, tooltip "Close (Esc)", and finger-sized
+#             on touch devices. Escape closes the panel too.
+#   body    — a ScrollContainer around a VBox (make_panel_shell), so every
+#             panel scrolls the same way instead of some clipping.
+#   footer  — ACTIONS ONLY (make_panel_footer), primary rightmost. Close is
+#             never repeated down here; a panel with no actions has no footer.
+
+const HEADER_CLOSE_TOOLTIP: String = "Close (Esc)"
+const HEADER_CLOSE_META: StringName = &"panel_header_close"
+
+
+# The one close control: a square "×" icon at the header's right edge.
+static func make_header_close_button(on_close: Callable = Callable()) -> Button:
+	var b := Button.new()
+	b.name = "HeaderClose"
+	b.text = "×"
+	b.tooltip_text = HEADER_CLOSE_TOOLTIP
+	b.set_meta(HEADER_CLOSE_META, true)
+	# Always focusable — this is the control a pad / keyboard player can
+	# always land on, even in a panel that is otherwise read-only.
+	b.focus_mode = Control.FOCUS_ALL
+	var side: float = 48.0 if is_touch_device() else 32.0
+	b.custom_minimum_size = Vector2(side, side)
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	apply_font(b, FONT_SANS, SIZE_SECTION)
+	b.add_theme_color_override("font_color", DIM_FG)
+	b.add_theme_color_override("font_hover_color", TITLE_FG)
+	b.add_theme_color_override("font_pressed_color", SECTION_FG)
+	b.add_theme_color_override("font_focus_color", TITLE_FG)
+	b.add_theme_stylebox_override("normal", _icon_button_stylebox(Color(0, 0, 0, 0)))
+	b.add_theme_stylebox_override("hover",
+		_icon_button_stylebox(Color(0.22, 0.28, 0.36, 0.7)))
+	b.add_theme_stylebox_override("pressed",
+		_icon_button_stylebox(Color(0.32, 0.38, 0.48, 0.8)))
+	var focus_sb := _icon_button_stylebox(Color(0.22, 0.28, 0.36, 0.5))
+	focus_sb.border_color = Color(0.85, 0.92, 1.0, 0.95)
+	focus_sb.set_border_width_all(2)
+	b.add_theme_stylebox_override("focus", focus_sb)
+	if on_close.is_valid():
+		b.pressed.connect(on_close)
+	return b
+
+
+# Title row + the header close. Every panel starts with this.
 static func make_panel_header(title_text: String, on_close: Callable = Callable()) -> HBoxContainer:
 	var row := HBoxContainer.new()
+	row.name = "PanelHeader"
 	row.add_theme_constant_override("separation", 8)
 	var title := make_title(title_text)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title.custom_minimum_size.x = 120.0
 	row.add_child(title)
 	if on_close.is_valid():
-		row.add_child(make_close_button(on_close))
+		row.add_child(make_header_close_button(on_close))
 	return row
 
 
-# Compact title row for HUD chip popovers — small × instead of a full Close pill.
+# Compact title row for HUD chip popovers — same close control, smaller title.
 static func make_chip_popup_header(title_text: String, on_close: Callable = Callable()) -> HBoxContainer:
 	var row := HBoxContainer.new()
+	row.name = "PanelHeader"
 	row.add_theme_constant_override("separation", 6)
-	var title := make_title(title_text)
+	var title := Label.new()
+	title.text = title_text
+	apply_font(title, FONT_SERIF_MED, SIZE_SECTION)
+	title.add_theme_color_override("font_color", TITLE_FG)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title.custom_minimum_size.x = 120.0
 	row.add_child(title)
 	if on_close.is_valid():
-		var xbtn := make_secondary_button("×")
-		xbtn.custom_minimum_size = Vector2(22, 22)
-		xbtn.tooltip_text = "Close"
-		xbtn.pressed.connect(on_close)
-		row.add_child(xbtn)
+		row.add_child(make_header_close_button(on_close))
 	return row
 
 
-# Standard dismiss control — always the same label + styling app-wide.
+# Labelled "Close" pill — only for full-screen menus (tank menu, scenario
+# picker) whose Cancel/Close sits beside other dialog choices. Panels use
+# make_panel_header's × instead.
 static func make_close_button(on_close: Callable = Callable()) -> Button:
 	var b := make_secondary_button("Close")
 	if on_close.is_valid():
@@ -746,23 +864,139 @@ static func make_close_button(on_close: Callable = Callable()) -> Button:
 	return b
 
 
-# Pinned footer row for side panels: optional leading actions, Close on the right.
+# Pinned footer row: ACTIONS ONLY, right-aligned, `primary` rightmost.
+# Legacy: a valid `on_close` still appends a "Close" pill (the full-screen
+# menus rely on it); migrated panels pass Callable() and close from the header.
 static func make_panel_footer(on_close: Callable, primary: Button = null,
 		middle: Array[Button] = []) -> VBoxContainer:
 	var block := VBoxContainer.new()
+	block.name = "PanelFooter"
 	block.add_theme_constant_override("separation", 8)
 	block.add_child(make_rule())
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
+	var hb := HFlowContainer.new()
+	hb.alignment = FlowContainer.ALIGNMENT_END
+	hb.add_theme_constant_override("h_separation", 8)
+	hb.add_theme_constant_override("v_separation", 6)
 	block.add_child(hb)
 	for btn in middle:
 		if btn != null:
 			hb.add_child(btn)
+	if on_close.is_valid():
+		hb.add_child(make_close_button(on_close))
 	if primary != null:
 		hb.add_child(primary)
-	hb.add_child(make_close_button(on_close))
 	return block
+
+
+# Standard panel skeleton: header (title + ×), a rule, a scrolling body and an
+# optional actions footer. Returns
+#   {root: VBoxContainer, header: HBoxContainer, scroll: ScrollContainer,
+#    body: VBoxContainer, footer: VBoxContainer or null}
+# Add `root` to the PanelContainer and fill `body`. `footer_actions` are laid
+# out left-to-right, so pass the primary action LAST.
+static func make_panel_shell(title_text: String, on_close: Callable,
+		footer_actions: Array = []) -> Dictionary:
+	var root := VBoxContainer.new()
+	root.name = "PanelShell"
+	root.add_theme_constant_override("separation", 8)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var header := make_panel_header(title_text, on_close)
+	root.add_child(header)
+	root.add_child(make_rule())
+	var scroll := make_panel_scroll()
+	root.add_child(scroll)
+	var body := scroll.get_child(0) as VBoxContainer
+	var footer: VBoxContainer = null
+	if not footer_actions.is_empty():
+		var middle: Array[Button] = []
+		for i in footer_actions.size() - 1:
+			if footer_actions[i] is Button:
+				middle.append(footer_actions[i])
+		var last: Button = footer_actions.back() as Button
+		footer = make_panel_footer(Callable(), last, middle)
+		root.add_child(footer)
+	return {"root": root, "header": header, "scroll": scroll,
+		"body": body, "footer": footer}
+
+
+# The body scroller every panel shares: vertical only, content fills the width
+# (so autowrap labels get a real width), one VBox child.
+static func make_panel_scroll() -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.name = "PanelBody"
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var body := VBoxContainer.new()
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 8)
+	scroll.add_child(body)
+	return scroll
+
+
+# Let a built form shrink to PANEL_MIN_W: long checkbox labels wrap, and
+# dropdowns size to their current choice (clipped) instead of their longest
+# item. Those two alone held Settings at 467 px and Sound at 450 px, pushing
+# the side panel off a 900-wide screen. Call once at the end of _build_ui().
+static func fit_panel_content(root: Node) -> void:
+	if root == null:
+		return
+	if root is CheckBox or root is CheckButton:
+		var b: Button = root as Button
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.x = maxf(b.custom_minimum_size.x, 120.0)
+	elif root is OptionButton:
+		var o: OptionButton = root as OptionButton
+		o.fit_to_longest_item = false
+		o.clip_text = true
+		o.custom_minimum_size.x = maxf(o.custom_minimum_size.x, 96.0)
+	elif root is HBoxContainer:
+		# A row of buttons (tier pickers, transport controls): drop the
+		# 88/110 px pill floors so the row is as wide as its labels.
+		var buttons: Array[Button] = []
+		var only_buttons: bool = root.get_child_count() > 1
+		for c in root.get_children():
+			if c is Button and not (c is CheckBox or c is CheckButton or c is OptionButton):
+				buttons.append(c as Button)
+			elif c is Control and (c as Control).visible:
+				only_buttons = false
+		if only_buttons and (root as Control).get_combined_minimum_size().x > PANEL_MIN_W - 48.0:
+			# Too wide for the narrowest panel: let the row wrap. The HBox
+			# stays (callers may hold it) and hosts a flow that takes the
+			# buttons, so its minimum width becomes the widest button.
+			var hb: HBoxContainer = root as HBoxContainer
+			var flow := HFlowContainer.new()
+			flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var sep: int = hb.get_theme_constant("separation")
+			flow.add_theme_constant_override("h_separation", sep)
+			flow.add_theme_constant_override("v_separation", sep)
+			if hb.alignment == BoxContainer.ALIGNMENT_END:
+				flow.alignment = FlowContainer.ALIGNMENT_END
+			elif hb.alignment == BoxContainer.ALIGNMENT_CENTER:
+				flow.alignment = FlowContainer.ALIGNMENT_CENTER
+			for b in buttons:
+				b.custom_minimum_size.x = minf(b.custom_minimum_size.x, 56.0)
+				hb.remove_child(b)
+				flow.add_child(b)
+			hb.add_child(flow)
+			return
+	for c in root.get_children():
+		fit_panel_content(c)
+
+
+# The header × of a built panel (or null) — for focus and tests.
+static func find_header_close(root: Node) -> Button:
+	if root == null:
+		return null
+	if root is Button and root.has_meta(HEADER_CLOSE_META):
+		return root as Button
+	for c in root.get_children():
+		var f: Button = find_header_close(c)
+		if f != null:
+			return f
+	return null
 
 
 # Big panel title. Pair with add_rule() right after for a clean separator
@@ -782,6 +1016,7 @@ static func make_subtitle(text: String) -> Label:
 	l.text = text
 	l.add_theme_font_size_override("font_size", scaled_size(SIZE_CAPTION))
 	l.add_theme_color_override("font_color", DIM_FG)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return l
 
 
@@ -1003,6 +1238,32 @@ static func _icon_button_stylebox(bg: Color) -> StyleBoxFlat:
 	s.content_margin_top = 4
 	s.content_margin_bottom = 4
 	return s
+
+
+# Left-aligned list entry for menus / flyouts: flat until hovered, full body
+# text, a visible focus ring for pads.
+static func make_menu_item_button(text: String) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.custom_minimum_size = Vector2(0, _button_min_height())
+	apply_font(b, FONT_SANS, SIZE_BODY)
+	b.add_theme_color_override("font_color", LABEL_FG)
+	b.add_theme_color_override("font_hover_color", TITLE_FG)
+	b.add_theme_color_override("font_pressed_color", SECTION_FG)
+	b.add_theme_color_override("font_focus_color", TITLE_FG)
+	for pair in [["normal", Color(0, 0, 0, 0)], ["hover", Color(0.22, 0.28, 0.36, 0.7)],
+			["pressed", Color(0.32, 0.38, 0.48, 0.8)], ["focus", Color(0.22, 0.28, 0.36, 0.5)]]:
+		var sb := _filled_stylebox(pair[1])
+		sb.content_margin_left = 10
+		sb.content_margin_right = 10
+		sb.content_margin_top = 3
+		sb.content_margin_bottom = 3
+		if pair[0] == "focus":
+			sb.border_color = Color(0.85, 0.92, 1.0, 0.95)
+			sb.set_border_width_all(2)
+		b.add_theme_stylebox_override(String(pair[0]), sb)
+	return b
 
 
 # Flat text-only control (disclosure toggles, low-priority links).

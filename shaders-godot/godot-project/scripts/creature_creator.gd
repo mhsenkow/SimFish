@@ -175,31 +175,25 @@ func close() -> void:
 # ---- UI construction --------------------------------------------------------
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(800, 560)
-	PanelTheme.apply_panel_chrome(self)
+	# Was 800x560, which overflowed a 900x600 layout once the chrome margins
+	# were added. The preview and the controls share whatever width there is.
+	custom_minimum_size = Vector2(560, 420)
+	PanelTheme.apply_modal_chrome(self)
 
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	var title := Label.new()
-	title.text = tr("✦ CREATURE CREATOR ✦")
-	title.add_theme_font_size_override("font_size", 20)
-	title.add_theme_color_override("font_color", Color8(120, 230, 200))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	outer.add_child(title)
+	# House header: title + × (Close used to sit at the end of the footer).
+	outer.add_child(PanelTheme.make_panel_header(tr("Creature Creator"), close))
+	outer.add_child(PanelTheme.make_subtitle(
+		tr("Design a custom organism, then stock the tank with it.")))
 
-	var subtitle := Label.new()
-	subtitle.text = tr("design a custom organism, then stock the tank with it")
-	subtitle.add_theme_font_size_override("font_size", 11)
-	subtitle.add_theme_color_override("font_color", Color8(180, 200, 225))
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	outer.add_child(subtitle)
-
-	# Type tabs.
-	var tabs := HBoxContainer.new()
-	tabs.alignment = BoxContainer.ALIGNMENT_CENTER
-	tabs.add_theme_constant_override("separation", 6)
+	# Type tabs — a flow so seven tabs wrap instead of setting the width.
+	var tabs := HFlowContainer.new()
+	tabs.alignment = FlowContainer.ALIGNMENT_CENTER
+	tabs.add_theme_constant_override("h_separation", 6)
+	tabs.add_theme_constant_override("v_separation", 6)
 	outer.add_child(tabs)
 	_add_tab(tabs, Kind.FISH, "🐟 Fish")
 	_add_tab(tabs, Kind.SHRIMP, "🦐 Shrimp")
@@ -224,7 +218,7 @@ func _build_ui() -> void:
 	pstyle.set_border_width_all(2)
 	pstyle.set_corner_radius_all(8)
 	preview_frame.add_theme_stylebox_override("panel", pstyle)
-	preview_frame.custom_minimum_size = Vector2(300, 300)
+	preview_frame.custom_minimum_size = Vector2(200, 200)
 	preview_frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	preview_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	preview_frame.size_flags_stretch_ratio = 1.0
@@ -260,22 +254,17 @@ func _build_ui() -> void:
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	outer.add_child(_status)
 
-	# Footer.
-	var footer := HBoxContainer.new()
-	footer.add_theme_constant_override("separation", 8)
-	outer.add_child(footer)
+	# Footer: actions only, primary ("Add 1") rightmost.
 	var randomize_btn := PanelTheme.make_secondary_button("🎲 Randomize")
 	randomize_btn.pressed.connect(_randomize)
-	footer.add_child(randomize_btn)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
-	for n in [1, 3, 5]:
-		var add_btn := PanelTheme.make_primary_button("Add %d" % n)
-		add_btn.pressed.connect(_add_to_tank.bind(n))
-		footer.add_child(add_btn)
-	var close_btn := PanelTheme.make_close_button(close)
-	footer.add_child(close_btn)
+	var middle: Array[Button] = [randomize_btn]
+	for n in [5, 3]:
+		var more_btn := PanelTheme.make_secondary_button("Add %d" % n)
+		more_btn.pressed.connect(_add_to_tank.bind(n))
+		middle.append(more_btn)
+	var add_btn := PanelTheme.make_primary_button("Add 1")
+	add_btn.pressed.connect(_add_to_tank.bind(1))
+	outer.add_child(PanelTheme.make_panel_footer(Callable(), add_btn, middle))
 
 
 func _add_tab(parent: Node, kind: int, label: String) -> void:

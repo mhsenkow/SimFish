@@ -167,12 +167,16 @@ func toggle_help() -> void:
 	panel.offset_right = 260
 	panel.offset_top = -210
 	panel.offset_bottom = 210
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	_help_overlay.add_child(panel)
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 6)
 	panel.add_child(vb)
-	vb.add_child(PanelTheme.make_title("Help"))
+	# House header: title + × (used to be a full-width primary "Close" at
+	# the bottom, the only panel that dismissed that way). Escape and a click
+	# on the scrim close it too — see _input().
+	vb.add_child(PanelTheme.make_panel_header("Help", toggle_help))
+	vb.add_child(PanelTheme.make_rule())
 	var search := LineEdit.new()
 	search.placeholder_text = "Search — e.g. gulping, NH₃, feed…"
 	vb.add_child(search)
@@ -194,10 +198,18 @@ func toggle_help() -> void:
 		gamepad = gp.is_gamepad_active()
 	body.text = _help_body(mobile, "", gamepad)
 	search.text_changed.connect(func(t: String): body.text = _help_body(mobile, t, gamepad))
-	var close := PanelTheme.make_primary_button("Close")
-	close.pressed.connect(toggle_help)
-	vb.add_child(close)
-	PanelTheme.schedule_couch_focus(_help_overlay, PackedStringArray(["Close"]))
+	PanelTheme.schedule_couch_focus(_help_overlay, PackedStringArray(["×"]))
+
+
+# Escape (or pad B via ui_cancel) closes Help. _input, not _unhandled_input:
+# this node is a child of main, so it sees the event before main's own
+# Escape cascade — which never knew about Help, so Escape used to leave it up.
+func _input(event: InputEvent) -> void:
+	if _help_overlay == null or not is_instance_valid(_help_overlay):
+		return
+	if event.is_action_pressed("ui_cancel") and not event.is_echo():
+		toggle_help()
+		get_viewport().set_input_as_handled()
 
 
 func _help_body(mobile: bool, query: String, gamepad: bool = false) -> String:
@@ -450,6 +462,10 @@ func _show_nudge(id: String, text: String, action: Callable) -> void:
 	_nudge_panel.z_index = PanelTheme.Z_ONBOARDING - 10
 	PanelTheme.apply_panel_chrome(_nudge_panel)
 	_main.add_child(_nudge_panel)
+	# main places it in the bottom-centre slot (clamped, beside the columns)
+	# once its content exists; the full-width anchors are only a fallback.
+	if _main.has_method("_relayout_bottom_stacks"):
+		_main.call_deferred("_relayout_bottom_stacks")
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
 	_nudge_panel.add_child(hb)
@@ -628,6 +644,8 @@ func _show_caption(text: String) -> void:
 	_caption_label.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0))
 	_caption_label.z_index = 260
 	_main.add_child(_caption_label)
+	if _main.has_method("_relayout_bottom_stacks"):
+		_main.call_deferred("_relayout_bottom_stacks")
 	var tw := _main.create_tween()
 	tw.tween_interval(4.0)
 	tw.tween_property(_caption_label, "modulate:a", 0.0, 0.8)

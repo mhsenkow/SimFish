@@ -758,7 +758,7 @@ func _ready() -> void:
 	add_child(center)
 
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 520.0, 420.0)
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	panel.gui_input.connect(func(_e): pass)
@@ -1087,7 +1087,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 480.0, 260.0, 0.9, 0.6)
 	center.add_child(panel)
 
@@ -1199,7 +1199,7 @@ func _show_wildcard_preview(sc: Dictionary, rolled_cfg: Dictionary) -> void:
 	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 420.0, 240.0, 0.86, 0.5)
 	center.add_child(panel)
 

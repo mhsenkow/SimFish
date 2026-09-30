@@ -32,7 +32,7 @@ var _step: int = 0
 
 func _ready() -> void:
 	_ai = get_node_or_null("/root/AIDirector")
-	custom_minimum_size = Vector2(480, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	_build_ui()
 	if _ai != null and _ai.has_signal("connection_tested"):
 		_ai.connection_tested.connect(_on_connection_tested)
@@ -40,32 +40,15 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.07, 0.09, 0.16, 0.97)
-	style.border_color = Color(0.42, 0.62, 0.95, 0.7)
-	style.border_width_left = 1
-	style.border_width_right = 1
-	style.border_width_top = 1
-	style.border_width_bottom = 1
-	style.corner_radius_top_left = 10
-	style.corner_radius_top_right = 10
-	style.corner_radius_bottom_left = 10
-	style.corner_radius_bottom_right = 10
-	style.content_margin_left = 18
-	style.content_margin_right = 18
-	style.content_margin_top = 14
-	style.content_margin_bottom = 14
-	add_theme_stylebox_override("panel", style)
+	# Shared modal chrome (was a hand-built stylebox with its own radius).
+	PanelTheme.apply_modal_chrome(self)
 
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 10)
 	add_child(v)
 
-	var title := Label.new()
-	title.text = tr("Bring your tank to life")
-	title.add_theme_font_size_override("font_size", 18)
-	title.add_theme_color_override("font_color", Color8(255, 215, 110))
-	v.add_child(title)
+	# House header: title + × (same as "Skip for now").
+	v.add_child(PanelTheme.make_panel_header(tr("Bring your tank to life"), _on_close))
 
 	var subtitle := Label.new()
 	subtitle.text = tr("Optional: install Ollama for AI-generated names, moods, and tank narration.")
@@ -81,8 +64,7 @@ func _build_ui() -> void:
 	privacy.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(privacy)
 
-	var hr := HSeparator.new()
-	v.add_child(hr)
+	v.add_child(PanelTheme.make_rule())
 
 	_step_label = Label.new()
 	_step_label.add_theme_font_size_override("font_size", 13)
@@ -106,7 +88,7 @@ func _build_ui() -> void:
 	_model_field.text_changed.connect(_on_model_changed)
 	model_row.add_child(_model_field)
 
-	_action_button = Button.new()
+	_action_button = PanelTheme.make_primary_button("")
 	_action_button.pressed.connect(_on_action_pressed)
 	v.add_child(_action_button)
 
@@ -116,18 +98,9 @@ func _build_ui() -> void:
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_status_label)
 
-	var hr2 := HSeparator.new()
-	v.add_child(hr2)
-
-	var footer := HBoxContainer.new()
-	v.add_child(footer)
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	footer.add_child(spacer)
-	_close_button = Button.new()
-	_close_button.text = tr("Skip for now")
+	_close_button = PanelTheme.make_secondary_button(tr("Skip for now"))
 	_close_button.pressed.connect(_on_close)
-	footer.add_child(_close_button)
+	v.add_child(PanelTheme.make_panel_footer(Callable(), _close_button))
 
 
 func _on_model_changed(text: String) -> void:

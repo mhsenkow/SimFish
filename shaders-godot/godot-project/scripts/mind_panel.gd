@@ -56,23 +56,12 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	var outer := VBoxContainer.new()
-	outer.add_theme_constant_override("separation", 8)
-	add_child(outer)
-
-	outer.add_child(PanelTheme.make_title("Mind"))
-	outer.add_child(PanelTheme.make_rule())
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	outer.add_child(scroll)
-
-	_body = VBoxContainer.new()
-	_body.add_theme_constant_override("separation", 8)
-	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.add_child(_body)
+	# House pattern: header with the × close, scrolling body, no footer
+	# (the panel has no actions). Without a close this panel could be
+	# opened and not dismissed.
+	var shell: Dictionary = PanelTheme.make_panel_shell("Mind", _request_close)
+	add_child(shell.root)
+	_body = shell.body
 
 	# Shown when nothing is being followed — an empty panel with no
 	# explanation reads as broken.
@@ -118,10 +107,6 @@ func _build_ui() -> void:
 	_workings_box.add_theme_constant_override("separation", 4)
 	_workings_box.visible = false
 	_body.add_child(_workings_box)
-
-	# Footer with a Close button — the house pattern every other panel uses.
-	# Without it this panel could be opened and not dismissed.
-	outer.add_child(PanelTheme.make_panel_footer(_request_close))
 
 
 func _toggle_workings() -> void:

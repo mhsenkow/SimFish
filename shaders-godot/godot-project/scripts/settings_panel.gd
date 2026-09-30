@@ -189,7 +189,7 @@ func _on_ui_ticker(delta: float) -> void:
 # Close / Apply. All visual styling goes through PanelTheme so the panel
 # matches Render and Fish-Store side-by-side.
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(460, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	PanelTheme.apply_panel_chrome(self)
 
 	# Outer layout: title at the top, scrolling section list in the middle,
@@ -199,7 +199,7 @@ func _build_ui() -> void:
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	outer.add_child(PanelTheme.make_title("Settings"))
+	outer.add_child(PanelTheme.make_panel_header("Settings", _close_panel))
 	outer.add_child(PanelTheme.make_rule())
 
 	var tabs := TabContainer.new()
@@ -949,10 +949,16 @@ func _build_ui() -> void:
 	# the bottom and became unreachable.
 	var apply := PanelTheme.make_primary_button("Apply (reload tank)")
 	apply.pressed.connect(_on_apply)
-	outer.add_child(PanelTheme.make_panel_footer(func():
-		_revert_staged_stocking()
-		visible = false
-		mouse_filter = Control.MOUSE_FILTER_IGNORE, apply))
+	# Actions only — Close is the header ×.
+	outer.add_child(PanelTheme.make_panel_footer(Callable(), apply))
+	PanelTheme.fit_panel_content(outer)
+
+
+# Header × / Escape-equivalent: drop staged stocking edits and hide.
+func _close_panel() -> void:
+	_revert_staged_stocking()
+	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
 func _new_settings_tab(tabs: TabContainer, title: String) -> VBoxContainer:

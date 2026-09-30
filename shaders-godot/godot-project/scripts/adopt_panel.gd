@@ -50,12 +50,19 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event.is_action_pressed("ui_cancel"):
-		visible = false
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var main: Node = get_tree().current_scene
-		if main != null and main.has_method("_on_modal_closed"):
-			main.call("_on_modal_closed", "adopt")
+		close()
 		get_viewport().set_input_as_handled()
+
+
+# One close path for the header ×, Escape and main: hide, then tell
+# UiPanelManager (via main) so its modal bookkeeping and backdrop clear too —
+# a bare `visible = false` left the manager thinking Adopt was still open.
+func close() -> void:
+	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var main: Node = get_tree().current_scene if is_inside_tree() else null
+	if main != null and main.has_method("_on_modal_closed"):
+		main.call("_on_modal_closed", "adopt")
 
 
 func toggle() -> void:
@@ -68,31 +75,19 @@ func toggle() -> void:
 
 
 func _build_ui() -> void:
-	custom_minimum_size = Vector2(420, 0)
+	custom_minimum_size = Vector2(PanelTheme.PANEL_MIN_W, 0)
 	# Use the shared dark rounded chrome so the panel reads as part of the
 	# same panel family. Cards inside keep their arcade-cyan border.
-	PanelTheme.apply_panel_chrome(self)
+	PanelTheme.apply_modal_chrome(self)
 
 	# Outer layout — title, subtitle, status, cards, footer.
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 8)
 	add_child(outer)
 
-	# Retro neon header. The double-bar glyphs frame the title without
-	# needing a font with built-in flourishes.
-	var title := Label.new()
-	title.text = tr("═══ ADOPT FISH ═══")
-	title.add_theme_font_size_override("font_size", 20)
-	title.add_theme_color_override("font_color", Color8(255, 110, 200))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	outer.add_child(title)
-
-	var subtitle := Label.new()
-	subtitle.text = tr("free · take home up to 2 of 3")
-	subtitle.add_theme_font_size_override("font_size", 11)
-	subtitle.add_theme_color_override("font_color", Color8(180, 230, 255))
-	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	outer.add_child(subtitle)
+	# House header: title + ×. The cards keep their arcade flavour.
+	outer.add_child(PanelTheme.make_panel_header(tr("Adopt Fish"), close))
+	outer.add_child(PanelTheme.make_subtitle(tr("Free · take home up to 2 of 3")))
 
 	_status_label = Label.new()
 	_status_label.text = ""
@@ -110,18 +105,10 @@ func _build_ui() -> void:
 	_cards_container.add_theme_constant_override("separation", 10)
 	outer.add_child(_cards_container)
 
-	# Footer: reroll + close. Reroll is the primary action (it's why the
-	# player is here); close is secondary.
-	outer.add_child(PanelTheme.make_rule())
-	var hb := HBoxContainer.new()
-	hb.alignment = BoxContainer.ALIGNMENT_END
-	hb.add_theme_constant_override("separation", 8)
-	outer.add_child(hb)
-	var close := PanelTheme.make_close_button(func(): visible = false)
-	hb.add_child(close)
+	# Footer: actions only — Reroll is the primary (Close is the header ×).
 	var reroll := PanelTheme.make_primary_button("Reroll")
 	reroll.pressed.connect(_regenerate)
-	hb.add_child(reroll)
+	outer.add_child(PanelTheme.make_panel_footer(Callable(), reroll))
 
 
 func _regenerate() -> void:

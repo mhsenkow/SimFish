@@ -119,7 +119,7 @@ func _confirm_quit_from_menu() -> void:
 	var overlay: Control = root["overlay"]
 	var center: CenterContainer = root["center"]
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 320.0, 150.0, 0.7, 0.4)
 	center.add_child(panel)
 	var vb := VBoxContainer.new()
@@ -674,7 +674,7 @@ func _show_orientation_picker() -> void:
 	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 340.0, 320.0, 0.94, 0.75)
 	center.add_child(panel)
 
@@ -743,7 +743,7 @@ func _show_walkthrough_offer() -> void:
 	var center: CenterContainer = root["center"]
 
 	var panel := PanelContainer.new()
-	PanelTheme.apply_panel_chrome(panel)
+	PanelTheme.apply_modal_chrome(panel)
 	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 400.0, 220.0, 0.88, 0.5)
 	center.add_child(panel)
 
