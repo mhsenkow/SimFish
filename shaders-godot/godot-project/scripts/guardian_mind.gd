@@ -2,6 +2,7 @@ extends RefCounted
 
 const FishMind = preload("res://scripts/fish_mind.gd")
 const GuardianGenerative = preload("res://scripts/guardian_generative.gd")
+const GuardianGrounding = preload("res://scripts/guardian_grounding.gd")
 
 # Persistent inner-state for the Guardian companion (#10–19). Stored inside
 # `_guardian_arc["mind"]` and serialized with the tank save (v6+).
@@ -384,6 +385,9 @@ static func build_ai_context(f: Node, sim: Node, arc: Dictionary, situation: Str
 		"tank_society": FishMind.society_snapshot(sim) if sim != null else {},
 	}
 	ctx.merge(GuardianGenerative.context_fields(arc))
+	# Plain sim facts (ammonia / O2 / daylight → water_state) so the grounded
+	# prompt and the post-generation validator agree on what is true.
+	GuardianGrounding.annotate_world(ctx, sim)
 	return ctx
 
 

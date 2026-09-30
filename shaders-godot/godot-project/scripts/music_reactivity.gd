@@ -149,3 +149,34 @@ static func step_stride(density: float) -> int:
 	if d >= 0.58:
 		return 2
 	return 4
+
+
+# --- The tank mind's mood ------------------------------------------------
+#
+# The collective mind (tank_mind.gd) carries a valence (-1 unhappy .. +1
+# content) and an arousal (0 still .. 1 stirred). The bed listens to it:
+# a calm, content tank sounds WIDER and SOFTER (more stereo spread, a touch
+# darker, a dB quieter, slower movement); a stressed one gets slightly
+# TENSER - pad voices beat against each other and move a little faster -
+# but it is never allowed to get brighter than a hair over neutral. Tension
+# through detuning and motion, never through treble: nothing harsh.
+const MOOD_CUTOFF_MAX_MUL: float = 1.06
+const MOOD_DETUNE_MAX: float = 0.0045   # ~8 cents of pad beating at full stress
+
+
+static func mind_mood(valence: float, arousal: float) -> Dictionary:
+	var v: float = clampf(valence, -1.0, 1.0)
+	var a: float = clampf(arousal, 0.0, 1.0)
+	var stress: float = clampf(a * 0.6 + maxf(-v, 0.0) * 0.7 - 0.15, 0.0, 1.0)
+	var calm: float = clampf((1.0 - a) * 0.7 + maxf(v, 0.0) * 0.5 - 0.2, 0.0, 1.0) \
+		* (1.0 - stress)
+	return {
+		"calm": calm,
+		"stress": stress,
+		"width": 1.0 + calm * 0.6,
+		"cutoff_mul": minf(lerpf(1.0, 0.85, calm) * lerpf(1.0, MOOD_CUTOFF_MAX_MUL, stress),
+			MOOD_CUTOFF_MAX_MUL),
+		"gain_db": -1.5 * calm,
+		"detune_add": MOOD_DETUNE_MAX * stress,
+		"lfo_mul": lerpf(1.0, 0.7, calm) * lerpf(1.0, 1.35, stress),
+	}

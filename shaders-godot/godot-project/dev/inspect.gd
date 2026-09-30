@@ -13,6 +13,7 @@ extends Node
 var _frame: int = 0
 var _shot: int = 0
 var _settle: int = 220
+var _out_prefix: String = "res://inspect_"
 
 # name, position, look-at target, fov
 const SHOTS: Array = [
@@ -36,6 +37,10 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("settle="):
 			arg_settle = int(a.split("=")[1])
+		# out=/abs/dir/prefix_ : write PNGs outside the repo (parallel agents
+		# otherwise overwrite each other's res://inspect_*.png).
+		if a.begins_with("out="):
+			_out_prefix = a.substr(4)
 	if arg_settle > 0:
 		_settle = arg_settle
 	_aim(0)
@@ -69,7 +74,7 @@ func _process(_dt: float) -> void:
 	if (_frame - _settle) % 6 != 0:
 		return
 	var img: Image = sub_viewport.get_texture().get_image()
-	img.save_png("res://inspect_%s.png" % SHOTS[_shot][0])
+	img.save_png("%s%s.png" % [_out_prefix, SHOTS[_shot][0]])
 	print("[inspect] saved %s" % SHOTS[_shot][0])
 	_shot += 1
 	if _shot >= SHOTS.size():

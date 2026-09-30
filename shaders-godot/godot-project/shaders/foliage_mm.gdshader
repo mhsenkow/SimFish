@@ -46,6 +46,11 @@ uniform float palette_hue_shift : hint_range(-0.5, 0.5) = 0.0;
 uniform float palette_saturation : hint_range(0.5, 1.5) = 1.0;
 uniform float palette_warmth : hint_range(-1.0, 1.0) = 0.0;
 uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
+// PlantSkeleton chain motion (world units / radians). Zero = legacy look.
+uniform vec2 chain_bend = vec2(0.0);
+uniform float chain_sway_amp = 0.0;
+uniform float chain_speed = 0.8;
+uniform float chain_lag = 2.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
@@ -111,6 +116,23 @@ void vertex() {
 		+ sway_phase_offset * 0.61 + v_leaf_phase * 1.7;
 	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade;
 	VERTEX.y += flutter * height_factor * 0.3;
+
+	// Articulated stem chain (PlantSkeleton). Unlike the terms above, which
+	// displace in instance-local space and therefore scale with each voxel's
+	// size and rotation, this is a WORLD-space deflection evaluated from the
+	// shared flex weight, so a stem internode and the leaf attached at the
+	// same node move together. Cantilever shape: stiff base, compliant tip.
+	// chain_bend is the slow CPU-side rest pose (phototropic bow + flow lean
+	// + fish brush); the sway phase lags with height so motion travels up.
+	if (chain_sway_amp > 0.0 || dot(chain_bend, chain_bend) > 1e-8) {
+		float cs = v_flex_weight;
+		float cshape = cs * cs * (3.0 - cs) * 0.5;
+		vec2 cdir = flow_len > 0.0001 ? flow_xz / flow_len : vec2(0.8, 0.6);
+		float cph = TIME * chain_speed + sway_phase_offset - cs * chain_lag;
+		vec2 cwave = cdir * sin(cph) + vec2(-cdir.y, cdir.x) * sin(cph * 0.71 + 1.3) * 0.35;
+		vec2 coff = (chain_bend + cwave * chain_sway_amp * dist_fade) * cshape;
+		VERTEX += inverse(mat3(MODEL_MATRIX)) * vec3(coff.x, 0.0, coff.y);
+	}
 }
 
 void fragment() {
@@ -177,7 +199,7 @@ void fragment() {
 	}
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
-	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Shaped lamp. In an unshaded pipeline nothing responds to a light on
 	// its own, so the cone is evaluated here - this is what puts the beam
 	// ON the leaves instead of only in the water in front of them.

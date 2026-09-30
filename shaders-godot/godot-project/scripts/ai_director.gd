@@ -11,19 +11,23 @@ const MindScheduler = preload("res://scripts/mind_scheduler.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const GuardianGrounding = preload("res://scripts/guardian_grounding.gd")
 
 const OLLAMA_PARSE_MAX_BYTES: int = 8192
+# /api/tags lists every installed model with its details — a dozen models is
+# already past 8 KB, and a truncated body parsed as "malformed JSON".
+const OLLAMA_TAGS_MAX_BYTES: int = 262144
 static var _parse_warned: bool = false
 
 
-static func _capped_ollama_utf8(body: PackedByteArray) -> String:
-	if body.size() > OLLAMA_PARSE_MAX_BYTES:
-		body = body.slice(0, OLLAMA_PARSE_MAX_BYTES)
+static func _capped_ollama_utf8(body: PackedByteArray, cap: int = OLLAMA_PARSE_MAX_BYTES) -> String:
+	if body.size() > cap:
+		body = body.slice(0, cap)
 	return body.get_string_from_utf8()
 
 
-static func _parse_ollama_outer(body: PackedByteArray) -> Dictionary:
-	var text: String = _capped_ollama_utf8(body)
+static func _parse_ollama_outer(body: PackedByteArray, cap: int = OLLAMA_PARSE_MAX_BYTES) -> Dictionary:
+	var text: String = _capped_ollama_utf8(body, cap)
 	if text.is_empty():
 		return {}
 	var json := JSON.new()
@@ -190,6 +194,10 @@ var _minute_batch_in_flight: bool = false
 # autoload instantiation triggers creation regardless of _ready timing.
 func _ready() -> void:
 	_ensure_http()
+	var tree := get_tree()
+	if tree != null and tree.has_signal("scene_changed") \
+			and not tree.is_connected("scene_changed", _on_scene_changed):
+		tree.connect("scene_changed", _on_scene_changed)
 	# Pre-fill an empty intent grid so get_intent_drift() is safe before
 	# the first refresh lands. Empty cells return Vector3.ZERO.
 	if _intent_cells.is_empty():
@@ -224,6 +232,9 @@ func _ensure_http() -> void:
 func _make_http(node_name: String, callback: Callable) -> HTTPRequest:
 	var h := HTTPRequest.new()
 	h.name = node_name
+	# SYSTEMIC #15: connect/TLS/read on HTTPRequest's own thread, never polled
+	# from the main loop. Every client also carries a timeout.
+	h.use_threads = true
 	h.timeout = HTTP_TIMEOUT_TEST_S
 	h.request_completed.connect(callback)
 	add_child(h)
@@ -396,7 +407,7 @@ func _on_test_response(result: int, code: int, _headers: PackedStringArray, body
 		last_error = "Ollama did not respond at %s (HTTP %d, result %d). Is `ollama serve` running?" % [endpoint, code, result]
 		emit_signal("connection_tested", false, last_error)
 		return
-	var parsed: Dictionary = _parse_ollama_outer(body)
+	var parsed: Dictionary = _parse_ollama_outer(body, OLLAMA_TAGS_MAX_BYTES)
 	if parsed.is_empty():
 		conn_state = ConnState.ERROR
 		last_error = "Ollama returned malformed JSON."
@@ -469,10 +480,24 @@ func pick_best_installed_model() -> String:
 
 
 func _is_meta_family(name_prefix: String) -> bool:
-	# Llama, llava (built on Llama), tinyllama, llama2-uncensored, etc.
-	# Anything starting with "llama" or "llava" or "tinyllama" is Meta-derived.
-	var s: String = name_prefix.to_lower()
-	return s.begins_with("llama") or s.begins_with("llava") or s == "tinyllama"
+	return is_meta_family(name_prefix)
+
+
+# Llama, llava (built on Llama), tinyllama, codellama, dolphin-llama3,
+# llama2-uncensored, plus the well-known Llama fine-tunes that don't say so
+# in their name. The user does not want any of these auto-picked.
+static func is_meta_family(name_prefix: String) -> bool:
+	var s: String = name_prefix.to_lower().split(":")[0]
+	if s.contains("/"):
+		s = s.get_slice("/", s.get_slice_count("/") - 1)
+	if s.contains("llama") or s.contains("llava"):
+		return true
+	for tune in ["vicuna", "orca-mini", "wizard-vicuna", "nous-hermes", "hermes3",
+			"meditron", "medllama", "wizardlm", "stable-beluga", "everythinglm",
+			"yarn-llama", "xwinlm", "samantha-mistral-llama"]:
+		if s.begins_with(tune):
+			return true
+	return false
 
 
 # ---- Naming -----------------------------------------------------------
@@ -636,6 +661,7 @@ func queue_fish_thought(f: Fish, sim: Node, situation: String = "inspect") -> St
 			var ms: Variant = (sim._guardian_arc as Dictionary).get("shared_milestones", null)
 			if ms is PackedStringArray and (ms as PackedStringArray).size() > 0:
 				ctx["shared_milestones"] = ms
+	GuardianGrounding.annotate_world(ctx, sim)
 	ctx["voice_style"] = MindNarrator.voice_style_label(fid, f.personality, f.species)
 	ctx["primary_process"] = FishMindScience.primary_process(f)
 	ctx["fish_id"] = fid
@@ -692,9 +718,13 @@ func _pump_fish_thought() -> void:
 	if _effective_guardian_voice() and glm != null and glm.has_method("queue_generate") \
 			and glm.has_method("is_ready") and bool(glm.call("is_ready")):
 		var sit: String = str(ctx.get("situation", ""))
-		var prompt: String = MindNarrator.build_fish_reply_prompt(ctx, _voice_lang_code()) \
-				if sit.begins_with("keeper_") \
-				else MindNarrator.build_fish_thought_prompt(ctx, _voice_lang_code())
+		# GuardianLlm builds its own compact grounded prompt from ctx; only
+		# hand it the JSON-dump prompt when ctx has nothing to ground on.
+		var prompt: String = ""
+		if str(ctx.get("fish_name", "")) == "" and str(ctx.get("species", "")) == "":
+			prompt = MindNarrator.build_fish_reply_prompt(ctx, _voice_lang_code()) \
+					if sit.begins_with("keeper_") \
+					else MindNarrator.build_fish_thought_prompt(ctx, _voice_lang_code())
 		var n_pred: int = MindNarrator.num_predict_for_situation(sit)
 		glm.call("queue_generate", full_key, prompt, fb, ctx, n_pred)
 		_thought_pending.pop_front()
@@ -933,7 +963,7 @@ func _apply_intent_payload(payload: Dictionary) -> void:
 		_fish_moods.erase(k)
 	# Chronicle line
 	if chronicle_enabled:
-		var line: String = String(payload.get("narration", "")).strip_edges()
+		var line: String = _validated_chronicle(String(payload.get("narration", "")))
 		if line != "":
 			emit_signal("chronicle_line", line, PackedStringArray(["intent"]))
 
@@ -1042,7 +1072,7 @@ func _on_chronicle_response(result: int, code: int, _h: PackedStringArray, body:
 	var inner: Dictionary = _parse_ollama_inner_response(body)
 	if inner.is_empty():
 		return
-	var line: String = String(inner.get("line", "")).strip_edges()
+	var line: String = _validated_chronicle(String(inner.get("line", "")))
 	if line != "" and not MindNarrator.chronicle_repeat(line):
 		MindNarrator.remember_chronicle(line)
 		emit_signal("chronicle_line", line, PackedStringArray(["chronicle"]))
@@ -1270,8 +1300,11 @@ func queue_guardian_line(context: Dictionary, fallback: String, cache_key: Strin
 	if not MindNarrator.should_attempt_generation(context):
 		return fb
 	var glm: Node = get_node_or_null("/root/GuardianLlm")
-	if _effective_guardian_voice() and glm != null and glm.has_method("queue_generate"):
-		var prompt: String = MindNarrator.build_guardian_prompt(context, _voice_lang_code())
+	if _effective_guardian_voice() and glm != null and glm.has_method("queue_generate") \
+			and glm.has_method("is_ready") and bool(glm.call("is_ready")):
+		var prompt: String = ""
+		if str(context.get("fish_name", "")) == "" and str(context.get("species", "")) == "":
+			prompt = MindNarrator.build_guardian_prompt(context, _voice_lang_code())
 		var ctx_for_job: Dictionary = context.duplicate(true)
 		ctx_for_job["situation"] = str(context.get("situation", ""))
 		glm.call("queue_generate", cache_key, prompt, fb, ctx_for_job)
@@ -1307,16 +1340,19 @@ func _request_guardian_line() -> void:
 	var prompt: String = MindNarrator.build_guardian_prompt(ctx, _voice_lang_code())
 	var rng_seed: int = _guardian_seed(str(job.get("cache_key", "")))
 	var tier: String = String(job.get("tier", "ollama"))
-	var stream_recap: bool = situation == "away_recap"
 	_http_guardian.timeout = HTTP_TIMEOUT_GUARDIAN_EMBEDDED_S if tier == "embedded" else TIER_TIMEOUT_S
+	# stream must stay false: with stream=true Ollama answers NDJSON, which
+	# HTTPRequest delivers as one body that never parsed — away recaps over
+	# Ollama silently always fell back to the template.
 	var payload: Dictionary = {
 		"model": str(job.get("model", model)),
 		"prompt": prompt,
-		"stream": stream_recap,
+		"stream": false,
 		"options": {
 			"temperature": 0.35,
 			"seed": rng_seed,
 			"num_predict": MindNarrator.num_predict_for_situation(situation),
+			"stop": ["\n\n", "Keeper:"],
 		},
 	}
 	var url: String = String(job.get("endpoint", endpoint)) + "/api/generate"
@@ -1348,10 +1384,10 @@ func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: 
 			var raw: String = String(outer.get("response", ""))
 			if raw.length() > OLLAMA_PARSE_MAX_BYTES:
 				raw = raw.substr(0, OLLAMA_PARSE_MAX_BYTES)
-			var max_w: int = GUARDIAN_MAX_WORDS
-			if bool(job.get("is_thought", false)):
-				max_w = MindNarrator.FISH_THOUGHT_MAX_WORDS
-			var fin: Dictionary = MindNarrator.finalize_line(ctx, raw, fb, max_w)
+			# Same gate as the in-process tier: grounding validation, then the
+			# narrator's entity/number checks. Rejected → template, never shown.
+			var kind: String = GuardianGrounding.kind_for(cache_key, ctx)
+			var fin: Dictionary = GuardianGrounding.finalize(kind, ctx, raw, fb)
 			line = String(fin.get("line", fb))
 	elif tier == "embedded" and enabled and conn_state == ConnState.OK \
 			and not bool(job.get("is_thought", false)):
@@ -1376,6 +1412,26 @@ func _on_guardian_response(result: int, code: int, _h: PackedStringArray, body: 
 		emit_signal("guardian_line_ready", cache_key, line, tier)
 	if not _guardian_pending.is_empty():
 		_request_guardian_line()
+
+
+# Chronicle/narration lines reach the journal too — same assistant-speak,
+# emoji and markup gate as voice lines. "" when rejected.
+func _validated_chronicle(raw: String) -> String:
+	var v: Dictionary = GuardianGrounding.validate(GuardianGrounding.KIND_CHRONICLE, {}, raw)
+	if not bool(v.get("ok", false)):
+		return ""
+	return String(v.get("line", ""))
+
+
+# Scene change (tank ↔ menu): voice jobs queued for the old tank's fish are
+# meaningless now — drop them and abort the in-flight voice request.
+func _on_scene_changed() -> void:
+	_guardian_pending.clear()
+	_thought_pending.clear()
+	if _guardian_in_flight and _http_guardian != null:
+		_http_guardian.cancel_request()
+	_guardian_in_flight = false
+	_thought_in_flight = false
 
 
 func _build_guardian_prompt(ctx: Dictionary) -> String:

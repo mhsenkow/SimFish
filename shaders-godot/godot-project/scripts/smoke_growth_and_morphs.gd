@@ -231,9 +231,9 @@ func _init() -> void:
 	t.check(prev_d < 0.05, "bloom actually arrives (%.4f left)" % prev_d)
 
 	# Creation and dt-less paths must land exactly, not ease in from origin.
-	var snapped: Transform3D = F.step(
+	var snapped_xf: Transform3D = F.step(
 		Transform3D(Basis(), Vector3(9.0, 9.0, 9.0)), tgt, 0.016, true)
-	t.approx(snapped.origin.length(), 0.0, "snap lands exactly on the tip")
+	t.approx(snapped_xf.origin.length(), 0.0, "snap lands exactly on the tip")
 	t.approx(F.step(Transform3D(Basis(), Vector3(9.0, 0.0, 0.0)), tgt, 0.0).origin.x,
 		0.0, "a dt of zero snaps rather than freezing mid-air")
 

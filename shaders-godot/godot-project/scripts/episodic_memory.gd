@@ -12,6 +12,9 @@ const _TankConfigWarnScript = preload("res://scripts/tank_config_warn.gd")
 const VECTOR_DIM: int = 32
 const STORE_MAX: int = 64
 const DECAY_RATE: float = 0.0008
+const DECAY_AGE_S: float = 600.0     # decay halves again every ~10 min of age
+const FORGET_WEIGHT: float = 0.08    # below this an episode is gone
+const REHEARSAL_GAIN: float = 0.03   # weight regained per retrieval
 const SALIENT_PROMOTE_WEIGHT: float = 0.62
 
 static var _pass3_script: GDScript = null
@@ -46,7 +49,7 @@ static func _quantize_enabled() -> bool:
 		return _MindWorkerCfgScript.read_bool("episodic_quant_8bit", true)
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml is SceneTree and (ml as SceneTree).root != null:
-		var cfg: Node = (ml as SceneTree).root.get_node_or_null("/root/TankConfig")
+		var cfg: Node = (ml as SceneTree).root.get_node_or_null("TankConfig")
 		if cfg != null and cfg.get("episodic_quant_8bit") != null:
 			return bool(cfg.episodic_quant_8bit)
 		return _TankConfigWarnScript.bool_or_warn(cfg, "episodic_quant_8bit", true)
@@ -169,6 +172,10 @@ static func _append_episode(f, kind: String, text: String, salience: float,
 		"kind": kind,
 		"text": text,
 		"weight": clampf(salience + (0.18 if kind == "keeper_word" else 0.0), 0.1, 1.0),
+		# Encoding-time salience: how strongly this moment resists forgetting.
+		# Kept separate from the (decaying) weight so protection doesn't fade
+		# along with the memory it protects.
+		"salience": clampf(salience, 0.0, 1.0),
 		"vec": embed(kind, text),
 		"norm": 0.0,
 		"access_count": 0,
@@ -238,6 +245,8 @@ static func retrieve(f, query: PackedFloat32Array, k: int = 3, kind_hint: String
 	for hit_wrap in best:
 		var hit: Dictionary = hit_wrap["entry"]
 		hit["access_count"] = int(hit.get("access_count", 0)) + 1
+		# Rehearsal: recalling a memory strengthens it (bounded).
+		hit["weight"] = minf(1.0, SaveHelpers._num(hit.get("weight", 0.5), 0.5) + REHEARSAL_GAIN)
 		out.append(hit)
 	return out
 
@@ -278,20 +287,33 @@ static func retrieve_for_situation(f, situation: String, k: int = 2) -> PackedSt
 
 
 static func tick_decay(f: Fish, dt: float) -> void:
+	# Forgetting curve: weight falls linearly in time, decelerating with age
+	# (Ebbinghaus / power-law: old memories that survived are sturdier) and
+	# slowed by encoding salience and surprise. Rehearsal happens at RETRIEVAL
+	# (see retrieve()), not here.
+	#
+	# The previous version multiplied the weight by (1 + salience*0.35 + ...)
+	# every tick and added access_count*0.002 per tick, so weights grew
+	# geometrically (0.6 -> ~1880 in four seconds at 15 Hz) and nothing was
+	# ever forgotten; on save the INF weights were nulled by sanitize_for_json.
 	var store: Array = ensure_store(f)
 	var keep: Array = []
+	var step: float = maxf(dt, 0.0)
 	for e in store:
-		e["age"] = SaveHelpers._num(e.get("age", 0.0), 0.0) + dt
-		var w: float = SaveHelpers._num(e.get("weight", 0.5), 0.5)
-		var sal: float = SaveHelpers._num(e.get("salience", w), w)
-		var surprise: float = SaveHelpers._num(e.get("surprise", 0.0), 0.0)
-		w = w * (1.0 + sal * 0.35 + surprise * 0.25)
-		w -= DECAY_RATE * dt * (1.0 + SaveHelpers._num(e.get("age", 0.0), 0.0) * 0.01)
+		if not (e is Dictionary):
+			continue
+		var age: float = SaveHelpers._num(e.get("age", 0.0), 0.0) + step
+		e["age"] = age
+		var w: float = clampf(SaveHelpers._num(e.get("weight", 0.5), 0.5), 0.0, 1.0)
+		var sal: float = clampf(SaveHelpers._num(e.get("salience", w), w), 0.0, 1.0)
+		var surprise: float = clampf(SaveHelpers._num(e.get("surprise", 0.0), 0.0), 0.0, 1.0)
+		var protect: float = 1.0 + sal * 0.35 + surprise * 0.25
+		var rate: float = DECAY_RATE * step / (protect * (1.0 + age / DECAY_AGE_S))
 		if bool(e.get("persistent", false)):
-			w -= DECAY_RATE * dt * 0.15
-		w += SaveHelpers._num(e.get("access_count", 0), 0.0) * 0.002
+			rate *= 0.15
+		w -= rate
 		e["weight"] = w
-		if w > 0.08:
+		if w > FORGET_WEIGHT:
 			keep.append(e)
 	f._episodic_store = keep
 
@@ -412,16 +434,86 @@ static func _prune_weakest(store: Array) -> void:
 	store.remove_at(worst_i)
 
 
+# Save form: JSON-safe. The embedding is NOT saved — it is a deterministic
+# hash of kind+text, so it is rebuilt on load (smaller state.json, and a
+# Packed*Array would come back from JSON as a plain Array anyway).
 static func store_to_dict(f: Fish) -> Array:
 	var store: Array = ensure_store(f)
 	var out: Array = []
 	for e in store:
-		var d: Dictionary = e.duplicate(true)
+		if not (e is Dictionary):
+			continue
+		var d: Dictionary = (e as Dictionary).duplicate(true)
+		d.erase("vec")
+		d.erase("vec_q")
+		d.erase("norm_q")
+		d.erase("norm")
+		var p: Variant = d.get("pos", null)
+		if p is Vector3:
+			d["pos"] = SaveHelpers.vec3_to_array(p as Vector3)
 		out.append(d)
 	return out
 
 
+# Load form: accepts the current save format AND older saves, which stored
+# the embedding as a JSON array (similarity_entry rejected it, so every loaded
+# memory scored 0 and recall after a reload was insertion order, not
+# relevance) and the position as the string "(x, y, z)" (so loaded episodes
+# never fed sleep schemas).
 static func apply_store_dict(f: Fish, arr: Variant) -> void:
 	if arr is not Array:
 		return
-	f._episodic_store = (arr as Array).duplicate(true)
+	var out: Array = []
+	for raw in (arr as Array):
+		if not (raw is Dictionary):
+			continue
+		var e: Dictionary = (raw as Dictionary).duplicate(true)
+		var kind: String = str(e.get("kind", "self"))
+		var text: String = str(e.get("text", ""))
+		if text == "":
+			continue
+		e["kind"] = kind
+		e["text"] = text
+		var w: float = clampf(SaveHelpers._num(e.get("weight", 0.5), 0.5), 0.0, 1.0)
+		e["weight"] = w
+		if e.has("salience"):
+			e["salience"] = clampf(SaveHelpers._num(e.get("salience", w), w), 0.0, 1.0)
+		e["age"] = maxf(0.0, SaveHelpers._num(e.get("age", 0.0), 0.0))
+		e["access_count"] = int(SaveHelpers._num(e.get("access_count", 0), 0.0))
+		var vec: PackedFloat32Array = embed(kind, text)
+		e["vec"] = vec
+		e["norm"] = vec_norm(vec)
+		e.erase("vec_q")
+		e.erase("norm_q")
+		if _quantize_enabled():
+			e["vec_q"] = _quantize_vec(vec)
+			e["norm_q"] = e["norm"]
+		var pos: Variant = _parse_pos(e.get("pos", null))
+		if pos is Vector3:
+			e["pos"] = pos
+		else:
+			e.erase("pos")
+		if w > FORGET_WEIGHT:
+			out.append(e)
+	while out.size() > STORE_MAX:
+		_prune_weakest(out)
+	f._episodic_store = out
+
+
+static func _parse_pos(p: Variant) -> Variant:
+	if p is Vector3:
+		if (p as Vector3).is_finite():
+			return p
+		return null
+	if p is Array and (p as Array).size() >= 3:
+		return SaveHelpers.array_to_vec3(p)
+	if p is String:
+		var parts: PackedStringArray = (p as String).strip_edges().trim_prefix("(") \
+				.trim_suffix(")").split(",", false)
+		if parts.size() >= 3 and parts[0].strip_edges().is_valid_float() \
+				and parts[1].strip_edges().is_valid_float() and parts[2].strip_edges().is_valid_float():
+			var v := Vector3(parts[0].to_float(), parts[1].to_float(), parts[2].to_float())
+			if v.is_finite():
+				return v
+			return null
+	return null

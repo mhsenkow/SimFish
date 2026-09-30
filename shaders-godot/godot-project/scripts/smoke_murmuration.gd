@@ -134,18 +134,18 @@ func _initialize() -> void:
 		"cross-species separation still steers")
 
 	# REFINEMENT_II #79 — dart pool steals oldest under mass startle.
-	const DartTrailPool = preload("res://scripts/dart_trail_pool.gd")
-	DartTrailPool.reset_for_test()
+	const _DartTrailPool = preload("res://scripts/dart_trail_pool.gd")
+	_DartTrailPool.reset_for_test()
 	var trail_parent := Node3D.new()
 	root.add_child(trail_parent)
 	var gp := Transform3D(Basis.IDENTITY, Vector3(1.0, 1.0, 0.0))
 	var dart_ok: int = 0
-	for _i in DartTrailPool.POOL_SIZE + 3:
-		if DartTrailPool.spawn(trail_parent, gp, Color.CYAN, Vector3.FORWARD, Callable()):
+	for _i in _DartTrailPool.POOL_SIZE + 3:
+		if _DartTrailPool.spawn(trail_parent, gp, Color.CYAN, Vector3.FORWARD, Callable()):
 			dart_ok += 1
-	TestSupport.check(failed, dart_ok >= DartTrailPool.POOL_SIZE,
+	TestSupport.check(failed, dart_ok >= _DartTrailPool.POOL_SIZE,
 		"dart pool serves under overload (%d)" % dart_ok)
-	DartTrailPool.reset_for_test()
+	_DartTrailPool.reset_for_test()
 	trail_parent.queue_free()
 
 	parent.queue_free()

@@ -196,6 +196,27 @@ var _tropism: Vector3 = Vector3.UP
 var _tropism_refresh_t: float = 0.0
 const TROPISM_REFRESH_S: float = 0.45
 
+# Articulated stem chain (PlantSkeleton) for base-Plant stem species: node
+# placement, apical dominance, surface trailing, phototropic bow and the
+# GPU chain-sway parameters. Rosettes/ribbons/carpets keep the legacy path.
+var skeleton: PlantSkeleton = PlantSkeleton.new()
+var _is_stem_skeleton: bool = false
+# World-space chain motion (sway/flow lean/brush) - stems and strap blades.
+var _chain_motion: bool = false
+# Basal rosette (crypts / swords): leaves radiate from one crown.
+var _is_rosette: bool = false
+var _pending_axillary: Array[int] = []
+# Stem handles that are NOT on the vertical main axis (trailing internodes,
+# side shoots). Keyed by handle so skeleton sync can ignore them.
+var _aux_handles: Dictionary = {}
+var _trail_handles: Array = []
+var _trail_progress: float = 0.0
+var _flow_lean: Vector2 = Vector2.ZERO
+var _chain_bend_pushed: Vector2 = Vector2(INF, INF)
+var _skeleton_motion_ticks: int = 0
+var _rosette_runner_armed: bool = false
+const YOUTH_TINT_S: float = 26.0
+
 # Latin + common name (set by real-species library, "" for emergent plants
 # which fall back to plant_name's auto-generated handle).
 var latin_name: String = ""
@@ -505,6 +526,10 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	if asymmetry_seed == 0:
 		asymmetry_seed = randi()
 	_resolve_phyllotaxis()
+	_is_stem_skeleton = _compute_uses_stem_skeleton()
+	_is_rosette = _save_kind() == "plant" and not is_epiphyte and not is_carpet \
+		and ROSETTE_RUNNER_FORMS.has(leaf_form)
+	_chain_motion = _is_stem_skeleton or (_save_kind() == "plant" and leaf_form == "ribbon")
 	_refresh_tropism()
 	# Cache substrate boost computed below — read TankConfig ONCE here so
 	# the per-tick path can skip the autoload lookup × 100 plants × 10 Hz.
@@ -544,8 +569,15 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_build_initial_roots()
 	else:
 		_build_holdfast_anchor()
+	# Ribbon blades are re-laid on every growth step; replaying a whole
+	# saved height would lay them `initial_height` times, so the replay only
+	# books the blades and they are built once at the end.
+	_ribbon_bulk = true
 	for i in initial_height:
 		_grow_one()
+	_ribbon_bulk = false
+	if _uses_ribbon_blades():
+		_rebuild_ribbon_blades(current_height)
 	_warm_start_growth_vitals()
 	_apply_sway_personality()
 	_apply_rooted_visibility_ranges()
@@ -733,6 +765,7 @@ func to_save_dict() -> Dictionary:
 		"_reiterations_used": _reiterations_used,
 		"_damage_episode_active": _damage_episode_active,
 		"_peak_biomass": _peak_biomass,
+		"skeleton": skeleton.to_dict() if _is_stem_skeleton else {},
 	}
 
 
@@ -748,7 +781,12 @@ func apply_save_dict(d: Dictionary) -> void:
 	# Rebuild voxels at the saved height in one shot.
 	var params: Dictionary = d.get("init_params", {})
 	var h: int = int(d.get("current_height", 1))
+	# Saved node positions replay while init() regrows the stem, so a
+	# reloaded plant keeps its grown curve. Pre-skeleton saves have no key:
+	# load_dict() resets and the chain is regrown fresh (the migration).
+	skeleton.load_dict(d.get("skeleton", null))
 	init(h, params)
+	_restore_skeleton_extras(d.get("skeleton", null))
 	# Patch dynamic state AFTER init so init() doesn't clobber it.
 	growth_progress = float(d.get("growth_progress", 0.0))
 	has_flower = not not d.get("has_flower", false)
@@ -792,7 +830,9 @@ func apply_save_dict(d: Dictionary) -> void:
 			var code: int = clampi(int(saved_limits[i]), 0, LIMIT_FACTOR_NAMES.size() - 1)
 			_stem_limit_history[i] = code
 			voxels[i].growth_limit_code = code
-	_internode_extension_y = maxf(0.0, float(d.get("_internode_extension_y", 0.0)))
+	# Negative = light-compacted internodes (stem skeleton plasticity).
+	_internode_extension_y = maxf(-float(current_height) * VOXEL_SIZE * 0.12,
+		float(d.get("_internode_extension_y", 0.0)))
 	_root_reserve = clampf(float(d.get("_root_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	_shoot_reserve = clampf(float(d.get("_shoot_reserve", 0.0)), 0.0, RESOURCE_RESERVOIR_CAP)
 	_heteroblasty_adult = bool(d.get(
@@ -1058,6 +1098,28 @@ func _apply_sway_personality() -> void:
 	const CALM_FLUTTER: float = 0.55
 	const CALM_TIP: float = 0.78
 	const CALM_SPEED: float = 0.72
+	# Stem skeleton: the shared world-space chain carries the big motion so
+	# stem and leaves travel together; the per-voxel local sway is trimmed
+	# to leaf-level life on top of it.
+	var flowering: bool = has_flower and flower_stage != FlowerStage.NONE
+	var chain_amp: float = 0.0
+	var chain_speed: float = 0.8
+	var chain_lag: float = 2.0
+	if _chain_motion:
+		var stem_h: float = maxf(_chain_height(), VOXEL_SIZE)
+		var cp: Dictionary = PlantSkeleton.chain_sway(stem_h, _stem_stiffness(), Vector3.ZERO, amp)
+		if not flowering:
+			chain_amp = clampf(amp * CALM_AMP * stem_h * 0.16 * float(cp["amp_scale"]), 0.0, 0.45)
+		chain_speed = sway_speed * CALM_SPEED * 0.7 * float(cp["speed_scale"])
+		chain_lag = float(cp["lag"])
+		amp *= 0.7
+		# Ribbon blades twist, so each segment's local axes point a different
+		# way and the per-instance local sway shears the chain apart into
+		# stacked slats. The world-space chain wave carries their motion.
+		if _uses_ribbon_blades():
+			amp *= 0.15
+			flutter *= 0.3
+	_chain_bend_pushed = Vector2(INF, INF)
 	if _foliage_mat != null:
 		_foliage_mat.set_shader_parameter("sway_amplitude", amp * CALM_AMP)
 		_foliage_mat.set_shader_parameter("flutter_amplitude", flutter * CALM_FLUTTER)
@@ -1071,13 +1133,16 @@ func _apply_sway_personality() -> void:
 		_foliage_mat.set_shader_parameter("sss_strength", 0.42)
 		var hue_nudge: float = fposmod(float(get_instance_id()) * 0.017, 1.0) * 0.08 - 0.04
 		_foliage_mat.set_shader_parameter("palette_hue_shift", hue_nudge)
+		_foliage_mat.set_shader_parameter("chain_sway_amp", chain_amp)
+		_foliage_mat.set_shader_parameter("chain_speed", chain_speed)
+		_foliage_mat.set_shader_parameter("chain_lag", chain_lag)
 	if _stem_mat != null:
 		# Stem voxels now use the same anchored bend field as leaves. This makes
 		# a tall plant read as a chain of yielding internodes instead of a rigid
 		# green tower with independently wobbling leaves. Flowers remain locked
 		# because their CPU anchor cannot follow a GPU-deformed stem.
 		var stem_amp: float = 0.0
-		if not (has_flower and flower_stage != FlowerStage.NONE):
+		if not flowering:
 			if leaf_form in ["lance", "pinnate", "fingered"]:
 				stem_amp = amp * 0.42
 			elif leaf_form == "column":
@@ -1090,6 +1155,9 @@ func _apply_sway_personality() -> void:
 		_stem_mat.set_shader_parameter("sway_speed", sway_speed / height_w * CALM_SPEED)
 		_stem_mat.set_shader_parameter(
 			"gust_response", 0.0 if has_flower and flower_stage != FlowerStage.NONE else 1.0)
+		_stem_mat.set_shader_parameter("chain_sway_amp", chain_amp)
+		_stem_mat.set_shader_parameter("chain_speed", chain_speed)
+		_stem_mat.set_shader_parameter("chain_lag", chain_lag)
 
 
 func _visual_youth_scale() -> float:
@@ -1527,6 +1595,7 @@ func _stabilize_flower_against_lean(dt: float = 0.0) -> void:
 		return
 	var tip_basis: Basis = tip.transform.basis.orthonormalized()
 	var anchor: Vector3 = tip.transform.origin + tip_basis.y * FLOWER_TIP_NEST
+	anchor += _chain_offset_local(anchor.y)
 	# Damped follow, not an assignment. The anchor is the sum of stem lean,
 	# canopy layover, gust tilt, circumnutation, brush bend and a voxel
 	# re-lay on every growth step; snapping a rigid bloom onto that sum
@@ -1607,7 +1676,8 @@ func _apply_canopy_layover() -> void:
 	# REAL_TANK_FIDELITY #113 — valli / ribbon blades that reach the surface
 	# bend at the waterline and lie along it for a long run, instead of a
 	# short tip lean. Other emergents keep the lighter meniscus layover.
-	if voxels.is_empty():
+	# Ribbon blades lay their own surface run (_ribbon_blade_segments).
+	if voxels.is_empty() or _uses_ribbon_blades():
 		return
 	_stop_canopy_bob()
 	var surface_local_y: float = water_surface_y - global_position.y
@@ -1656,6 +1726,12 @@ func _spawn_meniscus_break() -> void:
 	if stem_top >= surface_local_y + VOXEL_SIZE * 1.6:
 		return
 	var break_count: int = 2 + (1 if randf() < 0.35 else 0)
+	# Ribbon blades break the surface themselves and lie along it; the
+	# separate break cubes floated unattached above the crown. The growth is
+	# still booked so biomass is what it always was.
+	if _uses_ribbon_blades():
+		current_height += break_count
+		return
 	var wet_col: Color = (ramp[4] if ramp.size() > 4 else ramp[-1] as Color).lightened(0.16)
 	for i in break_count:
 		var y: float = maxf(stem_top, surface_local_y - VOXEL_SIZE * 0.12) \
@@ -1758,10 +1834,26 @@ func _grow_one() -> bool:
 		return true
 	if not _pending_trim_nodes.is_empty():
 		var cut_y: int = _pending_trim_nodes.pop_front()
-		_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
+		# Stem-skeleton plants already queued the real axillary buds under
+		# the cut (_sync_skeleton_after_loss); those grow below instead of a
+		# second, position-less legacy shoot.
+		if not (_is_stem_skeleton and not _pending_axillary.is_empty()):
+			_grow_side_shoot_at(effective_ramp, cut_y, photo_offset)
+			leaf_size_mult = base_leaf_scale
+			leaf_form = base_leaf_form
+			return true
+	# Released axillary buds (apical dominance lifted by a cut, the surface,
+	# or rich nutrients) spend this growth step as a side shoot.
+	if not _pending_axillary.is_empty():
+		var bud_node: int = _pending_axillary.pop_front()
+		if bud_node < skeleton.node_count():
+			_grow_axillary_shoot(effective_ramp, bud_node)
 		leaf_size_mult = base_leaf_scale
 		leaf_form = base_leaf_form
 		return true
+	# Stem skeleton: the chain decides where this node sits laterally.
+	if _is_stem_skeleton:
+		photo_offset = _place_skeleton_node(rel)
 
 	match leaf_form:
 		"paddle":
@@ -1810,6 +1902,11 @@ func _grow_one() -> bool:
 	if _damage_episode_active and biomass() >= int(float(_peak_biomass) * 0.9):
 		_damage_episode_active = false
 	_internode_extension_y += VOXEL_SIZE * 0.65 * etiolation
+	if _is_stem_skeleton and not skeleton.has_replay():
+		_internode_extension_y = maxf(_internode_extension_y + _light_internode_delta(),
+			-float(current_height) * VOXEL_SIZE * 0.12)
+		skeleton.restore_apex()
+		_maybe_release_axillary_bud(randf())
 	_rebuild_auxin_profile()
 	_cast_root_shadow()
 
@@ -1907,7 +2004,11 @@ func _micro_vary_color(base: Color, voxel_key: int) -> Color:
 # tip leaf cluster baked into the foliage MultiMesh so the side shoot
 # is visibly alive (not just a stub). Doesn't change current_height —
 # the main stem regrows on subsequent ticks.
-func _grow_side_shoot_at(ramp: Array, cut_y: int, photo_offset: Vector2) -> void:
+func _grow_side_shoot_at(ramp: Array, cut_y: int, photo_offset: Vector2,
+		node_idx: int = -1) -> void:
+	if node_idx >= 0 and node_idx < skeleton.node_count():
+		_grow_axillary_shoot(ramp, node_idx)
+		return
 	var theta: float = randf() * TAU
 	var dx: float = cos(theta)
 	var dz: float = sin(theta)
@@ -2009,6 +2110,7 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 	var leaf_xform: Transform3D = leaf_node.transform
 	var group: Array = []
 	var leaf_phase: float = _stable_leaf_phase(leaf_xform.origin, _leaf_groups.size())
+	var thin: float = _shade_thin_mult()
 	var voxel_i: int = 0
 	for v in leaf_voxels:
 		var mi: MeshInstance3D = v as MeshInstance3D
@@ -2031,7 +2133,7 @@ func _bake_leaf(leaf_node: Node3D, leaf_voxels: Array) -> Array:
 			_voxel_depth_jitter(col, inst_xform.origin), inst_xform.origin)
 		var handle: VoxelBatch.Handle = batch.add(scaled, baked_color)
 		handle.set_custom_data(Color(
-			_leaf_thickness(size, voxel_i, leaf_voxels.size()), leaf_phase, 0.0,
+			_leaf_thickness(size, voxel_i, leaf_voxels.size()) * thin, leaf_phase, 0.0,
 			_leaf_flex_weight(inst_xform.origin.y)))
 		group.append(handle)
 		voxel_i += 1
@@ -2052,6 +2154,7 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 	var group: Array = []
 	var leaf_phase: float = _stable_leaf_phase(leaf_xform.origin, _leaf_groups.size())
 	var defer_upload: bool = template.size() >= LEAF_BAKE_DEFER_THRESHOLD
+	var thin: float = _shade_thin_mult()
 	var voxel_i: int = 0
 	for v in template:
 		var lv: LeafShapes.LeafVoxel = v
@@ -2063,7 +2166,7 @@ func _bake_leaf_template(leaf_xform: Transform3D, template: Array,
 		var handle: VoxelBatch.Handle = batch.add_deferred(scaled, color) if defer_upload \
 			else batch.add(scaled, color)
 		handle.set_custom_data(Color(
-			_leaf_thickness(lv.size, voxel_i, template.size()), leaf_phase, 0.0,
+			_leaf_thickness(lv.size, voxel_i, template.size()) * thin, leaf_phase, 0.0,
 			_leaf_flex_weight(inst_xform.origin.y)))
 		group.append(handle)
 		voxel_i += 1
@@ -2156,6 +2259,10 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 	# Build the paddle leaf. Shade leaves run larger; mid-stem leaves are the
 	# biggest on the plant.
 	var span: float = _shade_size_mult() * _node_size_gradient(rel)
+	if _is_rosette:
+		leaf_node.position = _rosette_crown_pos()
+		leaf_node.rotation.x = _rosette_pitch()
+		span = _shade_size_mult() * _rosette_leaf_scale()
 	var template: Array = LeafShapes.get_leaf_template("paddle", {
 		"length": clampi(int(round(float(leaf_length) * span)), 2, 6),
 		"width": 2, "flatten": 0.5, "quilted": quilted, "wavy": wavy_edges,
@@ -2169,6 +2276,9 @@ func _grow_paddle_leaf(ramp: Array, age_frac: float, rel: float,
 
 func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
+	if _uses_ribbon_blades():
+		_grow_ribbon_blades(ramp)
+		return
 	var leaf_node := Node3D.new()
 	leaf_node.position = _clamp_growth_offset(Vector3(
 		photo_offset.x + randf_range(-0.1, 0.1),
@@ -2191,6 +2301,323 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 	leaf_node.free()
 
 
+# ---- Vallisneria ribbon blades ----------------------------------------------
+#
+# THE PROBLEM. A ribbon plant used to add one short (4-14 voxel) template
+# blade at the crown per growth step, while current_height - which is what
+# surface reach, top_world_y and biomass all read - counted those steps as if
+# they were a column. So a "surface-reaching" valli was 43 two-metre stubs
+# in a clump at the floor, plus the 2-3 meniscus-break cubes that
+# _enter_canopy then floated at the waterline above it: nothing connected
+# the crown to the surface.
+#
+# NOW. A crown holds a handful of long blades (ribbon_blade_count) and a
+# growth step LENGTHENS them: the longest blade's length tracks
+# current_height exactly as a column plant's height does, so a plant that
+# the ecology says has reached the surface visibly has. Near the surface the
+# blades get extra length (RIBBON_TRAIL_K) that bends over and lies along
+# the water in the direction of the current - the floating canopy. That
+# extra is geometry only: biomass, uptake and the growth cap still read
+# current_height, unchanged.
+#
+# Each blade is a chain of flat boxes (one MultiMesh instance per segment):
+# about two voxels wide at the base on a full-size plant, tapering to a
+# rounded tip, twisting slowly along its length and flattening out once it
+# lies on the surface, darker at the crown and lighter toward the lit tip.
+# Blades are re-laid in place (handles reused) only when the plant grows,
+# never per frame; motion is the foliage shader's chain sway.
+#
+# Save compatibility: nothing new is saved. A blade's shape derives from the
+# plant's asymmetry_seed and the order the blades were booked, both of which
+# the init() replay reproduces, so old saves simply regrow the new form.
+const RIBBON_SEG_LEN: float = VOXEL_SIZE * 1.25
+const RIBBON_MAX_SEGS: int = 60
+const RIBBON_MAX_BLADES: int = 8
+# Extra blade length, as a share of the water column, that trails along the
+# surface once the plant has reached it.
+const RIBBON_TRAIL_K: float = 0.35
+const RIBBON_MAX_TRAIL: float = 6.0
+const RIBBON_THICKNESS: float = VOXEL_SIZE * 0.24
+const RIBBON_BEND_RADIUS: float = 0.55
+# New blades emerge short and reach full length over this many growth steps.
+const RIBBON_EXPAND_STEPS: float = 6.0
+var _ribbon_bulk: bool = false
+var _ribbon_blade_serial: int = 0
+
+
+func _uses_ribbon_blades() -> bool:
+	return leaf_form == "ribbon" and _save_kind() == "plant"
+
+
+# Blades per crown at a given height: a seedling has one or two, a mature
+# valli crown six to eight.
+static func ribbon_blade_count(h: int) -> int:
+	if h <= 0:
+		return 0
+	return mini(h, clampi(int(2.0 + sqrt(float(h)) * 0.9), 1, RIBBON_MAX_BLADES))
+
+
+# Stable per-blade random in 0..1 (no RNG draw, so a replay reproduces it).
+func _ribbon_hash(serial: int, salt: int) -> float:
+	var v: float = sin(float(serial) * 12.9898 + float(salt) * 78.233
+		+ float(asymmetry_seed % 100003) * 0.0131) * 43758.5453
+	return v - floor(v)
+
+
+# Water column above the crown, in voxel rows.
+func _ribbon_reach_rows() -> float:
+	return maxf((water_surface_y - global_position.y) / VOXEL_SIZE, 1.0)
+
+
+# Blade length in voxel rows. `frac` is the blade's share of the longest.
+func _ribbon_blade_rows(h: int, frac: float) -> float:
+	var core: float = maxf(float(clampi(leaf_length, 3, 14)), float(h))
+	var reach: float = _ribbon_reach_rows()
+	var pool: float = smoothstep(reach * 0.6, reach, core) \
+		* minf(reach * RIBBON_TRAIL_K, RIBBON_MAX_TRAIL / VOXEL_SIZE)
+	return (core + pool) * frac
+
+
+func _grow_ribbon_blades(ramp: Array) -> void:
+	var h_next: int = current_height + 1
+	var target: int = ribbon_blade_count(h_next)
+	var have: int = 0
+	for st in _leaf_states:
+		if (st as Dictionary).has("rb_seed"):
+			have += 1
+	# Book new blades; a shed blade is replaced the same way. Only possible
+	# while the parallel leaf arrays line up (they always do in practice).
+	while have < target and _leaf_states.size() == _leaf_groups.size():
+		_leaf_groups.append([])
+		_leaf_ages.append(_t)
+		_register_leaf_age(_t)
+		var booked: Dictionary = _leaf_states[_leaf_states.size() - 1]
+		booked["rb_seed"] = _ribbon_blade_serial
+		booked["rb_birth_h"] = h_next
+		_ribbon_blade_serial += 1
+		have += 1
+	if not _ribbon_bulk:
+		_rebuild_ribbon_blades(h_next, ramp)
+
+
+# Direction the blades trail once they reach the surface: along the local
+# current where there is one, else a stable per-plant heading. Quantised to
+# eight headings so a flicker in the flow field cannot swing the canopy.
+func _ribbon_trail_dir() -> Vector2:
+	var flow: Vector3 = Vector3.ZERO
+	if is_inside_tree():
+		flow = _local_flow_at(Vector3(global_position.x, water_surface_y - 0.3,
+			global_position.z))
+	var d := Vector2(flow.x, flow.z)
+	if d.length() < 0.02:
+		var a: float = _ribbon_hash(-7, 3) * TAU
+		d = Vector2(cos(a), sin(a))
+	var ang: float = snappedf(d.angle(), TAU / 8.0)
+	return Vector2.from_angle(ang)
+
+
+# Keep a blade's surface run inside the glass: try the wanted heading, then
+# fan outward from it until the run's far end no longer needs clamping.
+func _ribbon_fit_trail(dir: Vector2, start: Vector3, run: float) -> Vector2:
+	if run <= 0.05 or not is_inside_tree():
+		return dir
+	var w: Node = _footprint_world()
+	if w == null or not w.has_method("clamp_xz_in_tank"):
+		return dir
+	var best: Vector2 = dir
+	var best_err: float = INF
+	for k in [0, 1, -1, 2, -2, 3, -3, 4]:
+		var cand: Vector2 = dir.rotated(float(k) * PI * 0.25)
+		var end: Vector3 = global_position + start + Vector3(cand.x, 0.0, cand.y) * run
+		var c: Vector2 = w.clamp_xz_in_tank(end.x, end.z, 0.3)
+		var err: float = c.distance_to(Vector2(end.x, end.z))
+		if err < 0.05:
+			return cand
+		if err < best_err:
+			best_err = err
+			best = cand
+	return best
+
+
+# One blade as [transform (size baked into the basis), color, custom data]
+# per segment, in plant-local space, base first. Pure given the plant's
+# seed, height, water level and the trail heading.
+func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
+		trail_dir: Vector2, ramp: Array) -> Array:
+	var frac: float = 1.0 if serial == 0 else lerpf(0.62, 1.0, _ribbon_hash(serial, 1))
+	var maturity: float = clampf(float(h - birth_h + 1) / RIBBON_EXPAND_STEPS, 0.3, 1.0)
+	var rows: float = _ribbon_blade_rows(h, frac) * maturity
+	var total_len: float = rows * VOXEL_SIZE
+	var n: int = clampi(ceili(total_len / RIBBON_SEG_LEN), 2, RIBBON_MAX_SEGS)
+	var seg: float = total_len / float(n)
+	# Two ranks (distichous) with some scatter, splaying a little outward.
+	var yaw: float = (PI if serial % 2 == 1 else 0.0) + float(asymmetry_seed % 628) * 0.01 \
+		+ (_ribbon_hash(serial, 2) - 0.5) * 1.3
+	var out_dir := Vector3(cos(yaw), 0.0, sin(yaw))
+	var side_dir: Vector3 = out_dir.cross(Vector3.UP)
+	var crown: Vector3 = _clamp_growth_offset(out_dir * VOXEL_SIZE * lerpf(0.15, 0.6,
+		_ribbon_hash(serial, 3)) + Vector3(0.0, VOXEL_SIZE * 0.1, 0.0))
+	# How far the blade keeps leaning out of the crown as it rises: a fan,
+	# not one bundle.
+	var lean: float = lerpf(0.05, 0.17, _ribbon_hash(serial, 10))
+	var tone: float = lerpf(0.9, 1.08, _ribbon_hash(serial, 11))
+	var surface_y: float = water_surface_y - global_position.y - 0.12
+	var reach_len: float = maxf(surface_y - crown.y, 0.0)
+	var base_w: float = VOXEL_SIZE * lerpf(1.0, 2.0, clampf((rows - 4.0) / 14.0, 0.0, 1.0)) \
+		* clampf(leaf_size_mult, 0.8, 1.2)
+	var twist_turns: float = lerpf(0.35, 1.1, _ribbon_hash(serial, 4))
+	var twist_phase: float = _ribbon_hash(serial, 5) * TAU
+	var wob_amp: float = lerpf(0.05, 0.16, _ribbon_hash(serial, 6)) * (1.4 if wavy_edges else 1.0)
+	var wob_phase: float = _ribbon_hash(serial, 7) * TAU
+	var leaf_phase: float = _ribbon_hash(serial, 9)
+	var fan: float = (_ribbon_hash(serial, 8) - 0.5) * 1.2
+	var tdir2: Vector2 = _ribbon_fit_trail(trail_dir.rotated(fan), crown + Vector3(0.0, reach_len, 0.0),
+		maxf(total_len - reach_len, 0.0))
+	var tdir := Vector3(tdir2.x, 0.0, tdir2.y)
+	var thin: float = _shade_thin_mult()
+	var mods: Dictionary = _leaf_mods()
+	var out: Array = []
+	var p: Vector3 = crown
+	# Leaves the crown splayed outward, then buoyancy stands it up.
+	var d: Vector3 = (Vector3.UP + out_dir * 0.9).normalized()
+	var surfacing: bool = false
+	var along: float = 0.0
+	for i in n:
+		var t: float = (float(i) + 0.5) / float(n)
+		var desired: Vector3
+		var max_turn: float
+		if not surfacing and p.y < surface_y - RIBBON_BEND_RADIUS:
+			var wob: float = sin(along * 0.9 + wob_phase) * wob_amp
+			desired = (Vector3.UP + out_dir * lean + side_dir * wob).normalized()
+			max_turn = seg * 0.25
+		else:
+			surfacing = true
+			var meander: float = sin(along * 0.7 + wob_phase) * 0.22
+			desired = tdir.rotated(Vector3.UP, meander)
+			max_turn = seg / RIBBON_BEND_RADIUS
+		var ang: float = d.angle_to(desired)
+		if ang > 0.0001:
+			d = d.slerp(desired, minf(1.0, max_turn / ang)).normalized()
+		var p2: Vector3 = p + d * seg
+		p2.y = minf(p2.y, surface_y)
+		var dir: Vector3 = p2 - p
+		if dir.length_squared() < 1e-6:
+			dir = d
+		dir = dir.normalized()
+		along += seg
+		# Width axis: twisting slowly while it rises, flat on the surface.
+		var flat_w: float = clampf(1.0 - dir.y * 1.6, 0.0, 1.0) if surfacing else 0.0
+		var tw: float = twist_turns * TAU * minf(along / maxf(reach_len, 0.5), 1.0) + twist_phase
+		var w_rise: Vector3 = side_dir * cos(tw) + out_dir * sin(tw)
+		var w_flat: Vector3 = Vector3.UP.cross(dir)
+		if w_flat.length_squared() < 1e-6:
+			w_flat = side_dir
+		w_flat = w_flat.normalized()
+		if w_flat.dot(w_rise) < 0.0:
+			w_flat = -w_flat
+		var wv: Vector3 = w_rise.lerp(w_flat, flat_w)
+		wv -= dir * wv.dot(dir)
+		if wv.length_squared() < 1e-6:
+			wv = dir.cross(Vector3.FORWARD if absf(dir.z) < 0.9 else Vector3.RIGHT)
+		wv = wv.normalized()
+		var zv: Vector3 = wv.cross(dir).normalized()
+		# Taper to a rounded tip; the sheath at the crown is a touch narrower.
+		var width: float = base_w * lerpf(1.0, 0.7, t)
+		if i == n - 1:
+			width *= 0.45
+		elif i == n - 2:
+			width *= 0.8
+		elif i == 0:
+			width *= 0.9
+		var size := Vector3(width, seg * 1.12, RIBBON_THICKNESS)
+		var seg_basis := Basis(wv * size.x, dir * size.y, zv * size.z)
+		var xf := Transform3D(seg_basis, (p + p2) * 0.5)
+		# Dark at the crown, lighter toward the lit tip and where it floats.
+		var ramp_t: float = lerpf(0.2, 0.93, pow(t, 0.8)) + flat_w * 0.06
+		var col: Color = _ribbon_ramp_color(ramp, ramp_t)
+		if t < 0.1:
+			col = col.darkened(0.12 * (1.0 - t / 0.1))
+		col = LeafShapes._modify_color(col, t, float(mods.get("variegation", 0.0)),
+			mods.get("tone_under", null), float(mods.get("iridescence", 0.0)))
+		# One tone per blade (plus a whisper per segment) so a blade reads as
+		# one continuous ribbon rather than a stack of differently lit slats.
+		var seg_tone: float = tone * (0.97 + 0.06 * _ribbon_hash(serial * 131 + i, 12))
+		col = VoxelMat.boost_foliage_color(col)
+		col = Color(col.r * seg_tone, col.g * seg_tone, col.b * seg_tone, col.a)
+		var custom := Color(_leaf_thickness(size, i, n) * thin, leaf_phase, 0.0,
+			_leaf_flex_weight(xf.origin.y))
+		out.append([xf, col, custom])
+		p = p2
+	return out
+
+
+static func _ribbon_ramp_color(ramp: Array, t: float) -> Color:
+	if ramp.size() < 2:
+		return Color8(60, 130, 70)
+	var f: float = clampf(t, 0.0, 1.0) * float(ramp.size() - 1)
+	var lo: int = clampi(int(f), 0, ramp.size() - 2)
+	return (ramp[lo] as Color).lerp(ramp[lo + 1] as Color, f - float(lo))
+
+
+# Re-lay every booked blade for height `h`, reusing each blade's existing
+# handles in place (so leaf state, damage holes and the batch slot stay put)
+# and only adding or hiding the difference in segment count.
+func _rebuild_ribbon_blades(h: int, ramp: Array = []) -> void:
+	if ramp.size() < 2:
+		ramp = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var trail_dir: Vector2 = _ribbon_trail_dir()
+	var touched: Array[VoxelBatch] = []
+	for i in mini(_leaf_groups.size(), _leaf_states.size()):
+		var st: Dictionary = _leaf_states[i]
+		if not st.has("rb_seed"):
+			continue
+		var segs: Array = _ribbon_blade_segments(int(st["rb_seed"]),
+			int(st.get("rb_birth_h", 0)), h, trail_dir, ramp)
+		var grp: Array = _leaf_groups[i]
+		var batch: VoxelBatch = null
+		for hv in grp:
+			if hv != null and (hv as VoxelBatch.Handle).alive:
+				batch = (hv as VoxelBatch.Handle).batch
+				break
+		if batch == null:
+			batch = _ensure_senescence_batch() if bool(st.get("senescence_migrated", false)) \
+				else _ensure_foliage_batch()
+		var rebuilt: Array = []
+		var k: int = 0
+		for s in segs:
+			var xf: Transform3D = s[0]
+			var col: Color = s[1]
+			var handle: VoxelBatch.Handle = null
+			while k < grp.size():
+				var cand: VoxelBatch.Handle = grp[k]
+				k += 1
+				if cand != null and cand.alive:
+					handle = cand
+					break
+			if handle != null:
+				handle.base_color = col
+				handle.set_transform(xf)
+				handle.set_color(col)
+			else:
+				handle = batch.add(xf, col)
+			handle.set_custom_data(s[2])
+			rebuilt.append(handle)
+		while k < grp.size():
+			var spare: VoxelBatch.Handle = grp[k]
+			k += 1
+			if spare != null and spare.alive:
+				spare.hide()
+		_leaf_groups[i] = rebuilt
+		# Recolouring reset the youth / senescence paint; let those re-apply.
+		st["youth_paint"] = -1.0
+		st["senesce_paint"] = 0.0
+		st["dose_visual"] = -1.0
+		if not touched.has(batch):
+			touched.append(batch)
+	for b in touched:
+		b.flush()
+
+
 func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2) -> void:
 	# Stem voxel first — stays a real MeshInstance3D node (it's structural, in
@@ -2210,6 +2637,10 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	if current_height % 2 == 0:
 		var leaf_node := Node3D.new()
 		leaf_node.position = stem_pos
+		# Light plasticity + mid-stem peak: shade pairs larger, sun pairs and
+		# the still-expanding apex / shaded base smaller.
+		leaf_node.scale = Vector3.ONE * clampf(
+			_shade_size_mult() * _node_size_gradient(rel), 0.7, 1.3)
 		var template: Array = LeafShapes.get_leaf_template("lance", {
 			"pair_index": int(current_height / 2.0),
 		})
@@ -2284,11 +2715,15 @@ func _grow_shaped_leaf(ramp: Array, age_frac: float, rel: float,
 		))
 		leaf_node.rotation.y = yaw
 	leaf_node.rotation.x = _shade_pitch()
+	if _is_rosette:
+		leaf_node.position = _rosette_crown_pos()
+		leaf_node.rotation.x = _rosette_pitch()
 	# Apply emersed-form size boost when the plant is still in its first
 	# minute. Linear fade so the transition reads as growth changing form.
 	var emersed_k: float = clampf(_emersed_remaining / EMERSED_DURATION_S, 0.0, 1.0)
 	var lsm: float = clampf(leaf_size_mult * _visual_youth_scale()
-		* (1.0 + emersed_k * 0.15) * _shade_size_mult() * _node_size_gradient(rel),
+		* (1.0 + emersed_k * 0.15) * _shade_size_mult()
+		* (_rosette_leaf_scale() if _is_rosette else _node_size_gradient(rel)),
 		0.5, 1.8)
 	var mods: Dictionary = _leaf_mods()
 	# Stem internode — visible thin stem segment for whorled-leaf plants
@@ -2511,7 +2946,9 @@ func _red_boosted_ramp(base_ramp: Array) -> Array:
 
 
 func biomass() -> int:
-	return current_height
+	# Trailing surface internodes are real stem tissue grown with nutrient
+	# spent, so they count; vertical nodes are current_height as before.
+	return current_height + _alive_trail_count()
 
 
 func _vitals_growth_mult(sim_driver: Node) -> float:
@@ -2713,12 +3150,22 @@ func _clear_voxel_tint(vx: VoxelBatch.Handle) -> void:
 var _footprint_enforce_timer: float = 0.0
 
 
+var _footprint_world_cache: Node = null
+
+
 func _footprint_world() -> Node:
+	# Called every tick (root clamp) — cache the ancestor instead of walking
+	# parents with has_method(); re-resolve if the plant is ever reparented.
+	if _footprint_world_cache != null and is_instance_valid(_footprint_world_cache) \
+			and _footprint_world_cache.is_ancestor_of(self):
+		return _footprint_world_cache
 	var n: Node = self
 	while n != null:
 		if n.has_method("clamp_xz_in_tank"):
+			_footprint_world_cache = n
 			return n
 		n = n.get_parent()
+	_footprint_world_cache = null
 	return null
 
 
@@ -2775,7 +3222,12 @@ func _clamp_root_to_footprint() -> void:
 		xz = w.clamp_xz_in_tank(g.x, g.z, 0.2 + reach, floor_y)
 	# Always snap the crown to the sculpted substrate surface — saved Y from a
 	# smaller tank or a flat rebuild must not leave stems buried or floating.
-	global_position = Vector3(xz.x, floor_y, xz.y)
+	# Runs every tick for every plant, and the crown is almost always already
+	# there: assigning global_position unconditionally re-dirtied the plant's
+	# whole voxel subtree (transform propagation) each tick for no change.
+	var crown_pos := Vector3(xz.x, floor_y, xz.y)
+	if crown_pos != g:
+		global_position = crown_pos
 
 
 func _clamp_node_xz_to_footprint(node: Node3D, margin: float = 0.22) -> void:
@@ -3006,7 +3458,8 @@ func wake_plant(_reason: String = "") -> void:
 func _static_sleep_eligible() -> bool:
 	return current_height >= max_height and not is_dying and not _melt_active \
 		and life_phase == LifePhase.VEGETATIVE and flower_stage == FlowerStage.NONE \
-		and _pending_trim_nodes.is_empty() and _brush_bend.length_squared() < 1e-6 \
+		and _pending_trim_nodes.is_empty() and _pending_axillary.is_empty() \
+		and _brush_bend.length_squared() < 1e-6 \
 		and _gust_tilt.length_squared() < 1e-6 and health >= 0.65 \
 		and (_foliage_batch == null or not _foliage_batch.has_deferred_writes())
 
@@ -3054,6 +3507,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	if _tropism_refresh_t <= 0.0:
 		_tropism_refresh_t = TROPISM_REFRESH_S
 		_refresh_tropism()
+		_tick_skeleton_motion(TROPISM_REFRESH_S)
 
 	# ---- Flow-based sway ----
 	# Dynamic time-based sway lives on the GPU (foliage_mm). CPU only applies a
@@ -3094,10 +3548,14 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 		lean_scale = 0.28
 	elif leaf_form in ["paddle", "spade", "lobed", "oval"]:
 		lean_scale = 0.38
-	rotation.z = (flow_bias * 0.025 + _brush_bend.x * 0.7 + _gust_tilt.x * 0.65
+	# Stem-skeleton plants take most of a fish brush as a chain bend (base
+	# planted, tip yielding) instead of a rigid tilt of the whole plant.
+	var brush_rigid: float = 0.3 if _chain_motion else 0.7
+	rotation.z = (flow_bias * 0.025 + _brush_bend.x * brush_rigid + _gust_tilt.x * 0.65
 			+ sin(_circumnutation_phase) * nutation) * lean_scale
-	rotation.x = (_brush_bend.y * 0.7 + _gust_tilt.y * 0.65
+	rotation.x = (_brush_bend.y * brush_rigid + _gust_tilt.y * 0.65
 			+ cos(_circumnutation_phase) * nutation * 0.7) * lean_scale
+	_push_chain_bend()
 	_stabilize_flower_against_lean(dt)
 	_height_ghost_timer += dt
 	if _height_ghost_timer > 180.0:
@@ -3358,6 +3816,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 
 	if (life_phase == LifePhase.CANOPY and not surface_pooling) \
 			or current_height >= max_height:
+		_tick_trailing(dt, growth_nutrient, substrate)
 		_tick_canopy(dt, nutrient_mult, substrate)
 		return
 
@@ -3490,6 +3949,12 @@ func _tick_runner(dt: float) -> void:
 		eligible = true
 	if has_plantlets and current_height >= 4:
 		eligible = true
+	# Crypts / swords spread by short rhizome runners into clonal daughters.
+	if _rosette_runner_form() and current_height >= 6:
+		if not _rosette_runner_armed:
+			_rosette_runner_armed = true
+			_runner_cooldown = maxf(_runner_cooldown, randf_range(150.0, 320.0))
+		eligible = true
 	if not eligible:
 		return
 	if _runner_active:
@@ -3514,6 +3979,9 @@ func _tick_runner(dt: float) -> void:
 func _begin_runner() -> void:
 	var best_dir: Vector3 = _pick_runner_direction()
 	var dist: float = randf_range(RUNNER_DISTANCE_MIN, RUNNER_DISTANCE_MAX)
+	if _rosette_runner_form():
+		# Rhizome daughters come up close to the mother clump.
+		dist *= 0.72
 	_runner_origin = Vector3(0.0, 0.0, 0.0)
 	_runner_target = best_dir * dist
 	_runner_active = true
@@ -3598,7 +4066,7 @@ func _finalize_runner() -> void:
 			# runner should just not produce a plant there — NOT relocate it into
 			# open water. This lets density self-limit instead of filling the tank.
 			cfg["autonomous_spread"] = true
-			if is_carpet or has_plantlets:
+			if is_carpet or has_plantlets or _rosette_runner_form():
 				cfg["no_mutate"] = true
 			cfg["variegation"] = variegation
 			cfg["quilted"] = quilted
@@ -3625,6 +4093,8 @@ func _finalize_runner() -> void:
 		_runner_cooldown = randf_range(60.0, 110.0)
 	elif has_plantlets:
 		_runner_cooldown = randf_range(90.0, 160.0)
+	elif _rosette_runner_form():
+		_runner_cooldown = randf_range(220.0, 380.0)
 	else:
 		_runner_cooldown = randf_range(RUNNER_COOLDOWN_MIN, RUNNER_COOLDOWN_MAX)
 
@@ -4555,6 +5025,9 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
 				substrate.add_at(_world_pos, 0.002)
 			_tick_detritus_flecks(dt, sim_v)
+		# New growth opens light lime and darkens as it matures.
+		if float(st.age_s) < YOUTH_TINT_S + 2.0:
+			_tint_leaf_youth(i, st)
 		# Naturalism #41 — advance leaf lifecycle phase.
 		_advance_leaf_phase(st, i)
 		if int(st.get("phase", LeafPhase.MATURE)) == LeafPhase.SHED:
@@ -4632,12 +5105,10 @@ func _restore_leaf_light_doses(saved: Variant) -> void:
 		state.dose_visual = -1.0
 
 
-func _advance_leaf_phase(st: Dictionary, _idx: int) -> void:
+func _advance_leaf_phase(st: Dictionary, idx: int) -> void:
 	var age_s: float = float(st.get("age_s", 0.0))
 	var phase: int = int(st.get("phase", LeafPhase.EXPANDING))
-	# Stress and health shorten mature life — starving plants turn over faster.
-	var life_scale: float = lerpf(0.55, 1.0, clampf(_health_smooth, 0.0, 1.0))
-	var mature_end: float = LEAF_EXPAND_S + LEAF_MATURE_S * life_scale
+	var mature_end: float = _leaf_mature_end(idx)
 	var senesce_end: float = mature_end + LEAF_SENESCE_S
 	match phase:
 		LeafPhase.BUD:
@@ -4658,8 +5129,7 @@ func _paint_leaf_senescence(idx: int, st: Dictionary) -> void:
 		return
 	var prev: float = float(st.get("senesce_paint", 0.0))
 	var age_s: float = float(st.get("age_s", 0.0))
-	var life_scale: float = lerpf(0.55, 1.0, clampf(_health_smooth, 0.0, 1.0))
-	var mature_end: float = LEAF_EXPAND_S + LEAF_MATURE_S * life_scale
+	var mature_end: float = _leaf_mature_end(idx)
 	var t: float = clampf((age_s - mature_end) / maxf(LEAF_SENESCE_S, 0.01), 0.0, 1.0)
 	if absf(t - prev) < 0.08:
 		return
@@ -4686,6 +5156,7 @@ func _ensure_senescence_batch() -> VoxelBatch:
 		_senescence_mat.shader = load("res://shaders/foliage_senescent_mm.gdshader")
 		_senescence_mat.set_shader_parameter("water_surface_y", water_surface_y)
 		_senescence_batch = VoxelBatch.new(self, _senescence_mat, 32, true)
+		_chain_bend_pushed = Vector2(INF, INF)
 		_apply_visibility_range_to(_senescence_batch.mmi)
 	return _senescence_batch
 
@@ -4718,10 +5189,20 @@ func _shed_leaf_at(idx: int) -> void:
 		_leaf_ages.remove_at(idx)
 	if idx < _leaf_states.size():
 		_leaf_states.remove_at(idx)
+	# Detritus drops from where the leaf actually was, so a shaded stem's
+	# lower leaves rain into the mulm under it rather than at the crown.
+	var drop_at: Vector3 = global_position
+	for h in grp:
+		if h != null and h.alive:
+			drop_at = global_transform * (h as VoxelBatch.Handle).local_pos
+			break
 	for h in grp:
 		if h != null and h.alive:
 			h.hide()
-	_spawn_decay_waste(global_position)
+	_spawn_decay_waste(drop_at)
+	if _is_rosette:
+		# Leaf turnover: a shed crown leaf frees room for a new inner leaf.
+		current_height = _live_leaf_count()
 
 
 var _leaf_hair_nodes: Array = []
@@ -4996,6 +5477,11 @@ func _recalc_height() -> void:
 			if h.alive:
 				max_local_y = maxf(max_local_y, h.local_pos.y)
 	current_height = maxi(0, int(max_local_y / VOXEL_SIZE))
+	if _is_rosette:
+		# A rosette's biomass is its leaf count, not its crown height.
+		current_height = _live_leaf_count()
+	if _is_stem_skeleton:
+		_sync_skeleton_after_loss()
 
 
 func _on_death() -> void:
@@ -5274,9 +5760,22 @@ func _shade_leaf_factor() -> float:
 	return clampf(1.0 - lit, 0.0, 1.0)
 
 
-# Size multiplier: shade leaves run up to ~28% larger.
+# Size multiplier: shade leaves run up to ~28% larger; sun leaves in a
+# bright spot run up to ~16% smaller (and denser - see _light_internode_delta).
 func _shade_size_mult() -> float:
-	return 1.0 + _shade_leaf_factor() * 0.28
+	var shade: float = _shade_leaf_factor()
+	var sun: float = _sun_leaf_factor(shade)
+	return 1.0 + shade * 0.28 - sun * 0.16
+
+
+# 0 below "full light" (the genome's reference), 1 in a hot spot under the lamp.
+func _sun_leaf_factor(shade: float) -> float:
+	return clampf((_light_avg - 0.62) / 0.3, 0.0, 1.0) * (1.0 - shade)
+
+
+# Shade leaves are thinner (more translucent); baked into thickness once.
+func _shade_thin_mult() -> float:
+	return lerpf(1.0, 0.72, _shade_leaf_factor())
 
 
 # Pitch in radians: shade leaves lie flatter to present more area upward.
@@ -5342,6 +5841,9 @@ func _tropism_lateral_offset() -> Vector2:
 
 
 func _get_stem_top() -> float:
+	if _is_rosette:
+		# Tallest leaf of the crown, not a stack of every leaf.
+		return float(leaf_length) * VOXEL_SIZE * 0.95 + VOXEL_SIZE * 0.5
 	var factor := 1.0
 	if leaf_form == "paddle":
 		factor = 0.9
@@ -5353,6 +5855,426 @@ func _get_stem_top() -> float:
 # Quick world-space height of the top voxel (for fish to target nibbling).
 func top_world_y() -> float:
 	return global_position.y + _get_stem_top()
+
+
+# ---- Stem skeleton (PlantSkeleton) ------------------------------------------
+#
+# Base-Plant stem species grow as an articulated chain. The skeleton decides
+# lateral node placement, which axillary buds break, how the stem trails on
+# the surface and how far the grown stem bows toward the lamp. Geometry is
+# still the same baked voxels, so biomass and nutrient uptake are unchanged
+# (trailing internodes add to biomass as the tissue they are).
+
+const STEM_SKELETON_FORMS: Array[String] = [
+	"lance", "pinnate", "fingered", "downy", "oval", "cordate", "column"]
+const ROSETTE_RUNNER_FORMS: Array[String] = ["paddle", "spade", "lobed"]
+
+
+func _compute_uses_stem_skeleton() -> bool:
+	if _save_kind() != "plant" or is_epiphyte or is_carpet:
+		return false
+	return whorled_leaves or STEM_SKELETON_FORMS.has(leaf_form)
+
+
+func uses_stem_skeleton() -> bool:
+	return _is_stem_skeleton
+
+
+func _rosette_runner_form() -> bool:
+	return _save_kind() == "plant" and not is_epiphyte and not is_carpet \
+		and not has_plantlets and ROSETTE_RUNNER_FORMS.has(leaf_form)
+
+
+# Per-node height factor (x) and bias (y) used by the voxel builder that will
+# place this node, so the skeleton's node sits exactly on the built stem.
+func _skeleton_node_y_base() -> Vector2:
+	match leaf_form:
+		"lance":
+			return Vector2(0.85, 0.5)
+		"column":
+			return Vector2(1.0, 0.5)
+		_:
+			return Vector2(0.85, 0.4)
+
+
+# Places the next node and returns the photo_offset the builders expect
+# (they add their own lean back on top, so subtract it here).
+func _place_skeleton_node(rel: float) -> Vector2:
+	var yb: Vector2 = _skeleton_node_y_base()
+	var base_y: float = float(current_height) * VOXEL_SIZE * yb.x + VOXEL_SIZE * yb.y
+	var replay: Variant = skeleton.peek_replay()
+	if replay is Vector3:
+		_internode_extension_y = (replay as Vector3).y - base_y
+	var shade: float = _shade_leaf_factor()
+	var lean_k: float = 1.0 if leaf_form in ["lance", "column"] else 0.92
+	var lean: Vector2 = _stem_lean_offset(rel) * lean_k
+	var lat: Vector2 = skeleton.grow_internode(
+		_tropism, VOXEL_SIZE * yb.x, lerpf(0.10, 0.22, shade),
+		lerpf(PlantSkeleton.MAX_TILT_BRIGHT, PlantSkeleton.MAX_TILT_SHADE, shade),
+		_plant_lateral_reach() * 1.3, base_y + _internode_extension_y, _t,
+		_lean_dir() * sway_amplitude * 0.35)
+	return lat - lean
+
+
+# Bright light compacts internodes into a dense, bushy stem (shade stretch is
+# the existing etiolation term). Gated on the same genome trait, so legacy
+# genomes (sensitivity 0) keep their exact spacing.
+func _light_internode_delta() -> float:
+	if etiolation_sensitivity <= 0.0:
+		return 0.0
+	var sun: float = _sun_leaf_factor(_shade_leaf_factor())
+	return -VOXEL_SIZE * 0.10 * sun * etiolation_sensitivity
+
+
+func _maybe_release_axillary_bud(roll: float) -> int:
+	var nutrient: float = clampf(float(_growth_diag.get("nutrient_mult", 0.5)), 0.0, 1.0)
+	var bud: int = skeleton.pick_released_bud(
+		maxf(auxin_dominance, 0.45), nutrient, _shade_leaf_factor(), roll)
+	if bud >= 0 and _pending_axillary.size() < MAX_PENDING_TRIM_NODES:
+		_pending_axillary.append(bud)
+	return bud
+
+
+# A lateral shoot breaking from the axil at `node_idx`: it leaves on the
+# node's leaf heading, then curves upward (negative gravitropism) and ends
+# in a small leaf of the species' own form, drawn in new-growth colour.
+func _grow_axillary_shoot(ramp: Array, node_idx: int) -> void:
+	var base: Vector3 = skeleton.node_pos[node_idx]
+	var theta: float = _leaf_yaw(node_idx) + _node_jitter(node_idx + 31, 0.35)
+	# Basis(UP, theta) maps local +X to (cos, 0, -sin): the leaf's heading.
+	var out := Vector3(cos(theta), 0.0, -sin(theta))
+	var stem_color: Color = ramp[clampi(2, 0, ramp.size() - 1)]
+	var seg_n: int = 3 + (1 if randf() < 0.5 else 0)
+	var p: Vector3 = base
+	for j in seg_n:
+		var t: float = float(j) / float(maxi(1, seg_n - 1))
+		var ang: float = lerpf(0.95, 0.25, t)
+		var d := Vector3(out.x * sin(ang), cos(ang), out.z * sin(ang))
+		p += d * VOXEL_SIZE * 0.55
+		var mi := MeshInstance3D.new()
+		var thick: float = lerpf(0.32, 0.22, t)
+		mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * thick, VOXEL_SIZE * 0.6, VOXEL_SIZE * thick))
+		mi.material_override = VoxelMat.make_foliage(stem_color)
+		mi.transform = Transform3D(Basis(Quaternion(Vector3.UP, d.normalized())),
+			_clamp_growth_offset(p))
+		_register_stem_voxel(mi)
+		_aux_handles[voxels[voxels.size() - 1]] = true
+	var template: Array = _small_leaf_template(node_idx)
+	var tip := _clamp_growth_offset(p + Vector3(0.0, VOXEL_SIZE * 0.2, 0.0))
+	if not template.is_empty():
+		var xf := Transform3D(Basis(Vector3.UP, theta).scaled(Vector3.ONE * 0.62), tip)
+		_leaf_groups.append(_bake_leaf_template(xf, template, ramp, 0.0, _leaf_mods()))
+	else:
+		var tip_node := Node3D.new()
+		tip_node.position = tip
+		tip_node.rotation.y = theta
+		var leaf_color: Color = ramp[clampi(ramp.size() - 2, 0, ramp.size() - 1)]
+		var tip_voxels: Array = []
+		for k in 3:
+			var lv := MeshInstance3D.new()
+			lv.mesh = VoxelMat.get_box(Vector3(
+				VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.22, VOXEL_SIZE * 0.32))
+			lv.material_override = VoxelMat.make_foliage(leaf_color.lightened(0.04 * float(k)))
+			lv.position = Vector3(VOXEL_SIZE * 0.18 * float(k), VOXEL_SIZE * 0.18 * float(k), 0.0)
+			tip_voxels.append(lv)
+		_leaf_groups.append(_bake_leaf(tip_node, tip_voxels))
+		tip_node.free()
+	_leaf_ages.append(_t)
+	_register_leaf_age(_t)
+
+
+func _small_leaf_template(node_idx: int) -> Array:
+	match leaf_form:
+		"lance":
+			return LeafShapes.get_leaf_template("lance", {"pair_index": node_idx})
+		"oval", "lobed", "spade":
+			return LeafShapes.get_leaf_template(leaf_form, {"length": 3})
+		"pinnate":
+			return LeafShapes.get_leaf_template("pinnate", {"length": 3, "quilted": quilted})
+		"fingered":
+			return LeafShapes.get_leaf_template("fingered",
+				{"length": 4, "fingers": 3, "quilted": quilted})
+		"cordate":
+			return LeafShapes.get_leaf_template("cordate",
+				{"quilted": quilted, "wavy": wavy_edges})
+	return []
+
+
+func _trail_max() -> int:
+	@warning_ignore("integer_division")
+	return clampi(max_height / 7, 2, PlantSkeleton.TRAIL_MAX_NODES)
+
+
+func _alive_trail_count() -> int:
+	var n: int = 0
+	for h in _trail_handles:
+		if h != null and (h as VoxelBatch.Handle).alive:
+			n += 1
+	return n
+
+
+# Canopy growth for stem plants: the apex that met the waterline turns and
+# runs along it; once the run is full, apical dominance is gone and lower
+# buds break into side shoots (the bushy crown of an untrimmed stem).
+func _tick_trailing(dt: float, growth_nutrient: float, substrate: SubstrateGrid) -> void:
+	if not _is_stem_skeleton or life_phase != LifePhase.CANOPY or surface_pooling \
+			or is_dying or not emergent_growth or _melt_active:
+		return
+	_trail_progress += growth_rate * 0.4 * clampf(0.3 + 0.7 * growth_nutrient, 0.0, 1.0) \
+		* clampf(health, 0.0, 1.0) * dt
+	if _trail_progress < 1.0:
+		return
+	_trail_progress = 0.0
+	if _starch < 0.06 or not _try_consume_growth_budget():
+		return
+	var grew: bool = false
+	if skeleton.trail_count() < _trail_max():
+		grew = _grow_trailing_internode()
+	else:
+		var bud: int = _maybe_release_axillary_bud(randf())
+		if bud >= 0:
+			_pending_axillary.erase(bud)
+			var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+			_grow_axillary_shoot(ramp, bud)
+			grew = true
+	if grew:
+		_starch = maxf(0.0, _starch - 0.05)
+		if substrate != null and not is_epiphyte:
+			substrate.consume_root_uptake(get_instance_id(), _world_pos, nutrient_demand)
+
+
+func _grow_trailing_internode() -> bool:
+	if skeleton.node_count() == 0:
+		return false
+	var surface_local_y: float = water_surface_y - global_position.y - VOXEL_SIZE * 0.35
+	var fallback: Vector2 = _lean_dir()
+	if not is_nan(_light_yaw_cache):
+		fallback = Vector2(sin(_light_yaw_cache), cos(_light_yaw_cache))
+	var prev: Vector3 = skeleton.apex_pos()
+	var pos: Vector3 = skeleton.grow_trail_node(surface_local_y, VOXEL_SIZE * 0.8, _t, fallback)
+	pos = _clamp_growth_offset(pos, VOXEL_SIZE * 0.5)
+	skeleton.node_pos[skeleton.node_count() - 1] = pos
+	var seg: Vector3 = pos - prev
+	seg.y = 0.0
+	var yaw: float = atan2(-seg.z, seg.x) if seg.length_squared() > 1e-6 else 0.0
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	var mi := MeshInstance3D.new()
+	mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.32))
+	mi.material_override = VoxelMat.make_foliage((ramp[2] as Color).darkened(0.05))
+	mi.transform = Transform3D(Basis(Vector3.UP, yaw),
+		Vector3((prev.x + pos.x) * 0.5, pos.y, (prev.z + pos.z) * 0.5))
+	_register_stem_voxel(mi)
+	var handle: VoxelBatch.Handle = voxels[voxels.size() - 1]
+	_aux_handles[handle] = true
+	_trail_handles.append(handle)
+	var template: Array = _small_leaf_template(skeleton.node_count())
+	if not template.is_empty():
+		var xf := Transform3D(Basis(Vector3.UP, _leaf_yaw(skeleton.node_count()))
+			.scaled(Vector3.ONE * 0.9), pos)
+		_leaf_groups.append(_bake_leaf_template(xf, template, ramp, 0.0, _leaf_mods()))
+		_leaf_ages.append(_t)
+		_register_leaf_age(_t)
+	return true
+
+
+# After tissue loss: drop eaten/trimmed nodes, release the buds under the cut
+# (two shoots from a pinched stem) and let a cut-back canopy stem grow again.
+func _sync_skeleton_after_loss() -> void:
+	var stem_top: float = -INF
+	for h in voxels:
+		if h != null and h.alive and not _aux_handles.has(h):
+			stem_top = maxf(stem_top, h.local_pos.y)
+	if stem_top == -INF:
+		for group in _leaf_groups:
+			for h in group:
+				if h != null and (h as VoxelBatch.Handle).alive:
+					stem_top = maxf(stem_top, (h as VoxelBatch.Handle).local_pos.y)
+	if stem_top == -INF:
+		stem_top = 0.0
+	var alive_trail: int = _alive_trail_count()
+	var removed: int = skeleton.truncate(stem_top + VOXEL_SIZE * 0.45, alive_trail)
+	if removed <= 0:
+		return
+	var kept: Array = []
+	for h in _trail_handles:
+		if h != null and (h as VoxelBatch.Handle).alive:
+			kept.append(h)
+	_trail_handles = kept
+	if is_dying:
+		return
+	# Buds queued on nodes that this loss removed are gone with them.
+	var live_pending: Array[int] = []
+	for b in _pending_axillary:
+		if b < skeleton.node_count():
+			live_pending.append(b)
+	_pending_axillary = live_pending
+	for bud in skeleton.release_buds_below_cut(2):
+		if _pending_axillary.size() < MAX_PENDING_TRIM_NODES:
+			_pending_axillary.append(bud)
+	if life_phase == LifePhase.CANOPY and not has_flower:
+		_reconcile_life_phase_from_geometry()
+
+
+func _restore_skeleton_extras(saved: Variant) -> void:
+	if not _is_stem_skeleton:
+		skeleton.end_replay()
+		return
+	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
+	for _i in skeleton.replay_trail_count():
+		if not _grow_trailing_internode():
+			break
+	for node_i in PlantSkeleton.saved_shoots(saved):
+		if skeleton.release_bud_at(node_i):
+			_grow_axillary_shoot(ramp, node_i)
+	skeleton.end_replay()
+
+
+# Height the chain is measured over: the built stem, or for strap blades the
+# span their flex weights were normalised to (see _leaf_flex_weight).
+func _chain_height() -> float:
+	if _is_stem_skeleton:
+		return maxf(_get_stem_top(), 0.0)
+	var span: float = float(maxi(max_height, leaf_length)) * VOXEL_SIZE
+	return clampf(span, 0.0, maxf(water_surface_y - global_position.y, VOXEL_SIZE))
+
+
+func _live_leaf_count() -> int:
+	var n: int = 0
+	for group in _leaf_groups:
+		for h in group:
+			if h != null and (h as VoxelBatch.Handle).alive:
+				n += 1
+				break
+	return n
+
+
+# Crypt / sword crown: every leaf rises from the same basal point, set round
+# it by the golden angle; the crown lifts only slightly as it ages.
+func _rosette_crown_pos() -> Vector3:
+	var n: int = current_height
+	var j := Vector3(_node_jitter(n, VOXEL_SIZE * 0.12), 0.0,
+		_node_jitter(n + 7919, VOXEL_SIZE * 0.12))
+	return _clamp_growth_offset(j + Vector3(0.0,
+		VOXEL_SIZE * (0.3 + 0.03 * float(mini(n, 8))), 0.0))
+
+
+# First (outer) leaves splay wide; later inner leaves stand up. Shade lays
+# the whole crown flatter.
+func _rosette_pitch() -> float:
+	var k: float = clampf(float(current_height) / 10.0, 0.0, 1.0)
+	return -lerpf(0.95, 0.28, k) + _shade_pitch() * 0.6
+
+
+# Juvenile leaves are short; a mature crown puts up full-length leaves.
+func _rosette_leaf_scale() -> float:
+	return lerpf(0.6, 1.08, clampf(float(current_height) / 8.0, 0.0, 1.0))
+
+
+func _stem_stiffness() -> float:
+	var s: float = clampf(plant_age_s / 900.0, 0.0, 0.55)
+	if life_phase == LifePhase.SENESCENT or is_dying:
+		s += 0.3
+	return clampf(s, 0.0, 1.0)
+
+
+func _local_flow_at(pos: Vector3) -> Vector3:
+	var sim_v: Node = _find_sim()
+	if sim_v == null:
+		return Vector3.ZERO
+	var w: Node = sim_v.get_parent()
+	if w != null and w.has_method("sample_flow"):
+		return w.sample_flow(pos)
+	return Vector3.ZERO
+
+
+# Low-rate skeleton update (tropism cadence, ~2 Hz): phototropic bow, local
+# flow lean, and an occasional refresh of the height-dependent sway params.
+func _tick_skeleton_motion(step_s: float) -> void:
+	if not _chain_motion or (voxels.is_empty() and _leaf_groups.is_empty()):
+		return
+	var stem_h: float = _chain_height()
+	var light_xz := Vector2.ZERO
+	# Strap blades do not bow to the lamp; stems do.
+	if _is_stem_skeleton and not is_nan(_light_yaw_cache):
+		light_xz = Vector2(sin(_light_yaw_cache), cos(_light_yaw_cache))
+	skeleton.step_bend(
+		PlantSkeleton.phototropic_target(light_xz, _shade_leaf_factor(), stem_h), step_s, stem_h)
+	var flow: Vector3 = _local_flow_at(global_position + Vector3(0.0, stem_h * 0.6, 0.0))
+	var chain: Dictionary = PlantSkeleton.chain_sway(stem_h, _stem_stiffness(), flow, sway_amplitude)
+	_flow_lean = chain["flow_lean"]
+	_skeleton_motion_ticks += 1
+	if _skeleton_motion_ticks % 20 == 0:
+		_apply_sway_personality()
+
+
+# World-space rest pose for the chain shader: bow + flow lean + fish brush.
+# Pushed only when it moves, so a settled plant costs one compare a tick.
+func _push_chain_bend() -> void:
+	if not _chain_motion:
+		return
+	var stem_h: float = _chain_height()
+	var total: Vector2 = skeleton.rest_bend + _flow_lean + _brush_bend * stem_h * 0.10
+	total = total.limit_length(minf(stem_h * 0.16, 2.0))
+	if _chain_bend_pushed.is_finite() and total.distance_squared_to(_chain_bend_pushed) < 0.000009:
+		return
+	_chain_bend_pushed = total
+	for m in [_foliage_mat, _stem_mat, _senescence_mat]:
+		if m != null:
+			(m as ShaderMaterial).set_shader_parameter("chain_bend", total)
+
+
+# CPU mirror of the shader's rest pose, for rigid children (the bloom).
+func _chain_offset_local(local_y: float) -> Vector3:
+	if not _chain_motion or not _chain_bend_pushed.is_finite():
+		return Vector3.ZERO
+	var s: float = _leaf_flex_weight(local_y)
+	var shape: float = s * s * (3.0 - s) * 0.5
+	var w := Vector3(_chain_bend_pushed.x, 0.0, _chain_bend_pushed.y) * shape
+	return global_transform.basis.inverse() * w
+
+
+func _leaf_mature_end(idx: int) -> float:
+	# Stress and health shorten mature life — starving plants turn over faster.
+	var life_scale: float = lerpf(0.55, 1.0, clampf(_health_smooth, 0.0, 1.0))
+	return LEAF_EXPAND_S + LEAF_MATURE_S * life_scale * _lower_leaf_shade_life(idx)
+
+
+# Lower leaves on a shaded (or self-shading, tall) stem yellow and drop
+# early — the bare lower stem of a stem plant under a canopy.
+func _lower_leaf_shade_life(idx: int) -> float:
+	if not _is_stem_skeleton:
+		return 1.0
+	var n: int = _leaf_states.size()
+	if n < 6:
+		return 1.0
+	var canopy_pos: float = float(idx) / float(n - 1)
+	var self_shade: float = clampf(float(n - 8) / 16.0, 0.0, 1.0)
+	var shade: float = maxf(_shade_leaf_factor(), self_shade * 0.7)
+	var low: float = 1.0 - smoothstep(0.0, 0.35, canopy_pos)
+	return lerpf(1.0, 0.4, low * shade)
+
+
+func _young_leaf_color(base: Color) -> Color:
+	if red_potential > 0.3:
+		return base.lightened(0.22)
+	return Color(minf(base.r * 0.92 + 0.10, 1.0), minf(base.g * 1.22 + 0.10, 1.0),
+		base.b * 0.72, base.a)
+
+
+func _tint_leaf_youth(idx: int, st: Dictionary) -> void:
+	if idx < 0 or idx >= _leaf_groups.size() or _deficiency_active != "":
+		return
+	if bool(st.get("senescence_migrated", false)):
+		return
+	var youth: float = 1.0 - clampf(float(st.get("age_s", 0.0)) / YOUTH_TINT_S, 0.0, 1.0)
+	var paint: float = snappedf(youth, 0.2)
+	if is_equal_approx(paint, float(st.get("youth_paint", -1.0))):
+		return
+	st.youth_paint = paint
+	for hv in _leaf_groups[idx]:
+		var h: VoxelBatch.Handle = hv
+		if h != null and h.alive:
+			h.set_color(h.base_color.lerp(_young_leaf_color(h.base_color), paint * 0.6))
 
 
 # ---- Utility ----

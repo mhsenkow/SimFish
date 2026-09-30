@@ -27,6 +27,8 @@ const MindLexicon = preload("res://scripts/mind_lexicon.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
 const TankMind = preload("res://scripts/tank_mind.gd")
+const ColonyMind = preload("res://scripts/colony_mind.gd")
+const TankChronicle = preload("res://scripts/tank_chronicle.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
 const FishContinuity = preload("res://scripts/fish_continuity.gd")
 const SimRngScript = preload("res://scripts/sim_rng.gd")
@@ -443,6 +445,7 @@ func request_keeper_reply(f: Fish, result: Dictionary) -> String:
 	var line: String = String(request_creature_thought(f, "keeper_reply")).strip_edges()
 	if line == "" or line == "…":
 		return ""
+	line = MindConversation.shape_keeper_reply(f, line, str(result.get("text", "")))
 	MindConversation.note_reply(f, line, self)
 	emit_signal("fish_thought_spoke", f, line)
 	return line
@@ -1647,6 +1650,8 @@ func _tick_night_watch(dt: float) -> void:
 	tick_confession_cooldown(dt)
 	NightWatch.tick_sim(self, dt, _room_idle_s)
 	_tank_mind = TankMind.ensure(self)
+	# Idempotent: installs the chronicle watcher once the sim is live.
+	TankChronicle.attach(self)
 
 
 func note_luminous_farewell(f: Fish) -> void:
@@ -3802,9 +3807,9 @@ func _tick(dt: float) -> void:
 		_tick_plant_distance_bucketed(p, dt, plant_camera)
 		var bm: int = p.biomass()
 		plant_biomass += bm
-		var h_v: Variant = p.get("_health_smooth")
-		var hf: float = clampf(float(h_v), 0.0, 1.0) if h_v != null else 1.0
-		photo_bm += float(bm) * hf
+		# Typed member read (Plant declares _health_smooth) instead of a
+		# by-name get() per plant per tick.
+		photo_bm += float(bm) * clampf(p._health_smooth, 0.0, 1.0)
 	_update_plant_far_batch(plant_camera, dt)
 	total_plant_biomass = plant_biomass + int(round(surface_plant_biomass))
 	total_photosynthetic_biomass = photo_bm + surface_plant_biomass
@@ -3830,18 +3835,18 @@ func _tick(dt: float) -> void:
 			* NUTRIENT_STRIP_INTERVAL
 		substrate.begin_root_footprint_refresh()
 		for p in plants:
-			if not is_instance_valid(p) or bool(p.get("is_epiphyte")):
+			if not is_instance_valid(p) or p.is_epiphyte:
 				continue
 			var pp: Vector3 = p.global_position
-			var root_mass: float = maxf(1.0, float(p.get("_root_count"))) \
-				* clampf(float(p.get("_health_smooth")), 0.05, 1.0)
+			var root_mass: float = maxf(1.0, float(p._root_count)) \
+				* clampf(p._health_smooth, 0.05, 1.0)
 			var radius_cells: int = clampi(int(float(p.biomass()) / 24.0), 0, 2)
 			substrate.register_root_footprint(
 				p.get_instance_id(), pp, radius_cells, root_mass)
 		substrate.end_root_footprint_refresh()
 		if strip > 0.0:
 			for p in plants:
-				if not is_instance_valid(p) or bool(p.get("is_epiphyte")):
+				if not is_instance_valid(p) or p.is_epiphyte:
 					continue
 				substrate.consume_root_uptake(
 					p.get_instance_id(), p.global_position,
@@ -4237,11 +4242,15 @@ func _tick(dt: float) -> void:
 	# 1.0 when biomass <=150 (sparse / cycling tank).
 	var plant_shortage: float = clampf((450.0 - float(plant_biomass)) / 300.0, 0.0, 1.0)
 	var w_shade: Node = get_parent()
+	# floater_coverage() walks every floater; nothing in this section adds or
+	# removes floaters, so read it once for the bloom, spawn and kind checks.
+	var has_shade_cov: bool = w_shade != null and w_shade.has_method("floater_coverage")
+	var shade_cov: float = float(w_shade.floater_coverage()) if has_shade_cov else 0.0
 	# Combined bloom pressure. Multiplicative: needs BOTH high nutrients AND
 	# low plant biomass to bloom. Floaters and snails suppress runaway blooms.
 	var bloom_pressure: float = n_pressure * plant_shortage
-	if w_shade != null and w_shade.has_method("floater_coverage"):
-		bloom_pressure *= 1.0 - float(w_shade.floater_coverage()) * 0.45
+	if has_shade_cov:
+		bloom_pressure *= 1.0 - shade_cov * 0.45
 	# Grazer cascade (#49): snails, shrimp, and herbivorous fish all crop algae,
 	# so adding or removing a grazer guild visibly shifts the bloom — a trophic
 	# cascade the player can watch.
@@ -4315,8 +4324,8 @@ func _tick(dt: float) -> void:
 	# Surface floating plants shade the water column and soak up the same
 	# nutrients algae want, so a duckweed mat strongly suppresses algae blooms
 	# (the real Walstad "float plants to beat algae" trick).
-	if w_shade != null and w_shade.has_method("floater_coverage"):
-		spawn_chance *= (1.0 - float(w_shade.floater_coverage()) * 0.7)
+	if has_shade_cov:
+		spawn_chance *= (1.0 - shade_cov * 0.7)
 	spawn_chance *= (1.0 - algae_crowding * 0.88)
 	var sp_rng: RandomNumberGenerator = rng.stream(SimRngScript.STREAM_SPAWN)
 	if (below_floor or sp_rng.randf() < spawn_chance) and algae_root != null:
@@ -4329,9 +4338,7 @@ func _tick(dt: float) -> void:
 		#   GSA appears on the glass walls under bright light.
 		#   CLUSTER is the default substrate biofilm clump.
 		var w := get_parent()
-		var floater_cov: float = 0.0
-		if w != null and w.has_method("floater_coverage"):
-			floater_cov = float(w.floater_coverage())
+		var floater_cov: float = shade_cov if has_shade_cov else 0.0
 		var kind: int = Algae.AlgaeKind.CLUSTER
 		var pick_kind: float = sp_rng.randf()
 		# Young-tank diatom phase (#52): a brand-new tank reliably runs a brown
@@ -4590,6 +4597,8 @@ func _tick(dt: float) -> void:
 					_play_ambient_death(prey, "predation")
 				else:
 					_play_ambient_event("eat", -1.0, _node_species(actor), actor.position)
+				ColonyMind.note_predation(self, actor, prey)
+				TankChronicle.note_predation(self, actor, prey)
 				# Visual flash at the bite — short bright burst at the
 				# prey's last position. The audio event covers the beat;
 				# the flash covers the eye. Spawned BEFORE queue_free
@@ -4629,6 +4638,7 @@ func _tick(dt: float) -> void:
 				consumed[snail] = true
 				_play_ambient_event("eat", -1.0, _node_species(actor), actor.position)
 				_spawn_waste(snail.global_position, 0.18, WasteParticle.KIND_FISH)
+				ColonyMind.note_predation(self, actor, snail)
 				snail.queue_free()
 
 		# Specialist grazing - corydoras / algae_grazer cropping algae clusters.
@@ -6537,6 +6547,7 @@ func save_state() -> Dictionary:
 			"fish_legacies": _fish_legacies.duplicate(true),
 			"voice_caches": _export_voice_caches(),
 			"tank_mind": TankMind.to_dict(self),
+			"colony_mind": ColonyMind.to_dict(self),
 			"night_runtime": _export_night_runtime(),
 			"away_dream_count": _away_dream_count,
 		},
@@ -6715,6 +6726,7 @@ func load_state(d: Dictionary) -> void:
 		_fish_legacies = (saved_fl as Array).duplicate(true)
 	_import_voice_caches(sim_d.get("voice_caches", {}))
 	TankMind.from_dict(self, sim_d.get("tank_mind", null))
+	ColonyMind.from_dict(self, sim_d.get("colony_mind", null))
 	_tank_mind = TankMind.ensure(self)
 	_import_night_runtime(sim_d.get("night_runtime", null))
 	_away_dream_count = int(sim_d.get("away_dream_count", 0))

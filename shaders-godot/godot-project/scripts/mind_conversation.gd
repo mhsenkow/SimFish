@@ -325,6 +325,97 @@ static func note_reply(f: Fish, line: String, sim: Node) -> void:
 		f._thought_stream = inner
 
 
+# Last-mile shaping of a template keeper reply (never touches LLM output that
+# arrives later through the async path). Two jobs:
+#   1. Echo a word the fish actually understood (MindLexicon) when the line
+#      does not already reference the keeper's words — so the reply reads as
+#      an answer to *this* line, not a canned ack.
+#   2. Never say the same line twice in a row: if it matches one of this
+#      fish's recent replies, reroll into a grounded variant built from the
+#      fish's real state.
+static func shape_keeper_reply(f: Fish, line: String, keeper_text: String = "") -> String:
+	var out: String = line.strip_edges()
+	if f == null or out == "" or out == "…":
+		return out
+	if keeper_text == "" and f.get("_keeper_pending") is Dictionary:
+		keeper_text = str((f._keeper_pending as Dictionary).get("keeper_text", ""))
+	var echo: String = understood_word(f, keeper_text)
+	var recent: Array = recent_fish_lines(f, 3)
+	if recent.has(out):
+		var alts: Array = _reroll_variants(f, echo)
+		var fresh: Array = alts.filter(func(a): return not recent.has(a))
+		if not fresh.is_empty():
+			out = str(fresh[randi() % fresh.size()])
+		else:
+			out = "%s… again" % out
+	if echo != "" and not out.to_lower().contains(echo):
+		out = "%s… %s" % [echo, out]
+	return out.substr(0, 96)
+
+
+# First keeper token this fish has paired in its lexicon, "" if none.
+static func understood_word(f: Fish, keeper_text: String) -> String:
+	if f == null or keeper_text.strip_edges() == "":
+		return ""
+	var clean: String = keeper_text.to_lower()
+	for ch in [".", ",", "!", "?", ";", ":", "\"", "'"]:
+		clean = clean.replace(ch, " ")
+	for tok in clean.split(" ", false):
+		if MindLexicon.comprehend(f, tok):
+			return MindLexicon.normalize_token(tok)
+	return ""
+
+
+static func recent_fish_lines(f: Fish, n: int = 3) -> Array:
+	var out: Array = []
+	var ring: Array = ensure_ring(f)
+	for i in range(ring.size() - 1, -1, -1):
+		var e: Variant = ring[i]
+		if e is Dictionary and str((e as Dictionary).get("role", "")) == "fish":
+			out.append(str((e as Dictionary).get("text", "")))
+			if out.size() >= n:
+				break
+	return out
+
+
+static func _reroll_variants(f: Fish, echo: String) -> Array:
+	var alts: Array = []
+	if f.hunger > 0.6:
+		alts.append_array(["belly's light — food?", "hungry. still hungry", "looking up for flakes"])
+	if f.stress > 0.45 or f.spooked > 0.3:
+		alts.append_array(["fins tight… stay slow", "not settled yet", "the water feels heavy"])
+	if f._asleep:
+		alts.append_array(["…half asleep", "mm… dark, drifting"])
+	if f.familiarity > 0.5:
+		alts.append_array(["I know your shape", "you again — good", "your voice, yes"])
+	alts.append_array(["I hear you", "listening", "here, near the glass", "mm. yes"])
+	if echo != "":
+		alts.append("%s — I know that one" % echo)
+	return alts
+
+
+# How close this fish feels to the keeper, 0..1, from real state: never below
+# its familiarity, lifted by curiosity about the keeper and by care trust
+# (MindKeeperModel). `care_trust` < 0 reads it from the keeper model.
+static func intimacy_for(f: Fish, care_trust: float = -1.0) -> float:
+	if f == null:
+		return 0.0
+	var fam: float = clampf(f.familiarity, 0.0, 1.0)
+	var v: float = maxf(fam, fam * 0.7 + clampf(f._curiosity_about_keeper, 0.0, 1.0) * 0.3)
+	if care_trust < 0.0:
+		care_trust = float(MindKeeperModel.ensure(f).get("care_trust", 0.0))
+	v = maxf(v, fam * 0.6 + clampf(care_trust, 0.0, 1.0) * 0.4)
+	return snappedf(clampf(v, 0.0, 1.0), 0.01)
+
+
+# Fill ctx["intimacy"] when a keeper-turn context was built without
+# enrich_context (or with the placeholder 0.0).
+static func ensure_intimacy(ctx: Dictionary, f: Fish) -> Dictionary:
+	if f != null and float(ctx.get("intimacy", 0.0)) <= 0.0:
+		ctx["intimacy"] = intimacy_for(f)
+	return ctx
+
+
 static func enrich_context(ctx: Dictionary, f: Fish, sim: Node = null) -> Dictionary:
 	var out: Dictionary = ctx.duplicate(true)
 	out["dialogue_recent"] = dialogue_snippet(f)
@@ -335,12 +426,15 @@ static func enrich_context(ctx: Dictionary, f: Fish, sim: Node = null) -> Dictio
 		out["keeper_misheard"] = str(f._keeper_pending.get("keeper_misheard", ""))
 	var convo: Dictionary = ensure_convo(f)
 	out["conversation_focus"] = str(convo.get("focus", ""))
-	out["intimacy"] = clampf(f.familiarity * 0.7 + f._curiosity_about_keeper * 0.3, 0.0, 1.0)
 	out["deliberation_hint"] = deliberation_reply_hint(f)
 	var fading: String = _fading_word_hint(f)
 	if fading != "":
 		out["fading_word"] = fading
 	out = MindKeeperModel.merge_context(out, f, sim)
+	# After merge_context so care_trust is available; always set — the
+	# narrator's greeting/reply templates read ctx["intimacy"], and
+	# MindContext.build_for_keeper_turn otherwise hands them a flat 0.0.
+	out["intimacy"] = intimacy_for(f, float(out.get("care_trust", -1.0)))
 	var arc: String = bond_arc_label(f)
 	if arc != "":
 		out["bond_arc"] = arc

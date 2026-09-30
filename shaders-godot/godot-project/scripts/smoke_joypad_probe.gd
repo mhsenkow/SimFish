@@ -6,7 +6,8 @@ extends SceneTree
 
 func _initialize() -> void:
 	await process_frame
-	GamepadBindings.ensure() if false else null
+	if false:
+		GamepadBindings.ensure()
 	var Bindings = preload("res://scripts/gamepad_bindings.gd")
 	Bindings.ensure()
 

@@ -148,6 +148,32 @@ uniform float duotone_amount : hint_range(0.0, 1.0) = 0.0;
 // 0 = off (the pre-2026-09-13 behaviour). 1 = every output pixel is a palette
 // entry. Fractional values mix toward the snapped colour.
 uniform float palette_lock : hint_range(0.0, 1.0) = 0.0;
+// ---- Hue-keeping quantize (2026-09-23 visual pass) ----
+// The raw SubViewport frame is a harmonious LOW-saturation picture: slate-teal
+// water (~#60747a), a taupe wall (~#867b6f), sage plants (~#83987e) seen
+// through a water wash. The palette's rungs sit much further out in chroma.
+// Picked by plain RGB distance inside a hard bank, those pixels landed on
+// whichever rung was closest in VALUE: the water became two lavender greys
+// (67% of the tank on the hero angle), the sage plants flickered grey/green
+// per pixel across the neutral/cool bank boundary, and the wall dithered
+// orange against lavender. Measured on a captured raw frame and re-quantized
+// offline, all three came from the same three causes, fixed here:
+//
+//   quantize_vibrance      lifts low/mid chroma before the search so a
+//                          washed-out plant still reads as a plant; already
+//                          saturated fauna are left alone.
+//   quantize_chroma_weight the main search uses pal_dist (hue error weighted
+//                          over value error) instead of RGB distance, so
+//                          dither walks along value, not across hue.
+//   bank_soft_penalty      the bank lock becomes a cost, not a wall: a pixel
+//                          can take an out-of-bank rung when it is much the
+//                          better hue match, and there is no hard seam for a
+//                          surface straddling two banks to flicker across.
+// 0 / 0 / (any, with palette_bank_lock off) returns the old behaviour.
+uniform float quantize_vibrance : hint_range(0.0, 1.5) = 0.5;
+uniform float quantize_chroma_weight : hint_range(0.0, 8.0) = 5.0;
+uniform float bank_soft_penalty : hint_range(0.0, 0.1) = 0.01;
+uniform float tint_water_keep : hint_range(0.0, 1.0) = 0.6;
 
 vec3 palette_color(int idx) {
 	float u = (float(idx) + 0.5) / float(palette_size);
@@ -189,6 +215,15 @@ float pal_dist(vec3 a, vec3 b) {
 	float dl = la - lb;
 	vec3 dc = (a - vec3(la)) - (b - vec3(lb));
 	return dl * dl + dot(dc, dc) * PAL_CHROMA_WEIGHT;
+}
+
+// Same metric with a caller-chosen chroma weight, for the main quantize.
+float pal_dist_w(vec3 a, vec3 b, float chroma_w) {
+	float la = luma_of(a);
+	float lb = luma_of(b);
+	float dl = la - lb;
+	vec3 dc = (a - vec3(la)) - (b - vec3(lb));
+	return dl * dl + dot(dc, dc) * chroma_w;
 }
 
 // Nearest two palette entries to `c`, ordered-dithered between them by
@@ -318,7 +353,25 @@ void fragment() {
 	src = mix(src, src * vec3(0.94, 0.98, 1.06), max(-seasonal_warmth, 0.0));
 	// Time-of-day tint. Multiplicative so values that were already darkened
 	// by night lighting in 3D don't double-darken; the tint just shifts hue.
-	src *= palette_tint;
+	// The time-of-day tint is light colour. Light that reaches the eye through
+	// water has lost its red on the way, so an amber dusk warms what the lamp
+	// and the room touch but does not turn the water itself to tea: on cool
+	// (blue-green dominant) pixels the tint keeps its brightness change and
+	// sheds `tint_water_keep` of its hue shift. Without it the dusk grade took
+	// the whole tank to one sepia (measured: raw water #7d9699 -> taupe).
+	float tw_cool = clamp(((src.g + src.b) * 0.5 - src.r) / 0.08, 0.0, 1.0);
+	vec3 tint_eff = mix(palette_tint, vec3(luma_of(palette_tint)), tw_cool * tint_water_keep);
+	src *= tint_eff;
+	// Vibrance: widen low/mid chroma before any heuristic reads it. Before the
+	// health grade so a stressed tank still loses its colour on top of this.
+	if (quantize_vibrance > 0.001) {
+		float v_l = luma_of(src);
+		float v_mx = max(max(src.r, src.g), src.b);
+		float v_mn = min(min(src.r, src.g), src.b);
+		float v_sat = (v_mx - v_mn) / max(v_mx, 0.001);
+		float v_k = 1.0 + quantize_vibrance * (1.0 - smoothstep(0.10, 0.60, v_sat));
+		src = max(vec3(v_l) + (src - vec3(v_l)) * v_k, vec3(0.0));
+	}
 	// ---- Health-driven mood grade (VISUAL_DIRECTIONS #14) ----
 	//
 	// This used to be a 4% cool shift and at most a 38% desaturation, driven by
@@ -437,11 +490,18 @@ void fragment() {
 	} else if (shader_perf_tier >= 0.5) {
 		search_cap = min(palette_size, 32);
 	}
+	// Soft lock: out-of-bank rungs pay a penalty instead of being skipped.
+	// With the penalty at 0 the hard lock (plus its bridge below) still applies.
+	bool soft_lock = locked && bank_soft_penalty > 0.0001;
 	for (int i = 0; i < 64; i++) {
 		if (i >= search_cap) break;
-		if (locked && (i < bank_start || i >= bank_end)) continue;
+		bool out_of_bank = locked && (i < bank_start || i >= bank_end);
+		if (out_of_bank && !soft_lock) continue;
 		vec3 p = palette_color(i);
-		float d = dot(src - p, src - p);
+		float d = (quantize_chroma_weight > 0.001)
+			? pal_dist_w(src, p, quantize_chroma_weight)
+			: dot(src - p, src - p);
+		if (out_of_bank) d += bank_soft_penalty;
 		if (d < best) {
 			best2 = best; bi = ai;
 			best  = d;    ai = i;
@@ -449,26 +509,31 @@ void fragment() {
 			best2 = d; bi = i;
 		}
 	}
-	// Adjacent-bank bridge when runner-up is a poor match (#18).
-	if (locked && best2 > best * 1.06) {
+	// Adjacent-bank bridge when runner-up is a poor match (#18). Hard lock only
+	// — the soft lock has already weighed every rung.
+	if (locked && !soft_lock && best2 > best * 1.06) {
 		int lo = max(bank_start - bank_size, 0);
 		int hi = min(bank_end + bank_size, palette_size);
 		for (int j = lo; j < hi; j++) {
 			if (j >= bank_start && j < bank_end) continue;
 			vec3 p = palette_color(j);
-			float d = dot(src - p, src - p);
+			float d = (quantize_chroma_weight > 0.001)
+				? pal_dist_w(src, p, quantize_chroma_weight)
+				: dot(src - p, src - p);
 			if (d < best2) {
 				best2 = d; bi = j;
 			}
 		}
 	}
 	// Rare: still no runner-up — scan full palette once.
-	if (locked && best2 > 1e8) {
+	if (locked && !soft_lock && best2 > 1e8) {
 		for (int j = 0; j < 64; j++) {
 			if (j >= palette_size) break;
 			if (j == ai) continue;
 			vec3 p = palette_color(j);
-			float d = dot(src - p, src - p);
+			float d = (quantize_chroma_weight > 0.001)
+				? pal_dist_w(src, p, quantize_chroma_weight)
+				: dot(src - p, src - p);
 			if (d < best2) {
 				best2 = d; bi = j;
 			}

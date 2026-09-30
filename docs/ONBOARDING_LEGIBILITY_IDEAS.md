@@ -270,6 +270,28 @@ polish that make the whole thing feel like a kind, finished product.
 
 ---
 
+## K. The tank talks first (implemented)
+
+The tank talk channel — with no fish followed, a "the tank" box sits bottom-left
+and Enter focuses it; the tank answers in its "we" voice and a few fish reply —
+had no way to be discovered. Now, **once per player**, after ~75 s of settled,
+uncluttered live time (not during the walkthrough, a card, a nudge, the creature
+designer, or while following a fish), the tank mind speaks first:
+*"…you're watching us. press enter, and speak."* The box pulses once and the
+tank's low breath plays.
+
+- Logic: `scripts/tank_talk_prompt.gd` (pure, smoke-tested in
+  `smoke_voice_onboarding.gd`); driver: `onboarding_runtime.gd`.
+- Persisted in the onboarding global prefs: `tank_talk_prompted` (never twice)
+  and `has_spoken_to_tank` (set the first time the keeper speaks to the tank,
+  prompted or not — a player who found it alone never sees the prompt).
+- Voice-off (`sentience_voice_off`) holds it; so does the channel being hidden.
+- Sound: the tank's line plays a soft low "breath", fish replies a tiny bubble
+  babble pitched by species size and brightened by boldness
+  (`scripts/tank_voice_audio.gd`, via `AmbientAudio.play_voice`).
+
+---
+
 ## Suggested first slice (highest legibility-per-hour)
 
 If Cursor implements in waves, this order front-loads comprehension:
@@ -300,3 +322,6 @@ already exist — the cheapest possible multiplier on the whole codebase.
 - Nudges never fire on a thriving tank, never stack, and back off when ignored.
 - Colorblind mode: no state is conveyed by color alone.
 - Returning after a day shows a warm, accurate "while you were away" recap.
+- Fresh profile, no fish followed, leave the tank alone ~75 s: the tank says
+  "…you're watching us. press enter, and speak." once, the box pulses; after
+  speaking to the tank (or after that one prompt) it never appears again.

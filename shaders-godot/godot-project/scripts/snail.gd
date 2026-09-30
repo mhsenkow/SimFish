@@ -8,6 +8,7 @@ extends Node3D
 
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const ColonyMind = preload("res://scripts/colony_mind.gd")
 
 @export var wall_normal: Vector3 = Vector3.RIGHT
 @export var wall_min: Vector3 = Vector3(-7.6, 2.0, -3.6)
@@ -1208,6 +1209,13 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 	# any explicit "go to the wafer" rule, and it costs one group scan.
 	if best == null:
 		_pursuing_waste = false
+		# Colony feast: a melting plant draws the congregation in.
+		var feast: Vector3 = ColonyMind.snail_feast_pull(sim, global_position)
+		var feast_dir := Vector2(feast.dot(tangent), feast.dot(bitangent))
+		if feast_dir.length() > 0.05:
+			_steer_direction(feast_dir.normalized(), dt)
+			_paused = false
+			return
 		_follow_feeding_neighbour(tangent, bitangent, dt)
 		return
 	# Compare in global space consistently — both endpoints in global, so
@@ -1487,6 +1495,9 @@ func _try_descend_to_substrate() -> bool:
 	if global_position.y > substrate_y + 0.18:
 		return false
 	if randf() > WALL_TRANSITION_CHANCE:
+		return false
+	# In bad water the colony stays on the glass, heading up, not down.
+	if randf() < ColonyMind.snail_surface_bias(_get_sim()):
 		return false
 
 	# Commit the transition.
@@ -2411,6 +2422,11 @@ func _choose_new_direction() -> void:
 	# we get here we've either eaten the target or lost it.
 	_pursuing_waste = false
 	_t_until_turn = randf_range(TURN_INTERVAL_MIN, TURN_INTERVAL_MAX)
+	var colony_sim: Node = _get_sim()
+	# Colony stress: the congregation pulls into its shells together.
+	if randf() < ColonyMind.snail_withdraw(colony_sim) * 0.35:
+		_clamped = true
+		_clamp_grace_remaining = CLAMP_RELEASE_GRACE * 4.0
 	_paused = randf() < PAUSE_CHANCE
 	if _paused:
 		# Cap the pause to a short interval so it reads as "resting" not
@@ -2420,7 +2436,8 @@ func _choose_new_direction() -> void:
 		_t_until_turn = randf_range(PAUSE_DURATION_MIN, minf(PAUSE_DURATION_MAX, 1.8))
 		return
 	# REAL_TANK_FIDELITY #108 — occasional climb toward surface for air (pulmonate).
-	if absf(wall_normal.y) < 0.55 and randf() < 0.08:
+	# Bad water (low O2 / ammonia) sends the colony up — a real keeper's tell.
+	if absf(wall_normal.y) < 0.55 and randf() < 0.08 + ColonyMind.snail_surface_bias(colony_sim) * 0.7:
 		_direction = Vector2(0.0, 1.0)
 		_t_until_turn = randf_range(2.5, 5.0)
 		return

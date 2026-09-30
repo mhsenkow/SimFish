@@ -188,7 +188,7 @@ void fragment() {
 
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
-	col = apply_water_column(col, v_world_pos.y, length(VERTEX));
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1). Emissive
 	// fixtures opt out: a lamp is not lit by itself, and dimming the one

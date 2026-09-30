@@ -239,12 +239,15 @@ const SCENARIOS: Array[Dictionary] = [
 		"id": "polyp_lab",
 		"name": "Polyp Biosphere",
 		"tagline": "Spherical bowl · NO fish · hydra colonies + clams + shrimp",
-		"body": "Speculative dome biosphere — a literal sphere tank, no fish at all. The detrital loop IS the entertainment: dense cherry shrimp colony, filter-feeding clams in the substrate, and freshwater hydra polyps (real Hydra viridis-style organisms) seeded as the sessile centerpiece. Eco-complete floor, no equipment flow, neutral light. Watch the bloom-and-crash cycles instead of the fauna drama.",
+		"body": "Speculative dome biosphere — a literal sphere tank, no fish at all. The detrital loop IS the entertainment: dense cherry shrimp colony, filter-feeding clams in the substrate, and freshwater hydra polyps (real Hydra viridis-style organisms) seeded as the sessile centerpiece. Eco-complete floor, one gentle airline and nothing else, neutral light. Watch the bloom-and-crash cycles instead of the fauna drama.",
 		"accent_color": Color8(180, 230, 140),
 		"config": {
 			"tank_preset": "polyp_lab",
 			"substrate_type": "eco_complete",
-			"aeration_type": "none",
+			# A single gentle airline. With no aeration the 24-shrimp colony
+			# sat on the 0.24 dawn O2 floor every night of a 3-day soak.
+			"aeration_type": "stick",
+			"aeration_strength": 0.3,
 			"tank_shape": "sphere",
 			"tank_half_w": 6.5,
 			"tank_half_d": 6.5,
@@ -395,7 +398,10 @@ const SCENARIOS: Array[Dictionary] = [
 		"config": {
 			"tank_preset": "nano_reef",
 			"substrate_type": "ocean_sand",
-			"aeration_type": "none",
+			# "Minimal" aeration, not none: unaerated, the cube hit the 0.24 O2
+			# floor every dawn and the clownfish lived in the hypoxia band.
+			"aeration_type": "stick",
+			"aeration_strength": 0.35,
 			"tank_shape": "cube",
 			"tank_half_w": 5.5,
 			"tank_half_d": 5.5,
@@ -408,7 +414,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"co2_level": 0.0,
 			"light_spectrum": 0.20,
 			"cycle_start_mode": "established",
-			"light_warmth": 0.82,
+			# Warm enough to teach bleaching (turn the heater on or push
+			# warmth up and it goes), but at 0.82 it bleached to 0.93 on its
+			# own within a day of a fresh tank.
+			"light_warmth": 0.74,
 			"heater_enabled": false,
 			"camera_yaw": -0.90,
 			"camera_pitch": 0.26,

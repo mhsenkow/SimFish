@@ -23,6 +23,8 @@
 class_name TrumpetSnail
 extends Node3D
 
+const ColonyMind = preload("res://scripts/colony_mind.gd")
+
 
 const SHELL_HEIGHT: float = 0.18
 const SHELL_BASE_RADIUS: float = 0.05
@@ -89,7 +91,9 @@ func _process(dt: float) -> void:
 	# Emergence cycle — surface at night, bury during the day. Real MTS
 	# is photophobic; coming out at night is the easy-to-read signal.
 	var dl: float = SimGate.daylight(sim, 1.0)
-	_is_emerged = dl < 0.35
+	# ...and by day too when the substrate collective reads bad water: MTS
+	# surfacing en masse in daylight is a classic low-O2 / ammonia tell.
+	_is_emerged = dl < 0.35 or ColonyMind.substrate_emerge(sim)
 	var visible_depth: float = -SURFACE_EMERGE_DEPTH if _is_emerged else -BURIED_EMERGE_DEPTH
 	# Lerp the shell Y toward the target depth so the surface/burrow
 	# transition is smooth, not a teleport.

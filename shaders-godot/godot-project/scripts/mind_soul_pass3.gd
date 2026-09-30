@@ -87,7 +87,7 @@ static func tick(f, sim, _ms, dt: float) -> void:
 	_tick_play(f, sim, dt)
 	_tick_tank_theme(f, s, sim)
 	_tick_felt_survey(f, s, sim, dt)
-	_update_pci(f, s)
+	_update_pci(f, s, dt)
 	f._soul_mind = s
 
 
@@ -678,7 +678,24 @@ static func _tick_felt_survey(f, s: Dictionary, sim, dt: float) -> void:
 			PackedStringArray(["felt_survey", "keeper"]))
 
 
-static func _update_pci(f, s: Dictionary) -> void:
+# perturb_and_measure runs three bind_moments plus four extra affect/protoself
+# ticks — ~150 us/fish, which made it the single most expensive piece of the
+# main-thread mind at every mind tick. pci_cache is a slow diagnostic readout
+# (pci_score), so refresh it every PCI_PERIOD_S, phase-staggered per fish.
+const PCI_PERIOD_S: float = 4.0
+
+
+static func _update_pci(f, s: Dictionary, dt: float) -> void:
+	var t: float
+	if s.get("pci_t") == null:
+		t = PCI_PERIOD_S * MindTick.phase01(str(f.id))
+	else:
+		t = float(s["pci_t"])
+	t += dt
+	if t < PCI_PERIOD_S:
+		s["pci_t"] = t
+		return
+	s["pci_t"] = fmod(t, PCI_PERIOD_S)
 	s["pci_cache"] = perturb_and_measure(f)
 
 

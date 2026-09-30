@@ -8,6 +8,7 @@ extends Node
 
 const _SynthRingBuffer = preload("res://scripts/synth_ring_buffer.gd")
 const _PotatoAmbientBed = preload("res://scripts/potato_ambient_bed.gd")
+const _TankVoiceAudio = preload("res://scripts/tank_voice_audio.gd")
 
 const SAMPLE_RATE: int = 22050
 
@@ -25,8 +26,14 @@ const SAMPLE_RATE: int = 22050
 # than emerging from six multiplications. AIR is trimmed hardest because it
 # measured 16 dB under the synth, which made the spacious layer - the whole
 # point of an ambient bed - inaudible.
-const BUS_TRIM_DRUMS: float = 4.2
-const BUS_TRIM_SYNTH: float = 6.5
+# Drums were trimmed x4.2 (+12.5 dB) - that, plus EDM hat/shaker defaults,
+# is what made the percussion "tsh tsh tsh" sit on top of the whole bed. A
+# lofi bed wants its drums felt, well under the pads: x2.0 (+6 dB).
+const BUS_TRIM_DRUMS: float = 2.0
+# Synth x9.0 (was 6.5): the lofi defaults removed the lead/risers that used to
+# carry a lot of the level, so the pads are brought up to keep the bed near
+# -35 dBFS RMS (measured with dev/audio_probe.tscn).
+const BUS_TRIM_SYNTH: float = 9.0
 const BUS_TRIM_AIR: float = 34.0
 const DELAY_LEN: int = 4096
 const MAX_SAMPLES_PER_FRAME: int = 512
@@ -278,6 +285,7 @@ var _pad_phases: Array[float] = [0.0, 0.0, 0.0]
 var _lpf_arp: float = 0.0
 var _lpf_pad: float = 0.0
 var _lpf_hat: float = 0.0
+var _lpf_hat2: float = 0.0
 var _lpf_master: float = 0.0
 var _lfo_phase: float = 0.0
 var _delay_buf: PackedFloat32Array = PackedFloat32Array()
@@ -385,6 +393,28 @@ func set_event_world_pos(pos: Vector3) -> void:
 	if tank_w < 0.5:
 		tank_w = 12.0
 	_event_pan = clampf(pos.x / maxf(tank_w * 0.5, 1.0), -1.0, 1.0)
+# ---- Voices, minds, and small real sounds ----
+# Creature voices (tank breath, fish babble) and event bloops live in a child
+# TankVoiceAudio; the bed ducks under a conversation, fades in on boot, and
+# takes its mood from the tank mind. See play_voice() and friends below.
+var _voices: Node = null
+var _talk_duck: float = 0.0        # 0 = bed at full, 1 = fully ducked
+var _talk_duck_t: float = 0.0      # seconds of conversation left to duck for
+const TALK_DUCK_DB: float = 3.5
+var _boot_fade: float = 0.0        # 0..1 over BOOT_FADE_S so launch never jumps in
+const BOOT_FADE_S: float = 4.0
+var _mind_valence: float = 0.0
+var _mind_arousal: float = 0.2
+var _mind_last_ignition: int = -1
+var _mood_bed: Dictionary = {}
+var _cached_pad_width: float = 1.0
+var _sc_target: float = 1.0        # sidechain duck target; _sidechain glides to it
+var _bass_gate: float = 0.0        # smoothed on/off for the alternating bass
+var _fauna_poll_t: float = 0.0
+var _gulp_seen: Dictionary = {}    # fish instance id -> true while mid-gulp-trip
+var _snail_attached: Dictionary = {}
+var _bloop_cd: Dictionary = {}     # kind -> seconds until it may sound again
+var _bubble_rise_t: float = 18.0
 var _vinyl_pop_env: float = 0.0
 var _vinyl_pop_freq: float = 1.0
 var _vinyl_pop_t: float = 0.0
@@ -549,6 +579,9 @@ func _ready() -> void:
 	_accent_t = 4.0
 	_rebuild_tonal_cache()
 	_refresh_mix_cache()
+	_voices = _TankVoiceAudio.new()
+	_voices.name = "TankVoices"
+	add_child(_voices)
 
 
 func _exit_tree() -> void:
@@ -720,8 +753,11 @@ func silence_immediately() -> void:
 	_pending.clear()
 	_synth_mutex.unlock()
 	_bubble_bursts.clear()
+	if _voices != null:
+		_voices.stop_all()
 	_kick_env = 0.0
 	_sidechain = 1.0
+	_sc_target = 1.0
 	_clap_env = 0.0
 	_shaker_env = 0.0
 	_tom_env = 0.0
@@ -805,6 +841,7 @@ func _refresh_environment() -> void:
 	var cfg := _cfg()
 	if cfg != null and cfg.has_method("current_substrate_profile"):
 		_env["saltwater"] = not not cfg.current_substrate_profile().get("is_saltwater", false)
+	_read_tank_mind()
 
 
 func _smooth_environment(dt: float) -> void:
@@ -1430,7 +1467,9 @@ func _bpm() -> float:
 	# Calm: narrower base tempo band and gentler metric modulation so BPM holds
 	# steady instead of drifting with every bloom / daylight / fish change.
 	# (Persona bpm_mul below still lets Lo-fi crawl and ABGT lift.)
-	var base: float = lerpf(85.0, 116.0, e * 0.5 + vit * tempo_follow * 0.4)
+	# Lofi band: 74-100 before persona/metric nudges (was 85-116, which sat
+	# a thriving tank at house tempo under what should be a slow bed).
+	var base: float = lerpf(74.0, 100.0, e * 0.5 + vit * tempo_follow * 0.4)
 	base *= lerpf(0.96, 1.05, bloom * _drive())
 	base *= lerpf(0.96, 1.04, dl)
 	base += clampf(fish * 0.2, 0.0, 5.0)
@@ -1536,22 +1575,25 @@ func _refresh_mix_cache() -> void:
 	_cached_pad_mix = _cfg_float("music_pad_mix", 0.78)
 	_cached_hat_mix = _cfg_float("music_hat_mix", 0.38)
 	var filter_bias: float = _cfg_float("music_filter_open", 0.38)
-	_cached_kick_gain = lerpf(0.14, 0.28, clampf(
+	_cached_kick_gain = lerpf(0.11, 0.21, clampf(
 		float(_smooth.get("fish", 0)) / 24.0 + float(_smooth.get("bloom", 0.0)) * 0.4, 0.0, 1.0))
-	_cached_bass_amp = 0.10 * _cached_bass_mix * lerpf(1.0, 0.68, float(_smooth.get("o2", 0.85)))
-	_cached_pad_level = lerpf(0.012, 0.026, clampf(float(_smooth.get("biomass", 0)) / 400.0, 0.0, 1.0))
+	# Measured before: 74% of the synth bus energy sat under 150 Hz (bass +
+	# sub) with the pads buried - boomy rather than warm. Bass steps back,
+	# pads step forward.
+	_cached_bass_amp = 0.06 * _cached_bass_mix * lerpf(1.0, 0.68, float(_smooth.get("o2", 0.85)))
+	_cached_pad_level = lerpf(0.022, 0.042, clampf(float(_smooth.get("biomass", 0)) / 400.0, 0.0, 1.0))
 	_cached_arp_level = lerpf(0.035, 0.08, vit) * _cached_arp_mix
 	_cached_hat_mul = lerpf(0.015, 0.04, float(_smooth.get("aeration", 0.0))) * _cached_hat_mix
 	_cached_lfo_hz = lerpf(0.03, 0.18, float(_smooth.get("aeration", 0.0)) * 0.5 + vit * 0.5)
 	_cached_arp_decay = lerpf(0.9984, 0.9945, _cached_energy)
-	var pad_cutoff: float = lerpf(500.0, 5200.0, float(_smooth.get("daylight", 1.0)))
+	var pad_cutoff: float = lerpf(500.0, 3600.0, float(_smooth.get("daylight", 1.0)))
 	pad_cutoff *= lerpf(0.85, 1.15, float(_smooth.get("bloom", 0.0)))
 	pad_cutoff *= lerpf(0.75, 1.35, filter_bias)
 	pad_cutoff *= lerpf(0.8, 1.3, sin(_lfo_phase * TAU) * 0.5 + 0.5)
 	_cached_pad_lpf_alpha = _lpf_alpha(pad_cutoff)
 	var arp_open: float = lerpf(0.25, 1.0, float(_smooth.get("bloom", 0.0)) * 0.6 + vit * 0.4)
 	arp_open = lerpf(arp_open * 0.65, arp_open, filter_bias)
-	var arp_cut: float = lerpf(520.0, 6200.0, arp_open * (sin(_lfo_phase * 0.5 * TAU) * 0.5 + 0.5))
+	var arp_cut: float = lerpf(520.0, 3800.0, arp_open * (sin(_lfo_phase * 0.5 * TAU) * 0.5 + 0.5))
 	_cached_arp_lpf_alpha = _lpf_alpha(arp_cut)
 	_cached_bass_active = int(float(_sample_clock) * _cached_beat_scale) % 2 == 0
 
@@ -1571,7 +1613,7 @@ func _refresh_mix_cache() -> void:
 	_cached_species_palette = _species_palette_cfg()
 	_cached_phrase_form = _phrase_form_key()
 	# Voices.
-	_cached_sub_bass_amp = lerpf(0.0, 0.075, _sub_bass_cfg())
+	_cached_sub_bass_amp = lerpf(0.0, 0.035, _sub_bass_cfg())
 	_cached_pwm_amp = lerpf(0.0, 0.06, _pwm_bass_cfg())
 	_cached_granular = _granular_cfg()
 	_cached_vocoder = _vocoder_cfg()
@@ -1594,7 +1636,16 @@ func _refresh_mix_cache() -> void:
 	_cached_pump_gate = _pump_gate_cfg()
 	# Pad pH detune: bad water quality detunes pad voices ±~30 cents.
 	var water_quality: float = clampf(o2 - tannins * 0.7, 0.0, 1.0)
-	_cached_pad_detune = 1.0 + (1.0 - water_quality) * 0.018 * _pad_ph_quality_amount()
+	# A constant ~6 cents of spread is the lofi warmth; bad water adds more.
+	_cached_pad_detune = 1.0035 + (1.0 - water_quality) * 0.018 * _pad_ph_quality_amount()
+	# The tank mind's mood: calm widens and softens, stress adds beating and
+	# motion (never treble). See MusicReactivity.mind_mood.
+	_mood_bed = MusicReactivity.mind_mood(_mind_valence, _mind_arousal)
+	_cached_pad_detune += float(_mood_bed["detune_add"])
+	_cached_pad_width = float(_mood_bed["width"])
+	_cached_lfo_hz *= float(_mood_bed["lfo_mul"])
+	_cached_bed_cutoff = minf(_cached_bed_cutoff * float(_mood_bed["cutoff_mul"]),
+		MusicReactivity.CUTOFF_WELL)
 	_cached_key_mod = _key_mod_cfg()
 	# Long-form: in-game day index drives key root shifts.
 	_maybe_modulate_key()
@@ -1830,7 +1881,9 @@ func _trigger_kick(velocity: float = 1.0) -> void:
 	var slam_mult: float = 0.85
 	if _phrase_state == PhraseState.DROP:
 		slam_mult = lerpf(0.7, 0.45, _cached_drop_intensity)
-	_sidechain = lerpf(0.72, 0.38, _cached_sidechain) * slam_mult
+	# Glide into the duck (see _render_trance_streams) instead of stepping
+	# the whole synth bus down in one sample - that step was an audible click.
+	_sc_target = lerpf(0.78, 0.5, _cached_sidechain) * slam_mult
 
 
 func _trigger_hat(velocity: float = 1.0) -> void:
@@ -1838,7 +1891,8 @@ func _trigger_hat(velocity: float = 1.0) -> void:
 	var mute_p: float = clampf(0.05 + _cached_humanize * 0.3, 0.0, 0.55)
 	if randf() < mute_p:
 		return
-	_hat_env = velocity * _hymn_duck
+	# Humanised velocity: no two brushes land the same.
+	_hat_env = velocity * _hymn_duck * (1.0 - _cached_humanize * randf_range(0.0, 0.5))
 
 
 func _trigger_clap(velocity: float = 1.0) -> void:
@@ -1854,8 +1908,10 @@ func _trigger_shaker_grain(velocity: float = 1.0) -> void:
 
 
 func _trigger_tom(pitch_hz: float = 140.0, velocity: float = 1.0) -> void:
-	_tom_env = velocity
-	_tom_phase = 0.0
+	# Re-zeroing the phase of a still-ringing tom is a click.
+	if _tom_env < 0.05:
+		_tom_phase = 0.0
+	_tom_env = maxf(_tom_env, velocity)
 	_tom_pitch = pitch_hz
 
 
@@ -2118,7 +2174,8 @@ func _advance_sequencer(quarter: int, _sixteenth: int, raw_16f: float) -> void:
 		if _cached_shaker_mix > 0.001:
 			var flow_n: float = float(_smooth.get("flow", 0.0))
 			if flow_n > 0.18 and (swung_16 % 3 == 0):
-				_trigger_shaker_grain(clampf(0.4 + flow_n * 0.6, 0.0, 1.0))
+				_trigger_shaker_grain(clampf(0.4 + flow_n * 0.6, 0.0, 1.0)
+					* (1.0 - _cached_humanize * randf_range(0.0, 0.5)))
 		# Pad-stab gating in BUILD: every 2 beats, gate open briefly; rest of
 		# the time, the pad is muted so the build feels punctuated.
 		if _phrase_state == PhraseState.BUILD and _cached_build_drama > 0.3:
@@ -2327,7 +2384,11 @@ func _mix_bubble_bursts() -> Vector2:
 		pitch_hz = maxf(90.0, pitch_hz * 0.9988)
 		var atk: float = smoothstep(0.0, 1.0, 1.0 - env)
 		var chirp: float = sin(phase * TAU) * env * env * atk
-		var airy: float = _noise_sample() * env * env * 0.11
+		var airy_raw: float = _noise_sample() * env * env * 0.11
+		var airy_lpf: float = float(b.get("lpf", 0.0))
+		airy_lpf += (airy_raw - airy_lpf) * 0.42   # ~2.2 kHz one-pole: fizz, not hiss
+		b["lpf"] = airy_lpf
+		var airy: float = airy_lpf
 		var sample: float = (chirp * 0.16 + airy) * amp
 		var pan_l: float = 1.0 - maxf(pan, 0.0) * 0.42
 		var pan_r: float = 1.0 + minf(pan, 0.0) * 0.42
@@ -2360,7 +2421,10 @@ func _render_trance_streams() -> void:
 	_advance_sequencer(quarter, sixteenth, sixteenth_f)
 
 	# Sidechain envelope decays toward 1 (released) between kicks.
-	_sidechain = lerpf(_sidechain, 1.0, 0.00085)
+	# The duck target releases slowly; _sidechain follows it with a ~3 ms
+	# attack so a kick never steps the bus down within one sample.
+	_sc_target = lerpf(_sc_target, 1.0, 0.00085)
+	_sidechain = lerpf(_sidechain, _sc_target, 0.015)
 	var sc: float = _sidechain
 	var vol: float = _cached_vol
 
@@ -2378,18 +2442,21 @@ func _render_trance_streams() -> void:
 		_kick_env *= 0.9994
 
 	if _hat_env > 0.001:
+		# Brushed, not ticked: two cascaded poles (12 dB/oct from ~2.4 kHz)
+		# so the noise has no fizz on top, and a longer, quieter decay.
 		var hat_raw: float = _noise_sample() * _hat_env
-		_lpf_hat = _one_pole_cached(hat_raw, _lpf_hat, _lpf_alpha(2800.0))
-		var hat_out: float = _lpf_hat * vol * _cached_hat_mul * _state_hat_gain
+		_lpf_hat = _one_pole_cached(hat_raw, _lpf_hat, _lpf_alpha(2400.0))
+		_lpf_hat2 = _one_pole_cached(_lpf_hat, _lpf_hat2, _lpf_alpha(2400.0))
+		var hat_out: float = _lpf_hat2 * vol * _cached_hat_mul * _state_hat_gain
 		# Slight pan to add stereo image to the drums bus.
 		d_l += hat_out * 1.05
 		d_r += hat_out * 0.95
-		_hat_env *= 0.9935
+		_hat_env *= 0.9965
 
 	# Clap — wide noise burst, panned ±, on 2 & 4 in high-energy phases.
 	if _clap_env > 0.001:
 		var clap_raw: float = _noise_sample() * _clap_env
-		_clap_lpf = _one_pole_cached(clap_raw, _clap_lpf, _lpf_alpha(1800.0))
+		_clap_lpf = _one_pole_cached(clap_raw, _clap_lpf, _lpf_alpha(1500.0))
 		var clap_out: float = _clap_lpf * vol * _cached_clap_mix * 0.7
 		# Stereo width via L/R noise decorrelation.
 		d_l += clap_out * 0.9
@@ -2399,8 +2466,8 @@ func _render_trance_streams() -> void:
 	# Polyrhythmic shaker — 16th-note presence weighted to creature movement.
 	if _shaker_env > 0.001:
 		var sk_raw: float = _noise_sample() * _shaker_env
-		_shaker_lpf = _one_pole_cached(sk_raw, _shaker_lpf, _lpf_alpha(5200.0))
-		var sk_out: float = _shaker_lpf * vol * _cached_shaker_mix * 0.55
+		_shaker_lpf = _one_pole_cached(sk_raw, _shaker_lpf, _lpf_alpha(3000.0))
+		var sk_out: float = _shaker_lpf * vol * _cached_shaker_mix * 0.3
 		# Slightly off-centre right so it complements the L-biased hat.
 		d_l += sk_out * 0.85
 		d_r += sk_out
@@ -2440,19 +2507,22 @@ func _render_trance_streams() -> void:
 	var s_l: float = 0.0
 	var s_r: float = 0.0
 
-	if _cached_bass_active:
+	# The bass alternates on/off by beat; a hard gate mid-cycle clicked, so
+	# it fades over ~5 ms instead.
+	_bass_gate = lerpf(_bass_gate, 1.0 if _cached_bass_active else 0.0, 0.01)
+	if _bass_gate > 0.0005:
 		_bass_phase = fposmod(_bass_phase + _bass_inc, 1.0)
 		# Bass-grit hardens the soft-clip based on aggression knob.
 		var b_raw: float = _soft_wave(_bass_phase)
 		var grit: float = _cached_bass_grit
 		var b_clipped: float = tanh(b_raw * (1.0 + grit * 3.0)) * lerpf(1.0, 0.78, grit)
-		var bass_out: float = b_clipped * _cached_bass_amp * vol * sc * _state_bass_gain
+		var bass_out: float = b_clipped * _cached_bass_amp * vol * sc * _state_bass_gain * _bass_gate
 		s_l += bass_out
 		s_r += bass_out
 
 		# Sub-bass — pure sine, 1 octave below the melodic bass.
 		_sub_phase = fposmod(_sub_phase + _sub_inc, 1.0)
-		var sub: float = sin(_sub_phase * TAU) * _cached_sub_bass_amp * vol * sc * _state_bass_gain
+		var sub: float = sin(_sub_phase * TAU) * _cached_sub_bass_amp * vol * sc * _state_bass_gain * _bass_gate
 		s_l += sub
 		s_r += sub
 
@@ -2495,8 +2565,9 @@ func _render_trance_streams() -> void:
 
 	# Granular pad — re-pitched echoes of pad output.
 	var grain_amp: float = _cached_granular
-	var pad_l: float = pad_out + (pad_v0 - pad_v2) * 0.18 * _cached_pad_level * vol * _cached_pad_mix
-	var pad_r: float = pad_out + (pad_v2 - pad_v0) * 0.18 * _cached_pad_level * vol * _cached_pad_mix
+	var pad_spread: float = 0.18 * _cached_pad_width
+	var pad_l: float = pad_out + (pad_v0 - pad_v2) * pad_spread * _cached_pad_level * vol * _cached_pad_mix
+	var pad_r: float = pad_out + (pad_v2 - pad_v0) * pad_spread * _cached_pad_level * vol * _cached_pad_mix
 	if grain_amp > 0.01:
 		# Write current pad value into the ring buffer.
 		_grain_buf[_grain_pos] = pad_mix_raw
@@ -2551,7 +2622,7 @@ func _render_trance_streams() -> void:
 			lead_r += saw * (0.5 + pan * 0.5)
 		lead_l *= 0.18
 		lead_r *= 0.18
-		var cutoff_open: float = lerpf(900.0, 7400.0,
+		var cutoff_open: float = lerpf(900.0, 3800.0,
 			_state_lead_gain * (0.4 + _phrase_state_bar_pos * 0.6))
 		var lalpha: float = _lpf_alpha(cutoff_open)
 		_lead_lpf_l = _one_pole_cached(lead_l, _lead_lpf_l, lalpha)
@@ -2566,7 +2637,7 @@ func _render_trance_streams() -> void:
 	if _riser_env > 0.001:
 		var n_l: float = _noise_sample() * _riser_env
 		var n_r: float = _noise_sample() * _riser_env
-		var sweep: float = lerpf(380.0, 9200.0, _phrase_state_bar_pos)
+		var sweep: float = lerpf(380.0, 4200.0, _phrase_state_bar_pos)
 		var ralpha: float = _lpf_alpha(sweep)
 		_riser_lpf = _one_pole_cached(n_l, _riser_lpf, ralpha)
 		var ramp: float = 0.018 + _phrase_state_bar_pos * 0.06
@@ -2579,7 +2650,7 @@ func _render_trance_streams() -> void:
 		_rev_cym_env = minf(1.0, _rev_cym_env + 0.0000115)   # ~6 s ramp
 		var rc_raw: float = _noise_sample() * _rev_cym_env
 		_rev_cym_lpf = _one_pole_cached(rc_raw, _rev_cym_lpf,
-			_lpf_alpha(lerpf(1200.0, 9200.0, _rev_cym_env)))
+			_lpf_alpha(lerpf(1200.0, 4200.0, _rev_cym_env)))
 		var rc_out: float = _rev_cym_lpf * _rev_cym_env * vol * 0.18 * _cached_drop_intensity
 		s_l += rc_out
 		s_r += rc_out * 1.05
@@ -2593,7 +2664,7 @@ func _render_trance_streams() -> void:
 	var build_open: float = 0.0
 	if _phrase_state == PhraseState.BUILD:
 		build_open = _phrase_state_bar_pos
-	var base_cut: float = lerpf(2400.0, 9800.0, build_open)
+	var base_cut: float = lerpf(2400.0, 5600.0, build_open)
 	base_cut *= lerpf(1.0 - _cached_breathe * 0.45, 1.0 + _cached_breathe * 0.45,
 		breathe * 0.5 + 0.5)
 	_cached_master_cut = base_cut
@@ -2721,7 +2792,7 @@ func _fill_playback_buffers(batch: int) -> void:
 			note[1] = dur - INV_SAMPLE_RATE
 			_pending[j] = note
 
-		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3800.0))
+		_plink_lpf = _one_pole_cached(plinks, _plink_lpf, _lpf_alpha(3200.0))
 		plinks = _plink_lpf
 		var bubbles: Vector2 = _mix_bubble_bursts()
 		var event_vol: float = _cached_vol
@@ -2895,6 +2966,7 @@ func _process(_dt: float) -> void:
 	else:
 		_smooth_environment(sim_dt * 0.35)
 
+	_tick_voices_and_minds(_dt, sim_dt)
 	_contagion_harmonic = maxf(0.0, _contagion_harmonic - _dt * 0.38)
 	_death_hush = maxf(0.0, _death_hush - _dt * 0.18)
 	_tick_hymn(_dt)
@@ -2950,6 +3022,11 @@ func _process(_dt: float) -> void:
 			target_db = lerpf(target_db, max_db, 0.18)
 		if _death_hush > 0.01:
 			target_db -= _death_hush * 24.0
+		# Mood (calm tanks sit a touch softer), conversation duck, boot fade.
+		target_db += float(_mood_bed.get("gain_db", 0.0))
+		target_db -= _talk_duck * TALK_DUCK_DB
+		target_db += linear_to_db(maxf(_boot_fade * _boot_fade, 0.0001))
+		target_db = maxf(target_db, -80.0)
 	if _player_drums != null:
 		_player_drums.volume_db = target_db
 	if _player_synth != null:
@@ -2999,7 +3076,8 @@ func get_live_status() -> Dictionary:
 	var beat_phase: float = fposmod(_cached_beat_time, 1.0)
 	var bar_phase: float = fposmod(_cached_beat_time / 4.0, 1.0)
 	var scale_mode: String = "major"
-	if TankConfig.music_mood in ["calm", "deep"]:
+	var mood_cfg: Node = _cfg()
+	if mood_cfg != null and str(mood_cfg.get("music_mood")) in ["calm", "deep"]:
 		scale_mode = "minor"
 	_live_status_cache = {
 		"bpm": _cached_bpm,
@@ -3173,6 +3251,7 @@ func pulse_favourite_death_hush() -> void:
 # Sim-driver fires this on food drop. Sends the bed into a 2-bar BUILD that
 # resolves on the next bar with whatever lands on play_eat_sfx.
 func play_feeding_event() -> void:
+	play_bloop("plop", _sample_clock & 0xFFFF)
 	if _cached_drop_intensity > 0.2:
 		_phrase_force_state = PhraseState.BUILD
 
@@ -3222,3 +3301,173 @@ func note_swim_activity(speed_0_1: float) -> void:
 	if act > 0.42 and _environment_enabled() and randf() < act * 0.09:
 		play_bubble_sfx(clampf(act * 0.22, 0.08, 0.28))
 	_swim_activity = lerpf(_swim_activity, act, 0.35)
+
+
+# ---- Voices: the tank mind speaks, the fish answer ------------------------
+#
+# play_voice(kind, seed, length) is the one entry point; the helpers below
+# derive seed/size/boldness from a Fish so main.gd needs one line per
+# display site. Everything is gated on the music + event settings (the same
+# switches every other event sound obeys), scaled by music volume x event
+# volume, rate-limited in TankVoiceAudio, and ducks the bed while talking.
+
+# Per-kind cooldowns for texture sounds (seconds), on top of the voice
+# module's own bloop cap/gap.
+const BLOOP_COOLDOWN_S: Dictionary = {
+	"bloop": 3.0, "gulp": 6.0, "plop": 4.0, "snail": 10.0, "ignite": 20.0,
+	"bubble_rise": 8.0,
+}
+
+
+func _voice_gain_db() -> float:
+	if not _events_enabled():
+		return -80.0
+	return linear_to_db(maxf(_user_volume() * _event_gain(), 0.0001))
+
+
+func play_voice(kind: String, seed_v: int, length: int = 24, size01: float = 0.5,
+		bold01: float = 0.5, variant: int = 0) -> bool:
+	if _voices == null:
+		return false
+	var gain_db: float = _voice_gain_db()
+	if gain_db <= -60.0:
+		return false
+	var p: Dictionary = _TankVoiceAudio.voice_params(kind, seed_v, length, size01, bold01, variant)
+	if p.is_empty():
+		return false
+	var ok: bool = _voices.request(p, gain_db)
+	if ok and _TankVoiceAudio.sound_class(kind) == "voice":
+		_talk_duck_t = maxf(_talk_duck_t, _TankVoiceAudio.duration_s(p) + 1.2)
+	return ok
+
+
+func play_bloop(kind: String, seed_v: int = 0, size01: float = 0.5) -> bool:
+	if not _environment_enabled() and kind in ["gulp", "snail", "bubble_rise", "plop"]:
+		return false
+	if float(_bloop_cd.get(kind, 0.0)) > 0.0:
+		return false
+	var ok: bool = play_voice(kind, seed_v, 0, size01)
+	if ok:
+		_bloop_cd[kind] = float(BLOOP_COOLDOWN_S.get(kind, 3.0))
+	return ok
+
+
+# The tank mind's reply appeared: a low breath, length scaled to the line.
+func play_tank_voice(line: String) -> bool:
+	var t: String = line.strip_edges()
+	if t == "":
+		return false
+	# Four breath shapes, chosen by the line: rendered once each, then cached.
+	return play_voice("tank", absi(t.hash()) % 4, t.length())
+
+
+# A fish said something. `addressed` = it is answering the keeper (babble);
+# otherwise it is just thinking (a tiny, rate-limited bloop).
+func on_fish_thought(fish: Node, line: String, addressed: bool = false) -> bool:
+	if fish == null or not is_instance_valid(fish):
+		return false
+	var traits: Dictionary = _fish_voice_traits(fish)
+	if addressed:
+		return play_voice("fish", int(traits["seed"]), line.strip_edges().length(),
+			float(traits["size01"]), float(traits["bold01"]), absi(line.hash()) % 97)
+	return play_bloop("bloop", int(traits["seed"]), float(traits["size01"]))
+
+
+func play_fish_voice(fish: Node, line: String) -> bool:
+	return on_fish_thought(fish, line, true)
+
+
+# size01 from the species (the same table that pitches its event notes:
+# tiny tetras high, plecos low) nudged by how grown this fish is; boldness
+# straight from its personality.
+func _fish_voice_traits(fish: Node) -> Dictionary:
+	var sp: String = String(fish.get("species")) if fish.get("species") != null else ""
+	var off: int = _species_offset(sp) if sp != "" else 0
+	var size01: float = clampf(float(7 - off) / 15.0, 0.0, 1.0)
+	if fish is Node3D:
+		var grown: float = clampf(((fish as Node3D).scale.x - 0.6) / 1.2, 0.0, 1.0)
+		size01 = clampf(size01 * 0.8 + grown * 0.2, 0.0, 1.0)
+	var bold01: float = 0.5
+	var pers: Variant = fish.get("personality")
+	if pers is Dictionary and (pers as Dictionary).has("boldness"):
+		bold01 = clampf(float(pers["boldness"]), 0.0, 1.0)
+	var fid: Variant = fish.get("id")
+	var seed_v: int = absi(str(fid).hash()) if fid != null else int(fish.get_instance_id() & 0xFFFFFF)
+	return {"seed": seed_v, "size01": size01, "bold01": bold01}
+
+
+# Read-only peek at the collective mind (tank_mind.gd keeps it on the sim).
+func _read_tank_mind() -> void:
+	if _sim_ref == null or not is_instance_valid(_sim_ref):
+		return
+	var tm: Variant = _sim_ref.get("_tank_mind")
+	if not (tm is Dictionary):
+		return
+	var d: Dictionary = tm
+	_env["mind_valence"] = clampf(float(d.get("mood_valence", 0.0)), -1.0, 1.0)
+	_env["mind_arousal"] = clampf(float(d.get("mood_arousal", 0.2)), 0.0, 1.0)
+	var ign: int = int(d.get("last_ignition_t", 0))
+	if _mind_last_ignition >= 0 and ign > _mind_last_ignition:
+		play_bloop("ignite", ign & 0xFFFF)
+	_mind_last_ignition = ign
+
+
+func _tick_voices_and_minds(dt: float, sim_dt: float) -> void:
+	_boot_fade = minf(1.0, _boot_fade + dt / BOOT_FADE_S)
+	_talk_duck_t = maxf(0.0, _talk_duck_t - dt)
+	var duck_target: float = 1.0 if _talk_duck_t > 0.0 else 0.0
+	# ~0.4 s into the duck, ~1.5 s back out: a conversation, not a pump.
+	_talk_duck = move_toward(_talk_duck, duck_target, dt * (2.5 if duck_target > _talk_duck else 0.65))
+	for k in _bloop_cd.keys():
+		_bloop_cd[k] = maxf(0.0, float(_bloop_cd[k]) - dt)
+	# Mind mood glides (it moves on a 5-12 s tick; the bed should not jump).
+	var mk: float = clampf(dt * 0.25, 0.0, 1.0)
+	_mind_valence = lerpf(_mind_valence, float(_env.get("mind_valence", 0.0)), mk)
+	_mind_arousal = lerpf(_mind_arousal, float(_env.get("mind_arousal", 0.2)), mk)
+	if _sim_ref == null or not is_instance_valid(_sim_ref):
+		return
+	# Now and then a small column of bubbles lets go - any living tank.
+	_bubble_rise_t -= sim_dt
+	if _bubble_rise_t <= 0.0:
+		_bubble_rise_t = lerpf(14.0, 34.0, randf()) * lerpf(1.3, 0.8, _tank_vitality)
+		play_bloop("bubble_rise", randi() & 0xFFFF)
+	_fauna_poll_t -= dt
+	if _fauna_poll_t <= 0.0:
+		_fauna_poll_t = 0.5
+		_poll_fauna_sounds()
+
+
+# Edge-detects two small real events by looking, not by hooking: a fish
+# reaching the surface on a gulp trip, and a snail letting go of a stem.
+func _poll_fauna_sounds() -> void:
+	var fish_v: Variant = _sim_ref.get("fish")
+	if fish_v is Array:
+		for f in fish_v:
+			if not is_instance_valid(f) or not (f is Node3D):
+				continue
+			var ry: Variant = f.get("_aerial_return_y")
+			var fid: int = f.get_instance_id()
+			if ry == null or not is_finite(float(ry)):
+				_gulp_seen.erase(fid)
+				continue
+			if _gulp_seen.has(fid):
+				continue
+			var ty: Variant = f.get("_aerial_target_y")
+			if ty != null and (f as Node3D).global_position.y >= float(ty) - 0.2:
+				_gulp_seen[fid] = true
+				var tr_d: Dictionary = _fish_voice_traits(f)
+				play_bloop("gulp", int(tr_d["seed"]), float(tr_d["size01"]))
+	var tree := get_tree()
+	if tree == null:
+		return
+	var seen: Dictionary = {}
+	for sn in tree.get_nodes_in_group("snails"):
+		var sid: int = sn.get_instance_id()
+		seen[sid] = true
+		var attached: bool = sn.get("_attached_plant") != null
+		if bool(_snail_attached.get(sid, false)) and not attached:
+			play_bloop("snail", sid & 0xFFFF)
+		_snail_attached[sid] = attached
+	for k in _snail_attached.keys():
+		if not seen.has(k):
+			_snail_attached.erase(k)

@@ -54,7 +54,7 @@ func _test_keeper_prompt_hardening() -> bool:
 func _test_save_json_bound() -> bool:
 	var saves: Node = TankSavesScript.new()
 	var path: String = "user://smoke_systemic_oversize.json"
-	var abs: String = ProjectSettings.globalize_path(path)
+	var abs_path: String = ProjectSettings.globalize_path(path)
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
 		return _fail("could not create oversize fixture")
@@ -64,8 +64,8 @@ func _test_save_json_bound() -> bool:
 	var d: Dictionary = saves.read_json(path)
 	if not d.is_empty():
 		return _fail("read_json must refuse oversized JSON")
-	if FileAccess.file_exists(abs):
-		DirAccess.remove_absolute(abs)
+	if FileAccess.file_exists(abs_path):
+		DirAccess.remove_absolute(abs_path)
 	if not _test_save_repair():
 		return false
 	return true
@@ -74,7 +74,7 @@ func _test_save_json_bound() -> bool:
 func _test_inf_json_roundtrip() -> bool:
 	var saves: Node = TankSavesScript.new()
 	var path: String = "user://smoke_systemic_inf.json"
-	var abs: String = ProjectSettings.globalize_path(path)
+	var abs_path: String = ProjectSettings.globalize_path(path)
 	var raw: String = JSON.stringify({"home": [INF, 1.0, 2.0], "neg": -INF})
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
@@ -82,8 +82,8 @@ func _test_inf_json_roundtrip() -> bool:
 	f.store_string(raw)
 	f.close()
 	var d: Dictionary = saves.read_json(path)
-	if FileAccess.file_exists(abs):
-		DirAccess.remove_absolute(abs)
+	if FileAccess.file_exists(abs_path):
+		DirAccess.remove_absolute(abs_path)
 	if d.is_empty():
 		return _fail("read_json must parse legacy ±INF saves")
 	if not (d.get("home") is Array):

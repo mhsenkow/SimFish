@@ -49,14 +49,28 @@ static func local_floater_shade_at(world_pos: Vector3, floaters: Array,
 # Warmth at a world position: room baseline + daylight lamp warmth + heater falloff.
 static func effective_warmth_at(pos: Vector3, _sim: Node, cfg: Node,
 		heater_pos: Vector3, daylight: float, heater_enabled: bool = true) -> float:
-	var light_warmth: float = 0.5
+	return warmth_from(pos, light_warmth_of(cfg), room_warmth_of(cfg), heater_pos,
+		daylight, heater_enabled)
+
+
+# Config inputs split out so a caller sampling many positions (world's
+# environment field) resolves TankConfig + the environment profile once.
+static func light_warmth_of(cfg: Node) -> float:
 	if cfg != null and cfg.get("light_warmth") != null:
-		light_warmth = clampf(float(cfg.light_warmth), 0.0, 1.0)
-	var room_warmth: float = 0.52
+		return clampf(float(cfg.light_warmth), 0.0, 1.0)
+	return 0.5
+
+
+static func room_warmth_of(cfg: Node) -> float:
 	if cfg != null and cfg.has_method("current_environment_profile"):
 		var prof: Dictionary = cfg.current_environment_profile()
 		if prof.has("room_warmth"):
-			room_warmth = float(prof["room_warmth"])
+			return float(prof["room_warmth"])
+	return 0.52
+
+
+static func warmth_from(pos: Vector3, light_warmth: float, room_warmth: float,
+		heater_pos: Vector3, daylight: float, heater_enabled: bool = true) -> float:
 	var heater_boost: float = 0.0
 	if heater_enabled and heater_pos != Vector3.ZERO:
 		var dist: float = pos.distance_to(heater_pos)

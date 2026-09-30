@@ -23,6 +23,9 @@ const KeeperInput = preload("res://scripts/keeper_input.gd")
 const _DartTrailPoolScript = preload("res://scripts/dart_trail_pool.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
+const _TankMindScript = preload("res://scripts/tank_mind.gd")
+const _TankDialogueScript = preload("res://scripts/tank_dialogue.gd")
+const ColonyMind = preload("res://scripts/colony_mind.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
 const OnboardingRuntimeScript = preload("res://scripts/onboarding_runtime.gd")
 const _QuantizeShader = preload("res://shaders/palette_quantize.gdshader")
@@ -31,6 +34,8 @@ const _QuantizePotatoShader = preload("res://shaders/palette_quantize_potato.gds
 const GLOBAL_PREFS_PATH := "user://global_prefs.cfg"
 const VOICE_BODY_FIRST_DELAY_S: float = 0.75
 const VOICE_TEMPLATE_DELAY_S: float = 0.35
+const TANK_COLONY_FIRST_S: float = 2.4
+const TANK_COLONY_STEP_S: float = 1.8
 
 
 @onready var sub_viewport: SubViewport = $SubViewport
@@ -47,6 +52,8 @@ var _post_display: TextureRect = null
 @onready var adopt_panel: PanelContainer = $AdoptPanel
 # Lazy-built; see _toggle_mind_panel (BROAD_DIRECTIONS #17).
 var _mind_panel: Control = null
+# Lazy-built; see _toggle_chronicle_panel (tank history as a story).
+var _chronicle_panel: Control = null
 # Lazy-built; see _toggle_vessel_picker (tank realism pass).
 var _vessel_picker: Control = null
 @onready var library_panel: PanelContainer = $LibraryPanel
@@ -234,6 +241,39 @@ var _follow_thought_tw_gen: int = 0
 var _keeper_say_edit: LineEdit = null
 var _keeper_ack_label: Label = null
 var _keeper_ack_t: float = 0.0
+# Short visible conversation log under the strip (keeper line + replies).
+var _keeper_history_label: Label = null
+var _keeper_history: Array = []
+# fish_id -> msec deadline: replies from these fish land in the history.
+var _keeper_addressed: Dictionary = {}
+const KEEPER_HISTORY_MAX: int = 8
+const KEEPER_HISTORY_SHOWN: int = 4
+const KEEPER_REPLY_WINDOW_MS: int = 30000
+const TANK_RESPONDER_FIRST_S: float = 1.4
+const TANK_RESPONDER_STEP_S: float = 1.6
+# Fish-to-fish follow-ups after a tank exchange (TankDialogue bounds them).
+const TANK_FOLLOWUP_DELAY_S: float = 1.9
+var _tank_followup_rt: Dictionary = {}
+# Tank speaks first (TankDialogue rate-limits; this only throttles the poll).
+const TANK_INITIATIVE_POLL_S: float = 2.0
+var _tank_initiative_rt: Dictionary = {}
+var _tank_initiative_cd: float = 4.0
+# Overheard fish-to-fish chatter while the keeper is silent (TankDialogue
+# owns the rate limits; this only throttles the poll and staggers lines).
+const CHATTER_POLL_S: float = 6.0
+const CHATTER_LINE_STEP_S: float = 2.6
+const KEEPER_PRESENT_IDLE_S: float = 600.0
+var _chatter_rt: Dictionary = {}
+var _chatter_cd: float = 20.0
+var _chatter_gen: int = 0
+# Fish ask the keeper (TankQuestions owns rate limits / persistence; this only
+# throttles the poll). The keeper counts as present after recent input.
+const KEEPER_QUESTION_POLL_S: float = 5.0
+const KEEPER_QUESTION_PRESENT_S: float = 120.0
+const KEEPER_ANSWER_REPLY_S: float = 1.2
+var _keeper_question_rt: Dictionary = {}
+var _keeper_question_cd: float = 12.0
+var _keeper_last_spoke_ms: int = 0
 var _keeper_cam_prev: Vector3 = Vector3.ZERO
 var _keeper_cursor_prev: Vector2 = Vector2.ZERO
 const FOLLOW_THOUGHT_CHAR_S: float = 0.034
@@ -1070,6 +1110,47 @@ func _toggle_mind_panel() -> void:
 				PackedStringArray(["Show inner workings"]))
 
 
+# Chronicle panel — the tank's history as chapters (L).
+func _install_chronicle_rail_button() -> void:
+	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
+	if cluster_vbox == null:
+		return
+	var btn := Button.new()
+	btn.name = "ChronicleToggle"
+	btn.text = "📖"
+	btn.tooltip_text = tr("Chronicle — the tank's story in chapters (L)")
+	btn.custom_minimum_size = Vector2(48, 48)
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.pressed.connect(_toggle_chronicle_panel)
+	cluster_vbox.add_child(btn)
+	var divider: Node = cluster_vbox.get_node_or_null("RailDivider")
+	if divider != null:
+		cluster_vbox.move_child(btn, divider.get_index())
+
+
+func _toggle_chronicle_panel() -> void:
+	if _chronicle_panel == null:
+		var script := load("res://scripts/chronicle_panel.gd")
+		_chronicle_panel = script.new() as Control
+		_chronicle_panel.name = "ChroniclePanel"
+		_chronicle_panel.set("main_ref", self)
+		add_child(_chronicle_panel)
+		_apply_panel_layout()
+	var opening: bool = not _chronicle_panel.visible
+	if opening:
+		_prepare_panel_open()
+		if _ui_panels != null:
+			_ui_panels.close_side_panels()
+	_chronicle_panel.visible = opening
+	if _chronicle_panel.visible:
+		if _chronicle_panel.get("_jump_latest") != null:
+			_chronicle_panel.set("_jump_latest", true)
+		if _chronicle_panel.has_method("refresh"):
+			_chronicle_panel.refresh()
+		PanelTheme.schedule_couch_focus(_chronicle_panel)
+
+
 func _install_residents_rail_button() -> void:
 	var cluster_vbox: Node = get_node_or_null("RightRail/RightCluster/VBox")
 	if cluster_vbox == null:
@@ -1468,6 +1549,7 @@ func _ready() -> void:
 	_install_camera_views_rail_button()
 	_install_residents_rail_button()
 	_install_mind_rail_button()
+	_install_chronicle_rail_button()
 	_setup_panel_close_hooks()
 	if walkthrough_overlay != null and walkthrough_overlay.has_method("setup"):
 		walkthrough_overlay.setup(self)
@@ -1862,13 +1944,18 @@ func _apply_render_config() -> void:
 # Built into ImageTextures on demand so each biotope reads in its own color
 # story instead of forcing every tank through the planted palette.
 const BIOTOPE_PALETTES: Dictionary = {
+	# planted, retuned 2026-09-23 against a captured raw frame: the neutral
+	# ramp (24-31) is the water's own slate-teal instead of lavender (which
+	# turned 67% of the tank interior purple-grey), 42-45 are warm taupe room
+	# greys instead of four dark browns the substrate ramp already covers, and
+	# the leaf ramp (8-15) is a naturalistic sage-to-olive instead of neon.
 	"planted": [
 		"0b1a22","163040","23475a","356379","4b8095","69a1b3","92c3d0","c5e2e7",
-		"102614","1d3b22","2c5a30","3e7f40","57a253","79c069","a5d97e","d0eb9a",
+		"0f2214","1c3620","2b4f2e","3d6b3c","548a4c","70a45e","98bf7a","c6dc9c",
 		"1a120c","2c1f15","432f1f","5d4128","785538","95714e","b18f6a","cdb088",
-		"1a1a1f","2a2a30","3d3d44","555560","707081","8c8ca0","a8a8bd","c4c4d6",
+		"161c1d","222b2d","313e40","435456","586d6f","718789","8ea3a4","b3c4c3",
 		"ffffff","e0eef2","b9d6df","c33b3b","d97e2c","e6c92a","2a7a4b","4a52c4",
-		"872cb0","c44a8e","2c1810","1a0f08","0d0805","503820","000000","f8f4e0",
+		"872cb0","c44a8e","4a423b","675d53","867b6f","a89d8f","000000","f8f4e0",
 	],
 	"blackwater": [
 		"0a0704","120c06","241808","3a220e","503016","6a4018","8c5a22","b07838",
@@ -2453,6 +2540,7 @@ func _process_mouse_input(dt: float) -> void:
 		_handle_shortcut(KEY_V, _toggle_camera_views_panel)
 		# J, not M: M already toggles Sound (and Shift+M motion debug).
 		_handle_shortcut(KEY_J, _toggle_mind_panel)
+		_handle_shortcut(KEY_L, _toggle_chronicle_panel)
 		_handle_shortcut(KEY_1, func(): _on_one())
 		_handle_shortcut(KEY_2, func(): _on_two())
 		_handle_shortcut(KEY_3, func(): _on_three())
@@ -3528,6 +3616,7 @@ func _open_gamepad_menu() -> void:
 		"Choose tank": func(): _close_gamepad_menu(); _toggle_vessel_picker(),
 		"Residents": func(): _close_gamepad_menu(); _toggle_residents_panel(),
 		"Mind": func(): _close_gamepad_menu(); _toggle_mind_panel(),
+		"Chronicle": func(): _close_gamepad_menu(); _toggle_chronicle_panel(),
 		"Camera views": func(): _close_gamepad_menu(); _toggle_camera_views_panel(),
 		"Adopt fish": func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_ADOPT),
 		"Library": func(): _close_gamepad_menu(); _ui_toggle_modal(UiPanelManager.MODAL_LIBRARY),
@@ -3685,12 +3774,20 @@ func close_mind_panel() -> void:
 	_sync_rail_toggles()
 
 
+func close_chronicle_panel() -> void:
+	if _chronicle_panel == null:
+		return
+	_chronicle_panel.visible = false
+	_sync_rail_toggles()
+
+
 func _click_hits_interactive_hud(mouse_pos: Vector2) -> bool:
 	if _ui_panels != null and _ui_panels.is_modal_open():
 		return true
 	for panel in [settings_panel, render_panel, sound_panel, library_panel,
 			creature_creator_panel, adopt_panel, _notifications_panel,
-			_light_panel, _residents_panel, _camera_views_panel]:
+			_light_panel, _residents_panel, _camera_views_panel,
+			_mind_panel, _chronicle_panel]:
 		if panel != null and panel.visible \
 				and panel.get_global_rect().has_point(mouse_pos):
 			return true
@@ -4570,13 +4667,23 @@ func _on_fish_thought_spoke(speaker: Fish, text: String) -> void:
 	var nm: String = _creature_display_name(speaker)
 	var line: String = text.strip_edges()
 	var follow_this: bool = _follow_target == speaker and is_instance_valid(speaker)
+	var addressed: bool = _keeper_addressed.has(fish_id) \
+			and Time.get_ticks_msec() <= int(_keeper_addressed[fish_id])
+	if _keeper_addressed.has(fish_id) and not addressed:
+		_keeper_addressed.erase(fish_id)
 	_defer_voice_presentation(func() -> void:
 		var sp: Fish = _fish_by_id(fish_id)
+		if addressed:
+			_keeper_history_push(nm, line)
+			_maybe_tank_followup(fish_id, line)
 		if follow_this and sp != null:
 			var is_reply: bool = MindConversation.session_active(sp)
 			_show_follow_thought_typewriter(sp, nm, line, is_reply)
 		elif has_method("_push_notification"):
-			_push_notification("fish_thought", "info", nm, line, false), VOICE_BODY_FIRST_DELAY_S)
+			_push_notification("fish_thought", "info", nm, line, false)
+		var audio := get_node_or_null("AmbientAudio")
+		if audio != null and audio.has_method("on_fish_thought") and sp != null:
+			audio.on_fish_thought(sp, line, addressed), VOICE_BODY_FIRST_DELAY_S)
 
 
 func _on_fish_thought_streaming(fish_id: String, partial: String, situation: String) -> void:
@@ -4684,6 +4791,9 @@ func _build_follow_thought_ui() -> void:
 	_follow_thought_strip.visible = false
 	_follow_thought_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_follow_thought_strip.z_index = 97
+	# Anchored to the bottom: let content (history lines) grow the panel UP
+	# instead of pushing it off-screen.
+	_follow_thought_strip.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.05, 0.08, 0.14, 0.88)
 	style.border_color = Color(0.42, 0.62, 0.88, 0.55)
@@ -4712,14 +4822,26 @@ func _build_follow_thought_ui() -> void:
 	_follow_thought_strip_body.add_theme_color_override("font_color", Color8(220, 232, 248))
 	_follow_thought_strip_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vb.add_child(_follow_thought_strip_body)
+	_keeper_history_label = Label.new()
+	_keeper_history_label.text = ""
+	_keeper_history_label.visible = false
+	_keeper_history_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	PanelTheme.as_serif_italic(_keeper_history_label, PanelTheme.SIZE_CAPTION)
+	_keeper_history_label.add_theme_color_override("font_color", Color8(170, 190, 205))
+	_keeper_history_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_keeper_history_label)
 	_keeper_say_edit = LineEdit.new()
 	_keeper_say_edit.placeholder_text = "say something… (Enter to send)"
 	_keeper_say_edit.tooltip_text = (
 		"Gamified bond: steady the tank first, then they open up. "
 		+ "Comfort words (safe, calm, hello) soothe wary fish. "
 		+ "The guardian fish can advise on tank care when things are rough. "
-		+ "Press Enter to send.")
+		+ "With no fish followed, you speak to the whole tank and a few fish answer. "
+		+ "Enter sends (or focuses this box), Esc clears.")
 	_keeper_say_edit.max_length = 120
+	# Stay in the box after Enter so a conversation can continue (4.4+).
+	if "keep_editing_on_text_submit" in _keeper_say_edit:
+		_keeper_say_edit.set("keep_editing_on_text_submit", true)
 	_keeper_say_edit.visible = false
 	_keeper_say_edit.text_submitted.connect(_on_keeper_say_submitted)
 	_keeper_say_edit.focus_exited.connect(_on_keeper_say_focus_exited)
@@ -4740,17 +4862,21 @@ func _on_keeper_say_submitted(text: String) -> void:
 
 
 func _on_keeper_say_focus_exited() -> void:
+	# Clicking away keeps the draft — it used to submit half-typed text.
 	if _keeper_say_edit == null:
 		return
-	_submit_keeper_line(_keeper_say_edit.text)
 	_pump_notification_toast_queue()
 
 
 func _submit_keeper_line(raw: String) -> void:
-	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
-		return
 	var line: String = raw.strip_edges()
 	if line == "":
+		return
+	# A fish (or the tank) asked something: this line is the answer.
+	if _try_answer_keeper_question(line):
+		return
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		_submit_tank_line(line)
 		return
 	var f: Fish = _follow_target as Fish
 	var result: Dictionary = KeeperInput.submit_to_fish(f, line, _sim)
@@ -4762,6 +4888,12 @@ func _submit_keeper_line(raw: String) -> void:
 	MindConversation.on_keeper_submit(f, line, _sim, result)
 	if _keeper_say_edit != null:
 		_keeper_say_edit.text = ""
+	_keeper_history_push("you → %s" % _creature_display_name(f), line)
+	_keeper_addressed[String(f.id)] = Time.get_ticks_msec() + KEEPER_REPLY_WINDOW_MS
+	_keeper_last_spoke_ms = Time.get_ticks_msec()
+	_chatter_gen += 1
+	# Talking to one fish is not a tank exchange: no fish-to-fish chatter.
+	_tank_followup_rt = {}
 	var ack: String = KeeperInput.ui_ack_line(result, f.fish_name, _sim, f)
 	if bool(result.get("is_guardian_advisor", false)):
 		var advisor: String = KeeperCare.guardian_advisor_line(f, _sim)
@@ -4785,6 +4917,510 @@ func _submit_keeper_line(raw: String) -> void:
 		f._keeper_message_salience = maxf(float(f._keeper_message_salience), 0.48)
 
 
+# "Speak to the tank": no fish followed. The collective answers at once in
+# the strip; 1–3 relevant fish answer afterwards through the normal per-fish
+# reply pipeline (so they show as fish speaking — toast / strip / journal).
+func _submit_tank_line(line: String) -> void:
+	if _sim == null:
+		return
+	var result: Dictionary = KeeperInput.submit_to_tank(_sim, line, target)
+	if not bool(result.get("ok", false)):
+		var why: String = KeeperCare.tank_feedback(result, _sim)
+		if why != "":
+			_show_keeper_ack(why)
+		return
+	if _keeper_say_edit != null:
+		_keeper_say_edit.text = ""
+	var said: String = str(result.get("text", line))
+	_keeper_history_push("you → the tank", said)
+	_keeper_last_spoke_ms = Time.get_ticks_msec()
+	_chatter_gen += 1
+	_TankDialogueScript.begin_exchange(_tank_followup_rt,
+			result.get("responder_ids", PackedStringArray()),
+			result.get("topics", PackedStringArray()), Time.get_ticks_msec())
+	var tank_line: String = str(result.get("line", ""))
+	if tank_line != "":
+		_keeper_history_push("the tank", tank_line)
+		_show_tank_voice(tank_line)
+	_show_keeper_ack(KeeperCare.tank_feedback(result, _sim))
+	_schedule_colony_chorus(said, result.get("topics", PackedStringArray()))
+	var ids: PackedStringArray = result.get("responder_ids", PackedStringArray())
+	# "what are you thinking / dreaming / who's your friend / tell me about X":
+	# grounded per-fish answers precomputed by KeeperInput.submit_to_tank.
+	var answers: Dictionary = result.get("fish_answers", {}) as Dictionary
+	for i in ids.size():
+		var fid: String = ids[i]
+		var answer: String = str(answers.get(fid, ""))
+		_keeper_addressed[fid] = Time.get_ticks_msec() + KEEPER_REPLY_WINDOW_MS
+		var tree := get_tree()
+		if tree == null:
+			break
+		tree.create_timer(TANK_RESPONDER_FIRST_S + TANK_RESPONDER_STEP_S * float(i)).timeout.connect(
+				func() -> void: _tank_responder_answer(fid, said, answer), CONNECT_ONE_SHOT)
+
+
+# Invertebrate collectives answer when the keeper's line concerns them
+# (shrimp / snails / substrate). Spaced after the tank's reply so the
+# chorus reads as a second voice, not a pile-on.
+func _schedule_colony_chorus(text: String, topics: PackedStringArray) -> void:
+	if _sim == null or not _voice_ui_enabled():
+		return
+	var parts: Array = ColonyMind.chorus(_sim, text, topics, 1)
+	if parts.is_empty():
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	for i in parts.size():
+		var part: Dictionary = parts[i]
+		var delay: float = TANK_COLONY_FIRST_S + TANK_COLONY_STEP_S * float(i)
+		tree.create_timer(delay).timeout.connect(func() -> void:
+			_present_colony_line(part), CONNECT_ONE_SHOT)
+
+
+func _present_colony_line(part: Dictionary) -> void:
+	if not _voice_ui_enabled():
+		return
+	var line: String = str(part.get("line", "")).strip_edges()
+	var who: String = str(part.get("speaker", "the colony"))
+	if line == "":
+		return
+	_keeper_history_push(who, line)
+	if _follow_target == null and _tank_channel_available():
+		# Keep the tank strip label as the colony speaker for this beat.
+		if _follow_thought_strip == null:
+			_build_follow_thought_ui()
+		_follow_thought_strip_name.text = who
+		_follow_thought_tw_full = line
+		_follow_thought_tw_idx = 0
+		_follow_thought_tw_gen += 1
+		var gen: int = _follow_thought_tw_gen
+		_follow_thought_strip_body.text = ""
+		_follow_thought_strip_body.visible = true
+		_follow_thought_strip.visible = true
+		_refresh_keeper_history()
+		_follow_thought_typewriter_step(gen)
+	elif has_method("_push_notification"):
+		_push_notification("fish_thought", "info", who, line, false)
+	var audio := get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("play_bloop"):
+		audio.play_bloop("bloop", absi(line.hash()) & 0xFFFF, 0.35)
+
+
+func _tank_responder_answer(fish_id: String, text: String, answer: String = "") -> void:
+	var f: Fish = _fish_by_id(fish_id)
+	if f == null or _sim == null:
+		return
+	var result: Dictionary = KeeperInput.submit_to_fish(f, text, _sim)
+	if not bool(result.get("ok", false)):
+		return
+	MindConversation.on_keeper_submit(f, text, _sim, result)
+	_keeper_addressed[fish_id] = Time.get_ticks_msec() + KEEPER_REPLY_WINDOW_MS
+	if answer != "" and MindConversation.should_reply_words(f, result):
+		_present_tank_intent_answer(f, answer)
+		return
+	var reply: String = ""
+	if _sim.has_method("request_keeper_reply"):
+		reply = String(_sim.request_keeper_reply(f, result))
+	if reply == "":
+		# Too wary / tank too rough for words: still answer visibly.
+		_pulse_creature_affect(f)
+
+
+# A responder's grounded answer to an inner-life question (thinking / dream /
+# friend / about <fish>) — shown like any fish reply to the keeper.
+func _present_tank_intent_answer(f: Fish, answer: String) -> void:
+	if not _voice_ui_enabled():
+		return
+	var nm: String = _creature_display_name(f)
+	_pulse_creature_affect(f)
+	MindConversation.note_reply(f, answer, _sim)
+	_keeper_history_push(nm, answer)
+	if _follow_target != null and has_method("_push_notification"):
+		_push_notification("fish_thought", "info", nm, answer, false)
+	var audio := get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("on_fish_thought"):
+		audio.on_fish_thought(f, answer, true)
+	_maybe_tank_followup(String(f.id), answer)
+
+
+# A tank responder's reply just landed: maybe another fish reacts to it
+# (agree / contradict / tease from its own state). TankDialogue caps this at
+# 2 per keeper line; a follow-up can itself draw the second one.
+func _maybe_tank_followup(speaker_id: String, speaker_line: String) -> void:
+	if _tank_followup_rt.is_empty() or _sim == null or not _voice_ui_enabled():
+		return
+	var speaker: Fish = _fish_by_id(speaker_id)
+	if speaker == null:
+		return
+	var fu: Dictionary = _TankDialogueScript.maybe_followup(_sim, _tank_followup_rt, speaker,
+			speaker_line, Time.get_ticks_msec())
+	if fu.is_empty():
+		return
+	var tree := get_tree()
+	if tree == null:
+		return
+	tree.create_timer(TANK_FOLLOWUP_DELAY_S).timeout.connect(func() -> void:
+		_present_tank_followup(fu), CONNECT_ONE_SHOT)
+
+
+func _present_tank_followup(fu: Dictionary) -> void:
+	var fid: String = str(fu.get("fish_id", ""))
+	var f: Fish = _fish_by_id(fid)
+	if f == null or not _voice_ui_enabled():
+		return
+	var line: String = str(fu.get("line", ""))
+	if line == "":
+		return
+	_pulse_creature_affect(f)
+	MindConversation.note_reply(f, line, _sim)
+	_keeper_history_push("%s → %s" % [str(fu.get("name", _creature_display_name(f))),
+			str(fu.get("to", "…"))], line)
+	# The strip log shows it in tank mode; while following a fish, toast it.
+	if _follow_target != null and has_method("_push_notification"):
+		_push_notification("fish_thought", "info", _creature_display_name(f), line, false)
+	# The reaction can itself draw one more (bounded by TankDialogue).
+	_maybe_tank_followup(fid, line)
+
+
+# Tank speaks first when something important happened and the keeper has
+# been quiet (rate limits + voice-off live in TankDialogue / TankMind).
+func _tick_tank_initiative(dt: float) -> void:
+	_tank_initiative_cd -= dt
+	if _tank_initiative_cd > 0.0:
+		return
+	_tank_initiative_cd = TANK_INITIATIVE_POLL_S
+	if _sim == null or not _sim_ready_for_voice():
+		return
+	var quiet_s: float = float(Time.get_ticks_msec() - _keeper_last_spoke_ms) / 1000.0
+	var now_s: float = float(Time.get_ticks_msec()) / 1000.0
+	var out: Dictionary = _TankMindScript.maybe_initiate(_sim, _tank_initiative_rt, quiet_s, now_s,
+			_hud_idle_seconds < KEEPER_PRESENT_IDLE_S)
+	if out.is_empty():
+		return
+	var line: String = str(out.get("line", ""))
+	if line == "" or not _voice_ui_enabled():
+		return
+	_keeper_history_push("the tank", line)
+	if _follow_target == null and _tank_channel_available():
+		_show_tank_voice(line)
+	else:
+		var audio := get_node_or_null("AmbientAudio")
+		if audio != null and audio.has_method("play_tank_voice"):
+			audio.play_tank_voice(line)
+		if has_method("_push_notification"):
+			_push_notification("fish_thought", "info", "the tank", line, false)
+
+
+# --- Fish ask the keeper -------------------------------------------------------
+#
+# A curious fish (rarely the whole tank) asks something grounded in its world.
+# Shown as "? Pip asks: …" in the strip/log with a faint "?" over the fish;
+# the keeper's next line (Enter focuses the box) is read as the answer.
+
+func _tick_keeper_questions(dt: float) -> void:
+	_keeper_question_cd -= dt
+	if _keeper_question_cd > 0.0:
+		return
+	_keeper_question_cd = KEEPER_QUESTION_POLL_S
+	if _sim == null or not _sim_ready_for_voice():
+		return
+	var now_ms: int = Time.get_ticks_msec()
+	var busy: bool = _TankDialogueScript.exchange_active(_tank_followup_rt, now_ms)
+	if _keeper_say_edit != null and _keeper_say_edit.has_focus() \
+			and _keeper_say_edit.text.strip_edges() != "":
+		busy = true
+	if is_instance_valid(_follow_target) and _follow_target is Fish \
+			and MindConversation.session_active(_follow_target as Fish):
+		busy = true
+	var quiet_s: float = float(now_ms - _keeper_last_spoke_ms) / 1000.0
+	var present: bool = _hud_idle_seconds < KEEPER_QUESTION_PRESENT_S or KeeperInput.gaze_seconds > 2.0
+	var out: Dictionary = KeeperInput.maybe_fish_question(_sim, _keeper_question_rt, quiet_s, present,
+			busy, _voice_ui_enabled())
+	if out.is_empty() or not _voice_ui_enabled():
+		return
+	if bool(out.get("fade", false)):
+		_keeper_history_push(str(out.get("name", "")), str(out.get("line", "…never mind")))
+		_refresh_keeper_question_placeholder()
+		return
+	var line: String = str(out.get("line", ""))
+	if line == "":
+		return
+	var nm: String = str(out.get("name", ""))
+	var f: Fish = _fish_by_id(str(out.get("fish_id", "")))
+	if bool(out.get("recall", false)):
+		_present_keeper_question_line(nm, line, f, false)
+		return
+	var who: String = "? the tank asks" if bool(out.get("collective", false)) else "? %s asks" % nm
+	_present_keeper_question_line(who, line, f, true)
+	_refresh_keeper_question_placeholder()
+
+
+func _present_keeper_question_line(who: String, line: String, f: Fish, is_question: bool) -> void:
+	_keeper_history_push(who, line)
+	var tank_strip: bool = _follow_target == null and _tank_channel_available()
+	var following_asker: bool = f != null and _follow_target == f
+	if tank_strip or following_asker:
+		if _follow_thought_strip == null:
+			_build_follow_thought_ui()
+		_follow_thought_strip_name.text = who.trim_prefix("? ")
+		_follow_thought_tw_full = line
+		_follow_thought_tw_idx = 0
+		_follow_thought_tw_gen += 1
+		var gen: int = _follow_thought_tw_gen
+		_follow_thought_strip_body.text = ""
+		_follow_thought_strip_body.visible = true
+		_follow_thought_strip.visible = true
+		_refresh_keeper_history()
+		_follow_thought_typewriter_step(gen)
+	elif has_method("_push_notification"):
+		_push_notification("fish_thought", "info", who.trim_prefix("? "), line, false)
+	var audio := get_node_or_null("AmbientAudio")
+	if f != null:
+		_pulse_creature_affect(f)
+		if is_question:
+			_float_question_glyph(f)
+		if audio != null and audio.has_method("on_fish_thought"):
+			audio.on_fish_thought(f, line, true)
+	elif audio != null and audio.has_method("play_tank_voice"):
+		audio.play_tank_voice(line)
+
+
+# A faint "?" over the asking fish while it waits.
+func _float_question_glyph(f: Fish) -> void:
+	if f == null or not is_instance_valid(f):
+		return
+	var lbl := Label3D.new()
+	lbl.text = "?"
+	lbl.font = PanelTheme.FONT_SERIF_ITALIC
+	lbl.font_size = 28
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.fixed_size = true
+	lbl.pixel_size = 0.0009
+	lbl.modulate = Color(0.86, 0.9, 0.78, 0.0)
+	lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.4)
+	lbl.outline_size = 6
+	lbl.position = Vector3(0.0, 0.55, 0.0)
+	f.add_child(lbl)
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "modulate:a", 0.7, 0.4)
+	tw.tween_interval(6.0)
+	tw.tween_property(lbl, "modulate:a", 0.0, 1.2)
+	tw.tween_callback(lbl.queue_free)
+
+
+func _keeper_question_placeholder() -> String:
+	if _sim == null:
+		return ""
+	var q: Dictionary = KeeperInput.pending_fish_question(_sim)
+	if q.is_empty():
+		return ""
+	# Following another fish: the line goes to that fish, not the asker.
+	if is_instance_valid(_follow_target) and _follow_target is Fish and not bool(q.get("collective", false)) \
+			and String((_follow_target as Fish).id) != str(q.get("fish_id", "")):
+		return ""
+	return KeeperCare.placeholder_for_question(q)
+
+
+func _refresh_keeper_question_placeholder() -> void:
+	if _keeper_say_edit == null or not _keeper_say_edit.visible:
+		return
+	var q_hint: String = _keeper_question_placeholder()
+	if q_hint != "":
+		_keeper_say_edit.placeholder_text = q_hint
+	elif is_instance_valid(_follow_target) and _follow_target is Fish:
+		_keeper_say_edit.placeholder_text = KeeperCare.placeholder_for_fish(_follow_target as Fish, _sim)
+	else:
+		_keeper_say_edit.placeholder_text = KeeperCare.placeholder_for_tank(_sim)
+
+
+# True when `line` was consumed as the answer to a pending question.
+func _try_answer_keeper_question(line: String) -> bool:
+	if _sim == null or _keeper_question_placeholder() == "":
+		return false
+	var res: Dictionary = KeeperInput.answer_fish_question(_sim, line)
+	if res.is_empty():
+		return false
+	if _keeper_say_edit != null:
+		_keeper_say_edit.text = ""
+	var nm: String = str(res.get("name", ""))
+	var collective: bool = bool(res.get("collective", false))
+	_keeper_history_push("you → %s" % ("the tank" if collective else nm), str(res.get("text", line)))
+	_keeper_last_spoke_ms = Time.get_ticks_msec()
+	_chatter_gen += 1
+	_show_keeper_ack(KeeperCare.question_answer_feedback(res))
+	_refresh_keeper_question_placeholder()
+	var tree := get_tree()
+	if tree == null:
+		return true
+	tree.create_timer(KEEPER_ANSWER_REPLY_S).timeout.connect(func() -> void:
+		_present_question_answer_reply(res), CONNECT_ONE_SHOT)
+	return true
+
+
+func _present_question_answer_reply(res: Dictionary) -> void:
+	if not _voice_ui_enabled():
+		return
+	var line: String = str(res.get("line", ""))
+	if line == "":
+		return
+	if bool(res.get("collective", false)):
+		_keeper_history_push("the tank", line)
+		if _follow_target == null and _tank_channel_available():
+			_show_tank_voice(line)
+		return
+	var f: Fish = _fish_by_id(str(res.get("fish_id", "")))
+	if f == null:
+		return
+	MindConversation.note_reply(f, line, _sim)
+	_present_keeper_question_line(_creature_display_name(f), line, f, false)
+
+
+func _sim_ready_for_voice() -> bool:
+	return not _immersive_mode and not _aquascape.is_active and not _timelapse_active
+
+
+# Overheard chatter: with the keeper silent, two visible nearby fish sometimes
+# trade 2–3 lines about what they actually share (hunger, a chase, a newborn,
+# a loss, the light turning). Shown as dim italic text floating over each
+# fish plus a "~" line in the strip log — never a toast.
+func _tick_overheard_chatter(dt: float) -> void:
+	_chatter_cd -= dt
+	if _chatter_cd > 0.0:
+		return
+	_chatter_cd = CHATTER_POLL_S
+	if _sim == null or not _sim_ready_for_voice():
+		return
+	var cfg := _cfg()
+	var voice_on: bool = _voice_ui_enabled() and (cfg == null
+			or not cfg.has_method("effective_fish_thought_voice_enabled")
+			or bool(cfg.effective_fish_thought_voice_enabled()))
+	var now_ms: int = Time.get_ticks_msec()
+	var busy: bool = _TankDialogueScript.exchange_active(_tank_followup_rt, now_ms)
+	if _keeper_say_edit != null and _keeper_say_edit.has_focus() \
+			and _keeper_say_edit.text.strip_edges() != "":
+		busy = true
+	if is_instance_valid(_follow_target) and _follow_target is Fish \
+			and MindConversation.session_active(_follow_target as Fish):
+		busy = true
+	var cam: Camera3D = sub_viewport.get_camera_3d() if sub_viewport != null else null
+	var seen: Array = []
+	if cam != null and _sim.get("fish") is Array:
+		for c in _sim.fish:
+			if is_instance_valid(c) and c is Fish and cam.is_position_in_frustum((c as Fish).global_position):
+				seen.append(c)
+	var quiet_s: float = float(now_ms - _keeper_last_spoke_ms) / 1000.0
+	var out: Dictionary = _TankDialogueScript.maybe_chatter(_sim, _chatter_rt, seen, quiet_s, busy,
+			float(now_ms) / 1000.0, voice_on and _TankMindScript.enabled())
+	if out.is_empty():
+		return
+	var gen: int = _chatter_gen
+	var tree := get_tree()
+	var lines: Array = out.get("lines", []) as Array
+	for i in lines.size():
+		var entry: Dictionary = lines[i]
+		if i == 0 or tree == null:
+			_present_chatter_line(entry, gen)
+		else:
+			tree.create_timer(CHATTER_LINE_STEP_S * float(i)).timeout.connect(func() -> void:
+				_present_chatter_line(entry, gen), CONNECT_ONE_SHOT)
+
+
+func _present_chatter_line(entry: Dictionary, gen: int) -> void:
+	# The keeper spoke since this exchange began: the fish fall quiet.
+	if gen != _chatter_gen or not _voice_ui_enabled() or not _sim_ready_for_voice():
+		return
+	var f: Fish = _fish_by_id(str(entry.get("fish_id", "")))
+	var line: String = str(entry.get("line", "")).strip_edges()
+	if f == null or line == "":
+		return
+	_keeper_history_push("~ %s → %s" % [str(entry.get("name", "")), str(entry.get("to", ""))], line)
+	var lbl := Label3D.new()
+	lbl.text = line
+	lbl.font = PanelTheme.FONT_SERIF_ITALIC
+	lbl.font_size = 20
+	lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lbl.fixed_size = true
+	lbl.pixel_size = 0.0009
+	lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lbl.width = 360.0
+	lbl.modulate = Color(0.8, 0.88, 0.84, 0.0)
+	lbl.outline_modulate = Color(0.0, 0.0, 0.0, 0.45)
+	lbl.outline_size = 6
+	lbl.position = Vector3(0.0, 0.62, 0.0)
+	f.add_child(lbl)
+	var hold: float = 2.2 + float(line.length()) * 0.03
+	var tw := lbl.create_tween()
+	tw.tween_property(lbl, "modulate:a", 0.62, 0.45)
+	tw.tween_interval(hold)
+	tw.tween_property(lbl, "modulate:a", 0.0, 0.8)
+	tw.tween_callback(lbl.queue_free)
+	var audio := get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("on_fish_thought"):
+		audio.on_fish_thought(f, line, false)
+
+
+func _show_tank_voice(line: String) -> void:
+	if _follow_thought_strip == null:
+		_build_follow_thought_ui()
+	_follow_thought_strip_name.text = tr("the tank")
+	_follow_thought_tw_full = line.strip_edges()
+	_follow_thought_tw_idx = 0
+	_follow_thought_tw_gen += 1
+	var gen: int = _follow_thought_tw_gen
+	_follow_thought_strip_body.text = ""
+	_follow_thought_strip_body.visible = true
+	_follow_thought_strip.visible = true
+	_refresh_keeper_history()
+	_follow_thought_typewriter_step(gen)
+	var audio := get_node_or_null("AmbientAudio")
+	if audio != null and audio.has_method("play_tank_voice"):
+		audio.play_tank_voice(line)
+
+
+func _keeper_history_push(who: String, text: String) -> void:
+	var t: String = text.strip_edges().substr(0, 110)
+	if t == "":
+		return
+	if not _keeper_history.is_empty():
+		var last: Dictionary = _keeper_history[-1]
+		if str(last.get("who", "")) == who and str(last.get("text", "")) == t:
+			return
+	_keeper_history.append({"who": who, "text": t})
+	while _keeper_history.size() > KEEPER_HISTORY_MAX:
+		_keeper_history.pop_front()
+	_refresh_keeper_history()
+
+
+func _refresh_keeper_history() -> void:
+	if _keeper_history_label == null:
+		return
+	# The line currently typing in the body is not repeated in the log.
+	var live: String = _follow_thought_tw_full.strip_edges()
+	var lines: PackedStringArray = PackedStringArray()
+	for i in range(_keeper_history.size() - 1, -1, -1):
+		var e: Dictionary = _keeper_history[i]
+		var txt: String = str(e.get("text", ""))
+		if lines.is_empty() and live != "" and txt == live and not str(e.get("who", "")).begins_with("you"):
+			continue
+		lines.insert(0, "%s: %s" % [str(e.get("who", "")), txt])
+		if lines.size() >= KEEPER_HISTORY_SHOWN:
+			break
+	_keeper_history_label.text = "\n".join(lines)
+	_keeper_history_label.visible = not lines.is_empty()
+	_layout_follow_thought_strip()
+
+
+func _tank_channel_available() -> bool:
+	return _sim != null and _voice_ui_enabled() and KeeperInput.ears_enabled() \
+			and not _immersive_mode and not _aquascape.is_active and not _timelapse_active
+
+
+func _keeper_say_available() -> bool:
+	return _keeper_say_edit != null and is_instance_valid(_keeper_say_edit) \
+			and _keeper_say_edit.is_visible_in_tree()
+
+
 func _show_keeper_you_said(text: String) -> void:
 	_show_keeper_ack(text)
 
@@ -4802,20 +5438,35 @@ func _show_keeper_ack(text: String) -> void:
 
 
 func _tick_keeper_input(dt: float) -> void:
-	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
-		if _keeper_say_edit != null:
-			_keeper_say_edit.visible = false
-		return
-	var f: Fish = _follow_target as Fish
-	if _keeper_say_edit != null:
-		_keeper_say_edit.visible = KeeperInput.ears_enabled()
-		if _keeper_say_edit.visible:
-			_keeper_say_edit.placeholder_text = KeeperCare.placeholder_for_fish(f, _sim)
+	_tick_tank_initiative(dt)
+	_tick_overheard_chatter(dt)
+	_tick_keeper_questions(dt)
 	if _keeper_ack_t > 0.0:
 		_keeper_ack_t = maxf(0.0, _keeper_ack_t - dt)
 		if _keeper_ack_t <= 0.0 and _keeper_ack_label != null:
 			_keeper_ack_label.visible = false
 			_keeper_ack_label.text = ""
+			_layout_follow_thought_strip()
+	if _follow_target == null or not is_instance_valid(_follow_target) or not (_follow_target is Fish):
+		_tick_tank_channel()
+		return
+	var f: Fish = _follow_target as Fish
+	if _keeper_say_edit != null:
+		_keeper_say_edit.visible = KeeperInput.ears_enabled() and _voice_ui_enabled()
+		if _keeper_say_edit.visible:
+			var q_hint: String = _keeper_question_placeholder()
+			_keeper_say_edit.placeholder_text = q_hint if q_hint != "" \
+					else KeeperCare.placeholder_for_fish(f, _sim)
+			# The say box lives in the strip — keep it reachable before the
+			# fish has had a first thought.
+			if _follow_thought_strip != null and not _follow_thought_strip.visible:
+				_follow_thought_strip.visible = true
+				_follow_thought_strip.modulate.a = 1.0
+				if _follow_thought_strip_name != null and _follow_thought_strip_name.text == "":
+					_follow_thought_strip_name.text = _creature_display_name(f)
+				_layout_follow_thought_strip()
+	if _follow_thought_strip_body != null:
+		_follow_thought_strip_body.visible = _follow_thought_strip_body.text != ""
 	var cam_still: bool = false
 	if _follow_mode == FollowMode.CINEMATIC:
 		cam_still = target.distance_squared_to(_keeper_cam_prev) < 0.0004
@@ -4835,6 +5486,34 @@ func _tick_keeper_input(dt: float) -> void:
 			KeeperInput.cursor_speed = 0.0
 
 
+# No fish followed: the strip becomes the tank's say box.
+func _tick_tank_channel() -> void:
+	if _follow_thought_strip == null or _keeper_say_edit == null:
+		return
+	if not _tank_channel_available():
+		if _keeper_say_edit.visible:
+			if _keeper_say_edit.has_focus():
+				_keeper_say_edit.release_focus()
+			_keeper_say_edit.visible = false
+			_follow_thought_strip.visible = false
+		return
+	if not _keeper_say_edit.visible or not _follow_thought_strip.visible:
+		_keeper_say_edit.visible = true
+		_follow_thought_strip.visible = true
+		_follow_thought_strip.modulate.a = 1.0
+		_keeper_say_edit.placeholder_text = KeeperCare.placeholder_for_tank(_sim)
+		_layout_follow_thought_strip()
+	if _follow_thought_strip_name != null and _follow_thought_strip_name.text == "":
+		_follow_thought_strip_name.text = tr("the tank")
+	if _follow_thought_strip_body != null:
+		_follow_thought_strip_body.visible = _follow_thought_strip_body.text != ""
+	# Placeholder follows tank tier (or an open question); slow cadence.
+	if Engine.get_process_frames() % 60 == 0:
+		var q_hint: String = _keeper_question_placeholder()
+		_keeper_say_edit.placeholder_text = q_hint if q_hint != "" \
+				else KeeperCare.placeholder_for_tank(_sim)
+
+
 func _layout_follow_thought_strip() -> void:
 	if _follow_thought_strip == null:
 		return
@@ -4851,7 +5530,10 @@ func _layout_follow_thought_strip() -> void:
 		var lines: int = maxi(1, _follow_thought_strip_body.get_line_count())
 		strip_h = maxf(92.0, float(lines) * line_h + 40.0)
 	if _keeper_ack_label != null and _keeper_ack_label.visible:
-		strip_h = 118.0
+		strip_h = maxf(strip_h, 118.0)
+	if _keeper_history_label != null and _keeper_history_label.visible:
+		var cap_h: float = float(PanelTheme.scaled_size(PanelTheme.SIZE_CAPTION)) + 5.0
+		strip_h += float(maxi(1, _keeper_history_label.get_line_count())) * cap_h
 	var toast_clearance: float = 0.0
 	if _notification_toast_active > 0 and not _keeper_input_active():
 		toast_clearance = PanelTheme.TOAST_STACK_H + 10.0
@@ -4935,8 +5617,10 @@ func _show_follow_thought_typewriter(speaker: Fish, speaker_name: String, text: 
 	_follow_thought_tw_gen += 1
 	var gen: int = _follow_thought_tw_gen
 	_follow_thought_strip_body.text = ""
+	_follow_thought_strip_body.visible = true
 	_follow_thought_strip.visible = true
 	_follow_thought_strip.modulate.a = 0.0
+	_refresh_keeper_history()
 	_follow_inner_thought_last_line = line
 	_follow_inner_thought_cd = FOLLOW_INNER_THOUGHT_INTERVAL_S
 	var fade := create_tween()
@@ -6285,6 +6969,22 @@ func _input(event: InputEvent) -> void:
 		_notify_hud_input()
 
 	if _handle_gamepad_action(event):
+		get_viewport().set_input_as_handled()
+		return
+
+	# Keeper say box: Esc clears + leaves the box (without also un-following
+	# the fish on the polled Esc shortcut); Enter from nowhere focuses it.
+	if event.is_action_pressed("ui_cancel") and _keeper_input_active():
+		_keeper_say_edit.text = ""
+		_keeper_say_edit.release_focus()
+		_key_was_pressed[KEY_ESCAPE] = true
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventKey and event.pressed and not event.echo \
+			and ((event as InputEventKey).keycode == KEY_ENTER \
+				or (event as InputEventKey).keycode == KEY_KP_ENTER) \
+			and get_viewport().gui_get_focus_owner() == null and _keeper_say_available():
+		_keeper_say_edit.grab_focus()
 		get_viewport().set_input_as_handled()
 		return
 
@@ -8125,6 +8825,9 @@ func _apply_panel_layout() -> void:
 	# creature" and "what is it thinking" are the same question.
 	if _mind_panel != null:
 		PanelTheme.layout_side_panel(_mind_panel, edge, top, bottom, panel_w, "left")
+
+	if _chronicle_panel != null:
+		PanelTheme.layout_side_panel(_chronicle_panel, edge, top, bottom, panel_w, "left")
 
 	# The vessel picker is a browsing surface, not a sidebar — centre it and
 	# give it room for two columns of cards.
@@ -11292,6 +11995,9 @@ func _dismiss_blocking_overlays() -> bool:
 		return true
 	if _mind_panel != null and _mind_panel.visible:
 		close_mind_panel()
+		return true
+	if _chronicle_panel != null and _chronicle_panel.visible:
+		close_chronicle_panel()
 		return true
 	if _camera_views_panel != null and _camera_views_panel.visible:
 		_close_camera_views_panel()

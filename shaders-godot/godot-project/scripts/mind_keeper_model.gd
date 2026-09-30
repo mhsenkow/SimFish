@@ -6,6 +6,7 @@ const KeeperInput = preload("res://scripts/keeper_input.gd")
 const MindSelfModel = preload("res://scripts/mind_self_model.gd")
 const MindWriteback = preload("res://scripts/mind_writeback.gd")
 const CognitiveSchema = preload("res://scripts/cognitive_schema.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
 
 const SCHEMA_VERSION: int = 1
 const TONE_RING_MAX: int = 12
@@ -13,11 +14,8 @@ const THEME_MAX: int = 5
 const SPEECH_RING_MAX: int = 8
 
 
-static func ensure(f) -> Dictionary:
-	var existing: Variant = f.get("_keeper_model")
-	if existing is Dictionary:
-		return existing as Dictionary
-	var fresh: Dictionary = {
+static func _defaults() -> Dictionary:
+	return {
 		"schema_version": SCHEMA_VERSION,
 		"speech_themes": PackedStringArray(),
 		"speech_ring": [],
@@ -32,9 +30,37 @@ static func ensure(f) -> Dictionary:
 		"prosody_baseline": {"valence": 0.0, "arousal": 0.22},
 		"last_absence_s": 0,
 	}
-	if f is Object:
-		(f as Object).set("_keeper_model", fresh)
-	return fresh
+
+
+# Fish declares `_keeper_model: Dictionary = {}`, so "is Dictionary" alone was
+# always true and the defaults were never written: every fish ran on an empty
+# model and .get() fallbacks. Fill any missing key in place (also repairs
+# partial / older saves) and coerce JSON-loaded types back.
+static func ensure(f) -> Dictionary:
+	var existing: Variant = f.get("_keeper_model")
+	var km: Dictionary = existing as Dictionary if existing is Dictionary else {}
+	if km.has("schema_version") and km.get("speech_themes") is PackedStringArray:
+		return km
+	var defaults: Dictionary = _defaults()
+	for k in defaults:
+		if not km.has(k):
+			km[k] = defaults[k]
+	var themes: Variant = km.get("speech_themes", null)
+	if not (themes is PackedStringArray):
+		var psa: PackedStringArray = PackedStringArray()
+		if themes is Array:
+			for t in (themes as Array):
+				if str(t) != "":
+					psa.append(str(t))
+		km["speech_themes"] = psa
+	for arr_key in ["speech_ring", "tone_history"]:
+		if not (km.get(arr_key) is Array):
+			km[arr_key] = []
+	if not (km.get("prosody_baseline") is Dictionary):
+		km["prosody_baseline"] = {"valence": 0.0, "arousal": 0.22}
+	if f is Object and not (existing is Dictionary and is_same(existing, km)):
+		(f as Object).set("_keeper_model", km)
+	return km
 
 
 static func on_keeper_line(f, text: String, result: Dictionary, sim: Node) -> void:
@@ -75,6 +101,13 @@ static func on_keeper_line(f, text: String, result: Dictionary, sim: Node) -> vo
 	_update_speech_read(km)
 	_propose_belief_from_line(f, text, result)
 	f._keeper_model = km
+	# Learned mind: the TONE of what the keeper says is lived experience
+	# (keeper-tone beliefs + slow trait drift toward / away from the keeper).
+	var felt: String = str(result.get("keeper_felt", f._keeper_pending.get("keeper_felt", "")))
+	if val > 0.2 or felt in ["comfort", "greeting"]:
+		FishLearnedMind.observe(f, "kind_word", FishLearnedMind.pos_of(f))
+	elif val < -0.2 or felt == "scold":
+		FishLearnedMind.observe(f, "harsh_word", FishLearnedMind.pos_of(f))
 	if int(km.get("conversation_count", 0)) == 3:
 		MindSelfModel.update_self_summary(f, "the soft-sound shape teaches me words")
 
@@ -110,6 +143,10 @@ static func note_care_event(f, kind: String) -> void:
 			trust = clampf(trust - 0.06, 0.0, 1.0)
 	km["care_trust"] = trust
 	f._keeper_model = km
+	if kind == "feed":
+		# The keeper's feed drop, stamped with the time of day: the evidence
+		# a "you come when the light goes gold" belief is distilled from.
+		FishLearnedMind.observe(f, "keeper_feed", FishLearnedMind.pos_of(f))
 
 
 static func record_greeting_ritual(f, keeper_line: String, fish_line: String) -> void:
@@ -168,6 +205,7 @@ static func to_dict(f) -> Dictionary:
 static func from_dict(f, d: Variant) -> void:
 	if d is Dictionary:
 		f._keeper_model = (d as Dictionary).duplicate(true)
+		ensure(f)
 
 
 static func _extract_themes(_f, km: Dictionary, text: String) -> void:

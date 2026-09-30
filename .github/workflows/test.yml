@@ -49,6 +49,9 @@ jobs:
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --editor --quit
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://dev/compile_check.gd
 
+      - name: Zero GDScript warnings (scripts/ + dev/)
+        run: ./scripts/check_warnings.sh
+
       - name: Regression triad (REFINEMENT_II #85)
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_perf_realtime.gd

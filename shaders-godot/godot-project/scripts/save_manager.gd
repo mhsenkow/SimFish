@@ -2,6 +2,8 @@
 class_name SaveManager
 extends RefCounted
 
+const TankChronicleScript = preload("res://scripts/tank_chronicle.gd")
+
 static var _writes_in_flight: int = 0
 static var _pending_write_path: String = ""
 static var _pending_write_payload: Variant = null
@@ -36,6 +38,9 @@ static func _log() -> Node:
 
 static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeController,
 		save_restored_flag: StringName) -> void:
+	# The Chronicle watches every tank, saved or fresh (idempotent).
+	if sim != null and not _capture_mode(host):
+		TankChronicleScript.attach(sim)
 	if host.get(save_restored_flag):
 		return
 	# VISUAL_DIRECTIONS #20 — a capture run builds its tank from a named
@@ -88,6 +93,11 @@ static func try_load(host: Node, sim: Node, world: Node, aquascape: AquascapeCon
 	d = SaveRepair.sanitize(d)
 	if sim != null and sim.has_method("load_state"):
 		sim.load_state(d)
+	# Chronicle lives at the top level of state.json (own schema). load_for
+	# attaches the watcher if needed and backfills from story_events when
+	# an older save has no chronicle yet.
+	if sim != null:
+		TankChronicleScript.load_for(sim, d)
 	if d.has("terrain") and world != null and world.has_method("terrain_apply_save_dict") \
 			and not TankConfig.rebuild_terrain_on_load:
 		world.terrain_apply_save_dict(d["terrain"])
@@ -137,6 +147,11 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 		var terrain_d: Dictionary = world.terrain_to_save_dict()
 		if not terrain_d.is_empty():
 			state_d["terrain"] = terrain_d
+	# Tank chronicle (story chapters) — top-level key, own schema version.
+	if sim != null:
+		var chron: Dictionary = TankChronicleScript.save_for(sim)
+		if not chron.is_empty():
+			state_d["chronicle"] = chron
 	# Stamp the schema version so this file can be migrated or refused later
 	# (BROAD_DIRECTIONS #4). Must happen before sanitize_for_json so the
 	# stamp survives into the payload.

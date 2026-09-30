@@ -26,6 +26,16 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 	emergent_growth = true
 	sway_amplitude = 0.0
 	params["sway_amplitude"] = 0.0
+	if params.has("radius_step"):
+		radius_step = float(params["radius_step"])
+	if params.has("height_step"):
+		height_step = float(params["height_step"])
+	if params.has("radius_cap"):
+		radius_cap = float(params["radius_cap"])
+	if params.has("max_horizontal_extent"):
+		max_horizontal_extent = float(params["max_horizontal_extent"])
+	if params.has("tank_wall_margin"):
+		tank_wall_margin = float(params["tank_wall_margin"])
 	_world_pos = global_position
 	super.init(initial_height, params)
 	rotation = Vector3.ZERO

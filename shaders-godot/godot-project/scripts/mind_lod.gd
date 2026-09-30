@@ -10,8 +10,10 @@ extends RefCounted
 #
 #   T0 reflex-only · T1 +Global Workspace · T2 +world-model · T3 +LLM voice
 #
-# Scope: this is the pure tier model + assignment (tested). Wiring sim_driver /
-# mind_cycle to actually skip phases by tier is the follow-up integration.
+# Wired: sim_driver assigns f._mind_lod_tier each tick (tier_for_hysteresis),
+# mind_cycle snapshots it per cycle (_cycle_lod_tier) and gates attention /
+# bind / encode / post-cycle phases on it, and MindBrainPool ships it to the
+# worker with each job.
 
 const T0_REFLEX: int = 0
 const T1_WORKSPACE: int = 1

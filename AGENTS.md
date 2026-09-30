@@ -71,12 +71,16 @@ All the same project.
   block (comment-free, all 11 present, correct load order). Put the rationale in
   a doc, not in the ini.
 - **Compile-check everything fast:** `dev/compile_check.gd` loads every script in
-  `scripts/` and reports parse failures — a few seconds, versus minutes for the
+  `scripts/` and `dev/` and reports parse failures — a few seconds, versus minutes for the
   full smoke suite. (It used to under-report: a non-null `ResourceLoader.load()`
   counted as success, but Godot returns a non-null GDScript for a script that
   FAILED to compile, so hard parse errors read as "0 failed". It now checks
   `can_instantiate()`.) Run it after any broad edit:
   `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://dev/compile_check.gd`.
+  **The project is at zero GDScript warnings:** `./scripts/check_warnings.sh`
+  reruns it under `--debug` and fails on any analyzer WARNING in `scripts/` or
+  `dev/` (CI runs it too) — fix the warning, or put a targeted
+  `@warning_ignore("<code>")` on a deliberate case (e.g. fields read via `get()`).
   **New `class_name`s need a project rescan** before they resolve headlessly
   (`--headless --path <project> --editor --quit` rebuilds
   `.godot/global_script_class_cache.cfg`); without it you get
@@ -97,7 +101,7 @@ All the same project.
   Timing-sensitive perf smokes are forced serial: they measure wall-clock, so a
   parallel run starves them into false failures (`smoke_perf_contract` sits at
   ~460 ms against a 490 ms ceiling).
-- **`scripts/smoke_baseline.txt` holds 7 known failures.** The suite gates
+- **`scripts/smoke_baseline.txt` holds the known failures (3 as of v0.2.35).** The suite gates
   *regressions*: a NEW failure exits 1, and so does a baselined smoke that
   starts **passing** — delete its line when you fix it. `--strict` ignores the
   baseline. It is a holding pen, not a place to hide failures.

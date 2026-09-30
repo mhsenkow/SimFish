@@ -5,12 +5,13 @@ extends RefCounted
 # batched fish cognition on WorkerThreadPool (brain thread spine).
 
 const _MindCycleScript = preload("res://scripts/mind_cycle.gd")
-const _FeltSelfLayerScript = preload("res://scripts/felt_self_layer.gd")
 const _MindWorkerCfgScript = preload("res://scripts/mind_worker_cfg.gd")
 const _TankConfigWarnScript = preload("res://scripts/tank_config_warn.gd")
 
 static var _mutex: Mutex = Mutex.new()
-static var _pending_jobs: Array = []
+# fish_id -> latest job. Keyed so a fish queued again while the previous batch
+# is still running replaces its stale job instead of piling up duplicates.
+static var _pending_jobs: Dictionary = {}
 static var _results: Dictionary = {}  # fish_id -> {ms, proxy}
 static var _task_id: int = -1
 static var _snap_banks: Array = [{}, {}]
@@ -19,10 +20,12 @@ static var _worker_cfg: Dictionary = {}
 static var _in_worker: bool = false
 static var _stats: Dictionary = {
 	"queued": 0, "applied": 0, "worker_batches": 0, "worker_jobs": 0,
+	"deferred_flushes": 0,
 }
 
 
 static func reset_for_test() -> void:
+	_join_inflight()
 	_mutex.lock()
 	_pending_jobs.clear()
 	_results.clear()
@@ -31,7 +34,8 @@ static func reset_for_test() -> void:
 	_snap_write_idx = 0
 	_worker_cfg.clear()
 	_in_worker = false
-	_stats = {"queued": 0, "applied": 0, "worker_batches": 0, "worker_jobs": 0}
+	_stats = {"queued": 0, "applied": 0, "worker_batches": 0, "worker_jobs": 0,
+			"deferred_flushes": 0}
 	_mutex.unlock()
 
 
@@ -125,8 +129,10 @@ static func apply_pending(f: Fish, ms: MindState) -> bool:
 	if not (packed is Dictionary):
 		return false
 	var result: Dictionary = packed as Dictionary
-	var proxy: MindFishProxy = MindFishProxy.from_dict(result.get("proxy", {}))
-	proxy.apply_mind_to(f)
+	# The result crossed the thread boundary and is owned here alone: adopt its
+	# containers instead of deep-copying them twice more.
+	var proxy: MindFishProxy = MindFishProxy.from_dict(result.get("proxy", {}), true)
+	proxy.apply_mind_to(f, true)
 	var ms_dict: Variant = result.get("ms", null)
 	if ms is MindState and ms_dict is Dictionary:
 		ms.from_dict(ms_dict as Dictionary)
@@ -150,7 +156,7 @@ static func queue_cognition(f: Fish, ms: MindState, dt: float) -> void:
 		"tier": tier,
 	}
 	_mutex.lock()
-	_pending_jobs.append(job)
+	_pending_jobs[job["fish_id"]] = job
 	_mutex.unlock()
 	_stats["queued"] = int(_stats.get("queued", 0)) + 1
 
@@ -159,21 +165,38 @@ static func flush_tick() -> void:
 	if not enabled():
 		return
 	poll()
+	# Exactly one batch in flight. Launching a second one used to overwrite
+	# _task_id (the first task was never joined) and run two workers over the
+	# same statics — the soak crash. Back-pressure instead: keep the jobs
+	# (latest per fish) and launch once the running batch has joined.
+	if _task_id >= 0:
+		_stats["deferred_flushes"] = int(_stats.get("deferred_flushes", 0)) + 1
+		return
 	_mutex.lock()
 	if _pending_jobs.is_empty():
 		_mutex.unlock()
 		return
-	var batch: Array = _pending_jobs.duplicate(true)
+	var batch: Array = _pending_jobs.values()
 	_pending_jobs.clear()
 	var read_idx: int = _snap_write_idx
 	_snap_write_idx = 1 - _snap_write_idx
 	var sim_copy: Dictionary = (_snap_banks[read_idx] as Dictionary).duplicate(true)
 	_mutex.unlock()
 	batch.sort_custom(_spatial_job_less)
+	# Main thread, no batch running: safe point to swap in this batch's
+	# immutable config snapshot.
+	var cfg_v: Variant = sim_copy.get("worker_cfg", null)
+	_MindWorkerCfgScript.publish(cfg_v as Dictionary if cfg_v is Dictionary else _worker_cfg)
 	_task_id = WorkerThreadPool.add_task(_worker_run_batch.bind(batch, sim_copy))
 	_stats["worker_batches"] = int(_stats.get("worker_batches", 0)) + 1
 	_stats["worker_jobs"] = int(_stats.get("worker_jobs", 0)) + batch.size()
 	poll()
+
+
+static func _join_inflight() -> void:
+	if _task_id >= 0:
+		WorkerThreadPool.wait_for_task_completion(_task_id)
+		_task_id = -1
 
 
 static func poll() -> void:
@@ -192,13 +215,11 @@ static func wait_for_batch(timeout_ms: int = 5000) -> bool:
 	return _task_id < 0
 
 
+# Runs on a WorkerThreadPool thread. Touches no Node/scene-tree API and writes
+# no shared static except _results (under _mutex): config comes from the
+# immutable MindWorkerCfg snapshot published by flush_tick before launch.
 static func _worker_run_batch(batch: Array, sim_snap: Dictionary) -> void:
 	_in_worker = true
-	if sim_snap.get("worker_cfg") is Dictionary:
-		_worker_cfg = (sim_snap["worker_cfg"] as Dictionary).duplicate(true)
-	_MindWorkerCfgScript.begin_batch(_worker_cfg)
-	_FeltSelfLayerScript.set_worker_felt_self_override(_worker_cfg.get("felt_self_enabled", true))
-	_MindCycleScript.set_worker_workspace_enabled(_worker_cfg.get("workspace_enabled", true))
 	var sim_host: MindSimSnap = MindSimSnap.from_dict(sim_snap)
 	var out: Dictionary = {}
 	for job_v in batch:
@@ -208,7 +229,8 @@ static func _worker_run_batch(batch: Array, sim_snap: Dictionary) -> void:
 		var fid: String = str(job.get("fish_id", ""))
 		if fid == "":
 			continue
-		var proxy: MindFishProxy = MindFishProxy.from_dict(job.get("proxy", {}))
+		# Jobs are handed over whole (flush_tick keeps no reference): adopt.
+		var proxy: MindFishProxy = MindFishProxy.from_dict(job.get("proxy", {}), true)
 		var ms: MindState = MindState.new()
 		ms.from_dict(job.get("ms", {}))
 		var dt: float = float(job.get("dt", 0.1))
@@ -217,10 +239,7 @@ static func _worker_run_batch(batch: Array, sim_snap: Dictionary) -> void:
 		proxy._mind_lod_tier = tier
 		_MindCycleScript.begin_cycle(proxy, sim_host)
 		_MindCycleScript.run_attention_phase_worker(proxy, sim_host, ms, dt)
-		out[fid] = {"proxy": proxy.to_dict(), "ms": ms.to_dict()}
-	_FeltSelfLayerScript.set_worker_felt_self_override(null)
-	_MindCycleScript.set_worker_workspace_enabled(null)
-	_MindWorkerCfgScript.end_batch()
+		out[fid] = {"proxy": proxy.to_dict(false), "ms": ms.to_dict()}
 	_in_worker = false
 	_mutex.lock()
 	for k in out.keys():

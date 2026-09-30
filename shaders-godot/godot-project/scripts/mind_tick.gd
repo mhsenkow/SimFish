@@ -3,7 +3,11 @@ extends RefCounted
 
 # PERFORMANCE_UNTHROTTLED #1/#6/#7/#25 — fixed-rate mind cadence, stagger, output lerp.
 
-const DEFAULT_HZ: float = 15.0
+# The sim ticks at 10 Hz, so a mind cadence above that can't be honoured (the
+# old 15 Hz default made every fish's accumulator grow without bound and the
+# mind ran every tick regardless of the setting). 5 Hz = every other sim tick,
+# staggered across fish, so mind cost now scales with the setting.
+const DEFAULT_HZ: float = 5.0
 const SLOW_LANE_SCALE: float = 0.5  # #25 idle-tank half cadence
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 
@@ -102,26 +106,44 @@ static func idle_slow_mult(sim: Node) -> float:
 	return SLOW_LANE_SCALE
 
 
+# Well-mixed [0,1) phase for a key. Raw String.hash() of sequential ids
+# ("e_1", "e_2", ...) clusters mod small N, which bunched every fish onto the
+# same tick; Knuth multiplicative mixing + the high bits spreads them.
+static func phase01(key: String) -> float:
+	# Mask to 31 bits first so the product stays inside int64.
+	var h: int = ((hash(key) & 0x7FFFFFFF) * 2654435761) & 0xFFFFFFFF
+	return float(h >> 22) / 1024.0
+
+
 static func init_fish(f) -> void:
-	if f.get("_mind_stagger") == null:
-		var hz: float = maxf(target_hz(), 1.0)
-		var slot: int = absi(hash(str(f.id))) % int(hz)
-		f._mind_stagger = float(slot) / hz
-		f._mind_accum = f._mind_stagger * mind_dt()
+	# Fish declares `_mind_stagger: float = -1.0` (unset). The old `== null`
+	# test never fired on a typed float, so no fish was ever staggered and
+	# every mind ran on the same tick.
+	var st: Variant = f.get("_mind_stagger")
+	if st == null or float(st) < 0.0:
+		# Continuous phase in [0,1) from the id — spreads fish evenly over
+		# however many sim ticks one mind step spans.
+		f._mind_stagger = phase01(str(f.id))
+		f._mind_accum = float(f._mind_stagger) * mind_dt()
 
 
 static func advance(f, sim, dt: float) -> Dictionary:
 	if not enabled():
 		return {"run": true, "mind_dt": dt}
 	init_fish(f)
-	var step: float = mind_dt() * idle_slow_mult(sim)
+	var step: float = mind_dt() / idle_slow_mult(sim)
 	if f.is_guardian or (f.get("fish_name") != null and str(f.fish_name) != ""):
 		step = mind_dt()
+	# At most one mind step per sim tick: a step shorter than dt is stretched
+	# to dt, so a cadence above the tick rate means "every tick" with the real
+	# elapsed dt instead of an ever-growing backlog.
+	step = maxf(step, dt)
 	f._mind_accum = float(f._mind_accum) + dt
 	var run: bool = false
 	var used_dt: float = dt
 	if f._mind_accum >= step:
-		f._mind_accum -= step
+		# Carry the remainder for phase, but never bank more than one step.
+		f._mind_accum = minf(float(f._mind_accum) - step, step)
 		run = true
 		used_dt = step
 		_stats["ticks"] = int(_stats.get("ticks", 0)) + 1

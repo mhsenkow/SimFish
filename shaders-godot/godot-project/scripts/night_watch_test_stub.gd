@@ -11,9 +11,12 @@ var fish: Array = []
 var day_phase: float = 0.78
 var dissolved_o2: float = 0.9
 var stability: float = 0.85
+@warning_ignore("unused_private_class_variable")
 var _away_dream_count: int = 0
 var story_events: Array = []
+@warning_ignore("unused_private_class_variable")
 var _spark_night_cathedral: bool = false
+@warning_ignore("unused_private_class_variable")
 var _tank_mind: Dictionary = {}
 
 

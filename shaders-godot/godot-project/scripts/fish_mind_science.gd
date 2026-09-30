@@ -7,6 +7,7 @@ const FishMind = preload("res://scripts/fish_mind.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 const SimRngScript = preload("res://scripts/sim_rng.gd")
+const FishSocial = preload("res://scripts/fish_social.gd")
 
 
 # Panksepp primary-process read (#21).
@@ -164,8 +165,13 @@ static func tick_theory_of_mind(f, neighbors: Array) -> void:
 			facing = other.heading.normalized().dot(to_me / d)
 		var closing: float = float(rec.get("prev_d", d)) - d
 		var hd: Vector3 = rec.get("hd", Vector3.ZERO) if rec.get("hd") is Vector3 else Vector3.ZERO
+		# The skip-when-unchanged gate must also watch DISTANCE: a neighbour
+		# charging in a straight line at constant speed keeps heading and speed
+		# fixed, so gating on those alone meant the most dangerous behaviour
+		# (a steady charge) was never observed and never learned (charge 0.00).
 		var moved: bool = hd.distance_squared_to(other.heading) > TOM_DELTA_EPS * TOM_DELTA_EPS \
-				or absf(float(rec.get("sp", other.speed)) - other.speed) > TOM_DELTA_EPS
+				or absf(float(rec.get("sp", other.speed)) - other.speed) > TOM_DELTA_EPS \
+				or absf(closing) > TOM_DELTA_EPS
 		if moved or not f._tom_pred.has(oid):
 			var aggressive: bool = (label == "threat" or label == "dominant") \
 					and facing > 0.4 and closing > 0.0
@@ -216,6 +222,20 @@ static func collect_predict_bid(f) -> Dictionary:
 
 static func tick_mate_grief(f: Fish, dt: float, mate_alive: bool) -> void:
 	if f._mate_id == "":
+		# Fish._clear_partner_refs_on_death() wipes the survivor's _mate_id the
+		# instant the mate dies, so the branch below could never fire. The
+		# social graph (FishSocial.on_death) records the loss and already
+		# applies the mood hit, so here we only MIRROR its level for a lost
+		# mate (no second mood/arousal hit) and seed the longing residue once.
+		var g: Dictionary = FishSocial.grieving_for(f)
+		var lvl: float = float(g.get("level", 0.0))
+		var gid: String = str(g.get("id", ""))
+		if lvl > 0.0 and gid != "" and FishSocial.has_tag(f, gid, "mate"):
+			var prev_m: float = f._mate_grief
+			f._mate_grief = maxf(f._mate_grief - dt * 0.04, lvl)
+			if prev_m < 0.35 and f._mate_grief >= 0.35:
+				f._longing_residue = clampf(float(f.get("_longing_residue") if f.get("_longing_residue") != null else 0.0) + 0.35, 0.0, 1.0)
+			return
 		f._mate_grief = maxf(0.0, f._mate_grief - dt * 0.05)
 		return
 	if not mate_alive and f._mate_grief < 1.0:

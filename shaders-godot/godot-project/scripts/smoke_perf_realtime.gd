@@ -131,8 +131,10 @@ func _initialize() -> void:
 	for _i in 60:
 		_MindTickScript.advance(cad_fish, rp_sim, 1.0 / 60.0)
 	var st: Dictionary = _MindTickScript.stats()
-	_assert(failed, int(st.get("ticks", 0)) >= 12 and int(st.get("ticks", 0)) <= 18,
-			"15 Hz mind cadence (~15 ticks/s)")
+	# 1 s of 60 Hz frames -> ~target_hz mind ticks (default 5 Hz; stagger ±1).
+	var want_ticks: int = int(round(minf(_MindTickScript.target_hz(), 60.0)))
+	_assert(failed, absi(int(st.get("ticks", 0)) - want_ticks) <= 2,
+			"mind cadence ~%d ticks/s (got %d)" % [want_ticks, int(st.get("ticks", 0))])
 	PerfGovernor.record_ledger(1, int(st.get("ticks", 0)) * 1000, int(st.get("skipped_frames", 0)))
 	# #95 — full brain pool roundtrip (attention + bind + encode on worker)
 	var sim_bp: SimDriver = SimDriver.new()
@@ -262,13 +264,13 @@ func _initialize() -> void:
 	MindBoidsBuffer.reset_for_test()
 	_assert(failed, _MindBoidsComputeScript.smoke_ok(), "gpu/cpu boids compute")
 	PerfGovernor.record_ledger(57, 1000, 850)
-	var objs_before: int = Performance.get_monitor(Performance.OBJECT_COUNT)
+	var objs_before: int = int(Performance.get_monitor(Performance.OBJECT_COUNT))
 	for _a in 120:
 		GlobalWorkspace.run_competition([
 			{"label": "food", "salience": 0.72, "coalition": ["food"], "coal_mask": 1},
 			{"label": "threat", "salience": 0.68, "coalition": ["threat"], "coal_mask": 4},
 		])
-	var objs_after: int = Performance.get_monitor(Performance.OBJECT_COUNT)
+	var objs_after: int = int(Performance.get_monitor(Performance.OBJECT_COUNT))
 	_assert(failed, objs_after <= objs_before + 2, "workspace competition alloc ratchet")
 	var lod_fish: Fish = Fish.new()
 	root.add_child(lod_fish)

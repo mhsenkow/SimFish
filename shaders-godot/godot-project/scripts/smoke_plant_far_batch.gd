@@ -24,6 +24,7 @@ func _initialize() -> void:
 		var batch: VoxelBatch = plant._ensure_foliage_batch()
 		for vi in int(ceil(float(FarBatchScript.MIN_INSTANCES)
 				/ float(FarBatchScript.MIN_FAR_PLANTS))):
+			@warning_ignore("integer_division")
 			fixture_handles.append(batch.add(Transform3D(Basis().scaled(Vector3.ONE * 0.08),
 				Vector3(float(vi % 10) * 0.1, float(vi / 10) * 0.1, 0.0)),
 				Color.GREEN))
@@ -42,10 +43,10 @@ func _initialize() -> void:
 			"measured profitable mirror enables global batch")
 		TestSupport.check(failed, not plants[0]._foliage_batch.mmi.visible,
 			"private batch hides only after successful mirror")
-	var measured_instances: int = far_batch.last_instance_count
-	var measured_saved_draws: int = far_batch.last_saved_draws
-	var measured_usec: int = far_batch.last_rebuild_usec
-	var measured_gate: bool = far_batch.enabled_by_profile
+	var _measured_instances: int = far_batch.last_instance_count
+	var _measured_saved_draws: int = far_batch.last_saved_draws
+	var _measured_usec: int = far_batch.last_rebuild_usec
+	var _measured_gate: bool = far_batch.enabled_by_profile
 
 	far_batch.update_far_batch([], camera, FarBatchScript.REBUILD_INTERVAL_S)
 	TestSupport.check(failed, not far_batch.enabled_by_profile, "small population falls back")

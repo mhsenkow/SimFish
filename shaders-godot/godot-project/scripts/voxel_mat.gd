@@ -377,6 +377,8 @@ static func make_substrate_caustic(color: Color, material_id: int = 0) -> Shader
 	m.set_shader_parameter("material_id", material_id)
 	m.set_shader_parameter("palette_saturation", 0.82)
 	m.set_shader_parameter("blob_shadow_max", 16 if _shader_perf_tier >= 2 else 32)
+	# Baked two-layer caustic tile on every tier (see baked_caustics.gd).
+	_BakedCaustics.apply_to_material(m, _shader_perf_tier)
 	_sub_caustic_mat_cache[cache_key] = m
 	return m
 
@@ -470,6 +472,7 @@ static func make_water(shallow: Color, deep: Color, floor_y: float, surface_y: f
 	m.set_shader_parameter("deep_color", deep)
 	m.set_shader_parameter("water_floor_y", floor_y)
 	m.set_shader_parameter("water_surface_y", surface_y)
+	_BakedCaustics.apply_to_material(m, _shader_perf_tier)
 	return m
 
 
@@ -1009,6 +1012,13 @@ const WATER_EXTINCTION_DEFAULT: float = 0.62
 # the horizontal wash — the thing that turns the tank cyan when `strength`
 # is raised instead — is untouched.
 const WATER_DEPTH_GAIN_DEFAULT: float = 2.6
+# In-water view-path gain (iaq_water_depth.y). The view half of the light path
+# is now measured in water — fragment to the tank wall the camera looks through
+# — rather than approximated from camera distance, so it is 0 at the front glass
+# and the full tank depth at the back wall. 2.4 puts the back wall of an 8-deep
+# tank at ~68% red / ~93% blue transmittance with ~23% in-scatter: the far side
+# of the tank visibly recedes into blue-green while the front stays crisp.
+const WATER_VIEW_GAIN_DEFAULT: float = 2.4
 
 
 # Pure: water state in, the two packed uniforms out. Split from the push so it
@@ -1048,14 +1058,24 @@ static func water_transmittance(absorb_k: float, depth: float,
 
 
 # strength 0 disables the effect entirely (room shots, potato tier, tests).
+# tank_half_w / tank_half_d publish the water volume's footprint so shaders can
+# measure the in-water view path; 0 keeps the legacy camera-distance term.
 static func push_water_column(surface_y: float, strength: float,
 		tannins: float = 0.0, turbidity: float = 0.0,
-		depth_gain: float = WATER_DEPTH_GAIN_DEFAULT) -> void:
+		depth_gain: float = WATER_DEPTH_GAIN_DEFAULT,
+		tank_half_w: float = 0.0, tank_half_d: float = 0.0) -> void:
 	var u: Array = water_column_uniforms(surface_y, strength, tannins, turbidity)
 	RenderingServer.global_shader_parameter_set("iaq_water_absorb", u[0])
 	RenderingServer.global_shader_parameter_set("iaq_water_body", u[1])
 	RenderingServer.global_shader_parameter_set(
-		"iaq_water_depth", Vector4(maxf(depth_gain, 0.01), 0.0, 0.0, 0.0))
+		"iaq_water_depth", water_depth_uniform(depth_gain, tank_half_w, tank_half_d))
+
+
+# Pure: x = depth gain, y = in-water view gain, zw = tank half extents.
+static func water_depth_uniform(depth_gain: float, tank_half_w: float,
+		tank_half_d: float) -> Vector4:
+	return Vector4(maxf(depth_gain, 0.01), WATER_VIEW_GAIN_DEFAULT,
+		maxf(tank_half_w, 0.0), maxf(tank_half_d, 0.0))
 
 
 static func disable_water_column() -> void:

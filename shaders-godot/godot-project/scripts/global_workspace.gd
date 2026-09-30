@@ -17,6 +17,7 @@ const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
 const MindSoul = preload("res://scripts/mind_soul.gd")
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
 const _MindCacheStatsScript = preload("res://scripts/mind_cache_stats.gd")
 const _MindSimSnapScript = preload("res://scripts/mind_sim_snap.gd")
 const _MindBidPoolScript = preload("res://scripts/mind_bid_pool.gd")
@@ -62,6 +63,8 @@ static func _coalitions_overlap(a: Array, b: Array, mask_a: int, mask_b: int) ->
 
 const _BID_EPS: float = 0.02  # PERFORMANCE_UNTHROTTLED #4
 const SLOW_LANE_HZ: float = 3.0
+const ALLOSTASIS_STRESS: float = 0.6
+const _EXPLORE_LABELS: Array[String] = ["free_energy", "novelty", "uncertainty"]
 const DIRTY_FEED: int = 1
 const DIRTY_KEEPER: int = 2
 const DIRTY_DAY: int = 4
@@ -214,6 +217,11 @@ static func _collect_slow_bids(f, _sim, dl: float, use_efe: bool) -> Array:
 	var schb: Dictionary = EpisodicMemory.collect_schema_bid(f)
 	if not schb.is_empty() and float(schb.get("salience", 0.0)) > 0.05:
 		slow.append(schb)
+	# Learned beliefs: anticipate a feed the fish expects, or inspect where
+	# an expected one failed to happen (prediction error -> curiosity).
+	var lmb: Dictionary = FishLearnedMind.collect_bid(f)
+	if not lmb.is_empty():
+		slow.append(_bid(f, str(lmb["label"]), float(lmb["salience"]), lmb["coalition"] as Array))
 	if dl < 0.32 and f.stress < 0.4 and f.vigilance < 0.45:
 		var nq_s: float = 0.38
 		if use_efe:
@@ -268,6 +276,12 @@ static func collect_bids(f, _sim) -> Array:
 	if f.get("_bid_last_daylight") != null and absf(float(f._bid_last_daylight) - dl) > 0.08:
 		mark_bid_dirty(f, DIRTY_DAY)
 	f._bid_last_daylight = dl
+	# A lesion toggled since this fish's slow lane last ran invalidates it:
+	# otherwise an ablated module's bids linger from the cache (META #14).
+	var abl_gen: int = MindAblation.generation
+	if int(f.get_meta(&"_bid_abl_gen", 0)) != abl_gen:
+		f.set_meta(&"_bid_abl_gen", abl_gen)
+		mark_bid_dirty(f, DIRTY_DAY)
 	var slow_cache: Variant = f.get("_bid_slow_cache")
 	if _slow_lane_due(f) or not (slow_cache is Array) or (slow_cache as Array).is_empty():
 		f._bid_slow_cache = _collect_slow_bids(f, _sim, dl, use_efe)
@@ -277,7 +291,14 @@ static func collect_bids(f, _sim) -> Array:
 	elif f.get("_bid_slow_cache") is Array and not f._bid_decayed_this_cycle:
 		_decay_cached_bids(f._bid_slow_cache as Array, 1.0 / maxf(SLOW_LANE_HZ, 1.0))
 		f._bid_decayed_this_cycle = true
+	# The allostasis / dark-room guard is a gate on the fish's CURRENT state,
+	# not on the state when the slow lane last ran: a fish that just got
+	# frightened must stop sightseeing now, not up to 1/SLOW_LANE_HZ later.
+	var stressed_now: bool = f.stress >= ALLOSTASIS_STRESS
 	for sb in (f._bid_slow_cache if f.get("_bid_slow_cache") is Array else []):
+		if stressed_now and sb is Dictionary \
+				and _EXPLORE_LABELS.has(str((sb as Dictionary).get("label", ""))):
+			continue
 		bids.append(sb)
 	_append_registered(f, _sim, bids)
 	_apply_precision_and_mods(f, bids, _sim)
@@ -586,6 +607,13 @@ static func _bias_for(f, focus: String, salience: float) -> Vector3:
 				var pos: Variant = (f._episodic_retrieval_hint as Dictionary).get("pos", null)
 				if pos is Vector3 and (pos as Vector3).is_finite():
 					bias = ((pos as Vector3) - f.position).normalized() * mag * 0.7
+		"anticipate", "inspect":
+			# Learned-belief target: the spot the food usually turns up at.
+			var bt: Variant = FishLearnedMind.cue_target(f)
+			if bt is Vector3:
+				bias = ((bt as Vector3) - f.position).normalized() * mag
+			elif focus == "anticipate":
+				bias = Vector3(0.0, mag * 0.6, 0.0)
 		"free_energy":
 			# 1A — steer toward the high-uncertainty cell the world model wants to
 			# resolve (epistemic foraging); fall back to a gentle forward probe.

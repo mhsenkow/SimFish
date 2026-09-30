@@ -9,7 +9,7 @@ var dissolved_o2: float = 0.8
 var tank_age_s: float = 0.0
 var music_sweep: float = 0.0
 var music_beat_phase: float = 0.0
-var mind_cadence_hz: float = 15.0
+var mind_cadence_hz: float = MindTick.DEFAULT_HZ
 var mind_idle_mult: float = 1.0
 
 
@@ -54,7 +54,7 @@ static func from_dict(d: Dictionary) -> RefCounted:
 	snap.tank_age_s = float(d.get("tank_age_s", 0.0))
 	snap.music_sweep = float(d.get("music_sweep", 0.0))
 	snap.music_beat_phase = float(d.get("music_beat_phase", 0.0))
-	snap.mind_cadence_hz = float(d.get("mind_cadence_hz", 15.0))
+	snap.mind_cadence_hz = float(d.get("mind_cadence_hz", MindTick.DEFAULT_HZ))
 	snap.mind_idle_mult = float(d.get("mind_idle_mult", 1.0))
 	return snap
 

@@ -511,7 +511,6 @@ static func _inv_h_honesty(_host: Node) -> Dictionary:
 
 static func _inv_soul1_self_pred(_host: Node) -> Dictionary:
 	const MindSoul = preload("res://scripts/mind_soul.gd")
-	const GlobalWorkspace = preload("res://scripts/global_workspace.gd")
 	if not MindSoul.enabled():
 		return {"passed": true, "measured": "soul layer off"}
 	var f: Fish = Fish.new()
@@ -534,7 +533,6 @@ static func _inv_soul1_self_pred(_host: Node) -> Dictionary:
 
 
 static func _inv_soul2_pci(_host: Node) -> Dictionary:
-	const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
 	if not MindSoulPass3.enabled():
 		return {"passed": true, "measured": "soul layer off"}
 	var f: Fish = Fish.new()
@@ -551,12 +549,12 @@ static func _inv_soul2_pci(_host: Node) -> Dictionary:
 
 
 static func _inv_dg1_calibration(_host: Node) -> Dictionary:
-	var ord: Dictionary = DeltaG.calibration_ordering()
+	var ordering: Dictionary = DeltaG.calibration_ordering()
 	return {
-		"passed": bool(ord.get("passed", false)),
+		"passed": bool(ordering.get("passed", false)),
 		"measured": "goal=%.2f boids=%.2f noise=%.2f scripted=%.2f" % [
-			float(ord.get("goal", 0.0)), float(ord.get("boids", 0.0)),
-			float(ord.get("noise", 0.0)), float(ord.get("scripted", 0.0))],
+			float(ordering.get("goal", 0.0)), float(ordering.get("boids", 0.0)),
+			float(ordering.get("noise", 0.0)), float(ordering.get("scripted", 0.0))],
 	}
 
 
@@ -649,7 +647,7 @@ static func _scan_honesty_file(path: String, hits: PackedStringArray) -> void:
 			if idx == -1:
 				break
 			# Allow the honesty disclaimer itself and felt_self_layer's honest frame.
-			if banned == "is conscious" and text.substr(maxf(0, idx - 40), 80).find("not a claim") != -1:
+			if banned == "is conscious" and text.substr(maxi(0, idx - 40), 80).find("not a claim") != -1:
 				idx += banned.length()
 				continue
 			hits.append("%s:%d:%s" % [path.get_file(), _line_of(text, idx), banned])

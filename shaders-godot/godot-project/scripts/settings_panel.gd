@@ -873,7 +873,7 @@ func _build_ui() -> void:
 	ai_row2.add_child(md_lbl)
 	_ai_model_edit = LineEdit.new()
 	_ai_model_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_ai_model_edit.placeholder_text = "llama3.2:3b"
+	_ai_model_edit.placeholder_text = "qwen2.5:3b"
 	_ai_model_edit.text_changed.connect(_on_ai_model_changed)
 	ai_row2.add_child(_ai_model_edit)
 	# Naming theme

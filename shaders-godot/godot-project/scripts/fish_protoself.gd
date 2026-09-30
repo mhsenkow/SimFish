@@ -13,10 +13,13 @@ static func enabled() -> bool:
 
 
 static func ensure(f) -> Dictionary:
+	# In place: this used to deep-copy the WHOLE felt-self dict (felt_now frames,
+	# binding, volition…) and swap it in on every call — valence()/texture()
+	# included — which cost a deep copy per read and orphaned any sub-dict
+	# reference another module was still holding (its writes were lost unless
+	# it re-stored them).
 	var fs_v: Variant = f.get("_felt_self")
-	var fs: Dictionary = {}
-	if fs_v is Dictionary:
-		fs = (fs_v as Dictionary).duplicate(true)
+	var fs: Dictionary = fs_v as Dictionary if fs_v is Dictionary else {}
 	if fs.get("protoself") == null or not (fs["protoself"] is Dictionary):
 		fs["protoself"] = {
 			"schema_version": SCHEMA_VERSION,
@@ -30,7 +33,7 @@ static func ensure(f) -> Dictionary:
 			"predicted_hunger": 0.3,
 			"body_changed_notice": "",
 		}
-	if f is Object:
+	if f is Object and not (fs_v is Dictionary):
 		(f as Object).set("_felt_self", fs)
 	return fs["protoself"] as Dictionary
 

@@ -145,6 +145,7 @@ func _initialize() -> void:
 	t.equals(out.get_height(), 180, "strip must not change height")
 	# The strip darkens the bottom; the top is untouched.
 	var top: Color = out.get_pixel(160, 10)
+	@warning_ignore("integer_division")
 	var bottom: Color = out.get_pixel(160, 180 - TankShare.CAPTION_STRIP_H / 2)
 	t.check(top.get_luminance() > bottom.get_luminance(),
 		"the caption strip must be darker than the image body (%.3f vs %.3f)"

@@ -56,7 +56,7 @@ func _init() -> void:
 	var wild: Vector2 = H.aim_from_world(Vector3(900.0, 0.0, -900.0), hw, hd)
 	t.check(absf(wild.x) < 1.0 and absf(wild.y) < 1.0,
 		"a wild aim drag stays inside the glass")
-	var hex: Array = [
+	var _hex: Array = [
 		Vector3(5.0, 0.0, 0.0), Vector3(2.5, 0.0, 5.0), Vector3(-2.5, 0.0, 5.0),
 		Vector3(-5.0, 0.0, 0.0), Vector3(-2.5, 0.0, -5.0), Vector3(2.5, 0.0, -5.0)]
 	for i in 24:

@@ -36,6 +36,7 @@ const HARDSCAPE_END := 31
 static func bank_for_index(i: int) -> int:
 	if i < 0 or i >= 48:
 		return BANK_NEUTRAL
+	@warning_ignore("integer_division")
 	return i / BANK_SIZE
 
 

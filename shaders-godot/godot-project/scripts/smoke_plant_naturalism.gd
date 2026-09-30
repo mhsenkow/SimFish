@@ -81,8 +81,8 @@ func _initialize() -> void:
 		"micro-vary differs across voxel keys")
 
 	# duplicate_mutate still works (wrapper).
-	var wrap: Dictionary = PlantGenome.duplicate_mutate(base, 3)
-	TestSupport.check(failed, int(wrap.generation) == 3, "duplicate_mutate sets generation")
+	var wrapped: Dictionary = PlantGenome.duplicate_mutate(base, 3)
+	TestSupport.check(failed, int(wrapped.generation) == 3, "duplicate_mutate sets generation")
 
 	host.queue_free()
 	if failed.is_empty():

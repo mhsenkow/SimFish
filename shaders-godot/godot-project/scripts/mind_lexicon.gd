@@ -14,22 +14,38 @@ const DECAY_RATE: float = 0.0008
 const PAIR_THRESHOLD: int = 3
 const TEACH_CONFIRM: int = 5
 const FADING_THRESHOLD: float = 0.12
+const FEED_PAIR_REFRACTORY_MS: int = 20000
 
 
-static func ensure_dict(f: Fish) -> Dictionary:
-	if f.get("_learned_words") == null or not (f._learned_words is Dictionary):
-		f._learned_words = {}
-	return f._learned_words
+# Accepts Fish or MindFishProxy (worker attention). Lexicon lives on
+# `_learned_words`; the proxy captures a read-only snapshot for bid boosts.
+static func ensure_dict(f) -> Dictionary:
+	if f == null:
+		return {}
+	var lw: Variant = f.get("_learned_words")
+	if lw == null or not (lw is Dictionary):
+		f.set("_learned_words", {})
+		return f.get("_learned_words") as Dictionary
+	return lw as Dictionary
 
 
+static var _punct_re: RegEx = null
+
+
+# First word, lower-cased, with surrounding punctuation stripped: a keeper who
+# types "dinner!" or "food?" means the same sound as "dinner" / "food". Without
+# the strip, a learned word was never recognised inside a real sentence.
 static func normalize_token(text: String) -> String:
 	var t: String = text.strip_edges().to_lower()
 	if t.is_empty():
 		return ""
 	var parts: PackedStringArray = t.split(" ", false)
-	if parts.is_empty():
-		return t.substr(0, 24)
-	return parts[0].substr(0, 24)
+	var first: String = parts[0] if not parts.is_empty() else t
+	if _punct_re == null:
+		_punct_re = RegEx.new()
+		_punct_re.compile("^[^\\p{L}\\p{N}]+|[^\\p{L}\\p{N}]+$")
+	first = _punct_re.sub(first, "", true)
+	return first.substr(0, 24)
 
 
 static func try_pair_on_feed(f: Fish, sim: Node) -> void:
@@ -37,6 +53,14 @@ static func try_pair_on_feed(f: Fish, sim: Node) -> void:
 		return
 	if not bool(sim.feed_anticipation_active()):
 		return
+	# One feeding = one pairing. This runs every mind tick while anticipation
+	# is active, so without a refractory window a single feed counted as
+	# several "pairings" and crossed PAIR_THRESHOLD by itself.
+	var prev: Variant = ensure_dict(f).get("dinner", null)
+	if prev is Dictionary:
+		var since: int = Time.get_ticks_msec() - int((prev as Dictionary).get("last_t", 0))
+		if since >= 0 and since < FEED_PAIR_REFRACTORY_MS:
+			return
 	_pair_event(f, "dinner", "food", sim)
 
 
@@ -142,7 +166,9 @@ static func _prune_weakest(lex: Dictionary) -> void:
 		lex.erase(worst)
 
 
-static func comprehend(f: Fish, token: String) -> bool:
+static func comprehend(f, token: String) -> bool:
+	if f == null:
+		return false
 	var lex: Dictionary = ensure_dict(f)
 	var entry: Variant = lex.get(normalize_token(token), null)
 	if entry is Dictionary:
@@ -150,7 +176,9 @@ static func comprehend(f: Fish, token: String) -> bool:
 	return false
 
 
-static func fading_token(f: Fish, token: String) -> bool:
+static func fading_token(f, token: String) -> bool:
+	if f == null:
+		return false
 	var lex: Dictionary = ensure_dict(f)
 	var entry: Variant = lex.get(normalize_token(token), null)
 	if entry is Dictionary:
@@ -165,7 +193,11 @@ static func tick_decay(f: Fish, dt: float) -> void:
 	var dead: Array[String] = []
 	for k in lex:
 		var e: Dictionary = lex[k]
-		e["strength"] = maxf(0.0, float(e.get("strength", 0.0)) - DECAY_RATE * dt * 60.0)
+		# Forgetting slows with practice: a word paired many times is sturdier.
+		# (Was DECAY_RATE*dt*60 = 0.048/s of real time, so even a saturated
+		# word was gone ~20 s after the lesson and nothing was ever retained.)
+		var practice: float = 1.0 + float(e.get("pairings", 0)) * 0.25
+		e["strength"] = maxf(0.0, float(e.get("strength", 0.0)) - DECAY_RATE * maxf(dt, 0.0) / practice)
 		if float(e["strength"]) <= 0.02:
 			dead.append(k)
 		else:

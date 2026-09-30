@@ -181,6 +181,7 @@ func _initialize() -> void:
 	var up := Image.create(96, 96, false, Image.FORMAT_RGB8)
 	for y in 96:
 		for x in 96:
+			@warning_ignore("integer_division")
 			up.set_pixel(x, y,
 				Color.WHITE if ((x / 3) + (y / 3)) % 2 == 0 else Color.BLACK)
 	var naive: float = float(Metrics.read(up, Rect2i(), 1, Metrics.HIGHLIGHT_LEVEL, 1)["stipple"])
@@ -210,6 +211,7 @@ func _halves(w: int, h: int) -> Image:
 	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
 	for y in h:
 		for x in w:
+			@warning_ignore("integer_division")
 			img.set_pixel(x, y, Color.WHITE if x < w / 2 else Color.BLACK)
 	return img
 

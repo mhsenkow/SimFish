@@ -12,8 +12,8 @@ func _initialize() -> void:
 	f.fish_name = "ProxySmoke"
 	f.familiarity = 0.5
 	var proxy: MindFishProxy = MindFishProxy.from_dict(MindFishProxy.capture(f))
-	const FishSignals = preload("res://scripts/fish_signals.gd")
-	proxy._signal_state = {"heard": FishSignals.FOOD, "heard_str": 0.6, "learn": {FishSignals.FOOD: 0.8}}
+	const _FishSignals = preload("res://scripts/fish_signals.gd")
+	proxy._signal_state = {"heard": _FishSignals.FOOD, "heard_str": 0.6, "learn": {_FishSignals.FOOD: 0.8}}
 	proxy._prospective = {"intent": "food", "t": 4.0}
 	var bold: float = proxy._trait("boldness")
 	if bold < 0.0 or bold > 1.0:

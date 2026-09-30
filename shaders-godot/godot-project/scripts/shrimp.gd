@@ -22,6 +22,7 @@ class_name Shrimp
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const ColonyMind = preload("res://scripts/colony_mind.gd")
 
 const MATURITY_FRY := 0
 const MATURITY_JUVENILE := 1
@@ -808,10 +809,12 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 
 	# Molting (adults only - fry are still growing into their first shell).
 	if maturity == MATURITY_ADULT:
-		_molt_timer = maxf(0.0, _molt_timer - dt)
+		# Colony moult nights drain the timer faster (synchronised moults).
+		_molt_timer = maxf(0.0, _molt_timer - dt * ColonyMind.shrimp_moult_mult(sim))
 		if _molt_timer <= 0.0:
 			_molt_timer = randf_range(MOLT_INTERVAL_MIN, MOLT_INTERVAL_MAX)
 			_molt_flash = 1.0
+			ColonyMind.note(sim, "shrimp", "moult")
 			_spawn_exuvia()
 			# Drop the exuvia at substrate as a small KIND_SHRIMP waste so
 			# snails / detritivores can graze it. sim_driver routes
@@ -858,6 +861,9 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				continue
 			var p: float = clampf(1.0 - sqrt(d2f) / 3.4, 0.0, 1.0)
 			predator_pressure = maxf(predator_pressure, p)
+	# Colony alarm: after a kill (or a predator loitering by the colony) the
+	# whole colony hides, not just the shrimp inside the fish's reach.
+	predator_pressure = maxf(predator_pressure, ColonyMind.shrimp_alarm(sim) * 0.6)
 	if predator_pressure > 0.08 and hunger < 0.86:
 		if _shelter_target == null:
 			_shelter_target = _pick_shelter_plant(plants)
@@ -1295,6 +1301,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		)
 		wander_dir.y = 0.0
 		target_velocity += wander_dir.normalized() * max_speed * 0.4
+		# Colony swarm: a fresh food drop pulls idle shrimp in together.
+		target_velocity += ColonyMind.shrimp_swarm_pull(sim, position, hunger) * max_speed
 
 	# Night-time dampening - shrimp slow by day; inherit the night when fish sleep (#33).
 	if sim != null:

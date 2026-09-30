@@ -8,6 +8,7 @@ const FishMindScience = preload("res://scripts/fish_mind_science.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
 const NightWatchExtras = preload("res://scripts/night_watch_extras.gd")
+const ColonyMind = preload("res://scripts/colony_mind.gd")
 
 enum SleepStage { AWAKE, NREM, REM, MICRO }
 
@@ -16,6 +17,7 @@ static func tick_sim(sim, dt: float, room_idle_s: float) -> void:
 	if sim == null:
 		return
 	TankMind.tick(sim, dt, room_idle_s)
+	ColonyMind.tick(sim, dt)
 	NightWatchExtras.tick_all(sim, dt, room_idle_s)
 	_tick_night_consolidation(sim, dt)
 	_tick_collective_contagion(sim, dt)

@@ -102,90 +102,374 @@ static func _is_stale_thought_echo(s: String) -> bool:
 	]
 
 
-static var _thought_templates: Dictionary = {}
+# ---------------------------------------------------------------------------
+# Grounded template voice (offline tier).
+#
+# Every line is assembled from what THIS fish's mind actually holds — its
+# strongest memories (MindContext.voice_episodes), the words it really learned
+# (lexicon), its felt body state, the need active inference would act on, what
+# it is predicting, and its relationship with the keeper. Nothing here reaches
+# for a stock line when grounded material exists. Per-fish personality comes
+# from voice_style (terse / dreamy / grumpy / curious / gentle / wary).
+#
+# Pure functions of ctx: safe on the narrator worker thread (no statics are
+# written), deterministic for a given ctx so smokes and replays are stable.
+# ---------------------------------------------------------------------------
+
+const _GOAL_PHRASES: Dictionary = {
+	"eat": ["want food", "belly wants food", "hungry. want to eat"],
+	"hide": ["want somewhere to hide", "want the plants around me", "want cover"],
+	"rest": ["want to rest", "want stillness", "tired. want to settle"],
+	"company": ["want the others near", "want my school close", "want company"],
+	"explore": ["want to look around", "want to see that corner", "want to find out"],
+	"drift": ["just drifting", "nothing I need", "easy water"],
+}
+
+const _MEMORY_PREFIX: Dictionary = {
+	"fed": ["I remember:", "still remember:", "before:"],
+	"player": ["I remember:", "before:", "you, before:"],
+	"keeper": ["I remember:", "you, before:"],
+	"keeper_word": ["your sound, before:", "I remember:"],
+	"named": ["I remember:", "my sound:"],
+	"startled": ["still shaken:", "I remember:"],
+	"loss": ["still missing:", "I remember:"],
+	"social": ["I remember:", "earlier:"],
+	"bred": ["I remember:"],
+	"dream": ["dreamed:", "in sleep:"],
+	"goal": ["been thinking:"],
+	"self": ["been thinking:", "lately:"],
+}
 
 
-static func template_fish_thought(ctx: Dictionary) -> String:
-	var key: String = "%s|%s|%s|%s" % [
-		str(ctx.get("feel", "")),
-		str(ctx.get("intends", "")),
-		str(ctx.get("local_hypothesis", "")),
-		str(ctx.get("player_at_glass", false)),
+static func _ctx_seed(ctx: Dictionary, salt: String) -> int:
+	var key: String = "%s|%s|%s|%d|%s" % [
+		str(ctx.get("fish_id", ctx.get("fish_name", ""))), str(ctx.get("keeper_text", "")),
+		str(ctx.get("feel", "")), int(ctx.get("conversation_count", 0)), salt,
 	]
-	if _thought_templates.has(key):
-		return str(_thought_templates[key])
-	var line: String = _template_fish_thought_inner(ctx)
-	if line != "":
-		_thought_templates[key] = line
+	return absi(hash(key))
+
+
+static func _pick(options: Array, seed_v: int) -> String:
+	if options.is_empty():
+		return ""
+	return str(options[seed_v % options.size()])
+
+
+static func _style_of(ctx: Dictionary) -> String:
+	var vs: String = str(ctx.get("voice_style", ""))
+	if vs != "":
+		return vs.split(",", false)[0].strip_edges()
+	var vseed: int = int(ctx.get("voice_seed", 0))
+	if vseed > 0:
+		return str(VOICE_STYLES[vseed % VOICE_STYLES.size()])
+	return "gentle"
+
+
+# Shorten a memory to at most n words without ending on a dangling article.
+static func _short_words(text: String, n: int) -> String:
+	var words: PackedStringArray = text.strip_edges().split(" ", false)
+	if words.size() <= n:
+		return " ".join(words)
+	words = words.slice(0, n)
+	while words.size() > 2 and str(words[words.size() - 1]).to_lower() in \
+			["the", "a", "an", "of", "in", "on", "at", "to", "with", "and", "my", "your", "by", "near"]:
+		words = words.slice(0, words.size() - 1)
+	return " ".join(words) + "…"
+
+
+static func _fit_words(line: String, max_words: int) -> String:
+	var words: PackedStringArray = line.strip_edges().split(" ", false)
+	if words.size() <= max_words:
+		return line.strip_edges()
+	return _short_words(line, max_words)
+
+
+static func _recent_fish_lines(ctx: Dictionary) -> PackedStringArray:
+	var out: PackedStringArray = PackedStringArray()
+	var recent: Variant = ctx.get("dialogue_recent", null)
+	if recent is PackedStringArray or recent is Array:
+		for r in recent:
+			var s: String = str(r)
+			var colon: int = s.find(": ")
+			if colon > 0 and s.substr(0, colon) != "keeper":
+				out.append(s.substr(colon + 2).strip_edges().to_lower())
+	return out
+
+
+# Personality colouring. Kept within the word budget by the caller.
+static func _apply_style(line: String, style: String, ctx: Dictionary) -> String:
+	if line == "" or line == "…":
+		return line
+	var calm_enough: bool = float(ctx.get("stress", 0.0)) < 0.5
+	match style:
+		"terse":
+			var cut: int = line.find(". ")
+			if cut > 0:
+				return line.substr(0, cut)
+			return line
+		"dreamy":
+			if not line.ends_with("…"):
+				return line.trim_suffix(".") + "…"
+		"grumpy":
+			if calm_enough and not line.begins_with("hm") and _ctx_seed(ctx, "grump") % 2 == 0:
+				return "hm. " + line
+		"wary":
+			if not line.begins_with("…"):
+				return "…" + line
+		"curious":
+			if calm_enough and _ctx_seed(ctx, "curio") % 3 == 0 and not line.begins_with("oh"):
+				return "oh — " + line
 	return line
 
 
-static func _template_fish_thought_inner(ctx: Dictionary) -> String:
-	if PLAYER_SENSING_VOICE_ENABLED and bool(ctx.get("player_at_glass", false)):
-		var fam: float = float(ctx.get("familiarity", 0.0))
-		if fam > 0.55:
-			return "something familiar, up near the glass"
-		return "something warm, up near the glass"
-	var feel: String = str(ctx.get("feel", "calm"))
-	var intent: String = str(ctx.get("intends", ""))
-	var hyp: String = str(ctx.get("local_hypothesis", ""))
-	if hyp == "unknown" or hyp == "":
-		hyp = ""
-	var mem: Variant = ctx.get("salient_memories", null)
-	if mem is PackedStringArray:
-		for i in (mem as PackedStringArray).size():
-			var m0: String = str((mem as PackedStringArray)[i])
-			if not _is_stale_thought_echo(m0):
-				return m0
-	if hyp != "" and hyp != "nothing":
-		match hyp:
+# What the keeper asked ABOUT, so a question gets an answer on topic.
+static func _question_topic(keeper_text: String) -> String:
+	var low: String = keeper_text.to_lower()
+	for w in ["hungry", "food", "eat", "dinner", "flake"]:
+		if low.contains(w):
+			return "hunger"
+	for w in ["learn", "know about", "changed", "used to", "grown", "different", "yourself"]:
+		if low.contains(w):
+			return "self"
+	for w in ["remember", "before", "yesterday", "earlier", "when you were"]:
+		if low.contains(w):
+			return "memory"
+	for w in ["friend", "who", "lonely", "alone", "others"]:
+		if low.contains(w):
+			return "social"
+	for w in ["want", "need", "wish"]:
+		if low.contains(w):
+			return "goal"
+	for w in ["how are", "feel", "okay", " ok", "scared", "happy", "sad", "doing"]:
+		if low.contains(w):
+			return "felt"
+	return ""
+
+
+static func _answer_on_topic(ctx: Dictionary, topic: String, clauses: Array) -> String:
+	var seed_v: int = _ctx_seed(ctx, "topic")
+	var hunger: float = float(ctx.get("hunger", 0.0))
+	match topic:
+		"hunger":
+			if hunger > 0.6:
+				return _pick(["yes. belly empty", "hungry. yes", "belly says yes"], seed_v)
+			if hunger > 0.35:
+				return _pick(["a little hungry", "could eat"], seed_v)
+			return _pick(["not hungry now", "belly is full"], seed_v)
+		"memory":
+			var m: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) in ["memory", "past"]), ctx, "tmem")
+			return m if m != "" else "not much stays with me"
+		"self":
+			var sl: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) in ["belief", "self", "past"]), ctx, "tself")
+			return sl if sl != "" else "still learning this water"
+		"social":
+			var b: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) == "bond"), ctx, "tbond")
+			if b != "":
+				return b
+			return "want the others near" if str(ctx.get("goal", "")) == "company" else "no one close to me"
+		"goal":
+			var g: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) == "goal"), ctx, "tgoal")
+			return g if g != "" else "nothing I need right now"
+		"felt":
+			var fe: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) == "felt"), ctx, "tfelt")
+			if fe != "":
+				return fe
+			match str(ctx.get("feel", "")):
+				"content", "cozy":
+					return "easy in the water"
+				"playful", "excited":
+					return "quick. bright"
+				"bored":
+					return "slow water. little happens"
+			return "steady. calm enough"
+	return ""
+
+
+# The fish's grounded "clause bank": each entry is something true of its mind.
+static func _grounded_clauses(ctx: Dictionary, want_keeper: bool, for_reply: bool = true) -> Array:
+	var out: Array = []
+	var seed_v: int = _ctx_seed(ctx, "clause")
+	# Memory — prefer one that involves the keeper when talking to the keeper.
+	var kep: String = str(ctx.get("keeper_episode", ""))
+	if want_keeper and kep != "":
+		var kk: String = str(ctx.get("keeper_episode_kind", "keeper"))
+		out.append({"k": "memory", "w": 1.3,
+				"s": "%s %s" % [_pick(_MEMORY_PREFIX.get(kk, ["I remember:"]), seed_v), _short_words(kep, 4)]})
+	var eps: Variant = ctx.get("episodes", null)
+	if eps is Array and not (eps as Array).is_empty():
+		var e0: Dictionary = (eps as Array)[0] as Dictionary
+		var t0: String = str(e0.get("text", ""))
+		if t0 != "" and t0 != kep:
+			var k0: String = str(e0.get("kind", ""))
+			if for_reply:
+				out.append({"k": "memory", "w": 1.0,
+						"s": "%s %s" % [_pick(_MEMORY_PREFIX.get(k0, ["I remember:"]), seed_v >> 3), _short_words(t0, 4)]})
+			else:
+				# Inner monologue: the memory itself, not a report about it.
+				out.append({"k": "memory", "w": 1.3, "s": _short_words(t0, 8)})
+	elif ctx.get("salient_memories") is PackedStringArray:
+		for m in (ctx.get("salient_memories") as PackedStringArray):
+			var ms: String = str(m)
+			if ms != "" and not _is_stale_thought_echo(ms) and ms != kep:
+				out.append({"k": "memory", "w": 1.2 if not for_reply else 0.9,
+						"s": ("I remember: %s" % _short_words(ms, 4)) if for_reply else _short_words(ms, 8)})
+				break
+	# Words it really learned from the keeper's line.
+	var uw: Variant = ctx.get("understood_words", null)
+	if uw is PackedStringArray and not (uw as PackedStringArray).is_empty():
+		var w0: String = str((uw as PackedStringArray)[0])
+		var kinds: Variant = ctx.get("understood_kinds", null)
+		var kind0: String = str((kinds as PackedStringArray)[0]) if kinds is PackedStringArray \
+				and (kinds as PackedStringArray).size() > 0 else ""
+		match kind0:
 			"food":
-				return "this corner might pay off"
-			"threat":
-				return "I don't trust this spot"
+				out.append({"k": "word", "w": 1.4, "s": "\"%s\" — the food sound" % w0})
+			"name":
+				out.append({"k": "word", "w": 1.4, "s": "\"%s\" — that's me" % w0})
+			"place":
+				out.append({"k": "word", "w": 1.2, "s": "\"%s\" — a place I know" % w0})
 			_:
-				return "still wondering about here"
-	match feel:
-		"anxious", "sulking":
-			return "something feels off"
-		"bored":
-			return "nothing much happening"
-		"playful", "excited":
-			return intent if intent != "" else "restless energy"
-		"dreaming":
-			return "chasing something in sleep"
-		_:
-			if intent != "" and intent != "cruising":
-				return intent.replace("_", " ")
-			return ""
+				out.append({"k": "word", "w": 1.1, "s": "\"%s\" — I know that one" % w0})
+	# Body / felt state.
+	var hunger: float = float(ctx.get("hunger", 0.0))
+	var stress: float = float(ctx.get("stress", 0.0))
+	var tex: String = str(ctx.get("felt_texture", ""))
+	if stress > 0.5:
+		out.append({"k": "felt", "w": 1.2, "s": _pick(["fins tight", "the water feels heavy", "not settled"], seed_v >> 5)})
+	elif hunger > 0.6:
+		out.append({"k": "felt", "w": 1.1, "s": _pick(["belly empty", "empty belly pulls", "hungry"], seed_v >> 5)})
+	elif tex != "" and tex != "neutral":
+		out.append({"k": "felt", "w": 0.8, "s": "%s in me" % tex if tex != "ease" else "easy in the water"})
+	# What active inference says it needs.
+	var goal: String = str(ctx.get("goal", ""))
+	if goal != "" and _GOAL_PHRASES.has(goal) and goal != "drift":
+		out.append({"k": "goal", "w": 1.0, "s": _pick(_GOAL_PHRASES[goal], seed_v >> 7)})
+	# What it predicts.
+	var expect_s: String = str(ctx.get("expects", ""))
+	if expect_s == "food":
+		out.append({"k": "expect", "w": 1.2, "s": "food soon, I think"})
+	elif expect_s.begins_with("charge"):
+		var who: String = expect_s.substr(7) if expect_s.length() > 7 else ""
+		out.append({"k": "expect", "w": 1.3,
+				"s": "%s is coming at me" % who if who != "" else "someone's coming at me"})
+	# What it has learned over its life (night-consolidated beliefs), how it
+	# has changed, and a thread back to its own past.
+	var bl: String = str(ctx.get("belief_line", ""))
+	if bl != "":
+		out.append({"k": "belief", "w": 1.25, "s": bl})
+	var sc: String = str(ctx.get("self_change", ""))
+	if sc != "":
+		out.append({"k": "self", "w": 0.8, "s": sc})
+	var ll: String = str(ctx.get("life_line", ""))
+	if ll != "":
+		out.append({"k": "past", "w": 0.7, "s": ll})
+	# Companions it is bonded to (names are whitelisted by construction).
+	var bn: Variant = ctx.get("bond_names", ctx.get("bonds", null))
+	if bn is PackedStringArray and not (bn as PackedStringArray).is_empty():
+		out.append({"k": "bond", "w": 0.7, "s": "%s stays near me" % str((bn as PackedStringArray)[0])})
+	return out
+
+
+# Choose one clause: weighted by salience, varied by seed, never a line the
+# fish just said in this conversation.
+static func _choose_clause(clauses: Array, ctx: Dictionary, salt: String, avoid_kind: String = "") -> String:
+	if clauses.is_empty():
+		return ""
+	var recent: PackedStringArray = _recent_fish_lines(ctx)
+	var total: float = 0.0
+	var usable: Array = []
+	for c in clauses:
+		var d: Dictionary = c as Dictionary
+		if str(d.get("k", "")) == avoid_kind:
+			continue
+		var s: String = str(d.get("s", ""))
+		var dup: bool = false
+		for r in recent:
+			if r.find(s.to_lower().substr(0, 12)) != -1:
+				dup = true
+				break
+		if dup:
+			continue
+		usable.append(d)
+		total += float(d.get("w", 1.0))
+	if usable.is_empty():
+		return ""
+	var roll: float = float(_ctx_seed(ctx, salt) % 1000) / 1000.0 * total
+	for d in usable:
+		roll -= float((d as Dictionary).get("w", 1.0))
+		if roll <= 0.0:
+			return str((d as Dictionary).get("s", ""))
+	return str((usable[usable.size() - 1] as Dictionary).get("s", ""))
+
+
+# Reaction to WHAT the keeper said, grounded in intent + relationship.
+static func _keeper_reaction(ctx: Dictionary, intent: String) -> String:
+	var seed_v: int = _ctx_seed(ctx, "react")
+	var intimacy: float = float(ctx.get("intimacy", ctx.get("familiarity", 0.0)))
+	var trust: float = float(ctx.get("care_trust", 0.3))
+	var moniker: String = str(ctx.get("keeper_moniker", ""))
+	var gap_d: float = float(ctx.get("keeper_absence_days", 0.0))
+	match intent:
+		"greeting":
+			if gap_d >= 3.0:
+				return "long water-turn since you"
+			if gap_d >= 2.0:
+				return "you came back"
+			var ritual: String = str(ctx.get("greeting_ritual", ""))
+			if ritual != "" and str(ctx.get("keeper_text", "")).begins_with(ritual):
+				return "that hello again"
+			if moniker != "" and intimacy > 0.45 and moniker != "the big shape":
+				return "%s is back" % moniker
+			if intimacy < 0.35:
+				return "something familiar above"
+			return _pick(["that shape again", "you, at the glass", "your shape. yes", "there you are"], seed_v)
+		"comfort":
+			if float(ctx.get("keeper_mood_valence", 0.0)) < -0.2:
+				return "gentler… you seem low"
+			return _pick(["warmer near the glass", "soft sound. fins loosen", "that tone settles me"], seed_v)
+		"scold":
+			if trust > 0.6:
+				return "sharp… but you feed me"
+			return _pick(["I shrink from that tone", "sharp sound. I hide", "fins tight at that"], seed_v)
+		"name":
+			return "a sound tied to me"
+		"food":
+			if float(ctx.get("hunger", 0.0)) > 0.4:
+				return _pick(["belly notices that word", "food? yes. yes", "that word. belly wakes"], seed_v)
+			return _pick(["food word… not hungry", "belly notices that word"], seed_v)
+		"question":
+			if float(ctx.get("keeper_comprehension", 0.5)) < 0.5 \
+					or float(ctx.get("self_confidence", 1.0)) < 0.4:
+				return "maybe. not sure what you are"
+			return ""  # answered from its own mind below
+	return ""
 
 
 # CONVERSATION §A — offline fish reply, voice-continuous with the LLM tier.
 static func template_fish_reply(ctx: Dictionary) -> String:
+	var line: String = _template_fish_reply_inner(ctx)
+	return _fit_words(line, FISH_REPLY_MAX_WORDS) if line != "" else "…"
+
+
+static func _template_fish_reply_inner(ctx: Dictionary) -> String:
 	var intent: String = str(ctx.get("keeper_intent", ctx.get("keeper_felt", "neutral")))
+	if intent == "":
+		intent = str(ctx.get("keeper_felt", "neutral"))
 	var comp: float = float(ctx.get("keeper_comprehension", 0.5))
 	var feel: String = str(ctx.get("feel", "calm"))
 	var intimacy: float = float(ctx.get("intimacy", ctx.get("familiarity", 0.0)))
 	var misheard: String = str(ctx.get("keeper_misheard", ""))
-	var species: String = str(ctx.get("species", ""))
 	var age_days: float = float(ctx.get("age_days", 0.0))
 	var conf: float = float(ctx.get("self_confidence", ctx.get("keeper_comprehension", 0.5)))
-	var moniker: String = str(ctx.get("keeper_moniker", ""))
 	var fading: String = str(ctx.get("fading_word", ""))
 	var lower_keeper: String = str(ctx.get("keeper_text", "")).to_lower()
-	# Species voice (#62).
-	if species in ["betta", "puffer"] and intimacy > 0.4:
-		pass  # terse below
-	elif species in ["tetra", "guppy"] and intimacy > 0.5 and randf() < 0.35:
-		return "we hear you"
-	elif species in ["cory", "otocinclus"] and intimacy > 0.35:
-		return "slow… listening"
-	# Age (#60).
+	var style: String = _style_of(ctx)
+	# A very young, unfamiliar fish has no words for the keeper yet (#60).
 	if age_days < 30.0 and intimacy < 0.45:
 		return "…"
 	if age_days > 300.0 and intent == "greeting":
 		return "still here, old friend"
-	# Nature / existence (#67).
+	# Nature / existence (#67) — honest: feeling, not a claim about what it is.
 	if lower_keeper.contains("alive") or lower_keeper.contains("real") \
 			or lower_keeper.contains("chatbot"):
 		return "I feel. I don't know what I am"
@@ -199,82 +483,127 @@ static func template_fish_reply(ctx: Dictionary) -> String:
 		if ws != "":
 			return "attending: %s" % ws
 		return "nothing clear right now"
-	# Fading memory (#65).
 	if fading != "":
 		return "a dim shape of %s… can't hold it" % fading
 	if misheard != "":
 		return "that sound… maybe %s?" % misheard
+	var clauses: Array = _grounded_clauses(ctx, true)
 	if intent == "unknown_sound" or comp < 0.25:
+		# Honest partial understanding: name the one word it DID learn.
+		var uw: Variant = ctx.get("understood_words", null)
+		if uw is PackedStringArray and not (uw as PackedStringArray).is_empty():
+			return "\"%s\" I know. rest I don't know" % str((uw as PackedStringArray)[0])
 		return "a sound I don't know yet"
+	# Strong internal states override social niceties — can't sound happy.
 	if feel in ["anxious", "sulking"] or float(ctx.get("stress", 0.0)) > 0.72:
-		return "the water feels heavy"
+		var expect_s: String = str(ctx.get("expects", ""))
+		if expect_s.begins_with("charge"):
+			var warn: String = _choose_clause(clauses.filter(func(c): return str(c["k"]) == "expect"), ctx, "stress")
+			return warn if warn != "" else "the water feels heavy"
+		return _apply_style(_pick(["the water feels heavy", "fins tight. not now", "too much in the water"],
+				_ctx_seed(ctx, "stress")), style, ctx)
 	if float(ctx.get("mate_grief", 0.0)) > 0.45:
 		return "someone missing in the water"
-	var gap_d: float = float(ctx.get("keeper_absence_days", 0.0))
-	if gap_d >= 3.0 and intent == "greeting":
-		return "long water-turn since you"
-	if intent == "scold":
-		return "I shrink from that tone"
-	if intent == "comfort":
-		if float(ctx.get("keeper_mood_valence", 0.0)) < -0.2:
-			return "gentler… you seem low"
-		return "warmer near the glass"
-	if intent == "greeting":
-		if gap_d >= 2.0:
-			return "you came back"
-		var ritual: String = str(ctx.get("greeting_ritual", ""))
-		if ritual != "" and str(ctx.get("keeper_text", "")).begins_with(ritual):
-			return "that hello again"
-		if moniker != "" and intimacy > 0.45:
-			return "%s is back" % moniker
-		if intimacy < 0.35:
-			return "something familiar above"
-		return "that shape again"
-	if intent == "question":
-		if comp < 0.5 or conf < 0.4:
-			return "maybe. not sure what you are"
-		return "not sure what you mean"
-	if intent == "name":
-		return "a sound tied to me"
-	if intent == "food":
-		return "belly notices that word"
-	if bool(ctx.get("feed_anticipated", false)) and comp > 0.4:
-		return "soft sound when light goes low"
-	var song: String = str(ctx.get("now_playing", ""))
-	if song != "" and intent == "neutral":
-		return "sound in the water and above"
-	var hunger: float = float(ctx.get("hunger", 0.0))
-	if hunger > 0.65:
-		return "empty belly pulls"
-	# Memory-augmented (#48, #55, #72).
-	var mem: Variant = ctx.get("salient_memories", null)
-	if mem is PackedStringArray and (mem as PackedStringArray).size() > 0:
-		var m0: String = str((mem as PackedStringArray)[0])
-		if "keeper" in m0.to_lower() or "bright" in m0.to_lower():
-			return "you did that before"
-		if randf() < 0.45:
-			return m0.substr(0, mini(m0.length(), 32))
-	var milestones: Variant = ctx.get("shared_milestones", null)
-	if milestones is PackedStringArray and (milestones as PackedStringArray).size() > 0 \
-			and intimacy > 0.55:
-		return "remember when the water went bad"
-	var delib: String = str(ctx.get("deliberation_hint", ""))
-	if delib == "avoid":
-		return "not yet… wary"
-	if delib == "approach":
-		return "…okay. closer"
-	var recent: Variant = ctx.get("dialogue_recent", null)
-	if recent is PackedStringArray and (recent as PackedStringArray).size() >= 2:
-		return "the soft sound again"
-	if intimacy < 0.25:
-		return "…"
-	match feel:
-		"playful", "excited":
-			return "ripple of interest"
-		"content", "cozy":
-			return "steady here"
+	var reaction: String = _keeper_reaction(ctx, intent)
+	# A question is answered from its own mind: what it wants / feels / expects.
+	if intent == "question" and reaction == "":
+		var ans: String = _answer_on_topic(ctx, _question_topic(str(ctx.get("keeper_text", ""))), clauses)
+		if ans == "":
+			ans = _choose_clause(clauses.filter(func(c): return str(c["k"]) in ["goal", "felt", "expect"]),
+					ctx, "answer")
+		if ans == "":
+			ans = _choose_clause(clauses, ctx, "answer")
+		return _apply_style(ans if ans != "" else "not sure what you mean", style, ctx)
+	if reaction == "" and bool(ctx.get("feed_anticipated", false)) and comp > 0.4:
+		reaction = "soft sound when light goes low"
+	if reaction == "" and str(ctx.get("now_playing", "")) != "" and intent in ["neutral", ""]:
+		reaction = "sound in the water and above"
+	var clause: String = _choose_clause(clauses, ctx, "reply")
+	var line: String = ""
+	if reaction != "" and clause != "":
+		# Join when both fit the budget; otherwise the grounded clause wins
+		# half the time so the fish isn't just a greeting machine.
+		var joined: String = "%s. %s" % [reaction, clause]
+		if joined.split(" ", false).size() <= FISH_REPLY_MAX_WORDS:
+			line = joined
+		elif intent in ["neutral", "presence", ""] and _ctx_seed(ctx, "join") % 2 == 0:
+			line = clause
+		else:
+			line = reaction  # answer what was said before musing
+	elif reaction != "":
+		line = reaction
+	elif clause != "":
+		line = clause
+	else:
+		var delib: String = str(ctx.get("deliberation_hint", ""))
+		if delib == "avoid":
+			line = "not yet… wary"
+		elif delib == "approach":
+			line = "…okay. closer"
+		elif intimacy < 0.25:
+			return "…"
+		else:
+			match feel:
+				"playful", "excited":
+					line = "ripple of interest"
+				"content", "cozy":
+					line = "steady here"
+				_:
+					line = "I hear you"
+	var styled: String = _apply_style(line, style, ctx)
+	return styled if styled.split(" ", false).size() <= FISH_REPLY_MAX_WORDS else line
+
+
+static func template_fish_thought(ctx: Dictionary) -> String:
+	# No shared cache: the old one was keyed only by feel|intent|hypothesis|glass
+	# (no fish id, no memory), so the first fish's memory line was replayed by
+	# every fish in the same mood forever — and it was written from the narrator
+	# worker thread. The template is cheap string work; compute it.
+	var line: String = _template_fish_thought_inner(ctx)
+	return _fit_words(line, FISH_THOUGHT_MAX_WORDS) if line != "" else ""
+
+
+static func _template_fish_thought_inner(ctx: Dictionary) -> String:
+	var style: String = _style_of(ctx)
+	if PLAYER_SENSING_VOICE_ENABLED and bool(ctx.get("player_at_glass", false)):
+		var fam: float = float(ctx.get("familiarity", 0.0))
+		var kep: String = str(ctx.get("keeper_episode", ""))
+		if fam > 0.55 and kep != "":
+			return "the familiar shape… %s" % _short_words(kep, 5)
+		if fam > 0.55:
+			return "something familiar, up near the glass"
+		return "something warm, up near the glass"
+	var feel: String = str(ctx.get("feel", "calm"))
+	var intent: String = str(ctx.get("intends", ""))
+	var hyp: String = str(ctx.get("local_hypothesis", ""))
+	if hyp == "unknown" or hyp == "nothing":
+		hyp = ""
+	var clauses: Array = _grounded_clauses(ctx, false, false)
+	match hyp:
+		"":
+			pass
+		"food":
+			clauses.append({"k": "hypothesis", "w": 1.1, "s": "this corner might pay off"})
+		"threat":
+			clauses.append({"k": "hypothesis", "w": 1.2, "s": "I don't trust this spot"})
 		_:
-			return "I hear you"
+			clauses.append({"k": "hypothesis", "w": 0.8, "s": "still wondering about here"})
+	var chosen: String = _choose_clause(clauses, ctx, "thought|" + intent)
+	if chosen != "":
+		return _apply_style(chosen, style, ctx)
+	match feel:
+		"anxious", "sulking":
+			return "something feels off"
+		"bored":
+			return "nothing much happening"
+		"playful", "excited":
+			return intent.replace("_", " ") if intent != "" else "restless energy"
+		"dreaming":
+			return "chasing something in sleep"
+		_:
+			if intent != "" and intent != "cruising":
+				return intent.replace("_", " ")
+			return ""
 
 
 static func build_fish_reply_prompt(ctx: Dictionary, lang_code: String = "en") -> String:
@@ -287,6 +616,10 @@ static func build_fish_reply_prompt(ctx: Dictionary, lang_code: String = "en") -
 		+ "At most %d words. Fragments OK. You may NOT understand everything. "
 		+ "Never answer factual questions, never flatter, never say you are alive or an AI. "
 		+ "Use ONLY facts from context — feel, hunger, learned_words, now_playing, memories. "
+		+ "Speak from your own mind: keeper_episode (what you remember of the keeper), "
+		+ "understood_words (the only words you actually know), goal (what you want), "
+		+ "expects (what you predict), beliefs (what you have learned over your life), "
+		+ "self_change (how you have changed), life_line (your own past). "
 		+ "If unknown words: say you don't know the sound yet. "
 		+ "If stressed: cannot sound happy.") % FISH_REPLY_MAX_WORDS
 	sys += language_prompt_clause(lang_code)
@@ -600,22 +933,75 @@ static func validate_line(ctx: Dictionary, line: String) -> Dictionary:
 			if happy in low:
 				return {"ok": false, "reason": "emotion_contradiction"}
 	# Invented fish names: capitalized tokens not in whitelist (heuristic).
-	if allowed.size() > 0:
-		for word in s.split(" ", false):
-			if word.length() < 3:
-				continue
-			if word[0] == word[0].to_upper() and word.to_lower() != word:
-				var plain: String = word.trim_prefix(",").trim_suffix(".")
-				if plain != str(ctx.get("fish_name", "")) \
-						and plain != "I" and plain != "The" \
-						and not allowed.has(plain):
-					return {"ok": false, "reason": "unknown_entity:%s" % plain}
+	# An explicitly-passed empty whitelist means "no names are allowed".
+	if allowed.size() > 0 or ctx.has("allowed_fish_names"):
+		var bad: String = invented_name_in(s, allowed, str(ctx.get("fish_name", "")))
+		if bad != "":
+			return {"ok": false, "reason": "unknown_entity:%s" % bad}
 	# Model-stated counts (digits in prose) — numbers belong in templates (#24).
 	if _has_suspicious_number(s):
 		return {"ok": false, "reason": "invented_number"}
 	if is_manipulative(s):
 		return {"ok": false, "reason": "manipulative_tone"}
 	return {"ok": true, "reason": ""}
+
+
+# Words a line may capitalize anywhere without being a name.
+const _CAP_OK_ANYWHERE: Array[String] = [
+	"I", "It", "The", "We", "You", "Keeper", "A", "An", "My", "Your", "Me", "Oh",
+	"Yes", "No", "Not", "And", "But", "So", "Now", "Then", "This", "That", "There",
+	"Here", "He", "She", "They", "Our", "Its", "Guardian",
+]
+# Sentence-initial words that are ordinary words, not names (the model often
+# opens with one). Anything else capitalized is a name candidate.
+const _SENTENCE_START_OK: Array[String] = [
+	"something", "soft", "warm", "cold", "cool", "slow", "quick", "bright", "dark",
+	"dim", "light", "food", "hungry", "full", "still", "quiet", "calm", "safe",
+	"strange", "new", "old", "again", "always", "never", "maybe", "perhaps", "today",
+	"tonight", "time", "water", "sound", "shape", "glass", "close", "closer", "near",
+	"nearer", "far", "down", "up", "over", "under", "above", "below", "around",
+	"just", "only", "all", "some", "every", "each", "one", "two", "what", "when",
+	"where", "why", "how", "who", "if", "because", "while", "after", "before",
+	"hello", "hi", "good", "bad", "little", "big", "small", "tired", "sleepy",
+	"fins", "belly", "gills", "bubbles", "flakes", "plants", "home", "morning",
+	"evening", "night", "day", "dusk", "dawn", "sunlight", "shadow", "shadows",
+	"let", "come", "stay", "look", "listen", "wait", "swim", "eat", "rest", "hush",
+	"too", "very", "much", "more", "less", "no", "not", "nothing", "everything",
+	"someone", "somewhere", "such", "those", "these", "almost", "already", "yet",
+	"thank", "thanks", "please", "sorry", "hmm", "ah", "mm", "ripple", "ripples",
+]
+
+
+# The first capitalized token that looks like an INVENTED proper name, or "".
+# Skips contractions ("It's"), common words ("You", "Keeper"), whitelisted
+# names, and ordinary sentence-initial words ("Something stirs."), but still
+# catches a made-up name anywhere ("Bob swims near me.", "near Bob today").
+static func invented_name_in(line: String, allowed: PackedStringArray, own_name: String = "") -> String:
+	var at_start: bool = true
+	for raw in line.split(" ", false):
+		var word: String = raw.strip_edges()
+		var plain: String = word.lstrip("\"'([{“‘-—").rstrip(",.!?;:\"')]}…”’-—")
+		var starts_sentence: bool = at_start
+		at_start = word.ends_with(".") or word.ends_with("!") or word.ends_with("?") \
+				or word.ends_with("…") or word.ends_with("...")
+		if plain.length() < 2:
+			continue
+		var first: String = plain.substr(0, 1)
+		if first == first.to_lower() or plain.to_lower() == plain:
+			continue
+		if plain.contains("'") or plain.contains("’"):
+			continue
+		if plain == own_name or allowed.has(plain) or _CAP_OK_ANYWHERE.has(plain):
+			continue
+		if plain.to_upper() == plain and plain.length() <= 3:
+			continue  # "OK", "UV"
+		if starts_sentence:
+			var lw: String = plain.to_lower()
+			if _SENTENCE_START_OK.has(lw) or lw.ends_with("ing") or lw.ends_with("ly") \
+					or lw.ends_with("ed") or lw.ends_with("ness") or lw.ends_with("ful"):
+				continue
+		return plain
+	return ""
 
 
 static func _has_suspicious_number(s: String) -> bool:

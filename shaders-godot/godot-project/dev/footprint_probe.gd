@@ -102,6 +102,7 @@ func _walk(n: Node, corners: Array, out: Array, path: String) -> void:
 		var x1 := -INF
 		var z0 := INF
 		var z1 := -INF
+		@warning_ignore("integer_division")
 		var step: int = maxi(1, faces.size() / 900)
 		for i in range(0, faces.size(), step):
 			var p: Vector3 = t * faces[i]

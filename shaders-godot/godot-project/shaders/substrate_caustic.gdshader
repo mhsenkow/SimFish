@@ -274,14 +274,12 @@ void fragment() {
                           1.0 + eff_strength * 0.20, shade);
     }
     
-    // 2. Caustics projection (Worley live, or baked tile on potato tier)
+    // 2. Caustics projection. Baked tile (two layers, two scales, two drift
+    // directions) on every tier that bound it; the live Worley search only
+    // remains as the fallback for a material nothing has baked for.
     vec2 uv = world_pos.xz * caustic_scale;
     float t = TIME * caustic_speed;
     float caustics = 0.0;
-    if (caustic_baked > 0.5) {
-        vec2 bt = uv * 0.12 + vec2(t * 0.04, -t * 0.03);
-        caustics = texture(baked_caustics_tex, bt).r * 0.46;
-    } else {
     // Same surface-gradient UV distortion as caustics.gdshader so the
     // pattern slides + warps with the overhead surface motion rather
     // than only modulating in brightness.
@@ -293,7 +291,12 @@ void fragment() {
         -sin(surf_uv.x + ts) * sin(surf_uv.y * 0.91 - ts * 0.74) * 0.91
         + sin(surf_uv.x * 1.55 - ts * 1.05) * cos(surf_uv.y * 1.35 + ts * 0.88) * 1.35);
     uv += surf_grad * wave_amplitude * wave_coupling * 6.0;
-
+    if (caustic_baked > 0.5) {
+        float ca = texture(baked_caustics_tex, uv * 0.21 + vec2(t * 0.031, -t * 0.019)).r;
+        float cb = texture(baked_caustics_tex, uv * 0.26 + vec2(-t * 0.022, -t * 0.027)).g;
+        float cweb = ca * 0.62 + cb * 0.42 + ca * cb * 0.9;
+        caustics = smoothstep(0.10, 0.80, cweb) * 0.46;
+    } else {
     float cc1 = worley_caustic(uv * 0.85, t * 0.6);
     float cc2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
     float cweb = cc1 * 0.65 + cc1 * cc2 * 0.9;
@@ -341,7 +344,5 @@ void fragment() {
         // overhead cut them harder than they cut the diffuse floor.
         caust_shaded *= shade * shade;
     }
-    ALBEDO = apply_water_column(
-        lit_base + light_color.rgb * caust_shaded,
-        v_wpos.y, length(VERTEX));
+    ALBEDO = apply_water_column_ws(lit_base + light_color.rgb * caust_shaded, v_wpos, CAMERA_POSITION_WORLD);
 }

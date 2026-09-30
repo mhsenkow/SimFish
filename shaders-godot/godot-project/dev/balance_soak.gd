@@ -51,9 +51,13 @@ class BalanceReport:
 	var initial_fauna: int = 0
 	var initial_biomass: int = 0
 	var failures: PackedStringArray = []
+	# Per-tick extremes. The 4x/day samples alias against the day cycle
+	# (216 s samples vs a 360 s light cycle only ever land on 5 phases), so
+	# a dawn O2 trough between samples went unseen.
+	var tick_min_o2: float = 99.0
 
 	func min_o2() -> float:
-		var m: float = 99.0
+		var m: float = tick_min_o2
 		for s in samples:
 			m = minf(m, s.o2)
 		return m if m < 99.0 else 0.0
@@ -133,6 +137,7 @@ var _tick_dt: float = DEFAULT_TICK_DT
 var _only_preset: String = ""
 var _only_scenario: String = ""
 var _mode: String = "presets"
+var _ticks_run: int = 0
 
 
 func _scenario_cases() -> Array[Dictionary]:
@@ -199,7 +204,7 @@ func _ready() -> void:
 			var end_day: float = 0.0
 			if not report.samples.is_empty():
 				end_day = report.samples[-1].sim_day
-			print("[balance] PASS %s | age %.1f->%.1f d n=%d O2 min/mean=%.2f/%.2f fauna %d->%d bio %d->%d floaters %.0f%% bleach %.2f" % [
+			print("[balance] PASS %s | age %.1f->%.1f d n=%d O2 min(tick)/mean=%.2f/%.2f fauna %d->%d bio %d->%d floaters %.0f%% bleach %.2f" % [
 				case_key,
 				report.samples[0].sim_day if not report.samples.is_empty() else 0.0,
 				end_day,
@@ -284,8 +289,8 @@ func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 	if world.sim != null:
 		world.sim.set_physics_process(false)
 
-	var ready: bool = await _wait_world_ready(world, 1200)
-	if not ready:
+	var is_ready: bool = await _wait_world_ready(world, 4000)
+	if not is_ready:
 		report.failures.append("world failed to finish stocking within frame budget")
 		world.queue_free()
 		await get_tree().process_frame
@@ -300,10 +305,14 @@ func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 		if is_instance_valid(p) and p.has_method("biomass"):
 			report.initial_biomass += int(p.biomass())
 
-	_soak(world, sim, report)
-	print("[balance] soaked %s to sim-day %.2f (%d samples)" % [
+	var soak_t0: int = Time.get_ticks_usec()
+	var ticks_before: int = _ticks_run
+	await _soak(world, sim, report)
+	var soak_ms: float = float(Time.get_ticks_usec() - soak_t0) / 1000.0
+	var ticks_done: int = maxi(1, _ticks_run - ticks_before)
+	print("[balance] soaked %s to sim-day %.2f (%d samples) in %.1f s wall, %.3f ms/tick over %d ticks" % [
 		report.preset, report.samples[-1].sim_day if not report.samples.is_empty() else 0.0,
-		report.samples.size()])
+		report.samples.size(), soak_ms / 1000.0, soak_ms / float(ticks_done), ticks_done])
 	world.queue_free()
 	await get_tree().process_frame
 	report.evaluate(case)
@@ -311,18 +320,18 @@ func _run_case(cfg: Node, saves: Node, case: Dictionary) -> BalanceReport:
 
 
 func _wait_world_ready(world: Node3D, max_frames: int) -> bool:
+	# world._ready() awaits frames between build phases; the founding fish,
+	# shrimp, cycle start and mature cold start all land AFTER the first
+	# plants exist. Waiting only for "some flora" soaked a fishless,
+	# un-cycled tank, so wait on the world's own completion flag.
 	for _i in max_frames:
 		await get_tree().process_frame
 		if not is_instance_valid(world):
 			return false
-		if not world.is_node_ready():
+		if world.get("sim") == null:
 			continue
-		var sim: Node = world.get("sim")
-		if sim == null:
-			continue
-		var has_flora: bool = sim.plants.size() > 0
-		var has_fauna: bool = sim.fish.size() > 0 or sim.shrimp.size() > 0
-		if has_flora or has_fauna:
+		var done: Variant = world.get("build_complete")
+		if done == null or bool(done):
 			for _j in 10:
 				await get_tree().process_frame
 			return true
@@ -345,6 +354,7 @@ func _soak(world: Node3D, sim: Node, report: BalanceReport) -> void:
 	while float(sim.tank_age_s) < target_age:
 		sim.day_phase = fposmod(float(sim.day_phase) + _tick_dt / cycle_len, 1.0)
 		sim._tick(_tick_dt)
+		report.tick_min_o2 = minf(report.tick_min_o2, float(sim.dissolved_o2))
 		floater_accum += _tick_dt
 		if floater_accum >= 3.0:
 			floater_accum = 0.0
@@ -364,6 +374,7 @@ func _soak(world: Node3D, sim: Node, report: BalanceReport) -> void:
 			_record_sample(sim, world, float(sim.tank_age_s), report)
 			sample_next += SAMPLE_INTERVAL_S
 		tick_n += 1
+		_ticks_run += 1
 		if tick_n % 8000 == 0:
 			await get_tree().process_frame
 	_record_sample(sim, world, float(sim.tank_age_s), report)

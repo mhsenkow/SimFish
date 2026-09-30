@@ -13,6 +13,9 @@ const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
 const KeeperCare = preload("res://scripts/keeper_care.gd")
 const MindWorkerCfg = preload("res://scripts/mind_worker_cfg.gd")
+const TankMind = preload("res://scripts/tank_mind.gd")
+const TankDialogue = preload("res://scripts/tank_dialogue.gd")
+const TankQuestions = preload("res://scripts/tank_questions.gd")
 
 static var gaze_fish_id: String = ""
 static var gaze_seconds: float = 0.0
@@ -162,6 +165,111 @@ static func submit_to_fish(f: Fish, text: String, sim: Node) -> Dictionary:
 		"is_guardian_advisor": f.is_guardian and tier <= KeeperCare.Tier.STRESSED,
 	}
 	return result
+
+
+# "Speak to the tank" (no fish followed): the collective answers from real
+# state, and picks 1–3 fish to answer back through submit_to_fish +
+# sim.request_keeper_reply (the caller staggers those so they read as a
+# conversation, not a burst). Template-only, main-thread safe.
+static func submit_to_tank(sim: Node, text: String, focus_pos: Variant = null) -> Dictionary:
+	if sim == null or text.strip_edges() == "":
+		return {"ok": false, "reason": "empty"}
+	if not ears_enabled():
+		return {"ok": false, "reason": "ears_off"}
+	var clean: String = MindNarrator.sanitize_keeper_input(text)
+	if clean == "":
+		return {"ok": false, "reason": "empty"}
+	var reply: Dictionary = TankMind.keeper_reply(sim, clean)
+	var responders: Array = TankMind.pick_keeper_responders(sim,
+			reply.get("topics", PackedStringArray()), reply.get("tokens", PackedStringArray()),
+			focus_pos)
+	var intent: String = str(reply.get("intent", ""))
+	var about_id: String = str(reply.get("about_id", ""))
+	# "tell me about Pip": Pip answers first.
+	if intent == "about" and about_id != "":
+		var about_f: Fish = TankDialogue.fish_by_id(sim, about_id)
+		if about_f != null:
+			responders.erase(about_f)
+			responders.push_front(about_f)
+			if responders.size() > TankMind.RESPONDERS_MAX:
+				responders.resize(TankMind.RESPONDERS_MAX)
+	var ids: PackedStringArray = PackedStringArray()
+	# Intent questions get grounded per-fish answers (thinking / dream /
+	# friend / about) instead of the generic reply pipeline.
+	var fish_answers: Dictionary = {}
+	for f in responders:
+		ids.append(str(f.id))
+		if intent != "":
+			var ans: String = TankDialogue.fish_intent_line(sim, f, intent, about_id)
+			if ans != "":
+				fish_answers[str(f.id)] = ans
+	return {
+		"ok": true,
+		"text": clean,
+		"line": str(reply.get("line", "")),
+		"topics": reply.get("topics", PackedStringArray()),
+		"understood": reply.get("understood", PackedStringArray()),
+		"responder_ids": ids,
+		"tank_tier": KeeperCare.tier_from_sim(sim),
+		"callback": str(reply.get("callback", "")),
+		"promise": str(reply.get("promise", "")),
+		"intent": intent,
+		"about_id": about_id,
+		"fish_answers": fish_answers,
+	}
+
+
+# --- Fish ask the keeper (TankQuestions) ------------------------------------
+#
+# Main polls maybe_fish_question on a slow cadence; while a question is
+# pending the keeper's next line goes to answer_fish_question first.
+
+static func maybe_fish_question(sim: Node, rt: Dictionary, keeper_quiet_s: float, keeper_present: bool,
+		keeper_busy: bool, voice_on: bool = true) -> Dictionary:
+	if sim == null:
+		return {}
+	var tm: Dictionary = TankMind.ensure(sim)
+	var st: Dictionary = TankMind.keeper_state(sim)
+	var on: bool = voice_on and ears_enabled() and TankMind.enabled()
+	var out: Dictionary = TankQuestions.maybe_ask(sim, tm, rt, st, keeper_quiet_s, keeper_present,
+			keeper_busy, on)
+	if not out.is_empty() and not bool(out.get("fade", false)) and not bool(out.get("recall", false)):
+		TankMind.append_ledger_line(sim, tm, "%s asked the keeper: %s" % [str(out.get("name", "")),
+				str(out.get("line", "")).substr(0, 56)])
+	return out
+
+
+# The open question ({} when none or expired).
+static func pending_fish_question(sim: Node) -> Dictionary:
+	if sim == null:
+		return {}
+	var tm: Dictionary = TankMind.ensure(sim)
+	if not TankQuestions.has_pending(tm):
+		return {}
+	return TankQuestions.pending(tm)
+
+
+# Read `text` as the answer to the pending question. {} → route as ordinary
+# talk. On success the asking fish also hears the line as a keeper percept
+# (lexicon pairing, familiarity) through submit_to_fish — after comprehension
+# was measured, so the answer itself cannot teach the words it is judged by.
+static func answer_fish_question(sim: Node, text: String) -> Dictionary:
+	if sim == null or text.strip_edges() == "" or not ears_enabled():
+		return {}
+	var clean: String = MindNarrator.sanitize_keeper_input(text)
+	if clean == "":
+		return {}
+	var res: Dictionary = TankQuestions.answer(sim, TankMind.ensure(sim), clean)
+	if res.is_empty():
+		return res
+	res["text"] = clean
+	if not bool(res.get("collective", false)):
+		var f: Fish = TankQuestions.fish_by_id(sim, str(res.get("fish_id", "")))
+		if f != null:
+			submit_to_fish(f, clean, sim)
+	TankMind.append_ledger_line(sim, TankMind.ensure(sim), "the keeper answered %s: \"%s\"" % [
+			str(res.get("name", "")), clean.substr(0, 48)])
+	return res
 
 
 static func _interpret_keeper(f: Fish, text: String) -> Dictionary:

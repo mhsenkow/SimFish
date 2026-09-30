@@ -23,6 +23,9 @@ extends PanelContainer
 class_name MindPanel
 
 const REFRESH_INTERVAL_S: float = 0.5
+const _FishBackstoryScript = preload("res://scripts/fish_backstory.gd")
+const _FishEnvironmentScript = preload("res://scripts/fish_environment.gd")
+const FishSocial = preload("res://scripts/fish_social.gd")
 
 # Reference to main.gd, set on instantiation. Duck-typed, like the other
 # panels, so this does not drag a class dependency on main.
@@ -30,6 +33,8 @@ var main_ref: Node = null
 
 var _name_label: Label = null
 var _headline_label: Label = null
+var _story_label: Label = null
+var _social_label: Label = null
 var _detail_box: VBoxContainer = null
 var _drive_box: VBoxContainer = null
 var _workings_btn: Button = null
@@ -82,6 +87,17 @@ func _build_ui() -> void:
 	_headline_label = PanelTheme.make_description()
 	_headline_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_body.add_child(_headline_label)
+
+	# Backstory (FishBackstory): where it came from, what it loves / fears.
+	_story_label = PanelTheme.make_description()
+	_story_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_body.add_child(_story_label)
+
+	# "Friends: X · Rival: Y" from fish_social.gd; hidden when there is none.
+	_social_label = PanelTheme.make_description()
+	_social_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_social_label.visible = false
+	_body.add_child(_social_label)
 
 	_detail_box = VBoxContainer.new()
 	_detail_box.add_theme_constant_override("separation", 4)
@@ -148,6 +164,9 @@ func refresh() -> void:
 	_empty_label.visible = not have
 	_name_label.visible = have
 	_headline_label.visible = have
+	if not have:
+		_story_label.visible = false
+	_social_label.visible = false
 	_detail_box.visible = have
 	_drive_box.visible = have
 	_workings_btn.visible = have
@@ -157,6 +176,15 @@ func refresh() -> void:
 
 	_name_label.text = _subject_name(subject)
 	_headline_label.text = MindLegible.headline(subject)
+	var story_txt: String = _FishBackstoryScript.summary(subject)
+	var doing: String = _FishEnvironmentScript.current_activity(subject)
+	if doing != "":
+		story_txt = ("Now %s. %s" % [doing, story_txt]).strip_edges()
+	_story_label.text = story_txt
+	_story_label.visible = story_txt != ""
+	var social_line: String = FishSocial.summary_line(subject) if subject is Fish else ""
+	_social_label.text = social_line
+	_social_label.visible = social_line != ""
 	_fill_lines(_detail_box, MindLegible.detail_lines(subject))
 	_fill_drives(_drive_box, MindLegible.drives(subject))
 	if _show_workings:

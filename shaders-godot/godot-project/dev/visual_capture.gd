@@ -39,6 +39,10 @@
 #   VISUAL_CAPTURE_HUD        1 to keep the HUD in frame (default: hidden)
 #   VISUAL_CAPTURE_DAY_PHASE  0..1 clock to pin (default 0.25 = midday)
 #   VISUAL_CAPTURE_VERBOSE    1 to print the camera position per angle
+#   VISUAL_CAPTURE_OUT        output dir (default user://visual_capture). Give
+#                             each concurrent capture its own, or they
+#                             overwrite each other's PNGs and metrics.
+#   VISUAL_CAPTURE_ANGLES     comma list of angle names to shoot (default all)
 
 extends Node
 
@@ -50,7 +54,7 @@ const Metrics = preload("res://scripts/frame_metrics.gd")
 const AestheticsScript = preload("res://scripts/aesthetics_runtime.gd")
 const Composition = preload("res://scripts/scape_composition.gd")
 
-const OUT_DIR: String = "user://visual_capture"
+const DEFAULT_OUT_DIR: String = "user://visual_capture"
 const DEFAULT_SCENARIO: String = "beginner_sandbox"
 # Frames before the first shot. With the render live (see _force_live_render)
 # the sim actually ticks, so the tank is built and planted well before this;
@@ -78,6 +82,13 @@ const ANGLES: Array[Dictionary] = [
 	# so nothing that happens ON it — the specular under the fixture, the
 	# meniscus, floaters — is assessable from them.
 	{"name": "surface", "yaw": -0.20, "pitch": 0.62, "radius": 14.0, "target_y": 5.4},
+	# How a phone photographs a real tank: held at mid-water, square to the
+	# glass, close. The lens sits BELOW the waterline, so the underside of the
+	# surface is in frame as a bright ceiling — the single most recognisable
+	# thing in a real aquarium photo, and invisible from every angle above.
+	# target_frac is a fraction of floor..surface, resolved per tank.
+	{"name": "photo", "yaw": 0.0, "pitch": -0.04, "radius": 10.5, "target_frac": 0.62},
+	{"name": "photo_up", "yaw": -0.12, "pitch": -0.10, "radius": 8.0, "target_frac": 0.80},
 ]
 
 var _main: Node = null
@@ -90,6 +101,8 @@ var _lines: PackedStringArray = PackedStringArray()
 var _hud_hidden: bool = false
 var _verbose: bool = false
 var _day_phase: float = DEFAULT_DAY_PHASE
+var OUT_DIR: String = DEFAULT_OUT_DIR
+var _angles: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -123,10 +136,17 @@ func _ready() -> void:
 	# _process, and a parent's _process runs BEFORE its children's. Run last so
 	# the angle the harness sets is the angle that gets rendered.
 	process_priority = 1000
+	OUT_DIR = _env("VISUAL_CAPTURE_OUT", DEFAULT_OUT_DIR)
+	var want: PackedStringArray = _env("VISUAL_CAPTURE_ANGLES", "").split(",", false)
+	for a in ANGLES:
+		if want.is_empty() or want.has(String(a["name"])):
+			_angles.append(a)
+	if _angles.is_empty():
+		_angles = ANGLES.duplicate()
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
 	_main = load("res://main.tscn").instantiate()
 	add_child(_main)
-	print("[visual_capture] booting; settle=", _settle, " angles=", ANGLES.size())
+	print("[visual_capture] booting; settle=", _settle, " angles=", _angles.size())
 
 
 static func _env(key: String, fallback: String) -> String:
@@ -158,6 +178,8 @@ func _process(_dt: float) -> void:
 		_angle_frame = 0
 		return
 	_angle_frame += 1
+	if _env("VISUAL_CAPTURE_HUD", "0") != "1":
+		_hide_chrome()
 	# Held every frame, not set once: follow-cam and cinema mode both write the
 	# camera from _process, so a one-shot set is a suggestion. The idle counter
 	# is reset with it — past SCREENSAVER_IDLE_S (45 s) main.gd re-arms the
@@ -166,9 +188,9 @@ func _process(_dt: float) -> void:
 	_apply_angle(_angle_i)
 	if _angle_frame < ANGLE_SETTLE:
 		return
-	_shoot(ANGLES[_angle_i])
+	_shoot(_angles[_angle_i])
 	_angle_i += 1
-	if _angle_i >= ANGLES.size():
+	if _angle_i >= _angles.size():
 		_finish()
 		return
 	_apply_angle(_angle_i)
@@ -178,8 +200,12 @@ func _process(_dt: float) -> void:
 # Hide every Control the game layers over the render, without depending on
 # main.gd's own photo path — _set_hud_visible_for_photo also draws letterbox
 # bars, which would poison the luminance percentiles with pure black.
+#
+# Re-applied every frame, not once: the follow-thought strip and the tank-talk
+# box are re-shown by main.gd's own _process, and one frame of them is enough
+# to land in a shot.
 func _hide_chrome() -> void:
-	if _main == null or _hud_hidden:
+	if _main == null:
 		return
 	_hud_hidden = true
 	for child in _main.get_children():
@@ -235,16 +261,27 @@ func _release_camera_modes() -> void:
 
 
 func _apply_angle(i: int) -> void:
-	var a: Dictionary = ANGLES[i]
+	var a: Dictionary = _angles[i]
 	if _main == null:
 		return
 	_main.set("yaw", float(a["yaw"]))
 	_main.set("pitch", float(a["pitch"]))
 	_main.set("radius", float(a["radius"]))
-	_main.set("target", Vector3(0.0, float(a["target_y"]), 0.0))
+	_main.set("target", Vector3(0.0, _angle_target_y(a), 0.0))
 	if _main.has_method("_apply_camera"):
 		_main.call("_apply_camera")
 
+
+
+func _angle_target_y(a: Dictionary) -> float:
+	if not a.has("target_frac"):
+		return float(a["target_y"])
+	var world: Variant = _main.get("world") if _main != null else null
+	if not (world is Node3D):
+		return 3.2
+	var floor_y: float = float(world.get("SUBSTRATE_DEPTH"))
+	var surface_y: float = float(world.get("WATER_HEIGHT"))
+	return lerpf(floor_y, surface_y, float(a["target_frac"]))
 
 
 func _shoot(a: Dictionary) -> void:
@@ -253,7 +290,7 @@ func _shoot(a: Dictionary) -> void:
 		var cam := _main.get_node_or_null("SubViewport/World/Camera3D") as Camera3D
 		print("[visual_capture] shoot ", name_s, " i=", _angle_i,
 			" main.radius=", _main.get("radius"), " main.yaw=", _main.get("yaw"),
-			" cam=", cam.global_position if cam != null else "?")
+			" cam=", str(cam.global_position) if cam != null else "?")
 	if _verbose:
 		var sv := _main.get_node_or_null("SubViewport") as SubViewport
 		if sv != null:

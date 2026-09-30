@@ -344,8 +344,10 @@ var guardian_mind_info_seen: bool = false
 var consciousness_workspace_enabled: bool = true
 # PERFORMANCE_REALTIME #95 — batched attention/bind/encode on WorkerThreadPool.
 var mind_brain_threads: bool = true
-# PERFORMANCE_UNTHROTTLED #1 — 15 Hz mind cadence (0 = legacy per-frame).
-var mind_cadence_hz: float = 15.0
+# PERFORMANCE_UNTHROTTLED #1 — mind cadence in Hz (0 = legacy per-frame). The
+# sim ticks at 10 Hz, so values above 10 mean "every tick"; 5 Hz (every other
+# tick, staggered) is the default. Keep in sync with MindTick.DEFAULT_HZ.
+var mind_cadence_hz: float = 5.0
 var consciousness_writeback_enabled: bool = true
 var consciousness_stream_enabled: bool = true
 # META #1-full — unified expected-free-energy drives (see docs/ACTIVE_INFERENCE_CORE.md).
@@ -686,12 +688,12 @@ var music_coupling_floor: float = 0.55
 var music_smooth_rate: float = 0.55
 var music_phrase_churn: float = 0.5
 var music_tempo_follow: float = 0.72
-var music_kick_mix: float = 0.5
+var music_kick_mix: float = 0.35
 var music_bass_mix: float = 0.6
 var music_arp_mix: float = 0.62
 var music_pad_mix: float = 0.78
-var music_hat_mix: float = 0.38
-var music_sidechain: float = 0.55
+var music_hat_mix: float = 0.15
+var music_sidechain: float = 0.3
 var music_filter_open: float = 0.38
 var music_delay_amount: float = 0.22
 var music_accent_density: float = 0.32
@@ -706,34 +708,34 @@ var music_seed: int = 1
 # Festival vibe — build/drop architecture, lead, lo-fi character.
 # auto = follow tank ; trance = aggressive 16-bar verse / 8-bar build / 16-bar drop ;
 # loop = stay in verse (chill background) ; free = let events nudge it.
-var music_phrase_form: String = "auto"
+var music_phrase_form: String = "loop"
 # Harmonic scale override ("auto" = tank-driven major/minor). Options: major,
 # minor, deep, blues_minor, blues_major, dorian, mixolydian, bebop, whole_tone.
 var music_scale: String = "auto"
 # Musical persona ("none" = pure tank-driven). Options: monk, abgt, lofi, dub.
 # A persona biases scale + rhythm feel + voices + how events reshape the music.
 var music_persona: String = "none"
-var music_drop_intensity: float = 0.7
+var music_drop_intensity: float = 0.15
 var music_breakdown_depth: float = 0.7
-var music_lead_mix: float = 0.55
+var music_lead_mix: float = 0.15
 var music_lead_detune: float = 0.55
 var music_vinyl_crackle: float = 0.08
 var music_tape_wow: float = 0.18
 var music_jazziness: float = 0.4
-var music_swing: float = 0.06
-var music_offbeat_hat: float = 0.55
+var music_swing: float = 0.3
+var music_offbeat_hat: float = 0.0
 var music_reverb_send: float = 0.45
 var music_humanize: float = 0.22
 var music_species_palette: float = 0.75
 # Extra voices.
 var music_sub_bass_mix: float = 0.55
-var music_offbeat_bass_mix: float = 0.35
+var music_offbeat_bass_mix: float = 0.12
 var music_granular_pad: float = 0.25
 var music_vocoder_pad: float = 0.25
-var music_shaker_mix: float = 0.4
-var music_clap_mix: float = 0.45
+var music_shaker_mix: float = 0.0
+var music_clap_mix: float = 0.0
 # Build dramaturgy.
-var music_build_drama: float = 0.7
+var music_build_drama: float = 0.0
 # Tank-state driven sound (auto-tied; knobs scale sensitivity).
 var music_bitcrush_algae: float = 0.22
 var music_bass_grit: float = 0.5
@@ -3001,6 +3003,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("music", "shaker_mix", music_shaker_mix)
 	cfg.set_value("music", "clap_mix", music_clap_mix)
 	cfg.set_value("music", "build_drama", music_build_drama)
+	cfg.set_value("music", "lofi_rev", MUSIC_LOFI_REV)
 	cfg.set_value("music", "bitcrush_algae", music_bitcrush_algae)
 	cfg.set_value("music", "bass_grit", music_bass_grit)
 	cfg.set_value("music", "pump_gate", music_pump_gate)
@@ -3344,6 +3347,8 @@ func load_from_disk() -> void:
 	music_pump_gate = cfg.get_value("music", "pump_gate", music_pump_gate)
 	music_key_mod = cfg.get_value("music", "key_mod", music_key_mod)
 	music_breathe_lfo = cfg.get_value("music", "breathe_lfo", music_breathe_lfo)
+	if int(cfg.get_value("music", "lofi_rev", 0)) < MUSIC_LOFI_REV:
+		_migrate_music_lofi_defaults()
 	music_sync_enabled = cfg.get_value("music_sync", "enabled", music_sync_enabled)
 	music_sync_intensity = cfg.get_value("music_sync", "intensity", music_sync_intensity)
 	music_sync_latency_ms = float(cfg.get_value("music_sync", "latency_ms", music_sync_latency_ms))
@@ -3499,6 +3504,10 @@ func load_from_disk() -> void:
 			consciousness_workspace_enabled)
 	mind_brain_threads = cfg.get_value("ai", "mind_brain_threads", mind_brain_threads)
 	mind_cadence_hz = float(cfg.get_value("ai", "mind_cadence_hz", mind_cadence_hz))
+	# 15 Hz was the old default (above the 10 Hz sim rate, so it silently meant
+	# "every tick"); files saved with it get the new default.
+	if is_equal_approx(mind_cadence_hz, 15.0):
+		mind_cadence_hz = 5.0
 	consciousness_writeback_enabled = cfg.get_value("ai", "consciousness_writeback_enabled",
 			consciousness_writeback_enabled)
 	consciousness_stream_enabled = cfg.get_value("ai", "consciousness_stream_enabled",
@@ -3709,6 +3718,7 @@ func reset_to_defaults() -> void:
 	music_pump_gate = 0.6
 	music_key_mod = 0.35
 	music_breathe_lfo = 0.35
+	_apply_music_lofi_defaults()
 	environment_preset = "void"
 	# Fauna behavior. Default ON — the tank is an ambient sim and should
 	# self-sustain when left unattended.
@@ -3916,3 +3926,53 @@ func apply_screen_fitted_dimensions() -> void:
 		tank_half_w = clampf(6.8 * scale, 4.8, 9.5)
 		tank_half_d = clampf(4.2 * scale, 3.0, 7.0)
 		tank_height = clampf(6.8 * scale, 5.2, 9.0)
+
+
+# --- Lofi music defaults ----------------------------------------------------
+#
+# The groove engine shipped with EDM defaults: an off-beat 8th hat, a 3-over-4
+# 16th shaker that switched on as soon as fish started swimming (the
+# "tsh tsh tsh tsh" players heard a few seconds in), claps on 2 and 4, snare
+# rolls / reverse cymbals / risers on every feeding, and a supersaw lead. The
+# default is now a quiet lofi bed: soft kick, a rare dark hat, no shaker/clap,
+# no build dramaturgy, a gentle swing. Every knob is still in the Sound panel
+# and the personas still override it.
+const MUSIC_LOFI_REV: int = 1
+# key -> [new default, old defaults that mean "the player never touched it"]
+const MUSIC_LOFI_DEFAULTS: Dictionary = {
+	"music_kick_mix": [0.35, [0.5, 0.65]],
+	"music_hat_mix": [0.15, [0.38, 0.55]],
+	"music_sidechain": [0.3, [0.55, 0.72]],
+	"music_phrase_form": ["loop", ["auto"]],
+	"music_drop_intensity": [0.15, [0.7]],
+	"music_lead_mix": [0.15, [0.55]],
+	"music_swing": [0.3, [0.06]],
+	"music_offbeat_hat": [0.0, [0.55]],
+	"music_offbeat_bass_mix": [0.12, [0.35]],
+	"music_shaker_mix": [0.0, [0.4]],
+	"music_clap_mix": [0.0, [0.45]],
+	"music_build_drama": [0.0, [0.7]],
+}
+
+
+func _apply_music_lofi_defaults() -> void:
+	for k in MUSIC_LOFI_DEFAULTS.keys():
+		set(k, MUSIC_LOFI_DEFAULTS[k][0])
+
+
+# Saves written before MUSIC_LOFI_REV stored the old defaults verbatim, so an
+# untouched value is indistinguishable from a chosen one - except that it
+# equals an old default exactly. Only those move; anything the player dialled
+# in by hand is kept.
+func _migrate_music_lofi_defaults() -> void:
+	for k in MUSIC_LOFI_DEFAULTS.keys():
+		var cur: Variant = get(k)
+		for old in MUSIC_LOFI_DEFAULTS[k][1]:
+			var same: bool = false
+			if cur is String or old is String:
+				same = str(cur) == str(old)
+			else:
+				same = absf(float(cur) - float(old)) < 0.0005
+			if same:
+				set(k, MUSIC_LOFI_DEFAULTS[k][0])
+				break

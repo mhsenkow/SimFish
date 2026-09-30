@@ -19,6 +19,13 @@ const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 const MindSoulPass3 = preload("res://scripts/mind_soul_pass3.gd")
 const _MindPromptSkeletonScript = preload("res://scripts/mind_prompt_skeleton.gd")
 const DeltaGCurve = preload("res://scripts/delta_g_curve.gd")
+const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
+const MindKeeperModel = preload("res://scripts/mind_keeper_model.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
+
+# Memory kinds that involve the keeper — what a fish can "remember about you".
+const KEEPER_EPISODE_KINDS: Array[String] = ["fed", "player", "keeper", "keeper_word", "named"]
+const VOICE_EPISODES_MAX: int = 3
 
 const BASE_CTX_TTL_S: float = 2.0
 static var _allowed_names: PackedStringArray = PackedStringArray()
@@ -198,7 +205,159 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "", ms
 		var dg_sum: Dictionary = DeltaGCurve.summary_for(f)
 		if float(dg_sum.get("delta_g", 0.0)) > 0.02 or float(dg_sum.get("robust", 0.0)) > 0.02:
 			ctx["delta_g_curve"] = dg_sum
+	if for_narrator:
+		add_voice_grounding(ctx, f, sim)
 	return ctx
+
+
+# SENTIENCE voice grounding — the fish's OWN mind, in the compact form the
+# template voice (and the LLM prompt) speak from:
+#   episodes        its strongest remembered moments (kind/text/keeper?)
+#   keeper_episode  the strongest memory that involves the keeper
+#   understood_words / unknown_words  what it actually comprehended of the
+#                   keeper's last line (lexicon), not what was typed
+#   goal            what active inference says it most needs right now
+#   expects         what it is predicting (feed, a learned charger)
+#   care_trust / conversation_count  its relationship with the keeper
+# Pure reads (plus MindKeeperModel.ensure's default fill); main thread only.
+static func add_voice_grounding(ctx: Dictionary, f: Fish, sim: Node = null) -> void:
+	if f == null:
+		return
+	var all_eps: Array = voice_episodes(f, 8)
+	if not all_eps.is_empty():
+		ctx["episodes"] = all_eps.slice(0, mini(VOICE_EPISODES_MAX, all_eps.size()))
+	for e in all_eps:
+		if bool((e as Dictionary).get("keeper", false)):
+			ctx["keeper_episode"] = str((e as Dictionary).get("text", ""))
+			ctx["keeper_episode_kind"] = str((e as Dictionary).get("kind", ""))
+			break
+	var heard: Dictionary = keeper_words_heard(f, str(ctx.get("keeper_text", "")))
+	if not (heard.get("understood") as PackedStringArray).is_empty():
+		ctx["understood_words"] = heard["understood"]
+		ctx["understood_kinds"] = heard["kinds"]
+	if not (heard.get("unknown") as PackedStringArray).is_empty():
+		ctx["unknown_words"] = heard["unknown"]
+	ctx["goal"] = active_goal(f)
+	# What it has LEARNED over its life (night-consolidated beliefs), how it has
+	# changed, and a thread back to its own past (milestones / backstory).
+	var learned: Dictionary = FishLearnedMind.context_for(f)
+	for lk in learned.keys():
+		ctx[lk] = learned[lk]
+	var expect_s: String = expectation(f, sim,
+			bool(ctx.get("feed_anticipated", false)) or learned.has("anticipating"))
+	if expect_s != "":
+		ctx["expects"] = expect_s
+	var km: Dictionary = MindKeeperModel.ensure(f)
+	ctx["care_trust"] = snappedf(float(km.get("care_trust", 0.3)), 0.01)
+	ctx["conversation_count"] = int(km.get("conversation_count", 0))
+	if not ctx.has("keeper_moniker"):
+		ctx["keeper_moniker"] = str(km.get("player_moniker", ""))
+
+
+# Strongest salient memories, newest first among equals. Skips the stock
+# "echo" lines the narrator already treats as stale.
+static func voice_episodes(f: Fish, max_n: int) -> Array:
+	var pool: Array = []
+	var mem: Variant = f.get("salient_memories")
+	if not (mem is Array):
+		return pool
+	var idx: int = 0
+	for raw in (mem as Array):
+		idx += 1
+		if not (raw is Dictionary):
+			continue
+		var e: Dictionary = raw as Dictionary
+		var text: String = str(e.get("text", "")).strip_edges()
+		if text == "" or MindNarrator._is_stale_thought_echo(text):
+			continue
+		var kind: String = str(e.get("kind", ""))
+		pool.append({
+			"kind": kind,
+			"text": text.substr(0, 60),
+			"keeper": KEEPER_EPISODE_KINDS.has(kind),
+			"_w": SaveHelpers._num(e.get("weight", 0.4), 0.4),
+			"_i": idx,
+		})
+	pool.sort_custom(func(a, b):
+		if absf(float(a["_w"]) - float(b["_w"])) > 0.05:
+			return float(a["_w"]) > float(b["_w"])
+		return int(a["_i"]) > int(b["_i"]))
+	var out: Array = []
+	for e in pool.slice(0, mini(max_n, pool.size())):
+		var d: Dictionary = e as Dictionary
+		d.erase("_w")
+		d.erase("_i")
+		out.append(d)
+	return out
+
+
+# Which of the keeper's words this fish has actually learned (MindLexicon).
+static func keeper_words_heard(f: Fish, keeper_text: String) -> Dictionary:
+	var understood: PackedStringArray = PackedStringArray()
+	var kinds: PackedStringArray = PackedStringArray()
+	var unknown: PackedStringArray = PackedStringArray()
+	if keeper_text.strip_edges() != "":
+		var lex: Dictionary = MindLexicon.ensure_dict(f)
+		for raw in keeper_text.split(" ", false):
+			var tok: String = MindLexicon.normalize_token(raw)
+			if tok.length() < 2 or understood.has(tok) or unknown.has(tok):
+				continue
+			if MindLexicon.comprehend(f, tok):
+				understood.append(tok)
+				var e: Variant = lex.get(tok, null)
+				kinds.append(str((e as Dictionary).get("kind", "")) if e is Dictionary else "")
+			elif unknown.size() < 3:
+				unknown.append(tok)
+	return {"understood": understood, "kinds": kinds, "unknown": unknown}
+
+
+# The need active inference would act on first: largest homeostatic
+# (pragmatic) error, with epistemic value (explore) competing only when the
+# fish is calm enough — the same allostasis guard the workspace uses.
+static func active_goal(f: Fish) -> String:
+	var pe: Dictionary = MindActiveInference.preferred_error(f)
+	var best: String = "drift"
+	var best_v: float = 0.25
+	for k in ["hunger", "safety", "rest", "social"]:
+		var v: float = float(pe.get(k, 0.0))
+		if v > best_v:
+			best_v = v
+			best = k
+	if f.stress < 0.6 and MindAblation.enabled(MindAblation.WORLD_MODEL):
+		var info: float = MindWorldModel.expected_free_energy_explore(f) * 0.6 \
+				+ f.curiosity_drive * 0.25
+		if info > best_v:
+			best = "explore"
+	match best:
+		"hunger":
+			return "eat"
+		"safety":
+			return "hide"
+		"rest":
+			return "rest"
+		"social":
+			return "company"
+		"explore":
+			return "explore"
+	return "drift"
+
+
+# What the fish is currently predicting, grounded in its predictive machinery.
+static func expectation(f: Fish, sim: Node, feed_anticipated: bool) -> String:
+	var alert: Variant = f.get("_tom_alert")
+	if alert is Dictionary and not (alert as Dictionary).is_empty() \
+			and MindAblation.enabled(MindAblation.THEORY_OF_MIND):
+		var oid: String = str((alert as Dictionary).get("oid", ""))
+		var nm: String = ""
+		if sim != null and sim.get("fish") != null:
+			for o in sim.fish:
+				if is_instance_valid(o) and str(o.id) == oid:
+					nm = str(o.fish_name if o.fish_name != "" else o.species)
+					break
+		return "charge:%s" % nm if nm != "" else "charge"
+	if feed_anticipated:
+		return "food"
+	return ""
 
 
 static func merge_guardian(ctx: Dictionary, guardian_ctx: Dictionary) -> Dictionary:
@@ -246,9 +405,18 @@ static func build_for_keeper_turn(f: Fish, sim: Node = null, situation: String =
 	for k in ["dialogue_recent", "keeper_moniker", "keeper_themes", "keeper_mood_valence",
 			"salient_memories", "self_model", "learned_words", "mate_grief",
 			"keeper_absence_days", "deliberation_hint", "greeting_ritual", "introspection_report",
-			"felt_texture", "core_valence", "life_chapters", "meta_emotion", "biography"]:
+			"felt_texture", "core_valence", "life_chapters", "meta_emotion", "biography",
+			"keeper_episode", "keeper_episode_kind", "understood_words", "understood_kinds",
+			"unknown_words", "goal", "expects", "care_trust", "conversation_count",
+			"voice_seed", "mood_valence", "beliefs", "belief_line", "anticipating",
+			"self_change", "life_line"]:
 		if full.has(k):
 			slim[k] = full[k]
+	# Named companions, under a key validate_line does NOT treat as the
+	# entity whitelist (that would reject a capitalised first word).
+	var bn: Variant = full.get("bonds", null)
+	if bn is PackedStringArray and not (bn as PackedStringArray).is_empty():
+		slim["bond_names"] = bn
 	return slim
 
 

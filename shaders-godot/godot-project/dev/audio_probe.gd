@@ -7,6 +7,14 @@ extends Node
 #   state=NAME       dead | healthy | stressed | thriving
 #   fullbed          force the full synth bed even if the stub is selected
 #   out=NAME         output basename under user://
+#   legacy           apply the pre-lofi EDM groove defaults (hat/shaker/clap/
+#                    build/lead) in memory, for before/after comparisons
+#   voices           also mix a tank breath + three fish replies + bloops into
+#                    the mix at their runtime gain, to check voice levels
+#
+# Prints peak / RMS per bus. States carry "flow" (creature movement): the
+# shaker only plays above flow 0.18, so a state without it never exercised
+# the percussion that was actually bothering players.
 #
 # The three buses carry reverb/delay as AudioServer effects, which this does
 # not capture: what lands in the file is the dry sum at bus gains.
@@ -14,6 +22,22 @@ extends Node
 const BUS_GAIN := {"drums": 0.251, "synth": 0.251, "air": 0.200}  # -12/-12/-14 dB
 
 var _daylight_override: float = 1.0
+var _with_voices: bool = false
+
+const LEGACY_GROOVE := {
+	"music_kick_mix": 0.5, "music_hat_mix": 0.38, "music_sidechain": 0.55,
+	"music_phrase_form": "auto", "music_drop_intensity": 0.7, "music_lead_mix": 0.55,
+	"music_swing": 0.06, "music_offbeat_hat": 0.55, "music_offbeat_bass_mix": 0.35,
+	"music_shaker_mix": 0.4, "music_clap_mix": 0.45, "music_build_drama": 0.7,
+}
+
+
+func _apply_legacy_groove() -> void:
+	var cfg: Node = get_node_or_null("/root/TankConfig")
+	if cfg == null:
+		return
+	for k in LEGACY_GROOVE.keys():
+		cfg.set(k, LEGACY_GROOVE[k])
 
 const STATES := {
 	"dead": {"aeration": 0.0, "o2": 0.15, "vitality": 0.05, "fish": 0.1,
@@ -21,13 +45,13 @@ const STATES := {
 		"activity": 0.05, "temp": 0.5, "ph": 0.4},
 	"stressed": {"aeration": 0.25, "o2": 0.35, "vitality": 0.35, "fish": 0.4,
 		"plants": 0.3, "clarity": 0.4, "nitrate": 0.7, "algae": 0.6,
-		"activity": 0.3, "temp": 0.55, "ph": 0.45},
+		"activity": 0.3, "temp": 0.55, "ph": 0.45, "flow": 0.3},
 	"healthy": {"aeration": 0.7, "o2": 0.8, "vitality": 0.7, "fish": 0.6,
 		"plants": 0.6, "clarity": 0.8, "nitrate": 0.25, "algae": 0.2,
-		"activity": 0.6, "temp": 0.5, "ph": 0.5},
+		"activity": 0.6, "temp": 0.5, "ph": 0.5, "flow": 0.45},
 	"thriving": {"aeration": 0.95, "o2": 0.95, "vitality": 0.95, "fish": 0.85,
 		"plants": 0.9, "clarity": 0.95, "nitrate": 0.1, "algae": 0.1,
-		"activity": 0.9, "temp": 0.5, "ph": 0.5},
+		"activity": 0.9, "temp": 0.5, "ph": 0.5, "flow": 0.7},
 }
 
 
@@ -54,6 +78,10 @@ func _ready() -> void:
 			force_full = true
 		elif a.begins_with("daylight="):
 			_daylight_override = float(a.split("=")[1])
+		elif a == "legacy":
+			_apply_legacy_groove()
+		elif a == "voices":
+			_with_voices = true
 
 	if STATES.has(state):
 		var sm: Dictionary = n.get("_smooth")
@@ -102,10 +130,15 @@ func _ready() -> void:
 		if cnt == 0:
 			break
 
+	if _with_voices:
+		_mix_voices(n, mix, mix_r, rate)
 	_write_wav("user://%s.wav" % out_name, mix, mix_r, rate)
 	for k in per_bus.keys():
 		_write_wav("user://%s_%s.wav" % [out_name, k],
 			per_bus[k], per_bus[k], rate)
+	for k in per_bus.keys():
+		_print_stats(k, per_bus[k], BUS_GAIN[k])
+	_print_stats("mix", mix, 1.0)
 	print("[audio] state=%s frames=%d rate=%d -> %s" % [
 		state, mix.size(), rate, ProjectSettings.globalize_path("user://")])
 	get_tree().quit(0)
@@ -135,3 +168,55 @@ func _write_wav(path: String, l: PackedFloat32Array, r: PackedFloat32Array,
 		f.store_16(int(clampf(l[i], -1.0, 1.0) * 32767.0))
 		f.store_16(int(clampf(r[i] if i < r.size() else l[i], -1.0, 1.0) * 32767.0))
 	f.close()
+
+
+# Mix voices in at the gain the game would give them (player volume_db =
+# music x event gain + trim), relative to the bed's -12 dB player gain.
+func _mix_voices(n: Node, mix: PackedFloat32Array, mix_r: PackedFloat32Array,
+		rate: int) -> void:
+	var V: GDScript = load("res://scripts/tank_voice_audio.gd")
+	var gain_db: float = float(n.call("_voice_gain_db"))
+	var plan: Array = [
+		[2.0, V.voice_params("tank", 1, 60)],
+		[4.0, V.voice_params("fish", 11, 40, 0.1, 0.8)],
+		[5.5, V.voice_params("fish", 22, 40, 0.5, 0.5)],
+		[7.0, V.voice_params("fish", 33, 40, 0.9, 0.2)],
+		[9.0, V.voice_params("bloop", 44, 0, 0.4)],
+		[10.0, V.voice_params("plop", 55, 0)],
+		[11.0, V.voice_params("bubble_rise", 66, 0)],
+		[12.0, V.voice_params("gulp", 77, 0, 0.6)],
+	]
+	var voice_only := PackedFloat32Array()
+	voice_only.resize(mix.size())
+	voice_only.fill(0.0)
+	for e in plan:
+		var p: Dictionary = e[1]
+		var g: float = db_to_linear(gain_db + float(V.VOICE_TRIM_DB) + float(p.get("trim_db", 0.0)))
+		var smp: PackedFloat32Array = V.render(p, rate)
+		var at: int = int(float(e[0]) * float(rate))
+		for i in smp.size():
+			if at + i >= mix.size():
+				break
+			mix[at + i] += smp[i] * g
+			mix_r[at + i] += smp[i] * g
+			voice_only[at + i] += smp[i] * g
+		var seg := smp.duplicate()
+		for i in seg.size():
+			seg[i] *= g
+		_print_stats("voice:" + String(p["kind"]), seg, 1.0)
+	_print_stats("voices", voice_only, 1.0)
+
+
+func _print_stats(label: String, buf: PackedFloat32Array, gain: float) -> void:
+	var peak: float = 0.0
+	var acc: float = 0.0
+	var cnt: int = 0
+	for v in buf:
+		var x: float = v * gain
+		peak = maxf(peak, absf(x))
+		if absf(x) > 1e-7:
+			acc += x * x
+			cnt += 1
+	var rms: float = sqrt(acc / float(maxi(cnt, 1)))
+	print("[audio] %-18s peak %6.1f dBFS  rms %6.1f dBFS (active samples)" % [
+		label, linear_to_db(maxf(peak, 1e-9)), linear_to_db(maxf(rms, 1e-9))])

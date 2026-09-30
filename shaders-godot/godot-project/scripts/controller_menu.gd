@@ -36,6 +36,7 @@ const _HEAD: Array[String] = [
 	"Choose tank",
 	"Residents",
 	"Mind",
+	"Chronicle",
 	"Camera views",
 	"Adopt fish",
 	"Library",

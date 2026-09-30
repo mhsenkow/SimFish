@@ -34,6 +34,15 @@ uniform float sunset_warmth : hint_range(0.0, 1.0) = 0.0;
 // Suspended particulate sparkle in the shaft (#59).
 uniform float dust_mote_density : hint_range(0.0, 1.0) = 0.35;
 uniform float water_surface_y = 6.5;
+// Caustic shaft striation (2026-09-23). Under a rippled surface a lamp does not
+// light a uniform cone: the surface focuses it into parallel streaks that
+// shimmer as the ripples move — the same focusing that draws the caustic web
+// on the floor. Sampling the baked caustic tile at the fragment's XZ gives
+// streaks that are vertical by construction (the pattern depends on XZ only)
+// and drift in step with the floor web. One texture read. 0 = uniform cone.
+uniform sampler2D baked_caustics_tex : filter_linear, repeat_enable;
+uniform float caustic_baked = 0.0;
+uniform float shaft_streaks : hint_range(0.0, 1.0) = 0.7;
 uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
 uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0); // min xz, size xz
 uniform float canopy_attenuation : hint_range(0.0, 1.0) = 0.0;
@@ -138,6 +147,14 @@ void fragment() {
 		alpha *= 1.0 - canopy * canopy_attenuation;
 	}
 
+	if (caustic_baked > 0.5 && shaft_streaks > 0.001) {
+		float under_w = 1.0 - smoothstep(water_surface_y - 0.10, water_surface_y + 0.05, world_vertex.y);
+		float s_web = texture(baked_caustics_tex,
+			world_vertex.xz * 0.30 + vec2(TIME * 0.025, -TIME * 0.018)).b;
+		// Mean ~1: dark gaps between shafts, bright cores inside them.
+		float streak = mix(0.45, 2.1, s_web);
+		alpha *= mix(1.0, streak, shaft_streaks * under_w);
+	}
 	float bands = floor(alpha * 5.0 + 0.5) / 5.0;
 	alpha = mix(alpha, bands, beam_posterize);
 	if (dust_mote_density > 0.001) {

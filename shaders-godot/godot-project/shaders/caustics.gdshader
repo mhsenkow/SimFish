@@ -18,6 +18,10 @@ uniform float wave_speed = 0.85;
 uniform float wave_scale = 0.42;
 uniform float wave_coupling : hint_range(0.0, 1.0) = 0.65;
 uniform float day_phase_offset = 0.0;
+// Baked two-layer caustic tile (scripts/baked_caustics.gd). 1 = two texture
+// reads instead of up to three 3x3 Worley searches per fragment.
+uniform sampler2D baked_caustics_tex : filter_linear, repeat_enable;
+uniform float caustic_baked = 0.0;
 
 // ---- Organic caustics ----
 // Real caustics are sharp, branching light filaments that drift and morph, not
@@ -85,7 +89,16 @@ void fragment() {
     float c1 = 0.0;
     float c2 = 0.0;
     float c3 = 0.0;
-    if (aquatic_detail < 3) {
+    float web = 0.0;
+    if (caustic_baked > 0.5) {
+        if (aquatic_detail < 3) {
+            float ca = texture(baked_caustics_tex, uv * 0.21 + vec2(t * 0.031, -t * 0.019)).r;
+            float cb = aquatic_detail < 2
+                ? texture(baked_caustics_tex, uv * 0.26 + vec2(-t * 0.022, -t * 0.027)).g
+                : 0.0;
+            web = ca * 0.62 + cb * 0.42 + ca * cb * 0.9;
+        }
+    } else if (aquatic_detail < 3) {
         c1 = worley_caustic(uv * 0.85, t * 0.6);
         if (aquatic_detail < 2) {
             c2 = worley_caustic(uv * 1.7 + vec2(13.0, 7.0), -t * 0.45 + 2.0);
@@ -94,12 +107,14 @@ void fragment() {
             }
         }
     }
-    float web = c1 * 0.55;
-    if (aquatic_detail < 2) {
-        web += c1 * c2 * 0.75;
-    }
-    if (aquatic_detail < 1) {
-        web += c2 * c3 * 0.42;
+    if (caustic_baked < 0.5) {
+        web = c1 * 0.55;
+        if (aquatic_detail < 2) {
+            web += c1 * c2 * 0.75;
+        }
+        if (aquatic_detail < 1) {
+            web += c2 * c3 * 0.42;
+        }
     }
     // Keep transitions gentle for the palette quantizer/dither.
     float caustics = smoothstep(0.15, 0.85, web) * 0.46;

@@ -121,6 +121,25 @@ uniform float surface_spec_gain : hint_range(0.0, 3.0) = 0.0;
 // falls between pixels: the first version of this moved the frame's p99 by
 // nothing at all.
 uniform float surface_spec_power : hint_range(8.0, 400.0) = 56.0;
+// ---- Real-water surface (2026-09-23) ----
+// The vertex waves lift the cap but never touched its NORMAL, so every
+// surface term — fresnel, the fixture specular, the underside — saw a flat
+// sheet: the specular under the lamp rendered as one smooth white oval.
+// surface_ripple_slope perturbs the cap's normal with an analytic capillary
+// ripple (three directional sines, no texture), which breaks that oval into a
+// glitter path and makes the fresnel shimmer. 0 = the old flat sheet.
+uniform float surface_ripple_slope : hint_range(0.0, 0.5) = 0.26;
+// Total internal reflection. Seen from below (the camera under the waterline,
+// looking up through the front glass), a real surface is a silver mirror
+// outside Snell's window (~48.6 deg from vertical) and a bright window onto
+// the room inside it. The old underside branch lived inside a view-space
+// "faces up" test, so from below — where the cap faces down — it never ran.
+uniform float tir_strength : hint_range(0.0, 1.0) = 0.8;
+// Baked two-layer caustic tile (scripts/baked_caustics.gd). 1 = two texture
+// reads per web instead of a 3x3 Worley search; the water volume evaluated
+// up to five of those per fragment over most of the screen.
+uniform sampler2D baked_caustics_tex : filter_linear, repeat_enable;
+uniform float caustic_baked = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
@@ -148,6 +167,28 @@ float worley_caustic(vec2 uv, float tt) {
 		}
 	}
 	return pow(clamp(d2 - d1, 0.0, 1.0), 1.6);
+}
+
+// One caustic web sample: baked tile when bound, live Worley otherwise.
+float water_web(vec2 uv, float tt) {
+	if (caustic_baked > 0.5) {
+		float a = texture(baked_caustics_tex, uv * 0.25 + vec2(tt * 0.031, -tt * 0.019)).r;
+		float b = texture(baked_caustics_tex, uv * 0.31 + vec2(-tt * 0.022, -tt * 0.027)).g;
+		return clamp(a * 0.62 + b * 0.42 + a * b * 0.9, 0.0, 1.0);
+	}
+	return worley_caustic(uv, tt);
+}
+
+// Analytic capillary-ripple slope (d height / d xz) at a world XZ. Three
+// directional waves at unrelated wavelengths so the glitter never grids.
+vec2 ripple_slope(vec2 p, float tt) {
+	const vec2 D1 = vec2(0.83, 0.56);
+	const vec2 D2 = vec2(-0.47, 0.88);
+	const vec2 D3 = vec2(0.21, -0.98);
+	float p1 = dot(p, D1) * 2.3 + tt * 1.7;
+	float p2 = dot(p, D2) * 3.1 - tt * 2.1;
+	float p3 = dot(p, D3) * 4.7 + tt * 2.9;
+	return D1 * cos(p1) * 0.55 + D2 * cos(p2) * 0.30 + D3 * cos(p3) * 0.15;
 }
 
 void vertex() {
@@ -258,11 +299,17 @@ void fragment() {
 	float cw2 = 0.0;
 	float cw3 = 0.0;
 	if (aquatic_detail < 3) {
-		cw1 = worley_caustic(cuv * 0.7, t * 0.6);
-		if (aquatic_detail < 2) {
-			cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
-			if (aquatic_detail < 1) {
-				cw3 = worley_caustic(cuv * 2.6 + vec2(15.0, 8.0), t * 0.28 + 3.0);
+		if (caustic_baked > 0.5) {
+			// The baked web already crosses two layers; one sample is the
+			// whole cw1/cw2/cw3 stack, so the tiers collapse to on/off.
+			cw1 = water_web(cuv * 0.7, t * 0.6);
+		} else {
+			cw1 = worley_caustic(cuv * 0.7, t * 0.6);
+			if (aquatic_detail < 2) {
+				cw2 = worley_caustic(cuv * 1.4 + vec2(9.0, 4.0), -t * 0.4 + 1.5);
+				if (aquatic_detail < 1) {
+					cw3 = worley_caustic(cuv * 2.6 + vec2(15.0, 8.0), t * 0.28 + 3.0);
+				}
 			}
 		}
 	}
@@ -285,18 +332,38 @@ void fragment() {
 
 	vec3 n = normalize(NORMAL);
 	float spec_alpha = 0.0;
+	float under_alpha = 0.0;
+	// World-space facing. Godot flips NORMAL on back faces of a cull_disabled
+	// mesh, so seen from below the cap faces DOWN; the view-space n.y tests
+	// below were therefore blind to the underside.
+	vec3 nw = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	float cap = smoothstep(0.55, 0.92, abs(nw.y))
+		* step(water_surface_y - 0.35, world_pos.y);
+	float cam_below = step(CAMERA_POSITION_WORLD.y, water_surface_y - 0.02);
+	vec2 rgrad = vec2(0.0);
+	if (cap > 0.01 && surface_ripple_slope > 0.001) {
+		rgrad = ripple_slope(world_pos.xz, TIME * wave_speed) * surface_ripple_slope;
+	}
+	vec3 n_rip_w = normalize(vec3(-rgrad.x, 1.0, -rgrad.y));
+	vec3 n_rip = normalize((VIEW_MATRIX * vec4(n_rip_w, 0.0)).xyz);
 	// Deep corners go genuinely dark (#38).
 	float corner_dark = pow(depth_used, 1.35) * (1.0 - abs(n.y) * 0.35);
 	col *= 1.0 - corner_dark * 0.28;
-	float surface = smoothstep(0.55, 0.92, n.y);
-	float fresnel = pow(1.0 - abs(dot(n, VIEW)), 2.2);
+	float surface = smoothstep(0.55, 0.92, n.y) * (1.0 - cam_below);
+	// Rippled normal on the cap, the mesh normal everywhere else.
+	vec3 n_s = normalize(mix(n, n_rip, surface));
+	float fresnel = pow(1.0 - abs(dot(n_s, VIEW)), 2.2);
+	// Refractive shimmer: looking down through a rippled surface the floor
+	// swims in bright and dark bands that follow the slope. A brightness
+	// modulation on the cap, keyed to the slope toward the light.
+	col *= 1.0 + dot(rgrad, vec2(0.55, 0.84)) * 1.6 * surface;
 	col = mix(col, shallow_color.rgb * 1.18, surface * 0.42);
 	// Living ceiling: viewed from below, the surface fractures the light into a
 	// drifting bright web. Reuses the caustic Worley so it matches the floor.
 	if (surface > 0.01) {
 		float surf_web = 0.0;
 		if (aquatic_detail < 3) {
-			surf_web = worley_caustic(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
+			surf_web = water_web(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
 		}
 		col += light_color * surf_web * surface * 0.18;
 		// Room/sky sheen on the top cap (#24).
@@ -307,16 +374,31 @@ void fragment() {
 			surface * pond_calm * 0.22 * pond_health_gloss);
 		col = mix(col, pond_color_spill,
 			surface * pond_color_spill_gain * 0.32 * pond_health_gloss);
-		// Underside mirror — total-internal-reflection read from below (#17).
-		vec3 view_dir = normalize(VIEW);
-		float from_below = smoothstep(0.15, 0.82, -view_dir.y) * surface;
+	}
+	// Underside: total internal reflection (#17), from the camera's real
+	// position rather than a view-space guess.
+	float under = cap * cam_below;
+	if (under > 0.01 && tir_strength > 0.001) {
+		vec3 v_w = normalize(CAMERA_POSITION_WORLD - world_pos);
+		float cos_t = abs(dot(v_w, n_rip_w));
+		// Outside Snell's window (cos < ~0.66) the surface is a perfect mirror.
+		float tir = 1.0 - smoothstep(0.58, 0.72, cos_t);
 		float ceil_web = 0.0;
 		if (aquatic_detail < 2) {
-			ceil_web = worley_caustic(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
+			ceil_web = water_web(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
 		}
-		col += light_color * ceil_web * from_below * underside_mirror * 0.46;
-		col += vec3(0.92, 0.97, 1.0) * from_below * underside_mirror * 0.20;
-		col += room_sky_color * from_below * underside_mirror * surface_reflection * 0.18;
+		// The mirror shows the tank's own body — the water colour lifted, a
+		// silver sheen, the web of light crossing it. Inside the window the
+		// bright room above shows through.
+		vec3 mirror = mix(deep_color.rgb * 1.8 + vec3(0.04, 0.07, 0.06),
+			vec3(0.80, 0.90, 0.92), 0.30 + ceil_web * 0.35);
+		mirror *= 1.0 + dot(rgrad, vec2(0.55, 0.84)) * 1.8;
+		vec3 window_c = room_sky_color * 1.15 + light_color * 0.25;
+		vec3 under_col = mix(window_c, mirror, tir);
+		float k = under * mix(0.45, 0.92, tir) * tir_strength;
+		col = mix(col, under_col, k);
+		col += light_color * ceil_web * under * underside_mirror * 0.30;
+		under_alpha = k * 0.88;
 	}
 
 	float meniscus = surface * (0.65 + 0.35 * sin(world_pos.x * 2.4 + world_pos.z * 2.1 + TIME * 0.35));
@@ -350,7 +432,10 @@ void fragment() {
 		vec3 h_dir = normalize(l_dir + normalize(VIEW));
 		// Only the up-facing surface, and only where the water is actually
 		// lit — a shaded corner of the meniscus must not spark.
-		float spec = pow(max(dot(n, h_dir), 0.0), surface_spec_power) * surface;
+		float spec = pow(max(dot(n_s, h_dir), 0.0), surface_spec_power) * surface;
+		// Glitter: the rippled lobe is already broken into streaks; harden
+		// its brighter half so the sparks land on whole pixels.
+		spec = mix(spec, smoothstep(0.30, 0.75, spec), 0.5);
 		// Toward white, not toward light_color: light_color is the water's own
 		// blue-green transmission tint, and a highlight wearing it can never
 		// reach the top of the palette. A specular is the light source seen
@@ -448,5 +533,5 @@ void fragment() {
 
 	ALBEDO = col;
 	// The specular is allowed past the translucency cap; nothing else is.
-	ALPHA = max(clamp(alpha, 0.04, 0.62), spec_alpha * 0.96);
+	ALPHA = max(max(clamp(alpha, 0.04, 0.62), spec_alpha * 0.96), under_alpha);
 }

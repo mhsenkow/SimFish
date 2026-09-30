@@ -23,9 +23,9 @@ func _initialize() -> void:
 	TestSupport.check(failed, clear.x / maxf(clear.z, 0.0001) > 3.0,
 		"red is absorbed several times harder than blue")
 	# Tannins invert it — blackwater keeps amber and loses blue.
-	var tan: Vector3 = _Vox.WATER_ABSORB_TANNIN
-	TestSupport.check(failed, tan.z > tan.x,
-		"tannin water absorbs blue hardest — what survives is amber (%s)" % tan)
+	var tannin: Vector3 = _Vox.WATER_ABSORB_TANNIN
+	TestSupport.check(failed, tannin.z > tannin.x,
+		"tannin water absorbs blue hardest — what survives is amber (%s)" % tannin)
 
 	# ---- The packed uniforms are shaped right ---------------------------------
 	# Asserted through the pure builder, not by reading the globals back: the
@@ -115,7 +115,9 @@ func _initialize() -> void:
 	for sh in ["voxel", "voxel_mm", "voxel_fauna_mm", "foliage", "foliage_mm",
 			"substrate_opaque", "substrate_caustic"]:
 		var src: String = FileAccess.get_file_as_string("res://shaders/%s.gdshader" % sh)
-		TestSupport.check(failed, src.contains("apply_water_column("),
+		# _ws is the world-space entry point (in-water view path); either counts.
+		TestSupport.check(failed,
+			src.contains("apply_water_column(") or src.contains("apply_water_column_ws("),
 			"%s.gdshader applies the water column" % sh)
 
 	_Vox.disable_water_column()

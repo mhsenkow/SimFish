@@ -27,7 +27,9 @@ global uniform vec4 iaq_palette_water;
 // non-aquatic surface pay one float compare.
 global uniform vec4 iaq_water_absorb;
 global uniform vec4 iaq_water_body;
-// x = depth legibility gain, yzw spare (VISUAL_DIRECTIONS #11).
+// x = depth legibility gain (VISUAL_DIRECTIONS #11).
+// y = in-water view-path gain, z/w = tank half extents X/Z. When z == 0 the
+// view term falls back to the legacy camera-distance approximation.
 //
 // The extinction below is physically shaped and, at aquarium scale, almost
 // invisible: measured against the shipped constants, the whole water column
@@ -44,8 +46,63 @@ global uniform vec4 iaq_water_body;
 global uniform vec4 iaq_water_depth;
 
 
+// ---- The view half of the path, measured in WATER (2026-09-23) ----
+//
+// The legacy view term was `view_dist * 0.35`: camera distance, mostly air,
+// down-weighted so the tank did not go cyan. That makes every fragment pay
+// nearly the same horizontal toll — the front plant and the back glass sit
+// 20 and 27 units from an orbit camera — so the one depth cue a real tank
+// shows best, the back of the tank fading into blue-green, was missing.
+//
+// This walks the ray from the fragment toward the camera and stops where it
+// leaves the water: the tank's side walls (a box of half extents z/w, centred
+// on the origin like every tank footprint) or the surface. A stem against the
+// front glass pays ~0, the back wall pays the full tank depth, and a camera
+// looking down through the surface pays only the vertical. Slab test only, no
+// texture reads: a few ALU ops per fragment.
+float water_view_path(vec3 wpos, vec3 cam_pos, float surface_y) {
+	vec3 rd = cam_pos - wpos;
+	float len_rd = length(rd);
+	rd /= max(len_rd, 0.0001);
+	vec2 half_ext = iaq_water_depth.zw;
+	vec2 s = vec2(rd.x >= 0.0 ? 1.0 : -1.0, rd.z >= 0.0 ? 1.0 : -1.0);
+	vec2 t_side = max(half_ext - s * wpos.xz, vec2(0.0)) / max(abs(rd.xz), vec2(0.0001));
+	float t_exit = min(t_side.x, t_side.y);
+	if (rd.y > 0.0001) {
+		t_exit = min(t_exit, max(surface_y - wpos.y, 0.0) / rd.y);
+	}
+	return clamp(min(t_exit, len_rd), 0.0, 64.0);
+}
+
+// World-space variant: `wpos` the fragment's world position, `cam_pos` the
+// camera's (CAMERA_POSITION_WORLD). Uses the in-water path above when the tank
+// extents are published, the legacy approximation otherwise.
+vec3 apply_water_column_ws(vec3 col, vec3 wpos, vec3 cam_pos) {
+	float strength = iaq_water_absorb.a;
+	if (strength < 0.001) {
+		return col;
+	}
+	float surface_y = iaq_water_body.a;
+	float depth = max(surface_y - wpos.y, 0.0);
+	if (depth <= 0.0) {
+		return col;
+	}
+	float depth_gain = max(iaq_water_depth.x, 0.01);
+	float view_term;
+	if (iaq_water_depth.z > 0.01) {
+		view_term = water_view_path(wpos, cam_pos, surface_y) * max(iaq_water_depth.y, 0.0);
+	} else {
+		view_term = length(cam_pos - wpos) * 0.35;
+	}
+	float path = depth * depth_gain + view_term;
+	vec3 transmit = exp(-iaq_water_absorb.rgb * path * strength);
+	float haze = 1.0 - exp(-path * strength * 0.020);
+	return col * transmit + iaq_water_body.rgb * haze;
+}
+
 // `world_y` is the fragment's world height, `view_dist` its distance from the
-// camera. Returns the colour as seen through the intervening water.
+// camera. Returns the colour as seen through the intervening water. Legacy
+// entry point — surfaces that know their world position use the _ws variant.
 vec3 apply_water_column(vec3 col, float world_y, float view_dist) {
 	float strength = iaq_water_absorb.a;
 	if (strength < 0.001) {

@@ -148,7 +148,7 @@ func _initialize() -> void:
 func _inject_btn(device: int, button: int, pressed: bool) -> void:
 	var ev := InputEventJoypadButton.new()
 	ev.device = device
-	ev.button_index = button
+	ev.button_index = button as JoyButton
 	ev.pressed = pressed
 	ev.pressure = 1.0 if pressed else 0.0
 	Input.parse_input_event(ev)
@@ -157,7 +157,7 @@ func _inject_btn(device: int, button: int, pressed: bool) -> void:
 func _inject_axis(device: int, axis: int, value: float) -> void:
 	var ev := InputEventJoypadMotion.new()
 	ev.device = device
-	ev.axis = axis
+	ev.axis = axis as JoyAxis
 	ev.axis_value = value
 	Input.parse_input_event(ev)
 

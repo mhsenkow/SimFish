@@ -416,13 +416,15 @@ static func _template_lance_pair(pair_index: int) -> Array:
 			var t: float = float(i) / float(leaf_len - 1)
 			# Width profile: widest in the middle.
 			var w: float = 0.7 if i == 1 else 0.45
-			# Leaves angle outward from the stem.
-			var angle: float = float(side) * 0.7 + yaw_offset
-			var dist: float = float(i) * VOXEL_SIZE * 0.65
+			# An opposite pair: the two leaves leave the node on opposite
+			# sides (they used to both splay toward +X, so every "pair" hung
+			# off one side of the stem), rising slightly as they go.
+			var angle: float = (0.0 if side < 0 else PI) + yaw_offset
+			var dist: float = float(i + 1) * VOXEL_SIZE * 0.6
 			out.append(LeafVoxel.new(
 				Vector3(
 					cos(angle) * dist,
-					sin(angle) * dist * 0.3,
+					dist * 0.32,
 					sin(angle) * dist,
 				),
 				Vector3(

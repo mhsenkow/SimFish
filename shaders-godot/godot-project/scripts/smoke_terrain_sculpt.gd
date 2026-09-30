@@ -88,6 +88,7 @@ func _initialize() -> void:
 		push_error("[smoke_terrain_sculpt] expanded region still bare after overlay")
 		quit(1)
 		return
+	@warning_ignore("integer_division")
 	var center_mat: int = large.get_material(large.cols / 2, 2, large.depths / 2)
 	if center_mat == TerrainVoxelGrid.CellMaterial.EMPTY:
 		push_error("[smoke_terrain_sculpt] saved sculpt not overlaid at center")

@@ -28,10 +28,10 @@ func _run_all() -> bool:
 	var iso: Dictionary = DeltaG.verify_reward_isolation()
 	if not bool(iso.get("ok", false)):
 		return _fail("reward isolation check failed")
-	var ord: Dictionary = DeltaG.calibration_ordering()
-	if not bool(ord.get("passed", false)):
+	var ordering: Dictionary = DeltaG.calibration_ordering()
+	if not bool(ordering.get("passed", false)):
 		return _fail("calibration ordering failed (goal=%.3f boids=%.3f noise=%.3f scripted=%.3f)"
-				% [ord.get("goal", 0.0), ord.get("boids", 0.0), ord.get("noise", 0.0), ord.get("scripted", 0.0)])
+				% [ordering.get("goal", 0.0), ordering.get("boids", 0.0), ordering.get("noise", 0.0), ordering.get("scripted", 0.0)])
 	var trip: Dictionary = DeltaG.scan_goodhart_tripwire()
 	if not bool(trip.get("passed", false)):
 		return _fail("Goodhart tripwire failed: %s" % str(trip.get("hits", [])))

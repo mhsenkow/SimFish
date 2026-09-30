@@ -18,6 +18,7 @@ const EDGE_FADE_SHADER := preload("res://shaders/list_edge_fade.gdshader")
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishJournal = preload("res://scripts/fish_journal.gd")
 const MindConversation = preload("res://scripts/mind_conversation.gd")
+const _FishBackstoryScript = preload("res://scripts/fish_backstory.gd")
 
 # List type filter.
 enum Filter { ALL, FISH, SHRIMP, SNAIL, CLAM, FAV }
@@ -559,13 +560,16 @@ func _make_card(c: Node) -> Control:
 	pip.color = _condition_color(c)
 	row.add_child(pip)
 
-	if c is Fish and c.fish_journal.size() > 0:
+	if c is Fish:
+		# Hover a resident to read its backstory.
+		card.tooltip_text = _FishBackstoryScript.summary(c)
+	if c is Fish and (c.fish_journal.size() > 0 or _FishBackstoryScript.has_story(c)):
 		var journal_btn := Button.new()
 		journal_btn.flat = true
 		journal_btn.focus_mode = Control.FOCUS_NONE
 		journal_btn.custom_minimum_size = Vector2(30, 34)
 		journal_btn.text = "📖"
-		journal_btn.tooltip_text = tr("Life journal")
+		journal_btn.tooltip_text = tr("Life story & journal")
 		journal_btn.pressed.connect(func(): _show_fish_journal(cref))
 		row.add_child(journal_btn)
 
@@ -832,7 +836,11 @@ func _show_fish_journal(f: Fish) -> void:
 	body.fit_content = true
 	body.scroll_active = true
 	body.custom_minimum_size = Vector2(300, 180)
-	body.text = FishJournal.format_bbcode(f.fish_journal, nm)
+	var story_lines: Array[String] = _FishBackstoryScript.bio_lines(f)
+	var story_bb: String = ""
+	if not story_lines.is_empty():
+		story_bb = "[b]Story[/b]\n%s\n\n" % "\n".join(PackedStringArray(story_lines))
+	body.text = story_bb + FishJournal.format_bbcode(f.fish_journal, nm)
 	vb.add_child(body)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)

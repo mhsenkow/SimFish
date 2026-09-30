@@ -1,6 +1,6 @@
 extends SceneTree
 
-# Fast parse/compile gate over every script in scripts/ (BROAD_DIRECTIONS #11).
+# Fast parse/compile gate over every script in scripts/ and dev/ (BROAD_DIRECTIONS #11).
 #
 # THE BUG THIS FIXES: the previous version treated a non-null
 # ResourceLoader.load() as success. But Godot returns a non-null GDScript
@@ -20,24 +20,37 @@ extends SceneTree
 # with a deliberately broken script present, 0 of 406 on the clean tree.
 
 
+# res://dev is included (non-recursive) so its tools stay compiling too, and so
+# scripts/check_warnings.sh — which runs this under --debug and fails on any
+# WARNING for a res://scripts/ or res://dev/ file — covers them.
+const DIRS: Array[String] = ["res://scripts", "res://dev"]
+
+
 func _initialize() -> void:
-	var dir := DirAccess.open("res://scripts")
-	if dir == null:
-		push_error("[compile_check] cannot open res://scripts")
-		quit(1)
-		return
 	var bad: Array[String] = []
 	var n: int = 0
-	dir.list_dir_begin()
-	var f: String = dir.get_next()
-	while f != "":
-		if f.ends_with(".gd"):
-			n += 1
-			var why: String = _check_one("res://scripts/" + f)
-			if why != "":
-				bad.append("%s: %s" % [f, why])
-		f = dir.get_next()
-	dir.list_dir_end()
+	for d in DIRS:
+		var dir := DirAccess.open(d)
+		if dir == null:
+			push_error("[compile_check] cannot open %s" % d)
+			quit(1)
+			return
+		dir.list_dir_begin()
+		var f: String = dir.get_next()
+		while f != "":
+			# Never reload this script itself: a CACHE_MODE_IGNORE load of a
+			# running script swaps its bytecode mid-call ("Internal script
+			# error! Opcode: 0") and hangs/crashes the run.
+			var p: String = d + "/" + f
+			if p == get_script().resource_path:
+				pass
+			elif not dir.current_is_dir() and f.ends_with(".gd"):
+				n += 1
+				var why: String = _check_one(p)
+				if why != "":
+					bad.append("%s/%s: %s" % [d.trim_prefix("res://"), f, why])
+			f = dir.get_next()
+		dir.list_dir_end()
 
 	if bad.is_empty():
 		print("[compile_check] %d scripts, 0 failed" % n)

@@ -10,6 +10,7 @@ const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishProtoself = preload("res://scripts/fish_protoself.gd")
 const FeltSelfLayer = preload("res://scripts/felt_self_layer.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
 
 
 static func enabled() -> bool:
@@ -289,7 +290,10 @@ static func tick_rank_boldness_drift(f: Fish, dt: float) -> void:
 	var rank: float = f.rank_within_species
 	var target: float = clampf(0.35 + rank * 0.45, 0.05, 1.0)
 	var cur: float = float(f.personality["boldness"])
-	f.personality["boldness"] = lerpf(cur, target, dt * 0.0008)
+	# Rank pressure is lived experience like any other: accumulate it and let
+	# the bounded nightly drift apply it, instead of lerping boldness toward
+	# the rank target (which erased everything else the fish had learned).
+	FishLearnedMind.accumulate(f, "rank_pull", (target - cur) * dt * 0.0008)
 
 
 static func tick_mourning_stance(f: Fish, sim: Node, dt: float) -> void:

@@ -159,7 +159,10 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	# Scaled by clarity: a murky tank scatters the reflection instead of
 	# mirroring it, which is exactly what a cloudy tank looks like.
 	mat.set_shader_parameter("surface_spec_gain", 1.7 * clampf(trans, 0.0, 1.0))
-	mat.set_shader_parameter("surface_spec_power", 56.0)
+	# 110 with the rippled normal (water.gdshader surface_ripple_slope): the
+	# lobe is tight enough that the ripples scatter it into a glitter path of
+	# separate sparks instead of the single white oval 56 drew on a flat sheet.
+	mat.set_shader_parameter("surface_spec_power", 110.0)
 	mat.set_shader_parameter("turbidity_haze", clampf((1.0 - trans) * 0.85, 0.0, 0.72))
 	mat.set_shader_parameter("flow_distortion", 0.38)
 	mat.set_shader_parameter("floor_bounce", clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.55))

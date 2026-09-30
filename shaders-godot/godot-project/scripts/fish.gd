@@ -19,6 +19,8 @@ class_name Fish
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
+const FishSocial = preload("res://scripts/fish_social.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
 const FishJournal = preload("res://scripts/fish_journal.gd")
 const GuardianFish = preload("res://scripts/guardian_fish.gd")
 const MakeItThere = preload("res://scripts/make_it_there.gd")
@@ -271,6 +273,11 @@ var food_preferences: Dictionary = {}
 var home_confidence: float = 0.0
 var _patrol_heatmap_refresh_t: float = 0.0
 var character_bio: String = ""
+# Template backstory (FishBackstory) + environment-intent state (FishEnvironment).
+const _FishBackstoryScript = preload("res://scripts/fish_backstory.gd")
+const _FishEnvironmentScript = preload("res://scripts/fish_environment.gd")
+var backstory: Dictionary = {}
+var env_state: Dictionary = {}
 var is_guardian: bool = false
 # curiosity_drive: an appetite for novelty in [0,1]. Builds when nothing
 #   interesting happens; discharged by investigating. Bored fish go exploring.
@@ -309,6 +316,12 @@ var _mate_grief: float = 0.0
 var _learning_rate_mult: float = 1.0
 @warning_ignore("unused_private_class_variable")
 var _prospective: Dictionary = {}
+# Learned mind (fish_learned_mind.gd): beliefs, trait-drift, milestones (saved);
+# _belief_cue is its transient once-a-second read model (never saved).
+@warning_ignore("unused_private_class_variable")
+var _learned_mind: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _belief_cue: Dictionary = {}
 var _voiced_wake: bool = false
 # A committed short-term goal so the fish doesn't re-decide every frame. The
 # goal_kind string is diagnostic; goal_point is where it wants to go; goal_timer
@@ -344,7 +357,7 @@ var _sleep_mind_cd: float = 0.0
 @warning_ignore("unused_private_class_variable")
 var _mind_accum: float = 0.0
 @warning_ignore("unused_private_class_variable")
-var _mind_stagger: float = 0.0
+var _mind_stagger: float = -1.0  # <0 = unset; MindTick.init_fish assigns the phase
 @warning_ignore("unused_private_class_variable")
 var _ws_bias_lerp_from: Vector3 = Vector3.ZERO
 @warning_ignore("unused_private_class_variable")
@@ -526,6 +539,9 @@ var _fear_peek_dir: Vector3 = Vector3.ZERO
 # id -> affinity [-1,1] (>0 friend, <0 rival). Built from repeated co-schooling
 # and grudges. Cheap to maintain (updated on the decay throttle).
 var bonds: Dictionary = {}
+# Social graph detail beside `bonds` (familiarity, tags, last event, grief).
+# Owned by fish_social.gd; persisted as "social".
+var social: Dictionary = {}
 # Leadership: a transient role within the local school. >0.5 means this fish is
 # currently leading; followers weight cohesion toward it. Hands off over time.
 var lead_score: float = 0.0
@@ -1103,6 +1119,7 @@ func _refresh_character_bio() -> void:
 		sim.ensure_id(self)
 	if id == "":
 		return
+	_FishBackstoryScript.ensure(self)
 	if character_bio != "" and not is_guardian:
 		return
 	var ai: Node = _ai_director_cached
@@ -1274,6 +1291,8 @@ func remember(kind: String, pos: Vector3, ttl: float = 12.0) -> void:
 	memory.append({"kind": kind, "pos": pos, "t": ttl})
 	if memory.size() > MEMORY_MAX:
 		memory.pop_front()
+	if kind != "fed":
+		FishLearnedMind.observe(self, kind, pos)
 	match kind:
 		"fed":
 			_confirm_region_hypothesis("food")
@@ -1569,6 +1588,7 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0, food_subtype: int = -1) 
 	# Working memory + mood: a meal is a happy, salient event. Remember where
 	# it happened so the fish can return to a proven spot when hungry again.
 	remember("fed", pos, 14.0)
+	FishLearnedMind.observe(self, "food" if food_subtype >= 0 else "graze", pos)
 	mood = clampf(mood + 0.12 * weight, -1.0, 1.0)
 	FishMind.nudge_arousal(self, 0.12 * weight)
 	if food_subtype >= 0:
@@ -1646,7 +1666,10 @@ func get_bio_summary() -> String:
 	var parts: PackedStringArray = PackedStringArray([title])
 	if character_bio != "":
 		parts.append(character_bio)
-	elif is_guardian:
+	var story_tag: String = _FishBackstoryScript.tagline(self)
+	if story_tag != "":
+		parts.append(story_tag)
+	if character_bio == "" and is_guardian:
 		parts.append(GuardianFish.offline_guardian_bio(self))
 	if meals > 0:
 		parts.append("%d %s" % [meals, "meal" if meals == 1 else "meals"])
@@ -3655,12 +3678,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			for k in expired:
 				grudges.erase(k)
 		# PERFORMANCE_UNTHROTTLED #11 — bond arcs on the decay throttle, not every brain tick.
-		if not bonds.is_empty():
-			for oid in bonds.keys():
-				var aff: float = float(bonds[oid])
-				bonds[oid] = clampf(aff - decay_dt * 0.002, -1.0, 1.0)
-				if aff > 0.2 and familiarity > 0.3:
-					bonds[oid] = clampf(float(bonds[oid]) + decay_dt * 0.0015, -1.0, 1.0)
+		# fish_social.gd: event-driven social graph + affinity decay toward 0.
+		FishSocial.tick(self, decay_dt)
 		if not habituated.is_empty():
 			var hab_decay: float = FishMind.habituation_decay_rate(self) * decay_dt
 			for k in habituated.keys():
@@ -3941,6 +3960,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	desired += _hardscape_clearance_push() * 1.6
 	if _behavior_ws_bias.length_squared() > 0.0001:
 		desired += _behavior_ws_bias * effective_max
+	desired += _FishEnvironmentScript.steer(self, dt, effective_max)
 
 	# Tier 0.2: SURFACE GULPING (hypoxia response). Only surface-adapted fish
 	# panic-gulp at the meniscus; mid-column species rely on the softer home_y
@@ -5292,6 +5312,11 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# intensity) so it reads as solemn, not broken.
 	if mourning_w > 0.01:
 		effective_max *= 1.0 - mourning_w * 0.30
+	# Personal grief (fish_social.gd): slower, drifting to where a friend died.
+	var social_grief: float = FishSocial.grief_level(self)
+	if social_grief > 0.01:
+		effective_max *= 1.0 - social_grief * FishSocial.GRIEF_SLOW
+		desired += FishSocial.grief_pull(self) * effective_max * FishSocial.GRIEF_PULL * social_grief
 
 	# Drift toward this fish's vertical territory (home_y). Each fish has
 	# its own anchor (not just the species preferred_y) so 30 cory don't
@@ -6553,6 +6578,7 @@ func _clear_partner_refs_on_death() -> void:
 func start_dying() -> void:
 	if _dying:
 		return
+	FishSocial.on_death(self)
 	_clear_partner_refs_on_death()
 	_dying = true
 	_dying_timer = DEATH_DURATION
@@ -8858,8 +8884,10 @@ func to_save_dict() -> Dictionary:
 		"arousal": arousal,
 		"mind": FishMind.mind_to_dict(self, sim != null and sim.has_method("save_mind_delta") and sim.save_mind_delta()),
 		"character_bio": character_bio,
+		"backstory": _FishBackstoryScript.to_save(self),
 		"is_guardian": is_guardian,
 		"bonds": bonds.duplicate(),
+		"social": FishSocial.to_save(self),
 		# Individual-aliveness state (H9): lifelong size/lifespan variance, the
 		# wariness scar from past frights, and the bonded mate id so loyalty +
 		# the size hierarchy survive a reload.
@@ -9017,11 +9045,13 @@ func apply_save_dict(d: Dictionary) -> void:
 	if mind_d is Dictionary:
 		FishMind.apply_mind_dict(self, mind_d as Dictionary)
 	character_bio = str(d.get("character_bio", character_bio))
+	_FishBackstoryScript.load_into(self, d.get("backstory", null))
 	is_guardian = bool(d.get("is_guardian", is_guardian))
 	_refresh_character_bio()
 	var saved_bonds: Variant = d.get("bonds", null)
 	if saved_bonds is Dictionary:
 		bonds = (saved_bonds as Dictionary).duplicate()
+	FishSocial.from_save(self, d.get("social", null))
 	var saved_visited: Variant = d.get("visited_regions", null)
 	if saved_visited is Array and (saved_visited as Array).size() == visited_regions.size():
 		for i in range(visited_regions.size()):

@@ -39,6 +39,9 @@ static var _alloc_baseline: int = -1
 static var _alloc_last_frame: int = 0
 static var _alloc_scope_tag: String = ""
 static var _ledger: Dictionary = {}
+# record_ledger is also called from mind worker threads (GlobalWorkspace bids,
+# episodic retrieval); unguarded concurrent inserts corrupt the Dictionary.
+static var _ledger_mutex: Mutex = Mutex.new()
 
 # record_frame() runs on literally every rendered frame, so it must not
 # allocate. _sort_scratch is a single reused buffer for the p95 percentile;
@@ -57,22 +60,29 @@ static func alloc_scope_tag() -> String:
 
 
 static func record_ledger(item_id: int, before_us: int, after_us: int) -> void:
-	_ledger[str(item_id)] = {"before_us": before_us, "after_us": after_us}
+	var row: Dictionary = {"before_us": before_us, "after_us": after_us}
+	_ledger_mutex.lock()
+	_ledger[str(item_id)] = row
+	_ledger_mutex.unlock()
 
 
 static func ledger_snapshot() -> Dictionary:
-	return _ledger.duplicate(true)
+	_ledger_mutex.lock()
+	var out: Dictionary = _ledger.duplicate(true)
+	_ledger_mutex.unlock()
+	return out
 
 
 static func ledger_hud_suffix(max_items: int = 3) -> String:
-	if _ledger.is_empty():
+	var ledger: Dictionary = ledger_snapshot()
+	if ledger.is_empty():
 		return ""
-	var keys: Array = _ledger.keys()
+	var keys: Array = ledger.keys()
 	keys.sort()
 	var parts: PackedStringArray = PackedStringArray()
 	for i in mini(keys.size(), max_items):
 		var k: String = str(keys[i])
-		var row: Dictionary = _ledger[k]
+		var row: Dictionary = ledger[k]
 		var saved_us: int = int(row.get("before_us", 0)) - int(row.get("after_us", 0))
 		if saved_us > 0:
 			parts.append("#%s −%.1fms" % [k, float(saved_us) / 1000.0])
@@ -108,7 +118,9 @@ static func reset_for_test() -> void:
 	_alloc_baseline = -1
 	_alloc_last_frame = 0
 	_alloc_scope_tag = ""
+	_ledger_mutex.lock()
 	_ledger.clear()
+	_ledger_mutex.unlock()
 	_sort_scratch = PackedFloat32Array()
 	_stride_tick = 0
 	target_frame_ms = TARGET_FRAME_MS

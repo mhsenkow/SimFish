@@ -50,6 +50,7 @@ const MIND_SCHEMA_VERSION: int = 3
 const SimRngScript = preload("res://scripts/sim_rng.gd")
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
 const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
 
 
 # ---- Perception (#1) ----
@@ -368,22 +369,20 @@ static func habituation_decay_rate(f) -> float:
 	return lerpf(1.4, 0.55, f._trait("curiosity"))
 
 
+# Lived experience -> personality. This used to write the traits directly every
+# tick (+0.004/s boldness while watched: a fish went from shy to maximally bold
+# in ~2 minutes of attention, and nothing bounded it). It now only ACCUMULATES
+# the day's experience; FishLearnedMind.apply_night_drift turns it into a
+# slow (<= 0.03/night/trait), birth-anchored (<= +-0.25) change during sleep.
 static func tick_personality_conditioning(f, dt: float) -> void:
 	if f.personality.is_empty():
 		return
 	if f.familiarity > 0.35 and f._cached_glance_strength > 0.2:
-		f.personality["boldness"] = clampf(
-			float(f.personality.get("boldness", 0.5)) + dt * 0.004, 0.05, 1.0)
-		f.personality["sociability"] = clampf(
-			float(f.personality.get("sociability", 0.5)) + dt * 0.003, 0.05, 1.0)
+		FishLearnedMind.accumulate(f, "warm_s", dt)
 	if f.spooked > 0.45 or f.stress > 0.75:
-		f.personality["boldness"] = clampf(
-			float(f.personality.get("boldness", 0.5)) - dt * 0.006, 0.05, 1.0)
-		f.personality["calm"] = clampf(
-			float(f.personality.get("calm", 0.5)) - dt * 0.004, 0.05, 1.0)
+		FishLearnedMind.accumulate(f, "fear_s", dt)
 	if f.curiosity_drive > 0.55 and f.stress < 0.35:
-		f.personality["curiosity"] = clampf(
-			float(f.personality.get("curiosity", 0.5)) + dt * 0.002, 0.05, 1.0)
+		FishLearnedMind.accumulate(f, "curious_s", dt)
 
 
 # Needs hierarchy (#31 Vol I): safety > food > social > rest > play > explore.
@@ -669,6 +668,8 @@ static func salient_avoid_steer(f, at_pos: Vector3) -> Vector3:
 			continue
 		var away: Vector3 = at_pos - sp
 		push += away.normalized() * (1.0 - sqrt(d2) / 2.5) * float(e.get("weight", 0.5))
+	# Learned danger beliefs (consolidated at night) bend the path too.
+	push += FishLearnedMind.danger_push(f, at_pos)
 	if push.length_squared() < 1e-4:
 		return Vector3.ZERO
 	return push.normalized()
@@ -975,7 +976,7 @@ static func mind_to_dict(f, delta: bool = false) -> Dictionary:
 		"schema_version": MIND_SCHEMA_VERSION,
 		"food_preferences": f.food_preferences.duplicate(),
 		"home_confidence": f.home_confidence,
-		"salient_memories": f.salient_memories.duplicate(true),
+		"salient_memories": _salient_to_save(f.salient_memories),
 		"fish_journal": f.fish_journal.duplicate(true),
 		"mate_grief": f._mate_grief,
 		"hypotheses": f._hypotheses.duplicate(true),
@@ -1005,12 +1006,44 @@ static func mind_to_dict(f, delta: bool = false) -> Dictionary:
 		"delta_g": DeltaG.to_dict(f),
 		"delta_g_curve": DeltaGCurve.to_dict(f),
 		"homeostasis": FishHomeostasis.to_dict(f),
+		"learned_mind": FishLearnedMind.to_dict(f),
 	})
 	d["schema_version"] = MIND_SCHEMA_VERSION
 	if delta:
 		return _MindDirtySaveScript.filter_dict(f, d)
 	_MindDirtySaveScript.clear(f)
 	return d
+
+
+# Salient memories carry a Vector3 "pos" that JSON turns into the string
+# "(x, y, z)". Loaded memories then failed every `pos is Vector3` check, so a
+# fish forgot WHERE it was frightened (salient_avoid_steer) on every reload.
+static func _salient_to_save(mem: Array) -> Array:
+	var out: Array = []
+	for e in mem:
+		if not (e is Dictionary):
+			continue
+		var d: Dictionary = (e as Dictionary).duplicate(true)
+		if d.get("pos") is Vector3:
+			d["pos"] = SaveHelpers.vec3_to_array(d["pos"] as Vector3)
+		out.append(d)
+	return out
+
+
+static func _salient_from_save(mem: Array) -> Array:
+	var out: Array = []
+	for e in mem:
+		if not (e is Dictionary):
+			continue
+		var d: Dictionary = (e as Dictionary).duplicate(true)
+		if d.has("pos"):
+			var p: Variant = EpisodicMemory._parse_pos(d["pos"])
+			if p is Vector3:
+				d["pos"] = p
+			else:
+				d.erase("pos")
+		out.append(d)
+	return out
 
 
 static func apply_mind_dict(f, d: Dictionary) -> void:
@@ -1023,7 +1056,7 @@ static func apply_mind_dict(f, d: Dictionary) -> void:
 	f.home_confidence = float(d.get("home_confidence", f.home_confidence))
 	var sm: Variant = d.get("salient_memories", null)
 	if sm is Array:
-		f.salient_memories = (sm as Array).duplicate(true)
+		f.salient_memories = _salient_from_save(sm as Array)
 	var q: Variant = d.get("quirks", null)
 	if q is Array:
 		f.quirks = (q as Array).duplicate()
@@ -1068,6 +1101,10 @@ static func apply_mind_dict(f, d: Dictionary) -> void:
 	DeltaG.from_dict(f, d.get("delta_g", null))
 	DeltaGCurve.from_dict(f, d.get("delta_g_curve", null))
 	FishHomeostasis.from_dict(f, d.get("homeostasis", null))
+	# Delta saves omit unchanged keys: only (re)build when the key is present,
+	# or when the save predates the learned mind entirely (migration).
+	if d.has("learned_mind") or not bool(d.get("delta", false)):
+		FishLearnedMind.from_dict(f, d.get("learned_mind", null))
 	var snap: Variant = d.get("continuity_snap", null)
 	if snap is Dictionary:
 		_pass3().continuity_on_restore(f, snap as Dictionary)

@@ -25,6 +25,8 @@ const DeltaGCurve = preload("res://scripts/delta_g_curve.gd")
 const PokeHarness = preload("res://scripts/poke_harness.gd")
 const _MindCacheRegistryScript = preload("res://scripts/mind_cache_registry.gd")
 const MindActiveInference = preload("res://scripts/mind_active_inference.gd")
+const FishLearnedMind = preload("res://scripts/fish_learned_mind.gd")
+const MindWorkerCfg = preload("res://scripts/mind_worker_cfg.gd")
 
 enum Phase { PERCEIVE, APPRAISE, ATTEND, BROADCAST, DELIBERATE, ENCODE, LEARN, BIND }
 
@@ -46,10 +48,13 @@ static func _tank_config() -> Node:
 
 
 static func workspace_enabled() -> bool:
+	# Test override only — MindBrainPool no longer sets this from worker threads
+	# (it leaked into main-thread reads mid-batch); workers read the immutable
+	# MindWorkerCfg snapshot instead.
 	if _worker_workspace_enabled != null:
 		return bool(_worker_workspace_enabled)
 	if not Thread.is_main_thread():
-		return true
+		return MindWorkerCfg.read_bool("workspace_enabled", true)
 	var cfg: Node = _tank_config()
 	if cfg == null:
 		return true
@@ -205,6 +210,9 @@ static func _diagnostic_slot(f, period: int) -> int:
 static func tick_post_cycle(f: Fish, sim: Node, dt: float) -> void:
 	_MindCacheRegistryScript.tick_retrieval_hint(f, dt)
 	MindSelfModel.tick_self_summary_voice_cd(f, dt)
+	# Learned mind: 1 Hz internal throttle (prediction error, anticipation,
+	# once-per-cycle night consolidation + trait drift).
+	FishLearnedMind.tick(f, sim, dt)
 	if MindLOD.runs_world_model(_lod_tier(f)):
 		EpisodicMemory.tick_decay(f, dt)
 		MindSelfModel.tick_trait_change_notice(f, sim, dt)

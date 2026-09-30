@@ -1,6 +1,8 @@
 # Runtime onboarding: nudges, captions, check-ins, help panel, tour hooks.
 extends Node
 
+const TankTalkPrompt = preload("res://scripts/tank_talk_prompt.gd")
+
 var _main: Node = null
 var _sim: Node = null
 var _resume_btn: Button = null
@@ -16,6 +18,13 @@ var _nudge_cooldown: float = 0.0
 var _thriving_days: float = 0.0
 var _ignored_nudges: int = 0
 var _active_nudge_id: String = ""
+# "You can talk to the tank" one-time prompt (see tank_talk_prompt.gd).
+# Flags cached here: global_pref re-reads the prefs file on every call.
+var _tt_spoken: bool = false
+var _tt_prompted: bool = false
+var _tt_loaded: bool = false
+var _tt_settled_s: float = 0.0
+var _tt_poll_t: float = 0.0
 var _chip_keys_primary: Array[String] = ["mood", "water", "fish"]
 var _chip_keys_all: Array[String] = [
 	"state", "water", "mood", "fish", "flora", "alert", "shrimp", "snails", "morphs",
@@ -242,6 +251,84 @@ func _process(dt: float) -> void:
 	if _sim == null and _main != null:
 		_sim = _main.get("_sim")
 	_sync_resume_button()
+	_tick_tank_talk_prompt(dt)
+
+
+func _tick_tank_talk_prompt(dt: float) -> void:
+	if _main == null or _sim == null:
+		return
+	if not _tt_loaded:
+		_tt_loaded = true
+		_tt_spoken = bool(OnboardingLegibility.global_pref(TankTalkPrompt.PREF_SPOKEN, false))
+		_tt_prompted = bool(OnboardingLegibility.global_pref(TankTalkPrompt.PREF_PROMPTED, false))
+	if _tt_spoken:
+		return
+	_tt_poll_t -= dt
+	if _tt_poll_t > 0.0:
+		_tt_settled_s = TankTalkPrompt.accrue(_tt_settled_s, dt, _tank_talk_blocked())
+		return
+	_tt_poll_t = 1.0
+	# The player found it on their own (prompted or not): never again.
+	var hist: Variant = _main.get("_keeper_history")
+	if hist is Array and TankTalkPrompt.history_has_tank_line(hist):
+		_tt_spoken = true
+		OnboardingLegibility.set_global_pref(TankTalkPrompt.PREF_SPOKEN, true)
+		return
+	if _tt_prompted:
+		return
+	var cfg := get_node_or_null("/root/TankConfig")
+	var blocked: bool = _tank_talk_blocked()
+	_tt_settled_s = TankTalkPrompt.accrue(_tt_settled_s, dt, blocked)
+	var d: int = TankTalkPrompt.decide({
+		"spoken": _tt_spoken,
+		"prompted": _tt_prompted,
+		"voice_off": cfg != null and bool(cfg.get("sentience_voice_off")),
+		"channel_available": _main.has_method("_tank_channel_available")
+			and bool(_main.call("_tank_channel_available"))
+			and _main.has_method("_keeper_say_available")
+			and bool(_main.call("_keeper_say_available")),
+		"blocked": blocked,
+		"settled_s": _tt_settled_s,
+	})
+	if d == TankTalkPrompt.Decision.FIRE:
+		_fire_tank_talk_prompt()
+
+
+func _tank_talk_blocked() -> bool:
+	if _main == null:
+		return true
+	if get_tree() != null and get_tree().paused:
+		return true
+	if _main.get("_follow_target") != null:
+		return true
+	var wt: Variant = _main.get("walkthrough_overlay")
+	if is_instance_valid(wt) and wt is CanvasItem and (wt as CanvasItem).visible:
+		return true
+	var cc: Variant = _main.get("creature_creator_panel")
+	if is_instance_valid(cc) and cc is CanvasItem and (cc as CanvasItem).visible:
+		return true
+	if has_blocking_card() or has_blocking_nudge():
+		return true
+	# Already typing into the box: nothing to point at.
+	var edit: Variant = _main.get("_keeper_say_edit")
+	return is_instance_valid(edit) and edit is Control and (edit as Control).has_focus()
+
+
+func _fire_tank_talk_prompt() -> void:
+	_tt_prompted = true
+	OnboardingLegibility.set_global_pref(TankTalkPrompt.PREF_PROMPTED, true)
+	if _main.has_method("_show_tank_voice"):
+		# Also plays the tank's breath (main.gd -> AmbientAudio.play_tank_voice).
+		_main.call("_show_tank_voice", TankTalkPrompt.LINE)
+	# One soft pulse of the box the line is talking about.
+	var edit: Variant = _main.get("_keeper_say_edit")
+	if is_instance_valid(edit) and edit is Control:
+		var c: Control = edit
+		var tw := c.create_tween()
+		tw.tween_property(c, "self_modulate", Color(1.55, 1.6, 1.9, 1.0), 0.45) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		tw.tween_property(c, "self_modulate", Color.WHITE, 0.9) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 func _sync_resume_button() -> void:

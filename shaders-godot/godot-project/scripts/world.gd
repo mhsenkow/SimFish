@@ -226,6 +226,11 @@ var _substrate_container: Node3D = null
 var fauna_root: Node3D = null
 var plants_root: Node3D = null
 var waste_root: Node3D = null
+# True once _ready() has run to completion (stocking, cycle start, mature
+# cold start). _ready() awaits frames while it builds, so "node ready" and
+# "plants exist" both fire long before the founding fish are in the water.
+# Harnesses that step the sim headlessly must wait on this instead.
+var build_complete: bool = false
 
 
 func _ready() -> void:
@@ -349,6 +354,7 @@ func _ready() -> void:
 		_caustics_mat = ShaderMaterial.new()
 		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
 		_caustics_mat.set_shader_parameter("aquatic_detail", maxi(_aquatic_shader_detail, 0))
+		BakedCaustics.apply_to_material(_caustics_mat)
 	_build_substrate()
 	_apply_water_wave_scale_uniforms()
 	# Empty / guided tanks (walkthrough): start the tank completely bare so
@@ -485,6 +491,7 @@ func _ready() -> void:
 			# The light beams are now drawn via super-performant shader meshes.
 			we.environment.volumetric_fog_enabled = false
 
+	build_complete = true
 	print_verbose("[walstad_loom] world built: ", get_child_count(), " top-level nodes; ",
 		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
 		  sim.plants.size(), " plants")
@@ -588,7 +595,8 @@ func _push_water_column() -> void:
 	var depth_gain: float = VoxelMat.WATER_DEPTH_GAIN_DEFAULT
 	if cfg != null and cfg.get("depth_legibility") != null:
 		depth_gain = float(cfg.get("depth_legibility"))
-	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb, depth_gain)
+	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb, depth_gain,
+		TANK_HALF_W, TANK_HALF_D)
 
 
 func _refresh_atmosphere_caches(adt: float) -> void:
@@ -5736,20 +5744,28 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	if pk is Array:
 		p._parent_keys = pk.duplicate()
 	
-	# Apply specialized traits if they exist in the config
-	if "branch_chance" in child_cfg:
-		p.branch_chance = child_cfg["branch_chance"]
-		p.branch_interval = child_cfg["branch_interval"]
-		p.branch_angle_deg = child_cfg["branch_angle_deg"]
-	if "radius_step" in child_cfg:
-		p.radius_step = child_cfg["radius_step"]
-		p.height_step = child_cfg["height_step"]
-		p.radius_cap = child_cfg["radius_cap"]
+	# Apply specialized traits only on the subclass that owns them.
+	# PlantGenome can carry parent keys across script types (a stem seedling
+	# inheriting a spiral parent's seed_config), and assigning spiral/branch
+	# fields onto a plain Plant throws at runtime.
+	if p is BranchPlant:
+		if "branch_chance" in child_cfg:
+			p.branch_chance = child_cfg["branch_chance"]
+		if "branch_interval" in child_cfg:
+			p.branch_interval = child_cfg["branch_interval"]
+		if "branch_angle_deg" in child_cfg:
+			p.branch_angle_deg = child_cfg["branch_angle_deg"]
 	if p is SpiralPlant:
+		if "radius_step" in child_cfg:
+			p.radius_step = float(child_cfg["radius_step"])
+		if "height_step" in child_cfg:
+			p.height_step = float(child_cfg["height_step"])
+		if "radius_cap" in child_cfg:
+			p.radius_cap = float(child_cfg["radius_cap"])
 		if "max_horizontal_extent" in child_cfg:
-			p.max_horizontal_extent = child_cfg["max_horizontal_extent"]
+			p.max_horizontal_extent = float(child_cfg["max_horizontal_extent"])
 		if "tank_wall_margin" in child_cfg:
-			p.tank_wall_margin = child_cfg["tank_wall_margin"]
+			p.tank_wall_margin = float(child_cfg["tank_wall_margin"])
 		
 	sim.register_plant(p)
 
@@ -6494,6 +6510,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 		# from the daylight curve in the _process loop; the initial 0 is
 		# just so the first frame before the loop runs doesn't flash.
 		mat.set_shader_parameter("beam_color", Color(1.0, 0.95, 0.80, 0.0))
+		BakedCaustics.apply_to_material(mat)
 		# beam_color.a is driven per-frame from the daylight curve; the
 		# per-tank strength + darkness lift ride along with it there.
 		mat.set_shader_parameter("speed", 1.2)
@@ -6939,7 +6956,7 @@ var _gust_wave_dir: Vector3 = Vector3.RIGHT
 var _gust_wave_strength: float = 0.0
 var _duckweed_accum: float = 0.0
 var _floater_vel: Dictionary = {}  # instance_id -> Vector3 xz velocity
-var _floater_grid: Dictionary = {}   # cell_key -> Array[FloatingPlant]
+var _floater_grid: Dictionary = {}   # Vector2i cell -> Array[FloatingPlant]
 var _floater_by_id: Dictionary = {}  # id -> FloatingPlant (tether lookup)
 const _FLOATER_CELL: float = 1.2
 const _FLOATER_SURFACE_MARGIN: float = 0.35
@@ -7202,10 +7219,11 @@ func _mutate_floater_genome(g: Dictionary) -> Dictionary:
 	return out
 
 
-func _floater_cell_key(x: float, z: float) -> String:
-	var cx: int = int(floor(x / _FLOATER_CELL))
-	var cz: int = int(floor(z / _FLOATER_CELL))
-	return "%d_%d" % [cx, cz]
+# Vector2i keys: query_floaters_in_radius probes a 7x7 block of cells per call
+# and the environment field calls it for every 1 m cell 4x a second, so the old
+# "%d_%d" String keys cost ~10k string formats per field rebuild.
+func _floater_cell_key(x: float, z: float) -> Vector2i:
+	return Vector2i(int(floor(x / _FLOATER_CELL)), int(floor(z / _FLOATER_CELL)))
 
 
 func _rebuild_floater_grid() -> void:
@@ -7217,7 +7235,7 @@ func _rebuild_floater_grid() -> void:
 		var fp: FloatingPlant = f
 		if fp.id != "":
 			_floater_by_id[fp.id] = fp
-		var key: String = _floater_cell_key(fp.position.x, fp.position.z)
+		var key: Vector2i = _floater_cell_key(fp.position.x, fp.position.z)
 		if not _floater_grid.has(key):
 			_floater_grid[key] = []
 		(_floater_grid[key] as Array).append(fp)
@@ -7235,7 +7253,7 @@ func query_floaters_in_radius(pos: Vector3, radius: float, active_only: bool = f
 	var r2: float = radius * radius
 	for dx in range(-r_cells, r_cells + 1):
 		for dz in range(-r_cells, r_cells + 1):
-			var key: String = "%d_%d" % [cx + dx, cz + dz]
+			var key := Vector2i(cx + dx, cz + dz)
 			if not _floater_grid.has(key):
 				continue
 			for fp in _floater_grid[key]:
@@ -7487,6 +7505,13 @@ func _rebuild_environment_field() -> void:
 	if _cfg_node != null and _cfg_node.get("heater_enabled") != null:
 		heater_on = not not _cfg_node.heater_enabled
 	var sample_y: float = WATER_HEIGHT * 0.42
+	# Tank-wide inputs are constant for the whole rebuild: resolve them once
+	# instead of per cell (floater_coverage() walks every floater; the warmth
+	# inputs re-read TankConfig + the environment profile).
+	var coverage: float = floater_coverage()
+	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
+	var light_warmth: float = WorldWaterVisuals.light_warmth_of(_cfg_node)
+	var room_warmth: float = WorldWaterVisuals.room_warmth_of(_cfg_node)
 	var x0: int = int(floor(-TANK_HALF_W / ENV_FIELD_CELL))
 	var x1: int = int(ceil(TANK_HALF_W / ENV_FIELD_CELL))
 	var z0: int = int(floor(-TANK_HALF_D / ENV_FIELD_CELL))
@@ -7499,19 +7524,23 @@ func _rebuild_environment_field() -> void:
 				continue
 			var cell := Vector2i(ix, iz)
 			var pos := Vector3(wx, sample_y, wz)
-			_env_light[cell] = _light_penetration_uncached(pos)
-			_env_warmth[cell] = WorldWaterVisuals.effective_warmth_at(
-				pos, sim, _cfg_node, _heater_world_pos, dl, heater_on)
+			_env_light[cell] = _light_penetration_with(pos, coverage, bloom)
+			_env_warmth[cell] = WorldWaterVisuals.warmth_from(
+				pos, light_warmth, room_warmth, _heater_world_pos, dl, heater_on)
 
 
 func _light_penetration_uncached(world_pos: Vector3) -> float:
 	var bloom: float = float(sim.bloom_intensity) if sim != null else 0.0
+	return _light_penetration_with(world_pos, floater_coverage(), bloom)
+
+
+func _light_penetration_with(world_pos: Vector3, coverage: float, bloom: float) -> float:
 	var nearby: Array = query_floaters_in_radius(
 		world_pos, WorldWaterVisuals.LOCAL_SHADE_RADIUS, true)
 	var local_shade: float = WorldWaterVisuals.local_floater_shade_at(world_pos, nearby)
 	local_shade = maxf(local_shade, _lily_pad_shade_at(world_pos))
 	return WorldWaterVisuals.light_penetration(
-		local_shade, floater_coverage(), bloom, tannins)
+		local_shade, coverage, bloom, tannins)
 
 
 func _warmth_uncached(world_pos: Vector3) -> float:

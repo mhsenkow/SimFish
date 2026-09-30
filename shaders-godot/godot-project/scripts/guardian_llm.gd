@@ -2,6 +2,8 @@ extends Node
 
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const MindScheduler = preload("res://scripts/mind_scheduler.gd")
+const GuardianGrounding = preload("res://scripts/guardian_grounding.gd")
+const GuardianLlmMock = preload("res://scripts/guardian_llm_mock.gd")
 
 # In-process Guardian LLM via godot_llama (llama.cpp GDExtension).
 # Steam/desktop builds bundle the GGUF under res://assets/guardian/ (CI fetch).
@@ -24,6 +26,14 @@ const MODEL_BYTES_APPROX: int = 250_000_000
 const MODEL_MIN_BYTES: int = 200_000_000
 const MODEL_MAX_BYTES: int = 290_000_000
 const QUEUE_MAX: int = 24
+const N_CTX: int = 1024
+# Hard cap on what we hand the tokenizer. The native side truncates an
+# over-long prompt from the FRONT (dropping the instructions), so trim here.
+const MAX_PROMPT_CHARS: int = 2400
+# Generation watchdog (SYSTEMIC #15). 80 tokens at ~35 tok/s plus prompt eval
+# is ~3 s on a mid CPU; past this the job resolves with its template line.
+const GEN_TIMEOUT_MS_DEFAULT: int = 12000
+const GEN_HARD_GRACE_MS: int = 15000
 # Platform matrix (#14): desktop/Steam bundles SmolLM2-360M; Web/Android = template-only.
 # See AGENTS.md § Guardian voice tiers.
 
@@ -44,9 +54,36 @@ var _partial_text: String = ""
 var _mem_check_timer: float = 0.0
 var _download_fail_reason: String = ""
 
+# Threading (SYSTEMIC #15): model verify/load and every generation run off the
+# main thread. Only one native generation is ever in flight.
+var _gen_thread: Thread = null
+var _io_thread: Thread = null
+var _load_cancelled: bool = false
+var _native_busy: bool = false
+var _native_text: String = ""
+var _native_error: String = ""
+var _job_seq: int = 0
+var _active_job_id: int = -1   # job whose result we still want (-1: none)
+var _running_job_id: int = -1  # job the worker is executing (-1: idle)
+var _job_started_ms: int = 0
+var gen_timeout_ms: int = GEN_TIMEOUT_MS_DEFAULT
+var _mock: bool = false
+var _zombie_threads: Array = []
+# Debug/test visibility.
+var last_result: Dictionary = {}
+var result_log: Array = []  # last 8 {key, raw, line, source, reason}
+var retractions: int = 0
+
 
 func _ready() -> void:
 	set_process(false)
+	var tree := get_tree()
+	if tree != null and tree.has_signal("scene_changed") \
+			and not tree.is_connected("scene_changed", _on_scene_changed):
+		tree.connect("scene_changed", _on_scene_changed)
+	if GuardianLlmMock.active():
+		call_deferred("enable_mock", true)
+		return
 	if not _platform_supported():
 		state = State.TEMPLATE_ONLY
 		return
@@ -60,6 +97,8 @@ func _ready() -> void:
 
 
 func _init_idle_state() -> void:
+	if _mock:
+		return
 	if not _platform_supported() or not _extension_available():
 		return
 	var cfg := get_node_or_null("/root/TankConfig")
@@ -164,7 +203,10 @@ func _begin_load_if_needed() -> void:
 
 
 func _schedule_load_model(path: String, delay_sec: float) -> void:
-	if state in [State.LOADING, State.READY, State.BUSY]:
+	# NOTE: callers set state = LOADING *before* scheduling, so LOADING must not
+	# be in this guard — it used to be, which silently meant the bundled model
+	# never loaded (only the post-download path, entered from DOWNLOADING, did).
+	if state in [State.READY, State.BUSY] or _io_thread_busy():
 		return
 	if path == "":
 		return
@@ -187,6 +229,8 @@ func _on_load_timer() -> void:
 
 
 func ensure_boot() -> void:
+	if _mock:
+		return
 	if not _platform_supported() or not _extension_available():
 		return
 	var cfg := get_node_or_null("/root/TankConfig")
@@ -240,9 +284,12 @@ func _voice_budget_allows_inprocess() -> bool:
 
 
 func suspend_voice(unload_model: bool = true) -> void:
-	_queue.clear()
-	_current_job = {}
-	_partial_text = ""
+	cancel_all("suspend")
+	_load_cancelled = true
+	if _load_timer != null:
+		_load_timer.stop()
+	_pending_load_path = ""
+	# A running worker keeps its own wrapper reference, so dropping ours is safe.
 	if unload_model and _llama != null:
 		_llama = null
 	_set_template_only()
@@ -288,7 +335,12 @@ func _sha256_file(path: String) -> String:
 func _reject_model_path(path: String, reason: String) -> void:
 	push_warning("[GuardianLlm] %s — %s" % [reason, path])
 	var abs_path: String = ProjectSettings.globalize_path(path) if path.begins_with("user://") else path
-	if abs_path != "" and FileAccess.file_exists(abs_path):
+	# Only ever delete files we downloaded ourselves — never a player's custom
+	# GGUF or the bundled res:// copy.
+	var ours: bool = path.begins_with("user://guardian/") \
+			or abs_path == ProjectSettings.globalize_path(_model_path()) \
+			or abs_path == ProjectSettings.globalize_path(_partial_path())
+	if ours and abs_path != "" and FileAccess.file_exists(abs_path):
 		DirAccess.remove_absolute(abs_path)
 	var partial: String = _partial_path()
 	if FileAccess.file_exists(partial):
@@ -375,15 +427,22 @@ func queue_generate(cache_key: String, prompt: String, fallback: String,
 	# fallback is returned synchronously by AIDirector until load finishes.
 	if not is_ready():
 		return
+	var kind: String = GuardianGrounding.kind_for(cache_key, context)
+	var model_prompt: String = grounded_prompt(kind, context, fallback, prompt)
 	var situation: String = str(context.get("situation", ""))
 	var stream: bool = situation.begins_with("keeper_") or situation == "away_recap"
 	var n_pred: int = num_predict if num_predict > 0 \
 			else MindNarrator.num_predict_for_situation(situation)
 	if cache_key.begins_with("cog|"):
 		n_pred = mini(n_pred, MindNarrator.NUM_PREDICT_FISH_THOUGHT)
+	# Same key already waiting → keep the newer context, drop the older job.
+	for i in range(_queue.size() - 1, -1, -1):
+		if str((_queue[i] as Dictionary).get("key", "")) == cache_key and cache_key != "":
+			_queue.remove_at(i)
 	_queue.append({
 		"key": cache_key,
-		"prompt": prompt,
+		"kind": kind,
+		"prompt": model_prompt,
 		"fallback": fallback,
 		"context": context.duplicate(true),
 		"stream": stream,
@@ -395,6 +454,20 @@ func queue_generate(cache_key: String, prompt: String, fallback: String,
 		_queue.pop_front()
 	if state == State.READY:
 		_pump_queue()
+
+
+# The tiny model gets a compact grounded prompt built from the context rather
+# than the caller's JSON-dump prompt (which overflowed n_ctx). Falls back to the
+# caller's prompt, trimmed, when the context carries nothing to ground on.
+static func grounded_prompt(kind: String, context: Dictionary, fallback: String,
+		caller_prompt: String) -> String:
+	var has_subject: bool = str(context.get("fish_name", "")) != "" \
+			or str(context.get("species", "")) != ""
+	if has_subject:
+		return GuardianGrounding.build_prompt(kind, context, fallback)
+	if caller_prompt.length() > MAX_PROMPT_CHARS:
+		return caller_prompt.substr(0, MAX_PROMPT_CHARS)
+	return caller_prompt
 
 
 func _sync_ai_tier() -> void:
@@ -473,7 +546,11 @@ func _process(_dt: float) -> void:
 			emit_signal("status_changed", status_summary())
 			emit_signal("download_progress_changed", download_progress, status_summary())
 		return
+	if _native_busy:
+		_process_watchdog()
 	if state in [State.READY, State.BUSY]:
+		if _mock:
+			return
 		_mem_check_timer += _dt
 		if _mem_check_timer >= 4.0:
 			_mem_check_timer = 0.0
@@ -516,7 +593,23 @@ func _on_download_completed(result: int, code: int, _h: PackedStringArray, _body
 		emit_signal("status_changed", _download_fail_reason)
 		emit_signal("download_progress_changed", 0.0, _download_fail_reason)
 		return
-	if not _verify_model_sha256(partial):
+	# Hashing 250MB takes ~1 s — verify on a worker thread (SYSTEMIC #15).
+	if _io_thread_busy():
+		return
+	emit_signal("download_progress_changed", 1.0, "Verifying download…")
+	_io_thread = Thread.new()
+	_io_thread.start(_thread_verify_download.bind(partial))
+
+
+# WORKER THREAD.
+func _thread_verify_download(partial: String) -> void:
+	var ok: bool = _verify_model_sha256(partial)
+	call_deferred("_on_download_verified", partial, ok)
+
+
+func _on_download_verified(partial: String, ok: bool) -> void:
+	_join_io_thread()
+	if not ok:
 		_download_fail_reason = "Download checksum failed — retry in Settings."
 		_reject_model_path(partial, "checksum mismatch")
 		state = State.TEMPLATE_ONLY
@@ -544,16 +637,13 @@ func _load_model(path: String) -> void:
 		emit_signal("status_changed", why)
 		_sync_ai_tier()
 		return
+	if _io_thread_busy():
+		# A verify/load is already running off-thread — its callback decides.
+		return
 	if not _verify_model_file(path):
 		_reject_model_path(path, "model file size out of range")
 		state = State.TEMPLATE_ONLY
 		emit_signal("status_changed", "Template voice (model unavailable — re-download in Settings)")
-		_sync_ai_tier()
-		return
-	if not _verify_model_sha256(path):
-		_reject_model_path(path, "model checksum mismatch")
-		state = State.TEMPLATE_ONLY
-		emit_signal("status_changed", "Template voice (model corrupted — re-download in Settings)")
 		_sync_ai_tier()
 		return
 	state = State.LOADING
@@ -565,134 +655,358 @@ func _load_model(path: String) -> void:
 		emit_signal("status_changed", status_summary())
 		return
 	var inst: RefCounted = wrapper.new() as RefCounted
-	if inst == null:
+	if inst == null or not inst.is_available():
 		state = State.TEMPLATE_ONLY
 		last_error = ""
 		emit_signal("status_changed", status_summary())
 		return
-	_llama = inst
-	if not _llama.is_available():
-		state = State.TEMPLATE_ONLY
-		last_error = ""
-		emit_signal("status_changed", status_summary())
+	# SYSTEMIC #15: SHA-256 of a 250MB file, llama_model_load and context
+	# creation are each hundreds of ms to seconds — all run on a worker thread.
+	# Half the cores (max 4): leave the rest for the render + sim threads so
+	# inference contention never starves the main loop.
+	var threads: int = clampi(OS.get_processor_count() >> 1, 1, 4)
+	_load_cancelled = false
+	_io_thread = Thread.new()
+	_io_thread.start(_thread_load_model.bind(inst, path, threads))
+
+
+# WORKER THREAD — touches only the wrapper it was handed, never the tree.
+func _thread_load_model(inst: RefCounted, path: String, threads: int) -> void:
+	var res: Dictionary = {"ok": false, "path": path, "reason": "", "inst": inst}
+	# The pinned hash only describes OUR SmolLM2 file; a player's custom GGUF
+	# is size/extension-checked only (it used to fail the hash and be deleted).
+	if path.get_file() == MODEL_FILENAME and not _verify_model_sha256(path):
+		res["reason"] = "sha"
+		call_deferred("_on_model_loaded", res)
 		return
 	# CPU-only avoids Metal/GPU init crashes during scene transitions on macOS.
-	var err: int = _llama.load_model(path, {"n_gpu_layers": 0})
+	var err: int = inst.load_model(path, {"n_gpu_layers": 0})
 	if err != OK:
-		state = State.TEMPLATE_ONLY
-		last_error = ""
-		emit_signal("status_changed", "Template voice (model unavailable — re-download in Settings)")
-		emit_signal("ready_changed", false)
-		_sync_ai_tier()
+		res["reason"] = "load"
+		call_deferred("_on_model_loaded", res)
 		return
-	var threads: int = maxi(1, mini(4, OS.get_processor_count() - 1))
-	err = _llama.create_context({
-		"n_ctx": 1024,
+	err = inst.create_context({
+		"n_ctx": N_CTX,
 		"threads": threads,
 		"threads_batch": threads,
 	})
 	if err != OK:
-		state = State.TEMPLATE_ONLY
-		last_error = ""
-		emit_signal("status_changed", "Template voice (model unavailable — re-download in Settings)")
-		emit_signal("ready_changed", false)
+		res["reason"] = "context"
+		call_deferred("_on_model_loaded", res)
+		return
+	res["ok"] = true
+	call_deferred("_on_model_loaded", res)
+
+
+func _on_model_loaded(res: Dictionary) -> void:
+	_join_io_thread()
+	var path: String = String(res.get("path", ""))
+	if _load_cancelled or not _voice_budget_allows_inprocess():
+		_load_cancelled = false
+		if state == State.LOADING:
+			_set_template_only()
+		return
+	if not bool(res.get("ok", false)):
+		var reason: String = String(res.get("reason", ""))
+		if reason == "sha":
+			_reject_model_path(path, "model checksum mismatch")
+			state = State.TEMPLATE_ONLY
+			emit_signal("status_changed", "Template voice (model corrupted — re-download in Settings)")
+		else:
+			state = State.TEMPLATE_ONLY
+			last_error = ""
+			emit_signal("status_changed", "Template voice (model unavailable — re-download in Settings)")
+			emit_signal("ready_changed", false)
 		_sync_ai_tier()
 		return
-	_llama.context.generation_finished.connect(_on_generation_finished)
-	_llama.context.generation_error.connect(_on_generation_error)
-	_connect_partial_stream()
+	_llama = res.get("inst") as RefCounted
+	_connect_native_signals()
 	state = State.READY
 	last_error = ""
 	emit_signal("ready_changed", true)
 	emit_signal("status_changed", status_summary())
 	_sync_ai_tier()
 	set_process(true)
-	call_deferred("_warmup_model")
-	_pump_queue()
+	if _queue.is_empty():
+		_start_job({"key": "", "prompt": "Reply with one word: ready", "fallback": "",
+				"context": {}, "stream": false, "num_predict": MindNarrator.NUM_PREDICT_WARMUP,
+				"_warmup": true})
+	else:
+		_pump_queue()
 
 
-func _warmup_model() -> void:
-	if state != State.READY or _llama == null or not _queue.is_empty():
-		return
-	_current_job = {"key": "", "fallback": "", "context": {}, "stream": false,
-			"num_predict": MindNarrator.NUM_PREDICT_WARMUP}
-	state = State.BUSY
-	_partial_text = ""
-	_llama.context.reset()
-	_llama.context.set_prompt("Reply with one word: ready")
-	# generate_stream is non-blocking (#19) — native inference runs off the main thread.
-	_llama.context.generate_stream(MindNarrator.NUM_PREDICT_WARMUP,
-			{"temperature": 0.05, "seed": 1})
-	# generation_finished returns to READY and pumps queue.
-
-
-func _connect_partial_stream() -> void:
+# Native signals fire on the generation thread. Every connection is DEFERRED so
+# the handlers run on the main thread, in emission order, via the message queue.
+func _connect_native_signals() -> void:
 	if _llama == null or _llama.context == null:
 		return
-	for sig_name in ["generation_token", "generation_update", "token_generated"]:
-		if _llama.context.has_signal(sig_name):
-			var cb := Callable(self, "_on_generation_partial")
-			if not _llama.context.is_connected(sig_name, cb):
-				_llama.context.connect(sig_name, cb)
+	var ctx: Object = _llama.context
+	var pairs: Array = [
+		["token_generated", Callable(self, "_on_generation_partial")],
+		["generation_finished", Callable(self, "_on_native_finished")],
+		["generation_error", Callable(self, "_on_native_error")],
+	]
+	for pair in pairs:
+		var sig: String = String(pair[0])
+		var cb: Callable = pair[1]
+		if ctx.has_signal(sig) and not ctx.is_connected(sig, cb):
+			ctx.connect(sig, cb, CONNECT_DEFERRED)
 
 
-func _on_generation_partial(token: String) -> void:
-	if not bool(_current_job.get("stream", false)):
+# ---- Mock mode (META #77) -----------------------------------------------------
+
+func enable_mock(on: bool = true) -> void:
+	_mock = on
+	if on:
+		GuardianLlmMock.forced = true
+		state = State.READY
+		last_error = ""
+		set_process(true)
+		emit_signal("ready_changed", true)
+		emit_signal("status_changed", status_summary())
+	else:
+		GuardianLlmMock.forced = false
+		cancel_all("mock_off")
+		state = State.TEMPLATE_ONLY
+		emit_signal("ready_changed", false)
+	_sync_ai_tier()
+
+
+func is_mock() -> bool:
+	return _mock
+
+
+# ---- Job pump -----------------------------------------------------------------
+
+func _pump_queue() -> void:
+	if state != State.READY or _native_busy or _queue.is_empty():
+		return
+	if _llama == null and not _mock:
+		return
+	var job: Dictionary = _queue.pop_front()
+	_start_job(job)
+
+
+func _start_job(job: Dictionary) -> void:
+	_job_seq += 1
+	var jid: int = _job_seq
+	job["_jid"] = jid
+	job["streamed"] = false
+	job["stream_blocked"] = false
+	_current_job = job
+	_active_job_id = jid
+	_running_job_id = jid
+	_native_busy = true
+	_native_text = ""
+	_native_error = ""
+	_partial_text = ""
+	_job_started_ms = Time.get_ticks_msec()
+	state = State.BUSY
+	set_process(true)
+	var key: String = str(job.get("key", ""))
+	var n_pred: int = int(job.get("num_predict", MindNarrator.NUM_PREDICT_GUARDIAN))
+	var params: Dictionary = GuardianGrounding.generation_params(key, n_pred)
+	if bool(job.get("_warmup", false)):
+		params = {"temperature": 0.05, "seed": 1, "max_tokens": n_pred}
+	var prompt: String = str(job.get("prompt", ""))
+	if _mock:
+		_mock_generate(jid, prompt, key, str(job.get("kind", GuardianGrounding.KIND_GUARDIAN)),
+				bool(job.get("stream", false)))
+		return
+	_join_gen_thread()
+	_gen_thread = Thread.new()
+	var stream: bool = bool(job.get("stream", false))
+	_gen_thread.start(_thread_generate.bind(jid, _llama, prompt, n_pred, params, stream))
+
+
+# WORKER THREAD. llama.cpp's generate/generate_stream are SYNCHRONOUS (the
+# old "non-blocking" comment was wrong — see godot_llama src/llama_context.cpp
+# _generate_internal): tokenize + prompt decode + every sampled token ran on
+# the main thread. Here they run on a dedicated thread; the native signals
+# reach us deferred, and the final hand-off is a deferred call.
+func _thread_generate(jid: int, llama: RefCounted, prompt: String, n_pred: int,
+		params: Dictionary, stream: bool) -> void:
+	if llama != null and llama.get("context") != null:
+		var ctx: Object = llama.context
+		ctx.reset()
+		ctx.set_prompt(prompt)
+		if stream:
+			ctx.generate_stream(n_pred, params)
+		else:
+			ctx.generate(n_pred, params)
+	call_deferred("_on_worker_done", jid)
+
+
+func _mock_generate(jid: int, prompt: String, key: String, kind: String, stream: bool) -> void:
+	var text: String = GuardianLlmMock.respond(prompt, key, kind)
+	if text == GuardianLlmMock.HANG_TOKEN:
+		return  # never completes — the watchdog (or a cancel) must resolve it
+	if stream:
+		for w in text.split(" ", false):
+			call_deferred("_on_generation_partial", w + " ", 0)
+	call_deferred("_on_native_finished", text)
+	call_deferred("_on_worker_done", jid)
+
+
+func _on_native_finished(full_text: String) -> void:
+	_native_text = full_text
+
+
+func _on_native_error(message: String) -> void:
+	_native_error = message
+	push_warning("[GuardianLlm] generation error: %s" % message)
+
+
+func _on_worker_done(jid: int) -> void:
+	if jid != _running_job_id:
+		return
+	_join_gen_thread()
+	_native_busy = false
+	_running_job_id = -1
+	var stale: bool = jid != _active_job_id
+	if stale:
+		# Cancelled or timed out — the job was already resolved with its fallback.
+		if state == State.BUSY:
+			state = State.READY
+		_pump_queue()
+		return
+	_active_job_id = -1
+	if _native_text == "" and _native_error != "":
+		var retries: int = int(_current_job.get("_error_retries", 0))
+		if retries < 1 and not bool(_current_job.get("_warmup", false)):
+			var again: Dictionary = _current_job.duplicate(true)
+			again["_error_retries"] = retries + 1
+			_queue.push_front(again)
+			_current_job = {}
+			state = State.READY
+			_pump_queue()
+			return
+	_on_generation_finished(_native_text)
+
+
+func _process_watchdog() -> void:
+	if not _native_busy:
+		return
+	var age: int = Time.get_ticks_msec() - _job_started_ms
+	if _active_job_id != -1 and age > gen_timeout_ms:
+		push_warning("[GuardianLlm] generation exceeded %d ms — template fallback" % gen_timeout_ms)
+		_native_cancel()
+		_resolve_current_with_fallback("timeout")
+	elif _active_job_id == -1 and age > gen_timeout_ms + GEN_HARD_GRACE_MS:
+		# The native loop ignored cancel (a single stuck decode). Stop routing
+		# voice through it; the thread keeps its own wrapper reference.
+		push_warning("[GuardianLlm] native generation unresponsive — dropping to template voice")
+		_native_busy = false
+		_running_job_id = -1
+		if _gen_thread != null:
+			_zombie_threads.append(_gen_thread)  # never joined: it would block the main thread
+		_gen_thread = null
+		_llama = null
+		_set_template_only()
+
+
+func _native_cancel() -> void:
+	if _mock:
+		# A hung mock job completes as soon as it is cancelled, like the native
+		# loop does at its next token.
+		if _native_busy and _running_job_id != -1:
+			call_deferred("_on_worker_done", _running_job_id)
+		return
+	if _llama != null and _llama.get("context") != null and _llama.context.has_method("cancel"):
+		_llama.context.cancel()
+
+
+# Resolve the in-flight job with its template line (already on screen), then
+# let the thread wind down; its result is discarded as stale.
+func _resolve_current_with_fallback(reason: String) -> void:
+	var job: Dictionary = _current_job
+	_current_job = {}
+	_active_job_id = -1
+	if job.is_empty() or bool(job.get("_warmup", false)):
+		return
+	MindNarrator.gen_attempts += 1
+	MindNarrator.fallback_uses += 1
+	MindNarrator.last_reject_reason = reason
+	var key: String = str(job.get("key", ""))
+	var fb: String = str(job.get("fallback", ""))
+	if bool(job.get("streamed", false)):
+		_retract_stream(key, fb)
+	if key.begins_with("cog|"):
+		MindScheduler.on_model_result(key.substr(4), fb, job.get("context", {}))
+
+
+func _on_generation_partial(token: String, _token_id: int = 0) -> void:
+	if _current_job.is_empty() or not bool(_current_job.get("stream", false)):
+		return
+	if bool(_current_job.get("stream_blocked", false)):
 		return
 	_partial_text += str(token)
 	var key: String = str(_current_job.get("key", ""))
-	if key != "":
-		emit_signal("generation_partial", key, _partial_text.strip_edges())
-		var ai := get_node_or_null("/root/AIDirector")
-		if ai != null:
-			if key.begins_with("thought|") and ai.has_method("notify_thought_streaming"):
-				ai.call("notify_thought_streaming", key, _partial_text.strip_edges())
-			elif ai.has_method("notify_guardian_line_streaming"):
-				ai.call("notify_guardian_line_streaming", key, _partial_text.strip_edges())
-
-
-func _pump_queue() -> void:
-	if _llama == null or state != State.READY or _queue.is_empty():
+	if key == "":
 		return
-	state = State.BUSY
-	_current_job = _queue[0]
-	_partial_text = ""
-	_llama.context.reset()
-	_llama.context.set_prompt(str(_current_job.get("prompt", "")))
-	var rng_seed: int = _seed_from_key(str(_current_job.get("key", "")))
-	var params: Dictionary = {
-		"temperature": 0.35,
-		"top_p": 0.9,
-		"repeat_penalty": 1.12,
-		"seed": rng_seed,
-	}
-	var n_pred: int = int(_current_job.get("num_predict", MindNarrator.NUM_PREDICT_GUARDIAN))
-	_llama.context.generate_stream(n_pred, params)
+	var kind: String = str(_current_job.get("kind", GuardianGrounding.KIND_GUARDIAN))
+	var ctx: Dictionary = _current_job.get("context", {})
+	var shown: String = GuardianGrounding.repair(ctx, _partial_text)
+	if not GuardianGrounding.partial_ok(kind, ctx, _partial_text):
+		# The final line will be rejected anyway: stop streaming, restore the
+		# template on screen, and stop spending CPU on it.
+		_current_job["stream_blocked"] = true
+		if bool(_current_job.get("streamed", false)):
+			_retract_stream(key, str(_current_job.get("fallback", "")))
+		_current_job["streamed"] = false
+		_native_cancel()
+		return
+	if shown == "":
+		return
+	_current_job["streamed"] = true
+	emit_signal("generation_partial", key, shown)
+	_emit_stream(key, shown)
+
+
+func _emit_stream(key: String, text: String) -> void:
+	var ai := get_node_or_null("/root/AIDirector")
+	if ai == null:
+		return
+	if key.begins_with("thought|") and ai.has_method("notify_thought_streaming"):
+		ai.call("notify_thought_streaming", key, text)
+	elif not key.begins_with("thought|") and not key.begins_with("cog|") \
+			and ai.has_method("notify_guardian_line_streaming"):
+		ai.call("notify_guardian_line_streaming", key, text)
+
+
+# A partial that was streamed to the UI and then rejected must not linger:
+# re-stream the template line over it.
+func _retract_stream(key: String, fallback: String) -> void:
+	if key == "" or fallback.strip_edges() == "":
+		return
+	retractions += 1
+	emit_signal("generation_partial", key, fallback)
+	_emit_stream(key, fallback)
 
 
 func _on_generation_finished(full_text: String) -> void:
-	var fb: String = str(_current_job.get("fallback", ""))
-	var ctx: Dictionary = _current_job.get("context", {})
-	var key: String = str(_current_job.get("key", ""))
-	var max_w: int = MindNarrator.GUARDIAN_MAX_WORDS
-	var fin: Dictionary
-	if key.begins_with("thought|"):
-		var sit: String = str(ctx.get("situation", ""))
-		max_w = MindNarrator.FISH_REPLY_MAX_WORDS if sit == "keeper_reply" \
-				else MindNarrator.FISH_THOUGHT_MAX_WORDS
-		if sit == "keeper_reply":
-			fin = MindNarrator.finalize_reply_line(ctx, full_text, fb, max_w)
-		else:
-			fin = MindNarrator.finalize_line(ctx, full_text, fb, max_w)
-	else:
-		fin = MindNarrator.finalize_line(ctx, full_text, fb, max_w)
+	var job: Dictionary = _current_job
+	_current_job = {}
+	state = State.READY
+	if job.is_empty() or bool(job.get("_warmup", false)):
+		_pump_queue()
+		return
+	var fb: String = str(job.get("fallback", ""))
+	var ctx: Dictionary = job.get("context", {})
+	var key: String = str(job.get("key", ""))
+	var kind: String = str(job.get("kind", GuardianGrounding.kind_for(key, ctx)))
+	var fin: Dictionary = GuardianGrounding.finalize(kind, ctx, full_text, fb)
 	var line: String = String(fin.get("line", fb))
-	var spoken_seq: int = int(_current_job.get("seq", -1))
+	last_result = {"key": key, "raw": full_text, "line": line,
+			"source": str(fin.get("source", "")), "reason": str(fin.get("reason", ""))}
+	result_log.append(last_result)
+	while result_log.size() > 8:
+		result_log.pop_front()
+	var spoken_seq: int = int(job.get("seq", -1))
 	if spoken_seq >= 0:
 		_last_spoken_seq = spoken_seq
-	if not _queue.is_empty():
-		_queue.pop_front()
-	state = State.READY
+	if line == fb and bool(job.get("streamed", false)):
+		_retract_stream(key, fb)
 	if key.begins_with("cog|"):
 		MindScheduler.on_model_result(key.substr(4), line, ctx)
 		_pump_queue()
@@ -704,7 +1018,7 @@ func _on_generation_finished(full_text: String) -> void:
 			ai.call("_cache_thought", key, line, fid)
 		elif ai.has_method("_cache_guardian_line"):
 			ai._cache_guardian_line(key, line)
-			ai.emit_signal("guardian_line_ready", key, line, "inprocess")
+			ai.emit_signal("guardian_line_ready", key, line, "mock" if _mock else "inprocess")
 	_pump_queue()
 
 
@@ -716,34 +1030,67 @@ func cancel_thought_generation(cache_key: String) -> void:
 			continue
 		keep.append(job)
 	_queue = keep
-	if str(_current_job.get("key", "")).contains(cache_key):
+	if not _current_job.is_empty() and str(_current_job.get("key", "")).contains(cache_key):
 		_current_job = {}
-		if _llama != null and _llama.context != null \
-				and _llama.context.has_method("stop_generation"):
-			_llama.context.stop_generation()
-		state = State.READY
+		_active_job_id = -1
+		_native_cancel()
+		# State stays BUSY until the thread winds down (_on_worker_done).
 
 
-func _on_generation_error(message: String) -> void:
-	push_warning("[GuardianLlm] generation error: %s" % message)
-	if _current_job.is_empty() and _queue.is_empty():
-		state = State.READY
-		return
-	var retries: int = int(_current_job.get("_error_retries", 0))
-	if retries < 1 and not _current_job.is_empty():
-		_current_job["_error_retries"] = retries + 1
-		state = State.READY
-		_pump_queue()
-		return
-	var fb: String = str(_current_job.get("fallback", ""))
-	if fb != "":
-		_on_generation_finished(fb)
-		return
-	if not _queue.is_empty():
-		_queue.pop_front()
-	_current_job = {}
-	state = State.READY
-	_pump_queue()
+# Drop everything queued and abandon the in-flight job (scene change, quit,
+# voice turned off). Never blocks: the worker finishes at its next token.
+func cancel_all(_reason: String = "") -> void:
+	_queue.clear()
+	if not _current_job.is_empty():
+		_current_job = {}
+		_active_job_id = -1
+		_native_cancel()
+	_partial_text = ""
+
+
+func _on_scene_changed() -> void:
+	cancel_all("scene_changed")
+
+
+func _io_thread_busy() -> bool:
+	return _io_thread != null and _io_thread.is_started()
+
+
+func _join_io_thread() -> void:
+	if _io_thread != null and _io_thread.is_started():
+		_io_thread.wait_to_finish()
+	_io_thread = null
+
+
+func _join_gen_thread() -> void:
+	if _gen_thread != null and _gen_thread.is_started():
+		_gen_thread.wait_to_finish()
+	_gen_thread = null
+
+
+func _exit_tree() -> void:
+	_shutdown_threads()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_shutdown_threads()
+
+
+# Quit path only: cancel, then join so no native thread outlives the engine.
+# Worst case this waits for one token (generation) or the rest of a model
+# load — acceptable at exit, never during play.
+func _shutdown_threads() -> void:
+	cancel_all("shutdown")
+	_load_cancelled = true
+	if _gen_thread != null and _gen_thread.is_started():
+		_native_cancel()
+		_gen_thread.wait_to_finish()
+	_gen_thread = null
+	if _io_thread != null and _io_thread.is_started():
+		_io_thread.wait_to_finish()
+	_io_thread = null
+	_native_busy = false
 
 
 static func _sanitize_output(text: String) -> String:

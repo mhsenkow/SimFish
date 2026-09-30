@@ -254,6 +254,59 @@ static func placeholder_for_fish(f: Fish, sim: Node) -> String:
 			return "say something… (Enter to send)"
 
 
+static func placeholder_for_tank(sim: Node) -> String:
+	match tier_from_sim(sim):
+		Tier.CRISIS, Tier.STRESSED:
+			return "speak to the tank… (it's struggling — ask how it is)"
+		_:
+			# Rotate a hint at the inner-life questions the tank can answer.
+			var hints: Array = ["Enter to send, Esc to clear", "ask what it's thinking",
+					"ask what it dreamed", "ask who is friends with whom", "ask about a fish by name"]
+			var slot: int = int(float(Time.get_ticks_msec()) / 45000.0) % hints.size()
+			return "speak to the tank… (%s)" % hints[slot]
+
+
+# Short status line under a tank exchange: what the tank understood and who
+# is about to answer.
+static func tank_feedback(result: Dictionary, sim: Node) -> String:
+	if not bool(result.get("ok", false)):
+		if str(result.get("reason", "")) == "ears_off":
+			return "Keeper ears off — enable in Settings → AI"
+		return ""
+	var parts: Array[String] = []
+	var heard: PackedStringArray = result.get("understood", PackedStringArray())
+	if heard.is_empty():
+		parts.append("the tank caught your tone, not your words")
+	else:
+		parts.append("understood: %s" % ", ".join(heard))
+	parts.append("tank %s" % tier_label(int(result.get("tank_tier", tier_from_sim(sim)))))
+	match str(result.get("promise", "")):
+		"feed":
+			parts.append("it will remember you said you'd feed")
+		"water":
+			parts.append("it will remember you said you'd fix the water")
+		"air":
+			parts.append("it will remember you said you'd help it breathe")
+	match str(result.get("intent", "")):
+		"dream":
+			parts.append("asked about its dream")
+		"thinking":
+			parts.append("asked what it's thinking")
+		"friend":
+			parts.append("asked about friendships")
+		"about":
+			parts.append("asked about one of them")
+	var ids: PackedStringArray = result.get("responder_ids", PackedStringArray())
+	var n: int = ids.size()
+	if n > 0:
+		parts.append("%d answering" % n)
+	if int(result.get("tank_tier", Tier.STEADY)) <= Tier.STRESSED:
+		var hint: String = primary_action_hint(sim)
+		if hint != "":
+			parts.append("→ %s" % hint)
+	return " · ".join(parts)
+
+
 static func ui_feedback(result: Dictionary, f: Fish, sim: Node) -> String:
 	if not bool(result.get("ok", false)):
 		match str(result.get("reason", "")):
@@ -318,3 +371,26 @@ static func maybe_guardian_interject(sim: Node, speaker: Fish) -> String:
 
 static func tank_needs_care_nudge(sim: Node) -> bool:
 	return tier_from_sim(sim) <= Tier.STRESSED
+
+
+# Say-box placeholder while a fish (or the tank) is waiting on an answer.
+static func placeholder_for_question(q: Dictionary) -> String:
+	if q.is_empty():
+		return ""
+	return "answer %s… (Enter to reply)" % str(q.get("name", "them"))
+
+
+# Status line after the keeper answered a fish's question: how much of the
+# answer actually landed (MindLexicon comprehension).
+static func question_answer_feedback(res: Dictionary) -> String:
+	if res.is_empty():
+		return ""
+	var nm: String = str(res.get("name", "they"))
+	var understood: PackedStringArray = res.get("understood", PackedStringArray())
+	if str(res.get("tone", "")) == "harsh":
+		return "%s shrank from the tone" % nm
+	if float(res.get("comprehension", 0.0)) >= 0.5:
+		return "%s understood most of it — and will remember" % nm
+	if not understood.is_empty():
+		return "%s caught \"%s\" — the rest was sound" % [nm, understood[0]]
+	return "%s didn't know the words, but felt the answer" % nm

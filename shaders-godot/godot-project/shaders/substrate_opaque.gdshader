@@ -261,7 +261,7 @@ void fragment() {
 		col = mix(col * 0.86, col * 1.07, step(0.5, bayer));
 	}
 	// Water column — deepest surface in the tank, so it recedes the most.
-	col = apply_water_column(col, v_wpos.y, length(VERTEX));
+	col = apply_water_column_ws(col, v_wpos, CAMERA_POSITION_WORLD);
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
 	col = iaq_beam_light_n(v_wpos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
