@@ -64,6 +64,7 @@ uniform float light_exempt : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/backlight.gdshaderinc"
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -196,6 +197,12 @@ void fragment() {
 	// palette went missing.
 	if (light_exempt < 0.5) {
 		col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+	}
+	// Room dimming rides the beam's ambient term (iaq_room_light,
+	// beam_cone.gdshaderinc). The rear lamp lights the tank, not the room.
+	if (room_haze_strength <= 0.001 && light_exempt < 0.5) {
+		col = iaq_backlight_light(col, v_world_pos,
+			(INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, CAMERA_POSITION_WORLD);
 	}
 	ALBEDO = col;
 }

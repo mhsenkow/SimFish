@@ -1100,8 +1100,8 @@ func design_tank(user_prompt: String) -> void:
 		+ "cichlid_pairs, blackwater_biotope), substrate_type (one of: aquasoil, "
 		+ "sand, eco_complete, inert_gravel, ocean_sand), aeration_type (filter, "
 		+ "disk, stick, none), tank_shape (box, cylinder, cube, hex, sphere), "
-		+ "tank_half_w (float 3-12), tank_half_d (float 3-8), tank_height (float "
-		+ "5-10), light_fixture (bar, spotlight), lighting_preset (planted, "
+		+ "tank_half_w (float 4-15), tank_half_d (float 4-10), tank_height (float "
+		+ "6-13), light_fixture (bar, spotlight), lighting_preset (planted, "
 		+ "cozy_shop, sunny, dim_warm, reef), co2_level (float 0-1), "
 		+ "light_spectrum (float 0-1 where 0=cool blue, 1=warm red). Pick a "
 		+ "preset that matches the vibe. Use ocean_sand ONLY with the reef "
@@ -1169,11 +1169,11 @@ func _sanitize_design(d: Dictionary) -> Dictionary:
 	if d.has("lighting_preset") and String(d["lighting_preset"]) in lightings:
 		out["lighting_preset"] = String(d["lighting_preset"])
 	if d.has("tank_half_w"):
-		out["tank_half_w"] = clampf(float(d["tank_half_w"]), 3.0, 12.0)
+		out["tank_half_w"] = clampf(float(d["tank_half_w"]), 4.0, 15.0)
 	if d.has("tank_half_d"):
-		out["tank_half_d"] = clampf(float(d["tank_half_d"]), 3.0, 8.0)
+		out["tank_half_d"] = clampf(float(d["tank_half_d"]), 4.0, 10.0)
 	if d.has("tank_height"):
-		out["tank_height"] = clampf(float(d["tank_height"]), 5.0, 10.0)
+		out["tank_height"] = clampf(float(d["tank_height"]), 6.0, 13.5)
 	if d.has("co2_level"):
 		out["co2_level"] = clampf(float(d["co2_level"]), 0.0, 1.0)
 	if d.has("light_spectrum"):

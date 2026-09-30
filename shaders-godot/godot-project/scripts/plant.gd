@@ -2094,7 +2094,13 @@ func _ensure_foliage_batch() -> VoxelBatch:
 		_apply_sway_personality()
 		# RGBA custom data is the bounded per-leaf visual channel. R starts with
 		# geometric thickness; later channels remain available without materials.
-		_foliage_batch = VoxelBatch.new(self, _foliage_mat, 256, true)
+		# Ribbon crowns: every blade is its own organ (desynchronised sway) and
+		# carries margin / midrib shading so overlapping blades separate.
+		if _uses_ribbon_blades():
+			_foliage_mat.set_shader_parameter("chain_desync", 1.0)
+			_foliage_mat.set_shader_parameter("blade_shade", 0.75)
+		_foliage_batch = VoxelBatch.new(self, _foliage_mat,
+			384 if _uses_ribbon_blades() else 256, true)
 		_apply_visibility_range_to(_foliage_batch.mmi)
 	return _foliage_batch
 
@@ -2321,9 +2327,15 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 # current_height, unchanged.
 #
 # Each blade is a chain of flat boxes (one MultiMesh instance per segment):
-# about two voxels wide at the base on a full-size plant, tapering to a
-# rounded tip, twisting slowly along its length and flattening out once it
-# lies on the surface, darker at the crown and lighter toward the lit tip.
+# a narrow strap (under a voxel wide even on a full-size plant - real valli
+# is 4-10 mm across and a metre long) that stays near-parallel, twists slowly
+# along its length and flattens out once it lies on the surface, darker at
+# the crown and lighter toward the lit tip. A crown is many blades standing
+# nearly straight up from one to three rosettes along a runner line; a few
+# of the shorter ones arch over in mid-water. Every blade carries its own
+# colour (family, age, tone) so neighbours cross palette rungs and the
+# outline pass can separate them - a stand of identical blades quantizes to
+# one flat green curtain.
 # Blades are re-laid in place (handles reused) only when the plant grows,
 # never per frame; motion is the foliage shader's chain sway.
 #
@@ -2332,7 +2344,10 @@ func _grow_ribbon_leaf(ramp: Array, age_frac: float, _rel: float,
 # the init() replay reproduces, so old saves simply regrow the new form.
 const RIBBON_SEG_LEN: float = VOXEL_SIZE * 1.25
 const RIBBON_MAX_SEGS: int = 60
-const RIBBON_MAX_BLADES: int = 8
+const RIBBON_MAX_BLADES: int = 14
+# Sub-rosettes along the runner line, and their spacing.
+const RIBBON_MAX_ROSETTES: int = 3
+const RIBBON_ROSETTE_STEP: float = VOXEL_SIZE * 1.6
 # Extra blade length, as a share of the water column, that trails along the
 # surface once the plant has reached it.
 const RIBBON_TRAIL_K: float = 0.35
@@ -2349,12 +2364,12 @@ func _uses_ribbon_blades() -> bool:
 	return leaf_form == "ribbon" and _save_kind() == "plant"
 
 
-# Blades per crown at a given height: a seedling has one or two, a mature
-# valli crown six to eight.
+# Blades per crown at a given height: a seedling has a few, a mature valli
+# stand ten or more.
 static func ribbon_blade_count(h: int) -> int:
 	if h <= 0:
 		return 0
-	return mini(h, clampi(int(2.0 + sqrt(float(h)) * 0.9), 1, RIBBON_MAX_BLADES))
+	return mini(h, clampi(int(3.0 + sqrt(float(h)) * 1.5), 1, RIBBON_MAX_BLADES))
 
 
 # Stable per-blade random in 0..1 (no RNG draw, so a replay reproduces it).
@@ -2444,27 +2459,46 @@ func _ribbon_fit_trail(dir: Vector2, start: Vector3, run: float) -> Vector2:
 # seed, height, water level and the trail heading.
 func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 		trail_dir: Vector2, ramp: Array) -> Array:
-	var frac: float = 1.0 if serial == 0 else lerpf(0.62, 1.0, _ribbon_hash(serial, 1))
+	var frac: float = 1.0 if serial == 0 else lerpf(0.35, 1.0, _ribbon_hash(serial, 1))
 	var maturity: float = clampf(float(h - birth_h + 1) / RIBBON_EXPAND_STEPS, 0.3, 1.0)
 	var rows: float = _ribbon_blade_rows(h, frac) * maturity
 	var total_len: float = rows * VOXEL_SIZE
 	var n: int = clampi(ceili(total_len / RIBBON_SEG_LEN), 2, RIBBON_MAX_SEGS)
 	var seg: float = total_len / float(n)
-	# Two ranks (distichous) with some scatter, splaying a little outward.
+	# Two ranks (distichous) with some scatter.
 	var yaw: float = (PI if serial % 2 == 1 else 0.0) + float(asymmetry_seed % 628) * 0.01 \
 		+ (_ribbon_hash(serial, 2) - 0.5) * 1.3
 	var out_dir := Vector3(cos(yaw), 0.0, sin(yaw))
 	var side_dir: Vector3 = out_dir.cross(Vector3.UP)
-	var crown: Vector3 = _clamp_growth_offset(out_dir * VOXEL_SIZE * lerpf(0.15, 0.6,
-		_ribbon_hash(serial, 3)) + Vector3(0.0, VOXEL_SIZE * 0.1, 0.0))
-	# How far the blade keeps leaning out of the crown as it rises: a fan,
-	# not one bundle.
-	var lean: float = lerpf(0.05, 0.17, _ribbon_hash(serial, 10))
-	var tone: float = lerpf(0.9, 1.08, _ribbon_hash(serial, 11))
+	# Which rosette along the runner line: a blade can only join a rosette
+	# that existed when it was booked, so a blade never jumps as the plant
+	# grows.
+	var ros_avail: int = clampi(1 + int(float(birth_h) / 10.0), 1, RIBBON_MAX_ROSETTES)
+	var ros: int = 0 if serial == 0 else mini(int(_ribbon_hash(serial, 13) * float(ros_avail)),
+		ros_avail - 1)
+	var runner_a: float = _ribbon_hash(-3, 14) * TAU
+	var runner := Vector3(cos(runner_a), 0.0, sin(runner_a))
+	var ros_off: float = [0.0, 1.0, -0.9][ros] * RIBBON_ROSETTE_STEP
+	var crown: Vector3 = _clamp_growth_offset(runner * ros_off
+		+ out_dir * VOXEL_SIZE * lerpf(0.05, 0.3, _ribbon_hash(serial, 3))
+		+ Vector3(0.0, VOXEL_SIZE * 0.1, 0.0))
+	# A barely-there lean: valli stands straight up in still water.
+	var lean: float = lerpf(0.0, 0.05, _ribbon_hash(serial, 10))
+	# Tone steps by the golden ratio, not a hash: successive blades are
+	# guaranteed to land far apart, so neighbours cross palette rungs.
+	var tone: float = lerpf(0.72, 1.2, fposmod(float(serial) * 0.618034 + _ribbon_hash(0, 11), 1.0))
+	# Some of the shorter blades arch over in mid-water instead of reaching.
+	var arch: bool = serial != 0 and frac < 0.75 and _ribbon_hash(serial, 17) < 0.3
+	# Tip: rounded, blunt (cut) or torn.
+	var tip_h: float = _ribbon_hash(serial, 16)
+	var tip_style: int = 0 if tip_h < 0.6 else (1 if tip_h < 0.82 else 2)
+	# Age rank among the booked blades: 0 = newest, 1 = oldest.
+	var age: float = clampf(float(_ribbon_blade_serial - 1 - serial) / 12.0, 0.0, 1.0)
+	var family: float = _ribbon_hash(serial * 17 + 5, 18)
 	var surface_y: float = water_surface_y - global_position.y - 0.12
 	var reach_len: float = maxf(surface_y - crown.y, 0.0)
-	var base_w: float = VOXEL_SIZE * lerpf(1.0, 2.0, clampf((rows - 4.0) / 14.0, 0.0, 1.0)) \
-		* clampf(leaf_size_mult, 0.8, 1.2)
+	var base_w: float = VOXEL_SIZE * lerpf(0.45, 1.0, clampf((rows - 4.0) / 14.0, 0.0, 1.0)) \
+		* clampf(leaf_size_mult, 0.8, 1.2) * 0.9 * lerpf(0.88, 1.12, _ribbon_hash(serial, 15))
 	var twist_turns: float = lerpf(0.35, 1.1, _ribbon_hash(serial, 4))
 	var twist_phase: float = _ribbon_hash(serial, 5) * TAU
 	var wob_amp: float = lerpf(0.05, 0.16, _ribbon_hash(serial, 6)) * (1.4 if wavy_edges else 1.0)
@@ -2478,18 +2512,21 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 	var mods: Dictionary = _leaf_mods()
 	var out: Array = []
 	var p: Vector3 = crown
-	# Leaves the crown splayed outward, then buoyancy stands it up.
-	var d: Vector3 = (Vector3.UP + out_dir * 0.9).normalized()
+	# Leaves the crown barely splayed; buoyancy stands it straight up.
+	var d: Vector3 = (Vector3.UP + out_dir * 0.28).normalized()
 	var surfacing: bool = false
 	var along: float = 0.0
 	for i in n:
 		var t: float = (float(i) + 0.5) / float(n)
 		var desired: Vector3
 		var max_turn: float
-		if not surfacing and p.y < surface_y - RIBBON_BEND_RADIUS:
+		if arch and not surfacing and along > total_len * 0.55:
+			desired = (out_dir + Vector3.DOWN * 0.3).normalized()
+			max_turn = seg / 0.8
+		elif not surfacing and p.y < surface_y - RIBBON_BEND_RADIUS:
 			var wob: float = sin(along * 0.9 + wob_phase) * wob_amp
 			desired = (Vector3.UP + out_dir * lean + side_dir * wob).normalized()
-			max_turn = seg * 0.25
+			max_turn = seg * 0.45
 		else:
 			surfacing = true
 			var meander: float = sin(along * 0.7 + wob_phase) * 0.22
@@ -2499,7 +2536,7 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 		if ang > 0.0001:
 			d = d.slerp(desired, minf(1.0, max_turn / ang)).normalized()
 		var p2: Vector3 = p + d * seg
-		p2.y = minf(p2.y, surface_y)
+		p2.y = clampf(p2.y, crown.y + VOXEL_SIZE, surface_y)
 		var dir: Vector3 = p2 - p
 		if dir.length_squared() < 1e-6:
 			dir = d
@@ -2521,17 +2558,20 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 			wv = dir.cross(Vector3.FORWARD if absf(dir.z) < 0.9 else Vector3.RIGHT)
 		wv = wv.normalized()
 		var zv: Vector3 = wv.cross(dir).normalized()
-		# Taper to a rounded tip; the sheath at the crown is a touch narrower.
-		var width: float = base_w * lerpf(1.0, 0.7, t)
+		# Near-parallel strap; the sheath at the crown is a touch narrower.
+		var width: float = base_w * lerpf(1.0, 0.85, t)
+		var tip_shift: float = 0.0
 		if i == n - 1:
-			width *= 0.45
+			width *= [0.45, 0.85, 0.55][tip_style]
+			tip_shift = 0.3 if tip_style == 2 else 0.0
 		elif i == n - 2:
-			width *= 0.8
+			width *= [0.8, 0.95, 0.7][tip_style]
+			tip_shift = -0.2 if tip_style == 2 else 0.0
 		elif i == 0:
 			width *= 0.9
 		var size := Vector3(width, seg * 1.12, RIBBON_THICKNESS)
 		var seg_basis := Basis(wv * size.x, dir * size.y, zv * size.z)
-		var xf := Transform3D(seg_basis, (p + p2) * 0.5)
+		var xf := Transform3D(seg_basis, (p + p2) * 0.5 + wv * width * tip_shift)
 		# Dark at the crown, lighter toward the lit tip and where it floats.
 		var ramp_t: float = lerpf(0.2, 0.93, pow(t, 0.8)) + flat_w * 0.06
 		var col: Color = _ribbon_ramp_color(ramp, ramp_t)
@@ -2543,12 +2583,46 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 		# one continuous ribbon rather than a stack of differently lit slats.
 		var seg_tone: float = tone * (0.97 + 0.06 * _ribbon_hash(serial * 131 + i, 12))
 		col = VoxelMat.boost_foliage_color(col)
-		col = Color(col.r * seg_tone, col.g * seg_tone, col.b * seg_tone, col.a)
+		col = _ribbon_blade_identity(col, t, family, age)
+		col = Color(col.r * seg_tone, col.g * seg_tone, col.b * seg_tone,
+			1.0 - _ribbon_fuzz(age, t))
 		var custom := Color(_leaf_thickness(size, i, n) * thin, leaf_phase, 0.0,
 			_leaf_flex_weight(xf.origin.y))
 		out.append([xf, col, custom])
 		p = p2
 	return out
+
+
+# A blade's own colour, AFTER the foliage saturation boost (which would
+# otherwise pull every family back onto the same green rung). `family` picks
+# base / yellow-green / olive / khaki / bronze-tipped; `age` 0..1 turns old
+# blades olive and dull, and the newest blade's tip lime.
+static func _ribbon_blade_identity(col: Color, t: float, family: float, age: float) -> Color:
+	var lum: float = col.r * 0.3 + col.g * 0.59 + col.b * 0.11
+	if family >= 0.88:
+		col = col.lerp(Color(lum * 1.25, lum * 0.95, lum * 0.55),
+			smoothstep(0.6, 1.0, t) * 0.6)
+	elif family >= 0.75:
+		col = col.lerp(Color(lum * 1.1, lum * 1.02, lum * 0.72), 0.4)
+	elif family >= 0.6:
+		col = Color(col.r * 1.05, col.g * 0.86, col.b * 0.62)
+	elif family >= 0.4:
+		col = Color(col.r * 1.18 + 0.03, col.g * 1.06, col.b * 0.78)
+	# Old blades: olive, desaturated, and senescing from the tip down.
+	col = col.lerp(Color(lum * 1.05, lum, lum * 0.7), 0.32 * age)
+	# Only the very tip: the surface run is the lit canopy and must stay green.
+	if age > 0.75:
+		col = col.lerp(Color(0.62, 0.52, 0.24), smoothstep(0.93, 1.0, t) * (age - 0.75) * 2.4)
+	# The newest blade: a lime tip.
+	if age < 0.15:
+		col = col.lerp(Color(0.55, 0.80, 0.22), smoothstep(0.6, 1.0, t) * 0.35 * (1.0 - age / 0.15))
+	return Color(col.r, col.g, col.b, 1.0)
+
+
+# Aufwuchs load baked at build time (foliage_mm reads it as 1 - COLOR.a):
+# old blades carry the film, heaviest toward the tip.
+static func _ribbon_fuzz(age: float, t: float) -> float:
+	return clampf((age - 0.55) * 0.8, 0.0, 0.3) * lerpf(0.6, 1.0, t)
 
 
 static func _ribbon_ramp_color(ramp: Array, t: float) -> Color:
@@ -2612,6 +2686,7 @@ func _rebuild_ribbon_blades(h: int, ramp: Array = []) -> void:
 		st["youth_paint"] = -1.0
 		st["senesce_paint"] = 0.0
 		st["dose_visual"] = -1.0
+		st["hair_paint"] = 0.0
 		if not touched.has(batch):
 			touched.append(batch)
 	for b in touched:
@@ -4988,6 +5063,10 @@ func _graze_leaf_biofilm(amount: int) -> bool:
 	for i in mini(amount, _leaf_states.size()):
 		var idx: int = _leaf_states.size() - 1 - i
 		var st: Dictionary = _leaf_states[idx]
+		# Grazers strip the aufwuchs off a ribbon blade as well as the film.
+		var hair: float = float(st.get("hair", 0.0))
+		if hair > 0.05:
+			st.hair = maxf(0.0, hair - 0.2)
 		var bio: float = float(st.get("biofilm", 0.0))
 		if bio < 0.08:
 			continue
@@ -5009,6 +5088,9 @@ func graze_detritus_fleck() -> bool:
 
 func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> void:
 	var shed_indices: Array[int] = []
+	var hair_rate: float = 0.0
+	if leaf_form == "ribbon" or species_id.contains("valli"):
+		hair_rate = 0.008 * _aufwuchs_pressure(sim_v)
 	for i in _leaf_states.size():
 		var st: Dictionary = _leaf_states[i]
 		st.age_s = float(st.get("age_s", 0.0)) + dt
@@ -5019,7 +5101,7 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		if leaf_form == "ribbon" or species_id.contains("valli"):
 			var age_s: float = float(st.get("age_s", 0.0))
 			if age_s > 45.0:
-				st.hair = clampf(float(st.get("hair", 0.0)) + dt * 0.008, 0.0, 1.0)
+				st.hair = clampf(float(st.get("hair", 0.0)) + dt * hair_rate, 0.0, 1.0)
 		if leaf_form in ["needle", "downy", "pinnate"] and sim_v != null:
 			var waste_arr: Variant = sim_v.get("waste")
 			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
@@ -5208,9 +5290,45 @@ func _shed_leaf_at(idx: int) -> void:
 var _leaf_hair_nodes: Array = []
 
 
+# Aufwuchs accrual multiplier: more light and more algae in the tank grow
+# it faster (about 0.8 at a middling tank, the old flat rate).
+func _aufwuchs_pressure(sim_v: Node) -> float:
+	var light: float = clampf(SimGate.daylight(sim_v, 0.5), 0.0, 1.0)
+	var algae: float = 0.6
+	var w: Node = sim_v.get_parent() if sim_v != null else null
+	if w != null and w.get("biofilm_progress") != null:
+		algae = clampf(float(w.get("biofilm_progress")) / 0.42, 0.0, 1.5)
+	return clampf((0.4 + 0.8 * light) * (0.35 + 1.1 * algae), 0.1, 2.0)
+
+
+# Ribbon crowns have no stem voxels for filament nodes to sit on, so their
+# aufwuchs is painted into the blade instead: the instance alpha, which
+# foliage_mm reads as the fuzz load (1 - a). Never below the build-time
+# age fuzz baked into base_color.a.
+func _paint_ribbon_aufwuchs() -> void:
+	for i in mini(_leaf_groups.size(), _leaf_states.size()):
+		var st: Dictionary = _leaf_states[i]
+		if not st.has("rb_seed"):
+			continue
+		var hair: float = float(st.get("hair", 0.0))
+		if absf(hair - float(st.get("hair_paint", 0.0))) < 0.05:
+			continue
+		st["hair_paint"] = hair
+		for hv in _leaf_groups[i]:
+			var h: VoxelBatch.Handle = hv
+			if h == null or not h.alive or h.batch == null:
+				continue
+			var c: Color = h.batch._colors[h.index]
+			c.a = minf(h.base_color.a, 1.0 - hair * 0.45)
+			h.set_color(c)
+
+
 func _tick_leaf_hair_visuals() -> void:
 	# Spawn sparse filament voxels on aged ribbon leaves (#73/#117).
 	if not (leaf_form == "ribbon" or species_id.contains("valli")):
+		return
+	if _uses_ribbon_blades():
+		_paint_ribbon_aufwuchs()
 		return
 	if voxels.is_empty() or _leaf_hair_nodes.size() >= 8:
 		return

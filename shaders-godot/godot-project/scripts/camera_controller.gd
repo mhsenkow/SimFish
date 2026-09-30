@@ -32,10 +32,13 @@ const ORTHO_MIN_SIZE: float = 2.0
 const ORTHO_MAX_SIZE: float = 80.0
 
 # Target clamp box — the single convergence box (see eye/clamp_target).
-const TARGET_MIN := Vector3(-20.0, -2.0, -20.0)
-const TARGET_MAX := Vector3(20.0, 12.0, 20.0)
+# Sized for the largest template tanks (TankSizing: 30 wide, 13.5 tall) with
+# room to pan past the glass; the old +-20 / y 12 box could not reach the
+# waterline of a tall tank.
+const TARGET_MIN := Vector3(-24.0, -2.0, -24.0)
+const TARGET_MAX := Vector3(24.0, 16.0, 24.0)
 # Item 38 — allow slightly-too-close corner shots instead of hard-clipping.
-const TARGET_MIN_CLOSE := Vector3(-22.0, -2.5, -22.0)
+const TARGET_MIN_CLOSE := Vector3(-26.0, -2.5, -26.0)
 
 
 # Deadzone gate: orbit/pan/dolly navigation only commits once the cursor has

@@ -21,6 +21,11 @@ class_name ScenarioPicker
 signal scenario_chosen(scenario: Dictionary)
 signal canceled
 
+# Size step chosen in the picker header (TankSizing.SIZE_STEPS). Static so the
+# choice survives reopening the picker within a session.
+static var _size_scale: float = 1.0
+var _size_rows: Array = []  # [size Label, equilibrium Label or null, scenario]
+
 # Each scenario describes the field overrides that get applied to
 # TankConfig after the new slot is created. Fields not present here are
 # left at the autoload's defaults (or whatever the slot already saved).
@@ -43,6 +48,8 @@ signal canceled
 # Plant growth audit (#16): after the soft-min retune, high-CO₂ scenarios no
 # longer need to compensate for multiplicative penalty stacking. Values below
 # were checked so planted tanks progress in minutes, not tens of minutes.
+const TankSizing := preload("res://scripts/tank_sizing.gd")
+
 const SCENARIOS: Array[Dictionary] = [
 	{
 		"id": "beginner_sandbox",
@@ -57,9 +64,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 9.0,
-			"tank_half_d": 5.0,
-			"tank_height": 7.0,
+			"tank_half_w": 11.5,
+			"tank_half_d": 6.5,
+			"tank_height": 9.0,
+			"stocking_ref_dims": Vector3(9.0, 5.0, 7.0),
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.20,
 			"light_fixture": "bar",
@@ -69,8 +77,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_spectrum": 0.50,
 			"camera_yaw": -0.35,
 			"camera_pitch": 0.16,
-			"camera_radius": 20.0,
-			"camera_target_y": 3.4,
+			"camera_radius": 25.8,
+			"camera_target_y": 4.4,
 			"camera_fov": 46.0,
 			"vessel_preset": "custom",
 		},
@@ -88,9 +96,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 10.0,
-			"tank_half_d": 5.5,
-			"tank_height": 8.0,
+			"tank_half_w": 12.5,
+			"tank_half_d": 7.0,
+			"tank_height": 10.0,
+			"stocking_ref_dims": Vector3(10.0, 5.5, 8.0),
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.23,
 			"light_fixture": "bar",
@@ -100,8 +109,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_spectrum": 0.55,
 			"camera_yaw": -0.62,
 			"camera_pitch": 0.12,
-			"camera_radius": 22.0,
-			"camera_target_y": 3.8,
+			"camera_radius": 27.7,
+			"camera_target_y": 4.8,
 			"camera_fov": 48.0,
 			"vessel_preset": "custom",
 		},
@@ -122,9 +131,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "disk",
 			"aeration_strength": 0.9,
 			"tank_shape": "box",
-			"tank_half_w": 12.0,
-			"tank_half_d": 4.0,
-			"tank_height": 6.0,
+			"tank_half_w": 15.0,
+			"tank_half_d": 5.5,
+			"tank_height": 7.5,
+			"stocking_ref_dims": Vector3(12.0, 4.0, 6.0),
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.18,
 			"light_fixture": "bar",
@@ -138,8 +148,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": -0.06,
 			"camera_pitch": 0.05,
-			"camera_radius": 25.0,
-			"camera_target_y": 2.8,
+			"camera_radius": 32.3,
+			"camera_target_y": 3.5,
 			"camera_fov": 40.0,
 			"vessel_preset": "custom",
 		},
@@ -160,14 +170,15 @@ const SCENARIOS: Array[Dictionary] = [
 			"co2_level": 0.0,
 			"light_spectrum": 0.80,
 			"tank_shape": "box",
-			"tank_half_w": 6.0,
-			"tank_half_d": 4.0,
-			"tank_height": 11.0,
+			"tank_half_w": 7.5,
+			"tank_half_d": 5.0,
+			"tank_height": 13.5,
+			"stocking_ref_dims": Vector3(6.0, 4.0, 11.0),
 			"cycle_start_mode": "established",
 			"camera_yaw": -0.85,
 			"camera_pitch": -0.06,
-			"camera_radius": 19.0,
-			"camera_target_y": 5.0,
+			"camera_radius": 23.6,
+			"camera_target_y": 6.1,
 			"camera_fov": 52.0,
 			"water_surface_fraction": 0.95,
 			"substrate_depth_fraction": 0.26,
@@ -192,13 +203,14 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"light_warmth": 0.72,
 			"tank_shape": "cube",
-			"tank_half_w": 6.5,
-			"tank_half_d": 6.5,
-			"tank_height": 8.0,
+			"tank_half_w": 8.0,
+			"tank_half_d": 8.0,
+			"tank_height": 10.0,
+			"stocking_ref_dims": Vector3(6.5, 6.5, 8.0),
 			"camera_yaw": -0.78,
 			"camera_pitch": 0.22,
-			"camera_radius": 17.5,
-			"camera_target_y": 3.6,
+			"camera_radius": 21.7,
+			"camera_target_y": 4.5,
 			"camera_fov": 45.0,
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.18,
@@ -216,9 +228,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "sand",
 			"aeration_type": "filter",
 			"tank_shape": "hex",
-			"tank_half_w": 7.0,
-			"tank_half_d": 7.0,
-			"tank_height": 10.0,
+			"tank_half_w": 9.0,
+			"tank_half_d": 9.0,
+			"tank_height": 12.5,
+			"stocking_ref_dims": Vector3(7.0, 7.0, 10.0),
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "spotlight",
@@ -229,8 +242,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": -1.05,
 			"camera_pitch": 0.34,
-			"camera_radius": 22.0,
-			"camera_target_y": 4.2,
+			"camera_radius": 28.0,
+			"camera_target_y": 5.2,
 			"camera_fov": 50.0,
 			"vessel_preset": "custom",
 		},
@@ -249,9 +262,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "stick",
 			"aeration_strength": 0.3,
 			"tank_shape": "sphere",
-			"tank_half_w": 6.5,
-			"tank_half_d": 6.5,
-			"tank_height": 7.5,
+			"tank_half_w": 8.0,
+			"tank_half_d": 8.0,
+			"tank_height": 9.5,
+			"stocking_ref_dims": Vector3(6.5, 6.5, 7.5),
 			"water_surface_fraction": 0.90,
 			"substrate_depth_fraction": 0.26,
 			"light_fixture": "spotlight",
@@ -262,8 +276,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": 0.30,
 			"camera_pitch": 0.10,
-			"camera_radius": 15.0,
-			"camera_target_y": 3.4,
+			"camera_radius": 18.6,
+			"camera_target_y": 4.3,
 			"camera_fov": 55.0,
 			"vessel_preset": "custom",
 		},
@@ -280,9 +294,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "cylinder",
-			"tank_half_w": 7.0,
-			"tank_half_d": 7.0,
-			"tank_height": 10.0,
+			"tank_half_w": 8.5,
+			"tank_half_d": 8.5,
+			"tank_height": 12.5,
+			"stocking_ref_dims": Vector3(7.0, 7.0, 10.0),
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.20,
 			"light_fixture": "spotlight",
@@ -292,8 +307,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"light_spectrum": 0.60,
 			"camera_yaw": -0.50,
 			"camera_pitch": -0.02,
-			"camera_radius": 21.0,
-			"camera_target_y": 4.8,
+			"camera_radius": 25.7,
+			"camera_target_y": 6.0,
 			"camera_fov": 44.0,
 			"vessel_preset": "custom",
 		},
@@ -309,9 +324,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "eco_complete",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 9.0,
-			"tank_half_d": 5.5,
-			"tank_height": 7.5,
+			"tank_half_w": 11.5,
+			"tank_half_d": 7.0,
+			"tank_height": 9.5,
+			"stocking_ref_dims": Vector3(9.0, 5.5, 7.5),
 			"water_surface_fraction": 0.92,
 			"substrate_depth_fraction": 0.24,
 			"light_fixture": "spotlight",
@@ -322,8 +338,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": -0.30,
 			"camera_pitch": -0.10,
-			"camera_radius": 19.0,
-			"camera_target_y": 3.2,
+			"camera_radius": 24.2,
+			"camera_target_y": 4.1,
 			"camera_fov": 54.0,
 			"vessel_preset": "custom",
 		},
@@ -340,9 +356,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "eco_complete",
 			"aeration_type": "disk",
 			"tank_shape": "box",
-			"tank_half_w": 7.0,
-			"tank_half_d": 5.0,
-			"tank_height": 6.0,
+			"tank_half_w": 8.5,
+			"tank_half_d": 6.0,
+			"tank_height": 7.5,
+			"stocking_ref_dims": Vector3(7.0, 5.0, 6.0),
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.24,
 			"light_fixture": "bar",
@@ -353,8 +370,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": -0.45,
 			"camera_pitch": 0.02,
-			"camera_radius": 13.0,
-			"camera_target_y": 2.6,
+			"camera_radius": 15.9,
+			"camera_target_y": 3.2,
 			"camera_fov": 38.0,
 			"vessel_preset": "custom",
 		},
@@ -370,9 +387,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 12.0,
-			"tank_half_d": 5.0,
-			"tank_height": 9.0,
+			"tank_half_w": 15.0,
+			"tank_half_d": 6.5,
+			"tank_height": 11.0,
+			"stocking_ref_dims": Vector3(12.0, 5.0, 9.0),
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "bar",
@@ -383,8 +401,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": 0.00,
 			"camera_pitch": 0.10,
-			"camera_radius": 27.0,
-			"camera_target_y": 4.2,
+			"camera_radius": 33.9,
+			"camera_target_y": 5.1,
 			"camera_fov": 42.0,
 			"vessel_preset": "custom",
 		},
@@ -403,9 +421,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "stick",
 			"aeration_strength": 0.35,
 			"tank_shape": "cube",
-			"tank_half_w": 5.5,
-			"tank_half_d": 5.5,
-			"tank_height": 6.5,
+			"tank_half_w": 7.0,
+			"tank_half_d": 7.0,
+			"tank_height": 8.0,
+			"stocking_ref_dims": Vector3(5.5, 5.5, 6.5),
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.16,
 			"light_fixture": "spotlight",
@@ -421,8 +440,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"heater_enabled": false,
 			"camera_yaw": -0.90,
 			"camera_pitch": 0.26,
-			"camera_radius": 13.5,
-			"camera_target_y": 3.0,
+			"camera_radius": 17.0,
+			"camera_target_y": 3.7,
 			"camera_fov": 47.0,
 			"vessel_preset": "custom",
 		},
@@ -449,9 +468,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "stick",
 			"aeration_strength": 1.0,
 			"tank_shape": "box",
-			"tank_half_w": 9.0,
-			"tank_half_d": 4.5,
-			"tank_height": 7.0,
+			"tank_half_w": 11.0,
+			"tank_half_d": 5.5,
+			"tank_height": 8.5,
+			"stocking_ref_dims": Vector3(9.0, 4.5, 7.0),
 			"water_surface_fraction": 0.94,
 			"substrate_depth_fraction": 0.28,
 			"light_fixture": "bar",
@@ -460,9 +480,9 @@ const SCENARIOS: Array[Dictionary] = [
 			"co2_level": 0.0,
 			"light_spectrum": 0.45,
 			"camera_pitch": -0.04,
-			"camera_radius": 17.0,
+			"camera_radius": 20.7,
 			"camera_yaw": -0.55,
-			"camera_target_y": 4.4,
+			"camera_target_y": 5.3,
 			"camera_fov": 46.0,
 			"vessel_preset": "custom",
 		},
@@ -480,9 +500,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 9.0,
-			"tank_half_d": 4.5,
-			"tank_height": 9.5,
+			"tank_half_w": 11.0,
+			"tank_half_d": 5.5,
+			"tank_height": 12.0,
+			"stocking_ref_dims": Vector3(9.0, 4.5, 9.5),
 			"water_surface_fraction": 0.95,
 			"substrate_depth_fraction": 0.28,
 			"light_fixture": "bar",
@@ -491,11 +512,53 @@ const SCENARIOS: Array[Dictionary] = [
 			"co2_level": 0.15,
 			"light_spectrum": 0.62,
 			"camera_pitch": -0.12,
-			"camera_radius": 19.5,
+			"camera_radius": 24.1,
 			"camera_yaw": -0.68,
-			"camera_target_y": 4.6,
+			"camera_target_y": 5.8,
 			"camera_fov": 50.0,
 			"vessel_preset": "custom",
+		},
+	},
+	{
+		"id": "hex_jungle",
+		"name": "Hex Jungle",
+		"tagline": "Tall hex column · pink LED · glass cloche · red ramshorns",
+		"body": "The keeper's own tank: a tall hexagonal column in the corner of a green room. Vallisneria floor to surface, a floating mat trailing long root curtains, a glass cloche on the gravel wearing a hair-algae mound, and red ramshorns on every pane. Endlers and guppies crowd the top third; rummy-nose and ember tetras hold lower. A pink LED bar on top and a warm lamp glowing through the blades from behind.",
+		"accent_color": Color8(214, 120, 170),
+		"silhouette": "🌾🐌",
+		"config": {
+			"tank_preset": "hex_jungle",
+			"cycle_start_mode": "established",
+			"substrate_type": "aquasoil",
+			"aeration_type": "filter",
+			"vessel_preset": "custom",
+			"tank_shape": "hex",
+			"tank_half_w": 7.6,
+			"tank_half_d": 7.6,
+			"tank_height": 17.0,
+			"stocking_ref_dims": Vector3(6.5, 6.5, 15.0),
+			"water_surface_fraction": 0.94,
+			"substrate_depth_fraction": 0.18,
+			"light_fixture": "bar",
+			"environment_preset": "green_corner",
+			"lighting_preset": "backlit_jungle",
+			"co2_level": 0.15,
+			"light_spectrum": 0.60,
+			# Eye level about two thirds up the column, where the crowd is.
+			"camera_pitch": -0.04,
+			"camera_radius": 31.0,
+			"camera_yaw": -0.52,
+			"camera_target_y": 8.2,
+			"camera_fov": 48.0,
+		},
+		# Applied AFTER the lighting preset (which resets the rig keys), so
+		# this tank keeps the backlit_jungle mood with its own colours: the
+		# pink LED bar the photos are lit by and a warmer, yellower lamp.
+		"lighting_overrides": {
+			"tank_fixture_color": Color(1.0, 0.74, 0.9),
+			"light_tint_rgb": Color(1.0, 0.74, 0.9),
+			"backlight_color": Color(1.0, 0.76, 0.34),
+			"backlight_intensity": 0.95,
 		},
 	},
 	{
@@ -518,13 +581,14 @@ const SCENARIOS: Array[Dictionary] = [
 			"co2_level": 0.0,
 			"light_spectrum": 0.48,
 			"camera_pitch": 0.30,
-			"camera_radius": 11.5,
+			"camera_radius": 14.1,
 			"tank_shape": "cube",
-			"tank_half_w": 4.5,
-			"tank_half_d": 4.5,
-			"tank_height": 6.5,
+			"tank_half_w": 5.5,
+			"tank_half_d": 5.5,
+			"tank_height": 8.0,
+			"stocking_ref_dims": Vector3(4.5, 4.5, 6.5),
 			"camera_yaw": -0.40,
-			"camera_target_y": 3.8,
+			"camera_target_y": 4.7,
 			"camera_fov": 43.0,
 			"water_surface_fraction": 0.94,
 			"vessel_preset": "custom",
@@ -544,9 +608,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"aeration_type": "filter",
 			"vessel_preset": "custom",
 			"tank_shape": "hex",
-			"tank_half_w": 5.0,
-			"tank_half_d": 5.0,
-			"tank_height": 11.0,
+			"tank_half_w": 6.5,
+			"tank_half_d": 6.5,
+			"tank_height": 13.5,
+			"stocking_ref_dims": Vector3(5.0, 5.0, 11.0),
 			"water_surface_fraction": 0.95,
 			"substrate_depth_fraction": 0.20,
 			"light_fixture": "gooseneck",
@@ -558,8 +623,8 @@ const SCENARIOS: Array[Dictionary] = [
 			# crosses the frame rather than pointing away from the camera.
 			"camera_yaw": -0.52,
 			"camera_pitch": -0.05,
-			"camera_radius": 17.0,
-			"camera_target_y": 5.6,
+			"camera_radius": 21.7,
+			"camera_target_y": 6.9,
 			"camera_fov": 52.0,
 		},
 	},
@@ -583,9 +648,10 @@ const SCENARIOS: Array[Dictionary] = [
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"tank_shape": "box",
-			"tank_half_w": 10.0,
-			"tank_half_d": 5.0,
-			"tank_height": 8.0,
+			"tank_half_w": 12.5,
+			"tank_half_d": 6.5,
+			"tank_height": 10.0,
+			"stocking_ref_dims": Vector3(10.0, 5.0, 8.0),
 			"water_surface_fraction": 0.93,
 			"substrate_depth_fraction": 0.22,
 			"light_fixture": "bar",
@@ -594,8 +660,8 @@ const SCENARIOS: Array[Dictionary] = [
 			"cycle_start_mode": "established",
 			"camera_yaw": -0.42,
 			"camera_pitch": 0.18,
-			"camera_radius": 22.0,
-			"camera_target_y": 3.8,
+			"camera_radius": 27.9,
+			"camera_target_y": 4.8,
 			"camera_fov": 45.0,
 			"vessel_preset": "custom",
 		},
@@ -628,9 +694,10 @@ static func random_wildcard_config() -> Dictionary:
 		else _WILD_PRESETS[randi() % _WILD_PRESETS.size()]
 	var shape: String = _WILD_SHAPES[randi() % _WILD_SHAPES.size()]
 	# Dimensions: small to large, but always plausible for the shape.
-	var half_w: float = randf_range(4.5, 11.0)
-	var half_d: float = randf_range(3.5, 7.0) if shape == "box" else half_w
-	var height: float = randf_range(5.0, 9.0)
+	# Same scale as the authored templates (TankSizing.SIZE_SCALE).
+	var half_w: float = randf_range(5.5, 14.0)
+	var half_d: float = randf_range(4.5, 8.5) if shape == "box" else half_w
+	var height: float = randf_range(6.5, 11.5)
 	# CO2 + spectrum pair sensibly: high CO2 + warm spectrum for planted,
 	# zero CO2 + cool spectrum for reef.
 	var co2: float = 0.0 if sub == "ocean_sand" else randf_range(0.0, 0.9)
@@ -657,6 +724,7 @@ static func random_wildcard_config() -> Dictionary:
 		"tank_half_w": half_w,
 		"tank_half_d": half_d,
 		"tank_height": height,
+		"stocking_ref_dims": Vector3(half_w, half_d, height) / TankSizing.SIZE_SCALE,
 		"water_surface_fraction": randf_range(0.88, 0.95),
 		"substrate_depth_fraction": randf_range(0.16, 0.26),
 		"light_fixture": "spotlight" if randf() < 0.4 else "bar",
@@ -709,6 +777,7 @@ func _ready() -> void:
 		"Themed combinations of substrate, plants/coral, fish, and lighting."))
 	vb.add_child(PanelTheme.make_rule())
 
+	vb.add_child(_build_size_row())
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -856,8 +925,16 @@ func _build_card(sc: Dictionary) -> Control:
 	whats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(whats)
 
+	# Size at the chosen step: full W x D x H in the same units as Settings,
+	# plus real gallons, so cards can be compared at a glance.
+	var size_lbl := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
+	size_lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	size_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(size_lbl)
+
 	# Equilibrium preview (#69): show roughly where the tank will settle so the
 	# defaults visibly express their designed balanced end-state.
+	var eq_lbl: Label = null
 	var eq_text: String = _equilibrium_hint(String(sc.get("config", {}).get("tank_preset", "")))
 	if eq_text != "":
 		var eq := Label.new()
@@ -867,6 +944,9 @@ func _build_card(sc: Dictionary) -> Control:
 		eq.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		eq.tooltip_text = Ol.equilibrium_tooltip()
 		vb.add_child(eq)
+		eq_lbl = eq
+	_size_rows.append([size_lbl, eq_lbl, sc])
+	_refresh_size_row(size_lbl, eq_lbl, sc)
 
 	# Pick button — separated from the body with a hairline so it reads as the
 	# card's commit action rather than another text line.
@@ -881,7 +961,7 @@ func _build_card(sc: Dictionary) -> Control:
 
 # Compute a rough "this tank wants to settle around N residents" line from the
 # scenario's stocking preset, so each card advertises its balanced end-state.
-func _equilibrium_hint(preset_key: String) -> String:
+func _equilibrium_hint(preset_key: String, stock_scale: float = 1.0) -> String:
 	if preset_key == "":
 		return ""
 	var cfg := get_node_or_null("/root/TankConfig")
@@ -893,9 +973,9 @@ func _equilibrium_hint(preset_key: String) -> String:
 	var shrimp_n: int = 0
 	for k in stocking.keys():
 		if String(k) == "shrimp":
-			shrimp_n = int(stocking[k])
+			shrimp_n = TankSizing.scale_count(int(stocking[k]), stock_scale)
 		else:
-			fish_n += int(stocking[k])
+			fish_n += TankSizing.scale_count(int(stocking[k]), stock_scale)
 	var parts: Array = []
 	if fish_n > 0:
 		parts.append("~%d fish" % fish_n)
@@ -906,6 +986,69 @@ func _equilibrium_hint(preset_key: String) -> String:
 	return "Settles around " + ", ".join(parts) + " once balanced"
 
 
+func _build_size_row() -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var lbl := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_BODY) as Label
+	lbl.text = tr("Tank size")
+	lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	row.add_child(lbl)
+	var group := ButtonGroup.new()
+	for step in TankSizing.SIZE_STEPS:
+		var b := Button.new()
+		b.text = tr(String(step["label"]))
+		b.toggle_mode = true
+		b.button_group = group
+		b.focus_mode = Control.FOCUS_ALL
+		b.tooltip_text = tr(String(step["hint"]))
+		var step_scale: float = float(step["scale"])
+		b.button_pressed = is_equal_approx(step_scale, _size_scale)
+		b.pressed.connect(func() -> void: _set_size_scale(step_scale))
+		row.add_child(b)
+	var hint := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
+	hint.text = tr("Fish and plants scale with the glass.")
+	hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(hint)
+	return row
+
+
+func _set_size_scale(s: float) -> void:
+	_size_scale = s
+	for r in _size_rows:
+		_refresh_size_row(r[0], r[1], r[2])
+
+
+func _refresh_size_row(size_lbl: Label, eq_lbl: Label, sc: Dictionary) -> void:
+	var config: Dictionary = sc.get("config", {})
+	if bool(sc.get("is_wildcard", false)):
+		size_lbl.text = tr("Size: rolled at random (%s)") % tr(_size_step_label())
+		return
+	var shape: String = String(config.get("tank_shape", "box"))
+	var d: Vector3 = TankSizing.scaled_dims(float(config.get("tank_half_w", 8.0)),
+		float(config.get("tank_half_d", 4.0)), float(config.get("tank_height", 7.0)), _size_scale)
+	size_lbl.text = tr("Size") + ": " + TankSizing.size_caption(shape, d.x, d.y, d.z,
+		float(config.get("water_surface_fraction", 0.93)))
+	if eq_lbl != null:
+		var ref: Vector3 = config.get("stocking_ref_dims", Vector3.ZERO)
+		var k: float = TankSizing.stocking_scale_for(shape, d, ref)
+		eq_lbl.text = "⚖ " + _equilibrium_hint(String(config.get("tank_preset", "")), k)
+
+
+func _size_step_label() -> String:
+	for step in TankSizing.SIZE_STEPS:
+		if is_equal_approx(float(step["scale"]), _size_scale):
+			return String(step["label"])
+	return "Standard"
+
+
+# Every exit path stamps the chosen size step; apply_scenario applies it.
+func _emit_chosen(sc: Dictionary) -> void:
+	sc["size_scale"] = _size_scale
+	scenario_chosen.emit(sc)
+
+
 func _pick(sc: Dictionary) -> void:
 	# Wildcard branch — either roll random or pop a prompt for AI.
 	if bool(sc.get("is_wildcard", false)):
@@ -913,7 +1056,7 @@ func _pick(sc: Dictionary) -> void:
 		return
 	# Emit a duplicate so the caller can't accidentally mutate the
 	# global SCENARIOS constant.
-	scenario_chosen.emit(sc.duplicate(true))
+	_emit_chosen(sc.duplicate(true))
 	queue_free()
 
 
@@ -991,7 +1134,7 @@ func _open_ai_prompt(sc: Dictionary, ai: Node) -> void:
 		var rolled: Dictionary = sc.duplicate(true)
 		rolled["config"] = random_wildcard_config()
 		rolled["name"] = "✨ Surprise tank"
-		scenario_chosen.emit(rolled)
+		_emit_chosen(rolled)
 		queue_free())
 	# Design via AI: send the prompt to AIDirector.design_tank.
 	go_btn.pressed.connect(func():
@@ -1016,7 +1159,7 @@ func _request_ai_design(sc: Dictionary, ai: Node, prompt: String,
 		status.text = tr("AI design helper missing — rolling random instead.")
 		var rolled: Dictionary = sc.duplicate(true)
 		rolled["config"] = random_wildcard_config()
-		scenario_chosen.emit(rolled)
+		_emit_chosen(rolled)
 		queue_free()
 		return
 	if not ai.is_connected("tank_designed", _on_ai_tank_designed):
@@ -1034,7 +1177,7 @@ func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_
 			go_btn.disabled = false
 		var rolled: Dictionary = sc.duplicate(true)
 		rolled["config"] = random_wildcard_config()
-		scenario_chosen.emit(rolled)
+		_emit_chosen(rolled)
 		queue_free()
 		return
 	var rolled2: Dictionary = sc.duplicate(true)
@@ -1045,7 +1188,7 @@ func _on_ai_tank_designed(config: Dictionary, sc: Dictionary, status: Label, go_
 		merged[k] = config[k]
 	rolled2["config"] = merged
 	rolled2["name"] = "✨ AI-designed tank"
-	scenario_chosen.emit(rolled2)
+	_emit_chosen(rolled2)
 	queue_free()
 
 
@@ -1087,7 +1230,7 @@ func _show_wildcard_preview(sc: Dictionary, rolled_cfg: Dictionary) -> void:
 		rolled["config"] = cfg_holder[0].duplicate(true)
 		rolled["name"] = "✨ Surprise tank"
 		rolled["body"] = "Randomly generated. " + String(rolled["body"])
-		scenario_chosen.emit(rolled)
+		_emit_chosen(rolled)
 		queue_free())
 
 
@@ -1135,8 +1278,26 @@ static func apply_scenario(scenario: Dictionary, cfg: Node) -> void:
 			lighting_slug = String(config[key])
 			continue
 		cfg.set(String(key), config[key])
+	# Picker size step (Compact..Grand) multiplies the template's own size.
+	# stocking_ref_dims stays at the authored size, so stocking and plant
+	# fill follow the glass.
+	var size_scale: float = float(scenario.get("size_scale", 1.0))
+	if not is_equal_approx(size_scale, 1.0) and config.has("tank_half_w"):
+		var d: Vector3 = TankSizing.scaled_dims(float(cfg.get("tank_half_w")),
+			float(cfg.get("tank_half_d")), float(cfg.get("tank_height")), size_scale)
+		cfg.set("tank_half_w", d.x)
+		cfg.set("tank_half_d", d.y)
+		cfg.set("tank_height", d.z)
 	if lighting_slug != "" and cfg.has_method("apply_lighting_preset"):
 		cfg.apply_lighting_preset(lighting_slug)
+	# Per-scenario lighting colours that must survive the preset: the preset
+	# resets every rig key, so anything set in "config" that it also touches
+	# would be silently overwritten. Kept out of "config" on purpose - some
+	# keys (light_tint_rgb) are rig keys owned by the lighting system.
+	var overrides: Dictionary = scenario.get("lighting_overrides", {})
+	for key in overrides.keys():
+		if String(key) in cfg:
+			cfg.set(String(key), overrides[key])
 	if config.has("cycle_start_mode"):
 		cfg.start_matured = (String(cfg.cycle_start_mode) == "established")
 	else:

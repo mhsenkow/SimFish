@@ -134,17 +134,79 @@ uniform float surface_ripple_slope : hint_range(0.0, 0.5) = 0.26;
 // outside Snell's window (~48.6 deg from vertical) and a bright window onto
 // the room inside it. The old underside branch lived inside a view-space
 // "faces up" test, so from below — where the cap faces down — it never ran.
-uniform float tir_strength : hint_range(0.0, 1.0) = 0.8;
+uniform float tir_strength : hint_range(0.0, 1.0) = 1.0;
 // Baked two-layer caustic tile (scripts/baked_caustics.gd). 1 = two texture
 // reads per web instead of a 3x3 Worley search; the water volume evaluated
 // up to five of those per fragment over most of the screen.
 uniform sampler2D baked_caustics_tex : filter_linear, repeat_enable;
 uniform float caustic_baked = 0.0;
+// ---- Underside mirror (alive pass, 2026-09-29) ----
+// Photographed from below, a planted tank's surface is the BRIGHTEST thing in
+// the frame: a lamp-coloured mirror carrying an upside-down copy of the fish
+// packed under it, peppered with trapped bubbles and film. The old mirror was
+// a constant grey-blue at <= 65% alpha over the dark lid, which is exactly the
+// dull grey plane the captures showed.
+//
+// under_glow scales the mirror sheet. under_reflect mixes in the reflected
+// tank, read from the screen copy the glass shader already forces (so the
+// sample costs no extra pass). It is sampled with filter_linear and LOD 0:
+// the Mobile renderer builds no mip chain for the screen copy, and a
+// mipmapped sampler there reads undefined levels - the black slab that got
+// screen reads banned on macOS in the first place. 0 = sheet only.
+uniform float under_glow : hint_range(0.0, 2.0) = 1.0;
+uniform float under_reflect : hint_range(0.0, 1.0) = 0.55;
+// How far below the surface the reflected ray is assumed to land before it
+// meets something. A constant is wrong in general and right where it matters:
+// the fish crowd and the valli runs live in the top couple of units.
+uniform float under_reach : hint_range(0.2, 8.0) = 2.4;
+uniform sampler2D under_screen_tex : hint_screen_texture, filter_linear, repeat_disable;
+// Surface film + trapped bubbles. Real ones gather where the surface is
+// still: under and between floaters and along the glass.
+uniform float surface_film : hint_range(0.0, 1.0) = 0.55;
+// xz = world centre, z = canopy radius, w = 1 while the floater is live.
+// Pushed by AquariumVisuals.sync_floater_shadows at the cosmetic tick.
+uniform vec4 floater_pts[32];
+uniform int floater_count = 0;
+// Radial fallback for curved tanks: > 0 means UV.x is not the cap's radial
+// coordinate and the edge band is measured as length(xz) / edge_radius.
+uniform float edge_radius = 0.0;
+global uniform vec4 iaq_beam_cone;
+global uniform vec4 iaq_beam_tint;
+global uniform vec4 iaq_backlight;
+global uniform vec4 iaq_backlight_tint;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 
 varying vec3 world_pos;
 varying float surface_lift;
+
+// The lamp's own colour at unit brightness: the fixture beam when it is on,
+// the water's light colour otherwise.
+vec3 lamp_rgb(vec3 fallback) {
+	vec3 lamp = mix(fallback, iaq_beam_tint.rgb, step(0.001, iaq_beam_cone.w));
+	return lamp / max(max(lamp.r, lamp.g), max(lamp.b, 0.001));
+}
+
+// Floater proximity at a surface point: x = inside a canopy (0..1),
+// y = the still-water ring around it where film and bubbles pile up.
+vec2 floater_cover(vec2 p) {
+	float inside = 0.0;
+	float ring = 0.0;
+	for (int i = 0; i < 32; i++) {
+		if (i >= floater_count) {
+			break;
+		}
+		vec4 f = floater_pts[i];
+		if (f.w < 0.5) {
+			continue;
+		}
+		float d = length(p - f.xy);
+		float r = max(f.z, 0.05);
+		inside = max(inside, 1.0 - smoothstep(r * 0.62, r, d));
+		ring = max(ring, smoothstep(r * 0.5, r * 0.95, d) * (1.0 - smoothstep(r * 1.1, r * 2.2, d)));
+	}
+	return vec2(inside, ring);
+}
 
 // Organic caustics web (matches caustics.gdshader) — drifting Worley cells.
 vec2 caustic_hash(vec2 p) {
@@ -262,6 +324,24 @@ void fragment() {
 	float through_water = clamp(depth_used * 0.55 + horiz_depth * 0.45, 0.0, 1.0);
 	float col_luma = dot(col, vec3(0.299, 0.587, 0.114));
 	col = mix(vec3(col_luma), col, 1.0 - through_water * 0.30);
+	// In-scatter (alive pass). Everything above fogs toward deep_color, which
+	// is why haze read as grey-blue murk. Real haze is lit matter: toward the
+	// lamp it glows in the lamp's colour (a lavender/pink band under a pink
+	// LED), and around a lamp behind the plants it glows in that lamp's.
+	{
+		vec3 lamp_s = lamp_rgb(light_color);
+		float up = clamp(1.0 - depth_used, 0.0, 1.0);
+		float beam_on = step(0.001, iaq_beam_cone.w);
+		float scat = (0.10 + aerial_haze * 0.30 + turbidity_haze * 0.40)
+			* up * up * (0.65 + beam_on * 0.35);
+		col = mix(col, col * 0.55 + lamp_s * mix(shallow_color.rgb, vec3(0.95), 0.55),
+			clamp(scat, 0.0, 0.30));
+		if (iaq_backlight.w > 0.001) {
+			vec3 bd = world_pos - iaq_backlight.xyz;
+			float att = clamp(iaq_backlight.w / (1.0 + iaq_backlight_tint.a * dot(bd, bd)), 0.0, 1.0);
+			col += iaq_backlight_tint.rgb * att * (0.06 + aerial_haze * 0.10 + turbidity_haze * 0.10);
+		}
+	}
 	// Turbidity milky read (#40 / REAL_TANK_FIDELITY #39–47).
 	if (turbidity_haze > 0.01) {
 		col = mix(col, bloom_color, turbidity_haze * (0.22 + depth_used * 0.38));
@@ -381,24 +461,73 @@ void fragment() {
 	if (under > 0.01 && tir_strength > 0.001) {
 		vec3 v_w = normalize(CAMERA_POSITION_WORLD - world_pos);
 		float cos_t = abs(dot(v_w, n_rip_w));
-		// Outside Snell's window (cos < ~0.66) the surface is a perfect mirror.
-		float tir = 1.0 - smoothstep(0.58, 0.72, cos_t);
+		// Outside Snell's window (48.6 deg from vertical, cos ~0.66) nothing
+		// leaves the water: the surface is a perfect mirror.
+		float tir = 1.0 - smoothstep(0.60, 0.70, cos_t);
 		float ceil_web = 0.0;
 		if (aquatic_detail < 2) {
 			ceil_web = water_web(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
 		}
-		// The mirror shows the tank's own body — the water colour lifted, a
-		// silver sheen, the web of light crossing it. Inside the window the
-		// bright room above shows through.
-		vec3 mirror = mix(deep_color.rgb * 1.8 + vec3(0.04, 0.07, 0.06),
-			vec3(0.80, 0.90, 0.92), 0.30 + ceil_web * 0.35);
-		mirror *= 1.0 + dot(rgrad, vec2(0.55, 0.84)) * 1.8;
-		vec3 window_c = room_sky_color * 1.15 + light_color * 0.25;
-		vec3 under_col = mix(window_c, mirror, tir);
-		float k = under * mix(0.45, 0.92, tir) * tir_strength;
+		vec3 lamp = lamp_rgb(light_color);
+		// The sheet: the lit upper water body seen in the mirror, silvered and
+		// wearing the lamp's colour (a pink LED makes a pink ceiling). The
+		// ripple slope swells it gently instead of striping it.
+		vec3 body = mix(shallow_color.rgb, vec3(0.92, 0.92, 0.94), 0.62);
+		vec3 sheet = body * mix(vec3(1.0), lamp, 0.72) * under_glow * 1.12;
+		sheet *= 1.0 + dot(rgrad, vec2(0.55, 0.84)) * 0.55 + ceil_web * 0.10;
+		// A lamp glowing behind the plants lights its own patch of ceiling.
+		if (iaq_backlight.w > 0.001) {
+			vec3 bd = world_pos - iaq_backlight.xyz;
+			float att = iaq_backlight.w / (1.0 + iaq_backlight_tint.a * dot(bd, bd));
+			sheet += iaq_backlight_tint.rgb * clamp(att, 0.0, 1.0) * 0.45;
+		}
+		// Reflected tank: follow the mirrored ray a short way back down and
+		// read what the opaque pass drew there. Fish packed under the surface
+		// meet their own upside-down copies at the waterline, which is the
+		// single strongest "this is a real tank" cue in the reference photos.
+		vec3 refl = sheet;
+		if (under_reflect > 0.001 && aquatic_detail < 3) {
+			vec3 r_w = reflect(-v_w, -n_rip_w);
+			vec3 q = world_pos + r_w * under_reach;
+			vec4 clip = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(q, 1.0));
+			if (clip.w > 0.001) {
+				vec2 suv = clip.xy / clip.w * 0.5 + 0.5;
+				float inb = smoothstep(0.0, 0.05, suv.x) * smoothstep(1.0, 0.95, suv.x)
+					* smoothstep(0.0, 0.05, suv.y) * smoothstep(1.0, 0.95, suv.y);
+				vec3 scene = textureLod(under_screen_tex, clamp(suv, vec2(0.002), vec2(0.998)), 0.0).rgb;
+				// Seen through the same bright upper water, so the copy keeps
+				// its silhouettes but sits inside the sheet's glow.
+				vec3 copy_c = scene * mix(vec3(1.0), lamp, 0.35) * 1.25 + sheet * 0.30;
+				refl = mix(sheet, copy_c, under_reflect * inb * tir);
+			}
+		}
+		// Film and trapped bubbles, clustered where the surface is still.
+		vec2 fc = floater_count > 0 ? floater_cover(world_pos.xz) : vec2(0.0);
+		float radial = edge_radius > 0.0 ? length(world_pos.xz) / edge_radius : UV.x;
+		float glass_band = smoothstep(0.80, 0.985, radial);
+		float still = clamp(fc.y + glass_band * 0.85 + fc.x * 0.5, 0.0, 1.0);
+		if (surface_film > 0.001) {
+			// Film: slow low-frequency scum, warmer and duller where it is thick.
+			float film_n = water_web(world_pos.xz * 0.35 + vec2(TIME * 0.01, 7.0), 0.0);
+			float film = surface_film * clamp(0.05 + still * 0.95, 0.0, 1.0) * film_n;
+			refl = mix(refl, refl * vec3(0.95, 0.92, 0.87) + vec3(0.035, 0.028, 0.02), film * 0.5);
+			// Bubbles: whole-pixel-sized cells so each one lands as a speck.
+			vec2 cell = floor(world_pos.xz * 15.0);
+			vec2 hb = caustic_hash(cell + vec2(17.0, 3.0));
+			float density = surface_film * (0.04 + still * 0.42);
+			float bubble = step(1.0 - density, hb.x);
+			refl = mix(refl, mix(vec3(1.0, 0.99, 0.97), lamp, 0.18) * 1.12, bubble * (0.55 + hb.y * 0.45));
+		}
+		// Inside Snell's window: the lamp itself, blown out.
+		vec3 window_c = mix(room_sky_color, lamp, 0.6) * 1.35;
+		vec3 under_col = mix(window_c, refl, tir);
+		// A floater's canopy sits just ABOVE the cap, so from below the cap
+		// is the nearer surface and an opaque mirror would paint over every
+		// leaf. Let the canopy through; the ring around it stays mirror.
+		float k = under * tir_strength * mix(0.80, 0.97, tir) * (1.0 - fc.x * 0.78);
 		col = mix(col, under_col, k);
-		col += light_color * ceil_web * under * underside_mirror * 0.30;
-		under_alpha = k * 0.88;
+		col += light_color * ceil_web * under * underside_mirror * 0.12;
+		under_alpha = k;
 	}
 
 	float meniscus = surface * (0.65 + 0.35 * sin(world_pos.x * 2.4 + world_pos.z * 2.1 + TIME * 0.35));
@@ -409,6 +538,22 @@ void fragment() {
 	// Meniscus bright ring — day side brighter than the water below (#46).
 	col += vec3(1.0, 1.0, 0.98) * meniscus * max(0.0, n.y - 0.50) * 0.18;
 	col = mix(col, col * vec3(1.08, 1.06, 1.02), near_surface * surface * 0.22);
+	// Film and trapped bubbles seen from ABOVE (alive pass): the same still-
+	// water clustering as the underside - a dull protein sheen and bright
+	// bead-sized bubbles in the rings round floaters and along the glass,
+	// clean moving water everywhere else.
+	if (surface > 0.01 && surface_film > 0.001) {
+		vec2 fc_t = floater_count > 0 ? floater_cover(world_pos.xz) : vec2(0.0);
+		float radial_t = edge_radius > 0.0 ? length(world_pos.xz) / edge_radius : UV.x;
+		float still_t = clamp(fc_t.y + smoothstep(0.80, 0.985, radial_t) * 0.85, 0.0, 1.0);
+		float film_t = surface_film * still_t
+			* water_web(world_pos.xz * 0.35 + vec2(TIME * 0.01, 7.0), 0.0);
+		col = mix(col, col * vec3(0.95, 0.93, 0.86) + vec3(0.05, 0.045, 0.03),
+			film_t * 0.40 * surface);
+		vec2 hb_t = caustic_hash(floor(world_pos.xz * 15.0) + vec2(17.0, 3.0));
+		float bub_t = step(1.0 - surface_film * still_t * 0.30, hb_t.x);
+		col = mix(col, vec3(0.93, 0.97, 0.99), bub_t * surface * 0.65);
+	}
 
 	// Above/below split — warm lighter air-side, cool submerged (#47).
 	float above_line = smoothstep(water_surface_y - 0.05, water_surface_y + 0.02, world_pos.y);
@@ -459,7 +604,9 @@ void fragment() {
 		* step(0.32, abs(n.y));
 	col += vec3(0.94, 0.99, 1.0) * glass_rim * 0.16;
 
-	col = mix(col, shallow_color.rgb * 0.82, fresnel * 0.28);
+	// Not on the underside: a mirror's grazing angle is where it is brightest,
+	// and this fresnel wash is what used to grey it back down.
+	col = mix(col, shallow_color.rgb * 0.82, fresnel * 0.28 * (1.0 - under));
 
 	col = mix(col, tint_color.rgb, tint_strength);
 	// #45 — tannin staining deepens with depth (tea ramp).
@@ -469,7 +616,8 @@ void fragment() {
 	}
 	// #52 — water's own green-gold colour (valli jungle backlight).
 	if (column_own_color > 0.01) {
-		col = mix(col, column_tint_rgb, column_own_color * (0.25 + depth_used * 0.35));
+		col = mix(col, column_tint_rgb, column_own_color * (0.25 + depth_used * 0.35)
+			* (1.0 - under * 0.6));
 	}
 	// #46 — surface-to-substrate light attenuation darkens the bed.
 	col *= 1.0 - bed_attenuation * depth_used * depth_used * 0.55;

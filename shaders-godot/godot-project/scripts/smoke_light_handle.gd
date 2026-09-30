@@ -2,7 +2,7 @@ extends SceneTree
 
 # Direct light manipulation (LightHandle) and its wiring.
 #
-# Hover the lamp, double-click to grab it, drag to move it. The maths is
+# Hover the lamp, press to grab it, drag to move it. The maths is
 # pure; the wiring is asserted by source inspection because a helper that
 # nothing calls is the failure mode that has already shipped twice here.
 
@@ -143,6 +143,57 @@ func _init() -> void:
 		"no snapshot means nothing to compare, not a spurious save")
 
 	# --- wiring -----------------------------------------------------------
+	# --- drag model (bug B: the lamp flew around the room) ----------------
+	# A click without a move changes nothing: the grab offset is kept.
+	var st := Vector3(1.0, 9.0, -2.0)
+	var gh := Vector3(1.3, 9.0, -1.6)
+	t.check(H.dragged(st, gh, gh).is_equal_approx(st),
+		"pressing on the lamp does not snap it to the cursor")
+	t.check(H.dragged(st, gh, gh + Vector3(0.5, 0.0, 0.25)).is_equal_approx(
+		st + Vector3(0.5, 0.0, 0.25)), "the lamp moves by exactly the cursor's travel")
+	# Grazing view: a flat-plane hit explodes, the upright surface does not.
+	var cam := Vector3(0.0, 9.2, 14.0)
+	var d1 := Vector3(0.0, -0.02, -1.0).normalized()
+	var d2 := Vector3(0.0, -0.03, -1.0).normalized()
+	t.check(H.choose_surface(d1) == H.SURFACE_UPRIGHT,
+		"a near edge-on view drags on the upright surface")
+	t.check(H.choose_surface(Vector3(0.1, -0.8, -0.5).normalized()) == H.SURFACE_FLAT,
+		"a steep view drags on the lamp's own plane")
+	var flat_jump: float = H.ray_plane_xz(cam, d1, 9.0).distance_to(
+		H.ray_plane_xz(cam, d2, 9.0))
+	var view: Vector3 = H.view_flat(d1)
+	var anc := Vector3(0.0, 9.0, 0.0)
+	var up_jump: float = H.surface_hit(H.SURFACE_UPRIGHT, cam, d1, 9.0, anc, view) \
+		.distance_to(H.surface_hit(H.SURFACE_UPRIGHT, cam, d2, 9.0, anc, view))
+	t.check(flat_jump > 3.0 and up_jump < 0.5,
+		"a one-pixel move at a grazing angle no longer slams the lamp "
+		+ "(flat %.2f vs upright %.2f)" % [flat_jump, up_jump])
+	t.check(is_finite(H.surface_hit(H.SURFACE_UPRIGHT, cam, d1, 9.0, anc, view).x),
+		"the upright surface always lands")
+	# One head position for build and drag.
+	var home: Vector2 = H.fixture_home("gooseneck")
+	var hw0: Vector3 = H.head_world(10.0, 5.0, 8.0, H.mount_above("gooseneck", 1.4),
+		home.x + 0.2, home.y + 0.1)
+	t.approx(hw0.y, 8.0 + H.GOOSENECK_MOUNT_ABOVE, "the gooseneck head hangs at its rim mount")
+	var back: Vector2 = H.offsets_relative(Vector2(hw0.x, hw0.z), 10.0, 5.0, home)
+	t.check(back.is_equal_approx(Vector2(0.2, 0.1)),
+		"offsets round-trip through the fixture home (the drag dropped it)")
+	# Footprint-aware clamp: a hex corner is not a rectangle corner.
+	var hex: Array = []
+	for i in 6:
+		var a: float = TAU * float(i) / 6.0
+		hex.append(Vector3(cos(a) * 10.0, 0.0, sin(a) * 10.0))
+	var corner := Vector2(9.5, 8.5)  # inside the bounding box, outside the hex
+	var cl: Vector2 = H.clamp_to_footprint(corner, hex, H.AIM_INSET)
+	var hex2 := PackedVector2Array()
+	for c in hex:
+		hex2.append(Vector2((c as Vector3).x, (c as Vector3).z))
+	t.check(Geometry2D.is_point_in_polygon(cl, hex2)
+			and not Geometry2D.is_point_in_polygon(corner, hex2),
+		"the aim is pulled inside a hex, not just its bounding box")
+	t.check(H.clamp_to_footprint(Vector2(1.0, -2.0), hex, H.AIM_INSET)
+		.is_equal_approx(Vector2(1.0, -2.0)), "a point already inside is left alone")
+
 	var m: String = _read("res://scripts/main.gd")
 	t.check(m.contains("_handle_light_handle_input("),
 		"main.gd routes input to the light handle")
@@ -188,12 +239,22 @@ func _init() -> void:
 			"func light_fixture_head_world(", "func has_movable_light(",
 			"func light_aim_world(", "func set_light_highlight("]:
 		t.check(w.contains(fn), "world.gd exposes %s" % fn.trim_prefix("func "))
-	t.check(w.contains("_rebuild_light_beam()"),
-		"moving the lamp rebuilds its shaft")
+	t.check(w.contains("_update_light_beams()")
+			and not w.contains("_rebuild_light_beam"),
+		"moving the lamp updates its shafts in place (the per-event rebuild leaked cones)")
 	# Dragging for a few seconds must not leave a fan of stale cones and
 	# particle emitters behind.
-	t.check(w.contains("BeamShaft") and w.contains("DustMotes"),
-		"the rebuild clears the previous shaft AND its motes by name")
+	t.check(w.contains("BEAM_SPOT_META") and w.contains("BEAM_MOTES_META"),
+		"each shaft carries its spot and motes - no name matching")
+	var bd: String = m.substr(m.find("func _begin_light_drag("), 2600)
+	t.check(bd.contains("_suppress_drag_until_release = true"),
+		"grabbing the light holds the POLLED camera orbit off until release")
+	t.check(not bd.contains("spot_aim_x = 0.0"),
+		"grabbing no longer forces the aim to the tank centre")
+	t.check(not bd.contains("_light_drag_to("),
+		"pressing does not move anything; only motion does")
+	t.check(m.contains("_window_to_viewport_exact("),
+		"the drag reads the cursor through the inverse of the ring's mapping")
 	t.check(w.contains("_light_highlight_on")
 			and w.contains("LIGHT_HIGHLIGHT_BOOST"),
 		"the hover highlight rides inside the per-frame emissive sync, "

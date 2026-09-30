@@ -10,6 +10,7 @@ extends Node3D
 class_name World
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+const TankSizing := preload("res://scripts/tank_sizing.gd")
 const CanopyDensityBuilder = preload("res://scripts/canopy_density.gd")
 # Preloaded rather than reached by class_name: a class added since the last
 # editor import is not yet in the global class cache, so a CLI run (the capture
@@ -88,6 +89,8 @@ var _substrate_ripple_dir: Vector2 = Vector2(1.0, 0.35)
 # rock surfaces, not just driftwood. We pick from upper-surface voxels at
 # spawn time so the plant sits visibly on top of a stone.
 var _rock_voxels: Array[MeshInstance3D] = []
+const HairMoundScript = preload("res://scripts/hair_mound.gd")
+var _hair_mounds: Node3D = null
 var _hardscape_occupancy: Dictionary = {}
 var _hardscape_occluder_stats: Dictionary = {}
 const HARDSCAPE_CELL_SIZE: float = 0.55
@@ -388,6 +391,15 @@ func _ready() -> void:
 
 	var saves := get_node_or_null("/root/TankSaves")
 	_loading_from_save = false
+	# A capture run must neither read nor write the player's tank.
+	# SaveManager already refuses to load or save under capture_mode, but this
+	# block would still DELETE the active slot's state.json on a substrate
+	# mismatch (a capture of any scenario whose substrate differs from the
+	# player's tank did exactly that), and would still set _loading_from_save
+	# from the player's slot, which skips the founders while the load itself
+	# is blocked, so the capture renders a bare tank.
+	if TankConfig.capture_mode:
+		saves = null
 	if saves != null:
 		if saves.has_state_for_active_slot() and not saves.is_active_save_compatible():
 			var cfg_for_log := get_node_or_null("/root/TankConfig")
@@ -737,7 +749,8 @@ func _process(dt: float) -> void:
 			var fix_col: Color = Color(1.0, 0.95, 0.85)
 			var fix_e: float = 0.5
 			if _cfg_node != null:
-				fix_col = _cfg_node.tank_fixture_color
+				fix_col = LightingRig.tint_light(_cfg_node.tank_fixture_color,
+					LightingRig.config_light_tint(_cfg_node))
 				fix_e = float(_cfg_node.tank_fixture_intensity)
 			var room_dark: float = 0.0
 			if _cfg_node != null:
@@ -901,7 +914,8 @@ func _process(dt: float) -> void:
 			global_energy = float(cfg2.global_intensity)
 			global_warmth = float(cfg2.global_warmth)
 			fixture_energy = float(cfg2.tank_fixture_intensity)
-			fixture_color = cfg2.tank_fixture_color
+			fixture_color = LightingRig.tint_light(cfg2.tank_fixture_color,
+				LightingRig.config_light_tint(cfg2))
 			sunset_drama = float(cfg2.sunset_drama)
 		var mv := _music_visual_node()
 		if mv != null and mv.has_method("light_fixture_mul"):
@@ -1300,7 +1314,7 @@ func _tick_tank_fidelity(sdt: float) -> void:
 		_water_material_ref.set_shader_parameter("turbidity_cone", 0.55)
 		_water_material_ref.set_shader_parameter("underside_mirror", 0.42)
 		var preset_id: String = String(cfg.get("tank_preset")) if cfg != null else ""
-		if preset_id == "valli_jungle":
+		if preset_id == "valli_jungle" or preset_id == "hex_jungle":
 			_water_material_ref.set_shader_parameter("column_own_color", 0.35)
 			_water_material_ref.set_shader_parameter("column_tint_rgb", Color(0.45, 0.68, 0.38))
 		# Bubble column glow from stick aerator.
@@ -1398,7 +1412,7 @@ func _tick_empty_shells(sdt: float) -> void:
 		kept.append(entry)
 	_empty_shells = kept
 	# Seed a front-glass trough pile on reference valli jungle.
-	if _empty_shells.is_empty() and cfg_preset_is("valli_jungle"):
+	if _empty_shells.is_empty() and (cfg_preset_is("valli_jungle") or cfg_preset_is("hex_jungle")):
 		for i in 14:
 			var xz: Vector2 = _sample_substrate_xz(0.35, 0.72)
 			xz.y = lerpf(xz.y, TANK_HALF_D * 0.78, 0.65)
@@ -2115,10 +2129,11 @@ func _sample_point_in_tank(y_min: float, y_max: float, margin: float = 0.35) -> 
 func _apply_founding_cohort_spread(g: Dictionary, i: int, count: int) -> void:
 	if count <= 1:
 		return
-	# Vertical spread on every tank shape — schools shouldn't seed as one slab.
-	g["preferred_y_frac"] = clampf(
-		float(i) / float(maxi(count - 1, 1)) * 0.76 + 0.10
-		+ randf_range(-0.06, 0.06), 0.08, 0.92)
+	# Vertical spread on every tank shape — schools shouldn't seed as one slab —
+	# but across the SPECIES band, not the whole column (FishDepthBands: the
+	# old 10%..86% ladder erased depth stratification between species).
+	g["preferred_y_frac"] = _FishDepthBands.cohort_frac(g, i, count,
+		randf_range(-1.0, 1.0), _REF_SUBSTRATE_Y, _REF_COLUMN_HEIGHT)
 	# Ring-seed home territories so patrol zones cover the footprint from day one.
 	var fp := _footprint()
 	var ring_a: float = TAU * float(i) / float(count) + randf_range(-0.3, 0.3)
@@ -2266,6 +2281,12 @@ func _snail_founder_layout_hex(is_saltwater: bool) -> Array:
 	var shapes_fw: Array = ["turbo", "apple", "turbo", "turbo", "apple", "turbo"]
 	var out: Array = []
 	var count: int = mini(6, 8 if is_saltwater else 6)
+	# Reference presets (item 93) boost the colony on hex tanks too: spread
+	# the founders along every face at many heights rather than six at the
+	# face midpoints. Used to ignore the boost entirely on hex.
+	var boost: Dictionary = TankFidelityRuntime.reference_snail_boost(_active_preset_id())
+	if not boost.is_empty() and not is_saltwater and corners.size() >= 3:
+		return _snail_founder_layout_hex_boosted(corners, boost)
 	for i in count:
 		var p1: Vector3 = corners[i % corners.size()]
 		var p2: Vector3 = corners[(i + 1) % corners.size()]
@@ -2287,6 +2308,40 @@ func _snail_founder_layout_hex(is_saltwater: bool) -> Array:
 		var pos2: Vector3 = boundary_point_on_wall(SUBSTRATE_DEPTH + 0.08, wn)
 		out.append([pos2, wn, "nassarius"])
 		out.append([pos2, wn, "nassarius"])
+	return out
+
+
+func _active_preset_id() -> String:
+	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
+	return String(cfg.get("tank_preset")) if cfg != null else ""
+
+
+func _snail_founder_layout_hex_boosted(corners: Array, boost: Dictionary) -> Array:
+	var out: Array = []
+	var count: int = int(boost.get("glass", 6))
+	var ram: bool = float(boost.get("ramshorn_bias", 0.0)) > 0.4
+	var shapes: Array = ["ramshorn", "ramshorn", "turbo", "ramshorn", "apple", "ramshorn"] \
+		if ram else ["turbo", "apple", "ramshorn", "turbo", "tower", "ramshorn"]
+	var n_edges: int = corners.size()
+	for i in count:
+		var e: int = i % n_edges
+		var p1: Vector3 = corners[e]
+		var p2: Vector3 = corners[(e + 1) % n_edges]
+		var edge: Vector3 = p2 - p1
+		edge.y = 0.0
+		if edge.length_squared() < 1e-6:
+			continue
+		var inward: Vector3 = Vector3(-edge.z, 0.0, edge.x).normalized()
+		if inward.dot(-(p1 + p2) * 0.5) < 0.0:
+			inward = -inward
+		# Golden-ratio strides give an even, unpatterned spread along the
+		# face and up the glass without a visible grid.
+		var t: float = 0.15 + 0.7 * fposmod(float(i) * 0.618034, 1.0)
+		var yf: float = fposmod(float(i) * 0.381966 + 0.13, 1.0)
+		var y: float = lerpf(SUBSTRATE_DEPTH + 0.35, WATER_HEIGHT - 0.28, yf)
+		var q: Vector3 = p1.lerp(p2, t) + inward * 0.3
+		var pos: Vector3 = clamp_xyz_in_tank(Vector3(q.x, y, q.z), 0.30, 0.08)
+		out.append([pos, inward, String(shapes[i % shapes.size()])])
 	return out
 
 
@@ -2337,7 +2392,7 @@ func _snail_founder_layout(is_saltwater: bool) -> Array:
 
 
 func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
-		shape: String, palette: Array, palette_i: int) -> void:
+		shape: String, palette: Array, palette_i: int, morph: Dictionary = {}) -> void:
 	snail.position = pos
 	snail.set("wall_normal", wall_n)
 	snail.set("wall_min", Vector3(-TANK_HALF_W + 0.4, SUBSTRATE_DEPTH + 0.05,
@@ -2353,6 +2408,22 @@ func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
 	snail.set("shell_shape", shape)
 	snail.set("shell_spines", _rng.randf_range(0.0, 0.45))
 	snail.set("toxin_level", _rng.randf_range(0.0, 0.35))
+	if not morph.is_empty():
+		# A single-morph colony (preset "snail_morph"): one shell form and one
+		# body colour at every size. Continuous size spread weighted to
+		# juveniles, not three buckets that read as clones; no re-roll into
+		# other shells, which would break the colony's look.
+		var mshape: String = String(morph.get("shape", shape))
+		snail.set("shell_shape", mshape)
+		snail.set("shell_size", lerpf(0.28, 1.3, pow(_rng.randf(), 1.7)))
+		snail.set("body_color", morph.get("body", Color8(44, 31, 21)))
+		snail.set("shell_spines", 0.0)
+		snail.set("spire_height", _rng.randf_range(0.7, 1.0))
+		snail.set("whorl_count", _rng.randi_range(3, 5))
+		snail.set("shell_pattern", _rng.randi() % 2)
+		snail.set("operculum", false)
+		snail.set("aperture_flare", _rng.randf_range(0.0, 0.15))
+		return
 	# Founder shell variety: most keep their layout shape, but a quarter roll
 	# one of the expanded shells so a starting colony shows the range and can
 	# drift further. Spire / whorl / pattern get matching variety.
@@ -3293,6 +3364,19 @@ func _build_hardscape(populate: bool = true) -> void:
 			hs_driftwood_mult = 1.25
 			hs_stones_mult = 0.55
 			hs_pebbles_mult = 0.5
+		"jungle_bed":
+			# One buried branch and a pebble scatter over the gravel cap.
+			# No stone islands: the plants are the scape.
+			hs_wood_form = "branch"
+			hs_driftwood_mult = 0.7
+			hs_stones_mult = 0.0
+			hs_pebbles_mult = 1.0
+		"cloche_jar":
+			# A glass cloche on the gravel and a red-brown pebble scatter.
+			# No wood and no stone islands in frame.
+			hs_driftwood_mult = 0.0
+			hs_stones_mult = 0.0
+			hs_pebbles_mult = 1.4
 		_:
 			pass  # default
 
@@ -3539,6 +3623,10 @@ func _build_hardscape(populate: bool = true) -> void:
 			add_rock_voxel.call(bc, Vector3(0.0, -0.08, 0.0), Vector3(0.85, 0.55, 0.85), bd, bt)
 			add_rock_voxel.call(bc, Vector3(0.0, 0.32, 0.0), Vector3(0.62, 0.55, 0.62), not bd, bt)
 			add_rock_voxel.call(bc, Vector3(0.05, 0.72, -0.05), Vector3(0.40, 0.42, 0.40), bd, bt)
+	elif hs_style == "jungle_bed" or hs_style == "cloche_jar":
+		_scatter_bed_pebbles(add_hardscape_cube, hs_pebbles_mult)
+		if hs_style == "cloche_jar":
+			_build_glass_cloche(c)
 	elif hs_stones_mult > 0.01:
 		_build_iwagumi_clusters(add_rock_voxel, add_hardscape_cube,
 			stone_mat, stone_dark, hs_pebbles_mult)
@@ -3556,11 +3644,69 @@ func _build_hardscape(populate: bool = true) -> void:
 	# wide rock base AOs over a wider patch than a thin twig.
 	_publish_substrate_contact_ao()
 	_build_hardscape_occluders(c)
+	rebuild_hair_mounds()
 	# Publish the filter intake position as the flow-origin so the
 	# substrate_caustic ripple-deepening kicks in. sim.filter_intake_pos
 	# is set later in the bootstrap flow, so we publish a zero-gain
 	# default now and let sim_driver re-publish when it's ready.
 	VoxelMat.update_substrate_flow_origin(Vector3.ZERO, 0.0)
+
+
+# Preset key `hair_mound_count` (int, absent = 0): that many hair-algae
+# mounds (scripts/hair_mound.gd), placed first on nodes in the group
+# "hair_mound_host" (a scenario can tag a cloche or a chosen stone; meta
+# "mound_radius" overrides the default 0.9), then on the tallest hardscape
+# tops at least 2 u apart. Cosmetic and deterministic: rebuilt from the
+# preset on every build or load, never saved. Public so a scenario that tags
+# a host after the hardscape is built can rebuild.
+func rebuild_hair_mounds() -> void:
+	if _hair_mounds != null and is_instance_valid(_hair_mounds):
+		_hair_mounds.queue_free()
+	_hair_mounds = null
+	var cfg := get_node_or_null("/root/TankConfig")
+	var count: int = 0
+	if cfg != null and cfg.has_method("current_tank_preset"):
+		count = int((cfg.current_tank_preset() as Dictionary).get("hair_mound_count", 0))
+	if count <= 0 or not is_inside_tree():
+		return
+	var centers: Array = []
+	var radii: Array = []
+	for host_v in get_tree().get_nodes_in_group("hair_mound_host"):
+		var host := host_v as Node3D
+		if host == null or centers.size() >= count:
+			continue
+		centers.append(to_local(host.global_position))
+		radii.append(float(host.get_meta("mound_radius", 0.9)))
+	var tops: Array = []
+	for arr in [_rock_voxels, _driftwood_voxels]:
+		for mi_v in arr:
+			var mi := mi_v as MeshInstance3D
+			if mi == null or not is_instance_valid(mi) or not mi.is_inside_tree():
+				continue
+			var half: float = (mi.mesh as BoxMesh).size.y * 0.5 if mi.mesh is BoxMesh else 0.0
+			tops.append(to_local(mi.global_position) + Vector3(0.0, half, 0.0))
+	tops.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.y > b.y)
+	for top_v in tops:
+		if centers.size() >= count:
+			break
+		var top: Vector3 = top_v
+		var clear: bool = true
+		for c_v in centers:
+			var cc: Vector3 = c_v
+			if Vector2(cc.x - top.x, cc.z - top.z).length() < 2.0:
+				clear = false
+				break
+		if clear:
+			centers.append(top)
+			radii.append(0.9)
+	if centers.is_empty():
+		return
+	var first: Vector3 = centers[0]
+	var seed_value: int = int(absf(first.x * 7331.0 + first.z * 1777.0)) + count
+	_hair_mounds = HairMoundScript.new()
+	_hair_mounds.name = "HairMounds"
+	add_child(_hair_mounds)
+	_hair_mounds.build(centers, radii, seed_value)
 
 
 func _build_hardscape_occluders(parent: Node3D) -> void:
@@ -3633,6 +3779,62 @@ func _publish_substrate_contact_ao() -> void:
 # accents. Pulled into a helper so style branches can opt out cleanly.
 # `add_rock_voxel` and `add_hardscape_cube` are closures captured from
 # _build_hardscape; we pass them in rather than redeclaring globally.
+# Red-brown gravel-cap pebbles for the jungle styles (reference photos: the
+# cap is a mix of rust, brick and umber stones, not grey rock). Batched through
+# the hardscape MultiMesh like every other pebble. A dedicated RNG so the
+# scatter does not shift placements drawn from _rng afterwards.
+func _scatter_bed_pebbles(add_hardscape_cube: Callable, mult: float) -> void:
+	var tones: Array[Color] = [
+		Color8(132, 64, 44), Color8(104, 56, 42), Color8(152, 94, 64),
+		Color8(86, 50, 40), Color8(170, 104, 70),
+	]
+	var mats: Array[Material] = []
+	for t in tones:
+		mats.append(VoxelMat.make_substrate_caustic(t))
+	var rng := RandomNumberGenerator.new()
+	var seed_src: int = int(sim.tank_seed) if sim != null and sim.get("tank_seed") != null else 12345
+	rng.seed = seed_src ^ 0x9EBB1E
+	var area: float = TANK_HALF_W * TANK_HALF_D * 4.0
+	var n: int = clampi(int(round(area * 0.55 * mult)), 8, 64)
+	for i in n:
+		var xz: Vector2 = Vector2(rng.randf_range(-TANK_HALF_W, TANK_HALF_W) * 0.86,
+			rng.randf_range(-TANK_HALF_D, TANK_HALF_D) * 0.86)
+		# Pebbles collect toward the front glass, where the photos show them.
+		xz.y = lerpf(xz.y, absf(xz.y), 0.45)
+		var sz: float = rng.randf_range(0.12, 0.30)
+		var y: float = column_surface_y(xz.x, xz.y) - sz * 0.25
+		add_hardscape_cube.call(Vector3(xz.x, y, xz.y),
+			Vector3(sz, sz * rng.randf_range(0.55, 0.85), sz * rng.randf_range(0.8, 1.2)),
+			mats[rng.randi() % mats.size()])
+
+
+# The keeper's glass apothecary cloche (hex_jungle). Built by GlassCloche;
+# this only picks the spot, reserves the ring in the occupancy grid so fish
+# and plants route around the glass, and tags the lid as a hair-mound host.
+func _build_glass_cloche(parent: Node3D) -> void:
+	var room: float = WATER_HEIGHT - SUBSTRATE_DEPTH
+	var radius: float = clampf(minf(TANK_HALF_W, TANK_HALF_D) * 0.14, 0.45, 1.1)
+	var height: float = clampf(room * 0.22, 1.2, radius * 3.6)
+	var fit: Vector2 = _fit_xz_inside_tank(-TANK_HALF_W * 0.34, TANK_HALF_D * 0.28, radius + 0.3)
+	var base := Vector3(fit.x, column_surface_y(fit.x, fit.y) - 0.04, fit.y)
+	var cloche: Node3D = GlassClocheScript.build(radius, height)
+	cloche.name = "GlassCloche"
+	cloche.position = base
+	parent.add_child(cloche)
+	var lid_top: Node3D = cloche.get_node_or_null("LidTop")
+	if lid_top != null:
+		lid_top.add_to_group("hair_mound_host")
+		lid_top.set_meta("mound_radius", radius * 0.8)
+	# Occupancy on the ring only: the jar is hollow, and blocking its whole
+	# volume would push the carpet out of a patch it visibly sits on.
+	for k in 10:
+		var a: float = TAU * float(k) / 10.0
+		var p: Vector3 = base + Vector3(cos(a) * radius, height * 0.4, sin(a) * radius)
+		_mark_hardscape_occupancy(p, Vector3(0.3, height * 0.8, 0.3))
+	if has_method("rebuild_hair_mounds"):
+		call_deferred("rebuild_hair_mounds")
+
+
 func _build_iwagumi_clusters(add_rock_voxel: Callable,
 		add_hardscape_cube: Callable,
 		stone_mat: Material, stone_dark: Material, pebbles_mult: float) -> void:
@@ -3750,16 +3952,22 @@ func _build_water_volume() -> void:
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 
 	# Top cap (triangle fan from centroid, normal +Y so it's visible from
-	# above the tank).
+	# above the tank). UV.x is the fan's radial coordinate - 0 at the
+	# centroid, 1 on the glass - which water.gdshader uses to gather surface
+	# film and trapped bubbles along the walls for any footprint shape.
 	for i in n:
 		var a: Vector3 = inset_corners[i]
 		var b: Vector3 = inset_corners[(i + 1) % n]
 		st.set_normal(Vector3.UP)
+		st.set_uv(Vector2.ZERO)
 		st.add_vertex(Vector3(cen.x, y_top, cen.z))
 		st.set_normal(Vector3.UP)
+		st.set_uv(Vector2.RIGHT)
 		st.add_vertex(Vector3(a.x, y_top, a.z))
 		st.set_normal(Vector3.UP)
+		st.set_uv(Vector2.RIGHT)
 		st.add_vertex(Vector3(b.x, y_top, b.z))
+	st.set_uv(Vector2.ZERO)
 
 	# Bottom cap (triangle fan, normal -Y - faces down so it's hidden inside
 	# the substrate but still part of the closed volume).
@@ -3817,6 +4025,8 @@ func _build_cylinder_water() -> void:
 	water.name = "Water"
 	water.mesh = cyl
 	_water_material_ref = _water_mat()
+	# CylinderMesh UVs are an atlas, not a radial coordinate (see the prism).
+	_water_material_ref.set_shader_parameter("edge_radius", rad)
 	water.material_override = _water_material_ref
 	_water_mesh = water
 	add_child(water)
@@ -3831,6 +4041,8 @@ func _build_sphere_water() -> void:
 	water.name = "Water"
 	water.mesh = mesh
 	_water_material_ref = _water_mat()
+	_water_material_ref.set_shader_parameter("edge_radius",
+		_bowl_ring_radius(float(bowl["R"]), float(bowl["cy"]), WATER_HEIGHT))
 	water.material_override = _water_material_ref
 	_water_mesh = water
 	add_child(water)
@@ -4174,6 +4386,15 @@ func _build_snails(populate: bool = true) -> Node3D:
 			Color8(70, 140, 110),   # teal
 			Color8(190, 160, 60),   # ochre
 		]
+	var morph: Dictionary = {}
+	var mystery_n: int = 0
+	var cfg_sn := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
+	if cfg_sn != null and not is_saltwater:
+		var preset_sn: Dictionary = cfg_sn.current_tank_preset()
+		morph = SNAIL_MORPHS.get(String(preset_sn.get("snail_morph", "")), {})
+		mystery_n = clampi(int(preset_sn.get("mystery_snails", 0)), 0, 4)
+		if not morph.is_empty():
+			founder_palette.assign(morph["shells"])
 	var positions_and_walls: Array = _snail_founder_layout(is_saltwater)
 	for i in positions_and_walls.size():
 		var pw = positions_and_walls[i]
@@ -4182,15 +4403,49 @@ func _build_snails(populate: bool = true) -> Node3D:
 		var shape: String = String(pw[2])
 		var snail := Node3D.new()
 		snail.set_script(load("res://scripts/snail.gd"))
-		_configure_snail_node(snail, pos, wall_n, shape, founder_palette, i)
+		_configure_snail_node(snail, pos, wall_n, shape, founder_palette, i, morph)
 		c.add_child(snail)
 		_build_snail_body(snail)
 		if sim != null:
 			sim.register_snail(snail)
+	# Mystery snails: one or two big gold apple shells near the waterline,
+	# the largest thing on the glass (reference photo 3).
+	for m in mystery_n:
+		var ang: float = TAU * (0.2 + 0.37 * float(m))
+		var wn := Vector3(-cos(ang), 0.0, -sin(ang))
+		var mpos: Vector3 = boundary_point_on_wall(WATER_HEIGHT - 0.9, wn)
+		var ms := Node3D.new()
+		ms.set_script(load("res://scripts/snail.gd"))
+		_configure_snail_node(ms, mpos, wn, "apple", [MYSTERY_SNAIL["shell"]], 0, MYSTERY_SNAIL)
+		ms.set("shell_size", _rng.randf_range(1.5, 1.8))
+		ms.set("shell_pattern", 1)
+		c.add_child(ms)
+		_build_snail_body(ms)
+		if sim != null:
+			sim.register_snail(ms)
 	return c
 
 
+# Preset "snail_morph" colonies. Red ramshorn (Planorbella duryi, red morph):
+# the shell is translucent so the red body shows through - a red shell on a
+# red body, a few tones apart, not a red shell on dark flesh.
+const SNAIL_MORPHS: Dictionary = {
+	"red_ramshorn": {
+		"shape": "ramshorn",
+		"shells": [Color8(176, 44, 36), Color8(196, 66, 46), Color8(150, 36, 32),
+			Color8(208, 88, 62), Color8(164, 52, 44)],
+		"body": Color8(186, 58, 48),
+	},
+}
+const MYSTERY_SNAIL: Dictionary = {
+	"shape": "apple",
+	"shell": Color8(222, 176, 72),
+	"body": Color8(92, 84, 76),
+}
+
+
 const SnailShell = preload("res://scripts/snail_shell.gd")
+const GlassClocheScript = preload("res://scripts/glass_cloche.gd")
 
 
 func _build_snail_body(snail: Node3D) -> void:
@@ -4318,7 +4573,7 @@ func _respawn_extinct_fauna() -> void:
 		}
 	else:
 		var preset: Dictionary = cfg.current_tank_preset()
-		stocking = preset.get("stocking", {}).duplicate()
+		stocking = resolve_stocking_fallbacks(preset)
 
 	if stocking.is_empty():
 		stocking = {"glassdart": 1, "mudsifter": 1, "shrimp": 1}
@@ -4721,6 +4976,18 @@ func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 					bg_band2.x, bg_band2.y, 0.55, 0.70, 36, 0.40, 0.40)
 				_spawn_plant(specs[0], spawn_position_on_floor(bxz2.x, bxz2.y),
 					_rng.randi_range(2, 4))
+			# "valli_fill": extra clumps across the WHOLE floor, not just the
+			# background band. A jungle tank is valli wall to wall, and on a
+			# hex the background band is a thin sliver behind the back vertex,
+			# so most row attempts are rejected by spacing.
+			var fill_n: int = int(layout.get("valli_fill", 0))
+			if fill_n > 0:
+				var all_band: Vector2 = _spawn_z_band("scatter")
+				for _f in fill_n:
+					var vxz: Vector2 = _sample_clear_xz_in_band(
+						all_band.x, all_band.y, 0.45, 0.60, 36, 0.34, 0.34)
+					_spawn_plant(specs[0], spawn_position_on_floor(vxz.x, vxz.y),
+						_rng.randi_range(2, 4))
 			await get_tree().process_frame
 			for _j in maxi(0, int(round(10.0 * m_crypt))):
 				var rxz2: Vector2 = _spawn_xz_at_fraction(
@@ -5011,7 +5278,9 @@ func _spawn_initial_plants() -> void:
 	var cfg_for_palette := get_node_or_null("/root/TankConfig")
 	if cfg_for_palette != null:
 		preset = cfg_for_palette.current_tank_preset()
-	var palette: Dictionary = preset.get("plant_palette", {})
+	# Plant fill follows floor area vs the template's authored size.
+	var palette: Dictionary = TankSizing.scaled_palette(preset.get("plant_palette", {}),
+		TankSizing.plant_fill_scale(cfg_for_palette))
 	var m_valli: float = float(palette.get("valli", 1.0))
 	var m_crypt: float = float(palette.get("crypt", 1.0))
 	var m_red: float = float(palette.get("red_stem", 1.0))
@@ -5838,6 +6107,25 @@ func _apply_initial_phenotype_spread(genome: Dictionary, mult: float) -> void:
 		genome["color_dot_count"] = clampi(int(_rng.randf_range(0, 2.5) * mult), 0, 4)
 
 
+# A preset's stocking with any species missing from SPECIES_LIBRARY swapped
+# for its "stocking_fallback" stand-in (counts merged), so a tank authored
+# ahead of a species keeps its crowd instead of spawning a third of it.
+# Keys with no library entry and no fallback pass through unchanged and are
+# skipped (with a warning) by the spawner, as before.
+static func resolve_stocking_fallbacks(preset: Dictionary) -> Dictionary:
+	var src: Dictionary = preset.get("stocking", {})
+	var fb: Dictionary = preset.get("stocking_fallback", {})
+	var out: Dictionary = {}
+	for k in src.keys():
+		var key: String = String(k)
+		if key != "shrimp" and key != "snails" and fb.has(key) \
+				and not TankConfig.SPECIES_LIBRARY.has(key) \
+				and TankConfig.SPECIES_LIBRARY.has(String(fb[key])):
+			key = String(fb[key])
+		out[key] = int(out.get(key, 0)) + int(src[k])
+	return out
+
+
 func _current_stocking_dict() -> Dictionary:
 	var cfg := get_node_or_null("/root/TankConfig")
 	if cfg == null:
@@ -5852,11 +6140,20 @@ func _current_stocking_dict() -> Dictionary:
 	return cfg.current_tank_preset().get("stocking", {})
 
 
+# Template stocking scales with tank size (TankSizing); hand-set custom
+# counts are the player's own numbers and stay exact.
+func _stocking_fill_scale() -> float:
+	var cfg := get_node_or_null("/root/TankConfig")
+	if cfg == null or cfg.tank_preset == "custom":
+		return 1.0
+	return TankSizing.stocking_scale(cfg)
+
+
 func _stocking_shrimp_count() -> int:
 	var stocking: Dictionary = _current_stocking_dict()
 	if not stocking.has("shrimp"):
 		return 0
-	return maxi(0, int(stocking["shrimp"]))
+	return maxi(0, TankSizing.scale_count(int(stocking["shrimp"]), _stocking_fill_scale()))
 
 
 func _spawn_initial_fish() -> void:
@@ -5877,10 +6174,11 @@ func _spawn_initial_fish() -> void:
 			}
 		else:
 			var preset: Dictionary = cfg.current_tank_preset()
-			stocking = preset.get("stocking", {})
+			stocking = resolve_stocking_fallbacks(preset)
 	if stocking.is_empty():
 		stocking = {"glassdart": 14, "mudsifter": 5, "betta": 1}
 
+	var stock_scale: float = _stocking_fill_scale()
 	var phenotype_mult: float = _initial_phenotype_spread()
 	# Each fish builds ~30-50 voxel MeshInstance3Ds (more with the new
 	# body_shape additions). Spawning all in one frame hammered Metal -
@@ -5890,7 +6188,9 @@ func _spawn_initial_fish() -> void:
 		# Shrimp + any non-fish key is handled separately.
 		if species_name == "shrimp":
 			continue
-		var count: int = int(stocking[species_name])
+		# Groups scale with the tank against the size the template was
+		# authored at (TankSizing); singles and pairs stay as authored.
+		var count: int = TankSizing.scale_count(int(stocking[species_name]), stock_scale)
 		if count <= 0:
 			continue
 		var entry: Dictionary = TankConfig.SPECIES_LIBRARY.get(species_name, {})
@@ -5971,9 +6271,8 @@ func _build_light_fixture() -> void:
 		# reach it. Parenting the root to the clamp instead is what made
 		# dragging the lamp carry its clamp out over the open water with
 		# the cable trailing off into the room.
-		_light_fixture_root.position = LightingRig.head_position(
-			TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, 0.62,
-			0.15 + rig_off_x, -0.80 + rig_off_z)
+		_light_fixture_root.position = _light_head_target(
+			fixture_type, height_above, rig_off_x, rig_off_z)
 		var head_emit := _register_fixture_emit(
 			VoxelMat.make_emissive(Color(1.65, 1.55, 1.35)))
 		var clamp_mat := VoxelMat.make(Color8(32, 34, 38))
@@ -5986,11 +6285,7 @@ func _build_light_fixture() -> void:
 		spot.name = "LampSpot"
 		spot.position = Vector3(0.0, -0.2, 0.0)
 		spot.rotation_degrees = Vector3(-78 + rig_tilt, -18 + rig_yaw, 0)
-		if LightingRig.has_aim(rig_aim_x, rig_aim_z):
-			spot.rotation_degrees = LightingRig.look_rotation_deg(
-				_light_fixture_root.position + spot.position,
-				LightingRig.aim_target(TANK_HALF_W, TANK_HALF_D,
-					SUBSTRATE_DEPTH, rig_aim_x, rig_aim_z))
+		spot.set_meta(LIGHT_BASE_ROT, spot.rotation_degrees)
 		spot.spot_range = TANK_HEIGHT + height_above + 4.0
 		spot.spot_angle = LightingRig.resolve_angle(rig_angle, 22.0)
 		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, 1.8)
@@ -5998,13 +6293,13 @@ func _build_light_fixture() -> void:
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
 		_rebuild_gooseneck()
+		_reaim_light_spots(rig_aim_x, rig_aim_z)
 		if cfg != null and cfg.light_volumetric:
 			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 		return
 
-	_light_fixture_root.position = LightingRig.head_position(
-		TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, height_above,
-		rig_off_x, rig_off_z)
+	_light_fixture_root.position = _light_head_target(
+		fixture_type, height_above, rig_off_x, rig_off_z)
 
 	var dark := VoxelMat.make(Color8(28, 28, 32))
 	var panel := VoxelMat.make(Color8(255, 248, 228))   # warm panel face
@@ -6030,11 +6325,7 @@ func _build_light_fixture() -> void:
 		var spot := SpotLight3D.new()
 		spot.position = Vector3(0, -0.2, 0)
 		spot.rotation_degrees = LightingRig.aim_rotation_deg(rig_tilt, rig_yaw)
-		if LightingRig.has_aim(rig_aim_x, rig_aim_z):
-			spot.rotation_degrees = LightingRig.look_rotation_deg(
-				_light_fixture_root.position + spot.position,
-				LightingRig.aim_target(TANK_HALF_W, TANK_HALF_D,
-					SUBSTRATE_DEPTH, rig_aim_x, rig_aim_z))
+		spot.set_meta(LIGHT_BASE_ROT, spot.rotation_degrees)
 		spot.spot_range = TANK_HEIGHT + height_above + 3.0
 		var def_angle: float = 56.0 if TANK_SHAPE == "sphere" else 38.0
 		var def_atten: float = 0.9 if TANK_SHAPE == "sphere" else 1.4
@@ -6043,6 +6334,7 @@ func _build_light_fixture() -> void:
 		spot.shadow_enabled = rig_shadows
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
+		_reaim_light_spots(rig_aim_x, rig_aim_z)
 
 		if cfg != null and cfg.light_volumetric:
 			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
@@ -6085,11 +6377,16 @@ func _build_light_fixture() -> void:
 				spot.spot_angle = 58.0
 				spot.spot_attenuation = 0.88
 			spot.shadow_enabled = false
+			spot.set_meta(LIGHT_BASE_ROT, spot.rotation_degrees)
 			_light_fixture_root.add_child(spot)
 			_light_fixture_spots.append(spot)
-
-			if cfg != null and cfg.light_volumetric:
-				_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
+		# The bar honours the aim too (it used to ignore it at build, so a
+		# dragged bar flipped back to straight-down shafts on reload), and
+		# its spots re-aim PARALLEL - see _reaim_light_spots.
+		_reaim_light_spots(rig_aim_x, rig_aim_z)
+		if cfg != null and cfg.light_volumetric:
+			for s in _light_fixture_spots:
+				_add_god_ray_beam(_light_fixture_root, s, s.spot_angle)
 
 	if TANK_SHAPE == "sphere":
 		_apply_sphere_aquarium_lighting()
@@ -6183,6 +6480,28 @@ func _update_accent_lights(cfg2: Node, deep_night: float, master_on: bool) -> vo
 			-TANK_HALF_D - 0.85)
 	elif _backlight != null and is_instance_valid(_backlight):
 		_backlight.visible = false
+	_push_backlight_globals(bl_on)
+
+
+# Every tank shader is unshaded, so the OmniLight above lights nothing on its
+# own. The shaders read the lamp from two globals instead (contract, shared by
+# foliage_light / backlight / water includes):
+#   iaq_backlight      = (x, y, z, energy)       energy 0 = off
+#   iaq_backlight_tint = (r, g, b, falloff k)    att = energy / (1 + k d^2)
+# k is picked from the lamp's range so attenuation reaches 0.5 at half range
+# and 0.2 at the far edge - the same reach the OmniLight was given.
+func _push_backlight_globals(on: bool) -> void:
+	if not on or _backlight == null or not is_instance_valid(_backlight):
+		RenderingServer.global_shader_parameter_set("iaq_backlight", Vector4.ZERO)
+		return
+	var p: Vector3 = _backlight.global_position if _backlight.is_inside_tree() \
+		else _backlight.position
+	var energy: float = LightingRig.backlight_energy(_backlight.light_energy)
+	RenderingServer.global_shader_parameter_set("iaq_backlight",
+		Vector4(p.x, p.y, p.z, energy))
+	var c: Color = _backlight.light_color
+	RenderingServer.global_shader_parameter_set("iaq_backlight_tint",
+		Vector4(c.r, c.g, c.b, LightingRig.backlight_falloff(_backlight.omni_range)))
 
 
 func _apply_accent(existing: OmniLight3D, light_name: String, pos: Vector3,
@@ -6245,6 +6564,7 @@ func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 			"iaq_beam_cone", Vector4(-1.0, -1.0, 30.0, 0.0))
 		RenderingServer.global_shader_parameter_set(
 			"iaq_beam_axis", Vector4(0.0, 0.0, 0.0, 0.0))
+		RenderingServer.global_shader_parameter_set("iaq_scatter_light", Vector4.ZERO)
 		return
 	# A bar is a segment, not its leftmost spot (VISUAL_DIRECTIONS #1).
 	var seg: Dictionary = LightingRig.beam_segment(positions)
@@ -6264,14 +6584,18 @@ func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 		shaping = float(_cfg_node.get("light_shaping"))
 	RenderingServer.global_shader_parameter_set(
 		"iaq_beam_tint", LightingRig.cone_tint(fixture_color, darkness, shaping))
+	RenderingServer.global_shader_parameter_set(
+		"iaq_scatter_light", LightingRig.scatter_light(fixture_color, fixture_energy, shaping))
 
 
 # --- Live light manipulation (see scripts/light_handle.gd) --------------
 #
 # Rebuilding the whole fixture on every mouse-move would be absurd, so a
 # drag moves the existing nodes: the fixture root carries the visible lamp,
-# the spot re-aims from its new position, and the shaft mesh is rebuilt
-# (it is one cone - cheap, and its length genuinely changes with the move).
+# the spots re-aim (in parallel) from its new position, and each existing
+# shaft is re-fitted in place (_update_light_beams) - nothing is allocated.
+# The drag itself lives in main.gd + light_handle.gd; this side only takes
+# offsets and an aim through set_light_placement.
 
 # Hover / grabbed affordance. The lamp is a small dark object in a dark
 # room; without a visible response to the cursor there is no way to
@@ -6292,10 +6616,81 @@ const LIGHT_HIGHLIGHT_BOOST: float = 1.85
 func light_fixture_head_world() -> Vector3:
 	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
 		return Vector3.INF
+	# The CENTRE of the fixture's spots. The first spot is the left end of
+	# a bar, so a handle drawn there jumped the bar half its length on grab.
+	return _light_fixture_root.global_position + _light_spots_centre_local()
+
+
+func light_fixture_root_world() -> Vector3:
+	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
+		return Vector3.INF
+	return _light_fixture_root.global_position
+
+
+func _light_spots_centre_local() -> Vector3:
+	var sum := Vector3.ZERO
+	var n: int = 0
 	for s in _light_fixture_spots:
 		if is_instance_valid(s):
-			return s.global_position
-	return _light_fixture_root.global_position
+			sum += s.position
+			n += 1
+	return sum / float(n) if n > 0 else Vector3.ZERO
+
+
+# THE head position for a pair of offsets, used by the build AND the drag.
+# They used to disagree (the drag dropped the gooseneck's home offset and
+# clamped to a different box), so the lamp jumped on the first touch and
+# again on reload.
+func _light_head_target(fixture: String, light_height: float,
+		off_x: float, off_z: float) -> Vector3:
+	var home: Vector2 = LightHandle.fixture_home(fixture)
+	var want: Vector3 = LightHandle.head_world(TANK_HALF_W, TANK_HALF_D,
+		TANK_HEIGHT, LightHandle.mount_above(fixture, light_height),
+		home.x + off_x, home.y + off_z)
+	var corners: Array[Vector3] = _tank_footprint_corners()
+	var xz: Vector2 = LightHandle.clamp_to_footprint(
+		Vector2(want.x, want.z), corners, LightHandle.HEAD_OVERHANG)
+	want.x = xz.x
+	want.z = xz.y
+	if fixture == "gooseneck":
+		# Keep the head within reach of the rim it is clamped to. A neck
+		# that stretches across the room stops reading as one object.
+		var clamp_world: Vector3 = Gooseneck.clamp_point(
+			want, corners, TANK_HEIGHT + 0.05)
+		want = Gooseneck.constrain_head(want, clamp_world,
+			Gooseneck.max_reach(TANK_HALF_W, TANK_HALF_D))
+	return want
+
+
+func _light_fixture_kind() -> Array:
+	if _cfg_node == null:
+		return ["bar", 1.4]
+	return [String(_cfg_node.light_fixture), float(_cfg_node.light_height)]
+
+
+# Where the fixture root would sit for these offsets (for the drag, which
+# needs to know how far the lamp REALLY moved after the reach clamp).
+func light_head_target(off_x: float, off_z: float) -> Vector3:
+	var k: Array = _light_fixture_kind()
+	return _light_head_target(String(k[0]), float(k[1]), off_x, off_z)
+
+
+# Inverse of light_head_target: stored offsets for a wanted root position.
+func light_head_offsets_for(root_world: Vector3) -> Vector2:
+	var k: Array = _light_fixture_kind()
+	var xz: Vector2 = LightHandle.clamp_to_footprint(
+		Vector2(root_world.x, root_world.z), _tank_footprint_corners(),
+		LightHandle.HEAD_OVERHANG)
+	return LightHandle.offsets_relative(xz, TANK_HALF_W, TANK_HALF_D,
+		LightHandle.fixture_home(String(k[0])))
+
+
+# Stored aim for a wanted landing point, kept inside the actual glass.
+func light_aim_for(target_world: Vector3) -> Vector2:
+	var xz: Vector2 = LightHandle.clamp_to_footprint(
+		Vector2(target_world.x, target_world.z), _tank_footprint_corners(),
+		LightHandle.AIM_INSET)
+	return Vector2(xz.x / maxf(0.001, TANK_HALF_W), xz.y / maxf(0.001, TANK_HALF_D))
 
 
 # Where the cone lands, in world space - the anchor for the aim handle.
@@ -6357,21 +6752,15 @@ func light_aim_world() -> Vector3:
 		return Vector3.INF
 	var ax: float = float(_cfg_node.spot_aim_x)
 	var az: float = float(_cfg_node.spot_aim_z)
-	if not LightingRig.has_aim(ax, az):
+	if LightingRig.has_aim(ax, az):
+		return LightingRig.aim_target(
+			TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ax, az)
+	# No aim set: the ring sits where the beam really lands, so it can be
+	# found and grabbed without first swinging the lamp anywhere.
+	if not has_movable_light():
 		return Vector3.INF
-	return LightingRig.aim_target(
-		TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ax, az)
-
-
-func light_rim_plane_y() -> float:
-	var h: float = 1.4
-	if _cfg_node != null:
-		h = float(_cfg_node.light_height)
-		if String(_cfg_node.light_fixture) == "gooseneck":
-			# The gooseneck head hangs just over the rim, so that is the
-			# plane the drag should track - not the taller pendant mount.
-			h = 0.62
-	return TANK_HEIGHT + h
+	return LightHandle.ray_plane_xz(light_fixture_head_world(),
+		LightingRig.spot_forward(_light_fixture_spots[0]), SUBSTRATE_DEPTH)
 
 
 func has_movable_light() -> bool:
@@ -6380,75 +6769,131 @@ func has_movable_light() -> bool:
 		and not _light_fixture_spots.is_empty()
 
 
-# Move the lamp. Offsets are -1..1 fractions of the tank's own half-extent.
+# Move the lamp. Offsets are fractions of the tank's own half-extent,
+# relative to the fixture's home (see LightHandle.fixture_home).
 func set_light_head_offset(offset_x: float, offset_z: float) -> void:
-	if not has_movable_light():
-		return
-	var fixture: String = "bar"
-	var height_above: float = 1.4
+	var ax: float = LightingRig.AIM_OFF
+	var az: float = LightingRig.AIM_OFF
 	if _cfg_node != null:
-		fixture = String(_cfg_node.light_fixture)
-		height_above = float(_cfg_node.light_height)
-	# The gooseneck clamps to the rim; the others hang above it.
-	var above: float = 0.62 if fixture == "gooseneck" else height_above
-	var want: Vector3 = LightHandle.head_world(
-		TANK_HALF_W, TANK_HALF_D, TANK_HEIGHT, above, offset_x, offset_z)
-	if fixture == "gooseneck":
-		# Keep the head within reach of the rim it is clamped to. A neck
-		# that stretches across the room stops reading as one object.
-		var rim_y: float = TANK_HEIGHT + 0.05
-		var clamp_world: Vector3 = Gooseneck.clamp_point(
-			want, _tank_footprint_corners(), rim_y)
-		want = Gooseneck.constrain_head(want, clamp_world,
-			Gooseneck.max_reach(TANK_HALF_W, TANK_HALF_D))
-	_light_fixture_root.position = want
-	if fixture == "gooseneck":
-		_rebuild_gooseneck()
-	_reaim_light_spots()
-	_rebuild_light_beam()
+		ax = float(_cfg_node.spot_aim_x)
+		az = float(_cfg_node.spot_aim_z)
+	set_light_placement(offset_x, offset_z, ax, az)
 
 
 func set_light_aim(aim_x: float, aim_z: float) -> void:
+	var ox: float = 0.0
+	var oz: float = 0.0
 	if _cfg_node != null:
+		ox = float(_cfg_node.spot_offset_x)
+		oz = float(_cfg_node.spot_offset_z)
+	set_light_placement(ox, oz, aim_x, aim_z)
+
+
+# Head + aim in one step: one re-aim and one beam update per drag event.
+# AIM_OFF for the aim restores each spot's own built rotation, so cancelling
+# a drag that started with no aim puts the fixture back exactly.
+func set_light_placement(off_x: float, off_z: float,
+		aim_x: float, aim_z: float) -> void:
+	if _cfg_node != null:
+		_cfg_node.spot_offset_x = off_x
+		_cfg_node.spot_offset_z = off_z
 		_cfg_node.spot_aim_x = aim_x
 		_cfg_node.spot_aim_z = aim_z
-	_reaim_light_spots()
-	_rebuild_light_beam()
+	if not has_movable_light():
+		return
+	var k: Array = _light_fixture_kind()
+	_light_fixture_root.position = _light_head_target(
+		String(k[0]), float(k[1]), off_x, off_z)
+	if String(k[0]) == "gooseneck":
+		_rebuild_gooseneck()
+	_reaim_light_spots(aim_x, aim_z)
+	_update_light_beams()
 
 
-func _reaim_light_spots() -> void:
-	if _cfg_node == null or _light_fixture_root == null:
+const LIGHT_BASE_ROT := "light_base_rot"
+const BEAM_SPOT_META := "beam_spot"
+const BEAM_MOTES_META := "beam_motes"
+
+
+# ONE direction for the whole fixture, from its centre. A bar is several
+# parallel down-lights; pointing each of them at the same spot converged
+# them into one hot pool the moment the bar was touched.
+func _reaim_light_spots(aim_x: float, aim_z: float) -> void:
+	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
 		return
-	var ax: float = float(_cfg_node.spot_aim_x)
-	var az: float = float(_cfg_node.spot_aim_z)
-	if not LightingRig.has_aim(ax, az):
-		return
-	var target: Vector3 = LightingRig.aim_target(
-		TANK_HALF_W, TANK_HALF_D, SUBSTRATE_DEPTH, ax, az)
+	var aimed: bool = LightingRig.has_aim(aim_x, aim_z)
+	var rot := Vector3(-90.0, 0.0, 0.0)
+	if aimed:
+		rot = LightingRig.look_rotation_deg(
+			_light_fixture_root.position + _light_spots_centre_local(),
+			LightingRig.aim_target(TANK_HALF_W, TANK_HALF_D,
+				SUBSTRATE_DEPTH, aim_x, aim_z))
 	for s in _light_fixture_spots:
 		if not is_instance_valid(s):
 			continue
-		s.rotation_degrees = LightingRig.look_rotation_deg(
-			_light_fixture_root.position + s.position, target)
+		if aimed:
+			s.rotation_degrees = rot
+		elif s.has_meta(LIGHT_BASE_ROT):
+			s.rotation_degrees = s.get_meta(LIGHT_BASE_ROT)
 
 
-func _rebuild_light_beam() -> void:
+# Length, direction and end radius of the shaft for one spot. Empty when
+# the beam would be too short to draw.
+func _beam_geometry(parent: Node3D, spot: SpotLight3D) -> Dictionary:
+	var spot_y: float = parent.position.y + spot.position.y
+	var aim: Vector3 = LightingRig.spot_forward(spot)
+	var dist: float = LightingRig.beam_span(
+		spot_y, SUBSTRATE_DEPTH, aim, (spot_y - SUBSTRATE_DEPTH) * 2.6)
+	if dist <= 0.1:
+		return {}
+	return {"aim": aim, "dist": dist,
+		"radius": LightingRig.beam_end_radius(dist, spot.spot_angle * 0.90)}
+
+
+# Move the existing shafts IN PLACE. Rebuilding them per mouse event leaked:
+# the old shaft was only queue_free'd, so the new one's name collided, came
+# back as "@BeamShaft@N", and the next pass's name match missed it - every
+# other drag step left a cone and a 32-particle emitter behind. Each shaft
+# now carries its spot and its motes as meta; nothing is allocated here.
+func _update_light_beams() -> void:
 	if _light_fixture_root == null or not is_instance_valid(_light_fixture_root):
 		return
-	if _cfg_node == null or not bool(_cfg_node.light_volumetric):
-		return
-	# Drop the old shaft (and its motes) before building the new one, or a
-	# few seconds of dragging leaves a fan of stale cones in the tank.
 	for child in _light_fixture_root.get_children():
-		if child is MeshInstance3D and String(child.name).begins_with("BeamShaft"):
-			_god_ray_materials.erase((child as MeshInstance3D).material_override)
-			child.queue_free()
-		elif child is GPUParticles3D and String(child.name).begins_with("DustMotes"):
-			child.queue_free()
-	for s in _light_fixture_spots:
-		if is_instance_valid(s):
-			_add_god_ray_beam(_light_fixture_root, s, s.spot_angle)
-			break
+		if not (child is MeshInstance3D) or not child.has_meta(BEAM_SPOT_META):
+			continue
+		var mi := child as MeshInstance3D
+		var spot_v: Variant = mi.get_meta(BEAM_SPOT_META)
+		if not is_instance_valid(spot_v):
+			continue
+		var spot := spot_v as SpotLight3D
+		var motes: GPUParticles3D = null
+		var motes_v: Variant = mi.get_meta(BEAM_MOTES_META, null)
+		if is_instance_valid(motes_v):
+			motes = motes_v as GPUParticles3D
+		var g: Dictionary = _beam_geometry(_light_fixture_root, spot)
+		mi.visible = not g.is_empty()
+		if motes != null:
+			motes.visible = mi.visible
+		if g.is_empty():
+			continue
+		var aim: Vector3 = g["aim"]
+		var dist: float = g["dist"]
+		var radius: float = g["radius"]
+		var mesh := mi.mesh as CylinderMesh
+		if mesh != null:
+			mesh.height = dist
+			mesh.bottom_radius = radius
+		mi.position = spot.position + aim * (dist * 0.5)
+		mi.basis = LightingRig.beam_basis(aim)
+		if motes != null:
+			motes.position = mi.position
+			motes.visibility_aabb = AABB(
+				Vector3(-radius * 1.2, -dist * 0.55, -radius * 1.2),
+				Vector3(radius * 2.4, dist * 1.1, radius * 2.4))
+			var pm := motes.process_material as ParticleProcessMaterial
+			if pm != null:
+				pm.emission_box_extents = Vector3(
+					radius * 0.75, dist * 0.48, radius * 0.75)
 
 
 # NB no height_above parameter: the shaft reads the lamp's REAL height off
@@ -6492,6 +6937,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	var mi := MeshInstance3D.new()
 	mi.name = "BeamShaft"
 	mi.mesh = mesh
+	mi.set_meta(BEAM_SPOT_META, spot)
 	
 	# CylinderMesh runs along local +Y and is centred, so push it half a
 	# length along the aim direction and rotate +Y onto that direction.
@@ -6612,6 +7058,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	mote_mesh.material = VoxelMat.make_bubble(Color(1.0, 0.97, 0.84, 0.60))
 	motes.draw_pass_1 = mote_mesh
 	parent.add_child(motes)
+	mi.set_meta(BEAM_MOTES_META, motes)
 
 
 # Sample the 8 closest fish to the camera and push their positions +
@@ -6926,7 +7373,10 @@ func _spawn_floaters() -> void:
 	var recipe: Dictionary = TankFidelityRuntime.reference_floater_recipe(preset_id)
 	if not recipe.is_empty():
 		# REAL_TANK_FIDELITY #56–57 — thick multi-species mat for counter_nano.
-		for morph_key in ["duckweed", "salvinia", "water_hyacinth"]:
+		# Curtain morphs hang a quarter to a third of the column, which is
+		# what the reference photos show (and what reads as a mat from below).
+		var column: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH)
+		for morph_key in ["duckweed", "salvinia", "frogbit", "water_lettuce", "water_hyacinth"]:
 			var n: int = int(recipe.get(morph_key, 0))
 			for _i in n:
 				var f_xz: Vector2 = _sample_surface_xz(0.35, 0.30)
@@ -6934,6 +7384,10 @@ func _spawn_floaters() -> void:
 				g["morph"] = morph_key
 				if morph_key == "water_hyacinth":
 					g["root_length"] = 0.85
+				elif morph_key == "frogbit":
+					g["root_length"] = minf(column * randf_range(0.26, 0.34), column - 0.6)
+				elif morph_key == "water_lettuce":
+					g["root_length"] = minf(column * randf_range(0.22, 0.30), column - 0.6)
 				_add_floater_at(
 					clamp_xyz_in_tank(Vector3(f_xz.x, floater_surface_y(), f_xz.y), 0.35), g)
 		return
@@ -6978,6 +7432,30 @@ var _surface_plant_biomass: float = 0.0
 # All shape-validated for non-rectangular tanks. New plant species are
 # self-contained Node3Ds with their own tick(); they're stored in
 # _math_plants so _process can drive their animation each frame.
+#
+# Preset key `surface_extras` gates these and the lily pads per tank:
+#   absent            today's random counts (every freshwater preset)
+#   false             none of them
+#   { "lily_pads": n, "nautilus": n, "cattails": n, "fractal_moss": n }
+#                     each sub-key an int count or a [min, max] range; a
+#                     missing sub-key keeps its random default.
+# A monoculture valli jungle has no lily pads, reeds or spiral plants in it;
+# a reference photo of one never does. Saved extras restore as saved.
+func _surface_extra_count(kind: String, lo: int, hi: int) -> int:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var spec: Variant = null
+	if cfg != null and cfg.has_method("current_tank_preset"):
+		spec = (cfg.current_tank_preset() as Dictionary).get("surface_extras", null)
+	if spec is bool and not bool(spec):
+		return 0
+	if spec is Dictionary and (spec as Dictionary).has(kind):
+		var v: Variant = (spec as Dictionary)[kind]
+		if v is Array and (v as Array).size() == 2:
+			return _rng.randi_range(int((v as Array)[0]), int((v as Array)[1]))
+		return maxi(int(v), 0)
+	return _rng.randi_range(lo, hi)
+
+
 func _spawn_math_plants() -> void:
 	var container := Node3D.new()
 	container.name = "MathPlants"
@@ -6993,7 +7471,7 @@ func _spawn_math_plants() -> void:
 
 	# Nautilus spirals.
 	var nautilus_script := load("res://scripts/nautilus_plant.gd")
-	for i in _rng.randi_range(2, 3):
+	for i in _surface_extra_count("nautilus", 2, 3):
 		var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.8, TANK_HALF_D * 0.5, 0.6)
 		var p = nautilus_script.new()
 		container.add_child(p)
@@ -7008,7 +7486,7 @@ func _spawn_math_plants() -> void:
 
 	# Cattail reeds.
 	var cattail_script := load("res://scripts/cattail_plant.gd")
-	for i in _rng.randi_range(2, 4):
+	for i in _surface_extra_count("cattails", 2, 4):
 		# Reeds prefer the back band (background-plant style).
 		var xz: Vector2 = _random_xz_in_band(-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.4, 0.5)
 		var p = cattail_script.new()
@@ -7030,7 +7508,7 @@ func _spawn_math_plants() -> void:
 		Color8(25, 65, 40), Color8(45, 95, 55), Color8(75, 130, 70),
 		Color8(110, 170, 95), Color8(150, 200, 125),
 	]
-	for i in _rng.randi_range(6, 10):
+	for i in _surface_extra_count("fractal_moss", 6, 10):
 		var xz: Vector2 = _random_xz_in_band(
 			-TANK_HALF_D * 0.85, TANK_HALF_D * 0.85, 0.4)
 		var p = moss_script.new()
@@ -7054,7 +7532,7 @@ func _spawn_lily_pads() -> void:
 	var container := Node3D.new()
 	container.name = "LilyPads"
 	add_child(container)
-	var n: int = _rng.randi_range(3, 5)
+	var n: int = _surface_extra_count("lily_pads", 3, 5)
 	for i in n:
 		var xz: Vector2 = _random_xz_in_band(
 			-TANK_HALF_D * 0.7, TANK_HALF_D * 0.7, 1.0)
@@ -10749,6 +11227,7 @@ func _spawn_snail_at(genome: Dictionary, pos: Vector3) -> void:
 # water column ~5 units). Any preferred_y / home_y_radius in the library
 # is interpreted as if it sits in this column, then re-projected onto
 # the actual tank's column.
+const _FishDepthBands = preload("res://scripts/fish_depth_bands.gd")
 const _REF_SUBSTRATE_Y: float = 1.6
 const _REF_COLUMN_HEIGHT: float = 5.0
 
@@ -10762,9 +11241,15 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 	#     reef fish use this to spread across the column.
 	#   preferred_y - legacy absolute Y. Remap as a fraction of the
 	#     reference column, then project onto the actual column.
+	#   species band (FishDepthBands) - where the species lives when the
+	#     genome names no per-fish fraction; the fish lands somewhere inside it.
 	var frac: float
+	var banded: bool = _FishDepthBands.has_band(genome)
 	if genome.has("preferred_y_frac"):
 		frac = clampf(float(genome["preferred_y_frac"]), 0.05, 0.95)
+	elif banded:
+		frac = clampf(_FishDepthBands.centre_frac(genome, _REF_SUBSTRATE_Y, _REF_COLUMN_HEIGHT)
+			+ randf_range(-0.6, 0.6) * _FishDepthBands.band_for(genome).y, 0.05, 0.95)
 	else:
 		var legacy: float = float(genome.get("preferred_y", 3.5))
 		frac = clampf((legacy - _REF_SUBSTRATE_Y) / _REF_COLUMN_HEIGHT, 0.05, 0.95)
@@ -10778,6 +11263,9 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 	var col_ratio: float = col / _REF_COLUMN_HEIGHT
 	if genome.has("home_y_radius"):
 		genome["home_y_radius"] = float(genome["home_y_radius"]) * col_ratio
+	# A banded species holds its layer: the radius follows the band width.
+	elif banded:
+		genome["home_y_radius"] = _FishDepthBands.home_y_radius(genome, col)
 	# If not set, fish.gd defaults to 0.8 - scale that too via an explicit set.
 	else:
 		genome["home_y_radius"] = 0.8 * col_ratio

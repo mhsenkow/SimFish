@@ -51,9 +51,16 @@ uniform vec2 chain_bend = vec2(0.0);
 uniform float chain_sway_amp = 0.0;
 uniform float chain_speed = 0.8;
 uniform float chain_lag = 2.0;
+// Per-blade chain desync, 0..1. Only ribbon crowns set it: every blade is
+// its own organ there, so blades in one crown drifting in lockstep read as
+// a rigid sheet. Stem plants keep 0 - their leaves must ride the stem.
+uniform float chain_desync : hint_range(0.0, 1.0) = 0.0;
+// Ribbon margin / midrib shading strength (0 = off). See foliage_light.
+uniform float blade_shade : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/foliage_light.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -64,9 +71,16 @@ varying float v_light_dose;
 // height, making a ribbon's root stationary while its successive segments
 // progressively yield to the current.
 varying float v_flex_weight;
+// Unit-box coordinate before any displacement: which face, and where across
+// the blade's width, a fragment sits.
+varying vec3 v_local;
+// Aufwuchs load from the instance colour's alpha (opaque = clean leaf).
+varying float v_fuzz;
 
 void vertex() {
 	v_inst_color = COLOR.rgb;
+	v_local = VERTEX;
+	v_fuzz = clamp(1.0 - COLOR.a, 0.0, 1.0);
 	v_leaf_thickness = clamp(INSTANCE_CUSTOM.r, 0.0, 1.0);
 	v_leaf_phase = INSTANCE_CUSTOM.g * 6.2831853;
 	v_light_dose = clamp(INSTANCE_CUSTOM.b, 0.0, 1.0);
@@ -128,32 +142,45 @@ void vertex() {
 		float cs = v_flex_weight;
 		float cshape = cs * cs * (3.0 - cs) * 0.5;
 		vec2 cdir = flow_len > 0.0001 ? flow_xz / flow_len : vec2(0.8, 0.6);
-		float cph = TIME * chain_speed + sway_phase_offset - cs * chain_lag;
+		float cph = TIME * chain_speed + sway_phase_offset - cs * chain_lag
+			- v_leaf_phase * 0.45 * chain_desync;
 		vec2 cwave = cdir * sin(cph) + vec2(-cdir.y, cdir.x) * sin(cph * 0.71 + 1.3) * 0.35;
-		vec2 coff = (chain_bend + cwave * chain_sway_amp * dist_fade) * cshape;
+		float blade_amp = mix(1.0, 0.8 + 0.4 * fract(v_leaf_phase * 0.159), chain_desync);
+		vec2 coff = (chain_bend + cwave * chain_sway_amp * blade_amp * dist_fade) * cshape;
 		VERTEX += inverse(mat3(MODEL_MATRIX)) * vec3(coff.x, 0.0, coff.y);
 	}
 }
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
+	// World-space normal. The face table, canopy shade, top catch and the
+	// dawn rim all used to read the VIEW-space normal as if it were world
+	// space, which is right only for a level camera: pitch the camera and the
+	// "top" of every leaf moved.
+	vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
 	float f;
-	if (n.y > 0.7) {
+	if (n_ws.y > 0.7) {
 		f = 1.00;
-	} else if (n.y < -0.7) {
+	} else if (n_ws.y < -0.7) {
 		f = 0.50;
-	} else if (abs(n.x) > 0.7) {
+	} else if (abs(n_ws.x) > 0.7) {
 		f = 0.82;
 	} else {
 		f = 0.68;
 	}
-	vec3 col = v_inst_color * f;
+	// A ribbon's broad face is its lit face and its edge its darkest line -
+	// the reverse of the cube table above.
+	if (blade_shade > 0.001 && abs(n_ws.y) <= 0.7) {
+		f = mix(f, 0.86, blade_shade);
+	}
+	vec3 col = v_inst_color * f * iaq_blade_margin(v_local, blade_shade);
 	col = apply_category_palette_tint(col, iaq_palette_foliage,
 		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
 	vec3 anthocyanin = vec3(col.r * 1.18 + 0.10, col.g * 0.52, col.b * 0.62 + 0.04);
 	col = mix(col, anthocyanin, red_potential * v_light_dose * 0.58);
+	col = iaq_leaf_aufwuchs(col, v_world_pos, v_local, v_fuzz);
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
-	if (n.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
+	if (n_ws.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);
 	}
 	// Bounded two-wave caustic shared with voxel.gdshader. This deliberately
@@ -173,27 +200,30 @@ void fragment() {
 	// to almost nothing at night.
 	float rim = pow(1.0 - clamp(dot(n, VIEW), 0.0, 1.0), 3.0);
 	float lit = max(daylight, tank_fixture_glow * 0.85);
-	// REAL_TANK_FIDELITY #121 — backlit translucency: veins darker, thin blade luminous.
 	float thin_transmission = mix(1.0, 0.28, v_leaf_thickness);
-	float backlit = pow(max(-dot(n, VIEW), 0.0), 1.8) * backlight_boost * lit
-		* thin_transmission;
-	col = mix(col, col * 0.55 + sss_color * 0.85, backlit * 0.65);
 	col = mix(col, col * 0.7 + sss_color * 0.55,
 		rim * sss_strength * (0.4 + 0.6 * lit) * thin_transmission);
+	// REAL_TANK_FIDELITY #121 — backlit translucency, in world space from
+	// the key light and the rear lamp (see foliage_light.gdshaderinc).
+	vec3 key_rgb = (tank_fixture_color * tank_fixture_glow + sss_color * daylight * 0.35)
+		* backlight_boost;
+	vec3 lit_col = iaq_leaf_light(col, v_world_pos, n_ws, CAMERA_POSITION_WORLD,
+		thin_transmission, key_rgb);
+	// Parallel veins show only where light comes through the blade.
+	float glow = clamp(dot(lit_col - col, vec3(0.333)) * 3.0, 0.0, 1.0);
+	float vein = step(0.78, fract(v_local.x * 3.0 + 0.5)) * blade_shade;
+	col = lit_col * (1.0 - vein * glow * 0.2);
 	float wet_band = 1.0 - smoothstep(0.03, 0.16, abs(v_world_pos.y - water_surface_y));
 	float wet_view = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.0);
 	col += vec3(0.16, 0.20, 0.22) * wet_band * wet_view * wet_sheen_strength;
 	float sun_edge = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5)
-		* max(dot(n, normalize(-foliage_light_dir)), 0.0);
+		* max(dot(n_ws, normalize(-foliage_light_dir)), 0.0);
 	col += vec3(0.18, 0.085, 0.025) * sun_edge * golden_hour;
-	// Vein darkening through the luminous blade.
-	float vein = step(0.82, fract(v_world_pos.y * 7.0 + v_world_pos.x * 3.0));
-	col *= 1.0 - vein * backlit * 0.18;
 	if (tank_fixture_glow > 0.001 && v_world_pos.y < water_surface_y - 0.05) {
 		float span = max(water_surface_y - fixture_water_floor, 0.5);
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
-		float top_catch = smoothstep(0.20, 0.88, n.y);
+		float top_catch = smoothstep(0.20, 0.88, n_ws.y);
 		col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
 		col *= 1.0 + wash * (0.62 + top_catch * 0.42);
 	}
@@ -203,6 +233,6 @@ void fragment() {
 	// Shaped lamp. In an unshaded pipeline nothing responds to a light on
 	// its own, so the cone is evaluated here - this is what puts the beam
 	// ON the leaves instead of only in the water in front of them.
-	col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+	col = iaq_beam_light_n(v_world_pos, n_ws, col);
 	ALBEDO = col;
 }

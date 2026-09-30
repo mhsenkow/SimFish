@@ -421,3 +421,101 @@ static func effective_room_darkness(player_darkness: float,
 		deep_night: float) -> float:
 	return clampf(maxf(clampf(player_darkness, 0.0, 1.0),
 		clampf(deep_night, 0.0, 1.0) * NIGHT_ROOM_DARKNESS), 0.0, 1.0)
+
+
+# --- The lit tank in a dim room (2026-09-29 alive pass) -----------------
+#
+# THE BUG. global_intensity is the SUN/ROOM axis, but the only place it turned
+# into brightness was the post pass's palette_tint, which multiplies the whole
+# frame. The post pass cannot tell the room from the tank, so a preset that
+# asks for a dim room around a lit tank (backlit_jungle: global 0.32) dimmed
+# the tank with it - a measured x0.69 on every pixel. The raw 3D frame of the
+# Vallisneria jungle sat at a photo-like median of 145; the shipped frame at
+# 103, with nothing brighter than 140 anywhere.
+#
+# So the dimming is split. The post tint keeps the part the lit tank is not
+# spared from, and the rest moves into the cone's AMBIENT term through the
+# iaq_room_light global (beam_cone.gdshaderinc): outside the cone - the room,
+# the tank's shadows - lands exactly as dark as before, inside it the tank
+# renders at its lamp's brightness. A pool of light in a dim room.
+
+# The legacy post-tint curve, anchored at 0.5 -> 1.0 so saved tanks keep their
+# look: dims toward 0.15 below the anchor, lifts to 1.25 above it.
+static func global_brightness(global_intensity: float) -> float:
+	var e: float = clampf(global_intensity, 0.0, 1.0)
+	if e <= 0.5:
+		return 0.15 + (e / 0.5) * 0.85
+	return 1.0 + ((e - 0.5) / 0.5) * 0.25
+
+
+# How much of the room's dimness a lit tank is spared, 0..1. A fixture at a
+# quarter of its range already owns the tank's brightness; one that is off
+# spares nothing, and the whole frame dims with the room as it always did.
+static func lamp_hold(tank_lit: bool, fixture_energy: float) -> float:
+	if not tank_lit:
+		return 0.0
+	return smoothstep(0.0, 0.25, maxf(fixture_energy, 0.0))
+
+
+# Brightness the post tint applies to the whole frame. Never brighter than the
+# sun already made it - the hold only takes dimming away, it adds no light.
+static func frame_brightness(global_b: float, hold: float) -> float:
+	if global_b >= 1.0:
+		return global_b
+	return lerpf(global_b, 1.0, clampf(hold, 0.0, 1.0))
+
+
+# What the room geometry must still multiply by so that, after the post tint,
+# it lands where the legacy single tint put it.
+static func room_light(global_b: float, frame_b: float) -> float:
+	return clampf(global_b / maxf(frame_b, 0.001), 0.0, 1.0)
+
+
+# --- Light tint (TankConfig.light_tint_rgb) ----------------------------
+#
+# The LED's own spectrum, separate from tank_fixture_color because every
+# lighting preset rewrites the fixture colour while a tank's lamp does not
+# change when the player picks "Golden hour". Normalised so the brightest
+# channel keeps its value: a pink full-spectrum LED is a pink light of the
+# same strength, not a dimmer white one. White is the identity.
+static func config_light_tint(cfg: Object) -> Color:
+	if cfg == null:
+		return Color.WHITE
+	var v: Variant = cfg.get("light_tint_rgb")
+	return v if v is Color else Color.WHITE
+
+
+static func tint_light(color: Color, tint: Color) -> Color:
+	var m: float = maxf(maxf(tint.r, tint.g), maxf(tint.b, 0.001))
+	return Color(color.r * tint.r / m, color.g * tint.g / m,
+		color.b * tint.b / m, color.a)
+
+
+# --- Rear backlight as shader globals ----------------------------------
+#
+# The OmniLight's light_energy is backlight_intensity * 1.15 (world.gd); the
+# shaders want 0..1-ish so a jungle preset's rear lamp lifts a lit leaf edge
+# without blowing the palette. Clamped: a slider pushed past its range must
+# not turn the back of the tank into a white sheet.
+static func backlight_energy(light_energy: float) -> float:
+	return clampf(light_energy / 1.15, 0.0, 1.5)
+
+
+# att = 1 / (1 + k d^2) with 0.5 at half range and 0.2 at full range.
+static func backlight_falloff(omni_range: float) -> float:
+	return 4.0 / maxf(omni_range * omni_range, 0.01)
+
+
+# --- Lit in-scatter (iaq_scatter_light) --------------------------------
+#
+# The water column's haze was a fixed teal (iaq_water_body), so distance
+# greyed everything toward teal whatever the lamp was. Real haze is the lamp's
+# light scattered back at the eye: pink under a pink LED, cream under warm
+# white. rgb = the lamp colour normalised to its brightest channel, a = how far
+# the haze takes that colour (0 = legacy teal). Scaled by energy so a dimmed
+# lamp scatters less of itself, and by shaping so 0 restores the old look.
+static func scatter_light(color: Color, energy: float, shaping: float = 1.0) -> Vector4:
+	var m: float = maxf(maxf(color.r, color.g), maxf(color.b, 0.001))
+	var amount: float = 0.7 * smoothstep(0.0, 0.3, maxf(energy, 0.0)) \
+		* clampf(shaping, 0.0, 1.0)
+	return Vector4(color.r / m, color.g / m, color.b / m, amount)

@@ -16,12 +16,13 @@ const Cfg := preload("res://scripts/tank_config.gd")
 
 # Settings → Tank sliders (settings_panel.gd). Values are FULL dimensions;
 # the config stores half-width and half-depth.
-const W_MIN := 4.0
-const W_MAX := 24.0
-const D_MIN := 2.0
-const D_MAX := 14.0
-const H_MIN := 4.0
-const H_MAX := 20.0
+const TankSizing := preload("res://scripts/tank_sizing.gd")
+const W_MIN := TankSizing.W_MIN
+const W_MAX := TankSizing.W_MAX
+const D_MIN := TankSizing.D_MIN
+const D_MAX := TankSizing.D_MAX
+const H_MIN := TankSizing.H_MIN
+const H_MAX := TankSizing.H_MAX
 # CameraController bounds.
 const RADIUS_MIN := 4.0
 const RADIUS_MAX := 55.0

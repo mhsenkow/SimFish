@@ -49,6 +49,7 @@ uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/backlight.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -271,5 +272,7 @@ void fragment() {
 			clamp(canopy_uv, vec2(0.0), vec2(1.0))).r;
 		col *= 1.0 - canopy * canopy_shade;
 	}
+	col = iaq_backlight_light(col, v_wpos,
+		(INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

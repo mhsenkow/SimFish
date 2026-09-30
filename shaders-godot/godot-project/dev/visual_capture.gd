@@ -43,6 +43,9 @@
 #                             each concurrent capture its own, or they
 #                             overwrite each other's PNGs and metrics.
 #   VISUAL_CAPTURE_ANGLES     comma list of angle names to shoot (default all)
+#   VISUAL_CAPTURE_CAM        extra angle "yaw,pitch,radius,target_frac" shot
+#                             as "custom" (target_frac: 0 floor .. 1 surface).
+#                             With VISUAL_CAPTURE_ANGLES=custom it is the only one.
 
 extends Node
 
@@ -76,6 +79,7 @@ const DEFAULT_DAY_PHASE: float = 0.25
 # than no capture set.
 const ANGLES: Array[Dictionary] = [
 	{"name": "hero", "yaw": -0.35, "pitch": 0.16, "radius": 20.0, "target_y": 3.4},
+	{"name": "fit", "fit": true, "yaw": -0.42, "pitch": 0.18, "radius": 20.0, "target_y": 3.4},
 	{"name": "front", "yaw": 0.0, "pitch": 0.10, "radius": 19.0, "target_y": 3.2},
 	{"name": "close", "yaw": -0.35, "pitch": 0.06, "radius": 9.5, "target_y": 3.0},
 	# Looks down ON the water. The hero angles see the surface nearly edge-on,
@@ -138,11 +142,17 @@ func _ready() -> void:
 	process_priority = 1000
 	OUT_DIR = _env("VISUAL_CAPTURE_OUT", DEFAULT_OUT_DIR)
 	var want: PackedStringArray = _env("VISUAL_CAPTURE_ANGLES", "").split(",", false)
-	for a in ANGLES:
+	var all_angles: Array[Dictionary] = ANGLES.duplicate()
+	var cam: PackedStringArray = _env("VISUAL_CAPTURE_CAM", "").split(",", false)
+	if cam.size() == 4:
+		all_angles.append({"name": "custom", "yaw": cam[0].to_float(),
+			"pitch": cam[1].to_float(), "radius": cam[2].to_float(),
+			"target_frac": cam[3].to_float()})
+	for a in all_angles:
 		if want.is_empty() or want.has(String(a["name"])):
 			_angles.append(a)
 	if _angles.is_empty():
-		_angles = ANGLES.duplicate()
+		_angles = all_angles
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
 	_main = load("res://main.tscn").instantiate()
 	add_child(_main)
@@ -263,6 +273,18 @@ func _release_camera_modes() -> void:
 func _apply_angle(i: int) -> void:
 	var a: Dictionary = _angles[i]
 	if _main == null:
+		return
+	# "fit": the player's real opening view (main._default_camera_for_tank),
+	# which frames the tank's own size - the fixed-radius angles crop the
+	# larger template tanks.
+	if bool(a.get("fit", false)) and _main.has_method("_default_camera_for_tank"):
+		var d: Dictionary = _main.call("_default_camera_for_tank")
+		_main.set("yaw", float(d["yaw"]))
+		_main.set("pitch", float(d["pitch"]))
+		_main.set("radius", float(d["radius"]))
+		_main.set("target", d["target"])
+		if _main.has_method("_apply_camera"):
+			_main.call("_apply_camera")
 		return
 	_main.set("yaw", float(a["yaw"]))
 	_main.set("pitch", float(a["pitch"]))

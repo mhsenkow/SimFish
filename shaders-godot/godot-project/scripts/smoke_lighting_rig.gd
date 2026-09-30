@@ -469,6 +469,53 @@ func _init() -> void:
 	t.check(w.contains("LightingRig.has_aim("),
 		"an unset aim still falls back to the fixture's own rake")
 
+	# --- A lit tank in a dim room (alive pass) ---
+	# The legacy curve is unchanged: 0.5 is the identity, 0 dims to 0.15.
+	t.approx(LightingRig.global_brightness(0.5), 1.0, "global 0.5 is the identity")
+	t.approx(LightingRig.global_brightness(0.0), 0.15, "global 0 dims to 0.15")
+	var dim_gb: float = LightingRig.global_brightness(0.32)
+	# A lit fixture spares the tank the room's dimness entirely...
+	var fb: float = LightingRig.frame_brightness(dim_gb, LightingRig.lamp_hold(true, 0.28))
+	t.approx(fb, 1.0, "a lit tank is not dimmed with the room")
+	# ...and the room still lands exactly where the single tint put it.
+	t.approx(fb * LightingRig.room_light(dim_gb, fb), dim_gb,
+		"room geometry keeps its legacy brightness")
+	# Lamp off: nothing is spared, the room multiplier is the identity.
+	var fb_off: float = LightingRig.frame_brightness(dim_gb, LightingRig.lamp_hold(false, 1.0))
+	t.approx(fb_off, dim_gb, "an unlit tank dims with the room as before")
+	t.approx(LightingRig.room_light(dim_gb, fb_off), 1.0, "no double dimming when unlit")
+	# The hold never adds light over a bright sun.
+	t.approx(LightingRig.frame_brightness(1.2, 1.0), 1.2, "the hold adds no light")
+	var cone_src: String = _read("res://shaders/beam_cone.gdshaderinc")
+	t.check(cone_src.contains("iaq_beam_tint.w * iaq_room_light"),
+		"the room's dimming moves into the cone's ambient term")
+	t.check(cone_src.contains("return base_col * iaq_room_light"),
+		"with no cone the tank dims with the room as before")
+	t.check(cone_src.contains("float core_e = energy < 1.0 ? sqrt(energy) : energy;"),
+		"a dimmed fixture still glints: the hot core scales with sqrt(energy)")
+	# --- Rear backlight globals ---
+	var fk: float = LightingRig.backlight_falloff(4.0)
+	t.approx(1.0 / (1.0 + fk * 4.0), 0.5, "backlight att is 0.5 at half range")
+	t.approx(LightingRig.backlight_energy(0.0), 0.0, "backlight off is zero energy")
+	t.check(w.contains("_push_backlight_globals("), "world.gd publishes the backlight")
+	for sh_name in ["voxel", "voxel_mm", "substrate_opaque", "substrate_caustic"]:
+		t.check(_read("res://shaders/%s.gdshader" % sh_name).contains("iaq_backlight_light("),
+			"%s picks up the rear backlight" % sh_name)
+	# --- Light tint ---
+	var pink: Color = LightingRig.tint_light(Color(1, 1, 1), Color(1.0, 0.6, 0.8))
+	t.approx(pink.r, 1.0, "light tint keeps the brightest channel")
+	t.approx(pink.g, 0.6, "light tint colours the rest")
+	var tc: String = _read("res://scripts/tank_config.gd")
+	t.check(tc.contains("\"light\", \"light_tint_rgb\""), "light_tint_rgb saves and loads")
+	t.check(w.contains("LightingRig.config_light_tint(cfg2)"),
+		"the lamp tint reaches the fixture colour")
+	var cone_sc: Vector4 = LightingRig.scatter_light(Color(1.0, 0.5, 0.5), 0.0)
+	t.approx(cone_sc.w, 0.0, "an unlit lamp scatters none of its colour")
+	t.check(_read("res://shaders/palette_tint.gdshaderinc").contains("iaq_scatter_body() * haze"),
+		"the water haze takes the lamp's colour")
+	var same: Color = LightingRig.tint_light(Color(0.5, 0.4, 0.3), Color.WHITE)
+	t.approx(same.g, 0.4, "a white tint is the identity")
+
 	probe.free()
 	quit(t.finish())
 

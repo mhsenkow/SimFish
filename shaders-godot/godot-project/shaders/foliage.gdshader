@@ -51,6 +51,7 @@ uniform float motion_lock : hint_range(0.0, 1.0) = 0.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/foliage_light.gdshaderinc"
 
 varying vec3 v_world_pos;
 
@@ -150,6 +151,12 @@ void fragment() {
     // Shaped lamp. In an unshaded pipeline nothing responds to a light on
     // its own, so the cone is evaluated here - this is what puts the beam
     // ON the leaves instead of only in the water in front of them.
-    col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+    // Thin-leaf transmission and the rear lamp, in world space (see
+    // foliage_light.gdshaderinc). Node-path leaves are single boxes of
+    // unknown thickness, so they transmit at a fixed middling rate.
+    vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
+    vec3 key_rgb = (tank_fixture_color * tank_fixture_glow + sss_color * sss_daylight * 0.35) * 0.55;
+    col = iaq_leaf_light(col, v_world_pos, n_ws, CAMERA_POSITION_WORLD, 0.6, key_rgb);
+    col = iaq_beam_light_n(v_world_pos, n_ws, col);
     ALBEDO = col;
 }

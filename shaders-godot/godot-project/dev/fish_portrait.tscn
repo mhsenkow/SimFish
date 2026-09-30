@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://fish_portrait_iaq"]
+
+[ext_resource type="Script" path="res://dev/fish_portrait.gd" id="1_portrait"]
+
+[node name="FishPortrait" type="Node"]
+script = ExtResource("1_portrait")

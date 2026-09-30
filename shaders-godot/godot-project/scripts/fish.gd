@@ -37,6 +37,7 @@ const _MindCacheRegistryScript = preload("res://scripts/mind_cache_registry.gd")
 const NightWatch = preload("res://scripts/night_watch.gd")
 const _MotionFieldScript = preload("res://scripts/motion_field.gd")
 const _MotionWaveScript = preload("res://scripts/motion_wave.gd")
+const _FishLifeBouts = preload("res://scripts/fish_life_bouts.gd")
 const _MotionSchoolScript = preload("res://scripts/motion_school.gd")
 const MindWorldModel = preload("res://scripts/mind_world_model.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
@@ -99,6 +100,20 @@ var accent_color: Color = Color8(230, 201, 42)
 # time (no behavior change for older fish).
 var tail_color: Color = Color8(0, 0, 0)
 var _tail_color_set: bool = false
+# Optional species colour zones. head_color paints the head block (the
+# rummy-nose red snout); caudal_stripes lays black/white bars along the
+# caudal lobes (rummy nose); female_color / female_tail_color replace the
+# generic grey female target on dimorphic species (a female guppy is
+# olive-silver with a near-clear tail, not grey); gravid_spot marks adult
+# livebearer females with the dark patch above the anal fin.
+var head_color: Color = Color8(0, 0, 0)
+var _head_color_set: bool = false
+var caudal_stripes: bool = false
+var female_color: Color = Color8(0, 0, 0)
+var _female_color_set: bool = false
+var female_tail_color: Color = Color8(0, 0, 0)
+var _female_tail_color_set: bool = false
+var gravid_spot: bool = false
 # Marking tint - a SECONDARY marking color zone, distinct from base/accent.
 # Used by the two-tone lateral band (cardinal tetra blue-over-red), the
 # rear-flank wedge (harlequin rasbora), the caudal eye-spot ring, and the
@@ -1708,6 +1723,57 @@ var _drive_soa_integrated: bool = false
 # automatically when courtship ends or the fish moves out of display
 # range.
 var _courtship_flare: bool = false
+# FISH LIFE (scripts/fish_life_bouts.gd): per-fish speed bouts, turn inertia,
+# livebearer pursuit + sigmoid display, idle pecking. State here, logic there.
+# (Read and written from fish_life_bouts.gd, hence the targeted ignores.)
+@warning_ignore("unused_private_class_variable")
+var _bout_kind: int = 0
+@warning_ignore("unused_private_class_variable")
+var _bout_t: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _bout_level: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _bout_env: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _bout_yaw: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _bout_clock: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _bout_w: Vector4 = Vector4.ZERO      # personal rhythm freqs + phases; x==0 unseeded
+@warning_ignore("unused_private_class_variable")
+var _cruise_mult: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _turn_rate_state: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_target: Fish = null
+@warning_ignore("unused_private_class_variable")
+var _lb_follow_t: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_cool: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_display_t: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_display_cool: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_side: float = 1.0
+@warning_ignore("unused_private_class_variable")
+var _lb_sigmoid: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _lb_quiver: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _peck_rate: float = -1.0             # genome "peck_rate"; <0 = species table
+@warning_ignore("unused_private_class_variable")
+var _peck_state: int = 0                 # 0 idle, 1 approach, 2 pecking
+@warning_ignore("unused_private_class_variable")
+var _peck_t: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _peck_cool: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _peck_timeout: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _peck_point: Vector3 = Vector3.ZERO
+@warning_ignore("unused_private_class_variable")
+var _peck_phase: float = 0.0
 # Sync pulse window — true only during the final pre-spawn beats. Both
 # fish puff up + flare in unison so the moment the eggs drop reads as
 # its own visual event (rather than ambient swimming → eggs appearing).
@@ -2146,6 +2212,17 @@ func init_genome(genome: Dictionary) -> void:
 	if genome.has("marking_color"):
 		marking_color = _coerce_color(genome["marking_color"], marking_color)
 		_marking_color_set = true
+	if genome.has("head_color"):
+		head_color = _coerce_color(genome["head_color"], head_color)
+		_head_color_set = true
+	caudal_stripes = bool(genome.get("caudal_stripes", false))
+	if genome.has("female_color"):
+		female_color = _coerce_color(genome["female_color"], female_color)
+		_female_color_set = true
+	if genome.has("female_tail_color"):
+		female_tail_color = _coerce_color(genome["female_tail_color"], female_tail_color)
+		_female_tail_color_set = true
+	gravid_spot = bool(genome.get("gravid_spot", false))
 	adult_voxel_scale = genome.get("adult_voxel_scale", adult_voxel_scale)
 	max_age_s = genome.get("max_age_s", max_age_s)
 	max_speed = genome.get("max_speed", max_speed)
@@ -2155,6 +2232,7 @@ func init_genome(genome: Dictionary) -> void:
 	fecundity = genome.get("fecundity", fecundity)
 	clutch_size = genome.get("clutch_size", clutch_size)
 	preferred_y = genome.get("preferred_y", preferred_y)
+	_peck_rate = float(genome.get("peck_rate", _peck_rate))
 	sex = genome.get("sex", _behavior_rng().randi() % 2)
 	generation = genome.get("generation", 0)
 	
@@ -2291,10 +2369,21 @@ func init_genome(genome: Dictionary) -> void:
 		var d: float = dimorphism
 		if sex == 1:
 			# Female form: drabber + fuller + shorter-finned, scaled by d.
-			base_color = base_color.lerp(Color(0.78, 0.78, 0.80), 0.55 * d)
-			if _tail_color_set:
+			# A species can name its own female colouring; without one the
+			# target is the generic silver-grey.
+			var f_body: Color = female_color if _female_color_set else Color(0.78, 0.78, 0.80)
+			base_color = base_color.lerp(f_body, (0.92 if _female_color_set else 0.55) * d)
+			if _female_tail_color_set:
+				tail_color = (tail_color if _tail_color_set else base_color) \
+					.lerp(female_tail_color, 0.88 * d)
+				_tail_color_set = true
+			elif _tail_color_set:
 				tail_color = tail_color.lerp(Color(0.7, 0.72, 0.75), 0.6 * d)
-			accent_color = accent_color.lerp(Color(0.65, 0.65, 0.70), 0.45 * d)
+			if _female_color_set:
+				accent_color = accent_color.lerp(f_body.darkened(0.12), 0.80 * d)
+				marking_color = marking_color.lerp(f_body.darkened(0.2), 0.75 * d)
+			else:
+				accent_color = accent_color.lerp(Color(0.65, 0.65, 0.70), 0.45 * d)
 			adult_voxel_scale *= lerpf(1.0, 1.35, d)
 			body_depth_factor *= lerpf(1.0, 1.15, d)
 			ventral_profile = clampf(ventral_profile * lerpf(1.0, 1.25, d), 0.55, 1.9)
@@ -2469,6 +2558,12 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 	else:
 		genome["tail_color"] = Color(g.randf(), g.randf() * 0.6 + 0.3, g.randf())
 	if not FishMorphs.restyles_body(palette_name):
+		# The tail of a colour-only morph (guppy, endler) is its signature
+		# flash: a vivid relative of the accent, never the reef path's random
+		# RGB, which rolled muddy olive and grey fans half the time.
+		var ta: Color = p[1]
+		genome["tail_color"] = Color.from_hsv(fposmod(ta.h + g.randf_range(-0.06, 0.06), 1.0),
+			maxf(ta.s, 0.78), maxf(ta.v, 0.88))
 		# Colour-only morph. A guppy morph is the same fish in a different
 		# colour, so leave the species' own body plan, size and finnage
 		# alone - rerolling them below would turn half the colony into
@@ -2610,11 +2705,15 @@ func _build_body() -> void:
 	_head_pivot.name = "Head"
 	_bank_pivot.add_child(_head_pivot)
 	var head: Node3D = _head_pivot
+	# head_color (rummy nose): the whole head block takes its own colour.
+	var mat_head: ShaderMaterial = _make_mat(head_color) if _head_color_set else mat_body
+	var mat_head_top: ShaderMaterial = _make_mat(head_color.lightened(0.22)) \
+		if _head_color_set else mat_top
 	_add_voxel_to(head, Vector3(0, 0, -2.5 * v),
-		Vector3(v * 0.95 * hp, v * 0.9 * hp, v * hp), mat_body)
+		Vector3(v * 0.95 * hp, v * 0.9 * hp, v * hp), mat_head)
 	# Forehead - lighter. Lifts on hump-backed phenotypes (angelfish, gourami).
 	_add_voxel_to(head, Vector3(0, v * 0.5 * hp * back_arch, -2.5 * v),
-		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_top)
+		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_head_top)
 	# Nuchal hump: a bulging forehead / nape boss that grows up and forward
 	# over the head. Defines mature cichlids (flowerhorn, severum, midas) and
 	# the humphead wrasse / bumphead parrotfish on the reef.
@@ -2894,6 +2993,15 @@ func _build_body() -> void:
 				Vector3(v * 0.08, v * 0.18, v * 0.16), mat_orn)
 	# Scale rows — subtle alternating lateral flecks between macro patterns.
 	_paint_scale_rows(_body_mid_pivot, v, seg_widths.size(), mat_marking)
+	if gravid_spot and sex == 1:
+		# Livebearer gravid spot: the dark patch on the rear belly above the
+		# anal fin, the easiest way to tell a female guppy at a glance.
+		var mat_gravid := _make_mat(base_color.darkened(0.66))
+		var gz: float = float(maxi(1, seg_widths.size() - 1)) * v * 0.70
+		for x_side in [-1.0, 1.0]:
+			_add_voxel_to(_body_mid_pivot,
+				Vector3(x_side * v * 0.50 * body_width_factor, -v * 0.24 * ventral_profile, gz),
+				Vector3(v * 0.10, v * 0.30, v * 0.44), mat_gravid)
 	# Lateral pattern. The discrete pattern_type chooses the macro layout; the
 	# continuous modulators (scale / intensity / density / coverage / contrast)
 	# reshape it, and an optional secondary motif blends in on top so a lineage
@@ -3089,6 +3197,19 @@ func _build_body() -> void:
 			_add_voxel_to(_tail_pivot,
 				Vector3(0, v * (-0.7 * fl * tf), v * (1.4 * fl)),
 				Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_tail)
+	if caudal_stripes:
+		# Rummy-nose caudal: a black bar down each lobe and one on the midline
+		# with white between - three dark bars on a fork still read at 3 px.
+		# 0.13 v wide, so the bars stand proud of the 0.10 v lobe both sides.
+		var mat_cbar := _make_mat(Color8(16, 16, 20))
+		var mat_cwhite := _make_mat(Color8(238, 240, 232))
+		for side_y in [-1.0, 1.0]:
+			_add_voxel_to(_tail_pivot, Vector3(0, side_y * v * 0.56 * tf, v * 1.08 * fl),
+				Vector3(v * 0.13, v * 0.13, v * 0.62 * fl), mat_cbar)
+			_add_voxel_to(_tail_pivot, Vector3(0, side_y * v * 0.30 * tf, v * 0.92 * fl),
+				Vector3(v * 0.12, v * 0.10, v * 0.50 * fl), mat_cwhite)
+		_add_voxel_to(_tail_pivot, Vector3(0, 0, v * 0.72 * fl),
+			Vector3(v * 0.14, v * 0.14, v * 0.56 * fl), mat_cbar)
 	# Finnage elaboration: flowing veil fins (betta / fancy livebearers). When
 	# finnage > 1.0, append long trailing ray voxels to the caudal, dorsal and
 	# anal fins so the silhouette reads as billowing drapery rather than a
@@ -3311,7 +3432,12 @@ func _push_fauna_inst_custom() -> void:
 		var static_a: float = float(h.get_meta("fauna_custom_a", 0.0)) \
 			if h.has_meta("fauna_custom_a") else 0.0
 		static_a = clampf(static_a, 0.0, 0.85)
-		h.set_custom_data(Color(cr, cg, cb, static_a))
+		# r packs the voxel's static bend weight with this fish's glow
+		# (FaunaVoxelBuilder.pack_custom_r) - writing the glow alone here
+		# used to zero the vertex wag the moment a fish flashed its belly.
+		var bend: float = float(h.get_meta("fauna_bend", 0.22)) \
+			if h.has_meta("fauna_bend") else 0.22
+		h.set_custom_data(Color(FaunaVoxelBuilder.pack_custom_r(bend, cr), cg, cb, static_a))
 
 
 func _apply_stress_flush() -> void:
@@ -4546,6 +4672,21 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				_courtship_intensity = 0.0
 			target_velocity = _apply_target_from_desired(desired, effective_max)
 			return events
+
+	# Tier 1a': FISH LIFE (fish_life_bouts.gd). A male livebearer tails a
+	# female and pulls ahead of her into the sigmoid display; failing that, a
+	# well-fed fish picks at a blade, the glass or the surface film. Both hand
+	# back ZERO when idle, and the normal tiers below carry on.
+	var life_steer: Vector3 = Vector3.ZERO
+	if is_livebearer:
+		life_steer = _FishLifeBouts.livebearer_steer(self, neighbors, dt, effective_max)
+	if life_steer == Vector3.ZERO:
+		life_steer = _FishLifeBouts.peck_steer(self, plants, dt, effective_max,
+			SimGate.daylight(sim, 1.0) if sim != null else 1.0)
+	if life_steer != Vector3.ZERO:
+		desired += life_steer
+		target_velocity = _apply_target_from_desired(desired, effective_max)
+		return events
 
 	# Tier 1b: SCAVENGE WASTE. Fish opportunistically eat waste particles
 	# that drift past. Cheaper than chasing live food. Applies to all fish,
@@ -6839,6 +6980,17 @@ func _motion_substep(dt: float) -> void:
 	if sim != null:
 		var enrich: float = clampf(float(sim.total_plant_biomass) / 300.0, 0.0, 1.0)
 		target_spd *= lerpf(0.85, 1.0, enrich)
+	# FISH LIFE bouts: each fish's own cruise pace / hover / dart schedule, so
+	# neighbours stop changing speed in lockstep.
+	var bout_ok: bool = settle_factor >= 1.0 and burst_remaining <= 0.0 \
+		and _sift_timer <= 0.0 and partner == null and _lb_target == null \
+		and _peck_state == 0 \
+		and (current_mode == Mode.CRUISE or current_mode == Mode.FORAGE)
+	target_spd = _FishLifeBouts.bout_speed(self, target_spd, dt, bout_ok,
+		SimGate.daylight(sim, 1.0) if sim != null else 1.0)
+	if _FishLifeBouts.is_darting(self):
+		eff_accel *= 4.0
+		target_dir = target_dir.rotated(Vector3.UP, _bout_yaw * 0.5)
 	_motion_target_spd = target_spd
 	if not is_finite(target_spd):
 		target_spd = 0.0
@@ -6928,7 +7080,8 @@ func _motion_substep(dt: float) -> void:
 		horizontal_axis.y *= 0.5
 		if horizontal_axis.length_squared() > 1e-6:
 			axis = horizontal_axis.normalized()
-		var turn: float = minf(max_step, angle)
+		# Turn inertia (FishLifeBouts): the yaw rate ramps, it does not snap.
+		var turn: float = _FishLifeBouts.inertial_turn(self, angle, max_step, dt, wall_t)
 		heading = _safe_normalize(heading.rotated(axis, turn), heading)
 		# Defensive NaN guard: if axis was degenerate in a way the checks
 		# above missed, the rotation can leak NaN into heading. Restore from
@@ -7194,6 +7347,8 @@ func _motion_substep(dt: float) -> void:
 		# Pectoral fins flare wider during display - real courting fish
 		# spread their pec fins maximally to look bigger / fitter.
 		pec_amp_extra = 0.10 + _courtship_intensity * 0.30
+	if _lb_sigmoid > 0.01:
+		pec_amp_extra = maxf(pec_amp_extra, 0.32 * _lb_sigmoid)
 	# Pre-spawn sync window: both fish puff up + flare in unison the
 	# beat before egg drop. Drives the body pulse and a brief extra
 	# pec spread so the spawn moment reads as a flash.
@@ -7337,9 +7492,21 @@ func _motion_substep(dt: float) -> void:
 		elif not is_equal_approx(_body_mid_pivot.scale.x, 1.0):
 			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(Vector3.ONE,
 				clampf(dt * 8.0, 0.0, 1.0))
+	# Livebearer sigmoid display (FishLifeBouts): the male bends into an S -
+	# tail one way, mid-body the other, head back - fins wide, quivering.
+	var lb_sig: float = _FishLifeBouts.sigmoid_env(self, dt) if is_livebearer else 0.0
+	if lb_sig > 0.001:
+		var s_amt: float = 0.5 * _lb_side * lb_sig
+		var quiv: float = sin(_lb_quiver) * 0.05 * lb_sig
+		if _tail_pivot != null:
+			_tail_pivot.rotation.y = lerpf(_tail_pivot.rotation.y, s_amt + quiv, lb_sig)
+		if _body_mid_pivot != null:
+			_body_mid_pivot.rotation.y = lerpf(_body_mid_pivot.rotation.y,
+				-s_amt * 0.85 - quiv, lb_sig)
 	if _head_pivot != null:
 		# Smooth head rotation in to avoid pop when locomotion changes.
 		var head_target: float = sin(_swim_phase + head_phase) * head_amp
+		head_target = lerpf(head_target, 0.3 * _lb_side, _lb_sigmoid)
 		head_target += Hydrodynamics.tail_recoil_yaw(_swim_phase, hydro_effort)
 		# Eye saccades: at rest, the head occasionally micro-turns. Fish
 		# don't have movable eyeballs (most species) so they redirect
@@ -7487,6 +7654,7 @@ func _tick_fauna_body_color(dt: float) -> void:
 	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
 		flare = 0.58 if _courtship_sync else _courtship_intensity * 0.42
+	flare = maxf(flare, _lb_sigmoid * 0.35)
 	# Relief pulse only — skip continuous mood/arousal tints during cruise.
 	flare += _relief_pulse * 0.14
 	var pallor: float = clampf((stress - 0.62) / 0.38, 0.0, 1.0) * 0.45

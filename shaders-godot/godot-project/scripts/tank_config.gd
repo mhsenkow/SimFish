@@ -377,6 +377,10 @@ var vessel_preset: String = "custom"
 var tank_half_w: float = 8.0
 var tank_half_d: float = 4.0
 var tank_height: float = 7.0
+# Size a scenario template was authored (and its stocking tuned) at, as
+# (half_w, half_d, height). TankSizing scales initial fish/shrimp and plant
+# fill from it. ZERO = no scaling (older saves, tanks made without one).
+var stocking_ref_dims: Vector3 = Vector3.ZERO
 # How new tanks pick footprint before the player edits shape sliders.
 # auto = portrait → tall round (cylinder), landscape → wide rectangle;
 # rect = always box; round = cylinder (square/cube uses shape picker).
@@ -610,6 +614,11 @@ var moonlight_enabled: bool = true
 var backlight_enabled: bool = false
 var backlight_intensity: float = 0.0
 var backlight_color: Color = Color(1.0, 0.62, 0.28)
+# The tank LED's own spectrum (LightingRig.tint_light). Separate from
+# tank_fixture_color because every lighting preset rewrites that, while the
+# lamp on a tank does not change when the player picks "Golden hour".
+# White is the identity; presets never set it.
+var light_tint_rgb: Color = Color(1.0, 1.0, 1.0)
 var moonlight_intensity: float = 0.4
 var moonlight_color: Color = Color(0.55, 0.70, 1.0)
 var accent1_enabled: bool = false
@@ -908,6 +917,27 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"night_depth_boost": 1.06,
 		"sim_clock": false,
 	},
+	# The keeper's own room (hex_jungle reference photos): a sage-green
+	# painted corner, a pale floor-standing cabinet, no window. The warm lamp
+	# behind the tank is the backlight, not a room prop.
+	"green_corner": {
+		"label": "Green corner",
+		"description": "Sage-green painted corner and a pale cabinet. No window; the tank's own pink LED and the warm lamp behind it light the room.",
+		"suggested_lighting": "backlit_jungle",
+		"desk_color": [196, 188, 172],
+		"wall_color": [66, 110, 60],
+		"accent_color": [150, 170, 120],
+		"light_color": [255, 214, 160],
+		"include_lamp": false,
+		"include_books": false,
+		"include_plant": false,
+		"include_window": false,
+		"include_clock": false,
+		"include_mug": false,
+		"room_warmth": 0.58,
+		"night_depth_boost": 1.10,
+		"sim_clock": false,
+	},
 }
 
 
@@ -933,9 +963,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "5 gallon nano",
 		"description": "Desk-scale starter. Shrimp, a betta, or a tiny nano school.",
 		"tank_shape": "box",
-		"tank_half_w": 3.5002,
-		"tank_half_d": 2.0776,
-		"tank_height": 4.9150,
+		"tank_half_w": 4.3753,
+		"tank_half_d": 2.5970,
+		"tank_height": 6.1437,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.26,
 	},
@@ -943,9 +973,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "10 gallon",
 		"description": "The classic first tank. Cheap, forgiving, everywhere.",
 		"tank_shape": "box",
-		"tank_half_w": 4.1401,
-		"tank_half_d": 2.4575,
-		"tank_height": 5.6377,
+		"tank_half_w": 5.1751,
+		"tank_half_d": 3.0719,
+		"tank_height": 7.0471,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.22,
 	},
@@ -953,9 +983,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "20 gallon long",
 		"description": "Low and wide — more floor for corys and carpeting than a 29.",
 		"tank_shape": "box",
-		"tank_half_w": 5.6172,
-		"tank_half_d": 2.8189,
-		"tank_height": 5.6377,
+		"tank_half_w": 7.0215,
+		"tank_half_d": 3.5236,
+		"tank_height": 7.0471,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.22,
 	},
@@ -963,9 +993,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "29 gallon",
 		"description": "Tall community tank. Room for stem plants to reach the light.",
 		"tank_shape": "box",
-		"tank_half_w": 5.6172,
-		"tank_half_d": 2.8189,
-		"tank_height": 7.6491,
+		"tank_half_w": 7.0215,
+		"tank_half_d": 3.5236,
+		"tank_height": 9.5614,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -973,9 +1003,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "40 gallon breeder",
 		"description": "Deep front-to-back. The aquascaper's favourite footprint.",
 		"tank_shape": "box",
-		"tank_half_w": 6.4433,
-		"tank_half_d": 3.8246,
-		"tank_height": 7.0004,
+		"tank_half_w": 8.0541,
+		"tank_half_d": 4.7808,
+		"tank_height": 8.7505,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.22,
 	},
@@ -983,9 +1013,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "55 gallon",
 		"description": "Long and narrow — a corridor for schooling fish.",
 		"tank_shape": "box",
-		"tank_half_w": 8.0006,
-		"tank_half_d": 2.9939,
-		"tank_height": 8.5899,
+		"tank_half_w": 10.0008,
+		"tank_half_d": 3.7424,
+		"tank_height": 10.7374,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -993,9 +1023,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "75 gallon",
 		"description": "Wide community centrepiece. Stable, forgiving, heavy.",
 		"tank_shape": "box",
-		"tank_half_w": 8.0006,
-		"tank_half_d": 3.8246,
-		"tank_height": 8.5899,
+		"tank_half_w": 10.0008,
+		"tank_half_d": 4.7808,
+		"tank_height": 10.7374,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -1003,9 +1033,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "120 gallon",
 		"description": "Deep enough to aquascape in layers. A serious piece of furniture.",
 		"tank_shape": "box",
-		"tank_half_w": 8.0006,
-		"tank_half_d": 4.7490,
-		"tank_height": 9.4979,
+		"tank_half_w": 10.0008,
+		"tank_half_d": 5.9362,
+		"tank_height": 11.8724,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -1013,9 +1043,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "60P rimless",
 		"description": "60 × 30 × 36 cm. The standard planted-tank canvas.",
 		"tank_shape": "box",
-		"tank_half_w": 4.6893,
-		"tank_half_d": 2.7834,
-		"tank_height": 6.3991,
+		"tank_half_w": 5.8616,
+		"tank_half_d": 3.4792,
+		"tank_height": 7.9989,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.22,
 	},
@@ -1023,9 +1053,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "30C cube",
 		"description": "A true 30 cm cube. Iwagumi in miniature.",
 		"tank_shape": "cube",
-		"tank_half_w": 2.7834,
-		"tank_half_d": 2.7834,
-		"tank_height": 5.5669,
+		"tank_half_w": 3.4792,
+		"tank_half_d": 3.4792,
+		"tank_height": 6.9586,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.26,
 	},
@@ -1033,9 +1063,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Reef cube",
 		"description": "Rimless saltwater cube. Viewable from three sides.",
 		"tank_shape": "cube",
-		"tank_half_w": 4.1401,
-		"tank_half_d": 4.1401,
-		"tank_height": 7.6491,
+		"tank_half_w": 5.1751,
+		"tank_half_d": 5.1751,
+		"tank_height": 9.5614,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -1043,9 +1073,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Column",
 		"description": "Tall and narrow. Tannins, driftwood, dim light.",
 		"tank_shape": "box",
-		"tank_half_w": 4.7490,
-		"tank_half_d": 2.8189,
-		"tank_height": 9.4979,
+		"tank_half_w": 5.9362,
+		"tank_half_d": 3.5236,
+		"tank_height": 11.8724,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -1053,9 +1083,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Shallow breeder",
 		"description": "Riparium proportions — wide surface, low water.",
 		"tank_shape": "box",
-		"tank_half_w": 6.4433,
-		"tank_half_d": 3.8246,
-		"tank_height": 4.9150,
+		"tank_half_w": 8.0541,
+		"tank_half_d": 4.7808,
+		"tank_height": 6.1437,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.26,
 	},
@@ -1063,9 +1093,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Round column",
 		"description": "Cylindrical tower. Unusual sightlines, awkward to scape.",
 		"tank_shape": "cylinder",
-		"tank_half_w": 3.8246,
-		"tank_half_d": 3.8246,
-		"tank_height": 11.2345,
+		"tank_half_w": 4.7808,
+		"tank_half_d": 4.7808,
+		"tank_height": 14.0431,
 		"water_surface_fraction": 0.94,
 		"substrate_depth_fraction": 0.20,
 	},
@@ -1073,9 +1103,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Hex",
 		"description": "Six-sided shallow pan. Viewed from above as much as the side.",
 		"tank_shape": "hex",
-		"tank_half_w": 4.7490,
-		"tank_half_d": 4.7490,
-		"tank_height": 5.6377,
+		"tank_half_w": 5.9362,
+		"tank_half_d": 5.9362,
+		"tank_height": 7.0471,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.22,
 	},
@@ -1083,9 +1113,9 @@ const VESSEL_PRESETS: Dictionary = {
 		"label": "Fishbowl",
 		"description": "Charming and cruel. Almost no surface area for gas exchange.",
 		"tank_shape": "sphere",
-		"tank_half_w": 2.8189,
-		"tank_half_d": 2.8189,
-		"tank_height": 4.9150,
+		"tank_half_w": 3.5236,
+		"tank_half_d": 3.5236,
+		"tank_height": 6.1437,
 		"water_surface_fraction": 0.92,
 		"substrate_depth_fraction": 0.26,
 	},
@@ -1385,6 +1415,116 @@ const SPECIES_LIBRARY: Dictionary = {
 			# internally; sim_driver._lay_eggs branches on this flag to
 			# spawn free-swimming fry directly instead of plant-laid eggs.
 			"is_livebearer": true,
+			# Females: olive-silver, near-clear tail, dark gravid spot - not
+			# the generic grey, which read as a different, duller species.
+			"female_color": Color8(150, 146, 116),
+			"female_tail_color": Color8(198, 192, 162),
+			"gravid_spot": true,
+		},
+	},
+	"endler": {
+		"label": "Endler's livebearer",
+		"description": "Tiny, hot-coloured guppy cousin. Males flash orange, jet black and neon green; females stay plain olive-silver.",
+		"genome": {
+			"species": "endler",
+			# Colour-only morph roll (FishMorphs.ENDLER), like the guppy:
+			# the body plan below is kept for every individual.
+			"mixed_morphs": true,
+			"morph_palette": "endler",
+			"base_color": Color8(255, 118, 36),
+			"accent_color": Color8(24, 22, 26),
+			"tail_color": Color8(255, 150, 50),
+			"dimorphic": true,
+			"is_livebearer": true,
+			"female_color": Color8(148, 142, 112),
+			"female_tail_color": Color8(192, 188, 160),
+			"gravid_spot": true,
+			"metallic_scales": true,             # the metallic sheen males carry
+			"adult_voxel_scale": 0.085,          # smaller than a guppy
+			"size_potential": 0.9,
+			"jaw_claw_size": 0.06,
+			"max_age_s": 170.0,
+			"max_speed": 1.7,
+			"schooling_strength": 0.8,
+			"separation_radius": 0.35,
+			"herbivory": 0.6,
+			"fecundity": 1.9,
+			"clutch_size": 3,
+			"preferred_y": 4.4,
+			"body_elongation": 0.92,
+			"body_depth_factor": 0.95,
+			"body_shape": "fusiform",
+			"fin_length_factor": 1.05,           # short tail, unlike a fancy guppy
+			"pattern_type": 7,                   # blotches in the accent colour
+			"swim_pattern": "shoal",
+			"tail_shape": 2,                     # upper/lower rays: the sword
+			"eye_size_factor": 1.1,
+		},
+	},
+	"rummy_nose": {
+		"label": "Rummy-nose tetra",
+		"description": "Tightest schooler in the hobby. Silver body, blood-red head, black-and-white striped tail.",
+		"genome": {
+			"species": "rummy_nose",
+			"base_color": Color8(214, 220, 214),
+			"accent_color": Color8(188, 196, 190),
+			"head_color": Color8(222, 38, 44),
+			"tail_color": Color8(236, 238, 232),
+			"caudal_stripes": true,
+			"metallic_scales": true,
+			"adult_voxel_scale": 0.15,
+			"size_potential": 0.95,
+			"jaw_claw_size": 0.04,
+			"max_age_s": 240.0,
+			"max_speed": 1.9,
+			"schooling_strength": 1.8,           # the tightest school in the tank
+			"separation_radius": 0.42,
+			"herbivory": 0.4,
+			"fecundity": 0.7,
+			"clutch_size": 2,
+			"preferred_y": 3.4,
+			"body_elongation": 1.15,
+			"body_depth_factor": 0.80,
+			"swim_pattern": "school",
+			"pattern_type": 0,
+			"tail_shape": 0,                     # forked
+			"eye_size_factor": 1.05,
+			"adipose_fin": true,
+			"body_shape": "fusiform",
+			"motion_gait_bias": 1.05,
+		},
+	},
+	"ember_tetra": {
+		"label": "Ember tetra",
+		"description": "Tiny glowing coal. Uniform orange-red all over, slightly see-through, in a loose shoal.",
+		"genome": {
+			"species": "ember_tetra",
+			# Kept on the orange side of scarlet: at ~0.6 of albedo (a flank
+			# out of the cone) 255,96,38 falls to the palette's red, while
+			# this holds the hot orange entry.
+			"base_color": Color8(255, 112, 34),
+			"accent_color": Color8(255, 132, 64),
+			"tail_color": Color8(255, 110, 50),
+			"adult_voxel_scale": 0.09,
+			"size_potential": 0.85,
+			"jaw_claw_size": 0.03,
+			"max_age_s": 200.0,
+			"max_speed": 1.6,
+			"schooling_strength": 1.3,
+			"separation_radius": 0.38,
+			"herbivory": 0.45,
+			"fecundity": 0.9,
+			"clutch_size": 2,
+			"preferred_y": 3.8,
+			"body_elongation": 1.0,
+			"body_depth_factor": 0.95,
+			"swim_pattern": "shoal",
+			"pattern_type": 0,
+			"tail_shape": 0,
+			"eye_size_factor": 1.1,
+			"adipose_fin": true,
+			"body_shape": "fusiform",
+			"motion_gait_bias": 0.98,
 		},
 	},
 	"pufferfish": {
@@ -2531,7 +2671,19 @@ const TANK_PRESETS: Dictionary = {
 			"mode": "ridge_strip",
 			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 0, "riccia": 1},
 		},
-		"hardscape_style": "twin_logs",
+		# Not twin_logs: that style runs the full three-island Iwagumi stone set
+		# (the multiplier only gates it on or off), which put a row of grey
+		# boulders along the front of a tank whose reference photo has none.
+		# jungle_bed keeps the buried branch and scatters pebbles over the cap.
+		"hardscape_style": "jungle_bed",
+		# The surface belongs to the valli lying along it. Lily pads, cattails,
+		# the nautilus and fractal moss read as props standing on a jungle.
+		"surface_extras": false,
+		# One hair algae / moss mound on the highest wood, as in the photos.
+		"hair_mound_count": 1,
+		# A ramshorn colony, not a mixed founder set: one morph at every size.
+		"snail_morph": "red_ramshorn",
+		"mystery_snails": 1,
 		"terrain_relief": [
 			# Soil mounded along the back where the valli runners are thickest,
 			# with a shallow trough at the front where shells collect.
@@ -2539,6 +2691,59 @@ const TANK_PRESETS: Dictionary = {
 			{"x":  0.10, "z":  0.60, "radius": 4, "mode": "dig"},
 		],
 		"description": "Wall-to-wall vallisneria over a gravel-capped soil bed, with a ramshorn colony and a drift of empty shells collecting in the low spot at the front. Driftwood buried in the blades. Hair algae on the older leaves. Backlit warm.",
+	},
+	# The keeper's own tank (reference photos 1-4): a tall corner column in a
+	# green room. Vallisneria floor to surface, a frogbit mat trailing long
+	# red-brown root curtains, a glass apothecary cloche on the gravel with a
+	# hair-algae mound on its lid, red ramshorns all over the glass, and a
+	# crowd of livebearers packed under the surface with rummy-nose and ember
+	# tetras lower down. Pink LED bar on top, a warm lamp behind the valli.
+	"hex_jungle": {
+		"label": "Hex jungle (the keeper's tank)",
+		# Densest stocking of any preset, on purpose: in the photos the upper
+		# third of the water is a crowd, and that crowd is what makes the tank
+		# read as alive rather than scaped. The volume ratio doubles the fish
+		# ceiling on a column this size, so this stays under the hard cap.
+		"stocking": {
+			# Authored at the pre-resize column (6.5 x 15); the scenario's
+			# stocking_ref_dims scales these ~1.34x, landing near the photo's
+			# crowd (~47 fish) without outrunning the sim tick.
+			"endler": 12, "guppy": 8, "rummy_nose": 8, "ember_tetra": 7,
+			"shrimp": 5,
+		},
+		# Used only when a key above is missing from SPECIES_LIBRARY (an older
+		# build, or a species renamed): the tank keeps its crowd instead of
+		# spawning a third of it.
+		"stocking_fallback": {
+			"endler": "guppy", "rummy_nose": "glassdart", "ember_tetra": "glassdart",
+		},
+		"phenotype_spread": 1.3,
+		"plant_palette": {
+			"valli": 3.40, "crypt": 0.50, "red_stem": 0.0,
+			"carpet": 0.10, "moss": 0.80, "java_fern": 0.30,
+		},
+		"plant_layout": {
+			"mode": "ridge_strip",
+			"extras": {"spirals": 0, "branch_ferns": 1, "hydra": 0, "marimo": 0, "riccia": 1},
+			# Valli wall to wall: the background rows alone leave a hex
+			# floor bare in front (see world._spawn_plants_for_layout).
+			"valli_fill": 22,
+		},
+		# Glass cloche front-left, red-brown pebbles over the gravel cap, no
+		# stone islands and no driftwood in frame.
+		"hardscape_style": "cloche_jar",
+		"surface_extras": false,
+		# The fuzzy mound sits on the cloche lid (photos 1, 2) and on the
+		# highest pebble pile.
+		"hair_mound_count": 2,
+		"snail_morph": "red_ramshorn",
+		"mystery_snails": 1,
+		"terrain_relief": [
+			# Soil banked up along the back where the valli is thickest.
+			{"x":  0.20, "z": -0.55, "radius": 5, "mode": "raise"},
+			{"x": -0.35, "z":  0.45, "radius": 3, "mode": "dig"},
+		],
+		"description": "The keeper's own tank. A tall corner column in a green room: vallisneria floor to surface, a frogbit mat with long red-brown root curtains, a glass cloche on the gravel wearing a hair-algae mound, red ramshorns all over the glass. Endlers and guppies crowd the surface, rummy-nose and ember tetras hold lower. Pink LED on top, a warm lamp glowing through the blades from behind.",
 	},
 	"night_lamp": {
 		"label": "Night lamp (one beam)",
@@ -2868,6 +3073,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("tank", "half_w", tank_half_w)
 	cfg.set_value("tank", "half_d", tank_half_d)
 	cfg.set_value("tank", "height", tank_height)
+	cfg.set_value("tank", "stocking_ref_dims", stocking_ref_dims)
 	cfg.set_value("tank", "shape", tank_shape)
 	cfg.set_value("tank", "vessel_preset", vessel_preset)
 	cfg.set_value("tank", "dome", tank_shape == "sphere")
@@ -2918,6 +3124,8 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("light", "backlight_intensity", backlight_intensity)
 	cfg.set_value("light", "backlight_color",
 		[backlight_color.r, backlight_color.g, backlight_color.b])
+	cfg.set_value("light", "light_tint_rgb",
+		[light_tint_rgb.r, light_tint_rgb.g, light_tint_rgb.b])
 	cfg.set_value("light", "moonlight_intensity", moonlight_intensity)
 	cfg.set_value("light", "moonlight_color",
 		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
@@ -3187,6 +3395,8 @@ func load_from_disk() -> void:
 	tank_half_w = cfg.get_value("tank", "half_w", tank_half_w)
 	tank_half_d = cfg.get_value("tank", "half_d", tank_half_d)
 	tank_height = cfg.get_value("tank", "height", tank_height)
+	var ref_dims: Variant = cfg.get_value("tank", "stocking_ref_dims", Vector3.ZERO)
+	stocking_ref_dims = ref_dims if ref_dims is Vector3 else Vector3.ZERO
 	tank_shape = cfg.get_value("tank", "shape", tank_shape)
 	vessel_preset = cfg.get_value("tank", "vessel_preset", vessel_preset)
 	# Legacy saves used "sphere" for the vertical cylinder tank.
@@ -3250,6 +3460,10 @@ func load_from_disk() -> void:
 		[backlight_color.r, backlight_color.g, backlight_color.b])
 	if bl_rgb.size() >= 3:
 		backlight_color = Color(float(bl_rgb[0]), float(bl_rgb[1]), float(bl_rgb[2]))
+	var lt_rgb: Array = cfg.get_value("light", "light_tint_rgb",
+		[light_tint_rgb.r, light_tint_rgb.g, light_tint_rgb.b])
+	if lt_rgb.size() >= 3:
+		light_tint_rgb = Color(float(lt_rgb[0]), float(lt_rgb[1]), float(lt_rgb[2]))
 	moonlight_intensity = cfg.get_value("light", "moonlight_intensity", moonlight_intensity)
 	var moon_rgb: Array = cfg.get_value("light", "moonlight_color",
 		[moonlight_color.r, moonlight_color.g, moonlight_color.b])
@@ -3605,6 +3819,7 @@ func reset_to_defaults() -> void:
 	tank_half_w = 8.0
 	tank_half_d = 4.0
 	tank_height = 7.0
+	stocking_ref_dims = Vector3.ZERO
 	apply_screen_fitted_dimensions()
 	# Population budget.
 	density_budget = 1.0
@@ -3633,6 +3848,7 @@ func reset_to_defaults() -> void:
 	global_warmth = 0.6
 	tank_fixture_intensity = 0.5
 	tank_fixture_color = Color(1.0, 0.95, 0.85)
+	light_tint_rgb = Color(1.0, 1.0, 1.0)
 	day_length_s = 360.0
 	sunset_drama = 0.75
 	moonlight_enabled = true
@@ -3892,8 +4108,9 @@ func apply_screen_fitted_dimensions() -> void:
 
 	if desktop:
 		tank_shape = "box"
-		tank_half_w = 14.0
-		tank_half_d = 10.0
+		# Same scale as the templates' medium tanks (TankSizing).
+		tank_half_w = 12.5
+		tank_half_d = 7.0
 		tank_height = 10.0
 		return
 

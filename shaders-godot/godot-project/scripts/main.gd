@@ -322,6 +322,7 @@ var _key_was_pressed: Dictionary = {}
 # (drag to refine, F to reset back to this).
 # Hero rest pose — tank as subject without crowding the frame.
 # Optical centre / rule-of-thirds Y; slight above-looking pitch; FOV ~45°.
+const TankSizing := preload("res://scripts/tank_sizing.gd")
 const DEFAULT_TARGET := Vector3(0, 2.8, 0)
 const DEFAULT_RADIUS := 15.5
 const DEFAULT_YAW := -0.42
@@ -360,18 +361,22 @@ func _default_camera_for_tank() -> Dictionary:
 	var vp: Vector2 = get_viewport().get_visible_rect().size if get_viewport() != null else Vector2(1536, 864)
 	var portrait: bool = vp.y > vp.x * 1.02
 	# Tall round tank seen on a tall screen: portrait camera.
+	var fov: float = float(camera.fov) if camera != null else 55.0
+	var aspect: float = vp.x / maxf(1.0, vp.y)
 	if shape == "cylinder" and portrait:
-		var radius_px: float = clampf(tank_h * 1.35 + tank_hw * 1.25, 9.0, 24.0)
+		var radius_px: float = TankSizing.fit_radius(tank_hw, tank_hd, tank_h, fov,
+			aspect, PORTRAIT_DEFAULT_YAW, PORTRAIT_DEFAULT_PITCH, 0.78)
 		return {
 			"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
-			"radius": radius_px,
+			"radius": clampf(radius_px, MIN_RADIUS, MAX_RADIUS),
 			"yaw": PORTRAIT_DEFAULT_YAW,
 			"pitch": PORTRAIT_DEFAULT_PITCH,
 		}
-	# Hero 3/4 — optical centre, designed pitch. Radius scales from the
-	# empirical DEFAULT_RADIUS that fills ~68% for an 8-unit half-width box.
-	var span: float = maxf(tank_hw, tank_hd * 0.85)
-	var hero_r: float = DEFAULT_RADIUS * (span / 8.0)
+	# Hero 3/4 — optical centre, designed pitch. The radius fits the tank's
+	# real extent (width, depth AND height) to ~68% of the view at the live
+	# fov and aspect; the old width-only rule cropped tall tanks.
+	var hero_r: float = TankSizing.fit_radius(tank_hw, tank_hd, tank_h, fov, aspect,
+		DEFAULT_YAW, DEFAULT_PITCH)
 	return {
 		"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
 		"radius": clampf(hero_r, MIN_RADIUS, MAX_RADIUS),
@@ -3149,6 +3154,11 @@ func _maybe_play_opening_camera() -> void:
 	var hero: Dictionary = _default_camera_for_tank()
 	var end_r: float = clampf(float(hero["radius"]), MIN_RADIUS, MAX_RADIUS)
 	var start_r: float = clampf(end_r * 1.38, MIN_RADIUS, MAX_RADIUS)
+	# Frame the tank it is: aim at its optical centre (a tall tank's centre
+	# sits well above the old fixed y=2.8) from the hero angle.
+	target = hero["target"]
+	yaw = float(hero["yaw"])
+	pitch = float(hero["pitch"])
 	radius = start_r
 	_apply_camera()
 	var tw := create_tween()
@@ -8267,6 +8277,7 @@ const _TOD_NIGHT: Vector3 = Vector3(0.38, 0.42, 0.52)
 var _palette_tint_smooth: Vector3 = Vector3(1.0, 1.0, 1.0)
 var _palette_night_blend_smooth: float = 0.0
 var _last_written_palette_tint: Vector3 = Vector3(-999.0, -999.0, -999.0)
+var _last_room_light: float = -1.0
 var _glance_cam_pos: Vector3 = Vector3(INF, INF, INF)
 var _glance_cam_rot_hash: float = 0.0
 var _shadow_cam_pos: Vector3 = Vector3(INF, INF, INF)
@@ -8319,9 +8330,16 @@ func _update_palette_tod_tint() -> void:
 		# Global intensity is a 2-segment curve anchored at 0.5 → 1.0 so saved
 		# tanks keep their look. Below 0.5 the scene dims down toward 0.15;
 		# above 0.5 it lifts to 1.4 for an over-bright "noon" feel.
-		var e: float = clampf(float(cfg.global_intensity), 0.0, 1.0)
-		var bright: float = (0.15 + (e / 0.5) * 0.85) if e <= 0.5 \
-			else (1.0 + ((e - 0.5) / 0.5) * 0.25)
+		# A lit tank is spared the room's dimness; the room geometry takes it
+		# instead through iaq_room_light (LightingRig.global_brightness).
+		var global_b: float = LightingRig.global_brightness(float(cfg.global_intensity))
+		var tank_lit: bool = bool(cfg.tank_lights_on) and bool(cfg.light_master_enabled)
+		var bright: float = LightingRig.frame_brightness(global_b,
+			LightingRig.lamp_hold(tank_lit, float(cfg.tank_fixture_intensity)))
+		var room_l: float = LightingRig.room_light(global_b, bright)
+		if absf(room_l - _last_room_light) > 0.002:
+			_last_room_light = room_l
+			RenderingServer.global_shader_parameter_set("iaq_room_light", room_l)
 		t *= bright
 		# Warmth tint: 0.0 cools (boost blue, drop red), 1.0 warms (boost red,
 		# drop blue). 0.5 is neutral. Effect is multiplicative on top of the
@@ -12363,6 +12381,14 @@ var _light_hover_kind: int = LightHandle.NONE
 var _light_drag_kind: int = LightHandle.NONE
 var _light_drag_before: Dictionary = {}
 var _light_cursor_set: bool = false
+# Drag frame, fixed at grab (LightHandle drag model).
+var _light_drag_surface: int = LightHandle.SURFACE_FLAT
+var _light_drag_view: Vector3 = Vector3.FORWARD
+var _light_drag_plane_y: float = 0.0
+var _light_drag_anchor: Vector3 = Vector3.INF
+var _light_drag_grab: Vector3 = Vector3.INF
+var _light_drag_root0: Vector3 = Vector3.INF
+var _light_drag_aim0: Vector3 = Vector3.INF
 
 
 func _light_cfg() -> Node:
@@ -12478,35 +12504,76 @@ func _handle_light_handle_input(event: InputEvent) -> bool:
 			return true
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
 			var lamp: Vector2 = _light_lamp_window()
-			if lamp == Vector2.INF:
+			if lamp == Vector2.INF or _click_hits_interactive_hud(mb.position):
 				return false
 			var kind: int = LightHandle.pick(
 				mb.position, lamp, _light_aim_window(),
 				LightHandle.grab_radius(_is_touch_active()))
 			if kind == LightHandle.NONE:
 				return false
-			_begin_light_drag(kind, mb.position)
-			return true
+			return _begin_light_drag(kind, mb.position)
 	return false
 
 
-func _begin_light_drag(kind: int, window_pos: Vector2) -> void:
+# The exact inverse of _viewport_to_window, so the ring is drawn and the
+# drag is read through ONE mapping. _window_mouse_to_viewport ignores its
+# argument and reads the live cursor instead.
+func _window_to_viewport_exact(wp: Vector2) -> Vector2:
+	if display == null or sub_viewport == null \
+			or sub_viewport.size.x <= 0 or sub_viewport.size.y <= 0:
+		return wp
+	var rect: Rect2 = display.get_global_rect()
+	if rect.size.x < 1.0 or rect.size.y < 1.0:
+		return wp
+	return Vector2(
+		(wp.x - rect.position.x) / rect.size.x * float(sub_viewport.size.x),
+		(wp.y - rect.position.y) / rect.size.y * float(sub_viewport.size.y))
+
+
+# Cursor ray -> the drag surface chosen at grab.
+func _light_surface_hit(window_pos: Vector2) -> Vector3:
+	var sv: Vector2 = _window_to_viewport_exact(window_pos)
+	return LightHandle.surface_hit(_light_drag_surface,
+		camera.project_ray_origin(sv), camera.project_ray_normal(sv).normalized(),
+		_light_drag_plane_y, _light_drag_anchor, _light_drag_view)
+
+
+func _begin_light_drag(kind: int, window_pos: Vector2) -> bool:
 	var cfg: Node = _light_cfg()
-	if cfg == null:
-		return
-	# Grabbing implies an aim: without one the rig falls back to the
-	# fixture's baked rake, and moving the lamp would not move the light.
-	if not LightingRig.has_aim(float(cfg.spot_aim_x), float(cfg.spot_aim_z)):
-		cfg.spot_aim_x = 0.0
-		cfg.spot_aim_z = 0.0
-		if world.has_method("set_light_aim"):
-			world.set_light_aim(0.0, 0.0)
+	if cfg == null or world == null or camera == null:
+		return false
+	# Snapshot BEFORE anything moves, so cancel restores "no aim" as no aim.
+	# Nothing is written on press: the drag carries a grab offset, so a
+	# click without a move changes nothing. (Pressing used to force the aim
+	# to the tank centre and snap the lamp to the cursor before the mouse
+	# had moved at all.)
+	var anchor: Vector3 = world.light_fixture_head_world() \
+		if kind == LightHandle.LAMP else world.light_aim_world()
+	if anchor == Vector3.INF or not anchor.is_finite():
+		return false
+	var sv: Vector2 = _window_to_viewport_exact(window_pos)
+	var dir: Vector3 = camera.project_ray_normal(sv).normalized()
+	_light_drag_surface = LightHandle.choose_surface(dir)
+	_light_drag_view = LightHandle.view_flat(dir)
+	_light_drag_plane_y = anchor.y
+	_light_drag_anchor = anchor
+	_light_drag_grab = _light_surface_hit(window_pos)
+	if _light_drag_grab == Vector3.INF:
+		return false
+	_light_drag_root0 = world.light_fixture_root_world()
+	_light_drag_aim0 = world.light_aim_world()
 	_light_drag_kind = kind
 	_light_drag_before = LightHandle.snapshot(
 		float(cfg.spot_offset_x), float(cfg.spot_offset_z),
 		float(cfg.spot_aim_x), float(cfg.spot_aim_z))
-	_light_drag_to(window_pos)
+	# The camera orbit is POLLED in _process, so consuming the press event
+	# does not stop it: the same drag orbited the camera, and because the
+	# lamp is placed from a camera ray, lamp and camera chased each other
+	# around the room. Hold the orbit (and the click-to-feed) off until the
+	# button is released.
+	_suppress_drag_until_release = true
 	_refresh_light_gizmo(window_pos)
+	return true
 
 
 func _end_light_drag() -> void:
@@ -12520,58 +12587,58 @@ func _end_light_drag() -> void:
 			float(cfg.spot_aim_z)):
 		_persist_light_placement()
 	_light_drag_before = {}
+	_refresh_light_gizmo(get_viewport().get_mouse_position())
 
 
 func _cancel_light_drag() -> void:
 	if _light_drag_kind == LightHandle.NONE:
 		return
-	var cfg: Node = _light_cfg()
-	if cfg != null and not _light_drag_before.is_empty():
-		var b: Dictionary = _light_drag_before
-		cfg.spot_offset_x = float(b.get("offset_x", 0.0))
-		cfg.spot_offset_z = float(b.get("offset_z", 0.0))
-		if world.has_method("set_light_aim"):
-			world.set_light_aim(float(b.get("aim_x", 0.0)),
-				float(b.get("aim_z", 0.0)))
-		if world.has_method("set_light_head_offset"):
-			world.set_light_head_offset(
-				float(cfg.spot_offset_x), float(cfg.spot_offset_z))
 	_light_drag_kind = LightHandle.NONE
+	if not _light_drag_before.is_empty() and world != null \
+			and world.has_method("set_light_placement"):
+		var b: Dictionary = _light_drag_before
+		world.set_light_placement(float(b.get("offset_x", 0.0)),
+			float(b.get("offset_z", 0.0)),
+			float(b.get("aim_x", LightingRig.AIM_OFF)),
+			float(b.get("aim_z", LightingRig.AIM_OFF)))
 	_light_drag_before = {}
+	_refresh_light_gizmo(get_viewport().get_mouse_position())
 
 
 func _light_drag_to(window_pos: Vector2) -> void:
 	if world == null or camera == null or _light_drag_kind == LightHandle.NONE:
 		return
-	var sv: Vector2 = _window_mouse_to_viewport(window_pos)
-	var origin: Vector3 = camera.project_ray_origin(sv)
-	var dir: Vector3 = camera.project_ray_normal(sv).normalized()
-	var hw: float = float(world.get("TANK_HALF_W"))
-	var hd: float = float(world.get("TANK_HALF_D"))
-	var cfg: Node = _light_cfg()
-	if cfg == null:
+	var hit: Vector3 = _light_surface_hit(window_pos)
+	if hit == Vector3.INF:
 		return
+	var b: Dictionary = _light_drag_before
+	var had_aim: bool = LightingRig.has_aim(
+		float(b.get("aim_x", LightingRig.AIM_OFF)),
+		float(b.get("aim_z", LightingRig.AIM_OFF)))
 	if _light_drag_kind == LightHandle.LAMP:
-		# The lamp moves across the plane of its own mount, not the water,
-		# so it tracks the cursor at the height it actually sits at.
-		var plane_y: float = world.light_rim_plane_y() \
-			if world.has_method("light_rim_plane_y") else float(world.get("TANK_HEIGHT"))
-		var hit: Vector3 = LightHandle.ray_plane_xz(origin, dir, plane_y)
-		if hit == Vector3.INF:
+		var root: Vector3 = LightHandle.dragged(
+			_light_drag_root0, _light_drag_grab, hit)
+		if root == Vector3.INF:
 			return
-		var off: Vector2 = LightHandle.offsets_from_world(hit, hw, hd)
-		cfg.spot_offset_x = off.x
-		cfg.spot_offset_z = off.y
-		if world.has_method("set_light_head_offset"):
-			world.set_light_head_offset(off.x, off.y)
+		var off: Vector2 = world.light_head_offsets_for(root)
+		var ax: float = LightingRig.AIM_OFF
+		var az: float = LightingRig.AIM_OFF
+		if had_aim and _light_drag_aim0 != Vector3.INF:
+			# Moving the lamp carries its aim with it, so the beam keeps the
+			# direction it had instead of swinging to a new target.
+			var moved: Vector3 = world.light_head_target(off.x, off.y) \
+				- _light_drag_root0
+			var aim: Vector2 = world.light_aim_for(_light_drag_aim0 + moved)
+			ax = aim.x
+			az = aim.y
+		world.set_light_placement(off.x, off.y, ax, az)
 	else:
-		var sub_y: float = float(world.get("SUBSTRATE_DEPTH"))
-		var hit2: Vector3 = LightHandle.ray_plane_xz(origin, dir, sub_y)
-		if hit2 == Vector3.INF:
+		var land: Vector3 = LightHandle.dragged(
+			_light_drag_anchor, _light_drag_grab, hit)
+		if land == Vector3.INF:
 			return
-		var aim: Vector2 = LightHandle.aim_from_world(hit2, hw, hd)
-		if world.has_method("set_light_aim"):
-			world.set_light_aim(aim.x, aim.y)
+		var aim2: Vector2 = world.light_aim_for(land)
+		world.set_light_aim(aim2.x, aim2.y)
 
 
 func _persist_light_placement() -> void:

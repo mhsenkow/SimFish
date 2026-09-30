@@ -44,6 +44,22 @@ global uniform vec4 iaq_water_body;
 // cyan at the default camera radius the last time someone tried it. This is a
 // declared artistic control, not a claim about water.
 global uniform vec4 iaq_water_depth;
+// Lit in-scatter (LightingRig.scatter_light): rgb = lamp colour normalised
+// to its brightest channel, a = how far the haze takes that colour. 0 keeps
+// the fixed iaq_water_body teal. The haze is the lamp's light scattered back
+// at the eye, so it should carry the lamp's colour, not always teal.
+global uniform vec4 iaq_scatter_light;
+
+vec3 iaq_scatter_body() {
+	vec3 body = iaq_water_body.rgb;
+	float m = iaq_scatter_light.a;
+	if (m <= 0.001) {
+		return body;
+	}
+	float lum = dot(body, vec3(0.299, 0.587, 0.114));
+	vec3 lit = (body * 0.35 + vec3(lum) * 0.65) * iaq_scatter_light.rgb * 1.2;
+	return mix(body, lit, clamp(m, 0.0, 1.0));
+}
 
 
 // ---- The view half of the path, measured in WATER (2026-09-23) ----
@@ -97,7 +113,7 @@ vec3 apply_water_column_ws(vec3 col, vec3 wpos, vec3 cam_pos) {
 	float path = depth * depth_gain + view_term;
 	vec3 transmit = exp(-iaq_water_absorb.rgb * path * strength);
 	float haze = 1.0 - exp(-path * strength * 0.020);
-	return col * transmit + iaq_water_body.rgb * haze;
+	return col * transmit + iaq_scatter_body() * haze;
 }
 
 // `world_y` is the fragment's world height, `view_dist` its distance from the
@@ -124,7 +140,7 @@ vec3 apply_water_column(vec3 col, float world_y, float view_dist) {
 	// In-scatter saturates with path length: distant water tends toward its own
 	// colour rather than toward black. Kept gentle — this is a wash, not fog.
 	float haze = 1.0 - exp(-path * strength * 0.020);
-	return col * transmit + iaq_water_body.rgb * haze;
+	return col * transmit + iaq_scatter_body() * haze;
 }
 
 vec3 apply_global_palette_tint(vec3 col, float hue_shift, float sat_mult,

@@ -69,8 +69,8 @@ func _lum(c: Color) -> float:
 func _check_mature_crown(t: TestSupport.Suite, host: Node3D) -> void:
 	var p: Plant = _make(host, 21)
 	var blades: Array = _blades(p)
-	t.in_range(float(blades.size()), 4.0, float(Plant.RIBBON_MAX_BLADES),
-		"a mature crown holds a handful of blades, not one per growth step")
+	t.in_range(float(blades.size()), 8.0, float(Plant.RIBBON_MAX_BLADES),
+		"a mature crown is many blades, but not one per growth step")
 	t.check(blades.size() < p.current_height,
 		"blade count (%d) is far below the step count (%d)" % [blades.size(), p.current_height])
 	var finite: bool = true
@@ -79,15 +79,29 @@ func _check_mature_crown(t: TestSupport.Suite, host: Node3D) -> void:
 	var lighter_tip: bool = true
 	var lengths: Dictionary = {}
 	var twist_deg: float = 0.0
+	var parallel: bool = true
+	var fan_half: float = 0.0
+	var lum_lo: float = INF
+	var lum_hi: float = -INF
+	var surface_local: float = WATER_Y - p.global_position.y - V
 	for g in blades:
 		var grp: Array = g
 		lengths[grp.size()] = true
 		for hv in grp:
 			if not (hv as VoxelBatch.Handle).transform.is_finite():
 				finite = false
+		for hv in grp:
+			var hs: VoxelBatch.Handle = hv
+			if hs.transform.basis.y.normalized().y > 0.8 and hs.local_pos.y < surface_local:
+				fan_half = maxf(fan_half, Vector2(hs.local_pos.x, hs.local_pos.z).length())
 		if grp.size() < 4:
 			continue
 		var base: VoxelBatch.Handle = grp[1]
+		var mid: VoxelBatch.Handle = grp[int(float(grp.size()) * 0.5)]
+		if grp.size() >= 6 and _width(mid) < _width(base) * 0.8:
+			parallel = false
+		lum_lo = minf(lum_lo, _lum(mid.base_color))
+		lum_hi = maxf(lum_hi, _lum(mid.base_color))
 		var tip: VoxelBatch.Handle = grp[grp.size() - 1]
 		widest_base = maxf(widest_base, _width(base))
 		if _width(tip) >= _width(base) * 0.8:
@@ -102,14 +116,31 @@ func _check_mature_crown(t: TestSupport.Suite, host: Node3D) -> void:
 				break
 			twist_deg = maxf(twist_deg, rad_to_deg(w0.angle_to(hk.transform.basis.x.normalized())))
 	t.check(finite, "every blade segment has a finite transform")
-	t.check(widest_base >= 2.0 * V * 0.95,
-		"a full-size blade is two voxels wide at the base (%.3f)" % widest_base)
-	t.check(tapers, "blades taper to a narrower rounded tip")
+	t.in_range(widest_base, 0.4 * V, 1.15 * V,
+		"a full-size blade is a narrow strap, not a paper sheet")
+	t.check(parallel, "blades stay near-parallel to mid-length")
+	t.check(fan_half < 1.3, "blades stand upright, not a splayed fan (half-width %.2f)" % fan_half)
+	t.check(lum_hi - lum_lo > 0.06,
+		"neighbouring blades carry their own tone (lum spread %.3f)" % (lum_hi - lum_lo))
+	t.check(tapers, "blades taper to a narrower tip")
 	t.check(lighter_tip, "blade colour lightens from the crown to the tip")
 	t.check(twist_deg > 20.0, "blades twist along their length (%.1f deg)" % twist_deg)
 	t.check(lengths.size() >= 2, "blade lengths vary within a crown (%d distinct)" % lengths.size())
 	t.equals(p.biomass(), p.current_height, "biomass is still current_height")
 	t.check(p.voxels.is_empty(), "ribbon crown grows no stem voxels")
+	# Aufwuchs on a crown with no stem voxels is painted into the blade.
+	for i in mini(p._leaf_groups.size(), p._leaf_states.size()):
+		var st: Dictionary = p._leaf_states[i]
+		if not st.has("rb_seed") or (p._leaf_groups[i] as Array).size() < 2:
+			continue
+		st["hair"] = 0.8
+		p._paint_ribbon_aufwuchs()
+		var hh: VoxelBatch.Handle = (p._leaf_groups[i] as Array)[1]
+		t.check(hh.batch._colors[hh.index].a < 0.7,
+			"an aufwuchs load paints into the blade (alpha %.2f)" % hh.batch._colors[hh.index].a)
+		p._graze_leaf_biofilm(p._leaf_states.size())
+		t.check(float(st.get("hair", 1.0)) < 0.8, "grazing strips aufwuchs off a blade")
+		break
 	p.free()
 
 

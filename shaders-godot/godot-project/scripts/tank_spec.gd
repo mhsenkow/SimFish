@@ -39,14 +39,14 @@ extends RefCounted
 # the range. Ordering and relative difference survive (a 120 still dwarfs a
 # nano) while every vessel stays workable. Solved from two anchors:
 #
-#   a 5 gallon nano (16 in) -> 7.0 units   (~3.9 fish-lengths across)
-#   a 75 gallon     (48 in) -> 16.0 units  (its familiar existing width)
+#   a 5 gallon nano (16 in) -> 8.75 units  (~4.9 fish-lengths across)
+#   a 75 gallon     (48 in) -> 20.0 units  (TankSizing.SIZE_SCALE x the old 16)
 #
 # Real volumes are NOT derived from these units — they come from the
 # catalogue's true inches — so the numbers shown to players stay honest even
 # though the geometry is stylised.
 const SCALE_POWER: float = 0.7525
-const SCALE_K: float = 0.8690
+const SCALE_K: float = 1.0863
 
 
 # Real inches -> game units.

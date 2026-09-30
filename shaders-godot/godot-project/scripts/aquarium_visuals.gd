@@ -8,6 +8,8 @@ const TICK_INTERVAL: float = 0.1
 const SLIME_CAP: int = 96
 const SPARKLE_CAP: int = 12
 const FLOATER_SHADOW_CAP: int = 64
+# Must match the floater_pts array size in water.gdshader.
+const FLOATER_MASK_CAP: int = 32
 
 var _world: Node3D
 var _sim: Node
@@ -20,6 +22,7 @@ var _compaction: Dictionary = {}
 var _slime_marks: Array[MeshInstance3D] = []
 var _mineral_streaks: Array[MeshInstance3D] = []
 var _floater_shadows: Array[MeshInstance3D] = []
+var _floater_mask_pts: PackedVector4Array = PackedVector4Array()
 
 var _haze_particles: GPUParticles3D
 var _debris_particles: GPUParticles3D
@@ -148,7 +151,9 @@ func sync_snow_density(transmittance: float) -> void:
 	if _snow_particles == null or not is_instance_valid(_snow_particles):
 		return
 	var murk: float = clampf(1.0 - transmittance, 0.0, 1.0)
-	_snow_particles.amount = int(lerpf(22.0, 52.0, murk * 0.65 + 0.35))
+	# Denser than before: in the shade a mote is now a dim fleck, so more of
+	# them reads as water full of stuff rather than as dust on the screen.
+	_snow_particles.amount = int(lerpf(48.0, 110.0, murk * 0.65 + 0.35))
 	_snow_particles.emitting = _snow_particles.amount > 0
 	# REAL_TANK_FIDELITY #42–43 — advect particulate with the flow field.
 	if _world != null and _world.has_method("sample_flow") and _snow_particles.process_material is ParticleProcessMaterial:
@@ -393,9 +398,19 @@ func _build_ambient_emitters() -> void:
 	# Suspended particulate ("marine snow"): fine motes drifting slowly down
 	# through the whole column, catching the light. Gives the water tangible
 	# density. Density is nudged with murkiness in the world ambient tick.
-	_snow_particles = _make_box_emitter("MarineSnow", 38, 9.0,
+	_snow_particles = _make_box_emitter("MarineSnow", 70, 9.0,
 		Vector3(0, sd + col_h * 0.5, 0), Vector3(hw, col_h * 0.48, hd),
 		Vector3(0.05, -1.0, 0.03), 0.015, 0.05, Color(0.80, 0.86, 0.86, 0.10))
+	# Motes catch the light instead of sitting at one flat grey (mote.gdshader):
+	# bright in the beam and around a backlight, a dim fleck in the shade.
+	var snow_box := _snow_particles.draw_pass_1 as BoxMesh
+	if snow_box != null:
+		snow_box.size = Vector3(0.05, 0.05, 0.05)
+		var mote_mat := ShaderMaterial.new()
+		mote_mat.shader = load("res://shaders/mote.gdshader") as Shader
+		mote_mat.set_shader_parameter("water_top", wh)
+		mote_mat.set_shader_parameter("water_floor", sd)
+		snow_box.material = mote_mat
 
 
 func _make_box_emitter(n: String, amount: int, life: float, pos: Vector3, ext: Vector3,
@@ -775,6 +790,35 @@ func sync_floater_shadows(floaters: Array, substrate_y: float) -> void:
 			shade = clampf(0.45 + fp.vitality * 0.35, 0.35, 0.85)
 		mi.scale = Vector3(disc * shade, 1.0, disc * shade)
 		idx += 1
+	_push_floater_mask(floaters)
+
+
+# Seen from below, the water cap is NEARER than a floater's leaves (they ride
+# just above it), so the underside mirror in water.gdshader has to open under
+# each canopy or it paints over the whole mat. The same points tell it where
+# the still water is, which is where film and trapped bubbles gather.
+func _push_floater_mask(floaters: Array) -> void:
+	var mat: ShaderMaterial = _world.get("_water_material_ref") as ShaderMaterial
+	if mat == null:
+		return
+	if _floater_mask_pts.size() != FLOATER_MASK_CAP:
+		_floater_mask_pts.resize(FLOATER_MASK_CAP)
+	var n: int = 0
+	for f in floaters:
+		if n >= FLOATER_MASK_CAP:
+			break
+		if not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		if not fp.is_surface_active() or not fp.is_inside_tree():
+			continue
+		var p: Vector3 = fp.global_position
+		_floater_mask_pts[n] = Vector4(p.x, p.z, fp.canopy_radius(), 1.0)
+		n += 1
+	for i in range(n, FLOATER_MASK_CAP):
+		_floater_mask_pts[i] = Vector4.ZERO
+	mat.set_shader_parameter("floater_pts", _floater_mask_pts)
+	mat.set_shader_parameter("floater_count", n)
 
 
 func _sync_floater_shadows() -> void:

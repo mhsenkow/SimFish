@@ -114,6 +114,22 @@ iaq_water_body={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+iaq_backlight={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_backlight_tint={
+"type": "vec4",
+"value": Vector4(1, 0.85, 0.45, 0.08)
+}
+iaq_room_light={
+"type": "float",
+"value": 1.0
+}
+iaq_scatter_light={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
 
 [steam]
 

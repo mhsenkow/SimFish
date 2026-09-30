@@ -74,6 +74,7 @@ uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/backlight.gdshaderinc"
 
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -344,5 +345,6 @@ void fragment() {
         // overhead cut them harder than they cut the diffuse floor.
         caust_shaded *= shade * shade;
     }
+    lit_base = iaq_backlight_light(lit_base, v_wpos, world_normal, CAMERA_POSITION_WORLD);
     ALBEDO = apply_water_column_ws(lit_base + light_color.rgb * caust_shaded, v_wpos, CAMERA_POSITION_WORLD);
 }

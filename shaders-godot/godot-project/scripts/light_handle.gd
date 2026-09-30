@@ -1,8 +1,8 @@
 extends RefCounted
 class_name LightHandle
 
-# Direct manipulation of the tank light: hover it, double-click to grab it,
-# drag to move it, and the beam follows.
+# Direct manipulation of the tank light: hover it, press to grab it, drag
+# to move it, and the beam follows. Esc / right-click cancels.
 #
 # The maths lives here rather than in main.gd because all of it is pure -
 # a ray, a plane, and a clamp - and because the alternative is another
@@ -95,6 +95,108 @@ static func head_world(half_w: float, half_d: float, tank_height: float,
 		clampf(offset_x, -HEAD_OVERHANG, HEAD_OVERHANG) * half_w,
 		tank_height + height_above,
 		clampf(offset_z, -HEAD_OVERHANG, HEAD_OVERHANG) * half_d)
+
+
+# --- The drag model ------------------------------------------------------
+#
+# The build and the drag MUST agree on where a given pair of offsets puts
+# the lamp, or the lamp jumps the first time it is touched and again on the
+# next reload. Both go through fixture_home + mount_above + head_world +
+# clamp_to_footprint; nothing else computes a head position.
+
+# Where each fixture sits with zero offsets, as a fraction of the tank's
+# half-extent. The gooseneck clamps near the back-right rim by default.
+const GOOSENECK_HOME := Vector2(0.15, -0.80)
+# The gooseneck head hangs just over its rim clamp, whatever light_height
+# (the pendant/bar mount height) says.
+const GOOSENECK_MOUNT_ABOVE: float = 0.62
+# The aim stays this far inside the glass.
+const AIM_INSET: float = 0.92
+
+
+static func fixture_home(fixture: String) -> Vector2:
+	return GOOSENECK_HOME if fixture == "gooseneck" else Vector2.ZERO
+
+
+static func mount_above(fixture: String, light_height: float) -> float:
+	return GOOSENECK_MOUNT_ABOVE if fixture == "gooseneck" else light_height
+
+
+# World xz -> the offsets the rig stores, which are RELATIVE to the fixture
+# home. The inverse of head_world(home + offset).
+static func offsets_relative(p: Vector2, half_w: float, half_d: float,
+		home: Vector2) -> Vector2:
+	return Vector2(p.x / maxf(0.001, half_w), p.y / maxf(0.001, half_d)) - home
+
+
+# Keep a point inside the tank footprint scaled about its centre: > 1 lets
+# the lamp overhang the rim, < 1 keeps the aim off the glass. A bounding-box
+# clamp let both past the corners of a hex or a cylinder, which put the cone
+# outside the tank.
+static func clamp_to_footprint(p: Vector2, corners: Array, scale: float) -> Vector2:
+	var poly := PackedVector2Array()
+	for c in corners:
+		var v: Vector3 = c
+		poly.append(Vector2(v.x, v.z) * scale)
+	if poly.size() < 3 or Geometry2D.is_point_in_polygon(p, poly):
+		return p
+	var best: Vector2 = p
+	var best_d: float = INF
+	for i in poly.size():
+		var q: Vector2 = Geometry2D.get_closest_point_to_segment(
+			p, poly[i], poly[(i + 1) % poly.size()])
+		var d: float = p.distance_squared_to(q)
+		if d < best_d:
+			best_d = d
+			best = q
+	return best
+
+
+# Which surface a drag slides along, chosen ONCE at grab. At hero camera
+# angles the lamp's own plane is nearly edge-on: |ray.y| -> 0 makes a
+# ray-plane hit explode, so a one-pixel mouse move slammed the lamp from
+# one clamp corner to the other. Past GRAZE_DIR_Y the drag uses an upright,
+# camera-facing plane instead (sideways = sideways, up = away).
+enum { SURFACE_FLAT = 0, SURFACE_UPRIGHT = 1 }
+const GRAZE_DIR_Y: float = 0.28
+
+
+static func choose_surface(dir: Vector3) -> int:
+	return SURFACE_UPRIGHT if absf(dir.y) < GRAZE_DIR_Y else SURFACE_FLAT
+
+
+# The camera's horizontal forward - the normal of the upright surface.
+static func view_flat(dir: Vector3) -> Vector3:
+	var f := Vector3(dir.x, 0.0, dir.z)
+	if f.length_squared() < 1e-8:
+		return Vector3.FORWARD
+	return f.normalized()
+
+
+# Where the cursor ray meets the drag surface, on the plane y = plane_y.
+# `anchor` is a point on the upright surface (the handle at grab).
+static func surface_hit(surface: int, origin: Vector3, dir: Vector3,
+		plane_y: float, anchor: Vector3, view: Vector3) -> Vector3:
+	if surface == SURFACE_FLAT:
+		return ray_plane_xz(origin, dir, plane_y)
+	var denom: float = dir.dot(view)
+	if denom < 1e-4:
+		return Vector3.INF
+	var t: float = (anchor - origin).dot(view) / denom
+	if t <= 0.0:
+		return Vector3.INF
+	var p: Vector3 = origin + dir * t
+	return Vector3(p.x, plane_y, p.z) + view * (p.y - plane_y)
+
+
+# The grab-offset model: the dragged thing keeps the offset it had from the
+# cursor at grab, so pressing does not snap its centre to the pointer and a
+# click without a move changes nothing at all.
+static func dragged(start: Vector3, grab_hit: Vector3, hit: Vector3) -> Vector3:
+	if start == Vector3.INF or grab_hit == Vector3.INF or hit == Vector3.INF:
+		return Vector3.INF
+	return Vector3(start.x + hit.x - grab_hit.x, start.y,
+		start.z + hit.z - grab_hit.z)
 
 
 # Round for display so a dragged value reads as a settled number rather

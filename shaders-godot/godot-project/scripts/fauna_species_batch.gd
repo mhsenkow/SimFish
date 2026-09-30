@@ -54,7 +54,9 @@ static func register_instance(parent: Node3D, species: String, xform: Transform3
 		_batches[k] = VoxelBatch.new(root, VoxelMat.make_fauna_mm(), 64, true)
 	var batch: VoxelBatch = _batches[k] as VoxelBatch
 	var h: VoxelBatch.Handle = batch.add(xform, color)
-	h.set_custom_data(Color(bone_index, 0.0, 0.0, 1.0))
+	# a = 0: iridescence comes from the builder's per-voxel value, not a
+	# blanket 1.0 (which the shader reads as full iridescence).
+	h.set_custom_data(Color(bone_index, 0.0, 0.0, 0.0))
 	return h
 
 

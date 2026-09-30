@@ -270,6 +270,10 @@ func is_stocking_fauna_compatible(preset_key: String = "", substrate_type: Strin
 	for k in stocking.keys():
 		if k != "shrimp":
 			allowed_fish.append(String(k))
+	# A fallback stand-in (TANK_PRESETS "stocking_fallback") is what actually
+	# spawned when the authored species is missing, so its saves are valid.
+	for v in preset.get("stocking_fallback", {}).values():
+		allowed_fish.append(String(v))
 	for f in d.get("fish", []):
 		if not f is Dictionary:
 			continue

@@ -71,6 +71,11 @@ const VIEW_LOD_MIN_DENSITY: float = 0.45
 
 # PERFORMANCE_REALTIME #70 — reuse morph shells instead of rebuilding voxels.
 static var _morph_shell_cache: Dictionary = {}
+# Morphs whose roots are a long feathered curtain (shaders/floater_roots.gdshader)
+# rather than a few stubs. These keep their roots in dense mats: a frogbit mat
+# seen from inside the tank IS its roots.
+const CURTAIN_MORPHS: Array[String] = ["frogbit", "water_lettuce", "water_hyacinth"]
+static var _root_curtain_mat: ShaderMaterial = null
 
 
 func init_genome(g: Dictionary) -> void:
@@ -223,7 +228,11 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 	if world != null and world.has_method("sample_flow"):
 		var flow: Vector3 = world.sample_flow(global_position + Vector3(0, -0.4, 0))
 		for child in get_children():
-			if child is MeshInstance3D and bool(child.get_meta("root_sway", false)):
+			if child is MeshInstance3D and bool(child.get_meta("root_curtain", false)):
+				# The curtain sways in its vertex shader; the flow only leans it.
+				child.rotation.x = lerpf(child.rotation.x, flow.z * 0.22, 0.2)
+				child.rotation.z = lerpf(child.rotation.z, flow.x * 0.22, 0.2)
+			elif child is MeshInstance3D and bool(child.get_meta("root_sway", false)):
 				var ph: float = float(child.get_meta("root_phase", 0.0))
 				child.rotation.x = sin(age_s * 1.1 + ph) * 0.12 + flow.z * 0.35
 				child.rotation.z = cos(age_s * 0.9 + ph) * 0.10 + flow.x * 0.35
@@ -340,6 +349,8 @@ func _update_root_lod() -> void:
 	if not hide_roots:
 		if morph in ["duckweed", "azolla"]:
 			hide_roots = _neighbor_density > 0.12
+		elif morph in CURTAIN_MORPHS:
+			hide_roots = false
 		else:
 			hide_roots = _neighbor_density > 0.42
 	if hide_roots == _roots_lod_hidden:
@@ -453,7 +464,8 @@ func tick_light_response(daylight: float, world: Node = null) -> void:
 			else:
 				col = _edge_center_color(mi.position, leaf_tint)
 			_set_foliage_albedo(mi, col)
-		elif c is MeshInstance3D and String(c.name).begins_with("root"):
+		elif c is MeshInstance3D and String(c.name).begins_with("root") \
+				and not c.has_meta("root_curtain"):
 			var mi2: MeshInstance3D = c
 			var redness2: float = clampf(redroot_response * daylight, 0.0, 1.0) if redroot_response > 0.0 else 0.0
 			var root_col: Color = base_color.darkened(0.35).lerp(Color(0.78, 0.28, 0.30), redness2 * 0.85)
@@ -514,6 +526,22 @@ func graze_palatability() -> float:
 
 func effective_shade_radius() -> float:
 	return shade_radius * lerpf(0.7, 1.15, leaf_size / 0.5)
+
+
+# World-space radius the leaves actually cover, from the _build_* layouts:
+# a frogbit ring sits at 0.7 leaf_size with leaves 1.0 leaf_size across, a
+# duckweed frond is ~0.6 leaf_size. The water shader opens the underside
+# mirror over this disc.
+func canopy_radius() -> float:
+	var k: float = 1.0
+	match morph:
+		"frogbit":
+			k = 1.2
+		"water_lettuce", "water_hyacinth":
+			k = 1.05
+		"duckweed", "azolla":
+			k = 0.65
+	return leaf_size * k * maxf(scale.x, 0.1)
 
 
 func root_world_positions() -> Array:
@@ -634,22 +662,25 @@ func _root_strands(count: int, length: float, spread: float = 1.0) -> void:
 		length = maxf(length, 2.8)
 		count = maxi(count, 6)
 	var bio_col: Color = root_color.lerp(Color8(200, 195, 170), clampf(root_biofilm, 0.0, 1.0) * 0.65)
-	for i in count:
-		var ang: float = float(i) / float(maxi(1, count)) * TAU
-		var rx: float = cos(ang) * leaf_size * 0.18 * spread
-		var rz: float = sin(ang) * leaf_size * 0.18 * spread
-		var seg_len: float = length * (0.7 + 0.5 * float((i % 3)) / 2.0)
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(0.05 + root_biofilm * 0.03, seg_len, 0.05 + root_biofilm * 0.03))
-		var mat: ShaderMaterial = VoxelMat.make_foliage(bio_col)
-		mat.set_shader_parameter("sss_strength", 0.42)
-		mi.material_override = mat
-		_configure_mesh_instance(mi)
-		mi.name = "root_%d" % i
-		mi.set_meta("root_sway", true)
-		mi.set_meta("root_phase", ang)
-		add_child(mi)
-		mi.position = Vector3(rx, -seg_len * 0.5 - 0.02, rz)
+	if morph in CURTAIN_MORPHS:
+		_root_curtain(count * 4, length, spread)
+	else:
+		for i in count:
+			var ang: float = float(i) / float(maxi(1, count)) * TAU
+			var rx: float = cos(ang) * leaf_size * 0.18 * spread
+			var rz: float = sin(ang) * leaf_size * 0.18 * spread
+			var seg_len: float = length * (0.7 + 0.5 * float((i % 3)) / 2.0)
+			var mi := MeshInstance3D.new()
+			mi.mesh = VoxelMat.get_box(Vector3(0.05 + root_biofilm * 0.03, seg_len, 0.05 + root_biofilm * 0.03))
+			var mat: ShaderMaterial = VoxelMat.make_foliage(bio_col)
+			mat.set_shader_parameter("sss_strength", 0.42)
+			mi.material_override = mat
+			_configure_mesh_instance(mi)
+			mi.name = "root_%d" % i
+			mi.set_meta("root_sway", true)
+			mi.set_meta("root_phase", ang)
+			add_child(mi)
+			mi.position = Vector3(rx, -seg_len * 0.5 - 0.02, rz)
 	# REAL_TANK_FIDELITY #64 — bubbles trapped under floating leaves.
 	if morph in ["water_hyacinth", "salvinia", "frogbit", "water_lettuce"]:
 		var trapped: int = 2 if morph == "duckweed" else 4
@@ -664,6 +695,80 @@ func _root_strands(count: int, length: float, spread: float = 1.0) -> void:
 				-0.06 - randf() * 0.08,
 				randf_range(-leaf_size * 0.35, leaf_size * 0.35))
 			add_child(bub)
+
+
+static func _root_curtain_material() -> ShaderMaterial:
+	if _root_curtain_mat == null:
+		_root_curtain_mat = ShaderMaterial.new()
+		_root_curtain_mat.shader = load("res://shaders/floater_roots.gdshader") as Shader
+	return _root_curtain_mat
+
+
+# One merged mesh for the whole root mass: `count` strands of varied length
+# hung in a disc under the crown, each two crossed ribbons so it has width
+# from any yaw. Pale at the crown, red-brown through the body, dark at the
+# tip; biofilm dulls it toward beige. See floater_roots.gdshader for the
+# UV/UV2/COLOR contract and why the hairs are a fragment pattern.
+func _root_curtain(count: int, length: float, spread: float) -> void:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var bio: float = clampf(root_biofilm, 0.0, 1.0) * 0.55
+	var film := Color8(196, 186, 160)
+	var crown: Color = Color8(212, 190, 160).lerp(film, bio)
+	var body: Color = Color8(150, 72, 46).lerp(film, bio)
+	var tip: Color = Color8(92, 42, 32).lerp(film, bio * 0.6)
+	# Thin: overlapping wide ribbons merge into one solid post (first capture).
+	var half_w: float = clampf(0.028 + length * 0.012, 0.03, 0.055)
+	var base_i: int = 0
+	for i in count:
+		var ang: float = randf() * TAU
+		# Hung across the whole crown, not a 0.07 tuft at its centre - the
+		# tuft read as a single brown post from below.
+		var rad: float = leaf_size * spread * lerpf(0.12, 0.8, sqrt(randf()))
+		var out_dir := Vector2(cos(ang), sin(ang))
+		var root_xz: Vector2 = out_dir * rad
+		# A few long leaders, most strands shorter: a curtain, not a comb.
+		var seg_len: float = length * lerpf(0.5, 1.0, pow(randf(), 0.6))
+		var segs: int = clampi(int(seg_len / 0.16), 3, 12)
+		var phase: float = randf() * TAU
+		# Strands fan outward as they hang, plus a little wander.
+		var bend: Vector2 = out_dir * seg_len * randf_range(0.05, 0.14) \
+			+ Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * 0.03 * seg_len
+		for ribbon in 2:
+			var a: float = phase + float(ribbon) * PI * 0.5
+			var side := Vector3(cos(a), 0.0, sin(a))
+			for k in segs + 1:
+				var v: float = float(k) / float(segs)
+				var c := Vector3(root_xz.x + bend.x * v * v, -0.02 - v * seg_len,
+					root_xz.y + bend.y * v * v)
+				var hw: float = half_w * lerpf(1.0, 0.6, v)
+				var col: Color = crown.lerp(body, smoothstep(0.0, 0.3, v)) if v < 0.5 \
+					else body.lerp(tip, smoothstep(0.5, 1.0, v))
+				col = col.srgb_to_linear()
+				for sgn in [-1.0, 1.0]:
+					st.set_color(col)
+					st.set_uv(Vector2(sgn, v))
+					st.set_uv2(Vector2(phase, seg_len))
+					st.add_vertex(c + side * hw * float(sgn))
+			for k in segs:
+				var a0: int = base_i + k * 2
+				st.add_index(a0)
+				st.add_index(a0 + 1)
+				st.add_index(a0 + 2)
+				st.add_index(a0 + 1)
+				st.add_index(a0 + 3)
+				st.add_index(a0 + 2)
+			base_i += (segs + 1) * 2
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = _root_curtain_material()
+	_configure_mesh_instance(mi)
+	# Roots hang in the water, not on top of it: draw in the normal opaque
+	# order like every other submerged thing, not above the volume.
+	mi.sorting_offset = 0.0
+	mi.name = "root_curtain"
+	mi.set_meta("root_curtain", true)
+	add_child(mi)
 
 
 func _build_duckweed() -> void:

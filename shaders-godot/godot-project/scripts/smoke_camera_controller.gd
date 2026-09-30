@@ -128,7 +128,8 @@ func _initialize() -> void:
 
 	# --- Target clamp: the single convergence box.
 	var ct: Vector3 = CameraController.clamp_target(Vector3(100.0, 100.0, -100.0))
-	TestSupport.check(failed, ct.is_equal_approx(Vector3(20.0, 12.0, -20.0)),
+	TestSupport.check(failed, ct.is_equal_approx(Vector3(CameraController.TARGET_MAX.x,
+			CameraController.TARGET_MAX.y, CameraController.TARGET_MIN.z)),
 			"clamp_target clamps to the convergence box")
 
 	# --- Eye position: spherical orbit coords (+pitch = eye above target).

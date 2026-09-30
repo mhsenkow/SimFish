@@ -46,10 +46,26 @@ const GUPPY: Array = [
 ]
 
 
+# Endler's livebearer males (Poecilia wingei). Smaller and far hotter than
+# a fancy guppy: a metallic body carrying orange, jet black and neon green
+# patches at once. Every entry pairs a hot body with a contrasting accent;
+# the females are drab regardless (dimorphism + female_color).
+const ENDLER: Array = [
+	[Color8(255, 118, 36), Color8(24, 22, 26)],     # tiger: orange + black bars
+	[Color8(96, 214, 96), Color8(255, 132, 40)],    # neon green + orange
+	[Color8(40, 38, 44), Color8(255, 150, 50)],     # black bar + copper sword
+	[Color8(70, 170, 225), Color8(255, 110, 40)],   # blue shimmer + orange
+	[Color8(255, 196, 64), Color8(40, 36, 40)],     # yellow + black peduncle
+	[Color8(226, 70, 56), Color8(110, 230, 120)],   # red + green flash
+]
+
+
 static func palette(name: String) -> Array:
 	match name:
 		"guppy":
 			return GUPPY
+		"endler":
+			return ENDLER
 		_:
 			return REEF
 
@@ -83,4 +99,4 @@ static func pick(name: String, roll: float) -> Array:
 # morph is the same fish in a different colour: rerolling its skeleton
 # would turn half a guppy colony into disc-shaped tangs.
 static func restyles_body(name: String) -> bool:
-	return name != "guppy"
+	return name != "guppy" and name != "endler"

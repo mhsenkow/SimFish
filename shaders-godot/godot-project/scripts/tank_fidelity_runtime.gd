@@ -76,6 +76,9 @@ static func reference_snail_boost(preset_id: String) -> Dictionary:
 			return {"glass": 28, "trumpet": 14, "ramshorn_bias": 0.15}
 		"valli_jungle":
 			return {"glass": 36, "trumpet": 8, "ramshorn_bias": 0.72}
+		"hex_jungle":
+			# Photos: red ramshorns all over every pane, at every size.
+			return {"glass": 34, "trumpet": 6, "ramshorn_bias": 0.95}
 		"counter_nano":
 			return {"glass": 12, "trumpet": 4, "ramshorn_bias": 0.35}
 		_:
@@ -88,7 +91,15 @@ static func reference_floater_recipe(preset_id: String) -> Dictionary:
 		"counter_nano":
 			return {"duckweed": 48, "salvinia": 18, "water_hyacinth": 2, "coverage": 0.72}
 		"valli_jungle":
-			return {"duckweed": 8, "salvinia": 4, "water_hyacinth": 0, "coverage": 0.12}
+			# A few frogbit / lettuce crowns among the duckweed: their root
+			# curtains are what the underside view reads as "floating plants".
+			return {"duckweed": 8, "salvinia": 4, "frogbit": 4, "water_lettuce": 2,
+				"water_hyacinth": 0, "coverage": 0.12}
+		"hex_jungle":
+			# The keeper's corner column: a frogbit mat with long red-brown
+			# root curtains over the valli, duckweed filling the gaps.
+			return {"duckweed": 10, "salvinia": 0, "frogbit": 9, "water_lettuce": 2,
+				"water_hyacinth": 0, "coverage": 0.30}
 		_:
 			return {}
 

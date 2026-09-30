@@ -61,6 +61,21 @@ All the same project.
   IS a rectangle), and `dev/audio_probe.tscn` measures generated audio levels
   per bus (`-- healthy` for a live-tank env, `-- fullbed` to force the full
   synth). Both need a long settle: much of the World is built over ~200 frames.
+- **Fish behaviour as numbers: `dev/fish_behaviour_probe.tscn`.** Headless;
+  drives the real main scene and prints per-species depth p10/50/90, speed
+  cv, hover/dart %, turn rate, speed lockstep between neighbours, shoal count,
+  display/courtship/peck %, plus gate diagnostics and mean O2. Env:
+  `FISH_PROBE_SCENARIO`, `FISH_PROBE_STOCK="guppy:40,glassdart:30"`,
+  `FISH_PROBE_WARMUP_S`, `FISH_PROBE_SAMPLE_S`, `FISH_PROBE_OUT`,
+  `FISH_PROBE_SPLIT=1` (also times frames with fish `_process` off and with
+  the sim node off). It sets `TankConfig.capture_mode` and refuses to run if
+  the active slot holds a saved tank, but run it in a sandbox anyway: a
+  local, git-excluded `godot-project/override.cfg` with
+  `[application] config/use_custom_user_dir=true` and
+  `config/custom_user_dir_name="walstad_loom_probe_sandbox"` keeps it off
+  the real `tanks` dir. Fish behaviour logic it measures lives in
+  `scripts/fish_life_bouts.gd` (bouts, turn inertia, livebearer display,
+  pecking) and `scripts/fish_depth_bands.gd` (per-species column bands).
 - **Never put comments in `project.godot`.** Godot's ConfigFile writer strips
   whitespace and folds a comment onto the line below it on the next re-save, so
   `# note` above `AppLog="*res://scripts/app_log.gd"` becomes one commented-out

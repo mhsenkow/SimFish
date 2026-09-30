@@ -24,6 +24,12 @@ global uniform vec3 iaq_beam_origin;
 global uniform vec3 iaq_beam_dir;
 global uniform vec4 iaq_beam_cone;
 global uniform vec4 iaq_beam_tint;
+// The room's share of global_intensity dimming (LightingRig.room_light). The
+// post tint spares a lit tank the room's dimness; the light the room would
+// have taken away is taken here instead, from the AMBIENT term only. Inside
+// the cone the lamp owns the brightness, outside it the tank falls to the
+// room's level - a pool of light in a dim room. 1.0 = no change.
+global uniform float iaq_room_light;
 // xyz = half-extent vector along a LINE fixture, w > 0.5 marks it a line.
 //
 // A bar light is not a point. world.gd builds it as four SpotLights spaced
@@ -139,7 +145,7 @@ const float IAQ_KEY_FLOOR = 0.62;
 vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
 	float energy = iaq_beam_cone.w;
 	if (energy <= 0.001) {
-		return base_col;
+		return base_col * iaq_room_light;
 	}
 	vec3 src_pos = iaq_beam_origin;
 	if (iaq_beam_axis.w > 0.5) {
@@ -166,7 +172,7 @@ vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
 	// Shadow attenuates DIRECT light only — ambient is what fills a shadow in.
 	float shadow = iaq_shadow(world_pos, src_pos);
 	float direct = cone * shadow;
-	float ambient = iaq_beam_tint.w;
+	float ambient = iaq_beam_tint.w * iaq_room_light;
 	float lit_side = mix(IAQ_KEY_FLOOR, 1.0, ndl);
 	vec3 lit = base_col * mix(ambient, lit_side, direct);
 	// Wash: the lamp's own colour spread across everything it reaches.
@@ -179,7 +185,11 @@ vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
 	// correspondingly broad; at 6 the core only lit faces within about 30
 	// degrees of pointing straight at the lamp, which in a planted tank is
 	// almost nothing, and the frame kept its missing top end.
-	lit += iaq_beam_tint.rgb * pow(ndl, 3.0) * direct * direct * energy * 0.62;
+	// The core scales with sqrt(energy) below full power: a dimmed LED still
+	// glints where a face turns straight at it - it is the pool around the
+	// glint that dims. Linear energy left a 0.28 fixture no highlight at all.
+	float core_e = energy < 1.0 ? sqrt(energy) : energy;
+	lit += iaq_beam_tint.rgb * pow(ndl, 3.0) * direct * direct * core_e * 0.62;
 	return lit;
 }
 

@@ -137,7 +137,9 @@ static func duplicate_mutate(src: Dictionary, generation: int) -> Dictionary:
 	var out: Dictionary = enrich(src)
 	out.generation = generation
 	out.leaf_size = clampf(float(out.leaf_size) + randf_range(-0.03, 0.03), 0.12, 0.75)
-	out.root_length = clampf(float(out.root_length) + randf_range(-0.05, 0.05), 0.05, 1.5)
+	# 2.4, not 1.5: a frogbit curtain runs a third of a 4.9-unit column, and a
+	# lower clamp would cut every offspring of a long-rooted founder short.
+	out.root_length = clampf(float(out.root_length) + randf_range(-0.05, 0.05), 0.05, 2.4)
 	out.spread_rate = clampf(float(out.spread_rate) + randf_range(-0.1, 0.1), 0.2, 2.8)
 	out.palatability = clampf(float(out.palatability) + randf_range(-0.06, 0.06), 0.15, 1.0)
 	if randf() < 0.04:

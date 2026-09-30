@@ -10,12 +10,13 @@ extends SceneTree
 
 # Size-slider bounds from settings_panel.gd. A preset outside these cannot be
 # represented by the UI that is supposed to edit it.
-const W_MIN: float = 4.0
-const W_MAX: float = 24.0
-const D_MIN: float = 2.0
-const D_MAX: float = 14.0
-const H_MIN: float = 4.0
-const H_MAX: float = 20.0
+const TankSizing := preload("res://scripts/tank_sizing.gd")
+const W_MIN: float = TankSizing.W_MIN
+const W_MAX: float = TankSizing.W_MAX
+const D_MIN: float = TankSizing.D_MIN
+const D_MAX: float = TankSizing.D_MAX
+const H_MIN: float = TankSizing.H_MIN
+const H_MAX: float = TankSizing.H_MAX
 
 # A fish is ~1.8 units long. Below this a tank reads as a jar, not a tank.
 const MIN_FISH_LENGTHS_ACROSS: float = 3.0
@@ -107,8 +108,8 @@ func _initialize() -> void:
 		"a bigger tank must be bigger in game units")
 	t.approx(TankSpec.inches_for_units(TankSpec.units_for_inches(30.0)), 30.0,
 		"inches -> units -> inches must round-trip", 0.01)
-	t.approx(TankSpec.units_for_inches(48.0), 16.0,
-		"a 48in tank should keep its familiar 16-unit width", 0.2)
+	t.approx(TankSpec.units_for_inches(48.0), 20.0,
+		"a 48in tank is 20 units (the old 16 x TankSizing.SIZE_SCALE)", 0.2)
 	t.equals(TankSpec.units_for_inches(0.0), 0.0, "zero inches is zero units")
 	# Monotonic, or the ordering players perceive breaks.
 	var prev: float = -1.0

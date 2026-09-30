@@ -67,16 +67,27 @@ that each combine a distinct tank shape + footprint + substrate + aeration
 + lighting + stocking. Every scenario produces a visibly different
 silhouette of glass on the desk, not just a different fish mix.
 
-| Scenario | Shape · W×D×H | Highlights |
+| Scenario | Shape · W×D×H (units) | Highlights |
 |---|---|---|
-| **Walstad Jungle** | box · 8×4×7 | Default planted community: cardinal tetras, harlequins, cory, mouthbrooding gourami pair, cleaner shrimp |
-| **Iwagumi Stone Garden** | wide box · 11×3×5 | Sand + bright sun + a single tetra school over almost-empty negative space |
-| **Blackwater Biotope** | column · 6×3×9 | Tall narrow tank, driftwood-stained warm water, killifish + cory + guppy |
-| **Coral Reef Cube** | **cube** · 6.5²×7 | Saltwater · ocean sand · corals, anemones, clams, mixed reef morphs |
-| **Cichlid Hex Showtank** | **hex** · 7²×8 | Hexagonal show tank, angelfish + gourami pairs defend wedges of floor |
-| **Polyp Biosphere** | **sphere** · 5²×6 | NO fish — cherry shrimp colony, freshwater hydra polyps, filter-feeding clams |
-| **Nature Aquarium Column** | **cylinder** · 5.5²×8 | Tall planted column, every behavior on display at once |
-| **Apex Predator Den** | box · 6×4×6 | Cozy dim tank, betta + dwarf puffer contest opposite corners |
+| **Walstad Jungle** | box · 25×14×10 | Default planted community: cardinal tetras, harlequins, cory, mouthbrooding gourami pair, cleaner shrimp |
+| **Iwagumi Stone Garden** | wide box · 30×11×7.5 | Sand + bright sun + a single tetra school over almost-empty negative space |
+| **Blackwater Biotope** | column · 15×10×13.5 | Tall narrow tank, driftwood-stained warm water, killifish + cory + guppy |
+| **Coral Reef Cube** | **cube** · 16²×10 | Saltwater · ocean sand · corals, anemones, clams, mixed reef morphs |
+| **Cichlid Hex Showtank** | **hex** · 18²×12.5 | Hexagonal show tank, angelfish + gourami pairs defend wedges of floor |
+| **Polyp Biosphere** | **sphere** · 16²×9.5 | NO fish — cherry shrimp colony, freshwater hydra polyps, filter-feeding clams |
+| **Nature Aquarium Column** | **cylinder** · 17²×12.5 | Tall planted column, every behavior on display at once |
+| **Apex Predator Den** | box · 23×14×9.5 | Cozy dim tank, betta + dwarf puffer contest opposite corners |
+
+Sizes are full width × depth × height in game units (Settings → Tank uses
+the same numbers). All templates and catalogue vessels share one scale
+(`scripts/tank_sizing.gd`, `TankSpec`: a 48 in tank is 20 units). Each
+template records the size its stocking was tuned at (`stocking_ref_dims`);
+schools and shrimp scale with volume^(2/3) and plant fill with floor area
+from there, so a bigger tank is fuller, not emptier. Singles and pairs
+(a betta, a predator pair) never multiply.
+The picker's **Tank size** row (Compact 0.8x · Standard · Large 1.2x ·
+Grand 1.4x) rescales the chosen template, and each card shows its size,
+real gallons and the scaled resident count at that step.
 
 The picker writes a config dict into `TankConfig` per scenario, so each tank
 opens with the right `tank_shape`, `tank_half_w/d`, `tank_height`,

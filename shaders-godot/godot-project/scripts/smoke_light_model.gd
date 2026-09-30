@@ -30,6 +30,7 @@ const MUST_BE_LIT: Array[String] = [
 	"voxel", "voxel_mm", "voxel_fauna_mm",
 	"foliage", "foliage_mm", "foliage_senescent_mm",
 	"substrate_opaque", "substrate_caustic",
+	"floater_roots", "mote",
 ]
 
 # Shaders deliberately outside the model, each for a stated reason. Listed so

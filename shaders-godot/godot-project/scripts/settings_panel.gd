@@ -14,6 +14,7 @@ extends PanelContainer
 const OllamaOnboarding = preload("res://scripts/ollama_onboarding.gd")
 const MindNarrator = preload("res://scripts/mind_narrator.gd")
 const KeeperInput = preload("res://scripts/keeper_input.gd")
+const TankSizing := preload("res://scripts/tank_sizing.gd")
 const FAUNA_MOTION_STEP: float = 0.5
 const FAUNA_VALUE_LABEL_W: float = 108.0
 
@@ -287,15 +288,15 @@ func _build_ui() -> void:
 	vbox_tank.add_child(fit_hint)
 
 	_w_label = Label.new()
-	_w_slider = PanelTheme.add_slider_row(vbox_tank, "Width", 4.0, 24.0, 0.5, _w_label)
+	_w_slider = PanelTheme.add_slider_row(vbox_tank, "Width", TankSizing.W_MIN, TankSizing.W_MAX, 0.5, _w_label)
 	_w_slider.value_changed.connect(func(v): _on_w(v); _update_vessel_desc())
 
 	_d_label = Label.new()
-	_d_slider = PanelTheme.add_slider_row(vbox_tank, "Depth", 2.0, 14.0, 0.5, _d_label)
+	_d_slider = PanelTheme.add_slider_row(vbox_tank, "Depth", TankSizing.D_MIN, TankSizing.D_MAX, 0.5, _d_label)
 	_d_slider.value_changed.connect(func(v): _on_d(v); _update_vessel_desc())
 
 	_h_label = Label.new()
-	_h_slider = PanelTheme.add_slider_row(vbox_tank, "Height", 4.0, 20.0, 0.5, _h_label)
+	_h_slider = PanelTheme.add_slider_row(vbox_tank, "Height", TankSizing.H_MIN, TankSizing.H_MAX, 0.5, _h_label)
 	_h_slider.value_changed.connect(func(v): _on_h(v); _update_vessel_desc())
 
 	var reload_badge := PanelTheme.make_description()
@@ -1206,9 +1207,11 @@ func _pull_from_config() -> void:
 			if _new_tank_fit_option.get_item_metadata(i) == TankConfig.new_tank_fit:
 				_new_tank_fit_option.select(i)
 				break
-	_w_slider.value = TankConfig.tank_half_w * 2.0
-	_d_slider.value = TankConfig.tank_half_d * 2.0
-	_h_slider.value = TankConfig.tank_height
+	# No signal: value_changed -> _on_w() would mark the vessel "custom" and
+	# snap the dims to the slider step just because the panel was opened.
+	_w_slider.set_value_no_signal(TankConfig.tank_half_w * 2.0)
+	_d_slider.set_value_no_signal(TankConfig.tank_half_d * 2.0)
+	_h_slider.set_value_no_signal(TankConfig.tank_height)
 	_light_height.value = TankConfig.light_height
 	_light_size.value = TankConfig.light_size
 	_light_volumetric_check.button_pressed = TankConfig.light_volumetric
@@ -1856,9 +1859,11 @@ func _on_vessel(idx: int) -> void:
 		if _shape_option.get_item_metadata(i) == TankConfig.tank_shape:
 			_shape_option.select(i)
 			break
-	_w_slider.value = TankConfig.tank_half_w * 2.0
-	_d_slider.value = TankConfig.tank_half_d * 2.0
-	_h_slider.value = TankConfig.tank_height
+	# No signal: value_changed -> _on_w() would mark the vessel "custom" and
+	# snap the dims to the slider step just because the panel was opened.
+	_w_slider.set_value_no_signal(TankConfig.tank_half_w * 2.0)
+	_d_slider.set_value_no_signal(TankConfig.tank_half_d * 2.0)
+	_h_slider.set_value_no_signal(TankConfig.tank_height)
 	_update_value_labels()
 	_refresh_density_readouts()
 	TankConfig.end_settings_batch()

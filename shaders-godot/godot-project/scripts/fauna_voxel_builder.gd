@@ -34,20 +34,26 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 		return
 	var albedo: Color = VoxelMat.fauna_color_from_material(mat)
 	var bend_w: float = _bone_bend_weight(parent)
-	var inst_custom: Color = Color(bend_w, 0.0, 0.0, 1.0)
+	# INSTANCE_CUSTOM contract (voxel_fauna_mm.gdshader): r = bend weight in
+	# the fraction + bioluminescence in the integer part, g = belly flash,
+	# b = display vibrancy, a = iridescence. This used to write the
+	# iridescence into g (read as belly flash) and 1.0 into a (read as FULL
+	# iridescence on every voxel), and bend in r was read as bioluminescence,
+	# washing every tail pale blue.
+	var inst_custom: Color = Color(pack_custom_r(bend_w, 0.0), 0.0, 0.0, 0.0)
 	if mat is ShaderMaterial:
 		var irid_v: Variant = (mat as ShaderMaterial).get_shader_parameter("irid_strength")
 		if irid_v != null:
-			inst_custom.g = clampf(float(irid_v), 0.0, 1.0)
+			inst_custom.a = clampf(float(irid_v), 0.0, 1.0)
 	var xform := Transform3D(Basis.from_scale(size), pos)
 	if _species_batch and _world_parent != null and _species != "" \
 			and _FaunaSpeciesBatchScript.active():
 		var h: VoxelBatch.Handle = _FaunaSpeciesBatchScript.register_instance(
 			_world_parent, _species, Transform3D.IDENTITY, albedo, inst_custom.r, _subspecies)
 		if h != null:
-			if inst_custom.g > 0.001:
-				h.set_meta("fauna_custom_a", inst_custom.g)
-				h.set_custom_data(inst_custom)
+			h.set_meta("fauna_bend", bend_w)
+			h.set_meta("fauna_custom_a", inst_custom.a)
+			h.set_custom_data(inst_custom)
 			h.set_meta("orig_color", albedo)
 			_FaunaSpeciesBatchScript.track_sync(parent, xform, h)
 			handles.append(h)
@@ -58,9 +64,9 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 		_pivot_seq[key] = 0
 	var batch: VoxelBatch = _batches[key]
 	var h2: VoxelBatch.Handle = batch.add(xform, albedo)
-	if inst_custom.g > 0.001 or inst_custom.r > 0.001:
-		h2.set_meta("fauna_custom_a", inst_custom.g)
-		h2.set_custom_data(inst_custom)
+	h2.set_meta("fauna_bend", bend_w)
+	h2.set_meta("fauna_custom_a", inst_custom.a)
+	h2.set_custom_data(inst_custom)
 	h2.set_meta("orig_color", albedo)
 	handles.append(h2)
 
@@ -86,6 +92,14 @@ static func handle_orig_color(h: VoxelBatch.Handle) -> Color:
 	if h.has_meta("orig_color"):
 		return h.get_meta("orig_color")
 	return h.base_color
+
+
+# Pack INSTANCE_CUSTOM.r: bend weight (0..1, static per voxel) in the
+# fraction, bioluminescence (0..1, per fish) in 1/32 integer steps. The shader
+# unpacks with fract()/floor(). Bend is capped below 1.0 so fract() never
+# wraps a full-weight tail voxel to zero.
+static func pack_custom_r(bend: float, biolum: float) -> float:
+	return floorf(clampf(biolum, 0.0, 1.0) * 32.0 + 0.5) + clampf(bend, 0.0, 0.995)
 
 
 static func _bone_bend_weight(parent: Node3D) -> float:

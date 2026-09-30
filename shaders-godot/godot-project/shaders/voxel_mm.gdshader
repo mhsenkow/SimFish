@@ -19,6 +19,7 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/backlight.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -58,5 +59,7 @@ void fragment() {
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
 	col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+	col = iaq_backlight_light(col, v_world_pos,
+		(INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }
