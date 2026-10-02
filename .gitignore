@@ -70,6 +70,12 @@ Thumbs.db
 # Per-script smoke logs (BROAD_DIRECTIONS #10) - regenerated every run.
 .smoke-logs/
 
+# Local Godot override (may pin custom_user_dir for probes). Never commit.
+shaders-godot/godot-project/override.cfg
+
+# Isolated dev-run scratch (HOLISTIC #001 inventories + backups).
+.scratch/
+
 # Visual inspection harness output (dev/inspect.tscn)
 inspect_*.png
 inspect_*.png.import

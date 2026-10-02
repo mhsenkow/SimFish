@@ -28,7 +28,7 @@ void vertex() {
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
-	float face = n.y > 0.7 ? 1.0 : (n.y < -0.7 ? 0.58 : 0.76);
+	float face = n.y > 0.7 ? 1.0 : (n.y < -0.7 ? 0.50 : 0.70);
 	vec3 amber = v_color * vec3(1.08, 0.88, 0.55) * face;
 	amber = apply_category_palette_tint(amber, iaq_palette_foliage, 0.0, 0.92, 0.08, 1.0);
 	// Analytic fixture cone (VISUAL_DIRECTIONS #1) — dying leaves live in the

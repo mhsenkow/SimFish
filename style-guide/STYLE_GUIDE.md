@@ -4,8 +4,21 @@ The look is **pixel art with sim depth underneath**. Internal sim runs continuou
 
 ## 1. Resolution & camera
 
-- **Internal render target:** `384 × 216` (16:9, 1/5 of 1080p, scales cleanly to 1080p and 4K).
-- **Upscale:** nearest-neighbor only. No bilinear. No subpixel AA.
+Supported **internal fidelity tiers** (16:9), enforced by
+`render_resolution_audit.gd` and stepped by adaptive quality:
+
+| Tier | Internal grid | Notes |
+|---|---|---|
+| potato | `256 × 144` | Adaptive floor / weak devices |
+| compact | `384 × 216` | Design-intent chunky grid (≈1/5 of 1080p) |
+| mid | `512 × 288` | First-launch beauty default (`AestheticsRuntime.BEAUTY_DEFAULTS`) |
+| high | `768 × 432` | Mid–high adaptive step |
+| desktop | `1024 × 576` | **Shipping `TankConfig` default** |
+
+- Post-process SubViewport must match the 3D internal size (never the window).
+- **Upscale:** nearest-neighbor only (`TEXTURE_FILTER_NEAREST` on the display
+  blit). No bilinear. Optional `integer_upscale` letterboxes to an exact N×
+  block so resized windows do not shimmer or blur pixel edges.
 - **Pixel aspect:** 1:1 square.
 - **Camera framing:** the tank fills ~70% of the viewport. Leave room above (lid, fixture, room beyond) and below (stand + cabinet) like the reference photo.
 - **Above/below water split:** the meniscus line is exactly **1 pixel tall**, value-shifted brighter on the day side. Sample it from the SPH surface field, snapped to the nearest internal row.

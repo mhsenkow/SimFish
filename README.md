@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.36](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.36)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
+**Latest release: [v0.2.37](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.37)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
 
 ## Where things are at (July 2026)
 
@@ -12,7 +12,7 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 |---|---|
 | **Playable builds** | macOS (notarized), Windows, Linux, Android — free on [GitHub Releases](https://github.com/mhsenkow/SimFish/releases) |
 | **Steam** | Desktop depots uploaded; EA launch July 7. Same binaries as GitHub. |
-| **Ecosystem sim** | Walstad nutrient loop, 8 scenario presets, saltwater reef mode, aquascaping craft |
+| **Ecosystem sim** | Walstad nutrient loop, **18** scenario presets (`scenario_picker.gd`), saltwater reef mode, aquascaping craft |
 | **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, three-pass soul/spark layer |
 | **Keeper loop** | Care tiers gate conversation — steady the tank first, then fish open up; comfort words soothe spooked fish |
 | **Performance** | Mind kernel tick path, perf governor, batched fauna/waste, potato fidelity tier, eight biome palettes |
@@ -31,7 +31,7 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 | | |
 |---|---|
 | ![Planted community](docs/img/planted-community.png) | ![Scenario picker](docs/img/tank-menu-scenarios.png) |
-| Planted community · live stat chips | Eight scenario presets |
+| Planted community · live stat chips | Scenario picker (18 presets) |
 | ![Reef cube](docs/img/reef-cube.png) | ![Void tank](docs/img/void-tank.png) |
 | Saltwater reef cube | Void environment preset |
 
@@ -62,13 +62,14 @@ On [Steam](https://store.steampowered.com/app/4796460/) — Early Access **July 
 
 ## Pick your tank
 
-Tapping **+ New tank** opens the scenario picker — eight curated themes
+Tapping **+ New tank** opens the scenario picker — **18** curated themes
 that each combine a distinct tank shape + footprint + substrate + aeration
 + lighting + stocking. Every scenario produces a visibly different
 silhouette of glass on the desk, not just a different fish mix.
 
 | Scenario | Shape · W×D×H (units) | Highlights |
 |---|---|---|
+| **Beginner sandbox** | box · tuned starter | Safest learning tank — light stocking, established cycle |
 | **Walstad Jungle** | box · 25×14×10 | Default planted community: cardinal tetras, harlequins, cory, mouthbrooding gourami pair, cleaner shrimp |
 | **Iwagumi Stone Garden** | wide box · 30×11×7.5 | Sand + bright sun + a single tetra school over almost-empty negative space |
 | **Blackwater Biotope** | column · 15×10×13.5 | Tall narrow tank, driftwood-stained warm water, killifish + cory + guppy |
@@ -77,6 +78,18 @@ silhouette of glass on the desk, not just a different fish mix.
 | **Polyp Biosphere** | **sphere** · 16²×9.5 | NO fish — cherry shrimp colony, freshwater hydra polyps, filter-feeding clams |
 | **Nature Aquarium Column** | **cylinder** · 17²×12.5 | Tall planted column, every behavior on display at once |
 | **Apex Predator Den** | box · 23×14×9.5 | Cozy dim tank, betta + dwarf puffer contest opposite corners |
+| **Shrimp sanctuary** | nano | Shrimp-focused colony, no fish predators |
+| **Dutch competition** | planted | High-CO₂ red-plant showcase |
+| **Nano reef** | small reef | Warmth / bleaching tutorial |
+| **Snail bar** | cleanup crew | Snail-forward stocking |
+| **Valli jungle** | dense planted | Vallisneria-heavy reference jungle |
+| **Hex jungle** | hex planted | Nonrectangular dense plant mass |
+| **Counter nano** | countertop nano | Compact desk footprint |
+| **Night lamp** | dim biotope | Night-forward lighting character |
+| **Wildcard** | varies | Random or AI roll — preview before commit |
+
+*(Dims above for the classic eight; remaining ids live in
+`scenario_picker.gd` `SCENARIOS` — count them there, do not hardcode.)*
 
 Sizes are full width × depth × height in game units (Settings → Tank uses
 the same numbers). All templates and catalogue vessels share one scale
@@ -283,8 +296,8 @@ forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
   1536 px viewport stretched onto a phone still yields a ~7 mm button
 
 ### Tank scenarios (the picker shown above)
-- Eight curated themes with distinct shapes (box, cube, hex, cylinder, sphere) + footprints + lighting + stocking
-- Three new tank presets: `polyp_lab` (fishless), `iwagumi_school`, `cichlid_pairs`, `blackwater_biotope`
+- **18** curated themes in `scenario_picker.gd` with distinct shapes (box, cube, hex, cylinder, sphere, …) + footprints + lighting + stocking
+- Includes fishless (`polyp_lab`), reef / nano reef, jungles, night lamp, wildcard, and the classic Walstad / Iwagumi / blackwater set
 
 ## Controls
 
@@ -385,12 +398,13 @@ Steam desktop upload: `./steam/stage_content.sh` then `STEAM_USERNAME=you ./stea
 ```
 SimFish/
 ├── shaders-godot/godot-project/    # THE GAME — open this in Godot
-│   ├── main.tscn                   # root scene: SubViewport (512×288) + palette Display + TopHUD
+│   ├── main.tscn                   # root scene: SubViewport (default 1024×576) + palette Display + TopHUD
 │   ├── tank_menu.tscn              # tank-picker shown on launch (main scene)
-│   ├── project.godot               # autoloads: TankSaves, TankConfig, SpeciesLibrary, SteamService, AIDirector
-│   ├── scripts/                    # ~70 GDScript files, grouped by subsystem below
-│   ├── shaders/                    # ~18 .gdshader files (render pipeline below)
+│   ├── project.godot               # 11 autoloads (AppLog…GamepadInput); config/version tracks release
+│   ├── scripts/                    # GDScript — see subsystem list below (~500+ files incl. smokes)
+│   ├── shaders/                    # .gdshader files (render pipeline below)
 │   ├── assets/                     # theme + fonts
+│   ├── dev/fixtures/saves/         # synthetic save fixtures (Holistic #011)
 │   └── palettes/                   # 48-color planted + night palette PNGs
 ├── shaders-godot/
 │   ├── make_palette.py             # generates palette PNGs from hex lists
@@ -406,7 +420,7 @@ SimFish/
 
 ### `scripts/` by subsystem
 
-- **Coordination / autoloads** — `sim_driver.gd` (10 Hz tick + save/load), `tank_config.gd`, `tank_saves.gd`, `save_manager.gd` / `save_helpers.gd`, `species_library.gd`, `ai_director.gd`, `steam_service.gd` (+ `steam_service_desktop.gd`).
+- **Coordination / autoloads** — `sim_driver.gd` (10 Hz tick + save/load), `tank_config.gd`, `tank_saves.gd`, `save_manager.gd` / `save_helpers.gd` / `save_migrations.gd`, `species_library.gd`, `ai_director.gd`, `steam_service.gd` (+ `steam_service_desktop.gd`), plus `app_log`, `localization`, `guardian_llm`, `music_context`, `ui_ticker`, `gamepad_input`.
 - **World build** — `world.gd`, `terrain_voxel_grid.gd`, `substrate_grid.gd`, `water_chemistry.gd`, `tank_footprint.gd`, `aquascape_controller.gd`, `aquarium_visuals.gd`.
 - **Fauna** — `fish.gd`, `shrimp.gd`, `snail.gd` (+ `snail_egg.gd` / `snail_shell.gd`), `clam.gd`, `egg.gd`, `evolution_pressure.gd`, `fauna_voxel_builder.gd` / `fauna_boundary.gd`, `microfauna_swarm.gd`, and critter variants (`bristle_worm`, `sea_cucumber`, `trumpet_snail`, `wriggle_worm`, `tubifex_patch`, `mycelium_patch`, `biofilm_patch`).
 - **Flora** — `plant.gd`, `branch_plant.gd`, `spiral_plant.gd`, `nautilus_plant.gd`, `fractal_moss.gd`, `cattail_plant.gd`, `lily_pad.gd`, `floating_plant.gd`, `coral.gd`, `algae.gd`, `leaf_shapes.gd`, `waste_particle.gd`.
@@ -414,7 +428,7 @@ SimFish/
 - **Rendering helpers** — `voxel_mat.gd`, `voxel_batch.gd`, `capture.gd` (F12 photo + timelapse).
 - **Species data** — `real_species_library.gd` / `real_species_fauna.gd`.
 - **Chrome geometry** — `safe_area.gd` (display cutout insets, viewport-space), `panel_theme.gd` (tokens, touch-target sizing, panel transitions).
-- **Dev-only** — `motion_debug_overlay.gd`, `smoke_*.gd`, `dev/compile_check.gd`.
+- **Dev-only** — `motion_debug_overlay.gd`, `smoke_*.gd`, `dev/compile_check.gd`. Run smokes with `scripts/run_smokes.sh` (not `smoke_runner.gd`).
 
 ### `shaders/` (the pipeline)
 
@@ -422,9 +436,25 @@ SimFish/
 
 ## Architecture notes
 
-**Rendering pipeline.** The 3D voxel scene lives in a `SubViewport` at 512×288. A full-window `TextureRect` displays the SubViewport's render through `palette_quantize.gdshader`, which snaps every output pixel to one of 48 palette colors using Bayer 4×4 dither between the two nearest hits. Voxel materials use `voxel.gdshader` — unshaded, face-based brightness (top 100%, sides 82% / 68%, bottom 50%) so cubes self-light without a directional light fighting the palette. Light energy in the environment is at 0.3 for soft fill only.
+**Rendering pipeline.** The 3D voxel scene lives in a `SubViewport` whose
+default internal size is **1024×576** (`TankConfig.render_width/height`;
+adaptive quality and potato tiers may step this). A full-window `TextureRect`
+displays that buffer through `palette_quantize.gdshader`, which snaps every
+output pixel to one of 48 palette colors using Bayer 4×4 dither between the two
+nearest hits, then nearest-neighbor upscales. Voxel materials use
+`voxel.gdshader` — unshaded, face-based brightness (top 100%, sides 82% / 68%,
+bottom 50%) so cubes self-light without a directional light fighting the
+palette. Light energy in the environment is at 0.3 for soft fill only.
+(Style-guide historical `384×216` target remains design intent for a future
+locked tier — runtime default is the TankConfig pair above.)
 
-**Simulation pipeline.** Behavior decisions run at 10 Hz in `SimDriver._tick()`. Motion runs at render rate in each creature's `_process()` — fish and shrimp use a **heading + speed** model with bounded turn rate and linear acceleration so they curve through arcs instead of teleporting. Banking on yaw rate gives them a visible roll into turns.
+**Simulation pipeline.** Behavior decisions and ecology run at 10 Hz in
+`SimDriver._tick()`. Mind ticks nest inside `Fish.tick`. Motion integrates at
+render rate in each creature's `_process()` — fish and shrimp use a
+**heading + speed** model with bounded turn rate and linear acceleration so they
+curve through arcs instead of teleporting. Banking on yaw rate gives them a
+visible roll into turns. Authoritative clock/state ownership:
+[`ARCHITECTURE.md`](ARCHITECTURE.md) (Holistic #010).
 
 **Schooling.** Boids with three upgrades: view cone (~115° in front), position prediction (cohesion targets `neighbor.position + neighbor.velocity * 0.4`), and speed matching toward school average.
 
@@ -456,7 +486,7 @@ Done since the original roadmap:
 - [x] Region-aware dither, time-of-day palette, integer upscale, outline shader, palette bank lock, CRT overlay, pixel-snap camera (8-bit aesthetic batch)
 - [x] Wave-coupled caustics, night bioluminescence, god-ray fish occlusion, plant SSS, filter bubble stream, glass meniscus ring, sand ripple sculpting, driftwood algae (beauty + water fidelity batch)
 - [x] Plant spatial grid, voxel LOD, self-tuning render tier, frame-budget sparkline, lazy substrate ticks (performance batch)
-- [x] New-tank scenario picker — 8 themed combos with distinct shapes + footprints + stocking
+- [x] New-tank scenario picker — **18** themed combos with distinct shapes + footprints + stocking (`scenario_picker.gd`)
 
 Up next: see [`docs/GOALS.md`](docs/GOALS.md) for the full 50-item checklist
 organized by category (motion, breeding, food web, plants, environment, etc.).

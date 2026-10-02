@@ -55,7 +55,7 @@ it. Full dependency-ordered plan in [The carve order](#the-carve-order).
 
 ```
 SceneTree
-├── /root/  (7 autoloads — process-wide singletons, see §2)
+├── /root/  (11 autoloads — process-wide singletons, see §2)
 │     TankSaves  TankConfig  SpeciesLibrary  SteamService
 │     AIDirector  GuardianLlm  MusicContext
 │
@@ -79,18 +79,29 @@ and **`Main` is a sibling view layer** that reads both. `Fish` nodes live under
 
 ### The tick & data-flow (`render ← read-only ← sim tick ← mind tick`)
 
-There are **two clocks**:
+There are **three clock families** (Holistic #010 — see also root
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) state table):
 
-- **Sim clock — authoritative, 10 Hz fixed.** `SimDriver._physics_process()`
-  [sim_driver.gd:2483] accumulates scaled delta and drains `_tick(dt)`
-  [sim_driver.gd:3083] at `SIM_DT = 0.1s`. The **mind tick is nested inside the
-  sim tick**: `_tick` loops fish and calls `f.tick(...)` [sim_driver.gd:~3290 →
-  fish.gd:3208], and `fish.tick` runs cognition via `_update_inner_life()`
-  [fish.gd:1188] → `CognitionKernel` / `MindCycle`. So: **mind tick ⊂ fish tick ⊂
-  sim tick.**
-- **Render/UI clock — per-frame `_process`.** `World._process()` [world.gd:495]
-  (visuals, lights, caustics, room) and `Main._process()` [main.gd:1642] (camera,
-  follow-cam, HUD, keeper chat) both **read** sim state and **must not mutate** it.
+1. **Sim clock — authoritative, 10 Hz fixed.** `SimDriver._physics_process()`
+   accumulates `dt * time_scale` and drains `_tick(SIM_DT)` at `SIM_HZ = 10`
+   (`SIM_DT = 0.1`). Ecology (chemistry, plants, waste, eggs, population events)
+   runs here.
+2. **Mind clock — nested in the sim tick.** `_tick` calls `f.tick(...)` →
+   `_update_inner_life()` → `CognitionKernel` / `MindCycle`. So:
+   **mind tick ⊂ fish tick ⊂ sim tick.** `MindScheduler.poll_workers()` runs at
+   the start of `_tick`.
+3. **Render / UI clock — per-frame `_process`.** `Fish._process` integrates
+   locomotion (`_motion_substep`) at render rate using `sim.time_scale`.
+   `World._process` and `Main._process` paint and camera — **read-only** on sim.
+
+**Wall-time clocks (must not invent ecology):**
+
+| Use | API | Owner |
+|---|---|---|
+| Tank dialogue quiet / kind / return gaps | `Time.get_unix_time_from_system` | `TankDialogue` |
+| Keeper reply windows | `Time.get_ticks_msec` | `Main` |
+| Narrator global voice spacing | sim-scaled `dt` (`GLOBAL_VOICE_COOLDOWN_S = 18`) | `MindNarrator` |
+| Promise deadlines | prefer `sim.tank_age_s`, else unix | `TankDialogue` |
 
 ```
         ┌─────────────── 10 Hz fixed (authoritative) ───────────────┐
@@ -98,11 +109,20 @@ There are **two clocks**:
         │    chemistry → plants → FISH BRAINS(mind tick) → waste/eggs│
         │    → algae → water_chemistry.tick → event resolution       │
         └───────────────────────────┬────────────────────────────────┘
-                                     │ writes sim state (positions, chem, stats)
+                                     │ writes sim state (positions intent, chem, stats)
                   read-only          ▼            read-only
    World._process() ───────► (sim state) ◄─────── Main._process()
    visuals/lights/caustics                        camera/HUD/follow/chat
+   Fish._process() ───────── locomotion integrate (render rate)
 ```
+
+| Concern | State owner | Clock | Save owner |
+|---|---|---|---|
+| Ecology / chem / population | `SimDriver` | 10 Hz sim tick | `SimDriver.save_state()` + `SaveMigrations` |
+| Mind / cognition | `Fish` via `MindState` | Nested in `fish.tick` | `fish[].mind` |
+| Locomotion pose | `Fish` | Render `_process` | `Fish.to_save_dict()` pos/vel/heading |
+| Aquascape | `AquascapeController` | Player / UI | `aquascape` via `SaveManager` |
+| Dialogue cooldowns | `TankDialogue` / `Main` | Wall unix / msec | `sim.tank_mind` (memory); reply windows session-only |
 
 When you carve, **preserve this direction.** A `VisualsController` or
 `HudController` reading `sim.day_phase` is fine; one *writing* a sim field is a bug
@@ -112,19 +132,24 @@ the current god-objects can hide and a clean module makes obvious.
 
 ## 2. Autoloads & shared singletons
 
-**7 autoloads** (`project.godot [autoload]`) — the only legitimate globals. Reach
+**11 autoloads** (`project.godot [autoload]`, asserted by
+`smoke_autoload_contract.gd`) — the only legitimate globals. Reach
 them with a cached typed ref in `_ready()`, **not** `get_node_or_null("/root/X")`
-per call (ENGINEERING #11/#12 — there are 255 such lookups today):
+per call (ENGINEERING #11/#12):
 
 | Autoload | Script | Owns |
 |---|---|---|
-| `TankConfig` | `tank_config.gd` (2,964 — itself a god-config, ENGINEERING #20) | All tank/scenario/lighting/sentience/music settings, `SPECIES_LIBRARY` |
+| `AppLog` | `app_log.gd` | Structured logging (load first) |
+| `Localization` | `localization.gd` | `tr()` from frame 0 |
 | `TankSaves` | `tank_saves.gd` | Per-slot save/load, compatibility checks |
+| `TankConfig` | `tank_config.gd` | All tank/scenario/lighting/sentience/music settings |
 | `SpeciesLibrary` | `species_library.gd` | Discovery state, real-species genomes |
 | `SteamService` | `steam_service.gd` | Steam integration |
 | `AIDirector` | `ai_director.gd` | Offline-first LLM tier ladder + `chronicle_line` |
 | `GuardianLlm` | `guardian_llm.gd` | In-process SmolLM2-360M, 3-tier fallback |
 | `MusicContext` | `music_context.gd` | Music clock, dance choreography, `now_playing` |
+| `UiTicker` | `ui_ticker.gd` | UI cadence |
+| `GamepadInput` | `gamepad_input.gd` | Controller routing |
 
 **Static-class singletons** (preloaded `class_name`, *not* autoloads — called as
 `Type.func()`): `CognitionKernel`, `MindCycle`, `MindState`, `MindChannel`,
@@ -291,6 +316,22 @@ reproducibility — sex assignment [4238, 4261, 4294, 4989], resilience/evo-burs
 mutations [4905-5031], algae crash [3780], fish-thought roll [1335]. Cosmetic color
 mutations (4242, 4899) may stay raw. Full list lives in the carve session 3A.
 
+### Random-stream ownership (HOLISTIC #017)
+
+| Stream | Owner | Used for | Must not |
+|---|---|---|---|
+| `SimRng.STREAM_SPAWN` | `SimDriver.rng` | Founding stock positions, counts, sex rolls that affect who exists | Be advanced by VFX / UI glitter |
+| `SimRng.STREAM_GENETICS` | `SimDriver.rng` / `MindRng` entity streams | Offspring genomes, heritable rolls | Mix with presentation noise |
+| `SimRng.STREAM_BEHAVIOR` | per-fish via `MindRng.for_fish(..., STREAM_BEHAVIOR)` / `Fish._behavior_rng()` | Behavioral replay, bout choices | Be consumed by cosmetics |
+| `SimRng.STREAM_EVENTS` | `SimDriver.rng` | Eco events, feed scatter | Cross-contaminate spawn |
+| `SimRng.STREAM_COGNITION` | `MindRng.for_fish` (default) | Mind / attention stochasticity | Alter founding stock |
+| `SimRng.STREAM_COSMETIC` | `SimDriver.rng` (named) | Presentation-only draws (shimmer, non-sim VFX) | Alter spawn, genetics, or behavior sequences |
+| `MindRng` | thin facade | Resolves per-entity stream names into `sim.rng` (fallback seed if no sim) | Invent a second master seed |
+
+**Contract:** drawing from `STREAM_COSMETIC` (or any non-spawn/behavior stream) must
+leave founding stock and behavioral replay sequences unchanged for the same master
+seed. Demonstrated by `scripts/smoke_sim_rng.gd` (`_cosmetic_isolation`).
+
 ---
 
 ## 5. The mind-as-host opportunity (why the fish carve matters most)
@@ -435,10 +476,9 @@ in the source idea doc's checkbox line — measurement is the point (ENGINEERING
          Migrate any randf/randi to the seeded stream (SimRng/MindRng/_behavior_rng).
 - [ ] 5. Respect §7 import rules — no new cycle; render/UI slices read-only on sim.
 - [ ] 6. Add scripts/smoke_<slice>.gd (extends SceneTree) asserting the pinned
-         behavior in isolation; wire it into smoke_runner.gd.
+         behavior in isolation; discoverable by `scripts/run_smokes.sh`.
 - [ ] 7. Verify headless:
-         ./scripts/godot.sh --headless --path shaders-godot/godot-project \
-           --script res://scripts/smoke_runner.gd
+         ./scripts/run_smokes.sh --include <your_smoke_needle>
 - [ ] 8. Confirm ZERO behavior change (pixel-identical feel / identical sim trace).
 - [ ] 9. Shrink one mind-debt row (§8) if applicable; record the new count.
 - [ ] 10. Mark the idea-doc item [x]/partial with a one-line shipped note + commit.

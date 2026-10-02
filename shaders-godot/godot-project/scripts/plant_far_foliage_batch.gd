@@ -82,8 +82,18 @@ func _eligible_for_mirroring(plant: Plant) -> bool:
 	# Flowers and pods remain live Node3D geometry. Mirroring only their
 	# stem/leaves would freeze one half of the plant and hide its private
 	# anchor, so reproductive plants stay wholly private.
-	return plant != null and not plant.has_flower \
-		and plant.flower_stage == Plant.FlowerStage.NONE
+	if plant == null or plant.has_flower \
+			or plant.flower_stage != Plant.FlowerStage.NONE:
+		return false
+	# Holistic #158 — tiny or highly distinctive forms keep private draws so
+	# far consolidation cannot collapse stems / rosettes / carpets together.
+	if plant.biomass() < 6:
+		return false
+	if plant.is_carpet or plant.leaf_form == "needle":
+		return false
+	if plant._uses_ribbon_blades() and plant.biomass() < 12:
+		return false
+	return true
 
 
 func _live_render_count(batch: VoxelBatch) -> int:

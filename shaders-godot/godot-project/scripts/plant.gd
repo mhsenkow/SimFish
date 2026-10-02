@@ -2489,11 +2489,16 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 	var tone: float = lerpf(0.72, 1.2, fposmod(float(serial) * 0.618034 + _ribbon_hash(0, 11), 1.0))
 	# Some of the shorter blades arch over in mid-water instead of reaching.
 	var arch: bool = serial != 0 and frac < 0.75 and _ribbon_hash(serial, 17) < 0.3
-	# Tip: rounded, blunt (cut) or torn.
+	# Holistic #142 — tip termination varies by style, bend, and age; stable
+	# per blade (hash of serial). Length of the full strap stays on the
+	# existing frac/maturity path so surface layover and dwarf scale hold.
 	var tip_h: float = _ribbon_hash(serial, 16)
-	var tip_style: int = 0 if tip_h < 0.6 else (1 if tip_h < 0.82 else 2)
+	# Spread tip styles more evenly: rounded / blunt / torn / tapered-whip.
+	var tip_style: int = 0 if tip_h < 0.28 else (1 if tip_h < 0.52 else (2 if tip_h < 0.78 else 3))
+	var tip_bend: float = lerpf(0.08, 0.42, _ribbon_hash(serial, 20))
 	# Age rank among the booked blades: 0 = newest, 1 = oldest.
 	var age: float = clampf(float(_ribbon_blade_serial - 1 - serial) / 12.0, 0.0, 1.0)
+	var tip_age_droop: float = age * lerpf(0.12, 0.5, _ribbon_hash(serial, 21))
 	var family: float = _ribbon_hash(serial * 17 + 5, 18)
 	var surface_y: float = water_surface_y - global_position.y - 0.12
 	var reach_len: float = maxf(surface_y - crown.y, 0.0)
@@ -2527,11 +2532,19 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 			var wob: float = sin(along * 0.9 + wob_phase) * wob_amp
 			desired = (Vector3.UP + out_dir * lean + side_dir * wob).normalized()
 			max_turn = seg * 0.45
+			# Tip character only in the last ~15% so layover length is preserved.
+			if t > 0.88:
+				desired = (desired + out_dir * tip_bend * 0.18
+					+ Vector3.DOWN * tip_age_droop * 0.2).normalized()
+				max_turn = seg * lerpf(0.45, 0.7, tip_bend)
 		else:
 			surfacing = true
 			var meander: float = sin(along * 0.7 + wob_phase) * 0.22
 			desired = tdir.rotated(Vector3.UP, meander)
 			max_turn = seg / RIBBON_BEND_RADIUS
+			if t > 0.88:
+				desired = (desired + Vector3.DOWN * tip_age_droop * 0.08
+					+ side_dir * (tip_bend - 0.25) * 0.1).normalized()
 		var ang: float = d.angle_to(desired)
 		if ang > 0.0001:
 			d = d.slerp(desired, minf(1.0, max_turn / ang)).normalized()
@@ -2562,11 +2575,13 @@ func _ribbon_blade_segments(serial: int, birth_h: int, h: int,
 		var width: float = base_w * lerpf(1.0, 0.85, t)
 		var tip_shift: float = 0.0
 		if i == n - 1:
-			width *= [0.45, 0.85, 0.55][tip_style]
-			tip_shift = 0.3 if tip_style == 2 else 0.0
+			width *= [0.45, 0.85, 0.55, 0.32][tip_style]
+			tip_shift = [0.0, 0.05, 0.3, -0.12][tip_style]
+			# Older tips thin a bit more — still one attached segment.
+			width *= lerpf(1.0, 0.78, tip_age_droop)
 		elif i == n - 2:
-			width *= [0.8, 0.95, 0.7][tip_style]
-			tip_shift = -0.2 if tip_style == 2 else 0.0
+			width *= [0.8, 0.95, 0.7, 0.62][tip_style]
+			tip_shift = [0.0, 0.0, -0.2, 0.08][tip_style]
 		elif i == 0:
 			width *= 0.9
 		var size := Vector3(width, seg * 1.12, RIBBON_THICKNESS)
@@ -3026,6 +3041,27 @@ func biomass() -> int:
 	return current_height + _alive_trail_count()
 
 
+# Holistic #141 — one authoritative budget for ecology + visuals.
+# Adapter, shade, grazing, and trim all read this same number.
+func ecology_biomass() -> float:
+	return float(biomass())
+
+
+func ecology_nutrient_demand() -> float:
+	return clampf(nutrient_demand, 0.0, 1.0)
+
+
+func ecology_graze(amount: int) -> int:
+	return nibble(maxi(0, amount))
+
+
+func ecology_die() -> void:
+	if is_dying:
+		return
+	_on_death()
+	queue_free()
+
+
 func _vitals_growth_mult(sim_driver: Node) -> float:
 	if sim_driver == null or sim_driver.get("tank_vitals") == null:
 		return 1.0
@@ -3397,7 +3433,8 @@ func canopy_shadow_sphere() -> Vector4:
 
 
 # Transition-only reversible LOD. Per-group extrema define the coarse
-# silhouette; only stable interior candidates are zero-scaled.
+# silhouette; form-aware keepers protect stems / rosettes / ribbons / carpets
+# so far/low fidelity still reads distinct (Holistic #158).
 func set_leaf_lod_reduced(reduced: bool) -> void:
 	if _leaf_lod_reduced == reduced:
 		return
@@ -3412,11 +3449,17 @@ func set_leaf_lod_reduced(reduced: bool) -> void:
 		return
 
 	_leaf_lod_hidden.clear()
+	var form: String = leaf_form
+	var is_ribbon: bool = _uses_ribbon_blades()
+	var is_rosette: bool = form in ["paddle", "lobed", "fingered", "heart", "round"]
+	var carpet_like: bool = is_carpet or form == "needle"
 	for group_v in _leaf_groups:
 		var group: Array = group_v
-		if group.size() < 5:
+		# Tiny groups are already silhouette — keep whole.
+		if group.size() < 4:
 			continue
 		var keep: Dictionary = {}
+		# Axis extrema always stay (coarse bounding silhouette).
 		for axis in 3:
 			var min_h: VoxelBatch.Handle = null
 			var max_h: VoxelBatch.Handle = null
@@ -3432,13 +3475,44 @@ func set_leaf_lod_reduced(reduced: bool) -> void:
 				keep[min_h] = true
 			if max_h != null:
 				keep[max_h] = true
+		# Form keepers: tip + base for ribbons; radial samples for rosettes;
+		# denser outline for carpets/moss-like needles.
+		if is_ribbon and group.size() >= 2:
+			var base_h: VoxelBatch.Handle = group[0]
+			var tip_h: VoxelBatch.Handle = group[group.size() - 1]
+			if base_h != null and base_h.alive:
+				keep[base_h] = true
+			if tip_h != null and tip_h.alive:
+				keep[tip_h] = true
+			# Mid-blade sample keeps strap readable at distance.
+			var mid_h: VoxelBatch.Handle = group[int(float(group.size()) * 0.5)]
+			if mid_h != null and mid_h.alive:
+				keep[mid_h] = true
+		elif is_rosette:
+			# Keep every 3rd voxel so the radial crown stays a rosette, not a stick.
+			for ri in range(0, group.size(), 3):
+				var rh: VoxelBatch.Handle = group[ri]
+				if rh != null and rh.alive:
+					keep[rh] = true
+		elif carpet_like:
+			for ci in range(0, group.size(), 2):
+				var ch: VoxelBatch.Handle = group[ci]
+				if ch != null and ch.alive:
+					keep[ch] = true
 		for value in group:
 			var h: VoxelBatch.Handle = value
 			if h == null or not h.alive or keep.has(h):
 				continue
-			if hash([asymmetry_seed, h.index]) & 1 == 0:
-				h.set_lod_visible(false)
-				_leaf_lod_hidden.append(h)
+			# Drop fewer interiors on distinctive forms.
+			var drop_mask: int = 1
+			if is_ribbon or is_rosette:
+				drop_mask = 3  # hide ~1/4
+			elif carpet_like:
+				drop_mask = 7  # hide ~1/8
+			if hash([asymmetry_seed, h.index]) & drop_mask != 0:
+				continue
+			h.set_lod_visible(false)
+			_leaf_lod_hidden.append(h)
 	if _foliage_batch != null:
 		_foliage_batch.flush()
 

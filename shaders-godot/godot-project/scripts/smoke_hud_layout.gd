@@ -78,6 +78,29 @@ func _init() -> void:
 	t.check(not scene.contains("offset_left = 128.0"),
 		"the scene no longer hard-codes a wider inset than the runtime floor")
 
+	# --- HOLISTIC #022: available centre for camera framing ---------------
+	var pad := Vector4(0.0, 0.0, 0.0, 0.0)
+	var full: Dictionary = H.regions(Vector2(1600, 900), pad, "right", 52.0, 56.0, 1500.0)
+	t.check(full.has(H.AVAILABLE_CENTER), "regions expose AVAILABLE_CENTER")
+	var ac: Rect2 = full[H.AVAILABLE_CENTER]
+	t.check(ac.size.x > 400.0 and ac.size.y > 200.0,
+		"available centre is a usable work rect")
+	var right_open: Dictionary = H.regions(Vector2(1600, 900), pad, "right", 52.0, 56.0,
+		1500.0, false, true)
+	var ac_r: Rect2 = right_open[H.AVAILABLE_CENTER]
+	t.check(ac_r.size.x < ac.size.x - 50.0,
+		"opening the right column shrinks the available centre")
+	var bias: Vector2 = H.available_center_bias(right_open, Vector2(1600, 900))
+	t.check(bias.x < -0.05,
+		"a right panel biases the free centre left of screen mid")
+	t.check(H.available_aspect(right_open, 16.0 / 9.0) < H.available_aspect(full, 16.0 / 9.0),
+		"available aspect narrows when a column opens")
+	var m2: String = _read("res://scripts/main.gd")
+	t.check(m2.contains("_sync_camera_to_available_center"),
+		"main feeds available centre into camera framing")
+	t.check(m2.contains("_panel_framing_stash"),
+		"panel close restores stashed framing rather than resetting")
+
 	quit(t.finish())
 
 

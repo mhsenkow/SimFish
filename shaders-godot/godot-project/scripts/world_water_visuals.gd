@@ -8,14 +8,16 @@ const FLOATER_FOOTPRINT: float = 0.26
 
 # Submerged light after surface floaters, green-water bloom, and tannin murk.
 # local_floater_shade is position-specific; global_coverage is tank-wide fallback.
+# HOLISTIC #041 — lean harder on local shade so open near-water recovers light
+# while dense canopy patches still darken their column.
 static func light_penetration(local_floater_shade: float, global_floater_coverage: float,
 		bloom: float, tannins: float) -> float:
 	var local: float = clampf(local_floater_shade, 0.0, 1.0)
 	var global: float = clampf(global_floater_coverage, 0.0, 1.0)
-	var floater_shade: float = lerpf(global, local, 0.82) * 0.62
-	var bloom_murk: float = clampf(bloom, 0.0, 1.0) * 0.48
-	var tannin_murk: float = clampf(tannins, 0.0, 1.0) * 0.32
-	return clampf(1.0 - floater_shade - bloom_murk - tannin_murk, 0.08, 1.0)
+	var floater_shade: float = lerpf(global, local, 0.88) * 0.58
+	var bloom_murk: float = clampf(bloom, 0.0, 1.0) * 0.44
+	var tannin_murk: float = clampf(tannins, 0.0, 1.0) * 0.30
+	return clampf(1.0 - floater_shade - bloom_murk - tannin_murk, 0.10, 1.0)
 
 
 # Radius-weighted local shade at a submerged XZ point (#21).

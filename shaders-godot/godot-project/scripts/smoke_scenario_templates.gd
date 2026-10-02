@@ -37,6 +37,16 @@ const REQUIRED: Array[String] = [
 	"water_surface_fraction", "substrate_depth_fraction", "cycle_start_mode",
 	"vessel_preset",
 ]
+# Long / far-camera tanks: authored radius + half-span exceeds the legacy
+# MeshInstance LOD floor of 22 (HOLISTIC #040 / Iwagumi flash).
+const LONG_CAMERA_IDS: Array[String] = [
+	"iwagumi", "dutch_competition", "hex_jungle",
+]
+const LEGACY_MI_LOD_END := 22.0
+# Keys handled by apply_scenario hooks rather than cfg.set (not TankConfig fields).
+const APPLY_HOOK_KEYS: Array[String] = [
+	"vessel_preset", "lighting_preset", "film_stock",
+]
 
 
 func _init() -> void:
@@ -67,8 +77,18 @@ func _init() -> void:
 
 		# --- every config key must be a real TankConfig property ---------
 		for key in config.keys():
+			if String(key) in APPLY_HOOK_KEYS:
+				continue
 			t.check(String(key) in cfg_probe,
 				"%s config key '%s' is a real TankConfig property" % [sid, key])
+		if config.has("film_stock"):
+			var stock: String = String(config["film_stock"])
+			t.check(Cfg.FILM_STOCKS.has(stock),
+				"%s film_stock '%s' exists in FILM_STOCKS" % [sid, stock])
+		if config.has("lighting_preset"):
+			var light: String = String(config["lighting_preset"])
+			t.check(Cfg.LIGHTING_PRESETS.has(light),
+				"%s lighting_preset '%s' exists" % [sid, light])
 
 		# --- dimensions inside the Settings sliders ----------------------
 		var w: float = float(config.get("tank_half_w", 0.0)) * 2.0
@@ -128,6 +148,25 @@ func _init() -> void:
 		# --- starts playable ---------------------------------------------
 		t.equals(String(config.get("cycle_start_mode", "")), "established",
 			"%s starts on an established cycle" % sid)
+
+		# --- long tanks must not rely on MeshInstance LOD @ 22 -----------
+		if sid in LONG_CAMERA_IDS:
+			var half_span: float = maxf(
+				float(config.get("tank_half_w", 0.0)),
+				float(config.get("tank_half_d", 0.0)))
+			var far_corner: float = float(config.get("camera_radius", 0.0)) + half_span
+			t.check(far_corner > LEGACY_MI_LOD_END,
+				"%s far corner %.1f exceeds legacy MI LOD %.0f (flash class)"
+				% [sid, far_corner, LEGACY_MI_LOD_END])
+
+	# Aquarium fauna never distance-culls MeshInstances; pond still does.
+	TopdownMotion.pond_active = false
+	t.approx(Fish.mesh_lod_range_end(), 0.0,
+		"aquarium MeshInstance LOD disabled (never cull)")
+	TopdownMotion.pond_active = true
+	t.check(Fish.mesh_lod_range_end() > LEGACY_MI_LOD_END,
+		"pond MeshInstance LOD still distance-culls detail")
+	TopdownMotion.pond_active = false
 
 	cfg_probe.free()
 	quit(t.finish())

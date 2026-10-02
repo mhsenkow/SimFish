@@ -200,14 +200,25 @@ func _top_up(fish: Array) -> void:
 
 
 func _column() -> Vector2:
-	var floor_y: float = float(_sim.get("substrate_top_y"))
-	var surf: float = float(_world.get("WATER_HEIGHT")) if _world != null else 6.5
+	# Holistic #081: same water-column ends as FishDepthBands / World.
+	var floor_y: float = 1.6
+	var surf: float = 6.5
+	if _world != null:
+		if _world.get("SUBSTRATE_DEPTH") != null:
+			floor_y = float(_world.SUBSTRATE_DEPTH)
+		elif _sim != null and _sim.get("substrate_top_y") != null:
+			floor_y = float(_sim.substrate_top_y)
+		if _world.get("WATER_HEIGHT") != null:
+			surf = float(_world.WATER_HEIGHT)
+	elif _sim != null and _sim.get("substrate_top_y") != null:
+		floor_y = float(_sim.substrate_top_y)
 	return Vector2(floor_y, maxf(surf, floor_y + 0.5))
 
 
 func _sample(fish: Array) -> void:
 	var col: Vector2 = _column()
 	var live: Array = []
+	const _DepthBands = preload("res://scripts/fish_depth_bands.gd")
 	for f in fish:
 		if not is_instance_valid(f) or f.get("_dying") == true:
 			continue
@@ -221,7 +232,7 @@ func _sample(fish: Array) -> void:
 			_track[key] = trk
 		var v: Vector3 = f.velocity
 		(trk["speeds"] as Array).append(v.length())
-		(trk["fracs"] as Array).append(clampf((f.global_position.y - col.x) / (col.y - col.x), -0.2, 1.2))
+		(trk["fracs"] as Array).append(_DepthBands.frac_from_y(f.global_position.y, col.x, col.y))
 		(trk["yaws"] as Array).append(atan2(f.heading.x, -f.heading.z))
 		if bool(f.get("_courtship_flare")):
 			trk["court"] = int(trk["court"]) + 1
@@ -337,11 +348,33 @@ static func _corr(a: Array, b: Array) -> float:
 
 func _finish(fish: Array) -> void:
 	var lines := PackedStringArray()
-	lines.append("fish_behaviour_probe  scenario=%s  fish=%d  sampled=%.0fs" % [
-		_env("FISH_PROBE_SCENARIO", "valli_jungle"), fish.size(), _sample_len])
+	var cfg := get_node_or_null("/root/TankConfig")
+	var scenario_id: String = _env("FISH_PROBE_SCENARIO", "valli_jungle")
+	var seed_v: int = 0
+	var time_scale: float = 1.0
+	if _sim != null:
+		if _sim.get("tank_seed") != null:
+			seed_v = int(_sim.get("tank_seed"))
+		if _sim.get("time_scale") != null:
+			time_scale = float(_sim.get("time_scale"))
+	var tier: String = String(cfg.get("device_tier")) if cfg != null else ""
+	var pop: Dictionary = {}
+	for fsh in fish:
+		if fsh == null or not is_instance_valid(fsh):
+			continue
+		var sp: String = String(fsh.get("species")) if fsh.get("species") != null else "?"
+		pop[sp] = int(pop.get(sp, 0)) + 1
+	# HOLISTIC #005 — reproducible header: seed, population, time scale, tier, scenario.
+	lines.append("fish_behaviour_probe  scenario=%s  seed=%d  time_scale=%.2f  tier=%s  fish=%d  warmup=%.0fs  sampled=%.0fs" % [
+		scenario_id, seed_v, time_scale, tier if tier != "" else "default",
+		fish.size(), _warmup, _sample_len])
+	lines.append("population  %s" % JSON.stringify(pop))
+	lines.append("samples_per_track_hz=%.1f  sample_dt=%.2f  build=%s" % [
+		1.0 / SAMPLE_DT, SAMPLE_DT,
+		String(ProjectSettings.get_setting("application/config/version", ""))])
 	var fm: Array = _frame_ms
-	lines.append("frame_ms  mean %.2f  p50 %.2f  p95 %.2f  p99 %.2f" % [
-		_mean(fm), _pct(fm, 0.5), _pct(fm, 0.95), _pct(fm, 0.99)])
+	lines.append("frame_ms  mean %.2f  p50 %.2f  p95 %.2f  p99 %.2f  n=%d" % [
+		_mean(fm), _pct(fm, 0.5), _pct(fm, 0.95), _pct(fm, 0.99), fm.size()])
 	var by_sp: Dictionary = {}
 	for key in _track.keys():
 		var trk: Dictionary = _track[key]

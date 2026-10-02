@@ -55,12 +55,21 @@ All the same project.
   registered defaults multiply saturation and value by the global palette.
   Like `dev/capture.tscn` it builds a real World and therefore writes to a
   real save slot: back up
-  `~/Library/Application Support/Godot/app_userdata/walstad loom/tanks` first.
-  `dev/footprint_probe.gd` lists meshes escaping the tank footprint (use real
-  `mesh.get_faces()` vertices, not the AABB - the AABB of a correct hex prism
-  IS a rectangle), and `dev/audio_probe.tscn` measures generated audio levels
-  per bus (`-- healthy` for a live-tank env, `-- fullbed` to force the full
-  synth). Both need a long settle: much of the World is built over ~200 frames.
+  `~/Library/Application Support/Godot/app_userdata/walstad loom/tanks` first,
+  **or prefer `scripts/dev_run.sh`** (HOLISTIC #001), which isolates user data
+  and verifies the real tanks inventory is unchanged.
+- **Isolated Godot runs: `scripts/dev_run.sh`.** Wraps `godot.sh` with a scratch
+  `custom_user_dir_name`, distinct output under `output/dev_runs/`, and a
+  before/after hash of the real tanks dir. Use it for `visual_capture`,
+  `inspect`, probes, and any other path that boots `main.tscn`. Opt into the
+  same path from `godot.sh` with `GODOT_ISOLATE=1`. Baseline matrix:
+  `scripts/visual_baseline_matrix.sh` (HOLISTIC #002).
+- **Footprint / audio probes.** `dev/footprint_probe.gd` lists meshes escaping
+  the tank footprint (use real `mesh.get_faces()` vertices, not the AABB - the
+  AABB of a correct hex prism IS a rectangle), and `dev/audio_probe.tscn`
+  measures generated audio levels per bus (`-- healthy` for a live-tank env,
+  `-- fullbed` to force the full synth). Both need a long settle: much of the
+  World is built over ~200 frames.
 - **Fish behaviour as numbers: `dev/fish_behaviour_probe.tscn`.** Headless;
   drives the real main scene and prints per-species depth p10/50/90, speed
   cv, hover/dart %, turn rate, speed lockstep between neighbours, shoal count,
@@ -116,7 +125,7 @@ All the same project.
   Timing-sensitive perf smokes are forced serial: they measure wall-clock, so a
   parallel run starves them into false failures (`smoke_perf_contract` sits at
   ~460 ms against a 490 ms ceiling).
-- **`scripts/smoke_baseline.txt` holds the known failures (3 as of v0.2.35).** The suite gates
+- **`scripts/smoke_baseline.txt` holds the known failures (count the file; release **v0.2.37**).** The suite gates
   *regressions*: a NEW failure exits 1, and so does a baselined smoke that
   starts **passing** — delete its line when you fix it. `--strict` ignores the
   baseline. It is a holding pen, not a place to hide failures.

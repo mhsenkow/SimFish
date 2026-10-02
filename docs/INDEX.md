@@ -10,6 +10,11 @@ Map of the idea-doc backlog and supporting docs. **Shipped progress** also lives
 | [GOALS.md](GOALS.md) | Master shipped/backlog tracker |
 | [BROAD_DIRECTIONS_20.md](BROAD_DIRECTIONS_20.md) | **20 broad improvement directions** + the append-only application log tracking work against them |
 | [VISUAL_DIRECTIONS_20.md](VISUAL_DIRECTIONS_20.md) | **20 directions with frame-level impact** — measured from a live `main.tscn` capture: the value hierarchy, the unshaded light model, palette fidelity, subject size. Companion to BROAD_DIRECTIONS_20 |
+| [HOLISTIC_FINISHING_PLAN_400.md](HOLISTIC_FINISHING_PLAN_400.md) | **400-task finishing plan** — beauty, aliveness, ecology, care, release readiness |
+| [HOLISTIC_FINISHING_LEDGER.md](HOLISTIC_FINISHING_LEDGER.md) | Execution evidence for the finishing plan (status ≠ checkbox count) |
+| [HOLISTIC_CROSSREF.md](HOLISTIC_CROSSREF.md) | Holistic task IDs ↔ older campaign docs (VISUAL_DIRECTIONS, FISH_ALIVE, GOALS, …) |
+| [PLAYER_CLAIM_EVIDENCE.md](PLAYER_CLAIM_EVIDENCE.md) | Player-facing claims → inputs (facts vs inferences vs forbidden internals) |
+| [OBSERVATION_CONTRACT.md](OBSERVATION_CONTRACT.md) | Minimum visible/measurable behaviour checklist (food, rest, shelter, school, graze, growth, decay) |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, smokes, commit conventions |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release history |
 | [../AGENTS.md](../AGENTS.md) | Repo layout for agents/contributors |

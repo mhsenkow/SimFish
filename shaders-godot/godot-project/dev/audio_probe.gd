@@ -6,15 +6,18 @@ extends Node
 #   seconds=N        how long to render (default 20)
 #   state=NAME       dead | healthy | stressed | thriving
 #   fullbed          force the full synth bed even if the stub is selected
-#   out=NAME         output basename under user://
+#   simplebed        force the potato/simple bed
+#   daylight=F       override daylight smooth (1=day, ~0.1=night)
+#   out=NAME         output basename under user:// (or AUDIO_PROBE_OUT)
 #   legacy           apply the pre-lofi EDM groove defaults (hat/shaker/clap/
 #                    build/lead) in memory, for before/after comparisons
 #   voices           also mix a tank breath + three fish replies + bloops into
 #                    the mix at their runtime gain, to check voice levels
 #
-# Prints peak / RMS per bus. States carry "flow" (creature movement): the
-# shaker only plays above flow 0.18, so a state without it never exercised
-# the percussion that was actually bothering players.
+# Prints peak / RMS / silence fraction per bus. States carry "flow"
+# (creature movement): the shaker only plays above flow 0.18, so a state
+# without it never exercised the percussion that was actually bothering
+# players. HOLISTIC #009 — scripts/audio_baseline.sh drives the matrix.
 #
 # The three buses carry reverb/delay as AudioServer effects, which this does
 # not capture: what lands in the file is the dry sum at bus gains.
@@ -67,6 +70,7 @@ func _ready() -> void:
 	var state: String = "healthy"
 	var out_name: String = "ambient_probe"
 	var force_full: bool = false
+	var force_simple: bool = false
 	for a in args:
 		if a.begins_with("seconds="):
 			seconds = float(a.split("=")[1])
@@ -76,6 +80,8 @@ func _ready() -> void:
 			out_name = a.split("=")[1]
 		elif a == "fullbed":
 			force_full = true
+		elif a == "simplebed":
+			force_simple = true
 		elif a.begins_with("daylight="):
 			_daylight_override = float(a.split("=")[1])
 		elif a == "legacy":
@@ -109,6 +115,8 @@ func _ready() -> void:
 		n.call("_refresh_mix_cache")
 		if force_full:
 			n.set("_cached_potato_bed", false)
+		elif force_simple:
+			n.set("_cached_potato_bed", true)
 		n.call("_run_synth_batch", batch)
 		var qd = n.get("_synth_queue_drums")
 		var qs = n.get("_synth_queue_synth")
@@ -132,15 +140,22 @@ func _ready() -> void:
 
 	if _with_voices:
 		_mix_voices(n, mix, mix_r, rate)
-	_write_wav("user://%s.wav" % out_name, mix, mix_r, rate)
+	var out_root: String = OS.get_environment("AUDIO_PROBE_OUT").strip_edges()
+	if out_root == "":
+		out_root = "user://"
+	elif not out_root.ends_with("/") and not out_root.ends_with("://"):
+		out_root += "/"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(out_root))
+	_write_wav("%s%s.wav" % [out_root, out_name], mix, mix_r, rate)
 	for k in per_bus.keys():
-		_write_wav("user://%s_%s.wav" % [out_name, k],
+		_write_wav("%s%s_%s.wav" % [out_root, out_name, k],
 			per_bus[k], per_bus[k], rate)
 	for k in per_bus.keys():
 		_print_stats(k, per_bus[k], BUS_GAIN[k])
 	_print_stats("mix", mix, 1.0)
-	print("[audio] state=%s frames=%d rate=%d -> %s" % [
-		state, mix.size(), rate, ProjectSettings.globalize_path("user://")])
+	print("[audio] state=%s frames=%d rate=%d daylight=%.2f full=%s simple=%s -> %s" % [
+		state, mix.size(), rate, _daylight_override, force_full, force_simple,
+		ProjectSettings.globalize_path(out_root)])
 	get_tree().quit(0)
 
 
@@ -211,12 +226,16 @@ func _print_stats(label: String, buf: PackedFloat32Array, gain: float) -> void:
 	var peak: float = 0.0
 	var acc: float = 0.0
 	var cnt: int = 0
+	var silent: int = 0
 	for v in buf:
 		var x: float = v * gain
 		peak = maxf(peak, absf(x))
 		if absf(x) > 1e-7:
 			acc += x * x
 			cnt += 1
+		else:
+			silent += 1
 	var rms: float = sqrt(acc / float(maxi(cnt, 1)))
-	print("[audio] %-18s peak %6.1f dBFS  rms %6.1f dBFS (active samples)" % [
-		label, linear_to_db(maxf(peak, 1e-9)), linear_to_db(maxf(rms, 1e-9))])
+	var silence_frac: float = float(silent) / float(maxi(buf.size(), 1))
+	print("[audio] %-18s peak %6.1f dBFS  rms %6.1f dBFS  silence_frac %.3f (active samples)" % [
+		label, linear_to_db(maxf(peak, 1e-9)), linear_to_db(maxf(rms, 1e-9)), silence_frac])

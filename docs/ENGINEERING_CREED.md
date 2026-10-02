@@ -16,7 +16,16 @@ Steam/desktop bundles the Guardian model; slim builds opt in. Web/Android use te
 
 ## Tested
 
-Subsystem changes get a headless `smoke_*.gd` or extend an existing one. Run `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://scripts/smoke_runner.gd` before claiming done.
+Subsystem changes get a headless `smoke_*.gd` or extend an existing one.
+**Preferred:** `./scripts/run_smokes.sh` (parallelism, per-script timeout,
+`scripts/smoke_baseline.txt`). Example: `./scripts/run_smokes.sh --include save_fixtures`.
+Do **not** use `smoke_runner.gd` for unattended runs — it has no timeout
+(AGENTS.md). Single-script debug:
+`./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://scripts/smoke_<name>.gd`.
+
+Operational facts (version, scenario count, autoload count, render defaults)
+are reconciled in README / `ARCHITECTURE.md` / style guide from
+`project.godot` + `scenario_picker.gd` (Holistic #014).
 
 ## Ablatable
 

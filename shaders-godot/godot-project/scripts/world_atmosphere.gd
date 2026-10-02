@@ -21,6 +21,14 @@ static func atmosphere_profile(cfg: Node) -> Dictionary:
 	for key in DEFAULTS.keys():
 		if prof.has(key):
 			out[key] = prof[key]
+	# HOLISTIC #048 — blackwater biotope floors tannin affinity even when the
+	# room profile is shy, so healthy tea water is not "low clarity" murk.
+	var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
+	var bw: Dictionary = Aesthetics.blackwater_contrast_bundle(
+		Aesthetics.biotope_palette_key(cfg))
+	if not bw.is_empty():
+		var floor_t: float = float(bw.get("tannin_affinity_min", 0.0))
+		out["tannin_affinity"] = maxf(float(out.get("tannin_affinity", 0.0)), floor_t)
 	return out
 
 
@@ -149,20 +157,23 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	mat.set_shader_parameter("depth_absorption",
 		clampf(0.34 + (1.0 - trans) * 0.36, 0.0, 1.0))
 	# macOS-safe atmospheric depth (#20) - volumetric fog stays off on Metal.
+	# Floor slightly lower so near subjects keep punch; murk still ramps haze
+	# at the back glass (HOLISTIC #041).
 	mat.set_shader_parameter("aerial_haze",
-		clampf(0.40 + (1.0 - trans) * 0.38, 0.0, 0.82))
+		clampf(0.34 + (1.0 - trans) * 0.40, 0.0, 0.78))
 	var dn: Dictionary = water_day_night_uniforms(day_night)
 	mat.set_shader_parameter("surface_reflection",
-		clampf(0.28 + float(dn["sunset_warmth"]) * 0.22, 0.0, 0.52))
-	mat.set_shader_parameter("underside_mirror", 0.48)
+		clampf(0.24 + float(dn["sunset_warmth"]) * 0.20, 0.0, 0.48))
+	# HOLISTIC #047 — luminous surface without a dominant white canopy sheet.
+	mat.set_shader_parameter("underside_mirror", 0.32)
 	# VISUAL_DIRECTIONS #3 — the tank's only genuine blown-out highlight.
 	# Scaled by clarity: a murky tank scatters the reflection instead of
 	# mirroring it, which is exactly what a cloudy tank looks like.
-	mat.set_shader_parameter("surface_spec_gain", 1.7 * clampf(trans, 0.0, 1.0))
+	mat.set_shader_parameter("surface_spec_gain", 1.22 * clampf(trans, 0.0, 1.0))
 	# 110 with the rippled normal (water.gdshader surface_ripple_slope): the
 	# lobe is tight enough that the ripples scatter it into a glitter path of
 	# separate sparks instead of the single white oval 56 drew on a flat sheet.
-	mat.set_shader_parameter("surface_spec_power", 110.0)
+	mat.set_shader_parameter("surface_spec_power", 100.0)
 	mat.set_shader_parameter("turbidity_haze", clampf((1.0 - trans) * 0.85, 0.0, 0.72))
 	mat.set_shader_parameter("flow_distortion", 0.38)
 	mat.set_shader_parameter("floor_bounce", clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.55))

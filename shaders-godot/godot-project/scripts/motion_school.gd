@@ -162,6 +162,20 @@ static func _tick_transient_leaders(fish_arr: Array, dt: float) -> void:
 			f_v.motion_lead_boost = clampf(float(f_v.motion_lead_boost) + dt * 2.2, 0.0, 0.85)
 
 
+# Holistic #086 — school speed matching weight. Keep cohesion / startle
+# propagation, but do not lock personal bout paces to neighbours.
+static func speed_match_weight(swim_pattern: String, bout_kind: int, bout_env: float,
+		burst_remaining: float, startle_remaining: float, agitation: float) -> float:
+	# Startle / burst: allow schools to surge together (response propagation).
+	if burst_remaining > 0.0 or startle_remaining > 0.0 or agitation > 0.35:
+		return 0.24
+	var w: float = 0.07 if swim_pattern == "school" else 0.035
+	# Decorative hover/dart and off-cruise envelopes own their pace.
+	if bout_kind != 0 or bout_env < 0.82 or bout_env > 1.18:
+		w *= 0.2
+	return w
+
+
 static func bank_correlation(f: Node) -> float:
 	if f == null or not _MotionWaveScript.uses_wave(f):
 		return 0.0

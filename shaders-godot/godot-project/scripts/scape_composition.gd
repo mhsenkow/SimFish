@@ -45,15 +45,49 @@ const FOCAL_OFFSET_MIN: float = 0.12
 const FOCAL_OFFSET_MAX: float = 0.75
 
 
-# An item is {"base": float, "tip": float, "mass": float, "x": float}.
-# `base`/`tip` are world Y; a rock has base == its bottom and tip its top, a
-# stem has base at the substrate and tip at its growing point.
-static func item(base_y: float, tip_y: float, mass: float, x: float = 0.0) -> Dictionary:
+# Scenario visual intent → composition expectations (HOLISTIC #019 / #021).
+# Dense jungles are allowed a smaller focal offset than open stone gardens:
+# wall-to-wall blades are the identity, not a failed scape. Sparse gardens
+# still need a decisive off-centre mass.
+static func expect_for_intent(intent: String) -> Dictionary:
+	match String(intent):
+		"dense_jungle":
+			return {
+				"focal_offset_min": 0.03,
+				"focal_offset_max": 0.80,
+				"top_of_bottom_max": 0.95,
+				# Wall-to-wall blades still need a swim passage, but a thinner
+				# corridor than an open stone garden is the point of the style.
+				"corridor_min": 0.12,
+			}
+		"open_scape", "stone_garden":
+			return {
+				"focal_offset_min": 0.0,
+				"focal_offset_max": 0.75,
+				"top_of_bottom_max": TOP_OF_BOTTOM_MAX,
+				# Carpet + low stones: mass lives in the substrate band.
+				# Requiring mid/upper fill forced false FAILs on real Iwagumi.
+				"upper_band_min": 0.0,
+				"mid_band_min": 0.0,
+			}
+		_:
+			return {}
+
+
+# An item is {"base": float, "tip": float, "mass": float, "x": float, "z": float,
+# "r": float}. `base`/`tip` are world Y; a rock has base == its bottom and tip
+# its top, a stem has base at the substrate and tip at its growing point.
+# `z` / `r` feed the swim-corridor grid (HOLISTIC #030); older callers that
+# omit them still work for band/focal checks.
+static func item(base_y: float, tip_y: float, mass: float, x: float = 0.0,
+		z: float = 0.0, radius: float = 0.0) -> Dictionary:
 	return {
 		"base": minf(base_y, tip_y),
 		"tip": maxf(base_y, tip_y),
 		"mass": maxf(mass, 0.0),
 		"x": x,
+		"z": z,
+		"r": maxf(radius, 0.0),
 	}
 
 
@@ -135,17 +169,149 @@ static func open_band_fraction(occ: PackedFloat32Array) -> float:
 	return float(empty) / float(occ.size())
 
 
-# The four checks, in the same {name, value, want, ok} shape FrameMetrics uses
-# so a capture run can print one table.
-static func grade(occ: PackedFloat32Array, focal_frac: float) -> Array[Dictionary]:
+# ---- Swim corridor (HOLISTIC #030) ------------------------------------------
+#
+# Band occupancy and focal offset are vertical / lateral mass checks. They
+# cannot tell a dense jungle with a clear mid-water passage from a solid hedge.
+# A coarse XZ occupancy grid + flood-fill measures connected open water so
+# dense planting can still score well when a swim corridor remains.
+#
+# Measurement only — never delete established growth to satisfy the score.
+
+const CORRIDOR_CELLS: int = 12
+# Largest connected open component must cover at least this fraction of the
+# floor grid (or the scape is nearly empty, which also "passes").
+const CORRIDOR_MIN: float = 0.18
+# Mid-band mass that marks a cell occupied. Light stems still leave a path;
+# a boulder (high mass) or thick cluster blocks.
+const CORRIDOR_BLOCK_MASS: float = 2.5
+
+
+static func _item_radius(d: Dictionary, half_w: float) -> float:
+	var r: float = float(d.get("r", 0.0))
+	if r > 0.001:
+		return r
+	# Mass heuristic when callers omit r: a unit stem ~0.35, a boulder grows.
+	var mass: float = float(d.get("mass", 1.0))
+	return clampf(0.28 + sqrt(maxf(mass, 0.0)) * 0.18, 0.25, maxf(0.6, half_w * 0.35))
+
+
+# Returns {open_frac, corridor_frac, cells, open, corridor}. `corridor_frac` is
+# the largest 4-connected open component over the XZ floor grid.
+static func swim_corridor(items: Array, half_w: float, half_d: float,
+		floor_y: float, surface_y: float, cells: int = CORRIDOR_CELLS) -> Dictionary:
+	var n: int = clampi(cells, 4, 24)
+	var empty: Dictionary = {
+		"open_frac": 1.0, "corridor_frac": 1.0, "cells": n * n,
+		"open": n * n, "corridor": n * n,
+	}
+	if half_w <= 0.001 or half_d <= 0.001:
+		return empty
+	var span_y: float = surface_y - floor_y
+	# Mid-water slab: corridors read where fish actually swim, not the carpet.
+	var mid_lo: float = floor_y + span_y * 0.22
+	var mid_hi: float = floor_y + span_y * 0.78
+	var blocked: PackedByteArray = PackedByteArray()
+	blocked.resize(n * n)
+	blocked.fill(0)
+	var cell_w: float = (half_w * 2.0) / float(n)
+	var cell_d: float = (half_d * 2.0) / float(n)
+	for it in items:
+		if not (it is Dictionary):
+			continue
+		var d: Dictionary = it
+		var mass: float = float(d.get("mass", 0.0))
+		if mass < CORRIDOR_BLOCK_MASS * 0.35:
+			continue
+		var lo: float = float(d.get("base", floor_y))
+		var hi: float = float(d.get("tip", floor_y))
+		if hi < mid_lo or lo > mid_hi:
+			continue
+		var ix: float = float(d.get("x", 0.0))
+		var iz: float = float(d.get("z", 0.0))
+		var rad: float = _item_radius(d, half_w)
+		# Heavier mass blocks a wider footprint.
+		rad *= clampf(0.85 + mass / 12.0, 0.85, 1.8)
+		var x0: int = clampi(int(floor((ix - rad + half_w) / cell_w)), 0, n - 1)
+		var x1: int = clampi(int(floor((ix + rad + half_w) / cell_w)), 0, n - 1)
+		var z0: int = clampi(int(floor((iz - rad + half_d) / cell_d)), 0, n - 1)
+		var z1: int = clampi(int(floor((iz + rad + half_d) / cell_d)), 0, n - 1)
+		for zc in range(z0, z1 + 1):
+			for xc in range(x0, x1 + 1):
+				var cx: float = -half_w + (float(xc) + 0.5) * cell_w
+				var cz: float = -half_d + (float(zc) + 0.5) * cell_d
+				if (cx - ix) * (cx - ix) + (cz - iz) * (cz - iz) <= rad * rad:
+					blocked[zc * n + xc] = 1
+	var open_n: int = 0
+	for i in blocked.size():
+		if blocked[i] == 0:
+			open_n += 1
+	var total: int = n * n
+	if open_n == 0:
+		return {
+			"open_frac": 0.0, "corridor_frac": 0.0, "cells": total,
+			"open": 0, "corridor": 0,
+		}
+	# Flood-fill largest open component (4-connected).
+	var seen: PackedByteArray = PackedByteArray()
+	seen.resize(total)
+	seen.fill(0)
+	var best: int = 0
+	var stack: Array[int] = []
+	for start in total:
+		if blocked[start] != 0 or seen[start] != 0:
+			continue
+		stack.clear()
+		stack.append(start)
+		seen[start] = 1
+		var size: int = 0
+		while not stack.is_empty():
+			var cur: int = stack.pop_back()
+			size += 1
+			var cx: int = cur % n
+			# Deliberate integer division: row index in the corridor grid.
+			@warning_ignore("integer_division")
+			var cz: int = cur / n
+			for off in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var nx: int = cx + off.x
+				var nz: int = cz + off.y
+				if nx < 0 or nz < 0 or nx >= n or nz >= n:
+					continue
+				var ni: int = nz * n + nx
+				if blocked[ni] != 0 or seen[ni] != 0:
+					continue
+				seen[ni] = 1
+				stack.append(ni)
+		best = maxi(best, size)
+	return {
+		"open_frac": float(open_n) / float(total),
+		"corridor_frac": float(best) / float(total),
+		"cells": total,
+		"open": open_n,
+		"corridor": best,
+	}
+
+
+# The composition checks, in the same {name, value, want, ok} shape FrameMetrics
+# uses so a capture run can print one table. `expect` overrides the universal
+# thresholds (see expect_for_intent) so dense jungles and open gardens are
+# not scored by one density rule. Optional `corridor` (from swim_corridor)
+# adds the connected-open-water row without forcing callers to delete plants.
+static func grade(occ: PackedFloat32Array, focal_frac: float,
+		expect: Dictionary = {}, corridor: Dictionary = {}) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	var top: float = occ[occ.size() - 1] if not occ.is_empty() else 0.0
 	var bottom: float = occ[0] if not occ.is_empty() else 0.0
+	var top_cap: float = float(expect.get("top_of_bottom_max", TOP_OF_BOTTOM_MAX))
+	var fmin: float = float(expect.get("focal_offset_min", FOCAL_OFFSET_MIN))
+	var fmax: float = float(expect.get("focal_offset_max", FOCAL_OFFSET_MAX))
+	var upper_min: float = float(expect.get("upper_band_min", BAND_MIN))
+	var mid_min: float = float(expect.get("mid_band_min", BAND_MIN))
 	out.append({
 		"name": "upper band",
 		"value": top,
-		"want": ">= %.2f" % BAND_MIN,
-		"ok": top >= BAND_MIN,
+		"want": ">= %.2f" % upper_min,
+		"ok": top >= upper_min,
 	})
 	# Deliberate integer division: the middle band index.
 	@warning_ignore("integer_division")
@@ -154,31 +320,49 @@ static func grade(occ: PackedFloat32Array, focal_frac: float) -> Array[Dictionar
 	out.append({
 		"name": "mid band",
 		"value": mid,
-		"want": ">= %.2f" % BAND_MIN,
-		"ok": mid >= BAND_MIN,
+		"want": ">= %.2f" % mid_min,
+		"ok": mid >= mid_min,
 	})
 	out.append({
 		"name": "top vs bottom",
 		"value": top / maxf(bottom, 0.0001),
-		"want": "<= %.2f" % TOP_OF_BOTTOM_MAX,
-		"ok": top <= bottom * TOP_OF_BOTTOM_MAX + 0.0001,
+		"want": "<= %.2f" % top_cap,
+		"ok": top <= bottom * top_cap + 0.0001,
 	})
 	var af: float = absf(focal_frac)
 	out.append({
 		"name": "focal offset",
 		"value": af,
-		"want": "%.2f..%.2f" % [FOCAL_OFFSET_MIN, FOCAL_OFFSET_MAX],
-		"ok": af >= FOCAL_OFFSET_MIN and af <= FOCAL_OFFSET_MAX,
+		"want": "%.2f..%.2f" % [fmin, fmax],
+		"ok": af >= fmin and af <= fmax,
 	})
+	if not corridor.is_empty():
+		var cmin: float = float(expect.get("corridor_min", CORRIDOR_MIN))
+		var cfrac: float = float(corridor.get("corridor_frac", 1.0))
+		var ofrac: float = float(corridor.get("open_frac", 1.0))
+		# Nearly empty tanks pass; dense tanks need a connected corridor.
+		var ok_c: bool = ofrac >= 0.85 or cfrac >= cmin
+		out.append({
+			"name": "swim corridor",
+			"value": cfrac,
+			"want": ">= %.2f (or open)" % cmin,
+			"ok": ok_c,
+		})
 	return out
 
 
-static func format_report(occ: PackedFloat32Array, focal_frac: float) -> String:
+static func format_report(occ: PackedFloat32Array, focal_frac: float,
+		intent: String = "", corridor: Dictionary = {}) -> String:
 	var parts := PackedStringArray()
 	for v in occ:
 		parts.append("%.3f" % v)
-	return "bands[low..high] %s  focal %+.3f  open %.2f" % [
+	var base: String = "bands[low..high] %s  focal %+.3f  open %.2f" % [
 		" ".join(parts), focal_frac, open_band_fraction(occ)]
+	if not corridor.is_empty():
+		base = "%s  corridor %.2f" % [base, float(corridor.get("corridor_frac", 0.0))]
+	if intent.strip_edges().is_empty():
+		return base
+	return "%s  intent=%s" % [base, intent]
 
 
 # ---- Placement bias --------------------------------------------------------
@@ -263,7 +447,8 @@ static func items_from_scape(plants: Array, hardscape: Array,
 		if p.has_method("biomass"):
 			mass = maxf(float(p.call("biomass")), 1.0)
 		out.append(item(node.global_position.y,
-			node.global_position.y + height, mass, node.global_position.x))
+			node.global_position.y + height, mass, node.global_position.x,
+			node.global_position.z))
 	for h in hardscape:
 		if not (h is Vector4):
 			continue
@@ -271,5 +456,7 @@ static func items_from_scape(plants: Array, hardscape: Array,
 		if s.w <= 0.001:
 			continue
 		# Sphere proxy: mass scales with volume so a boulder outweighs a pebble.
-		out.append(item(s.y - s.w, s.y + s.w, s.w * s.w * s.w * 12.0, s.x))
+		# Vector4 is (x, y, z, radius); z feeds the corridor grid.
+		out.append(item(s.y - s.w, s.y + s.w, s.w * s.w * s.w * 12.0, s.x,
+			s.z, s.w))
 	return out

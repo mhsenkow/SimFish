@@ -103,11 +103,11 @@ void fragment() {
     if (n.y > 0.7) {
         f = 1.00;        // top
     } else if (n.y < -0.7) {
-        f = 0.58;        // bottom
+        f = 0.50;        // bottom — HOLISTIC #050 close-range shadow steps
     } else if (abs(n.x) > 0.7) {
-        f = 0.88;        // +X / -X sides
+        f = 0.84;        // +X / -X sides
     } else {
-        f = 0.76;        // +Z / -Z sides
+        f = 0.70;        // +Z / -Z sides
     }
     vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
     col = apply_category_palette_tint(col, iaq_palette_foliage,

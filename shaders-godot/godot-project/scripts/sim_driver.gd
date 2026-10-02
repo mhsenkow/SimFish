@@ -48,6 +48,7 @@ const _MindBoidsComputeScript = preload("res://scripts/mind_boids_compute.gd")
 const _MotionFieldScript = preload("res://scripts/motion_field.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const _PlantFarFoliageBatchScript = preload("res://scripts/plant_far_foliage_batch.gd")
+const FoodWebTraceScript = preload("res://scripts/food_web_trace.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -2104,14 +2105,17 @@ func _record_trophic_produced(amount: float) -> void:
 
 
 func _record_trophic_consumed(consumed_nv: float, leftover: float) -> void:
+	# Absorbed by consumer; leftover re-enters only via _spawn_waste → produced.
+	# Do not re-add leftover to produced here (that silently doubled food value).
 	trophic_ledger["consumed"] = float(trophic_ledger.get("consumed", 0.0)) + consumed_nv
-	if leftover > 0.04:
-		trophic_ledger["produced"] = float(trophic_ledger.get("produced", 0.0)) + leftover
-		_trophic_hour_produced += leftover
-	else:
-		trophic_ledger["lost"] = float(trophic_ledger.get("lost", 0.0)) + consumed_nv
-	var recycled: float = consumed_nv - maxf(leftover, 0.0)
-	_trophic_hour_recycled += maxf(0.0, recycled * 0.4)
+	var open_leftover: float = maxf(0.0, leftover)
+	var absorbed: float = maxf(0.0, consumed_nv - open_leftover)
+	trophic_ledger["absorbed"] = float(trophic_ledger.get("absorbed", 0.0)) + absorbed
+	if open_leftover > 0.0 and open_leftover <= 0.04:
+		# Tiny remainder evaporates as heat — document the loss; do not
+		# discard the absorbed portion of the meal.
+		trophic_ledger["lost"] = float(trophic_ledger.get("lost", 0.0)) + open_leftover
+	_trophic_hour_recycled += absorbed * 0.4
 
 
 func _record_trophic_deposited(amount: float) -> void:
@@ -2119,6 +2123,20 @@ func _record_trophic_deposited(amount: float) -> void:
 		return
 	trophic_ledger["deposited"] = float(trophic_ledger.get("deposited", 0.0)) + amount
 	_trophic_hour_recycled += amount
+
+
+func trace_food_web(chain_id: int, stage: String, amount: float, note: String = "") -> void:
+	if food_web_trace == null:
+		return
+	food_web_trace.record(chain_id, stage, amount, note)
+	if stage == FoodWebTraceScript.STAGE_SETTLE_DEPOSIT and chain_id > 0:
+		_last_deposit_chain_id = chain_id
+
+
+func food_web_events(limit: int = 16) -> Array:
+	if food_web_trace == null:
+		return []
+	return food_web_trace.recent_events(limit)
 
 
 func _refresh_tank_vitals(bloom_pressure: float, n_total: float, plant_biomass: int) -> void:
@@ -2256,12 +2274,17 @@ var tank_vitals: Dictionary = {}
 var trophic_ledger: Dictionary = {
 	"produced": 0.0,
 	"consumed": 0.0,
+	"absorbed": 0.0,
 	"deposited": 0.0,
 	"lost": 0.0,
 }
 var _trophic_hour_timer: float = 0.0
 var _trophic_hour_produced: float = 0.0
 var _trophic_hour_recycled: float = 0.0
+# Holistic #121 — named meal-chain transfers (diagnostic, not simulation state).
+var food_web_trace = FoodWebTraceScript.new()
+var _active_meal_chain_id: int = -1
+var _last_deposit_chain_id: int = -1
 
 # ---- Dissolved-O2 model ----
 # Tank-wide normalized scalar where 1.0 ≈ fully saturated, 0.0 = anoxic.
@@ -4065,6 +4088,9 @@ func _tick(dt: float) -> void:
 			recycle_waste(w)
 		elif w.last_deposit_amount > 0.0:
 			_record_trophic_deposited(w.last_deposit_amount)
+			if w.meal_chain_id > 0:
+				trace_food_web(w.meal_chain_id, FoodWebTraceScript.STAGE_SETTLE_DEPOSIT,
+					w.last_deposit_amount, "substrate")
 		i -= 1
 	_waste_physics_batched = false
 	if waste_batch != null:
@@ -4566,8 +4592,21 @@ func _tick(dt: float) -> void:
 				consumed[w] = true
 				_play_ambient_event("eat", -1.0, _node_species(actor), actor.position)
 				var consumed_nv: float = w.nutrient_value
+				var chain_id: int = w.meal_chain_id
 				var leftover: float = consumed_nv * 0.4
-				_record_trophic_consumed(consumed_nv, leftover if leftover > 0.04 else 0.0)
+				var heat_loss: float = 0.0
+				if leftover <= 0.04:
+					heat_loss = leftover
+					leftover = 0.0
+				_record_trophic_consumed(consumed_nv, heat_loss if heat_loss > 0.0 else leftover)
+				if chain_id > 0:
+					trace_food_web(chain_id, FoodWebTraceScript.STAGE_CONSUME,
+						consumed_nv, _node_species(actor))
+					trace_food_web(chain_id, FoodWebTraceScript.STAGE_ABSORB,
+						consumed_nv - leftover - heat_loss, "eater")
+					if heat_loss > 0.0:
+						trace_food_web(chain_id, FoodWebTraceScript.STAGE_DOCUMENTED_LOSS,
+							heat_loss, "metabolic_heat")
 				waste.erase(w)
 				recycle_waste(w)
 				_mark_waste_grid_stale()
@@ -4575,8 +4614,11 @@ func _tick(dt: float) -> void:
 					var new_kind: int = WasteParticle.KIND_FISH
 					if actor_kind == "shrimp":
 						new_kind = WasteParticle.KIND_SHRIMP
+					if chain_id > 0:
+						trace_food_web(chain_id, FoodWebTraceScript.STAGE_METABOLIC_WASTE,
+							leftover, "excrete")
 					_spawn_waste(actor.global_position + Vector3(0, -0.1, 0),
-						leftover, new_kind)
+						leftover, new_kind, WasteParticle.FOOD_SUB_PELLET, chain_id)
 				# Detritivore → biofilm feedback (see snail.gd for the
 				# matching call). The fragment the eater drops back into
 				# the substrate AND the act of breaking the particle both
@@ -4943,7 +4985,8 @@ func _acquire_waste() -> WasteParticle:
 
 
 func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
-		food_subtype: int = WasteParticle.FOOD_SUB_PELLET) -> void:
+		food_subtype: int = WasteParticle.FOOD_SUB_PELLET,
+		meal_chain_id: int = -1) -> void:
 	if waste_root == null:
 		return
 	# Global waste cap. Without it, an unattended cycling tank with many
@@ -4968,6 +5011,7 @@ func _spawn_waste(at: Vector3, amount: float, kind: int = 0,
 	w.global_position = at
 	w._reset_motion_interp()
 	w.init(amount, substrate_top_y, kind, food_subtype)
+	w.meal_chain_id = meal_chain_id
 	register_waste(w)
 	if kind == WasteParticle.KIND_FOOD and waste_batch != null:
 		waste_batch.flush_blit()
@@ -4997,12 +5041,17 @@ func spawn_player_food(world_pos: Vector3, food_subtype: int = WasteParticle.FOO
 			value = 0.55
 		_:
 			count = rng.randi_range(5, 8, ev)
+	var chain_total: float = float(count) * value
+	var chain_id: int = -1
+	if food_web_trace != null:
+		chain_id = food_web_trace.begin_chain("spawn_player_food", chain_total, food_subtype)
+		_active_meal_chain_id = chain_id
 	for i in count:
 		var jx: float = rng.randf_range(-spread, spread, ev)
 		var jz: float = rng.randf_range(-spread, spread, ev)
 		var jy: float = rng.randf_range(-0.01, 0.04, ev)
 		var pos: Vector3 = Vector3(world_pos.x + jx, base_y + jy, world_pos.z + jz)
-		_spawn_waste(pos, value, WasteParticle.KIND_FOOD, food_subtype)
+		_spawn_waste(pos, value, WasteParticle.KIND_FOOD, food_subtype, chain_id)
 	record_feed_drop(world_pos, food_subtype)
 	if waste_batch != null:
 		waste_batch.flush_blit()

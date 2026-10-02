@@ -68,10 +68,14 @@ const RIGHT_COLUMN := "RIGHT_COLUMN"
 const BOTTOM_LEFT_STACK := "BOTTOM_LEFT_STACK"
 const BOTTOM_CENTRE := "BOTTOM_CENTRE"
 const CENTRE_MODAL := "CENTRE_MODAL"
+# Free work area between chrome and open columns — camera framing fits here
+# (HOLISTIC #022), not into the full viewport under an open side panel.
+const AVAILABLE_CENTER := "AVAILABLE_CENTER"
 # Every Rect2 key regions() returns (CENTRE_MODAL overlaps the rest by design:
-# it sits over them behind a scrim).
+# it sits over them behind a scrim). AVAILABLE_CENTER is the unobscured tank
+# view; it shrinks when a column opens.
 const REGION_KEYS: Array[String] = [TOP_BAR, RAIL, BOTTOM_BAR, LEFT_COLUMN,
-	RIGHT_COLUMN, BOTTOM_LEFT_STACK, BOTTOM_CENTRE, CENTRE_MODAL]
+	RIGHT_COLUMN, BOTTOM_LEFT_STACK, BOTTOM_CENTRE, CENTRE_MODAL, AVAILABLE_CENTER]
 # Bool key: true when both columns cannot be open at once (plus a usable
 # centre band) — opening one column must then close the other.
 const COLUMNS_EXCLUSIVE := "columns_exclusive"
@@ -176,7 +180,32 @@ static func regions(vp: Vector2, safe_pad: Vector4, rail_dock: String,
 		m0 = edge_l
 		m1 = right_limit
 	out[CENTRE_MODAL] = Rect2(m0, work_top, maxf(0.0, m1 - m0), h)
+	# Usable tank view: full work height, same horizontal band as the bottom
+	# stack/centre slot (clears open columns). Feed this into camera framing.
+	out[AVAILABLE_CENTER] = Rect2(cx0, work_top, maxf(0.0, cx1 - cx0), h)
 	return out
+
+
+# Aspect of the free tank view. Falls back to the viewport aspect when the
+# region is missing or degenerate.
+static func available_aspect(regs: Dictionary, fallback_aspect: float = 16.0 / 9.0) -> float:
+	var r: Rect2 = regs.get(AVAILABLE_CENTER, Rect2()) as Rect2
+	if r.size.y < 1.0 or r.size.x < 1.0:
+		return maxf(0.3, fallback_aspect)
+	return r.size.x / r.size.y
+
+
+# How far the free-centre midpoint sits from the viewport midpoint, as a
+# fraction of half-viewport (−1..1). Positive X = free centre is to the right
+# of screen centre (left panel open) — the camera should bias the tank that way.
+static func available_center_bias(regs: Dictionary, vp: Vector2) -> Vector2:
+	var r: Rect2 = regs.get(AVAILABLE_CENTER, Rect2()) as Rect2
+	if r.size.x < 1.0 or r.size.y < 1.0 or vp.x < 1.0 or vp.y < 1.0:
+		return Vector2.ZERO
+	var mid: Vector2 = r.get_center()
+	return Vector2(
+		clampf((mid.x - vp.x * 0.5) / (vp.x * 0.5), -1.0, 1.0),
+		clampf((mid.y - vp.y * 0.5) / (vp.y * 0.5), -1.0, 1.0))
 
 
 # Place `c` at an absolute rect (anchors collapsed to the top-left). A control

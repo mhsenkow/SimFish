@@ -33,6 +33,8 @@ var settled: bool = false
 var _life: float = 0.0
 var _settle_timer: float = 0.0
 var last_deposit_amount: float = 0.0
+# Holistic #121 — optional meal-chain id so transfers stay on one diagnostic trail.
+var meal_chain_id: int = -1
 # Cached tank World node. tick() ran a string-path node lookup every tick for
 # every particle (up to ~240 × the sim rate); the World ref is stable for the
 # particle's life, so resolve it once.
@@ -51,6 +53,7 @@ func prepare_for_pool() -> void:
 	_settle_timer = 0.0
 	settled = false
 	last_deposit_amount = 0.0
+	meal_chain_id = -1
 	_release_batch_slot()
 	_hide_fallback_mesh()
 	visible = false
@@ -231,6 +234,13 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 				substrate.deposit_litter_at(position, deposit)
 			else:
 				substrate.add_at(position, deposit)
+			# Document clamped-away nutrient as an explicit loss when deposit < value.
+			var clamped_away: float = maxf(0.0, nutrient_value - deposit)
+			if clamped_away > 0.001 and meal_chain_id > 0:
+				var sim_loss: Variant = w.get("sim") if w != null else null
+				if sim_loss != null and sim_loss.has_method("trace_food_web"):
+					sim_loss.trace_food_web(meal_chain_id, "documented_loss",
+						clamped_away, "substrate_cap")
 			if randf() < 0.17 and w != null and w.has_method("add_mulm_voxel"):
 				w.add_mulm_voxel(global_position)
 	else:

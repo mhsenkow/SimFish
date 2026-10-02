@@ -96,7 +96,9 @@ static func biotope_palette_key_from_preset(preset_l: String) -> String:
 static func fauna_saturation_mult(key: String) -> float:
 	match key:
 		"blackwater", "asian_peat":
-			return 1.18
+			# Slightly hotter accents so eyes/fins stay readable through tea
+			# water (HOLISTIC #048) without neon.
+			return 1.26
 		"reef", "hard_alkaline", "amazon_clearwater":
 			return 1.36
 		"tanganyika_rock", "brackish":
@@ -105,6 +107,92 @@ static func fauna_saturation_mult(key: String) -> float:
 			return 1.14
 		_:
 			return 1.30
+
+
+# HOLISTIC #048 — blackwater contrast: tea-colored depth without treating a
+# healthy tannin tank as universal murk. Applied when biotope key is blackwater
+# (or asian_peat sibling). Empty dict for other biotopes.
+static func blackwater_contrast_bundle(biotope_key: String) -> Dictionary:
+	var key: String = biotope_key.strip_edges().to_lower()
+	if key != "blackwater" and key != "asian_peat":
+		return {}
+	return {
+		# Slightly softer master extinction so near fauna keep local contrast.
+		"extinction_scale": 0.88,
+		# Stronger vertical tea gradient (depth half only — see iaq_water_depth).
+		"depth_legibility": 3.15,
+		# Environment affinity bump when the room profile is shy.
+		"tannin_affinity_min": 0.22,
+		# Fauna sat already via fauna_saturation_mult; keep a highlight floor
+		# hint for post / capture docs (not a second desat path).
+		"highlight_preserve": 0.82,
+		"water_character": "tea-stained depth; healthy amber column, not poor clarity",
+	}
+
+
+# HOLISTIC #042 — document which grades share the aquarium palette lock and
+# which are evaluated separately (UI / explicit alternate modes).
+static func palette_lock_contract() -> Dictionary:
+	return {
+		"aquarium_modes": ["day", "night", "care", "outline", "photo"],
+		"alternate_modes": ["duotone"],
+		"excluded_from_aquarium_lock": ["ui", "hud", "chrome"],
+		"final_stage": "palette_quantize.palette_lock / snap_to_palette",
+		"photo_keeps_lock": true,
+	}
+
+
+# HOLISTIC #046 — CPU mirror of protect_color_identity in palette_tint.gdshaderinc.
+# Representative red/blue/yellow/green swatches must keep channel leadership
+# after a tint stack (biotope sat × material × warmth).
+static func protect_color_identity(before: Color, after: Color) -> Color:
+	var bmax: float = maxf(maxf(before.r, before.g), before.b)
+	var amax: float = maxf(maxf(after.r, after.g), after.b)
+	if bmax < 0.02 or amax < 0.02:
+		return after
+	var bi: int = _dominant_channel(before)
+	var ai: int = _dominant_channel(after)
+	var before_yellow: bool = _is_yellow_lead(before)
+	var after_yellow: bool = _is_yellow_lead(after)
+	if bi == ai or (before_yellow and after_yellow):
+		return after
+	var pull: float = 0.55
+	return Color(
+		lerpf(after.r, before.r * (amax / bmax), pull),
+		lerpf(after.g, before.g * (amax / bmax), pull),
+		lerpf(after.b, before.b * (amax / bmax), pull),
+		after.a)
+
+
+static func _dominant_channel(c: Color) -> int:
+	if _is_yellow_lead(c):
+		return 3
+	if c.g >= c.r and c.g >= c.b:
+		return 1
+	if c.b >= c.r and c.b >= c.g:
+		return 2
+	return 0
+
+
+static func _is_yellow_lead(c: Color) -> bool:
+	return c.r > 0.15 and c.g > 0.15 \
+		and absf(c.r - c.g) < 0.14 \
+		and c.b < minf(c.r, c.g) * 0.88
+
+
+# Soften stacked sat×val so a material grade on already-boosted fauna does not
+# crush chroma identity (HOLISTIC #046).
+static func compose_tint_sat_val(sat_a: float, val_a: float,
+		sat_b: float = 1.0, val_b: float = 1.0) -> Vector2:
+	var sat: float = clampf(sat_a * sat_b, 0.55, 1.45)
+	var val: float = clampf(val_a * val_b, 0.70, 1.30)
+	# When both axes move together, ease saturation so value loss does not
+	# double-desaturate reds into mud.
+	if absf(val - 1.0) > 0.06 and sat > 1.0:
+		sat = lerpf(1.0, sat, 0.82)
+	elif absf(val - 1.0) > 0.06 and sat < 1.0:
+		sat = lerpf(1.0, sat, 0.82)
+	return Vector2(sat, val)
 
 
 # 1 = thriving/clear, 0 = stressed/murky — drives palette health grade.
@@ -255,6 +343,8 @@ const PHOTO_MODE_GRADE: Dictionary = {
 	"selective_glow_strength": 0.72,
 	"film_grain_strength": 0.05,
 	"dither_strength": 0.82,
+	# HOLISTIC #042 — photo preset must not bypass the final palette lock.
+	"palette_lock": 1.0,
 }
 
 

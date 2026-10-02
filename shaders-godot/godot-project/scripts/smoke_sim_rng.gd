@@ -47,10 +47,34 @@ func _run_all() -> bool:
 	var ent: String = SimRng.entity_stream_name(SimRng.STREAM_COGNITION, "fish-1")
 	if ent != "cognition:fish-1":
 		return _fail("entity stream naming")
+	# HOLISTIC #017 — cosmetic draws must not alter founding stock / behavior streams.
+	if not _cosmetic_isolation():
+		return _fail("cosmetic stream must not alter spawn or behavior streams")
 	# META #31 — shrimp offspring genetics are now seeded: same parent id + seed
 	# must produce a byte-identical fry genome across runs (replay determinism).
 	if not _shrimp_offspring_deterministic():
 		return _fail("shrimp produce_offspring_genome must be deterministic under SimRng")
+	return true
+
+
+func _cosmetic_isolation() -> bool:
+	var a := SimRng.new()
+	a.reset(42)
+	var spawn_seq: PackedFloat32Array = PackedFloat32Array()
+	var behavior_seq: PackedFloat32Array = PackedFloat32Array()
+	for _i in 4:
+		spawn_seq.append(a.randf(SimRng.STREAM_SPAWN))
+		behavior_seq.append(a.randf(SimRng.STREAM_BEHAVIOR))
+	var b := SimRng.new()
+	b.reset(42)
+	# Interleave cosmetic draws — must not change spawn/behavior sequences.
+	for _j in 12:
+		b.randf(SimRng.STREAM_COSMETIC)
+	for i in spawn_seq.size():
+		if b.randf(SimRng.STREAM_SPAWN) != spawn_seq[i]:
+			return false
+		if b.randf(SimRng.STREAM_BEHAVIOR) != behavior_seq[i]:
+			return false
 	return true
 
 

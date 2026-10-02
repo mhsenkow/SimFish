@@ -32,7 +32,85 @@ static var _frame_count: int = 0
 static var budget_pressure: float = 0.0
 static var last_frame_ms: float = 0.0
 static var last_spike_subsystem: String = ""
+static var spike_count: int = 0
+static var spike_log: Array = []  # recent {ms, subsystem} for workload reports
+const SPIKE_LOG_CAP: int = 32
 
+
+# HOLISTIC #013 — p50/p95/p99 over the rolling frame ring (and spike count).
+static func frame_percentiles() -> Dictionary:
+	if _frame_count <= 0:
+		return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "n": 0, "mean": 0.0}
+	if _sort_scratch.size() != _frame_count:
+		_sort_scratch.resize(_frame_count)
+	for i in _frame_count:
+		_sort_scratch[i] = _frame_ring[i]
+	_sort_scratch.sort()
+	var n: int = _frame_count
+	var sum: float = 0.0
+	for i in n:
+		sum += _sort_scratch[i]
+	return {
+		"p50": _pct_from_sorted(0.50),
+		"p95": _pct_from_sorted(0.95),
+		"p99": _pct_from_sorted(0.99),
+		"n": n,
+		"mean": sum / float(n),
+		"last_ms": last_frame_ms,
+		"spike_count": spike_count,
+		"last_spike_subsystem": last_spike_subsystem,
+	}
+
+
+static func _pct_from_sorted(p: float) -> float:
+	if _frame_count <= 0:
+		return 0.0
+	var idx: int = clampi(int(ceil(float(_frame_count) * p)) - 1, 0, _frame_count - 1)
+	return _sort_scratch[idx]
+
+
+static func hardware_snapshot() -> Dictionary:
+	return {
+		"os": OS.get_name(),
+		"model": OS.get_model_name(),
+		"cpu": OS.get_processor_name(),
+		"cpu_count": OS.get_processor_count(),
+		"video_adapter": RenderingServer.get_video_adapter_name(),
+		"video_vendor": RenderingServer.get_video_adapter_vendor(),
+		"renderer": RenderingServer.get_current_rendering_method(),
+		"max_fps": Engine.max_fps,
+		"target_frame_ms": target_frame_ms,
+		"spike_ms": spike_ms,
+	}
+
+
+# Workload report: percentiles + hardware + cap/tier + draw/entities + spikes.
+static func workload_report(workload: String, fish_n: int, draw_n: int,
+		entity_n: int = -1, tier: String = "") -> Dictionary:
+	refresh_target()
+	var pct: Dictionary = frame_percentiles()
+	var hw: Dictionary = hardware_snapshot()
+	var entities: int = entity_n if entity_n >= 0 else fish_n
+	return {
+		"workload": workload,
+		"p50_ms": pct.get("p50", 0.0),
+		"p95_ms": pct.get("p95", 0.0),
+		"p99_ms": pct.get("p99", 0.0),
+		"mean_ms": pct.get("mean", 0.0),
+		"frames": pct.get("n", 0),
+		"hardware": hw,
+		"fps_cap": Engine.max_fps,
+		"target_frame_ms": target_frame_ms,
+		"tier": tier,
+		"draw_calls": draw_n,
+		"entities": entities,
+		"fish": fish_n,
+		"budget_pressure": budget_pressure,
+		"main_thread_spikes": spike_count,
+		"last_spike_subsystem": last_spike_subsystem,
+		"recent_spikes": spike_log.duplicate(),
+		"disclaimer": "Review-machine sample — does not represent low-end devices.",
+	}
 static var _scopes: Dictionary = {}
 static var _scope_active: Dictionary = {}
 static var _alloc_baseline: int = -1
@@ -113,6 +191,8 @@ static func reset_for_test() -> void:
 	budget_pressure = 0.0
 	last_frame_ms = 0.0
 	last_spike_subsystem = ""
+	spike_count = 0
+	spike_log.clear()
 	_scopes.clear()
 	_scope_active.clear()
 	_alloc_baseline = -1
@@ -147,6 +227,10 @@ static func record_frame(dt_sec: float) -> void:
 		budget_pressure = maxf(budget_pressure, _pressure_from_ms(ms))
 	if spiking:
 		last_spike_subsystem = _top_scope_name()
+		spike_count += 1
+		spike_log.append({"ms": ms, "subsystem": last_spike_subsystem})
+		if spike_log.size() > SPIKE_LOG_CAP:
+			spike_log.pop_front()
 	_scope_active.clear()
 	# get_static_memory_usage() is a debug-HUD readout, not a control signal.
 	# Polling it every frame cost more than the number was worth.
@@ -229,9 +313,14 @@ static func _top_scope_name() -> String:
 
 
 static func hud_line(fish_n: int, draw_n: int) -> String:
+	var pct: Dictionary = frame_percentiles()
 	var fps: float = 1000.0 / maxf(last_frame_ms, 0.001)
-	var line: String = "fps %.0f · fish %d · draw %d · p95 %.1fms · lod %.2f" % [
-		fps, fish_n, draw_n, last_frame_ms, budget_pressure]
+	var line: String = "fps %.0f · fish %d · draw %d · p50/p95/p99 %.1f/%.1f/%.1fms · lod %.2f" % [
+		fps, fish_n, draw_n,
+		float(pct.get("p50", last_frame_ms)),
+		float(pct.get("p95", last_frame_ms)),
+		float(pct.get("p99", last_frame_ms)),
+		budget_pressure]
 	if _MindTickScript.enabled():
 		var tgt: float = _MindTickScript.target_hz()
 		var got: float = _MindTickScript.achieved_hz_per_fish()

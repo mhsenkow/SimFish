@@ -88,11 +88,13 @@ void fragment() {
 	if (n.y > 0.7) {
 		f = 1.00;
 	} else if (n.y < -0.7) {
-		f = 0.58 + belly_flash * 0.35;
+		// HOLISTIC #050 — deeper wood/hardscape undersides so close views keep
+		// readable dark steps without crushing to histogram black.
+		f = 0.50 + belly_flash * 0.35;
 	} else if (abs(n.x) > 0.7) {
-		f = 0.88;
+		f = 0.84;
 	} else {
-		f = 0.76;
+		f = 0.70;
 	}
 	vec3 col = albedo.rgb * f;
 	vec4 gpal = palette_category == 1 ? iaq_palette_fauna : iaq_palette_hardscape;

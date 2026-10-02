@@ -109,3 +109,13 @@ static func hardscape_clearance_push(f: Fish) -> Vector3:
 		if count >= 10:
 			break
 	return push
+
+
+# Holistic #083 — yaw authority from body size and current speed.
+# Large cruisers turn in broader arcs; crawl speed further softens the rate
+# (FishLifeBouts.inertial_turn still kills the spin-in-place floor).
+static func body_speed_turn_scale(body_m: float, speed: float, max_speed: float) -> float:
+	var body: float = clampf(0.55 / maxf(body_m, 0.28), 0.38, 1.35)
+	var spd: float = clampf(speed / maxf(max_speed, 0.12), 0.0, 1.0)
+	var crawl: float = lerpf(0.55, 1.0, clampf(spd / 0.12, 0.0, 1.0))
+	return body * crawl

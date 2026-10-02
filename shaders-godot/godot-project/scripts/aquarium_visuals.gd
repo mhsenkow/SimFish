@@ -131,7 +131,7 @@ func begin_screenshot_boost(duration: float = 3.0) -> void:
 		wm.set_shader_parameter("caustic_intensity", 0.85)
 		wm.set_shader_parameter("depth_fog", 0.55)
 		wm.set_shader_parameter("surface_reflection", 0.38)
-		wm.set_shader_parameter("underside_mirror", 0.42)
+		wm.set_shader_parameter("underside_mirror", 0.32)
 	var cfg: Node = _cfg if _cfg != null else get_node_or_null("/root/TankConfig")
 	if cfg != null and bool(cfg.get("photo_mode_enhanced")):
 		AestheticsRuntime.apply_photo_mode_grade(cfg, true)
@@ -235,6 +235,10 @@ func _pop_slime_mark() -> void:
 
 
 func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
+	spawn_snail_slime_at(pos + wall_n * 0.02)
+
+
+func spawn_snail_slime_at(anchor: Vector3) -> void:
 	if _slime_marks.size() >= SLIME_CAP:
 		_pop_slime_mark()
 	var mi := MeshInstance3D.new()
@@ -247,7 +251,7 @@ func spawn_snail_slime(pos: Vector3, wall_n: Vector3) -> void:
 	var base_mat: ShaderMaterial = VoxelMat.make(Color(0.72, 0.82, 0.78, 0.35))
 	var mat: ShaderMaterial = base_mat.duplicate()
 	mi.material_override = mat
-	mi.position = pos + wall_n * 0.02
+	mi.position = anchor
 	if _glass_root != null:
 		_glass_root.add_child(mi)
 	else:

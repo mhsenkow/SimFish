@@ -33,6 +33,14 @@ func _run() -> void:
 	root.add_child(moss)
 	moss.init_at(Vector3.ZERO, ramp)
 	hosts.append(moss)
+	var plant := Plant.new()
+	root.add_child(plant)
+	plant.init(6, {"leaf_form": "lance", "max_height": 12})
+	hosts.append(plant)
+	var floater := FloatingPlant.new()
+	root.add_child(floater)
+	floater.init_genome({"morph": "duckweed"})
+	hosts.append(floater)
 
 	grid.add_at(Vector3.ZERO, 2.0)
 	var nutrient_before: float = grid.get_at(Vector3.ZERO)
@@ -40,13 +48,29 @@ func _run() -> void:
 		var adapter = Adapter.new(host)
 		TestSupport.check(failed, adapter.biomass() > 0.0,
 			"%s reports biomass" % host.get_class())
+		# Holistic #141 — ecology_biomass matches the adapter budget.
+		if host.has_method("ecology_biomass"):
+			TestSupport.check(failed,
+				absf(adapter.biomass() - float(host.call("ecology_biomass"))) < 0.001,
+				"%s ecology_biomass matches adapter" % host.get_class())
 		TestSupport.check(failed, adapter.nutrient_demand() > 0.0,
 			"%s reports nutrient demand" % host.get_class())
 		adapter.tick(2.1, grid)
-		TestSupport.check(failed, host.has_method("ecology_graze"),
+		TestSupport.check(failed,
+			host.has_method("ecology_graze") or host.has_method("nibble"),
 			"%s exposes grazing" % host.get_class())
 	TestSupport.check(failed, grid.get_at(Vector3.ZERO) < nutrient_before,
 		"adapter ecology consumes substrate nutrients")
+	# Floater must not debit substrate (water-column path owns that sink).
+	var floater_grid := SubstrateGrid.new()
+	root.add_child(floater_grid)
+	floater_grid.init(3.0, 3.0, 1.0)
+	floater_grid.add_at(Vector3.ZERO, 2.0)
+	var before_f: float = floater_grid.get_at(Vector3.ZERO)
+	var f_adapt = Adapter.new(floater)
+	f_adapt.tick(2.1, floater_grid)
+	TestSupport.check(failed, absf(floater_grid.get_at(Vector3.ZERO) - before_f) < 0.001,
+		"floater ecology does not double-debit substrate")
 	var death_adapter = Adapter.new(moss)
 	var mulm_before: float = grid.get_mulm_at(Vector3.ZERO)
 	death_adapter.die(grid)

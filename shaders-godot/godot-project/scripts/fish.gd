@@ -1773,6 +1773,12 @@ var _peck_timeout: float = 0.0
 @warning_ignore("unused_private_class_variable")
 var _peck_point: Vector3 = Vector3.ZERO
 @warning_ignore("unused_private_class_variable")
+var _peck_normal: Vector3 = Vector3.ZERO   # surface normal at contact (Holistic #089)
+@warning_ignore("unused_private_class_variable")
+var _peck_kind: int = 0                   # 0 none, 1 film, 2 plant, 3 glass
+@warning_ignore("unused_private_class_variable")
+var _peck_plant: Variant = null           # Plant ref while pecking a blade
+@warning_ignore("unused_private_class_variable")
 var _peck_phase: float = 0.0
 # Sync pulse window — true only during the final pre-spawn beats. Both
 # fish puff up + flare in unison so the moment the eggs drop reads as
@@ -3273,23 +3279,33 @@ const _LOD_SMALL_MAX_VOXEL: float = 0.13  # under this → secondary detail
 # LOD threshold must sit well past that to keep fins/eyes visible at the
 # normal viewing distance — only fish across the room from the camera
 # should drop detail.
-const _LOD_TINY_RANGE: float = 22.0       # range_end for tiny voxels
-const _LOD_SMALL_RANGE: float = 32.0      # range_end for small voxels
+const _LOD_TINY_RANGE: float = 22.0       # pond MeshInstance detail range_end
+const _LOD_SMALL_RANGE: float = 32.0      # legacy; body batches never use this
 const _LOD_BIG_RANGE: float = 0.0         # 0 = never LOD out (default)
+
+
+## Aquarium tanks (Iwagumi / Dutch / tall hex) put the camera at 31–36 with
+## far corners past 40. MeshInstance LOD at 22 made leftover MI children
+## pop as fish crossed the threshold. Body MultiMesh already never culls;
+## aquarium MI matches that. Pond overhead still distance-culls detail.
+static func mesh_lod_range_end() -> float:
+	if TopdownMotion.pond_active:
+		return _LOD_TINY_RANGE * TopdownMotion.overhead_lod_range_mult()
+	return _LOD_BIG_RANGE
 
 
 func _apply_lod_ranges() -> void:
 	if _voxel_builder == null:
 		return
-	var lod_mult: float = TopdownMotion.overhead_lod_range_mult() if TopdownMotion.pond_active else 1.0
-	# Structural body batches stay visible at normal camera distances — only
-	# tiny attached parts fade. Applying SMALL_RANGE to every batch made fish
-	# in far tank corners (often 30+ units from the camera) pop out entirely.
+	# Structural body batches stay visible at normal camera distances —
+	# Applying SMALL_RANGE to every batch made fish in far tank corners
+	# (often 30+ units from the camera) pop out entirely.
 	for batch: VoxelBatch in _voxel_builder.get_batches():
 		if batch.mmi != null:
 			batch.mmi.visibility_range_begin = 0.0
 			batch.mmi.visibility_range_end = _LOD_BIG_RANGE
 			batch.mmi.visibility_range_end_margin = 0.0
+	var mi_end: float = mesh_lod_range_end()
 	var stack: Array = [self]
 	while not stack.is_empty():
 		var n: Node = stack.pop_back()
@@ -3297,8 +3313,8 @@ func _apply_lod_ranges() -> void:
 			if c is MeshInstance3D:
 				var mi: MeshInstance3D = c
 				mi.visibility_range_begin = 0.0
-				mi.visibility_range_end = _LOD_TINY_RANGE * lod_mult
-				mi.visibility_range_end_margin = 3.0
+				mi.visibility_range_end = mi_end
+				mi.visibility_range_end_margin = 0.0 if mi_end <= 0.0 else 3.0
 			if c.get_child_count() > 0:
 				stack.push_back(c)
 
@@ -6524,8 +6540,10 @@ func _process(dt: float) -> void:
 	_belly_flash_cd = maxf(0.0, _belly_flash_cd - dt)
 	if _belly_flash > 0.0:
 		_belly_flash = maxf(0.0, _belly_flash - dt * 2.5)
-	# Iridescent flank flash when the fish turns broadside to the overhead fixture (#120).
-	if velocity.length_squared() > 0.10:
+	# Iridescent flank flash when a metallic fish turns broadside to the
+	# overhead fixture (#120). Non-metallic schoolers (glassdart / Iwagumi)
+	# used to strobe every bank under sunny light — that read as flashing.
+	if metallic_scales and velocity.length_squared() > 0.10:
 		var flank_up: float = absf(global_transform.basis.x.y)
 		if flank_up > 0.76:
 			_silver_flash = maxf(_silver_flash, 0.52)
@@ -6981,7 +6999,8 @@ func _motion_substep(dt: float) -> void:
 		var enrich: float = clampf(float(sim.total_plant_biomass) / 300.0, 0.0, 1.0)
 		target_spd *= lerpf(0.85, 1.0, enrich)
 	# FISH LIFE bouts: each fish's own cruise pace / hover / dart schedule, so
-	# neighbours stop changing speed in lockstep.
+	# neighbours stop changing speed in lockstep. Hunger/hypoxia/escape/breeding
+	# soft-abort decorative bouts inside FishLifeBouts (Holistic #082).
 	var bout_ok: bool = settle_factor >= 1.0 and burst_remaining <= 0.0 \
 		and _sift_timer <= 0.0 and partner == null and _lb_target == null \
 		and _peck_state == 0 \
@@ -7042,6 +7061,8 @@ func _motion_substep(dt: float) -> void:
 	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
 	eff_turn *= TopdownMotion.turn_rate_at_speed(speed, max_speed)
 	eff_turn *= _MotionWaveScript.agitation_turn_boost(motion_agitation)
+	# Holistic #083: larger bodies turn in broader arcs; fry stay nimble.
+	eff_turn *= FishLocomotion.body_speed_turn_scale(body_m, speed, max_speed)
 	if maturity == MATURITY_SENESCENT:
 		eff_turn *= 0.78
 	elif maturity == MATURITY_FRY:
@@ -7081,7 +7102,10 @@ func _motion_substep(dt: float) -> void:
 		if horizontal_axis.length_squared() > 1e-6:
 			axis = horizontal_axis.normalized()
 		# Turn inertia (FishLifeBouts): the yaw rate ramps, it does not snap.
-		var turn: float = _FishLifeBouts.inertial_turn(self, angle, max_step, dt, wall_t)
+		# Body + speed gate the floor so near-zero speed cannot spin in place.
+		var spd_frac: float = clampf(speed / maxf(max_speed, 0.12), 0.0, 1.0)
+		var turn: float = _FishLifeBouts.inertial_turn(
+			self, angle, max_step, dt, wall_t, spd_frac, body_m)
 		heading = _safe_normalize(heading.rotated(axis, turn), heading)
 		# Defensive NaN guard: if axis was degenerate in a way the checks
 		# above missed, the rotation can leak NaN into heading. Restore from
@@ -7411,14 +7435,29 @@ func _motion_substep(dt: float) -> void:
 	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
 		speed, _motion_target_spd, max_speed)
 	hydro_effort += clampf(absf(_motion_target_spd - speed) / maxf(max_speed, 0.1), 0.0, 0.5) * 0.45
-	if flow_vel.length_squared() > 0.02:
+	var fin_eff: Dictionary = Hydrodynamics.fin_effort_from_swim(
+		speed, _motion_target_spd, max_speed, flow_vel, heading)
+	hydro_effort *= float(fin_eff.get("tail_amp", 1.0))
+	if float(fin_eff.get("carried", 0.0)) > 0.2:
+		# Drift with the current: quiet the body, leave light pec trim.
+		hydro_effort *= lerpf(1.0, 0.35, float(fin_eff["carried"]))
+	elif flow_vel.length_squared() > 0.02:
 		hydro_effort += flow_vel.length() * 0.18
+	wag_freq *= float(fin_eff.get("wag_freq", 1.0))
+	pec_amp_extra += float(fin_eff.get("pec_amp", 0.0))
 	if hydro_effort > 0.04:
 		tail_amp += hydro_effort * 0.52
 		wag_amp_extra += hydro_effort * 0.32
 	elif speed < 0.14 and _motion_target_spd < 0.18:
 		tail_amp *= 0.84
 		body_amp *= 0.78
+	# Station-holding against flow reads as pec rowing, not tail thrust.
+	if float(fin_eff.get("station", 0.0)) > 0.5:
+		tail_amp *= 0.72
+		pec_amp_extra = maxf(pec_amp_extra, 0.28 + flow_vel.length() * 6.0)
+	if float(fin_eff.get("braking", 0.0)) > 0.2:
+		tail_amp *= lerpf(1.0, 0.62, float(fin_eff["braking"]))
+		pec_amp_extra = maxf(pec_amp_extra, float(fin_eff["braking"]) * 0.45)
 
 	# Mood + arousal modulation (#26). Valence slows/fin-spread; arousal quickens
 	# the wag so "content & playing" reads faster than "content & resting."
@@ -7985,10 +8024,13 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 		# Vacuole / torus — hollow center under high tightness + stress.
 		if tightness > 1.65 and edge_dist < slot_r * 0.55:
 			steer -= to_c.normalized() * 0.35
-		# Speed matching: nudge in heading direction proportional to school
-		# speed delta. If the school is faster than us, accelerate.
+		# Speed matching: soft nudge only. Personal bouts own pace; startle
+		# still propagates through MotionSchool.speed_match_weight (#086).
 		var speed_delta: float = school_avg_speed - speed
-		steer += heading * clampf(speed_delta * 0.3, -0.4, 0.4)
+		var match_w: float = MotionSchool.speed_match_weight(
+			swim_pattern, _bout_kind, _bout_env, burst_remaining,
+			_startle_remaining, motion_agitation)
+		steer += heading * clampf(speed_delta * match_w, -0.18, 0.18)
 
 	# Friendship cohesion (applies even outside a formal school count).
 	if friend_w > 0.01:

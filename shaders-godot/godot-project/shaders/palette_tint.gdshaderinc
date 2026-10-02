@@ -143,14 +143,58 @@ vec3 apply_water_column(vec3 col, float world_y, float view_dist) {
 	return col * transmit + iaq_scatter_body() * haze;
 }
 
+// Keep red / blue / yellow / green leadership after a tint stack so stacked
+// sat and warmth cannot turn a cardinal into olive mud (HOLISTIC #046).
+vec3 protect_color_identity(vec3 before, vec3 after) {
+	float bmax = max(max(before.r, before.g), before.b);
+	float amax = max(max(after.r, after.g), after.b);
+	if (bmax < 0.02 || amax < 0.02) {
+		return after;
+	}
+	bool before_yellow = before.r > 0.15 && before.g > 0.15
+		&& abs(before.r - before.g) < 0.14
+		&& before.b < min(before.r, before.g) * 0.88;
+	bool after_yellow = after.r > 0.15 && after.g > 0.15
+		&& abs(after.r - after.g) < 0.14
+		&& after.b < min(after.r, after.g) * 0.88;
+	int bi = 0;
+	if (before_yellow) {
+		bi = 3;
+	} else if (before.g >= before.r && before.g >= before.b) {
+		bi = 1;
+	} else if (before.b >= before.r && before.b >= before.g) {
+		bi = 2;
+	}
+	int ai = 0;
+	if (after_yellow) {
+		ai = 3;
+	} else if (after.g >= after.r && after.g >= after.b) {
+		ai = 1;
+	} else if (after.b >= after.r && after.b >= after.g) {
+		ai = 2;
+	}
+	if (bi == ai) {
+		return after;
+	}
+	return mix(after, before * (amax / max(bmax, 0.001)), 0.55);
+}
+
 vec3 apply_global_palette_tint(vec3 col, float hue_shift, float sat_mult,
 		float warmth, float val_mult) {
 	if (abs(hue_shift) < 0.0001 && abs(sat_mult - 1.0) < 0.0001 && abs(warmth) < 0.0001 && abs(val_mult - 1.0) < 0.0001) {
 		return col;
 	}
+	vec3 before = col;
+	// Soft-compound sat×val so stacked biotope / material / music grades do
+	// not double-crush chroma (HOLISTIC #046).
+	float sat_e = clamp(sat_mult, 0.55, 1.45);
+	float val_e = clamp(val_mult, 0.70, 1.30);
+	if (abs(val_e - 1.0) > 0.06) {
+		sat_e = mix(1.0, sat_e, 0.82);
+	}
 	float luma = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(vec3(luma), col, sat_mult);
-	col *= val_mult;
+	col = mix(vec3(luma), col, sat_e);
+	col *= val_e;
 	col = mix(col, col * vec3(1.08, 1.0, 0.92), max(warmth, 0.0));
 	col = mix(col, col * vec3(0.92, 0.98, 1.08), max(-warmth, 0.0));
 	if (abs(hue_shift) > 0.0001) {
@@ -164,14 +208,18 @@ vec3 apply_global_palette_tint(vec3 col, float hue_shift, float sat_mult,
 		);
 		col = clamp(hue_rot * col, 0.0, 1.0);
 	}
-	return col;
+	return protect_color_identity(before, col);
 }
 
 vec3 apply_category_palette_tint(vec3 col, vec4 global_pal,
 		float hue_shift, float sat_mult, float warmth, float val_mult) {
+	// Cap the composed sat so category globals × per-call overlays cannot
+	// stack past the identity band.
+	float sat_c = clamp(global_pal.y * sat_mult, 0.55, 1.45);
+	float val_c = clamp(global_pal.w * val_mult, 0.70, 1.30);
 	return apply_global_palette_tint(col,
 		global_pal.x + hue_shift,
-		global_pal.y * sat_mult,
+		sat_c,
 		global_pal.z + warmth,
-		global_pal.w * val_mult);
+		val_c);
 }

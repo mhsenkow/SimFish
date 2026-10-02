@@ -55,7 +55,8 @@ flowchart TB
 | `sim_driver.gd` | 6.4k | Chemistry, population, events, guardian | **Started:** `sim_topdown.gd` (flock/sync-turn) |
 
 **Rule:** strangler-fig only — extract behind existing call sites, pin with smokes
-(`scripts/run_smokes.sh` or `smoke_runner.gd`).
+via `scripts/run_smokes.sh` (preferred; timeouts + baseline). Do **not** use
+`smoke_runner.gd` for unattended runs — it has no per-script timeout.
 
 ---
 
@@ -116,19 +117,67 @@ immediate escalation path so a spike is never smoothed away.
 
 ---
 
-## Autoloads (7)
+## Autoloads (11)
+
+Measured from `project.godot` `[autoload]` (gated by `smoke_autoload_contract.gd`):
 
 | Name | Script | Contract |
 |------|--------|----------|
-| TankConfig | `tank_config.gd` | Tank shape, chemistry tuning, sentience flags |
-| MusicContext | `music_context.gd` | Unified music clock, dance mods, phrase choreography |
-| GlobalWorkspace | `global_workspace.gd` | GWT bid competition (autoload singleton) |
-| AmbientAudio | `ambient_audio.gd` | Procedural generative music |
-| MusicReactive | `music_reactive.gd` | External library analysis |
-| GuardianLLM | `guardian_llm.gd` | In-process SmolLM2 (desktop) |
-| SteamAPI | godotsteam | Platform |
+| AppLog | `app_log.gd` | First — structured logging for other autoloads |
+| Localization | `localization.gd` | `tr()` from frame 0 |
+| TankSaves | `tank_saves.gd` | Per-slot paths, compatibility, JSON I/O |
+| TankConfig | `tank_config.gd` | Tank shape, chemistry, render, sentience flags |
+| SpeciesLibrary | `species_library.gd` | Discovery + real-species genomes |
+| SteamService | `steam_service.gd` | Steam / platform |
+| AIDirector | `ai_director.gd` | Offline-first LLM tier + chronicle lines |
+| GuardianLlm | `guardian_llm.gd` | In-process SmolLM2 (desktop) |
+| MusicContext | `music_context.gd` | Music clock, dance mods, phrase choreography |
+| UiTicker | `ui_ticker.gd` | UI cadence independent of sim |
+| GamepadInput | `gamepad_input.gd` | Controller routing |
 
 Prefer typed autoload access over `get_node_or_null("/root/…")` (#11).
+Static helpers such as `GlobalWorkspace`, `SimRng`/`MindRng`, and mind modules are
+`class_name` libraries — **not** autoloads.
+
+---
+
+## Authoritative state and clocks (Holistic #010)
+
+Cross-system changes must name **state owner**, **clock**, and **save owner**.
+Evidence from current call sites (`SimDriver.SIM_HZ = 10`, `fish._process` →
+`_motion_substep`, `fish.tick` → `_update_inner_life`, `TankDialogue._unix()`,
+`MindNarrator.tick_global_cooldown(dt)`).
+
+| Concern | State owner | Clock | Save owner / key |
+|---|---|---|---|
+| Ecology / chemistry / population | `SimDriver` | Sim clock: `_physics_process` → accumulate `dt * time_scale` → `_tick(SIM_DT)` at **10 Hz** (`SIM_DT = 0.1`) | `SimDriver.save_state()` → `sim`, plants/fish/shrimp/…; stamped `save_version` via `SaveMigrations` |
+| Day/night phase | `SimDriver.day_phase` | Sim wall of scaled delta (`sdt / day_length_s`), not render frames | `sim.day_phase` |
+| Fish drives / behavior tiers / breed & nibble cooldowns | `Fish` fields mutated in `Fish.tick` | **Nested in sim tick** (`SimDriver` calls `f.tick(dt, …)`) | Per-fish `Fish.to_save_dict()` inside `save_state()` |
+| Mind / cognition | `Fish` private mind fields via `MindState` / `MindChannel` | Same sim tick: `fish.tick` → `_update_inner_life` → `CognitionKernel` / `MindCycle`; `MindScheduler` polled at start of `_tick` | `fish[].mind` (`FishMind.mind_to_dict`, incl. `learned_mind`) |
+| Render-time locomotion | `Fish` position/velocity/heading | **Render `_process`**: `Fish._process` scales `dt` by `sim.time_scale`, substeps `_motion_substep` (≤~0.05 s). Brain outputs intent on sim tick; body integrates every frame | Position/velocity/heading in `Fish.to_save_dict()` |
+| Visuals / lights / caustics | `World` (+ extracted visuals helpers) | Render `_process` — **read-only** on sim | Room/ambient via world ambient save hooks; not sim ecology |
+| Camera / HUD / follow | `Main` | Render `_process` / input — read-only on sim | Camera views + follow ids via `SaveManager` / `sim.followed_id` |
+| Aquascape voxels / placed objects | `AquascapeController` (+ build grid) | Player / UI time | Top-level `aquascape` array (`to_save_arr`) merged by `SaveManager` |
+| Tank dialogue initiations, promises, absence | `TankDialogue` memory on `sim.tank_mind.keeper_memory` | **Wall unix** (`Time.get_unix_time_from_system`) for quiet gaps / kind cooldowns / return gap; promise deadlines prefer **sim** `tank_age_s` | `sim.tank_mind` (`TankMind.to_dict`) |
+| Keeper reply windows / addressed fish | `Main` (`_keeper_addressed`, `_keeper_last_spoke_ms`) | **Wall msec** (`Time.get_ticks_msec`) | Session-only (not persisted as wall timers) |
+| Narrator / global voice spacing | `MindNarrator._global_voice_cd` | **Sim-scaled dt** via `tick_global_cooldown(dt)` (`GLOBAL_VOICE_COOLDOWN_S = 18`) | Not a separate save blob |
+| Feed grace / last-feed recency | `SimDriver._last_feed_unix` | Wall unix | Rebuilt / used at runtime; feed history array in `sim.feed_time_history` |
+| Away / chronicle reply windows | `TankChronicle` node | Mix: sim day ticks + wall msec for keeper reply / away | Top-level `chronicle` + `story_events` |
+
+**Direction rule:** sim tick writes authoritative ecology and mind; render `_process`
+integrates locomotion and paints. UI/dialogue wall clocks must not advance ecology.
+
+Also mirrored under [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1.
+
+---
+
+## Random streams (Holistic #017)
+
+`SimDriver.rng` (`SimRng`) owns named streams: spawn, genetics, behavior, events,
+cognition, and **cosmetic**. `MindRng` resolves per-entity streams into that
+master. A cosmetic draw must not alter founding stock or behavioral replay —
+asserted by `scripts/smoke_sim_rng.gd`. Full ownership table:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (§4 “Random-stream ownership”).
 
 ---
 
@@ -337,25 +386,29 @@ directions to an instant show/hide. Pinned by `smoke_panel_motion.gd`.
 ## Verification
 
 ```bash
-# All smokes (local)
+# All smokes (local) — preferred runner
 ./scripts/run_smokes.sh
+
+# Subset
+./scripts/run_smokes.sh --include save_fixtures
 
 # Single smoke
 ./scripts/godot.sh --headless --path shaders-godot/godot-project \
   --script res://scripts/smoke_tank_shapes.gd
-
-# In-Godot runner (#42)
-./scripts/godot.sh --headless --path shaders-godot/godot-project \
-  --script res://scripts/smoke_runner.gd
 ```
 
 CI: `.github/workflows/test.yml` — smokes on every PR + gdlint on new modules.
+`smoke_runner.gd` remains an in-editor convenience only; AGENTS.md forbids it
+for unattended / CI-style runs.
 
 ---
 
 ## Save / schema
 
-- Tank save version in `sim_driver` export (v5+)
+- Envelope: `SaveMigrations.CURRENT_VERSION` (`save_version` key, currently **1**)
+- Payload shape: `SimDriver.SAVE_STATE_VERSION` (`version` key, currently **6**)
+- Repair: `SaveRepair.sanitize` before `load_state`
+- Fixtures: `dev/fixtures/saves/` + `smoke_save_fixtures.gd` (Holistic #011)
 - `MindState.SCHEMA_VERSION` = 3 (extended channel fields)
 - Fish still owns scalar fields for save compat; mind dicts sync via `MindState`
 

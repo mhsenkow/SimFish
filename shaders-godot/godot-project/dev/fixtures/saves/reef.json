@@ -1,0 +1,190 @@
+{
+  "sim": {
+    "time_scale": 1.0,
+    "day_phase": 0.28,
+    "tank_seed": 4242,
+    "dissolved_o2": 0.88,
+    "elapsed_runtime_s": 3600.0,
+    "tank_age_s": 604800.0,
+    "next_entity_id": 10,
+    "substrate_type": "ocean_sand",
+    "tank_preset": "reef",
+    "stability": 0.65,
+    "feed_time_history": [],
+    "tank_legacy": {},
+    "milestone_flags": {},
+    "tank_mind": {},
+    "voice_caches": {}
+  },
+  "substrate": {
+    "type": "ocean_sand"
+  },
+  "water_chemistry": {
+    "ammonia": 0.02,
+    "nitrite": 0.01,
+    "nitrate": 0.12,
+    "alkalinity_proxy": 8.2,
+    "salinity": 1.0
+  },
+  "plants": [],
+  "fish": [
+    {
+      "id": "f_reef_1",
+      "pos": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "genome": {
+        "species": "clown",
+        "sex": 0,
+        "base_color": [
+          0.95,
+          0.45,
+          0.1,
+          1.0
+        ],
+        "accent_color": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "tail_color": [
+          0.95,
+          0.45,
+          0.1,
+          1.0
+        ],
+        "marking_color": [
+          0.05,
+          0.05,
+          0.05,
+          1.0
+        ]
+      },
+      "age": 300.0,
+      "hunger": 0.35,
+      "energy": 0.85,
+      "stress": 0.1,
+      "maturity": 2,
+      "velocity": [
+        0.2,
+        0.0,
+        0.0
+      ],
+      "heading": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "speed": 0.2,
+      "breed_cooldown": 0.0,
+      "growth_factor": 1.0,
+      "display_name": "",
+      "name_source": "none",
+      "personality": {
+        "boldness": 0.5,
+        "curiosity": 0.5
+      },
+      "bio": {},
+      "feed_heatmap": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "grudges": {},
+      "habituated": {},
+      "familiarity": 0.2,
+      "mood": 0.55,
+      "arousal": 0.3,
+      "home": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "mind": {},
+      "bonds": {},
+      "social": {}
+    }
+  ],
+  "shrimp": [],
+  "snails": [],
+  "clams": [],
+  "fish_eggs": [],
+  "waste": [],
+  "algae": [],
+  "story_events": [
+    {
+      "k": "arrive",
+      "d": 1,
+      "a": "",
+      "as": "clown"
+    }
+  ],
+  "favorites": [],
+  "save_version": 1,
+  "version": 6,
+  "saved_unix": 1727800000
+}

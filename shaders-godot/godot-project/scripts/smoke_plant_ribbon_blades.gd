@@ -126,7 +126,47 @@ func _check_mature_crown(t: TestSupport.Suite, host: Node3D) -> void:
 	t.check(lighter_tip, "blade colour lightens from the crown to the tip")
 	t.check(twist_deg > 20.0, "blades twist along their length (%.1f deg)" % twist_deg)
 	t.check(lengths.size() >= 2, "blade lengths vary within a crown (%d distinct)" % lengths.size())
+	# Holistic #142 — tip terminations vary in length/bend/age, stay attached.
+	var tip_widths: Dictionary = {}
+	var tip_y: Dictionary = {}
+	var tip_lum: Dictionary = {}
+	for g in blades:
+		var grp: Array = g
+		if grp.size() < 3:
+			continue
+		var tip: VoxelBatch.Handle = grp[grp.size() - 1]
+		var tip_key: String = "%.3f" % snappedf(_width(tip), 0.01)
+		tip_widths[tip_key] = true
+		var y_key: String = "%.2f" % snappedf(tip.local_pos.y, 0.05)
+		tip_y[y_key] = true
+		var lum_key: String = "%.2f" % snappedf(_lum(tip.base_color), 0.04)
+		tip_lum[lum_key] = true
+		# Tip remains part of the blade chain (attached to prior segment).
+		var prior: VoxelBatch.Handle = grp[grp.size() - 2]
+		t.check(tip.local_pos.distance_to(prior.local_pos) < V * 2.2,
+			"tip stays attached to its blade (gap %.3f)" % tip.local_pos.distance_to(prior.local_pos))
+	t.check(tip_widths.size() >= 2,
+		"Valli tip widths vary (%d distinct)" % tip_widths.size())
+	t.check(tip_y.size() >= 2 or tip_lum.size() >= 2,
+		"Valli tips vary in height or age tone")
 	t.equals(p.biomass(), p.current_height, "biomass is still current_height")
+	# Holistic #158 — reduced LOD keeps ribbon silhouette (tips + bases).
+	var tips_before: int = 0
+	for g in blades:
+		if (g as Array).size() > 0:
+			tips_before += 1
+	p.set_leaf_lod_reduced(true)
+	var tips_kept: int = 0
+	for g in _blades(p):
+		var grp: Array = g
+		if grp.is_empty():
+			continue
+		var tip: VoxelBatch.Handle = grp[grp.size() - 1]
+		if tip != null and tip.alive and tip.lod_visible:
+			tips_kept += 1
+	t.check(tips_kept >= maxi(1, tips_before - 1),
+		"reduced LOD keeps ribbon tips (%d/%d)" % [tips_kept, tips_before])
+	p.set_leaf_lod_reduced(false)
 	t.check(p.voxels.is_empty(), "ribbon crown grows no stem voxels")
 	# Aufwuchs on a crown with no stem voxels is painted into the blade.
 	for i in mini(p._leaf_groups.size(), p._leaf_states.size()):

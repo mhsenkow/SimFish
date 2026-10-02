@@ -6,6 +6,16 @@ Format: version → highlights. For full diffs, see git tags and GitHub release 
 
 ## Unreleased
 
+## v0.2.37
+
+- **Scenario contact sheet:** day fit/close/front for all 18 templates; Holistic #040 ledgered.
+- **Iwagumi / long-tank fish flash fixed:** aquarium MeshInstance fauna LOD never distance-culls; silver flank flash and MultiMesh irid turn flash gated to metallic fauna.
+- **Camera polish:** usable-region framing with side panels, stand cap in hero view, less snap/orbit chatter, vessel-scaled input speeds, swim-corridor composition measure.
+- **Fish motion:** one water-column depth contract; emergency interrupts; body/speed-bounded turns; swim-linked fin effort; softer school speed matching; reachable pecks.
+- **Plants / ecology:** unified plant + floater biomass budget; Valli tip variation; form-aware far foliage LOD; food-web meal trace; snail corner continuity.
+- **Stone-garden grading:** sparse Iwagumi no longer fails mid/upper band fills.
+- Binaries: [GitHub Releases](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.37) (macOS / Windows / Linux / Android).
+
 ## v0.2.36
 
 - **Real-tank look:** lit tanks no longer dimmed with the room; the rear backlight actually lights the tank; lamp-coloured haze; pink grow-LED tint.

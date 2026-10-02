@@ -76,20 +76,24 @@
 # Environment:
 #   UI_CAPTURE_OUT             output dir (absolute, or user://)
 #   UI_CAPTURE_STATES          comma list of state ids (baseline always runs)
-#   UI_CAPTURE_PASSES          comma list of pass ids (1152x648,900x600)
+#   UI_CAPTURE_PASSES          comma list of pass ids (1152x648,900x600,
+#                              enlarged_text,pseudolocale,controller)
 #   UI_CAPTURE_SETTLE          frames before the first state (default 360;
 #                              also at least UI_CAPTURE_SETTLE_S seconds, def. 25)
 #   UI_CAPTURE_SCENARIO        scenario id (default beginner_sandbox)
 #   UI_CAPTURE_NARROW_LOGICAL  0 = narrow pass resizes the window only
+#   UI_CAPTURE_DIFFICULT=1     shorthand: only #008 difficult passes + key states
 
 extends Node
 
 const ScenarioPickerScript = preload("res://scripts/scenario_picker.gd")
 const AestheticsScript = preload("res://scripts/aesthetics_runtime.gd")
+const Readiness = preload("res://scripts/capture_readiness.gd")
 
 const DEFAULT_OUT_DIR: String = "user://ui_capture"
 const DEFAULT_SCENARIO: String = "beginner_sandbox"
-const DEFAULT_SETTLE: int = 360
+# Cosmetic settle AFTER World.build_complete (HOLISTIC #004).
+const DEFAULT_SETTLE: int = 90
 # Waits are "at least N frames AND at least S seconds": a capture window never
 # has focus and can run at single-digit fps, where a frame count alone is
 # shorter than the panels' 0.16 s fade.
@@ -97,7 +101,8 @@ const STATE_SETTLE: Array = [4, 0.45]
 const ESC_SETTLE: Array = [3, 0.3]
 const RESET_SETTLE: Array = [2, 0.15]
 const RESIZE_SETTLE: Array = [10, 1.0]
-const DEFAULT_SETTLE_S: float = 25.0
+const DEFAULT_SETTLE_S: float = 4.0
+const READY_TIMEOUT_S: float = 45.0
 const DAY_PHASE: float = 0.25
 const THUMB_W: int = 384
 const CAPTION_H: int = 20
@@ -113,6 +118,13 @@ const SEEN_FLAGS: PackedStringArray = ["tutorial_seen", "walkthrough_completed",
 const PASSES: Array[Dictionary] = [
 	{"id": "1152x648", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0)},
 	{"id": "900x600", "window": Vector2i(900, 600), "logical": Vector2i(900, 600)},
+	# HOLISTIC #008 — difficult content / a11y passes (navigable + primary visible).
+	{"id": "enlarged_text", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0),
+		"ui_font_scale": 1.5},
+	{"id": "pseudolocale", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0),
+		"locale": "qps"},
+	{"id": "controller", "window": Vector2i(1152, 648), "logical": Vector2i(0, 0),
+		"controller_only": true},
 ]
 
 const STATES: Array[Dictionary] = [
@@ -141,6 +153,9 @@ const STATES: Array[Dictionary] = [
 	{"id": "chip_water", "steps": [["_show_water_chemistry_popup", Color.WHITE]]},
 	{"id": "chip_story", "steps": [["_show_story_popup", Color.WHITE]]},
 	{"id": "chip_alert", "steps": [["_show_alert_guidance_popup", Color.WHITE]]},
+	# HOLISTIC #008 — long creature names stress the residents list + strip.
+	{"id": "long_names", "steps": [["@long_names"], ["_toggle_residents_panel"]]},
+	{"id": "controller_path", "steps": [["_open_gamepad_menu"]]},
 	# Combinations — the "overlap when they expand" cases.
 	{"id": "residents+mind", "steps": [["_toggle_residents_panel"], ["_toggle_mind_panel"]]},
 	{"id": "mind+chronicle", "steps": [["_toggle_mind_panel"], ["_toggle_chronicle_panel"]]},
@@ -198,6 +213,12 @@ func _ready() -> void:
 	_settle_s = maxf(1.0, _env("UI_CAPTURE_SETTLE_S", str(DEFAULT_SETTLE_S)).to_float())
 	_only_states = _env("UI_CAPTURE_STATES", "").split(",", false)
 	_only_passes = _env("UI_CAPTURE_PASSES", "").split(",", false)
+	if _env("UI_CAPTURE_DIFFICULT", "") == "1":
+		if _only_passes.is_empty():
+			_only_passes = PackedStringArray(["enlarged_text", "pseudolocale", "controller"])
+		if _only_states.is_empty():
+			_only_states = PackedStringArray([
+				"baseline", "settings", "residents", "long_names", "controller_path", "gamepad_menu"])
 	_narrow_logical = _env("UI_CAPTURE_NARROW_LOGICAL", "1") != "0"
 	_out = _env("UI_CAPTURE_OUT", DEFAULT_OUT_DIR)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(_out))
@@ -316,9 +337,31 @@ func _do_step(step: Array) -> void:
 			_push_toasts()
 		"@notifs":
 			_push_notifs()
+		"@long_names":
+			_apply_long_creature_names()
 		_:
 			_call(method, args)
 
+
+func _apply_long_creature_names() -> void:
+	# HOLISTIC #008 — stress layout with intentionally long display names.
+	var long_name: String = "Alexandrina-of-the-Moonlit-Vallisneria-Curtain-XXVIII"
+	var sim: Variant = _main.get("_sim")
+	if not (sim is Node):
+		_log("WARN no _sim for @long_names")
+		return
+	var n: int = 0
+	for f in (sim as Node).get("fish"):
+		if f != null and is_instance_valid(f) and f.get("fish_name") != null:
+			f.set("fish_name", "%s-%d" % [long_name, n])
+			n += 1
+	var shrimp_list: Variant = (sim as Node).get("shrimp")
+	if shrimp_list is Array:
+		for s in shrimp_list:
+			if s != null and is_instance_valid(s) and s.get("shrimp_name") != null:
+				s.set("shrimp_name", "Shrimp-%s-%d" % [long_name, n])
+				n += 1
+	_log("long_names applied to %d creatures" % n)
 
 func _expand_strip() -> void:
 	var strip: Variant = _main.get("_follow_thought_strip")
@@ -611,8 +654,58 @@ func _panel_details(group: String, grect: Rect2) -> Dictionary:
 		if (bn as Control).focus_mode != Control.FOCUS_NONE and (bn as Control).is_visible_in_tree():
 			focusable += 1
 	d["focusable_buttons"] = focusable
+	# HOLISTIC #008 — navigable + primary action visible.
+	var primary: Dictionary = _primary_action(node, grect, vp_size_or_default())
+	d["navigable"] = focusable > 0 or bool(d.get("focus_in", false)) or primary.get("visible", false)
+	d["primary_action"] = primary
 	return d
 
+
+func vp_size_or_default() -> Vector2:
+	return _vp_size()
+
+
+func _primary_action(node: Control, grect: Rect2, vp: Vector2) -> Dictionary:
+	# Prefer an obvious non-close action button inside the opened group.
+	var buttons: Array[Node] = node.find_children("*", "BaseButton", true, false)
+	var best: BaseButton = null
+	var best_score: float = -1.0
+	for bn in buttons:
+		var btn: BaseButton = bn as BaseButton
+		if not btn.is_visible_in_tree():
+			continue
+		var txt: String = (btn as Button).text.strip_edges() if btn is Button else ""
+		if CLOSE_TEXTS.has(txt):
+			continue
+		var br: Rect2 = btn.get_global_rect()
+		if br.size.x < 4.0 or br.size.y < 4.0:
+			continue
+		var onscreen: bool = br.intersects(Rect2(Vector2.ZERO, vp))
+		var score: float = br.get_area()
+		if txt != "":
+			score += 200.0
+		if btn.focus_mode != Control.FOCUS_NONE:
+			score += 80.0
+		if onscreen:
+			score += 120.0
+		if score > best_score:
+			best_score = score
+			best = btn
+	if best == null:
+		return {"visible": grect.intersects(Rect2(Vector2.ZERO, vp)), "label": "", "onscreen": grect.intersects(Rect2(Vector2.ZERO, vp))}
+	var r: Rect2 = best.get_global_rect()
+	var label: String = ""
+	if best is Button:
+		label = (best as Button).text.strip_edges()
+	else:
+		label = String(best.name)
+	return {
+		"visible": true,
+		"label": label,
+		"onscreen": r.intersects(Rect2(Vector2.ZERO, vp)),
+		"rect": _rect_arr(r),
+		"focusable": best.focus_mode != Control.FOCUS_NONE,
+	}
 
 static func _first_of(n: Node, cls: String, depth: int) -> Node:
 	if n.is_class(cls):
@@ -629,6 +722,13 @@ static func _first_of(n: Node, cls: String, depth: int) -> Node:
 # ---- run ---------------------------------------------------------------------
 
 func _run() -> void:
+	var ready_info: Dictionary = await Readiness.await_world(get_tree(), _main, READY_TIMEOUT_S)
+	if not bool(ready_info.get("ok", false)):
+		push_error("[ui_capture] %s" % String(ready_info.get("reason", "not ready")))
+		get_tree().quit(1)
+		return
+	print("[ui_capture] world ready stage=%s waited=%.2fs; cosmetic settle=%d/%.1fs" % [
+		String(ready_info.get("stage", "")), float(ready_info.get("waited_s", 0.0)), _settle, _settle_s])
 	var t0: int = Time.get_ticks_msec()
 	var k: int = 0
 	while k < _settle or Time.get_ticks_msec() - t0 < int(_settle_s * 1000.0):
@@ -653,10 +753,23 @@ func _apply_pass(p: Dictionary) -> void:
 		win.content_scale_size = _default_content_scale
 	else:
 		win.content_scale_size = logical
+	# HOLISTIC #008 content modifiers on the pass.
+	if _cfg != null:
+		_cfg.set("ui_font_scale", float(p.get("ui_font_scale", 1.0)))
+		var loc: String = String(p.get("locale", "en"))
+		_cfg.set("locale", loc)
+		var i18n: Node = get_node_or_null("/root/Localization")
+		if i18n != null and i18n.has_method("set_locale"):
+			i18n.call("set_locale", loc)
 	await _wait(RESIZE_SETTLE)
 	_call("_apply_panel_layout")
+	# Controller pass: smoke the gamepad menu once so focus paths exist, then
+	# reset so each state starts clean (controller_path / gamepad_menu reopen).
+	if bool(p.get("controller_only", false)):
+		_call("_open_gamepad_menu")
+		await _wait(STATE_SETTLE)
+		await _reset()
 	await _wait(STATE_SETTLE)
-
 
 func _run_pass(pid: String) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("%s/%s" % [_out, pid]))
@@ -722,10 +835,13 @@ func _run_pass(pid: String) -> void:
 			groups.size(), ",".join(opened), int(esc["presses"]), ",".join(esc["left"] as Array)])
 		for pd in panels:
 			var d: Dictionary = pd
-			_log("PANEL pass=%s state=%s group=%s rect=%s z=%s script=%s corner=%s margins=%s close=%s scroll=%s focus_in=%s focusable=%s" % [
+			_log("PANEL pass=%s state=%s group=%s rect=%s z=%s script=%s corner=%s margins=%s close=%s scroll=%s focus_in=%s focusable=%s navigable=%s primary=%s primary_onscreen=%s" % [
 				pid, sid, d["group"], str(d["rect"]), str(d.get("z", "")), str(d.get("script", "")),
 				str(d.get("corner", "")), str(d.get("margins", "")), str(d.get("close", [])),
-				str(d.get("scroll", "")), str(d.get("focus_in", "")), str(d.get("focusable_buttons", ""))])
+				str(d.get("scroll", "")), str(d.get("focus_in", "")), str(d.get("focusable_buttons", "")),
+				str(d.get("navigable", "")),
+				str((d.get("primary_action", {}) as Dictionary).get("label", "")),
+				str((d.get("primary_action", {}) as Dictionary).get("onscreen", ""))])
 		var ov_list: Array = []
 		for key in overlaps:
 			var o: Dictionary = overlaps[key]

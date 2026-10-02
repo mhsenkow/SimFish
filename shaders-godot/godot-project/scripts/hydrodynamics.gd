@@ -148,6 +148,39 @@ static func effort_wag_boost(speed: float, target_spd: float, max_speed: float) 
 	return clampf((target_spd - speed) / maxf(max_speed, 0.1), 0.0, 1.0) * 0.28
 
 
+# Holistic #084 — fin/tail effort from acceleration and motion relative to flow.
+# Cruising, braking, station-holding, and being carried read differently.
+static func fin_effort_from_swim(speed: float, target_spd: float, max_speed: float,
+		flow: Vector3, heading: Vector3) -> Dictionary:
+	var ms: float = maxf(max_speed, 0.1)
+	var accel: float = (target_spd - speed) / ms
+	var flow_len: float = flow.length()
+	var along: float = 0.0
+	if flow_len > 1e-4 and heading.length_squared() > 1e-6:
+		along = flow.dot(heading.normalized())
+	var braking: float = brake_pose_amount(speed, target_spd)
+	var station: float = 1.0 if target_spd < 0.18 and speed < 0.22 else 0.0
+	var carried: float = 0.0
+	if along > 0.015 and target_spd <= speed + 0.04 and flow_len > 0.01:
+		carried = clampf(along / maxf(flow_len, 1e-4), 0.0, 1.0) \
+			* clampf(flow_len * 14.0, 0.0, 1.0)
+	var cruise: float = clampf(1.0 - absf(accel) * 1.8, 0.0, 1.0) * (1.0 - carried) \
+		* (1.0 - braking)
+	return {
+		"tail_amp": lerpf(0.72, 1.38, clampf(accel, 0.0, 1.0)) \
+			* lerpf(1.0, 0.42, carried) * lerpf(1.0, 0.55, braking) \
+			* lerpf(1.0, 0.9, cruise * 0.5),
+		"pec_amp": braking * 0.55 + station * (0.22 + flow_len * 10.0) \
+			+ clampf(-accel, 0.0, 1.0) * 0.18 + carried * 0.08,
+		"wag_freq": lerpf(0.88, 1.28, clampf(accel, 0.0, 1.0)) \
+			* lerpf(1.0, 0.52, carried) * lerpf(1.0, 0.75, braking),
+		"carried": carried,
+		"braking": braking,
+		"station": station,
+		"cruise": cruise,
+	}
+
+
 static func tail_recoil_yaw(phase: float, effort: float) -> float:
 	return -sin(phase) * 0.07 * effort
 

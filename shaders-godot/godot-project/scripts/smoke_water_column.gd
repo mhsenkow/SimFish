@@ -103,11 +103,28 @@ func _initialize() -> void:
 		"world resolves TankConfig even when its cached node is null")
 	TestSupport.check(failed, wsrc.contains("_push_water_column()"),
 		"world pushes the water column on its ambient tick")
+	TestSupport.check(failed, wsrc.contains("blackwater_contrast_bundle"),
+		"world applies blackwater contrast strategy (HOLISTIC #048)")
+	var aes_src: String = FileAccess.get_file_as_string("res://scripts/aesthetics_runtime.gd")
+	TestSupport.check(failed, aes_src.contains("blackwater_contrast_bundle"),
+		"aesthetics owns the blackwater contrast bundle")
 	var cfg_src: String = FileAccess.get_file_as_string("res://scripts/tank_config.gd")
 	TestSupport.check(failed, cfg_src.contains("water_extinction"),
 		"the strength is a persisted setting, not a hardcoded constant")
 	TestSupport.check(failed, cfg_src.contains('cfg.set_value("render", "water_extinction"'),
 		"the setting is saved")
+	# Blackwater near-path remains more legible than a crushed full-strength tea
+	# column: extinction_scale < 1 soft depth_legibility > default.
+	var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
+	var bw: Dictionary = Aesthetics.blackwater_contrast_bundle("blackwater")
+	var bw_strength: float = 0.62 * float(bw.get("extinction_scale", 1.0))
+	var bw_depth: float = float(bw.get("depth_legibility", 2.6))
+	var near_bw: float = _Vox.water_transmittance(tannin.x, 1.0, 8.0, bw_strength, bw_depth)
+	var deep_bw: float = _Vox.water_transmittance(tannin.x, 5.0, 14.0, bw_strength, bw_depth)
+	TestSupport.check(failed, near_bw > deep_bw + 0.04,
+		"blackwater keeps near>deep tea gradient (%.2f vs %.2f)" % [near_bw, deep_bw])
+	TestSupport.check(failed, near_bw > 0.70,
+		"near blackwater subjects stay legible (%.2f)" % near_bw)
 
 	# ---- Every in-tank surface applies it ------------------------------------
 	# If one shader misses it, that surface floats free of the depth cue and the

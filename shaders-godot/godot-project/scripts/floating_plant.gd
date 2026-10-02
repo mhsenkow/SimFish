@@ -520,6 +520,26 @@ func biomass() -> float:
 	return float(leaf_count) * leaf_size * vitality
 
 
+# Holistic #141 — same budget the ecology adapter and tank totals use.
+func ecology_biomass() -> float:
+	return biomass()
+
+
+func ecology_nutrient_demand() -> float:
+	return clampf(0.22 * vitality * (1.0 + nitrogen_fixer * 0.35), 0.02, 1.0)
+
+
+func ecology_graze(amount: int) -> int:
+	return nibble(maxi(0, amount))
+
+
+func ecology_die() -> void:
+	vitality = 0.0
+	leaf_count = 0
+	_visual_dirty = true
+	queue_free()
+
+
 func graze_palatability() -> float:
 	return clampf(palatability * vitality, 0.05, 1.0)
 

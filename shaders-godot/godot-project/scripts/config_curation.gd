@@ -89,6 +89,7 @@ const MANIFEST: Dictionary = {
 	"adaptive_quality_target_fps": [TIER_ADVANCED, "render"],
 	"pixel_snap_camera": [TIER_ADVANCED, "render"],
 	"follow_depth_of_field": [TIER_ADVANCED, "camera"],
+	"idle_cinema_tour": [TIER_COMMON, "camera"],
 	"follow_dof_blur_strength": [TIER_ADVANCED, "camera"],
 	"follow_dof_far_softness": [TIER_ADVANCED, "camera"],
 	"follow_dof_near_softness": [TIER_ADVANCED, "camera"],

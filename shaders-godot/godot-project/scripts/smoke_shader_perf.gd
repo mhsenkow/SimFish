@@ -56,9 +56,30 @@ func _run_all() -> bool:
 		return _fail("baked caustics texture missing")
 	# #84 blob data texture path
 	_VoxelMatScript.update_substrate_blob_shadows([Vector4(1.0, 2.0, 3.0, 0.5)])
-	# #86 internal render contract
+	# #86 internal render contract — all fidelity tiers, not a single size
+	for tier: Vector2i in _RenderResolutionAuditScript.supported_tiers():
+		if not _RenderResolutionAuditScript.internal_size_ok(tier.x, tier.y):
+			return _fail("tier %dx%d must be supported" % [tier.x, tier.y])
 	if not _RenderResolutionAuditScript.internal_size_ok(512, 288):
-		return _fail("512x288 internal contract")
+		return _fail("512x288 mid tier")
+	if not _RenderResolutionAuditScript.internal_size_ok(1024, 576):
+		return _fail("1024x576 desktop default tier")
+	if _RenderResolutionAuditScript.internal_size_ok(640, 360):
+		return _fail("non-tier 640x360 must be rejected")
+	if not _RenderResolutionAuditScript.post_matches_3d(1024, 576, 1024, 576):
+		return _fail("post must match 3D size")
+	if _RenderResolutionAuditScript.post_matches_3d(1024, 576, 1920, 1080):
+		return _fail("post must not silently match window size")
+	if not _RenderResolutionAuditScript.nearest_upscale_ok(
+			int(CanvasItem.TEXTURE_FILTER_NEAREST)):
+		return _fail("nearest filter must pass upscale audit")
+	if _RenderResolutionAuditScript.nearest_upscale_ok(
+			int(CanvasItem.TEXTURE_FILTER_LINEAR)):
+		return _fail("linear filter must fail upscale audit")
+	if _RenderResolutionAuditScript.tier_label(1024, 576) != "desktop":
+		return _fail("desktop tier label")
+	if _RenderResolutionAuditScript.DEFAULT_INTERNAL != Vector2i(1024, 576):
+		return _fail("shipping default must be 1024x576")
 	# #87 warm list populated by tier + warm pass
 	_VoxelMatScript.warm_shader_variants(null)
 	if _ShaderWarmCaptureScript.count() < 2:

@@ -54,17 +54,20 @@ static func is_tap(drag_total_px: float) -> bool:
 
 
 # Orbit: yaw/pitch follow mouse delta; pitch clamped, yaw free.
-# Returns Vector2(yaw, pitch).
-static func orbit(yaw: float, pitch: float, delta: Vector2) -> Vector2:
-	var ny: float = yaw - delta.x * SENSITIVITY
-	var np: float = clampf(pitch - delta.y * SENSITIVITY, MIN_PITCH, MAX_PITCH)
+# Returns Vector2(yaw, pitch). `sens` overrides SENSITIVITY (HOLISTIC #035).
+static func orbit(yaw: float, pitch: float, delta: Vector2,
+		sens: float = SENSITIVITY) -> Vector2:
+	var s: float = sens if sens > 0.0 else SENSITIVITY
+	var ny: float = yaw - delta.x * s
+	var np: float = clampf(pitch - delta.y * s, MIN_PITCH, MAX_PITCH)
 	return Vector2(ny, np)
 
 
 # Dolly: radius scales with vertical drag, clamped to the orbit shell.
-static func dolly(radius: float, delta_y: float) -> float:
-	return clampf(radius * (1.0 + delta_y * DOLLY_MOUSE_SENSITIVITY),
-			MIN_RADIUS, MAX_RADIUS)
+static func dolly(radius: float, delta_y: float,
+		sens: float = DOLLY_MOUSE_SENSITIVITY) -> float:
+	var s: float = sens if sens > 0.0 else DOLLY_MOUSE_SENSITIVITY
+	return clampf(radius * (1.0 + delta_y * s), MIN_RADIUS, MAX_RADIUS)
 
 
 # Wheel/pinch zoom — perspective (radius) variant.
@@ -142,9 +145,12 @@ static func clamp_zoom_budget(budget: float) -> float:
 
 # Pan: slide target perpendicular to the view using the camera basis right/up.
 # Drag right pushes the scene right (target moves left), matching Figma/PS.
+# `sens` overrides PAN_MOUSE_SENSITIVITY (HOLISTIC #035); live `radius` still
+# scales world travel so screen-space feel stays constant while zooming.
 static func pan_target(target: Vector3, delta: Vector2, cam_right: Vector3,
-		cam_up: Vector3, radius: float) -> Vector3:
-	var pan_sc: float = PAN_MOUSE_SENSITIVITY * radius
+		cam_up: Vector3, radius: float, sens: float = PAN_MOUSE_SENSITIVITY) -> Vector3:
+	var s: float = sens if sens > 0.0 else PAN_MOUSE_SENSITIVITY
+	var pan_sc: float = s * radius
 	var t: Vector3 = target
 	t -= cam_right * (delta.x * pan_sc)
 	t += cam_up * (delta.y * pan_sc)
@@ -226,3 +232,178 @@ static func eye_position(target: Vector3, yaw: float, pitch: float,
 	var y: float = sin(pitch)
 	var z: float = cos(pitch) * cos(yaw)
 	return target + Vector3(x, y, z) * radius
+
+
+# Scenario-authored hero pose for the opening / fit view (HOLISTIC #021).
+# Keeps TankConfig camera_* as the orbit intent while callers still size
+# radius with TankSizing.fit_radius for the live viewport.
+static func scenario_hero_orbit(cfg: Object, default_yaw: float,
+		default_pitch: float, default_target_y: float) -> Dictionary:
+	var yaw_v: float = default_yaw
+	var pitch_v: float = default_pitch
+	var target := Vector3(0.0, default_target_y, 0.0)
+	if cfg == null:
+		return {"yaw": yaw_v, "pitch": pitch_v, "target": target}
+	if cfg.get("camera_yaw") != null:
+		yaw_v = float(cfg.get("camera_yaw"))
+	if cfg.get("camera_pitch") != null:
+		pitch_v = float(cfg.get("camera_pitch"))
+	var tx: float = float(cfg.get("camera_target_x")) if cfg.get("camera_target_x") != null else 0.0
+	var tz: float = float(cfg.get("camera_target_z")) if cfg.get("camera_target_z") != null else 0.0
+	var ty: float = default_target_y
+	if cfg.get("camera_target_y") != null:
+		var authored_y: float = float(cfg.get("camera_target_y"))
+		# Shared TankConfig default is 2.8; scenarios author above/below that.
+		if authored_y > 2.85 or authored_y < 2.75:
+			ty = authored_y
+	target = Vector3(tx, ty, tz)
+	return {"yaw": yaw_v, "pitch": pitch_v, "target": target}
+
+
+# ---- Hero fit with stand bound (HOLISTIC #023) ------------------------------
+#
+# A real cabinet is ~30" tall whatever tank sits on it. Framing the full stand
+# with a nano makes furniture dominate the picture; ignoring it crops the
+# contact shadow that grounds the tank. Cap how much stand may enter the hero
+# frame so substrate, waterline and fixture stay primary.
+
+# ~TankSpec.units_for_inches(30) — kept numeric so headless smokes need no TankSpec.
+const STAND_WORLD_REF: float = 13.9
+# Hard world-unit ceiling on stand visible in the hero shot.
+const STAND_FRAME_MAX: float = 1.6
+# Never let stand claim more than this fraction of tank height in-frame.
+const STAND_FRAME_OF_TANK: float = 0.20
+
+
+static func stand_allowed_in_frame(tank_h: float,
+		stand_h: float = STAND_WORLD_REF) -> float:
+	return minf(minf(maxf(0.0, stand_h), STAND_FRAME_MAX),
+		maxf(0.0, tank_h) * STAND_FRAME_OF_TANK)
+
+
+# Orbit radius that frames tank + capped stand at `fill` of the viewport.
+# Same geometry as TankSizing.fit_radius, with vertical extent grown by the
+# allowed stand below the substrate. User-authored camera views bypass this
+# by applying their own radius.
+static func hero_fit_radius(half_w: float, half_d: float, tank_h: float,
+		fov_deg: float, aspect: float, yaw: float, pitch: float,
+		fill: float = 0.68, stand_h: float = STAND_WORLD_REF) -> float:
+	var stand_vis: float = stand_allowed_in_frame(tank_h, stand_h)
+	var cy: float = absf(cos(yaw))
+	var sy: float = absf(sin(yaw))
+	var ext_x: float = half_w * cy + half_d * sy
+	# Optical centre sits in the water column; include capped stand below.
+	var total_h: float = tank_h + stand_vis
+	var ext_y: float = total_h * 0.55 * absf(cos(pitch)) + half_d * absf(sin(pitch))
+	var tan_v: float = tan(deg_to_rad(clampf(fov_deg, 20.0, 110.0)) * 0.5)
+	var tan_h: float = tan_v * maxf(0.3, aspect)
+	var r_x: float = ext_x / maxf(0.05, tan_h * fill)
+	var r_y: float = ext_y / maxf(0.05, tan_v * fill)
+	return maxf(r_x, r_y) + half_d * 0.3
+
+
+# ---- Usable-centre framing offset (HOLISTIC #022) ---------------------------
+#
+# Side panels overlay the full-bleed 3D view. Bias the orbit target so the
+# tank's projection sits in HudLayout.AVAILABLE_CENTER rather than under the
+# panel. `bias` is HudLayout.available_center_bias (−1..1).
+
+static func available_center_target(base_target: Vector3, bias: Vector2,
+		cam_right: Vector3, cam_up: Vector3, radius: float, fov_deg: float,
+		aspect: float) -> Vector3:
+	if bias.length_squared() < 0.0001:
+		return base_target
+	var half_v: float = tan(deg_to_rad(clampf(fov_deg, 5.0, 170.0)) * 0.5) * maxf(radius, 0.1)
+	var half_h: float = half_v * maxf(0.3, aspect)
+	# Restrained: move the subject most of the way toward the free centre,
+	# not the full bias (keeps the transition gentle).
+	var gain: float = 0.72
+	return base_target + cam_right * (bias.x * half_h * gain) \
+			- cam_up * (bias.y * half_v * gain * 0.55)
+
+
+# When the free centre is narrower than the viewport, ease the orbit out so
+# the tank still clears the remaining band. Returns a radius multiplier ≥ 1.
+static func available_center_radius_scale(avail_aspect: float,
+		full_aspect: float) -> float:
+	var full_a: float = maxf(0.3, full_aspect)
+	var avail_a: float = maxf(0.3, avail_aspect)
+	if avail_a >= full_a * 0.97:
+		return 1.0
+	# Cap the pull-back so opening a panel never teleports the camera.
+	return clampf(full_a / avail_a, 1.0, 1.28)
+
+
+# ---- Threshold chatter (HOLISTIC #027) --------------------------------------
+#
+# Pixel-snap, orbit coast, and follow deadzones fight continuous motion when
+# they hard-cross a threshold every few frames. Soften each gate.
+
+# Settle speed (world units / sec) below which pixel-snap may engage. Above
+# this the eye tracks continuously so slow pans do not stair-step.
+const PIXEL_SNAP_SETTLE: float = 0.12
+
+
+static func pixel_snap_eye(pos: Vector3, world_per_pixel: float,
+		eye_speed: float, settle: float = PIXEL_SNAP_SETTLE) -> Vector3:
+	if world_per_pixel <= 0.0001 or eye_speed > settle:
+		return pos
+	return Vector3(
+		snappedf(pos.x, world_per_pixel),
+		snappedf(pos.y, world_per_pixel),
+		snappedf(pos.z, world_per_pixel))
+
+
+# Exponential coast with a hard rest floor — once below `rest`, velocity is
+# zeroed so the next frame does not re-cross the threshold and chatter.
+static func damp_orbit_velocity(v: float, decay: float, rest: float = 0.0005) -> float:
+	var n: float = v * decay
+	return 0.0 if absf(n) < rest else n
+
+
+# Follow deadzone with hysteresis. Enter chase above `deadzone`; stop only
+# after returning inside `deadzone * exit_frac`. Resting fish no longer shake
+# the camera at the boundary. Returns {target, chasing}.
+static func follow_deadzone_step(aim: Vector3, current: Vector3,
+		deadzone: float, chasing: bool, exit_frac: float = 0.72) -> Dictionary:
+	var enter: float = maxf(deadzone, 0.05)
+	var exit_r: float = enter * clampf(exit_frac, 0.2, 0.95)
+	var d: Vector3 = aim - current
+	var dist: float = d.length()
+	if chasing:
+		if dist <= exit_r:
+			return {"target": current, "chasing": false}
+		return {"target": aim - d.normalized() * exit_r, "chasing": true}
+	if dist > enter:
+		return {"target": aim - d.normalized() * enter, "chasing": true}
+	return {"target": current, "chasing": false}
+
+
+# ---- Vessel-scaled input (HOLISTIC #035) ------------------------------------
+#
+# Compact and Grand tanks should take comparable effort to inspect. Derive a
+# stable scale from the vessel's fit radius and footprint — NOT the live zoom —
+# so selecting a saved close-up does not suddenly change mouse feel.
+
+const REF_FIT_RADIUS: float = 15.5
+const REF_FOOTPRINT: float = 8.0
+
+
+static func vessel_speed_scale(fit_radius: float, footprint_r: float) -> float:
+	var d: float = clampf(fit_radius / REF_FIT_RADIUS, 0.55, 1.7)
+	var f: float = clampf(footprint_r / REF_FOOTPRINT, 0.55, 1.7)
+	return clampf(sqrt(d * f), 0.65, 1.5)
+
+
+static func orbit_sensitivity(scale: float) -> float:
+	return SENSITIVITY * clampf(scale, 0.65, 1.5)
+
+
+static func pan_sensitivity(scale: float) -> float:
+	# Pan already multiplies by live radius for screen-space constancy; the
+	# vessel scale only equalises absolute footprint feel across tank sizes.
+	return PAN_MOUSE_SENSITIVITY * clampf(scale, 0.65, 1.5)
+
+
+static func dolly_sensitivity(scale: float) -> float:
+	return DOLLY_MOUSE_SENSITIVITY * clampf(scale, 0.65, 1.5)

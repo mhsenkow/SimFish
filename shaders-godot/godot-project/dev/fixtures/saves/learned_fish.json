@@ -1,0 +1,262 @@
+{
+  "sim": {
+    "time_scale": 1.0,
+    "day_phase": 0.28,
+    "tank_seed": 4242,
+    "dissolved_o2": 0.82,
+    "elapsed_runtime_s": 3600.0,
+    "tank_age_s": 259200.0,
+    "next_entity_id": 10,
+    "substrate_type": "aquasoil",
+    "tank_preset": "community",
+    "stability": 0.7,
+    "feed_time_history": [],
+    "tank_legacy": {},
+    "milestone_flags": {},
+    "tank_mind": {},
+    "voice_caches": {}
+  },
+  "substrate": {
+    "type": "aquasoil"
+  },
+  "plants": [
+    {
+      "id": "p_lrn",
+      "pos": [
+        1.0,
+        0.2,
+        0.5
+      ],
+      "species": "vallisneria",
+      "biomass": 12.0,
+      "age": 400.0
+    }
+  ],
+  "fish": [
+    {
+      "id": "f_learned",
+      "pos": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "genome": {
+        "species": "tetra",
+        "sex": 0,
+        "base_color": [
+          0.2,
+          0.55,
+          0.85,
+          1.0
+        ],
+        "accent_color": [
+          0.9,
+          0.4,
+          0.2,
+          1.0
+        ],
+        "tail_color": [
+          0.2,
+          0.55,
+          0.85,
+          1.0
+        ],
+        "marking_color": [
+          0.1,
+          0.1,
+          0.1,
+          1.0
+        ]
+      },
+      "age": 400.0,
+      "hunger": 0.35,
+      "energy": 0.85,
+      "stress": 0.1,
+      "maturity": 2,
+      "velocity": [
+        0.2,
+        0.0,
+        0.0
+      ],
+      "heading": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "speed": 0.2,
+      "breed_cooldown": 0.0,
+      "growth_factor": 1.0,
+      "display_name": "",
+      "name_source": "none",
+      "personality": {
+        "boldness": 0.5,
+        "curiosity": 0.5
+      },
+      "bio": {},
+      "feed_heatmap": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.82,
+        0.61,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "grudges": {},
+      "habituated": {
+        "tap": 0.72,
+        "shadow": 0.41
+      },
+      "familiarity": 0.8,
+      "mood": 0.7,
+      "arousal": 0.3,
+      "home": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "mind": {
+        "schema_version": 1,
+        "learned_mind": {
+          "v": 1,
+          "cycle": 14,
+          "last_phase": 0.3,
+          "night_c": 13,
+          "events": [
+            {
+              "k": "fed",
+              "c": 10
+            }
+          ],
+          "beliefs": [
+            {
+              "id": "feed_corner",
+              "kind": "feed",
+              "conf": 0.71,
+              "p": [
+                1.2,
+                3.0,
+                -0.4
+              ],
+              "phase": 2,
+              "formed_c": 4,
+              "last_c": 14,
+              "hit_c": 6,
+              "ok": 5,
+              "miss": 1
+            }
+          ],
+          "exp": {
+            "fed": 12.0
+          },
+          "birth": {
+            "boldness": 0.45,
+            "curiosity": 0.6
+          },
+          "drift_log": [],
+          "milestones": [
+            {
+              "tag": "first_feed",
+              "c": 2
+            }
+          ],
+          "hab": {
+            "tap": {
+              "n": 4.0,
+              "c": 8
+            }
+          },
+          "gseen": [],
+          "voice_c": -1,
+          "voice_n": 0,
+          "maturity": 2
+        },
+        "working_memory": [
+          {
+            "kind": "food",
+            "pos": [
+              1.2,
+              3.0,
+              -0.4
+            ],
+            "t": 4.0
+          }
+        ],
+        "food_preferences": {
+          "flake": 0.8
+        }
+      },
+      "bonds": {},
+      "social": {}
+    }
+  ],
+  "shrimp": [],
+  "snails": [],
+  "fish_eggs": [],
+  "waste": [],
+  "algae": [],
+  "story_events": [],
+  "favorites": [
+    "f_learned"
+  ],
+  "save_version": 1,
+  "version": 6,
+  "saved_unix": 1727800000
+}

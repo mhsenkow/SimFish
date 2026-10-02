@@ -56,14 +56,15 @@ const ScenarioPickerScript = preload("res://scripts/scenario_picker.gd")
 const Metrics = preload("res://scripts/frame_metrics.gd")
 const AestheticsScript = preload("res://scripts/aesthetics_runtime.gd")
 const Composition = preload("res://scripts/scape_composition.gd")
+const Readiness = preload("res://scripts/capture_readiness.gd")
 
 const DEFAULT_OUT_DIR: String = "user://visual_capture"
 const DEFAULT_SCENARIO: String = "beginner_sandbox"
-# Frames before the first shot. With the render live (see _force_live_render)
-# the sim actually ticks, so the tank is built and planted well before this;
-# the number is set by how long the staged cosmetic passes take to converge,
-# not by the ecology.
-const DEFAULT_SETTLE: int = 480
+# Cosmetic settle AFTER World.build_complete (HOLISTIC #004). Content readiness
+# is observed; this bound only covers plant sway / particle phase convergence.
+const DEFAULT_SETTLE: int = 120
+# Hard ceiling waiting for build_complete before failing with the stuck stage.
+const READY_TIMEOUT_S: float = 45.0
 # Frames to let the camera settle after a move. The orbit camera is applied
 # immediately but plant sway, particles and the 10 Hz cosmetic tick are not.
 const ANGLE_SETTLE: int = 30
@@ -101,6 +102,8 @@ var _settle: int = DEFAULT_SETTLE
 var _angle_i: int = 0
 var _angle_frame: int = 0
 var _armed: bool = false
+var _world_ready: bool = false
+var _ready_info: Dictionary = {}
 var _lines: PackedStringArray = PackedStringArray()
 var _hud_hidden: bool = false
 var _verbose: bool = false
@@ -156,7 +159,22 @@ func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
 	_main = load("res://main.tscn").instantiate()
 	add_child(_main)
-	print("[visual_capture] booting; settle=", _settle, " angles=", _angles.size())
+	print("[visual_capture] booting; cosmetic_settle=", _settle, " angles=", _angles.size())
+	_boot_wait.call_deferred()
+
+
+func _boot_wait() -> void:
+	var timeout_s: float = _env("VISUAL_CAPTURE_READY_TIMEOUT",
+		str(READY_TIMEOUT_S)).to_float()
+	_ready_info = await Readiness.await_world(get_tree(), _main, timeout_s)
+	if not bool(_ready_info.get("ok", false)):
+		push_error("[visual_capture] %s" % String(_ready_info.get("reason", "not ready")))
+		get_tree().quit(1)
+		return
+	_world_ready = true
+	_frame = 0
+	print("[visual_capture] world ready stage=%s waited=%.2fs; cosmetic settle=%d" % [
+		String(_ready_info.get("stage", "")), float(_ready_info.get("waited_s", 0.0)), _settle])
 
 
 static func _env(key: String, fallback: String) -> String:
@@ -174,6 +192,10 @@ func _apply_scenario(cfg: Node, id: String) -> void:
 
 
 func _process(_dt: float) -> void:
+	if not _world_ready:
+		_force_live_render()
+		_pin_clock()
+		return
 	_frame += 1
 	_force_live_render()
 	_pin_clock()
@@ -338,11 +360,19 @@ func _shoot(a: Dictionary) -> void:
 		Metrics.highlight_level_for(pal_max), _upscale_factor(img))
 	_lines.append(Metrics.format_report(name_s, report))
 	var pal: int = _palette_size()
-	for row in Metrics.grade(report, pal):
+	# Camera-intent grade (HOLISTIC #003): close/surface/photo views are not
+	# failed solely by the hero-view dark-room shadow floor.
+	var profile: Dictionary = Metrics.view_profile(name_s)
+	var subject_region: String = String(profile.get("subject_region", "water_column"))
+	var subject: Dictionary = Metrics.read(img, Metrics.region_rect(img, subject_region), 2,
+		Metrics.highlight_level_for(pal_max), _upscale_factor(img))
+	for row in Metrics.grade(report, pal, name_s, subject):
 		_lines.append("  %-16s %-10s %10.3f  %s" % [
 			row["name"], row["want"], row["value"],
 			"ok" if row["ok"] else "FAIL"])
 	print("[visual_capture] ", Metrics.format_report(name_s, report))
+	print("[visual_capture]   view=%s subject_region=%s spread=%.1f" % [
+		String(profile.get("view", name_s)), subject_region, Metrics.tonal_spread(subject)])
 
 
 # Brightest luminance the active palette can produce, blending the day and
@@ -424,6 +454,7 @@ func _composition_lines() -> PackedStringArray:
 	var floor_y: float = float(world.get("SUBSTRATE_DEPTH"))
 	var surface_y: float = float(world.get("WATER_HEIGHT"))
 	var half_w: float = float(world.get("TANK_HALF_W"))
+	var half_d: float = float(world.get("TANK_HALF_D"))
 	var voxel: float = float(world.get("VOXEL_SIZE"))
 	var hardscape: Array = world.get("_last_contact_ao_points") as Array
 	var items: Array = Composition.items_from_scape(
@@ -431,19 +462,37 @@ func _composition_lines() -> PackedStringArray:
 		hardscape if hardscape != null else [], voxel)
 	var occ: PackedFloat32Array = Composition.band_occupancy(items, floor_y, surface_y)
 	var focal: float = Composition.focal_offset_frac(items, half_w)
+	var corridor: Dictionary = Composition.swim_corridor(
+		items, half_w, half_d, floor_y, surface_y)
+	var intent: String = _scenario_visual_intent()
+	var expect: Dictionary = Composition.expect_for_intent(intent)
 	out.append("composition      %s  (%d items, floor %.2f surface %.2f)" % [
-		Composition.format_report(occ, focal), items.size(), floor_y, surface_y])
-	for row in Composition.grade(occ, focal):
+		Composition.format_report(occ, focal, intent, corridor), items.size(), floor_y, surface_y])
+	for row in Composition.grade(occ, focal, expect, corridor):
 		out.append("  %-16s %-12s %10.3f  %s" % [
 			row["name"], row["want"], row["value"],
 			"ok" if row["ok"] else "FAIL"])
 	return out
 
 
+func _scenario_visual_intent() -> String:
+	var id: String = _env("VISUAL_CAPTURE_SCENARIO", DEFAULT_SCENARIO)
+	for sc in ScenarioPickerScript.SCENARIOS:
+		if String(sc.get("id", "")) != id:
+			continue
+		# HOLISTIC #019 stores a dict; #021 reads composition_profile from it.
+		var intent_v: Variant = sc.get("visual_intent", {})
+		if intent_v is Dictionary:
+			return String((intent_v as Dictionary).get("composition_profile", ""))
+		return String(intent_v)
+	return ""
+
+
 func _finish() -> void:
 	for line in _composition_lines():
 		_lines.append(line)
 		print("[visual_capture] ", line)
+	_write_metadata()
 	var text: String = "\n".join(_lines) + "\n"
 	var f := FileAccess.open("%s/metrics.txt" % OUT_DIR, FileAccess.WRITE)
 	if f != null:
@@ -452,3 +501,36 @@ func _finish() -> void:
 	print("[visual_capture] wrote ", ProjectSettings.globalize_path(OUT_DIR))
 	print(text)
 	get_tree().quit(0)
+
+
+# Fixed-seed capture metadata so baseline matrices are comparable across
+# machines and commits (HOLISTIC #002).
+func _write_metadata() -> void:
+	var cfg := get_node_or_null("/root/TankConfig")
+	var sim: Variant = _main.get("_sim") if _main != null else null
+	var meta := {
+		"scenario": _env("VISUAL_CAPTURE_SCENARIO", DEFAULT_SCENARIO),
+		"day_phase": _day_phase,
+		"settle_frames": _settle,
+		"world_ready": _ready_info,
+		"angles": [],
+		"tank_seed": int(sim.get("tank_seed")) if sim is Node and sim.get("tank_seed") != null else 0,
+		"render_width": int(cfg.get("render_width")) if cfg != null else 0,
+		"render_height": int(cfg.get("render_height")) if cfg != null else 0,
+		"device_tier": String(cfg.get("device_tier")) if cfg != null else "",
+		"build_version": String(ProjectSettings.get_setting("application/config/version", "")),
+		"godot_version": Engine.get_version_info(),
+		"out_dir": ProjectSettings.globalize_path(OUT_DIR),
+		"capture_mode": true,
+		"hud": _env("VISUAL_CAPTURE_HUD", "0") == "1",
+	}
+	var angle_names: Array = []
+	for a in _angles:
+		angle_names.append(String(a.get("name", "")))
+	meta["angles"] = angle_names
+	var path: String = "%s/meta.json" % OUT_DIR
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(meta, "\t"))
+		f.close()
+		print("[visual_capture] meta ", ProjectSettings.globalize_path(path))

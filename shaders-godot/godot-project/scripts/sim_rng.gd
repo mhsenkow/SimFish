@@ -11,6 +11,10 @@ const STREAM_BEHAVIOR := "behavior"
 const STREAM_EVENTS := "events"
 const STREAM_SPAWN := "spawn"
 const STREAM_COGNITION := "cognition"
+# Cosmetic / VFX / presentation draws. Must never feed founding stock or
+# behavioral replay (HOLISTIC #017). Prefer this over raw randf() for glitter,
+# shimmer, and non-sim presentation noise.
+const STREAM_COSMETIC := "cosmetic"
 
 var _master_seed: int = 0
 var _streams: Dictionary = {}

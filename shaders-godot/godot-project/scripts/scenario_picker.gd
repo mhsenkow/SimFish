@@ -58,6 +58,13 @@ const SCENARIOS: Array[Dictionary] = [
 		"body": "Nothing here will crash on you — aquasoil, filter aeration, a small hardy community, and an already-cycled tank. The safest place to learn feed, chips, and watch the loop.",
 		"accent_color": Color8(130, 210, 160),
 		"silhouette": "🌱🐟",
+		# HOLISTIC #019 — composition / water intent (not a universal density score).
+		"visual_intent": {
+			"focal_subject": "small mid-water school near soft plant clumps",
+			"quiet_region": "open front-left sand / gravel reading space",
+			"dominant_plant_form": "mixed stem + low carpet accents",
+			"water_character": "clear, slightly warm daylight column",
+		},
 		"config": {
 			"tank_preset": "classic_community",
 			"cycle_start_mode": "established",
@@ -121,6 +128,13 @@ const SCENARIOS: Array[Dictionary] = [
 		"tagline": "Wide shallow box · sand · single tetra school · bright sun",
 		"body": "Long shallow rectangle (11×3 with low ceiling) so the negative space dominates. Bright cool lighting + sand floor + a hidden sponge filter for gentle surface turnover. Three asymmetric stones, no driftwood, almost no plants. A single tight cardinal tetra school is the only living motion. Sunlit-window room.",
 		"accent_color": Color8(220, 215, 200),
+		"visual_intent": {
+			"focal_subject": "asymmetric stone triad with tight tetra school",
+			"quiet_region": "wide empty sand plane (negative space is the hero)",
+			"dominant_plant_form": "sparse carpet or nearly bare sand",
+			"water_character": "bright cool clear; hard sunlight edges",
+			"composition_profile": "stone_garden",
+		},
 		"config": {
 			"tank_preset": "iwagumi_school",
 			"substrate_type": "sand",
@@ -160,13 +174,20 @@ const SCENARIOS: Array[Dictionary] = [
 		"tagline": "Tall narrow column · driftwood-stained water · dim warm",
 		"body": "Tall narrow column tank (6×3 with a 9-unit ceiling) so the vertical driftwood and column dimness read. Aquasoil floor, filter intake, warm dim pendant. Killifish dart at the surface, corydoras shuffle the leaf litter, guppies hold mid-water. Tannins lerp the water tea-brown over real-time hours. Dark-cabinet room.",
 		"accent_color": Color8(135, 95, 60),
+		"visual_intent": {
+			"focal_subject": "vertical driftwood silhouette against tea-stained water",
+			"quiet_region": "lower leaf-litter pocket and shadowed corners",
+			"dominant_plant_form": "sparse stems / litter; wood over greenery",
+			"water_character": "tea-stained depth; healthy amber column, not poor clarity",
+		},
 		"config": {
 			"tank_preset": "blackwater_biotope",
 			"substrate_type": "aquasoil",
 			"aeration_type": "filter",
 			"light_fixture": "spotlight",
-			"environment_preset": "dark_cabinet",
+			"environment_preset": "blackwater_den",
 			"lighting_preset": "dim_warm",
+			"film_stock": "blackwater",
 			"co2_level": 0.0,
 			"light_spectrum": 0.80,
 			"tank_shape": "box",
@@ -191,6 +212,12 @@ const SCENARIOS: Array[Dictionary] = [
 		"tagline": "Cube tank · ocean sand · corals + clams · bleaching + night biolum",
 		"body": "Saltwater rimless cube (7×7 footprint, 7 tall — equal sides for a proper coral-cube aesthetic). Ocean-sand substrate spawns corals, anemones, clams, sponges instead of plants. Coral tips pulse + bleach under heat stress + glow in sync at night; anemones ribbon-wave. Mixed reef fish — each individual rolls a unique tropical morph (clownfish, tangs, chromis, anthias).",
 		"accent_color": Color8(255, 150, 110),
+		"visual_intent": {
+			"focal_subject": "coral mound + host anemone with reef fish",
+			"quiet_region": "open blue mid-water above sand apron",
+			"dominant_plant_form": "hard/soft coral structure (no freshwater canopy)",
+			"water_character": "clear oceanic blue; night biolum accents",
+		},
 		"config": {
 			"tank_preset": "reef",
 			"substrate_type": "ocean_sand",
@@ -494,6 +521,15 @@ const SCENARIOS: Array[Dictionary] = [
 		"body": "Vallisneria has taken the whole tank — runners floor to surface, then bending over and lying along it, so the light comes through a green wall rather than down onto a scape. A ramshorn colony works the soil line and empty shells drift into the low spot at the front. Guppy fry hide in the blades. Hair algae on the older leaves. Driftwood is in there somewhere, mostly buried.",
 		"accent_color": Color8(126, 186, 84),
 		"silhouette": "🌾🐌",
+		# HOLISTIC #019/#021 — dense wall-of-blades identity; composition
+		# expects a soft focal offset, not an open-garden power point.
+		"visual_intent": {
+			"focal_subject": "floor-to-surface vallisneria wall with fry in blades",
+			"quiet_region": "front low shell pocket / sparse soil edge",
+			"dominant_plant_form": "dense vertical blade canopy",
+			"water_character": "green-filtered backlight; soft mid clarity",
+			"composition_profile": "dense_jungle",
+		},
 		"config": {
 			"tank_preset": "valli_jungle",
 			"cycle_start_mode": "established",
@@ -511,11 +547,13 @@ const SCENARIOS: Array[Dictionary] = [
 			"lighting_preset": "backlit_jungle",
 			"co2_level": 0.15,
 			"light_spectrum": 0.62,
-			"camera_pitch": -0.12,
-			"camera_radius": 24.1,
-			"camera_yaw": -0.68,
-			"camera_target_y": 5.8,
-			"camera_fov": 50.0,
+			# Slightly front-and-center so the mid-water passage and fish read;
+			# pitch keeps a little of the luminous canopy without cropping it.
+			"camera_pitch": -0.05,
+			"camera_radius": 23.2,
+			"camera_yaw": -0.48,
+			"camera_target_y": 5.2,
+			"camera_fov": 48.0,
 			"vessel_preset": "custom",
 		},
 	},
@@ -526,6 +564,13 @@ const SCENARIOS: Array[Dictionary] = [
 		"body": "The keeper's own tank: a tall hexagonal column in the corner of a green room. Vallisneria floor to surface, a floating mat trailing long root curtains, a glass cloche on the gravel wearing a hair-algae mound, and red ramshorns on every pane. Endlers and guppies crowd the top third; rummy-nose and ember tetras hold lower. A pink LED bar on top and a warm lamp glowing through the blades from behind.",
 		"accent_color": Color8(214, 120, 170),
 		"silhouette": "🌾🐌",
+		"visual_intent": {
+			"focal_subject": "upper-third crowd + glass cloche with hair algae",
+			"quiet_region": "lower hex wedge away from the cloche",
+			"dominant_plant_form": "tall blade forest + floating root curtains",
+			"water_character": "pink-LED tint through green blades; warm backlight",
+			"composition_profile": "dense_jungle",
+		},
 		"config": {
 			"tank_preset": "hex_jungle",
 			"cycle_start_mode": "established",
@@ -1276,6 +1321,9 @@ static func apply_scenario(scenario: Dictionary, cfg: Node) -> void:
 			continue
 		if key == "lighting_preset":
 			lighting_slug = String(config[key])
+			continue
+		if key == "film_stock" and cfg.has_method("apply_film_stock"):
+			cfg.apply_film_stock(String(config[key]))
 			continue
 		cfg.set(String(key), config[key])
 	# Picker size step (Compact..Grand) multiplies the template's own size.

@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# Resolve Godot CLI for headless smoke tests and agent shells.
-# Cursor/CI shells often skip ~/.zshrc, so plain `godot` may be missing even
-# when the Godot.app editor works from Finder or your own terminal.
+# Thin resolver — prefer scripts/dev_run.sh for captures/probes/smokes.
+#
+# Isolation (HOLISTIC #001) lives in scripts/dev_run.sh so this file stays a
+# pure Godot locator for CI and callers that already sandboxed themselves.
+# When GODOT_ISOLATE=1 (default for interactive agent shells that export it),
+# this re-enters through dev_run.sh once, then resolves the binary.
 set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ "${GODOT_ISOLATE:-0}" == "1" && "${GODOT_VIA_DEV_RUN:-0}" != "1" ]]; then
+	export GODOT_VIA_DEV_RUN=1
+	exec "$ROOT/scripts/dev_run.sh" "$@"
+fi
 
 resolve_godot() {
 	if [[ -n "${GODOT_BIN:-}" && -x "$GODOT_BIN" ]]; then

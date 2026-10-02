@@ -1,0 +1,408 @@
+{
+  "sim": {
+    "time_scale": 1.0,
+    "day_phase": 0.28,
+    "tank_seed": 4242,
+    "dissolved_o2": 0.82,
+    "elapsed_runtime_s": 3600.0,
+    "tank_age_s": 172800.0,
+    "next_entity_id": 10,
+    "substrate_type": "aquasoil",
+    "tank_preset": "community",
+    "stability": 0.7,
+    "feed_time_history": [],
+    "tank_legacy": {},
+    "milestone_flags": {},
+    "tank_mind": {},
+    "voice_caches": {}
+  },
+  "substrate": {
+    "type": "aquasoil"
+  },
+  "plants": [
+    {
+      "id": "p_br_1",
+      "pos": [
+        1.0,
+        0.2,
+        0.5
+      ],
+      "species": "vallisneria",
+      "biomass": 12.0,
+      "age": 400.0
+    }
+  ],
+  "fish": [
+    {
+      "id": "f_mom",
+      "pos": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "genome": {
+        "species": "guppy",
+        "sex": 1,
+        "base_color": [
+          0.85,
+          0.35,
+          0.55,
+          1.0
+        ],
+        "accent_color": [
+          0.95,
+          0.7,
+          0.2,
+          1.0
+        ],
+        "tail_color": [
+          0.85,
+          0.35,
+          0.55,
+          1.0
+        ],
+        "marking_color": [
+          0.2,
+          0.1,
+          0.15,
+          1.0
+        ],
+        "is_livebearer": true
+      },
+      "age": 200.0,
+      "hunger": 0.35,
+      "energy": 0.85,
+      "stress": 0.1,
+      "maturity": 2,
+      "velocity": [
+        0.2,
+        0.0,
+        0.0
+      ],
+      "heading": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "speed": 0.2,
+      "breed_cooldown": 12.0,
+      "growth_factor": 1.0,
+      "display_name": "",
+      "name_source": "none",
+      "personality": {
+        "boldness": 0.5,
+        "curiosity": 0.5
+      },
+      "bio": {},
+      "feed_heatmap": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "grudges": {},
+      "habituated": {},
+      "familiarity": 0.2,
+      "mood": 0.55,
+      "arousal": 0.3,
+      "home": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "mind": {},
+      "bonds": {},
+      "social": {},
+      "sex": 1,
+      "gestation_progress": 0.65,
+      "gestation_genome": {
+        "species": "guppy",
+        "sex": 0,
+        "base_color": [
+          0.7,
+          0.4,
+          0.5,
+          1.0
+        ],
+        "accent_color": [
+          0.9,
+          0.6,
+          0.2,
+          1.0
+        ],
+        "tail_color": [
+          0.7,
+          0.4,
+          0.5,
+          1.0
+        ],
+        "marking_color": [
+          0.15,
+          0.1,
+          0.1,
+          1.0
+        ]
+      },
+      "partner_id": "f_dad"
+    },
+    {
+      "id": "f_dad",
+      "pos": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "genome": {
+        "species": "guppy",
+        "sex": 0,
+        "base_color": [
+          0.7,
+          0.4,
+          0.5,
+          1.0
+        ],
+        "accent_color": [
+          0.9,
+          0.6,
+          0.2,
+          1.0
+        ],
+        "tail_color": [
+          0.7,
+          0.4,
+          0.5,
+          1.0
+        ],
+        "marking_color": [
+          0.15,
+          0.1,
+          0.1,
+          1.0
+        ]
+      },
+      "age": 210.0,
+      "hunger": 0.35,
+      "energy": 0.85,
+      "stress": 0.1,
+      "maturity": 2,
+      "velocity": [
+        0.2,
+        0.0,
+        0.0
+      ],
+      "heading": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "speed": 0.2,
+      "breed_cooldown": 12.0,
+      "growth_factor": 1.0,
+      "display_name": "",
+      "name_source": "none",
+      "personality": {
+        "boldness": 0.5,
+        "curiosity": 0.5
+      },
+      "bio": {},
+      "feed_heatmap": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "grudges": {},
+      "habituated": {},
+      "familiarity": 0.2,
+      "mood": 0.55,
+      "arousal": 0.3,
+      "home": [
+        0.0,
+        2.5,
+        0.0
+      ],
+      "mind": {},
+      "bonds": {},
+      "social": {},
+      "sex": 0,
+      "partner_id": "f_mom"
+    }
+  ],
+  "fish_eggs": [
+    {
+      "id": "egg_1",
+      "pos": [
+        0.5,
+        1.2,
+        -0.3
+      ],
+      "age": 8.0,
+      "incubate_remaining": 18.0,
+      "parent_id": "f_dad",
+      "genome": {
+        "species": "tetra",
+        "sex": 0,
+        "base_color": [
+          0.2,
+          0.55,
+          0.85,
+          1.0
+        ],
+        "accent_color": [
+          0.9,
+          0.4,
+          0.2,
+          1.0
+        ],
+        "tail_color": [
+          0.2,
+          0.55,
+          0.85,
+          1.0
+        ],
+        "marking_color": [
+          0.1,
+          0.1,
+          0.1,
+          1.0
+        ]
+      }
+    }
+  ],
+  "shrimp": [],
+  "snails": [],
+  "waste": [],
+  "algae": [],
+  "story_events": [
+    {
+      "k": "birth",
+      "d": 2,
+      "a": "",
+      "as": "guppy"
+    }
+  ],
+  "favorites": [],
+  "save_version": 1,
+  "version": 6,
+  "saved_unix": 1727800000
+}

@@ -93,8 +93,8 @@ vec3 iaq_leaf_light(vec3 col, vec3 wpos, vec3 n_ws, vec3 cam_pos, float thin,
 	vec3 lk = normalize(key_pos - wpos);
 	float t_key = max(-dot(n_ws, lk), 0.0)
 		* (0.3 + 0.7 * pow(max(dot(-v_ws, lk), 0.0), 3.0)) * key_cone;
-	add += key_col * filt * t_key * 0.85;
-	veil += t_key * 0.35;
+	add += key_col * filt * t_key * 0.72;
+	veil += t_key * 0.28;
 
 	// Rear lamp. Energy 0 = off; one compare for every tank without one.
 	float bl_e = iaq_backlight.w;
@@ -131,11 +131,13 @@ float iaq_blade_margin(vec3 local_box, float amount) {
 	// Broad face (thin axis is local z): shade across the width.
 	if (abs(local_box.z) > 0.45) {
 		float m = abs(local_box.x) * 2.0;
-		return mix(1.0, mix(1.12, 0.70, smoothstep(0.40, 0.95, m)), amount);
+		// HOLISTIC #050 — stronger margin dark so overlapping blades keep a
+		// luminance step after palette quantize (close-range structure).
+		return mix(1.0, mix(1.12, 0.62, smoothstep(0.40, 0.95, m)), amount);
 	}
 	// Edge face: a blade seen edge-on is its darkest line.
 	if (abs(local_box.x) > 0.45) {
-		return mix(1.0, 0.72, amount);
+		return mix(1.0, 0.64, amount);
 	}
 	return 1.0;
 }

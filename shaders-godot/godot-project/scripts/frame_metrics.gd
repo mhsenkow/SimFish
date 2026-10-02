@@ -279,51 +279,276 @@ static func separation(front: Dictionary, back: Dictionary) -> float:
 	return float(front.get("p50", 0.0)) - float(back.get("p50", 0.0))
 
 
+# Readable dark steps inside a subject crop (HOLISTIC #050) — cavities, leaf
+# overlaps, wood undersides — without demanding hero-view room blacks.
+# Measured as median-minus-p05 so a uniformly grey close-up scores near 0.
+static func shadow_structure(report: Dictionary) -> float:
+	return float(report.get("p50", 0.0)) - float(report.get("p05", 0.0))
+
+
+# ---- Palette lock modes (HOLISTIC #042) --------------------------------------
+#
+# The aquarium render is graded under palette_excess at the final lock stage.
+# UI chrome and explicitly alternate grades (duotone) are documented separately
+# so a HUD swatch or a two-ramp photo look is not mistaken for a lock failure.
+
+## Per-mode excess ceiling. `ui` returns -1 (not graded as aquarium lock).
+static func palette_mode_profile(mode: String) -> Dictionary:
+	var m: String = mode.strip_edges().to_lower()
+	match m:
+		"night":
+			return {
+				"mode": "night",
+				"palette_excess_max": PALETTE_EXCESS_MAX,
+				"scope": "aquarium",
+				"notes": "night LUT + bloom burnthrough; final snap still locks",
+			}
+		"care", "health":
+			return {
+				"mode": "care",
+				"palette_excess_max": PALETTE_EXCESS_MAX,
+				"scope": "aquarium",
+				"notes": "health_grade runs before quantize; palette_lock re-snaps",
+			}
+		"outline":
+			return {
+				"mode": "outline",
+				"palette_excess_max": PALETTE_EXCESS_MAX,
+				"scope": "aquarium",
+				"notes": "outline/creature ink darken then snap_to_palette",
+			}
+		"photo", "photo_up", "signature":
+			return {
+				"mode": "photo",
+				# Slight headroom for sensor grain before the final snap; lock
+				# itself stays on (AestheticsRuntime.PHOTO_MODE_GRADE).
+				"palette_excess_max": PALETTE_EXCESS_MAX + 0.5,
+				"scope": "aquarium",
+				"notes": "photo preset keeps palette_lock; UI not included",
+			}
+		"duotone":
+			return {
+				"mode": "duotone",
+				"palette_excess_max": 2.5,
+				"scope": "alternate",
+				"notes": "explicit two-ramp mode — not the 48-slot biotope lock",
+			}
+		"ui", "hud", "chrome":
+			return {
+				"mode": "ui",
+				"palette_excess_max": -1.0,
+				"scope": "ui",
+				"notes": "UI chrome evaluated separately from aquarium render",
+			}
+		_:
+			return {
+				"mode": "day",
+				"palette_excess_max": PALETTE_EXCESS_MAX,
+				"scope": "aquarium",
+				"notes": "default day / hero aquarium lock",
+			}
+
+
+# ---- Camera-aware grading (HOLISTIC #003) ------------------------------------
+#
+# The universal hero-view shadow floor is the right test for a composed room
+# shot and the wrong test for a close underwater photo: surface / photo /
+# photo_up frames intentionally omit the dark room, so failing them solely on
+# p05<=40 produces false disease signals (see output/holistic_review_20261001).
+#
+# View profiles keep the disease checks that still apply (washed-out midtones,
+# palette lock, stipple) while relaxing room-only expectations. Named regions
+# are fractional frame rects for optional regional reads — not mandatory crops
+# that rot when framing changes.
+
+## Fractional rects of the frame, origin top-left, values in 0..1.
+## Callers convert with `region_rect(img, name)`.
+static func regions() -> Dictionary:
+	return {
+		# Lower band where the stand / room floor usually sits in hero/fit.
+		"room_floor": Rect2(0.05, 0.78, 0.90, 0.18),
+		# Central water column used for subject readability.
+		"water_column": Rect2(0.18, 0.22, 0.64, 0.50),
+		# Upper third: canopy / surface / fixture.
+		"canopy": Rect2(0.10, 0.02, 0.80, 0.28),
+		# Tight centre crop for close / photo subject checks.
+		"subject_center": Rect2(0.28, 0.28, 0.44, 0.44),
+		# Full frame alias.
+		"full": Rect2(0.0, 0.0, 1.0, 1.0),
+	}
+
+
+static func region_rect(img: Image, region_name: String) -> Rect2i:
+	if img == null:
+		return Rect2i()
+	var regs: Dictionary = regions()
+	var r: Rect2 = regs.get(region_name, regs["full"]) as Rect2
+	var w: int = img.get_width()
+	var h: int = img.get_height()
+	return Rect2i(
+		clampi(int(floor(r.position.x * float(w))), 0, maxi(w - 1, 0)),
+		clampi(int(floor(r.position.y * float(h))), 0, maxi(h - 1, 0)),
+		maxi(int(round(r.size.x * float(w))), 1),
+		maxi(int(round(r.size.y * float(h))), 1))
+
+
+## Per-view expectations. Missing keys inherit the hero/universal defaults.
+static func view_profile(view: String) -> Dictionary:
+	var v: String = view.strip_edges().to_lower()
+	# Hero / fit / front: full room-inclusive contract.
+	var hero := {
+		"view": "hero",
+		"require_shadow_floor": true,
+		"shadow_p05_max": float(SHADOW_P05_MAX),
+		"midtone_mass_max": MIDTONE_MASS_MAX,
+		"stipple_max": STIPPLE_MAX,
+		"stipple_contrast_max": STIPPLE_CONTRAST_MAX,
+		"palette_excess_max": PALETTE_EXCESS_MAX,
+		"highlight_fraction_min": HIGHLIGHT_FRACTION_MIN,
+		# Washed-out subject: tonal spread too small inside the water column.
+		"min_tonal_spread": 35.0,
+		"subject_region": "water_column",
+	}
+	match v:
+		"hero", "fit", "front", "":
+			return hero
+		"close":
+			var close_p: Dictionary = hero.duplicate()
+			close_p["view"] = "close"
+			close_p["require_shadow_floor"] = false
+			close_p["shadow_p05_max"] = 130.0
+			close_p["subject_region"] = "subject_center"
+			close_p["min_tonal_spread"] = 28.0
+			# HOLISTIC #050 — demand local dark steps in the subject crop, not
+			# manufactured whole-frame blacks for the hero histogram.
+			close_p["require_shadow_structure"] = true
+			close_p["min_shadow_structure"] = 16.0
+			return close_p
+		"surface":
+			var surface_p: Dictionary = hero.duplicate()
+			surface_p["view"] = "surface"
+			surface_p["require_shadow_floor"] = false
+			surface_p["shadow_p05_max"] = 160.0
+			surface_p["subject_region"] = "canopy"
+			surface_p["min_tonal_spread"] = 24.0
+			# Looking onto the surface compresses values; allow a slightly
+			# louder stipple step without blessing salt-and-pepper.
+			surface_p["stipple_contrast_max"] = 30.0
+			return surface_p
+		"photo", "photo_up":
+			var photo_p: Dictionary = hero.duplicate()
+			photo_p["view"] = v
+			photo_p["require_shadow_floor"] = false
+			photo_p["shadow_p05_max"] = 150.0
+			photo_p["subject_region"] = "subject_center"
+			photo_p["min_tonal_spread"] = 30.0
+			photo_p["stipple_contrast_max"] = 32.0
+			return photo_p
+		"custom":
+			var custom_p: Dictionary = hero.duplicate()
+			custom_p["view"] = "custom"
+			custom_p["require_shadow_floor"] = false
+			return custom_p
+		_:
+			var other: Dictionary = hero.duplicate()
+			other["view"] = v
+			other["require_shadow_floor"] = false
+			return other
+
+
 # The whole contract in one call. Returns a list of {name, ok, value, want}
 # so callers can print a table and fail on the first false.
-static func grade(report: Dictionary, palette_size: int) -> Array[Dictionary]:
+#
+# `view` selects camera-intent expectations (HOLISTIC #003). Pass "" / "hero"
+# for the historical universal grade. Optional `subject_report` is a regional
+# read used for the washed-out-subject check; when empty, the full-frame
+# tonal spread is used instead.
+static func grade(report: Dictionary, palette_size: int, view: String = "hero",
+		subject_report: Dictionary = {}) -> Array[Dictionary]:
+	var profile: Dictionary = view_profile(view)
 	var out: Array[Dictionary] = []
+	var mid_max: float = float(profile.get("midtone_mass_max", MIDTONE_MASS_MAX))
 	out.append({
 		"name": "midtone_mass",
 		"value": float(report.get("midtone_mass", 1.0)),
-		"want": "<= %.2f" % MIDTONE_MASS_MAX,
-		"ok": float(report.get("midtone_mass", 1.0)) <= MIDTONE_MASS_MAX,
+		"want": "<= %.2f" % mid_max,
+		"ok": float(report.get("midtone_mass", 1.0)) <= mid_max,
 	})
+	var hf_min: float = float(profile.get("highlight_fraction_min", HIGHLIGHT_FRACTION_MIN))
 	var hf: float = float(report.get("highlight_fraction", 0.0))
 	out.append({
 		"name": "highlight",
 		"value": hf,
-		"want": ">= %.4f @%.0f" % [HIGHLIGHT_FRACTION_MIN,
+		"want": ">= %.4f @%.0f" % [hf_min,
 			float(report.get("highlight_level", HIGHLIGHT_LEVEL))],
-		"ok": hf >= HIGHLIGHT_FRACTION_MIN,
+		"ok": hf >= hf_min,
 	})
-	out.append({
-		"name": "p05 (shadow)",
-		"value": float(report.get("p05", 255.0)),
-		"want": "<= %d" % SHADOW_P05_MAX,
-		"ok": float(report.get("p05", 255.0)) <= float(SHADOW_P05_MAX),
-	})
+	var shadow_max: float = float(profile.get("shadow_p05_max", float(SHADOW_P05_MAX)))
+	var require_shadow: bool = bool(profile.get("require_shadow_floor", true))
+	var p05: float = float(report.get("p05", 255.0))
+	if require_shadow:
+		out.append({
+			"name": "p05 (shadow)",
+			"value": p05,
+			"want": "<= %.0f" % shadow_max,
+			"ok": p05 <= shadow_max,
+		})
+	else:
+		# Still recorded as evidence, but not a hard fail: a close-up lacking
+		# the dark room is informative, not diseased. A truly crushed black
+		# frame (p05 at 0 with no structure) is caught by midtone/spread.
+		out.append({
+			"name": "p05 (shadow)",
+			"value": p05,
+			"want": "info <= %.0f (view=%s)" % [shadow_max, String(profile.get("view", view))],
+			"ok": true,
+		})
+	var stip_max: float = float(profile.get("stipple_max", STIPPLE_MAX))
 	var stip: float = float(report.get("stipple", 0.0))
 	out.append({
 		"name": "stipple",
 		"value": stip,
-		"want": "<= %.2f" % STIPPLE_MAX,
-		"ok": stip <= STIPPLE_MAX,
+		"want": "<= %.2f" % stip_max,
+		"ok": stip <= stip_max,
 	})
+	var stipc_max: float = float(profile.get("stipple_contrast_max", STIPPLE_CONTRAST_MAX))
 	var stipc: float = float(report.get("stipple_contrast", 0.0))
 	out.append({
 		"name": "stipple step",
 		"value": stipc,
-		"want": "<= %.0f" % STIPPLE_CONTRAST_MAX,
-		"ok": stipc <= STIPPLE_CONTRAST_MAX,
+		"want": "<= %.0f" % stipc_max,
+		"ok": stipc <= stipc_max,
 	})
+	var excess_max: float = float(profile.get("palette_excess_max", PALETTE_EXCESS_MAX))
 	var excess: float = palette_excess(report, palette_size)
 	out.append({
 		"name": "palette_excess",
 		"value": excess,
-		"want": "<= %.1fx" % PALETTE_EXCESS_MAX,
-		"ok": excess <= PALETTE_EXCESS_MAX,
+		"want": "<= %.1fx" % excess_max,
+		"ok": excess <= excess_max,
 	})
+	# Washed-out subject evidence: even when the room shadow floor is waived,
+	# a frame with no tonal structure still fails.
+	var subject: Dictionary = subject_report if not subject_report.is_empty() else report
+	var spread: float = tonal_spread(subject)
+	var min_spread: float = float(profile.get("min_tonal_spread", 35.0))
+	out.append({
+		"name": "tonal_spread",
+		"value": spread,
+		"want": ">= %.0f" % min_spread,
+		"ok": spread >= min_spread,
+	})
+	# Close-range shadow structure (HOLISTIC #050): cavities / overlaps must
+	# keep a readable dark step inside the subject without a room-black floor.
+	if bool(profile.get("require_shadow_structure", false)):
+		var struct_v: float = shadow_structure(subject)
+		var min_struct: float = float(profile.get("min_shadow_structure", 16.0))
+		out.append({
+			"name": "shadow_structure",
+			"value": struct_v,
+			"want": ">= %.0f" % min_struct,
+			"ok": struct_v >= min_struct,
+		})
 	return out
 
 

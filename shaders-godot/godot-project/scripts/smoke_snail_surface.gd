@@ -75,4 +75,40 @@ func _init() -> void:
 		t.check(c <= prev + 1e-6, "chance is non-increasing at size %.2f" % sz)
 		prev = c
 
+	# --- Holistic #126 corner continuity (box + hex) ----------------------
+	var box_a := Vector3.RIGHT
+	var box_b := Vector3.FORWARD
+	t.check(S.should_transfer_wall(box_a, box_b, 0.12),
+		"box corner within band triggers transfer")
+	t.check(not S.should_transfer_wall(box_a, box_a, 0.12),
+		"same face does not transfer")
+	t.check(not S.should_transfer_wall(box_a, box_b, 0.80),
+		"far from corner does not transfer")
+	# Hex faces meet at ~60° — normals still diverge enough.
+	var hex_a := Vector3(1.0, 0.0, 0.0)
+	var hex_b := Vector3(0.5, 0.0, 0.866).normalized()
+	t.check(S.should_transfer_wall(hex_a, hex_b, 0.18),
+		"hex corner within band triggers transfer")
+	var pos := Vector3(3.0, 2.5, 3.0)
+	var wrapped: Vector3 = S.wrap_position_around_corner(pos, box_a, box_b, 0.06)
+	t.approx(wrapped.y, pos.y, "corner wrap preserves height")
+	t.check(wrapped.distance_to(pos) < 0.35,
+		"corner wrap is a short seam step, not a jump (%.3f)" % wrapped.distance_to(pos))
+	var blended: Vector3 = S.blend_wall_normal(box_a, box_b, 0.5)
+	t.approx(blended.length(), 1.0, "blended normal is unit")
+	t.check(blended.dot(box_a) > 0.3 and blended.dot(box_b) > 0.3,
+		"blended normal sits between faces")
+	# Slime trail must not emit a single interior chord across a corner hop.
+	var far := pos + Vector3(-0.8, 0.0, -0.8)
+	var anchors: Array = S.slime_trail_anchors(pos, box_a, far, box_b, 0.4)
+	t.check(anchors.size() >= 2,
+		"corner hop emits glass-side intermediate slime marks")
+	var interior_hits: int = 0
+	for a in anchors:
+		var ap: Vector3 = a as Vector3
+		# A mark deep in +inward of both walls would be interior paint.
+		if ap.dot(box_a) < pos.dot(box_a) - 0.2 and ap.dot(box_b) < pos.dot(box_b) - 0.2:
+			interior_hits += 1
+	t.equals(interior_hits, 0, "slime anchors do not paint the aquarium interior")
+
 	quit(t.finish())

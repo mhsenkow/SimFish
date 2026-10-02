@@ -317,13 +317,18 @@ void fragment() {
 	col = mix(col, col * vec3(0.92, 1.02, 1.08), depth_used * (1.0 - depth_used) * 0.28);
 
 	// Aerial perspective — back of tank desaturates into the water tint (#11, #33).
-	col = mix(col, deep_color.rgb, depth_used * aerial_haze * 0.42);
-	float horiz_depth = clamp((world_pos.z + tank_half_depth) / max(tank_half_depth * 2.0, 0.1), 0.0, 1.0);
-	col = mix(col, deep_color.rgb, horiz_depth * aerial_haze * 0.36);
-	// Depth-scaled contrast — distant subjects lose punch (#37).
-	float through_water = clamp(depth_used * 0.55 + horiz_depth * 0.45, 0.0, 1.0);
+	// Background plants live at −Z; the front glass is +Z (see world._spawn_z_band).
+	// horiz_depth must rise toward the BACK so near subjects keep local contrast
+	// while the far wall retains depth haze (HOLISTIC #041).
+	col = mix(col, deep_color.rgb, depth_used * aerial_haze * 0.28);
+	float horiz_depth = clamp((tank_half_depth - world_pos.z) / max(tank_half_depth * 2.0, 0.1), 0.0, 1.0);
+	col = mix(col, deep_color.rgb, horiz_depth * aerial_haze * 0.48);
+	// Depth-scaled contrast — distant subjects lose punch (#37). Weight the
+	// back wall harder than vertical depth so mid-water fish near the glass
+	// keep chroma.
+	float through_water = clamp(depth_used * 0.35 + horiz_depth * 0.65, 0.0, 1.0);
 	float col_luma = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(vec3(col_luma), col, 1.0 - through_water * 0.30);
+	col = mix(vec3(col_luma), col, 1.0 - through_water * 0.38);
 	// In-scatter (alive pass). Everything above fogs toward deep_color, which
 	// is why haze read as grey-blue murk. Real haze is lit matter: toward the
 	// lamp it glows in the lamp's colour (a lavender/pink band under a pink
@@ -332,10 +337,10 @@ void fragment() {
 		vec3 lamp_s = lamp_rgb(light_color);
 		float up = clamp(1.0 - depth_used, 0.0, 1.0);
 		float beam_on = step(0.001, iaq_beam_cone.w);
-		float scat = (0.10 + aerial_haze * 0.30 + turbidity_haze * 0.40)
-			* up * up * (0.65 + beam_on * 0.35);
+		float scat = (0.08 + aerial_haze * 0.26 + turbidity_haze * 0.36)
+			* up * up * (0.55 + beam_on * 0.35) * (0.45 + horiz_depth * 0.55);
 		col = mix(col, col * 0.55 + lamp_s * mix(shallow_color.rgb, vec3(0.95), 0.55),
-			clamp(scat, 0.0, 0.30));
+			clamp(scat, 0.0, 0.26));
 		if (iaq_backlight.w > 0.001) {
 			vec3 bd = world_pos - iaq_backlight.xyz;
 			float att = clamp(iaq_backlight.w / (1.0 + iaq_backlight_tint.a * dot(bd, bd)), 0.0, 1.0);
@@ -351,11 +356,12 @@ void fragment() {
 		col = mix(col, vec3(luma) * bloom_color * 1.08, milk * 0.42);
 		col = mix(col, col * 0.92 + bloom_color * 0.18, milk * depth_used * 0.35);
 	}
-	// Depth-dependent contrast falloff (#40) — back glass milkier.
-	float contrast_loss = clamp(horiz_depth * 0.55 + depth_used * 0.35, 0.0, 1.0)
-		* (0.35 + turbidity_haze * 0.45);
+	// Depth-dependent contrast falloff (#40) — back glass milkier; near glass
+	// keeps punch so fish and leaf edges separate from the water body.
+	float contrast_loss = clamp(horiz_depth * 0.72 + depth_used * 0.22, 0.0, 1.0)
+		* (0.32 + turbidity_haze * 0.42);
 	float cl = dot(col, vec3(0.299, 0.587, 0.114));
-	col = mix(vec3(cl), col, 1.0 - contrast_loss * 0.55);
+	col = mix(vec3(cl), col, 1.0 - contrast_loss * 0.58);
 	// Warm substrate bounce in the lower column (#43).
 	col = mix(col, col * vec3(1.08, 1.03, 0.94),
 		floor_bounce * (1.0 - depth_used) * depth_used * 0.42);
@@ -518,15 +524,16 @@ void fragment() {
 			float bubble = step(1.0 - density, hb.x);
 			refl = mix(refl, mix(vec3(1.0, 0.99, 0.97), lamp, 0.18) * 1.12, bubble * (0.55 + hb.y * 0.45));
 		}
-		// Inside Snell's window: the lamp itself, blown out.
-		vec3 window_c = mix(room_sky_color, lamp, 0.6) * 1.35;
+		// Inside Snell's window: the lamp itself, luminous but not a white sheet.
+		// HOLISTIC #047 — keep surface light while revealing leaf gaps/overlap.
+		vec3 window_c = mix(room_sky_color, lamp, 0.50) * 1.16;
 		vec3 under_col = mix(window_c, refl, tir);
 		// A floater's canopy sits just ABOVE the cap, so from below the cap
 		// is the nearer surface and an opaque mirror would paint over every
 		// leaf. Let the canopy through; the ring around it stays mirror.
-		float k = under * tir_strength * mix(0.80, 0.97, tir) * (1.0 - fc.x * 0.78);
+		float k = under * tir_strength * mix(0.70, 0.90, tir) * (1.0 - fc.x * 0.88);
 		col = mix(col, under_col, k);
-		col += light_color * ceil_web * under * underside_mirror * 0.12;
+		col += light_color * ceil_web * under * underside_mirror * 0.09;
 		under_alpha = k;
 	}
 

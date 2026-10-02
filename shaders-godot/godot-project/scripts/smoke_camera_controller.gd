@@ -144,6 +144,76 @@ func _initialize() -> void:
 	TestSupport.check(failed, _approx(CameraController.auto_orbit_yaw(1.0, 0.08, 0.5), 1.04),
 			"auto_orbit_yaw advances yaw by speed*dt")
 
+	# --- HOLISTIC #023: stand-bounded hero fit ---
+	var stand_nano: float = CameraController.stand_allowed_in_frame(5.0, CameraController.STAND_WORLD_REF)
+	TestSupport.check(failed, stand_nano <= CameraController.STAND_FRAME_MAX + 0.001,
+			"stand in frame is capped in world units")
+	TestSupport.check(failed, stand_nano <= 5.0 * CameraController.STAND_FRAME_OF_TANK + 0.001,
+			"stand in frame is capped vs tank height (nano)")
+	var fit_no_stand: float = CameraController.hero_fit_radius(
+		8.0, 4.0, 7.0, 55.0, 16.0 / 9.0, -0.42, 0.18, 0.68, 0.0)
+	var fit_stand: float = CameraController.hero_fit_radius(
+		8.0, 4.0, 7.0, 55.0, 16.0 / 9.0, -0.42, 0.18, 0.68, CameraController.STAND_WORLD_REF)
+	TestSupport.check(failed, fit_stand >= fit_no_stand - 0.01,
+			"capped stand may pull the hero back slightly, never in")
+	var fit_short: float = CameraController.hero_fit_radius(
+		10.0, 5.0, 4.0, 55.0, 16.0 / 9.0, -0.42, 0.18)
+	var fit_short_full: float = CameraController.hero_fit_radius(
+		10.0, 5.0, 4.0, 55.0, 16.0 / 9.0, -0.42, 0.18, 0.68, 40.0)
+	TestSupport.check(failed, absf(fit_short - fit_short_full) < 0.05,
+			"a huge authored stand still hits the same cap as the default")
+
+	# --- HOLISTIC #027: chatter gates ---
+	var snapped_eye: Vector3 = CameraController.pixel_snap_eye(Vector3(1.07, 2.03, 3.09), 0.1, 0.0)
+	TestSupport.check(failed, snapped_eye.is_equal_approx(Vector3(1.1, 2.0, 3.1)),
+			"pixel snap engages when the eye is settled")
+	var moving: Vector3 = CameraController.pixel_snap_eye(Vector3(1.07, 2.03, 3.09), 0.1, 0.5)
+	TestSupport.check(failed, moving.is_equal_approx(Vector3(1.07, 2.03, 3.09)),
+			"pixel snap is skipped while the eye is moving (no pan chatter)")
+	TestSupport.check(failed, _approx(CameraController.damp_orbit_velocity(0.01, 0.5, 0.006), 0.0),
+			"orbit damp hard-zeros below the rest floor")
+	TestSupport.check(failed, CameraController.damp_orbit_velocity(0.02, 0.5, 0.006) > 0.0,
+			"orbit damp preserves supra-rest velocity")
+	var chase0: Dictionary = CameraController.follow_deadzone_step(
+			Vector3(2, 0, 0), Vector3.ZERO, 1.0, false)
+	TestSupport.check(failed, bool(chase0["chasing"]),
+			"follow enters chase outside the deadzone")
+	var chase1: Dictionary = CameraController.follow_deadzone_step(
+			Vector3(2.5, 0, 0), chase0["target"] as Vector3, 1.0, true)
+	TestSupport.check(failed, bool(chase1["chasing"]),
+			"hysteresis keeps chasing while still outside the exit radius")
+	var chase2: Dictionary = CameraController.follow_deadzone_step(
+			Vector3(0.5, 0, 0), Vector3(0.5, 0, 0), 1.0, true)
+	TestSupport.check(failed, not bool(chase2["chasing"]),
+			"follow stops chasing once inside the exit radius")
+
+	# --- HOLISTIC #035: vessel speed scale ---
+	var compact_s: float = CameraController.vessel_speed_scale(10.0, 4.0)
+	var grand_s: float = CameraController.vessel_speed_scale(28.0, 14.0)
+	TestSupport.check(failed, compact_s < grand_s,
+			"Grand tanks get a higher vessel speed scale than Compact")
+	TestSupport.check(failed, compact_s >= 0.65 and grand_s <= 1.5,
+			"vessel speed scale stays in the clamp band")
+	# Live zoom must not be the scale input — fit radius is stable across saved views.
+	TestSupport.check(failed,
+			_approx(CameraController.orbit_sensitivity(1.0), CameraController.SENSITIVITY),
+			"orbit sensitivity at scale 1 matches the base constant")
+	var pan_hi: float = CameraController.pan_sensitivity(1.4)
+	TestSupport.check(failed, pan_hi > CameraController.PAN_MOUSE_SENSITIVITY,
+			"pan sensitivity scales with the vessel factor")
+
+	# --- HOLISTIC #022 helpers ---
+	var biased: Vector3 = CameraController.available_center_target(
+			Vector3.ZERO, Vector2(0.5, 0.0), Vector3.RIGHT, Vector3.UP, 10.0, 55.0, 16.0 / 9.0)
+	TestSupport.check(failed, biased.x > 0.5,
+			"available-centre bias shifts the target toward the free half")
+	TestSupport.check(failed,
+			_approx(CameraController.available_center_radius_scale(16.0 / 9.0, 16.0 / 9.0), 1.0),
+			"full-width centre needs no radius pull-back")
+	TestSupport.check(failed,
+			CameraController.available_center_radius_scale(0.8, 16.0 / 9.0) > 1.0,
+			"a narrowed centre eases the orbit out")
+
 	quit(TestSupport.report("smoke_camera_controller", failed))
 
 

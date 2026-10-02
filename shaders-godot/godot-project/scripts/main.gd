@@ -306,6 +306,7 @@ var _cinema_auto: bool = false            # true when the idle screensaver start
 const FOLLOW_LEAD_TIME: float = 0.4       # seconds of velocity lookahead
 const FOLLOW_LERP_K: float = 3.0
 const FOLLOW_DEADZONE: float = 0.9        # world units the subject may roam before the cam chases
+var _follow_chasing: bool = false         # HOLISTIC #027 hysteresis across the deadzone
 # Orbit radius to restore when a CINEMATIC follow ends. 0 = nothing saved.
 var _follow_saved_radius: float = 0.0
 const CINEMA_INTERVAL_S: float = 12.0
@@ -345,6 +346,17 @@ var target: Vector3 = DEFAULT_TARGET
 var radius: float = DEFAULT_RADIUS
 var yaw: float = DEFAULT_YAW
 var pitch: float = DEFAULT_PITCH
+# HOLISTIC #022 — player framing stashed while a side panel steals centre space.
+# Closing the panel restores this rather than resetting to the hero default.
+var _panel_framing_stash: Dictionary = {}
+var _panel_framing_active: bool = false
+# Set when the player orbits/pans while a panel is open — stop re-biasing.
+var _panel_framing_suppressed: bool = false
+# HOLISTIC #035 — stable vessel input scale (fit radius × footprint), not live zoom.
+var _vessel_speed_scale: float = 1.0
+# HOLISTIC #027 — previous eye position for pixel-snap settle speed.
+var _cam_eye_prev: Vector3 = Vector3.INF
+var _cam_eye_speed: float = 0.0
 
 
 # Pick camera defaults that frame the current tank well. Tall cylinders in
@@ -362,27 +374,58 @@ func _default_camera_for_tank() -> Dictionary:
 	var portrait: bool = vp.y > vp.x * 1.02
 	# Tall round tank seen on a tall screen: portrait camera.
 	var fov: float = float(camera.fov) if camera != null else 55.0
+	if cfg != null and float(cfg.get("camera_fov")) > 1.0:
+		fov = float(cfg.get("camera_fov"))
 	var aspect: float = vp.x / maxf(1.0, vp.y)
+	var regions: Dictionary = _ui_regions()
+	if not regions.is_empty():
+		aspect = HudLayout.available_aspect(regions, aspect)
+	# Scenario-authored orbit (HOLISTIC #021). TankConfig carries per-scenario
+	# yaw/pitch/target; hero_fit_radius sizes the shell with a capped stand
+	# contribution so furniture does not dominate short tanks (#023).
+	var hero_y: float = tank_h * HERO_TARGET_Y_FRAC
+	var orbit: Dictionary = CameraController.scenario_hero_orbit(
+		cfg, DEFAULT_YAW, DEFAULT_PITCH, hero_y)
+	var yaw_v: float = float(orbit["yaw"])
+	var pitch_v: float = float(orbit["pitch"])
+	var target_v: Vector3 = orbit["target"] as Vector3
 	if shape == "cylinder" and portrait:
-		var radius_px: float = TankSizing.fit_radius(tank_hw, tank_hd, tank_h, fov,
+		var radius_px: float = CameraController.hero_fit_radius(tank_hw, tank_hd, tank_h, fov,
 			aspect, PORTRAIT_DEFAULT_YAW, PORTRAIT_DEFAULT_PITCH, 0.78)
+		_refresh_vessel_speed_scale(radius_px, maxf(tank_hw, tank_hd))
 		return {
 			"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
 			"radius": clampf(radius_px, MIN_RADIUS, MAX_RADIUS),
 			"yaw": PORTRAIT_DEFAULT_YAW,
 			"pitch": PORTRAIT_DEFAULT_PITCH,
 		}
-	# Hero 3/4 — optical centre, designed pitch. The radius fits the tank's
-	# real extent (width, depth AND height) to ~68% of the view at the live
-	# fov and aspect; the old width-only rule cropped tall tanks.
-	var hero_r: float = TankSizing.fit_radius(tank_hw, tank_hd, tank_h, fov, aspect,
-		DEFAULT_YAW, DEFAULT_PITCH)
+	# Hero 3/4 — optical centre, scenario pitch/yaw. Radius fits tank + capped
+	# stand to ~68% of the usable view at the live fov and aspect.
+	var hero_r: float = CameraController.hero_fit_radius(tank_hw, tank_hd, tank_h, fov, aspect,
+		yaw_v, pitch_v)
+	_refresh_vessel_speed_scale(hero_r, maxf(tank_hw, tank_hd))
 	return {
-		"target": Vector3(0.0, tank_h * HERO_TARGET_Y_FRAC, 0.0),
+		"target": target_v,
 		"radius": clampf(hero_r, MIN_RADIUS, MAX_RADIUS),
-		"yaw": DEFAULT_YAW,
-		"pitch": DEFAULT_PITCH,
+		"yaw": yaw_v,
+		"pitch": pitch_v,
 	}
+
+
+func _refresh_vessel_speed_scale(fit_r: float, footprint_r: float) -> void:
+	_vessel_speed_scale = CameraController.vessel_speed_scale(fit_r, footprint_r)
+
+
+func _orbit_sens() -> float:
+	return CameraController.orbit_sensitivity(_vessel_speed_scale)
+
+
+func _pan_sens() -> float:
+	return CameraController.pan_sensitivity(_vessel_speed_scale)
+
+
+func _dolly_sens() -> float:
+	return CameraController.dolly_sensitivity(_vessel_speed_scale)
 
 
 # Soft clamp — keep a tiny margin so extreme zoom-in doesn't clip glass,
@@ -406,9 +449,20 @@ func _reset_camera_to_default() -> void:
 	radius = d["radius"]
 	yaw = d["yaw"]
 	pitch = d["pitch"]
+	_abandon_panel_framing()
 	_release_cinematic_follow()
 	_auto_orbit = false
 	_apply_camera()
+
+
+# Manual orbit/pan while a side panel is stealing centre: drop the stash so
+# closing the panel keeps the player's edit instead of replaying the pre-open
+# shot (HOLISTIC #022).
+func _abandon_panel_framing() -> void:
+	if _panel_framing_active:
+		_panel_framing_suppressed = true
+	_panel_framing_stash.clear()
+	_panel_framing_active = false
 
 
 func _zoom_camera_by_factor(factor: float, coast: bool = false) -> void:
@@ -2291,11 +2345,16 @@ func _process(dt: float) -> void:
 			var t: float = 1.0 - exp(-FOLLOW_LERP_K * dt)
 			if _follow_lock:
 				target = target.lerp(aim, t)
+				_follow_chasing = false
 			else:
-				var d: Vector3 = aim - target
-				var dist: float = d.length()
-				if dist > FOLLOW_DEADZONE:
-					target = target.lerp(aim - d.normalized() * FOLLOW_DEADZONE, t)
+				# HOLISTIC #027 — hysteresis so resting fish do not chatter the
+				# camera at the deadzone edge.
+				var step: Dictionary = CameraController.follow_deadzone_step(
+					aim, target, FOLLOW_DEADZONE, _follow_chasing)
+				_follow_chasing = bool(step["chasing"])
+				var want: Vector3 = step["target"] as Vector3
+				if _follow_chasing:
+					target = target.lerp(want, t)
 			# VISUAL_DIRECTIONS #8 — and actually GET CLOSE. Following used to
 			# move only the target, so clicking a fish re-centred the same wide
 			# shot on a 0.6-unit animal 20 units away. Eased at half the
@@ -2330,9 +2389,14 @@ func _process(dt: float) -> void:
 	elif _follow_mode == FollowMode.OFF and _hud_idle_seconds > SCREENSAVER_IDLE_S \
 			and _sim != null and _sim.has_method("favorite_creatures") \
 			and not _sim.favorite_creatures().is_empty():
-		# Idle screensaver: drift through your favorites until you touch anything.
-		set_cycle_scope(CycleScope.FAVORITES)
-		set_cinema_mode(true, true)
+		# Idle screensaver: gentle auto-orbit only. Cinematic zoom-follow on
+		# idle used to yank framing away from static player control.
+		var cfg_idle := _cfg()
+		if cfg_idle != null and bool(cfg_idle.idle_cinema_tour):
+			set_cycle_scope(CycleScope.FAVORITES)
+			set_cinema_mode(true, true)
+		elif AccessibilityRuntime.allow_auto_orbit(true):
+			_auto_orbit = true
 
 	_sync_rail_toggles()
 
@@ -2344,7 +2408,7 @@ func _process(dt: float) -> void:
 		if fwd.length_squared() > 0.001:
 			fwd = fwd.normalized()
 			var right: Vector3 = fwd.cross(Vector3.UP).normalized()
-			var step: float = PAN_SPEED * dt
+			var step: float = PAN_SPEED * _vessel_speed_scale * dt
 			var moved: bool = false
 			if Input.is_key_pressed(KEY_W): target += fwd * step; moved = true
 			if Input.is_key_pressed(KEY_S): target -= fwd * step; moved = true
@@ -2470,7 +2534,7 @@ func _process_mouse_input(dt: float) -> void:
 					_pan_target(delta)
 				"dolly":
 					var prev_r: float = radius
-					radius = CameraController.dolly(radius, delta.y)
+					radius = CameraController.dolly(radius, delta.y, _dolly_sens())
 					if dt > 0.0:
 						_cam_zoom_vel = (radius - prev_r) / dt
 					_apply_camera()
@@ -2489,30 +2553,32 @@ func _process_mouse_input(dt: float) -> void:
 						_pan_target(delta)
 						_pond_conduct_add(_project_to_surface(mouse_now))
 					else:
-						var ob: Vector2 = CameraController.orbit(yaw, pitch, delta)
+						var ob: Vector2 = CameraController.orbit(yaw, pitch, delta, _orbit_sens())
 						yaw = ob.x
 						pitch = ob.y
+						_abandon_panel_framing()
 						if dt > 0.0:
-							_cam_spin_yaw = (-delta.x * CameraController.SENSITIVITY) / dt * _CAM_SPIN_GAIN
-							_cam_spin_pitch = (-delta.y * CameraController.SENSITIVITY) / dt * _CAM_SPIN_GAIN
+							_cam_spin_yaw = (-delta.x * _orbit_sens()) / dt * _CAM_SPIN_GAIN
+							_cam_spin_pitch = (-delta.y * _orbit_sens()) / dt * _CAM_SPIN_GAIN
 						_apply_camera()
 
 
 	_drain_zoom(dt)
 
-	# Short ease-out after orbit/zoom release (#196).
+	# Short ease-out after orbit/zoom release (#196). HOLISTIC #027 — damp
+	# through CameraController so sub-rest velocities hard-zero (no chatter).
 	if not _orbiting and not _auto_orbit:
 		var spin_decay: float = exp(-_CAM_SPIN_DECAY * dt)
 		var cam_coasted: bool = false
 		if absf(_cam_spin_yaw) > 0.0005 or absf(_cam_spin_pitch) > 0.0005:
 			yaw += _cam_spin_yaw * dt
 			pitch = clampf(pitch + _cam_spin_pitch * dt, MIN_PITCH, MAX_PITCH)
-			_cam_spin_yaw *= spin_decay
-			_cam_spin_pitch *= spin_decay
+			_cam_spin_yaw = CameraController.damp_orbit_velocity(_cam_spin_yaw, spin_decay)
+			_cam_spin_pitch = CameraController.damp_orbit_velocity(_cam_spin_pitch, spin_decay)
 			cam_coasted = true
 		if _current_projection_id == "perspective" and absf(_cam_zoom_vel) > 0.004:
 			radius = clampf(radius + _cam_zoom_vel * dt, MIN_RADIUS, MAX_RADIUS)
-			_cam_zoom_vel *= spin_decay
+			_cam_zoom_vel = CameraController.damp_orbit_velocity(_cam_zoom_vel, spin_decay, 0.004)
 			cam_coasted = true
 		if cam_coasted:
 			_apply_camera()
@@ -3038,9 +3104,9 @@ func _refresh_controls_hint() -> void:
 	if controls_hint == null:
 		return
 	if _is_mobile():
-		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · Care in footer · tap creature to follow · photo"
+		controls_hint.text = "drag orbit · pinch zoom · tap water to feed · Care in footer · tap creature to select · photo"
 	else:
-		controls_hint.text = "orbit · Feed · Care · click creature to follow · F12 photo · ? help"
+		controls_hint.text = "orbit · Feed · Care · click creature to select · F12 photo · ? help"
 
 
 func _alert_fish_to_feed(hit: Vector3, food_subtype: int) -> int:
@@ -3284,7 +3350,7 @@ func _process_gamepad_camera(dt: float) -> void:
 			_pan_target(pan_delta)
 	var look_delta: Vector2 = gp.look_pixel_delta(dt)
 	if look_delta.length_squared() > 0.0:
-		var ob: Vector2 = CameraController.orbit(yaw, pitch, look_delta)
+		var ob: Vector2 = CameraController.orbit(yaw, pitch, look_delta, _orbit_sens())
 		yaw = ob.x
 		pitch = ob.y
 		_apply_camera()
@@ -4330,6 +4396,7 @@ func clear_follow() -> void:
 	_follow_saved_radius = 0.0
 	_follow_target = null
 	_follow_mode = FollowMode.OFF
+	_follow_chasing = false
 	_cinema_active = false
 	_clear_follow_thought_ui()
 	if portal_container != null:
@@ -5963,7 +6030,9 @@ var _follow_dof_amount: float = 0.0
 func _update_follow_dof() -> void:
 	if camera == null:
 		return
-	var want_follow: bool = _follow_mode != FollowMode.OFF and _follow_target != null \
+	# DOF is cinematic-only: a plain click-select (PIP) must leave the main
+	# camera's look alone, including focus blur. Room/photo DOF stay separate.
+	var want_follow: bool = _follow_mode == FollowMode.CINEMATIC and _follow_target != null \
 		and is_instance_valid(_follow_target)
 	var cfg_dof := _cfg()
 	var want_room: bool = cfg_dof != null and bool(cfg_dof.get("tank_room_dof"))
@@ -6720,10 +6789,17 @@ func _toggle_portal_layout() -> void:
 
 
 func _assign_creature_target(creature: Node3D) -> void:
-	# Keep the current viewing style when re-targeting; default to PiP for a
-	# fresh pick (design: a tap/click opens the portal, promotable to cinematic).
-	var mode: int = _follow_mode if _follow_mode != FollowMode.OFF else FollowMode.PIP
-	follow_creature(creature, mode)
+	# Click/tap selects for the portal + inspector only. Never steal the
+	# player's framing — cinematic push-in is opt-in via the portal 🎬 control
+	# (or explicit cinema/favorite shortcuts). Inheriting CINEMATIC from an idle
+	# screensaver tour used to zoom the main camera on every subsequent click.
+	if _follow_mode == FollowMode.CINEMATIC:
+		if _follow_saved_radius > 0.0:
+			radius = _follow_saved_radius
+			_apply_camera()
+		_follow_saved_radius = 0.0
+		_cinema_active = false
+	follow_creature(creature, FollowMode.PIP)
 	print_verbose("[walstad_loom] following %s" % _creature_label(creature))
 
 
@@ -7592,10 +7668,15 @@ func _apply_camera() -> void:
 		var fov_rad: float = deg_to_rad(float(camera.fov))
 		var rh: float = maxf(64.0, float(sub_viewport.size.y))
 		var wpp: float = 2.0 * tan(fov_rad * 0.5) * radius / rh
-		if wpp > 0.0001:
-			pos.x = snappedf(pos.x, wpp)
-			pos.y = snappedf(pos.y, wpp)
-			pos.z = snappedf(pos.z, wpp)
+		# HOLISTIC #027 — only snap when the eye has settled; continuous slow
+		# pans stay continuous (stable screen-space stepping when stopped).
+		if _cam_eye_prev != Vector3.INF:
+			_cam_eye_speed = pos.distance_to(_cam_eye_prev) / maxf(get_process_delta_time(), 0.0001)
+		_cam_eye_prev = pos
+		pos = CameraController.pixel_snap_eye(pos, wpp, _cam_eye_speed)
+	else:
+		_cam_eye_prev = Vector3.INF
+		_cam_eye_speed = 0.0
 	camera.global_position = pos
 	camera.look_at(target, Vector3.UP)
 
@@ -7611,11 +7692,12 @@ func _pan_target(delta: Vector2) -> void:
 	# Dragging RIGHT pushes the scene right (target moves left). The basis
 	# right/up + radius-scaled sensitivity math lives in CameraController.
 	var basis: Basis = camera.global_transform.basis
-	target = CameraController.pan_target(target, delta, basis.x, basis.y, radius)
+	target = CameraController.pan_target(target, delta, basis.x, basis.y, radius, _pan_sens())
 	# `target` is clamped to a sane box inside `_apply_camera()` (every
 	# update path calls through there, so the clamp lives at the single
 	# convergence point).
 	# Clear follow-cam when the user manually pans - they're taking control back.
+	_abandon_panel_framing()
 	_release_cinematic_follow()
 	_apply_camera()
 
@@ -8202,6 +8284,7 @@ func get_frame_history_ordered() -> PackedFloat32Array:
 # TankConfig.adaptive_quality is on. Stepping is conservative — one
 # resolution tier per check, with a long hold between steps so we don't
 # thrash near the threshold.
+# Adaptive fidelity tiers — must stay aligned with RenderResolutionAudit.supported_tiers().
 const _ADAPTIVE_RES_TIERS: Array = [
 	{"w": 256, "h": 144},
 	{"w": 384, "h": 216},
@@ -8981,6 +9064,78 @@ func _flush_ui_regions_changed() -> void:
 	_relayout_bottom_stacks()
 	_place_portal_card()
 	_sync_rail_toggles()
+	# HOLISTIC #022 — keep the tank in the usable centre while a side panel
+	# is open; restore the player's framing on close (never a hard reset).
+	_sync_camera_to_available_center()
+
+
+# Side-panel framing: stash the player's orbit when a column first opens,
+# bias the target into HudLayout.AVAILABLE_CENTER, and restore on close.
+func _sync_camera_to_available_center() -> void:
+	if camera == null or _current_projection_id != "perspective":
+		return
+	# Don't fight aquascape's own camera stash, cinematic follow, or modals.
+	if _aquascape != null and _aquascape.is_active:
+		return
+	if _follow_mode == FollowMode.CINEMATIC:
+		return
+	var left_open: bool = _ui_panels != null and _ui_panels.is_region_open(HudLayout.LEFT_COLUMN)
+	var right_open: bool = _ui_panels != null and _ui_panels.is_region_open(HudLayout.RIGHT_COLUMN)
+	var side_open: bool = left_open or right_open
+	if side_open:
+		if _panel_framing_suppressed:
+			return
+		if not _panel_framing_active:
+			_panel_framing_stash = {
+				"target": target,
+				"radius": radius,
+				"yaw": yaw,
+				"pitch": pitch,
+			}
+			_panel_framing_active = true
+		_apply_available_center_framing()
+	else:
+		_panel_framing_suppressed = false
+		if _panel_framing_active:
+			var s: Dictionary = _panel_framing_stash
+			if not s.is_empty():
+				target = s.get("target", target) as Vector3
+				radius = float(s.get("radius", radius))
+				yaw = float(s.get("yaw", yaw))
+				pitch = float(s.get("pitch", pitch))
+			_panel_framing_stash.clear()
+			_panel_framing_active = false
+			_apply_camera()
+
+
+func _apply_available_center_framing() -> void:
+	if not _panel_framing_active or _panel_framing_stash.is_empty() or camera == null:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var regions: Dictionary = _ui_regions()
+	var bias: Vector2 = HudLayout.available_center_bias(regions, vp)
+	var full_aspect: float = vp.x / maxf(1.0, vp.y)
+	var avail_aspect: float = HudLayout.available_aspect(regions, full_aspect)
+	var base_t: Vector3 = _panel_framing_stash["target"] as Vector3
+	var base_r: float = float(_panel_framing_stash["radius"])
+	var r_scale: float = CameraController.available_center_radius_scale(avail_aspect, full_aspect)
+	radius = clampf(base_r * r_scale, MIN_RADIUS, MAX_RADIUS)
+	# Basis from the stashed orbit so the nudge is stable across frames.
+	var eye: Vector3 = CameraController.eye_position(base_t,
+		float(_panel_framing_stash["yaw"]), float(_panel_framing_stash["pitch"]), radius)
+	var forward: Vector3 = (base_t - eye).normalized()
+	var right: Vector3 = forward.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+	var up: Vector3 = right.cross(forward).normalized()
+	var fov: float = float(camera.fov)
+	target = CameraController.available_center_target(
+		base_t, bias, right, up, radius, fov, full_aspect)
+	yaw = float(_panel_framing_stash["yaw"])
+	pitch = float(_panel_framing_stash["pitch"])
+	_apply_camera()
 
 
 # Split BOTTOM_LEFT_STACK: the notification toasts own its bottom while any

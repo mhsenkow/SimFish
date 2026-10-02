@@ -396,22 +396,35 @@ static func _consolidate_schemas(f: Fish, by_kind: Dictionary) -> void:
 
 # How good/bad the learned schemas say a location is (sum of nearby schema
 # valence×strength, proximity-weighted). Negative = learned-dangerous region.
-static func schema_valence_at(f: Fish, pos: Vector3) -> float:
+# Accepts Fish or MindFishProxy — worker attention hosts the proxy.
+static func schema_valence_at(f, pos: Vector3) -> float:
+	if f == null:
+		return 0.0
+	var schemas: Variant = f.get("_semantic_schemas")
+	if not (schemas is Array):
+		return 0.0
 	var total: float = 0.0
-	for s in (f._semantic_schemas as Array):
-		var c: Variant = s.get("center", null)
+	for s in (schemas as Array):
+		if not (s is Dictionary):
+			continue
+		var c: Variant = (s as Dictionary).get("center", null)
 		if not (c is Vector3):
 			continue
 		var d: float = pos.distance_to(c as Vector3)
 		if d < SCHEMA_RADIUS:
-			total += SaveHelpers._num(s.get("valence", 0.0), 0.0) * SaveHelpers._num(s.get("strength", 0.0), 0.0) * (1.0 - d / SCHEMA_RADIUS)
+			total += SaveHelpers._num((s as Dictionary).get("valence", 0.0), 0.0) \
+					* SaveHelpers._num((s as Dictionary).get("strength", 0.0), 0.0) \
+					* (1.0 - d / SCHEMA_RADIUS)
 	return total
 
 
 # A caution bid when the fish sits in a region its schemas have learned is bad —
 # acting on a generalized rule, not a single fresh memory.
 static func collect_schema_bid(f) -> Dictionary:
-	if (f._semantic_schemas as Array).is_empty():
+	if f == null:
+		return {}
+	var schemas: Variant = f.get("_semantic_schemas")
+	if not (schemas is Array) or (schemas as Array).is_empty():
 		return {}
 	var v: float = schema_valence_at(f, f.position)
 	if v < -0.4:

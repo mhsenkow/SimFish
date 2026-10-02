@@ -1,6 +1,13 @@
 # Per-species water-column band: where in the column a species lives
 # (0 = substrate top, 1 = surface) and how wide that band is.
 #
+# WATER-COLUMN CONTRACT (Holistic #081). One definition everywhere:
+#   frac 0.0 = substrate top (World.SUBSTRATE_DEPTH / sim.substrate_top_y)
+#   frac 1.0 = water surface (World.WATER_HEIGHT)
+# Soft swim margins and dome ceilings are locomotion / footprint concerns;
+# they must not redefine what a stored preferred_y_frac means. Use
+# y_from_frac / frac_from_y for every placement, home, and probe reading.
+#
 # WHY THIS EXISTS. world._apply_founding_cohort_spread used to overwrite every
 # founding fish's preferred_y_frac with an even 10%..86% ladder across the
 # cohort, whatever the species, and the library's legacy preferred_y values put
@@ -23,18 +30,26 @@ extends RefCounted
 const DEFAULT_HALF: float = 0.14
 
 # species -> Vector2(centre_frac, half_width_frac)
-# Calibrated against dev/fish_behaviour_probe on valli_jungle: the observed
-# median sits ~0.1-0.17 above the centre (cause not isolated - part of it is
-# the probe measuring from sim.substrate_top_y rather than the world's
-# SUBSTRATE_DEPTH), so the centres are set low on purpose.
+# Centres are the intended living depth on the shared 0..1 column (no probe
+# compensation offset). Saves that already store preferred_y_frac keep it.
 const BANDS: Dictionary = {
-	"guppy": Vector2(0.70, 0.13),
-	"endler": Vector2(0.74, 0.11),
-	"harlequin_rasbora": Vector2(0.52, 0.12),
-	"ember_tetra": Vector2(0.44, 0.11),
-	"glassdart": Vector2(0.36, 0.12),
-	"rummy_nose": Vector2(0.28, 0.11),
+	"guppy": Vector2(0.80, 0.13),
+	"endler": Vector2(0.84, 0.11),
+	"harlequin_rasbora": Vector2(0.60, 0.12),
+	"ember_tetra": Vector2(0.52, 0.11),
+	"glassdart": Vector2(0.44, 0.12),
+	"rummy_nose": Vector2(0.36, 0.11),
 }
+
+
+# Absolute Y for a column fraction. floor_y = substrate top, surface_y = meniscus.
+static func y_from_frac(frac: float, floor_y: float, surface_y: float) -> float:
+	return lerpf(floor_y, surface_y, clampf(frac, 0.0, 1.0))
+
+
+# Column fraction for an absolute Y. Matches y_from_frac as its inverse.
+static func frac_from_y(y: float, floor_y: float, surface_y: float) -> float:
+	return clampf((y - floor_y) / maxf(surface_y - floor_y, 0.5), 0.0, 1.0)
 
 
 # Band for a genome; x < 0 means "no species band - use the legacy

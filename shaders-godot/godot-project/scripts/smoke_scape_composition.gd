@@ -114,6 +114,31 @@ func _initialize() -> void:
 				"dead centre must fail — it is the one placement every "
 					+ "aquascaping tradition agrees is wrong")
 
+	# Dense-jungle intent relaxes focal offset (HOLISTIC #021 / #019).
+	var jungle_expect: Dictionary = SC.expect_for_intent("dense_jungle")
+	t.check(float(jungle_expect.get("focal_offset_min", 1.0)) < SC.FOCAL_OFFSET_MIN,
+		"dense jungles accept a softer focal offset than the universal rule")
+	var jungle_grade: Array[Dictionary] = SC.grade(
+		SC.band_occupancy(good, 0.0, 6.0), 0.035, jungle_expect)
+	for row in jungle_grade:
+		if String(row["name"]) == "focal offset":
+			t.check(bool(row["ok"]),
+				"a mild jungle offset passes under dense_jungle expectations")
+
+	# Stone-garden / Iwagumi: carpet + low stones must not require mid/upper fill.
+	var stone_expect: Dictionary = SC.expect_for_intent("stone_garden")
+	t.approx(float(stone_expect.get("upper_band_min", 1.0)), 0.0,
+		"stone_garden allows empty upper band", 0.001)
+	t.approx(float(stone_expect.get("mid_band_min", 1.0)), 0.0,
+		"stone_garden allows empty mid band", 0.001)
+	var carpet_only: Array = [SC.item(0.0, 0.2, 4.0, 0.5)]
+	var stone_grade: Array[Dictionary] = SC.grade(
+		SC.band_occupancy(carpet_only, 0.0, 6.0), 0.0, stone_expect)
+	for row in stone_grade:
+		if String(row["name"]) in ["upper band", "mid band", "focal offset"]:
+			t.check(bool(row["ok"]),
+				"stone_garden carpet-only passes %s" % String(row["name"]))
+
 	# --- The bias leans a layout, it does not relocate it ---
 	# smoke_scenario_layouts caught the unbounded version: a `corner_refuge`
 	# stem at x = -5.85 with a 0.7 pull toward +3.0 landed at +2.6, out of the
@@ -140,6 +165,36 @@ func _initialize() -> void:
 		"massless items contribute nothing", 0.001)
 	t.check(SC.format_report(SC.band_occupancy(good, 0.0, 6.0), gfocal).length() > 0,
 		"the report formats")
+
+	# --- Swim corridor (HOLISTIC #030) ---
+	# Dense planting with a clear mid-water passage must pass; a solid hedge
+	# of blocking mass across the tank must fail. Measurement only — nothing
+	# deletes plants to satisfy the score.
+	var corridor_ok_items: Array = [
+		SC.item(0.0, 5.0, 8.0, -3.5, 0.0, 0.9),  # left wall
+		SC.item(0.0, 5.0, 8.0, 3.5, 0.0, 0.9),   # right wall
+		SC.item(0.0, 1.0, 2.0, 0.0, 2.5, 0.4),   # back carpet — leaves mid open
+	]
+	var c_ok: Dictionary = SC.swim_corridor(corridor_ok_items, 6.0, 4.0, 0.0, 6.0)
+	t.check(float(c_ok["corridor_frac"]) >= SC.CORRIDOR_MIN,
+		"a mid-water passage scores a corridor (got %.2f)" % float(c_ok["corridor_frac"]))
+	var corridor_block: Array = []
+	for i in 14:
+		for j in 10:
+			corridor_block.append(SC.item(0.0, 5.0, 8.0,
+				-6.0 + float(i) * 0.9, -4.0 + float(j) * 0.9, 0.55))
+	var c_bad: Dictionary = SC.swim_corridor(corridor_block, 6.0, 4.0, 0.0, 6.0)
+	t.check(float(c_bad["corridor_frac"]) < SC.CORRIDOR_MIN,
+		"a solid hedge fails the corridor (got %.2f)" % float(c_bad["corridor_frac"]))
+	var c_empty: Dictionary = SC.swim_corridor([], 6.0, 4.0, 0.0, 6.0)
+	t.approx(float(c_empty["corridor_frac"]), 1.0, "an empty tank is fully open", 0.01)
+	var named_c: Dictionary = {}
+	for row in SC.grade(SC.band_occupancy(corridor_ok_items, 0.0, 6.0),
+			SC.focal_offset_frac(corridor_ok_items, 6.0), {}, c_ok):
+		named_c[String(row["name"])] = row
+	t.check(named_c.has("swim corridor"), "grade includes the corridor row when supplied")
+	t.check(bool((named_c["swim corridor"] as Dictionary)["ok"]),
+		"dense-with-passage passes the corridor grade")
 
 	# --- Items outside the column are clamped, not dropped ---
 	var overshoot: PackedFloat32Array = SC.band_occupancy(

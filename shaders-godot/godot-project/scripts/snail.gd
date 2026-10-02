@@ -170,6 +170,10 @@ const STUCK_PROGRESS_MIN_SQ: float = 0.008 * 0.008  # ~8 mm minimum progress
 # tick. 1.5 s is enough for the snail to crawl meaningfully away from
 # the corner on its new wall before another transition can fire.
 var _wall_transition_cooldown: float = 0.0
+# Holistic #126 — previous slime sample so corner hops do not chord the tank.
+var _slime_prev_pos: Vector3 = Vector3.ZERO
+var _slime_prev_normal: Vector3 = Vector3.ZERO
+var _slime_prev_valid: bool = false
 # --- Surface film (REAL_TANK_FIDELITY: the waterline band) ---------------
 #
 # Pulmonate snails (bladder, pond, ramshorn) glide inverted along the
@@ -509,6 +513,9 @@ func _process(dt: float) -> void:
 			# of turning straight back down the glass.
 			if _try_attach_to_surface_film():
 				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
+			# Glass → adjacent glass around a box/hex corner (Holistic #126).
+			elif _try_transfer_adjacent_wall():
+				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN * 0.55
 			# Glass → substrate descent for snails on vertical glass.
 			elif _try_descend_to_substrate():
 				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
@@ -784,7 +791,7 @@ func _process(dt: float) -> void:
 				if _eating_pulse_remaining > 0.0:
 					rate = 0.90
 				if randf() < dt * rate:
-					av.spawn_snail_slime(global_position, wall_normal)
+					_spawn_continuous_slime(av)
 					av.record_compaction(global_position.x, global_position.z)
 				if randf() < dt * 0.012:
 					av.spawn_snail_bubble(global_position + wall_normal * 0.05)
@@ -1265,8 +1272,8 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		var wn := _world_node()
 		if wn != null:
 			var av = _aquarium_visuals()
-			if av != null and av.has_method("spawn_snail_slime"):
-				av.spawn_snail_slime(global_position, wall_normal)
+			if av != null:
+				_spawn_continuous_slime(av)
 		return
 	# Project the to_w vector into wall-tangent space and override direction.
 	var dx: float = to_w.dot(tangent)
@@ -1314,6 +1321,84 @@ const WALL_TRANSITION_CHANCE: float = 0.80
 # When transitioning, how far to nudge the snail onto the new wall so
 # it doesn't immediately re-trigger the boundary handler.
 const WALL_TRANSITION_NUDGE: float = 0.10
+
+
+# Holistic #126 — transfer from one vertical glass face onto the adjacent
+# face at a box or hex corner without jumping or cutting the interior.
+func _try_transfer_adjacent_wall() -> bool:
+	if absf(wall_normal.dot(Vector3.UP)) > 0.55:
+		return false
+	if _film_dwell > 0.0 or _attached_plant != null or _attached_lily_pad != null:
+		return false
+	var w := _world_node()
+	if w == null or not w.has_method("tank_lateral_boundary_info"):
+		return false
+	var info: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
+	var nearest: Vector3 = info.get("inward", Vector3.ZERO)
+	var clearance: float = float(info.get("clearance", 99.0))
+	if not SnailSurface.should_transfer_wall(wall_normal, nearest, clearance):
+		return false
+	nearest = nearest.normalized()
+	var old_n: Vector3 = wall_normal
+	var old_pos: Vector3 = global_position
+	global_position = SnailSurface.wrap_position_around_corner(
+		global_position, old_n, nearest, WALL_TRANSITION_NUDGE)
+	wall_normal = nearest
+	_curved_attached = false
+	_wall_anchor_offset = wall_normal.dot(global_position)
+	# Re-project onto the new face so hex/box clamps don't yank through glass.
+	if w.has_method("tank_lateral_boundary_info"):
+		var after: Dictionary = w.tank_lateral_boundary_info(global_position, 0.0)
+		var inward2: Vector3 = after.get("inward", nearest)
+		var clear2: float = float(after.get("clearance", 0.0))
+		if inward2.length_squared() > 0.01:
+			inward2 = inward2.normalized()
+			global_position -= inward2 * clear2
+			wall_normal = inward2
+			_wall_anchor_offset = wall_normal.dot(global_position)
+	# Heading follows the new face; slight upward bias keeps motion readable.
+	var tangent: Vector3
+	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
+		tangent = Vector3.RIGHT
+	else:
+		tangent = wall_normal.cross(Vector3.UP).normalized()
+	var bitangent: Vector3 = tangent.cross(wall_normal).normalized()
+	var keep: Vector3 = tangent * _facing.x + bitangent * _facing.y
+	if keep.length_squared() < 1e-6:
+		keep = bitangent
+	_direction = Vector2(keep.dot(tangent), keep.dot(bitangent))
+	if _direction.length_squared() < 1e-6:
+		_direction = Vector2(randf_range(-0.25, 0.25), 0.85).normalized()
+	else:
+		_direction = _direction.normalized()
+	_facing = _direction
+	_stuck_timer = 0.0
+	_last_progress_pos = global_position
+	_sync_initial_orientation()
+	# Seed slime continuity so the next mark wraps the corner.
+	_slime_prev_pos = old_pos
+	_slime_prev_normal = old_n
+	_slime_prev_valid = true
+	return true
+
+
+func _spawn_continuous_slime(av: Node) -> void:
+	if av == null or not av.has_method("spawn_snail_slime_at"):
+		if av != null and av.has_method("spawn_snail_slime"):
+			av.spawn_snail_slime(global_position, wall_normal)
+		_slime_prev_pos = global_position
+		_slime_prev_normal = wall_normal
+		_slime_prev_valid = true
+		return
+	var anchors: Array = [global_position + wall_normal * 0.02]
+	if _slime_prev_valid:
+		anchors = SnailSurface.slime_trail_anchors(
+			_slime_prev_pos, _slime_prev_normal, global_position, wall_normal)
+	for a in anchors:
+		av.spawn_snail_slime_at(a as Vector3)
+	_slime_prev_pos = global_position
+	_slime_prev_normal = wall_normal
+	_slime_prev_valid = true
 
 
 # Try to climb from the substrate onto an adjacent vertical glass wall.
@@ -1973,17 +2058,30 @@ func _reclamp_to_footprint() -> void:
 		var clearance: float = float(info.get("clearance", 0.0))
 		if inward.length_squared() > 0.01:
 			inward = inward.normalized()
-			# Project the snail onto the curve. clearance > 0 means we
-			# drifted inward away from the wall; clearance < 0 means we
-			# pushed through to the outside. Either way, subtract
-			# `inward * clearance` to land on the surface.
-			global_position -= inward * clearance
-			wall_normal = inward
-			# Maintain the scalar projection so any code reading
-			# _wall_anchor_offset (mostly save/load) sees a consistent
-			# value. For curved walls this scalar is only meaningful at
-			# THIS instant — it gets recomputed next tick.
-			_wall_anchor_offset = wall_normal.dot(global_position)
+			# Holistic #126 — at hex/box polygon corners, wrap onto the new
+			# face instead of slamming the normal and chord-cutting interior.
+			if absf(wall_normal.y) < 0.55 \
+					and SnailSurface.should_transfer_wall(wall_normal, inward, clearance, 0.34):
+				var old_n: Vector3 = wall_normal
+				global_position = SnailSurface.wrap_position_around_corner(
+					global_position, old_n, inward, 0.04)
+				wall_normal = inward
+				_wall_anchor_offset = wall_normal.dot(global_position)
+				_slime_prev_pos = global_position
+				_slime_prev_normal = old_n
+				_slime_prev_valid = true
+			else:
+				# Project the snail onto the curve. clearance > 0 means we
+				# drifted inward away from the wall; clearance < 0 means we
+				# pushed through to the outside. Either way, subtract
+				# `inward * clearance` to land on the surface.
+				global_position -= inward * clearance
+				# Soften normal flips so shell pose does not snap at seams.
+				if wall_normal.dot(inward) < 0.92 and absf(wall_normal.y) < 0.55:
+					wall_normal = SnailSurface.blend_wall_normal(wall_normal, inward, 0.45)
+				else:
+					wall_normal = inward
+				_wall_anchor_offset = wall_normal.dot(global_position)
 		# Clamp Y so we don't burrow into the substrate or break the
 		# surface. Y stays whatever the crawl set it to within these
 		# limits.

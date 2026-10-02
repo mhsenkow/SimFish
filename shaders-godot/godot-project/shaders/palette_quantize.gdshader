@@ -411,7 +411,7 @@ void fragment() {
 	float sat_lift = mix(1.08, 1.0, smoothstep(0.38, 0.72, sat_post));
 	src = mix(vec3(luma), src, sat_lift);
 	src *= mix(1.04, 1.0, smoothstep(0.42, 0.78, sat_post));
-	// ---- Region-aware dither strength ----
+	// ---- Region-aware dither strength (HOLISTIC #044 material budgets) ----
 	float maxc = max(max(src.r, src.g), src.b);
 	float minc = min(min(src.r, src.g), src.b);
 	float sat = (maxc - minc) / max(maxc, 0.001);
@@ -431,8 +431,6 @@ void fragment() {
 	float low_sat_factor = 1.0 - smoothstep(0.18, 0.55, sat);
 	region_d *= mix(1.0, bright_suppress, low_sat_factor);
 	float eff_dither = mix(dither_strength, region_d, region_aware_dither);
-	// Vivid fauna/plants: lighter dither so silhouettes stay legible through glass.
-	eff_dither *= mix(1.0, 0.42, smoothstep(0.42, 0.78, sat));
 	// Flat-area clustering (#6): when neighbours share luma, keep terraces flat.
 	vec2 step_uv_cluster = 1.0 / internal_resolution;
 	float lc_pre = luma;
@@ -449,16 +447,29 @@ void fragment() {
 	float coarse = is_substrate ? dither_substrate_coarse : 0.0;
 	// Room/background: neutral bank, brighter than underwater substrate —
 	// dial dither down so the room stays calm behind the tank (#15, #141).
-	// The luma gate used to start at 0.38, which assumed the room was BRIGHTER
-	// than the tank. Once the room haze ceiling put it where it belongs
-	// (VISUAL_DIRECTIONS #2) the gate stopped firing and the room got the full
-	// dither budget it exists to be spared. It only needs to exclude genuine
-	// shadow now, not everything below mid-grey.
 	float room_like = float(bank_hint == 1)
 		* (1.0 - smoothstep(0.12, 0.42, sat))
 		* smoothstep(0.08, 0.26, luma)
 		* (1.0 - float(is_substrate));
 	eff_dither *= mix(1.0, clamp(room_dither_scale, 0.0, 1.0), room_like);
+	// Material-region budgets: water keeps soft gradient stipple; glass stays
+	// quiet; plants moderate; fauna contours refuse crawling stipple.
+	float water_like = float(bank_hint == 0)
+		* (1.0 - smoothstep(0.10, 0.42, sat))
+		* smoothstep(0.06, 0.58, luma)
+		* (1.0 - room_like);
+	float glass_like = (1.0 - smoothstep(0.04, 0.20, sat))
+		* smoothstep(0.58, 0.94, luma)
+		* (1.0 - room_like)
+		* (1.0 - water_like);
+	float plant_like = float(bank_hint == 0)
+		* smoothstep(0.20, 0.48, sat)
+		* (1.0 - smoothstep(0.62, 0.92, sat));
+	float fauna_like = smoothstep(0.48, 0.82, sat);
+	eff_dither *= mix(1.0, 1.10, water_like);
+	eff_dither *= mix(1.0, 0.20, glass_like);
+	eff_dither *= mix(1.0, 0.58, plant_like);
+	eff_dither *= mix(1.0, 0.30, fauna_like);
 
 	// Duotone: collapse chroma onto the ramp before quantizing, so the nearest
 	// rungs are picked by tone rather than by an arbitrary RGB distance from a

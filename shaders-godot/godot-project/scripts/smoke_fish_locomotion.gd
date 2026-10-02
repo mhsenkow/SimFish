@@ -69,6 +69,12 @@ func _initialize() -> void:
 			"crowded fish separate over 50 steps (%.3f → %.3f)" % [start_min, end_min])
 	TestSupport.check(failed, end_min > 0.1, "fish reach a sane personal space (got %.3f)" % end_min)
 
+	# Holistic #083 — body/speed turn scale: large+slow < tiny+fast.
+	var tiny_fast: float = FishLocomotion.body_speed_turn_scale(0.30, 1.0, 1.2)
+	var large_slow: float = FishLocomotion.body_speed_turn_scale(0.62, 0.05, 1.2)
+	TestSupport.check(failed, large_slow < tiny_fast,
+			"large/slow turns less than tiny/fast (%.3f vs %.3f)" % [large_slow, tiny_fast])
+
 	quit(TestSupport.report("smoke_fish_locomotion", failed))
 
 

@@ -286,14 +286,12 @@ void fragment() {
 		// pixel row that separates it from the plants behind.
 		float edge = pow(1.0 - ndv, 2.0) * max(n_ws.y, 0.0);
 		col += iaq_beam_tint.rgb * edge * direct * energy * 0.35;
-		// Iridescent turn flash. Iridophores are angle-selective mirrors:
-		// the flank flares in bands as the angle between its normal and the
-		// lamp/camera half-vector sweeps, i.e. as the fish yaws or rolls, and
-		// holds steady when the fish does. Flank faces only, scaled by the
-		// voxel's own iridescence (a).
+		// Iridescent turn flash — metallic / iridophore species only.
+		// Non-metallic schoolers (cardinal tetras under Iwagumi sun) used to
+		// strobe every bank via this path even with belly/silver flash off.
 		float irid_f = max(irid_strength, v_inst_custom.a);
 		float flank = 1.0 - smoothstep(0.55, 0.75, abs(n_ws.y));
-		if (irid_f > 0.001 && flank > 0.001) {
+		if (metallic_strength > 0.001 && irid_f > 0.001 && flank > 0.001) {
 			vec3 h = normalize(to_lamp + v_ws);
 			float ang = acos(clamp(dot(n_ws, h), -1.0, 1.0));
 			float flash = pow(0.5 + 0.5 * cos(ang * 7.0), 8.0);

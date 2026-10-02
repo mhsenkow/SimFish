@@ -103,6 +103,74 @@ func _initialize() -> void:
 			"structured frame should pass %s (got %.3f, want %s)"
 				% [row["name"], float(row["value"]), row["want"]])
 
+	# --- Camera-intent grading (HOLISTIC #003) ---
+	# A bright close-up with no dark room must NOT fail solely on the hero
+	# shadow floor, but a washed-out flat still fails tonal_spread.
+	var bright_close := _solid(160, 90, Color(0.55, 0.58, 0.60))
+	for i in 30:
+		bright_close.set_pixel(40 + i, 40, Color(0.95, 0.94, 0.90))
+	var bc: Dictionary = Metrics.read(bright_close)
+	var bc_hero: Array[Dictionary] = Metrics.grade(bc, 48, "hero")
+	var bc_close: Array[Dictionary] = Metrics.grade(bc, 48, "close")
+	var hero_shadow_fail := false
+	var close_shadow_ok := false
+	for row in bc_hero:
+		if String(row["name"]) == "p05 (shadow)" and not bool(row["ok"]):
+			hero_shadow_fail = true
+	for row in bc_close:
+		if String(row["name"]) == "p05 (shadow)" and bool(row["ok"]):
+			close_shadow_ok = true
+	t.check(hero_shadow_fail,
+		"hero grade still enforces the dark-room shadow floor on a bright frame")
+	t.check(close_shadow_ok,
+		"close grade does not fail solely on the hero-view shadow floor")
+	var flat_close: Dictionary = Metrics.read(_solid(80, 45, Color(0.5, 0.5, 0.5)))
+	var flat_grade: Array[Dictionary] = Metrics.grade(flat_close, 48, "photo")
+	var spread_fail := false
+	for row in flat_grade:
+		if String(row["name"]) == "tonal_spread" and not bool(row["ok"]):
+			spread_fail = true
+	t.check(spread_fail,
+		"washed-out photo view still fails tonal_spread")
+
+	# Named regions resolve inside the image.
+	var reg: Rect2i = Metrics.region_rect(well, "subject_center")
+	t.check(reg.size.x > 0 and reg.size.y > 0, "subject_center region is non-empty")
+	t.check(Metrics.regions().has("water_column"), "water_column region exists")
+	t.equals(String(Metrics.view_profile("surface").get("view")), "surface",
+		"surface profile names itself")
+	t.check(not bool(Metrics.view_profile("photo").get("require_shadow_floor")),
+		"photo view waives the room shadow floor")
+	t.check(bool(Metrics.view_profile("close").get("require_shadow_structure")),
+		"close view requires local shadow structure (HOLISTIC #050)")
+	t.approx(Metrics.shadow_structure({"p50": 120.0, "p05": 90.0}), 30.0,
+		"shadow_structure is p50-p05", 0.01)
+	# A structured subject crop passes close shadow_structure; a flat mid grey fails.
+	var structured_subject := _structured(80, 45)
+	var ss: Dictionary = Metrics.read(structured_subject)
+	var ss_grade: Array[Dictionary] = Metrics.grade(ss, 48, "close", ss)
+	var struct_ok := false
+	for row in ss_grade:
+		if String(row["name"]) == "shadow_structure" and bool(row["ok"]):
+			struct_ok = true
+	t.check(struct_ok, "structured close subject passes shadow_structure")
+	var flat_ss: Dictionary = Metrics.read(_solid(80, 45, Color(0.5, 0.5, 0.5)))
+	var flat_ss_grade: Array[Dictionary] = Metrics.grade(flat_ss, 48, "close", flat_ss)
+	var struct_fail := false
+	for row in flat_ss_grade:
+		if String(row["name"]) == "shadow_structure" and not bool(row["ok"]):
+			struct_fail = true
+	t.check(struct_fail, "flat close subject fails shadow_structure")
+
+	# HOLISTIC #042 — mode profiles document aquarium vs UI lock scope.
+	t.equals(String(Metrics.palette_mode_profile("ui").get("scope")), "ui",
+		"UI chrome is out of aquarium palette lock")
+	t.equals(String(Metrics.palette_mode_profile("night").get("scope")), "aquarium",
+		"night is an aquarium lock mode")
+	t.check(float(Metrics.palette_mode_profile("photo").get("palette_excess_max"))
+			>= Metrics.PALETTE_EXCESS_MAX,
+		"photo mode allows slight excess headroom for grain")
+
 	# --- The highlight level follows the palette, not an absolute ---
 	# A night palette tops out around 154 by construction; demanding 200 of it
 	# asks the frame to leave its own palette.

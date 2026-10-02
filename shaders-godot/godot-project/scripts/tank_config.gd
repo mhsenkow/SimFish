@@ -24,7 +24,9 @@ var capture_mode: bool = false
 
 # ---- Rendering parameters ----
 # Internal SubViewport resolution. Smaller = more pixelated / chunkier.
-# Common choices: 256x144 (chunky), 512x288 (balanced), 768x432, 1024x576 (default).
+# Common choices / adaptive tiers (see RenderResolutionAudit.supported_tiers):
+# 256x144 potato, 384x216 compact, 512x288 mid (beauty first-launch),
+# 768x432 high, 1024x576 desktop shipping default.
 var render_width: int = 1024
 var render_height: int = 576
 # Palette quantize shader strength.
@@ -112,10 +114,14 @@ var adaptive_quality_target_fps: int = 55
 # substrate / hardscape. Off by default — interferes slightly with very
 # smooth auto-orbit cinematography.
 var pixel_snap_camera: bool = false
-# Cinematic depth-of-field on the followed creature. When following a fish, the
-# far/near layers blur so the eye locks onto the subject. On by default on
-# desktop; mobile preset still resets it off (palette pass smear reads wrong there).
+# Cinematic depth-of-field on the followed creature. Applies only in CINEMATIC
+# follow mode (portal 🎬 / cinema tour) — click-select PIP leaves framing alone.
+# On by default on desktop; mobile preset still resets it off.
 var follow_depth_of_field: bool = true
+# When true, idle after SCREENSAVER_IDLE_S starts a cinematic favorites tour
+# that zooms the main camera onto fish. Off by default — prefer static control
+# with optional gentle auto-orbit instead.
+var idle_cinema_tour: bool = false
 # Follow DOF tuning — only applied when follow_depth_of_field is on.
 var follow_dof_blur_strength: float = 0.06      # 0..0.25 — blur intensity
 var follow_dof_far_softness: float = 2.0        # far transition width (world units)
@@ -872,7 +878,8 @@ const ENVIRONMENT_PRESETS: Dictionary = {
 		"room_warmth": 0.62,
 		"sunset_boost": 1.35,
 		"night_depth_boost": 1.18,
-		"tannin_affinity": 0.12,
+		# HOLISTIC #048 — enough affinity for tea read without murk-as-disease.
+		"tannin_affinity": 0.24,
 		"sim_clock": true,
 	},
 	# Reference room for the Counter Nano scenario — the small rimless cube
@@ -2669,6 +2676,9 @@ const TANK_PRESETS: Dictionary = {
 		},
 		"plant_layout": {
 			"mode": "ridge_strip",
+			# HOLISTIC #021 — keep a readable mid-water passage and put the
+			# tall blade mass on the tank's focal side instead of a centred hedge.
+			"passage_clear": true,
 			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 0, "riccia": 1},
 		},
 		# Not twin_logs: that style runs the full three-island Iwagumi stone set
@@ -3285,6 +3295,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("render", "integer_upscale", integer_upscale)
 	cfg.set_value("render", "pixel_snap_camera", pixel_snap_camera)
 	cfg.set_value("render", "follow_depth_of_field", follow_depth_of_field)
+	cfg.set_value("camera", "idle_cinema_tour", idle_cinema_tour)
 	cfg.set_value("render", "follow_dof_blur_strength", follow_dof_blur_strength)
 	cfg.set_value("render", "follow_dof_far_softness", follow_dof_far_softness)
 	cfg.set_value("render", "follow_dof_near_softness", follow_dof_near_softness)
@@ -3643,6 +3654,7 @@ func load_from_disk() -> void:
 	integer_upscale = cfg.get_value("render", "integer_upscale", integer_upscale)
 	pixel_snap_camera = cfg.get_value("render", "pixel_snap_camera", pixel_snap_camera)
 	follow_depth_of_field = cfg.get_value("render", "follow_depth_of_field", follow_depth_of_field)
+	idle_cinema_tour = cfg.get_value("camera", "idle_cinema_tour", idle_cinema_tour)
 	follow_dof_blur_strength = float(cfg.get_value("render", "follow_dof_blur_strength", follow_dof_blur_strength))
 	follow_dof_far_softness = float(cfg.get_value("render", "follow_dof_far_softness", follow_dof_far_softness))
 	follow_dof_near_softness = float(cfg.get_value("render", "follow_dof_near_softness", follow_dof_near_softness))

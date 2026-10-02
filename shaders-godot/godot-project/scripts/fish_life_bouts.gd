@@ -48,6 +48,31 @@ static func _seed(f: Fish) -> void:
 	f._lb_cool = r.randf_range(1.0, 8.0)
 
 
+# Hunger / hypoxia / escape / breeding may preempt decorative hover/dart.
+# Soft abort: leave the bout without a dart-rate speed spike toward cruise.
+static func emergency_interrupt(f: Fish) -> bool:
+	if f.hunger >= 0.55:
+		return true
+	if f.burst_remaining > 0.0 or f._startle_remaining > 0.0:
+		return true
+	if f.current_mode == Fish.Mode.FLEE or f.current_mode == Fish.Mode.SPAWN \
+			or f.current_mode == Fish.Mode.COURT:
+		return true
+	if f._aerial_timer > 0.0:
+		return true
+	if f.sim != null and f.sim.get("dissolved_o2") != null \
+			and float(f.sim.dissolved_o2) < Fish.SURFACE_GULP_O2:
+		return true
+	return false
+
+
+static func _abort_bout_soft(f: Fish) -> void:
+	f._bout_kind = BOUT_CRUISE
+	f._bout_yaw = 0.0
+	f._bout_t = f._behavior_rng().randf_range(0.8, 2.2)
+	f._bout_level = 1.0
+
+
 # ---- 1. Speed bouts (per frame, fish._process) ------------------------------
 
 static func bout_speed(f: Fish, target_spd: float, dt: float, eligible: bool,
@@ -55,8 +80,14 @@ static func bout_speed(f: Fish, target_spd: float, dt: float, eligible: bool,
 	_seed(f)
 	f._bout_clock += dt
 	f._bout_t -= dt
-	if f._bout_t <= 0.0 or (not eligible and f._bout_kind != BOUT_CRUISE):
-		_next_bout(f, eligible, daylight)
+	var emergency: bool = emergency_interrupt(f)
+	if emergency and f._bout_kind != BOUT_CRUISE:
+		_abort_bout_soft(f)
+	if f._bout_t <= 0.0 or (not eligible and f._bout_kind != BOUT_CRUISE) or emergency:
+		if emergency:
+			_abort_bout_soft(f)
+		else:
+			_next_bout(f, eligible and not emergency, daylight)
 	var level: float
 	match f._bout_kind:
 		BOUT_HOVER:
@@ -67,9 +98,10 @@ static func bout_speed(f: Fish, target_spd: float, dt: float, eligible: bool,
 		_:
 			level = f._cruise_mult * (1.0 + 0.2 * sin(f._bout_clock * f._bout_w.x + f._bout_w.z)
 				+ 0.1 * sin(f._bout_clock * f._bout_w.y + f._bout_w.w))
-	if not eligible:
+	if not eligible or emergency:
 		level = 1.0
-	var rate: float = 7.0 if f._bout_kind == BOUT_DART else 1.4
+	# Emergency return eases toward cruise; never use dart snap-rate.
+	var rate: float = 2.2 if emergency else (7.0 if f._bout_kind == BOUT_DART else 1.4)
 	f._bout_env = move_toward(f._bout_env, level, dt * rate * maxf(absf(level - f._bout_env), 0.25))
 	return target_spd * f._bout_env
 
@@ -114,14 +146,25 @@ static func is_darting(f: Fish) -> bool:
 
 # Returns this frame's turn (radians). max_step is the capped turn for the
 # frame; the yaw rate itself ramps toward what the fish wants.
+# speed_frac (0..1 of max) and body_m bound the floor so large/slow fish
+# cannot spin in place (Holistic #083).
 static func inertial_turn(f: Fish, angle: float, max_step: float, dt: float,
-		wall_t: float) -> float:
+		wall_t: float, speed_frac: float = 1.0, body_m: float = 0.45) -> float:
 	var want_rate: float = minf(max_step, angle) / maxf(dt, 1e-4)
 	var cap_rate: float = max_step / maxf(dt, 1e-4)
 	# Full rate in ~0.3 s; near glass the fish may snap harder.
 	var accel: float = cap_rate * lerpf(3.2, 12.0, clampf(wall_t, 0.0, 1.0))
+	# Larger bodies yaw more slowly toward the want rate.
+	accel *= clampf(0.52 / maxf(body_m, 0.28), 0.45, 1.25)
+	var sf: float = clampf(speed_frac, 0.0, 1.0)
+	if sf < 0.06:
+		# Near-zero speed: bleed yaw rate out; do not invent a floor turn.
+		f._turn_rate_state = move_toward(f._turn_rate_state, 0.0, cap_rate * 5.0 * dt)
+		return minf(absf(f._turn_rate_state) * dt, angle)
 	f._turn_rate_state = move_toward(f._turn_rate_state, want_rate, accel * dt)
-	return minf(maxf(f._turn_rate_state * dt, max_step * 0.18), angle)
+	# Floor scales with speed so crawl never forces a minimum spin.
+	var floor_step: float = max_step * 0.18 * clampf(sf / 0.14, 0.0, 1.0)
+	return minf(maxf(f._turn_rate_state * dt, floor_step), angle)
 
 
 # ---- 3. Livebearer pursuit + sigmoid display (sim tick) ---------------------
@@ -257,9 +300,22 @@ static func peck_steer(f: Fish, plants: Array, dt: float, effective_max: float,
 			return Vector3.ZERO
 		f._peck_state = 1
 		f._peck_timeout = 5.0
+	# Occluded / removed target: cancel cleanly (Holistic #089).
+	if not _peck_target_reachable(f):
+		_end_peck(f, rate)
+		return Vector3.ZERO
 	var to_pt: Vector3 = f._peck_point - f.position
 	var d: float = to_pt.length()
 	var reach: float = f._body_tank_margin() * 0.55 + 0.06
+	# Approach along the surface normal so head and contact agree.
+	var approach_dir: Vector3 = to_pt
+	if f._peck_normal.length_squared() > 1e-6:
+		var nrm: Vector3 = f._peck_normal.normalized()
+		# Prefer the component that closes on the surface (into the wall / film).
+		var into: Vector3 = -nrm
+		if into.dot(to_pt) < 0.0:
+			into = nrm
+		approach_dir = into * maxf(d, 0.08) + to_pt * 0.35
 	if f._peck_state == 1:
 		f._peck_timeout -= dt
 		if f._peck_timeout <= 0.0:
@@ -269,37 +325,80 @@ static func peck_steer(f: Fish, plants: Array, dt: float, effective_max: float,
 			f._peck_state = 2
 			f._peck_t = f._behavior_rng().randf_range(1.2, 3.0)
 			f._peck_phase = 0.0
-		elif d > 1e-4:
-			return to_pt / d * effective_max * clampf(d / 0.8, 0.28, 0.5)
+		elif approach_dir.length_squared() > 1e-6:
+			return approach_dir.normalized() * effective_max * clampf(d / 0.8, 0.28, 0.5)
 		return Vector3.ZERO
-	# Pecking: short forward jabs at the spot, drifting back between them.
+	# Pecking: short jabs along the surface normal, drifting back between them.
 	f._peck_t -= dt
 	f._peck_phase += dt
 	if f._peck_t <= 0.0:
 		_end_peck(f, rate)
 		return Vector3.ZERO
-	if d < 1e-4:
+	if d < 1e-4 and f._peck_normal.length_squared() < 1e-6:
 		return Vector3.ZERO
 	var jab: bool = fmod(f._peck_phase, 0.42) < 0.14
+	var jab_dir: Vector3 = approach_dir
+	if jab_dir.length_squared() < 1e-6:
+		jab_dir = -f._peck_normal if f._peck_normal.length_squared() > 1e-6 else Vector3.FORWARD
 	var push: float = 0.42 if jab else (0.0 if d < reach else 0.12)
 	# Never exactly ZERO while pecking, or the caller drops back to cruising.
-	return to_pt / d * effective_max * maxf(push, 0.01) - f.velocity * (0.0 if jab else 0.8)
+	return jab_dir.normalized() * effective_max * maxf(push, 0.01) - f.velocity * (0.0 if jab else 0.8)
 
 
 static func _end_peck(f: Fish, rate: float) -> void:
 	f._peck_state = 0
 	f._peck_t = 0.0
+	f._peck_plant = null
+	f._peck_normal = Vector3.ZERO
 	f._peck_cool = f._behavior_rng().randf_range(3.0, 10.0) / maxf(rate, 0.05)
 
 
+static func _peck_target_reachable(f: Fish) -> bool:
+	match f._peck_kind:
+		1: # surface film — still near the meniscus
+			var surf: float = f._water_surface_y()
+			return f._peck_point.y <= surf + 0.05 and f._peck_point.y >= surf - 0.45 \
+				and f.position.y > surf - maxf(1.4, f.home_y_radius * 2.0)
+		2: # plant blade — plant still present and point still on its stalk
+			var pl: Variant = f._peck_plant
+			if pl == null or not is_instance_valid(pl) or not (pl is Plant):
+				return false
+			var plant: Plant = pl
+			var top_y: float = plant.global_position.y + float(plant.current_height) * Plant.VOXEL_SIZE
+			var base_y: float = plant.global_position.y + 0.1
+			if f._peck_point.y < base_y - 0.15 or f._peck_point.y > top_y + 0.15:
+				return false
+			var dxz: Vector2 = Vector2(f._peck_point.x - plant.global_position.x,
+				f._peck_point.z - plant.global_position.z)
+			return dxz.length_squared() < 0.22 * 0.22
+		3: # glass — still near a wall with a matching inward normal
+			var bnd: Dictionary = f._lateral_boundary_context(f.global_position)
+			var clr: float = float(bnd.get("clearance", 99.0))
+			var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
+			if clr > 2.2 or inward.length_squared() < 1e-4:
+				return false
+			if f._peck_normal.length_squared() > 1e-6 \
+					and inward.normalized().dot(f._peck_normal.normalized()) < 0.35:
+				return false
+			return true
+		_:
+			return false
+
+
 # Surface film for fish already near the top, else a blade of the nearest
-# plant inside the fish's own layer, else the nearest glass.
+# plant inside the fish's own layer, else the nearest glass. Stores contact
+# normal so approach / jab face the reachable surface (Holistic #089).
 static func _pick_peck_point(f: Fish, plants: Array) -> bool:
 	var r: RandomNumberGenerator = f._behavior_rng()
+	f._peck_plant = null
+	f._peck_normal = Vector3.ZERO
+	f._peck_kind = 0
 	var surf: float = f._water_surface_y()
 	if f.position.y > surf - maxf(0.9, f.home_y_radius * 1.6) and r.randf() < 0.55:
 		f._peck_point = Vector3(f.position.x + r.randf_range(-0.5, 0.5), surf - 0.07,
 			f.position.z + r.randf_range(-0.5, 0.5))
+		f._peck_normal = Vector3.UP  # film faces down into the water; approach from below
+		f._peck_kind = 1
 		return true
 	var best: Plant = null
 	var best_d2: float = 2.4 * 2.4
@@ -327,12 +426,21 @@ static func _pick_peck_point(f: Fish, plants: Array) -> bool:
 		var y: float = clampf(f.position.y + r.randf_range(-0.3, 0.3), base_y, maxf(top_y - 0.05, base_y))
 		f._peck_point = Vector3(best.global_position.x + r.randf_range(-0.09, 0.09), y,
 			best.global_position.z + r.randf_range(-0.09, 0.09))
+		var to_blade: Vector3 = f._peck_point - f.position
+		to_blade.y *= 0.35
+		f._peck_normal = to_blade.normalized() if to_blade.length_squared() > 1e-6 \
+			else Vector3(1.0, 0.0, 0.0)
+		f._peck_plant = best
+		f._peck_kind = 2
 		return true
 	var bnd: Dictionary = f._lateral_boundary_context(f.global_position)
 	var clr: float = float(bnd.get("clearance", 99.0))
 	var inward: Vector3 = bnd.get("inward", Vector3.ZERO)
 	if clr < 1.6 and inward.length_squared() > 1e-4:
-		f._peck_point = f.position - inward.normalized() * maxf(clr - 0.12, 0.0) \
+		var nrm: Vector3 = inward.normalized()
+		f._peck_point = f.position - nrm * maxf(clr - 0.12, 0.0) \
 			+ Vector3(0, r.randf_range(-0.2, 0.2), 0)
+		f._peck_normal = nrm  # outward from tank = surface normal into water
+		f._peck_kind = 3
 		return true
 	return false

@@ -234,9 +234,19 @@ var waste_root: Node3D = null
 # "plants exist" both fire long before the founding fish are in the water.
 # Harnesses that step the sim headlessly must wait on this instead.
 var build_complete: bool = false
+# Named stage of staged construction (HOLISTIC #004). Captures poll this so a
+# timeout can name the unfinished stage instead of guessing frame waits.
+# Values: init → structure → stocking → fixtures → complete.
+var build_stage: String = "init"
+
+
+func _set_build_stage(stage: String) -> void:
+	build_stage = stage
+	print_verbose("[walstad_loom] build_stage=", stage)
 
 
 func _ready() -> void:
+	_set_build_stage("init")
 	# Pull tank dimensions + substrate profile from the autoload config.
 	# Settings panel writes here and reloads the scene to apply.
 	var cfg := get_node_or_null("/root/TankConfig")
@@ -358,6 +368,7 @@ func _ready() -> void:
 		_caustics_mat.shader = load("res://shaders/caustics.gdshader")
 		_caustics_mat.set_shader_parameter("aquatic_detail", maxi(_aquatic_shader_detail, 0))
 		BakedCaustics.apply_to_material(_caustics_mat)
+	_set_build_stage("structure")
 	_build_substrate()
 	_apply_water_wave_scale_uniforms()
 	# Empty / guided tanks (walkthrough): start the tank completely bare so
@@ -415,6 +426,7 @@ func _ready() -> void:
 	# exist in saltwater either (they're freshwater forms) so we skip
 	# them entirely. Shrimp are also skipped further down via the same
 	# is_saltwater check.
+	_set_build_stage("stocking")
 	if start_empty:
 		# Guided/empty tank: spawn nothing. The player builds it up via the
 		# walkthrough using the creature creator + aquascape tools.
@@ -447,6 +459,7 @@ func _ready() -> void:
 		# Lily pads + math plants restored via SimDriver.load_state → restore_ambient.
 		pass
 
+	_set_build_stage("fixtures")
 	_spawn_aeration_system()
 	_init_flow_field()
 	_spawn_mulm_layer()
@@ -504,6 +517,7 @@ func _ready() -> void:
 			we.environment.volumetric_fog_enabled = false
 
 	build_complete = true
+	_set_build_stage("complete")
 	print_verbose("[walstad_loom] world built: ", get_child_count(), " top-level nodes; ",
 		  sim.fish.size(), " fish, ", sim.shrimp.size(), " shrimp, ",
 		  sim.plants.size(), " plants")
@@ -607,6 +621,13 @@ func _push_water_column() -> void:
 	var depth_gain: float = VoxelMat.WATER_DEPTH_GAIN_DEFAULT
 	if cfg != null and cfg.get("depth_legibility") != null:
 		depth_gain = float(cfg.get("depth_legibility"))
+	# HOLISTIC #048 — blackwater contrast: tea depth without near-subject crush.
+	var Aesthetics := preload("res://scripts/aesthetics_runtime.gd")
+	var bw: Dictionary = Aesthetics.blackwater_contrast_bundle(
+		Aesthetics.biotope_palette_key(cfg))
+	if not bw.is_empty():
+		strength *= float(bw.get("extinction_scale", 1.0))
+		depth_gain = float(bw.get("depth_legibility", depth_gain))
 	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb, depth_gain,
 		TANK_HALF_W, TANK_HALF_D)
 
@@ -883,7 +904,7 @@ func _process(dt: float) -> void:
 			var bloom: float = float(column.get("bloom_haze", 0.0))
 			var fvec: Vector3 = foliage_flow_vec()
 			_visuals.sync_foliage_uniforms(
-				clampf(bloom * 0.5 + 0.15, 0.0, 0.65), WATER_HEIGHT, foliage_light,
+				clampf(bloom * 0.55 + 0.32, 0.0, 0.75), WATER_HEIGHT, foliage_light,
 				fvec, clampf(fvec.length() * 2.2, 0.0, 1.0))
 
 	# Day/night light cycle. The DirectionalLight gives soft ambient room
@@ -1312,7 +1333,7 @@ func _tick_tank_fidelity(sdt: float) -> void:
 		_water_material_ref.set_shader_parameter("protein_film",
 			clampf(0.25 - floater_coverage() * 0.2, 0.0, 0.4))
 		_water_material_ref.set_shader_parameter("turbidity_cone", 0.55)
-		_water_material_ref.set_shader_parameter("underside_mirror", 0.42)
+		_water_material_ref.set_shader_parameter("underside_mirror", 0.32)
 		var preset_id: String = String(cfg.get("tank_preset")) if cfg != null else ""
 		if preset_id == "valli_jungle" or preset_id == "hex_jungle":
 			_water_material_ref.set_shader_parameter("column_own_color", 0.35)
@@ -1782,6 +1803,14 @@ func _sway_surface_plants(adt: float) -> void:
 		if lp.has_method("tick"):
 			lp.tick(sway_dt)
 		ecology_biomass += _tick_surface_plant_ecology(lp, adt)
+	# Holistic #141 — floaters share the same ecology budget as other surface flora.
+	for f in _floaters:
+		if not is_instance_valid(f) or not (f is FloatingPlant):
+			continue
+		var fp: FloatingPlant = f
+		if fp.turion_buried:
+			continue
+		ecology_biomass += _tick_surface_plant_ecology(fp, adt)
 	_surface_plant_biomass = ecology_biomass
 	if sim != null:
 		sim.surface_plant_biomass = ecology_biomass
@@ -1797,7 +1826,7 @@ func _tick_surface_plant_ecology(host: Node, dt: float) -> float:
 	if adapter == null:
 		adapter = PlantEcologyAdapterScript.new(host)
 		_surface_ecology_adapters[id] = adapter
-	adapter.tick(dt, sim.substrate if sim != null else null)
+	adapter.tick(dt, sim.substrate if sim != null else null, sim)
 	return float(adapter.biomass())
 
 
@@ -1937,7 +1966,9 @@ func tank_vertical_boundary_info(p: Vector3, margin: float = 0.25,
 
 
 func preferred_y_at(x: float, z: float, frac: float, floor_y: float = NAN) -> float:
-	return _footprint().column_fraction_to_y(x, z, frac, 0.35, floor_y)
+	# Holistic #081: preferred_y_frac maps the full water column (0=substrate,
+	# 1=surface). Swim margins stay in locomotion; do not bake them into frac.
+	return _footprint().column_fraction_to_y(x, z, frac, 0.0, floor_y)
 
 
 func toggle_motion_debug() -> bool:
@@ -4971,9 +5002,25 @@ func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 				maxi(0, int(round(8.0 * m_fern * _epiphyte_spawn_scalar()))))
 		"ridge_strip":
 			var bg_band2: Vector2 = _spawn_z_band("background")
-			for _row in maxi(0, int(round(7.0 * m_valli))):
-				var bxz2: Vector2 = _sample_clear_xz_in_band(
-					bg_band2.x, bg_band2.y, 0.55, 0.70, 36, 0.40, 0.40)
+			var passage_clear: bool = bool(layout.get("passage_clear", false))
+			var mass_side: float = float(_focal_side())
+			var valli_rows: int = maxi(0, int(round(7.0 * m_valli)))
+			for row_i in valli_rows:
+				var bxz2: Vector2
+				if passage_clear:
+					# Deterministic mass-side wall (~4/5 of stems) so focal
+					# offset does not jitter around the dense_jungle floor
+					# between identical seeds' secondary RNG draws.
+					var x_frac: float
+					if (row_i % 5) == 4:
+						x_frac = -mass_side * _rng.randf_range(0.55, 0.90)
+					else:
+						x_frac = mass_side * _rng.randf_range(0.32, 0.88)
+					var z_frac: float = _rng.randf_range(-0.90, -0.48)
+					bxz2 = _spawn_xz_at_fraction(x_frac, z_frac, 0.34)
+				else:
+					bxz2 = _sample_clear_xz_in_band(
+						bg_band2.x, bg_band2.y, 0.55, 0.70, 36, 0.40, 0.40)
 				_spawn_plant(specs[0], spawn_position_on_floor(bxz2.x, bxz2.y),
 					_rng.randi_range(2, 4))
 			# "valli_fill": extra clumps across the WHOLE floor, not just the
@@ -4986,12 +5033,26 @@ func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 				for _f in fill_n:
 					var vxz: Vector2 = _sample_clear_xz_in_band(
 						all_band.x, all_band.y, 0.45, 0.60, 36, 0.34, 0.34)
+					if passage_clear and absf(vxz.x) < TANK_HALF_W * 0.18 \
+							and vxz.y > -TANK_HALF_D * 0.15:
+						# Keep the front mid passage clear of fill clumps.
+						continue
 					_spawn_plant(specs[0], spawn_position_on_floor(vxz.x, vxz.y),
 						_rng.randi_range(2, 4))
 			await get_tree().process_frame
-			for _j in maxi(0, int(round(10.0 * m_crypt))):
-				var rxz2: Vector2 = _spawn_xz_at_fraction(
-					_rng.randf_range(-0.35, 0.35), _rng.randf_range(-0.20, 0.35), 0.50)
+			var crypt_n: int = maxi(0, int(round(10.0 * m_crypt)))
+			for crypt_i in crypt_n:
+				var rxz2: Vector2
+				if passage_clear:
+					# Supporting midground masses on the focal flank, not a
+					# centred bush clogging the swim lane.
+					var c_side: float = mass_side if (crypt_i % 4) != 3 else -mass_side
+					rxz2 = _spawn_xz_at_fraction(
+						c_side * _rng.randf_range(0.18, 0.58),
+						_rng.randf_range(-0.25, 0.30), 0.45)
+				else:
+					rxz2 = _spawn_xz_at_fraction(
+						_rng.randf_range(-0.35, 0.35), _rng.randf_range(-0.20, 0.35), 0.50)
 				_spawn_plant(specs[1], spawn_position_on_floor(rxz2.x, rxz2.y),
 					_rng.randi_range(2, 4))
 			await get_tree().process_frame
@@ -11234,11 +11295,12 @@ const _REF_COLUMN_HEIGHT: float = 5.0
 
 func _apply_water_column_scale(genome: Dictionary) -> void:
 	# Actual water column for this tank (SUBSTRATE_DEPTH .. WATER_HEIGHT).
+	# Holistic #081: one definition via FishDepthBands.y_from_frac / frac_from_y.
 	var col: float = maxf(1.0, WATER_HEIGHT - SUBSTRATE_DEPTH)
 
 	# Vertical anchor:
 	#   preferred_y_frac (0..1) - new key, takes priority. Mixed-morph
-	#     reef fish use this to spread across the column.
+	#     reef fish use this to spread across the column. Saves retain it.
 	#   preferred_y - legacy absolute Y. Remap as a fraction of the
 	#     reference column, then project onto the actual column.
 	#   species band (FishDepthBands) - where the species lives when the
@@ -11255,7 +11317,7 @@ func _apply_water_column_scale(genome: Dictionary) -> void:
 		frac = clampf((legacy - _REF_SUBSTRATE_Y) / _REF_COLUMN_HEIGHT, 0.05, 0.95)
 	genome["preferred_y_frac"] = frac
 	# Nominal column Y — refined per-spawn in _apply_shape_aware_preferred_y.
-	genome["preferred_y"] = SUBSTRATE_DEPTH + frac * col
+	genome["preferred_y"] = _FishDepthBands.y_from_frac(frac, SUBSTRATE_DEPTH, WATER_HEIGHT)
 
 	# Vertical territory radius:
 	#   The library's home_y_radius was 16-25% of the reference column.

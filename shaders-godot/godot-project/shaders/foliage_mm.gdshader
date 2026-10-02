@@ -180,7 +180,18 @@ void fragment() {
 	col = mix(col, anthocyanin, red_potential * v_light_dose * 0.58);
 	col = iaq_leaf_aufwuchs(col, v_world_pos, v_local, v_fuzz);
 	// Under broad canopies / lily pads — dim lower-facing leaf pixels.
-	if (n_ws.y < -0.2 && v_world_pos.y > water_surface_y - 0.6) {
+	// Also soften near-surface blades so overlapping tips read as gaps rather
+	// than one luminous sheet (HOLISTIC #047).
+	if (v_world_pos.y > water_surface_y - 0.85) {
+		float near_cap = smoothstep(water_surface_y - 0.85, water_surface_y - 0.05,
+			v_world_pos.y);
+		float under = step(n_ws.y, -0.15);
+		float shade_k = canopy_shade * (0.38 + under * 0.28) * (1.0 - daylight * 0.28);
+		col *= 1.0 - shade_k * near_cap;
+		// Stronger midrib/margin so overlapping tips split into highlight +
+		// shadow instead of one midtone sheet (HOLISTIC #047).
+		col *= mix(1.0, iaq_blade_margin(v_local, 1.0), near_cap * 0.42);
+	} else if (n_ws.y < -0.2 && v_world_pos.y > water_surface_y - 1.2) {
 		col *= 1.0 - canopy_shade * 0.38 * (1.0 - daylight * 0.35);
 	}
 	// Bounded two-wave caustic shared with voxel.gdshader. This deliberately
