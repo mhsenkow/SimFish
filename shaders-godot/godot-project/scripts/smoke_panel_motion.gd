@@ -119,8 +119,11 @@ func _initialize() -> void:
 		quit(1)
 
 
-# Tweens advance on process frames; step past the animation with margin.
+# Tweens use process time, which can be clamped below elapsed wall time
+# on a loaded CI runner. Accumulate the same clock instead of racing it.
 func _settle(seconds: float) -> void:
-	var deadline: int = Time.get_ticks_msec() + int((seconds + 0.15) * 1000.0)
-	while Time.get_ticks_msec() < deadline:
+	var elapsed: float = 0.0
+	while elapsed < seconds + 0.15:
 		await process_frame
+		elapsed += root.get_process_delta_time()
+	await process_frame

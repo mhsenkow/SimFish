@@ -62,3 +62,7 @@ The existing rendered harnesses still report renderer/resource allocations at pr
 The first remote smoke workflow exposed existing CI setup defects: it omitted GodotSteam before compiling desktop scripts, and passed an unsupported `--config` option to the pinned gdtoolkit 4.3.4 linter. The workflow now installs the same Steam extension as release builds and lets gdlint discover the project-local `gdlintrc`. The corrected six-module lint invocation passes locally.
 
 Linux CI also exposed nonportable array-count substitutions in the shell runner and the duplicate real-time performance fixture retaining its first population. Portable argument counts and explicit fixture disposal fix these, with the 4.5× ratio and 490 ms ceiling unchanged. The corrected real-time fixture passes locally.
+
+Three Linux shards passed; the fourth exposed an animation-test clock mismatch under load. The panel transition smoke now accumulates Godot process time, matching its tweens, rather than assuming elapsed wall time advances animation equally. Panel timings and game behavior are unchanged.
+
+All four release exports succeeded. The macOS download was locally signed with the project Developer ID after CI skipped signing for absent certificate secrets; its nested signatures verify. Notarization remains blocked by the local Xcode license requirement. Fresh desktop builds are staged for Steam, whose upload still requires a cached partner login.
