@@ -1,0 +1,33 @@
+extends SceneTree
+
+func _initialize() -> void:
+	await process_frame
+	var t := TestSupport.Suite.new("smoke_photo_ui_state")
+	# Attach after ready so only the real photo UI methods run.
+	var host := Node.new()
+	root.add_child(host)
+	host.set_script(load("res://scripts/main.gd"))
+	host.set_process(false)
+	var hud := Control.new()
+	var rail := Control.new()
+	var footer := PanelContainer.new()
+	host.add_child(hud)
+	host.add_child(rail)
+	host.add_child(footer)
+	host.set("top_hud", hud)
+	host.set("right_rail", rail)
+	host.set("footer_bar", footer)
+	rail.hide()
+	footer.hide()
+	host.call("_set_hud_visible_for_photo", false)
+	t.check(not hud.visible and not rail.visible and not footer.visible, "photo hides chrome")
+	host.call("_set_hud_visible_for_photo", false)
+	host.call("_set_hud_visible_for_photo", true)
+	t.check(hud.visible, "original visible HUD returns after nested hide")
+	t.check(not rail.visible and not footer.visible, "hidden panels stay hidden after photo")
+	host.call("_set_hud_visible_for_photo", false)
+	rail.free()
+	host.call("_set_hud_visible_for_photo", true)
+	t.check(hud.visible, "panel deletion during capture is safe")
+	host.free()
+	quit(t.finish())

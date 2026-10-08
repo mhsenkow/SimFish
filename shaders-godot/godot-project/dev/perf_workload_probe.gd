@@ -93,6 +93,7 @@ func _run_workload(wid: String, spec: Dictionary) -> void:
 	_cfg.cycle_start_mode = String(spec.get("cycle", "established"))
 	_cfg.start_matured = bool(spec.get("start_matured", _cfg.cycle_start_mode == "established"))
 	PerfGovernor.reset_for_test()
+	Fish.life_profile.clear()
 	_main = load("res://main.tscn").instantiate()
 	add_child(_main)
 	print("[perf_probe] workload=%s density=%.2f scenario=%s" % [
@@ -140,6 +141,24 @@ func _run_workload(wid: String, spec: Dictionary) -> void:
 	report["scenario"] = scenario_id
 	report["density_budget"] = float(_cfg.density_budget)
 	report["hud"] = PerfGovernor.hud_line(fish_n, draw_n)
+	report["process_ms"] = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	report["geometry_inventory"] = _geometry_inventory()
+	var profile: Dictionary = (sim_n as Node).get("tick_profile")
+	var stage_means: Dictionary = {}
+	for stage in profile:
+		var stats: Vector2i = profile[stage]
+		stage_means[stage] = {"mean_ms": float(stats.x) / maxf(float(stats.y), 1.0) / 1000.0,
+			"calls": stats.y}
+	report["tick_profile"] = stage_means
+	var life_means: Dictionary = {}
+	for stage in Fish.life_profile:
+		var stats: Vector2i = Fish.life_profile[stage]
+		life_means[stage] = {"mean_ms": float(stats.x) / maxf(float(stats.y), 1.0) / 1000.0,
+			"calls": stats.y}
+	report["life_profile"] = life_means
+	report["physics_ms"] = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+	if OS.get_environment("PERF_PROBE_SPLIT") == "1":
+		report["split_costs"] = await _measure_split(sim_n as Node)
 	_reports.append(report)
 	var path: String = "%s/%s.json" % [_out, wid]
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -150,6 +169,72 @@ func _run_workload(wid: String, spec: Dictionary) -> void:
 		wid, float(report.p50_ms), float(report.p95_ms), float(report.p99_ms),
 		fish_n, draw_n, entity_n, int(report.main_thread_spikes),
 		int(report.fps_cap), tier if tier != "" else "default"])
+
+
+# Optional diagnostic: each subsystem is disabled independently, then restored.
+# Real wall-clock frame intervals are measured without PerfGovernor's clamps.
+func _measure_split(sim_node: Node) -> Dictionary:
+	var costs: Dictionary = {}
+	costs["all_on"] = await _wall_frame_mean()
+	var fish_process: Array[Node] = []
+	for fish in sim_node.get("fish"):
+		if is_instance_valid(fish) and fish.is_processing():
+			fish_process.append(fish)
+			fish.set_process(false)
+	costs["fish_animation_off"] = await _wall_frame_mean()
+	for fish in fish_process:
+		if is_instance_valid(fish):
+			fish.set_process(true)
+	var sim_physics: bool = sim_node.is_physics_processing()
+	sim_node.set_physics_process(false)
+	costs["simulation_off"] = await _wall_frame_mean()
+	sim_node.set_physics_process(sim_physics)
+	var world: Node = _main.find_child("World", true, false)
+	var world_process: bool = world.is_processing()
+	world.set_process(false)
+	costs["world_process_off"] = await _wall_frame_mean()
+	world.set_process(world_process)
+	var main_process: bool = _main.is_processing()
+	_main.set_process(false)
+	costs["main_process_off"] = await _wall_frame_mean()
+	_main.set_process(main_process)
+	return costs
+
+
+func _wall_frame_mean() -> float:
+	for i in 8:
+		await get_tree().process_frame
+	var start: int = Time.get_ticks_usec()
+	for i in 40:
+		await get_tree().process_frame
+	return float(Time.get_ticks_usec() - start) / 40000.0
+
+
+# Count renderable nodes after sampling, never in the measured frame window.
+# Draw calls also include shadows and UI, so this identifies geometry owners
+# without pretending that a node count is a GPU timing measurement.
+func _geometry_inventory() -> Dictionary:
+	var out: Dictionary = {}
+	var world: Node = _main.find_child("World", true, false)
+	if world == null:
+		return out
+	for branch in world.get_children():
+		var stats: Dictionary = {"meshes": 0, "multimeshes": 0, "instances": 0}
+		var pending: Array[Node] = [branch]
+		while not pending.is_empty():
+			var node: Node = pending.pop_back()
+			if node is MeshInstance3D and (node as MeshInstance3D).is_visible_in_tree():
+				stats["meshes"] += 1
+			elif node is MultiMeshInstance3D and (node as MultiMeshInstance3D).is_visible_in_tree():
+				stats["multimeshes"] += 1
+				var mm: MultiMesh = (node as MultiMeshInstance3D).multimesh
+				if mm != null:
+					stats["instances"] += mm.visible_instance_count if mm.visible_instance_count >= 0 else mm.instance_count
+			for child in node.get_children():
+				pending.append(child)
+		if int(stats["meshes"]) + int(stats["multimeshes"]) > 0:
+			out[String(branch.name)] = stats
+	return out
 
 
 func _finish() -> void:

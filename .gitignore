@@ -82,6 +82,5 @@ inspect_*.png.import
 
 # Local scratch captures / release zips (not for git; CI publishes Releases).
 artifacts/
-scripts/smoke_baseline.txt
 shaders-godot/godot-project/inspect_*.png
 shaders-godot/godot-project/inspect_*.png.import

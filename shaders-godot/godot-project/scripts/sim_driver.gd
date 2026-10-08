@@ -2866,6 +2866,7 @@ func try_claim_pearling_slot(pearl_factor: float) -> float:
 
 
 const WASTE_GRID_CELL_SIZE: float = 1.5
+var _waste_grid_cells: Array[Vector2i] = []
 var _waste_grid: Dictionary = {}  # Vector2i → Array[WasteParticle]
 var _waste_grid_stale: bool = true
 
@@ -2900,7 +2901,8 @@ func _physics_process(dt: float) -> void:
 		_widget_export_timer = 0.0
 		_export_widget_state()
 	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
-	var sdt: float = dt * time_scale
+	var sdt: float = maxf(0.0, dt * time_scale)
+	var previous_accum: float = _accum
 	_accum += sdt
 	# Clamp the accumulator to prevent a "spiral of death" on slow frames: at
 	# time_scale=16 a single 100ms hitch enqueues 1.6s = 16 ticks; if any of
@@ -2908,6 +2910,9 @@ func _physics_process(dt: float) -> void:
 	# faster than it drains and the game-loop locks. Cap at 4 ticks (0.4s of
 	# sim work) so we drop sim-time on a hitch instead of freezing the render.
 	_accum = minf(_accum, SIM_DT * 4.0)
+	# Light, seasonal cues and stats must consume the same accepted time as
+	# ecology. Discarded hitch debt must not age daylight ahead of the tank.
+	sdt = maxf(0.0, _accum - previous_accum)
 	# Day phase only advances if the user hasn't frozen the cycle in the
 	# Light panel. The rest of the sim keeps ticking either way. Cycle
 	# length is also slider-driven (TankConfig.day_length_s); the constant
@@ -3082,8 +3087,8 @@ const WASTE_GRID_REBUILD_S: float = 0.2
 var _cadence_booted: bool = false
 var _off_frustum_hz: int = 5
 var _music_mods_frame: int = -1
-var _ambient_snap: Dictionary = {}  # PERFORMANCE_UNTHROTTLED #12
 var _music_mc_cache: Node = null
+var _ambient_snap: Dictionary = {}  # PERFORMANCE_UNTHROTTLED #12
 # Snail spatial grid (G88) — baby-snail predator scans.
 var _snail_grid: Dictionary = {}
 const SNAIL_GRID_CELL_SIZE: float = 2.0
@@ -3096,6 +3101,7 @@ const SNAIL_GRID_CELL_SIZE: float = 2.0
 # the cells the fish actually overlaps.
 const PLANT_GRID_CELL_SIZE: float = 2.0
 const PLANT_GRID_REBUILD_S: float = 0.5
+var _plants_grid_cells: Array[Vector2i] = []
 var _plants_grid: Dictionary = {}  # Vector2i → Array[Plant]
 
 
@@ -3112,24 +3118,46 @@ func _rebuild_plants_grid() -> void:
 		else:
 			_plants_grid[cell] = [p]
 
+	_plants_grid_cells.assign(_plants_grid.keys())
+	_plants_grid_cells.sort_custom(_grid_cell_less)
 
 # Return all plants within max_dist of pos. Caller does the final
 # distance check + biomass/state filters; this just narrows the search.
-func query_plants_in_radius(pos: Vector3, max_dist: float) -> Array:
+# Broad searches in sparse tanks walk occupied cells, rather than allocating
+# hundreds of empty buckets per fish. Candidate membership and order are kept.
+static func _grid_cell_less(a: Vector2i, b: Vector2i) -> bool:
+	return a.x < b.x or (a.x == b.x and a.y < b.y)
+
+
+static func _grid_candidates(grid: Dictionary, cells: Array[Vector2i],
+		center: Vector2i, reach: int) -> Array:
 	var result: Array = []
+	if grid.is_empty():
+		return result
+	var span: int = reach * 2 + 1
+	if not cells.is_empty() and span * span > grid.size() * 2:
+		for cell in cells:
+			if absi(cell.x - center.x) <= reach and absi(cell.y - center.y) <= reach:
+				result.append_array(grid[cell])
+	else:
+		for dx in range(-reach, reach + 1):
+			for dz in range(-reach, reach + 1):
+				var cell := center + Vector2i(dx, dz)
+				if grid.has(cell):
+					result.append_array(grid[cell])
+	return result
+
+
+func query_plants_in_radius(pos: Vector3, max_dist: float) -> Array:
+	if not pos.is_finite() or not is_finite(max_dist) or max_dist < 0.0 or plants.is_empty():
+		return []
 	if _plants_grid.is_empty():
 		# Cold start: bootstrap once so callers don't see a stall.
 		_rebuild_plants_grid()
 	var cx: int = int(floor(pos.x / PLANT_GRID_CELL_SIZE))
 	var cz: int = int(floor(pos.z / PLANT_GRID_CELL_SIZE))
 	var reach: int = maxi(1, int(ceil(max_dist / PLANT_GRID_CELL_SIZE)))
-	for dx in range(-reach, reach + 1):
-		for dz in range(-reach, reach + 1):
-			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _plants_grid.get(cell, [])
-			for p in bucket:
-				result.append(p)
-	return result
+	return _grid_candidates(_plants_grid, _plants_grid_cells, Vector2i(cx, cz), reach)
 
 
 func _rebuild_waste_grid() -> void:
@@ -3147,71 +3175,39 @@ func _rebuild_waste_grid() -> void:
 			_waste_grid[cell] = [w]
 	_waste_grid_stale = false
 
+	_waste_grid_cells.assign(_waste_grid.keys())
+	_waste_grid_cells.sort_custom(_grid_cell_less)
+
 
 func query_waste_in_radius(pos: Vector3, max_dist: float) -> Array:
-	var result: Array = []
 	if _waste_grid_stale or (_waste_grid.is_empty() and not waste.is_empty()):
 		_rebuild_waste_grid()
 	var cx: int = int(floor(pos.x / WASTE_GRID_CELL_SIZE))
 	var cz: int = int(floor(pos.z / WASTE_GRID_CELL_SIZE))
 	var reach: int = maxi(1, int(ceil(max_dist / WASTE_GRID_CELL_SIZE)))
-	for dx in range(-reach, reach + 1):
-		for dz in range(-reach, reach + 1):
-			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _waste_grid.get(cell, [])
-			for w in bucket:
-				if is_instance_valid(w):
-					result.append(w)
+	var result: Array = _grid_candidates(_waste_grid, _waste_grid_cells, Vector2i(cx, cz), reach)
+	_prune_invalid(result)
 	return result
 
 
 func _begin_music_mods_frame() -> void:
-	_music_mods_frame = Engine.get_physics_frames()
+	var frame: int = Engine.get_physics_frames()
+	if _music_mods_frame == frame and is_instance_valid(_music_mc_cache):
+		return
+	_music_mods_frame = frame
 	_music_mc_cache = get_node_or_null("/root/MusicContext")
 
 
 func music_mods_for(f: Fish) -> Dictionary:
 	if f == null:
 		return {"speed": 1.0, "wander": 1.0, "accel": 1.0, "turn": 1.0, "scale": 1.0}
-	if _music_mods_frame != Engine.get_physics_frames():
-		_begin_music_mods_frame()
-	var bot_y: float = float(substrate_top_y if get("substrate_top_y") != null else 0.0) + 0.5
-	var top_y: float = 8.0
-	if world != null and world.get("WATER_HEIGHT") != null:
-		top_y = float(world.WATER_HEIGHT) - 0.4
-	var traits: Dictionary = {
-		"swim_pattern": f.swim_pattern,
-		"species": f.species,
-		"lead_score": f.lead_score,
-		"boldness": f._trait("boldness"),
-		"calm": f._trait("calm"),
-		"gluttony": f._trait("gluttony"),
-		"base_color": f.base_color,
-		"accent_color": f.accent_color,
-		"growth_factor": f.growth_factor,
-		"preferred_y": f.preferred_y,
-		"y_min": bot_y,
-		"y_max": top_y,
-		"mouth_orientation": f.mouth_orientation,
-		"finnage": f.finnage,
-		"eye_spot": f.eye_spot,
-		"color_vibrancy": (f._color_vibrancy(f.base_color) + f._color_vibrancy(f.accent_color)) * 0.5,
-	}
-	if _music_mc_cache != null and _music_mc_cache.has_method("fauna_behavior_mods"):
-		return _music_mc_cache.fauna_behavior_mods(f.get_instance_id(), traits)
-	var mr: Node = get_tree().get_first_node_in_group("music_reactive") if is_inside_tree() else null
-	if mr != null and mr.has_method("fauna_behavior_mods"):
-		return mr.fauna_behavior_mods(f.get_instance_id())
-	return {
-		"speed": 1.0, "wander": 1.0, "home_radius": 1.0, "home_pull": 1.0,
-		"tightness": 1.0, "accel": 1.0, "turn": 1.0, "dart_chance": 0.0,
-		"beat_dart": false, "wander_refresh": 1.0, "home_drift": 1.0,
-		"wander_amp": 1.0, "sweep": 0.0, "vertical": 0.0, "beat_phase": 0.0,
-		"scale": 1.0,
-	}
+	# Use the same frame-cached response as locomotion. The former duplicate
+	# trait builder omitted stress and sleep, so resting fish could still dance.
+	return f._music_mods()
 
 
 const ALGAE_GRID_CELL_SIZE: float = 1.5
+var _algae_grid_cells: Array[Vector2i] = []
 var _algae_grid: Dictionary = {}
 
 
@@ -3229,21 +3225,17 @@ func _rebuild_algae_grid() -> void:
 		else:
 			_algae_grid[cell] = [a]
 
+	_algae_grid_cells.assign(_algae_grid.keys())
+	_algae_grid_cells.sort_custom(_grid_cell_less)
+
 
 func query_algae_in_radius(pos: Vector3, max_dist: float) -> Array:
-	var result: Array = []
 	if _algae_grid.is_empty() and not algae.is_empty():
 		_rebuild_algae_grid()
 	var cx: int = int(floor(pos.x / ALGAE_GRID_CELL_SIZE))
 	var cz: int = int(floor(pos.z / ALGAE_GRID_CELL_SIZE))
 	var reach: int = maxi(1, int(ceil(max_dist / ALGAE_GRID_CELL_SIZE)))
-	for dx in range(-reach, reach + 1):
-		for dz in range(-reach, reach + 1):
-			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _algae_grid.get(cell, [])
-			for a in bucket:
-				result.append(a)
-	return result
+	return _grid_candidates(_algae_grid, _algae_grid_cells, Vector2i(cx, cz), reach)
 
 
 # Persistent fish grid for render-rate queries (snail predator scans).
@@ -3269,6 +3261,8 @@ func _rebuild_fish_query_grid() -> void:
 
 func query_fish_in_radius(pos: Vector3, radius_sq: float) -> Array:
 	var result: Array = []
+	if not pos.is_finite() or not is_finite(radius_sq) or radius_sq <= 0.0 or fish.is_empty():
+		return result
 	if _fish_query_grid.is_empty() and not fish.is_empty():
 		_rebuild_fish_query_grid()
 	var cx: int = int(floor(pos.x / SPATIAL_CELL_SIZE))
@@ -3277,7 +3271,9 @@ func query_fish_in_radius(pos: Vector3, radius_sq: float) -> Array:
 	for dx in range(-reach, reach + 1):
 		for dz in range(-reach, reach + 1):
 			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _fish_query_grid.get(cell, [])
+			if not _fish_query_grid.has(cell):
+				continue
+			var bucket: Array = _fish_query_grid[cell]
 			for f in bucket:
 				if not is_instance_valid(f) or f.get("_dying") == true:
 					continue
@@ -3310,7 +3306,9 @@ func _spatial_query(pos: Vector3, radius_sq: float, exclude: Node3D = null) -> A
 	for dx in _CELL_OFFSETS:
 		for dz in _CELL_OFFSETS:
 			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _spatial_grid.get(cell, [])
+			if not _spatial_grid.has(cell):
+				continue
+			var bucket: Array = _spatial_grid[cell]
 			for e in bucket:
 				if not is_instance_valid(e) or e.get("_dying") == true:
 					continue
@@ -3341,6 +3339,8 @@ func _rebuild_snail_grid() -> void:
 
 func query_snails_in_radius(pos: Vector3, max_dist: float, babies_only: bool = true) -> Array:
 	var result: Array = []
+	if not pos.is_finite() or not is_finite(max_dist) or max_dist <= 0.0:
+		return result
 	if _snail_grid.is_empty():
 		_rebuild_snail_grid()
 	var cx: int = int(floor(pos.x / SNAIL_GRID_CELL_SIZE))
@@ -3350,7 +3350,9 @@ func query_snails_in_radius(pos: Vector3, max_dist: float, babies_only: bool = t
 	for dx in range(-reach, reach + 1):
 		for dz in range(-reach, reach + 1):
 			var cell := Vector2i(cx + dx, cz + dz)
-			var bucket: Array = _snail_grid.get(cell, [])
+			if not _snail_grid.has(cell):
+				continue
+			var bucket: Array = _snail_grid[cell]
 			for sn in bucket:
 				if not is_instance_valid(sn):
 					continue
@@ -3748,9 +3750,28 @@ func _cadence_resilience_seed(_dt: float) -> void:
 	_resilience_cooldown_s = RESILIENCE_INTERVAL_S if spawned else 6.0
 
 
+# Opt-in diagnostic; never sampled per creature and off in normal play.
+var _tick_profile_enabled: bool = OS.get_environment("SIM_PROFILE") == "1"
+var tick_profile: Dictionary = {}
+var _tick_profile_stamp: int = 0
+
+func _profile_tick_stage(stage: String) -> void:
+	if not _tick_profile_enabled:
+		return
+	var now: int = Time.get_ticks_usec()
+	var stats: Vector2i = tick_profile.get(stage, Vector2i.ZERO)
+	stats.x += now - _tick_profile_stamp
+	stats.y += 1
+	tick_profile[stage] = stats
+	_tick_profile_stamp = now
+
+
 func _tick(dt: float) -> void:
+	if _tick_profile_enabled:
+		_tick_profile_stamp = Time.get_ticks_usec()
 	_boot_sim_cadence()
 	SimCadence.tick(dt)
+	_profile_tick_stage("cadence")
 	MindScheduler.poll_workers()
 	_sync_rng()
 	tank_age_s += dt
@@ -3796,6 +3817,7 @@ func _tick(dt: float) -> void:
 	if w_ripple != null and w_ripple.has_method("advance_substrate_ripple"):
 		w_ripple.advance_substrate_ripple(dt)
 
+	_profile_tick_stage("ambient")
 	# 2. Substrate field + periodic 3D terrain nutrient sync.
 	if substrate != null:
 		substrate.tick(dt)
@@ -3807,6 +3829,7 @@ func _tick(dt: float) -> void:
 		if w_sync != null and w_sync.has_method("sync_terrain_nutrients"):
 			w_sync.sync_terrain_nutrients()
 
+	_profile_tick_stage("substrate")
 	# 3. Plants — cap GPU-heavy growth steps per tick (Metal fence safety).
 	# Walstad balance: more growth budget when cycled + planted; less during spikes.
 	var cycle_bonus: float = 1.0
@@ -3875,6 +3898,7 @@ func _tick(dt: float) -> void:
 					p.get_instance_id(), p.global_position,
 					strip * p.nutrient_demand * 0.4)
 
+	_profile_tick_stage("plants")
 	# 4. Fish: gather neighbors, tick, collect events.
 	var events: Array[Dictionary] = []
 	# Pre-collect fry list and baby snails for predator AI.
@@ -3940,13 +3964,16 @@ func _tick(dt: float) -> void:
 	# insert pass replaces the old O(N²) nested neighbor loop.
 	_spatial_rebuild(fish)
 	_mind_tick_index += 1
+	_profile_tick_stage("fish_setup")
 	_MindBoidsBufferScript.capture(fish, _mind_tick_index)
 	_MindBoidsComputeScript.run()
+	_profile_tick_stage("school_neighbours")
 	var motion_cfg: Node = _cfg()
 	_MotionFieldScript.sync_tuning(motion_cfg)
 	_MotionFieldScript.tick(fish, dt, world)
 	_FaunaSpeciesBatchScript.set_active(_FaunaSpeciesBatchScript.should_enable(fish_n))
 
+	_profile_tick_stage("school_fields")
 	# Off-frustum brain throttle. Flip the phase each tick so off-screen
 	# fish whose (instance_id % 2) matches run their brain; the other half
 	# skip. Net effect: brain ticks at 5 Hz for entities the player can't
@@ -3981,6 +4008,7 @@ func _tick(dt: float) -> void:
 			mind_eligible += 1
 	_MindTickScript.set_eligible_fish(mind_eligible)
 
+	_profile_tick_stage("brain_setup")
 	for f in fish:
 		if not is_instance_valid(f):
 			continue
@@ -4017,9 +4045,6 @@ func _tick(dt: float) -> void:
 	MindBrainPool.flush_tick()
 	_MindDriveSoAScript.clear_flags(fish)
 
-	if _FaunaSpeciesBatchScript.active() and _FaunaSpeciesBatchScript.sync_slot_count() > 0:
-		_FaunaSpeciesBatchScript.sync_all()
-
 	if world != null and world.has_method("set_tank_phi_coherence"):
 		world.set_tank_phi_coherence(FishSparkExpression.tank_phi_coherence(fish))
 
@@ -4039,6 +4064,7 @@ func _tick(dt: float) -> void:
 					amb_audio.pulse_contagion_harmonic(spike)
 		_prev_tank_arousal = mean_arousal
 
+	_profile_tick_stage("fish")
 	# 4b. Shrimp — rebuild grid with shrimp entities.
 	_spatial_rebuild(shrimp)
 
@@ -4075,6 +4101,7 @@ func _tick(dt: float) -> void:
 
 	# 4d. Periodic footprint enforcement — SimCadence (~0.22 s).
 
+	_profile_tick_stage("shrimp")
 	# 5. Waste — batch physics for drifting detritus (#61), then per-particle logic.
 	var sub_top: float = substrate_top_y if substrate != null else 0.0
 	_waste_physics_batched = true
@@ -4117,8 +4144,11 @@ func _tick(dt: float) -> void:
 	# 6. Eggs - tick incubation, hatch when ready.
 	var hatched: Array[FishEgg] = []
 	var non_viable: Array[FishEgg] = []
+	# One environmental sample for the whole brood, not a world query per egg.
+	var egg_rate: float = FishEgg.development_rate(_tank_warmth_sample(), dissolved_o2) \
+		if not eggs.is_empty() else 1.0
 	for e in eggs:
-		if e.tick(dt):
+		if e.tick(dt, egg_rate):
 			if e.viable:
 				hatched.append(e)
 			else:
@@ -4207,6 +4237,7 @@ func _tick(dt: float) -> void:
 				_spawn_waste(Vector3(px, fy2, pz), 0.4, WasteParticle.KIND_FOOD)
 			log_story_event("Something drifts in at the surface — a brief feeding frenzy.")
 
+	_profile_tick_stage("broods_food")
 	# 6c. Algae bloom dynamics.
 	#
 	# Real planted tanks cycle: nutrients spike from over-feeding or new
@@ -4532,6 +4563,7 @@ func _tick(dt: float) -> void:
 			a.queue_free()
 		ai -= 1
 
+	_profile_tick_stage("chemistry_algae")
 	# 7. Resolve events from fish + shrimp.
 	#
 	# Targets that get consumed (waste particles, prey, snails, algae) are

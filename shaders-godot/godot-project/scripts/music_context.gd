@@ -91,6 +91,8 @@ func now_playing() -> Dictionary:
 		"genre": String(_ctx.genre),
 		"section": String(_ctx.section),
 		"descriptor": describe_now_playing(),
+		"swing": float(_ctx.swing),
+		"confidence": float(_ctx.confidence),
 	}
 
 
@@ -102,12 +104,15 @@ func describe_now_playing() -> String:
 	var tempo: float = float(_ctx.tempo)
 	var feel: String = "slow" if tempo < 80.0 else (
 		"steady" if tempo < 110.0 else ("upbeat" if tempo < 140.0 else "driving"))
-	return "a %s, %s %s-key song" % [feel, String(_ctx.mood), String(_ctx.mode)]
+	var texture: String = "soft, swung" if String(_ctx.genre) == "lofi" else String(_ctx.mood)
+	if float(_ctx.confidence) < 0.35:
+		return "a %s pulse in the music" % feel
+	return "a %s, %s %s-key passage" % [feel, texture, String(_ctx.mode)]
 
 
 # Map the raw features into valence (sad↔happy), arousal (calm↔energetic), and a
 # mood label. Smoothed so the read is stable, not jittery frame-to-frame.
-func _derive_understanding() -> void:
+func _derive_understanding(dt: float = 1.0 / 60.0) -> void:
 	var mode_term: float = 0.18 if String(_ctx.mode) == "major" else -0.18
 	var bright: float = float(_ctx.brightness)
 	var tempo_norm: float = clampf((float(_ctx.tempo) - 60.0) / 120.0, 0.0, 1.0)
@@ -121,8 +126,9 @@ func _derive_understanding() -> void:
 		0.5 + mode_term + (bright - 0.5) * 0.30 + (tempo_norm - 0.45) * 0.12, 0.0, 1.0)
 	var arousal_target: float = clampf(
 		energy * 0.5 + tempo_norm * 0.3 + onset_density * 0.2, 0.0, 1.0)
-	_ctx.valence = lerpf(float(_ctx.valence), valence_target, 0.1)
-	_ctx.arousal = lerpf(float(_ctx.get("arousal", 0.5)), arousal_target, 0.1)
+	var blend: float = 1.0 - exp(-maxf(dt, 0.0) * 2.0)
+	_ctx.valence = lerpf(float(_ctx.valence), valence_target, blend)
+	_ctx.arousal = lerpf(float(_ctx.get("arousal", 0.5)), arousal_target, blend)
 	_ctx.mood = _mood_label(float(_ctx.valence), float(_ctx.arousal))
 
 
@@ -201,6 +207,8 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	var gluttony: float = float(traits.get("gluttony", 0.5))
 
 	var i: float = _dance_intensity() * _tank_health_mult()
+	if i <= 0.001:
+		return _FAUNA_NEUTRAL.duplicate()
 	var confidence: float = clampf(float(_ctx.confidence), 0.0, 1.0)
 	if confidence < 0.38:
 		i = minf(i, 0.28)
@@ -314,7 +322,7 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 	if _overhead_view:
 		motion_trail = maxf(motion_trail, clampf(sweep * float(_ctx.energy) * 0.82, 0.0, 0.75))
 
-	return {
+	var result: Dictionary = {
 		"speed": (1.0 + groove * 1.25 * i + anticipation * 0.65 * i + speed_bonus * i) / tempo_factor * float(species_mods.get("speed", 1.0)),
 		"wander": (1.0 + mid * 1.15 * i + eased_energy * 0.45 * i) * float(species_mods.get("wander", 1.0)) * wander_jitter,
 		"wander_amp": 1.0 + groove * 1.05 * i + anticipation * 0.28 * i,
@@ -363,6 +371,21 @@ func fauna_behavior_mods(instance_id: int, traits: Dictionary = {}) -> Dictionar
 		"swing_sway": clampf(float(_ctx.swing) * groove, 0.0, 1.0),
 		"overhead_view": _overhead_view,
 	}
+	if String(_ctx.genre) == "lofi" and String(_ctx.source) == "generative":
+		var comfort: float = (1.0 - clampf(float(traits.get("stress", 0.0)), 0.0, 1.0)) \
+			* (1.0 - clampf(float(traits.get("sleep_depth", 0.0)), 0.0, 1.0))
+		var response: float = comfort * lerpf(0.12, 0.28, boldness)
+		for key in ["speed", "wander", "home_radius", "home_pull", "tightness", "accel", "turn",
+			"wander_refresh", "home_drift", "wander_amp", "scale", "bass_radius"]:
+			result[key] = lerpf(1.0, float(result[key]), response)
+		for key in ["sweep", "vertical", "dance_bank", "dart_chance", "tail_amp_extra", "pec_flutter",
+			"kick_thump", "snare_flick", "fin_flare", "eye_flash", "motion_trail", "swing_sway",
+			"glide_hold", "wave_tail", "downbeat_pulse", "dance_blend", "treble_shimmer"]:
+			result[key] = float(result[key]) * response
+		result.wag_freq_target = float(result.wag_freq_target) * response
+		result.beat_dart = false
+		result.soloist = false
+	return result
 
 
 func compute_dance_target(
@@ -536,9 +559,11 @@ func _showiness() -> float:
 
 
 func _should_dance() -> bool:
+	if not bool(_ctx.active):
+		return false
 	if String(_ctx.source) == "external":
 		return bool(TankConfig.music_sync_fish)
-	return bool(TankConfig.music_enabled)
+	return bool(TankConfig.music_enabled) and bool(TankConfig.music_sync_fish)
 
 
 func _dance_intensity() -> float:
@@ -565,7 +590,7 @@ func _refresh(dt: float) -> void:
 	if ext_live:
 		_populate_external(ext, dt)
 	elif gen_live:
-		_populate_generative(amb)
+		_populate_generative(amb, dt)
 	else:
 		_idle_decay(dt)
 
@@ -583,7 +608,7 @@ func _refresh(dt: float) -> void:
 	_maybe_drop_bubbles(dt)
 
 
-func _populate_generative(amb: Node) -> void:
+func _populate_generative(amb: Node, dt: float = 1.0 / 60.0) -> void:
 	var status: Dictionary = amb.get_live_status() if amb.has_method("get_live_status") else {}
 	var persona_key: String = String(TankConfig.music_persona) if "music_persona" in TankConfig else "none"
 	var persona: Dictionary = amb.PERSONAS.get(persona_key, {}) if "PERSONAS" in amb else {}
@@ -603,19 +628,20 @@ func _populate_generative(amb: Node) -> void:
 	_ctx.mode = String(status.get("scale_mode", "major"))
 	_ctx.swing = float(status.get("swing", persona.get("swing", 0.0)))
 	_ctx.humanize = float(status.get("humanize", persona.get("humanize", 0.0)))
-	_ctx.energy = clampf(float(status.get("vitality", 0.5)), 0.0, 1.0)
-	_ctx.energy_env = lerpf(float(_ctx.energy_env), _ctx.energy, 0.08)
+	_ctx.energy = clampf(float(status.get("energy", TankConfig.music_energy)), 0.0, 1.0)
+	_ctx.energy_env = lerpf(float(_ctx.energy_env), _ctx.energy, 1.0 - exp(-maxf(dt, 0.0) * 4.0))
 	_ctx.bass = clampf(_ctx.energy * 0.85, 0.0, 1.0)
 	_ctx.mid = clampf(_ctx.energy * 0.7, 0.0, 1.0)
 	_ctx.high = clampf(_ctx.energy * 0.55, 0.0, 1.0)
 	_ctx.beat = maxf(0.0, cos(float(_ctx.beat_phase) * TAU) * 0.5 + 0.5) * 0.2
-	_ctx.valence = 0.62 if _ctx.mode == "major" else 0.38
 	_ctx.danceability = clampf(_ctx.energy * 0.75 + 0.2, 0.0, 1.0)
 	_ctx.confidence = 1.0
 	_ctx.onsets = []
 	_ctx.genre = _genre_from_persona(persona_key, persona)
 	_ctx.mood = "bright" if _ctx.mode == "major" else "moody"
 	_ctx.timbre_sharp = lerpf(0.35, 0.55, float(_ctx.energy))
+	_ctx.brightness = 0.32 if _ctx.genre == "lofi" else _ctx.timbre_sharp
+	_derive_understanding(dt)
 
 
 func _populate_external(mr: Node, dt: float) -> void:
@@ -657,7 +683,7 @@ func _populate_external(mr: Node, dt: float) -> void:
 	_ctx.section = String(clock.get("section", _ctx.phrase_state))
 	# Fuse the raw features into a slow, stable semantic read (valence / arousal /
 	# mood) the rest of the game can "understand" — cheap arithmetic, smoothed.
-	_derive_understanding()
+	_derive_understanding(dt)
 	_ctx.genre = MusicChoreography.classify_genre(
 		_ctx.tempo, _ctx.energy, _ctx.danceability, _ctx.valence)
 
@@ -877,7 +903,8 @@ func _genre_from_persona(persona_key: String, persona: Dictionary) -> String:
 
 
 func _generative_live(_amb: Node) -> bool:
-	return bool(TankConfig.music_enabled)
+	return bool(TankConfig.music_enabled) and bool(TankConfig.music_ambient_enabled) \
+		and float(TankConfig.music_volume) > 0.001
 
 
 func _resolved_genre() -> String:

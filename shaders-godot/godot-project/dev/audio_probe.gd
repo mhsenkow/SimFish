@@ -71,6 +71,7 @@ func _ready() -> void:
 	var out_name: String = "ambient_probe"
 	var force_full: bool = false
 	var force_simple: bool = false
+	var preset_key: String = ""
 	for a in args:
 		if a.begins_with("seconds="):
 			seconds = float(a.split("=")[1])
@@ -88,6 +89,14 @@ func _ready() -> void:
 			_apply_legacy_groove()
 		elif a == "voices":
 			_with_voices = true
+		elif a.begins_with("preset="):
+			preset_key = a.trim_prefix("preset=")
+	if not preset_key.is_empty():
+		var studio: Script = load("res://scripts/sound_panel.gd")
+		for preset in studio.PRESETS:
+			if preset.key == preset_key:
+				for key in preset.values:
+					get_node("/root/TankConfig").set(key, preset.values[key])
 
 	if STATES.has(state):
 		var sm: Dictionary = n.get("_smooth")

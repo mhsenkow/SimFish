@@ -76,7 +76,7 @@ static func trim(layer: Control) -> void:
 
 # Add a toast to the layer and wire its lifecycle into the stack.
 static func present(layer: Control, cfg: Dictionary) -> Toast:
-	if layer == null or not is_instance_valid(layer):
+	if not is_instance_valid(layer) or not layer.is_inside_tree() or layer.is_queued_for_deletion():
 		return null
 	var t: Toast = Toast.create(cfg)
 	layer.add_child(t)
@@ -91,12 +91,14 @@ static func present(layer: Control, cfg: Dictionary) -> Toast:
 
 
 static func _deferred_relayout(layer: Control) -> void:
-	# Two frames: one for the container to measure the new child, one for
-	# the position to take effect before it is drawn.
-	var tree: SceneTree = layer.get_tree()
-	if tree == null:
-		relayout(layer)
+	if not is_instance_valid(layer) or not layer.is_inside_tree():
 		return
+	# Do not retain a Node argument across suspension: teardown can free the
+	# layer before either frame resumes.
+	var layer_ref: WeakRef = weakref(layer)
+	var tree: SceneTree = layer.get_tree()
 	await tree.process_frame
 	await tree.process_frame
-	relayout(layer)
+	var live_layer := layer_ref.get_ref() as Control
+	if is_instance_valid(live_layer) and live_layer.is_inside_tree() and not live_layer.is_queued_for_deletion():
+		relayout(live_layer)

@@ -521,14 +521,20 @@ static func schedule_couch_focus(root: Node,
 	if root == null or not is_instance_valid(root):
 		return
 	var tree := root.get_tree()
+	# Capturing a Node directly logs a freed-lambda error before the validity
+	# guard runs if the player leaves the scene before the next frame.
+	var panel_ref: WeakRef = weakref(root)
 	if tree == null:
 		# Not in tree yet — try again once added.
 		root.ready.connect(func():
-			schedule_couch_focus(root, prefer_focus_text), CONNECT_ONE_SHOT)
+			var panel: Node = panel_ref.get_ref()
+			if panel != null:
+				schedule_couch_focus(panel, prefer_focus_text), CONNECT_ONE_SHOT)
 		return
 	tree.process_frame.connect(func():
-		if is_instance_valid(root):
-			grab_couch_focus(root, prefer_focus_text), CONNECT_ONE_SHOT)
+		var panel: Node = panel_ref.get_ref()
+		if panel != null:
+			grab_couch_focus(panel, prefer_focus_text), CONNECT_ONE_SHOT)
 
 
 static func _preferred_focusable(root: Node,
@@ -942,6 +948,8 @@ static func make_panel_scroll() -> ScrollContainer:
 static func fit_panel_content(root: Node) -> void:
 	if root == null:
 		return
+	if root is ScrollContainer:
+		(root as ScrollContainer).follow_focus = true
 	if root is CheckBox or root is CheckButton:
 		var b: Button = root as Button
 		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

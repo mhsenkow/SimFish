@@ -1,0 +1,2 @@
+# Known smoke failures. Empty after v0.2.38 contract fixes.
+# Add only independently reproduced regressions with a concrete reason.

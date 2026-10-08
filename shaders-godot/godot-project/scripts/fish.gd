@@ -48,6 +48,7 @@ const FishVolition = preload("res://scripts/fish_volition.gd")
 const FaunaVoxelBuilder = preload("res://scripts/fauna_voxel_builder.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const SpeciesLibScript = preload("res://scripts/species_library.gd")
+const FishExperience = preload("res://scripts/fish_experience.gd")
 const FishSpawnSettle = preload("res://scripts/fish_spawn_settle.gd")
 
 const MATURITY_FRY := 0
@@ -337,6 +338,10 @@ var _prospective: Dictionary = {}
 var _learned_mind: Dictionary = {}
 @warning_ignore("unused_private_class_variable")
 var _belief_cue: Dictionary = {}
+var _experience_memory: Dictionary = {}
+var _experience_response: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _experience_elapsed: float = 0.0
 var _voiced_wake: bool = false
 # A committed short-term goal so the fish doesn't re-decide every frame. The
 # goal_kind string is diagnostic; goal_point is where it wants to go; goal_timer
@@ -1246,6 +1251,38 @@ func _try_commit_return(_events: Dictionary, desired: Vector3, eff_max: float,
 # Seasonal breeding readiness in roughly [0.7, 1.3] from the real-world month:
 # peaks in spring (Mar-May), dips in winter. Matches the seasonal palette drift
 # so the tank's look and its biology share one annual rhythm.
+# UI explanations share the actual physiology gates used by mate seeking.
+func breeding_condition_reason(season_breed: float = -1.0) -> String:
+	if maturity != MATURITY_ADULT:
+		return tr("Still growing")
+	if breed_cooldown > 0.0:
+		return tr("Recovering after breeding")
+	if hunger >= 0.5:
+		return tr("Needs food")
+	if season_breed < 0.0:
+		season_breed = _season_breed_mult()
+	if energy <= 0.65 / season_breed:
+		return tr("Needs rest")
+	if stress >= 0.4 * season_breed:
+		return tr("Needs calmer conditions")
+	return ""
+
+
+func breeding_status_label() -> String:
+	if _gestation_progress > 0.0:
+		return tr("Gestating · %d%%") % int(clampf(_gestation_progress, 0.0, 1.0) * 100.0)
+	if _mouthbrood_progress > 0.0:
+		return tr("Mouthbrooding · %d young") % _mouthbrood_count
+	if partner != null and is_instance_valid(partner):
+		return tr("Courting")
+	var reason: String = breeding_condition_reason()
+	if reason != "":
+		return reason
+	if is_livebearer and sex == 0:
+		return tr("Ready to respond to a mate")
+	return tr("Conditions suitable; mate and habitat still required")
+
+
 func _season_breed_mult() -> float:
 	var month: int = Time.get_datetime_dict_from_system().get("month", 6)
 	# Phase so April (month 4) sits near the peak.
@@ -1315,6 +1352,7 @@ func remember(kind: String, pos: Vector3, ttl: float = 12.0) -> void:
 				FishMind.record_salient(self, "fed", "hand-fed near the glass", 0.45 + familiarity * 0.2, pos)
 				_log_journal_event("fed near the glass", PackedStringArray(["fed"]))
 		"startled":
+			FishExperience.observe(self, "alarm", pos)
 			_confirm_region_hypothesis("threat")
 			FishMind.record_salient(self, "startled", "a sudden fright", 0.55 + spooked * 0.2, pos)
 			_log_journal_event("startled by something sudden", PackedStringArray(["startle"]))
@@ -1392,14 +1430,32 @@ func _sleep_skips_mind_tick(dt: float) -> bool:
 # behavior tiers so mood/curiosity/spooked/familiarity are fresh when the
 # steering reads them. Returns nothing; mutates state in place. Throttle-safe:
 # everything here is O(1) plus a small memory sweep.
+static var life_profile: Dictionary = {}
+var _life_profile_enabled: bool = OS.get_environment("SIM_PROFILE") == "1"
+var _life_profile_stamp: int = 0
+
+func _profile_life_stage(stage: String) -> void:
+	if not _life_profile_enabled:
+		return
+	var now: int = Time.get_ticks_usec()
+	var stats: Vector2i = life_profile.get(stage, Vector2i.ZERO)
+	stats.x += now - _life_profile_stamp
+	stats.y += 1
+	life_profile[stage] = stats
+	_life_profile_stamp = now
+
+
 func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = []) -> void:
+	_music_mods_render_stamp = -1
+	if _life_profile_enabled:
+		_life_profile_stamp = Time.get_ticks_usec()
 	assert(_mind_subsystem_fields_alive())
 	var _ms = MindChannel.for_cycle(self, is_guardian or fish_name != "" or familiarity > 0.4)
 	var _brain_async: bool = MindBrainPool.enabled()
 	if _brain_async:
 		MindBrainPool.apply_pending(self, _ms)
-	var _prev_snap: Dictionary = MindCycle.snapshot_prev(self)
-	var _tick_snap: Dictionary = _ms.snapshot()
+	var _tick_snap: Dictionary = {}
+	_profile_life_stage("state_capture")
 	# Decay working memory with emotionally-weighted rates (#25).
 	if not memory.is_empty():
 		var i: int = 0
@@ -1427,13 +1483,19 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	# META #10 — affect drifts toward the school's mood (excitement/calm spread).
 	if MindAblation.enabled(MindAblation.CONTAGION):
 		MindContagion.tick(self, neighbors, dt)
+	_profile_life_stage("emotion_signals")
 	var _mind_sleep_skip: bool = _sleep_skips_mind_tick(dt)
 	var _mind_gate: Dictionary = _MindTickScript.advance(self, sim, dt)
 	var _mind_dt: float = float(_mind_gate.get("mind_dt", dt))
 	var _run_mind: bool = bool(_mind_gate.get("run", true)) and not _mind_sleep_skip
+	# A gated/sleeping tick never stores a cognitive snapshot. Avoid copying
+	# its workspace and self-model until a cycle will actually consume them.
+	if _run_mind:
+		_tick_snap = _ms.snapshot()
 	if not _brain_async and _run_mind:
 		_MindTickScript.on_mind_tick_start(self)
 		MindCycle.run_attention_phase(self, sim, _ms, _mind_dt)
+	_profile_life_stage("attention")
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
 		FishVolition.willed_attention(self, "novelty")
 	if _run_mind:
@@ -1500,10 +1562,16 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 		satisfaction += (float(sim.dissolved_o2) - 0.6) * 0.4
 	var baseline: float = FishMind.mood_baseline(self)
 	var mood_target: float = clampf(baseline + satisfaction, -1.0, 1.0)
+	_profile_life_stage("goals")
 	FishMind.tick_mood_disposition(self, dt, satisfaction)
 	mood = lerpf(mood, mood_target, clampf(dt * 0.4, 0.0, 1.0))
 	FishMind.tick_affect(self, dt)
+	FishExperience.tick(self, dt)
 	_tick_music_affect(dt)
+	# Binding and the eventual channel commit must see the affect just felt,
+	# rather than restoring the pre-tick snapshot over the music response.
+	_ms.mood = mood
+	_ms.arousal = arousal
 	if sim != null and sim.has_method("sim_day"):
 		MakeItThere.apply_mood_weather(self, int(sim.sim_day()), dt)
 	var enrich: float = FishMindScience.tank_enrichment(sim)
@@ -1519,6 +1587,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	FishMindScience.tick_sleep_replay(self)
 	FishMindScience.tick_prospective(self, dt)
 	FishMindScience.tick_neuromodulators(self, dt, satisfaction, surprise)
+	_profile_life_stage("affect")
 	if _run_mind and not neighbors.is_empty() and MindAblation.enabled(MindAblation.THEORY_OF_MIND):
 		FishMindScience.tick_theory_of_mind(self, neighbors)
 		for n in neighbors:
@@ -1568,6 +1637,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	lead_target += sin(age * 0.13 + float(get_instance_id() % 100)) * 0.12
 	lead_score = lerpf(lead_score, clampf(lead_target, 0.0, 1.0), clampf(dt * 0.2, 0.0, 1.0))
 
+	_profile_life_stage("social_memory")
 	FishMind.tick_salient_decay(self, dt)
 	if _run_mind:
 		if _brain_async:
@@ -1580,6 +1650,7 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 		MindChannel.commit(self, _ms)
 		MindCycle.store_snapshot(self, _tick_snap, _ms)
 		_MindTickScript.on_mind_tick_end(self)
+	_profile_life_stage("cognition")
 	if _thought_stream != "":
 		_thought_stream_age += dt
 		if _thought_stream != _last_stream_logged:
@@ -1607,6 +1678,7 @@ func _record_meal_at(pos: Vector3, weight: float = 1.0, food_subtype: int = -1) 
 	mood = clampf(mood + 0.12 * weight, -1.0, 1.0)
 	FishMind.nudge_arousal(self, 0.12 * weight)
 	if food_subtype >= 0:
+		FishExperience.observe(self, "food", pos)
 		FishMind.record_food_preference(self, food_subtype, weight)
 	var cell: int = FishMind.heatmap_cell_at(self, pos)
 	if cell >= 0:
@@ -1744,6 +1816,8 @@ var _bout_w: Vector4 = Vector4.ZERO      # personal rhythm freqs + phases; x==0 
 var _cruise_mult: float = 1.0
 @warning_ignore("unused_private_class_variable")
 var _turn_rate_state: float = 0.0
+@warning_ignore("unused_private_class_variable")
+var _turn_axis_state: Vector3 = Vector3.UP
 @warning_ignore("unused_private_class_variable")
 var _lb_target: Fish = null
 @warning_ignore("unused_private_class_variable")
@@ -1900,6 +1974,11 @@ var _pec_left_pivot: Node3D = null
 var _pec_right_pivot: Node3D = null
 var _anal_pivot: Node3D = null
 var _swim_phase: float = 0.0
+var _motor_phase: float = 0.0
+var _pec_phase: float = 0.0
+var _gill_phase: float = 0.0
+var _fin_tail_activity: float = 0.8
+var _fin_effort_cache: Dictionary = {}
 var _music_kick_pulse: float = 0.0
 var _music_snare_flick: float = 0.0
 var _music_trail_ghost: float = 0.0
@@ -2034,6 +2113,9 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 		r.randf_range(-0.5, 0.5),
 	)
 	_swim_phase = r.randf() * TAU
+	_motor_phase = _swim_phase
+	_pec_phase = _swim_phase
+	_gill_phase = _swim_phase
 	_wag_freq_jitter = r.randf_range(0.88, 1.12)
 	_gait_amp_bias = r.randf_range(0.82, 1.18)
 	_motion_glide_bias = r.randf_range(0.35, 0.72)
@@ -2740,14 +2822,17 @@ func _build_body() -> void:
 	var mat_eye_hi := VoxelMat.make(Color8(210, 228, 235))
 	var eye_hi: float = maxf(v * 0.08 * hp * es, v * 0.06 * hp)
 	var eye_lift: float = float(asym["eye_lift"])
+	# The head extends to 0.475v: the old 0.4v centres buried both
+	# pupils and catchlights inside it at the default eye size.
+	var eye_x: float = v * 0.475 * hp + eye_core * 0.18
 	for x_side in [-1.0, 1.0]:
-		_add_voxel_to(head, Vector3(x_side * v * 0.4 * hp, v * 0.1 * hp, -2.38 * v),
+		_add_voxel_to(head, Vector3(x_side * eye_x, v * 0.1 * hp, -2.38 * v),
 			Vector3(eye_core, eye_core, eye_core), mat_eye)
 		# The catchlight sits a hair higher on one side than the other. At a
 		# 512x288 render that is a single pixel of difference, and it is enough
 		# to stop two fish reading as the same sprite flipped.
 		_add_voxel_to(head,
-			Vector3(x_side * v * 0.42 * hp, (0.14 + x_side * eye_lift) * v * hp, -2.44 * v),
+			Vector3(x_side * (eye_x + eye_core * 0.45), (0.14 + x_side * eye_lift) * v * hp, -2.44 * v),
 			Vector3(eye_hi, eye_hi, eye_hi), mat_eye_hi)
 	# Mouth indicator: a small accent voxel positioned by mouth_orientation.
 	# +1 = downturned (sifters), -1 = upturned (surface feeders), 0 = neutral.
@@ -3043,7 +3128,7 @@ func _build_body() -> void:
 	for r in ray_n:
 		var rz: float = lerpf(-0.15, 0.85, float(r) / float(maxi(1, ray_n - 1))) * v
 		var ray_h: float = v * (0.12 + 0.10 * float(r)) * dh
-		_add_voxel_to(_dorsal_pivot, Vector3(0, ray_h, rz),
+		_add_dorsal_fin_voxel(Vector3(0, ray_h, rz),
 			Vector3(v * 0.07, v * (0.18 + 0.06 * float(r)) * dh, v * 0.32), mat_fin)
 	# Long-based dorsal: stretch the dorsal's base fore-and-aft along the back
 	# (plecos, bichirs, oscars, knifefish). Scales with dorsal_length_factor.
@@ -3052,7 +3137,7 @@ func _build_body() -> void:
 		var dn: int = clampi(1 + int((dlen - 1.0) * 3.0), 1, 5)
 		for i in dn:
 			var dz: float = lerpf(-0.5, 1.2, float(i) / float(maxi(1, dn - 1))) * v * dlen
-			_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.18 * dh, dz),
+			_add_dorsal_fin_voxel(Vector3(0, v * 0.18 * dh, dz),
 				Vector3(v * 0.12, v * 0.34 * dh, v * 0.5), mat_fin)
 	# Second (soft) dorsal: a separate fin block set behind the first. The
 	# spiny + soft two-dorsal arrangement of most perciforms — gobies,
@@ -3076,14 +3161,14 @@ func _build_body() -> void:
 	_anal_pivot.position = Vector3(0, -v * 0.65, v * 1.6)
 	_body_mid_pivot.add_child(_anal_pivot)
 	var afl: float = anal_fin_length_factor
-	_add_voxel_to(_anal_pivot, Vector3(0, -v * 0.2 * afl, 0),
+	_add_anal_fin_voxel(Vector3(0, -v * 0.2 * afl, 0),
 		Vector3(v * 0.12, v * 0.35 * afl, v * 0.7), mat_fin)
 	if afl >= 1.0:
 		# Trailing voxels stretch BACK along Z, sweeping downward with the
 		# magnitude of afl. Two segments give the fin a tapered profile.
-		_add_voxel_to(_anal_pivot, Vector3(0, -v * 0.45 * afl, v * 0.3),
+		_add_anal_fin_voxel(Vector3(0, -v * 0.45 * afl, v * 0.3),
 			Vector3(v * 0.11, v * 0.4 * afl, v * 0.65), mat_fin)
-		_add_voxel_to(_anal_pivot, Vector3(0, -v * 0.85 * afl, v * 0.65),
+		_add_anal_fin_voxel(Vector3(0, -v * 0.85 * afl, v * 0.65),
 			Vector3(v * 0.10, v * 0.45 * afl, v * 0.5), mat_fin)
 	# Adipose fin: small lobe between dorsal and tail, on the dorsal line.
 	# Defines the tetra silhouette (also present on catfish, salmonids,
@@ -3155,52 +3240,59 @@ func _build_body() -> void:
 	# Tail voxels use mat_tail (the bright zone). Dorsal / anal / pectorals
 	# above continue to use mat_fin.
 	match tail_shape:
-		1:  # fan / round
-			for ang in [-0.75, -0.25, 0.25, 0.75]:
+		1:  # fan / round — a continuous widening membrane, not floating plates
+			var fan_length: float = v * 0.95 * fl * maxf(1.0, finnage)
+			var fan_step: float = fan_length / 6.0
+			for strip in 6:
+				var progress: float = float(strip + 1) / 6.0
+				var half_height: float = v * lerpf(0.28, 1.15 * maxf(1.0, finnage), progress)
+				# Round the outer corners while retaining a broad guppy fan.
+				if strip == 5:
+					half_height *= 0.88
 				_add_voxel_to(_tail_pivot,
-					Vector3(0, v * ang * 0.6, v * (0.95 * fl)),
-					Vector3(v * 0.15, v * 0.4, v * (0.55 * fl)), mat_tail)
+					Vector3(0, 0, v * 0.35 + (float(strip) + 0.5) * fan_step),
+					Vector3(v * 0.12, half_height * 2.0, fan_step + v * 0.08), mat_tail)
 		2:  # lyre - long top + bottom trailing rays
-			_add_voxel_to(_tail_pivot, Vector3(0, v * 0.35 * tf, v * (0.8 * fl)),
+			_add_tail_fin_voxel(Vector3(0, v * 0.35 * tf, v * (0.8 * fl)),
 				Vector3(v * 0.13, v * 0.35, v * (0.5 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, -v * 0.35 * tf, v * (0.8 * fl)),
+			_add_tail_fin_voxel(Vector3(0, -v * 0.35 * tf, v * (0.8 * fl)),
 				Vector3(v * 0.13, v * 0.35, v * (0.5 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot,
+			_add_tail_fin_voxel(
 				Vector3(0, v * (1.1 * fl * tf), v * (1.7 * fl)),
 				Vector3(v * 0.12, v * (0.5 * fl), v * (0.7 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot,
+			_add_tail_fin_voxel(
 				Vector3(0, v * (-1.1 * fl * tf), v * (1.7 * fl)),
 				Vector3(v * 0.12, v * (0.5 * fl), v * (0.7 * fl)), mat_tail)
 		3:  # square paddle
-			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (0.95 * fl)),
+			_add_tail_fin_voxel(Vector3(0, 0, v * (0.95 * fl)),
 				Vector3(v * 0.15, v * 1.0, v * (0.7 * fl)), mat_tail)
 		4:  # lunate / crescent — fast pelagic cruisers (tuna, jacks)
 			# Stiff narrow crescent: long swept tips top + bottom, pinched
 			# centre. tail_fork_depth widens the spread of the tips.
-			_add_voxel_to(_tail_pivot, Vector3(0, v * (0.9 * fl * tf), v * (1.0 * fl)),
+			_add_tail_fin_voxel(Vector3(0, v * (0.9 * fl * tf), v * (1.0 * fl)),
 				Vector3(v * 0.12, v * (0.7 * fl), v * (0.45 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, v * (-0.9 * fl * tf), v * (1.0 * fl)),
+			_add_tail_fin_voxel(Vector3(0, v * (-0.9 * fl * tf), v * (1.0 * fl)),
 				Vector3(v * 0.12, v * (0.7 * fl), v * (0.45 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, v * (1.5 * fl * tf), v * (1.75 * fl)),
+			_add_tail_fin_voxel(Vector3(0, v * (1.5 * fl * tf), v * (1.75 * fl)),
 				Vector3(v * 0.1, v * (0.5 * fl), v * (0.35 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, v * (-1.5 * fl * tf), v * (1.75 * fl)),
+			_add_tail_fin_voxel(Vector3(0, v * (-1.5 * fl * tf), v * (1.75 * fl)),
 				Vector3(v * 0.1, v * (0.5 * fl), v * (0.35 * fl)), mat_tail)
 		5:  # lanceolate — single pointed spear (many gobies, blennies, eels)
-			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (0.9 * fl)),
+			_add_tail_fin_voxel(Vector3(0, 0, v * (0.9 * fl)),
 				Vector3(v * 0.15, v * 0.7, v * (0.6 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (1.5 * fl)),
+			_add_tail_fin_voxel(Vector3(0, 0, v * (1.5 * fl)),
 				Vector3(v * 0.12, v * 0.32, v * (0.55 * fl)), mat_tail)
-			_add_voxel_to(_tail_pivot, Vector3(0, 0, v * (2.0 * fl)),
+			_add_tail_fin_voxel(Vector3(0, 0, v * (2.0 * fl)),
 				Vector3(v * 0.1, v * 0.12, v * (0.45 * fl)), mat_tail)
 		_:  # 0 = forked (default)
 			for fork_i in 3:
 				var fork_y: float = lerpf(0.35, 0.75, float(fork_i) / 2.0) * tf
 				var fork_z: float = lerpf(0.75, 1.35, float(fork_i) / 2.0) * fl
-				_add_voxel_to(_tail_pivot, Vector3(0, v * fork_y, v * fork_z),
+				_add_tail_fin_voxel(Vector3(0, v * fork_y, v * fork_z),
 					Vector3(v * 0.10, v * 0.22, v * (0.38 + 0.08 * float(fork_i))), mat_tail)
-				_add_voxel_to(_tail_pivot, Vector3(0, -v * fork_y, v * fork_z),
+				_add_tail_fin_voxel(Vector3(0, -v * fork_y, v * fork_z),
 					Vector3(v * 0.10, v * 0.22, v * (0.38 + 0.08 * float(fork_i))), mat_tail)
-			_add_voxel_to(_tail_pivot,
+			_add_tail_fin_voxel(
 				Vector3(0, v * (-0.7 * fl * tf), v * (1.4 * fl)),
 				Vector3(v * 0.12, v * (0.3 * fl), v * (0.4 * fl)), mat_tail)
 	if caudal_stripes:
@@ -3220,7 +3312,9 @@ func _build_body() -> void:
 	# finnage > 1.0, append long trailing ray voxels to the caudal, dorsal and
 	# anal fins so the silhouette reads as billowing drapery rather than a
 	# tight functional tail.
-	if finnage > 1.0:
+	if finnage > 1.0 and tail_shape != 1:
+		# Fan-tail elaboration is already included in its membrane. Extending
+		# all three fins again made guppies read as disconnected gold plates.
 		var veil: float = finnage
 		# Veil fins use the translucent voxel material so the silhouette
 		# reads as "you can see the water behind the trailing rays" — the
@@ -3232,18 +3326,18 @@ func _build_body() -> void:
 		var mat_veil := VoxelMat.make_translucent(veil_color)
 		# Caudal veil streamers sweeping back well past the tail template.
 		for ang in [-1.0, -0.4, 0.4, 1.0]:
-			_add_voxel_to(_tail_pivot,
+			_add_tail_fin_voxel(
 				Vector3(0, v * ang * 0.7 * veil, v * (1.6 * fl * veil)),
 				Vector3(v * 0.11, v * (0.45 * veil), v * (0.9 * fl * veil)), mat_veil)
-		_add_voxel_to(_tail_pivot,
+		_add_tail_fin_voxel(
 			Vector3(0, 0, v * (2.3 * fl * veil)),
 			Vector3(v * 0.10, v * (1.0 * veil), v * (0.7 * fl)), mat_veil)
 		# Dorsal + anal veil trails (the sweeping top + bottom fans).
 		if _dorsal_pivot != null:
-			_add_voxel_to(_dorsal_pivot, Vector3(0, v * 0.75 * dorsal_height_factor, v * 0.7),
+			_add_dorsal_fin_voxel(Vector3(0, v * 0.75 * dorsal_height_factor, v * 0.7),
 				Vector3(v * 0.10, v * (0.7 * veil), v * (1.1 * veil)), mat_veil)
 		if _anal_pivot != null:
-			_add_voxel_to(_anal_pivot, Vector3(0, -v * 0.7 * veil, v * 0.9),
+			_add_anal_fin_voxel(Vector3(0, -v * 0.7 * veil, v * 0.9),
 				Vector3(v * 0.10, v * (0.7 * veil), v * (1.0 * veil)), mat_veil)
 	# Apply body elongation + depth scaling. The bank pivot's local Y stretches
 	# the body height (puffer = 1.4, minnow = 0.7), Z stretches length.
@@ -3259,6 +3353,36 @@ func _build_body() -> void:
 		_cached_meshes = _voxel_builder.handles.duplicate()
 	_apply_lod_ranges()
 	_rebuild_glow_mesh_cache()
+
+
+# Connect each caudal ray to the peduncle with a stepped membrane. Scaling
+# fin_length_factor used to move the rays away from the body without adding
+# their base, leaving large-finned guppies with visibly floating tail blocks.
+func _add_tail_fin_voxel(pos: Vector3, size_v: Vector3, mat: Material) -> void:
+	_add_connected_fin_voxel(_tail_pivot, pos, size_v, mat,
+		Vector3(0, 0, adult_voxel_scale * 0.4))
+
+
+func _add_dorsal_fin_voxel(pos: Vector3, size_v: Vector3, mat: Material) -> void:
+	_add_connected_fin_voxel(_dorsal_pivot, pos, size_v, mat, Vector3.ZERO)
+
+
+func _add_anal_fin_voxel(pos: Vector3, size_v: Vector3, mat: Material) -> void:
+	_add_connected_fin_voxel(_anal_pivot, pos, size_v, mat, Vector3.ZERO)
+
+
+func _add_connected_fin_voxel(parent: Node3D, pos: Vector3, size_v: Vector3,
+		mat: Material, start: Vector3) -> void:
+	_add_voxel_to(parent, pos, size_v, mat)
+	var end := Vector3(0, pos.y, pos.z)
+	var count: int = clampi(ceili(start.distance_to(end) / (adult_voxel_scale * 0.5)), 1, 8)
+	for i in count:
+		var a: Vector3 = start.lerp(end, float(i) / float(count))
+		var b: Vector3 = start.lerp(end, float(i + 1) / float(count))
+		var padding: float = adult_voxel_scale * 0.12
+		_add_voxel_to(parent, (a + b) * 0.5,
+			Vector3(size_v.x * 0.8, absf(b.y - a.y) + maxf(padding, minf(size_v.y, adult_voxel_scale * 0.35)),
+				absf(b.z - a.z) + padding), mat)
 
 
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
@@ -3432,6 +3556,11 @@ func _apply_belly_flash_uniform(strength: float) -> void:
 		if c is MeshInstance3D:
 			var sm := (c as MeshInstance3D).material_override as ShaderMaterial
 			if sm != null and sm.get_shader_parameter("belly_flash") != null:
+				# Legacy mesh materials may be shared between individuals.
+				if not c.has_meta("belly_material_owned"):
+					sm = sm.duplicate() as ShaderMaterial
+					(c as MeshInstance3D).material_override = sm
+					c.set_meta("belly_material_owned", true)
 				sm.set_shader_parameter("belly_flash", strength)
 
 
@@ -3467,7 +3596,7 @@ func _apply_stress_flush() -> void:
 		for child in _cached_meshes:
 			if child is VoxelBatch.Handle:
 				var h: VoxelBatch.Handle = child
-				h.set_color(FaunaVoxelBuilder.handle_orig_color(h))
+				FaunaVoxelBuilder.set_handle_color(h, FaunaVoxelBuilder.handle_orig_color(h))
 		return
 	var flush_col: Color = accent_color.lerp(Color8(210, 70, 55), 0.72)
 	var base_luma: float = base_color.r * 0.299 + base_color.g * 0.587 + base_color.b * 0.114
@@ -3485,7 +3614,7 @@ func _apply_stress_flush() -> void:
 		var fin_or_belly: bool = luma < base_luma - 0.06 \
 			or d_acc <= 0.22 or d_belly <= 0.18
 		var amt: float = k * (0.62 if fin_or_belly else 0.22)
-		h2.set_color(orig.lerp(flush_col, amt))
+		FaunaVoxelBuilder.set_handle_color(h2, orig.lerp(flush_col, amt))
 
 
 func _tick_substrate_compaction(dt: float) -> void:
@@ -3607,7 +3736,15 @@ func _add_voxel(pos: Vector3, size: Vector3, mat: Material) -> void:
 
 # ---- Tick (called by SimDriver) ----
 
+var _music_mods_cache: Dictionary = {}
+var _music_mods_render_stamp: int = -1
+var _music_mods_physics_stamp: int = -1
+
 func _music_mods() -> Dictionary:
+	var render_stamp: int = Engine.get_process_frames()
+	var physics_stamp: int = Engine.get_physics_frames()
+	if _music_mods_render_stamp == render_stamp and _music_mods_physics_stamp == physics_stamp:
+		return _music_mods_cache
 	var bot_y: float = float(sim.substrate_top_y if sim != null else 0.0) + 0.5
 	var top_y: float = _water_surface_y() - 0.4
 	var traits: Dictionary = {
@@ -3627,6 +3764,8 @@ func _music_mods() -> Dictionary:
 		"finnage": finnage,
 		"eye_spot": eye_spot,
 		"color_vibrancy": (_color_vibrancy(base_color) + _color_vibrancy(accent_color)) * 0.5,
+		"stress": stress,
+		"sleep_depth": _sleep_depth,
 	}
 	var mods: Dictionary
 	var mc: Node = music_ctx()
@@ -3644,27 +3783,41 @@ func _music_mods() -> Dictionary:
 				"wander_amp": 1.0, "sweep": 0.0, "vertical": 0.0, "beat_phase": 0.0,
 				"scale": 1.0,
 			}
-	return _damp_music_mods_for_time_scale(mods)
+	if not _experience_response.is_empty() and FishExperience.listening_enabled(self):
+		mods = mods.duplicate()
+		var comfort_gain: float = float(_experience_response.get("comfort", 0.0)) * (1.0 - stress) * (1.0 - _sleep_depth)
+		mods["wander_amp"] = float(mods.get("wander_amp", 1.0)) * (1.0 - comfort_gain * 0.08)
+	_music_mods_cache = _damp_music_mods_for_time_scale(mods)
+	_music_mods_render_stamp = render_stamp
+	_music_mods_physics_stamp = physics_stamp
+	return _music_mods_cache
 
 
 func _tick_music_affect(dt: float) -> void:
 	# The fish FEEL the song: a gentle ambient pull of mood toward the music's
-	# valence and a small arousal lift on energetic music. Off by default, so this
-	# is a single bool check unless the keeper has music sync on — no per-frame
-	# cost otherwise (the "doesn't bog down" contract).
+	# valence and a small arousal lift on energetic music. Generative listening
+	# is gentler than external choreography, and respects sleep and stress.
+	# The keeper can disable both with the fish music response setting.
 	var cfg: Node = tank_cfg()
-	if cfg == null or not bool(cfg.get("music_sync_enabled")) or not bool(cfg.get("music_sync_fish")):
+	if cfg == null or not bool(cfg.get("music_sync_fish")):
 		return
 	var music: Node = music_ctx()
 	if music == null or not music.has_method("is_active") or not bool(music.call("is_active")):
 		return
-	var intensity: float = clampf(float(cfg.get("music_sync_intensity")), 0.0, 1.0)
+	var external: bool = music.source_name() == "external"
+	if external and not bool(cfg.get("music_sync_enabled")):
+		return
+	var intensity: float = clampf(float(cfg.get("music_sync_intensity")) if external \
+		else float(cfg.get("music_reactivity")) * 0.35, 0.0, 1.0)
+	intensity *= (1.0 - clampf(_sleep_depth, 0.0, 1.0)) * (1.0 - clampf(stress, 0.0, 1.0))
 	if intensity <= 0.001:
 		return
 	var np: Dictionary = music.call("now_playing") if music.has_method("now_playing") else {}
 	var k: float = clampf(dt * 0.2 * intensity, 0.0, 1.0)
 	# Music colours the mood ~20% at equilibrium (wellbeing still dominates).
-	var music_mood: float = clampf((float(np.get("valence", 0.5)) - 0.5) * 2.0, -1.0, 1.0)
+	var music_mood: float = clampf((float(np.get("valence", 0.5)) - 0.5) * 2.0
+		+ float(_experience_response.get("comfort", 0.0)) * 0.18
+		- float(_experience_response.get("alarm", 0.0)) * 0.25, -1.0, 1.0)
 	mood = lerpf(mood, music_mood, k * 0.5)
 	# Energetic music can lift arousal, never damp it below the felt baseline.
 	var music_arousal: float = float(np.get("arousal", 0.5))
@@ -3788,6 +3941,7 @@ func _apply_music_groove_steering(mods: Dictionary, desired: Vector3, effective_
 
 func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste: Array,
 		  baby_shrimp: Array, world_bounds: AABB) -> Dictionary:
+	_music_mods_render_stamp = -1
 	# Returns events for the SimDriver to act on (lay egg, eat waste,
 	# kill prey, spawn waste, die).
 	var events: Dictionary = {}
@@ -4125,7 +4279,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			var gulp_dir: Vector3 = Vector3(0, surface_y - position.y, 0)
 			# Add a small lateral random walk so the school of gulpers doesn't
 			# converge to one column.
-			gulp_dir.x += sin(_swim_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
+			gulp_dir.x += sin(_motor_phase * 0.7 + float(get_instance_id() % 100)) * 0.6
 			desired += gulp_dir.normalized() * effective_max * 1.4
 			current_mode = Mode.FORAGE
 			if _behavior_rng().randf() < dt * 1.8:
@@ -5226,10 +5380,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# population has a living annual cadence (driven by the real-world month,
 	# same source as the seasonal palette shift).
 	var season_breed: float = _season_breed_mult()
-	if not female_initiator_only and maturity == MATURITY_ADULT \
-			and breed_cooldown <= 0.0 and partner == null \
-			and hunger < 0.5 and energy > 0.65 / season_breed \
-			and stress < 0.4 * season_breed \
+	if not female_initiator_only and partner == null \
+			and breeding_condition_reason(season_breed) == "" \
 			and _behavior_rng().randf() >= _logistic_breed_suppress():
 		# PERFORMANCE_UNTHROTTLED #42 — mate scans at 0.5 Hz with cached refs.
 		_mate_scan_cd -= dt
@@ -5339,9 +5491,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if dl_sleep < 0.18:
 			school_w *= lerpf(0.32, 1.0, dl_sleep / 0.18)
 			desired += Vector3(
-				sin(_swim_phase * 0.28 + float(get_instance_id() % 17) * 0.2),
-				sin(_swim_phase * 0.19) * 0.06,
-				cos(_swim_phase * 0.24)) * effective_max * 0.07
+				sin(_motor_phase * 0.28 + float(get_instance_id() % 17) * 0.2),
+				sin(_motor_phase * 0.19) * 0.06,
+				cos(_motor_phase * 0.24)) * effective_max * 0.07
 	# Curiosity breakaway (#27) — peel toward novelty; cohesion decides if others follow.
 	if _MotionWaveScript.uses_wave(self) and curiosity_drive > 0.5 and _interest_remaining > 0.15 \
 			and _trait("curiosity") > 0.35 and burst_remaining <= 0.0:
@@ -5506,7 +5658,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if _spawn_settle_remaining > 0.0:
 		target_y = global_position.y
 	else:
-		target_y += sin(_swim_phase * 0.45 + float(get_instance_id() % 53) * 0.11) \
+		target_y += sin(_motor_phase * 0.45 + float(get_instance_id() % 53) * 0.11) \
 			* home_y_radius * 0.16
 	var dy: float = target_y - position.y
 	# Stronger Y pull beyond home_y_radius; gentle within it. Result: fish
@@ -5979,9 +6131,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			desired *= 0.35
 	elif swim_pattern == "meander":
 		desired += Vector3(
-			sin(_swim_phase * 1.7) * effective_max * 0.12,
-			sin(_swim_phase * 2.3) * 0.06,
-			cos(_swim_phase * 1.4) * effective_max * 0.12)
+			sin(_motor_phase * 1.7) * effective_max * 0.12,
+			sin(_motor_phase * 2.3) * 0.06,
+			cos(_motor_phase * 1.4) * effective_max * 0.12)
 	elif swim_pattern == "sit" and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
 		desired *= lerpf(0.04, 0.18, hunger)
 		if hunger > 0.55 and _behavior_rng().randf() < dt * 0.08:
@@ -6131,7 +6283,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			interval = 5.0 + _behavior_rng().randf() * 6.0  # loaches: frequent zig-zags
 		interval /= maxf(float(music_mods.get("wander_refresh", 1.0)), 1.0)
 		_wander_refresh_timer = interval
-		var phase: float = _swim_phase + float(get_instance_id() % 97) * 0.09
+		var phase: float = _motor_phase + float(get_instance_id() % 97) * 0.09
 		var y_wander: float = 0.15
 		if _tank_is_dome() or _water_column_height() > 6.0:
 			y_wander = 0.38
@@ -6229,6 +6381,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			* float(fauna_rt.get("wander", 1.0)) * float(music_mods.get("wander", 1.0)) \
 			* float(music_mods.get("wander_amp", 1.0))
 
+	desired = FishExperience.steer(self, desired, effective_max)
 	desired = _apply_music_groove_steering(music_mods, desired, effective_max)
 
 	# Diurnal / nocturnal / crepuscular activity. The generic "everyone slows
@@ -6526,7 +6679,7 @@ func _process(dt: float) -> void:
 	if _asleep and _dreaming and _dream_wisp != "" and sim != null and sim.has_method("daylight"):
 		var dl_w: float = float(sim.daylight())
 		if dl_w < 0.38:
-			var wisp: float = 0.14 + 0.11 * absf(sin(_swim_phase * 1.85 + float(get_instance_id() % 23) * 0.07))
+			var wisp: float = 0.14 + 0.11 * absf(sin(_motor_phase * 1.85 + float(get_instance_id() % 23) * 0.07))
 			if stress > 0.5:
 				wisp *= 1.35
 			_apply_bioluminescence_uniform(wisp)
@@ -6936,7 +7089,15 @@ func _motion_velocity_floor(current_speed: float) -> float:
 	return maxf(current_speed, floor_speed)
 
 
+func _advance_motor_phase(dt: float) -> void:
+	var body_length: float = adult_voxel_scale * 5.5 * body_elongation * maxf(scale.x, 0.1)
+	_motor_phase = Hydrodynamics.advance_phase(_motor_phase,
+		Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type) * _wag_freq_jitter, dt, TAU * 100.0)
+
+
 func _motion_substep(dt: float) -> void:
+	if not is_finite(dt) or dt <= 0.0:
+		return
 	if not is_finite(speed):
 		speed = 0.0
 	if not is_finite(_last_yaw):
@@ -7084,28 +7245,20 @@ func _motion_substep(dt: float) -> void:
 	var wall_t: float = 1.0 - clampf(clearance / repel_dist, 0.0, 1.0)
 	var angle: float = heading.angle_to(target_dir)
 	if angle > 0.0005:
-		var ant: float = TopdownMotion.turn_anticipation_delta(angle, speed)
-		if absf(ant) > 0.001:
-			heading = _safe_normalize(heading.rotated(Vector3.UP, ant * dt * 3.0), heading)
-			angle = heading.angle_to(target_dir)
 		var axis: Vector3 = heading.cross(target_dir)
 		if axis.length_squared() < 1e-6:
 			axis = Vector3.UP
 		axis = axis.normalized()
 		var turn_boost: float = lerpf(1.0, 1.14, wall_t * wall_t)
-		var max_step: float = eff_turn * turn_boost * dt
-		# Fish turn slower vertically than horizontally - real fish have a hard
-		# time pitching up/down sharply. Project the turn onto a mostly-horizontal
-		# axis by reducing its UP component.
-		var horizontal_axis: Vector3 = axis
-		horizontal_axis.y *= 0.5
-		if horizontal_axis.length_squared() > 1e-6:
-			axis = horizontal_axis.normalized()
+		var max_step: float = eff_turn * turn_boost * dt * FishLocomotion.steering_axis_gain(axis)
+		# UP is the yaw axis; horizontal axis components produce pitch.
+		# Damp pitch without weakening yaw or amplifying diagonal climbs.
+		axis = FishLocomotion.steering_axis(axis)
 		# Turn inertia (FishLifeBouts): the yaw rate ramps, it does not snap.
 		# Body + speed gate the floor so near-zero speed cannot spin in place.
 		var spd_frac: float = clampf(speed / maxf(max_speed, 0.12), 0.0, 1.0)
 		var turn: float = _FishLifeBouts.inertial_turn(
-			self, angle, max_step, dt, wall_t, spd_frac, body_m)
+			self, angle, max_step, dt, wall_t, spd_frac, body_m, axis)
 		heading = _safe_normalize(heading.rotated(axis, turn), heading)
 		# Defensive NaN guard: if axis was degenerate in a way the checks
 		# above missed, the rotation can leak NaN into heading. Restore from
@@ -7113,6 +7266,8 @@ func _motion_substep(dt: float) -> void:
 		# (look_at(NaN) silently corrupts the transform basis).
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	else:
+		_turn_rate_state = move_toward(_turn_rate_state, 0.0, eff_turn * 4.0 * dt)
 	# Limit pitch for mid-water cruisers — real fish rarely climb/dive steeply.
 	# Music sync loosens this so groove-driven swoops read vertically.
 	if _sift_timer <= 0.0 and mouth_orientation != 1 and swim_pattern != "dart":
@@ -7125,14 +7280,23 @@ func _motion_substep(dt: float) -> void:
 			if absf(heading.y) > max_pitch:
 				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
+	_advance_motor_phase(dt)
+	# Modulate the requested pace, not the integrated speed every substep.
+	# Repeated speed multiplication made fast-forward fish lose momentum.
+	if burst_remaining <= 0.0:
+		target_spd *= TopdownMotion.burst_glide_speed_mult(_motor_phase, swim_pattern)
+	if _MotionWaveScript.uses_wave(self) and absf(_last_yaw_rate) > 0.45:
+		target_spd *= 1.0 + clampf(absf(_last_yaw_rate) * 0.06, 0.0, 0.1)
+	target_spd *= lerpf(1.0, 0.68, smoothstep(0.15, 0.9, wall_t))
+	_motion_target_spd = target_spd
 	# ---- Hydrodynamic speed: stroke thrust + quadratic drag + coast (#1–11) ----
 	var drag_k: float = Hydrodynamics.drag_coeff(body_m, _hydro_profile)
 	var stroke_push: float = 0.0
 	var pec_push: float = 0.0
 	if full_hydro:
 		stroke_push = Hydrodynamics.stroke_thrust(
-			_swim_phase, _hydro_profile, speed, target_spd, max_speed) * 1.22
-		pec_push = Hydrodynamics.pec_thrust(_swim_phase, _hydro_profile, speed, target_spd)
+			_motor_phase, _hydro_profile, speed, target_spd, max_speed) * 1.22
+		pec_push = Hydrodynamics.pec_thrust(_motor_phase, _hydro_profile, speed, target_spd)
 		if w_h != null and w_h.has_method("draft_in_wake"):
 			var draft: float = w_h.draft_in_wake(global_position, heading)
 			stroke_push *= 1.0 - draft * 0.38
@@ -7142,7 +7306,6 @@ func _motion_substep(dt: float) -> void:
 			speed, target_spd, stroke_push + pec_push, drag_k, eff_accel, dt, coasting)
 	else:
 		speed = move_toward(speed, target_spd, eff_accel * dt * 0.7)
-	speed *= TopdownMotion.burst_glide_speed_mult(_swim_phase, swim_pattern)
 	# Keep living motion above zero, but ramp that floor during startup.
 	if settle_factor < 1.0:
 		speed = maxf(speed, _motion_velocity_floor(0.0) * settle_factor)
@@ -7154,9 +7317,6 @@ func _motion_substep(dt: float) -> void:
 	if burst_remaining > _prev_burst_snap + 0.12:
 		FishAlive.world_answer(self, "dart")
 	_prev_burst_snap = burst_remaining
-	# LIVING_MOTION #45 — outside fish on a hard turn hold the arc with a touch more speed.
-	if _MotionWaveScript.uses_wave(self) and absf(_last_yaw_rate) > 0.45:
-		speed *= 1.0 + clampf(absf(_last_yaw_rate) * 0.06, 0.0, 0.1)
 	_brake_pose = Hydrodynamics.brake_pose_amount(speed, target_spd)
 	_station_keep = Hydrodynamics.station_keep_pec(
 		_swim_phase, flow_vel.length(), target_spd)
@@ -7178,8 +7338,6 @@ func _motion_substep(dt: float) -> void:
 	var breath_y: float = _breath_motion_delta(dt)
 	if is_finite(breath_y):
 		global_position.y += breath_y * settle_factor
-	if wall_t > 0.35:
-		speed = minf(speed, target_spd * lerpf(1.0, 0.68, wall_t))
 
 	if flow_vel.is_finite() and flow_vel.length_squared() > 1e-6 and full_hydro:
 		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(body_m)
@@ -7296,10 +7454,10 @@ func _motion_substep(dt: float) -> void:
 	# Compute the world-space yaw of the heading on the XZ plane. The change
 	# in yaw between frames is the yaw rate; bank angle is proportional to it.
 	var current_yaw: float = atan2(heading.x, -heading.z)
+	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
+	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
+	_last_yaw_rate = yaw_rate
 	if do_body_anim:
-		var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
-		var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
-		_last_yaw_rate = yaw_rate
 		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
 		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate) * (1.15 if absf(yaw_rate) > 0.5 else 1.0)
@@ -7312,7 +7470,8 @@ func _motion_substep(dt: float) -> void:
 			bank_target = clampf(
 				bank_target + dance_bank * signf(yaw_rate + 0.001) * (1.0 + accent * 0.35),
 				-0.95, 0.95)
-		_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
+		bank_target = clampf(bank_target, -0.95 if dance_bank > 0.02 else -0.65, 0.95 if dance_bank > 0.02 else 0.65)
+		_bank = lerpf(_bank, bank_target, 1.0 - exp(-dt * 5.0))
 		if _bank_pivot != null:
 			_bank_pivot.rotation.z = _bank
 			if _body_mid_pivot != null:
@@ -7360,7 +7519,9 @@ func _motion_substep(dt: float) -> void:
 	# differently per locomotion_type so loaches actually undulate like
 	# eels, puffers stiffly paddle their tails, reef tangs row with
 	# their pec fins, and the default schoolers carangiform-wag.
-	var wag_freq: float = 2.5 + speed * 5.5
+	var body_length: float = adult_voxel_scale * 5.5 * body_elongation \
+		* maxf(scale.x, 0.1)
+	var wag_freq: float = Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type)
 	var wag_amp_extra: float = 0.0
 	var pec_amp_extra: float = 0.0
 	if _courtship_flare:
@@ -7396,7 +7557,6 @@ func _motion_substep(dt: float) -> void:
 			# Eel / loach style: whole-body traveling sine wave. Head
 			# leads, body mid follows ~50° behind, tail trails ~100°
 			# behind the head. Slower base frequency, larger amplitudes.
-			wag_freq = 1.8 + speed * 3.5
 			tail_amp = 0.55
 			body_amp = 0.40
 			body_phase = -0.55 * PI    # body lags tail by 100° → traveling wave
@@ -7407,7 +7567,6 @@ func _motion_substep(dt: float) -> void:
 			# Boxfish / puffer: rigid body, only the tail oscillates.
 			# Higher tail frequency to make up for the small amplitude
 			# and lack of body assist. Pec fins do most of the steering.
-			wag_freq = 3.5 + speed * 6.0
 			tail_amp = 0.42
 			body_amp = 0.02
 			head_amp = 0.0
@@ -7423,7 +7582,6 @@ func _motion_substep(dt: float) -> void:
 			pec_freq_base = 5.5 + speed * 4.5
 		"thunniform":
 			# Tuna cruiser: stiff body, narrow but fast tail.
-			wag_freq = 3.0 + speed * 7.0
 			tail_amp = 0.25
 			body_amp = 0.03
 			head_amp = 0.0
@@ -7435,8 +7593,15 @@ func _motion_substep(dt: float) -> void:
 	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
 		speed, _motion_target_spd, max_speed)
 	hydro_effort += clampf(absf(_motion_target_spd - speed) / maxf(max_speed, 0.1), 0.0, 0.5) * 0.45
-	var fin_eff: Dictionary = Hydrodynamics.fin_effort_from_swim(
-		speed, _motion_target_spd, max_speed, flow_vel, heading)
+	Hydrodynamics.fin_effort_into(speed, _motion_target_spd, max_speed,
+		flow_vel, heading, _fin_effort_cache)
+	var fin_eff: Dictionary = _fin_effort_cache
+	_fin_tail_activity = lerpf(_fin_tail_activity, float(fin_eff["tail_amp"]),
+		1.0 - exp(-dt * 6.0))
+	# Apply effort to the main wave, not only its small acceleration bonus.
+	tail_amp *= _fin_tail_activity
+	body_amp *= _fin_tail_activity
+	head_amp *= _fin_tail_activity
 	hydro_effort *= float(fin_eff.get("tail_amp", 1.0))
 	if float(fin_eff.get("carried", 0.0)) > 0.2:
 		# Drift with the current: quiet the body, leave light pec trim.
@@ -7524,7 +7689,8 @@ func _motion_substep(dt: float) -> void:
 			_tail_pivot.scale.z = lerpf(_tail_pivot.scale.z, 1.0, clampf(dt * 6.0, 0.0, 1.0))
 	if _body_mid_pivot != null:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
-			* (body_amp + wag_amp_extra * 0.4)
+			* (body_amp + wag_amp_extra * 0.4) \
+			+ clampf(_turn_anticipation, -0.22, 0.22) * clampf(body_amp / 0.1, 0.0, 1.4)
 		if _music_kick_pulse > 0.02:
 			var kick_scale: float = 1.0 + _music_kick_pulse * 0.03
 			_body_mid_pivot.scale = Vector3(kick_scale, kick_scale * 0.92, 1.0)
@@ -7596,7 +7762,9 @@ func _motion_substep(dt: float) -> void:
 		breath_load *= 1.0 - float(aff_anim.get("breath_calm", 0.0))
 		_breath_load = lerpf(_breath_load, breath_load, clampf(dt * 3.0, 0.0, 1.0))
 		var breath_amp: float = (0.035 + clampf(_breath_load - 1.0, 0.0, 1.2) * 0.05) * maxf(rest_factor, 0.25)
-		var breath: float = 1.0 + sin(_swim_phase * 0.9 * _breath_load) * breath_amp
+		_gill_phase = Hydrodynamics.advance_phase(_gill_phase,
+			2.2 * _breath_load * _wag_freq_jitter, dt)
+		var breath: float = 1.0 + sin(_gill_phase) * breath_amp
 		# Blink: a brief vertical squash of the head reads as an eye-blink at
 		# voxel resolution (no separate eyelid geometry needed).
 		var blink_sq: float = 1.0 - (0.18 if _blink_remaining > 0.0 else 0.0)
@@ -7626,17 +7794,22 @@ func _motion_substep(dt: float) -> void:
 	pec_amp = maxf(pec_amp + fin_mood, 0.06)
 	if speed < max_speed * 0.08:
 		pec_amp = maxf(pec_amp, 0.14)
-		_swim_phase += dt * pec_freq * 0.85
+	# Integrate the pectoral oscillator independently. Multiplying the tail
+	# phase by a changing frequency ratio caused abrupt pose jumps, and the
+	# old idle boost advanced the tail a second time after posing the body.
+	_pec_phase = Hydrodynamics.advance_phase(_pec_phase,
+		pec_freq * _wag_freq_jitter, dt)
 	if bow > 0.08:
 		pec_amp += bow * 0.22 * dance_blend
 	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
 	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
 	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18 \
 		+ float(aff_anim.get("pec_spread", 0.0)), -0.1, 0.35)
+	var turn_load: float = clampf(_last_yaw_rate * 0.12, -0.20, 0.20)
 	if _pec_right_pivot != null:
-		_pec_right_pivot.rotation.z = sin(_swim_phase * pec_freq / wag_freq) * pec_amp + pec_spread
+		_pec_right_pivot.rotation.z = sin(_pec_phase) * pec_amp * (1.0 + turn_load) + pec_spread
 	if _pec_left_pivot != null:
-		_pec_left_pivot.rotation.z = -sin(_swim_phase * pec_freq / wag_freq + PI * 0.5) * pec_amp - pec_spread
+		_pec_left_pivot.rotation.z = -sin(_pec_phase + PI * 0.5) * pec_amp * (1.0 - turn_load) - pec_spread
 
 	# ---- Idle fidgets: shimmy / substrate-flash micro-gestures ----
 	# Applied as transient roll/wiggle on the bank pivot, layered over banking.
@@ -7716,14 +7889,14 @@ func _tick_fauna_body_color(dt: float) -> void:
 					if pallor > 0.0:
 						c.s = maxf(0.0, c.s * (1.0 - pallor))
 						c = c.lerp(Color(0.72, 0.74, 0.78), pallor * 0.45)
-					h.set_color(c)
+					FaunaVoxelBuilder.set_handle_color(h, c)
 	elif _courtship_color_active:
 		_courtship_color_active = false
 		_last_courtship_color_step = -999
 		for child in _cached_meshes:
 			if child is VoxelBatch.Handle:
 				var h2: VoxelBatch.Handle = child
-				h2.set_color(FaunaVoxelBuilder.handle_orig_color(h2))
+				FaunaVoxelBuilder.set_handle_color(h2, FaunaVoxelBuilder.handle_orig_color(h2))
 
 
 func _update_maturity() -> void:
@@ -8061,7 +8234,7 @@ func _apply_aging_tint() -> void:
 		if child is VoxelBatch.Handle:
 			var h: VoxelBatch.Handle = child
 			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
-			h.set_color(orig_color.lerp(Color8(120, 110, 100), 0.45))
+			FaunaVoxelBuilder.set_handle_color(h, orig_color.lerp(Color8(120, 110, 100), 0.45))
 
 
 var _aged_applied: bool = false
@@ -8090,14 +8263,14 @@ func _apply_maturity_color() -> void:
 		if child is VoxelBatch.Handle:
 			var h: VoxelBatch.Handle = child
 			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
-			h.set_color(orig_color.lerp(wash, desat))
+			FaunaVoxelBuilder.set_handle_color(h, orig_color.lerp(wash, desat))
 
 
 func _restore_original_colors() -> void:
 	for child in _cached_meshes:
 		if child is VoxelBatch.Handle:
 			var h: VoxelBatch.Handle = child
-			h.set_color(FaunaVoxelBuilder.handle_orig_color(h))
+			FaunaVoxelBuilder.set_handle_color(h, FaunaVoxelBuilder.handle_orig_color(h))
 
 func _all_meshes(node: Node) -> Array:
 	var out: Array = []
@@ -9092,6 +9265,7 @@ func to_save_dict() -> Dictionary:
 		"familiarity": familiarity,
 		"mood": mood,
 		"arousal": arousal,
+		"experience": _experience_memory.duplicate(true),
 		"mind": FishMind.mind_to_dict(self, sim != null and sim.has_method("save_mind_delta") and sim.save_mind_delta()),
 		"character_bio": character_bio,
 		"backstory": _FishBackstoryScript.to_save(self),
@@ -9129,6 +9303,8 @@ func to_save_dict() -> Dictionary:
 # and assigned its global_position. partner ref is resolved by SimDriver in
 # a second pass after every entity has its id assigned.
 func apply_save_dict(d: Dictionary) -> void:
+	_music_mods_render_stamp = -1
+	FishExperience.restore(self, d.get("experience", {}))
 	id = String(d.get("id", id))
 	_MindCacheRegistryScript.reset_transient(self)
 	# Replay init_genome with the saved genome — this re-derives all the
@@ -9501,6 +9677,15 @@ func _max_inside_travel(from: Vector3, dir: Vector3, max_len: float,
 	if dir.length_squared() < 1e-8:
 		return 0.0
 	dir = _safe_normalize(dir)
+	# Ordinary swimming stays wholly inside the vessel. Avoid fourteen
+	# iterative clamps when the requested endpoint already fits. Retain the
+	# conservative search for travel that reaches glass or the water surface.
+	var endpoint: Vector3 = from + dir * max_len
+	var water_line: float = _water_surface_y()
+	if endpoint.is_finite() and from.y <= water_line and endpoint.y <= water_line:
+		var endpoint_clamped: Vector3 = w.clamp_xyz_in_tank(endpoint, margin, body_r)
+		if endpoint_clamped.is_finite() and endpoint.distance_squared_to(endpoint_clamped) < 1e-10:
+			return max_len
 	var lo: float = 0.0
 	var hi: float = max_len
 	for _i in 14:

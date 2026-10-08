@@ -44,6 +44,7 @@ const MAX_LIST_LINEAGE_EDGES: int = 180
 enum Scope { TANK, GLOBAL, ECOSYSTEM, SPECIES }
 
 const RealSpeciesLibrary = preload("res://scripts/real_species_library.gd")
+const SnailShell = preload("res://scripts/snail_shell.gd")
 
 # Static catalog of the maintenance / environmental entities that don't
 # go through the regular SpeciesLibrary discovery flow. These appear
@@ -230,6 +231,12 @@ var _spawn_button: Button = null
 var _share_button: Button = null
 var _import_button: Button = null
 
+var _body: HBoxContainer
+var _list_column: Control
+var _detail_scroll: ScrollContainer
+var _detail_body: VBoxContainer
+var _compact_layout: bool = false
+
 var _selected_key: String = ""
 var _selected_genome: Dictionary = {}
 var _selected_organism_type: String = ""
@@ -240,10 +247,20 @@ func _ready() -> void:
 	_close_panel()
 	_build_ui()
 	_build_preview_world()
+	_update_library_layout()
+	get_viewport().size_changed.connect(_update_library_layout)
 	_apply_mobile_layout()
 	var lib := get_node_or_null("/root/SpeciesLibrary")
 	if lib != null:
 		lib.library_changed.connect(_on_library_changed)
+
+
+func _exit_tree() -> void:
+	# Closing detaches the preview viewport to stop its rendering. It still
+	# belongs to this panel and must be released when leaving the tank.
+	if is_instance_valid(_preview_viewport) and _preview_viewport.get_parent() == null:
+		_preview_viewport.free()
+	_preview_viewport = null
 
 
 func toggle() -> void:
@@ -374,10 +391,53 @@ func _build_ui() -> void:
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	outer.add_child(body)
 
-	body.add_child(_build_list_column())
+	_body = body
+	_list_column = _build_list_column()
+	body.add_child(_list_column)
 	_preview_column = _build_preview_column()
 	body.add_child(_preview_column)
-	body.add_child(_build_detail_column())
+	_detail_scroll = ScrollContainer.new()
+	_detail_scroll.name = "SpeciesDetails"
+	_detail_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_detail_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_detail_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	body.add_child(_detail_scroll)
+	_detail_body = VBoxContainer.new()
+	_detail_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_detail_body.add_theme_constant_override("separation", 12)
+	_detail_scroll.add_child(_detail_body)
+	_detail_body.add_child(_build_detail_column())
+	outer.add_child(PanelTheme.make_rule())
+	var actions := HFlowContainer.new()
+	actions.name = "LibraryActions"
+	actions.alignment = FlowContainer.ALIGNMENT_END
+	actions.add_theme_constant_override("h_separation", 8)
+	actions.add_theme_constant_override("v_separation", 6)
+	for button in [_share_button, _import_button, _spawn_button, _pin_button]:
+		actions.add_child(button)
+	outer.add_child(actions)
+	PanelTheme.fit_panel_content(outer)
+
+
+# Keep the roster beside the selected species on small windows; preview and
+# details share one scrolling column so neither can push the close button
+# outside the modal. Wide windows retain the three-column gallery.
+func _update_library_layout() -> void:
+	if _body == null:
+		return
+	var compact: bool = get_viewport().get_visible_rect().size.x < 1200.0
+	_list_column.custom_minimum_size.x = 180.0 if compact else 240.0
+	_detail_scroll.custom_minimum_size.x = 260.0
+	if compact != _compact_layout:
+		_compact_layout = compact
+		if compact:
+			_preview_column.reparent(_detail_body)
+			_detail_body.move_child(_preview_column, 0)
+		else:
+			_preview_column.reparent(_body)
+			_body.move_child(_preview_column, 1)
+	_preview_column.custom_minimum_size.y = 200.0 if compact else 0.0
+	_preview_column.size_flags_vertical = Control.SIZE_FILL if compact else Control.SIZE_EXPAND_FILL
 
 
 # ---- Column 1: species list ----
@@ -390,8 +450,9 @@ func _build_list_column() -> Control:
 
 	v.add_child(PanelTheme.make_section("Discovered"))
 
-	var filter_row := HBoxContainer.new()
-	filter_row.add_theme_constant_override("separation", 4)
+	var filter_row := HFlowContainer.new()
+	filter_row.add_theme_constant_override("h_separation", 4)
+	filter_row.add_theme_constant_override("v_separation", 4)
 	v.add_child(filter_row)
 	_filter_all = _make_filter_button("All", true)
 	_filter_all.pressed.connect(func(): _set_type_filter(TypeFilter.ALL))
@@ -427,6 +488,7 @@ func _build_list_column() -> Control:
 
 	var lineage_hint := Label.new()
 	lineage_hint.text = tr("Lines link offspring → parents")
+	lineage_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lineage_hint.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
 	lineage_hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
 	_list_panel.add_child(lineage_hint)
@@ -526,9 +588,10 @@ func _build_preview_column() -> Control:
 	frame.add_child(_preview_texture_rect)
 
 	# Controls strip beneath the preview.
-	var controls := HBoxContainer.new()
-	controls.add_theme_constant_override("separation", 8)
-	controls.alignment = BoxContainer.ALIGNMENT_CENTER
+	var controls := HFlowContainer.new()
+	controls.add_theme_constant_override("h_separation", 8)
+	controls.add_theme_constant_override("v_separation", 6)
+	controls.alignment = FlowContainer.ALIGNMENT_CENTER
 	v.add_child(controls)
 
 	var auto := CheckBox.new()
@@ -570,6 +633,7 @@ func _build_detail_column() -> Control:
 
 	_detail_source_badge = Label.new()
 	_detail_source_badge.text = ""
+	_detail_source_badge.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	PanelTheme.as_mono(_detail_source_badge, PanelTheme.SIZE_CAPTION)
 	_detail_source_badge.add_theme_color_override("font_color", PanelTheme.SECTION_FG)
 	v.add_child(_detail_source_badge)
@@ -595,28 +659,20 @@ func _build_detail_column() -> Control:
 	_detail_meta.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(_detail_meta)
 
-	# Spacer pushes the pin button to the bottom.
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	v.add_child(spacer)
-
+	# Actions are pinned below the gallery, outside both scroll areas.
 	_pin_button = PanelTheme.make_primary_button("Pin to Global")
 	_pin_button.pressed.connect(_on_pin_pressed)
 	_pin_button.disabled = true
-	v.add_child(_pin_button)
 	_spawn_button = PanelTheme.make_secondary_button("Spawn in Tank")
 	_spawn_button.pressed.connect(_on_spawn_pressed)
 	_spawn_button.disabled = true
-	v.add_child(_spawn_button)
 	# Share / import a strain as a compact code so a discovered lineage can be
 	# traded and re-grown in another tank.
 	_share_button = PanelTheme.make_secondary_button("Share strain (copy code)")
 	_share_button.pressed.connect(_on_share_strain_pressed)
 	_share_button.disabled = true
-	v.add_child(_share_button)
 	_import_button = PanelTheme.make_secondary_button("Import strain (paste code)")
 	_import_button.pressed.connect(_on_import_strain_pressed)
-	v.add_child(_import_button)
 	return v
 
 
@@ -1195,8 +1251,9 @@ func _make_list_item(entry: Dictionary) -> Control:
 	var indent: String = "  ".repeat(mini(gen, 6))
 	var marker: String = " 📌" if is_pin else ""
 	btn.text = "%s%s %s · g%d%s" % [indent, icon, display, gen, marker]
+	btn.clip_text = true
 	var lineage: String = String(entry.get("parent_lineage", ""))
-	btn.tooltip_text = "%s · gen %d\nfrom: %s" % [otype, gen, lineage]
+	btn.tooltip_text = "%s · %s · gen %d\nfrom: %s" % [display, otype, gen, lineage]
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn.custom_minimum_size = Vector2(0, 28)
@@ -1508,7 +1565,7 @@ func _on_import_strain_pressed() -> void:
 		return
 	var otype: String = String(g.get("organism_type", "fish"))
 	var ok: bool = not not world.spawn_library_entry(g, otype)
-	_detail_meta.text = tr("Imported strain into your tank.") if ok else "Import failed (incompatible tank?)."
+	_detail_meta.text = tr("Imported strain into your tank.") if ok else _spawn_failure_text(world, tr("Import failed (incompatible tank?)."))
 
 
 func _on_spawn_pressed() -> void:
@@ -1522,7 +1579,12 @@ func _on_spawn_pressed() -> void:
 		return
 	var ok: bool = not not world.spawn_library_entry(
 		_selected_genome.duplicate(true), _selected_organism_type)
-	_detail_meta.text = tr("Spawned into tank.") if ok else "Spawn failed for this entry."
+	_detail_meta.text = tr("Spawned into tank.") if ok else _spawn_failure_text(world, tr("Spawn failed for this entry."))
+
+
+func _spawn_failure_text(world: Node, fallback: String) -> String:
+	var reason: Variant = world.get("last_spawn_failure")
+	return String(reason) if reason is String and not String(reason).is_empty() else fallback
 
 
 # ---- Preview creature lifecycle ---------------------------------------------
@@ -1552,11 +1614,13 @@ func _load_preview_creature(genome: Dictionary, otype: String) -> void:
 
 func _spawn_preview_fish(g: Dictionary) -> Fish:
 	var f := Fish.new()
+	# Stable reference portraits when reopening a species.
+	f.id = "library:%s:%d" % [String(g.get("species", "fish")), hash(g)]
 	_preview_pivot.add_child(f)
 	f.position = Vector3.ZERO
 	g.erase("preferred_y_frac")
-	f.init_genome(g)
 	f.maturity = Fish.MATURITY_ADULT
+	f.init_genome(g)
 	f.scale = Vector3.ONE
 	f.target_velocity = Vector3.ZERO
 	f.speed = 0.0
@@ -1617,67 +1681,24 @@ func _disable_preview_lod(node: Node) -> void:
 
 
 func _build_preview_snail_shell(snail: Node3D, g: Dictionary) -> void:
-	var shell_color: Color = _preview_color(g.get("shell_color", Color8(135, 44, 176)))
-	var shell_size: float = float(g.get("shell_size", 1.0))
-	var shell_shape: String = String(g.get("shell_shape", "turbo"))
-	var shell_dark := shell_color.darkened(0.22)
-	var body := Color8(44, 31, 21)
-	var shell_mat := VoxelMat.make_fauna(shell_color)
-	var shell_dark_mat := VoxelMat.make_fauna(shell_dark)
-	var body_mat := VoxelMat.make_fauna(body)
-	match shell_shape:
-		"trochus":
-			for i in 6:
-				var y: float = 0.04 + i * 0.045 * shell_size
-				var s: float = (0.18 - i * 0.025) * shell_size
-				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
-				var mi := MeshInstance3D.new()
-				mi.mesh = VoxelMat.get_box(Vector3(s, s * 0.85, s))
-				mi.position = Vector3(0, y, 0)
-				mi.material_override = mat
-				snail.add_child(mi)
-		"nassarius":
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(0.14 * shell_size, 0.08 * shell_size, 0.18 * shell_size))
-			mi.material_override = shell_mat
-			snail.add_child(mi)
-		"apple":
-			var body_whorl := MeshInstance3D.new()
-			body_whorl.mesh = VoxelMat.get_box(
-				Vector3(0.24 * shell_size, 0.21 * shell_size, 0.24 * shell_size))
-			body_whorl.position = Vector3(0, 0.05 * shell_size, 0.0)
-			body_whorl.material_override = shell_mat
-			snail.add_child(body_whorl)
-			var apex := MeshInstance3D.new()
-			apex.mesh = VoxelMat.get_box(
-				Vector3(0.12 * shell_size, 0.10 * shell_size, 0.12 * shell_size))
-			apex.position = Vector3(0, 0.17 * shell_size, -0.04 * shell_size)
-			apex.material_override = shell_dark_mat
-			snail.add_child(apex)
-		_:
-			for i in 4:
-				var ang: float = i * 0.7
-				var r: float = (0.05 + i * 0.06) * shell_size
-				var sp := Vector3(cos(ang) * r, sin(ang) * r, 0.0)
-				var s: float = (0.16 - i * 0.02) * shell_size
-				var mat: Material = shell_mat if (i & 1) == 0 else shell_dark_mat
-				var mi := MeshInstance3D.new()
-				mi.mesh = VoxelMat.get_box(Vector3(s, s, s))
-				mi.position = sp
-				mi.material_override = mat
-				snail.add_child(mi)
-	var foot := MeshInstance3D.new()
-	var foot_size: Vector3 = Vector3(0.24 * shell_size, 0.06 * shell_size, 0.16 * shell_size)
-	var foot_y: float = -0.12 * shell_size
-	if shell_shape == "nassarius":
-		foot_size = Vector3(0.28 * shell_size, 0.04 * shell_size, 0.20 * shell_size)
-		foot_y = -0.05 * shell_size
-	elif shell_shape == "apple":
-		foot_size = Vector3(0.30 * shell_size, 0.07 * shell_size, 0.22 * shell_size)
-	foot.mesh = VoxelMat.get_box(foot_size)
-	foot.position = Vector3(0, foot_y, 0)
-	foot.material_override = body_mat
-	snail.add_child(foot)
+	# Use the same shell architecture as the live tank and Creator, including
+	# ramshorn/tower shapes and heritable markings rather than legacy cubes.
+	var genome: Dictionary = g.duplicate(true)
+	for key in ["shell_color", "shell_accent_color", "body_color"]:
+		if genome.has(key):
+			genome[key] = _preview_color(genome[key])
+	var add_box := func(parent: Node3D, pos: Vector3, size_v: Vector3, color: Color):
+		var voxel := MeshInstance3D.new()
+		voxel.mesh = VoxelMat.get_box(size_v)
+		voxel.position = pos
+		voxel.material_override = VoxelMat.make_fauna(color)
+		parent.add_child(voxel)
+	SnailShell.build(snail, genome, add_box)
+	var ss: float = maxf(0.2, float(genome.get("shell_size", 1.0)))
+	var body: Color = genome.get("body_color", Color8(44, 31, 21))
+	for side in [-1.0, 1.0]:
+		add_box.call(snail, Vector3(0.10, -0.01 * ss, side * 0.06),
+			Vector3(0.03, 0.10 * ss, 0.03), body)
 
 
 func _preview_color(c: Variant) -> Color:

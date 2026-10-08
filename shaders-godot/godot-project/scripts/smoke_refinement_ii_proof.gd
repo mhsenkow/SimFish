@@ -51,6 +51,7 @@ func _test_tank_config_roundtrip(failed: Array[String]) -> void:
 	if cfg == null:
 		TestSupport.check(failed, false, "TankConfig autoload missing")
 		return
+	cfg.flush_pending_settings()
 	var saved_w: int = int(cfg.render_width)
 	var saved_h: int = int(cfg.render_height)
 	var saved_msaa: int = int(cfg.msaa)
@@ -59,13 +60,15 @@ func _test_tank_config_roundtrip(failed: Array[String]) -> void:
 	cfg.msaa = 2
 	var snap: ConfigFile = cfg.call("_build_save_config_file") as ConfigFile
 	var path: String = String(cfg.call("_current_save_path"))
-	snap.save(path)
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	TestSupport.check(failed, snap.save(path) == OK, "settings fixture saves before load")
 	cfg.render_width = 640
 	cfg.render_height = 360
 	cfg.load_from_disk()
 	TestSupport.check(failed, int(cfg.render_width) == 512, "settings width round-trips (got %d)" % int(cfg.render_width))
 	TestSupport.check(failed, int(cfg.render_height) == 288, "settings height round-trips")
-	TestSupport.check(failed, int(cfg.msaa) == 2, "settings msaa round-trips")
+	var expected_msaa: int = 0 if OS.get_name() == "macOS" else 2
+	TestSupport.check(failed, int(cfg.msaa) == expected_msaa, "settings MSAA respects the platform safety contract")
 	cfg.render_width = saved_w
 	cfg.render_height = saved_h
 	cfg.msaa = saved_msaa

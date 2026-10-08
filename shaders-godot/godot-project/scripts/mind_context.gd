@@ -174,6 +174,21 @@ static func build_for_fish(f: Fish, sim: Node = null, situation: String = "", ms
 		var song_desc: String = str(music_node.describe_now_playing())
 		if song_desc != "":
 			ctx["now_playing"] = song_desc
+			var heard: Dictionary = music_node.now_playing()
+			ctx["music_perception"] = {
+				"source": heard.get("source", "none"), "tempo": heard.get("tempo", 0.0),
+				"energy": heard.get("energy", 0.0), "mood": heard.get("mood", "calm"),
+				"swing": heard.get("swing", 0.0), "confidence": heard.get("confidence", 0.0),
+			}
+			ctx["music_response"] = "the rhythm leans, then settles" if float(heard.get("swing", 0.0)) > 0.25 \
+				else ("slow pulses in the water" if float(heard.get("tempo", 120.0)) < 100.0 else "steady sound around me")
+			var learned: Variant = f.get("_experience_response")
+			if learned is Dictionary and not learned.is_empty():
+				ctx["music_memory"] = {"familiarity": learned.get("familiar", 0.0),
+					"food_expectation": learned.get("food", 0.0), "alarm": learned.get("alarm", 0.0),
+					"confidence": learned.get("confidence", 0.0)}
+				if learned.has("reason"):
+					ctx["music_response"] = learned.reason
 	if FeltSelfLayer.layer_enabled():
 		ctx["felt_texture"] = FishCoreAffect.texture(f)
 		ctx["core_valence"] = snappedf(FishCoreAffect.valence(f), 0.01)
@@ -400,6 +415,9 @@ static func build_for_keeper_turn(f: Fish, sim: Node = null, situation: String =
 		"intimacy": full.get("intimacy", 0.0),
 		"age_days": full.get("age_days", 0.0),
 		"now_playing": full.get("now_playing", ""),
+		"music_perception": full.get("music_perception", {}),
+		"music_response": full.get("music_response", ""),
+		"music_memory": full.get("music_memory", {}),
 		"feed_anticipated": full.get("feed_anticipated", false),
 	}
 	for k in ["dialogue_recent", "keeper_moniker", "keeper_themes", "keeper_mood_valence",

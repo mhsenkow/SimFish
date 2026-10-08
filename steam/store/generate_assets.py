@@ -71,7 +71,9 @@ def save_screenshots() -> list[Path]:
     shots_dir = OUT / "screenshots"
     shots_dir.mkdir(parents=True, exist_ok=True)
 
-    gameplay = sorted(MARKETING.glob("Screenshot*.png"))
+    version = (REPO / "shaders-godot/godot-project/project.godot").read_text().split('config/version="', 1)[1].split('"', 1)[0]
+    gameplay = sorted((MARKETING / "releases" / f"v{version}" / "screenshots").glob("*.png"))
+    gameplay = gameplay or sorted(MARKETING.glob("Screenshot*.png"))
     if gameplay:
         paths: list[Path] = []
         for idx, path in enumerate(gameplay[:5], start=1):
@@ -79,7 +81,7 @@ def save_screenshots() -> list[Path]:
             if abs((img.width / img.height) - (16 / 9)) > 0.02:
                 img = crop_16_9(img, 0.5, 0.50, 1.0)
             out_path = shots_dir / f"{idx:02d}_gameplay.png"
-            img.resize(SCREENSHOT_SIZE, Image.Resampling.LANCZOS).save(out_path, optimize=True)
+            img.resize(SCREENSHOT_SIZE, Image.Resampling.NEAREST).save(out_path, optimize=True)
             paths.append(out_path)
             print(f"  screenshot: {out_path.name} <- {path.name}")
         if len(paths) < 5:
@@ -297,7 +299,7 @@ def main() -> None:
     print(
         f"\nReady: {len(screenshots)} screenshots, {len(capsules)} capsules, {len(icons)} icons"
         f"\n  → {OUT}\n"
-        f"Upload at: https://partner.steamgames.com/admin/game/edit/1202304?activetab=tab_graphicalassets"
+        f"Upload at: https://partner.steamgames.com/admin/game/edit/4796460?activetab=tab_graphicalassets"
     )
 
 

@@ -172,30 +172,42 @@ func commit_workspace_to(f) -> void:
 
 
 func snapshot() -> Dictionary:
+	return _snapshot_values(true)
+
+
+func _snapshot_values(copy_collections: bool) -> Dictionary:
 	return {
 		"schema_version": schema_version,
 		"mood": mood, "arousal": arousal, "vigilance": vigilance,
 		"stress": stress, "hunger": hunger, "surprise": surprise,
 		"attention_focus": attention_focus,
 		"current_intention": current_intention,
-		"workspace": workspace.duplicate(true),
-		"self_model": self_model.duplicate(true),
+		"workspace": workspace.duplicate(true) if copy_collections else workspace,
+		"self_model": self_model.duplicate(true) if copy_collections else self_model,
 		"thought_stream": thought_stream,
 	}
 
 
 func diff(prev: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
-	var snap: Dictionary = snapshot()
-	for k in snap.keys():
+	var snap: Dictionary = _snapshot_values(false)
+	for k in snap:
 		var a: Variant = snap[k]
 		var b: Variant = prev.get(k, null)
 		if a is float and b is float:
 			if absf(float(a) - float(b)) > 0.02:
 				out[k] = {"from": b, "to": a}
 		elif a != b:
-			out[k] = {"from": b, "to": a}
+			# Comparison can borrow collections; retained history cannot. Copy
+			# only changed values and detach both ends from future mutations.
+			out[k] = {"from": _copy_diff_value(b), "to": _copy_diff_value(a)}
 	return out
+
+
+func _copy_diff_value(value: Variant) -> Variant:
+	if value is Array or value is Dictionary:
+		return value.duplicate(true)
+	return value
 
 
 func to_dict() -> Dictionary:

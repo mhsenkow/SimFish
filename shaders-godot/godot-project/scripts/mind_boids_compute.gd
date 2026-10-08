@@ -34,7 +34,7 @@ static func run() -> void:
 		MindBoidsBuffer.backend = "none"
 		return
 	# Topological schooling uses the CPU path until the GPU shader catches up.
-	if _try_gpu(n) and not _needs_topo_cpu(n):
+	if not _needs_topo_cpu(n) and _try_gpu(n):
 		MindBoidsBuffer.backend = "gpu"
 		return
 	_cpu_dispatch(n)

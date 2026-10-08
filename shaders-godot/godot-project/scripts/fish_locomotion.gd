@@ -13,6 +13,16 @@ extends RefCounted
 # seeded RNG read for coincident hardscape) do not mutate fish state.
 
 
+# Preserve yaw while reducing the pitch component of a combined steering axis.
+static func steering_axis_gain(axis: Vector3) -> float:
+	return sqrt(0.25 + 0.75 * axis.y * axis.y)
+
+
+static func steering_axis(axis: Vector3) -> Vector3:
+	var result := Vector3(axis.x * 0.5, axis.y, axis.z * 0.5)
+	return result.normalized() if result.length_squared() > 1e-8 else Vector3.UP
+
+
 # Lateral + vertical tank-wall repulsion. Skips the inward shove when the fish is
 # already cruising along the glass tangent (only pushes when heading into a wall).
 static func wall_avoid(f: Fish, _b: AABB) -> Vector3:

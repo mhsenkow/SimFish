@@ -1,5 +1,8 @@
 extends RefCounted
 
+const Scripts = preload("res://scripts/plant_seed_scripts.gd")
+const Saves = preload("res://scripts/save_helpers.gd")
+
 const MAX_LOTS_PER_CELL: int = 8
 const MAX_QUANTITY_PER_CELL: float = 1.0
 const VIABILITY_HALF_LIFE_S: float = 7200.0
@@ -34,6 +37,9 @@ func lots_at(cell: Vector2i) -> Array:
 
 func add_lot(cell: Vector2i, genome: Dictionary, quantity: float,
 		dormancy: Dictionary = {}) -> float:
+	if not _valid(cell) or not is_finite(quantity) or quantity <= 0.0:
+		return 0.0
+	genome = Scripts.normalize_genome(genome)
 	var room: float = MAX_QUANTITY_PER_CELL - total_at(cell)
 	var accepted: float = minf(maxf(0.0, quantity), maxf(0.0, room))
 	if accepted <= 0.0:
@@ -65,7 +71,7 @@ func add_lot(cell: Vector2i, genome: Dictionary, quantity: float,
 		genome = {}
 	lots.append({
 		"genome_id": identity,
-		"genome": genome.duplicate(true),
+		"genome": genome,
 		"quantity": accepted,
 		"age_s": 0.0,
 		"viability": 1.0,
@@ -75,6 +81,8 @@ func add_lot(cell: Vector2i, genome: Dictionary, quantity: float,
 
 
 func consume(cell: Vector2i, amount: float) -> Dictionary:
+	if not is_finite(amount) or amount <= 0.0:
+		return {}
 	var lots: Array = _cell_lots(cell)
 	var best_i: int = -1
 	var best_score: float = -1.0
@@ -99,6 +107,8 @@ func consume(cell: Vector2i, amount: float) -> Dictionary:
 
 func consume_eligible(cell: Vector2i, amount: float, environment: Dictionary,
 		cell_maturity: float, disturbance: float) -> Dictionary:
+	if not is_finite(amount) or amount <= 0.0:
+		return {}
 	var lots: Array = _cell_lots(cell)
 	var best_i: int = -1
 	var best_score: float = -1.0
@@ -172,33 +182,39 @@ func to_sparse_save() -> Array:
 		for z in _cells_z:
 			var lots: Array = _lots[x][z]
 			if not lots.is_empty():
-				out.append({"x": x, "z": z, "lots": lots.duplicate(true)})
+				out.append({"x": x, "z": z, "lots": Saves.sanitize_for_json(lots)})
 	return out
 
 
 func apply_sparse_save(entries: Array) -> void:
+	# Loading replaces inventory; do not merge saved families and then write
+	# their age/viability onto whichever unrelated lot happens to be last.
+	for col in _lots:
+		for lots in col:
+			lots.clear()
 	for entry_v in entries:
-		if not (entry_v is Dictionary):
+		if not entry_v is Dictionary:
 			continue
 		var entry: Dictionary = entry_v
-		var cell := Vector2i(int(entry.get("x", -1)), int(entry.get("z", -1)))
-		if not _valid(cell):
+		var cell := Vector2i(int(Saves._num(entry.get("x"), -1)), int(Saves._num(entry.get("z"), -1)))
+		if not _valid(cell) or not entry.get("lots") is Array:
 			continue
-		var incoming: Variant = entry.get("lots", [])
-		if not (incoming is Array):
-			continue
-		for lot_v in incoming:
-			if not (lot_v is Dictionary):
+		var destination: Array = _cell_lots(cell)
+		for lot_v in entry.lots:
+			if destination.size() >= MAX_LOTS_PER_CELL:
+				break
+			if not lot_v is Dictionary:
 				continue
 			var lot: Dictionary = lot_v
-			var accepted: float = add_lot(cell, lot.get("genome", {}),
-				float(lot.get("quantity", 0.0)), lot.get("dormancy", {}))
-			if accepted <= 0.0:
+			var quantity: float = minf(Saves._num(lot.get("quantity"), 0.0), MAX_QUANTITY_PER_CELL - total_at(cell))
+			if quantity <= 0.0:
 				continue
-			var dst: Dictionary = (_cell_lots(cell) as Array).back()
-			dst.genome_id = String(lot.get("genome_id", dst.genome_id))
-			dst.age_s = maxf(0.0, float(lot.get("age_s", 0.0)))
-			dst.viability = clampf(float(lot.get("viability", 1.0)), 0.0, 1.0)
+			var genome: Dictionary = Scripts.normalize_genome(lot.genome) if lot.get("genome") is Dictionary else {}
+			destination.append({"genome_id": str(lot.get("genome_id", _genome_identity(genome))),
+				"genome": genome, "quantity": quantity,
+				"age_s": maxf(0.0, Saves._num(lot.get("age_s"), 0.0)),
+				"viability": clampf(Saves._num(lot.get("viability"), 1.0), 0.0, 1.0),
+				"dormancy": lot.dormancy.duplicate(true) if lot.get("dormancy") is Dictionary else {}})
 
 
 func migrate_scalar(cell: Vector2i, quantity: float) -> void:
@@ -207,6 +223,8 @@ func migrate_scalar(cell: Vector2i, quantity: float) -> void:
 
 
 func _cell_lots(cell: Vector2i) -> Array:
+	if not _valid(cell):
+		return []
 	return _lots[cell.x][cell.y]
 
 
@@ -218,6 +236,7 @@ func _genome_identity(genome: Dictionary) -> String:
 	if genome.is_empty():
 		return "legacy:anonymous"
 	var species: String = String(genome.get("species_id", ""))
-	var lineage: String = String(genome.get("plant_name",
-		genome.get("parent_lineage", "Founders")))
+	var lineage: String = str(genome.get("plant_name", ""))
+	if lineage == "":
+		lineage = str(genome.get("parent_lineage", "Founders"))
 	return "%s|%s|g%d" % [species, lineage, int(genome.get("generation", 0))]

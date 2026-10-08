@@ -10,7 +10,7 @@ from pathlib import Path
 ASSETS = Path(__file__).resolve().parent / "assets"
 OUT = Path("/tmp/steam_upload_steps")
 CHUNK = 600_000
-APP_ID = 1202304
+APP_ID = 4796460
 
 
 def asset_paths() -> list[Path]:

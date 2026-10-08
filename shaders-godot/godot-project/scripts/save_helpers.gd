@@ -84,6 +84,12 @@ static func array_to_vec2(a, fallback: Vector2 = Vector2.ZERO) -> Vector2:
 # ---- JSON round-trip ----
 
 static func sanitize_for_json(v: Variant) -> Variant:
+	if v is Script:
+		return v.resource_path
+	if v is Vector3:
+		return vec3_to_array(v)
+	if v is Color:
+		return color_to_array(v)
 	if v is float:
 		return null if not is_finite(v) else v
 	if v is Array:

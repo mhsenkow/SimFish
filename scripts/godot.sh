@@ -39,4 +39,23 @@ resolve_godot() {
 }
 
 GODOT="$(resolve_godot)"
+# The isolated project contains early user-directory settings and shares assets.
+# Replace the caller's --path while preserving scene/script/user arguments.
+if [[ -n "${GODOT_DEV_PROJECT:-}" ]]; then
+	args=()
+	while (( $# )); do
+		if [[ "$1" == "--" || "$1" == "++" ]]; then
+			args+=("$@")
+			break
+		elif [[ "$1" == "--path" ]]; then
+			shift
+			if (( $# == 0 )); then echo "--path requires a directory" >&2; exit 2; fi
+			shift
+		else
+			args+=("$1")
+			shift
+		fi
+	done
+	exec "$GODOT" --path "$GODOT_DEV_PROJECT" "${args[@]}"
+fi
 exec "$GODOT" "$@"

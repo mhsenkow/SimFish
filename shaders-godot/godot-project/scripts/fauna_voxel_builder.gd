@@ -72,7 +72,7 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 
 
 func flush_all() -> void:
-	if _species_batch and _FaunaSpeciesBatchScript.active():
+	if _species_batch:
 		_FaunaSpeciesBatchScript.sync_all()
 		return
 	for batch: VoxelBatch in _batches.values():
@@ -81,9 +81,16 @@ func flush_all() -> void:
 
 
 func get_batches() -> Array:
-	if _species_batch and _FaunaSpeciesBatchScript.active():
+	if _species_batch:
 		return _FaunaSpeciesBatchScript.batches_for(_species, _subspecies)
 	return _batches.values()
+
+
+# COLOR.a describes fin tissue in the opaque shader. Mood/age color washes
+# must change pigment without turning a delicate membrane into solid tissue.
+static func set_handle_color(handle: VoxelBatch.Handle, color: Color) -> void:
+	color.a = handle_orig_color(handle).a
+	handle.set_color(color)
 
 
 static func handle_orig_color(h: VoxelBatch.Handle) -> Color:
@@ -112,7 +119,8 @@ static func _bone_bend_weight(parent: Node3D) -> float:
 			return 0.42
 		"TailPivot", "Tail":
 			return 1.0
-		"GillPivot", "PectoralL", "PectoralR", "Dorsal", "Anal":
+		"GillPivot", "PectoralL", "PectoralR", "Dorsal", "Anal", \
+		"PecLeft", "PecRight", "DorsalPivot", "AnalPivot", "Dorsal2":
 			return 0.72
 		_:
 			return 0.22

@@ -4,36 +4,32 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.37](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.37)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam wishlist](https://store.steampowered.com/app/4796460/) (Early Access **July 7, 2026**)
+**Latest release: [v0.2.38](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.38)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
-## Where things are at (July 2026)
+## Where things are at (October 2026)
 
 | Area | Status |
 |---|---|
 | **Playable builds** | macOS (notarized), Windows, Linux, Android — free on [GitHub Releases](https://github.com/mhsenkow/SimFish/releases) |
-| **Steam** | Desktop depots uploaded; EA launch July 7. Same binaries as GitHub. |
+| **Steam** | Available in Early Access; desktop builds share the same game source as GitHub. |
 | **Ecosystem sim** | Walstad nutrient loop, **18** scenario presets (`scenario_picker.gd`), saltwater reef mode, aquascaping craft |
-| **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, three-pass soul/spark layer |
+| **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, and saved music associations |
 | **Keeper loop** | Care tiers gate conversation — steady the tank first, then fish open up; comfort words soothe spooked fish |
-| **Performance** | Mind kernel tick path, perf governor, batched fauna/waste, potato fidelity tier, eight biome palettes |
+| **Performance** | Cached fish music responses, sparse habitat queries, batched fauna/waste, and adaptive fidelity |
 | **In progress** | Sentience eval harness hardening, mind-kernel GDExtension, Steam EA polish |
 
 ### Screenshots
 
-**Keeper focus — blackwater biotope.** Workspace inspector shows felt self, tank mind, and dialogue with a followed fish. Type to a fish; stressed tanks block replies until care improves.
+Current v0.2.38 captures from the game. Pixel-art tanks, a clearer shelf, and templates when you want a different habitat.
 
-![Blackwater tank with workspace inspector and keeper dialogue](docs/img/keeper-blackwater-focus.png)
-
-**Isometric workspace.** Pond/isometric camera + camera-views panel. Moss asks *"what is this place?"* — the keeper-care gate in action.
-
-![Isometric tank with workspace inspector and Moss dialogue](docs/img/isometric-workspace-moss.png)
+![Living planted aquarium](docs/img/living-tank-v038.webp)
 
 | | |
 |---|---|
-| ![Planted community](docs/img/planted-community.png) | ![Scenario picker](docs/img/tank-menu-scenarios.png) |
-| Planted community · live stat chips | Scenario picker (18 presets) |
-| ![Reef cube](docs/img/reef-cube.png) | ![Void tank](docs/img/void-tank.png) |
-| Saltwater reef cube | Void environment preset |
+| ![Tank shelf with Living tank action](docs/img/tank-shelf-v038.webp) | ![Responsive template picker](docs/img/tank-templates-v038.webp) |
+| Continue a tank or start a living garden | Browse 18 templates |
+| ![Current saltwater reef](docs/img/reef-v038.webp) | ![Fish swimming in the planted community](docs/img/living-close-v038.webp) |
+| Reef cube · corals and mixed marine morphs | A closer view of the living community |
 
 ## Download
 
@@ -58,13 +54,11 @@ Tested on Ubuntu / Debian-based distros. The binary already has the exec bit set
 
 ### Steam
 
-On [Steam](https://store.steampowered.com/app/4796460/) — Early Access **July 7, 2026**. [Wishlist](https://store.steampowered.com/app/4796460/) to get notified. GitHub releases stay free; a Steam purchase helps fund more dev time.
+Available in Early Access on [Steam](https://store.steampowered.com/app/4796460/). GitHub releases stay free; a Steam purchase helps fund more dev time.
 
 ## Pick your tank
 
-Tapping **+ New tank** opens the scenario picker — **18** curated themes
-that each combine a distinct tank shape + footprint + substrate + aeration
-+ lighting + stocking. Every scenario produces a visibly different
+Choose **+ Living tank** to start a populated Quick Garden with gentle lo-fi music and automatic feeding. Choose **Templates** to browse **18** curated themes, each combining a tank shape, substrate, aeration, lighting, and stocking. Every scenario produces a visibly different
 silhouette of glass on the desk, not just a different fish mix.
 
 | Scenario | Shape · W×D×H (units) | Highlights |
@@ -108,8 +102,7 @@ opens with the right `tank_shape`, `tank_half_w/d`, `tank_height`,
 `environment_preset` already set. Adding a new scenario is one Dictionary
 entry in [`scenario_picker.gd`](shaders-godot/godot-project/scripts/scenario_picker.gd).
 
-The **Guided setup** button still works the same way — empty tank, walk
-through stocking it manually.
+The **Guided setup** option remains available for building and stocking a tank yourself. Existing saved settings are preserved; the ready-to-watch defaults apply to fresh settings.
 
 ## What's in the tank
 
@@ -189,6 +182,18 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - Population dynamics cycling — fry born, some eaten, survivors mature, breed, repeat
 
 ## Recent additions
+
+### v0.2.38 — quieter music, living defaults, and reliable ecology
+
+- **Ready to watch:** one-click Living tank, populated Quick Garden, automatic feeding, softer lo-fi defaults, and clearer responsive menus and panels.
+- **Softer sound:** quieter, filtered hats, gentler environmental and creature-event layers, and more coherent musical phrasing.
+- **Individual motion and listening:** smoother turns, more varied swimming bouts, and bounded, saved associations between music, comfort, feeding and alarm. Sleep and stress consistently temper musical responses. These are simulated learning states, not a claim of consciousness.
+- **Reliable reproduction and restores:** repair old seed script references, preserve coral forms and colors, respect plant capacity, recompute relocation height, and prevent seed or plant-chemical inventories accumulating on reload.
+- **Stable highlights and shelf photos:** smoother fish sheen and bank lighting, bounded reflected highlights, automatic first-visit photos, atomic image saves, and correct UI visibility after taking a photo.
+- **Less repeated work:** shared per-frame fish music responses, occupied-cell habitat queries, cached plant-chemical concentrations, and fewer temporary arrays in neighbour searches.
+- **Validation:** 571 scripts compile with zero analyzer warnings; all 237 local smoke tests pass, with zero failures or timeouts. Targeted CPU benchmarks are recorded in the pass notes; they do not measure whole-game FPS.
+
+[Release notes](docs/RELEASE_v0.2.38.md) · [Music pass](docs/MUSIC_LOFI_PASS_20261007.md) · [Swimming pass](docs/SWIMMING_MOTION_PASS_20261007.md) · [Ready defaults](docs/EXPERIENCE_AND_READY_DEFAULTS_20261007.md) · [Seed reliability](docs/SEEDLING_RELIABILITY_PERFORMANCE_PASS_20261007.md) · [Ecology performance](docs/ECOLOGY_RESTORE_QUERY_PASS_20261007.md)
 
 ### v0.2.25 — polish & stability
 

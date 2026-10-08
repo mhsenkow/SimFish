@@ -74,9 +74,13 @@ var _file: FileAccess = null
 var _context: Dictionary = {}
 
 
+func _init() -> void:
+	# Autoload services can report a fault before this node's _ready runs.
+	_ring.resize(RING_SIZE)
+
+
 func _ready() -> void:
 	_session_started_unix = int(Time.get_unix_time_from_system())
-	_ring.resize(RING_SIZE)
 	if OS.is_debug_build():
 		min_level = Level.DEBUG
 	_open_session()

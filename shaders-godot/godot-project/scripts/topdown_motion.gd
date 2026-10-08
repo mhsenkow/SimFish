@@ -302,13 +302,13 @@ static func turn_rate_at_speed(speed: float, max_speed: float) -> float:
 static func turn_anticipation_delta(angle: float, speed: float) -> float:
 	if absf(angle) < 0.06:
 		return 0.0
-	return clampf(-signf(angle) * speed * 0.14, -0.4, 0.4)
+	return clampf(signf(angle) * speed * 0.14, -0.4, 0.4)
 
 
 static func burst_glide_speed_mult(phase: float, swim_pattern: String) -> float:
 	if swim_pattern not in ["cruise", "school", "shoal", "meander"]:
 		return 1.0
-	var p: float = fposmod(phase, 1.0)
+	var p: float = fposmod(phase / TAU, 1.0)
 	var kick: float = clampf(1.0 - absf(p - 0.25) * 4.0, 0.0, 1.0)
 	var glide: float = clampf((p - 0.45) / 0.5, 0.0, 1.0) if p > 0.45 else 0.0
 	return lerpf(0.82, 1.0, kick) * lerpf(1.0, 0.88, glide)

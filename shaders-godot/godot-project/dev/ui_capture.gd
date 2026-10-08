@@ -204,9 +204,17 @@ func _ready() -> void:
 	_cfg.set("beauty_defaults_applied", false)
 	AestheticsScript.apply_first_launch_defaults(_cfg)
 	_apply_scenario(_env("UI_CAPTURE_SCENARIO", DEFAULT_SCENARIO))
+	var sound_preset: String = _env("UI_CAPTURE_SOUND_PRESET", "")
+	if not sound_preset.is_empty():
+		var sound_script: GDScript = load("res://scripts/sound_panel.gd")
+		for preset: Dictionary in sound_script.PRESETS:
+			if str(preset.key) == sound_preset:
+				for key: String in preset.values:
+					_cfg.set(key, preset.values[key])
 	for flag in SEEN_FLAGS:
 		if _cfg.get(flag) != null:
 			_cfg.set(flag, true)
+	OnboardingLegibility.set_global_pref("sentience_north_star_seen", true)
 	if _cfg.get("walkthrough_pending") != null:
 		_cfg.set("walkthrough_pending", false)
 	_settle = maxi(30, _env("UI_CAPTURE_SETTLE", str(DEFAULT_SETTLE)).to_int())

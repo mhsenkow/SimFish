@@ -379,6 +379,8 @@ const MANIFEST: Dictionary = {
 	"rebuild_terrain_on_load": [TIER_STATE, "tank"],
 	"_save_timer": [TIER_INTERNAL, "internal"],
 	"_save_in_flight": [TIER_INTERNAL, "internal"],
+	"_save_task_id": [TIER_INTERNAL, "internal"],
+	"_save_closing": [TIER_INTERNAL, "internal"],
 	"_save_queued": [TIER_INTERNAL, "internal"],
 	"_settings_batch_depth": [TIER_INTERNAL, "internal"],
 	"_save_pending_from_batch": [TIER_INTERNAL, "internal"],

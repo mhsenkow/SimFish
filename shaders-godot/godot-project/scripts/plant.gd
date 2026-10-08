@@ -339,7 +339,8 @@ var parent_lineage: String = "Founders"
 var _parent_keys: Array = []
 
 # ---- Root system ----
-var root_voxels: Array[MeshInstance3D] = []
+var root_voxels: Array[VoxelBatch.Handle] = []
+var _root_batch: VoxelBatch = null
 var _root_count: int = 0
 var _max_roots: int = 5
 var _root_growth_counter: int = 0  # grows one root per N stem voxels
@@ -459,6 +460,9 @@ var _leaf_nodes: Array[Node3D] = []
 
 
 func _exit_tree() -> void:
+	if _root_batch != null:
+		_root_batch.dispose()
+		_root_batch = null
 	if _foliage_batch != null:
 		_foliage_batch.dispose()
 		_foliage_batch = null
@@ -1248,7 +1252,7 @@ func _build_initial_roots() -> void:
 # _rhizome_attach_points to position leaves along the trunk instead of
 # stacking them on a single column.
 var _rhizome_attach_points: PackedVector3Array = PackedVector3Array()
-var _rhizome_voxels: Array[MeshInstance3D] = []
+var _rhizome_voxels: Array[VoxelBatch.Handle] = []
 # Direction the rhizome creeps along its host, and how far it has got. An
 # epiphyte does not gain height like a stem plant — it travels. Keeping the
 # heading lets growth extend the same runner instead of rebuilding it.
@@ -1256,6 +1260,29 @@ var _rhizome_dir: Vector3 = Vector3.RIGHT
 var _rhizome_segments: int = 0
 const RHIZOME_MAX_SEGMENTS: int = 14
 const RHIZOME_STEP: float = VOXEL_SIZE * 0.55
+
+# Root/rhizome geometry is static in plant-local space. Preserve its shape,
+# color and growth records while sharing one draw instead of one per hair.
+func _bake_root_voxel(template: MeshInstance3D) -> VoxelBatch.Handle:
+	if _root_batch == null:
+		var mat := ShaderMaterial.new()
+		mat.shader = load("res://shaders/foliage_mm.gdshader") as Shader
+		mat.set_shader_parameter("sway_amplitude", 0.0)
+		mat.set_shader_parameter("flutter_amplitude", 0.0)
+		mat.set_shader_parameter("gust_response", 0.0)
+		VoxelMat.register_foliage_mm(mat)
+		_root_batch = VoxelBatch.new(self, mat, 64, true)
+		_root_batch.mmi.name = "RootBatch"
+		_apply_visibility_range_to(_root_batch.mmi)
+	var xform: Transform3D = template.transform
+	xform.basis = xform.basis * Basis.from_scale((template.mesh as BoxMesh).size)
+	var color: Color = VoxelMat.fauna_color_from_material(template.material_override)
+	var handle: VoxelBatch.Handle = _root_batch.add(xform, color)
+	handle.set_custom_data(Color(0.4, 0.0, 0.0, 0.0))
+	_root_batch.flush()
+	template.free()
+	return handle
+
 
 func _build_holdfast_anchor() -> void:
 	var ramp: Array = ramp_override if ramp_override.size() == 6 else PLANT_RAMP
@@ -1282,8 +1309,8 @@ func _build_holdfast_anchor() -> void:
 		seg.material_override = VoxelMat.make_foliage(rhizome_color)
 		var seg_pos: Vector3 = dir * float(i) * VOXEL_SIZE * 0.55
 		seg.position = seg_pos
-		add_child(seg)
-		_rhizome_voxels.append(seg)
+		var seg_handle: VoxelBatch.Handle = _bake_root_voxel(seg)
+		_rhizome_voxels.append(seg_handle)
 		# Leaf attachment point — store for the leaf-spawn path.
 		_rhizome_attach_points.append(seg_pos)
 		# Root hairs underneath each segment — 2 tiny pale voxels splayed
@@ -1300,16 +1327,16 @@ func _build_holdfast_anchor() -> void:
 				+ Vector3(0.0, -VOXEL_SIZE * 0.20, 0.0)
 			# Tilt the hair so it looks pulled down by gravity.
 			hair.rotation.z = -side * 0.35
-			add_child(hair)
-			root_voxels.append(hair)
+			var hair_handle: VoxelBatch.Handle = _bake_root_voxel(hair)
+			root_voxels.append(hair_handle)
 		# Tiny anchor stub between segment and host surface.
 		var anchor := MeshInstance3D.new()
 		anchor.mesh = VoxelMat.get_box(Vector3(
 			VOXEL_SIZE * 0.16, VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.16))
 		anchor.material_override = VoxelMat.make_foliage(hair_color.darkened(0.20))
 		anchor.position = seg_pos + Vector3(0.0, -VOXEL_SIZE * 0.30, 0.0)
-		add_child(anchor)
-		root_voxels.append(anchor)
+		var anchor_handle: VoxelBatch.Handle = _bake_root_voxel(anchor)
+		root_voxels.append(anchor_handle)
 	_rhizome_segments = rhizome_len
 	_root_count = root_voxels.size()
 
@@ -1355,8 +1382,8 @@ func _extend_rhizome() -> bool:
 		VOXEL_SIZE * 0.55, VOXEL_SIZE * 0.32, VOXEL_SIZE * 0.45))
 	seg.material_override = VoxelMat.make_foliage(rhizome_color)
 	seg.position = seg_pos
-	add_child(seg)
-	_rhizome_voxels.append(seg)
+	var seg_handle: VoxelBatch.Handle = _bake_root_voxel(seg)
+	_rhizome_voxels.append(seg_handle)
 	_rhizome_attach_points.append(seg_pos)
 	var cross: Vector3 = Vector3(-_rhizome_dir.z, 0.0, _rhizome_dir.x)
 	for side in [-1.0, 1.0]:
@@ -1367,8 +1394,8 @@ func _extend_rhizome() -> bool:
 		hair.position = seg_pos + cross * side * VOXEL_SIZE * 0.30 \
 			+ Vector3(0.0, -VOXEL_SIZE * 0.20, 0.0)
 		hair.rotation.z = -side * 0.35
-		add_child(hair)
-		root_voxels.append(hair)
+		var hair_handle: VoxelBatch.Handle = _bake_root_voxel(hair)
+		root_voxels.append(hair_handle)
 	_rhizome_segments += 1
 	_root_count = root_voxels.size()
 	return true
@@ -1408,8 +1435,8 @@ func _add_root(root_ramp: Array) -> void:
 			-float(j) * VOXEL_SIZE * 0.5,
 			sin(angle) * spread,
 		)
-		add_child(mi)
-		root_voxels.append(mi)
+		var mi_handle: VoxelBatch.Handle = _bake_root_voxel(mi)
+		root_voxels.append(mi_handle)
 		# Root-hair fuzz — 2 pale horizontal sub-voxels at the anchor tip.
 		if j == depth - 1:
 			var cross_x: float = cos(angle + PI * 0.5)
@@ -1419,13 +1446,13 @@ func _add_root(root_ramp: Array) -> void:
 				hair.mesh = VoxelMat.get_box(Vector3(
 					VOXEL_SIZE * 0.12, VOXEL_SIZE * 0.07, VOXEL_SIZE * 0.12))
 				hair.material_override = VoxelMat.make_foliage(root_light.lightened(0.12))
-				hair.position = mi.position + Vector3(
+				hair.position = mi_handle.local_pos + Vector3(
 					cross_x * side * VOXEL_SIZE * 0.14,
 					-VOXEL_SIZE * 0.06,
 					cross_z * side * VOXEL_SIZE * 0.14,
 				)
-				add_child(hair)
-				root_voxels.append(hair)
+				var hair_handle: VoxelBatch.Handle = _bake_root_voxel(hair)
+				root_voxels.append(hair_handle)
 	_root_count += 1
 
 
@@ -4720,6 +4747,9 @@ func _tick_seeding(dt: float) -> void:
 	if sim_d != null and sim_d.substrate != null:
 		var bank: float = sim_d.substrate.get_seed_bank_at(_world_pos)
 		if bank > 0.2 and seed_timer > 12.0:
+			var world: Node = sim_d.get_parent()
+			if SimGate.plants_at_capacity(world):
+				return
 			var dl: float = SimGate.daylight(sim_d, 0.5)
 			if dl > 0.45 and substrate_nutrient_ok(sim_d.substrate):
 				var lot: Dictionary = sim_d.substrate.take_eligible_seed_lot_at(
@@ -5721,6 +5751,7 @@ func _germinate_seed_at(pos: Vector3, sim_d: Node, seed_genome: Dictionary = {})
 	var cfg: Dictionary = seed_genome.duplicate(true) \
 		if not seed_genome.is_empty() else get_seed_config()
 	cfg["from_seed_bank"] = true
+	cfg["autonomous_spread"] = true
 	world.spawn_seedling(pos, mutated_ramp, int(cfg.get("generation", generation + 1)), cfg)
 
 
@@ -5776,7 +5807,7 @@ func get_seed_config() -> Dictionary:
 	base_g["parent_lineage"] = plant_name
 	base_g["parent_keys"] = [my_key] if my_key != "" else []
 	base_g["plant_name"] = ""
-	base_g["script"] = get_script()
+	base_g["script"] = (get_script() as Script).resource_path
 	var cfg: Dictionary = {}
 	var partner: Plant = _find_pollination_partner()
 	if partner != null:
@@ -5784,7 +5815,7 @@ func get_seed_config() -> Dictionary:
 		partner_g["palatability"] = partner._heritable_palatability
 		cfg = PlantGenome.outcross(base_g, partner_g,
 			maxi(generation, partner.generation) + 1)
-		cfg["script"] = get_script()
+		cfg["script"] = (get_script() as Script).resource_path
 		_pollination_cooldown_s = POLLINATION_COOLDOWN_S
 		partner._pollination_cooldown_s = POLLINATION_COOLDOWN_S
 	else:

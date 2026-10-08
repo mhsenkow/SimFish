@@ -5,8 +5,8 @@ extends RefCounted
 const TankChronicleScript = preload("res://scripts/tank_chronicle.gd")
 
 static var _writes_in_flight: int = 0
-static var _pending_write_path: String = ""
-static var _pending_write_payload: Variant = null
+static var _write_task_id: int = -1
+static var _pending_writes: Dictionary = {}
 
 
 static func writes_in_flight() -> int:
@@ -14,9 +14,9 @@ static func writes_in_flight() -> int:
 
 
 static func reset_for_test() -> void:
+	flush_pending_writes()
 	_writes_in_flight = 0
-	_pending_write_path = ""
-	_pending_write_payload = null
+	_pending_writes.clear()
 
 # AppLog is an autoload, so it is absent in headless --script runs and in any
 # static context before the tree exists. Never assume it is there.
@@ -119,6 +119,8 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 		pending_time_scale: float, skip_thumbnail: bool = false) -> float:
 	if sim == null or not sim.has_method("save_state"):
 		return pending_time_scale
+	if host != null and host.has_method("is_save_restore_blocked") and host.call("is_save_restore_blocked"):
+		return pending_time_scale
 	# Never let a capture run write its synthetic tank over the player's slot.
 	if _capture_mode(host):
 		return pending_time_scale
@@ -190,12 +192,34 @@ static func save_active(host: Node, sim: Node, world: Node, aquascape: Aquascape
 
 
 static func _enqueue_async_write(path: String, payload: Variant) -> void:
-	if _writes_in_flight > 0:
-		_pending_write_path = path
-		_pending_write_payload = payload
-		return
-	_writes_in_flight += 1
-	WorkerThreadPool.add_task(_async_serialize_and_write.bind(path, payload))
+	# The queue belongs to the main thread. Coalesce each tank independently.
+	_pending_writes[path] = payload
+	poll_writes()
+
+
+static func poll_writes() -> void:
+	if _write_task_id >= 0:
+		if not WorkerThreadPool.is_task_completed(_write_task_id):
+			return
+		WorkerThreadPool.wait_for_task_completion(_write_task_id)
+		_write_task_id = -1
+		_writes_in_flight = 0
+	if not _pending_writes.is_empty():
+		var path: String = String(_pending_writes.keys()[0])
+		var payload: Variant = _pending_writes[path]
+		_pending_writes.erase(path)
+		_writes_in_flight = 1
+		_write_task_id = WorkerThreadPool.add_task(_async_serialize_and_write.bind(path, payload))
+
+
+static func flush_pending_writes() -> void:
+	# Called at exit and before slot duplication/deletion/invalidation.
+	while _write_task_id >= 0 or not _pending_writes.is_empty():
+		if _write_task_id >= 0:
+			WorkerThreadPool.wait_for_task_completion(_write_task_id)
+			_write_task_id = -1
+			_writes_in_flight = 0
+		poll_writes()
 
 
 static func _async_serialize_and_write(path: String, payload: Variant) -> void:
@@ -203,13 +227,6 @@ static func _async_serialize_and_write(path: String, payload: Variant) -> void:
 	var json_text: String = JSON.stringify(payload, "  ")
 	_async_write_save(path, json_text)
 	PerfGovernor.record_ledger(26, t0 + 1200, t0)
-	_writes_in_flight = maxi(0, _writes_in_flight - 1)
-	if _writes_in_flight == 0 and _pending_write_path != "":
-		var next_path: String = _pending_write_path
-		var next_payload: Variant = _pending_write_payload
-		_pending_write_path = ""
-		_pending_write_payload = null
-		_enqueue_async_write(next_path, next_payload)
 
 
 static func _async_write_save(path: String, json_text: String) -> void:

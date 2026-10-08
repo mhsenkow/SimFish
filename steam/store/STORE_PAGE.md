@@ -2,13 +2,21 @@
 
 ## Short description (≤ 300 chars)
 
-A generative pixel-art Walstad aquarium. Plants grow, fish school and breed, shrimp climb stems, snails crawl the glass. Watch a closed nutrient loop settle into equilibrium — chunky pixels, sim depth underneath.
+A living pixel-art aquarium with gentle generative lo-fi. Start a beautiful populated tank, watch fish school and breed, and follow individual lives as plants, shrimp and snails shape a Walstad ecosystem.
 
 ## About the game
 
-walstad loom is a living tank you watch more than you play. A 3D voxel aquascape runs through a palette-quantize shader so everything reads as pixel art, while plants, fish, shrimp, and snails interact in a Walstad-style food web underneath.
+walstad loom is a living tank you watch more than you play. A 3D voxel aquascape becomes palette-quantized pixel art, with a Walstad-style food web underneath.
 
-Stock a preset or build your own mix. Feed the tank, follow a creature, take photos, timelapse a bloom crash. The ecosystem self-balances over a few minutes — algae spikes when nutrients run hot, snails and shrimp graze it back, fry hide in the stems.
+Start a populated Living tank in one click, with automatic feeding and gentle lo-fi already set up. Or choose from 18 templates, from planted jungles and shrimp sanctuaries to a saltwater reef, and shape your own aquarium.
+
+Fish school, breed, shelter, sleep and develop individual behavioral histories. Their response to music reflects stress, rest and bounded learned associations with comfort, food and alarm. Plants grow from substrate nutrients; shrimp and snails graze, fry shelter in stems, and waste feeds the next cycle.
+
+Follow a creature, take photos, feed the tank or simply leave it as a quiet desktop companion. Softer percussion, smoother swimming and clearer panels make the everyday experience more comfortable. Simulated learning gives fish continuity without claiming consciousness.
+
+## v0.2.38 update
+
+Softer lo-fi hats and event sounds; ready-to-watch defaults; smoother swimming; saved musical associations; repaired seedling inheritance; stable seed and chemistry restores; and reduced repeated simulation work.
 
 ## Suggested tags
 
@@ -46,7 +54,7 @@ Outputs under `steam/store/assets/`:
 - Processor: Dual-core 2 GHz
 - Memory: 4 GB RAM
 - Graphics: OpenGL 3.3 / Metal / Vulkan-capable GPU
-- Storage: 200 MB
+- Storage: 1 GB (includes the desktop Guardian model)
 
 **Recommended**
 - Memory: 8 GB RAM

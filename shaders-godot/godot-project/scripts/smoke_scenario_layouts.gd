@@ -43,9 +43,8 @@ func _initialize() -> void:
 		push_error("[smoke_scenario_layouts] TankConfig autoload missing")
 		quit(1)
 		return
-	var saves := get_root().get_node_or_null("TankSaves")
-	if saves != null and saves.has_method("clear_active_state"):
-		saves.clear_active_state()
+	# Fresh fixtures never need to erase a keeper's save.
+	cfg.capture_mode = true
 	var world_script: Script = load("res://scripts/world.gd")
 	var failed: Array[String] = []
 	for case in CASES:

@@ -1,7 +1,7 @@
 # A fish egg. Sits where it was laid (plants or substrate), incubates for
 # some seconds, then hatches into a fry that inherits the parents' genome.
 #
-# Visible as a small pale cluster of voxels. Adds slight wobble during the
+# One visible egg represents one future fry. Adds slight wobble during the
 # last 20% of incubation as the fry inside develops.
 
 extends Node3D
@@ -9,10 +9,18 @@ class_name FishEgg
 
 const VOXEL_SIZE: float = 0.10
 const INCUBATION_S: float = 30.0  # seconds to hatch (sim time)
+# Accelerated gameplay profiles, not biological incubation times.
+const INCUBATION_BY_SPECIES: Dictionary = {
+	"glassdart": 30.0, "danio": 24.0, "killifish": 42.0,
+	"harlequin_rasbora": 36.0, "ember_tetra": 34.0, "rummy_nose": 38.0,
+	"angelfish": 48.0, "mudsifter": 40.0,
+}
 
 var genome: Dictionary = {}
 var species: String = "glassdart"
 var _age: float = 0.0
+var incubation_s: float = INCUBATION_S
+var _development: float = 0.0
 var _wobble_pivot: Node3D = null
 # Cached per-egg-cell materials so the hatch pulse-glow can lift their
 # albedo each tick. The base color is what _build_visual originally set;
@@ -32,6 +40,8 @@ var viable: bool = true
 func init(genome_dict: Dictionary) -> void:
 	genome = genome_dict
 	species = genome.get("species", species)
+	incubation_s = clampf(SaveHelpers._num(genome.get("incubation_s",
+		INCUBATION_BY_SPECIES.get(species, INCUBATION_S)), INCUBATION_S), 10.0, 120.0)
 	viable = not not genome.get("viable", true)
 	# Derive egg tint from the parents' base_color: lighten by 40% and
 	# desaturate toward a warm translucent look so the species identity
@@ -64,30 +74,35 @@ func to_save_dict() -> Dictionary:
 		"species": species,
 		"genome": g,
 		"age": _age,
+		"development": _development,
+		"incubation_s": incubation_s,
 	}
 
 
 func apply_save_dict(d: Dictionary) -> void:
 	species = String(d.get("species", species))
-	var g: Dictionary = d.get("genome", {})
+	var g: Dictionary = (d.get("genome", {}) as Dictionary).duplicate(true)
 	for key in ["base_color", "accent_color", "tail_color"]:
 		if g.has(key) and g[key] is Array:
 			g[key] = SaveHelpers.array_to_color(g[key])
 	init(g)
-	_age = float(d.get("age", 0.0))
+	_age = maxf(0.0, SaveHelpers._num(d.get("age", 0.0), 0.0))
+	# Legacy eggs keep their original 30-second deadline and progress. New
+	# profiles must never reset or unexpectedly extend an already saved brood.
+	incubation_s = clampf(SaveHelpers._num(d.get("incubation_s", INCUBATION_S),
+		INCUBATION_S), 10.0, 120.0)
+	_development = maxf(0.0, SaveHelpers._num(d.get("development", _age), _age))
 
 
 func _build_visual() -> void:
-	# A cluster of 3-5 tiny eggs, tinted per species.
+	# A single pale voxel per embryo: the previous four-cell visual implied
+	# four times as many hatchlings and cost four material updates per tick.
 	_wobble_pivot = Node3D.new()
 	add_child(_wobble_pivot)
 	_egg_materials.clear()
 	_egg_base_colors.clear()
 	var positions: Array[Vector3] = [
 		Vector3(0, 0, 0),
-		Vector3(VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.1, 0),
-		Vector3(-VOXEL_SIZE * 0.8, VOXEL_SIZE * 0.05, VOXEL_SIZE * 0.4),
-		Vector3(VOXEL_SIZE * 0.3, VOXEL_SIZE * 0.8, -VOXEL_SIZE * 0.4),
 	]
 	for i in positions.size():
 		var mi := MeshInstance3D.new()
@@ -105,18 +120,20 @@ func _build_visual() -> void:
 
 
 # Called by SimDriver each tick. Returns true when the egg should hatch.
-func tick(dt: float) -> bool:
+func tick(dt: float, rate: float = 1.0) -> bool:
+	dt = maxf(0.0, dt)
 	_age += dt
+	_development += dt * (clampf(rate, 0.15, 1.5) if viable else 1.0)
 	# Wobble in the last few seconds before hatching.
-	if _wobble_pivot != null and _age > INCUBATION_S * 0.7:
-		var wobble_t := (_age - INCUBATION_S * 0.7) / (INCUBATION_S * 0.3)
+	if _wobble_pivot != null and _development > incubation_s * 0.7:
+		var wobble_t: float = clampf((_development - incubation_s * 0.7) / (incubation_s * 0.3), 0.0, 1.0)
 		_wobble_pivot.rotation.z = sin(_age * 8.0) * 0.1 * wobble_t
 	# Hatch pulse-glow. Egg albedo lifts toward an embryo-light cream as
 	# incubation completes; pulse frequency also climbs so a near-hatch
 	# egg visibly flickers. Only viable eggs glow — dead eggs stay dull
 	# so the player reads "this clutch isn't going to develop."
 	if viable and _egg_materials.size() > 0:
-		var hatch_t: float = clampf(_age / INCUBATION_S, 0.0, 1.0)
+		var hatch_t: float = development_fraction()
 		# Glow eases in over the second half so early incubation looks
 		# inert and the last 15s reads as "actively quickening." Quartic
 		# ramp emphasises the final stretch.
@@ -139,11 +156,20 @@ func tick(dt: float) -> bool:
 			var base_c: Color = _egg_base_colors[i]
 			var target: Color = base_c.lightened(0.55)
 			mat.set_shader_parameter("albedo", base_c.lerp(target, lift))
-	return _age >= INCUBATION_S
+	return is_ready_to_hatch()
 
 
 func is_ready_to_hatch() -> bool:
-	return _age >= INCUBATION_S
+	return _development >= incubation_s
+
+
+func development_fraction() -> float:
+	return clampf(_development / incubation_s, 0.0, 1.0)
+
+
+static func development_rate(warmth: float, oxygen: float) -> float:
+	var temperature: float = clampf(1.0 + (warmth - 0.55) * 0.8, 0.65, 1.35)
+	return temperature * clampf(oxygen / 0.5, 0.25, 1.0)
 
 
 func dissolve() -> void:

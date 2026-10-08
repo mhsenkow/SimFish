@@ -13,7 +13,7 @@ import requests
 from PIL import Image
 
 ASSETS = Path(__file__).resolve().parent / "assets"
-ITEM_ID = 1202304
+ITEM_ID = 4796460
 SAVE_URL = f"https://partner.steamgames.com/admin/game/save/{ITEM_ID}?activetab=tab_graphicalassets&json=1"
 
 IMAGE_TYPES = [

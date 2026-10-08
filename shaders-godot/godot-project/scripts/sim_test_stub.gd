@@ -12,3 +12,8 @@ const SimRngScript = preload("res://scripts/sim_rng.gd")
 
 var rng: SimRngScript = SimRngScript.new()
 var time_scale: float = 1.0
+
+
+# Same fallback light as the old cognition fixture, with a real contract.
+func daylight() -> float:
+	return 1.0

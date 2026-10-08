@@ -103,7 +103,14 @@ func _build_ui() -> void:
 	# don't look like they're stacked on top of each other.
 	_cards_container = VBoxContainer.new()
 	_cards_container.add_theme_constant_override("separation", 10)
-	outer.add_child(_cards_container)
+	var cards_scroll := ScrollContainer.new()
+	cards_scroll.name = "Arrivals"
+	cards_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	cards_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	cards_scroll.follow_focus = true
+	_cards_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cards_scroll.add_child(_cards_container)
+	outer.add_child(cards_scroll)
 
 	# Footer: actions only — Reroll is the primary (Close is the header ×).
 	var reroll := PanelTheme.make_primary_button("Reroll")
@@ -125,6 +132,7 @@ func _regenerate() -> void:
 func _rebuild_cards() -> void:
 	# Tear down old cards.
 	for c in _cards_container.get_children():
+		_cards_container.remove_child(c)
 		c.queue_free()
 	for i in _options.size():
 		_cards_container.add_child(_make_card(i))
@@ -181,6 +189,7 @@ func _make_card(idx: int) -> Control:
 	hb.add_child(vbox)
 	var name_label := Label.new()
 	name_label.text = String(g.get("_display_name", "fish"))
+	name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	PanelTheme.as_serif(name_label, PanelTheme.SIZE_ITEM)
 	name_label.add_theme_color_override("font_color", Color8(255, 220, 80))
 	vbox.add_child(name_label)

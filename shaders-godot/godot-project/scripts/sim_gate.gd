@@ -41,6 +41,7 @@ const CONTRACT: Dictionary = {
 		"query_plants_in_radius": 2,
 	},
 	"World": {
+		"plants_at_capacity": 0,
 		"clamp_xyz_in_tank": 1,
 		"column_surface_y": 2,
 		"sample_flow": 1,
@@ -72,6 +73,12 @@ static func query_plants_in_radius(sim: Object, pos: Vector3, max_dist: float) -
 
 
 # --- World -----------------------------------------------------------------
+
+static func plants_at_capacity(world: Object) -> bool:
+	if not _has(world, "plants_at_capacity"):
+		return false
+	return bool(world.call("plants_at_capacity"))
+
 
 # Clamp a position inside the tank walls. Falls back to the input point:
 # returning ZERO instead would teleport creatures to the tank centre, which

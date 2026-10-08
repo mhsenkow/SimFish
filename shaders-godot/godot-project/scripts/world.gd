@@ -26,6 +26,8 @@ const TankFlowFieldScript = preload("res://scripts/tank_flow_field.gd")
 const HardscapeOccludersScript = preload("res://scripts/hardscape_occluders.gd")
 const PlantEcologyAdapterScript = preload("res://scripts/plant_ecology_adapter.gd")
 const SeedMoteDynamics = preload("res://scripts/seed_mote_dynamics.gd")
+const SeedPlantScripts = preload("res://scripts/plant_seed_scripts.gd")
+const SeedPlantBase = preload("res://scripts/plant.gd")
 const EpiphyteAttachment = preload("res://scripts/epiphyte_attachment.gd")
 
 # How much tannin has leached into the water (0..1). Driftwood releases it
@@ -4499,6 +4501,8 @@ func _build_snail_body(snail: Node3D) -> void:
 		"aperture_flare": float(snail.get("aperture_flare")) if "aperture_flare" in snail else 0.0,
 		"operculum": (snail.get("operculum") if "operculum" in snail else false),
 		"shell_pattern": int(snail.get("shell_pattern")) if "shell_pattern" in snail else 0,
+		"shell_pattern_scale": float(snail.get("shell_pattern_scale")),
+		"shell_pattern_density": float(snail.get("shell_pattern_density")),
 		"shell_spines": float(snail.get("shell_spines")) if "shell_spines" in snail else 0.0,
 		"toxin_level": float(snail.get("toxin_level")) if "toxin_level" in snail else 0.0,
 		"generation": int(snail.get("generation")) if "generation" in snail else 0,
@@ -5946,7 +5950,8 @@ func _apply_template_canvas(template_name: String) -> void:
 # Return a hardscape voxel position close to `near_pos` suitable for epiphyte
 # attachment, or Vector3.ZERO if no hardscape is available. Used by both
 # spawn_library_entry and _spawn_plant for Anubias/Buce/Java fern/moss.
-func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
+func _find_nearest_hardscape_anchor(near_pos: Vector3,
+		max_distance: float = EpiphyteAttachment.MAX_ATTACHMENT_DISTANCE) -> Vector3:
 	var surfaces: Array = []
 	for p_v in _build_epiphyte_anchors:
 		if p_v is Vector3:
@@ -5957,7 +5962,7 @@ func _find_nearest_hardscape_anchor(near_pos: Vector3) -> Vector3:
 	for mi in _rock_voxels:
 		if mi != null and is_instance_valid(mi):
 			surfaces.append({"position": mi.global_position, "kind": "rock"})
-	var attachment: Dictionary = EpiphyteAttachment.nearest_valid(near_pos, surfaces)
+	var attachment: Dictionary = EpiphyteAttachment.nearest_valid(near_pos, surfaces, max_distance)
 	if attachment.is_empty():
 		return Vector3.ZERO
 	var offset: float = 0.25 if String(attachment.kind) == "wood" else 0.20
@@ -5990,7 +5995,7 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	# ceiling. Deliberate spawns — initial stocking, save-restore, the
 	# Creature Creator — deliberately do NOT, so loading a saved tank never
 	# silently drops plants the player planted.
-	if bool(seed_config.get("autonomous_spread", false)) and plants_at_capacity():
+	if (bool(seed_config.get("autonomous_spread", false)) or bool(seed_config.get("from_seed_bank", false))) and plants_at_capacity():
 		return
 	var is_saltwater: bool = not not _active_substrate_profile.get("is_saltwater", false)
 	var seed_reach: float = float(seed_config.get("leaf_length", 4)) * VOXEL_SIZE * 0.55
@@ -6018,19 +6023,11 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		var alt: Vector2 = _pick_ecology_site(
 			is_saltwater, alt_band.x, alt_band.y, 0.35, 0.45)
 		alt = clamp_plant_site(alt.x, alt.y, seed_reach, 0.25)
-		sp.x = alt.x
-		sp.z = alt.y
-	# A seed taken straight from a live plant carries a real Script here, but
-	# one restored from the seed bank on disk has been through JSON, where a
-	# Script can only survive as its path. Accept either.
-	var script_v: Variant = seed_config.get("script", null)
-	var script: Script = null
-	if script_v is Script:
-		script = script_v
-	elif script_v is String and not String(script_v).is_empty():
-		script = load(String(script_v)) as Script
+		sp = spawn_position_on_floor(alt.x, alt.y)
+	# Repair old JSON debug representations and reject missing/non-plant scripts.
+	var script: Script = SeedPlantScripts.resolve(seed_config.get("script", null))
 	if script == null:
-		script = load("res://scripts/plant.gd") as Script
+		script = SeedPlantBase
 	var p = script.new()
 	plants_root.add_child(p)
 	p.global_position = sp
@@ -6045,7 +6042,7 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 		p.ramp_override = evolved_ramp
 	p.water_surface_y = WATER_HEIGHT
 	p.generation = generation
-	
+
 	# Inherit properties from parent. Library spawns set no_mutate so the
 	# preset reads exactly — emergent seedlings go through PlantGenome.mutate
 	# (Naturalism #361) so generations actually drift.
@@ -6064,16 +6061,13 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 	if bool(seed_config.get("from_seed_bank", false)):
 		plant_lineages.record_germination(child_cfg, lineage_cell)
 		child_cfg["lineage_cell"] = lineage_cell
-	# Initialize the child plant using the parent's genetic traits
-	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
-	if child_cfg.has("generation"):
-		p.generation = int(child_cfg["generation"])
-	if child_cfg.has("parent_lineage"):
-		p.parent_lineage = String(child_cfg["parent_lineage"])
-	var pk: Variant = child_cfg.get("parent_keys", [])
-	if pk is Array:
-		p._parent_keys = pk.duplicate()
-	
+	# Subclass geometry must be configured before init lays its first voxels.
+	if p is Coral:
+		p.coral_form = str(child_cfg.get("coral_form", "dome"))
+		if child_cfg.get("tip_color") is Color:
+			p.tip_color = child_cfg.tip_color
+		elif child_cfg.get("tip_color") is Array:
+			p.tip_color = SaveHelpers.array_to_color(child_cfg.tip_color, p.tip_color)
 	# Apply specialized traits only on the subclass that owns them.
 	# PlantGenome can carry parent keys across script types (a stem seedling
 	# inheriting a spiral parent's seed_config), and assigning spiral/branch
@@ -6096,7 +6090,17 @@ func spawn_seedling(pos: Vector3, ramp: Array, generation: int, seed_config: Dic
 			p.max_horizontal_extent = float(child_cfg["max_horizontal_extent"])
 		if "tank_wall_margin" in child_cfg:
 			p.tank_wall_margin = float(child_cfg["tank_wall_margin"])
-		
+
+	# Initialize the child plant using the parent's genetic traits
+	p.init(maxi(1, int(child_cfg.get("spawn_initial_height", 1))), child_cfg)
+	if child_cfg.has("generation"):
+		p.generation = int(child_cfg["generation"])
+	if child_cfg.has("parent_lineage"):
+		p.parent_lineage = String(child_cfg["parent_lineage"])
+	var pk: Variant = child_cfg.get("parent_keys", [])
+	if pk is Array:
+		p._parent_keys = pk.duplicate()
+
 	sim.register_plant(p)
 
 
@@ -9549,6 +9553,8 @@ func _build_room_environment() -> void:
 	# light, default, mid, dark — so the surface looks like irregular
 	# wood grain instead of the previous rigid alternating checkerboard
 	# (which read as a wallpaper or pink lattice in warmer presets).
+	# Static room tiles share one draw per material; animated props stay independent.
+	var room_batch := HardscapeBatch.new()
 	var plank_size: float = 1.25
 	var nx: int = int(desk_half_w * 2.0 / plank_size) + 1
 	var nz: int = int(desk_half_d * 2.0 / plank_size) + 1
@@ -9568,21 +9574,17 @@ func _build_room_environment() -> void:
 				mat = desk_mat
 			else:
 				mat = desk_light_mat
-			var mi := MeshInstance3D.new()
-			mi.mesh = VoxelMat.get_box(Vector3(plank_size * 0.96,
-				desk_thickness, plank_size * 0.96))
-			mi.material_override = mat
-			mi.position = Vector3(px, desk_y - desk_thickness * 0.5, pz)
-			room.add_child(mi)
+			var plank_mesh: BoxMesh = VoxelMat.get_box(Vector3(plank_size * 0.96,
+				desk_thickness, plank_size * 0.96)) as BoxMesh
+			room_batch.add(room, Vector3(px, desk_y - desk_thickness * 0.5, pz),
+				plank_mesh.size, mat)
 	# Front lip of the desk: a slightly raised edge to suggest a real
 	# table edge in front of the camera.
 	for ix in nx:
 		var px2: float = -desk_half_w + (float(ix) + 0.5) * plank_size
-		var lip := MeshInstance3D.new()
-		lip.mesh = VoxelMat.get_box(Vector3(plank_size * 0.96, 0.12, 0.2))
-		lip.material_override = desk_dark_mat
-		lip.position = Vector3(px2, desk_y + 0.02, desk_half_d - 0.1)
-		room.add_child(lip)
+		var lip_mesh: BoxMesh = VoxelMat.get_box(Vector3(plank_size * 0.96, 0.12, 0.2)) as BoxMesh
+		room_batch.add(room, Vector3(px2, desk_y + 0.02, desk_half_d - 0.1),
+			lip_mesh.size, desk_dark_mat)
 
 	# The tank stood on a floating slab: a 1.2-thick desk surface with
 	# nothing beneath it and no floor, so the whole thing read as levitating
@@ -9659,11 +9661,9 @@ func _build_room_environment() -> void:
 				bmat = wall_mat
 			else:
 				bmat = wall_light_mat
-			var brick := MeshInstance3D.new()
-			brick.mesh = VoxelMat.get_box(Vector3(brick_w * 0.96, brick_h * 0.96, 0.4))
-			brick.material_override = bmat
-			brick.position = Vector3(bx, by, wall_z)
-			room.add_child(brick)
+			var brick_mesh: BoxMesh = VoxelMat.get_box(Vector3(brick_w * 0.96, brick_h * 0.96, 0.4)) as BoxMesh
+			room_batch.add(room, Vector3(bx, by, wall_z), brick_mesh.size, bmat)
+	room_batch.flush()
 
 	# Build window frame/sky if active
 	if include_window:
@@ -9735,38 +9735,6 @@ func _build_room_environment() -> void:
 	window_glow.position = Vector3(0.0, desk_y + 4.2, wall_z + 0.6)
 	room.add_child(window_glow)
 	_room_window_glow = window_glow
-
-	# Contact shadow under the tank — implemented by RECOLORING the desk
-	# planks that fall inside the tank's footprint, NOT by adding a
-	# separate layer of shadow voxels. The previous version laid down a
-	# 6×6 grid of dark cells which from a low camera angle read as a
-	# tiled mosaic of dark trapezoids ("weird reflections"). Recoloring
-	# the existing planks keeps the desk seamless — the shadow IS the
-	# desk grain at that location.
-	var shadow_r2: float = (maxf(TANK_HALF_W, TANK_HALF_D) + 0.35) * (maxf(TANK_HALF_W, TANK_HALF_D) + 0.35)
-	var shadow_mat: ShaderMaterial = VoxelMat.make_room(
-		Color(desk_color.r * 0.45, desk_color.g * 0.42, desk_color.b * 0.40),
-		0.30, haze_tint)
-	# Edge-softened shadow: at the centre the plank is the full shadow
-	# colour; near the radius edge we lerp back toward the original
-	# plank material. We accomplish this by walking the desk children
-	# we just spawned and substituting materials inside the footprint.
-	# The desk planks are the last children we added before this — walk
-	# `room`'s children backward until we hit a non-plank child.
-	for ci in range(room.get_child_count() - 1, -1, -1):
-		var pn: Node = room.get_child(ci)
-		if not (pn is MeshInstance3D):
-			break
-		var pp: Vector3 = (pn as MeshInstance3D).position
-		# Only top-of-desk planks (the front lip sits at desk_y + 0.02,
-		# planks sit at desk_y - desk_thickness * 0.5).
-		if absf(pp.y - (desk_y - desk_thickness * 0.5)) > 0.05:
-			continue
-		var d2: float = pp.x * pp.x + pp.z * pp.z
-		if d2 < shadow_r2:
-			# Soft edge: keep full shadow inside 0.85 of the radius;
-			# fade back to a mid-shade in the outer 0.15.
-			(pn as MeshInstance3D).material_override = shadow_mat
 
 	# Room dust motes. Sparse slow-drifting particles in the air above
 	# the desk for ambient atmosphere. Distinct from the in-beam motes
@@ -11073,7 +11041,11 @@ func spawn_mycelium_patch(at: Vector3) -> Node3D:
 # position near the top-center (so the new arrival drops in visibly), then
 # delegates to the private spawn helper. The adopt_panel.gd panel calls
 # this; nothing else does.
+var last_spawn_failure: String = ""
+
+
 func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool:
+	last_spawn_failure = ""
 	if sim == null or fauna_root == null:
 		return false
 	var otype: String = organism_type
@@ -11134,18 +11106,15 @@ func spawn_library_entry(genome: Dictionary, organism_type: String = "") -> bool
 				cfg["parent_lineage"] = String(genome.get("plant_name", "Library stock"))
 			# Library spawns are exact presets — no mutation jitter.
 			cfg["no_mutate"] = true
-			# Epiphytes need a host: drop them onto the nearest driftwood/
-			# rock instead of the substrate. We translate via the helper
-			# below; if no hardscape exists yet, fall back to substrate
-			# placement which will still render but not feel right.
+			# Manual placement can use any host in the tank. A random substrate
+			# site farther than the propagation radius is not a missing host.
 			var spawn_pos: Vector3 = spawn_position_on_floor(p_xz.x, p_xz.y)
 			if bool(cfg.get("is_epiphyte", false)):
-				var anchor: Vector3 = _find_nearest_hardscape_anchor(spawn_pos)
-				if anchor != Vector3.ZERO:
-					spawn_pos = anchor
-				else:
-					push_warning("[walstad_loom] epiphyte spawn has no hardscape — rooting in substrate")
-					cfg["is_epiphyte"] = false
+				var anchor: Vector3 = _find_nearest_hardscape_anchor(spawn_pos, INF)
+				if anchor == Vector3.ZERO:
+					last_spawn_failure = tr("Add rock or driftwood before placing this epiphyte.")
+					return false
+				spawn_pos = anchor
 			var max_h: int = int(cfg.get("max_height", cfg.get("max_h", 12)))
 			var col: float = maxf(0.5, WATER_HEIGHT - SUBSTRATE_DEPTH - 0.5)
 			cfg["spawn_initial_height"] = maxi(1, mini(max_h,

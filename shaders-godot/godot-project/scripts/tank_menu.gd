@@ -29,6 +29,7 @@ var _create_cluster: HBoxContainer = null
 var _manage_cluster: HBoxContainer = null
 var _overflow_btn: Button = null
 var _empty_card: PanelContainer = null
+var _shelf_caption: Label = null
 
 var _selected_slots: Dictionary = {}
 var _slot_checkboxes: Dictionary = {}
@@ -60,8 +61,19 @@ func _setup_chrome() -> void:
 
 
 func _setup_top_bar() -> void:
-	_new_btn = PanelTheme.make_primary_button("+ New tank")
-	_new_btn.pressed.connect(_on_new_pressed)
+	var brand := PanelTheme.make_subtitle("walstad loom")
+	_top_shell.add_child(brand)
+	_top_shell.move_child(brand, 0)
+	_shelf_caption = PanelTheme.make_subtitle("Continue a living world, or start something new.")
+	_shelf_caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_top_shell.add_child(_shelf_caption)
+	_top_shell.move_child(_shelf_caption, 2)
+	_new_btn = PanelTheme.make_primary_button("+ Living tank")
+	_new_btn.tooltip_text = tr("Start a planted, stocked, established tank with gentle music and automatic feeding")
+	_new_btn.pressed.connect(_on_living_tank_pressed)
+	var templates_btn := PanelTheme.make_secondary_button("Templates")
+	templates_btn.tooltip_text = tr("Choose a different aquarium style")
+	templates_btn.pressed.connect(_on_new_pressed)
 
 	_guided_btn = PanelTheme.make_secondary_button("+ Guided setup")
 	_guided_btn.tooltip_text = tr("Create an empty tank and walk through stocking step by step")
@@ -76,7 +88,7 @@ func _setup_top_bar() -> void:
 	_info_btn.pressed.connect(func(): AppLinks.show_info_popup(self))
 
 	_create_cluster = PanelTheme.make_action_cluster(
-		[_new_btn, _guided_btn, _design_btn], 8)
+		[_new_btn, templates_btn, _guided_btn, _design_btn], 8)
 
 	_select_all = CheckBox.new()
 	_select_all.text = tr("Select all")
@@ -105,12 +117,12 @@ func _setup_top_bar() -> void:
 	bar_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_action_row.add_child(bar_spacer)
 	_action_row.add_child(_manage_cluster)
-	_action_row.add_child(_info_btn)
-	var quit_btn := PanelTheme.make_secondary_button("Quit")
+	$TopBarShell/TitleRow.add_child(_info_btn)
+	var quit_btn := PanelTheme.make_ghost_button("Quit")
 	quit_btn.tooltip_text = tr("Quit to desktop (controller-friendly)")
 	quit_btn.focus_mode = Control.FOCUS_ALL
 	quit_btn.pressed.connect(_confirm_quit_from_menu)
-	_action_row.add_child(quit_btn)
+	$TopBarShell/TitleRow.add_child(quit_btn)
 
 
 func _confirm_quit_from_menu() -> void:
@@ -147,81 +159,83 @@ func _confirm_quit_from_menu() -> void:
 
 func _toggle_overflow_menu() -> void:
 	var popup := PopupMenu.new()
-	popup.add_item("Select all", 0)
+	popup.add_item(tr("Guided setup"), 2)
+	popup.add_item(tr("Design a scape"), 3)
+	popup.add_item(tr("Info"), 4)
+	if not _listed_slots.is_empty():
+		popup.add_separator()
+	popup.add_item(tr("Select all"), 0)
+	popup.set_item_disabled(popup.get_item_index(0), _listed_slots.is_empty())
 	popup.add_item(_delete_selected_btn.text, 1)
-	popup.set_item_disabled(1, _delete_selected_btn.disabled)
+	popup.set_item_disabled(popup.get_item_index(1), _delete_selected_btn.disabled)
 	popup.id_pressed.connect(func(id: int) -> void:
 		if id == 0:
 			_select_all.button_pressed = not _select_all.button_pressed
 		elif id == 1:
-			_on_delete_selected_confirm())
+			_on_delete_selected_confirm()
+		elif id == 2:
+			_on_guided_pressed()
+		elif id == 3:
+			_on_design_scape_pressed()
+		elif id == 4:
+			AppLinks.show_info_popup(self))
 	add_child(popup)
+	popup.popup_hide.connect(popup.queue_free)
 	popup.position = _overflow_btn.global_position + Vector2(0, _overflow_btn.size.y)
 	popup.popup()
 
 
 func _apply_responsive_layout() -> void:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var narrow: bool = vp.x < PanelTheme.MOBILE_NARROW_W
-	# The tank shelf is the first screen a phone player sees, and in landscape
-	# the cutout sits on one of the long edges — right where the leftmost card
-	# and the title row live. Inset the whole shelf, not just the top.
+	var compact: bool = vp.x < 760.0
 	var pad: Vector4 = SafeArea.insets(get_viewport())
-
+	var available: float = vp.x - pad.x - pad.z
+	var edge: float = maxf(16.0, (available - 1280.0) * 0.5)
+	_guided_btn.visible = not compact
+	_design_btn.visible = not compact
+	_manage_cluster.visible = true
+	_select_all.visible = not compact and not _listed_slots.is_empty()
+	_delete_selected_btn.visible = not compact and not _listed_slots.is_empty()
+	_overflow_btn.visible = compact
+	_overflow_btn.text = tr("More")
+	_info_btn.visible = vp.x >= 480.0
 	if _top_shell != null:
-		var top_h: float = PanelTheme.SHELF_TOP_BAR_H
-		if narrow:
-			top_h = 96.0
-		_top_shell.offset_left = PanelTheme.EDGE_MARGIN + pad.x
-		_top_shell.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
-		_top_shell.offset_top = PanelTheme.EDGE_MARGIN + pad.y
-		_top_shell.offset_bottom = _top_shell.offset_top + top_h
-	if _scroll != null and _top_shell != null:
-		_scroll.offset_left = PanelTheme.EDGE_MARGIN + pad.x
-		_scroll.offset_right = -(PanelTheme.EDGE_MARGIN + pad.z)
-		_scroll.offset_top = _top_shell.offset_bottom + PanelTheme.EDGE_MARGIN
-		_scroll.offset_bottom = -(PanelTheme.EDGE_MARGIN + pad.w)
-
-	if _create_cluster != null:
-		_create_cluster.visible = true
-	if _manage_cluster != null:
-		_manage_cluster.visible = not _listed_slots.is_empty()
-	if _select_all != null and _delete_selected_btn != null and _overflow_btn != null:
-		_select_all.visible = not narrow
-		_delete_selected_btn.visible = not narrow
-		_overflow_btn.visible = narrow and not _listed_slots.is_empty()
-	if _info_btn != null:
-		_info_btn.visible = not narrow or vp.x >= 360.0
-
+		_top_shell.offset_left = edge + pad.x
+		_top_shell.offset_right = -(edge + pad.z)
+		_top_shell.offset_top = 20.0 + pad.y
+		_top_shell.offset_bottom = _top_shell.offset_top + 132.0
+	if _scroll != null:
+		_scroll.offset_left = edge + pad.x
+		_scroll.offset_right = -(edge + pad.z)
+		_scroll.offset_top = _top_shell.offset_bottom + 16.0
+		_scroll.offset_bottom = -(16.0 + pad.w)
+	_empty_hero.offset_left = edge + pad.x
+	_empty_hero.offset_right = -(edge + pad.z)
+	_empty_hero.offset_top = _scroll.offset_top
+	_empty_hero.offset_bottom = -(16.0 + pad.w)
+	if _empty_card != null:
+		_empty_card.custom_minimum_size.x = minf(460.0, available - edge * 2.0)
 	var m: Dictionary = _grid_metrics()
 	_grid.columns = int(m["cols"])
 	for card in _grid.get_children():
 		if card is PanelContainer:
 			card.custom_minimum_size.x = float(m["card_w"])
+			var thumbnail: Control = card.find_child("Thumbnail", true, false)
+			if thumbnail != null:
+				thumbnail.custom_minimum_size.y = clampf(float(m["card_w"]) * 0.53, 120.0, 210.0)
 
 
-# Column count + card width chosen so the row fills the viewport instead of
-# capping at three 320px cards and leaving the right half empty. Columns scale
-# with width toward a ~360px target; cards then divide the available row width
-# exactly so the grid spans edge to edge.
+# Divide a centered shelf into cards that keep their names and actions readable.
 const _GRID_H_SEP: float = 16.0
-const _CARD_TARGET_W: float = 360.0
+const _CARD_TARGET_W: float = 320.0
 
 
 func _grid_metrics() -> Dictionary:
 	var vp: Vector2 = get_viewport().get_visible_rect().size
-	var portrait: bool = vp.y > vp.x * 1.02
-	# Inner width: viewport minus the scroll's edge insets and the vertical
-	# scrollbar gutter, so cards don't run under the scrollbar.
 	var pad: Vector4 = SafeArea.insets(get_viewport())
-	var avail: float = vp.x - PanelTheme.EDGE_MARGIN * 2.0 - 16.0 - pad.x - pad.z
-	var cols: int
-	if portrait or vp.x < 520.0:
-		cols = 1
-	else:
-		cols = clampi(int(round(avail / _CARD_TARGET_W)), 2, 6)
-	var card_w: float = maxf((avail - _GRID_H_SEP * float(cols - 1)) / float(cols),
-		PanelTheme.SHELF_CARD_MIN_W)
+	var avail: float = minf(1280.0, vp.x - 32.0 - pad.x - pad.z) - 16.0
+	var cols: int = clampi(int(floor((avail + _GRID_H_SEP) / (_CARD_TARGET_W + _GRID_H_SEP))), 1, 4)
+	var card_w: float = maxf(0.0, (avail - _GRID_H_SEP * float(cols - 1)) / float(cols))
 	return {"cols": cols, "card_w": card_w}
 
 
@@ -262,15 +276,18 @@ func _build_empty_hero() -> void:
 	vb.add_theme_constant_override("separation", 12)
 	_empty_card.add_child(vb)
 
-	vb.add_child(PanelTheme.make_title("Start your first living world"))
+	var hero_title := PanelTheme.make_title("Start your first living world")
+	hero_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(hero_title)
 	var body := PanelTheme.make_subtitle(
-		"Pick a scenario, stock gently, and watch the closed loop settle.")
+		"A planted garden, living fish, gentle music. Ready to watch.")
 	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(body)
 
-	var cta := PanelTheme.make_primary_button("Create your first tank →")
+	var cta := PanelTheme.make_primary_button("Start a living garden →")
 	cta.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	cta.pressed.connect(_on_new_pressed)
+	cta.pressed.connect(_on_living_tank_pressed)
 	vb.add_child(cta)
 
 
@@ -286,8 +303,9 @@ func _make_card(entry: Dictionary) -> Control:
 	vb.add_theme_constant_override("separation", 8)
 	card.add_child(vb)
 
-	var thumb_h: float = card_w * 0.625
+	var thumb_h: float = clampf(card_w * 0.53, 120.0, 210.0)
 	var thumb_wrap := PanelContainer.new()
+	thumb_wrap.name = "Thumbnail"
 	thumb_wrap.custom_minimum_size = Vector2(0, thumb_h)
 	var thumb_style := StyleBoxFlat.new()
 	thumb_style.bg_color = Color(0.10, 0.12, 0.18, 1.0)
@@ -309,10 +327,15 @@ func _make_card(entry: Dictionary) -> Control:
 	thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var thumb_path: String = String(entry.get("thumbnail_path", ""))
 	if thumb_path != "" and FileAccess.file_exists(thumb_path):
-		var img := Image.load_from_file(thumb_path)
+		var img: Image = preload("res://scripts/tank_thumbnail.gd").load_image(thumb_path)
 		if img != null:
 			thumb.texture = ImageTexture.create_from_image(img)
+	if thumb.texture == null and bool(entry.get("has_saved_state", false)):
+		thumb.texture = ImageTexture.create_from_image(
+			preload("res://scripts/tank_thumbnail.gd").illustration(slot))
+		thumb_wrap.tooltip_text = tr("Tank illustration — a fresh photo is saved when you open it.")
 	if thumb.texture == null:
+		thumb_wrap.tooltip_text = tr("This tank has not been opened yet.")
 		var ph := ColorRect.new()
 		ph.color = Color(0.10, 0.12, 0.18, 1.0)
 		ph.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -343,6 +366,8 @@ func _make_card(entry: Dictionary) -> Control:
 	var name_lbl := Label.new()
 	var tank_name: String = String(entry.get("name", "Tank %d" % slot))
 	name_lbl.text = tank_name
+	name_lbl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	name_lbl.tooltip_text = tank_name
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	PanelTheme.as_serif(name_lbl, PanelTheme.SIZE_ITEM, true)
 	name_lbl.add_theme_color_override("font_color", PanelTheme.TITLE_FG)
@@ -370,13 +395,13 @@ func _make_card(entry: Dictionary) -> Control:
 	var dup_btn := PanelTheme.make_icon_button(UiIcons.menu_label("duplicate"))
 	dup_btn.tooltip_text = UiIcons.menu_tooltip("duplicate")
 	dup_btn.pressed.connect(func(): _on_duplicate(slot))
-	title_row.add_child(dup_btn)
+
 
 	var del_btn := PanelTheme.make_icon_button(UiIcons.menu_label("delete"))
 	del_btn.tooltip_text = UiIcons.menu_tooltip("delete")
 	del_btn.pressed.connect(func():
 		_on_delete_confirm([slot], [tank_name]))
-	title_row.add_child(del_btn)
+
 
 	# Meta block: tighter rhythm than the rest of the card so the cycle/day
 	# glance and the run-history line read as one paragraph, not two bands.
@@ -390,6 +415,7 @@ func _make_card(entry: Dictionary) -> Control:
 	if glance != "":
 		var status := Label.new()
 		status.text = glance
+		status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		PanelTheme.as_mono(status, PanelTheme.SIZE_CAPTION)
 		status.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 		meta_box.add_child(status)
@@ -406,7 +432,12 @@ func _make_card(entry: Dictionary) -> Control:
 	open_btn.focus_mode = Control.FOCUS_ALL
 	open_btn.pressed.connect(func(): _on_open(slot))
 	open_btn.set_meta("tank_open_slot", slot)
-	vb.add_child(open_btn)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 8)
+	actions.add_child(open_btn)
+	actions.add_child(dup_btn)
+	actions.add_child(del_btn)
+	vb.add_child(actions)
 
 	return card
 
@@ -648,6 +679,12 @@ func _on_guided_pressed() -> void:
 	_transition_to_main()
 
 
+func _on_living_tank_pressed() -> void:
+	var scenario: Dictionary = ScenarioPicker.SCENARIOS[0].duplicate(true)
+	scenario["name"] = "Quiet Garden"
+	_finish_new_tank(scenario)
+
+
 func _on_new_pressed() -> void:
 	if _is_mobile():
 		_show_orientation_picker()
@@ -834,7 +871,7 @@ func _maybe_first_launch_flow() -> void:
 	var saves := get_node_or_null("/root/TankSaves")
 	if saves == null or not saves.list_tanks().is_empty():
 		return
-	_open_scenario_picker()
+	_new_btn.grab_focus()
 	file.set_value("app", "first_launch_done", true)
 	file.save("user://global_prefs.cfg")
 

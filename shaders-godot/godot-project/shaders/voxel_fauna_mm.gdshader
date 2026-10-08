@@ -133,6 +133,7 @@ vec3 apply_vibrancy(vec3 col, float vib) {
 }
 
 varying vec3 v_inst_color;
+varying float v_tissue_density;
 varying vec3 v_world_pos;
 varying vec4 v_inst_custom;
 varying float v_bend;
@@ -147,6 +148,7 @@ varying float v_biolum;
 // tail glowed pale blue at rest and lost its wag once a fish flashed.
 void vertex() {
 	v_inst_color = COLOR.rgb;
+	v_tissue_density = COLOR.a;
 	v_inst_custom = INSTANCE_CUSTOM;
 	v_bend = fract(INSTANCE_CUSTOM.r);
 	v_biolum = floor(INSTANCE_CUSTOM.r) / 32.0;
@@ -180,19 +182,22 @@ void fragment() {
 	float belly_local = max(belly_flash, v_inst_custom.g);
 	// Face values in WORLD space (they were view-space, so the face turned
 	// to the camera - the flank - always took the dim "other" bucket).
-	float f;
-	if (n_ws.y > 0.7) {
-		f = FAUNA_TOP;
-	} else if (n_ws.y < -0.7) {
-		f = FAUNA_BELLY + belly_local * 0.35;
-	} else {
-		f = FAUNA_FLANK;
-	}
+	// Banked faces change light smoothly; hard normal buckets popped between
+	// flank and belly brightness when a fish crossed the old 0.7 threshold.
+	float f = mix(FAUNA_FLANK, FAUNA_TOP, smoothstep(0.45, 0.85, n_ws.y));
+	f = mix(f, FAUNA_BELLY + belly_local * 0.35, smoothstep(0.45, 0.85, -n_ws.y));
+	vec3 biolum_glow = vec3(0.0);
 	float fin_w = smoothstep(0.60, 0.72, v_bend);
-	vec3 col = v_inst_color * f;
+	// COLOR.a retains the source fin material's density. Keep the batch
+	// opaque (no alpha sorting or extra passes), but avoid treating delicate
+	// membranes as shiny body scales. Body voxels with alpha 1 stay identical.
+	float membrane = 1.0 - smoothstep(0.78, 0.98, v_tissue_density);
+	float tissue_light = mix(0.76, 0.94, abs(dot(n_ws, v_ws)));
+	vec3 col = v_inst_color * mix(f, tissue_light, membrane);
 	col = apply_category_palette_tint(col, iaq_palette_fauna,
 		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
-	col = apply_vibrancy(col, color_vibrancy + v_inst_custom.b * 0.32);
+	col = apply_vibrancy(col, mix(color_vibrancy, 1.0, membrane)
+		+ v_inst_custom.b * 0.32);
 
 	if (aquatic_caustic_intensity > 0.001 && v_world_pos.y < water_surface_y - 0.08) {
 		vec2 cuv = v_world_pos.xz * 1.12;
@@ -209,7 +214,7 @@ void fragment() {
 		float span = max(water_surface_y - fixture_water_floor, 0.5);
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.40) * tank_fixture_glow;
-		float top_catch = smoothstep(0.25, 0.88, n.y);
+		float top_catch = smoothstep(0.25, 0.88, n_ws.y);
 		col += tank_fixture_color * wash * mix(0.34, 0.62, top_catch);
 		col *= 1.0 + wash * (0.58 + top_catch * 0.38);
 	}
@@ -222,7 +227,7 @@ void fragment() {
 		if (length(biolum_color) < 0.01) {
 			glow_tint = v_inst_color;
 		}
-		col += glow_tint * biolum_local * pulse * 0.55;
+		biolum_glow = glow_tint * biolum_local * pulse * 0.55;
 	}
 
 	if (room_haze_strength > 0.001) {
@@ -243,7 +248,7 @@ void fragment() {
 	if (irid_strength > 0.001 || v_inst_custom.a > 0.001) {
 		float irid_local = max(irid_strength, v_inst_custom.a);
 		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
-		float step_f = floor(fres * 6.0) / 6.0;
+		float step_f = fres; // continuous sheen; palette quantization supplies the pixel style
 		float band = step_f * 6.28318;
 		vec3 sheen = vec3(0.5 + 0.5 * sin(band),
 			0.5 + 0.5 * sin(band + 2.094),
@@ -254,7 +259,7 @@ void fragment() {
 		float fres_m = pow(1.0 - abs(dot(n, normalize(VIEW))), 3.0);
 		vec3 vdir = normalize(VIEW);
 		float spec = pow(max(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))), 0.0), 14.0);
-		float band_m = floor(fres_m * 3.0) / 3.0;
+		float band_m = fres_m;
 		col += vec3(spec * 0.42) * metallic_strength;
 		col = mix(col, col * vec3(1.12, 1.10, 1.06), band_m * metallic_strength * 0.35);
 	}
@@ -293,12 +298,19 @@ void fragment() {
 		float flank = 1.0 - smoothstep(0.55, 0.75, abs(n_ws.y));
 		if (metallic_strength > 0.001 && irid_f > 0.001 && flank > 0.001) {
 			vec3 h = normalize(to_lamp + v_ws);
-			float ang = acos(clamp(dot(n_ws, h), -1.0, 1.0));
-			float flash = pow(0.5 + 0.5 * cos(ang * 7.0), 8.0);
+			float flash = pow(max(dot(n_ws, h), 0.0), 12.0);
 			vec3 sheen = base_lit * 1.35 + vec3(0.10, 0.16, 0.18);
 			col = mix(col, max(col, sheen), flash * flank * direct * clamp(irid_f * 1.6, 0.0, 1.0));
 		}
 	}
 	col = fauna_backlight(col, v_world_pos, n_ws, v_ws, fin_w);
-	ALBEDO = col;
+	// Reflected light is not an emitter. Several independent rim/cone/wash
+	// terms previously pushed scales into the post pass's white HDR bloom.
+	// A continuous hue-preserving shoulder keeps pigment and highlight detail
+	// as the fish turns. True bioluminescence is added after the shoulder.
+	float peak = max(max(col.r, col.g), col.b);
+	float excess = max(peak - 0.72, 0.0);
+	float soft_peak = min(peak, 0.72) + 0.22 * excess / (excess + 0.22);
+	col *= soft_peak / max(peak, 0.0001);
+	ALBEDO = col + biolum_glow;
 }

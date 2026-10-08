@@ -62,6 +62,8 @@ func _initialize() -> void:
 	# Must be set BEFORE the node enters the tree: _ready() opens the session.
 	var log_dir: String = _private_dir("main")
 	lg.log_dir = log_dir
+	lg.info("startup", "before ready")
+	TestSupport.check(failed, lg.recent(1).size() == 1, "logger accepts calls before ready")
 	root.add_child(lg)
 	await process_frame
 	TestSupport.check(failed, lg.current_log().begins_with(log_dir),

@@ -41,6 +41,7 @@ var _tabs: TabContainer
 var _tank_score_body: VBoxContainer
 var _tank_score_paused: VBoxContainer
 var _calibrate_latency_label: Label
+var _listening_label: Label
 var _bar_legend: Label
 
 # Bundled demo tracks — secondary ghost buttons under the primary upload CTA.
@@ -218,7 +219,10 @@ const PRESETS: Array = [
 		"label": "☕ Lo-fi",
 		"desc": "Vinyl, tape wow, jazz voicings, gentle swing, Rhodes EP.",
 		"values": {
-			"music_style": "ambient",
+			"music_style": "hybrid",
+			"music_persona": "lofi",
+			"music_dance_style": "sway",
+			"music_showiness": 0.25,
 			"music_phrase_form": "loop",
 			"music_mood": "calm",
 			"music_energy": 0.32,
@@ -233,24 +237,24 @@ const PRESETS: Array = [
 			"music_swing": 0.45,
 			"music_humanize": 0.4,
 			"music_jazziness": 0.85,
-			"music_vinyl_crackle": 0.65,
-			"music_tape_wow": 0.5,
+			"music_vinyl_crackle": 0.06,
+			"music_tape_wow": 0.22,
 			"music_sidechain": 0.45,
 			"music_kick_mix": 0.45,
 			"music_bass_mix": 0.7,
-			"music_arp_mix": 0.6,
+			"music_arp_mix": 0.42,
 			"music_pad_mix": 0.85,
-			"music_hat_mix": 0.4,
+			"music_hat_mix": 0.14,
 			"music_delay_amount": 0.55,
 			"music_filter_open": 0.35,
-			"music_sub_bass_mix": 0.55,
+			"music_sub_bass_mix": 0.22,
 			"music_offbeat_bass_mix": 0.1,
 			"music_clap_mix": 0.15,
-			"music_shaker_mix": 0.55,
-			"music_granular_pad": 0.55,
-			"music_vocoder_pad": 0.4,
+			"music_shaker_mix": 0.06,
+			"music_granular_pad": 0.22,
+			"music_vocoder_pad": 0.0,
 			"music_breathe_lfo": 0.6,
-			"music_bitcrush_algae": 0.35,
+			"music_bitcrush_algae": 0.0,
 			"music_bass_grit": 0.15,
 			"music_pump_gate": 0.25,
 			"music_key_mod": 0.15,
@@ -362,6 +366,7 @@ func _ready() -> void:
 	set_process_unhandled_input(true)
 	_build_ui()
 	_pull_from_config()
+	_tabs.current_tab = 0 if _external_sync_live() else 1
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var mr := _music_reactive()
@@ -455,7 +460,7 @@ func _build_ui() -> void:
 
 	outer.add_child(PanelTheme.make_panel_header("Sound Studio", _close))
 	var subtitle := PanelTheme.make_description()
-	subtitle.text = tr("Now Playing for your track · Tank score for procedural ambient · Choreography for the dance.")
+	subtitle.text = tr("A quiet score for your living world. Shape the sound, bring a track, or watch the fish listen.")
 	outer.add_child(subtitle)
 	outer.add_child(PanelTheme.make_rule())
 
@@ -499,6 +504,9 @@ func _build_now_playing_tab(vbox: VBoxContainer) -> void:
 
 
 func _build_tank_score_tab(vbox: VBoxContainer) -> void:
+	_listening_label = PanelTheme.make_description()
+	_listening_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(_listening_label)
 	_tank_score_paused = VBoxContainer.new()
 	_tank_score_paused.add_theme_constant_override("separation", 8)
 	_tank_score_paused.visible = false
@@ -537,13 +545,28 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 		btn.pressed.connect(func(): _apply_preset(p))
 		preset_flow.add_child(btn)
 
+	var clean_btn := PanelTheme.make_secondary_button("Clean texture")
+	clean_btn.tooltip_text = tr("Remove vinyl, hats, shaker and claps while keeping the melody and water sounds.")
+	clean_btn.pressed.connect(_on_clean_texture)
+	preset_flow.add_child(clean_btn)
+
 	_add_section(_tank_score_body, "Master & character")
 	_add_check(_tank_score_body, "music_enabled", "Enable procedural sound")
 	for def in SLIDERS["master"]:
 		if String(def["key"]) == "music_showiness":
 			continue
 		_add_slider_group(_tank_score_body, [def])
-	_mood_option = PanelTheme.add_dropdown_row(_tank_score_body, "Mood")
+	var groove := _fold_section(_tank_score_body, "Groove")
+	_add_slider_group(groove, SLIDERS["groove"])
+
+	var texture := _fold_section(_tank_score_body, "Lo-fi character")
+	var lofi_desc := PanelTheme.make_description()
+	lofi_desc.text = tr("Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO.")
+	texture.add_child(lofi_desc)
+	_add_slider_group(texture, SLIDERS["lofi"])
+
+	var harmony := _fold_section(_tank_score_body, "Harmony & arrangement")
+	_mood_option = PanelTheme.add_dropdown_row(harmony, "Mood")
 	for entry in [
 		{"key": "auto", "label": "Auto (follow tank)"},
 		{"key": "calm", "label": "Calm (minor)"},
@@ -555,7 +578,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	_mood_option.item_selected.connect(func(idx):
 		TankConfig.music_mood = _mood_option.get_item_metadata(idx))
 
-	_style_option = PanelTheme.add_dropdown_row(_tank_score_body, "Style")
+	_style_option = PanelTheme.add_dropdown_row(harmony, "Style")
 	for entry in [
 		{"key": "ambient", "label": "Ambient (soft accents)"},
 		{"key": "hybrid", "label": "Hybrid (bed + events)"},
@@ -566,7 +589,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	_style_option.item_selected.connect(func(idx):
 		TankConfig.music_style = _style_option.get_item_metadata(idx))
 
-	_persona_option = PanelTheme.add_dropdown_row(_tank_score_body, "Persona")
+	_persona_option = PanelTheme.add_dropdown_row(harmony, "Persona")
 	for entry in [
 		{"key": "none", "label": "None (pure tank-driven)"},
 		{"key": "monk", "label": "Thelonious Monk (jazz-blues)"},
@@ -579,7 +602,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	_persona_option.item_selected.connect(func(idx):
 		TankConfig.music_persona = _persona_option.get_item_metadata(idx))
 
-	_scale_option = PanelTheme.add_dropdown_row(_tank_score_body, "Scale")
+	_scale_option = PanelTheme.add_dropdown_row(harmony, "Scale")
 	for entry in [
 		{"key": "auto", "label": "Auto (tank-driven)"},
 		{"key": "major", "label": "Major"},
@@ -597,7 +620,7 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	_scale_option.item_selected.connect(func(idx):
 		TankConfig.music_scale = _scale_option.get_item_metadata(idx))
 
-	_form_option = PanelTheme.add_dropdown_row(_tank_score_body, "Phrase form")
+	_form_option = PanelTheme.add_dropdown_row(harmony, "Phrase form")
 	for entry in [
 		{"key": "auto", "label": "Auto (vitality-driven)"},
 		{"key": "trance", "label": "Trance (strict 16/4/16/8)"},
@@ -609,47 +632,38 @@ func _build_tank_score_tab(vbox: VBoxContainer) -> void:
 	_form_option.item_selected.connect(func(idx):
 		TankConfig.music_phrase_form = _form_option.get_item_metadata(idx))
 
-	_add_section(_tank_score_body, "Drop & build")
+	var arrangement := _fold_section(_tank_score_body, "Drop & build")
 	var drop_desc := PanelTheme.make_description()
-	drop_desc.text = tr("Breeding triggers a build into a drop. Deaths trigger a breakdown.")
-	_tank_score_body.add_child(drop_desc)
-	_add_slider_group(_tank_score_body, SLIDERS["drops"])
+	drop_desc.text = tr("Shape builds and drops for energetic arrangements. Lo-fi keeps feeding accents gentle.")
+	arrangement.add_child(drop_desc)
+	_add_slider_group(arrangement, SLIDERS["drops"])
 
-	_add_section(_tank_score_body, "Groove")
-	_add_slider_group(_tank_score_body, SLIDERS["groove"])
-
-	_add_section(_tank_score_body, "Lo-fi character")
-	var lofi_desc := PanelTheme.make_description()
-	lofi_desc.text = tr("Vinyl & tape wow tip the bed toward background-coffee-shop. Jazziness extends pad chords. Master breathe sweeps the cutoff across a slow LFO.")
-	_tank_score_body.add_child(lofi_desc)
-	_add_slider_group(_tank_score_body, SLIDERS["lofi"])
-
-	_add_section(_tank_score_body, "Extra voices")
+	var voices := _fold_section(_tank_score_body, "Extra voices")
 	var voices_desc := PanelTheme.make_description()
 	voices_desc.text = tr("Sub-bass adds depth; PWM bass plays \"&\"s between kicks; granular shimmer layers past pad echoes; vocoder turns the bubble env into an 'aah' choir; polyrhythmic shaker tracks creature movement.")
-	_tank_score_body.add_child(voices_desc)
-	_add_slider_group(_tank_score_body, SLIDERS["voices"])
+	voices.add_child(voices_desc)
+	_add_slider_group(voices, SLIDERS["voices"])
 
-	_add_section(_tank_score_body, "Tank state → sound")
+	var reactive := _fold_section(_tank_score_body, "Tank state → sound")
 	var tank_state_desc := PanelTheme.make_description()
 	tank_state_desc.text = tr("Algae bloom bitcrushes the synth; aggression hardens the bass clip; aeration low cuts the kick like the pump is the metronome; key shifts every in-game day.")
-	_tank_score_body.add_child(tank_state_desc)
-	_add_slider_group(_tank_score_body, SLIDERS["tank_state"])
+	reactive.add_child(tank_state_desc)
+	_add_slider_group(reactive, SLIDERS["tank_state"])
 
-	_add_section(_tank_score_body, "Layers")
-	_add_check(_tank_score_body, "music_ambient_enabled", "Ambient accents")
-	_add_check(_tank_score_body, "music_events_enabled", "Creature & plant events")
-	_add_check(_tank_score_body, "music_environment_enabled", "Environment (bubbles, flow)")
-	_add_slider_group(_tank_score_body, SLIDERS["mix"])
+	var mixer := _fold_section(_tank_score_body, "Layers")
+	_add_check(mixer, "music_ambient_enabled", "Ambient accents")
+	_add_check(mixer, "music_events_enabled", "Creature & plant events")
+	_add_check(mixer, "music_environment_enabled", "Environment (bubbles, flow)")
+	_add_slider_group(mixer, SLIDERS["mix"])
 
-	_add_section(_tank_score_body, "Tank coupling")
-	_add_slider_group(_tank_score_body, SLIDERS["coupling"])
+	var coupling := _fold_section(_tank_score_body, "Tank coupling")
+	_add_slider_group(coupling, SLIDERS["coupling"])
 
-	_add_section(_tank_score_body, "Metric influence")
+	var influence := _fold_section(_tank_score_body, "Metric influence")
 	var infl_desc := PanelTheme.make_description()
 	infl_desc.text = tr("How strongly each live tank metric steers harmony, rhythm, and timbre. Species palette: 0 = all fish sound alike, 1 = max per-species coloring.")
-	_tank_score_body.add_child(infl_desc)
-	_add_slider_group(_tank_score_body, SLIDERS["influence"])
+	influence.add_child(infl_desc)
+	_add_slider_group(influence, SLIDERS["influence"])
 
 	_add_section(_tank_score_body, "Record this jam")
 	var rec_desc := PanelTheme.make_description()
@@ -1149,6 +1163,21 @@ func _music_reactive() -> Node:
 	return main.get_node_or_null("MusicReactive")
 
 
+func _fold_section(parent: Node, title: String) -> VBoxContainer:
+	var button := PanelTheme.make_secondary_button(title + " ▸")
+	button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	button.toggle_mode = true
+	parent.add_child(button)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 8)
+	content.visible = false
+	parent.add_child(content)
+	button.toggled.connect(func(on: bool):
+		content.visible = on
+		button.text = tr(title) + (" ▾" if on else " ▸"))
+	return content
+
+
 func _add_section(parent: Node, label: String) -> void:
 	parent.add_child(PanelTheme.make_spacer(4))
 	parent.add_child(PanelTheme.make_section(label))
@@ -1260,6 +1289,9 @@ func _state_badge_color(state_name: String) -> Color:
 
 func _refresh_live_readout() -> void:
 	var amb := _ambient()
+	var music: Node = get_node_or_null("/root/MusicContext")
+	if _listening_label != null:
+		_listening_label.text = music.describe_now_playing().capitalize() if music != null and music.is_active() else tr("Quiet water · no musical score is playing.")
 	var status: Dictionary = amb.get_live_status() if amb != null and amb.has_method("get_live_status") else {}
 	var mc := get_node_or_null("/root/MusicContext")
 	var ctx: Dictionary = mc.get_context() if mc != null and mc.has_method("get_context") else {}
@@ -1350,6 +1382,10 @@ func _on_capture_dance() -> void:
 
 func _apply_preset(preset: Dictionary) -> void:
 	var values: Dictionary = preset.get("values", {})
+	if values.has("music_style"):
+		TankConfig.music_persona = String(values.get("music_persona", "none"))
+		TankConfig.music_scale = String(values.get("music_scale", "auto"))
+		TankConfig.music_dance_style = String(values.get("music_dance_style", "auto"))
 	for key in values.keys():
 		TankConfig.set(key, values[key])
 	# Re-seed only on explicit randomize, not on preset.
@@ -1358,6 +1394,14 @@ func _apply_preset(preset: Dictionary) -> void:
 	if amb != null and amb.has_method("randomize_performance"):
 		# Reset performance state so the new vibe lands cleanly.
 		amb.randomize_performance()
+	_refresh_live_readout()
+
+
+func _on_clean_texture() -> void:
+	for key in ["music_vinyl_crackle", "music_hat_mix", "music_offbeat_hat",
+		"music_shaker_mix", "music_clap_mix"]:
+		TankConfig.set(key, 0.0)
+	_pull_from_config()
 	_refresh_live_readout()
 
 

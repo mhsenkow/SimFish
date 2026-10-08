@@ -330,6 +330,8 @@ func _refresh_card_stats() -> void:
 		var sub: Label = card.get_meta("sub_lbl")
 		if sub != null:
 			sub.text = _sub_text(c)
+		if c is Fish:
+			card.tooltip_text = _fish_tooltip(c as Fish)
 		var star: Button = card.get_meta("star")
 		if star != null:
 			star.text = "★" if _is_favorite(c) else "☆"
@@ -570,7 +572,7 @@ func _make_card(c: Node) -> Control:
 
 	if c is Fish:
 		# Hover a resident to read its backstory.
-		card.tooltip_text = _FishBackstoryScript.summary(c)
+		card.tooltip_text = _fish_tooltip(c as Fish)
 	if c is Fish and (c.fish_journal.size() > 0 or _FishBackstoryScript.has_story(c)):
 		var journal_btn := Button.new()
 		journal_btn.flat = true
@@ -718,6 +720,17 @@ func _age_of(c: Node) -> float:
 	if c != null and c.get("age") != null:
 		return float(c.age)
 	return 0.0
+
+
+func _fish_tooltip(fish: Fish) -> String:
+	var text: String = "%s\n\n%s: %s" % [_FishBackstoryScript.summary(fish),
+		tr("Breeding"), fish.breeding_status_label()]
+	if Fish.FishExperience.listening_enabled(fish) and fish._experience_response.has("reason"):
+		text += "\n" + tr("Listening") + ": " + str(fish._experience_response.reason)
+	var rest: Dictionary = fish._experience_memory.get("rest", {})
+	if float(rest.get("confidence", 0.0)) > 0.25:
+		text += "\n" + tr("Has a familiar resting place")
+	return text
 
 
 func _sub_text(c: Node) -> String:

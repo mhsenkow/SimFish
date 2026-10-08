@@ -19,7 +19,9 @@ func _initialize() -> void:
 	for pi in FarBatchScript.MIN_FAR_PLANTS:
 		var plant: Plant = PlantScript.new()
 		host.add_child(plant)
-		plant.init(0, {"leaf_form": "column", "max_height": 1})
+		plant.init(0, {"leaf_form": "column", "max_height": 6})
+		# The production gate requires mature biomass as well as render density.
+		plant.current_height = 6
 		plant.position = Vector3(50.0 + pi, 0.0, 0.0)
 		var batch: VoxelBatch = plant._ensure_foliage_batch()
 		for vi in int(ceil(float(FarBatchScript.MIN_INSTANCES)

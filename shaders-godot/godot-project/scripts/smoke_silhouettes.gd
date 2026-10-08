@@ -37,9 +37,13 @@ func _initialize() -> void:
 		fish.init_genome(genome)
 		await process_frame
 		var batches: Array = fish.get("_voxel_builder").get_batches() if fish.get("_voxel_builder") != null else []
-		if batches.size() < 8:
-			push_error("[smoke_silhouettes] %s: too few voxel batches (%d)" % [
-				species_key, batches.size()])
+		var voxel_count: int = 0
+		for batch in batches:
+			voxel_count += int(batch.get("_count"))
+		# Batching is an implementation detail; test that actual geometry exists.
+		if batches.is_empty() or voxel_count < 8:
+			push_error("[smoke_silhouettes] %s: too few generated voxels (%d)" % [
+				species_key, voxel_count])
 			quit(1)
 			return
 		fish.queue_free()

@@ -59,8 +59,11 @@ All the same project.
   **or prefer `scripts/dev_run.sh`** (HOLISTIC #001), which isolates user data
   and verifies the real tanks inventory is unchanged.
 - **Isolated Godot runs: `scripts/dev_run.sh`.** Wraps `godot.sh` with a scratch
-  `custom_user_dir_name`, distinct output under `output/dev_runs/`, and a
-  before/after hash of the real tanks dir. Use it for `visual_capture`,
+  `custom_user_dir_name` in an isolated project configuration, a no-autoload
+  user-directory preflight, recovery copies under `.scratch/save_backups/`,
+  distinct output under `output/dev_runs/`, and a before/after hash of the real
+  tanks dir. `override.cfg` alone did not redirect user data reliably in Godot
+  4.6.2; do not rely on it for isolation. Use the wrapper for `visual_capture`,
   `inspect`, probes, and any other path that boots `main.tscn`. Opt into the
   same path from `godot.sh` with `GODOT_ISOLATE=1`. Baseline matrix:
   `scripts/visual_baseline_matrix.sh` (HOLISTIC #002).
@@ -78,11 +81,9 @@ All the same project.
   `FISH_PROBE_WARMUP_S`, `FISH_PROBE_SAMPLE_S`, `FISH_PROBE_OUT`,
   `FISH_PROBE_SPLIT=1` (also times frames with fish `_process` off and with
   the sim node off). It sets `TankConfig.capture_mode` and refuses to run if
-  the active slot holds a saved tank, but run it in a sandbox anyway: a
-  local, git-excluded `godot-project/override.cfg` with
-  `[application] config/use_custom_user_dir=true` and
-  `config/custom_user_dir_name="walstad_loom_probe_sandbox"` keeps it off
-  the real `tanks` dir. Fish behaviour logic it measures lives in
+  the active slot holds a saved tank, but run it in a sandbox anyway:
+  `scripts/dev_run.sh` supplies verified isolation; an `override.cfg` alone
+  is insufficient on the tested Godot build. Fish behaviour logic lives in
   `scripts/fish_life_bouts.gd` (bouts, turn inertia, livebearer display,
   pecking) and `scripts/fish_depth_bands.gd` (per-species column bands).
 - **Never put comments in `project.godot`.** Godot's ConfigFile writer strips
@@ -125,7 +126,9 @@ All the same project.
   Timing-sensitive perf smokes are forced serial: they measure wall-clock, so a
   parallel run starves them into false failures (`smoke_perf_contract` sits at
   ~460 ms against a 490 ms ceiling).
-- **`scripts/smoke_baseline.txt` holds the known failures (count the file; release **v0.2.37**).** The suite gates
+- **`scripts/smoke_baseline.txt` holds the known failures (count the file; release **v0.2.38**).** The file is empty after the v0.2.38 contract fixes. Each smoke
+  gets its own isolated user directory so parallel tests cannot share tank or
+  achievement files. The suite gates
   *regressions*: a NEW failure exits 1, and so does a baselined smoke that
   starts **passing** — delete its line when you fix it. `--strict` ignores the
   baseline. It is a holding pen, not a place to hide failures.

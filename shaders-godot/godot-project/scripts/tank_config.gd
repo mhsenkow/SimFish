@@ -670,8 +670,8 @@ var lighting_preset: String = "custom"
 
 # Procedural music settings.
 var music_enabled: bool = true
-var music_volume: float = 0.7
-var music_complexity: float = 0.5
+var music_volume: float = 0.6
+var music_complexity: float = 0.45
 # Layer toggles + how strongly the tank ecosystem steers tone/tempo.
 var music_ambient_enabled: bool = true
 var music_events_enabled: bool = true
@@ -679,12 +679,12 @@ var music_environment_enabled: bool = true
 var music_event_volume: float = 0.58
 var music_reactivity: float = 0.65
 # 0 = subtle groove, 1 = full choreographed show.
-var music_showiness: float = 0.5
+var music_showiness: float = 0.18
 # auto | ballet | frenzy | sway | stately | bounce | sync
-var music_dance_style: String = "auto"
+var music_dance_style: String = "sway"
 var music_sync_latency_ms: float = 80.0
 # auto | calm | bright | deep
-var music_mood: String = "auto"
+var music_mood: String = "calm"
 # ambient | trance | hybrid — continuous bed character
 var music_style: String = "hybrid"
 # Swap the reactive synth bed for a cheap looping one.
@@ -697,7 +697,7 @@ var music_style: String = "hybrid"
 # for devices actually classed as low-end.
 var music_simple_bed: bool = false
 # 0..1 — BPM, kick, arp density, filter sweep intensity
-var music_energy: float = 0.42
+var music_energy: float = 0.32
 # Sound studio — tank coupling & layer mix (0..1 unless noted).
 var music_coupling_floor: float = 0.55
 var music_smooth_rate: float = 0.55
@@ -705,12 +705,12 @@ var music_phrase_churn: float = 0.5
 var music_tempo_follow: float = 0.72
 var music_kick_mix: float = 0.35
 var music_bass_mix: float = 0.6
-var music_arp_mix: float = 0.62
-var music_pad_mix: float = 0.78
-var music_hat_mix: float = 0.15
+var music_arp_mix: float = 0.42
+var music_pad_mix: float = 0.85
+var music_hat_mix: float = 0.1
 var music_sidechain: float = 0.3
-var music_filter_open: float = 0.38
-var music_delay_amount: float = 0.22
+var music_filter_open: float = 0.35
+var music_delay_amount: float = 0.3
 var music_accent_density: float = 0.32
 var music_influence_fish: float = 1.0
 var music_influence_plants: float = 1.0
@@ -729,36 +729,36 @@ var music_phrase_form: String = "loop"
 var music_scale: String = "auto"
 # Musical persona ("none" = pure tank-driven). Options: monk, abgt, lofi, dub.
 # A persona biases scale + rhythm feel + voices + how events reshape the music.
-var music_persona: String = "none"
+var music_persona: String = "lofi"
 var music_drop_intensity: float = 0.15
 var music_breakdown_depth: float = 0.7
 var music_lead_mix: float = 0.15
-var music_lead_detune: float = 0.55
-var music_vinyl_crackle: float = 0.08
-var music_tape_wow: float = 0.18
-var music_jazziness: float = 0.4
-var music_swing: float = 0.3
+var music_lead_detune: float = 0.2
+var music_vinyl_crackle: float = 0.0
+var music_tape_wow: float = 0.12
+var music_jazziness: float = 0.7
+var music_swing: float = 0.4
 var music_offbeat_hat: float = 0.0
-var music_reverb_send: float = 0.45
+var music_reverb_send: float = 0.55
 var music_humanize: float = 0.22
 var music_species_palette: float = 0.75
 # Extra voices.
-var music_sub_bass_mix: float = 0.55
+var music_sub_bass_mix: float = 0.22
 var music_offbeat_bass_mix: float = 0.12
 var music_granular_pad: float = 0.25
-var music_vocoder_pad: float = 0.25
+var music_vocoder_pad: float = 0.0
 var music_shaker_mix: float = 0.0
 var music_clap_mix: float = 0.0
 # Build dramaturgy.
 var music_build_drama: float = 0.0
 # Tank-state driven sound (auto-tied; knobs scale sensitivity).
-var music_bitcrush_algae: float = 0.22
-var music_bass_grit: float = 0.5
-var music_pump_gate: float = 0.6
+var music_bitcrush_algae: float = 0.0
+var music_bass_grit: float = 0.12
+var music_pump_gate: float = 0.15
 # Harmony.
 var music_key_mod: float = 0.35
 # Master breathe LFO depth (0..1).
-var music_breathe_lfo: float = 0.35
+var music_breathe_lfo: float = 0.2
 
 # ---- Music sync (tank reacts to Spotify / local audio) ----
 var music_sync_enabled: bool = false
@@ -774,11 +774,11 @@ var music_sync_last_track_id: String = ""
 
 # ---- Room environment ----
 # A "scene" around the tank — desk, wall, lamp, props. Lifts the tank
-# from floating-in-void to "sitting in a room." Defaults to "void"
-# (the classic look) so existing tanks open unchanged. Each preset's
+# from floating-in-void to "sitting in a room." New tanks start on a warm desk.
+# Existing saved choices still take precedence when loaded. Each preset's
 # colors are chosen from the palette so the room quantizes cleanly
 # alongside the tank.
-var environment_preset: String = "void"
+var environment_preset: String = "bedroom_desk"
 
 const ENVIRONMENT_PRESETS: Dictionary = {
 	"void": {
@@ -1154,7 +1154,7 @@ func apply_vessel_preset(slug: String) -> void:
 # the app for days and come back to a living tank instead of a graveyard.
 # Power users can switch either off in Settings → Advanced.
 var auto_respawn_fauna: bool = true
-var auto_feed_fauna: bool = false
+var auto_feed_fauna: bool = true
 var guardian_companion_enabled: bool = true
 var guardian_may_enable_autofeed: bool = true
 # Live swim/grouping multipliers — read every fish tick; no reload required.
@@ -3028,6 +3028,8 @@ const SAVE_COALESCE_S: float = 0.5
 
 var _save_timer: Timer = null
 var _save_in_flight: bool = false
+var _save_task_id: int = -1
+var _save_closing: bool = false
 var _save_queued: bool = false
 var _settings_batch_depth: int = 0
 var _save_pending_from_batch: bool = false
@@ -3056,7 +3058,7 @@ func request_save_to_disk() -> void:
 
 
 func save_to_disk() -> void:
-	if capture_mode:
+	if capture_mode or _save_closing:
 		return
 	if _save_in_flight:
 		_save_queued = true
@@ -3064,18 +3066,59 @@ func save_to_disk() -> void:
 	_save_in_flight = true
 	var cfg: ConfigFile = _build_save_config_file()
 	var path: String = _current_save_path()
-	var self_ref: Object = self
-	WorkerThreadPool.add_task(func() -> void:
-		cfg.save(path)
-		# call_deferred is thread-safe; never touch the scene tree from the worker.
-		self_ref.call_deferred("_on_save_worker_finished"))
+	_save_task_id = WorkerThreadPool.add_task(_write_config_worker.bind(cfg, path))
 
 
-func _on_save_worker_finished() -> void:
+static func _write_config_snapshot(cfg: ConfigFile, path: String) -> Error:
+	var pending: String = path + ".pending"
+	var err: Error = DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	if err != OK:
+		return err
+	err = cfg.save(pending)
+	if err == OK:
+		err = DirAccess.rename_absolute(pending, path)
+	if err != OK and FileAccess.file_exists(pending):
+		DirAccess.remove_absolute(pending)
+	return err
+
+
+func _write_config_worker(cfg: ConfigFile, path: String) -> void:
+	var err: Error = _write_config_snapshot(cfg, path)
+	call_deferred("_on_save_worker_finished", err, WorkerThreadPool.get_caller_task_id())
+
+
+func _on_save_worker_finished(err: Error = OK, task_id: int = -1) -> void:
+	if task_id >= 0 and task_id != _save_task_id:
+		return # a synchronous flush already reclaimed this task
+	if _save_task_id >= 0:
+		WorkerThreadPool.wait_for_task_completion(_save_task_id)
+		_save_task_id = -1
 	_save_in_flight = false
-	if _save_queued:
+	if err != OK:
+		push_warning("[walstad_loom] settings save failed: %s" % error_string(err))
+	if _save_queued and not _save_closing:
 		_save_queued = false
 		save_to_disk()
+
+
+func _exit_tree() -> void:
+	_save_closing = true
+	flush_pending_settings()
+
+
+func flush_pending_settings() -> void:
+	if _save_task_id >= 0:
+		WorkerThreadPool.wait_for_task_completion(_save_task_id)
+		_save_task_id = -1
+	_save_in_flight = false
+	# A coalesced last edit must survive an immediate quit.
+	var timer_pending: bool = is_instance_valid(_save_timer) and _save_timer.time_left > 0.0
+	if not capture_mode and (_save_queued or _save_pending_from_batch or timer_pending):
+		_write_config_snapshot(_build_save_config_file(), _current_save_path())
+	_save_queued = false
+	_save_pending_from_batch = false
+	if is_instance_valid(_save_timer):
+		_save_timer.stop()
 
 
 func _build_save_config_file() -> ConfigFile:
@@ -3809,6 +3852,7 @@ func _ready() -> void:
 # so the "new tank" the player just created would silently inherit the
 # previous tank's preset, substrate, lighting, etc.
 func switch_to_slot(slot: int) -> void:
+	flush_pending_settings()
 	var saves := get_node_or_null("/root/TankSaves")
 	if saves != null:
 		saves.set_active(slot)
@@ -3886,30 +3930,30 @@ func reset_to_defaults() -> void:
 	tod_night_color = Color(0.38, 0.42, 0.52)
 	lighting_preset = "custom"
 	music_enabled = true
-	music_volume = 0.7
-	music_complexity = 0.5
+	music_volume = 0.6
+	music_complexity = 0.45
 	music_ambient_enabled = true
 	music_events_enabled = true
 	music_environment_enabled = true
 	music_event_volume = 0.58
 	music_reactivity = 0.65
-	music_showiness = 0.5
-	music_dance_style = "auto"
-	music_mood = "auto"
+	music_showiness = 0.18
+	music_dance_style = "sway"
+	music_mood = "calm"
 	music_style = "hybrid"
-	music_energy = 0.55
+	music_energy = 0.32
 	music_coupling_floor = 0.55
 	music_smooth_rate = 0.55
 	music_phrase_churn = 0.5
 	music_tempo_follow = 0.72
 	music_kick_mix = 0.65
-	music_bass_mix = 0.75
-	music_arp_mix = 0.85
-	music_pad_mix = 0.7
-	music_hat_mix = 0.55
+	music_bass_mix = 0.6
+	music_arp_mix = 0.42
+	music_pad_mix = 0.85
+	music_hat_mix = 0.1
 	music_sidechain = 0.72
-	music_filter_open = 0.5
-	music_delay_amount = 0.35
+	music_filter_open = 0.35
+	music_delay_amount = 0.3
 	music_accent_density = 0.32
 	music_influence_fish = 1.0
 	music_influence_plants = 1.0
@@ -3921,37 +3965,39 @@ func reset_to_defaults() -> void:
 	music_seed = 1
 	music_phrase_form = "auto"
 	music_scale = "auto"
-	music_persona = "none"
+	music_persona = "lofi"
 	music_drop_intensity = 0.7
 	music_breakdown_depth = 0.7
 	music_lead_mix = 0.55
-	music_lead_detune = 0.55
-	music_vinyl_crackle = 0.08
-	music_tape_wow = 0.18
-	music_jazziness = 0.4
-	music_swing = 0.06
+	music_lead_detune = 0.2
+	music_vinyl_crackle = 0.0
+	music_tape_wow = 0.12
+	music_jazziness = 0.7
+	music_swing = 0.4
 	music_offbeat_hat = 0.55
-	music_reverb_send = 0.45
+	music_reverb_send = 0.55
 	music_humanize = 0.22
 	music_species_palette = 0.75
-	music_sub_bass_mix = 0.55
+	music_sub_bass_mix = 0.22
 	music_offbeat_bass_mix = 0.35
 	music_granular_pad = 0.25
-	music_vocoder_pad = 0.25
+	music_vocoder_pad = 0.0
 	music_shaker_mix = 0.4
 	music_clap_mix = 0.45
 	music_build_drama = 0.7
-	music_bitcrush_algae = 0.22
-	music_bass_grit = 0.5
-	music_pump_gate = 0.6
+	music_bitcrush_algae = 0.0
+	music_bass_grit = 0.12
+	music_pump_gate = 0.15
 	music_key_mod = 0.35
-	music_breathe_lfo = 0.35
+	music_breathe_lfo = 0.2
 	_apply_music_lofi_defaults()
-	environment_preset = "void"
+	music_hat_mix = 0.10
+	music_swing = 0.4
+	environment_preset = "bedroom_desk"
 	# Fauna behavior. Default ON — the tank is an ambient sim and should
 	# self-sustain when left unattended.
 	auto_respawn_fauna = true
-	auto_feed_fauna = false
+	auto_feed_fauna = true
 	cycle_start_mode = "established"
 	plant_youth_scale = 0.52
 	fauna_schooling_mult = 0.85

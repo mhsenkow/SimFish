@@ -85,18 +85,28 @@ const TOM_DELTA_EPS: float = 0.04
 
 
 static func _tom_nearest(f, neighbors: Array) -> Array:
-	var scored: Array = []
+	# Only four neighbors are used. Retain that bounded prefix rather than
+	# allocating a score dictionary per fish and sorting the entire school.
+	var out: Array = []
+	var distances: Array[float] = []
+	var center: Vector3 = f.position
 	for n in neighbors:
-		if not (n is Fish) or n == f:
+		if not is_instance_valid(n) or not (n is Fish) or n == f:
 			continue
 		var other: Fish = n as Fish
-		if str(other.id) == "":
+		if other.id.is_empty():
 			continue
-		scored.append({"fish": other, "d2": f.position.distance_squared_to(other.position)})
-	scored.sort_custom(func(a, b): return float(a.get("d2", 999.0)) < float(b.get("d2", 999.0)))
-	var out: Array = []
-	for i in range(mini(TOM_NEIGHBOR_K, scored.size())):
-		out.append((scored[i] as Dictionary).get("fish"))
+		var d2: float = center.distance_squared_to(other.position)
+		var at: int = out.size()
+		while at > 0 and d2 < distances[at - 1]:
+			at -= 1
+		if at >= TOM_NEIGHBOR_K:
+			continue
+		out.insert(at, other)
+		distances.insert(at, d2)
+		if out.size() > TOM_NEIGHBOR_K:
+			out.resize(TOM_NEIGHBOR_K)
+			distances.resize(TOM_NEIGHBOR_K)
 	return out
 
 

@@ -12,10 +12,8 @@
     var pct = Math.round(daylight * 100);
     var phase;
     if (daylight < 0.18) phase = "night";
-    else if (daylight < 0.38) phase = "dawn";
-    else if (daylight < 0.72) phase = "day";
-    else if (daylight < 0.88) phase = "dusk";
-    else phase = "night";
+    else if (daylight < 0.38) phase = t < DAY_S / 2 ? "dawn" : "dusk";
+    else phase = "day";
     el.textContent = phase + " · " + pct + "% daylight";
     el.dataset.phase = phase;
   }

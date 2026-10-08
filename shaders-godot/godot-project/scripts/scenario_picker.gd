@@ -24,6 +24,10 @@ signal canceled
 # Size step chosen in the picker header (TankSizing.SIZE_STEPS). Static so the
 # choice survives reopening the picker within a session.
 static var _size_scale: float = 1.0
+var _panel: PanelContainer
+var _template_grid: GridContainer
+var _template_scroll: ScrollContainer
+var _showing_all: bool = false
 var _size_rows: Array = []  # [size Label, equilibrium Label or null, scenario]
 
 # Each scenario describes the field overrides that get applied to
@@ -803,13 +807,13 @@ func _ready() -> void:
 	add_child(center)
 
 	var panel := PanelContainer.new()
+	_panel = panel
 	PanelTheme.apply_modal_chrome(panel)
-	PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 520.0, 420.0)
+	_layout_templates()
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	panel.gui_input.connect(func(_e): pass)
 	center.add_child(panel)
-	get_viewport().size_changed.connect(func():
-		PanelTheme.layout_modal_panel(panel, get_viewport().get_visible_rect().size, 520.0, 420.0))
+	get_viewport().size_changed.connect(_layout_templates)
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 12)
@@ -817,21 +821,22 @@ func _ready() -> void:
 	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	panel.add_child(vb)
 
-	vb.add_child(PanelTheme.make_title("Pick a tank scenario"))
+	vb.add_child(PanelTheme.make_panel_header("Choose a tank template", _cancel))
 	vb.add_child(PanelTheme.make_subtitle(
-		"Themed combinations of substrate, plants/coral, fish, and lighting."))
+		"A living world, ready to make your own. Start with a favorite below."))
 	vb.add_child(PanelTheme.make_rule())
 
 	vb.add_child(_build_size_row())
 	var scroll := ScrollContainer.new()
+	_template_scroll = scroll
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vb.add_child(scroll)
 
 	var grid := GridContainer.new()
-	var vp: Vector2 = get_viewport().get_visible_rect().size
-	grid.columns = 1 if vp.x < PanelTheme.MOBILE_NARROW_W or vp.y > vp.x else 2
+	_template_grid = grid
+	grid.columns = 1
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
 	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -844,19 +849,26 @@ func _ready() -> void:
 	if not extras.is_empty():
 		var expand_row := HBoxContainer.new()
 		expand_row.alignment = BoxContainer.ALIGNMENT_CENTER
-		var expand_btn := PanelTheme.make_ghost_button("More scenarios ▾")
+		var expand_btn := PanelTheme.make_secondary_button("Browse all %d templates" % SCENARIOS.size())
 		expand_btn.pressed.connect(func():
-			for extra in extras:
-				grid.add_child(_build_card(extra))
-			expand_row.visible = false)
+			_showing_all = not _showing_all
+			for child in grid.get_children():
+				grid.remove_child(child)
+				child.queue_free()
+			_size_rows.clear()
+			for template in SCENARIOS if _showing_all else _ordered_scenarios():
+				grid.add_child(_build_card(template))
+			expand_btn.text = tr("Show recommended templates") if _showing_all else tr("Browse all %d templates") % SCENARIOS.size()
+			_template_scroll.scroll_vertical = 0
+			_layout_templates())
 		expand_row.add_child(expand_btn)
 		vb.add_child(expand_row)
 
-	vb.add_child(PanelTheme.make_panel_footer(_cancel))
+	_layout_templates()
 
 	# Pad: jump focus onto first "Open this tank" so Cross doesn't fire New
 	# behind the modal.
-	PanelTheme.schedule_couch_focus(self, PackedStringArray(["Open this tank"]))
+	PanelTheme.schedule_couch_focus(self, PackedStringArray(["Use template"]))
 
 
 const Ol = preload("res://scripts/onboarding_legibility.gd")
@@ -890,118 +902,93 @@ func _extra_scenarios() -> Array:
 # description body, and an "Open this tank" button.
 func _build_card(sc: Dictionary) -> Control:
 	var card := PanelContainer.new()
-	card.custom_minimum_size = Vector2(280, 0)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	PanelTheme.apply_shelf_card_chrome(card)
-
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 8)
+	vb.add_theme_constant_override("separation", 10)
 	card.add_child(vb)
-
-	# Accent-color title band so each scenario has a glance-recognisable
-	# identity in the grid.
-	var band := PanelContainer.new()
-	var band_sb := StyleBoxFlat.new()
-	band_sb.bg_color = sc.get("accent_color", Color(0.6, 0.7, 0.8, 1.0))
-	band_sb.content_margin_left = 10
-	band_sb.content_margin_right = 10
-	band_sb.content_margin_top = 6
-	band_sb.content_margin_bottom = 6
-	band_sb.corner_radius_top_left = 6
-	band_sb.corner_radius_top_right = 6
-	band.add_theme_stylebox_override("panel", band_sb)
-	var title := Label.new()
-	var sid: String = String(sc.get("id", ""))
-	var plain: String = Ol.SCENARIO_PLAIN_NAMES.get(sid, String(sc.get("name", "Scenario")))
-	title.text = plain
+	var accent := ColorRect.new()
+	accent.color = sc.get("accent_color", PanelTheme.TITLE_FG)
+	accent.custom_minimum_size.y = 4
+	accent.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(accent)
+	var title := PanelTheme.make_title(String(sc.get("name", "Template")))
 	PanelTheme.as_serif(title, PanelTheme.SIZE_ITEM, true)
-	title.add_theme_color_override("font_color", Color(0.06, 0.07, 0.10, 1.0))
-	band.add_child(title)
-	vb.add_child(band)
-
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(title)
+	var sid: String = String(sc.get("id", ""))
 	var meta: Dictionary = Ol.SCENARIO_META.get(sid, {})
-	if bool(meta.get("recommended", false)):
-		var ribbon := Label.new()
-		ribbon.text = tr("★ Best for beginners")
-		ribbon.add_theme_color_override("font_color", Color8(255, 230, 120))
-		ribbon.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
-		vb.add_child(ribbon)
-	if meta.has("tier"):
-		var tier := Label.new()
-		var tier_i: int = int(meta.get("tier", 1))
-		tier.text = "%s — %s" % [Ol.tier_label(tier_i), String(meta.get("tier_why", ""))]
-		tier.add_theme_color_override("font_color", Ol.tier_color(tier_i))
-		tier.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
-		tier.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		vb.add_child(tier)
-	if bool(meta.get("maint_warning", false)):
-		var warn := Label.new()
-		warn.text = tr("Higher-maintenance — best once you've kept a tank")
-		warn.add_theme_color_override("font_color", Color8(230, 160, 110))
-		warn.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
-		warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		vb.add_child(warn)
-	var sil: String = String(sc.get("silhouette", ""))
-	if sil != "":
-		var sil_lbl := Label.new()
-		sil_lbl.text = sil
-		sil_lbl.add_theme_font_size_override("font_size", PanelTheme.SIZE_TITLE)
-		sil_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		vb.add_child(sil_lbl)
-
-	# Tagline (one-line summary) + body (description) + what's-in-the-tank,
-	# stepping down in size and emphasis so the card reads top-to-bottom.
+	var tier_i: int = int(meta.get("tier", 1))
+	var badge := PanelTheme.make_subtitle(Ol.tier_label(tier_i) +
+		(" · Recommended" if bool(meta.get("recommended", false)) else ""))
+	badge.add_theme_color_override("font_color", Ol.tier_color(tier_i))
+	badge.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vb.add_child(badge)
 	var tag := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_BODY) as Label
 	tag.text = String(sc.get("tagline", ""))
 	tag.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
 	tag.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tag.custom_minimum_size.y = 52.0
 	vb.add_child(tag)
-
-	var body := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_SMALL) as Label
-	body.text = String(sc.get("body", ""))
-	body.add_theme_color_override("font_color", PanelTheme.DIM_FG)
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vb.add_child(body)
-
-	var whats := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
-	whats.text = Ol.scenario_whats_in_tank(sc.get("config", {}))
-	whats.add_theme_color_override("font_color", PanelTheme.DIM_FG)
-	whats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vb.add_child(whats)
-
-	# Size at the chosen step: full W x D x H in the same units as Settings,
-	# plus real gallons, so cards can be compared at a glance.
-	var size_lbl := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
-	size_lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
+	var size_lbl := PanelTheme.make_subtitle("")
 	size_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(size_lbl)
-
-	# Equilibrium preview (#69): show roughly where the tank will settle so the
-	# defaults visibly express their designed balanced end-state.
-	var eq_lbl: Label = null
-	var eq_text: String = _equilibrium_hint(String(sc.get("config", {}).get("tank_preset", "")))
-	if eq_text != "":
-		var eq := Label.new()
-		eq.text = "⚖ " + eq_text
-		eq.add_theme_color_override("font_color", Color(0.62, 0.82, 0.70, 1.0))
-		eq.add_theme_font_size_override("font_size", PanelTheme.SIZE_CAPTION)
-		eq.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		eq.tooltip_text = Ol.equilibrium_tooltip()
-		vb.add_child(eq)
-		eq_lbl = eq
+	var details := VBoxContainer.new()
+	details.name = "TemplateDetails"
+	details.visible = false
+	details.add_theme_constant_override("separation", 8)
+	vb.add_child(details)
+	for text in [String(sc.get("body", "")), String(meta.get("tier_why", "")),
+		Ol.scenario_whats_in_tank(sc.get("config", {}))]:
+		var line := PanelTheme.make_subtitle(text)
+		line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		details.add_child(line)
+	if bool(meta.get("maint_warning", false)):
+		var warning := PanelTheme.make_subtitle("Higher maintenance · best after your first tank")
+		warning.add_theme_color_override("font_color", Ol.tier_color(2))
+		warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		# Keep maintenance visible even while the detailed description is folded.
+		vb.add_child(warning)
+	var eq_lbl := PanelTheme.make_subtitle("")
+	eq_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	eq_lbl.tooltip_text = Ol.equilibrium_tooltip()
+	details.add_child(eq_lbl)
 	_size_rows.append([size_lbl, eq_lbl, sc])
 	_refresh_size_row(size_lbl, eq_lbl, sc)
-
-	# Pick button — separated from the body with a hairline so it reads as the
-	# card's commit action rather than another text line.
 	vb.add_child(PanelTheme.make_rule())
-	var pick := PanelTheme.make_primary_button("Open this tank")
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 8)
+	var more := PanelTheme.make_ghost_button("Details")
+	more.toggle_mode = true
+	more.toggled.connect(func(on: bool):
+		details.visible = on
+		more.text = tr("Less") if on else tr("Details"))
+	actions.add_child(more)
+	var pick := PanelTheme.make_primary_button("Use template")
 	pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pick.pressed.connect(func(): _pick(sc))
-	vb.add_child(pick)
-
+	actions.add_child(pick)
+	vb.add_child(actions)
+	# Reading a longer description should not move the choice buttons below
+	# the fold, or push the neighboring cards' buttons down with the row.
+	vb.move_child(details, vb.get_child_count() - 1)
 	return card
+
+
+func _layout_templates() -> void:
+	if _panel == null:
+		return
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var pad: Vector4 = SafeArea.insets(get_viewport())
+	var available := Vector2(vp.x - pad.x - pad.z, vp.y - pad.y - pad.w)
+	var height: float = available.y - 40.0
+	if available.x >= 1000.0 and not _showing_all:
+		height = minf(height, 520.0)
+	var target := Vector2(minf(1200.0, available.x - 32.0), height)
+	_panel.custom_minimum_size = target
+	_panel.size = target
+	if _template_grid != null:
+		_template_grid.columns = clampi(int(floor((target.x - 32.0) / 320.0)), 1, 3)
 
 
 # Compute a rough "this tank wants to settle around N residents" line from the
@@ -1032,16 +1019,19 @@ func _equilibrium_hint(preset_key: String, stock_scale: float = 1.0) -> String:
 
 
 func _build_size_row() -> Control:
+	var section := VBoxContainer.new()
+	section.add_theme_constant_override("separation", 6)
+	var label := PanelTheme.make_subtitle("Tank size · fish and plants scale with the glass")
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	section.add_child(label)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	var lbl := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_BODY) as Label
-	lbl.text = tr("Tank size")
-	lbl.add_theme_color_override("font_color", PanelTheme.LABEL_FG)
-	row.add_child(lbl)
+	section.add_child(row)
 	var group := ButtonGroup.new()
 	for step in TankSizing.SIZE_STEPS:
-		var b := Button.new()
-		b.text = tr(String(step["label"]))
+		var b := PanelTheme.make_secondary_button(String(step["label"]))
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.x = 0
 		b.toggle_mode = true
 		b.button_group = group
 		b.focus_mode = Control.FOCUS_ALL
@@ -1050,13 +1040,7 @@ func _build_size_row() -> Control:
 		b.button_pressed = is_equal_approx(step_scale, _size_scale)
 		b.pressed.connect(func() -> void: _set_size_scale(step_scale))
 		row.add_child(b)
-	var hint := PanelTheme.as_sans(Label.new(), PanelTheme.SIZE_CAPTION) as Label
-	hint.text = tr("Fish and plants scale with the glass.")
-	hint.add_theme_color_override("font_color", PanelTheme.DIM_FG)
-	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	row.add_child(hint)
-	return row
+	return section
 
 
 func _set_size_scale(s: float) -> void:

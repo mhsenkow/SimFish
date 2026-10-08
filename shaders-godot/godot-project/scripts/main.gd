@@ -2208,6 +2208,7 @@ func apply_material_palette() -> void:
 
 
 func _process(dt: float) -> void:
+	_tick_shelf_thumbnail(dt)
 	ShaderUniformLedger.tick(dt)
 	_aquascape.tick_paint_cooldown(dt)
 
@@ -3751,7 +3752,7 @@ func _confirm_quit_game() -> void:
 func _quit_to_desktop() -> void:
 	_persist_last_quit_unix()
 	if _save_restored:
-		save_active_tank(true)
+		await _save_active_tank_with_thumbnail()
 	get_tree().quit()
 
 
@@ -3983,7 +3984,7 @@ func _take_photo() -> void:
 		world_node.begin_screenshot_boost(3.0)
 	_play_photo_flash()
 	_set_hud_visible_for_photo(false)
-	_request_viewport_image(_finish_photo_with_hud_restore)
+	_request_photo_readback()
 
 
 func _play_photo_flash() -> void:
@@ -4013,25 +4014,34 @@ func _take_signature_shot() -> void:
 	if world != null and world.has_method("begin_screenshot_boost"):
 		world.begin_screenshot_boost(4.0)
 	_set_hud_visible_for_photo(false)
-	get_tree().create_timer(0.06).timeout.connect(
-		func(): _request_viewport_image(_finish_photo_with_hud_restore))
+	get_tree().create_timer(0.06).timeout.connect(_request_photo_readback)
+
+
+var _photo_hud_state: Array = []
+
+func _request_photo_readback() -> void:
+	if not is_inside_tree():
+		return
+	if not _request_viewport_image(_finish_photo_with_hud_restore, true):
+		_set_hud_visible_for_photo(true)
+		_show_photo_toast("Camera is busy — try again in a moment")
 
 
 func _set_hud_visible_for_photo(visible: bool) -> void:
-	if top_hud != null:
-		top_hud.visible = visible
-	if right_rail != null:
-		right_rail.visible = visible
-	if footer_bar != null:
-		footer_bar.visible = visible
-	if _rail_flyout != null:
-		_rail_flyout.visible = visible
-	if _notifications_toast_layer != null:
-		_notifications_toast_layer.visible = visible
-	if _feed_toast_panel != null:
-		_feed_toast_panel.visible = visible
-	if _immersive_exit_btn != null:
-		_immersive_exit_btn.visible = visible
+	if not visible:
+		if not _photo_hud_state.is_empty():
+			return
+		for control in [top_hud, right_rail, footer_bar, _rail_flyout,
+				_notifications_toast_layer, _feed_toast_panel, _immersive_exit_btn]:
+			if is_instance_valid(control):
+				_photo_hud_state.append({"node": weakref(control), "visible": control.visible})
+				control.visible = false
+	else:
+		for saved in _photo_hud_state:
+			var control: Control = saved.node.get_ref() as Control
+			if is_instance_valid(control):
+				control.visible = bool(saved.visible)
+		_photo_hud_state.clear()
 	_set_photo_letterbox(not visible)
 
 
@@ -4096,7 +4106,10 @@ func _update_palette_debug_label(on: bool) -> void:
 
 func _finish_photo_with_hud_restore(img: Image) -> void:
 	_set_hud_visible_for_photo(true)
-	_finish_photo(img)
+	if img != null and not img.is_empty():
+		_finish_photo(img)
+	else:
+		_show_photo_toast("Photo capture unavailable — please try again")
 
 
 # Save a photo as a POSTCARD: the shot plus a burned-in provenance strip and
@@ -4228,28 +4241,33 @@ func _save_timelapse_frame(img: Image, frame_path: String) -> void:
 
 
 # Defer GPU readback until after the viewport finishes presenting.
-func _request_viewport_image(on_ready: Callable) -> void:
+func _request_viewport_image(on_ready: Callable, post_processed: bool = false) -> bool:
 	if sub_viewport == null or not is_instance_valid(sub_viewport):
-		return
+		return false
 	var frame: int = Engine.get_process_frames()
 	if _viewport_capture_busy \
 			or frame - _last_viewport_capture_frame < VIEWPORT_CAPTURE_FRAME_GAP:
-		return
+		return false
 	_viewport_capture_busy = true
-	_run_viewport_capture(on_ready)
+	_run_viewport_capture(on_ready, post_processed)
+	return true
 
 
-func _run_viewport_capture(on_ready: Callable) -> void:
+func _run_viewport_capture(on_ready: Callable, post_processed: bool = false) -> void:
 	await RenderingServer.frame_post_draw
 	var img: Image = null
 	if sub_viewport != null and is_instance_valid(sub_viewport):
-		var tex: ViewportTexture = sub_viewport.get_texture()
+		var source: SubViewport = _post_viewport if post_processed and is_instance_valid(_post_viewport) else sub_viewport
+		var tex: ViewportTexture = source.get_texture()
 		if tex != null:
 			img = tex.get_image()
 	_viewport_capture_busy = false
 	_last_viewport_capture_frame = Engine.get_process_frames()
 	if img != null and img.get_width() > 0 and img.get_height() > 0:
-		on_ready.call(img)
+		if is_inside_tree() and on_ready.is_valid():
+			on_ready.call(img)
+	elif on_ready == _finish_photo_with_hud_restore and is_inside_tree():
+		_finish_photo_with_hud_restore(null)
 
 
 # ---- Timelapse mode ----
@@ -4773,16 +4791,18 @@ func _pulse_creature_affect(creature: Node) -> void:
 
 
 func _defer_voice_presentation(show_fn: Callable, delay_s: float = VOICE_BODY_FIRST_DELAY_S) -> void:
-	var tree := get_tree()
-	if tree == null:
-		if show_fn.is_valid():
-			show_fn.call()
+	if not is_inside_tree() or is_queued_for_deletion():
 		return
 	var wait_s: float = maxf(delay_s, 0.05)
-	tree.create_timer(wait_s).timeout.connect(func() -> void:
-		if show_fn.is_valid():
-			show_fn.call()
-	, CONNECT_ONE_SHOT)
+	# SceneTree timers outlive their scene. A bound method disconnects when
+	# this controller is freed; a self-owned lambda still attempts to run.
+	get_tree().create_timer(wait_s).timeout.connect(
+		_deliver_voice_presentation.bind(show_fn), CONNECT_ONE_SHOT)
+
+
+func _deliver_voice_presentation(show_fn: Callable) -> void:
+	if is_inside_tree() and not is_queued_for_deletion() and show_fn.is_valid():
+		show_fn.call()
 
 
 func _fish_by_id(fish_id: String) -> Fish:
@@ -9652,6 +9672,10 @@ func _setup_rail_groups() -> void:
 	]:
 		if btn != null:
 			btn.visible = false
+	for button_name in ["CameraViewsToggle", "ResidentsToggle", "MindToggle", "ChronicleToggle"]:
+		var direct_button := _rail_vbox.get_node_or_null(button_name) as Control
+		if direct_button != null:
+			direct_button.hide()
 	var divider: HSeparator = right_cluster.get_node_or_null("VBox/RailDivider") as HSeparator \
 		if right_cluster != null else null
 	if divider != null:
@@ -9775,6 +9799,14 @@ func _rail_flyout_items(group_id: String) -> Array[Dictionary]:
 			]
 		"world":
 			return [
+				{"label": "Residents", "tip": "Follow and favorite your creatures (K)",
+					"action": _toggle_residents_panel},
+				{"label": "Mind", "tip": "What the followed creature is thinking (J)",
+					"action": _toggle_mind_panel},
+				{"label": "Chronicle", "tip": "The tank’s story in chapters (L)",
+					"action": _toggle_chronicle_panel},
+				{"label": "Camera views", "tip": "Presets, projection and field of view (V)",
+					"action": _toggle_camera_views_panel},
 				{"label": "Aquascape", "tip": "Sculpt substrate and hardscape (B)",
 					"action": _toggle_aquascape},
 				{"label": "Follow Portal", "tip": "Creature picture-in-picture (C)",
@@ -11738,11 +11770,15 @@ const AUTOSAVE_INTERVAL_S: float = 300.0
 var _autosave_accum: float = 0.0
 # GPU readback guard — synchronous get_image() on macOS often trips
 # "timeout waiting for fence" if we read while the viewport is still drawing.
+var _thumbnail_pending_path: String = ""
+var _thumbnail_first_saved: bool = false
+var _thumbnail_settle_s: float = 0.0
 var _viewport_capture_busy: bool = false
 var _last_viewport_capture_frame: int = -9999
 const VIEWPORT_CAPTURE_FRAME_GAP: int = 45
 # True once we've successfully restored state (or determined there's nothing
 # to restore). Guards against running load_state twice.
+var _save_restore_blocked: bool = false
 var _save_restored: bool = false
 # Sticky last-running time_scale: when the user pauses for aquascape or
 # manually, we save the previous non-zero value so the next session opens
@@ -11752,6 +11788,9 @@ var _save_pending_time_scale: float = 1.0
 
 func _try_load_saved_state() -> void:
 	SaveManager.try_load(self, _sim, world, _aquascape, &"_save_restored")
+	var saves := get_node_or_null("/root/TankSaves")
+	if saves != null and FileAccess.file_exists(saves.state_path(int(saves.active_slot))) and not saves.is_active_save_compatible():
+		_save_restore_blocked = true
 	if _sim != null and _sim.has_method("reset_make_it_there_session"):
 		_sim.reset_make_it_there_session()
 	_sync_speed_hud()
@@ -11766,13 +11805,23 @@ func _try_load_saved_state() -> void:
 #   - clean app quit
 # Skip if we're in the middle of aquascape mode (time_scale=0 from that path
 # would freeze the session at "paused" forever).
+func is_save_restore_blocked() -> bool:
+	return _save_restore_blocked
+
+
 func save_active_tank(skip_thumbnail: bool = false) -> void:
+	if _save_restore_blocked:
+		return
 	_save_pending_time_scale = SaveManager.save_active(
 		self, _sim, world, _aquascape, _save_pending_time_scale, skip_thumbnail)
 
 
 # Write state + block until the menu-card thumbnail is on disk.
 func _save_active_tank_with_thumbnail() -> void:
+	if _save_restore_blocked:
+		return
+	if _cfg() != null and bool(_cfg().get("capture_mode")):
+		return
 	save_active_tank(true)
 	var saves := get_node_or_null("/root/TankSaves")
 	if saves == null:
@@ -11781,12 +11830,40 @@ func _save_active_tank_with_thumbnail() -> void:
 
 
 func _save_thumbnail(path: String) -> void:
-	if sub_viewport == null:
+	if _save_restore_blocked:
 		return
-	_request_viewport_image(_finish_save_thumbnail.bind(path))
+	if _cfg() != null and bool(_cfg().get("capture_mode")):
+		return
+	# Coalesce requests; a photo/timelapse readback must not lose this save.
+	_thumbnail_pending_path = path
+
+
+func _tick_shelf_thumbnail(dt: float) -> void:
+	if _save_restore_blocked:
+		_thumbnail_pending_path = ""
+		return
+	if _thumbnail_first_saved and _thumbnail_pending_path.is_empty():
+		return
+	if DisplayServer.get_name() == "headless" or not _save_restored:
+		return
+	if _cfg() != null and bool(_cfg().get("capture_mode")):
+		return
+	if world == null or not bool(world.get("build_complete")):
+		return
+	if not _thumbnail_first_saved:
+		_thumbnail_settle_s += dt
+		if _thumbnail_settle_s >= 2.0:
+			var saves := get_node_or_null("/root/TankSaves")
+			if saves != null:
+				_save_thumbnail(saves.thumbnail_path(int(saves.active_slot)))
+			_thumbnail_first_saved = true
+	if not _thumbnail_pending_path.is_empty():
+		_request_viewport_image(_finish_save_thumbnail.bind(_thumbnail_pending_path), true)
 
 
 func _capture_thumbnail_to_path(path: String) -> void:
+	if DisplayServer.get_name() == "headless":
+		return
 	if sub_viewport == null or not is_instance_valid(sub_viewport):
 		return
 	# Hero composition for shelf thumbnails (#199).
@@ -11802,7 +11879,8 @@ func _capture_thumbnail_to_path(path: String) -> void:
 	await RenderingServer.frame_post_draw
 	await RenderingServer.frame_post_draw
 	var img: Image = null
-	var tex: ViewportTexture = sub_viewport.get_texture()
+	var source: SubViewport = _post_viewport if is_instance_valid(_post_viewport) else sub_viewport
+	var tex: ViewportTexture = source.get_texture()
 	if tex != null:
 		img = tex.get_image()
 	target = saved_cam["target"]
@@ -11817,14 +11895,16 @@ func _capture_thumbnail_to_path(path: String) -> void:
 
 
 func _finish_save_thumbnail(img: Image, path: String) -> void:
-	var dir: String = path.get_base_dir()
-	if dir != "":
-		DirAccess.make_dir_recursive_absolute(dir)
-	var w: int = 480
-	var h: int = int(round(float(img.get_height()) * (float(w) / float(img.get_width()))))
-	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
-	var err: int = img.save_png(path)
-	if err != OK:
+	if _save_restore_blocked:
+		return
+	var err: Error = preload("res://scripts/tank_thumbnail.gd").save_image(img, path)
+	if err == OK:
+		if _thumbnail_pending_path == path:
+			_thumbnail_pending_path = ""
+	else:
+		# Keep the last good photo and retry on the next normal autosave.
+		if _thumbnail_pending_path == path:
+			_thumbnail_pending_path = ""
 		push_warning("[walstad_loom] thumbnail save failed at %s: err %d" % [path, err])
 
 
@@ -11833,6 +11913,7 @@ func _finish_save_thumbnail(img: Image, path: String) -> void:
 # Deliberately NOT the corruption prompt: the file is intact, and offering
 # "start fresh" here would destroy a good tank that a game update would open.
 func _show_incompatible_save_prompt(_state_path: String, mig: Dictionary) -> void:
+	_save_restore_blocked = true
 	var dialog := AcceptDialog.new()
 	dialog.title = "Save format too new"
 	dialog.dialog_text = String(mig.get("reason", "This tank's save cannot be opened."))
@@ -11841,41 +11922,63 @@ func _show_incompatible_save_prompt(_state_path: String, mig: Dictionary) -> voi
 		dialog.dialog_text += "\n\nThe tank has been left untouched."
 	dialog.ok_button_text = "Back to tanks"
 	add_child(dialog)
-	dialog.confirmed.connect(func(): _on_back_to_menu())
-	dialog.canceled.connect(func(): _on_back_to_menu())
+	dialog.confirmed.connect(_on_back_to_menu)
+	dialog.canceled.connect(_on_back_to_menu)
 	dialog.popup_centered()
 
 
 # Show a modal prompt offering to start fresh or attempt the .bak file. Only
 # fires when state.json existed but failed to parse — corruption.
 func _show_corrupt_save_prompt(state_path: String) -> void:
+	_save_restore_blocked = true
 	var bak_path: String = state_path + ".bak"
 	var dialog := AcceptDialog.new()
-	if FileAccess.file_exists(bak_path):
-		dialog.dialog_text = "This tank's save file is corrupted.\nA backup is available."
-		dialog.add_button("Restore from backup", true, "restore_bak")
-		dialog.add_button("Start fresh", false, "start_fresh")
-	else:
-		dialog.dialog_text = "This tank's save file is corrupted and there's no backup.\nStarting fresh."
 	dialog.title = "Save file problem"
+	dialog.ok_button_text = "Back to tanks"
+	dialog.dialog_text = "This tank's save file cannot be read. It has been left untouched."
+	if FileAccess.file_exists(bak_path):
+		dialog.dialog_text += "\nA backup is available."
+		dialog.add_button("Restore from backup", true, "restore_bak")
+	dialog.add_button("Start fresh", false, "start_fresh")
 	add_child(dialog)
-	dialog.custom_action.connect(func(action: StringName):
-		if String(action) == "restore_bak":
-			var saves := get_node_or_null("/root/TankSaves")
-			if saves != null:
-				var d: Dictionary = saves.read_json(bak_path)
-				if not d.is_empty() and _sim != null:
-					_sim.load_state(d)
-					if d.has("terrain") and world != null \
-							and world.has_method("terrain_apply_save_dict"):
-						world.terrain_apply_save_dict(d["terrain"])
-						if _sim != null and _sim.has_method("_clamp_loaded_entities"):
-							_sim.call("_clamp_loaded_entities")
-					if d.has("aquascape"):
-						_restore_aquascape(d["aquascape"])
-		dialog.queue_free())
-	dialog.confirmed.connect(func(): dialog.queue_free())
+	dialog.custom_action.connect(_handle_corrupt_save_action.bind(dialog, bak_path))
+	dialog.confirmed.connect(_on_back_to_menu)
+	dialog.canceled.connect(_on_back_to_menu)
 	dialog.popup_centered()
+
+
+func _handle_corrupt_save_action(action: StringName, dialog: AcceptDialog, bak_path: String) -> void:
+	var saves := get_node_or_null("/root/TankSaves")
+	if String(action) == "restore_bak":
+		var d: Dictionary = saves.read_json(bak_path) if saves != null else {}
+		var mig: Dictionary = SaveMigrations.migrate(d) if not d.is_empty() else {"ok": false}
+		if not bool(mig.get("ok", false)) or _sim == null:
+			dialog.dialog_text = "The backup could not be restored. Both files have been left untouched."
+			return
+		d = SaveRepair.sanitize(mig.get("dict", d))
+		_sim.load_state(d)
+		preload("res://scripts/tank_chronicle.gd").load_for(_sim, d)
+		if d.has("terrain") and world != null and world.has_method("terrain_apply_save_dict"):
+			world.terrain_apply_save_dict(d["terrain"])
+			if _sim.has_method("_clamp_loaded_entities"):
+				_sim.call("_clamp_loaded_entities")
+		if d.has("aquascape"):
+			_restore_aquascape(d["aquascape"])
+		restore_follow_from_save(d)
+	elif String(action) == "start_fresh":
+		if saves == null:
+			return
+		saves.clear_active_state()
+		if FileAccess.file_exists(saves.state_path(int(saves.active_slot))) or FileAccess.file_exists(bak_path):
+			dialog.dialog_text = "The old save could not be preserved. It has been left untouched."
+			return
+	else:
+		return
+	_save_restore_blocked = false
+	_thumbnail_first_saved = false
+	_thumbnail_settle_s = 0.0
+	save_active_tank()
+	dialog.queue_free()
 
 
 # ---- App-lifecycle: pause sim when backgrounded ----
@@ -11944,6 +12047,8 @@ func _on_focus_in() -> void:
 
 
 func _persist_last_quit_unix() -> void:
+	if _save_restore_blocked:
+		return
 	var cfg := _cfg()
 	if cfg == null:
 		return

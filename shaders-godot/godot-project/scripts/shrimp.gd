@@ -394,7 +394,7 @@ func _build_body() -> void:
 	# Crabs are stubby.
 	_antenna_pivot = Node3D.new()
 	_antenna_pivot.name = "Antennae"
-	_antenna_pivot.position = Vector3(0, v * 0.3, -v * 1.2)
+	_antenna_pivot.position = Vector3(0, v * 0.3, _head_eye_z(v, lenf) - v * 0.1)
 	_bank_pivot.add_child(_antenna_pivot)
 	var antenna_mat: Material = mat_antenna
 	var antenna_len: float = 0.9 * antenna_length_factor
@@ -411,7 +411,7 @@ func _build_body() -> void:
 	# long one; crabs have none.
 	if rostrum_length > 0.05 and body_shape != "crab":
 		var rost_mat: Material = VoxelMat.fauna_color_carrier(base_color.darkened(0.1))
-		_voxel(_bank_pivot, Vector3(0, v * 0.45, -v * (1.3 + rostrum_length * 0.8)),
+		_voxel(_bank_pivot, Vector3(0, v * 0.45, _head_eye_z(v, lenf) - v * (0.2 + rostrum_length * 0.8)),
 			Vector3(v * 0.07, v * 0.1, v * (0.4 + rostrum_length * 0.9)), rost_mat)
 
 	# Egg cluster (visible only when is_gravid). Bright yellow-orange spheres
@@ -498,7 +498,7 @@ func _build_caridean_core(v: float, lenf: float, mat_body: Material, mat_belly: 
 		Vector3(v * 0.9, v * 0.9, v * 0.9 * lenf), mat_body)
 	_voxel(_bank_pivot, Vector3(0, -v * 0.3, -v * 0.8 * lenf),
 		Vector3(v * 0.7, v * 0.3, v * 0.7 * lenf), mat_belly)
-	_build_eyes(v, -v * 1.1, mat_eye, mat_dark)
+	_build_eyes(v, _head_eye_z(v, lenf), mat_eye, mat_dark)
 	# Mid segment (thickest part of carapace).
 	_voxel(_bank_pivot, Vector3(0, v * 0.3, 0), Vector3(v * 1.1, v * 1.0, v * 0.9 * lenf), mat_body)
 	_voxel(_bank_pivot, Vector3(0, -v * 0.4, 0), Vector3(v * 0.9, v * 0.25, v * 0.7 * lenf), mat_belly)
@@ -606,6 +606,15 @@ func _build_mantis_core(v: float, lenf: float, mat_body: Material, mat_belly: Ma
 
 # ---- Shared appendage builders ----
 
+# Shared facial anchor so length genes cannot leave antennae in the thorax.
+func _head_eye_z(v: float, lenf: float) -> float:
+	match body_shape:
+		"crab": return -v * 0.55 * lenf
+		"lobster": return -v * 1.25 * lenf
+		"mantis": return -v * 1.4 * lenf
+		_: return -v * 1.1 * lenf
+
+
 func _build_eyes(v: float, z: float, mat_eye: Material, mat_dark: Material) -> void:
 	# Sessile eyes sit on the carapace (eye_stalk_length 0); raised eyes ride
 	# short stalks (crab, mantis, some shrimp).
@@ -634,9 +643,9 @@ func _build_claws(v: float, lenf: float) -> void:
 		var cs: float = claw_size * side_scale
 		var claw_len: float = v * (0.40 + cs * 1.05) * lenf
 		var claw_thick: float = v * (0.08 + cs * 0.10)
-		_voxel(_bank_pivot, Vector3(side * v * 0.62, v * 0.02, -v * (1.18 + cs * 0.26)),
+		_voxel(_bank_pivot, Vector3(side * v * 0.62, v * 0.02, -v * (1.18 * lenf + cs * 0.26)),
 			Vector3(claw_thick, claw_thick, claw_len), claw_mat)
-		_voxel(_bank_pivot, Vector3(side * v * 0.70, -v * 0.03, -v * (1.48 + cs * 0.30)),
+		_voxel(_bank_pivot, Vector3(side * v * 0.70, -v * 0.03, -v * (1.48 * lenf + cs * 0.30)),
 			Vector3(claw_thick * 0.9, claw_thick * 0.85, claw_len * 0.48), claw_mat)
 
 
@@ -653,7 +662,7 @@ func _build_legs(v: float, mat_dark: Material) -> void:
 		for side in [1.0, -1.0]:
 			var pivot := Node3D.new()
 			pivot.name = "Leg%d%s" % [i, "R" if side > 0.0 else "L"]
-			pivot.position = Vector3(side * xside * v, -v * 0.12, zoff * v)
+			pivot.position = Vector3(side * xside * v, -v * 0.12, zoff * v * body_length_factor)
 			_bank_pivot.add_child(pivot)
 			_voxel(pivot, Vector3(0.0, -v * 0.28, 0.0),
 				Vector3(v * 0.1, v * 0.3 * ll, v * 0.1), mat_dark)

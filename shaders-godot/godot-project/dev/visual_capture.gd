@@ -99,6 +99,7 @@ const ANGLES: Array[Dictionary] = [
 var _main: Node = null
 var _frame: int = 0
 var _settle: int = DEFAULT_SETTLE
+var _sequence_i: int = 0
 var _angle_i: int = 0
 var _angle_frame: int = 0
 var _armed: bool = false
@@ -220,7 +221,15 @@ func _process(_dt: float) -> void:
 	_apply_angle(_angle_i)
 	if _angle_frame < ANGLE_SETTLE:
 		return
-	_shoot(_angles[_angle_i])
+	var sequence_frames: int = clampi(_env("VISUAL_CAPTURE_SEQUENCE_FRAMES", "1").to_int(), 1, 120)
+	var shot: Dictionary = _angles[_angle_i].duplicate()
+	if sequence_frames > 1:
+		shot["name"] = "%s_%03d" % [shot["name"], _sequence_i]
+	_shoot(shot)
+	_sequence_i += 1
+	if _sequence_i < sequence_frames:
+		return
+	_sequence_i = 0
 	_angle_i += 1
 	if _angle_i >= _angles.size():
 		_finish()

@@ -289,6 +289,9 @@ static func _answer_on_topic(ctx: Dictionary, topic: String, clauses: Array) -> 
 static func _grounded_clauses(ctx: Dictionary, want_keeper: bool, for_reply: bool = true) -> Array:
 	var out: Array = []
 	var seed_v: int = _ctx_seed(ctx, "clause")
+	var music_memory: Dictionary = ctx.get("music_memory", {})
+	if float(music_memory.get("confidence", 0.0)) > 0.35 and str(ctx.get("music_response", "")) != "":
+		out.append({"k": "music", "w": 0.9, "s": str(ctx.music_response)})
 	# Memory — prefer one that involves the keeper when talking to the keeper.
 	var kep: String = str(ctx.get("keeper_episode", ""))
 	if want_keeper and kep != "":
@@ -517,7 +520,7 @@ static func _template_fish_reply_inner(ctx: Dictionary) -> String:
 	if reaction == "" and bool(ctx.get("feed_anticipated", false)) and comp > 0.4:
 		reaction = "soft sound when light goes low"
 	if reaction == "" and str(ctx.get("now_playing", "")) != "" and intent in ["neutral", ""]:
-		reaction = "sound in the water and above"
+		reaction = str(ctx.get("music_response", "sound in the water and above"))
 	var clause: String = _choose_clause(clauses, ctx, "reply")
 	var line: String = ""
 	if reaction != "" and clause != "":

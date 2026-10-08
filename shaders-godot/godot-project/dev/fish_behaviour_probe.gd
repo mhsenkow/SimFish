@@ -167,11 +167,11 @@ func _split_step(fish: Array, now: int) -> void:
 		for f in fish:
 			if is_instance_valid(f):
 				f.set_process(true)
-		_sim.set_process(false)
+		_sim.set_physics_process(false)
 		_sim.set_physics_process(false)
 		_split_phase = 2
 	else:
-		_sim.set_process(true)
+		_sim.set_physics_process(true)
 		_sim.set_physics_process(true)
 		_split_phase = 3
 	_last_tick_usec = now

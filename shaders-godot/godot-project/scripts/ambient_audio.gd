@@ -127,9 +127,9 @@ const PERSONAS: Dictionary = {
 	# Lo-fi / Dilla — dusty, drunk-swung downtempo. Vinyl + tape, Rhodes chords;
 	# events are soft, behind-the-beat accents.
 	"lofi": {
-		"scale": "blues_major", "bpm_mul": 0.6, "swing": 0.62, "humanize": 0.72,
+		"scale": "blues_major", "bpm_mul": 0.82, "swing": 0.62, "humanize": 0.72,
 		"jazziness": 0.7, "offbeat_hat": 0.3, "lead_mix": 0.28, "sidechain": 0.45,
-		"reverb": 0.5, "vinyl": 0.7, "tape": 0.6, "event": "lofi",
+		"reverb": 0.42, "vinyl": 0.06, "tape": 0.22, "event": "lofi",
 	},
 	# Dub techno / deep — spacious, hypnotic. Sparse, big reverb + delay throws;
 	# events echo out into the air bus and sweep the filter.
@@ -286,6 +286,12 @@ var _lpf_arp: float = 0.0
 var _lpf_pad: float = 0.0
 var _lpf_hat: float = 0.0
 var _lpf_hat2: float = 0.0
+var _hat_level: float = 0.0
+var _shaker_level: float = 0.0
+var _shaker_lpf2: float = 0.0
+var _cached_hat_alpha: float = 0.0
+var _cached_shaker_alpha: float = 0.0
+var _cached_vinyl_alpha: float = 0.0
 var _lpf_master: float = 0.0
 var _lfo_phase: float = 0.0
 var _delay_buf: PackedFloat32Array = PackedFloat32Array()
@@ -299,6 +305,7 @@ var _pad_increments: Array[float] = [0.0, 0.0, 0.0]
 var _cached_bpm: float = 110.0
 var _cached_beat_scale: float = 110.0 / 60.0 * INV_SAMPLE_RATE
 var _cached_beat_time: float = 0.0
+var _cached_lofi: bool = false
 var _cached_vol: float = 0.35
 # Tank-reactive bed snapshot (see MusicReactivity). Read per sample on the
 # synth worker, so it is cached rather than recomputed.
@@ -367,6 +374,8 @@ var _wow_lfo2: float = 0.0
 
 # Vinyl crackle layer — sparse pops + filtered noise floor.
 var _vinyl_noise_lpf: float = 0.0
+var _vinyl_pop_lpf: float = 0.0
+var _vinyl_pop_lpf2: float = 0.0
 
 # ---- Aquatic ambience bed (delicate tank fizz, not a noise wash) ----
 # Sparse micro-fizz gated by aeration / pearling; breathes slowly so it reads as
@@ -416,7 +425,6 @@ var _snail_attached: Dictionary = {}
 var _bloop_cd: Dictionary = {}     # kind -> seconds until it may sound again
 var _bubble_rise_t: float = 18.0
 var _vinyl_pop_env: float = 0.0
-var _vinyl_pop_freq: float = 1.0
 var _vinyl_pop_t: float = 0.0
 
 # Stereo bed — output is now Vector2; arp/pad/lead can pan.
@@ -961,11 +969,13 @@ func _lead_detune_cfg() -> float:
 
 
 func _vinyl_cfg() -> float:
-	return _pp(_cfg_float("music_vinyl_crackle", 0.2), "vinyl")
+	var amount: float = _cfg_float("music_vinyl_crackle", 0.2)
+	return 0.0 if amount <= 0.001 else _pp(amount, "vinyl")
 
 
 func _tape_wow_cfg() -> float:
-	return _pp(_cfg_float("music_tape_wow", 0.18), "tape")
+	var amount: float = _cfg_float("music_tape_wow", 0.18)
+	return 0.0 if amount <= 0.001 else _pp(amount, "tape")
 
 
 func _jazziness_cfg() -> float:
@@ -1530,6 +1540,7 @@ func _refresh_thread_cfg_snapshot() -> void:
 		bool(cfg.get("music_simple_bed"))
 		or String(cfg.get("device_tier")) == "low")
 	_cached_energy = _energy()
+	_cached_lofi = _persona_key() == "lofi"
 	_cached_hat_mix = _cfg_float("music_hat_mix", 0.38)
 	_cached_sidechain = _pp(_cfg_float("music_sidechain", 0.55), "sidechain")
 	_cached_influence_aeration = _influence("music_influence_aeration")
@@ -1595,7 +1606,7 @@ func _refresh_mix_cache() -> void:
 	arp_open = lerpf(arp_open * 0.65, arp_open, filter_bias)
 	var arp_cut: float = lerpf(520.0, 3800.0, arp_open * (sin(_lfo_phase * 0.5 * TAU) * 0.5 + 0.5))
 	_cached_arp_lpf_alpha = _lpf_alpha(arp_cut)
-	_cached_bass_active = int(float(_sample_clock) * _cached_beat_scale) % 2 == 0
+	_cached_bass_active = int(_cached_beat_time) % 2 == 0
 
 	# Festival / lo-fi knobs cached here too so per-sample math is just a read.
 	_cached_lead_mix = _lead_mix_cfg()
@@ -1609,6 +1620,9 @@ func _refresh_mix_cache() -> void:
 	_cached_reverb_send = _reverb_send_cfg()
 	_cached_humanize = _humanize_cfg()
 	_cached_vinyl = _vinyl_cfg()
+	_cached_hat_alpha = _lpf_alpha(1500.0 if _cached_lofi else 2200.0)
+	_cached_shaker_alpha = _lpf_alpha(1400.0 if _cached_lofi else 2200.0)
+	_cached_vinyl_alpha = _lpf_alpha(1200.0)
 	_cached_tape_wow = _tape_wow_cfg()
 	_cached_species_palette = _species_palette_cfg()
 	_cached_phrase_form = _phrase_form_key()
@@ -2308,26 +2322,24 @@ func _dc_block_r(sample: float) -> float:
 func _vinyl_sample() -> float:
 	if _cached_vinyl <= 0.001:
 		return 0.0
-	# Sparse pop generator — roughly Poisson via decay timer.
+	# Independent pop/hiss filters prevent the floor from driving the pop state.
 	_vinyl_pop_t -= INV_SAMPLE_RATE
 	if _vinyl_pop_t <= 0.0:
-		# Frequency of pops scales with knob; ~2..18 pops/sec at full.
-		var rate_hz: float = lerpf(0.8, 18.0, _cached_vinyl)
-		_vinyl_pop_t = lerpf(0.04, 1.2, randf()) / maxf(0.1, rate_hz)
-		_vinyl_pop_env = randf_range(0.35, 0.75) * _cached_vinyl
-		_vinyl_pop_freq = lerpf(400.0, 1800.0, randf())
-	var pop: float = 0.0
+		var rate_hz: float = lerpf(0.4, 5.0, _cached_vinyl)
+		_vinyl_pop_t = -log(maxf(0.0001, 1.0 - randf())) / rate_hz
+		_vinyl_pop_env = randf_range(0.25, 0.55) * _cached_vinyl
+	var pop_raw: float = 0.0
 	if _vinyl_pop_env > 0.001:
-		# Bandpassed noise burst — sine pops at 900–4200 Hz read as UI clicks.
-		var pop_raw: float = _noise_sample() * _vinyl_pop_env
-		_vinyl_noise_lpf = _one_pole_cached(pop_raw, _vinyl_noise_lpf, _lpf_alpha(2400.0))
-		pop = _vinyl_noise_lpf
-		_vinyl_pop_env *= 0.968
-	# Low-level filtered noise floor — gives that 7" record hiss.
-	var hiss_raw: float = _noise_sample()
-	_vinyl_noise_lpf = _one_pole_cached(hiss_raw, _vinyl_noise_lpf, _lpf_alpha(3200.0))
-	var floor_amp: float = _cached_vinyl * 0.008
-	return (pop * 0.032 + _vinyl_noise_lpf * floor_amp)
+		pop_raw = _noise_sample() * _vinyl_pop_env
+		_vinyl_pop_env *= 0.989
+	_vinyl_pop_lpf = _one_pole_cached(pop_raw, _vinyl_pop_lpf, _cached_vinyl_alpha)
+	_vinyl_pop_lpf2 = _one_pole_cached(_vinyl_pop_lpf, _vinyl_pop_lpf2, _cached_vinyl_alpha)
+	# Lo-fi warmth comes from voicing and tape; it need not carry constant static.
+	var hiss: float = 0.0
+	if not _cached_lofi:
+		_vinyl_noise_lpf = _one_pole_cached(_noise_sample(), _vinyl_noise_lpf, _cached_vinyl_alpha)
+		hiss = _vinyl_noise_lpf * _cached_vinyl * 0.001
+	return _vinyl_pop_lpf2 * 0.012 + hiss
 
 
 # Tape-wow — write to ring buffer, read with LFO-modulated position so the
@@ -2412,9 +2424,14 @@ var _f_air_l: float = 0.0
 var _f_air_r: float = 0.0
 
 
+func _advance_musical_clock() -> float:
+	var beat_time: float = _cached_beat_time
+	_cached_beat_time += _cached_beat_scale
+	return beat_time
+
+
 func _render_trance_streams() -> void:
-	var beat_time: float = float(_sample_clock) * _cached_beat_scale
-	_cached_beat_time = beat_time
+	var beat_time: float = _advance_musical_clock()
 	var quarter: int = int(beat_time)
 	var sixteenth_f: float = beat_time * 4.0
 	var sixteenth: int = int(sixteenth_f)
@@ -2442,11 +2459,12 @@ func _render_trance_streams() -> void:
 		_kick_env *= 0.9994
 
 	if _hat_env > 0.001:
-		# Brushed, not ticked: two cascaded poles (12 dB/oct from ~2.4 kHz)
-		# so the noise has no fizz on top, and a longer, quieter decay.
-		var hat_raw: float = _noise_sample() * _hat_env
-		_lpf_hat = _one_pole_cached(hat_raw, _lpf_hat, _lpf_alpha(2400.0))
-		_lpf_hat2 = _one_pole_cached(_lpf_hat, _lpf_hat2, _lpf_alpha(2400.0))
+		# Brushed, not ticked: two cascaded poles (12 dB/oct)
+		# with a rounded attack; lo-fi uses a darker cutoff.
+		_hat_level = lerpf(_hat_level, _hat_env, 0.025)
+		var hat_raw: float = _noise_sample() * _hat_level
+		_lpf_hat = _one_pole_cached(hat_raw, _lpf_hat, _cached_hat_alpha)
+		_lpf_hat2 = _one_pole_cached(_lpf_hat, _lpf_hat2, _cached_hat_alpha)
 		var hat_out: float = _lpf_hat2 * vol * _cached_hat_mul * _state_hat_gain
 		# Slight pan to add stereo image to the drums bus.
 		d_l += hat_out * 1.05
@@ -2460,14 +2478,16 @@ func _render_trance_streams() -> void:
 		var clap_out: float = _clap_lpf * vol * _cached_clap_mix * 0.7
 		# Stereo width via L/R noise decorrelation.
 		d_l += clap_out * 0.9
-		d_r += clap_out * 1.1 + _noise_sample() * _clap_env * 0.005
+		d_r += clap_out * 1.1 + _noise_sample() * _clap_env * _cached_clap_mix * vol * 0.005
 		_clap_env *= 0.985
 
 	# Polyrhythmic shaker — 16th-note presence weighted to creature movement.
 	if _shaker_env > 0.001:
-		var sk_raw: float = _noise_sample() * _shaker_env
-		_shaker_lpf = _one_pole_cached(sk_raw, _shaker_lpf, _lpf_alpha(3000.0))
-		var sk_out: float = _shaker_lpf * vol * _cached_shaker_mix * 0.3
+		_shaker_level = lerpf(_shaker_level, _shaker_env, 0.02)
+		var sk_raw: float = _noise_sample() * _shaker_level
+		_shaker_lpf = _one_pole_cached(sk_raw, _shaker_lpf, _cached_shaker_alpha)
+		_shaker_lpf2 = _one_pole_cached(_shaker_lpf, _shaker_lpf2, _cached_shaker_alpha)
+		var sk_out: float = _shaker_lpf2 * vol * _cached_shaker_mix * (0.055 if _cached_lofi else 0.12)
 		# Slightly off-centre right so it complements the L-biased hat.
 		d_l += sk_out * 0.85
 		d_r += sk_out
@@ -2603,6 +2623,9 @@ func _render_trance_streams() -> void:
 	if _arp_env > 0.0005:
 		_arp_phase = fposmod(_arp_phase + _arp_inc, 1.0)
 		var arp_raw: float = _soft_wave(_arp_phase)
+		if _cached_lofi:
+			# A soft tine-like attack warms the line without another voice.
+			arp_raw = sin(_arp_phase * TAU + sin(_arp_phase * TAU * 2.0) * _arp_env * 0.55)
 		_lpf_arp = _one_pole_cached(arp_raw, _lpf_arp, _cached_arp_lpf_alpha)
 		var arp_out: float = _lpf_arp * _arp_env * _cached_arp_level * vol * sc * _state_arp_gain
 		s_l += arp_out * 0.78
@@ -2714,17 +2737,22 @@ func _drain_synth_queues(max_frames: int = -1) -> int:
 	if _SynthRingBuffer.filled() > 0 and max_frames != 0:
 		var cap: int = max_frames if max_frames > 0 else _SynthRingBuffer.filled()
 		ring_written = _SynthRingBuffer.pop_into(_playback_synth, null, cap)
+	# Retain samples that cannot fit this frame instead of discarding the tail.
+	# Full drains keep the existing cheap array transfer; only partial drains slice.
+	var limit: int = _playback_headroom()
+	if max_frames >= 0:
+		limit = mini(limit, maxi(0, max_frames - ring_written))
 	_synth_mutex.lock()
+	var n: int = mini(limit, mini(_synth_queue_drums.size(),
+		mini(_synth_queue_synth.size(), _synth_queue_air.size())))
 	var d: PackedVector2Array = _synth_queue_drums
 	var s: PackedVector2Array = _synth_queue_synth
 	var a: PackedVector2Array = _synth_queue_air
-	_synth_queue_drums = PackedVector2Array()
-	_synth_queue_synth = PackedVector2Array()
-	_synth_queue_air = PackedVector2Array()
+	if n > 0:
+		_synth_queue_drums = d.slice(n) if n < d.size() else PackedVector2Array()
+		_synth_queue_synth = s.slice(n) if n < s.size() else PackedVector2Array()
+		_synth_queue_air = a.slice(n) if n < a.size() else PackedVector2Array()
 	_synth_mutex.unlock()
-	var n: int = mini(mini(d.size(), s.size()), a.size())
-	if max_frames >= 0:
-		n = mini(n, max_frames)
 	for i in n:
 		_playback_drums.push_frame(d[i])
 		_playback_synth.push_frame(s[i])
@@ -2760,6 +2788,7 @@ func _fill_playback_buffers(batch: int) -> void:
 		if trance_on:
 			_render_trance_streams()
 		else:
+			_advance_musical_clock()
 			_f_drums_l = 0.0
 			_f_drums_r = 0.0
 			_f_synth_l = 0.0
@@ -2925,6 +2954,7 @@ func _fill_playback_buffers_potato(batch: int) -> void:
 	blk_air.resize(batch)
 	zeros.resize(batch)
 	for i in batch:
+		_advance_musical_clock()
 		var bed: Vector2 = _PotatoAmbientBed.next_stereo()
 		# Levelled against the full bed: the stub used to peak around
 		# -39 dBFS where the real bed peaks near -27, so even when it was
@@ -3048,6 +3078,7 @@ func _process(_dt: float) -> void:
 			break
 		if _synth_task_id >= 0:
 			if WorkerThreadPool.is_task_completed(_synth_task_id):
+				WorkerThreadPool.wait_for_task_completion(_synth_task_id)
 				_synth_task_id = -1
 			else:
 				if headroom < 128:
@@ -3070,15 +3101,12 @@ var _live_status_bar: int = -1
 
 
 func get_live_status() -> Dictionary:
-	var bar_key: int = _last_bar
+	var bar_key: int = Engine.get_process_frames()
 	if bar_key == _live_status_bar and not _live_status_cache.is_empty():
 		return _live_status_cache
 	var beat_phase: float = fposmod(_cached_beat_time, 1.0)
 	var bar_phase: float = fposmod(_cached_beat_time / 4.0, 1.0)
-	var scale_mode: String = "major"
-	var mood_cfg: Node = _cfg()
-	if mood_cfg != null and str(mood_cfg.get("music_mood")) in ["calm", "deep"]:
-		scale_mode = "minor"
+	var scale_mode: String = "minor" if _cached_scale in [SCALE_MINOR, SCALE_DEEP, SCALE_BLUES_MINOR, SCALE_DORIAN] else "major"
 	_live_status_cache = {
 		"bpm": _cached_bpm,
 		"vitality": _tank_vitality,
@@ -3103,6 +3131,8 @@ func get_live_status() -> Dictionary:
 		"swing": _cached_swing,
 		"humanize": _cached_humanize,
 		"scale_mode": scale_mode,
+		"lofi": _cached_lofi,
+		"energy": _cached_energy,
 	}
 	_live_status_bar = bar_key
 	return _live_status_cache
@@ -3251,8 +3281,10 @@ func pulse_favourite_death_hush() -> void:
 # Sim-driver fires this on food drop. Sends the bed into a 2-bar BUILD that
 # resolves on the next bar with whatever lands on play_eat_sfx.
 func play_feeding_event() -> void:
+	if not _events_enabled():
+		return
 	play_bloop("plop", _sample_clock & 0xFFFF)
-	if _cached_drop_intensity > 0.2:
+	if _cached_drop_intensity > 0.2 and not _cached_lofi and _cached_phrase_form in ["auto", "trance"]:
 		_phrase_force_state = PhraseState.BUILD
 
 
@@ -3260,6 +3292,8 @@ func play_feeding_event() -> void:
 # `cause` ∈ "starvation" | "hypoxia" | "age" | "predation" | ""
 func play_aquarium_event_extended(event_name: String, species: String = "",
 		intensity: float = -1.0, age01: float = -1.0, cause: String = "") -> void:
+	if not _events_enabled():
+		return
 	if event_name == "death":
 		# Age-coded death — young = higher minor7; old = tonic resolved.
 		# (We don't have age in the standard signature so route here when set.)

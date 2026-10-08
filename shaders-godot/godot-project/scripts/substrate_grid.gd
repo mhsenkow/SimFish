@@ -782,7 +782,9 @@ func apply_save_dict(d: Dictionary) -> void:
 				_mark_dirty(Vector2i(x, z))
 	_apply_channel_flat(seed_bank, d.get("seed_bank_flat", []), sx, sz)
 	var structured: Variant = d.get("seed_lots", [])
-	if structured is Array and not (structured as Array).is_empty():
+	# Loading replaces dormant inventory, including explicitly empty saves.
+	_seed_lots.apply_sparse_save([])
+	if d.has("seed_lots") and structured is Array:
 		_seed_lots.apply_sparse_save(structured)
 		for x in cells_x:
 			for z in cells_z:
@@ -795,7 +797,8 @@ func apply_save_dict(d: Dictionary) -> void:
 				_sync_seed_scalar(Vector2i(x, z))
 	_apply_channel_flat(allelochemical, d.get("allelochemical_flat", []), sx, sz)
 	var family_entries: Variant = d.get("allelopathy_families", [])
-	if family_entries is Array and not (family_entries as Array).is_empty():
+	_allelopathy_families.apply_sparse_save([])
+	if d.has("allelopathy_families") and family_entries is Array:
 		_allelopathy_families.apply_sparse_save(family_entries)
 	else:
 		for x in mini(cells_x, sx):

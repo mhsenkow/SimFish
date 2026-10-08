@@ -3,10 +3,11 @@ extends RefCounted
 const MAX_ATTACHMENT_DISTANCE: float = 6.0
 
 
-static func nearest_valid(near_pos: Vector3, surfaces: Array) -> Dictionary:
+static func nearest_valid(near_pos: Vector3, surfaces: Array,
+		max_distance: float = MAX_ATTACHMENT_DISTANCE) -> Dictionary:
 	var best_pos := Vector3.ZERO
 	var best_kind := ""
-	var best_d2: float = MAX_ATTACHMENT_DISTANCE * MAX_ATTACHMENT_DISTANCE
+	var best_d2: float = maxf(0.0, max_distance) * maxf(0.0, max_distance)
 	for surface_v in surfaces:
 		if not (surface_v is Dictionary):
 			continue

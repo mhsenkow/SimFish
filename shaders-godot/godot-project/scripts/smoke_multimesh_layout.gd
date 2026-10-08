@@ -29,6 +29,19 @@ func _init() -> void:
 		color.r, color.g, color.b, color.a,
 		custom.r, custom.g, custom.b, custom.a,
 	])
+	if DisplayServer.get_name() == "headless":
+		# The dummy renderer does not retain MultiMesh transforms for readback.
+		# Still gate CPU packing; rendered runs retain the GPU round-trip below.
+		var t := TestSupport.Suite.new("smoke_multimesh_layout")
+		var packed := PackedFloat32Array()
+		packed.resize(12)
+		MultiMeshBufferBlit._write_xform(packed, 0, xform)
+		t.equals(MultiMeshBufferBlit._stride_for(mm, true), 20, "transform, color and custom-data stride")
+		for i in 12:
+			t.approx(packed[i], rows[i], "non-symmetric transform packs component %d" % i)
+		print("[smoke_multimesh_layout] headless: CPU packing checked; GPU readback requires a rendered run")
+		quit(t.finish())
+		return
 	mm.set_buffer(rows)
 	var via_rows := mm.get_instance_transform(0)
 	var rows_ok := via_rows.origin.distance_to(xform.origin) < 0.001 \

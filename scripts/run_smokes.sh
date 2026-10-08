@@ -31,6 +31,8 @@ GODOT="$ROOT/scripts/godot.sh"
 PROJECT="$ROOT/shaders-godot/godot-project"
 LOGDIR="${SMOKE_LOG_DIR:-$ROOT/.smoke-logs}"
 BASELINE="$ROOT/scripts/smoke_baseline.txt"
+SMOKE_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)_$$"
+SMOKE_PROJECT_ROOT="$ROOT/.scratch/smoke_projects/$SMOKE_RUN_ID"
 
 # Needs native extensions or physical hardware — never runnable in CI.
 SKIP_ALWAYS=(
@@ -56,6 +58,7 @@ SERIAL_ONLY=(
 	smoke_shader_perf.gd
 	smoke_motion_topo_perf.gd
 	smoke_frame_budget.gd
+	smoke_colony_mind.gd
 )
 
 JOBS="$( (command -v sysctl >/dev/null && sysctl -n hw.ncpu) || nproc || echo 4 )"
@@ -94,9 +97,13 @@ should_skip() {
 run_one() {
 	local script="$1"
 	local log="$LOGDIR/${script%.gd}.log"
+	local test_project="$SMOKE_PROJECT_ROOT/${script%.gd}"
+	mkdir -p "$test_project"
+	python3 "$ROOT/scripts/prepare_dev_project.py" "$PROJECT" "$test_project" \
+		"walstad_smoke_${SMOKE_RUN_ID}_${script%.gd}" || { echo "FAIL $script isolation"; return; }
 	# Backgrounded + explicit wait so the shell does not print its own
 	# "Alarm clock: 14" job-control notice when the alarm fires.
-	perl -e 'alarm shift; exec @ARGV or exit 127' \
+	GODOT_DEV_PROJECT="$test_project" GODOT_VIA_DEV_RUN=1 perl -e 'alarm shift; exec @ARGV or exit 127' \
 		"$TIMEOUT" "$GODOT" --headless --path "$PROJECT" \
 		--script "res://scripts/$script" >"$log" 2>&1 &
 	local pid=$!
@@ -162,13 +169,16 @@ started=$(date +%s)
 
 # Fan out, bounded by $JOBS.
 results_file="$(mktemp)"
-running=0
+# FIFO wait works on macOS Bash 3 as well as newer shells. Always retain
+# the other live pids: `wait -n || wait` drained the entire pool but only
+# decremented its count once, serializing every launch after the first eight.
+running_pids=()
 for script in ${par_group[@]+"${par_group[@]}"}; do
 	run_one "$script" >>"$results_file" &
-	running=$(( running + 1 ))
-	if (( running >= JOBS )); then
-		wait -n 2>/dev/null || wait
-		running=$(( running - 1 ))
+	running_pids+=("$!")
+	if (( ${#running_pids[@]} >= JOBS )); then
+		wait "${running_pids[0]}" || true
+		running_pids=("${running_pids[@]:1}")
 	fi
 done
 wait

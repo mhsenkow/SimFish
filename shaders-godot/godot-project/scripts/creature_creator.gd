@@ -912,13 +912,16 @@ func _add_to_tank(count: int) -> void:
 		return
 	var otype: String = _otype_string()
 	var added: int = 0
+	var genome: Dictionary = _current_genome()
 	for i in count:
-		if _world.spawn_library_entry(_current_genome(), otype):
+		if _world.spawn_library_entry(genome, otype):
 			added += 1
 	if added > 0:
 		_status.text = "Added %d %s to the tank." % [added, _kind_plural(added)]
 	else:
-		_status.text = tr("Could not place any (tank may be full).")
+		var reason: Variant = _world.get("last_spawn_failure")
+		_status.text = String(reason) if reason is String and not String(reason).is_empty() \
+			else tr("Could not place any (tank may be full).")
 
 
 func _kind_plural(n: int) -> String:

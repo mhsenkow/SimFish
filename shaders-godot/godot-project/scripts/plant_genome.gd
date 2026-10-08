@@ -98,6 +98,8 @@ static func enrich(src: Dictionary) -> Dictionary:
 	var out: Dictionary = DEFAULTS.duplicate(true)
 	for k in src.keys():
 		out[k] = src[k]
+	if out.underside_tone is Array:
+		out.underside_tone = SaveHelpers.array_to_color(out.underside_tone)
 	if String(out.emersed_leaf_form) == "":
 		out.emersed_leaf_form = String(out.leaf_form)
 	# Category-based defaults when species_id hints at type

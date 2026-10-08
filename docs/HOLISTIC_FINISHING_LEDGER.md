@@ -15,6 +15,35 @@ Newest batch first.
 
 ---
 
+## Batch 2026-10-02 — scene callback teardown fix
+
+- Player log traced the invalid lambda to `main.gd`'s delayed voice presentation during a settings-triggered scene reload. Replaced the SceneTree timer lambda with a bound controller method, which disconnects when the controller is freed and skips delivery when detached or queued for deletion.
+- The same log showed toast layout requesting a tree from a detached layer. Reject detached/deleting layers in `ToastStack.present`, and resolve a weak layer reference after the two-frame layout wait.
+- Added `smoke_scene_callback_lifetime` exercising live delivery, freed/detached voice cancellation, detached toast rejection, and layer deletion during layout. Six checks pass with no runtime errors. Existing `smoke_toast` passes 50 checks; 535 scripts compile with zero warnings. Isolated runs verified real tank inventory unchanged.
+
+## Batch 2026-10-02 — fauna geometry and preview pass
+
+- Fish: place pupils and catchlights on the actual head surface (the default pupils were fully buried). Connect caudal rays and flowing veil fins to their peduncle; connect dorsal/anal membranes to their animation pivots. Retain per-species fin outlines and caudal markings. Match the builder’s actual fin-pivot names to shader bend weights so dorsal/anal/pectoral flutter is enabled.
+- Shrimp: anchor antennae and rostrum to each body plan’s head, scale caridean eye placement with body length, and let claws / walking-leg spacing follow the length gene. This fixes eyes and facial appendages left in the thorax on long morphs.
+- Snails: denser ramshorn/turbo coil sampling; overlapping tower/trochus whorls even at maximum spire height, accounting for the shared box-mesh cache. Pass shell-pattern scale/density into the live builder so inherited marking genes actually affect the shell.
+- Life Library: replace its obsolete snail geometry with the shared `SnailShell` builder used by the tank and Creator, retaining color decoding and adding the same pair of static eye stalks.
+- Evidence: `output/fauna_pass/before/`, `after/`, and `final/` hold model close-ups; final portraits use a front three-quarter camera. `output/fauna_pass/tank/custom.png` checks guppy/glassdart silhouettes through the real lighting/palette chain. The gameplay shot still flags the scenario’s composition/corridor metrics; this pass does not change the scape.
+- Regression coverage: `smoke_fauna_geometry.gd` checks connected fins on all six tail templates with long/fancy fins, visible pupils, four crustacean body plans, connected shell whorls at maximum spire height, and preview/live shell parity. `dev/fauna_portrait.tscn` provides a reusable isolated close-up capture path.
+- Validation: compile check **533 scripts, 0 failures / warnings**; six targeted fauna/pattern, shrimp, snail and performance smokes pass. Geometry smoke: **249 checks**. Final close-ups and the gameplay capture complete; isolated runs verify the real tank inventory is unchanged. Performance verification measures the existing CPU contract, not GPU frame cost.
+
+---
+
+## Batch 2026-10-02 — responsive panel cleanup
+
+- Life Library: keep the roster beside a scrolling preview/detail column at narrow desktop widths; retain three gallery columns on wide windows. Wrap filters and preview controls, clip roster names with full-name tooltips, and pin Share / Import / Spawn / Pin below the gallery.
+- Adopt Fish: scroll arrivals independently of the header and Reroll action; wrap long names and remove old cards before rerolling so their pending frees cannot inflate the layout.
+- Rail: fold the four remaining direct Camera / Residents / Mind / Chronicle shortcuts into World. The existing keyboard shortcuts remain available; the rail now fits above the footer at a 900×600 logical viewport.
+- Shared panels: follow keyboard/controller focus when scrolling; defer focus through a weak reference so a scene exit cannot leave a freed-node lambda. Release the library’s detached preview viewport when the panel exits.
+- Evidence: `output/ui_baselines/layout_pass_before/` reproduces library controls 122 px off-screen and Adopt/rail overlap with the footer. `output/ui_baselines/layout_pass_final/` captures the revised layouts at 1536×864 and 900×600 logical sizes. Regression coverage: `smoke_panel_responsive.gd`, including resize round-trips and visible footer actions.
+- Validation: compile check **531 scripts, 0 failures, 0 warnings**; all six panel smokes pass (responsive smoke: 14 checks). Final wide/narrow captures report no off-screen groups or overlaps in the audited baseline / World / Library / Adopt states; each opened panel closes with one Escape. Real tank inventory unchanged. Phone portrait and enlarged-text layouts were not captured in this pass. The visual harness still reports renderer/resource cleanup errors at shutdown, also present in the before capture; no runtime script errors appeared in the final capture.
+
+---
+
 ## Batch 2026-10-01j — scenario template QA / Iwagumi flash (#040)
 
 | ID | Status | Change | Files | Checks | Artifacts / limits |

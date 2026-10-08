@@ -62,7 +62,8 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 				var y: float = (0.02 + t * 0.42 * spire) * ss
 				var s: float = (0.2 * (1.0 - t * 0.82)) * ss
 				add_box.call(parent, Vector3(0, y, 0),
-					Vector3(maxf(s, 0.02), maxf(s * 0.72, 0.02), maxf(s, 0.02)), band.call(i))
+					Vector3(maxf(s, 0.02), maxf(s * 0.72, 0.42 * spire * ss / float(n - 1) + 0.01),
+						maxf(s, 0.02)), band.call(i))
 		"tower":
 			# Tall narrow many-whorl spire (trumpet / rabbit / cerith).
 			var n: int = maxi(whorls, 6) * 2
@@ -71,11 +72,12 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 				var y: float = (0.02 + t * 0.66 * spire) * ss
 				var s: float = (0.14 * (1.0 - t * 0.78)) * ss
 				add_box.call(parent, Vector3(0, y, 0),
-					Vector3(maxf(s, 0.02), maxf(s, 0.02), maxf(s, 0.02)), band.call(i))
+					Vector3(maxf(s, 0.02), maxf(s, 0.66 * spire * ss / float(n - 1) + 0.01),
+						maxf(s, 0.02)), band.call(i))
 		"ramshorn":
 			# Flat planispiral coil: whorls wound in one vertical plane, thin in
 			# Z, fattening toward the outer whorl.
-			var n: int = maxi(whorls, 5) * 2
+			var n: int = maxi(whorls, 5) * 4
 			for i in n:
 				var t: float = float(i) / float(maxi(1, n - 1))
 				var ang: float = t * TAU * 1.6
@@ -124,7 +126,7 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 		_:
 			# turbo: low rounded vertical spiral, fattening toward the outer
 			# whorl. More voxels than the legacy build so it reads as a curve.
-			var n: int = whorls * 2 + 2
+			var n: int = whorls * 5 + 4
 			for i in n:
 				var t: float = float(i) / float(maxi(1, n - 1))
 				var ang: float = t * TAU * (0.5 * float(whorls) + 0.5)

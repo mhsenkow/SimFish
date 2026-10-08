@@ -13,7 +13,7 @@ ASSETS = Path(__file__).resolve().parent / "assets"
 # NOTE: this does not match the shipping app id (4796460 in project.godot and
 # STEAMWORKS.md). Confirm before running — this script drives the live partner
 # site and would edit whichever app this points at.
-APP_ID = 1202304
+APP_ID = 4796460
 STORE_URL = f"https://partner.steamgames.com/admin/game/edit/{APP_ID}?activetab=tab_graphicalassets"
 
 

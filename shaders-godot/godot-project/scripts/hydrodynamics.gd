@@ -102,10 +102,11 @@ static func pec_thrust(phase: float, profile: Dictionary, speed: float, target_s
 static func integrate_speed(speed: float, target_spd: float, stroke_thrust_val: float,
 		drag_k: float, motor_accel: float, dt: float, coasting: bool) -> float:
 	var motor: float = 0.0
-	if target_spd > speed + 0.015:
-		motor = motor_accel
-	elif not coasting and target_spd + 0.04 < speed:
-		motor = -motor_accel * 0.65
+	# Demand eases toward the requested pace instead of toggling full thrust
+	# on/off at a tiny speed threshold. Coasting uses gentle braking trim;
+	# suppressing it entirely let residual stroke thrust sustain the old pace.
+	var demand: float = clampf((target_spd - speed) / maxf(target_spd * 0.35, 0.08), -0.65, 1.0)
+	motor = motor_accel * demand * (0.18 if coasting and demand < 0.0 else 1.0)
 	var thrust: float = motor + stroke_thrust_val
 	var drag: float = drag_k * speed * speed
 	var next: float = speed + (thrust - drag) * dt
@@ -152,6 +153,14 @@ static func effort_wag_boost(speed: float, target_spd: float, max_speed: float) 
 # Cruising, braking, station-holding, and being carried read differently.
 static func fin_effort_from_swim(speed: float, target_spd: float, max_speed: float,
 		flow: Vector3, heading: Vector3) -> Dictionary:
+	var result: Dictionary = {}
+	fin_effort_into(speed, target_spd, max_speed, flow, heading, result)
+	return result
+
+
+# Live animation reuses a per-fish result: no new Dictionary every frame.
+static func fin_effort_into(speed: float, target_spd: float, max_speed: float,
+		flow: Vector3, heading: Vector3, result: Dictionary) -> void:
 	var ms: float = maxf(max_speed, 0.1)
 	var accel: float = (target_spd - speed) / ms
 	var flow_len: float = flow.length()
@@ -166,19 +175,39 @@ static func fin_effort_from_swim(speed: float, target_spd: float, max_speed: flo
 			* clampf(flow_len * 14.0, 0.0, 1.0)
 	var cruise: float = clampf(1.0 - absf(accel) * 1.8, 0.0, 1.0) * (1.0 - carried) \
 		* (1.0 - braking)
-	return {
-		"tail_amp": lerpf(0.72, 1.38, clampf(accel, 0.0, 1.0)) \
+	var activity: float = smoothstep(0.02, 0.35, maxf(speed, target_spd) / ms)
+	result["tail_amp"] = lerpf(0.14, 0.92, activity) \
+			* lerpf(1.0, 1.45, clampf(accel, 0.0, 1.0)) \
 			* lerpf(1.0, 0.42, carried) * lerpf(1.0, 0.55, braking) \
-			* lerpf(1.0, 0.9, cruise * 0.5),
-		"pec_amp": braking * 0.55 + station * (0.22 + flow_len * 10.0) \
-			+ clampf(-accel, 0.0, 1.0) * 0.18 + carried * 0.08,
-		"wag_freq": lerpf(0.88, 1.28, clampf(accel, 0.0, 1.0)) \
-			* lerpf(1.0, 0.52, carried) * lerpf(1.0, 0.75, braking),
-		"carried": carried,
-		"braking": braking,
-		"station": station,
-		"cruise": cruise,
-	}
+			* lerpf(1.0, 0.9, cruise * 0.5)
+	result["pec_amp"] = braking * 0.55 + station * (0.22 + minf(flow_len * 10.0, 0.65)) \
+			+ clampf(-accel, 0.0, 1.0) * 0.18 + carried * 0.08
+	result["wag_freq"] = lerpf(0.88, 1.28, clampf(accel, 0.0, 1.0)) \
+			* lerpf(1.0, 0.52, carried) * lerpf(1.0, 0.75, braking)
+	result["carried"] = carried
+	result["braking"] = braking
+	result["station"] = station
+	result["cruise"] = cruise
+
+
+# Radians per sim-second. Large animals cover fewer body lengths at the
+# same speed; small fry use faster strokes without unbounded vibration.
+static func tailbeat_rate(speed: float, body_length: float, base_rate: float,
+		speed_gain: float) -> float:
+	return clampf(base_rate + maxf(speed, 0.0) / maxf(body_length, 0.18)
+		* speed_gain, base_rate, 18.0)
+
+
+static func locomotion_tailbeat_rate(speed: float, body_length: float, locomotion: String) -> float:
+	match locomotion:
+		"anguilliform": return tailbeat_rate(speed, body_length, 1.8, 3.5)
+		"ostraciiform": return tailbeat_rate(speed, body_length, 3.5, 6.0)
+		"thunniform": return tailbeat_rate(speed, body_length, 3.0, 7.0)
+	return tailbeat_rate(speed, body_length, 2.5, 5.5)
+
+
+static func advance_phase(phase: float, rate: float, dt: float, period: float = TAU) -> float:
+	return fposmod(phase + maxf(rate, 0.0) * maxf(dt, 0.0), maxf(period, 1e-4))
 
 
 static func tail_recoil_yaw(phase: float, effort: float) -> float:

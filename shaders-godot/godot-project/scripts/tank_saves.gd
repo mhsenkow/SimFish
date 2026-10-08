@@ -42,6 +42,22 @@ func _ready() -> void:
 # Returns Array[Dictionary], one per tank, sorted by last_opened_unix desc.
 # Each dict has: { "slot": int, "name": String, "runtime_s": int,
 # "created_unix": int, "last_opened_unix": int, "thumbnail_path": String }.
+var _save_manager_script: Script = null
+
+func _save_manager() -> Script:
+	# Load after autoload initialization; SaveManager depends on TankConfig.
+	if _save_manager_script == null:
+		_save_manager_script = load("res://scripts/save_manager.gd")
+	return _save_manager_script
+
+func _process(_dt: float) -> void:
+	_save_manager().poll_writes()
+
+func _exit_tree() -> void:
+	if _save_manager_script != null:
+		_save_manager_script.flush_pending_writes()
+
+
 func list_tanks() -> Array:
 	var out: Array = []
 	var d := DirAccess.open(TANKS_DIR)
@@ -61,7 +77,8 @@ func list_tanks() -> Array:
 		if meta.is_empty():
 			continue
 		meta["slot"] = slot
-		meta["thumbnail_path"] = TANKS_DIR + "/" + str(slot) + "/thumbnail.png"
+		meta["thumbnail_path"] = thumbnail_path(slot)
+		meta["has_saved_state"] = FileAccess.file_exists(state_path(slot)) or FileAccess.file_exists(state_path(slot) + ".bak")
 		out.append(meta)
 	d.list_dir_end()
 	out.sort_custom(func(a: Dictionary, b: Dictionary):
@@ -91,6 +108,7 @@ func new_tank(tank_name: String = "New tank") -> int:
 # Duplicate slot's config + meta (but not its state — a clone starts fresh
 # with the same parameters but a new seed/spawn). Returns the new slot id.
 func duplicate_tank(src_slot: int, new_name: String = "") -> int:
+	_save_manager().flush_pending_writes()
 	var src_dir: String = _slot_dir(src_slot)
 	var src_meta: Dictionary = _read_meta(src_slot)
 	var new_slot: int = _next_free_slot()
@@ -115,6 +133,7 @@ func duplicate_tank(src_slot: int, new_name: String = "") -> int:
 
 # Remove a tank slot from disk. Irreversible — caller should confirm.
 func delete_tank(slot: int) -> void:
+	_save_manager().flush_pending_writes()
 	var dir: String = _slot_dir(slot)
 	var d := DirAccess.open(dir)
 	if d != null:
@@ -331,16 +350,24 @@ func _peek_saved_has_freshwater_plant() -> bool:
 	return false
 
 
-# Delete the active slot's state.json (and its .bak). Used when we detect
+# Retire the active slot's state.json (and its .bak). Used when we detect
 # an incompatible save: the user just changed substrate to a type that
-# can't host the previous plants/creatures.
+# can't host the previous plants/creatures. Keep an exact recovery copy.
 func clear_active_state() -> void:
+	_save_manager().flush_pending_writes()
 	var sp: String = state_path(active_slot)
-	if FileAccess.file_exists(sp):
-		DirAccess.remove_absolute(sp)
 	var bp: String = state_backup_path(active_slot)
-	if FileAccess.file_exists(bp):
-		DirAccess.remove_absolute(bp)
+	if not FileAccess.file_exists(sp) and not FileAccess.file_exists(bp):
+		return
+	var archive: String = _slot_dir(active_slot).path_join("invalidated").path_join(
+		"%d_%d" % [int(Time.get_unix_time_from_system()), Time.get_ticks_usec()])
+	_ensure_dir(archive)
+	for path in [sp, bp]:
+		if not FileAccess.file_exists(path):
+			continue
+		var err: Error = DirAccess.rename_absolute(path, archive.path_join(path.get_file()))
+		if err != OK:
+			push_error("TankSaves: could not preserve incompatible state %s (%s)" % [path, err])
 
 
 # Atomic write: write to .tmp then rename. Prevents half-written files if

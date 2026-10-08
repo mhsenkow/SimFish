@@ -149,7 +149,10 @@ static func is_darting(f: Fish) -> bool:
 # speed_frac (0..1 of max) and body_m bound the floor so large/slow fish
 # cannot spin in place (Holistic #083).
 static func inertial_turn(f: Fish, angle: float, max_step: float, dt: float,
-		wall_t: float, speed_frac: float = 1.0, body_m: float = 0.45) -> float:
+		wall_t: float, speed_frac: float = 1.0, body_m: float = 0.45,
+		axis: Vector3 = Vector3.UP) -> float:
+	if dt <= 0.0 or angle <= 0.0 or max_step <= 0.0:
+		return 0.0
 	var want_rate: float = minf(max_step, angle) / maxf(dt, 1e-4)
 	var cap_rate: float = max_step / maxf(dt, 1e-4)
 	# Full rate in ~0.3 s; near glass the fish may snap harder.
@@ -160,11 +163,20 @@ static func inertial_turn(f: Fish, angle: float, max_step: float, dt: float,
 	if sf < 0.06:
 		# Near-zero speed: bleed yaw rate out; do not invent a floor turn.
 		f._turn_rate_state = move_toward(f._turn_rate_state, 0.0, cap_rate * 5.0 * dt)
-		return minf(absf(f._turn_rate_state) * dt, angle)
+		var direction: float = -1.0 if f._turn_axis_state.dot(axis) < -0.1 else 1.0
+		return direction * minf(absf(f._turn_rate_state) * dt, minf(angle, max_step))
+	# Keep angular momentum when a steering target changes sides. The old
+	# unsigned rate instantly reversed a fully developed turn.
+	if f._turn_axis_state.dot(axis) < -0.1:
+		if wall_t > 0.6:
+			f._turn_rate_state = 0.0
+		else:
+			f._turn_rate_state = move_toward(f._turn_rate_state, 0.0, accel * dt)
+			if f._turn_rate_state > 0.001:
+				return -minf(f._turn_rate_state * dt, minf(angle, max_step))
+	f._turn_axis_state = axis
 	f._turn_rate_state = move_toward(f._turn_rate_state, want_rate, accel * dt)
-	# Floor scales with speed so crawl never forces a minimum spin.
-	var floor_step: float = max_step * 0.18 * clampf(sf / 0.14, 0.0, 1.0)
-	return minf(maxf(f._turn_rate_state * dt, floor_step), angle)
+	return minf(f._turn_rate_state * dt, minf(angle, max_step))
 
 
 # ---- 3. Livebearer pursuit + sigmoid display (sim tick) ---------------------
