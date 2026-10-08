@@ -40,6 +40,9 @@ jobs:
           unzip -q godot.zip
           echo "GODOT_BIN=$HOME/godot/Godot_v${GODOT_VERSION}_linux.x86_64" >> "$GITHUB_ENV"
 
+      - name: Install GodotSteam
+        run: bash steam/install_godotsteam.sh
+
       - name: Import project assets
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --import
@@ -121,7 +124,7 @@ jobs:
       - name: Lint engineering modules
         working-directory: shaders-godot/godot-project
         run: |
-          gdlint --config gdlintrc scripts/sim_topdown.gd \
+          gdlint scripts/sim_topdown.gd \
             scripts/mind_channel.gd \
             scripts/mind_state.gd \
             scripts/smoke_runner.gd \

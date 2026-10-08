@@ -56,3 +56,7 @@ Theory-of-mind still follows its nearest four fish, but selection now keeps a bo
 - Completed isolated captures and focused probes verified the real tank inventory remained unchanged. A later check correctly detected concurrent autosaving from the player's editor game session in tank 22; its newer save was preserved, and a stop request was sent before final performance measurements.
 
 The existing rendered harnesses still report renderer/resource allocations at process exit; these fixes do not claim to resolve all shutdown diagnostics.
+
+## Publishing checks
+
+The first remote smoke workflow exposed existing CI setup defects: it omitted GodotSteam before compiling desktop scripts, and passed an unsupported `--config` option to the pinned gdtoolkit 4.3.4 linter. The workflow now installs the same Steam extension as release builds and lets gdlint discover the project-local `gdlintrc`. The corrected six-module lint invocation passes locally.
