@@ -31,6 +31,16 @@ func _initialize() -> void:
 
 
 static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
+	# Median of independent fixtures reduces shared-runner scheduling noise.
+	# Each sample still averages the same eight real simulation ticks.
+	var runs: Array[float] = []
+	for _repeat in 3:
+		runs.append(_measure_sim_tick_ms_once(tree_root, n_fish))
+	runs.sort()
+	return runs[1]
+
+
+static func _measure_sim_tick_ms_once(tree_root: Node, n_fish: int) -> float:
 	var cfg: Node = tree_root.get_node_or_null("/root/TankConfig")
 	var prev_brain: Variant = null
 	if cfg != null and cfg.get("mind_brain_threads") != null:

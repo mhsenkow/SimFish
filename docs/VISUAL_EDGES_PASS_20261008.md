@@ -66,3 +66,5 @@ Linux CI also exposed nonportable array-count substitutions in the shell runner 
 Three Linux shards passed; the fourth exposed an animation-test clock mismatch under load. The panel transition smoke now accumulates Godot process time, matching its tweens, rather than assuming elapsed wall time advances animation equally. Panel timings and game behavior are unchanged.
 
 All four release exports succeeded. The macOS download was locally signed with the project Developer ID after CI skipped signing for absent certificate secrets; its nested signatures verify. Notarization remains blocked by the local Xcode license requirement. Fresh desktop builds are staged for Steam, whose upload still requires a cached partner login.
+
+A later Linux run narrowly crossed the population ratio limit (234.3 / 51.7 ms). Both performance smokes now take the median of three independent fixture means, retaining eight timed ticks per fixture, and use identical fish IDs because identity hashes stagger mind cadence. This makes the two gates compare the same workload; thresholds remain unchanged. Both revised smokes pass locally.

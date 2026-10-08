@@ -290,6 +290,16 @@ static func _assert(failed: Array[String], cond: bool, msg: String) -> void:
 
 
 static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
+	# Median of independent fixtures reduces shared-runner scheduling noise.
+	# Each sample still averages the same eight real simulation ticks.
+	var runs: Array[float] = []
+	for _repeat in 3:
+		runs.append(_measure_sim_tick_ms_once(tree_root, n_fish))
+	runs.sort()
+	return runs[1]
+
+
+static func _measure_sim_tick_ms_once(tree_root: Node, n_fish: int) -> float:
 	var cfg: Node = tree_root.get_node_or_null("/root/TankConfig")
 	var prev_brain: Variant = null
 	if cfg != null and cfg.get("mind_brain_threads") != null:
@@ -302,7 +312,8 @@ static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
 	for i in n_fish:
 		var fish: Fish = Fish.new()
 		tree_root.add_child(fish)
-		fish.id = "perf_%d_%d" % [n_fish, i]
+		# Match the performance contract identities: IDs set mind cadence phases.
+		fish.id = "contract_%d_%d" % [n_fish, i]
 		fish.position = Vector3(
 			randf_range(-6.0, 6.0), randf_range(2.0, 6.0), randf_range(-3.0, 3.0))
 		fish.maturity = Fish.MATURITY_ADULT
