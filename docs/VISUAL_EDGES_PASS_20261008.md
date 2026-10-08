@@ -60,3 +60,5 @@ The existing rendered harnesses still report renderer/resource allocations at pr
 ## Publishing checks
 
 The first remote smoke workflow exposed existing CI setup defects: it omitted GodotSteam before compiling desktop scripts, and passed an unsupported `--config` option to the pinned gdtoolkit 4.3.4 linter. The workflow now installs the same Steam extension as release builds and lets gdlint discover the project-local `gdlintrc`. The corrected six-module lint invocation passes locally.
+
+Linux CI also exposed nonportable array-count substitutions in the shell runner and the duplicate real-time performance fixture retaining its first population. Portable argument counts and explicit fixture disposal fix these, with the 4.5× ratio and 490 ms ceiling unchanged. The corrected real-time fixture passes locally.

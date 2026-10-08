@@ -61,7 +61,7 @@ SERIAL_ONLY=(
 	smoke_colony_mind.gd
 )
 
-JOBS="$( (command -v sysctl >/dev/null && sysctl -n hw.ncpu) || nproc || echo 4 )"
+JOBS="$( (command -v sysctl >/dev/null && sysctl -n hw.ncpu 2>/dev/null) || nproc 2>/dev/null || echo 4 )"
 (( JOBS > 8 )) && JOBS=8
 TIMEOUT=180
 SHARD_I=1
@@ -158,13 +158,17 @@ for script in ${selected[@]+"${selected[@]}"}; do
 	fi
 done
 
-total=${#selected[@]-0}
+array_count() { echo "$#"; }
+
+total=$(array_count ${selected[@]+"${selected[@]}"})
+par_count=$(array_count ${par_group[@]+"${par_group[@]}"})
+ser_count=$(array_count ${ser_group[@]+"${ser_group[@]}"})
 if (( total == 0 )); then
 	echo "[smoke] nothing to run (include='$INCLUDE' shard=$SHARD_I/$SHARD_N)"
 	exit 0
 fi
 
-echo "[smoke] $total scripts (${#par_group[@]-0} parallel, ${#ser_group[@]-0} serial) · ${JOBS} jobs · ${TIMEOUT}s timeout · shard ${SHARD_I}/${SHARD_N}"
+echo "[smoke] $total scripts ($par_count parallel, $ser_count serial) · ${JOBS} jobs · ${TIMEOUT}s timeout · shard ${SHARD_I}/${SHARD_N}"
 started=$(date +%s)
 
 # Fan out, bounded by $JOBS.
@@ -219,9 +223,13 @@ while read -r line; do
 	fi
 done < <(grep -E '^PASS ' "$results_file" || true)
 
+new_count=$(array_count ${new_failures[@]+"${new_failures[@]}"})
+known_count=$(array_count ${known_failures[@]+"${known_failures[@]}"})
+fixed_count=$(array_count ${fixed[@]+"${fixed[@]}"})
+
 # Print NEW failures with output. Known ones are listed by name only —
 # their logs are on disk if wanted, but they are not today's news.
-if (( ${#new_failures[@]-0} > 0 )); then
+if (( $new_count > 0 )); then
 	echo
 	for script in ${new_failures[@]+"${new_failures[@]}"}; do
 		echo "──── NEW FAILURE $script ────"
@@ -229,18 +237,18 @@ if (( ${#new_failures[@]-0} > 0 )); then
 		echo
 	done
 fi
-if (( ${#known_failures[@]-0} > 0 )); then
+if (( $known_count > 0 )); then
 	echo "[smoke] known failures (scripts/smoke_baseline.txt): ${known_failures[*]-}"
 fi
-if (( ${#fixed[@]-0} > 0 )); then
+if (( $fixed_count > 0 )); then
 	echo "[smoke] these are BASELINED BUT NOW PASSING — delete them from" >&2
 	echo "[smoke] scripts/smoke_baseline.txt: ${fixed[*]-}" >&2
 fi
 
-echo "[smoke] ${elapsed}s: $passed passed, ${#new_failures[@]-0} new failures, ${#known_failures[@]-0} known, $timedout timed out (of $total)"
+echo "[smoke] ${elapsed}s: $passed passed, $new_count new failures, $known_count known, $timedout timed out (of $total)"
 echo "[smoke] logs: $LOGDIR"
 rm -f "$results_file"
-if (( ${#new_failures[@]-0} > 0 || ${#fixed[@]-0} > 0 )); then
+if (( $new_count > 0 || $fixed_count > 0 )); then
 	exit 1
 fi
 exit 0

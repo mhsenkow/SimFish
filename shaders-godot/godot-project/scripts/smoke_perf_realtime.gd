@@ -295,6 +295,8 @@ static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
 	if cfg != null and cfg.get("mind_brain_threads") != null:
 		prev_brain = cfg.mind_brain_threads
 		cfg.mind_brain_threads = false
+	seed(0xF15C)
+	var fixtures: Array[Fish] = []
 	var sim: SimDriver = SimDriver.new()
 	tree_root.add_child(sim)
 	for i in n_fish:
@@ -305,6 +307,7 @@ static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
 			randf_range(-6.0, 6.0), randf_range(2.0, 6.0), randf_range(-3.0, 3.0))
 		fish.maturity = Fish.MATURITY_ADULT
 		sim.register_fish(fish)
+		fixtures.append(fish)
 	for _w in 12:
 		sim._tick(SimDriver.SIM_DT)
 	var total_usec: int = 0
@@ -313,7 +316,9 @@ static func _measure_sim_tick_ms(tree_root: Node, n_fish: int) -> float:
 		var t0: int = Time.get_ticks_usec()
 		sim._tick(SimDriver.SIM_DT)
 		total_usec += Time.get_ticks_usec() - t0
-	sim.queue_free()
+	for fish in fixtures:
+		fish.free()
+	sim.free()
 	if prev_brain != null and cfg != null:
 		cfg.mind_brain_threads = prev_brain
 	return float(total_usec) / float(SAMPLES) / 1000.0
