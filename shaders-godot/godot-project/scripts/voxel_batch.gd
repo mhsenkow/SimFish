@@ -78,7 +78,7 @@ class Handle extends RefCounted:
 
 	func hide() -> void:
 		if alive and batch != null:
-			batch._hide(index)
+			batch._retire(index)
 			alive = false
 			visible = false
 			lod_visible = false
@@ -98,13 +98,17 @@ var _deferred_indices: Array[int] = []
 var _deferred_cursor: int = 0
 var _handles: Array[WeakRef] = []
 var _underutilized_s: float = 0.0
+var _compaction_check_s: float = 0.0
+var _reuse_retired_slots: bool = false
+var _retired_indices: Array[int] = []
 const COMPACT_HOLD_S: float = 5.0
 const MIN_CAPACITY: int = 64
 
 
 func _init(parent: Node3D, material: Material, initial_capacity: int = 64,
-		use_custom_data: bool = false) -> void:
+		use_custom_data: bool = false, reuse_retired_slots: bool = false) -> void:
 	_use_custom = use_custom_data
+	_reuse_retired_slots = reuse_retired_slots
 	_mm = MultiMesh.new()
 	_mm.transform_format = MultiMesh.TRANSFORM_3D
 	_mm.use_colors = true
@@ -142,7 +146,18 @@ func add_deferred(xform: Transform3D, color: Color) -> Handle:
 
 func _reserve(xform: Transform3D, color: Color, deferred: bool) -> Handle:
 	var i: int = _count
-	_count += 1
+	# Fauna churn reuses permanently retired slots. Deferred plant bakes keep
+	# append-only indices so their final visibility commit remains atomic.
+	var reuse: bool = _reuse_retired_slots and not deferred \
+			and not has_deferred_writes() and not _retired_indices.is_empty()
+	if reuse:
+		i = _retired_indices.pop_back()
+		var retired: Handle = _handles[i].get_ref() as Handle
+		if retired != null:
+			retired.index = -1
+			retired.batch = null
+	else:
+		_count += 1
 	# Guard against non-finite transforms (NaN/Inf) that would flood the
 	# Godot console with "instance_set_transform: !v.is_finite()" errors and
 	# corrupt the _xforms mirror (causing _ensure_capacity to re-fire the
@@ -153,12 +168,18 @@ func _reserve(xform: Transform3D, color: Color, deferred: bool) -> Handle:
 	if not xform.is_finite():
 		push_warning("VoxelBatch.add: non-finite transform (pos=%s), hiding voxel." % xform.origin)
 		safe_xform = Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
-	_xforms.append(safe_xform)
 	_bounds_dirty = true
-	_colors.append(color)
 	var custom: Color = Color(0.0, 0.0, 0.0, 1.0)
-	if _use_custom:
-		_customs.append(custom)
+	if reuse:
+		_xforms[i] = safe_xform
+		_colors[i] = color
+		if _use_custom:
+			_customs[i] = custom
+	else:
+		_xforms.append(safe_xform)
+		_colors.append(color)
+		if _use_custom:
+			_customs.append(custom)
 	_ensure_capacity(_count, i if deferred else -1)
 	var h := Handle.new()
 	h.batch = self
@@ -166,7 +187,10 @@ func _reserve(xform: Transform3D, color: Color, deferred: bool) -> Handle:
 	h.local_pos = xform.origin
 	h.base_color = color
 	h.transform = xform
-	_handles.append(weakref(h))
+	if reuse:
+		_handles[i] = weakref(h)
+	else:
+		_handles.append(weakref(h))
 	return h
 
 
@@ -200,9 +224,18 @@ func process_deferred_writes(max_writes: int) -> int:
 # Callers invoke this at coarse simulation cadence; compaction is forbidden
 # while a deferred bake owns unwritten slots.
 func consider_compaction(dt: float) -> bool:
-	if _mm == null or has_deferred_writes():
+	if _mm == null or has_deferred_writes() or _mm.instance_count <= MIN_CAPACITY:
 		_underutilized_s = 0.0
+		_compaction_check_s = 0.0
 		return false
+	_compaction_check_s += maxf(0.0, dt)
+	# Mature plant buffers used to scan every voxel at 10 Hz merely to decide
+	# that no compaction was needed. Check once a second, or at the hold deadline.
+	if _compaction_check_s < 1.0 \
+			and (_underutilized_s == 0.0 or _underutilized_s + _compaction_check_s < COMPACT_HOLD_S):
+		return false
+	var elapsed: float = _compaction_check_s
+	_compaction_check_s = 0.0
 	var live_count: int = 0
 	for handle_ref in _handles:
 		var h: Handle = handle_ref.get_ref() as Handle
@@ -212,7 +245,7 @@ func consider_compaction(dt: float) -> bool:
 	if capacity <= MIN_CAPACITY or live_count * 4 >= capacity:
 		_underutilized_s = 0.0
 		return false
-	_underutilized_s += maxf(0.0, dt)
+	_underutilized_s += elapsed
 	if _underutilized_s < COMPACT_HOLD_S:
 		return false
 	_compact_live_handles(live_count)
@@ -255,6 +288,7 @@ func _compact_live_handles(live_count: int) -> void:
 	_colors = new_colors
 	_customs = new_customs
 	_handles.clear()
+	_retired_indices.clear()
 	for h in new_handles:
 		_handles.append(weakref(h))
 	_count = live_count
@@ -266,8 +300,8 @@ func _compact_live_handles(live_count: int) -> void:
 	_refresh_custom_aabb()
 
 
-# Commit pending instance writes in one GPU upload (avoids Metal fence stalls
-# when hundreds of plants bake leaves in the same frame).
+# Every mutation already writes its changed instance. Commit visibility and
+# culling here; repeating the full buffer upload triples moving-fauna work.
 func flush() -> void:
 	if has_deferred_writes():
 		return
@@ -275,8 +309,6 @@ func flush() -> void:
 		return
 	_visible = _count
 	_mm.visible_instance_count = _visible
-	if _count >= 8:
-		blit_buffer()
 	_refresh_custom_aabb()
 
 
@@ -284,6 +316,19 @@ func set_bounds_margin(margin: Vector3) -> void:
 	_bounds_margin = Vector3(
 		maxf(0.0, margin.x), maxf(0.0, margin.y), maxf(0.0, margin.z))
 	_bounds_dirty = true
+
+
+# Moving bone groups can supply their union without rescanning every voxel.
+# The caller must include all live boxes; the usual shader-sway margin still
+# applies. Plants and ungrouped batches keep the exact per-voxel fallback.
+func set_conservative_bounds(bounds: AABB) -> void:
+	if not is_instance_valid(mmi) or not bounds.position.is_finite() \
+			or not bounds.size.is_finite() or bounds.size.x < 0.0 \
+			or bounds.size.y < 0.0 or bounds.size.z < 0.0:
+		return
+	mmi.custom_aabb = AABB(bounds.position - _bounds_margin,
+		bounds.size + _bounds_margin * 2.0)
+	_bounds_dirty = false
 
 
 func _refresh_custom_aabb() -> void:
@@ -364,12 +409,16 @@ func _ensure_capacity(n: int, first_unwritten: int = -1) -> void:
 
 func _apply_color(i: int, c: Color) -> void:
 	if i >= 0 and i < _count:
+		if _colors[i] == c:
+			return
 		_colors[i] = c
 		_mm.set_instance_color(i, c)
 
 
 func _apply_custom(i: int, c: Color) -> void:
 	if not _use_custom or i < 0 or i >= _count:
+		return
+	if _customs[i] == c:
 		return
 	_customs[i] = c
 	_mm.set_instance_custom_data(i, c)
@@ -381,9 +430,17 @@ func _apply_transform(i: int, x: Transform3D) -> void:
 			# Same guard as add() — silently skip non-finite per-frame updates
 			# so a corrupted animation origin doesn't flood the console.
 			return
+		if _xforms[i] == x:
+			return
 		_xforms[i] = x
 		_mm.set_instance_transform(i, x)
 		_bounds_dirty = true
+
+
+func _retire(i: int) -> void:
+	_hide(i)
+	if _reuse_retired_slots and i >= 0 and i < _count:
+		_retired_indices.append(i)
 
 
 func _hide(i: int) -> void:
@@ -417,7 +474,9 @@ func clear() -> void:
 	_deferred_indices.clear()
 	_deferred_cursor = 0
 	_handles.clear()
+	_retired_indices.clear()
 	_underutilized_s = 0.0
+	_compaction_check_s = 0.0
 	_bounds_dirty = true
 	if _mm != null:
 		_mm.visible_instance_count = 0

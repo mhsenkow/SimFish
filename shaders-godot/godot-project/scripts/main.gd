@@ -94,6 +94,7 @@ var _light_master_check: CheckBox = null
 var _light_day_cycle_check: CheckBox = null
 var _light_day_phase_slider: HSlider = null
 var _light_day_phase_value: Label = null
+var _light_day_phase_dragging: bool = false
 var _light_day_length_slider: HSlider = null
 var _light_day_length_value: Label = null
 var _light_sunset_drama_slider: HSlider = null
@@ -104,12 +105,23 @@ var _light_global_warmth_slider: HSlider = null
 var _light_global_warmth_value: Label = null
 # --- Tank fixture section (artificial light only) ---
 var _light_tank_check: CheckBox = null
+var _light_fixture_cycle_check: CheckBox = null
+var _light_fixture_status: Label = null
 var _light_heater_check: CheckBox = null
 var _light_caustics_check: CheckBox = null
 var _light_fixture_intensity_slider: HSlider = null
 var _light_fixture_intensity_value: Label = null
 var _light_fixture_color_picker: ColorPickerButton = null
+var _light_beams_check: CheckBox = null
+var _light_beam_strength_slider: HSlider = null
+var _light_beam_strength_value: Label = null
+var _light_room_darkness_slider: HSlider = null
+var _light_room_darkness_value: Label = null
 # --- Accent & moonlight section ---
+var _light_backlight_check: CheckBox = null
+var _light_backlight_intensity_slider: HSlider = null
+var _light_backlight_intensity_value: Label = null
+var _light_backlight_color_picker: ColorPickerButton = null
 var _light_moon_check: CheckBox = null
 var _light_moon_intensity_slider: HSlider = null
 var _light_moon_intensity_value: Label = null
@@ -1996,19 +2008,9 @@ func _apply_render_config() -> void:
 # Built into ImageTextures on demand so each biotope reads in its own color
 # story instead of forcing every tank through the planted palette.
 const BIOTOPE_PALETTES: Dictionary = {
-	# planted, retuned 2026-09-23 against a captured raw frame: the neutral
-	# ramp (24-31) is the water's own slate-teal instead of lavender (which
-	# turned 67% of the tank interior purple-grey), 42-45 are warm taupe room
-	# greys instead of four dark browns the substrate ramp already covers, and
-	# the leaf ramp (8-15) is a naturalistic sage-to-olive instead of neon.
-	"planted": [
-		"0b1a22","163040","23475a","356379","4b8095","69a1b3","92c3d0","c5e2e7",
-		"0f2214","1c3620","2b4f2e","3d6b3c","548a4c","70a45e","98bf7a","c6dc9c",
-		"1a120c","2c1f15","432f1f","5d4128","785538","95714e","b18f6a","cdb088",
-		"161c1d","222b2d","313e40","435456","586d6f","718789","8ea3a4","b3c4c3",
-		"ffffff","e0eef2","b9d6df","c33b3b","d97e2c","e6c92a","2a7a4b","4a52c4",
-		"872cb0","c44a8e","4a423b","675d53","867b6f","a89d8f","000000","f8f4e0",
-	],
+	# Planted: petrol water, emerald-to-sage foliage, earth and slate,
+	# with coral / gold / lapis / plum accents. Mirrors make_palette.py.
+	"planted": AestheticsRuntime.PLANTED_PALETTE,
 	"blackwater": [
 		"0a0704","120c06","241808","3a220e","503016","6a4018","8c5a22","b07838",
 		"0c0905","1a130a","2b2014","3d2f1e","57442d","735c40","927758","b29575",
@@ -2085,12 +2087,7 @@ func _current_biotope_palette_key(cfg: Node) -> String:
 # Moonlit variant of a day palette slot. Darken + cool, but keep near-white
 # highlights mostly intact so emissive content still burns through.
 func _night_palette_color(c: Color) -> Color:
-	var lum: float = c.get_luminance()
-	var night := c.darkened(0.42)
-	night = night.lerp(Color(night.r * 0.7, night.g * 0.82, night.b * 1.1, 1.0), 0.5)
-	night = c.lerp(night, clampf(1.0 - lum * 0.6, 0.3, 1.0))
-	night.a = 1.0
-	return night
+	return AestheticsRuntime.night_palette_color(c)
 
 
 # Cache identity for a palette build: the biotope plus every setting that
@@ -2443,7 +2440,7 @@ func _process(dt: float) -> void:
 			else:
 				_finish_dance_capture()
 	_refresh_state_chip()
-	if _light_panel != null and _light_panel.visible:
+	if is_instance_valid(_light_panel) and _light_panel.visible:
 		_refresh_light_panel_live()
 
 
@@ -7300,9 +7297,9 @@ func _input(event: InputEvent) -> void:
 					if not on_alerts_rail:
 						_close_notifications_panel()
 						_sync_rail_toggles()
-				if _light_panel != null and _light_panel.visible \
+				if is_instance_valid(_light_panel) and _light_panel.visible \
 						and not _light_panel.get_global_rect().has_point(mb.position) \
-						and (_light_btn == null \
+						and (not is_instance_valid(_light_btn) \
 							or not _light_btn.get_global_rect().has_point(mb.position)) \
 						and (_rail_appearance_btn == null \
 							or not _rail_appearance_btn.get_global_rect().has_point(mb.position)):
@@ -8509,7 +8506,8 @@ func _update_palette_tod_tint() -> void:
 		var global_b: float = LightingRig.global_brightness(float(cfg.global_intensity))
 		var tank_lit: bool = bool(cfg.tank_lights_on) and bool(cfg.light_master_enabled)
 		var bright: float = LightingRig.frame_brightness(global_b,
-			LightingRig.lamp_hold(tank_lit, float(cfg.tank_fixture_intensity)))
+			LightingRig.lamp_hold(tank_lit, LightingRig.fixture_output(cfg,
+				SimGate.daylight(_sim, 1.0))))
 		var room_l: float = LightingRig.room_light(global_b, bright)
 		if absf(room_l - _last_room_light) > 0.002:
 			_last_room_light = room_l
@@ -8550,7 +8548,7 @@ func _update_palette_tod_tint() -> void:
 			1.0 - absf(fposmod(float(_sim.day_phase), 1.0) - 0.5) / 0.12, 0.0, 1.0)
 		night_blend *= 1.0 - sunset_hour * 0.28
 		var deep_night: float = 1.0 - smoothstep(0.08, 0.38, dl)
-		var tank_on: bool = cfg == null or cfg.tank_lights_on
+		var tank_on: bool = cfg == null or LightingRig.fixture_output(cfg, dl) > 0.001
 		if tank_on and deep_night > 0.35:
 			night_blend *= lerpf(1.0, 0.38, smoothstep(0.35, 1.0, deep_night))
 			var bloom_boost: float = 0.85 + deep_night * 0.14
@@ -8827,7 +8825,7 @@ func _sync_rail_toggles() -> void:
 	h = h * 31 + int(settings_panel != null and settings_panel.visible)
 	h = h * 31 + int(render_panel != null and render_panel.visible)
 	h = h * 31 + int(sound_panel != null and sound_panel.visible)
-	h = h * 31 + int(_light_panel != null and _light_panel.visible)
+	h = h * 31 + int(is_instance_valid(_light_panel) and _light_panel.visible)
 	h = h * 31 + int(adopt_panel != null and adopt_panel.visible)
 	h = h * 31 + int(library_panel != null and library_panel.visible)
 	h = h * 31 + int(creature_creator_panel != null and creature_creator_panel.visible)
@@ -8843,7 +8841,7 @@ func _sync_rail_toggles() -> void:
 	if _rail_world_btn != null:
 		PanelTheme.style_rail_button(_rail_world_btn, _follow_mode == FollowMode.PIP or _aquascape.is_active)
 	if _rail_appearance_btn != null:
-		var look_on: bool = (_light_panel != null and _light_panel.visible) \
+		var look_on: bool = (is_instance_valid(_light_panel) and _light_panel.visible) \
 			or (render_panel != null and render_panel.visible) \
 			or (sound_panel != null and sound_panel.visible)
 		PanelTheme.style_rail_button(_rail_appearance_btn, look_on)
@@ -9034,7 +9032,7 @@ func _register_ui_panels(vp: Vector2) -> void:
 		_ui_panels.register(UiPanelManager.SIDE_RENDER, render_panel, right)
 	if sound_panel != null:
 		_ui_panels.register(UiPanelManager.SIDE_SOUND, sound_panel, right)
-	if _light_panel != null:
+	if is_instance_valid(_light_panel):
 		_ui_panels.register(UiPanelManager.SIDE_LIGHT, _light_panel, right)
 	if _notifications_panel != null:
 		_ui_panels.register(UiPanelManager.SIDE_NOTIFICATIONS, _notifications_panel, right)
@@ -9601,7 +9599,7 @@ func _on_managed_panel_visibility_changed() -> void:
 
 func _open_light_panel_exclusive() -> void:
 	_ensure_light_panel()
-	if _light_panel == null:
+	if not is_instance_valid(_light_panel):
 		return
 	_pull_light_panel_values()
 	_light_panel.visible = true
@@ -9611,7 +9609,8 @@ func _open_light_panel_exclusive() -> void:
 
 
 func _close_light_panel() -> void:
-	if _light_panel != null and _light_panel.visible:
+	_light_day_phase_dragging = false
+	if is_instance_valid(_light_panel) and _light_panel.visible:
 		_light_panel.visible = false
 		_light_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if _ui_panels != null:
@@ -10594,15 +10593,15 @@ func _pop_str(total: int, adults: int, kids: int, a_suf: String, k_suf: String) 
 
 func _day_label(p: float) -> String:
 	# Map day_phase (0=dawn, 0.25=midday, 0.5=dusk, 0.75=midnight) to a label.
-	if p < 0.125: return "dawn"
-	elif p < 0.375: return "day"
-	elif p < 0.5: return "dusk"
-	elif p < 0.875: return "night"
-	else: return "dawn"
+	if p < 0.125: return tr("dawn")
+	elif p < 0.375: return tr("day")
+	elif p < 0.5: return tr("dusk")
+	elif p < 0.875: return tr("night")
+	else: return tr("dawn")
 
 
 func _is_night_time() -> bool:
-	if _sim == null:
+	if not is_instance_valid(_sim):
 		return false
 	var p: float = fposmod(float(_sim.day_phase), 1.0)
 	return p >= 0.5 and p < 0.875
@@ -10632,8 +10631,9 @@ func _toggle_light_panel() -> void:
 
 
 func _ensure_light_panel() -> void:
-	if _light_panel != null and is_instance_valid(_light_panel):
+	if is_instance_valid(_light_panel):
 		return
+	_light_day_phase_dragging = false
 	# REFINEMENT_II #70 — block preset→custom flips while wiring controls.
 	_light_applying_preset = true
 	_light_panel = PanelContainer.new()
@@ -10649,7 +10649,7 @@ func _ensure_light_panel() -> void:
 	_light_panel.add_child(outer)
 
 	# House header: title + × (the panel has no actions, so no footer).
-	outer.add_child(PanelTheme.make_panel_header("Light", func() -> void:
+	outer.add_child(PanelTheme.make_panel_header(tr("Light"), func() -> void:
 		_close_light_panel()
 		_sync_rail_toggles()))
 	outer.add_child(PanelTheme.make_rule())
@@ -10662,16 +10662,18 @@ func _ensure_light_panel() -> void:
 	preset_row.add_theme_constant_override("separation", 8)
 	outer.add_child(preset_row)
 	var preset_lbl := Label.new()
-	preset_lbl.text = "Preset"
+	preset_lbl.text = tr("Preset")
 	preset_lbl.custom_minimum_size = Vector2(72, 0)
 	preset_row.add_child(preset_lbl)
 	_light_preset_option = OptionButton.new()
 	_light_preset_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_light_preset_option.add_item("Custom")
+	_light_preset_option.fit_to_longest_item = false
+	_light_preset_option.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_light_preset_option.add_item(tr("Custom"))
 	_light_preset_option.set_item_metadata(0, "custom")
 	for key in TankConfig.LIGHTING_PRESETS.keys():
 		var preset: Dictionary = TankConfig.LIGHTING_PRESETS[key]
-		_light_preset_option.add_item(String(preset.get("label", key)))
+		_light_preset_option.add_item(tr(String(preset.get("label", key))))
 		_light_preset_option.set_item_metadata(_light_preset_option.item_count - 1, key)
 	_light_preset_option.item_selected.connect(_on_lighting_preset_selected)
 	preset_row.add_child(_light_preset_option)
@@ -10679,7 +10681,7 @@ func _ensure_light_panel() -> void:
 	# so successive presses still give variety.
 	var random_btn := Button.new()
 	random_btn.text = "🎲"
-	random_btn.tooltip_text = "Randomize lighting (picks a preset and jitters its values)"
+	random_btn.tooltip_text = tr("Randomize lighting (picks a preset and jitters its values)")
 	random_btn.custom_minimum_size = Vector2(36, 0)
 	random_btn.focus_mode = Control.FOCUS_NONE
 	random_btn.pressed.connect(_on_lighting_randomize_pressed)
@@ -10691,6 +10693,7 @@ func _ensure_light_panel() -> void:
 	# Give it a generous height that _position_light_panel can re-clamp once
 	# the viewport size is known.
 	var scroll := ScrollContainer.new()
+	scroll.name = "LightControlsScroll"
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -10704,60 +10707,64 @@ func _ensure_light_panel() -> void:
 	# Stash so _position_light_panel can resize it to fit the viewport.
 
 	# ---- Global section ----
-	_add_light_section(vbox, "Global")
+	_add_light_section(vbox, tr("Global"))
 
 	_light_master_check = CheckBox.new()
-	_light_master_check.text = "Lights enabled (master)"
+	_light_master_check.text = tr("Lights enabled (master)")
 	_light_master_check.toggled.connect(_on_light_master_toggled)
 	vbox.add_child(_light_master_check)
 	_attach_reset(_light_master_check, "light_master_enabled")
 
 	_light_day_cycle_check = CheckBox.new()
-	_light_day_cycle_check.text = "Day / night cycle running"
+	_light_day_cycle_check.text = tr("Day / night cycle running")
 	_light_day_cycle_check.toggled.connect(_on_day_cycle_toggled)
 	vbox.add_child(_light_day_cycle_check)
 	_attach_reset(_light_day_cycle_check, "day_cycle_enabled")
 
 	_light_day_phase_value = Label.new()
 	_light_day_phase_slider = PanelTheme.add_slider_row(
-		vbox, "Day phase (dawn→noon→dusk→night)", 0.0, 1.0, 0.01,
+		vbox, tr("Time of day"), 0.0, 1.0, 0.01,
 		_light_day_phase_value)
 	_light_day_phase_slider.value_changed.connect(_on_day_phase_changed)
+	_light_day_phase_slider.drag_started.connect(func() -> void:
+		_light_day_phase_dragging = true)
+	_light_day_phase_slider.drag_ended.connect(func(_changed: bool) -> void:
+		_light_day_phase_dragging = false)
 	# (No reset — day phase is sim runtime state, not a user-default.)
 
 	_light_day_length_value = Label.new()
 	_light_day_length_slider = PanelTheme.add_slider_row(
-		vbox, "Day length (seconds)", 30.0, 3600.0, 15.0, _light_day_length_value)
+		vbox, tr("Day length (seconds)"), 30.0, 3600.0, 15.0, _light_day_length_value)
 	_light_day_length_slider.value_changed.connect(_on_day_length_changed)
 	_attach_reset(_light_day_length_slider, "day_length_s")
 
 	_light_sunset_drama_value = Label.new()
 	_light_sunset_drama_slider = PanelTheme.add_slider_row(
-		vbox, "Sunset drama", 0.0, 2.5, 0.05, _light_sunset_drama_value)
+		vbox, tr("Sunset drama"), 0.0, 2.5, 0.01, _light_sunset_drama_value)
 	_light_sunset_drama_slider.value_changed.connect(_on_sunset_drama_changed)
 	_attach_reset(_light_sunset_drama_slider, "sunset_drama")
 
 	_light_global_intensity_value = Label.new()
 	_light_global_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Global intensity", 0.0, 1.0, 0.05, _light_global_intensity_value)
+		vbox, tr("Global intensity"), 0.0, 1.0, 0.01, _light_global_intensity_value)
 	_light_global_intensity_slider.value_changed.connect(_on_global_intensity_changed)
 	_attach_reset(_light_global_intensity_slider, "global_intensity")
 
 	_light_global_warmth_value = Label.new()
 	_light_global_warmth_slider = PanelTheme.add_slider_row(
-		vbox, "Global warmth (cool→warm)", 0.0, 1.0, 0.05, _light_global_warmth_value)
+		vbox, tr("Global warmth"), 0.0, 1.0, 0.01, _light_global_warmth_value)
 	_light_global_warmth_slider.value_changed.connect(_on_global_warmth_changed)
 	_attach_reset(_light_global_warmth_slider, "global_warmth")
 
 	_light_ambient_floor_value = Label.new()
 	_light_ambient_floor_slider = PanelTheme.add_slider_row(
-		vbox, "Ambient floor (dark-floor lift)", 0.0, 1.0, 0.05, _light_ambient_floor_value)
+		vbox, tr("Ambient fill"), 0.0, 1.0, 0.01, _light_ambient_floor_value)
 	_light_ambient_floor_slider.value_changed.connect(_on_ambient_floor_changed)
 	_attach_reset(_light_ambient_floor_slider, "ambient_floor")
 
 	_light_biolum_value = Label.new()
 	_light_biolum_slider = PanelTheme.add_slider_row(
-		vbox, "Bioluminescence ×", 0.0, 3.0, 0.1, _light_biolum_value)
+		vbox, tr("Bioluminescence ×"), 0.0, 3.0, 0.1, _light_biolum_value)
 	_light_biolum_slider.value_changed.connect(_on_biolum_changed)
 	_attach_reset(_light_biolum_slider, "biolum_multiplier")
 
@@ -10772,14 +10779,14 @@ func _ensure_light_panel() -> void:
 	chip_row.add_theme_constant_override("separation", 6)
 	vbox.add_child(chip_row)
 	var chip_lbl := Label.new()
-	chip_lbl.text = "Jump"
-	chip_lbl.custom_minimum_size = Vector2(160, 0)
+	chip_lbl.text = tr("Jump")
+	chip_lbl.custom_minimum_size = Vector2(42, 0)
 	chip_row.add_child(chip_lbl)
 	for chip in [
-		{"label": "Dawn", "phase": 0.0},
-		{"label": "Noon", "phase": 0.25},
-		{"label": "Dusk", "phase": 0.5},
-		{"label": "Night", "phase": 0.75},
+		{"label": tr("Dawn"), "phase": 0.0},
+		{"label": tr("Noon"), "phase": 0.25},
+		{"label": tr("Dusk"), "phase": 0.5},
+		{"label": tr("Night"), "phase": 0.75},
 	]:
 		var b := Button.new()
 		b.text = String(chip["label"])
@@ -10789,161 +10796,204 @@ func _ensure_light_panel() -> void:
 		chip_row.add_child(b)
 
 	# ---- Tank fixture section ----
-	_add_light_section(vbox, "Tank fixture")
+	_add_light_section(vbox, tr("Tank fixture"))
 
 	_light_tank_check = CheckBox.new()
-	_light_tank_check.text = "Tank lights on (artificial fixture at night)"
+	_light_tank_check.text = tr("Aquarium lamp on")
+	_light_tank_check.tooltip_text = tr("Switch the aquarium fixture off at any time. Daylight and moonlight have separate controls.")
 	_light_tank_check.toggled.connect(_on_light_tank_toggled)
 	vbox.add_child(_light_tank_check)
 	_attach_reset(_light_tank_check, "tank_lights_on")
 
+	_light_fixture_cycle_check = CheckBox.new()
+	_light_fixture_cycle_check.text = tr("Follow daylight cycle")
+	_light_fixture_cycle_check.tooltip_text = tr("An automatic photoperiod gives plants light during the day and animals darkness at night. Turn off to keep the lamp on continuously.")
+	_light_fixture_cycle_check.toggled.connect(_on_fixture_cycle_toggled)
+	vbox.add_child(_light_fixture_cycle_check)
+	_attach_reset(_light_fixture_cycle_check, "fixture_follow_day_cycle")
+	_light_fixture_status = PanelTheme.make_description()
+	vbox.add_child(_light_fixture_status)
+
 	_light_heater_check = CheckBox.new()
-	_light_heater_check.text = "Substrate heater on (warmth near the rod)"
+	_light_heater_check.text = tr("Substrate heater on")
 	_light_heater_check.toggled.connect(_on_heater_toggled)
 	vbox.add_child(_light_heater_check)
 	_attach_reset(_light_heater_check, "heater_enabled")
 
 	_light_fixture_intensity_value = Label.new()
 	_light_fixture_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Fixture intensity", 0.0, 1.0, 0.05, _light_fixture_intensity_value)
+		vbox, tr("Fixture intensity"), 0.0, 1.5, 0.01, _light_fixture_intensity_value)
 	_light_fixture_intensity_slider.value_changed.connect(_on_fixture_intensity_changed)
 	_attach_reset(_light_fixture_intensity_slider, "tank_fixture_intensity")
 
-	_light_fixture_color_picker = _make_color_row(vbox, "Fixture color",
+	_light_fixture_color_picker = _make_color_row(vbox, tr("Fixture color"),
 		_on_fixture_color_changed)
 	_attach_reset(_light_fixture_color_picker, "tank_fixture_color")
 
+	_light_beams_check = CheckBox.new()
+	_light_beams_check.text = tr("Visible light shafts")
+	_light_beams_check.tooltip_text = tr("Soft shafts show light scattering in the water. This changes their appearance, not the amount of light reaching plants.")
+	_light_beams_check.toggled.connect(_on_light_beams_toggled)
+	vbox.add_child(_light_beams_check)
+	_attach_reset(_light_beams_check, "light_volumetric")
+	_light_beam_strength_value = Label.new()
+	_light_beam_strength_slider = PanelTheme.add_slider_row(
+		vbox, tr("Shaft opacity"), 0.0, 2.0, 0.01, _light_beam_strength_value)
+	_light_beam_strength_slider.tooltip_text = tr("Visible shaft opacity. A gentle setting preserves the tank's colors.")
+	_light_beam_strength_slider.value_changed.connect(_on_beam_strength_changed)
+	_attach_reset(_light_beam_strength_slider, "beam_strength")
+
+	_light_room_darkness_value = Label.new()
+	_light_room_darkness_slider = PanelTheme.add_slider_row(
+		vbox, tr("Dim the room"), 0.0, 1.0, 0.01, _light_room_darkness_value)
+	_light_room_darkness_slider.tooltip_text = tr("Reduce light in the room around the tank while retaining the aquarium lamp.")
+	_light_room_darkness_slider.value_changed.connect(_on_room_darkness_changed)
+	_attach_reset(_light_room_darkness_slider, "room_darkness")
+
 	_light_caustics_check = CheckBox.new()
-	_light_caustics_check.text = "Show surface caustics"
+	_light_caustics_check.text = tr("Show surface caustics")
 	_light_caustics_check.toggled.connect(_on_light_caustics_toggled)
 	vbox.add_child(_light_caustics_check)
 	_attach_reset(_light_caustics_check, "light_caustics")
 
 	_light_caustic_strength_value = Label.new()
 	_light_caustic_strength_slider = PanelTheme.add_slider_row(
-		vbox, "Caustic intensity ×", 0.0, 2.0, 0.05, _light_caustic_strength_value)
+		vbox, tr("Caustic strength"), 0.0, 2.0, 0.01, _light_caustic_strength_value)
 	_light_caustic_strength_slider.value_changed.connect(_on_caustic_strength_changed)
 	_attach_reset(_light_caustic_strength_slider, "caustic_intensity_user")
 
 	# ---- Accent & moonlight section ----
-	_add_light_section(vbox, "Accent & moonlight")
+	_add_light_section(vbox, tr("Accent & moonlight"))
+
+	_light_backlight_check = CheckBox.new()
+	_light_backlight_check.text = tr("Rear foliage light")
+	_light_backlight_check.toggled.connect(_on_backlight_toggled)
+	vbox.add_child(_light_backlight_check)
+	_attach_reset(_light_backlight_check, "backlight_enabled")
+	_light_backlight_intensity_value = Label.new()
+	_light_backlight_intensity_slider = PanelTheme.add_slider_row(
+		vbox, tr("Rear intensity"), 0.0, 1.5, 0.01, _light_backlight_intensity_value)
+	_light_backlight_intensity_slider.value_changed.connect(_on_backlight_intensity_changed)
+	_attach_reset(_light_backlight_intensity_slider, "backlight_intensity")
+	_light_backlight_color_picker = _make_color_row(vbox, tr("Rear color"), _on_backlight_color_changed)
+	_attach_reset(_light_backlight_color_picker, "backlight_color")
 
 	_light_moon_check = CheckBox.new()
-	_light_moon_check.text = "Moonlight (cool nighttime fill)"
+	_light_moon_check.text = tr("Moonlight at night")
 	_light_moon_check.toggled.connect(_on_moon_toggled)
 	vbox.add_child(_light_moon_check)
 	_attach_reset(_light_moon_check, "moonlight_enabled")
 	_light_moon_intensity_value = Label.new()
 	_light_moon_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Moon intensity", 0.0, 1.0, 0.05, _light_moon_intensity_value)
+		vbox, tr("Moon intensity"), 0.0, 1.0, 0.01, _light_moon_intensity_value)
 	_light_moon_intensity_slider.value_changed.connect(_on_moon_intensity_changed)
 	_attach_reset(_light_moon_intensity_slider, "moonlight_intensity")
-	_light_moon_color_picker = _make_color_row(vbox, "Moon color", _on_moon_color_changed)
+	_light_moon_color_picker = _make_color_row(vbox, tr("Moon color"), _on_moon_color_changed)
 	_attach_reset(_light_moon_color_picker, "moonlight_color")
 
 	_light_accent1_check = CheckBox.new()
-	_light_accent1_check.text = "Accent 1 (front-left, mid-water)"
+	_light_accent1_check.text = tr("Front-left accent")
 	_light_accent1_check.toggled.connect(_on_accent1_toggled)
 	vbox.add_child(_light_accent1_check)
 	_attach_reset(_light_accent1_check, "accent1_enabled")
 	_light_accent1_intensity_value = Label.new()
 	_light_accent1_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Accent 1 intensity", 0.0, 1.5, 0.05, _light_accent1_intensity_value)
+		vbox, tr("Accent 1 intensity"), 0.0, 1.5, 0.01, _light_accent1_intensity_value)
 	_light_accent1_intensity_slider.value_changed.connect(_on_accent1_intensity_changed)
 	_attach_reset(_light_accent1_intensity_slider, "accent1_intensity")
-	_light_accent1_color_picker = _make_color_row(vbox, "Accent 1 color", _on_accent1_color_changed)
+	_light_accent1_color_picker = _make_color_row(vbox, tr("Accent 1 color"), _on_accent1_color_changed)
 	_attach_reset(_light_accent1_color_picker, "accent1_color")
 
 	_light_accent2_check = CheckBox.new()
-	_light_accent2_check.text = "Accent 2 (back-right, mid-water)"
+	_light_accent2_check.text = tr("Back-right accent")
 	_light_accent2_check.toggled.connect(_on_accent2_toggled)
 	vbox.add_child(_light_accent2_check)
 	_attach_reset(_light_accent2_check, "accent2_enabled")
 	_light_accent2_intensity_value = Label.new()
 	_light_accent2_intensity_slider = PanelTheme.add_slider_row(
-		vbox, "Accent 2 intensity", 0.0, 1.5, 0.05, _light_accent2_intensity_value)
+		vbox, tr("Accent 2 intensity"), 0.0, 1.5, 0.01, _light_accent2_intensity_value)
 	_light_accent2_intensity_slider.value_changed.connect(_on_accent2_intensity_changed)
 	_attach_reset(_light_accent2_intensity_slider, "accent2_intensity")
-	_light_accent2_color_picker = _make_color_row(vbox, "Accent 2 color", _on_accent2_color_changed)
+	_light_accent2_color_picker = _make_color_row(vbox, tr("Accent 2 color"), _on_accent2_color_changed)
 	_attach_reset(_light_accent2_color_picker, "accent2_color")
 
 	# ---- Post-process section ----
-	_add_light_section(vbox, "Post-process")
+	_add_light_section(vbox, tr("Post-process"))
 
 	_light_pp_vignette_value = Label.new()
 	_light_pp_vignette_slider = PanelTheme.add_slider_row(
-		vbox, "Vignette", 0.0, 1.0, 0.05, _light_pp_vignette_value)
+		vbox, tr("Vignette"), 0.0, 1.0, 0.01, _light_pp_vignette_value)
 	_light_pp_vignette_slider.value_changed.connect(_on_pp_vignette_changed)
 	_attach_reset(_light_pp_vignette_slider, "pp_vignette_strength")
 
 	_light_pp_vignette_falloff_value = Label.new()
 	_light_pp_vignette_falloff_slider = PanelTheme.add_slider_row(
-		vbox, "Vignette falloff", 0.5, 4.0, 0.1, _light_pp_vignette_falloff_value)
+		vbox, tr("Vignette falloff"), 0.5, 4.0, 0.1, _light_pp_vignette_falloff_value)
 	_light_pp_vignette_falloff_slider.value_changed.connect(_on_pp_vignette_falloff_changed)
 	_attach_reset(_light_pp_vignette_falloff_slider, "pp_vignette_falloff")
 
 	_light_pp_bloom_threshold_value = Label.new()
 	_light_pp_bloom_threshold_slider = PanelTheme.add_slider_row(
-		vbox, "Bloom threshold", 0.0, 1.0, 0.02, _light_pp_bloom_threshold_value)
+		vbox, tr("Bloom threshold"), 0.0, 1.0, 0.01, _light_pp_bloom_threshold_value)
 	_light_pp_bloom_threshold_slider.value_changed.connect(_on_pp_bloom_threshold_changed)
 	_attach_reset(_light_pp_bloom_threshold_slider, "pp_bloom_threshold")
 
 	_light_pp_bloom_strength_value = Label.new()
 	_light_pp_bloom_strength_slider = PanelTheme.add_slider_row(
-		vbox, "Bloom strength", 0.0, 1.0, 0.02, _light_pp_bloom_strength_value)
+		vbox, tr("Bloom strength"), 0.0, 1.0, 0.01, _light_pp_bloom_strength_value)
 	_light_pp_bloom_strength_slider.value_changed.connect(_on_pp_bloom_strength_changed)
 	_attach_reset(_light_pp_bloom_strength_slider, "pp_bloom_strength")
 
 	_light_pp_outline_value = Label.new()
 	_light_pp_outline_slider = PanelTheme.add_slider_row(
-		vbox, "Edge outline", 0.0, 1.0, 0.05, _light_pp_outline_value)
+		vbox, tr("Edge outline"), 0.0, 1.0, 0.01, _light_pp_outline_value)
 	_light_pp_outline_slider.value_changed.connect(_on_pp_outline_changed)
 	_attach_reset(_light_pp_outline_slider, "outline_strength")
 
 	_light_pp_dither_value = Label.new()
 	_light_pp_dither_slider = PanelTheme.add_slider_row(
-		vbox, "Dither", 0.0, 1.0, 0.05, _light_pp_dither_value)
+		vbox, tr("Dither"), 0.0, 1.0, 0.01, _light_pp_dither_value)
 	_light_pp_dither_slider.value_changed.connect(_on_pp_dither_changed)
 	_attach_reset(_light_pp_dither_slider, "dither_strength")
 
 	_light_pp_crt_value = Label.new()
 	_light_pp_crt_slider = PanelTheme.add_slider_row(
-		vbox, "CRT scanline", 0.0, 1.0, 0.05, _light_pp_crt_value)
+		vbox, tr("CRT scanline"), 0.0, 1.0, 0.01, _light_pp_crt_value)
 	_light_pp_crt_slider.value_changed.connect(_on_pp_crt_changed)
 	_attach_reset(_light_pp_crt_slider, "crt_strength")
 
 	_light_pp_region_dither_check = CheckBox.new()
-	_light_pp_region_dither_check.text = "Region-aware dither (heavy on water, light on fauna)"
+	_light_pp_region_dither_check.text = tr("Region-aware dither")
 	_light_pp_region_dither_check.toggled.connect(_on_pp_region_dither_toggled)
 	vbox.add_child(_light_pp_region_dither_check)
 	_attach_reset(_light_pp_region_dither_check, "dither_region_aware")
 
 	_light_pp_bank_lock_check = CheckBox.new()
-	_light_pp_bank_lock_check.text = "Lock palette to nearest hue bank (16-color feel)"
+	_light_pp_bank_lock_check.text = tr("Keep colors in hue families")
 	_light_pp_bank_lock_check.toggled.connect(_on_pp_bank_lock_toggled)
 	vbox.add_child(_light_pp_bank_lock_check)
 	_attach_reset(_light_pp_bank_lock_check, "palette_bank_lock")
 
 	# ---- Per-phase color override section (#14) ----
-	_add_light_section(vbox, "Per-phase colors")
+	_add_light_section(vbox, tr("Per-phase colors"))
 
 	_light_tod_override_check = CheckBox.new()
-	_light_tod_override_check.text = "Use these instead of the built-in dawn/day/dusk/night"
+	_light_tod_override_check.text = tr("Custom time-of-day colors")
 	_light_tod_override_check.toggled.connect(_on_tod_override_toggled)
 	vbox.add_child(_light_tod_override_check)
 	_attach_reset(_light_tod_override_check, "tod_use_overrides")
 
-	_light_tod_dawn_picker = _make_color_row(vbox, "Dawn", _on_tod_dawn_changed)
+	_light_tod_dawn_picker = _make_color_row(vbox, tr("Dawn"), _on_tod_dawn_changed)
 	_attach_reset(_light_tod_dawn_picker, "tod_dawn_color")
-	_light_tod_day_picker = _make_color_row(vbox, "Day (noon)", _on_tod_day_changed)
+	_light_tod_day_picker = _make_color_row(vbox, tr("Day (noon)"), _on_tod_day_changed)
 	_attach_reset(_light_tod_day_picker, "tod_day_color")
-	_light_tod_dusk_picker = _make_color_row(vbox, "Dusk", _on_tod_dusk_changed)
+	_light_tod_dusk_picker = _make_color_row(vbox, tr("Dusk"), _on_tod_dusk_changed)
 	_attach_reset(_light_tod_dusk_picker, "tod_dusk_color")
-	_light_tod_night_picker = _make_color_row(vbox, "Night", _on_tod_night_changed)
+	_light_tod_night_picker = _make_color_row(vbox, tr("Night"), _on_tod_night_changed)
 	_attach_reset(_light_tod_night_picker, "tod_night_color")
 
 	var hint := PanelTheme.make_description()
-	hint.text = "Master off renders the tank near-black. For fixture type, direction, and beams open Settings."
+	hint.text = tr("The aquarium lamp and daylight are separate. Drag the lamp or its pool in the tank to aim it; fixture shape is in Settings.")
 	vbox.add_child(hint)
 	_pull_light_panel_values()
 
@@ -10962,14 +11012,21 @@ const _LIGHT_DEFAULTS: Dictionary = {
 	"global_intensity": 0.5,
 	"global_warmth": 0.6,
 	"tank_lights_on": true,
+	"fixture_follow_day_cycle": true,
 	"heater_enabled": true,
 	"tank_fixture_intensity": 0.5,
 	"tank_fixture_color": Color(1.0, 0.95, 0.85),
+	"light_volumetric": true,
+	"beam_strength": 1.0,
+	"room_darkness": 0.0,
 	"light_caustics": true,
 	"caustic_intensity_user": 1.0,
 	"moonlight_enabled": true,
 	"moonlight_intensity": 0.4,
 	"moonlight_color": Color(0.55, 0.70, 1.0),
+	"backlight_enabled": false,
+	"backlight_intensity": 0.0,
+	"backlight_color": Color(1.0, 0.62, 0.28),
 	"accent1_enabled": false,
 	"accent1_intensity": 0.6,
 	"accent1_color": Color(1.0, 0.45, 0.75),
@@ -10981,7 +11038,7 @@ const _LIGHT_DEFAULTS: Dictionary = {
 	"pp_bloom_threshold": 0.72,
 	"pp_bloom_strength": 0.68,
 	"outline_strength": 0.0,
-	"dither_strength": 0.85,
+	"dither_strength": 0.72,
 	"crt_strength": 0.0,
 	"dither_region_aware": true,
 	"palette_bank_lock": true,
@@ -11000,22 +11057,37 @@ const _LIGHT_DEFAULTS: Dictionary = {
 # Setting the control programmatically fires its change signal, so cfg
 # and value label both update.
 func _attach_reset(control: Control, cfg_key: String) -> void:
-	if control == null:
+	if not is_instance_valid(control):
 		return
 	var row: Node = control.get_parent()
 	if row == null:
 		return
 	if not _LIGHT_DEFAULTS.has(cfg_key):
 		return
+	# Checkboxes were direct children of the section's VBox, so adding the
+	# reset to their parent created a full extra row for each small arrow.
+	# Give each toggle a real row, preserving its section order.
+	if control is CheckBox and row is VBoxContainer:
+		var index: int = control.get_index()
+		row.remove_child(control)
+		var toggle_row := HBoxContainer.new()
+		toggle_row.add_theme_constant_override("separation", 8)
+		row.add_child(toggle_row)
+		row.move_child(toggle_row, index)
+		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		toggle_row.add_child(control)
+		row = toggle_row
 	var default_v: Variant = _LIGHT_DEFAULTS[cfg_key]
 	var btn := Button.new()
 	btn.text = "↻"
-	btn.tooltip_text = "Reset to default"
+	btn.tooltip_text = tr("Reset to default")
 	btn.custom_minimum_size = Vector2(22, 0)
 	btn.flat = true
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.add_theme_color_override("font_color", Color(0.7, 0.78, 0.85, 0.7))
 	btn.pressed.connect(func():
+		if not is_instance_valid(control):
+			return
 		if control is HSlider:
 			(control as HSlider).value = float(default_v)
 		elif control is CheckBox:
@@ -11033,7 +11105,7 @@ func _make_sun_direction_pad(parent: Node) -> Control:
 	row.add_theme_constant_override("separation", 12)
 	parent.add_child(row)
 	var l := Label.new()
-	l.text = "Sun direction"
+	l.text = tr("Sun direction")
 	l.custom_minimum_size = Vector2(160, 0)
 	row.add_child(l)
 	var pad := Control.new()
@@ -11047,6 +11119,8 @@ func _make_sun_direction_pad(parent: Node) -> Control:
 
 
 func _on_sun_pad_input(ev: InputEvent, pad: Control) -> void:
+	if not is_instance_valid(pad):
+		return
 	var drag: bool = false
 	var pos: Vector2 = Vector2.ZERO
 	if ev is InputEventMouseButton:
@@ -11077,6 +11151,8 @@ func _on_sun_pad_input(ev: InputEvent, pad: Control) -> void:
 
 
 func _on_sun_pad_draw(pad: Control) -> void:
+	if not is_instance_valid(pad):
+		return
 	var sz: Vector2 = pad.size
 	# Background frame
 	pad.draw_rect(Rect2(Vector2.ZERO, sz), Color(0.10, 0.12, 0.18, 0.95), true)
@@ -11101,12 +11177,13 @@ func _on_sun_pad_draw(pad: Control) -> void:
 # Snap day_phase to one of the four anchors and refresh the slider/value
 # label so the UI reflects the jump immediately.
 func _jump_to_phase(p: float) -> void:
-	if _sim != null:
+	if is_instance_valid(_sim):
 		_sim.day_phase = fposmod(p, 1.0)
-	if _light_day_phase_slider != null:
+	if is_instance_valid(_light_day_phase_slider):
 		_light_day_phase_slider.set_value_no_signal(p)
-	if _light_day_phase_value != null:
+	if is_instance_valid(_light_day_phase_value):
 		_light_day_phase_value.text = _day_phase_label(p)
+	_refresh_fixture_status()
 
 
 # Helper for "label  [ColorPickerButton]" rows in the Light popup. Keeps the
@@ -11145,49 +11222,69 @@ func _pull_light_panel_values() -> void:
 	# Suppress the "user touched a control → switch to Custom" hook while we
 	# rewrite UI state from cfg.
 	_light_applying_preset = true
-	if _light_preset_option != null:
+	if is_instance_valid(_light_preset_option):
+		# A removed or imported preset must not leave the previous look's
+		# name selected. Opening the panel still preserves the saved values.
+		_light_preset_option.select(0)
 		var slug: String = String(cfg.lighting_preset)
 		for i in _light_preset_option.item_count:
 			if String(_light_preset_option.get_item_metadata(i)) == slug:
 				_light_preset_option.select(i)
 				break
-	if _light_master_check != null:
+	if is_instance_valid(_light_master_check):
 		_light_master_check.set_pressed_no_signal(bool(cfg.light_master_enabled))
-	if _light_day_cycle_check != null:
+	if is_instance_valid(_light_day_cycle_check):
 		_light_day_cycle_check.set_pressed_no_signal(bool(cfg.day_cycle_enabled))
-	if _light_day_phase_slider != null:
-		var phase: float = float(_sim.day_phase) if _sim != null else 0.25
+	if is_instance_valid(_light_day_phase_slider):
+		var phase: float = float(_sim.day_phase) if is_instance_valid(_sim) else 0.25
 		_light_day_phase_slider.set_value_no_signal(phase)
 		_light_day_phase_value.text = _day_phase_label(phase)
-	if _light_day_length_slider != null:
+	if is_instance_valid(_light_day_length_slider):
 		_light_day_length_slider.set_value_no_signal(float(cfg.day_length_s))
 		_light_day_length_value.text = _fmt_duration(float(cfg.day_length_s))
-	if _light_sunset_drama_slider != null:
+	if is_instance_valid(_light_sunset_drama_slider):
 		_light_sunset_drama_slider.set_value_no_signal(float(cfg.sunset_drama))
 		_light_sunset_drama_value.text = "%.2f" % float(cfg.sunset_drama)
-	if _light_global_intensity_slider != null:
+	if is_instance_valid(_light_global_intensity_slider):
 		_light_global_intensity_slider.set_value_no_signal(float(cfg.global_intensity))
 		_light_global_intensity_value.text = "%.2f" % float(cfg.global_intensity)
-	if _light_global_warmth_slider != null:
+	if is_instance_valid(_light_global_warmth_slider):
 		_light_global_warmth_slider.set_value_no_signal(float(cfg.global_warmth))
 		_light_global_warmth_value.text = "%.2f" % float(cfg.global_warmth)
-	if _light_tank_check != null:
+	if is_instance_valid(_light_tank_check):
 		_light_tank_check.set_pressed_no_signal(bool(cfg.tank_lights_on))
-	if _light_heater_check != null:
+	if is_instance_valid(_light_fixture_cycle_check):
+		_light_fixture_cycle_check.set_pressed_no_signal(bool(cfg.fixture_follow_day_cycle))
+	if is_instance_valid(_light_heater_check):
 		_light_heater_check.set_pressed_no_signal(bool(cfg.heater_enabled))
-	if _light_caustics_check != null:
+	if is_instance_valid(_light_caustics_check):
 		_light_caustics_check.set_pressed_no_signal(bool(cfg.light_caustics))
-	if _light_fixture_intensity_slider != null:
+	if is_instance_valid(_light_fixture_intensity_slider):
 		_light_fixture_intensity_slider.set_value_no_signal(float(cfg.tank_fixture_intensity))
 		_light_fixture_intensity_value.text = "%.2f" % float(cfg.tank_fixture_intensity)
-	if _light_fixture_color_picker != null:
+	if is_instance_valid(_light_fixture_color_picker):
 		_light_fixture_color_picker.color = cfg.tank_fixture_color
-	if _light_moon_check != null:
+	if is_instance_valid(_light_beams_check):
+		_light_beams_check.set_pressed_no_signal(bool(cfg.light_volumetric))
+	if is_instance_valid(_light_beam_strength_slider):
+		_light_beam_strength_slider.set_value_no_signal(float(cfg.beam_strength))
+		_light_beam_strength_value.text = "%.2f" % float(cfg.beam_strength)
+	if is_instance_valid(_light_room_darkness_slider):
+		_light_room_darkness_slider.set_value_no_signal(float(cfg.room_darkness))
+		_light_room_darkness_value.text = "%.2f" % float(cfg.room_darkness)
+	if is_instance_valid(_light_backlight_check):
+		_light_backlight_check.set_pressed_no_signal(bool(cfg.backlight_enabled))
+	if is_instance_valid(_light_backlight_intensity_slider):
+		_light_backlight_intensity_slider.set_value_no_signal(float(cfg.backlight_intensity))
+		_light_backlight_intensity_value.text = "%.2f" % float(cfg.backlight_intensity)
+	if is_instance_valid(_light_backlight_color_picker):
+		_light_backlight_color_picker.color = cfg.backlight_color
+	if is_instance_valid(_light_moon_check):
 		_light_moon_check.set_pressed_no_signal(bool(cfg.moonlight_enabled))
-	if _light_moon_intensity_slider != null:
+	if is_instance_valid(_light_moon_intensity_slider):
 		_light_moon_intensity_slider.set_value_no_signal(float(cfg.moonlight_intensity))
 		_light_moon_intensity_value.text = "%.2f" % float(cfg.moonlight_intensity)
-	if _light_moon_color_picker != null:
+	if is_instance_valid(_light_moon_color_picker):
 		_light_moon_color_picker.color = cfg.moonlight_color
 	if _light_accent1_check != null:
 		_light_accent1_check.set_pressed_no_signal(bool(cfg.accent1_enabled))
@@ -11203,52 +11300,53 @@ func _pull_light_panel_values() -> void:
 		_light_accent2_intensity_value.text = "%.2f" % float(cfg.accent2_intensity)
 	if _light_accent2_color_picker != null:
 		_light_accent2_color_picker.color = cfg.accent2_color
-	if _light_pp_vignette_slider != null:
+	if is_instance_valid(_light_pp_vignette_slider):
 		_light_pp_vignette_slider.set_value_no_signal(float(cfg.pp_vignette_strength))
 		_light_pp_vignette_value.text = "%.2f" % float(cfg.pp_vignette_strength)
-	if _light_pp_bloom_threshold_slider != null:
+	if is_instance_valid(_light_pp_bloom_threshold_slider):
 		_light_pp_bloom_threshold_slider.set_value_no_signal(float(cfg.pp_bloom_threshold))
 		_light_pp_bloom_threshold_value.text = "%.2f" % float(cfg.pp_bloom_threshold)
-	if _light_pp_bloom_strength_slider != null:
+	if is_instance_valid(_light_pp_bloom_strength_slider):
 		_light_pp_bloom_strength_slider.set_value_no_signal(float(cfg.pp_bloom_strength))
 		_light_pp_bloom_strength_value.text = "%.2f" % float(cfg.pp_bloom_strength)
-	if _light_pp_outline_slider != null:
+	if is_instance_valid(_light_pp_outline_slider):
 		_light_pp_outline_slider.set_value_no_signal(float(cfg.outline_strength))
 		_light_pp_outline_value.text = "%.2f" % float(cfg.outline_strength)
-	if _light_pp_dither_slider != null:
+	if is_instance_valid(_light_pp_dither_slider):
 		_light_pp_dither_slider.set_value_no_signal(float(cfg.dither_strength))
 		_light_pp_dither_value.text = "%.2f" % float(cfg.dither_strength)
-	if _light_pp_crt_slider != null:
+	if is_instance_valid(_light_pp_crt_slider):
 		_light_pp_crt_slider.set_value_no_signal(float(cfg.crt_strength))
 		_light_pp_crt_value.text = "%.2f" % float(cfg.crt_strength)
-	if _light_pp_vignette_falloff_slider != null:
+	if is_instance_valid(_light_pp_vignette_falloff_slider):
 		_light_pp_vignette_falloff_slider.set_value_no_signal(float(cfg.pp_vignette_falloff))
 		_light_pp_vignette_falloff_value.text = "%.2f" % float(cfg.pp_vignette_falloff)
-	if _light_pp_region_dither_check != null:
+	if is_instance_valid(_light_pp_region_dither_check):
 		_light_pp_region_dither_check.set_pressed_no_signal(bool(cfg.dither_region_aware))
-	if _light_pp_bank_lock_check != null:
+	if is_instance_valid(_light_pp_bank_lock_check):
 		_light_pp_bank_lock_check.set_pressed_no_signal(bool(cfg.palette_bank_lock))
-	if _light_ambient_floor_slider != null:
+	if is_instance_valid(_light_ambient_floor_slider):
 		_light_ambient_floor_slider.set_value_no_signal(float(cfg.ambient_floor))
 		_light_ambient_floor_value.text = "%.2f" % float(cfg.ambient_floor)
-	if _light_biolum_slider != null:
+	if is_instance_valid(_light_biolum_slider):
 		_light_biolum_slider.set_value_no_signal(float(cfg.biolum_multiplier))
 		_light_biolum_value.text = "%.2f" % float(cfg.biolum_multiplier)
-	if _light_caustic_strength_slider != null:
+	if is_instance_valid(_light_caustic_strength_slider):
 		_light_caustic_strength_slider.set_value_no_signal(float(cfg.caustic_intensity_user))
 		_light_caustic_strength_value.text = "%.2f" % float(cfg.caustic_intensity_user)
-	if _light_tod_override_check != null:
+	if is_instance_valid(_light_tod_override_check):
 		_light_tod_override_check.set_pressed_no_signal(bool(cfg.tod_use_overrides))
-	if _light_tod_dawn_picker != null:
+	if is_instance_valid(_light_tod_dawn_picker):
 		_light_tod_dawn_picker.color = cfg.tod_dawn_color
-	if _light_tod_day_picker != null:
+	if is_instance_valid(_light_tod_day_picker):
 		_light_tod_day_picker.color = cfg.tod_day_color
-	if _light_tod_dusk_picker != null:
+	if is_instance_valid(_light_tod_dusk_picker):
 		_light_tod_dusk_picker.color = cfg.tod_dusk_color
-	if _light_tod_night_picker != null:
+	if is_instance_valid(_light_tod_night_picker):
 		_light_tod_night_picker.color = cfg.tod_night_color
-	if _light_sun_pad != null:
+	if is_instance_valid(_light_sun_pad):
 		_light_sun_pad.queue_redraw()
+	_refresh_fixture_status()
 	_light_applying_preset = false
 
 
@@ -11270,17 +11368,45 @@ func _day_phase_label(p: float) -> String:
 # into the slider so the user sees the sun actually moving. Skip when the
 # user is grabbing the slider, otherwise the live update fights their drag.
 func _refresh_light_panel_live() -> void:
-	if _light_day_phase_slider == null or _sim == null:
+	_refresh_fixture_status()
+	if not is_instance_valid(_light_day_phase_slider) or not is_instance_valid(_sim):
 		return
 	var cfg := _cfg()
 	if cfg == null or not bool(cfg.day_cycle_enabled):
 		return
-	if _light_day_phase_slider.has_focus():
+	if _light_day_phase_dragging:
 		return
 	var phase: float = float(_sim.day_phase)
 	_light_day_phase_slider.set_value_no_signal(phase)
-	if _light_day_phase_value != null:
+	if is_instance_valid(_light_day_phase_value):
 		_light_day_phase_value.text = _day_phase_label(phase)
+
+
+func _refresh_fixture_status() -> void:
+	if not is_instance_valid(_light_fixture_status):
+		return
+	var cfg := _cfg()
+	if cfg == null:
+		return
+	var status: String
+	if not bool(cfg.light_master_enabled):
+		status = tr("Aquarium lighting switched off at the master control.")
+	elif not bool(cfg.tank_lights_on):
+		status = tr("Aquarium lamp off. Daylight has separate controls.")
+	elif float(cfg.tank_fixture_intensity) <= 0.001:
+		status = tr("Aquarium lamp dimmed to zero.")
+	elif bool(cfg.fixture_follow_day_cycle):
+		var output: float = LightingRig.fixture_output(cfg, SimGate.daylight(_sim, 1.0))
+		if output <= 0.001:
+			status = tr("Lamp resting for the night. Automatic light returns at dawn.")
+		elif output < float(cfg.tank_fixture_intensity) * 0.95:
+			status = tr("Automatic light: gentle sunrise / sunset fade.")
+		else:
+			status = tr("Lamp active on its daylight schedule.")
+	else:
+		status = tr("Lamp active continuously, including at night.")
+	if _light_fixture_status.text != status:
+		_light_fixture_status.text = status
 
 
 func _position_light_panel() -> void:
@@ -11288,9 +11414,9 @@ func _position_light_panel() -> void:
 
 
 func _sync_light_btn() -> void:
-	if _light_btn == null:
+	if not is_instance_valid(_light_btn):
 		return
-	var open: bool = _light_panel != null and _light_panel.visible
+	var open: bool = is_instance_valid(_light_panel) and _light_panel.visible
 	PanelTheme.style_rail_button(_light_btn, open)
 
 
@@ -11303,7 +11429,7 @@ func _light_mark_custom() -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.lighting_preset = "custom"
-	if _light_preset_option != null and _light_preset_option.item_count > 0:
+	if is_instance_valid(_light_preset_option) and _light_preset_option.item_count > 0:
 		_light_preset_option.select(0)  # index 0 is Custom
 
 
@@ -11311,6 +11437,71 @@ func _on_light_tank_toggled(v: bool) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.tank_lights_on = v
+	_refresh_fixture_status()
+	_light_mark_custom()
+
+
+func _on_fixture_cycle_toggled(v: bool) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.fixture_follow_day_cycle = v
+	_refresh_fixture_status()
+	_light_mark_custom()
+
+
+func _on_light_beams_toggled(v: bool) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.light_volumetric = v
+	_light_mark_custom()
+
+
+func _on_beam_strength_changed(v: float) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.beam_strength = v
+	if is_instance_valid(_light_beam_strength_value):
+		_light_beam_strength_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_room_darkness_changed(v: float) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.room_darkness = v
+	if is_instance_valid(_light_room_darkness_value):
+		_light_room_darkness_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_backlight_toggled(v: bool) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.backlight_enabled = v
+		# The saved default is off at zero intensity. Enabling that light
+		# should produce a gentle visible fill on the first click.
+		if v and float(cfg.backlight_intensity) <= 0.0:
+			cfg.backlight_intensity = 0.45
+			if is_instance_valid(_light_backlight_intensity_slider):
+				_light_backlight_intensity_slider.set_value_no_signal(0.45)
+				_light_backlight_intensity_value.text = "0.45"
+	_light_mark_custom()
+
+
+func _on_backlight_intensity_changed(v: float) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.backlight_intensity = v
+	if is_instance_valid(_light_backlight_intensity_value):
+		_light_backlight_intensity_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_backlight_color_changed(c: Color) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.backlight_color = c
+	_light_mark_custom()
 
 
 func _on_heater_toggled(v: bool) -> void:
@@ -11331,7 +11522,7 @@ func _on_global_intensity_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.global_intensity = v
-	if _light_global_intensity_value != null:
+	if is_instance_valid(_light_global_intensity_value):
 		_light_global_intensity_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11340,7 +11531,7 @@ func _on_global_warmth_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.global_warmth = v
-	if _light_global_warmth_value != null:
+	if is_instance_valid(_light_global_warmth_value):
 		_light_global_warmth_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11349,8 +11540,9 @@ func _on_fixture_intensity_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.tank_fixture_intensity = v
-	if _light_fixture_intensity_value != null:
+	if is_instance_valid(_light_fixture_intensity_value):
 		_light_fixture_intensity_value.text = "%.2f" % v
+	_refresh_fixture_status()
 	_light_mark_custom()
 
 
@@ -11365,6 +11557,7 @@ func _on_light_master_toggled(v: bool) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.light_master_enabled = v
+	_refresh_fixture_status()
 	_light_mark_custom()
 
 
@@ -11376,10 +11569,14 @@ func _on_day_cycle_toggled(v: bool) -> void:
 
 
 func _on_day_phase_changed(v: float) -> void:
-	if _sim != null:
-		_sim.day_phase = fposmod(v, 1.0)
-	if _light_day_phase_value != null:
-		_light_day_phase_value.text = _day_phase_label(v)
+	var phase: float = fposmod(v, 1.0)
+	if is_instance_valid(_sim):
+		_sim.day_phase = phase
+	if is_instance_valid(_light_day_phase_slider):
+		_light_day_phase_slider.set_value_no_signal(phase)
+	if is_instance_valid(_light_day_phase_value):
+		_light_day_phase_value.text = _day_phase_label(phase)
+	_refresh_fixture_status()
 	# Day phase is a runtime value, not part of the preset definition, so
 	# don't snap to Custom here — the user wants to scrub freely.
 
@@ -11388,7 +11585,7 @@ func _on_day_length_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.day_length_s = v
-	if _light_day_length_value != null:
+	if is_instance_valid(_light_day_length_value):
 		_light_day_length_value.text = _fmt_duration(v)
 	_light_mark_custom()
 
@@ -11397,7 +11594,7 @@ func _on_sunset_drama_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.sunset_drama = v
-	if _light_sunset_drama_value != null:
+	if is_instance_valid(_light_sunset_drama_value):
 		_light_sunset_drama_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11413,7 +11610,7 @@ func _on_moon_intensity_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.moonlight_intensity = v
-	if _light_moon_intensity_value != null:
+	if is_instance_valid(_light_moon_intensity_value):
 		_light_moon_intensity_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11475,7 +11672,7 @@ func _on_pp_vignette_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_vignette_strength = v
-	if _light_pp_vignette_value != null:
+	if is_instance_valid(_light_pp_vignette_value):
 		_light_pp_vignette_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11484,7 +11681,7 @@ func _on_pp_bloom_threshold_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_bloom_threshold = v
-	if _light_pp_bloom_threshold_value != null:
+	if is_instance_valid(_light_pp_bloom_threshold_value):
 		_light_pp_bloom_threshold_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11493,7 +11690,7 @@ func _on_pp_bloom_strength_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_bloom_strength = v
-	if _light_pp_bloom_strength_value != null:
+	if is_instance_valid(_light_pp_bloom_strength_value):
 		_light_pp_bloom_strength_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11502,7 +11699,7 @@ func _on_pp_outline_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.outline_strength = v
-	if _light_pp_outline_value != null:
+	if is_instance_valid(_light_pp_outline_value):
 		_light_pp_outline_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11511,7 +11708,7 @@ func _on_pp_dither_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.dither_strength = v
-	if _light_pp_dither_value != null:
+	if is_instance_valid(_light_pp_dither_value):
 		_light_pp_dither_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11520,7 +11717,7 @@ func _on_pp_crt_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.crt_strength = v
-	if _light_pp_crt_value != null:
+	if is_instance_valid(_light_pp_crt_value):
 		_light_pp_crt_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11529,7 +11726,7 @@ func _on_pp_vignette_falloff_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.pp_vignette_falloff = v
-	if _light_pp_vignette_falloff_value != null:
+	if is_instance_valid(_light_pp_vignette_falloff_value):
 		_light_pp_vignette_falloff_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11552,7 +11749,7 @@ func _on_ambient_floor_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.ambient_floor = v
-	if _light_ambient_floor_value != null:
+	if is_instance_valid(_light_ambient_floor_value):
 		_light_ambient_floor_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11561,7 +11758,7 @@ func _on_biolum_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.biolum_multiplier = v
-	if _light_biolum_value != null:
+	if is_instance_valid(_light_biolum_value):
 		_light_biolum_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11570,7 +11767,7 @@ func _on_caustic_strength_changed(v: float) -> void:
 	var cfg := _cfg()
 	if cfg != null:
 		cfg.caustic_intensity_user = v
-	if _light_caustic_strength_value != null:
+	if is_instance_valid(_light_caustic_strength_value):
 		_light_caustic_strength_value.text = "%.2f" % v
 	_light_mark_custom()
 
@@ -11630,7 +11827,7 @@ func _on_lighting_randomize_pressed() -> void:
 	cfg.global_intensity = clampf(float(cfg.global_intensity) * randf_range(0.85, 1.15), 0.0, 1.0)
 	cfg.global_warmth = clampf(float(cfg.global_warmth) + randf_range(-0.12, 0.12), 0.0, 1.0)
 	cfg.tank_fixture_intensity = clampf(
-		float(cfg.tank_fixture_intensity) * randf_range(0.85, 1.15), 0.0, 1.0)
+		float(cfg.tank_fixture_intensity) * randf_range(0.85, 1.15), 0.0, 1.5)
 	cfg.sunset_drama = clampf(
 		float(cfg.sunset_drama) * randf_range(0.85, 1.20), 0.0, 2.5)
 	cfg.lighting_preset = "custom"  # randomized → no longer pure preset
@@ -11643,7 +11840,8 @@ func _on_lighting_randomize_pressed() -> void:
 # _light_applying_preset guard prevents the slider change events from
 # snapping the dropdown back to "Custom" mid-apply.
 func _on_lighting_preset_selected(idx: int) -> void:
-	if _light_preset_option == null:
+	if not is_instance_valid(_light_preset_option) \
+			or idx < 0 or idx >= _light_preset_option.item_count:
 		return
 	var slug: String = String(_light_preset_option.get_item_metadata(idx))
 	var cfg := _cfg()
@@ -11721,7 +11919,7 @@ func _close_panels_for_immersive() -> void:
 	]:
 		if panel != null and panel.visible:
 			panel.visible = false
-	if _light_btn != null:
+	if is_instance_valid(_light_btn):
 		_sync_light_btn()
 
 
@@ -12560,7 +12758,7 @@ func _dismiss_blocking_overlays() -> bool:
 		_close_notifications_panel()
 		_sync_rail_toggles()
 		return true
-	if _light_panel != null and _light_panel.visible:
+	if is_instance_valid(_light_panel) and _light_panel.visible:
 		_close_light_panel()
 		return true
 	# is_panel_open() rather than .visible: a panel mid-close is still visible,
@@ -12923,7 +13121,7 @@ func _light_cfg() -> Node:
 
 
 func _ensure_light_gizmo() -> LightGizmo:
-	if _light_gizmo != null and is_instance_valid(_light_gizmo):
+	if is_instance_valid(_light_gizmo) and is_instance_valid(_light_gizmo):
 		return _light_gizmo
 	_light_gizmo = LightGizmo.new()
 	_light_gizmo.name = "LightGizmo"
@@ -12971,7 +13169,7 @@ func _light_aim_window() -> Vector2:
 func _refresh_light_gizmo(window_pos: Vector2) -> void:
 	var lamp: Vector2 = _light_lamp_window()
 	if lamp == Vector2.INF:
-		if _light_gizmo != null and is_instance_valid(_light_gizmo):
+		if is_instance_valid(_light_gizmo) and is_instance_valid(_light_gizmo):
 			_light_gizmo.refresh(Vector2.INF, Vector2.INF, 0.0,
 				LightHandle.NONE, LightHandle.NONE)
 		_set_light_hover(LightHandle.NONE)

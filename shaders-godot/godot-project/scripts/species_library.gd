@@ -401,7 +401,8 @@ func organism_type(genome: Dictionary) -> String:
 	return String(genome.get("organism_type", ORGANISM_FISH))
 
 
-func parent_keys_for_breeding(genomes: Array) -> Array:
+# Pure lineage calculation: reproduction must not allocate an unowned Node.
+static func parent_keys_for_breeding(genomes: Array) -> Array:
 	var out: Array = []
 	for g in genomes:
 		if g is Dictionary and not (g as Dictionary).is_empty():
@@ -415,12 +416,12 @@ func species_key(g: Dictionary) -> String:
 	return make_species_key(g)
 
 
-func make_species_key(g: Dictionary) -> String:
+static func make_species_key(g: Dictionary) -> String:
 	return _species_key_from_genome(g)
 
 
-func _species_key_from_genome(g: Dictionary) -> String:
-	match organism_type(g):
+static func _species_key_from_genome(g: Dictionary) -> String:
+	match String(g.get("organism_type", ORGANISM_FISH)):
 		ORGANISM_SHRIMP:
 			return _species_key_shrimp(g)
 		ORGANISM_SNAIL:
@@ -431,7 +432,7 @@ func _species_key_from_genome(g: Dictionary) -> String:
 			return _species_key_fish(g)
 
 
-func _species_key_fish(g: Dictionary) -> String:
+static func _species_key_fish(g: Dictionary) -> String:
 	var parts: Array = [
 		"fish",
 		String(g.get("species", "?")),
@@ -470,7 +471,7 @@ func _species_key_fish(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-func _species_key_shrimp(g: Dictionary) -> String:
+static func _species_key_shrimp(g: Dictionary) -> String:
 	var parts: Array = [
 		"shrimp",
 		String(g.get("species", "shrimp")),
@@ -490,7 +491,7 @@ func _species_key_shrimp(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-func _species_key_snail(g: Dictionary) -> String:
+static func _species_key_snail(g: Dictionary) -> String:
 	var parts: Array = [
 		"snail",
 		_color_to_hex(g.get("shell_color", Color.WHITE)),
@@ -506,7 +507,7 @@ func _species_key_snail(g: Dictionary) -> String:
 	return "::".join(parts)
 
 
-func _species_key_plant(g: Dictionary) -> String:
+static func _species_key_plant(g: Dictionary) -> String:
 	var ramp_parts: Array = []
 	var ramp_override_v: Variant = g.get("ramp_override", [])
 	if ramp_override_v is Array:
@@ -663,7 +664,7 @@ func genome_from_serialisable(g: Dictionary) -> Dictionary:
 	return out
 
 
-func _color_to_hex(c: Variant) -> String:
+static func _color_to_hex(c: Variant) -> String:
 	if c is Color:
 		return (c as Color).to_html(false)
 	if c is Array and (c as Array).size() >= 3:

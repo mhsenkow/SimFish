@@ -471,4 +471,8 @@ func _finish(fish: Array) -> void:
 		f.close()
 	print(text)
 	print("[fish_probe] wrote ", ProjectSettings.globalize_path(_out))
+	set_process(false)
+	_main.queue_free()
+	await get_tree().process_frame
+	await get_tree().process_frame
 	get_tree().quit(0)

@@ -243,8 +243,8 @@ static func snapshot_prev(f: Fish) -> Dictionary:
 	return {}
 
 
-static func store_snapshot(f: Fish, snap: Dictionary, ms = null) -> void:
-	var entry: Dictionary = {"t": Time.get_ticks_msec(), "snap": snap.duplicate(true)}
+static func store_snapshot(f: Fish, snap: Dictionary, ms = null, adopt: bool = false) -> void:
+	var entry: Dictionary = {"t": Time.get_ticks_msec(), "snap": snap if adopt else snap.duplicate(true)}
 	if ms != null and f.get("_mind_snapshot_prev") is Dictionary:
 		entry["diff"] = ms.diff(f._mind_snapshot_prev as Dictionary)
 	f._mind_snapshot_prev = snap.duplicate(true)

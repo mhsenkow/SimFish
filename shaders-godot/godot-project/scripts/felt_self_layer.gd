@@ -21,14 +21,22 @@ static func set_worker_felt_self_override(v: Variant) -> void:
 	_worker_felt_self_override = v
 
 
+static var _tank_config_cache: Node = null
+
+
 static func _tank_config() -> Node:
+	# Cache only the autoload identity. Flags remain live, including toggles
+	# made in the same frame; worker paths use their own immutable snapshot.
+	if is_instance_valid(_tank_config_cache) and _tank_config_cache.is_inside_tree():
+		return _tank_config_cache
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml == null:
 		return null
 	var st: SceneTree = ml as SceneTree
 	if st == null or st.root == null or not st.root.is_inside_tree():
 		return null
-	return st.root.get_node_or_null("/root/TankConfig")
+	_tank_config_cache = st.root.get_node_or_null("/root/TankConfig")
+	return _tank_config_cache
 
 
 static func layer_enabled() -> bool:

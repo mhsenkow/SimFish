@@ -325,8 +325,10 @@ const MIN_HEALTH_FOR_FLOOR: float = 0.4
 # Called by a passing fish to deflect the plant. world_dir is the fish's
 # horizontal travel direction; amount scales with its speed/size.
 func brush(world_dir: Vector3, amount: float) -> void:
-	wake_plant("damage")
-	var add := Vector2(world_dir.x, world_dir.z) * clampf(amount, 0.65, 0.72)
+	if amount <= 0.0 or not world_dir.is_finite():
+		return
+	wake_plant("contact")
+	var add := Vector2(world_dir.x, world_dir.z).limit_length(1.0) * clampf(amount, 0.0, 0.72)
 	_brush_bend = (_brush_bend + add).limit_length(0.55)
 	if amount > 0.22 and _health_smooth > 0.55 and randf() < 0.35:
 		_release_brush_bubbles()
@@ -428,8 +430,6 @@ var _stem_batch: VoxelBatch = null
 var _stem_mat: ShaderMaterial = null
 var _senescence_batch: VoxelBatch = null
 var _senescence_mat: ShaderMaterial = null
-var _blush_last_sat: float = -1.0
-var _blush_last_warmth: float = -99.0
 var _blush_last_sss: float = -1.0
 var _blush_last_vibrancy: float = -1.0
 const PLANT_LOD_BASE_RANGE: float = 38.0
@@ -886,7 +886,7 @@ func _warm_start_growth_vitals() -> void:
 	var w: Node = sim_v.get_parent()
 	if w == null or not w.has_method("light_penetration_at"):
 		return
-	var dl: float = SimGate.daylight(sim_v, 0.5)
+	var dl: float = _photosynthetic_exposure(sim_v, 0.5)
 	var lp: float = float(w.light_penetration_at(_world_pos if _world_pos != Vector3.ZERO else global_position))
 	_light_avg = maxf(_light_avg, lp * dl * 0.85)
 
@@ -3016,9 +3016,7 @@ func _red_boosted_ramp(base_ramp: Array) -> Array:
 	if base_ramp.size() < 4 or red_potential <= 0.0:
 		return base_ramp
 	var sim_d: Node = _find_sim()
-	var light: float = 1.0
-	if sim_d != null and sim_d.has_method("daylight"):
-		light = clampf(float(sim_d.daylight()), 0.0, 1.0)
+	var light: float = clampf(_photosynthetic_exposure(sim_d, 1.0), 0.0, 1.0)
 	var shade_term: float = clampf(_shade_mult, 0.5, 1.0)
 	var co2_now: float = 0.0
 	if sim_d != null and sim_d.has_method("co2_level"):
@@ -3153,10 +3151,12 @@ func _recompute_shade() -> void:
 				candidates.append(child)
 	var rad2: float = SHADE_RADIUS * SHADE_RADIUS
 	for child in candidates:
-		if child == self or not (child is Plant):
+		# Cached neighbors can disappear between grid rebuilds. Even `is`
+		# raises on a freed Object, so validity must precede the type check.
+		if not is_instance_valid(child) or not (child is Plant):
 			continue
 		var op: Plant = child
-		if not is_instance_valid(op):
+		if op == self or op.is_queued_for_deletion():
 			continue
 		var dx: float = op._world_pos.x - _world_pos.x
 		var dz: float = op._world_pos.z - _world_pos.z
@@ -3168,7 +3168,7 @@ func _recompute_shade() -> void:
 
 
 # Compute & apply pale (CO₂) or yellow (iron) tint to the topmost voxels.
-# Reads sim.daylight() and uses growth_progress as an indirect "stalled
+# Reads effective illumination and uses growth_progress as an indirect "stalled
 # photosynthesis" signal. We tint the top quartile of voxels because
 # deficiencies show first on new growth in real plants (carbon demand
 # and iron mobility both favor the youngest tissue).
@@ -3176,7 +3176,7 @@ func _apply_deficiency_tints(nutrient_mult: float) -> void:
 	if voxels.is_empty():
 		return
 	var sim_driver: Node = _find_sim()
-	var daylight: float = SimGate.daylight(sim_driver, 1.0)
+	var daylight: float = _photosynthetic_exposure(sim_driver, 1.0)
 	# Symptoms now report measured local availability. Environmental guards
 	# keep the cues readable: carbon demand matters under light, and iron
 	# chlorosis appears on otherwise viable tissue.
@@ -3647,8 +3647,9 @@ func _sleep_environment_signature(substrate: SubstrateGrid) -> int:
 	var sim: Node = _find_sim()
 	var daylight_bucket: int = int(round(sim.daylight() * 8.0)) \
 		if sim != null and sim.has_method("daylight") else 4
+	var irradiance_bucket: int = int(round(_photosynthetic_exposure(sim, 0.5) * 8.0))
 	var flow_bucket: int = int(round(_get_flow_bias() * 10.0))
-	return hash([nutrient_bucket, daylight_bucket, flow_bucket])
+	return hash([nutrient_bucket, daylight_bucket, irradiance_bucket, flow_bucket])
 
 
 func tick(dt: float, substrate: SubstrateGrid) -> void:
@@ -3859,21 +3860,20 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			var temp_mult: float = 1.0 - absf(warmth - temp_opt) * 1.4
 			nutrient_mult *= clampf(temp_mult, 0.35, 1.15)
 
-	# Diel starch + light average (#3, #2)
-	_light_avg = lerpf(_light_avg, light_pen * (SimGate.daylight(sim_v, 0.5)), dt * 0.08)
-	var dl_s: float = SimGate.daylight(sim_v, 0.5)
-	if dl_s > 0.35:
-		_starch = clampf(_starch + dt * light_pen * 0.06, 0.0, 1.0)
-	else:
-		_starch = maxf(0.0, _starch - dt * 0.02)
+	# Photosynthetic starch + light average (#3, #2). The lamp supplies carbon
+	# even at night; master blackout removes it even at noon. Stored starch
+	# still supports gradual growth during the dark portion of the cycle.
+	var dl_s: float = _photosynthetic_exposure(sim_v, 0.5)
+	_tick_light_resources(dt, light_pen, dl_s)
 	if _starch < 0.12 and dl_s < 0.25:
 		nutrient_mult *= 0.55
 
 	# Induced defense (#29)
 	if _grazing_pressure > 0.35:
 		nutrient_mult *= 1.0 - clampf((_grazing_pressure - 0.35) * 0.4, 0.0, 0.25)
-		_grazing_pressure = maxf(0.0, _grazing_pressure - dt * 0.015)
 		palatability = clampf(palatability - dt * 0.002, 0.05, 1.0)
+
+	_grazing_pressure = maxf(0.0, _grazing_pressure - dt * 0.015)
 
 	# Thigmomorphogenesis (#4)
 	var flow_mag: float = absf(_get_flow_bias())
@@ -4078,6 +4078,20 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 								"%s is melting — leaves dropping, will regrow from the rhizome."
 								% label, 2)
 							_record_melt_cluster(sim_d)
+
+
+func _tick_light_resources(dt: float, light_pen: float, exposure: float) -> void:
+	var water_light: float = clampf(exposure * light_pen, 0.0, 1.5)
+	var local_light: float = water_light * _shade_mult
+	# Exact exponential keeps distance-bucketed coarse ticks from overshooting
+	# the mean after dimming the lights or restoring a sleeping mature plant.
+	# Growth already applies _shade_mult in its light limitation stack, so the
+	# stored acclimation average excludes that second canopy multiplier.
+	_light_avg = lerpf(_light_avg, water_light, 1.0 - exp(-maxf(0.0, dt) * 0.08))
+	var usable: float = clampf(local_light, 0.0, 1.0)
+	var carbon_gain: float = usable * 0.06
+	var dark_draw: float = (1.0 - usable) * 0.02
+	_starch = clampf(_starch + maxf(0.0, dt) * (carbon_gain - dark_draw), 0.0, 1.0)
 
 
 func _tick_resource_transport(dt: float) -> void:
@@ -4573,6 +4587,21 @@ func _notify_growth_audio() -> void:
 		sim_driver._play_ambient_event("plant", intensity)
 
 
+func _photosynthetic_exposure(sim_v: Node, fallback: float = 0.5) -> float:
+	var tank_light: float = SimGate.irradiance(sim_v, fallback)
+	if not is_instance_valid(sim_v):
+		return tank_light
+	var world: Node = sim_v.get_parent()
+	if world == null:
+		return tank_light
+	var pos: Vector3 = _world_pos
+	if pos == Vector3.ZERO:
+		pos = global_position if is_inside_tree() else position
+	# Source geometry is sampled before the existing water/floater absorption
+	# and canopy shade. Applying those here too would shade the plant twice.
+	return SimGate.irradiance_at(world, pos, tank_light)
+
+
 func _find_sim() -> Node:
 	if _sim_driver_ref != null and is_instance_valid(_sim_driver_ref):
 		return _sim_driver_ref
@@ -4625,7 +4654,7 @@ func _tick_pearling(dt: float) -> void:
 	if not _pearling_eligible:
 		return
 	var o2: float = float(sim_driver.get("dissolved_o2"))
-	var daylight: float = SimGate.daylight(sim_driver, 1.0)
+	var daylight: float = _photosynthetic_exposure(sim_driver, 1.0)
 	# Pearl when: O2 super-saturated + bright light + plant healthy + tall
 	# enough that you'd actually see the bubble stream. CO2-met plants
 	# get a multiplicative boost so a dosed tank reads dramatically — the
@@ -5045,16 +5074,19 @@ func _on_flower_consumed() -> void:
 
 
 func nibble(amount: int) -> int:
+	if amount <= 0:
+		return 0
+	var cleaned: int = _graze_surface_units(amount)
+	amount -= cleaned
+	if amount == 0:
+		return cleaned
 	wake_plant("damage")
 	_grazing_pressure = clampf(_grazing_pressure + float(amount) * 0.08, 0.0, 1.0)
 	_lifetime_grazing_pressure = clampf(
 		_lifetime_grazing_pressure + float(amount) * 0.025, 0.0, 1.0)
-	# Aufwuchs grazing (#30): eat leaf biofilm without always removing tissue.
-	if _graze_leaf_biofilm(amount):
-		return amount
 	if has_flower and not bloom_voxels.is_empty() \
 			and flower_stage >= FlowerStage.BUD:
-		return _nibble_flower(amount)
+		return cleaned + _nibble_flower(amount)
 	var removed: int = 0
 	var any_stem_lost: bool = false
 	var stem_before: int = voxels.size()
@@ -5105,7 +5137,7 @@ func nibble(amount: int) -> int:
 	if current_height <= 0 and voxels.is_empty() and not _has_live_leaf_voxel():
 		_on_death()
 		queue_free()
-	return removed
+	return cleaned + removed
 
 
 func _register_leaf_age(birth_t: float) -> void:
@@ -5162,32 +5194,87 @@ func _rasp_leaf_scar() -> bool:
 	return _take_youngest_leaf_voxel()
 
 
-func _graze_leaf_biofilm(amount: int) -> bool:
-	var grazed: int = 0
-	for i in mini(amount, _leaf_states.size()):
-		var idx: int = _leaf_states.size() - 1 - i
-		var st: Dictionary = _leaf_states[idx]
-		# Grazers strip the aufwuchs off a ribbon blade as well as the film.
-		var hair: float = float(st.get("hair", 0.0))
-		if hair > 0.05:
-			st.hair = maxf(0.0, hair - 0.2)
-		var bio: float = float(st.get("biofilm", 0.0))
-		if bio < 0.08:
+# Surface cleaning feeds detritivores without clipping stems or triggering
+# tissue-damage defenses. Optional position prevents remote leaf harvesting.
+func graze_surface_food(amount: int, at: Vector3 = Vector3.INF, reach: float = 0.5) -> int:
+	return _graze_surface_units(maxi(0, amount), at, reach)
+
+
+func _leaf_surface_position(index: int) -> Vector3:
+	if index < 0 or index >= _leaf_groups.size():
+		return Vector3.INF
+	var group: Array = _leaf_groups[index]
+	for h in group:
+		if h is VoxelBatch.Handle and h.alive and h.visible:
+			return to_global(h.local_pos)
+	return Vector3.INF
+
+
+func surface_graze_site(from: Vector3) -> Vector3:
+	var best: Vector3 = Vector3.INF
+	var best_d2: float = INF
+	for i in _leaf_states.size():
+		var st: Dictionary = _leaf_states[i]
+		if float(st.get("biofilm", 0.0)) < 0.08 and float(st.get("hair", 0.0)) <= 0.05:
 			continue
+		var site: Vector3 = _leaf_surface_position(i)
+		if not site.is_finite():
+			continue
+		var d2: float = from.distance_squared_to(site)
+		if d2 < best_d2:
+			best_d2 = d2
+			best = site
+	return best
+
+
+func habitat_cover_score() -> float:
+	if is_dying or _melt_active or health < 0.25:
+		return 0.0
+	return clampf(float(_leaf_groups.size()) / 6.0, 0.0, 1.0) * clampf(health, 0.0, 1.0)
+
+
+func _graze_leaf_biofilm(amount: int) -> bool:
+	return _graze_surface_units(amount) >= amount and amount > 0
+
+
+func _graze_surface_units(amount: int, at: Vector3 = Vector3.INF, reach: float = 0.5) -> int:
+	var grazed: int = 0
+	for idx in range(_leaf_states.size() - 1, -1, -1):
+		if grazed >= amount:
+			break
+		var st: Dictionary = _leaf_states[idx]
+		var hair: float = float(st.get("hair", 0.0))
+		var bio: float = float(st.get("biofilm", 0.0))
+		if bio < 0.08 and hair <= 0.05:
+			continue
+		var site: Vector3 = _leaf_surface_position(idx)
+		if not site.is_finite() or (at.is_finite() and site.distance_squared_to(at) > reach * reach):
+			continue
+		st.hair = maxf(0.0, hair - 0.2)
 		st.biofilm = maxf(0.0, bio - 0.35)
-		if float(st.get("gsa", 0.0)) > 0.05:
-			st.gsa = maxf(0.0, float(st.get("gsa", 0.0)) - 0.25)
+		st.gsa = maxf(0.0, float(st.get("gsa", 0.0)) - 0.25)
 		grazed += 1
-	return grazed >= amount
+	if grazed > 0:
+		wake_plant("surface_cleaning")
+		if at.is_finite():
+			var touch: Vector3 = global_position - at
+			if touch.length_squared() > 1e-6:
+				brush(touch.normalized(), 0.018)
+	return grazed
 
 
-func graze_detritus_fleck() -> bool:
-	if _detritus_fleck_nodes.is_empty():
-		return false
-	var fleck: MeshInstance3D = _detritus_fleck_nodes.pop_back()
-	if is_instance_valid(fleck):
+func graze_detritus_fleck(at: Vector3 = Vector3.INF, reach: float = 0.5) -> bool:
+	for i in range(_detritus_fleck_nodes.size() - 1, -1, -1):
+		var fleck: MeshInstance3D = _detritus_fleck_nodes[i]
+		if not is_instance_valid(fleck) or fleck.is_queued_for_deletion():
+			_detritus_fleck_nodes.remove_at(i)
+			continue
+		if at.is_finite() and fleck.global_position.distance_squared_to(at) > reach * reach:
+			continue
+		_detritus_fleck_nodes.remove_at(i)
 		fleck.queue_free()
-	return true
+		return true
+	return false
 
 
 func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> void:
@@ -5206,11 +5293,6 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 			var age_s: float = float(st.get("age_s", 0.0))
 			if age_s > 45.0:
 				st.hair = clampf(float(st.get("hair", 0.0)) + dt * hair_rate, 0.0, 1.0)
-		if leaf_form in ["needle", "downy", "pinnate"] and sim_v != null:
-			var waste_arr: Variant = sim_v.get("waste")
-			if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
-				substrate.add_at(_world_pos, 0.002)
-			_tick_detritus_flecks(dt, sim_v)
 		# New growth opens light lime and darkens as it matures.
 		if float(st.age_s) < YOUTH_TINT_S + 2.0:
 			_tint_leaf_youth(i, st)
@@ -5220,6 +5302,11 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 			shed_indices.append(i)
 		elif int(st.get("phase", LeafPhase.MATURE)) == LeafPhase.SENESCENT:
 			_paint_leaf_senescence(i, st)
+	if leaf_form in ["needle", "downy", "pinnate"] and sim_v != null:
+		var waste_arr: Variant = sim_v.get("waste")
+		if waste_arr is Array and (waste_arr as Array).size() > 0 and randf() < dt * 0.15:
+			substrate.add_at(_world_pos, 0.002)
+		_tick_detritus_flecks(dt, sim_v)
 	# Shed oldest-first so parallel indices stay valid while popping.
 	shed_indices.reverse()
 	for si in shed_indices:
@@ -5232,28 +5319,14 @@ func _tick_leaf_ecology(dt: float, substrate: SubstrateGrid, sim_v: Node) -> voi
 		_tick_nyctinasty(sim_v)
 		_tick_dynamic_blush(sim_v)
 		_tick_leaf_hair_visuals()
-		if _foliage_mat != null and leaf_form in ["paddle", "spade", "lobed"]:
-			var film_avg: float = 0.0
-			var gsa_avg: float = 0.0
-			for st2 in _leaf_states:
-				film_avg += float(st2.get("biofilm", 0.0))
-				gsa_avg += float(st2.get("gsa", 0.0))
-			if not _leaf_states.is_empty():
-				film_avg /= float(_leaf_states.size())
-				gsa_avg /= float(_leaf_states.size())
-				var film_mix: float = clampf(film_avg * 0.4 + gsa_avg * 0.55, 0.0, 0.65)
-				_foliage_mat.set_shader_parameter("palette_saturation",
-					lerpf(float(_foliage_mat.get_shader_parameter("palette_saturation")),
-						0.72, film_mix))
-				_foliage_mat.set_shader_parameter("palette_warmth",
-					float(_foliage_mat.get_shader_parameter("palette_warmth")) + gsa_avg * 0.18)
+
 
 
 func _tick_leaf_light_dose(dt: float, sim_v: Node) -> void:
 	if red_potential <= 0.0 or _leaf_states.is_empty():
 		return
 	var daylight_now: float = clampf(
-		SimGate.daylight(sim_v, 0.5),
+		_photosynthetic_exposure(sim_v, 0.5),
 		0.0, 1.0)
 	for i in mini(_leaf_states.size(), _leaf_groups.size()):
 		var state: Dictionary = _leaf_states[i]
@@ -5397,7 +5470,7 @@ var _leaf_hair_nodes: Array = []
 # Aufwuchs accrual multiplier: more light and more algae in the tank grow
 # it faster (about 0.8 at a middling tank, the old flat rate).
 func _aufwuchs_pressure(sim_v: Node) -> float:
-	var light: float = clampf(SimGate.daylight(sim_v, 0.5), 0.0, 1.0)
+	var light: float = clampf(_photosynthetic_exposure(sim_v, 0.5), 0.0, 1.0)
 	var algae: float = 0.6
 	var w: Node = sim_v.get_parent() if sim_v != null else null
 	if w != null and w.get("biofilm_progress") != null:
@@ -5486,6 +5559,10 @@ func _tick_detritus_flecks(dt: float, sim_v: Node) -> void:
 	var waste_arr: Variant = sim_v.get("waste")
 	if not (waste_arr is Array) or (waste_arr as Array).is_empty():
 		return
+	for i in range(_detritus_fleck_nodes.size() - 1, -1, -1):
+		var old_fleck: MeshInstance3D = _detritus_fleck_nodes[i]
+		if not is_instance_valid(old_fleck) or old_fleck.is_queued_for_deletion():
+			_detritus_fleck_nodes.remove_at(i)
 	if _detritus_fleck_nodes.size() >= 3:
 		return
 	if randf() > dt * 0.08:
@@ -5497,12 +5574,19 @@ func _tick_detritus_flecks(dt: float, sim_v: Node) -> void:
 	fleck.position = Vector3(randf_range(-0.15, 0.15), y_off, randf_range(-0.15, 0.15))
 	add_child(fleck)
 	_detritus_fleck_nodes.append(fleck)
-	var tw := create_tween()
+	# A grazed fleck dies early: its timer must die with it. Bind a weak
+	# reference instead of capturing a Node that may be freed by feeding.
+	var tw := fleck.create_tween()
 	tw.tween_interval(randf_range(8.0, 18.0))
-	tw.tween_callback(func():
-		if is_instance_valid(fleck):
-			fleck.queue_free()
-		_detritus_fleck_nodes.erase(fleck))
+	tw.tween_callback(_expire_detritus_fleck.bind(weakref(fleck)))
+
+
+func _expire_detritus_fleck(fleck_ref: WeakRef) -> void:
+	var fleck: MeshInstance3D = fleck_ref.get_ref() as MeshInstance3D
+	if not is_instance_valid(fleck):
+		return
+	_detritus_fleck_nodes.erase(fleck)
+	fleck.queue_free()
 
 
 func _tick_age_senescence(dt: float) -> void:
@@ -5614,7 +5698,6 @@ func _apply_limiting_factor_tint() -> void:
 
 
 func _tick_dynamic_blush(sim_v: Node) -> void:
-	_apply_limiting_factor_tint()
 	if _foliage_mat == null:
 		return
 	var w: Node = sim_v.get_parent() if sim_v != null else null
@@ -5626,12 +5709,20 @@ func _tick_dynamic_blush(sim_v: Node) -> void:
 		mature = clampf(float(sim_v.tank_age_s) / 3600.0, 0.0, 1.0)
 	var sat: float = lerpf(1.0, 0.78, depth * 0.55)
 	var warmth: float = mature * 0.12 - depth * 0.1
-	if absf(sat - _blush_last_sat) > 0.05:
-		_foliage_mat.set_shader_parameter("palette_saturation", sat)
-		_blush_last_sat = sat
-	if absf(warmth - _blush_last_warmth) > 0.05:
-		_foliage_mat.set_shader_parameter("palette_warmth", warmth)
-		_blush_last_warmth = warmth
+	# Compose current film with the base tint, never with the last tinted result.
+	if leaf_form in ["paddle", "spade", "lobed"] and not _leaf_states.is_empty():
+		var film_avg: float = 0.0
+		var gsa_avg: float = 0.0
+		for state in _leaf_states:
+			film_avg += float(state.get("biofilm", 0.0))
+			gsa_avg += float(state.get("gsa", 0.0))
+		film_avg /= float(_leaf_states.size())
+		gsa_avg /= float(_leaf_states.size())
+		sat = lerpf(sat, 0.72, clampf(film_avg * 0.4 + gsa_avg * 0.55, 0.0, 0.65))
+		warmth += gsa_avg * 0.18
+	_foliage_mat.set_shader_parameter("palette_saturation", sat)
+	_foliage_mat.set_shader_parameter("palette_warmth", warmth)
+	_apply_limiting_factor_tint()
 	if red_potential < 0.05:
 		return
 	var dl: float = SimGate.daylight(sim_v, 0.5)
@@ -5842,14 +5933,14 @@ func _find_pollination_partner() -> Plant:
 	var best: Plant = null
 	var best_d2: float = POLLINATION_RADIUS * POLLINATION_RADIUS
 	for candidate_v in sim_n.query_plants_in_radius(global_position, POLLINATION_RADIUS):
+		if not is_instance_valid(candidate_v) or not (candidate_v is Plant):
+			continue
+		var candidate: Plant = candidate_v
+		if candidate == self or candidate.is_queued_for_deletion():
+			continue
 		if checked >= MAX_POLLINATION_CANDIDATES:
 			break
 		checked += 1
-		if not (candidate_v is Plant):
-			continue
-		var candidate: Plant = candidate_v
-		if candidate == self or not is_instance_valid(candidate):
-			continue
 		if candidate.flower_stage != FlowerStage.MATURE \
 				or not candidate._pollen_ready \
 				or candidate._pollination_cooldown_s > 0.0:

@@ -20,7 +20,9 @@ static func ensure(f) -> Dictionary:
 	var fs_v: Variant = f.get("_felt_self")
 	var fs: Dictionary = {}
 	if fs_v is Dictionary:
-		fs = (fs_v as Dictionary).duplicate(true)
+		# The host owns felt state. Retain sibling-module references, as
+		# FishBinding.ensure does; snapshots copy at explicit boundaries.
+		fs = fs_v as Dictionary
 	if fs.get("relevance") == null or not (fs["relevance"] is Dictionary):
 		fs["relevance"] = {
 			"schema_version": SCHEMA_VERSION,
@@ -28,7 +30,7 @@ static func ensure(f) -> Dictionary:
 			"boredom": 0.0,
 			"last_surprise_t": 0.0,
 		}
-	if f is Object:
+	if f is Object and not (fs_v is Dictionary):
 		(f as Object).set("_felt_self", fs)
 	return fs["relevance"] as Dictionary
 

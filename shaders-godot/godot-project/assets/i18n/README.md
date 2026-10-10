@@ -12,6 +12,8 @@ falls back to readable English rather than a raw identifier.
 1. Extract the current key set:
    `./scripts/godot.sh --headless --path shaders-godot/godot-project --script res://dev/i18n_extract.gd`
    — writes `strings.pot`-style CSV here.
+   The extractor also reads lighting preset names from `TankConfig` so
+   data-defined names used by the Light panel's dropdown are included.
 2. Translate the CSV.
 3. Import it in the Godot editor (it produces `.translation`), leave the
    result in this directory.

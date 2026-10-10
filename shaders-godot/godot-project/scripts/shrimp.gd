@@ -56,6 +56,8 @@ var velocity: Vector3 = Vector3.ZERO
 var heading: Vector3 = Vector3.FORWARD
 var speed: float = 0.0
 var _escape_remaining: float = 0.0
+var _settle_speed: float = 0.0
+var _floor_sample_remaining: float = 0.0
 var _pleopod_phase: float = 0.0
 var _hydro_profile: Dictionary = {}
 var current_mode: Mode = Mode.WANDER
@@ -142,6 +144,7 @@ var _clean_cooldown: float = 0.0
 # SENTIENCE_THE_SPARK B35 — repeat clients at the cleaning station.
 var clean_clients: Dictionary = {}
 var _shelter_target: Plant = null
+var _forage_pause_s: float = 0.0
 const SHELTER_SCAN_RADIUS: float = 3.4
 # Tracks how many successful broods this individual has had. Used for
 # breeding-partner bias - successful breeders are more attractive (cheap
@@ -718,10 +721,10 @@ func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 
 
 func _is_shelter_plant(p: Plant) -> bool:
-	if p == null or not is_instance_valid(p):
+	if p == null or not is_instance_valid(p) or p.is_dying:
 		return false
 	if not (p is Coral):
-		return false
+		return p.habitat_cover_score() > 0.25
 	var form: String = String(p.get("coral_form"))
 	return form == "anemone" or form == "sponge" \
 		or form == "sponge_fresh" or form == "hydra_fresh"
@@ -739,7 +742,7 @@ func _pick_shelter_plant(plants: Array) -> Plant:
 		var d2: float = pl.global_position.distance_squared_to(position)
 		if d2 > SHELTER_SCAN_RADIUS * SHELTER_SCAN_RADIUS:
 			continue
-		var score: float = d2 - float(pl.biomass()) * 0.02
+		var score: float = d2 - float(pl.biomass()) * 0.02 - pl.habitat_cover_score() * 1.5
 		if score < best_score:
 			best_score = score
 		candidates.append({"plant": pl, "score": score})
@@ -790,6 +793,12 @@ func _nearby_fish(radius_sq: float) -> Array:
 func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array: Array, baby_snails: Array,
 		  neighbors: Array, world_bounds: AABB) -> Dictionary:
 	var events: Dictionary = {}
+	_floor_sample_remaining -= dt
+	if _floor_sample_remaining <= 0.0:
+		_floor_sample_remaining = 0.25
+		var habitat: Node = sim.get_parent() if sim != null else null
+		if habitat != null and habitat.has_method("column_surface_y"):
+			substrate_top_y = float(habitat.column_surface_y(global_position.x, global_position.z))
 
 	# Dying shrimp are inert — no behavior, no events. _process handles
 	# the sinking + fading animation and queue_free.
@@ -804,7 +813,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	shelter_bonus = maxf(0.0, shelter_bonus - dt * 0.35)
 	if _shelter_target != null and (not is_instance_valid(_shelter_target) \
-			or _shelter_target.biomass() <= 0):
+			or not _is_shelter_plant(_shelter_target)):
 		_shelter_target = null
 
 	# Gravidity: if carrying eggs, count down and release fry when ready.
@@ -856,6 +865,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# Tier 1.5: anti-predator sheltering. Under nearby fish-predator pressure
 	# shrimp run for anemone/sponge/hydra structure and hunker down in cover.
 	var predator_pressure: float = 0.0
+	var predator_away: Vector3 = Vector3.ZERO
 	if sim != null:
 		for f in _nearby_fish(3.4 * 3.4):
 			if not is_instance_valid(f):
@@ -870,20 +880,28 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				continue
 			var p: float = clampf(1.0 - sqrt(d2f) / 3.4, 0.0, 1.0)
 			predator_pressure = maxf(predator_pressure, p)
+			predator_away += (global_position - f.global_position).normalized() * p
 	# Colony alarm: after a kill (or a predator loitering by the colony) the
 	# whole colony hides, not just the shrimp inside the fish's reach.
 	predator_pressure = maxf(predator_pressure, ColonyMind.shrimp_alarm(sim) * 0.6)
+	if predator_pressure > 0.35 and shelter_bonus < 0.45 and hunger < 0.86 and body_shape != "crab":
+		_escape_remaining = maxf(_escape_remaining, 0.28)
 	if predator_pressure > 0.08 and hunger < 0.86:
 		if _shelter_target == null:
 			_shelter_target = _pick_shelter_plant(plants)
 		if _shelter_target != null:
 			current_mode = Mode.REST
 			var shelter_pos: Vector3 = _shelter_target.global_position
-			shelter_pos.y = _shelter_target.top_world_y() - 0.12
+			if _shelter_target is Coral:
+				shelter_pos.y = _shelter_target.top_world_y() - 0.12
+			else:
+				shelter_pos.y += minf(0.55, maxf(0.08,
+					(_shelter_target.top_world_y() - shelter_pos.y) * 0.35))
 			var ring: float = _instance_yaw()
 			shelter_pos += Vector3(cos(ring), 0.0, sin(ring)) * 0.34
 			var to_cover: Vector3 = shelter_pos - position
 			if to_cover.length() < 0.55:
+				_escape_remaining = 0.0
 				shelter_bonus = maxf(shelter_bonus, 0.45 + predator_pressure * 0.45)
 				target_velocity *= 0.30
 			else:
@@ -891,6 +909,19 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				target_velocity += to_cover.normalized() * max_speed * 1.25
 			_apply_target(target_velocity)
 			return events
+		if predator_away.length_squared() > 1e-6:
+			current_mode = Mode.REST
+			target_velocity += predator_away.normalized() * max_speed * 1.35
+			_apply_target(target_velocity)
+			return events
+
+	# A visible picking bout, interruptible by predators. Keep physiology
+	# ticking while feeding; don't consume another bite every brain tick.
+	if _forage_pause_s > 0.0:
+		_forage_pause_s = maxf(0.0, _forage_pause_s - dt)
+		current_mode = Mode.NIBBLE
+		_apply_target(target_velocity * 0.15)
+		return events
 
 	# Tier 2: already paired - keep courting.
 	if partner != null:
@@ -1138,7 +1169,9 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			var to_w: Vector3 = (wpos + stand_off) - position
 			if to_w.length() < 0.3:
 				events["eat_waste"] = best_w
-				hunger = maxf(0.0, hunger - 0.30)
+				# SimDriver grants nutrition only to the successful claimant.
+				_apply_target(target_velocity * 0.15)
+				return events
 			else:
 				target_velocity += to_w.normalized() * max_speed * 0.9
 				_apply_target(target_velocity)
@@ -1163,8 +1196,11 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				if taken > 0:
 					hunger = maxf(0.0, hunger - 0.25 * float(taken))
 					energy = minf(1.0, energy + 0.08)
+					_forage_pause_s = 0.7
 					events["waste_at"] = position + Vector3(0, -0.05, 0)
 					events["waste_amount"] = 0.10 * float(taken)
+					_apply_target(target_velocity * 0.15)
+					return events
 			else:
 				target_velocity += to_a.normalized() * max_speed * 1.0
 				_apply_target(target_velocity)
@@ -1176,6 +1212,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 		if w_sh != null and w_sh.has_method("query_floaters_in_radius"):
 			var best_fp: FloatingPlant = null
 			var best_fp_d2: float = 4.0
+			var best_root: Vector3 = Vector3.INF
 			for fp in w_sh.query_floaters_in_radius(position, 2.0):
 				if not (fp is FloatingPlant) or fp.root_biofilm < 0.12:
 					continue
@@ -1184,15 +1221,18 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 					if d2r < best_fp_d2:
 						best_fp_d2 = d2r
 						best_fp = fp
+						best_root = rp
 			if best_fp != null:
 				current_mode = Mode.NIBBLE
-				var roots: Array = best_fp.root_world_positions()
-				var tgt: Vector3 = roots[0] if roots.size() > 0 else best_fp.global_position
+				var tgt: Vector3 = best_root
 				if position.distance_squared_to(tgt) < 0.16:
 					var grazed: float = minf(0.15, best_fp.root_biofilm)
 					best_fp.root_biofilm = maxf(0.0, best_fp.root_biofilm - grazed)
 					hunger = maxf(0.0, hunger - grazed * 1.2)
 					energy = minf(1.0, energy + grazed * 0.4)
+					_forage_pause_s = 0.7
+					_apply_target(target_velocity * 0.15)
+					return events
 				else:
 					target_velocity += (tgt - position).normalized() * max_speed * 0.9
 					_apply_target(target_velocity)
@@ -1201,7 +1241,7 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# Tier 6: PLANTS - Only if plants are growing well and algae/food is scarce.
 	if hunger > 0.4:
 		# Corals are fallback forage when detritus/algae are scarce.
-		if hunger > 0.65:
+		if hunger > 0.82:
 			var best_coral: Plant = null
 			var best_coral_d2: float = 6.0
 			for p in _nearby_plants(plants, 2.5):
@@ -1209,6 +1249,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 					continue
 				if p is Coral:
 					var d2c: float = p.global_position.distance_squared_to(position)
+					if body_shape in ["crab", "lobster"] and p.top_world_y() > substrate_top_y + _ground_band() + 0.25:
+						continue
 					if d2c < best_coral_d2:
 						best_coral_d2 = d2c
 						best_coral = p
@@ -1230,44 +1272,29 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 					_apply_target(target_velocity)
 					return events
 
-		# First: a quick grazing pass for plants right next to us on the floor.
+		# Clean reachable leaf surfaces first. A nearby plant's root does
+		# not make food high in its canopy magically reachable.
 		for p in _nearby_plants(plants, 1.2):
-			if not is_instance_valid(p) or p.biomass() < 15:
+			if not is_instance_valid(p) or not (p is Plant):
 				continue
-			if p.has_method("graze_detritus_fleck") and p.graze_detritus_fleck():
+			if p.graze_detritus_fleck(global_position, 0.45):
 				current_mode = Mode.NIBBLE
 				hunger = maxf(0.0, hunger - 0.14)
 				energy = minf(1.0, energy + 0.03)
-				_apply_target(target_velocity)
+				_forage_pause_s = 0.7
+				_apply_target(target_velocity * 0.15)
 				return events
-			var pp: Vector3 = p.global_position
-			if absf(pp.y - position.y) > 0.6: continue   # only floor-level plants
-			var d2: float = pp.distance_squared_to(position)
-			if d2 < 0.35 * 0.35:
-				var taken: int = p.nibble(1)
-				if taken > 0:
-					hunger = maxf(0.0, hunger - 0.22 * float(taken))
-					energy = minf(1.0, energy + 0.04)
-					events["waste_at"] = position + Vector3(0, -0.05, 0)
-					events["waste_amount"] = 0.10 * float(taken)
-					_apply_target(target_velocity)
-					return events
 
-		# Then: pick a tall plant to climb if we have no current target.
 		if climb_target == null:
-			var w_sh: Node = sim.get_parent() if sim != null else null
-			if w_sh != null and w_sh.has_method("query_build_shelter_near") and hunger > 0.2:
-				var ledge: Vector3 = w_sh.query_build_shelter_near(position, 2.6)
-				if ledge != Vector3.ZERO and absf(ledge.y - position.y) < 1.2:
-					target_velocity += (ledge - position).normalized() * max_speed * 0.65
 			var best_p: Plant = null
 			var best_p_d2: float = 12.0
-			for p in plants:
-				if not is_instance_valid(p) or p.biomass() < 15:
+			for p in _nearby_plants(plants, 3.5):
+				if not is_instance_valid(p) or not (p is Plant) or p.is_dying:
 					continue
-				var d2: float = p.global_position.distance_squared_to(position)
-				if p.has_method("has_grazeable_flower") and p.has_grazeable_flower():
-					d2 *= 0.4
+				var site: Vector3 = _plant_food_site(p)
+				if not site.is_finite():
+					continue
+				var d2: float = site.distance_squared_to(global_position)
 				if d2 < best_p_d2:
 					best_p_d2 = d2
 					best_p = p
@@ -1276,31 +1303,34 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				climb_remaining_time = CLIMB_GIVE_UP_TIME
 
 	if climb_target != null:
-		if not is_instance_valid(climb_target) or climb_target.biomass() <= 0:
+		if not is_instance_valid(climb_target) or climb_target.is_dying or hunger < 0.28:
 			climb_target = null
 		else:
-			climb_remaining_time -= dt
-			current_mode = Mode.CLIMB
-			var top: Vector3 = climb_target.global_position
-			if climb_target.has_method("graze_target_world_y"):
-				top.y = climb_target.graze_target_world_y()
-			else:
-				top.y = climb_target.top_world_y()
-			var to_top: Vector3 = top - position
-			if to_top.length() < 0.45:
-				current_mode = Mode.NIBBLE
-				# Eat 2 voxels per visit - more visible chomp.
-				var taken: int = climb_target.nibble(2)
-				if taken > 0:
-					hunger = maxf(0.0, hunger - 0.22 * float(taken))
-					energy = minf(1.0, energy + 0.05)
-					events["waste_at"] = position + Vector3(0, -0.05, 0)
-					events["waste_amount"] = 0.10 * float(taken)
+			var site: Vector3 = _plant_food_site(climb_target)
+			if not site.is_finite():
 				climb_target = null
 			else:
-				target_velocity += to_top.normalized() * max_speed * 1.0
-			if climb_remaining_time <= 0.0:
-				climb_target = null
+				climb_remaining_time -= dt
+				current_mode = Mode.CLIMB
+				var to_site: Vector3 = site - global_position
+				if to_site.length() < 0.45:
+					var taken: int = climb_target.graze_surface_food(1, global_position, 0.5)
+					# Tissue is a last resort, after surface food is exhausted.
+					if taken == 0 and hunger > 0.82:
+						taken = climb_target.nibble(1)
+					if taken > 0:
+						current_mode = Mode.NIBBLE
+						hunger = maxf(0.0, hunger - 0.16 * float(taken))
+						energy = minf(1.0, energy + 0.04)
+						_forage_pause_s = 0.8
+						events["waste_at"] = global_position + Vector3(0, -0.05, 0)
+						events["waste_amount"] = 0.04 * float(taken)
+						_apply_target(target_velocity * 0.15)
+						return events
+				else:
+					target_velocity += to_site.normalized() * max_speed * 0.75
+				if climb_remaining_time <= 0.0:
+					climb_target = null
 
 	# Default: wander on substrate.
 	if current_mode == Mode.WANDER:
@@ -1342,6 +1372,24 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	return events
 
 
+func finish_detritus_meal() -> void:
+	hunger = maxf(0.0, hunger - 0.30)
+	energy = minf(1.0, energy + 0.04)
+	_forage_pause_s = maxf(_forage_pause_s, 0.7)
+
+
+func _plant_food_site(plant: Plant) -> Vector3:
+	var site: Vector3 = plant.surface_graze_site(global_position)
+	if not site.is_finite() and hunger > 0.82:
+		site = plant.global_position
+		site.y = plant.graze_target_world_y()
+	# Heavier bottom walkers forage low structure instead of flying to tips.
+	if site.is_finite() and body_shape in ["crab", "lobster"] \
+			and site.y > substrate_top_y + _ground_band() + 0.25:
+		return Vector3.INF
+	return site
+
+
 func _apply_target(t: Vector3) -> void:
 	_target_velocity = _constrain_velocity_to_tank(t)
 
@@ -1371,21 +1419,27 @@ func _look_up_for_direction(d: Vector3) -> Vector3:
 func _motion_substep(dt: float) -> void:
 	if _hydro_profile.is_empty():
 		_hydro_profile = Hydrodynamics.profile_for_locomotion("shrimp", 0.14)
-	# Gravity-like pull when not climbing. Shrimp tend to stick to surfaces.
-	if climb_target == null:
-		_target_velocity.y -= 1.2 * dt
+	_swim_phase = fposmod(_swim_phase + dt * (3.0 + speed * 4.0), TAU)
+	var pre_move: Vector3 = global_position
+	var bottom_walker: bool = body_shape in ["crab", "lobster"]
+	var on_floor: bool = global_position.y <= substrate_top_y + 0.22
 	var target_dir: Vector3 = heading
 	var target_spd: float = 0.0
 	var brain_target: Vector3 = _target_velocity
 	if sim != null and sim.has_method("sim_tick_blend"):
 		var blend: float = sim.sim_tick_blend()
 		brain_target = _prev_target_velocity.lerp(_target_velocity, blend)
+	# Foot contact removes vertical steering, without rewriting the brain's
+	# command. Open-water shrimp settle gently between swimming bouts.
+	if bottom_walker or (on_floor and climb_target == null and brain_target.y <= 0.0):
+		brain_target.y = 0.0
+		var flat_heading := Vector3(heading.x, 0.0, heading.z)
+		if flat_heading.length_squared() > 1e-6:
+			heading = flat_heading.normalized()
 	if brain_target.length_squared() > 1e-4:
 		target_spd = brain_target.length()
 		target_dir = brain_target.normalized()
 	target_spd *= _day_activity_mult()
-	if target_spd > speed + 0.42 and target_spd > 0.5:
-		_escape_remaining = maxf(_escape_remaining, 0.38)
 	var constrained: Vector3 = _constrain_velocity_to_tank(target_dir * target_spd)
 	if constrained.length_squared() > 1e-6:
 		target_dir = constrained.normalized()
@@ -1407,9 +1461,14 @@ func _motion_substep(dt: float) -> void:
 		target_spd *= Hydrodynamics.upstream_effort(flow_vel, heading)
 	if _escape_remaining > 0.0:
 		_escape_remaining = maxf(0.0, _escape_remaining - dt)
-		heading = (-target_dir if target_dir.length_squared() > 1e-6 else -heading).normalized()
-		speed += 2.8 * dt
-		target_spd = maxf(target_spd, max_speed * 1.15)
+		heading = target_dir.normalized()
+		var burst_speed: float = maxf(max_speed * 1.8, 0.65)
+		speed = move_toward(speed, burst_speed, 2.8 * dt)
+	elif on_floor or bottom_walker:
+		# Legs provide traction; idle swimmers' residual stroke thrust must
+		# not make a resting bottom animal skate across the substrate.
+		var corner_pace: float = lerpf(0.45, 1.0, clampf(heading.dot(target_dir), 0.0, 1.0))
+		speed = move_toward(speed, target_spd * corner_pace, dt * (1.8 if bottom_walker else 2.6))
 	else:
 		var stroke: float = Hydrodynamics.stroke_thrust(
 			_swim_phase, _hydro_profile, speed, target_spd, max_speed)
@@ -1418,7 +1477,7 @@ func _motion_substep(dt: float) -> void:
 		var drag_k: float = Hydrodynamics.drag_coeff(0.14, _hydro_profile)
 		speed = Hydrodynamics.integrate_speed(
 			speed, target_spd, stroke, drag_k, 3.0, dt, true)
-	if flow_vel.length_squared() > 1e-6:
+	if flow_vel.length_squared() > 1e-6 and not on_floor and not bottom_walker:
 		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(0.14)
 	# Substrate grip — planted feet when walking, not tail-flipping (#21).
 	if climb_target == null and _escape_remaining <= 0.0 \
@@ -1427,7 +1486,15 @@ func _motion_substep(dt: float) -> void:
 		if target_spd < 0.4:
 			speed = minf(speed, target_spd + 0.05)
 	velocity = heading * speed
-	position += velocity * dt
+	if climb_target == null and not on_floor and not bottom_walker:
+		_settle_speed = move_toward(_settle_speed, 0.35, dt * 1.2)
+		velocity.y -= _settle_speed
+	else:
+		_settle_speed = 0.0
+	global_position += velocity * dt
+	if bottom_walker or global_position.y < substrate_top_y + 0.08:
+		global_position.y = move_toward(global_position.y, substrate_top_y + 0.08, dt * 2.0)
+		global_position.y = maxf(global_position.y, substrate_top_y + 0.08)
 	if w != null and w.has_method("clamp_xyz_in_tank"):
 		global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
 	if speed > 0.55 and w != null:
@@ -1453,7 +1520,8 @@ func _motion_substep(dt: float) -> void:
 			var up_r: Vector3 = _look_up_for_direction(recover_d)
 			transform.basis = Basis.looking_at(recover_d, up_r)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
-		var d: Vector3 = _visual_heading_for_display(dt, heading)
+		var display_heading: Vector3 = -heading if _escape_remaining > 0.0 else heading
+		var d: Vector3 = _visual_heading_for_display(dt, display_heading)
 		# GROUND-LOCK. Orienting to the full 3D heading pitched the whole
 		# body nose-down whenever gravity pulled it toward the substrate, so
 		# a shrimp "crawling" was permanently tipped forward at whatever
@@ -1468,7 +1536,7 @@ func _motion_substep(dt: float) -> void:
 			d = d.normalized()
 		if d.is_finite():
 			var up: Vector3 = _look_up_for_direction(d)
-			look_at(position + d, up)
+			look_at(global_position + d, up)
 			if not transform.is_finite():
 				transform.basis = Basis.looking_at(d, up)
 	var current_yaw: float = atan2(heading.x, -heading.z)
@@ -1484,7 +1552,9 @@ func _motion_substep(dt: float) -> void:
 	_bank = lerpf(_bank, bank_target, clampf(dt * 5.0, 0.0, 1.0))
 	if _bank_pivot != null:
 		_bank_pivot.rotation.z = _bank
-	_tick_gait(dt, grounded)
+	var ground_delta: Vector3 = global_position - pre_move
+	ground_delta.y = 0.0
+	_tick_gait(dt, grounded, ground_delta.length())
 
 
 # ---- Crawling gait ----------------------------------------------------
@@ -1526,20 +1596,22 @@ func _gait_profile() -> Dictionary:
 
 
 # Advance the walk cycle and pose the body from it.
-func _tick_gait(dt: float, grounded: bool) -> void:
+func _tick_gait(dt: float, grounded: bool, travel_distance: float = -1.0) -> void:
 	if _bank_pivot == null:
 		return
 	var g: Dictionary = _gait_profile()
 	if grounded:
 		# Distance-driven: the cycle advances with ground covered, so the
 		# legs stop when the animal stops and quicken when it hurries.
-		_gait_phase += speed * dt * float(g["steps_per_unit"]) * TAU
+		var distance: float = travel_distance if travel_distance >= 0.0 else speed * dt
+		_gait_phase += distance * float(g["steps_per_unit"]) * TAU
 	else:
 		# Swimming: legs tuck and idle rather than freezing mid-stride.
 		_gait_phase += dt * 1.5
 	_gait_phase = fposmod(_gait_phase, TAU)
 
-	var moving: float = clampf(speed / 0.35, 0.0, 1.0) if grounded else 0.0
+	var gait_speed: float = travel_distance / maxf(dt, 0.0001) if travel_distance >= 0.0 else speed
+	var moving: float = clampf(gait_speed / 0.35, 0.0, 1.0) if grounded else 0.0
 
 	# Legs swing fore/aft around their own pivots, in alternating tripod.
 	for entry in _leg_pivots:
@@ -1547,10 +1619,13 @@ func _tick_gait(dt: float, grounded: bool) -> void:
 		if node == null or not is_instance_valid(node):
 			continue
 		var ph: float = _gait_phase + float(entry["phase"])
-		var swing: float = sin(ph) * float(g["swing"]) * moving
-		# Lift on the forward half of the stroke so the leg clears the
-		# ground instead of scraping through it.
-		var lift: float = maxf(0.0, cos(ph)) * float(g["swing"]) * 0.45 * moving
+		# A longer loaded stance and a quicker lifted recovery read as feet
+		# pushing against a surface, rather than paddling through it.
+		var cycle: float = fposmod(ph, TAU) / TAU
+		var stance: float = 0.64
+		var stroke: float = cycle / stance if cycle < stance else (cycle - stance) / (1.0 - stance)
+		var swing: float = (lerpf(1.0, -1.0, stroke) if cycle < stance else lerpf(-1.0, 1.0, stroke)) * float(g["swing"]) * moving
+		var lift: float = 0.0 if cycle < stance else sin(stroke * PI) * float(g["swing"]) * 0.45 * moving
 		node.rotation.x = swing
 		node.rotation.z = lift * float(entry["side"])
 
@@ -1633,7 +1708,6 @@ func _process(dt: float) -> void:
 		return
 
 	# Animation: tail flicks + pleopod paddle + antennae twitch + walking bob.
-	_swim_phase += dt * (3.0 + speed * 4.0)
 	_pleopod_phase += dt * (4.5 + speed * 5.0)
 	# Tail-flick amplitude scales sharply with speed. A calm shrimp barely
 	# twitches its tail; a spooked or fleeing shrimp executes the classic
@@ -1654,18 +1728,14 @@ func _process(dt: float) -> void:
 			seg.rotation.y = sin(_swim_phase * 1.7 + lag) * 0.24 * damp
 			seg.rotation.x = sin(_swim_phase * 2.1 + lag * 1.2) * 0.14 * damp
 			seg.rotation.z = sin(_swim_phase * 2.8 + lag * 0.8) * 0.07 * damp
-	# Walking bob: a small vertical pulse at twice the tail frequency
-	# mimics the alternating-leg gait of crawling. Suppressed at very
-	# low speeds (resting) and at high speeds (the shrimp is tail-
-	# flipping above substrate, legs aren't doing the work).
-	if _bank_pivot != null and _molt_flash <= 0.0:
-		var walk_factor: float = clampf(speed * 5.0, 0.0, 1.0) \
-			* clampf(1.0 - speed * 0.55, 0.0, 1.0)
-		_bank_pivot.position.y = sin(_swim_phase * 2.0) * 0.014 * walk_factor
-		if current_mode == Mode.NIBBLE or current_mode == Mode.FORAGE_WASTE:
-			var grab: float = 0.5 + 0.5 * sin(_swim_phase * 4.4)
-			_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.38 * grab, dt * 7.0)
-			_bank_pivot.position.z = lerpf(_bank_pivot.position.z, -0.05 * grab, dt * 5.0)
+	# Feeding pose settles back to neutral on leaving the feeding bout.
+	# The distance-driven gait owns vertical bob; don't overwrite its rest pose.
+	if _bank_pivot != null:
+		var feeding: bool = current_mode == Mode.NIBBLE and _forage_pause_s > 0.0
+		var grab: float = 0.5 + 0.5 * sin(_swim_phase * 4.4) if feeding else 0.0
+		var pose_blend: float = 1.0 - exp(-dt * 7.0)
+		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.20 * grab, pose_blend)
+		_bank_pivot.position.z = lerpf(_bank_pivot.position.z, -0.035 * grab, pose_blend)
 
 	# Egg-cluster visibility: visible only during the gravid window.
 	if _egg_cluster != null and _egg_cluster.visible != is_gravid:
@@ -2088,7 +2158,7 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"pattern_density": new_pat_density,
 		"generation": maxi(generation, other.generation) + 1,
 		"parent_lineage": "%s & %s" % [shrimp_name, other.shrimp_name],
-		"parent_keys": SpeciesLibScript.new().parent_keys_for_breeding([
+		"parent_keys": SpeciesLibScript.parent_keys_for_breeding([
 			get_saved_genome(), other.get_saved_genome(),
 		]),
 	}

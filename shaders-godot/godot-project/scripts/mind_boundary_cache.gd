@@ -19,6 +19,10 @@ static func invalidate_all() -> void:
 	_epoch += 1
 
 
+static func forget_id(fid: String) -> void:
+	_entries.erase(fid)
+
+
 static func lateral(f: Fish, gp: Vector3, body_m: float, heading_hint: Vector3) -> Dictionary:
 	if f == null:
 		return {"clearance": 99.0, "inward": Vector3.ZERO, "body_m": body_m}

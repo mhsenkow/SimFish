@@ -12,9 +12,9 @@ static func for_cycle(f: Fish, rich: bool = true) -> MindState:
 	return MindState.for_fish(f, rich)
 
 
-static func commit(f: Fish, ms: MindState) -> void:
+static func commit(f: Fish, ms: MindState, adopt: bool = false) -> void:
 	assert(f != null and ms != null)
-	ms.apply_to_fish(f)
+	ms.apply_to_fish(f, adopt)
 
 
 static func workspace_label(ms: MindState) -> String:

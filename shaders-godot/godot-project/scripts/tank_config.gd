@@ -580,9 +580,11 @@ var spot_aim_z: float = -999.0
 var spot_shadows: bool = false
 # Visible shaft multiplier. 0 hides the beam even when light_volumetric is on.
 var beam_strength: float = 1.0
-# Night-only player toggle — when false the aquarium fixture is off but the
-# sim day/night cycle keeps running.
+# Aquarium lamp switch. Sunlight and the animal clock remain independent.
 var tank_lights_on: bool = true
+# New tanks get a photoperiod and a restful night automatically. Manual lighting
+# presets and legacy saves keep their deliberately chosen around-the-clock lamp.
+var fixture_follow_day_cycle: bool = true
 # Substrate heater rod contributes warmth when on (see world.effective_warmth_at).
 var heater_enabled: bool = true
 # Master kill switch for all aquarium lighting (sun + fixture + ambient).
@@ -2166,6 +2168,7 @@ const LIGHTING_PRESETS: Dictionary = {
 	# the presets the aimable-spot work exists for: everything above can only
 	# change the light's colour and brightness, these change its SHAPE.
 	"clip_spot_night": {
+		"fixture_follow_day_cycle": false,
 		"label": "Clip spot (dark room)",
 		# The room is essentially off. What little global light remains is
 		# window spill, and room_darkness crushes the rest to nothing.
@@ -2230,6 +2233,7 @@ const LIGHTING_PRESETS: Dictionary = {
 	},
 	# REAL_TANK_FIDELITY #164 — backlighting as a supported look (Tank B/C).
 	"backlit_jungle": {
+		"fixture_follow_day_cycle": false,
 		"label": "Backlit jungle",
 		"global_intensity": 0.32, "global_warmth": 0.82,
 		"tank_fixture_intensity": 0.28,
@@ -2250,6 +2254,10 @@ const LIGHTING_PRESETS: Dictionary = {
 # still in place, so the daylight preset renders as a dark room - the preset
 # list stops being a set of looks and becomes order-dependent.
 const LIGHTING_RIG_DEFAULTS: Dictionary = {
+	"fixture_follow_day_cycle": true,
+	"light_fixture": "bar",
+	"light_height": 1.4,
+	"light_size": 0.75,
 	"room_darkness": 0.0,
 	"spot_angle_deg": -1.0,
 	"spot_attenuation": -1.0,
@@ -3162,6 +3170,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("light", "beam_strength", beam_strength)
 	cfg.set_value("light", "caustics", light_caustics)
 	cfg.set_value("light", "tank_on", tank_lights_on)
+	cfg.set_value("light", "fixture_follow_day_cycle", fixture_follow_day_cycle)
 	cfg.set_value("light", "heater_enabled", heater_enabled)
 	cfg.set_value("light", "master_enabled", light_master_enabled)
 	cfg.set_value("light", "day_cycle_enabled", day_cycle_enabled)
@@ -3493,6 +3502,8 @@ func load_from_disk() -> void:
 	beam_strength = cfg.get_value("light", "beam_strength", beam_strength)
 	light_caustics = cfg.get_value("light", "caustics", light_caustics)
 	tank_lights_on = cfg.get_value("light", "tank_on", tank_lights_on)
+	fixture_follow_day_cycle = bool(cfg.get_value("light", "fixture_follow_day_cycle",
+		false if cfg.has_section_key("light", "tank_on") else true))
 	heater_enabled = cfg.get_value("light", "heater_enabled", heater_enabled)
 	light_master_enabled = cfg.get_value("light", "master_enabled", light_master_enabled)
 	day_cycle_enabled = cfg.get_value("light", "day_cycle_enabled", day_cycle_enabled)
@@ -3897,6 +3908,10 @@ func reset_to_defaults() -> void:
 	light_volumetric = true
 	light_caustics = true
 	tank_lights_on = true
+	fixture_follow_day_cycle = true
+	for rig_key in LIGHTING_RIG_DEFAULTS:
+		set(rig_key, LIGHTING_RIG_DEFAULTS[rig_key])
+	backlight_color = Color(1.0, 0.62, 0.28)
 	heater_enabled = true
 	light_master_enabled = true
 	day_cycle_enabled = true

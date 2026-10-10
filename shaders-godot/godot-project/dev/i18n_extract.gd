@@ -26,6 +26,7 @@ func _initialize() -> void:
 			_scan(("res://scripts/" + f), keys)
 		f = dir.get_next()
 	dir.list_dir_end()
+	_scan_lighting_presets(keys)
 
 	var sorted: Array = keys.keys()
 	sorted.sort()
@@ -45,6 +46,24 @@ func _initialize() -> void:
 	print("[i18n] wrapped=%d  still-unwrapped .text/.tooltip_text literals=%d"
 		% [sorted.size(), unwrapped])
 	quit(0)
+
+
+# The preset labels are immutable data, so their runtime tr(label) calls
+# cannot be discovered by scanning literal tr("...") expressions alone.
+# Read the actual constant without instantiating another TankConfig node.
+func _scan_lighting_presets(keys: Dictionary) -> void:
+	var cfg: GDScript = load("res://scripts/tank_config.gd")
+	if cfg == null:
+		return
+	var constants: Dictionary = cfg.get_script_constant_map()
+	var presets: Dictionary = constants.get("LIGHTING_PRESETS", {})
+	for preset in presets.values():
+		var label: String = String(preset.get("label", ""))
+		if label.is_empty():
+			continue
+		if not keys.has(label):
+			keys[label] = []
+		(keys[label] as Array).append("tank_config.gd")
 
 
 func _scan(path: String, keys: Dictionary) -> void:
@@ -84,7 +103,7 @@ func _closing_quote(src: String, from: int) -> int:
 
 
 func _csv(v: String) -> String:
-	if v.contains(",") or v.contains('"') or v.contains("\n"):
+	if v.contains(",") or v.contains('"') or v.contains("\n") or v != v.strip_edges():
 		return '"%s"' % v.replace('"', '""')
 	return v
 

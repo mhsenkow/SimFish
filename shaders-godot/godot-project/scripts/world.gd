@@ -299,6 +299,7 @@ func _ready() -> void:
 	sim = SimDriver.new()
 	sim.name = "SimDriver"
 	sim.tank_seed = seed_value
+	sim.begin_habitat_build()
 	add_child(sim)
 	# Pipe AIDirector chronicle lines into the sim's story_events log so
 	# they surface in the existing story dialog. Cheap connection; fires
@@ -518,6 +519,7 @@ func _ready() -> void:
 			# The light beams are now drawn via super-performant shader meshes.
 			we.environment.volumetric_fog_enabled = false
 
+	sim.finish_habitat_build()
 	build_complete = true
 	_set_build_stage("complete")
 	print_verbose("[walstad_loom] world built: ", get_child_count(), " top-level nodes; ",
@@ -901,8 +903,7 @@ func _process(dt: float) -> void:
 			# and sell the "shaded column" read under dense floaters.
 			caust_i *= (1.0 - floater_coverage() * 0.42)
 			_visuals.sync_aquatic_uniforms(caust_i, _last_caustic_color, WATER_HEIGHT, dp, 0.35)
-			var fixture_glow_amb: float = ln_w["deep_night"] * (1.0 if ln_w["tank_lights_on"] else 0.0)
-			var foliage_light: float = maxf(ln_w["dl"], fixture_glow_amb * 0.82)
+			var foliage_light: float = SimGate.irradiance(sim, ln_w["dl"])
 			var bloom: float = float(column.get("bloom_haze", 0.0))
 			var fvec: Vector3 = foliage_flow_vec()
 			_visuals.sync_foliage_uniforms(
@@ -918,6 +919,7 @@ func _process(dt: float) -> void:
 	_light_cycle_accum += dt
 	if sim != null and _light_cycle_accum >= LIGHT_CYCLE_INTERVAL:
 		_light_cycle_accum = 0.0
+		_refresh_light_fixture_from_config()
 		if _cached_lighting.is_empty() or _cached_water_column.is_empty():
 			_refresh_atmosphere_caches(0.0)
 		var ln: Dictionary = _cached_lighting
@@ -936,7 +938,7 @@ func _process(dt: float) -> void:
 		if cfg2 != null:
 			global_energy = float(cfg2.global_intensity)
 			global_warmth = float(cfg2.global_warmth)
-			fixture_energy = float(cfg2.tank_fixture_intensity)
+			fixture_energy = LightingRig.fixture_output(cfg2, dl)
 			fixture_color = LightingRig.tint_light(cfg2.tank_fixture_color,
 				LightingRig.config_light_tint(cfg2))
 			sunset_drama = float(cfg2.sunset_drama)
@@ -951,6 +953,13 @@ func _process(dt: float) -> void:
 				warm_mix = float(mix.get("light_warmth", 0.0))
 			if warm_mix > 0.001:
 				fixture_color = fixture_color.lerp(Color(1.0, 0.72, 0.48), warm_mix)
+		# The dimmer includes the RGB value; keep chromaticity separate so a
+		# grey/dark color choice is not multiplied into brightness twice.
+		var fixture_rgb: Vector3 = LightingRig.linear_light_rgb(fixture_color)
+		var fixture_peak: float = maxf(fixture_rgb.x, maxf(fixture_rgb.y, fixture_rgb.z))
+		if fixture_peak > 0.0001:
+			fixture_color = Color(fixture_rgb.x / fixture_peak,
+				fixture_rgb.y / fixture_peak, fixture_rgb.z / fixture_peak).linear_to_srgb()
 		# Sunset drama amplifies dusk warmth + how deep night dips. 0 flattens
 		# the cycle to a steady mid-day, 2 makes sunset golden and midnight
 		# truly dark. Clamped so users can't crash deep_night past 1.0.
@@ -1014,8 +1023,8 @@ func _process(dt: float) -> void:
 		# when the player leaves tank_lights_on enabled. Uses the user-picked
 		# fixture color (not the global beam color) so reef-blue, planted-pink,
 		# etc. read correctly.
-		var spot_day: float = 0.4 + dl * (fixture_energy * 6.0)
-		var spot_night: float = fixture_energy * 8.0 if tank_lights_on else 0.0
+		var spot_day: float = fixture_energy * 6.0
+		var spot_night: float = fixture_energy * 8.0
 		# Darkness counts as night here: see LightingRig.lamp_dominance. A
 		# blacked-out room hands the scene to the lamp whatever the clock says.
 		var lamp_rule: float = LightingRig.lamp_dominance(deep_night, darkness)
@@ -1025,7 +1034,7 @@ func _process(dt: float) -> void:
 			spot_energy *= 0.68
 		# Fixture spotlights take the user's RGB at night; day blends toward
 		# the global beam so the cycle still feels like a sun arc.
-		var fixture_lit: Color = fixture_color.lerp(beam_color, 1.0 - lamp_rule)
+		var fixture_lit: Color = fixture_color
 		for spot in _light_fixture_spots:
 			if not is_instance_valid(spot):
 				continue
@@ -1033,14 +1042,14 @@ func _process(dt: float) -> void:
 			spot.light_energy = spot_energy
 		if _sphere_fill_light != null and is_instance_valid(_sphere_fill_light):
 			_sphere_fill_light.light_color = fixture_lit.lerp(Color(0.72, 0.86, 1.0), 0.24)
-			var fill_day: float = 0.08 + dl * (fixture_energy * 0.55)
-			var fill_night: float = fixture_energy * 0.42 if tank_lights_on else 0.0
+			var fill_day: float = fixture_energy * 0.55
+			var fill_night: float = fixture_energy * 0.42
 			var fill_e: float = lerpf(fill_day, fill_night, deep_night)
 			if sphere_soft:
 				fill_e *= 1.35
 			_sphere_fill_light.light_energy = fill_e
 		if _directional_light != null:
-			var dir_e: float = 0.012 + room_dl * (global_energy * 0.48)
+			var dir_e: float = (0.012 + room_dl * (global_energy * 0.48)) if master_on else 0.0
 			if sphere_soft:
 				dir_e *= 1.28
 			_directional_light.light_energy = dir_e
@@ -1059,7 +1068,17 @@ func _process(dt: float) -> void:
 			clampf(sunset_hour, 0.0, 1.0), foliage_light_dir,
 			AccessibilityRuntime.reduced_motion_enabled())
 		_update_accent_lights(cfg2, deep_night, master_on)
-		var fixture_active: bool = tank_lights_on and master_on
+		var fixture_active: bool = tank_lights_on and master_on and fixture_energy > 0.0
+		var sun_energy: float = room_dl * global_energy * 2.0 if master_on else 0.0
+		var sun_dir := Vector3.UP
+		if is_instance_valid(_directional_light):
+			sun_dir = _directional_light.global_basis.z.normalized()
+		RenderingServer.global_shader_parameter_set("iaq_sun_light",
+			Vector4(sun_dir.x, sun_dir.y, sun_dir.z, sun_energy))
+		var sun_rgb: Vector3 = LightingRig.linear_light_rgb(room_color)
+		RenderingServer.global_shader_parameter_set("iaq_sun_tint",
+			Vector4(sun_rgb.x, sun_rgb.y, sun_rgb.z, 0.0))
+		_cache_plant_light(dl, cfg2)
 		# Unconditional: the shaped cone must reach the foliage shaders even
 		# when volumetric beams are off, because it is what lights the
 		# plants, not just what draws the visible shaft.
@@ -1095,12 +1114,14 @@ func _process(dt: float) -> void:
 				env.ambient_light_energy = 0.0
 		# Fixture wash uses the user-picked fixture color at night so a blue
 		# reef fixture lights the water blue from the top down.
-		var glow_color: Color = fixture_color.lerp(beam_color, 1.0 - deep_night)
+		var glow_color: Color = fixture_color
 		VoxelMat.update_fixture_glow(fixture_glow, glow_color, WATER_HEIGHT, SUBSTRATE_DEPTH)
 
 		# Sync caustics material — global_energy drives the daytime caustic
 		# intensity, fixture_energy gates the night-time pattern when tank lights
 		# stay on.
+		var caustic_color: Color = beam_color.lerp(fixture_color,
+			fixture_energy / maxf(0.0001, fixture_energy + dl * global_energy))
 		if _caustics_mat != null:
 			var show_caustics: bool = true
 			if cfg2 != null:
@@ -1109,9 +1130,8 @@ func _process(dt: float) -> void:
 			var intensity: float = 0.0
 			if show_caustics:
 				var caust_day: float = clampf(dl * global_energy * 2.0, 0.0, 1.0)
-				var caust_night: float = clampf(fixture_energy * 1.25, 0.0, 1.0) \
-					if tank_lights_on else 0.0
-				intensity = lerpf(caust_day, caust_night, deep_night)
+				var caust_night: float = clampf(fixture_energy * 1.25, 0.0, 1.0)
+				intensity = maxf(caust_day, caust_night)
 				if cfg2 != null:
 					intensity *= clampf(float(cfg2.caustic_intensity_user), 0.0, 2.0)
 				var trans: float = float(_cached_water_column.get("transmittance", 1.0))
@@ -1121,68 +1141,28 @@ func _process(dt: float) -> void:
 				intensity *= float(mv.caustic_mul())
 			intensity *= lerpf(0.90, 1.10, _tank_phi_coherence)
 			var caustics_changed: bool = absf(intensity - _last_caustic_intensity) > 0.02 \
-				or absf(beam_color.r - _last_caustic_color.r) > 0.04 \
-				or absf(beam_color.g - _last_caustic_color.g) > 0.04 \
-				or absf(beam_color.b - _last_caustic_color.b) > 0.04
+				or absf(caustic_color.r - _last_caustic_color.r) > 0.04 \
+				or absf(caustic_color.g - _last_caustic_color.g) > 0.04 \
+				or absf(caustic_color.b - _last_caustic_color.b) > 0.04
 			if caustics_changed:
 				_last_caustic_intensity = intensity
-				_last_caustic_color = beam_color
+				_last_caustic_color = caustic_color
 				if show_caustics:
 					_caustics_mat.set_shader_parameter("caustic_intensity", intensity)
-					_caustics_mat.set_shader_parameter("light_color", beam_color)
+					_caustics_mat.set_shader_parameter("light_color", caustic_color)
 					_caustics_mat.set_shader_parameter("day_phase_offset",
 							float(sim.day_phase) if sim != null else 0.0)
 				else:
 					_caustics_mat.set_shader_parameter("caustic_intensity", 0.0)
-				VoxelMat.update_caustic_uniforms(intensity if show_caustics else 0.0, beam_color)
+				VoxelMat.update_caustic_uniforms(intensity if show_caustics else 0.0, caustic_color)
 				if _water_material_ref != null:
 					_water_material_ref.set_shader_parameter(
 						"caustic_intensity", intensity if show_caustics else 0.0)
-					_water_material_ref.set_shader_parameter("light_color", beam_color)
+					_water_material_ref.set_shader_parameter("light_color", caustic_color)
 					_water_material_ref.set_shader_parameter("day_phase_offset",
 						float(sim.day_phase) if sim != null else 0.0)
-				if _glass_material_ref != null:
-					var shape_id: float = 0.0
-					if TANK_SHAPE == "cylinder":
-						shape_id = 1.0
-					elif TANK_SHAPE == "sphere":
-						shape_id = 2.0
-					var fixture_glow_g: float = deep_night * (1.0 if tank_lights_on else 0.0)
-					var shape_band: float = 0.45 + dl * 0.35 + fixture_glow_g * 0.55
-					var reflection: float = 0.15 + dl * 0.12 + fixture_glow_g * 0.22
-					var sparkle: float = fixture_glow_g * 0.9
-					var rim: float = 0.55 + fixture_glow_g * 0.35
-					# Mac can't use screen-space glass reflection — lean on
-					# room tint + chrome rim so panes still feel glassy.
-					if OS.get_name() == "macOS":
-						reflection = maxf(reflection, 0.42 + dl * 0.12)
-						rim = maxf(rim, 0.72)
-						sparkle = maxf(sparkle, 0.12 + fixture_glow_g * 0.5)
-					var caustic_band: float = 0.0
-					if show_caustics and sim != null and sim.has_method("topdown_caustic_beat"):
-						caustic_band = clampf(intensity * 0.22 + float(sim.topdown_caustic_beat()) * 0.18, 0.0, 0.55)
-					var glass_changed: bool = absf(shape_id - _last_glass_shape_id) > 0.01 \
-						or absf(shape_band - _last_glass_shape_band) > 0.02 \
-						or absf(reflection - _last_glass_reflection) > 0.02 \
-						or absf(sparkle - _last_glass_sparkle) > 0.02 \
-						or absf(rim - _last_glass_rim) > 0.02 \
-						or absf(WATER_HEIGHT - _last_glass_water_y) > 0.02 \
-						or absf(caustic_band - _last_glass_caustic_band) > 0.02
-					if glass_changed:
-						_last_glass_shape_id = shape_id
-						_last_glass_shape_band = shape_band
-						_last_glass_reflection = reflection
-						_last_glass_sparkle = sparkle
-						_last_glass_rim = rim
-						_last_glass_water_y = WATER_HEIGHT
-						_last_glass_caustic_band = caustic_band
-						_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
-						_glass_material_ref.set_shader_parameter("shape_band", shape_band)
-						_glass_material_ref.set_shader_parameter("reflection_strength", reflection)
-						_glass_material_ref.set_shader_parameter("sparkle", sparkle)
-						_glass_material_ref.set_shader_parameter("rim_chrome", rim)
-						_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
-						_glass_material_ref.set_shader_parameter("caustic_band", caustic_band)
+
+		_sync_glass_lighting(dl, fixture_energy, deep_night, master_on)
 
 		# Sync god ray materials to the light cycle and Render panel parameters.
 		var density: float = 0.02
@@ -1194,23 +1174,11 @@ func _process(dt: float) -> void:
 		# Base beam opacity scales with daylight + user density settings.
 		# At deep night only the aquarium fixture contributes — no moonlight floor.
 		var base_alpha: float = density * 10.0
-		var ray_day: float = dl * 0.75
-		var ray_night: float = 1.05 if tank_lights_on else 0.0
-		var beam_rule: float = LightingRig.lamp_dominance(deep_night, darkness)
-		var ray_mix: float = lerpf(ray_day, ray_night, beam_rule)
-		# God-ray opacity blends day side (global) with night side (fixture).
-		# Under darkness this must follow the LAMP, not the sun - the sun's
-		# energy is exactly what darkness has just taken away.
-		var ray_energy_mix: float = lerpf(global_energy, fixture_energy, beam_rule)
-		var ray_alpha: float = base_alpha * ray_mix * (ray_energy_mix / 0.5)
+		var ray_alpha: float = base_alpha * fixture_energy * 2.0
 		if TANK_SHAPE == "sphere":
 			ray_alpha *= 0.52
-		if fixture_active and (dl > 0.08 or deep_night > 0.25):
-			ray_alpha = maxf(ray_alpha, 0.03 + fixture_energy * 0.08)
-		# Soften less — fixture beam should read as a real light shaft (#36, #67).
-		ray_alpha *= 1.15
 		if fixture_active:
-			ray_alpha = maxf(ray_alpha, 0.055 + fixture_energy * 0.12)
+			ray_alpha = maxf(ray_alpha, fixture_energy * 0.16)
 		var trans_ray: float = float(_cached_water_column.get("transmittance", 1.0))
 		ray_alpha = WorldAtmosphere.modulate_god_ray_alpha(ray_alpha, trans_ray)
 		# Per-tank shaft strength, lifted by room darkness - a visible beam
@@ -1227,7 +1195,10 @@ func _process(dt: float) -> void:
 				ray_alpha, float(beam_cfg.beam_strength),
 				LightingRig.effective_room_darkness(
 					float(beam_cfg.room_darkness), deep_night))
-		var ray_color := Color(beam_color.r, beam_color.g, beam_color.b, ray_alpha)
+		if cfg2 != null and not bool(cfg2.light_volumetric):
+			ray_alpha = 0.0
+		_sync_light_beam_visibility(ray_alpha > 0.0 and fixture_active, fixture_color)
+		var ray_color := Color(fixture_color.r, fixture_color.g, fixture_color.b, ray_alpha)
 		# Slightly higher exponent → softer cylinder edges (less "solid cone").
 		var exponent: float = lerp(1.35, 2.65, (anisotropy + 0.9) / 1.8)
 
@@ -6282,6 +6253,37 @@ var _light_fixture_spots: Array[SpotLight3D] = []
 var _fixture_emit_mats: Array[ShaderMaterial] = []
 var _sphere_fill_light: OmniLight3D = null
 var _god_ray_materials: Array[ShaderMaterial] = []
+var _fixture_config_key: Array = []
+var _fixture_placement_key: Array = []
+
+
+# Structural light changes rebuild just the small lamp, never the ecosystem.
+# Aim drags reuse the current geometry. Presets now change the actual fixture.
+func _fixture_key(cfg: Node) -> Array:
+	return [cfg.light_fixture, cfg.light_height, cfg.light_size,
+		cfg.spot_angle_deg, cfg.spot_attenuation, cfg.spot_tilt_deg, cfg.spot_yaw_deg]
+
+
+func _refresh_light_fixture_from_config() -> void:
+	if _cfg_node == null:
+		return
+	var key: Array = _fixture_key(_cfg_node)
+	if key != _fixture_config_key:
+		if is_instance_valid(_light_fixture_root):
+			remove_child(_light_fixture_root)
+			_light_fixture_root.queue_free()
+		_light_fixture_spots.clear()
+		if is_instance_valid(_sphere_fill_light):
+			remove_child(_sphere_fill_light)
+			_sphere_fill_light.queue_free()
+		_sphere_fill_light = null
+		_build_light_fixture()
+	var placement: Array = [_cfg_node.spot_offset_x, _cfg_node.spot_offset_z,
+		_cfg_node.spot_aim_x, _cfg_node.spot_aim_z]
+	if placement != _fixture_placement_key:
+		set_light_placement(float(placement[0]), float(placement[1]),
+			float(placement[2]), float(placement[3]))
+		_fixture_placement_key = placement
 
 
 func _build_light_fixture() -> void:
@@ -6302,7 +6304,6 @@ func _build_light_fixture() -> void:
 	var rig_off_z: float = 0.0
 	var rig_tilt: float = 0.0
 	var rig_yaw: float = 0.0
-	var rig_shadows: bool = false
 	var rig_aim_x: float = LightingRig.AIM_OFF
 	var rig_aim_z: float = LightingRig.AIM_OFF
 	if cfg != null:
@@ -6315,10 +6316,12 @@ func _build_light_fixture() -> void:
 		rig_off_z = float(cfg.spot_offset_z)
 		rig_tilt = float(cfg.spot_tilt_deg)
 		rig_yaw = float(cfg.spot_yaw_deg)
-		rig_shadows = bool(cfg.spot_shadows)
 		rig_aim_x = float(cfg.spot_aim_x)
 		rig_aim_z = float(cfg.spot_aim_z)
 
+	if cfg != null:
+		_fixture_config_key = _fixture_key(cfg)
+		_fixture_placement_key = [cfg.spot_offset_x, cfg.spot_offset_z, cfg.spot_aim_x, cfg.spot_aim_z]
 	_god_ray_materials.clear()
 	_fixture_emit_mats.clear()
 
@@ -6353,13 +6356,15 @@ func _build_light_fixture() -> void:
 		spot.set_meta(LIGHT_BASE_ROT, spot.rotation_degrees)
 		spot.spot_range = TANK_HEIGHT + height_above + 4.0
 		spot.spot_angle = LightingRig.resolve_angle(rig_angle, 22.0)
-		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, 1.8)
-		spot.shadow_enabled = rig_shadows
+		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, 2.0)
+		spot.shadow_enabled = false
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
 		_rebuild_gooseneck()
 		_reaim_light_spots(rig_aim_x, rig_aim_z)
-		if cfg != null and cfg.light_volumetric:
+		if TANK_SHAPE == "sphere":
+			_apply_sphere_aquarium_lighting()
+		if cfg != null:
 			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 		return
 
@@ -6396,12 +6401,12 @@ func _build_light_fixture() -> void:
 		var def_atten: float = 0.9 if TANK_SHAPE == "sphere" else 1.4
 		spot.spot_angle = LightingRig.resolve_angle(rig_angle, def_angle)
 		spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, def_atten)
-		spot.shadow_enabled = rig_shadows
+		spot.shadow_enabled = false
 		_light_fixture_root.add_child(spot)
 		_light_fixture_spots.append(spot)
 		_reaim_light_spots(rig_aim_x, rig_aim_z)
 
-		if cfg != null and cfg.light_volumetric:
+		if cfg != null:
 			_add_god_ray_beam(_light_fixture_root, spot, spot.spot_angle)
 	else:
 		# Bar - long thin housing across the tank width.
@@ -6436,11 +6441,10 @@ func _build_light_fixture() -> void:
 			spot.position = Vector3(sx, -0.2, 0)
 			spot.rotation_degrees = Vector3(-90, 0, 0)
 			spot.spot_range = TANK_HEIGHT + height_above + 3.0
-			spot.spot_angle = 42.0
-			spot.spot_attenuation = 1.2
+			spot.spot_angle = LightingRig.resolve_angle(rig_angle, 42.0)
+			spot.spot_attenuation = LightingRig.resolve_attenuation(rig_atten, 2.0)
 			if TANK_SHAPE == "sphere":
-				spot.spot_angle = 58.0
-				spot.spot_attenuation = 0.88
+				spot.spot_angle = LightingRig.resolve_angle(rig_angle, 58.0)
 			spot.shadow_enabled = false
 			spot.set_meta(LIGHT_BASE_ROT, spot.rotation_degrees)
 			_light_fixture_root.add_child(spot)
@@ -6449,9 +6453,9 @@ func _build_light_fixture() -> void:
 		# dragged bar flipped back to straight-down shafts on reload), and
 		# its spots re-aim PARALLEL - see _reaim_light_spots.
 		_reaim_light_spots(rig_aim_x, rig_aim_z)
-		if cfg != null and cfg.light_volumetric:
-			for s in _light_fixture_spots:
-				_add_god_ray_beam(_light_fixture_root, s, s.spot_angle)
+		if cfg != null and not _light_fixture_spots.is_empty():
+			_add_god_ray_beam(_light_fixture_root,
+				_light_fixture_spots[0], _light_fixture_spots[0].spot_angle)
 
 	if TANK_SHAPE == "sphere":
 		_apply_sphere_aquarium_lighting()
@@ -6471,7 +6475,7 @@ func _sync_fixture_housing_glow(active: bool, energy: float, col: Color,
 	var night_read: float = clampf(energy * 1.55, 0.0, 1.45) if active else 0.06
 	var brightness: float = lerpf(day_read, night_read, deep_night)
 	if not active:
-		brightness = lerpf(day_read * 0.35, 0.05, deep_night)
+		brightness = 0.05
 	if _light_highlight_on:
 		# Lift rather than recolour, so a highlighted lamp still reads as
 		# that lamp. Floored so hovering an OFF fixture still shows.
@@ -6483,7 +6487,7 @@ func _sync_fixture_housing_glow(active: bool, energy: float, col: Color,
 		if not is_instance_valid(mat):
 			continue
 		var src: Color = base if i == 0 else bloom
-		var tinted: Color = src.lerp(col, 0.28)
+		var tinted := Color(col.r * src.r, col.g * src.g, col.b * src.b)
 		mat.set_shader_parameter("albedo", Color(
 			tinted.r * brightness,
 			tinted.g * brightness,
@@ -6515,13 +6519,13 @@ func _update_accent_lights(cfg2: Node, deep_night: float, master_on: bool) -> vo
 	# Accent point lights — independent, always on (no day/night gate) so the
 	# user can use them as plant-tank stage lighting that runs 24/7.
 	_apply_accent(_accent1_light, "Accent1",
-		Vector3(-2.6, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, -2.4),
+		Vector3(-TANK_HALF_W * 0.55, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, TANK_HALF_D * 0.55),
 		cfg2 != null and master_on and bool(cfg2.accent1_enabled),
 		float(cfg2.accent1_intensity) if cfg2 != null else 0.6,
 		cfg2.accent1_color if cfg2 != null else Color.WHITE,
 		1)
 	_apply_accent(_accent2_light, "Accent2",
-		Vector3(2.6, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, 2.4),
+		Vector3(TANK_HALF_W * 0.55, SUBSTRATE_DEPTH + (WATER_HEIGHT - SUBSTRATE_DEPTH) * 0.55, -TANK_HALF_D * 0.55),
 		cfg2 != null and master_on and bool(cfg2.accent2_enabled),
 		float(cfg2.accent2_intensity) if cfg2 != null else 0.6,
 		cfg2.accent2_color if cfg2 != null else Color.WHITE,
@@ -6546,6 +6550,17 @@ func _update_accent_lights(cfg2: Node, deep_night: float, master_on: bool) -> vo
 	elif _backlight != null and is_instance_valid(_backlight):
 		_backlight.visible = false
 	_push_backlight_globals(bl_on)
+	var moon_dir := Vector3.UP
+	var moon_energy: float = 0.0
+	if moon_on and is_instance_valid(_moonlight):
+		moon_dir = _moonlight.global_basis.z.normalized() if _moonlight.is_inside_tree() \
+			else _moonlight.basis.z.normalized()
+		moon_energy = _moonlight.light_energy / 0.92
+	RenderingServer.global_shader_parameter_set("iaq_moon_light",
+		Vector4(moon_dir.x, moon_dir.y, moon_dir.z, moon_energy))
+	var moon_color: Vector3 = LightingRig.linear_light_rgb(cfg2.moonlight_color if cfg2 != null else Color.WHITE)
+	RenderingServer.global_shader_parameter_set("iaq_moon_tint",
+		Vector4(moon_color.x, moon_color.y, moon_color.z, 0.0))
 
 
 # Every tank shader is unshaded, so the OmniLight above lights nothing on its
@@ -6564,23 +6579,25 @@ func _push_backlight_globals(on: bool) -> void:
 	var energy: float = LightingRig.backlight_energy(_backlight.light_energy)
 	RenderingServer.global_shader_parameter_set("iaq_backlight",
 		Vector4(p.x, p.y, p.z, energy))
-	var c: Color = _backlight.light_color
+	var c: Vector3 = LightingRig.linear_light_rgb(_backlight.light_color)
 	RenderingServer.global_shader_parameter_set("iaq_backlight_tint",
-		Vector4(c.r, c.g, c.b, LightingRig.backlight_falloff(_backlight.omni_range)))
+		Vector4(c.x, c.y, c.z, LightingRig.backlight_falloff(_backlight.omni_range)))
 
 
 func _apply_accent(existing: OmniLight3D, light_name: String, pos: Vector3,
 		on: bool, intensity: float, color: Color, slot: int) -> void:
+	var global_name: String = "iaq_accent%d" % slot
 	if not on:
 		if existing != null and is_instance_valid(existing):
 			existing.visible = false
+		RenderingServer.global_shader_parameter_set(global_name, Vector4.ZERO)
 		return
 	var node: OmniLight3D = existing
 	if node == null:
 		node = OmniLight3D.new()
 		node.name = light_name
 		node.position = pos
-		node.omni_range = 5.5
+		node.omni_range = maxf(2.0, maxf(TANK_HALF_W, TANK_HALF_D) * 1.1)
 		node.omni_attenuation = 1.2
 		node.shadow_enabled = false
 		add_child(node)
@@ -6591,15 +6608,18 @@ func _apply_accent(existing: OmniLight3D, light_name: String, pos: Vector3,
 	node.visible = true
 	node.light_color = color
 	node.light_energy = intensity * 1.4
+	var p: Vector3 = node.global_position if node.is_inside_tree() else node.position
+	RenderingServer.global_shader_parameter_set(global_name,
+		Vector4(p.x, p.y, p.z, maxf(0.0, intensity)))
+	var rgb: Vector3 = LightingRig.linear_light_rgb(color)
+	RenderingServer.global_shader_parameter_set(global_name + "_tint",
+		Vector4(rgb.x, rgb.y, rgb.z, 4.0 / (node.omni_range * node.omni_range)))
 
 
 func _apply_sphere_aquarium_lighting() -> void:
-	# Wider beams + internal fill so the bowl rim isn't harsh spotlight pools.
-	for spot in _light_fixture_spots:
-		if not is_instance_valid(spot):
-			continue
-		spot.spot_angle = minf(spot.spot_angle + 22.0, 72.0)
-		spot.spot_attenuation = 0.85
+	# Fixture builders choose broader bowl defaults before creating the shaft.
+	# Preserve explicit cone/attenuation controls: widening the native lights
+	# afterwards left their analytic exposure and visible shafts inconsistent.
 	# Soft omni fill at mid-water — reads as light bouncing in the curved glass.
 	_sphere_fill_light = OmniLight3D.new()
 	_sphere_fill_light.name = "SphereFill"
@@ -6615,8 +6635,154 @@ func _apply_sphere_aquarium_lighting() -> void:
 # Push the live spot into the shader globals that the unshaded voxel and
 # foliage shaders read. Without this the lamp lights the water volume but
 # not the plants standing in it - see shaders/beam_cone.gdshaderinc.
+var _plant_light_cached: bool = false
+var _plant_solar_light: float = 1.0
+var _plant_fixture_light: float = 0.0
+var _plant_light_origin := Vector3.ZERO
+var _plant_light_axis := Vector3.ZERO
+var _plant_light_dir := Vector3.DOWN
+var _plant_light_cone := Vector4.ZERO
+var _plant_light_falloff := Vector4.ZERO
+
+
+func _fixture_falloff(spot: SpotLight3D, axis: Vector3) -> Vector4:
+	var reference: float = maxf(TANK_HEIGHT - SUBSTRATE_DEPTH + 1.1, 0.5)
+	return Vector4(reference, 0.25, clampf(spot.spot_attenuation, 0.1, 8.0), axis.length())
+
+
+func _cache_plant_light(dl: float, cfg: Node) -> void:
+	_plant_light_cached = true
+	_plant_solar_light = 0.0
+	_plant_fixture_light = 0.0
+	if cfg != null and not bool(cfg.light_master_enabled):
+		return
+	_plant_solar_light = clampf(dl, 0.0, 1.0)
+	if cfg != null:
+		_plant_solar_light *= maxf(0.0, float(cfg.global_intensity)) * 2.0 \
+			* (1.0 - clampf(float(cfg.room_darkness), 0.0, 1.0))
+	var positions: Array = []
+	var first: SpotLight3D = null
+	for spot in _light_fixture_spots:
+		if not is_instance_valid(spot):
+			continue
+		positions.append(spot.global_position if spot.is_inside_tree() else spot.position)
+		if first == null:
+			first = spot
+	if first == null:
+		return
+	var segment: Dictionary = LightingRig.beam_segment(positions)
+	_plant_light_origin = segment["origin"]
+	_plant_light_axis = segment["axis"]
+	_plant_light_dir = LightingRig.spot_forward(first)
+	_plant_light_cone = LightingRig.cone_params(first.spot_angle, first.spot_range, 1.0)
+	_plant_light_falloff = _fixture_falloff(first, _plant_light_axis)
+	_plant_fixture_light = LightingRig.fixture_output(cfg, dl) * 2.0
+
+
+# Relative incident light, BEFORE the existing water/floater/canopy shading.
+# This is a calibrated game-scale exposure, not a measurement in physical PAR.
+func irradiance_at(pos: Vector3) -> float:
+	if not _plant_light_cached:
+		return SimGate.irradiance(sim, 1.0)
+	var fixture: float = 0.0
+	if _plant_fixture_light > 0.0:
+		fixture = _plant_fixture_light * LightingRig.beam_coverage(pos,
+			_plant_light_origin, _plant_light_axis, _plant_light_dir, _plant_light_cone, _plant_light_falloff)
+	return clampf(maxf(_plant_solar_light, fixture), 0.0, 1.5)
+
+
+# Glass is a receiving interface, independent of whether caustics changed.
+func _sync_glass_lighting(dl: float, fixture: float, deep_night: float,
+		master_on: bool) -> void:
+	if _glass_material_ref == null:
+		return
+	var daylight_energy: float = dl
+	if _cfg_node != null:
+		daylight_energy *= float(_cfg_node.global_intensity) * 2.0 \
+			* (1.0 - clampf(float(_cfg_node.room_darkness), 0.0, 1.0))
+	var moon: float = _moonlight.light_energy if is_instance_valid(_moonlight) \
+		and _moonlight.visible else 0.0
+	var light: float = clampf(maxf(daylight_energy, fixture * 2.0) + moon * 0.22, 0.0, 1.5) \
+		if master_on else 0.0
+	var shape_id: float = 1.0 if TANK_SHAPE == "cylinder" else 2.0 if TANK_SHAPE == "sphere" else 0.0
+	var glow: float = clampf(deep_night * fixture * 2.0, 0.0, 1.5)
+	var shape_band: float = (0.45 + dl * 0.35 + glow * 0.55) * light
+	var reflection: float = (0.15 + dl * 0.12 + glow * 0.22) * light
+	var sparkle: float = glow * 0.9 * light
+	var rim: float = (0.55 + glow * 0.35) * light
+	if OS.get_name() == "macOS":
+		reflection = maxf(reflection, (0.42 + dl * 0.12) * light)
+		rim = maxf(rim, 0.72 * light)
+		sparkle = maxf(sparkle, (0.12 + glow * 0.5) * light)
+	var caustic: float = 0.0
+	if _cfg_node == null or bool(_cfg_node.light_caustics):
+		caustic = clampf(maxf(_last_caustic_intensity, 0.0) * 0.22, 0.0, 0.55)
+	if not master_on:
+		caustic = 0.0
+	var changed: bool = absf(shape_id - _last_glass_shape_id) > 0.01 \
+		or absf(shape_band - _last_glass_shape_band) > 0.005 \
+		or absf(reflection - _last_glass_reflection) > 0.005 \
+		or absf(sparkle - _last_glass_sparkle) > 0.005 \
+		or absf(rim - _last_glass_rim) > 0.005 \
+		or absf(WATER_HEIGHT - _last_glass_water_y) > 0.02 \
+		or absf(caustic - _last_glass_caustic_band) > 0.005
+	if not changed:
+		return
+	_last_glass_shape_id = shape_id
+	_last_glass_shape_band = shape_band
+	_last_glass_reflection = reflection
+	_last_glass_sparkle = sparkle
+	_last_glass_rim = rim
+	_last_glass_water_y = WATER_HEIGHT
+	_last_glass_caustic_band = caustic
+	_glass_material_ref.set_shader_parameter("tank_shape_id", shape_id)
+	_glass_material_ref.set_shader_parameter("shape_band", shape_band)
+	_glass_material_ref.set_shader_parameter("reflection_strength", reflection)
+	_glass_material_ref.set_shader_parameter("sparkle", sparkle)
+	_glass_material_ref.set_shader_parameter("rim_chrome", rim)
+	_glass_material_ref.set_shader_parameter("water_surface_y", WATER_HEIGHT)
+	_glass_material_ref.set_shader_parameter("caustic_band", caustic)
+
+
+func _sync_light_beam_visibility(on: bool, color: Color = Color.WHITE) -> void:
+	if not is_instance_valid(_light_fixture_root):
+		return
+	for child in _light_fixture_root.get_children():
+		if not child.has_meta(BEAM_MOTES_META):
+			continue
+		child.visible = on
+		var motes: GPUParticles3D = child.get_meta(BEAM_MOTES_META)
+		if is_instance_valid(motes):
+			motes.visible = on
+			motes.emitting = on
+			if motes.draw_pass_1 != null and motes.draw_pass_1.material is ShaderMaterial:
+				var mote_mat: ShaderMaterial = motes.draw_pass_1.material
+				mote_mat.set_shader_parameter("bubble_color", Color(color.r, color.g, color.b, 0.38))
+				mote_mat.set_shader_parameter("o2_tint", 0.0)
+				mote_mat.set_shader_parameter("highlight", 0.12)
+
+
+var _fixture_shader_color := Color(1.0, 0.95, 0.85)
+var _fixture_shader_energy: float = 0.0
+var _fixture_shader_darkness: float = 0.0
+var _fixture_shader_active: bool = false
+
+
 func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 		darkness: float, active: bool) -> void:
+	_fixture_shader_color = fixture_color
+	_fixture_shader_energy = fixture_energy
+	_fixture_shader_darkness = darkness
+	_fixture_shader_active = active
+	var shaping: float = 1.0
+	if _cfg_node != null:
+		shaping = float(_cfg_node.light_shaping)
+	var tint: Vector4 = LightingRig.cone_tint(fixture_color, darkness, shaping)
+	if _cfg_node != null:
+		tint.w = maxf(tint.w, clampf(float(_cfg_node.ambient_floor), 0.0, 1.0))
+		if not bool(_cfg_node.light_master_enabled):
+			tint.w = 0.0
+	RenderingServer.global_shader_parameter_set("iaq_beam_tint", tint)
 	var spot: SpotLight3D = null
 	var positions: Array = []
 	for s in _light_fixture_spots:
@@ -6634,6 +6800,7 @@ func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 	# A bar is a segment, not its leftmost spot (VISUAL_DIRECTIONS #1).
 	var seg: Dictionary = LightingRig.beam_segment(positions)
 	var axis: Vector3 = seg["axis"]
+	RenderingServer.global_shader_parameter_set("iaq_beam_falloff", _fixture_falloff(spot, axis))
 	RenderingServer.global_shader_parameter_set(
 		"iaq_beam_origin", seg["origin"])
 	RenderingServer.global_shader_parameter_set(
@@ -6644,11 +6811,6 @@ func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,
 	RenderingServer.global_shader_parameter_set(
 		"iaq_beam_cone", LightingRig.cone_params(
 			spot.spot_angle, spot.spot_range, fixture_energy))
-	var shaping: float = 1.0
-	if _cfg_node != null and _cfg_node.get("light_shaping") != null:
-		shaping = float(_cfg_node.get("light_shaping"))
-	RenderingServer.global_shader_parameter_set(
-		"iaq_beam_tint", LightingRig.cone_tint(fixture_color, darkness, shaping))
 	RenderingServer.global_shader_parameter_set(
 		"iaq_scatter_light", LightingRig.scatter_light(fixture_color, fixture_energy, shaping))
 
@@ -6770,6 +6932,7 @@ func _rebuild_gooseneck() -> void:
 		return
 	for child in _light_fixture_root.get_children():
 		if child is MeshInstance3D and child.has_meta(GOOSENECK_PART):
+			_light_fixture_root.remove_child(child)
 			child.queue_free()
 	var corners: Array[Vector3] = _tank_footprint_corners()
 	var rim_y: float = TANK_HEIGHT + 0.05
@@ -6873,6 +7036,12 @@ func set_light_placement(off_x: float, off_z: float,
 		_rebuild_gooseneck()
 	_reaim_light_spots(aim_x, aim_z)
 	_update_light_beams()
+	# Pointer-driven motion updates the analytic light at the same cadence as
+	# the lamp mesh, instead of leaving its light pool behind at 10 Hz.
+	_sync_beam_cone_globals(_fixture_shader_color, _fixture_shader_energy,
+		_fixture_shader_darkness, _fixture_shader_active)
+	if sim != null:
+		_cache_plant_light(SimGate.daylight(sim, 1.0), _cfg_node)
 
 
 const LIGHT_BASE_ROT := "light_base_rot"
@@ -6905,14 +7074,19 @@ func _reaim_light_spots(aim_x: float, aim_z: float) -> void:
 # Length, direction and end radius of the shaft for one spot. Empty when
 # the beam would be too short to draw.
 func _beam_geometry(parent: Node3D, spot: SpotLight3D) -> Dictionary:
-	var spot_y: float = parent.position.y + spot.position.y
+	var origin: Vector3 = spot.position
+	var line_axis := Vector3.ZERO
+	if _light_fixture_spots.size() > 1:
+		origin = _light_spots_centre_local()
+		line_axis = (_light_fixture_spots[-1].position - _light_fixture_spots[0].position) * 0.5
+	var spot_y: float = parent.position.y + origin.y
 	var aim: Vector3 = LightingRig.spot_forward(spot)
 	var dist: float = LightingRig.beam_span(
 		spot_y, SUBSTRATE_DEPTH, aim, (spot_y - SUBSTRATE_DEPTH) * 2.6)
 	if dist <= 0.1:
 		return {}
-	return {"aim": aim, "dist": dist,
-		"radius": LightingRig.beam_end_radius(dist, spot.spot_angle * 0.90)}
+	return {"aim": aim, "dist": dist, "origin": origin, "line_axis": line_axis,
+		"radius": LightingRig.beam_end_radius(dist, spot.spot_angle)}
 
 
 # Move the existing shafts IN PLACE. Rebuilding them per mouse event leaked:
@@ -6948,23 +7122,26 @@ func _update_light_beams() -> void:
 		if mesh != null:
 			mesh.height = dist
 			mesh.bottom_radius = radius
-		mi.position = spot.position + aim * (dist * 0.5)
+		mi.position = (g["origin"] as Vector3) + aim * (dist * 0.5)
 		mi.basis = LightingRig.beam_basis(aim)
+		var line_axis: Vector3 = g["line_axis"]
+		mi.extra_cull_margin = line_axis.length()
+		(mi.material_override as ShaderMaterial).set_shader_parameter("line_half_axis", mi.basis.inverse() * line_axis)
 		if motes != null:
 			motes.position = mi.position
 			motes.visibility_aabb = AABB(
-				Vector3(-radius * 1.2, -dist * 0.55, -radius * 1.2),
-				Vector3(radius * 2.4, dist * 1.1, radius * 2.4))
+				Vector3(-radius * 1.2 - line_axis.length(), -dist * 0.55, -radius * 1.2),
+				Vector3(radius * 2.4 + line_axis.length() * 2.0, dist * 1.1, radius * 2.4))
 			var pm := motes.process_material as ParticleProcessMaterial
 			if pm != null:
 				pm.emission_box_extents = Vector3(
-					radius * 0.75, dist * 0.48, radius * 0.75)
+					radius * 0.75 + line_axis.length(), dist * 0.48, radius * 0.75)
 
 
 # NB no height_above parameter: the shaft reads the lamp's REAL height off
 # the fixture that carries it (parent.position.y), because the nominal
 # light_height is wrong for the gooseneck, whose clamp sits on the rim.
-func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> void:
+func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, _spot_angle: float) -> void:
 	# Length along the AIM direction, not straight down. A raked beam
 	# travels further before it lands than a vertical one, and the shaft
 	# used to be a vertical cylinder regardless of where the light pointed
@@ -6977,22 +7154,17 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	# light_height of 1.4 the shaft was built from a phantom lamp 1.35 units
 	# above the one you can see. That is why the beam did not look like it
 	# came from the lamp.
-	var spot_y: float = parent.position.y + spot.position.y
-	# Read the light's ACTUAL forward axis rather than rebuilding it from
-	# euler angles. A look-at rotation can carry a non-zero Z that a
-	# tilt/yaw reconstruction silently drops, which would leave the visible
-	# shaft pointing somewhere the light is not.
-	var aim: Vector3 = LightingRig.spot_forward(spot)
-	var dist: float = LightingRig.beam_span(
-		spot_y, SUBSTRATE_DEPTH, aim, (spot_y - SUBSTRATE_DEPTH) * 2.6)
-	if dist <= 0.1:
+	var geometry: Dictionary = _beam_geometry(parent, spot)
+	if geometry.is_empty():
 		return
-
+	var aim: Vector3 = geometry["aim"]
+	var dist: float = geometry["dist"]
+	var line_axis: Vector3 = geometry["line_axis"]
 	# Create a CylinderMesh.
 	var mesh := CylinderMesh.new()
-	mesh.top_radius = 0.05
+	mesh.top_radius = 0.18
 	# Widen bottom radius to match spotlight visual angle.
-	mesh.bottom_radius = LightingRig.beam_end_radius(dist, spot_angle * 0.90)
+	mesh.bottom_radius = geometry["radius"]
 	mesh.height = dist
 	mesh.cap_top = false
 	mesh.cap_bottom = false
@@ -7006,10 +7178,11 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	
 	# CylinderMesh runs along local +Y and is centred, so push it half a
 	# length along the aim direction and rotate +Y onto that direction.
-	mi.position = spot.position + aim * (dist * 0.5)
+	mi.position = (geometry["origin"] as Vector3) + aim * (dist * 0.5)
 	# Local -Y points along the beam so UV.y = 0 (the bright, sealed end of
 	# the shaft) stays at the lamp. See LightingRig.beam_basis.
 	mi.basis = LightingRig.beam_basis(aim)
+	mi.extra_cull_margin = line_axis.length()
 	
 	# Load the shader and create a material.
 	var shader := load("res://shaders/god_ray.gdshader") as Shader
@@ -7021,6 +7194,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 		# from the daylight curve in the _process loop; the initial 0 is
 		# just so the first frame before the loop runs doesn't flash.
 		mat.set_shader_parameter("beam_color", Color(1.0, 0.95, 0.80, 0.0))
+		mat.set_shader_parameter("line_half_axis", mi.basis.inverse() * line_axis)
 		BakedCaustics.apply_to_material(mat)
 		# beam_color.a is driven per-frame from the daylight curve; the
 		# per-tank strength + darkness lift ride along with it there.
@@ -7065,14 +7239,14 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	# these read as crisp 1-2 pixel sparkles drifting through the shaft.
 	var motes := GPUParticles3D.new()
 	motes.name = "DustMotes"
-	motes.amount = 32
+	motes.amount = 48 if line_axis.length() > 0.15 else 32
 	motes.lifetime = 9.0
 	motes.preprocess = motes.lifetime * 0.5
 	motes.randomness = 0.45
 	motes.local_coords = false
 	motes.visibility_aabb = AABB(
-		Vector3(-mesh.bottom_radius * 1.2, -dist * 0.55, -mesh.bottom_radius * 1.2),
-		Vector3(mesh.bottom_radius * 2.4, dist * 1.1, mesh.bottom_radius * 2.4))
+		Vector3(-mesh.bottom_radius * 1.2 - line_axis.length(), -dist * 0.55, -mesh.bottom_radius * 1.2),
+		Vector3(mesh.bottom_radius * 2.4 + line_axis.length() * 2.0, dist * 1.1, mesh.bottom_radius * 2.4))
 	motes.position = mi.position
 	var mote_pm := ParticleProcessMaterial.new()
 	mote_pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
@@ -7080,7 +7254,7 @@ func _add_god_ray_beam(parent: Node3D, spot: SpotLight3D, spot_angle: float) -> 
 	# slightly via the directional bias below so motes appear denser near
 	# the lamp and disperse as they drift down.
 	mote_pm.emission_box_extents = Vector3(
-		mesh.bottom_radius * 0.75, dist * 0.48, mesh.bottom_radius * 0.75)
+		mesh.bottom_radius * 0.75 + line_axis.length(), dist * 0.48, mesh.bottom_radius * 0.75)
 	# Motes drift slowly downward with a gentle lateral wobble — gravity
 	# tiny so they sway in the simulated water column instead of falling
 	# like terrestrial dust. Initial velocity adds a wisp of horizontal

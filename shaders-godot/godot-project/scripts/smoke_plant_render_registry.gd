@@ -130,6 +130,12 @@ uniform float flow_strength = 0.0;
 		"integrated plus pending far-plant time preserves complete elapsed time")
 	far_plant.health = 0.5
 	TestSupport.check(failed, sim._plant_tick_divisor(far_plant, camera) == 1,
-		"stressed far plant returns to full tick rate")
+			"stressed far plant returns to full tick rate")
+	sim._track_plant_clock(far_plant)
+	var far_id: int = far_plant.get_instance_id()
+	sim._plant_tick_accum[far_id] = 0.3
+	far_plant.free()
+	TestSupport.check(failed, not sim._plant_tick_accum.has(far_id),
+			"departed plant releases its unconsumed bucket clock")
 	host.queue_free()
 	quit(TestSupport.report("smoke_plant_render_registry", failed))

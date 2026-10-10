@@ -244,9 +244,8 @@ static func fauna_color_from_material(mat: Material) -> Color:
 
 
 static var _fauna_mm_template: ShaderMaterial = null
-static var _fauna_mm_mats: Array = []
+static var _fauna_mm_mats: Array[WeakRef] = []
 const FAUNA_MM_SHADER_PATH := "res://shaders/voxel_fauna_mm.gdshader"
-const FAUNA_MM_CAP: int = 320
 
 
 static func _ensure_fauna_mm_template() -> void:
@@ -267,16 +266,30 @@ static func _ensure_fauna_mm_template() -> void:
 static func make_fauna_mm() -> ShaderMaterial:
 	_ensure_fauna_mm_template()
 	var m: ShaderMaterial = _fauna_mm_template.duplicate() as ShaderMaterial
-	if _fauna_mm_mats.size() < FAUNA_MM_CAP and not _fauna_mm_mats.has(m):
-		_fauna_mm_mats.append(m)
+	# The registry observes live materials; it must not own dead animal bodies.
+	if _fauna_mm_mats.size() % 64 == 0:
+		_live_fauna_mm_mats()
+	_fauna_mm_mats.append(weakref(m))
 	return m
+
+
+static func _live_fauna_mm_mats() -> Array[ShaderMaterial]:
+	var live: Array[ShaderMaterial] = []
+	var kept: Array[WeakRef] = []
+	for ref in _fauna_mm_mats:
+		var value: Variant = ref.get_ref()
+		if is_instance_valid(value) and value is ShaderMaterial:
+			live.append(value as ShaderMaterial)
+			kept.append(ref)
+	_fauna_mm_mats = kept
+	return live
 
 
 static func refresh_fauna_rims() -> void:
 	for m in _fauna_mat_cache.values():
 		if m is ShaderMaterial and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
 			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
-	for m in _fauna_mm_mats:
+	for m in _live_fauna_mm_mats():
 		if is_instance_valid(m) and m is ShaderMaterial \
 				and (m as ShaderMaterial).get_shader_parameter("fauna_rim") != null:
 			(m as ShaderMaterial).set_shader_parameter("fauna_rim", FAUNA_RIM)
@@ -612,7 +625,7 @@ static func update_aquatic_uniforms(intensity: float, light_color: Color, water_
 			mat.set_shader_parameter("water_surface_y", water_y)
 			mat.set_shader_parameter("day_phase_offset", day_offset)
 			mat.set_shader_parameter("aquatic_shimmer", shimmer)
-	for mat in _fauna_mm_mats:
+	for mat in _live_fauna_mm_mats():
 		if is_instance_valid(mat) and mat is ShaderMaterial:
 			mat.set_shader_parameter("aquatic_caustic_intensity", intensity)
 			mat.set_shader_parameter("aquatic_light_color", light_color)
@@ -646,7 +659,7 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 			mat.set_shader_parameter("tank_fixture_glow", glow)
 			mat.set_shader_parameter("tank_fixture_color", color)
 			mat.set_shader_parameter("fixture_water_floor", water_floor)
-	for mat in _fauna_mm_mats:
+	for mat in _live_fauna_mm_mats():
 		if is_instance_valid(mat) and mat is ShaderMaterial:
 			mat.set_shader_parameter("tank_fixture_glow", glow)
 			mat.set_shader_parameter("tank_fixture_color", color)
@@ -669,7 +682,7 @@ static func update_fixture_glow(glow: float, color: Color, water_y: float,
 
 
 static var _foliage_mm_mats: Array[WeakRef] = []
-static var _mat_palette_last: Dictionary = {}
+const MATERIAL_PALETTE_META: StringName = &"voxel_palette_last"
 static var _palette_globals_ready: bool = false
 
 
@@ -1086,6 +1099,7 @@ static func _apply_palette_overlay(mat: ShaderMaterial,
 		oh: float, osat: float, owarm: float, oval: float) -> void:
 	if mat == null or not is_instance_valid(mat):
 		return
+	mat.remove_meta(MATERIAL_PALETTE_META)
 	mat.set_shader_parameter("palette_hue_shift", oh)
 	mat.set_shader_parameter("palette_saturation", osat)
 	mat.set_shader_parameter("palette_warmth", owarm)
@@ -1095,6 +1109,7 @@ static func _apply_palette_overlay(mat: ShaderMaterial,
 static func _clear_palette_overlay(mat: ShaderMaterial) -> void:
 	if mat == null or not is_instance_valid(mat):
 		return
+	mat.remove_meta(MATERIAL_PALETTE_META)
 	mat.set_shader_parameter("palette_hue_shift", 0.0)
 	mat.set_shader_parameter("palette_saturation", 1.0)
 	mat.set_shader_parameter("palette_warmth", 0.0)
@@ -1105,11 +1120,10 @@ static func _apply_palette_to_material(mat: ShaderMaterial, hue: float, sat: flo
 		warmth: float, val: float) -> void:
 	if mat == null or not is_instance_valid(mat):
 		return
-	var mid: int = mat.get_instance_id()
 	var key: Vector4 = Vector4(hue, sat, warmth, val)
-	if _mat_palette_last.get(mid, Vector4.INF) == key:
+	if mat.get_meta(MATERIAL_PALETTE_META, Vector4.INF) == key:
 		return
-	_mat_palette_last[mid] = key
+	mat.set_meta(MATERIAL_PALETTE_META, key)
 	mat.set_shader_parameter("palette_hue_shift", hue)
 	mat.set_shader_parameter("palette_saturation", sat)
 	mat.set_shader_parameter("palette_warmth", warmth)

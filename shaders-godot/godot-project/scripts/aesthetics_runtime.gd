@@ -2,6 +2,16 @@
 class_name AestheticsRuntime
 extends RefCounted
 
+const PLANTED_PALETTE: Array[String] = [
+	"0b1a22","163040","23475a","356379","4b8095","69a1b3","92c3d0","c5e2e7",
+	"10261d","1b3d2e","2c5f47","3f7c50","5a975c","7ab372","a4cf8c","d5e5ad",
+	"1a120c","2c1f15","432f1f","5d4128","785538","95714e","b18f6a","cdb088",
+	"161c1d","222b2d","313e40","435456","586d6f","718789","8ea3a4","b3c4c3",
+	"ffffff","e0eef2","b9d6df","cf5353","df9648","e5c86b","348875","4b67bf",
+	"8053a1","bc5a88","4a423b","675d53","867b6f","a89d8f","000000","f8f4e0",
+]
+
+
 const TankFidelity := preload("res://scripts/tank_fidelity_runtime.gd")
 
 # First-launch curated look (#99). Does not override saved render prefs once applied.
@@ -423,3 +433,22 @@ static func ui_palette_tokens(hexes: Array) -> Dictionary:
 		"glass_tint": Color(water.r * 0.14, water.g * 0.16, water.b * 0.20, 0.58),
 	}
 
+
+
+# Pigment stays chromatic as the sculpted body catches light. White mixing
+# washed intricate markings toward pastel; these are build-time display colors.
+static func fauna_highlight_color(c: Color) -> Color:
+	return Color.from_hsv(c.h, c.s * 0.84, minf(1.0, c.v * 0.90 + 0.18), c.a)
+
+
+static func fauna_shadow_color(c: Color) -> Color:
+	return Color.from_hsv(c.h, c.s * 0.96, c.v * 0.53, c.a)
+
+
+static func night_palette_color(c: Color) -> Color:
+	var lum: float = c.get_luminance()
+	var night := c.darkened(0.42)
+	night = night.lerp(Color(night.r * 0.7, night.g * 0.82, night.b * 1.1, 1.0), 0.5)
+	night = c.lerp(night, clampf(1.0 - lum * 0.6, 0.3, 1.0))
+	night.a = 1.0
+	return night

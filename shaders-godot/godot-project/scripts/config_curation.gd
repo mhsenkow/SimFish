@@ -240,6 +240,7 @@ const MANIFEST: Dictionary = {
 	"spot_shadows": [TIER_ADVANCED, "lighting"],
 	"beam_strength": [TIER_ADVANCED, "lighting"],
 	"tank_lights_on": [TIER_COMMON, "tank"],
+	"fixture_follow_day_cycle": [TIER_COMMON, "lighting"],
 	"heater_enabled": [TIER_COMMON, "water"],
 	"light_master_enabled": [TIER_ESSENTIAL, "lighting"],
 	"day_cycle_enabled": [TIER_ESSENTIAL, "misc"],

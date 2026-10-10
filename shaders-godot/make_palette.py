@@ -9,29 +9,18 @@ Requires Pillow:
 """
 
 from pathlib import Path
+import re
 from PIL import Image
 
 
 PALETTES = {
     "planted_48": [
-        # water cool ramp (8)
-        "#0b1a22", "#163040", "#23475a", "#356379",
-        "#4b8095", "#69a1b3", "#92c3d0", "#c5e2e7",
-        # plant green ramp (8)
-        "#102614", "#1d3b22", "#2c5a30", "#3e7f40",
-        "#57a253", "#79c069", "#a5d97e", "#d0eb9a",
-        # substrate browns (8)
-        "#1a120c", "#2c1f15", "#432f1f", "#5d4128",
-        "#785538", "#95714e", "#b18f6a", "#cdb088",
-        # stone grays — true neutral ramp (#5), not blue-tinted
-        "#1a1a1a", "#2a2a2a", "#3a3a3a", "#4a4a4a", "#5c5c5c", "#707070", "#8a8a8a", "#a4a4a4",
-        # highlights / glass (3)
-        "#ffffff", "#e0eef2", "#b9d6df",
-        # warm fauna — 2 value steps per hue (#3, #6); 16 slots total
-        "#6a2020", "#c33b3b", "#8a4818", "#d97e2c",
-        "#8a7010", "#e6c92a", "#283888", "#4060ff",
-        "#5a2088", "#872cb0", "#882050", "#c44a8e",
-        "#000000",
+        "#0b1a22", "#163040", "#23475a", "#356379", "#4b8095", "#69a1b3", "#92c3d0", "#c5e2e7",
+        "#10261d", "#1b3d2e", "#2c5f47", "#3f7c50", "#5a975c", "#7ab372", "#a4cf8c", "#d5e5ad",
+        "#1a120c", "#2c1f15", "#432f1f", "#5d4128", "#785538", "#95714e", "#b18f6a", "#cdb088",
+        "#161c1d", "#222b2d", "#313e40", "#435456", "#586d6f", "#718789", "#8ea3a4", "#b3c4c3",
+        "#ffffff", "#e0eef2", "#b9d6df", "#cf5353", "#df9648", "#e5c86b", "#348875", "#4b67bf",
+        "#8053a1", "#bc5a88", "#4a423b", "#675d53", "#867b6f", "#a89d8f", "#000000", "#f8f4e0",
     ],
     "blackwater_48": [
         "#0a0907", "#15110b", "#251c10", "#382a14",
@@ -128,7 +117,19 @@ def write_palette(name: str, hexes: list[str], out_dir: Path) -> Path:
     return out_path
 
 
+def runtime_planted_palette() -> list[str]:
+    # The game is the authoritative art table. Keep preview generation in
+    # agreement when an artist adjusts the palette there.
+    source = (Path(__file__).parent / "godot-project/scripts/aesthetics_runtime.gd").read_text()
+    literal = source.split("const PLANTED_PALETTE:", 1)[1].split("= [", 1)[1].split("]", 1)[0]
+    colors = re.findall(r'"([0-9a-fA-F]{6})"', literal)
+    if len(colors) != 48:
+        raise ValueError("Runtime planted palette must contain exactly 48 hex colors")
+    return ["#" + color for color in colors]
+
+
 def main() -> None:
+    PALETTES["planted_48"] = runtime_planted_palette()
     out_dir = Path(__file__).parent / "palettes"
     out_dir.mkdir(exist_ok=True)
     for name, hexes in PALETTES.items():

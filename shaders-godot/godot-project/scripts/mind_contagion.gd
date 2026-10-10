@@ -11,7 +11,6 @@ extends RefCounted
 const RADIUS: float = 6.0
 const RADIUS2: float = RADIUS * RADIUS
 const _MindArousalFieldScript = preload("res://scripts/mind_arousal_field.gd")
-const _MindPairCacheScript = preload("res://scripts/mind_pair_cache.gd")
 
 
 # Nudge f.arousal (fast) and f.mood (slower) toward the proximity-weighted mean of
@@ -27,11 +26,13 @@ static func tick(f: Fish, neighbors: Array, dt: float) -> void:
 	if field_ar > 0.01:
 		sum_ar += field_ar * 2.4
 		sum_w += 2.4
+	var position: Vector3 = f.global_position
 	for n in neighbors:
 		if not (n is Fish) or n == f:
 			continue
-		var pair: Dictionary = _MindPairCacheScript.get_pair(f, n)
-		var dist: float = float(pair.get("dist", f.position.distance_to(n.position)))
+		# This consumer needs distance only, not a pair dictionary, heading
+		# projection or a formatted string key for every neighbor.
+		var dist: float = position.distance_to((n as Fish).global_position)
 		if dist >= RADIUS:
 			continue
 		var w: float = 1.0 - dist / RADIUS

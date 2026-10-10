@@ -61,6 +61,20 @@ func _initialize() -> void:
 	t.approx(seen._motor_phase, unseen._motor_phase, "camera culling does not stop the stroke clock")
 	t.check(seen.global_position.distance_to(unseen.global_position) < 0.0001,
 		"visible and culled fish follow the same physical path")
+	var regular := _make_swimmer(host, true)
+	var batched := _make_swimmer(host, true)
+	var old_pose_phase: float = batched._swim_phase
+	for step in 5:
+		regular._motion_substep(0.01)
+		batched._motion_substep(0.01, 0.05 if step == 4 else 0.0)
+		if step < 4:
+			t.approx(batched._swim_phase, old_pose_phase, "intermediate integration does not write a hidden fin pose")
+	t.approx(regular.speed, batched.speed, "pose batching preserves physical momentum")
+	t.approx(regular._motor_phase, batched._motor_phase, "pose batching preserves the propulsion clock")
+	t.check(regular.position.distance_to(batched.position) < 0.0001,
+		"pose batching preserves movement through all substeps")
+	t.check(batched._swim_phase > old_pose_phase, "final visible pose advances the fin clock")
+	t.check(batched.transform.is_finite(), "batched swimmer remains finite")
 	var paused_speed: float = seen.speed
 	var paused_position: Vector3 = seen.global_position
 	seen._motion_substep(0.0)

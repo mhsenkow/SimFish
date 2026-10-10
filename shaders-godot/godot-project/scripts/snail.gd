@@ -681,7 +681,8 @@ func _process(dt: float) -> void:
 			_direction = _direction.normalized()
 
 	# Smoothly turn crawl heading toward the target direction.
-	_facing = _facing.lerp(_direction, clampf(dt * FACING_TURN_RATE, 0.0, 1.0))
+	var facing_turn: float = wrapf(_direction.angle() - _facing.angle(), -PI, PI)
+	_facing = Vector2.from_angle(_facing.angle() + clampf(facing_turn, -dt * FACING_TURN_RATE, dt * FACING_TURN_RATE))
 	if _facing.length_squared() > 1e-6:
 		_facing = _facing.normalized()
 
@@ -727,6 +728,11 @@ func _process(dt: float) -> void:
 		speed_mult *= RETREAT_SPEED_MULT
 	# Peristaltic foot wave drives glide on the forward stroke only (#22).
 	var target_speed: float = SPEED * crawl_speed * speed_mult
+	if _eating_pulse_remaining > 0.0 and _retreat_remaining <= 0.0:
+		target_speed = 0.0
+	# Tight turns shorten the glide while the head explores the new direction.
+	var turn_alignment: float = clampf(_facing.dot(_direction), 0.0, 1.0)
+	target_speed *= lerpf(0.35, 1.0, turn_alignment)
 	_crawl_speed_smoothed = move_toward(
 		_crawl_speed_smoothed, target_speed, 0.45 * dt)
 	var gait_speed: float = _crawl_speed_smoothed * (0.28 + 0.72 * forward_stroke)
@@ -1122,6 +1128,9 @@ func _ensure_finite_transform() -> void:
 
 
 func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> void:
+	if hunger < 0.12 or _eating_pulse_remaining > 0.0:
+		_pursuing_waste = false
+		return
 	# Scan the world for waste particles near our wall. If one is close
 	# enough, point our motion toward it in the wall-tangent plane. When we
 	# get very close, consume it (produces a tiny snail pellet).
@@ -1163,7 +1172,7 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		if sim.has_method("query_algae_in_radius"):
 			algae_near = sim.query_algae_in_radius(global_position, 5.0)
 		for a in algae_near:
-			if not is_instance_valid(a):
+			if not is_instance_valid(a) or (a.has_method("biomass") and a.biomass() <= 0):
 				continue
 			var to_a_pos: Vector3 = (a as Node3D).global_position - global_position
 			if absf(wall_normal.dot(to_a_pos)) > OFF_PLANE_MAX:
@@ -1172,11 +1181,9 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 			if d2 < best_d2:
 				best_d2 = d2
 				best = a
-	# If food is scarce, snails rasp soft plant/coral tissue too (slowly).
-	# Lush-tank bonus: when the tank's planted area is dense, snails crop
-	# more aggressively (more food in arm's reach, less wandering cost).
-	# This is the negative-feedback brake against monoculture takeover —
-	# without it, fast-growing stems just hit max_height and sit there.
+	# Living leaves supply surface film. Tissue is a last resort for very
+	# hungry snails, and small establishing plants are spared that fallback.
+	# Dense foliage makes encounter opportunities more frequent.
 	var lush_plant_gate: float = 0.45
 	var lush_biomass: int = int(sim.get("total_plant_biomass") if sim.get("total_plant_biomass") != null else 0)
 	if lush_biomass > 250:
@@ -1189,9 +1196,14 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		for p in plants_near:
 			if not is_instance_valid(p):
 				continue
-			if not p.has_method("nibble") or p.biomass() < 8:
+			if not p.has_method("nibble") or p.biomass() <= 0 or (p is Plant and p.is_dying):
 				continue
-			var to_p_pos: Vector3 = (p as Node3D).global_position - global_position
+			var plant_site: Vector3 = p.surface_graze_site(global_position) if p is Plant else Vector3.INF
+			if not plant_site.is_finite():
+				if hunger <= 0.85 or p.biomass() < 8:
+					continue
+				plant_site = (p as Node3D).global_position
+			var to_p_pos: Vector3 = plant_site - global_position
 			if absf(wall_normal.dot(to_p_pos)) > OFF_PLANE_MAX:
 				continue
 			var d2p: float = to_p_pos.length_squared()
@@ -1227,9 +1239,15 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 		return
 	# Compare in global space consistently — both endpoints in global, so
 	# the snail's parent transform doesn't skew the comparison.
-	var to_w: Vector3 = best.global_position - global_position
-	# Consume if very close.
-	if to_w.length() < 0.25:
+	var food_position: Vector3 = best.global_position
+	if best is Plant:
+		var leaf_site: Vector3 = (best as Plant).surface_graze_site(global_position)
+		if leaf_site.is_finite():
+			food_position = leaf_site
+	var to_w: Vector3 = food_position - global_position
+	# A leaf can be rasped within head reach, without occupying its voxel.
+	var bite_reach: float = 0.45 if best is Plant else 0.25
+	if to_w.length() < bite_reach:
 		if best is WasteParticle:
 			# It's waste — type-checked so we never try to erase a non-waste
 			# node (algae / plant / floater) from the typed waste array.
@@ -1248,17 +1266,21 @@ func _check_waste_nearby(tangent: Vector3, bitangent: Vector3, dt: float) -> voi
 			if wn_bio != null and wn_bio.has_method("boost_biofilm"):
 				wn_bio.boost_biofilm(nv_consumed)
 		else:
-			# It's algae, plant, coral, or floater.
-			if best is FloatingPlant:
-				(best as FloatingPlant).nibble(1)
-				hunger = clampf(hunger - FEED_PLANT, 0.0, 1.0)
+			var taken: int = 0
+			var feeding_gain: float = FEED_PLANT
+			if best is Plant:
+				taken = (best as Plant).graze_surface_food(1, global_position, 0.5)
+				if taken == 0 and hunger > 0.85:
+					taken = (best as Plant).nibble(1)
 			elif best.has_method("nibble"):
-				if best.has_method("top_world_y"):
-					best.nibble(1)   # rooted plant/coral: slow rasping
-					hunger = clampf(hunger - FEED_PLANT, 0.0, 1.0)
-				else:
-					best.nibble(999) # algae cluster: can clear quickly
-					hunger = clampf(hunger - FEED_ALGAE, 0.0, 1.0)
+				taken = int(best.nibble(1))
+				if not (best is FloatingPlant):
+					feeding_gain = FEED_ALGAE
+			if taken <= 0:
+				_pursuing_waste = false
+				return
+			hunger = clampf(hunger - feeding_gain * float(taken), 0.0, 1.0)
+
 		# Trigger the visible eating pulse — _apply_squash amplifies the
 		# body wave for EATING_PULSE_DURATION so the bite reads as a
 		# distinct beat instead of a silent consume.
@@ -1810,10 +1832,10 @@ func _try_attach_to_plant() -> bool:
 		return false
 	var best: Node3D = null
 	var best_d2: float = PLANT_PROX * PLANT_PROX
-	# Cap to avoid scanning hundreds of plants per scan tick.
-	var n: int = mini(plants_arr.size(), 64)
-	for i in n:
-		var p_v: Variant = plants_arr[i]
+	# Use the existing XZ grid; roster order must not hide nearby plants.
+	if sim.has_method("query_plants_in_radius"):
+		plants_arr = sim.query_plants_in_radius(global_position, PLANT_PROX)
+	for p_v in plants_arr:
 		if not is_instance_valid(p_v) or not (p_v is Node3D):
 			continue
 		var p: Node3D = p_v as Node3D
@@ -1826,7 +1848,9 @@ func _try_attach_to_plant() -> bool:
 		# height). Read current_height if available; fall back to 4 voxels.
 		var trunk_top: float = p.global_position.y + 0.32 * 4.0
 		var ch_v: Variant = p.get("current_height")
-		if ch_v != null:
+		if p is Plant:
+			trunk_top = (p as Plant).top_world_y()
+		elif ch_v != null:
 			trunk_top = p.global_position.y + 0.32 * float(int(ch_v))
 		if global_position.y < p.global_position.y - 0.2 or global_position.y > trunk_top + 0.1:
 			continue
@@ -1880,9 +1904,9 @@ func _try_attach_to_plant() -> bool:
 func _steer_direction(target: Vector2, dt: float) -> void:
 	if target.length_squared() < 1e-6:
 		return
-	_direction = _direction.lerp(target, clampf(dt * STEER_RATE, 0.0, 1.0))
-	if _direction.length_squared() > 1e-6:
-		_direction = _direction.normalized()
+	var current_angle: float = _direction.angle()
+	var turn: float = wrapf(target.angle() - current_angle, -PI, PI)
+	_direction = Vector2.from_angle(current_angle + clampf(turn, -dt * STEER_RATE, dt * STEER_RATE))
 
 
 func _shell_up() -> Vector3:
@@ -2038,7 +2062,9 @@ func _reclamp_to_footprint() -> void:
 			# attachment so the next scan tick can pick a new surface.
 			var trunk_top: float = pp.y + 0.32 * 4.0
 			var ch_v: Variant = _attached_plant.get("current_height")
-			if ch_v != null:
+			if _attached_plant is Plant:
+				trunk_top = (_attached_plant as Plant).top_world_y()
+			elif ch_v != null:
 				trunk_top = pp.y + 0.32 * float(int(ch_v))
 			if global_position.y > trunk_top + 0.05:
 				_attached_plant = null  # off the top
@@ -2274,7 +2300,7 @@ func _lay_egg_sac() -> void:
 	sac.set("inherited_shell_thickness",
 		clampf(shell_thickness + randf_range(-0.06, 0.06) + thick_bias, 0.05, 1.0))
 	sac.set("inherited_parent_lineage", snail_name)
-	sac.set("inherited_parent_keys", SpeciesLibScript.new().parent_keys_for_breeding([get_saved_genome()]))
+	sac.set("inherited_parent_keys", SpeciesLibScript.parent_keys_for_breeding([get_saved_genome()]))
 
 
 func _mutate_shell_shape(base_shape: String) -> String:

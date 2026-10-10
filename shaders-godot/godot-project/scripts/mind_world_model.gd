@@ -131,7 +131,7 @@ static func _gru_learn_readout(m: Dictionary, actual: PackedFloat32Array,
 	if not m.has("gw") or predicted.size() < GRU_OUT:
 		return
 	var gw: Dictionary = m["gw"]
-	if not gw.has("Wo") or not gw.has("h"):
+	if not gw.has("Wo") or not m.has("h"):
 		return
 	var lr: float = clampf(dt * 0.14, 0.004, 0.09)
 	var h: PackedFloat32Array = m["h"]
@@ -195,10 +195,12 @@ static func tick(f, _sim: Node, dt: float) -> void:
 	while gh.size() > 64:
 		gh.pop_front()
 	m["gru_err_hist"] = gh
+	# SOUL #14 — online delta on readout head (deterministic per fish).
+	# The previous prediction belongs to the previous hidden state. Learn
+	# against that state before rolling the recurrent model forward.
+	_gru_learn_readout(m, s, gp, dt)
 	var step: Dictionary = _gru_step(m, s)
 	m["gru_pred"] = step["pred"]
-	# SOUL #14 — online delta on readout head (deterministic per fish).
-	_gru_learn_readout(m, s, gp, dt)
 	if int(m.get("updates", 0)) <= 3:
 		m["pe_baseline"] = maxf(float(m.get("pe_baseline", 0.0)), float(m.get("error", 0.0)))
 		m["gru_pe_baseline"] = maxf(float(m.get("gru_pe_baseline", 0.0)), float(m.get("gru_error", 0.0)))

@@ -4,6 +4,20 @@ extends RefCounted
 # REFINEMENT_II #7 + #16 — one place to clear transient mind caches on load/reset.
 
 const EpisodicMemory = preload("res://scripts/episodic_memory.gd")
+const LearnedMind = preload("res://scripts/fish_learned_mind.gd")
+const Scheduler = preload("res://scripts/mind_scheduler.gd")
+
+
+static func release_fish(f: Fish) -> void:
+	# Forget bookkeeping when the Node leaves; learned state stays on the fish
+	# and in its save, including when moving it to another tank.
+	LearnedMind.release_fish(f)
+	Scheduler.forget_fish(f)
+	if MindBrainPool.forget_fish(f):
+		MindBoundaryCache.forget_id(str(f.id))
+		MindPromptSkeleton.invalidate(f)
+		MindDirtySave.clear(f)
+		MindContext.forget_fish(f)
 
 
 static func reset_transient(f: Fish) -> void:

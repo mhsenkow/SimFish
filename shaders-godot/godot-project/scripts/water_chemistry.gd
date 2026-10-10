@@ -265,7 +265,10 @@ func apply_water_change(fraction: float = 0.35) -> void:
 func _tick_carbonate(dt: float, sim: SimDriver, plant_biomass: int) -> void:
 	if sim == null:
 		return
-	var dl: float = SimGate.daylight(sim, 0.5)
+	# Carbon and pH follow photosynthetic exposure, while SimDriver.daylight
+	# continues to govern animal clocks. A manually lit night is not darkness
+	# for a plant, and a blacked-out noon must not keep consuming dissolved CO2.
+	var dl: float = clampf(SimGate.irradiance(sim, 0.5), 0.0, 1.0)
 	var biomass_f: float = clampf(float(plant_biomass) / 420.0, 0.0, 1.2)
 	var photo_draw: float = dl * biomass_f * 0.0018 * dt
 	var night_resp: float = (1.0 - dl) * biomass_f * 0.0012 * dt

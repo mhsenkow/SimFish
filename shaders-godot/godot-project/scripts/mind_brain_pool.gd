@@ -13,10 +13,12 @@ static var _mutex: Mutex = Mutex.new()
 # is still running replaces its stale job instead of piling up duplicates.
 static var _pending_jobs: Dictionary = {}
 static var _results: Dictionary = {}  # fish_id -> {ms, proxy}
+static var _owners: Dictionary = {}  # fish_id -> Node instance id; no Node on workers
 static var _task_id: int = -1
 static var _snap_banks: Array = [{}, {}]
 static var _snap_write_idx: int = 0
 static var _worker_cfg: Dictionary = {}
+static var _config: Node = null
 static var _in_worker: bool = false
 static var _stats: Dictionary = {
 	"queued": 0, "applied": 0, "worker_batches": 0, "worker_jobs": 0,
@@ -29,10 +31,12 @@ static func reset_for_test() -> void:
 	_mutex.lock()
 	_pending_jobs.clear()
 	_results.clear()
+	_owners.clear()
 	_task_id = -1
 	_snap_banks = [{}, {}]
 	_snap_write_idx = 0
 	_worker_cfg.clear()
+	_config = null
 	_in_worker = false
 	_stats = {"queued": 0, "applied": 0, "worker_batches": 0, "worker_jobs": 0,
 			"deferred_flushes": 0}
@@ -46,20 +50,18 @@ static func stats() -> Dictionary:
 static func enabled() -> bool:
 	if OS.has_feature("web") or OS.has_feature("android"):
 		return false
-	if DisplayServer.get_name() == "headless":
-		return true
+	if is_instance_valid(_config):
+		return bool(_config.mind_brain_threads)
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml == null:
 		return false
 	var st: SceneTree = ml as SceneTree
 	if st == null or st.root == null:
 		return false
-	var cfg: Node = st.root.get_node_or_null("/root/TankConfig")
-	if cfg == null:
+	_config = st.root.get_node_or_null("/root/TankConfig")
+	if _config == null:
 		return true
-	if cfg.get("mind_brain_threads") != null:
-		return bool(cfg.mind_brain_threads)
-	return true
+	return bool(_config.mind_brain_threads)
 
 
 static func in_worker() -> bool:
@@ -117,26 +119,32 @@ static func begin_tick(sim: Node) -> void:
 	_snap_banks[w]["worker_cfg"] = _worker_cfg.duplicate(true)
 
 
-static func apply_pending(f: Fish, ms: MindState) -> bool:
+static func apply_pending(f: Fish, ms: MindState = null) -> bool:
 	if f == null:
 		return false
 	var fid: String = str(f.id)
 	_mutex.lock()
 	var packed: Variant = _results.get(fid, null)
-	if packed is Dictionary:
+	if packed is Dictionary and int(packed.get("owner_id", 0)) == f.get_instance_id():
 		_results.erase(fid)
 	_mutex.unlock()
 	if not (packed is Dictionary):
 		return false
 	var result: Dictionary = packed as Dictionary
+	if int(result.get("owner_id", 0)) != f.get_instance_id():
+		return false
 	# The result crossed the thread boundary and is owned here alone: adopt its
 	# containers instead of deep-copying them twice more.
 	var proxy: MindFishProxy = MindFishProxy.from_dict(result.get("proxy", {}), true)
 	proxy.apply_mind_to(f, true)
 	var ms_dict: Variant = result.get("ms", null)
-	if ms is MindState and ms_dict is Dictionary:
-		ms.from_dict(ms_dict as Dictionary)
-		ms.apply_to_fish(f)
+	if ms_dict is Dictionary:
+		var result_state: MindState = ms if ms != null else MindState.new()
+		result_state.from_dict(ms_dict as Dictionary, true)
+		# Recall belongs to the proxy and may have been invalidated by a new
+		# main-thread experience while the job was running.
+		result_state.capture_runtime_updates(f)
+		result_state.apply_to_fish(f, ms == null)
 	_stats["applied"] = int(_stats.get("applied", 0)) + 1
 	return true
 
@@ -150,15 +158,33 @@ static func queue_cognition(f: Fish, ms: MindState, dt: float) -> void:
 	var tier: int = int(tier_v) if tier_v != null else MindLOD.T2_WORLD_MODEL
 	var job: Dictionary = {
 		"fish_id": str(f.id),
+		"owner_id": f.get_instance_id(),
 		"proxy": MindFishProxy.capture(f),
 		"ms": ms.to_dict(),
 		"dt": dt,
 		"tier": tier,
 	}
 	_mutex.lock()
+	if _owners.has(job["fish_id"]) and _owners[job["fish_id"]] != job["owner_id"]:
+		_results.erase(job["fish_id"])
+	_owners[job["fish_id"]] = job["owner_id"]
 	_pending_jobs[job["fish_id"]] = job
 	_mutex.unlock()
 	_stats["queued"] = int(_stats.get("queued", 0)) + 1
+
+
+static func forget_fish(f: Fish) -> bool:
+	var fid: String = str(f.id)
+	_mutex.lock()
+	# A tank reload can reuse a persistent fish id while the old Node exits.
+	# Only its own lifetime may cancel work or clear shared id-keyed caches.
+	var owns_id: bool = int(_owners.get(fid, f.get_instance_id())) == f.get_instance_id()
+	if owns_id:
+		_owners.erase(fid)
+		_pending_jobs.erase(fid)
+		_results.erase(fid)
+	_mutex.unlock()
+	return owns_id
 
 
 static func flush_tick() -> void:
@@ -232,18 +258,23 @@ static func _worker_run_batch(batch: Array, sim_snap: Dictionary) -> void:
 		# Jobs are handed over whole (flush_tick keeps no reference): adopt.
 		var proxy: MindFishProxy = MindFishProxy.from_dict(job.get("proxy", {}), true)
 		var ms: MindState = MindState.new()
-		ms.from_dict(job.get("ms", {}))
+		ms.from_dict(job.get("ms", {}), true)
 		var dt: float = float(job.get("dt", 0.1))
 		var tier: int = int(job.get("tier", MindLOD.T2_WORLD_MODEL))
 		proxy._cycle_lod_tier = tier
 		proxy._mind_lod_tier = tier
 		_MindCycleScript.begin_cycle(proxy, sim_host)
 		_MindCycleScript.run_attention_phase_worker(proxy, sim_host, ms, dt)
-		out[fid] = {"proxy": proxy.to_dict(false), "ms": ms.to_dict()}
+		out[fid] = {"proxy": proxy.to_dict(false), "ms": ms.to_dict(false),
+				"owner_id": job.get("owner_id", 0)}
 	_in_worker = false
 	_mutex.lock()
 	for k in out.keys():
-		_results[k] = out[k]
+		if int(_owners.get(k, -1)) == int(out[k]["owner_id"]):
+			_results[k] = out[k]
+		elif not _owners.has(k):
+			# A departed job may have marked dirty fields after tree exit.
+			MindDirtySave.clear_id(str(k))
 	_mutex.unlock()
 
 

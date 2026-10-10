@@ -66,7 +66,8 @@ static func tick(f: Fish, dt: float) -> void:
 
 
 static func active_signal(f) -> String:
-	var st: Dictionary = _state(f)
+	# Real fish already own this dictionary; generic adapters retain _state.
+	var st: Dictionary = (f as Fish)._signal_state if f is Fish else _state(f)
 	return str(st.get("sig", "")) if float(st.get("t", 0.0)) > 0.0 else ""
 
 

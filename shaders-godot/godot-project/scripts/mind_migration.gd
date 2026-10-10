@@ -8,8 +8,8 @@ extends RefCounted
 
 
 # Walk d from its stored schema_version up to `current`, applying each step.
-static func migrate(d: Dictionary, current: int) -> Dictionary:
-	var out: Dictionary = d.duplicate(true)
+static func migrate(d: Dictionary, current: int, copy: bool = true) -> Dictionary:
+	var out: Dictionary = d.duplicate(true) if copy else d
 	var v: int = int(out.get("schema_version", 1))
 	# Guard against a malformed/missing version and runaway loops.
 	if v < 1:

@@ -18,24 +18,19 @@ const REHEARSAL_GAIN: float = 0.03   # weight regained per retrieval
 const SALIENT_PROMOTE_WEIGHT: float = 0.62
 
 static var _pass3_script: GDScript = null
-static var _retrieve_cache: Dictionary = {}  # fish_id|sit_hash → {t, hits}
+static var _cache_generation: int = 0
 const RETRIEVE_TTL_S: float = 2.0
 
 
 static func clear_caches_for_test() -> void:
-	_retrieve_cache.clear()
+	_cache_generation += 1
 
 
 static func clear_retrieve_cache_for(f) -> void:
-	if f == null or not (f is Fish) or str((f as Fish).id) == "":
+	if not is_instance_valid(f):
 		return
-	var prefix: String = "%s|" % str((f as Fish).id)
-	var stale: Array[String] = []
-	for k in _retrieve_cache.keys():
-		if str(k).begins_with(prefix):
-			stale.append(str(k))
-	for k in stale:
-		_retrieve_cache.erase(k)
+	f._episodic_recall_cache.clear()
+	f._episodic_revision += 1
 
 
 static func _pass3() -> GDScript:
@@ -118,13 +113,17 @@ static func similarity(a: PackedFloat32Array, b: PackedFloat32Array) -> float:
 
 
 static func similarity_entry(query: PackedFloat32Array, entry: Dictionary) -> float:
+	return _similarity_entry(query, entry, vec_norm(query), _quantize_enabled())
+
+
+static func _similarity_entry(query: PackedFloat32Array, entry: Dictionary,
+		query_norm: float, quantized: bool) -> float:
 	var vq: Variant = entry.get("vec_q", null)
-	if vq is PackedByteArray and _quantize_enabled():
+	if vq is PackedByteArray and quantized:
 		var q_dot: float = _dot_quant(query, vq as PackedByteArray)
-		var nq: float = vec_norm(query)
 		var q_nb: float = float(entry.get("norm_q", entry.get("norm", 1.0)))
-		if q_nb > 1e-6 and nq > 1e-6:
-			return q_dot / (nq * q_nb)
+		if q_nb > 1e-6 and query_norm > 1e-6:
+			return q_dot / (query_norm * q_nb)
 		return q_dot
 	var vec: Variant = entry.get("vec", null)
 	if vec is not PackedFloat32Array:
@@ -132,10 +131,8 @@ static func similarity_entry(query: PackedFloat32Array, entry: Dictionary) -> fl
 	var b: PackedFloat32Array = vec as PackedFloat32Array
 	var dot: float = similarity(query, b)
 	var nb: float = float(entry.get("norm", 0.0))
-	if nb > 1e-6:
-		var nq: float = vec_norm(query)
-		if nq > 1e-6:
-			return dot / (nq * nb)
+	if nb > 1e-6 and query_norm > 1e-6:
+		return dot / (query_norm * nb)
 	return dot
 
 
@@ -190,6 +187,7 @@ static func _append_episode(f, kind: String, text: String, salience: float,
 	if pos.is_finite() and not is_inf(pos.x):
 		entry["pos"] = pos
 	store.append(entry)
+	clear_retrieve_cache_for(f)
 	_MindDirtySaveScript.mark(f, "episodic_store")
 	FishConcepts.ingest_episode(f, kind, text, float(entry.get("weight", salience)), entry)
 	while store.size() > STORE_MAX:
@@ -203,11 +201,14 @@ static func _kind_bucket(situation: String) -> String:
 	return ""
 
 
-static func _scan_store(store: Array, query: PackedFloat32Array, k: int, best: Array) -> void:
+static func _scan_store(store: Array, query: PackedFloat32Array, k: int, best: Array,
+		query_norm: float, quantized: bool, bucket: String = "", matching: bool = true) -> void:
 	for e in store:
 		if not (e is Dictionary):
 			continue
-		var sim: float = similarity_entry(query, e as Dictionary)
+		if bucket != "" and (str(e.get("kind", "")) == bucket) != matching:
+			continue
+		var sim: float = _similarity_entry(query, e as Dictionary, query_norm, quantized)
 		sim *= SaveHelpers._num(e.get("weight", 0.5), 0.5)
 		var score: float = sim
 		var insert_at: int = best.size()
@@ -223,67 +224,78 @@ static func _scan_store(store: Array, query: PackedFloat32Array, k: int, best: A
 
 
 static func retrieve(f, query: PackedFloat32Array, k: int = 3, kind_hint: String = "") -> Array:
+	var out: Array = []
+	for hit in _retrieve_hits(f, query, k, kind_hint, _quantize_enabled()):
+		out.append(hit["entry"])
+	return out
+
+
+static func _retrieve_hits(f, query: PackedFloat32Array, k: int, kind_hint: String,
+		quantized: bool) -> Array:
 	var store: Array = ensure_store(f)
-	if store.is_empty():
+	if store.is_empty() or k <= 0:
 		return []
 	var best: Array = []
-	var bucket: String = kind_hint if kind_hint != "" else ""
+	var bucket: String = kind_hint
+	var query_norm: float = vec_norm(query)
 	if bucket != "":
-		var primary: Array = []
-		var rest: Array = []
-		for e in store:
-			if str((e as Dictionary).get("kind", "")) == bucket:
-				primary.append(e)
-			else:
-				rest.append(e)
-		_scan_store(primary, query, k, best)
+		_scan_store(store, query, k, best, query_norm, quantized, bucket)
 		if best.size() < k:
-			_scan_store(rest, query, k, best)
+			_scan_store(store, query, k, best, query_norm, quantized, bucket, false)
 	else:
-		_scan_store(store, query, k, best)
-	var out: Array = []
+		_scan_store(store, query, k, best, query_norm, quantized)
 	for hit_wrap in best:
 		var hit: Dictionary = hit_wrap["entry"]
 		hit["access_count"] = int(hit.get("access_count", 0)) + 1
 		# Rehearsal: recalling a memory strengthens it (bounded).
 		hit["weight"] = minf(1.0, SaveHelpers._num(hit.get("weight", 0.5), 0.5) + REHEARSAL_GAIN)
-		out.append(hit)
-	return out
-
-
-static func _situation_hash(f, situation: String) -> int:
-	return hash("%s|%s|%s" % [str(f.id), situation, f.attention_focus])
+	return best
 
 
 static func retrieve_for_situation(f, situation: String, k: int = 2) -> PackedStringArray:
-	var cache_key: String = "%s|%d" % [str(f.id), _situation_hash(f, situation)]
+	# One bounded cache per host. Workers own a detached copy; fish with the
+	# same save id, old tanks and deleted fish cannot share or retain entries.
+	var cache: Dictionary = f._episodic_recall_cache
+	var quantized: bool = _quantize_enabled()
 	var now: float = Time.get_ticks_msec() / 1000.0
-	var cached: Variant = _retrieve_cache.get(cache_key, null)
-	if cached is Dictionary:
-		var cd: Dictionary = cached as Dictionary
-		if now - float(cd.get("t", 0.0)) < RETRIEVE_TTL_S:
-			_MindCacheStatsScript.retrieval_hits += 1
-			return cd.get("out", PackedStringArray()) as PackedStringArray
+	if cache.get("generation", -1) == _cache_generation \
+			and cache.get("situation") == situation and cache.get("focus") == f.attention_focus \
+			and cache.get("k") == k and cache.get("quantized") == quantized \
+			and now - float(cache.get("t", 0.0)) < RETRIEVE_TTL_S:
+		_MindCacheStatsScript.retrieval_hits += 1
+		_apply_recall_hint(f, cache.get("hint", {}))
+		return cache.get("out", PackedStringArray()) as PackedStringArray
 	_MindCacheStatsScript.retrieval_misses += 1
 	var t0: int = Time.get_ticks_usec()
 	var q: PackedFloat32Array = embed(situation, f.attention_focus)
 	var hint: String = _kind_bucket(situation)
 	if hint == "" and f.attention_focus != "":
 		hint = _kind_bucket(f.attention_focus)
-	var hits: Array = retrieve(f, q, k, hint)
+	var hits: Array = _retrieve_hits(f, q, k, hint, quantized)
 	var out: PackedStringArray = PackedStringArray()
-	for h in hits:
+	var recalled_hint: Dictionary = {}
+	for hit in hits:
+		var h: Dictionary = hit["entry"]
 		out.append(str(h.get("text", "")))
-		if SaveHelpers._num(h.get("score", 0.0), 0.0) > 0.35:
-			f._episodic_retrieval_hint = {
+		var pos: Variant = h.get("pos", null)
+		if recalled_hint.is_empty() and float(hit["score"]) > 0.35 \
+				and pos is Vector3 and (pos as Vector3).is_finite():
+			recalled_hint = {
 				"kind": str(h.get("kind", "")),
 				"salience": SaveHelpers._num(h.get("weight", 0.4), 0.4),
-				"pos": h.get("pos", Vector3.ZERO),
+				"pos": pos,
 			}
-			f._episodic_retrieval_hint_ttl = 0.42
-	_retrieve_cache[cache_key] = {"t": now, "out": out}
+	_apply_recall_hint(f, recalled_hint)
+	f._episodic_recall_cache = {"generation": _cache_generation, "situation": situation,
+		"focus": f.attention_focus, "k": k, "quantized": quantized,
+		"t": now, "out": out, "hint": recalled_hint}
 	PerfGovernor.record_ledger(17, Time.get_ticks_usec(), t0)
 	return out
+
+
+static func _apply_recall_hint(f, hint: Dictionary) -> void:
+	f._episodic_retrieval_hint = hint.duplicate()
+	f._episodic_retrieval_hint_ttl = 0.42 if not hint.is_empty() else 0.0
 
 
 static func tick_decay(f: Fish, dt: float) -> void:
@@ -315,6 +327,8 @@ static func tick_decay(f: Fish, dt: float) -> void:
 		e["weight"] = w
 		if w > FORGET_WEIGHT:
 			keep.append(e)
+	if keep.size() != store.size():
+		clear_retrieve_cache_for(f)
 	f._episodic_store = keep
 
 
@@ -511,6 +525,7 @@ static func apply_store_dict(f: Fish, arr: Variant) -> void:
 	while out.size() > STORE_MAX:
 		_prune_weakest(out)
 	f._episodic_store = out
+	clear_retrieve_cache_for(f)
 
 
 static func _parse_pos(p: Variant) -> Variant:

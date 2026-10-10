@@ -31,12 +31,12 @@ Each biotope has a 48-color master palette derived from a 12-color base (warm, c
 
 ```
 Water cool ramp:    #0b1a22  #163040  #23475a  #356379  #4b8095  #69a1b3  #92c3d0  #c5e2e7
-Plant green ramp:   #102614  #1d3b22  #2c5a30  #3e7f40  #57a253  #79c069  #a5d97e  #d0eb9a
+Plant green ramp:   #10261d  #1b3d2e  #2c5f47  #3f7c50  #5a975c  #7ab372  #a4cf8c  #d5e5ad
 Substrate browns:   #1a120c  #2c1f15  #432f1f  #5d4128  #785538  #95714e  #b18f6a  #cdb088
-Stone grays:        #1a1a1f  #2a2a30  #3d3d44  #555560  #707081  #8c8ca0  #a8a8bd  #c4c4d6
+Stone grays:        #161c1d  #222b2d  #313e40  #435456  #586d6f  #718789  #8ea3a4  #b3c4c3
 Glass/highlight:    #ffffff  #e0eef2  #b9d6df
 Tannin tint (mul):  #d8b888  (multiplied over water ramp at high tannin levels)
-Fish accents:       #c33b3b  #d97e2c  #e6c92a  #2a7a4b  #4a52c4  #872cb0  #c44a8e
+Fish accents:       #cf5353  #df9648  #e5c86b  #348875  #4b67bf  #8053a1  #bc5a88
 ```
 
 ### 2b. Blackwater (Rio Negro vibe — tea-stained, low-light)
@@ -110,3 +110,12 @@ Bayer 4×4 matrix (divide by 16):
 - No HDR bloom on anything except point lights + bubble highlights.
 - No more than 48 colors on screen at any time, ever. Counter that in a debug overlay.
 - No baking sim motion into spritesheets — it kills the emergence.
+
+## Color relationships
+
+Warm beam cores and cool shaded planes should make each other read more clearly.
+Reflect the material pigment in broad light; reserve near-white for small catches.
+Keep animal markings intricate and hue-stable as they turn. Use emerald, sage and
+pale gold to separate leaf planes, and quiet earth/slate around vivid accents.
+See [the color and light pass](../docs/COLOR_AND_LIGHT_20261008.md) for the
+Chevreul reference, implementation, and validation limits.

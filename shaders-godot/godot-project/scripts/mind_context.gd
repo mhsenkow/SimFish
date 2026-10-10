@@ -34,6 +34,11 @@ static var _allowed_names_count: int = -1
 static var _lexicon_cache: Dictionary = {}
 
 
+static func forget_fish(f: Fish) -> void:
+	_lexicon_cache.erase(str(f.id))
+	invalidate_fish_roster()
+
+
 static func invalidate_fish_roster(sim: Node = null) -> void:
 	_allowed_names_count = -1
 	if sim != null:

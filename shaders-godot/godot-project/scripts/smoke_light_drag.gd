@@ -7,6 +7,7 @@ extends SceneTree
 #   - build == drag: re-applying the stored placement moves nothing
 #   - a bar re-aims PARALLEL (it used to converge into one hot pool)
 #   - dragging never leaks shafts or mote emitters
+#   - each fixture keeps one shaft curtain (bars share one across spots)
 #   - every shaft points where its spot points
 #   - a reload (rebuild from config) lands where the drag left it
 #   - cancel restores the built rotations exactly
@@ -55,10 +56,14 @@ func _run() -> void:
 		if spots.is_empty():
 			continue
 		var n: int = spots.size()
+		# Bars keep four parallel spots but one continuous scattering curtain
+		# (smoke_light_sources). Single-spot fixtures still get one shaft.
+		var want_beams: int = 1
 		var built_rot: Array = _rots(spots)
 		var built_root: Vector3 = w.light_fixture_root_world()
 		var cone: Array = _cone(spots)
-		t.check(_beam_count(w) == n, "%s: one shaft per spot at build (%d)" % [fixture, _beam_count(w)])
+		t.check(_beam_count(w) == want_beams,
+			"%s: one shaft curtain at build (%d)" % [fixture, _beam_count(w)])
 
 		# build == drag: the drag's own setter with the stored values is a no-op.
 		w.set_light_placement(0.0, 0.0, R.AIM_OFF, R.AIM_OFF)
@@ -81,9 +86,10 @@ func _run() -> void:
 			w.set_light_placement(0.6 * sin(f * TAU), 0.4 * cos(f * TAU),
 				0.3 * cos(f * TAU), -0.2 + 0.2 * sin(f * TAU))
 		await process_frame
-		t.check(_beam_count(w) == n and _motes_count(w) == n,
+		t.check(_beam_count(w) == want_beams and _motes_count(w) == want_beams,
 			"%s: 40 drag steps leave %d shafts / %d motes (want %d)" % [
-				fixture, _beam_count(w), _motes_count(w), n])
+				fixture, _beam_count(w), _motes_count(w), want_beams])
+		t.check(n >= 1, "%s: fixture still has at least one spot" % fixture)
 		var fwd0: Vector3 = R.spot_forward(spots[0])
 		var parallel: bool = true
 		for s in spots:

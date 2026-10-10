@@ -100,6 +100,12 @@ var _current_thought: String = ""
 var _thought_stream: String = ""
 var _thought_stream_age: float = 0.0
 var _episodic_store: Array = []
+var _episodic_recall_cache: Dictionary = {}
+var _episodic_revision: int = 0
+var _wb_episodic_revision: int = 0
+var _wb_world_updates: int = 0
+var _wb_felt_hashes: Dictionary = {}
+var _wb_soul_hashes: Dictionary = {}
 var _felt_self: Dictionary = {}
 var _life_stance: String = ""
 var _self_summary: String = ""
@@ -227,6 +233,7 @@ static func capture(f: Fish) -> Dictionary:
 	p._last_winning_affordance = _fish_str(f, "_last_winning_affordance")
 	p._prediction_error = _fish_float(f, "_prediction_error")
 	p._world_model = _fish_dict(f, "_world_model")
+	p._wb_world_updates = int(p._world_model.get("updates", 0))
 	p._episodic_retrieval_hint = _fish_dict(f, "_episodic_retrieval_hint")
 	p._episodic_retrieval_hint_ttl = _fish_float(f, "_episodic_retrieval_hint_ttl")
 	p._episodic_hint_focus = _fish_str(f, "_episodic_hint_focus")
@@ -257,8 +264,13 @@ static func capture(f: Fish) -> Dictionary:
 	p._thought_stream = _fish_str(f, "_thought_stream")
 	p._thought_stream_age = _fish_float(f, "_thought_stream_age")
 	p._episodic_store = _fish_array(f, "_episodic_store")
+	p._episodic_recall_cache = f._episodic_recall_cache.duplicate(true)
+	p._episodic_revision = f._episodic_revision
+	p._wb_episodic_revision = f._episodic_revision
 	p._wb_episodic_keys = episode_keys(p._episodic_store)
 	p._felt_self = _fish_dict(f, "_felt_self")
+	for key in p._felt_self:
+		p._wb_felt_hashes[key] = hash(p._felt_self[key])
 	p._life_stance = _fish_str(f, "_life_stance")
 	p._self_summary = _fish_str(f, "_self_summary")
 	p._active_plan = _fish_dict(f, "_active_plan")
@@ -284,6 +296,8 @@ static func capture(f: Fish) -> Dictionary:
 	p._delib_avoid_s = _fish_float(f, "_delib_avoid_s")
 	p._longing_residue = _fish_float(f, "_longing_residue")
 	p._soul_mind = _fish_dict(f, "_soul_mind")
+	for key in p._soul_mind:
+		p._wb_soul_hashes[key] = hash(p._soul_mind[key])
 	p._cycle_lod_tier = int(_fish_float(f, "_mind_lod_tier", 2.0))
 	p._mind_lod_tier = p._cycle_lod_tier
 	# Every container above is already a private deep copy; don't copy twice.
@@ -422,6 +436,9 @@ static func from_dict(d: Dictionary, adopt: bool = false) -> MindFishProxy:
 	p._last_winning_affordance = str(d.get("_last_winning_affordance", ""))
 	p._prediction_error = float(d.get("_prediction_error", 0.0))
 	_copy_dict_field(d, "_world_model", p, "_world_model", adopt)
+	p._wb_world_updates = int(d.get("_wb_world_updates", 0))
+	_copy_dict_field(d, "_wb_felt_hashes", p, "_wb_felt_hashes", adopt)
+	_copy_dict_field(d, "_wb_soul_hashes", p, "_wb_soul_hashes", adopt)
 	_copy_dict_field(d, "_episodic_retrieval_hint", p, "_episodic_retrieval_hint", adopt)
 	p._episodic_retrieval_hint_ttl = float(d.get("_episodic_retrieval_hint_ttl", 0.0))
 	p._episodic_hint_focus = str(d.get("_episodic_hint_focus", ""))
@@ -451,6 +468,9 @@ static func from_dict(d: Dictionary, adopt: bool = false) -> MindFishProxy:
 	p._thought_stream = str(d.get("_thought_stream", ""))
 	p._thought_stream_age = float(d.get("_thought_stream_age", 0.0))
 	_copy_array_field(d, "_episodic_store", p, "_episodic_store", adopt)
+	_copy_dict_field(d, "_episodic_recall_cache", p, "_episodic_recall_cache", adopt)
+	p._episodic_revision = int(d.get("_episodic_revision", 0))
+	p._wb_episodic_revision = int(d.get("_wb_episodic_revision", 0))
 	_copy_dict_field(d, "_felt_self", p, "_felt_self", adopt)
 	p._life_stance = str(d.get("_life_stance", ""))
 	p._self_summary = str(d.get("_self_summary", ""))
@@ -575,6 +595,9 @@ func to_dict(copy: bool = true) -> Dictionary:
 		"_last_winning_affordance": _last_winning_affordance,
 		"_prediction_error": _prediction_error,
 		"_world_model": _dc(_world_model, copy),
+		"_wb_world_updates": _wb_world_updates,
+		"_wb_felt_hashes": _dc(_wb_felt_hashes, copy),
+		"_wb_soul_hashes": _dc(_wb_soul_hashes, copy),
 		"_episodic_retrieval_hint": _dc(_episodic_retrieval_hint, copy),
 		"_episodic_retrieval_hint_ttl": _episodic_retrieval_hint_ttl,
 		"_episodic_hint_focus": _episodic_hint_focus,
@@ -604,6 +627,9 @@ func to_dict(copy: bool = true) -> Dictionary:
 		"_thought_stream": _thought_stream,
 		"_thought_stream_age": _thought_stream_age,
 		"_episodic_store": _dc(_episodic_store, copy),
+		"_episodic_recall_cache": _dc(_episodic_recall_cache, copy),
+		"_episodic_revision": _episodic_revision,
+		"_wb_episodic_revision": _wb_episodic_revision,
 		"_felt_self": _dc(_felt_self, copy),
 		"_life_stance": _life_stance,
 		"_self_summary": _self_summary,
@@ -651,15 +677,13 @@ func apply_mind_to(f: Fish, adopt: bool = false) -> void:
 	f._self_model_key = _self_model_key
 	f._thought_stream = _thought_stream
 	f._thought_stream_age = _thought_stream_age
-	f._prediction_error = _prediction_error
 	f._life_stance = _life_stance
 	f._self_summary = _self_summary
 	f._active_plan = _dc(_active_plan, not adopt)
-	f._world_model = _dc(_world_model, not adopt)
+	if int(f._world_model.get("updates", 0)) == _wb_world_updates:
+		f._world_model = _dc(_world_model, not adopt)
+		f._prediction_error = _prediction_error
 	f._keeper_pending = _dc(_keeper_pending, not adopt)
-	f._episodic_retrieval_hint = _dc(_episodic_retrieval_hint, not adopt)
-	f._episodic_retrieval_hint_ttl = _episodic_retrieval_hint_ttl
-	f._episodic_hint_focus = _episodic_hint_focus
 	f._cycle_use_efe = _cycle_use_efe
 	f._bid_decayed_this_cycle = _bid_decayed_this_cycle
 	f._bid_salience_mods = _dc(_bid_salience_mods, not adopt)
@@ -672,9 +696,20 @@ func apply_mind_to(f: Fish, adopt: bool = false) -> void:
 	f._meta_ring_head = _meta_ring_head
 	f._writeback_cd = _writeback_cd
 	f._mind_writeback_log = _dc(_mind_writeback_log, not adopt)
-	f._felt_self = _dc(_felt_self, not adopt)
+	# Attention may update relevance/continuity; newer main-thread sensory
+	# moments and recurrent predictions must not roll back with a late batch.
+	_merge_runtime_components(f._felt_self, _felt_self, _wb_felt_hashes, adopt)
 	f._td_eligibility_peak = _td_eligibility_peak
 	f._episodic_store = merge_episodic_store(f._episodic_store, _episodic_store, _wb_episodic_keys)
+	if f._episodic_revision == _wb_episodic_revision:
+		f._episodic_retrieval_hint = _dc(_episodic_retrieval_hint, not adopt)
+		f._episodic_retrieval_hint_ttl = _episodic_retrieval_hint_ttl
+		f._episodic_hint_focus = _episodic_hint_focus
+		f._episodic_recall_cache = _dc(_episodic_recall_cache, not adopt)
+		f._episodic_revision = _episodic_revision
+	else:
+		# New main-thread experience outranks an in-flight worker's recall.
+		EpisodicMemory.clear_retrieve_cache_for(f)
 	f.surprise = surprise
 	f.curiosity_drive = curiosity_drive
 	f._cached_glance_point = _cached_glance_point
@@ -691,10 +726,24 @@ func apply_mind_to(f: Fish, adopt: bool = false) -> void:
 	f._signal_state = _dc(_signal_state, not adopt)
 	f._prospective = _dc(_prospective, not adopt)
 	f._keeper_model = merge_keeper_model(f._keeper_model, _keeper_model, _wb_keeper_hash)
-	f._soul_mind = _dc(_soul_mind, not adopt)
+	_merge_runtime_components(f._soul_mind, _soul_mind, _wb_soul_hashes, adopt)
 	f.salient_memories = _dc(salient_memories, not adopt)
 	f._salient_ring_head = _salient_ring_head
 	f._salient_top_cache = _dc(_salient_top_cache, not adopt)
+
+
+static func _merge_runtime_components(current: Dictionary, incoming: Dictionary,
+		before: Dictionary, adopt: bool) -> void:
+	for key in incoming:
+		# Unchanged worker components contribute nothing. Keep the live owned
+		# container and avoid hashing/copying it again on the main thread.
+		if before.has(key) and hash(incoming[key]) == int(before[key]):
+			continue
+		var unchanged: bool = not current.has(key) and not before.has(key)
+		if current.has(key) and before.has(key):
+			unchanged = hash(current[key]) == int(before[key])
+		if unchanged:
+			current[key] = _dc(incoming[key], not adopt)
 
 
 static func _episode_key(e: Dictionary) -> String:

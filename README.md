@@ -4,23 +4,23 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.38](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.38)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.39](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.39)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
 ## Where things are at (October 2026)
 
 | Area | Status |
 |---|---|
-| **Playable builds** | macOS (notarized), Windows, Linux, Android — free on [GitHub Releases](https://github.com/mhsenkow/SimFish/releases) |
+| **Playable builds** | macOS (notarized), Windows, Linux, Android — free on [GitHub Releases](https://github.com/mhsenkow/SimFish/releases); iOS App Store path scaffolded ([docs/IOS_APP_STORE.md](docs/IOS_APP_STORE.md)) |
 | **Steam** | Available in Early Access; desktop builds share the same game source as GitHub. |
 | **Ecosystem sim** | Walstad nutrient loop, **18** scenario presets (`scenario_picker.gd`), saltwater reef mode, aquascaping craft |
 | **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, and saved music associations |
 | **Keeper loop** | Care tiers gate conversation — steady the tank first, then fish open up; comfort words soothe spooked fish |
-| **Performance** | Cached fish music responses, sparse habitat queries, batched fauna/waste, and adaptive fidelity |
+| **Performance** | Instance-upload guards, school merges, bounded mind recall, long-session fauna slot reuse, adaptive fidelity |
 | **In progress** | Sentience eval harness hardening, mind-kernel GDExtension, Steam EA polish |
 
 ### Screenshots
 
-Current v0.2.38 captures from the game. Pixel-art tanks, a clearer shelf, and templates when you want a different habitat.
+Current captures from the game (v0.2.38 art still current). Pixel-art tanks, a clearer shelf, and templates when you want a different habitat.
 
 ![Living planted aquarium](docs/img/living-tank-v038.webp)
 
@@ -183,6 +183,17 @@ Substrate nutrients ← waste deposits + reservoir trickle
 
 ## Recent additions
 
+### v0.2.39 — color, habitats, and long-session performance
+
+- **Color and light:** planted day/night LUTs match runtime banks; fish highlights keep pigment; bars share one continuous shaft curtain across four spots.
+- **Living habitats:** foliage shelter, film-first grazing, handling pauses, snail rasping, and plant recovery without breaking growth/chemistry.
+- **Crowded tanks and render:** spatial school merges, shared bone updates, single-instance uploads, bone-group culling, exact no-op guards.
+- **Mind and tending:** owned worker handoffs, bounded recall, shared attention counts, complete starter habitats, appetite-based auto-feed.
+- **Long sessions:** reusable fauna slots, departed-fish cache/job cleanup, weak material registries — keep living memories, drop stale work.
+- **Validation:** 613 scripts, zero analyzer warnings; all 260 smokes pass (~156 s).
+
+[Release notes](docs/RELEASE_v0.2.39.md) · [Color and light](docs/COLOR_AND_LIGHT_20261008.md) · [Habitats](docs/HABITAT_INTERACTIONS_20261008.md) · [Locomotion](docs/LIVING_LOCOMOTION_20261008.md) · [Crowded fish](docs/CROWDED_FISH_PERFORMANCE_20261008.md) · [Tending](docs/TENDING_PERFORMANCE_20261009.md) · [Render/schooling](docs/RENDER_SCHOOLING_PERFORMANCE_20261009.md) · [Retention](docs/LONG_SESSION_RETENTION_20261009.md) · [iOS App Store](docs/IOS_APP_STORE.md)
+
 ### v0.2.38 — quieter music, living defaults, and reliable ecology
 
 - **Ready to watch:** one-click Living tank, populated Quick Garden, automatic feeding, softer lo-fi defaults, and clearer responsive menus and panels.
@@ -193,7 +204,7 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - **Less repeated work:** shared per-frame fish music responses, occupied-cell habitat queries, cached plant-chemical concentrations, and fewer temporary arrays in neighbour searches.
 - **Validation:** 571 scripts compile with zero analyzer warnings; all 237 local smoke tests pass, with zero failures or timeouts. Targeted CPU benchmarks are recorded in the pass notes; they do not measure whole-game FPS.
 
-[Release notes](docs/RELEASE_v0.2.38.md) · [Music pass](docs/MUSIC_LOFI_PASS_20261007.md) · [Swimming pass](docs/SWIMMING_MOTION_PASS_20261007.md) · [Ready defaults](docs/EXPERIENCE_AND_READY_DEFAULTS_20261007.md) · [Seed reliability](docs/SEEDLING_RELIABILITY_PERFORMANCE_PASS_20261007.md) · [Ecology performance](docs/ECOLOGY_RESTORE_QUERY_PASS_20261007.md)
+[Release notes](docs/RELEASE_v0.2.38.md) · [Music pass](docs/MUSIC_LOFI_PASS_20261007.md) · [Swimming pass](docs/SWIMMING_MOTION_PASS_20261007.md) · [Ready defaults](docs/EXPERIENCE_AND_READY_DEFAULTS_20261007.md) · [Seed reliability](docs/SEEDLING_RELIABILITY_PERFORMANCE_PASS_20261007.md) · [Ecology performance](docs/ECOLOGY_RESTORE_QUERY_PASS_20261007.md) · [Living habitats](docs/HABITAT_INTERACTIONS_20261008.md) · [Living locomotion](docs/LIVING_LOCOMOTION_20261008.md) · [Color and light](docs/COLOR_AND_LIGHT_20261008.md) · [Fish flash diagnosis](docs/FISH_FLASH_DIAGNOSIS_20261008.md)
 
 ### v0.2.25 — polish & stability
 
@@ -291,6 +302,19 @@ forward-moving Walstad ecosystem (save format v4 → v5). Highlights:
   reads as permanently over budget (which used to pin every fish at the lowest
   cognition tier and max out shader cost)
 - First-launch render resolution seeded from the detected device tier
+- Crowded-fish pass: spatial school merges, stable school identities, shared bone
+  transform updates, and one fin pose per rendered frame.
+  [Measurements and remaining limits](docs/CROWDED_FISH_PERFORMANCE_20261008.md).
+- Mind and tending pass: owned worker handoffs, bounded recall caches, shared
+  attention counts, retained learning, complete starter habitats and appetite-based
+  automatic feeding. [Measurements and validation](docs/TENDING_PERFORMANCE_20261009.md).
+- Render/schooling follow-up: single instance uploads, bone-group culling bounds,
+  exact no-op guards and cached neighbor selection, with behavior equivalence checks.
+  [Measurements and remaining costs](docs/RENDER_SCHOOLING_PERFORMANCE_20261009.md).
+- Long-session retention: reusable fauna slots, departed-fish cache/job cleanup,
+  weak material registries and coarse plant-buffer maintenance preserve living
+  memories while releasing stale work.
+  [Aging probes and validation](docs/LONG_SESSION_RETENTION_20261009.md).
 - Frame-budget sparkline in the Render panel
 - Lazy substrate cell ticks (only diffuses dirty cells near active plants/waste)
 

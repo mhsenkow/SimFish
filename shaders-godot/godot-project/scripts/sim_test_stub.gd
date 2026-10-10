@@ -17,3 +17,7 @@ var time_scale: float = 1.0
 # Same fallback light as the old cognition fixture, with a real contract.
 func daylight() -> float:
 	return 1.0
+
+
+func irradiance() -> float:
+	return daylight()

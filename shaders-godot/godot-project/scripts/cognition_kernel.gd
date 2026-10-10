@@ -30,3 +30,4 @@ static func run_bind_encode_learn(host: Node, ms: MindState, sim: Node, dt: floa
 	MindCycleScript.run_bind_phase(host, sim, ms, dt)
 	MindCycleScript.run_encode_phase(host, ms)
 	MindCycleScript.tick_post_cycle(host, sim, dt)
+	ms.capture_runtime_updates(host)

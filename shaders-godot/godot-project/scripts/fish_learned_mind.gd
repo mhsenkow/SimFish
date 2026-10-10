@@ -76,6 +76,10 @@ const PHASE_NAMES: Array[String] = [
 static var _tick_acc: Dictionary = {}  # instance id -> seconds since last tick
 
 
+static func release_fish(f: Fish) -> void:
+	_tick_acc.erase(f.get_instance_id())
+
+
 # ---- state ----
 
 static func _prop(f, key: String) -> Variant:

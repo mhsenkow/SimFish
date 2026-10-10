@@ -16,6 +16,7 @@ const THOUGHT_INTERVAL_AMBIENT: float = 22.0
 const SN_IDLE := &"idle"
 const SN_SITUATION := &"situation"
 const MAX_QUEUE: int = 12
+const MAX_OP_CACHE: int = 512
 const AMBIENT_QUEUE_CUTOFF: int = 8
 const MEMORY_PRESSURE_BYTES: int = 2_200_000_000
 
@@ -30,6 +31,7 @@ static var _stats: Dictionary = {
 }
 static var _op_cache: Dictionary = {}
 static var _pending_async: Dictionary = {}
+static var _request_serial: int = 0
 static var _worker_mutex: Mutex = Mutex.new()
 static var _worker_results: Dictionary = {}  # cache_key -> {op, prompt}
 static var _worker_inflight: Dictionary = {}  # cache_key -> {fish, ctx, task_id, use_glm}
@@ -78,6 +80,9 @@ static func stats() -> Dictionary:
 
 
 static func reset_stats_for_test() -> void:
+	# Join before clearing: workers otherwise repopulate a supposedly reset cache.
+	for job: Dictionary in _worker_inflight.values():
+		WorkerThreadPool.wait_for_task_completion(int(job["task_id"]))
 	_stats = {
 		"cycles": 0, "queue_depth": 0, "cache_hits": 0, "reflections": 0,
 		"last_latency_ms": 0, "in_flight": false, "pending_async": 0,
@@ -86,10 +91,43 @@ static func reset_stats_for_test() -> void:
 	_queue.clear()
 	_in_flight = false
 	_pending_async.clear()
+	_op_cache.clear()
 	_worker_mutex.lock()
 	_worker_results.clear()
 	_worker_inflight.clear()
 	_worker_mutex.unlock()
+
+
+static func _store_op(key: String, op: Dictionary) -> void:
+	_op_cache.erase(key)
+	_op_cache[key] = op
+	while _op_cache.size() > MAX_OP_CACHE:
+		_op_cache.erase(_op_cache.keys()[0])
+
+
+static func forget_fish(f: Fish) -> void:
+	var prefix: String = str(f.id) + "|"
+	for key: String in _op_cache.keys():
+		if key.begins_with(prefix):
+			_op_cache.erase(key)
+	for i in range(_queue.size() - 1, -1, -1):
+		if _queue[i].get("fish") == f:
+			_queue.remove_at(i)
+	var cancelled_async: bool = false
+	for key: String in _pending_async.keys():
+		if _pending_async[key].get("fish") == f:
+			_pending_async.erase(key)
+			cancelled_async = true
+	# Keep the task id until it can be joined, but release the departing Node
+	# and its context now. Its late worker result cannot resurrect old state.
+	for job: Dictionary in _worker_inflight.values():
+		if job.get("fish") == f:
+			job["fish"] = null
+			job["ctx"] = {}
+			job["cancelled"] = true
+	if cancelled_async:
+		_in_flight = false
+		_pump()
 
 
 static func poll_workers() -> void:
@@ -117,13 +155,14 @@ static func _finish_worker_job(cache_key: String) -> void:
 	if packed is Dictionary:
 		_worker_results.erase(cache_key)
 	_worker_mutex.unlock()
-	if not (packed is Dictionary):
+	var f: Fish = job.get("fish")
+	var has_result: bool = packed is Dictionary
+	if not is_instance_valid(f) or bool(job.get("cancelled", false)) or not has_result:
 		_in_flight = false
 		if not _queue.is_empty():
 			_pump()
 		return
 	var result: Dictionary = packed as Dictionary
-	var f: Fish = job.get("fish")
 	var ctx: Dictionary = job.get("ctx", {})
 	var line: String = str(result.get("line", ""))
 	if line != "" and f != null and is_instance_valid(f):
@@ -132,15 +171,16 @@ static func _finish_worker_job(cache_key: String) -> void:
 	var fb: Dictionary = result.get("op", {}) as Dictionary
 	if bool(job.get("use_glm", false)):
 		var glm: Node = _autoload("GuardianLlm")
-		if glm != null and glm.has_method("queue_generate"):
+		if glm != null and glm.has_method("queue_generate") \
+				and glm.has_method("is_ready") and bool(glm.call("is_ready")):
 			ctx["fish_id"] = str(f.id) if f != null else ""
-			_pending_async[cache_key] = {"fish": f, "ctx": ctx, "t0": Time.get_ticks_msec()}
-			glm.call("queue_generate", "cog|" + cache_key,
+			var request_key: String = _begin_model_request(cache_key, f, ctx)
+			glm.call("queue_generate", "cog|" + request_key,
 					String(result.get("prompt", "")), fb.get("line", ""), ctx,
 					MindNarrator.NUM_PREDICT_FISH_THOUGHT)
-		_apply_cached(f, fb, ctx)
-		return
-	_op_cache[cache_key] = fb
+			_apply_cached(f, fb, ctx)
+			return
+	_store_op(cache_key, fb)
 	_apply_cached(f, fb, ctx)
 	_stats["reflections"] += 1
 	_in_flight = false
@@ -190,7 +230,7 @@ static func precache_for_fish(f: Fish, sim: Node) -> void:
 		var ctx: Dictionary = MindContext.build_for_fish(f, sim, sit)
 		var key: String = _cache_key(f, ctx)
 		if not _op_cache.has(key):
-			_op_cache[key] = CognitiveSchema.template_op(ctx)
+			_store_op(key, CognitiveSchema.template_op(ctx))
 
 
 static func priority_for(f: Fish, sim: Node) -> float:
@@ -284,7 +324,9 @@ static func _run_internal_thought(f: Fish, sim: Node, deep: bool) -> void:
 	var cache_key: String = _cache_key(f, ctx)
 	if _op_cache.has(cache_key):
 		_stats["cache_hits"] += 1
-		_apply_cached(f, _op_cache[cache_key], ctx)
+		var cached: Dictionary = _op_cache[cache_key]
+		_store_op(cache_key, cached)
+		_apply_cached(f, cached, ctx)
 		return
 	if _queue.size() >= MAX_QUEUE:
 		return
@@ -345,6 +387,9 @@ static func _pump() -> void:
 	var job: Dictionary = _queue[0]
 	_queue.remove_at(0)
 	var f: Fish = job.get("fish")
+	if not is_instance_valid(f):
+		_pump()
+		return
 	var ctx: Dictionary = job.get("ctx", {})
 	var cache_key: String = String(job.get("cache_key", ""))
 	var use_glm: bool = false
@@ -372,16 +417,29 @@ static func _apply_cached(f: Fish, op: Dictionary, ctx: Dictionary) -> void:
 	MindDaring.apply_model_op(f, op, ctx)
 
 
-static func on_model_result(cache_key: String, raw: String, ctx: Dictionary) -> void:
+static func _begin_model_request(cache_key: String, f: Fish, ctx: Dictionary) -> String:
+	_request_serial += 1
+	var request_key: String = "%s|request_%d" % [cache_key, _request_serial]
+	_pending_async[request_key] = {"fish": f, "ctx": ctx, "cache_key": cache_key,
+			"t0": Time.get_ticks_msec()}
+	return request_key
+
+
+static func on_model_result(request_key: String, raw: String, ctx: Dictionary) -> void:
+	var pending: Variant = _pending_async.get(request_key, null)
+	# A cancelled request may finish after a new fish's job starts. It must
+	# neither populate the cache nor release that job's in-flight gate.
+	if not (pending is Dictionary):
+		return
+	var cache_key: String = str(pending.get("cache_key", request_key))
 	var op: Dictionary = CognitiveSchema.parse_line(raw)
 	if not CognitiveSchema.validate_op(op, ctx):
 		op = CognitiveSchema.template_op(ctx)
-	_op_cache[cache_key] = op
+	_store_op(cache_key, op)
 	_stats["reflections"] += 1
-	var pending: Variant = _pending_async.get(cache_key, null)
 	if pending is Dictionary:
 		var job: Dictionary = pending as Dictionary
-		_pending_async.erase(cache_key)
+		_pending_async.erase(request_key)
 		var t0: int = int(job.get("t0", 0))
 		if t0 > 0:
 			_stats["last_latency_ms"] = Time.get_ticks_msec() - t0

@@ -41,6 +41,22 @@ func _initialize() -> void:
 	sim._physics_process(0.1)
 	t.approx((sim.day_phase - before) * 360.0, 0.4,
 		"fast-forward light shares the ecology catch-up limit")
+	var busy := ClockFixture.new()
+	root.add_child(busy)
+	busy.set_physics_process(false)
+	busy._last_tick_usec = SimDriver.SIM_RENDER_WORK_BUDGET_USEC + 1
+	var busy_phase: float = busy.day_phase
+	busy._physics_process(2.0)
+	t.equals(busy.tick_count, 1, "expensive ticks reduce catch-up work")
+	t.approx((busy.day_phase - busy_phase) * 360.0, busy.ecology_time,
+		"expensive catch-up keeps daylight and ecology aligned")
+	busy._sim_work_usec = SimDriver.SIM_RENDER_WORK_BUDGET_USEC
+	var accepted: float = busy.ecology_time
+	var accepted_phase: float = busy.day_phase
+	busy._physics_process(1.0 / 60.0)
+	t.approx(busy.ecology_time, accepted, "same rendered frame does not repeat exhausted work")
+	t.approx(busy.day_phase, accepted_phase, "discarded overload time does not age the light")
+	busy.free()
 	sim.free()
 	cfg.day_cycle_enabled = original_enabled
 	cfg.day_length_s = original_length

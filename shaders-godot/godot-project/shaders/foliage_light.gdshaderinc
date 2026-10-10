@@ -32,26 +32,7 @@ global uniform vec4 iaq_backlight_tint;
 // much of the cone reaches `wpos`. Returns the light position in xyz and the
 // cone factor in w.
 vec4 iaq_leaf_key_source(vec3 wpos) {
-	vec3 src_pos = iaq_beam_origin;
-	if (iaq_beam_axis.w > 0.5) {
-		vec3 ax = iaq_beam_axis.xyz;
-		float len2 = dot(ax, ax);
-		if (len2 > 1e-6) {
-			float t_ax = clamp(dot(wpos - iaq_beam_origin, ax) / len2, -1.0, 1.0);
-			src_pos = iaq_beam_origin + ax * t_ax;
-		}
-	}
-	vec3 to_frag = wpos - src_pos;
-	float dist = length(to_frag);
-	float cone = 0.0;
-	if (dist > 0.0001) {
-		float cd = dot(to_frag / dist, normalize(iaq_beam_dir));
-		// Transmission forgives the cone edge more than direct light does:
-		// light scattered through the water still arrives from above.
-		cone = smoothstep(iaq_beam_cone.x - 0.25, iaq_beam_cone.y, cd);
-		cone *= 1.0 - smoothstep(iaq_beam_cone.z * 0.6, iaq_beam_cone.z * 1.1, dist);
-	}
-	return vec4(src_pos, cone);
+	return vec4(iaq_beam_source(wpos), iaq_beam_at(wpos).w);
 }
 
 

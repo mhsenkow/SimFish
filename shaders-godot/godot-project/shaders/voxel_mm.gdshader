@@ -53,13 +53,13 @@ void fragment() {
 		col += tank_fixture_color * wash * mix(0.28, 0.50, top_catch);
 		col *= 1.0 + wash * (0.50 + top_catch * 0.30);
 	}
-	// Water column — red dies first with depth and distance. Global uniform, so
-	// it costs one compare on anything above the waterline or out of the tank.
-	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
 	col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
 	col = iaq_backlight_light(col, v_world_pos,
 		(INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, CAMERA_POSITION_WORLD);
+	// Transport the reflected light through water once, after every source.
+	// New highlights must not bypass wavelength-dependent extinction.
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

@@ -170,20 +170,59 @@ uniform int floater_count = 0;
 // Radial fallback for curved tanks: > 0 means UV.x is not the cap's radial
 // coordinate and the edge band is measured as length(xz) / edge_radius.
 uniform float edge_radius = 0.0;
-global uniform vec4 iaq_beam_cone;
-global uniform vec4 iaq_beam_tint;
 global uniform vec4 iaq_backlight;
 global uniform vec4 iaq_backlight_tint;
 
 #include "res://shaders/palette_tint.gdshaderinc"
+#include "res://shaders/beam_cone.gdshaderinc"
 
 varying vec3 world_pos;
 varying float surface_lift;
 
-// The lamp's own colour at unit brightness: the fixture beam when it is on,
-// the water's light colour otherwise.
-vec3 lamp_rgb(vec3 fallback) {
-	vec3 lamp = mix(fallback, iaq_beam_tint.rgb, step(0.001, iaq_beam_cone.w));
+// Incident light is shared with the solid tank surfaces. A dim lamp must
+// produce a dim reflection; normalising its RGB alone made a nearly-off LED
+// paint the same luminous water ceiling as a fully powered one.
+vec4 water_point_source(vec3 wpos, vec4 source, vec4 tint) {
+	if (source.w <= 0.0) {
+		return vec4(0.0);
+	}
+	vec3 delta = source.xyz - wpos;
+	float distance2 = dot(delta, delta);
+	float attenuation = max(source.w, 0.0) / (1.0 + max(tint.w, 0.0) * distance2);
+	return vec4(delta * inversesqrt(max(distance2, 0.0001)), attenuation);
+}
+
+vec3 water_incident_rgb(vec4 fixture, vec4 accent1, vec4 accent2) {
+	vec3 direct = iaq_beam_tint.rgb * max(iaq_beam_cone.w, 0.0)
+		* fixture.w * 2.0;
+	direct += iaq_sun_tint.rgb * max(iaq_sun_light.w, 0.0);
+	direct += iaq_moon_tint.rgb * max(iaq_moon_light.w, 0.0);
+	direct += iaq_accent1_tint.rgb * accent1.w * 0.65;
+	direct += iaq_accent2_tint.rgb * accent2.w * 0.65;
+	return max(direct, vec3(0.0));
+}
+
+vec3 water_light_response(vec3 incident, vec3 wpos) {
+	float ambient = max(iaq_beam_tint.w * iaq_room_light, 0.0);
+	// The rear lamp has its own local wash below. Keep that wash readable
+	// when it is the only lamp without inventing a globally bright ceiling.
+	float rear = 0.0;
+	if (iaq_backlight.w > 0.0) {
+		vec3 delta = wpos - iaq_backlight.xyz;
+		rear = iaq_backlight.w
+			/ (1.0 + max(iaq_backlight_tint.a, 0.0) * dot(delta, delta));
+	}
+	return clamp(max(max(vec3(ambient), incident), rear * max(iaq_backlight_tint.rgb, vec3(0.0))),
+		vec3(0.0), vec3(1.5));
+}
+
+// Spectrum and amplitude stay separate. The shared continuous light response
+// below controls brightness; this hue is only for reflected/scattered color.
+vec3 lamp_rgb(vec3 fallback, vec3 incident) {
+	vec3 lamp = incident;
+	if (max(max(lamp.r, lamp.g), lamp.b) <= 0.001) {
+		lamp = fallback;
+	}
 	return lamp / max(max(lamp.r, lamp.g), max(lamp.b, 0.001));
 }
 
@@ -286,6 +325,14 @@ void vertex() {
 }
 
 void fragment() {
+	vec4 fixture_sample = iaq_beam_at(world_pos);
+	vec4 accent1_sample = water_point_source(world_pos, iaq_accent1, iaq_accent1_tint);
+	vec4 accent2_sample = water_point_source(world_pos, iaq_accent2, iaq_accent2_tint);
+	vec3 incident_rgb = water_incident_rgb(fixture_sample, accent1_sample, accent2_sample);
+	vec3 light_response_rgb = water_light_response(incident_rgb, world_pos);
+	float light_response = max(max(light_response_rgb.r, light_response_rgb.g), light_response_rgb.b);
+	float direct_response = clamp(max(max(incident_rgb.r, incident_rgb.g), incident_rgb.b), 0.0, 1.5);
+	float direct_share = direct_response / max(light_response, 0.001);
 	float depth_span = max(water_surface_y - water_floor_y, 0.15);
 	float depth_norm = clamp((water_surface_y - world_pos.y) / depth_span, 0.0, 1.0);
 	// Quantize depth_norm into N discrete bands for the posterized
@@ -334,9 +381,9 @@ void fragment() {
 	// lamp it glows in the lamp's colour (a lavender/pink band under a pink
 	// LED), and around a lamp behind the plants it glows in that lamp's.
 	{
-		vec3 lamp_s = lamp_rgb(light_color);
+		vec3 lamp_s = lamp_rgb(light_color, incident_rgb);
 		float up = clamp(1.0 - depth_used, 0.0, 1.0);
-		float beam_on = step(0.001, iaq_beam_cone.w);
+		float beam_on = clamp(fixture_sample.w * iaq_beam_cone.w * 2.0, 0.0, 1.0);
 		float scat = (0.08 + aerial_haze * 0.26 + turbidity_haze * 0.36)
 			* up * up * (0.55 + beam_on * 0.35) * (0.45 + horiz_depth * 0.55);
 		col = mix(col, col * 0.55 + lamp_s * mix(shallow_color.rgb, vec3(0.95), 0.55),
@@ -435,10 +482,16 @@ void fragment() {
 	// Deep corners go genuinely dark (#38).
 	float corner_dark = pow(depth_used, 1.35) * (1.0 - abs(n.y) * 0.35);
 	col *= 1.0 - corner_dark * 0.28;
-	float surface = smoothstep(0.55, 0.92, n.y) * (1.0 - cam_below);
+	// NORMAL is in view space. Its y component vanishes in a top-down camera,
+	// which used to disable every surface reflection in the pond view.
+	float surface = cap * (1.0 - cam_below);
 	// Rippled normal on the cap, the mesh normal everywhere else.
 	vec3 n_s = normalize(mix(n, n_rip, surface));
-	float fresnel = pow(1.0 - abs(dot(n_s, VIEW)), 2.2);
+	// Air/water IOR ~1.333: normal-incidence reflection is ~2.04%.
+	// Schlick's smooth approximation keeps grazing reflections without the
+	// previous broad grey wash. Watercolour gains remain separate below.
+	float ndv_water = clamp(abs(dot(n_s, VIEW)), 0.0, 1.0);
+	float fresnel = 0.02037 + 0.97963 * pow(1.0 - ndv_water, 5.0);
 	// Refractive shimmer: looking down through a rippled surface the floor
 	// swims in bright and dark bands that follow the slope. A brightness
 	// modulation on the cap, keyed to the slope toward the light.
@@ -474,7 +527,7 @@ void fragment() {
 		if (aquatic_detail < 2) {
 			ceil_web = water_web(world_pos.xz * 1.05 + vec2(5.0, 2.0), TIME * 0.42);
 		}
-		vec3 lamp = lamp_rgb(light_color);
+		vec3 lamp = lamp_rgb(light_color, incident_rgb);
 		// The sheet: the lit upper water body seen in the mirror, silvered and
 		// wearing the lamp's colour (a pink LED makes a pink ceiling). The
 		// ripple slope swells it gently instead of striping it.
@@ -573,32 +626,43 @@ void fragment() {
 		float glint_dist = abs(world_pos.x - fixture_glint_center);
 		float glint = smoothstep(fixture_glint_width * 0.52, fixture_glint_width * 0.06, glint_dist);
 		glint *= 0.55 + 0.45 * sin(world_pos.z * 1.8 + TIME * 0.65);
-		col += light_color * glint * surface * (0.22 + caustic_intensity * 0.28);
+		col += lamp_rgb(light_color, incident_rgb) * glint * surface
+			* (0.22 + caustic_intensity * 0.28) * direct_share;
 	}
 
 	// Specular glint where the fixture reflects off the surface. Computed in
 	// view space, which is where NORMAL and VIEW already live.
-	if (surface_spec_gain > 0.001) {
-		vec3 lp_view = (VIEW_MATRIX * vec4(fixture_world_pos, 1.0)).xyz;
-		vec3 l_dir = normalize(lp_view - VERTEX);
-		vec3 h_dir = normalize(l_dir + normalize(VIEW));
+	if (surface_spec_gain > 0.001 && direct_response > 0.001) {
+		vec3 incoming = fixture_sample.xyz * fixture_sample.w * max(iaq_beam_cone.w, 0.0) * 2.0
+			+ iaq_sun_light.xyz * max(iaq_sun_light.w, 0.0)
+			+ iaq_moon_light.xyz * max(iaq_moon_light.w, 0.0)
+			+ accent1_sample.xyz * accent1_sample.w * 0.65
+			+ accent2_sample.xyz * accent2_sample.w * 0.65;
+		if (dot(incoming, incoming) < 0.0001) {
+			incoming = vec3(0.0, 1.0, 0.0);
+		}
+		vec3 l_world = normalize(incoming);
+		vec3 l_dir = normalize((VIEW_MATRIX * vec4(l_world, 0.0)).xyz);
+		vec3 half_sum = l_dir + normalize(VIEW);
+		vec3 h_dir = half_sum * inversesqrt(max(dot(half_sum, half_sum), 0.0001));
 		// Only the up-facing surface, and only where the water is actually
 		// lit — a shaded corner of the meniscus must not spark.
-		float spec = pow(max(dot(n_s, h_dir), 0.0), surface_spec_power) * surface;
-		// Glitter: the rippled lobe is already broken into streaks; harden
-		// its brighter half so the sparks land on whole pixels.
-		spec = mix(spec, smoothstep(0.30, 0.75, spec), 0.5);
-		// Toward white, not toward light_color: light_color is the water's own
-		// blue-green transmission tint, and a highlight wearing it can never
-		// reach the top of the palette. A specular is the light source seen
-		// directly, so it takes the source's colour, not the medium's.
-		col += mix(light_color, vec3(1.0, 0.98, 0.94), 0.62) * spec * surface_spec_gain;
+		float ndh = max(dot(n_s, h_dir), 0.0);
+		// Broaden subpixel lobes before palette quantisation. Reflections can
+		// move across ripples without repeatedly appearing as a single hot pixel.
+		float footprint = clamp(fwidth(ndh), 0.0, 0.15);
+		float filtered_power = surface_spec_power
+			/ (1.0 + surface_spec_power * footprint * footprint * 4.0);
+		float spec = pow(ndh, filtered_power) * surface;
+		// A specular carries the source spectrum, without introducing white
+		// into a deeply colored fixture. The palette supplies its final steps.
+		col += lamp_rgb(light_color, incident_rgb) * spec * surface_spec_gain * direct_share;
 		// AND the surface must become opaque where it sparks. This is the step
 		// that was missing first time round: the water is blend_mix with alpha
 		// capped at 0.62, so however hot `col` gets a translucent fragment can
 		// only contribute 62% of it and the highlight never blows out. A real
 		// specular hides what is behind it.
-		spec_alpha = clamp(spec * surface_spec_gain, 0.0, 1.0);
+		spec_alpha = clamp(spec * surface_spec_gain * direct_response, 0.0, 1.0);
 	}
 
 	// Corner meniscus on polygon tanks only; curved volumes use the top ring.
@@ -686,7 +750,10 @@ void fragment() {
 	alpha += ice_rim * 0.06;
 	alpha += bacterial_bloom * 0.18;
 
-	ALBEDO = col;
+	// This is reflected/scattered light, not emission. Keeping the material's
+	// shape, film and optical alpha independent lets a darkened tank remain
+	// clear while its artificial highlights follow the actual source power.
+	ALBEDO = col * light_response_rgb;
 	// The specular is allowed past the translucency cap; nothing else is.
 	ALPHA = max(max(clamp(alpha, 0.04, 0.62), spec_alpha * 0.96), under_alpha);
 }

@@ -237,11 +237,11 @@ static func beam_length(head_y: float, substrate_y: float,
 	return minf(drop / -dir.y, max_len)
 
 
-# Radius of the cone where it lands. spot_angle is the full cone width, so
-# the half-angle is what opens the triangle.
+# Godot's spot_angle is an angular RADIUS, not the full cone width.
+# Keep the visible shaft and analytic light pool on the same cone.
 static func beam_end_radius(length: float, angle_deg: float) -> float:
 	return maxf(0.02, length * tan(deg_to_rad(
-		clampf(angle_deg, ANGLE_MIN, ANGLE_MAX) * 0.5)))
+		clampf(angle_deg, ANGLE_MIN, ANGLE_MAX))))
 
 
 # Room light after darkness. Never negative, and never quite zero so a
@@ -355,16 +355,69 @@ static func beam_segment(positions: Array) -> Dictionary:
 # (cos_outer, cos_inner, range, energy) for the shader global.
 static func cone_params(angle_deg: float, reach: float,
 		energy: float) -> Vector4:
-	var half: float = clampf(angle_deg, ANGLE_MIN, ANGLE_MAX) * 0.5
+	var half: float = clampf(angle_deg, ANGLE_MIN, ANGLE_MAX)
 	var cos_outer: float = cos(deg_to_rad(half))
 	var cos_inner: float = cos(deg_to_rad(half * CONE_INNER_FRAC))
 	return Vector4(cos_outer, cos_inner, maxf(0.1, reach),
 		maxf(0.0, energy))
 
 
+# Independent lamp dimmer, shared by rendering and photosynthesis. The
+# optional schedule follows the solar bell without changing the animal clock.
+# A manual lamp still works at any hour; a disabled lamp has exactly zero output.
+static func fixture_output(cfg: Node, daylight: float) -> float:
+	if cfg == null:
+		return 0.5 * smoothstep(0.05, 0.55, daylight)
+	if not bool(cfg.light_master_enabled) or not bool(cfg.tank_lights_on):
+		return 0.0
+	var output: float = clampf(float(cfg.tank_fixture_intensity), 0.0, 1.5)
+	var spectrum: Vector3 = linear_light_rgb(tint_light(cfg.tank_fixture_color, config_light_tint(cfg)))
+	output *= maxf(spectrum.x, maxf(spectrum.y, spectrum.z))
+	if cfg.get("fixture_follow_day_cycle") == true:
+		output *= smoothstep(0.05, 0.55, clampf(daylight, 0.0, 1.0))
+	return output
+
+
+# CPU counterpart of iaq_beam_at: normalized coverage before water/canopy
+# attenuation. Plants and rendered light share the same footprint and edge.
+static func beam_coverage(pos: Vector3, origin: Vector3, axis: Vector3,
+		direction: Vector3, params: Vector4, falloff: Vector4 = Vector4.ZERO) -> float:
+	var src: Vector3 = origin
+	var span2: float = axis.length_squared()
+	if span2 > 0.0225:
+		src += axis * clampf((pos - src).dot(axis) / span2, -1.0, 1.0)
+	var to_pos: Vector3 = pos - src
+	var dist: float = to_pos.length()
+	if dist < 0.0001:
+		return 0.0
+	var cd: float = (to_pos / dist).dot(direction.normalized())
+	return smoothstep(params.x, params.y, cd) \
+		* (1.0 - smoothstep(params.z * 0.55, params.z, dist)) * distance_falloff(dist, falloff)
+
+
+# Finite emitter softening prevents the point-source singularity. Reference
+# distance calibrates arbitrary game units; it does not follow lamp height.
+# A long bar approximates a line source nearby and a point source far away.
+static func distance_falloff(dist: float, falloff: Vector4) -> float:
+	if falloff.x <= 0.0:
+		return 1.0
+	var exponent: float = falloff.z
+	if falloff.w > 0.0:
+		exponent = lerpf(1.0, 2.0, smoothstep(falloff.w, falloff.w * 4.0, dist))
+	var ratio: float = falloff.x * falloff.x / maxf(dist * dist + falloff.y * falloff.y, 0.0001)
+	return clampf(pow(ratio, exponent * 0.5), 0.0, 1.5)
+
+
 # (r, g, b, ambient_outside). Darkness drives how far the unlit half falls,
 # so the same lamp reads as a gentle pool in a lit room and as the only
 # light source in a dark one.
+# Packed vec4 globals have no source_color annotation. Convert picker sRGB
+# once on the CPU; shader light multiplication is performed in linear RGB.
+static func linear_light_rgb(color: Color) -> Vector3:
+	var linear: Color = color.srgb_to_linear()
+	return Vector3(maxf(linear.r, 0.0), maxf(linear.g, 0.0), maxf(linear.b, 0.0))
+
+
 static func cone_tint(color: Color, darkness: float,
 		shaping: float = 1.0) -> Vector4:
 	var d: float = clampf(darkness, 0.0, 1.0)
@@ -373,7 +426,8 @@ static func cone_tint(color: Color, darkness: float,
 	# the lamp only mattered once the room was blacked out.
 	var lit_floor: float = lerpf(1.0, CONE_SHAPING_FLOOR, clampf(shaping, 0.0, 1.0))
 	var ambient: float = lerpf(lit_floor, CONE_AMBIENT_FLOOR, d)
-	return Vector4(color.r, color.g, color.b, ambient)
+	var rgb: Vector3 = linear_light_rgb(color)
+	return Vector4(rgb.x, rgb.y, rgb.z, ambient)
 
 
 # How much the tank's own lamp owns the scene, 0..1.
@@ -515,7 +569,8 @@ static func backlight_falloff(omni_range: float) -> float:
 # the haze takes that colour (0 = legacy teal). Scaled by energy so a dimmed
 # lamp scatters less of itself, and by shaping so 0 restores the old look.
 static func scatter_light(color: Color, energy: float, shaping: float = 1.0) -> Vector4:
-	var m: float = maxf(maxf(color.r, color.g), maxf(color.b, 0.001))
+	var rgb: Vector3 = linear_light_rgb(color)
+	var m: float = maxf(maxf(rgb.x, rgb.y), maxf(rgb.z, 0.001))
 	var amount: float = 0.7 * smoothstep(0.0, 0.3, maxf(energy, 0.0)) \
 		* clampf(shaping, 0.0, 1.0)
-	return Vector4(color.r / m, color.g / m, color.b / m, amount)
+	return Vector4(rgb.x / m, rgb.y / m, rgb.z / m, amount)

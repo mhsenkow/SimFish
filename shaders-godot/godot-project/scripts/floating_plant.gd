@@ -63,6 +63,7 @@ var _neighbor_density: float = 0.0
 var _decay_sink: float = 0.0
 var _visual_dirty: bool = true
 var _light_response_t: float = 0.0
+var _light_exposure_avg: float = 0.5
 var _roots_lod_hidden: bool = false
 var _view_lod_hidden: bool = false
 var _lod_tick: int = 0
@@ -71,6 +72,8 @@ const VIEW_LOD_MIN_DENSITY: float = 0.45
 
 # PERFORMANCE_REALTIME #70 — reuse morph shells instead of rebuilding voxels.
 static var _morph_shell_cache: Dictionary = {}
+static var _morph_shell_order: Array[String] = []
+const MORPH_SHELL_CACHE_LIMIT: int = 64
 # Morphs whose roots are a long feathered curtain (shaders/floater_roots.gdshader)
 # rather than a few stubs. These keep their roots in dense mats: a frogbit mat
 # seen from inside the tank IS its roots.
@@ -93,6 +96,10 @@ func init_genome(g: Dictionary) -> void:
 		vitality = clampf(float(g.vitality), 0.0, 1.0)
 	if g.has("root_biofilm"):
 		root_biofilm = clampf(float(g.root_biofilm), 0.0, 1.0)
+	if g.has("light_exposure_avg"):
+		var saved_light: float = float(g.light_exposure_avg)
+		_light_exposure_avg = clampf(saved_light, 0.0, 1.0) \
+			if is_finite(saved_light) else 0.5
 	if g.has("root_length_current"):
 		root_length_current = float(g.root_length_current)
 	if g.has("bud_stage"):
@@ -117,7 +124,16 @@ func get_genome() -> Dictionary:
 
 # Per-clump sim step (10 Hz from World._floater_growth_step).
 func tick(dt: float, world: Node, sim: Node) -> void:
-	var dl: float = SimGate.daylight(sim, 1.0)
+	var clock_light: float = SimGate.daylight(sim, 1.0)
+	var dl: float = SimGate.irradiance(sim, 1.0)
+	if is_instance_valid(world):
+		var sample_pos: Vector3 = global_position if is_inside_tree() else position
+		dl = SimGate.irradiance_at(world, sample_pos, dl)
+	dl = clampf(dl, 0.0, 1.0)
+	# Root pigmentation acclimates to exposure; a brief dimming or sunset
+	# should not instantly erase red roots or flash between two leaf colors.
+	_light_exposure_avg = lerpf(_light_exposure_avg, dl,
+		1.0 - exp(-maxf(0.0, dt) / 45.0))
 	var warmth: float = 0.55
 	if world != null and world.has_method("surface_warmth_at"):
 		warmth = float(world.surface_warmth_at(global_position))
@@ -204,7 +220,7 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 		_request_turion(world)
 		_low_light_ticks = 0
 	# Flowering (#42)
-	_tick_flowering(dl)
+	_tick_flowering(clock_light)
 	# Decay visual (#49) — surface_sink() applies the dip at drift time; don't
 	# also mutate position.y here or the transform can desync + go non-finite.
 	if vitality < 0.25:
@@ -239,7 +255,7 @@ func tick(dt: float, world: Node, sim: Node) -> void:
 	_light_response_t += dt
 	if _visual_dirty or _light_response_t >= 6.0:
 		_light_response_t = 0.0
-		tick_light_response(dl, world)
+		tick_light_response(_light_exposure_avg, world)
 	# Allelopathy at root tips (#25)
 	if world != null and sim != null and sim.get("substrate") != null and root_length_current > 0.2:
 		var tips: Array = root_world_positions()
@@ -602,17 +618,44 @@ func _mount_cached_shell(shell: Node3D) -> void:
 
 
 func _store_shell_cache(key: String) -> void:
+	var ml: MainLoop = Engine.get_main_loop()
+	if ml is SceneTree:
+		var shutdown: Callable = clear_shell_cache
+		if not (ml as SceneTree).root.tree_exiting.is_connected(shutdown):
+			(ml as SceneTree).root.tree_exiting.connect(shutdown)
 	var shell := Node3D.new()
 	for c in get_children():
 		shell.add_child(c.duplicate())
+	if _morph_shell_cache.has(key):
+		(_morph_shell_cache[key] as Node3D).free()
+	_morph_shell_order.erase(key)
 	_morph_shell_cache[key] = shell
+	_morph_shell_order.append(key)
+	while _morph_shell_order.size() > MORPH_SHELL_CACHE_LIMIT:
+		var oldest: String = _morph_shell_order.pop_front()
+		var retired: Node3D = _morph_shell_cache[oldest]
+		_morph_shell_cache.erase(oldest)
+		retired.free()
+
+
+static func clear_shell_cache() -> void:
+	for shell: Node3D in _morph_shell_cache.values():
+		if is_instance_valid(shell):
+			shell.free()
+	_morph_shell_cache.clear()
+	_morph_shell_order.clear()
 
 
 func _build() -> void:
 	for c in get_children():
+		# Deferred deletion alone leaves old parts available to duplicate into
+		# the new cache entry, especially on several rebuilds in one frame.
+		remove_child(c)
 		c.queue_free()
 	var key: String = _shell_cache_key()
 	if _morph_shell_cache.has(key):
+		_morph_shell_order.erase(key)
+		_morph_shell_order.append(key)
 		_mount_cached_shell(_morph_shell_cache[key] as Node3D)
 	else:
 		match morph:
@@ -978,6 +1021,7 @@ func to_state() -> Dictionary:
 		"vitality": vitality,
 		"age_s": age_s,
 		"root_biofilm": root_biofilm,
+		"light_exposure_avg": _light_exposure_avg,
 		"root_length_current": root_length_current,
 		"bud_stage": bud_stage,
 		"flower_stage": flower_stage,

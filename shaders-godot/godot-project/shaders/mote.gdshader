@@ -37,10 +37,8 @@ void vertex() {
 
 void fragment() {
 	float tw = 0.5 + 0.5 * sin(TIME * (1.1 + v_seed * 2.3) + v_seed * 41.0);
-	vec3 base = mote_color.rgb * shade_level;
-	// How much the lamp lifts this point, as a multiplier on a white mote.
-	vec3 lit = iaq_beam_light(v_wp, vec3(1.0)) - vec3(1.0);
-	vec3 col = base + max(lit, vec3(0.0)) * mote_color.rgb * glint * (0.45 + tw * 0.75);
+	vec3 receiver = iaq_beam_light(v_wp, mote_color.rgb);
+	vec3 col = receiver * mix(shade_level, glint, (0.45 + tw * 0.75) * 0.65);
 	if (iaq_backlight.w > 0.001) {
 		vec3 bd = v_wp - iaq_backlight.xyz;
 		float att = clamp(iaq_backlight.w / (1.0 + iaq_backlight_tint.a * dot(bd, bd)), 0.0, 1.0);
@@ -49,7 +47,9 @@ void fragment() {
 	// Near the surface the light is strongest even without a shaped beam.
 	float top = smoothstep(0.55, 1.0, clamp((v_wp.y - water_floor)
 		/ max(water_top - water_floor, 0.5), 0.0, 1.0));
-	col += mote_color.rgb * top * 0.22 * tw;
+	float top_light = max(iaq_sun_light.w, iaq_moon_light.w * 0.22);
+	top_light = max(top_light, iaq_beam_at(v_wp).w * iaq_beam_cone.w * 2.0);
+	col += mote_color.rgb * top * 0.22 * tw * clamp(top_light, 0.0, 1.5);
 	col = apply_water_column_ws(col, v_wp, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

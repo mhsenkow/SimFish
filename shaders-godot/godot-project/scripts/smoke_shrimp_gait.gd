@@ -27,7 +27,7 @@ func _initialize() -> void:
 			+ "with the heading is what tipped them nose-down")
 
 	# --- Distance-driven cycle ---
-	t.check(src.contains("speed * dt * float(g[\"steps_per_unit\"])"),
+	t.check(src.contains("distance * float(g[\"steps_per_unit\"])"),
 		"the gait must advance with DISTANCE travelled — a time-driven cycle "
 			+ "keeps paddling when the animal has stopped")
 

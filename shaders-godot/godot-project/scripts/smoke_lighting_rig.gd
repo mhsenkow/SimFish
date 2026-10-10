@@ -178,7 +178,9 @@ func _init() -> void:
 	# of 1.4 the shaft was built from a phantom lamp 1.35 units above the
 	# one you can see. The shaft has to read the real fixture.
 	var w2: String = _read("res://scripts/world.gd")
-	t.check(w2.contains("var spot_y: float = parent.position.y + spot.position.y"),
+	# Multi-spot bars use the fixture centre as origin; single spots use
+	# spot.position. Either way the height is parent.position.y + origin.y.
+	t.check(w2.contains("var spot_y: float = parent.position.y + origin.y"),
 		"the shaft height comes from the real fixture, not a nominal one")
 	t.check(not w2.contains("TANK_HEIGHT + height_above + spot.position.y"),
 		"the phantom-lamp height is gone")
@@ -283,7 +285,7 @@ func _init() -> void:
 	var cone: Vector4 = R.cone_params(30.0, 20.0, 1.15)
 	t.check(cone.x < cone.y,
 		"cos_outer is the wider edge (%.4f < %.4f)" % [cone.x, cone.y])
-	t.approx(cone.x, cos(deg_to_rad(15.0)), "outer edge is the half-angle")
+	t.approx(cone.x, cos(deg_to_rad(30.0)), "outer edge matches Godot angular radius")
 	t.approx(cone.w, 1.15, "energy passes through")
 	var wide_cone: Vector4 = R.cone_params(60.0, 20.0, 1.0)
 	t.check(wide_cone.x < cone.x, "a wider cone has a smaller outer cosine")
@@ -489,8 +491,8 @@ func _init() -> void:
 	var cone_src: String = _read("res://shaders/beam_cone.gdshaderinc")
 	t.check(cone_src.contains("iaq_beam_tint.w * iaq_room_light"),
 		"the room's dimming moves into the cone's ambient term")
-	t.check(cone_src.contains("return base_col * iaq_room_light"),
-		"with no cone the tank dims with the room as before")
+	t.check(not cone_src.contains("return base_col * iaq_room_light"),
+		"an off lamp cannot bypass the receiving surface ambient")
 	t.check(cone_src.contains("float core_e = energy < 1.0 ? sqrt(energy) : energy;"),
 		"a dimmed fixture still glints: the hot core scales with sqrt(energy)")
 	# --- Rear backlight globals ---

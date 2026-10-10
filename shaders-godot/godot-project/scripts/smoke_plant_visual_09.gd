@@ -4,6 +4,10 @@ class LightStub extends Node:
 	func daylight() -> float:
 		return 1.0
 
+
+	func irradiance() -> float:
+		return daylight()
+
 func _initialize() -> void:
 	var failed: Array[String] = []
 	var host := Node3D.new()

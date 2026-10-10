@@ -86,9 +86,9 @@ func _initialize() -> void:
 
 	# --- Colour passes through untouched ---
 	var tinted: Vector4 = LightingRigScript.cone_tint(Color(0.9, 0.6, 0.3), 0.4, 1.0)
-	t.approx(tinted.x, 0.9, "cone tint carries r", 0.001)
-	t.approx(tinted.y, 0.6, "cone tint carries g", 0.001)
-	t.approx(tinted.z, 0.3, "cone tint carries b", 0.001)
+	t.approx(tinted.x, Color(0.9, 0.6, 0.3).srgb_to_linear().r, "cone tint carries linear r", 0.001)
+	t.approx(tinted.y, Color(0.9, 0.6, 0.3).srgb_to_linear().g, "cone tint carries linear g", 0.001)
+	t.approx(tinted.z, Color(0.9, 0.6, 0.3).srgb_to_linear().b, "cone tint carries linear b", 0.001)
 
 	# --- A bar fixture is a segment, not its leftmost spot ---
 	var bar: Array = [

@@ -38,14 +38,15 @@ static func ensure(f) -> Dictionary:
 		if f is Object:
 			(f as Object).set("_soul_mind", fresh)
 		return ensure_fields(fresh)
-	var s: Dictionary = (existing as Dictionary).duplicate(true)
+	# Owned by this fish (or detached worker proxy). Borrow for runtime
+	# reads/updates; save/load and worker capture copy at their boundaries.
+	# A deep copy here also lets outer callers overwrite nested learning.
+	var s: Dictionary = existing as Dictionary
 	if int(s.get("schema_version", 0)) != SCHEMA_VERSION:
 		s = _fresh_state()
 		if f is Object:
 			(f as Object).set("_soul_mind", s)
 		return ensure_fields(s)
-	if f is Object:
-		(f as Object).set("_soul_mind", s)
 	return ensure_fields(s)
 
 

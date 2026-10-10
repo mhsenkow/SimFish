@@ -12,7 +12,7 @@ config_version=5
 
 config/name="walstad loom"
 config/description="Generative pixel-art Walstad aquarium. 3D voxel content rendered through palette-quantized 512x288 SubViewport."
-config/version="0.2.38"
+config/version="0.2.39"
 run/main_scene="res://tank_menu.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.png"
@@ -71,6 +71,42 @@ iaq_beam_tint={
 "value": Vector4(1, 0.9, 0.7, 1)
 }
 iaq_beam_axis={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_sun_light={
+"type": "vec4",
+"value": Vector4(0, 1, 0, 0)
+}
+iaq_sun_tint={
+"type": "vec4",
+"value": Vector4(1, 1, 1, 0)
+}
+iaq_moon_light={
+"type": "vec4",
+"value": Vector4(0, 1, 0, 0)
+}
+iaq_moon_tint={
+"type": "vec4",
+"value": Vector4(0.55, 0.7, 1, 0)
+}
+iaq_accent1={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_accent1_tint={
+"type": "vec4",
+"value": Vector4(1, 1, 1, 0)
+}
+iaq_accent2={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_accent2_tint={
+"type": "vec4",
+"value": Vector4(1, 1, 1, 0)
+}
+iaq_beam_falloff={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }

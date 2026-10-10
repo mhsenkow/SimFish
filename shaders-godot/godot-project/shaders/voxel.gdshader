@@ -65,6 +65,7 @@ uniform float light_exempt : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
 #include "res://shaders/backlight.gdshaderinc"
+#include "res://shaders/fauna_reflection.gdshaderinc"
 
 vec3 apply_vibrancy(vec3 col, float vib) {
 	if (vib <= 1.001) {
@@ -84,8 +85,14 @@ void vertex() {
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
+	vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
+	float fauna_weight = palette_category == 1 ? 1.0 : 0.0;
+	float catch_opacity = mix(1.0, FAUNA_CATCH_OPACITY, fauna_weight);
 	float f;
-	if (n.y > 0.7) {
+	if (palette_category == 1) {
+		f = mix(1.22, 1.0, smoothstep(0.45, 0.85, n_ws.y));
+		f = mix(f, 0.60 + belly_flash * 0.35, smoothstep(0.45, 0.85, -n_ws.y));
+	} else if (n.y > 0.7) {
 		f = 1.00;
 	} else if (n.y < -0.7) {
 		// HOLISTIC #050 — deeper wood/hardscape undersides so close views keep
@@ -109,8 +116,10 @@ void fragment() {
 		float cwave = sin(cuv.x * 2.0 + t) * sin(cuv.y * 1.65 - t * 0.9)
 			+ sin((cuv.x + cuv.y) * 1.3 + t);
 		float caustics = smoothstep(0.08, 0.75, cwave) * aquatic_caustic_intensity;
-		col += aquatic_light_color * caustics * 0.22;
-		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
+		col += mix(aquatic_light_color, col * aquatic_light_color, fauna_weight)
+			* caustics * mix(0.22, 0.10, fauna_weight);
+		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer
+			* mix(0.035, 0.012, fauna_weight);
 		col += vec3(shim, shim * 0.6, -shim * 0.4);
 	}
 
@@ -118,9 +127,9 @@ void fragment() {
 		float span = max(water_surface_y - fixture_water_floor, 0.5);
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.40) * tank_fixture_glow;
-		float top_catch = smoothstep(0.25, 0.88, n.y);
-		col += tank_fixture_color * wash * mix(0.34, 0.62, top_catch);
-		col *= 1.0 + wash * (0.58 + top_catch * 0.38);
+		float top_catch = smoothstep(0.25, 0.88, palette_category == 1 ? n_ws.y : n.y);
+		col += tank_fixture_color * wash * mix(0.18, 0.34, top_catch) * catch_opacity;
+		col *= 1.0 + wash * (0.30 + top_catch * 0.22);
 	}
 
 	// Bioluminescence — soft pulsing additive glow. Pulse phase keyed off
@@ -166,7 +175,7 @@ void fragment() {
 	// Iridescent / structural colour — palette-quantized hue steps (#32).
 	if (irid_strength > 0.001) {
 		float fres = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5);
-		float step_f = floor(fres * 6.0) / 6.0;
+		float step_f = fres; // palette quantization supplies the stepped color, not the sheen
 		float band = step_f * 6.28318;
 		vec3 sheen = vec3(0.5 + 0.5 * sin(band),
 			0.5 + 0.5 * sin(band + 2.094),
@@ -177,9 +186,10 @@ void fragment() {
 	if (metallic_strength > 0.001) {
 		float fres_m = pow(1.0 - abs(dot(n, normalize(VIEW))), 3.0);
 		vec3 vdir = normalize(VIEW);
-		float spec = pow(max(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))), 0.0), 14.0);
-		float band_m = floor(fres_m * 3.0) / 3.0;
-		col += vec3(spec * 0.42) * metallic_strength;
+		float spec = fauna_scale_catch(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))));
+		float band_m = fres_m;
+		col += mix(col, vec3(1.0, 0.95, 0.84), 0.18) * spec * 0.24 * metallic_strength
+			* catch_opacity;
 		col = mix(col, col * vec3(1.12, 1.10, 1.06), band_m * metallic_strength * 0.35);
 	}
 	if (fauna_rim > 0.001) {
@@ -191,20 +201,20 @@ void fragment() {
 
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
-	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1). Emissive
 	// fixtures opt out: a lamp is not lit by itself, and dimming the one
 	// genuinely bright object in the frame is how the highlight end of the
 	// palette went missing.
 	if (light_exempt < 0.5) {
-		col = iaq_beam_light_n(v_world_pos, (INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, col);
+		col = iaq_beam_light_surface_n(v_world_pos, n_ws, col, catch_opacity);
 	}
 	// Room dimming rides the beam's ambient term (iaq_room_light,
 	// beam_cone.gdshaderinc). The rear lamp lights the tank, not the room.
 	if (room_haze_strength <= 0.001 && light_exempt < 0.5) {
-		col = iaq_backlight_light(col, v_world_pos,
-			(INV_VIEW_MATRIX * vec4(n, 0.0)).xyz, CAMERA_POSITION_WORLD);
+		col = mix(col, iaq_backlight_light(col, v_world_pos, n_ws, CAMERA_POSITION_WORLD),
+			catch_opacity);
 	}
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

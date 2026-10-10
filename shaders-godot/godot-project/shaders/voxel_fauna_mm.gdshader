@@ -39,6 +39,7 @@ uniform float fauna_vertex_bend : hint_range(0.0, 1.0) = 1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/fauna_reflection.gdshaderinc"
 
 // Rear backlight, published by world.gd (project.godot declares both):
 //   iaq_backlight      = (x, y, z, energy)       energy 0 = off
@@ -79,26 +80,9 @@ const float FAUNA_CHROMA_GAIN_MAX = 3.0;
 // lamp, mirroring iaq_beam_light_n's cone term. Used for the rim catch and
 // the iridescent flash, which need the light's direction, not just its sum.
 float fauna_beam_direct(vec3 wpos, out vec3 to_lamp) {
-	to_lamp = vec3(0.0, 1.0, 0.0);
-	if (iaq_beam_cone.w <= 0.001) {
-		return 0.0;
-	}
-	vec3 src = iaq_beam_origin;
-	if (iaq_beam_axis.w > 0.5) {
-		vec3 ax = iaq_beam_axis.xyz;
-		float len2 = dot(ax, ax);
-		if (len2 > 1e-6) {
-			src = iaq_beam_origin + ax * clamp(dot(wpos - iaq_beam_origin, ax) / len2, -1.0, 1.0);
-		}
-	}
-	vec3 d = wpos - src;
-	float dist = length(d);
-	if (dist < 0.0001) {
-		return 0.0;
-	}
-	to_lamp = -d / dist;
-	float cone = smoothstep(iaq_beam_cone.x, iaq_beam_cone.y, dot(d / dist, normalize(iaq_beam_dir)));
-	return cone * (1.0 - smoothstep(iaq_beam_cone.z * 0.55, iaq_beam_cone.z, dist));
+	vec4 sample_light = iaq_beam_at(wpos);
+	to_lamp = sample_light.xyz;
+	return sample_light.w * clamp(iaq_beam_cone.w * 2.0, 0.0, 1.0);
 }
 
 // Backlight on a fish: a silhouette rim in the lamp colour on edges lying
@@ -117,7 +101,8 @@ vec3 fauna_backlight(vec3 col, vec3 wpos, vec3 n, vec3 v, float fin) {
 	float behind = max(dot(-v, l), 0.0);
 	float edge = pow(1.0 - clamp(abs(dot(n, v)), 0.0, 1.0), 2.0);
 	vec3 tint = iaq_backlight_tint.rgb;
-	vec3 rim = tint * edge * (0.30 + 0.70 * behind) * att * 0.45;
+	vec3 rim = mix(col, tint, 0.18) * edge * (0.30 + 0.70 * behind)
+		* att * 0.45 * FAUNA_CATCH_OPACITY;
 	vec3 trans = col * tint * fin * behind * behind * att * 0.60;
 	return col + rim + trans;
 }
@@ -205,8 +190,8 @@ void fragment() {
 		float cwave = sin(cuv.x * 2.0 + t) * sin(cuv.y * 1.65 - t * 0.9)
 			+ sin((cuv.x + cuv.y) * 1.3 + t);
 		float caustics = smoothstep(0.08, 0.75, cwave) * aquatic_caustic_intensity;
-		col += aquatic_light_color * caustics * 0.22;
-		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.035;
+		col += col * aquatic_light_color * caustics * 0.10;
+		float shim = sin(v_world_pos.x * 4.2 + t * 2.1) * aquatic_shimmer * 0.012;
 		col += vec3(shim, shim * 0.6, -shim * 0.4);
 	}
 
@@ -215,8 +200,8 @@ void fragment() {
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.40) * tank_fixture_glow;
 		float top_catch = smoothstep(0.25, 0.88, n_ws.y);
-		col += tank_fixture_color * wash * mix(0.34, 0.62, top_catch);
-		col *= 1.0 + wash * (0.58 + top_catch * 0.38);
+		col += tank_fixture_color * wash * mix(0.18, 0.34, top_catch) * FAUNA_CATCH_OPACITY;
+		col *= 1.0 + wash * (0.30 + top_catch * 0.22);
 	}
 
 	if (bioluminescence > 0.001 || v_biolum > 0.001) {
@@ -258,9 +243,10 @@ void fragment() {
 	if (metallic_strength > 0.001) {
 		float fres_m = pow(1.0 - abs(dot(n, normalize(VIEW))), 3.0);
 		vec3 vdir = normalize(VIEW);
-		float spec = pow(max(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))), 0.0), 14.0);
+		float spec = fauna_scale_catch(dot(n, normalize(vdir + vec3(0.25, 0.55, 0.18))));
 		float band_m = fres_m;
-		col += vec3(spec * 0.42) * metallic_strength;
+		col += mix(col, vec3(1.0, 0.95, 0.84), 0.18) * spec * 0.24 * metallic_strength
+			* FAUNA_CATCH_OPACITY;
 		col = mix(col, col * vec3(1.12, 1.10, 1.06), band_m * metallic_strength * 0.35);
 	}
 	if (fauna_rim > 0.001) {
@@ -272,12 +258,11 @@ void fragment() {
 
 	// Water column — red dies first with depth and distance. Global uniform, so
 	// it costs one compare on anything above the waterline or out of the tank.
-	col = mix(col, apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD),
-		FAUNA_WATER_MIX);
+
 	// Analytic fixture cone — the only light model an unshaded pipeline has.
 	// See shaders/beam_cone.gdshaderinc (VISUAL_DIRECTIONS #1).
 	vec3 base_lit = col;
-	vec3 lit = iaq_beam_light_n(v_world_pos, n_ws, col);
+	vec3 lit = iaq_beam_light_surface_n(v_world_pos, n_ws, col, FAUNA_CATCH_OPACITY);
 	const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 	float l_in = max(dot(base_lit, LUMA), 1e-3);
 	float gain = min(dot(lit, LUMA) / l_in, FAUNA_CHROMA_GAIN_MAX);
@@ -290,17 +275,20 @@ void fragment() {
 		// Beam rim: the top edge of a fish catching the fixture, one bright
 		// pixel row that separates it from the plants behind.
 		float edge = pow(1.0 - ndv, 2.0) * max(n_ws.y, 0.0);
-		col += iaq_beam_tint.rgb * edge * direct * energy * 0.35;
+		col += mix(base_lit, iaq_beam_tint.rgb, 0.18) * edge * direct * energy * 0.35
+			* FAUNA_CATCH_OPACITY;
 		// Iridescent turn flash — metallic / iridophore species only.
 		// Non-metallic schoolers (cardinal tetras under Iwagumi sun) used to
 		// strobe every bank via this path even with belly/silver flash off.
 		float irid_f = max(irid_strength, v_inst_custom.a);
 		float flank = 1.0 - smoothstep(0.55, 0.75, abs(n_ws.y));
 		if (metallic_strength > 0.001 && irid_f > 0.001 && flank > 0.001) {
-			vec3 h = normalize(to_lamp + v_ws);
-			float flash = pow(max(dot(n_ws, h), 0.0), 12.0);
+			vec3 half_sum = to_lamp + v_ws;
+			vec3 h = half_sum * inversesqrt(max(dot(half_sum, half_sum), 0.0001));
+			float flash = fauna_scale_catch(dot(n_ws, h));
 			vec3 sheen = base_lit * 1.35 + vec3(0.10, 0.16, 0.18);
-			col = mix(col, max(col, sheen), flash * flank * direct * clamp(irid_f * 1.6, 0.0, 1.0));
+			col = mix(col, max(col, sheen), flash * flank * direct
+				* clamp(irid_f * 1.6, 0.0, 1.0) * FAUNA_CATCH_OPACITY);
 		}
 	}
 	col = fauna_backlight(col, v_world_pos, n_ws, v_ws, fin_w);
@@ -312,5 +300,8 @@ void fragment() {
 	float excess = max(peak - 0.72, 0.0);
 	float soft_peak = min(peak, 0.72) + 0.22 * excess / (excess + 0.22);
 	col *= soft_peak / max(peak, 0.0001);
-	ALBEDO = col + biolum_glow;
+	col += biolum_glow;
+	col = mix(col, apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD),
+		FAUNA_WATER_MIX);
+	ALBEDO = col;
 }

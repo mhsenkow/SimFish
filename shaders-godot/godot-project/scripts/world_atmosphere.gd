@@ -166,14 +166,15 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 		clampf(0.24 + float(dn["sunset_warmth"]) * 0.20, 0.0, 0.48))
 	# HOLISTIC #047 — luminous surface without a dominant white canopy sheet.
 	mat.set_shader_parameter("underside_mirror", 0.32)
-	# VISUAL_DIRECTIONS #3 — the tank's only genuine blown-out highlight.
-	# Scaled by clarity: a murky tank scatters the reflection instead of
-	# mirroring it, which is exactly what a cloudy tank looks like.
+	# Reflection roughness/art direction is independent of source power.
+	# water.gdshader multiplies these gains by the same continuous sun,
+	# fixture and moon energies that illuminate the solid surfaces.
+	# A murky tank spreads the reflection instead of mirroring it.
 	mat.set_shader_parameter("surface_spec_gain", 1.22 * clampf(trans, 0.0, 1.0))
-	# 110 with the rippled normal (water.gdshader surface_ripple_slope): the
-	# lobe is tight enough that the ripples scatter it into a glitter path of
-	# separate sparks instead of the single white oval 56 drew on a flat sheet.
-	mat.set_shader_parameter("surface_spec_power", 100.0)
+	# A broad filtered lobe follows the ripples without pinprick aliasing at
+	# low internal resolutions. This changes no render passes or texture reads.
+	mat.set_shader_parameter("surface_spec_power", 64.0)
+	mat.set_shader_parameter("under_glow", 1.0)
 	mat.set_shader_parameter("turbidity_haze", clampf((1.0 - trans) * 0.85, 0.0, 0.72))
 	mat.set_shader_parameter("flow_distortion", 0.38)
 	mat.set_shader_parameter("floor_bounce", clampf(0.22 + float(dn["sunset_warmth"]) * 0.18, 0.0, 0.55))
@@ -189,8 +190,8 @@ static func apply_water_shader(mat: ShaderMaterial, column: Dictionary,
 	mat.set_shader_parameter("sunset_warmth", dn["sunset_warmth"])
 	mat.set_shader_parameter("moonlight", dn["moonlight"])
 	mat.set_shader_parameter("day_phase_offset", dn["day_phase_offset"])
-	if ice_lens > 0.001:
-		mat.set_shader_parameter("ice_lens", ice_lens)
+	# Always clear a previous cold preset when the tank warms again.
+	mat.set_shader_parameter("ice_lens", clampf(ice_lens, 0.0, 1.0))
 
 
 # Room clock: sim day-phase by default; wall time when preset sets sim_clock false.

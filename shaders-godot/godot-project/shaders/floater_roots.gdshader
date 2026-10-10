@@ -71,7 +71,6 @@ void fragment() {
 	// Hairs are thinner, so more of the light through them survives: paler.
 	vec3 col = mix(COLOR.rgb, COLOR.rgb * 1.18 + vec3(0.03, 0.025, 0.02), fine);
 	col = apply_category_palette_tint(col, iaq_palette_foliage, 0.0, 1.0, 0.0, 1.0);
-	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Roots are translucent: a lamp behind the curtain lights it through,
 	// the hairs most of all. That glow is the strongest root cue in photos.
 	if (iaq_backlight.w > 0.001) {
@@ -80,5 +79,7 @@ void fragment() {
 		col += iaq_backlight_tint.rgb * att * (0.30 + fine * 0.30) * (0.5 + col);
 	}
 	col = iaq_beam_light(v_world_pos, col);
+	// A backlit root's glow still travels through the intervening water.
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

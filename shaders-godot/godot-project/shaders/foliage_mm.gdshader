@@ -235,15 +235,14 @@ void fragment() {
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
 		float top_catch = smoothstep(0.20, 0.88, n_ws.y);
-		col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch);
-		col *= 1.0 + wash * (0.62 + top_catch * 0.42);
+		col += tank_fixture_color * wash * mix(0.18, 0.30, top_catch);
+		col *= 1.0 + wash * (0.32 + top_catch * 0.24);
 	}
-	// Water column — red dies first with depth and distance. Global uniform, so
-	// it costs one compare on anything above the waterline or out of the tank.
-	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	// Shaped lamp. In an unshaded pipeline nothing responds to a light on
 	// its own, so the cone is evaluated here - this is what puts the beam
 	// ON the leaves instead of only in the water in front of them.
 	col = iaq_beam_light_n(v_world_pos, n_ws, col);
+	// Extinction acts on the complete reflected/transmitted radiance once.
+	col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
 	ALBEDO = col;
 }

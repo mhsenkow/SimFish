@@ -49,6 +49,7 @@ const _MotionFieldScript = preload("res://scripts/motion_field.gd")
 const _FaunaSpeciesBatchScript = preload("res://scripts/fauna_species_batch.gd")
 const _PlantFarFoliageBatchScript = preload("res://scripts/plant_far_foliage_batch.gd")
 const FoodWebTraceScript = preload("res://scripts/food_web_trace.gd")
+const _TankIlluminationScript = preload("res://scripts/tank_illumination.gd")
 
 signal stats_changed(stats: Dictionary)
 signal eco_event(kind: String, text: String, severity: int)
@@ -68,6 +69,93 @@ signal fish_voiced_wake(f: Fish)
 
 const SIM_HZ: float = 10.0
 const SIM_DT: float = 1.0 / SIM_HZ
+
+# Standalone simulations are ready immediately. World stages its habitat over
+# many frames and opens this gate only after founders, plants and saves exist.
+var habitat_ready: bool = true
+
+var _attention_counts: Dictionary = {}
+var _attention_by_fish: Dictionary = {}
+var _attention_summary_ready: bool = false
+
+
+func _rebuild_attention_summary() -> void:
+	_attention_counts.clear()
+	_attention_by_fish.clear()
+	for f in fish:
+		if is_instance_valid(f):
+			var focus: String = f.attention_focus
+			_attention_by_fish[f.get_instance_id()] = focus
+			if focus != "":
+				_attention_counts[focus] = int(_attention_counts.get(focus, 0)) + 1
+	_attention_summary_ready = true
+
+
+func _refresh_fish_attention(f: Fish) -> void:
+	if not _attention_summary_ready:
+		_rebuild_attention_summary()
+	var key: int = f.get_instance_id()
+	if not _attention_by_fish.has(key):
+		return
+	var before: String = _attention_by_fish[key]
+	var focus: String = f.attention_focus
+	if before == focus:
+		return
+	if before != "":
+		var remaining: int = int(_attention_counts[before]) - 1
+		if remaining <= 0:
+			_attention_counts.erase(before)
+		else:
+			_attention_counts[before] = remaining
+	if focus != "":
+		_attention_counts[focus] = int(_attention_counts.get(focus, 0)) + 1
+	_attention_by_fish[key] = focus
+
+
+func attention_theme_for(f: Fish) -> String:
+	# Earlier fish have completed their ticks; this fish may just have applied
+	# a worker decision. Update its focus before answering the shared census.
+	_refresh_fish_attention(f)
+	var top_n: int = 1
+	var candidates: Dictionary = {}
+	for focus in _attention_counts:
+		var count: int = _attention_counts[focus]
+		if count > top_n:
+			top_n = count
+			candidates = {focus: true}
+		elif count == top_n and count >= 2:
+			candidates[focus] = true
+	if candidates.size() == 1:
+		return str(candidates.keys()[0])
+	# Preserve the original first-in-roster tie break even if keys were
+	# inserted in a different order as attention changed during the tick.
+	if candidates.size() > 1:
+		for other in fish:
+			if is_instance_valid(other) and candidates.has(other.attention_focus):
+				return other.attention_focus
+	return ""
+
+
+func begin_habitat_build() -> void:
+	habitat_ready = false
+	_accum = 0.0
+
+
+func finish_habitat_build() -> void:
+	var biomass: int = 0
+	var photosynthetic: float = 0.0
+	for p in plants:
+		if not is_instance_valid(p) or p.is_queued_for_deletion():
+			continue
+		var bm: int = p.biomass()
+		biomass += bm
+		photosynthetic += float(bm) * clampf(p._health_smooth, 0.0, 1.0)
+	total_plant_biomass = biomass + int(round(surface_plant_biomass))
+	total_photosynthetic_biomass = photosynthetic + surface_plant_biomass
+	# Prime from the complete canopy; thereafter retain the existing gentle
+	# 30-second response to changes in plant capacity.
+	_tick_carrying_capacity(0.0)
+	habitat_ready = true
 
 
 # 0 at the tick boundary → 1 just before the next sim step. Render paths use
@@ -1238,6 +1326,8 @@ var total_photosynthetic_biomass: float = 0.0
 # tank crashes.
 const CARRYING_CAPACITY_PLANT_DIVISOR: float = 18.0
 const CARRYING_CAPACITY_AERATION_BONUS: int = 3
+const CARRYING_CAPACITY_FILTER_BACTERIA: float = 24.0
+const CARRYING_CAPACITY_SPONGE_BACTERIA: float = 18.0
 const CARRYING_CAPACITY_MIN: int = 6
 const CARRYING_CAPACITY_MAX: int = 80
 
@@ -1285,16 +1375,29 @@ func fish_carrying_capacity() -> int:
 			w_volume_mult = clampf(live_vol / ref_vol, 0.4, 1.6)
 	var biomass_cap: int = int(float(total_plant_biomass) / CARRYING_CAPACITY_PLANT_DIVISOR)
 	var aeration_bonus: int = 0
+	var bacterial_support: float = 0.0
 	match aeration_fixture:
 		"filter":
 			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS + 2
+			bacterial_support = CARRYING_CAPACITY_FILTER_BACTERIA * equipment_efficiency()
 		"disk":
 			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS
+			bacterial_support = CARRYING_CAPACITY_SPONGE_BACTERIA
 		"stick":
 			aeration_bonus = CARRYING_CAPACITY_AERATION_BONUS - 1
 		_:
 			aeration_bonus = 0
-	var raw: float = (float(biomass_cap) + float(aeration_bonus)) * w_volume_mult
+	# Established substrate/filter bacteria also support sparse scapes. A
+	# stone garden should not need a jungle's canopy to avoid stocking stress.
+	# Fresh colonies and reduced aeration get proportionally less support.
+	if water_chemistry != null:
+		bacterial_support *= clampf(water_chemistry.bacteria_colony, 0.0, 1.0)
+		var cfg_air: Node = _cfg()
+		if cfg_air != null:
+			bacterial_support *= clampf(float(cfg_air.aeration_strength), 0.0, 1.0)
+	else:
+		bacterial_support = 0.0
+	var raw: float = (float(biomass_cap) + float(aeration_bonus) + bacterial_support) * w_volume_mult
 	var soft: int = clampi(int(round(raw)), CARRYING_CAPACITY_MIN, CARRYING_CAPACITY_MAX)
 	# Density dial + hard node ceiling (see TankConfig.population_cap).
 	# Resolved through _cfg() rather than the bare autoload identifier so
@@ -1948,6 +2051,60 @@ var _accum: float = 0.0
 var _stats_timer: float = 0.0
 var _extinction_timer: float = 0.0
 var _auto_feed_timer: float = 0.0
+
+
+func _automatic_feed_portion_count() -> int:
+	# Size rations by actual unmet appetite, not raw population. Healthy
+	# grazers that already found biofilm/plants need no extra food.
+	var demand: float = 0.0
+	for f in fish:
+		if is_instance_valid(f) and not f.is_queued_for_deletion() and not f._dying:
+			demand += maxf(0.0, f.hunger - 0.32) / Fish.FOOD_HUNGER_DELTA
+	for s in shrimp:
+		if is_instance_valid(s) and not s.is_queued_for_deletion():
+			# Detritivores get a small supplement only when grazing isn't enough.
+			demand += maxf(0.0, s.hunger - 0.65) * 0.5
+	var pending: int = 0
+	for food in waste:
+		if is_instance_valid(food) and not food.is_queued_for_deletion() \
+				and food.kind == WasteParticle.KIND_FOOD:
+			pending += 1
+	var limit: int = 12
+	if dissolved_o2 < 0.35 or water_chemistry.ammonia > 0.35:
+		limit = 2
+	return maxi(0, clampi(int(ceil(demand)), 0, limit) - pending)
+
+
+func _drop_automatic_food(count: int) -> void:
+	if count <= 0:
+		return
+	var pellet: float = 0.5
+	if substrate != null:
+		var cell_count: float = float(substrate.cells_x * substrate.cells_z)
+		var n_density: float = substrate.total_above_baseline() / maxf(1.0, cell_count)
+		if n_density > 0.10 or water_chemistry.ammonia > 0.35:
+			pellet = 0.22
+	var hungry: Array[Fish] = []
+	for f in fish:
+		if is_instance_valid(f) and not f.is_queued_for_deletion() and not f._dying and f.hunger > 0.32:
+			hungry.append(f)
+	hungry.sort_custom(func(a: Fish, b: Fish) -> bool: return a.hunger > b.hunger)
+	var w: Node = get_parent()
+	var fy: float = 5.95
+	if w != null and w.get("WATER_HEIGHT") != null:
+		fy = float(w.get("WATER_HEIGHT")) - 0.55
+	for i in count:
+		var xz: Vector2 = Vector2.ZERO
+		if i < hungry.size():
+			# Spread the ration over hungry residents, giving shy and distant
+			# school members a chance instead of one competitive feeding point.
+			var pos: Vector3 = hungry[i].global_position
+			xz = Vector2(pos.x, pos.z)
+		elif w != null and w.has_method("sample_xz_in_tank"):
+			xz = w.sample_xz_in_tank(0.5)
+		_spawn_waste(Vector3(xz.x, fy, xz.y), pellet, WasteParticle.KIND_FOOD)
+
+
 # Natural food pulse (#50): occasional "something fell in" surface event that
 # the whole web reacts to — keeps the tank pulsing instead of flat-lining at
 # equilibrium.
@@ -2094,6 +2251,8 @@ func apply_cycle_start_from_config() -> void:
 		water_chemistry.apply_fresh_start()
 		tank_age_s = 0.0
 		dissolved_o2 = 0.85
+	_filter_media_age_s = WaterChemistry.SIM_DAY_S * 3.0 \
+		if mode == "established" or _is_saltwater_tank() else 0.0
 	sync_aeration_from_config(false)
 
 
@@ -2452,17 +2611,18 @@ func _tick_dissolved_o2(dt: float) -> void:
 		floater_n = w_o2.floater_count()
 	var dl: float = daylight()
 	var night: float = 1.0 - dl
+	var light: float = irradiance()
 	var photo_biomass: float = total_photosynthetic_biomass
 	if photo_biomass <= 0.0:
 		photo_biomass = float(total_plant_biomass)
-	var photo: float = dl * (
+	var photo: float = light * (
 		photo_biomass * O2_PHOTO_PER_PLANT * O2_PHOTO_BIOMASS_MULT
 		+ float(plants.size()) * O2_PHOTO_PER_PLANT * O2_PHOTO_PLANTS_MULT
 		+ float(floater_n) * O2_PHOTO_FLOATER)
 	var fish_resp_scale: float = lerpf(O2_FISH_NIGHT_RESP_SCALE, 1.0, dl)
 	var shrimp_resp_scale: float = lerpf(O2_SHRIMP_NIGHT_RESP_SCALE, 1.0, dl)
 	var plant_night_resp: float = float(total_plant_biomass) * O2_RESPIRE_PLANT \
-		* night * 0.52
+		* (1.0 - clampf(light, 0.0, 1.0)) * 0.52
 	var respire: float = float(_fish_count_for_o2()) * O2_RESPIRE_FISH * fish_resp_scale \
 		+ float(shrimp.size()) * O2_RESPIRE_SHRIMP * shrimp_resp_scale \
 		+ float(snail_count) * O2_RESPIRE_SNAIL \
@@ -2512,6 +2672,7 @@ const WASTE_POOL_CAP: int = 64
 
 func register_fish(f: Fish) -> void:
 	fish.append(f)
+	_attention_summary_ready = false
 	f.sim = self
 	# Fry join sim.fish immediately — included in the next autosave (#83).
 	if f.has_method("_reclamp_territory_to_tank"):
@@ -2826,9 +2987,20 @@ func _record_organism_discovery(g: Dictionary, silent: bool = false) -> void:
 
 func register_plant(p: Plant) -> void:
 	plants.append(p)
+	_track_plant_clock(p)
 	if p.has_method("get_plant_genome"):
 		_record_organism_discovery(p.get_plant_genome())
 	_pulse_enrichment_novelty()
+
+
+func _track_plant_clock(p: Plant) -> void:
+	var exiting: Callable = _on_plant_clock_exiting.bind(p.get_instance_id())
+	if not p.tree_exiting.is_connected(exiting):
+		p.tree_exiting.connect(exiting)
+
+
+func _on_plant_clock_exiting(instance_id: int) -> void:
+	_plant_tick_accum.erase(instance_id)
 
 
 # SENTIENCE_THE_SPARK #37 — hardscape/plant adds bump novelty salience briefly.
@@ -2884,7 +3056,17 @@ func register_egg(e: FishEgg) -> void:
 	eggs.append(e)
 
 
+# Bound catch-up across all physics callbacks sharing one rendered frame.
+# One expensive tick is unavoidable; repeating it eight times is avoidable.
+const SIM_RENDER_WORK_BUDGET_USEC: int = 8000
+var _sim_work_render_frame: int = -1
+var _sim_work_usec: int = 0
+var _last_tick_usec: int = 0
+
+
 func _physics_process(dt: float) -> void:
+	if not habitat_ready:
+		return
 	# Fish positions for snail predator scans — 10 Hz is enough for 0.3 s scan cadence.
 	_fish_grid_t += dt
 	if _fish_grid_t >= FISH_GRID_REBUILD_S:
@@ -2900,6 +3082,16 @@ func _physics_process(dt: float) -> void:
 	if _widget_export_timer >= WIDGET_EXPORT_INTERVAL_S:
 		_widget_export_timer = 0.0
 		_export_widget_state()
+	var render_frame: int = Engine.get_process_frames()
+	if render_frame != _sim_work_render_frame:
+		_sim_work_render_frame = render_frame
+		_sim_work_usec = 0
+	if _sim_work_usec >= SIM_RENDER_WORK_BUDGET_USEC:
+		return
+	var tick_limit: int = 4
+	if _last_tick_usec > 0:
+		tick_limit = clampi(int(float(SIM_RENDER_WORK_BUDGET_USEC - _sim_work_usec)
+			/ float(_last_tick_usec)), 1, 4)
 	# Scale incoming delta by time_scale so pause/fast-forward work uniformly.
 	var sdt: float = maxf(0.0, dt * time_scale)
 	var previous_accum: float = _accum
@@ -2908,8 +3100,9 @@ func _physics_process(dt: float) -> void:
 	# time_scale=16 a single 100ms hitch enqueues 1.6s = 16 ticks; if any of
 	# those ticks then runs slower than its share of real time, _accum grows
 	# faster than it drains and the game-loop locks. Cap at 4 ticks (0.4s of
-	# sim work) so we drop sim-time on a hitch instead of freezing the render.
-	_accum = minf(_accum, SIM_DT * 4.0)
+	# sim work), or less when measured tick cost exhausts the render budget.
+	# Discarded time is shared by ecology and daylight.
+	_accum = minf(_accum, SIM_DT * float(tick_limit))
 	# Light, seasonal cues and stats must consume the same accepted time as
 	# ecology. Discarded hitch debt must not age daylight ahead of the tank.
 	sdt = maxf(0.0, _accum - previous_accum)
@@ -2925,7 +3118,10 @@ func _physics_process(dt: float) -> void:
 		day_phase = fposmod(day_phase + sdt / cycle_len, 1.0)
 	while _accum >= SIM_DT:
 		_accum -= SIM_DT
+		var tick_start: int = Time.get_ticks_usec()
 		_tick(SIM_DT)
+		_last_tick_usec = maxi(1, Time.get_ticks_usec() - tick_start)
+		_sim_work_usec += _last_tick_usec
 	_stats_timer += sdt
 	if _stats_timer >= 1.0:
 		_stats_timer = 0.0
@@ -2939,6 +3135,33 @@ func daylight() -> float:
 	var raw: float = 0.5 + 0.5 * cos((day_phase - 0.25) * TAU)
 	# Smooth dawn/dusk ramp (photoperiod crossfade ~30 sim-seconds at 1×).
 	return raw * raw * (3.0 - 2.0 * raw)
+
+
+# Photosynthesis follows the lamp and the room's solar exposure. The separate
+# daylight() clock remains the source for animal activity and photoperiod.
+# Hundreds of plants sample this several times per tick, so evaluate config
+# once per rendered frame / sim tick rather than once per leaf or creature.
+var _irradiance_sample_frame: int = -1
+var _irradiance_sample_phase: float = -1.0
+var _irradiance_value: float = 1.0
+
+
+func irradiance() -> float:
+	var frame: int = Engine.get_process_frames()
+	if _irradiance_sample_frame == frame and _irradiance_sample_phase == day_phase:
+		return _irradiance_value
+	_irradiance_sample_frame = frame
+	_irradiance_sample_phase = day_phase
+	var dl: float = daylight()
+	var cfg: Node = _cfg()
+	if cfg == null:
+		_irradiance_value = dl
+	else:
+		_irradiance_value = _TankIlluminationScript.normalized_irradiance(
+			dl, float(cfg.global_intensity), float(cfg.room_darkness),
+			LightingRig.fixture_output(cfg, dl) / _TankIlluminationScript.REFERENCE_INTENSITY,
+			bool(cfg.light_master_enabled))
+	return _irradiance_value
 
 
 # Cached TankConfig autoload accessor. The autoload never moves, so the per-tick
@@ -3108,7 +3331,7 @@ var _plants_grid: Dictionary = {}  # Vector2i → Array[Plant]
 func _rebuild_plants_grid() -> void:
 	_plants_grid.clear()
 	for p in plants:
-		if not is_instance_valid(p):
+		if not is_instance_valid(p) or p.is_queued_for_deletion():
 			continue
 		var cell := Vector2i(
 			int(floor(p._world_pos.x / PLANT_GRID_CELL_SIZE)),
@@ -3157,7 +3380,11 @@ func query_plants_in_radius(pos: Vector3, max_dist: float) -> Array:
 	var cx: int = int(floor(pos.x / PLANT_GRID_CELL_SIZE))
 	var cz: int = int(floor(pos.z / PLANT_GRID_CELL_SIZE))
 	var reach: int = maxi(1, int(ceil(max_dist / PLANT_GRID_CELL_SIZE)))
-	return _grid_candidates(_plants_grid, _plants_grid_cells, Vector2i(cx, cz), reach)
+	var result: Array = _grid_candidates(_plants_grid, _plants_grid_cells, Vector2i(cx, cz), reach)
+	# Plants are removed between the half-second grid refreshes. Keep the
+	# returned neighborhood live, just as the waste query does.
+	_prune_invalid(result)
+	return result
 
 
 func _rebuild_waste_grid() -> void:
@@ -3214,7 +3441,7 @@ var _algae_grid: Dictionary = {}
 func _rebuild_algae_grid() -> void:
 	_algae_grid.clear()
 	for a in algae:
-		if not is_instance_valid(a):
+		if not is_instance_valid(a) or a.is_queued_for_deletion():
 			continue
 		var ap: Vector3 = (a as Node3D).global_position
 		var cell := Vector2i(
@@ -3235,7 +3462,9 @@ func query_algae_in_radius(pos: Vector3, max_dist: float) -> Array:
 	var cx: int = int(floor(pos.x / ALGAE_GRID_CELL_SIZE))
 	var cz: int = int(floor(pos.z / ALGAE_GRID_CELL_SIZE))
 	var reach: int = maxi(1, int(ceil(max_dist / ALGAE_GRID_CELL_SIZE)))
-	return _grid_candidates(_algae_grid, _algae_grid_cells, Vector2i(cx, cz), reach)
+	var result: Array = _grid_candidates(_algae_grid, _algae_grid_cells, Vector2i(cx, cz), reach)
+	_prune_invalid(result)
+	return result
 
 
 # Persistent fish grid for render-rate queries (snail predator scans).
@@ -3767,6 +3996,7 @@ func _profile_tick_stage(stage: String) -> void:
 
 
 func _tick(dt: float) -> void:
+	_irradiance_sample_frame = -1
 	if _tick_profile_enabled:
 		_tick_profile_stamp = Time.get_ticks_usec()
 	_boot_sim_cadence()
@@ -3781,6 +4011,7 @@ func _tick(dt: float) -> void:
 	# (guardian pick, cast-change counts, spatial rebuild). Stale refs survive
 	# until the engine deletes the node at frame end; casting them throws.
 	_prune_invalid(fish)
+	_rebuild_attention_summary()
 	_prune_invalid(shrimp)
 	_prune_invalid(eggs)
 	_prune_invalid(waste)
@@ -4035,6 +4266,7 @@ func _tick(dt: float) -> void:
 		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
 		var neighbors: Array = _spatial_query(f.position, 9.0, f)
 		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
+		_refresh_fish_attention(f)
 		if f.arousal > 0.06:
 			_MindArousalFieldScript.deposit(f, f.arousal * dt)
 		if ev.size() > 0:
@@ -4180,38 +4412,13 @@ func _tick(dt: float) -> void:
 		else:
 			_extinction_timer = 0.0
 
-	# 6b. Auto-Feed at surface — user opted in via settings; always drops
-	# pellets on schedule. Scale amount down when the tank is already rich so
-	# we don't pile on during spikes (absolute total_above_baseline scales
-	# with grid size, so use per-cell density for that check).
+	# 6b. Auto-feed supplements unmet appetite, subtracting existing meals.
+	# The bounded ration scales with the community and stays quiet when sated.
 	if cfg != null and cfg.auto_feed_fauna:
 		_auto_feed_timer += dt
 		if _auto_feed_timer >= 12.0:
 			_auto_feed_timer = 0.0
-			var pellet: float = 0.5
-			if substrate != null:
-				var cell_count: float = float(substrate.cells_x * substrate.cells_z)
-				var n_density: float = substrate.total_above_baseline() / maxf(1.0, cell_count)
-				if n_density > 0.10 or water_chemistry.ammonia > 0.35:
-					pellet = 0.22
-			var spawn_x: float = 0.0
-			var spawn_z: float = 0.0
-			var w := get_parent()
-			if w != null and w.has_method("sample_xz_in_tank"):
-				var xz: Vector2 = w.sample_xz_in_tank(0.5)
-				spawn_x = xz.x
-				spawn_z = xz.y
-			# WATER_HEIGHT may be unset on the parent in unusual tank presets;
-			# null-subtract would crash. Fall back to a safe near-surface Y.
-			# Offset 0.55 below meniscus so pellets start within the fish's
-			# reachable zone (fish body margin ~0.58) and don't pull the whole
-			# school into the ceiling while chasing unreachable food.
-			var fy: float = 5.95
-			if w != null:
-				var water_h = w.get("WATER_HEIGHT")
-				if water_h != null:
-					fy = float(water_h) - 0.55
-			_spawn_waste(Vector3(spawn_x, fy, spawn_z), pellet, WasteParticle.KIND_FOOD)
+			_drop_automatic_food(_automatic_feed_portion_count())
 
 	# 6b2. Natural food pulse (#50). Skipped during an ammonia spike (don't pile
 	# food on a struggling tank) and in saltwater (handled by reef feeding).
@@ -4622,6 +4829,8 @@ func _tick(dt: float) -> void:
 			var w: WasteParticle = ev["eat_waste"]
 			if is_instance_valid(w) and not consumed.has(w):
 				consumed[w] = true
+				if actor is Shrimp:
+					(actor as Shrimp).finish_detritus_meal()
 				_play_ambient_event("eat", -1.0, _node_species(actor), actor.position)
 				var consumed_nv: float = w.nutrient_value
 				var chain_id: int = w.meal_chain_id
@@ -6838,6 +7047,7 @@ func load_state(d: Dictionary) -> void:
 		var p: Plant = _spawn_plant_from_dict(plant_dict)
 		if p != null:
 			plants.append(p)
+			_track_plant_clock(p)
 			id_map[String(p.id)] = p
 
 	for frag_dict in d.get("plant_fragments", []):

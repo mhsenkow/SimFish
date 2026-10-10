@@ -29,14 +29,22 @@ const EPISTEMIC_BID_SCALE: float = 0.7
 const EPISTEMIC_BID_MIN: float = 0.45
 
 
+static var _tank_config_cache: Node = null
+
+
 static func _tank_config() -> Node:
+	# Cache only the autoload identity. Flags remain live, including toggles
+	# made in the same frame; worker paths use their own immutable snapshot.
+	if is_instance_valid(_tank_config_cache) and _tank_config_cache.is_inside_tree():
+		return _tank_config_cache
 	var ml: MainLoop = Engine.get_main_loop()
 	if ml == null:
 		return null
 	var st: SceneTree = ml as SceneTree
 	if st == null or st.root == null or not st.root.is_inside_tree():
 		return null
-	return st.root.get_node_or_null("/root/TankConfig")
+	_tank_config_cache = st.root.get_node_or_null("/root/TankConfig")
+	return _tank_config_cache
 
 
 static func _active_inference_flag() -> bool:

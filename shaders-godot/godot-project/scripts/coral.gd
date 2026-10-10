@@ -1006,9 +1006,13 @@ func _recalc_height() -> void:
 
 
 func nibble(amount: int) -> int:
+	if amount <= 0:
+		return 0
+	var cleaned: int = _graze_surface_units(amount)
+	amount -= cleaned
+	if amount == 0:
+		return cleaned
 	_grazing_pressure = clampf(_grazing_pressure + float(amount) * 0.08, 0.0, 1.0)
-	if _graze_leaf_biofilm(amount):
-		return amount
 	var removed: int = 0
 	for i in amount:
 		if not _body_handles.is_empty():
@@ -1028,7 +1032,7 @@ func nibble(amount: int) -> int:
 	if current_height <= 0 and _live_body_voxel_count() == 0 and _legacy_body_nodes.is_empty():
 		_on_death()
 		queue_free()
-	return removed
+	return cleaned + removed
 
 
 # Pale the coral voxels toward bone-white in proportion to _bleach_level.

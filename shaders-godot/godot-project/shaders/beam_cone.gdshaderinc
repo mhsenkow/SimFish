@@ -24,6 +24,17 @@ global uniform vec3 iaq_beam_origin;
 global uniform vec3 iaq_beam_dir;
 global uniform vec4 iaq_beam_cone;
 global uniform vec4 iaq_beam_tint;
+global uniform vec4 iaq_beam_falloff;
+// Directional sources use a unit vector TO the light and continuous energy.
+// Point sources carry position, energy, and tint.a = inverse-square softening.
+global uniform vec4 iaq_sun_light;
+global uniform vec4 iaq_sun_tint;
+global uniform vec4 iaq_moon_light;
+global uniform vec4 iaq_moon_tint;
+global uniform vec4 iaq_accent1;
+global uniform vec4 iaq_accent1_tint;
+global uniform vec4 iaq_accent2;
+global uniform vec4 iaq_accent2_tint;
 // The room's share of global_intensity dimming (LightingRig.room_light). The
 // post tint spares a lit tank the room's dimness; the light the room would
 // have taken away is taken here instead, from the AMBIENT term only. Inside
@@ -103,6 +114,10 @@ float iaq_shadow(vec3 world_pos, vec3 light_pos) {
 		if (dist2 < rr) {
 			continue;
 		}
+		// Crossing the self-shadow sphere must not switch an entire voxel
+		// between full shadow and full light. Feather just outside its radius;
+		// squared distances avoid another square root in this fragment loop.
+		float self_fade = smoothstep(rr, rr * 1.5625, dist2);
 		float t = dot(d, L);
 		// Only things BETWEEN the fragment and the lamp cast onto it.
 		if (t <= 0.02 || t >= light_dist) {
@@ -114,7 +129,7 @@ float iaq_shadow(vec3 world_pos, vec3 light_pos) {
 		}
 		// Soft edge: opaque through the sphere's centre line, feathered to
 		// nothing at its silhouette.
-		float k = 1.0 - sqrt(perp2 / rr);
+		float k = (1.0 - sqrt(max(perp2, 0.0) / rr)) * self_fade;
 		// Contact hardening. A leaf resting on the sand casts a sharp dark
 		// shadow; the same leaf near the lamp casts a wide faint one. Without
 		// this, every shadow in the tank has the same weight and the depth cue
@@ -132,6 +147,64 @@ float iaq_shadow(vec3 world_pos, vec3 light_pos) {
 const float IAQ_KEY_FLOOR = 0.62;
 
 
+// One shared source/coverage calculation for surfaces, leaves, fish and water.
+vec3 iaq_beam_source(vec3 world_pos) {
+	vec3 src = iaq_beam_origin;
+	if (iaq_beam_axis.w > 0.5) {
+		vec3 ax = iaq_beam_axis.xyz;
+		float len2 = dot(ax, ax);
+		if (len2 > 1e-6) {
+			src += ax * clamp(dot(world_pos - src, ax) / len2, -1.0, 1.0);
+		}
+	}
+	return src;
+}
+
+vec4 iaq_beam_at(vec3 world_pos) {
+	vec3 to_light = iaq_beam_source(world_pos) - world_pos;
+	float dist = length(to_light);
+	if (dist < 0.0001) {
+		return vec4(0.0, 1.0, 0.0, 0.0);
+	}
+	vec3 L = to_light / dist;
+	float cd = dot(-L, normalize(iaq_beam_dir));
+	float cone = smoothstep(iaq_beam_cone.x, iaq_beam_cone.y, cd);
+	cone *= 1.0 - smoothstep(iaq_beam_cone.z * 0.55, iaq_beam_cone.z, dist);
+	if (iaq_beam_falloff.x > 0.0) {
+		float exponent = iaq_beam_falloff.z;
+		if (iaq_beam_falloff.w > 0.0) {
+			exponent = mix(1.0, 2.0, smoothstep(iaq_beam_falloff.w, iaq_beam_falloff.w * 4.0, dist));
+		}
+		float ratio = iaq_beam_falloff.x * iaq_beam_falloff.x
+			/ max(dist * dist + iaq_beam_falloff.y * iaq_beam_falloff.y, 1e-4);
+		cone *= clamp(pow(ratio, exponent * 0.5), 0.0, 1.5);
+	}
+	return vec4(L, cone);
+}
+
+// Diffuse reflection preserves the surface pigment. Normalizing the normal
+// with a guarded reciprocal avoids NaNs on billboard/point callers.
+vec3 iaq_directional_light(vec3 pigment, vec3 n, vec4 source, vec3 tint) {
+	if (source.w <= 0.0) {
+		return vec3(0.0);
+	}
+	float ndl = dot(n, source.xyz);
+	float wrap = clamp((ndl + 0.20) / 1.20, 0.0, 1.0);
+	return pigment * tint * source.w * wrap * 0.22;
+}
+
+vec3 iaq_point_light(vec3 pigment, vec3 world_pos, vec3 n, vec4 source, vec4 tint) {
+	if (source.w <= 0.0) {
+		return vec3(0.0);
+	}
+	vec3 d = source.xyz - world_pos;
+	float d2 = dot(d, d);
+	vec3 L = d * inversesqrt(max(d2, 1e-4));
+	float wrap = clamp((dot(n, L) + 0.25) / 1.25, 0.0, 1.0);
+	float att = source.w / (1.0 + max(tint.w, 0.0) * d2);
+	return pigment * tint.rgb * wrap * att * 0.65;
+}
+
 // Full form: cone falloff plus a directional key from the surface normal, plus
 // a tight hot core where a face points straight back at the lamp.
 //
@@ -142,41 +215,32 @@ const float IAQ_KEY_FLOOR = 0.62;
 // difference between a lit object and a tinted one.
 //
 // `world_normal` need not be normalised. Pass vec3(0.0) to skip the key.
-vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
-	float energy = iaq_beam_cone.w;
-	if (energy <= 0.001) {
-		return base_col * iaq_room_light;
-	}
-	vec3 src_pos = iaq_beam_origin;
-	if (iaq_beam_axis.w > 0.5) {
-		vec3 ax = iaq_beam_axis.xyz;
-		float len2 = dot(ax, ax);
-		if (len2 > 1e-6) {
-			float t_ax = clamp(dot(world_pos - iaq_beam_origin, ax) / len2, -1.0, 1.0);
-			src_pos = iaq_beam_origin + ax * t_ax;
-		}
-	}
-	vec3 to_frag = world_pos - src_pos;
-	float dist = length(to_frag);
-	float cone = 0.0;
-	if (dist > 0.0001) {
-		float cd = dot(to_frag / dist, normalize(iaq_beam_dir));
-		cone = smoothstep(iaq_beam_cone.x, iaq_beam_cone.y, cd);
-		float reach = iaq_beam_cone.z;
-		cone *= 1.0 - smoothstep(reach * 0.55, reach, dist);
-	}
+vec3 iaq_beam_light_surface_n(vec3 world_pos, vec3 world_normal, vec3 base_col,
+		float catch_opacity) {
+	float energy = max(iaq_beam_cone.w, 0.0);
+	vec4 sample_light = iaq_beam_at(world_pos);
+	float cone = sample_light.w;
+	vec3 n = world_normal * inversesqrt(max(dot(world_normal, world_normal), 1e-6));
 	float ndl = 1.0;
-	if (dot(world_normal, world_normal) > 1e-6 && dist > 0.0001) {
-		ndl = max(dot(normalize(world_normal), -to_frag / dist), 0.0);
+	if (dot(world_normal, world_normal) > 1e-6) {
+		ndl = max(dot(n, sample_light.xyz), 0.0);
 	}
 	// Shadow attenuates DIRECT light only — ambient is what fills a shadow in.
-	float shadow = iaq_shadow(world_pos, src_pos);
-	float direct = cone * shadow;
+	float shadow = energy > 0.0 ? iaq_shadow(world_pos, iaq_beam_source(world_pos)) : 1.0;
+	float spectrum_peak = max(max(iaq_beam_tint.r, iaq_beam_tint.g), iaq_beam_tint.b);
+	float direct = cone * shadow * clamp(energy * max(spectrum_peak, 0.0) * 2.0, 0.0, 1.0);
 	float ambient = iaq_beam_tint.w * iaq_room_light;
 	float lit_side = mix(IAQ_KEY_FLOOR, 1.0, ndl);
-	vec3 lit = base_col * mix(ambient, lit_side, direct);
-	// Wash: the lamp's own colour spread across everything it reaches.
-	lit += iaq_beam_tint.rgb * direct * energy * 0.30;
+	// Adding a source cannot darken an existing ambient reflection. Keep
+	// the diffuse addition in the source spectrum, including a black RGB lamp.
+	vec3 source_hue = iaq_beam_tint.rgb / max(spectrum_peak, 1e-4);
+	vec3 lit = base_col * ambient
+		+ base_col * source_hue * max(lit_side - ambient, 0.0) * direct;
+	// Light reflects the surface pigment. A uniform white wash erased the
+	// colour relationship between adjacent leaves, stones and markings.
+	float pigment_luma = dot(base_col, vec3(0.299, 0.587, 0.114));
+	vec3 pigment = mix(vec3(pigment_luma), base_col, 0.72);
+	lit += pigment * iaq_beam_tint.rgb * direct * energy * 0.40;
 	// Hot core: the term that lets a face turned up at the bar reach the
 	// bright end of the palette, which nothing in the frame did before
 	// (VISUAL_DIRECTIONS #3 — a measured p99 of 158 out of 255).
@@ -189,8 +253,18 @@ vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
 	// glints where a face turns straight at it - it is the pool around the
 	// glint that dims. Linear energy left a 0.28 fixture no highlight at all.
 	float core_e = energy < 1.0 ? sqrt(energy) : energy;
-	lit += iaq_beam_tint.rgb * pow(ndl, 3.0) * direct * direct * core_e * 0.62;
+	lit += iaq_beam_tint.rgb * pow(ndl, 3.0) * direct * direct * core_e * 0.62
+		* catch_opacity;
+	lit += iaq_directional_light(pigment, n, iaq_sun_light, iaq_sun_tint.rgb);
+	lit += iaq_directional_light(pigment, n, iaq_moon_light, iaq_moon_tint.rgb);
+	lit += iaq_point_light(pigment, world_pos, n, iaq_accent1, iaq_accent1_tint);
+	lit += iaq_point_light(pigment, world_pos, n, iaq_accent2, iaq_accent2_tint);
 	return lit;
+}
+
+
+vec3 iaq_beam_light_n(vec3 world_pos, vec3 world_normal, vec3 base_col) {
+	return iaq_beam_light_surface_n(world_pos, world_normal, base_col, 1.0);
 }
 
 

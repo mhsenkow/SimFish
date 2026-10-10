@@ -66,9 +66,25 @@ static func _union_find_ids(fish_arr: Array) -> void:
 			continue
 		var root: int = _find(parent, idx)
 		if not clusters.has(root):
-			clusters[root] = _next_school_id
+			clusters[root] = []
+		(clusters[root] as Array).append(f_v)
+	# Connected schools keep their identity across ticks. Regenerating IDs
+	# every tick prevented fission timers accumulating and leaked old timers.
+	var claimed: Dictionary = {}
+	for members in clusters.values():
+		var sid: int = -1
+		for f in members:
+			var previous: int = int(f.school_id)
+			if previous >= 0:
+				_next_school_id = maxi(_next_school_id, previous + 1)
+				if not claimed.has(previous) and (sid < 0 or previous < sid):
+					sid = previous
+		if sid < 0:
+			sid = _next_school_id
 			_next_school_id += 1
-		f_v.school_id = int(clusters[root])
+		claimed[sid] = true
+		for f in members:
+			f.school_id = sid
 
 
 static func _union(parent: Dictionary, a: int, b: int) -> void:
@@ -98,6 +114,9 @@ static func _tick_fission_fusion(fish_arr: Array, dt: float) -> void:
 		if not by_id.has(sid):
 			by_id[sid] = []
 		(by_id[sid] as Array).append(f_v)
+	for previous in _fission_timer.keys():
+		if not by_id.has(previous):
+			_fission_timer.erase(previous)
 	var split_ids: Array[int] = []
 	for sid_v in by_id.keys():
 		var sid: int = int(sid_v)
@@ -129,23 +148,55 @@ static func _tick_fission_fusion(fish_arr: Array, dt: float) -> void:
 		for i in range(half, group.size()):
 			group[i].school_id = new_id
 		_fission_timer.erase(sid)
-	# Cheap merge: overlapping school blobs of same species
-	for f_a in fish_arr:
-		if not is_instance_valid(f_a) or not _MotionWaveScript.uses_wave(f_a):
+	_merge_nearby_schools(fish_arr)
+
+
+static func _merge_nearby_schools(fish_arr: Array) -> void:
+	# Preserve the original ordered merge decisions, but inspect only local
+	# candidates. Eligibility and species are collected once, not per pair.
+	var active: Array[Node3D] = []
+	var species: Array[String] = []
+	var cells: Array[Vector3i] = []
+	var grid: Dictionary = {}
+	var schools_by_species: Dictionary = {}
+	for f in fish_arr:
+		if not is_instance_valid(f) or f.get("_dying") == true or not _MotionWaveScript.uses_wave(f):
 			continue
-		var sid_a: int = int(f_a.school_id)
-		if sid_a < 0:
+		if int(f.school_id) < 0:
 			continue
-		for f_b in fish_arr:
-			if f_a == f_b or not is_instance_valid(f_b):
-				continue
-			if f_a.species != f_b.species or not _MotionWaveScript.uses_wave(f_b):
-				continue
-			var sid_b: int = int(f_b.school_id)
-			if sid_b < 0 or sid_a == sid_b:
-				continue
-			if f_a.position.distance_squared_to(f_b.position) < MERGE_DIST * MERGE_DIST:
-				f_b.school_id = sid_a
+		var pos: Vector3 = f.position
+		var cell := Vector3i(floori(pos.x / MERGE_DIST), floori(pos.y / MERGE_DIST),
+			floori(pos.z / MERGE_DIST))
+		var index: int = active.size()
+		active.append(f)
+		var name: String = String(f.species)
+		species.append(name)
+		if not schools_by_species.has(name):
+			schools_by_species[name] = {}
+		(schools_by_species[name] as Dictionary)[int(f.school_id)] = true
+		cells.append(cell)
+		if not grid.has(cell):
+			grid[cell] = []
+		(grid[cell] as Array).append(index)
+	for i in active.size():
+		if (schools_by_species[species[i]] as Dictionary).size() < 2:
+			continue
+		var a: Node3D = active[i]
+		var sid: int = int(a.get("school_id"))
+		var candidates: Array[int] = []
+		for x in range(-1, 2):
+			for y in range(-1, 2):
+				for z in range(-1, 2):
+					var cell: Vector3i = cells[i] + Vector3i(x, y, z)
+					if grid.has(cell):
+						for j in grid[cell]:
+							if j != i and species[i] == species[j]:
+								candidates.append(j)
+		candidates.sort()
+		for j in candidates:
+			var b: Node3D = active[j]
+			if sid != int(b.get("school_id")) and a.position.distance_squared_to(b.position) < MERGE_DIST * MERGE_DIST:
+				b.set("school_id", sid)
 
 
 static func _tick_transient_leaders(fish_arr: Array, dt: float) -> void:

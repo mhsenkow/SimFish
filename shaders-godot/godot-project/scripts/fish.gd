@@ -16,6 +16,8 @@ class_name Fish
 
 # Preloaded so parse works even before the editor has populated the
 # global class_name registry — see ai_director.gd for the same trick.
+const ColorArt = preload("res://scripts/aesthetics_runtime.gd")
+const FishPigment = preload("res://scripts/fish_pigment.gd")
 const CreatureNaming = preload("res://scripts/creature_naming.gd")
 const FishMind = preload("res://scripts/fish_mind.gd")
 const FishMindScience = preload("res://scripts/fish_mind_science.gd")
@@ -444,6 +446,11 @@ var _self_summary: String = ""
 var _mind_writeback_log: Array = []
 var _mind_snapshot_prev: Dictionary = {}
 var _mind_timeline: Array = []
+# Transient recall belongs to this individual, never a global id cache.
+@warning_ignore("unused_private_class_variable")
+var _episodic_recall_cache: Dictionary = {}
+@warning_ignore("unused_private_class_variable")
+var _episodic_revision: int = 0
 var _td_eligibility_peak: float = 0.0
 var _last_boldness: float = -1.0
 # SENTIENCE_THE_DARING_MIND — keeper ears, lexicon, world model, self-stance.
@@ -1283,10 +1290,26 @@ func breeding_status_label() -> String:
 	return tr("Conditions suitable; mate and habitat still required")
 
 
+static var _breed_season_frame: int = -1
+static var _breed_season_mult: float = 1.0
+
 func _season_breed_mult() -> float:
+	var frame: int = Engine.get_physics_frames()
+	if _breed_season_frame == frame:
+		return _breed_season_mult
+	_breed_season_frame = frame
 	var month: int = Time.get_datetime_dict_from_system().get("month", 6)
 	# Phase so April (month 4) sits near the peak.
-	return 1.0 + sin((float(month) - 4.0) / 12.0 * TAU) * 0.3
+	_breed_season_mult = 1.0 + sin((float(month) - 4.0) / 12.0 * TAU) * 0.3
+	return _breed_season_mult
+
+
+func _mate_candidate_available(f: Fish) -> bool:
+	return is_instance_valid(f) and not f.is_queued_for_deletion() \
+		and f != self and not f._dying and f.species == species and f.sex != sex \
+		and f.maturity == MATURITY_ADULT and f.breed_cooldown <= 0.0 \
+		and f.partner == null and f.hunger <= 0.5 and f.energy >= 0.55 \
+		and f.stress <= 0.4 and f.position.distance_squared_to(position) <= 9.0
 
 
 # Logistic fecundity (#31): breeding is suppressed as the population approaches
@@ -1299,12 +1322,10 @@ func _find_preferred_mate(neighbors: Array) -> Fish:
 	if _mate_id == "":
 		return null
 	for n in neighbors:
-		if not (n is Fish):
+		if not is_instance_valid(n) or not (n is Fish):
 			continue
 		var f: Fish = n
-		if String(f.id) == _mate_id and f.partner == null \
-				and f.maturity == MATURITY_ADULT and f.sex != sex \
-				and f.breed_cooldown <= 0.0:
+		if String(f.id) == _mate_id and _mate_candidate_available(f):
 			return f
 	return null
 
@@ -1450,10 +1471,10 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	if _life_profile_enabled:
 		_life_profile_stamp = Time.get_ticks_usec()
 	assert(_mind_subsystem_fields_alive())
-	var _ms = MindChannel.for_cycle(self, is_guardian or fish_name != "" or familiarity > 0.4)
+	var _ms: MindState = null
 	var _brain_async: bool = MindBrainPool.enabled()
 	if _brain_async:
-		MindBrainPool.apply_pending(self, _ms)
+		MindBrainPool.apply_pending(self)
 	var _tick_snap: Dictionary = {}
 	_profile_life_stage("state_capture")
 	# Decay working memory with emotionally-weighted rates (#25).
@@ -1491,9 +1512,14 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	# A gated/sleeping tick never stores a cognitive snapshot. Avoid copying
 	# its workspace and self-model until a cycle will actually consume them.
 	if _run_mind:
+		# Gated ticks do not consume or commit a MindState. Build its detached
+		# snapshot only for a real cycle, after any worker result is applied.
+		_ms = MindChannel.for_cycle(self, is_guardian or fish_name != "" or familiarity > 0.4)
 		_tick_snap = _ms.snapshot()
 	if not _brain_async and _run_mind:
 		_MindTickScript.on_mind_tick_start(self)
+		MindCycle.begin_cycle(self, sim)
+		_ms.episodic_retrieval_hint = _episodic_retrieval_hint.duplicate()
 		MindCycle.run_attention_phase(self, sim, _ms, _mind_dt)
 	_profile_life_stage("attention")
 	if FeltSelfLayer.layer_enabled() and attention_focus == "boredom":
@@ -1570,8 +1596,9 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	_tick_music_affect(dt)
 	# Binding and the eventual channel commit must see the affect just felt,
 	# rather than restoring the pre-tick snapshot over the music response.
-	_ms.mood = mood
-	_ms.arousal = arousal
+	if _ms != null:
+		_ms.mood = mood
+		_ms.arousal = arousal
 	if sim != null and sim.has_method("sim_day"):
 		MakeItThere.apply_mood_weather(self, int(sim.sim_day()), dt)
 	var enrich: float = FishMindScience.tank_enrichment(sim)
@@ -1642,13 +1669,18 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 	if _run_mind:
 		if _brain_async:
 			MindCycle.run_bind_phase(self, sim, _ms, _mind_dt)
+			_profile_life_stage("cognition_bind")
 			MindCycle.run_encode_phase(self, _ms)
+			_profile_life_stage("cognition_encode")
 			MindCycle.tick_post_cycle(self, sim, _mind_dt)
+			_profile_life_stage("cognition_post")
+			_ms.capture_runtime_updates(self)
 			MindBrainPool.queue_cognition(self, _ms, _mind_dt)
+			_profile_life_stage("cognition_queue")
 		else:
 			CognitionKernel.run_bind_encode_learn(self, _ms, sim, _mind_dt)
-		MindChannel.commit(self, _ms)
-		MindCycle.store_snapshot(self, _tick_snap, _ms)
+		MindChannel.commit(self, _ms, true)
+		MindCycle.store_snapshot(self, _tick_snap, _ms, true)
 		_MindTickScript.on_mind_tick_end(self)
 	_profile_life_stage("cognition")
 	if _thought_stream != "":
@@ -1866,10 +1898,6 @@ var _courtship_pulse_phase: float = 0.0
 # saturation boost so the courtship BUILDS to a flash at the spawn moment
 # rather than being an on/off display.
 var _courtship_intensity: float = 0.0
-var _courtship_color_active: bool = false
-# Last quantized courtship saturation step actually pushed to the shader; lets
-# the per-voxel albedo writes skip frames/substeps where the boost is unchanged.
-var _last_courtship_color_step: int = -999
 # Pheromone trail: GPUParticles3D that trails a receptive female to
 # visually signal she's in heat. Created on demand, freed when she's
 # no longer receptive.
@@ -1999,8 +2027,13 @@ var _fry_smear_count: int = 0
 var _belly_flash_cd: float = 0.0
 var _last_belly_flash_push: float = -1.0
 var _fauna_color_t: float = 0.0
-var _stress_flush_t: float = 0.0
-var _last_stress_flush_k: float = -1.0
+# All whole-body color changes share one continuous state and one writer.
+var _pigment_state: Vector4 = Vector4.ZERO
+var _pigment_flush: float = 0.0
+var _pigment_written: Vector4 = Vector4(-1.0, -1.0, -1.0, -1.0)
+var _pigment_flush_written: float = -1.0
+var _individual_color_variation: Vector3 = Vector3(0.0, 1.0, 1.0)
+var _individual_color_ready: bool = false
 var _last_yaw: float = 0.0
 var _motion_transform_warned: bool = false
 var _bank: float = 0.0
@@ -2180,6 +2213,22 @@ func spawn_settle_factor() -> float:
 	return FishSpawnSettle.factor(_spawn_settle_remaining, _spawn_settle_duration)
 
 
+var _mind_resave_on_enter: bool = false
+
+
+func _enter_tree() -> void:
+	if _mind_resave_on_enter:
+		# Reparenting releases transient dirty flags. The destination's next
+		# delta save must still contain the transferred fish's complete mind.
+		MindDirtySave.mark_all_mind(self)
+		_mind_resave_on_enter = false
+
+
+func _exit_tree() -> void:
+	_MindCacheRegistryScript.release_fish(self)
+	_mind_resave_on_enter = true
+
+
 func _ready() -> void:
 	if id != "":
 		apply_spawn_variation()
@@ -2287,12 +2336,14 @@ func init_genome(genome: Dictionary) -> void:
 	if subspecies_id == "":
 		subspecies_id = species
 	base_color = _coerce_color(genome.get("base_color", base_color), base_color)
-	var ind_h: float = _behavior_rng().randf_range(-0.07, 0.07)
-	var ind_s: float = _behavior_rng().randf_range(0.94, 1.08)
+	if not _individual_color_ready:
+		_individual_color_variation = Vector3(_behavior_rng().randf_range(-0.07, 0.07),
+			_behavior_rng().randf_range(0.94, 1.08), _behavior_rng().randf_range(0.92, 1.06))
+		_individual_color_ready = true
 	base_color = Color.from_hsv(
-		clampf(base_color.h + ind_h, 0.0, 1.0),
-		clampf(base_color.s * ind_s, 0.0, 1.0),
-		clampf(base_color.v * _behavior_rng().randf_range(0.92, 1.06), 0.0, 1.0))
+		clampf(base_color.h + _individual_color_variation.x, 0.0, 1.0),
+		clampf(base_color.s * _individual_color_variation.y, 0.0, 1.0),
+		clampf(base_color.v * _individual_color_variation.z, 0.0, 1.0))
 	accent_color = _coerce_color(genome.get("accent_color", accent_color), accent_color)
 	if genome.has("tail_color"):
 		tail_color = _coerce_color(genome["tail_color"], tail_color)
@@ -2566,6 +2617,8 @@ func init_genome(genome: Dictionary) -> void:
 	# A fry is born tiny - we'll lerp scale as it matures.
 	scale = Vector3.ONE * _maturity_scale()
 	_build_body()
+	_update_maturity()
+	_apply_maturity_color()
 	# Apply distance-LOD to voxels — tiny details drop out beyond ~8m,
 	# secondary details beyond ~14m. Portal PiP camera is close so it
 	# still sees full detail; the orbit camera at typical distance keeps
@@ -2755,8 +2808,8 @@ func _build_body() -> void:
 	# the eye highlight, the pectorals and the caudal nick below.
 	var asym: Dictionary = _individual_asymmetry()
 	var mat_body := _make_mat(base_color)
-	var mat_top := _make_mat(base_color.lightened(0.42))
-	var mat_belly := _make_mat(base_color.darkened(0.58))
+	var mat_top := _make_mat(ColorArt.fauna_highlight_color(base_color))
+	var mat_belly := _make_mat(ColorArt.fauna_shadow_color(base_color))
 	var mat_accent := _make_mat(accent_color)
 	var mat_eye := VoxelMat.make(Color8(11, 26, 34))
 	var mat_fin := VoxelMat.make_translucent(
@@ -3585,37 +3638,6 @@ func _push_fauna_inst_custom() -> void:
 		h.set_custom_data(Color(FaunaVoxelBuilder.pack_custom_r(bend, cr), cg, cb, static_a))
 
 
-func _apply_stress_flush() -> void:
-	if _cached_meshes.is_empty():
-		return
-	var k: float = clampf((stress - 0.40) / 0.60, 0.0, 1.0)
-	if _last_stress_flush_k >= 0.0 and absf(k - _last_stress_flush_k) < 0.10:
-		return
-	_last_stress_flush_k = k
-	if k <= 0.001:
-		for child in _cached_meshes:
-			if child is VoxelBatch.Handle:
-				var h: VoxelBatch.Handle = child
-				FaunaVoxelBuilder.set_handle_color(h, FaunaVoxelBuilder.handle_orig_color(h))
-		return
-	var flush_col: Color = accent_color.lerp(Color8(210, 70, 55), 0.72)
-	var base_luma: float = base_color.r * 0.299 + base_color.g * 0.587 + base_color.b * 0.114
-	var belly_ref: Color = base_color.darkened(0.35)
-	for child in _cached_meshes:
-		if not (child is VoxelBatch.Handle):
-			continue
-		var h2: VoxelBatch.Handle = child
-		var orig: Color = FaunaVoxelBuilder.handle_orig_color(h2)
-		var luma: float = orig.r * 0.299 + orig.g * 0.587 + orig.b * 0.114
-		var d_acc: float = maxf(maxf(absf(orig.r - accent_color.r),
-			absf(orig.g - accent_color.g)), absf(orig.b - accent_color.b))
-		var d_belly: float = maxf(maxf(absf(orig.r - belly_ref.r),
-			absf(orig.g - belly_ref.g)), absf(orig.b - belly_ref.b))
-		var fin_or_belly: bool = luma < base_luma - 0.06 \
-			or d_acc <= 0.22 or d_belly <= 0.18
-		var amt: float = k * (0.62 if fin_or_belly else 0.22)
-		FaunaVoxelBuilder.set_handle_color(h2, orig.lerp(flush_col, amt))
-
 
 func _tick_substrate_compaction(dt: float) -> void:
 	if sim == null or speed < max_speed * 0.55:
@@ -4196,15 +4218,8 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 
 	_update_maturity()
 
-	# Senescent fish: slowly fade their colors.
-	if maturity == MATURITY_SENESCENT:
-		_apply_aging_tint()
-	# Juvenile color deepening: fry + juveniles are desaturated, gradually
-	# gaining vibrancy as they approach adulthood (#14 in GOALS).
-	elif maturity <= MATURITY_JUVENILE:
-		_apply_maturity_color()
-	else:
-		_restore_original_colors()
+	# Life-stage pigment is composed with mood in the render update. Rewriting
+	# adult colors here at 10 Hz used to erase pallor/courtship between frames.
 
 	# Death conditions.
 	# Old fish can hang on for 25% past max_age_s. Meal-driven age
@@ -5390,11 +5405,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_cached_preferred_mate = _find_preferred_mate(neighbors)
 			_cached_breed_partner = _find_breeding_partner(neighbors)
 		var candidate: Fish = null
-		if _cached_preferred_mate != null and is_instance_valid(_cached_preferred_mate) \
-				and _cached_preferred_mate.partner == null:
+		if _mate_candidate_available(_cached_preferred_mate):
 			candidate = _cached_preferred_mate
-		elif _cached_breed_partner != null and is_instance_valid(_cached_breed_partner) \
-				and _cached_breed_partner.partner == null:
+		elif _mate_candidate_available(_cached_breed_partner):
 			candidate = _cached_breed_partner
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
@@ -5487,7 +5500,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	var fauna_sep: float = float(fauna_rt.get("separation", 1.0))
 	var school_w: float = schooling_strength * float(fauna_rt.get("schooling", 1.0))
 	if sim != null and _MotionWaveScript.uses_wave(self):
-		var dl_sleep: float = float(sim.daylight()) if sim.get("daylight") != null else 1.0
+		var dl_sleep: float = SimGate.daylight(sim, 1.0)
 		if dl_sleep < 0.18:
 			school_w *= lerpf(0.32, 1.0, dl_sleep / 0.18)
 			desired += Vector3(
@@ -6716,10 +6729,6 @@ func _process(dt: float) -> void:
 		_apply_overhead_readability_uniform(band)
 	if _mouth_gape > 0.0:
 		_mouth_gape = maxf(0.0, _mouth_gape - dt * 5.5)
-	_stress_flush_t -= dt
-	if _stress_flush_t <= 0.0:
-		_stress_flush_t = 0.12
-		_apply_stress_flush()
 	_tick_substrate_compaction(dt)
 	if sim != null and sim.has_method("spark_calm"):
 		var calm: float = sim.spark_calm()
@@ -6757,8 +6766,10 @@ func _process(dt: float) -> void:
 		speed = 0.0
 	var n_steps: int = clampi(int(ceil(dt / maxf(0.05 / clampf(speed / maxf(max_speed, 0.15), 0.55, 1.6), 0.028))), 1, 20)
 	var sub_dt: float = dt / float(n_steps)
-	for _step in n_steps:
-		_motion_substep(sub_dt)
+	for step in n_steps:
+		# Integration needs small steps; fin/bank transforms only need the
+		# final pose that this rendered frame can actually display.
+		_motion_substep(sub_dt, dt if step == n_steps - 1 else 0.0)
 
 	_tick_fauna_body_color(dt)
 
@@ -7095,7 +7106,7 @@ func _advance_motor_phase(dt: float) -> void:
 		Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type) * _wag_freq_jitter, dt, TAU * 100.0)
 
 
-func _motion_substep(dt: float) -> void:
+func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	if not is_finite(dt) or dt <= 0.0:
 		return
 	if not is_finite(speed):
@@ -7446,6 +7457,11 @@ func _motion_substep(dt: float) -> void:
 	if speed > 0.04 and heading.length_squared() > 0.0001:
 		_face_direction(heading)
 
+	if pose_dt == 0.0:
+		var substep_yaw: float = atan2(heading.x, -heading.z)
+		_last_yaw_rate = wrapf(substep_yaw - _last_yaw, -PI, PI) / maxf(dt, 0.0001)
+		_last_yaw = substep_yaw
+		return
 	var do_body_anim: bool = sim == null or not sim.has_method("is_creature_visible_to_camera") \
 		or sim.is_creature_visible_to_camera(self)
 	var mm: Dictionary = _music_mods() if do_body_anim else {}
@@ -7457,6 +7473,8 @@ func _motion_substep(dt: float) -> void:
 	var yaw_diff: float = wrapf(current_yaw - _last_yaw, -PI, PI)
 	var yaw_rate: float = yaw_diff / maxf(dt, 0.0001)
 	_last_yaw_rate = yaw_rate
+	if pose_dt > 0.0:
+		dt = pose_dt
 	if do_body_anim:
 		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
@@ -7852,51 +7870,51 @@ func _motion_substep(dt: float) -> void:
 		_repair_motion_state()
 
 
-# Whole-body albedo tints (courtship flare, pallor). Must NOT run inside
-# _motion_substep — that path fires up to 20× per render frame and was
-# rewriting every voxel color on arousal/music ticks → visible strobing.
+# Life-stage, stress and display all use this writer. It runs once per
+# rendered frame (never in integration substeps), easing the wash before
+# admitting a changed color to the GPU at at most 10 Hz.
 func _tick_fauna_body_color(dt: float) -> void:
 	if _cached_meshes.is_empty() or _dying:
 		return
+	var target: Vector4 = _pigment_target()
+	var flush: float = clampf((stress - 0.40) / 0.60, 0.0, 1.0)
+	# Visual easing is bounded on a stalled frame; biological time is intact.
+	var blend: float = 1.0 - exp(-minf(maxf(dt, 0.0), 0.10) * 1.6)
+	_pigment_state = _pigment_state.lerp(target, blend)
+	_pigment_flush = lerpf(_pigment_flush, flush, blend)
 	_fauna_color_t -= dt
 	if _fauna_color_t > 0.0:
 		return
-	_fauna_color_t = 0.16
+	_fauna_color_t = 0.10
+	_write_fauna_pigment()
 
+
+func _pigment_target() -> Vector4:
 	var flare: float = 0.0
 	if _courtship_flare and sex == 0 and _courtship_intensity > 0.05:
 		flare = 0.58 if _courtship_sync else _courtship_intensity * 0.42
-	flare = maxf(flare, _lb_sigmoid * 0.35)
-	# Relief pulse only — skip continuous mood/arousal tints during cruise.
-	flare += _relief_pulse * 0.14
+	flare = maxf(flare, _lb_sigmoid * 0.35) + _relief_pulse * 0.14
 	var pallor: float = clampf((stress - 0.62) / 0.38, 0.0, 1.0) * 0.45
 	pallor = clampf(pallor + spooked * 0.28 + clampf(-mood, 0.0, 1.0) * 0.18, 0.0, 0.75)
+	var aged: float = smoothstep(0.80, 1.05, age / maxf(max_age_s, 0.001))
+	return Vector4(1.0 - _color_maturity, aged, clampf(flare, 0.0, 0.8), pallor)
 
-	if flare > 0.001 or pallor > 0.001:
-		if not _courtship_color_active:
-			_courtship_color_active = true
-			_last_courtship_color_step = -999
-		var step: int = int(round(flare * 24.0)) * 1000 + int(round(pallor * 24.0))
-		if step != _last_courtship_color_step:
-			_last_courtship_color_step = step
-			for child in _cached_meshes:
-				if child is VoxelBatch.Handle:
-					var h: VoxelBatch.Handle = child
-					var c: Color = FaunaVoxelBuilder.handle_orig_color(h)
-					if flare > 0.0:
-						c = c.lightened(flare * 0.22)
-						c.s = minf(1.0, c.s + flare * 0.85)
-					if pallor > 0.0:
-						c.s = maxf(0.0, c.s * (1.0 - pallor))
-						c = c.lerp(Color(0.72, 0.74, 0.78), pallor * 0.45)
-					FaunaVoxelBuilder.set_handle_color(h, c)
-	elif _courtship_color_active:
-		_courtship_color_active = false
-		_last_courtship_color_step = -999
-		for child in _cached_meshes:
-			if child is VoxelBatch.Handle:
-				var h2: VoxelBatch.Handle = child
-				FaunaVoxelBuilder.set_handle_color(h2, FaunaVoxelBuilder.handle_orig_color(h2))
+
+func _write_fauna_pigment(force: bool = false) -> void:
+	var delta: Vector4 = (_pigment_state - _pigment_written).abs()
+	if not force and maxf(maxf(delta.x, delta.y), maxf(delta.z, delta.w)) < 0.008 \
+			and absf(_pigment_flush - _pigment_flush_written) < 0.008:
+		return
+	_pigment_written = _pigment_state
+	_pigment_flush_written = _pigment_flush
+	for child in _cached_meshes:
+		if child is VoxelBatch.Handle:
+			var handle: VoxelBatch.Handle = child
+			if not handle.alive:
+				continue
+			var original: Color = FaunaVoxelBuilder.handle_orig_color(handle)
+			FaunaVoxelBuilder.set_handle_color(handle, FishPigment.compose(original,
+				_pigment_state, _pigment_flush, accent_color, base_color))
 
 
 func _update_maturity() -> void:
@@ -8221,56 +8239,18 @@ func _boids(neighbors: Array, tightness: float = 1.0, separation_mult: float = 1
 	return steer
 
 
-func _apply_aging_tint() -> void:
-	# Senescent fish fade their voxel materials toward a desaturated, darker
-	# version of base_color. We only need to do this once when entering
-	# senescence; track via _aged_applied to avoid repeated work.
-	if _aged_applied:
-		return
-	_aged_applied = true
-	# Walk all MeshInstance3D descendants and tint their material to the
-	# faded color. Cheap since fish are small.
-	for child in _cached_meshes:
-		if child is VoxelBatch.Handle:
-			var h: VoxelBatch.Handle = child
-			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
-			FaunaVoxelBuilder.set_handle_color(h, orig_color.lerp(Color8(120, 110, 100), 0.45))
-
-
-var _aged_applied: bool = false
-
-# ---- Juvenile color deepening ----
-# Tracks how far along the fry-→-adult color ramp this fish is. 0.0 = freshly
-# hatched (pale silvery wash), 1.0 = full genome color. Updated every tick by
-# _update_maturity(). _last_maturity_color_step tracks the last rounded step
-# so we don’t re-walk the mesh tree every single frame (expensive on big fish).
+# Smooth biological color maturity, updated by _update_maturity().
 var _color_maturity: float = 0.0
-var _last_maturity_color_step: int = -1
 
 
+# Initialise a newly built or restored body before its first rendered frame.
+# Live age/emotion changes use _tick_fauna_body_color rather than resetting
+# whole-body materials from separate simulation timers.
 func _apply_maturity_color() -> void:
-	# Quantise to 10 steps so we only re-walk the mesh tree ~10 times over
-	# the entire fry→juvenile→adult ramp, not every tick.
-	var step: int = int(_color_maturity * 10.0)
-	if step == _last_maturity_color_step:
-		return
-	_last_maturity_color_step = step
-	# Desaturation factor: at _color_maturity 0 the fish is 45% washed
-	# toward a pale silvery tone. At 1.0 it’s at full genome color.
-	var desat: float = 0.32 * (1.0 - _color_maturity)
-	var wash: Color = Color(0.75, 0.75, 0.78)
-	for child in _cached_meshes:
-		if child is VoxelBatch.Handle:
-			var h: VoxelBatch.Handle = child
-			var orig_color: Color = FaunaVoxelBuilder.handle_orig_color(h)
-			FaunaVoxelBuilder.set_handle_color(h, orig_color.lerp(wash, desat))
+	_pigment_state = _pigment_target()
+	_pigment_flush = clampf((stress - 0.40) / 0.60, 0.0, 1.0)
+	_write_fauna_pigment(true)
 
-
-func _restore_original_colors() -> void:
-	for child in _cached_meshes:
-		if child is VoxelBatch.Handle:
-			var h: VoxelBatch.Handle = child
-			FaunaVoxelBuilder.set_handle_color(h, FaunaVoxelBuilder.handle_orig_color(h))
 
 func _all_meshes(node: Node) -> Array:
 	var out: Array = []
@@ -8390,24 +8370,16 @@ func _find_breeding_partner(neighbors: Array) -> Fish:
 	var best: Fish = null
 	var best_score: float = -INF
 	for n in neighbors:
-		if not n is Fish or n == self:
+		if not is_instance_valid(n) or not n is Fish:
 			continue
 		var f: Fish = n
-		if f.species != species or f.sex == sex:
-			continue
-		if f.maturity != MATURITY_ADULT or f.breed_cooldown > 0.0:
-			continue
-		if f.partner != null:
+		if not _mate_candidate_available(f):
 			continue
 		# Assortative mating: lineages prefer their own subspecies.
 		if subspecies_id != "" and f.subspecies_id != "" and subspecies_id != f.subspecies_id:
 			if _behavior_rng().randf() > 0.06:
 				continue
-		if f.hunger > 0.5 or f.energy < 0.55 or f.stress > 0.4:
-			continue
 		var d2: float = f.position.distance_squared_to(position)
-		if d2 > 9.0:
-			continue
 		# Lower distance is better, more breed_count is better, and fitter
 		# candidates have a stronger mate-choice advantage.
 		var fitness: float = _mate_fitness_score(f)
@@ -9121,7 +9093,7 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"labyrinth_breather": (labyrinth_breather if _behavior_rng().randf() < 0.99
 			else partner.labyrinth_breather),
 		"organism_type": "fish",
-		"parent_keys": SpeciesLibScript.new().parent_keys_for_breeding([
+		"parent_keys": SpeciesLibScript.parent_keys_for_breeding([
 			get_saved_genome(), partner.get_saved_genome(),
 		]),
 		"personality": _blend_offspring_personality(self, partner),
@@ -9206,6 +9178,9 @@ func to_save_dict() -> Dictionary:
 		"id": id,
 		"pos": SaveHelpers.vec3_to_array(global_position),
 		"genome": _genome_to_json(_saved_genome),
+		# Individual appearance is cosmetic, not a heritable mutation. Keep it
+		# outside the genome so the same fish doesn't change hue on every load.
+		"color_variation": SaveHelpers.vec3_to_array(_individual_color_variation),
 		# Dynamic state. velocity + heading are derived from each other in
 		# the locomotion code, so we save both for fidelity; speed is the
 		# magnitude. partner_id is resolved post-load by SimDriver._resolve_refs.
@@ -9306,6 +9281,18 @@ func apply_save_dict(d: Dictionary) -> void:
 	_music_mods_render_stamp = -1
 	FishExperience.restore(self, d.get("experience", {}))
 	id = String(d.get("id", id))
+	# Old saves have no cosmetic roll; derive a stable one from their identity.
+	var color_fallback := Vector3(
+		lerpf(-0.07, 0.07, FishSpawnSettle.seeded_phase(id, 41)),
+		lerpf(0.94, 1.08, FishSpawnSettle.seeded_phase(id, 42)),
+		lerpf(0.92, 1.06, FishSpawnSettle.seeded_phase(id, 43)))
+	_individual_color_variation = SaveHelpers.array_to_vec3(
+		d.get("color_variation", []), color_fallback)
+	if not _individual_color_variation.is_finite():
+		_individual_color_variation = color_fallback
+	_individual_color_variation = _individual_color_variation.clamp(
+		Vector3(-0.07, 0.94, 0.92), Vector3(0.07, 1.08, 1.06))
+	_individual_color_ready = true
 	_MindCacheRegistryScript.reset_transient(self)
 	# Replay init_genome with the saved genome — this re-derives all the
 	# phenotype fields including the dimorphic transformation.
@@ -9466,6 +9453,8 @@ func apply_save_dict(d: Dictionary) -> void:
 		var shrink: float = lerpf(1.0, 0.15, clampf(1.0 - _dying_timer / DEATH_DURATION, 0.0, 1.0))
 		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
 
+	_update_maturity()
+	_apply_maturity_color()
 
 # Pull body + territory anchors inside the tank footprint. Saved games from
 # box tanks (or pre-curved-wall builds) can carry home coords outside a

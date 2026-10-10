@@ -25,7 +25,6 @@ func flush() -> void:
 		if batch is VoxelBatch:
 			var vb: VoxelBatch = batch as VoxelBatch
 			vb.flush()
-			vb.blit_buffer()
 
 
 func draw_calls() -> int:

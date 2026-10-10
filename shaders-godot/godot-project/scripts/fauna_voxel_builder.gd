@@ -77,7 +77,6 @@ func flush_all() -> void:
 		return
 	for batch: VoxelBatch in _batches.values():
 		batch.flush()
-		batch.blit_buffer()
 
 
 func get_batches() -> Array:

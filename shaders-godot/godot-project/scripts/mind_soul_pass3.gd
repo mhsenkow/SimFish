@@ -558,7 +558,14 @@ static func _tick_reconciliation(f, sim, dt: float) -> void:
 
 
 static func _tick_empathy_mirror(f, sim, dt: float) -> void:
-	if sim == null or sim.get("fish") == null:
+	if f.bonds.is_empty() or sim == null or sim.get("fish") == null:
+		return
+	var can_mirror: bool = false
+	for oid in f.bonds:
+		if float(f.bonds[oid]) >= 0.4:
+			can_mirror = true
+			break
+	if not can_mirror:
 		return
 	for other in sim.fish:
 		if not is_instance_valid(other) or not (other is Fish) or other == f:
@@ -643,8 +650,13 @@ static func _tick_play(_f, _sim, _dt: float) -> void:
 	pass
 
 
-static func _tick_tank_theme(_f, s: Dictionary, sim) -> void:
+static func _tick_tank_theme(f, s: Dictionary, sim) -> void:
 	if sim == null or sim.get("fish") == null:
+		return
+	if sim is SimDriver:
+		var theme: String = (sim as SimDriver).attention_theme_for(f)
+		if theme != "":
+			s["tank_theme"] = "tank dwelling on %s" % theme.replace("_", " ")
 		return
 	var counts: Dictionary = {}
 	for other in sim.fish:

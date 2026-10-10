@@ -237,8 +237,9 @@ static func _autoload(name: String) -> Node:
 
 
 static func session_active(f: Fish) -> bool:
-	var convo: Dictionary = ensure_convo(f)
-	return bool(convo.get("active", false))
+	# _convo is an initialized Dictionary on Fish. Neighbor scans need a
+	# read, not a name-based property lookup and an initialization check.
+	return bool(f._convo.get("active", false))
 
 
 static func dialogue_snippet(f: Fish) -> PackedStringArray:

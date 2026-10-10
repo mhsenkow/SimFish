@@ -16,6 +16,8 @@ const MindSoul = preload("res://scripts/mind_soul.gd")
 const HABIT_STRENGTH_COMPILE: float = 0.68
 const HABIT_STRENGTH_RUN: float = 0.64
 const HABIT_BREAK_SURPRISE: float = 0.42
+const MAX_LEARNED_CONTEXTS: int = 128
+const DAY_CONTEXTS: Array[String] = ["dawn", "day", "dusk", "night"]
 
 
 static func enabled() -> bool:
@@ -50,7 +52,7 @@ static func context_key(f, sim) -> String:
 	var cell: String = FishMindScience.novelty_cell_key(f)
 	var phase: String = "day"
 	if sim != null and sim.get("day_phase") != null:
-		phase = str(sim.day_phase)
+		phase = _phase_context(float(sim.day_phase))
 	elif sim != null and sim.has_method("daylight"):
 		var dl: float = float(sim.daylight())
 		if dl < 0.3:
@@ -61,6 +63,26 @@ static func context_key(f, sim) -> String:
 	if focus == "":
 		focus = "idle"
 	return "%s|%s|%s" % [cell, phase, focus]
+
+
+static func _phase_context(day_phase: float) -> String:
+	# Exact clock fractions create a new habit on every tick and never repeat.
+	if not is_finite(day_phase):
+		return "day"
+	return DAY_CONTEXTS[int(floor(fposmod(day_phase + 0.125, 1.0) * 4.0))]
+
+
+static func _store_context(table: Dictionary, context: String, value: Dictionary) -> void:
+	# Bound older saves too. Evict oldest insertion first, preserving the
+	# context being reinforced. Existing contexts do not allocate a key list.
+	if table.size() > MAX_LEARNED_CONTEXTS or (not table.has(context)
+			and table.size() >= MAX_LEARNED_CONTEXTS):
+		for key in table.keys():
+			if key != context:
+				table.erase(key)
+			if table.size() < MAX_LEARNED_CONTEXTS:
+				break
+	table[context] = value
 
 
 static var _habit_attempts: int = 0
@@ -376,7 +398,7 @@ static func _reinforce_habit(f, s: Dictionary, sim, label: String) -> void:
 	else:
 		h = {"label": label, "strength": 0.08, "uses": 0}
 	h["uses"] = int(h.get("uses", 0)) + 1
-	habits[ctx] = h
+	_store_context(habits, ctx, h)
 	s["habits"] = habits
 
 
@@ -413,7 +435,7 @@ static func _update_bandit(f, s: Dictionary, sim, label: String) -> void:
 			delta = 0.05
 	var old: float = float(row.get(key, 0.5))
 	row[key] = clampf(lerpf(old, old + delta, 0.35), 0.0, 1.0)
-	bandit[ctx] = row
+	_store_context(bandit, ctx, row)
 	s["bandit"] = bandit
 
 

@@ -970,8 +970,11 @@ static func tick_home_confidence(f, dt: float) -> void:
 # Save-boundary serializer — called from Fish.to_save_dict() only (#24 audit).
 static func mind_to_dict(f, delta: bool = false) -> Dictionary:
 	var ms = MindState.for_fish(f, true)
-	ms.sync_from_fish(f)
-	var d: Dictionary = ms.to_dict()
+	# for_fish already owns a detached snapshot. This one-shot serializer can
+	# transfer it without syncing and deep-copying the same mind twice more.
+	var d: Dictionary = ms.to_dict(false)
+	# Runtime worker handoffs need the cue; a saved tank needs to recall anew.
+	d.erase("episodic_retrieval_hint")
 	d.merge({
 		"schema_version": MIND_SCHEMA_VERSION,
 		"food_preferences": f.food_preferences.duplicate(),
@@ -1049,7 +1052,10 @@ static func _salient_from_save(mem: Array) -> Array:
 static func apply_mind_dict(f, d: Dictionary) -> void:
 	var ms = MindState.new()
 	ms.from_dict(d)
+	# Ignore a transient cue in older saves as well as omitting it on new ones.
+	ms.episodic_retrieval_hint = {}
 	ms.apply_to_fish(f)
+	MindCacheRegistry.reset_transient(f)
 	var fp: Variant = d.get("food_preferences", null)
 	if fp is Dictionary:
 		f.food_preferences = (fp as Dictionary).duplicate()

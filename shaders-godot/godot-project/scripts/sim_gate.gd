@@ -38,9 +38,11 @@ extends RefCounted
 const CONTRACT: Dictionary = {
 	"SimDriver": {
 		"daylight": 0,
+		"irradiance": 0,
 		"query_plants_in_radius": 2,
 	},
 	"World": {
+		"irradiance_at": 1,
 		"plants_at_capacity": 0,
 		"clamp_xyz_in_tank": 1,
 		"column_surface_y": 2,
@@ -66,6 +68,14 @@ static func daylight(sim: Object, fallback: float = 1.0) -> float:
 	return float(sim.call("daylight"))
 
 
+# Relative photosynthetic exposure: respects lamp scheduling, both lighting
+# switches and the room's solar fill. Use daylight() for biological clocks.
+static func irradiance(sim: Object, fallback: float = 1.0) -> float:
+	if not _has(sim, "irradiance"):
+		return fallback
+	return float(sim.call("irradiance"))
+
+
 static func query_plants_in_radius(sim: Object, pos: Vector3, max_dist: float) -> Array:
 	if not _has(sim, "query_plants_in_radius"):
 		return []
@@ -73,6 +83,13 @@ static func query_plants_in_radius(sim: Object, pos: Vector3, max_dist: float) -
 
 
 # --- World -----------------------------------------------------------------
+
+static func irradiance_at(world: Object, position: Vector3,
+		fallback: float = 1.0) -> float:
+	if not _has(world, "irradiance_at"):
+		return fallback
+	return float(world.call("irradiance_at", position))
+
 
 static func plants_at_capacity(world: Object) -> bool:
 	if not _has(world, "plants_at_capacity"):

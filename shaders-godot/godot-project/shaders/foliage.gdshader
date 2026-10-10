@@ -142,12 +142,9 @@ void fragment() {
         float top_catch = smoothstep(0.20, 0.88, n.y);
         float leaf_green = smoothstep(0.28, 0.68, col.g - max(col.r, col.b));
         float wash_col = mix(1.0, 0.42, leaf_green);
-        col += tank_fixture_color * wash * mix(0.30, 0.55, top_catch) * wash_col;
-        col *= 1.0 + wash * mix(0.62 + top_catch * 0.42, 0.28, leaf_green);
+        col += tank_fixture_color * wash * mix(0.18, 0.30, top_catch) * wash_col;
+        col *= 1.0 + wash * mix(0.32 + top_catch * 0.24, 0.28, leaf_green);
     }
-    // Water column — red dies first with depth and distance. Global uniform, so
-    // it costs one compare on anything above the waterline or out of the tank.
-    col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
     // Shaped lamp. In an unshaded pipeline nothing responds to a light on
     // its own, so the cone is evaluated here - this is what puts the beam
     // ON the leaves instead of only in the water in front of them.
@@ -158,5 +155,7 @@ void fragment() {
     vec3 key_rgb = (tank_fixture_color * tank_fixture_glow + sss_color * sss_daylight * 0.35) * 0.55;
     col = iaq_leaf_light(col, v_world_pos, n_ws, CAMERA_POSITION_WORLD, 0.6, key_rgb);
     col = iaq_beam_light_n(v_world_pos, n_ws, col);
+    // Transmission, reflected key and rear light share the same water path.
+    col = apply_water_column_ws(col, v_world_pos, CAMERA_POSITION_WORLD);
     ALBEDO = col;
 }

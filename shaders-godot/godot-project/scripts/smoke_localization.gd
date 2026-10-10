@@ -15,8 +15,9 @@ const LocalizationScript = preload("res://scripts/localization.gd")
 #
 # NB: this was 305 while the counter flagged any `.text = "` line, including
 # `"\n".join(...)` separators and format fragments. With the prose check the
-# real figure is 105 — i.e. coverage was ~67%, not the ~40% first reported.
-const UNWRAPPED_BUDGET: int = 105
+# real figure was 105 — i.e. coverage was ~67%, not the ~40% first reported.
+# The lighting-panel pass reduced those remaining prose literals to 84.
+const UNWRAPPED_BUDGET: int = 84
 
 # Wrapped keys currently extracted. A floor, so wrapping cannot be undone.
 const MIN_WRAPPED_KEYS: int = 195

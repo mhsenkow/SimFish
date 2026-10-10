@@ -61,10 +61,17 @@ uniform vec4 tank_planes[8];
 uniform int tank_plane_count = 0;
 uniform float tank_clip_softness : hint_range(0.01, 1.0) = 0.16;
 
+#include "res://shaders/beam_cone.gdshaderinc"
+
+// Extrude the source's cone along the LED bar: one continuous curtain.
+uniform vec3 line_half_axis = vec3(0.0);
 varying vec3 local_pos;
 varying vec3 world_vertex;
 
 void vertex() {
+	vec3 classify_axis = vec3(line_half_axis.x, 0.0, line_half_axis.z);
+	float side = sign(dot(VERTEX, classify_axis));
+	VERTEX += line_half_axis * side;
 	local_pos = VERTEX;
 	world_vertex = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
@@ -108,14 +115,28 @@ void fragment() {
 
 	// Forward scatter — the cylinder's local +Y is the beam axis. Brighter
 	// when the camera is looking along the beam, dimmer side-on.
-	vec3 beam_axis_world = normalize((MODEL_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-	float scatter = abs(dot(beam_axis_world, normalize(VIEW)));
-	float scatter_boost = mix(1.0, 1.0 + scatter * 0.85, forward_scatter);
+	vec3 beam_axis_world = normalize((MODEL_MATRIX * vec4(0.0, -1.0, 0.0, 0.0)).xyz);
+	vec3 view_world = normalize(CAMERA_POSITION_WORLD - world_vertex);
+	float mu = dot(beam_axis_world, view_world);
+	float g = clamp(forward_scatter * 0.75, 0.0, 0.60);
+	float phase = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * mu, 0.01), 1.5);
+	float scatter_boost = clamp(phase, 0.35, 2.0);
 
 	float alpha = beam_color.a * pow(fresnel, falloff_exponent) * vertical_curve * shimmer * scatter_boost;
+	// Dust scatters the same incident beam as the continuous water column.
+	// Add it before geometric/canopy masks so motes cannot escape the tank,
+	// glow through a fish, or reappear beneath an opaque floating canopy.
+	if (dust_mote_density > 0.001) {
+		float motes = smoothstep(0.78, 1.0,
+			sin(world_vertex.x * 11.0 + time * 2.2)
+			* sin(world_vertex.z * 10.0 - time * 1.7)
+			* sin(world_vertex.y * 8.5 + time * 1.4));
+		alpha += dust_mote_density * motes * vertical_curve * 0.16
+			* clamp(beam_color.a * 8.0, 0.0, 1.0);
+	}
 	// Air gap above the waterline — fixture cone reads in open air (#68).
 	float air_gap = smoothstep(water_surface_y - 0.12, water_surface_y + 0.04, world_vertex.y);
-	alpha *= mix(1.42, 1.0, air_gap);
+	alpha *= mix(1.0, 0.08, air_gap);
 	alpha *= 1.0 - occlusion * 0.72;
 
 	float fish_block = 0.0;
@@ -155,18 +176,18 @@ void fragment() {
 		float streak = mix(0.45, 2.1, s_web);
 		alpha *= mix(1.0, streak, shaft_streaks * under_w);
 	}
-	float bands = floor(alpha * 5.0 + 0.5) / 5.0;
-	alpha = mix(alpha, bands, beam_posterize);
-	if (dust_mote_density > 0.001) {
-		float motes = smoothstep(0.78, 1.0,
-			sin(world_vertex.x * 11.0 + time * 2.2)
-			* sin(world_vertex.z * 10.0 - time * 1.7)
-			* sin(world_vertex.y * 8.5 + time * 1.4));
-		alpha += dust_mote_density * motes * vertical_curve * 0.16;
-	}
+	// The final palette already supplies bands. A second hard alpha step
+	// made moving shafts jump in brightness; use a continuous soft shoulder.
+	float softened = alpha * alpha / max(alpha + 0.015, 0.015);
+	alpha = mix(alpha, softened, beam_posterize);
 
 	vec3 beam_rgb = mix(beam_color.rgb,
 		beam_color.rgb * vec3(1.12, 0.92, 0.78), sunset_warmth * 0.65);
+	// The lit core holds the lamp colour; the water takes the shaft edges
+	// toward petrol/pearl with depth. Reuse geometry terms, no new textures.
+	float water_depth = clamp((water_surface_y - world_vertex.y) / max(water_surface_y, 0.5), 0.0, 1.0);
+	float veil = (1.0 - fresnel) * water_depth * 0.20;
+	beam_rgb *= mix(vec3(1.0), vec3(0.80, 0.97, 1.06), veil);
 	ALBEDO = beam_rgb;
-	ALPHA = alpha;
+	ALPHA = alpha * clamp(iaq_beam_at(world_vertex).w, 0.0, 1.0);
 }

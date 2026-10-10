@@ -37,7 +37,10 @@ static func mark_all_mind(f) -> void:
 static func clear(f) -> void:
 	if f == null:
 		return
-	var fid: String = str(f.id)
+	clear_id(str(f.id))
+
+
+static func clear_id(fid: String) -> void:
 	if fid != "":
 		_mutex.lock()
 		_dirty.erase(fid)

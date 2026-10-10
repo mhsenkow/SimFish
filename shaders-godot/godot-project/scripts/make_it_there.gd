@@ -219,7 +219,9 @@ static func _tick_breaking_beauty(f: Fish, dt: float) -> void:
 		f.mood = clampf(f.mood + dt * 0.02, -1.0, 1.0)
 		return
 	# Wabi-sabi: aged fish carry quiet grace, not just fade.
-	if f._aged_applied and randf() < dt * 0.02:
+	# Senescence is already checked above. This behavior must not depend on
+	# a rendering flag: pigment now ages continuously through one color writer.
+	if randf() < dt * 0.02:
 		f.mood = clampf(f.mood + 0.03, -1.0, 1.0)
 
 

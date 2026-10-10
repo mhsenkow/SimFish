@@ -23,8 +23,16 @@ func _initialize() -> void:
 	a._ws_broadcast_digest = 99
 	a._ws_bids_digest = 77
 	a._episodic_retrieval_hint = {"kind": "food", "salience": 0.8}
+	a._mind_workspace = [{"label": "food", "nested": {"value": 1}}]
 
 	var saved: Dictionary = a.to_save_dict()
+	TestSupport.check(failed, not (saved.mind as Dictionary).has("episodic_retrieval_hint"),
+		"transient recall cue is omitted from saves")
+	saved.mind.workspace[0].nested.value = 2
+	TestSupport.check(failed, a._mind_workspace[0].nested.value == 1,
+		"one-shot save still owns its nested collections")
+	# Legacy/intermediate saves may contain a cue; the loader must ignore it.
+	saved.mind.episodic_retrieval_hint = {"kind": "food", "pos": Vector3(9, 1, 0)}
 	var b := Fish.new()
 	parent.add_child(b)
 	b.global_position = a.global_position
@@ -36,6 +44,10 @@ func _initialize() -> void:
 		"transient broadcast digest cleared on load (got %d)" % int(b._ws_broadcast_digest))
 	TestSupport.check(failed, int(b._ws_bids_digest) == -1, "transient bids digest cleared on load")
 	TestSupport.check(failed, b._episodic_retrieval_hint.is_empty(), "retrieval hint cleared on load")
+	TestSupport.check(failed, b._episodic_recall_cache.is_empty(), "recall cache cleared on load")
+	b._mind_workspace[0].nested.value = 3
+	TestSupport.check(failed, saved.mind.workspace[0].nested.value == 2,
+		"loaded mind stays detached from the caller's save")
 
 	var saved2: Dictionary = b.to_save_dict()
 	TestSupport.check(failed, not saved2.has("_ws_broadcast_digest"),
