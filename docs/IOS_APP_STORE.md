@@ -35,15 +35,30 @@ Godot already exports Android and ships a touch HUD (`mobile_hud.gd`,
 
 ## Export locally
 
+Godot already emits a full Xcode project under `build/ios/` (verified on v0.2.39).
+A direct IPA archive currently fails with:
+
+> WalstadLoom is automatically signed for development, but a conflicting code
+> signing identity Apple Distribution has been manually specified.
+
+Until an App Store profile exists for `com.mhsenkow.walstadloom`, prefer the
+Xcode path:
+
 ```bash
 mkdir -p build/ios
 ./scripts/godot.sh --headless --path shaders-godot/godot-project \
   --export-release "iOS" ../../build/ios/WalstadLoom.ipa
+# Even when the IPA step fails, build/ios/WalstadLoom.xcodeproj is usable.
+open build/ios/WalstadLoom.xcodeproj
 ```
 
-Or export the Xcode project (`application/export_project_only=true`), open it in Xcode, Archive → Distribute App → App Store Connect.
+In Xcode: select the WalstadLoom target → Signing & Capabilities → Team
+**Michael Senkow (WC44W2QVE4)** → enable Automatically manage signing (or attach
+the App Store profile once created) → Product → Archive → Distribute App →
+App Store Connect.
 
-Signing identity for release: `Apple Distribution: Michael Senkow (WC44W2QVE4)`  
+Signing identity for a scripted IPA once the profile exists:
+`Apple Distribution: Michael Senkow (WC44W2QVE4)`  
 Team ID: `WC44W2QVE4`  
 Targeted devices: iPhone + iPad (`targeted_device_family=2`).
 
