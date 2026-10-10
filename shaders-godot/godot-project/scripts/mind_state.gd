@@ -265,8 +265,12 @@ func to_dict(copy_collections: bool = true) -> Dictionary:
 		"workspace_ignited": workspace_ignited,
 		"system2_pending": system2_pending,
 		"eligibility_peak": eligibility_peak,
-		"episodic_retrieval_hint": episodic_retrieval_hint.duplicate(true) if copy_collections else episodic_retrieval_hint,
-		"bid_salience_mods": bid_salience_mods.duplicate(true) if copy_collections else bid_salience_mods,
+		"episodic_retrieval_hint": (
+			episodic_retrieval_hint.duplicate(true) if copy_collections
+			else episodic_retrieval_hint),
+		"bid_salience_mods": (
+			bid_salience_mods.duplicate(true) if copy_collections
+			else bid_salience_mods),
 		"writeback_cd": writeback_cd,
 		"sleep_depth": sleep_depth,
 		"dream_wisp": dream_wisp,
