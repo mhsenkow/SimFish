@@ -13,7 +13,7 @@ Godot already exports Android and ships a touch HUD (`mobile_hud.gd`,
 | Distribution cert | Present locally: `Apple Distribution: Michael Senkow (WC44W2QVE4)` |
 | Provisioning profile | Local profile **Loom App Store** is for `com.loom.storyteller` — **wrong app** |
 | App Store Connect app record | Needs create for walstad loom |
-| ASC API key on disk | `~/.appstoreconnect/private_keys/AuthKey_397A4HMVSU.p8` (needs Issuer ID) |
+| ASC API key on disk | `AuthKey_397A4HMVSU.p8` · Issuer `69a6de78-8ab8-47e3-e053-5b8c7c11a4d1` |
 | Guardian LLM on iOS | Disabled (same policy as Android / AGENTS.md) |
 
 ## One-time Apple setup
@@ -30,8 +30,7 @@ Godot already exports Android and ships a touch HUD (`mobile_hud.gd`,
 3. **App Store Connect**  
    Create the app: name **walstad loom**, bundle `com.mhsenkow.walstadloom`, primary category Games → Simulation (or Casual). Fill privacy nutrition labels (no tracking today).
 
-4. **ASC API Issuer ID**  
-   App Store Connect → Users and Access → Integrations → App Store Connect API. Copy the **Issuer ID** and keep it with Key ID `397A4HMVSU`. Local notarization/CI already expecting `NOTARY_API_ISSUER`.
+4. **ASC API Issuer ID** — found (same as Loom Storyteller): `69a6de78-8ab8-47e3-e053-5b8c7c11a4d1`.
 
 ## Export locally
 
