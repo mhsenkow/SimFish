@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.40](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.40)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.41](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.41)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
 ## Where things are at (October 2026)
 
@@ -182,6 +182,13 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - Population dynamics cycling — fry born, some eaten, survivors mature, breed, repeat
 
 ## Recent additions
+
+### v0.2.41 — the tank fills the desktop window
+
+- **No black bars:** the view grows past the old 16:9 frame. A 16:10 screen shows more room above and below; a wider screen shows more to the sides.
+- **Includes v0.2.40:** drawn nav icons on iPad and iPhone.
+
+[Release notes](docs/RELEASE_v0.2.41.md)
 
 ### v0.2.40 — drawn nav icons
 

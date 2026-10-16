@@ -80,6 +80,23 @@ func _run_all() -> bool:
 		return _fail("desktop tier label")
 	if _RenderResolutionAuditScript.DEFAULT_INTERNAL != Vector2i(1024, 576):
 		return _fail("shipping default must be 1024x576")
+	var same_aspect: Vector2i = _RenderResolutionAuditScript.size_for_window(
+		Vector2i(1024, 576), Vector2(1536, 864))
+	if same_aspect != Vector2i(1024, 576):
+		return _fail("16:9 window must keep the desktop tier")
+	var tall: Vector2i = _RenderResolutionAuditScript.size_for_window(
+		Vector2i(1024, 576), Vector2(1600, 1000))
+	var tall_aspect: float = float(tall.x) / float(tall.y)
+	if absf(tall_aspect - 1.6) > 0.03:
+		return _fail("16:10 window must match render aspect, got %s" % str(tall))
+	if absf(float(tall.x * tall.y) - float(1024 * 576)) / float(1024 * 576) > 0.08:
+		return _fail("window fit must keep the tier pixel budget")
+	var wide_fov: float = _RenderResolutionAuditScript.vertical_fov_for_window(55.0, 2.2)
+	if absf(wide_fov - 55.0) > 0.01:
+		return _fail("wider than 16:9 must keep authored fov")
+	var tall_fov: float = _RenderResolutionAuditScript.vertical_fov_for_window(55.0, 1.6)
+	if tall_fov <= 55.0:
+		return _fail("taller than 16:9 must open vertical fov so the frame fills")
 	# #87 warm list populated by tier + warm pass
 	_VoxelMatScript.warm_shader_variants(null)
 	if _ShaderWarmCaptureScript.count() < 2:

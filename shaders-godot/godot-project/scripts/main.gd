@@ -1869,6 +1869,12 @@ func _apply_render_config() -> void:
 		var oriented: Vector2i = _oriented_mobile_render_size(render_w, render_h)
 		render_w = oriented.x
 		render_h = oriented.y
+	# Match the live window. A fixed 16:9 buffer on a 16:10 desktop is what
+	# left the black bars; expand already grows the root viewport.
+	var fitted: Vector2i = RenderResolutionAudit.size_for_window(
+		Vector2i(render_w, render_h), get_viewport().get_visible_rect().size)
+	render_w = fitted.x
+	render_h = fitted.y
 	if not RenderResolutionAudit.post_matches_3d(render_w, render_h, render_w, render_h):
 		push_warning("Render post chain must match 3D internal resolution")
 	# SubViewport size.
@@ -1990,8 +1996,14 @@ func _apply_render_config() -> void:
 	# Camera FOV.
 	if camera != null:
 		camera.projection = Camera3D.PROJECTION_PERSPECTIVE
+		camera.keep_aspect = Camera3D.KEEP_HEIGHT
 		_current_projection_id = "perspective"
-		camera.fov = float(cfg.camera_fov)
+		var win_aspect: float = 1536.0 / 864.0
+		var win_size: Vector2 = get_viewport().get_visible_rect().size
+		if win_size.y > 1.0:
+			win_aspect = win_size.x / win_size.y
+		camera.fov = RenderResolutionAudit.vertical_fov_for_window(
+			float(cfg.camera_fov), win_aspect)
 	# Fog: read from environment if available.
 	if world != null:
 		var we := world.get_node_or_null("WorldEnvironment")

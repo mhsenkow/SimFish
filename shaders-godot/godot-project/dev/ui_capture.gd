@@ -37,9 +37,9 @@
 # cleared, so a state shows only what its steps opened.
 #
 # PASSES: every state is shot at two window sizes. The project stretches a
-# fixed 1536x864 viewport (stretch/mode=viewport, aspect keep), so a smaller
-# WINDOW alone only letterboxes the same layout. The narrow pass therefore also
-# sets content_scale_size to 900x600 so the layout itself is narrow — the
+# 1536x864 design viewport (stretch/mode=viewport, aspect expand), so the root
+# viewport grows to the window instead of leaving black bars. The narrow pass
+# still sets content_scale_size to 900x600 so the layout itself is narrow — the
 # stress case for anything placed with literals (UI_CAPTURE_NARROW_LOGICAL=0
 # for window-only).
 #

@@ -59,6 +59,44 @@ static func post_matches_3d(render_w: int, render_h: int, post_w: int, post_h: i
 	return post_w == render_w and post_h == render_h
 
 
+# Design frame. The project viewport starts here; stretch/aspect=expand grows
+# one axis so a 16:10 desktop (or a 4:3 iPad) is not letterboxed in black.
+const DESIGN_ASPECT: float = 1536.0 / 864.0
+
+
+# Keep the chosen tier's pixel count, but match the window so the nearest
+# blit is not a stretch and the root viewport has no empty bars.
+static func size_for_window(base: Vector2i, window: Vector2) -> Vector2i:
+	if base.x < 2 or base.y < 2 or window.x < 2.0 or window.y < 2.0:
+		return base
+	var window_aspect: float = window.x / window.y
+	var base_aspect: float = float(base.x) / float(base.y)
+	if absf(window_aspect - base_aspect) < 0.015:
+		return base
+	var area: float = float(base.x) * float(base.y)
+	var h: float = sqrt(area / window_aspect)
+	var wi: int = maxi(64, int(round(h * window_aspect)))
+	var hi: int = maxi(64, int(round(h)))
+	if wi % 2 == 1:
+		wi += 1
+	if hi % 2 == 1:
+		hi += 1
+	return Vector2i(wi, hi)
+
+
+# Vertical fov that keeps the 16:9 width when the window is taller, so the
+# extra space shows room instead of cropping the tank. Wider windows keep
+# the authored fov and reveal more to the sides.
+static func vertical_fov_for_window(base_fov: float, window_aspect: float) -> float:
+	var fov: float = clampf(base_fov, 20.0, 110.0)
+	if window_aspect >= DESIGN_ASPECT - 0.02:
+		return fov
+	var aspect: float = maxf(0.4, window_aspect)
+	var half: float = deg_to_rad(fov) * 0.5
+	var half_adj: float = atan(tan(half) * DESIGN_ASPECT / aspect)
+	return clampf(rad_to_deg(half_adj * 2.0), 20.0, 110.0)
+
+
 ## Display path must nearest-neighbor upscale the internal buffer. A non-nearest
 ## filter on the post TextureRect would blur pixel edges when the window resizes.
 static func nearest_upscale_ok(texture_filter: int) -> bool:

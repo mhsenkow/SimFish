@@ -50,10 +50,10 @@ https://mhsenkow.github.io/SimFish/docs/privacy.html
 2. Wait for the aquascape to build; pinch/drag camera; open Care / Feed.  
 3. Optional: Settings → confirm touch controls.  
 
-No login. Next store build **0.2.40 (54)**. Review currently has **0.2.39 (53)**.
+No login. Next store build **0.2.41 (55)**. Review currently has **0.2.39 (53)**.
 
 ## Build / encryption
-- Marketing version **0.2.40**, build **54** (in review: 0.2.39 / 53)  
+- Marketing version **0.2.41**, build **55** (in review: 0.2.39 / 53)  
 - `ITSAppUsesNonExemptEncryption` = false (HTTPS only; no custom crypto)
 
 ## API upload
@@ -74,7 +74,7 @@ cd build/ios
 xcodebuild -project WalstadLoom.xcodeproj -scheme WalstadLoom \
   -destination 'generic/platform=iOS' -archivePath Archive.xcarchive \
   DEVELOPMENT_TEAM=WC44W2QVE4 CODE_SIGN_STYLE=Automatic \
-  CURRENT_PROJECT_VERSION=54 -allowProvisioningUpdates archive
+  CURRENT_PROJECT_VERSION=55 -allowProvisioningUpdates archive
 xcodebuild -exportArchive -archivePath Archive.xcarchive \
   -exportPath export -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
@@ -90,7 +90,7 @@ xcodebuild -exportArchive -archivePath Archive.xcarchive \
 7. App Privacy → Data Not Collected  
 
 ## Status (2026-10-16)
-- Desktop and the site ship **v0.2.40** (drawn nav icons). Store review still has build **53 / 0.2.39** until the next upload.
+- Desktop and the site ship **v0.2.41** (window fill, plus the v0.2.40 nav icons). Store review still has build **53 / 0.2.39** until the next upload.
 - ASC app `6823230910` — iOS rejected pending the information reply; macOS was **WAITING_FOR_REVIEW** (build 53 / 0.2.39)  
 - Price **$2.99** USA base; categories Games → Simulation + Casual; secondary Entertainment  
 - Screenshots: iPhone 6.7" ×3, iPad 13" ×3, Mac 2560×1600 ×3 (App Preview video **not** required)  

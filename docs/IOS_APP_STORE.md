@@ -3,7 +3,7 @@
 Godot already exports Android and ships a touch HUD (`mobile_hud.gd`,
 `OS.has_feature("ios")`). This doc is the App Store checklist for iPhone + iPad.
 
-## Current state (v0.2.40)
+## Current state (v0.2.41)
 
 | Piece | Status |
 |---|---|
