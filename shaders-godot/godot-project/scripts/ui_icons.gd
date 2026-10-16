@@ -4,6 +4,8 @@
 class_name UiIcons
 extends RefCounted
 
+const NavIcons = preload("res://scripts/ui_nav_icons.gd")
+
 const RAIL: Dictionary = {
 	"portal": {"emoji": "◉", "text": "◉", "tip": "Follow portal (creature PiP)"},
 	"aquascape": {"emoji": "▣", "text": "▣", "tip": "Aquascape — sculpt substrate & hardscape"},
@@ -144,8 +146,14 @@ static func rail_tooltip(id: String) -> String:
 static func apply_rail_button(btn: Button, id: String, force_short: bool = false) -> void:
 	if btn == null:
 		return
-	btn.text = rail_label(id, force_short)
 	btn.tooltip_text = rail_tooltip(id)
+	# Drawn marks, not font glyphs. iPad's theme fallback does not supply the
+	# symbols IBM Plex is missing, so a text glyph there is an empty button.
+	if NavIcons.has(id):
+		NavIcons.apply(btn, id)
+	else:
+		btn.icon = null
+		btn.text = rail_label(id, force_short)
 
 
 static func chip_glyph(key: String) -> String:

@@ -1403,6 +1403,9 @@ static func style_rail_button(btn: Button, active: bool = false) -> void:
 	# a small icon lost in a big empty square.
 	btn.add_theme_font_size_override("font_size",
 		int(round(20.0 * clampf(edge / RAIL_BUTTON, 1.0, 1.6))))
+	if btn.icon != null:
+		btn.expand_icon = true
+		btn.add_theme_constant_override("icon_max_width", int(round(edge * 0.58)))
 	btn.add_theme_stylebox_override("normal",
 		_rail_button_stylebox(Color(0, 0, 0, 0)))
 	btn.add_theme_stylebox_override("hover",

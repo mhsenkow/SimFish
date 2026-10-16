@@ -11866,10 +11866,9 @@ func _add_immersive_toggle_button() -> void:
 	if hbox == null:
 		return
 	var btn := Button.new()
-	btn.text = UiIcons.rail_label("immersive", _is_mobile())
-	btn.tooltip_text = UiIcons.rail_tooltip("immersive")
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = menu_button.custom_minimum_size
+	UiIcons.apply_rail_button(btn, "immersive", _is_mobile())
 	btn.pressed.connect(_toggle_immersive_mode)
 	hbox.add_child(btn)
 	hbox.move_child(btn, menu_button.get_index() + 1)

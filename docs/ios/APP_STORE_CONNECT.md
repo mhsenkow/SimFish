@@ -2,7 +2,7 @@
 
 Bundle ID: `com.mhsenkow.walstadloom`  
 Team: `WC44W2QVE4` · Category: **Games → Simulation** (secondary: Casual)  
-Price: **Free** (GitHub releases stay free; Steam is separate)
+Price: **$2.99** USD base (GitHub releases stay free; Steam is separate)
 
 Shell: Godot 4.6 iOS export (`build/ios/`)
 
@@ -13,7 +13,7 @@ walstad loom
 A living pixel aquarium
 
 ## Promotional text (≤170)
-Start a planted Walstad tank, watch fish school and breed, and keep the water in balance. Free download; optional Steam version funds further development.
+Start a planted Walstad tank, watch fish school and breed, and keep the water in balance.
 
 ## Description
 walstad loom is a generative pixel-art aquarium. Plants grow, fish school and breed, shrimp climb, snails clean the glass — a closed nutrient loop that settles into a Walstad-style balance as you watch.
@@ -50,10 +50,10 @@ https://mhsenkow.github.io/SimFish/docs/privacy.html
 2. Wait for the aquascape to build; pinch/drag camera; open Care / Feed.  
 3. Optional: Settings → confirm touch controls.  
 
-No login. Build **0.2.39 (53)**.
+No login. Next store build **0.2.40 (54)**. Review currently has **0.2.39 (53)**.
 
 ## Build / encryption
-- Marketing version **0.2.39**, build **53**  
+- Marketing version **0.2.40**, build **54** (in review: 0.2.39 / 53)  
 - `ITSAppUsesNonExemptEncryption` = false (HTTPS only; no custom crypto)
 
 ## API upload
@@ -74,7 +74,7 @@ cd build/ios
 xcodebuild -project WalstadLoom.xcodeproj -scheme WalstadLoom \
   -destination 'generic/platform=iOS' -archivePath Archive.xcarchive \
   DEVELOPMENT_TEAM=WC44W2QVE4 CODE_SIGN_STYLE=Automatic \
-  CURRENT_PROJECT_VERSION=53 -allowProvisioningUpdates archive
+  CURRENT_PROJECT_VERSION=54 -allowProvisioningUpdates archive
 xcodebuild -exportArchive -archivePath Archive.xcarchive \
   -exportPath export -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
@@ -89,7 +89,28 @@ xcodebuild -exportArchive -archivePath Archive.xcarchive \
 6. Upload IPA → assign to 0.2.39 → screenshots (iPhone 6.7" + iPad 13")  
 7. App Privacy → Data Not Collected  
 
-## Status (2026-10-15)
-- Bundle ID created via API: resource `473345FBC6`  
-- IPA ready: `build/ios/export/WalstadLoom.ipa` (0.2.39 / 53, 77 MB)  
-- ASC app record: **blocked** until Account Holder accepts updated agreements (API cannot CREATE apps)  
+## Status (2026-10-16)
+- Desktop and the site ship **v0.2.40** (drawn nav icons). Store review still has build **53 / 0.2.39** until the next upload.
+- ASC app `6823230910` — iOS rejected pending the information reply; macOS was **WAITING_FOR_REVIEW** (build 53 / 0.2.39)  
+- Price **$2.99** USA base; categories Games → Simulation + Casual; secondary Entertainment  
+- Screenshots: iPhone 6.7" ×3, iPad 13" ×3, Mac 2560×1600 ×3 (App Preview video **not** required)  
+- Privacy: Data Not Collected + privacy URL live  
+- Still optional / Account Holder: real App Review phone (placeholder `+1 412 555 0100`), EU **DSA** trader status, Availability “Set Up” if prompted, more screenshots (up to 10)  
+
+
+### Mac App Store pkg (re-sign notes)
+Godot’s MAS export omits top-level `LSMinimumSystemVersion` (only `LSMinimumSystemVersionByArchitecture`). Preset `macOS App Store` now injects it via `additional_plist_content`. If rebuilding by hand:
+
+```bash
+/usr/libexec/PlistBuddy -c 'Add :LSMinimumSystemVersion string 11.0' \
+  build/mas/WalstadLoom.app/Contents/Info.plist
+codesign --force --deep --options runtime --timestamp \
+  --sign "Apple Distribution: Michael Senkow (WC44W2QVE4)" \
+  --entitlements mas.entitlements build/mas/WalstadLoom.app
+productbuild --component build/mas/WalstadLoom.app /Applications \
+  --sign "3rd Party Mac Developer Installer: Michael Senkow (WC44W2QVE4)" \
+  build/mas/WalstadLoom.pkg
+xcrun altool --upload-app -f build/mas/WalstadLoom.pkg -t osx \
+  --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
+```
+
