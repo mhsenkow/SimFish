@@ -105,9 +105,14 @@ build_macos_llama_dylibs() {
 	if [[ "$got" != "$want" ]]; then
 		echo "WARNING: submodule commit ${got:0:7} != expected ${want:0:7}; update LLAMA_SUBMODULE_COMMIT" >&2
 	fi
+	# GitHub's macOS runners expose Homebrew OpenSSL 4, and this pinned
+	# llama.cpp's cpp-httplib does not compile against it (X509_get_subject_name
+	# now returns const). The Godot plugin only needs the inference dylibs.
 	cmake -S "$tmpdir/godot_llama/third_party/llama.cpp" \
 		-B "$tmpdir/godot_llama/third_party/llama.cpp/build_shared" \
-		-DGGML_SHARED=ON -DBUILD_SHARED_LIBS=ON -DGGML_METAL=ON -DGGML_BLAS=ON
+		-DGGML_SHARED=ON -DBUILD_SHARED_LIBS=ON -DGGML_METAL=ON -DGGML_BLAS=ON \
+		-DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF \
+		-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
 	cmake --build "$tmpdir/godot_llama/third_party/llama.cpp/build_shared" \
 		--config Release -j"$(sysctl -n hw.ncpu)"
 	mkdir -p "$BIN"
