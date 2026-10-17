@@ -450,6 +450,8 @@ func _pick_nudge(stats: Dictionary) -> Dictionary:
 func _show_nudge(id: String, text: String, action: Callable) -> void:
 	if _main == null:
 		return
+	if bool(_main.get("_photo_framing")):
+		return
 	if _active_nudge_id == id and _nudge_panel != null:
 		return
 	_dismiss_nudge()

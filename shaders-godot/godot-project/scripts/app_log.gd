@@ -85,6 +85,15 @@ func _ready() -> void:
 		min_level = Level.DEBUG
 	_open_session()
 	info("app", "session start — %s" % session_header_line())
+	_keep_window_filled()
+	PanelTheme.install_hover_tooltips()
+	var win := get_window()
+	if win != null and not win.size_changed.is_connected(_keep_window_filled):
+		win.size_changed.connect(_keep_window_filled)
+
+
+func _keep_window_filled() -> void:
+	RenderResolutionAudit.fill_window(get_window())
 
 
 func _exit_tree() -> void:

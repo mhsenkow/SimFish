@@ -15,8 +15,6 @@
 
 extends Control
 
-const NavIcons = preload("res://scripts/ui_nav_icons.gd")
-
 @export var footer_speed_slot: NodePath
 
 signal pause_pressed
@@ -37,13 +35,14 @@ var _residents_btn: Button
 var _build_row: HBoxContainer = null
 var _is_mobile: bool = false
 var _immersive_mode: bool = false
+var _aquascape_mode: bool = false
 
 var _speed_container: HBoxContainer = null
 var _action_container: HBoxContainer = null
 
 var _idle_seconds: float = 0.0
 const IDLE_DIM_SECONDS: float = 5.0
-const DIM_MODULATE: Color = Color(1, 1, 1, 0.35)
+const DIM_MODULATE: Color = Color(1, 1, 1, 0.88)
 const LIT_MODULATE: Color = Color(1, 1, 1, 1)
 
 const SPEED_STEPS: Array = [
@@ -71,8 +70,12 @@ func _on_viewport_resized() -> void:
 		var btn_size: Vector2 = _btn_size()
 		var fs: int = _font_size()
 		for btn in _all_buttons():
-			btn.custom_minimum_size = btn_size
-			btn.add_theme_font_size_override("font_size", fs)
+			if btn.text.contains(" "):
+				btn.custom_minimum_size = Vector2(maxf(btn_size.x, 76.0), btn_size.y)
+				btn.add_theme_font_size_override("font_size", 15)
+			else:
+				btn.custom_minimum_size = btn_size
+				btn.add_theme_font_size_override("font_size", fs)
 			if btn.icon != null:
 				btn.add_theme_constant_override("icon_max_width", int(round(btn_size.x * 0.62)))
 	_apply_layout()
@@ -115,7 +118,7 @@ func set_immersive_mode(on: bool) -> void:
 	if _action_container != null:
 		_action_container.visible = not on
 	if _build_row != null:
-		_build_row.visible = not on
+		_build_row.visible = _aquascape_mode and not on
 	visible = true
 
 
@@ -124,12 +127,12 @@ func sync_time_scale(ts: float) -> void:
 	if _pause_btn == null:
 		return
 	if ts <= 0.0:
-		NavIcons.apply(_pause_btn, "play", Color8(220, 180, 80))
+		UiIcons.apply_mark(_pause_btn, "play")
 		for s in _speed_btns.keys():
 			PanelTheme.style_hud_toggle_button(_speed_btns[s], false)
 			_speed_btns[s].modulate = Color(0.65, 0.65, 0.65)
 		return
-	NavIcons.apply(_pause_btn, "pause", Color8(220, 180, 80))
+	UiIcons.apply_mark(_pause_btn, "pause")
 	var best_key: float = 1.0
 	var best_diff: float = INF
 	for s in _speed_btns.keys():
@@ -212,28 +215,28 @@ func _build_action_row() -> void:
 	_action_container.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_action_container)
 
-	_camera_views_btn = _make_btn("", Color8(180, 210, 240), "camera")
+	_camera_views_btn = _make_btn(tr("Views"), Color8(180, 210, 240), "camera")
 	_camera_views_btn.tooltip_text = tr("Open Camera Views — presets, saved views, FOV, auto-orbit")
 	_camera_views_btn.pressed.connect(func():
 		_buzz(14)
 		camera_views_pressed.emit())
 	_action_container.add_child(_camera_views_btn)
 
-	_residents_btn = _make_btn("", Color8(200, 200, 240), "residents")
+	_residents_btn = _make_btn(tr("Fish"), Color8(200, 200, 240), "residents")
 	_residents_btn.tooltip_text = tr("Residents — follow & favorite your creatures")
 	_residents_btn.pressed.connect(func():
 		_buzz(14)
 		residents_pressed.emit())
 	_action_container.add_child(_residents_btn)
 
-	_photo_btn = _make_btn("", Color8(150, 200, 170), "photo")
-	_photo_btn.tooltip_text = tr("Take a screenshot of the tank")
+	_photo_btn = _make_btn(tr("Photo"), Color8(150, 200, 170), "photo")
+	_photo_btn.tooltip_text = tr("Photo mode — hide the menus and frame a shot")
 	_photo_btn.pressed.connect(func():
 		_buzz(25)
 		photo_pressed.emit())
 	_action_container.add_child(_photo_btn)
 
-	_undo_btn = _make_btn("", Color8(220, 130, 130), "undo")
+	_undo_btn = _make_btn(tr("Undo"), Color8(220, 130, 130), "undo")
 	_undo_btn.tooltip_text = tr("Undo the last aquascape change")
 	_undo_btn.pressed.connect(func():
 		_buzz(15)
@@ -250,25 +253,25 @@ func _build_build_tool_row() -> void:
 	_build_row.visible = false
 	add_child(_build_row)
 	var tools: Array[Dictionary] = [
-		{"tool": "block", "icon": "block"},
-		{"tool": "eraser", "icon": "eraser"},
-		{"tool": "line", "icon": "line"},
-		{"tool": "object", "icon": "object"},
-		{"tool": "paste", "icon": "paste"},
+		{"tool": "block", "icon": "block", "label": tr("Sculpt")},
+		{"tool": "eraser", "icon": "eraser", "label": tr("Erase")},
+		{"tool": "line", "icon": "line", "label": tr("Line")},
+		{"tool": "object", "icon": "object", "label": tr("Place")},
+		{"tool": "paste", "icon": "paste", "label": tr("Paste")},
 	]
 	for t in tools:
-		var btn := _make_btn("", Color8(200, 220, 255), String(t["icon"]))
+		var btn := _make_btn(String(t["label"]), Color8(200, 220, 255), String(t["icon"]))
 		var tool_key: String = String(t["tool"])
 		btn.pressed.connect(func():
 			_buzz(10)
 			aquascape_tool_pressed.emit(tool_key))
 		_build_row.add_child(btn)
-	var up := _make_btn("", Color8(180, 200, 220), "up")
+	var up := _make_btn(tr("Up"), Color8(180, 200, 220), "up")
 	up.pressed.connect(func():
 		_buzz(8)
 		build_plane_pressed.emit(1.0))
 	_build_row.add_child(up)
-	var down := _make_btn("", Color8(180, 200, 220), "down")
+	var down := _make_btn(tr("Down"), Color8(180, 200, 220), "down")
 	down.pressed.connect(func():
 		_buzz(8)
 		build_plane_pressed.emit(-1.0))
@@ -283,29 +286,36 @@ func _apply_layout() -> void:
 	var win: Vector2 = get_viewport().get_visible_rect().size
 	var is_portrait: bool = _is_mobile and win.y > win.x
 	var bottom_extra: float = PanelTheme.RAIL_BOTTOM_HEIGHT if is_portrait else 0.0
-	# Sit above the FooterBar dock (speed controls live inside it).
-	var footer_clearance: float = 52.0
-	var bottom_y: float = safe.position.y + safe.size.y - footer_clearance - 12.0 - bottom_extra
-	var right_x: float = safe.position.x + safe.size.x - 16.0
+	# Sit above the FooterBar dock and clear of the right-hand rail so
+	# RightRail never overhangs the right-most action button.
+	var footer_clearance: float = 56.0
+	var rail_inset: float = 12.0 if is_portrait else (PanelTheme.rail_chrome_inset(get_viewport()) + 8.0)
+	var bottom_y: float = safe.position.y + safe.size.y - footer_clearance - 10.0 - bottom_extra
+	var right_x: float = minf(safe.position.x + safe.size.x - 16.0, win.x - rail_inset)
 	_action_container.anchor_left = 0.0
 	_action_container.anchor_top = 0.0
 	_action_container.anchor_right = 0.0
 	_action_container.anchor_bottom = 0.0
-	var action_w: float = btn_size.x * 3.0 + 6.0 * 2.0 + 8.0
+	var action_min: Vector2 = _action_container.get_combined_minimum_size()
+	var action_w: float = maxf(action_min.x, btn_size.x * 3.0 + 16.0)
 	_action_container.offset_left = right_x - action_w
 	_action_container.offset_top = bottom_y - btn_size.y
 	_action_container.offset_right = right_x
 	_action_container.offset_bottom = bottom_y
 	if _build_row != null:
-		var build_w: float = btn_size.x * 7.0 + 4.0 * 6.0 + 8.0
+		var build_min: Vector2 = _build_row.get_combined_minimum_size()
+		var build_w: float = maxf(build_min.x, btn_size.x * 7.0 + 28.0)
+		var left_clear: float = safe.position.x + 304.0
+		var max_left: float = maxf(safe.position.x + 12.0, _action_container.offset_left - build_w - 12.0)
+		var build_left: float = minf(left_clear, max_left)
 		_build_row.anchor_left = 0.0
 		_build_row.anchor_top = 0.0
 		_build_row.anchor_right = 0.0
 		_build_row.anchor_bottom = 0.0
-		_build_row.offset_left = safe.position.x + 12.0
-		_build_row.offset_top = bottom_y - btn_size.y * 2.0 - 8.0
-		_build_row.offset_right = safe.position.x + 12.0 + build_w
-		_build_row.offset_bottom = bottom_y - btn_size.y - 8.0
+		_build_row.offset_left = build_left
+		_build_row.offset_top = bottom_y - btn_size.y
+		_build_row.offset_right = build_left + build_w
+		_build_row.offset_bottom = bottom_y
 
 
 func _make_btn(label: String, color: Color, icon_id: String = "") -> Button:
@@ -318,11 +328,14 @@ func _make_btn(label: String, color: Color, icon_id: String = "") -> Button:
 	btn.mouse_filter = Control.MOUSE_FILTER_STOP
 	PanelTheme.style_hud_toggle_button(btn, false)
 	if icon_id != "":
-		NavIcons.apply(btn, icon_id, color)
-		# style_hud_toggle_button clears the width; put the finger target back
-		# so the drawn mark has a square to sit in.
 		btn.custom_minimum_size = _btn_size()
-		btn.add_theme_constant_override("icon_max_width", int(round(_btn_size().x * 0.62)))
+		UiIcons.apply_mark(btn, icon_id)
+		if label != "":
+			var mark: String = UiIcons.mark_text(icon_id)
+			btn.text = ("%s %s" % [mark, label]) if mark != "" else label
+			PanelTheme.apply_font(btn, UiIcons.mark_font(), 15)
+			btn.custom_minimum_size = Vector2(maxf(_btn_size().x, 76.0), _btn_size().y)
+		btn.tooltip_text = String(UiIcons.MARK_TIPS.get(icon_id, btn.tooltip_text))
 	return btn
 
 
@@ -333,10 +346,12 @@ func _highlight_speed(active: float) -> void:
 
 
 func set_aquascape_mode(on: bool) -> void:
+	_aquascape_mode = on
 	if _undo_btn != null:
 		_undo_btn.visible = on
 	if _build_row != null:
 		_build_row.visible = on and not _immersive_mode
+	_apply_layout()
 
 
 func _buzz(duration_ms: int) -> void:

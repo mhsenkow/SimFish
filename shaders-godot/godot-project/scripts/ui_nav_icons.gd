@@ -4,6 +4,7 @@
 extends RefCounted
 
 const _SCALE: int = 3
+const _DIR := "res://assets/ui/nav/"
 
 static var _cache: Dictionary = {}
 
@@ -293,12 +294,16 @@ const _PATTERNS: Dictionary = {
 
 
 static func has(id: String) -> bool:
-	return _PATTERNS.has(id)
+	return FileAccess.file_exists(_DIR + id + ".png") or _PATTERNS.has(id)
 
 
 static func texture(id: String) -> Texture2D:
 	if _cache.has(id):
 		return _cache[id] as Texture2D
+	var filed := _texture_from_file(id)
+	if filed != null:
+		_cache[id] = filed
+		return filed
 	if not _PATTERNS.has(id):
 		return null
 	var rows: Array = _PATTERNS[id]
@@ -318,6 +323,20 @@ static func texture(id: String) -> Texture2D:
 	return tex
 
 
+static func _texture_from_file(id: String) -> Texture2D:
+	var path := _DIR + id + ".png"
+	if not FileAccess.file_exists(path):
+		return null
+	if ResourceLoader.exists(path):
+		var loaded: Resource = ResourceLoader.load(path)
+		if loaded is Texture2D:
+			return loaded as Texture2D
+	var img := Image.new()
+	if img.load(path) != OK:
+		return null
+	return ImageTexture.create_from_image(img)
+
+
 static func apply(btn: Button, id: String, tint: Color = Color(0.93, 0.95, 0.98, 1)) -> void:
 	var tex := texture(id)
 	if btn == null or tex == null:
@@ -333,7 +352,13 @@ static func apply(btn: Button, id: String, tint: Color = Color(0.93, 0.95, 0.98,
 		edge = btn.custom_minimum_size.y
 	if edge < 8.0:
 		edge = 48.0
-	btn.add_theme_constant_override("icon_max_width", int(round(edge * 0.58)))
+	# Icon-only buttons with a zero width collapse to nothing. The top-left
+	# Menu and Focus controls were that case.
+	if btn.custom_minimum_size.x < 8.0:
+		var tall: float = maxf(edge, btn.custom_minimum_size.y)
+		btn.custom_minimum_size = Vector2(tall, tall)
+		edge = tall
+	btn.add_theme_constant_override("icon_max_width", int(round(edge * 0.62)))
 	btn.add_theme_color_override("icon_normal_color", tint)
 	btn.add_theme_color_override("icon_hover_color", Color.WHITE)
 	btn.add_theme_color_override("icon_pressed_color", Color.WHITE)

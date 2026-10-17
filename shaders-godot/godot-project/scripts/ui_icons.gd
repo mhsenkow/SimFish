@@ -1,10 +1,60 @@
-# Cross-platform HUD glyphs. One monochrome geometric language everywhere
-# (VISUAL_POLISH #179–#181) — no color-emoji / ASCII split. Tooltips carry
-# the readable name; buttons show a single consistent mark.
+# HUD marks. Buttons show one basic emoji; the tooltip carries the name.
+# The font is the system emoji face, with a symbol fallback, so iPad is not
+# stuck with IBM Plex's empty boxes.
 class_name UiIcons
 extends RefCounted
 
-const NavIcons = preload("res://scripts/ui_nav_icons.gd")
+const MARKS: Dictionary = {
+	"menu": "🏠",
+	"immersive": "👁️",
+	"create": "➕",
+	"world": "🐠",
+	"appearance": "☀️",
+	"system": "⚙️",
+	"alerts": "🔔",
+	"help": "❓",
+	"portal": "🔍",
+	"aquascape": "🪨",
+	"creator": "✨",
+	"adopt": "🐠",
+	"library": "📚",
+	"notifications": "🔔",
+	"render": "🎨",
+	"sound": "🔊",
+	"settings": "⚙️",
+	"light": "💡",
+	"pause": "⏸️",
+	"play": "▶️",
+	"photo": "📷",
+	"undo": "↩️",
+	"camera": "🎥",
+	"residents": "🐟",
+	"block": "🧱",
+	"eraser": "❌",
+	"line": "✏️",
+	"object": "🌿",
+	"paste": "📋",
+	"up": "⬆️",
+	"down": "⬇️",
+}
+
+const MARK_TIPS: Dictionary = {
+	"pause": "Pause or resume the tank (P)",
+	"play": "Resume the tank (P)",
+	"photo": "Photo mode — frame a shot",
+	"undo": "Undo the last change",
+	"camera": "Camera views",
+	"residents": "Residents — follow and favorite creatures",
+	"block": "Place a block",
+	"eraser": "Erase",
+	"line": "Draw a line",
+	"object": "Place an object",
+	"paste": "Paste",
+	"up": "Raise the build plane",
+	"down": "Lower the build plane",
+}
+
+static var _mark_font: Font
 
 const RAIL: Dictionary = {
 	"portal": {"emoji": "◉", "text": "◉", "tip": "Follow portal (creature PiP)"},
@@ -143,14 +193,57 @@ static func rail_tooltip(id: String) -> String:
 	return String(e.get("tip", id))
 
 
+static func mark_font() -> Font:
+	if _mark_font != null:
+		return _mark_font
+	var emoji := SystemFont.new()
+	emoji.font_names = PackedStringArray([
+		"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+	])
+	var symbols := SystemFont.new()
+	symbols.font_names = PackedStringArray([
+		"Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2", "DejaVu Sans",
+	])
+	var chain: Array[Font] = [symbols, PanelTheme.FONT_SANS]
+	emoji.fallbacks = chain
+	_mark_font = emoji
+	return _mark_font
+
+
+static func mark_text(id: String) -> String:
+	return String(MARKS.get(id, ""))
+
+
+static func apply_mark(btn: Button, id: String) -> void:
+	if btn == null:
+		return
+	var mark := mark_text(id)
+	if mark == "":
+		return
+	btn.icon = null
+	btn.text = mark
+	btn.clip_text = false
+	btn.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var edge: float = maxf(btn.custom_minimum_size.x, btn.custom_minimum_size.y)
+	if edge < 36.0:
+		edge = 44.0
+	btn.custom_minimum_size = Vector2(edge, edge)
+	PanelTheme.apply_font(btn, mark_font(), int(round(edge * 0.46)))
+	var fg := Color(0.96, 0.97, 0.99)
+	btn.add_theme_color_override("font_color", fg)
+	btn.add_theme_color_override("font_hover_color", Color.WHITE)
+	btn.add_theme_color_override("font_pressed_color", Color.WHITE)
+	btn.add_theme_color_override("font_focus_color", Color.WHITE)
+	if MARK_TIPS.has(id) and btn.tooltip_text.strip_edges() == "":
+		btn.tooltip_text = String(MARK_TIPS[id])
+
+
 static func apply_rail_button(btn: Button, id: String, force_short: bool = false) -> void:
 	if btn == null:
 		return
 	btn.tooltip_text = rail_tooltip(id)
-	# Drawn marks, not font glyphs. iPad's theme fallback does not supply the
-	# symbols IBM Plex is missing, so a text glyph there is an empty button.
-	if NavIcons.has(id):
-		NavIcons.apply(btn, id)
+	if mark_text(id) != "":
+		apply_mark(btn, id)
 	else:
 		btn.icon = null
 		btn.text = rail_label(id, force_short)
@@ -188,15 +281,9 @@ static func feed_label(id: String, force_short: bool = false) -> String:
 	return String(e.get("name", e.get("text", id)))
 
 
-static func feed_button_label(id: String, force_short: bool = false) -> String:
+static func feed_button_label(id: String, _force_short: bool = false) -> String:
 	var e: Dictionary = FEED.get(id, {})
-	var name: String = String(e.get("name", e.get("text", id)))
-	if force_short:
-		return String(e.get("text", name))
-	var em: String = String(e.get("emoji", ""))
-	if em.strip_edges() != "":
-		return "%s %s" % [em, name]
-	return name
+	return String(e.get("name", e.get("text", id)))
 
 
 static func feed_tooltip(id: String) -> String:
@@ -215,15 +302,9 @@ static func apply_feed_button(btn: Button, id: String, active: bool = false,
 	btn.add_theme_constant_override("outline_size", 0)
 
 
-static func care_button_label(id: String, force_short: bool = false) -> String:
+static func care_button_label(id: String, _force_short: bool = false) -> String:
 	var e: Dictionary = CARE.get(id, {})
-	var name: String = String(e.get("name", e.get("text", id)))
-	if force_short:
-		return String(e.get("text", name))
-	var em: String = String(e.get("emoji", ""))
-	if em.strip_edges() != "":
-		return "%s %s" % [em, name]
-	return name
+	return String(e.get("name", e.get("text", id)))
 
 
 static func care_tooltip(id: String) -> String:

@@ -60,8 +60,22 @@ static func post_matches_3d(render_w: int, render_h: int, post_w: int, post_h: i
 
 
 # Design frame. The project viewport starts here; stretch/aspect=expand grows
-# one axis so a 16:10 desktop (or a 4:3 iPad) is not letterboxed in black.
+# one axis so a wider or taller window is not letterboxed in black.
 const DESIGN_ASPECT: float = 1536.0 / 864.0
+
+
+# Fill the window and keep proportions. Ignore-aspect squashed the picture;
+# a kept frame is the black bars.
+static func fill_window(win: Window) -> void:
+	if win == null:
+		return
+	win.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
+	win.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+	win.content_scale_stretch = Window.CONTENT_SCALE_STRETCH_FRACTIONAL
+	if DisplayServer.get_name() == "headless":
+		return
+	if win.mode != Window.MODE_FULLSCREEN and win.mode != Window.MODE_EXCLUSIVE_FULLSCREEN:
+		win.mode = Window.MODE_FULLSCREEN
 
 
 # Keep the chosen tier's pixel count, but match the window so the nearest

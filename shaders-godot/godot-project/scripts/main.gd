@@ -27,6 +27,7 @@ const _TankMindScript = preload("res://scripts/tank_mind.gd")
 const _TankDialogueScript = preload("res://scripts/tank_dialogue.gd")
 const ColonyMind = preload("res://scripts/colony_mind.gd")
 const UiPanelManagerScript = preload("res://scripts/ui_panel_manager.gd")
+const _DayTimeline = preload("res://scripts/day_timeline.gd")
 const OnboardingRuntimeScript = preload("res://scripts/onboarding_runtime.gd")
 const _QuantizeShader = preload("res://shaders/palette_quantize.gdshader")
 const _QuantizePotatoShader = preload("res://shaders/palette_quantize_potato.gdshader")
@@ -85,6 +86,16 @@ var _vessel_picker: Control = null
 # Focus / immersive mode — hides chrome for an unobstructed tank view.
 var _immersive_mode: bool = false
 var _immersive_exit_btn: Button = null
+# Photo framing: the tank fills the screen. A small strip holds the clock,
+# the shutter, and a way out. That strip can hide too.
+var _photo_framing: bool = false
+var _photo_chrome_on: bool = true
+var _photo_shot_restore_chrome: bool = true
+var _photo_mode_saved: Array = []
+var _photo_strip: PanelContainer = null
+var _photo_reveal: Button = null
+var _day_clock: Control = null
+var _photo_clock: Control = null
 var _light_btn: Button = null
 var _light_panel: PanelContainer = null
 # Top-of-panel preset picker. "custom" means "user is on their own".
@@ -456,14 +467,18 @@ func _clamp_radius_to_frame(r: float) -> float:
 # double-tap reset, and the new "Reset view" button in the Camera Views
 # panel. Calls _apply_camera() at the end so the change is immediate.
 func _reset_camera_to_default() -> void:
+	# Follow locks the orbit every frame, so a reset that leaves it on
+	# snaps straight back and looks like F did nothing.
+	clear_follow()
 	var d: Dictionary = _default_camera_for_tank()
 	target = d["target"]
 	radius = d["radius"]
 	yaw = d["yaw"]
 	pitch = d["pitch"]
 	_abandon_panel_framing()
-	_release_cinematic_follow()
 	_auto_orbit = false
+	_cam_zoom_vel = 0.0
+	_zoom_budget = 0.0
 	_apply_camera()
 
 
@@ -480,6 +495,9 @@ func _abandon_panel_framing() -> void:
 func _zoom_camera_by_factor(factor: float, coast: bool = false) -> void:
 	if camera == null:
 		return
+	# Cinematic follow rewrites radius every frame. A pinch has to take
+	# the camera back or the zoom is undone before the next draw.
+	_release_cinematic_follow()
 	if _current_projection_id == "perspective":
 		var prev_r: float = radius
 		radius = CameraController.zoom_radius(radius, factor)
@@ -1388,6 +1406,7 @@ const PINCH_ZOOM_SENSITIVITY: float = 0.008
 # Flag: true while any finger is touching the screen. Used to suppress
 # mouse-polling so emulated mouse events from touch don't double-fire.
 var _touch_active: bool = false
+var _last_touch_event_msec: int = 0
 # Mobile HUD reference (wired in _ready if the node exists).
 var _mobile_hud: Control = null
 
@@ -1530,6 +1549,13 @@ func _is_mobile() -> bool:
 
 
 func _is_touch_active() -> bool:
+	if _touch_active and _last_touch_event_msec > 0 \
+			and (Time.get_ticks_msec() - _last_touch_event_msec) > 650:
+		_touches.clear()
+		_touch_prev.clear()
+		_touch_active = false
+		_pinch_distance = 0.0
+		_pinch_angle = 0.0
 	return _touch_active
 
 
@@ -1658,6 +1684,8 @@ func _ready() -> void:
 	_add_tank_lights_toggle()
 	_ensure_notifications_ui()
 	_build_hud_chips()
+	_ensure_day_clock()
+	_clear_stuck_photo_look()
 	_setup_rail_groups()
 	_on_viewport_resized()
 	get_viewport().size_changed.connect(_on_viewport_resized)
@@ -3988,12 +4016,28 @@ func _on_eight() -> void:
 
 
 func _take_photo() -> void:
-	var world_node := get_node_or_null("SubViewport/World")
-	if world_node != null and world_node.has_method("begin_screenshot_boost"):
-		world_node.begin_screenshot_boost(3.0)
+	_clear_stuck_photo_look()
 	_play_photo_flash()
+	if _photo_framing:
+		if _photo_strip != null:
+			_photo_strip.visible = false
+		if _photo_reveal != null:
+			_photo_reveal.visible = false
 	_set_hud_visible_for_photo(false)
 	_request_photo_readback()
+
+
+func _clear_stuck_photo_look() -> void:
+	var cfg := _cfg()
+	if cfg == null:
+		return
+	cfg.set("photo_handheld", false)
+	cfg.set("photo_macro_mode", false)
+	cfg.set("photo_horizon_roll_deg", 0.0)
+	cfg.set("photo_sensor_noise", 0.0)
+	AestheticsRuntime.apply_photo_mode_grade(cfg, false)
+	if camera != null:
+		camera.rotation.z = 0.0
 
 
 func _play_photo_flash() -> void:
@@ -4033,6 +4077,7 @@ func _request_photo_readback() -> void:
 		return
 	if not _request_viewport_image(_finish_photo_with_hud_restore, true):
 		_set_hud_visible_for_photo(true)
+		_restore_photo_chrome_after_shot()
 		_show_photo_toast("Camera is busy — try again in a moment")
 
 
@@ -4051,7 +4096,8 @@ func _set_hud_visible_for_photo(visible: bool) -> void:
 			if is_instance_valid(control):
 				control.visible = bool(saved.visible)
 		_photo_hud_state.clear()
-	_set_photo_letterbox(not visible)
+	if not _photo_framing:
+		_set_photo_letterbox(not visible)
 
 
 func _set_photo_letterbox(on: bool) -> void:
@@ -4115,6 +4161,7 @@ func _update_palette_debug_label(on: bool) -> void:
 
 func _finish_photo_with_hud_restore(img: Image) -> void:
 	_set_hud_visible_for_photo(true)
+	_restore_photo_chrome_after_shot()
 	if img != null and not img.is_empty():
 		_finish_photo(img)
 	else:
@@ -5497,7 +5544,7 @@ func _refresh_keeper_history() -> void:
 
 func _tank_channel_available() -> bool:
 	return _sim != null and _voice_ui_enabled() and KeeperInput.ears_enabled() \
-			and not _immersive_mode and not _aquascape.is_active and not _timelapse_active
+			and not _immersive_mode and not _photo_framing and not _aquascape.is_active and not _timelapse_active
 
 
 func _keeper_say_available() -> bool:
@@ -7184,6 +7231,23 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
+	# F resets the view. The polled shortcut is skipped while a finger is
+	# down, and on iPad that is most of the time a keyboard is used.
+	if event is InputEventKey and event.pressed and not event.echo \
+			and not _typing_focus_in_ui():
+		var fk: InputEventKey = event as InputEventKey
+		if fk.keycode == KEY_F and not fk.ctrl_pressed and not fk.meta_pressed \
+				and not fk.alt_pressed:
+			_reset_camera_to_default()
+			_key_was_pressed[KEY_F] = true
+			get_viewport().set_input_as_handled()
+			return
+		if fk.keycode == KEY_ESCAPE and _photo_framing:
+			_exit_photo_mode()
+			_key_was_pressed[KEY_ESCAPE] = true
+			get_viewport().set_input_as_handled()
+			return
+
 	if event is InputEventKey and event.pressed and not event.echo \
 			and not _typing_focus_in_ui():
 		var ek: InputEventKey = event as InputEventKey
@@ -7211,7 +7275,7 @@ func _input(event: InputEvent) -> void:
 	#   two fingers up / down     → zoom (push in / pull out)
 	#   two fingers left / right  → orbit yaw (spin the tank)
 	#   Shift + two fingers       → pan, both axes
-	if event is InputEventPanGesture and not _is_touch_active():
+	if event is InputEventPanGesture:
 		var pg: InputEventPanGesture = event as InputEventPanGesture
 		if _click_hits_interactive_hud(pg.position):
 			return
@@ -7220,7 +7284,7 @@ func _input(event: InputEvent) -> void:
 		return
 
 	# ---- macOS trackpad pinch (desktop; mobile uses ScreenDrag pinch) ----
-	if event is InputEventMagnifyGesture and not _is_touch_active():
+	if event is InputEventMagnifyGesture:
 		var mg: InputEventMagnifyGesture = event as InputEventMagnifyGesture
 		if _click_hits_interactive_hud(mg.position):
 			return
@@ -7233,6 +7297,16 @@ func _input(event: InputEvent) -> void:
 			_queue_zoom(CameraController.magnify_log_zoom(mg.factor), mg.position)
 		get_viewport().set_input_as_handled()
 		return
+
+	if event is InputEventMouseButton:
+		var wheel_mb: InputEventMouseButton = event as InputEventMouseButton
+		if wheel_mb.pressed and (wheel_mb.button_index == MOUSE_BUTTON_WHEEL_UP \
+				or wheel_mb.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+			if _click_hits_interactive_hud(wheel_mb.position):
+				return
+			_zoom_from_scroll_event(wheel_mb)
+			get_viewport().set_input_as_handled()
+			return
 
 	# ---- Mouse events (skip when touch is active) ----
 	if _is_touch_active():
@@ -7341,14 +7415,20 @@ func _input(event: InputEvent) -> void:
 # ---- Touch gesture handlers ----
 
 func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
+	_last_touch_event_msec = Time.get_ticks_msec()
 	if ev.pressed:
+		if _mobile_hud != null and _mobile_hud.has_method("notify_input"):
+			_mobile_hud.notify_input()
+		if _click_hits_interactive_hud(ev.position):
+			_touches.erase(ev.index)
+			_touch_prev.erase(ev.index)
+			if _touches.is_empty():
+				_touch_active = false
+			return
 		# Finger down.
 		_touches[ev.index] = ev.position
 		_touch_prev[ev.index] = ev.position
 		_touch_active = true
-		# Keep the mobile HUD lit while the user is interacting.
-		if _mobile_hud != null and _mobile_hud.has_method("notify_input"):
-			_mobile_hud.notify_input()
 
 		if _touches.size() == 1:
 			# First finger: start tap / long-press timers.
@@ -7451,6 +7531,9 @@ func _handle_screen_touch(ev: InputEventScreenTouch) -> void:
 
 
 func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
+	_last_touch_event_msec = Time.get_ticks_msec()
+	if not _touches.has(ev.index) and _click_hits_interactive_hud(ev.position):
+		return
 	_touches[ev.index] = ev.position
 	if _mobile_hud != null and _mobile_hud.has_method("notify_input"):
 		_mobile_hud.notify_input()
@@ -7508,11 +7591,12 @@ func _handle_screen_drag(ev: InputEventScreenDrag) -> void:
 		var p0: Vector2 = positions[0] as Vector2
 		var p1: Vector2 = positions[1] as Vector2
 
-		# Pinch zoom: compare current finger distance to previous frame.
+		# Pinch zoom: radius tracks the finger distance. The old formula
+		# changed it by a fraction of a percent per frame, so a pinch
+		# looked like it did nothing.
 		var cur_dist: float = p0.distance_to(p1)
-		if _pinch_distance > 10.0:  # avoid division issues on initial frame
-			var zoom_delta: float = (cur_dist - _pinch_distance) * PINCH_ZOOM_SENSITIVITY
-			_zoom_camera_by_factor(1.0 - zoom_delta / 100.0)
+		if _pinch_distance > 10.0 and cur_dist > 10.0:
+			_zoom_camera_by_factor(_pinch_distance / cur_dist)
 		_pinch_distance = cur_dist
 
 		# Twist: angle between the two fingers. Apply the delta to yaw so a
@@ -7637,7 +7721,7 @@ func _setup_mobile_ui() -> void:
 	_mobile_hud = get_node_or_null("MobileHUD")
 	if _mobile_hud != null:
 		if _mobile_hud.has_signal("photo_pressed"):
-			_mobile_hud.connect("photo_pressed", _take_photo)
+			_mobile_hud.connect("photo_pressed", _toggle_photo_mode)
 		if _mobile_hud.has_signal("undo_pressed"):
 			_mobile_hud.connect("undo_pressed", _aquascape_undo)
 		if _mobile_hud.has_signal("water_pressed"):
@@ -7842,6 +7926,7 @@ var _last_state_sub: String = ""
 # change — so a paused or steady-speed tank does zero UI work on idle frames,
 # while a speed nudge or phase rollover still updates instantly.
 func _refresh_state_chip() -> void:
+	_sync_day_clock()
 	if _chips.is_empty():
 		return
 	var state_value: String = "1×"
@@ -7916,10 +8001,9 @@ func _render_header() -> void:
 			# str() on the value, which renders cleanly: 4.0 → "4", 1.5 → "1.5".
 			state_value = "%s×" % ts
 		state_sub = _day_label(float(_sim.day_phase))
-		if String(_stats.get("hud_mode", "")) == "cycle":
-			var day_l: String = String(_stats.get("sim_day_label", ""))
-			if not day_l.is_empty():
-				state_sub = "%s · %s" % [day_l, state_sub]
+		var day_l: String = String(_stats.get("sim_day_label", ""))
+		if not day_l.is_empty():
+			state_sub = "%s · %s" % [day_l, state_sub]
 	_update_chip("state", state_value, state_sub, true, state_warn)
 
 	# Fauna chips. On compact layout the shrimp+snails chips are hidden and
@@ -8258,14 +8342,6 @@ func _on_viewport_resized() -> void:
 	_apply_render_config()
 
 
-# Resize the Display TextureRect based on the current TankConfig settings.
-# Two modes:
-#   integer_upscale = false (default) → full-rect anchored display, stretched
-#     to the window. Subpixel shimmer is possible at non-integer ratios but
-#     the image fills the screen.
-#   integer_upscale = true → display sized to (sub_viewport.size × N) where
-#     N is the largest integer that fits, centered, letterboxed. Every
-#     render pixel maps to an exact N×N block on the monitor — no shimmer.
 # Rolling buffer of recent frame times. The Render panel reads this to
 # draw its mini-sparkline; the adaptive-quality controller reads it to
 # decide when to step the resolution up or down.
@@ -8674,63 +8750,23 @@ func _tank_health_grade(transmittance: float) -> float:
 	return AestheticsRuntime.health_grade_from_state(clarity, fauna, algae_ok, plants)
 
 
+# The tank picture covers the window on both axes. A kept frame used to
+# leave black bars on the left and right.
 func _apply_display_layout() -> void:
 	if display == null:
 		return
-	var cfg := _cfg()
-	var integer_lock: bool = cfg != null and bool(cfg.get("integer_upscale"))
-	if not integer_lock:
-		# Restore full-rect anchored layout (matches the .tscn default).
-		display.anchor_left = 0.0
-		display.anchor_top = 0.0
-		display.anchor_right = 1.0
-		display.anchor_bottom = 1.0
-		display.offset_left = 0.0
-		display.offset_top = 0.0
-		display.offset_right = 0.0
-		display.offset_bottom = 0.0
-		return
-	# Integer letterbox. Use the drawable viewport size (not raw window size)
-	# so HiDPI / chrome insets match what the player actually sees.
-	var win: Vector2 = get_viewport().get_visible_rect().size
-	var sv: Vector2 = Vector2(sub_viewport.size)
-	if sv.x <= 0.0 or sv.y <= 0.0 or win.x <= 1.0 or win.y <= 1.0:
-		return
-	var scale_x: float = floorf(win.x / sv.x)
-	var scale_y: float = floorf(win.y / sv.y)
-	var n: float = maxf(1.0, minf(scale_x, scale_y))
-	var out_size: Vector2 = sv * n
-	# Coverage guard — if integer scaling would shrink the tank to less
-	# than 70% of the window dimension on either axis, the letterboxing
-	# is worse than the shimmer it's supposed to fix. Fall back to the
-	# stretched full-rect layout in that case so the player isn't staring
-	# at a tiny tank inside a huge black border. This typically fires when
-	# the render resolution is high relative to a small window.
-	# Also fall back when the letterboxed rect would exceed the window —
-	# otherwise the display is clipped and the player sees a zoomed-in
-	# corner of the render (common when render res > window width).
-	var coverage_x: float = out_size.x / win.x
-	var coverage_y: float = out_size.y / win.y
-	if coverage_x < 0.70 or coverage_y < 0.70 \
-			or out_size.x > win.x + 0.5 or out_size.y > win.y + 0.5:
-		display.anchor_left = 0.0
-		display.anchor_top = 0.0
-		display.anchor_right = 1.0
-		display.anchor_bottom = 1.0
-		display.offset_left = 0.0
-		display.offset_top = 0.0
-		display.offset_right = 0.0
-		display.offset_bottom = 0.0
-		return
-	var origin: Vector2 = ((win - out_size) * 0.5).floor()
+	# Cover the window on both axes. A kept frame, or integer upscale's
+	# centered rect, is what left the black bars on the left and right.
+	RenderResolutionAudit.fill_window(get_window())
+	display.stretch_mode = TextureRect.STRETCH_SCALE
 	display.anchor_left = 0.0
 	display.anchor_top = 0.0
-	display.anchor_right = 0.0
-	display.anchor_bottom = 0.0
-	display.offset_left = origin.x
-	display.offset_top = origin.y
-	display.offset_right = origin.x + out_size.x
-	display.offset_bottom = origin.y + out_size.y
+	display.anchor_right = 1.0
+	display.anchor_bottom = 1.0
+	display.offset_left = 0.0
+	display.offset_top = 0.0
+	display.offset_right = 0.0
+	display.offset_bottom = 0.0
 
 
 # Cached display safe-area padding (left, top, right, bottom) in viewport
@@ -8850,16 +8886,20 @@ func _sync_rail_toggles() -> void:
 			or (adopt_panel != null and adopt_panel.visible) \
 			or (library_panel != null and library_panel.visible)
 		PanelTheme.style_rail_button(_rail_create_btn, create_on)
+		UiIcons.apply_rail_button(_rail_create_btn, "create", _is_mobile())
 	if _rail_world_btn != null:
 		PanelTheme.style_rail_button(_rail_world_btn, _follow_mode == FollowMode.PIP or _aquascape.is_active)
+		UiIcons.apply_rail_button(_rail_world_btn, "world", _is_mobile())
 	if _rail_appearance_btn != null:
 		var look_on: bool = (is_instance_valid(_light_panel) and _light_panel.visible) \
 			or (render_panel != null and render_panel.visible) \
 			or (sound_panel != null and sound_panel.visible)
 		PanelTheme.style_rail_button(_rail_appearance_btn, look_on)
+		UiIcons.apply_rail_button(_rail_appearance_btn, "appearance", _is_mobile())
 	if _rail_system_btn != null:
 		PanelTheme.style_rail_button(_rail_system_btn,
 			settings_panel != null and settings_panel.visible)
+		UiIcons.apply_rail_button(_rail_system_btn, "system", _is_mobile())
 	_update_notification_badge()
 	_apply_rail_button_labels(_rail_dock == "bottom")
 
@@ -9383,6 +9423,9 @@ func _apply_hud_layout() -> void:
 	if left_cluster != null:
 		left_cluster.offset_left = 8.0 + pad.x
 		left_cluster.offset_top = 6.0 + pad.y
+		# The cluster is not inside a container, so a zero rect never grows to
+		# fit Menu and Focus. Clicks miss them until the rect matches the buttons.
+		left_cluster.reset_size()
 	if top_hud != null:
 		top_hud.offset_bottom = PanelTheme.HUD_TOP + pad.y
 	if stats_bar != null:
@@ -9401,6 +9444,17 @@ func _apply_hud_layout() -> void:
 	if layout_changed:
 		_render_header()
 	_apply_ecology_hud_layout()
+	_ensure_day_clock()
+	if _day_clock != null and is_instance_valid(_day_clock):
+		var clock_w: float = minf(320.0, maxf(220.0, w - left_inset - 16.0))
+		_day_clock.offset_left = left_inset
+		_day_clock.offset_top = stats_bar.offset_bottom + 4.0
+		_day_clock.offset_right = _day_clock.offset_left + clock_w
+		_day_clock.offset_bottom = _day_clock.offset_top + 34.0
+		_day_clock.visible = not _photo_framing and not _immersive_mode
+		if top_hud != null:
+			top_hud.offset_bottom = maxf(top_hud.offset_bottom, _day_clock.offset_bottom)
+	_layout_photo_chrome()
 
 
 var _cycle_banner: Label = null
@@ -9734,9 +9788,9 @@ func _make_rail_group_button(group_id: String, _label: String) -> Button:
 	btn.name = "RailGroup_%s" % group_id
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = Vector2(PanelTheme.RAIL_BUTTON, PanelTheme.RAIL_BUTTON)
+	PanelTheme.style_rail_button(btn, false)
 	UiIcons.apply_rail_button(btn, group_id, _is_mobile())
 	btn.pressed.connect(func(): _toggle_rail_flyout(group_id, btn))
-	PanelTheme.style_rail_button(btn, false)
 	return btn
 
 
@@ -9857,6 +9911,7 @@ func _update_notification_badge() -> void:
 	_notif_badge.text = str(unread) if unread > 0 else ""
 	if _rail_alerts_btn != null:
 		PanelTheme.style_rail_button(_rail_alerts_btn, unread > 0)
+		UiIcons.apply_rail_button(_rail_alerts_btn, "alerts", _is_mobile())
 
 
 func _ensure_notifications_ui() -> void:
@@ -11879,7 +11934,9 @@ func _add_immersive_toggle_button() -> void:
 		return
 	var btn := Button.new()
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = menu_button.custom_minimum_size
+	PanelTheme.style_hud_toggle_button(btn)
+	var edge: float = maxf(menu_button.custom_minimum_size.y, PanelTheme._button_min_height())
+	btn.custom_minimum_size = Vector2(edge, edge)
 	UiIcons.apply_rail_button(btn, "immersive", _is_mobile())
 	btn.pressed.connect(_toggle_immersive_mode)
 	hbox.add_child(btn)
@@ -11953,6 +12010,180 @@ func _ensure_immersive_exit_button() -> void:
 	_immersive_exit_btn.visible = false
 	_immersive_exit_btn.pressed.connect(_toggle_immersive_mode)
 	add_child(_immersive_exit_btn)
+
+
+func _toggle_photo_mode() -> void:
+	if _photo_framing:
+		_exit_photo_mode()
+	else:
+		_enter_photo_mode()
+
+
+func _enter_photo_mode() -> void:
+	_clear_stuck_photo_look()
+	if _immersive_mode:
+		_immersive_mode = false
+		_apply_immersive_mode()
+	_close_panels_for_immersive()
+	if _keeper_say_edit != null and is_instance_valid(_keeper_say_edit) \
+			and _keeper_say_edit.has_focus():
+		_keeper_say_edit.release_focus()
+	if _onboarding != null and _onboarding.has_method("dismiss_nudge"):
+		_onboarding.dismiss_nudge()
+	_photo_framing = true
+	_photo_chrome_on = true
+	_photo_mode_saved.clear()
+	for control in _photo_chrome_nodes():
+		if is_instance_valid(control):
+			_photo_mode_saved.append({"node": weakref(control), "visible": control.visible})
+			control.visible = false
+	_ensure_photo_strip()
+	_layout_photo_chrome()
+	_set_photo_chrome(true)
+	_sync_day_clock()
+
+
+func _exit_photo_mode() -> void:
+	_photo_framing = false
+	for saved in _photo_mode_saved:
+		var control: Control = saved.node.get_ref() as Control
+		if is_instance_valid(control):
+			control.visible = bool(saved.visible)
+	_photo_mode_saved.clear()
+	_set_photo_chrome(false)
+	if _photo_strip != null:
+		_photo_strip.visible = false
+	if _photo_reveal != null:
+		_photo_reveal.visible = false
+	_clear_stuck_photo_look()
+
+
+func _photo_chrome_nodes() -> Array:
+	return [
+		top_hud, right_rail, footer_bar, _mobile_hud, _rail_flyout,
+		_notifications_toast_layer, _feed_toast_panel, _immersive_exit_btn,
+		portal_container, _follow_thought_strip, _onboarding, _cycle_banner,
+		aquascape_palette, controls_hint, _status_toast, _discovery_toast,
+		_day_clock,
+	]
+
+
+func _set_photo_chrome(on: bool) -> void:
+	_photo_chrome_on = on and _photo_framing
+	if _photo_strip != null:
+		_photo_strip.visible = _photo_chrome_on
+	if _photo_reveal != null:
+		_photo_reveal.visible = _photo_framing and not _photo_chrome_on
+	if _photo_chrome_on:
+		_sync_day_clock()
+
+
+func _restore_photo_chrome_after_shot() -> void:
+	if not _photo_framing:
+		return
+	_set_photo_chrome(_photo_shot_restore_chrome)
+
+
+func _photo_shutter() -> void:
+	_photo_shot_restore_chrome = _photo_chrome_on
+	_take_photo()
+
+
+func _ensure_photo_strip() -> void:
+	if _photo_strip != null and is_instance_valid(_photo_strip):
+		return
+	_photo_strip = PanelContainer.new()
+	_photo_strip.name = "PhotoStrip"
+	_photo_strip.visible = false
+	_photo_strip.mouse_filter = Control.MOUSE_FILTER_STOP
+	_photo_strip.z_index = 80
+	PanelTheme.apply_panel_chrome(_photo_strip)
+	add_child(_photo_strip)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	_photo_strip.add_child(box)
+	_photo_clock = _DayTimeline.new()
+	_photo_clock.custom_minimum_size = Vector2(300, 36)
+	_photo_clock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_child(_photo_clock)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
+	var shutter := PanelTheme.make_primary_button("Shutter")
+	shutter.tooltip_text = "Save this frame"
+	shutter.pressed.connect(_photo_shutter)
+	row.add_child(shutter)
+	var hide_btn := PanelTheme.make_secondary_button("Hide")
+	hide_btn.tooltip_text = "Hide these controls"
+	hide_btn.pressed.connect(func() -> void: _set_photo_chrome(false))
+	row.add_child(hide_btn)
+	var done := PanelTheme.make_secondary_button("Done")
+	done.tooltip_text = "Leave photo mode"
+	done.pressed.connect(_exit_photo_mode)
+	row.add_child(done)
+	_photo_reveal = Button.new()
+	_photo_reveal.name = "PhotoReveal"
+	_photo_reveal.visible = false
+	_photo_reveal.focus_mode = Control.FOCUS_NONE
+	_photo_reveal.z_index = 80
+	_photo_reveal.tooltip_text = "Show photo controls"
+	PanelTheme.style_hud_toggle_button(_photo_reveal)
+	UiIcons.apply_rail_button(_photo_reveal, "photo", true)
+	_photo_reveal.pressed.connect(func() -> void: _set_photo_chrome(true))
+	add_child(_photo_reveal)
+
+
+func _layout_photo_chrome() -> void:
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	if _photo_strip != null:
+		var w: float = minf(420.0, maxf(280.0, vp.x - 24.0))
+		_photo_strip.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		_photo_strip.offset_left = (vp.x - w) * 0.5
+		_photo_strip.offset_right = _photo_strip.offset_left + w
+		_photo_strip.offset_bottom = vp.y - 18.0
+		_photo_strip.offset_top = _photo_strip.offset_bottom - 108.0
+	if _photo_reveal != null:
+		_photo_reveal.set_anchors_preset(Control.PRESET_TOP_LEFT)
+		_photo_reveal.offset_left = vp.x * 0.5 - 22.0
+		_photo_reveal.offset_right = vp.x * 0.5 + 22.0
+		_photo_reveal.offset_bottom = vp.y - 18.0
+		_photo_reveal.offset_top = _photo_reveal.offset_bottom - 44.0
+
+
+func _ensure_day_clock() -> void:
+	if _day_clock != null and is_instance_valid(_day_clock):
+		return
+	if top_hud == null:
+		return
+	_day_clock = _DayTimeline.new()
+	_day_clock.name = "DayClock"
+	_day_clock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_day_clock.z_index = 3
+	top_hud.add_child(_day_clock)
+
+
+func _sync_day_clock() -> void:
+	var phase: float = 0.25
+	var text: String = ""
+	if _sim != null and is_instance_valid(_sim) and _sim.get("day_phase") != null:
+		phase = float(_sim.day_phase)
+		var day_name: String = ""
+		if _sim.has_method("sim_day_label"):
+			day_name = String(_sim.sim_day_label())
+		var phase_name: String = _day_label(phase)
+		text = phase_name if day_name == "" else "%s · %s" % [day_name, phase_name]
+	if _day_clock != null and is_instance_valid(_day_clock) and _day_clock.has_method("set_clock"):
+		_day_clock.call("set_clock", phase, text)
+	if _photo_clock != null and is_instance_valid(_photo_clock) and _photo_clock.has_method("set_clock"):
+		_photo_clock.call("set_clock", phase, text)
+	if _photo_framing or (_aquascape != null and _aquascape.is_active):
+		if _follow_thought_strip != null and is_instance_valid(_follow_thought_strip):
+			_follow_thought_strip.visible = false
+		if _onboarding != null:
+			var nudge: Variant = _onboarding.get("_nudge_panel")
+			if nudge is Control and is_instance_valid(nudge):
+				(nudge as Control).visible = false
 
 
 # ---- Back-to-menu navigation ----

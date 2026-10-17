@@ -1482,6 +1482,29 @@ static func make_hud_chip_group_spacer() -> Control:
 	return sp
 
 
+# Hover tips use the same panel language as the HUD. The project theme
+# otherwise leaves TooltipPanel on the engine default, which reads as a
+# stray OS popup next to these buttons.
+static func install_hover_tooltips() -> void:
+	var theme := ThemeDB.get_project_theme()
+	if theme == null:
+		return
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = Color(0.07, 0.08, 0.13, 0.96)
+	panel.border_color = Color(0.55, 0.72, 0.92, 0.9)
+	panel.set_border_width_all(1)
+	panel.set_corner_radius_all(4)
+	panel.content_margin_left = 10
+	panel.content_margin_right = 10
+	panel.content_margin_top = 6
+	panel.content_margin_bottom = 6
+	theme.set_stylebox("panel", "TooltipPanel", panel)
+	theme.set_color("font_color", "TooltipLabel", TITLE_FG)
+	theme.set_font("font", "TooltipLabel", FONT_SANS)
+	theme.set_font_size("font_size", "TooltipLabel", SIZE_SMALL)
+	ProjectSettings.set_setting("gui/timers/tooltip_delay_sec", 0.3)
+
+
 static func style_hud_toggle_button(btn: Button, active: bool = false) -> void:
 	btn.flat = true
 	btn.set_meta("couch_was_none", true)

@@ -97,6 +97,17 @@ func _run_all() -> bool:
 	var tall_fov: float = _RenderResolutionAuditScript.vertical_fov_for_window(55.0, 1.6)
 	if tall_fov <= 55.0:
 		return _fail("taller than 16:9 must open vertical fov so the frame fills")
+	var project_text: String = FileAccess.get_file_as_string("res://project.godot")
+	if not project_text.contains('window/stretch/aspect="expand"'):
+		return _fail("window stretch must expand without squashing the picture")
+	if not project_text.contains('window/stretch/mode="canvas_items"'):
+		return _fail("the picture must scale with the screen, not a fixed frame")
+	if not project_text.contains("window/size/mode=3"):
+		return _fail("the window must open fullscreen")
+	if not project_text.contains('window/stretch/scale_mode="fractional"'):
+		return _fail("integer window scale leaves black bars")
+	if not FileAccess.get_file_as_string("res://scripts/main.gd").contains("STRETCH_SCALE"):
+		return _fail("tank display must scale to the full window")
 	# #87 warm list populated by tier + warm pass
 	_VoxelMatScript.warm_shader_variants(null)
 	if _ShaderWarmCaptureScript.count() < 2:

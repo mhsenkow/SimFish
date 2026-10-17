@@ -49,14 +49,21 @@ func _initialize() -> void:
 		TestSupport.check(failed, bool(icons_script.call("use_color_emoji")) == false,
 				"monochrome icon language (#179)")
 
-	var nav_script: GDScript = load("res://scripts/ui_nav_icons.gd") as GDScript
-	TestSupport.check(failed, nav_script != null, "ui_nav_icons.gd loads")
-	if nav_script != null:
+	if icons_script != null:
+		var sample := Button.new()
+		root.add_child(sample)
 		for nav_id in ["create", "world", "appearance", "system", "alerts", "menu",
 				"immersive", "pause", "play", "photo", "camera", "residents"]:
-			var tex: Texture2D = nav_script.call("texture", nav_id) as Texture2D
-			TestSupport.check(failed, tex != null and tex.get_width() >= 12,
-					"nav icon draws: %s" % nav_id)
+			icons_script.call("apply_rail_button", sample, nav_id, false)
+			var shown: String = sample.text
+			TestSupport.check(failed, shown != "" and sample.icon == null,
+					"nav mark is an emoji: %s" % nav_id)
+			TestSupport.check(failed, sample.custom_minimum_size.x >= 36.0,
+					"nav mark keeps a hit target: %s" % nav_id)
+			var font: Font = sample.get_theme_font("font")
+			var covered: bool = font != null and font.has_char(shown.unicode_at(0))
+			TestSupport.check(failed, covered, "emoji font has %s" % nav_id)
+		sample.free()
 
 	if failed.is_empty():
 		print("[smoke] visual_polish OK")

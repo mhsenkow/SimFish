@@ -12,8 +12,6 @@ const PLANTED_PALETTE: Array[String] = [
 ]
 
 
-const TankFidelity := preload("res://scripts/tank_fidelity_runtime.gd")
-
 # First-launch curated look (#99). Does not override saved render prefs once applied.
 const BEAUTY_DEFAULTS: Dictionary = {
 	"render_width": 512,
@@ -375,30 +373,27 @@ static func apply_photo_mode_grade(cfg: Node, on: bool) -> void:
 	if cfg == null:
 		return
 	if on:
-		_photo_revert.clear()
+		# A second press used to snapshot the already-graded values, so
+		# turning it off restored the blur instead of the tank.
+		if not _photo_revert.is_empty():
+			return
 		for key: String in PHOTO_MODE_GRADE:
 			_photo_revert[key] = cfg.get(key)
 			cfg.set(key, PHOTO_MODE_GRADE[key])
-		# REAL_TANK_FIDELITY #194 — person-held photo bundle.
-		var bundle: Dictionary = TankFidelity.photo_mode_bundle()
-		for key: String in ["photo_handheld", "photo_horizon_roll_deg", "photo_macro_mode",
-				"photo_sensor_noise", "photo_mode_enhanced"]:
-			if not _photo_revert.has(key):
-				_photo_revert[key] = cfg.get(key)
-			if key == "photo_handheld":
-				cfg.set(key, true)
-			elif key == "photo_macro_mode":
-				cfg.set(key, true)
-			elif key == "photo_horizon_roll_deg":
-				cfg.set(key, float(bundle.get("horizon_roll_deg", 1.4)))
-			elif key == "photo_sensor_noise":
-				cfg.set(key, float(bundle.get("sensor_noise", 0.18)))
-			elif key == "photo_mode_enhanced":
-				cfg.set(key, true)
+		# Handheld drift and macro depth-of-field smear the pixel tank and
+		# do not come back off. The framing mode leaves the picture alone.
+		cfg.set("photo_handheld", false)
+		cfg.set("photo_macro_mode", false)
+		cfg.set("photo_horizon_roll_deg", 0.0)
+		cfg.set("photo_sensor_noise", 0.0)
 	else:
 		for key: String in _photo_revert:
 			cfg.set(key, _photo_revert[key])
 		_photo_revert.clear()
+		cfg.set("photo_handheld", false)
+		cfg.set("photo_macro_mode", false)
+		cfg.set("photo_horizon_roll_deg", 0.0)
+		cfg.set("photo_sensor_noise", 0.0)
 
 
 static var _photo_revert: Dictionary = {}
