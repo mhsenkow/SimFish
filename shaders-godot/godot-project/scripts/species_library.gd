@@ -29,6 +29,10 @@ const ORGANISM_SNAIL := "snail"
 const ORGANISM_PLANT := "plant"
 
 var tank_entries: Array = []
+# species_key -> entry for tank_entries. Offspring colours drift, so nearly
+# every birth or seedling is a new key; record_discovery's linear scan of an
+# ever-growing list ran once per birth for the whole session.
+var _tank_index: Dictionary = {}
 var global_entries: Array = []
 
 # Suppression flag for bulk load — sim_driver replays saved entities via load_state.
@@ -56,7 +60,7 @@ func record_discovery(genome: Dictionary, source: String, silent: bool = false) 
 	if genome == null or genome.is_empty():
 		return false
 	var key: String = species_key(genome)
-	var existing: Dictionary = _find_by_key(tank_entries, key)
+	var existing: Dictionary = _find_tank_entry(key)
 	if not existing.is_empty():
 		existing["count_seen"] = int(existing.get("count_seen", 0)) + 1
 		return false
@@ -97,6 +101,7 @@ func record_discovery(genome: Dictionary, source: String, silent: bool = false) 
 					_real_species_matched[fid] = true
 					_fire_real_fauna_discovery(fid)
 	tank_entries.append(entry)
+	_tank_index[key] = entry
 	library_changed.emit()
 	if not _loading and not silent:
 		species_discovered.emit(entry)
@@ -152,7 +157,7 @@ func get_global_entries() -> Array:
 
 
 func find_in_tank(key: String) -> Dictionary:
-	return _find_by_key(tank_entries, key)
+	return _find_tank_entry(key)
 
 
 func find_in_global(key: String) -> Dictionary:
@@ -383,12 +388,14 @@ func unpin_from_global(key: String) -> void:
 
 func clear_tank() -> void:
 	tank_entries.clear()
+	_tank_index.clear()
 	library_changed.emit()
 
 
 func set_tank_entries(entries: Array) -> void:
 	_loading = true
 	tank_entries = entries.duplicate(true)
+	_rebuild_tank_index()
 	_loading = false
 	library_changed.emit()
 
@@ -576,6 +583,24 @@ func _display_name_for(genome: Dictionary, otype: String) -> String:
 			if genome.has("_display_name"):
 				return String(genome["_display_name"])
 	return String(genome.get("species", otype))
+
+
+func _find_tank_entry(key: String) -> Dictionary:
+	# Smokes and callers may mutate tank_entries directly; fall back to the
+	# scan (and reindex) whenever the index has drifted from the array.
+	if _tank_index.size() != tank_entries.size():
+		_rebuild_tank_index()
+	var hit: Variant = _tank_index.get(key, null)
+	return hit if hit is Dictionary else {}
+
+
+func _rebuild_tank_index() -> void:
+	_tank_index.clear()
+	for e in tank_entries:
+		if e is Dictionary:
+			var k: String = String(e.get("species_key", ""))
+			if k != "" and not _tank_index.has(k):
+				_tank_index[k] = e
 
 
 func _find_by_key(arr: Array, key: String) -> Dictionary:

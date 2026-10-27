@@ -83,6 +83,8 @@ func _try_root(sim: SimDriver, world: Node) -> void:
 		cfg["generation"] = int(genome.get("generation", 0)) + 1
 		cfg["parent_lineage"] = String(genome.get("plant_name",
 			genome.get("parent_lineage", "Fragment")))
+		# Clonal spread obeys the plant ceiling like runners do.
+		cfg["autonomous_spread"] = true
 		world.spawn_seedling(global_position, ramp_override, int(cfg.generation), cfg)
 	_finish()
 

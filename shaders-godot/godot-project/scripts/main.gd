@@ -1442,6 +1442,7 @@ var _radial_menu: Control = null
 # ---- Tutorial overlay ----
 # Shown on first mobile launch; dismissed by tapping OK, persisted via
 # TankConfig.tutorial_seen so it never returns.
+var _intro_dialog_queue: Node = null
 var _tutorial_overlay: Control = null
 
 # ---- Welcome-back toast (time-skip recap) ----
@@ -2440,7 +2441,7 @@ func _process(dt: float) -> void:
 
 	# WASD pan target along view direction (desktop only — no keyboard on mobile).
 	# Gamepad left stick pans when not in aquascape (aquascape uses LS for reticle).
-	if not _is_touch_active() and not _typing_focus_in_ui():
+	if not _is_touch_active() and not _typing_focus_in_ui() and not _intro_dialog_active():
 		var fwd: Vector3 = (target - camera.global_position)
 		fwd.y = 0.0
 		if fwd.length_squared() > 0.001:
@@ -2487,6 +2488,10 @@ func _process(dt: float) -> void:
 # Extracted mouse-polling logic. Called from _process() only when touch
 # is NOT active (prevents emulated mouse events from fighting touch).
 func _process_mouse_input(dt: float) -> void:
+	if _intro_dialog_active():
+		_orbiting = false
+		_suppress_drag_until_release = true
+		return
 	var mouse_now: Vector2 = get_window().get_mouse_position()
 	var lmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	var mmb: bool = Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
@@ -2624,7 +2629,7 @@ func _process_mouse_input(dt: float) -> void:
 
 	# G toggles auto-orbit. (Space used to do this; it's now reserved as the
 	# hold-to-pan modifier, matching Photoshop / Figma muscle memory.)
-	if not _is_touch_active() and not _typing_focus_in_ui():
+	if not _is_touch_active() and not _typing_focus_in_ui() and not _intro_dialog_active():
 		var g_now: bool = Input.is_key_pressed(KEY_G)
 		if g_now and not _auto_orbit_was_pressed:
 			_auto_orbit = AccessibilityRuntime.allow_auto_orbit(not _auto_orbit)
@@ -2637,7 +2642,7 @@ func _process_mouse_input(dt: float) -> void:
 		_apply_camera()
 
 	# Edge-triggered shortcuts (keyboard only — mobile gets on-screen buttons).
-	if not _is_touch_active() and not _typing_focus_in_ui():
+	if not _is_touch_active() and not _typing_focus_in_ui() and not _intro_dialog_active():
 		_handle_shortcut(KEY_P, _toggle_pause)
 		_handle_shortcut(KEY_V, _toggle_camera_views_panel)
 		# J, not M: M already toggles Sound (and Shift+M motion debug).
@@ -3342,6 +3347,8 @@ func _aim_screen_pos() -> Vector2:
 
 
 func _gui_blocks_tank_actions() -> bool:
+	if _intro_dialog_active():
+		return true
 	if _typing_focus_in_ui():
 		return true
 	if _gamepad_menu != null and is_instance_valid(_gamepad_menu):
@@ -4876,7 +4883,6 @@ func _maybe_show_sentience_intro() -> void:
 	if bool(OnboardingLegibility.global_pref("sentience_north_star_seen", false)):
 		_maybe_show_mind_upgrade_toast()
 		return
-	OnboardingLegibility.set_global_pref("sentience_north_star_seen", true)
 	call_deferred("_show_sentience_north_star_modal")
 
 
@@ -4893,18 +4899,21 @@ func _maybe_show_mind_upgrade_toast() -> void:
 
 
 func _show_sentience_north_star_modal() -> void:
+	queue_intro_dialog("guardian_intro", func() -> Control:
+		_show_sentience_north_star_now()
+		return _guardian_consent_layer)
+
+
+func _show_sentience_north_star_now() -> void:
 	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
 		return
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var backdrop := ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
-	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-	backdrop.set_size(vp_size)
-	add_child(backdrop)
+	var modal_root := PanelTheme.make_modal_root(self, PanelTheme.Z_GUARDIAN)
+	var backdrop: Control = modal_root["overlay"]
 	_guardian_consent_layer = backdrop
 	var modal: PanelContainer = GuardianMindOnboarding.open_in(backdrop,
 			GuardianMindOnboarding.Mode.NORTH_STAR)
 	modal.closed.connect(func(_accepted: bool) -> void:
+		OnboardingLegibility.set_global_pref("sentience_north_star_seen", true)
 		if is_instance_valid(backdrop):
 			backdrop.queue_free()
 		_guardian_consent_layer = null
@@ -5978,8 +5987,6 @@ func _on_guardian_llm_status(message: String) -> void:
 
 
 func _on_guardian_consent_required(needs_download: bool) -> void:
-	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
-		return
 	# COMMS #281 — no LLM consent modal in the first five minutes.
 	var now_s: float = Time.get_ticks_msec() / 1000.0
 	if CommsInbox.consent_deferred(_comms_session_start_s, now_s):
@@ -6010,17 +6017,19 @@ func _flush_deferred_consent() -> void:
 
 
 func _show_guardian_consent_modal(needs_download: bool) -> void:
+	queue_intro_dialog("guardian_consent", func() -> Control:
+		_show_guardian_consent_now(needs_download)
+		return _guardian_consent_layer)
+
+
+func _show_guardian_consent_now(needs_download: bool) -> void:
 	if _guardian_consent_layer != null and is_instance_valid(_guardian_consent_layer):
 		return
 	var glm := get_node_or_null("/root/GuardianLlm")
 	if glm == null:
 		return
-	var vp_size: Vector2 = get_viewport().get_visible_rect().size
-	var backdrop := ColorRect.new()
-	backdrop.color = Color(0.0, 0.0, 0.0, 0.55)
-	backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
-	backdrop.set_size(vp_size)
-	add_child(backdrop)
+	var modal_root := PanelTheme.make_modal_root(self, PanelTheme.Z_GUARDIAN)
+	var backdrop: Control = modal_root["overlay"]
 	_guardian_consent_layer = backdrop
 	var mode: int = GuardianMindOnboarding.Mode.DOWNLOAD if needs_download \
 			else GuardianMindOnboarding.Mode.BUNDLED_INFO
@@ -7197,6 +7206,22 @@ func _input(event: InputEvent) -> void:
 			event is InputEventJoypadMotion or event is InputEventMagnifyGesture \
 			or event is InputEventPanGesture:
 		_notify_hud_input()
+
+	if _intro_dialog_active():
+		if event.is_action_pressed("ui_cancel") and not event.is_echo():
+			if is_instance_valid(_guardian_consent_layer):
+				var dialog := _guardian_consent_layer.find_child("GuardianMindOnboarding", true, false)
+				if dialog != null:
+					dialog.call("_on_header_close")
+			elif is_instance_valid(_tutorial_overlay):
+				_dismiss_tutorial_overlay(_tutorial_overlay)
+			elif is_instance_valid(_coachmark_overlay):
+				_show_coachmark_step(3)
+			elif _onboarding != null:
+				_onboarding.dismiss_card()
+			get_viewport().set_input_as_handled()
+		# Mouse/touch and ui_accept continue to Godot's GUI dispatch.
+		return
 
 	if _handle_gamepad_action(event):
 		get_viewport().set_input_as_handled()
@@ -12872,6 +12897,12 @@ func _toggle_cheat_sheet() -> void:
 
 
 func _maybe_show_coachmarks() -> void:
+	queue_intro_dialog("coachmarks", func() -> Control:
+		_show_coachmarks_now()
+		return _coachmark_overlay)
+
+
+func _show_coachmarks_now() -> void:
 	if bool(OnboardingLegibility.global_pref("tour_complete", false)):
 		return
 	if bool(_global_pref("coachmarks_seen", false)):
@@ -13077,7 +13108,46 @@ func _dismiss_blocking_overlays() -> bool:
 	return false
 
 
+func queue_intro_dialog(key: String, factory: Callable) -> void:
+	if _intro_dialog_queue == null:
+		_intro_dialog_queue = preload("res://scripts/intro_dialog_queue.gd").new()
+		_intro_dialog_queue.blocked = _intro_dialog_blocked
+		add_child(_intro_dialog_queue)
+	_intro_dialog_queue.enqueue(key, func() -> Control:
+		_touches.clear()
+		_touch_prev.clear()
+		_touch_active = false
+		_long_press_fired = true
+		_orbiting = false
+		_suppress_drag_until_release = true
+		if _onboarding != null:
+			_onboarding.dismiss_nudge()
+		return factory.call() as Control)
+
+
+func _intro_dialog_active() -> bool:
+	return (_intro_dialog_queue != null and _intro_dialog_queue.has_active()) or is_instance_valid(_coachmark_overlay)
+
+
+func _intro_dialog_blocked() -> bool:
+	if walkthrough_overlay != null and walkthrough_overlay.visible:
+		return true
+	if is_instance_valid(_coachmark_overlay):
+		return true
+	if _ui_panels != null and _ui_panels.is_any_panel_open():
+		return true
+	if _onboarding != null and _onboarding.has_method("has_help_open"):
+		return _onboarding.has_help_open()
+	return false
+
+
 func _maybe_show_tutorial() -> void:
+	queue_intro_dialog("tutorial", func() -> Control:
+		_show_tutorial_now()
+		return _tutorial_overlay)
+
+
+func _show_tutorial_now() -> void:
 	if bool(_global_pref("tutorial_seen", false)):
 		return
 	var cfg := _cfg()

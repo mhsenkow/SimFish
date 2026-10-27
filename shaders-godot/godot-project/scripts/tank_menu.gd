@@ -965,7 +965,7 @@ func _on_guardian_consent_required(needs_download: bool) -> void:
 	_guardian_consent_layer = backdrop
 	var mode: int = GuardianMindOnboarding.Mode.DOWNLOAD if needs_download \
 			else GuardianMindOnboarding.Mode.BUNDLED_INFO
-	var modal: PanelContainer = GuardianMindOnboarding.open_in(self, mode)
+	var modal: PanelContainer = GuardianMindOnboarding.open_in(backdrop, mode)
 	modal.closed.connect(func(accepted: bool) -> void:
 		if is_instance_valid(backdrop):
 			backdrop.queue_free()

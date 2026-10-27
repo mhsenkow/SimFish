@@ -30,6 +30,9 @@ var kind: int = KIND_FISH
 var food_subtype: int = FOOD_SUB_PELLET
 var voxel_size: float = 0.12
 var settled: bool = false
+# Set by WastePhysicsBatch when the packed integrator lands the particle;
+# tick() then runs the settle + substrate deposit.
+var batch_landed: bool = false
 var _life: float = 0.0
 var _settle_timer: float = 0.0
 var last_deposit_amount: float = 0.0
@@ -52,6 +55,7 @@ func prepare_for_pool() -> void:
 	_life = 0.0
 	_settle_timer = 0.0
 	settled = false
+	batch_landed = false
 	last_deposit_amount = 0.0
 	meal_chain_id = -1
 	_release_batch_slot()
@@ -221,9 +225,10 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 					var flow_v: Vector3 = w.sample_flow(global_position)
 					position += flow_v * dt * 0.48
 
-		if position.y <= floor_y + voxel_size * 0.5:
+		if batch_landed or position.y <= floor_y + voxel_size * 0.5:
 			position.y = floor_y + voxel_size * 0.5
 			settled = true
+			batch_landed = false
 			var deposit: float = nutrient_value
 			if substrate != null:
 				var n_total: float = substrate.total_above_baseline()

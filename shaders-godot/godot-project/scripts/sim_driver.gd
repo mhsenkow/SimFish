@@ -454,6 +454,14 @@ func _maybe_guardian_dream_journal(note: String) -> void:
 	_journal_append("(dream — not real): %s" % note.strip_edges(), "dream", "", "event")
 
 
+# The one field shrimp need at night. tank_mind_snapshot() aggregates over
+# every fish (delta-G, robustness curves); shrimp called it each per tick all
+# night, so the shrimp stage went from ~1.5 ms by day to ~31 ms after dark -
+# the slowdown players hit at the first nightfall, three minutes in.
+func tank_asleep_fraction() -> float:
+	return float(TankMind.ensure(self).get("asleep_fraction", 0.0))
+
+
 func tank_mind_snapshot() -> Dictionary:
 	_tank_mind = TankMind.ensure(self)
 	var snap: Dictionary = TankMind.snapshot(self)
@@ -583,7 +591,31 @@ func append_fish_journal_entry(f: Fish, text: String,
 		return
 	FishJournal.append_entry(f.fish_journal, text, tags,
 			{"sim_day": sim_day_label(), "t": elapsed_runtime_s})
+	# Re-insert so the dictionary stays in least-recently-written order.
+	_fish_journals.erase(String(f.id))
 	_fish_journals[String(f.id)] = f.fish_journal.duplicate(true)
+	_prune_fish_journals()
+
+
+# Journals outlive their fish (memorial reads, save restore) but were never
+# dropped, so a long-running tank carried one per voiced fish ever born into
+# every save. Past the cap, the oldest-written journals of fish no longer in
+# the tank go first; living fish are never pruned.
+const FISH_JOURNALS_MAX: int = 96
+
+
+func _prune_fish_journals() -> void:
+	if _fish_journals.size() <= FISH_JOURNALS_MAX:
+		return
+	var living: Dictionary = {}
+	for lf in fish:
+		if is_instance_valid(lf):
+			living[String(lf.id)] = true
+	for k in _fish_journals.keys():
+		if _fish_journals.size() <= FISH_JOURNALS_MAX:
+			break
+		if not living.has(k):
+			_fish_journals.erase(k)
 
 
 func notify_fish_voiced_wake(f: Fish) -> void:
@@ -4591,6 +4623,10 @@ func _tick(dt: float) -> void:
 	if has_shade_cov:
 		spawn_chance *= (1.0 - shade_cov * 0.7)
 	spawn_chance *= (1.0 - algae_crowding * 0.88)
+	# Algae are photosynthetic: new clumps follow the light the plants get, so
+	# the bloom builds through the photoperiod and stalls at night or with the
+	# lamp off (it used to spawn at the same rate in the dark).
+	spawn_chance *= lerpf(0.12, 1.0, clampf(irradiance(), 0.0, 1.0))
 	var sp_rng: RandomNumberGenerator = rng.stream(SimRngScript.STREAM_SPAWN)
 	if (below_floor or sp_rng.randf() < spawn_chance) and algae_root != null:
 		var a := Algae.new()
@@ -4762,11 +4798,12 @@ func _tick(dt: float) -> void:
 			algae.remove_at(ai)
 			ai -= 1
 			continue
-		if a.tick(dt, bloom_favor):
+		if a.tick(dt, bloom_favor) or (crash and randf() < dt * 0.12):
 			algae.remove_at(ai)
-			a.queue_free()
-		elif crash and randf() < dt * 0.12:
-			algae.remove_at(ai)
+			# A dead clump sloughs off as litter: its nutrients go back to the
+			# soil instead of vanishing (only grazed algae used to recycle).
+			if a.voxel_count() > 0:
+				_spawn_waste(a.global_position, 0.04, WasteParticle.KIND_PLANT)
 			a.queue_free()
 		ai -= 1
 
@@ -5343,10 +5380,24 @@ func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
 		_clamp_entity_to_bounds(baby, 0.18, 0.04)
 
 
+# Room for new fish under the carrying capacity. Breeding is only suppressed
+# softly (FishLifeBouts / _logistic_breed_suppress leaks ~10%), so without a
+# check at birth a 45-fish Walstad tank bred to 80+ within minutes and every
+# fish is a full per-tick brain. Fry the tank can't support simply don't make
+# it, the way real fry get eaten or starve in a full tank.
+func _fish_birth_room() -> int:
+	var live: int = 0
+	for f in fish:
+		if is_instance_valid(f) and f.get("_dying") != true:
+			live += 1
+	# Unclamped: negative means over capacity (callers loop 0 times).
+	return fish_carrying_capacity() - live - eggs.size()
+
+
 func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 	if fauna_root == null:
 		return
-	var n: int = mini(mother.clutch_size, 4)
+	var n: int = mini(mini(mother.clutch_size, 4), _fish_birth_room())
 	var sp: String = SimRngScript.STREAM_SPAWN
 	for i in n:
 		var g: Dictionary = brood_genome.duplicate(true)
@@ -5381,7 +5432,7 @@ func _release_livebearer_fry(mother: Fish, brood_genome: Dictionary) -> void:
 func _release_brooded_fry(mother: Fish, brood_genome: Dictionary, count: int) -> void:
 	if fauna_root == null:
 		return
-	var n: int = clampi(count, 1, 4)
+	var n: int = mini(clampi(count, 1, 4), _fish_birth_room())
 	var sp: String = SimRngScript.STREAM_SPAWN
 	for i in n:
 		var g: Dictionary = brood_genome.duplicate(true)
@@ -5420,7 +5471,9 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 	# enters the FishEgg incubation pipeline.
 	if fauna_root == null:
 		return
-	var n: int = mini(a.clutch_size, 4)
+	var n: int = mini(mini(a.clutch_size, 4), _fish_birth_room())
+	if n <= 0:
+		return
 	var mid: Vector3 = (a.position + b.position) * 0.5
 
 	if a.is_livebearer or b.is_livebearer:
@@ -5519,6 +5572,9 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 
 func _hatch(e: FishEgg) -> void:
 	if fauna_root == null:
+		return
+	# The egg itself still counts in _fish_birth_room, so add it back.
+	if _fish_birth_room() + 1 <= 0:
 		return
 	var fry := Fish.new()
 	fry.species = e.species
@@ -6281,6 +6337,11 @@ func _run_evolution_burst(dt: float) -> void:
 	var w: Node = get_parent()
 	if w == null or not w.has_method("spawn_seedling"):
 		return
+	# Bursts are succession, not stocking: they used to bypass the plant
+	# ceiling (spawn_seedling only checks it for autonomous spread), adding
+	# ~3 plants every 24 s for as long as the tank ran.
+	if w.has_method("plants_at_capacity") and bool(w.plants_at_capacity()):
+		return
 	var is_saltwater: bool = false
 	var sw: Variant = w.get("_active_substrate_profile")
 	if sw is Dictionary:
@@ -6300,11 +6361,16 @@ func _run_evolution_burst(dt: float) -> void:
 		for j in child_ramp.size():
 			child_ramp[j] = _mutate_color(child_ramp[j], 0.10 + bloom_intensity * 0.06)
 		var child_cfg: Dictionary = base_cfg.duplicate(true)
+		# Marks the child as self-propagated so spawn_seedling applies the
+		# plant ceiling and drops it on a crowded site instead of relocating.
+		child_cfg["autonomous_spread"] = true
+		# Mutation is symmetric: the old always-upward multipliers ratcheted
+		# every lineage to max growth rate and height over a long session.
 		child_cfg["growth_rate"] = clampf(
-			float(child_cfg.get("growth_rate", 0.18)) * randf_range(1.08, 1.34),
+			float(child_cfg.get("growth_rate", 0.18)) * randf_range(0.88, 1.14),
 			0.08, 0.62)
 		child_cfg["max_height"] = clampi(
-			int(child_cfg.get("max_height", 14)) + randi_range(-2, 5), 5, 48)
+			int(child_cfg.get("max_height", 14)) + randi_range(-3, 3), 5, 48)
 		child_cfg["sway_amplitude"] = clampf(
 			float(child_cfg.get("sway_amplitude", 0.18)) + randf_range(0.00, 0.10),
 			0.02, 0.80)

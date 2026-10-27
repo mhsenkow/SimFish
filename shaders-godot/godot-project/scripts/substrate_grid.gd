@@ -70,6 +70,13 @@ const SOIL_DEPLETION_DAYS: float = 60.0
 const SOIL_AGED_LEAK_FRAC: float = 0.25
 var soil_age_s: float = 0.0
 var soil_age_mult: float = 1.0
+# Per-cell soil level from the sculpted terrain (aquasoil rich, sand lean),
+# written by TerrainVoxelGrid.sync_nutrients_to_substrate. Each cell relaxes
+# toward it instead of the global baseline. The terrain sync used to
+# OVERWRITE `nutrients` every 6 s, which erased every deposit, root drawdown
+# and mulm release - the soil could neither be fed nor exhausted. Empty means
+# "no terrain": cells relax toward the global baseline as before.
+var cell_baseline: Array = []
 
 
 func _active_baseline() -> float:
@@ -154,6 +161,7 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 		sc.resize(cells_z)
 		_scratch.append(sc)
 	_dirty_cells.clear()
+	cell_baseline = []
 	_init_channel_grid(seed_bank)
 	_init_channel_grid(allelochemical)
 	_init_channel_grid(root_oxygen)
@@ -167,6 +175,21 @@ func init(half_w: float, half_d: float, cells_per_unit: float = 1.0) -> void:
 	_root_competition.init(cells_x, cells_z)
 	_allelopathy_families.init(cells_x, cells_z)
 	_dirty_channels.clear()
+
+
+# Terrain level for one cell. `reset_value` also snaps the live value to it
+# (first sync after build or load); otherwise the cell drifts there through
+# the normal decay, so sculpting still reshapes fertility without wiping the
+# ecology's own perturbations.
+func set_cell_baseline(x: int, z: int, level: float, reset_value: bool) -> void:
+	if cell_baseline.is_empty():
+		_init_channel_grid(cell_baseline, _active_baseline())
+	var prev: float = float(cell_baseline[x][z])
+	cell_baseline[x][z] = level
+	if reset_value:
+		nutrients[x][z] = level
+	elif absf(prev - level) > EQUILIBRIUM_EPSILON:
+		_mark_dirty(Vector2i(x, z))
 
 
 func _init_channel_grid(grid: Array, initial: float = 0.0) -> void:
@@ -623,6 +646,11 @@ func tick(_dt: float) -> void:
 	var baseline: float = _active_baseline()
 	var leak: float = _active_reservoir_leak()
 	var eq: float = baseline + leak / DECAY_RATE
+	# A terrain cell's target is its sculpted level at fresh-soil leak; as the
+	# soil ages the leak tapers and the cell settles slightly below it.
+	var fresh_leak_offset: float = (reservoir_leak_override if reservoir_leak_override >= 0.0 \
+		else RESERVOIR_LEAK_PER_TICK) / DECAY_RATE
+	var has_terrain: bool = not cell_baseline.is_empty()
 	_next_dirty.clear()
 	for cell_v in to_process:
 		var cell: Vector2i = cell_v
@@ -644,7 +672,11 @@ func tick(_dt: float) -> void:
 			count += 1.0
 		var avg: float = sum / maxf(count, 1.0)
 		var new_val: float = c + (avg - c) * DIFFUSION_RATE
-		new_val += (baseline - new_val) * DECAY_RATE
+		var cell_target: float = baseline
+		if has_terrain:
+			cell_target = float(cell_baseline[x][z]) - fresh_leak_offset
+			eq = cell_target + leak / DECAY_RATE
+		new_val += (cell_target - new_val) * DECAY_RATE
 		new_val += leak
 		new_val = clampf(new_val, 0.0, NUTRIENT_MAX)
 		nutrients[x][z] = new_val

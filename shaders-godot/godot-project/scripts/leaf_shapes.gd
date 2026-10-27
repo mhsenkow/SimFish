@@ -358,7 +358,9 @@ static func _template_paddle(length: int, width: int, flatten: float,
 				Vector3(
 					float(dx) * VOXEL_SIZE * 0.75 + _wave_x_offset(wavy, dx, i),
 					float(i) * VOXEL_SIZE * 0.85 + _quilt_offset(quilted, i * 3 + dx),
-					0.0,
+					# A cupped blade: raised margins and a gently returning tip.
+					# Keep adjacent boxes overlapping so the voxel silhouette is solid.
+					VOXEL_SIZE * (0.16 * absf(float(dx)) - 0.32 * sin(t * PI)),
 				),
 				Vector3(sx, sy, sz), t, dx == 0))
 	return out
@@ -414,25 +416,19 @@ static func _template_lance_pair(pair_index: int) -> Array:
 	for side in [-1, 1]:
 		for i in leaf_len:
 			var t: float = float(i) / float(leaf_len - 1)
-			# Width profile: widest in the middle.
-			var w: float = 0.7 if i == 1 else 0.45
-			# An opposite pair: the two leaves leave the node on opposite
-			# sides (they used to both splay toward +X, so every "pair" hung
-			# off one side of the stem), rising slightly as they go.
+			# Keep the longitudinal boxes overlapping; rotate their long axis
+			# with the pair so alternate nodes have the same unbroken blade.
 			var angle: float = (0.0 if side < 0 else PI) + yaw_offset
-			var dist: float = float(i + 1) * VOXEL_SIZE * 0.6
-			out.append(LeafVoxel.new(
-				Vector3(
-					cos(angle) * dist,
-					dist * 0.32,
-					sin(angle) * dist,
-				),
-				Vector3(
-					VOXEL_SIZE * w,
-					VOXEL_SIZE * 0.45,
-					VOXEL_SIZE * 0.35,
-				),
-				t, i == 1))
+			var dist: float = (0.40 + float(i) * 0.56) * VOXEL_SIZE
+			var width: float = 0.70 if i == 1 else (0.38 if i == 0 else 0.24)
+			var lv := LeafVoxel.new(
+				Vector3(cos(angle) * dist,
+					VOXEL_SIZE * (0.12 + 0.22 * sin(t * PI * 0.8)),
+					sin(angle) * dist),
+				Vector3(VOXEL_SIZE * 0.70, VOXEL_SIZE * 0.26, VOXEL_SIZE * width),
+				t, i == 0)
+			lv.xform.basis = Basis(Vector3.UP, -angle)
+			out.append(lv)
 	return out
 
 
@@ -447,11 +443,12 @@ static func _template_needle(length: int) -> Array:
 	for i in length:
 		var t: float = float(i) / float(maxi(1, length - 1))
 		out.append(LeafVoxel.new(
-			Vector3(0, float(i) * VOXEL_SIZE * 0.75, 0),
+			Vector3(VOXEL_SIZE * 0.30 * t * t, float(i) * VOXEL_SIZE * 0.75,
+				VOXEL_SIZE * 0.12 * sin(t * PI)),
 			Vector3(
-				VOXEL_SIZE * 0.3,
+				VOXEL_SIZE * lerpf(0.30, 0.12, t),
 				VOXEL_SIZE * 0.8,
-				VOXEL_SIZE * 0.3,
+				VOXEL_SIZE * lerpf(0.30, 0.12, t),
 			),
 			t, false, false))
 	return out
@@ -481,12 +478,12 @@ static func _template_oval() -> Array:
 				Vector3(
 					(float(col) - 1.0) * VOXEL_SIZE * 0.7,
 					float(row) * VOXEL_SIZE * 0.65,
-					0.0,
+					VOXEL_SIZE * (0.12 * absf(float(col) - 1.0) - 0.25 * sin(t * PI)),
 				),
 				Vector3(
 					VOXEL_SIZE * 0.85,
-					VOXEL_SIZE * 0.4,
-					VOXEL_SIZE * 0.8,
+					VOXEL_SIZE * 0.72,
+					VOXEL_SIZE * 0.30,
 				),
 				t, col == 1, false))
 	return out
@@ -1075,7 +1072,7 @@ static func _leaf_color(ramp: Array, t: float, age_frac: float,
 	var color: Color = (ramp[idx_lo] as Color).lerp(ramp[idx_hi] as Color, frac)
 	# Midrib is slightly darker for visible venation.
 	if is_midrib:
-		color = color.darkened(0.12)
+		color = color.darkened(0.22)
 	# Fresh tip growth reads one step brighter than the blade interior.
 	if t > 0.82 and not is_midrib:
 		color = color.lightened((t - 0.82) * 0.55)

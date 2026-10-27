@@ -105,6 +105,7 @@ const FEED_ALGAE: float = 0.5             # hunger relief from algae
 const FEED_PLANT: float = 0.28            # hunger relief from rasping plant/coral
 const BREED_ENERGY_MIN: float = 0.55      # body condition needed to lay eggs
 const BREED_HUNGER_MAX: float = 0.7       # too hungry to breed above this
+const BIOFILM_GRAZE_SHARE: float = 0.75   # of HUNGER_RATE a mature film offsets
 
 var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
@@ -444,6 +445,17 @@ func _process(dt: float) -> void:
 	# starve before they can forage.
 	hunger = clampf(hunger + HUNGER_RATE * appetite * dt, 0.0, 1.0)
 	var w_sn := _world_node()
+	# Biofilm grazing: the film on glass, wood and leaves is a snail's staple
+	# in a soil tank. Before this, snails lived only on discrete algae clumps
+	# and waste, which a clean planted tank barely has, and a Walstad colony
+	# starved out within five minutes. A mature film (biofilm_progress ~0.7)
+	# covers most - not all - of the hunger climb; algae, waste and leaves
+	# still decide whether the colony grows.
+	if w_sn != null:
+		var film: Variant = w_sn.get("biofilm_progress")
+		if film != null:
+			hunger = clampf(hunger - HUNGER_RATE * dt * BIOFILM_GRAZE_SHARE
+				* clampf(float(film) / 0.7, 0.0, 1.0), 0.0, 1.0)
 	if w_sn != null and w_sn.has_method("build_graze_surface_boost"):
 		var graze_boost: float = float(w_sn.build_graze_surface_boost())
 		if graze_boost > 0.02 and w_sn.has_method("_is_hardscape_occupied") \

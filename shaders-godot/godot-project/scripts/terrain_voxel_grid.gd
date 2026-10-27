@@ -512,12 +512,16 @@ func count_exposed_peat() -> int:
 func sync_nutrients_to_substrate(grid: SubstrateGrid) -> void:
 	if grid == null:
 		return
+	# First sync for this grid snaps the field to the terrain; later syncs only
+	# move each cell's baseline (see SubstrateGrid.cell_baseline).
+	var first: bool = grid.cell_baseline.is_empty()
 	for x in grid.cells_x:
 		for z in grid.cells_z:
 			var wx: float = grid.origin.x + (float(x) + 0.5) * grid.cell_size
 			var wz: float = grid.origin.z + (float(z) + 0.5) * grid.cell_size
 			var sample: Dictionary = sample_column_nutrients(wx, wz)
-			grid.nutrients[x][z] = clampf(float(sample["surface"]), 0.0, SubstrateGrid.NUTRIENT_MAX)
+			grid.set_cell_baseline(x, z,
+				clampf(float(sample["surface"]), 0.0, SubstrateGrid.NUTRIENT_MAX), first)
 
 
 func material_color(mat: int, cy: int, cx: int, cz: int) -> Color:

@@ -147,3 +147,19 @@ vec3 iaq_leaf_aufwuchs(vec3 col, vec3 wpos, vec3 local_box, float fuzz) {
 		step(0.7, fract(h * 7.31)));
 	return mix(col, aufwuchs, mask * 0.6);
 }
+
+
+// Continuous directional values retain voxel facets without brightness pops
+// as a leaf tilts. Both node and MultiMesh foliage use the same world frame.
+float iaq_leaf_face_value(vec3 n_ws) {
+	float side = mix(0.66, 0.82, n_ws.x * n_ws.x);
+	float value = mix(side, 1.0, smoothstep(0.15, 0.90, n_ws.y));
+	return mix(value, 0.46, smoothstep(0.15, 0.90, -n_ws.y));
+}
+
+// A fixture lifts a leaf's own pigment. An additive white wash erased the
+// midrib and collapsed shaded greens into the same pale palette entry.
+vec3 iaq_leaf_fixture(vec3 col, vec3 lamp, float wash, float top_catch) {
+	vec3 reflected = mix(col, lamp * max(max(col.r, col.g), col.b), 0.16);
+	return col + reflected * wash * (0.46 + top_catch * 0.30);
+}

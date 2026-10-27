@@ -158,20 +158,12 @@ void fragment() {
 	// space, which is right only for a level camera: pitch the camera and the
 	// "top" of every leaf moved.
 	vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
-	float f;
-	if (n_ws.y > 0.7) {
-		f = 1.00;
-	} else if (n_ws.y < -0.7) {
-		f = 0.50;
-	} else if (abs(n_ws.x) > 0.7) {
-		f = 0.82;
-	} else {
-		f = 0.68;
-	}
+	float f = iaq_leaf_face_value(n_ws);
 	// A ribbon's broad face is its lit face and its edge its darkest line -
 	// the reverse of the cube table above.
-	if (blade_shade > 0.001 && abs(n_ws.y) <= 0.7) {
-		f = mix(f, 0.86, blade_shade);
+	if (blade_shade > 0.001) {
+		float upright = 1.0 - smoothstep(0.55, 0.85, abs(n_ws.y));
+		f = mix(f, 0.86, blade_shade * upright);
 	}
 	vec3 col = v_inst_color * f * iaq_blade_margin(v_local, blade_shade);
 	col = apply_category_palette_tint(col, iaq_palette_foliage,
@@ -235,8 +227,7 @@ void fragment() {
 		float depth = clamp((water_surface_y - v_world_pos.y) / span, 0.0, 1.0);
 		float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
 		float top_catch = smoothstep(0.20, 0.88, n_ws.y);
-		col += tank_fixture_color * wash * mix(0.18, 0.30, top_catch);
-		col *= 1.0 + wash * (0.32 + top_catch * 0.24);
+		col = iaq_leaf_fixture(col, tank_fixture_color, wash, top_catch);
 	}
 	// Shaped lamp. In an unshaded pipeline nothing responds to a light on
 	// its own, so the cone is evaluated here - this is what puts the beam

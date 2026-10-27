@@ -99,16 +99,8 @@ vec3 apply_vibrancy(vec3 col, float vib) {
 void fragment() {
     // Face-based voxel shading
     vec3 n = normalize(NORMAL);
-    float f;
-    if (n.y > 0.7) {
-        f = 1.00;        // top
-    } else if (n.y < -0.7) {
-        f = 0.50;        // bottom — HOLISTIC #050 close-range shadow steps
-    } else if (abs(n.x) > 0.7) {
-        f = 0.84;        // +X / -X sides
-    } else {
-        f = 0.70;        // +Z / -Z sides
-    }
+    vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
+    float f = iaq_leaf_face_value(n_ws);
     vec3 col = apply_vibrancy(albedo.rgb * f, color_vibrancy);
     col = apply_category_palette_tint(col, iaq_palette_foliage,
 		palette_hue_shift, palette_saturation, palette_warmth, palette_value);
@@ -133,17 +125,14 @@ void fragment() {
     float wet_view = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.0);
     col += vec3(0.16, 0.20, 0.22) * wet_band * wet_view * wet_sheen_strength;
     float sun_edge = pow(1.0 - abs(dot(n, normalize(VIEW))), 2.5)
-        * max(dot(n, normalize(-foliage_light_dir)), 0.0);
+        * max(dot(n_ws, normalize(-foliage_light_dir)), 0.0);
     col += vec3(0.18, 0.085, 0.025) * sun_edge * golden_hour;
     if (tank_fixture_glow > 0.001 && v_world_pos.y < fixture_water_top - 0.05) {
         float span = max(fixture_water_top - fixture_water_floor, 0.5);
         float depth = clamp((fixture_water_top - v_world_pos.y) / span, 0.0, 1.0);
         float wash = (1.0 - depth * 0.38) * tank_fixture_glow;
-        float top_catch = smoothstep(0.20, 0.88, n.y);
-        float leaf_green = smoothstep(0.28, 0.68, col.g - max(col.r, col.b));
-        float wash_col = mix(1.0, 0.42, leaf_green);
-        col += tank_fixture_color * wash * mix(0.18, 0.30, top_catch) * wash_col;
-        col *= 1.0 + wash * mix(0.32 + top_catch * 0.24, 0.28, leaf_green);
+        float top_catch = smoothstep(0.20, 0.88, n_ws.y);
+        col = iaq_leaf_fixture(col, tank_fixture_color, wash, top_catch);
     }
     // Shaped lamp. In an unshaded pipeline nothing responds to a light on
     // its own, so the cone is evaluated here - this is what puts the beam
@@ -151,7 +140,6 @@ void fragment() {
     // Thin-leaf transmission and the rear lamp, in world space (see
     // foliage_light.gdshaderinc). Node-path leaves are single boxes of
     // unknown thickness, so they transmit at a fixed middling rate.
-    vec3 n_ws = normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz);
     vec3 key_rgb = (tank_fixture_color * tank_fixture_glow + sss_color * sss_daylight * 0.35) * 0.55;
     col = iaq_leaf_light(col, v_world_pos, n_ws, CAMERA_POSITION_WORLD, 0.6, key_rgb);
     col = iaq_beam_light_n(v_world_pos, n_ws, col);

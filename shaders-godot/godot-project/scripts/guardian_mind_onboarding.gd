@@ -125,6 +125,8 @@ func _on_decline() -> void:
 
 
 func _finish(accepted: bool) -> void:
+	if is_queued_for_deletion():
+		return
 	emit_signal("closed", accepted)
 	queue_free()
 
@@ -133,12 +135,14 @@ static func open_in(parent: Node, mode: int = Mode.DOWNLOAD) -> PanelContainer:
 	var script: GDScript = load("res://scripts/guardian_mind_onboarding.gd") as GDScript
 	var w: PanelContainer = script.new()
 	w.setup(mode)
-	parent.add_child(w)
-	if parent is Control:
-		var host := parent as Control
-		w.set_anchors_preset(Control.PRESET_CENTER)
-		w.position = (host.size - w.custom_minimum_size) * 0.5
-	else:
-		var vp: Vector2 = parent.get_viewport().get_visible_rect().size
-		w.position = (vp - w.custom_minimum_size) * 0.5
+	w.name = "GuardianMindOnboarding"
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(center)
+	center.add_child(w)
+	w.custom_minimum_size.x = minf(560.0, parent.get_viewport().get_visible_rect().size.x * 0.90)
+	w._accept_btn.focus_mode = Control.FOCUS_ALL
+	w._decline_btn.focus_mode = Control.FOCUS_ALL
+	w._accept_btn.call_deferred("grab_focus")
 	return w

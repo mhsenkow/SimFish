@@ -142,6 +142,8 @@ func install_help_rail_button(rail: Control) -> void:
 
 
 func toggle_help() -> void:
+	if _main != null and _main.has_method("_intro_dialog_active") and _main._intro_dialog_active():
+		return
 	if _help_overlay != null and is_instance_valid(_help_overlay):
 		_help_overlay.queue_free()
 		_help_overlay = null
@@ -448,6 +450,8 @@ func _pick_nudge(stats: Dictionary) -> Dictionary:
 
 
 func _show_nudge(id: String, text: String, action: Callable) -> void:
+	if _main != null and _main.has_method("_intro_dialog_active") and _main._intro_dialog_active():
+		return
 	if _main == null:
 		return
 	if bool(_main.get("_photo_framing")):
@@ -659,7 +663,22 @@ func _show_caption(text: String) -> void:
 func _show_card(title: String, body: String) -> void:
 	if _main == null:
 		return
-	# Replace any existing card so focus always lands on the newest one.
+	if _main.has_method("queue_intro_dialog"):
+		_main.queue_intro_dialog("card:" + title, func() -> Control:
+			_show_card_now(title, body)
+			return _card_overlay)
+	else:
+		_show_card_now(title, body)
+
+
+func has_help_open() -> bool:
+	return is_instance_valid(_help_overlay)
+
+
+func _show_card_now(title: String, body: String) -> void:
+	if _main == null:
+		return
+	# The queue opens one card at a time; discard any stale local reference.
 	dismiss_card()
 	var overlay := Control.new()
 	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)

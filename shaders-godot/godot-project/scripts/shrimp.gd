@@ -1347,8 +1347,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	if sim != null:
 		var dl: float = float(sim.daylight())
 		var night_factor: float = 0.35 + 0.65 * dl
-		if dl < 0.28 and sim.has_method("tank_mind_snapshot"):
-			var asleep: float = float(sim.tank_mind_snapshot().get("asleep_fraction", 0.0))
+		if dl < 0.28 and sim.has_method("tank_asleep_fraction"):
+			var asleep: float = float(sim.tank_asleep_fraction())
 			if asleep > 0.55:
 				night_factor = 0.52 + 0.48 * dl
 		target_velocity *= night_factor

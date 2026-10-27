@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://temporal_soak_iaq"]
+
+[ext_resource type="Script" path="res://dev/temporal_soak.gd" id="1_probe"]
+
+[node name="TemporalSoak" type="Node"]
+script = ExtResource("1_probe")

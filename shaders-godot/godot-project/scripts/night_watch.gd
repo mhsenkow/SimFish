@@ -284,6 +284,15 @@ static func _tick_sleep_cluster(f: Fish, sim, dt: float) -> void:
 	var dl: float = SimGate.daylight(sim, 1.0)
 	if dl > 0.28:
 		return
+	# Each sleeper scans the whole population, so this was O(fish^2) every
+	# night tick. The drift is slow (dt * 0.12), so run it once a second per
+	# fish, staggered by instance id, with the elapsed time folded in.
+	var cadence: int = SLEEP_CLUSTER_EVERY_TICKS
+	var tick_i: Variant = sim.get("_mind_tick_index")
+	if tick_i != null and (int(tick_i) + f.get_instance_id()) % cadence != 0:
+		return
+	if tick_i != null:
+		dt *= float(cadence)
 	var center: Vector3 = Vector3.ZERO
 	var n: int = 0
 	for nf in TankMind._fish_list(sim):
@@ -299,6 +308,9 @@ static func _tick_sleep_cluster(f: Fish, sim, dt: float) -> void:
 	f._sleep_nook = f._sleep_nook.lerp(center, clampf(dt * 0.12, 0.0, 1.0))
 
 
+const SLEEP_CLUSTER_EVERY_TICKS: int = 10
+
+
 static func _pick_night_watcher(sim) -> void:
 	if sim == null:
 		return
@@ -306,6 +318,13 @@ static func _pick_night_watcher(sim) -> void:
 	if dl > 0.3:
 		return
 	var tm: Dictionary = TankMind.ensure(sim)
+	# A tank-wide pick, but tick_sleep calls it for every fish: once per sim
+	# tick is enough (it was an O(fish^2) scan every night tick).
+	var tick_i: Variant = sim.get("_mind_tick_index")
+	if tick_i != null:
+		if int(tm.get("watcher_pick_tick", -1)) == int(tick_i):
+			return
+		tm["watcher_pick_tick"] = int(tick_i)
 	var best: Fish = null
 	var best_s: float = -1.0
 	for f in TankMind._fish_list(sim):

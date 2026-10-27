@@ -1166,12 +1166,30 @@ func set_current_thought(line: String) -> void:
 	_thought_cd = 12.0
 
 
+# Called every tick per fish (mate grief); a linear String-compare scan of the
+# whole population made it O(fish^2) per tick. Cache the mate's instance id,
+# and re-scan for a missing mate at most every 2 s (a mate restored later in
+# a load still gets found).
+var _mate_cache_iid: int = 0
+var _mate_missing_until_ms: int = 0
+
+
 func _mate_is_alive() -> bool:
 	if _mate_id == "" or sim == null or sim.get("fish") == null:
 		return false
+	if _mate_cache_iid != 0:
+		var o: Object = instance_from_id(_mate_cache_iid)
+		if o != null and is_instance_valid(o) and String(o.get("id")) == _mate_id:
+			return true
+		_mate_cache_iid = 0
+	var now: int = Time.get_ticks_msec()
+	if now < _mate_missing_until_ms:
+		return false
 	for ff in sim.fish:
 		if is_instance_valid(ff) and String(ff.id) == _mate_id:
+			_mate_cache_iid = ff.get_instance_id()
 			return true
+	_mate_missing_until_ms = now + 2000
 	return false
 
 
@@ -2851,10 +2869,14 @@ func _build_body() -> void:
 	var mat_head_top: ShaderMaterial = _make_mat(head_color.lightened(0.22)) \
 		if _head_color_set else mat_top
 	_add_voxel_to(head, Vector3(0, 0, -2.5 * v),
-		Vector3(v * 0.95 * hp, v * 0.9 * hp, v * hp), mat_head)
+		Vector3(v * 0.95 * hp, v * 0.9 * hp, v * 0.80 * hp), mat_head)
+	# A smaller muzzle steps the cheek into the mouth without smoothing away
+	# the voxel silhouette. The eye stays on the broad cheek behind it.
+	_add_voxel_to(head, Vector3(0, -v * 0.06 * hp, -2.5 * v - v * 0.45 * hp),
+		Vector3(v * 0.62 * hp, v * 0.58 * hp, v * 0.34 * hp), mat_head)
 	# Forehead - lighter. Lifts on hump-backed phenotypes (angelfish, gourami).
 	_add_voxel_to(head, Vector3(0, v * 0.5 * hp * back_arch, -2.5 * v),
-		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_head_top)
+		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * 0.80 * hp), mat_head_top)
 	# Nuchal hump: a bulging forehead / nape boss that grows up and forward
 	# over the head. Defines mature cichlids (flowerhorn, severum, midas) and
 	# the humphead wrasse / bumphead parrotfish on the reef.
@@ -2870,10 +2892,12 @@ func _build_body() -> void:
 	_add_voxel_to(head, Vector3(0, -v * 0.5 * hp * ventral_profile, -2.5 * v),
 		Vector3(v * 0.6 * hp, v * 0.3 * hp, v * hp), mat_belly)
 	# Eyes — style-guide 1-voxel + highlight pixel for silhouette clarity.
+	# Keep the dark pupil dominant after palette quantization; a large pale
+	# catchlight made the whole eye read as a white bead at tank-view scale.
 	var es: float = eye_size_factor
-	var eye_core: float = maxf(v * 0.14 * hp * es, v * 0.11 * hp)
+	var eye_core: float = maxf(v * 0.18 * hp * es, v * 0.13 * hp)
 	var mat_eye_hi := VoxelMat.make(Color8(210, 228, 235))
-	var eye_hi: float = maxf(v * 0.08 * hp * es, v * 0.06 * hp)
+	var eye_hi: float = maxf(v * 0.05 * hp * es, v * 0.035 * hp)
 	var eye_lift: float = float(asym["eye_lift"])
 	# The head extends to 0.475v: the old 0.4v centres buried both
 	# pupils and catchlights inside it at the default eye size.
@@ -3296,15 +3320,29 @@ func _build_body() -> void:
 		1:  # fan / round — a continuous widening membrane, not floating plates
 			var fan_length: float = v * 0.95 * fl * maxf(1.0, finnage)
 			var fan_step: float = fan_length / 6.0
+			# Pigment is denser near the root; the outer membrane is thinner.
+			# Three cached tones give the fan structure without noisy speckles.
+			var root_color: Color = effective_tail.darkened(0.22)
+			root_color.a = 0.78
+			var edge_color: Color = effective_tail.lerp(base_color, 0.16).lightened(0.10)
+			edge_color.a = 0.52
+			var mat_root := VoxelMat.make_translucent(root_color)
+			var mat_edge := VoxelMat.make_translucent(edge_color)
 			for strip in 6:
 				var progress: float = float(strip + 1) / 6.0
 				var half_height: float = v * lerpf(0.28, 1.15 * maxf(1.0, finnage), progress)
 				# Round the outer corners while retaining a broad guppy fan.
 				if strip == 5:
 					half_height *= 0.88
-				_add_voxel_to(_tail_pivot,
-					Vector3(0, 0, v * 0.35 + (float(strip) + 0.5) * fan_step),
-					Vector3(v * 0.12, half_height * 2.0, fan_step + v * 0.08), mat_tail)
+				var membrane_mat: Material = mat_root if strip < 2 else (mat_edge if strip == 5 else mat_tail)
+				var strip_z: float = v * 0.35 + (float(strip) + 0.5) * fan_step
+				_add_voxel_to(_tail_pivot, Vector3(0, 0, strip_z),
+					Vector3(v * lerpf(0.14, 0.08, progress), half_height * 2.0,
+						fan_step + v * 0.08), membrane_mat)
+				# A single central ray reads at game scale; the stepped fan edge
+				# supplies the other rays without adding a mesh of tiny lines.
+				_add_voxel_to(_tail_pivot, Vector3(0, 0, strip_z),
+					Vector3(v * 0.15, v * 0.09, fan_step + v * 0.08), mat_root)
 		2:  # lyre - long top + bottom trailing rays
 			_add_tail_fin_voxel(Vector3(0, v * 0.35 * tf, v * (0.8 * fl)),
 				Vector3(v * 0.13, v * 0.35, v * (0.5 * fl)), mat_tail)
@@ -4020,8 +4058,6 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	# Hunger/energy when not integrated by MindDriveSoA (#51).
 	if not _drive_soa_integrated:
 		hunger = clampf(hunger + dt * 0.006, 0.0, 1.0)
-		if sim != null and sim.dissolved_o2 > 0.72 and sim.total_plant_biomass > 280:
-			hunger = maxf(0.0, hunger - dt * 0.0018)
 		if maturity == MATURITY_FRY and sim != null:
 			var w_micro: Node = sim.get_parent()
 			if w_micro != null and w_micro.has_method("live_microfauna_count"):
@@ -4030,6 +4066,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 					hunger = maxf(0.0, hunger - dt * clampf(float(micro_n) / 60.0, 0.0, 1.0) * 0.012)
 		var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
 		energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
+		MindDriveSoA.apply_forage_and_reserves(self, dt, MindDriveSoA.forage_support(sim))
 	burst_remaining = maxf(0.0, burst_remaining - dt)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	nibble_cooldown = maxf(0.0, nibble_cooldown - dt)
@@ -6520,6 +6557,9 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		if _patrol_retarget_t <= 0.0:
 			_patrol_retarget_t = _behavior_rng().randf_range(8.0, 16.0)
 			_patrol_idx = (_patrol_idx + 1) % patrol_anchors.size()
+		# refresh_patrol_from_heatmap can rebuild a shorter anchor list under a
+		# live index (out-of-bounds script errors every tick in long runs).
+		_patrol_idx = _patrol_idx % patrol_anchors.size()
 		var anchor: Vector3 = patrol_anchors[_patrol_idx]
 		var to_anchor: Vector3 = anchor - position
 		if to_anchor.length() > 1.0 and to_anchor.length_squared() > 1e-4:

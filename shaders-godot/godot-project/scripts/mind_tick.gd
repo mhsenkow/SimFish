@@ -9,6 +9,13 @@ extends RefCounted
 # staggered across fish, so mind cost now scales with the setting.
 const DEFAULT_HZ: float = 5.0
 const SLOW_LANE_SCALE: float = 0.5  # #25 idle-tank half cadence
+# Tank-wide ceiling on unnamed-fish mind cycles per second. A cycle costs
+# ~1 ms of main thread (snapshot, bind/encode, worker hand-off), so at a flat
+# 5 Hz per fish a tank that bred from 45 to 80 fish went from ~25 to ~90 ms per
+# sim tick and the game crawled within minutes. Past BUDGET/DEFAULT_HZ fish
+# (24) each fish's cadence stretches instead, so mind cost stops growing with
+# population; steering stays smooth through lerp_visuals.
+const MIND_CYCLES_PER_S_BUDGET: float = 120.0
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 
 static var _snap_hz: float = -1.0
@@ -134,6 +141,11 @@ static func advance(f, sim, dt: float) -> Dictionary:
 	var step: float = mind_dt() / idle_slow_mult(sim)
 	if f.is_guardian or (f.get("fish_name") != null and str(f.fish_name) != ""):
 		step = mind_dt()
+	# The budget exempts only the guardian and the fish the player is looking
+	# at: every stocked fish gets a name, so a "named" exemption covered the
+	# whole tank and the budget never applied.
+	if not f.is_guardian and f.get("_player_watched") != true:
+		step = maxf(step, float(_eligible_fish) / MIND_CYCLES_PER_S_BUDGET)
 	# At most one mind step per sim tick: a step shorter than dt is stretched
 	# to dt, so a cadence above the tick rate means "every tick" with the real
 	# elapsed dt instead of an ever-growing backlog.

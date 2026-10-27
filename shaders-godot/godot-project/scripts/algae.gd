@@ -287,6 +287,10 @@ func biomass() -> int:
 	return _voxels.size()
 
 
+func voxel_count() -> int:
+	return _voxels.size()
+
+
 func nibble(amount: int) -> int:
 	var taken: int = 0
 	for i in amount:

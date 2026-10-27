@@ -36,7 +36,7 @@ static func integrate(waste: Array, dt: float, sim: Node, substrate_top_y: float
 	_life.clear()
 	_map.clear()
 	for particle in waste:
-		if not is_instance_valid(particle) or particle.settled:
+		if not is_instance_valid(particle) or particle.settled or particle.batch_landed:
 			continue
 		if particle.kind == 3:  # KIND_FOOD
 			continue
@@ -76,7 +76,11 @@ static func integrate(waste: Array, dt: float, sim: Node, substrate_top_y: float
 			p += flow * dt * 0.48
 		if p.y <= floor_y + _map[i].voxel_size * 0.5:
 			p.y = floor_y + _map[i].voxel_size * 0.5
-			_map[i].settled = true
+			# Landing is handed to WasteParticle.tick, which deposits the
+			# particle's nutrients into the substrate on the settle transition.
+			# Setting `settled` here skipped that branch, so poop, litter and
+			# corpses never reached the soil.
+			_map[i].batch_landed = true
 		_pos[i] = p
 		_map[i].position = p
 		_map[i]._interp_to = p

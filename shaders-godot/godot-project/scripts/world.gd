@@ -870,8 +870,9 @@ func _process(dt: float) -> void:
 		_apply_biofilm_tints()
 		_apply_driftwood_wet_lines()
 	# Coral recruitment (saltwater tanks only). Larval settlement is limited
-	# by substrate space and competition, not a global count cap.
-	if _active_substrate_profile.get("is_saltwater", false):
+	# by substrate space and competition - and by the plant ceiling, which it
+	# used to skip, adding 1-3 corals every ~35 s for the whole session.
+	if _active_substrate_profile.get("is_saltwater", false) and not plants_at_capacity():
 		_coral_recruit_timer = maxf(0.0, _coral_recruit_timer - sdt)
 		if _coral_recruit_timer <= 0.0:
 			_coral_recruit_timer = randf_range(CORAL_RECRUIT_MIN, CORAL_RECRUIT_MAX)
@@ -1361,6 +1362,13 @@ func disturb_substrate(amount: float = 0.55) -> void:
 
 
 var _empty_shells: Array = []
+# Shells dissolve: once buried they soften over a few sim days and their
+# calcium returns to the water as hardness, the way spent shells do in a
+# soil tank. Before this they were permanent draw calls that piled up for
+# the whole session (snails live 12 minutes).
+const EMPTY_SHELL_DISSOLVE_S: float = 1800.0
+const EMPTY_SHELL_MAX: int = 40
+const EMPTY_SHELL_GH_RETURN: float = 0.02
 
 
 func spawn_empty_snail_shell(pos: Vector3, color: Color, size: float = 1.0,
@@ -1389,6 +1397,8 @@ func spawn_empty_snail_shell(pos: Vector3, color: Color, size: float = 1.0,
 
 func _tick_empty_shells(sdt: float) -> void:
 	var kept: Array = []
+	# Oldest first: past the cap, the oldest shells dissolve early.
+	var excess: int = _empty_shells.size() - EMPTY_SHELL_MAX
 	for entry_v in _empty_shells:
 		if not (entry_v is Dictionary):
 			continue
@@ -1397,6 +1407,10 @@ func _tick_empty_shells(sdt: float) -> void:
 		if n == null or not is_instance_valid(n):
 			continue
 		entry["age"] = float(entry.get("age", 0.0)) + sdt
+		if float(entry["age"]) >= EMPTY_SHELL_DISSOLVE_S or excess > 0:
+			excess -= 1
+			_dissolve_empty_shell(n as Node)
+			continue
 		# Half-bury over time (#84) — deeper sink into the gravel trough.
 		var bury: float = clampf(float(entry["age"]) / 280.0, 0.0, 0.85)
 		entry["bury"] = bury
@@ -1413,6 +1427,12 @@ func _tick_empty_shells(sdt: float) -> void:
 			spawn_empty_snail_shell(
 				Vector3(xz.x, SUBSTRATE_DEPTH, xz.y),
 				Color8(180, 140, 120), randf_range(0.35, 1.15), "ramshorn")
+
+
+func _dissolve_empty_shell(n: Node) -> void:
+	n.queue_free()
+	if sim != null and sim.water_chemistry != null:
+		sim.water_chemistry.gh = minf(float(sim.water_chemistry.gh) + EMPTY_SHELL_GH_RETURN, 12.0)
 
 
 func cfg_preset_is(id: String) -> bool:
@@ -2509,9 +2529,14 @@ static func _mature_creatures(creatures: Array) -> void:
 				(sg as Dictionary)["generation"] = int(c.get("generation"))
 		var max_age_v: Variant = c.get("max_age_s")
 		if max_age_v != null and c.get("age") != null:
-			# Mid-life band: established-looking, clear of senescence so no founder
-			# spawns about to die.
-			c.set("age", rng.randf_range(0.2, 0.5) * float(max_age_v))
+			# Spread across the whole life (fish mature at 0.3, go senescent at
+			# 0.85). The old 0.2-0.5 band put every founder in one cohort: they
+			# matured together, spawned 24 eggs in the first 30 s, then aged out
+			# together a few minutes later - a boom/bust wave on every load.
+			c.set("age", rng.randf_range(0.12, 0.8) * float(max_age_v))
+		if c.get("breed_cooldown") != null:
+			# Stagger first spawning so founders don't all pair on frame one.
+			c.set("breed_cooldown", rng.randf_range(0.0, 90.0))
 
 
 func boost_biofilm(amount: float) -> void:
