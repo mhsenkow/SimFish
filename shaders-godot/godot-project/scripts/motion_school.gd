@@ -240,8 +240,13 @@ static func bank_correlation(f: Node) -> float:
 		var ni: int = MindBoidsBuffer.topo_neighbor_at(idx, t)
 		if ni < 0:
 			continue
-		var nf: Node = MindBoidsBuffer.fish_refs[ni]
-		if nf == null or nf.get("_bank_pivot") == null:
+		# The boids buffer is captured once per tick; a neighbour can be freed
+		# before this runs, and assigning a freed ref to a typed var errors.
+		var nf_v: Variant = MindBoidsBuffer.fish_refs[ni]
+		if not is_instance_valid(nf_v):
+			continue
+		var nf: Node = nf_v
+		if nf.get("_bank_pivot") == null:
 			continue
 		sum += float((nf._bank_pivot as Node3D).rotation.z)
 		n += 1

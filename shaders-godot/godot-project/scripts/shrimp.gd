@@ -36,7 +36,7 @@ var species: String = "shrimp"
 var base_color: Color = Color8(180, 90, 70)         # neocaridina red default
 var accent_color: Color = Color8(245, 220, 200)     # belly cream
 var adult_voxel_scale: float = 0.10                 # smaller than fish
-var max_age_s: float = 360.0                        # ~6 minutes lifespan
+var max_age_s: float = 360.0                        # pre-scale; see Fish.LIFESPAN_SCALE
 var max_speed: float = 0.85
 var max_turn_rate: float = 4.0                      # nimble
 var sex: int = 0
@@ -233,6 +233,12 @@ func init_genome(genome: Dictionary) -> void:
 	accent_color = genome.get("accent_color", accent_color)
 	adult_voxel_scale = genome.get("adult_voxel_scale", adult_voxel_scale)
 	max_age_s = genome.get("max_age_s", max_age_s)
+	# Same once-per-lineage lifespan scale as fish: a 6-minute shrimp colony
+	# aged out in a single generation (22 -> 2 in fifteen minutes).
+	if int(genome.get("lifespan_v", 1)) < Fish.LIFESPAN_VERSION:
+		max_age_s *= Fish.LIFESPAN_SCALE
+		_saved_genome["max_age_s"] = max_age_s
+		_saved_genome["lifespan_v"] = Fish.LIFESPAN_VERSION
 	max_speed = genome.get("max_speed", max_speed)
 	sex = genome.get("sex", randi() % 2)
 	substrate_top_y = genome.get("substrate_top_y", substrate_top_y)
@@ -809,7 +815,16 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 
 	age += dt
 	hunger = clampf(hunger + dt * 0.011, 0.0, 1.0)
-	energy = clampf(energy - dt * 0.004, 0.0, 1.0)
+	# Shrimp pick biofilm off every surface (World.biofilm_graze_share).
+	var habitat_g: Node = sim.get_parent() if sim != null else null
+	var film_share: float = 0.0
+	if habitat_g != null and habitat_g.has_method("biofilm_graze_share"):
+		film_share = float(habitat_g.biofilm_graze_share("shrimp"))
+		hunger = clampf(hunger - dt * 0.011 * film_share, 0.0, 1.0)
+	# Grazing feeds body condition too (energy drains 0.004/s). Hunger-only
+	# relief left a sated colony too weak to breed (energy > 0.5), so it never
+	# replaced its elders - the bug fish forage had (MindDriveSoA).
+	energy = clampf(energy - dt * 0.004 + dt * 0.005 * film_share, 0.0, 1.0)
 	breed_cooldown = maxf(0.0, breed_cooldown - dt)
 	shelter_bonus = maxf(0.0, shelter_bonus - dt * 0.35)
 	if _shelter_target != null and (not is_instance_valid(_shelter_target) \
@@ -1109,7 +1124,12 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			var w: Node = sim.get_parent()
 			if w != null and w.has_method("shrimp_carrying_capacity"):
 				colony_cap = int(w.shrimp_carrying_capacity())
-		var overcrowded: bool = sim != null and sim.shrimp.size() >= colony_cap
+		# Senescent shrimp don't hold breeding space. Counting them let a
+		# colony that filled in one burst stay a single age cohort: nothing
+		# was born while it was full, and when that cohort aged out together
+		# the colony went extinct (temporal soak: 51 -> 0). Now the colony
+		# raises its replacements during the elders' senescent window.
+		var overcrowded: bool = sim != null and _breeding_colony_size() >= colony_cap
 		if not overcrowded:
 			var best_mate: Shrimp = null
 			var best_score: float = -INF
@@ -2135,7 +2155,9 @@ func produce_offspring_genome(other: Shrimp) -> Dictionary:
 		"accent_color": accent_color.lerp(other.accent_color, mix).lerp(
 			Color(_g.randf(), _g.randf(), _g.randf()), color_muta * 0.5),
 		"adult_voxel_scale": new_size,
-		"max_age_s": (max_age_s + other.max_age_s) * 0.5 + _g.randf_range(-30.0, 30.0),
+		"max_age_s": (max_age_s + other.max_age_s) * 0.5
+			+ _g.randf_range(-30.0, 30.0) * Fish.LIFESPAN_SCALE,
+		"lifespan_v": Fish.LIFESPAN_VERSION,
 		"max_speed": (max_speed + other.max_speed) * 0.5 + _g.randf_range(-0.08, 0.08),
 		"sex": _g.randi() % 2,
 		"substrate_top_y": substrate_top_y,
@@ -2323,3 +2345,20 @@ func resolve_refs(saved: Dictionary, id_map: Dictionary) -> void:
 		var p: Node = id_map[pid]
 		if is_instance_valid(p) and p is Shrimp:
 			partner = p
+
+
+# Per-frame cache: every breeding-ready shrimp asks.
+static var _colony_size_frame: int = -1
+static var _colony_size: int = 0
+
+
+func _breeding_colony_size() -> int:
+	var frame: int = Engine.get_process_frames()
+	if frame == _colony_size_frame:
+		return _colony_size
+	_colony_size_frame = frame
+	_colony_size = 0
+	for s in sim.shrimp:
+		if is_instance_valid(s) and s.maturity != MATURITY_SENESCENT:
+			_colony_size += 1
+	return _colony_size

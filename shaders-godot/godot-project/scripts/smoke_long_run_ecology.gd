@@ -20,6 +20,7 @@ func _init() -> void:
 	_waste_handoff(t)
 	_forage(t)
 	_night_cost(t)
+	_lifespan(t)
 	quit(t.finish())
 
 
@@ -67,9 +68,13 @@ class _MindFish:
 	var id: String = ""
 	var is_guardian: bool = false
 	var fish_name: String = ""
+	@warning_ignore("unused_private_class_variable")  # read/written by MindTick
 	var _mind_stagger: float = -1.0
+	@warning_ignore("unused_private_class_variable")  # read/written by MindTick
 	var _mind_accum: float = 0.0
+	@warning_ignore("unused_private_class_variable")  # read/written by MindTick
 	var _bid_slow_accum: float = 0.0
+	@warning_ignore("unused_private_class_variable")  # read/written by MindTick
 	var _bid_slow_due: bool = false
 	var _player_watched: bool = false
 
@@ -78,7 +83,7 @@ func _mind_budget(t: TestSupport.Suite) -> void:
 	MindTick.reset_stats_for_test()
 	MindTick.apply_ambient_snap({"mind_cadence_hz": MindTick.DEFAULT_HZ, "mind_idle_mult": 1.0})
 	var cycles: Array[int] = []
-	for n in [20, 80]:
+	for n in [10, 80]:
 		MindTick.set_eligible_fish(n)
 		var fishes: Array = []
 		for i in n:
@@ -91,8 +96,9 @@ func _mind_budget(t: TestSupport.Suite) -> void:
 				if bool(MindTick.advance(f, null, 0.1).get("run", false)):
 					runs += 1
 		cycles.append(runs)
-	t.in_range(float(cycles[0]) / 10.0, 90.0, 110.0, "20 fish run at the full 5 Hz")
-	t.in_range(float(cycles[1]) / 10.0, 100.0, MindTick.MIND_CYCLES_PER_S_BUDGET * 1.05,
+	t.in_range(float(cycles[0]) / 10.0, 45.0, 55.0, "10 fish run at the full 5 Hz")
+	t.in_range(float(cycles[1]) / 10.0, MindTick.MIND_CYCLES_PER_S_BUDGET * 0.85,
+		MindTick.MIND_CYCLES_PER_S_BUDGET * 1.05,
 		"80 fish share the tank budget instead of 400 cycles/s")
 	var watched := _MindFish.new()
 	watched.id = "watched_budget"
@@ -154,3 +160,30 @@ func _night_cost(t: TestSupport.Suite) -> void:
 		"shrimp must not build the whole-tank mind snapshot per tick")
 	var nw: String = FileAccess.get_file_as_string("res://scripts/night_watch.gd")
 	t.check(nw.contains("watcher_pick_tick"), "the night watcher is picked once per tick")
+
+
+func _lifespan(t: TestSupport.Suite) -> void:
+	# Authored lifespans (presets, old saves) scale once; lineages never compound.
+	var mom := Fish.new()
+	root.add_child(mom)
+	mom.set_process(false)
+	mom.init_genome({"species": "guppy", "sex": 1, "max_age_s": 240.0})
+	t.approx(mom.max_age_s, 240.0 * Fish.LIFESPAN_SCALE, "an authored lifespan is scaled on init")
+	var dad := Fish.new()
+	root.add_child(dad)
+	dad.set_process(false)
+	dad.init_genome({"species": "guppy", "sex": 0, "max_age_s": 240.0})
+	var child_genome: Dictionary = mom.produce_offspring_genome(dad)
+	var child := Fish.new()
+	root.add_child(child)
+	child.set_process(false)
+	child.init_genome(child_genome)
+	t.in_range(child.max_age_s, 240.0 * Fish.LIFESPAN_SCALE - 101.0,
+		240.0 * Fish.LIFESPAN_SCALE + 101.0, "offspring inherit the scaled span without rescaling")
+	var replay := Fish.new()
+	root.add_child(replay)
+	replay.set_process(false)
+	replay.init_genome(mom._saved_genome)
+	t.approx(replay.max_age_s, mom.max_age_s, "a saved genome replays without rescaling")
+	for f in [mom, dad, child, replay]:
+		f.queue_free()

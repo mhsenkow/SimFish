@@ -66,6 +66,9 @@ var _died: Dictionary = {}
 # instance id -> last census snapshot, so a vanished fish can be classified.
 var _last_seen: Dictionary = {}
 var _death_causes: Dictionary = {}
+# Same classification for the cleanup crew ("shrimp:old_age", "snail:starvation").
+var _crew_seen: Dictionary = {}
+var _crew_causes: Dictionary = {}
 var _census_acc: float = 0.0
 var _wall_start: int = 0
 # Templates start with an established tank_age_s; checkpoints count from boot.
@@ -245,6 +248,41 @@ func _census() -> void:
 			_death_causes[cause] = int(_death_causes.get(cause, 0)) + 1
 			_last_seen.erase(id)
 	_alive = now
+	_census_crew()
+
+
+func _census_crew() -> void:
+	var crew: Array = []
+	for s in _sim.get("shrimp"):
+		crew.append(["shrimp", s])
+	var sroot: Variant = _sim.get("snails_root")
+	if sroot is Node:
+		for sn in (sroot as Node).get_children():
+			if sn.get("hunger") != null:
+				crew.append(["snail", sn])
+	var now: Dictionary = {}
+	for pair in crew:
+		if not is_instance_valid(pair[1]):
+			continue
+		var c: Object = pair[1]
+		var id: int = c.get_instance_id()
+		now[id] = {
+			"kind": pair[0],
+			"age_frac": float(c.get("age")) / maxf(1.0, float(c.get("max_age_s"))),
+			"hunger": float(c.get("hunger")), "energy": float(c.get("energy")),
+		}
+	for id in _crew_seen:
+		if now.has(id):
+			continue
+		var snap: Dictionary = _crew_seen[id]
+		var cause: String = "eaten_or_other"
+		if float(snap.age_frac) >= 0.95:
+			cause = "old_age"
+		elif float(snap.energy) < 0.15:
+			cause = "starvation"
+		var key: String = "%s:%s" % [snap.kind, cause]
+		_crew_causes[key] = int(_crew_causes.get(key, 0)) + 1
+	_crew_seen = now
 
 
 static func _pct(values: Array[float], q: float) -> float:
@@ -284,6 +322,7 @@ func _record() -> void:
 	var hunger_sum: float = 0.0
 	var energy_sum: float = 0.0
 	var stress_sum: float = 0.0
+	var bursting: int = 0
 	var maturity: Array = [0, 0, 0, 0]
 	for f in sim.get("fish"):
 		if is_instance_valid(f):
@@ -292,6 +331,8 @@ func _record() -> void:
 			hunger_sum += float(f.hunger)
 			energy_sum += float(f.energy)
 			stress_sum += float(f.stress)
+			if float(f.burst_remaining) > 0.0:
+				bursting += 1
 			maturity[clampi(int(f.maturity), 0, 3)] += 1
 			if int(f.maturity) == 2:
 				var why: String = String(f.breeding_condition_reason())
@@ -299,6 +340,13 @@ func _record() -> void:
 					why = "ready"
 				breed_block[why] = int(breed_block.get(why, 0)) + 1
 	var nf: float = maxf(1.0, float((sim.get("fish") as Array).size()))
+	var shrimp_mat: Array = [0, 0, 0, 0]
+	var shrimp_energy: float = 0.0
+	for sh in sim.get("shrimp"):
+		if is_instance_valid(sh):
+			shrimp_mat[clampi(int(sh.maturity), 0, 3)] += 1
+			shrimp_energy += float(sh.energy)
+	var ns: float = maxf(1.0, float((sim.get("shrimp") as Array).size()))
 	var snails: int = 0
 	var sroot: Variant = sim.get("snails_root")
 	if sroot is Node:
@@ -339,12 +387,16 @@ func _record() -> void:
 		"born_since_last": _born.duplicate(),
 		"died_since_last": _died.duplicate(),
 		"death_causes": _death_causes.duplicate(),
+		"crew_deaths": _crew_causes.duplicate(),
 		"maturity": maturity,
 		"adult_breed_block": breed_block,
 		"fish_hunger": snappedf(hunger_sum / nf, 0.01),
 		"fish_energy": snappedf(energy_sum / nf, 0.01),
 		"fish_stress": snappedf(stress_sum / nf, 0.01),
+		"fish_bursting": snappedf(float(bursting) / nf, 0.01),
 		"fish_cap": int(sim.call("fish_carrying_capacity")),
+		"shrimp_maturity": shrimp_mat,
+		"shrimp_energy": snappedf(shrimp_energy / ns, 0.01),
 		"shrimp": (sim.get("shrimp") as Array).size(),
 		"snails": snails,
 		"eggs": (sim.get("eggs") as Array).size(),
@@ -376,6 +428,7 @@ func _record() -> void:
 	_born.clear()
 	_died.clear()
 	_death_causes.clear()
+	_crew_causes.clear()
 	print("[temporal] ", JSON.stringify(row))
 
 

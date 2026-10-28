@@ -2258,6 +2258,40 @@ func shrimp_carrying_capacity() -> int:
 	return _pop_cap("shrimp", maxi(6, int(_tank_volume_proxy() * 0.38)))
 
 
+# Fraction of a grazer's hunger climb the glass/wood/leaf biofilm covers.
+# A mature film feeds about half the carrying capacity almost fully; past that
+# it is shared thinner, so algae, waste and leaves decide whether a colony
+# grows. Without it the Walstad cleanup crew starved out within fifteen
+# minutes (temporal soak: shrimp 22 -> 2, snails 13 -> 3). Cached per frame -
+# every snail and shrimp asks.
+const BIOFILM_GRAZE_MAX_SHARE: float = 0.95
+var _graze_share_frame: int = -1
+var _graze_share: Dictionary = {}
+
+
+func biofilm_graze_share(kind: String) -> float:
+	var frame: int = Engine.get_process_frames()
+	if frame != _graze_share_frame:
+		_graze_share_frame = frame
+		_graze_share.clear()
+	if _graze_share.has(kind):
+		return float(_graze_share[kind])
+	var film: float = clampf(biofilm_progress / 0.7, 0.0, 1.0)
+	var n: int = 0
+	var cap: int = 1
+	if sim != null:
+		if kind == "snail":
+			n = int(sim.snail_count)
+			cap = snail_carrying_capacity()
+		else:
+			n = sim.shrimp.size()
+			cap = shrimp_carrying_capacity()
+	var support: float = clampf(float(cap) * 0.5 / float(maxi(n, 1)), 0.0, 1.0)
+	var share: float = BIOFILM_GRAZE_MAX_SHARE * film * support
+	_graze_share[kind] = share
+	return share
+
+
 # Hard ceiling on live Plant nodes. Plants had no global limit — runner
 # propagation only self-limited spatially, so a dense carpet scape left
 # running for hours could grow node count without bound. `propagate_plant`
@@ -4643,7 +4677,7 @@ func _respawn_extinct_fauna() -> void:
 				s.global_position = sp
 				s.base_color = Color.from_hsv(randf(), randf_range(0.6, 0.9), randf_range(0.5, 0.9))
 				s.max_speed = randf_range(0.4, 0.6)
-				s.max_age_s = randf_range(120.0, 180.0)
+				s.max_age_s = randf_range(120.0, 180.0) * Fish.LIFESPAN_SCALE
 				s.age = randf_range(10.0, 40.0)
 				s.maturity = Shrimp.MATURITY_ADULT
 				sim.register_shrimp(s)

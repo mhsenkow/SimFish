@@ -9,13 +9,14 @@ extends RefCounted
 # staggered across fish, so mind cost now scales with the setting.
 const DEFAULT_HZ: float = 5.0
 const SLOW_LANE_SCALE: float = 0.5  # #25 idle-tank half cadence
-# Tank-wide ceiling on unnamed-fish mind cycles per second. A cycle costs
-# ~1 ms of main thread (snapshot, bind/encode, worker hand-off), so at a flat
-# 5 Hz per fish a tank that bred from 45 to 80 fish went from ~25 to ~90 ms per
-# sim tick and the game crawled within minutes. Past BUDGET/DEFAULT_HZ fish
-# (24) each fish's cadence stretches instead, so mind cost stops growing with
-# population; steering stays smooth through lerp_visuals.
-const MIND_CYCLES_PER_S_BUDGET: float = 120.0
+# Tank-wide ceiling on mind cycles per second (the guardian and the watched
+# fish are exempt). A cycle costs ~1 ms of main thread (snapshot, bind/encode,
+# worker hand-off), so at a flat 5 Hz per fish a tank that bred from 45 to 80
+# fish went from ~25 to ~90 ms per sim tick and the game crawled within
+# minutes. Past BUDGET/DEFAULT_HZ fish (~14) each fish's cadence stretches
+# instead, so mind cost stops growing with population; steering stays smooth
+# through lerp_visuals. 72/s keeps a full 66-fish tank near 1 Hz per fish.
+const MIND_CYCLES_PER_S_BUDGET: float = 72.0
 const MindSoulPass2 = preload("res://scripts/mind_soul_pass2.gd")
 
 static var _snap_hz: float = -1.0

@@ -2062,6 +2062,8 @@ var _off_frustum_phase: int = 0
 var _plant_tick_index: int = 0
 var _plant_tick_accum: Dictionary = {}
 const PLANT_TICK_NEAR_DIST_SQ: float = 32.0 * 32.0
+const CROWD_HALF_TICK_FISH: int = 32
+const CROWD_HALF_TICK_PLANTS: int = 96
 const PLANT_TICK_FAR_DIST_SQ: float = 44.0 * 44.0
 var _guardian_mind_accum: float = 0.0
 var _shrimp_brain_phase: int = 0
@@ -3256,13 +3258,18 @@ func is_creature_visible_to_camera(node: Node3D) -> bool:
 func _plant_tick_divisor(plant: Plant, camera: Camera3D) -> int:
 	if camera == null or plant == null:
 		return 1
+	# A dense planting near the camera ran every plant at 10 Hz - ~13 ms of a
+	# full Walstad tick at ~200 plants, most of them under 0.65 health at the
+	# plant cap, so the stress exemption below covered nearly all of them.
+	# Growth, stress and flowering all integrate the accumulated dt at 5 Hz.
+	var crowd_min: int = 2 if plants.size() > CROWD_HALF_TICK_PLANTS else 1
 	# Stress, death and active flowering remain responsive even when the camera
 	# is far away. Calm vegetation can safely integrate a larger accumulated dt.
 	if plant.is_dying or plant.health < 0.65 or int(plant.flower_stage) != 0:
-		return 1
+		return crowd_min
 	var dist_sq: float = camera.global_position.distance_squared_to(plant.global_position)
 	if dist_sq <= PLANT_TICK_NEAR_DIST_SQ:
-		return 1
+		return crowd_min
 	if dist_sq <= PLANT_TICK_FAR_DIST_SQ:
 		return 2
 	return 4
@@ -4293,14 +4300,31 @@ func _tick(dt: float) -> void:
 				var frustum_mask: int = 3 if _mind_budget_pressure > 0.55 else 1
 				if (f.get_instance_id() & frustum_mask) != (_off_frustum_phase & frustum_mask):
 					f.analytic_body_step(dt)
+					f._skipped_tick_dt += dt
 					continue
+		# Crowded tank: like shrimp, each fish runs its behaviour tick every
+		# other sim tick with the elapsed time. Motion still integrates every
+		# frame from the current velocity, so on screen this reads the same;
+		# at 64 fish the fish stage was ~42 of a ~70 ms tick. The guardian,
+		# the fish being looked at and fish at a wall keep the full rate.
+		elif fish_n > CROWD_HALF_TICK_FISH and not f.is_guardian \
+				and f._cached_glance_strength <= 0.12 \
+				and (f.get_instance_id() & 1) != (_off_frustum_phase & 1) \
+				and not _entity_near_tank_wall(f.position):
+			f._skipped_tick_dt += dt
+			continue
 		f._player_watched = have_cam and fish_visible and f._cached_glance_strength > 0.12
+		# Skipped ticks are carried, not dropped: age, timers and gestation
+		# advance by the real elapsed time (off-screen fish used to age at
+		# half speed).
+		var tick_dt: float = minf(dt + f._skipped_tick_dt, dt * 4.0)
+		f._skipped_tick_dt = 0.0
 		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
 		var neighbors: Array = _spatial_query(f.position, 9.0, f)
-		var ev: Dictionary = f.tick(dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
+		var ev: Dictionary = f.tick(tick_dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
 		_refresh_fish_attention(f)
 		if f.arousal > 0.06:
-			_MindArousalFieldScript.deposit(f, f.arousal * dt)
+			_MindArousalFieldScript.deposit(f, f.arousal * tick_dt)
 		if ev.size() > 0:
 			ev["actor"] = f
 			ev["actor_kind"] = "fish"
@@ -5360,7 +5384,21 @@ func _release_shrimp_brood(mother: Shrimp, brood_genome: Dictionary) -> void:
 	# identical clones.
 	if fauna_root == null:
 		return
-	var n: int = mini(mother.clutch_size, 4)
+	# Shrimplets past the colony's carrying capacity don't make it (same
+	# idea as _fish_birth_room); release had no check and a full colony bred
+	# past 100. Elders don't hold space - a colony must raise replacements
+	# while its senescent cohort is still alive - but the total stays under
+	# 125% of capacity.
+	var room: int = 99
+	var w_cap: Node = get_parent()
+	if w_cap != null and w_cap.has_method("shrimp_carrying_capacity"):
+		var cap: int = int(w_cap.shrimp_carrying_capacity())
+		var breeding_age: int = 0
+		for s_c in shrimp:
+			if is_instance_valid(s_c) and s_c.maturity != Shrimp.MATURITY_SENESCENT:
+				breeding_age += 1
+		room = mini(cap - breeding_age, int(float(cap) * 1.25) - shrimp.size())
+	var n: int = mini(mini(mother.clutch_size, 4), room)
 	for i in n:
 		var g: Dictionary = brood_genome.duplicate(true)
 		g["sex"] = randi() % 2

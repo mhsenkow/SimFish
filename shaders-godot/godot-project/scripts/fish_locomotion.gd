@@ -91,6 +91,27 @@ static func local_clearance_push(f: Fish, neighbors: Array, plants: Array) -> Ve
 
 
 # Push away from driftwood / stones (hardscape_root children) within radius.
+# Hardscape positions, rebuilt once per frame. Every fish used to walk the
+# hardscape children (get_children() allocation + global_position per node)
+# on every behaviour tick - ~2 ms of a full tank's tick.
+static var _hardscape_frame: int = -1
+static var _hardscape_root_id: int = 0
+static var _hardscape_pos: PackedVector3Array = PackedVector3Array()
+
+
+static func _hardscape_positions(root: Node3D) -> PackedVector3Array:
+	var frame: int = Engine.get_process_frames()
+	if frame == _hardscape_frame and root.get_instance_id() == _hardscape_root_id:
+		return _hardscape_pos
+	_hardscape_frame = frame
+	_hardscape_root_id = root.get_instance_id()
+	_hardscape_pos.clear()
+	for h in root.get_children():
+		if is_instance_valid(h) and h is Node3D:
+			_hardscape_pos.append((h as Node3D).global_position)
+	return _hardscape_pos
+
+
 static func hardscape_clearance_push(f: Fish) -> Vector3:
 	if f.sim == null:
 		return Vector3.ZERO
@@ -101,10 +122,8 @@ static func hardscape_clearance_push(f: Fish) -> Vector3:
 	var clear_r2: float = CLEAR_R * CLEAR_R
 	var push := Vector3.ZERO
 	var count: int = 0
-	for h in (root as Node3D).get_children():
-		if not is_instance_valid(h):
-			continue
-		var d: Vector3 = f.position - h.global_position
+	for hp in _hardscape_positions(root as Node3D):
+		var d: Vector3 = f.position - hp
 		d.y *= 0.45
 		var d2: float = d.length_squared()
 		if d2 >= clear_r2:

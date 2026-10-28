@@ -19,7 +19,7 @@ extends Node3D
 @export var inherited_shell_accent_color: Color = Color(0, 0, 0, 0)
 @export var inherited_crawl_speed: float = 1.0
 @export var inherited_appetite: float = 1.0
-@export var inherited_max_age_s: float = 720.0
+@export var inherited_max_age_s: float = 720.0 * Fish.LIFESPAN_SCALE
 @export var inherited_spire_height: float = 1.0
 @export var inherited_whorl_count: int = 4
 @export var inherited_aperture_flare: float = 0.0
@@ -63,6 +63,7 @@ func to_save_dict() -> Dictionary:
 		"inherited_crawl_speed": inherited_crawl_speed,
 		"inherited_appetite": inherited_appetite,
 		"inherited_max_age_s": inherited_max_age_s,
+		"lifespan_v": Fish.LIFESPAN_VERSION,
 		"inherited_spire_height": inherited_spire_height,
 		"inherited_whorl_count": inherited_whorl_count,
 		"inherited_aperture_flare": inherited_aperture_flare,
@@ -90,6 +91,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	inherited_crawl_speed = float(d.get("inherited_crawl_speed", inherited_crawl_speed))
 	inherited_appetite = float(d.get("inherited_appetite", inherited_appetite))
 	inherited_max_age_s = float(d.get("inherited_max_age_s", inherited_max_age_s))
+	if d.has("inherited_max_age_s") and int(d.get("lifespan_v", 1)) < Fish.LIFESPAN_VERSION:
+		inherited_max_age_s *= Fish.LIFESPAN_SCALE
 	inherited_spire_height = float(d.get("inherited_spire_height", inherited_spire_height))
 	inherited_whorl_count = int(d.get("inherited_whorl_count", inherited_whorl_count))
 	inherited_aperture_flare = float(d.get("inherited_aperture_flare", inherited_aperture_flare))

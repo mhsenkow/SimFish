@@ -44,7 +44,9 @@ const ColonyMind = preload("res://scripts/colony_mind.gd")
 # (clear detritus/algae faster) but starve sooner when food is scarce.
 @export var appetite: float = 1.0
 # Genome-overridable lifespan (seconds). Defaults to the class lifespan.
-@export var max_age_s: float = 720.0
+# Already lifespan-scaled (Fish.LIFESPAN_SCALE x the old 720 s): 12-minute
+# snails turned the whole colony over twice an hour.
+@export var max_age_s: float = 720.0 * Fish.LIFESPAN_SCALE
 # ---- Expanded shell architecture (heritable) ----
 # Defaults reproduce the original turbo spiral so existing saves are unchanged.
 # spire_height stretches the spire vertically (low turbo → tall tower/cerith),
@@ -88,7 +90,7 @@ const PAUSE_DURATION_MAX: float = 4.0
 const BREEDING_INTERVAL_MIN: float = 120.0
 const BREEDING_INTERVAL_MAX: float = 240.0
 const MATURITY_AGE: float = 60.0          # baby -> adult after a minute
-const LIFESPAN_S: float = 720.0           # 12-minute lifespan; senescence at end
+const LIFESPAN_S: float = 720.0           # authored span; max_age_s applies Fish.LIFESPAN_SCALE
 
 # Hunger / energy. Snails are grazers: hunger climbs steadily and is only
 # pushed back down by eating detritus, algae, or biofilm/plant tissue. If
@@ -105,7 +107,6 @@ const FEED_ALGAE: float = 0.5             # hunger relief from algae
 const FEED_PLANT: float = 0.28            # hunger relief from rasping plant/coral
 const BREED_ENERGY_MIN: float = 0.55      # body condition needed to lay eggs
 const BREED_HUNGER_MAX: float = 0.7       # too hungry to breed above this
-const BIOFILM_GRAZE_SHARE: float = 0.75   # of HUNGER_RATE a mature film offsets
 
 var _direction: Vector2 = Vector2.RIGHT     # in wall-tangent space
 var _facing: Vector2 = Vector2.RIGHT        # smoothed direction the body points
@@ -286,6 +287,7 @@ func get_saved_genome() -> Dictionary:
 		"crawl_speed": crawl_speed,
 		"appetite": appetite,
 		"max_age_s": max_age_s,
+		"lifespan_v": Fish.LIFESPAN_VERSION,
 		"spire_height": spire_height,
 		"whorl_count": whorl_count,
 		"aperture_flare": aperture_flare,
@@ -317,6 +319,8 @@ func apply_genome_metadata(g: Dictionary) -> void:
 	crawl_speed = clampf(float(g.get("crawl_speed", crawl_speed)), 0.3, 2.5)
 	appetite = clampf(float(g.get("appetite", appetite)), 0.4, 2.0)
 	max_age_s = maxf(60.0, float(g.get("max_age_s", max_age_s)))
+	if g.has("max_age_s") and int(g.get("lifespan_v", 1)) < Fish.LIFESPAN_VERSION:
+		max_age_s *= Fish.LIFESPAN_SCALE
 	spire_height = clampf(float(g.get("spire_height", spire_height)), 0.4, 2.0)
 	whorl_count = clampi(int(g.get("whorl_count", whorl_count)), 3, 8)
 	aperture_flare = clampf(float(g.get("aperture_flare", aperture_flare)), 0.0, 1.0)
@@ -446,16 +450,10 @@ func _process(dt: float) -> void:
 	hunger = clampf(hunger + HUNGER_RATE * appetite * dt, 0.0, 1.0)
 	var w_sn := _world_node()
 	# Biofilm grazing: the film on glass, wood and leaves is a snail's staple
-	# in a soil tank. Before this, snails lived only on discrete algae clumps
-	# and waste, which a clean planted tank barely has, and a Walstad colony
-	# starved out within five minutes. A mature film (biofilm_progress ~0.7)
-	# covers most - not all - of the hunger climb; algae, waste and leaves
-	# still decide whether the colony grows.
-	if w_sn != null:
-		var film: Variant = w_sn.get("biofilm_progress")
-		if film != null:
-			hunger = clampf(hunger - HUNGER_RATE * dt * BIOFILM_GRAZE_SHARE
-				* clampf(float(film) / 0.7, 0.0, 1.0), 0.0, 1.0)
+	# in a soil tank (see World.biofilm_graze_share).
+	if w_sn != null and w_sn.has_method("biofilm_graze_share"):
+		hunger = clampf(hunger - HUNGER_RATE * dt
+			* float(w_sn.biofilm_graze_share("snail")), 0.0, 1.0)
 	if w_sn != null and w_sn.has_method("build_graze_surface_boost"):
 		var graze_boost: float = float(w_sn.build_graze_surface_boost())
 		if graze_boost > 0.02 and w_sn.has_method("_is_hardscape_occupied") \
@@ -2692,6 +2690,7 @@ func to_save_dict() -> Dictionary:
 		"crawl_speed": crawl_speed,
 		"appetite": appetite,
 		"max_age_s": max_age_s,
+		"lifespan_v": Fish.LIFESPAN_VERSION,
 		"spire_height": spire_height,
 		"whorl_count": whorl_count,
 		"aperture_flare": aperture_flare,
@@ -2749,6 +2748,8 @@ func apply_save_dict(d: Dictionary) -> void:
 	crawl_speed = clampf(float(d.get("crawl_speed", crawl_speed)), 0.3, 2.5)
 	appetite = clampf(float(d.get("appetite", appetite)), 0.4, 2.0)
 	max_age_s = maxf(60.0, float(d.get("max_age_s", max_age_s)))
+	if d.has("max_age_s") and int(d.get("lifespan_v", 1)) < Fish.LIFESPAN_VERSION:
+		max_age_s *= Fish.LIFESPAN_SCALE
 	spire_height = clampf(float(d.get("spire_height", spire_height)), 0.4, 2.0)
 	whorl_count = clampi(int(d.get("whorl_count", whorl_count)), 3, 8)
 	aperture_flare = clampf(float(d.get("aperture_flare", aperture_flare)), 0.0, 1.0)

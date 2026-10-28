@@ -125,7 +125,18 @@ var gravid_spot: bool = false
 var marking_color: Color = Color8(0, 0, 0)
 var _marking_color_set: bool = false
 var adult_voxel_scale: float = 0.18
-var max_age_s: float = 240.0            # ~4 minutes lifespan for visible cycles
+var max_age_s: float = 240.0            # pre-scale default; see LIFESPAN_SCALE
+# Species tables, saves and the creators author lifespans of 150-540 s - under
+# one 360 s light cycle. A whole generation was born in a burst and died of
+# old age within minutes, so a Walstad tank boom-busted from 45 fish to 3 by
+# minute 30 (dev/temporal_soak.tscn). Lifespans now span ~2-6 sim days. The
+# scale is applied once per lineage: genomes without `lifespan_v` (presets,
+# old saves, creator) are scaled on init, offspring inherit already-scaled
+# parents and carry the marker, so it never compounds down a lineage.
+const LIFESPAN_SCALE: float = 4.0
+# Smallest kill advantage the predation pass allows (clampf(..., 1.45, 2.05)).
+const PREDATOR_FEAR_SIZE_RATIO: float = 1.45
+const LIFESPAN_VERSION: int = 2
 var max_speed: float = 1.8
 var schooling_strength: float = 1.0
 var separation_radius: float = 0.55
@@ -390,6 +401,10 @@ var _bond_seek_cached: Vector3 = Vector3.ZERO
 var _bond_seek_t0: float = 0.0
 @warning_ignore("unused_private_class_variable")
 var _player_watched: bool = false
+# Sim time this fish's behaviour tick skipped (LOD); SimDriver folds it into
+# the next tick so nothing time-based runs slow.
+@warning_ignore("unused_private_class_variable")
+var _skipped_tick_dt: float = 0.0
 var _feed_heatmap_decay_mul: float = 1.0
 var _feed_heatmap_top3: Array = []
 @warning_ignore("unused_private_class_variable")
@@ -1286,11 +1301,24 @@ func breeding_condition_reason(season_breed: float = -1.0) -> String:
 		return tr("Needs food")
 	if season_breed < 0.0:
 		season_breed = _season_breed_mult()
-	if energy <= 0.65 / season_breed:
+	var sparse: float = _sparse_breed_ease()
+	if energy <= lerpf(0.65, 0.45, sparse) / season_breed:
 		return tr("Needs rest")
-	if stress >= 0.4 * season_breed:
+	if stress >= lerpf(0.4, 0.55, sparse) * season_breed:
 		return tr("Needs calmer conditions")
 	return ""
+
+
+# Density-dependent readiness, the other half of _logistic_breed_suppress:
+# 0 at or above 80% of carrying capacity (today's gates), 1 in an empty tank.
+# Fish live 4-6 minutes, and with fixed gates a thinned population could not
+# out-breed old age - a Walstad tank decayed to a handful of fish in ten
+# minutes even when fed. Sparse populations breed more readily, so stocking
+# recovers toward what the plants can carry instead of ratcheting down.
+func _sparse_breed_ease() -> float:
+	if sim == null or not sim.has_method("fish_stocking_ratio"):
+		return 0.0
+	return clampf(1.0 - float(sim.fish_stocking_ratio()) / 0.8, 0.0, 1.0)
 
 
 func breeding_status_label() -> String:
@@ -1326,8 +1354,10 @@ func _mate_candidate_available(f: Fish) -> bool:
 	return is_instance_valid(f) and not f.is_queued_for_deletion() \
 		and f != self and not f._dying and f.species == species and f.sex != sex \
 		and f.maturity == MATURITY_ADULT and f.breed_cooldown <= 0.0 \
-		and f.partner == null and f.hunger <= 0.5 and f.energy >= 0.55 \
-		and f.stress <= 0.4 and f.position.distance_squared_to(position) <= 9.0
+		and f.partner == null and f.hunger <= 0.5 \
+		and f.energy >= lerpf(0.55, 0.4, f._sparse_breed_ease()) \
+		and f.stress <= lerpf(0.4, 0.55, f._sparse_breed_ease()) \
+		and f.position.distance_squared_to(position) <= 9.0
 
 
 # Logistic fecundity (#31): breeding is suppressed as the population approaches
@@ -2382,6 +2412,10 @@ func init_genome(genome: Dictionary) -> void:
 	gravid_spot = bool(genome.get("gravid_spot", false))
 	adult_voxel_scale = genome.get("adult_voxel_scale", adult_voxel_scale)
 	max_age_s = genome.get("max_age_s", max_age_s)
+	if int(genome.get("lifespan_v", 1)) < LIFESPAN_VERSION:
+		max_age_s *= LIFESPAN_SCALE
+		_saved_genome["max_age_s"] = max_age_s
+		_saved_genome["lifespan_v"] = LIFESPAN_VERSION
 	max_speed = genome.get("max_speed", max_speed)
 	schooling_strength = genome.get("schooling_strength", schooling_strength)
 	separation_radius = genome.get("separation_radius", separation_radius)
@@ -4064,7 +4098,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 				var micro_n: int = w_micro.live_microfauna_count()
 				if micro_n > 4:
 					hunger = maxf(0.0, hunger - dt * clampf(float(micro_n) / 60.0, 0.0, 1.0) * 0.012)
-		var energy_drain := 0.004 + (0.04 if burst_remaining > 0.0 else 0.0)
+		var energy_drain := 0.004 + (MindDriveSoA.BURST_ENERGY_PER_S if burst_remaining > 0.0 else 0.0)
 		energy = clampf(energy - dt * energy_drain, 0.0, 1.0)
 		MindDriveSoA.apply_forage_and_reserves(self, dt, MindDriveSoA.forage_support(sim))
 	burst_remaining = maxf(0.0, burst_remaining - dt)
@@ -5442,9 +5476,15 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 			_cached_preferred_mate = _find_preferred_mate(neighbors)
 			_cached_breed_partner = _find_breeding_partner(neighbors)
 		var candidate: Fish = null
-		if _mate_candidate_available(_cached_preferred_mate):
+		# The 0.5 s cache can outlive its fish; a freed ref passed to the typed
+		# parameter is a script error, so drop dead refs first.
+		if not is_instance_valid(_cached_preferred_mate):
+			_cached_preferred_mate = null
+		if not is_instance_valid(_cached_breed_partner):
+			_cached_breed_partner = null
+		if _cached_preferred_mate != null and _mate_candidate_available(_cached_preferred_mate):
 			candidate = _cached_preferred_mate
-		elif _mate_candidate_available(_cached_breed_partner):
+		elif _cached_breed_partner != null and _mate_candidate_available(_cached_breed_partner):
 			candidate = _cached_breed_partner
 		if candidate != null and candidate.partner == null:
 			# Mutual pair-bond.
@@ -5513,9 +5553,13 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		var pf: Fish = n
 		if pf == self or pf.species == species:
 			continue
-		# "Threatening" = noticeably bigger than us (size-based predation uses
-		# growth_factor >= 1.3 elsewhere) and within a body-lengths radius.
-		if pf.growth_factor * pf.adult_voxel_scale > adult_voxel_scale * 1.25:
+		# "Threatening" = a fish that could actually eat us: the same predator
+		# class and minimum size advantage the predation pass uses. Any bigger
+		# fish used to count, so peaceful corydoras and gouramis kept small
+		# schoolers in a permanent baitball - the largest stress source in a
+		# community tank (temporal soak), which blocked breeding for good.
+		var pf_predator: bool = pf.growth_factor >= 1.3 or pf.species == "betta"
+		if pf_predator and pf.effective_size() > effective_size() * PREDATOR_FEAR_SIZE_RATIO:
 			var pd2: float = pf.position.distance_squared_to(position)
 			if pd2 < 12.0:
 				predator_near = maxf(predator_near, 1.0 - sqrt(pd2) / 3.5)
@@ -9031,7 +9075,9 @@ func produce_offspring_genome(partner: Fish) -> Dictionary:
 		"adult_voxel_scale": new_size,
 		"size_potential": new_size_potential,
 		"max_growth": clampf((max_growth + partner.max_growth) * 0.5 * _behavior_rng().randf_range(0.94, 1.06), 1.05, 2.8),
-		"max_age_s": (max_age_s + partner.max_age_s) * 0.5 + _behavior_rng().randf_range(-25.0, 25.0),
+		"max_age_s": (max_age_s + partner.max_age_s) * 0.5
+			+ _behavior_rng().randf_range(-25.0, 25.0) * LIFESPAN_SCALE,
+		"lifespan_v": LIFESPAN_VERSION,
 		"max_speed": (max_speed + partner.max_speed) * 0.5 + _behavior_rng().randf_range(-0.15, 0.15),
 		"schooling_strength": (schooling_strength + partner.schooling_strength) * 0.5,
 		"separation_radius": separation_radius,
