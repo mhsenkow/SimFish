@@ -193,37 +193,17 @@ func tick(dt: float, substrate: SubstrateGrid) -> bool:
 							position.z += cos(_life * 0.9) * 0.04 * dt
 
 			if can_fall:
+				# Food sinks through moving water: carried by the current and
+				# settling at its own rate. A flake caught in the filter's
+				# stream travels the tank before it lands - and the fish chase
+				# it there. The intake's pull is the field's own sink.
+				var water_v := Vector3.ZERO
 				if w != null and w.has_method("sample_flow"):
-					var flow_v: Vector3 = w.sample_flow(global_position)
-					var flow_mag: float = Vector2(flow_v.x, flow_v.z).length()
-					fall_rate *= lerpf(1.35, 0.42, clampf(flow_mag * 2.2, 0.0, 1.0))
-				position.y -= fall_rate * dt
-				var swirl_t: float = _life * 1.1
-				var px: float = position.x
-				var pz: float = position.z
-				var swirl: Vector2 = Vector2(
-					sin(swirl_t + pz * 0.55) * 0.085,
-					cos(swirl_t * 0.83 - px * 0.55) * 0.085)
+					water_v = w.sample_flow(global_position)
 				var wander: Vector2 = Vector2(
-					sin(_life * 2.3 + px * 0.4) * 0.04,
-					sin(_life * 1.9 + pz * 0.4 + 1.3) * 0.04)
-				var intake_pull: Vector2 = Vector2.ZERO
-				if w != null:
-					var sim_batch: Variant = w.get("sim")
-					if sim_batch != null and sim_batch.has_method("filter_intake_active") \
-							and bool(sim_batch.filter_intake_active()):
-						var intake_pos_v: Variant = sim_batch.get("filter_intake_pos")
-						if intake_pos_v != null and intake_pos_v is Vector3:
-							var dx: float = (intake_pos_v as Vector3).x - position.x
-							var dz: float = (intake_pos_v as Vector3).z - position.z
-							var d2: float = dx * dx + dz * dz
-							var pull_k: float = 0.18 / (1.0 + d2 * 0.6)
-							intake_pull = Vector2(dx, dz) * pull_k
-				position.x += (swirl.x + wander.x + intake_pull.x) * dt
-				position.z += (swirl.y + wander.y + intake_pull.y) * dt
-				if w != null and w.has_method("sample_flow"):
-					var flow_v: Vector3 = w.sample_flow(global_position)
-					position += flow_v * dt * 0.48
+					sin(_life * 2.3 + position.x * 0.4) * 0.03,
+					sin(_life * 1.9 + position.z * 0.4 + 1.3) * 0.03)
+				position += (water_v + Vector3(wander.x, -fall_rate, wander.y)) * dt
 
 		if batch_landed or position.y <= floor_y + voxel_size * 0.5:
 			position.y = floor_y + voxel_size * 0.5

@@ -183,9 +183,12 @@ global uniform vec4 iaq_backlight_tint;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
+#include "res://shaders/flow_field.gdshaderinc"
 
 varying vec3 world_pos;
 varying float surface_lift;
+// The current just under the surface here (REAL_TANK top-10 #4).
+varying vec3 v_surface_flow;
 
 // Incident light is shared with the solid tank surfaces. A dim lamp must
 // produce a dim reflection; normalising its RGB alone made a nearly-off LED
@@ -305,7 +308,15 @@ void vertex() {
 	world_pos = wp;
 	vec3 n = normalize((MODEL_NORMAL_MATRIX * NORMAL));
 	surface_lift = 0.0;
+	v_surface_flow = vec3(0.0);
 	if (n.y > 0.45) {
+		// The surface is the top of the same water the fish swim in: where
+		// a plume or the outlet breaks it, it boils; where the water wells
+		// up or churns it roughens; in the dead corner it lies flat.
+		vec3 su = iaq_flow_at(vec3(wp.x, water_surface_y - 0.35, wp.z));
+		v_surface_flow = su;
+		float agitation = clamp(abs(su.y) * 1.4 + length(su.xz) * 0.55
+			+ iaq_flow_turb(vec3(wp.x, water_surface_y - 0.35, wp.z)) * 0.10, 0.0, 1.6);
 		float w1 = sin(wp.x * wave_scale + TIME * wave_speed)
 			* cos(wp.z * wave_scale * 0.91 - TIME * wave_speed * 0.74);
 		float w2 = sin(wp.x * wave_scale * 1.55 - TIME * wave_speed * 1.05)
@@ -328,6 +339,7 @@ void vertex() {
 			float r2 = dot(d, d);
 			surface_lift -= pt.w * exp(-r2 * 7.5) * pt.z * 0.14;
 		}
+		surface_lift *= 1.0 + agitation;
 		VERTEX.y += surface_lift;
 	}
 }
@@ -483,7 +495,12 @@ void fragment() {
 	float cam_below = step(CAMERA_POSITION_WORLD.y, water_surface_y - 0.02);
 	vec2 rgrad = vec2(0.0);
 	if (cap > 0.01 && surface_ripple_slope > 0.001) {
-		rgrad = ripple_slope(world_pos.xz, TIME * wave_speed) * surface_ripple_slope;
+		// Ripples ride the surface current (flow-map advection).
+		vec3 fph = iaq_flow_map_phase(TIME, 2.6);
+		vec2 su_xz = v_surface_flow.xz;
+		rgrad = mix(ripple_slope(world_pos.xz - su_xz * fph.x, TIME * wave_speed),
+			ripple_slope(world_pos.xz - su_xz * fph.y, TIME * wave_speed), fph.z)
+			* surface_ripple_slope * (1.0 + clamp(length(su_xz) * 1.2, 0.0, 0.8));
 	}
 	vec3 n_rip_w = normalize(vec3(-rgrad.x, 1.0, -rgrad.y));
 	vec3 n_rip = normalize((VIEW_MATRIX * vec4(n_rip_w, 0.0)).xyz);

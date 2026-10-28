@@ -46,6 +46,8 @@
 #   VISUAL_CAPTURE_CAM        extra angle "yaw,pitch,radius,target_frac" shot
 #                             as "custom" (target_frac: 0 floor .. 1 surface).
 #                             With VISUAL_CAPTURE_ANGLES=custom it is the only one.
+#   VISUAL_CAPTURE_SEQUENCE_FRAMES / _STRIDE  shoot N frames, one every STRIDE
+#                             frames (stack them for a long exposure)
 #   VISUAL_CAPTURE_CFG        "key=value;key=value" TankConfig overrides applied
 #                             after the scenario (e.g. "tank_glow=0" for the
 #                             legacy look), so a look can be tuned by capture.
@@ -248,6 +250,11 @@ func _process(_dt: float) -> void:
 	if _angle_frame < ANGLE_SETTLE:
 		return
 	var sequence_frames: int = clampi(_env("VISUAL_CAPTURE_SEQUENCE_FRAMES", "1").to_int(), 1, 120)
+	# Frames to let pass between sequence shots, so a sequence can span
+	# seconds of motion (stack them for a long exposure of the current).
+	var stride: int = maxi(1, _env("VISUAL_CAPTURE_SEQUENCE_STRIDE", "1").to_int())
+	if sequence_frames > 1 and (_angle_frame - ANGLE_SETTLE) % stride != 0:
+		return
 	var shot: Dictionary = _angles[_angle_i].duplicate()
 	if sequence_frames > 1:
 		shot["name"] = "%s_%03d" % [shot["name"], _sequence_i]

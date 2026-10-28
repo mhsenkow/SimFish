@@ -228,7 +228,8 @@ func _sample(fish: Array) -> void:
 		if trk.is_empty():
 			trk = {"species": String(f.species), "sex": int(f.sex),
 				"mat": int(f.maturity), "speeds": [], "fracs": [], "yaws": [],
-				"display": 0, "court": 0, "peck": 0, "cruise": 0, "dbout": 0, "follow": 0, "hung": 0.0, "strs": 0.0, "dspd": 0.0, "max_speed": float(f.max_speed)}
+				"display": 0, "court": 0, "peck": 0, "cruise": 0, "dbout": 0, "follow": 0, "hung": 0.0, "strs": 0.0, "dspd": 0.0, "max_speed": float(f.max_speed),
+				"flow_n": 0, "flow_up": 0, "flow_acc": 0.0, "flow_rel": 0.0}
 			_track[key] = trk
 		var v: Vector3 = f.velocity
 		(trk["speeds"] as Array).append(v.length())
@@ -260,10 +261,70 @@ func _sample(fish: Array) -> void:
 		var peck: Variant = f.get("_peck_t")
 		if peck != null and float(peck) > 0.0:
 			trk["peck"] = int(trk["peck"]) + 1
+		# Water current: how much of it reaches this fish, and whether a fish
+		# in real current is facing into it (rheotaxis).
+		if _world != null and _world.has_method("sample_flow"):
+			var fv: Vector3 = _world.sample_flow(f.global_position)
+			var fl: float = fv.length()
+			trk["flow_acc"] = float(trk["flow_acc"]) + fl
+			if fl > 0.06:
+				trk["flow_n"] = int(trk["flow_n"]) + 1
+				var hd: Vector3 = f.heading
+				if hd.length_squared() > 1e-6 and hd.normalized().dot(fv / fl) < -0.5:
+					trk["flow_up"] = int(trk["flow_up"]) + 1
 	_cluster_counts.append(_clusters(live))
 	if _sim != null and _sim.get("dissolved_o2") != null:
 		_o2_acc += float(_sim.get("dissolved_o2"))
 		_o2_n += 1
+
+
+# Arrow map of the current: a front-to-back average side view (x across, y
+# up) and a top view at mid-depth (x across, z toward the viewer). Arrow
+# = direction, case = speed (lower < 0.05 u/s <= UPPER), '#' = solid.
+func _flow_map(ff: Variant) -> PackedStringArray:
+	var out := PackedStringArray()
+	var d: Vector3i = ff.grid_dims()
+	var wc: WaterCurrent = ff.solver()
+	var arrows := ["e", "n", "w", "s"]
+	out.append("flow map: side view (rows = height, top row = surface)")
+	for y in range(d.y - 1, -1, -1):
+		var row := ""
+		for x in d.x:
+			var acc := Vector3.ZERO
+			var solid_n: int = 0
+			for z in d.z:
+				if wc.is_solid_cell(x, y, z):
+					solid_n += 1
+					continue
+				acc += ff.sample(ff.cell_center(x, y, z))
+			if solid_n == d.z:
+				row += "#"
+				continue
+			acc /= float(d.z - solid_n)
+			row += _arrow(Vector2(acc.x, acc.y), arrows)
+		out.append("  " + row)
+	var ym: int = int(d.y / 2.0)
+	out.append("flow map: top view at mid-depth (rows = back to front)")
+	for z in d.z:
+		var row2 := ""
+		for x in d.x:
+			if wc.is_solid_cell(x, ym, z):
+				row2 += "#"
+				continue
+			var v: Vector3 = ff.sample(ff.cell_center(x, ym, z))
+			row2 += _arrow(Vector2(v.x, -v.z), arrows)
+		out.append("  " + row2)
+	return out
+
+
+func _arrow(v: Vector2, arrows: Array) -> String:
+	var l: float = v.length()
+	if l < 0.012:
+		return "."
+	var a: float = fposmod(atan2(v.y, v.x), TAU)
+	var k: int = int(round(a / (PI * 0.5))) % 4
+	var ch: String = arrows[k]
+	return ch.to_upper() if l >= 0.05 else ch
 
 
 # Single-linkage shoal count per species, summed. A tank where every species
@@ -458,9 +519,29 @@ func _finish(fish: Array) -> void:
 		lines.append("   diag  cruise-mode %4.1f%%  dart-bout %4.1f%%  pursuing %4.1f%%  hunger %4.2f  stress %4.2f  dart-speed %4.2f of max" % [
 			100.0 * d_cruise / denom, 100.0 * d_dbout / denom, 100.0 * d_follow / denom,
 			d_hung / denom, d_strs / denom, d_dspd / maxf(float(d_dbout), 1.0)])
+		var fl_n: int = 0
+		var fl_up: int = 0
+		var fl_acc: float = 0.0
+		for ftr in trs:
+			fl_n += int(ftr.get("flow_n", 0))
+			fl_up += int(ftr.get("flow_up", 0))
+			fl_acc += float(ftr.get("flow_acc", 0.0))
+		lines.append("   flow  mean current at fish %4.3f u/s  in-current %4.1f%%  facing upstream when in current %4.1f%%" % [
+			fl_acc / denom, 100.0 * float(fl_n) / denom,
+			100.0 * float(fl_up) / maxf(float(fl_n), 1.0)])
 	lines.append("adult-male livebearer samples %d  blocked: stress %d  hunger %d  partner %d  burst %d  startle %d   mean O2 %.2f" % [
 		_lb_gate[0], _lb_gate[1], _lb_gate[2], _lb_gate[3], _lb_gate[4], _lb_gate[5],
 		_o2_acc / maxf(float(_o2_n), 1.0)])
+	if _world != null and _world.get("_flow_field") != null:
+		var ff: Variant = _world.get("_flow_field")
+		var wc: WaterCurrent = ff.solver()
+		var st: Dictionary = wc.stats()
+		lines.append("water current  grid %dx%dx%d cell %.2f  max %.2f mean %.3f u/s  step %.2f ms (worker)  resid_div %.3f" % [
+			wc.nx, wc.ny, wc.nz, wc.cell, float(st["max"]), float(st["mean"]),
+			wc.last_step_ms, wc.residual_divergence()])
+	if _env("FISH_PROBE_FLOW_MAP", "0") == "1" and _world != null \
+			and _world.get("_flow_field") != null:
+		lines.append_array(_flow_map(_world.get("_flow_field")))
 	if _split:
 		lines.append("split frame_ms  fish _process off: %.2f   sim off (fish on): %.2f" % [
 			_mean(_split_ms[0]), _mean(_split_ms[1])])

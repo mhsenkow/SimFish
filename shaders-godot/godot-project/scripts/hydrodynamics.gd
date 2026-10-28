@@ -117,6 +117,62 @@ static func flow_coupling(body_size: float) -> float:
 	return clampf(0.22 + reynolds_scale(body_size) * 0.35, 0.15, 0.62)
 
 
+# ---- Swimming in moving water (REAL_TANK top-10 #4) ------------------------
+#
+# A neutrally buoyant fish is carried by the water completely: its motion
+# over the ground is the water's velocity plus its own swim velocity through
+# the water. So to arrive somewhere it must swim at (where it wants to go)
+# minus (what the water is doing), and to stay put in a current it must face
+# into it and swim at the current's speed. Rheotaxis is not a rule added on
+# top - it is what holding station in moving water looks like. Tail beat,
+# effort and turn all follow from the water-relative speed the same way.
+
+# Below this the water is still as far as a fish is concerned; converting
+# would only let sensor noise twitch its heading.
+const STILL_WATER: float = 0.02
+# Share of a fish's top speed it will spend just holding station. Past this
+# the current wins and the fish is carried - fry in a filter outflow.
+const STATION_SPEED_SHARE: float = 0.92
+
+
+# Swim velocity (through the water) that yields `ground` over the ground in
+# a current `flow`, capped at what the fish can actually sustain.
+static func water_relative_target(ground: Vector3, flow: Vector3, max_speed: float) -> Vector3:
+	var fl2: float = flow.length_squared()
+	if fl2 < STILL_WATER * STILL_WATER or not flow.is_finite():
+		return ground
+	var rel: Vector3 = ground - flow
+	var cap: float = maxf(max_speed, 0.05) * STATION_SPEED_SHARE
+	var rl: float = rel.length()
+	if rl > cap:
+		rel *= cap / rl
+	return rel
+
+
+# How much of the current actually moves a fish. Free in mid-water it is all
+# of it. Near the substrate the boundary layer slows the water (the solver's
+# floor is free-slip, so this is where that physics lives), and a bottom
+# fish resting on the bed is held by contact, not carried.
+static func carry_share(height_above_bed: float, resting_on_bed: bool) -> float:
+	if resting_on_bed:
+		return 0.12
+	return lerpf(0.45, 1.0, smoothstep(0.0, 0.6, maxf(height_above_bed, 0.0)))
+
+
+# Steering toward calmer water: the flow-speed gradient from four lateral
+# probes, as a unit-ish direction. Zero when the fish is not working hard.
+static func shelter_steer(flow_here: float, east: float, west: float, north: float,
+		south: float, max_speed: float) -> Vector3:
+	var effort: float = flow_here / maxf(max_speed, 0.05)
+	if effort < 0.25:
+		return Vector3.ZERO
+	var g := Vector3(west - east, 0.0, south - north)
+	var gl: float = g.length()
+	if gl < 0.01:
+		return Vector3.ZERO
+	return g / gl * clampf((effort - 0.25) / 0.5, 0.0, 1.0)
+
+
 static func upstream_effort(flow: Vector3, heading: Vector3) -> float:
 	if flow.length_squared() < 1e-6:
 		return 1.0

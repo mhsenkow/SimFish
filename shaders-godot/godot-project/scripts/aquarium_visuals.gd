@@ -142,16 +142,8 @@ func sync_snow_density(transmittance: float) -> void:
 	# them reads as water full of stuff rather than as dust on the screen.
 	_snow_particles.amount = int(lerpf(48.0, 110.0, murk * 0.65 + 0.35))
 	_snow_particles.emitting = _snow_particles.amount > 0
-	# REAL_TANK_FIDELITY #42–43 — advect particulate with the flow field.
-	if _world != null and _world.has_method("sample_flow") and _snow_particles.process_material is ParticleProcessMaterial:
-		var pm: ParticleProcessMaterial = _snow_particles.process_material
-		var flow: Vector3 = _world.sample_flow(Vector3(0.0, float(_world.WATER_HEIGHT) * 0.5, 0.0))
-		var dir := Vector3(flow.x, -0.55, flow.z)
-		if dir.length_squared() < 1e-5:
-			dir = Vector3(0.05, -1.0, 0.03)
-		pm.direction = dir.normalized()
-		pm.initial_velocity_min = 0.02 + flow.length() * 0.15
-		pm.initial_velocity_max = 0.08 + flow.length() * 0.35
+	# The snow rides the water current itself (flow_particles.gdshader samples
+	# the field per particle); murk only changes how much of it there is.
 
 
 func record_compaction(x: float, z: float, amount: float = 0.02) -> void:
@@ -392,6 +384,19 @@ func _build_ambient_emitters() -> void:
 	_snow_particles = _make_box_emitter("MarineSnow", 70, 9.0,
 		Vector3(0, sd + col_h * 0.5, 0), Vector3(hw, col_h * 0.48, hd),
 		Vector3(0.05, -1.0, 0.03), 0.015, 0.05, Color(0.80, 0.86, 0.86, 0.10))
+	# Each mote is a tracer in the water current (REAL_TANK top-10 #4): it
+	# rides up the plume, along the surface and down the far glass, and
+	# hangs where the water is still.
+	var flow_pm := ShaderMaterial.new()
+	flow_pm.shader = load("res://shaders/flow_particles.gdshader") as Shader
+	flow_pm.set_shader_parameter("emission_center", Vector3(0, sd + col_h * 0.5, 0))
+	flow_pm.set_shader_parameter("emission_extents", Vector3(hw, col_h * 0.48, hd))
+	flow_pm.set_shader_parameter("volume_min", Vector3(-hw - 0.3, sd - 0.2, -hd - 0.3))
+	flow_pm.set_shader_parameter("volume_max", Vector3(hw + 0.3, wh - 0.02, hd + 0.3))
+	_snow_particles.process_material = flow_pm
+	_snow_particles.position = Vector3.ZERO
+	_snow_particles.visibility_aabb = AABB(Vector3(-hw - 1.0, sd - 1.0, -hd - 1.0),
+		Vector3(hw * 2.0 + 2.0, col_h + 2.0, hd * 2.0 + 2.0))
 	# Motes catch the light instead of sitting at one flat grey (mote.gdshader):
 	# bright in the beam and around a backlight, a dim fleck in the shade.
 	var snow_box := _snow_particles.draw_pass_1 as BoxMesh

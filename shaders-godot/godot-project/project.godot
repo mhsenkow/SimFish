@@ -180,6 +180,18 @@ iaq_tank_glow={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+iaq_flow_tex={
+"type": "sampler3D",
+"value": ""
+}
+iaq_flow_box={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 1)
+}
+iaq_flow_dims={
+"type": "vec4",
+"value": Vector4(1, 1, 1, 0)
+}
 
 [steam]
 

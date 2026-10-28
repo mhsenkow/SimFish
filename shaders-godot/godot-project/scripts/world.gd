@@ -160,6 +160,13 @@ var _flow_tick_accum: float = 0.0
 const FLOW_TICK_INTERVAL: float = 0.10
 var _filter_jet_pos: Vector3 = Vector3.ZERO
 var _filter_flow_origin: Vector3 = Vector3.ZERO
+# What drives the water (REAL_TANK top-10 #4), recorded by the aerator
+# builders: {"kind": "disk"|"stick"|"filter", ...positions}. Empty = none.
+var _flow_equipment: Dictionary = {}
+var _flow_refresh_t: float = 0.0
+var _flow_tex_serial: int = -1
+# Seconds between obstacle / plant-bed refreshes of the water current.
+const FLOW_SCENE_REFRESH_S: float = 4.0
 var _flow_lane_mote_t: float = 0.0
 var _flow_lane_motes: Array = []
 const FLOW_LANE_MOTE_CAP: int = 14
@@ -463,8 +470,9 @@ func _ready() -> void:
 		pass
 
 	_set_build_stage("fixtures")
+	# Builds the water current too (_init_flow_field), once the aerator that
+	# drives it exists.
 	_spawn_aeration_system()
-	_init_flow_field()
 	_spawn_mulm_layer()
 	_spawn_water_ambience()
 	_visuals = AquariumVisuals.new()
@@ -710,11 +718,18 @@ func _process(dt: float) -> void:
 		adt = _ambient_accum * _amb_ts
 		_ambient_accum = 0.0
 
-	_flow_tick_accum += sdt
+	# Water time is real time: fast-forward speeds the ecology, not the physics
+	# of a current, so the solver steps on wall-clock dt.
+	_flow_tick_accum += dt
 	if _flow_tick_accum >= FLOW_TICK_INTERVAL:
 		if _flow_field != null:
-			_flow_field.tick(_flow_tick_accum)
+			_flow_field.tick(minf(_flow_tick_accum, 0.2))
+			_publish_flow_texture()
 		_flow_tick_accum = 0.0
+	_flow_refresh_t -= dt
+	if _flow_refresh_t <= 0.0 and _flow_field != null:
+		_flow_refresh_t = FLOW_SCENE_REFRESH_S
+		_refresh_flow_scene()
 
 	_tick_flow_lane_motes(sdt)
 	_tick_seed_drifts(sdt)
@@ -731,8 +746,6 @@ func _process(dt: float) -> void:
 				var shimmer: float = 0.58 + sin(_room_time_passed * 3.6) * 0.11 \
 						+ sin(_room_time_passed * 8.2) * 0.05
 				_heater_glow.light_energy = shimmer
-				if _flow_field != null:
-					_flow_field.deposit(_heater_world_pos, Vector3(0.0, 0.28, 0.0), 0.06)
 			else:
 				_heater_glow.light_energy = 0.04
 			_heater_glow.visible = hon
@@ -9006,6 +9019,7 @@ func _bubble_turbulence_curve() -> CurveTexture:
 # stream + surface pops. Stores the resulting air injection rate on the
 # SimDriver so dissolved-O2 simulation can respond.
 func _spawn_aeration_system() -> void:
+	_flow_equipment = {}
 	var container := Node3D.new()
 	container.name = "Aeration"
 	add_child(container)
@@ -9239,6 +9253,7 @@ func _build_disk_aerator(parent: Node, anchor_x: float, flow_rate: float) -> voi
 		clampf(rise_dist / 1.3, 2.5, 6.0), 18)
 	var surface_jet := Vector3(anchor_x, WATER_HEIGHT - 0.05, sz + 0.35)
 	_configure_substrate_flow(Vector3(anchor_x, disk_y, sz), surface_jet, flow_rate)
+	_flow_equipment = {"kind": "disk", "pos": Vector3(anchor_x, disk_y + 0.1, sz)}
 
 
 # --- Bubble stick (wand) ---
@@ -9286,6 +9301,8 @@ func _build_stick_aerator(parent: Node, anchor_x: float, flow_rate: float) -> vo
 	_configure_substrate_flow(
 		Vector3(center_x, bar_y, sz),
 		Vector3(center_x, WATER_HEIGHT - 0.05, sz + 0.5), flow_rate)
+	_flow_equipment = {"kind": "stick", "pos": Vector3(center_x, bar_y + 0.12, sz),
+		"half": span}
 
 
 # --- Filter (hang-on-back) ---
@@ -9381,6 +9398,9 @@ func _build_filter_aerator(parent: Node, anchor_x: float, flow_rate: float) -> v
 	# Output stream: bubbles + flow emitting forward from the spout end.
 	var spout_end := Vector3(anchor_x, spout_y, sz + 0.32 + 3.5 * 0.32)
 	_configure_substrate_flow(intake.position, spout_end, flow_rate)
+	# The return pours forward and a little down off the lip.
+	_flow_equipment = {"kind": "filter", "outlet": spout_end + Vector3(0.0, -0.25, 0.25),
+		"dir": Vector3(0.0, -0.3, 1.0), "intake": intake.position}
 	_emit_filter_outflow(parent, spout_end)
 	# Surface pop ripples downstream of the spout end.
 	_spawn_surface_pop_emitter(parent,
@@ -9446,11 +9466,19 @@ func _emit_rising_bubbles(parent: Node, base_pos: Vector3, extents: Vector3,
 	p.preprocess = p.lifetime * 0.5
 	p.local_coords = false
 	p.position = base_pos
-	var pm := _make_bubble_process_material(
-		Vector3(0, 1, 0), 0.45, 0.95, 0.95, 8.0, 18.0)
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = extents
+	# Each bubble rises at its terminal speed through the water current
+	# (flow_bubbles.gdshader), so the column leans and fans with the
+	# circulation the stone itself is driving.
+	var pm := ShaderMaterial.new()
+	pm.shader = load("res://shaders/flow_bubbles.gdshader") as Shader
+	pm.set_shader_parameter("emission_center", base_pos)
+	pm.set_shader_parameter("emission_extents", extents)
+	pm.set_shader_parameter("surface_y", WATER_HEIGHT - 0.04)
+	pm.set_shader_parameter("rise_speed", clampf(rise_distance / p.lifetime * 1.15, 0.8, 1.6))
 	p.process_material = pm
+	p.position = Vector3.ZERO
+	p.visibility_aabb = AABB(Vector3(base_pos.x - 3.0, base_pos.y - 0.5, base_pos.z - 3.0),
+		Vector3(6.0, rise_distance + 1.0, 6.0))
 	var bm := SphereMesh.new()
 	bm.radius = bubble_radius
 	bm.height = bubble_radius * 2.0
@@ -10732,21 +10760,155 @@ func _clear_driftwood_biofilm(vx: MeshInstance3D) -> void:
 func _init_flow_field() -> void:
 	if _flow_field == null:
 		_flow_field = TankFlowFieldScript.new()
-	var jet: Vector3 = Vector3.ZERO
-	var flow_rate: float = 0.28
+	# The grid spans glass floor to surface; the substrate (and its slope),
+	# hardscape and anything outside a curved tank are solid cells.
+	# Phones and low tiers get a coarser grid: the circulation survives, the
+	# small eddies go, and the worker stays a few % of a core.
+	var max_cells: int = TankFlowFieldScript.WaterCurrentScript.DEFAULT_MAX_CELLS
+	var tier: String = String(_cfg_node.get("device_tier")) if _cfg_node != null else ""
+	if OS.has_feature("mobile") or tier == "low" or tier == "potato":
+		max_cells = 1100
+	_flow_field.setup(TANK_HALF_W, TANK_HALF_D, 0.0, WATER_HEIGHT,
+		Callable(self, "_flow_cell_solid"), max_cells)
+	_flow_field.set_sources(_flow_sources())
+	_refresh_flow_scene()
+	# Open the tank with its circulation established: ~20 s of water time in
+	# coarse steps, a few tens of ms once at build.
+	_flow_field.prewarm(12.0, 0.3)
+	_flow_tex_serial = -1
+	_publish_flow_texture()
+
+
+# Water is not where the substrate, the glass or a curved wall is.
+func _flow_cell_solid(c: Vector3) -> bool:
+	if not is_inside_tank_volume(c.x, c.y, c.z, 0.05):
+		return true
+	return c.y < column_surface_y(c.x, c.z)
+
+
+# Equipment -> fluid sources, in the units the sim already uses for the same
+# equipment (aeration_air_rate / aeration_flow_rate), so what bubbles and
+# oxygenates is also what moves the water.
+func _flow_sources() -> Array:
+	var out: Array = []
+	var air: float = 0.6
+	var flow: float = 0.15
 	if sim != null:
-		jet = sim.filter_intake_pos
-		var fr: Variant = sim.get("aeration_flow_rate")
-		if fr != null:
-			flow_rate = float(fr)
-	var floor_y: float = WATER_HEIGHT - SUBSTRATE_DEPTH
-	var jet_dir: Vector3 = Vector3(-1.0, 0.0, 0.35)
-	if jet.length_squared() > 1e-4:
-		jet_dir = Vector3(-jet.x, 0.12, -jet.z).normalized()
-	else:
-		jet = Vector3(0.0, WATER_HEIGHT - 0.45, TANK_HALF_D * 0.35)
-	_flow_field.configure(
-		TANK_HALF_W, TANK_HALF_D, floor_y, WATER_HEIGHT, jet, jet_dir, flow_rate)
+		air = float(sim.aeration_air_rate)
+		flow = float(sim.aeration_flow_rate)
+	var kind: String = String(_flow_equipment.get("kind", ""))
+	match kind:
+		"disk":
+			# A bubble plume: buoyancy concentrated over the stone.
+			out.append({"kind": "plume", "pos": _flow_equipment["pos"],
+				"buoyancy": 1.2 + air * 2.6, "radius": 0.32})
+		"stick":
+			# A curtain: the same air spread along the bar.
+			var c: Vector3 = _flow_equipment["pos"]
+			var half: float = float(_flow_equipment.get("half", 2.0))
+			var n: int = clampi(int(round(half / 0.9)) + 1, 2, 6)
+			for i in n:
+				var t: float = (float(i) / float(n - 1)) * 2.0 - 1.0
+				out.append({"kind": "plume", "pos": c + Vector3(t * half, 0.0, 0.0),
+					"buoyancy": (1.0 + air * 2.2) / sqrt(float(n)), "radius": 0.3})
+		"filter":
+			# Hang-on-back: volume leaves at the intake and returns at the lip.
+			# ~1 unit^3/s at full flow is a 200 gph filter on a 48 in tank.
+			var q: float = 0.25 + flow * 0.75
+			out.append({"kind": "filter", "outlet": _flow_equipment["outlet"],
+				"dir": _flow_equipment["dir"], "speed": clampf(0.9 + flow * 1.5, 0.6, 2.6),
+				"intake": _flow_equipment["intake"], "flow": q, "width": 2.0})
+	# The heater drives a slow convection cell of its own, even in a tank
+	# with no air or filter at all.
+	if _cfg_node != null and bool(_cfg_node.heater_enabled) and _heater_world_pos != Vector3.ZERO:
+		out.append({"kind": "plume", "pos": _heater_world_pos, "buoyancy": 0.22,
+			"radius": 0.3, "thermal": true})
+	return out
+
+
+# Rebuild what the water flows round: hardscape voxels become solid cells, and
+# plants become porosity - a valli thicket is not a wall, but the current dies
+# inside it and goes round.
+func _refresh_flow_scene() -> void:
+	if _flow_field == null:
+		return
+	var dims: Vector3i = _flow_field.grid_dims()
+	var n: int = dims.x * dims.y * dims.z
+	if n <= 0:
+		return
+	var cell: float = _flow_field.grid_cell()
+	var org: Vector3 = _flow_field.grid_origin()
+	var mask := PackedByteArray()
+	mask.resize(n)
+	for z in dims.z:
+		for y in dims.y:
+			for x in dims.x:
+				var c: Vector3 = _flow_field.cell_center(x, y, z)
+				mask[x + dims.x * (y + dims.y * z)] = 1 if _flow_cell_solid(c) else 0
+	# A hardscape voxel blocks a cell when it covers its centre.
+	for arr in [_driftwood_voxels, _rock_voxels]:
+		for mi_v in arr:
+			var mi := mi_v as MeshInstance3D
+			if mi == null or not is_instance_valid(mi) or not mi.is_inside_tree():
+				continue
+			var bm := mi.mesh as BoxMesh
+			var half_ext: Vector3 = (bm.size if bm != null else Vector3.ONE * 0.4) * 0.5
+			var p: Vector3 = mi.global_position
+			var lo: Vector3i = Vector3i(((p - half_ext - org) / cell).floor())
+			var hi: Vector3i = Vector3i(((p + half_ext - org) / cell).floor())
+			for z in range(maxi(lo.z, 0), mini(hi.z, dims.z - 1) + 1):
+				for y in range(maxi(lo.y, 0), mini(hi.y, dims.y - 1) + 1):
+					for x in range(maxi(lo.x, 0), mini(hi.x, dims.x - 1) + 1):
+						var c2: Vector3 = _flow_field.cell_center(x, y, z)
+						var d: Vector3 = (c2 - p).abs()
+						if d.x <= half_ext.x + cell * 0.25 and d.y <= half_ext.y + cell * 0.25 \
+								and d.z <= half_ext.z + cell * 0.25:
+							mask[x + dims.x * (y + dims.y * z)] = 1
+	_flow_field.set_solid_mask(mask)
+	# Plant beds.
+	var por := PackedFloat32Array()
+	por.resize(n)
+	por.fill(0.0)
+	if plants_root != null:
+		for child in plants_root.get_children():
+			var pl := child as Plant
+			if pl == null or not is_instance_valid(pl):
+				continue
+			var base: Vector3 = pl.global_position
+			var top: float = base.y + float(pl.current_height) * VOXEL_SIZE
+			var x: int = int((base.x - org.x) / cell)
+			var z: int = int((base.z - org.z) / cell)
+			if x < 0 or z < 0 or x >= dims.x or z >= dims.z:
+				continue
+			var y0: int = clampi(int((base.y - org.y) / cell), 0, dims.y - 1)
+			var y1: int = clampi(int((top - org.y) / cell), 0, dims.y - 1)
+			for y in range(y0, y1 + 1):
+				var i: int = x + dims.x * (y + dims.y * z)
+				por[i] = minf(por[i] + 0.22, 1.0)
+	_flow_field.set_porosity(por)
+	_flow_field.set_sources(_flow_sources())
+
+
+# The field as a global sampler3D for every shader that wants the water's
+# motion at its own world position (plants, motes, bubbles, the surface).
+func _publish_flow_texture() -> void:
+	if _flow_field == null:
+		return
+	var serial: int = _flow_field.snapshot_serial()
+	if serial == _flow_tex_serial:
+		return
+	_flow_tex_serial = serial
+	var tex: ImageTexture3D = _flow_field.texture()
+	if tex == null:
+		return
+	var dims: Vector3i = _flow_field.grid_dims()
+	var org: Vector3 = _flow_field.grid_origin()
+	var cell: float = _flow_field.grid_cell()
+	RenderingServer.global_shader_parameter_set("iaq_flow_tex", tex)
+	RenderingServer.global_shader_parameter_set("iaq_flow_box",
+		Vector4(org.x, org.y, org.z, cell))
+	RenderingServer.global_shader_parameter_set("iaq_flow_dims",
+		Vector4(float(dims.x), float(dims.y), float(dims.z), 1.0))
 
 
 func sample_flow(pos: Vector3) -> Vector3:
@@ -10780,7 +10942,13 @@ func foliage_flow_vec() -> Vector3:
 func deposit_wake(pos: Vector3, vel: Vector3, body_size: float) -> void:
 	if _flow_field == null or vel.length_squared() < 1e-6:
 		return
-	_flow_field.deposit(pos, vel, body_size * 0.095)
+	_flow_field.deposit_wake(pos, vel, body_size)
+
+
+func flow_turbulence_at(pos: Vector3) -> float:
+	if _flow_field == null:
+		return 0.0
+	return _flow_field.turbulence_at(pos)
 
 
 func flow_strength_at(pos: Vector3) -> float:

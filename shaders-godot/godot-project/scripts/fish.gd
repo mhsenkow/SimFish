@@ -6010,29 +6010,38 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 	if bond_pull.length_squared() > 0.01 and burst_remaining <= 0.0 and _startle_remaining <= 0.0:
 		desired += bond_pull * effective_max * 0.24
 
-	# LEAN INTO CURRENT. Fish near the aeration / filter intake brace
-	# slightly into the flow — the real-aquarium behavior of fish holding
-	# position against the filter outflow. Cheap: just adds a small
-	# heading-direction term when within range of the intake. Effect
-	# scales with aeration_flow_rate so a barely-on filter doesn't make
-	# everyone face the wall.
-	if sim != null:
-		var intake_pos_v: Variant = sim.get("filter_intake_pos")
-		if intake_pos_v is Vector3 and (intake_pos_v as Vector3).length_squared() > 0.01:
-			var intake_pos: Vector3 = intake_pos_v
-			var to_intake: Vector3 = intake_pos - position
-			var intake_d: float = to_intake.length()
-			if intake_d < 3.5:
-				var flow_strength: float = 0.0
-				var afr_v: Variant = sim.get("aeration_flow_rate")
-				if afr_v != null:
-					flow_strength = clampf(float(afr_v) * 0.7, 0.0, 1.0)
-				if flow_strength > 0.05:
-					# Bias heading toward the intake (fish face into flow).
-					# Magnitude tapers with distance so only fish actually
-					# in the current respond.
-					var falloff: float = 1.0 - intake_d / 3.5
-					desired += to_intake.normalized() * effective_max * 0.18 * flow_strength * falloff
+	# SHELTER FROM THE CURRENT. Holding station in moving water is real work,
+	# so a fish the current is working hard drifts toward calmer water a body
+	# length or so away - the lee of a rock, the inside of a plant bed, the
+	# dead spot behind the wood - the way real fish rest in flow refuges. The
+	# facing-into-it half needs no steering at all: it falls out of swimming
+	# relative to the water (_motion_substep, Hydrodynamics.water_relative_target).
+	if burst_remaining <= 0.0 and _startle_remaining <= 0.0:
+		var w_s: Node = _world_node()
+		if w_s != null and w_s.has_method("flow_strength_at"):
+			var here: float = float(w_s.flow_strength_at(position))
+			if here > max_speed * 0.25:
+				var r: float = maxf(_body_tank_margin() * 2.5, 0.7)
+				var shelter: Vector3 = Hydrodynamics.shelter_steer(here,
+					float(w_s.flow_strength_at(position + Vector3(r, 0.0, 0.0))),
+					float(w_s.flow_strength_at(position - Vector3(r, 0.0, 0.0))),
+					float(w_s.flow_strength_at(position + Vector3(0.0, 0.0, r))),
+					float(w_s.flow_strength_at(position - Vector3(0.0, 0.0, r))),
+					max_speed)
+				if shelter.length_squared() > 1e-4:
+					desired += shelter * effective_max * 0.22
+			# Positive rheotaxis: with nowhere particular to be, a fish turns
+			# into the current - the lateral line and the optomotor reflex
+			# both drive it - which is why the fish in a filter's stream all
+			# point the same way. Scaled by how much of a current it is for
+			# this fish, so fry feel a trickle the adults ignore.
+			if current_mode == Mode.CRUISE and here > 0.03:
+				var fv_r: Vector3 = w_s.sample_flow(position) if w_s.has_method("sample_flow") \
+					else Vector3.ZERO
+				var pull_r: float = clampf(here / maxf(max_speed * 0.3, 0.05), 0.0, 1.0)
+				if fv_r.length_squared() > 1e-6:
+					desired += -Vector3(fv_r.x, fv_r.y * 0.3, fv_r.z).normalized() \
+						* effective_max * 0.28 * pull_r
 
 	# AI DIRECTOR INTENT DRIFT. When the LLM is running and has populated
 	# its 4×4×4 mood grid, sample the cell our tank-relative position is
@@ -7175,6 +7184,12 @@ func _breath_motion_delta(dt: float) -> float:
 	return delta
 
 
+func _floor_y_here(w: Node) -> float:
+	if w != null and w.has_method("column_surface_y"):
+		return float(w.column_surface_y(global_position.x, global_position.z))
+	return 0.0
+
+
 func _motion_velocity_floor(current_speed: float) -> float:
 	if _asleep or _dying or motion_freeze_t > 0.05:
 		return current_speed
@@ -7286,7 +7301,14 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	var w_h: Node = _world_node()
 	if w_h != null and w_h.has_method("sample_flow"):
 		flow_vel = w_h.sample_flow(global_position)
-		target_spd *= Hydrodynamics.upstream_effort(flow_vel, heading)
+		if not flow_vel.is_finite():
+			flow_vel = Vector3.ZERO
+	# How much of that current moves this fish (boundary layer, resting on
+	# the bed); the swim target below and the carry after the move both use it.
+	var bed_h: float = global_position.y - _floor_y_here(w_h)
+	var on_bed: bool = swim_pattern == "sit" and current_mode == Mode.REST and bed_h < 0.35
+	var carried_flow: Vector3 = flow_vel * Hydrodynamics.carry_share(bed_h, on_bed) \
+		if full_hydro else Vector3.ZERO
 	var margin: float = 0.22
 	var body_r: float = body_m * 0.55
 
@@ -7313,6 +7335,15 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		target_dir = _heading_away_from_meniscus(target_dir)
 		target_spd = maxf(target_spd, max_speed * 0.55)
 		heading = target_dir
+	# Everything above is where the fish wants to go over the GROUND. It swims
+	# through the WATER, so subtract what the water is doing: to hold station
+	# in a current it faces into it and swims at the current's speed.
+	if carried_flow.length_squared() > 1e-6:
+		var swim_v: Vector3 = Hydrodynamics.water_relative_target(
+			target_dir * target_spd, carried_flow, max_speed)
+		if swim_v.length_squared() > 1e-6:
+			target_dir = swim_v.normalized()
+			target_spd = swim_v.length()
 
 	eff_turn *= Hydrodynamics.turn_rate_scale(speed, max_speed, _hydro_profile)
 	eff_turn *= TopdownMotion.turn_rate_at_speed(speed, max_speed)
@@ -7434,9 +7465,6 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	if is_finite(breath_y):
 		global_position.y += breath_y * settle_factor
 
-	if flow_vel.is_finite() and flow_vel.length_squared() > 1e-6 and full_hydro:
-		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(body_m)
-
 	# ---- Move only as far as the tank allows (never swim into glass) ----
 	var gp: Vector3 = global_position
 	var move_dir: Vector3 = heading
@@ -7487,6 +7515,16 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		if not is_finite(speed):
 			speed = 0.0
 		heading = move_dir
+	# The water carries the fish. Same wall clamp as the swim move, so a
+	# current can press a fish against the glass but never through it. Speed
+	# and heading stay water-relative: that is what the fins are doing.
+	if carried_flow.length_squared() > 1e-6:
+		var carry_len: float = carried_flow.length() * dt
+		var carry_dir: Vector3 = carried_flow / carried_flow.length()
+		var carry_ok: float = _max_inside_travel(global_position, carry_dir, carry_len,
+			margin, body_r)
+		if is_finite(carry_ok) and carry_ok > 0.0:
+			global_position += carry_dir * carry_ok
 	velocity = move_dir * speed if move_dir.length_squared() > 1e-6 else Vector3.ZERO
 	if full_hydro and speed > 0.1 and w_h != null:
 		if w_h.has_method("deposit_wake"):

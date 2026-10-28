@@ -52,6 +52,7 @@ uniform float motion_lock : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
 #include "res://shaders/foliage_light.gdshaderinc"
+#include "res://shaders/flow_field.gdshaderinc"
 
 varying vec3 v_world_pos;
 
@@ -69,7 +70,13 @@ void vertex() {
         // 2. Slow gentle sway (swimming pool current / wind)
         float time_sway = TIME * sway_speed;
         float phase = world_pos.x * 0.4 + world_pos.z * 0.3;
+        // Local water at this vertex when the current field is up.
+        vec3 water = iaq_flow_at(world_pos);
         float flow_push = dot(flow_dir, vec3(world_pos.x, 0.0, world_pos.z)) * flow_strength * 0.12;
+        if (iaq_flow_dims.w > 0.5) {
+            flow_push = sin(dot(world_pos.xz, water.xz) * 0.9 - TIME * 0.8)
+                * clamp(length(water.xz) * 2.2, 0.0, 1.0) * 0.5;
+        }
         float sway = (sin(time_sway + phase) + flow_push) * sway_amplitude * dist_fade;
 
         // Scale sway by height (higher vertices sway more)
@@ -81,7 +88,8 @@ void vertex() {
         // 3. High-frequency leaf flutter
         float time_flutter = TIME * flutter_speed;
         float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0;
-        float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade;
+        float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade
+            * (0.55 + clamp(iaq_flow_turb(world_pos) * 0.9 + length(water.xz) * 1.3, 0.0, 1.6));
         VERTEX.y += flutter * height_factor * 0.3;
     }
 }

@@ -54,26 +54,24 @@ static func integrate(waste: Array, dt: float, sim: Node, substrate_top_y: float
 		var floor_y: float = substrate_top_y
 		if floor_fn.is_valid():
 			floor_y = float(floor_fn.call(p.x, p.z))
-		p.y -= FALL_SPEED * dt
-		var swirl_t: float = life * 1.1
-		var swirl := Vector2(
-			sin(swirl_t + p.z * 0.55) * 0.085,
-			cos(swirl_t * 0.83 - p.x * 0.55) * 0.085)
-		var wander := Vector2(
-			sin(life * 2.3 + p.x * 0.4) * 0.04,
-			sin(life * 1.9 + p.z * 0.4 + 1.3) * 0.04)
-		p.x += (swirl.x + wander.x) * dt
-		p.z += (swirl.y + wander.y) * dt
-		if have_intake:
+		# Detritus is a tracer that sinks: the water carries it and it settles
+		# through the water at its own speed. Where the current is strong it
+		# travels; in the dead spot it drops - which is where mulm piles up in
+		# a real tank. The filter's pull is the intake's sink in the field
+		# itself, not a separate attraction. A faint random walk stands in
+		# for eddies below the grid.
+		var wander := Vector3(
+			sin(life * 2.3 + p.x * 0.4) * 0.03, 0.0,
+			sin(life * 1.9 + p.z * 0.4 + 1.3) * 0.03)
+		var water := Vector3.ZERO
+		if flow_fn.is_valid():
+			water = flow_fn.call(Vector3(p.x, p.y, p.z))
+		elif have_intake:
 			var dx: float = intake.x - p.x
 			var dz: float = intake.z - p.z
-			var d2: float = dx * dx + dz * dz
-			var pull: float = 0.18 / (1.0 + d2 * 0.6)
-			p.x += dx * pull * dt
-			p.z += dz * pull * dt
-		if flow_fn.is_valid():
-			var flow: Vector3 = flow_fn.call(Vector3(p.x, p.y, p.z))
-			p += flow * dt * 0.48
+			var pull: float = 0.18 / (1.0 + (dx * dx + dz * dz) * 0.6)
+			water = Vector3(dx * pull, 0.0, dz * pull)
+		p += (water + wander + Vector3(0.0, -FALL_SPEED, 0.0)) * dt
 		if p.y <= floor_y + _map[i].voxel_size * 0.5:
 			p.y = floor_y + _map[i].voxel_size * 0.5
 			# Landing is handed to WasteParticle.tick, which deposits the

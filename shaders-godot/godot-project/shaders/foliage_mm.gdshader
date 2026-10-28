@@ -61,6 +61,7 @@ uniform float blade_shade : hint_range(0.0, 1.0) = 0.0;
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
 #include "res://shaders/foliage_light.gdshaderinc"
+#include "res://shaders/flow_field.gdshaderinc"
 
 varying vec3 v_inst_color;
 varying vec3 v_world_pos;
@@ -104,15 +105,27 @@ void vertex() {
 	// A travelling phase, rather than every segment swinging together, makes
 	// long ribbons describe a slow S-curve through the water.
 	float sway = sin(time_sway + phase) * sway_amplitude * height_factor * dist_fade;
+	// The water at THIS vertex (flow_field.gdshaderinc), not one probe for
+	// the whole tank: a blade in the filter's stream streams, one in the lee
+	// of the wood barely moves. The steady lean is CPU-side per plant
+	// (chain_bend); this is the pulsing push and the sub-grid shiver.
 	vec2 flow_xz = flow_dir.xz;
+	float local_strength = flow_strength;
+	float turb = 0.0;
+	if (iaq_flow_dims.w > 0.5) {
+		vec3 water = iaq_flow_at(world_pos);
+		flow_xz = water.xz;
+		local_strength = clamp(length(water.xz) * 2.2, 0.0, 1.0);
+		turb = iaq_flow_turb(world_pos);
+	}
 	float flow_len = length(flow_xz);
-	if (flow_len > 0.0001 && flow_strength > 0.001) {
+	if (flow_len > 0.0001 && local_strength > 0.001) {
 		vec2 current_dir = flow_xz / flow_len;
 		float current_phase = dot(world_pos.xz, current_dir) * 0.72
-			- TIME * (0.52 + flow_strength * 0.72) + v_leaf_phase * 0.55
+			- TIME * (0.52 + local_strength * 0.72) + v_leaf_phase * 0.55
 			+ v_flex_weight * 2.8;
 		float current_pulse = 0.44 + sin(current_phase) * 0.26;
-		VERTEX.xz += current_dir * current_pulse * flow_strength
+		VERTEX.xz += current_dir * current_pulse * local_strength
 			* sway_amplitude * height_factor * dist_fade;
 	}
 	float gust_dist = distance(world_pos.xz, gust_wave.xz);
@@ -128,7 +141,9 @@ void vertex() {
 	float time_flutter = TIME * flutter_speed + sway_phase_offset * 1.15 + v_leaf_phase;
 	float phase_flutter = world_pos.x * 1.5 + world_pos.y * 2.0
 		+ sway_phase_offset * 0.61 + v_leaf_phase * 1.7;
-	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade;
+	// Churned water makes a leaf shiver; still water lets it hang.
+	float flutter = sin(time_flutter + phase_flutter) * flutter_amplitude * dist_fade
+		* (0.55 + clamp(turb * 0.9 + local_strength * 0.6, 0.0, 1.6));
 	VERTEX.y += flutter * height_factor * 0.3;
 
 	// Articulated stem chain (PlantSkeleton). Unlike the terms above, which
