@@ -1091,6 +1091,8 @@ func _process(dt: float) -> void:
 			darkness, deep_night)
 		_sync_beam_cone_globals(fixture_color, fixture_energy, room_dark_now,
 			fixture_active)
+		_sync_tank_glow_globals(fixture_color, fixture_energy, room_dark_now,
+			fixture_active)
 		var fixture_glow: float = LightingRig.lamp_dominance(deep_night, darkness) \
 			* (1.0 if fixture_active else 0.0)
 		fixture_glow *= clampf(fixture_energy * 1.85, 0.0, 1.0)
@@ -6825,6 +6827,22 @@ var _fixture_shader_color := Color(1.0, 0.95, 0.85)
 var _fixture_shader_energy: float = 0.0
 var _fixture_shader_darkness: float = 0.0
 var _fixture_shader_active: bool = false
+
+
+# The tank as the room's light source: ambient split between water and room,
+# and the glow the lit tank throws onto the desk and wall (LightingRig.tank_light).
+func _sync_tank_glow_globals(fixture_color: Color, fixture_energy: float,
+		darkness: float, active: bool) -> void:
+	var glow: float = 0.0
+	if _cfg_node != null:
+		glow = float(_cfg_node.tank_glow)
+	var hold: float = LightingRig.lamp_hold(active, fixture_energy)
+	RenderingServer.global_shader_parameter_set("iaq_tank_box",
+		LightingRig.tank_box(TANK_HALF_W, TANK_HALF_D, 0.0, WATER_HEIGHT))
+	RenderingServer.global_shader_parameter_set("iaq_tank_light",
+		LightingRig.tank_light(glow, hold, darkness))
+	RenderingServer.global_shader_parameter_set("iaq_tank_glow",
+		LightingRig.tank_glow(fixture_color, fixture_energy, glow, hold))
 
 
 func _sync_beam_cone_globals(fixture_color: Color, fixture_energy: float,

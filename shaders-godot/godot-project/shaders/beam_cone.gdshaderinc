@@ -51,6 +51,106 @@ global uniform float iaq_room_light;
 // ON the bar, which is what a bar actually does.
 global uniform vec4 iaq_beam_axis;
 
+// ---- The tank as the light source (REAL_TANK top-10 #1) ---------------------
+//
+// The ambient term above is ONE number for the whole scene, so the water and
+// the wall behind the tank were lit to exactly the same level and the tank
+// could never glow relative to its room. In a photograph of a lit aquarium the
+// tank is the brightest object in the room, its top is brighter than its floor,
+// and the desk and wall near it are lit BY it. These three globals split the
+// ambient by position and give the tank its spill.
+//
+//   iaq_tank_box   : x/y = water half extents X/Z, z = glass floor Y,
+//                    w = water surface Y. x == 0 disables the whole path.
+//   iaq_tank_light : x = ambient multiplier OUTSIDE the tank (the room),
+//                    y = lamp-light gain at the surface, z = at the glass floor,
+//                    w = share of the lamp's DIRECT light that reaches
+//                    surfaces outside the tank. A lamp sits on the tank and
+//                    its hood throws the light down into the water; without
+//                    this the wall behind sat inside the cone and stayed as
+//                    bright as the water whatever the ambient did.
+//   iaq_tank_glow  : rgb = colour of the light leaving the glass (linear),
+//                    a = its strength at the glass.
+//
+// LightingRig.tank_light / tank_glow build them; (1, 1, 1) and a = 0 are the
+// identity, so a lamp that is off leaves the scene exactly as it was.
+global uniform vec4 iaq_tank_box;
+global uniform vec4 iaq_tank_light;
+global uniform vec4 iaq_tank_glow;
+
+// 1 inside the water volume (and the floaters and emergent growth just above
+// it), 0 outside, with a short soft edge so a voxel straddling the glass does
+// not split into two brightnesses.
+float iaq_tank_inside(vec3 p) {
+	vec2 half_ext = iaq_tank_box.xy;
+	vec2 out_xz = abs(p.xz) - half_ext;
+	float out_h = max(out_xz.x, out_xz.y);
+	float out_v = max(iaq_tank_box.z - p.y, p.y - (iaq_tank_box.w + 0.6));
+	return 1.0 - smoothstep(0.0, 0.12, max(out_h, out_v));
+}
+
+// Multiplier on the ambient term: 1 in the tank, the room dim outside it.
+float iaq_tank_ambient_mul(vec3 p) {
+	if (iaq_tank_box.x <= 0.001) {
+		return 1.0;
+	}
+	return mix(iaq_tank_light.x, 1.0, iaq_tank_inside(p));
+}
+
+// Gain on everything lit INSIDE the tank: the surface is brighter than the
+// floor. Applied to the finished light rather than the ambient because inside
+// the cone the direct term replaces the ambient, so an ambient lift there
+// changed nothing.
+float iaq_tank_depth_gain(vec3 p) {
+	if (iaq_tank_box.x <= 0.001) {
+		return 1.0;
+	}
+	float span = max(iaq_tank_box.w - iaq_tank_box.z, 0.5);
+	float t = clamp((iaq_tank_box.w - p.y) / span, 0.0, 1.0);
+	// Light is lost fastest in the first stretch below the surface, so the
+	// top third reads distinctly brighter rather than the gradient being an
+	// even ramp nobody notices.
+	float gain = mix(iaq_tank_light.y, iaq_tank_light.z, pow(t, 0.75));
+	return mix(1.0, gain, iaq_tank_inside(p));
+}
+
+// Multiplier on the lamp's direct term: 1 in the tank, iaq_tank_light.w
+// outside it.
+float iaq_tank_direct_mul(vec3 p) {
+	if (iaq_tank_box.x <= 0.001) {
+		return 1.0;
+	}
+	return mix(iaq_tank_light.w, 1.0, iaq_tank_inside(p));
+}
+
+// Light the tank throws onto the room: strongest on surfaces close to the
+// glass that face it. Zero inside the tank, where the lamp already lights it.
+vec3 iaq_tank_spill(vec3 p, vec3 n, vec3 base_col) {
+	if (iaq_tank_glow.a <= 0.001 || iaq_tank_box.x <= 0.001) {
+		return vec3(0.0);
+	}
+	vec3 lo = vec3(-iaq_tank_box.x, iaq_tank_box.z, -iaq_tank_box.y);
+	vec3 hi = vec3(iaq_tank_box.x, iaq_tank_box.w, iaq_tank_box.y);
+	vec3 nearest = clamp(p, lo, hi);
+	vec3 d = nearest - p;
+	float dist2 = dot(d, d);
+	if (dist2 < 1e-5) {
+		return vec3(0.0);
+	}
+	vec3 L = d * inversesqrt(dist2);
+	float facing = 1.0;
+	if (dot(n, n) > 1e-6) {
+		facing = clamp((dot(normalize(n), L) + 0.35) / 1.35, 0.0, 1.0);
+	}
+	// A short reach: the desk at the glass and the wall right behind it are
+	// lit, the far wall is not. At half the tank width the spill lit the whole
+	// wall back up by exactly as much as the room dim took away.
+	float reach = clamp(max(iaq_tank_box.x, iaq_tank_box.y) * 0.22, 1.2, 3.5);
+	float fall = 1.0 / (1.0 + dist2 / (reach * reach));
+	fall *= fall;
+	return base_col * iaq_tank_glow.rgb * (iaq_tank_glow.a * facing * fall);
+}
+
 // ---- Occluder field (VISUAL_DIRECTIONS #4) ----------------------------------
 //
 // WHAT WAS MISSING. Shadow casting in this project reached exactly one
@@ -228,8 +328,9 @@ vec3 iaq_beam_light_surface_n(vec3 world_pos, vec3 world_normal, vec3 base_col,
 	// Shadow attenuates DIRECT light only — ambient is what fills a shadow in.
 	float shadow = energy > 0.0 ? iaq_shadow(world_pos, iaq_beam_source(world_pos)) : 1.0;
 	float spectrum_peak = max(max(iaq_beam_tint.r, iaq_beam_tint.g), iaq_beam_tint.b);
-	float direct = cone * shadow * clamp(energy * max(spectrum_peak, 0.0) * 2.0, 0.0, 1.0);
-	float ambient = iaq_beam_tint.w * iaq_room_light;
+	float direct = cone * shadow * clamp(energy * max(spectrum_peak, 0.0) * 2.0, 0.0, 1.0)
+		* iaq_tank_direct_mul(world_pos);
+	float ambient = iaq_beam_tint.w * iaq_room_light * iaq_tank_ambient_mul(world_pos);
 	float lit_side = mix(IAQ_KEY_FLOOR, 1.0, ndl);
 	// Adding a source cannot darken an existing ambient reflection. Keep
 	// the diffuse addition in the source spectrum, including a black RGB lamp.
@@ -255,10 +356,12 @@ vec3 iaq_beam_light_surface_n(vec3 world_pos, vec3 world_normal, vec3 base_col,
 	float core_e = energy < 1.0 ? sqrt(energy) : energy;
 	lit += iaq_beam_tint.rgb * pow(ndl, 3.0) * direct * direct * core_e * 0.62
 		* catch_opacity;
+	lit *= iaq_tank_depth_gain(world_pos);
 	lit += iaq_directional_light(pigment, n, iaq_sun_light, iaq_sun_tint.rgb);
 	lit += iaq_directional_light(pigment, n, iaq_moon_light, iaq_moon_tint.rgb);
 	lit += iaq_point_light(pigment, world_pos, n, iaq_accent1, iaq_accent1_tint);
 	lit += iaq_point_light(pigment, world_pos, n, iaq_accent2, iaq_accent2_tint);
+	lit += iaq_tank_spill(world_pos, world_normal, pigment);
 	return lit;
 }
 

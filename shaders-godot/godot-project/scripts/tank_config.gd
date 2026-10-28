@@ -555,6 +555,11 @@ var plant_establish_scale: float = 0.72
 # the tank the only lit object in frame rather than the brightest part of a
 # dim scene. 0 = untouched, 1 = the room goes black.
 var room_darkness: float = 0.0
+# How much the lit tank owns the room (LightingRig.tank_light): 0 leaves the
+# room and the water on one ambient level, 1 dims the room around a tank whose
+# surface glows and whose light spills onto the desk and wall. Only acts while
+# the lamp is on, so it never darkens a tank that has no light of its own.
+var tank_glow: float = 0.8
 # Cone width and edge hardness. LightingRig.INHERIT (-1) keeps whatever the
 # chosen fixture type picks for itself, so these are additive - existing
 # tanks are unaffected until a preset opts in.
@@ -3158,6 +3163,7 @@ func _build_save_config_file() -> ConfigFile:
 	cfg.set_value("tank", "wood_form", wood_form)
 	cfg.set_value("plants", "establish_scale", plant_establish_scale)
 	cfg.set_value("light", "room_darkness", room_darkness)
+	cfg.set_value("light", "tank_glow", tank_glow)
 	cfg.set_value("light", "spot_angle_deg", spot_angle_deg)
 	cfg.set_value("light", "spot_attenuation", spot_attenuation)
 	cfg.set_value("light", "spot_offset_x", spot_offset_x)
@@ -3490,6 +3496,7 @@ func load_from_disk() -> void:
 	wood_form = String(cfg.get_value("tank", "wood_form", wood_form))
 	plant_establish_scale = cfg.get_value("plants", "establish_scale", plant_establish_scale)
 	room_darkness = cfg.get_value("light", "room_darkness", room_darkness)
+	tank_glow = cfg.get_value("light", "tank_glow", tank_glow)
 	spot_angle_deg = cfg.get_value("light", "spot_angle_deg", spot_angle_deg)
 	spot_attenuation = cfg.get_value("light", "spot_attenuation", spot_attenuation)
 	spot_offset_x = cfg.get_value("light", "spot_offset_x", spot_offset_x)

@@ -229,6 +229,7 @@ const MANIFEST: Dictionary = {
 	# the cone geometry underneath it is ADVANCED because it is normally set
 	# by picking a lighting preset, not by hand.
 	"room_darkness": [TIER_COMMON, "lighting"],
+	"tank_glow": [TIER_COMMON, "lighting"],
 	"spot_angle_deg": [TIER_ADVANCED, "lighting"],
 	"spot_attenuation": [TIER_ADVANCED, "lighting"],
 	"spot_offset_x": [TIER_ADVANCED, "lighting"],

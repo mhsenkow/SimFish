@@ -574,3 +574,65 @@ static func scatter_light(color: Color, energy: float, shaping: float = 1.0) -> 
 	var amount: float = 0.7 * smoothstep(0.0, 0.3, maxf(energy, 0.0)) \
 		* clampf(shaping, 0.0, 1.0)
 	return Vector4(rgb.x / m, rgb.y / m, rgb.z / m, amount)
+
+
+# --- The tank as the light source (REAL_TANK top-10 #1) -----------------
+#
+# The cone's ambient term was one number for the whole scene, so at default
+# settings the wall behind the tank was lit exactly as brightly as the water
+# in front of it. A lit aquarium in a photograph is the brightest thing in the
+# room, its top is brighter than its floor, and the desk and wall beside it are
+# lit by it. tank_light splits the ambient by position (iaq_tank_light); the
+# glow is the light the tank throws back onto the room (iaq_tank_glow).
+#
+# Both scale with `tank_glow` (TankConfig) times the lamp hold, so a lamp that
+# is off returns the identity and the scene is exactly as it was.
+
+# Room ambient at full glow. Not lower: the room must stay a room, with its
+# furniture readable, not turn into a void the tank floats in.
+const TANK_GLOW_ROOM_DIM: float = 0.45
+# Gain on the lamp-lit colour just under the surface and at the glass floor.
+const TANK_GLOW_SURFACE: float = 1.38
+const TANK_GLOW_FLOOR: float = 0.80
+# Share of the lamp's direct light reaching the room at full glow: what leaks
+# past the hood. The spill below is what lights the room instead.
+const TANK_GLOW_ROOM_DIRECT: float = 0.25
+# Strength of the spill at the glass at full glow and full lamp.
+const TANK_GLOW_SPILL: float = 0.95
+# Water colour the spill passes through on its way out of the glass.
+const TANK_GLOW_WATER := Vector3(0.62, 0.92, 0.86)
+
+
+static func tank_glow_amount(glow: float, hold: float) -> float:
+	return clampf(glow, 0.0, 1.0) * clampf(hold, 0.0, 1.0)
+
+
+# (room_mul, surface_mul, floor_mul, room_direct). Room darkness already crushes the
+# room through the cone ambient, so the extra room dim backs off as darkness
+# rises rather than compounding into black.
+static func tank_light(glow: float, hold: float, darkness: float) -> Vector4:
+	var k: float = tank_glow_amount(glow, hold)
+	var room_k: float = k * (1.0 - clampf(darkness, 0.0, 1.0) * 0.6)
+	return Vector4(lerpf(1.0, TANK_GLOW_ROOM_DIM, room_k),
+		lerpf(1.0, TANK_GLOW_SURFACE, k), lerpf(1.0, TANK_GLOW_FLOOR, k),
+		lerpf(1.0, TANK_GLOW_ROOM_DIRECT, k))
+
+
+# (r, g, b, strength). rgb is the lamp's linear colour normalised to its
+# brightest channel and filtered through the water.
+static func tank_glow(fixture_color: Color, fixture_energy: float,
+		glow: float, hold: float) -> Vector4:
+	var k: float = tank_glow_amount(glow, hold)
+	var rgb: Vector3 = linear_light_rgb(fixture_color)
+	var peak: float = maxf(rgb.x, maxf(rgb.y, rgb.z))
+	if peak <= 0.0001 or k <= 0.0:
+		return Vector4.ZERO
+	rgb = rgb / peak * TANK_GLOW_WATER
+	var strength: float = k * clampf(fixture_energy * 1.6, 0.0, 1.0) * TANK_GLOW_SPILL
+	return Vector4(rgb.x, rgb.y, rgb.z, strength)
+
+
+# (half_w, half_d, floor_y, surface_y) for iaq_tank_box.
+static func tank_box(half_w: float, half_d: float, floor_y: float,
+		surface_y: float) -> Vector4:
+	return Vector4(maxf(half_w, 0.0), maxf(half_d, 0.0), floor_y, surface_y)

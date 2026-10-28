@@ -168,6 +168,18 @@ iaq_scatter_light={
 "type": "vec4",
 "value": Vector4(0, 0, 0, 0)
 }
+iaq_tank_box={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+iaq_tank_light={
+"type": "vec4",
+"value": Vector4(1, 1, 1, 1)
+}
+iaq_tank_glow={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
 
 [steam]
 

@@ -46,6 +46,9 @@
 #   VISUAL_CAPTURE_CAM        extra angle "yaw,pitch,radius,target_frac" shot
 #                             as "custom" (target_frac: 0 floor .. 1 surface).
 #                             With VISUAL_CAPTURE_ANGLES=custom it is the only one.
+#   VISUAL_CAPTURE_CFG        "key=value;key=value" TankConfig overrides applied
+#                             after the scenario (e.g. "tank_glow=0" for the
+#                             legacy look), so a look can be tuned by capture.
 
 extends Node
 
@@ -134,6 +137,7 @@ func _ready() -> void:
 	cfg.set("beauty_defaults_applied", false)
 	AestheticsScript.apply_first_launch_defaults(cfg)
 	_apply_scenario(cfg, _env("VISUAL_CAPTURE_SCENARIO", DEFAULT_SCENARIO))
+	_apply_cfg_overrides(cfg, _env("VISUAL_CAPTURE_CFG", ""))
 	_verbose = _env("VISUAL_CAPTURE_VERBOSE", "0") == "1"
 	_day_phase = clampf(_env("VISUAL_CAPTURE_DAY_PHASE",
 		str(DEFAULT_DAY_PHASE)).to_float(), 0.0, 1.0)
@@ -190,6 +194,28 @@ func _apply_scenario(cfg: Node, id: String) -> void:
 			print("[visual_capture] scenario=", id)
 			return
 	push_warning("[visual_capture] unknown scenario '%s' — using config defaults" % id)
+
+
+# "key=value;key=value" TankConfig overrides applied after the scenario, so a
+# look can be tuned by capture before it is written into a preset. Values
+# parse as bool (true/false), float, or are left as strings.
+func _apply_cfg_overrides(cfg: Node, spec: String) -> void:
+	for pair in spec.split(";", false):
+		var kv: PackedStringArray = pair.split("=", false, 1)
+		if kv.size() != 2:
+			continue
+		var key: String = kv[0].strip_edges()
+		var raw: String = kv[1].strip_edges()
+		var value: Variant = raw
+		if raw == "true" or raw == "false":
+			value = raw == "true"
+		elif raw.is_valid_float():
+			value = raw.to_float()
+		if not key in cfg:
+			push_warning("[visual_capture] unknown cfg key '%s'" % key)
+			continue
+		cfg.set(key, value)
+		print("[visual_capture] cfg ", key, "=", value)
 
 
 func _process(_dt: float) -> void:

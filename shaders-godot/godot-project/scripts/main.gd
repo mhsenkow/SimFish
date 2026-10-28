@@ -128,6 +128,8 @@ var _light_beam_strength_slider: HSlider = null
 var _light_beam_strength_value: Label = null
 var _light_room_darkness_slider: HSlider = null
 var _light_room_darkness_value: Label = null
+var _light_tank_glow_slider: HSlider = null
+var _light_tank_glow_value: Label = null
 # --- Accent & moonlight section ---
 var _light_backlight_check: CheckBox = null
 var _light_backlight_intensity_slider: HSlider = null
@@ -10941,6 +10943,12 @@ func _ensure_light_panel() -> void:
 	_light_room_darkness_slider.tooltip_text = tr("Reduce light in the room around the tank while retaining the aquarium lamp.")
 	_light_room_darkness_slider.value_changed.connect(_on_room_darkness_changed)
 	_attach_reset(_light_room_darkness_slider, "room_darkness")
+	_light_tank_glow_value = Label.new()
+	_light_tank_glow_slider = PanelTheme.add_slider_row(
+		vbox, tr("Tank glow"), 0.0, 1.0, 0.01, _light_tank_glow_value)
+	_light_tank_glow_slider.tooltip_text = tr("While the lamp is on, the tank lights its room: a brighter surface, a dimmer room, light spilling onto the desk.")
+	_light_tank_glow_slider.value_changed.connect(_on_tank_glow_changed)
+	_attach_reset(_light_tank_glow_slider, "tank_glow")
 
 	_light_caustics_check = CheckBox.new()
 	_light_caustics_check.text = tr("Show surface caustics")
@@ -11111,6 +11119,7 @@ const _LIGHT_DEFAULTS: Dictionary = {
 	"light_volumetric": true,
 	"beam_strength": 1.0,
 	"room_darkness": 0.0,
+	"tank_glow": 0.8,
 	"light_caustics": true,
 	"caustic_intensity_user": 1.0,
 	"moonlight_enabled": true,
@@ -11364,6 +11373,9 @@ func _pull_light_panel_values() -> void:
 	if is_instance_valid(_light_room_darkness_slider):
 		_light_room_darkness_slider.set_value_no_signal(float(cfg.room_darkness))
 		_light_room_darkness_value.text = "%.2f" % float(cfg.room_darkness)
+	if is_instance_valid(_light_tank_glow_slider):
+		_light_tank_glow_slider.set_value_no_signal(float(cfg.tank_glow))
+		_light_tank_glow_value.text = "%.2f" % float(cfg.tank_glow)
 	if is_instance_valid(_light_backlight_check):
 		_light_backlight_check.set_pressed_no_signal(bool(cfg.backlight_enabled))
 	if is_instance_valid(_light_backlight_intensity_slider):
@@ -11563,6 +11575,15 @@ func _on_room_darkness_changed(v: float) -> void:
 		cfg.room_darkness = v
 	if is_instance_valid(_light_room_darkness_value):
 		_light_room_darkness_value.text = "%.2f" % v
+	_light_mark_custom()
+
+
+func _on_tank_glow_changed(v: float) -> void:
+	var cfg := _cfg()
+	if cfg != null:
+		cfg.tank_glow = v
+	if is_instance_valid(_light_tank_glow_value):
+		_light_tank_glow_value.text = "%.2f" % v
 	_light_mark_custom()
 
 

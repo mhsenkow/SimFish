@@ -24,6 +24,14 @@ uniform vec3 light_color : source_color = vec3(0.55, 0.75, 0.95);
 uniform float water_floor_y = 1.0;
 uniform float water_surface_y = 6.5;
 uniform float depth_fog : hint_range(0.0, 1.0) = 0.45;
+// Share of the volume's own alpha kept on its VERTICAL faces - the ones seen
+// through the front and back glass. Solids already pay for the water between
+// them and the eye (apply_water_column_ws in palette_tint.gdshaderinc), so a
+// full-strength veil on the box faces counted that haze twice: two faces at
+// 0.12-0.22 alpha each laid a lit teal sheet over the whole scape, lifted
+// every shadow to mid-grey and was most of why the tank read as flat. The
+// surface cap keeps its full alpha. 1 = legacy.
+uniform float side_veil : hint_range(0.0, 1.0) = 0.42;
 // Posterize the depth fog into discrete bands instead of a smooth
 // gradient — keeps the look consistent with the 48-color palette and
 // makes the depth dropoff read as a chunky pixel-art lineweight
@@ -203,7 +211,7 @@ vec3 water_incident_rgb(vec4 fixture, vec4 accent1, vec4 accent2) {
 }
 
 vec3 water_light_response(vec3 incident, vec3 wpos) {
-	float ambient = max(iaq_beam_tint.w * iaq_room_light, 0.0);
+	float ambient = max(iaq_beam_tint.w * iaq_room_light * iaq_tank_ambient_mul(wpos), 0.0);
 	// The rear lamp has its own local wash below. Keep that wash readable
 	// when it is the only lamp without inventing a globally bright ceiling.
 	float rear = 0.0;
@@ -212,8 +220,8 @@ vec3 water_light_response(vec3 incident, vec3 wpos) {
 		rear = iaq_backlight.w
 			/ (1.0 + max(iaq_backlight_tint.a, 0.0) * dot(delta, delta));
 	}
-	return clamp(max(max(vec3(ambient), incident), rear * max(iaq_backlight_tint.rgb, vec3(0.0))),
-		vec3(0.0), vec3(1.5));
+	return clamp(max(max(vec3(ambient), incident), rear * max(iaq_backlight_tint.rgb, vec3(0.0)))
+		* iaq_tank_depth_gain(wpos), vec3(0.0), vec3(1.5));
 }
 
 // Spectrum and amplitude stay separate. The shared continuous light response
@@ -749,6 +757,9 @@ void fragment() {
 	alpha += caustics * 0.04;
 	alpha += ice_rim * 0.06;
 	alpha += bacterial_bloom * 0.18;
+	// Murk is real scattering in the water, so it keeps its veil.
+	float veil_keep = mix(side_veil, 1.0, clamp(bloom_haze + bacterial_bloom, 0.0, 1.0));
+	alpha *= mix(1.0, veil_keep, clamp(vertical - surface, 0.0, 1.0));
 
 	// This is reflected/scattered light, not emission. Keeping the material's
 	// shape, film and optical alpha independent lets a darkened tank remain

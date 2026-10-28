@@ -4,6 +4,15 @@ render_mode blend_mix, cull_disabled, unshaded;
 
 uniform vec4 glass_color : source_color = vec4(0.7, 0.85, 0.9, 0.045);
 uniform float rim_brightness : hint_range(0.0, 1.0) = 0.35;
+// Share of the glass's alpha kept where a pane is seen FACE-ON (REAL_TANK
+// top-10 #1). Every pane is drawn on both faces, so a line of sight through
+// the front and back glass crosses four layers of bright cyan at 5-15% alpha
+// each - a measured +26 luma on the substrate front and +30 in mid-water, a
+// milky sheet over the whole scape that was most of why the tank read flat.
+// Low-iron glass is almost invisible face-on; it reads at its edges, its rim
+// and where it turns to a grazing angle, and all of those keep full alpha.
+// 1 = legacy.
+uniform float face_veil : hint_range(0.0, 1.0) = 0.38;
 // Reflection of the room's warm wall colour, blended in by fresnel +
 // vertical gradient inside the fragment. Bumped from 0.22 → 0.42 so the
 // room is visibly ghosted in the glass instead of being a faint hint —
@@ -259,6 +268,7 @@ void fragment() {
 
 	// Green dust algae film (#21–24). Heavier on light-facing / back panels;
 	// grazing tracks carve clean radiating paths through the dust.
+	float dust_keep = 0.0;
 	if (green_dust > 0.01 && abs(n.y) < 0.55) {
 		float panel = mix(0.35, 1.0, dust_panel_bias);
 		// Back glass (facing -Z) and light-facing get more dust.
@@ -278,6 +288,7 @@ void fragment() {
 		}
 		dust_cov *= 1.0 - clear * 0.92;
 		col = mix(col, mix(col, dust_col, 0.72), clamp(dust_cov, 0.0, 0.78));
+		dust_keep = clamp(dust_cov * 1.4, 0.0, 1.0);
 	}
 
 	// Salt creep / hard-water spots above the waterline (#32).
@@ -301,11 +312,20 @@ void fragment() {
 
 	// Fresnel rim bloom (#60) — glass brightens as you orbit to grazing angles.
 	float fresnel_rim = pow(fresnel, 1.65);
-	col += vec3(0.90, 0.96, 1.0) * fresnel_rim * 0.38;
+	// What a grazing pane mirrors is the room, and a room lit by the tank is
+	// dim: a white wash here turned both side panes into bright sheets either
+	// side of the scape.
+	col += vec3(0.90, 0.96, 1.0) * fresnel_rim * 0.38 * mix(1.0, 0.45, 1.0 - face_veil);
 
 	float alpha = glass_color.a + fresnel * 0.04 + top_rim * 0.03 + meniscus * 0.02 + ring_above * 0.05;
 	alpha += chrome * 0.08;
 	alpha += fresnel_rim * 0.07 + edge_ink * 0.04;
+	// Face-on panes thin out; edges, rim, waterline, grazing angles and the
+	// algae dust (a real deposit) keep their full weight.
+	float glass_keep = clamp(max(max(fresnel_rim * 0.7, edge_section * 0.8),
+		max(max(chrome, edge_ink), max(top_rim, dust_keep)))
+		+ meniscus + ring_above, 0.0, 1.0);
+	alpha *= mix(face_veil, 1.0, glass_keep);
 	ALBEDO = col;
 	// The rim specular is the one thing allowed past the translucency cap —
 	// a mirrored lip hides what is behind it. Everything else about the glass

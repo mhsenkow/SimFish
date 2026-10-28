@@ -518,6 +518,36 @@ func _init() -> void:
 	var same: Color = LightingRig.tint_light(Color(0.5, 0.4, 0.3), Color.WHITE)
 	t.approx(same.g, 0.4, "a white tint is the identity")
 
+	# --- the tank as the light source ------------------------------------
+	# A lamp that is off, or tank_glow 0, must leave the scene exactly as it
+	# was: the identity, so no tank without a lamp gets darker.
+	var off: Vector4 = R.tank_light(0.8, 0.0, 0.0)
+	t.approx(off.x, 1.0, "lamp off: room ambient untouched")
+	t.approx(off.y, 1.0, "lamp off: surface untouched")
+	t.approx(off.w, 1.0, "lamp off: lamp light reaches the room as before")
+	t.approx(R.tank_light(0.0, 1.0, 0.0).x, 1.0, "tank_glow 0 is the legacy look")
+	t.approx(R.tank_glow(Color.WHITE, 0.6, 0.8, 0.0).w, 0.0, "no spill without a lamp")
+	var on: Vector4 = R.tank_light(1.0, 1.0, 0.0)
+	t.check(on.x < 1.0, "a lit tank dims its room")
+	t.check(on.y > 1.0 and on.y > on.z, "the surface is brighter than the floor")
+	t.check(on.w < 1.0, "the hood keeps most direct light in the tank")
+	# Darkness already crushes the room; the glow must not compound it to black.
+	t.check(R.tank_light(1.0, 1.0, 1.0).x > on.x, "room dim backs off as darkness rises")
+	var spill: Vector4 = R.tank_glow(Color(1.0, 0.9, 0.7), 0.6, 1.0, 1.0)
+	t.check(spill.w > 0.0, "a lit tank spills light onto the room")
+	t.check(spill.x <= R.TANK_GLOW_WATER.x + 0.001 and spill.y <= R.TANK_GLOW_WATER.y + 0.001
+		and spill.z <= R.TANK_GLOW_WATER.z + 0.001,
+		"spill colour is the lamp normalised, filtered through the water")
+	var glow_box: Vector4 = R.tank_box(8.0, 4.0, 0.0, 6.5)
+	t.approx(glow_box.w, 6.5, "tank box carries the surface height")
+	t.check(cone_src.contains("iaq_tank_ambient_mul(world_pos)"),
+		"the cone ambient splits room from tank")
+	t.check(cone_src.contains("lit *= iaq_tank_depth_gain(world_pos)"),
+		"lamp light falls off from the surface down")
+	t.check(cone_src.contains("lit += iaq_tank_spill(world_pos, world_normal, pigment)"),
+		"the tank lights the room around it")
+	t.check(w.contains("_sync_tank_glow_globals("), "world pushes the tank glow globals")
+
 	probe.free()
 	quit(t.finish())
 
