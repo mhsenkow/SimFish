@@ -4,7 +4,7 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.50](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.50)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.51](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.51)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
 ## Where things are at (October 2026)
 
@@ -20,15 +20,15 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 
 ### Screenshots
 
-Current captures from the game (v0.2.38 art still current). Pixel-art tanks, a clearer shelf, and templates when you want a different habitat.
+Current captures from the game (v0.2.51 tank and reef; shelf and template picker from v0.2.38). Pixel-art tanks, a clearer shelf, and templates when you want a different habitat.
 
-![Living planted aquarium](docs/img/living-tank-v038.webp)
+![Living planted aquarium](docs/img/living-tank-v051.webp)
 
 | | |
 |---|---|
 | ![Tank shelf with Living tank action](docs/img/tank-shelf-v038.webp) | ![Responsive template picker](docs/img/tank-templates-v038.webp) |
 | Continue a tank or start a living garden | Browse 18 templates |
-| ![Current saltwater reef](docs/img/reef-v038.webp) | ![Fish swimming in the planted community](docs/img/living-close-v038.webp) |
+| ![Saltwater reef on live rock](docs/img/reef-v051.webp) | ![Fish swimming in the planted community](docs/img/living-close-v038.webp) |
 | Reef cube · corals and mixed marine morphs | A closer view of the living community |
 
 ## Download
@@ -182,6 +182,16 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - Population dynamics cycling — fry born, some eaten, survivors mature, breed, repeat
 
 ## Recent additions
+
+### v0.2.51 — a realism pass: real water, a lit room, a tank that has lived
+
+- **Water as a fluid:** one solved current from airstones, filter and heater; plants, motes, bubbles, food and ripples move with it, and fish swim relative to it.
+- **The tank lights its room:** dim room, bright surface, spill on the desk; the milky glass veil is gone. New **Tank glow** slider.
+- **Depth:** haze by the water you look through; the surface mirrors the tank from below.
+- **History in everything:** planted stands and crowned stem plants, spindle-shaped fish, branching driftwood with algae, gravel-over-soil at the glass, established snail colonies.
+- **Reef on live rock:** arch, cave and bommie crusted in coralline, corals on the ledges, clearer water.
+
+[Release notes](docs/RELEASE_v0.2.51.md)
 
 ### v0.2.50 — long-run ecology and cleaner first run
 
