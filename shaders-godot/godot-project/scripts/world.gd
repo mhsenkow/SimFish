@@ -3246,7 +3246,8 @@ func _apply_substrate_fidelity_strata() -> void:
 	var root_d: float = float(_active_substrate_profile.get("root_density", 0.0))
 	if plants_root != null:
 		var pc: int = plants_root.get_child_count()
-		root_d = clampf(root_d + float(pc) * 0.008, 0.0, 1.0)
+		# Saturates gently: a jungle of 200 plants is not 200 roots on the glass.
+		root_d = clampf(root_d + (1.0 - exp(-float(pc) / 120.0)) * 0.7, 0.0, 0.85)
 	var tunnel: float = float(_active_substrate_profile.get("tunnel_strength", 0.0))
 	if sim != null and sim.get("snails") != null:
 		var mts: int = 0

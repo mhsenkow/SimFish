@@ -47,6 +47,7 @@ uniform float slope_hint : hint_range(0.0, 1.0) = 0.0;
 uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
 uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
+#include "res://shaders/substrate_grain.gdshaderinc"
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
 #include "res://shaders/backlight.gdshaderinc"
@@ -126,10 +127,9 @@ vec3 stratified_bed_color(vec3 world_pos, vec3 n, vec3 base_col) {
 		+ (hash21(floor(world_pos.xz * 0.55)) - 0.5) * 0.12);
 	float depth_frac = clamp((local_top - world_pos.y) / bed_h, 0.0, 1.0);
 
-	// Wavy soil/cap boundary (±15% of cap thickness via low-freq noise).
-	float wave = (hash21(floor(world_pos.xz * 0.85)) - 0.5) * 2.0
-		+ sin(world_pos.x * 0.55 + world_pos.z * 0.38) * 0.55
-		+ sin(world_pos.x * 1.3 - world_pos.z * 0.9) * 0.25;
+	// Wavy soil/cap boundary: smooth noise along the glass, so it wanders
+	// instead of stepping every 1.2 units (substrate_grain.gdshaderinc).
+	float wave = sg_boundary_wave(world_pos) * 1.6;
 	float cap_split = cap_fraction + wave * boundary_wave * cap_fraction;
 	cap_split = clamp(cap_split, 0.08, 0.92);
 
@@ -137,7 +137,9 @@ vec3 stratified_bed_color(vec3 world_pos, vec3 n, vec3 base_col) {
 	float soil_w = smoothstep(cap_split - mix_w, cap_split + mix_w, depth_frac);
 
 	vec3 soil = soil_color.rgb;
-	vec3 cap = mix(cap_color.rgb, base_col, 0.35);
+	// Mostly the cap's own tone: at 0.35 each 0.4-unit terrain voxel's own
+	// albedo showed through as a block.
+	vec3 cap = mix(cap_color.rgb, base_col, 0.12);
 
 	// Age dulls and olives the cap.
 	cap = mix(cap, cap * vec3(0.78, 0.82, 0.68), bed_age * 0.55);
@@ -148,33 +150,46 @@ vec3 stratified_bed_color(vec3 world_pos, vec3 n, vec3 base_col) {
 
 	vec3 col = mix(cap, soil, soil_w);
 
-	// Discrete grains on vertical faces near the glass (side walls).
+	// Grains on vertical faces at the glass: packed rounded gravel in the
+	// cap, scattered down into the soil through the mixing band and
+	// thinning with depth (snails and roots working the layers together),
+	// sand specks in the soil below.
 	bool side = abs(n.y) < 0.55;
-	if (side && grain_population > 0.01 && soil_w < 0.92) {
-		float size_scale = mix(5.5, 2.8, smoothstep(0.0, cap_split, depth_frac));
-		vec2 cell = floor(vec2(world_pos.x, world_pos.y) * size_scale
-			+ vec2(world_pos.z * 0.3, 0.0));
-		float gh = hash21(cell);
-		float in_grain = step(0.42, gh) * step(hash21(cell + 17.3),
-			mix(0.55, 0.82, grain_population));
-		vec3 pebble = grain_palette_sample(hash21(cell + 3.1));
-		// Finer grains deeper in the cap.
-		float fine = smoothstep(0.0, cap_split * 0.85, depth_frac);
-		pebble = mix(pebble * 1.05, mix(pebble, soil, 0.35), fine * 0.4);
-		col = mix(col, pebble, in_grain * grain_population * (1.0 - soil_w * 0.7));
-		// Wet-dark contact ring at glass.
-		float edge = 1.0 - smoothstep(0.0, 0.12, abs(fract(world_pos.x * size_scale) - 0.5)
-			+ abs(fract(world_pos.y * size_scale) - 0.5));
-		col *= mix(1.0, 0.78, edge * glass_contact * in_grain * 0.55);
+	// Face-aligned coordinates: the bed at the glass is stair-stepped, and a
+	// sheared x + z mix smeared grains diagonally across the steps.
+	vec2 q = abs(n.z) >= abs(n.x) ? vec2(world_pos.x, world_pos.y)
+		: vec2(world_pos.z, world_pos.y);
+	if (side && grain_population > 0.01) {
+		float coarse = mix(0.15, 0.09, smoothstep(0.0, cap_split, depth_frac));
+		vec3 gap = mix(soil, cap * 0.32, 0.5);
+		vec3 gravel = sg_gravel(q, gap, cap_color.rgb * 1.08,
+			grain_palette_sample(0.25), grain_palette_sample(0.40), coarse);
+		// Below the boundary, grains survive in proportion to how far the
+		// mixing has reached.
+		float below = clamp((depth_frac - cap_split) / max(mix_w * 2.2, 0.05), 0.0, 1.0);
+		float keep = 1.0 - smoothstep(0.0, 1.0, below);
+		float scatter = step(1.0 - keep * 0.85, sg_hash(floor(q / coarse) + 21.0));
+		float gravel_w = mix(1.0, scatter, step(0.001, below)) * grain_population;
+		col = mix(col, gravel, gravel_w * (1.0 - soil_w * 0.15));
+		// Fine sand specks in the soil.
+		float spk = step(0.93, sg_hash(floor(q * 26.0)));
+		col = mix(col, cap_color.rgb * 0.7, spk * soil_w * 0.55);
+		// Wet-dark contact where grains press the glass.
+		col *= mix(1.0, 0.86, glass_contact * 0.3 * (1.0 - soil_w));
 	}
 
-	// Root hairs in soil against front glass.
+	// Roots against the glass: thin pale lines wandering down through the
+	// soil, a few per hand-width - not the field of tan rectangles a cell
+	// hash drew once a dense planting saturated root_density.
 	if (side && root_density > 0.01 && soil_w > 0.25) {
-		float root_n = hash21(floor(vec2(world_pos.x * 9.0, world_pos.y * 14.0)));
-		float strand = step(0.88 - root_density * 0.25, root_n)
-			* step(0.15, fract(world_pos.y * 11.0 + root_n * 4.0));
-		vec3 root_col = vec3(0.72, 0.64, 0.48);
-		col = mix(col, root_col, strand * root_density * 0.55 * soil_w);
+		float rx = q.x * 6.0 + sin(q.y * 4.3 + floor(q.x * 6.0) * 1.7) * 0.22;
+		float lane = floor(rx);
+		float present = step(sg_hash(vec2(lane, 3.3)), root_density * 0.32);
+		float thin = 1.0 - smoothstep(0.035, 0.075, abs(fract(rx) - 0.5));
+		// Each root runs a while and stops: segments along its length.
+		float run = step(0.15, sg_vnoise(q.y * 2.6 + lane * 3.1));
+		vec3 root_col = vec3(0.70, 0.62, 0.46);
+		col = mix(col, root_col, present * thin * run * soil_w * 0.65);
 	}
 
 	// MTS tunnels — pale voids in soil.
@@ -257,7 +272,9 @@ void fragment() {
 		col *= compute_contact_ao(world_pos);
 	}
 	if (abs(n.y) < 0.72) {
-		vec2 bcell = floor(world_pos.xz * 10.0);
+		// Along the face and up it: keyed on xz alone this drew vertical
+		// stripes down the front glass.
+		vec2 bcell = floor(vec2(world_pos.x + world_pos.z, world_pos.y) * 10.0);
 		float bayer = fract(sin(dot(bcell, vec2(12.9898, 78.233))) * 43758.5453);
 		col = mix(col * 0.86, col * 1.07, step(0.5, bayer));
 	}

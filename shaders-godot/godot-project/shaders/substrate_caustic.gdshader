@@ -82,6 +82,7 @@ uniform float palette_value : hint_range(0.7, 1.3) = 1.0;
 uniform sampler2D canopy_density_tex : filter_linear, repeat_disable;
 uniform vec4 canopy_bounds = vec4(-7.5, -3.5, 15.0, 7.0);
 uniform float canopy_shade : hint_range(0.0, 1.0) = 0.0;
+#include "res://shaders/substrate_grain.gdshaderinc"
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
 #include "res://shaders/backlight.gdshaderinc"
@@ -273,9 +274,18 @@ void fragment() {
     }
     // Slope-edge Bayer dither on vertical substrate faces (angle of repose).
     if (abs(n.y) < 0.72) {
-        vec2 bcell = floor(world_pos.xz * 10.0);
+        vec2 bcell = floor(vec2(world_pos.x + world_pos.z, world_pos.y) * 10.0);
         float bayer = fract(sin(dot(bcell, vec2(12.9898, 78.233))) * 43758.5453);
         base_color = mix(base_color * 0.86, base_color * 1.07, step(0.5, bayer));
+    }
+    // The exposed top row's side faces are the top of the cap at the glass:
+    // gravel, not a flat band (REAL_TANK top-10 #8). Hardscape keeps its own.
+    if (abs(n.y) < 0.55 && patina <= 0.001) {
+        vec2 qg = abs(n.z) >= abs(n.x) ? vec2(world_pos.x, world_pos.y)
+            : vec2(world_pos.z, world_pos.y);
+        vec3 tone = albedo.rgb;
+        base_color = mix(base_color, sg_gravel(qg, tone * 0.30, tone * 1.10,
+            tone * vec3(0.92, 0.88, 0.80), tone * vec3(0.78, 0.80, 0.86), 0.15) * f, 0.85);
     }
 
     // Sand-ripple sculpting on top-facing voxels. Build a long-wavelength
