@@ -2834,6 +2834,7 @@ func _apply_mixed_morph_jitter(genome: Dictionary) -> void:
 
 func _build_body() -> void:
 	_voxel_builder = FaunaVoxelBuilder.new()
+	_taper_v = 0.0
 	var fish_n: int = 0
 	if sim != null and sim.get("fish") is Array:
 		fish_n = (sim.fish as Array).size()
@@ -2864,16 +2865,20 @@ func _build_body() -> void:
 	var mat_belly := _make_mat(ColorArt.fauna_shadow_color(base_color))
 	var mat_accent := _make_mat(accent_color)
 	var mat_eye := VoxelMat.make(Color8(11, 26, 34))
+	# Fins carry more pigment than glass would. At tank distance a fish is 3-5
+	# render pixels tall, and a 0.62-alpha fin over water quantises to the
+	# water colour - the fins vanished and the fish read as a pill. Veil fins
+	# (bettas, fancy guppies) keep their own lighter material below.
 	var mat_fin := VoxelMat.make_translucent(
 		Color(base_color.darkened(0.12).r, base_color.darkened(0.12).g,
-			base_color.darkened(0.12).b, 0.62).lerp(accent_color, 0.12))
+			base_color.darkened(0.12).b, FIN_ALPHA).lerp(accent_color, 0.12))
 	# Tail fin material: defaults to a darker shade of base_color, but if
 	# the genome supplied an explicit tail_color we use that (male guppies'
 	# bright red/orange fan against a dark body).
 	var effective_tail: Color = tail_color if _tail_color_set \
 		else base_color.darkened(0.15)
 	var mat_tail := VoxelMat.make_translucent(
-		Color(effective_tail.r, effective_tail.g, effective_tail.b, 0.68))
+		Color(effective_tail.r, effective_tail.g, effective_tail.b, TAIL_ALPHA))
 	# Marking material: the secondary ornament color zone (tetra blue band,
 	# rasbora rear wedge, gourami flank, eye-spot ring). Falls back to accent
 	# when the genome supplies no explicit marking_color.
@@ -3021,6 +3026,11 @@ func _build_body() -> void:
 	_body_mid_pivot.name = "BodyMid"
 	_body_mid_pivot.position = Vector3(0, 0, -1.5 * v)
 	_bank_pivot.add_child(_body_mid_pivot)
+	# Everything placed on the body from here on - segments, accents, every
+	# stripe, bar and spot - is squashed by the same depth profile along the
+	# fish's length (_body_depth_profile), so the body is deepest just behind
+	# the head and tapers to the tail, and the markings taper with it.
+	_taper_v = v
 	# Segments at z offsets 0, v, 2v (back along the body from the pivot).
 	# ventral_profile shifts the belly center DOWN for round-bellied species
 	# (puffer); back_arch lifts the top center UP for hump-backed species
@@ -3233,7 +3243,7 @@ func _build_body() -> void:
 	var dh: float = dorsal_height_factor
 	_dorsal_pivot = Node3D.new()
 	_dorsal_pivot.name = "DorsalPivot"
-	_dorsal_pivot.position = Vector3(0, v * 0.75, v * 1.0)
+	_dorsal_pivot.position = Vector3(0, v * 0.75 * _body_depth_profile(v * 1.0), v * 1.0)
 	_body_mid_pivot.add_child(_dorsal_pivot)
 	var ray_n: int = 4
 	for r in ray_n:
@@ -3257,7 +3267,7 @@ func _build_body() -> void:
 	if second_dorsal:
 		var d2 := Node3D.new()
 		d2.name = "Dorsal2"
-		d2.position = Vector3(0, v * 0.75, v * 1.95)
+		d2.position = Vector3(0, v * 0.75 * _body_depth_profile(v * 1.95), v * 1.95)
 		_body_mid_pivot.add_child(d2)
 		_add_voxel_to(d2, Vector3(0, v * 0.16 * dh, 0),
 			Vector3(v * 0.13, v * 0.3 * dh, v * 0.7), mat_fin)
@@ -3269,7 +3279,7 @@ func _build_body() -> void:
 	# the dorsal and anal fins extend symmetrically into long fans.
 	_anal_pivot = Node3D.new()
 	_anal_pivot.name = "AnalPivot"
-	_anal_pivot.position = Vector3(0, -v * 0.65, v * 1.6)
+	_anal_pivot.position = Vector3(0, -v * 0.65 * _body_depth_profile(v * 1.6), v * 1.6)
 	_body_mid_pivot.add_child(_anal_pivot)
 	var afl: float = anal_fin_length_factor
 	_add_anal_fin_voxel(Vector3(0, -v * 0.2 * afl, 0),
@@ -3327,9 +3337,12 @@ func _build_body() -> void:
 	_tail_pivot.name = "TailPivot"
 	_tail_pivot.position = Vector3(0, 0, 1.5 * v)
 	_bank_pivot.add_child(_tail_pivot)
-	# Tail peduncle (narrow connector).
+	# Tail peduncle: the waist in front of the tail. At three pixels tall the
+	# pinch between body and caudal fin is the strongest single cue that the
+	# shape is a fish, so it is narrower than the body's last segment by a
+	# clear step rather than the near-flush 0.6 it was.
 	_add_voxel_to(_tail_pivot, Vector3(0, 0, 0),
-		Vector3(v * 0.5, v * 0.6, v), mat_body)
+		Vector3(v * 0.44, v * PEDUNCLE_DEPTH * _peduncle_depth_scale(), v), mat_body)
 	# Healed caudal nick — a notch of body-dark punched into one side of the
 	# peduncle on roughly a fifth of individuals. Reads as a survived
 	# encounter rather than a modelling error, and it is the cheapest possible
@@ -3513,7 +3526,48 @@ func _add_connected_fin_voxel(parent: Node3D, pos: Vector3, size_v: Vector3,
 func _add_voxel_to(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 	if _voxel_builder == null:
 		_voxel_builder = FaunaVoxelBuilder.new()
+	if parent == _body_mid_pivot and _taper_v > 0.0:
+		var k: float = _body_depth_profile(pos.z)
+		pos.y *= k
+		size.y *= k
 	_voxel_builder.add_voxel(parent, pos, size, mat)
+
+
+# ---- Side profile (REAL_TANK top-10 #3) ------------------------------------
+#
+# The body was three near-equal box segments (1.15 / 1.20 / 1.0 deep) and a
+# 0.6 peduncle: in side view a rectangle with a head on it, which at tank
+# distance is a pill. A fish in profile is a spindle - deepest a third of the
+# way back, tapering steadily to a pinched peduncle before the tail flares.
+const FIN_ALPHA: float = 0.80
+const TAIL_ALPHA: float = 0.86
+const PEDUNCLE_DEPTH: float = 0.38
+var _taper_v: float = 0.0
+
+
+# Depth multiplier at body-pivot z (0 = first segment behind the head,
+# +2v = last segment before the peduncle). Shapes whose whole point is a
+# uniform section (a puffer's ball, an eel's tube) are left alone.
+func _body_depth_profile(z: float) -> float:
+	if _taper_v <= 0.0:
+		return 1.0
+	match body_shape:
+		"globiform", "anguilliform":
+			return 1.0
+		"compressed":
+			var tc: float = clampf(z / (_taper_v * 2.4), 0.0, 1.0)
+			return lerpf(1.04, 0.84, pow(tc, 1.7))
+	var t: float = clampf(z / (_taper_v * 2.4), 0.0, 1.0)
+	return lerpf(1.08, 0.66, pow(t, 1.6))
+
+
+func _peduncle_depth_scale() -> float:
+	match body_shape:
+		"globiform":
+			return 1.15
+		"anguilliform":
+			return 1.6
+	return 1.0
 
 
 # Walk the body hierarchy once after _build_body and assign per-voxel
