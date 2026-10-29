@@ -5532,7 +5532,7 @@ func _spawn_initial_plants() -> void:
 		 "leaf_form": "paddle", "leaf_length": 5, "max_roots": 6,
 		 "ramp": [Color8(34, 60, 28), Color8(54, 88, 38), Color8(78, 119, 53),
 				  Color8(110, 152, 73), Color8(140, 178, 95), Color8(170, 200, 120)]},
-		{"name": "carpet",   "max": [3, 6],   "rate": 0.30, "sway": 0.04,
+		{"name": "carpet",   "max": [5, 9],   "rate": 0.30, "sway": 0.04,
 		 "leaf_form": "needle", "leaf_length": 3, "max_roots": 3,
 		 "ramp": [Color8(40, 90, 35), Color8(60, 122, 52), Color8(82, 152, 70),
 				  Color8(110, 180, 92), Color8(145, 205, 118), Color8(180, 225, 145)]},
@@ -5731,7 +5731,25 @@ func _spawn_initial_corals() -> void:
 		# 5: yellow-amber plate coral
 		[Color8(105, 75, 30), Color8(140, 105, 45), Color8(180, 140, 60),
 		 Color8(210, 175, 85), Color8(235, 210, 130), Color8(250, 235, 180)],
+		# 6: green Acropora
+		[Color8(30, 70, 45), Color8(45, 100, 60), Color8(65, 135, 80),
+		 Color8(95, 170, 100), Color8(140, 205, 125), Color8(190, 235, 160)],
+		# 7: brown-cream Acropora with blue polyp tips
+		[Color8(80, 60, 40), Color8(115, 90, 60), Color8(150, 125, 90),
+		 Color8(180, 160, 125), Color8(140, 175, 215), Color8(120, 190, 245)],
+		# 8: cream-tan leather / toadstool soft coral
+		[Color8(95, 80, 55), Color8(130, 110, 75), Color8(165, 145, 100),
+		 Color8(195, 178, 132), Color8(220, 205, 165), Color8(240, 230, 200)],
+		# 9: red gorgonian sea fan
+		[Color8(90, 25, 30), Color8(125, 40, 40), Color8(165, 60, 52),
+		 Color8(200, 85, 70), Color8(225, 120, 95), Color8(245, 160, 130)],
 	]
+	# A reef is not one colour. The staghorns drew from two ramps and every
+	# soft coral from the lavender one, so under the blue reef lamp the whole
+	# tank read violet. Picks reuse the draws the old code made (one randi per
+	# staghorn, none per soft coral), so nothing else in the layout shifts.
+	var staghorn_ramps: Array = [0, 1, 6, 7]
+	var soft_ramps: Array = [4, 8, 9]
 
 	# --- Background: staghorn forest (shape-aware) ---
 	for row_i in 10:
@@ -5741,7 +5759,7 @@ func _spawn_initial_corals() -> void:
 		plants_root.add_child(c)
 		c.global_position = _coral_base(c, xz, row_i, 3)
 		c.coral_form = "branching" if _rng.randf() < 0.6 else "staghorn_fern"
-		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
+		var pal: Array = coral_palettes[staghorn_ramps[_rng.randi() % staghorn_ramps.size()]]
 		c.ramp_override = pal
 		c.tip_color = pal[pal.size() - 1]
 		c.water_surface_y = WATER_HEIGHT
@@ -5781,8 +5799,9 @@ func _spawn_initial_corals() -> void:
 		plants_root.add_child(c)
 		c.global_position = _coral_base(c, xz, i, 3)
 		c.coral_form = "feathery"
-		c.ramp_override = coral_palettes[4]   # lavender
-		c.tip_color = coral_palettes[4][5]
+		var soft_pal: Array = coral_palettes[soft_ramps[i % soft_ramps.size()]]
+		c.ramp_override = soft_pal
+		c.tip_color = soft_pal[5]
 		c.water_surface_y = WATER_HEIGHT
 		c.generation = 0
 		c.init(_rng.randi_range(2, 4), {
@@ -5973,7 +5992,21 @@ func _spawn_stand(spec: Dictionary, center: Vector2, count: int, radius: float,
 		var fit: Vector2 = clamp_plant_site(px, pz, 0.35, 0.30)
 		if not fits_plant_at(fit.x, fit.y, 0.30, 0.30):
 			continue
-		_spawn_plant(spec, spawn_position_on_floor(fit.x, fit.y),
+		var plant_spec: Dictionary = spec
+		# A stem bunch is a dome, not a column: the outer stems lean out and
+		# stop short (younger, or trimmed), the centre ones run to the top.
+		# Derived from the planting position, so no extra random draws.
+		var out_k: float = clampf(r / maxf(radius, 0.01), 0.0, 1.0)
+		if String(spec.get("leaf_form", "")) == "lance" and out_k > 0.45:
+			plant_spec = spec.duplicate()
+			var mx: Array = spec.get("max", [11, 18])
+			var short_k: float = lerpf(0.82, 0.52, (out_k - 0.45) / 0.55)
+			plant_spec["max"] = [maxi(4, int(float(mx[0]) * short_k)),
+				maxi(5, int(float(mx[1]) * short_k))]
+			plant_spec["reaches_surface"] = false
+			plant_spec["lean_dir"] = Vector2(cos(a), sin(a))
+			plant_spec["lean_gain"] = lerpf(1.6, 3.0, out_k)
+		_spawn_plant(plant_spec, spawn_position_on_floor(fit.x, fit.y),
 			clampi(base_h + _rng.randi_range(-1, 1), 1, h_max + 1))
 
 
@@ -6097,6 +6130,8 @@ func _spawn_plant(spec: Dictionary, pos: Vector3, initial_height: int) -> void:
 		"max_roots": int(spec.get("max_roots", 5)),
 		"is_epiphyte": is_epiphyte,
 		"surface_pooling": pools,
+		"lean_dir": spec.get("lean_dir", Vector2.ZERO),
+		"lean_gain": float(spec.get("lean_gain", 1.0)),
 	})
 	sim.register_plant(p)
 

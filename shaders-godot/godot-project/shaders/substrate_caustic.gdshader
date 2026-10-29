@@ -227,7 +227,9 @@ vec3 apply_patina(vec3 col, vec3 wp, vec3 wn) {
         col *= 1.0 - pores * 0.40 * k;
         float blot = hash21(floor(wp.xz * 1.8) + floor(wp.y * 1.8) * 2.3 + vec2(3.0, 9.0));
         float blot2 = hash21(floor(wp.xz * 4.5) + floor(wp.y * 4.5) * 1.3 + vec2(11.0, 2.0));
-        vec3 coralline = mix(vec3(0.52, 0.28, 0.48), vec3(0.70, 0.42, 0.62), blot2);
+        // Strongly pigmented: under a blue reef lamp a pale lavender crust
+        // has the same colour as a purple coral and the two merge.
+        vec3 coralline = mix(vec3(0.56, 0.16, 0.50), vec3(0.74, 0.26, 0.64), blot2);
         float cov = step(0.64, blot) * (0.65 + side * 0.25) * mix(0.55, 1.0, step(0.45, blot2));
         col = mix(col, coralline * (0.9 + 0.2 * h1), cov * k);
         // Turf algae on what faces the lamp.
@@ -250,6 +252,13 @@ vec3 apply_patina(vec3 col, vec3 wp, vec3 wn) {
     float speck_t = patina_kind == 2 ? 0.55 : 0.70;
     float speck = step(speck_t, h2) * (0.35 + up * 0.65);
     col = mix(col, vec3(0.20, 0.47, 0.15) * (0.9 + 0.2 * h1), speck * k * 0.85);
+    // ...and patches big enough to survive the default camera: a pinprick
+    // is under a render pixel at 18 units, a hand-sized patch on the upper
+    // half of a limb is several. Only on faces the light reaches.
+    float patch_h = hash21(floor(wp.xz * 2.4) + floor(wp.y * 2.4) * 2.9 + vec2(41.0, 13.0));
+    float lit_face = smoothstep(-0.25, 0.45, wn.y);
+    float patch = step(patina_kind == 2 ? 0.50 : 0.60, patch_h) * lit_face;
+    col = mix(col, vec3(0.22, 0.42, 0.16) * (0.85 + 0.3 * h2), patch * k * 0.72);
     // Where it meets the gravel: the damp band grazers do not reach.
     float near_bed = 1.0 - smoothstep(0.0, 0.65, wp.y - patina_floor_y);
     col = mix(col, vec3(0.10, 0.17, 0.08) * (0.8 + 0.4 * h1), near_bed * k * 0.65 * (1.0 - up * 0.3));

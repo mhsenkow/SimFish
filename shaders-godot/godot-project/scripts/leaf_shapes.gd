@@ -459,9 +459,9 @@ static func _template_needle(length: int) -> Array:
 			Vector3(VOXEL_SIZE * 0.30 * t * t, float(i) * VOXEL_SIZE * 0.75,
 				VOXEL_SIZE * 0.12 * sin(t * PI)),
 			Vector3(
-				VOXEL_SIZE * lerpf(0.30, 0.12, t),
+				VOXEL_SIZE * lerpf(0.36, 0.16, t),
 				VOXEL_SIZE * 0.8,
-				VOXEL_SIZE * lerpf(0.30, 0.12, t),
+				VOXEL_SIZE * lerpf(0.36, 0.16, t),
 			),
 			t, false, false))
 	return out

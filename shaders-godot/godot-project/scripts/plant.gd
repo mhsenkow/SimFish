@@ -561,6 +561,14 @@ func init(initial_height: int = 1, params: Dictionary = {}) -> void:
 		_apply_default_growth_strategy()
 	if params.has("is_epiphyte"):
 		is_epiphyte = not not params["is_epiphyte"]
+	if params.has("lean_dir"):
+		var ld: Variant = params["lean_dir"]
+		if ld is Vector2:
+			lean_override = ld
+		elif ld is Array and (ld as Array).size() >= 2:
+			lean_override = Vector2(float(ld[0]), float(ld[1]))
+	if params.has("lean_gain"):
+		lean_gain = clampf(float(params["lean_gain"]), 0.0, 4.0)
 	# Transplant shock (#8): young plants melt briefly after spawn.
 	if plant_age_s < TRANSPLANT_MELT_AGE_S and melt_susceptibility > 0.2:
 		_melt_active = true
@@ -678,6 +686,8 @@ func to_save_dict() -> Dictionary:
 			"leaf_size_mult": leaf_size_mult,
 			"max_roots": _max_roots,
 			"is_epiphyte": is_epiphyte,
+			"lean_dir": [lean_override.x, lean_override.y],
+			"lean_gain": lean_gain,
 			"variegation": variegation,
 			"quilted": quilted,
 			"wavy_edges": wavy_edges,
@@ -2778,12 +2788,18 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 
 func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
 		photo_offset: Vector2) -> void:
+	# Hairgrass and other carpet blades fan out from the crown in every
+	# direction. The template bows along +X, so with every blade at the same
+	# spot and yaw a tuft was one thin stub - at tank distance, speckle where
+	# a lawn should be.
 	var leaf_node := Node3D.new()
+	var spread: float = VOXEL_SIZE * 0.40
 	leaf_node.position = _clamp_growth_offset(Vector3(
-		photo_offset.x + randf_range(-0.05, 0.05),
+		photo_offset.x + randf_range(-spread, spread),
 		VOXEL_SIZE * 0.2,
-		photo_offset.y + randf_range(-0.05, 0.05),
+		photo_offset.y + randf_range(-spread, spread),
 	))
+	leaf_node.rotation.y = randf() * TAU
 	var needle_len: int = clampi(leaf_length, 2, 6)
 	var template: Array = LeafShapes.get_leaf_template("needle", {
 		"length": needle_len,
@@ -6054,16 +6070,25 @@ func _node_jitter(node: int, spread: float) -> float:
 	return (float(h % 2000) / 1000.0 - 1.0) * spread
 
 
+# Set by the planter: a stem on the outside of a bunch leans away from it, so
+# a bunch opens like a bouquet instead of standing as one column. Zero = the
+# genome's own direction (below). lean_gain scales how far it leans.
+var lean_override: Vector2 = Vector2.ZERO
+var lean_gain: float = 1.0
+
+
 # The direction this individual leans. The old fixed `sin(rel)` arc bent every
 # plant along +X, so a row of stems all bowed the same way.
 func _lean_dir() -> Vector2:
+	if lean_override.length_squared() > 1e-4:
+		return lean_override.normalized()
 	var a: float = _phyllotaxis_phase()
 	return Vector2(cos(a), sin(a))
 
 
 # Lateral offset of the node at `rel` (0 = base, 1 = tip) along the lean.
 func _stem_lean_offset(rel: float) -> Vector2:
-	return _lean_dir() * (sin(rel * PI * 0.6) * sway_amplitude * 0.6)
+	return _lean_dir() * (sin(rel * PI * 0.6) * sway_amplitude * 0.6 * lean_gain)
 
 
 # ---- Light-driven leaf plasticity --------------------------------------------

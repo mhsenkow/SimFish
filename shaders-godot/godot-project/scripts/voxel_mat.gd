@@ -405,7 +405,7 @@ static func make_substrate_caustic(color: Color, material_id: int = 0,
 
 # Hardscape that has been underwater a while (REAL_TANK top-10 #7): the
 # substrate shader with its patina pass on. kind 1 = wood, 2 = stone.
-const HARDSCAPE_PATINA: float = 0.8
+const HARDSCAPE_PATINA: float = 1.0
 
 
 static func make_hardscape(color: Color, kind: int, floor_y: float) -> ShaderMaterial:
