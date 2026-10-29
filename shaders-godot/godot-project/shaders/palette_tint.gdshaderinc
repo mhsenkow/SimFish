@@ -50,6 +50,22 @@ global uniform vec4 iaq_water_depth;
 // at the eye, so it should carry the lamp's colour, not always teal.
 global uniform vec4 iaq_scatter_light;
 
+// ---- Distance haze (REAL_TANK top-10 #6) ----
+//
+// In-scatter is light scattered INTO the line of sight between an object and
+// the eye, so it builds along the view path through the water, not along the
+// downward path the light took to reach the object. It used to share one path
+// term with absorption, which buried the distance cue under the depth one: a
+// leaf at the back glass and a leaf at the front, at the same height, wore
+// nearly the same wash. The front substrate got as much fog as the back wall.
+//
+// And the haze is LIT water. Its colour was the water body's dark teal, so
+// far things went darker but kept their contrast - shade, not distance. A lit
+// tank's far side recedes toward the glow of the water in front of it.
+const float IAQ_HAZE_VIEW_RATE = 0.038;
+const float IAQ_HAZE_DEPTH_RATE = 0.004;
+const float IAQ_HAZE_LIT_GAIN = 2.2;
+
 vec3 iaq_scatter_body() {
 	vec3 body = iaq_water_body.rgb;
 	float m = iaq_scatter_light.a;
@@ -77,17 +93,49 @@ vec3 iaq_scatter_body() {
 // looking down through the surface pays only the vertical. Slab test only, no
 // texture reads: a few ALU ops per fragment.
 float water_view_path(vec3 wpos, vec3 cam_pos, float surface_y) {
-	vec3 rd = cam_pos - wpos;
-	float len_rd = length(rd);
-	rd /= max(len_rd, 0.0001);
-	vec2 half_ext = iaq_water_depth.zw;
-	vec2 s = vec2(rd.x >= 0.0 ? 1.0 : -1.0, rd.z >= 0.0 ? 1.0 : -1.0);
-	vec2 t_side = max(half_ext - s * wpos.xz, vec2(0.0)) / max(abs(rd.xz), vec2(0.0001));
-	float t_exit = min(t_side.x, t_side.y);
-	if (rd.y > 0.0001) {
-		t_exit = min(t_exit, max(surface_y - wpos.y, 0.0) / rd.y);
+	// Segment fragment -> camera against the water box: |x| <= half_ext.x,
+	// |z| <= half_ext.y, y <= surface. Slab test, no texture reads. A point
+	// inside the tank pays the water between it and the glass it is seen
+	// through; a point OUTSIDE (the back wall, the room behind the tank) pays
+	// the whole tank it is seen through, and nothing if the line of sight
+	// misses the water (REAL_TANK top-10 #6).
+	vec3 d = cam_pos - wpos;
+	float len_d = length(d);
+	if (len_d < 0.0001) {
+		return 0.0;
 	}
-	return clamp(min(t_exit, len_rd), 0.0, 64.0);
+	vec3 rd = d / len_d;
+	vec2 half_ext = iaq_water_depth.zw;
+	float t0 = 0.0;
+	float t1 = len_d;
+	if (abs(rd.x) < 1e-5) {
+		if (abs(wpos.x) > half_ext.x) {
+			return 0.0;
+		}
+	} else {
+		float ta = (-half_ext.x - wpos.x) / rd.x;
+		float tb = (half_ext.x - wpos.x) / rd.x;
+		t0 = max(t0, min(ta, tb));
+		t1 = min(t1, max(ta, tb));
+	}
+	if (abs(rd.z) < 1e-5) {
+		if (abs(wpos.z) > half_ext.y) {
+			return 0.0;
+		}
+	} else {
+		float tc = (-half_ext.y - wpos.z) / rd.z;
+		float td = (half_ext.y - wpos.z) / rd.z;
+		t0 = max(t0, min(tc, td));
+		t1 = min(t1, max(tc, td));
+	}
+	if (rd.y > 0.0001) {
+		t1 = min(t1, (surface_y - wpos.y) / rd.y);
+	} else if (rd.y < -0.0001) {
+		t0 = max(t0, (surface_y - wpos.y) / rd.y);
+	} else if (wpos.y > surface_y) {
+		return 0.0;
+	}
+	return clamp(t1 - t0, 0.0, 64.0);
 }
 
 // World-space variant: `wpos` the fragment's world position, `cam_pos` the
@@ -100,20 +148,29 @@ vec3 apply_water_column_ws(vec3 col, vec3 wpos, vec3 cam_pos) {
 	}
 	float surface_y = iaq_water_body.a;
 	float depth = max(surface_y - wpos.y, 0.0);
-	if (depth <= 0.0) {
-		return col;
-	}
 	float depth_gain = max(iaq_water_depth.x, 0.01);
 	float view_term;
 	if (iaq_water_depth.z > 0.01) {
 		view_term = water_view_path(wpos, cam_pos, surface_y) * max(iaq_water_depth.y, 0.0);
+		// The downwelling half of the path only exists for things IN the water.
+		vec2 half_ext = iaq_water_depth.zw;
+		if (abs(wpos.x) > half_ext.x || abs(wpos.z) > half_ext.y) {
+			depth = 0.0;
+		}
 	} else {
+		if (depth <= 0.0) {
+			return col;
+		}
 		view_term = length(cam_pos - wpos) * 0.35;
+	}
+	if (depth <= 0.0 && view_term <= 0.001) {
+		return col;
 	}
 	float path = depth * depth_gain + view_term;
 	vec3 transmit = exp(-iaq_water_absorb.rgb * path * strength);
-	float haze = 1.0 - exp(-path * strength * 0.020);
-	return col * transmit + iaq_scatter_body() * haze;
+	float haze = 1.0 - exp(-(view_term * IAQ_HAZE_VIEW_RATE + depth * IAQ_HAZE_DEPTH_RATE)
+		* strength);
+	return mix(col * transmit, iaq_scatter_body() * IAQ_HAZE_LIT_GAIN, haze);
 }
 
 // `world_y` is the fragment's world height, `view_dist` its distance from the
