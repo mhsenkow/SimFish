@@ -162,7 +162,12 @@ uniform float caustic_baked = 0.0;
 // mipmapped sampler there reads undefined levels - the black slab that got
 // screen reads banned on macOS in the first place. 0 = sheet only.
 uniform float under_glow : hint_range(0.0, 2.0) = 1.0;
-uniform float under_reflect : hint_range(0.0, 1.0) = 0.55;
+// Outside Snell's window the surface is a total-internal-reflection mirror:
+// what it shows IS the tank, upside down, not a bright sheet. At 0.55 with the
+// sheet added back on top, the copy washed out to the grey-white plane the
+// close captures showed; 0.9 keeps it a mirror, the sheet only filling where
+// the reflected sample falls off screen (REAL_TANK top-10 #5).
+uniform float under_reflect : hint_range(0.0, 1.0) = 0.9;
 // How far below the surface the reflected ray is assumed to land before it
 // meets something. A constant is wrong in general and right where it matters:
 // the fish crowd and the valli runs live in the top couple of units.
@@ -521,7 +526,9 @@ void fragment() {
 	// swims in bright and dark bands that follow the slope. A brightness
 	// modulation on the cap, keyed to the slope toward the light.
 	col *= 1.0 + dot(rgrad, vec2(0.55, 0.84)) * 1.6 * surface;
-	col = mix(col, shallow_color.rgb * 1.18, surface * 0.42);
+	// Looking down through the cap you see the water below it, not a paler
+	// sheet: the old 1.18x lift turned the whole cap into a flat white band.
+	col = mix(col, shallow_color.rgb, surface * 0.30);
 	// Living ceiling: viewed from below, the surface fractures the light into a
 	// drifting bright web. Reuses the caustic Worley so it matches the floor.
 	if (surface > 0.01) {
@@ -530,10 +537,24 @@ void fragment() {
 			surf_web = water_web(world_pos.xz * 0.9 + vec2(3.0, 1.0), TIME * 0.5);
 		}
 		col += light_color * surf_web * surface * 0.18;
-		// Room/sky sheen on the top cap (#24).
+		// Room/sky sheen on the top cap (#24). At a grazing angle the cap
+		// mirrors what is above it, so it carries the ROOM's actual light
+		// level: a room the lit tank has dimmed (iaq_tank_light) reflects
+		// dim, and the lamp's hood is the bright part of that reflection.
 		float refl = surface_reflection * pond_health_gloss;
-		col = mix(col, room_sky_color,
+		float room_level = clamp(iaq_beam_tint.w * iaq_room_light
+			* (iaq_tank_box.x > 0.001 ? iaq_tank_light.x : 1.0), 0.12, 1.0);
+		col = mix(col, room_sky_color * room_level,
 			surface * fresnel * refl * (0.35 + sunset_warmth * 0.35));
+		// The lamp in the mirror: a broad bright reflection where the ripples
+		// tilt the cap toward the fixture. The tight specular below is the
+		// glint inside it; this is the hood's glow the glint sits in.
+		vec3 v_top = normalize(CAMERA_POSITION_WORLD - world_pos);
+		vec3 r_top = reflect(-v_top, n_rip_w);
+		vec3 to_lamp = normalize(fixture_world_pos - world_pos);
+		float hood = smoothstep(0.80, 0.985, dot(r_top, to_lamp));
+		col += lamp_rgb(light_color, incident_rgb) * hood * surface
+			* (0.15 + fresnel * 0.65) * direct_share * 0.55;
 		col = mix(col, shallow_color.rgb * 1.08,
 			surface * pond_calm * 0.22 * pond_health_gloss);
 		col = mix(col, pond_color_spill,
@@ -581,7 +602,8 @@ void fragment() {
 				vec3 scene = textureLod(under_screen_tex, clamp(suv, vec2(0.002), vec2(0.998)), 0.0).rgb;
 				// Seen through the same bright upper water, so the copy keeps
 				// its silhouettes but sits inside the sheet's glow.
-				vec3 copy_c = scene * mix(vec3(1.0), lamp, 0.35) * 1.25 + sheet * 0.30;
+				vec3 copy_c = scene * mix(vec3(0.92, 0.98, 1.0), lamp, 0.25) * 1.05
+					+ sheet * 0.06;
 				refl = mix(sheet, copy_c, under_reflect * inb * tir);
 			}
 		}
