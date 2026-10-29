@@ -2692,6 +2692,9 @@ const TANK_PRESETS: Dictionary = {
 			# HOLISTIC #021 — keep a readable mid-water passage and put the
 			# tall blade mass on the tank's focal side instead of a centred hedge.
 			"passage_clear": true,
+			# Wall to wall: the rows alone landed as two clumps in open water.
+			# Fill stands skip the passage, so the swim lane survives.
+			"valli_fill": 18,
 			"extras": {"spirals": 0, "branch_ferns": 2, "hydra": 0, "marimo": 0, "riccia": 1},
 		},
 		# Not twin_logs: that style runs the full three-island Iwagumi stone set

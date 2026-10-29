@@ -2738,11 +2738,15 @@ func _rebuild_ribbon_blades(h: int, ramp: Array = []) -> void:
 func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 		photo_offset: Vector2) -> void:
 	# Stem voxel first — stays a real MeshInstance3D node (it's structural, in
-	# the `voxels` array, and drives height / nibble / tint).
+	# the `voxels` array, and drives height / nibble / tint). Thin, and in the
+	# leaves' own mid tone: on a healthy stem plant the stem is a thread the
+	# foliage hides, not the dark pole every other node used to hang off.
 	var stem_mi := MeshInstance3D.new()
-	stem_mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.35, VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.35))
-	var stem_color: Color = ramp[0] if ramp.size() > 0 else Color8(40, 70, 30)
-	stem_mi.material_override = VoxelMat.make_foliage(stem_color.darkened(0.1))
+	stem_mi.mesh = VoxelMat.get_box(Vector3(VOXEL_SIZE * 0.24, VOXEL_SIZE * 0.9, VOXEL_SIZE * 0.24))
+	var stem_color: Color = Color8(40, 70, 30)
+	if ramp.size() > 2:
+		stem_color = (ramp[1] as Color).lerp(ramp[2] as Color, 0.35)
+	stem_mi.material_override = VoxelMat.make_foliage(stem_color.darkened(0.12))
 	var lean_l: Vector2 = _stem_lean_offset(rel)
 	stem_mi.position = _clamp_growth_offset(Vector3(
 		lean_l.x + photo_offset.x,
@@ -2751,21 +2755,25 @@ func _grow_lance_pair(ramp: Array, age_frac: float, rel: float,
 	))
 	var stem_pos: Vector3 = stem_mi.position
 	_register_stem_voxel(stem_mi)
-	if current_height % 2 == 0:
-		var leaf_node := Node3D.new()
-		leaf_node.position = stem_pos
-		# Light plasticity + mid-stem peak: shade pairs larger, sun pairs and
-		# the still-expanding apex / shaded base smaller.
-		leaf_node.scale = Vector3.ONE * clampf(
-			_shade_size_mult() * _node_size_gradient(rel), 0.7, 1.3)
-		var template: Array = LeafShapes.get_leaf_template("lance", {
-			"pair_index": int(current_height / 2.0),
-		})
-		_leaf_groups.append(_bake_leaf_template(
-			leaf_node.transform, template, ramp, age_frac, _leaf_mods()))
-		_leaf_ages.append(_t)
-		_register_leaf_age(_t)
-		leaf_node.free()
+	# A pair at every node, each turned a quarter from the last (decussate),
+	# climbing steeper toward the apex. Every-other-node flat pairs on a bare
+	# stem read as a coat rack; this reads as Rotala.
+	var leaf_node := Node3D.new()
+	leaf_node.position = stem_pos
+	# Light plasticity + mid-stem peak: shade pairs larger, sun pairs and
+	# the still-expanding apex / shaded base smaller.
+	leaf_node.scale = Vector3.ONE * clampf(
+		_shade_size_mult() * _node_size_gradient(rel), 0.7, 1.3)
+	var rise: int = 0 if rel < 0.4 else (1 if rel < 0.78 else 2)
+	var template: Array = LeafShapes.get_leaf_template("lance", {
+		"pair_index": current_height,
+		"rise": rise,
+	})
+	_leaf_groups.append(_bake_leaf_template(
+		leaf_node.transform, template, ramp, age_frac, _leaf_mods()))
+	_leaf_ages.append(_t)
+	_register_leaf_age(_t)
+	leaf_node.free()
 
 
 func _grow_needle_leaf(ramp: Array, age_frac: float, _rel: float,
@@ -6300,7 +6308,7 @@ func _grow_axillary_shoot(ramp: Array, node_idx: int) -> void:
 func _small_leaf_template(node_idx: int) -> Array:
 	match leaf_form:
 		"lance":
-			return LeafShapes.get_leaf_template("lance", {"pair_index": node_idx})
+			return LeafShapes.get_leaf_template("lance", {"pair_index": node_idx, "rise": 1})
 		"oval", "lobed", "spade":
 			return LeafShapes.get_leaf_template(leaf_form, {"length": 3})
 		"pinnate":

@@ -5070,8 +5070,9 @@ func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 				else:
 					bxz2 = _sample_clear_xz_in_band(
 						bg_band2.x, bg_band2.y, 0.55, 0.70, 36, 0.40, 0.40)
-				_spawn_plant(specs[0], spawn_position_on_floor(bxz2.x, bxz2.y),
-					_rng.randi_range(2, 4))
+				# A row is a stand of blades, not one: one plant per row left
+				# the "jungle" as a couple of clumps in open water.
+				_spawn_stand(specs[0], bxz2, _rng.randi_range(3, 4), 0.5, 2, 4)
 			# "valli_fill": extra clumps across the WHOLE floor, not just the
 			# background band. A jungle tank is valli wall to wall, and on a
 			# hex the background band is a thin sliver behind the back vertex,
@@ -5086,8 +5087,7 @@ func _spawn_plants_for_layout(mode: String, specs: Array, palette: Dictionary,
 							and vxz.y > -TANK_HALF_D * 0.15:
 						# Keep the front mid passage clear of fill clumps.
 						continue
-					_spawn_plant(specs[0], spawn_position_on_floor(vxz.x, vxz.y),
-						_rng.randi_range(2, 4))
+					_spawn_stand(specs[0], vxz, _rng.randi_range(2, 3), 0.4, 2, 4)
 			await get_tree().process_frame
 			var crypt_n: int = maxi(0, int(round(10.0 * m_crypt)))
 			for crypt_i in crypt_n:
@@ -5360,11 +5360,14 @@ func _spawn_initial_plants() -> void:
 				  Color8(110, 180, 92), Color8(145, 205, 118), Color8(180, 225, 145)]},
 		# Stem plants reach the surface and break the meniscus, but they do
 		# not run along it the way a ribbon blade does.
+		# Rotala-like: olive-green lower leaves blushing to rose at the crown.
+		# The old ramp ran maroon -> tan, and with new-growth bronze on top
+		# every stem read as a brown pole.
 		{"name": "red_stem", "max": [11, 18], "rate": 0.18, "sway": 0.16,
 		 "reaches_surface": true,
 		 "leaf_form": "lance", "leaf_length": 3, "max_roots": 4,
-		 "ramp": [Color8(78, 32, 30), Color8(115, 50, 40), Color8(155, 70, 52),
-				  Color8(180, 95, 72), Color8(200, 125, 90), Color8(215, 160, 120)]},
+		 "ramp": [Color8(36, 64, 30), Color8(60, 96, 40), Color8(104, 118, 50),
+				  Color8(160, 98, 60), Color8(206, 96, 82), Color8(232, 140, 118)]},
 		{"name": "moss",     "max": [2, 4],   "rate": 0.10, "sway": 0.02,
 		 "leaf_form": "column", "leaf_length": 2, "max_roots": 2,
 		 "is_epiphyte": true,
@@ -5405,21 +5408,20 @@ func _spawn_initial_plants() -> void:
 		await _spawn_freshwater_plant_extras(species_specs, layout)
 		return
 
-	# Calm-density scalar: the default Walstad jungle read as visually chaotic
-	# (a wall of swaying blades). Thin the swaying species at spawn so the scape
-	# breathes — carpets/runners still fill in over play time, just less densely.
-	# Epiphytes (moss/fern) are left alone: they hug hardscape and barely sway.
-	const CALM_DENSITY: float = 0.65
+	# Planted in STANDS, the way a tank is actually planted and the way
+	# plants then grow: stems in bunches, crypts in clumps, carpet in patches
+	# that runners join up. The old scatter spread single plants evenly and
+	# then thinned them by a third so the swaying would read calm - which
+	# left a tank of lone poles over bare sand. Grouping is what reads calm;
+	# a bunch of thirty leaves sways as one mass.
 
-	# --- Background wall: valli forest (shape-aware placement) ---
-	# Cluster jitter widened to 0.55 + per-blade fit check enforced so
-	# blades don't pile on top of each other.
+	# --- Background wall: valli forest in rows ---
 	var bg_band: Vector2 = _spawn_z_band("background")
-	var bg_rows: int = maxi(0, int(round(8.0 * m_valli * CALM_DENSITY)))
+	var bg_rows: int = maxi(0, int(round(9.0 * m_valli)))
 	for _row in bg_rows:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			bg_band.x, bg_band.y, 0.55, 0.70, 36, 0.40, 0.40)
-		var n_blades: int = _rng.randi_range(2, 4)
+		var n_blades: int = _rng.randi_range(3, 5)
 		for i in n_blades:
 			var px: float = xz.x + _rng.randf_range(-0.55, 0.55)
 			var pz: float = xz.y + _rng.randf_range(-0.55, 0.55)
@@ -5430,35 +5432,45 @@ func _spawn_initial_plants() -> void:
 				_rng.randi_range(2, 5))
 	await get_tree().process_frame
 
-	# --- Midground rosettes (crypts) + red accent stems scattered ---
+	# --- Stem bunches: the flanks of the midground, in front of the valli,
+	# where an aquascaper puts them. Behind the valli wall they vanished.
 	var mid_band: Vector2 = _spawn_z_band("mid")
-	var mid_crypts: int = maxi(0, int(round(18.0 * m_crypt * CALM_DENSITY)))
-	for i in mid_crypts:
-		var xz: Vector2 = _sample_clear_xz_in_band(
-			mid_band.x, mid_band.y, 0.45, 0.70, 36, 0.55, 0.50)
-		_spawn_plant(species_specs[1], spawn_position_on_floor(xz.x, xz.y),
-			_rng.randi_range(2, 4))
-	await get_tree().process_frame
-	var mid_reds: int = maxi(0, int(round(9.0 * m_red * CALM_DENSITY)))
-	for i in mid_reds:
-		var xz: Vector2 = _sample_clear_xz_in_band(
-			mid_band.x, mid_band.y, 0.45, 0.70, 36, 0.55, 0.50)
-		_spawn_plant(species_specs[3], spawn_position_on_floor(xz.x, xz.y),
-			_rng.randi_range(2, 4))
+	var stem_stands: int = maxi(0, int(round(5.0 * m_red)))
+	var stem_z := Vector2(bg_band.y, lerpf(mid_band.x, mid_band.y, 0.45))
+	for s_i in stem_stands:
+		var side: float = -1.0 if s_i % 2 == 0 else 1.0
+		# A clear spot (no hardscape, no other plant) on this stand's flank.
+		var xz: Vector2 = Vector2.ZERO
+		for _try in 12:
+			xz = _sample_clear_xz_in_band(stem_z.x, stem_z.y, 0.55, 0.85, 24, 0.55, 0.45)
+			if signf(xz.x) == side and absf(xz.x) > TANK_HALF_W * 0.3:
+				break
+		# Half the bunches are younger (or freshly trimmed) and stop short of
+		# the surface, so the skyline steps the way a real tank's does
+		# instead of every stand being a column to the waterline.
+		var stem_spec: Dictionary = species_specs[3]
+		if _rng.randf() < 0.5:
+			stem_spec = stem_spec.duplicate()
+			stem_spec["reaches_surface"] = false
+			stem_spec["max"] = [9, 14]
+		_spawn_stand(stem_spec, xz, _rng.randi_range(6, 9), 0.6, 2, 4)
 	await get_tree().process_frame
 
-	# --- Foreground carpet: medium density. The carpet relies on later
-	# runner propagation (Vallisneria-style stolons) to fill in over
-	# play time rather than spawning everything packed at start.
+	# --- Midground crypt clumps ---
+	var crypt_clumps: int = maxi(0, int(round(8.0 * m_crypt)))
+	for _c in crypt_clumps:
+		var xz: Vector2 = _sample_clear_xz_in_band(
+			mid_band.x, mid_band.y, 0.45, 0.70, 36, 0.55, 0.50)
+		_spawn_stand(species_specs[1], xz, _rng.randi_range(4, 6), 0.65, 2, 4)
+	await get_tree().process_frame
+
+	# --- Foreground carpet patches. Runners join them up over play time. ---
 	var fg_band: Vector2 = _spawn_z_band("foreground")
-	var fg_carpet: int = maxi(0, int(round(30.0 * m_carpet * CALM_DENSITY)))
-	for i in fg_carpet:
+	var carpet_patches: int = maxi(0, int(round(7.0 * m_carpet)))
+	for _p in carpet_patches:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			fg_band.x, fg_band.y, 0.40, 0.55, 36, 0.30, 0.58)
-		_spawn_plant(species_specs[2], spawn_position_on_floor(xz.x, xz.y),
-			_rng.randi_range(1, 3))
-		if i == 15:
-			await get_tree().process_frame
+		_spawn_stand(species_specs[2], xz, _rng.randi_range(9, 13), 1.05, 1, 3)
 	await get_tree().process_frame
 
 	# --- Moss on driftwood epiphyte points ---
@@ -5766,6 +5778,25 @@ func _plants_established() -> bool:
 	if _cfg_node == null:
 		return false
 	return String(_cfg_node.get("cycle_start_mode")) != "fresh"
+
+
+# One planted group: `count` of a species within `radius` of `center`, denser
+# toward the middle, all from one starting height range so a bunch reads as
+# planted together. _spawn_plant's own spacing check keeps stems from piling
+# onto one spot, so a crowded bunch just comes out a little smaller.
+func _spawn_stand(spec: Dictionary, center: Vector2, count: int, radius: float,
+		h_min: int, h_max: int) -> void:
+	var base_h: int = _rng.randi_range(h_min, h_max)
+	for i in count:
+		var a: float = _rng.randf() * TAU
+		var r: float = radius * sqrt(_rng.randf()) * (0.35 if i == 0 else 1.0)
+		var px: float = center.x + cos(a) * r
+		var pz: float = center.y + sin(a) * r
+		var fit: Vector2 = clamp_plant_site(px, pz, 0.35, 0.30)
+		if not fits_plant_at(fit.x, fit.y, 0.30, 0.30):
+			continue
+		_spawn_plant(spec, spawn_position_on_floor(fit.x, fit.y),
+			clampi(base_h + _rng.randi_range(-1, 1), 1, h_max + 1))
 
 
 func _plant_establish_scale() -> float:

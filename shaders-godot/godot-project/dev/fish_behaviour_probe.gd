@@ -539,6 +539,19 @@ func _finish(fish: Array) -> void:
 		lines.append("water current  grid %dx%dx%d cell %.2f  max %.2f mean %.3f u/s  step %.2f ms (worker)  resid_div %.3f" % [
 			wc.nx, wc.ny, wc.nz, wc.cell, float(st["max"]), float(st["mean"]),
 			wc.last_step_ms, wc.residual_divergence()])
+	if _world != null and _world.get("plants_root") != null:
+		var forms: Dictionary = {}
+		var heights: Dictionary = {}
+		for pl in (_world.get("plants_root") as Node).get_children():
+			if pl is Plant:
+				var k: String = String((pl as Plant).leaf_form)
+				forms[k] = int(forms.get(k, 0)) + 1
+				heights[k] = int(heights.get(k, 0)) + int((pl as Plant).current_height)
+		var parts := PackedStringArray()
+		for k in forms:
+			parts.append("%s %d (mean h %.1f)" % [k, int(forms[k]),
+				float(heights[k]) / maxf(float(forms[k]), 1.0)])
+		lines.append("plants  " + ", ".join(parts))
 	if _env("FISH_PROBE_FLOW_MAP", "0") == "1" and _world != null \
 			and _world.get("_flow_field") != null:
 		lines.append_array(_flow_map(_world.get("_flow_field")))

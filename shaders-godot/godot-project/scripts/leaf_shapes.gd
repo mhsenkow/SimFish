@@ -190,7 +190,8 @@ static func normalize_template_params(kind: String, params: Dictionary) -> Dicti
 				"wavy": bool(params.get("wavy", false)),
 			}
 		"lance":
-			return {"pair_index": posmod(int(params.get("pair_index", 0)), 2)}
+			return {"pair_index": posmod(int(params.get("pair_index", 0)), 2),
+				"rise": clampi(int(params.get("rise", 0)), 0, LANCE_RISE_STEPS - 1)}
 		"needle", "lobed":
 			return {"length": _tpl_len(params.get("length", 4))}
 		"spade":
@@ -274,7 +275,7 @@ static func _build_template(kind: String, n: Dictionary) -> Array:
 				float(n["sway_bucket"]) / float(TEMPLATE_SWAY_BUCKETS) * TAU,
 				n["wavy"])
 		"lance":
-			return _template_lance_pair(n["pair_index"])
+			return _template_lance_pair(n["pair_index"], n["rise"])
 		"needle":
 			return _template_needle(n["length"])
 		"oval":
@@ -409,25 +410,37 @@ static func build_lance_pair(ramp: Array, age_frac: float,
 		ramp, age_frac, mods)
 
 
-static func _template_lance_pair(pair_index: int) -> Array:
+# Upward tilt (radians) of a lance pair by how far up the stem it sits. Real
+# stem plants (Rotala, Ludwigia, Hygrophila) hold their lower leaves out
+# almost flat and their upper ones climbing toward the apex, so the top of a
+# stem closes into a crown instead of every node being the same flat rung.
+# Quantised so the template cache stays at a handful of entries.
+const LANCE_RISE_STEPS: int = 3
+const LANCE_RISE: Array[float] = [0.22, 0.55, 0.92]
+
+
+static func _template_lance_pair(pair_index: int, rise: int = 0) -> Array:
 	var out: Array = []
 	var leaf_len: int = 3
 	var yaw_offset: float = float(pair_index % 2) * PI * 0.5
+	var up: float = LANCE_RISE[clampi(rise, 0, LANCE_RISE_STEPS - 1)]
 	for side in [-1, 1]:
+		var angle: float = (0.0 if side < 0 else PI) + yaw_offset
+		var outward := Vector3(cos(angle), 0.0, sin(angle))
+		# The blade leaves the node at `up` and arches back toward level near
+		# its tip, the way a real leaf's weight bows it.
 		for i in leaf_len:
 			var t: float = float(i) / float(leaf_len - 1)
-			# Keep the longitudinal boxes overlapping; rotate their long axis
-			# with the pair so alternate nodes have the same unbroken blade.
-			var angle: float = (0.0 if side < 0 else PI) + yaw_offset
-			var dist: float = (0.40 + float(i) * 0.56) * VOXEL_SIZE
-			var width: float = 0.70 if i == 1 else (0.38 if i == 0 else 0.24)
+			var dist: float = (0.34 + float(i) * 0.52) * VOXEL_SIZE
+			var seg_up: float = up * (1.0 - 0.35 * t)
+			var width: float = 0.70 if i == 1 else (0.42 if i == 0 else 0.26)
 			var lv := LeafVoxel.new(
-				Vector3(cos(angle) * dist,
-					VOXEL_SIZE * (0.12 + 0.22 * sin(t * PI * 0.8)),
-					sin(angle) * dist),
-				Vector3(VOXEL_SIZE * 0.70, VOXEL_SIZE * 0.26, VOXEL_SIZE * width),
+				outward * (dist * cos(seg_up))
+					+ Vector3.UP * (VOXEL_SIZE * 0.08 + dist * sin(seg_up)),
+				Vector3(VOXEL_SIZE * 0.66, VOXEL_SIZE * 0.24, VOXEL_SIZE * width),
 				t, i == 0)
-			lv.xform.basis = Basis(Vector3.UP, -angle)
+			# Long axis (local X) along the blade: pitch it up, then yaw it out.
+			lv.xform.basis = Basis(Vector3.UP, -angle) * Basis(Vector3.BACK, seg_up)
 			out.append(lv)
 	return out
 
