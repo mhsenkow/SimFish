@@ -3,6 +3,16 @@ render_mode unshaded, cull_back;
 
 uniform vec4 albedo : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform int material_id = 0;
+// Underwater patina on hardscape (REAL_TANK top-10 #7). 0 = off (the
+// substrate itself and anything else using this shader); wood and stone
+// materials set it. A piece of wood that has been in a planted tank for
+// months is not one flat brown: its upper faces carry a dusting of mulm and
+// biofilm and pinpricks of green algae, its bark has grain, its underside is
+// dark and waterlogged, and where it meets the gravel there is a band of
+// green-black algae the grazers cannot reach.
+uniform float patina : hint_range(0.0, 1.0) = 0.0;
+uniform int patina_kind = 0;  // 1 = wood, 2 = stone
+uniform float patina_floor_y = 1.6;
 uniform float caustic_intensity : hint_range(0.0, 1.0) = 1.0;
 uniform float caustic_speed = 0.8;
 uniform float caustic_scale = 1.2;
@@ -198,6 +208,36 @@ void vertex() {
 	v_wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
+// Blocky world-space noise so every mark lands on the voxel grid, not across it.
+vec3 apply_patina(vec3 col, vec3 wp, vec3 wn) {
+    float h1 = hash21(floor(wp.xz * 7.0) + floor(wp.y * 7.0) * 3.1);
+    float h2 = hash21(floor(wp.xz * 8.0) + vec2(19.0, 7.0) + floor(wp.y * 8.0));
+    float h3 = hash21(floor(wp.xz * 3.0) + vec2(5.0, 41.0) + floor(wp.y * 3.0));
+    float up = smoothstep(0.35, 0.9, wn.y);
+    float down = smoothstep(0.35, 0.9, -wn.y);
+    float side = 1.0 - max(up, down);
+    float k = patina;
+    if (patina_kind == 1) {
+        // Bark grain: long bands along the limb, broken into blocks.
+        float grain = hash21(vec2(floor(wp.y * 14.0), floor((wp.x + wp.z) * 2.5)));
+        col *= mix(1.0, mix(0.82, 1.12, grain), side * k);
+    }
+    // Waterlogged underside.
+    col *= 1.0 - down * 0.18 * k;
+    // Mulm and biofilm settle on what faces up: a dull olive-brown dust,
+    // thicker in patches.
+    vec3 film = mix(vec3(0.34, 0.30, 0.20), vec3(0.30, 0.36, 0.20), float(patina_kind == 2));
+    col = mix(col, film * (0.85 + 0.30 * h1), up * k * mix(0.35, 0.70, h3));
+    // Green algae: pinpricks on wood, a fuller film on lit stone tops.
+    float speck_t = patina_kind == 2 ? 0.55 : 0.70;
+    float speck = step(speck_t, h2) * (0.35 + up * 0.65);
+    col = mix(col, vec3(0.20, 0.47, 0.15) * (0.9 + 0.2 * h1), speck * k * 0.85);
+    // Where it meets the gravel: the damp band grazers do not reach.
+    float near_bed = 1.0 - smoothstep(0.0, 0.65, wp.y - patina_floor_y);
+    col = mix(col, vec3(0.10, 0.17, 0.08) * (0.8 + 0.4 * h1), near_bed * k * 0.65 * (1.0 - up * 0.3));
+    return col;
+}
+
 void fragment() {
     // 1. Base voxel shading
     vec3 n = normalize(NORMAL);
@@ -221,6 +261,10 @@ void fragment() {
     base_color = apply_category_palette_tint(base_color, iaq_palette_substrate,
         palette_hue_shift, palette_saturation, palette_warmth, palette_value);
     base_color = apply_material_grain(base_color, material_id, world_pos, grain_variation);
+    if (patina > 0.001) {
+        base_color = apply_patina(base_color, world_pos,
+            normalize((INV_VIEW_MATRIX * vec4(n, 0.0)).xyz));
+    }
     // Hardscape contact AO darkens the substrate within registered
     // footprints on the top face only — matches substrate_opaque.
     if (n.y > 0.7) {

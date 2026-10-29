@@ -380,20 +380,37 @@ static func tier_post_outline_scale() -> float:
 static func tier_post_region_dither() -> float:
 	return _shader_tier_post_dither
 
-static func make_substrate_caustic(color: Color, material_id: int = 0) -> ShaderMaterial:
+static func make_substrate_caustic(color: Color, material_id: int = 0,
+		patina_kind: int = 0, patina: float = 0.0, floor_y: float = 1.6) -> ShaderMaterial:
 	var cache_key: String = "%d_%s" % [material_id, str(snappedf(color.r, 0.02))]
+	if patina_kind > 0:
+		cache_key = "hs%d_%d_%s_%s_%s" % [patina_kind, material_id, str(color),
+			str(snappedf(patina, 0.05)), str(snappedf(floor_y, 0.05))]
 	if _sub_caustic_mat_cache.has(cache_key):
 		return _sub_caustic_mat_cache[cache_key]
 	var m := ShaderMaterial.new()
 	m.shader = _get_sub_caustic_shader()
 	m.set_shader_parameter("albedo", color)
 	m.set_shader_parameter("material_id", material_id)
+	if patina_kind > 0:
+		m.set_shader_parameter("patina", patina)
+		m.set_shader_parameter("patina_kind", patina_kind)
+		m.set_shader_parameter("patina_floor_y", floor_y)
 	m.set_shader_parameter("palette_saturation", 0.82)
 	m.set_shader_parameter("blob_shadow_max", 16 if _shader_perf_tier >= 2 else 32)
 	# Baked two-layer caustic tile on every tier (see baked_caustics.gd).
 	_BakedCaustics.apply_to_material(m, _shader_perf_tier)
 	_sub_caustic_mat_cache[cache_key] = m
 	return m
+
+# Hardscape that has been underwater a while (REAL_TANK top-10 #7): the
+# substrate shader with its patina pass on. kind 1 = wood, 2 = stone.
+const HARDSCAPE_PATINA: float = 0.8
+
+
+static func make_hardscape(color: Color, kind: int, floor_y: float) -> ShaderMaterial:
+	return make_substrate_caustic(color, 0, kind, HARDSCAPE_PATINA, floor_y)
+
 
 static var _foliage_shader: Shader = null
 const FOLIAGE_SHADER_PATH := "res://shaders/foliage.gdshader"

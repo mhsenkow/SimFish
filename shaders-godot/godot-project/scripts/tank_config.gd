@@ -2342,6 +2342,10 @@ const TANK_PRESETS: Dictionary = {
 			"carpet": 1.0, "moss": 1.0, "java_fern": 1.0,
 		},
 		"hardscape_style": "default",
+		# A branch that climbs and forks into the water column, not the flat
+		# log arc: a Walstad tank's wood is the thing the fish weave through
+		# and the moss and ferns grow on (REAL_TANK top-10 #7).
+		"wood_form": "branch",
 		"description": "The textbook beginner freshwater community: a cardinal tetra school + harlequin rasbora shoal + corydoras bottom team + a dwarf gourami territorial pair (watch the alpha chase the other off his patch and incubate fry in his throat). Cherry shrimp cleanup crew includes 2 amano-style cleaners that station near stressed fish.",
 	},
 	"community": {

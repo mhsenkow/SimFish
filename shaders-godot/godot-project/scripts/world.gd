@@ -3502,8 +3502,8 @@ func _build_hardscape(populate: bool = true) -> void:
 	var p2 := Vector3(TANK_HALF_W * 0.1, SUBSTRATE_DEPTH + 1.55, TANK_HALF_D * 0.3)
 	var p3 := Vector3(TANK_HALF_W * 0.65, SUBSTRATE_DEPTH + 0.05, -TANK_HALF_D * 0.2)
 
-	var mat_dark := VoxelMat.make_substrate_caustic(C_DRIFTWOOD_DARK.darkened(0.10))
-	var mat_light := VoxelMat.make_substrate_caustic(C_DRIFTWOOD_LIGHT.lightened(0.08))
+	var mat_dark := VoxelMat.make_hardscape(C_DRIFTWOOD_DARK.darkened(0.10), 1, SUBSTRATE_DEPTH)
+	var mat_light := VoxelMat.make_hardscape(C_DRIFTWOOD_LIGHT.lightened(0.08), 1, SUBSTRATE_DEPTH)
 	var mat_moss := VoxelMat.make_substrate_caustic(Color8(52, 78, 42))
 	
 	_driftwood_voxels.clear()
@@ -3634,12 +3634,12 @@ func _build_hardscape(populate: bool = true) -> void:
 	# Multiplier gates how aggressive the stone work is: boulder_field
 	# scales up, polyp_jar/spartan scales down, predator_corners
 	# rearranges into two opposing piles handled below.
-	var stone_mat := VoxelMat.make_substrate_caustic(C_STONE_LIGHT)
-	var stone_dark := VoxelMat.make_substrate_caustic(C_STONE_DARK)
+	var stone_mat := VoxelMat.make_hardscape(C_STONE_LIGHT, 2, SUBSTRATE_DEPTH)
+	var stone_dark := VoxelMat.make_hardscape(C_STONE_DARK, 2, SUBSTRATE_DEPTH)
 	# REAL_TANK_FIDELITY #133–134 — layered ochre / iron-stained stone variants.
-	var stone_ochre := VoxelMat.make_substrate_caustic(Color8(168, 122, 72))
-	var stone_iron := VoxelMat.make_substrate_caustic(Color8(110, 72, 48))
-	var stone_chalk := VoxelMat.make_substrate_caustic(Color8(190, 175, 150))
+	var stone_ochre := VoxelMat.make_hardscape(Color8(168, 122, 72), 2, SUBSTRATE_DEPTH)
+	var stone_iron := VoxelMat.make_hardscape(Color8(110, 72, 48), 2, SUBSTRATE_DEPTH)
+	var stone_chalk := VoxelMat.make_hardscape(Color8(190, 175, 150), 2, SUBSTRATE_DEPTH)
 
 	var add_rock_voxel: Callable = func(center: Vector3, offset: Vector3, size: Vector3, is_dark: bool, rot: Vector3) -> MeshInstance3D:
 		# Pick a face material so a single rock shows bedding / staining.
