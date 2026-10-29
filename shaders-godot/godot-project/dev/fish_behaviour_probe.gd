@@ -552,6 +552,28 @@ func _finish(fish: Array) -> void:
 			parts.append("%s %d (mean h %.1f)" % [k, int(forms[k]),
 				float(heights[k]) / maxf(float(forms[k]), 1.0)])
 		lines.append("plants  " + ", ".join(parts))
+	# Small life: what makes a tank read as inhabited at a glance.
+	if _world != null and _sim != null:
+		var snail_kinds: Dictionary = {}
+		var snail_sizes: Array = []
+		var sroot: Variant = _sim.get("snails_root")
+		if sroot is Node:
+			for sn in (sroot as Node).get_children():
+				var shp: Variant = sn.get("shell_shape")
+				if shp != null:
+					snail_kinds[String(shp)] = int(snail_kinds.get(String(shp), 0)) + 1
+					snail_sizes.append(float((sn as Node3D).scale.x))
+		var fry_n: int = 0
+		for fsh in fish:
+			if is_instance_valid(fsh) and int(fsh.get("maturity")) == 0:
+				fry_n += 1
+		var shrimp_v: Variant = _sim.get("shrimp")
+		var eggs_v: Variant = _sim.get("eggs")
+		var mf: int = int(_world.call("live_microfauna_count")) if _world.has_method("live_microfauna_count") else -1
+		lines.append("small life  snails %s (scale p10/p50/p90 %.2f/%.2f/%.2f)  shrimp %d  fry %d  eggs %d  microfauna %d" % [
+			JSON.stringify(snail_kinds), _pct(snail_sizes, 0.1), _pct(snail_sizes, 0.5), _pct(snail_sizes, 0.9),
+			(shrimp_v as Array).size() if shrimp_v is Array else -1, fry_n,
+			(eggs_v as Array).size() if eggs_v is Array else -1, mf])
 	if _env("FISH_PROBE_FLOW_MAP", "0") == "1" and _world != null \
 			and _world.get("_flow_field") != null:
 		lines.append_array(_flow_map(_world.get("_flow_field")))

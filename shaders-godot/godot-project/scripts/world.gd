@@ -163,6 +163,10 @@ var _filter_flow_origin: Vector3 = Vector3.ZERO
 # What drives the water (REAL_TANK top-10 #4), recorded by the aerator
 # builders: {"kind": "disk"|"stick"|"filter", ...positions}. Empty = none.
 var _flow_equipment: Dictionary = {}
+# Snail founders past the original few use their own generator (see
+# _build_snails) so colony size cannot move later placements.
+var _snail_rng := RandomNumberGenerator.new()
+var _snail_legacy_founders: int = 6
 var _flow_refresh_t: float = 0.0
 var _flow_tex_serial: int = -1
 # Seconds between obstacle / plant-bed refreshes of the water current.
@@ -2322,7 +2326,10 @@ func plants_at_capacity() -> bool:
 	return sim.plants.size() >= plant_carrying_capacity()
 
 
-func boundary_point_on_wall(y: float, wall_n: Vector3, inset: float = 0.07) -> Vector3:
+# `along` (-1..1) slides the scan origin along the wall, so a colony can be
+# spread across a wall instead of every founder landing at its centre.
+func boundary_point_on_wall(y: float, wall_n: Vector3, inset: float = 0.07,
+		along: float = 0.0) -> Vector3:
 	var n: Vector3 = wall_n.normalized()
 	if n.dot(Vector3.UP) > 0.85:
 		var xz: Vector2 = _sample_substrate_xz(0.35, 0.18, 0.15)
@@ -2330,6 +2337,10 @@ func boundary_point_on_wall(y: float, wall_n: Vector3, inset: float = 0.07) -> V
 			Vector3(xz.x, SUBSTRATE_DEPTH + 0.08, xz.y), 0.32, 0.08)
 	var fp := _footprint()
 	var from := Vector3(0.0, y, 0.0)
+	if absf(along) > 0.001:
+		var tangent := Vector3(-n.z, 0.0, n.x)
+		var reach: float = absf(tangent.x) * fp.half_w + absf(tangent.z) * fp.half_d
+		from += tangent * clampf(along, -1.0, 1.0) * reach * 0.82
 	var dir: Vector3 = -n
 	if dir.length_squared() < 1e-6:
 		dir = Vector3(1.0, 0.0, 0.0)
@@ -2435,10 +2446,26 @@ func _snail_founder_layout(is_saltwater: bool) -> Array:
 	var cfg := _cfg_node if _cfg_node != null else get_node_or_null("/root/TankConfig")
 	if cfg != null:
 		preset_id = String(cfg.get("tank_preset"))
+	if is_saltwater:
+		# A reef cleanup crew: turbo and trochus on the rock and glass,
+		# conchs and nassarius in the sand. Never pond snails.
+		shapes_fw = ["turbo", "trochus", "conch", "turbo", "limpet", "trochus",
+			"turbo", "conch", "trochus", "turbo", "limpet", "trochus"]
 	var boost: Dictionary = TankFidelityRuntime.reference_snail_boost(preset_id)
+	# An established tank has an established snail colony (REAL_TANK
+	# top-10 #9): dozens at every size, not the six founders a brand-new
+	# tank starts with. Scaled from the tank's own carrying capacity, so a
+	# nano stays a nano. A tank started fresh keeps the small founding group.
 	var count: int = 8 if is_saltwater else 6
 	if not boost.is_empty() and not is_saltwater:
 		count = int(boost.get("glass", count))
+	# The founders every tank had before the colony grew: laid out and drawn
+	# from _rng exactly as they always were, so nothing placed after them moves.
+	_snail_legacy_founders = count
+	if _plants_established():
+		var cap_n: int = snail_carrying_capacity()
+		count = clampi(int(round(cap_n * (0.35 if is_saltwater else 0.45))),
+			count, maxi(count, 24 if is_saltwater else 36))
 		var ram_bias: float = float(boost.get("ramshorn_bias", 0.0))
 		if ram_bias > 0.4:
 			shapes_fw = ["ramshorn", "ramshorn", "turbo", "ramshorn", "apple", "ramshorn",
@@ -2447,7 +2474,16 @@ func _snail_founder_layout(is_saltwater: bool) -> Array:
 		var wn: Vector3 = wall_dirs[i % wall_dirs.size()]
 		var shape: String = shapes_fw[i % shapes_fw.size()]
 		var yf: float = float(y_fracs[i % y_fracs.size()])
-		if is_saltwater and i >= 5:
+		# Past the first pass round the walls, a share of the colony works the
+		# substrate and every founder lands somewhere new along its wall.
+		var along: float = 0.0
+		var extra: bool = i >= _snail_legacy_founders
+		if extra:
+			along = _snail_rng.randf_range(-1.0, 1.0)
+			yf = clampf(yf + _snail_rng.randf_range(-0.12, 0.12), 0.1, 0.85)
+			if not is_saltwater and i % 5 == 3:
+				wn = Vector3.UP
+		if is_saltwater and i >= 5 and (not extra or i % 2 == 1):
 			wn = Vector3.UP
 			shape = "nassarius"
 			yf = 0.0
@@ -2459,7 +2495,11 @@ func _snail_founder_layout(is_saltwater: bool) -> Array:
 			else lerpf(SUBSTRATE_DEPTH + 0.35, WATER_HEIGHT - 0.28, yf)
 		if wn.dot(Vector3.DOWN) > 0.85:
 			y = WATER_HEIGHT - 0.06
-		var pos: Vector3 = boundary_point_on_wall(y, wn)
+		var shared_rng: RandomNumberGenerator = _rng
+		if extra:
+			_rng = _snail_rng
+		var pos: Vector3 = boundary_point_on_wall(y, wn, 0.07, along)
+		_rng = shared_rng
 		out.append([pos, wn, shape])
 	return out
 
@@ -2502,7 +2542,10 @@ func _configure_snail_node(snail: Node3D, pos: Vector3, wall_n: Vector3,
 	# drift further. Spire / whorl / pattern get matching variety.
 	var rolled_shape: String = shape
 	if _rng.randf() < 0.25:
-		var pool: Array = ["ramshorn", "tower", "trochus", "limpet", "conch"]
+		# Freshwater shells in a freshwater tank: trochus and conch are marine.
+		var pool: Array = ["trochus", "conch", "limpet", "turbo"] \
+			if bool(_active_substrate_profile.get("is_saltwater", false)) \
+			else ["ramshorn", "tower", "limpet", "turbo"]
 		rolled_shape = pool[_rng.randi() % pool.size()]
 		snail.set("shell_shape", rolled_shape)
 	snail.set("spire_height",
@@ -4441,6 +4484,12 @@ func _build_snails(populate: bool = true) -> Node3D:
 	# snails via the creature creator during the walkthrough).
 	if not populate:
 		return c
+	# Founders past the original few draw from their own generator, seeded
+	# from the tank, so the size of the colony never shifts the plant and
+	# hardscape placements that draw from _rng after it (REAL_TANK top-10 #9).
+	_snail_rng = RandomNumberGenerator.new()
+	_snail_rng.seed = (int(sim.tank_seed) if sim != null and sim.get("tank_seed") != null else 12345) ^ 0x5A11
+	var shared_rng: RandomNumberGenerator = _rng
 	# Saltwater branches into a marine snail mix (turbo / trochus on the
 	# glass, plus nassarius scavengers on the substrate). Freshwater
 	# keeps the original purple-leaning founder palette.
@@ -4482,7 +4531,9 @@ func _build_snails(populate: bool = true) -> Node3D:
 		var shape: String = String(pw[2])
 		var snail := Node3D.new()
 		snail.set_script(load("res://scripts/snail.gd"))
+		_rng = _snail_rng if i >= _snail_legacy_founders else shared_rng
 		_configure_snail_node(snail, pos, wall_n, shape, founder_palette, i, morph)
+		_rng = shared_rng
 		c.add_child(snail)
 		_build_snail_body(snail)
 		if sim != null:

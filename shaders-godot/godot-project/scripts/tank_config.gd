@@ -2477,9 +2477,11 @@ const TANK_PRESETS: Dictionary = {
 		"stocking": {
 			# Single species, but mixed_morphs + high phenotype_spread mean
 			# every individual reads as a different reef fish (clownfish,
-			# tang, chromis, anthias-shaped morphs). No shrimp - this is a
-			# pure reef community.
+			# tang, chromis, anthias-shaped morphs). Plus the cleaner shrimp
+			# every reef keeper adds: the small life that makes a reef read
+			# as inhabited rather than a fish display (REAL_TANK top-10 #9).
 			"reef_fish": 16,
+			"shrimp": 3,
 		},
 		"phenotype_spread": 3.5,
 		"substrate": "ocean_sand",
