@@ -2110,13 +2110,17 @@ const BIOTOPE_PALETTES: Dictionary = {
 		"ffffff","e8ece0","d0d8c8","b04030","c87028","d8a830","387888","404890",
 		"602878","904868","000000","585040","403828","282018","f0ece0","ffffff",
 	],
+	# Neutral 28-31 are pale steel blues (sand and live rock under reef LEDs
+	# read blue-white; true greys swallowed the water) and warm 43-45 violet coralline, 46-47 bright aragonite, replacing greys the reef never
+	# used: before, sand and rock could only land on the cyan-white
+	# highlights and coralline algae had no colour at all (REAL_TANK #10).
 	"reef": [
 		"061828","0c2840","143860","1c5890","2490b8","40b8d8","68d8f0","a0f0fc",
 		"081818","102828","184038","205850","287868","389878","50b898","78d8b8",
 		"201008","382010","502818","683820","805028","986838","b08048","c89858",
 		"101018","202028","303038","404048","505058","606068","707078","808088",
 		"ffffff","f0f8fc","d0e8f0","ff4040","ff8830","ffe040","30c868","4060ff",
-		"ff40c0","ff6088","000000","404040","202020","101010","f8fcff","ffffff",
+		"ff40c0","ff6088","000000","5a4a78","7e6a9e","a48cc0","e6ded0","d2c7b0",
 	],
 }
 var _biotope_palette_cache: Dictionary = {}

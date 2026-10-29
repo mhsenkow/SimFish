@@ -103,11 +103,24 @@ func _save_kind() -> String:
 	return "coral"
 
 
+# Settled on live rock rather than sand (REAL_TANK top-10 #10). A perched
+# coral keeps the base it was placed at instead of snapping to the substrate
+# column every tick the way rooted plants do.
+var perched: bool = false
+
+
+func _clamp_root_to_footprint() -> void:
+	if perched:
+		return
+	super._clamp_root_to_footprint()
+
+
 func to_save_dict() -> Dictionary:
 	var d: Dictionary = super.to_save_dict()
 	d["coral_form"] = coral_form
 	d["tip_color"] = SaveHelpers.color_to_array(tip_color)
 	d["bleach_level"] = _bleach_level
+	d["perched"] = perched
 	return d
 
 
@@ -115,6 +128,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	coral_form = String(d.get("coral_form", coral_form))
 	tip_color = SaveHelpers.array_to_color(d.get("tip_color", []), tip_color)
 	_bleach_level = clampf(float(d.get("bleach_level", 0.0)), 0.0, 1.0)
+	perched = bool(d.get("perched", false))
 	super.apply_save_dict(d)
 
 

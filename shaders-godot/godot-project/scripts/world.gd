@@ -167,6 +167,10 @@ var _flow_equipment: Dictionary = {}
 # _build_snails) so colony size cannot move later placements.
 var _snail_rng := RandomNumberGenerator.new()
 var _snail_legacy_founders: int = 6
+# Upward-facing ledges on the live rock, highest first, that the coral
+# spawner settles corals onto (_build_live_rock / _coral_base).
+var _live_rock_perches: Array[Vector3] = []
+const REEF_WATER_CLARITY: float = 0.72
 var _flow_refresh_t: float = 0.0
 var _flow_tex_serial: int = -1
 # Seconds between obstacle / plant-bed refreshes of the water current.
@@ -644,6 +648,12 @@ func _push_water_column() -> void:
 	if not bw.is_empty():
 		strength *= float(bw.get("extinction_scale", 1.0))
 		depth_gain = float(bw.get("depth_legibility", depth_gain))
+	# Reef water is the clearest water in the hobby - keepers chase it with
+	# skimmers and carbon - and the reef cube is the deepest view in the game
+	# (16 units front to back). Full freshwater haze turned it to pale fog,
+	# which the palette then rounded to neon cyan (REAL_TANK top-10 #10).
+	if bool(_active_substrate_profile.get("is_saltwater", false)):
+		strength *= REEF_WATER_CLARITY
 	VoxelMat.push_water_column(WATER_HEIGHT, strength, tannins, turb, depth_gain,
 		TANK_HALF_W, TANK_HALF_D)
 
@@ -3493,6 +3503,12 @@ func _build_hardscape(populate: bool = true) -> void:
 			hs_driftwood_mult = 0.7
 			hs_stones_mult = 0.0
 			hs_pebbles_mult = 1.0
+		"live_rock":
+			# Reef: stacked aragonite live rock - an arch with a cave under
+			# it, a bommie, a back pillar - and rubble. Never driftwood.
+			hs_driftwood_mult = 0.0
+			hs_stones_mult = 0.0
+			hs_pebbles_mult = 0.0
 		"cloche_jar":
 			# A glass cloche on the gravel and a red-brown pebble scatter.
 			# No wood and no stone islands in frame.
@@ -3745,6 +3761,8 @@ func _build_hardscape(populate: bool = true) -> void:
 			add_rock_voxel.call(bc, Vector3(0.0, -0.08, 0.0), Vector3(0.85, 0.55, 0.85), bd, bt)
 			add_rock_voxel.call(bc, Vector3(0.0, 0.32, 0.0), Vector3(0.62, 0.55, 0.62), not bd, bt)
 			add_rock_voxel.call(bc, Vector3(0.05, 0.72, -0.05), Vector3(0.40, 0.42, 0.40), bd, bt)
+	elif hs_style == "live_rock":
+		_build_live_rock(c, add_hardscape_cube)
 	elif hs_style == "jungle_bed" or hs_style == "cloche_jar":
 		_scatter_bed_pebbles(add_hardscape_cube, hs_pebbles_mult)
 		if hs_style == "cloche_jar":
@@ -3772,6 +3790,114 @@ func _build_hardscape(populate: bool = true) -> void:
 	# is set later in the bootstrap flow, so we publish a zero-gain
 	# default now and let sim_driver re-publish when it's ready.
 	VoxelMat.update_substrate_flow_origin(Vector3.ZERO, 0.0)
+
+
+# ---- Live rock (REAL_TANK top-10 #10) ---------------------------------------
+#
+# A reef tank is built on rock, not sand: piled porous aragonite with caves,
+# arches and overhangs, crusted in coralline algae, the corals growing ON it.
+# The reef used to get the freshwater default - a mossy driftwood log and
+# Iwagumi stones - with every coral standing in open sand.
+#
+# The structure is a set of overlapping blobs, each filled with craggy
+# rotated boxes: two piers and the span that bridges them (the gap below is
+# the cave), a bommie on the right flank and a tall pillar at the back left.
+# Positions are fractions of the tank and sizes scale with it, so a pico cube
+# gets a smaller reef rather than a crowded one. Own RNG, tank-seeded.
+func _build_live_rock(c: Node3D, add_rubble: Callable) -> void:
+	_live_rock_perches.clear()
+	var rr := RandomNumberGenerator.new()
+	rr.seed = (int(sim.tank_seed) if sim != null and sim.get("tank_seed") != null else 12345) ^ 0x2EEF
+	var mats: Array = [
+		VoxelMat.make_hardscape(Color8(178, 168, 146), 3, SUBSTRATE_DEPTH),
+		VoxelMat.make_hardscape(Color8(152, 142, 122), 3, SUBSTRATE_DEPTH),
+		VoxelMat.make_hardscape(Color8(198, 188, 166), 3, SUBSTRATE_DEPTH),
+	]
+	var col_h: float = maxf(WATER_HEIGHT - SUBSTRATE_DEPTH, 1.0)
+	var k: float = clampf(minf(TANK_HALF_W, TANK_HALF_D) / 7.0, 0.5, 1.5)
+	# [centre (x frac, height frac above the sand, z frac), radii, boxes]
+	var blobs: Array = [
+		[Vector3(-0.44, 0.09, -0.30), Vector3(1.0, 1.25, 0.9), 16],
+		[Vector3(0.12, 0.07, -0.38), Vector3(0.9, 1.05, 0.85), 14],
+		[Vector3(-0.16, 0.29, -0.33), Vector3(2.3, 0.45, 0.85), 18],
+		[Vector3(0.56, 0.05, 0.14), Vector3(1.35, 0.95, 1.25), 18],
+		[Vector3(0.58, 0.18, 0.10), Vector3(0.75, 0.6, 0.75), 9],
+		[Vector3(-0.70, 0.17, -0.66), Vector3(0.75, 1.75, 0.75), 14],
+	]
+	var tops: Array = []
+	for b in blobs:
+		var cf: Vector3 = b[0]
+		var rad: Vector3 = (b[1] as Vector3) * k
+		var centre := Vector3(cf.x * TANK_HALF_W, SUBSTRATE_DEPTH + cf.y * col_h,
+			cf.z * TANK_HALF_D)
+		for _i in int(b[2]):
+			var u := Vector3.ZERO
+			for _t in 8:
+				u = Vector3(rr.randf_range(-1, 1), rr.randf_range(-1, 1), rr.randf_range(-1, 1))
+				if u.length_squared() <= 1.0:
+					break
+			var p: Vector3 = centre + u * rad * 0.78
+			p.y = maxf(p.y, SUBSTRATE_DEPTH - 0.25)
+			var base_sz: float = rr.randf_range(0.45, 0.95) * k
+			var sz := Vector3(base_sz * rr.randf_range(0.85, 1.3),
+				base_sz * rr.randf_range(0.6, 1.0), base_sz * rr.randf_range(0.85, 1.3))
+			var fit: Vector2 = _fit_xz_inside_tank(p.x, p.z, sz.x * 0.6 + 0.2)
+			p.x = fit.x
+			p.z = fit.y
+			if not is_inside_tank_volume(p.x, p.y, p.z, 0.2):
+				continue
+			var mi := _add_cube(c, p, sz, mats[rr.randi() % mats.size()])
+			mi.basis = Basis.from_euler(Vector3(rr.randf_range(-0.35, 0.35),
+				rr.randf_range(-0.8, 0.8), rr.randf_range(-0.35, 0.35))) \
+				* Basis.from_scale(Vector3.ONE)
+			_mark_hardscape_occupancy(p, sz)
+			_rock_voxels.append(mi)
+			tops.append(Vector3(p.x, p.y + sz.y * 0.45, p.z))
+	# Rubble round the bases: the broken pieces every rockscape sheds.
+	for b in blobs:
+		var cf2: Vector3 = b[0]
+		if cf2.y > 0.15:
+			continue
+		var rad2: Vector3 = (b[1] as Vector3) * k
+		for _j in 5:
+			var ang: float = rr.randf() * TAU
+			var rx: float = cf2.x * TANK_HALF_W + cos(ang) * rad2.x * rr.randf_range(0.9, 1.5)
+			var rz: float = cf2.z * TANK_HALF_D + sin(ang) * rad2.z * rr.randf_range(0.9, 1.5)
+			var rs: float = rr.randf_range(0.14, 0.30) * k
+			add_rubble.call(Vector3(rx, column_surface_y(rx, rz) + rs * 0.3, rz),
+				Vector3(rs * 1.3, rs * 0.7, rs), mats[1])
+	# Perches: exposed tops, highest first, spaced so two corals never fight
+	# for one ledge. A top with another box sitting just above it is covered.
+	tops.sort_custom(func(a, b): return a.y > b.y)
+	var spacing: float = 1.05 * k
+	for t in tops:
+		var tv: Vector3 = t
+		if tv.y < SUBSTRATE_DEPTH + 0.5:
+			continue
+		var ok: bool = true
+		for q in tops:
+			var qv: Vector3 = q
+			if qv.y > tv.y + 0.08 and Vector2(qv.x - tv.x, qv.z - tv.z).length() < 0.35 * k:
+				ok = false
+				break
+		if ok:
+			for pc in _live_rock_perches:
+				if (pc - tv).length() < spacing:
+					ok = false
+					break
+		if ok:
+			_live_rock_perches.append(tv)
+		if _live_rock_perches.size() >= 14:
+			break
+
+
+# Where coral `idx` of a group settles: every `every`-th one goes up on the
+# live rock while ledges last, the rest on the sand at `xz`.
+func _coral_base(c: Coral, xz: Vector2, idx: int, every: int) -> Vector3:
+	if not _live_rock_perches.is_empty() and idx % every == 0:
+		c.perched = true
+		return _live_rock_perches.pop_front()
+	return spawn_position_on_floor(xz.x, xz.y)
 
 
 # Preset key `hair_mound_count` (int, absent = 0): that many hair-algae
@@ -5608,12 +5734,12 @@ func _spawn_initial_corals() -> void:
 	]
 
 	# --- Background: staghorn forest (shape-aware) ---
-	for _row in 10:
+	for row_i in 10:
 		var xz: Vector2 = _sample_clear_xz_in_band(
 			-TANK_HALF_D * 0.95, -TANK_HALF_D * 0.55, 0.4, 0.55, 36, 0.35, 0.52)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = spawn_position_on_floor(xz.x, xz.y)
+		c.global_position = _coral_base(c, xz, row_i, 3)
 		c.coral_form = "branching" if _rng.randf() < 0.6 else "staghorn_fern"
 		var pal: Array = coral_palettes[_rng.randi() % 2]  # palettes 0 or 1
 		c.ramp_override = pal
@@ -5633,7 +5759,7 @@ func _spawn_initial_corals() -> void:
 		var xz: Vector2 = _sample_clear_xz_in_band(-0.5, 1.0, 0.4, 0.45, 36, 0.0, 0.40)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = spawn_position_on_floor(xz.x, xz.y)
+		c.global_position = _coral_base(c, xz, i, 2)
 		c.coral_form = "dome" if _rng.randf() < 0.5 else "brain"
 		var pal: Array = coral_palettes[2 + _rng.randi() % 2]  # palettes 2 or 3
 		c.ramp_override = pal
@@ -5653,7 +5779,7 @@ func _spawn_initial_corals() -> void:
 		var xz: Vector2 = _sample_clear_xz_in_band(-1.5, 1.5, 0.5, 0.5, 36, 0.0, 0.44)
 		var c := Coral.new()
 		plants_root.add_child(c)
-		c.global_position = spawn_position_on_floor(xz.x, xz.y)
+		c.global_position = _coral_base(c, xz, i, 3)
 		c.coral_form = "feathery"
 		c.ramp_override = coral_palettes[4]   # lavender
 		c.tip_color = coral_palettes[4][5]

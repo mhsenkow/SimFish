@@ -2485,6 +2485,7 @@ const TANK_PRESETS: Dictionary = {
 		},
 		"phenotype_spread": 3.5,
 		"substrate": "ocean_sand",
+		"hardscape_style": "live_rock",
 		"description": "Coral reef + mixed tropical school. Each fish unique. Plants replaced by corals.",
 	},
 	# ---- Scenario-specific presets ----
@@ -2501,6 +2502,7 @@ const TANK_PRESETS: Dictionary = {
 		},
 		"phenotype_spread": 2.0,
 		"substrate": "ocean_sand",
+		"hardscape_style": "live_rock",
 		"description": "Pico reef cube — very light bioload; warmth-management bleaching tutorial.",
 	},
 	"polyp_lab": {
@@ -3010,13 +3012,16 @@ const SUBSTRATE_PROFILES: Dictionary = {
 		# plant.tick() growth path still works.
 		"nutrient_baseline": 0.12,
 		"reservoir_leak": 0.00005,
+		# Aragonite sand reads cream-white with crushed shell, not paper white:
+		# at 228-255 under a reef lamp it blew out to the palette's cyan
+		# highlights and lost every grain (REAL_TANK top-10 #10).
 		"colors": [
-			Color8(228, 215, 188), Color8(238, 226, 200), Color8(245, 234, 210),
-			Color8(250, 240, 218), Color8(252, 245, 226), Color8(255, 250, 235),
+			Color8(186, 176, 152), Color8(198, 188, 164), Color8(206, 196, 172),
+			Color8(214, 204, 180), Color8(220, 210, 186), Color8(228, 218, 194),
 		],
 		"cap_fraction": 0.90,
-		"soil_color": [180, 160, 130],
-		"cap_color": [245, 234, 210],
+		"soil_color": [150, 136, 112],
+		"cap_color": [212, 200, 174],
 		"boundary_wave": 0.06,
 		"mix_band": 0.12,
 		"anoxic_darken": 0.15,

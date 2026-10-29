@@ -11,7 +11,7 @@ uniform int material_id = 0;
 // dark and waterlogged, and where it meets the gravel there is a band of
 // green-black algae the grazers cannot reach.
 uniform float patina : hint_range(0.0, 1.0) = 0.0;
-uniform int patina_kind = 0;  // 1 = wood, 2 = stone
+uniform int patina_kind = 0;  // 1 = wood, 2 = stone, 3 = reef live rock
 uniform float patina_floor_y = 1.6;
 uniform float caustic_intensity : hint_range(0.0, 1.0) = 1.0;
 uniform float caustic_speed = 0.8;
@@ -218,6 +218,23 @@ vec3 apply_patina(vec3 col, vec3 wp, vec3 wn) {
     float down = smoothstep(0.35, 0.9, -wn.y);
     float side = 1.0 - max(up, down);
     float k = patina;
+    if (patina_kind == 3) {
+        // Live rock: porous aragonite under crusts of coralline algae (the
+        // purple-pink blotches that are the first thing a reef keeper looks
+        // for), green-brown turf on the lit tops, dark pores, a shaded
+        // underside. Blotches sit on the voxel grid at two scales.
+        float pores = step(0.80, hash21(floor(wp.xz * 9.0) + floor(wp.y * 9.0) * 1.7));
+        col *= 1.0 - pores * 0.40 * k;
+        float blot = hash21(floor(wp.xz * 1.8) + floor(wp.y * 1.8) * 2.3 + vec2(3.0, 9.0));
+        float blot2 = hash21(floor(wp.xz * 4.5) + floor(wp.y * 4.5) * 1.3 + vec2(11.0, 2.0));
+        vec3 coralline = mix(vec3(0.52, 0.28, 0.48), vec3(0.70, 0.42, 0.62), blot2);
+        float cov = step(0.64, blot) * (0.65 + side * 0.25) * mix(0.55, 1.0, step(0.45, blot2));
+        col = mix(col, coralline * (0.9 + 0.2 * h1), cov * k);
+        // Turf algae on what faces the lamp.
+        col = mix(col, vec3(0.34, 0.36, 0.20) * (0.85 + 0.3 * h1), up * step(0.62, h3) * k * 0.70);
+        col *= 1.0 - down * 0.28 * k;
+        return col;
+    }
     if (patina_kind == 1) {
         // Bark grain: long bands along the limb, broken into blocks.
         float grain = hash21(vec2(floor(wp.y * 14.0), floor((wp.x + wp.z) * 2.5)));
