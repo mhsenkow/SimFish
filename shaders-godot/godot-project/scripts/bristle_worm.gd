@@ -63,9 +63,9 @@ func _ready() -> void:
 				br.mesh = VoxelMat.get_box(Vector3(
 					VOXEL_SIZE * 0.15, VOXEL_SIZE * 0.15, VOXEL_SIZE * 0.3))
 				br.material_override = VoxelMat.make_fauna(bristle_col)
-				br.position = Vector3(side * thickness * 0.6, 0.0,
-					VOXEL_SIZE * 0.6 * float(i))
-				add_child(br)
+				# Parented to the segment so the bristles ride its wriggle.
+				br.position = Vector3(side * thickness * 0.6, 0.0, 0.0)
+				mi.add_child(br)
 				_bristles.append(br)
 	_phase = randf() * TAU
 	_jitter_t = randf_range(2.0, 5.0)
@@ -97,9 +97,6 @@ func _process(dt: float) -> void:
 	var target_depth: float = lerpf(-HIDE_DEPTH, SHOW_DEPTH, _emerged_t)
 	var burrow_wave: float = maxf(0.0, sin(_phase - 0.6))
 	position.y = lerpf(position.y, substrate_top_y + target_depth + burrow_wave * 0.035, sdt * 0.6)
-	if _emerged_t > 0.35:
-		position.x += burrow_wave * 0.014 * _emerged_t
-		position.z += maxf(0.0, sin(_phase - 1.1)) * 0.01 * _emerged_t
 
 	# Wriggle the body — each segment offsets laterally based on its
 	# index, producing the classic worm wave.
@@ -107,13 +104,17 @@ func _process(dt: float) -> void:
 		var seg: MeshInstance3D = _segments[i]
 		if seg == null or not is_instance_valid(seg):
 			continue
-		var ph: float = _phase + float(i) * 0.55
+		# Head (i = 0) leads; the wave travels back toward the tail.
+		var ph: float = _phase - float(i) * 0.55
 		seg.position.x = sin(ph) * WRIGGLE_AMP * VOXEL_SIZE
 
-	# Drift across substrate only while mostly emerged. Slow + random.
+	# Drift across substrate only while mostly emerged. Slow + random, and
+	# pulsed: each burrow wave pushes the worm along its drift (this used to
+	# be a per-frame +X/+Z nudge with no dt, a one-way slide).
 	if _emerged_t > 0.5:
-		position.x += _drift.x * sdt
-		position.z += _drift.z * sdt
+		var surge: float = 0.4 + 1.2 * burrow_wave
+		position.x += _drift.x * surge * sdt
+		position.z += _drift.z * surge * sdt
 	_jitter_t -= sdt
 	if _jitter_t <= 0.0:
 		_jitter_t = randf_range(2.0, 5.0)

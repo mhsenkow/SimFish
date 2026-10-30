@@ -222,11 +222,12 @@ func tick(dt: float, waste_list: Array, substrate: SubstrateGrid) -> void:
 # the hinge motion runs at frame rate even though the sim mode machine
 # is at 10 Hz.
 func _process(dt: float) -> void:
+	# Sim time, so the gape pauses and fast-forwards with the rest of the tank.
+	if sim != null and sim.get("time_scale") != null:
+		dt *= float(sim.time_scale)
 	if dt <= 0.0:
 		return
-	# Throttle a touch with a per-instance phase so dozens of clams don't
-	# all touch transforms on the same frame.
-	_open_amount = lerpf(_open_amount, _open_target, clampf(dt * 4.0, 0.0, 1.0))
+	_open_amount = lerpf(_open_amount, _open_target, 1.0 - exp(-dt * 4.0))
 	if _shell_upper != null and is_instance_valid(_shell_upper):
 		var pivot: Node3D = _shell_upper.get_parent() as Node3D
 		if pivot != null:

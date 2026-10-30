@@ -11,6 +11,10 @@
 # the caller: world.gd attaches an animated "EyeStalks" pivot; the preview adds
 # a static pair.
 #
+# Model frame: the head is +X (eye stalks, aperture lip, the foot's long axis)
+# and the shell's dorsal side is +Y. snail.gd turns +X onto the crawl
+# direction; the previews turn it toward their camera.
+#
 # class_name intentionally omitted — preloaded as a const where used.
 extends RefCounted
 
@@ -24,7 +28,11 @@ static func _field(d: Dictionary, k: String, def: Variant) -> Variant:
 #   shell_size, spire_height, aperture_flare, shell_spines, toxin_level (float)
 #   whorl_count, shell_pattern, generation (int)
 #   shell_shape, operculum
-static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
+# foot_parent (optional): a pivot for the foot, a sibling of `parent` in the
+# same frame. It is moved to the sole and the foot box hangs above it, so a
+# caller can squash the foot without the sole leaving the surface (live snail).
+static func build(parent: Node3D, g: Dictionary, add_box: Callable,
+		foot_parent: Node3D = null) -> void:
 	var ss: float = maxf(0.2, float(_field(g, "shell_size", 1.0)))
 	var shape: String = String(_field(g, "shell_shape", "turbo"))
 	var spire: float = clampf(float(_field(g, "spire_height", 1.0)), 0.4, 2.0)
@@ -215,10 +223,16 @@ static func build(parent: Node3D, g: Dictionary, add_box: Callable) -> void:
 		foot_size = Vector3(0.3, 0.07, 0.22) * ss
 	else:
 		foot_size = Vector3(0.24, 0.06, 0.16) * ss
-	add_box.call(parent, Vector3(0, foot_y, 0), foot_size, body_color)
+	if foot_parent != null:
+		foot_parent.position = Vector3(0, foot_y - foot_size.y * 0.5, 0)
+		add_box.call(foot_parent, Vector3(0, foot_size.y * 0.5, 0), foot_size, body_color)
+	else:
+		add_box.call(parent, Vector3(0, foot_y, 0), foot_size, body_color)
 	if operculum:
 		var op_pivot := Node3D.new()
 		op_pivot.name = "Operculum"
 		parent.add_child(op_pivot)
-		add_box.call(op_pivot, Vector3(0, foot_y + 0.05 * ss, 0.07 * ss),
+		# At the front, where the head withdraws: the trapdoor shows only while
+		# the snail is clamped, closing the opening the head went into.
+		add_box.call(op_pivot, Vector3(0.07 * ss, foot_y + 0.05 * ss, 0),
 			Vector3(0.12, 0.03, 0.1) * ss, shell_dark.darkened(0.1))

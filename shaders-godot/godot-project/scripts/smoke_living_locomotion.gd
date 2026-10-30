@@ -36,12 +36,82 @@ func _initialize() -> void:
 	sh._escape_remaining = 0.2
 	sh._target_velocity = Vector3.RIGHT
 	sh._motion_substep(0.02)
-	t.check(sh.heading.dot(Vector3.RIGHT) > 0.9, "tail escape moves in the selected safe direction")
+	# Motion, not facing: a tail flip travels backwards along the body (#23),
+	# so heading alone no longer says where an escape goes. Safety straight
+	# ahead is a forward bolt.
+	t.check(sh.velocity.normalized().dot(Vector3.RIGHT) > 0.9, "tail escape moves in the selected safe direction")
 	for _i in 120:
 		sh._escape_remaining = 0.2
 		sh._motion_substep(1.0 / 60.0)
 	t.check(sh.speed <= maxf(sh.max_speed * 1.8, 0.65) + 0.001,
 		"sustained predator pressure cannot accelerate escape without bound")
+
+	# Tail flip (#23). The display used to flip to -heading, and the 5.5 rad/s
+	# visual turn cap made that a 0.57 s spin inside a 0.28 s escape. A
+	# caridean shoots backwards with its head still toward the threat.
+	var flipper := Shrimp.new()
+	host.add_child(flipper)
+	flipper.init_genome({"substrate_top_y": 0.0})
+	flipper.set_process(false)
+	flipper.position = Vector3(0, 0.08, 0)
+	flipper.heading = Vector3.LEFT
+	flipper._visual_heading = Vector3.LEFT
+	flipper._target_velocity = Vector3.RIGHT
+	for _i in 18:
+		flipper._escape_remaining = 0.2
+		flipper._motion_substep(1.0 / 60.0)
+	t.check(flipper.velocity.normalized().dot(Vector3.RIGHT) > 0.95,
+		"tail flip shoots backwards toward safety behind it")
+	t.check(flipper.heading.dot(Vector3.LEFT) > 0.95, "tail flip keeps the head toward the threat")
+	t.check(flipper._visual_heading.dot(Vector3.LEFT) > 0.95,
+		"tail flip does not spin the displayed body round")
+	t.check(flipper.speed <= maxf(flipper.max_speed * 1.8, 0.65) + 0.001, "tail flip speed is bounded")
+	# Safety off to one side of straight back: the thrust bends toward it,
+	# but only within the flip cone, and the body yaws slowly.
+	var side_safe := Vector3(cos(1.2), 0.0, sin(1.2))
+	flipper.heading = Vector3.LEFT
+	flipper._target_velocity = side_safe
+	flipper._escape_remaining = 0.2
+	flipper._motion_substep(1.0 / 60.0)
+	t.check(flipper.velocity.normalized().dot(side_safe) >= cos(Shrimp.ESCAPE_FLIP_REACH) - 0.01,
+		"an off-axis tail flip still leads away toward safety")
+	t.check(flipper.heading.angle_to(Vector3.LEFT) <= Shrimp.ESCAPE_FLIP_YAW_RATE / 60.0 + 0.001,
+		"the body yaws slowly during a flip instead of turning to face its travel")
+
+	# Landing (#37). Within 0.22 of the substrate Y used to snap to +0.08 in
+	# one frame; a descending shrimp now eases down, then grips the floor.
+	var lander := Shrimp.new()
+	host.add_child(lander)
+	lander.init_genome({"substrate_top_y": 0.0})
+	lander.set_process(false)
+	lander.position = Vector3(0, 0.21, 0)
+	lander._target_velocity = Vector3.ZERO
+	lander._motion_substep(1.0 / 60.0)
+	t.check(lander.position.y > 0.17, "touchdown eases in rather than snapping to the floor")
+	for _i in 120:
+		lander._motion_substep(1.0 / 60.0)
+		if lander._floor_gripped:
+			break
+	t.check(lander._floor_gripped, "an eased descent ends with the feet gripping the floor")
+	t.approx(lander.position.y, 0.08, "a landed shrimp rests on the floor", 0.002)
+	var rest_y: float = lander._body_pivot_rest_y
+	for _i in 9:
+		lander._motion_substep(1.0 / 60.0)
+	t.check(lander._bank_pivot.position.y < rest_y - 0.004, "the body settles onto its legs at touchdown")
+	for _i in 60:
+		lander._motion_substep(1.0 / 60.0)
+	t.approx(lander._bank_pivot.position.y, rest_y, "the touchdown settle recovers", 0.001)
+	var land_heights: Array[float] = []
+	for hz in [30, 120]:
+		var drop := Shrimp.new()
+		host.add_child(drop)
+		drop.set_process(false)
+		drop.substrate_top_y = 0.0
+		drop.position = Vector3(0, 0.21, 0)
+		for _i in roundi(float(hz) * 0.5):
+			drop._motion_substep(1.0 / float(hz))
+		land_heights.append(drop.position.y)
+	t.approx(land_heights[0], land_heights[1], "the touchdown ease is frame-rate independent", 0.002)
 	sh.body_shape = "crab"
 	sh._escape_remaining = 0.0
 	sh._target_velocity = Vector3(0.5, 1.5, 0)

@@ -71,6 +71,7 @@ idea at a time.
 | [HYDRODYNAMIC_LIFE_IDEAS.md](HYDRODYNAMIC_LIFE_IDEAS.md) | Water flow, hydrodynamics |
 | [TOPDOWN_MOTION_IDEAS.md](TOPDOWN_MOTION_IDEAS.md) | Top-down pond motion |
 | [LIVING_MOTION_IDEAS.md](LIVING_MOTION_IDEAS.md) | **The murmuration pass** — 100 ideas making motion read as life: topological (starling) schooling for schooling species only, correlation that *propagates* instead of being broadcast, momentum-true bodies, growth you can watch, one shared flow field coupling fish/plants/water, and micro-motion so nothing is ever still. Gated by an order-parameter eval + mind replay-parity |
+| [CREATURE_MOTION_700.md](CREATURE_MOTION_700.md) | **The illusion of life**: 700 motion ideas for every creature, graded against the twelve principles of animation. Starts with 40 shipped motions that are being cancelled (overwritten pivots, a corpse-wagging shader, snails crawling sideways). Then a spring/composer/envelope toolkit and a motion lab; a fish spine with a real travelling wave, eyes, jaw and opercula; anticipation, poses and arcs; shrimp, snails, worms, sessile animals and microfauna; and the performance budget, in seven gated phases |
 | [AQUASCAPING_CRAFT_IDEAS.md](AQUASCAPING_CRAFT_IDEAS.md) | Aquascape tools & objects |
 
 ### Look, feel, onboarding

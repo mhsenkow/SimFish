@@ -19,6 +19,7 @@ const INCUBATION_BY_SPECIES: Dictionary = {
 var genome: Dictionary = {}
 var species: String = "glassdart"
 var _age: float = 0.0
+var _visual_age: float = 0.0
 var incubation_s: float = INCUBATION_S
 var _development: float = 0.0
 var _wobble_pivot: Node3D = null
@@ -119,15 +120,21 @@ func _build_visual() -> void:
 		_wobble_pivot.add_child(mi)
 
 
+# Wobble over the last 30% of incubation, as the embryo moves. Runs per frame
+# on a visual clock that trails the 10 Hz sim age, so it doesn't step.
+func _process(dt: float) -> void:
+	_visual_age = clampf(_visual_age + dt, _age - 0.2, _age + 0.1)
+	if _wobble_pivot == null:
+		return
+	var wobble_t: float = clampf((_development - incubation_s * 0.7) / (incubation_s * 0.3), 0.0, 1.0)
+	_wobble_pivot.rotation.z = sin(_visual_age * 8.0) * 0.1 * wobble_t
+
+
 # Called by SimDriver each tick. Returns true when the egg should hatch.
 func tick(dt: float, rate: float = 1.0) -> bool:
 	dt = maxf(0.0, dt)
 	_age += dt
 	_development += dt * (clampf(rate, 0.15, 1.5) if viable else 1.0)
-	# Wobble in the last few seconds before hatching.
-	if _wobble_pivot != null and _development > incubation_s * 0.7:
-		var wobble_t: float = clampf((_development - incubation_s * 0.7) / (incubation_s * 0.3), 0.0, 1.0)
-		_wobble_pivot.rotation.z = sin(_age * 8.0) * 0.1 * wobble_t
 	# Hatch pulse-glow. Egg albedo lifts toward an embryo-light cream as
 	# incubation completes; pulse frequency also climbs so a near-hatch
 	# egg visibly flickers. Only viable eggs glow — dead eggs stay dull

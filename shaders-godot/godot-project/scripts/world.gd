@@ -4747,7 +4747,22 @@ func _build_snail_body(snail: Node3D) -> void:
 			made = _add_cube(par, pos, size, _fauna_mat(col))
 		if not is_foot and made is MeshInstance3D:
 			shell_voxels.append(made)
-	SnailShell.build(snail, g, add_box)
+	# Everything visible hangs off one "Body" pivot, in the model frame (head
+	# on +X, shell up on +Y), so snail.gd can blend a surface change on the
+	# visuals while the logical snail has already moved (CREATURE_MOTION #26).
+	# The shell and the foot get their own pivots: the foot wave squashes the
+	# foot alone and a clamp lowers the shell onto it, so the calcite never
+	# deforms (#28).
+	var body := Node3D.new()
+	body.name = "Body"
+	snail.add_child(body)
+	var shell := Node3D.new()
+	shell.name = "Shell"
+	body.add_child(shell)
+	var foot := Node3D.new()
+	foot.name = "Foot"
+	body.add_child(foot)
+	SnailShell.build(shell, g, add_box, foot)
 	if snail.has_method("register_shell_voxels"):
 		snail.call("register_shell_voxels", shell_voxels)
 	# REAL_TANK_FIDELITY #36 — foot pad pressed flat to the glass when
@@ -4761,20 +4776,26 @@ func _build_snail_body(snail: Node3D) -> void:
 		pad.mesh = VoxelMat.get_box(Vector3(pad_s * 1.35, 0.035 * shell_size, pad_s))
 		var pad_col := Color(body_color.r, body_color.g, body_color.b, 0.72)
 		pad.material_override = VoxelMat.make_translucent(pad_col)
-		# Sit slightly into the glass plane so the foot reads through the pane.
-		pad.position = -wall_n.normalized() * (0.04 * shell_size) + Vector3(0, -0.10 * shell_size, 0)
-		snail.add_child(pad)
+		# At the sole, on the foot pivot, so it spreads with the foot wave.
+		# Local -Y faces the glass; the old offset added the WORLD wall normal
+		# to a local position, which slid the pad sideways instead.
+		pad.position = Vector3(0, 0.01 * shell_size, 0)
+		foot.add_child(pad)
 	# Eye stalks - wrapped in a named pivot so snail.gd can animate them
 	# (slow sway, periodic retraction). Keep size fixed for visibility.
 	# Pivot sits at the stalk base so rotation tilts the eyes naturally.
 	var eye_stalks := Node3D.new()
 	eye_stalks.name = "EyeStalks"
 	eye_stalks.position = Vector3(0.10, -0.06 * shell_size, 0)
-	snail.add_child(eye_stalks)
+	body.add_child(eye_stalks)
 	_add_cube(eye_stalks, Vector3(0.0, 0.05 * shell_size, 0.06),
 		Vector3(0.03, 0.10 * shell_size, 0.03), body_mat)
 	_add_cube(eye_stalks, Vector3(0.0, 0.05 * shell_size, -0.06),
 		Vector3(0.03, 0.10 * shell_size, 0.03), body_mat)
+	# Every spawn path adds the snail to the tree BEFORE building it, so its
+	# _ready() found no EyeStalks / Operculum and the stalks never animated.
+	if snail.has_method("bind_body"):
+		snail.call("bind_body")
 
 
 # ---- Initial population ----
@@ -11250,13 +11271,18 @@ func spawn_surface_wake_ex(pos: Vector3, speed: float, yaw_rate: float, move_hea
 
 
 func _kick_bristle_worms_near(pos: Vector3) -> void:
-	for c in get_children():
-		if c == null or not is_instance_valid(c):
+	# Bristle worms live under wriggle_root (_build_bristle_worms), not under
+	# World itself; searching World's own children never found one, so a
+	# digging fish never disturbed them (CREATURE_MOTION #34).
+	if wriggle_root == null or not is_instance_valid(wriggle_root):
+		return
+	for c in wriggle_root.get_children():
+		if not is_instance_valid(c) or not (c is BristleWorm):
 			continue
-		if c.get_script() != null and str(c.get_script().resource_path).ends_with("bristle_worm.gd"):
-			if c.global_position.distance_squared_to(pos) < 2.8:
-				c._emerged_t = maxf(float(c._emerged_t), 0.65)
-				c._phase += 1.2
+		var bw: BristleWorm = c as BristleWorm
+		if bw.global_position.distance_squared_to(pos) < 2.8:
+			bw._emerged_t = maxf(bw._emerged_t, 0.65)
+			bw._phase += 1.2
 
 
 func spawn_substrate_dust(pos: Vector3) -> void:

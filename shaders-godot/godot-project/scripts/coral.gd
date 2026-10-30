@@ -652,6 +652,10 @@ func _grow_anemone() -> void:
 				body.position + Vector3(0.0, VOXEL_SIZE * 0.33, 0.0),
 				Vector3(VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14, VOXEL_SIZE * 0.14),
 				tip_color)
+			# The tip rides its tentacle: as a sibling it ignored the sway, and
+			# the lift in _animate wrote an absolute y that dropped it to the base.
+			tip.reparent(body, false)
+			tip.position = Vector3(0.0, VOXEL_SIZE * 0.33, 0.0)
 			body.set_meta("tip_ref", tip)
 			_anemone_tip_voxels.append(tip)
 
@@ -876,8 +880,7 @@ func _animate_polyp_tips(sim_n: Node = null) -> void:
 			var phase_h: float = float(entry.get("phase", 0.0))
 			var s_h: float = 1.0 + sin(_sessile_phase * 1.6 + phase_h) * amp
 			var retract_h: float = sin(_sessile_phase * 0.42 + phase_h * 0.15)
-			if retract_h < -0.72:
-				s_h *= 0.52
+			s_h *= lerpf(1.0, 0.52, 1.0 - smoothstep(-0.82, -0.62, retract_h))
 			var glow_swell_h: float = 1.0 + night_glow * 0.10 * (0.5 + 0.5 * sin(_sessile_phase * 1.6 + phase_h))
 			var feed_swell_h: float = 1.0 + _feeding_extension * (0.18 + 0.07 * sin(_sessile_phase * 0.8 + phase_h * 0.5))
 			var base_scale_h: float = float(entry.get("base_scale", 1.0))
@@ -914,8 +917,8 @@ func _animate_polyp_tips(sim_n: Node = null) -> void:
 		# Slow periodic retract — dome / plate polyps snap mostly closed
 		# every ~8–12 s so colonies read as actively respiring.
 		var retract_env: float = sin(_sessile_phase * 0.42 + phase * 0.15)
-		if retract_env < -0.72:
-			s *= 0.52
+		# Eased across the threshold; a hard step made the polyp pop shut.
+		s *= lerpf(1.0, 0.52, 1.0 - smoothstep(-0.82, -0.62, retract_env))
 		# Scale-with-glow: glowing polyps swell slightly so a bright pulse
 		# also reads as a physical "breath out" rather than only a color
 		# change. Bumped by night_glow so this only kicks in after dusk.
@@ -1193,7 +1196,7 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 				0.08, float(sim_n.water_chemistry.reef_nutrients) - night_f * 0.0008 * dt)
 	# Lerp to target slowly — tentacles take seconds to extend / retract,
 	# they don't snap like a fish reaction.
-	_feeding_extension = lerpf(_feeding_extension, target_feeding, clampf(dt * 0.6, 0.0, 1.0))
+	_feeding_extension = lerpf(_feeding_extension, target_feeding, 1.0 - exp(-dt * 0.6))
 	_touch_retract_t = maxf(0.0, _touch_retract_t - dt)
 	_clam_snap_t = maxf(0.0, _clam_snap_t - dt)
 	if sim_n != null and sim_n.get("fish") != null:
@@ -1201,7 +1204,9 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 			if is_instance_valid(ff) and ff.get("_dying") != true:
 				if ff.position.distance_squared_to(global_position) < 2.25:
 					_touch_retract_t = 0.45
-					_feeding_extension = minf(_feeding_extension, 0.08)
+					# Fast but not instant: about a quarter second to pull in.
+					_feeding_extension = lerpf(_feeding_extension,
+						minf(_feeding_extension, 0.08), 1.0 - exp(-dt * 10.0))
 					if coral_form == "clam":
 						_clam_snap_t = 0.42
 					break

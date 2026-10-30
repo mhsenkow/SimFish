@@ -349,6 +349,9 @@ func _maturity_scale() -> float:
 
 func _build_body() -> void:
 	_voxel_builder = FaunaVoxelBuilder.new()
+	# Crustaceans flex the abdomen in pitch; the shader's lateral fish wave
+	# made every tail wag sideways.
+	_voxel_builder.lateral_body_wave = false
 	# Voxel crustacean facing -Z. body_shape branches the silhouette:
 	#   caridean  curl-tailed shrimp (default)
 	#   crab      wide flat carapace, tucked abdomen, splayed legs
@@ -425,17 +428,7 @@ func _build_body() -> void:
 
 	# Egg cluster (visible only when is_gravid). Bright yellow-orange spheres
 	# carried under the swimmerets; parented to the tail pivot so they bob.
-	if _tail_pivot != null:
-		_egg_cluster = Node3D.new()
-		_egg_cluster.name = "EggCluster"
-		_egg_cluster.position = Vector3(0, -v * 0.15, v * 0.3)
-		_egg_cluster.visible = false
-		_tail_pivot.add_child(_egg_cluster)
-		var mat_egg := VoxelMat.make_translucent(Color(0.94, 0.65, 0.24, 0.58))
-		for ex in [-0.18, 0.0, 0.18]:
-			for ez in [-0.1, 0.1]:
-				_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
-					Vector3(v * 0.18, v * 0.18, v * 0.18), mat_egg)
+	_spawn_egg_cluster()
 
 	# Colour banding pattern across the carapace + abdomen.
 	if pattern_type > 0:
@@ -545,15 +538,7 @@ func _build_crab_core(v: float, lenf: float, mat_body: Material, mat_belly: Mate
 	_voxel(_tail_pivot, Vector3(0, 0, 0), Vector3(v * 0.5, v * 0.15, v * 0.45), mat_belly)
 	_build_eyes(v, -v * 0.55 * lenf, mat_eye, mat_dark)
 	_build_claws(v, lenf)
-	# Walking legs splayed wide to both sides (4 pairs).
-	var ll: float = leg_length_factor
-	for i in 4:
-		var zf: float = lerpf(-0.5, 0.7, float(i) / 3.0) * lenf
-		for x_side in [-1.0, 1.0]:
-			_voxel(_bank_pivot, Vector3(x_side * v * 1.05, -v * 0.05, v * zf),
-				Vector3(v * 0.7 * ll, v * 0.08, v * 0.1), mat_dark)
-			_voxel(_bank_pivot, Vector3(x_side * v * 1.45, -v * 0.25, v * zf),
-				Vector3(v * 0.18, v * 0.4 * ll, v * 0.09), mat_dark)
+	_build_crab_legs(v, lenf, mat_dark)
 
 
 func _build_lobster_core(v: float, lenf: float, mat_body: Material, mat_belly: Material,
@@ -682,6 +667,32 @@ func _build_legs(v: float, mat_dark: Material) -> void:
 			_leg_pivots.append({"node": pivot, "phase": phase, "side": side})
 
 
+func _build_crab_legs(v: float, lenf: float, mat_dark: Material) -> void:
+	# Four pairs splayed wide, each hinged at the carapace edge so the gait
+	# can lift and swing it. They were welded to BankPivot, so a walking crab
+	# slid sideways on frozen legs (#24). Same voxels as before, just re-homed
+	# on a pivot: the resting silhouette is unchanged.
+	var ll: float = leg_length_factor
+	_leg_pivots.clear()
+	for i in 4:
+		var zf: float = lerpf(-0.5, 0.7, float(i) / 3.0) * lenf
+		for x_side in [-1.0, 1.0]:
+			var pivot := Node3D.new()
+			pivot.name = "Leg%d%s" % [i, "R" if x_side > 0.0 else "L"]
+			pivot.position = Vector3(x_side * v * 0.7, -v * 0.05, v * zf)
+			_bank_pivot.add_child(pivot)
+			_voxel(pivot, Vector3(x_side * v * 0.35, 0.0, 0.0),
+				Vector3(v * 0.7 * ll, v * 0.08, v * 0.1), mat_dark)
+			_voxel(pivot, Vector3(x_side * v * 0.75, -v * 0.2, 0.0),
+				Vector3(v * 0.18, v * 0.4 * ll, v * 0.09), mat_dark)
+			# A wave runs rear-to-front down each side and the two sides
+			# alternate. A quarter-cycle between neighbours keeps adjacent
+			# feet from scissoring through each other, which a half-cycle
+			# tetrapod does at this leg spacing.
+			var phase: float = float(3 - i) * PI * 0.5 + (0.0 if x_side > 0.0 else PI)
+			_leg_pivots.append({"node": pivot, "phase": phase, "side": x_side})
+
+
 func _build_filter_fans(v: float) -> void:
 	# Bamboo / wood shrimp hold feathery feeding fans forward of the mouth and
 	# sweep the current. Two splayed fan clusters.
@@ -723,6 +734,7 @@ func _build_shrimp_pattern(v: float, lenf: float) -> void:
 func _voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> void:
 	if _voxel_builder == null:
 		_voxel_builder = FaunaVoxelBuilder.new()
+		_voxel_builder.lateral_body_wave = false
 	_voxel_builder.add_voxel(parent, pos, size, mat)
 
 
@@ -1426,6 +1438,23 @@ var _prev_target_velocity: Vector3 = Vector3.ZERO
 var _visual_heading: Vector3 = Vector3(0.0, 0.0, -1.0)
 var _was_camera_visible: bool = true
 const VISUAL_TURN_CAP: float = 5.5
+# Tail-flip escape (#23). A caridean shoots BACKWARDS with its head still
+# toward the threat; flexing the abdomen off-centre steers the thrust up to
+# FLIP_CONE off straight back, and the body yaws only slowly between flips.
+# When safety lies ahead (beyond the cone plus FLIP_REACH) it bolts forward.
+const ESCAPE_FLIP_CONE: float = 0.6
+const ESCAPE_FLIP_REACH: float = 0.8
+const ESCAPE_FLIP_YAW_RATE: float = 2.0
+# Touchdown (#37): the last of a descent eases onto the floor, then the body
+# dips once on its legs. Grip engages once the feet are within GRIP_EPS.
+const LAND_EASE_RATE: float = 4.0
+const LAND_GRIP_EPS: float = 0.006
+const LAND_SETTLE_TIME: float = 0.3
+const LAND_SETTLE_DEPTH: float = 0.016
+var _floor_gripped: bool = false
+var _land_drop: float = 0.0
+var _land_settle_t: float = 0.0
+var _land_settle_amp: float = 0.0
 
 
 func _look_up_for_direction(d: Vector3) -> Vector3:
@@ -1464,13 +1493,18 @@ func _motion_substep(dt: float) -> void:
 	if constrained.length_squared() > 1e-6:
 		target_dir = constrained.normalized()
 		target_spd = constrained.length()
-	var angle: float = heading.angle_to(target_dir)
+	# A tail flip keeps the head toward the threat: the body only yaws so its
+	# tail lines up with safety, instead of turning to face where it is going.
+	var tail_flip: bool = _escape_remaining > 0.0 \
+		and (-heading).angle_to(target_dir) <= ESCAPE_FLIP_CONE + ESCAPE_FLIP_REACH
+	var steer_dir: Vector3 = -target_dir if tail_flip else target_dir
+	var angle: float = heading.angle_to(steer_dir)
 	if angle > 0.0005:
-		var axis: Vector3 = heading.cross(target_dir)
+		var axis: Vector3 = heading.cross(steer_dir)
 		if axis.length_squared() < 1e-6:
 			axis = Vector3.UP
 		axis = axis.normalized()
-		var turn: float = minf(max_turn_rate * dt, angle)
+		var turn: float = minf((ESCAPE_FLIP_YAW_RATE if tail_flip else max_turn_rate) * dt, angle)
 		heading = heading.rotated(axis, turn).normalized()
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
@@ -1479,9 +1513,14 @@ func _motion_substep(dt: float) -> void:
 	if w != null and w.has_method("sample_flow"):
 		flow_vel = w.sample_flow(global_position)
 		target_spd *= Hydrodynamics.upstream_effort(flow_vel, heading)
+	var move_dir: Vector3 = heading
 	if _escape_remaining > 0.0:
 		_escape_remaining = maxf(0.0, _escape_remaining - dt)
-		heading = target_dir.normalized()
+		if tail_flip:
+			move_dir = _tail_flip_direction(target_dir)
+		else:
+			heading = target_dir.normalized()
+			move_dir = heading
 		var burst_speed: float = maxf(max_speed * 1.8, 0.65)
 		speed = move_toward(speed, burst_speed, 2.8 * dt)
 	elif on_floor or bottom_walker:
@@ -1500,12 +1539,27 @@ func _motion_substep(dt: float) -> void:
 	if flow_vel.length_squared() > 1e-6 and not on_floor and not bottom_walker:
 		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(0.14)
 	# Substrate grip — planted feet when walking, not tail-flipping (#21).
+	# Arriving from above, the last of the drop eases in instead of snapping
+	# 0.14 down in one frame (#37); once the feet are down the floor holds
+	# exactly, so a walker neither skates nor bobs and cannot drift up.
+	var floor_y: float = substrate_top_y + 0.08
 	if climb_target == null and _escape_remaining <= 0.0 \
 			and global_position.y <= substrate_top_y + 0.22:
-		global_position.y = substrate_top_y + 0.08
+		if _floor_gripped or global_position.y - floor_y <= LAND_GRIP_EPS:
+			if not _floor_gripped:
+				_floor_gripped = true
+				_land_settle_amp = clampf(_land_drop / 0.14, 0.0, 1.0)
+				_land_settle_t = LAND_SETTLE_TIME if _land_settle_amp > 0.05 else 0.0
+			global_position.y = floor_y
+		else:
+			_land_drop = maxf(_land_drop, global_position.y - floor_y)
+			global_position.y = lerpf(global_position.y, floor_y, 1.0 - exp(-LAND_EASE_RATE * dt))
 		if target_spd < 0.4:
 			speed = minf(speed, target_spd + 0.05)
-	velocity = heading * speed
+	else:
+		_floor_gripped = false
+		_land_drop = 0.0
+	velocity = move_dir * speed
 	if climb_target == null and not on_floor and not bottom_walker:
 		_settle_speed = move_toward(_settle_speed, 0.35, dt * 1.2)
 		velocity.y -= _settle_speed
@@ -1519,9 +1573,9 @@ func _motion_substep(dt: float) -> void:
 		global_position = w.clamp_xyz_in_tank(global_position, 0.20, 0.14)
 	if speed > 0.55 and w != null:
 		if w.has_method("deposit_wake"):
-			w.deposit_wake(global_position, heading * speed, 0.14)
+			w.deposit_wake(global_position, move_dir * speed, 0.14)
 		if w.has_method("brush_plants_near") and randf() < dt * 0.5:
-			w.brush_plants_near(global_position, heading, speed, 0.55)
+			w.brush_plants_near(global_position, move_dir, speed, 0.55)
 		if w.has_method("spawn_creature_substrate_dust") and speed > 0.65 and randf() < dt * 0.35:
 			w.spawn_creature_substrate_dust(global_position, 1.1)
 	# Same non-finite guard as fish.gd — look_at(NaN) corrupts the basis and
@@ -1540,8 +1594,9 @@ func _motion_substep(dt: float) -> void:
 			var up_r: Vector3 = _look_up_for_direction(recover_d)
 			transform.basis = Basis.looking_at(recover_d, up_r)
 	if speed > 0.04 and heading.length_squared() > 1e-4:
-		var display_heading: Vector3 = -heading if _escape_remaining > 0.0 else heading
-		var d: Vector3 = _visual_heading_for_display(dt, display_heading)
+		# The body shows its real facing, tail flip included: a flip moves the
+		# animal backwards along it rather than spinning it round (#23).
+		var d: Vector3 = _visual_heading_for_display(dt, heading)
 		# GROUND-LOCK. Orienting to the full 3D heading pitched the whole
 		# body nose-down whenever gravity pulled it toward the substrate, so
 		# a shrimp "crawling" was permanently tipped forward at whatever
@@ -1574,7 +1629,21 @@ func _motion_substep(dt: float) -> void:
 		_bank_pivot.rotation.z = _bank
 	var ground_delta: Vector3 = global_position - pre_move
 	ground_delta.y = 0.0
-	_tick_gait(dt, grounded, ground_delta.length())
+	# A flip is swimming, not walking: legs tuck rather than scurry backwards.
+	_tick_gait(dt, grounded and _escape_remaining <= 0.0, ground_delta.length())
+
+
+# Thrust direction for a tail flip: straight back along the body, bent toward
+# the safe direction by at most ESCAPE_FLIP_CONE. The caller only flips when
+# safety is within CONE + REACH of straight back, so this always leads away.
+func _tail_flip_direction(safe_dir: Vector3) -> Vector3:
+	var back: Vector3 = -heading
+	if back.angle_to(safe_dir) <= ESCAPE_FLIP_CONE:
+		return safe_dir.normalized()
+	var axis: Vector3 = back.cross(safe_dir)
+	if axis.length_squared() < 1e-8:
+		return back
+	return back.rotated(axis.normalized(), ESCAPE_FLIP_CONE).normalized()
 
 
 # ---- Crawling gait ----------------------------------------------------
@@ -1652,7 +1721,13 @@ func _tick_gait(dt: float, grounded: bool, travel_distance: float = -1.0) -> voi
 	# Body bob at twice leg frequency — two footfalls per cycle.
 	var bob: float = sin(_gait_phase * 2.0) * float(g["bob"]) * moving
 	_gait_bob = lerpf(_gait_bob, bob, clampf(dt * 12.0, 0.0, 1.0))
-	_bank_pivot.position.y = _body_pivot_rest_y + _gait_bob
+	# Touchdown settle (#37): one soft dip and recovery as the legs take the
+	# weight, scaled by how far the animal eased down onto the floor.
+	var settle: float = 0.0
+	if _land_settle_t > 0.0:
+		_land_settle_t = maxf(0.0, _land_settle_t - dt)
+		settle = sin(PI * (1.0 - _land_settle_t / LAND_SETTLE_TIME)) * LAND_SETTLE_DEPTH * _land_settle_amp
+	_bank_pivot.position.y = _body_pivot_rest_y + _gait_bob - settle
 
 	# Waddle: a small yaw wobble in step with the legs. Subtle, but it is
 	# what stops a walking animal looking like it is on rails.
@@ -1779,13 +1854,6 @@ func _process(dt: float) -> void:
 		scale_target *= float(mr_s.fauna_behavior_mods(get_instance_id()).get("scale", 1.0))
 	scale = scale.lerp(Vector3.ONE * scale_target, dt * 0.5)
 
-	# Berried-female visual: small yellow egg cluster under the tail.
-	if is_gravid and _egg_cluster == null:
-		_spawn_egg_cluster()
-	elif not is_gravid and _egg_cluster != null:
-		_egg_cluster.queue_free()
-		_egg_cluster = null
-
 
 # Day/night activity multiplier. Shrimp are crepuscular — they peak at the
 # dawn / dusk transitions and ebb at deep midday and midnight. We model
@@ -1889,32 +1957,35 @@ func _animate_death(dt: float) -> void:
 		queue_free()
 
 
+# The berried egg mass is built once with the body and only ever shown or
+# hidden. It hangs off the abdomen (TailPivot) so the eggs ride every tail
+# flick. It used to be freed the first frame a shrimp was not gravid and
+# rebuilt later on BankPivot, so berried females carried eggs that hung still
+# under a moving tail (#22).
 func _spawn_egg_cluster() -> void:
-	if _bank_pivot == null:
+	if _tail_pivot == null or _egg_cluster != null:
 		return
+	var v: float = adult_voxel_scale
 	_egg_cluster = Node3D.new()
 	_egg_cluster.name = "EggCluster"
-	# Position under the tail (which sits at z = 0.6v ish in tail_pivot).
-	_egg_cluster.position = Vector3(0, -adult_voxel_scale * 0.45, adult_voxel_scale * 0.4)
-	_bank_pivot.add_child(_egg_cluster)
-	var v: float = adult_voxel_scale
-	var c_egg := Color8(245, 220, 110)
-	var c_egg_dark := Color8(220, 190, 80)
-	var positions: Array[Vector3] = [
-		Vector3(0, 0, 0),
-		Vector3(v * 0.18, 0, 0),
-		Vector3(-v * 0.18, 0, 0),
-		Vector3(0, 0, v * 0.18),
-		Vector3(v * 0.10, v * 0.05, v * 0.10),
-	]
-	for i in positions.size():
-		var mi := MeshInstance3D.new()
-		mi.mesh = VoxelMat.get_box(Vector3(0.12, 0.12, 0.12))
-		mi.position = positions[i]
-		var egg_col: Color = c_egg if (i & 1) == 0 else c_egg_dark
-		mi.material_override = VoxelMat.make_translucent(
-			Color(egg_col.r, egg_col.g, egg_col.b, 0.62))
-		_egg_cluster.add_child(mi)
+	_egg_cluster.position = _egg_cluster_offset(v, body_length_factor)
+	_egg_cluster.visible = is_gravid
+	_tail_pivot.add_child(_egg_cluster)
+	var mat_egg := VoxelMat.make_translucent(Color(0.94, 0.65, 0.24, 0.58))
+	for ex in [-0.18, 0.0, 0.18]:
+		for ez in [-0.1, 0.1]:
+			_voxel(_egg_cluster, Vector3(ex * v, 0.0, ez * v),
+				Vector3(v * 0.18, v * 0.18, v * 0.18), mat_egg)
+
+
+# Where the egg mass hangs in TailPivot space: just under each body plan's
+# abdomen, so the eggs peek out below it rather than sitting inside it.
+func _egg_cluster_offset(v: float, lenf: float) -> Vector3:
+	match body_shape:
+		"crab": return Vector3(0.0, -v * 0.12, -v * 0.05)        # under the tucked flap
+		"lobster": return Vector3(0.0, -v * 0.32, v * 0.75 * lenf)  # along the swimmerets
+		"mantis": return Vector3(0.0, -v * 0.5, -v * 0.45 * lenf)   # under the last segment
+		_: return Vector3(0.0, -v * 0.36, v * 0.15 * lenf)          # under the first segment
 
 
 func _build_antenna_chain(parent: Node3D, side: float, v: float, total_len: float,

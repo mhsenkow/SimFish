@@ -1,5 +1,6 @@
 # Actual Fish movement and mesh animation in the Library's isolated preview scene.
-# Run via scripts/dev_run.sh. SWIMMING_CAPTURE_OUT chooses the PNG sequence directory.
+# Run via scripts/dev_run.sh. SWIMMING_CAPTURE_OUT chooses the PNG sequence directory;
+# SWIMMING_CAPTURE_SPECIES picks a SPECIES_LIBRARY key (default guppy).
 extends Node
 
 func _ready() -> void:
@@ -26,7 +27,10 @@ func _capture() -> void:
 	if out.is_empty():
 		out = "user://swimming_capture"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(out))
-	var genome: Dictionary = cfg.SPECIES_LIBRARY["guppy"]["genome"].duplicate(true)
+	var species: String = OS.get_environment("SWIMMING_CAPTURE_SPECIES")
+	if species.is_empty() or not cfg.SPECIES_LIBRARY.has(species):
+		species = "guppy"
+	var genome: Dictionary = cfg.SPECIES_LIBRARY[species]["genome"].duplicate(true)
 	genome["sex"] = 0
 	genome["mixed_morphs"] = false
 	library.call("_load_preview_creature", genome, "fish")

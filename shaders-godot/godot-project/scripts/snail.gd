@@ -148,6 +148,11 @@ var _pulse_phase: float = 0.0
 # disturbed or while reorienting.
 var _eye_stalks: Node3D = null
 var _operculum_pivot: Node3D = null
+# Visual pivots built by world.gd (_build_snail_body): Body holds everything
+# visible, Shell the calcite, Foot the muscular sole. Null for a bare snail.
+var _body: Node3D = null
+var _shell_pivot: Node3D = null
+var _foot_pivot: Node3D = null
 var _transform_warned: bool = false
 var _operculum_ext: float = 0.0
 var _eye_phase: float = 0.0
@@ -241,6 +246,21 @@ var _wander_phase: float = 0.0
 const EYE_RETRACT_INTERVAL_MIN: float = 6.0
 const EYE_RETRACT_INTERVAL_MAX: float = 14.0
 const EYE_RETRACT_DURATION: float = 0.8
+# Tentacles invaginate quickly but not instantly, and come back out slowly
+# (CREATURE_MOTION #39): ~0.15 s in, ~1.5 s out. Rates are 1/s for an
+# exponential approach; 3 / rate is the 95% time.
+const EYE_RETRACT_RATE: float = 20.0
+const EYE_EXTEND_RATE: float = 2.0
+const EYE_RETRACT_MIN: float = 0.15
+var _eye_ext: float = 1.0
+# Shell tuck (CREATURE_MOTION #28): 0 = out and crawling, 1 = clamped. The
+# shell drops onto a flattened foot fast (~0.15 s) and lifts back slowly.
+const TUCK_IN_RATE: float = 18.0
+const TUCK_OUT_RATE: float = 2.2
+const HOVER_TUCK: float = 0.7          # a fish hovering overhead: partly tucked
+const SHELL_TUCK_DROP: float = 0.045   # x shell_size, model units
+const CLAMP_FOOT_Y: float = 0.35       # foot height while clamped
+var _tuck: float = 0.0
 # Shell-retraction defense. Real snails clamp the foot into the shell and
 # go still when a predator brushes past. Set true while a snail_predator
 # (loach / puffer) is within CLAMP_RADIUS. Movement is suspended and the
@@ -266,7 +286,32 @@ const MAX_STEP_DT: float = 0.05             # stabilizes motion at high time_sca
 const FACING_TURN_RATE: float = 5.5
 const STEER_RATE: float = 4.0               # food / retreat heading blend
 const ORIENT_RATE: float = 6.0
+const RIGHTING_RATE: float = 1.6            # 1/s; upright in ~1.9 s
 var _scan_accum: float = 0.0
+
+# The body is built head-first along local +X (snail_shell.gd, world.gd), but
+# Basis.looking_at aims local -Z. Every crawl basis is turned a quarter about
+# local Y so +X lands on the crawl direction; without it the snail slid along
+# sideways (CREATURE_MOTION #25). Columns: +X -> -Z, +Y -> +Y, +Z -> +X.
+const MODEL_YAW: Basis = Basis(Vector3(0, 0, -1), Vector3(0, 1, 0), Vector3(1, 0, 0))
+
+# Surface changes (glass/floor/corner/film/plant) move the logical snail at
+# once, so every clamp and scan sees the right surface. The visible Body
+# eases from where it was drawn to the new pose instead of snapping
+# (CREATURE_MOTION #26). Easing position along with rotation keeps the shell
+# from swinging through the glass or the floor on the way round.
+const SURFACE_BLEND_S: float = 0.6
+var _blend_from: Transform3D = Transform3D.IDENTITY
+var _blend_t: float = -1.0                  # < 0: no blend running
+var _visual_prev: Transform3D = Transform3D.IDENTITY
+var _visual_prev_valid: bool = false
+
+# Released from the surface film away from any glass: the snail drops
+# shell-first to the substrate and rights itself there (#27).
+const SINK_SPEED: float = 0.85
+const SINK_ACCEL: float = 1.6
+var _sinking: bool = false
+var _sink_speed: float = 0.0
 
 # Save/load id (see fish.gd for rationale).
 var id: String = ""
@@ -382,10 +427,7 @@ func _ready() -> void:
 	_pulse_phase = randf() * TAU
 	_eye_phase = randf() * TAU
 	_eye_retract_timer = randf_range(EYE_RETRACT_INTERVAL_MIN, EYE_RETRACT_INTERVAL_MAX)
-	_eye_stalks = get_node_or_null("EyeStalks") as Node3D
-	_operculum_pivot = get_node_or_null("Operculum") as Node3D
-	if _operculum_pivot != null:
-		_operculum_pivot.visible = false
+	bind_body()
 	if is_baby:
 		scale = Vector3.ONE * 0.5
 	# Lock the wall plane to the spawn position. World.gd places snails on a
@@ -395,7 +437,23 @@ func _ready() -> void:
 	_wall_anchor_offset = wall_normal.dot(position)
 	if not _shell_thickness_explicit:
 		shell_thickness = _default_shell_thickness(shell_shape)
-	call_deferred("_sync_initial_orientation")
+	call_deferred("_sync_initial_orientation", false)
+
+
+# Resolve the animated parts world.gd built. Called from _ready and again by
+# world.gd once it has built the body, because every spawn path adds the
+# snail to the tree first and builds it afterwards. Bodies built before the
+# Body pivot existed (snail_egg's fallback) keep their parts at the root.
+func bind_body() -> void:
+	_body = get_node_or_null("Body") as Node3D
+	var parts: Node = _body if _body != null else self
+	_eye_stalks = parts.get_node_or_null("EyeStalks") as Node3D
+	_shell_pivot = parts.get_node_or_null("Shell") as Node3D
+	_foot_pivot = parts.get_node_or_null("Foot") as Node3D
+	var op_parent: Node = _shell_pivot if _shell_pivot != null else parts
+	_operculum_pivot = op_parent.get_node_or_null("Operculum") as Node3D
+	if _operculum_pivot != null:
+		_operculum_pivot.visible = _operculum_ext > 0.04
 
 
 # Shell wall thickness by silhouette, matching how these animals actually
@@ -429,6 +487,7 @@ func _process(dt: float) -> void:
 			return
 	dt = minf(dt, MAX_STEP_DT)
 	_sanitize_wall_normal()
+	_tick_surface_blend(dt)
 	age += dt
 	# Death by old age. queue_free with a small chance of leaving a shell
 	# voxel behind (not done here - just remove). Lifespan is genome-driven
@@ -517,7 +576,8 @@ func _process(dt: float) -> void:
 			if _film_dwell <= 0.0:
 				_release_surface_film()
 				_wall_transition_cooldown = WALL_TRANSITION_COOLDOWN
-		if _retreat_remaining <= 0.0 and not _clamped and _wall_transition_cooldown <= 0.0:
+		if _retreat_remaining <= 0.0 and not _clamped and not _sinking \
+				and _wall_transition_cooldown <= 0.0:
 			# Waterline → surface film. Checked before the descent so a
 			# snail that has just climbed to the top takes the film instead
 			# of turning straight back down the glass.
@@ -560,12 +620,19 @@ func _process(dt: float) -> void:
 	# tank doesn't go visually dead when snails pause.
 	_tick_eye_stalks(dt)
 	_tick_operculum(dt)
+	_tick_tuck(dt)
+
+	# Falling from the surface film: withdrawn, no crawling, until it lands.
+	if _sinking:
+		_tick_sink(dt)
+		_ensure_finite_transform()
+		return
 
 	# When clamped we suspend movement entirely - foot's pulled in, no
 	# crawling, no foraging, no breeding decision needed. Skip the rest
-	# of the tick.
+	# of the tick. _tick_tuck eases the shell down onto a flattened foot.
 	if _clamped:
-		_apply_squash(0.35)  # body flattened into shell
+		_apply_squash(1.0)
 		_ensure_finite_transform()
 		return
 
@@ -573,7 +640,7 @@ func _process(dt: float) -> void:
 	# while they hover overhead. Skip movement/breed/feed decisions until
 	# the fish drifts away — eye stalks already retracted in the check.
 	if _fish_hover_freeze:
-		_apply_squash(0.55)  # body slightly tucked
+		_apply_squash(1.0)  # partly tucked via _tick_tuck
 		_ensure_finite_transform()
 		return
 
@@ -699,22 +766,27 @@ func _process(dt: float) -> void:
 	# Foot-pulse motion. Phase advances at ~1.5 Hz; speed and shell-vertical
 	# squash are modulated by sin(phase), creating a "creep" gait. Snails
 	# move noticeably only on the forward stroke of the pulse.
+	# Tilt is measured against the shell-up this surface wants, not world UP:
+	# under the surface film the shell is SUPPOSED to hang down, and testing
+	# against UP kept film snails in "righting" forever, never crawling.
 	if absf(wall_normal.dot(Vector3.UP)) > 0.92:
-		var shell_tilt: float = 1.0 - clampf(transform.basis.y.dot(Vector3.UP), -1.0, 1.0)
+		var shell_tilt: float = 1.0 - clampf(transform.basis.y.dot(_shell_up()), -1.0, 1.0)
 		if shell_tilt > 0.26:
 			_righting_remaining = maxf(_righting_remaining, 1.9)
 	if _righting_remaining > 0.0:
 		_righting_remaining = maxf(0.0, _righting_remaining - dt)
 		_pulse_phase += dt * 0.45
 		_apply_squash(1.0 + sin(_pulse_phase) * 0.04)
+		# Keep the heading the body already has (model forward is +X). This
+		# used to read basis.z and aim -Z at it, a target 180 degrees from
+		# the current yaw every frame, so a righting snail spun in place.
 		var rot_basis: Basis = transform.basis.orthonormalized()
-		var flat_fwd: Vector3 = Vector3(rot_basis.z.x, 0.0, rot_basis.z.z)
+		var flat_fwd: Vector3 = rot_basis.x - _shell_up() * rot_basis.x.dot(_shell_up())
 		if flat_fwd.length_squared() < 1e-6:
-			flat_fwd = Vector3.FORWARD
+			flat_fwd = tangent
 		_slerp_rotation_toward(
-			Basis.looking_at(flat_fwd.normalized(), Vector3.UP),
-			clampf(dt * 1.35, 0.0, 1.0))
-		_apply_wall_orientation(flat_fwd.normalized(), dt)
+			Basis.looking_at(flat_fwd.normalized(), _shell_up()) * MODEL_YAW,
+			1.0 - exp(-RIGHTING_RATE * dt))
 		_ensure_finite_transform()
 		return
 	if _paused:
@@ -763,9 +835,14 @@ func _process(dt: float) -> void:
 		# us back to almost-the-same position, accumulate the stuck timer
 		# and eventually force a turn. This generic version replaces
 		# per-voxel hardscape scanning — catches any obstacle.
+		# Progress counts from the last point the snail got 8 mm past, not
+		# per frame: one frame of crawl is 1-2 mm, so the per-frame test
+		# called every snail stuck and turned it at random every 1.4 s.
 		if gait_speed > 0.02:
-			var actual_move_sq: float = (position - pre_move).length_squared()
-			if actual_move_sq < STUCK_PROGRESS_MIN_SQ:
+			if global_position.distance_squared_to(_last_progress_pos) >= STUCK_PROGRESS_MIN_SQ:
+				_last_progress_pos = global_position
+				_stuck_timer = 0.0
+			else:
 				_stuck_timer += dt
 				if _stuck_timer > STUCK_THRESHOLD:
 					_stuck_timer = 0.0
@@ -776,8 +853,6 @@ func _process(dt: float) -> void:
 					_paused = false
 					# Quick re-attempt so we don't sit still again.
 					_t_until_turn = randf_range(0.4, 1.2)
-			else:
-				_stuck_timer = maxf(0.0, _stuck_timer - dt * 1.5)
 	else:
 		_apply_wall_orientation(tangent, dt)
 
@@ -1119,8 +1194,16 @@ func _ensure_finite_transform() -> void:
 		dirty = true
 	if not quaternion.is_finite() or not transform.is_finite():
 		var up: Vector3 = _shell_up()
-		var fwd: Vector3 = _safe_unit(-transform.basis.z, Vector3.FORWARD)
-		quaternion = Basis.looking_at(fwd, up).get_rotation_quaternion()
+		var fwd: Vector3 = _safe_unit(transform.basis.x, Vector3.FORWARD)
+		quaternion = (Basis.looking_at(fwd, up) * MODEL_YAW).get_rotation_quaternion()
+		dirty = true
+	if _body != null and is_instance_valid(_body) and not _body.transform.is_finite():
+		_body.transform = Transform3D.IDENTITY
+		_blend_t = -1.0
+		dirty = true
+	if _foot_pivot != null and is_instance_valid(_foot_pivot) \
+			and (not _foot_pivot.scale.is_finite() or _foot_pivot.scale.y < 0.01):
+		_foot_pivot.scale = Vector3.ONE
 		dirty = true
 	if not _spacing_push.is_finite():
 		_spacing_push = Vector3.ZERO
@@ -1335,7 +1418,10 @@ func _get_sim() -> Node:
 	return null
 
 
-func _sync_initial_orientation() -> void:
+# Snap the logical pose to the current surface. On a surface change (blend =
+# true) the visible Body then eases over from where it was last drawn; spawn
+# and load pass false and simply appear in place.
+func _sync_initial_orientation(blend: bool = true) -> void:
 	var tangent: Vector3
 	if absf(wall_normal.dot(Vector3.UP)) > 0.95:
 		tangent = Vector3.RIGHT
@@ -1343,6 +1429,48 @@ func _sync_initial_orientation() -> void:
 		tangent = wall_normal.cross(Vector3.UP).normalized()
 	var bitangent: Vector3 = tangent.cross(wall_normal).normalized()
 	_apply_wall_orientation(tangent * _facing.x + bitangent * _facing.y, 1.0)
+	if blend:
+		_begin_surface_blend()
+
+
+func _begin_surface_blend() -> void:
+	if _body == null or not _visual_prev_valid or not is_inside_tree():
+		return
+	_blend_from = _visual_prev
+	_blend_t = 0.0
+	_apply_surface_blend()
+
+
+# Runs first thing every tick, ahead of every early return, so a snail that
+# clamps or freezes mid-transition still finishes the move.
+func _tick_surface_blend(dt: float) -> void:
+	if _body == null or not is_inside_tree():
+		return
+	if _blend_t >= 0.0:
+		_blend_t += dt
+		if _blend_t >= SURFACE_BLEND_S:
+			_blend_t = -1.0
+			_body.transform = Transform3D.IDENTITY
+		else:
+			_apply_surface_blend()
+	_visual_prev = _body.global_transform
+	_visual_prev_valid = true
+
+
+func _apply_surface_blend() -> void:
+	var u: float = smoothstep(0.0, 1.0, _blend_t / SURFACE_BLEND_S)
+	var target: Transform3D = global_transform
+	var shown: Transform3D = _blend_from.interpolate_with(target, u)
+	var local: Transform3D = target.affine_inverse() * shown
+	if local.is_finite():
+		_body.transform = local
+	else:
+		_blend_t = -1.0
+		_body.transform = Transform3D.IDENTITY
+
+
+func is_surface_blending() -> bool:
+	return _blend_t >= 0.0
 
 
 # Wall transition probability. A snail that hits a corner only climbs /
@@ -1353,6 +1481,15 @@ const WALL_TRANSITION_CHANCE: float = 0.80
 # When transitioning, how far to nudge the snail onto the new wall so
 # it doesn't immediately re-trigger the boundary handler.
 const WALL_TRANSITION_NUDGE: float = 0.10
+
+
+# How far the head or the tail reaches past the origin along the crawl axis,
+# shell overhang included. With the head leading (#25) the body's long axis
+# points at the floor while a snail climbs off it or heads down to it, so
+# the floor corner has to keep the origin this high or the end whorl dips
+# into the substrate.
+func _body_half_length() -> float:
+	return 0.27 * shell_size * absf(scale.x)
 
 
 # Holistic #126 — transfer from one vertical glass face onto the adjacent
@@ -1485,13 +1622,14 @@ func _try_climb_onto_glass() -> bool:
 	_attached_plant = null  # leaving any plant trunk attachment
 	_attached_lily_pad = null
 	# Snap Y just above the substrate so the snail visibly sits on the
-	# glass right above the substrate-glass corner. The lateral X/Z
-	# stay where they are (we were already at the boundary).
+	# glass right above the substrate-glass corner, its tail clear of the
+	# gravel. The lateral X/Z stay where they are (we were already at the
+	# boundary).
 	var substrate_y: float = 1.6
 	var sub_v: Variant = w.get("SUBSTRATE_DEPTH")
 	if sub_v != null:
 		substrate_y = float(sub_v)
-	global_position.y = substrate_y + WALL_TRANSITION_NUDGE
+	global_position.y = substrate_y + maxf(WALL_TRANSITION_NUDGE, _body_half_length())
 	# Re-anchor the plane. _wall_anchor_offset is the projection of
 	# position onto the new wall_normal — for flat walls this is the
 	# fixed plane offset. For curved walls it's recomputed every tick
@@ -1581,16 +1719,57 @@ func _release_surface_film() -> void:
 			_direction = Vector2(randf_range(-0.30, 0.30), -1.0).normalized()
 			took_glass = true
 	if not took_glass:
-		# Sink. wall_normal returns to UP so the substrate clamp catches it
-		# on the way down and it lands the right way up.
+		# Sink. The film anchor was DOWN·pos (= -film_y); flipping the normal
+		# to UP without re-anchoring made the next reclamp project the snail
+		# to y = -film_y, under the tank floor (CREATURE_MOTION #27). Anchor
+		# on the substrate it falls to; _tick_sink drops it there shell-first
+		# and the righting response turns it over once it lands.
 		wall_normal = Vector3.UP
+		_wall_anchor_offset = _substrate_y() + WALL_TRANSITION_NUDGE
+		_sinking = true
+		_sink_speed = 0.0
 		var ang := randf() * TAU
 		_direction = Vector2(cos(ang), sin(ang))
 	_curved_attached = false
 	_facing = _direction
 	_stuck_timer = 0.0
 	_last_progress_pos = global_position
-	_sync_initial_orientation()
+	if took_glass:
+		_sync_initial_orientation()
+
+
+func _substrate_y() -> float:
+	var w := _world_node()
+	var v: Variant = w.get("SUBSTRATE_DEPTH") if w != null else null
+	return 1.6 if v == null else float(v)
+
+
+func _tick_sink(dt: float) -> void:
+	_sink_speed = minf(SINK_SPEED, _sink_speed + SINK_ACCEL * dt)
+	var p: Vector3 = global_position
+	p.y = maxf(_wall_anchor_offset, p.y - _sink_speed * dt)
+	var w := _world_node()
+	if w != null and w.has_method("clamp_xyz_in_tank"):
+		# XZ only: the volume clamp would also pull Y down off the film plane
+		# in one step, which reads as a jump at the start of the fall.
+		var body_r: float = shell_size * 0.10
+		var c: Vector3 = w.clamp_xyz_in_tank(p, body_r + 0.04, body_r)
+		p.x = c.x
+		p.z = c.z
+	global_position = p
+	_apply_squash(1.0)
+	if p.y <= _wall_anchor_offset + 1e-4:
+		_sinking = false
+		_sink_speed = 0.0
+		_stuck_timer = 0.0
+		_last_progress_pos = global_position
+		# Crawl off the way the body landed pointing, so righting is not
+		# followed by a swivel. Floor frame: tangent +X, bitangent +Z.
+		var fwd: Vector3 = transform.basis.x
+		var heading := Vector2(fwd.x, fwd.z)
+		if heading.length_squared() > 1e-4:
+			_direction = heading.normalized()
+			_facing = _direction
 
 
 # Try to descend from a vertical glass wall down onto the substrate.
@@ -1608,8 +1787,9 @@ func _try_descend_to_substrate() -> bool:
 	var sub_v: Variant = w.get("SUBSTRATE_DEPTH")
 	if sub_v != null:
 		substrate_y = float(sub_v)
-	# Only descend when we're already very close to the substrate floor.
-	if global_position.y > substrate_y + 0.18:
+	# Only descend when we're already very close to the substrate floor:
+	# head-first, that is when the head (not the origin) reaches it.
+	if global_position.y > substrate_y + maxf(0.18, _body_half_length() + 0.04):
 		return false
 	if randf() > WALL_TRANSITION_CHANCE:
 		return false
@@ -1968,7 +2148,8 @@ func _apply_wall_orientation(crawl_hint: Vector3, dt: float) -> void:
 		if tangent.length_squared() < 1e-6:
 			tangent = Vector3.RIGHT
 		crawl_dir = tangent.normalized()
-	var target_basis: Basis = Basis.looking_at(crawl_dir, up)
+	# MODEL_YAW puts the head (+X) on the crawl direction, not -Z.
+	var target_basis: Basis = Basis.looking_at(crawl_dir, up) * MODEL_YAW
 	if not target_basis.is_finite():
 		return
 	var blend: float = clampf(dt * ORIENT_RATE, 0.0, 1.0)
@@ -2003,6 +2184,11 @@ func _world_node() -> Node:
 # triangle, cylinder, and sphere glass. Crawl stays on the spawn wall plane
 # but X/Y/Z are pulled back inside the tank footprint every frame.
 func _reclamp_to_footprint() -> void:
+	# Mid-fall the anchor is the landing plane; projecting onto it here (the
+	# sim's periodic bounds pass calls this too) would teleport the snail
+	# down. _tick_sink keeps it inside the glass until it lands.
+	if _sinking:
+		return
 	# Under the film the snail is on a horizontal plane just below the water
 	# surface. Hold that plane exactly, and let the normal tank clamp keep
 	# it inside the walls, so it can glide right up to the glass.
@@ -2198,31 +2384,60 @@ func _handle_boundary_bounce(_tangent: Vector3, _bitangent: Vector3, _pre_move: 
 
 func _apply_squash(squash_y: float) -> void:
 	# Foot-wave creep — instead of a single uniform Y squash (which read
-	# as "bouncing block"), modulate three axes so the body visibly
+	# as "bouncing block"), modulate three axes so the foot visibly
 	# COMPRESSES on the back stroke and STRETCHES forward on the push.
 	# Real snail crawl is a wave of muscular contraction running tail →
-	# head; we approximate by tying Z stretch to the same _pulse_phase
-	# but at quarter-period offset so the body lengthens just as the foot
-	# pushes down. X jitters slightly out of phase for the side-to-side
-	# inching feel.
+	# head; we approximate by tying the forward stretch to the same
+	# _pulse_phase but at quarter-period offset so the foot lengthens just
+	# as it pushes down. Width jitters slightly out of phase for the
+	# side-to-side inching feel.
+	#
+	# Only the Foot pivot deforms (CREATURE_MOTION #28). The shell is calcite:
+	# it used to squash and stretch with the whole node, and the predator
+	# clamp set the whole snail to 0.35 tall in one frame. The root now
+	# carries only the uniform growth scale; a clamp lowers the shell onto a
+	# flattened foot through _tuck, eased in _tick_tuck.
 	var base: float = 0.5 if is_baby else 1.0
 	if is_baby:
 		base = 0.5 + 0.5 * clampf(age / MATURITY_AGE, 0.0, 1.0)
+	var grown: Vector3 = Vector3.ONE * base
+	if grown.is_finite() and base > 0.01:
+		scale = grown
 	# Eating pulse — bigger compress/release during a consumption beat.
 	var eat_amp: float = 1.0
 	if _eating_pulse_remaining > 0.0:
 		var ep_t: float = 1.0 - (_eating_pulse_remaining / EATING_PULSE_DURATION)
 		# Bell curve over the eating window — peak amplitude mid-pulse.
 		eat_amp = 1.0 + 0.30 * sin(clampf(ep_t, 0.0, 1.0) * PI)
-	# Z creep: stretches forward on push (sin of phase + π/2), squashes back.
-	var creep_z: float = 1.0 + sin(_pulse_phase + PI * 0.5) * 0.10 * eat_amp
-	# X side-shimmy: tiny lateral wobble for body weight transfer.
-	var shimmy_x: float = 1.0 + sin(_pulse_phase * 0.65 + 0.7) * 0.04 * eat_amp
-	# Y squash: the original foot pulse, amplified by eating.
-	var y_axis: float = 1.0 + (squash_y - 1.0) * eat_amp
-	var s: Vector3 = Vector3(base * shimmy_x, base * y_axis, base * creep_z)
-	if s.is_finite() and s.x > 0.01 and s.y > 0.01 and s.z > 0.01:
-		scale = s
+	# A tucked foot is pulled in, not crawling: the wave fades with the tuck
+	# and the foot draws in a little under the shell.
+	var wave: float = eat_amp * (1.0 - _tuck)
+	# Model frame: +X is forward. Creep stretches forward on the push (sin
+	# of phase + π/2) and squashes back; Z is the side shimmy.
+	var creep_x: float = (1.0 + sin(_pulse_phase + PI * 0.5) * 0.10 * wave) \
+		* lerpf(1.0, 0.8, _tuck)
+	var shimmy_z: float = (1.0 + sin(_pulse_phase * 0.65 + 0.7) * 0.04 * wave) \
+		* lerpf(1.0, 0.85, _tuck)
+	# Y squash: the original foot pulse, amplified by eating, flattened by
+	# the clamp. The Foot pivot sits at the sole, so the sole stays put.
+	var y_axis: float = (1.0 + (squash_y - 1.0) * eat_amp) * lerpf(1.0, CLAMP_FOOT_Y, _tuck)
+	if _foot_pivot != null:
+		var fs: Vector3 = Vector3(creep_x, y_axis, shimmy_z)
+		if fs.is_finite() and fs.x > 0.01 and fs.y > 0.01 and fs.z > 0.01:
+			_foot_pivot.scale = fs
+	if _shell_pivot != null:
+		_shell_pivot.position.y = -_tuck * SHELL_TUCK_DROP * shell_size
+
+
+# Ease the shell tuck toward the current threat level: in fast, out slow.
+func _tick_tuck(dt: float) -> void:
+	var target: float = 0.0
+	if _clamped or _sinking:
+		target = 1.0
+	elif _fish_hover_freeze:
+		target = HOVER_TUCK
+	var rate: float = TUCK_IN_RATE if target > _tuck else TUCK_OUT_RATE
+	_tuck = lerpf(_tuck, target, 1.0 - exp(-rate * dt))
 
 
 func _count_snails() -> int:
@@ -2345,33 +2560,39 @@ func _tick_eye_stalks(dt: float) -> void:
 				EYE_RETRACT_INTERVAL_MIN, EYE_RETRACT_INTERVAL_MAX)
 	# Stalk extension factor.
 	#   1.0  fully extended (default)
-	#   0.0  fully retracted (clamped or mid-pull)
-	# When predator-clamped, force-retract for the duration of the clamp.
-	# During a scheduled retract, ease in/out so the pull reads as a
-	# smooth pinch rather than a snap.
-	var ext: float = 1.0
-	if _clamped:
-		ext = 0.0
+	#   0.0  fully retracted (clamped or falling)
+	# A pull (scheduled, predator flinch, hovering fish) holds the stalks in
+	# at EYE_RETRACT_MIN for the retract window. The target used to be
+	# applied directly, so a clamp pulled them in - and an unclamp shot them
+	# back out - in one frame. Ease toward it instead: fast in, slow out.
+	var ext_target: float = 1.0
+	if _clamped or _sinking:
+		ext_target = 0.0
 	elif _eye_retract_remaining > 0.0:
-		var t: float = 1.0 - (_eye_retract_remaining / EYE_RETRACT_DURATION)
-		# Bell-shape: 0 → 1 → 0 over the duration, so we retract then re-extend.
-		ext = 1.0 - sin(t * PI)
-		ext = maxf(0.15, ext)
-	# Base sway — slow resting wiggle, suppressed during retraction.
-	var sway_y: float = sin(_eye_phase) * 0.18 * ext
-	var sway_x: float = sin(_eye_phase * 0.7 + 1.1) * 0.10 * ext
-	# Crawl bias — when actively crawling, the eye stalks lean forward
-	# (negative X pitch on the EyeStalks pivot, which is offset along
-	# local +X from the head). Stronger lean during fast pursuit-of-food
-	# crawl so the snail visibly "leans into" the chase.
+		ext_target = EYE_RETRACT_MIN
+	var ext_rate: float = EYE_RETRACT_RATE if ext_target < _eye_ext else EYE_EXTEND_RATE
+	_eye_ext = lerpf(_eye_ext, ext_target, 1.0 - exp(-ext_rate * dt))
+	var ext: float = _eye_ext
+	# Base sway — slow resting wiggle, suppressed during retraction. The
+	# pivot is in the model frame (head on +X): yaw is about Y, and pitch -
+	# leaning fore and aft - is about Z, negative leaning forward.
+	var yaw: float = sin(_eye_phase) * 0.18 * ext
+	var pitch: float = sin(_eye_phase * 0.7 + 1.1) * 0.10 * ext
+	# Crawl bias — when actively crawling, the eye stalks lean forward.
+	# Stronger lean during fast pursuit-of-food crawl so the snail visibly
+	# "leans into" the chase.
 	if not _paused and not _clamped and _crawl_speed_smoothed > 0.02:
 		var lean_strength: float = (0.30 if _pursuing_waste else 0.18) * ext
-		sway_x -= lean_strength
+		pitch -= lean_strength
 		# Yaw bias toward heading curve — if the snail is mid-turn the
 		# stalks pre-point in the new direction, like a real snail
-		# orienting before the body catches up.
-		var turn_lean: float = clampf(_direction.x - _facing.x, -1.0, 1.0)
-		sway_y += turn_lean * 0.22 * ext
+		# orienting before the body catches up. (tangent, bitangent) winds
+		# clockwise seen from the shell side (tangent × bitangent is
+		# -wall_normal), so a positive heading delta is a right turn: a
+		# negative yaw about the shell-up axis.
+		var turn_lean: float = clampf(
+			-wrapf(_direction.angle() - _facing.angle(), -PI, PI), -1.0, 1.0)
+		yaw += turn_lean * 0.22 * ext
 	else:
 		# Paused: wider scan amplitude — looking around for food / threats.
 		# Random saccades stacked on the base sway every ~2.4 s.
@@ -2384,10 +2605,10 @@ func _tick_eye_stalks(dt: float) -> void:
 		# Decay scan target toward 0 so the saccade is a brief twitch
 		# rather than a permanent head-cock.
 		_eye_scan_target = _eye_scan_target.lerp(Vector2.ZERO, clampf(dt * 1.2, 0.0, 1.0))
-		sway_y += _eye_scan_target.x * ext
-		sway_x += _eye_scan_target.y * ext
-	_eye_stalks.rotation.y = sway_y
-	_eye_stalks.rotation.x = sway_x
+		yaw += _eye_scan_target.x * ext
+		pitch += _eye_scan_target.y * ext
+	_eye_stalks.rotation.y = yaw
+	_eye_stalks.rotation.z = pitch
 	# Scale the stalks along Y so they visually pull into the body
 	# during retraction. Width stays steady so they don't look thinner.
 	var stalk_scale_y: float = lerpf(0.1, 1.0, ext)
@@ -2793,4 +3014,4 @@ func apply_save_dict(d: Dictionary) -> void:
 	# side" for a frame or two before the orientation catches up. The
 	# call is deferred to next-frame so the parent transform is settled.
 	_last_progress_pos = global_position
-	call_deferred("_sync_initial_orientation")
+	call_deferred("_sync_initial_orientation", false)

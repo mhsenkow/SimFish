@@ -36,6 +36,7 @@ var _segments: Array[MeshInstance3D] = []
 var _tentacles: Array[MeshInstance3D] = []
 var _tubercles: Array[MeshInstance3D] = []
 var _creep_phase: float = 0.0
+var _seg_base_z: PackedFloat32Array = PackedFloat32Array()
 
 
 func _ready() -> void:
@@ -70,14 +71,16 @@ func _ready() -> void:
 			- VOXEL_SIZE * 0.9 * float(SEGMENT_COUNT - 1) * 0.5)
 		add_child(mi)
 		_segments.append(mi)
-		# Tubercles on every other middle segment.
+		_seg_base_z.append(mi.position.z)
+		# Tubercles on every other middle segment. Children of the segment
+		# so they ride its creep stretch.
 		if i > 0 and i < SEGMENT_COUNT - 1 and i % 2 == 1:
 			var tub := MeshInstance3D.new()
 			tub.mesh = VoxelMat.get_box(Vector3(
 				VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.18))
 			tub.material_override = VoxelMat.make_fauna(tube_col)
-			tub.position = mi.position + Vector3(0, VOXEL_SIZE * 0.5, 0)
-			add_child(tub)
+			tub.position = Vector3(0, VOXEL_SIZE * 0.5, 0)
+			mi.add_child(tub)
 			_tubercles.append(tub)
 	# Feeding tentacles at the head (front) end — small fan of voxels
 	# that visibly pulse.
@@ -88,11 +91,11 @@ func _ready() -> void:
 		tent.mesh = VoxelMat.get_box(Vector3(
 			VOXEL_SIZE * 0.18, VOXEL_SIZE * 0.30, VOXEL_SIZE * 0.18))
 		tent.material_override = VoxelMat.make_fauna(Color8(195, 165, 125))
-		tent.position = head_seg.position + Vector3(
+		tent.position = Vector3(
 			cos(ang) * VOXEL_SIZE * 0.35,
 			VOXEL_SIZE * 0.55,
 			sin(ang) * VOXEL_SIZE * 0.35 - VOXEL_SIZE * 0.45)
-		add_child(tent)
+		head_seg.add_child(tent)
 		_tentacles.append(tent)
 	_phase = randf() * TAU
 	_jitter_t = randf_range(REJITTER_INTERVAL_MIN, REJITTER_INTERVAL_MAX)
@@ -117,16 +120,15 @@ func _process(dt: float) -> void:
 		queue_free()
 		return
 	_phase += sdt * TENTACLE_PULSE_FREQ
-
-	_phase += sdt * TENTACLE_PULSE_FREQ
 	_creep_phase += sdt * 0.85
 	var stretch: float = sin(_creep_phase)
+	# Stretch from the built (centred) spacing; rebuilding z from scratch
+	# here used to drop the centring and detach tentacles and tubercles.
 	for i in _segments.size():
 		var seg: MeshInstance3D = _segments[i]
 		if seg == null or not is_instance_valid(seg):
 			continue
-		var base_z: float = float(i) * VOXEL_SIZE * 0.72
-		seg.position.z = base_z + stretch * 0.018 * float(i + 1)
+		seg.position.z = _seg_base_z[i] + stretch * 0.018 * float(i + 1)
 
 	# Glacial crawl — stretch-compress couples to drift (#30).
 	var creep_push: float = 0.85 + maxf(0.0, sin(_creep_phase)) * 0.35

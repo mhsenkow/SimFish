@@ -128,16 +128,23 @@ varying float v_biolum;
 // fish.gd _push_fauna_inst_custom, fauna_species_batch.gd):
 //   r  fract = bone bend weight (static; head 0.08 .. tail ~1)
 //      floor / 32 = bioluminescence (per fish)
-//   g  belly flash      b  display vibrancy      a  iridescence (static)
+//   g  belly flash      b  display vibrancy
+//   a  fract = iridescence (static)
+//      floor = motion quiet level (per fish, fish.gd _set_motion_quiet):
+//              0..7 quiets the body ripple, +8 stills the fin flutter.
+//              0 = full motion, so writers that never set it keep the wave.
 // r used to carry bend OR glow depending on which writer ran last, so every
 // tail glowed pale blue at rest and lost its wag once a fish flashed.
 void vertex() {
 	v_inst_color = COLOR.rgb;
 	v_tissue_density = COLOR.a;
-	v_inst_custom = INSTANCE_CUSTOM;
+	v_inst_custom = vec4(INSTANCE_CUSTOM.rgb, fract(INSTANCE_CUSTOM.a));
 	v_bend = fract(INSTANCE_CUSTOM.r);
 	v_biolum = floor(INSTANCE_CUSTOM.r) / 32.0;
-	float bend_w = v_bend * fauna_vertex_bend;
+	float quiet_q = floor(INSTANCE_CUSTOM.a);
+	float fin_still = step(7.5, quiet_q);
+	float body_act = 1.0 - (quiet_q - fin_still * 8.0) / 7.0;
+	float bend_w = v_bend * fauna_vertex_bend * body_act;
 	// Body wave (PERFORMANCE #68: pivots carry the macro bend, this is the
 	// ripple on top). The phase travels along the pivot's body axis in world
 	// space, so voxels further back lag the ones ahead of them and the
@@ -154,7 +161,7 @@ void vertex() {
 	// Fin flutter: fins (weight ~0.72) shear at a higher rate, trailing edge
 	// most, so pectorals and the dorsal visibly scull while hovering.
 	float fin = 1.0 - smoothstep(0.06, 0.14, abs(v_bend - 0.72));
-	VERTEX.x += sin(TIME * 10.5 - along * 7.0) * fin * fauna_vertex_bend
+	VERTEX.x += sin(TIME * 10.5 - along * 7.0) * fin * fauna_vertex_bend * (1.0 - fin_still)
 		* (VERTEX.z + 0.5) * 0.30 * s_ref / sx;
 	VERTEX.y += cos(TIME * 5.3 - along * 5.0) * bend_w * 0.03;
 	v_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;

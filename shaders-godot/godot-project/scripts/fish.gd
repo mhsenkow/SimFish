@@ -514,6 +514,7 @@ var _cycle_lod_tier: int = 2
 var _homeostasis: Dictionary = {}
 # Per-instance fauna overrides (biolum / belly / vibrancy) for MultiMesh batches (#51).
 var _fauna_inst_custom: Color = Color(0.0, 0.0, 0.0, 0.0)
+var _motion_quiet_q: int = 0  # see _update_motion_quiet
 var _glow_meshes: Array = []  # PERFORMANCE_UNTHROTTLED #65
 var _last_biolum_strength: float = -1.0
 @warning_ignore("unused_private_class_variable")
@@ -604,10 +605,8 @@ var _dreaming: bool = false
 var _dream_note_logged: bool = false
 var _sleep_nook: Vector3 = Vector3.ZERO
 var _sleep_have_nook: bool = false
-# Eye highlight target (local yaw the eye-dot looks toward) and blink timer.
+# Eye highlight target (local yaw the eye-dot looks toward).
 var _eye_look: float = 0.0
-var _blink_t: float = 0.0
-var _blink_remaining: float = 0.0
 # Cached content shimmer + breathing load for the animation layer.
 var _breath_load: float = 1.0
 
@@ -1082,7 +1081,6 @@ func sync_sleep_stage_from_depth() -> void:
 # the player can read before the fish actually panics.
 var _gill_flush_t: float = 0.0               # animation phase (0 = idle)
 var _gill_flush_check: float = 0.0           # countdown to next eligibility check
-var _gill_pivot: Node3D = null               # set by _build_body when available
 
 # ---- Pecking-order boldness ----
 # Cached personality scalar: bold fish reach food first; timid hang back.
@@ -1221,29 +1219,31 @@ func pulse_affect_cue() -> void:
 func answer_affect_cue(kind: String = "pulse") -> void:
 	if _bank_pivot == null or not is_instance_valid(_bank_pivot):
 		return
-	var base: Vector3 = _bank_pivot.scale
+	# Tween the affect layer; the pose pass multiplies it onto the body
+	# proportions, so the cue can't overwrite them.
+	var base: Vector3 = Vector3.ONE
 	var tween := create_tween()
 	match kind:
 		"turn_away":
 			_gaze_remaining = 0.0
 			_reaction_remaining = 0.65
 			_reaction_point = global_position + Vector3(0, 0, 2.5)
-			tween.tween_property(_bank_pivot, "scale", base * 0.94, 0.18)
-			tween.tween_property(_bank_pivot, "scale", base, 0.42)
+			tween.tween_property(self, "_affect_scale", base * 0.94, 0.18)
+			tween.tween_property(self, "_affect_scale", base, 0.42)
 		"approach":
-			tween.tween_property(_bank_pivot, "scale", base * 1.1, 0.14)
-			tween.tween_property(_bank_pivot, "scale", base, 0.36)
+			tween.tween_property(self, "_affect_scale", base * 1.1, 0.14)
+			tween.tween_property(self, "_affect_scale", base, 0.36)
 		"flare":
-			tween.tween_property(_bank_pivot, "scale", base * 1.14, 0.1)
-			tween.tween_property(_bank_pivot, "scale", base * 0.98, 0.22)
-			tween.tween_property(_bank_pivot, "scale", base, 0.28)
+			tween.tween_property(self, "_affect_scale", base * 1.14, 0.1)
+			tween.tween_property(self, "_affect_scale", base * 0.98, 0.22)
+			tween.tween_property(self, "_affect_scale", base, 0.28)
 		"gaze_lock":
 			_gaze_remaining = 1.4
-			tween.tween_property(_bank_pivot, "scale", base * 1.04, 0.12)
-			tween.tween_property(_bank_pivot, "scale", base, 0.38)
+			tween.tween_property(self, "_affect_scale", base * 1.04, 0.12)
+			tween.tween_property(self, "_affect_scale", base, 0.38)
 		_:
-			tween.tween_property(_bank_pivot, "scale", base * 1.06, 0.12)
-			tween.tween_property(_bank_pivot, "scale", base, 0.38)
+			tween.tween_property(self, "_affect_scale", base * 1.06, 0.12)
+			tween.tween_property(self, "_affect_scale", base, 0.38)
 
 
 func get_inspect_thought() -> String:
@@ -1697,12 +1697,6 @@ func _update_inner_life(dt: float, conspecifics_nearby: int, neighbors: Array = 
 				and float(sim.daylight()) < 0.35:
 			_interest_remaining = maxf(_interest_remaining, 0.15)
 
-	# Eye blink cadence — slower when calm, suppressed when active.
-	_blink_t -= dt
-	_blink_remaining = maxf(0.0, _blink_remaining - dt)
-	if _blink_t <= 0.0 and speed < 0.8:
-		_blink_t = _behavior_rng().randf_range(2.0, 6.0)
-		_blink_remaining = 0.12
 
 	# Leadership: a confident, high-ranking, mature fish drifts toward leading
 	# its local school. A slow random walk lets the role change hands over time
@@ -2065,7 +2059,6 @@ var _music_eye_flash: float = 0.0
 # drifting continuously rather than holding fixed offsets.
 var _wag_freq_jitter: float = 1.0
 # Tight schoolers share tail-wag phase within ±0.1 rad of the tank pulse.
-var _school_phase_offset: float = 0.0
 # Fry-dart trail emitter cadence. Only used when maturity == MATURITY_FRY and
 # the fry is currently in a dart burst (burst_remaining > 0). The trail
 # afterimages are world-positioned so the smear visibly trails the fry
@@ -2124,8 +2117,16 @@ var _station_keep: float = 0.0
 var _surface_wake_t: float = 0.0
 var _biolum_wake_t: float = 0.0
 var _silver_flash: float = 0.0
-var _turn_anticipation: float = 0.0
-var _speed_personality: float = 1.0
+var _turn_lean: float = 0.0
+var _bump_yaw: float = 0.0                   # visual yaw easing out a wall redirect
+var _wall_bump_t: float = 0.0
+const WALL_BUMP_S: float = 0.3
+var _posture_roll: float = 0.0               # cleaning / sleep roll added to the bank
+# BankPivot.scale = _body_proportions * _display_scale * _affect_scale.
+var _body_proportions: Vector3 = Vector3.ONE  # elongation / depth / width genes
+var _display_scale: Vector3 = Vector3.ONE     # courtship puff
+var _affect_scale: Vector3 = Vector3.ONE      # keeper-answer body cue (tweened)
+var _body_mid_rest_scale: Vector3 = Vector3.ONE  # gravid bulge
 var _home_loop_angle: float = 0.0
 var _last_yaw_rate: float = 0.0
 var _motion_target_spd: float = 0.0
@@ -2200,8 +2201,10 @@ func apply_spawn_variation(rng: RandomNumberGenerator = null) -> void:
 	_wag_freq_jitter = r.randf_range(0.88, 1.12)
 	_gait_amp_bias = r.randf_range(0.82, 1.18)
 	_motion_glide_bias = r.randf_range(0.35, 0.72)
-	_school_phase_offset = r.randf_range(-0.1, 0.1)
-	_speed_personality = r.randf_range(0.82, 1.18)
+	# Two retired draws (a school-pulse phase offset and a speed personality
+	# that _cruise_mult already provides). Kept so seeded spawns don't shift.
+	r.randf_range(-0.1, 0.1)
+	r.randf_range(0.82, 1.18)
 	_home_loop_angle = r.randf() * TAU
 	if not _spawn_heading_supplied:
 		var theta: float = r.randf() * TAU
@@ -3480,11 +3483,10 @@ func _build_body() -> void:
 	# Apply body elongation + depth scaling. The bank pivot's local Y stretches
 	# the body height (puffer = 1.4, minnow = 0.7), Z stretches length.
 	if _bank_pivot != null:
-		_bank_pivot.scale.z = body_elongation
-		_bank_pivot.scale.y = body_depth_factor
-		# Lateral width — the third cross-section axis. <1 = slab-thin
+		# Lateral width (x) is the third cross-section axis. <1 = slab-thin
 		# (laterally compressed), >1 = flat-and-wide (rays, flatfish, plecos).
-		_bank_pivot.scale.x = body_width_factor
+		_body_proportions = Vector3(body_width_factor, body_depth_factor, body_elongation)
+		_bank_pivot.scale = _body_proportions * _display_scale * _affect_scale
 
 	if _voxel_builder != null:
 		_voxel_builder.flush_all()
@@ -3707,11 +3709,9 @@ func _update_mouthbrood_bulge() -> void:
 		_mouthbrood_bulge = MeshInstance3D.new()
 		var v: float = adult_voxel_scale
 		# Bulge is a slightly elongated box sitting under and forward of
-		# the head pivot; we tuck it into the body-front group so head
-		# rotation carries it. Falls back to self if no head pivot found.
-		var anchor: Node = get_node_or_null("Bank/BodyMid/BodyFront")
-		if anchor == null:
-			anchor = self
+		# the head pivot; parenting it to the head lets bank, pitch and head
+		# rotation carry it. Falls back to self if no head pivot found.
+		var anchor: Node = _head_pivot if _head_pivot != null else self
 		_mouthbrood_bulge.mesh = VoxelMat.get_box(
 			Vector3(v * 1.9, v * 1.1, v * 2.4))
 		_mouthbrood_bulge.material_override = VoxelMat.make_mouthbrood_bulge(
@@ -3761,7 +3761,29 @@ func _push_fauna_inst_custom() -> void:
 		# used to zero the vertex wag the moment a fish flashed its belly.
 		var bend: float = float(h.get_meta("fauna_bend", 0.22)) \
 			if h.has_meta("fauna_bend") else 0.22
-		h.set_custom_data(Color(FaunaVoxelBuilder.pack_custom_r(bend, cr), cg, cb, static_a))
+		h.set_custom_data(Color(FaunaVoxelBuilder.pack_custom_r(bend, cr), cg, cb,
+			static_a + float(_motion_quiet_q)))
+
+
+# How much of the shader's body ripple and fin flutter this fish shows
+# (voxel_fauna_mm.gdshader, INSTANCE_CUSTOM.a). The ripple used to run on
+# global TIME for every fish, including sleeping and dead ones. Quantised,
+# with hysteresis, so a fish only re-uploads its voxels when the level moves.
+func _update_motion_quiet() -> void:
+	var q: int
+	if _dying:
+		q = 15
+	elif _asleep:
+		q = 14
+	else:
+		var act: float = clampf(_fin_tail_activity / 0.92, 0.15, 1.0)
+		var level: float = (1.0 - act) * 7.0
+		if absf(level - float(_motion_quiet_q)) < 0.75:
+			return
+		q = clampi(roundi(level), 0, 6)
+	if q != _motion_quiet_q:
+		_motion_quiet_q = q
+		_push_fauna_inst_custom()
 
 
 
@@ -6883,13 +6905,13 @@ func _process(dt: float) -> void:
 			velocity *= lerpf(1.0, 0.72, calm)
 	MakeItThere.tick_fish_body(self, sim, dt)
 
-	# Apply pregnancy bulge if gestating
-	if _body_mid_pivot != null:
-		if is_livebearer and sex == 1 and _gestation_progress > 0.0:
-			var bulge := 1.0 + _gestation_progress * 0.35
-			_body_mid_pivot.scale = Vector3(bulge * 0.8 + 0.2, bulge, 1.0)
-		else:
-			_body_mid_pivot.scale = Vector3.ONE
+	# Pregnancy bulge if gestating. It sets the mid-body's rest scale; the
+	# pose pass eases toward it and layers the music kick on top.
+	if is_livebearer and sex == 1 and _gestation_progress > 0.0:
+		var bulge := 1.0 + _gestation_progress * 0.35
+		_body_mid_rest_scale = Vector3(bulge * 0.8 + 0.2, bulge, 1.0)
+	else:
+		_body_mid_rest_scale = Vector3.ONE
 	# Mouthbrooding throat bulge — lazy-created when the female starts
 	# incubating; scaled by progress so it visibly fills + recedes.
 	_update_mouthbrood_bulge()
@@ -6936,35 +6958,34 @@ func _apply_posture_overlays(dt: float) -> void:
 		return
 	# FISH_ALIVE #641 — torn caudal from fights / wear.
 	FishAlive.apply_fin_nicks_visual(self)
+	# These set _posture_roll, which _motion_substep adds to the bank (the
+	# substep owns rotation.z, so writing it here was erased next frame). The
+	# cleaning pitch lives in the substep's pitch targets.
 	# Cleaning tilt — the recipient presents flank to the cleaner.
 	if _being_cleaned > 0.05:
 		var target_roll: float = 0.42 * sign(sin(get_instance_id() * 0.01))
-		_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z, target_roll, dt * 3.0)
-		_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.18, dt * 3.0)
+		_posture_roll = lerpf(_posture_roll, target_roll, 1.0 - exp(-dt * 3.0))
 		return
-	# Sleep posture — diurnal species at deep night drift gently with a
-	# slight body tilt and occasional twitches.
-	if sim != null and swim_pattern != "shuffle":
-		var dl: float = float(sim.daylight())
-		if dl < 0.18 and maturity != MATURITY_FRY:
-			# Smooth toward a small per-fish roll; keep direction stable
-			# by deriving from instance id so each sleeper picks a side.
-			var side: float = -1.0 if (get_instance_id() % 2 == 0) else 1.0
-			var sleep_roll: float = side * 0.22 * (1.0 - clampf(dl / 0.18, 0.0, 1.0))
-			_sleep_tilt = lerpf(_sleep_tilt, sleep_roll, dt * 1.5)
-			_bank_pivot.rotation.z = lerpf(_bank_pivot.rotation.z,
-				_bank_pivot.rotation.z + _sleep_tilt * 0.4, dt * 2.0)
-			# Occasional twitch — a small dart that the brain will absorb
-			# on the next tick. Real sleeping fish twitch every few minutes.
-			_sleep_twitch_t -= dt
-			if _sleep_twitch_t <= 0.0:
-				_sleep_twitch_t = _behavior_rng().randf_range(8.0, 25.0)
-				if energy > 0.2 and burst_remaining <= 0.0:
-					burst_remaining = 0.18
-					heading_offset += Vector3(
-						_behavior_rng().randf_range(-0.4, 0.4), 0.0, _behavior_rng().randf_range(-0.4, 0.4))
-		else:
-			_sleep_tilt = lerpf(_sleep_tilt, 0.0, dt * 2.0)
+	# Sleep posture — a sleeping fish settles into a slight body tilt that
+	# deepens with sleep depth, with occasional twitches.
+	if _asleep and swim_pattern != "shuffle" and maturity != MATURITY_FRY:
+		# Keep the direction stable by deriving it from the instance id, so
+		# each sleeper picks a side.
+		var side: float = -1.0 if (get_instance_id() % 2 == 0) else 1.0
+		var sleep_roll: float = side * 0.22 * clampf(_sleep_depth, 0.0, 1.0)
+		_sleep_tilt = lerpf(_sleep_tilt, sleep_roll, 1.0 - exp(-dt * 1.5))
+		# Occasional twitch — a small dart that the brain will absorb
+		# on the next tick. Real sleeping fish twitch every few minutes.
+		_sleep_twitch_t -= dt
+		if _sleep_twitch_t <= 0.0:
+			_sleep_twitch_t = _behavior_rng().randf_range(8.0, 25.0)
+			if energy > 0.2 and burst_remaining <= 0.0:
+				burst_remaining = 0.18
+				heading_offset += Vector3(
+					_behavior_rng().randf_range(-0.4, 0.4), 0.0, _behavior_rng().randf_range(-0.4, 0.4))
+	else:
+		_sleep_tilt = lerpf(_sleep_tilt, 0.0, 1.0 - exp(-dt * 2.0))
+	_posture_roll = lerpf(_posture_roll, _sleep_tilt, 1.0 - exp(-dt * 3.0))
 
 
 # Pre-stress gill flush. Periodically rolls a chance to play a short
@@ -6977,7 +6998,7 @@ func _tick_gill_flush(dt: float) -> void:
 	# Animate any in-flight flush — even if conditions no longer warrant.
 	if _gill_flush_t > 0.0:
 		_gill_flush_t = maxf(0.0, _gill_flush_t - dt)
-		var pivot: Node3D = _gill_pivot if _gill_pivot != null else _head_pivot
+		var pivot: Node3D = _head_pivot
 		if pivot != null:
 			# Phase 0..1 — out at 0..0.5, settle at 0.5..1. Use sin(πt) for
 			# a smooth pulse.
@@ -7061,6 +7082,8 @@ func start_dying() -> void:
 	target_velocity = Vector3.ZERO
 	speed = 0.0
 	burst_remaining = 0.0
+	# A corpse doesn't ripple.
+	_update_motion_quiet()
 
 
 # Death pose: tilts onto its side, drifts slowly downward, shrinks toward
@@ -7072,6 +7095,8 @@ func start_dying() -> void:
 # write per frame. Combined with the sink + tilt + final mulm drop, the
 # visual story is: tip, drift, dissolve.
 func _animate_death(dt: float) -> void:
+	# Covers fish reloaded mid-death, which never ran start_dying.
+	_update_motion_quiet()
 	# Wall-clock safety net — if the fish has been dying for more than
 	# DEATH_WALL_CLOCK_MAX seconds of REAL time (independent of sim time
 	# scale or dt starvation), force-complete the animation. Catches any
@@ -7100,7 +7125,7 @@ func _animate_death(dt: float) -> void:
 		# silhouette through ~70% of the animation, then drops fast at
 		# the end so the queue_free is visually motivated.
 		var shrink: float = lerpf(1.0, 0.15, progress)
-		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
+		_bank_pivot.scale = _body_proportions * shrink
 	# Sink slowly — real dead fish drop to the substrate as buoyancy fails.
 	position.y -= 0.18 * dt
 	# Stop above substrate so the corpse rests on the bottom rather than
@@ -7251,6 +7276,19 @@ func _motion_velocity_floor(current_speed: float) -> float:
 		return maxf(current_speed, 0.02)
 	var floor_speed: float = 0.04 + (0.03 if swim_pattern == "hover" else 0.0)
 	return maxf(current_speed, floor_speed)
+
+
+# A wall block redirects the path in one step; that is collision, and
+# physics keeps it. The body shouldn't snap with it: the visual yaw holds
+# where it was and eases into the new heading (_bump_yaw on the bank pivot),
+# the bank doesn't read the snap as a turn, and the fish brakes briefly.
+func _note_wall_bump(before: Vector3, after: Vector3) -> void:
+	var dyaw: float = wrapf(atan2(after.x, -after.z) - atan2(before.x, -before.z), -PI, PI)
+	if absf(dyaw) < 0.02:
+		return
+	_bump_yaw = clampf(_bump_yaw + dyaw, -PI * 0.75, PI * 0.75)
+	_last_yaw = wrapf(_last_yaw + dyaw, -PI, PI)
+	_wall_bump_t = WALL_BUMP_S
 
 
 func _advance_motor_phase(dt: float) -> void:
@@ -7498,6 +7536,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		FishAlive.world_answer(self, "dart")
 	_prev_burst_snap = burst_remaining
 	_brake_pose = Hydrodynamics.brake_pose_amount(speed, target_spd)
+	if _wall_bump_t > 0.0:
+		_wall_bump_t = maxf(0.0, _wall_bump_t - dt)
+		_brake_pose = maxf(_brake_pose, _wall_bump_t / WALL_BUMP_S * 0.8)
 	_station_keep = Hydrodynamics.station_keep_pec(
 		_swim_phase, flow_vel.length(), target_spd)
 	if full_hydro:
@@ -7554,10 +7595,12 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 				var out_comp: float = move_dir.dot(outward)
 				if out_comp > 0.05:
 					var bounced: Vector3 = _reflect_heading_at_wall(move_dir, inward)
+					var pre_bump: Vector3 = move_dir
 					move_dir = _safe_normalize(heading.lerp(bounced, 0.62), bounced)
 					allowed = _max_inside_travel(gp, move_dir, want_len, margin, body_r)
 					if not is_finite(allowed) or allowed < 0.0:
 						allowed = 0.0
+					_note_wall_bump(pre_bump, move_dir)
 		global_position = gp + move_dir * allowed
 		if not global_position.is_finite():
 			var w_fix := _world_node()
@@ -7652,7 +7695,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	if pose_dt > 0.0:
 		dt = pose_dt
 	if do_body_anim:
-		_turn_anticipation = lerpf(_turn_anticipation, -yaw_rate * 0.08, clampf(dt * 6.0, 0.0, 1.0))
+		# Mid-body bend toward the turn. It follows the realised yaw rate, so
+		# it is a lean, not anticipation.
+		_turn_lean = lerpf(_turn_lean, -yaw_rate * 0.12, 1.0 - exp(-dt * 6.0))
 		var bank_target: float = clampf(-yaw_rate * 0.35, -0.6, 0.6)
 		bank_target += Hydrodynamics.centripetal_bank(speed, yaw_rate) * (1.15 if absf(yaw_rate) > 0.5 else 1.0)
 		bank_target *= settle_factor
@@ -7667,18 +7712,22 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		bank_target = clampf(bank_target, -0.95 if dance_bank > 0.02 else -0.65, 0.95 if dance_bank > 0.02 else 0.65)
 		_bank = lerpf(_bank, bank_target, 1.0 - exp(-dt * 5.0))
 		if _bank_pivot != null:
-			_bank_pivot.rotation.z = _bank
-			if _body_mid_pivot != null:
-				_body_mid_pivot.rotation.y = lerpf(_body_mid_pivot.rotation.y,
-					-yaw_rate * 0.12, clampf(dt * 8.0, 0.0, 1.0))
+			# Cleaning and sleep postures ride on the motion bank.
+			_bank_pivot.rotation.z = _bank + _posture_roll
+			_bump_yaw = lerpf(_bump_yaw, 0.0, 1.0 - exp(-dt * 14.0))
+			_bank_pivot.rotation.y = _bump_yaw
 			# Sifting nose-down tilt. While _sift_timer > 0 we apply a pitch
 			# rotation around X so the fish's head points down at the
 			# substrate - the classic cory grazing pose. Lerp in + out for
 			# smoothness; courtship-display males ALSO tilt slightly for the
 			# parade swim.
 			var pitch_target: float = 0.0
-			if _sift_timer > 0.0:
+			if _being_cleaned > 0.05:
+				pitch_target = -0.18   # presenting to the cleaner
+			elif _sift_timer > 0.0:
 				pitch_target = 0.55
+			elif _brake_pose > 0.12:
+				pitch_target = -0.22 * _brake_pose   # nose up while braking
 			elif hunger > 0.5 and velocity.y < -0.12 and current_mode == Mode.FORAGE:
 				pitch_target = 0.34   # head-down: diving to forage at the bottom
 			elif current_mode == Mode.FORAGE and velocity.y > 0.12:
@@ -7783,6 +7832,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		_:
 			# subcarangiform default — current schooler behavior.
 			pass
+	# Body flexibility for the turn lean, from the locomotion's base bend
+	# (before effort scaling): rigid boxfish bend little, eels a lot.
+	var body_flex: float = clampf(body_amp / 0.1, 0.0, 1.4)
 
 	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
 		speed, _motion_target_spd, max_speed)
@@ -7870,12 +7922,6 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			+ minf(speed * 0.18, 0.25)) * _gait_amp_bias + _music_snare_flick * 0.42
 		if _brake_pose > 0.12:
 			_tail_pivot.rotation.y += _brake_pose * 0.38
-			if _pec_right_pivot != null:
-				_pec_right_pivot.rotation.z += _brake_pose * 0.55
-			if _pec_left_pivot != null:
-				_pec_left_pivot.rotation.z -= _brake_pose * 0.55
-			if _bank_pivot != null:
-				_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, -0.22 * _brake_pose, dt * 6.0)
 		if _music_trail_ghost > 0.02:
 			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.12
 			_tail_pivot.scale.z = lerpf(1.0, 1.06, _music_trail_ghost)
@@ -7884,13 +7930,14 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	if _body_mid_pivot != null:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4) \
-			+ clampf(_turn_anticipation, -0.22, 0.22) * clampf(body_amp / 0.1, 0.0, 1.4)
+			+ clampf(_turn_lean, -0.22, 0.22) * body_flex
+		# The gravid bulge is the rest scale; the music kick pulses on top.
 		if _music_kick_pulse > 0.02:
 			var kick_scale: float = 1.0 + _music_kick_pulse * 0.03
-			_body_mid_pivot.scale = Vector3(kick_scale, kick_scale * 0.92, 1.0)
-		elif not is_equal_approx(_body_mid_pivot.scale.x, 1.0):
-			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(Vector3.ONE,
-				clampf(dt * 8.0, 0.0, 1.0))
+			_body_mid_pivot.scale = _body_mid_rest_scale * Vector3(kick_scale, kick_scale * 0.92, 1.0)
+		elif not _body_mid_pivot.scale.is_equal_approx(_body_mid_rest_scale):
+			_body_mid_pivot.scale = _body_mid_pivot.scale.lerp(_body_mid_rest_scale,
+				1.0 - exp(-dt * 8.0))
 	# Livebearer sigmoid display (FishLifeBouts): the male bends into an S -
 	# tail one way, mid-body the other, head back - fins wide, quivering.
 	var lb_sig: float = _FishLifeBouts.sigmoid_env(self, dt) if is_livebearer else 0.0
@@ -7959,12 +8006,11 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		_gill_phase = Hydrodynamics.advance_phase(_gill_phase,
 			2.2 * _breath_load * _wag_freq_jitter, dt)
 		var breath: float = 1.0 + sin(_gill_phase) * breath_amp
-		# Blink: a brief vertical squash of the head reads as an eye-blink at
-		# voxel resolution (no separate eyelid geometry needed).
-		var blink_sq: float = 1.0 - (0.18 if _blink_remaining > 0.0 else 0.0)
+		# No blink: fish have no eyelids, and squashing the whole head read
+		# as a flicker.
 		var gape_z: float = 1.0 + _mouth_gape * 0.28
 		var eye_pulse: float = 1.0 + _music_eye_flash * 0.06
-		_head_pivot.scale = Vector3(breath * eye_pulse, blink_sq, gape_z)
+		_head_pivot.scale = Vector3(breath * eye_pulse, 1.0, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
 	if _dorsal_pivot != null:
 		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08
@@ -7999,6 +8045,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
 	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18 \
 		+ float(aff_anim.get("pec_spread", 0.0)), -0.1, 0.35)
+	# Braking flares both pectorals out as brakes, on top of the spread.
+	if _brake_pose > 0.12:
+		pec_spread += _brake_pose * 0.55
 	var turn_load: float = clampf(_last_yaw_rate * 0.12, -0.20, 0.20)
 	if _pec_right_pivot != null:
 		_pec_right_pivot.rotation.z = sin(_pec_phase) * pec_amp * (1.0 + turn_load) + pec_spread
@@ -8032,12 +8081,15 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			var pulse: float = 1.0 + sin(_courtship_pulse_phase) * display_amp
 			# Apply differentially: width swells more than length so the
 			# fish reads as fuller-bodied, not stretched.
-			_bank_pivot.scale = Vector3(pulse, pulse * 0.6 + 0.4, 1.0)
-		elif not is_equal_approx(_bank_pivot.scale.x, 1.0):
+			_display_scale = Vector3(pulse, pulse * 0.6 + 0.4, 1.0)
+		elif not _display_scale.is_equal_approx(Vector3.ONE):
 			# Ease back to normal scale when not displaying.
-			_bank_pivot.scale = _bank_pivot.scale.lerp(Vector3.ONE,
-				clampf(dt * 6.0, 0.0, 1.0))
+			_display_scale = _display_scale.lerp(Vector3.ONE, 1.0 - exp(-dt * 6.0))
+		# The bank pivot's scale also carries the body proportions, so every
+		# layer multiplies onto them instead of overwriting them.
+		_bank_pivot.scale = _body_proportions * _display_scale * _affect_scale
 
+	_update_motion_quiet()
 	_sanitize_posture_pivot(_bank_pivot)
 	_sanitize_posture_pivot(_tail_pivot)
 	_sanitize_posture_pivot(_body_mid_pivot)
@@ -9629,7 +9681,7 @@ func apply_save_dict(d: Dictionary) -> void:
 	if _dying and _bank_pivot != null:
 		_bank_pivot.rotation.z = PI * 0.5
 		var shrink: float = lerpf(1.0, 0.15, clampf(1.0 - _dying_timer / DEATH_DURATION, 0.0, 1.0))
-		_bank_pivot.scale = Vector3(shrink, shrink, shrink)
+		_bank_pivot.scale = _body_proportions * shrink
 
 	_update_maturity()
 	_apply_maturity_color()

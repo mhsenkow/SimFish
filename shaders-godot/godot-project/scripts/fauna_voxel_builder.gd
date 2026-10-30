@@ -16,6 +16,10 @@ var _species_batch: bool = false
 var _world_parent: Node3D = null
 var _species: String = ""
 var _subspecies: String = ""
+# The shader's lateral body ripple is a fish's swimming wave. Creatures that
+# don't swim by bending sideways (crustaceans flex in pitch) turn it off,
+# which writes a zero bend weight for every voxel they build.
+var lateral_body_wave: bool = true
 
 
 func enable_species_batch(world_parent: Node3D, species: String, subspecies: String = "") -> void:
@@ -33,10 +37,11 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 			% [pos, size, String(parent.name) if parent != null else "?"])
 		return
 	var albedo: Color = VoxelMat.fauna_color_from_material(mat)
-	var bend_w: float = _bone_bend_weight(parent)
+	var bend_w: float = _bone_bend_weight(parent) if lateral_body_wave else 0.0
 	# INSTANCE_CUSTOM contract (voxel_fauna_mm.gdshader): r = bend weight in
 	# the fraction + bioluminescence in the integer part, g = belly flash,
-	# b = display vibrancy, a = iridescence. This used to write the
+	# b = display vibrancy, a = iridescence in the fraction (the integer part
+	# is the per-fish motion quiet level, 0 here). This used to write the
 	# iridescence into g (read as belly flash) and 1.0 into a (read as FULL
 	# iridescence on every voxel), and bend in r was read as bioluminescence,
 	# washing every tail pale blue.
@@ -44,7 +49,7 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 	if mat is ShaderMaterial:
 		var irid_v: Variant = (mat as ShaderMaterial).get_shader_parameter("irid_strength")
 		if irid_v != null:
-			inst_custom.a = clampf(float(irid_v), 0.0, 1.0)
+			inst_custom.a = clampf(float(irid_v), 0.0, 0.99)
 	var xform := Transform3D(Basis.from_scale(size), pos)
 	if _species_batch and _world_parent != null and _species != "" \
 			and _FaunaSpeciesBatchScript.active():

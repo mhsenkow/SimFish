@@ -93,4 +93,47 @@ func _initialize() -> void:
 	small.free()
 	big.free()
 
+	await process_frame
+
+	# --- Crab legs are hinged (#24) ---
+	# They were welded voxels on BankPivot, so a walking crab slid on frozen legs.
+	var crab_walker := Shrimp.new()
+	root.add_child(crab_walker)
+	crab_walker.init_genome({"body_shape": "crab"})
+	crab_walker.set_process(false)
+	t.equals(crab_walker._leg_pivots.size(), 8, "a crab stands on four hinged leg pairs")
+	crab_walker._tick_gait(1.0 / 60.0, true, 0.01)
+	var pose_a: Array[Vector3] = []
+	for entry in crab_walker._leg_pivots:
+		pose_a.append((entry["node"] as Node3D).rotation)
+	crab_walker._tick_gait(1.0 / 60.0, true, 0.01)
+	var stepped: int = 0
+	for i in crab_walker._leg_pivots.size():
+		if (crab_walker._leg_pivots[i]["node"] as Node3D).rotation.distance_to(pose_a[i]) > 0.02:
+			stepped += 1
+	t.equals(stepped, 8, "every leg of a walking crab moves between poses")
+	crab_walker.free()
+
+	# --- Eggs ride the abdomen (#22) ---
+	# A non-gravid frame used to free the egg mass built on TailPivot, and a
+	# later brood got a new one on BankPivot that stayed still under the tail.
+	for plan in ["caridean", "crab", "lobster", "mantis"]:
+		var hen := Shrimp.new()
+		root.add_child(hen)
+		hen.init_genome({"body_shape": plan})
+		var eggs: Node3D = hen._egg_cluster
+		t.check(eggs != null and eggs.get_parent() == hen._tail_pivot,
+			"%s eggs hang off the abdomen pivot" % plan)
+		if eggs == null:
+			hen.free()
+			continue
+		t.check(not eggs.visible, "%s without a brood shows no eggs" % plan)
+		hen._process(1.0 / 60.0)
+		t.check(hen._egg_cluster == eggs, "%s keeps its egg mass through a non-gravid frame" % plan)
+		hen.is_gravid = true
+		hen._process(1.0 / 60.0)
+		t.check(eggs.visible and eggs.get_parent() == hen._tail_pivot,
+			"%s berried female carries visible eggs on the tail" % plan)
+		hen.free()
+
 	quit(t.finish())

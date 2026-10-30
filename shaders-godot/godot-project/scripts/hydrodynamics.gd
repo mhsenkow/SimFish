@@ -283,8 +283,11 @@ static func overshoot_bias(speed: float, target_spd: float, dist_to_goal: float)
 	return overshoot * clampf(1.0 - dist_to_goal / 1.2, 0.0, 1.0) * 0.08
 
 
+# Extra roll into the turn at speed. Same sign convention as the fish's bank
+# (-yaw_rate: dorsal leans toward the centre of the turn), so it adds to the
+# base bank instead of cancelling it.
 static func centripetal_bank(speed: float, yaw_rate: float) -> float:
-	return clampf(speed * yaw_rate * 0.08, -0.35, 0.35)
+	return clampf(-speed * yaw_rate * 0.08, -0.35, 0.35)
 
 
 static func use_full_physics(_sim: Node, _creature: Node3D) -> bool:
