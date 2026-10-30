@@ -27,6 +27,15 @@
 #   FISH_PROBE_SAMPLE_S   sim seconds to sample (default 40)
 #   FISH_PROBE_OUT        report path (default user://fish_behaviour_probe.txt)
 #   FISH_PROBE_SPLIT      1 = also time frames with fish / sim processing off
+#   FISH_PROBE_MOTION_N   fish per species given 30 Hz pose tracks (default 4)
+#
+# Motion quality (CREATURE_MOTION_700 #85-#89 #92 #100 #119), appended after
+# the behaviour table: up to FISH_PROBE_MOTION_N fish per species get 30 Hz
+# pose tracks (root, head and tail tips, every pivot channel), resampled to an
+# even grid and scored with MotionMetrics - jerk, heading kinks, arc breaks,
+# head/body -> tail phase lag, tail-beat Hz, Strouhal, pectoral twin
+# correlation, neighbour pose correlation and snaps - plus p10/p50/p90 of
+# speed, turn rate and bout length from the 10 Hz samples.
 
 extends Node
 
@@ -35,6 +44,13 @@ const ScenarioPickerScript = preload("res://scripts/scenario_picker.gd")
 const SAMPLE_DT: float = 0.1
 # Two fish closer than this belong to the same shoal for the cluster count.
 const SHOAL_LINK: float = 1.35
+# Motion tracks (#100): pose sampling step, and the thresholds the counts use.
+const MOTION_DT: float = 1.0 / 30.0
+const SNAP_ROT: float = 0.9          # rad in one 1/30 s step on a pivot channel
+const SNAP_POS: float = 0.25         # units in one step of the root, outside bursts
+const KINK_SLACK: float = 1.3        # x max_turn_rate before a yaw step is a kink
+const MOTION_CHANNELS: PackedStringArray = ["head_ry", "body_ry", "tail_ry", "dorsal_rx",
+	"pec_l_rz", "pec_r_rz", "bank_rx", "bank_ry", "bank_rz"]
 
 var _main: Node = null
 var _sim: Node = null
@@ -64,6 +80,12 @@ var _split_phase: int = 0
 var _split_frames: int = 0
 var _split_ms: Array = [[], []]
 var _o2_n: int = 0
+var _motion_n: int = 4
+var _motion_acc: float = 0.0
+var _motion_t: float = 0.0
+# instance_id -> {species, max_turn, len, t, pos, yaw, lat, speed, exempt, ch:{}}
+var _motion: Dictionary = {}
+var _motion_count: Dictionary = {}
 
 
 func _ready() -> void:
@@ -90,6 +112,7 @@ func _ready() -> void:
 	_sample_len = _env("FISH_PROBE_SAMPLE_S", "40").to_float()
 	_out = _env("FISH_PROBE_OUT", _out)
 	_split = _env("FISH_PROBE_SPLIT", "0") == "1"
+	_motion_n = maxi(0, _env("FISH_PROBE_MOTION_N", "4").to_int())
 	for part in _env("FISH_PROBE_STOCK", "").split(",", false):
 		var kv: PackedStringArray = part.split(":")
 		if kv.size() == 2:
@@ -143,6 +166,11 @@ func _process(dt: float) -> void:
 	if _sample_acc >= SAMPLE_DT:
 		_sample_acc -= SAMPLE_DT
 		_sample(fish)
+	_motion_t += sdt
+	_motion_acc += sdt
+	if _motion_acc >= MOTION_DT and _t_sim < _warmup + _sample_len:
+		_motion_acc = fmod(_motion_acc, MOTION_DT)
+		_sample_motion(fish)
 	if _t_sim >= _warmup + _sample_len:
 		if _split and _split_phase < 3:
 			_split_step(fish, now)
@@ -229,12 +257,14 @@ func _sample(fish: Array) -> void:
 			trk = {"species": String(f.species), "sex": int(f.sex),
 				"mat": int(f.maturity), "speeds": [], "fracs": [], "yaws": [],
 				"display": 0, "court": 0, "peck": 0, "cruise": 0, "dbout": 0, "follow": 0, "hung": 0.0, "strs": 0.0, "dspd": 0.0, "max_speed": float(f.max_speed),
-				"flow_n": 0, "flow_up": 0, "flow_acc": 0.0, "flow_rel": 0.0}
+				"flow_n": 0, "flow_up": 0, "flow_acc": 0.0, "flow_rel": 0.0, "bk": []}
 			_track[key] = trk
 		var v: Vector3 = f.velocity
 		(trk["speeds"] as Array).append(v.length())
 		(trk["fracs"] as Array).append(_DepthBands.frac_from_y(f.global_position.y, col.x, col.y))
 		(trk["yaws"] as Array).append(atan2(f.heading.x, -f.heading.z))
+		var bk_v: Variant = f.get("_bout_kind")
+		(trk["bk"] as Array).append(int(bk_v) if bk_v != null else 0)
 		if bool(f.get("_courtship_flare")):
 			trk["court"] = int(trk["court"]) + 1
 		var disp: Variant = f.get("_lb_display_t")
@@ -580,6 +610,8 @@ func _finish(fish: Array) -> void:
 	if _split:
 		lines.append("split frame_ms  fish _process off: %.2f   sim off (fish on): %.2f" % [
 			_mean(_split_ms[0]), _mean(_split_ms[1])])
+	lines.append_array(_motion_report())
+	lines.append_array(_distribution_report())
 	var text: String = "\n".join(lines) + "\n"
 	var f := FileAccess.open(_out, FileAccess.WRITE)
 	if f != null:
@@ -592,3 +624,329 @@ func _finish(fish: Array) -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	get_tree().quit(0)
+
+
+# ---- Motion quality (#85-#89 #92 #100 #119) --------------------------------
+
+func _sample_motion(fish: Array) -> void:
+	if _motion_n <= 0:
+		return
+	for f in fish:
+		if not is_instance_valid(f) or f.get("_dying") == true:
+			continue
+		var key: int = f.get_instance_id()
+		var trk: Dictionary = _motion.get(key, {})
+		if trk.is_empty():
+			var sp: String = String(f.species)
+			if int(_motion_count.get(sp, 0)) >= _motion_n:
+				continue
+			_motion_count[sp] = int(_motion_count.get(sp, 0)) + 1
+			var ch: Dictionary = {}
+			for c in MOTION_CHANNELS:
+				ch[c] = []
+			trk = {"species": sp, "max_turn": float(f.max_turn_rate),
+				"max_speed": float(f.max_speed),
+				"len": float(f.adult_voxel_scale) * 5.5 * float(f.body_elongation) * maxf(f.scale.x, 0.1),
+				"t": [], "pos": [], "yaw": [], "lat": [], "speed": [], "exempt": [], "ch": ch}
+			_motion[key] = trk
+		var n3: Node3D = f
+		var pos: Vector3 = n3.global_position
+		(trk["t"] as Array).append(_motion_t)
+		(trk["pos"] as Array).append(pos)
+		(trk["yaw"] as Array).append(atan2(f.heading.x, -f.heading.z))
+		var right: Vector3 = n3.global_transform.basis.x.normalized()
+		(trk["lat"] as Array).append((MotionDebugOverlay.tail_tip_world(n3) - pos).dot(right))
+		(trk["speed"] as Array).append(float(f.speed))
+		var ex: bool = float(f.burst_remaining) > 0.0 or float(f.get("_startle_remaining")) > 0.0
+		(trk["exempt"] as Array).append(1 if ex else 0)
+		var ch2: Dictionary = trk["ch"]
+		_push_rot(ch2, "head_ry", f.get("_head_pivot"), 1)
+		_push_rot(ch2, "body_ry", f.get("_body_mid_pivot"), 1)
+		_push_rot(ch2, "tail_ry", f.get("_tail_pivot"), 1)
+		_push_rot(ch2, "dorsal_rx", f.get("_dorsal_pivot"), 0)
+		_push_rot(ch2, "pec_l_rz", f.get("_pec_left_pivot"), 2)
+		_push_rot(ch2, "pec_r_rz", f.get("_pec_right_pivot"), 2)
+		_push_rot(ch2, "bank_rx", f.get("_bank_pivot"), 0)
+		_push_rot(ch2, "bank_ry", f.get("_bank_pivot"), 1)
+		_push_rot(ch2, "bank_rz", f.get("_bank_pivot"), 2)
+
+
+static func _push_rot(ch: Dictionary, key: String, pivot: Variant, axis: int) -> void:
+	var v: float = 0.0
+	if pivot is Node3D and is_instance_valid(pivot):
+		v = (pivot as Node3D).rotation[axis]
+	(ch[key] as Array).append(v)
+
+
+# Linear resample of (t, v) onto the absolute grid k*MOTION_DT. Returns
+# [first grid index, values], so tracks that started at different times align.
+static func _grid(t: PackedFloat32Array, v: PackedFloat32Array, angular: bool = false) -> Array:
+	var out := PackedFloat32Array()
+	var n: int = mini(t.size(), v.size())
+	if n < 2:
+		return [0, out]
+	var src: PackedFloat32Array = v
+	if angular:
+		src = v.duplicate()
+		for i in range(1, n):
+			src[i] = src[i - 1] + wrapf(v[i] - v[i - 1], -PI, PI)
+	var k0: int = int(ceil(t[0] / MOTION_DT))
+	var k1: int = int(floor(t[n - 1] / MOTION_DT))
+	var j: int = 0
+	for k in range(k0, k1 + 1):
+		var tk: float = float(k) * MOTION_DT
+		while j < n - 2 and t[j + 1] < tk:
+			j += 1
+		var span: float = maxf(t[j + 1] - t[j], 1e-6)
+		var a: float = clampf((tk - t[j]) / span, 0.0, 1.0)
+		out.append(lerpf(src[j], src[j + 1], a))
+	return [k0, out]
+
+
+static func _grid3(t: PackedFloat32Array, v: PackedVector3Array) -> PackedVector3Array:
+	var xs := PackedFloat32Array()
+	var ys := PackedFloat32Array()
+	var zs := PackedFloat32Array()
+	for p in v:
+		xs.append(p.x)
+		ys.append(p.y)
+		zs.append(p.z)
+	var gx: PackedFloat32Array = _grid(t, xs)[1]
+	var gy: PackedFloat32Array = _grid(t, ys)[1]
+	var gz: PackedFloat32Array = _grid(t, zs)[1]
+	var out := PackedVector3Array()
+	for i in gx.size():
+		out.append(Vector3(gx[i], gy[i], gz[i]))
+	return out
+
+
+static func _std(v: PackedFloat32Array) -> float:
+	if v.size() < 2:
+		return 0.0
+	var m: float = MotionMetrics.mean(v)
+	var acc: float = 0.0
+	for x in v:
+		acc += (x - m) * (x - m)
+	return sqrt(acc / float(v.size()))
+
+
+# Grid index -> exempt flag (burst / startle) from the bracketing raw samples.
+static func _exempt_grid(t: PackedFloat32Array, ex: PackedByteArray, k0: int, n: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(n)
+	var j: int = 0
+	for i in n:
+		var tk: float = float(k0 + i) * MOTION_DT
+		while j < t.size() - 1 and t[j + 1] <= tk:
+			j += 1
+		var e: bool = (j < ex.size() and ex[j] != 0) or (j + 1 < ex.size() and ex[j + 1] != 0)
+		out[i] = 1 if e else 0
+	return out
+
+
+func _score_track(trk: Dictionary) -> Dictionary:
+	# Tracks are plain Arrays while sampling (a packed array read out of a
+	# Dictionary is a copy, so appending to it would be lost); pack them here.
+	var t := PackedFloat32Array(trk["t"])
+	var yg: Array = _grid(t, PackedFloat32Array(trk["yaw"]), true)
+	var k0: int = int(yg[0])
+	var yaw: PackedFloat32Array = yg[1]
+	var n: int = yaw.size()
+	if n < 16:
+		return {}
+	var pos: PackedVector3Array = _grid3(t, PackedVector3Array(trk["pos"]))
+	var spd: PackedFloat32Array = _grid(t, PackedFloat32Array(trk["speed"]))[1]
+	var lat: PackedFloat32Array = _grid(t, PackedFloat32Array(trk["lat"]))[1]
+	var ch: Dictionary = {}
+	for c in MOTION_CHANNELS:
+		ch[c] = _grid(t, PackedFloat32Array((trk["ch"] as Dictionary)[c]))[1]
+	var exempt: PackedByteArray = _exempt_grid(t, PackedByteArray(trk["exempt"]), k0, n)
+	var exempt_idx := PackedInt32Array()
+	for i in n:
+		if exempt[i] != 0:
+			exempt_idx.append(i)
+	var minutes: float = maxf(float(n) * MOTION_DT / 60.0, 1e-3)
+	var out: Dictionary = {"k0": k0, "minutes": minutes, "tail": ch["tail_ry"]}
+	var j: Dictionary = MotionMetrics.jerk(pos, MOTION_DT)
+	out["jerk_mean"] = float(j["mean"])
+	out["jerk_p95"] = float(j["p95"])
+	out["kinks"] = MotionMetrics.heading_kinks(yaw, MOTION_DT, float(trk["max_turn"]) * KINK_SLACK, exempt_idx)
+	var step_len: float = maxf(MotionDebugOverlay.CURVATURE_MIN_STEP, float(trk["len"]) * 0.05)
+	out["breaks"] = MotionMetrics.curvature_breaks(MotionDebugOverlay.decimate(pos, step_len),
+		MotionDebugOverlay.CURVATURE_BREAK)
+	var tail: PackedFloat32Array = ch["tail_ry"]
+	var hz: float = MotionMetrics.dominant_hz(tail, MOTION_DT)
+	out["hz"] = hz
+	out["lag_ht"] = MotionMetrics.phase_lag(ch["head_ry"], tail, MOTION_DT, hz) \
+		if _std(ch["head_ry"]) > 1e-3 and _std(tail) > 1e-3 and hz > 0.0 else NAN
+	out["lag_bt"] = MotionMetrics.phase_lag(ch["body_ry"], tail, MOTION_DT, hz) \
+		if _std(ch["body_ry"]) > 1e-3 and _std(tail) > 1e-3 and hz > 0.0 else NAN
+	# Strouhal at cruise: outside bursts, moving at least 15% of max speed.
+	var cruise_lat := PackedFloat32Array()
+	var cruise_spd := PackedFloat32Array()
+	var ms: float = float(trk["max_speed"])
+	for i in n:
+		if exempt[i] == 0 and spd[i] > ms * 0.15:
+			cruise_lat.append(lat[i])
+			cruise_spd.append(spd[i])
+	out["st"] = NAN
+	if cruise_lat.size() >= 30:
+		var pc: Dictionary = MotionMetrics.percentiles(cruise_lat, [5, 95])
+		out["st"] = MotionMetrics.strouhal(hz, float(pc[95]) - float(pc[5]), MotionMetrics.mean(cruise_spd))
+	# Twin: right pectoral against the mirrored left.
+	var neg_l := PackedFloat32Array()
+	for v in (ch["pec_l_rz"] as PackedFloat32Array):
+		neg_l.append(-v)
+	out["pec_twin"] = MotionMetrics.correlation(ch["pec_r_rz"], neg_l) \
+		if _std(ch["pec_r_rz"]) > 1e-4 and _std(neg_l) > 1e-4 else NAN
+	var snaps: int = 0
+	for c in MOTION_CHANNELS:
+		snaps += MotionMetrics.snaps(ch[c], SNAP_ROT, true)
+	for i in range(1, pos.size()):
+		if exempt[i] == 0 and pos[i].distance_to(pos[i - 1]) > SNAP_POS:
+			snaps += 1
+	out["snaps"] = snaps
+	return out
+
+
+static func _nan_mean(vals: Array) -> float:
+	var acc: float = 0.0
+	var k: int = 0
+	for v in vals:
+		if is_nan(float(v)):
+			continue
+		acc += float(v)
+		k += 1
+	return acc / float(k) if k > 0 else NAN
+
+
+static func _circ_mean(vals: Array) -> float:
+	var c: float = 0.0
+	var s: float = 0.0
+	var k: int = 0
+	for v in vals:
+		if is_nan(float(v)):
+			continue
+		c += cos(float(v))
+		s += sin(float(v))
+		k += 1
+	return fposmod(atan2(s, c), TAU) if k > 0 else NAN
+
+
+static func _fmt(v: float, pattern: String, width: int) -> String:
+	if is_nan(v):
+		return "-".lpad(width)
+	return (pattern % v).lpad(width)
+
+
+func _motion_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	if _motion.is_empty():
+		return out
+	out.append("motion quality (CREATURE_MOTION_700 #85-#89 #92 #100)  30 Hz pose tracks, up to %d fish/species; lag in units of pi (tail behind head/body), counts per fish-minute" % _motion_n)
+	out.append("%-18s %2s %16s %7s %7s %10s %5s %5s %5s %6s %6s %6s" % [
+		"species", "n", "jerk mean/p95", "kinks", "arcbrk", "lag h/b", "tailHz", "St",
+		"pecTw", "nbrCor", "snaps", "min"])
+	var by_sp: Dictionary = {}
+	for key in _motion.keys():
+		var trk: Dictionary = _motion[key]
+		var sc: Dictionary = _score_track(trk)
+		if sc.is_empty():
+			continue
+		var sp: String = String(trk["species"])
+		if not by_sp.has(sp):
+			by_sp[sp] = []
+		(by_sp[sp] as Array).append(sc)
+	for sp in by_sp.keys():
+		var scs: Array = by_sp[sp]
+		var f_jm: Array = []
+		var f_jp: Array = []
+		var f_hz: Array = []
+		var f_st: Array = []
+		var f_tw: Array = []
+		var f_lh: Array = []
+		var f_lb: Array = []
+		var kinks: int = 0
+		var breaks: int = 0
+		var snaps: int = 0
+		var minutes: float = 0.0
+		for sc in scs:
+			f_jm.append(sc["jerk_mean"])
+			f_jp.append(sc["jerk_p95"])
+			f_hz.append(sc["hz"])
+			f_st.append(sc["st"])
+			f_tw.append(sc["pec_twin"])
+			f_lh.append(sc["lag_ht"])
+			f_lb.append(sc["lag_bt"])
+			kinks += int(sc["kinks"])
+			breaks += int(sc["breaks"])
+			snaps += int(sc["snaps"])
+			minutes += float(sc["minutes"])
+		# Neighbour pose correlation: tail yaw of tracked pairs, on the shared grid.
+		var nbr: Array = []
+		for i in scs.size():
+			for jj in range(i + 1, scs.size()):
+				nbr.append(_aligned_corr(scs[i], scs[jj]))
+		var lag_h: float = _circ_mean(f_lh)
+		var lag_b: float = _circ_mean(f_lb)
+		var lag_s: String = "%s/%s" % [_fmt(lag_h / PI, "%.2f", 4).strip_edges(), _fmt(lag_b / PI, "%.2f", 4).strip_edges()]
+		out.append("%-18s %2d %7.1f/%8.1f %7.1f %7.1f %10s %5s %5s %5s %6s %6.1f %6.2f" % [
+			sp, scs.size(), _nan_mean(f_jm), _nan_mean(f_jp),
+			float(kinks) / minutes, float(breaks) / minutes, lag_s,
+			_fmt(_nan_mean(f_hz), "%.2f", 5).strip_edges(), _fmt(_nan_mean(f_st), "%.2f", 5).strip_edges(),
+			_fmt(_nan_mean(f_tw), "%.2f", 5).strip_edges(), _fmt(_nan_mean(nbr), "%.2f", 6).strip_edges(),
+			float(snaps) / minutes, minutes])
+	out.append("   targets  St 0.2-0.4 at cruise (#88); lag: travelling wave = monotonic, standing = 0 or 1 (#87); pecTw/nbrCor well below 1 (#89); kinks/arcbrk/snaps near 0 outside bursts (#86 #83 #92)")
+	return out
+
+
+static func _aligned_corr(a: Dictionary, b: Dictionary) -> float:
+	var ta: PackedFloat32Array = a["tail"]
+	var tb: PackedFloat32Array = b["tail"]
+	var ka: int = int(a["k0"])
+	var kb: int = int(b["k0"])
+	var start: int = maxi(ka, kb)
+	var stop: int = mini(ka + ta.size(), kb + tb.size())
+	if stop - start < 30:
+		return NAN
+	return MotionMetrics.correlation(ta.slice(start - ka, stop - ka), tb.slice(start - kb, stop - kb))
+
+
+# #119: the spread, not just the mean. Speed and turn rate from the 10 Hz
+# samples; bout lengths are runs of one _bout_kind, first and last run of
+# each track dropped (they are cut off by the sampling window).
+func _distribution_report() -> PackedStringArray:
+	var out := PackedStringArray()
+	out.append("distributions (#119)  p10/p50/p90 from %.0f Hz samples" % (1.0 / SAMPLE_DT))
+	out.append("%-18s %20s %20s %22s" % ["species", "speed u/s", "turn rad/s", "bout s (n)"])
+	var by_sp: Dictionary = {}
+	for key in _track.keys():
+		var trk: Dictionary = _track[key]
+		var sp: String = String(trk["species"])
+		if not by_sp.has(sp):
+			by_sp[sp] = {"speed": [], "turn": [], "bout": []}
+		var acc: Dictionary = by_sp[sp]
+		for v in trk["speeds"]:
+			(acc["speed"] as Array).append(float(v))
+		var yaws: Array = trk["yaws"]
+		for i in range(1, yaws.size()):
+			(acc["turn"] as Array).append(absf(wrapf(float(yaws[i]) - float(yaws[i - 1]), -PI, PI)) / SAMPLE_DT)
+		var bk: Array = trk.get("bk", [])
+		var runs := PackedFloat32Array()
+		var run: int = 0
+		for i in bk.size():
+			run += 1
+			if i == bk.size() - 1 or int(bk[i + 1]) != int(bk[i]):
+				runs.append(float(run) * SAMPLE_DT)
+				run = 0
+		for i in range(1, runs.size() - 1):
+			(acc["bout"] as Array).append(runs[i])
+	for sp in by_sp.keys():
+		var acc2: Dictionary = by_sp[sp]
+		var ps: Dictionary = MotionMetrics.percentiles(PackedFloat32Array(acc2["speed"]))
+		var pt: Dictionary = MotionMetrics.percentiles(PackedFloat32Array(acc2["turn"]))
+		var pb: Dictionary = MotionMetrics.percentiles(PackedFloat32Array(acc2["bout"]))
+		out.append("%-18s   %5.2f/%5.2f/%5.2f   %5.2f/%5.2f/%5.2f   %5.1f/%5.1f/%5.1f (%3d)" % [
+			sp, ps[10], ps[50], ps[90], pt[10], pt[50], pt[90], pb[10], pb[50], pb[90],
+			(acc2["bout"] as Array).size()])
+	return out

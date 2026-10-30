@@ -53,6 +53,22 @@ If your change touches one subsystem, add or extend a `extends SceneTree` smoke 
 - Mark shipped items in the idea doc (`- [ ]` → `- [x]`), mirroring [docs/GOALS.md](docs/GOALS.md).
 - PRs should pass the GitHub **Smoke tests** workflow (headless smokes + targeted gdlint).
 
+### Motion changes
+
+A PR or commit that changes how a creature moves adds one line to its
+description ([docs/CREATURE_MOTION_700.md](docs/CREATURE_MOTION_700.md) #116):
+
+```
+Motion: <principle tags> · <metric: name, before → after> · <clip: path or attachment>
+```
+
+That is: which principle it serves, which metric moved, and which clip shows it.
+Capture clips through `scripts/dev_run.sh` and keep them under `output/` (not
+committed). Pose and animation work must leave steering unchanged
+(`smoke_motion_mind_parity`, `smoke_schooling_force_equivalence`); a deliberate
+path change says so and names the re-baselined test. Details and examples are in
+[docs/MOTION_REVIEW_PROTOCOL.md](docs/MOTION_REVIEW_PROTOCOL.md).
+
 ## Supply chain
 
 Pinned versions and SHA256 hashes live in `scripts/supply_chain/manifest.env`. Update that

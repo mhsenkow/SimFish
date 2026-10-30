@@ -1,0 +1,24 @@
+{
+	"_note": "MotionPoseLibrary (scripts/motion_pose_library.gd). Channels: fin_carriage (-1 clamped .. 1 flared), caudal_spread (scale), dorsal_raise (rad), pec_forward (rad), head_pitch (rad, + nose down), body_arch (rad), roll (rad), breath (rate multiplier). _in/_out are blend seconds, _ease the curve. Species inherit _default poses; poses inherit channels from rest. Section G of docs/CREATURE_MOTION_700.md fills this in.",
+	"_default": {
+		"rest": {"fin_carriage": 0.0, "caudal_spread": 1.0, "dorsal_raise": 0.0, "pec_forward": 0.0, "head_pitch": 0.0, "body_arch": 0.0, "roll": 0.0, "breath": 1.0},
+		"cruise": {"_in": 0.6, "_out": 0.6, "_ease": "sine"},
+		"hover": {"fin_carriage": 0.2, "dorsal_raise": 0.12, "pec_forward": 0.15, "_in": 0.5, "_out": 0.5, "_ease": "sine"},
+		"alert": {"fin_carriage": 0.6, "caudal_spread": 1.08, "dorsal_raise": 0.35, "pec_forward": 0.25, "breath": 1.6, "_in": 0.12, "_out": 0.8, "_ease": "expo"},
+		"clamped": {"fin_carriage": -1.0, "caudal_spread": 0.8, "dorsal_raise": -0.25, "head_pitch": 0.08, "breath": 1.4, "_in": 0.08, "_out": 2.5, "_ease": "expo"},
+		"display": {"fin_carriage": 1.0, "caudal_spread": 1.2, "dorsal_raise": 0.5, "body_arch": 0.08, "_in": 0.4, "_out": 0.6, "_ease": "back"},
+		"sleep": {"fin_carriage": -0.3, "caudal_spread": 0.9, "dorsal_raise": -0.1, "breath": 0.6, "_in": 3.0, "_out": 0.4, "_ease": "sine"},
+		"dead": {"fin_carriage": 0.7, "caudal_spread": 1.0, "body_arch": 0.12, "roll": 3.14159, "breath": 0.0, "_in": 1.5, "_out": 0.1, "_ease": "sine"}
+	},
+	"betta": {
+		"rest": {"fin_carriage": 0.35},
+		"display": {"fin_carriage": 1.0, "caudal_spread": 1.35, "dorsal_raise": 0.65, "_in": 0.45, "_out": 0.7, "_ease": "back"}
+	},
+	"corydoras": {
+		"rest": {"head_pitch": 0.12, "pec_forward": 0.3}
+	},
+	"angelfish": {
+		"rest": {"fin_carriage": 0.2},
+		"hover": {"pec_forward": 0.3, "dorsal_raise": 0.2}
+	}
+}

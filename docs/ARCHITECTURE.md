@@ -501,3 +501,206 @@ in the source idea doc's checkbox line — measurement is the point (ENGINEERING
 *Line numbers verified against HEAD on 2026-06-28; treat as navigational hints and
 follow the symbol. Update this map as slices land — it is the destination, keep it
 true.*
+
+---
+
+## 11. Motion architecture (fish)
+
+*Added 2026-10-30 for [CREATURE_MOTION_700.md](CREATURE_MOTION_700.md) #80.
+Verified by reading `fish.gd` at `5ad6dd3` (the Phase 0 commit). Line numbers
+are from that commit.*
+
+This section records who writes each transform channel on a fish, in what
+order, and on which clock, so the next motion pass doesn't reintroduce the
+overwrites that Phase 0 removed (#2–#7). Line numbers are from `5ad6dd3`; the
+Phase 1 changes (one stroke clock, the per-draw shader phase, motion profiles as
+data, the expression layer) are folded into the clock and shader tables and
+listed under [Phase 1 changes](#phase-1-changes).
+
+### The rig
+
+```
+Fish (fish.gd root, Node3D)    basis: look_at(heading)  position: the motor
+└── BankPivot                  roll, yaw, pitch and scale layers (table below)
+    ├── Head                   at the BankPivot origin; head voxels sit ahead of it
+    ├── BodyMid                z = -1.5 v
+    │   ├── DorsalPivot, Dorsal2 (Dorsal2 has no writer), AnalPivot
+    │   └── PecRight, PecLeft
+    └── TailPivot              z = +1.5 v
+```
+
+Built in `_build_body`: `BankPivot`
+([fish.gd:2893](../shaders-godot/godot-project/scripts/fish.gd:2893)), `Head`
+(2906), `BodyMid` (3029), `DorsalPivot` (3248), `AnalPivot` (3284), `PecRight`
+(3308), `PecLeft` (3314), `TailPivot` (3340). `v` is `adult_voxel_scale`. Head,
+BodyMid and TailPivot are siblings, so rotating BodyMid does not carry the tail
+(lever 1 in the backlog). The mouthbrood bulge is parented to Head (#8).
+
+### Frame order
+
+`Fish._process` ([fish.gd:6805](../shaders-godot/godot-project/scripts/fish.gd:6805))
+runs these steps each rendered frame, with `dt` already multiplied by
+`sim.time_scale`:
+
+1. The gravid bulge sets `_body_mid_rest_scale` (6912). The mouthbrood bulge
+   updates.
+2. **Death is exclusive.** A dying fish runs `_animate_death` (7097) and
+   returns. Nothing below runs.
+3. **Integration substeps.** The frame is split into 1–20 substeps (6936).
+   Each `_motion_substep` (7300) steers, advances `_motor_phase`, integrates
+   thrust and drag, moves, and faces the heading. Every substep except the last
+   gets `pose_dt == 0` and returns after updating the yaw rate (7679). **Only
+   the last substep poses the body**, using the whole frame's `dt`.
+4. **Pose pass** (the rest of the last substep). It checks frustum visibility
+   (`do_body_anim`, 7684). For a visible fish it writes bank, yaw and pitch,
+   then the swim animation: tail, mid-body, the livebearer S, head, gill and
+   gape, dorsal, anal, pectorals, fidgets and the BankPivot scale. Then it
+   updates the shader quiet level and clamps the pivots (8092–8096).
+5. `_tick_fauna_body_color` (colour, not transforms).
+6. `_apply_posture_overlays` (6956) updates `_posture_roll` (read by the
+   *next* frame's pose pass) and applies fin nicks.
+7. `_tick_gill_flush` (6997) may override `Head.scale` for 0.5 s.
+
+**Off-frustum fish write no pose at all.** Their pivots keep the last drawn
+pose, and `_swim_phase`, `_pec_phase` and `_gill_phase` stop, because they
+advance inside the pose pass. Only `_motor_phase` (physics) keeps running.
+
+### Who writes which channel
+
+| Channel | Writer (line) | Composition | Notes |
+|---|---|---|---|
+| Fish root basis | `_face_direction(heading)` every substep while speed > 0.04 (7677) | Single | The whole body is tied to the path; there is no head lead (#69) |
+| Fish root position | `_motion_substep`: the move, buoyancy, the breath delta (7559–7561), the current carry | Additive deltas | Death moves `position.y` in `_animate_death` |
+| Fish root scale | `tick()` growth lerp at 10 Hz (6795); repair paths | Single | Maturity × growth |
+| BankPivot.rotation.z (roll) | Pose pass: `_bank + _posture_roll` (7716), then `+=` the shimmy or flash fidget (8062, 8064) | Sum | `_bank` is the turn bank (7713). `_posture_roll` is set by `_apply_posture_overlays` *after* the pose pass, so sleep and cleaning roll arrive one frame late. Death lerps toward π/2 instead (7120). `MotionSchool.bank_correlation` reads neighbours' *drawn* roll ([motion_school.gd:230](../shaders-godot/godot-project/scripts/motion_school.gd:230)), so their posture and fidgets leak into this fish's bank target |
+| BankPivot.rotation.y (yaw) | Pose pass: `_bump_yaw` (7718) | Single | The wall-redirect yaw, eased out at rate 14 (#14) |
+| BankPivot.rotation.x (pitch) | Pose pass: lerp toward `pitch_target` (7751) | Single, first match | One `if/elif` ladder: cleaning, sift, brake, forage dive, forage rise, courting male, receptive female, senescent, stressed. Death lerps it to 0 (7123). Uses `clampf(dt * 4)`, which depends on frame rate |
+| BankPivot.scale | Pose pass: `_body_proportions * _display_scale * _affect_scale` (8090); the same formula at build (3489) | Product | `_body_proportions` are the width, depth and length genes; `_display_scale` is the courtship puff, written just before (8084); `_affect_scale` is tweened by `answer_affect_cue` (1219). Death writes `_body_proportions * shrink` (7128, and 9684 on reload), dropping the display and affect layers on purpose |
+| BodyMid.rotation.y | Pose pass: `sin(_swim_phase + body_phase) * (body_amp + 0.4 * wag_amp_extra) + clamp(_turn_lean) * body_flex` (7931), then blended toward the livebearer S by `lb_sig` (7950) | Sum, then blend | `body_phase = π` by default: a standing counter-wag (7793) |
+| BodyMid.scale | Pose pass: `_body_mid_rest_scale` × the music kick, eased (7937–7940) | Product | The rest scale is the gravid bulge (#6) |
+| TailPivot.rotation.y | Pose pass: `sin(_swim_phase) * amplitude * _gait_amp_bias` + snare flick (7921), `+=` brake (7924), `+=` music trail (7926), then blended toward the S (7948) | Sum, then blend | — |
+| TailPivot.scale.z | Pose pass: music trail stretch to 1.06 (7927–7929) | Single | #683 |
+| TailPivot.scale.y, rotation.z | `FishAlive.apply_fin_nicks_visual` ([fish_alive.gd:248](../shaders-godot/godot-project/scripts/fish_alive.gd:248)), called from `_apply_posture_overlays` (6960) | Single | A torn caudal. Lerps 0.2–0.25 per frame, so it depends on frame rate |
+| Head.rotation.y | Pose pass: lerp toward the head wave + the S head + `tail_recoil_yaw` + saccade + eye look (7989) | Sum, smoothed | No eye pivots; gaze is a head micro-yaw |
+| Head.scale | Pose pass: `(breath * eye_pulse, 1, gape_z)` (8013); **also** `_tick_gill_flush` (7007) | **Two writers** | The gill flush runs after the pose pass and wins for its 0.5 s. This is the one remaining two-writer channel on a living fish |
+| DorsalPivot.rotation.x, .z; AnalPivot.rotation.x | Pose pass: functions of `_swim_phase` (8016–8019) | Single | Stateless |
+| PecRight / PecLeft.rotation.z | Pose pass: `±sin(_pec_phase [+ π/2]) * pec_amp * (1 ± turn_load) ± pec_spread` (8053, 8055) | Single | The brake flare is a term inside `pec_amp` and `pec_spread` (#3) |
+| Dorsal2, adipose, veil streamers | None | — | Rigid (#236, #223) |
+| All four main pivots | `_sanitize_posture_pivot` (7186) at the end of the pose pass | Clamp | Scale 0.08–2.2; rotation x ±0.55π, y ±π, z ±0.65π. It is the last writer: a layer outside these limits is silently clipped |
+
+### Layer variables
+
+Systems that want to change a channel they don't own set one of these, and the
+owner composes it. These are the hooks that replaced Phase 0's overwrites.
+
+| Variable | Set by | Read by | Meaning |
+|---|---|---|---|
+| `_bank` | Pose pass (7713) | Roll | Turn bank: `−yaw_rate·0.35` plus `centripetal_bank`, same sign (#1) |
+| `_posture_roll` | `_apply_posture_overlays` (6967, 6988) | Roll | Cleaning tilt or sleep roll (#4, #5) |
+| `_bump_yaw` | `_note_wall_bump` (7285) | Yaw | Visual yaw held through a wall redirect (#14) |
+| `_turn_lean` | Pose pass (7700) | BodyMid yaw | Lean that follows the realised yaw rate (#2, #16) |
+| `_body_proportions` | `_build_body` (3488) | BankPivot scale | Genes; never written after build |
+| `_display_scale` | Pose pass (8084) | BankPivot scale | Courtship puff |
+| `_affect_scale` | `answer_affect_cue` tweens (1219) | BankPivot scale | Keeper-answer body cue |
+| `_body_mid_rest_scale` | `_process` (6912) | BodyMid scale | Gravid bulge |
+| `_brake_pose` | `_motion_substep` (7538–7541) | Pitch, tail, pectorals | Brake amount from the speed gap or a wall bump |
+
+### The clocks
+
+| Clock | Advanced by | Rate | Drives |
+|---|---|---|---|
+| `_motor_phase` | `_advance_motor_phase`, every substep, visible or not | `locomotion_tailbeat_rate(speed, L, type) × _wag_freq_jitter × _beat_rate_mult` rad/s; the multiplier is effort (`Hydrodynamics.effort_beat_mult`) × glide × courtship × `_beat_mood_mult` (cached at the 10 Hz brain tick). Wraps at 100·2π | Stroke and pectoral thrust, burst-and-glide pace, the visible tail (below), and several slow wander and gulp sines in `tick()` |
+| `_swim_phase` | Pose pass: `_motor_phase − π/2 + _visual_phase_offset` | The stroke clock's rate; dancing adds its tempo difference to `_visual_phase_offset`, which otherwise eases to a whole cycle (rate 0.8). The offset starts at π/2 so a new fish keeps its spawn phase | Tail, mid-body, head wave, dorsal and anal fins, tail recoil, `station_keep_pec`, and the shader ripple (`fauna_wave_phase`) |
+| `_pec_phase` | Pose pass (8040) | `pec_freq_base × _wag_freq_jitter`: 4.5 + 3.0·speed rad/s, labriform 5.5 + 4.5·speed | Pectorals |
+| `_gill_phase` | Pose pass (8006) | `2.2 × _breath_load × _wag_freq_jitter` rad/s | Head-width breath pulse |
+| `_breath_phase` | `_breath_motion_delta` (7253), every substep | 0.7–1.55 cycles/s, from `_breath_load` | The root's vertical breath bob |
+
+All four phase clocks start from the same random value at spawn
+(`apply_spawn_variation`,
+[fish.gd:2197](../shaders-godot/godot-project/scripts/fish.gd:2197)) and then
+drift apart, except that `_swim_phase` is derived from `_motor_phase`: the tail
+crosses the midline as `max(0, sin(_motor_phase))` thrust peaks (#13, #49).
+Everything in the stroke rate is state every fish keeps, so a culled fish
+strokes exactly as a drawn one (`smoke_swimming_continuity`).
+`_breath_phase` and `_gill_phase` are two breath clocks with unrelated rates.
+Smaller clocks: `_courtship_pulse_phase` (7 rad/s), `_lb_quiver` (19 rad/s),
+`_buoy_bob_t` (0.55 rad/s) and the shader's own `TIME`.
+
+### The shader contract (`INSTANCE_CUSTOM`)
+
+The header comment of
+[voxel_fauna_mm.gdshader:127](../shaders-godot/godot-project/shaders/voxel_fauna_mm.gdshader:127)
+is the contract. Each component packs two things:
+
+| Component | Integer part | Fraction | Written by |
+|---|---|---|---|
+| `r` | Bioluminescence × 32 (per fish) | Bone bend weight (static) | `FaunaVoxelBuilder.pack_custom_r` ([fauna_voxel_builder.gd:112](../shaders-godot/godot-project/scripts/fauna_voxel_builder.gd:112)) at build; `Fish._push_fauna_inst_custom` (3746) re-packs it with the glow |
+| `g` | — | Belly flash | `_push_fauna_inst_custom` |
+| `b` | — | Display vibrancy | `_push_fauna_inst_custom` |
+| `a` | Motion quiet level (per fish) | Iridescence (static, from the material) | Builder (fraction); `_update_motion_quiet` (3772) through `_push_fauna_inst_custom` (integer) |
+
+- **Bend weight** comes from the pivot the voxel is built on
+  (`_bone_bend_weight`,
+  [fauna_voxel_builder.gd:116](../shaders-godot/godot-project/scripts/fauna_voxel_builder.gd:116)):
+  Head 0.08, BodyMid 0.42, TailPivot 1.0, fins 0.72, anything else 0.22.
+  Crustacean builders set `lateral_body_wave = false`, which writes 0 (#12).
+- **Quiet level:** 0–6 for an awake fish, from `_fin_tail_activity`, with 0.75
+  of hysteresis; 14 asleep; 15 dying. The shader reads levels of 8 and above
+  as "fins still" and maps the remainder to body-ripple strength
+  (`body_act = 1 − (q − 8·fin_still)/7`). Asleep keeps 1/7 of the ripple;
+  dying keeps none.
+- **What the shader draws:** a body ripple `sin(phase − along·5)` scaled by
+  bend weight², where `phase` is the instance uniform `fauna_wave_phase` that
+  each fish sets on its pivot MultiMeshes from `_swim_phase` (Phase 1, #11).
+  A shared species batch (36 or more of a kind) can't carry a per-fish value,
+  leaves it at −1, and falls back to `TIME·6.2`. Fin flutter on weight ≈ 0.72
+  runs at `TIME·10.5` and a vertical `cos(TIME·5.3)` term stays on `TIME`.
+- **Uploads:** the quiet level only re-uploads a fish's voxels when its
+  quantised level changes. The `fauna_vertex_bend` uniform (line 38) is not
+  written by game code; only two dev probes set it.
+
+### The rules
+
+1. **One writer per channel.** Each node-property component (for example
+   `BankPivot.rotation.z`) is assigned by exactly one function in a frame.
+   Anything else that wants to affect it sets a layer variable that the owner
+   composes. Don't add a second assignment.
+2. **Layers compose; they don't overwrite.** Angles add. Scales multiply. A
+   new effect means a new layer variable and one new term in the owner's sum
+   or product.
+3. **Mode switches are exclusive and declared.** Death (`_animate_death`) and
+   save restore (9682–9684) are the only places allowed to take a channel
+   over completely, and they are listed in the table above.
+4. **Pose once per frame, for visible fish only.** Pose writes belong in the
+   pose pass of the last substep. Integration substeps don't touch pivots.
+5. **Pose doesn't steer.** Cosmetic layers must not change steering forces
+   (#696); `smoke_motion_mind_parity` and
+   `smoke_schooling_force_equivalence` check this.
+6. **Smoothing uses `1 − exp(−k·dt)` or `MotionEase.damp()`, not `dt·k`.**
+   The pose pass was converted in Phase 1 (#48). Brain and mood lerps keep
+   `dt·k` so mind-replay parity holds; `scripts/check_motion_lint.sh` stops
+   the count from growing anywhere.
+
+Known exceptions in `5ad6dd3`: `Head.scale` has two writers (pose pass and gill
+flush); the posture roll arrives one frame late; the school bank correlation
+reads neighbours' drawn roll rather than their `_bank`.
+
+### Phase 1 changes
+
+- **One stroke clock** (#13, #49): see the clock table.
+- **Per-draw wave phase** (#11, #50): see the shader contract.
+- **Motion profiles as data** (#63): the per-locomotion tail, body, head and
+  pectoral constants come from `FishMotionProfiles.get_profile()`
+  ([fish_motion_profiles.gd](../shaders-godot/godot-project/scripts/fish_motion_profiles.gd)),
+  with optional overrides in `data/motion/locomotion_profiles.json`
+  (`reload_data()`; note `ClassName.reload()` would hit Godot's own
+  `Script.reload()`).
+- **Expression layer** (#17): the sim refreshes `_spark_motion` at the brain
+  tick for visible fish; the pose eases `_spark_tail`, `_spark_fins` and
+  `_spark_still` into tail amplitude, pectoral spread and stillness. Its
+  speed, turn and wander scales are not read: pose doesn't steer.
+- **Toolkit** for later phases: `MotionSpring`, `MotionChain`,
+  `MotionPoseComposer` (rule 1 as code, with a foreign-write check),
+  `MotionPoseLibrary`, `MotionEnvelope`, `MotionGaze`, `MotionBreath`,
+  `MotionLod`, `MotionEvents`, `MotionMetrics` and others in `scripts/motion_*.gd`.
+  The fish pose moves onto the composer with the spine (Phase 2).

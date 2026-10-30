@@ -109,6 +109,18 @@ static func handle_orig_color(h: VoxelBatch.Handle) -> Color:
 # fraction, bioluminescence (0..1, per fish) in 1/32 integer steps. The shader
 # unpacks with fract()/floor(). Bend is capped below 1.0 so fract() never
 # wraps a full-weight tail voxel to zero.
+# The per-pivot MultiMesh instances this builder made (empty when voxels went
+# to a shared species batch). A creature sets per-instance shader uniforms on
+# these, such as the fish wave phase.
+func pivot_instances() -> Array[GeometryInstance3D]:
+	var out: Array[GeometryInstance3D] = []
+	for key in _batches:
+		var b: VoxelBatch = _batches[key]
+		if b != null and is_instance_valid(b.mmi):
+			out.append(b.mmi)
+	return out
+
+
 static func pack_custom_r(bend: float, biolum: float) -> float:
 	return floorf(clampf(biolum, 0.0, 1.0) * 32.0 + 0.5) + clampf(bend, 0.0, 0.995)
 

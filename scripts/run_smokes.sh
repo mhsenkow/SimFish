@@ -109,7 +109,11 @@ run_one() {
 	local pid=$!
 	wait "$pid" 2>/dev/null
 	local rc=$?
-	if (( rc == 0 )); then
+	# Godot exits 0 when the --script itself fails to parse, so a smoke with
+	# a syntax error used to read as a pass without running a single check.
+	if (( rc == 0 )) && grep -q "Failed to load script \"res://scripts/$script\"" "$log"; then
+		echo "FAIL $script parse error"
+	elif (( rc == 0 )); then
 		echo "PASS $script"
 	elif (( rc == 142 )); then
 		echo "TIMEOUT $script"

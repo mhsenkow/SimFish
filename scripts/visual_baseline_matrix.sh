@@ -11,12 +11,20 @@
 #   - routing through scripts/dev_run.sh so the player's tanks stay untouched
 #   - grading with camera-intent profiles (HOLISTIC #003)
 #
+# Also renders motion-lab stills (CREATURE_MOTION_700 #105): a few species on
+# the neutral motion-lab stage at fixed tail-beat phases, side | top | front,
+# so a motion change shows up in the same baseline as a lighting change.
+#
 # Usage:
 #   scripts/visual_baseline_matrix.sh
 #   VISUAL_BASELINE_SETTLE=360 scripts/visual_baseline_matrix.sh
 #   VISUAL_BASELINE_SCENARIOS="valli_jungle,hex_jungle" scripts/visual_baseline_matrix.sh
+#   VISUAL_BASELINE_SCENARIOS=none scripts/visual_baseline_matrix.sh   # motion stills only
+#   VISUAL_BASELINE_MOTION=0 ...                                         # skip motion stills
+#   VISUAL_BASELINE_MOTION_SPECIES="guppy,shrimp:crab" VISUAL_BASELINE_MOTION_PHASES="0,0.5" ...
 #
 # Output: output/visual_baselines/<stamp>/<scenario>/<day|night>/{fit,close}.png
+#         output/visual_baselines/<stamp>/motion_lab/<species>_phaseNNN.png
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +36,9 @@ SETTLE="${VISUAL_BASELINE_SETTLE:-360}"
 ANGLES="${VISUAL_BASELINE_ANGLES:-fit,close}"
 SCENARIOS_CSV="${VISUAL_BASELINE_SCENARIOS:-beginner_sandbox,valli_jungle,blackwater,reef,hex_jungle}"
 PHASES_CSV="${VISUAL_BASELINE_PHASES:-day:0.25,night:0.75}"
+MOTION="${VISUAL_BASELINE_MOTION:-1}"
+MOTION_SPECIES="${VISUAL_BASELINE_MOTION_SPECIES:-guppy,betta,corydoras,shrimp:crab}"
+MOTION_PHASES="${VISUAL_BASELINE_MOTION_PHASES:-0,0.25,0.5,0.75}"
 
 mkdir -p "$OUT_ROOT"
 SUMMARY="$OUT_ROOT/SUMMARY.md"
@@ -48,6 +59,7 @@ IFS=',' read -r -a PHASE_SPECS <<<"$PHASES_CSV"
 
 echo "[visual_baseline] out=$OUT_ROOT scenarios=${#SCENARIOS[@]} phases=${#PHASE_SPECS[@]}"
 
+if [[ "$SCENARIOS_CSV" != "none" ]]; then
 for scenario in "${SCENARIOS[@]}"; do
 	scenario="$(echo "$scenario" | tr -d '[:space:]')"
 	[[ -z "$scenario" ]] && continue
@@ -82,6 +94,34 @@ for scenario in "${SCENARIOS[@]}"; do
 		echo "| \`$scenario\` | \`$name\` ($phase) | \`$scenario/$name\` | $note |" >>"$SUMMARY"
 	done
 done
+fi
+
+# Motion-lab stills (#105). The lab builds no World and touches no save slot,
+# but it still goes through dev_run.sh like every other capture.
+if [[ "$MOTION" == "1" ]]; then
+	cell="$OUT_ROOT/motion_lab"
+	mkdir -p "$cell"
+	echo "[visual_baseline] motion lab stills ($MOTION_SPECIES @ $MOTION_PHASES) → $cell"
+	export MOTION_LAB_STILLS="$cell"
+	export MOTION_LAB_STILL_SPECIES="$MOTION_SPECIES"
+	export MOTION_LAB_STILL_PHASES="$MOTION_PHASES"
+	export GODOT_SCRATCH_NAME="walstad_loom_baseline_motion_$$"
+	export GODOT_DEV_OUT_ROOT="$cell/dev_run"
+	set +e
+	"$DEV_RUN" --path "$PROJECT" res://dev/motion_lab.tscn
+	ec=$?
+	set -e
+	unset MOTION_LAB_STILLS MOTION_LAB_STILL_SPECIES MOTION_LAB_STILL_PHASES
+	note="ok"
+	if (( ec != 0 )); then
+		note="exit $ec"
+	elif [[ ! -f "$cell/stills.txt" ]]; then
+		note="missing stills"
+	else
+		note="$(find "$cell" -maxdepth 1 -name '*_phase*.png' | wc -l | tr -d ' ') stills"
+	fi
+	echo "| \`motion_lab\` | \`$MOTION_PHASES\` | \`motion_lab\` | $note |" >>"$SUMMARY"
+fi
 
 {
 	echo
@@ -90,6 +130,10 @@ done
 	echo "Each cell has \`fit.png\`, \`close.png\`, \`metrics.txt\`, and \`meta.json\`."
 	echo "Grades use camera-intent profiles from \`frame_metrics.view_profile\`:"
 	echo "close views do not fail solely on the hero-view shadow floor."
+	echo
+	echo "\`motion_lab/<species>_phaseNNN.png\` are motion-lab stills: side | top | front"
+	echo "in the creature's body frame at NNN% of a tail beat (or gait cycle), after a"
+	echo "fixed 1.5 s straight cruise. Same build, same image; a diff is a motion change."
 	echo
 	echo "Re-run a single cell:"
 	echo

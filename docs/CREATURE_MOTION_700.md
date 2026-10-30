@@ -183,6 +183,34 @@ Full suite: 260 of 265 pass. The 5 failures also fail on clean `4fc358e`
 localization, and a `project.godot` window-scale check). A new
 `smoke_snail_motion` covers the snail items.
 
+**Phase 1 status (2026-10-30).** 68 of the 75 Phase 1 items shipped (62) or
+partly shipped (6), along with three Phase 0 items that were waiting on them
+(#11, #13, #17). The rest have reasons noted on each item:
+- Waiting for the behaviours they test: #107–#109, #111.
+- Moved into Phase 2: #69.
+- Deferred: #71.
+- Moved to the perf work: #112 goes with #700.
+
+What shipped:
+- The toolkit in `scripts/motion_*.gd`.
+- One stroke clock for thrust and the visible tail.
+- A per-draw shader wave phase.
+- Motion profiles as data.
+- The expression layer, cosmetic only.
+- The motion lab, overlay, clip tools and probes.
+- Six motion docs, the motion lint, and a smoke-runner fix: a smoke that
+  failed to parse used to count as a pass.
+
+First baseline from the new probes (short runs):
+- Guppy Strouhal is 0.44 and glassdart 0.63, against a 0.2–0.4 target.
+- Head-to-tail lag sits at π (a standing wave, lever 1).
+- Fish average 7–8 snaps per minute.
+- Legged crustaceans' feet slide 60–120% of a stride while planted (target
+  ≤10%).
+- Worms don't face their travel.
+
+Phases 2 and 4 are built to move exactly these numbers.
+
 ---
 
 # Part I — Foundations
@@ -272,7 +300,7 @@ are from `4fc358e`.
   `INSTANCE_CUSTOM.a` (iridescence keeps the fraction): body ripple follows
   tail activity, sleep and death still it, and fins stop on sleep and death.
   Quantised with hysteresis, so voxels only re-upload when the level moves.
-- [ ] **11. Phase-lock the shader ripple to the tail.** The ripple uses global
+- [x] **11. Phase-lock the shader ripple to the tail.** The ripple uses global
   `TIME·6.2`
   ([voxel_fauna_mm.gdshader:152](../shaders-godot/godot-project/shaders/voxel_fauna_mm.gdshader:152))
   while the pivots use `_swim_phase`. Pass the phase in instance data so the
@@ -280,6 +308,10 @@ are from `4fc358e`.
   **Phase 0:** *Deferred to #50.* The per-voxel custom data is uploaded per
   handle, so a continuous per-fish phase would mean re-uploading every voxel
   every frame. It needs the instance-data design in Phase 1.
+  **Phase 1 (2026-10-30):** `fauna_wave_phase` is an instance uniform each fish
+  sets on its pivot MultiMeshes every posed frame, so the flank ripple is the
+  tail's own wave. Fish in a shared species batch (36 or more of a kind) keep
+  the global clock, since one draw serves the whole school.
 - [x] **12. Take the fish wag off crustaceans.** `_bone_bend_weight` gives any
   node named `TailPivot` a bend weight of 1.0
   ([fauna_voxel_builder.gd:111](../shaders-godot/godot-project/scripts/fauna_voxel_builder.gd:111)),
@@ -287,7 +319,7 @@ are from `4fc358e`.
   crustacean voxels weight 0, or a pitch-axis flag (#517). *SD · S/L*
   **Phase 0 (2026-10-29):** `FaunaVoxelBuilder.lateral_body_wave`; shrimp
   builders turn it off, so crustacean voxels carry zero bend.
-- [ ] **13. Couple visible tail beat to thrust.** `_motor_phase`
+- [x] **13. Couple visible tail beat to thrust.** `_motor_phase`
   ([fish.gd:7256](../shaders-godot/godot-project/scripts/fish.gd:7256)) drives
   thrust and `_swim_phase` drives the tail, so the surges land at random against
   the strokes. Derive both from one clock (#49), with the thrust peak at
@@ -296,6 +328,9 @@ are from `4fc358e`.
   identical physics for visible and culled fish, while the visible tail's rate
   includes mood, glide and dance factors computed only for drawn fish. Merging
   the clocks first means moving those factors into a render-independent rate.
+  **Phase 1 (2026-10-30):** Done with #49. The visible tail is the stroke clock
+  a quarter cycle back (`_swim_phase = _motor_phase − π/2 + offset`), so the
+  tail crosses the midline as `max(0, sin)` thrust peaks.
 - [x] **14. Replace the wall-bounce snap.** A hard block snaps heading 62% toward
   a reflection and sets `speed = allowed/dt`
   ([fish.gd:7557](../shaders-godot/godot-project/scripts/fish.gd:7557),
@@ -316,7 +351,7 @@ are from `4fc358e`.
   `_turn_lean` and build real anticipation separately (Section E). *AN · S/S*
   **Phase 0 (2026-10-29):** Renamed `_turn_lean`; real anticipation is still
   Section E.
-- [ ] **17. Consume or delete `_spark_motion`.** fin_spread, tail_amp, stillness
+- [x] **17. Consume or delete `_spark_motion`.** fin_spread, tail_amp, stillness
   and the speed and turn scales are computed in
   [fish_spark_expression.gd:121](../shaders-godot/godot-project/scripts/fish_spark_expression.gd:121)
   and nothing reads them. Feed them into the pose composer as an
@@ -324,6 +359,10 @@ are from `4fc358e`.
   **Phase 0:** *Deferred to #44.* `FishSparkExpression.tick` never runs at
   runtime, so consuming `_spark_motion` means switching a module on. That
   should land with the pose composer, not as a fix.
+  **Phase 1 (2026-10-30):** Wired as cosmetic only. The sim refreshes the
+  modifiers at the brain tick for visible fish; the pose eases in `tail_amp`,
+  `fin_spread` and `stillness`. Speed, turn and wander scales are deliberately
+  ignored, and the phase 1 smoke checks the path is unchanged.
 - [x] **18. Read `_school_phase_offset` and `_speed_personality`.** Both are set at
   [fish.gd:2203](../shaders-godot/godot-project/scripts/fish.gd:2203) and
   never read. They are exactly the per-fish tempo and phase that stop schools
@@ -491,92 +530,141 @@ Most of the principles need state: springs for follow-through, envelopes for
 anticipation, a composer so layers add up instead of overwriting each other.
 Build these once, in `scripts/motion/`, and use them everywhere.
 
-- [ ] **41. `MotionSpring`.** A second-order dynamics helper (frequency `f`,
+- [x] **41. `MotionSpring`.** A second-order dynamics helper (frequency `f`,
   damping `ζ`, response `r`) with float, Vector3 and angle variants, stable
   for any `dt` (semi-implicit, with a `dt` clamp derived from `f`). `r < 0`
   gives anticipation, `r > 1` gives overshoot and `ζ < 1` gives settle. This
   one primitive covers FT, SI and AN. *FT SI AN · M/L*
-- [ ] **42. Tissue presets.** A data table of spring parameters per tissue: fin
+  **Phase 1 (2026-10-30):** `scripts/motion_spring.gd`: f/ζ/r second-order
+  dynamics with the k2 stability clamp; float, angle and Vector3 variants.
+- [x] **42. Tissue presets.** A data table of spring parameters per tissue: fin
   membrane (f 4, ζ 0.45), veil fin (f 1.6, ζ 0.3), barbel (f 3, ζ 0.5), antenna
   (f 2.5, ζ 0.35), tentacle (f 1.2, ζ 0.6), shell on foot (f 2, ζ 0.7). Every
   secondary part picks a preset instead of inventing constants. *FT · S/M*
-- [ ] **43. `MotionChain`.** An n-link chain where each link springs toward its
+  **Phase 1 (2026-10-30):** `MotionSpring.TISSUE`: fin, caudal, veil, barbel,
+  antenna, tentacle, shell, body, bank, steer, anticipate.
+- [x] **43. `MotionChain`.** An n-link chain where each link springs toward its
   parent's rotation with a per-link lag and stiffness falloff. Use it for
   caudal fins, veils, barbels, feelers, antennae, tentacles and worm bodies. *FT SD · M/L*
-- [ ] **44. `PoseComposer`: one writer per channel.** Each pivot channel (rot
+  **Phase 1 (2026-10-30):** `scripts/motion_chain.gd`, with stiffness falloff
+  toward the tip.
+- [x] **44. `PoseComposer`: one writer per channel.** Each pivot channel (rot
   x/y/z, scale) gets a list of additive or multiplicative layers (locomotion,
   turn lean, posture, display, breath, expression, music, death) with weights.
   The composer writes each channel once, at the end of the substep. This
   removes the whole class of bugs in #2–#7. *PP · L/L*
-- [ ] **45. `PoseLibrary` as data.** Per-species key poses (pivot → rotation and
+  **Phase 1 (2026-10-30):** `scripts/motion_pose_composer.gd`: base + Σadd ·
+  Πmul per (node, property), written once. The fish pose moves onto it with the
+  spine in Phase 2.
+- [x] **45. `PoseLibrary` as data.** Per-species key poses (pivot → rotation and
   scale, plus fin spread and tail spread) stored as `.tres`, with a shared
   fallback set. Section G fills it. *PP AP · M/L*
-- [ ] **46. Separate in and out blend times.** Every pose blend takes an
+  **Phase 1 (2026-10-30):** `scripts/motion_pose_library.gd` reading
+  `data/motion/poses.json`, with `_default` fallbacks; Section G fills the
+  poses.
+- [x] **46. Separate in and out blend times.** Every pose blend takes an
   `in_time`, `out_time` and ease curve. Alarm postures snap in (0.08 s) and
   release slowly (1.2 s); display poses ease in over 0.4 s. *SI PP · S/M*
-- [ ] **47. `Ease` helpers.** Smootherstep, expo-out (drag decay), back-out
+  **Phase 1 (2026-10-30):** `MotionPoseLibrary.Blend` takes separate in and out
+  times and a curve per pose.
+- [x] **47. `Ease` helpers.** Smootherstep, expo-out (drag decay), back-out
   (overshoot), sine-in-out and a custom "drag" curve, as static funcs with
   unit tests. Ban new hand-written polynomials in motion code. *SI · S/M*
-- [ ] **48. Replace `lerpf(a, b, dt·k)` with `damp()`.** `lerp(a, b,
+  **Phase 1 (2026-10-30):** `scripts/motion_ease.gd`.
+- [x] **48. Replace `lerpf(a, b, dt·k)` with `damp()`.** `lerp(a, b,
   1 − exp(−λ·dt))` is frame-rate independent; `dt·k` overshoots once
   `dt·k > 1` and drifts with frame rate. Audit every instance in
   `fish.gd`, `shrimp.gd` and `snail.gd`. *TI SI · M/M*
-- [ ] **49. One motion clock per creature.** A single `MotionClock` advances the
+  **Phase 1 (2026-10-30):** `MotionEase.damp()`. The fish pose block is
+  converted; the brain and mood lerps stay, so mind-replay parity holds.
+  `check_motion_lint.sh` (#115) stops new ones.
+- [x] **49. One motion clock per creature.** A single `MotionClock` advances the
   locomotor phase from speed and body length. The tail, the thrust pulse, the
   pectoral rhythm (as a ratio), the shader ripple and the breath all derive
   from it. *TI · M/L*
-- [ ] **50. Per-instance shader data.** Pack swim phase, wave amplitude, bend axis
+  **Phase 1 (2026-10-30):** Thrust and the visible tail share `_motor_phase`.
+  Its rate now includes effort (`Hydrodynamics.effort_beat_mult`), glide,
+  courtship and a mood factor cached at the 10 Hz brain tick. All are state
+  every fish has, so culled and drawn fish still stroke identically. Dancing is
+  the one departure: it accumulates in a visual offset that eases back to a
+  whole cycle.
+- [x] **50. Per-instance shader data.** Pack swim phase, wave amplitude, bend axis
   and a "dead" flag into `INSTANCE_CUSTOM.gba` for every fauna voxel batch,
   and make `voxel_fauna_mm.gdshader` read them instead of `TIME`. *TI FT · M/L*
+  **Phase 1 (2026-10-30):** See #11. `INSTANCE_CUSTOM.a` also carries the quiet
+  level (#10).
 - [ ] **51. Instance uniforms for unbatched fauna.** Snails, clams and worms use
   one `MeshInstance3D` per voxel; give them `instance uniform` phase and bend
   so shader motion is possible without batching. *SD · M/M*
-- [ ] **52. `ActionEnvelope`.** Every discrete action (dart, strike, gulp, flip,
+  **Phase 1 (2026-10-30):** *Partly.* The instance-uniform path exists in the
+  fauna shader. Snails, clams and worms use `voxel.gdshader` with no vertex
+  motion, so they get it when Phase 4 batches them (#699).
+- [x] **52. `ActionEnvelope`.** Every discrete action (dart, strike, gulp, flip,
   peck, lunge, hop) runs a wind-up → action → follow-through → settle state
   machine with per-species durations, instead of a bare timer and a speed
   multiplier. *AN FT SI · M/L*
-- [ ] **53. `GazeController`.** Picks a gaze target (food, mate, rival, threat,
+  **Phase 1 (2026-10-30):** `scripts/motion_envelope.gd`, with `from_frames()`
+  for exposure sheets.
+- [x] **53. `GazeController`.** Picks a gaze target (food, mate, rival, threat,
   keeper, reflection, nothing), schedules saccades, and drives eye pivots and
   a head-lead offset. Shared by fish, shrimp eye-stalks and snail tentacles. *AN SA AP · M/L*
-- [ ] **54. `BreathOscillator`.** Rate and depth from O₂, exertion, temperature
+  **Phase 1 (2026-10-30):** `scripts/motion_gaze.gd`. Fish eyes need pivots
+  first (#297).
+- [x] **54. `BreathOscillator`.** Rate and depth from O₂, exertion, temperature
   and stress; drives opercula, mouth, buccal pumping and a tiny body bob.
   Replaces the ad-hoc breath Y-bob at
   [fish.gd:7211](../shaders-godot/godot-project/scripts/fish.gd:7211). *SA TI · M/M*
-- [ ] **55. A minimal contact solver.** Plane-projection "IK" for leg tips, the
+  **Phase 1 (2026-10-30):** `scripts/motion_breath.gd`.
+- [x] **55. A minimal contact solver.** Plane-projection "IK" for leg tips, the
   snail foot and fish resting on substrate: find the ground under the contact
   point and rotate the limb so it touches. Bounded cost: two raycasts against
   the height field, no physics bodies. *SD · M/L*
-- [ ] **56. Surface-transition planner.** A shared helper that turns "move from
+  **Phase 1 (2026-10-30):** `scripts/motion_contact.gd`.
+- [x] **56. Surface-transition planner.** A shared helper that turns "move from
   surface A to surface B" into a pivot around the shared edge over a set time
   (an arc). Used by snails, climbing shrimp and the hillstream loach. *AR SI · M/M*
-- [ ] **57. `MotionPersonality` per individual.** Seeded tempo (±12%), amplitude
+  **Phase 1 (2026-10-30):** `scripts/motion_surface_transition.gd`.
+- [x] **57. `MotionPersonality` per individual.** Seeded tempo (±12%), amplitude
   bias, fin-carriage bias, preferred turn side, boldness and fidgetiness,
   saved with the creature. The existing jitters at
   [fish.gd:2200](../shaders-godot/godot-project/scripts/fish.gd:2200) move
   here. *AP TI · M/M*
-- [ ] **58. Laterality.** Real fish are lateralised: individuals favour one
+  **Phase 1 (2026-10-30):** `scripts/motion_personality.gd`. The fish's
+  existing jitters move onto it in Phase 2.
+- [x] **58. Laterality.** Real fish are lateralised: individuals favour one
   escape direction and one eye for inspecting novel things. Store a bias in
   [-1, 1] and use it for escape side, ambiguous turns and which eye faces the
   keeper. *AP SD · S/M*
-- [ ] **59. Motion LOD tiers.** Hero (followed or selected), near, far and
+  **Phase 1 (2026-10-30):** `MotionPersonality.laterality` and `choose_side()`.
+- [x] **59. Motion LOD tiers.** Hero (followed or selected), near, far and
   offscreen, each with a declared feature set: hero gets everything, far drops
   chains and gaze, offscreen keeps only the clock and trajectory. Today only the
   frustum gates body animation
   ([fish.gd:7641](../shaders-godot/godot-project/scripts/fish.gd:7641)). *ST · M/M*
-- [ ] **60. Pixel-amplitude budget.** Compute world units per screen pixel at
+  **Phase 1 (2026-10-30):** `scripts/motion_lod.gd`. Tiers declare features;
+  creatures consult them from Phase 2.
+- [x] **60. Pixel-amplitude budget.** Compute world units per screen pixel at
   each creature (the camera already has `pixel_snap_eye`). Skip channels whose
   amplitude is under half a pixel and boost legibility-critical channels
   (Section M). *ST EX · M/M*
-- [ ] **61. Motion event bus.** Emit `dart_started`, `strike`, `gulp`, `landed`,
+  **Phase 1 (2026-10-30):** `MotionLod.px_per_unit`, `legibility_gain` (capped
+  at 1.3) and `worth_animating`.
+- [x] **61. Motion event bus.** Emit `dart_started`, `strike`, `gulp`, `landed`,
   `flip`, `clamped` and `startled` with position and strength, for audio,
   particles, camera and neighbour reactions. Today each reaction is wired by
   hand. *ST SA · M/M*
-- [ ] **62. Pose history ring buffer (debug).** The last 5 s of pivot transforms
+  **Phase 1 (2026-10-30):** `scripts/motion_events.gd`. Emitters arrive with
+  the actions in Phase 3.
+- [x] **62. Pose history ring buffer (debug).** The last 5 s of pivot transforms
   per creature, for onion-skinning and graphs (Section C). *— · S/M*
-- [ ] **63. Move motion constants into data.** Today the match block at
+  **Phase 1 (2026-10-30):** `scripts/motion_pose_history.gd`.
+- [x] **63. Move motion constants into data.** Today the match block at
   [fish.gd:7742](../shaders-godot/godot-project/scripts/fish.gd:7742) holds
   them. Put tail amp, body amp, wavelength, pec amp and frequency, turn radius
   and bout timing in a `motion` sub-dictionary of each species. *TI · M/L*
+  **Phase 1 (2026-10-30):** `scripts/fish_motion_profiles.gd` (defaults equal
+  the old match block) plus `data/motion/locomotion_profiles.json`;
+  `reload_data()` re-reads it.
 - [ ] **64. Turn the three sibling pivots into a spine chain.** Head, BodyMid and
   TailPivot are siblings of `BankPivot`
   ([fish.gd:2848](../shaders-godot/godot-project/scripts/fish.gd:2848)), so
@@ -603,41 +691,69 @@ Build these once, in `scripts/motion/`, and use them everywhere.
   path tangent and let the head and eyes lead it by up to 0.3 rad. This is the
   hook for anticipation and gaze; today `_face_direction` ties the whole body
   to the path ([fish.gd:7140](../shaders-godot/godot-project/scripts/fish.gd:7140)). *AN AR · M/L*
-- [ ] **70. A common `CreatureMotor` interface.** Desired velocity, gait phase,
+  **Phase 1 (2026-10-30):** *Moves to Phase 2* with the head lead (#143): the
+  split is only worth making when something leads.
+- [x] **70. A common `CreatureMotor` interface.** Desired velocity, gait phase,
   contact state, current action and pose weights, exposed the same way by
   fish, shrimp, snails and worms, so probes and overlays work on all of them. *— · M/M*
+  **Phase 1 (2026-10-30):** `scripts/motion_creature_view.gd`: fish, shrimp,
+  snail and others behind one read-only view.
 - [ ] **71. Fixed-rate motion integration.** Integrate motion at a fixed 60 Hz
   with render interpolation, instead of variable substeps (1–20 for fish
   ([fish.gd:6914](../shaders-godot/godot-project/scripts/fish.gd:6914)), 1–7
   for shrimp). Springs, chains and replays become deterministic. *TI · L/M*
-- [ ] **72. A frame-rate equivalence harness.** Run each creature's motion at
+  **Phase 1 (2026-10-30):** *Deferred.* Fixed-rate integration is a wide
+  physics change, and `smoke_motion_phase1` shows fish already land within 0.03
+  u at 60 vs 120 Hz. Revisit if the spine's springs drift.
+- [x] **72. A frame-rate equivalence harness.** Run each creature's motion at
   30/60/120/144 Hz from one seed and compare trajectories and pose channels
   within a tolerance. This extends the existing walking-consistency check
   to everything. *TI · M/M*
+  **Phase 1 (2026-10-30):** In `smoke_motion_phase1` (fish at 30/60/120 Hz);
+  shrimp at 30/120 Hz are in `smoke_living_locomotion`.
 - [ ] **73. Seeded motion randomness.** Every jitter, fidget and saccade draws
   from a per-creature stream in `sim_rng.gd`, never from global `randf()`,
   so captures can be compared before and after. *— · S/M*
-- [ ] **74. Smooth noise instead of sums of sines.** A small 1D simplex/value
+  **Phase 1 (2026-10-30):** *Partly.* Fish motion already draws only from
+  seeded per-fish streams. The invertebrates use global `randf()` (79 calls in
+  `snail.gd` alone) and convert with their Phase 4 rework.
+- [x] **74. Smooth noise instead of sums of sines.** A small 1D simplex/value
   noise helper for wander, fin flicker and antenna sway. Two or three sines
   beat visibly over minutes; noise doesn't. *SA AP · S/M*
-- [ ] **75. A periodicity audit.** List every `sin(TIME·k)` and fixed-rate
+  **Phase 1 (2026-10-30):** `scripts/motion_noise.gd`.
+- [x] **75. A periodicity audit.** List every `sin(TIME·k)` and fixed-rate
   oscillator in motion code and shaders. Make ratios incommensurate (scale by
   the golden ratio) or move them to noise, so no fin flicks on a visible
   metronome. *TI · S/M*
-- [ ] **76. Hysteresis for behaviour-to-pose switching.** A pose can't re-enter
+  **Phase 1 (2026-10-30):** The fauna shader's oscillators (fin flutter 10.5,
+  vertical 5.3, fallback ripple 6.2 rad/s) have no small-integer ratios, and
+  the stroke clock wraps at 100·2π so its 1.3× and 0.28× harmonics stay
+  continuous. Nothing beats visibly; the wander sines move to noise with #277.
+- [x] **76. Hysteresis for behaviour-to-pose switching.** A pose can't re-enter
   within N seconds of leaving, and enter and exit thresholds differ, so a fish
   near a threshold doesn't flicker between hover and cruise poses. *PP SI · S/M*
-- [ ] **77. Defined rest poses.** Every species declares a neutral pose (fin
+  **Phase 1 (2026-10-30):** `MotionEnvelope.Hysteresis`.
+- [x] **77. Defined rest poses.** Every species declares a neutral pose (fin
   carriage, tail spread, head angle). Every layer decays to it, not to zero
   rotation. A betta at rest carries its fins half spread, not clamped. *PP AP · S/M*
-- [ ] **78. Reduce-motion support.** One setting scales exaggeration, camera
+  **Phase 1 (2026-10-30):** `MotionPoseLibrary.rest_pose()`; every pose
+  inherits rest channels.
+- [x] **78. Reduce-motion support.** One setting scales exaggeration, camera
   reactions and fast flicker down by 60% and removes strobing. Ties into
   accessibility and potato mode. *EX · S/M*
+  **Phase 1 (2026-10-30):** `MotionLod.exaggeration_scale()` reads the existing
+  reduced-motion setting; exaggeration (Section M) goes through it.
 - [ ] **79. A motion budget ledger.** Declare per-creature motion cost (CPU µs,
   draw calls) per LOD tier in one table, and make the perf contract read it. *— · S/M*
-- [ ] **80. Document the motion architecture.** Who writes which channel, the
+  **Phase 1 (2026-10-30):** *Partly.* [MOTION_BUDGET.md](MOTION_BUDGET.md)
+  holds per-tier targets and the measured facts, kept apart. No per-tier cost
+  has been measured yet, and the perf contract doesn't read the ledger (#700).
+- [x] **80. Document the motion architecture.** Who writes which channel, the
   layer order and the clocks, as a section in `docs/ARCHITECTURE.md`, so the
   next pass doesn't reintroduce overwrites. *— · S/M*
+  **Phase 1 (2026-10-30):** [ARCHITECTURE.md](ARCHITECTURE.md) §11: rig, frame
+  order, the writer of every channel, layer variables, clocks, shader contract
+  and rules.
 
 ## C. Seeing and measuring motion (81–120)
 
@@ -645,109 +761,203 @@ The existing probes measure behaviour (depth bands, speed CV, hover and dart
 percentages). None of them measures whether motion *looks* right. Each
 principle has a number that can be checked.
 
-- [ ] **81. Onion skins in the debug overlay.** In `motion_debug_overlay.gd`,
+- [x] **81. Onion skins in the debug overlay.** In `motion_debug_overlay.gd`,
   draw the last 30 head and tail-tip positions as dots, spaced in time. Clumped
   dots at the ends of a move are slow in/out; evenly spaced dots mean the
   motion is mechanical. *SI AR · S/L*
-- [ ] **82. A speed graph for the selected creature.** A 10 s speed trace with
+  **Phase 1 (2026-10-30):** Shift+M in game (`motion_debug_overlay.gd`): 30
+  onion-skin dots each for head and tail tip, sampled at 30 Hz, for the
+  followed fish or the one nearest screen centre.
+- [x] **82. A speed graph for the selected creature.** A 10 s speed trace with
   bout-change markers. A burst should look like a cliff and a long tail, not a
   square wave. *SI TI · S/M*
-- [ ] **83. A curvature overlay.** Colour the head path by curvature and flag
+  **Phase 1 (2026-10-30):** A 10 s speed graph with bout, burst, startle and
+  motion-event markers.
+- [x] **83. A curvature overlay.** Colour the head path by curvature and flag
   discontinuities (kinks) in red. Arcs should be continuous; kinks are snaps. *AR · S/M*
-- [ ] **84. A side-view tail-tip trace.** Plot the caudal tip in the fish's own
+  **Phase 1 (2026-10-30):** The body-centre path coloured by curvature, with
+  breaks ticked in red (the head tip carries the body wave, so it read as false
+  breaks).
+- [x] **84. A side-view tail-tip trace.** Plot the caudal tip in the fish's own
   frame; a healthy swimmer draws a flattened figure-eight. *AR SD · S/M*
-- [ ] **85. A jerk metric.** Mean and p95 of |d³x/dt³| per species from the
+  **Phase 1 (2026-10-30):** Tail-tip traces in the fish's own frame, top and
+  side.
+- [x] **85. A jerk metric.** Mean and p95 of |d³x/dt³| per species from the
   behaviour probe. Spikes outside declared explosive actions are bugs. *SI · M/M*
-- [ ] **86. A heading-kink count.** Frames where |Δyaw| exceeds the inertial
+  **Phase 1 (2026-10-30):** `MotionMetrics.jerk`.
+- [x] **86. A heading-kink count.** Frames where |Δyaw| exceeds the inertial
   cap without a startle or C-start flag. *AR · S/M*
-- [ ] **87. A body phase-lag metric.** The phase difference head → mid → tail. A
+  **Phase 1 (2026-10-30):** `MotionMetrics.heading_kinks`, with exempt frames.
+- [x] **87. A body phase-lag metric.** The phase difference head → mid → tail. A
   travelling wave has monotonic lag; a standing wave has 0 or π. Assert it per
   locomotion type. *FT · M/M*
-- [ ] **88. A Strouhal check.** St = f·A/U at cruise, asserted in 0.2–0.4 for
+  **Phase 1 (2026-10-30):** `MotionMetrics.phase_lag` (projection at the beat
+  frequency).
+- [x] **88. A Strouhal check.** St = f·A/U at cruise, asserted in 0.2–0.4 for
   body-caudal swimmers. Catches tails beating too fast for the speed (the
   "paddling in place" look). *TI · S/M*
-- [ ] **89. A twin metric.** Correlation of left and right pectoral angles over
+  **Phase 1 (2026-10-30):** `MotionMetrics.strouhal` and `dominant_hz`.
+- [x] **89. A twin metric.** Correlation of left and right pectoral angles over
   10 s, and pose correlation between school neighbours. Assert both below a
   ceiling, so fins and fish don't mirror each other. *SD · S/M*
+  **Phase 1 (2026-10-30):** `MotionMetrics.correlation`.
 - [ ] **90. A sub-pixel report.** For each animated channel, the screen-space
   amplitude at the default camera. Flag channels under 0.5 px (wasted CPU)
   and over-twitchy channels that shimmer through the palette quantize. *ST · M/M*
-- [ ] **91. A single-writer assertion (debug).** The pose composer asserts one
+  **Phase 1 (2026-10-30):** *Partly.* `MotionLod.amplitude_px` and
+  `worth_animating` give the numbers; a per-channel report needs the probe
+  columns.
+- [x] **91. A single-writer assertion (debug).** The pose composer asserts one
   write per channel per frame, so overwrites like #2–#4 can't return. *— · S/M*
-- [ ] **92. A snap detector (debug).** Log any pivot or root transform that
+  **Phase 1 (2026-10-30):** `MotionPoseComposer` reports writes that bypass it
+  (debug builds).
+- [x] **92. A snap detector (debug).** Log any pivot or root transform that
   moves more than a threshold in one frame without a motion event flag. *SI · S/M*
-- [ ] **93. A "corpse wag" smoke.** After death the per-instance bend is 0 and
+  **Phase 1 (2026-10-30):** `MotionMetrics.snaps` for recorded channels.
+- [x] **93. A "corpse wag" smoke.** After death the per-instance bend is 0 and
   no pivot rotates except the death sequence. *SD · S/S*
-- [ ] **94. A motion lab scene.** `dev/motion_lab.tscn`: one creature per
+  **Phase 1 (2026-10-30):** In `smoke_motion_phase1`: death sets quiet level
+  15, and it reaches the voxels' instance data.
+- [x] **94. A motion lab scene.** `dev/motion_lab.tscn`: one creature per
   species on a neutral backdrop, orthographic side, top and front views, a
   timeline scrubber, 0.1× slow motion, and buttons to trigger each action
   (dart, startle, strike, gulp, display, die). Isolated through `dev_run.sh`. *— · M/L*
-- [ ] **95. Slow motion and frame-step in dev builds.** A hotkey for
+  **Phase 1 (2026-10-30):** `dev/motion_lab.tscn`: every species plus caridean,
+  crab, lobster, mantis and a snail on a neutral stage with no World or saves;
+  side, top and front orthographic views; scripted paths; actions dart,
+  startle, gulp, display, court, die, flip, retract and clamp. There is no
+  strike to trigger yet.
+- [x] **95. Slow motion and frame-step in dev builds.** A hotkey for
   `time_scale` 0.1 and single-frame stepping, so animation can be judged the
   way animators judge it. *— · S/M*
-- [ ] **96. A reference library.** `docs/MOTION_REFERENCE.md`: real footage and
+  **Phase 1 (2026-10-30):** In the lab: 0.1×–2×, pause, single-frame step, and
+  a scrubber over the last 600 frames.
+- [x] **96. A reference library.** `docs/MOTION_REFERENCE.md`: real footage and
   papers per species and behaviour (zebrafish C-start high-speed video, guppy
   sigmoid display, corydoras surface dash, shrimp tail flip, nerite crawl,
   daphnia hop), each with what to look for. *— · S/L*
-- [ ] **97. Published kinematic numbers in one table.** Tail-beat amplitude
+  **Phase 1 (2026-10-30):** [MOTION_REFERENCE.md](MOTION_REFERENCE.md). Sources
+  are named only where certain; the rest are search terms.
+- [x] **97. Published kinematic numbers in one table.** Tail-beat amplitude
   about 0.2 L at the tip; stride length 0.6–0.7 L per beat; C-start stage 1
   about 10–20 ms and stage 2 about 20–40 ms; shrimp flip about 30–50 ms;
   Strouhal 0.2–0.4. Each tuning constant cites a row. *TI · S/M*
-- [ ] **98. Clip capture.** A dev script that records a 4 s clip of the motion
+  **Phase 1 (2026-10-30):** The kinematics table in
+  [MOTION_REFERENCE.md](MOTION_REFERENCE.md), with a confidence level, the
+  constant it calibrates and today's value per row. The code declares no world
+  scale (one comment implies 1 u ≈ 1 m, the backlog assumed 6 cm), so it
+  calibrates in body lengths.
+- [x] **98. Clip capture.** A dev script that records a 4 s clip of the motion
   lab to `output/motion_lab/*.gif` for review. *— · S/M*
-- [ ] **99. Before/after pairs.** The same seed and scenario, before and after,
+  **Phase 1 (2026-10-30):** `dev/motion_clip.tscn` writes PNG frames,
+  `motion.csv` and `meta.json`; `tools/motion_clip_compose.py gif DIR` makes
+  the GIF.
+- [x] **99. Before/after pairs.** The same seed and scenario, before and after,
   composed side by side into one clip, so every PR in this backlog ships a
   visual diff. *— · S/M*
-- [ ] **100. Motion columns in the fish behaviour probe.** Add jerk, kink count,
+  **Phase 1 (2026-10-30):** `motion_clip_compose.py pair BEFORE AFTER` lays two
+  clips side by side; the same seed replays identically.
+- [x] **100. Motion columns in the fish behaviour probe.** Add jerk, kink count,
   Strouhal, phase lag, twin correlation and snap count to
   `dev/fish_behaviour_probe.tscn`. *— · M/M*
-- [ ] **101. An invertebrate motion probe.** Stance ratio, foot slip, turn rate,
+  **Phase 1 (2026-10-30):** `fish_behaviour_probe` adds a motion-quality
+  section: jerk, kinks, arc breaks, head→tail lag, tail Hz, Strouhal, pectoral
+  twin and neighbour correlation, snaps.
+- [x] **101. An invertebrate motion probe.** Stance ratio, foot slip, turn rate,
   facing error and surface-transition duration for shrimp, crabs, snails and
   worms. *— · M/M*
-- [ ] **102. A foot-slip metric.** How far the leg tip slides along the ground
+  **Phase 1 (2026-10-30):** `dev/invert_motion_probe.tscn`: speed, turn rate,
+  facing, stance, foot slip and surface/emerge transitions per type.
+- [x] **102. A foot-slip metric.** How far the leg tip slides along the ground
   during stance; target ≤ 10% of stride. *SD · S/M*
-- [ ] **103. A facing smoke.** Snails, worms, cucumbers and trumpet snails face
+  **Phase 1 (2026-10-30):** `MotionMetrics.foot_slip`.
+- [x] **103. A facing smoke.** Snails, worms, cucumbers and trumpet snails face
   their direction of travel (dot > 0.9 once moving). Catches #25 and its
   siblings. *SD · S/M*
-- [ ] **104. Frame-rate smokes for every creature.** Built on #72. *TI · S/M*
-- [ ] **105. Motion captures in the visual baseline.** Add motion-lab stills at
+  **Phase 1 (2026-10-30):** The invertebrate probe measures facing for every
+  type. Snails pass (0.97); worms fail (bristle 0.14, wriggle −0.01), as Phase
+  4 (#598) expects.
+- [x] **104. Frame-rate smokes for every creature.** Built on #72. *TI · S/M*
+  **Phase 1 (2026-10-30):** Fish, shrimp and snails have frame-rate checks;
+  worms join with Phase 4.
+- [x] **105. Motion captures in the visual baseline.** Add motion-lab stills at
   fixed phases to `scripts/visual_baseline_matrix.sh`. *— · S/M*
-- [ ] **106. An exposure sheet per behaviour.** Document each action's key poses
+  **Phase 1 (2026-10-30):** `visual_baseline_matrix.sh` adds motion-lab stills
+  (guppy, betta, corydoras, crab at four beat phases).
+- [x] **106. An exposure sheet per behaviour.** Document each action's key poses
   and frame counts at 60 fps (dart: 6 frames wind-up, 4 strike, 24 glide, 12
   settle), as the spec the code is tested against. *TI PP · S/M*
+  **Phase 1 (2026-10-30):**
+  [MOTION_EXPOSURE_SHEETS.md](MOTION_EXPOSURE_SHEETS.md): 14 actions at 60 and
+  30 fps, with the 30 fps floors (#687).
 - [ ] **107. Smoke: anticipation precedes action.** Every dart, strike and flip
   shows a wind-up state for at least its species minimum before peak speed. *AN · S/M*
+  **Phase 1 (2026-10-30):** *Waits for Section E*: there are no wind-ups to
+  test yet.
 - [ ] **108. Smoke: follow-through after stops.** Tail amplitude decays over at
   least 0.3 s after thrust ends, rather than stopping on the frame. *FT · S/M*
+  **Phase 1 (2026-10-30):** *Waits for #230*, which makes the tail swing on
+  after thrust stops.
 - [ ] **109. Smoke: no constant-speed segments between rests.** The speed curve
   between any two rests has non-zero acceleration at both ends. *SI · S/M*
+  **Phase 1 (2026-10-30):** *Waits for Phase 3* timing work.
 - [ ] **110. Smoke: crustacean flips are in pitch.** The abdomen flexes about X
   during an escape, not about Y. *SD · S/S*
+  **Phase 1 (2026-10-30):** *Partly.* `smoke_motion_phase1` checks crustacean
+  voxels carry no lateral bend; the pitch-axis flip test comes with the
+  segmented abdomen (#517).
 - [ ] **111. Smoke: every death ends in a pose.** Fish belly-up or sunk, snail
   as an empty shell, shrimp curled. None vanishes mid-water. *PP · S/M*
+  **Phase 1 (2026-10-30):** *Waits for Phase 5.* Snail old age, clams and worms
+  still vanish (#455–#457).
 - [ ] **112. A motion perf counter.** Per-creature motion µs in the dev overlay,
   coloured against the #79 budget. *— · S/M*
-- [ ] **113. Hot-reloaded motion data.** Edit the `motion` sub-dictionary and see
+  **Phase 1:** *Moves to #700*, where per-creature motion cost gets measured
+  against the budget ledger (#79).
+- [x] **113. Hot-reloaded motion data.** Edit the `motion` sub-dictionary and see
   it apply in the motion lab without a restart. *— · M/M*
+  **Phase 1 (2026-10-30):** The lab's "Reload motion data" calls
+  `FishMotionProfiles.reload_data()` and `MotionPoseLibrary.reload_data()`.
 - [ ] **114. A tuning panel.** Dev sliders for spring presets, wave parameters
   and envelope timings that write back to data. Tuning by eye is how this
   work gets good. *— · M/L*
-- [ ] **115. A motion lint.** A check in `check_warnings.sh` style that flags new
+  **Phase 1 (2026-10-30):** *Partly.* The lab tunes `MotionSpring.TISSUE`
+  presets against a live step response and saves `tissue_tuning.json`. The
+  presets are a const, and nothing in the game reads them yet, so the sliders
+  preview rather than tune live.
+- [x] **115. A motion lint.** A check in `check_warnings.sh` style that flags new
   `lerpf(…, dt *` in motion files and new `sin(TIME` in fauna shaders. *— · S/M*
-- [ ] **116. A principle line in the PR template.** "Which principle does this
+  **Phase 1 (2026-10-30):** `scripts/check_motion_lint.sh` with
+  `scripts/motion_lint_baseline.txt`, run in CI next to the warnings check. A
+  file can only go down. While building it, the smoke runner turned out to
+  count a smoke that failed to parse as a pass; `run_smokes.sh` now fails it.
+- [x] **116. A principle line in the PR template.** "Which principle does this
   serve; which metric moved; which clip shows it." *— · S/S*
-- [ ] **117. A blind real-or-game review.** Every few milestones, cut 10 s clips
+  **Phase 1 (2026-10-30):**
+  [MOTION_REVIEW_PROTOCOL.md](MOTION_REVIEW_PROTOCOL.md) and a "Motion changes"
+  section in CONTRIBUTING.md; the repo has no PR template.
+- [x] **117. A blind real-or-game review.** Every few milestones, cut 10 s clips
   of real footage and game footage at matched framing, and have someone who
   hasn't seen the work rank "which looks alive". Track the score. *AP · S/M*
-- [ ] **118. Motion CSV export per species.** Generalise the swimming pass's
+  **Phase 1 (2026-10-30):**
+  [MOTION_REVIEW_PROTOCOL.md](MOTION_REVIEW_PROTOCOL.md): clip spec, raters,
+  forced choice plus 1–5 scores, noise estimate and results log.
+- [x] **118. Motion CSV export per species.** Generalise the swimming pass's
   `motion.csv` (heading, speed, bank, every pivot channel) to every species
   and action. *— · S/M*
-- [ ] **119. Track kinematic distributions, not means.** Report p10/p50/p90 of
+  **Phase 1 (2026-10-30):** `motion_clip` writes every pivot channel per frame,
+  legs included.
+- [x] **119. Track kinematic distributions, not means.** Report p10/p50/p90 of
   speed, turn rate and bout length. A creature with the right mean and no
   variance looks robotic. *TI · S/M*
-- [ ] **120. A principle scorecard.** One page, updated per milestone: each of
+  **Phase 1 (2026-10-30):** The probe reports p10/p50/p90 of speed, turn rate
+  and bout length.
+- [x] **120. A principle scorecard.** One page, updated per milestone: each of
   the twelve principles × each creature family, graded from motion-lab clips
   and metrics. Shows where to spend the next pass. *— · S/L*
+  **Phase 1 (2026-10-30):** [MOTION_SCORECARD.md](MOTION_SCORECARD.md), graded
+  at `5ad6dd3`. No family is at B yet; staging and exaggeration are D or worse
+  everywhere.
 
 ---
 

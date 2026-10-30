@@ -55,6 +55,9 @@ jobs:
       - name: Zero GDScript warnings (scripts/ + dev/)
         run: ./scripts/check_warnings.sh
 
+      - name: Motion lint (CREATURE_MOTION_700 #115)
+        run: ./scripts/check_motion_lint.sh
+
       - name: Regression triad (REFINEMENT_II #85)
         run: |
           "$GODOT_BIN" --headless --path "${{ env.PROJECT_PATH }}" --script res://scripts/smoke_perf_realtime.gd

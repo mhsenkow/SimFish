@@ -246,6 +246,25 @@ static func fin_effort_into(speed: float, target_spd: float, max_speed: float,
 	result["cruise"] = cruise
 
 
+# The tail-beat rate factor from fin_effort_into ("wag_freq"), without the
+# dictionary: faster when accelerating, slower when carried or braking. The
+# stroke clock calls it every substep for every fish.
+static func effort_beat_mult(speed: float, target_spd: float, max_speed: float,
+		flow: Vector3, heading: Vector3) -> float:
+	var ms: float = maxf(max_speed, 0.1)
+	var accel: float = (target_spd - speed) / ms
+	var flow_len: float = flow.length()
+	var along: float = 0.0
+	if flow_len > 1e-4 and heading.length_squared() > 1e-6:
+		along = flow.dot(heading.normalized())
+	var carried: float = 0.0
+	if along > 0.015 and target_spd <= speed + 0.04 and flow_len > 0.01:
+		carried = clampf(along / maxf(flow_len, 1e-4), 0.0, 1.0) \
+			* clampf(flow_len * 14.0, 0.0, 1.0)
+	return lerpf(0.88, 1.28, clampf(accel, 0.0, 1.0)) * lerpf(1.0, 0.52, carried) \
+		* lerpf(1.0, 0.75, brake_pose_amount(speed, target_spd))
+
+
 # Radians per sim-second. Large animals cover fewer body lengths at the
 # same speed; small fry use faster strokes without unbounded vibration.
 static func tailbeat_rate(speed: float, body_length: float, base_rate: float,

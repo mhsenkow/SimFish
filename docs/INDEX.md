@@ -37,7 +37,7 @@ idea at a time.
 | [PERFORMANCE_UNTHROTTLED_MIND_IDEAS.md](PERFORMANCE_UNTHROTTLED_MIND_IDEAS.md) | **Performance II — the unthrottled mind** — 100 architectural ideas after Perf I's tranche: a fixed mind tick, allocation-free workspace, packed-math memory, O(N) social cognition, the brain thread + GDExtension kernel, one-draw-per-species rendering — gated by a replay-parity eval so full ability survives at any tank size. Absorbs Perf I's open spines (#57/#95/#96) |
 | [OPUS_HANDOFF.md](OPUS_HANDOFF.md) | **XL epics for Opus** — god-object carve, replay, GPU boids, LLM batching; do not start without this map |
 | [OPUS_HANDOFF_DETAILED.md](OPUS_HANDOFF_DETAILED.md) | Per-task execution brief (acceptance + smoke specs) + progress ledger for the Opus carve sessions |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Module map for the carve — god-object ownership, public surfaces, carve order, import rules, mind-debt ledger |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Module map for the carve — god-object ownership, public surfaces, carve order, import rules, mind-debt ledger; §11 maps who writes each fish motion channel, the clocks and the shader contract |
 
 ### Sentience & mind
 
@@ -72,6 +72,11 @@ idea at a time.
 | [TOPDOWN_MOTION_IDEAS.md](TOPDOWN_MOTION_IDEAS.md) | Top-down pond motion |
 | [LIVING_MOTION_IDEAS.md](LIVING_MOTION_IDEAS.md) | **The murmuration pass** — 100 ideas making motion read as life: topological (starling) schooling for schooling species only, correlation that *propagates* instead of being broadcast, momentum-true bodies, growth you can watch, one shared flow field coupling fish/plants/water, and micro-motion so nothing is ever still. Gated by an order-parameter eval + mind replay-parity |
 | [CREATURE_MOTION_700.md](CREATURE_MOTION_700.md) | **The illusion of life**: 700 motion ideas for every creature, graded against the twelve principles of animation. Starts with 40 shipped motions that are being cancelled (overwritten pivots, a corpse-wagging shader, snails crawling sideways). Then a spring/composer/envelope toolkit and a motion lab; a fish spine with a real travelling wave, eyes, jaw and opercula; anticipation, poses and arcs; shrimp, snails, worms, sessile animals and microfauna; and the performance budget, in seven gated phases |
+| [MOTION_REFERENCE.md](MOTION_REFERENCE.md) | Real-animal motion reference per creature and behaviour (what to look for, papers, search terms), plus the published kinematics table that tuning constants cite (CREATURE_MOTION #96, #97) |
+| [MOTION_EXPOSURE_SHEETS.md](MOTION_EXPOSURE_SHEETS.md) | Key poses and frame counts for 14 actions at 60 and 30 fps, with the minimum wind-up and hit frames at 30; the spec motion smokes test against (#106, #687) |
+| [MOTION_SCORECARD.md](MOTION_SCORECARD.md) | The twelve principles × eight creature families, graded A–F from the code after Phase 0, and how to re-grade (#120) |
+| [MOTION_REVIEW_PROTOCOL.md](MOTION_REVIEW_PROTOCOL.md) | The blind real-or-game review (clips, raters, scoring, tracking) and the per-PR motion line (#116, #117) |
+| [MOTION_BUDGET.md](MOTION_BUDGET.md) | Per-creature motion cost targets by LOD tier and draw calls, kept apart from what has actually been measured (#79) |
 | [AQUASCAPING_CRAFT_IDEAS.md](AQUASCAPING_CRAFT_IDEAS.md) | Aquascape tools & objects |
 
 ### Look, feel, onboarding

@@ -36,6 +36,10 @@ uniform float metallic_strength : hint_range(0.0, 1.0) = 0.0;
 uniform float fin_translucency : hint_range(0.0, 1.0) = 0.0;
 uniform float fauna_rim : hint_range(0.0, 1.0) = 0.0;
 uniform float fauna_vertex_bend : hint_range(0.0, 1.0) = 1.0;
+// Per-draw swim phase (fish.gd sets it on each pivot's MultiMesh), so the
+// flank ripple is the same wave as the pivots' tail beat. Negative means
+// unset: shared species batches and other fauna keep the global clock.
+instance uniform float fauna_wave_phase = -1.0;
 
 #include "res://shaders/palette_tint.gdshaderinc"
 #include "res://shaders/beam_cone.gdshaderinc"
@@ -156,7 +160,8 @@ void vertex() {
 	float sx = max(length(MODEL_MATRIX[0].xyz), 1e-4);
 	float s_ref = max(sz, length(MODEL_MATRIX[1].xyz));
 	float along = dot(MODEL_MATRIX[3].xyz, ax_z / sz);
-	float wave = sin(TIME * 6.2 - along * 5.0);
+	float wave_t = fauna_wave_phase >= 0.0 ? fauna_wave_phase : TIME * 6.2;
+	float wave = sin(wave_t - along * 5.0);
 	VERTEX.x += wave * bend_w * bend_w * 0.30 * s_ref / sx;
 	// Fin flutter: fins (weight ~0.72) shear at a higher rate, trailing edge
 	// most, so pectorals and the dorsal visibly scull while hovering.

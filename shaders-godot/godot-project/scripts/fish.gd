@@ -515,6 +515,8 @@ var _homeostasis: Dictionary = {}
 # Per-instance fauna overrides (biolum / belly / vibrancy) for MultiMesh batches (#51).
 var _fauna_inst_custom: Color = Color(0.0, 0.0, 0.0, 0.0)
 var _motion_quiet_q: int = 0  # see _update_motion_quiet
+# Per-pivot MultiMeshes that take the shader wave phase (empty when batched).
+var _wave_instances: Array[GeometryInstance3D] = []
 var _glow_meshes: Array = []  # PERFORMANCE_UNTHROTTLED #65
 var _last_biolum_strength: float = -1.0
 @warning_ignore("unused_private_class_variable")
@@ -524,7 +526,6 @@ var _homeostatic_feed_point: Vector3 = Vector3.ZERO
 var _spark_state: Dictionary = {}
 @warning_ignore("unused_private_class_variable")
 var _spark_signals: Dictionary = {}
-@warning_ignore("unused_private_class_variable")
 var _spark_motion: Dictionary = {}
 @warning_ignore("unused_private_class_variable")
 var _spark_milestones: Dictionary = {}
@@ -2118,6 +2119,14 @@ var _surface_wake_t: float = 0.0
 var _biolum_wake_t: float = 0.0
 var _silver_flash: float = 0.0
 var _turn_lean: float = 0.0
+var _beat_mood_mult: float = 1.0
+var _spark_tail: float = 1.0
+var _spark_fins: float = 1.0
+var _spark_still: float = 0.0
+# Visible tail phase = _motor_phase - π/2 + this. Starts at π/2 so a fresh fish
+# keeps its spawn phase, then eases to a whole cycle; dancing pushes it away.
+var _visual_phase_offset: float = PI * 0.5
+var _last_motor_rate: float = 0.0
 var _bump_yaw: float = 0.0                   # visual yaw easing out a wall redirect
 var _wall_bump_t: float = 0.0
 const WALL_BUMP_S: float = 0.3
@@ -3491,6 +3500,7 @@ func _build_body() -> void:
 	if _voxel_builder != null:
 		_voxel_builder.flush_all()
 		_cached_meshes = _voxel_builder.handles.duplicate()
+		_wave_instances = _voxel_builder.pivot_instances()
 	_apply_lod_ranges()
 	_rebuild_glow_mesh_cache()
 
@@ -3763,6 +3773,19 @@ func _push_fauna_inst_custom() -> void:
 			if h.has_meta("fauna_bend") else 0.22
 		h.set_custom_data(Color(FaunaVoxelBuilder.pack_custom_r(bend, cr), cg, cb,
 			static_a + float(_motion_quiet_q)))
+
+
+# The shader's flank ripple rides the same phase as the pivots' tail beat
+# (#50, #11): set per pivot draw, since INSTANCE_CUSTOM is per voxel and
+# re-uploading every voxel every frame would cost more than the ripple is
+# worth. Fish in a shared species batch keep the shader's global clock.
+func _push_wave_phase() -> void:
+	if _wave_instances.is_empty():
+		return
+	var ph: float = fposmod(_swim_phase, TAU)
+	for gi in _wave_instances:
+		if is_instance_valid(gi):
+			gi.set_instance_shader_parameter(&"fauna_wave_phase", ph)
 
 
 # How much of the shader's body ripple and fin flutter this fish shows
@@ -4122,6 +4145,7 @@ func tick(dt: float, neighbors: Array, plants: Array, algae_array: Array, waste:
 		return events
 
 	age += dt
+	_beat_mood_mult = _compute_beat_mood_mult()
 	# Memory decay throttle. Bulk-decay grudges / habituation / heatmap once
 	# every DECAY_THROTTLE_PERIOD (~5s) instead of every tick. Player-visible
 	# behavior is identical (decay values change imperceptibly between ticks)
@@ -7291,10 +7315,39 @@ func _note_wall_bump(before: Vector3, after: Vector3) -> void:
 	_wall_bump_t = WALL_BUMP_S
 
 
-func _advance_motor_phase(dt: float) -> void:
+# One stroke clock (CREATURE_MOTION_700 #49, #13). Thrust reads it, and the
+# visible tail is this phase a quarter cycle back (see _motion_substep's pose),
+# so each stroke's push lands as the tail sweeps through the midline. The
+# beat rate includes effort, glide and mood, all of which come from state the
+# sim keeps for every fish, so a culled fish strokes exactly like a drawn one.
+func _advance_motor_phase(dt: float, target_spd: float = -1.0, flow: Vector3 = Vector3.ZERO) -> void:
 	var body_length: float = adult_voxel_scale * 5.5 * body_elongation * maxf(scale.x, 0.1)
-	_motor_phase = Hydrodynamics.advance_phase(_motor_phase,
-		Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type) * _wag_freq_jitter, dt, TAU * 100.0)
+	var rate: float = Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type) \
+		* _wag_freq_jitter * _beat_rate_mult(target_spd, flow)
+	_motor_phase = Hydrodynamics.advance_phase(_motor_phase, rate, dt, TAU * 100.0)
+	_last_motor_rate = rate
+
+
+func _beat_rate_mult(target_spd: float, flow: Vector3) -> float:
+	var mult: float = _beat_mood_mult
+	if _courtship_flare:
+		mult *= 1.0 + _courtship_intensity * 0.5
+	if target_spd >= 0.0:
+		mult *= Hydrodynamics.effort_beat_mult(speed, target_spd, max_speed, flow, heading)
+	if swim_pattern in ["cruise", "hover", "meander"] and speed < max_speed * 0.45:
+		mult *= lerpf(1.0, 0.2, _motion_glide_bias)
+	return mult
+
+
+# Mood and arousal quicken or slow the beat (#26). Refreshed at the brain
+# tick, so it costs nothing per frame and is the same seen or culled.
+func _compute_beat_mood_mult() -> float:
+	var m: float = 1.0 + stress * 0.35
+	if not personality.is_empty():
+		m -= float(personality.get("calm", 0.5)) * 0.20 - 0.10
+	m += spooked * 0.4 - clampf(mood, 0.0, 1.0) * 0.15
+	m += float(FishMind.animation_modifiers(self).get("wag_freq", 0.0))
+	return clampf(m, 0.55, 1.7)
 
 
 func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
@@ -7498,7 +7551,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			if absf(heading.y) > max_pitch:
 				heading = Vector3(flat.x, signf(heading.y) * max_pitch, flat.z).normalized()
 
-	_advance_motor_phase(dt)
+	_advance_motor_phase(dt, target_spd, flow_vel)
 	# Modulate the requested pace, not the integrated speed every substep.
 	# Repeated speed multiplication made fast-forward fish lose momentum.
 	if burst_remaining <= 0.0:
@@ -7749,7 +7802,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 				# to sifting / dying so the player reads it as mood, not action.
 				pitch_target = 0.08
 			_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, pitch_target,
-				clampf(dt * 4.0, 0.0, 1.0))
+				1.0 - exp(-dt * 4.0))
 	_last_yaw = current_yaw
 
 	if not do_body_anim:
@@ -7762,13 +7815,12 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# differently per locomotion_type so loaches actually undulate like
 	# eels, puffers stiffly paddle their tails, reef tangs row with
 	# their pec fins, and the default schoolers carangiform-wag.
-	var body_length: float = adult_voxel_scale * 5.5 * body_elongation \
-		* maxf(scale.x, 0.1)
-	var wag_freq: float = Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type)
+	# The beat rate is the stroke clock's (courtship, effort, glide and mood
+	# included); only dancing departs from it, below.
+	var wag_freq: float = _last_motor_rate / maxf(_wag_freq_jitter, 0.01)
 	var wag_amp_extra: float = 0.0
 	var pec_amp_extra: float = 0.0
 	if _courtship_flare:
-		wag_freq *= 1.0 + _courtship_intensity * 0.5
 		# Wag and pec amplitudes ramp with courtship intensity so the
 		# display crescendos from a subtle shimmy to a dramatic flare.
 		wag_amp_extra = 0.10 + _courtship_intensity * 0.25
@@ -7788,50 +7840,14 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# sin(phase) reference. Positive offset = that segment leads the tail.
 	# A traveling head→tail wave needs head leading, body mid leading by
 	# half, tail trailing — values below produce that for anguilliform.
-	var tail_amp: float = 0.35
-	var body_amp: float = 0.10
-	var body_phase: float = PI       # default = counter-wag (180° out of phase)
-	var head_amp: float = 0.0
-	var head_phase: float = 0.0
-	var pec_amp_base: float = 0.45
-	var pec_freq_base: float = 4.5 + speed * 3.0
-	match locomotion_type:
-		"anguilliform":
-			# Eel / loach style: whole-body traveling sine wave. Head
-			# leads, body mid follows ~50° behind, tail trails ~100°
-			# behind the head. Slower base frequency, larger amplitudes.
-			tail_amp = 0.55
-			body_amp = 0.40
-			body_phase = -0.55 * PI    # body lags tail by 100° → traveling wave
-			head_amp = 0.30
-			head_phase = -1.1 * PI     # head leads tail by ~80°
-			pec_amp_base = 0.20        # pec fins almost still on eels
-		"ostraciiform":
-			# Boxfish / puffer: rigid body, only the tail oscillates.
-			# Higher tail frequency to make up for the small amplitude
-			# and lack of body assist. Pec fins do most of the steering.
-			tail_amp = 0.42
-			body_amp = 0.02
-			head_amp = 0.0
-			pec_amp_base = 0.80
-		"labriform":
-			# Reef tang / angelfish: pectoral fins are the primary
-			# thrust, tail subdued. Pec fins beat at a higher
-			# frequency independent of the body wag.
-			tail_amp = 0.18
-			body_amp = 0.04
-			head_amp = 0.0
-			pec_amp_base = 1.05
-			pec_freq_base = 5.5 + speed * 4.5
-		"thunniform":
-			# Tuna cruiser: stiff body, narrow but fast tail.
-			tail_amp = 0.25
-			body_amp = 0.03
-			head_amp = 0.0
-			pec_amp_base = 0.30
-		_:
-			# subcarangiform default — current schooler behavior.
-			pass
+	var prof: Dictionary = FishMotionProfiles.get_profile(locomotion_type)
+	var tail_amp: float = float(prof["tail_amp"])
+	var body_amp: float = float(prof["body_amp"])
+	var body_phase: float = float(prof["body_phase"])
+	var head_amp: float = float(prof["head_amp"])
+	var head_phase: float = float(prof["head_phase"])
+	var pec_amp_base: float = float(prof["pec_amp"])
+	var pec_freq_base: float = float(prof["pec_freq_base"]) + speed * float(prof["pec_freq_speed"])
 	# Body flexibility for the turn lean, from the locomotion's base bend
 	# (before effort scaling): rigid boxfish bend little, eels a lot.
 	var body_flex: float = clampf(body_amp / 0.1, 0.0, 1.4)
@@ -7844,8 +7860,15 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	var fin_eff: Dictionary = _fin_effort_cache
 	_fin_tail_activity = lerpf(_fin_tail_activity, float(fin_eff["tail_amp"]),
 		1.0 - exp(-dt * 6.0))
+	# Mind-stance expression (_spark_motion, set by the sim at the brain
+	# tick): playful fish flare fins and swing wider, wary ones tuck, and
+	# stillness quiets the stroke. Eased, since the stance changes in steps.
+	_spark_tail = MotionEase.damp(_spark_tail, float(_spark_motion.get("tail_amp", 1.0)), 2.5, dt)
+	_spark_fins = MotionEase.damp(_spark_fins, float(_spark_motion.get("fin_spread", 1.0)), 2.5, dt)
+	_spark_still = MotionEase.damp(_spark_still, float(_spark_motion.get("stillness", 0.0)), 2.5, dt)
+	var expression_amp: float = _spark_tail * (1.0 - _spark_still * 0.6)
 	# Apply effort to the main wave, not only its small acceleration bonus.
-	tail_amp *= _fin_tail_activity
+	tail_amp *= _fin_tail_activity * expression_amp
 	body_amp *= _fin_tail_activity
 	head_amp *= _fin_tail_activity
 	hydro_effort *= float(fin_eff.get("tail_amp", 1.0))
@@ -7854,7 +7877,6 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		hydro_effort *= lerpf(1.0, 0.35, float(fin_eff["carried"]))
 	elif flow_vel.length_squared() > 0.02:
 		hydro_effort += flow_vel.length() * 0.18
-	wag_freq *= float(fin_eff.get("wag_freq", 1.0))
 	pec_amp_extra += float(fin_eff.get("pec_amp", 0.0))
 	if hydro_effort > 0.04:
 		tail_amp += hydro_effort * 0.52
@@ -7870,15 +7892,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		tail_amp *= lerpf(1.0, 0.62, float(fin_eff["braking"]))
 		pec_amp_extra = maxf(pec_amp_extra, float(fin_eff["braking"]) * 0.45)
 
-	# Mood + arousal modulation (#26). Valence slows/fin-spread; arousal quickens
-	# the wag so "content & playing" reads faster than "content & resting."
+	# Mood and arousal shape fins and breath here; their effect on the beat
+	# rate lives in the shared stroke clock (_beat_rate_mult).
 	var aff_anim: Dictionary = FishMind.animation_modifiers(self)
-	var mood_freq_mult: float = 1.0 + stress * 0.35
-	if not personality.is_empty():
-		mood_freq_mult -= float(personality.get("calm", 0.5)) * 0.20 - 0.10
-	mood_freq_mult += spooked * 0.4 - clampf(mood, 0.0, 1.0) * 0.15
-	mood_freq_mult += float(aff_anim.get("wag_freq", 0.0))
-	wag_freq *= clampf(mood_freq_mult, 0.55, 1.7)
 
 	var dance_blend: float = float(mm.get("dance_blend", 0.0))
 	var dance_freeze: float = float(mm.get("dance_freeze", 0.0))
@@ -7886,7 +7902,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	if dance_blend > 0.04:
 		var wft: float = float(mm.get("wag_freq_target", 0.0))
 		if wft > 0.01:
-			wag_freq = lerpf(wag_freq, wft, clampf(dt * 5.5, 0.0, 1.0) * dance_blend)
+			wag_freq = lerpf(wag_freq, wft, (1.0 - exp(-dt * 5.5)) * dance_blend)
 		wag_amp_extra += float(mm.get("tail_amp_extra", 0.0)) * dance_blend
 		pec_amp_extra += float(mm.get("pec_flutter", 0.0)) * dance_blend
 		pec_amp_extra += float(mm.get("fin_flare", 0.0)) * dance_blend
@@ -7906,17 +7922,22 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			phase_rate = 0.0
 		elif bow > 0.12:
 			phase_rate = lerpf(phase_rate, 0.35, bow)
-		_swim_phase += dt * wag_freq * _wag_freq_jitter * phase_rate
+		# Dancing beats to the music, not the stroke clock: the difference
+		# accumulates in the visual offset and eases back out afterwards.
+		_visual_phase_offset += dt * (wag_freq * _wag_freq_jitter * phase_rate - _last_motor_rate)
 	else:
 		_music_kick_pulse = maxf(_music_kick_pulse - dt * 9.0, 0.0)
 		_music_snare_flick = maxf(_music_snare_flick - dt * 11.0, 0.0)
 		_music_eye_flash = maxf(_music_eye_flash - dt * 8.0, 0.0)
 		_music_trail_ghost = maxf(_music_trail_ghost - dt * 5.5, 0.0)
-		var coast_phase: float = 1.0
-		if swim_pattern in ["cruise", "hover", "meander"] and speed < max_speed * 0.45:
-			coast_phase = lerpf(1.0, 0.2, _motion_glide_bias)
-		_swim_phase += dt * wag_freq * _wag_freq_jitter * coast_phase
-	# Tail-beat phase lock to tank pulse retired (LIVING_MOTION #5).
+		# Re-lock to the stroke clock at the nearest whole cycle (whole cycles
+		# keep the fins' non-integer harmonics continuous).
+		var lock_to: float = _visual_phase_offset - wrapf(_visual_phase_offset, -PI, PI)
+		_visual_phase_offset = MotionEase.damp(_visual_phase_offset, lock_to, 0.8, dt)
+	# The visible tail is the stroke clock a quarter cycle back: the tail
+	# crosses the midline (its fastest sweep) as max(0, sin(_motor_phase))
+	# thrust peaks. Tail-beat phase lock to tank pulse retired (LIVING_MOTION #5).
+	_swim_phase = _motor_phase - PI * 0.5 + _visual_phase_offset
 	if _tail_pivot != null:
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
 			+ minf(speed * 0.18, 0.25)) * _gait_amp_bias + _music_snare_flick * 0.42
@@ -7926,7 +7947,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			_tail_pivot.rotation.y += sin(_swim_phase * 1.45) * _music_trail_ghost * 0.12
 			_tail_pivot.scale.z = lerpf(1.0, 1.06, _music_trail_ghost)
 		elif absf(_tail_pivot.scale.z - 1.0) > 0.01:
-			_tail_pivot.scale.z = lerpf(_tail_pivot.scale.z, 1.0, clampf(dt * 6.0, 0.0, 1.0))
+			_tail_pivot.scale.z = lerpf(_tail_pivot.scale.z, 1.0, 1.0 - exp(-dt * 6.0))
 	if _body_mid_pivot != null:
 		_body_mid_pivot.rotation.y = sin(_swim_phase + body_phase) \
 			* (body_amp + wag_amp_extra * 0.4) \
@@ -7974,7 +7995,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 				_saccade_target = _behavior_rng().randf_range(-0.22, 0.22)
 		# Decay the saccade target back toward 0 so the twitch is a brief
 		# pulse, not a sustained head-cock.
-		_saccade_target = lerpf(_saccade_target, 0.0, clampf(dt * 1.8, 0.0, 1.0))
+		_saccade_target = lerpf(_saccade_target, 0.0, 1.0 - exp(-dt * 1.8))
 		_idle_glance_t -= dt
 		if rest_factor > 0.35 and speed < max_speed * 0.35 and _idle_glance_t <= 0.0:
 			_idle_glance_t = _behavior_rng().randf_range(2.8, 6.5)
@@ -7985,10 +8006,10 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		# and subtle; the saccade above is the quick flick layered on top.
 		var gaze_hold: float = clampf(_gaze_yaw, -0.3, 0.3) if _gaze_remaining > 0.0 else 0.0
 		gaze_hold += float(aff_anim.get("gaze_split", 0.0))
-		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, clampf(dt * 2.0, 0.0, 1.0))
+		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, 1.0 - exp(-dt * 2.0))
 		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y,
 			head_target + (_saccade_target + _eye_look * 0.5) * rest_factor,
-			clampf(dt * 12.0, 0.0, 1.0))
+			1.0 - exp(-dt * 12.0))
 		# Gill flare at rest. When the fish is barely moving (drifting,
 		# sifting, sleeping), the eye reads a subtle head-width pulse as
 		# gill-cover breathing — a real fish at rest does this constantly
@@ -8001,7 +8022,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		var o2_now2: float = float(sim.dissolved_o2) if sim != null and sim.get("dissolved_o2") != null else 1.0
 		var breath_load: float = clampf(0.4 + speed * 0.5 + (0.7 - o2_now2) * 1.2 + stress * 0.4, 0.4, 2.2)
 		breath_load *= 1.0 - float(aff_anim.get("breath_calm", 0.0))
-		_breath_load = lerpf(_breath_load, breath_load, clampf(dt * 3.0, 0.0, 1.0))
+		_breath_load = lerpf(_breath_load, breath_load, 1.0 - exp(-dt * 3.0))
 		var breath_amp: float = (0.035 + clampf(_breath_load - 1.0, 0.0, 1.2) * 0.05) * maxf(rest_factor, 0.25)
 		_gill_phase = Hydrodynamics.advance_phase(_gill_phase,
 			2.2 * _breath_load * _wag_freq_jitter, dt)
@@ -8044,7 +8065,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# A small static spread offset: relaxed fish hold pecs slightly out; clamped
 	# fish tuck them in. Applied as a bias on top of the rowing oscillation.
 	var pec_spread: float = clampf(0.12 + clampf(mood, 0.0, 1.0) * 0.12 - spooked * 0.18 \
-		+ float(aff_anim.get("pec_spread", 0.0)), -0.1, 0.35)
+		+ float(aff_anim.get("pec_spread", 0.0)), -0.1, 0.35) * _spark_fins
 	# Braking flares both pectorals out as brakes, on top of the spread.
 	if _brake_pose > 0.12:
 		pec_spread += _brake_pose * 0.55
@@ -8090,6 +8111,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		_bank_pivot.scale = _body_proportions * _display_scale * _affect_scale
 
 	_update_motion_quiet()
+	_push_wave_phase()
 	_sanitize_posture_pivot(_bank_pivot)
 	_sanitize_posture_pivot(_tail_pivot)
 	_sanitize_posture_pivot(_body_mid_pivot)

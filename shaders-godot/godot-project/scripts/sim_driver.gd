@@ -4322,6 +4322,11 @@ func _tick(dt: float) -> void:
 		# Spatial query: 9 cells checked instead of all fish. Radius² = 9.0
 		var neighbors: Array = _spatial_query(f.position, 9.0, f)
 		var ev: Dictionary = f.tick(tick_dt, neighbors, plants, algae, waste, baby_shrimp_list, world_bounds)
+		# Mind stance → fin carriage, tail effort and stillness (SPARK §A,
+		# CREATURE_MOTION_700 #17). Cosmetic only: the pose reads it, steering
+		# doesn't. Visible fish only, since nobody sees the rest.
+		if fish_visible and FishSparkExpression.enabled():
+			FishSparkExpression.motion_modifiers(f, FishSparkExpression.gather_signals(f, null, tick_dt))
 		_refresh_fish_attention(f)
 		if f.arousal > 0.06:
 			_MindArousalFieldScript.deposit(f, f.arousal * tick_dt)
