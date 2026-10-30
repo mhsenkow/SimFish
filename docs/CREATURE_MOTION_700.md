@@ -211,6 +211,20 @@ First baseline from the new probes (short runs):
 
 Phases 2 and 4 are built to move exactly these numbers.
 
+**Phase 2 status (2026-10-30), first tranche.** 13 items shipped and 3 partly.
+This tranche covers the spine pass, the travelling wave, caudal and bank
+springs, fin folding, tuck, drag and roll lag, rest pitch, anti-twin
+pectorals and the Strouhal tuning. The probe moved accordingly:
+- Arc breaks went from 14–38 to 0–4 per fish-minute in a typical run.
+- Snaps went from 7–8 to 1–3.
+- Head/body→tail lag moved off π.
+- Strouhal went from 0.44–0.63 to 0.36–0.41.
+
+Still open in Phase 2 are the items that need new geometry or pivots: eyes,
+jaw and opercula (#297–#307), pelvic fins (#379), veil, barbel and feeler
+chains (#223, #227, #228), the shader volume bend (#121), and the multi-joint
+spine (#65).
+
 ---
 
 # Part I — Foundations
@@ -671,6 +685,11 @@ Build these once, in `scripts/motion/`, and use them everywhere.
   rotating the mid-body doesn't carry the tail. Build Head ← Front ← Mid ← Rear
   ← Peduncle ← Caudal, with the visual pivot at each joint. This is the
   structural lever for squash/stretch, overlap and arcs in the body itself. *SD FT AR · L/L*
+  **Phase 2 (2026-10-30):** *Partly.* The spine pass places the sibling Head,
+  BodyMid and TailPivot along one midline each frame (the tail hangs where the
+  mid-body ends), so they act as a chain without re-parenting and the peduncle
+  crack is gone. A true multi-joint spine (#65) still needs re-voxelised
+  segments.
 - [ ] **65. Segment count by body plan.** Anguilliform 7 joints, fusiform 5,
   compressed 4, globiform 2. Small fry use 3 regardless (cost and pixel
   scale). *SD TI · M/M*
@@ -680,6 +699,10 @@ Build these once, in `scripts/motion/`, and use them everywhere.
   per type: anguilliform about 0.6 L, subcarangiform about 0.9 L, carangiform
   about 1.1 L, thunniform about 1.3 L. Today's default is a standing
   counter-wag (`body_phase = π`). *FT AR TI · M/L*
+  **Phase 2 (2026-10-30):** *Partly.* The subcarangiform mid-body now leads the
+  tail by a quarter cycle (`body_phase` π → π/2), so the wave travels: the
+  probe's head/body→tail lag moved off π. The quadratic envelope and
+  wavelength-per-type wait for more joints.
 - [ ] **67. Midline from curvature, not angles.** Express the body as a midline
   curvature function (wave plus turn curvature plus pose) and integrate it to
   joint angles. Turning and swimming then add in one space, and the body keeps
@@ -797,6 +820,10 @@ principle has a number that can be checked.
   body-caudal swimmers. Catches tails beating too fast for the speed (the
   "paddling in place" look). *TI · S/M*
   **Phase 1 (2026-10-30):** `MotionMetrics.strouhal` and `dominant_hz`.
+  **Phase 2 (2026-10-30):** Measured in the probe. Guppy and glassdart Strouhal
+  went from 0.44–0.63 to 0.36–0.41 by trimming subcarangiform `tail_amp` to
+  0.28 and the speed-added amplitude, since real fish speed up by beating
+  faster, not wider.
 - [x] **89. A twin metric.** Correlation of left and right pectoral angles over
   10 s, and pose correlation between school neighbours. Assert both below a
   ceiling, so fins and fish don't mirror each other. *SD · S/M*
@@ -1004,18 +1031,25 @@ water, squash and stretch is anatomy: a bending body keeps its volume.
   voxels pushed out along their normals), then a slow 6–10 s deflation with
   burps. It is rare and stressful in real fish, so make it rare and costly to
   the fish's stress, and never a toy. *SQ EX AP · M/L*
-- [ ] **128. Caudal spread and furl.** The caudal fin spreads (scale Y +10–15%)
+- [x] **128. Caudal spread and furl.** The caudal fin spreads (scale Y +10–15%)
   through the power stroke and furls at reversal and during glides. Today
   caudal `scale.y` only changes for fin nicks
   ([fish_alive.gd:248](../shaders-godot/godot-project/scripts/fish_alive.gd:248)). *SQ FT · S/L*
-- [ ] **129. Fold median fins at speed.** Real fish depress the dorsal and anal
+  **Phase 2 (2026-10-30):** Tail `scale.y` widens up to 12% as the tail sweeps
+  the midline, scaled by activity; fin tears multiply in through
+  `_tail_nick_scale` (the pose now owns that channel).
+- [x] **129. Fold median fins at speed.** Real fish depress the dorsal and anal
   fins during bursts to cut drag and erect them for slow manoeuvring and
   turning. Drive dorsal and anal erection from `1 − speed/max` plus a turn
   term. Today they are pure functions of swim phase
   ([fish.gd:7969](../shaders-godot/godot-project/scripts/fish.gd:7969)). *SQ SD · S/L*
-- [ ] **130. Tuck the pectorals in bursts.** A clear adducted pose (pectorals
+  **Phase 2 (2026-10-30):** Dorsal and anal fold back with speed (smoothstep
+  0.35–0.9 of max) and stand up again in turns.
+- [x] **130. Tuck the pectorals in bursts.** A clear adducted pose (pectorals
   flat against the body) above 70% of max speed, separate from the gradual
   `pec_amp` reduction. *SQ · S/M*
+  **Phase 2 (2026-10-30):** Above about 65% of max speed the pectorals tuck:
+  spread −0.25, amplitude −60%.
 - [ ] **131. Landing squash for bottom fish.** Corydoras, plecos, gobies and
   loaches touching down compress about 3% in Y over two frames, splay pelvic
   and pectoral fins, and recover. This is where their weight shows. *SQ SD · S/M*
@@ -1027,9 +1061,11 @@ water, squash and stretch is anatomy: a bending body keeps its volume.
   (#315). *SQ SA · M/M*
 - [ ] **134. Global caps.** Hard limits of ±8% for adults, ±12% for fry, and
   ±25% only for gape and puffer inflation, so nothing ever reads as rubber. *SQ SD · S/M*
-- [ ] **135. Soft fry, stiff elders.** Flexibility (bend gain and squash gain)
+- [x] **135. Soft fry, stiff elders.** Flexibility (bend gain and squash gain)
   scales with growth stage from `fish_growth.gd`: fry bend about 1.3×,
   senescent fish about 0.7×. *SQ TI · S/M*
+  **Phase 2 (2026-10-30):** Body bend and head wave ×1.2 for fry, ×0.75 for
+  senescent fish.
 - [ ] **136. Collision squash.** When a fish actually hits glass or another fish
   (the panic case), it compresses for two frames and recoils. Pair this with
   the brake pose in #14. *SQ SI · S/S*
@@ -1316,9 +1352,11 @@ state ([fish.gd:7869](../shaders-godot/godot-project/scripts/fish.gd:7869),
 ([fish.gd:3453](../shaders-godot/godot-project/scripts/fish.gd:3453)).
 Nothing lags, nothing settles.
 
-- [ ] **221. Spring the caudal fin.** The caudal fin follows the peduncle angle
+- [x] **221. Spring the caudal fin.** The caudal fin follows the peduncle angle
   through a spring (f ≈ 4–6 Hz, ζ ≈ 0.4). It trails on the stroke, whips at
   reversal and cups. *FT · S/L*
+  **Phase 2 (2026-10-30):** The caudal follows its wave target through a spring
+  (6 Hz, ζ 0.55: about 7% gain at 3 Hz, so fast beats aren't amplified).
 - [ ] **222. Two rows of caudal.** Split the caudal into a leading and a
   trailing voxel row, with the trailing row lagging (a two-link chain), so
   the fin visibly flexes. *FT SD · M/M*
@@ -1328,10 +1366,14 @@ Nothing lags, nothing settles.
 - [ ] **224. Ripple long median fins.** The betta and gourami undulate their
   dorsal and anal fins along the base. Give the long fins several ray pivots
   with phase offsets, so a wave runs along them. *FT SA · M/M*
-- [ ] **225. Dorsal lag on roll.** The dorsal fin leans against the roll at the
+- [x] **225. Dorsal lag on roll.** The dorsal fin leans against the roll at the
   start of a turn, then catches up. *FT · S/S*
-- [ ] **226. Pectoral drag.** At the start of a burst the pectorals are swept
+  **Phase 2 (2026-10-30):** Dorsal roll lag through a fin-preset spring,
+  clamped ±0.3.
+- [x] **226. Pectoral drag.** At the start of a burst the pectorals are swept
   back by drag, then fold; at a stop they flare, then relax. *FT SI · S/M*
+  **Phase 2 (2026-10-30):** Acceleration sweeps the pectorals back (damped, up
+  to 0.35).
 - [ ] **227. Barbels on chains.** Corydoras, pleco and mudsifter barbels
   ([fish.gd:2992](../shaders-godot/godot-project/scripts/fish.gd:2992))
   trail while swimming, drape on the substrate while sifting and flick
@@ -1343,16 +1385,21 @@ Nothing lags, nothing settles.
 - [ ] **229. Angelfish filaments.** The long ventral filaments and the dorsal
   and anal extensions trail and swing on turns, with the slowest settle of any
   part in the tank. *FT AP · S/M*
-- [ ] **230. The tail keeps swinging.** When thrust stops, tail amplitude decays
+- [x] **230. The tail keeps swinging.** When thrust stops, tail amplitude decays
   over one or two beats through a spring, instead of dropping to the effort
   floor at once. *FT SI · S/L*
+  **Phase 2 (2026-10-30):** The caudal spring rings the tail down after thrust
+  stops.
 - [ ] **231. Body yaw overshoot.** After a sharp turn the body overshoots the
   new heading a little and settles (underdamped body-yaw spring, ζ ≈ 0.6). *FT AR · S/M*
-- [ ] **232. Bank overshoot.** At turn exit the fish rolls slightly past level,
+- [x] **232. Bank overshoot.** At turn exit the fish rolls slightly past level,
   then settles (bank spring ζ ≈ 0.55). Today the bank uses first-order
   smoothing ([fish.gd:7669](../shaders-godot/godot-project/scripts/fish.gd:7669)). *FT SI · S/M*
-- [ ] **233. Pitch overshoot.** After a rise or dive the nose passes level by
+  **Phase 2 (2026-10-30):** The bank is an underdamped spring (bank preset, ζ
+  0.55).
+- [x] **233. Pitch overshoot.** After a rise or dive the nose passes level by
   3–5° and settles. *FT · S/S*
+  **Phase 2 (2026-10-30):** Pitch follows a spring (1.2 Hz, ζ 0.6).
 - [ ] **234. Order of moving parts.** Starting: eyes → head → pectorals → body →
   tail. Stopping: tail → body, and the fins settle last. Implement as
   per-channel delays in the composer. *FT TI · M/L*
@@ -1775,9 +1822,15 @@ eye of an animal with no eyelids
 - [ ] **376. No cracks at joints.** Rotating pivots open gaps and overlaps
   between voxel blocks. Add joint filler voxels or overlap the segments, and
   check bends in `inspect`. *SD · M/M*
-- [ ] **377. Rest pitch from balance.** Each species' centre of mass and centre
+  **Phase 2 (2026-10-30):** *Partly.* The spine pass closes the
+  BodyMid–TailPivot crack; joints inside a segment still use rigid voxel
+  blocks.
+- [x] **377. Rest pitch from balance.** Each species' centre of mass and centre
   of buoyancy set its rest pitch: corydoras nose-down, some tetras slightly
   nose-up. *SD · S/M*
+  **Phase 2 (2026-10-30):** Rest pitch comes from
+  `MotionPoseLibrary.rest_pose(species).head_pitch` and fades out as the fish
+  swims (corydoras idle nose-down).
 - [ ] **378. Bottom fish sink.** Corydoras, plecos, gobies and hillstream loaches
   have little or no swim-bladder lift. When they stop swimming they land; they
   don't hover. *SD TI · S/L*
@@ -1788,13 +1841,16 @@ eye of an animal with no eyelids
   floating a voxel above it. *SD · M/M*
 - [ ] **381. Belly to the surface.** Adherent grazers align belly-down to the
   surface normal of glass, wood or rock. *SD · S/M*
-- [ ] **382. No twin pectorals.** Beyond the quarter-cycle offset, give each
+- [x] **382. No twin pectorals.** Beyond the quarter-cycle offset, give each
   pectoral its own noise and its own spring, so the two sides never mirror. *SD · S/M*
+  **Phase 2 (2026-10-30):** Each pectoral's amplitude varies ±12% on its own
+  smooth noise.
 - [ ] **383. No twin neighbours.** No two neighbours share a phase and a pose;
   enforced by the twin metric (#89). *SD · S/M*
-- [ ] **384. Anatomical head limits.** Fish have no neck. Clamp head yaw to about
+- [x] **384. Anatomical head limits.** Fish have no neck. Clamp head yaw to about
   0.15 rad relative to the front segment; any more lead has to come from the
   body bend. *SD · S/M*
+  **Phase 2 (2026-10-30):** Head yaw is clamped to ±0.3 rad.
 - [ ] **385. Dorsal-up stability.** Roll always recovers toward dorsal-up for a
   healthy fish. Only illness and death break it. *SD · S/S*
 - [ ] **386. Sideslip in turns.** Bodies slide slightly outward in sharp turns. *SD AR · S/S*

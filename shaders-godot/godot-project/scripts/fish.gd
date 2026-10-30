@@ -2119,6 +2119,21 @@ var _surface_wake_t: float = 0.0
 var _biolum_wake_t: float = 0.0
 var _silver_flash: float = 0.0
 var _turn_lean: float = 0.0
+# Phase 2 body (CREATURE_MOTION_700 Part II). Springs give the caudal its
+# lag and ring-out, the bank and pitch their overshoot; the rest positions
+# let the spine pass chain the sibling pivots into one continuous body.
+# Stiff enough not to amplify fast beats: about 7% gain at 3 Hz.
+var _caudal_spring: MotionSpring = MotionSpring.new(6.0, 0.55, 0.0)
+var _bank_spring: MotionSpring = MotionSpring.for_tissue("bank")
+var _pitch_spring: MotionSpring = MotionSpring.new(1.2, 0.6, 0.0)
+var _dorsal_lag: MotionSpring = MotionSpring.for_tissue("fin")
+var _mid_rest_z: float = 0.0
+var _tail_rest_z: float = 0.0
+var _head_rest_pos: Vector3 = Vector3.ZERO
+var _tail_nick_scale: float = 1.0
+var _prev_pose_speed: float = 0.0
+var _pose_t: float = 0.0
+var _pec_drag: float = 0.0
 var _beat_mood_mult: float = 1.0
 var _spark_tail: float = 1.0
 var _spark_fins: float = 1.0
@@ -3349,6 +3364,9 @@ func _build_body() -> void:
 	_tail_pivot.name = "TailPivot"
 	_tail_pivot.position = Vector3(0, 0, 1.5 * v)
 	_bank_pivot.add_child(_tail_pivot)
+	_tail_rest_z = _tail_pivot.position.z
+	_mid_rest_z = _body_mid_pivot.position.z if _body_mid_pivot != null else -1.5 * v
+	_head_rest_pos = _head_pivot.position if _head_pivot != null else Vector3.ZERO
 	# Tail peduncle: the waist in front of the tail. At three pixels tall the
 	# pinch between body and caudal fin is the strongest single cue that the
 	# shape is a fish, so it is narrower than the body's last segment by a
@@ -7320,6 +7338,15 @@ func _note_wall_bump(before: Vector3, after: Vector3) -> void:
 # so each stroke's push lands as the tail sweeps through the midline. The
 # beat rate includes effort, glide and mood, all of which come from state the
 # sim keeps for every fish, so a culled fish strokes exactly like a drawn one.
+var _rest_pose_cache: Dictionary = {}
+
+
+func _rest_pose() -> Dictionary:
+	if _rest_pose_cache.is_empty():
+		_rest_pose_cache = MotionPoseLibrary.rest_pose(species)
+	return _rest_pose_cache
+
+
 func _advance_motor_phase(dt: float, target_spd: float = -1.0, flow: Vector3 = Vector3.ZERO) -> void:
 	var body_length: float = adult_voxel_scale * 5.5 * body_elongation * maxf(scale.x, 0.1)
 	var rate: float = Hydrodynamics.locomotion_tailbeat_rate(speed, body_length, locomotion_type) \
@@ -7763,7 +7790,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 				bank_target + dance_bank * signf(yaw_rate + 0.001) * (1.0 + accent * 0.35),
 				-0.95, 0.95)
 		bank_target = clampf(bank_target, -0.95 if dance_bank > 0.02 else -0.65, 0.95 if dance_bank > 0.02 else 0.65)
-		_bank = lerpf(_bank, bank_target, 1.0 - exp(-dt * 5.0))
+		# Underdamped: at a turn's exit the fish rolls a little past level and
+		# settles (#232).
+		_bank = _bank_spring.step(dt, bank_target)
 		if _bank_pivot != null:
 			# Cleaning and sleep postures ride on the motion bank.
 			_bank_pivot.rotation.z = _bank + _posture_roll
@@ -7774,7 +7803,10 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 			# substrate - the classic cory grazing pose. Lerp in + out for
 			# smoothness; courtship-display males ALSO tilt slightly for the
 			# parade swim.
-			var pitch_target: float = 0.0
+			# Resting balance (#377): heavy-headed species idle nose-down,
+			# per their rest pose; swimming levels them out.
+			var slow: float = 1.0 - clampf(speed / maxf(max_speed * 0.3, 0.05), 0.0, 1.0)
+			var pitch_target: float = float(_rest_pose().get("head_pitch", 0.0)) * slow
 			if _being_cleaned > 0.05:
 				pitch_target = -0.18   # presenting to the cleaner
 			elif _sift_timer > 0.0:
@@ -7801,8 +7833,9 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 				# Chronic stress: shoulders-down body language. Subtle compared
 				# to sifting / dying so the player reads it as mood, not action.
 				pitch_target = 0.08
-			_bank_pivot.rotation.x = lerpf(_bank_pivot.rotation.x, pitch_target,
-				1.0 - exp(-dt * 4.0))
+			# Nose passes level by a few degrees after a rise or dive, then
+			# settles (#233).
+			_bank_pivot.rotation.x = _pitch_spring.step(dt, pitch_target)
 	_last_yaw = current_yaw
 
 	if not do_body_anim:
@@ -7851,6 +7884,11 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# Body flexibility for the turn lean, from the locomotion's base bend
 	# (before effort scaling): rigid boxfish bend little, eels a lot.
 	var body_flex: float = clampf(body_amp / 0.1, 0.0, 1.4)
+	# Fry are soft and bend more; old fish stiffen (#135).
+	var age_flex: float = 1.2 if maturity == MATURITY_FRY else (0.75 if maturity == MATURITY_SENESCENT else 1.0)
+	body_amp *= age_flex
+	head_amp *= age_flex
+	body_flex *= age_flex
 
 	var hydro_effort: float = Hydrodynamics.effort_wag_boost(
 		speed, _motion_target_spd, max_speed)
@@ -7939,8 +7977,10 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# thrust peaks. Tail-beat phase lock to tank pulse retired (LIVING_MOTION #5).
 	_swim_phase = _motor_phase - PI * 0.5 + _visual_phase_offset
 	if _tail_pivot != null:
+		# Real fish swim faster by beating faster at a near-constant amplitude
+		# (~0.2 body lengths), so speed adds only a little amplitude (#88).
 		_tail_pivot.rotation.y = sin(_swim_phase) * (tail_amp + wag_amp_extra \
-			+ minf(speed * 0.18, 0.25)) * _gait_amp_bias + _music_snare_flick * 0.42
+			+ minf(speed * 0.06, 0.08)) * _gait_amp_bias + _music_snare_flick * 0.42
 		if _brake_pose > 0.12:
 			_tail_pivot.rotation.y += _brake_pose * 0.38
 		if _music_trail_ghost > 0.02:
@@ -7970,6 +8010,31 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		if _body_mid_pivot != null:
 			_body_mid_pivot.rotation.y = lerpf(_body_mid_pivot.rotation.y,
 				-s_amt * 0.85 - quiv, lb_sig)
+	# ---- Spine (#64, #66, #221, #230, #376) ----
+	# The caudal chases its wave target through a spring: it trails the
+	# stroke, whips at reversal and rings out when thrust stops.
+	var activity_n: float = clampf(_fin_tail_activity / 0.92, 0.0, 1.0)
+	if _tail_pivot != null:
+		_tail_pivot.rotation.y = _caudal_spring.step(dt, _tail_pivot.rotation.y)
+		# Caudal spread (#128): the fin opens through the power stroke (as
+		# the tail sweeps the midline) and furls at reversal. Torn fins
+		# (FishAlive) scale it down.
+		var spread: float = 1.0 + 0.12 * absf(cos(_swim_phase)) * activity_n
+		_tail_pivot.scale.y = _tail_nick_scale * spread
+	# Head, mid-body and tail are sibling pivots. Placing them along one
+	# midline makes them a chain without re-parenting: the tail hangs off
+	# wherever the mid-body ends, so the body bends as one piece with no
+	# crack at the peduncle, and a mid-body that leads the tail by a quarter
+	# cycle (the profiles' body_phase) sends the wave from head to tail.
+	if _body_mid_pivot != null and _tail_pivot != null:
+		var th_b: float = _body_mid_pivot.rotation.y
+		var seg: float = _tail_rest_z - _mid_rest_z
+		var x0: float = -seg * 0.5 * sin(th_b)
+		_body_mid_pivot.position.x = x0
+		_tail_pivot.position.x = x0 + seg * sin(th_b)
+		_tail_pivot.position.z = _mid_rest_z + seg * cos(th_b)
+		if _head_pivot != null:
+			_head_pivot.position.x = _head_rest_pos.x + x0
 	if _head_pivot != null:
 		# Smooth head rotation in to avoid pop when locomotion changes.
 		var head_target: float = sin(_swim_phase + head_phase) * head_amp
@@ -8007,9 +8072,10 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		var gaze_hold: float = clampf(_gaze_yaw, -0.3, 0.3) if _gaze_remaining > 0.0 else 0.0
 		gaze_hold += float(aff_anim.get("gaze_split", 0.0))
 		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, 1.0 - exp(-dt * 2.0))
-		_head_pivot.rotation.y = lerpf(_head_pivot.rotation.y,
+		# Fish have no neck (#384): bigger turns come from the body bend.
+		_head_pivot.rotation.y = clampf(lerpf(_head_pivot.rotation.y,
 			head_target + (_saccade_target + _eye_look * 0.5) * rest_factor,
-			1.0 - exp(-dt * 12.0))
+			1.0 - exp(-dt * 12.0)), -0.3, 0.3)
 		# Gill flare at rest. When the fish is barely moving (drifting,
 		# sifting, sleeping), the eye reads a subtle head-width pulse as
 		# gill-cover breathing — a real fish at rest does this constantly
@@ -8033,11 +8099,17 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		var eye_pulse: float = 1.0 + _music_eye_flash * 0.06
 		_head_pivot.scale = Vector3(breath * eye_pulse, 1.0, gape_z)
 	# Dorsal: small sway with the body counter-wag, faster small flutter on top.
+	# Median fins fold back at speed to cut drag and stand up for slow
+	# manoeuvring and turns (#129); the dorsal lags the roll (#225).
+	var speed_frac: float = clampf(speed / maxf(max_speed, 0.1), 0.0, 1.0)
+	var fold: float = clampf(smoothstep(0.35, 0.9, speed_frac)
+		- clampf(absf(_last_yaw_rate) * 0.3, 0.0, 1.0) * 0.5, 0.0, 1.0)
 	if _dorsal_pivot != null:
-		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08
-		_dorsal_pivot.rotation.z = -sin(_swim_phase) * 0.05
+		_dorsal_pivot.rotation.x = sin(_swim_phase * 1.3) * 0.08 * (1.0 - fold) + fold * 0.55
+		var roll_lag: float = clampf(_dorsal_lag.step(dt, _bank) - _bank, -0.3, 0.3)
+		_dorsal_pivot.rotation.z = -sin(_swim_phase) * 0.05 + roll_lag
 	if _anal_pivot != null:
-		_anal_pivot.rotation.x = -sin(_swim_phase * 1.3) * 0.10
+		_anal_pivot.rotation.x = -sin(_swim_phase * 1.3) * 0.10 * (1.0 - fold) - fold * 0.45
 	# Pectoral fins: faster rowing flutter. Each side offset by PI/2 so the
 	# motion looks like a continuous paddle. Labriform / ostraciiform get
 	# bigger amplitude because their bodies don't propel — the pecs do.
@@ -8069,11 +8141,24 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	# Braking flares both pectorals out as brakes, on top of the spread.
 	if _brake_pose > 0.12:
 		pec_spread += _brake_pose * 0.55
+	# Accelerating sweeps them back with drag (#226); a burst tucks them flat
+	# against the body (#130).
+	var accel: float = (speed - _prev_pose_speed) / maxf(dt, 1e-4)
+	_prev_pose_speed = speed
+	_pec_drag = MotionEase.damp(_pec_drag, clampf(accel * 0.25, 0.0, 0.35), 8.0, dt)
+	var tuck: float = smoothstep(0.65, 0.95, speed_frac)
+	pec_spread -= _pec_drag + tuck * 0.25
+	pec_amp *= 1.0 - tuck * 0.6
+	# No twin pectorals (#382): each side breathes on its own noise.
+	_pose_t += dt
+	var seed_i: int = get_instance_id() & 0xffff
+	var pec_r_var: float = 1.0 + 0.12 * MotionNoise.value1(seed_i, _pose_t * 0.7)
+	var pec_l_var: float = 1.0 + 0.12 * MotionNoise.value1(seed_i + 7919, _pose_t * 0.7)
 	var turn_load: float = clampf(_last_yaw_rate * 0.12, -0.20, 0.20)
 	if _pec_right_pivot != null:
-		_pec_right_pivot.rotation.z = sin(_pec_phase) * pec_amp * (1.0 + turn_load) + pec_spread
+		_pec_right_pivot.rotation.z = sin(_pec_phase) * pec_amp * pec_r_var * (1.0 + turn_load) + pec_spread
 	if _pec_left_pivot != null:
-		_pec_left_pivot.rotation.z = -sin(_pec_phase + PI * 0.5) * pec_amp * (1.0 - turn_load) - pec_spread
+		_pec_left_pivot.rotation.z = -sin(_pec_phase + PI * 0.5) * pec_amp * pec_l_var * (1.0 - turn_load) - pec_spread
 
 	# ---- Idle fidgets: shimmy / substrate-flash micro-gestures ----
 	# Applied as transient roll/wiggle on the bank pivot, layered over banking.

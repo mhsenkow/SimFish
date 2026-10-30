@@ -249,14 +249,14 @@ static func apply_fin_nicks_visual(f: Fish) -> void:
 	var nicks: int = int(f._fin_nicks)
 	if f._tail_pivot == null or not is_instance_valid(f._tail_pivot):
 		return
+	# The pose pass owns TailPivot.scale.y and multiplies this in.
 	if nicks <= 0:
-		if absf(f._tail_pivot.scale.y - 1.0) > 0.02:
-			f._tail_pivot.scale.y = lerpf(f._tail_pivot.scale.y, 1.0, 0.2)
+		f._tail_nick_scale = lerpf(f._tail_nick_scale, 1.0, 0.2)
 		return
 	# Asymmetric vertical squash + slight yaw bias = torn caudal.
 	var tear: float = clampf(0.08 * float(mini(nicks, 4)), 0.08, 0.32)
 	var side: float = 1.0 if (f.get_instance_id() & 1) == 0 else -1.0
-	f._tail_pivot.scale.y = lerpf(f._tail_pivot.scale.y, 1.0 - tear, 0.25)
+	f._tail_nick_scale = lerpf(f._tail_nick_scale, 1.0 - tear, 0.25)
 	f._tail_pivot.rotation.z = lerpf(f._tail_pivot.rotation.z, side * tear * 0.55, 0.2)
 
 

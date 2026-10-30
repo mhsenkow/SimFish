@@ -15,8 +15,9 @@ extends RefCounted
 const DATA_PATH: String = "res://data/motion/locomotion_profiles.json"
 
 const DEFAULTS: Dictionary = {
-	# Body-caudal schoolers: tail and mid-body counter-wag.
-	"subcarangiform": {"tail_amp": 0.35, "body_amp": 0.10, "body_phase": PI,
+	# Body-caudal schoolers. The mid-body leads the tail by a quarter cycle,
+	# so the wave travels head to tail (it was a standing counter-wag, π).
+	"subcarangiform": {"tail_amp": 0.28, "body_amp": 0.10, "body_phase": PI * 0.5,
 		"head_amp": 0.0, "head_phase": 0.0, "pec_amp": 0.45,
 		"pec_freq_base": 4.5, "pec_freq_speed": 3.0},
 	# Eel / loach: whole-body travelling wave, head leading.

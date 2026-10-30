@@ -1,6 +1,6 @@
 {
 	"_note": "Overrides for FishMotionProfiles.DEFAULTS (scripts/fish_motion_profiles.gd). Phases ending in _pi are multiples of pi. Values here match the defaults; edit to tune, then Reload in dev/motion_lab.",
-	"subcarangiform": {"tail_amp": 0.35, "body_amp": 0.10, "body_phase_pi": 1.0, "pec_amp": 0.45},
+	"subcarangiform": {"tail_amp": 0.28, "body_amp": 0.10, "body_phase_pi": 0.5, "pec_amp": 0.45},
 	"anguilliform": {"tail_amp": 0.55, "body_amp": 0.40, "body_phase_pi": -0.55, "head_amp": 0.30, "head_phase_pi": -1.1, "pec_amp": 0.20},
 	"ostraciiform": {"tail_amp": 0.42, "body_amp": 0.02, "pec_amp": 0.80},
 	"labriform": {"tail_amp": 0.18, "body_amp": 0.04, "pec_amp": 1.05, "pec_freq_base": 5.5, "pec_freq_speed": 4.5},
