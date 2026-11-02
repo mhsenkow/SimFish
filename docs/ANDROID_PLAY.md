@@ -59,7 +59,12 @@ PASS=$(cat secrets/export_android_release_password.txt)
 # clear keystore/release_password again
 ```
 
-Preset uses `gradle_build/export_format=1` (AAB), `version/name=0.2.50`, `version/code=63`.
+Local Play uploads flip the Android preset to Gradle AAB
+(`gradle_build/use_gradle_build=true`, `export_format=1`,
+`export_path=../../build/WalstadLoom.aab`) with the upload keystore.
+**Do not commit that flip** — CI ships the sideload APK
+(`use_gradle_build=false`, `export_format=0`) for GitHub Releases.
+Current store track: `version/name=0.2.52`, `version/code=65`.
 
 ## Play Console status (2026-10-28)
 

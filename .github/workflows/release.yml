@@ -26,6 +26,9 @@ jobs:
   export:
     name: Export ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    # Android is secondary to desktop Steam/GitHub; don't block the Release
+    # publish if the APK job flakes (missing build template, SDK drift, etc.).
+    continue-on-error: ${{ matrix.name == 'Android' }}
     strategy:
       fail-fast: false
       matrix:
