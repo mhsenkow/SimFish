@@ -18,18 +18,18 @@ OUT = ROOT / "assets"
 
 SCREENSHOT_SIZE = (1920, 1080)
 
-# Hand-made marketing art → exact Steam capsule filenames.
+# Store page capsules (the "Store assets 0/4" checklist).
 MARKETING_CAPSULES: dict[str, str] = {
-    "small_capsule_462x174.png": "Small capsule (1).png",
-    "main_capsule_1232x706.png": "Main capsule (2).png",
-    "library_header_920x430.png": "header capsule (1).png",
-    "hero_capsule_748x896.png": "vert (1).png",
+    "header_capsule_920x430.png": "header_capsule.png",
+    "small_capsule_462x174.png": "small_capsule.png",
+    "main_capsule_1232x706.png": "main_capsule.png",
+    "hero_capsule_748x896.png": "vert.png",
 }
 
 CAPSULES = {
+    "header_capsule_920x430": (920, 430),
     "small_capsule_462x174": (462, 174),
     "main_capsule_1232x706": (1232, 706),
-    "package_header_1414x464": (1414, 464),
     "hero_capsule_748x896": (748, 896),
     "library_capsule_600x900": (600, 900),
     "library_hero_3840x1240": (3840, 1240),
@@ -92,8 +92,8 @@ def save_screenshots() -> list[Path]:
     sources: list[tuple[str, Path, float, float, float]] = [
         ("01_gameplay_main", SOURCE, 0.50, 0.48, 1.0),
         ("02_gameplay_creature", SOURCE, 0.22, 0.45, 1.25),
-        ("03_reef_tank", MARKETING / "back (1).png", 0.50, 0.50, 1.0),
-        ("04_reef_coral", MARKETING / "back (1).png", 0.78, 0.48, 1.35),
+        ("03_reef_tank", MARKETING / "back.png", 0.50, 0.50, 1.0),
+        ("04_reef_coral", MARKETING / "back.png", 0.78, 0.48, 1.35),
         ("05_preview_art", PREVIEW, 0.50, 0.50, 1.0),
     ]
 
@@ -142,12 +142,12 @@ def save_derived_capsules(loaded: dict[str, Image.Image]) -> list[Path]:
     paths: list[Path] = list(caps_dir.glob("*.png"))
     main = loaded.get("main_capsule_1232x706.png")
     vert = loaded.get("hero_capsule_748x896.png")
-    header = loaded.get("library_header_920x430.png")
-    reef = MARKETING / "back (1).png"
+    header = loaded.get("header_capsule_920x430.png")
+    reef = MARKETING / "back.png"
     reef_img = load_rgb(reef) if reef.exists() else main
 
     derived: list[tuple[str, Image.Image | None, tuple[int, int]]] = [
-        ("package_header_1414x464.png", header or main, (1414, 464)),
+        ("library_header_920x430.png", header, (920, 430)),
         ("library_hero_3840x1240.png", reef_img, (3840, 1240)),
         ("library_capsule_600x900.png", vert, (600, 900)),
         ("library_logo_1280x720.png", None, (1280, 720)),

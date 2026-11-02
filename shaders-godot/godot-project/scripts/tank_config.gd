@@ -1221,6 +1221,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Mid-water schoolers. The signature neon-blue stripe runs the full body over a deep scarlet lower flank. Streamlined and fast.",
 		"genome": {
 			"species": "glassdart",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Cardinal tetra: the iconic two-tone flank. base_color is the
 			# scarlet body, marking_color is the electric neon-blue dorsal
 			# stripe, accent is a slightly deeper scarlet shadow on the lower
@@ -1258,6 +1259,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Bottom-dweller. Banded orange + chocolate. Sifts substrate for detritus.",
 		"genome": {
 			"species": "mudsifter",
+			"locomotion_type": "anguilliform",  # CREATURE_MOTION #331
 			# Kuhli-loach inspired: bright orange with dark chocolate bands.
 			"base_color": Color8(225, 130, 50),
 			"accent_color": Color8(60, 35, 25),
@@ -1299,6 +1301,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Solitary carnivore. Iridescent royal-blue with magenta finnage. Long sweeping arcs.",
 		"genome": {
 			"species": "betta",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			# Vibrant royal blue with hot magenta finnage; iridescent
 			# turquoise marking flash on the flank.
 			"base_color": Color8(40, 90, 235),
@@ -1349,6 +1352,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Surface darter. Brilliant turquoise + orange. Short-lived, breeds prolifically.",
 		"genome": {
 			"species": "killifish",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Vivid turquoise body with hot orange accents.
 			"base_color": Color8(20, 200, 215),
 			"accent_color": Color8(255, 110, 35),
@@ -1389,6 +1393,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Dark slate body with a brilliant scarlet fan tail. Loose mid-water shoals.",
 		"genome": {
 			"species": "guppy",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Fancy guppies are the most colour-variable fish anyone keeps -
 			# a real colony is orange next to black next to drab olive next
 			# to snakeskin, all at once. mixed_morphs + the "guppy" palette
@@ -1441,6 +1446,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tiny, hot-coloured guppy cousin. Males flash orange, jet black and neon green; females stay plain olive-silver.",
 		"genome": {
 			"species": "endler",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Colour-only morph roll (FishMorphs.ENDLER), like the guppy:
 			# the body plan below is kept for every individual.
 			"mixed_morphs": true,
@@ -1480,6 +1486,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tightest schooler in the hobby. Silver body, blood-red head, black-and-white striped tail.",
 		"genome": {
 			"species": "rummy_nose",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			"base_color": Color8(214, 220, 214),
 			"accent_color": Color8(188, 196, 190),
 			"head_color": Color8(222, 38, 44),
@@ -1513,6 +1520,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tiny glowing coal. Uniform orange-red all over, slightly see-through, in a loose shoal.",
 		"genome": {
 			"species": "ember_tetra",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Kept on the orange side of scarlet: at ~0.6 of albedo (a flank
 			# out of the cone) 255,96,38 falls to the palette's red, while
 			# this holds the hot orange entry.
@@ -1546,6 +1554,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Round, slow, solitary. Lemon-yellow with dark spots. Meanders, hunts shrimp.",
 		"genome": {
 			"species": "pufferfish",
+			"locomotion_type": "ostraciiform",  # CREATURE_MOTION #331
 			# Bright lemon yellow with strong dark spots - high contrast.
 			"base_color": Color8(255, 220, 60),
 			"accent_color": Color8(50, 40, 25),
@@ -1591,6 +1600,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Fast top schooler. Iridescent silver with electric-blue stripes. Restless.",
 		"genome": {
 			"species": "danio",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Iridescent silver-cyan with electric blue lateral stripe.
 			"base_color": Color8(220, 235, 250),
 			"accent_color": Color8(20, 80, 220),
@@ -1621,6 +1631,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Peppered bronze armor. Tight bottom group, shuffles between plants.",
 		"genome": {
 			"species": "corydoras",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Bronze cory with high-contrast dark peppering.
 			"base_color": Color8(210, 165, 95),
 			"accent_color": Color8(40, 30, 20),
@@ -1661,6 +1672,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tall slow centerpiece. Pearl white with jet-black bars. Hovers in pairs.",
 		"genome": {
 			"species": "angelfish",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			# Pure pearl white with jet black bars - real angelfish striking look.
 			"base_color": Color8(250, 250, 252),
 			"accent_color": Color8(15, 15, 25),
@@ -1713,6 +1725,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tight copper-orange shoal with the signature jet-black 'pork-chop' wedge over the rear flank. Peaceful mid-water schoolers.",
 		"genome": {
 			"species": "harlequin_rasbora",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Warm copper-orange body with a deep black rear wedge.
 			"base_color": Color8(225, 130, 70),
 			"accent_color": Color8(235, 150, 95),
@@ -1744,6 +1757,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Small armored catfish that clings to glass + broad-leaf plants and rasps algae. Schools loosely; ignored by most fish. The dedicated freshwater algae-eater the snails can't quite replace.",
 		"genome": {
 			"species": "otocinclus",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			# Pale tan-brown with a dark lateral stripe running snout-to-tail.
 			"base_color": Color8(180, 155, 115),
 			"accent_color": Color8(58, 48, 38),
@@ -1784,6 +1798,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Stout armored catfish that rasps driftwood for fiber + algae. The big chunky bottom dweller that finally makes driftwood ecologically meaningful. One per tank — they're territorial about their log.",
 		"genome": {
 			"species": "bristlenose_pleco",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Dark mottled brown body with paler belly + bristly snout.
 			"base_color": Color8(78, 62, 48),
 			"accent_color": Color8(135, 110, 82),
@@ -1830,6 +1845,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Deep-bodied labyrinth centerpiece. Flame-red flanks washed with iridescent turquoise, long pelvic feelers, and habitual surface air-gulping.",
 		"genome": {
 			"species": "dwarf_gourami",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			# Flame red base with a turquoise two-tone wash and red finnage.
 			"base_color": Color8(205, 55, 45),
 			"marking_color": Color8(55, 175, 195),
@@ -1878,6 +1894,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Single 'species' built to look like a mixed reef community - clownfish, tangs, chromis, anthias. Every individual rolls a unique morph at spawn.",
 		"genome": {
 			"species": "reef_fish",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			# Bright tropical baseline. The mixed_morphs path in fish.gd
 			# init_genome OVERWRITES base_color / accent_color / pattern /
 			# shape per individual so this baseline is rarely seen
@@ -1913,6 +1930,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Flattened torrent-dweller that clings to rock with a broad sucker belly and rasps algae film. Mottled tan over a pale underside; wide ray-like pectoral shelves.",
 		"genome": {
 			"species": "hillstream_loach",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			"base_color": Color8(120, 105, 70),
 			"accent_color": Color8(55, 45, 30),
 			"marking_color": Color8(40, 32, 22),
@@ -1947,6 +1965,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Long-bodied ambush predator with a needle snout. Hangs near the surface, then lunges. Olive-bronze flanks over a pale belly.",
 		"genome": {
 			"species": "freshwater_gar",
+			"locomotion_type": "thunniform",  # CREATURE_MOTION #331
 			"base_color": Color8(95, 110, 70),
 			"accent_color": Color8(210, 205, 175),
 			"adult_voxel_scale": 0.2,
@@ -1979,6 +1998,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Tiny bottom-percher with two distinct dorsal fins and a fused pelvic sucker it rests on leaves and rock with. Bold dark bands on gold.",
 		"genome": {
 			"species": "goby",
+			"locomotion_type": "subcarangiform",  # CREATURE_MOTION #331
 			"base_color": Color8(235, 195, 60),
 			"accent_color": Color8(40, 35, 40),
 			"marking_color": Color8(35, 30, 35),
@@ -2010,6 +2030,7 @@ const SPECIES_LIBRARY: Dictionary = {
 		"description": "Deep disc-bodied cichlid. Dominant males swell a pronounced forehead hump. Gold-green flanks broken by speckled rows; guards its fry.",
 		"genome": {
 			"species": "severum",
+			"locomotion_type": "labriform",  # CREATURE_MOTION #331
 			"base_color": Color8(150, 170, 90),
 			"accent_color": Color8(60, 70, 45),
 			"marking_color": Color8(120, 60, 45),

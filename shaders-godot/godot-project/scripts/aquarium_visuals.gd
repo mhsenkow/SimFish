@@ -257,6 +257,15 @@ func spawn_snail_slime_at(anchor: Vector3) -> void:
 func spawn_snail_bubble(pos: Vector3) -> void:
 	if randf() > 0.35:
 		return
+	_spawn_bubble_at(pos, 0.02)
+
+
+# #322: always-on bubble for nest building (no random drop).
+func spawn_nest_bubble(pos: Vector3) -> void:
+	_spawn_bubble_at(pos, 0.028)
+
+
+func _spawn_bubble_at(pos: Vector3, radius: float) -> void:
 	var p := GPUParticles3D.new()
 	p.amount = 1
 	p.lifetime = 1.2
@@ -266,14 +275,14 @@ func spawn_snail_bubble(pos: Vector3) -> void:
 	p.position = pos
 	var pm := ParticleProcessMaterial.new()
 	pm.direction = Vector3(0, 1, 0)
-	pm.initial_velocity_min = 0.15
-	pm.initial_velocity_max = 0.28
-	pm.gravity = Vector3(0, 0.6, 0)
+	pm.initial_velocity_min = 0.12
+	pm.initial_velocity_max = 0.22
+	pm.gravity = Vector3(0, 0.45, 0)
 	pm.spread = 8.0
 	p.process_material = pm
 	var bm := SphereMesh.new()
-	bm.radius = 0.02
-	bm.height = 0.04
+	bm.radius = radius
+	bm.height = radius * 2.0
 	bm.radial_segments = 4
 	bm.rings = 2
 	bm.material = VoxelMat.make_bubble()

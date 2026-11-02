@@ -196,8 +196,9 @@ static func landscape_range_scale(fear: float) -> float:
 
 
 static func breath_hover_offset(f: Fish, dt: float) -> float:
-	# FISH_ALIVE #121 — breath bob always on (not only when spark layer enabled).
-	return FishAlive.micro_idle_y(f, dt)
+	# CREATURE_MOTION #316 / FISH_ALIVE #121 — always-on breath bob.
+	# Use Fish's frame-correct delta (absolute sine drifts with Hz).
+	return f._breath_motion_delta(dt)
 
 
 static func feed_anticipation_drift(f: Fish, sim: Node) -> Vector3:

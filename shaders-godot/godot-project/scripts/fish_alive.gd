@@ -107,12 +107,14 @@ static func home_loiter_mult(f: Fish) -> float:
 
 static func home_soft_attract(f: Fish, dist_home: float, home_r: float) -> float:
 	# Inside the radius: gentle pull toward center so fish loaf at home.
+	# Keep this softer than mill/patrol (≤~0.18) so calm fish still orbit
+	# instead of pin-wobbling on the home point.
 	if dist_home >= home_r or home_r < 0.2:
 		return 0.0
 	if f.hunger > 0.4 or f.stress > 0.45:
 		return 0.0
 	var t: float = 1.0 - dist_home / home_r
-	return t * t * 0.22 * home_loiter_mult(f)
+	return t * t * 0.12 * home_loiter_mult(f)
 
 
 ## #1+#121 — continuous micro-idle: breath bob + never-parked floor.

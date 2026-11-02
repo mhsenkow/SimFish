@@ -321,19 +321,26 @@ func set_bounds_margin(margin: Vector3) -> void:
 # Moving bone groups can supply their union without rescanning every voxel.
 # The caller must include all live boxes; the usual shader-sway margin still
 # applies. Plants and ungrouped batches keep the exact per-voxel fallback.
-func set_conservative_bounds(bounds: AABB) -> void:
+# merge_mirror additionally unions the per-voxel mirror scan — GPU-skinned
+# batches use it when they also hold untracked static instances, whose only
+# authority is the mirror (tracked mirrors are bone-local there, so the
+# union can only over-include, never cull a drawn voxel).
+func set_conservative_bounds(bounds: AABB, merge_mirror: bool = false) -> void:
 	if not is_instance_valid(mmi) or not bounds.position.is_finite() \
 			or not bounds.size.is_finite() or bounds.size.x < 0.0 \
 			or bounds.size.y < 0.0 or bounds.size.z < 0.0:
 		return
+	if merge_mirror:
+		var mirror: Variant = _mirror_bounds()
+		if mirror is AABB:
+			bounds = bounds.merge(mirror as AABB)
 	mmi.custom_aabb = AABB(bounds.position - _bounds_margin,
 		bounds.size + _bounds_margin * 2.0)
 	_bounds_dirty = false
 
 
-func _refresh_custom_aabb() -> void:
-	if mmi == null or not _bounds_dirty:
-		return
+# Tight AABB over the live mirror transforms, or null when nothing is drawn.
+func _mirror_bounds() -> Variant:
 	var have_live: bool = false
 	var min_v: Vector3 = Vector3.ZERO
 	var max_v: Vector3 = Vector3.ZERO
@@ -356,11 +363,20 @@ func _refresh_custom_aabb() -> void:
 			min_v = min_v.min(lo)
 			max_v = max_v.max(hi)
 	if not have_live:
+		return null
+	return AABB(min_v, max_v - min_v)
+
+
+func _refresh_custom_aabb() -> void:
+	if mmi == null or not _bounds_dirty:
+		return
+	var mirror: Variant = _mirror_bounds()
+	if not (mirror is AABB):
 		mmi.custom_aabb = AABB(-_bounds_margin, _bounds_margin * 2.0)
 	else:
-		min_v -= _bounds_margin
-		max_v += _bounds_margin
-		mmi.custom_aabb = AABB(min_v, max_v - min_v)
+		var box: AABB = mirror as AABB
+		mmi.custom_aabb = AABB(box.position - _bounds_margin,
+			box.size + _bounds_margin * 2.0)
 	_bounds_dirty = false
 
 

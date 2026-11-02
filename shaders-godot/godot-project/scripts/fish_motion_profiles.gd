@@ -11,6 +11,8 @@ extends RefCounted
 # Fields: tail_amp, body_amp, body_phase, head_amp, head_phase (radians,
 # measured from the tail's sin(phase)), pec_amp, pec_freq_base and
 # pec_freq_speed (pectoral rate = base + speed · per_speed).
+# wave_length: body-lengths per wave (#66); tip_frac: tip amplitude as a
+# fraction of body length for the quadratic envelope (carangiform ≈ 0.1).
 
 const DATA_PATH: String = "res://data/motion/locomotion_profiles.json"
 
@@ -19,23 +21,28 @@ const DEFAULTS: Dictionary = {
 	# so the wave travels head to tail (it was a standing counter-wag, π).
 	"subcarangiform": {"tail_amp": 0.28, "body_amp": 0.10, "body_phase": PI * 0.5,
 		"head_amp": 0.0, "head_phase": 0.0, "pec_amp": 0.45,
-		"pec_freq_base": 4.5, "pec_freq_speed": 3.0},
+		"pec_freq_base": 4.5, "pec_freq_speed": 3.0,
+		"wave_length": 0.9, "tip_frac": 0.10},
 	# Eel / loach: whole-body travelling wave, head leading.
 	"anguilliform": {"tail_amp": 0.55, "body_amp": 0.40, "body_phase": -0.55 * PI,
 		"head_amp": 0.30, "head_phase": -1.1 * PI, "pec_amp": 0.20,
-		"pec_freq_base": 4.5, "pec_freq_speed": 3.0},
+		"pec_freq_base": 4.5, "pec_freq_speed": 3.0,
+		"wave_length": 0.6, "tip_frac": 0.14},
 	# Boxfish / puffer: rigid body, the tail oscillates, pectorals steer.
 	"ostraciiform": {"tail_amp": 0.42, "body_amp": 0.02, "body_phase": PI,
 		"head_amp": 0.0, "head_phase": 0.0, "pec_amp": 0.80,
-		"pec_freq_base": 4.5, "pec_freq_speed": 3.0},
+		"pec_freq_base": 4.5, "pec_freq_speed": 3.0,
+		"wave_length": 1.2, "tip_frac": 0.06},
 	# Tang / angelfish: pectorals are the thrust, the tail is subdued.
 	"labriform": {"tail_amp": 0.18, "body_amp": 0.04, "body_phase": PI,
 		"head_amp": 0.0, "head_phase": 0.0, "pec_amp": 1.05,
-		"pec_freq_base": 5.5, "pec_freq_speed": 4.5},
+		"pec_freq_base": 5.5, "pec_freq_speed": 4.5,
+		"wave_length": 1.1, "tip_frac": 0.07},
 	# Tuna cruiser: stiff body, narrow fast tail.
 	"thunniform": {"tail_amp": 0.25, "body_amp": 0.03, "body_phase": PI,
 		"head_amp": 0.0, "head_phase": 0.0, "pec_amp": 0.30,
-		"pec_freq_base": 4.5, "pec_freq_speed": 3.0},
+		"pec_freq_base": 4.5, "pec_freq_speed": 3.0,
+		"wave_length": 1.3, "tip_frac": 0.08},
 }
 
 static var _profiles: Dictionary = {}
@@ -73,8 +80,8 @@ static func reload_data() -> int:
 			if key.ends_with("_pi"):
 				key = key.trim_suffix("_pi")
 				v *= PI
-			if base.has(key):
-				base[key] = v
+			# Allow new envelope fields even when older JSON omits them.
+			base[key] = v
 		_profiles[type_name] = base
 		n += 1
 	return n

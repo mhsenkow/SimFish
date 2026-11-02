@@ -135,6 +135,8 @@ func _test_binding(t: TestSupport.Suite) -> void:
 		"built-after-ready snail binds body, shell and foot pivots")
 	var op: Node3D = sn._operculum_pivot
 	t.check(op != null and not op.visible, "operculum is bound and hidden while out")
+	# #565: pedal-wave bands exist under the foot (glass pad or sole).
+	t.check(sn._pedal_bands.size() >= 3, "pedal-wave bands are bound (#565)")
 	sn.queue_free()
 
 
@@ -330,6 +332,15 @@ func _test_clamp_tuck(t: TestSupport.Suite) -> void:
 	t.check(sn.scale.is_equal_approx(Vector3.ONE), "an adult root carries no squash")
 	t.check(float(foot_x_seen.max()) - float(foot_x_seen.min()) > 0.05,
 		"the foot creeps while crawling")
+	# #567: shell rocks with the foot pulse while crawling.
+	t.check(absf(shell.rotation.x) > 0.005 or absf(sn._shell_rock) > 0.005,
+		"the shell rocks on the foot (#567)")
+	# #565: pedal bands travel along the sole.
+	if sn._pedal_bands.size() >= 2:
+		var b0: Node3D = sn._pedal_bands[0] as Node3D
+		var x0: float = b0.position.x
+		_run(sn, 40)
+		t.check(absf(b0.position.x - x0) > 0.01, "pedal bands scroll (#565)")
 	sn._clamped = true
 	sn._clamp_grace_remaining = 99.0
 	sn._process(DT)

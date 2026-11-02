@@ -56,6 +56,7 @@ var velocity: Vector3 = Vector3.ZERO
 var heading: Vector3 = Vector3.FORWARD
 var speed: float = 0.0
 var _escape_remaining: float = 0.0
+var _react_delay: float = 0.0  # #348: species reaction latency before flip
 var _settle_speed: float = 0.0
 var _floor_sample_remaining: float = 0.0
 var _pleopod_phase: float = 0.0
@@ -180,6 +181,8 @@ var _body_pivot_rest_y: float = 0.0
 
 var _antenna_pivot: Node3D = null
 var _antenna_seg_pivots: Array = []
+var _antenna_chains: Array = []  # #242 MotionChain per antenna side
+var _last_antenna_yaw: float = 0.0
 var _bank_pivot: Node3D = null
 var _voxel_builder: FaunaVoxelBuilder = null
 var _last_yaw: float = 0.0
@@ -416,6 +419,7 @@ func _build_body() -> void:
 	if body_shape == "crab":
 		antenna_len *= 0.4
 	_antenna_seg_pivots.clear()
+	_antenna_chains.clear()
 	_build_antenna_chain(_antenna_pivot, 1.0, v, antenna_len, antenna_mat)
 	_build_antenna_chain(_antenna_pivot, -1.0, v, antenna_len, antenna_mat)
 
@@ -911,8 +915,15 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 	# Colony alarm: after a kill (or a predator loitering by the colony) the
 	# whole colony hides, not just the shrimp inside the fish's reach.
 	predator_pressure = maxf(predator_pressure, ColonyMind.shrimp_alarm(sim) * 0.6)
-	if predator_pressure > 0.35 and shelter_bonus < 0.45 and hunger < 0.86 and body_shape != "crab":
-		_escape_remaining = maxf(_escape_remaining, 0.28)
+	# #348: cherry shrimp ~50 ms; crabs/lobsters 150–300 ms before the flip.
+	if predator_pressure > 0.35 and shelter_bonus < 0.45 and hunger < 0.86 \
+			and _escape_remaining <= 0.0 and _react_delay <= 0.0:
+		var kind: String = "crab" if body_shape == "crab" else "cherry_shrimp"
+		_react_delay = FishTiming.invert_react_seconds(kind, body_shape == "crab")
+	if _react_delay > 0.0:
+		_react_delay = maxf(0.0, _react_delay - dt)
+		if _react_delay <= 0.0 and predator_pressure > 0.25 and shelter_bonus < 0.45:
+			_escape_remaining = maxf(_escape_remaining, 0.28)
 	if predator_pressure > 0.08 and hunger < 0.86:
 		if _shelter_target == null:
 			_shelter_target = _pick_shelter_plant(plants)
@@ -1333,10 +1344,13 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 			if best_p != null:
 				climb_target = best_p
 				climb_remaining_time = CLIMB_GIVE_UP_TIME
+				set_meta("_swim_arc_from", global_position)
 
 	if climb_target != null:
 		if not is_instance_valid(climb_target) or climb_target.is_dying or hunger < 0.28:
 			climb_target = null
+			if has_meta("_swim_arc_from"):
+				remove_meta("_swim_arc_from")
 		else:
 			var site: Vector3 = _plant_food_site(climb_target)
 			if not site.is_finite():
@@ -1346,6 +1360,8 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 				current_mode = Mode.CLIMB
 				var to_site: Vector3 = site - global_position
 				if to_site.length() < 0.45:
+					if has_meta("_swim_arc_from"):
+						remove_meta("_swim_arc_from")
 					var taken: int = climb_target.graze_surface_food(1, global_position, 0.5)
 					# Tissue is a last resort, after surface food is exhausted.
 					if taken == 0 and hunger > 0.82:
@@ -1360,9 +1376,23 @@ func tick(dt: float, plants: Array, algae_array: Array, waste: Array, _fry_array
 						_apply_target(target_velocity * 0.15)
 						return events
 				else:
-					target_velocity += to_site.normalized() * max_speed * 0.75
+					# #290: perch-to-perch swim lifts, glides, descends in an arc.
+					if not has_meta("_swim_arc_from"):
+						set_meta("_swim_arc_from", global_position)
+					var arc_from: Vector3 = get_meta("_swim_arc_from") as Vector3
+					var horiz0: float = Vector3(site.x - arc_from.x, 0.0, site.z - arc_from.z).length()
+					var horiz: float = Vector3(site.x - global_position.x, 0.0, site.z - global_position.z).length()
+					var u: float = 1.0 - clampf(horiz / maxf(horiz0, 0.15), 0.0, 1.0)
+					var arc_aim: Vector3 = FishEaseArcs.shrimp_swim_arc(arc_from, site, u, 0.55)
+					var to_arc: Vector3 = arc_aim - global_position
+					if to_arc.length_squared() > 1e-6:
+						target_velocity += to_arc.normalized() * max_speed * 0.85
+					else:
+						target_velocity += to_site.normalized() * max_speed * 0.75
 				if climb_remaining_time <= 0.0:
 					climb_target = null
+					if has_meta("_swim_arc_from"):
+						remove_meta("_swim_arc_from")
 
 	# Default: wander on substrate.
 	if current_mode == Mode.WANDER:
@@ -1437,6 +1467,8 @@ var _target_velocity: Vector3 = Vector3.ZERO
 var _prev_target_velocity: Vector3 = Vector3.ZERO
 var _visual_heading: Vector3 = Vector3(0.0, 0.0, -1.0)
 var _was_camera_visible: bool = true
+var _yaw_rate_state: float = 0.0
+var _speed_ease: float = 0.0
 const VISUAL_TURN_CAP: float = 5.5
 # Tail-flip escape (#23). A caridean shoots BACKWARDS with its head still
 # toward the threat; flexing the abdomen off-centre steers the thrust up to
@@ -1504,10 +1536,16 @@ func _motion_substep(dt: float) -> void:
 		if axis.length_squared() < 1e-6:
 			axis = Vector3.UP
 		axis = axis.normalized()
-		var turn: float = minf((ESCAPE_FLIP_YAW_RATE if tail_flip else max_turn_rate) * dt, angle)
+		# #264: angular spring with rate cap (not constant-rate yaw).
+		var rate_cap: float = ESCAPE_FLIP_YAW_RATE if tail_flip else max_turn_rate
+		var want_rate: float = minf(rate_cap, angle / maxf(dt, 1e-4))
+		_yaw_rate_state = move_toward(_yaw_rate_state, want_rate, rate_cap * 3.5 * dt)
+		var turn: float = minf(_yaw_rate_state * dt, angle)
 		heading = heading.rotated(axis, turn).normalized()
 		if not heading.is_finite() or heading.length_squared() < 0.5:
 			heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
+	else:
+		_yaw_rate_state = move_toward(_yaw_rate_state, 0.0, max_turn_rate * 2.5 * dt)
 	var w: Node = sim.get_parent() if sim != null else null
 	var flow_vel: Vector3 = Vector3.ZERO
 	if w != null and w.has_method("sample_flow"):
@@ -1522,12 +1560,16 @@ func _motion_substep(dt: float) -> void:
 			heading = target_dir.normalized()
 			move_dir = heading
 		var burst_speed: float = maxf(max_speed * 1.8, 0.65)
-		speed = move_toward(speed, burst_speed, 2.8 * dt)
+		# #265: ease start/stop over ~two strides instead of a linear ramp.
+		_speed_ease = MotionEase.damp(_speed_ease, burst_speed, 4.5, dt)
+		speed = _speed_ease
 	elif on_floor or bottom_walker:
 		# Legs provide traction; idle swimmers' residual stroke thrust must
 		# not make a resting bottom animal skate across the substrate.
 		var corner_pace: float = lerpf(0.45, 1.0, clampf(heading.dot(target_dir), 0.0, 1.0))
-		speed = move_toward(speed, target_spd * corner_pace, dt * (1.8 if bottom_walker else 2.6))
+		var want_spd: float = target_spd * corner_pace
+		_speed_ease = MotionEase.damp(_speed_ease, want_spd, 3.2 if bottom_walker else 4.0, dt)
+		speed = _speed_ease
 	else:
 		var stroke: float = Hydrodynamics.stroke_thrust(
 			_swim_phase, _hydro_profile, speed, target_spd, max_speed)
@@ -1536,6 +1578,7 @@ func _motion_substep(dt: float) -> void:
 		var drag_k: float = Hydrodynamics.drag_coeff(0.14, _hydro_profile)
 		speed = Hydrodynamics.integrate_speed(
 			speed, target_spd, stroke, drag_k, 3.0, dt, true)
+		_speed_ease = speed
 	if flow_vel.length_squared() > 1e-6 and not on_floor and not bottom_walker:
 		global_position += flow_vel * dt * Hydrodynamics.flow_coupling(0.14)
 	# Substrate grip — planted feet when walking, not tail-flipping (#21).
@@ -1638,12 +1681,18 @@ func _motion_substep(dt: float) -> void:
 # safety is within CONE + REACH of straight back, so this always leads away.
 func _tail_flip_direction(safe_dir: Vector3) -> Vector3:
 	var back: Vector3 = -heading
+	var flat: Vector3
 	if back.angle_to(safe_dir) <= ESCAPE_FLIP_CONE:
-		return safe_dir.normalized()
-	var axis: Vector3 = back.cross(safe_dir)
-	if axis.length_squared() < 1e-8:
-		return back
-	return back.rotated(axis.normalized(), ESCAPE_FLIP_CONE).normalized()
+		flat = safe_dir.normalized()
+	else:
+		var axis: Vector3 = back.cross(safe_dir)
+		if axis.length_squared() < 1e-8:
+			flat = back
+		else:
+			flat = back.rotated(axis.normalized(), ESCAPE_FLIP_CONE).normalized()
+	# #291: early flip pitches up, then glides down.
+	var esc_frac: float = clampf(_escape_remaining / 0.28, 0.0, 1.0)
+	return FishEaseArcs.shrimp_flip_arc(flat, esc_frac)
 
 
 # ---- Crawling gait ----------------------------------------------------
@@ -1814,15 +1863,41 @@ func _process(dt: float) -> void:
 	if _tail_pivot != null:
 		_tail_pivot.rotation.x = sin(_swim_phase) * tail_amp
 	if _antenna_pivot != null:
-		for i in _antenna_seg_pivots.size():
-			var seg: Node3D = _antenna_seg_pivots[i] as Node3D
-			if not is_instance_valid(seg):
-				continue
-			var lag: float = float(i) * 0.38
-			var damp: float = 1.0 / (1.0 + float(i) * 0.45)
-			seg.rotation.y = sin(_swim_phase * 1.7 + lag) * 0.24 * damp
-			seg.rotation.x = sin(_swim_phase * 2.1 + lag * 1.2) * 0.14 * damp
-			seg.rotation.z = sin(_swim_phase * 2.8 + lag * 0.8) * 0.07 * damp
+		# #242: antennae as MotionChains driven by yaw rate + drag, not pure sine.
+		var yaw_now: float = atan2(heading.x, -heading.z) if heading.length_squared() > 1e-6 else 0.0
+		var yaw_rate: float = wrapf(yaw_now - _last_antenna_yaw, -PI, PI) / maxf(dt, 1e-4)
+		_last_antenna_yaw = yaw_now
+		var root: float = clampf(yaw_rate * 0.08, -0.55, 0.55) \
+			+ sin(_swim_phase) * 0.06 * clampf(speed / maxf(max_speed, 0.1), 0.0, 1.0)
+		var hang: float = 0.18 * (1.0 - clampf(speed / maxf(max_speed, 0.1), 0.0, 1.0))
+		# Reach forward while exploring / nibbling.
+		if current_mode == Mode.NIBBLE or current_mode == Mode.WANDER:
+			hang -= 0.22
+			root *= 0.5
+		if _antenna_chains.is_empty() and not _antenna_seg_pivots.is_empty():
+			# Lazy-bind: three segments per side → two chains of 3.
+			for side in 2:
+				var segs: Array = []
+				for i in 3:
+					var idx: int = side * 3 + i
+					if idx < _antenna_seg_pivots.size():
+						segs.append(_antenna_seg_pivots[idx])
+				if segs.size() == 3:
+					_antenna_chains.append({
+						"pivots": segs,
+						"chain": MotionChain.new(3, "antenna", 0.7),
+					})
+		for entry in _antenna_chains:
+			var chain: MotionChain = entry["chain"]
+			var pivots: Array = entry["pivots"]
+			var rel: PackedFloat32Array = chain.step(dt, root, hang)
+			for i in mini(pivots.size(), rel.size()):
+				var seg: Node3D = pivots[i] as Node3D
+				if seg == null:
+					continue
+				seg.rotation.y = rel[i]
+				seg.rotation.x = hang * (0.35 + float(i) * 0.15)
+				seg.rotation.z = 0.0
 	# Feeding pose settles back to neutral on leaving the feeding bout.
 	# The distance-driven gait owns vertical bob; don't overwrite its rest pose.
 	if _bank_pivot != null:

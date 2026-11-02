@@ -5578,6 +5578,15 @@ func _lay_eggs(a: Fish, b: Fish) -> void:
 		if best_fp != null:
 			lay_at = best_fp.global_position + Vector3(0, -0.12, 0)
 
+	# #177: prefer a spawn site with a clear ray to the camera.
+	var cam_lay: Camera3D = null
+	var tree_lay: SceneTree = get_tree()
+	if tree_lay != null:
+		var vp: Viewport = tree_lay.root.get_viewport()
+		if vp != null:
+			cam_lay = vp.get_camera_3d()
+	lay_at = MotionStaging.prefer_visible_site(lay_at, cam_lay, plants, 0.8)
+
 	for i in n:
 		var g: Dictionary = a.produce_offspring_genome(b)
 		var e := FishEgg.new()

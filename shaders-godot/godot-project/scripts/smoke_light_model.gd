@@ -27,7 +27,7 @@ const INCLUDE_LINE: String = 'res://shaders/beam_cone.gdshaderinc'
 
 # Shaders that draw solid tank or room content and therefore must be lit.
 const MUST_BE_LIT: Array[String] = [
-	"voxel", "voxel_mm", "voxel_fauna_mm",
+	"voxel", "voxel_mm", "voxel_fauna_mm", "voxel_fauna_skinned",
 	"foliage", "foliage_mm", "foliage_senescent_mm",
 	"substrate_opaque", "substrate_caustic",
 	"floater_roots", "mote",
@@ -121,8 +121,13 @@ func _initialize() -> void:
 	# --- Coverage: every lit surface samples the cone ---
 	for name_s in MUST_BE_LIT:
 		var path: String = "res://shaders/%s.gdshader" % name_s
-		var src: String = _read(path)
-		t.check(src != "", "shader %s exists" % name_s)
+		t.check(_read(path) != "", "shader %s exists" % name_s)
+		# Scan the COMPOSED source: a shader may take its lit body from a
+		# shared .gdshaderinc (the two fauna MultiMesh variants share
+		# fauna_mm_common.gdshaderinc), and the gate's question is whether
+		# the source a shader compiles samples the cone — not which file
+		# the sampling line sits in.
+		var src: String = _read_with_includes(path)
 		if src == "":
 			continue
 		t.check(src.contains(INCLUDE_LINE),
@@ -162,3 +167,22 @@ func _read(path: String) -> String:
 	var s: String = f.get_as_text()
 	f.close()
 	return s
+
+
+# The shader text with local #include "res://…" lines inlined (bounded depth),
+# i.e. the source the shader actually compiles.
+func _read_with_includes(path: String, depth: int = 0) -> String:
+	var src: String = _read(path)
+	if depth >= 4 or src == "":
+		return src
+	var out := PackedStringArray()
+	for line in src.split("\n"):
+		out.append(line)
+		var trimmed: String = line.strip_edges()
+		if trimmed.begins_with("#include"):
+			var q0: int = trimmed.find("\"")
+			var q1: int = trimmed.rfind("\"")
+			if q0 >= 0 and q1 > q0:
+				out.append(_read_with_includes(
+					trimmed.substr(q0 + 1, q1 - q0 - 1), depth + 1))
+	return "\n".join(out)

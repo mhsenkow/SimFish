@@ -38,10 +38,12 @@ func add_voxel(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> vo
 		return
 	var albedo: Color = VoxelMat.fauna_color_from_material(mat)
 	var bend_w: float = _bone_bend_weight(parent) if lateral_body_wave else 0.0
-	# INSTANCE_CUSTOM contract (voxel_fauna_mm.gdshader): r = bend weight in
-	# the fraction + bioluminescence in the integer part, g = belly flash,
-	# b = display vibrancy, a = iridescence in the fraction (the integer part
-	# is the per-fish motion quiet level, 0 here). This used to write the
+	# INSTANCE_CUSTOM contract (fauna_mm_common.gdshaderinc): r = bend weight
+	# in the fraction + bioluminescence in the integer part, g = belly flash
+	# in the fraction (the integer part is the GPU bone-palette slot, stamped
+	# by fauna_species_batch.track_sync on skinned batches), b = display
+	# vibrancy, a = iridescence in the fraction (the integer part is the
+	# per-fish motion quiet level, 0 here). This used to write the
 	# iridescence into g (read as belly flash) and 1.0 into a (read as FULL
 	# iridescence on every voxel), and bend in r was read as bioluminescence,
 	# washing every tail pale blue.
@@ -128,7 +130,15 @@ static func pack_custom_r(bend: float, biolum: float) -> float:
 static func _bone_bend_weight(parent: Node3D) -> float:
 	if parent == null:
 		return 0.2
-	match String(parent.name):
+	var pname: String = String(parent.name)
+	# Soft chains (#223/#227/#228) and face/pelvic pivots must not pick up the
+	# lateral body wave — they ride the head/body already.
+	if pname.begins_with("Barbel") or pname.begins_with("Feeler") \
+			or pname.begins_with("Veil") \
+			or pname in ["EyeLeft", "EyeRight", "Jaw", "OperculumL", "OperculumR",
+				"PelvicL", "PelvicR", "Adipose", "Dorsal2"]:
+		return 0.0
+	match pname:
 		"Head":
 			return 0.08
 		"BodyMid":

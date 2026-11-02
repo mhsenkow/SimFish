@@ -6,7 +6,6 @@ const Onboarding = preload("res://scripts/onboarding_runtime.gd")
 
 class Host extends Control:
 	var dialogs: Node
-	var _sim: Node = null
 	func queue_intro_dialog(key: String, factory: Callable) -> void:
 		dialogs.enqueue(key, factory)
 	func _intro_dialog_active() -> bool:

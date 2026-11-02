@@ -4,9 +4,9 @@ A generative pixel-art aquarium running as a 3D voxel scene through a palette-qu
 
 The aesthetic is **pixel art with sim depth underneath**. Internal sim runs continuous; render pass quantizes to chunky pixels + a 48-color palette with region-aware dither, hue-bank palette lock, optional outline + CRT overlay, and time-of-day tinting. Animation emerges from physics, not keyframes.
 
-**Latest release: [v0.2.51](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.51)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
+**Latest release: [v0.2.52](https://github.com/mhsenkow/SimFish/releases/tag/v0.2.52)** · [GitHub Pages](https://mhsenkow.github.io/SimFish/docs/) · [Steam Early Access](https://store.steampowered.com/app/4796460/)
 
-## Where things are at (October 2026)
+## Where things are at (November 2026)
 
 | Area | Status |
 |---|---|
@@ -15,7 +15,8 @@ The aesthetic is **pixel art with sim depth underneath**. Internal sim runs cont
 | **Ecosystem sim** | Walstad nutrient loop, **18** scenario presets (`scenario_picker.gd`), saltwater reef mode, aquascaping craft |
 | **Fish minds** | Active inference, world model, inter-fish signals, emotional contagion, and saved music associations |
 | **Keeper loop** | Care tiers gate conversation — steady the tank first, then fish open up; comfort words soothe spooked fish |
-| **Performance** | Instance-upload guards, school merges, bounded mind recall, long-session fauna slot reuse, adaptive fidelity |
+| **Performance** | GPU bone-palette skinning for crowded fauna batches (~14× sync cut), instance-upload guards, school merges, adaptive fidelity |
+| **Motion** | Travelling-wave body bend, anticipation/follow-through, pose library, timing and exaggeration layers |
 | **In progress** | Sentience eval harness hardening, mind-kernel GDExtension, Steam EA polish |
 
 ### Screenshots
@@ -182,6 +183,14 @@ Substrate nutrients ← waste deposits + reservoir trickle
 - Population dynamics cycling — fry born, some eaten, survivors mature, breed, repeat
 
 ## Recent additions
+
+### v0.2.52 — motion that reads as life, crowded tanks stay light
+
+- **Travelling-wave bodies:** one stroke clock drives thrust and the visible tail; anticipation, follow-through, staging and exaggeration land from the creature-motion backlog.
+- **GPU bone palette:** shared species batches skin on the GPU (~14× less per-frame fauna sync on the measured probe).
+- **Store / Play:** refreshed Steam capsules; Android Play console notes and marketing assets.
+
+[Release notes](docs/RELEASE_v0.2.52.md)
 
 ### v0.2.51 — a realism pass: real water, a lit room, a tank that has lived
 

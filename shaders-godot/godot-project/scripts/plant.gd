@@ -3717,11 +3717,25 @@ func tick(dt: float, substrate: SubstrateGrid) -> void:
 	# Brush bend: a fish that swam through the foliage left a transient push
 	# that springs back over ~1s, so the scenery visibly reacts to its
 	# inhabitants instead of ignoring them.
-	if _brush_bend.length_squared() > 1e-6:
-		var spring_k: float = 8.5
-		var damp: float = 3.2
-		_brush_bend_vel += (-_brush_bend * spring_k - _brush_bend_vel * damp) * dt
-		_brush_bend += _brush_bend_vel * dt
+	# Self-heal if an earlier large-dt step ever poisoned the bend or transform.
+	if not _brush_bend.is_finite() or not _brush_bend_vel.is_finite():
+		_brush_bend = Vector2.ZERO
+		_brush_bend_vel = Vector2.ZERO
+	if not rotation.is_finite():
+		rotation = Vector3.ZERO
+	if _brush_bend.length_squared() > 1e-6 or _brush_bend_vel.length_squared() > 1e-6:
+		# #241: underdamped so a brush rings 2–3 visible oscillations.
+		# Sub-step and clamp so coarse plant ticks (0.2–0.8s, or higher under
+		# time_scale) can never drive explicit Euler unstable into NaN.
+		var spring_k: float = 11.0
+		var damp: float = 2.6
+		var rem: float = minf(maxf(dt, 0.0), 1.0)
+		while rem > 1e-5:
+			var step_dt: float = minf(rem, 0.04)
+			rem -= step_dt
+			_brush_bend_vel += (-_brush_bend * spring_k - _brush_bend_vel * damp) * step_dt
+			_brush_bend_vel = _brush_bend_vel.limit_length(2.2)
+			_brush_bend = (_brush_bend + _brush_bend_vel * step_dt).limit_length(0.55)
 		if _brush_bend.length() < 0.004 and _brush_bend_vel.length() < 0.02:
 			_brush_bend = Vector2.ZERO
 			_brush_bend_vel = Vector2.ZERO

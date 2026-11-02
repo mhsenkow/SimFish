@@ -244,8 +244,23 @@ static func fauna_color_from_material(mat: Material) -> Color:
 
 
 static var _fauna_mm_template: ShaderMaterial = null
+static var _fauna_skinned_template: ShaderMaterial = null
 static var _fauna_mm_mats: Array[WeakRef] = []
 const FAUNA_MM_SHADER_PATH := "res://shaders/voxel_fauna_mm.gdshader"
+const FAUNA_SKINNED_SHADER_PATH := "res://shaders/voxel_fauna_skinned.gdshader"
+
+
+# Both fauna MultiMesh shaders share fauna_mm_common.gdshaderinc, so they take
+# the same defaults and the same registry-driven uniform pushes.
+static func _apply_fauna_mm_defaults(m: ShaderMaterial) -> void:
+	m.set_shader_parameter("color_vibrancy", 1.24)
+	var exp_on: bool = _experimental_on()
+	m.set_shader_parameter("sss_strength",
+		FAUNA_SSS_EXPERIMENTAL if exp_on else FAUNA_SSS_DEFAULT)
+	m.set_shader_parameter("irid_strength",
+		FAUNA_IRID_EXPERIMENTAL if exp_on else FAUNA_IRID_DEFAULT)
+	m.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
+	m.set_shader_parameter("fauna_rim", FAUNA_RIM)
 
 
 static func _ensure_fauna_mm_template() -> void:
@@ -253,20 +268,33 @@ static func _ensure_fauna_mm_template() -> void:
 		return
 	_fauna_mm_template = ShaderMaterial.new()
 	_fauna_mm_template.shader = load(FAUNA_MM_SHADER_PATH) as Shader
-	_fauna_mm_template.set_shader_parameter("color_vibrancy", 1.24)
-	var exp_on: bool = _experimental_on()
-	_fauna_mm_template.set_shader_parameter("sss_strength",
-		FAUNA_SSS_EXPERIMENTAL if exp_on else FAUNA_SSS_DEFAULT)
-	_fauna_mm_template.set_shader_parameter("irid_strength",
-		FAUNA_IRID_EXPERIMENTAL if exp_on else FAUNA_IRID_DEFAULT)
-	_fauna_mm_template.set_shader_parameter("sss_color", Vector3(1.0, 0.85, 0.62))
-	_fauna_mm_template.set_shader_parameter("fauna_rim", FAUNA_RIM)
+	_apply_fauna_mm_defaults(_fauna_mm_template)
+
+
+static func _ensure_fauna_skinned_template() -> void:
+	if _fauna_skinned_template != null and is_instance_valid(_fauna_skinned_template):
+		return
+	_fauna_skinned_template = ShaderMaterial.new()
+	_fauna_skinned_template.shader = load(FAUNA_SKINNED_SHADER_PATH) as Shader
+	_apply_fauna_mm_defaults(_fauna_skinned_template)
 
 
 static func make_fauna_mm() -> ShaderMaterial:
 	_ensure_fauna_mm_template()
 	var m: ShaderMaterial = _fauna_mm_template.duplicate() as ShaderMaterial
 	# The registry observes live materials; it must not own dead animal bodies.
+	if _fauna_mm_mats.size() % 64 == 0:
+		_live_fauna_mm_mats()
+	_fauna_mm_mats.append(weakref(m))
+	return m
+
+
+# Species-batch variant with the GPU bone palette (fauna_species_batch.gd owns
+# the texture). Joins the same registry so aquatic/fixture/rim uniform pushes
+# reach it — the shaders share every uniform name.
+static func make_fauna_skinned() -> ShaderMaterial:
+	_ensure_fauna_skinned_template()
+	var m: ShaderMaterial = _fauna_skinned_template.duplicate() as ShaderMaterial
 	if _fauna_mm_mats.size() % 64 == 0:
 		_live_fauna_mm_mats()
 	_fauna_mm_mats.append(weakref(m))
@@ -1284,6 +1312,7 @@ static func _warm_shaders_cpu(cfg: Node = null) -> void:
 	_ShaderWarmCapture.record("fauna")
 	make_fauna(Color(0.55, 0.42, 0.32))
 	make_fauna_mm()
+	make_fauna_skinned()
 	make_foliage(Color(0.42, 0.72, 0.36))
 	make_flower_foliage(Color(0.92, 0.55, 0.68))
 	make_substrate_opaque(Color8(82, 62, 44))

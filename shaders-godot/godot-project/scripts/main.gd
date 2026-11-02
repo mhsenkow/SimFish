@@ -2387,6 +2387,10 @@ func _process(dt: float) -> void:
 			var vel_v: Variant = _follow_target.get("velocity")
 			if vel_v is Vector3:
 				aim += (vel_v as Vector3) * FOLLOW_LEAD_TIME
+			# #178: lead room ahead of travel so the follow shot sells direction.
+			var head_v: Variant = _follow_target.get("heading")
+			if head_v is Vector3:
+				aim = MotionStaging.follow_lead_aim(aim, head_v as Vector3, 0.18)
 			var t: float = 1.0 - exp(-FOLLOW_LERP_K * dt)
 			if _follow_lock:
 				target = target.lerp(aim, t)
@@ -2394,11 +2398,21 @@ func _process(dt: float) -> void:
 			else:
 				# HOLISTIC #027 — hysteresis so resting fish do not chatter the
 				# camera at the deadzone edge.
+				# #179: widen the deadzone briefly on dart/startle, then ease catch-up.
+				var burst_v: float = float(_follow_target.get("burst_remaining") \
+					if _follow_target.get("burst_remaining") != null else 0.0)
+				var startle_v: float = float(_follow_target.get("_startle_remaining") \
+					if _follow_target.get("_startle_remaining") != null else 0.0)
+				var dz: float = MotionStaging.follow_deadzone_for_speed(
+					FOLLOW_DEADZONE, burst_v, startle_v)
 				var step: Dictionary = CameraController.follow_deadzone_step(
-					aim, target, FOLLOW_DEADZONE, _follow_chasing)
+					aim, target, dz, _follow_chasing)
 				_follow_chasing = bool(step["chasing"])
 				var want: Vector3 = step["target"] as Vector3
 				if _follow_chasing:
+					# Ease harder while catching a surge so the cam itself sells speed.
+					var catch_k: float = FOLLOW_LERP_K * (1.35 if burst_v > 0.1 or startle_v > 0.1 else 1.0)
+					t = 1.0 - exp(-catch_k * dt)
 					target = target.lerp(want, t)
 			# VISUAL_DIRECTIONS #8 — and actually GET CLOSE. Following used to
 			# move only the target, so clicking a fish re-centred the same wide

@@ -1,4 +1,4 @@
-# Motion lab (CREATURE_MOTION_700 #94 #95 #113 #114, stills for #105).
+# Motion lab (CREATURE_MOTION_700 #94 #95 #113 #114 #218 #219, stills for #105).
 #
 #   scripts/dev_run.sh --path shaders-godot/godot-project res://dev/motion_lab.tscn
 #
@@ -13,6 +13,9 @@
 #             flip; snail eye retract and clamp - through the same fields the
 #             game uses (burst_remaining, _startle_remaining, _lb_display_t,
 #             _courtship_flare, start_dying, _escape_remaining, ...)
+#   poses     (#218) lock a named PoseLibrary pose and edit channel sliders;
+#             Save pose writes a species override into poses.json (with a
+#             user:// / out-dir backup)
 #   overlay   MotionDebugOverlay on the selected creature: onion skins,
 #             curvature-coloured head path, speed graph, tail-tip trace
 #   tuning    MotionSpring.TISSUE presets as sliders with a live step
@@ -33,6 +36,11 @@
 # of MOTION_LAB_STILL_SPECIES (default guppy,betta,corydoras,shrimp:crab) at
 # MOTION_LAB_STILL_PHASES (fractions of a beat, default 0,0.25,0.5,0.75) and
 # quits. Needs a real renderer (not --headless).
+#
+# Pose contact sheet (#219): MOTION_LAB_POSE_SHEET=<dir> tiles every fish
+# species × every required pose (side view) into pose_contact_sheet.png.
+# MOTION_LAB_POSE_SHEET_SPECIES / _POSES optional CSV filters. Needs a real
+# renderer (not --headless).
 #
 # Save safety: no World, no SimDriver, no TankSaves. TankConfig.capture_mode
 # is set anyway. Run it through dev_run.sh like every other dev scene.
@@ -81,6 +89,11 @@ var _ui_bouts: CheckBox = null
 var _ui_tissue: OptionButton = null
 var _ui_spring: Array = []      # [HSlider f, HSlider zeta, HSlider r]
 var _graphs: Control = null
+var _ui_pose: OptionButton = null
+var _ui_pose_sliders: Dictionary = {}  # channel -> HSlider
+var _ui_pose_lock: CheckBox = null
+var _pose_edit: Dictionary = {}
+var _pose_name: String = "cruise"
 
 
 func _ready() -> void:
@@ -92,6 +105,10 @@ func _ready() -> void:
 	_out_dir = _out_dir.path_join("motion_lab") if not _out_dir.is_empty() else "user://motion_lab"
 	for k in MotionSpring.TISSUE:
 		_tuning[k] = (MotionSpring.TISSUE[k] as Array).duplicate()
+	var sheet: String = OS.get_environment("MOTION_LAB_POSE_SHEET").strip_edges()
+	if not sheet.is_empty():
+		_run_pose_sheet.call_deferred(sheet)
+		return
 	var stills: String = OS.get_environment("MOTION_LAB_STILLS").strip_edges()
 	if not stills.is_empty():
 		_run_stills.call_deferred(stills)
@@ -232,6 +249,9 @@ func _select(i: int) -> void:
 	_overlay.subject = _selected()
 	_overlay.clear_history()
 	_rebuild_actions()
+	_rebuild_pose_list()
+	if _ui_pose_lock != null and _ui_pose_lock.button_pressed:
+		_pick_pose(_pose_name)
 	_set_status("selected %s" % String(_kinds[_sel]["label"]))
 
 
@@ -489,6 +509,39 @@ func _build_ui() -> void:
 		_pick_tissue(_tissue))
 	srow.add_child(reset_b)
 
+	_add_label(col, "Pose editor (#218)", 13)
+	_ui_pose_lock = CheckBox.new()
+	_ui_pose_lock.text = "lock pose preview"
+	_ui_pose_lock.toggled.connect(_on_pose_lock)
+	col.add_child(_ui_pose_lock)
+	_ui_pose = OptionButton.new()
+	_ui_pose.item_selected.connect(func(i: int) -> void: _pick_pose(_ui_pose.get_item_text(i)))
+	col.add_child(_ui_pose)
+	_rebuild_pose_list()
+	for ch in MotionPoseLibrary.CHANNELS:
+		var rg: Array = MotionPoseLibrary.CHANNEL_RANGE.get(ch, [-1.0, 1.0, 0.02])
+		var channel: String = ch
+		var sl: HSlider = _add_slider(col, ch, float(rg[0]), float(rg[1]), 0.0, float(rg[2]),
+			func(v: float) -> void: _on_pose_channel(channel, v))
+		_ui_pose_sliders[ch] = sl
+	var porow := HBoxContainer.new()
+	col.add_child(porow)
+	var save_pose_b := Button.new()
+	save_pose_b.text = "Save pose"
+	save_pose_b.pressed.connect(_save_pose)
+	porow.add_child(save_pose_b)
+	var clear_pose_b := Button.new()
+	clear_pose_b.text = "Clear lock"
+	clear_pose_b.pressed.connect(func() -> void:
+		_ui_pose_lock.button_pressed = false
+		_on_pose_lock(false))
+	porow.add_child(clear_pose_b)
+	var sheet_b := Button.new()
+	sheet_b.text = "Write contact sheet"
+	sheet_b.pressed.connect(func() -> void:
+		_write_pose_sheet_live.call_deferred())
+	porow.add_child(sheet_b)
+
 	_add_label(col, "Data", 13)
 	var drow := HBoxContainer.new()
 	col.add_child(drow)
@@ -726,6 +779,226 @@ func _draw_spring(r: Rect2) -> void:
 		"spring '%s'  f %.2f Hz  zeta %.2f  r %.2f  step response 2 s  overshoot %.0f%%" % [
 			_tissue, p[0], p[1], p[2], maxf(0.0, peak - 1.0) * 100.0],
 		HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 16.0, 11, Color(0.85, 0.9, 1.0))
+
+
+# ---- Pose editor (#218) ----------------------------------------------------
+
+func _rebuild_pose_list() -> void:
+	if _ui_pose == null:
+		return
+	_ui_pose.clear()
+	var species: String = _selected_fish_species()
+	MotionPoseLibrary.reload_data()
+	var poses: PackedStringArray = MotionPoseLibrary.list_poses(species if not species.is_empty() else "_default")
+	var want: String = _pose_name
+	var sel: int = 0
+	for i in poses.size():
+		_ui_pose.add_item(poses[i])
+		if poses[i] == want:
+			sel = i
+	if poses.is_empty():
+		_ui_pose.add_item("cruise")
+	_ui_pose.select(sel)
+	_pose_name = _ui_pose.get_item_text(_ui_pose.selected)
+	_load_pose_sliders()
+
+
+func _selected_fish_species() -> String:
+	var c: Node3D = _selected()
+	if c is Fish:
+		return (c as Fish).species
+	if _sel >= 0 and _sel < _kinds.size() and String(_kinds[_sel].get("type", "")) == "fish":
+		return String(_kinds[_sel].get("key", ""))
+	return ""
+
+
+func _load_pose_sliders() -> void:
+	var species: String = _selected_fish_species()
+	if species.is_empty():
+		species = "_default"
+	_pose_edit = MotionPoseLibrary.get_pose(species, _pose_name)
+	for ch in MotionPoseLibrary.CHANNELS:
+		if not _ui_pose_sliders.has(ch):
+			continue
+		var sl: HSlider = _ui_pose_sliders[ch]
+		sl.set_value_no_signal(float(_pose_edit.get(ch, 0.0)))
+
+
+func _pick_pose(pose_name: String) -> void:
+	_pose_name = pose_name
+	_load_pose_sliders()
+	if _ui_pose_lock != null and _ui_pose_lock.button_pressed:
+		_apply_pose_preview()
+
+
+func _on_pose_lock(on: bool) -> void:
+	var c: Node3D = _selected()
+	if not (c is Fish):
+		_set_status("pose editor needs a fish")
+		if _ui_pose_lock != null:
+			_ui_pose_lock.set_pressed_no_signal(false)
+		return
+	if on:
+		_apply_pose_preview()
+		_set_status("pose lock %s / %s" % [(c as Fish).species, _pose_name])
+	else:
+		FishPoseRuntime.clear_force_pose(c as Fish)
+		_set_status("pose lock cleared")
+
+
+func _on_pose_channel(channel: String, v: float) -> void:
+	_pose_edit[channel] = v
+	if _ui_pose_lock != null and _ui_pose_lock.button_pressed:
+		_apply_pose_preview()
+
+
+func _apply_pose_preview() -> void:
+	var c: Node3D = _selected()
+	if not (c is Fish):
+		return
+	var f: Fish = c
+	FishPoseRuntime.force_pose(f, _pose_name)
+	FishPoseRuntime.set_edit_channels(f, _pose_edit)
+	# One tiny substep so pivots refresh under the lock.
+	f._motion_substep(1e-4, 1e-4)
+
+
+func _save_pose() -> void:
+	var species: String = _selected_fish_species()
+	if species.is_empty():
+		_set_status("select a fish before saving a pose")
+		return
+	MotionPoseLibrary.upsert_pose(species, _pose_name, _pose_edit)
+	var backup: String = _out_dir.path_join("poses_edit.json")
+	# Prefer the shipped library; always keep a backup under the run out-dir.
+	var wrote: String = MotionPoseLibrary.save_data(PackedStringArray([
+		MotionPoseLibrary.DATA_PATH, backup,
+	]))
+	if wrote.is_empty():
+		_set_status("pose save failed (could not write poses.json or backup)")
+		return
+	_set_status("saved %s/%s → %s" % [species, _pose_name, ProjectSettings.globalize_path(wrote)])
+	_apply_pose_preview()
+
+
+# ---- Pose contact sheet (#219) ---------------------------------------------
+
+func _pose_sheet_species_and_poses() -> Dictionary:
+	var species_csv: String = OS.get_environment("MOTION_LAB_POSE_SHEET_SPECIES").strip_edges()
+	var poses_csv: String = OS.get_environment("MOTION_LAB_POSE_SHEET_POSES").strip_edges()
+	var species_list := PackedStringArray()
+	if species_csv.is_empty():
+		# Default: a readable review set; full library via MOTION_LAB_POSE_SHEET_SPECIES=all
+		if OS.get_environment("MOTION_LAB_POSE_SHEET_SPECIES") == "all" and _stage != null:
+			for k in _stage.kinds():
+				if String(k.get("type", "")) == "fish":
+					species_list.append(String(k.get("key", "")))
+		else:
+			species_list = PackedStringArray(["guppy", "betta", "corydoras", "angelfish", "pleco"])
+	else:
+		if species_csv == "all" and _stage != null:
+			for k in _stage.kinds():
+				if String(k.get("type", "")) == "fish":
+					species_list.append(String(k.get("key", "")))
+		else:
+			for s in species_csv.split(",", false):
+				species_list.append(s.strip_edges())
+	var pose_list := PackedStringArray()
+	if poses_csv.is_empty():
+		pose_list = PackedStringArray([
+			"cruise", "hover", "alert", "clamped", "display", "threat",
+			"sleep", "gulp", "glide", "dead",
+		])
+	elif poses_csv == "all":
+		pose_list = FishPoseRuntime.required_poses()
+	else:
+		for p in poses_csv.split(",", false):
+			pose_list.append(p.strip_edges())
+	return {"species": species_list, "poses": pose_list}
+
+
+func _capture_pose_cells(species_list: PackedStringArray, pose_list: PackedStringArray) -> Dictionary:
+	var cells: Array = []
+	var labels := PackedStringArray()
+	var side_vp: SubViewport = _views[0]["vp"] if not _views.is_empty() else null
+	if side_vp == null or _stage == null:
+		return {"cells": cells, "labels": labels}
+	for sp in species_list:
+		var kind: Dictionary = _stage.kind_by_key(sp)
+		if kind.is_empty() or String(kind.get("type", "")) != "fish":
+			push_warning("[motion_lab] pose sheet skip unknown fish " + sp)
+			continue
+		seed(20261030)
+		var c: Node3D = _stage.spawn(kind, Vector3(0.0, StageScript.FISH_Y, 0.0))
+		if c == null or not (c is Fish):
+			continue
+		var f: Fish = c
+		var st: Dictionary = _stage.drive_state(c)
+		st["path"] = "straight"
+		st["natural_bouts"] = false
+		st["pace"] = 0.15
+		for _i in 45:
+			_stage.step(c, STEP_DT)
+		for pose_name in pose_list:
+			FishPoseRuntime.force_pose(f, pose_name)
+			f.speed = 0.02
+			f.target_velocity = Vector3.ZERO
+			f._motion_substep(1e-4, 1e-4)
+			_update_stills_cameras(c)
+			await RenderingServer.frame_post_draw
+			await RenderingServer.frame_post_draw
+			var im: Image = side_vp.get_texture().get_image()
+			im.convert(Image.FORMAT_RGBA8)
+			cells.append(im)
+			labels.append("%s/%s" % [sp, pose_name])
+			FishPoseRuntime.clear_force_pose(f)
+		_stage.forget(c)
+		c.queue_free()
+		await get_tree().process_frame
+	return {"cells": cells, "labels": labels}
+
+
+func _finish_pose_sheet(dir: String, cells: Array, labels: PackedStringArray, pose_list: PackedStringArray) -> String:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(dir) if dir.begins_with("res://") or dir.begins_with("user://") else dir)
+	var sheet: Image = MotionPoseLibrary.compose_contact_sheet(cells, maxi(pose_list.size(), 1), 2)
+	var out_path: String = dir.path_join("pose_contact_sheet.png")
+	sheet.save_png(out_path)
+	var idx := FileAccess.open(dir.path_join("pose_contact_sheet.txt"), FileAccess.WRITE)
+	if idx != null:
+		idx.store_string("pose contact sheet (#219)\ncols=%d poses=%s\n" % [
+			pose_list.size(), ",".join(pose_list)])
+		idx.store_string("\n".join(labels) + "\n")
+		idx.close()
+	return out_path
+
+
+func _write_pose_sheet_live() -> void:
+	MotionPoseLibrary.reload_data()
+	var cfg: Dictionary = _pose_sheet_species_and_poses()
+	var species_list: PackedStringArray = cfg["species"]
+	var pose_list: PackedStringArray = cfg["poses"]
+	var captured: Dictionary = await _capture_pose_cells(species_list, pose_list)
+	var dir: String = _out_dir.path_join("pose_sheet")
+	var out_path: String = _finish_pose_sheet(
+		dir, captured["cells"] as Array, captured["labels"] as PackedStringArray, pose_list)
+	_set_status("pose sheet %d cells → %s" % [(captured["cells"] as Array).size(), out_path])
+
+
+func _run_pose_sheet(dir: String) -> void:
+	var holder := Node.new()
+	add_child(holder)
+	_make_world_views(func(_v: String, vp: SubViewport) -> void: holder.add_child(vp), Vector2i(160, 120))
+	await get_tree().process_frame
+	MotionPoseLibrary.reload_data()
+	var cfg: Dictionary = _pose_sheet_species_and_poses()
+	var species_list: PackedStringArray = cfg["species"]
+	var pose_list: PackedStringArray = cfg["poses"]
+	var captured: Dictionary = await _capture_pose_cells(species_list, pose_list)
+	var out_path: String = _finish_pose_sheet(
+		dir, captured["cells"] as Array, captured["labels"] as PackedStringArray, pose_list)
+	print("[motion_lab] pose sheet %d cells -> %s" % [(captured["cells"] as Array).size(), out_path])
+	get_tree().quit(0 if not (captured["cells"] as Array).is_empty() else 1)
 
 
 # ---- Stills mode (#105) ----------------------------------------------------

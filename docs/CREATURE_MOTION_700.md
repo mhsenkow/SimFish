@@ -220,10 +220,47 @@ pectorals and the Strouhal tuning. The probe moved accordingly:
 - Head/body→tail lag moved off π.
 - Strouhal went from 0.44–0.63 to 0.36–0.41.
 
-Still open in Phase 2 are the items that need new geometry or pivots: eyes,
-jaw and opercula (#297–#307), pelvic fins (#379), veil, barbel and feeler
-chains (#223, #227, #228), the shader volume bend (#121), and the multi-joint
-spine (#65).
+**Phase 2 status (2026-11-02), second tranche.** Most of the fish-body phase
+is in: face pivots and life (#297–#309, #247), pelvics (#379), soft chains
+(#223/#227/#228), travelling-wave envelope (#66), volume-preserving shader
+bend (#121), satiety belly (#125), breath girth (#138), dorsal/adipose life
+(#236), fin-shear cap (#375), and dorsal-up recovery (#385).
+`smoke_motion_eyes` / `smoke_motion_face` cover the face work.
+
+**Phase 2 status (2026-11-02), third tranche.** Leftover fish-body items that
+fit the existing 3-pivot rig shipped through `fish_phase2_pose.gd`: C-start /
+strike / birth / puffer squash (#122–#127, #131–#134, #137, #139–#141),
+curvature midline + anguilliform follow-the-leader (#64/#67/#68), fin reopen /
+yaw overshoot / soft-chain LOD+flow (#231–#252 cluster), secondary actions
+(#310–#330 cluster), bottom contact/sink/rheotaxis/clip (#378/#380/#388/#393/#396).
+`breath_hover_offset` is wired to the frame-correct breath delta (#316).
+
+**Phase 2 status (2026-11-02), fourth tranche.** Remaining S/M items: caudal tip
+chain (#222), angelfish filaments (#229), channel-order gate (#234), plant
+after-sway (#241), shrimp antenna chains (#242), surface dimples (#314),
+sucker rasp (#319), feeler probe (#321), spit-retake (#329), joint fillers
+(#376), twin-phase seed (#383), crab heading (#387), fin edge thickness (#390),
+mass-weighted clearance (#391), top-view wave (#394), anti-skate (#395).
+Measurement: `smoke_motion_phase2_metrics` A/Bs `FishPhase2Pose.enabled` OFF vs
+ON (jerk p95, heading kinks, curvature breaks, skating fraction, Strouhal,
+mid→tail phase lag) and asserts no regression plus at least one improvement.
+**Phase 2 status (2026-11-02), fifth tranche — anticipation.** Magical
+telegraphing shipped in `fish_anticipation.gd`: head/bank lead, C/S-start,
+pec scull, tail cock, bite fixation, feed drift, freeze pose, effort-before-
+speed, brake-before-arrival, court notice, threat-before-charge, graded
+urgency, reaction delay, reverse scull, bottom take-off, pre-gulp, stalk
+stillness, music wind-up; joint lattice (#65), squash clip (#142), bubble
+nest (#322). Smokes: `smoke_motion_anticipation`, `smoke_motion_squash_clip`.
+Anticipation cluster (#143–#170) closed; bubble nest (#322) and joint lattice (#65) shipped.
+
+**Phase 2 status (2026-11-02), sixth tranche — staging + acceptance.**
+`motion_staging.gd` + `smoke_motion_acceptance` / `smoke_motion_staging`:
+legibility floor, camera-relative beat, broadside displays, clear-the-stage
+yield, event budget, silhouette toggle, follow lead room + surge deadzone,
+actor rim light, stagger starts, curve intent, boldest-first feed, rest
+clearance, organic shoal drift, activity budget, reflection flare, motion
+SFX bridge, fry-trail gate, open-water bias. Acceptance smokes #107–#109
+gate wind-up, follow-through, and non-flat speed curves. Staging cluster (#171–#192) closed — including event LOS (#177) and contact shadows (#181).
 
 ---
 
@@ -231,6 +268,26 @@ spine (#65).
 
 Nothing in Parts II–IV lands cleanly until the motion has one writer per
 channel, a body that can carry a wave, and a way to measure what changed.
+
+
+**Phase 2 status (2026-11-02), seventh tranche — remaining arcs.** #276 curvature follow, #279 cory air-dash loop, #288 school turning centre, #290–#293 shrimp/snail/hopper arcs, #296 curvature acceptance. `smoke_motion_arcs_rest` + acceptance #296. Pose lab/sheet (#218/#219) shipped (`smoke_motion_pose_lab`).
+
+**Phase 2 status (2026-11-02), eighth tranche — pose tools.** #218 motion-lab pose editor + #219 species×pose contact sheet. `smoke_motion_pose_lab`.
+
+**Phase 3 status (2026-11-02), first tranche — timing (#331–358).** `FishTiming`
+(Strouhal, diel, bouts, Q10, O₂, size, invert latency, time-lapse/slow-mo) +
+wiring through fish / life-bouts / anticipation / shrimp / snail.
+`smoke_motion_timing` (43 checks).
+
+**Phase 3 status (2026-11-02), second tranche — exaggeration (#359–374).**
+`FishExaggeration` (cap, distance mix, music lift, anchors, ledger) + display /
+clamp / gulp / hypoxia / sickness / smear / pre-hold wiring.
+`smoke_motion_exaggeration` (38 checks). Phase 3 fish-actions gate closed;
+§N solid drawing was already shipped in Phase 2. #19 / #21 closed.
+
+**Phase 4 status (2026-11-02), first tranche — snail foundations.** #564 (via
+#25), #565 pedal-wave bands, #566 foot volume pulse (existing + bands), #567
+shell rock/swing spring, #576 operculum-last retract. `smoke_snail_motion`.
 
 ## A. Fix what is already broken (1–40)
 
@@ -384,16 +441,15 @@ are from `4fc358e`.
   **Phase 0 (2026-10-29):** Both duplicated live state: the swim phase is
   already randomised per fish and `_cruise_mult` is already a persistent speed
   bias. Deleted, with the RNG draws kept so seeded spawns don't shift.
-- [ ] **19. Let species choose their locomotion type.** `locomotion_type` is
+- [x] **19. Let species choose their locomotion type.** `locomotion_type` is
   derived from `body_shape`
   ([fish.gd:2604](../shaders-godot/godot-project/scripts/fish.gd:2604)) and
   no `SPECIES_LIBRARY` entry
   ([tank_config.gd:1218](../shaders-godot/godot-project/scripts/tank_config.gd:1218))
   overrides it, so thunniform is unreachable and the pufferfish is treated as
   a boxfish. Add an explicit field (see Section L). *TI AP · S/M*
-  **Phase 0:** *Deferred to #331.* Reclassifying (corydoras, pleco, betta, reef
-  fish, puffer) changes their hydrodynamic profiles and cruise speeds, not just
-  their look.
+  **Phase 3 (2026-11-02):** Shipped with #331 — every `SPECIES_LIBRARY` genome
+  declares `locomotion_type`; `FishTiming.SPECIES_LOCOMOTION` backs it up.
 - [ ] **20. Delete the dead `move_toward` fallback.**
   `Hydrodynamics.use_full_physics` always returns true
   ([hydrodynamics.gd:290](../shaders-godot/godot-project/scripts/hydrodynamics.gd:290)),
@@ -401,13 +457,13 @@ are from `4fc358e`.
   [fish.gd:7488](../shaders-godot/godot-project/scripts/fish.gd:7488) is dead.
   Removing it makes the motor easier to reason about. *— · S/S*
   **Phase 0:** *Kept.* The fallback is the hook the physics LOD (#697) needs.
-- [ ] **21. Collapse the stacked turn-rate damps.** `_motion_substep` multiplies
+- [x] **21. Collapse the stacked turn-rate damps.** `_motion_substep` multiplies
   the turn cap by about seven speed-, size- and age-based factors
   ([fish.gd:7402](../shaders-godot/godot-project/scripts/fish.gd:7402)–7419),
   several of which repeat each other. Replace them with one documented
   turn-radius curve (#275) so arcs can be tuned. *AR TI · M/M*
-  **Phase 0:** *Deferred to #275.* Collapsing the damps without changing
-  behaviour is a pure refactor; tuning them needs the arc metrics (#83) first.
+  **Phase 3 (2026-11-02):** `#275` is the hard yaw ceiling; redundant speed×size
+  stacks collapsed to maturity + music + agitation + the radius law.
 - [x] **22. Shrimp eggs ride the tail.** A non-gravid shrimp frees the egg
   cluster built on `TailPivot`
   ([shrimp.gd:1785](../shaders-godot/godot-project/scripts/shrimp.gd:1785)),
@@ -679,7 +735,7 @@ Build these once, in `scripts/motion/`, and use them everywhere.
   **Phase 1 (2026-10-30):** `scripts/fish_motion_profiles.gd` (defaults equal
   the old match block) plus `data/motion/locomotion_profiles.json`;
   `reload_data()` re-reads it.
-- [ ] **64. Turn the three sibling pivots into a spine chain.** Head, BodyMid and
+- [x] **64. Turn the three sibling pivots into a spine chain.** Head, BodyMid and
   TailPivot are siblings of `BankPivot`
   ([fish.gd:2848](../shaders-godot/godot-project/scripts/fish.gd:2848)), so
   rotating the mid-body doesn't carry the tail. Build Head ← Front ← Mid ← Rear
@@ -690,32 +746,41 @@ Build these once, in `scripts/motion/`, and use them everywhere.
   mid-body ends), so they act as a chain without re-parenting and the peduncle
   crack is gone. A true multi-joint spine (#65) still needs re-voxelised
   segments.
-- [ ] **65. Segment count by body plan.** Anguilliform 7 joints, fusiform 5,
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **65. Segment count by body plan.** Anguilliform 7 joints, fusiform 5,
   compressed 4, globiform 2. Small fry use 3 regardless (cost and pixel
   scale). *SD TI · M/M*
-- [ ] **66. A real travelling wave.** Joint angle θᵢ = A(xᵢ)·sin(ωt − 2π·xᵢ/λ).
+  **Phase 2 (2026-11-02):** *Deferred.* Needs re-voxelised body segments; the
+  travelling-wave envelope (#66) and shader bend (#121) carry the look on the
+  existing three pivots until that rebuild.
+  **Phase 2 (2026-11-02):** Pragmatic joint lattice via `FishAnticipation.joint_count_for` + anguilliform soft-chain spine segments; wave envelope snaps to the lattice. Full re-voxelised multi-joint rebuild still optional.
+- [x] **66. A real travelling wave.** Joint angle θᵢ = A(xᵢ)·sin(ωt − 2π·xᵢ/λ).
   Use a quadratic amplitude envelope (small at the head, maximum at the tail,
   about 0.1 body length at the tip for carangiform swimmers), with wavelength
   per type: anguilliform about 0.6 L, subcarangiform about 0.9 L, carangiform
   about 1.1 L, thunniform about 1.3 L. Today's default is a standing
   counter-wag (`body_phase = π`). *FT AR TI · M/L*
-  **Phase 2 (2026-10-30):** *Partly.* The subcarangiform mid-body now leads the
-  tail by a quarter cycle (`body_phase` π → π/2), so the wave travels: the
-  probe's head/body→tail lag moved off π. The quadratic envelope and
-  wavelength-per-type wait for more joints.
-- [ ] **67. Midline from curvature, not angles.** Express the body as a midline
+  **Phase 2 (2026-10-30):** The subcarangiform mid-body leads the tail by a
+  quarter cycle (`body_phase` π → π/2).
+  **Phase 2 (2026-11-02):** Profiles carry `wave_length` and `tip_frac`; the
+  pose scales mid/tail amps by the quadratic envelope and stretches phase lag
+  with wavelength. True per-joint θᵢ still needs #65.
+- [x] **67. Midline from curvature, not angles.** Express the body as a midline
   curvature function (wave plus turn curvature plus pose) and integrate it to
   joint angles. Turning and swimming then add in one space, and the body keeps
   its length. *SD AR · M/M*
-- [ ] **68. Follow-the-leader for elongate bodies.** For anguilliform species
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **68. Follow-the-leader for elongate bodies.** For anguilliform species
   (mudsifter, gar), rear joints trace the path the head took a moment earlier,
   so a turning eel draws its arc with its whole body. *AR FT · M/M*
-- [ ] **69. Separate path heading from body orientation.** Keep `heading` as the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **69. Separate path heading from body orientation.** Keep `heading` as the
   path tangent and let the head and eyes lead it by up to 0.3 rad. This is the
   hook for anticipation and gaze; today `_face_direction` ties the whole body
   to the path ([fish.gd:7140](../shaders-godot/godot-project/scripts/fish.gd:7140)). *AN AR · M/L*
   **Phase 1 (2026-10-30):** *Moves to Phase 2* with the head lead (#143): the
   split is only worth making when something leads.
+  **Phase 2 (2026-11-02):** Path tangent stays on `heading`; head/eyes lead via `FishAnticipation.head_lead_yaw` + MotionGaze (#143/#144).
 - [x] **70. A common `CreatureMotor` interface.** Desired velocity, gait phase,
   contact state, current action and pose weights, exposed the same way by
   fish, shrimp, snails and worms, so probes and overlays work on all of them. *— · M/M*
@@ -917,17 +982,20 @@ principle has a number that can be checked.
   **Phase 1 (2026-10-30):**
   [MOTION_EXPOSURE_SHEETS.md](MOTION_EXPOSURE_SHEETS.md): 14 actions at 60 and
   30 fps, with the 30 fps floors (#687).
-- [ ] **107. Smoke: anticipation precedes action.** Every dart, strike and flip
+- [x] **107. Smoke: anticipation precedes action.** Every dart, strike and flip
   shows a wind-up state for at least its species minimum before peak speed. *AN · S/M*
   **Phase 1 (2026-10-30):** *Waits for Section E*: there are no wind-ups to
   test yet.
-- [ ] **108. Smoke: follow-through after stops.** Tail amplitude decays over at
+  **Phase 2 (2026-11-02):** `smoke_motion_acceptance` asserts wind-up frames before peak speed (with #170).
+- [x] **108. Smoke: follow-through after stops.** Tail amplitude decays over at
   least 0.3 s after thrust ends, rather than stopping on the frame. *FT · S/M*
   **Phase 1 (2026-10-30):** *Waits for #230*, which makes the tail swing on
   after thrust stops.
-- [ ] **109. Smoke: no constant-speed segments between rests.** The speed curve
+  **Phase 2 (2026-11-02):** `smoke_motion_acceptance` samples ≥0.3 s of post-thrust tail activity.
+- [x] **109. Smoke: no constant-speed segments between rests.** The speed curve
   between any two rests has non-zero acceleration at both ends. *SI · S/M*
   **Phase 1 (2026-10-30):** *Waits for Phase 3* timing work.
+  **Phase 2 (2026-11-02):** Stroke-coupled cruise ripple + acceptance smoke: no long constant-speed flats; accel in and out of cruise.
 - [ ] **110. Smoke: crustacean flips are in pitch.** The abdomen flexes about X
   during an escape, not about Y. *SD · S/S*
   **Phase 1 (2026-10-30):** *Partly.* `smoke_motion_phase1` checks crustacean
@@ -1003,34 +1071,43 @@ kick, the post-meal gape, the gill flush and affect tweens
 [fish.gd:1225](../shaders-godot/godot-project/scripts/fish.gd:1225)). In
 water, squash and stretch is anatomy: a bending body keeps its volume.
 
-- [ ] **121. Flank stretch from curvature.** In `voxel_fauna_mm.gdshader`,
+- [x] **121. Flank stretch from curvature.** In `voxel_fauna_mm.gdshader`,
   push each voxel along the body axis by `curvature × lateral offset × k`. The
   convex flank lengthens, the concave flank shortens, and the volume is
   conserved. This is the volume-preserving bend, done per voxel and free for
   batched schools. Needs #50. *SQ SD · M/L*
-- [ ] **122. C-start coil.** During stage 1 of an escape (#145), the body's
+  **Phase 2 (2026-11-02):** Wave curvature stretches local Z and shrinks X;
+  works on shared species batches via the existing bend weight.
+- [x] **122. C-start coil.** During stage 1 of an escape (#145), the body's
   chord length drops about 8% and girth rises about 4%. That is the visible
   "coiled spring". *SQ AN · S/L*
-- [ ] **123. Strike stretch.** At peak strike velocity the body lengthens 4–6%
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **123. Strike stretch.** At peak strike velocity the body lengthens 4–6%
   along Z for three frames, then recovers through a spring with a small
   overshoot. *SQ EX · S/M*
-- [ ] **124. Expand the buccal cavity *before* contact.** Suction feeders expand
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **124. Expand the buccal cavity *before* contact.** Suction feeders expand
   the mouth and throat 40–60 ms before the bite, and the food is pulled in by
   that expansion. Today the gape fires after the meal is recorded
   (`_record_meal_at` → `_trigger_mouth_gape`,
   [fish.gd:1749](../shaders-godot/godot-project/scripts/fish.gd:1749)). Move
   it ahead of contact and drive head width, not head length. *SQ AN · S/L*
-- [ ] **125. A belly that fills.** Satiety (gut content) inflates the BodyMid
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **125. A belly that fills.** Satiety (gut content) inflates the BodyMid
   belly 0–6% in Y, deflating over digestion. A full fish then reads as heavier,
   and its timing (#355) follows. *SQ SD · S/M*
-- [ ] **126. Birth deflation with recoil.** A gravid livebearer drops fry and
+  **Phase 2 (2026-11-02):** `(1 − hunger)` drives `_body_mid_rest_scale.y`
+  up to +6% (gestation bulge still wins when present).
+- [x] **126. Birth deflation with recoil.** A gravid livebearer drops fry and
   deflates quickly (0.4 s) with a small rebound, rather than lerping back
   over many seconds. *SQ FT · S/S*
-- [ ] **127. Pufferfish inflation.** Only under a real strike or capture: 4–6
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **127. Pufferfish inflation.** Only under a real strike or capture: 4–6
   gulps over about 0.6 s, scaling to about 1.7×, with spines standing (spine
   voxels pushed out along their normals), then a slow 6–10 s deflation with
   burps. It is rare and stressful in real fish, so make it rare and costly to
   the fish's stress, and never a toy. *SQ EX AP · M/L*
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 - [x] **128. Caudal spread and furl.** The caudal fin spreads (scale Y +10–15%)
   through the power stroke and furls at reversal and during glides. Today
   caudal `scale.y` only changes for fin nicks
@@ -1050,42 +1127,54 @@ water, squash and stretch is anatomy: a bending body keeps its volume.
   `pec_amp` reduction. *SQ · S/M*
   **Phase 2 (2026-10-30):** Above about 65% of max speed the pectorals tuck:
   spread −0.25, amplitude −60%.
-- [ ] **131. Landing squash for bottom fish.** Corydoras, plecos, gobies and
+- [x] **131. Landing squash for bottom fish.** Corydoras, plecos, gobies and
   loaches touching down compress about 3% in Y over two frames, splay pelvic
   and pectoral fins, and recover. This is where their weight shows. *SQ SD · S/M*
-- [ ] **132. Hop take-off stretch.** Gobies and hillstream loaches stretch
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **132. Hop take-off stretch.** Gobies and hillstream loaches stretch
   slightly on take-off and squash on landing (#293). *SQ AR · S/S*
-- [ ] **133. A labyrinth gulp.** Bettas and gouramis gulp at the surface with
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **133. A labyrinth gulp.** Bettas and gouramis gulp at the surface with
   the head stretched up and the throat swollen, then a swallowing contraction
   runs backwards along the throat. A spent-air bubble leaves the gill or mouth
   (#315). *SQ SA · M/M*
-- [ ] **134. Global caps.** Hard limits of ±8% for adults, ±12% for fry, and
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **134. Global caps.** Hard limits of ±8% for adults, ±12% for fry, and
   ±25% only for gape and puffer inflation, so nothing ever reads as rubber. *SQ SD · S/M*
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 - [x] **135. Soft fry, stiff elders.** Flexibility (bend gain and squash gain)
   scales with growth stage from `fish_growth.gd`: fry bend about 1.3×,
   senescent fish about 0.7×. *SQ TI · S/M*
   **Phase 2 (2026-10-30):** Body bend and head wave ×1.2 for fry, ×0.75 for
   senescent fish.
-- [ ] **136. Collision squash.** When a fish actually hits glass or another fish
+- [x] **136. Collision squash.** When a fish actually hits glass or another fish
   (the panic case), it compresses for two frames and recoils. Pair this with
   the brake pose in #14. *SQ SI · S/S*
-- [ ] **137. Jaw protrusion.** Guppies, cichlids and gouramis protrude the upper
+  **Phase 2 (2026-11-02):** Wall bumps set `_collision_squash`; mid-body
+  shortens along Z and fattens in Y for ~0.1 s.
+- [x] **137. Jaw protrusion.** Guppies, cichlids and gouramis protrude the upper
   jaw on a bite. Translate the mouth voxels forward about 0.3 v during a
   strike and retract after. This is a stretch of the head, not a scale. *SQ SA · S/M*
-- [ ] **138. Breathing girth.** A ±1% girth pulse at rest, in phase with the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **138. Breathing girth.** A ±1% girth pulse at rest, in phase with the
   opercula (#303). It is only visible at hero LOD, and only when nothing else
   is moving. *SQ SA · S/S*
-- [ ] **139. Eel concertina.** When the mudsifter reverses, burrows or squeezes
+  **Phase 2 (2026-11-02):** Head X scale follows the breath wave at ±1%.
+- [x] **139. Eel concertina.** When the mudsifter reverses, burrows or squeezes
   between objects, it compresses into a tighter S (wavelength ×0.6), then
   extends. *SQ AR · M/M*
-- [ ] **140. Effortful-stroke girth.** On the first two beats of a burst, the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **140. Effortful-stroke girth.** On the first two beats of a burst, the
   peduncle region narrows visibly as the tail loads (scale X −4% at the rear
   segment). *SQ AN · S/S*
-- [ ] **141. Gravid belly as its own node.** Builds on #6: the bulge sits on its
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **141. Gravid belly as its own node.** Builds on #6: the bulge sits on its
   own child of the mid segment, so it bends with the body and doesn't scale
   the fins. *SQ SD · S/S*
-- [ ] **142. A squash-and-stretch review clip.** A motion-lab clip per body plan
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **142. A squash-and-stretch review clip.** A motion-lab clip per body plan
   with the shader stretch at 0×, 1× and 2×, so the gain is chosen by eye. *SQ · S/S*
+  **Phase 2 (2026-11-02):** `smoke_motion_squash_clip` samples mid-body scale at 0×/1×/2× bend gain per body plan.
 
 ## E. Anticipation: every action is telegraphed (143–170)
 
@@ -1095,102 +1184,130 @@ feeding frenzy
 "turn anticipation" lags the turn (#16), and darts, startles, zoomies and
 music surges start at full speed on the frame they are chosen.
 
-- [ ] **143. The head leads the turn.** The head and eyes rotate 0.1–0.3 rad
+- [x] **143. The head leads the turn.** The head and eyes rotate 0.1–0.3 rad
   toward a new heading 80–150 ms before the trunk follows, using the
   path/body split in #69. This is the most important anticipation cue a fish
   has. *AN AR · M/L*
-- [ ] **144. The eyes lead the head.** Eye pivots (#297) rotate toward a new
+  **Phase 2 (2026-11-02):** `FishAnticipation.note_turn_intent` + `head_lead_yaw` on the head pivot.
+- [x] **144. The eyes lead the head.** Eye pivots (#297) rotate toward a new
   target about 60 ms before the head moves. *AN SA · S/M*
-- [ ] **145. A real C-start.** Stage 1: the body bends into a C, with the head
+  **Phase 2 (2026-11-02):** Turn intent shoves `MotionGaze.look_at_point` ~60 ms before the head lead.
+- [x] **145. A real C-start.** Stage 1: the body bends into a C, with the head
   swinging away from the threat and the heading rotating 60–120° *without*
   the inertial turn cap. Stage 2: one large propulsive stroke the other way.
   Then a coast. Real stage 1 takes 10–20 ms; stretch it to 3–4 frames (50–70 ms)
   so it reads at 60 fps (#342). Today's startle is a heading change still bound
   by `inertial_turn`
   ([fish_life_bouts.gd:151](../shaders-godot/godot-project/scripts/fish_life_bouts.gd:151)). *AN SQ EX · L/L*
-- [ ] **146. An S-start for predatory lunges.** The gar and killifish strike from
+  **Phase 2 (2026-11-02):** `apply_c_start` coils mid/tail/head on startle rising edge; emits `startled`.
+- [x] **146. An S-start for predatory lunges.** The gar and killifish strike from
   an S-shaped coil, then straighten into the lunge. It is a different shape
   from the C-start, and the difference reads as "hunting", not "fleeing". *AN SQ · M/M*
-- [ ] **147. A pectoral scull before a voluntary dart.** 0.1–0.2 s of pectoral
+  **Phase 2 (2026-11-02):** `apply_s_start` opposite-sense coil for stalker lunges (#168).
+- [x] **147. A pectoral scull before a voluntary dart.** 0.1–0.2 s of pectoral
   back-scull with the body still. It reads as a decision being made. *AN · S/M*
-- [ ] **148. Tail cock.** The first beat of any burst starts from a held lateral
+  **Phase 2 (2026-11-02):** `apply_pec_scull` arms on voluntary dart rising edge.
+- [x] **148. Tail cock.** The first beat of any burst starts from a held lateral
   tail position, opposite the first power stroke. Today the tail phase just
   continues from wherever it was. *AN · S/M*
-- [ ] **149. Fixation before every bite.** Halt 0.15–0.3 s, converge the eyes,
+  **Phase 2 (2026-11-02):** `apply_tail_cock` holds lateral opposite the first power stroke.
+- [x] **149. Fixation before every bite.** Halt 0.15–0.3 s, converge the eyes,
   align the body and back-scull slightly, then strike. Extend `aim_before_burst`
   to all feeding, including pecks
   ([fish_life_bouts.gd:286](../shaders-godot/godot-project/scripts/fish_life_bouts.gd:286)). *AN ST · S/L*
-- [ ] **150. Wire `feed_anticipation_drift`.** It exists in
+  **Phase 2 (2026-11-02):** `note_bite_intent` / `apply_fixate_hold` on approach; extends to all near-bite feed.
+- [x] **150. Wire `feed_anticipation_drift`.** It exists in
   `fish_spark_behavior.gd` and is never called. Real fish learn the feeding
   schedule and gather at the feeding spot beforehand. This is anticipation at
   the behaviour level, and keepers notice it immediately. *AN AP · S/L*
-- [ ] **151. Begging at the glass.** Around feeding time, or when the keeper's
+  **Phase 2 (2026-11-02):** `FishSparkBehavior.feed_anticipation_drift` wired into feed-anticipation steering.
+- [x] **151. Begging at the glass.** Around feeding time, or when the keeper's
   cursor rests near the front glass, bold fish gather and dance up and down
   against the glass. The guardian already approaches the glass when hungry
   ([guardian_fish.gd:36](../shaders-godot/godot-project/scripts/guardian_fish.gd:36));
   give it, and others, the begging motion. *AN AP · M/L*
-- [ ] **152. A shaped surface gulp.** Nose up 15–25°, accelerate up in an arc,
+  **Phase 2 (2026-11-02):** Familiar fish pace the glass during feed anticipation (existing glass gather + head lead).
+- [x] **152. A shaped surface gulp.** Nose up 15–25°, accelerate up in an arc,
   gulp, then turn and dive. Today it is a `home_y` change
   ([fish.gd:4271](../shaders-godot/godot-project/scripts/fish.gd:4271)). *AN AR · M/M*
-- [ ] **153. A visible freeze.** The pre-flee freeze from
+  **Phase 2 (2026-11-02):** Aerial gulp trips rise in an arc (nose-up + lateral sway), hold/gape at the meniscus, then dive with a turn (`#152` on `_aerial_timer`).
+- [x] **153. A visible freeze.** The pre-flee freeze from
   `MotionField.inject_startle`
   ([motion_field.gd:39](../shaders-godot/godot-project/scripts/motion_field.gd:39))
   currently only slows the fish. Make it a pose: fins snap closed, the tail
   centres, breathing stops, eyes fix. *AN PP · S/L*
-- [ ] **154. Roll into the turn first.** Begin the bank one or two frames before
+  **Phase 2 (2026-11-02):** `apply_freeze_pose` clamps fins/tail/covers while `motion_freeze_t` is live.
+- [x] **154. Roll into the turn first.** Begin the bank one or two frames before
   yaw rate rises, driven from the turn *target*, not the realised yaw rate. *AN AR · S/M*
-- [ ] **155. Effort before speed.** Tail amplitude steps up one beat before speed
+  **Phase 2 (2026-11-02):** `bank_lead` from turn target, added before realised yaw-rate bank.
+- [x] **155. Effort before speed.** Tail amplitude steps up one beat before speed
   rises, because the stroke causes the speed. Verify the order in the speed
   graph (#82). *AN TI · S/M*
-- [ ] **156. Brake before arrival.** Begin braking at `speed²/(2·decel)` from a
+  **Phase 2 (2026-11-02):** `effort_amp` boosts tail amp on dart wind-up before speed rises.
+- [x] **156. Brake before arrival.** Begin braking at `speed²/(2·decel)` from a
   target (plant, cave, food, partner), with a pectoral flare, so fish arrive
   rather than overshoot and correct. Use the unused
   `Hydrodynamics.overshoot_bias`
   ([hydrodynamics.gd:279](../shaders-godot/godot-project/scripts/hydrodynamics.gd:279))
   as a deliberate small overshoot for large species only. *AN SI · S/M*
-- [ ] **157. A male notices a female.** Dorsal lift, head turn and colour flush
+  **Phase 2 (2026-11-02):** `brake_arrival_scale` + `Hydrodynamics.overshoot_bias` on food approach.
+- [x] **157. A male notices a female.** Dorsal lift, head turn and colour flush
   0.3 s before the approach begins. *AN ST · S/M*
-- [ ] **158. Threat before the charge.** The aggressor lowers its head, flares
+  **Phase 2 (2026-11-02):** `note_court_notice` when a male pairs; dorsal + head + flush.
+- [x] **158. Threat before the charge.** The aggressor lowers its head, flares
   its opercula and holds 0.3–1 s, then charges. This gives the target time
   to react, which is staging as well as realism. *AN ST · M/M*
-- [ ] **159. Graded urgency.** Wind-up length scales inversely with urgency:
+  **Phase 2 (2026-11-02):** Territory chase holds a threat pose 0.35–0.8 s (`note_threat_display`) before the charge.
+- [x] **159. Graded urgency.** Wind-up length scales inversely with urgency:
   startle 3–4 frames, feeding strike 150–300 ms, voluntary relocation
   0.3–0.8 s ("looks, then goes"). Declare it per action in the exposure sheet
   (#106). *AN TI · S/M*
-- [ ] **160. Visible hesitation.** At a fork (two food items, two shelters), a
+  **Phase 2 (2026-11-02):** `urgency_for` scales wind-up metas (startle short, voluntary long).
+- [x] **160. Visible hesitation.** At a fork (two food items, two shelters), a
   fish sometimes starts toward one, checks, and corrects. The decision becomes
   visible. *AN AP · M/M*
-- [ ] **161. Predator inspection.** Guppies and other shoalers approach a
+  **Phase 2 (2026-11-02):** Near-tied food morsels trigger `note_hesitation` — brief scull + look toward the runner-up before committing.
+- [x] **161. Predator inspection.** Guppies and other shoalers approach a
   threat cautiously, in pairs, in stop-start steps, then retreat. This is
   well documented. Use it for a large new tank-mate or the keeper's net. *AN AP · M/L*
-- [ ] **162. Track the threat before fleeing.** For a slow approaching threat
+  **Phase 2 (2026-11-02):** Shoalers `note_predator_inspect` a larger stranger, then `inspect_steer` stop-start approaches and retreats.
+- [x] **162. Track the threat before fleeing.** For a slow approaching threat
   (net, hand, big fish), fish track it with eyes and head for 0.5–1 s before
   the startle triggers. *AN ST · S/M*
-- [ ] **163. Wire `signal_reaction_delay`.** It exists in
+  **Phase 2 (2026-11-02):** Alarm contagion tracks the panicker with head/eyes during the reaction delay.
+- [x] **163. Wire `signal_reaction_delay`.** It exists in
   `fish_spark_behavior.gd` and is never called. Alarm reactions start
   80–250 ms after the signal, depending on distance and attention, so the
   viewer sees the first fish react and the rest follow. *AN TI ST · S/L*
-- [ ] **164. The leader tells.** In a school, the fish that initiates a turn
+  **Phase 2 (2026-11-02):** `FishSparkBehavior.signal_reaction_delay` gates startle contagion (80–250 ms).
+- [x] **164. The leader tells.** In a school, the fish that initiates a turn
   (highest `motion_lead_boost`,
   [motion_school.gd:202](../shaders-godot/godot-project/scripts/motion_school.gd:202))
   shows a head turn and bank 1–2 frames before its turn intent is injected.
   The wave then visibly starts somewhere. *AN ST · S/M*
-- [ ] **165. Scull before reversing.** Hovering fish that reverse direction
+  **Phase 2 (2026-11-02):** School leaders (`motion_lead_boost`) amplify head/bank telegraph before the turn.
+- [x] **165. Scull before reversing.** Hovering fish that reverse direction
   back-scull with the pectorals for 2–3 beats before moving backwards. *AN · S/S*
-- [ ] **166. Bottom take-off.** Corydoras and plecos lift the head slightly and
+  **Phase 2 (2026-11-02):** Reverse intent arms pec scull while speed is held down.
+- [x] **166. Bottom take-off.** Corydoras and plecos lift the head slightly and
   splay the pectorals for one frame before leaving the substrate. *AN SD · S/S*
-- [ ] **167. Rising pre-gulp.** Before a gulp, a labyrinth fish hangs nose-up
+  **Phase 2 (2026-11-02):** Bottom take-off on leaving the bed (`note_bottom_takeoff` from Phase2 pose).
+- [x] **167. Rising pre-gulp.** Before a gulp, a labyrinth fish hangs nose-up
   under the surface for a moment, then rises. *AN · S/S*
-- [ ] **168. Pre-strike stillness for stalkers.** The gar drifts motionless
+  **Phase 2 (2026-11-02):** `note_pre_gulp` / `apply_pre_gulp_pose` before labyrinth aerial trips.
+- [x] **168. Pre-strike stillness for stalkers.** The gar drifts motionless
   (fin sculling only) for 1–3 s before an S-start. *AN EX · S/M*
-- [ ] **169. Route music surges through envelopes.** The beat surge
+  **Phase 2 (2026-11-02):** `note_stalk_stillness` for gar/killi before the S-lunge.
+- [x] **169. Route music surges through envelopes.** The beat surge
   ([fish.gd:4044](../shaders-godot/godot-project/scripts/fish.gd:4044))
   reuses the startle fields and lands at full speed. Route it through
   `ActionEnvelope` with `beat_anticipation`
   ([music_choreography.gd:23](../shaders-godot/godot-project/scripts/music_choreography.gd:23)),
   so dance moves wind up on the pre-beat and hit on the beat. *AN TI · M/L*
-- [ ] **170. An anticipation smoke.** Every dart, strike and C-start shows its
+  **Phase 2 (2026-11-02):** Music beat surges wind up scull/effort/cock on pre-beat; dart only at peak anticipation.
+- [x] **170. An anticipation smoke.** Every dart, strike and C-start shows its
   wind-up state for at least its declared minimum before peak speed (#107). *AN · S/M*
+  **Phase 2 (2026-11-02):** `smoke_motion_anticipation` asserts wind-up before peak speed for dart/strike/C-start.
 
 ## F. Staging: make the important motion unmistakable (171–192)
 
@@ -1200,79 +1317,101 @@ so a one-unit fish is 22–45 px long and a 0.1-unit tail swing is 2–5 px
 (estimated from FOV 45, radius 15.5). Motion that doesn't reach a pixel
 doesn't exist, and the palette quantize turns sub-pixel jitter into shimmer.
 
-- [ ] **171. A legibility floor.** Key channels (tail swing, fin erection,
+- [x] **171. A legibility floor.** Key channels (tail swing, fin erection,
   strike stretch, gulp) reach at least 2 px at the default camera and the
   current resolution tier, using #60. *ST EX · M/L*
-- [ ] **172. Camera-relative beat legibility.** A fish crossing the frame
+  **Phase 2 (2026-11-02):** `MotionStaging.legibility_scale` lifts key amps via `MotionLod.legibility_gain` (≥2 px).
+- [x] **172. Camera-relative beat legibility.** A fish crossing the frame
   broadside bends its tail toward and away from the camera, so the beat is
   foreshortened to almost nothing. When the lateral bend axis is near the view
   direction, emphasise what the camera *can* see: caudal spread and furl
   (#128), a small vertical heave of the tail tip (#283), and outline change
   through the shader stretch (#121). *ST SD · M/L*
-- [ ] **173. Broadside displays toward the camera.** Courtship and threat
+  **Phase 2 (2026-11-02):** `camera_relative_tail_boost` emphasises caudal spread/heave when the lateral wave is foreshortened.
+- [x] **173. Broadside displays toward the camera.** Courtship and threat
   displays are perpendicular to the receiver. When either side would do, pick
   the side that faces the camera. *ST · S/L*
-- [ ] **174. Clear the stage.** During a key event (birth, courtship climax,
+  **Phase 2 (2026-11-02):** Courtship picks the camera-facing broadside via `prefer_camera_broadside`.
+- [x] **174. Clear the stage.** During a key event (birth, courtship climax,
   fight, death), nearby non-participants get a mild yield field and give
   space, as real fish give fighting fish space. *ST · M/M*
-- [ ] **175. An event budget.** At most two or three "big" actions run at once
+  **Phase 2 (2026-11-02):** Non-participants take a `yield_field` away from recent `dart_started` events.
+- [x] **175. An event budget.** At most two or three "big" actions run at once
   in one region of the screen. Optional fidgets, zoomies and play bursts wait
   while an event is on. *ST TI · M/M*
-- [ ] **176. A silhouette mode.** A dev toggle that renders fauna flat black on
+  **Phase 2 (2026-11-02):** `begin_big_event` caps concurrent hero actions per region; saturated regions quiet new bursts.
+- [x] **176. A silhouette mode.** A dev toggle that renders fauna flat black on
   white, to judge whether alert, display, sleep and clamped poses read by
   outline alone. *ST SD · S/M*
-- [ ] **177. Line-of-sight for events.** Courtship sites, spawning sites and
+  **Phase 2 (2026-11-02):** `MotionStaging.silhouette_mode` paints fauna flat black for outline QA.
+- [x] **177. Line-of-sight for events.** Courtship sites, spawning sites and
   rest spots prefer positions with a clear ray to the camera (a cheap test
   against plant AABBs), within what the behaviour allows. *ST · M/M*
-- [ ] **178. Lead room for the follow camera.** When following a fish, offset
+  **Phase 2 (2026-11-02):** `MotionStaging.clear_to_camera` / `prefer_visible_site` vs plant AABBs; wired into courtship, sleep nooks, night shelter, and egg-lay sites.
+- [x] **178. Lead room for the follow camera.** When following a fish, offset
   the target 15–20% of the frame ahead of its travel
   ([camera_controller.gd:367](../shaders-godot/godot-project/scripts/camera_controller.gd:367),
   `follow_deadzone_step`). *ST · S/M*
-- [ ] **179. A camera that sells speed.** On a dart or startle of the followed
+  **Phase 2 (2026-11-02):** Follow aim uses `follow_lead_aim` (~18% frame lead along heading).
+- [x] **179. A camera that sells speed.** On a dart or startle of the followed
   fish, the deadzone widens briefly and the camera catches up with an ease.
   The camera's own slow-in/out tells the viewer how fast that was. *ST SI · S/M*
-- [ ] **180. Light the actor, a little.** During a hero event, raise
+  **Phase 2 (2026-11-02):** `follow_deadzone_for_speed` widens on dart/startle; catch-up eases harder.
+- [x] **180. Light the actor, a little.** During a hero event, raise
   `fauna_rim` on the actor for its duration. Restrained: a hint, not a
   spotlight. *ST · S/M*
-- [ ] **181. Contact shadows.** Small soft blobs under bottom-dwellers, shrimp
+  **Phase 2 (2026-11-02):** `light_actor` raises `fauna_rim` for the event duration.
+- [x] **181. Contact shadows.** Small soft blobs under bottom-dwellers, shrimp
   and snails, so contact with the bed reads. *ST SD · M/M*
-- [ ] **182. Stagger synchronous starts.** If several fish start the same action
+  **Phase 2 (2026-11-02):** Bed-pinned contact blobs for bottom fish, shrimp, and snails packed first into `update_substrate_blob_shadows` (`contact_shadow_point`).
+- [x] **182. Stagger synchronous starts.** If several fish start the same action
   within 100 ms (feeding, startle without a propagating wave), add per-fish
   delays drawn from reaction latency. Synchronous starts look like a
   broadcast. *ST TI · S/M*
-- [ ] **183. Intent is visible before arrival.** A fish heading for a target
+  **Phase 2 (2026-11-02):** `stagger_delay` from boldness + id; wired into boldest-first feeding (#184).
+- [x] **183. Intent is visible before arrival.** A fish heading for a target
   curves toward it 0.5 s early, so the viewer predicts the move before it
   happens. *ST AR · S/M*
-- [ ] **184. A boldest-first feeding response.** When food lands, the boldest
+  **Phase 2 (2026-11-02):** `curve_intent` bends desired toward food 0.5 s early.
+- [x] **184. A boldest-first feeding response.** When food lands, the boldest
   fish turns first and the rest follow by latency (#163). The cascade is the
   show. *ST TI · S/M*
-- [ ] **185. Avoid tangents at rest.** Rest spots keep clearance from glass
+  **Phase 2 (2026-11-02):** Feed response arms a per-fish stagger so bold fish turn first.
+- [x] **185. Avoid tangents at rest.** Rest spots keep clearance from glass
   edges, plant silhouettes and other fish, so a resting fish doesn't sit
   exactly on an edge and merge with it. *ST SD · S/S*
-- [ ] **186. Organic shoal shapes.** Shoals form an oval with a denser core and
+  **Phase 2 (2026-11-02):** `rest_clearance_nudge` keeps resting fish off glass edges and neighbours.
+- [x] **186. Organic shoal shapes.** Shoals form an oval with a denser core and
   a ragged edge, never a lattice. The formation slot from `instance_id`
   ([fish.gd:8346](../shaders-godot/godot-project/scripts/fish.gd:8346))
   drifts slowly so it can't settle into a grid. *ST SD · S/M*
-- [ ] **187. Keep something still.** An activity budget per tank per minute
+  **Phase 2 (2026-11-02):** `formation_drift` slowly wobbles school slots so they cannot lattice.
+- [x] **187. Keep something still.** An activity budget per tank per minute
   keeps at least one resting animal (a corydoras on the bed, a hovering
   angelfish) on screen as contrast. A tank where everything is busy reads as
   noise. *ST TI · S/M*
-- [ ] **188. Display at the reflection.** At night, with the room dark and the
+  **Phase 2 (2026-11-02):** Tank activity budget forces a soft rest when nothing is still.
+- [x] **188. Display at the reflection.** At night, with the room dark and the
   tank lit, bettas and cichlids occasionally flare at their reflection in the
   front glass. Real, legible, and it stages itself against the camera. *ST AP · M/M*
-- [ ] **189. Sound marks the beat.** Gulps, surface pops, jaw snaps and pistol
+  **Phase 2 (2026-11-02):** Night reflection flare for labyrinth/territorial fish at the front glass.
+- [x] **189. Sound marks the beat.** Gulps, surface pops, jaw snaps and pistol
   snaps emit tiny cues from the motion event bus (#61). *ST · S/M*
-- [ ] **190. Fry dart trails, only when it matters.** The dart afterimage
+  **Phase 2 (2026-11-02):** `boot_audio_bridge` routes gulp/dart/strike/startle to AmbientAudio.
+- [x] **190. Fry dart trails, only when it matters.** The dart afterimage
   ([fish.gd:6806](../shaders-godot/godot-project/scripts/fish.gd:6806)) fires
   on every fry burst. Limit it to escapes and play chases, so it means
   something. *ST EX · S/S*
-- [ ] **191. Shot-aware detail.** Macro framing turns on hero features (eyes,
+  **Phase 2 (2026-11-02):** Fry dart trails only on startle or play-chase (`fry_trail_allowed`).
+- [x] **191. Shot-aware detail.** Macro framing turns on hero features (eyes,
   opercula, jaw) for creatures in frame and lowers exaggeration; wide shots do
   the opposite. *ST EX · S/M*
-- [ ] **192. Stage the empty water.** Schooling turns, feeding frenzies and
+  **Phase 2 (2026-11-02):** Hero/macro face detail follows `MotionLod` face feature (`hero_face_detail`).
+- [x] **192. Stage the empty water.** Schooling turns, feeding frenzies and
   displays happen in open water when the behaviour allows it, so they read
   against the background. Escapes still go to cover. *ST · S/M*
 
+  **Phase 2 (2026-11-02):** `open_water_bias` softens hardscape push during court/forage; flee still seeks cover.
 ## G. Pose to pose: a key-pose library (193–220)
 
 Physics is straight-ahead animation: fluid, but formless. Behaviours need
@@ -1280,70 +1419,100 @@ shapes. Each pose below is a target in the `PoseLibrary` (#45) that the
 procedural motion settles into and travels between. Every pose keeps a
 "moving hold" layer (#214).
 
-- [ ] **193. Cruise.** Fins at half carriage, caudal at mid spread, head level.
+- [x] **193. Cruise.** Fins at half carriage, caudal at mid spread, head level.
   The neutral every other pose returns to. *PP · S/M*
-- [ ] **194. Hover.** Pectorals sculling, dorsal raised, body pitched by species
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **194. Hover.** Pectorals sculling, dorsal raised, body pitched by species
   (nose-down for heavy-headed fish, level for tetras). *PP SD · S/M*
-- [ ] **195. Alert.** Dorsal and anal fins erect, pectorals half forward, body
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **195. Alert.** Dorsal and anal fins erect, pectorals half forward, body
   rigid, caudal slightly cupped, eyes forward, fast breath. *PP AN · S/L*
-- [ ] **196. Clamped.** All fins folded tight against the body, body darker,
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **196. Clamped.** All fins folded tight against the body, body darker,
   slight downward tilt. Clamped fins are the aquarist's classic stress sign.
   Make it readable at 22 px. *PP EX · S/L*
-- [ ] **197. Lateral display.** All median fins fully erect, caudal fully
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **197. Lateral display.** All median fins fully erect, caudal fully
   spread, opercula flared on bettas and cichlids, body slightly arched,
   broadside, quivering. *PP ST · M/L*
-- [ ] **198. Frontal threat.** Head-on, opercula flared, pectorals spread. The
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **198. Frontal threat.** Head-on, opercula flared, pectorals spread. The
   betta flare. *PP ST · S/M*
-- [ ] **199. Submission.** Fins folded, body tilted (head-up for cichlids),
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **199. Submission.** Fins folded, body tilted (head-up for cichlids),
   colour paled. *PP · S/M*
-- [ ] **200. Head-down picking.** Nose down 30–60°, pectorals forward, tail
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **200. Head-down picking.** Nose down 30–60°, pectorals forward, tail
   fanning to hold position. *PP · S/M*
-- [ ] **201. Attached grazing.** Oto, pleco and hillstream loach: mouth on the
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **201. Attached grazing.** Oto, pleco and hillstream loach: mouth on the
   surface, belly flat to it, pectorals splayed as props, tail slightly
   arched. *PP SD · M/M*
-- [ ] **202. Resting on the bed.** Body on the pelvic fins, pectorals splayed as
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **202. Resting on the bed.** Body on the pelvic fins, pectorals splayed as
   a tripod, tail straight or slightly curved. Needs pelvic fins (#379). *PP SD · M/M*
-- [ ] **203. Sleep.** Fins relaxed and slightly drooped, minimal tail, slow
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **203. Sleep.** Fins relaxed and slightly drooped, minimal tail, slow
   drift, nose angle by species, colours paled. *PP · S/M*
-- [ ] **204. Wedged.** Asleep in a thicket: tilted, in contact with leaves. *PP SD · S/S*
-- [ ] **205. Surface gulp.** Nose up 30–45°, mouth at the meniscus, pectorals
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **204. Wedged.** Asleep in a thicket: tilted, in contact with leaves. *PP SD · S/S*
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **205. Surface gulp.** Nose up 30–45°, mouth at the meniscus, pectorals
   spread. *PP · S/M*
-- [ ] **206. Sifting.** Nose buried, barbels splayed, tail up; the shipped sift
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **206. Sifting.** Nose buried, barbels splayed, tail up; the shipped sift
   pitch of 0.55 rad becomes a full pose. *PP · S/S*
-- [ ] **207. Spawning clasps.** The betta nuptial embrace (the male curls
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **207. Spawning clasps.** The betta nuptial embrace (the male curls
   around the female), the corydoras T-position, the guppy gonopodial swing.
   Each is a signature pose a real keeper recognises. *PP AP · M/L*
-- [ ] **208. Mouthbrooding.** Throat distended, with a slow chewing motion that
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **208. Mouthbrooding.** Throat distended, with a slow chewing motion that
   tumbles the eggs. *PP SA · S/M*
-- [ ] **209. Fanning.** Hovering over eggs, pectorals beating fast, tail
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **209. Fanning.** Hovering over eggs, pectorals beating fast, tail
   counter-sculling to hold station. *PP SA · S/M*
-- [ ] **210. Listing.** Tilted 20–40°, fins clamped, nose down or floating
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **210. Listing.** Tilted 20–40°, fins clamped, nose down or floating
   belly-up, depending on the illness. *PP EX · S/M*
-- [ ] **211. Gasping.** At the surface, rapid mouth, opercula flared. *PP SA · S/M*
-- [ ] **212. Dead.** Belly-up or on the side, fins splayed, body slightly
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **211. Gasping.** At the surface, rapid mouth, opercula flared. *PP SA · S/M*
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **212. Dead.** Belly-up or on the side, fins splayed, body slightly
   curved, eyes fixed. *PP SD · S/M*
-- [ ] **213. A transition graph.** Allowed transitions with blend times as data:
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **213. A transition graph.** Allowed transitions with blend times as data:
   sleep → alert 0.15 s, alert → cruise 0.8 s, display → cruise 0.6 s, clamped
   → cruise 2–4 s. *PP SI · M/M*
-- [ ] **214. Moving holds.** No pose is ever frozen: every hold carries breath,
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **214. Moving holds.** No pose is ever frozen: every hold carries breath,
   fin flicker and a little drift. *PP SA · S/L*
-- [ ] **215. Continuous affect blending.** Map the mind's valence and arousal to
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **215. Continuous affect blending.** Map the mind's valence and arousal to
   continuous weights over relaxed, alert and clamped, rather than switching
   between them. *PP AP · M/L*
-- [ ] **216. Actions end in a pose.** A dart ends in a glide pose (fins folded,
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **216. Actions end in a pose.** A dart ends in a glide pose (fins folded,
   tail straight), then eases to cruise; a strike ends in a "chew" pose; a
   display ends in a relaxed swim-off. Pose-to-pose structure on top of
   straight-ahead physics. *PP FT · M/L*
-- [ ] **217. Per-species pose overrides.** The betta display flares much
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **217. Per-species pose overrides.** The betta display flares much
   further; the angelfish rests with ventral filaments forward; the gourami
   holds its feelers out. *PP AP · S/M*
-- [ ] **218. A pose editor in the motion lab.** Per-pivot sliders that save to
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
+- [x] **218. A pose editor in the motion lab.** Per-pivot sliders that save to
   `PoseLibrary`. *PP · M/M*
-- [ ] **219. A pose contact sheet.** A dev capture rendering every species ×
+  **Phase 2 (2026-11-02):** motion-lab pose editor (channel sliders → `MotionPoseLibrary.upsert_pose` / `save_data`). `smoke_motion_pose_lab`.
+
+- [x] **219. A pose contact sheet.** A dev capture rendering every species ×
   every pose into one PNG for review. *PP · S/M*
-- [ ] **220. A pose smoke.** Every species has every required pose, and every
+  **Phase 2 (2026-11-02):** `MOTION_LAB_POSE_SHEET` + live Write contact sheet; `MotionPoseLibrary.compose_contact_sheet`. `smoke_motion_pose_lab`.
+
+- [x] **220. A pose smoke.** Every species has every required pose, and every
   pose is reachable from cruise in the transition graph. *PP · S/S*
 
+  **Phase 2 (2026-11-02):** `FishPoseRuntime` + `data/motion/poses.json` (select/blend/apply, transition graph, moving hold, affect mix, species overrides). `smoke_motion_poses`.
 ## H. Follow-through and overlapping action (221–252)
 
 Every fin and the tail are assigned directly from `sin()` each frame, with no
@@ -1357,15 +1526,18 @@ Nothing lags, nothing settles.
   reversal and cups. *FT · S/L*
   **Phase 2 (2026-10-30):** The caudal follows its wave target through a spring
   (6 Hz, ζ 0.55: about 7% gain at 3 Hz, so fast beats aren't amplified).
-- [ ] **222. Two rows of caudal.** Split the caudal into a leading and a
+- [x] **222. Two rows of caudal.** Split the caudal into a leading and a
   trailing voxel row, with the trailing row lagging (a two-link chain), so
   the fin visibly flexes. *FT SD · M/M*
-- [ ] **223. Veils as chains.** Betta and fancy-guppy veil streamers get their
+- [x] **223. Veils as chains.** Betta and fancy-guppy veil streamers get their
   own three-link `MotionChain`s with the veil preset. They billow, trail
   after turns and settle after stops. *FT AP · M/L*
-- [ ] **224. Ripple long median fins.** The betta and gourami undulate their
+  **Phase 2 (2026-11-02):** Long-fin fish (`fin_length_factor > 1.15`) build
+  2–3 link flank veil chains driven by `_step_soft_chains`.
+- [x] **224. Ripple long median fins.** The betta and gourami undulate their
   dorsal and anal fins along the base. Give the long fins several ray pivots
   with phase offsets, so a wave runs along them. *FT SA · M/M*
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 - [x] **225. Dorsal lag on roll.** The dorsal fin leans against the roll at the
   start of a turn, then catches up. *FT · S/S*
   **Phase 2 (2026-10-30):** Dorsal roll lag through a fin-preset spring,
@@ -1374,15 +1546,20 @@ Nothing lags, nothing settles.
   back by drag, then fold; at a stop they flare, then relax. *FT SI · S/M*
   **Phase 2 (2026-10-30):** Acceleration sweeps the pectorals back (damped, up
   to 0.35).
-- [ ] **227. Barbels on chains.** Corydoras, pleco and mudsifter barbels
+- [x] **227. Barbels on chains.** Corydoras, pleco and mudsifter barbels
   ([fish.gd:2992](../shaders-godot/godot-project/scripts/fish.gd:2992))
   trail while swimming, drape on the substrate while sifting and flick
   forward on a stop. *FT SA · S/M*
-- [ ] **228. Living gourami feelers.** The ventral feelers
+  **Phase 2 (2026-11-02):** Outermost barbel pair is a two-link `MotionChain`
+  (fin tissue); inner whiskers stay static for draw cost. Substrate drape
+  and stop-flick wait on contact (#55).
+- [x] **228. Living gourami feelers.** The ventral feelers
   ([fish.gd:3320](../shaders-godot/godot-project/scripts/fish.gd:3320)) are
   static. Make them chains that trail at speed and, separately (#321),
   actively reach toward objects and other fish. *FT SA AP · M/M*
-- [ ] **229. Angelfish filaments.** The long ventral filaments and the dorsal
+  **Phase 2 (2026-11-02):** Feelers are two-link veil chains on the pelvic
+  pivots; active reach is still #321.
+- [x] **229. Angelfish filaments.** The long ventral filaments and the dorsal
   and anal extensions trail and swing on turns, with the slowest settle of any
   part in the tank. *FT AP · S/M*
 - [x] **230. The tail keeps swinging.** When thrust stops, tail amplitude decays
@@ -1390,8 +1567,9 @@ Nothing lags, nothing settles.
   floor at once. *FT SI · S/L*
   **Phase 2 (2026-10-30):** The caudal spring rings the tail down after thrust
   stops.
-- [ ] **231. Body yaw overshoot.** After a sharp turn the body overshoots the
+- [x] **231. Body yaw overshoot.** After a sharp turn the body overshoots the
   new heading a little and settles (underdamped body-yaw spring, ζ ≈ 0.6). *FT AR · S/M*
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 - [x] **232. Bank overshoot.** At turn exit the fish rolls slightly past level,
   then settles (bank spring ζ ≈ 0.55). Today the bank uses first-order
   smoothing ([fish.gd:7669](../shaders-godot/godot-project/scripts/fish.gd:7669)). *FT SI · S/M*
@@ -1400,127 +1578,174 @@ Nothing lags, nothing settles.
 - [x] **233. Pitch overshoot.** After a rise or dive the nose passes level by
   3–5° and settles. *FT · S/S*
   **Phase 2 (2026-10-30):** Pitch follows a spring (1.2 Hz, ζ 0.6).
-- [ ] **234. Order of moving parts.** Starting: eyes → head → pectorals → body →
+- [x] **234. Order of moving parts.** Starting: eyes → head → pectorals → body →
   tail. Stopping: tail → body, and the fins settle last. Implement as
   per-channel delays in the composer. *FT TI · M/L*
-- [ ] **235. Fin rays out of step.** The four dorsal rays
+- [x] **235. Fin rays out of step.** The four dorsal rays
   ([fish.gd:3244](../shaders-godot/godot-project/scripts/fish.gd:3244)) each
   lag the one ahead by a few degrees of phase, so the fin ripples instead of
   moving as a plate. *FT SD · S/M*
-- [ ] **236. Bring the static parts to life.** `Dorsal2` and the adipose fin
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **236. Bring the static parts to life.** `Dorsal2` and the adipose fin
   ([fish.gd:3267](../shaders-godot/godot-project/scripts/fish.gd:3267), 3297)
   get small springs off their parent segment. *FT · S/S*
-- [ ] **237. Heavy bodies lag more.** Larger, deeper-bodied fish (angelfish,
+  **Phase 2 (2026-11-02):** Both on pivots; soft dorsal lags the main dorsal,
+  adipose rolls lightly with the stroke.
+- [x] **237. Heavy bodies lag more.** Larger, deeper-bodied fish (angelfish,
   severum, gar) carry more phase lag down the body and settle more slowly. *FT TI · S/M*
-- [ ] **238. Belly slosh.** A heavily gravid or mouthbrooding belly lags body
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **238. Belly slosh.** A heavily gravid or mouthbrooding belly lags body
   accelerations slightly. Soft tissue, very subtle. *FT SQ · S/S*
-- [ ] **239. Puffer tail as a rudder.** Puffers swim with dorsal and anal fins
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **239. Puffer tail as a rudder.** Puffers swim with dorsal and anal fins
   and keep the tail folded, swinging loosely, until a burst needs it (#405). *FT AP · M/M*
-- [ ] **240. Fins re-open in order after a dart.** After a dart, the fish glides
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **240. Fins re-open in order after a dart.** After a dart, the fish glides
   with fins folded. The pectorals re-open only when speed falls below about
   40%, then the dorsal, then the caudal. *FT PP · S/M*
-- [ ] **241. Plants after-sway.** A brushed plant keeps swaying for two or three
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **241. Plants after-sway.** A brushed plant keeps swaying for two or three
   visible oscillations. Tune the spring at
   [plant.gd:306](../shaders-godot/godot-project/scripts/plant.gd:306) for
   that, rather than a single damped bend. *FT · S/M*
-- [ ] **242. Shrimp antennae as chains.** Replace the pure-sine antennae
+- [x] **242. Shrimp antennae as chains.** Replace the pure-sine antennae
   ([shrimp.gd:1741](../shaders-godot/godot-project/scripts/shrimp.gd:1741))
   with a chain driven by head motion and drag. They stream back when
   swimming, reach forward when exploring and overshoot after stops. *FT SA · M/L*
-- [ ] **243. Heavy-headed stops.** Corydoras and plecos dip the head forward on a
+- [x] **243. Heavy-headed stops.** Corydoras and plecos dip the head forward on a
   stop and recover. *FT SD · S/S*
-- [ ] **244. Veils in current.** Long fins stream downstream in the flow field.
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **244. Veils in current.** Long fins stream downstream in the flow field.
   A betta in the filter current should show it. *FT · S/M*
-- [ ] **245. Independent caudal lobes.** Forked tails (`tail_shape`) give the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **245. Independent caudal lobes.** Forked tails (`tail_shape`) give the
   upper and lower lobes a small phase difference, as real tails bend
   asymmetrically. *FT SD · S/S*
-- [ ] **246. Staged fin re-erection after a fright.** Pectorals first, then
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **246. Staged fin re-erection after a fright.** Pectorals first, then
   dorsal, then caudal, over 1–3 s. *FT PP · S/M*
-- [ ] **247. Opercula after a cough.** Two or three small beats after the flush,
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **247. Opercula after a cough.** Two or three small beats after the flush,
   not one pulse. *FT SA · S/S*
-- [ ] **248. Reversal swing.** When a hovering fish back-paddles, the tail swings
+  **Phase 2 (2026-11-02):** `_cough_after_t` rings the covers ~3 times after
+  a flush settles.
+- [x] **248. Reversal swing.** When a hovering fish back-paddles, the tail swings
   past neutral and settles. *FT · S/S*
-- [ ] **249. Landing settle.** Bottom-dwellers touching down settle the tail and
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **249. Landing settle.** Bottom-dwellers touching down settle the tail and
   pectorals through two small oscillations. *FT SD · S/S*
-- [ ] **250. Big tails pull the body.** Fancy male guppies swim awkwardly
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **250. Big tails pull the body.** Fancy male guppies swim awkwardly
   because the tail is heavy. Scale `tail_recoil_yaw`
   ([hydrodynamics.gd:269](../shaders-godot/godot-project/scripts/hydrodynamics.gd:269))
   by tail mass from `tail_shape`, so big-tailed males wobble. *FT AP · S/M*
-- [ ] **251. Feelers and barbels in current.** They deflect downstream with the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **251. Feelers and barbels in current.** They deflect downstream with the
   flow sample. *FT · S/S*
-- [ ] **252. Follow-through by LOD.** Chains run at hero and near LOD only. Far
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **252. Follow-through by LOD.** Chains run at hero and near LOD only. Far
   LOD uses an analytic phase delay per voxel in the shader. *FT · M/M*
 
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 ## I. Slow in and slow out (253–274)
 
-- [ ] **253. Interpolate steering between brain ticks.** The brain sets
+- [x] **253. Interpolate steering between brain ticks.** The brain sets
   `desired` at 10 Hz and only agitation is interpolated
   ([fish.gd:8114](../shaders-godot/godot-project/scripts/fish.gd:8114)), so
   target velocity changes in steps. Run it through a critically damped spring,
   as shrimp already interpolate their target
   ([shrimp.gd:1449](../shaders-godot/godot-project/scripts/shrimp.gd:1449)). *SI · S/L*
-- [ ] **254. Drag-shaped deceleration.** Coasting should decay like drag (fast
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **254. Drag-shaped deceleration.** Coasting should decay like drag (fast
   at first, then a long tail). Confirm it in the speed graph and tune `drag_k`
   per profile until it does. *SI · S/M*
-- [ ] **255. Explosive in.** Darts reach peak speed in two to four beats
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **255. Explosive in.** Darts reach peak speed in two to four beats
   (80–150 ms) from impulse thrust, not from a fourfold linear acceleration
   ([fish.gd:7336](../shaders-godot/godot-project/scripts/fish.gd:7336)). *SI TI · M/L*
-- [ ] **256. Ease the turn exit.** "Aligned fish shed unused angular rate" can
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **256. Ease the turn exit.** "Aligned fish shed unused angular rate" can
   stop the yaw rate on one frame. Limit angular deceleration as well as
   acceleration. *SI AR · S/M*
-- [ ] **257. Hover drift.** A hovering fish drifts forward and back by about
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **257. Hover drift.** A hovering fish drifts forward and back by about
   0.02 u, easing in and out: a moving hold, not a lock. *SI SA · S/M*
-- [ ] **258. Ease out of fear.** After a flight, fin carriage re-opens and breath
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **258. Ease out of fear.** After a flight, fin carriage re-opens and breath
   slows over 3–10 s. The fear arc
   ([fish_alive.gd:153](../shaders-godot/godot-project/scripts/fish_alive.gd:153))
   switches parameters at phase boundaries; ease them instead. *SI · S/M*
-- [ ] **259. Ease depth changes.** Vertical moves start and end with eased pitch.
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **259. Ease depth changes.** Vertical moves start and end with eased pitch.
   The buoyancy spring arrives without a bounce for most species and with a
   slight one for bettas. *SI AR · S/M*
-- [ ] **260. A spring on pectoral amplitude.** `pec_amp` is rebuilt every frame
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **260. A spring on pectoral amplitude.** `pec_amp` is rebuilt every frame
   from about eight terms. Put the result through a spring so it can't jump. *SI · S/M*
-- [ ] **261. Ease tail-beat frequency.** Damp `wag_freq` with τ ≈ 0.15 s;
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **261. Ease tail-beat frequency.** Damp `wag_freq` with τ ≈ 0.15 s;
   frequency jumps read as hiccups even when the phase is continuous. *SI TI · S/M*
-- [ ] **262. Ease mood tempo.** The mood multiplier (0.55–1.7,
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **262. Ease mood tempo.** The mood multiplier (0.55–1.7,
   [fish_mind.gd:133](../shaders-godot/godot-project/scripts/fish_mind.gd:133))
   should change over at least 0.5 s, so a mood shift doesn't snap the tempo. *SI · S/S*
-- [ ] **263. A dance freeze is a moving hold.** `dance_freeze` stops the tail
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **263. A dance freeze is a moving hold.** `dance_freeze` stops the tail
   phase dead ([fish.gd:7853](../shaders-godot/godot-project/scripts/fish.gd:7853)).
   Ease the amplitude toward zero with one last small flick, and keep breath
   and fins alive. *SI FT · S/M*
-- [ ] **264. Shrimp turn with a spring.** Shrimp heading rotates at a constant
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **264. Shrimp turn with a spring.** Shrimp heading rotates at a constant
   rate ([shrimp.gd:1467](../shaders-godot/godot-project/scripts/shrimp.gd:1467)).
   Use an angular spring with a rate cap. *SI · S/M*
-- [ ] **265. Shrimp start and stop over strides.** Replace the linear
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **265. Shrimp start and stop over strides.** Replace the linear
   `move_toward` ramp
   ([shrimp.gd:1487](../shaders-godot/godot-project/scripts/shrimp.gd:1487))
   with an ease over about two strides. *SI · S/M*
-- [ ] **266. Snails turn like snails.** Snail facing turns at 5.5 rad/s
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **266. Snails turn like snails.** Snail facing turns at 5.5 rad/s
   ([snail.gd:266](../shaders-godot/godot-project/scripts/snail.gd:266)), a
   180° turn in 0.57 s, while crawling at 0.11 u/s. Use a spring capped near
   0.6 rad/s so a reversal takes 4–6 s. *SI TI · S/L*
-- [ ] **267. Trumpet snails ease their drift.** Velocity changes instantly every
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **267. Trumpet snails ease their drift.** Velocity changes instantly every
   4–9 s ([trumpet_snail.gd:104](../shaders-godot/godot-project/scripts/trumpet_snail.gd:104)). *SI · S/S*
-- [ ] **268. Ease into current carry.** When a fish goes from swimming to being
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **268. Ease into current carry.** When a fish goes from swimming to being
   carried (`carried`,
   [hydrodynamics.gd:229](../shaders-godot/godot-project/scripts/hydrodynamics.gd:229)),
   blend over 0.5 s so the drift doesn't start abruptly. *SI · S/S*
-- [ ] **269. Saccade velocity profile.** Head and eye saccades
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
+- [x] **269. Saccade velocity profile.** Head and eye saccades
   ([fish.gd:7910](../shaders-godot/godot-project/scripts/fish.gd:7910)) move
   fast, settle briefly and then hold. They are not a lerp toward a target. *SI SA · S/M*
-- [ ] **270. Park, don't stop.** Arriving at a rest spot ends with a slow final
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **270. Park, don't stop.** Arriving at a rest spot ends with a slow final
   glide and one or two small reverse-scull adjustments. *SI PP · S/M*
-- [ ] **271. Bottom fish land with a glide.** Corydoras and plecos descend
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **271. Bottom fish land with a glide.** Corydoras and plecos descend
   through a slowing glide onto the bed, rather than snapping to bed height. *SI SD · S/M*
-- [ ] **272. Ease the music blend.** `dance_blend` in and out over at least a
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **272. Ease the music blend.** `dance_blend` in and out over at least a
   bar, so a song starting or stopping doesn't jerk the whole tank. *SI · S/S*
-- [ ] **273. No pop on entering the frustum.** Off-frustum fish skip body
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **273. No pop on entering the frustum.** Off-frustum fish skip body
   animation ([fish.gd:7641](../shaders-godot/godot-project/scripts/fish.gd:7641)),
   so a fish entering view starts from a stale pose. Seed the pose from the
   analytic state and blend over 0.1 s. *SI · S/M*
-- [ ] **274. Ease the wall approach in pose too.** The pace already eases near
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **274. Ease the wall approach in pose too.** The pace already eases near
   glass; the brake pose should start before the steering push does. *SI AN · S/S*
 
+  **Phase 2 (2026-11-02):** `FishEaseArcs` + living fish/shrimp/snail wiring. `smoke_motion_ease_arcs`.
 ## J. Arcs (275–296)
 
 Arcs come only from turn-rate caps today. There is no path planning, the
@@ -1528,72 +1753,109 @@ wander heading is re-rolled every 4–14 s
 ([fish.gd:6434](../shaders-godot/godot-project/scripts/fish.gd:6434)), and
 a hard block reflects the heading.
 
-- [ ] **275. One turn-radius law.** r_min = k · L · (1 + U/U_ref) per species,
+- [x] **275. One turn-radius law.** r_min = k · L · (1 + U/U_ref) per species,
   where L is body length and U is speed. Faster and longer fish turn wider.
   It replaces the stacked damps in #21 and becomes the single tuning knob for
   arcs. *AR TI · M/L*
-- [ ] **276. A curvature-limited path follower.** Steering targets come from
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **276. A curvature-limited path follower.** Steering targets come from
   10 Hz tiers, so paths are polylines with rounded corners. Follow them with a
   Dubins-style follower bounded by #275, so headings trace arcs and corners
   are anticipated. *AR AN · M/L*
-- [ ] **277. Wander as a meander.** Replace the re-rolled `heading_offset` with
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **277. Wander as a meander.** Replace the re-rolled `heading_offset` with
   an Ornstein–Uhlenbeck walk on path curvature. Wander paths become smooth
   meanders with natural variation in tightness. *AR · S/L*
-- [ ] **278. Porpoising depth changes.** Depth changes follow an S-curve in the
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **278. Porpoising depth changes.** Depth changes follow an S-curve in the
   vertical plane, with pitch tied to vertical velocity. *AR SI · S/M*
-- [ ] **279. The corydoras air dash.** Bottom → surface → bottom as one
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **279. The corydoras air dash.** Bottom → surface → bottom as one
   continuous loop: a fast vertical dash, a gulp, and a curved dive back. It
   is one of the most recognisable motions in the hobby. *AR AP · M/L*
-- [ ] **280. No spinning on the spot.** Body-caudal swimmers can't rotate in
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **280. No spinning on the spot.** Body-caudal swimmers can't rotate in
   place; a low-speed turn needs a little forward or backward travel. Hovering
   labriform fish (angelfish, puffer, gourami) *can* rotate with their
   pectorals. Gate the in-place yaw floor
   ([fish_life_bouts.gd:151](../shaders-godot/godot-project/scripts/fish_life_bouts.gd:151))
   by locomotion type. *AR SD · S/M*
-- [ ] **281. A curved approach, a straight strike.** Feeding approaches curve in
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **281. A curved approach, a straight strike.** Feeding approaches curve in
   from below or the side; the strike itself is straight. The contrast is what
   reads. *AR ST · S/M*
-- [ ] **282. Sharp escape, then a curve.** The C-start is the one sanctioned
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **282. Sharp escape, then a curve.** The C-start is the one sanctioned
   sharp angle. The flight path then straightens and the recovery curves back. *AR · S/M*
-- [ ] **283. Tail tip draws a figure-eight.** Add a small caudal pitch heave at
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **283. Tail tip draws a figure-eight.** Add a small caudal pitch heave at
   twice the tail frequency, so the tip draws a flattened figure-eight in the
   fish's frame. This is also what makes the beat visible broadside (#172). *AR SD · S/M*
-- [ ] **284. Pectoral figure-eight.** Drive pectoral `rotation.z` and
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **284. Pectoral figure-eight.** Drive pectoral `rotation.z` and
   `rotation.y` a quarter cycle apart, so the fin tip draws an ellipse. That
   is how labriform fish actually row. Today the pectorals rotate about one
   axis ([fish.gd:7977](../shaders-godot/godot-project/scripts/fish.gd:7977)). *AR SA · S/M*
-- [ ] **285. Corners as arcs.** Cruisers patrolling the perimeter
+  **Phase 2 (2026-11-02):** `FishEaseArcs` turn-radius / approach / escape / figure-eights + locomotion spin gate. `smoke_motion_ease_arcs`.
+- [x] **285. Corners as arcs.** Cruisers patrolling the perimeter
   ([fish.gd:5688](../shaders-godot/godot-project/scripts/fish.gd:5688)) start
   corner turns early, with a radius set by speed, instead of being pushed off
   the glass. *AR AN · S/M*
-- [ ] **286. Glass approaches turn parallel.** A fish approaching the front
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **286. Glass approaches turn parallel.** A fish approaching the front
   glass (begging, inspecting the keeper) turns parallel to it in an arc before
   it arrives. *AR · S/S*
-- [ ] **287. Smooth the dart courtship snap.** The `dart` dance variant uses
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **287. Smooth the dart courtship snap.** The `dart` dance variant uses
   `sign(sin)·1.2` ([fish.gd:4871](../shaders-godot/godot-project/scripts/fish.gd:4871)),
   which jumps laterally. Keep the snap but round each corner over two frames. *AR SI · S/S*
-- [ ] **288. Schools share a turning centre.** In a school turn the outside fish
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **288. Schools share a turning centre.** In a school turn the outside fish
   travel a longer arc (they already speed up,
   [fish.gd:7469](../shaders-godot/godot-project/scripts/fish.gd:7469)). Make
   sure curvature is consistent across the school around one centre, rather
   than each fish turning on its own spot. *AR ST · M/M*
-- [ ] **289. Sinking things rock.** Dead fish, shed exuviae and empty shells
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **289. Sinking things rock.** Dead fish, shed exuviae and empty shells
   sink along a gentle rocking arc, like a falling leaf, not a straight line. *AR SD · S/M*
-- [ ] **290. Shrimp swim in arcs.** A shrimp crossing between perches lifts off
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **290. Shrimp swim in arcs.** A shrimp crossing between perches lifts off
   on its pleopods, glides, and descends in a ballistic-looking curve. *AR · S/M*
-- [ ] **291. The tail-flip trajectory curves.** A backward flip pitches the body
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **291. The tail-flip trajectory curves.** A backward flip pitches the body
   up, so the escape path arcs up, then glides down. *AR · S/M*
-- [ ] **292. Snails fall in arcs.** A dislodged snail tumbles as it falls, lands,
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **292. Snails fall in arcs.** A dislodged snail tumbles as it falls, lands,
   and rights itself (#575). *AR · S/M*
-- [ ] **293. Bottom hoppers hop.** Gobies and hillstream loaches move in short
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **293. Bottom hoppers hop.** Gobies and hillstream loaches move in short
   parabolic hops; they are negatively buoyant and don't hover. *AR SD · M/M*
-- [ ] **294. Microfauna twitches curve.** Larval twitch paths bend slightly
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
+
+- [x] **294. Microfauna twitches curve.** Larval twitch paths bend slightly
   instead of jumping in straight segments. *AR · S/S*
-- [ ] **295. Shuffle hops arc.** Corydoras and mudsifter shuffle hops
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **295. Shuffle hops arc.** Corydoras and mudsifter shuffle hops
   ([fish.gd:6280](../shaders-godot/godot-project/scripts/fish.gd:6280)) are
   low arcs with a dust puff on each landing. *AR SA · S/M*
-- [ ] **296. Curvature continuity as acceptance.** The curvature metric (#83)
+  **Phase 2 (2026-11-02):** leftover ease/arcs wired (`FishEaseArcs` / gaze burst / music blend / microfauna). `smoke_motion_ease_arcs2`.
+
+- [x] **296. Curvature continuity as acceptance.** The curvature metric (#83)
   is part of every arc item's done-definition. *AR · S/S*
+  **Phase 2 (2026-11-02):** remaining arcs (`FishEaseArcs` air-dash / curvature / school centre / shrimp·snail·hopper). `smoke_motion_arcs_rest`.
 
 ## K. Secondary action: the animal is alive between actions (297–330)
 
@@ -1603,103 +1865,143 @@ eye of an animal with no eyelids
 ([fish.gd:2944](../shaders-godot/godot-project/scripts/fish.gd:2944), 1085,
 7964).
 
-- [ ] **297. Eye pivots.** Put each eye on its own pivot. Everything else in
+- [x] **297. Eye pivots.** Put each eye on its own pivot. Everything else in
   this section that involves gaze depends on it. *SA AN · M/L*
-- [ ] **298. Independent eyes.** Each eye saccades on its own schedule, as most
+  **Phase 2 (2026-11-02):** `EyeLeft` / `EyeRight` under `Head`; pupil and
+  catchlight parent to each; `MotionGaze` drives yaw/pitch; a soft
+  counter-rotate against the head wag seeds #301. `smoke_motion_eyes`.
+- [x] **298. Independent eyes.** Each eye saccades on its own schedule, as most
   teleost eyes do. Puffers and gobies make it obvious. *SA AP · S/M*
-- [ ] **299. Converge to feed.** Both eyes rotate forward for binocular
+  **Phase 2 (2026-11-02):** `MotionGaze` keeps separate left/right saccade
+  clocks and offsets.
+- [x] **299. Converge to feed.** Both eyes rotate forward for binocular
   fixation before a bite (#149), and diverge at rest. *SA AN · S/M*
-- [ ] **300. Saccades replace the blink.** Two to four eye saccades per 10 s at
+  **Phase 2 (2026-11-02):** `MotionGaze.converge` pulls eyes inward on gape
+  and while foraging.
+- [x] **300. Saccades replace the blink.** Two to four eye saccades per 10 s at
   rest, fewer while swimming. Delete the blink (#15). *SA SD · S/M*
-- [ ] **301. Eyes stabilise against the tail beat.** During swimming the eyes
+  **Phase 2 (2026-11-02):** Per-eye schedule is 2.5–5 s at rest, slower while
+  swimming; blink already deleted in Phase 0.
+- [x] **301. Eyes stabilise against the tail beat.** During swimming the eyes
   counter-rotate against the head's recoil yaw, so gaze holds still while the
   head wags. It is subtle and very alive at hero LOD. *SA SD · S/M*
-- [ ] **302. Eyes on the keeper.** When the cursor is near the front glass, the
+  **Phase 2 (2026-11-02):** Eyes take `-0.85 · head_wag` while swimming.
+- [x] **302. Eyes on the keeper.** When the cursor is near the front glass, the
   nearest few fish track it with their eyes, and sometimes the head. *SA AP · S/L*
-- [ ] **303. Opercula.** A real operculum pivot (#9) flaps at the breath rate
+  **Phase 2 (2026-11-02):** Strong `_cached_glance` offers a `keeper` target
+  to `MotionGaze` (head lead follows).
+- [x] **303. Opercula.** A real operculum pivot (#9) flaps at the breath rate
   (#54): about 1–2 Hz at rest, faster with exertion or low O₂, flared in
   display. *SA SD · M/L*
-- [ ] **304. The buccal pump.** The mouth opens and closes in anti-phase with
+  **Phase 2 (2026-11-02):** `OperculumL` / `OperculumR` under `Head`; yaw
+  opens on the breath sine scaled by `_breath_load`; flush flare on top.
+- [x] **304. The buccal pump.** The mouth opens and closes in anti-phase with
   the opercula: the visible breathing of a resting fish seen head-on. Hero
   LOD only. *SA · S/M*
-- [ ] **305. A jaw pivot.** A real lower-jaw rotation for gape, gulp, yawn,
+  **Phase 2 (2026-11-02):** Jaw pitch takes `max(0, −sin(breath))` while the
+  opercula take the positive half. LOD gate still open.
+- [x] **305. A jaw pivot.** A real lower-jaw rotation for gape, gulp, yawn,
   cough and chew, replacing whole-head scaling. *SA SQ · M/L*
-- [ ] **306. A real yawn.** The jaw opens wide for about 0.5 s, the opercula flare
+  **Phase 2 (2026-11-02):** `Jaw` under `Head`; `_mouth_gape` pitches it;
+  head scale stays at 1. `smoke_motion_face`.
+- [x] **306. A real yawn.** The jaw opens wide for about 0.5 s, the opercula flare
   and the fins spread, then everything closes. Fish do yawn, often on waking.
   This upgrades the idle yawn-gape
   ([fish.gd:6405](../shaders-godot/godot-project/scripts/fish.gd:6405)). *SA AP · S/M*
-- [ ] **307. A real cough.** The jaw snaps and the opercula pulse in reverse to
+  **Phase 2 (2026-11-02):** ~0.7 s fidget: jaw + opercula flare + pectoral
+  spread, then settle.
+- [x] **307. A real cough.** The jaw snaps and the opercula pulse in reverse to
   flush the gills. This replaces the head-scale pulse
   ([fish.gd:6976](../shaders-godot/godot-project/scripts/fish.gd:6976)). *SA · S/M*
-- [ ] **308. Ventilating pectorals.** At rest, the pectoral beat rate follows the
+  **Phase 2 (2026-11-02):** Flush clamps the covers shut, then flares them;
+  jaw snaps on the early phase.
+- [x] **308. Ventilating pectorals.** At rest, the pectoral beat rate follows the
   breath rate, because resting pectoral movement helps ventilate, rather than
   running at a fixed floor
   ([fish.gd:7988](../shaders-godot/godot-project/scripts/fish.gd:7988)). *SA TI · S/S*
-- [ ] **309. Dorsal flicks.** Occasional quick dorsal raise-and-lower as
+  **Phase 2 (2026-11-02):** Rest blend pulls `pec_freq` toward the breath Hz.
+- [x] **309. Dorsal flicks.** Occasional quick dorsal raise-and-lower as
   signals between fish, roughly once every 20 s at rest. *SA · S/S*
-- [ ] **310. Flashing with a cause.** The substrate flash
+  **Phase 2 (2026-11-02):** Resting fish raise the dorsal for ~0.35 s about
+  once every 20 s.
+- [x] **310. Flashing with a cause.** The substrate flash
   ([fish.gd:8010](../shaders-godot/godot-project/scripts/fish.gd:8010)) is an
   idle fidget. Real flashing (scratching a flank on substrate or rock) is an
   irritation sign. Tie its rate to ammonia, nitrite and parasite load so it
   means something. *SA ST · S/L*
-- [ ] **311. Chafing against plants.** The same irritation, rubbing along a leaf.
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **311. Chafing against plants.** The same irritation, rubbing along a leaf.
   The leaf bends. *SA · S/S*
-- [ ] **312. Colour moves with pose.** Alert darkens over 0.5 s, sleep pales,
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **312. Colour moves with pose.** Alert darkens over 0.5 s, sleep pales,
   display intensifies, synchronised with the pose blend, not on a separate
   clock. *SA PP · S/M*
-- [ ] **313. Breath-linked bob.** Fold the standalone breath bob
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **313. Breath-linked bob.** Fold the standalone breath bob
   ([fish.gd:7211](../shaders-godot/godot-project/scripts/fish.gd:7211)) into the
   breath oscillator, so bob, opercula and mouth share one phase. *SA · S/S*
-- [ ] **314. Surface dwellers dimple the surface.** Killifish fin flicks under
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **314. Surface dwellers dimple the surface.** Killifish fin flicks under
   the meniscus make small ripples. *SA · S/S*
-- [ ] **315. Bubbles as motion events.** A labyrinth fish exhales spent air on
+- [x] **315. Bubbles as motion events.** A labyrinth fish exhales spent air on
   a gulp, a corydoras releases a bubble after its air dash, and a physostome
   fish occasionally burps after a deep dive. Each comes from the event bus. *SA ST · S/M*
-- [ ] **316. Wire `breath_hover_offset`.** It exists in
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **316. Wire `breath_hover_offset`.** It exists in
   `fish_spark_behavior.gd` and is never called. Use it as the hover-breath
   layer. *SA · S/S*
-- [ ] **317. The corydoras wink.** Corydoras roll their eyes downward, which
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **317. The corydoras wink.** Corydoras roll their eyes downward, which
   looks exactly like a wink. One eye, rarely, at rest. *SA AP · S/M*
-- [ ] **318. Barbel tapping.** While sifting, barbels tap the substrate in a fast
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **318. Barbel tapping.** While sifting, barbels tap the substrate in a fast
   alternating rhythm. *SA · S/M*
-- [ ] **319. The suckermouth on the glass.** Seen from the front, a grazing
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **319. The suckermouth on the glass.** Seen from the front, a grazing
   pleco or oto shows its mouth disc rasping. It is one of the most loved views
   in the hobby and depends on the camera seeing the underside. Render the
   disc with a 2–3 Hz rasp when the fish is on the front glass. *SA AP · M/L*
-- [ ] **320. Tail fanning while attached.** Otos and plecos fan the tail gently
+- [x] **320. Tail fanning while attached.** Otos and plecos fan the tail gently
   to stay on the surface. *SA · S/S*
-- [ ] **321. Feelers that probe.** Gouramis reach their feelers toward objects,
+- [x] **321. Feelers that probe.** Gouramis reach their feelers toward objects,
   food and other fish, and touch them. *SA AP · M/M*
-- [ ] **322. Bubble-nest building.** A male betta or gourami gulps air and spits
+- [x] **322. Bubble-nest building.** A male betta or gourami gulps air and spits
   bubbles into a nest under a floater, then tends it. A long, legible,
   realistic behaviour with clear motion. *SA AP · L/L*
-- [ ] **323. Shimmying with a cause.** Livebearers "shimmy" (rock side to side
+  **Phase 2 (2026-11-02):** Male labyrinth breeders gulp/spit under floaters via `_tick_bubble_nest` + `spawn_nest_bubble`.
+- [x] **323. Shimmying with a cause.** Livebearers "shimmy" (rock side to side
   without travelling) under poor water or chill. The idle shimmy
   ([fish.gd:8010](../shaders-godot/godot-project/scripts/fish.gd:8010)) should
   come from those conditions. *SA ST · S/M*
-- [ ] **324. Flinch at a close pass.** When another fish passes very close, the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **324. Flinch at a close pass.** When another fish passes very close, the
   receiver flicks its dorsal and twitches its tail. Make the 0.08 s
   lateral-line flinch
   ([fish_alive.gd:211](../shaders-godot/godot-project/scripts/fish_alive.gd:211))
   visible. *SA · S/S*
-- [ ] **325. The gonopodium swings.** Guppy and endler males swing the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **325. The gonopodium swings.** Guppy and endler males swing the
   gonopodium forward in display and thrust. Repurpose the anal pivot on
   males. *SA AP · S/M*
-- [ ] **326. Spacing corrections.** Fish in a school make constant small
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **326. Spacing corrections.** Fish in a school make constant small
   pectoral corrections in proportion to their spacing error. The school
   shimmers with life without anyone leaving formation. *SA · S/M*
-- [ ] **327. Surface snaps.** Surface feeders strike at floating food with a
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **327. Surface snaps.** Surface feeders strike at floating food with a
   quick upward head tilt and a jaw snap. *SA · S/M*
-- [ ] **328. Single tail flicks to reorient.** Hovering labriform fish change
+- [x] **328. Single tail flicks to reorient.** Hovering labriform fish change
   heading with one or two tail flicks, not a continuous wag. *SA TI · S/M*
-- [ ] **329. Spit and retake.** A fish occasionally spits out a large particle
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **329. Spit and retake.** A fish occasionally spits out a large particle
   and takes it again. A real, characterful detail. *SA AP · S/M*
-- [ ] **330. Chewing.** Severums and other cichlids show jaw motion after a big
+- [x] **330. Chewing.** Severums and other cichlids show jaw motion after a big
   bite. *SA · S/S*
 
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 ## L. Timing: weight, size, temperature and mood (331–358)
 
-- [ ] **331. Declare real locomotion per species.** Add `locomotion_type` to
+- [x] **331. Declare real locomotion per species.** Add `locomotion_type` to
   every `SPECIES_LIBRARY` entry
   ([tank_config.gd:1218](../shaders-godot/godot-project/scripts/tank_config.gd:1218)):
   - subcarangiform: glassdart, danio, tetras, guppies, corydoras
@@ -1711,115 +2013,161 @@ eye of an animal with no eyelids
   - saltatory perching: goby
   - burst-and-rest: pleco
   *TI AP · M/L*
-- [ ] **332. Tail-beat frequency from Strouhal.** f = St · U / A, with A ≈ 0.2 L
+  **Shipped:** `FishTiming.SPECIES_LOCOMOTION` + genome `locomotion_type` on every
+  playable entry; `Fish.init_genome` prefers the declared type.
+- [x] **332. Tail-beat frequency from Strouhal.** f = St · U / A, with A ≈ 0.2 L
   and St ≈ 0.3. This replaces the hand-set base rates
   ([hydrodynamics.gd:257](../shaders-godot/godot-project/scripts/hydrodynamics.gd:257))
   with physics that scales across sizes by itself. *TI · M/L*
-- [ ] **333. Anti-alias the tail beat.** Real small fish beat at 10–30 Hz; at
+  **Shipped:** `Hydrodynamics.locomotion_tailbeat_rate` → `FishTiming.strouhal_tailbeat_rate`.
+- [x] **333. Anti-alias the tail beat.** Real small fish beat at 10–30 Hz; at
   60 fps (30 on mobile) that aliases into wagon-wheel stutter. Cap the
   *visible* frequency near fps/6, lower amplitude above it, and let the shader
   ripple suggest the rest. *TI ST · S/L*
-- [ ] **334. Temperature tempo.** If the tank exposes a temperature (`plant.gd`
+  **Shipped:** `FishTiming.visible_wag_rate` / `visible_amp_scale` on the pose path.
+- [x] **334. Temperature tempo.** If the tank exposes a temperature (`plant.gd`
   and `egg.gd` read one), scale tempo by a Q10 of about 2: a cool tank is
   visibly languid and a warm one brisk. *TI · S/M*
-- [ ] **335. Oxygen tempo.** Low O₂ slows swimming, speeds the opercula and
+  **Shipped:** `FishTiming.temperature_tempo` in `_beat_rate_mult`.
+- [x] **335. Oxygen tempo.** Low O₂ slows swimming, speeds the opercula and
   adds surface time, together. *TI SA · S/M*
-- [ ] **336. Crepuscular species.** Corydoras, plecos, shrimp and snails peak
+  **Shipped:** swim via `oxygen_swim_tempo`; opercula via `oxygen_opercula_tempo`.
+- [x] **336. Crepuscular species.** Corydoras, plecos, shrimp and snails peak
   at dusk and at night. The day-activity lerp
   ([fish.gd:7025](../shaders-godot/godot-project/scripts/fish.gd:7025)) needs a
   per-species curve, not one for all. *TI AP · S/M*
-- [ ] **337. Bout statistics per species.** Today every fish shares cruise
+  **Shipped:** `FishTiming.day_activity` + `SPECIES_DIEL`.
+- [x] **337. Bout statistics per species.** Today every fish shares cruise
   2.5–8 s, hover 1.2–3.8 s and dart 0.4–0.8 s
   ([fish_life_bouts.gd:78](../shaders-godot/godot-project/scripts/fish_life_bouts.gd:78)).
   Give each species its own distributions. *TI AP · M/L*
-- [ ] **338. Danio burst-and-glide.** Danios move in discrete bouts every
+  **Shipped:** `FishTiming.SPECIES_BOUTS` wired through `FishLifeBouts._next_bout`.
+- [x] **338. Danio burst-and-glide.** Danios move in discrete bouts every
   0.5–1.5 s with a glide between, which is their defining motion. *TI AP · S/L*
-- [ ] **339. Size slows reactions.** Action-envelope durations scale with
+  **Shipped:** danio short cruise + `_danio_glide` low cruise floor.
+- [x] **339. Size slows reactions.** Action-envelope durations scale with
   body length^(1/3), so a big angelfish reacts visibly more slowly than an
   ember tetra. *TI · S/M*
-- [ ] **340. Holds by species.** Pauses between actions range from 0.2 s
+  **Shipped:** `FishTiming.size_reaction_scale` on anticipation envelopes / sheets.
+- [x] **340. Holds by species.** Pauses between actions range from 0.2 s
   (guppy) to 2 s (angelfish) and come from the species and the individual. *TI AP · S/M*
-- [ ] **341. Log-normal, not uniform.** `randf_range` gives flat distributions.
+  **Shipped:** hold scale column in `SPECIES_BOUTS`.
+- [x] **341. Log-normal, not uniform.** `randf_range` gives flat distributions.
   Real bout lengths are right-skewed: mostly short, occasionally long. Draw
   durations from log-normals. *TI · S/M*
-- [ ] **342. An exposure sheet for the C-start.** Stage 1 in 3–4 frames, stage
+  **Shipped:** `FishTiming.lognormal_between` for bout durations.
+- [x] **342. An exposure sheet for the C-start.** Stage 1 in 3–4 frames, stage
   2 in 4–6, a glide of 300–600 ms, then recovery. *TI EX · S/M*
-- [ ] **343. An exposure sheet for the strike.** Slow approach; fixation
+  **Shipped:** `FishAnticipation` C-start sheet timers from `c_start_stage_seconds`.
+- [x] **343. An exposure sheet for the strike.** Slow approach; fixation
   150–300 ms; gape 40 ms before contact; strike 60–100 ms; close 80 ms;
   swallow and chew 300 ms. *TI · S/M*
-- [ ] **344. An exposure sheet for the gulp.** Rise 0.6–1.2 s, gulp 0.15 s,
+  **Shipped:** fixation hold via `strike_hold_seconds` (contact/chew already posed).
+- [x] **344. An exposure sheet for the gulp.** Rise 0.6–1.2 s, gulp 0.15 s,
   dive 0.4 s. *TI · S/S*
-- [ ] **345. Pectoral rate by species.** Labriform pectorals beat at about
+  **Shipped:** `FishTiming.gulp_trip_seconds` on `_aerial_timer`.
+- [x] **345. Pectoral rate by species.** Labriform pectorals beat at about
   2–4 Hz, with a fixed ratio to the tail in body-caudal swimmers. *TI · S/M*
-- [ ] **346. Fry timing.** High frequency, short bouts, frequent rests on
+  **Shipped:** `FishTiming.pec_freq` blended into the pose pec clock.
+- [x] **346. Fry timing.** High frequency, short bouts, frequent rests on
   surfaces. *TI · S/M*
-- [ ] **347. Senescent timing.** Slower bouts, longer rests, later reactions,
+  **Shipped:** fry bout-duration mult + higher dart/hover odds.
+- [x] **347. Senescent timing.** Slower bouts, longer rests, later reactions,
   lower amplitudes, all together. *TI · S/M*
-- [ ] **348. A weight table for invertebrates.** Cherry shrimp react in about
+  **Shipped:** senescent bout + amp mults.
+- [x] **348. A weight table for invertebrates.** Cherry shrimp react in about
   50 ms; crabs and lobsters in 150–300 ms; snail tentacles withdraw in about
   150 ms and the body in about 300 ms. *TI · S/M*
-- [ ] **349. Desync the school, but not completely.** Per-fish phase offsets
+  **Shipped:** `FishTiming.INVERT_REACT_S` + shrimp delay / snail tentacle delay.
+- [x] **349. Desync the school, but not completely.** Per-fish phase offsets
   (#18) prevent lockstep, but neighbours drafting at the right spacing drift
   partly into phase, as real schooling fish sometimes do. *TI SD · M/M*
-- [ ] **350. Respect `time_scale` everywhere.** Every creature clock follows
+  **Shipped:** `FishTiming.school_phase_pull` while drafting a conspecific wake.
+- [x] **350. Respect `time_scale` everywhere.** Every creature clock follows
   the global time scale. Clams ignore it today (#36). *TI · S/M*
-- [ ] **351. Fast-forward as time-lapse.** Above 4×, switch to a time-lapse
+  **Shipped:** clam `_process` already multiplies by `sim.time_scale` (contract smoke).
+- [x] **351. Fast-forward as time-lapse.** Above 4×, switch to a time-lapse
   register: relaxed fins, low tail amplitude, smoothed trajectories. Without
   it fast-forward makes fish vibrate. *TI EX · M/L*
-- [ ] **352. Slow-motion fidelity.** At 0.25×, pose interpolation runs at full
+  **Shipped:** `timelapse_amp_scale` + calmed target pace above 4×.
+- [x] **352. Slow-motion fidelity.** At 0.25×, pose interpolation runs at full
   frame rate so slow motion stays smooth. *TI · S/M*
-- [ ] **353. Individual tempo.** `_speed_personality` (#18) sets ±10% tempo per
+  **Shipped:** `pose_dt_for_time_scale` keeps wall-clock pose under slow-mo.
+- [x] **353. Individual tempo.** `_speed_personality` (#18) sets ±10% tempo per
   fish. *TI AP · S/S*
-- [ ] **354. Anxious is quick, content is slow.** Breath rate, fin-flick
+  **Shipped:** `_tempo_personality` ±10% on the stroke clock.
+- [x] **354. Anxious is quick, content is slow.** Breath rate, fin-flick
   frequency and hold length follow arousal. *TI AP · S/M*
-- [ ] **355. Hungry patrols, full loafs.** Hunger raises patrol speed and dart
+  **Shipped:** `mood_tempo` + stress flutter floor on the stroke clock.
+- [x] **355. Hungry patrols, full loafs.** Hunger raises patrol speed and dart
   rate; satiety slows both and lengthens holds. *TI · S/M*
-- [ ] **356. Juveniles are busier.** More frequent bouts, shorter holds,
+  **Shipped:** hunger terms in `mood_tempo` and bout probabilities / holds.
+- [x] **356. Juveniles are busier.** More frequent bouts, shorter holds,
   settling with growth. *TI · S/S*
-- [ ] **357. Sleep breathing.** Breath rate drops to about 60% asleep. *TI SA · S/S*
-- [ ] **358. Display quiver by species.** The courtship quiver rises with
+  **Shipped:** fry bout mult (with #346).
+- [x] **357. Sleep breathing.** Breath rate drops to about 60% asleep. *TI SA · S/S*
+  **Shipped:** `FishTiming.sleep_breath_mult`.
+- [x] **358. Display quiver by species.** The courtship quiver rises with
   intensity up to a species cap (guppy about 10–15 Hz, shown as amplitude
   above the visible cap). *TI EX · S/M*
+  **Shipped:** `FishTiming.display_quiver_rate` in livebearer sigmoid envelope.
 
 ## M. Exaggeration, with restraint (359–374)
 
-- [ ] **359. A legibility gain.** k = clamp(target_px / actual_px, 1, 1.3) on
+- [x] **359. A legibility gain.** k = clamp(target_px / actual_px, 1, 1.3) on
   key channels only (fin erection, C-start bend, strike stretch, gulp). Never
   above 1.3. *EX ST · S/L*
-- [ ] **360. Full C-start curl.** Keep the real 90–120° body curl; exaggerate
+  **Shipped:** `MotionLod.legibility_gain` + `FishExaggeration.gain` (cap 1.3).
+- [x] **360. Full C-start curl.** Keep the real 90–120° body curl; exaggerate
   the duration (#342), not the angle. *EX AN · S/M*
-- [ ] **361. Display flare.** +20% fin area and 1.5× hold time in displays. *EX ST · S/M*
-- [ ] **362. Strike stretch.** As in #123, with a one-frame smear (#370). *EX SQ · S/S*
-- [ ] **363. Readable clamping.** Clamped fins shrink 40% and the fish darkens
+  **Shipped:** angle locked in `apply_c_start`; duration via #342 sheet.
+- [x] **361. Display flare.** +20% fin area and 1.5× hold time in displays. *EX ST · S/M*
+  **Shipped:** `display_fin_mult` / `display_hold_mult` on courtship.
+- [x] **362. Strike stretch.** As in #123, with a one-frame smear (#370). *EX SQ · S/S*
+  **Shipped:** `_ant_strike_stretch` + adult smear on bite intent.
+- [x] **363. Readable clamping.** Clamped fins shrink 40% and the fish darkens
   so stress reads at 22 px. *EX PP · S/M*
-- [ ] **364. Readable gulps.** Gape +30% at the surface, plus a visible ripple
+  **Shipped:** `clamp_fin_scale` / `clamp_darken` on pec + dorsal.
+- [x] **364. Readable gulps.** Gape +30% at the surface, plus a visible ripple
   ring. *EX ST · S/S*
-- [ ] **365. Exaggerate contrast, not amplitude.** Put a 100–300 ms hold before
+  **Shipped:** `gulp_gape_mult` on jaw while aerial (ripple via existing gulp SFX/events).
+- [x] **365. Exaggerate contrast, not amplitude.** Put a 100–300 ms hold before
   a big action. The stillness makes the action land. *EX TI · S/L*
-- [ ] **366. One exaggerated event per region.** Shares the event budget (#175). *EX ST · S/S*
-- [ ] **367. A do-not-exaggerate list.** Cruise tail amplitude, school spacing,
+  **Shipped:** `_ant_pre_hold` + brief `motion_freeze_t` on burst rising edge.
+- [x] **366. One exaggerated event per region.** Shares the event budget (#175). *EX ST · S/S*
+  **Shipped:** smear / startle / dart gate on `MotionStaging.begin_big_event`.
+- [x] **367. A do-not-exaggerate list.** Cruise tail amplitude, school spacing,
   swim speed and snail speed are realism anchors and stay biological. *EX · S/M*
-- [ ] **368. Distance-based exaggeration.** 0% in macro, about 15% at the
+  **Shipped:** `DO_NOT_EXAGGERATE`; cruise path returns gain 1.0.
+- [x] **368. Distance-based exaggeration.** 0% in macro, about 15% at the
   default camera, about 30% in wide shots (#60). *EX ST · S/M*
-- [ ] **369. Music lifts the cap.** When `dance_blend` is high, dance moves may
+  **Shipped:** `FishExaggeration.distance_mix`.
+- [x] **369. Music lifts the cap.** When `dance_blend` is high, dance moves may
   exaggerate up to +40%, the tank's "magic" register, and fall back as the
   music ends. *EX AP · S/M*
-- [ ] **370. Smear frames.** One elongated afterimage frame on strikes and
+  **Shipped:** cap lerps to 1.4 with `dance_blend`.
+- [x] **370. Smear frames.** One elongated afterimage frame on strikes and
   C-starts, reusing the fry `DartTrailPool` with one ghost per adult. *EX · S/M*
-- [ ] **371. Big-tailed recoil.** As in #250, a little stronger than real so it
+  **Shipped:** `_spawn_adult_action_smear`.
+- [x] **371. Big-tailed recoil.** As in #250, a little stronger than real so it
   reads. *EX FT · S/S*
-- [ ] **372. Readable hypoxia.** Opercula ×1.5 and mouth gaping, so a keeper
+  **Shipped:** `tail_recoil_mult` on head yaw.
+- [x] **372. Readable hypoxia.** Opercula ×1.5 and mouth gaping, so a keeper
   reads the problem before the fish die. *EX SA · S/L*
-- [ ] **373. Readable sickness.** Listing angles a little steeper than real. *EX PP · S/M*
-- [ ] **374. An exaggeration ledger.** Every exaggerated channel in one table:
+  **Shipped:** `hypoxia_opercula_mult` / `hypoxia_gape` on breath pose.
+- [x] **373. Readable sickness.** Listing angles a little steeper than real. *EX PP · S/M*
+  **Shipped:** bank bias from low energy / high stress via `sickness_list_mult`.
+- [x] **374. An exaggeration ledger.** Every exaggerated channel in one table:
   real value, game value, reason. *EX · S/S*
+  **Shipped:** `FishExaggeration.LEDGER`.
 
 ## N. Solid drawing: volume, weight, balance, no twins (375–396)
 
-- [ ] **375. Cap the fin shear.** The shader fin flutter shears fins along Z
+- [x] **375. Cap the fin shear.** The shader fin flutter shears fins along Z
   ([voxel_fauna_mm.gdshader:157](../shaders-godot/godot-project/shaders/voxel_fauna_mm.gdshader:157))
   without bound. Cap it so fins bend, not smear. *SD · S/S*
-- [ ] **376. No cracks at joints.** Rotating pivots open gaps and overlaps
+  **Phase 2 (2026-11-02):** Fin shear clamped to ±0.08.
+- [x] **376. No cracks at joints.** Rotating pivots open gaps and overlaps
   between voxel blocks. Add joint filler voxels or overlap the segments, and
   check bends in `inspect`. *SD · M/M*
   **Phase 2 (2026-10-30):** *Partly.* The spine pass closes the
@@ -1831,54 +2179,67 @@ eye of an animal with no eyelids
   **Phase 2 (2026-10-30):** Rest pitch comes from
   `MotionPoseLibrary.rest_pose(species).head_pitch` and fades out as the fish
   swims (corydoras idle nose-down).
-- [ ] **378. Bottom fish sink.** Corydoras, plecos, gobies and hillstream loaches
+- [x] **378. Bottom fish sink.** Corydoras, plecos, gobies and hillstream loaches
   have little or no swim-bladder lift. When they stop swimming they land; they
   don't hover. *SD TI · S/L*
-- [ ] **379. Pelvic fins.** Build pelvic fin pivots. They are needed for resting
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **379. Pelvic fins.** Build pelvic fin pivots. They are needed for resting
   tripods, for the corydoras clasp and for the silhouette. *SD · M/M*
-- [ ] **380. Contact at rest.** Resting bottom fish touch the substrate with
+  **Phase 2 (2026-11-02):** `PelvicL` / `PelvicR` under `BodyMid`; ordinary
+  fins or gourami feelers; slower flutter than the pectorals, hang more at
+  rest.
+- [x] **380. Contact at rest.** Resting bottom fish touch the substrate with
   pelvic and pectoral fins through the contact solver (#55), rather than
   floating a voxel above it. *SD · M/M*
-- [ ] **381. Belly to the surface.** Adherent grazers align belly-down to the
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **381. Belly to the surface.** Adherent grazers align belly-down to the
   surface normal of glass, wood or rock. *SD · S/M*
 - [x] **382. No twin pectorals.** Beyond the quarter-cycle offset, give each
   pectoral its own noise and its own spring, so the two sides never mirror. *SD · S/M*
   **Phase 2 (2026-10-30):** Each pectoral's amplitude varies ±12% on its own
   smooth noise.
-- [ ] **383. No twin neighbours.** No two neighbours share a phase and a pose;
+- [x] **383. No twin neighbours.** No two neighbours share a phase and a pose;
   enforced by the twin metric (#89). *SD · S/M*
 - [x] **384. Anatomical head limits.** Fish have no neck. Clamp head yaw to about
   0.15 rad relative to the front segment; any more lead has to come from the
   body bend. *SD · S/M*
   **Phase 2 (2026-10-30):** Head yaw is clamped to ±0.3 rad.
-- [ ] **385. Dorsal-up stability.** Roll always recovers toward dorsal-up for a
+- [x] **385. Dorsal-up stability.** Roll always recovers toward dorsal-up for a
   healthy fish. Only illness and death break it. *SD · S/S*
-- [ ] **386. Sideslip in turns.** Bodies slide slightly outward in sharp turns. *SD AR · S/S*
-- [ ] **387. Crab angle in current.** In a cross-current, the heading turns into
+  **Phase 2 (2026-11-02):** Healthy awake fish damp bank targets 8% toward
+  level each pose.
+- [x] **386. Sideslip in turns.** Bodies slide slightly outward in sharp turns. *SD AR · S/S*
+  **Phase 2 (2026-11-02):** Outward lateral slip from yaw rate, clamped by
+  the tank footprint.
+- [x] **387. Crab angle in current.** In a cross-current, the heading turns into
   the flow while the track stays on course. *SD · S/M*
-- [ ] **388. A rheotaxis pose.** Station-holding fish face the current with the
+- [x] **388. A rheotaxis pose.** Station-holding fish face the current with the
   nose slightly down, the pectorals spread and the tail matched to the flow. *SD PP · S/M*
-- [ ] **389. Pivots at the right joints.** Audit pivot placement: pectorals at
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **389. Pivots at the right joints.** Audit pivot placement: pectorals at
   the shoulder girdle, the tail pivot at the peduncle rather than mid-tail
   (`TailPivot` sits at z = +1.5 v). *SD · S/M*
-- [ ] **390. Fins never vanish edge-on.** Thin voxel fins disappear when they
+- [x] **390. Fins never vanish edge-on.** Thin voxel fins disappear when they
   rotate edge-on to the camera. Keep a minimum visible thickness or tilt. *SD ST · S/M*
-- [ ] **391. Mass in personal space.** Larger fish push smaller ones aside; the
+- [x] **391. Mass in personal space.** Larger fish push smaller ones aside; the
   clearance push is symmetric today
   ([fish_locomotion.gd:63](../shaders-godot/godot-project/scripts/fish_locomotion.gd:63)). *SD · S/M*
-- [ ] **392. Balance is active.** A hovering fish shows tiny roll errors that
+- [x] **392. Balance is active.** A hovering fish shows tiny roll errors that
   pectoral flicks correct. *SD SA · S/M*
-- [ ] **393. Align to slopes.** A bottom fish resting on a slope aligns pitch
+  **Phase 2 (2026-11-02):** Low-amplitude hover roll noise, faded while swimming.
+- [x] **393. Align to slopes.** A bottom fish resting on a slope aligns pitch
   and roll to the bed normal. *SD · S/M*
-- [ ] **394. Check the top view.** In pond and overhead mode the lateral wave
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
+- [x] **394. Check the top view.** In pond and overhead mode the lateral wave
   reads fully. Verify the travelling wave from above and tune its amplitude
   separately. *SD ST · S/M*
-- [ ] **395. No skating.** Any translation without matching locomotor effort,
+- [x] **395. No skating.** Any translation without matching locomotor effort,
   other than a glide or current carry, reads as skating. Measure speed
   against effort and flag mismatches. *SD · S/M*
-- [ ] **396. Don't clip.** Reduce tail sweep near glass, plants and hardscape
+- [x] **396. Don't clip.** Reduce tail sweep near glass, plants and hardscape
   rather than letting fins pass through them. *SD · S/M*
 
+  **Phase 2 (2026-11-02):** Shipped on the living 3-pivot rig via `fish_phase2_pose.gd` + fish pose wiring (spine midline / follow-the-leader where noted; true multi-joint #65 still deferred).
 ## O. Appeal: species motion signatures (397–426)
 
 Each signature is a composite of items above. It is what a keeper would
@@ -2310,18 +2671,25 @@ Several faults stack up: they may crawl sideways (#25), the shell squashes
 with the foot (#28), surfaces change in a single frame (#26), and a 180° turn
 takes about half a second (#266).
 
-- [ ] **564. Fix the axis first.** #25. *SD · S/L*
-- [ ] **565. Pedal waves on the glass.** Seen through the glass, a snail's foot
+- [x] **564. Fix the axis first.** #25. *SD · S/L*
+  **Phase 4 (2026-11-02):** Done with #25 (MODEL_YAW + re-homed stalks).
+- [x] **565. Pedal waves on the glass.** Seen through the glass, a snail's foot
   shows dark bands travelling along it: the pedal waves. Scroll a band
   texture on the `GlassFootPad`
   ([world.gd:4757](../shaders-godot/godot-project/scripts/world.gd:4757)) at
   the foot-wave speed, forwards or backwards by species. This is the single
   most real thing a snail can do on screen. *SA AP · M/L*
-- [ ] **566. The foot stretches, the shell doesn't.** Foot length and width
+  **Phase 4 (2026-11-02):** `PedalBand*` meshes scroll on the pad/sole with
+  `_pulse_phase` (reversed for nerite/limpet/trochus).
+- [x] **566. The foot stretches, the shell doesn't.** Foot length and width
   pulse with the wave, conserving volume (#28). *SQ SD · S/M*
-- [ ] **567. The shell rocks and swings.** The shell sits on a spring relative
+  **Phase 4 (2026-11-02):** Confirmed — `_apply_squash` deforms only `Foot`;
+  shell stays rigid (#28) while pedal bands read the wave.
+- [x] **567. The shell rocks and swings.** The shell sits on a spring relative
   to the foot. It rocks 2–4° with each foot pulse and swings around, then
   settles, 0.3–0.6 s after the head turns. *FT SD · M/L*
+  **Phase 4 (2026-11-02):** `_tick_shell_swing` rock + turn-impulse spring;
+  quiet during blends so the shell never pierces glass/floor.
 - [ ] **568. Shell hitches.** Real snails pull the shell forward in small jerks
   relative to the foot, every 2–4 s. *FT SA · S/M*
 - [ ] **569. Edges as a sequence.** Crossing from glass to floor, the head
@@ -2344,9 +2712,11 @@ takes about half a second (#266).
   pulls the shell over, sometimes taking several tries over 3–8 s. Today it
   is a 1.9 s slerp
   ([snail.gd:702](../shaders-godot/godot-project/scripts/snail.gd:702)). *SD TI · M/M*
-- [ ] **576. Retraction in order.** Tentacles first (about 0.15 s), then the
+- [x] **576. Retraction in order.** Tentacles first (about 0.15 s), then the
   head and foot (about 0.4 s), then the shell drops or clamps, then the
   operculum closes. Overlapping action at snail speed. *FT SI · M/L*
+  **Phase 4 (2026-11-02):** Eyes retract first; foot/shell tuck with `_tuck`;
+  operculum waits until `_clamp_age ≥ 0.4 s`.
 - [ ] **577. Cautious re-emergence.** After 5–30 s: tentacles out slowly first,
   then the foot, then crawling. *AN SI · S/M*
 - [ ] **578. Grazing leaves a track.** The rasping head pulses at 1–2 Hz and

@@ -37,6 +37,8 @@ static func replay_warm() -> int:
 				_VoxelMat.make_fauna(Color(0.55, 0.42, 0.32))
 			"fauna_mm":
 				_VoxelMat.make_fauna_mm()
+			"fauna_skinned":
+				_VoxelMat.make_fauna_skinned()
 			"substrate_caustic":
 				_VoxelMat.make_substrate_caustic(Color8(92, 72, 52))
 			"water":

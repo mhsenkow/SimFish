@@ -261,6 +261,16 @@ const HOVER_TUCK: float = 0.7          # a fish hovering overhead: partly tucked
 const SHELL_TUCK_DROP: float = 0.045   # x shell_size, model units
 const CLAMP_FOOT_Y: float = 0.35       # foot height while clamped
 var _tuck: float = 0.0
+# #565: dark pedal-wave bands scrolling along the glass foot pad / foot sole.
+var _pedal_bands: Array = []
+var _pedal_dir: float = 1.0  # +1 forward (headward); some species reverse
+# #567: shell sits on a spring — rocks with the foot pulse, swings after turns.
+var _shell_rock: float = 0.0
+var _shell_swing: float = 0.0
+var _shell_swing_vel: float = 0.0
+var _facing_angle_prev: float = 0.0
+# #576: ordered clamp — tentacles → foot/head → shell drop → operculum.
+var _clamp_age: float = 0.0
 # Shell-retraction defense. Real snails clamp the foot into the shell and
 # go still when a predator brushes past. Set true while a snail_predator
 # (loach / puffer) is within CLAMP_RADIUS. Movement is suspended and the
@@ -281,13 +291,16 @@ var _righting_remaining: float = 0.0
 # but the cost drops from 60 Hz × N fish/waste to 3 Hz × N. Eye-stalk
 # wiggle, foot pulse, facing lerp etc. all still update per frame so the
 # motion stays smooth.
+# #348: body reaction ~300 ms; tentacles use the faster invert table.
 const SCAN_INTERVAL: float = 0.3
 const MAX_STEP_DT: float = 0.05             # stabilizes motion at high time_scale
-const FACING_TURN_RATE: float = 5.5
+# #266: snails reverse in 4–6 s — cap near 0.6 rad/s (was an instant 5.5).
+const FACING_TURN_RATE: float = 0.6
 const STEER_RATE: float = 4.0               # food / retreat heading blend
 const ORIENT_RATE: float = 6.0
 const RIGHTING_RATE: float = 1.6            # 1/s; upright in ~1.9 s
 var _scan_accum: float = 0.0
+var _tentacle_react_delay: float = 0.0
 
 # The body is built head-first along local +X (snail_shell.gd, world.gd), but
 # Basis.looking_at aims local -Z. Every crawl basis is turned a quarter about
@@ -454,6 +467,10 @@ func bind_body() -> void:
 	_operculum_pivot = op_parent.get_node_or_null("Operculum") as Node3D
 	if _operculum_pivot != null:
 		_operculum_pivot.visible = _operculum_ext > 0.04
+	_ensure_pedal_bands()
+	# Nerites / limpets crawl with a reverse pedal wave (tailward bands).
+	_pedal_dir = -1.0 if shell_shape in ["turbo", "limpet", "trochus"] else 1.0
+	_facing_angle_prev = _facing.angle()
 
 
 # Shell wall thickness by silhouette, matching how these animals actually
@@ -612,6 +629,10 @@ func _process(dt: float) -> void:
 	# this gives an immediate stalk-pull while leaving the heavier clamp
 	# decision on the throttled scan. Cheap: bails when no predators exist.
 	_check_immediate_predator_retract()
+	if _tentacle_react_delay > 0.0:
+		_tentacle_react_delay = maxf(0.0, _tentacle_react_delay - dt)
+		if _tentacle_react_delay <= 0.0 and _eye_retract_remaining <= 0.0:
+			_eye_retract_remaining = EYE_RETRACT_DURATION
 	# Eye stalk animation runs in every state (clamped, paused, crawling).
 	# Slow sway is the resting wiggle real snails do as they sense around;
 	# periodic retraction is the brief stalk-pull when they reset their
@@ -621,6 +642,8 @@ func _process(dt: float) -> void:
 	_tick_eye_stalks(dt)
 	_tick_operculum(dt)
 	_tick_tuck(dt)
+	_tick_pedal_waves(dt)
+	_tick_shell_swing(dt)
 
 	# Falling from the surface film: withdrawn, no crawling, until it lands.
 	if _sinking:
@@ -2425,19 +2448,108 @@ func _apply_squash(squash_y: float) -> void:
 		var fs: Vector3 = Vector3(creep_x, y_axis, shimmy_z)
 		if fs.is_finite() and fs.x > 0.01 and fs.y > 0.01 and fs.z > 0.01:
 			_foot_pivot.scale = fs
-	if _shell_pivot != null:
-		_shell_pivot.position.y = -_tuck * SHELL_TUCK_DROP * shell_size
+	# Shell drop / rock / swing live in `_tick_shell_swing` (#567 / #576).
 
 
 # Ease the shell tuck toward the current threat level: in fast, out slow.
 func _tick_tuck(dt: float) -> void:
+	# #576: tentacles lead (~0.15 s via eye retract); foot/head follow next.
+	if _clamped or _sinking:
+		_clamp_age += dt
+	else:
+		_clamp_age = 0.0
 	var target: float = 0.0
 	if _clamped or _sinking:
+		# Foot/head follow immediately (eyes lead visually via faster retract);
+		# operculum waits on `_clamp_age` in `_tick_operculum` (#576).
 		target = 1.0
 	elif _fish_hover_freeze:
 		target = HOVER_TUCK
 	var rate: float = TUCK_IN_RATE if target > _tuck else TUCK_OUT_RATE
 	_tuck = lerpf(_tuck, target, 1.0 - exp(-rate * dt))
+
+
+# #565 / #566: scroll dark bands along the sole; foot volume already pulses
+# in `_apply_squash` (forward stretch + Y squash, shell undeformed).
+func _ensure_pedal_bands() -> void:
+	_pedal_bands.clear()
+	if _foot_pivot == null:
+		return
+	var host: Node3D = _foot_pivot.get_node_or_null("GlassFootPad") as Node3D
+	if host == null:
+		host = _foot_pivot
+	# Rebuild if a previous bind left bands behind.
+	for child in host.get_children():
+		if child is MeshInstance3D and String(child.name).begins_with("PedalBand"):
+			child.queue_free()
+	var band_mat := StandardMaterial3D.new()
+	band_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	band_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	band_mat.albedo_color = Color(0.12, 0.14, 0.11, 0.55)
+	band_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var ss: float = maxf(shell_size, 0.35)
+	for i in 4:
+		var band := MeshInstance3D.new()
+		band.name = "PedalBand%d" % i
+		var box := BoxMesh.new()
+		box.size = Vector3(0.04 * ss, 0.008 * ss, 0.16 * ss)
+		band.mesh = box
+		band.material_override = band_mat
+		host.add_child(band)
+		_pedal_bands.append(band)
+
+
+func _tick_pedal_waves(_dt: float) -> void:
+	if _pedal_bands.is_empty():
+		return
+	# Hide during surface blends / clamps so band AABBs never pierce glass/floor.
+	var bands_on: bool = not _clamped and not _sinking and _tuck < 0.55 \
+		and _wall_transition_cooldown <= 0.0 \
+		and not (has_method("is_surface_blending") and is_surface_blending())
+	var crawl: float = 0.0 if not bands_on else \
+		clampf(_crawl_speed_smoothed / maxf(SPEED * crawl_speed, 0.02), 0.0, 1.0)
+	var amp: float = lerpf(0.15, 1.0, crawl)
+	var span: float = 0.22 * maxf(shell_size, 0.35)
+	for i in _pedal_bands.size():
+		var band: MeshInstance3D = _pedal_bands[i] as MeshInstance3D
+		if band == null or not is_instance_valid(band):
+			continue
+		# Bands travel headward (+X) with the pedal wave (or reverse for nerites).
+		var u: float = fposmod(_pulse_phase * _pedal_dir / TAU + float(i) / float(_pedal_bands.size()), 1.0)
+		band.position = Vector3((u - 0.5) * span * 2.0, 0.018 * shell_size, 0.0)
+		band.visible = bands_on and amp > 0.08
+		band.scale = Vector3(1.0, lerpf(0.35, 1.0, amp), 1.0)
+
+
+# #567: shell rocks 2–4° with each foot pulse; swings then settles after turns.
+func _tick_shell_swing(dt: float) -> void:
+	if _shell_pivot == null:
+		return
+	# Quiet the rock during surface blends / righting so the shell never
+	# dips through the floor or glass (penetration smoke).
+	var quiet: bool = _clamped or _sinking or _paused or _righting_remaining > 0.0 \
+		or (has_method("is_surface_blending") and is_surface_blending()) \
+		or _wall_transition_cooldown > 0.0
+	var facing_a: float = _facing.angle()
+	var d_yaw: float = wrapf(facing_a - _facing_angle_prev, -PI, PI)
+	_facing_angle_prev = facing_a
+	if quiet:
+		_shell_rock = lerpf(_shell_rock, 0.0, 1.0 - exp(-dt * 14.0))
+		_shell_swing = lerpf(_shell_swing, 0.0, 1.0 - exp(-dt * 14.0))
+		_shell_swing_vel = 0.0
+	else:
+		var pulse_rock: float = sin(_pulse_phase) * deg_to_rad(2.5) * (1.0 - _tuck)
+		_shell_rock = lerpf(_shell_rock, pulse_rock, 1.0 - exp(-dt * 6.0))
+		# Impulse the swing spring when the head turns; settle in 0.3–0.6 s.
+		_shell_swing_vel += d_yaw * 2.8
+		_shell_swing_vel += -_shell_swing * 18.0 * dt
+		_shell_swing_vel *= exp(-dt * 5.5)
+		_shell_swing += _shell_swing_vel * dt
+		_shell_swing = clampf(_shell_swing, -0.35, 0.35)
+	var tuck_drop: float = -_tuck * SHELL_TUCK_DROP * shell_size
+	_shell_pivot.position.y = tuck_drop
+	_shell_pivot.rotation.x = _shell_rock
+	_shell_pivot.rotation.y = _shell_swing * (1.0 - _tuck)
 
 
 func _count_snails() -> int:
@@ -2619,7 +2731,9 @@ func _tick_eye_stalks(dt: float) -> void:
 func _tick_operculum(dt: float) -> void:
 	if _operculum_pivot == null or not operculum:
 		return
-	var target: float = 1.0 if _clamped else (0.55 if _fish_hover_freeze else 0.0)
+	# #576: operculum closes last — after tentacles (~0.15 s) and foot (~0.4 s).
+	var want_closed: bool = _clamped and _clamp_age >= 0.4
+	var target: float = 1.0 if want_closed else (0.55 if _fish_hover_freeze else 0.0)
 	_operculum_ext = lerpf(_operculum_ext, target, clampf(dt * 9.0, 0.0, 1.0))
 	_operculum_pivot.visible = _operculum_ext > 0.04
 	_operculum_pivot.scale = Vector3(
@@ -2638,6 +2752,8 @@ const _IMMEDIATE_RETRACT_RADIUS_SQ: float = 0.7 * 0.7
 func _check_immediate_predator_retract() -> void:
 	# Already retracting / clamped → nothing to do.
 	if _clamped or _eye_retract_remaining > 0.0:
+		return
+	if _tentacle_react_delay > 0.0:
 		return
 	var sim := _get_sim()
 	if sim == null:
@@ -2658,7 +2774,8 @@ func _check_immediate_predator_retract() -> void:
 			continue
 		var d2: float = (f.global_position - self_pos).length_squared()
 		if d2 < _IMMEDIATE_RETRACT_RADIUS_SQ:
-			_eye_retract_remaining = EYE_RETRACT_DURATION
+			# #348: tentacles withdraw after ~150 ms, not the same frame.
+			_tentacle_react_delay = FishTiming.invert_react_seconds("snail", false)
 			return
 
 

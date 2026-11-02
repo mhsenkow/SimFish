@@ -799,6 +799,7 @@ func _update_phrase_choreography(dt: float = 0.016) -> void:
 
 
 func _update_dance_blend(dt: float) -> void:
+	# #272: ease over at least a bar (~2 s) so song start/stop doesn't jerk the tank.
 	var baseline: float = 0.14 if bool(_ctx.active) and _should_dance() else 0.0
 	var target: float = baseline
 	if bool(_ctx.active) and _should_dance():
@@ -806,12 +807,13 @@ func _update_dance_blend(dt: float) -> void:
 			target = 1.0
 		else:
 			target = maxf(baseline, 0.22)
-	var rate: float = 1.6 if target > _dance_blend else 1.2
 	var world: Node = _world_node()
 	var sim_hush: Node = world.get_node_or_null("SimDriver") if world != null else null
 	if sim_hush != null and sim_hush.has_method("daylight") and float(sim_hush.daylight()) < 0.28:
 		target *= 0.48
-	_dance_blend = lerpf(_dance_blend, target, clampf(dt * rate, 0.0, 1.0))
+	# λ ≈ 0.7 → ~1.4 s to 63%, full settle over a bar.
+	var lam: float = 0.85 if target > _dance_blend else 0.65
+	_dance_blend = MotionEase.damp(_dance_blend, target, lam, dt)
 	if baseline > 0.0:
 		_dance_blend = maxf(_dance_blend, baseline * 0.85)
 

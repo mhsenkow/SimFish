@@ -6,6 +6,10 @@ const Batches = preload("res://scripts/fauna_species_batch.gd")
 func _initialize() -> void:
 	await process_frame
 	Batches.reset_for_test()
+	# FAUNA_SYNC_LEGACY=1 measures the per-voxel CPU path for comparison with
+	# the default GPU bone palette.
+	if OS.get_environment("FAUNA_SYNC_LEGACY") == "1":
+		Batches.set_gpu_skin_enabled(false)
 	var tank := Node3D.new()
 	root.add_child(tank)
 	var bones: Array[Node3D] = []
@@ -32,6 +36,7 @@ func _initialize() -> void:
 			times.append(float(Time.get_ticks_usec() - start) / 1000.0)
 	times.sort()
 	var report: Dictionary = {"bones": bones.size(), "voxels": Batches.sync_slot_count(),
+		"gpu_skin": Batches.gpu_skin_enabled(),
 		"median_ms": times[6], "p95_ms": times[11]}
 	print(JSON.stringify(report))
 	var path: String = OS.get_environment("FAUNA_SYNC_PROBE_OUT")

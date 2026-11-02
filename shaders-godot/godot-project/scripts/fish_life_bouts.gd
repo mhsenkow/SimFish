@@ -69,7 +69,10 @@ static func emergency_interrupt(f: Fish) -> bool:
 static func _abort_bout_soft(f: Fish) -> void:
 	f._bout_kind = BOUT_CRUISE
 	f._bout_yaw = 0.0
-	f._bout_t = f._behavior_rng().randf_range(0.8, 2.2)
+	var r: RandomNumberGenerator = f._behavior_rng()
+	f._bout_t = FishTiming.lognormal_between(r, 0.8, 2.2) \
+		* FishTiming.life_stage_bout_dur_mult(f.maturity) \
+		* FishTiming.hold_scale(f.species)
 	f._bout_level = 1.0
 
 
@@ -98,6 +101,9 @@ static func bout_speed(f: Fish, target_spd: float, dt: float, eligible: bool,
 		_:
 			level = f._cruise_mult * (1.0 + 0.2 * sin(f._bout_clock * f._bout_w.x + f._bout_w.z)
 				+ 0.1 * sin(f._bout_clock * f._bout_w.y + f._bout_w.w))
+			# #338: danio glide between bursts rides a lower cruise floor.
+			if f.species == "danio" and f.get_meta("_danio_glide", false):
+				level *= 0.28
 	if not eligible or emergency:
 		level = 1.0
 	# Emergency return eases toward cruise; never use dart snap-rate.
@@ -109,33 +115,87 @@ static func bout_speed(f: Fish, target_spd: float, dt: float, eligible: bool,
 static func _next_bout(f: Fish, eligible: bool, daylight: float) -> void:
 	var r: RandomNumberGenerator = f._behavior_rng()
 	f._bout_yaw = 0.0
+	f.set_meta("_danio_glide", false)
+	var dur_mult: float = FishTiming.life_stage_bout_dur_mult(f.maturity)
+	# #355: satiety lengthens holds; hunger shortens them.
+	var hunger_hold: float = lerpf(1.25, 0.75, clampf(f.hunger, 0.0, 1.0))
+	# #354: arousal shortens holds / content lengthens.
+	var arousal_hold: float = lerpf(1.15, 0.8, clampf(f.arousal, 0.0, 1.0))
+	var hold_m: float = FishTiming.hold_scale(f.species) * hunger_hold * arousal_hold
 	if not eligible:
 		f._bout_kind = BOUT_CRUISE
-		f._bout_t = r.randf_range(1.0, 3.0)
+		f._bout_t = FishTiming.lognormal_between(r, 1.0, 3.0) * dur_mult * hold_m
 		return
+	var w: Array = FishTiming.bout_windows(f.species)
+	var cruise_lo: float = float(w[0])
+	var cruise_hi: float = float(w[1])
+	var hover_lo: float = float(w[2])
+	var hover_hi: float = float(w[3])
+	var dart_lo: float = float(w[4])
+	var dart_hi: float = float(w[5])
 	var night: bool = daylight < 0.25
 	var p_dart: float = 0.0 if night or f.maturity == Fish.MATURITY_SENESCENT else 0.2
 	var p_hover: float = 0.36 if night else 0.2
-	if f.swim_pattern in ["hover", "sit"]:
+	# Station-keepers (angel/betta/pleco sit) may park; active schoolers should
+	# mostly cruise — long near-zero hover bouts read as "frozen but wagging".
+	var park_species: bool = f.swim_pattern in ["hover", "sit"] \
+		or f.species in ["angelfish", "betta", "severum", "dwarf_gourami", "bristlenose_pleco", "pufferfish"]
+	# #346 / #356: fry dart and rest more often.
+	if f.maturity == Fish.MATURITY_FRY:
+		p_dart += 0.12
+		p_hover += 0.1
+	# #355: hunger raises dart rate; satiety prefers hover/loaf.
+	p_dart += clampf(f.hunger - 0.4, 0.0, 0.5) * 0.22
+	p_hover += clampf(0.45 - f.hunger, 0.0, 0.45) * (0.28 if park_species else 0.12)
+	p_dart += clampf(f.arousal - 0.4, 0.0, 0.5) * 0.12
+	if park_species:
 		p_hover += 0.15
+	elif f.swim_pattern in ["school", "shoal"]:
+		p_hover *= 0.55
+		p_dart += 0.04
 	elif f.swim_pattern in ["dart", "cruise"]:
 		p_dart += 0.06
+		p_hover *= 0.7
+	# #338: danios alternate short bursts with glides.
+	if f.species == "danio":
+		p_dart = maxf(p_dart, 0.42)
+		p_hover = maxf(p_hover, 0.22)
+		cruise_lo = 0.5
+		cruise_hi = 1.5
+		dart_lo = 0.45
+		dart_hi = 1.1
+		hover_lo = 0.4
+		hover_hi = 1.2
 	# Never two darts back to back - a dart is punctuation.
 	if f._bout_kind == BOUT_DART:
 		p_dart = 0.0
 	var roll: float = r.randf()
 	if roll < p_dart:
 		f._bout_kind = BOUT_DART
-		f._bout_t = r.randf_range(0.4, 0.8)
+		f._bout_t = FishTiming.lognormal_between(r, dart_lo, dart_hi) * dur_mult
 		f._bout_level = r.randf_range(0.9, 1.0)
 		f._bout_yaw = r.randf_range(-0.75, 0.75)
 	elif roll < p_dart + p_hover:
 		f._bout_kind = BOUT_HOVER
-		f._bout_t = r.randf_range(1.2, 3.8)
-		f._bout_level = r.randf_range(0.12, 0.32)
+		var hover_hold: float = hold_m if park_species else lerpf(1.0, hold_m, 0.35)
+		f._bout_t = FishTiming.lognormal_between(r, hover_lo, hover_hi) \
+			* dur_mult * hover_hold
+		# Park species may nearly stop; schoolers "hover" as a soft glide so
+		# their home spot still drifts over a few seconds.
+		if park_species:
+			f._bout_level = r.randf_range(0.14, 0.34)
+		else:
+			f._bout_level = r.randf_range(0.38, 0.62)
+		if f.species == "danio":
+			f.set_meta("_danio_glide", true)
+			f._bout_level = r.randf_range(0.18, 0.32)
 	else:
 		f._bout_kind = BOUT_CRUISE
-		f._bout_t = r.randf_range(2.5, 8.0)
+		f._bout_t = FishTiming.lognormal_between(r, cruise_lo, cruise_hi) * dur_mult
+		if f.species == "danio" and r.randf() < 0.55:
+			# Burst-and-glide: a short cruise that will drop into a glide next.
+			f.set_meta("_danio_glide", false)
+			f._bout_t = FishTiming.lognormal_between(r, 0.5, 1.5) * dur_mult
 
 
 static func is_darting(f: Fish) -> bool:
@@ -160,11 +220,16 @@ static func inertial_turn(f: Fish, angle: float, max_step: float, dt: float,
 	# Larger bodies yaw more slowly toward the want rate.
 	accel *= clampf(0.52 / maxf(body_m, 0.28), 0.45, 1.25)
 	var sf: float = clampf(speed_frac, 0.0, 1.0)
-	if sf < 0.06:
+	# #280: body-caudal swimmers can't spin in place; labriform / ostraciiform can.
+	var can_pivot: bool = f.locomotion_type in ["labriform", "ostraciiform", "balistiform"]
+	if sf < 0.06 and not can_pivot:
 		# Near-zero speed: bleed yaw rate out; do not invent a floor turn.
 		f._turn_rate_state = move_toward(f._turn_rate_state, 0.0, cap_rate * 5.0 * dt)
 		var direction: float = -1.0 if f._turn_axis_state.dot(axis) < -0.1 else 1.0
-		return direction * minf(absf(f._turn_rate_state) * dt, minf(angle, max_step))
+		return direction * minf(absf(f._turn_rate_state) * dt, minf(angle, max_step)) * 0.35
+	if sf < 0.06 and can_pivot:
+		# Hover-rowers may yaw with pecs; keep a soft floor.
+		want_rate = minf(want_rate, cap_rate * 0.55)
 	# Keep angular momentum when a steering target changes sides. The old
 	# unsigned rate instantly reversed a fully developed turn.
 	if f._turn_axis_state.dot(axis) < -0.1:
@@ -277,7 +342,10 @@ static func sigmoid_env(f: Fish, dt: float) -> float:
 	var want: float = 1.0 if f._lb_display_t > 0.0 else 0.0
 	f._lb_sigmoid = move_toward(f._lb_sigmoid, want, dt * (4.0 if want > 0.5 else 2.5))
 	if f._lb_sigmoid > 0.0:
-		f._lb_quiver += dt * 19.0
+		# #358: quiver rate rises with intensity up to a species Hz cap.
+		var q_rate: float = FishTiming.display_quiver_rate(
+			f.species, maxf(f._courtship_intensity, f._lb_sigmoid))
+		f._lb_quiver += dt * q_rate
 	return f._lb_sigmoid
 
 

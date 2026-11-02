@@ -1,24 +1,88 @@
 {
-	"_note": "MotionPoseLibrary (scripts/motion_pose_library.gd). Channels: fin_carriage (-1 clamped .. 1 flared), caudal_spread (scale), dorsal_raise (rad), pec_forward (rad), head_pitch (rad, + nose down), body_arch (rad), roll (rad), breath (rate multiplier). _in/_out are blend seconds, _ease the curve. Species inherit _default poses; poses inherit channels from rest. Section G of docs/CREATURE_MOTION_700.md fills this in.",
+	"_note": "MotionPoseLibrary — CREATURE_MOTION_700 §G. Channels: fin_carriage (-1..1), caudal_spread, dorsal_raise, anal_raise, pec_forward, pec_spread, head_pitch (+nose-down), body_arch, roll, breath, opercula, jaw, colour (0 pale..1 flash). _in/_out seconds, _ease curve. Species inherit _default; poses inherit rest.",
+	"_transitions": {
+		"_note": "#213 allowed edges with blend seconds (from→to).",
+		"cruise": {"hover": 0.5, "alert": 0.25, "clamped": 0.12, "display": 0.45, "threat": 0.35, "submission": 0.4, "picking": 0.4, "attached": 0.5, "bed_rest": 0.6, "sleep": 2.5, "wedged": 2.0, "gulp": 0.25, "sifting": 0.35, "spawn_clasp": 0.5, "mouthbrood": 0.8, "fanning": 0.5, "listing": 0.6, "gasping": 0.2, "glide": 0.15, "chew": 0.2, "dead": 1.2},
+		"hover": {"cruise": 0.5, "alert": 0.2, "display": 0.4, "picking": 0.35, "fanning": 0.4, "sleep": 2.0},
+		"alert": {"cruise": 0.8, "clamped": 0.1, "display": 0.3, "threat": 0.25, "hover": 0.4},
+		"clamped": {"cruise": 3.0, "alert": 1.5, "submission": 0.5, "listing": 0.8},
+		"display": {"cruise": 0.6, "threat": 0.35, "spawn_clasp": 0.4, "hover": 0.5},
+		"threat": {"cruise": 0.7, "display": 0.4, "clamped": 0.2},
+		"submission": {"cruise": 1.2, "clamped": 0.4},
+		"picking": {"cruise": 0.45, "hover": 0.4},
+		"attached": {"cruise": 0.55},
+		"bed_rest": {"cruise": 0.7, "sleep": 1.5},
+		"sleep": {"alert": 0.15, "cruise": 0.8, "wedged": 0.5},
+		"wedged": {"sleep": 0.4, "alert": 0.2, "cruise": 0.9},
+		"gulp": {"cruise": 0.35, "gasping": 0.3},
+		"sifting": {"cruise": 0.4},
+		"spawn_clasp": {"cruise": 0.7, "display": 0.5},
+		"mouthbrood": {"cruise": 0.9, "hover": 0.6},
+		"fanning": {"cruise": 0.5, "hover": 0.4},
+		"listing": {"cruise": 2.0, "clamped": 0.6, "dead": 1.0},
+		"gasping": {"cruise": 0.8, "gulp": 0.3},
+		"glide": {"cruise": 0.55, "hover": 0.4},
+		"chew": {"cruise": 0.35, "forage": 0.3},
+		"dead": {}
+	},
 	"_default": {
-		"rest": {"fin_carriage": 0.0, "caudal_spread": 1.0, "dorsal_raise": 0.0, "pec_forward": 0.0, "head_pitch": 0.0, "body_arch": 0.0, "roll": 0.0, "breath": 1.0},
-		"cruise": {"_in": 0.6, "_out": 0.6, "_ease": "sine"},
-		"hover": {"fin_carriage": 0.2, "dorsal_raise": 0.12, "pec_forward": 0.15, "_in": 0.5, "_out": 0.5, "_ease": "sine"},
-		"alert": {"fin_carriage": 0.6, "caudal_spread": 1.08, "dorsal_raise": 0.35, "pec_forward": 0.25, "breath": 1.6, "_in": 0.12, "_out": 0.8, "_ease": "expo"},
-		"clamped": {"fin_carriage": -1.0, "caudal_spread": 0.8, "dorsal_raise": -0.25, "head_pitch": 0.08, "breath": 1.4, "_in": 0.08, "_out": 2.5, "_ease": "expo"},
-		"display": {"fin_carriage": 1.0, "caudal_spread": 1.2, "dorsal_raise": 0.5, "body_arch": 0.08, "_in": 0.4, "_out": 0.6, "_ease": "back"},
-		"sleep": {"fin_carriage": -0.3, "caudal_spread": 0.9, "dorsal_raise": -0.1, "breath": 0.6, "_in": 3.0, "_out": 0.4, "_ease": "sine"},
-		"dead": {"fin_carriage": 0.7, "caudal_spread": 1.0, "body_arch": 0.12, "roll": 3.14159, "breath": 0.0, "_in": 1.5, "_out": 0.1, "_ease": "sine"}
+		"rest": {"fin_carriage": 0.0, "caudal_spread": 1.0, "dorsal_raise": 0.0, "anal_raise": 0.0, "pec_forward": 0.0, "pec_spread": 0.0, "head_pitch": 0.0, "body_arch": 0.0, "roll": 0.0, "breath": 1.0, "opercula": 0.0, "jaw": 0.0, "colour": 0.5},
+		"cruise": {"fin_carriage": 0.15, "caudal_spread": 1.0, "dorsal_raise": 0.08, "anal_raise": 0.05, "pec_spread": 0.1, "_in": 0.6, "_out": 0.6, "_ease": "sine"},
+		"hover": {"fin_carriage": 0.25, "dorsal_raise": 0.18, "pec_forward": 0.2, "pec_spread": 0.35, "caudal_spread": 0.95, "_in": 0.5, "_out": 0.5, "_ease": "sine"},
+		"alert": {"fin_carriage": 0.65, "caudal_spread": 1.1, "dorsal_raise": 0.4, "anal_raise": 0.28, "pec_forward": 0.28, "pec_spread": 0.2, "breath": 1.7, "colour": 0.7, "_in": 0.12, "_out": 0.8, "_ease": "expo"},
+		"clamped": {"fin_carriage": -1.0, "caudal_spread": 0.72, "dorsal_raise": -0.28, "anal_raise": -0.2, "pec_spread": -0.35, "head_pitch": 0.1, "breath": 1.45, "colour": 0.25, "_in": 0.08, "_out": 2.8, "_ease": "expo"},
+		"display": {"fin_carriage": 1.0, "caudal_spread": 1.22, "dorsal_raise": 0.55, "anal_raise": 0.45, "body_arch": 0.1, "opercula": 0.25, "colour": 0.9, "pec_spread": 0.4, "_in": 0.4, "_out": 0.6, "_ease": "back"},
+		"threat": {"fin_carriage": 0.9, "caudal_spread": 1.15, "dorsal_raise": 0.5, "pec_spread": 0.55, "opercula": 0.55, "head_pitch": 0.18, "jaw": 0.25, "colour": 0.85, "_in": 0.2, "_out": 0.55, "_ease": "expo"},
+		"submission": {"fin_carriage": -0.7, "caudal_spread": 0.85, "dorsal_raise": -0.15, "head_pitch": -0.2, "colour": 0.2, "breath": 1.2, "_in": 0.25, "_out": 1.0, "_ease": "sine"},
+		"picking": {"fin_carriage": 0.2, "head_pitch": 0.55, "pec_forward": 0.35, "pec_spread": 0.3, "caudal_spread": 0.95, "_in": 0.35, "_out": 0.4, "_ease": "sine"},
+		"attached": {"fin_carriage": 0.1, "head_pitch": 0.75, "pec_spread": 0.55, "pec_forward": 0.4, "body_arch": 0.12, "caudal_spread": 0.9, "_in": 0.45, "_out": 0.5, "_ease": "sine"},
+		"bed_rest": {"fin_carriage": 0.05, "pec_spread": 0.45, "pec_forward": 0.25, "head_pitch": 0.08, "caudal_spread": 0.92, "dorsal_raise": -0.05, "_in": 0.55, "_out": 0.55, "_ease": "sine"},
+		"sleep": {"fin_carriage": -0.35, "caudal_spread": 0.88, "dorsal_raise": -0.12, "anal_raise": -0.08, "breath": 0.55, "colour": 0.35, "pec_spread": -0.1, "_in": 3.0, "_out": 0.4, "_ease": "sine"},
+		"wedged": {"fin_carriage": -0.25, "roll": 0.35, "head_pitch": 0.15, "breath": 0.5, "colour": 0.3, "_in": 2.0, "_out": 0.5, "_ease": "sine"},
+		"gulp": {"fin_carriage": 0.3, "head_pitch": -0.55, "pec_spread": 0.4, "jaw": 0.7, "opercula": 0.35, "breath": 1.8, "_in": 0.2, "_out": 0.35, "_ease": "expo"},
+		"sifting": {"fin_carriage": 0.15, "head_pitch": 0.55, "body_arch": 0.15, "pec_forward": 0.2, "caudal_spread": 0.9, "_in": 0.3, "_out": 0.35, "_ease": "sine"},
+		"spawn_clasp": {"fin_carriage": 0.7, "caudal_spread": 1.1, "body_arch": 0.35, "roll": 0.25, "dorsal_raise": 0.4, "colour": 0.95, "_in": 0.45, "_out": 0.55, "_ease": "back"},
+		"mouthbrood": {"fin_carriage": 0.1, "jaw": 0.35, "head_pitch": 0.05, "breath": 1.15, "body_arch": 0.08, "_in": 0.7, "_out": 0.7, "_ease": "sine"},
+		"fanning": {"fin_carriage": 0.35, "pec_spread": 0.55, "pec_forward": 0.15, "caudal_spread": 0.9, "dorsal_raise": 0.2, "breath": 1.35, "_in": 0.4, "_out": 0.45, "_ease": "sine"},
+		"listing": {"fin_carriage": -0.8, "roll": 0.55, "head_pitch": 0.25, "colour": 0.15, "breath": 1.6, "caudal_spread": 0.8, "_in": 0.5, "_out": 1.5, "_ease": "sine"},
+		"gasping": {"fin_carriage": 0.2, "head_pitch": -0.4, "jaw": 0.85, "opercula": 0.7, "breath": 2.2, "pec_spread": 0.3, "_in": 0.15, "_out": 0.5, "_ease": "expo"},
+		"glide": {"fin_carriage": -0.55, "caudal_spread": 0.78, "dorsal_raise": -0.15, "pec_spread": -0.25, "breath": 1.1, "_in": 0.12, "_out": 0.55, "_ease": "expo"},
+		"chew": {"fin_carriage": 0.15, "jaw": 0.45, "opercula": 0.2, "head_pitch": 0.12, "_in": 0.15, "_out": 0.3, "_ease": "sine"},
+		"dead": {"fin_carriage": 0.75, "caudal_spread": 1.05, "body_arch": 0.15, "roll": 3.14159, "breath": 0.0, "jaw": 0.15, "colour": 0.1, "_in": 1.5, "_out": 0.1, "_ease": "sine"}
 	},
 	"betta": {
 		"rest": {"fin_carriage": 0.35},
-		"display": {"fin_carriage": 1.0, "caudal_spread": 1.35, "dorsal_raise": 0.65, "_in": 0.45, "_out": 0.7, "_ease": "back"}
+		"display": {"fin_carriage": 1.0, "caudal_spread": 1.4, "dorsal_raise": 0.7, "anal_raise": 0.55, "opercula": 0.45, "_in": 0.45, "_out": 0.7, "_ease": "back"},
+		"threat": {"opercula": 0.75, "pec_spread": 0.7, "caudal_spread": 1.3},
+		"spawn_clasp": {"body_arch": 0.55, "roll": 0.45, "caudal_spread": 1.25}
 	},
 	"corydoras": {
-		"rest": {"head_pitch": 0.12, "pec_forward": 0.3}
+		"rest": {"head_pitch": 0.12, "pec_forward": 0.3},
+		"bed_rest": {"pec_spread": 0.55, "head_pitch": 0.15},
+		"sifting": {"head_pitch": 0.65, "body_arch": 0.22},
+		"spawn_clasp": {"body_arch": 0.2, "roll": 0.15, "head_pitch": 0.35}
 	},
 	"angelfish": {
 		"rest": {"fin_carriage": 0.2},
-		"hover": {"pec_forward": 0.3, "dorsal_raise": 0.2}
+		"hover": {"pec_forward": 0.35, "dorsal_raise": 0.25, "anal_raise": 0.3},
+		"display": {"anal_raise": 0.55, "dorsal_raise": 0.6}
+	},
+	"gourami": {
+		"rest": {"fin_carriage": 0.25, "pec_forward": 0.15},
+		"hover": {"pec_forward": 0.4},
+		"display": {"fin_carriage": 0.85, "dorsal_raise": 0.45}
+	},
+	"guppy": {
+		"display": {"caudal_spread": 1.28, "fin_carriage": 0.9},
+		"spawn_clasp": {"anal_raise": 0.5, "body_arch": 0.15}
+	},
+	"pleco": {
+		"rest": {"head_pitch": 0.2, "pec_spread": 0.35},
+		"attached": {"head_pitch": 0.85, "pec_spread": 0.65, "body_arch": 0.18},
+		"bed_rest": {"pec_spread": 0.6}
+	},
+	"oto": {
+		"attached": {"head_pitch": 0.9, "pec_spread": 0.6},
+		"picking": {"head_pitch": 0.7}
 	}
 }

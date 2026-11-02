@@ -77,7 +77,11 @@ static func local_clearance_push(f: Fish, neighbors: Array, plants: Array) -> Ve
 		var weave_y: float = TopdownMotion.collision_weave_y(f.position.y - nf.position.y, rel_sp)
 		if absf(weave_y) > 0.01:
 			push.y += weave_y
-		push += d * ((FISH_PERSONAL_SPACE - sqrt(d2)) / maxf(sqrt(d2), 0.001)) * 1.9
+		# #391: mass in personal space — larger fish displace smaller ones more.
+		var my_m: float = maxf(f.size_potential, 0.4)
+		var their_m: float = maxf(nf.size_potential, 0.4)
+		var mass_w: float = clampf(their_m / my_m, 0.55, 1.85)
+		push += d * ((FISH_PERSONAL_SPACE - sqrt(d2)) / maxf(sqrt(d2), 0.001)) * 1.9 * mass_w
 	for p in plants:
 		if not is_instance_valid(p):
 			continue

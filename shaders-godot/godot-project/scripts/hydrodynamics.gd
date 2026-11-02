@@ -273,12 +273,10 @@ static func tailbeat_rate(speed: float, body_length: float, base_rate: float,
 		* speed_gain, base_rate, 18.0)
 
 
+# #332: Strouhal law f = St · U / A (A ≈ 0.2 L). Legacy base_rate path kept
+# for callers that pass an explicit floor.
 static func locomotion_tailbeat_rate(speed: float, body_length: float, locomotion: String) -> float:
-	match locomotion:
-		"anguilliform": return tailbeat_rate(speed, body_length, 1.8, 3.5)
-		"ostraciiform": return tailbeat_rate(speed, body_length, 3.5, 6.0)
-		"thunniform": return tailbeat_rate(speed, body_length, 3.0, 7.0)
-	return tailbeat_rate(speed, body_length, 2.5, 5.5)
+	return FishTiming.strouhal_tailbeat_rate(speed, body_length, locomotion)
 
 
 static func advance_phase(phase: float, rate: float, dt: float, period: float = TAU) -> float:

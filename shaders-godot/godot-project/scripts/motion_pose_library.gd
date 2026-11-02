@@ -20,6 +20,27 @@ extends RefCounted
 const DATA_PATH: String = "res://data/motion/poses.json"
 const DEFAULT_IN: float = 0.35
 const DEFAULT_OUT: float = 0.6
+# Editable channels for the motion-lab pose editor (#218). Ranges are [min, max, step].
+const CHANNELS: PackedStringArray = [
+	"fin_carriage", "caudal_spread", "dorsal_raise", "anal_raise",
+	"pec_forward", "pec_spread", "head_pitch", "body_arch", "roll",
+	"breath", "opercula", "jaw", "colour",
+]
+const CHANNEL_RANGE: Dictionary = {
+	"fin_carriage": [-1.0, 1.0, 0.02],
+	"caudal_spread": [0.5, 1.6, 0.02],
+	"dorsal_raise": [-0.5, 1.0, 0.02],
+	"anal_raise": [-0.5, 1.0, 0.02],
+	"pec_forward": [-0.5, 1.0, 0.02],
+	"pec_spread": [-0.5, 1.0, 0.02],
+	"head_pitch": [-1.0, 1.0, 0.02],
+	"body_arch": [-0.5, 1.0, 0.02],
+	"roll": [-1.0, 1.0, 0.02],
+	"breath": [0.0, 2.5, 0.05],
+	"opercula": [0.0, 1.0, 0.02],
+	"jaw": [0.0, 1.0, 0.02],
+	"colour": [0.0, 1.0, 0.02],
+}
 
 static var _data: Dictionary = {}
 static var _loaded: bool = false
@@ -100,6 +121,103 @@ static func ease(kind: String, t: float) -> float:
 		"expo": return MotionEase.expo_out(t)
 		"back": return MotionEase.back_out(t)
 	return MotionEase.smooth(t)
+
+
+static func list_poses(species: String = "_default") -> PackedStringArray:
+	if not _loaded:
+		reload_data()
+	var names: Dictionary = {}
+	for table_key in ["_default", species]:
+		var table: Variant = _data.get(table_key, {})
+		if not (table is Dictionary):
+			continue
+		for k in table as Dictionary:
+			var ks: String = String(k)
+			if ks.begins_with("_"):
+				continue
+			names[ks] = true
+	var out := PackedStringArray(names.keys())
+	out.sort()
+	return out
+
+
+# #218: write a species override (or _default) into the in-memory library.
+static func upsert_pose(species: String, pose: String, channels: Dictionary) -> void:
+	if not _loaded:
+		reload_data()
+	if species.is_empty() or pose.is_empty():
+		return
+	if not (_data.get(species) is Dictionary):
+		_data[species] = {}
+	var table: Dictionary = _data[species]
+	var cleaned: Dictionary = _channels_only(channels)
+	# Preserve blend metadata when the caller includes it.
+	for meta_k in ["_in", "_out", "_ease"]:
+		if channels.has(meta_k):
+			cleaned[meta_k] = channels[meta_k]
+	table[pose] = cleaned
+
+
+# Persist the library to the first writable path in `paths`.
+# Default: shipped DATA_PATH. Lab save passes [DATA_PATH, backup]; tests pass
+# a user:// path only so the shipped file is never touched.
+static func save_data(paths: Variant = null) -> String:
+	if not _loaded:
+		reload_data()
+	var targets := PackedStringArray()
+	if paths is PackedStringArray:
+		targets = paths
+	elif paths is Array:
+		for p in paths:
+			targets.append(String(p))
+	elif paths is String and not String(paths).is_empty():
+		targets.append(String(paths))
+	else:
+		targets.append(DATA_PATH)
+	var payload: String = JSON.stringify(_data, "\t")
+	for path in targets:
+		var base: String = path.get_base_dir()
+		if path.begins_with("user://") or path.begins_with("res://"):
+			DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(base))
+		else:
+			DirAccess.make_dir_recursive_absolute(base)
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		if f == null:
+			continue
+		f.store_string(payload)
+		f.close()
+		return path
+	return ""
+
+
+# #219: tile cell images into one contact sheet (rows × cols).
+static func compose_contact_sheet(cells: Array, cols: int, pad: int = 2,
+		bg: Color = Color(0.08, 0.09, 0.11)) -> Image:
+	if cells.is_empty() or cols <= 0:
+		return Image.create(1, 1, false, Image.FORMAT_RGBA8)
+	var cell_w: int = 1
+	var cell_h: int = 1
+	for c in cells:
+		if c is Image:
+			cell_w = maxi(cell_w, (c as Image).get_width())
+			cell_h = maxi(cell_h, (c as Image).get_height())
+	var rows: int = int(ceil(float(cells.size()) / float(cols)))
+	var out_w: int = cols * cell_w + (cols - 1) * pad
+	var out_h: int = rows * cell_h + (rows - 1) * pad
+	var out := Image.create(maxi(out_w, 1), maxi(out_h, 1), false, Image.FORMAT_RGBA8)
+	out.fill(bg)
+	for i in cells.size():
+		var im: Image = cells[i] as Image
+		if im == null:
+			continue
+		im.convert(Image.FORMAT_RGBA8)
+		var col: int = i % cols
+		@warning_ignore("integer_division")
+		var row: int = i / cols
+		var x: int = col * (cell_w + pad)
+		var y: int = row * (cell_h + pad)
+		out.blit_rect(im, Rect2i(Vector2i.ZERO, im.get_size()), Vector2i(x, y))
+	return out
 
 
 # Tracks one pose's weight over time with separate in/out times (#46):

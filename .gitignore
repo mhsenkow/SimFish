@@ -84,3 +84,10 @@ inspect_*.png.import
 artifacts/
 shaders-godot/godot-project/inspect_*.png
 shaders-godot/godot-project/inspect_*.png.import
+
+# Android upload keystore (local only)
+secrets/
+*.keystore
+*.jks
+
+shaders-godot/godot-project/android/

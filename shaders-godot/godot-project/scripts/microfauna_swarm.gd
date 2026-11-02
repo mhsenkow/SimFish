@@ -164,8 +164,10 @@ func _step(dt: float) -> void:
 				p.hop_cd = randf_range(0.8, 2.0)
 				p.drift = wake_push.normalized() * 0.38 + Vector3(0.0, 0.12, 0.0)
 		if p.hop_t > 0.0:
+			# #294: twitch paths bend slightly instead of jumping in straight segments.
 			p.hop_t = maxf(0.0, p.hop_t - dt)
-			p.pos += p.drift * dt * 2.6
+			var bend: Vector3 = Vector3(-p.drift.z, 0.0, p.drift.x) * sin(p.hop_t * 18.0) * 0.35
+			p.pos += (p.drift + bend) * dt * 2.6
 		elif p.morph == 0 and p.hop_cd <= 0.0 and randf() < dt * 0.07:
 			p.hop_t = 0.11
 			p.hop_cd = randf_range(1.4, 3.8)

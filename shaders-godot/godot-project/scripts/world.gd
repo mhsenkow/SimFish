@@ -7796,6 +7796,9 @@ func _update_fish_lighting_contributors() -> void:
 	_occluder_buf.clear()
 	_blob_buf.clear()
 	_plant_blob_buf.clear()
+	# #181: contact-shadow slots reserved for bed-hugging fauna (fish/shrimp/snails).
+	var contact_buf: Array = []
+	const CONTACT_SLOTS: int = 10
 	for f in sim.fish:
 		if not is_instance_valid(f):
 			continue
@@ -7808,8 +7811,32 @@ func _update_fish_lighting_contributors() -> void:
 			var h: float = f.global_position.y - bed_y
 			if h >= 0.0 and h <= 4.5:
 				_insert_bounded_fish(_blob_buf, f, h,
-					_BLOB_SHADOW_SLOTS - _PLANT_BLOB_SHADOW_SLOTS)
+					_BLOB_SHADOW_SLOTS - _PLANT_BLOB_SHADOW_SLOTS - CONTACT_SLOTS)
+			if h >= -0.05 and h <= 0.85:
+				var rad: float = 0.28
+				var advoxv: Variant = f.get("adult_voxel_scale")
+				if advoxv != null:
+					rad = clampf(float(advoxv) * 2.2, 0.14, 0.48)
+				_insert_bounded_fish(contact_buf, f, h, CONTACT_SLOTS)
+				# Stash radius on the node meta for packing below.
+				f.set_meta("_contact_shadow_r", rad)
 	if need_blobs:
+		for s in sim.shrimp:
+			if not is_instance_valid(s):
+				continue
+			var sh: float = s.global_position.y - bed_y
+			if sh >= -0.05 and sh <= 0.85:
+				s.set_meta("_contact_shadow_r", 0.16)
+				_insert_bounded_fish(contact_buf, s, sh, CONTACT_SLOTS)
+		if sim.snails_root != null and is_instance_valid(sim.snails_root):
+			for sn in sim.snails_root.get_children():
+				if not is_instance_valid(sn) or not (sn is Node3D):
+					continue
+				var sn3: Node3D = sn as Node3D
+				var snh: float = sn3.global_position.y - bed_y
+				if snh >= -0.15 and snh <= 0.9:
+					sn3.set_meta("_contact_shadow_r", 0.2)
+					_insert_bounded_fish(contact_buf, sn3, snh, CONTACT_SLOTS)
 		for p in sim.plants:
 			if not is_instance_valid(p) or not p.has_method("canopy_shadow_sphere"):
 				continue
@@ -7841,23 +7868,43 @@ func _update_fish_lighting_contributors() -> void:
 				mat.set_shader_parameter("occluders", smooth_packed)
 	if need_blobs:
 		var blob_packed: Array[Vector4] = []
-		for i in _BLOB_SHADOW_SLOTS:
-			if i < _blob_buf.size():
-				var fish_node: Node3D = _blob_buf[i][0]
-				var radius: float = 0.4
-				var advoxv: Variant = fish_node.get("adult_voxel_scale")
-				if advoxv != null:
-					radius = clampf(float(advoxv) * 3.4, 0.3, 1.1)
-				blob_packed.append(Vector4(
-					fish_node.global_position.x,
-					fish_node.global_position.y,
-					fish_node.global_position.z,
-					radius))
-			elif i - _blob_buf.size() < _plant_blob_buf.size():
-				var plant_node: Node = _plant_blob_buf[i - _blob_buf.size()][0]
-				blob_packed.append(plant_node.canopy_shadow_sphere())
-			else:
-				blob_packed.append(Vector4.ZERO)
+		# #181: contact shadows first (tight, bed-pinned), then mid-water fish, then plants.
+		for entry in contact_buf:
+			if blob_packed.size() >= _BLOB_SHADOW_SLOTS:
+				break
+			var cn: Node3D = entry[0]
+			var cr: float = float(cn.get_meta("_contact_shadow_r", 0.22))
+			var cp: Vector4 = MotionStaging.contact_shadow_point(cn, bed_y, cr)
+			if cp.w > 0.001:
+				blob_packed.append(cp)
+		for i in _blob_buf.size():
+			if blob_packed.size() >= _BLOB_SHADOW_SLOTS - _PLANT_BLOB_SHADOW_SLOTS:
+				break
+			var fish_node: Node3D = _blob_buf[i][0]
+			# Skip animals already represented as contact shadows.
+			var already: bool = false
+			for c_entry in contact_buf:
+				if c_entry[0] == fish_node:
+					already = true
+					break
+			if already:
+				continue
+			var radius: float = 0.4
+			var advoxv2: Variant = fish_node.get("adult_voxel_scale")
+			if advoxv2 != null:
+				radius = clampf(float(advoxv2) * 3.4, 0.3, 1.1)
+			blob_packed.append(Vector4(
+				fish_node.global_position.x,
+				fish_node.global_position.y,
+				fish_node.global_position.z,
+				radius))
+		for i in _plant_blob_buf.size():
+			if blob_packed.size() >= _BLOB_SHADOW_SLOTS:
+				break
+			var plant_node: Node = _plant_blob_buf[i][0]
+			blob_packed.append(plant_node.canopy_shadow_sphere())
+		while blob_packed.size() < _BLOB_SHADOW_SLOTS:
+			blob_packed.append(Vector4.ZERO)
 		VoxelMat.update_substrate_blob_shadows(blob_packed)
 		_publish_occluder_field(blob_packed)
 
@@ -9031,6 +9078,11 @@ func _push_surface_dimple(x: float, z: float, strength: float) -> void:
 	_surface_dimples.append({"x": x, "z": z, "s": strength, "life": 1.0})
 	while _surface_dimples.size() > 12:
 		_surface_dimples.pop_front()
+
+
+# Public entry for killifish / surface-fin flicks (#314).
+func spawn_surface_dimple(pos: Vector3, strength: float = 0.55) -> void:
+	_push_surface_dimple(pos.x, pos.z, clampf(strength, 0.08, 1.4))
 
 
 func _tick_surface_dimples(dt: float) -> void:

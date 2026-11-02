@@ -88,6 +88,9 @@ an unchanged real tank inventory.
    named and guardian fish.
 3. Move bone transforms into a GPU palette or consolidate voxel geometry per bone
    so shared rendering no longer writes a full transform per voxel per frame.
+   **Done 2026-11-02** — [GPU_BONE_SKINNING_20261102.md](GPU_BONE_SKINNING_20261102.md):
+   per-batch bone-matrix texture + `voxel_fauna_skinned.gdshader`; the fixed
+   400-bone/9,600-voxel sync workload fell 10.007 → 0.695 ms median (~14×).
 4. Compare equal tank populations over longer samples, including stable healthy
    tanks and overload cases. Track visual continuity and behavior alongside timing.
 

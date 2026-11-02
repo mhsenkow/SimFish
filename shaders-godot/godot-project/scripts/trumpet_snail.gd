@@ -41,6 +41,7 @@ var sim: Node = null
 var substrate_top_y: float = 0.0
 var _age: float = 0.0
 var _drift: Vector3 = Vector3.ZERO
+var _drift_target: Vector3 = Vector3.ZERO
 var _next_jitter_t: float = 0.0
 var _segments: Array[MeshInstance3D] = []
 var _is_emerged: bool = false
@@ -71,10 +72,11 @@ func _ready() -> void:
 		add_child(seg)
 		_segments.append(seg)
 	_next_jitter_t = randf_range(REJITTER_INTERVAL_MIN, REJITTER_INTERVAL_MAX)
-	_drift = Vector3(
+	_drift_target = Vector3(
 		randf_range(-CRAWL_SPEED, CRAWL_SPEED),
 		0.0,
 		randf_range(-CRAWL_SPEED, CRAWL_SPEED))
+	_drift = _drift_target
 
 
 func _process(dt: float) -> void:
@@ -101,13 +103,15 @@ func _process(dt: float) -> void:
 
 	# Slow crawl across substrate while emerged. Re-jitter direction
 	# periodically so the snail doesn't head off the edge of the tank.
+	# #267: ease into the new drift instead of snapping velocity.
+	_drift = MotionEase.damp_v3(_drift, _drift_target, 1.8, sdt)
 	if _is_emerged:
 		position.x += _drift.x * sdt
 		position.z += _drift.z * sdt
 	_next_jitter_t -= sdt
 	if _next_jitter_t <= 0.0:
 		_next_jitter_t = randf_range(REJITTER_INTERVAL_MIN, REJITTER_INTERVAL_MAX)
-		_drift = Vector3(
+		_drift_target = Vector3(
 			randf_range(-CRAWL_SPEED, CRAWL_SPEED),
 			0.0,
 			randf_range(-CRAWL_SPEED, CRAWL_SPEED))
