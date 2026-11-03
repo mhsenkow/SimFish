@@ -158,8 +158,9 @@ func is_active() -> bool:
 
 func set_spark_overlay(calm: float, liturgy: String = "") -> void:
 	_spark_calm = clampf(calm, 0.0, 1.0)
-	if liturgy != "":
-		_spark_liturgy = liturgy
+	# Always assign: empty string clears elegy/vespers (Loom #370). The old
+	# `if liturgy != ""` guard left "elegy" stuck after the first loss forever.
+	_spark_liturgy = liturgy
 
 
 func spark_liturgy() -> String:

@@ -217,8 +217,12 @@ static func _tick_dawn_spark(sim, _dt: float) -> void:
 	if TankMind._night_f(sim, "dawn_spark_t") > 0.0:
 		return
 	var dl: float = SimGate.daylight(sim, 0.5)
-	var phase: float = TankMind._float_prop(sim, "day_phase", 0.5)
-	if dl > 0.22 and dl < 0.42 and phase > 0.02 and phase < 0.14:
+	# Loom #355: old gate required dl in 0.22..0.42 during phase 0.02..0.14,
+	# but SimDriver.daylight() is ~0.59..0.96 across that window — unreachable.
+	# Fire once on the rising edge through 0.3 (true daybreak).
+	var prev_dl: float = TankMind._night_f(sim, "dawn_spark_prev_dl", dl)
+	TankMind._set_night_f(sim, "dawn_spark_prev_dl", dl)
+	if prev_dl < 0.3 and dl >= 0.3:
 		if sim.has_method("trigger_dawn_spark"):
 			sim.trigger_dawn_spark(12.0)
 		else:

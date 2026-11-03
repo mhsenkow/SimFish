@@ -8659,9 +8659,16 @@ func _update_palette_tod_tint() -> void:
 		# silhouettes are still readable enough to find the rail buttons.
 		if not bool(cfg.light_master_enabled):
 			t = Vector3(0.04, 0.04, 0.07)
+		# Loom #368: SimDriver has no `calm`; derive tank calm from TankMind
+		# valence (up) and arousal (down). Fallback 0.75 matches the old default.
 		var calm: float = 0.75
-		if _sim != null and _sim.get("calm") != null:
-			calm = clampf(float(_sim.calm), 0.0, 1.0)
+		if _sim != null:
+			var tm_v: Variant = _sim.get("_tank_mind")
+			if tm_v is Dictionary:
+				var tm: Dictionary = tm_v as Dictionary
+				var val: float = float(tm.get("mood_valence", 0.0))
+				var ar: float = float(tm.get("mood_arousal", 0.2))
+				calm = clampf(0.55 + val * 0.35 - ar * 0.45, 0.15, 1.0)
 		var breath: float = 1.0 + AestheticsRuntime.ambient_breath(_ambient_breath_t, calm)
 		var target_t: Vector3 = t * breath
 		_palette_tint_smooth = _palette_tint_smooth.lerp(target_t, minf(1.0, get_process_delta_time() * 2.4))

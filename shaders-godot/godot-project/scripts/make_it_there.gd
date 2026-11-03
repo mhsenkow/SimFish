@@ -72,6 +72,15 @@ static func spark_mark(arc: Dictionary, flag: String) -> void:
 	sp["flags"] = flags
 
 
+static func spark_clear(arc: Dictionary, flag: String) -> void:
+	var sp: Dictionary = ensure_spark(arc)
+	var flags: PackedStringArray = sp.get("flags", PackedStringArray())
+	var idx: int = flags.find(flag)
+	if idx >= 0:
+		flags.remove_at(idx)
+	sp["flags"] = flags
+
+
 # ---- Session threshold beats (A) ----
 
 static func mood_weather_offset(sim_day: int) -> float:
@@ -277,6 +286,7 @@ static func tick_sim(sim: Node, arc: Dictionary, session: Dictionary, dt: float)
 	_tick_presence_calm(sim, dt)
 	_tick_guardian_kindness(sim, arc, dt)
 	_tick_ordinary_journal(sim, arc, dt)
+	_tick_grief_decay(sim, arc, sp)
 	_try_unrepeatable_moment(sim, arc, sp, session)
 	_try_spark_lines(sim, arc, sp)
 
@@ -504,6 +514,25 @@ static func note_loss(sim: Node, arc: Dictionary) -> void:
 	var mc: Node = sim.get_tree().get_first_node_in_group("music_context") if sim.get_tree() else null
 	if mc != null and mc.has_method("set_spark_overlay"):
 		mc.set_spark_overlay(0.0, "elegy")
+
+
+# Loom #370: grief resolves. Elegy cleared after a few sim-days so dance damping
+# and liturgy do not stick forever (Preoccupation: resolves, not a fake mood).
+static func _tick_grief_decay(sim: Node, arc: Dictionary, sp: Dictionary) -> void:
+	if not spark_has(arc, "recent_loss"):
+		return
+	var day: int = int(sim.sim_day()) if sim.has_method("sim_day") else 0
+	var loss_day: int = int(sp.get("last_loss_day", -1))
+	if loss_day < 0:
+		spark_clear(arc, "recent_loss")
+		return
+	# ~3 sim-days of elegy; bond/familiarity could stretch this later.
+	if day - loss_day < 3:
+		return
+	spark_clear(arc, "recent_loss")
+	var mc: Node = sim.get_tree().get_first_node_in_group("music_context") if sim.get_tree() else null
+	if mc != null and mc.has_method("set_spark_overlay"):
+		mc.set_spark_overlay(0.0, "")
 
 
 static func try_grief_care(sim: Node, arc: Dictionary) -> void:

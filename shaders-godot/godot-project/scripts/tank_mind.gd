@@ -50,6 +50,7 @@ static func ensure(sim) -> Dictionary:
 			"ignition_cd": 0.0,
 			"mood_valence": 0.0,
 			"mood_arousal": 0.18,
+			"mood_strain": 0.0,
 			"collective_arousal": 0.2,
 			"asleep_fraction": 0.0,
 			"self_summary": "we are many; the water holds us",
@@ -295,7 +296,11 @@ static func _aggregate_fish(sim, tm: Dictionary, dl: float) -> void:
 	if n <= 0:
 		return
 	tm["collective_arousal"] = sum_ar / float(n)
-	tm["mood_arousal"] = lerpf(float(tm.get("mood_arousal", 0.18)), sum_st / float(n), 0.08)
+	# Loom #96: mood_arousal was tracking mean stress, so excited-happy looked
+	# like distressed. Drive arousal from collective arousal; expose stress as
+	# mood_strain for prosody / music.
+	tm["mood_arousal"] = lerpf(float(tm.get("mood_arousal", 0.18)), sum_ar / float(n), 0.08)
+	tm["mood_strain"] = lerpf(float(tm.get("mood_strain", 0.0)), sum_st / float(n), 0.08)
 	tm["mood_valence"] = lerpf(float(tm.get("mood_valence", 0.0)), sum_mood / float(n), 0.06)
 	tm["asleep_fraction"] = float(asleep_n) / float(n)
 	if dl < 0.28 and float(tm.get("asleep_fraction", 0.0)) > 0.55:
