@@ -64,6 +64,7 @@ static func ensure(sim) -> Dictionary:
 			"solitude": 0.0,
 			"away_events": [],
 			"nights_tended": 0,
+			"dawn_noted": false,
 			"bad_night": false,
 			"stocking_feel": "balanced",
 			"nightlight_sessions": 0,
@@ -93,10 +94,18 @@ static func tick(sim, dt: float, room_idle_s: float = 0.0) -> void:
 	var is_night: bool = dl < 0.28
 	if is_night:
 		tm["duration_since_dusk"] = float(tm.get("duration_since_dusk", 0.0)) + dt
-	elif dl > 0.45:
-		tm["duration_since_dusk"] = 0.0
-		if phase > 0.08 and phase < 0.18 and float(tm.get("duration_since_dusk", 0.0)) <= 0.0:
+		# Arm the dawn latch so the next daybreak notes once (Loom #369).
+		tm["dawn_noted"] = false
+	elif dl > 0.45 and phase > 0.08 and phase < 0.18:
+		# Was: zero duration_since_dusk then test <= 0, so _note_dawn ran every
+		# tick across the dawn window and inflated nights_tended.
+		if not bool(tm.get("dawn_noted", false)) \
+				and float(tm.get("duration_since_dusk", 0.0)) > 0.0:
+			tm["dawn_noted"] = true
 			_note_dawn(sim, tm)
+		tm["duration_since_dusk"] = 0.0
+	elif dl > 0.45 and phase >= 0.18:
+		tm["duration_since_dusk"] = 0.0
 	# Solitude (#91): deep idle at night.
 	var solo: float = 0.0
 	if is_night and room_idle_s > 30.0:
