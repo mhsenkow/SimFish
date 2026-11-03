@@ -4,6 +4,9 @@ extends RefCounted
 # CONSCIOUSNESS_ENGINEERING §A — unified MindState: the fish's mind as one object.
 # fish.gd still owns scalar fields for save compat; MindState syncs each tick.
 
+const FishMind = preload("res://scripts/fish_mind.gd")
+const MindSelfModel = preload("res://scripts/mind_self_model.gd")
+
 const SCHEMA_VERSION: int = 4
 
 var schema_version: int = SCHEMA_VERSION
@@ -20,6 +23,10 @@ var curiosity_drive: float = 0.0
 var spooked: float = 0.0
 var familiarity: float = 0.0
 var mood_disposition: float = 0.0
+# Derived display channels for MindLegible (Loom #2). Not written back by apply.
+var emotional_state: String = ""
+var dominant_need: String = ""
+var energy: float = 1.0
 
 # Neuromodulators
 var dopamine: float = 0.45
@@ -114,6 +121,10 @@ func sync_from_fish(f: Fish) -> void:
 	felt_self = f._felt_self.duplicate(true)
 	sleep_depth = f._sleep_depth
 	dream_wisp = f._dream_wisp
+	energy = f.energy
+	emotional_state = FishMind.emotional_state(f)
+	dominant_need = FishMind.dominant_need(f)
+	meta_states = MindSelfModel.meta_to_array(f)
 
 
 # Runtime modules still write Fish directly. Capture their completed work

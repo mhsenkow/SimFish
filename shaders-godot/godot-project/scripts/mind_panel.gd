@@ -160,7 +160,11 @@ func refresh() -> void:
 		return
 
 	_name_label.text = _subject_name(subject)
-	_headline_label.text = MindLegible.headline(subject)
+	# Fish stores mind fields underscored; MindLegible reads MindState names.
+	# Sync through MindState so thought / ignition / Expectations / Outlook render
+	# (SENTIENCE_THE_LOOM #2).
+	var mind: Object = _legible_state(subject)
+	_headline_label.text = MindLegible.headline(mind)
 	var story_txt: String = _FishBackstoryScript.summary(subject)
 	var doing: String = _FishEnvironmentScript.current_activity(subject)
 	if doing != "":
@@ -170,10 +174,10 @@ func refresh() -> void:
 	var social_line: String = FishSocial.summary_line(subject) if subject is Fish else ""
 	_social_label.text = social_line
 	_social_label.visible = social_line != ""
-	_fill_lines(_detail_box, MindLegible.detail_lines(subject))
-	_fill_drives(_drive_box, MindLegible.drives(subject))
+	_fill_lines(_detail_box, MindLegible.detail_lines(mind))
+	_fill_drives(_drive_box, MindLegible.drives(mind))
 	if _show_workings:
-		_fill_workings(_workings_box, MindLegible.workings(subject))
+		_fill_workings(_workings_box, MindLegible.workings(mind))
 	_last_subject = subject
 
 
@@ -190,11 +194,22 @@ func _subject() -> Object:
 	return target
 
 
+# MindLegible speaks MindState field names. A live Fish needs the sync adapter.
+func _legible_state(subject: Object) -> Object:
+	if subject is Fish:
+		return MindState.for_fish(subject as Fish, true)
+	return subject
+
+
 func _subject_name(subject: Object) -> String:
 	var nm: Variant = subject.get("display_name")
 	if nm != null and not String(nm).is_empty():
 		return String(nm)
 	nm = subject.get("creature_name")
+	if nm != null and not String(nm).is_empty():
+		return String(nm)
+	# Fish uses fish_name; without this the panel falls back to the species (#2).
+	nm = subject.get("fish_name")
 	if nm != null and not String(nm).is_empty():
 		return String(nm)
 	var species: Variant = subject.get("species")

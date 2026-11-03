@@ -225,4 +225,57 @@ func _initialize() -> void:
 	t.equals(MindLegible.workings(FakeMind.new()).size(), 0,
 		"a quiet mind produces no workings rows")
 
+	# --- Live Fish via MindState adapter (SENTIENCE_THE_LOOM #2) ---
+	# FakeMind hid the underscore mismatch. A real Fish stores thoughts as
+	# _current_thought etc.; the panel must sync through MindState first.
+	var live: Fish = Fish.new()
+	live.fish_name = "Nell"
+	live.species = "corydoras"
+	live._current_thought = "the gravel shifts"
+	live._thought_stream = "soft ticks below"
+	live._workspace_ignited = true
+	live._prediction_error = 0.7
+	live._life_stance = "bottom_tinkerer"
+	live._self_summary = "I know these stones"
+	live._sleep_depth = 0.0
+	live._dream_wisp = ""
+	live._meta_ring = ["self_aware"]
+	live.attention_focus = "substrate"
+	live.current_intention = "forage"
+	var adapted: MindState = MindState.for_fish(live, true)
+	var live_details: Array[String] = MindLegible.detail_lines(adapted)
+	t.check(live_details.size() >= 1, "adapted Fish produces a thought line")
+	t.check(live_details[live_details.size() - 1].contains("the gravel shifts"),
+		"adapted Fish surfaces _current_thought: %s" % str(live_details))
+	var live_work: Array[Dictionary] = MindLegible.workings(adapted)
+	var live_by: Dictionary = {}
+	for r in live_work:
+		live_by[String(r["label"])] = String(r["value"])
+	t.check(String(live_by.get("Mind", "")).contains("taken over"),
+		"adapted Fish surfaces workspace ignition")
+	t.check(String(live_by.get("Expectations", "")).contains("surprising"),
+		"adapted Fish surfaces prediction_error")
+	t.equals(String(live_by.get("Outlook", "")), "bottom tinkerer",
+		"adapted Fish surfaces life_stance")
+	t.check(String(live_by.get("Sense of self", "")).contains("stones"),
+		"adapted Fish surfaces self_summary")
+	# Asleep must appear when sleep_depth is set (underscore on Fish).
+	live._sleep_depth = 0.5
+	live._dream_wisp = "warm shallows"
+	live._asleep = true
+	var asleep_ms: MindState = MindState.for_fish(live, true)
+	var asleep_h: String = MindLegible.headline(asleep_ms)
+	t.check(asleep_h.contains("Asleep") or asleep_h.contains("Dreaming"),
+		"adapted sleeping Fish reads as asleep/dreaming: %s" % asleep_h)
+	t.check(asleep_h.contains("warm shallows"),
+		"adapted dream_wisp reaches the headline: %s" % asleep_h)
+	# Raw Fish without the adapter does not expose underscore mind fields.
+	var raw_lines: Array[String] = MindLegible.detail_lines(live)
+	var raw_has_thought: bool = false
+	for line in raw_lines:
+		if line.contains("the gravel shifts"):
+			raw_has_thought = true
+	t.check(not raw_has_thought,
+		"raw Fish does not expose _current_thought to MindLegible")
+
 	quit(t.finish())
