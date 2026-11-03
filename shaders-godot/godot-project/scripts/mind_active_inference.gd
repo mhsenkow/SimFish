@@ -90,6 +90,8 @@ static func preferred_error(f) -> Dictionary:
 		"social": clampf(float(he.get("social", 0.0)), 0.0, 1.0),
 		"rest": clampf(float(he.get("rest", 0.0)), 0.0, 1.0),
 		"allostatic_hunger": clampf(float(he.get("allostatic_hunger", 0.0)), 0.0, 1.0),
+		# Loom #177: oxygen set-point error — a suffocating fish wants the surface.
+		"breath": clampf(float(he.get("o2", 0.0)), 0.0, 1.0),
 	}
 
 
@@ -108,6 +110,8 @@ static func pragmatic_value(f, label: String) -> float:
 			base = float(pe["social"])
 		"rest", "night_quiet":
 			base = float(pe["rest"])
+		"surface", "gulp", "breath", "airstone", "oxygen":
+			base = float(pe.get("breath", 0.0))
 		_:
 			base = 0.0
 	const MindSoul = preload("res://scripts/mind_soul.gd")
@@ -163,6 +167,8 @@ static func efe_salience(f, label: String, sim = null) -> float:
 			sal = maxf(sal, f.curiosity_drive * NOVELTY_SCALE)
 		"night_quiet", "rest":
 			sal = maxf(sal, NIGHT_QUIET_BASE)
+		"surface", "gulp", "breath", "airstone", "oxygen":
+			sal = maxf(sal, float(preferred_error(f).get("breath", 0.0)))
 	return maxf(0.0, sal)
 
 

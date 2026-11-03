@@ -76,8 +76,15 @@ static func errors(f, sim: Node = null) -> Dictionary:
 		social_err = SaveHelpers._num(h.get("social_set", 0.25), 0.25)
 	var explore_err: float = maxf(0.0, f.curiosity_drive - SaveHelpers._num(h.get("explore_set", 0.35), 0.35))
 	var o2_err: float = 0.0
-	if sim != null:
-		var eff_o2: float = SaveHelpers._num(sim.get("dissolved_o2"), 1.0)
+	# preferred_error often passes null; fall back to the fish's live sim so
+	# breath error is not silently dropped (Loom #177).
+	var sim_n: Node = sim
+	if sim_n == null and f.get("sim") != null and f.sim is Node:
+		sim_n = f.sim as Node
+	if sim_n != null:
+		var dissolved: float = SaveHelpers._num(sim_n.get("dissolved_o2"), 1.0)
+		var chem_pen: float = SaveHelpers._num(f.get("_chem_o2_penalty"), 0.0)
+		var eff_o2: float = dissolved - chem_pen
 		o2_err = maxf(0.0, SaveHelpers._num(h.get("o2_set", 0.75), 0.75) - eff_o2)
 	var trend: float = SaveHelpers._num(h.get("hunger_trend", 0.0), 0.0)
 	var future_hunger: float = clampf(

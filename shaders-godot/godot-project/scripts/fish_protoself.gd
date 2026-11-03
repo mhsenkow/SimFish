@@ -43,8 +43,35 @@ static func tick(f, _sim: Node, dt: float) -> void:
 		return
 	var pb: Dictionary = ensure(f)
 	var o2_pen: float = float(f.get("_chem_o2_penalty") if f.get("_chem_o2_penalty") != null else 0.0)
+	# Loom #178: split thin water (breath hunger) from chemical sting (gill burn).
+	# Previously gill_rhythm only tracked the nitrite penalty, so genuinely thin
+	# water with no nitrite left the felt gills calm while the body gulped.
+	var breath_hunger: float = 0.0
+	var gill_burn: float = clampf(o2_pen, 0.0, 1.0)
+	var sim_n: Node = _sim
+	if sim_n == null and f.get("sim") != null and f.sim is Node:
+		sim_n = f.sim as Node
+	if sim_n != null:
+		var dissolved: float = float(sim_n.get("dissolved_o2") if sim_n.get("dissolved_o2") != null else 1.0)
+		var eff_o2: float = dissolved - o2_pen
+		var o2_set: float = 0.75
+		var h: Variant = f.get("_homeostasis")
+		if h is Dictionary:
+			o2_set = float((h as Dictionary).get("o2_set", 0.75))
+		breath_hunger = clampf(o2_set - eff_o2, 0.0, 1.0)
+		var wc: Variant = sim_n.get("water_chemistry")
+		if wc != null:
+			var nh3: float = float(wc.get("ammonia") if wc.get("ammonia") != null else 0.0)
+			if wc.has_method("toxic_ammonia_level"):
+				nh3 = float(wc.call("toxic_ammonia_level"))
+			var nh3_sting: float = clampf((nh3 - 0.02) / 0.18, 0.0, 1.0)
+			gill_burn = clampf(o2_pen + nh3_sting * 0.55, 0.0, 1.0)
+	if f is Object:
+		(f as Object).set("_breath_hunger", breath_hunger)
+		(f as Object).set("_gill_burn", gill_burn)
 	pb["gill_rhythm"] = lerpf(float(pb.get("gill_rhythm", 0.5)),
-			clampf(0.35 + f.stress * 0.45 + o2_pen * 0.35, 0.0, 1.0), clampf(dt * 2.0, 0.0, 1.0))
+			clampf(0.35 + f.stress * 0.45 + breath_hunger * 0.4 + gill_burn * 0.25, 0.0, 1.0),
+			clampf(dt * 2.0, 0.0, 1.0))
 	pb["gut_fullness"] = lerpf(float(pb.get("gut_fullness", 0.3)), f.hunger, clampf(dt * 1.5, 0.0, 1.0))
 	pb["fin_tension"] = lerpf(float(pb.get("fin_tension", 0.2)),
 			clampf(f.stress * 0.55 + f.vigilance * 0.35, 0.0, 1.0), clampf(dt * 1.8, 0.0, 1.0))
@@ -55,7 +82,9 @@ static func tick(f, _sim: Node, dt: float) -> void:
 	var bank: float = float(f.get("_bank") if f.get("_bank") != null else 0.0)
 	pb["orientation"] = lerpf(float(pb.get("orientation", 0.0)), absf(tilt) + absf(bank) * 0.5,
 			clampf(dt * 2.5, 0.0, 1.0))
-	var comfort: float = clampf(1.0 - f.stress * 0.55 - f.hunger * 0.25 - o2_pen * 0.3, 0.0, 1.0)
+	var comfort: float = clampf(
+			1.0 - f.stress * 0.55 - f.hunger * 0.25 - breath_hunger * 0.3 - gill_burn * 0.25,
+			0.0, 1.0)
 	pb["comfort"] = lerpf(float(pb.get("comfort", 0.5)), comfort, clampf(dt * 1.2, 0.0, 1.0))
 	# SOUL #47 — aging body as interoceptive truth.
 	if MindSoul.enabled():
@@ -65,7 +94,8 @@ static func tick(f, _sim: Node, dt: float) -> void:
 			pb["vitality_decline"] = lerpf(float(pb.get("vitality_decline", 0.0)), decline, dt * 0.4)
 			pb["comfort"] = lerpf(float(pb.get("comfort", 0.5)), comfort * (1.0 - decline * 0.35), dt * 0.6)
 	pb["pain"] = lerpf(float(pb.get("pain", 0.0)),
-			clampf(f.stress * 0.4 + o2_pen * 0.5, 0.0, 1.0), clampf(dt * 1.5, 0.0, 1.0))
+			clampf(f.stress * 0.4 + gill_burn * 0.55 + breath_hunger * 0.2, 0.0, 1.0),
+			clampf(dt * 1.5, 0.0, 1.0))
 	# Bodily prediction error → surprise (#4).
 	var pred_h: float = float(pb.get("predicted_hunger", f.hunger))
 	var intero_err: float = absf(f.hunger - pred_h)

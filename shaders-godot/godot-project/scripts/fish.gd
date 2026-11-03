@@ -622,6 +622,11 @@ var stress: float = 0.0
 # perceives less O2 than is dissolved — it gulps at the surface even when the
 # water is well-oxygenated. Recomputed each tick from the nitrite reading.
 var _chem_o2_penalty: float = 0.0
+# Felt-body oxygen channels (SENTIENCE_THE_LOOM #178). Breath hunger is the
+# effective-O₂ deficit vs the species set-point; gill burn is NH₃/nitrite sting.
+# Both are written by FishProtoself.tick and read by felt vocabulary / tells.
+var _breath_hunger: float = 0.0
+var _gill_burn: float = 0.0
 # Staggered maturation / senescence (#39): a small per-individual lifespan
 # offset so siblings born in the same clutch don't all mature and die on the
 # exact same tick — smooths the demographic into a believable age pyramid
@@ -7865,7 +7870,7 @@ func _repair_motion_state() -> void:
 		global_position = Vector3(_safe_x, _safe_y, _safe_z)
 	if not is_finite(growth_factor) or growth_factor <= 0.0:
 		growth_factor = 1.0
-	if not scale.is_finite() or scale.x <= 0.0:
+	if not scale.is_finite() or scale.x <= 0.0 or scale.y <= 0.0 or scale.z <= 0.0:
 		scale = Vector3.ONE * _maturity_scale() * clampf(growth_factor, 0.6, 2.0)
 	if not is_finite(_last_yaw):
 		_last_yaw = atan2(heading.x, -heading.z) if heading.is_finite() else 0.0
@@ -8019,7 +8024,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		_last_yaw = atan2(heading.x, -heading.z) if heading.is_finite() else 0.0
 	if not is_finite(growth_factor) or growth_factor <= 0.0:
 		growth_factor = 1.0
-	if not scale.is_finite() or scale.x <= 0.0:
+	if not scale.is_finite() or scale.x <= 0.0 or scale.y <= 0.0 or scale.z <= 0.0:
 		scale = Vector3.ONE * _maturity_scale() * growth_factor
 	if not heading.is_finite() or heading.length_squared() < 0.0001:
 		heading = Vector3(sin(_last_yaw), 0.0, -cos(_last_yaw))
@@ -10776,7 +10781,7 @@ func apply_save_dict(d: Dictionary) -> void:
 		global_position = Vector3(home_x, home_y, home_z)
 	if not is_finite(_hover_depth) or is_inf(_hover_depth):
 		_hover_depth = global_position.y
-	if not scale.is_finite() or scale.x <= 0.0:
+	if not scale.is_finite() or scale.x <= 0.0 or scale.y <= 0.0 or scale.z <= 0.0:
 		scale = Vector3.ONE * _maturity_scale() * growth_factor
 	_reset_facing_from_direction(heading)
 	# Transient refs are NOT restored — they're cheap to re-pick next tick

@@ -89,6 +89,10 @@ static func begin_cycle(f, sim = null) -> void:
 
 
 static func run_perceive_phase(f, sim, _ms, dt: float) -> void:
+	# Loom #176: homeostasis must tick in live play, not only in the eval /
+	# poke harness — otherwise hunger_trend, dominant need and the feed point
+	# stay frozen while EFE still reads their errors every cycle.
+	FishHomeostasis.tick(f, sim, dt)
 	if not FishBinding.layer_enabled():
 		return
 	FishProtoself.tick(f, sim, dt)
