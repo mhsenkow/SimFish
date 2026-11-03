@@ -33,6 +33,7 @@ class FakeMind:
 	var meta_states: PackedStringArray = PackedStringArray()
 	var emotional_state: String = ""
 	var dominant_need: String = ""
+	var energy: float = 1.0
 
 
 func _initialize() -> void:
@@ -169,20 +170,32 @@ func _initialize() -> void:
 	dr.stress = 0.3
 	dr.curiosity_drive = 0.6
 	dr.vigilance = 0.01
+	dr.energy = 0.8
+	dr.arousal = 0.55
 	var rows: Array[Dictionary] = MindLegible.drives(dr)
 	t.check(rows.size() >= 3, "notable drives are returned")
 	t.equals(String(rows[0]["label"]), "Hunger", "the strongest drive sorts first")
 	var labels: Array[String] = []
+	var by_drive: Dictionary = {}
 	for r in rows:
 		labels.append(String(r["label"]))
+		by_drive[String(r["label"])] = float(r["value"])
 		t.in_range(float(r["value"]), 0.0, 1.0,
 			"%s must be a 0..1 magnitude" % String(r["label"]))
 	t.check(not labels.has("Alertness"),
 		"a negligible drive (0.01) must be dropped, got: %s" % ", ".join(labels))
-	# Descending order throughout.
-	for i in range(1, rows.size()):
+	# Loom #3: Energy is metabolic energy, Stirred is arousal; both trail needs.
+	t.check(labels.has("Energy"), "Energy bar is present")
+	t.approx(float(by_drive.get("Energy", -1.0)), 0.8, "Energy binds energy, not arousal")
+	t.check(labels.has("Stirred"), "Stirred bar surfaces arousal")
+	t.approx(float(by_drive.get("Stirred", -1.0)), 0.55, "Stirred binds arousal")
+	t.equals(String(labels[labels.size() - 2]), "Energy", "Energy trails sorted needs")
+	t.equals(String(labels[labels.size() - 1]), "Stirred", "Stirred is last")
+	# Need-drives alone stay descending.
+	var need_n: int = labels.size() - 2
+	for i in range(1, need_n):
 		t.check(float(rows[i - 1]["value"]) >= float(rows[i]["value"]),
-			"drives must be sorted descending")
+			"need-drives must be sorted descending")
 
 	# --- Workings: the machinery, still phrased ---
 	var w := FakeMind.new()

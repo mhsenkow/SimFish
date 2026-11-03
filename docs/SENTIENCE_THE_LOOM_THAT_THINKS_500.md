@@ -187,7 +187,7 @@ made it.
   - The name falls back to the species.
 
   Pass `MindState.sync_from_fish(f)` (or an adapter). `smoke_mind_legible.gd:10-12` passes because it builds a fake object with the plain names; make it use a real `Fish`.
-- [ ] **3. [V] The "Energy" bar shows arousal.** (S·S) `mind_legible.gd:228`. Bind it to `energy` (`fish.gd:619`) and add a separate "stirred" bar if arousal is wanted.
+- [x] **3. [V] The "Energy" bar shows arousal.** (S·S) `mind_legible.gd:228`. Bind it to `energy` (`fish.gd:619`) and add a separate "stirred" bar if arousal is wanted.
 - [ ] **4. A model upgrade replaces the line; it is not a second line.** (S·M) The template is emitted first. When the model upgrade lands, `sim_driver.gd:505-509` re-emits `fish_thought_spoke`, so the player gets a second strip and a second babble. Give each utterance an id and make the upgrade an in-place replace (text cross-fades, no new sound).
 - [ ] **5. Every speech path makes a sound.** (S·M) These are silent today:
   - Guardian lines (`main.gd:4763-4815`).

@@ -220,18 +220,26 @@ static func workings(state: Object) -> Array[Dictionary]:
 # A UI can render these as bars; the caller does not need to know which
 # MindState fields are drives.
 static func drives(state: Object) -> Array[Dictionary]:
+	# Pressing need-drives sort strongest-first. Energy / Stirred are status
+	# meters appended after (SENTIENCE_THE_LOOM #3): Energy was wrongly bound
+	# to arousal; a full energy bar must not outrank hunger.
 	var candidates: Array[Dictionary] = [
 		{"label": "Hunger", "value": _num(state, "hunger", 0.0)},
 		{"label": "Stress", "value": _num(state, "stress", 0.0)},
 		{"label": "Curiosity", "value": _num(state, "curiosity_drive", 0.0)},
 		{"label": "Alertness", "value": _num(state, "vigilance", 0.0)},
-		{"label": "Energy", "value": _num(state, "arousal", 0.0)},
 	]
 	var out: Array[Dictionary] = []
 	for c in candidates:
 		if float(c["value"]) >= 0.05:
 			out.append(c)
 	out.sort_custom(func(a, b): return float(a["value"]) > float(b["value"]))
+	var energy_v: float = _num(state, "energy", 0.0)
+	if energy_v >= 0.05:
+		out.append({"label": "Energy", "value": energy_v})
+	var stirred_v: float = _num(state, "arousal", 0.0)
+	if stirred_v >= 0.05:
+		out.append({"label": "Stirred", "value": stirred_v})
 	return out
 
 
