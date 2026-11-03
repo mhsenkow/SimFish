@@ -25,6 +25,18 @@ func _init() -> void:
 	var mods: Dictionary = FishSparkExpression.motion_modifiers(f, sig)
 	if mods.is_empty() or not mods.has("wander_scale"):
 		failed.append("motion mods missing wander_scale")
+	# Loom #193: tick is the live entry (modifiers + apply_shaders). Calling
+	# motion_modifiers alone left spark shader params never mind-driven.
+	f._prediction_error = 0.8
+	FishSparkExpression.tick(f, ms, 0.1)
+	if f._spark_motion.is_empty():
+		failed.append("tick must populate _spark_motion")
+	# Source contract: sim_driver must call tick, not modifiers alone.
+	var sim_src: String = FileAccess.get_file_as_string("res://scripts/sim_driver.gd")
+	if not sim_src.contains("FishSparkExpression.tick("):
+		failed.append("sim_driver must call FishSparkExpression.tick")
+	if sim_src.contains("FishSparkExpression.motion_modifiers(f, FishSparkExpression.gather_signals"):
+		failed.append("sim_driver must not call motion_modifiers alone")
 	if failed.is_empty():
 		print("smoke_spark_expression: OK")
 	else:
