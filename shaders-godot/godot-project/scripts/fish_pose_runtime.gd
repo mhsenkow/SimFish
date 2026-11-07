@@ -7,6 +7,8 @@ extends RefCounted
 
 
 const HOLD_FLICKER: float = 0.04
+const _META_OFFS: StringName = &"_pose_offs"
+const _ZERO_OFFS: PackedFloat32Array = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 static var enabled: bool = true
 
@@ -164,14 +166,16 @@ static func tick(f: Fish, dt: float) -> Dictionary:
 		f.set_meta("_pose_channels", edited)
 		return edited
 	# Continuous affect (#215): valence/arousal soft-mix relaxed/alert/clamped.
-	var base: Dictionary = MotionPoseLibrary.get_pose(f.species, cur)
+	# Resolved poses are cached and shared (read-only); mix_channels returns a
+	# fresh dictionary, so `mixed` below is ours to edit.
+	var base: Dictionary = MotionPoseLibrary.resolved_channels(f.species, cur)
 	var affect_w: float = clampf(float(f.arousal) * 0.55 + maxf(float(f.stress) - 0.35, 0.0) * 0.5, 0.0, 1.0)
 	var valence: float = clampf((float(f.mood) + 1.0) * 0.5, 0.0, 1.0)
-	var alert_p: Dictionary = MotionPoseLibrary.get_pose(f.species, "alert")
-	var clamp_p: Dictionary = MotionPoseLibrary.get_pose(f.species, "clamped")
-	var mixed: Dictionary = MotionPoseLibrary.mix(base, alert_p, affect_w * valence * 0.35)
+	var alert_p: Dictionary = MotionPoseLibrary.resolved_channels(f.species, "alert")
+	var mixed: Dictionary = MotionPoseLibrary.mix_channels(base, alert_p, affect_w * valence * 0.35)
 	if float(f.stress) > 0.5:
-		mixed = MotionPoseLibrary.mix(mixed, clamp_p, clampf((float(f.stress) - 0.5) * 0.7, 0.0, 0.55))
+		var clamp_p: Dictionary = MotionPoseLibrary.resolved_channels(f.species, "clamped")
+		mixed = MotionPoseLibrary.mix_channels(mixed, clamp_p, clampf((float(f.stress) - 0.5) * 0.7, 0.0, 0.55))
 	# Moving hold (#214): breath / fin flicker / tiny drift never freeze.
 	var hold_t: float = float(f.get_meta("_pose_hold_t") if f.has_meta("_pose_hold_t") else 0.0) + dt
 	f.set_meta("_pose_hold_t", hold_t)
@@ -183,8 +187,8 @@ static func tick(f: Fish, dt: float) -> Dictionary:
 
 	# Weight the mix by blend progress so transitions don't pop.
 	var w: float = blend.weight
-	var rest: Dictionary = MotionPoseLibrary.rest_pose(f.species)
-	var out: Dictionary = MotionPoseLibrary.mix(rest, mixed, w)
+	var rest: Dictionary = MotionPoseLibrary.resolved_channels(f.species, "rest")
+	var out: Dictionary = MotionPoseLibrary.mix_channels(rest, mixed, w)
 	f.set_meta("_pose_channels", out)
 	return out
 
@@ -223,20 +227,18 @@ static func apply(f: Fish, pec_amp: float, pec_spread: float, dt: float) -> Dict
 	var want_arch: float = arch if absf(arch) > 0.15 else 0.0
 	var want_op: float = op if absf(op) > 0.15 else 0.0
 	var want_jaw: float = jaw if absf(jaw) > 0.15 else 0.0
-	var off_d: float = MotionEase.damp(_meta_f(f, "_pose_off_d", 0.0), want_d, 6.0, dt)
-	var off_a: float = MotionEase.damp(_meta_f(f, "_pose_off_a", 0.0), want_a, 6.0, dt)
-	var off_p: float = MotionEase.damp(_meta_f(f, "_pose_off_p", 0.0), want_p, 5.0, dt)
-	var off_r: float = MotionEase.damp(_meta_f(f, "_pose_off_r", 0.0), want_r, 4.0, dt)
-	var off_arch: float = MotionEase.damp(_meta_f(f, "_pose_off_arch", 0.0), want_arch, 5.0, dt)
-	var off_op: float = MotionEase.damp(_meta_f(f, "_pose_off_op", 0.0), want_op, 6.0, dt)
-	var off_jaw: float = MotionEase.damp(_meta_f(f, "_pose_off_jaw", 0.0), want_jaw, 8.0, dt)
-	f.set_meta("_pose_off_d", off_d)
-	f.set_meta("_pose_off_a", off_a)
-	f.set_meta("_pose_off_p", off_p)
-	f.set_meta("_pose_off_r", off_r)
-	f.set_meta("_pose_off_arch", off_arch)
-	f.set_meta("_pose_off_op", off_op)
-	f.set_meta("_pose_off_jaw", off_jaw)
+	# The seven damped offsets live in one packed meta (d, a, p, r, arch, op,
+	# jaw): fourteen meta reads/writes per fish per frame were a measurable
+	# share of the pose pass.
+	var offs: PackedFloat32Array = f.get_meta(_META_OFFS, _ZERO_OFFS)
+	var off_d: float = MotionEase.damp(offs[0], want_d, 6.0, dt)
+	var off_a: float = MotionEase.damp(offs[1], want_a, 6.0, dt)
+	var off_p: float = MotionEase.damp(offs[2], want_p, 5.0, dt)
+	var off_r: float = MotionEase.damp(offs[3], want_r, 4.0, dt)
+	var off_arch: float = MotionEase.damp(offs[4], want_arch, 5.0, dt)
+	var off_op: float = MotionEase.damp(offs[5], want_op, 6.0, dt)
+	var off_jaw: float = MotionEase.damp(offs[6], want_jaw, 8.0, dt)
+	f.set_meta(_META_OFFS, PackedFloat32Array([off_d, off_a, off_p, off_r, off_arch, off_op, off_jaw]))
 	if f._dorsal_pivot != null:
 		f._dorsal_pivot.rotation.x += off_d * 0.35
 	if f._anal_pivot != null:

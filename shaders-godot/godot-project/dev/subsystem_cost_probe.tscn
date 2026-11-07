@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://subsystem_cost_probe_iaq"]
+
+[ext_resource type="Script" path="res://dev/subsystem_cost_probe.gd" id="1_probe"]
+
+[node name="SubsystemCostProbe" type="Node"]
+script = ExtResource("1_probe")

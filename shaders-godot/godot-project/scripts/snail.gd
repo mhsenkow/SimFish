@@ -495,6 +495,35 @@ static func _default_shell_thickness(shape: String) -> float:
 			return 0.5
 
 
+# Update LOD. A snail crawls ~0.1 u/s, a tenth of a render pixel per frame at
+# the default view, so one small on screen updates on alternate frames with
+# the skipped time carried into the next step. Only when the doubled step
+# still fits MAX_STEP_DT, so a snail never crawls slower for it; close snails
+# and anything without a camera (tests, headless tools) run every frame.
+const LOD_FULL_RATE_PPU: float = 40.0
+const LOD_PPU_REFRESH_FRAMES: int = 15
+var _lod_carry: float = 0.0
+var _lod_ppu: float = INF
+var _lod_ppu_frame: int = -1000
+
+
+func _lod_skip_frame(dt: float) -> bool:
+	var frame: int = Engine.get_process_frames()
+	if frame - _lod_ppu_frame >= LOD_PPU_REFRESH_FRAMES:
+		_lod_ppu_frame = frame
+		_lod_ppu = INF
+		var cam: Camera3D = get_viewport().get_camera_3d() if is_inside_tree() else null
+		if cam != null:
+			_lod_ppu = MotionLod.px_per_unit(cam, global_position,
+				get_viewport().get_visible_rect().size.y)
+	if _lod_ppu >= LOD_FULL_RATE_PPU or _lod_carry + dt * 2.0 > MAX_STEP_DT:
+		return false
+	if ((frame + (get_instance_id() >> 4)) & 1) == 0:
+		return false
+	_lod_carry += dt
+	return true
+
+
 func _process(dt: float) -> void:
 	# Honor sim time_scale so pause/fast-forward affect snails too.
 	var sim := _get_sim()
@@ -502,6 +531,10 @@ func _process(dt: float) -> void:
 		dt *= float(sim.time_scale)
 		if dt <= 0.0:
 			return
+	if _lod_skip_frame(dt):
+		return
+	dt += _lod_carry
+	_lod_carry = 0.0
 	dt = minf(dt, MAX_STEP_DT)
 	_sanitize_wall_normal()
 	_tick_surface_blend(dt)

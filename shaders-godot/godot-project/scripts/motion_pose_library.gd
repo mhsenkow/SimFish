@@ -44,10 +44,15 @@ const CHANNEL_RANGE: Dictionary = {
 
 static var _data: Dictionary = {}
 static var _loaded: bool = false
+# "species|pose" -> resolved channels (no "_" metadata). Read-only: the per-
+# frame pose layer (FishPoseRuntime.tick) used to rebuild every pose with three
+# merges and a filter copy, four poses per fish per frame.
+static var _resolved: Dictionary = {}
 
 
 static func reload_data() -> bool:
 	_data = {}
+	_resolved = {}
 	_loaded = true
 	if not FileAccess.file_exists(DATA_PATH):
 		return false
@@ -90,6 +95,30 @@ static func get_pose(species: String, pose: String) -> Dictionary:
 	var s: Variant = _species_table(species).get(pose, {})
 	if s is Dictionary:
 		out.merge(s, true)
+	return out
+
+
+# Channels of a resolved pose, cached. The returned dictionary is shared:
+# never write to it (get_pose returns a private copy for callers that edit).
+static func resolved_channels(species: String, pose: String) -> Dictionary:
+	if not _loaded:
+		reload_data()
+	var key: String = species + "|" + pose
+	var hit: Variant = _resolved.get(key)
+	if hit != null:
+		return hit
+	var c: Dictionary = _channels_only(get_pose(species, pose))
+	_resolved[key] = c
+	return c
+
+
+# Same result as mix() for channel-only inputs (resolved_channels / earlier
+# mix_channels output), without re-filtering both sides every call.
+static func mix_channels(from: Dictionary, to: Dictionary, w: float) -> Dictionary:
+	var out: Dictionary = from.duplicate()
+	var cw: float = clampf(w, 0.0, 1.0)
+	for k in to:
+		out[k] = lerpf(float(from.get(k, to[k])), float(to[k]), cw)
 	return out
 
 
@@ -156,6 +185,7 @@ static func upsert_pose(species: String, pose: String, channels: Dictionary) -> 
 		if channels.has(meta_k):
 			cleaned[meta_k] = channels[meta_k]
 	table[pose] = cleaned
+	_resolved = {}
 
 
 # Persist the library to the first writable path in `paths`.

@@ -3743,6 +3743,28 @@ func _add_soft_chain(parent: Node3D, root_pos: Vector3, link_n: int,
 	})
 
 
+# Eye gaze moves an eye voxel ~0.02 units; under half a pixel it cannot be seen
+# (MotionLod.worth_animating, CREATURE_MOTION_700 #60) and is skipped.
+const FACE_DETAIL_UNITS: float = 0.02
+# Below this many render pixels per world unit (a ~0.6 u fish under ~24 px)
+# the pose pass runs at half rate. Default framing at 1024x576 is ~37.
+const POSE_FULL_RATE_PPU: float = 40.0
+var _pose_lod_carry: float = 0.0
+
+
+# Render pixels per world unit at this fish, or INF when it must stay at full
+# detail: no camera (tests, headless tools), the guardian, or the fish the
+# keeper is watching / following.
+func _pose_lod_ppu() -> float:
+	if is_guardian or _cached_glance_strength > 0.12 or not is_inside_tree():
+		return INF
+	var vp: Viewport = get_viewport()
+	var cam: Camera3D = vp.get_camera_3d()
+	if cam == null:
+		return INF
+	return MotionLod.px_per_unit(cam, global_position, vp.get_visible_rect().size.y)
+
+
 func _step_soft_chains(dt: float) -> void:
 	if _soft_chains.is_empty():
 		return
@@ -4452,7 +4474,15 @@ func _nudge_home_toward_music_target(target: Vector3, strength: float) -> void:
 func _apply_music_beat_surge(mods: Dictionary, _effective_max: float) -> void:
 	# #169: route beat surges through wind-up (anticipation → effort → dart).
 	var anticipation: float = float(mods.get("anticipation", 0.0))
-	if anticipation <= 0.0 and mods.has("beat_phase"):
+	# Derive the pre-beat only for a provider that dances (dart_chance > 0) but
+	# sends no anticipation of its own. The neutral mods every non-dancing fish
+	# gets carry beat_phase 0.0, and beat_anticipation(0.0) is 1.0 - the peak
+	# of a beat - so this fallback used to re-arm a full 0.68 s music dart on
+	# every fish every tick: burst_remaining never reached 0, which blocked
+	# every hover/dart bout, peck and courtship gate and pinned fish at burst
+	# speed (v0.2.52, fish probe: dart bouts 0%, speed cv 0.38 -> 0.16).
+	if not mods.has("anticipation") and float(mods.get("dart_chance", 0.0)) > 0.0 \
+			and mods.has("beat_phase"):
 		anticipation = MusicChoreography.beat_anticipation(float(mods.get("beat_phase", 0.0)))
 	if not bool(mods.get("beat_dart", false)) and anticipation < 0.35:
 		return
@@ -8499,6 +8529,19 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	_last_yaw_rate = yaw_rate
 	if pose_dt > 0.0:
 		dt = pose_dt
+	# Pose LOD (CREATURE_MOTION_700 #59, MOTION_BUDGET "far" tier). Movement
+	# above always integrates every frame; this pose pass (bank, wave, fins,
+	# head, overlays) is the expensive part. A fish small on screen runs it on
+	# alternate frames with the skipped time carried, so springs and phases
+	# advance exactly; the watched/followed fish and close fish never skip.
+	var lod_ppu: float = _pose_lod_ppu() if do_body_anim else INF
+	if do_body_anim and lod_ppu < POSE_FULL_RATE_PPU:
+		if ((Engine.get_process_frames() + (get_instance_id() >> 4)) & 1) == 1:
+			_pose_lod_carry = minf(_pose_lod_carry + dt, 0.1)
+			_last_yaw = current_yaw
+			return
+		dt += _pose_lod_carry
+	_pose_lod_carry = 0.0
 	if do_body_anim:
 		# Mid-body bend toward the turn. It follows the realised yaw rate, so
 		# it is a lean, not anticipation.
@@ -8668,6 +8711,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 	tail_amp *= 1.0 + FishAnticipation.effort_amp(self)  # #155
 	# #171: lift key channels to ≥2 px at the default camera.
 	var cam_n: Camera3D = get_viewport().get_camera_3d() if is_inside_tree() else null
+	var face_lod: bool = MotionLod.worth_animating(FACE_DETAIL_UNITS, lod_ppu)
 	tail_amp *= MotionStaging.legibility_scale(self, maxf(tail_amp, 0.04), cam_n)
 	# #172: when the lateral beat is foreshortened, emphasise caudal spread + heave.
 	# Heave is a bounded offset from rest Y — never integrate current+delta
@@ -8917,7 +8961,7 @@ func _motion_substep(dt: float, pose_dt: float = -1.0) -> void:
 		gaze_hold += float(aff_anim.get("gaze_split", 0.0))
 		_eye_look = lerpf(_eye_look, gaze_hold * rest_factor, 1.0 - exp(-dt * 2.0))
 		var gaze_head: float = 0.0
-		if _motion_gaze != null and (_eye_left_pivot != null or _eye_right_pivot != null):
+		if face_lod and _motion_gaze != null and (_eye_left_pivot != null or _eye_right_pivot != null):
 			# Keeper at the glass (#302) beats curiosity glances.
 			if _cached_glance_strength > 0.30 and _cached_glance_point.length_squared() > 0.01:
 				_motion_gaze.look_at_point(&"keeper", _cached_glance_point,
